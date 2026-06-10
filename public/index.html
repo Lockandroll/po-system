@@ -214,7 +214,7 @@ async function render() {
     '<div id="sidebar">' +
       '<div class="sidebar-logo"><h1>Lock and Roll</h1></div>' +
       '<nav class="sidebar-nav">' +
-        '<div class="nav-item ' + (state.currentView === 'dashboard' ? 'active' : '') + '" onclick="navigate(\'dashboard\')">' + icons.dashboard + ' Dashboard</div>' +
+        '<div class="nav-item ' + (state.currentView === 'dashboard' ? 'active' : '') + '" onclick="navigate(\'dashboard\')">' + icons.dashboard + ' PO Dashboard</div>' +
         (state.user.role !== 'approver' ? '<div class="nav-item ' + (state.currentView === 'new' ? 'active' : '') + '" onclick="navigate(\'new\')">' + icons.plus + ' New PO</div>' : '') +
         '<div class="nav-item ' + (['quotes','new-quote','edit-quote','view-quote'].includes(state.currentView) ? 'active' : '') + '" onclick="navigate(\'quotes\')">' + icons.quote + ' Quotes</div>' +
         (state.user.role === 'admin' ? '<div class="nav-item ' + (state.currentView === 'users' ? 'active' : '') + '" onclick="navigate(\'users\')">' + icons.users + ' Users</div>' : '') +
@@ -329,7 +329,7 @@ async function renderDashboard(el) {
     const cityOptions = '<option value="">All Cities</option>' + cities.map(function(c){ return '<option value="' + escHtml(c) + '">' + escHtml(c) + '</option>'; }).join('');
 
     el.innerHTML =
-      '<div class="page-header"><div><div class="page-title">Dashboard</div></div>' +
+      '<div class="page-header"><div><div class="page-title">PO Dashboard</div></div>' +
       '<div class="flex-gap">' +
       '<button class="btn btn-secondary" onclick="exportCSV()">&#8595; Export CSV</button>' +
       (state.user.role !== 'approver' ? '<button class="btn btn-primary" onclick="navigate(\'new\')" style="white-space:nowrap">' + icons.plus + ' New PO</button>' : '') +
@@ -665,7 +665,7 @@ async function renderUsers(el) {
   try {
     const users = await api('GET', '/users');
     el.innerHTML =
-      '<div class="page-header"><div class="page-title">Users</div><button class="btn btn-primary" onclick="showUserModal(null)">' + icons.plus + ' Add User</button></div>' +
+      '<div class="page-header"><div class="page-title">Users</div><button class="btn btn-primary" onclick="showUserModal(null)" style="white-space:nowrap">' + icons.plus + ' Add User</button></div>' +
       '<div id="users-error"></div>' +
       '<div class="card"><div class="card-body" style="padding:0"><div class="table-wrap"><table>' +
         '<thead><tr><th>Name</th><th>Email</th><th>Role</th><th>Status</th><th></th></tr></thead>' +
@@ -1000,7 +1000,7 @@ async function renderCities(el) {
   try {
     const cities = await api('GET', '/cities/all');
     el.innerHTML =
-      '<div class="page-header"><div><div class="page-title">Cities</div><div class="page-subtitle">Manage city codes used in PO numbers</div></div><button class="btn btn-primary" onclick="showCityModal(null)">' + icons.plus + ' Add City</button></div>' +
+      '<div class="page-header"><div><div class="page-title">Cities</div><div class="page-subtitle">Manage city codes used in PO numbers</div></div><button class="btn btn-primary" onclick="showCityModal(null)" style="white-space:nowrap">' + icons.plus + ' Add City</button></div>' +
       '<div id="cities-error"></div>' +
       '<div class="card"><div class="card-body" style="padding:0"><div class="table-wrap"><table>' +
         '<thead><tr><th>Code</th><th>Name</th><th>Status</th><th></th></tr></thead>' +
@@ -1112,7 +1112,7 @@ async function renderQuotes(el) {
     el.innerHTML =
       '<div class="page-header">' +
         '<div><div class="page-title">Quotes</div><div class="page-subtitle">' + (isAdmin ? 'All quotes' : 'Your quotes') + '</div></div>' +
-        '<button class="btn btn-primary" onclick="navigate(\'new-quote\')">' + icons.plus + ' New Quote</button>' +
+        '<button class="btn btn-primary" onclick="navigate(\'new-quote\')" style="white-space:nowrap">' + icons.plus + ' New Quote</button>' +
       '</div>' +
       '<div id="quotes-error"></div>' +
       '<div class="card">' +
