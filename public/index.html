@@ -119,6 +119,8 @@
     .modal-title { font-size: 16px; font-weight: 600; }
     .modal-body { padding: 20px; }
     .modal-footer { padding: 16px 20px; border-top: 1px solid var(--border); display: flex; gap: 8px; justify-content: flex-end; }
+    .filter-bar { display: flex; gap: 10px; flex-wrap: wrap; margin-bottom: 16px; align-items: center; }
+    .filter-bar input, .filter-bar select { width: auto; flex: 1; min-width: 140px; }
     .empty-state { text-align: center; padding: 48px 24px; color: var(--text-muted-color); }
     .empty-state svg { width: 48px; height: 48px; margin: 0 auto 16px; opacity: 0.3; }
     .empty-state h3 { font-size: 16px; font-weight: 600; color: var(--text-dim); margin-bottom: 6px; }
@@ -175,6 +177,7 @@ const icons = {
   edit: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>',
   trash: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14H6L5 6"/><path d="M10 11v6"/><path d="M14 11v6"/><path d="M9 6V4h6v2"/></svg>',
   logout: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/></svg>',
+  map: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="1 6 1 22 8 18 16 22 23 18 23 2 16 6 8 2 1 6"/><line x1="8" y1="2" x2="8" y2="18"/><line x1="16" y1="6" x2="16" y2="22"/></svg>',
 };
 
 function escHtml(s) {
@@ -211,6 +214,7 @@ async function render() {
         '<div class="nav-item ' + (state.currentView === 'dashboard' ? 'active' : '') + '" onclick="navigate(\'dashboard\')">' + icons.dashboard + ' Dashboard</div>' +
         (state.user.role !== 'approver' ? '<div class="nav-item ' + (state.currentView === 'new' ? 'active' : '') + '" onclick="navigate(\'new\')">' + icons.plus + ' New PO</div>' : '') +
         (state.user.role === 'admin' ? '<div class="nav-item ' + (state.currentView === 'users' ? 'active' : '') + '" onclick="navigate(\'users\')">' + icons.users + ' Users</div>' : '') +
+        (state.user.role === 'admin' ? '<div class="nav-item ' + (state.currentView === 'cities' ? 'active' : '') + '" onclick="navigate(\'cities\')">' + icons.map + ' Cities</div>' : '') +
       '</nav>' +
       '<div class="sidebar-footer">' +
         '<div class="sidebar-user"><div class="avatar">' + escHtml(initials) + '</div><div class="sidebar-user-info"><div class="sidebar-user-name">' + escHtml(state.user.name) + '</div><div class="sidebar-user-role">' + escHtml(state.user.role) + '</div></div></div>' +
@@ -228,6 +232,7 @@ async function render() {
   else if (state.currentView === 'edit') await renderEditPO(content, state.currentParam);
   else if (state.currentView === 'view') await renderViewPO(content, state.currentParam);
   else if (state.currentView === 'users') await renderUsers(content);
+  else if (state.currentView === 'cities') await renderCities(content);
   else { state.currentView = 'dashboard'; await renderDashboard(content); }
 }
 
@@ -299,18 +304,26 @@ function logout() {
   render();
 }
 
+let allPOs = [];
+
 async function renderDashboard(el) {
   try {
-    const pos = await api('GET', '/pos');
-    const total = pos.length;
-    const pending = pos.filter(function(p){ return p.status === 'submitted'; }).length;
-    const approved = pos.filter(function(p){ return p.status === 'approved'; }).length;
-    const drafts = pos.filter(function(p){ return p.status === 'draft'; }).length;
+    allPOs = await api('GET', '/pos');
+    const total = allPOs.length;
+    const pending = allPOs.filter(function(p){ return p.status === 'submitted'; }).length;
+    const approved = allPOs.filter(function(p){ return p.status === 'approved'; }).length;
+    const drafts = allPOs.filter(function(p){ return p.status === 'draft'; }).length;
     const isApprover = ['approver','admin'].includes(state.user.role);
+
+    const cities = [...new Set(allPOs.filter(function(p){ return p.city_code; }).map(function(p){ return p.city_code; }))].sort();
+    const cityOptions = '<option value="">All Cities</option>' + cities.map(function(c){ return '<option value="' + escHtml(c) + '">' + escHtml(c) + '</option>'; }).join('');
+
     el.innerHTML =
       '<div class="page-header"><div><div class="page-title">Dashboard</div></div>' +
+      '<div class="flex-gap">' +
+      '<button class="btn btn-secondary" onclick="exportCSV()">&#8595; Export CSV</button>' +
       (state.user.role !== 'approver' ? '<button class="btn btn-primary" onclick="navigate(\'new\')">' + icons.plus + ' New PO</button>' : '') +
-      '</div>' +
+      '</div></div>' +
       '<div class="stats-grid">' +
         '<div class="stat-card"><div class="stat-value">' + total + '</div><div class="stat-label">Total POs</div></div>' +
         '<div class="stat-card"><div class="stat-value" style="color:var(--warning)">' + pending + '</div><div class="stat-label">Pending Approval</div></div>' +
@@ -319,39 +332,114 @@ async function renderDashboard(el) {
       '</div>' +
       '<div class="card">' +
         '<div class="card-header"><span class="card-title">Purchase Orders</span></div>' +
-        '<div class="card-body" style="padding:0">' +
-          (pos.length === 0 ? '<div class="empty-state"><h3>No purchase orders yet</h3><p>Create your first PO to get started.</p></div>' :
-          '<div class="table-wrap"><table>' +
-            '<thead><tr><th>PO Number</th><th>Vendor</th>' + (isApprover ? '<th>Requested By</th>' : '') + '<th>Total</th><th>Status</th><th>Date</th><th></th></tr></thead>' +
-            '<tbody>' + pos.map(function(po){
-              return '<tr>' +
-                '<td><strong>' + escHtml(po.po_number) + '</strong></td>' +
-                '<td>' + escHtml(po.vendor_name) + '</td>' +
-                (isApprover ? '<td>' + escHtml(po.requester_name || '—') + '</td>' : '') +
-                '<td>$' + parseFloat(po.total_amount).toFixed(2) + '</td>' +
-                '<td>' + badgeHtml(po.status) + '</td>' +
-                '<td>' + formatDate(po.created_at) + '</td>' +
-                '<td><button class="btn btn-secondary btn-sm" onclick="navigate(\'view\',' + po.id + ')">View</button></td>' +
-              '</tr>';
-            }).join('') +
-            '</tbody></table></div>') +
+        '<div class="card-body" style="border-bottom:1px solid var(--border)">' +
+          '<div class="filter-bar">' +
+            '<input type="text" id="filter-text" placeholder="Search PO #, vendor, customer..." oninput="applyFilters()" />' +
+            '<select id="filter-status" onchange="applyFilters()"><option value="">All Statuses</option><option value="draft">Draft</option><option value="submitted">Submitted</option><option value="approved">Approved</option><option value="rejected">Rejected</option><option value="cancelled">Cancelled</option></select>' +
+            '<select id="filter-city" onchange="applyFilters()">' + cityOptions + '</select>' +
+          '</div>' +
         '</div>' +
+        '<div id="po-table-body" style="padding:0"></div>' +
       '</div>';
+
+    applyFilters();
   } catch(err) {
     el.innerHTML = '<div class="alert alert-error">' + escHtml(err.message) + '</div>';
   }
+}
+
+function applyFilters() {
+  const text = (document.getElementById('filter-text') || {}).value || '';
+  const status = (document.getElementById('filter-status') || {}).value || '';
+  const city = (document.getElementById('filter-city') || {}).value || '';
+  const isApprover = ['approver','admin'].includes(state.user.role);
+
+  const filtered = allPOs.filter(function(po) {
+    if (status && po.status !== status) return false;
+    if (city && po.city_code !== city) return false;
+    if (text) {
+      const q = text.toLowerCase();
+      const haystack = ((po.po_number || '') + ' ' + (po.vendor_name || '') + ' ' + (po.customer_name || '') + ' ' + (po.requester_name || '')).toLowerCase();
+      if (!haystack.includes(q)) return false;
+    }
+    return true;
+  });
+
+  const tbody = document.getElementById('po-table-body');
+  if (!tbody) return;
+  if (filtered.length === 0) {
+    tbody.innerHTML = '<div class="empty-state"><h3>No matching purchase orders</h3><p>Try adjusting your filters.</p></div>';
+    return;
+  }
+  tbody.innerHTML =
+    '<div class="table-wrap"><table>' +
+    '<thead><tr><th>PO Number</th><th>City</th><th>Vendor</th>' + (isApprover ? '<th>Requested By</th>' : '') + '<th>Total</th><th>Status</th><th>Date</th><th></th></tr></thead>' +
+    '<tbody>' + filtered.map(function(po){
+      return '<tr>' +
+        '<td><strong>' + escHtml(po.po_number) + '</strong></td>' +
+        '<td>' + escHtml(po.city_code || '—') + '</td>' +
+        '<td>' + escHtml(po.vendor_name) + '</td>' +
+        (isApprover ? '<td>' + escHtml(po.requester_name || '—') + '</td>' : '') +
+        '<td>$' + parseFloat(po.total_amount).toFixed(2) + '</td>' +
+        '<td>' + badgeHtml(po.status) + '</td>' +
+        '<td>' + formatDate(po.created_at) + '</td>' +
+        '<td><button class="btn btn-secondary btn-sm" onclick="navigate(\'view\',' + po.id + ')">View</button></td>' +
+      '</tr>';
+    }).join('') +
+    '</tbody></table></div>';
+}
+
+async function exportCSV() {
+  try {
+    const { pos, itemsByPO } = await api('GET', '/pos/export');
+    const rows = [];
+    rows.push(['PO Number','Status','City','Vendor','Customer Name','Requested By','Date','PO Total','Item #','Manufacturer','Description','Quantity','Unit Price','Line Total'].join(','));
+    pos.forEach(function(po) {
+      const items = itemsByPO[po.po_number] || [];
+      if (items.length === 0) {
+        rows.push([po.po_number, po.status, po.city_code||'', po.vendor_name, po.customer_name||'', po.requester_name||'', formatDate(po.created_at), parseFloat(po.total_amount).toFixed(2), '', '', '', '', '', ''].map(csvCell).join(','));
+      } else {
+        items.forEach(function(item) {
+          const lineTotal = (parseFloat(item.quantity) * parseFloat(item.unit_price)).toFixed(2);
+          rows.push([po.po_number, po.status, po.city_code||'', po.vendor_name, po.customer_name||'', po.requester_name||'', formatDate(po.created_at), parseFloat(po.total_amount).toFixed(2), item.item_number||'', item.manufacturer||'', item.description, item.quantity, parseFloat(item.unit_price).toFixed(2), lineTotal].map(csvCell).join(','));
+        });
+      }
+    });
+    const blob = new Blob([rows.join('\n')], { type: 'text/csv' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = 'purchase-orders-' + new Date().toISOString().slice(0,10) + '.csv';
+    a.click();
+    URL.revokeObjectURL(url);
+  } catch(err) {
+    alert('Export failed: ' + err.message);
+  }
+}
+
+function csvCell(val) {
+  const s = String(val == null ? '' : val);
+  if (s.includes(',') || s.includes('"') || s.includes('\n')) return '"' + s.replace(/"/g, '""') + '"';
+  return s;
 }
 
 let lineItems = [];
 
 async function renderEditPO(el, id) {
   let po = null;
+  let cities = [];
+  try { cities = await api('GET', '/cities'); } catch(e) {}
   if (id) {
     try { po = await api('GET', '/pos/' + id); } catch(e) { el.innerHTML = '<div class="alert alert-error">' + escHtml(e.message) + '</div>'; return; }
     lineItems = po.line_items || [];
   } else {
     lineItems = [{ item_number: '', manufacturer: '', description: '', quantity: 1, unit_price: '' }];
   }
+  const cityOptions = cities.length === 0
+    ? '<option value="">No cities configured — add in Cities settings</option>'
+    : '<option value="">Select city...</option>' + cities.map(function(c) {
+        return '<option value="' + escHtml(c.code) + '"' + (po && po.city_code === c.code ? ' selected' : '') + '>' + escHtml(c.name) + ' (' + escHtml(c.code) + ')</option>';
+      }).join('');
   el.innerHTML =
     '<div class="page-header">' +
       '<div><div class="page-title">' + (id ? 'Edit PO' : 'New Purchase Order') + '</div></div>' +
@@ -362,6 +450,9 @@ async function renderEditPO(el, id) {
       '<div class="form-row">' +
         '<div class="form-group"><label>Vendor / Supplier *</label><input type="text" id="po-vendor" value="' + escHtml(po ? po.vendor_name : '') + '" placeholder="Vendor name" /></div>' +
         '<div class="form-group"><label>Customer Name</label><input type="text" id="po-customer" value="' + escHtml(po && po.customer_name ? po.customer_name : '') + '" placeholder="Customer name" /></div>' +
+      '</div>' +
+      '<div class="form-row">' +
+        '<div class="form-group"><label>City *</label><select id="po-city">' + cityOptions + '</select></div>' +
       '</div>' +
       '<div class="form-group"><label>Notes</label><textarea id="po-notes" placeholder="Optional notes...">' + escHtml(po ? po.notes || '' : '') + '</textarea></div>' +
     '</div></div>' +
@@ -426,8 +517,10 @@ function removeItem(i) {
 async function savePO(id, action) {
   const vendor_name = document.getElementById('po-vendor').value.trim();
   const customer_name = document.getElementById('po-customer').value.trim();
+  const city_code = document.getElementById('po-city').value;
   const notes = document.getElementById('po-notes').value.trim();
   if (!vendor_name) { document.getElementById('edit-error').innerHTML = '<div class="alert alert-error">Vendor name is required.</div>'; return; }
+  if (!city_code) { document.getElementById('edit-error').innerHTML = '<div class="alert alert-error">Please select a city.</div>'; return; }
 
   // Read current input values
   const rows = document.querySelectorAll('#line-items-body tr');
@@ -448,9 +541,9 @@ async function savePO(id, action) {
     document.getElementById('btn-submit') && (document.getElementById('btn-submit').disabled = true);
     let po;
     if (id) {
-      po = await api('PUT', '/pos/' + id, { vendor_name, customer_name, notes, line_items: validItems });
+      po = await api('PUT', '/pos/' + id, { vendor_name, customer_name, city_code, notes, line_items: validItems });
     } else {
-      po = await api('POST', '/pos', { vendor_name, customer_name, notes, line_items: validItems });
+      po = await api('POST', '/pos', { vendor_name, customer_name, city_code, notes, line_items: validItems });
     }
     if (action === 'submit') {
       await api('POST', '/pos/' + po.id + '/submit');
@@ -491,6 +584,7 @@ async function renderViewPO(el, id) {
         '<div class="detail-grid">' +
           '<div class="detail-field"><label>PO Number</label><p>' + escHtml(po.po_number) + '</p></div>' +
           '<div class="detail-field"><label>Vendor / Supplier</label><p>' + escHtml(po.vendor_name) + '</p></div>' +
+          (po.city_code ? '<div class="detail-field"><label>City</label><p>' + escHtml(po.city_code) + '</p></div>' : '') +
           (po.customer_name ? '<div class="detail-field"><label>Customer Name</label><p>' + escHtml(po.customer_name) + '</p></div>' : '') +
           '<div class="detail-field"><label>Requested By</label><p>' + escHtml(po.requester_name || '—') + '</p></div>' +
           '<div class="detail-field"><label>Created</label><p>' + formatDate(po.created_at) + '</p></div>' +
@@ -628,6 +722,86 @@ async function deactivateUser(id) {
 async function reactivateUser(id) {
   try { await api('POST', '/users/' + id + '/reactivate'); navigate('users'); }
   catch(err) { document.getElementById('users-error').innerHTML = '<div class="alert alert-error">' + escHtml(err.message) + '</div>'; }
+}
+
+async function renderCities(el) {
+  if (state.user.role !== 'admin') { el.innerHTML = '<div class="alert alert-error">Access denied.</div>'; return; }
+  try {
+    const cities = await api('GET', '/cities/all');
+    el.innerHTML =
+      '<div class="page-header"><div><div class="page-title">Cities</div><div class="page-subtitle">Manage city codes used in PO numbers</div></div><button class="btn btn-primary" onclick="showCityModal(null)">' + icons.plus + ' Add City</button></div>' +
+      '<div id="cities-error"></div>' +
+      '<div class="card"><div class="card-body" style="padding:0"><div class="table-wrap"><table>' +
+        '<thead><tr><th>Code</th><th>Name</th><th>Status</th><th></th></tr></thead>' +
+        '<tbody>' + cities.map(function(c) {
+          const isInactive = c.active === false;
+          return '<tr class="' + (isInactive ? 'user-row-inactive' : '') + '">' +
+            '<td><strong style="font-family:monospace;color:var(--primary)">' + escHtml(c.code) + '</strong></td>' +
+            '<td>' + escHtml(c.name) + '</td>' +
+            '<td>' + (isInactive ? '<span class="badge badge-inactive">Inactive</span>' : '<span style="color:var(--success);font-size:13px">&#10003; Active</span>') + '</td>' +
+            '<td class="flex-gap">' +
+              '<button class="btn btn-secondary btn-sm" onclick="showCityModal(' + c.id + ')">Edit</button>' +
+              (!isInactive ? '<button class="btn btn-danger btn-sm" onclick="deactivateCity(' + c.id + ')">Deactivate</button>' : '') +
+              (isInactive ? '<button class="btn btn-success btn-sm" onclick="reactivateCity(' + c.id + ')">Reactivate</button>' : '') +
+            '</td>' +
+          '</tr>';
+        }).join('') +
+        '</tbody></table></div>' +
+        (cities.length === 0 ? '<div class="empty-state"><h3>No cities yet</h3><p>Add your first city to start creating POs.</p></div>' : '') +
+      '</div></div>';
+  } catch(err) { el.innerHTML = '<div class="alert alert-error">' + escHtml(err.message) + '</div>'; }
+}
+
+async function showCityModal(id) {
+  let city = null;
+  if (id) {
+    try {
+      const all = await api('GET', '/cities/all');
+      city = all.find(function(c){ return c.id === id; });
+    } catch(e) {}
+  }
+  const overlay = document.createElement('div');
+  overlay.className = 'modal-overlay';
+  overlay.innerHTML =
+    '<div class="modal">' +
+      '<div class="modal-header"><span class="modal-title">' + (id ? 'Edit City' : 'Add City') + '</span><button class="btn btn-ghost btn-sm" onclick="this.closest(\'.modal-overlay\').remove()">&#x2715;</button></div>' +
+      '<div class="modal-body">' +
+        '<div id="modal-error"></div>' +
+        '<div class="form-group"><label>City Name</label><input type="text" id="modal-city-name" value="' + escHtml(city ? city.name : '') + '" placeholder="e.g. Chicago" /></div>' +
+        '<div class="form-group"><label>3-Letter Code</label><input type="text" id="modal-city-code" value="' + escHtml(city ? city.code : '') + '" placeholder="e.g. CHI" maxlength="3" style="text-transform:uppercase" /></div>' +
+        '<div class="text-muted mt-2">The code appears at the start of PO numbers, e.g. <strong>CHI</strong>-2026-0001-TM</div>' +
+      '</div>' +
+      '<div class="modal-footer"><button class="btn btn-secondary" onclick="this.closest(\'.modal-overlay\').remove()">Cancel</button><button class="btn btn-primary" onclick="saveCity(' + (id||'null') + ', this)">Save</button></div>' +
+    '</div>';
+  document.body.appendChild(overlay);
+}
+
+async function saveCity(id, btn) {
+  const name = document.getElementById('modal-city-name').value.trim();
+  const code = document.getElementById('modal-city-code').value.trim().toUpperCase();
+  if (!name || !code) { document.getElementById('modal-error').innerHTML = '<div class="alert alert-error">Name and code are required.</div>'; return; }
+  if (code.length !== 3) { document.getElementById('modal-error').innerHTML = '<div class="alert alert-error">Code must be exactly 3 characters.</div>'; return; }
+  try {
+    btn.disabled = true;
+    if (id) { await api('PUT', '/cities/' + id, { name, code }); }
+    else { await api('POST', '/cities', { name, code }); }
+    document.querySelector('.modal-overlay').remove();
+    navigate('cities');
+  } catch(err) {
+    document.getElementById('modal-error').innerHTML = '<div class="alert alert-error">' + escHtml(err.message) + '</div>';
+    btn.disabled = false;
+  }
+}
+
+async function deactivateCity(id) {
+  if (!confirm('Deactivate this city? It will no longer appear in the PO city dropdown.')) return;
+  try { await api('POST', '/cities/' + id + '/deactivate'); navigate('cities'); }
+  catch(err) { document.getElementById('cities-error').innerHTML = '<div class="alert alert-error">' + escHtml(err.message) + '</div>'; }
+}
+
+async function reactivateCity(id) {
+  try { await api('POST', '/cities/' + id + '/reactivate'); navigate('cities'); }
+  catch(err) { document.getElementById('cities-error').innerHTML = '<div class="alert alert-error">' + escHtml(err.message) + '</div>'; }
 }
 
 render();
