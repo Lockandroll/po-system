@@ -49,6 +49,13 @@ async function initDB() {
       ');'
     );
     await client.query(
+      'CREATE TABLE IF NOT EXISTS settings (' +
+      '  key VARCHAR(100) PRIMARY KEY,' +
+      '  value TEXT,' +
+      '  updated_at TIMESTAMP DEFAULT NOW()' +
+      ');'
+    );
+    await client.query(
       'ALTER TABLE purchase_orders ADD COLUMN IF NOT EXISTS customer_name VARCHAR(255);' +
       'ALTER TABLE purchase_orders ADD COLUMN IF NOT EXISTS city_code CHAR(3);' +
       'ALTER TABLE po_line_items ADD COLUMN IF NOT EXISTS item_number VARCHAR(100);' +
