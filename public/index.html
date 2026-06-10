@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Lock and Roll</title>
+  <title>Lock and Roll LLC</title>
   <style>
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
     :root {
@@ -383,7 +383,7 @@ function applyFilters() {
   }
   tbody.innerHTML =
     '<div class="table-wrap"><table>' +
-    '<thead><tr><th>PO Number</th><th>City</th><th>Vendor</th>' + (isApprover ? '<th>Requested By</th>' : '') + '<th>Total</th><th>Status</th><th>Date</th><th></th></tr></thead>' +
+    '<thead><tr><th>PO Number</th><th>City</th><th>Vendor</th>' + (isApprover ? '<th>Requested By</th>' : '') + '<th>Total</th><th>Status</th><th>Approved By</th><th>Orderer</th><th>Date</th><th></th></tr></thead>' +
     '<tbody>' + filtered.map(function(po){
       return '<tr>' +
         '<td><strong>' + escHtml(po.po_number) + '</strong></td>' +
@@ -392,6 +392,8 @@ function applyFilters() {
         (isApprover ? '<td>' + escHtml(po.requester_name || '—') + '</td>' : '') +
         '<td>$' + parseFloat(po.total_amount).toFixed(2) + '</td>' +
         '<td>' + badgeHtml(po.status) + '</td>' +
+        '<td>' + escHtml(po.approver_name || '—') + '</td>' +
+        '<td>' + escHtml(po.orderer_name || '—') + '</td>' +
         '<td>' + formatDate(po.created_at) + '</td>' +
         '<td><button class="btn btn-secondary btn-sm" onclick="navigate(\'view\',' + po.id + ')">View</button></td>' +
       '</tr>';
@@ -458,7 +460,7 @@ async function renderEditPO(el, id) {
     '<div id="edit-error"></div>' +
     '<div class="card mb-4"><div class="card-header"><span class="card-title">Order Information</span></div><div class="card-body">' +
       '<div class="form-row">' +
-        '<div class="form-group"><label>Vendor / Manufacturer *</label><input type="text" id="po-vendor" value="' + escHtml(po ? po.vendor_name : '') + '" placeholder="Vendor name" /></div>' +
+        '<div class="form-group"><label>Vendor / Supplier *</label><input type="text" id="po-vendor" value="' + escHtml(po ? po.vendor_name : '') + '" placeholder="Vendor name" /></div>' +
         '<div class="form-group"><label>Customer Name</label><input type="text" id="po-customer" value="' + escHtml(po && po.customer_name ? po.customer_name : '') + '" placeholder="Customer name" /></div>' +
       '</div>' +
       '<div class="form-row">' +
@@ -577,6 +579,8 @@ async function renderViewPO(el, id) {
     const canDelete = state.user.role === 'admin' || (state.user.role !== 'approver' && po.status === 'draft' && po.requester_id === state.user.id);
     const canApprove = ['approver','admin'].includes(state.user.role) && po.status === 'submitted';
     const canCancel = state.user.role === 'admin' && po.status !== 'draft' && po.status !== 'cancelled';
+    let usersForApproval = [];
+    if (canApprove) { try { usersForApproval = await api('GET', '/users'); } catch(e) {} }
 
     el.innerHTML =
       '<div class="page-header">' +
@@ -594,13 +598,14 @@ async function renderViewPO(el, id) {
       '<div class="card mb-4"><div class="card-header"><span class="card-title">Order Information</span></div><div class="card-body">' +
         '<div class="detail-grid">' +
           '<div class="detail-field"><label>PO Number</label><p>' + escHtml(po.po_number) + '</p></div>' +
-          '<div class="detail-field"><label>Vendor / Manufacturer</label><p>' + escHtml(po.vendor_name) + '</p></div>' +
+          '<div class="detail-field"><label>Vendor / Supplier</label><p>' + escHtml(po.vendor_name) + '</p></div>' +
           (po.city_code ? '<div class="detail-field"><label>City</label><p>' + escHtml(po.city_code) + '</p></div>' : '') +
           (po.customer_name ? '<div class="detail-field"><label>Customer Name</label><p>' + escHtml(po.customer_name) + '</p></div>' : '') +
           '<div class="detail-field"><label>Requested By</label><p>' + escHtml(po.requester_name || '—') + '</p></div>' +
           '<div class="detail-field"><label>Created</label><p>' + formatDate(po.created_at) + '</p></div>' +
           (po.approver_name ? '<div class="detail-field"><label>' + (po.status === 'approved' ? 'Approved By' : 'Reviewed By') + '</label><p>' + escHtml(po.approver_name) + '</p></div>' : '') +
           (po.approved_at ? '<div class="detail-field"><label>' + (po.status === 'approved' ? 'Approved On' : 'Reviewed On') + '</label><p>' + formatDate(po.approved_at) + '</p></div>' : '') +
+          (po.orderer_name ? '<div class="detail-field"><label>Responsible for Ordering</label><p>' + escHtml(po.orderer_name) + '</p></div>' : '') +
           (po.notes ? '<div class="detail-field" style="grid-column:1/-1"><label>Notes</label><p>' + escHtml(po.notes) + '</p></div>' : '') +
           (po.rejection_reason ? '<div class="detail-field" style="grid-column:1/-1"><label>Rejection Reason</label><p style="color:var(--danger)">' + escHtml(po.rejection_reason) + '</p></div>' : '') +
         '</div>' +
@@ -623,6 +628,12 @@ async function renderViewPO(el, id) {
       '</div></div>' +
       (canApprove ?
         '<div class="card"><div class="card-header"><span class="card-title">Approval Decision</span></div><div class="card-body">' +
+          '<div class="form-group"><label>Person Responsible for Ordering *</label>' +
+            '<select id="orderer-id" required>' +
+              '<option value="">Select user...</option>' +
+              usersForApproval.filter(function(u){ return u.active !== false; }).map(function(u){ return '<option value="' + u.id + '">' + escHtml(u.name) + '</option>'; }).join('') +
+            '</select>' +
+          '</div>' +
           '<div class="form-group"><label>Rejection Reason (required if rejecting)</label><textarea id="reject-reason" placeholder="Explain why this PO is being rejected..."></textarea></div>' +
           '<div class="flex-gap"><button class="btn btn-success" onclick="approvePO(' + po.id + ')">&#10003; Approve</button><button class="btn btn-danger" onclick="rejectPO(' + po.id + ')">&#10007; Reject</button></div>' +
         '</div></div>' : '');
@@ -637,7 +648,10 @@ async function submitPO(id) {
 }
 
 async function approvePO(id) {
-  try { await api('POST', '/pos/' + id + '/approve'); navigate('dashboard'); }
+  const ordererEl = document.getElementById('orderer-id');
+  const orderer_id = ordererEl ? ordererEl.value : '';
+  if (!orderer_id) { document.getElementById('view-error').innerHTML = '<div class="alert alert-error">Please select the person responsible for ordering.</div>'; return; }
+  try { await api('POST', '/pos/' + id + '/approve', { orderer_id: parseInt(orderer_id) }); navigate('dashboard'); }
   catch(err) { document.getElementById('view-error').innerHTML = '<div class="alert alert-error">' + escHtml(err.message) + '</div>'; }
 }
 
@@ -764,7 +778,7 @@ async function printPO(id) {
     const badgeStyle = badgeStyles[po.status] || 'background:#2a2a2a;color:#aaa';
 
     const detailFields = [
-      { label: 'Vendor / Manufacturer', value: po.vendor_name },
+      { label: 'Vendor / Supplier', value: po.vendor_name },
       { label: 'Customer Name', value: po.customer_name || '—' },
       { label: 'City', value: po.city_code || '—' },
       { label: 'Requested By', value: po.requester_name || '—' },
