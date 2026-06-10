@@ -174,15 +174,21 @@ router.put('/:id', requireAuth, async (req, res) => {
   }
 });
 
-// Delete draft PO
+// Delete PO — admins can delete any; others only their own drafts
 router.delete('/:id', requireAuth, async (req, res) => {
   const { rows } = await pool.query('SELECT * FROM purchase_orders WHERE id = $1', [req.params.id]);
   const po = rows[0];
   if (!po) return res.status(404).json({ error: 'PO not found' });
-  if (po.requester_id !== req.user.id && req.user.role !== 'admin') {
-    return res.status(403).json({ error: 'Forbidden' });
+  if (req.user.role === 'admin') {
+    await pool.query('DELETE FROM purchase_orders WHERE id = $1', [req.params.id]);
+    return res.json({ success: true });
   }
-  if (po.status !== 'draft') return res.status(400).json({ error: 'Only draft POs can be deleted' });
+  if (po.requester_id !== req.user.id) {
+    return res.status(403).json({ error: 'You do not have permission to delete this PO' });
+  }
+  if (po.status !== 'draft') {
+    return res.status(400).json({ error: 'Only draft POs can be deleted. Ask an admin to delete or cancel this PO.' });
+  }
   await pool.query('DELETE FROM purchase_orders WHERE id = $1', [req.params.id]);
   res.json({ success: true });
 });
