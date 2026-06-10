@@ -1,0 +1,887 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>PO System</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    :root {
+      --primary: #2563eb;
+      --primary-dark: #1d4ed8;
+      --success: #16a34a;
+      --danger: #dc2626;
+      --warning: #d97706;
+      --gray-50: #f9fafb;
+      --gray-100: #f3f4f6;
+      --gray-200: #e5e7eb;
+      --gray-300: #d1d5db;
+      --gray-500: #6b7280;
+      --gray-700: #374151;
+      --gray-900: #111827;
+      --radius: 8px;
+      --shadow: 0 1px 3px rgba(0,0,0,0.1), 0 1px 2px rgba(0,0,0,0.06);
+      --shadow-md: 0 4px 6px -1px rgba(0,0,0,0.1), 0 2px 4px -1px rgba(0,0,0,0.06);
+    }
+    body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: var(--gray-50); color: var(--gray-900); min-height: 100vh; }
+
+    /* Layout */
+    #app { display: flex; min-height: 100vh; }
+    #sidebar { width: 240px; background: white; border-right: 1px solid var(--gray-200); display: flex; flex-direction: column; position: fixed; top: 0; left: 0; height: 100vh; z-index: 10; }
+    #main { margin-left: 240px; flex: 1; display: flex; flex-direction: column; min-height: 100vh; }
+    .main-header { background: white; border-bottom: 1px solid var(--gray-200); padding: 16px 24px; display: flex; align-items: center; justify-content: space-between; }
+    .main-content { padding: 24px; flex: 1; }
+    #app.no-sidebar #sidebar { display: none; }
+    #app.no-sidebar #main { margin-left: 0; }
+
+    /* Sidebar */
+    .sidebar-logo { padding: 20px 16px; border-bottom: 1px solid var(--gray-200); }
+    .sidebar-logo h1 { font-size: 18px; font-weight: 700; color: var(--primary); }
+    .sidebar-logo p { font-size: 12px; color: var(--gray-500); margin-top: 2px; }
+    .sidebar-nav { flex: 1; padding: 12px 8px; }
+    .nav-item { display: flex; align-items: center; gap: 10px; padding: 10px 12px; border-radius: var(--radius); cursor: pointer; color: var(--gray-700); font-size: 14px; font-weight: 500; transition: all 0.15s; margin-bottom: 2px; }
+    .nav-item:hover { background: var(--gray-100); color: var(--gray-900); }
+    .nav-item.active { background: #eff6ff; color: var(--primary); }
+    .nav-item svg { width: 18px; height: 18px; flex-shrink: 0; }
+    .sidebar-footer { padding: 16px; border-top: 1px solid var(--gray-200); }
+    .sidebar-user { display: flex; align-items: center; gap: 10px; margin-bottom: 12px; }
+    .avatar { width: 36px; height: 36px; border-radius: 50%; background: var(--primary); color: white; display: flex; align-items: center; justify-content: center; font-weight: 700; font-size: 14px; flex-shrink: 0; }
+    .sidebar-user-info { flex: 1; min-width: 0; }
+    .sidebar-user-name { font-size: 14px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .sidebar-user-role { font-size: 12px; color: var(--gray-500); text-transform: capitalize; }
+
+    /* Buttons */
+    .btn { display: inline-flex; align-items: center; gap: 6px; padding: 8px 16px; border-radius: var(--radius); font-size: 14px; font-weight: 500; cursor: pointer; border: none; transition: all 0.15s; text-decoration: none; }
+    .btn-primary { background: var(--primary); color: white; }
+    .btn-primary:hover { background: var(--primary-dark); }
+    .btn-success { background: var(--success); color: white; }
+    .btn-success:hover { background: #15803d; }
+    .btn-danger { background: var(--danger); color: white; }
+    .btn-danger:hover { background: #b91c1c; }
+    .btn-secondary { background: white; color: var(--gray-700); border: 1px solid var(--gray-300); }
+    .btn-secondary:hover { background: var(--gray-50); }
+    .btn-sm { padding: 5px 10px; font-size: 13px; }
+    .btn-ghost { background: transparent; color: var(--gray-500); }
+    .btn-ghost:hover { background: var(--gray-100); color: var(--gray-700); }
+    .btn:disabled { opacity: 0.5; cursor: not-allowed; }
+
+    /* Cards */
+    .card { background: white; border-radius: var(--radius); border: 1px solid var(--gray-200); box-shadow: var(--shadow); }
+    .card-header { padding: 16px 20px; border-bottom: 1px solid var(--gray-200); display: flex; align-items: center; justify-content: space-between; }
+    .card-title { font-size: 16px; font-weight: 600; }
+    .card-body { padding: 20px; }
+
+    /* Forms */
+    .form-group { margin-bottom: 16px; }
+    label { display: block; font-size: 14px; font-weight: 500; color: var(--gray-700); margin-bottom: 6px; }
+    input, select, textarea { width: 100%; padding: 9px 12px; border: 1px solid var(--gray-300); border-radius: var(--radius); font-size: 14px; color: var(--gray-900); background: white; transition: border 0.15s; outline: none; }
+    input:focus, select:focus, textarea:focus { border-color: var(--primary); box-shadow: 0 0 0 3px rgba(37,99,235,0.1); }
+    textarea { resize: vertical; min-height: 80px; }
+    .form-row { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+
+    /* Table */
+    .table-wrap { overflow-x: auto; }
+    table { width: 100%; border-collapse: collapse; }
+    th { padding: 10px 16px; text-align: left; font-size: 12px; font-weight: 600; color: var(--gray-500); text-transform: uppercase; letter-spacing: 0.05em; border-bottom: 1px solid var(--gray-200); background: var(--gray-50); }
+    td { padding: 12px 16px; font-size: 14px; border-bottom: 1px solid var(--gray-100); }
+    tr:last-child td { border-bottom: none; }
+    tr:hover td { background: var(--gray-50); }
+
+    /* Badges */
+    .badge { display: inline-flex; align-items: center; padding: 3px 10px; border-radius: 20px; font-size: 12px; font-weight: 600; text-transform: capitalize; }
+    .badge-draft { background: var(--gray-100); color: var(--gray-700); }
+    .badge-submitted { background: #fef3c7; color: #92400e; }
+    .badge-approved { background: #dcfce7; color: #166534; }
+    .badge-rejected { background: #fee2e2; color: #991b1b; }
+    .badge-admin { background: #ede9fe; color: #5b21b6; }
+    .badge-approver { background: #e0f2fe; color: #0c4a6e; }
+    .badge-requester { background: var(--gray-100); color: var(--gray-700); }
+
+    /* Page header */
+    .page-header { margin-bottom: 24px; display: flex; align-items: center; justify-content: space-between; }
+    .page-title { font-size: 22px; font-weight: 700; }
+    .page-subtitle { font-size: 14px; color: var(--gray-500); margin-top: 4px; }
+
+    /* Stats */
+    .stats-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 16px; margin-bottom: 24px; }
+    .stat-card { background: white; border: 1px solid var(--gray-200); border-radius: var(--radius); padding: 16px 20px; box-shadow: var(--shadow); }
+    .stat-value { font-size: 28px; font-weight: 700; margin-bottom: 4px; }
+    .stat-label { font-size: 13px; color: var(--gray-500); }
+
+    /* Line items */
+    .line-items-table { width: 100%; border-collapse: collapse; margin-top: 8px; }
+    .line-items-table th { padding: 8px 10px; background: var(--gray-50); font-size: 12px; font-weight: 600; color: var(--gray-500); text-transform: uppercase; border-bottom: 1px solid var(--gray-200); text-align: left; }
+    .line-items-table td { padding: 8px 10px; font-size: 14px; border-bottom: 1px solid var(--gray-100); }
+    .line-items-table td input { padding: 6px 8px; }
+    .line-items-table .total-row td { font-weight: 700; background: var(--gray-50); }
+    .add-item-btn { margin-top: 8px; }
+
+    /* Detail view */
+    .detail-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 24px; margin-bottom: 24px; }
+    .detail-field label { font-size: 12px; font-weight: 600; color: var(--gray-500); text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 4px; }
+    .detail-field p { font-size: 15px; color: var(--gray-900); }
+
+    /* Alert */
+    .alert { padding: 12px 16px; border-radius: var(--radius); font-size: 14px; margin-bottom: 16px; }
+    .alert-error { background: #fee2e2; color: #991b1b; border: 1px solid #fecaca; }
+    .alert-success { background: #dcfce7; color: #166534; border: 1px solid #bbf7d0; }
+    .alert-info { background: #eff6ff; color: #1e40af; border: 1px solid #bfdbfe; }
+
+    /* Auth page */
+    .auth-page { display: flex; align-items: center; justify-content: center; min-height: 100vh; background: var(--gray-50); }
+    .auth-card { width: 100%; max-width: 400px; padding: 8px; }
+    .auth-logo { text-align: center; margin-bottom: 32px; }
+    .auth-logo h1 { font-size: 28px; font-weight: 800; color: var(--primary); }
+    .auth-logo p { color: var(--gray-500); margin-top: 6px; }
+
+    /* Modal */
+    .modal-overlay { position: fixed; inset: 0; background: rgba(0,0,0,0.5); display: flex; align-items: center; justify-content: center; z-index: 100; padding: 16px; }
+    .modal { background: white; border-radius: var(--radius); box-shadow: var(--shadow-md); width: 100%; max-width: 480px; }
+    .modal-header { padding: 16px 20px; border-bottom: 1px solid var(--gray-200); display: flex; align-items: center; justify-content: space-between; }
+    .modal-title { font-size: 16px; font-weight: 600; }
+    .modal-body { padding: 20px; }
+    .modal-footer { padding: 16px 20px; border-top: 1px solid var(--gray-200); display: flex; gap: 8px; justify-content: flex-end; }
+
+    /* Misc */
+    .empty-state { text-align: center; padding: 48px 24px; color: var(--gray-500); }
+    .empty-state svg { width: 48px; height: 48px; margin: 0 auto 16px; opacity: 0.4; }
+    .empty-state h3 { font-size: 16px; font-weight: 600; color: var(--gray-700); margin-bottom: 6px; }
+    .loading { text-align: center; padding: 48px; color: var(--gray-500); }
+    .flex-gap { display: flex; gap: 8px; align-items: center; }
+    .text-right { text-align: right; }
+    .text-muted { color: var(--gray-500); font-size: 13px; }
+    .mt-2 { margin-top: 8px; }
+    .mt-4 { margin-top: 16px; }
+    .mb-4 { margin-bottom: 16px; }
+    .hidden { display: none !important; }
+  </style>
+</head>
+<body>
+<div id="app" class="no-sidebar">
+  <!-- Auth / Setup pages render here when not logged in -->
+</div>
+
+<script>
+// ============================================================
+// STATE
+// ============================================================
+const state = {
+  token: localStorage.getItem('po_token'),
+  user: JSON.parse(localStorage.getItem('po_user') || 'null'),
+  currentView: null,
+  currentPO: null,
+};
+
+// ============================================================
+// API
+// ============================================================
+async function api(method, path, body) {
+  const opts = {
+    method,
+    headers: { 'Content-Type': 'application/json' },
+  };
+  if (state.token) opts.headers['Authorization'] = `Bearer ${state.token}`;
+  if (body) opts.body = JSON.stringify(body);
+  const res = await fetch('/api' + path, opts);
+  const data = await res.json();
+  if (!res.ok) throw new Error(data.error || 'Request failed');
+  return data;
+}
+
+// ============================================================
+// ROUTER
+// ============================================================
+function navigate(view, param) {
+  state.currentView = view;
+  state.currentParam = param || null;
+  render();
+}
+
+// ============================================================
+// AUTH HELPERS
+// ============================================================
+function login(token, user) {
+  state.token = token;
+  state.user = user;
+  localStorage.setItem('po_token', token);
+  localStorage.setItem('po_user', JSON.stringify(user));
+}
+
+function logout() {
+  state.token = null;
+  state.user = null;
+  localStorage.removeItem('po_token');
+  localStorage.removeItem('po_user');
+  navigate('login');
+}
+
+// ============================================================
+// ICONS
+// ============================================================
+const icons = {
+  dashboard: `<svg fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></svg>`,
+  plus: `<svg fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M12 4v16m8-8H4"/></svg>`,
+  users: `<svg fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M17 20h5v-2a4 4 0 00-3-3.87M9 20H4v-2a4 4 0 013-3.87m6 5.87a4 4 0 100-8 4 4 0 000 8zm6-4a3 3 0 11-6 0 3 3 0 016 0zm-12 0a3 3 0 11-6 0 3 3 0 016 0z"/></svg>`,
+  logout: `<svg fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M17 16l4-4m0 0l-4-4m4 4H7m6 4v1a2 2 0 01-2 2H5a2 2 0 01-2-2V7a2 2 0 012-2h6a2 2 0 012 2v1"/></svg>`,
+  back: `<svg fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M10 19l-7-7m0 0l7-7m-7 7h18"/></svg>`,
+  trash: `<svg fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6M9 7V4h6v3M3 7h18"/></svg>`,
+  edit: `<svg fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z"/></svg>`,
+};
+
+// ============================================================
+// RENDER
+// ============================================================
+function render() {
+  const app = document.getElementById('app');
+  if (!state.token) {
+    app.className = 'no-sidebar';
+    app.innerHTML = '';
+    renderAuthPage(app);
+    return;
+  }
+  app.className = '';
+  app.innerHTML = `
+    <div id="sidebar">
+      <div class="sidebar-logo">
+        <h1>PO System</h1>
+        <p>Purchase Orders</p>
+      </div>
+      <nav class="sidebar-nav">
+        <div class="nav-item ${state.currentView === 'dashboard' ? 'active' : ''}" onclick="navigate('dashboard')">
+          ${icons.dashboard} Dashboard
+        </div>
+        ${state.user.role !== 'approver' ? `
+        <div class="nav-item ${state.currentView === 'create' ? 'active' : ''}" onclick="navigate('create')">
+          ${icons.plus} New PO
+        </div>` : ''}
+        ${state.user.role === 'admin' ? `
+        <div class="nav-item ${state.currentView === 'users' ? 'active' : ''}" onclick="navigate('users')">
+          ${icons.users} Users
+        </div>` : ''}
+      </nav>
+      <div class="sidebar-footer">
+        <div class="sidebar-user">
+          <div class="avatar">${state.user.name.charAt(0).toUpperCase()}</div>
+          <div class="sidebar-user-info">
+            <div class="sidebar-user-name">${escHtml(state.user.name)}</div>
+            <div class="sidebar-user-role">${state.user.role}</div>
+          </div>
+        </div>
+        <button class="btn btn-ghost" style="width:100%;justify-content:center;" onclick="logout()">
+          ${icons.logout} Sign out
+        </button>
+      </div>
+    </div>
+    <div id="main">
+      <div id="content" class="main-content"></div>
+    </div>
+  `;
+
+  const content = document.getElementById('content');
+  switch (state.currentView) {
+    case 'dashboard': renderDashboard(content); break;
+    case 'create': renderCreatePO(content, null); break;
+    case 'edit': renderCreatePO(content, state.currentParam); break;
+    case 'view': renderViewPO(content, state.currentParam); break;
+    case 'users': renderUsers(content); break;
+    default: renderDashboard(content);
+  }
+}
+
+// ============================================================
+// AUTH PAGES
+// ============================================================
+function renderAuthPage(app) {
+  app.innerHTML = `<div class="auth-page"><div class="auth-card" id="auth-inner"></div></div>`;
+  checkSetupNeeded();
+}
+
+async function checkSetupNeeded() {
+  const inner = document.getElementById('auth-inner');
+  try {
+    const { needed } = await api('GET', '/auth/setup-needed');
+    if (needed) renderSetupForm(inner);
+    else renderLoginForm(inner);
+  } catch {
+    renderLoginForm(inner);
+  }
+}
+
+function renderLoginForm(el) {
+  el.innerHTML = `
+    <div class="auth-logo"><h1>PO System</h1><p>Sign in to your account</p></div>
+    <div class="card"><div class="card-body">
+      <div id="login-error"></div>
+      <div class="form-group"><label>Email</label><input type="email" id="login-email" placeholder="you@company.com" /></div>
+      <div class="form-group"><label>Password</label><input type="password" id="login-password" placeholder="••••••••" /></div>
+      <button class="btn btn-primary" style="width:100%;justify-content:center;" onclick="doLogin()">Sign In</button>
+    </div></div>
+  `;
+  document.getElementById('login-password').addEventListener('keydown', e => { if (e.key === 'Enter') doLogin(); });
+}
+
+async function doLogin() {
+  const email = document.getElementById('login-email').value.trim();
+  const password = document.getElementById('login-password').value;
+  const errEl = document.getElementById('login-error');
+  errEl.innerHTML = '';
+  try {
+    const { token, user } = await api('POST', '/auth/login', { email, password });
+    login(token, user);
+    navigate('dashboard');
+  } catch (err) {
+    errEl.innerHTML = `<div class="alert alert-error">${escHtml(err.message)}</div>`;
+  }
+}
+
+function renderSetupForm(el) {
+  el.innerHTML = `
+    <div class="auth-logo"><h1>PO System</h1><p>Create your admin account to get started</p></div>
+    <div class="card"><div class="card-body">
+      <div class="alert alert-info mb-4">This is first-time setup. You'll be the system administrator.</div>
+      <div id="setup-error"></div>
+      <div class="form-group"><label>Your Name</label><input type="text" id="setup-name" placeholder="Jane Smith" /></div>
+      <div class="form-group"><label>Email</label><input type="email" id="setup-email" placeholder="you@company.com" /></div>
+      <div class="form-group"><label>Password</label><input type="password" id="setup-password" placeholder="Choose a strong password" /></div>
+      <button class="btn btn-primary" style="width:100%;justify-content:center;" onclick="doSetup()">Create Admin Account</button>
+    </div></div>
+  `;
+}
+
+async function doSetup() {
+  const name = document.getElementById('setup-name').value.trim();
+  const email = document.getElementById('setup-email').value.trim();
+  const password = document.getElementById('setup-password').value;
+  const errEl = document.getElementById('setup-error');
+  errEl.innerHTML = '';
+  try {
+    const { token, user } = await api('POST', '/auth/setup', { name, email, password });
+    login(token, user);
+    navigate('dashboard');
+  } catch (err) {
+    errEl.innerHTML = `<div class="alert alert-error">${escHtml(err.message)}</div>`;
+  }
+}
+
+// ============================================================
+// DASHBOARD
+// ============================================================
+async function renderDashboard(el) {
+  el.innerHTML = `<div class="loading">Loading…</div>`;
+  try {
+    const pos = await api('GET', '/pos');
+    const isApprover = ['approver', 'admin'].includes(state.user.role);
+
+    const counts = {
+      draft: pos.filter(p => p.status === 'draft').length,
+      submitted: pos.filter(p => p.status === 'submitted').length,
+      approved: pos.filter(p => p.status === 'approved').length,
+      rejected: pos.filter(p => p.status === 'rejected').length,
+    };
+
+    el.innerHTML = `
+      <div class="page-header">
+        <div>
+          <div class="page-title">Dashboard</div>
+          <div class="page-subtitle">Welcome back, ${escHtml(state.user.name)}</div>
+        </div>
+        ${state.user.role !== 'approver' ? `<button class="btn btn-primary" onclick="navigate('create')">${icons.plus} New PO</button>` : ''}
+      </div>
+
+      <div class="stats-grid">
+        <div class="stat-card">
+          <div class="stat-value">${pos.length}</div>
+          <div class="stat-label">Total POs</div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-value" style="color:var(--warning)">${counts.submitted}</div>
+          <div class="stat-label">Pending Approval</div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-value" style="color:var(--success)">${counts.approved}</div>
+          <div class="stat-label">Approved</div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-value" style="color:var(--gray-500)">${counts.draft}</div>
+          <div class="stat-label">Drafts</div>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-header">
+          <span class="card-title">Purchase Orders</span>
+        </div>
+        ${pos.length === 0 ? `
+          <div class="empty-state">
+            <svg fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/></svg>
+            <h3>No purchase orders yet</h3>
+            <p>${state.user.role !== 'approver' ? 'Create your first PO to get started.' : 'No POs have been submitted for approval yet.'}</p>
+          </div>
+        ` : `
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>PO Number</th>
+                  <th>Vendor</th>
+                  ${isApprover ? '<th>Requested By</th>' : ''}
+                  <th>Total</th>
+                  <th>Status</th>
+                  <th>Date</th>
+                  <th></th>
+                </tr>
+              </thead>
+              <tbody>
+                ${pos.map(po => `
+                  <tr>
+                    <td><strong>${escHtml(po.po_number)}</strong></td>
+                    <td>${escHtml(po.vendor_name)}</td>
+                    ${isApprover ? `<td>${escHtml(po.requester_name || '—')}</td>` : ''}
+                    <td>$${parseFloat(po.total_amount).toFixed(2)}</td>
+                    <td><span class="badge badge-${po.status}">${po.status}</span></td>
+                    <td class="text-muted">${formatDate(po.created_at)}</td>
+                    <td>
+                      <button class="btn btn-sm btn-secondary" onclick="navigate('view', ${po.id})">View</button>
+                    </td>
+                  </tr>
+                `).join('')}
+              </tbody>
+            </table>
+          </div>
+        `}
+      </div>
+    `;
+  } catch (err) {
+    el.innerHTML = `<div class="alert alert-error">${escHtml(err.message)}</div>`;
+  }
+}
+
+// ============================================================
+// CREATE / EDIT PO
+// ============================================================
+async function renderCreatePO(el, poId) {
+  let po = null;
+  let lineItems = [{ description: '', quantity: 1, unit_price: '' }];
+
+  if (poId) {
+    el.innerHTML = `<div class="loading">Loading…</div>`;
+    try {
+      po = await api('GET', `/pos/${poId}`);
+      lineItems = po.line_items.map(i => ({ description: i.description, quantity: i.quantity, unit_price: i.unit_price }));
+    } catch (err) {
+      el.innerHTML = `<div class="alert alert-error">${escHtml(err.message)}</div>`;
+      return;
+    }
+  }
+
+  function buildLineItemRows() {
+    return lineItems.map((item, i) => `
+      <tr>
+        <td><input type="text" value="${escHtml(String(item.description))}" oninput="updateLineItem(${i},'description',this.value)" placeholder="Item description" /></td>
+        <td><input type="number" value="${item.quantity}" oninput="updateLineItem(${i},'quantity',this.value)" min="0.01" step="any" style="width:80px"/></td>
+        <td><input type="number" value="${item.unit_price}" oninput="updateLineItem(${i},'unit_price',this.value)" min="0" step="0.01" placeholder="0.00" style="width:100px"/></td>
+        <td class="text-right">$${lineTotal(item)}</td>
+        <td><button class="btn btn-sm btn-ghost" onclick="removeLineItem(${i})" ${lineItems.length === 1 ? 'disabled' : ''}>${icons.trash}</button></td>
+      </tr>
+    `).join('');
+  }
+
+  function lineTotal(item) {
+    const q = parseFloat(item.quantity) || 0;
+    const p = parseFloat(item.unit_price) || 0;
+    return (q * p).toFixed(2);
+  }
+
+  function grandTotal() {
+    return lineItems.reduce((s, i) => s + (parseFloat(i.quantity)||0) * (parseFloat(i.unit_price)||0), 0).toFixed(2);
+  }
+
+  function refreshTable() {
+    document.getElementById('line-items-body').innerHTML = buildLineItemRows();
+    document.getElementById('grand-total').textContent = `$${grandTotal()}`;
+  }
+
+  window.updateLineItem = (i, field, val) => {
+    lineItems[i][field] = val;
+    document.getElementById('grand-total').textContent = `$${grandTotal()}`;
+    // Refresh only totals column to avoid cursor jump
+    const rows = document.querySelectorAll('#line-items-body tr');
+    if (rows[i]) rows[i].cells[3].textContent = `$${lineTotal(lineItems[i])}`;
+  };
+
+  window.removeLineItem = (i) => {
+    lineItems.splice(i, 1);
+    refreshTable();
+  };
+
+  window.addLineItem = () => {
+    lineItems.push({ description: '', quantity: 1, unit_price: '' });
+    refreshTable();
+  };
+
+  el.innerHTML = `
+    <div class="page-header">
+      <div>
+        <button class="btn btn-ghost btn-sm" onclick="navigate('dashboard')" style="margin-bottom:8px">${icons.back} Back</button>
+        <div class="page-title">${po ? `Edit PO: ${escHtml(po.po_number)}` : 'New Purchase Order'}</div>
+      </div>
+    </div>
+    <div id="po-error"></div>
+    <div class="card mb-4">
+      <div class="card-header"><span class="card-title">Order Details</span></div>
+      <div class="card-body">
+        <div class="form-row">
+          <div class="form-group">
+            <label>Vendor / Supplier *</label>
+            <input type="text" id="po-vendor" value="${po ? escHtml(po.vendor_name) : ''}" placeholder="Acme Corp" />
+          </div>
+        </div>
+        <div class="form-group">
+          <label>Notes (optional)</label>
+          <textarea id="po-notes" placeholder="Any additional details…">${po ? escHtml(po.notes || '') : ''}</textarea>
+        </div>
+      </div>
+    </div>
+    <div class="card mb-4">
+      <div class="card-header"><span class="card-title">Line Items</span></div>
+      <div class="card-body">
+        <div class="table-wrap">
+          <table class="line-items-table">
+            <thead><tr><th>Description</th><th>Qty</th><th>Unit Price</th><th>Total</th><th></th></tr></thead>
+            <tbody id="line-items-body">${buildLineItemRows()}</tbody>
+            <tfoot>
+              <tr class="total-row">
+                <td colspan="3" class="text-right" style="padding:10px 10px">Grand Total</td>
+                <td id="grand-total">$${grandTotal()}</td>
+                <td></td>
+              </tr>
+            </tfoot>
+          </table>
+        </div>
+        <button class="btn btn-secondary btn-sm add-item-btn" onclick="addLineItem()">${icons.plus} Add Item</button>
+      </div>
+    </div>
+    <div class="flex-gap">
+      <button class="btn btn-secondary" onclick="savePO(false, ${po ? po.id : 'null'})">Save Draft</button>
+      <button class="btn btn-primary" onclick="savePO(true, ${po ? po.id : 'null'})">Submit for Approval</button>
+    </div>
+  `;
+}
+
+async function savePO(submit, poId) {
+  const vendor_name = document.getElementById('po-vendor').value.trim();
+  const notes = document.getElementById('po-notes').value.trim();
+  const errEl = document.getElementById('po-error');
+  errEl.innerHTML = '';
+
+  if (!vendor_name) {
+    errEl.innerHTML = `<div class="alert alert-error">Vendor name is required.</div>`;
+    return;
+  }
+
+  const line_items = [];
+  document.querySelectorAll('#line-items-body tr').forEach((row, i) => {
+    const inputs = row.querySelectorAll('input');
+    line_items.push({
+      description: inputs[0].value.trim(),
+      quantity: parseFloat(inputs[1].value) || 0,
+      unit_price: parseFloat(inputs[2].value) || 0,
+    });
+  });
+
+  if (line_items.some(i => !i.description || i.quantity <= 0)) {
+    errEl.innerHTML = `<div class="alert alert-error">All line items need a description and positive quantity.</div>`;
+    return;
+  }
+
+  try {
+    let po;
+    if (poId) {
+      po = await api('PUT', `/pos/${poId}`, { vendor_name, notes, line_items });
+    } else {
+      po = await api('POST', '/pos', { vendor_name, notes, line_items });
+    }
+    if (submit) {
+      await api('POST', `/pos/${po.id}/submit`);
+    }
+    navigate('dashboard');
+  } catch (err) {
+    errEl.innerHTML = `<div class="alert alert-error">${escHtml(err.message)}</div>`;
+  }
+}
+
+// ============================================================
+// VIEW PO
+// ============================================================
+async function renderViewPO(el, poId) {
+  el.innerHTML = `<div class="loading">Loading…</div>`;
+  try {
+    const po = await api('GET', `/pos/${poId}`);
+    const canEdit = state.user.role === 'admin' || (state.user.role !== 'approver' && po.status === 'draft' && po.requester_id === state.user.id);
+    const canApprove = ['approver', 'admin'].includes(state.user.role) && po.status === 'submitted';
+    const canDelete = state.user.role !== 'approver' && po.status === 'draft' && (po.requester_id === state.user.id || state.user.role === 'admin');
+    const canSubmit = state.user.role !== 'approver' && po.status === 'draft' && po.requester_id === state.user.id;
+
+    el.innerHTML = `
+      <div class="page-header">
+        <div>
+          <button class="btn btn-ghost btn-sm" onclick="navigate('dashboard')" style="margin-bottom:8px">${icons.back} Back</button>
+          <div class="page-title">${escHtml(po.po_number)}</div>
+          <div style="margin-top:6px"><span class="badge badge-${po.status}">${po.status}</span></div>
+        </div>
+        <div class="flex-gap">
+          ${canEdit ? `<button class="btn btn-secondary" onclick="navigate('edit', ${po.id})">${icons.edit} Edit</button>` : ''}
+          ${canSubmit ? `<button class="btn btn-primary" onclick="submitPO(${po.id})">Submit for Approval</button>` : ''}
+          ${canDelete ? `<button class="btn btn-danger btn-sm" onclick="deletePO(${po.id})">${icons.trash}</button>` : ''}
+        </div>
+      </div>
+
+      <div id="view-error"></div>
+
+      <div class="card mb-4">
+        <div class="card-header"><span class="card-title">Order Information</span></div>
+        <div class="card-body">
+          <div class="detail-grid">
+            <div class="detail-field"><label>PO Number</label><p>${escHtml(po.po_number)}</p></div>
+            <div class="detail-field"><label>Vendor</label><p>${escHtml(po.vendor_name)}</p></div>
+            <div class="detail-field"><label>Requested By</label><p>${escHtml(po.requester_name || '—')}</p></div>
+            <div class="detail-field"><label>Created</label><p>${formatDate(po.created_at)}</p></div>
+            ${po.approver_name ? `<div class="detail-field"><label>${po.status === 'approved' ? 'Approved By' : 'Reviewed By'}</label><p>${escHtml(po.approver_name)}</p></div>` : ''}
+            ${po.approved_at ? `<div class="detail-field"><label>${po.status === 'approved' ? 'Approved On' : 'Reviewed On'}</label><p>${formatDate(po.approved_at)}</p></div>` : ''}
+            ${po.notes ? `<div class="detail-field" style="grid-column:1/-1"><label>Notes</label><p>${escHtml(po.notes)}</p></div>` : ''}
+            ${po.rejection_reason ? `<div class="detail-field" style="grid-column:1/-1"><label>Rejection Reason</label><p style="color:var(--danger)">${escHtml(po.rejection_reason)}</p></div>` : ''}
+          </div>
+        </div>
+      </div>
+
+      <div class="card mb-4">
+        <div class="card-header"><span class="card-title">Line Items</span></div>
+        <div class="card-body">
+          <div class="table-wrap">
+            <table class="line-items-table">
+              <thead><tr><th>Description</th><th>Qty</th><th>Unit Price</th><th class="text-right">Total</th></tr></thead>
+              <tbody>
+                ${po.line_items.map(item => `
+                  <tr>
+                    <td>${escHtml(item.description)}</td>
+                    <td>${item.quantity}</td>
+                    <td>$${parseFloat(item.unit_price).toFixed(2)}</td>
+                    <td class="text-right">$${(parseFloat(item.quantity) * parseFloat(item.unit_price)).toFixed(2)}</td>
+                  </tr>
+                `).join('')}
+              </tbody>
+              <tfoot>
+                <tr class="total-row">
+                  <td colspan="3" class="text-right">Grand Total</td>
+                  <td class="text-right">$${parseFloat(po.total_amount).toFixed(2)}</td>
+                </tr>
+              </tfoot>
+            </table>
+          </div>
+        </div>
+      </div>
+
+      ${canApprove ? `
+        <div class="card">
+          <div class="card-header"><span class="card-title">Approval Decision</span></div>
+          <div class="card-body">
+            <div class="form-group">
+              <label>Rejection Reason (required if rejecting)</label>
+              <textarea id="reject-reason" placeholder="Explain why this PO is being rejected…"></textarea>
+            </div>
+            <div class="flex-gap">
+              <button class="btn btn-success" onclick="approvePO(${po.id})">✓ Approve</button>
+              <button class="btn btn-danger" onclick="rejectPO(${po.id})">✗ Reject</button>
+            </div>
+          </div>
+        </div>
+      ` : ''}
+    `;
+  } catch (err) {
+    el.innerHTML = `<div class="alert alert-error">${escHtml(err.message)}</div>`;
+  }
+}
+
+async function submitPO(id) {
+  try {
+    await api('POST', `/pos/${id}/submit`);
+    navigate('dashboard');
+  } catch (err) {
+    document.getElementById('view-error').innerHTML = `<div class="alert alert-error">${escHtml(err.message)}</div>`;
+  }
+}
+
+async function approvePO(id) {
+  try {
+    await api('POST', `/pos/${id}/approve`);
+    navigate('dashboard');
+  } catch (err) {
+    document.getElementById('view-error').innerHTML = `<div class="alert alert-error">${escHtml(err.message)}</div>`;
+  }
+}
+
+async function rejectPO(id) {
+  const reason = document.getElementById('reject-reason').value.trim();
+  if (!reason) {
+    document.getElementById('view-error').innerHTML = `<div class="alert alert-error">Please enter a rejection reason.</div>`;
+    return;
+  }
+  try {
+    await api('POST', `/pos/${id}/reject`, { reason });
+    navigate('dashboard');
+  } catch (err) {
+    document.getElementById('view-error').innerHTML = `<div class="alert alert-error">${escHtml(err.message)}</div>`;
+  }
+}
+
+async function deletePO(id) {
+  if (!confirm('Delete this draft PO? This cannot be undone.')) return;
+  try {
+    await api('DELETE', `/pos/${id}`);
+    navigate('dashboard');
+  } catch (err) {
+    document.getElementById('view-error').innerHTML = `<div class="alert alert-error">${escHtml(err.message)}</div>`;
+  }
+}
+
+// ============================================================
+// USERS (admin only)
+// ============================================================
+async function renderUsers(el) {
+  el.innerHTML = `<div class="loading">Loading…</div>`;
+  try {
+    const users = await api('GET', '/users');
+    el.innerHTML = `
+      <div class="page-header">
+        <div><div class="page-title">User Management</div><div class="page-subtitle">Manage who can access the system</div></div>
+        <button class="btn btn-primary" onclick="showCreateUserModal()">${icons.plus} Add User</button>
+      </div>
+      <div id="users-error"></div>
+      <div class="card">
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>Name</th><th>Email</th><th>Role</th><th>Joined</th><th></th></tr></thead>
+            <tbody>
+              ${users.map(u => `
+                <tr>
+                  <td><strong>${escHtml(u.name)}</strong></td>
+                  <td>${escHtml(u.email)}</td>
+                  <td><span class="badge badge-${u.role}">${u.role}</span></td>
+                  <td class="text-muted">${formatDate(u.created_at)}</td>
+                  <td>
+                    <div class="flex-gap">
+                      <button class="btn btn-sm btn-secondary" onclick="showEditUserModal(${JSON.stringify(u).split('"').join('&quot;')})">Edit</button>
+                      ${u.id !== state.user.id ? `<button class="btn btn-sm btn-danger" onclick="deleteUser(${u.id})">${icons.trash}</button>` : ''}
+                    </div>
+                  </td>
+                </tr>
+              `).join('')}
+            </tbody>
+          </table>
+        </div>
+      </div>
+      <div id="user-modal"></div>
+    `;
+  } catch (err) {
+    el.innerHTML = `<div class="alert alert-error">${escHtml(err.message)}</div>`;
+  }
+}
+
+function userModalHtml(title, user) {
+  return `
+    <div class="modal-overlay" onclick="if(event.target===this)closeModal()">
+      <div class="modal">
+        <div class="modal-header">
+          <span class="modal-title">${title}</span>
+          <button class="btn btn-ghost btn-sm" onclick="closeModal()">✕</button>
+        </div>
+        <div class="modal-body">
+          <div id="user-modal-error"></div>
+          <div class="form-group"><label>Name *</label><input id="um-name" type="text" value="${user ? escHtml(user.name) : ''}" /></div>
+          <div class="form-group"><label>Email *</label><input id="um-email" type="email" value="${user ? escHtml(user.email) : ''}" /></div>
+          <div class="form-group">
+            <label>Role *</label>
+            <select id="um-role">
+              <option value="requester" ${user && user.role==='requester' ? 'selected' : ''}>Requester</option>
+              <option value="approver" ${user && user.role==='approver' ? 'selected' : ''}>Approver</option>
+              <option value="admin" ${user && user.role==='admin' ? 'selected' : ''}>Admin</option>
+            </select>
+          </div>
+          <div class="form-group"><label>${user ? 'New Password (leave blank to keep)' : 'Password *'}</label><input id="um-password" type="password" /></div>
+        </div>
+        <div class="modal-footer">
+          <button class="btn btn-secondary" onclick="closeModal()">Cancel</button>
+          <button class="btn btn-primary" onclick="saveUser(${user ? user.id : 'null'})">${user ? 'Save Changes' : 'Create User'}</button>
+        </div>
+      </div>
+    </div>
+  `;
+}
+
+function showCreateUserModal() {
+  document.getElementById('user-modal').innerHTML = userModalHtml('Add New User', null);
+}
+
+function showEditUserModal(userStr) {
+  const user = typeof userStr === 'string' ? JSON.parse(userStr) : userStr;
+  document.getElementById('user-modal').innerHTML = userModalHtml('Edit User', user);
+}
+
+function closeModal() {
+  const m = document.getElementById('user-modal');
+  if (m) m.innerHTML = '';
+}
+
+async function saveUser(userId) {
+  const name = document.getElementById('um-name').value.trim();
+  const email = document.getElementById('um-email').value.trim();
+  const role = document.getElementById('um-role').value;
+  const password = document.getElementById('um-password').value;
+  const errEl = document.getElementById('user-modal-error');
+  errEl.innerHTML = '';
+
+  if (!name || !email || !role || (!userId && !password)) {
+    errEl.innerHTML = `<div class="alert alert-error">All fields are required.</div>`;
+    return;
+  }
+
+  try {
+    if (userId) {
+      await api('PUT', `/users/${userId}`, { name, email, role, ...(password ? { password } : {}) });
+    } else {
+      await api('POST', '/users', { name, email, role, password });
+    }
+    renderUsers(document.getElementById('content'));
+  } catch (err) {
+    errEl.innerHTML = `<div class="alert alert-error">${escHtml(err.message)}</div>`;
+  }
+}
+
+async function deleteUser(id) {
+  if (!confirm('Delete this user? This cannot be undone.')) return;
+  try {
+    await api('DELETE', `/users/${id}`);
+    renderUsers(document.getElementById('content'));
+  } catch (err) {
+    document.getElementById('users-error').innerHTML = `<div class="alert alert-error">${escHtml(err.message)}</div>`;
+  }
+}
+
+// ============================================================
+// UTILS
+// ============================================================
+function escHtml(str) {
+  return String(str ?? '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+function formatDate(str) {
+  if (!str) return '—';
+  return new Date(str).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+}
+
+// ============================================================
+// BOOT
+// ============================================================
+navigate(state.token ? 'dashboard' : 'login');
+</script>
+</body>
+</html>
