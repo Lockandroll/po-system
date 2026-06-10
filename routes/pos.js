@@ -306,7 +306,7 @@ router.post('/:id/submit', requireAuth, async (req, res) => {
   const appUrl = process.env.APP_URL || '';
   const poUrl = appUrl ? appUrl + '/#view/' + po.id : null;
 
-  const { rows: approvers } = await pool.query("SELECT email, name FROM users WHERE role IN ('approver', 'admin') AND active = true");
+  const { rows: approvers } = await pool.query("SELECT email, name FROM users WHERE role IN ('approver', 'admin') AND active = true AND receive_emails = true");
   for (let i = 0; i < approvers.length; i++) {
     const approver = approvers[i];
     await sendEmail(
@@ -330,14 +330,14 @@ router.post('/:id/approve', requireAuth, requireRole('approver', 'admin'), async
   if (!orderer_id) return res.status(400).json({ error: 'Please select the person responsible for ordering' });
 
   const { rows } = await pool.query(
-    'SELECT po.*, u.email AS requester_email, u.name AS requester_name FROM purchase_orders po JOIN users u ON po.requester_id = u.id WHERE po.id = $1',
+    'SELECT po.*, u.email AS requester_email, u.name AS requester_name, u.receive_emails AS requester_receive_emails FROM purchase_orders po JOIN users u ON po.requester_id = u.id WHERE po.id = $1',
     [req.params.id]
   );
   const po = rows[0];
   if (!po) return res.status(404).json({ error: 'PO not found' });
   if (po.status !== 'submitted') return res.status(400).json({ error: 'PO is not pending approval' });
 
-  const { rows: ordererRows } = await pool.query('SELECT id, name, email FROM users WHERE id = $1', [orderer_id]);
+  const { rows: ordererRows } = await pool.query('SELECT id, name, email, receive_emails FROM users WHERE id = $1', [orderer_id]);
   if (!ordererRows.length) return res.status(400).json({ error: 'Selected orderer not found' });
   const orderer = ordererRows[0];
 
@@ -351,10 +351,12 @@ router.post('/:id/approve', requireAuth, requireRole('approver', 'admin'), async
   const emailHtml = buildPOEmailHtml(po, items, req.user.name, orderer.name);
 
   const ccEmails = [];
-  if (req.user.email && req.user.email !== po.requester_email) ccEmails.push(req.user.email);
-  if (orderer.email && orderer.email !== po.requester_email) ccEmails.push(orderer.email);
+  const { rows: approverRows } = await pool.query('SELECT receive_emails FROM users WHERE id = $1', [req.user.id]);
+  const approverReceives = approverRows.length && approverRows[0].receive_emails !== false;
+  if (approverReceives && req.user.email && req.user.email !== po.requester_email) ccEmails.push(req.user.email);
+  if (orderer.receive_emails !== false && orderer.email && orderer.email !== po.requester_email) ccEmails.push(orderer.email);
 
-  await sendEmail(
+  if (po.requester_receive_emails !== false) await sendEmail(
     po.requester_email,
     '[Lock and Roll] PO Approved: ' + po.po_number,
     '<p>Hi ' + po.requester_name + ',</p>' +
@@ -371,7 +373,7 @@ router.post('/:id/approve', requireAuth, requireRole('approver', 'admin'), async
 router.post('/:id/reject', requireAuth, requireRole('approver', 'admin'), async (req, res) => {
   const reason = req.body.reason;
   const { rows } = await pool.query(
-    'SELECT po.*, u.email AS requester_email, u.name AS requester_name FROM purchase_orders po JOIN users u ON po.requester_id = u.id WHERE po.id = $1',
+    'SELECT po.*, u.email AS requester_email, u.name AS requester_name, u.receive_emails AS requester_receive_emails FROM purchase_orders po JOIN users u ON po.requester_id = u.id WHERE po.id = $1',
     [req.params.id]
   );
   const po = rows[0];
@@ -383,7 +385,7 @@ router.post('/:id/reject', requireAuth, requireRole('approver', 'admin'), async 
     ['rejected', req.user.id, reason || null, req.params.id]
   );
 
-  await sendEmail(
+  if (po.requester_receive_emails !== false) await sendEmail(
     po.requester_email,
     '[Lock and Roll] PO Rejected: ' + po.po_number,
     '<p>Hi ' + po.requester_name + ',</p>' +
@@ -398,7 +400,7 @@ router.post('/:id/reject', requireAuth, requireRole('approver', 'admin'), async 
 // Cancel PO (admin only)
 router.post('/:id/cancel', requireAuth, requireRole('admin'), async (req, res) => {
   const { rows } = await pool.query(
-    'SELECT po.*, u.email AS requester_email, u.name AS requester_name FROM purchase_orders po JOIN users u ON po.requester_id = u.id WHERE po.id = $1',
+    'SELECT po.*, u.email AS requester_email, u.name AS requester_name, u.receive_emails AS requester_receive_emails FROM purchase_orders po JOIN users u ON po.requester_id = u.id WHERE po.id = $1',
     [req.params.id]
   );
   const po = rows[0];
@@ -411,7 +413,7 @@ router.post('/:id/cancel', requireAuth, requireRole('admin'), async (req, res) =
     ['cancelled', req.params.id]
   );
 
-  await sendEmail(
+  if (po.requester_receive_emails !== false) await sendEmail(
     po.requester_email,
     '[Lock and Roll] PO Cancelled: ' + po.po_number,
     '<p>Hi ' + po.requester_name + ',</p>' +
