@@ -7,7 +7,7 @@ const router = express.Router();
 
 // List all users (admin only)
 router.get('/', requireAuth, requireRole('admin'), async (req, res) => {
-  const { rows } = await pool.query('SELECT id, name, email, role, created_at FROM users ORDER BY name');
+  const { rows } = await pool.query('SELECT id, name, email, role, active, created_at FROM users ORDER BY active DESC, name ASC');
   res.json(rows);
 });
 
@@ -23,7 +23,7 @@ router.post('/', requireAuth, requireRole('admin'), async (req, res) => {
   const password_hash = await bcrypt.hash(password, 12);
   try {
     const { rows } = await pool.query(
-      'INSERT INTO users (name, email, password_hash, role) VALUES ($1, $2, $3, $4) RETURNING id, name, email, role',
+      'INSERT INTO users (name, email, password_hash, role) VALUES ($1, $2, $3, $4) RETURNING id, name, email, role, active',
       [name, email, password_hash, role]
     );
     res.status(201).json(rows[0]);
@@ -40,10 +40,10 @@ router.put('/:id', requireAuth, requireRole('admin'), async (req, res) => {
   let query, params;
   if (password) {
     const password_hash = await bcrypt.hash(password, 12);
-    query = 'UPDATE users SET name=$1, email=$2, role=$3, password_hash=$4 WHERE id=$5 RETURNING id, name, email, role';
+    query = 'UPDATE users SET name=$1, email=$2, role=$3, password_hash=$4 WHERE id=$5 RETURNING id, name, email, role, active';
     params = [name, email, role, password_hash, id];
   } else {
-    query = 'UPDATE users SET name=$1, email=$2, role=$3 WHERE id=$4 RETURNING id, name, email, role';
+    query = 'UPDATE users SET name=$1, email=$2, role=$3 WHERE id=$4 RETURNING id, name, email, role, active';
     params = [name, email, role, id];
   }
   const { rows } = await pool.query(query, params);
@@ -51,11 +51,40 @@ router.put('/:id', requireAuth, requireRole('admin'), async (req, res) => {
   res.json(rows[0]);
 });
 
-// Delete user (admin only)
+// Deactivate user (admin only)
+router.post('/:id/deactivate', requireAuth, requireRole('admin'), async (req, res) => {
+  const { id } = req.params;
+  if (parseInt(id) === req.user.id) {
+    return res.status(400).json({ error: 'Cannot deactivate your own account' });
+  }
+  const { rows } = await pool.query(
+    'UPDATE users SET active=false WHERE id=$1 RETURNING id',
+    [id]
+  );
+  if (!rows[0]) return res.status(404).json({ error: 'User not found' });
+  res.json({ success: true });
+});
+
+// Reactivate user (admin only)
+router.post('/:id/reactivate', requireAuth, requireRole('admin'), async (req, res) => {
+  const { id } = req.params;
+  const { rows } = await pool.query(
+    'UPDATE users SET active=true WHERE id=$1 RETURNING id',
+    [id]
+  );
+  if (!rows[0]) return res.status(404).json({ error: 'User not found' });
+  res.json({ success: true });
+});
+
+// Delete user (admin only — only if no POs)
 router.delete('/:id', requireAuth, requireRole('admin'), async (req, res) => {
   const { id } = req.params;
   if (parseInt(id) === req.user.id) {
     return res.status(400).json({ error: 'Cannot delete your own account' });
+  }
+  const { rows: poRows } = await pool.query('SELECT COUNT(*) FROM purchase_orders WHERE requester_id=$1', [id]);
+  if (parseInt(poRows[0].count) > 0) {
+    return res.status(400).json({ error: 'Cannot delete user — they have existing purchase orders. Deactivate instead.' });
   }
   await pool.query('DELETE FROM users WHERE id = $1', [id]);
   res.json({ success: true });
