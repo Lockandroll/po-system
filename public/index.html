@@ -849,4 +849,56 @@ function closeModal() {
   if (m) m.innerHTML = '';
 }
 
-async function saveUser(u
+async function saveUser(userId) {
+  const name = document.getElementById('um-name').value.trim();
+  const email = document.getElementById('um-email').value.trim();
+  const role = document.getElementById('um-role').value;
+  const password = document.getElementById('um-password').value;
+  const errEl = document.getElementById('user-modal-error');
+  errEl.innerHTML = '';
+
+  if (!name || !email || !role || (!userId && !password)) {
+    errEl.innerHTML = `<div class="alert alert-error">All fields are required.</div>`;
+    return;
+  }
+
+  try {
+    if (userId) {
+      await api('PUT', `/users/${userId}`, { name, email, role, ...(password ? { password } : {}) });
+    } else {
+      await api('POST', '/users', { name, email, role, password });
+    }
+    renderUsers(document.getElementById('content'));
+  } catch (err) {
+    errEl.innerHTML = `<div class="alert alert-error">${escHtml(err.message)}</div>`;
+  }
+}
+
+async function deleteUser(id) {
+  if (!confirm('Delete this user? This cannot be undone.')) return;
+  try {
+    await api('DELETE', `/users/${id}`);
+    renderUsers(document.getElementById('content'));
+  } catch (err) {
+    document.getElementById('users-error').innerHTML = `<div class="alert alert-error">${escHtml(err.message)}</div>`;
+  }
+}
+
+// ============================================================
+// UTILS
+// ============================================================
+function escHtml(str) {
+  return String(str ?? '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+function formatDate(str) {
+  if (!str) return '—';
+  return new Date(str).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+}
+
+// ============================================================
+// BOOT
+// ============================================================
+navigate(state.token ? 'dashboard' : 'login');
+</script>
+</body>
+</html>
