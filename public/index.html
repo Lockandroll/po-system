@@ -332,7 +332,7 @@ async function renderDashboard(el) {
       '<div class="page-header"><div><div class="page-title">Dashboard</div></div>' +
       '<div class="flex-gap">' +
       '<button class="btn btn-secondary" onclick="exportCSV()">&#8595; Export CSV</button>' +
-      (state.user.role !== 'approver' ? '<button class="btn btn-primary" onclick="navigate(\'new\')">' + icons.plus + ' New PO</button>' : '') +
+      (state.user.role !== 'approver' ? '<button class="btn btn-primary" onclick="navigate(\'new\')" style="white-space:nowrap">' + icons.plus + ' New PO</button>' : '') +
       '</div></div>' +
       '<div class="stats-grid">' +
         '<div class="stat-card"><div class="stat-value">' + total + '</div><div class="stat-label">Total POs</div></div>' +
