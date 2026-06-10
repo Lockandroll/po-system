@@ -271,4 +271,32 @@ router.post('/:id/reject', requireAuth, requireRole('approver', 'admin'), async 
   res.json({ success: true });
 });
 
+// Cancel PO (admin only — works on any status except draft)
+router.post('/:id/cancel', requireAuth, requireRole('admin'), async (req, res) => {
+  const { rows } = await pool.query(
+    'SELECT po.*, u.email AS requester_email, u.name AS requester_name FROM purchase_orders po JOIN users u ON po.requester_id = u.id WHERE po.id = $1',
+    [req.params.id]
+  );
+  const po = rows[0];
+  if (!po) return res.status(404).json({ error: 'PO not found' });
+  if (po.status === 'draft') return res.status(400).json({ error: 'Use delete for draft POs' });
+  if (po.status === 'cancelled') return res.status(400).json({ error: 'PO is already cancelled' });
+
+  await pool.query(
+    'UPDATE purchase_orders SET status=$1, updated_at=NOW() WHERE id=$2',
+    ['cancelled', req.params.id]
+  );
+
+  await sendEmail(
+    po.requester_email,
+    '[PO System] PO Cancelled: ' + po.po_number,
+    '<p>Hi ' + po.requester_name + ',</p>' +
+    '<p>Your purchase order <strong>' + po.po_number + '</strong> has been <strong>cancelled</strong> by an administrator.</p>' +
+    '<p><strong>Vendor:</strong> ' + po.vendor_name + '<br/>' +
+    '<strong>Total:</strong> $' + parseFloat(po.total_amount).toFixed(2) + '</p>'
+  );
+
+  res.json({ success: true });
+});
+
 module.exports = router;
