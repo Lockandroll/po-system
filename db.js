@@ -56,6 +56,28 @@ async function initDB() {
       ');'
     );
     await client.query(
+      'CREATE TABLE IF NOT EXISTS quotes (' +
+      '  id SERIAL PRIMARY KEY,' +
+      '  quote_number VARCHAR(50) UNIQUE NOT NULL,' +
+      '  requester_id INTEGER REFERENCES users(id),' +
+      '  customer_name VARCHAR(255) NOT NULL,' +
+      '  city_code CHAR(3),' +
+      '  notes TEXT,' +
+      '  total_amount DECIMAL(10,2) DEFAULT 0,' +
+      '  created_at TIMESTAMP DEFAULT NOW(),' +
+      '  updated_at TIMESTAMP DEFAULT NOW()' +
+      ');' +
+      'CREATE TABLE IF NOT EXISTS quote_line_items (' +
+      '  id SERIAL PRIMARY KEY,' +
+      '  quote_id INTEGER REFERENCES quotes(id) ON DELETE CASCADE,' +
+      '  item_number VARCHAR(100),' +
+      '  manufacturer VARCHAR(255),' +
+      '  description VARCHAR(500) NOT NULL,' +
+      '  quantity DECIMAL(10,2) NOT NULL,' +
+      '  unit_price DECIMAL(10,2) NOT NULL' +
+      ');'
+    );
+    await client.query(
       'ALTER TABLE purchase_orders ADD COLUMN IF NOT EXISTS customer_name VARCHAR(255);' +
       'ALTER TABLE purchase_orders ADD COLUMN IF NOT EXISTS city_code CHAR(3);' +
       'ALTER TABLE po_line_items ADD COLUMN IF NOT EXISTS item_number VARCHAR(100);' +
