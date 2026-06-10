@@ -403,7 +403,7 @@ async function exportCSV() {
   try {
     const { pos, itemsByPO } = await api('GET', '/pos/export');
     const rows = [];
-    rows.push(['PO Number','Status','City','Vendor','Customer Name','Requested By','Date','PO Total','Item #','Manufacturer','Description','Quantity','Unit Price','Line Total'].join(','));
+    rows.push(['PO Number','Status','City','Vendor','Customer Name','Requested By','Date','PO Total','Item #','Supplier','Description','Quantity','Unit Price','Line Total'].join(','));
     pos.forEach(function(po) {
       const items = itemsByPO[po.po_number] || [];
       if (items.length === 0) {
@@ -468,7 +468,7 @@ async function renderEditPO(el, id) {
     '</div></div>' +
     '<div class="card mb-4"><div class="card-header"><span class="card-title">Line Items</span></div><div class="card-body">' +
       '<div class="table-wrap"><table class="line-items-table">' +
-        '<thead><tr><th>Item #</th><th>Manufacturer</th><th>Description</th><th>Qty</th><th>Unit Price</th><th>Total</th><th></th></tr></thead>' +
+        '<thead><tr><th>Item #</th><th>Supplier</th><th>Description</th><th>Qty</th><th>Unit Price</th><th>Total</th><th></th></tr></thead>' +
         '<tbody id="line-items-body"></tbody>' +
         '<tfoot><tr class="total-row"><td colspan="5" class="text-right" style="padding:10px">Grand Total</td><td id="grand-total" style="padding:10px">$0.00</td><td></td></tr></tfoot>' +
       '</table></div>' +
@@ -488,7 +488,7 @@ function buildLineItemRows() {
     const total = (parseFloat(item.quantity)||0) * (parseFloat(item.unit_price)||0);
     return '<tr>' +
       '<td><input type="text" value="' + escHtml(item.item_number||'') + '" placeholder="Item #" onchange="updateItem(' + i + ',this)" data-field="item_number" /></td>' +
-      '<td><input type="text" value="' + escHtml(item.manufacturer||'') + '" placeholder="Manufacturer" onchange="updateItem(' + i + ',this)" data-field="manufacturer" /></td>' +
+      '<td><input type="text" value="' + escHtml(item.manufacturer||'') + '" placeholder="Supplier" onchange="updateItem(' + i + ',this)" data-field="manufacturer" /></td>' +
       '<td><input type="text" value="' + escHtml(item.description||'') + '" placeholder="Description *" onchange="updateItem(' + i + ',this)" data-field="description" /></td>' +
       '<td><input type="number" value="' + escHtml(item.quantity||'') + '" min="0.01" step="0.01" onchange="updateItem(' + i + ',this)" data-field="quantity" style="width:70px" /></td>' +
       '<td><input type="number" value="' + escHtml(item.unit_price||'') + '" min="0" step="0.01" placeholder="0.00" onchange="updateItem(' + i + ',this)" data-field="unit_price" style="width:90px" /></td>' +
@@ -607,7 +607,7 @@ async function renderViewPO(el, id) {
       '</div></div>' +
       '<div class="card mb-4"><div class="card-header"><span class="card-title">Line Items</span></div><div class="card-body">' +
         '<div class="table-wrap"><table class="line-items-table">' +
-          '<thead><tr><th>Item #</th><th>Manufacturer</th><th>Description</th><th>Qty</th><th>Unit Price</th><th class="text-right">Total</th></tr></thead>' +
+          '<thead><tr><th>Item #</th><th>Supplier</th><th>Description</th><th>Qty</th><th>Unit Price</th><th class="text-right">Total</th></tr></thead>' +
           '<tbody>' + po.line_items.map(function(item) {
             return '<tr>' +
               '<td>' + escHtml(item.item_number || '—') + '</td>' +
@@ -700,7 +700,10 @@ async function showUserModal(id) {
         '<div class="form-group"><label>Name</label><input type="text" id="modal-name" value="' + escHtml(user ? user.name : '') + '" /></div>' +
         '<div class="form-group"><label>Email</label><input type="email" id="modal-email" value="' + escHtml(user ? user.email : '') + '" /></div>' +
         '<div class="form-group"><label>' + (id ? 'New Password (leave blank to keep)' : 'Password') + '</label><input type="password" id="modal-password" /></div>' +
-        '<div class="form-group"><label>Role</label><select id="modal-role"><option value="requester"' + (user&&user.role==='requester'?' selected':'') + '>Requester</option><option value="approver"' + (user&&user.role==='approver'?' selected':'') + '>Approver</option><option value="admin"' + (user&&user.role==='admin'?' selected':'') + '>Admin</option></select></div>' +
+        '<div class="form-row">' +
+          '<div class="form-group"><label>Phone</label><input type="text" id="modal-phone" value="' + escHtml(user ? user.phone || '' : '') + '" placeholder="e.g. 321-208-0441" /></div>' +
+          '<div class="form-group"><label>Role</label><select id="modal-role"><option value="requester"' + (user&&user.role==='requester'?' selected':'') + '>Requester</option><option value="approver"' + (user&&user.role==='approver'?' selected':'') + '>Approver</option><option value="admin"' + (user&&user.role==='admin'?' selected':'') + '>Admin</option></select></div>' +
+          '</div>' +
       '</div>' +
       '<div class="modal-footer"><button class="btn btn-secondary" onclick="this.closest(\'.modal-overlay\').remove()">Cancel</button><button class="btn btn-primary" onclick="saveUser(' + (id||'null') + ', this)">Save</button></div>' +
     '</div>';
@@ -712,10 +715,11 @@ async function saveUser(id, btn) {
   const email = document.getElementById('modal-email').value.trim();
   const password = document.getElementById('modal-password').value;
   const role = document.getElementById('modal-role').value;
+  const phone = document.getElementById('modal-phone').value.trim();
   try {
     btn.disabled = true;
-    if (id) { await api('PUT', '/users/' + id, { name, email, password: password || undefined, role }); }
-    else { await api('POST', '/users', { name, email, password, role }); }
+    if (id) { await api('PUT', '/users/' + id, { name, email, password: password || undefined, role, phone: phone || undefined }); }
+    else { await api('POST', '/users', { name, email, password, role, phone: phone || undefined }); }
     document.querySelector('.modal-overlay').remove();
     navigate('users');
   } catch(err) {
@@ -841,7 +845,7 @@ async function printPO(id) {
           '<table style="width:100%;border-collapse:collapse;font-size:13px">' +
             '<thead><tr style="border-bottom:2px solid #e5e7eb">' +
               '<th style="text-align:left;padding:8px;font-size:11px;font-weight:600;color:#6b7280;text-transform:uppercase;letter-spacing:0.05em">Item #</th>' +
-              '<th style="text-align:left;padding:8px;font-size:11px;font-weight:600;color:#6b7280;text-transform:uppercase;letter-spacing:0.05em">Manufacturer</th>' +
+              '<th style="text-align:left;padding:8px;font-size:11px;font-weight:600;color:#6b7280;text-transform:uppercase;letter-spacing:0.05em">Supplier</th>' +
               '<th style="text-align:left;padding:8px;font-size:11px;font-weight:600;color:#6b7280;text-transform:uppercase;letter-spacing:0.05em">Description</th>' +
               '<th style="text-align:right;padding:8px;font-size:11px;font-weight:600;color:#6b7280;text-transform:uppercase;letter-spacing:0.05em">Qty</th>' +
               '<th style="text-align:right;padding:8px;font-size:11px;font-weight:600;color:#6b7280;text-transform:uppercase;letter-spacing:0.05em">Unit price</th>' +
@@ -899,6 +903,16 @@ async function renderSettings(el) {
       '<div style="margin-top:16px">' +
         '<button class="btn btn-primary" id="save-logo-btn" style="display:none" onclick="saveLogo()">Save Logo</button>' +
       '</div>' +
+    '</div></div>' +
+    '<div class="card mt-4" style="margin-top:20px"><div class="card-header"><span class="card-title">Company Information</span></div><div class="card-body">' +
+      '<p class="text-muted mb-4" style="margin-bottom:16px">Shown on printed quotes below the logo. Enter your office address and main phone number.</p>' +
+      '<div class="form-row">' +
+        '<div class="form-group"><label>Company Name</label><input type="text" id="company-name" value="' + escHtml(settings.company_name || '') + '" placeholder="e.g. Pop-A-Lock" /></div>' +
+        '<div class="form-group"><label>Company Phone</label><input type="text" id="company-phone" value="' + escHtml(settings.company_phone || '') + '" placeholder="e.g. 337-873-2983" /></div>' +
+      '</div>' +
+      '<div class="form-group"><label>Address Line 1</label><input type="text" id="company-address" value="' + escHtml(settings.company_address || '') + '" placeholder="e.g. 589 Dorset Court" /></div>' +
+      '<div class="form-group"><label>City, State, ZIP</label><input type="text" id="company-city-zip" value="' + escHtml(settings.company_city_state_zip || '') + '" placeholder="e.g. Mount Dora, Florida 32757" /></div>' +
+      '<button class="btn btn-primary" onclick="saveCompanyInfo()">Save Company Info</button>' +
     '</div></div>';
 }
 
@@ -953,6 +967,29 @@ async function removeLogo() {
   try {
     await api('DELETE', '/settings/logo');
     navigate('settings');
+  } catch(err) {
+    document.getElementById('settings-error').innerHTML = '<div class="alert alert-error">' + escHtml(err.message) + '</div>';
+  }
+}
+
+async function saveCompanyInfo() {
+  const fields = [
+    { key: 'company_name', id: 'company-name' },
+    { key: 'company_phone', id: 'company-phone' },
+    { key: 'company_address', id: 'company-address' },
+    { key: 'company_city_state_zip', id: 'company-city-zip' }
+  ];
+  try {
+    for (const f of fields) {
+      const val = (document.getElementById(f.id) || {}).value || '';
+      if (val.trim()) {
+        await api('PUT', '/settings/' + f.key, { value: val.trim() });
+      } else {
+        await api('DELETE', '/settings/' + f.key).catch(function(){});
+      }
+    }
+    document.getElementById('settings-success').innerHTML = '<div class="alert alert-success">Company information saved.</div>';
+    setTimeout(function() { const el = document.getElementById('settings-success'); if (el) el.innerHTML = ''; }, 4000);
   } catch(err) {
     document.getElementById('settings-error').innerHTML = '<div class="alert alert-error">' + escHtml(err.message) + '</div>';
   }
@@ -1040,6 +1077,13 @@ async function reactivateCity(id) {
 
 // ── Quotes ────────────────────────────────────────────────────────────────────
 
+function getDefaultImportantInfo() {
+  var d = new Date();
+  d.setDate(d.getDate() + 30);
+  var formatted = (d.getMonth()+1).toString().padStart(2,'0') + '/' + d.getDate().toString().padStart(2,'0') + '/' + d.getFullYear();
+  return 'This proposal is valid until ' + formatted + '. Any major changes to the cost of parts, if any, will be discussed once the proposal is approved.\n\nPop-A-Lock will provide a 90-day warranty for the labor. Pop-A-Lock will facilitate any warranty for the parts based on the manufacturer\'s specification of warranty. After 90 days, Pop-A-Lock will charge labor to facilitate the part warranty.';
+}
+
 let quoteLineItems = [];
 
 async function renderQuotes(el) {
@@ -1084,11 +1128,13 @@ async function renderEditQuote(el, id) {
     try { quote = await api('GET', '/quotes/' + id); } catch(e) { el.innerHTML = '<div class="alert alert-error">' + escHtml(e.message) + '</div>'; return; }
     quoteLineItems = quote.line_items || [];
   } else {
-    quoteLineItems = [{ item_number: '', manufacturer: '', description: '', quantity: 1, unit_price: '' }];
+    quoteLineItems = [{ item_number: '', manufacturer: '', description: '', quantity: 1, unit_price: '', list_price: '' }];
   }
   const cityOptions = '<option value="">Select city (optional)...</option>' + cities.map(function(c) {
     return '<option value="' + escHtml(c.code) + '"' + (quote && quote.city_code === c.code ? ' selected' : '') + '>' + escHtml(c.name) + ' (' + escHtml(c.code) + ')</option>';
   }).join('');
+  const importantInfoVal = quote ? (quote.important_info || '') : getDefaultImportantInfo();
+  const taxRateVal = quote ? (parseFloat(quote.tax_rate) || 0) : 0;
   el.innerHTML =
     '<div class="page-header">' +
       '<div><div class="page-title">' + (id ? 'Edit Quote' : 'New Quote') + '</div></div>' +
@@ -1104,11 +1150,25 @@ async function renderEditQuote(el, id) {
     '</div></div>' +
     '<div class="card mb-4"><div class="card-header"><span class="card-title">Line Items</span></div><div class="card-body">' +
       '<div class="table-wrap"><table class="line-items-table">' +
-        '<thead><tr><th>Item #</th><th>Manufacturer</th><th>Description</th><th>Qty</th><th>Unit Price</th><th>Total</th><th></th></tr></thead>' +
+        '<thead><tr><th>Item #</th><th>Supplier</th><th>Description</th><th>Qty</th><th>Unit Price (Our Cost)</th><th>List Price (Customer Cost)</th><th>Total</th><th></th></tr></thead>' +
         '<tbody id="quote-line-items-body"></tbody>' +
-        '<tfoot><tr class="total-row"><td colspan="5" class="text-right" style="padding:10px">Grand Total</td><td id="quote-grand-total" style="padding:10px">$0.00</td><td></td></tr></tfoot>' +
+        '<tfoot>' +
+          '<tr><td colspan="6" class="text-right" style="padding:8px 10px;color:var(--text-muted-color)">Subtotal</td><td id="quote-subtotal" style="padding:8px 10px">$0.00</td><td></td></tr>' +
+          '<tr><td colspan="6" class="text-right" style="padding:8px 10px;color:var(--text-muted-color)">Tax</td><td id="quote-tax-display" style="padding:8px 10px">$0.00</td><td></td></tr>' +
+          '<tr class="total-row"><td colspan="6" class="text-right" style="padding:10px">Grand Total</td><td id="quote-grand-total" style="padding:10px">$0.00</td><td></td></tr>' +
+        '</tfoot>' +
       '</table></div>' +
-      '<button class="btn btn-secondary btn-sm add-item-btn" onclick="addQuoteLineItem()">' + icons.plus + ' Add Item</button>' +
+      '<div style="display:flex;justify-content:space-between;align-items:center;margin-top:8px">' +
+        '<button class="btn btn-secondary btn-sm" onclick="addQuoteLineItem()">' + icons.plus + ' Add Item</button>' +
+        '<div style="display:flex;align-items:center;gap:8px">' +
+          '<label style="margin:0;font-size:13px">Tax %</label>' +
+          '<input type="number" id="qt-tax-rate" value="' + taxRateVal + '" min="0" max="100" step="0.01" style="width:80px" oninput="updateQuoteTotals()" />' +
+        '</div>' +
+      '</div>' +
+    '</div></div>' +
+    '<div class="card mb-4"><div class="card-header"><span class="card-title">Important Information</span></div><div class="card-body">' +
+      '<p class="text-muted" style="margin-bottom:12px;font-size:13px">Printed at the bottom of the quote. Edit as needed.</p>' +
+      '<textarea id="qt-important-info" style="min-height:120px">' + escHtml(importantInfoVal) + '</textarea>' +
     '</div></div>' +
     '<div class="flex-gap">' +
       '<button class="btn btn-primary" onclick="saveQuote(' + (id||'null') + ')" id="btn-save-quote">Save Quote</button>' +
@@ -1120,18 +1180,19 @@ function buildQuoteLineItemRows() {
   const tbody = document.getElementById('quote-line-items-body');
   if (!tbody) return;
   tbody.innerHTML = quoteLineItems.map(function(item, i) {
-    const total = (parseFloat(item.quantity)||0) * (parseFloat(item.unit_price)||0);
+    const total = (parseFloat(item.quantity)||0) * (parseFloat(item.list_price)||0);
     return '<tr>' +
       '<td><input type="text" value="' + escHtml(item.item_number||'') + '" placeholder="Item #" onchange="updateQuoteItem(' + i + ',this)" data-field="item_number" /></td>' +
-      '<td><input type="text" value="' + escHtml(item.manufacturer||'') + '" placeholder="Manufacturer" onchange="updateQuoteItem(' + i + ',this)" data-field="manufacturer" /></td>' +
+      '<td><input type="text" value="' + escHtml(item.manufacturer||'') + '" placeholder="Supplier" onchange="updateQuoteItem(' + i + ',this)" data-field="manufacturer" /></td>' +
       '<td><input type="text" value="' + escHtml(item.description||'') + '" placeholder="Description *" onchange="updateQuoteItem(' + i + ',this)" data-field="description" /></td>' +
       '<td><input type="number" value="' + escHtml(item.quantity||'') + '" min="0.01" step="0.01" onchange="updateQuoteItem(' + i + ',this)" data-field="quantity" style="width:70px" /></td>' +
       '<td><input type="number" value="' + escHtml(item.unit_price||'') + '" min="0" step="0.01" placeholder="0.00" onchange="updateQuoteItem(' + i + ',this)" data-field="unit_price" style="width:90px" /></td>' +
+      '<td><input type="number" value="' + escHtml(item.list_price||'') + '" min="0" step="0.01" placeholder="0.00" onchange="updateQuoteItem(' + i + ',this)" data-field="list_price" style="width:90px" /></td>' +
       '<td id="qt-row-total-' + i + '">$' + total.toFixed(2) + '</td>' +
       '<td>' + (quoteLineItems.length > 1 ? '<button class="btn btn-ghost btn-sm" onclick="removeQuoteItem(' + i + ')">' + icons.trash + '</button>' : '') + '</td>' +
     '</tr>';
   }).join('');
-  updateQuoteGrandTotal();
+  updateQuoteTotals();
 }
 
 function updateQuoteItem(i, input) {
@@ -1143,14 +1204,23 @@ function updateQuoteItem(i, input) {
   updateQuoteGrandTotal();
 }
 
-function updateQuoteGrandTotal() {
-  const total = quoteLineItems.reduce(function(sum, item) { return sum + (parseFloat(item.quantity)||0) * (parseFloat(item.unit_price)||0); }, 0);
-  const el = document.getElementById('quote-grand-total');
-  if (el) el.textContent = '$' + total.toFixed(2);
+function updateQuoteTotals() {
+  const subtotal = quoteLineItems.reduce(function(sum, item) { return sum + (parseFloat(item.quantity)||0) * (parseFloat(item.list_price)||0); }, 0);
+  const taxRateEl = document.getElementById('qt-tax-rate');
+  const taxRate = taxRateEl ? (parseFloat(taxRateEl.value) || 0) : 0;
+  const taxAmt = subtotal * taxRate / 100;
+  const grand = subtotal + taxAmt;
+  const subtotalEl = document.getElementById('quote-subtotal');
+  const taxEl = document.getElementById('quote-tax-display');
+  const grandEl = document.getElementById('quote-grand-total');
+  if (subtotalEl) subtotalEl.textContent = '$' + subtotal.toFixed(2);
+  if (taxEl) taxEl.textContent = '$' + taxAmt.toFixed(2);
+  if (grandEl) grandEl.textContent = '$' + grand.toFixed(2);
 }
+function updateQuoteGrandTotal() { updateQuoteTotals(); }
 
 function addQuoteLineItem() {
-  quoteLineItems.push({ item_number: '', manufacturer: '', description: '', quantity: 1, unit_price: '' });
+  quoteLineItems.push({ item_number: '', manufacturer: '', description: '', quantity: 1, unit_price: '', list_price: '' });
   buildQuoteLineItemRows();
 }
 
@@ -1163,6 +1233,8 @@ async function saveQuote(id) {
   const customer_name = document.getElementById('qt-customer').value.trim();
   const city_code = document.getElementById('qt-city').value;
   const notes = document.getElementById('qt-notes').value.trim();
+  const tax_rate = parseFloat(document.getElementById('qt-tax-rate').value) || 0;
+  const important_info = document.getElementById('qt-important-info').value.trim();
   if (!customer_name) { document.getElementById('quote-edit-error').innerHTML = '<div class="alert alert-error">Customer name is required.</div>'; return; }
   const rows = document.querySelectorAll('#quote-line-items-body tr');
   rows.forEach(function(row, i) {
@@ -1172,8 +1244,9 @@ async function saveQuote(id) {
     if (inputs[2]) quoteLineItems[i].description = inputs[2].value;
     if (inputs[3]) quoteLineItems[i].quantity = inputs[3].value;
     if (inputs[4]) quoteLineItems[i].unit_price = inputs[4].value;
+    if (inputs[5]) quoteLineItems[i].list_price = inputs[5].value;
   });
-  const validItems = quoteLineItems.filter(function(item){ return item.description && item.quantity && item.unit_price; });
+  const validItems = quoteLineItems.filter(function(item){ return item.description && item.quantity && item.list_price; });
   if (validItems.length === 0) { document.getElementById('quote-edit-error').innerHTML = '<div class="alert alert-error">At least one complete line item is required.</div>'; return; }
   try {
     const btn = document.getElementById('btn-save-quote');
@@ -1222,18 +1295,25 @@ async function renderViewQuote(el, id) {
       '</div></div>' +
       '<div class="card"><div class="card-header"><span class="card-title">Line Items</span></div><div class="card-body">' +
         '<div class="table-wrap"><table class="line-items-table">' +
-          '<thead><tr><th>Item #</th><th>Manufacturer</th><th>Description</th><th>Qty</th><th>Unit Price</th><th class="text-right">Total</th></tr></thead>' +
+          '<thead><tr><th>Item #</th><th>Supplier</th><th>Description</th><th>Qty</th><th>Unit Price (Our Cost)</th><th>List Price (Customer Cost)</th><th class="text-right">Total</th></tr></thead>' +
           '<tbody>' + q.line_items.map(function(item) {
+            const listP = parseFloat(item.list_price || 0);
+            const lineTotal = (parseFloat(item.quantity) * listP).toFixed(2);
             return '<tr>' +
               '<td>' + escHtml(item.item_number || '—') + '</td>' +
               '<td>' + escHtml(item.manufacturer || '—') + '</td>' +
               '<td>' + escHtml(item.description) + '</td>' +
               '<td>' + item.quantity + '</td>' +
-              '<td>$' + parseFloat(item.unit_price).toFixed(2) + '</td>' +
-              '<td class="text-right">$' + (parseFloat(item.quantity) * parseFloat(item.unit_price)).toFixed(2) + '</td>' +
+              '<td>$' + parseFloat(item.unit_price || 0).toFixed(2) + '</td>' +
+              '<td>$' + listP.toFixed(2) + '</td>' +
+              '<td class="text-right">$' + lineTotal + '</td>' +
             '</tr>';
           }).join('') + '</tbody>' +
-          '<tfoot><tr class="total-row"><td colspan="5" class="text-right">Grand Total</td><td class="text-right">$' + parseFloat(q.total_amount).toFixed(2) + '</td></tr></tfoot>' +
+          '<tfoot>' +
+            '<tr><td colspan="6" class="text-right" style="padding:8px 10px;color:var(--text-muted-color)">Subtotal</td><td class="text-right" style="padding:8px 10px">$' + (parseFloat(q.total_amount) - parseFloat(q.tax_amount||0)).toFixed(2) + '</td></tr>' +
+            (parseFloat(q.tax_amount||0) > 0 ? '<tr><td colspan="6" class="text-right" style="padding:8px 10px;color:var(--text-muted-color)">Tax (' + parseFloat(q.tax_rate||0).toFixed(2) + '%)</td><td class="text-right" style="padding:8px 10px">$' + parseFloat(q.tax_amount).toFixed(2) + '</td></tr>' : '') +
+            '<tr class="total-row"><td colspan="6" class="text-right">Grand Total</td><td class="text-right">$' + parseFloat(q.total_amount).toFixed(2) + '</td></tr>' +
+          '</tfoot>' +
         '</table></div>' +
       '</div></div>';
   } catch(err) {
@@ -1260,13 +1340,30 @@ async function printQuote(id) {
 
     const logoHtml = settings.logo
       ? '<img src="' + settings.logo + '" style="height:56px;max-width:200px;object-fit:contain;display:block" alt="Logo" />'
-      : '<div style="font-size:22px;font-weight:600;color:#f97316;letter-spacing:-0.3px">PO System</div>';
+      : '<div style="font-size:22px;font-weight:600;color:#f97316;letter-spacing:-0.3px">' + esc(settings.company_name || 'Lock and Roll') + '</div>';
+
+    const companyAddrHtml = (settings.company_address || settings.company_city_state_zip || settings.company_phone)
+      ? '<div style="margin-top:10px;font-size:12px;color:#d1d5db;line-height:1.6">' +
+          (settings.company_address ? esc(settings.company_address) + '<br>' : '') +
+          (settings.company_city_state_zip ? esc(settings.company_city_state_zip) + '<br>' : '') +
+          (settings.company_phone ? esc(settings.company_phone) : '') +
+        '</div>'
+      : '';
+
+    const locksmiths = '<div style="padding:20px 32px;border-bottom:1px solid #e5e7eb;background:#fafafa">' +
+      '<div style="font-size:11px;font-weight:600;color:#6b7280;text-transform:uppercase;letter-spacing:0.05em;margin-bottom:10px">Your Locksmith</div>' +
+      '<div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px">' +
+        '<div><div style="font-size:11px;font-weight:600;color:#9ca3af;text-transform:uppercase;letter-spacing:0.05em;margin-bottom:3px">Name</div><div style="font-size:13px;color:#111">' + esc(q.requester_name || '—') + '</div></div>' +
+        '<div><div style="font-size:11px;font-weight:600;color:#9ca3af;text-transform:uppercase;letter-spacing:0.05em;margin-bottom:3px">Phone</div><div style="font-size:13px;color:#111">' + esc(q.requester_phone || '—') + '</div></div>' +
+        '<div><div style="font-size:11px;font-weight:600;color:#9ca3af;text-transform:uppercase;letter-spacing:0.05em;margin-bottom:3px">Email</div><div style="font-size:13px;color:#111">' + esc(q.requester_email || '—') + '</div></div>' +
+      '</div>' +
+    '</div>';
 
     const detailFields = [
       { label: 'Customer Name', value: q.customer_name },
       { label: 'City', value: q.city_code || '—' },
-      { label: 'Prepared By', value: q.requester_name || '—' },
-      { label: 'Date', value: formatDate(q.created_at) }
+      { label: 'Quote Date', value: formatDate(q.created_at) },
+      { label: 'Quote Number', value: q.quote_number }
     ];
 
     const detailGrid = detailFields.map(function(d) {
@@ -1276,22 +1373,40 @@ async function printQuote(id) {
       '</div>';
     }).join('');
 
+    const taxRate = parseFloat(q.tax_rate) || 0;
+    const subtotal = q.line_items.reduce(function(s, item) {
+      return s + (parseFloat(item.quantity) || 0) * (parseFloat(item.list_price || item.unit_price) || 0);
+    }, 0);
+    const taxAmount = subtotal * taxRate / 100;
+    const grandTotal = subtotal + taxAmount;
+
     const itemRows = q.line_items.map(function(item) {
-      const lineTotal = (parseFloat(item.quantity) * parseFloat(item.unit_price)).toFixed(2);
+      const price = parseFloat(item.list_price || item.unit_price) || 0;
+      const lineTotal = ((parseFloat(item.quantity) || 0) * price).toFixed(2);
       return '<tr>' +
-        '<td style="padding:10px 8px;color:#6b7280;border-bottom:1px solid #f3f4f6">' + esc(item.item_number || '—') + '</td>' +
-        '<td style="padding:10px 8px;color:#6b7280;border-bottom:1px solid #f3f4f6">' + esc(item.manufacturer || '—') + '</td>' +
         '<td style="padding:10px 8px;border-bottom:1px solid #f3f4f6">' + esc(item.description) + '</td>' +
         '<td style="padding:10px 8px;text-align:right;border-bottom:1px solid #f3f4f6">' + esc(item.quantity) + '</td>' +
-        '<td style="padding:10px 8px;text-align:right;border-bottom:1px solid #f3f4f6">$' + parseFloat(item.unit_price).toFixed(2) + '</td>' +
+        '<td style="padding:10px 8px;text-align:right;border-bottom:1px solid #f3f4f6">$' + price.toFixed(2) + '</td>' +
         '<td style="padding:10px 8px;text-align:right;border-bottom:1px solid #f3f4f6">$' + lineTotal + '</td>' +
       '</tr>';
     }).join('');
+
+    const taxRows = taxRate > 0
+      ? '<tr><td colspan="3" style="padding:8px;text-align:right;font-size:13px;color:#6b7280">Subtotal</td><td style="padding:8px;text-align:right;font-size:13px;color:#6b7280">$' + subtotal.toFixed(2) + '</td></tr>' +
+        '<tr><td colspan="3" style="padding:8px;text-align:right;font-size:13px;color:#6b7280">Tax (' + taxRate + '%)</td><td style="padding:8px;text-align:right;font-size:13px;color:#6b7280">$' + taxAmount.toFixed(2) + '</td></tr>'
+      : '';
 
     const notesHtml = q.notes
       ? '<div style="padding:20px 32px;border-bottom:1px solid #e5e7eb">' +
           '<div style="font-size:11px;font-weight:600;color:#6b7280;text-transform:uppercase;letter-spacing:0.05em;margin-bottom:6px">Notes</div>' +
           '<div style="font-size:13px;color:#6b7280">' + esc(q.notes) + '</div>' +
+        '</div>'
+      : '';
+
+    const importantHtml = q.important_info
+      ? '<div style="padding:20px 32px;border-bottom:1px solid #e5e7eb">' +
+          '<div style="font-size:11px;font-weight:600;color:#6b7280;text-transform:uppercase;letter-spacing:0.05em;margin-bottom:6px">Important Information</div>' +
+          '<div style="font-size:12px;color:#6b7280;white-space:pre-wrap;line-height:1.6">' + esc(q.important_info) + '</div>' +
         '</div>'
       : '';
 
@@ -1320,13 +1435,14 @@ async function printQuote(id) {
         '<span class="hint">Tip: select &ldquo;Save as PDF&rdquo; in the print dialog</span>' +
       '</div>' +
       '<div class="page">' +
-        '<div style="background:#0f0f0f;padding:24px 32px;display:flex;justify-content:space-between;align-items:center">' +
-          '<div>' + logoHtml + '</div>' +
+        '<div style="background:#0f0f0f;padding:24px 32px;display:flex;justify-content:space-between;align-items:flex-start">' +
+          '<div>' + logoHtml + companyAddrHtml + '</div>' +
           '<div style="text-align:right">' +
             '<div style="font-size:18px;font-weight:500;color:#f0f0f0">' + esc(q.quote_number) + '</div>' +
             '<div style="margin-top:8px"><span style="display:inline-flex;padding:3px 12px;border-radius:20px;font-size:11px;font-weight:600;background:#0d1e30;color:#60a5fa;border:1px solid #1e3a5f">Quote</span></div>' +
           '</div>' +
         '</div>' +
+        locksmiths +
         '<div style="padding:24px 32px;border-bottom:1px solid #e5e7eb">' +
           '<div style="display:grid;grid-template-columns:1fr 1fr 1fr 1fr;gap:20px">' + detailGrid + '</div>' +
         '</div>' +
@@ -1334,23 +1450,25 @@ async function printQuote(id) {
           '<div style="font-size:11px;font-weight:600;color:#6b7280;text-transform:uppercase;letter-spacing:0.05em;margin-bottom:12px">Line items</div>' +
           '<table style="width:100%;border-collapse:collapse;font-size:13px">' +
             '<thead><tr style="border-bottom:2px solid #e5e7eb">' +
-              '<th style="text-align:left;padding:8px;font-size:11px;font-weight:600;color:#6b7280;text-transform:uppercase;letter-spacing:0.05em">Item #</th>' +
-              '<th style="text-align:left;padding:8px;font-size:11px;font-weight:600;color:#6b7280;text-transform:uppercase;letter-spacing:0.05em">Manufacturer</th>' +
               '<th style="text-align:left;padding:8px;font-size:11px;font-weight:600;color:#6b7280;text-transform:uppercase;letter-spacing:0.05em">Description</th>' +
               '<th style="text-align:right;padding:8px;font-size:11px;font-weight:600;color:#6b7280;text-transform:uppercase;letter-spacing:0.05em">Qty</th>' +
-              '<th style="text-align:right;padding:8px;font-size:11px;font-weight:600;color:#6b7280;text-transform:uppercase;letter-spacing:0.05em">Unit price</th>' +
+              '<th style="text-align:right;padding:8px;font-size:11px;font-weight:600;color:#6b7280;text-transform:uppercase;letter-spacing:0.05em">Price</th>' +
               '<th style="text-align:right;padding:8px;font-size:11px;font-weight:600;color:#6b7280;text-transform:uppercase;letter-spacing:0.05em">Total</th>' +
             '</tr></thead>' +
             '<tbody>' + itemRows + '</tbody>' +
-            '<tfoot><tr style="border-top:2px solid #e5e7eb">' +
-              '<td colspan="5" style="padding:12px 8px;text-align:right;font-weight:600;font-size:13px;color:#6b7280">Grand total</td>' +
-              '<td style="padding:12px 8px;text-align:right;font-size:17px;font-weight:700;color:#f97316">$' + parseFloat(q.total_amount).toFixed(2) + '</td>' +
-            '</tr></tfoot>' +
+            '<tfoot>' +
+              taxRows +
+              '<tr style="border-top:2px solid #e5e7eb">' +
+                '<td colspan="3" style="padding:12px 8px;text-align:right;font-weight:600;font-size:13px;color:#6b7280">Grand total</td>' +
+                '<td style="padding:12px 8px;text-align:right;font-size:17px;font-weight:700;color:#f97316">$' + grandTotal.toFixed(2) + '</td>' +
+              '</tr>' +
+            '</tfoot>' +
           '</table>' +
         '</div>' +
         notesHtml +
+        importantHtml +
         '<div style="background:#f9fafb;padding:14px 32px;display:flex;justify-content:space-between;font-size:11px;color:#9ca3af;border-top:1px solid #e5e7eb">' +
-          '<span>PO System &mdash; popalockar.com</span>' +
+          '<span>' + esc(settings.company_name || 'Lock and Roll') + '</span>' +
           '<span>Generated ' + today + '</span>' +
         '</div>' +
       '</div>' +
