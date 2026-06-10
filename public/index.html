@@ -178,6 +178,8 @@ const icons = {
   trash: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14H6L5 6"/><path d="M10 11v6"/><path d="M14 11v6"/><path d="M9 6V4h6v2"/></svg>',
   logout: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/></svg>',
   map: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="1 6 1 22 8 18 16 22 23 18 23 2 16 6 8 2 1 6"/><line x1="8" y1="2" x2="8" y2="18"/><line x1="16" y1="6" x2="16" y2="22"/></svg>',
+  settings: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>',
+  print: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="6 9 6 2 18 2 18 9"/><path d="M6 18H4a2 2 0 0 1-2-2v-5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2h-2"/><rect x="6" y="14" width="12" height="8"/></svg>',
 };
 
 function escHtml(s) {
@@ -215,6 +217,7 @@ async function render() {
         (state.user.role !== 'approver' ? '<div class="nav-item ' + (state.currentView === 'new' ? 'active' : '') + '" onclick="navigate(\'new\')">' + icons.plus + ' New PO</div>' : '') +
         (state.user.role === 'admin' ? '<div class="nav-item ' + (state.currentView === 'users' ? 'active' : '') + '" onclick="navigate(\'users\')">' + icons.users + ' Users</div>' : '') +
         (state.user.role === 'admin' ? '<div class="nav-item ' + (state.currentView === 'cities' ? 'active' : '') + '" onclick="navigate(\'cities\')">' + icons.map + ' Cities</div>' : '') +
+        (state.user.role === 'admin' ? '<div class="nav-item ' + (state.currentView === 'settings' ? 'active' : '') + '" onclick="navigate(\'settings\')">' + icons.settings + ' Settings</div>' : '') +
       '</nav>' +
       '<div class="sidebar-footer">' +
         '<div class="sidebar-user"><div class="avatar">' + escHtml(initials) + '</div><div class="sidebar-user-info"><div class="sidebar-user-name">' + escHtml(state.user.name) + '</div><div class="sidebar-user-role">' + escHtml(state.user.role) + '</div></div></div>' +
@@ -233,6 +236,7 @@ async function render() {
   else if (state.currentView === 'view') await renderViewPO(content, state.currentParam);
   else if (state.currentView === 'users') await renderUsers(content);
   else if (state.currentView === 'cities') await renderCities(content);
+  else if (state.currentView === 'settings') await renderSettings(content);
   else { state.currentView = 'dashboard'; await renderDashboard(content); }
 }
 
@@ -573,6 +577,7 @@ async function renderViewPO(el, id) {
         '<div><div class="page-title">' + escHtml(po.po_number) + '</div><div class="page-subtitle">' + badgeHtml(po.status) + '</div></div>' +
         '<div class="flex-gap">' +
           '<button class="btn btn-secondary" onclick="navigate(\'dashboard\')">&larr; Back</button>' +
+          '<button class="btn btn-secondary" onclick="printPO(' + po.id + ')">' + icons.print + ' Print PO</button>' +
           (canEdit ? '<button class="btn btn-secondary" onclick="navigate(\'edit\',' + po.id + ')">' + icons.edit + ' Edit</button>' : '') +
           (canSubmit ? '<button class="btn btn-primary" onclick="submitPO(' + po.id + ')">Submit for Approval</button>' : '') +
           (canDelete ? '<button class="btn btn-danger btn-sm" onclick="deletePO(' + po.id + ')">' + icons.trash + '</button>' : '') +
@@ -722,6 +727,229 @@ async function deactivateUser(id) {
 async function reactivateUser(id) {
   try { await api('POST', '/users/' + id + '/reactivate'); navigate('users'); }
   catch(err) { document.getElementById('users-error').innerHTML = '<div class="alert alert-error">' + escHtml(err.message) + '</div>'; }
+}
+
+async function printPO(id) {
+  try {
+    const results = await Promise.all([
+      api('GET', '/pos/' + id),
+      api('GET', '/settings').catch(function() { return {}; })
+    ]);
+    const po = results[0];
+    const settings = results[1];
+
+    function esc(s) { return String(s == null ? '' : s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
+
+    const logoHtml = settings.logo
+      ? '<img src="' + settings.logo + '" style="height:56px;max-width:200px;object-fit:contain;display:block" alt="Logo" />'
+      : '<div style="font-size:22px;font-weight:600;color:#f97316;letter-spacing:-0.3px">PO System</div><div style="font-size:12px;color:#888;margin-top:2px">Purchase Order</div>';
+
+    const badgeStyles = {
+      draft: 'background:#2a2a2a;color:#aaa',
+      submitted: 'background:#2d2100;color:#f59e0b',
+      approved: 'background:#0d2d17;color:#22c55e',
+      rejected: 'background:#2d0d0d;color:#ef4444',
+      cancelled: 'background:#1a0d2e;color:#c084fc'
+    };
+    const badgeStyle = badgeStyles[po.status] || 'background:#2a2a2a;color:#aaa';
+
+    const detailFields = [
+      { label: 'Vendor / Supplier', value: po.vendor_name },
+      { label: 'Customer Name', value: po.customer_name || '—' },
+      { label: 'City', value: po.city_code || '—' },
+      { label: 'Requested By', value: po.requester_name || '—' },
+      { label: 'Date', value: formatDate(po.created_at) },
+      { label: po.status === 'approved' ? 'Approved By' : 'Reviewed By', value: po.approver_name || '—' }
+    ];
+
+    const detailGrid = detailFields.map(function(d) {
+      return '<div>' +
+        '<div style="font-size:11px;font-weight:600;color:#6b7280;text-transform:uppercase;letter-spacing:0.05em;margin-bottom:4px">' + esc(d.label) + '</div>' +
+        '<div style="font-size:14px;color:#111">' + esc(d.value) + '</div>' +
+      '</div>';
+    }).join('');
+
+    const itemRows = po.line_items.map(function(item) {
+      const lineTotal = (parseFloat(item.quantity) * parseFloat(item.unit_price)).toFixed(2);
+      return '<tr>' +
+        '<td style="padding:10px 8px;color:#6b7280;border-bottom:1px solid #f3f4f6">' + esc(item.item_number || '—') + '</td>' +
+        '<td style="padding:10px 8px;color:#6b7280;border-bottom:1px solid #f3f4f6">' + esc(item.manufacturer || '—') + '</td>' +
+        '<td style="padding:10px 8px;border-bottom:1px solid #f3f4f6">' + esc(item.description) + '</td>' +
+        '<td style="padding:10px 8px;text-align:right;border-bottom:1px solid #f3f4f6">' + esc(item.quantity) + '</td>' +
+        '<td style="padding:10px 8px;text-align:right;border-bottom:1px solid #f3f4f6">$' + parseFloat(item.unit_price).toFixed(2) + '</td>' +
+        '<td style="padding:10px 8px;text-align:right;border-bottom:1px solid #f3f4f6">$' + lineTotal + '</td>' +
+      '</tr>';
+    }).join('');
+
+    const notesHtml = po.notes
+      ? '<div style="padding:20px 32px;border-bottom:1px solid #e5e7eb">' +
+          '<div style="font-size:11px;font-weight:600;color:#6b7280;text-transform:uppercase;letter-spacing:0.05em;margin-bottom:6px">Notes</div>' +
+          '<div style="font-size:13px;color:#6b7280">' + esc(po.notes) + '</div>' +
+        '</div>'
+      : '';
+
+    const rejectionHtml = po.rejection_reason
+      ? '<div style="padding:20px 32px;border-bottom:1px solid #e5e7eb">' +
+          '<div style="font-size:11px;font-weight:600;color:#dc2626;text-transform:uppercase;letter-spacing:0.05em;margin-bottom:6px">Rejection Reason</div>' +
+          '<div style="font-size:13px;color:#dc2626">' + esc(po.rejection_reason) + '</div>' +
+        '</div>'
+      : '';
+
+    const today = new Date().toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+
+    const html = '<!DOCTYPE html><html><head><meta charset="UTF-8"><title>' + esc(po.po_number) + '</title>' +
+      '<style>' +
+      '* { margin:0; padding:0; box-sizing:border-box; }' +
+      'body { font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; background:#f3f4f6; color:#111; }' +
+      '.no-print { background:white; padding:12px 24px; border-bottom:1px solid #e5e7eb; display:flex; gap:8px; align-items:center; position:sticky; top:0; z-index:10; box-shadow:0 1px 3px rgba(0,0,0,0.08); }' +
+      '.btn-print { background:#f97316; color:white; border:none; padding:9px 18px; border-radius:6px; font-size:14px; font-weight:500; cursor:pointer; }' +
+      '.btn-print:hover { background:#ea6a00; }' +
+      '.btn-close { background:transparent; color:#6b7280; border:1px solid #d1d5db; padding:9px 18px; border-radius:6px; font-size:14px; cursor:pointer; }' +
+      '.hint { font-size:12px; color:#9ca3af; margin-left:4px; }' +
+      '.page { max-width:800px; margin:24px auto 48px; background:white; border-radius:8px; overflow:hidden; box-shadow:0 1px 4px rgba(0,0,0,0.12); }' +
+      '@media print {' +
+      '  .no-print { display:none !important; }' +
+      '  body { background:white; }' +
+      '  .page { margin:0; box-shadow:none; border-radius:0; max-width:100%; }' +
+      '  * { -webkit-print-color-adjust:exact !important; print-color-adjust:exact !important; }' +
+      '}' +
+      '</style></head><body>' +
+      '<div class="no-print">' +
+        '<button class="btn-print" onclick="window.print()">&#128438;&nbsp; Print / Save as PDF</button>' +
+        '<button class="btn-close" onclick="window.close()">Close</button>' +
+        '<span class="hint">Tip: select &ldquo;Save as PDF&rdquo; in the print dialog</span>' +
+      '</div>' +
+      '<div class="page">' +
+        '<div style="background:#0f0f0f;padding:24px 32px;display:flex;justify-content:space-between;align-items:center">' +
+          '<div>' + logoHtml + '</div>' +
+          '<div style="text-align:right">' +
+            '<div style="font-size:18px;font-weight:500;color:#f0f0f0">' + esc(po.po_number) + '</div>' +
+            '<div style="margin-top:8px"><span style="display:inline-flex;padding:3px 12px;border-radius:20px;font-size:11px;font-weight:600;text-transform:capitalize;' + badgeStyle + '">' + esc(po.status) + '</span></div>' +
+          '</div>' +
+        '</div>' +
+        '<div style="padding:24px 32px;border-bottom:1px solid #e5e7eb">' +
+          '<div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:20px">' + detailGrid + '</div>' +
+        '</div>' +
+        '<div style="padding:24px 32px;border-bottom:1px solid #e5e7eb">' +
+          '<div style="font-size:11px;font-weight:600;color:#6b7280;text-transform:uppercase;letter-spacing:0.05em;margin-bottom:12px">Line items</div>' +
+          '<table style="width:100%;border-collapse:collapse;font-size:13px">' +
+            '<thead><tr style="border-bottom:2px solid #e5e7eb">' +
+              '<th style="text-align:left;padding:8px;font-size:11px;font-weight:600;color:#6b7280;text-transform:uppercase;letter-spacing:0.05em">Item #</th>' +
+              '<th style="text-align:left;padding:8px;font-size:11px;font-weight:600;color:#6b7280;text-transform:uppercase;letter-spacing:0.05em">Manufacturer</th>' +
+              '<th style="text-align:left;padding:8px;font-size:11px;font-weight:600;color:#6b7280;text-transform:uppercase;letter-spacing:0.05em">Description</th>' +
+              '<th style="text-align:right;padding:8px;font-size:11px;font-weight:600;color:#6b7280;text-transform:uppercase;letter-spacing:0.05em">Qty</th>' +
+              '<th style="text-align:right;padding:8px;font-size:11px;font-weight:600;color:#6b7280;text-transform:uppercase;letter-spacing:0.05em">Unit price</th>' +
+              '<th style="text-align:right;padding:8px;font-size:11px;font-weight:600;color:#6b7280;text-transform:uppercase;letter-spacing:0.05em">Total</th>' +
+            '</tr></thead>' +
+            '<tbody>' + itemRows + '</tbody>' +
+            '<tfoot><tr style="border-top:2px solid #e5e7eb">' +
+              '<td colspan="5" style="padding:12px 8px;text-align:right;font-weight:600;font-size:13px;color:#6b7280">Grand total</td>' +
+              '<td style="padding:12px 8px;text-align:right;font-size:17px;font-weight:700;color:#f97316">$' + parseFloat(po.total_amount).toFixed(2) + '</td>' +
+            '</tr></tfoot>' +
+          '</table>' +
+        '</div>' +
+        notesHtml +
+        rejectionHtml +
+        '<div style="background:#f9fafb;padding:14px 32px;display:flex;justify-content:space-between;font-size:11px;color:#9ca3af;border-top:1px solid #e5e7eb">' +
+          '<span>PO System &mdash; popalockar.com</span>' +
+          '<span>Generated ' + today + '</span>' +
+        '</div>' +
+      '</div>' +
+      '</body></html>';
+
+    const win = window.open('', '_blank', 'width=900,height=700');
+    if (!win) { alert('Pop-up blocked. Please allow pop-ups for this site to print POs.'); return; }
+    win.document.write(html);
+    win.document.close();
+    win.focus();
+  } catch(err) {
+    alert('Print failed: ' + err.message);
+  }
+}
+
+async function renderSettings(el) {
+  if (state.user.role !== 'admin') { el.innerHTML = '<div class="alert alert-error">Access denied.</div>'; return; }
+  let settings = {};
+  try { settings = await api('GET', '/settings'); } catch(e) {}
+
+  el.innerHTML =
+    '<div class="page-header"><div class="page-title">Settings</div></div>' +
+    '<div id="settings-error"></div>' +
+    '<div id="settings-success"></div>' +
+    '<div class="card"><div class="card-header"><span class="card-title">Company Logo</span></div><div class="card-body">' +
+      '<p class="text-muted mb-4" style="margin-bottom:16px">Shown in the header of printed POs. Recommended: PNG with transparent background, at least 400px wide.</p>' +
+      '<div style="display:flex;align-items:center;gap:20px;flex-wrap:wrap">' +
+        '<div id="logo-preview-area" onclick="document.getElementById(\'logo-file-input\').click()" style="width:180px;height:80px;border:1.5px dashed var(--border);border-radius:var(--radius);display:flex;align-items:center;justify-content:center;background:var(--bg-elevated);overflow:hidden;cursor:pointer;flex-shrink:0">' +
+          (settings.logo
+            ? '<img src="' + settings.logo + '" style="max-width:100%;max-height:100%;object-fit:contain" alt="Current logo" />'
+            : '<span style="font-size:13px;color:var(--text-muted-color)">Click to upload</span>') +
+        '</div>' +
+        '<div style="display:flex;flex-direction:column;gap:8px">' +
+          '<input type="file" id="logo-file-input" accept="image/png,image/jpeg,image/gif" style="display:none" onchange="previewSettingsLogo(this)" />' +
+          '<button class="btn btn-secondary" onclick="document.getElementById(\'logo-file-input\').click()">&#128247; Upload Logo</button>' +
+          (settings.logo ? '<button class="btn btn-danger btn-sm" onclick="removeLogo()">Remove Logo</button>' : '') +
+        '</div>' +
+      '</div>' +
+      '<div style="margin-top:16px">' +
+        '<button class="btn btn-primary" id="save-logo-btn" style="display:none" onclick="saveLogo()">Save Logo</button>' +
+      '</div>' +
+    '</div></div>';
+}
+
+function previewSettingsLogo(input) {
+  const file = input.files[0];
+  if (!file) return;
+  const reader = new FileReader();
+  reader.onload = function(e) {
+    const img = new Image();
+    img.onload = function() {
+      const canvas = document.createElement('canvas');
+      var w = img.width, h = img.height, maxW = 500;
+      if (w > maxW) { h = Math.round(h * maxW / w); w = maxW; }
+      canvas.width = w; canvas.height = h;
+      canvas.getContext('2d').drawImage(img, 0, 0, w, h);
+      const resized = canvas.toDataURL('image/png');
+      const area = document.getElementById('logo-preview-area');
+      area.innerHTML = '<img src="' + resized + '" style="max-width:100%;max-height:100%;object-fit:contain" />';
+      area.dataset.logoData = resized;
+      const btn = document.getElementById('save-logo-btn');
+      if (btn) { btn.style.display = 'inline-flex'; }
+    };
+    img.src = e.target.result;
+  };
+  reader.readAsDataURL(file);
+}
+
+async function saveLogo() {
+  const area = document.getElementById('logo-preview-area');
+  const logoData = area && area.dataset.logoData;
+  if (!logoData) return;
+  const btn = document.getElementById('save-logo-btn');
+  try {
+    if (btn) btn.disabled = true;
+    await api('PUT', '/settings/logo', { value: logoData });
+    document.getElementById('settings-success').innerHTML = '<div class="alert alert-success">Logo saved. It will appear on all printed POs.</div>';
+    if (btn) btn.style.display = 'none';
+    delete area.dataset.logoData;
+    setTimeout(function() {
+      const el = document.getElementById('settings-success');
+      if (el) el.innerHTML = '';
+    }, 4000);
+  } catch(err) {
+    document.getElementById('settings-error').innerHTML = '<div class="alert alert-error">' + escHtml(err.message) + '</div>';
+  } finally {
+    if (btn) btn.disabled = false;
+  }
+}
+
+async function removeLogo() {
+  if (!confirm('Remove the company logo from printed POs?')) return;
+  try {
+    await api('DELETE', '/settings/logo');
+    navigate('settings');
+  } catch(err) {
+    document.getElementById('settings-error').innerHTML = '<div class="alert alert-error">' + escHtml(err.message) + '</div>';
+  }
 }
 
 async function renderCities(el) {
