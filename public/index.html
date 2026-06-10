@@ -25,8 +25,6 @@
       --shadow-md: 0 4px 12px rgba(0,0,0,0.5);
     }
     body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: var(--bg); color: var(--text); min-height: 100vh; }
-
-    /* Layout */
     #app { display: flex; min-height: 100vh; }
     #sidebar { width: 240px; background: #111; border-right: 1px solid var(--border); display: flex; flex-direction: column; position: fixed; top: 0; left: 0; height: 100vh; z-index: 10; }
     #main { margin-left: 240px; flex: 1; display: flex; flex-direction: column; min-height: 100vh; }
@@ -34,10 +32,9 @@
     .main-content { padding: 24px; flex: 1; }
     #app.no-sidebar #sidebar { display: none; }
     #app.no-sidebar #main { margin-left: 0; }
-
-    /* Sidebar */
     .sidebar-logo { padding: 20px 16px; border-bottom: 1px solid var(--border); }
     .sidebar-logo h1 { font-size: 18px; font-weight: 700; color: var(--primary); letter-spacing: -0.3px; }
+    .sidebar-logo h1::after { content: ''; display: block; width: 32px; height: 2px; background: var(--primary); margin-top: 6px; border-radius: 2px; }
     .sidebar-logo p { font-size: 12px; color: var(--text-muted-color); margin-top: 2px; }
     .sidebar-nav { flex: 1; padding: 12px 8px; }
     .nav-item { display: flex; align-items: center; gap: 10px; padding: 10px 12px; border-radius: var(--radius); cursor: pointer; color: var(--text-dim); font-size: 14px; font-weight: 500; transition: all 0.15s; margin-bottom: 2px; }
@@ -50,8 +47,6 @@
     .sidebar-user-info { flex: 1; min-width: 0; }
     .sidebar-user-name { font-size: 14px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
     .sidebar-user-role { font-size: 12px; color: var(--text-muted-color); text-transform: capitalize; }
-
-    /* Buttons */
     .btn { display: inline-flex; align-items: center; gap: 6px; padding: 8px 16px; border-radius: var(--radius); font-size: 14px; font-weight: 500; cursor: pointer; border: none; transition: all 0.15s; text-decoration: none; }
     .btn-primary { background: var(--primary); color: white; }
     .btn-primary:hover { background: var(--primary-dark); }
@@ -65,14 +60,10 @@
     .btn-ghost { background: transparent; color: var(--text-muted-color); }
     .btn-ghost:hover { background: var(--bg-elevated); color: var(--text-dim); }
     .btn:disabled { opacity: 0.4; cursor: not-allowed; }
-
-    /* Cards */
     .card { background: var(--bg-card); border-radius: var(--radius); border: 1px solid var(--border); box-shadow: var(--shadow); }
     .card-header { padding: 16px 20px; border-bottom: 1px solid var(--border); display: flex; align-items: center; justify-content: space-between; }
     .card-title { font-size: 16px; font-weight: 600; color: var(--text); }
     .card-body { padding: 20px; }
-
-    /* Forms */
     .form-group { margin-bottom: 16px; }
     label { display: block; font-size: 14px; font-weight: 500; color: var(--text-dim); margin-bottom: 6px; }
     input, select, textarea { width: 100%; padding: 9px 12px; border: 1px solid var(--border); border-radius: var(--radius); font-size: 14px; color: var(--text); background: var(--bg-elevated); transition: border 0.15s; outline: none; }
@@ -80,112 +71,78 @@
     select option { background: var(--bg-elevated); color: var(--text); }
     textarea { resize: vertical; min-height: 80px; }
     .form-row { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
-
-    /* Table */
     .table-wrap { overflow-x: auto; }
     table { width: 100%; border-collapse: collapse; }
     th { padding: 10px 16px; text-align: left; font-size: 12px; font-weight: 600; color: var(--text-muted-color); text-transform: uppercase; letter-spacing: 0.05em; border-bottom: 1px solid var(--border); background: var(--bg-elevated); }
     td { padding: 12px 16px; font-size: 14px; border-bottom: 1px solid var(--border-light); color: var(--text-dim); }
     tr:last-child td { border-bottom: none; }
     tr:hover td { background: rgba(255,255,255,0.03); }
-
-    /* Badges */
     .badge { display: inline-flex; align-items: center; padding: 3px 10px; border-radius: 20px; font-size: 12px; font-weight: 600; text-transform: capitalize; }
     .badge-draft { background: #2a2a2a; color: #aaa; }
     .badge-submitted { background: #2d2100; color: #f59e0b; border: 1px solid #4a3500; }
     .badge-approved { background: #0d2d17; color: #22c55e; border: 1px solid #134d27; }
     .badge-rejected { background: #2d0d0d; color: #ef4444; border: 1px solid #4d1515; }
+    .badge-cancelled { background: #1a0d2e; color: #c084fc; border: 1px solid #3b1f6e; }
     .badge-admin { background: #1e1040; color: #a78bfa; }
     .badge-approver { background: #0d1e30; color: #60a5fa; }
     .badge-requester { background: #2a2a2a; color: #aaa; }
-
-    /* Page header */
     .page-header { margin-bottom: 24px; display: flex; align-items: center; justify-content: space-between; }
     .page-title { font-size: 22px; font-weight: 700; }
     .page-subtitle { font-size: 14px; color: var(--text-muted-color); margin-top: 4px; }
-
-    /* Stats */
     .stats-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 16px; margin-bottom: 24px; }
     .stat-card { background: var(--bg-card); border: 1px solid var(--border); border-radius: var(--radius); padding: 16px 20px; box-shadow: var(--shadow); }
     .stat-value { font-size: 28px; font-weight: 700; margin-bottom: 4px; color: var(--primary); }
     .stat-label { font-size: 13px; color: var(--text-muted-color); }
-
-    /* Line items */
     .line-items-table { width: 100%; border-collapse: collapse; margin-top: 8px; }
     .line-items-table th { padding: 8px 10px; background: var(--bg-elevated); font-size: 12px; font-weight: 600; color: var(--text-muted-color); text-transform: uppercase; border-bottom: 1px solid var(--border); text-align: left; }
     .line-items-table td { padding: 8px 10px; font-size: 14px; border-bottom: 1px solid var(--border-light); color: var(--text-dim); }
     .line-items-table td input { padding: 6px 8px; }
     .line-items-table .total-row td { font-weight: 700; background: var(--bg-elevated); color: var(--primary); }
     .add-item-btn { margin-top: 8px; }
-
-    /* Detail view */
     .detail-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 24px; margin-bottom: 24px; }
     .detail-field label { font-size: 12px; font-weight: 600; color: var(--text-muted-color); text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 4px; }
     .detail-field p { font-size: 15px; color: var(--text); }
-
-    /* Alert */
     .alert { padding: 12px 16px; border-radius: var(--radius); font-size: 14px; margin-bottom: 16px; }
     .alert-error { background: #2d0d0d; color: #fca5a5; border: 1px solid #4d1515; }
     .alert-success { background: #0d2d17; color: #86efac; border: 1px solid #134d27; }
     .alert-info { background: #0d1e30; color: #93c5fd; border: 1px solid #1e3a5f; }
-
-    /* Auth page */
     .auth-page { display: flex; align-items: center; justify-content: center; min-height: 100vh; background: var(--bg); }
     .auth-card { width: 100%; max-width: 400px; padding: 8px; }
     .auth-logo { text-align: center; margin-bottom: 32px; }
     .auth-logo h1 { font-size: 28px; font-weight: 800; color: var(--primary); }
     .auth-logo p { color: var(--text-muted-color); margin-top: 6px; }
-
-    /* Modal */
     .modal-overlay { position: fixed; inset: 0; background: rgba(0,0,0,0.75); display: flex; align-items: center; justify-content: center; z-index: 100; padding: 16px; }
     .modal { background: var(--bg-card); border: 1px solid var(--border); border-radius: var(--radius); box-shadow: var(--shadow-md); width: 100%; max-width: 480px; }
     .modal-header { padding: 16px 20px; border-bottom: 1px solid var(--border); display: flex; align-items: center; justify-content: space-between; }
     .modal-title { font-size: 16px; font-weight: 600; }
     .modal-body { padding: 20px; }
     .modal-footer { padding: 16px 20px; border-top: 1px solid var(--border); display: flex; gap: 8px; justify-content: flex-end; }
-
-    /* Misc */
     .empty-state { text-align: center; padding: 48px 24px; color: var(--text-muted-color); }
     .empty-state svg { width: 48px; height: 48px; margin: 0 auto 16px; opacity: 0.3; }
     .empty-state h3 { font-size: 16px; font-weight: 600; color: var(--text-dim); margin-bottom: 6px; }
     .loading { text-align: center; padding: 48px; color: var(--text-muted-color); }
-    .flex-gap { display: flex; gap: 8px; align-items: center; }
+    .flex-gap { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
     .text-right { text-align: right; }
     .text-muted { color: var(--text-muted-color); font-size: 13px; }
     .mt-2 { margin-top: 8px; }
     .mt-4 { margin-top: 16px; }
     .mb-4 { margin-bottom: 16px; }
     .hidden { display: none !important; }
-
-    /* Orange accent on sidebar logo underline */
-    .sidebar-logo h1::after { content: ''; display: block; width: 32px; height: 2px; background: var(--primary); margin-top: 6px; border-radius: 2px; }
   </style>
 </head>
 <body>
-<div id="app" class="no-sidebar">
-  <!-- Auth / Setup pages render here when not logged in -->
-</div>
-
+<div id="app" class="no-sidebar"></div>
 <script>
-// ============================================================
-// STATE
-// ============================================================
 const state = {
   token: localStorage.getItem('po_token'),
   user: JSON.parse(localStorage.getItem('po_user') || 'null'),
   currentView: null,
-  currentPO: null,
+  currentParam: null,
 };
 
-// ============================================================
-// API
-// ============================================================
 async function api(method, path, body) {
-  const opts = {
-    method,
-    headers: { 'Content-Type': 'application/json' },
-  };
-  if (state.token) opts.headers['Authorization'] = `Bearer ${state.token}`;
+  const opts = { method, headers: { 'Content-Type': 'application/json' } };
+  if (state.token) opts.headers['Authorization'] = 'Bearer ' + state.token;
   if (body) opts.body = JSON.stringify(body);
   const res = await fetch('/api' + path, opts);
   const data = await res.json();
@@ -193,23 +150,133 @@ async function api(method, path, body) {
   return data;
 }
 
-// ============================================================
-// ROUTER
-// ============================================================
 function navigate(view, param) {
   state.currentView = view;
   state.currentParam = param || null;
   render();
 }
 
-// ============================================================
-// AUTH HELPERS
-// ============================================================
-function login(token, user) {
-  state.token = token;
-  state.user = user;
-  localStorage.setItem('po_token', token);
-  localStorage.setItem('po_user', JSON.stringify(user));
+const icons = {
+  dashboard: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/></svg>',
+  plus: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>',
+  users: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>',
+  edit: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>',
+  trash: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14H6L5 6"/><path d="M10 11v6"/><path d="M14 11v6"/><path d="M9 6V4h6v2"/></svg>',
+  logout: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/></svg>',
+};
+
+function escHtml(s) {
+  if (s == null) return '';
+  return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+
+function formatDate(d) {
+  if (!d) return '—';
+  return new Date(d).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+}
+
+function badgeHtml(status) {
+  return '<span class="badge badge-' + escHtml(status) + '">' + escHtml(status) + '</span>';
+}
+
+async function render() {
+  const app = document.getElementById('app');
+  if (!state.token || !state.user) {
+    app.className = 'no-sidebar';
+    try {
+      const { needed } = await api('GET', '/auth/setup-needed');
+      if (needed) { renderSetup(app); return; }
+    } catch(e) {}
+    renderLogin(app);
+    return;
+  }
+  app.className = '';
+  const initials = state.user.name.split(' ').map(function(w){ return w[0]; }).join('').toUpperCase().slice(0,2);
+  app.innerHTML =
+    '<div id="sidebar">' +
+      '<div class="sidebar-logo"><h1>PO System</h1><p>Purchase Orders</p></div>' +
+      '<nav class="sidebar-nav">' +
+        '<div class="nav-item ' + (state.currentView === 'dashboard' ? 'active' : '') + '" onclick="navigate(\'dashboard\')">' + icons.dashboard + ' Dashboard</div>' +
+        (state.user.role !== 'approver' ? '<div class="nav-item ' + (state.currentView === 'new' ? 'active' : '') + '" onclick="navigate(\'new\')">' + icons.plus + ' New PO</div>' : '') +
+        (state.user.role === 'admin' ? '<div class="nav-item ' + (state.currentView === 'users' ? 'active' : '') + '" onclick="navigate(\'users\')">' + icons.users + ' Users</div>' : '') +
+      '</nav>' +
+      '<div class="sidebar-footer">' +
+        '<div class="sidebar-user"><div class="avatar">' + escHtml(initials) + '</div><div class="sidebar-user-info"><div class="sidebar-user-name">' + escHtml(state.user.name) + '</div><div class="sidebar-user-role">' + escHtml(state.user.role) + '</div></div></div>' +
+        '<button class="btn btn-ghost" style="width:100%" onclick="logout()">' + icons.logout + ' Sign Out</button>' +
+      '</div>' +
+    '</div>' +
+    '<div id="main">' +
+      '<div class="main-header"><span style="font-size:15px;font-weight:600">Welcome back, ' + escHtml(state.user.name) + '</span></div>' +
+      '<div class="main-content" id="content"><div class="loading">Loading…</div></div>' +
+    '</div>';
+
+  const content = document.getElementById('content');
+  if (state.currentView === 'dashboard') await renderDashboard(content);
+  else if (state.currentView === 'new') await renderEditPO(content, null);
+  else if (state.currentView === 'edit') await renderEditPO(content, state.currentParam);
+  else if (state.currentView === 'view') await renderViewPO(content, state.currentParam);
+  else if (state.currentView === 'users') await renderUsers(content);
+  else { state.currentView = 'dashboard'; await renderDashboard(content); }
+}
+
+function renderLogin(app) {
+  app.innerHTML =
+    '<div class="auth-page"><div class="auth-card">' +
+      '<div class="auth-logo"><h1>PO System</h1><p>Sign in to your account</p></div>' +
+      '<div class="card"><div class="card-body">' +
+        '<div id="auth-error"></div>' +
+        '<div class="form-group"><label>Email</label><input type="email" id="login-email" placeholder="you@company.com" /></div>' +
+        '<div class="form-group"><label>Password</label><input type="password" id="login-password" /></div>' +
+        '<button class="btn btn-primary" style="width:100%" onclick="doLogin()">Sign In</button>' +
+      '</div></div>' +
+    '</div></div>';
+  document.getElementById('login-password').addEventListener('keydown', function(e){ if(e.key==='Enter') doLogin(); });
+}
+
+async function doLogin() {
+  const email = document.getElementById('login-email').value.trim();
+  const password = document.getElementById('login-password').value;
+  try {
+    const data = await api('POST', '/auth/login', { email, password });
+    state.token = data.token;
+    state.user = data.user;
+    localStorage.setItem('po_token', data.token);
+    localStorage.setItem('po_user', JSON.stringify(data.user));
+    navigate('dashboard');
+  } catch(err) {
+    document.getElementById('auth-error').innerHTML = '<div class="alert alert-error">' + escHtml(err.message) + '</div>';
+  }
+}
+
+function renderSetup(app) {
+  app.innerHTML =
+    '<div class="auth-page"><div class="auth-card">' +
+      '<div class="auth-logo"><h1>PO System</h1><p>Create your admin account</p></div>' +
+      '<div class="card"><div class="card-body">' +
+        '<div id="auth-error"></div>' +
+        '<div class="form-group"><label>Name</label><input type="text" id="setup-name" placeholder="Your Name" /></div>' +
+        '<div class="form-group"><label>Email</label><input type="email" id="setup-email" placeholder="you@company.com" /></div>' +
+        '<div class="form-group"><label>Password</label><input type="password" id="setup-password" /></div>' +
+        '<button class="btn btn-primary" style="width:100%" onclick="doSetup()">Create Admin Account</button>' +
+      '</div></div>' +
+    '</div></div>';
+}
+
+async function doSetup() {
+  const name = document.getElementById('setup-name').value.trim();
+  const email = document.getElementById('setup-email').value.trim();
+  const password = document.getElementById('setup-password').value;
+  try {
+    await api('POST', '/auth/setup', { name, email, password });
+    const data = await api('POST', '/auth/login', { email, password });
+    state.token = data.token;
+    state.user = data.user;
+    localStorage.setItem('po_token', data.token);
+    localStorage.setItem('po_user', JSON.stringify(data.user));
+    navigate('dashboard');
+  } catch(err) {
+    document.getElementById('auth-error').innerHTML = '<div class="alert alert-error">' + escHtml(err.message) + '</div>';
+  }
 }
 
 function logout() {
@@ -217,688 +284,333 @@ function logout() {
   state.user = null;
   localStorage.removeItem('po_token');
   localStorage.removeItem('po_user');
-  navigate('login');
+  render();
 }
 
-// ============================================================
-// ICONS
-// ============================================================
-const icons = {
-  dashboard: `<svg fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></svg>`,
-  plus: `<svg fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M12 4v16m8-8H4"/></svg>`,
-  users: `<svg fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M17 20h5v-2a4 4 0 00-3-3.87M9 20H4v-2a4 4 0 013-3.87m6 5.87a4 4 0 100-8 4 4 0 000 8zm6-4a3 3 0 11-6 0 3 3 0 016 0zm-12 0a3 3 0 11-6 0 3 3 0 016 0z"/></svg>`,
-  logout: `<svg fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M17 16l4-4m0 0l-4-4m4 4H7m6 4v1a2 2 0 01-2 2H5a2 2 0 01-2-2V7a2 2 0 012-2h6a2 2 0 012 2v1"/></svg>`,
-  back: `<svg fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M10 19l-7-7m0 0l7-7m-7 7h18"/></svg>`,
-  trash: `<svg fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6M9 7V4h6v3M3 7h18"/></svg>`,
-  edit: `<svg fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z"/></svg>`,
-};
-
-// ============================================================
-// RENDER
-// ============================================================
-function render() {
-  const app = document.getElementById('app');
-  if (!state.token) {
-    app.className = 'no-sidebar';
-    app.innerHTML = '';
-    renderAuthPage(app);
-    return;
-  }
-  app.className = '';
-  app.innerHTML = `
-    <div id="sidebar">
-      <div class="sidebar-logo">
-        <h1>PO System</h1>
-        <p>Purchase Orders</p>
-      </div>
-      <nav class="sidebar-nav">
-        <div class="nav-item ${state.currentView === 'dashboard' ? 'active' : ''}" onclick="navigate('dashboard')">
-          ${icons.dashboard} Dashboard
-        </div>
-        ${state.user.role !== 'approver' ? `
-        <div class="nav-item ${state.currentView === 'create' ? 'active' : ''}" onclick="navigate('create')">
-          ${icons.plus} New PO
-        </div>` : ''}
-        ${state.user.role === 'admin' ? `
-        <div class="nav-item ${state.currentView === 'users' ? 'active' : ''}" onclick="navigate('users')">
-          ${icons.users} Users
-        </div>` : ''}
-      </nav>
-      <div class="sidebar-footer">
-        <div class="sidebar-user">
-          <div class="avatar">${state.user.name.charAt(0).toUpperCase()}</div>
-          <div class="sidebar-user-info">
-            <div class="sidebar-user-name">${escHtml(state.user.name)}</div>
-            <div class="sidebar-user-role">${state.user.role}</div>
-          </div>
-        </div>
-        <button class="btn btn-ghost" style="width:100%;justify-content:center;" onclick="logout()">
-          ${icons.logout} Sign out
-        </button>
-      </div>
-    </div>
-    <div id="main">
-      <div id="content" class="main-content"></div>
-    </div>
-  `;
-
-  const content = document.getElementById('content');
-  switch (state.currentView) {
-    case 'dashboard': renderDashboard(content); break;
-    case 'create': renderCreatePO(content, null); break;
-    case 'edit': renderCreatePO(content, state.currentParam); break;
-    case 'view': renderViewPO(content, state.currentParam); break;
-    case 'users': renderUsers(content); break;
-    default: renderDashboard(content);
-  }
-}
-
-// ============================================================
-// AUTH PAGES
-// ============================================================
-function renderAuthPage(app) {
-  app.innerHTML = `<div class="auth-page"><div class="auth-card" id="auth-inner"></div></div>`;
-  checkSetupNeeded();
-}
-
-async function checkSetupNeeded() {
-  const inner = document.getElementById('auth-inner');
-  try {
-    const { needed } = await api('GET', '/auth/setup-needed');
-    if (needed) renderSetupForm(inner);
-    else renderLoginForm(inner);
-  } catch {
-    renderLoginForm(inner);
-  }
-}
-
-function renderLoginForm(el) {
-  el.innerHTML = `
-    <div class="auth-logo"><h1>PO System</h1><p>Sign in to your account</p></div>
-    <div class="card"><div class="card-body">
-      <div id="login-error"></div>
-      <div class="form-group"><label>Email</label><input type="email" id="login-email" placeholder="you@company.com" /></div>
-      <div class="form-group"><label>Password</label><input type="password" id="login-password" placeholder="••••••••" /></div>
-      <button class="btn btn-primary" style="width:100%;justify-content:center;" onclick="doLogin()">Sign In</button>
-    </div></div>
-  `;
-  document.getElementById('login-password').addEventListener('keydown', e => { if (e.key === 'Enter') doLogin(); });
-}
-
-async function doLogin() {
-  const email = document.getElementById('login-email').value.trim();
-  const password = document.getElementById('login-password').value;
-  const errEl = document.getElementById('login-error');
-  errEl.innerHTML = '';
-  try {
-    const { token, user } = await api('POST', '/auth/login', { email, password });
-    login(token, user);
-    navigate('dashboard');
-  } catch (err) {
-    errEl.innerHTML = `<div class="alert alert-error">${escHtml(err.message)}</div>`;
-  }
-}
-
-function renderSetupForm(el) {
-  el.innerHTML = `
-    <div class="auth-logo"><h1>PO System</h1><p>Create your admin account to get started</p></div>
-    <div class="card"><div class="card-body">
-      <div class="alert alert-info mb-4">This is first-time setup. You'll be the system administrator.</div>
-      <div id="setup-error"></div>
-      <div class="form-group"><label>Your Name</label><input type="text" id="setup-name" placeholder="Jane Smith" /></div>
-      <div class="form-group"><label>Email</label><input type="email" id="setup-email" placeholder="you@company.com" /></div>
-      <div class="form-group"><label>Password</label><input type="password" id="setup-password" placeholder="Choose a strong password" /></div>
-      <button class="btn btn-primary" style="width:100%;justify-content:center;" onclick="doSetup()">Create Admin Account</button>
-    </div></div>
-  `;
-}
-
-async function doSetup() {
-  const name = document.getElementById('setup-name').value.trim();
-  const email = document.getElementById('setup-email').value.trim();
-  const password = document.getElementById('setup-password').value;
-  const errEl = document.getElementById('setup-error');
-  errEl.innerHTML = '';
-  try {
-    const { token, user } = await api('POST', '/auth/setup', { name, email, password });
-    login(token, user);
-    navigate('dashboard');
-  } catch (err) {
-    errEl.innerHTML = `<div class="alert alert-error">${escHtml(err.message)}</div>`;
-  }
-}
-
-// ============================================================
-// DASHBOARD
-// ============================================================
 async function renderDashboard(el) {
-  el.innerHTML = `<div class="loading">Loading…</div>`;
   try {
     const pos = await api('GET', '/pos');
-    const isApprover = ['approver', 'admin'].includes(state.user.role);
-
-    const counts = {
-      draft: pos.filter(p => p.status === 'draft').length,
-      submitted: pos.filter(p => p.status === 'submitted').length,
-      approved: pos.filter(p => p.status === 'approved').length,
-      rejected: pos.filter(p => p.status === 'rejected').length,
-    };
-
-    el.innerHTML = `
-      <div class="page-header">
-        <div>
-          <div class="page-title">Dashboard</div>
-          <div class="page-subtitle">Welcome back, ${escHtml(state.user.name)}</div>
-        </div>
-        ${state.user.role !== 'approver' ? `<button class="btn btn-primary" onclick="navigate('create')">${icons.plus} New PO</button>` : ''}
-      </div>
-
-      <div class="stats-grid">
-        <div class="stat-card">
-          <div class="stat-value">${pos.length}</div>
-          <div class="stat-label">Total POs</div>
-        </div>
-        <div class="stat-card">
-          <div class="stat-value" style="color:var(--warning)">${counts.submitted}</div>
-          <div class="stat-label">Pending Approval</div>
-        </div>
-        <div class="stat-card">
-          <div class="stat-value" style="color:var(--success)">${counts.approved}</div>
-          <div class="stat-label">Approved</div>
-        </div>
-        <div class="stat-card">
-          <div class="stat-value" style="color:var(--gray-500)">${counts.draft}</div>
-          <div class="stat-label">Drafts</div>
-        </div>
-      </div>
-
-      <div class="card">
-        <div class="card-header">
-          <span class="card-title">Purchase Orders</span>
-        </div>
-        ${pos.length === 0 ? `
-          <div class="empty-state">
-            <svg fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/></svg>
-            <h3>No purchase orders yet</h3>
-            <p>${state.user.role !== 'approver' ? 'Create your first PO to get started.' : 'No POs have been submitted for approval yet.'}</p>
-          </div>
-        ` : `
-          <div class="table-wrap">
-            <table>
-              <thead>
-                <tr>
-                  <th>PO Number</th>
-                  <th>Vendor</th>
-                  ${isApprover ? '<th>Requested By</th>' : ''}
-                  <th>Total</th>
-                  <th>Status</th>
-                  <th>Date</th>
-                  <th></th>
-                </tr>
-              </thead>
-              <tbody>
-                ${pos.map(po => `
-                  <tr>
-                    <td><strong>${escHtml(po.po_number)}</strong></td>
-                    <td>${escHtml(po.vendor_name)}</td>
-                    ${isApprover ? `<td>${escHtml(po.requester_name || '—')}</td>` : ''}
-                    <td>$${parseFloat(po.total_amount).toFixed(2)}</td>
-                    <td><span class="badge badge-${po.status}">${po.status}</span></td>
-                    <td class="text-muted">${formatDate(po.created_at)}</td>
-                    <td>
-                      <button class="btn btn-sm btn-secondary" onclick="navigate('view', ${po.id})">View</button>
-                    </td>
-                  </tr>
-                `).join('')}
-              </tbody>
-            </table>
-          </div>
-        `}
-      </div>
-    `;
-  } catch (err) {
-    el.innerHTML = `<div class="alert alert-error">${escHtml(err.message)}</div>`;
+    const total = pos.length;
+    const pending = pos.filter(function(p){ return p.status === 'submitted'; }).length;
+    const approved = pos.filter(function(p){ return p.status === 'approved'; }).length;
+    const drafts = pos.filter(function(p){ return p.status === 'draft'; }).length;
+    const isApprover = ['approver','admin'].includes(state.user.role);
+    el.innerHTML =
+      '<div class="page-header"><div><div class="page-title">Dashboard</div></div>' +
+      (state.user.role !== 'approver' ? '<button class="btn btn-primary" onclick="navigate(\'new\')">' + icons.plus + ' New PO</button>' : '') +
+      '</div>' +
+      '<div class="stats-grid">' +
+        '<div class="stat-card"><div class="stat-value">' + total + '</div><div class="stat-label">Total POs</div></div>' +
+        '<div class="stat-card"><div class="stat-value" style="color:var(--warning)">' + pending + '</div><div class="stat-label">Pending Approval</div></div>' +
+        '<div class="stat-card"><div class="stat-value" style="color:var(--success)">' + approved + '</div><div class="stat-label">Approved</div></div>' +
+        '<div class="stat-card"><div class="stat-value" style="color:var(--text-muted-color)">' + drafts + '</div><div class="stat-label">Drafts</div></div>' +
+      '</div>' +
+      '<div class="card">' +
+        '<div class="card-header"><span class="card-title">Purchase Orders</span></div>' +
+        '<div class="card-body" style="padding:0">' +
+          (pos.length === 0 ? '<div class="empty-state"><h3>No purchase orders yet</h3><p>Create your first PO to get started.</p></div>' :
+          '<div class="table-wrap"><table>' +
+            '<thead><tr><th>PO Number</th><th>Vendor</th>' + (isApprover ? '<th>Requested By</th>' : '') + '<th>Total</th><th>Status</th><th>Date</th><th></th></tr></thead>' +
+            '<tbody>' + pos.map(function(po){
+              return '<tr>' +
+                '<td><strong>' + escHtml(po.po_number) + '</strong></td>' +
+                '<td>' + escHtml(po.vendor_name) + '</td>' +
+                (isApprover ? '<td>' + escHtml(po.requester_name || '—') + '</td>' : '') +
+                '<td>$' + parseFloat(po.total_amount).toFixed(2) + '</td>' +
+                '<td>' + badgeHtml(po.status) + '</td>' +
+                '<td>' + formatDate(po.created_at) + '</td>' +
+                '<td><button class="btn btn-secondary btn-sm" onclick="navigate(\'view\',' + po.id + ')">View</button></td>' +
+              '</tr>';
+            }).join('') +
+            '</tbody></table></div>') +
+        '</div>' +
+      '</div>';
+  } catch(err) {
+    el.innerHTML = '<div class="alert alert-error">' + escHtml(err.message) + '</div>';
   }
 }
 
-// ============================================================
-// CREATE / EDIT PO
-// ============================================================
-async function renderCreatePO(el, poId) {
+let lineItems = [];
+
+async function renderEditPO(el, id) {
   let po = null;
-  let lineItems = [{ description: '', quantity: 1, unit_price: '' }];
-
-  if (poId) {
-    el.innerHTML = `<div class="loading">Loading…</div>`;
-    try {
-      po = await api('GET', `/pos/${poId}`);
-      lineItems = po.line_items.map(i => ({ item_number: i.item_number || '', manufacturer: i.manufacturer || '', description: i.description, quantity: i.quantity, unit_price: i.unit_price }));
-    } catch (err) {
-      el.innerHTML = `<div class="alert alert-error">${escHtml(err.message)}</div>`;
-      return;
-    }
+  if (id) {
+    try { po = await api('GET', '/pos/' + id); } catch(e) { el.innerHTML = '<div class="alert alert-error">' + escHtml(e.message) + '</div>'; return; }
+    lineItems = po.line_items || [];
+  } else {
+    lineItems = [{ item_number: '', manufacturer: '', description: '', quantity: 1, unit_price: '' }];
   }
-
-  function buildLineItemRows() {
-    return lineItems.map((item, i) => `
-      <tr>
-        <td><input type="text" value="${escHtml(String(item.item_number||''))}" oninput="updateLineItem(${i},'item_number',this.value)" placeholder="Item #" style="width:90px"/></td>
-        <td><input type="text" value="${escHtml(String(item.manufacturer||''))}" oninput="updateLineItem(${i},'manufacturer',this.value)" placeholder="Manufacturer" /></td>
-        <td><input type="text" value="${escHtml(String(item.description))}" oninput="updateLineItem(${i},'description',this.value)" placeholder="Description" /></td>
-        <td><input type="number" value="${item.quantity}" oninput="updateLineItem(${i},'quantity',this.value)" min="0.01" step="any" style="width:70px"/></td>
-        <td><input type="number" value="${item.unit_price}" oninput="updateLineItem(${i},'unit_price',this.value)" min="0" step="0.01" placeholder="0.00" style="width:90px"/></td>
-        <td class="text-right">$${lineTotal(item)}</td>
-        <td><button class="btn btn-sm btn-ghost" onclick="removeLineItem(${i})" ${lineItems.length === 1 ? 'disabled' : ''}>${icons.trash}</button></td>
-      </tr>
-    `).join('');
-  }
-
-  function lineTotal(item) {
-    const q = parseFloat(item.quantity) || 0;
-    const p = parseFloat(item.unit_price) || 0;
-    return (q * p).toFixed(2);
-  }
-
-  function grandTotal() {
-    return lineItems.reduce((s, i) => s + (parseFloat(i.quantity)||0) * (parseFloat(i.unit_price)||0), 0).toFixed(2);
-  }
-
-  function refreshTable() {
-    document.getElementById('line-items-body').innerHTML = buildLineItemRows();
-    document.getElementById('grand-total').textContent = `$${grandTotal()}`;
-  }
-
-  window.updateLineItem = (i, field, val) => {
-    lineItems[i][field] = val;
-    document.getElementById('grand-total').textContent = `$${grandTotal()}`;
-    // Refresh only totals column to avoid cursor jump
-    const rows = document.querySelectorAll('#line-items-body tr');
-    if (rows[i]) rows[i].cells[5].textContent = `$${lineTotal(lineItems[i])}`;
-  };
-
-  window.removeLineItem = (i) => {
-    lineItems.splice(i, 1);
-    refreshTable();
-  };
-
-  window.addLineItem = () => {
-    lineItems.push({ item_number: '', manufacturer: '', description: '', quantity: 1, unit_price: '' });
-    refreshTable();
-  };
-
-  el.innerHTML = `
-    <div class="page-header">
-      <div>
-        <button class="btn btn-ghost btn-sm" onclick="navigate('dashboard')" style="margin-bottom:8px">${icons.back} Back</button>
-        <div class="page-title">${po ? `Edit PO: ${escHtml(po.po_number)}` : 'New Purchase Order'}</div>
-      </div>
-    </div>
-    <div id="po-error"></div>
-    <div class="card mb-4">
-      <div class="card-header"><span class="card-title">Order Details</span></div>
-      <div class="card-body">
-        <div class="form-row">
-          <div class="form-group">
-            <label>Vendor / Supplier *</label>
-            <input type="text" id="po-vendor" value="${po ? escHtml(po.vendor_name) : ''}" placeholder="Acme Corp" />
-          </div>
-          <div class="form-group">
-            <label>Customer Name</label>
-            <input type="text" id="po-customer" value="${po ? escHtml(po.customer_name || '') : ''}" placeholder="Customer this order is for" />
-          </div>
-        </div>
-        <div class="form-group">
-          <label>Notes (optional)</label>
-          <textarea id="po-notes" placeholder="Any additional details…">${po ? escHtml(po.notes || '') : ''}</textarea>
-        </div>
-      </div>
-    </div>
-    <div class="card mb-4">
-      <div class="card-header"><span class="card-title">Line Items</span></div>
-      <div class="card-body">
-        <div class="table-wrap">
-          <table class="line-items-table">
-            <thead><tr><th>Item #</th><th>Manufacturer</th><th>Description</th><th>Qty</th><th>Unit Price</th><th>Total</th><th></th></tr></thead>
-            <tbody id="line-items-body">${buildLineItemRows()}</tbody>
-            <tfoot>
-              <tr class="total-row">
-                <td colspan="5" class="text-right" style="padding:10px 10px">Grand Total</td>
-                <td id="grand-total">$${grandTotal()}</td>
-                <td></td>
-              </tr>
-            </tfoot>
-          </table>
-        </div>
-        <button class="btn btn-secondary btn-sm add-item-btn" onclick="addLineItem()">${icons.plus} Add Item</button>
-      </div>
-    </div>
-    <div class="flex-gap">
-      <button class="btn btn-secondary" onclick="savePO(false, ${po ? po.id : 'null'})">Save Draft</button>
-      <button class="btn btn-primary" onclick="savePO(true, ${po ? po.id : 'null'})">Submit for Approval</button>
-    </div>
-  `;
+  el.innerHTML =
+    '<div class="page-header">' +
+      '<div><div class="page-title">' + (id ? 'Edit PO' : 'New Purchase Order') + '</div></div>' +
+      '<button class="btn btn-secondary" onclick="navigate(id ? \'view\' : \'dashboard\', ' + (id||'null') + ')">Cancel</button>' +
+    '</div>' +
+    '<div id="edit-error"></div>' +
+    '<div class="card mb-4"><div class="card-header"><span class="card-title">Order Information</span></div><div class="card-body">' +
+      '<div class="form-row">' +
+        '<div class="form-group"><label>Vendor / Supplier *</label><input type="text" id="po-vendor" value="' + escHtml(po ? po.vendor_name : '') + '" placeholder="Vendor name" /></div>' +
+        '<div class="form-group"><label>Customer Name</label><input type="text" id="po-customer" value="' + escHtml(po && po.customer_name ? po.customer_name : '') + '" placeholder="Customer name" /></div>' +
+      '</div>' +
+      '<div class="form-group"><label>Notes</label><textarea id="po-notes" placeholder="Optional notes...">' + escHtml(po ? po.notes || '' : '') + '</textarea></div>' +
+    '</div></div>' +
+    '<div class="card mb-4"><div class="card-header"><span class="card-title">Line Items</span></div><div class="card-body">' +
+      '<div class="table-wrap"><table class="line-items-table">' +
+        '<thead><tr><th>Item #</th><th>Manufacturer</th><th>Description</th><th>Qty</th><th>Unit Price</th><th>Total</th><th></th></tr></thead>' +
+        '<tbody id="line-items-body"></tbody>' +
+        '<tfoot><tr class="total-row"><td colspan="5" class="text-right" style="padding:10px">Grand Total</td><td id="grand-total" style="padding:10px">$0.00</td><td></td></tr></tfoot>' +
+      '</table></div>' +
+      '<button class="btn btn-secondary btn-sm add-item-btn" onclick="addLineItem()">' + icons.plus + ' Add Item</button>' +
+    '</div></div>' +
+    '<div class="flex-gap">' +
+      '<button class="btn btn-secondary" onclick="savePO(' + (id||'null') + ', \'draft\')" id="btn-draft">Save Draft</button>' +
+      (state.user.role !== 'approver' ? '<button class="btn btn-primary" onclick="savePO(' + (id||'null') + ', \'submit\')" id="btn-submit">Submit for Approval</button>' : '') +
+    '</div>';
+  buildLineItemRows();
 }
 
-async function savePO(submit, poId) {
+function buildLineItemRows() {
+  const tbody = document.getElementById('line-items-body');
+  if (!tbody) return;
+  tbody.innerHTML = lineItems.map(function(item, i) {
+    const total = (parseFloat(item.quantity)||0) * (parseFloat(item.unit_price)||0);
+    return '<tr>' +
+      '<td><input type="text" value="' + escHtml(item.item_number||'') + '" placeholder="Item #" onchange="updateItem(' + i + ',this)" data-field="item_number" /></td>' +
+      '<td><input type="text" value="' + escHtml(item.manufacturer||'') + '" placeholder="Manufacturer" onchange="updateItem(' + i + ',this)" data-field="manufacturer" /></td>' +
+      '<td><input type="text" value="' + escHtml(item.description||'') + '" placeholder="Description *" onchange="updateItem(' + i + ',this)" data-field="description" /></td>' +
+      '<td><input type="number" value="' + escHtml(item.quantity||'') + '" min="0.01" step="0.01" onchange="updateItem(' + i + ',this)" data-field="quantity" style="width:70px" /></td>' +
+      '<td><input type="number" value="' + escHtml(item.unit_price||'') + '" min="0" step="0.01" placeholder="0.00" onchange="updateItem(' + i + ',this)" data-field="unit_price" style="width:90px" /></td>' +
+      '<td id="row-total-' + i + '">$' + total.toFixed(2) + '</td>' +
+      '<td>' + (lineItems.length > 1 ? '<button class="btn btn-ghost btn-sm" onclick="removeItem(' + i + ')">' + icons.trash + '</button>' : '') + '</td>' +
+    '</tr>';
+  }).join('');
+  updateGrandTotal();
+}
+
+function updateItem(i, input) {
+  lineItems[i][input.dataset.field] = input.value;
+  const qty = parseFloat(lineItems[i].quantity) || 0;
+  const price = parseFloat(lineItems[i].unit_price) || 0;
+  const cell = document.getElementById('row-total-' + i);
+  if (cell) cell.textContent = '$' + (qty * price).toFixed(2);
+  updateGrandTotal();
+}
+
+function updateGrandTotal() {
+  const total = lineItems.reduce(function(sum, item) { return sum + (parseFloat(item.quantity)||0) * (parseFloat(item.unit_price)||0); }, 0);
+  const el = document.getElementById('grand-total');
+  if (el) el.textContent = '$' + total.toFixed(2);
+}
+
+function addLineItem() {
+  lineItems.push({ item_number: '', manufacturer: '', description: '', quantity: 1, unit_price: '' });
+  buildLineItemRows();
+}
+
+function removeItem(i) {
+  lineItems.splice(i, 1);
+  buildLineItemRows();
+}
+
+async function savePO(id, action) {
   const vendor_name = document.getElementById('po-vendor').value.trim();
   const customer_name = document.getElementById('po-customer').value.trim();
   const notes = document.getElementById('po-notes').value.trim();
-  const errEl = document.getElementById('po-error');
-  errEl.innerHTML = '';
+  if (!vendor_name) { document.getElementById('edit-error').innerHTML = '<div class="alert alert-error">Vendor name is required.</div>'; return; }
 
-  if (!vendor_name) {
-    errEl.innerHTML = `<div class="alert alert-error">Vendor name is required.</div>`;
-    return;
-  }
-
-  const line_items = [];
-  document.querySelectorAll('#line-items-body tr').forEach((row, i) => {
+  // Read current input values
+  const rows = document.querySelectorAll('#line-items-body tr');
+  rows.forEach(function(row, i) {
     const inputs = row.querySelectorAll('input');
-    line_items.push({
-      item_number: inputs[0].value.trim(),
-      manufacturer: inputs[1].value.trim(),
-      description: inputs[2].value.trim(),
-      quantity: parseFloat(inputs[3].value) || 0,
-      unit_price: parseFloat(inputs[4].value) || 0,
-    });
+    if (inputs[0]) lineItems[i].item_number = inputs[0].value;
+    if (inputs[1]) lineItems[i].manufacturer = inputs[1].value;
+    if (inputs[2]) lineItems[i].description = inputs[2].value;
+    if (inputs[3]) lineItems[i].quantity = inputs[3].value;
+    if (inputs[4]) lineItems[i].unit_price = inputs[4].value;
   });
 
-  if (line_items.some(i => !i.description || i.quantity <= 0)) {
-    errEl.innerHTML = `<div class="alert alert-error">All line items need a description and positive quantity.</div>`;
-    return;
-  }
+  const validItems = lineItems.filter(function(item){ return item.description && item.quantity && item.unit_price; });
+  if (validItems.length === 0) { document.getElementById('edit-error').innerHTML = '<div class="alert alert-error">At least one complete line item is required.</div>'; return; }
 
   try {
+    document.getElementById('btn-draft') && (document.getElementById('btn-draft').disabled = true);
+    document.getElementById('btn-submit') && (document.getElementById('btn-submit').disabled = true);
     let po;
-    if (poId) {
-      po = await api('PUT', `/pos/${poId}`, { vendor_name, customer_name, notes, line_items });
+    if (id) {
+      po = await api('PUT', '/pos/' + id, { vendor_name, customer_name, notes, line_items: validItems });
     } else {
-      po = await api('POST', '/pos', { vendor_name, customer_name, notes, line_items });
+      po = await api('POST', '/pos', { vendor_name, customer_name, notes, line_items: validItems });
     }
-    if (submit) {
-      await api('POST', `/pos/${po.id}/submit`);
+    if (action === 'submit') {
+      await api('POST', '/pos/' + po.id + '/submit');
+      navigate('dashboard');
+    } else {
+      navigate('view', po.id);
     }
-    navigate('dashboard');
-  } catch (err) {
-    errEl.innerHTML = `<div class="alert alert-error">${escHtml(err.message)}</div>`;
+  } catch(err) {
+    document.getElementById('edit-error').innerHTML = '<div class="alert alert-error">' + escHtml(err.message) + '</div>';
+    document.getElementById('btn-draft') && (document.getElementById('btn-draft').disabled = false);
+    document.getElementById('btn-submit') && (document.getElementById('btn-submit').disabled = false);
   }
 }
 
-// ============================================================
-// VIEW PO
-// ============================================================
-async function renderViewPO(el, poId) {
-  el.innerHTML = `<div class="loading">Loading…</div>`;
+async function renderViewPO(el, id) {
+  el.innerHTML = '<div class="loading">Loading…</div>';
   try {
-    const po = await api('GET', `/pos/${poId}`);
+    const po = await api('GET', '/pos/' + id);
     const canEdit = state.user.role === 'admin' || (state.user.role !== 'approver' && po.status === 'draft' && po.requester_id === state.user.id);
-    const canApprove = ['approver', 'admin'].includes(state.user.role) && po.status === 'submitted';
-    const canDelete = state.user.role !== 'approver' && po.status === 'draft' && (po.requester_id === state.user.id || state.user.role === 'admin');
     const canSubmit = state.user.role !== 'approver' && po.status === 'draft' && po.requester_id === state.user.id;
+    const canDelete = (state.user.role !== 'approver' && po.status === 'draft' && po.requester_id === state.user.id) || (state.user.role === 'admin' && po.status === 'draft');
+    const canApprove = ['approver','admin'].includes(state.user.role) && po.status === 'submitted';
+    const canCancel = state.user.role === 'admin' && po.status !== 'draft' && po.status !== 'cancelled';
 
-    el.innerHTML = `
-      <div class="page-header">
-        <div>
-          <button class="btn btn-ghost btn-sm" onclick="navigate('dashboard')" style="margin-bottom:8px">${icons.back} Back</button>
-          <div class="page-title">${escHtml(po.po_number)}</div>
-          <div style="margin-top:6px"><span class="badge badge-${po.status}">${po.status}</span></div>
-        </div>
-        <div class="flex-gap">
-          ${canEdit ? `<button class="btn btn-secondary" onclick="navigate('edit', ${po.id})">${icons.edit} Edit</button>` : ''}
-          ${canSubmit ? `<button class="btn btn-primary" onclick="submitPO(${po.id})">Submit for Approval</button>` : ''}
-          ${canDelete ? `<button class="btn btn-danger btn-sm" onclick="deletePO(${po.id})">${icons.trash}</button>` : ''}
-        </div>
-      </div>
-
-      <div id="view-error"></div>
-
-      <div class="card mb-4">
-        <div class="card-header"><span class="card-title">Order Information</span></div>
-        <div class="card-body">
-          <div class="detail-grid">
-            <div class="detail-field"><label>PO Number</label><p>${escHtml(po.po_number)}</p></div>
-            <div class="detail-field"><label>Vendor / Supplier</label><p>${escHtml(po.vendor_name)}</p></div>
-            ${po.customer_name ? `<div class="detail-field"><label>Customer Name</label><p>${escHtml(po.customer_name)}</p></div>` : ''}
-            <div class="detail-field"><label>Requested By</label><p>${escHtml(po.requester_name || '—')}</p></div>
-            <div class="detail-field"><label>Created</label><p>${formatDate(po.created_at)}</p></div>
-            ${po.approver_name ? `<div class="detail-field"><label>${po.status === 'approved' ? 'Approved By' : 'Reviewed By'}</label><p>${escHtml(po.approver_name)}</p></div>` : ''}
-            ${po.approved_at ? `<div class="detail-field"><label>${po.status === 'approved' ? 'Approved On' : 'Reviewed On'}</label><p>${formatDate(po.approved_at)}</p></div>` : ''}
-            ${po.notes ? `<div class="detail-field" style="grid-column:1/-1"><label>Notes</label><p>${escHtml(po.notes)}</p></div>` : ''}
-            ${po.rejection_reason ? `<div class="detail-field" style="grid-column:1/-1"><label>Rejection Reason</label><p style="color:var(--danger)">${escHtml(po.rejection_reason)}</p></div>` : ''}
-          </div>
-        </div>
-      </div>
-
-      <div class="card mb-4">
-        <div class="card-header"><span class="card-title">Line Items</span></div>
-        <div class="card-body">
-          <div class="table-wrap">
-            <table class="line-items-table">
-              <thead><tr><th>Item #</th><th>Manufacturer</th><th>Description</th><th>Qty</th><th>Unit Price</th><th class="text-right">Total</th></tr></thead>
-              <tbody>
-                ${po.line_items.map(item => `
-                  <tr>
-                    <td>${escHtml(item.item_number || '—')}</td>
-                    <td>${escHtml(item.manufacturer || '—')}</td>
-                    <td>${escHtml(item.description)}</td>
-                    <td>${item.quantity}</td>
-                    <td>$${parseFloat(item.unit_price).toFixed(2)}</td>
-                    <td class="text-right">$${(parseFloat(item.quantity) * parseFloat(item.unit_price)).toFixed(2)}</td>
-                  </tr>
-                `).join('')}
-              </tbody>
-              <tfoot>
-                <tr class="total-row">
-                  <td colspan="5" class="text-right">Grand Total</td>
-                  <td class="text-right">$${parseFloat(po.total_amount).toFixed(2)}</td>
-                </tr>
-              </tfoot>
-            </table>
-          </div>
-        </div>
-      </div>
-
-      ${canApprove ? `
-        <div class="card">
-          <div class="card-header"><span class="card-title">Approval Decision</span></div>
-          <div class="card-body">
-            <div class="form-group">
-              <label>Rejection Reason (required if rejecting)</label>
-              <textarea id="reject-reason" placeholder="Explain why this PO is being rejected…"></textarea>
-            </div>
-            <div class="flex-gap">
-              <button class="btn btn-success" onclick="approvePO(${po.id})">✓ Approve</button>
-              <button class="btn btn-danger" onclick="rejectPO(${po.id})">✗ Reject</button>
-            </div>
-          </div>
-        </div>
-      ` : ''}
-    `;
-  } catch (err) {
-    el.innerHTML = `<div class="alert alert-error">${escHtml(err.message)}</div>`;
+    el.innerHTML =
+      '<div class="page-header">' +
+        '<div><div class="page-title">' + escHtml(po.po_number) + '</div><div class="page-subtitle">' + badgeHtml(po.status) + '</div></div>' +
+        '<div class="flex-gap">' +
+          '<button class="btn btn-secondary" onclick="navigate(\'dashboard\')">&larr; Back</button>' +
+          (canEdit ? '<button class="btn btn-secondary" onclick="navigate(\'edit\',' + po.id + ')">' + icons.edit + ' Edit</button>' : '') +
+          (canSubmit ? '<button class="btn btn-primary" onclick="submitPO(' + po.id + ')">Submit for Approval</button>' : '') +
+          (canDelete ? '<button class="btn btn-danger btn-sm" onclick="deletePO(' + po.id + ')">' + icons.trash + '</button>' : '') +
+          (canCancel ? '<button class="btn btn-danger btn-sm" onclick="cancelPO(' + po.id + ')">&#x2715; Cancel PO</button>' : '') +
+        '</div>' +
+      '</div>' +
+      '<div id="view-error"></div>' +
+      '<div class="card mb-4"><div class="card-header"><span class="card-title">Order Information</span></div><div class="card-body">' +
+        '<div class="detail-grid">' +
+          '<div class="detail-field"><label>PO Number</label><p>' + escHtml(po.po_number) + '</p></div>' +
+          '<div class="detail-field"><label>Vendor / Supplier</label><p>' + escHtml(po.vendor_name) + '</p></div>' +
+          (po.customer_name ? '<div class="detail-field"><label>Customer Name</label><p>' + escHtml(po.customer_name) + '</p></div>' : '') +
+          '<div class="detail-field"><label>Requested By</label><p>' + escHtml(po.requester_name || '—') + '</p></div>' +
+          '<div class="detail-field"><label>Created</label><p>' + formatDate(po.created_at) + '</p></div>' +
+          (po.approver_name ? '<div class="detail-field"><label>' + (po.status === 'approved' ? 'Approved By' : 'Reviewed By') + '</label><p>' + escHtml(po.approver_name) + '</p></div>' : '') +
+          (po.approved_at ? '<div class="detail-field"><label>' + (po.status === 'approved' ? 'Approved On' : 'Reviewed On') + '</label><p>' + formatDate(po.approved_at) + '</p></div>' : '') +
+          (po.notes ? '<div class="detail-field" style="grid-column:1/-1"><label>Notes</label><p>' + escHtml(po.notes) + '</p></div>' : '') +
+          (po.rejection_reason ? '<div class="detail-field" style="grid-column:1/-1"><label>Rejection Reason</label><p style="color:var(--danger)">' + escHtml(po.rejection_reason) + '</p></div>' : '') +
+        '</div>' +
+      '</div></div>' +
+      '<div class="card mb-4"><div class="card-header"><span class="card-title">Line Items</span></div><div class="card-body">' +
+        '<div class="table-wrap"><table class="line-items-table">' +
+          '<thead><tr><th>Item #</th><th>Manufacturer</th><th>Description</th><th>Qty</th><th>Unit Price</th><th class="text-right">Total</th></tr></thead>' +
+          '<tbody>' + po.line_items.map(function(item) {
+            return '<tr>' +
+              '<td>' + escHtml(item.item_number || '—') + '</td>' +
+              '<td>' + escHtml(item.manufacturer || '—') + '</td>' +
+              '<td>' + escHtml(item.description) + '</td>' +
+              '<td>' + item.quantity + '</td>' +
+              '<td>$' + parseFloat(item.unit_price).toFixed(2) + '</td>' +
+              '<td class="text-right">$' + (parseFloat(item.quantity) * parseFloat(item.unit_price)).toFixed(2) + '</td>' +
+            '</tr>';
+          }).join('') + '</tbody>' +
+          '<tfoot><tr class="total-row"><td colspan="5" class="text-right">Grand Total</td><td class="text-right">$' + parseFloat(po.total_amount).toFixed(2) + '</td></tr></tfoot>' +
+        '</table></div>' +
+      '</div></div>' +
+      (canApprove ?
+        '<div class="card"><div class="card-header"><span class="card-title">Approval Decision</span></div><div class="card-body">' +
+          '<div class="form-group"><label>Rejection Reason (required if rejecting)</label><textarea id="reject-reason" placeholder="Explain why this PO is being rejected..."></textarea></div>' +
+          '<div class="flex-gap"><button class="btn btn-success" onclick="approvePO(' + po.id + ')">&#10003; Approve</button><button class="btn btn-danger" onclick="rejectPO(' + po.id + ')">&#10007; Reject</button></div>' +
+        '</div></div>' : '');
+  } catch(err) {
+    el.innerHTML = '<div class="alert alert-error">' + escHtml(err.message) + '</div>';
   }
 }
 
 async function submitPO(id) {
-  try {
-    await api('POST', `/pos/${id}/submit`);
-    navigate('dashboard');
-  } catch (err) {
-    document.getElementById('view-error').innerHTML = `<div class="alert alert-error">${escHtml(err.message)}</div>`;
-  }
+  try { await api('POST', '/pos/' + id + '/submit'); navigate('dashboard'); }
+  catch(err) { document.getElementById('view-error').innerHTML = '<div class="alert alert-error">' + escHtml(err.message) + '</div>'; }
 }
 
 async function approvePO(id) {
-  try {
-    await api('POST', `/pos/${id}/approve`);
-    navigate('dashboard');
-  } catch (err) {
-    document.getElementById('view-error').innerHTML = `<div class="alert alert-error">${escHtml(err.message)}</div>`;
-  }
+  try { await api('POST', '/pos/' + id + '/approve'); navigate('dashboard'); }
+  catch(err) { document.getElementById('view-error').innerHTML = '<div class="alert alert-error">' + escHtml(err.message) + '</div>'; }
 }
 
 async function rejectPO(id) {
   const reason = document.getElementById('reject-reason').value.trim();
-  if (!reason) {
-    document.getElementById('view-error').innerHTML = `<div class="alert alert-error">Please enter a rejection reason.</div>`;
-    return;
-  }
-  try {
-    await api('POST', `/pos/${id}/reject`, { reason });
-    navigate('dashboard');
-  } catch (err) {
-    document.getElementById('view-error').innerHTML = `<div class="alert alert-error">${escHtml(err.message)}</div>`;
-  }
+  if (!reason) { document.getElementById('view-error').innerHTML = '<div class="alert alert-error">Please enter a rejection reason.</div>'; return; }
+  try { await api('POST', '/pos/' + id + '/reject', { reason }); navigate('dashboard'); }
+  catch(err) { document.getElementById('view-error').innerHTML = '<div class="alert alert-error">' + escHtml(err.message) + '</div>'; }
 }
 
 async function deletePO(id) {
   if (!confirm('Delete this draft PO? This cannot be undone.')) return;
-  try {
-    await api('DELETE', `/pos/${id}`);
-    navigate('dashboard');
-  } catch (err) {
-    document.getElementById('view-error').innerHTML = `<div class="alert alert-error">${escHtml(err.message)}</div>`;
-  }
+  try { await api('DELETE', '/pos/' + id); navigate('dashboard'); }
+  catch(err) { document.getElementById('view-error').innerHTML = '<div class="alert alert-error">' + escHtml(err.message) + '</div>'; }
 }
 
-// ============================================================
-// USERS (admin only)
-// ============================================================
+async function cancelPO(id) {
+  if (!confirm('Cancel this PO? This cannot be undone.')) return;
+  try { await api('POST', '/pos/' + id + '/cancel'); navigate('dashboard'); }
+  catch(err) { document.getElementById('view-error').innerHTML = '<div class="alert alert-error">' + escHtml(err.message) + '</div>'; }
+}
+
 async function renderUsers(el) {
-  el.innerHTML = `<div class="loading">Loading…</div>`;
+  if (state.user.role !== 'admin') { el.innerHTML = '<div class="alert alert-error">Access denied.</div>'; return; }
   try {
     const users = await api('GET', '/users');
-    el.innerHTML = `
-      <div class="page-header">
-        <div><div class="page-title">User Management</div><div class="page-subtitle">Manage who can access the system</div></div>
-        <button class="btn btn-primary" onclick="showCreateUserModal()">${icons.plus} Add User</button>
-      </div>
-      <div id="users-error"></div>
-      <div class="card">
-        <div class="table-wrap">
-          <table>
-            <thead><tr><th>Name</th><th>Email</th><th>Role</th><th>Joined</th><th></th></tr></thead>
-            <tbody>
-              ${users.map(u => `
-                <tr>
-                  <td><strong>${escHtml(u.name)}</strong></td>
-                  <td>${escHtml(u.email)}</td>
-                  <td><span class="badge badge-${u.role}">${u.role}</span></td>
-                  <td class="text-muted">${formatDate(u.created_at)}</td>
-                  <td>
-                    <div class="flex-gap">
-                      <button class="btn btn-sm btn-secondary" onclick="showEditUserModal(${JSON.stringify(u).split('"').join('&quot;')})">Edit</button>
-                      ${u.id !== state.user.id ? `<button class="btn btn-sm btn-danger" onclick="deleteUser(${u.id})">${icons.trash}</button>` : ''}
-                    </div>
-                  </td>
-                </tr>
-              `).join('')}
-            </tbody>
-          </table>
-        </div>
-      </div>
-      <div id="user-modal"></div>
-    `;
-  } catch (err) {
-    el.innerHTML = `<div class="alert alert-error">${escHtml(err.message)}</div>`;
-  }
+    el.innerHTML =
+      '<div class="page-header"><div class="page-title">Users</div><button class="btn btn-primary" onclick="showUserModal(null)">' + icons.plus + ' Add User</button></div>' +
+      '<div id="users-error"></div>' +
+      '<div class="card"><div class="card-body" style="padding:0"><div class="table-wrap"><table>' +
+        '<thead><tr><th>Name</th><th>Email</th><th>Role</th><th></th></tr></thead>' +
+        '<tbody>' + users.map(function(u) {
+          return '<tr>' +
+            '<td>' + escHtml(u.name) + '</td>' +
+            '<td>' + escHtml(u.email) + '</td>' +
+            '<td><span class="badge badge-' + escHtml(u.role) + '">' + escHtml(u.role) + '</span></td>' +
+            '<td class="flex-gap">' +
+              '<button class="btn btn-secondary btn-sm" onclick="showUserModal(' + u.id + ')">Edit</button>' +
+              (u.id !== state.user.id ? '<button class="btn btn-danger btn-sm" onclick="deleteUser(' + u.id + ')">Delete</button>' : '') +
+            '</td>' +
+          '</tr>';
+        }).join('') +
+        '</tbody></table></div></div></div>';
+  } catch(err) { el.innerHTML = '<div class="alert alert-error">' + escHtml(err.message) + '</div>'; }
 }
 
-function userModalHtml(title, user) {
-  return `
-    <div class="modal-overlay" onclick="if(event.target===this)closeModal()">
-      <div class="modal">
-        <div class="modal-header">
-          <span class="modal-title">${title}</span>
-          <button class="btn btn-ghost btn-sm" onclick="closeModal()">✕</button>
-        </div>
-        <div class="modal-body">
-          <div id="user-modal-error"></div>
-          <div class="form-group"><label>Name *</label><input id="um-name" type="text" value="${user ? escHtml(user.name) : ''}" /></div>
-          <div class="form-group"><label>Email *</label><input id="um-email" type="email" value="${user ? escHtml(user.email) : ''}" /></div>
-          <div class="form-group">
-            <label>Role *</label>
-            <select id="um-role">
-              <option value="requester" ${user && user.role==='requester' ? 'selected' : ''}>Requester</option>
-              <option value="approver" ${user && user.role==='approver' ? 'selected' : ''}>Approver</option>
-              <option value="admin" ${user && user.role==='admin' ? 'selected' : ''}>Admin</option>
-            </select>
-          </div>
-          <div class="form-group"><label>${user ? 'New Password (leave blank to keep)' : 'Password *'}</label><input id="um-password" type="password" /></div>
-        </div>
-        <div class="modal-footer">
-          <button class="btn btn-secondary" onclick="closeModal()">Cancel</button>
-          <button class="btn btn-primary" onclick="saveUser(${user ? user.id : 'null'})">${user ? 'Save Changes' : 'Create User'}</button>
-        </div>
-      </div>
-    </div>
-  `;
+async function showUserModal(id) {
+  let user = null;
+  if (id) { try { const users = await api('GET', '/users'); user = users.find(function(u){ return u.id === id; }); } catch(e){} }
+  const overlay = document.createElement('div');
+  overlay.className = 'modal-overlay';
+  overlay.innerHTML =
+    '<div class="modal">' +
+      '<div class="modal-header"><span class="modal-title">' + (id ? 'Edit User' : 'Add User') + '</span><button class="btn btn-ghost btn-sm" onclick="this.closest(\'.modal-overlay\').remove()">&#x2715;</button></div>' +
+      '<div class="modal-body">' +
+        '<div id="modal-error"></div>' +
+        '<div class="form-group"><label>Name</label><input type="text" id="modal-name" value="' + escHtml(user ? user.name : '') + '" /></div>' +
+        '<div class="form-group"><label>Email</label><input type="email" id="modal-email" value="' + escHtml(user ? user.email : '') + '" /></div>' +
+        '<div class="form-group"><label>' + (id ? 'New Password (leave blank to keep)' : 'Password') + '</label><input type="password" id="modal-password" /></div>' +
+        '<div class="form-group"><label>Role</label><select id="modal-role"><option value="requester"' + (user&&user.role==='requester'?' selected':'') + '>Requester</option><option value="approver"' + (user&&user.role==='approver'?' selected':'') + '>Approver</option><option value="admin"' + (user&&user.role==='admin'?' selected':'') + '>Admin</option></select></div>' +
+      '</div>' +
+      '<div class="modal-footer"><button class="btn btn-secondary" onclick="this.closest(\'.modal-overlay\').remove()">Cancel</button><button class="btn btn-primary" onclick="saveUser(' + (id||'null') + ', this)">Save</button></div>' +
+    '</div>';
+  document.body.appendChild(overlay);
 }
 
-function showCreateUserModal() {
-  document.getElementById('user-modal').innerHTML = userModalHtml('Add New User', null);
-}
-
-function showEditUserModal(userStr) {
-  const user = typeof userStr === 'string' ? JSON.parse(userStr) : userStr;
-  document.getElementById('user-modal').innerHTML = userModalHtml('Edit User', user);
-}
-
-function closeModal() {
-  const m = document.getElementById('user-modal');
-  if (m) m.innerHTML = '';
-}
-
-async function saveUser(userId) {
-  const name = document.getElementById('um-name').value.trim();
-  const email = document.getElementById('um-email').value.trim();
-  const role = document.getElementById('um-role').value;
-  const password = document.getElementById('um-password').value;
-  const errEl = document.getElementById('user-modal-error');
-  errEl.innerHTML = '';
-
-  if (!name || !email || !role || (!userId && !password)) {
-    errEl.innerHTML = `<div class="alert alert-error">All fields are required.</div>`;
-    return;
-  }
-
+async function saveUser(id, btn) {
+  const name = document.getElementById('modal-name').value.trim();
+  const email = document.getElementById('modal-email').value.trim();
+  const password = document.getElementById('modal-password').value;
+  const role = document.getElementById('modal-role').value;
   try {
-    if (userId) {
-      await api('PUT', `/users/${userId}`, { name, email, role, ...(password ? { password } : {}) });
-    } else {
-      await api('POST', '/users', { name, email, role, password });
-    }
-    renderUsers(document.getElementById('content'));
-  } catch (err) {
-    errEl.innerHTML = `<div class="alert alert-error">${escHtml(err.message)}</div>`;
+    btn.disabled = true;
+    if (id) { await api('PUT', '/users/' + id, { name, email, password: password || undefined, role }); }
+    else { await api('POST', '/users', { name, email, password, role }); }
+    document.querySelector('.modal-overlay').remove();
+    navigate('users');
+  } catch(err) {
+    document.getElementById('modal-error').innerHTML = '<div class="alert alert-error">' + escHtml(err.message) + '</div>';
+    btn.disabled = false;
   }
 }
 
 async function deleteUser(id) {
-  if (!confirm('Delete this user? This cannot be undone.')) return;
-  try {
-    await api('DELETE', `/users/${id}`);
-    renderUsers(document.getElementById('content'));
-  } catch (err) {
-    document.getElementById('users-error').innerHTML = `<div class="alert alert-error">${escHtml(err.message)}</div>`;
-  }
+  if (!confirm('Delete this user?')) return;
+  try { await api('DELETE', '/users/' + id); navigate('users'); }
+  catch(err) { document.getElementById('users-error').innerHTML = '<div class="alert alert-error">' + escHtml(err.message) + '</div>'; }
 }
 
-// ============================================================
-// UTILS
-// ============================================================
-function escHtml(str) {
-  return String(str ?? '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
-}
-function formatDate(str) {
-  if (!str) return '—';
-  return new Date(str).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
-}
-
-// ============================================================
-// BOOT
-// ============================================================
-navigate(state.token ? 'dashboard' : 'login');
+render();
 </script>
 </body>
 </html>
