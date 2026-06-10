@@ -98,7 +98,7 @@ router.get('/:id', requireAuth, async (req, res) => {
 
 // Create PO
 router.post('/', requireAuth, async (req, res) => {
-  const { vendor_name, notes, line_items } = req.body;
+  const { vendor_name, customer_name, notes, line_items } = req.body;
   if (!vendor_name) return res.status(400).json({ error: 'Vendor name is required' });
   if (!line_items || line_items.length === 0) return res.status(400).json({ error: 'At least one line item is required' });
 
@@ -109,14 +109,14 @@ router.post('/', requireAuth, async (req, res) => {
   try {
     await client.query('BEGIN');
     const { rows } = await client.query(
-      'INSERT INTO purchase_orders (po_number, requester_id, vendor_name, notes, total_amount) VALUES ($1, $2, $3, $4, $5) RETURNING *',
-      [po_number, req.user.id, vendor_name, notes || null, total_amount]
+      'INSERT INTO purchase_orders (po_number, requester_id, vendor_name, customer_name, notes, total_amount) VALUES ($1, $2, $3, $4, $5, $6) RETURNING *',
+      [po_number, req.user.id, vendor_name, customer_name || null, notes || null, total_amount]
     );
     const po = rows[0];
     for (const item of line_items) {
       await client.query(
-        'INSERT INTO po_line_items (po_id, description, quantity, unit_price) VALUES ($1, $2, $3, $4)',
-        [po.id, item.description, item.quantity, item.unit_price]
+        'INSERT INTO po_line_items (po_id, item_number, manufacturer, description, quantity, unit_price) VALUES ($1, $2, $3, $4, $5, $6)',
+        [po.id, item.item_number || null, item.manufacturer || null, item.description, item.quantity, item.unit_price]
       );
     }
     await client.query('COMMIT');
@@ -131,7 +131,7 @@ router.post('/', requireAuth, async (req, res) => {
 
 // Update draft PO
 router.put('/:id', requireAuth, async (req, res) => {
-  const { vendor_name, notes, line_items } = req.body;
+  const { vendor_name, customer_name, notes, line_items } = req.body;
   const { rows } = await pool.query('SELECT * FROM purchase_orders WHERE id = $1', [req.params.id]);
   const po = rows[0];
   if (!po) return res.status(404).json({ error: 'PO not found' });
@@ -148,15 +148,15 @@ router.put('/:id', requireAuth, async (req, res) => {
   try {
     await client.query('BEGIN');
     const { rows: updated } = await client.query(
-      'UPDATE purchase_orders SET vendor_name=$1, notes=$2, total_amount=$3, updated_at=NOW() WHERE id=$4 RETURNING *',
-      [vendor_name || po.vendor_name, notes ?? po.notes, total_amount, req.params.id]
+      'UPDATE purchase_orders SET vendor_name=$1, customer_name=$2, notes=$3, total_amount=$4, updated_at=NOW() WHERE id=$5 RETURNING *',
+      [vendor_name || po.vendor_name, customer_name ?? po.customer_name, notes ?? po.notes, total_amount, req.params.id]
     );
     if (line_items) {
       await client.query('DELETE FROM po_line_items WHERE po_id = $1', [req.params.id]);
       for (const item of line_items) {
         await client.query(
-          'INSERT INTO po_line_items (po_id, description, quantity, unit_price) VALUES ($1, $2, $3, $4)',
-          [req.params.id, item.description, item.quantity, item.unit_price]
+          'INSERT INTO po_line_items (po_id, item_number, manufacturer, description, quantity, unit_price) VALUES ($1, $2, $3, $4, $5, $6)',
+          [req.params.id, item.item_number || null, item.manufacturer || null, item.description, item.quantity, item.unit_price]
         );
       }
     }
@@ -253,12 +253,4 @@ router.post('/:id/reject', requireAuth, requireRole('approver', 'admin'), async 
     po.requester_email,
     `[PO System] PO Rejected: ${po.po_number}`,
     `<p>Hi ${po.requester_name},</p>
-     <p>Your purchase order <strong>${po.po_number}</strong> has been <strong style="color:red">rejected</strong> by ${req.user.name}.</p>
-     ${reason ? `<p><strong>Reason:</strong> ${reason}</p>` : ''}
-     <p>You may edit and resubmit the PO after making any needed changes.</p>`
-  );
-
-  res.json({ success: true });
-});
-
-module.exports = router;
+     <p>You

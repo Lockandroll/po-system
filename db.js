@@ -41,10 +41,4 @@ async function initDB() {
         unit_price DECIMAL(10,2) NOT NULL
       );
     `);
-    console.log('Database initialized');
-  } finally {
-    client.release();
-  }
-}
-
-module.exports = { pool, initDB };
+    // Add new columns if they don't exist (safe to 

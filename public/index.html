@@ -7,153 +7,158 @@
   <style>
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
     :root {
-      --primary: #2563eb;
-      --primary-dark: #1d4ed8;
-      --success: #16a34a;
-      --danger: #dc2626;
-      --warning: #d97706;
-      --gray-50: #f9fafb;
-      --gray-100: #f3f4f6;
-      --gray-200: #e5e7eb;
-      --gray-300: #d1d5db;
-      --gray-500: #6b7280;
-      --gray-700: #374151;
-      --gray-900: #111827;
+      --primary: #f97316;
+      --primary-dark: #ea6a00;
+      --success: #22c55e;
+      --danger: #ef4444;
+      --warning: #f59e0b;
+      --bg: #0f0f0f;
+      --bg-card: #1a1a1a;
+      --bg-elevated: #222222;
+      --border: #2e2e2e;
+      --border-light: #252525;
+      --text: #f0f0f0;
+      --text-muted-color: #888;
+      --text-dim: #bbb;
       --radius: 8px;
-      --shadow: 0 1px 3px rgba(0,0,0,0.1), 0 1px 2px rgba(0,0,0,0.06);
-      --shadow-md: 0 4px 6px -1px rgba(0,0,0,0.1), 0 2px 4px -1px rgba(0,0,0,0.06);
+      --shadow: 0 1px 3px rgba(0,0,0,0.4);
+      --shadow-md: 0 4px 12px rgba(0,0,0,0.5);
     }
-    body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: var(--gray-50); color: var(--gray-900); min-height: 100vh; }
+    body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: var(--bg); color: var(--text); min-height: 100vh; }
 
     /* Layout */
     #app { display: flex; min-height: 100vh; }
-    #sidebar { width: 240px; background: white; border-right: 1px solid var(--gray-200); display: flex; flex-direction: column; position: fixed; top: 0; left: 0; height: 100vh; z-index: 10; }
+    #sidebar { width: 240px; background: #111; border-right: 1px solid var(--border); display: flex; flex-direction: column; position: fixed; top: 0; left: 0; height: 100vh; z-index: 10; }
     #main { margin-left: 240px; flex: 1; display: flex; flex-direction: column; min-height: 100vh; }
-    .main-header { background: white; border-bottom: 1px solid var(--gray-200); padding: 16px 24px; display: flex; align-items: center; justify-content: space-between; }
+    .main-header { background: #111; border-bottom: 1px solid var(--border); padding: 16px 24px; display: flex; align-items: center; justify-content: space-between; }
     .main-content { padding: 24px; flex: 1; }
     #app.no-sidebar #sidebar { display: none; }
     #app.no-sidebar #main { margin-left: 0; }
 
     /* Sidebar */
-    .sidebar-logo { padding: 20px 16px; border-bottom: 1px solid var(--gray-200); }
-    .sidebar-logo h1 { font-size: 18px; font-weight: 700; color: var(--primary); }
-    .sidebar-logo p { font-size: 12px; color: var(--gray-500); margin-top: 2px; }
+    .sidebar-logo { padding: 20px 16px; border-bottom: 1px solid var(--border); }
+    .sidebar-logo h1 { font-size: 18px; font-weight: 700; color: var(--primary); letter-spacing: -0.3px; }
+    .sidebar-logo p { font-size: 12px; color: var(--text-muted-color); margin-top: 2px; }
     .sidebar-nav { flex: 1; padding: 12px 8px; }
-    .nav-item { display: flex; align-items: center; gap: 10px; padding: 10px 12px; border-radius: var(--radius); cursor: pointer; color: var(--gray-700); font-size: 14px; font-weight: 500; transition: all 0.15s; margin-bottom: 2px; }
-    .nav-item:hover { background: var(--gray-100); color: var(--gray-900); }
-    .nav-item.active { background: #eff6ff; color: var(--primary); }
+    .nav-item { display: flex; align-items: center; gap: 10px; padding: 10px 12px; border-radius: var(--radius); cursor: pointer; color: var(--text-dim); font-size: 14px; font-weight: 500; transition: all 0.15s; margin-bottom: 2px; }
+    .nav-item:hover { background: var(--bg-elevated); color: var(--text); }
+    .nav-item.active { background: rgba(249,115,22,0.15); color: var(--primary); }
     .nav-item svg { width: 18px; height: 18px; flex-shrink: 0; }
-    .sidebar-footer { padding: 16px; border-top: 1px solid var(--gray-200); }
+    .sidebar-footer { padding: 16px; border-top: 1px solid var(--border); }
     .sidebar-user { display: flex; align-items: center; gap: 10px; margin-bottom: 12px; }
     .avatar { width: 36px; height: 36px; border-radius: 50%; background: var(--primary); color: white; display: flex; align-items: center; justify-content: center; font-weight: 700; font-size: 14px; flex-shrink: 0; }
     .sidebar-user-info { flex: 1; min-width: 0; }
     .sidebar-user-name { font-size: 14px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-    .sidebar-user-role { font-size: 12px; color: var(--gray-500); text-transform: capitalize; }
+    .sidebar-user-role { font-size: 12px; color: var(--text-muted-color); text-transform: capitalize; }
 
     /* Buttons */
     .btn { display: inline-flex; align-items: center; gap: 6px; padding: 8px 16px; border-radius: var(--radius); font-size: 14px; font-weight: 500; cursor: pointer; border: none; transition: all 0.15s; text-decoration: none; }
     .btn-primary { background: var(--primary); color: white; }
     .btn-primary:hover { background: var(--primary-dark); }
     .btn-success { background: var(--success); color: white; }
-    .btn-success:hover { background: #15803d; }
+    .btn-success:hover { background: #16a34a; }
     .btn-danger { background: var(--danger); color: white; }
-    .btn-danger:hover { background: #b91c1c; }
-    .btn-secondary { background: white; color: var(--gray-700); border: 1px solid var(--gray-300); }
-    .btn-secondary:hover { background: var(--gray-50); }
+    .btn-danger:hover { background: #dc2626; }
+    .btn-secondary { background: var(--bg-elevated); color: var(--text-dim); border: 1px solid var(--border); }
+    .btn-secondary:hover { background: #2a2a2a; color: var(--text); }
     .btn-sm { padding: 5px 10px; font-size: 13px; }
-    .btn-ghost { background: transparent; color: var(--gray-500); }
-    .btn-ghost:hover { background: var(--gray-100); color: var(--gray-700); }
-    .btn:disabled { opacity: 0.5; cursor: not-allowed; }
+    .btn-ghost { background: transparent; color: var(--text-muted-color); }
+    .btn-ghost:hover { background: var(--bg-elevated); color: var(--text-dim); }
+    .btn:disabled { opacity: 0.4; cursor: not-allowed; }
 
     /* Cards */
-    .card { background: white; border-radius: var(--radius); border: 1px solid var(--gray-200); box-shadow: var(--shadow); }
-    .card-header { padding: 16px 20px; border-bottom: 1px solid var(--gray-200); display: flex; align-items: center; justify-content: space-between; }
-    .card-title { font-size: 16px; font-weight: 600; }
+    .card { background: var(--bg-card); border-radius: var(--radius); border: 1px solid var(--border); box-shadow: var(--shadow); }
+    .card-header { padding: 16px 20px; border-bottom: 1px solid var(--border); display: flex; align-items: center; justify-content: space-between; }
+    .card-title { font-size: 16px; font-weight: 600; color: var(--text); }
     .card-body { padding: 20px; }
 
     /* Forms */
     .form-group { margin-bottom: 16px; }
-    label { display: block; font-size: 14px; font-weight: 500; color: var(--gray-700); margin-bottom: 6px; }
-    input, select, textarea { width: 100%; padding: 9px 12px; border: 1px solid var(--gray-300); border-radius: var(--radius); font-size: 14px; color: var(--gray-900); background: white; transition: border 0.15s; outline: none; }
-    input:focus, select:focus, textarea:focus { border-color: var(--primary); box-shadow: 0 0 0 3px rgba(37,99,235,0.1); }
+    label { display: block; font-size: 14px; font-weight: 500; color: var(--text-dim); margin-bottom: 6px; }
+    input, select, textarea { width: 100%; padding: 9px 12px; border: 1px solid var(--border); border-radius: var(--radius); font-size: 14px; color: var(--text); background: var(--bg-elevated); transition: border 0.15s; outline: none; }
+    input:focus, select:focus, textarea:focus { border-color: var(--primary); box-shadow: 0 0 0 3px rgba(249,115,22,0.15); }
+    select option { background: var(--bg-elevated); color: var(--text); }
     textarea { resize: vertical; min-height: 80px; }
     .form-row { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
 
     /* Table */
     .table-wrap { overflow-x: auto; }
     table { width: 100%; border-collapse: collapse; }
-    th { padding: 10px 16px; text-align: left; font-size: 12px; font-weight: 600; color: var(--gray-500); text-transform: uppercase; letter-spacing: 0.05em; border-bottom: 1px solid var(--gray-200); background: var(--gray-50); }
-    td { padding: 12px 16px; font-size: 14px; border-bottom: 1px solid var(--gray-100); }
+    th { padding: 10px 16px; text-align: left; font-size: 12px; font-weight: 600; color: var(--text-muted-color); text-transform: uppercase; letter-spacing: 0.05em; border-bottom: 1px solid var(--border); background: var(--bg-elevated); }
+    td { padding: 12px 16px; font-size: 14px; border-bottom: 1px solid var(--border-light); color: var(--text-dim); }
     tr:last-child td { border-bottom: none; }
-    tr:hover td { background: var(--gray-50); }
+    tr:hover td { background: rgba(255,255,255,0.03); }
 
     /* Badges */
     .badge { display: inline-flex; align-items: center; padding: 3px 10px; border-radius: 20px; font-size: 12px; font-weight: 600; text-transform: capitalize; }
-    .badge-draft { background: var(--gray-100); color: var(--gray-700); }
-    .badge-submitted { background: #fef3c7; color: #92400e; }
-    .badge-approved { background: #dcfce7; color: #166534; }
-    .badge-rejected { background: #fee2e2; color: #991b1b; }
-    .badge-admin { background: #ede9fe; color: #5b21b6; }
-    .badge-approver { background: #e0f2fe; color: #0c4a6e; }
-    .badge-requester { background: var(--gray-100); color: var(--gray-700); }
+    .badge-draft { background: #2a2a2a; color: #aaa; }
+    .badge-submitted { background: #2d2100; color: #f59e0b; border: 1px solid #4a3500; }
+    .badge-approved { background: #0d2d17; color: #22c55e; border: 1px solid #134d27; }
+    .badge-rejected { background: #2d0d0d; color: #ef4444; border: 1px solid #4d1515; }
+    .badge-admin { background: #1e1040; color: #a78bfa; }
+    .badge-approver { background: #0d1e30; color: #60a5fa; }
+    .badge-requester { background: #2a2a2a; color: #aaa; }
 
     /* Page header */
     .page-header { margin-bottom: 24px; display: flex; align-items: center; justify-content: space-between; }
     .page-title { font-size: 22px; font-weight: 700; }
-    .page-subtitle { font-size: 14px; color: var(--gray-500); margin-top: 4px; }
+    .page-subtitle { font-size: 14px; color: var(--text-muted-color); margin-top: 4px; }
 
     /* Stats */
     .stats-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 16px; margin-bottom: 24px; }
-    .stat-card { background: white; border: 1px solid var(--gray-200); border-radius: var(--radius); padding: 16px 20px; box-shadow: var(--shadow); }
-    .stat-value { font-size: 28px; font-weight: 700; margin-bottom: 4px; }
-    .stat-label { font-size: 13px; color: var(--gray-500); }
+    .stat-card { background: var(--bg-card); border: 1px solid var(--border); border-radius: var(--radius); padding: 16px 20px; box-shadow: var(--shadow); }
+    .stat-value { font-size: 28px; font-weight: 700; margin-bottom: 4px; color: var(--primary); }
+    .stat-label { font-size: 13px; color: var(--text-muted-color); }
 
     /* Line items */
     .line-items-table { width: 100%; border-collapse: collapse; margin-top: 8px; }
-    .line-items-table th { padding: 8px 10px; background: var(--gray-50); font-size: 12px; font-weight: 600; color: var(--gray-500); text-transform: uppercase; border-bottom: 1px solid var(--gray-200); text-align: left; }
-    .line-items-table td { padding: 8px 10px; font-size: 14px; border-bottom: 1px solid var(--gray-100); }
+    .line-items-table th { padding: 8px 10px; background: var(--bg-elevated); font-size: 12px; font-weight: 600; color: var(--text-muted-color); text-transform: uppercase; border-bottom: 1px solid var(--border); text-align: left; }
+    .line-items-table td { padding: 8px 10px; font-size: 14px; border-bottom: 1px solid var(--border-light); color: var(--text-dim); }
     .line-items-table td input { padding: 6px 8px; }
-    .line-items-table .total-row td { font-weight: 700; background: var(--gray-50); }
+    .line-items-table .total-row td { font-weight: 700; background: var(--bg-elevated); color: var(--primary); }
     .add-item-btn { margin-top: 8px; }
 
     /* Detail view */
     .detail-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 24px; margin-bottom: 24px; }
-    .detail-field label { font-size: 12px; font-weight: 600; color: var(--gray-500); text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 4px; }
-    .detail-field p { font-size: 15px; color: var(--gray-900); }
+    .detail-field label { font-size: 12px; font-weight: 600; color: var(--text-muted-color); text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 4px; }
+    .detail-field p { font-size: 15px; color: var(--text); }
 
     /* Alert */
     .alert { padding: 12px 16px; border-radius: var(--radius); font-size: 14px; margin-bottom: 16px; }
-    .alert-error { background: #fee2e2; color: #991b1b; border: 1px solid #fecaca; }
-    .alert-success { background: #dcfce7; color: #166534; border: 1px solid #bbf7d0; }
-    .alert-info { background: #eff6ff; color: #1e40af; border: 1px solid #bfdbfe; }
+    .alert-error { background: #2d0d0d; color: #fca5a5; border: 1px solid #4d1515; }
+    .alert-success { background: #0d2d17; color: #86efac; border: 1px solid #134d27; }
+    .alert-info { background: #0d1e30; color: #93c5fd; border: 1px solid #1e3a5f; }
 
     /* Auth page */
-    .auth-page { display: flex; align-items: center; justify-content: center; min-height: 100vh; background: var(--gray-50); }
+    .auth-page { display: flex; align-items: center; justify-content: center; min-height: 100vh; background: var(--bg); }
     .auth-card { width: 100%; max-width: 400px; padding: 8px; }
     .auth-logo { text-align: center; margin-bottom: 32px; }
     .auth-logo h1 { font-size: 28px; font-weight: 800; color: var(--primary); }
-    .auth-logo p { color: var(--gray-500); margin-top: 6px; }
+    .auth-logo p { color: var(--text-muted-color); margin-top: 6px; }
 
     /* Modal */
-    .modal-overlay { position: fixed; inset: 0; background: rgba(0,0,0,0.5); display: flex; align-items: center; justify-content: center; z-index: 100; padding: 16px; }
-    .modal { background: white; border-radius: var(--radius); box-shadow: var(--shadow-md); width: 100%; max-width: 480px; }
-    .modal-header { padding: 16px 20px; border-bottom: 1px solid var(--gray-200); display: flex; align-items: center; justify-content: space-between; }
+    .modal-overlay { position: fixed; inset: 0; background: rgba(0,0,0,0.75); display: flex; align-items: center; justify-content: center; z-index: 100; padding: 16px; }
+    .modal { background: var(--bg-card); border: 1px solid var(--border); border-radius: var(--radius); box-shadow: var(--shadow-md); width: 100%; max-width: 480px; }
+    .modal-header { padding: 16px 20px; border-bottom: 1px solid var(--border); display: flex; align-items: center; justify-content: space-between; }
     .modal-title { font-size: 16px; font-weight: 600; }
     .modal-body { padding: 20px; }
-    .modal-footer { padding: 16px 20px; border-top: 1px solid var(--gray-200); display: flex; gap: 8px; justify-content: flex-end; }
+    .modal-footer { padding: 16px 20px; border-top: 1px solid var(--border); display: flex; gap: 8px; justify-content: flex-end; }
 
     /* Misc */
-    .empty-state { text-align: center; padding: 48px 24px; color: var(--gray-500); }
-    .empty-state svg { width: 48px; height: 48px; margin: 0 auto 16px; opacity: 0.4; }
-    .empty-state h3 { font-size: 16px; font-weight: 600; color: var(--gray-700); margin-bottom: 6px; }
-    .loading { text-align: center; padding: 48px; color: var(--gray-500); }
+    .empty-state { text-align: center; padding: 48px 24px; color: var(--text-muted-color); }
+    .empty-state svg { width: 48px; height: 48px; margin: 0 auto 16px; opacity: 0.3; }
+    .empty-state h3 { font-size: 16px; font-weight: 600; color: var(--text-dim); margin-bottom: 6px; }
+    .loading { text-align: center; padding: 48px; color: var(--text-muted-color); }
     .flex-gap { display: flex; gap: 8px; align-items: center; }
     .text-right { text-align: right; }
-    .text-muted { color: var(--gray-500); font-size: 13px; }
+    .text-muted { color: var(--text-muted-color); font-size: 13px; }
     .mt-2 { margin-top: 8px; }
     .mt-4 { margin-top: 16px; }
     .mb-4 { margin-bottom: 16px; }
     .hidden { display: none !important; }
+
+    /* Orange accent on sidebar logo underline */
+    .sidebar-logo h1::after { content: ''; display: block; width: 32px; height: 2px; background: var(--primary); margin-top: 6px; border-radius: 2px; }
   </style>
 </head>
 <body>
@@ -467,7 +472,7 @@ async function renderCreatePO(el, poId) {
     el.innerHTML = `<div class="loading">Loading…</div>`;
     try {
       po = await api('GET', `/pos/${poId}`);
-      lineItems = po.line_items.map(i => ({ description: i.description, quantity: i.quantity, unit_price: i.unit_price }));
+      lineItems = po.line_items.map(i => ({ item_number: i.item_number || '', manufacturer: i.manufacturer || '', description: i.description, quantity: i.quantity, unit_price: i.unit_price }));
     } catch (err) {
       el.innerHTML = `<div class="alert alert-error">${escHtml(err.message)}</div>`;
       return;
@@ -477,9 +482,11 @@ async function renderCreatePO(el, poId) {
   function buildLineItemRows() {
     return lineItems.map((item, i) => `
       <tr>
-        <td><input type="text" value="${escHtml(String(item.description))}" oninput="updateLineItem(${i},'description',this.value)" placeholder="Item description" /></td>
-        <td><input type="number" value="${item.quantity}" oninput="updateLineItem(${i},'quantity',this.value)" min="0.01" step="any" style="width:80px"/></td>
-        <td><input type="number" value="${item.unit_price}" oninput="updateLineItem(${i},'unit_price',this.value)" min="0" step="0.01" placeholder="0.00" style="width:100px"/></td>
+        <td><input type="text" value="${escHtml(String(item.item_number||''))}" oninput="updateLineItem(${i},'item_number',this.value)" placeholder="Item #" style="width:90px"/></td>
+        <td><input type="text" value="${escHtml(String(item.manufacturer||''))}" oninput="updateLineItem(${i},'manufacturer',this.value)" placeholder="Manufacturer" /></td>
+        <td><input type="text" value="${escHtml(String(item.description))}" oninput="updateLineItem(${i},'description',this.value)" placeholder="Description" /></td>
+        <td><input type="number" value="${item.quantity}" oninput="updateLineItem(${i},'quantity',this.value)" min="0.01" step="any" style="width:70px"/></td>
+        <td><input type="number" value="${item.unit_price}" oninput="updateLineItem(${i},'unit_price',this.value)" min="0" step="0.01" placeholder="0.00" style="width:90px"/></td>
         <td class="text-right">$${lineTotal(item)}</td>
         <td><button class="btn btn-sm btn-ghost" onclick="removeLineItem(${i})" ${lineItems.length === 1 ? 'disabled' : ''}>${icons.trash}</button></td>
       </tr>
@@ -506,7 +513,7 @@ async function renderCreatePO(el, poId) {
     document.getElementById('grand-total').textContent = `$${grandTotal()}`;
     // Refresh only totals column to avoid cursor jump
     const rows = document.querySelectorAll('#line-items-body tr');
-    if (rows[i]) rows[i].cells[3].textContent = `$${lineTotal(lineItems[i])}`;
+    if (rows[i]) rows[i].cells[5].textContent = `$${lineTotal(lineItems[i])}`;
   };
 
   window.removeLineItem = (i) => {
@@ -515,7 +522,7 @@ async function renderCreatePO(el, poId) {
   };
 
   window.addLineItem = () => {
-    lineItems.push({ description: '', quantity: 1, unit_price: '' });
+    lineItems.push({ item_number: '', manufacturer: '', description: '', quantity: 1, unit_price: '' });
     refreshTable();
   };
 
@@ -535,6 +542,10 @@ async function renderCreatePO(el, poId) {
             <label>Vendor / Supplier *</label>
             <input type="text" id="po-vendor" value="${po ? escHtml(po.vendor_name) : ''}" placeholder="Acme Corp" />
           </div>
+          <div class="form-group">
+            <label>Customer Name</label>
+            <input type="text" id="po-customer" value="${po ? escHtml(po.customer_name || '') : ''}" placeholder="Customer this order is for" />
+          </div>
         </div>
         <div class="form-group">
           <label>Notes (optional)</label>
@@ -547,11 +558,11 @@ async function renderCreatePO(el, poId) {
       <div class="card-body">
         <div class="table-wrap">
           <table class="line-items-table">
-            <thead><tr><th>Description</th><th>Qty</th><th>Unit Price</th><th>Total</th><th></th></tr></thead>
+            <thead><tr><th>Item #</th><th>Manufacturer</th><th>Description</th><th>Qty</th><th>Unit Price</th><th>Total</th><th></th></tr></thead>
             <tbody id="line-items-body">${buildLineItemRows()}</tbody>
             <tfoot>
               <tr class="total-row">
-                <td colspan="3" class="text-right" style="padding:10px 10px">Grand Total</td>
+                <td colspan="5" class="text-right" style="padding:10px 10px">Grand Total</td>
                 <td id="grand-total">$${grandTotal()}</td>
                 <td></td>
               </tr>
@@ -570,6 +581,7 @@ async function renderCreatePO(el, poId) {
 
 async function savePO(submit, poId) {
   const vendor_name = document.getElementById('po-vendor').value.trim();
+  const customer_name = document.getElementById('po-customer').value.trim();
   const notes = document.getElementById('po-notes').value.trim();
   const errEl = document.getElementById('po-error');
   errEl.innerHTML = '';
@@ -583,9 +595,11 @@ async function savePO(submit, poId) {
   document.querySelectorAll('#line-items-body tr').forEach((row, i) => {
     const inputs = row.querySelectorAll('input');
     line_items.push({
-      description: inputs[0].value.trim(),
-      quantity: parseFloat(inputs[1].value) || 0,
-      unit_price: parseFloat(inputs[2].value) || 0,
+      item_number: inputs[0].value.trim(),
+      manufacturer: inputs[1].value.trim(),
+      description: inputs[2].value.trim(),
+      quantity: parseFloat(inputs[3].value) || 0,
+      unit_price: parseFloat(inputs[4].value) || 0,
     });
   });
 
@@ -597,9 +611,9 @@ async function savePO(submit, poId) {
   try {
     let po;
     if (poId) {
-      po = await api('PUT', `/pos/${poId}`, { vendor_name, notes, line_items });
+      po = await api('PUT', `/pos/${poId}`, { vendor_name, customer_name, notes, line_items });
     } else {
-      po = await api('POST', '/pos', { vendor_name, notes, line_items });
+      po = await api('POST', '/pos', { vendor_name, customer_name, notes, line_items });
     }
     if (submit) {
       await api('POST', `/pos/${po.id}/submit`);
@@ -643,7 +657,8 @@ async function renderViewPO(el, poId) {
         <div class="card-body">
           <div class="detail-grid">
             <div class="detail-field"><label>PO Number</label><p>${escHtml(po.po_number)}</p></div>
-            <div class="detail-field"><label>Vendor</label><p>${escHtml(po.vendor_name)}</p></div>
+            <div class="detail-field"><label>Vendor / Supplier</label><p>${escHtml(po.vendor_name)}</p></div>
+            ${po.customer_name ? `<div class="detail-field"><label>Customer Name</label><p>${escHtml(po.customer_name)}</p></div>` : ''}
             <div class="detail-field"><label>Requested By</label><p>${escHtml(po.requester_name || '—')}</p></div>
             <div class="detail-field"><label>Created</label><p>${formatDate(po.created_at)}</p></div>
             ${po.approver_name ? `<div class="detail-field"><label>${po.status === 'approved' ? 'Approved By' : 'Reviewed By'}</label><p>${escHtml(po.approver_name)}</p></div>` : ''}
@@ -659,10 +674,12 @@ async function renderViewPO(el, poId) {
         <div class="card-body">
           <div class="table-wrap">
             <table class="line-items-table">
-              <thead><tr><th>Description</th><th>Qty</th><th>Unit Price</th><th class="text-right">Total</th></tr></thead>
+              <thead><tr><th>Item #</th><th>Manufacturer</th><th>Description</th><th>Qty</th><th>Unit Price</th><th class="text-right">Total</th></tr></thead>
               <tbody>
                 ${po.line_items.map(item => `
                   <tr>
+                    <td>${escHtml(item.item_number || '—')}</td>
+                    <td>${escHtml(item.manufacturer || '—')}</td>
                     <td>${escHtml(item.description)}</td>
                     <td>${item.quantity}</td>
                     <td>$${parseFloat(item.unit_price).toFixed(2)}</td>
@@ -672,7 +689,7 @@ async function renderViewPO(el, poId) {
               </tbody>
               <tfoot>
                 <tr class="total-row">
-                  <td colspan="3" class="text-right">Grand Total</td>
+                  <td colspan="5" class="text-right">Grand Total</td>
                   <td class="text-right">$${parseFloat(po.total_amount).toFixed(2)}</td>
                 </tr>
               </tfoot>
@@ -832,56 +849,4 @@ function closeModal() {
   if (m) m.innerHTML = '';
 }
 
-async function saveUser(userId) {
-  const name = document.getElementById('um-name').value.trim();
-  const email = document.getElementById('um-email').value.trim();
-  const role = document.getElementById('um-role').value;
-  const password = document.getElementById('um-password').value;
-  const errEl = document.getElementById('user-modal-error');
-  errEl.innerHTML = '';
-
-  if (!name || !email || !role || (!userId && !password)) {
-    errEl.innerHTML = `<div class="alert alert-error">All fields are required.</div>`;
-    return;
-  }
-
-  try {
-    if (userId) {
-      await api('PUT', `/users/${userId}`, { name, email, role, ...(password ? { password } : {}) });
-    } else {
-      await api('POST', '/users', { name, email, role, password });
-    }
-    renderUsers(document.getElementById('content'));
-  } catch (err) {
-    errEl.innerHTML = `<div class="alert alert-error">${escHtml(err.message)}</div>`;
-  }
-}
-
-async function deleteUser(id) {
-  if (!confirm('Delete this user? This cannot be undone.')) return;
-  try {
-    await api('DELETE', `/users/${id}`);
-    renderUsers(document.getElementById('content'));
-  } catch (err) {
-    document.getElementById('users-error').innerHTML = `<div class="alert alert-error">${escHtml(err.message)}</div>`;
-  }
-}
-
-// ============================================================
-// UTILS
-// ============================================================
-function escHtml(str) {
-  return String(str ?? '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
-}
-function formatDate(str) {
-  if (!str) return '—';
-  return new Date(str).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
-}
-
-// ============================================================
-// BOOT
-// ============================================================
-navigate(state.token ? 'dashboard' : 'login');
-</script>
-</body>
-</html>
+async function saveUser(u
