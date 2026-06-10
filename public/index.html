@@ -180,6 +180,7 @@ const icons = {
   map: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="1 6 1 22 8 18 16 22 23 18 23 2 16 6 8 2 1 6"/><line x1="8" y1="2" x2="8" y2="18"/><line x1="16" y1="6" x2="16" y2="22"/></svg>',
   settings: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>',
   print: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="6 9 6 2 18 2 18 9"/><path d="M6 18H4a2 2 0 0 1-2-2v-5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2h-2"/><rect x="6" y="14" width="12" height="8"/></svg>',
+  quote: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/><polyline points="10 9 9 9 8 9"/></svg>',
 };
 
 function escHtml(s) {
@@ -215,6 +216,7 @@ async function render() {
       '<nav class="sidebar-nav">' +
         '<div class="nav-item ' + (state.currentView === 'dashboard' ? 'active' : '') + '" onclick="navigate(\'dashboard\')">' + icons.dashboard + ' Dashboard</div>' +
         (state.user.role !== 'approver' ? '<div class="nav-item ' + (state.currentView === 'new' ? 'active' : '') + '" onclick="navigate(\'new\')">' + icons.plus + ' New PO</div>' : '') +
+        '<div class="nav-item ' + (['quotes','new-quote','edit-quote','view-quote'].includes(state.currentView) ? 'active' : '') + '" onclick="navigate(\'quotes\')">' + icons.quote + ' Quotes</div>' +
         (state.user.role === 'admin' ? '<div class="nav-item ' + (state.currentView === 'users' ? 'active' : '') + '" onclick="navigate(\'users\')">' + icons.users + ' Users</div>' : '') +
         (state.user.role === 'admin' ? '<div class="nav-item ' + (state.currentView === 'cities' ? 'active' : '') + '" onclick="navigate(\'cities\')">' + icons.map + ' Cities</div>' : '') +
         (state.user.role === 'admin' ? '<div class="nav-item ' + (state.currentView === 'settings' ? 'active' : '') + '" onclick="navigate(\'settings\')">' + icons.settings + ' Settings</div>' : '') +
@@ -237,6 +239,10 @@ async function render() {
   else if (state.currentView === 'users') await renderUsers(content);
   else if (state.currentView === 'cities') await renderCities(content);
   else if (state.currentView === 'settings') await renderSettings(content);
+  else if (state.currentView === 'quotes') await renderQuotes(content);
+  else if (state.currentView === 'new-quote') await renderEditQuote(content, null);
+  else if (state.currentView === 'edit-quote') await renderEditQuote(content, state.currentParam);
+  else if (state.currentView === 'view-quote') await renderViewQuote(content, state.currentParam);
   else { state.currentView = 'dashboard'; await renderDashboard(content); }
 }
 
@@ -1030,6 +1036,334 @@ async function deactivateCity(id) {
 async function reactivateCity(id) {
   try { await api('POST', '/cities/' + id + '/reactivate'); navigate('cities'); }
   catch(err) { document.getElementById('cities-error').innerHTML = '<div class="alert alert-error">' + escHtml(err.message) + '</div>'; }
+}
+
+// ── Quotes ────────────────────────────────────────────────────────────────────
+
+let quoteLineItems = [];
+
+async function renderQuotes(el) {
+  try {
+    const quotes = await api('GET', '/quotes');
+    const isAdmin = state.user.role === 'admin';
+    el.innerHTML =
+      '<div class="page-header">' +
+        '<div><div class="page-title">Quotes</div><div class="page-subtitle">' + (isAdmin ? 'All quotes' : 'Your quotes') + '</div></div>' +
+        '<button class="btn btn-primary" onclick="navigate(\'new-quote\')">' + icons.plus + ' New Quote</button>' +
+      '</div>' +
+      '<div id="quotes-error"></div>' +
+      '<div class="card">' +
+        '<div class="card-header"><span class="card-title">Quote List</span></div>' +
+        (quotes.length === 0
+          ? '<div class="empty-state"><h3>No quotes yet</h3><p>Create your first quote to get started.</p></div>'
+          : '<div class="table-wrap"><table>' +
+              '<thead><tr><th>Quote #</th><th>Customer</th><th>City</th>' + (isAdmin ? '<th>Created By</th>' : '') + '<th>Total</th><th>Date</th><th></th></tr></thead>' +
+              '<tbody>' + quotes.map(function(q) {
+                return '<tr>' +
+                  '<td><strong>' + escHtml(q.quote_number) + '</strong></td>' +
+                  '<td>' + escHtml(q.customer_name) + '</td>' +
+                  '<td>' + escHtml(q.city_code || '—') + '</td>' +
+                  (isAdmin ? '<td>' + escHtml(q.requester_name || '—') + '</td>' : '') +
+                  '<td>$' + parseFloat(q.total_amount).toFixed(2) + '</td>' +
+                  '<td>' + formatDate(q.created_at) + '</td>' +
+                  '<td><button class="btn btn-secondary btn-sm" onclick="navigate(\'view-quote\',' + q.id + ')">View</button></td>' +
+                '</tr>';
+              }).join('') +
+            '</tbody></table></div>') +
+      '</div>';
+  } catch(err) {
+    el.innerHTML = '<div class="alert alert-error">' + escHtml(err.message) + '</div>';
+  }
+}
+
+async function renderEditQuote(el, id) {
+  let quote = null;
+  let cities = [];
+  try { cities = await api('GET', '/cities'); } catch(e) {}
+  if (id) {
+    try { quote = await api('GET', '/quotes/' + id); } catch(e) { el.innerHTML = '<div class="alert alert-error">' + escHtml(e.message) + '</div>'; return; }
+    quoteLineItems = quote.line_items || [];
+  } else {
+    quoteLineItems = [{ item_number: '', manufacturer: '', description: '', quantity: 1, unit_price: '' }];
+  }
+  const cityOptions = '<option value="">Select city (optional)...</option>' + cities.map(function(c) {
+    return '<option value="' + escHtml(c.code) + '"' + (quote && quote.city_code === c.code ? ' selected' : '') + '>' + escHtml(c.name) + ' (' + escHtml(c.code) + ')</option>';
+  }).join('');
+  el.innerHTML =
+    '<div class="page-header">' +
+      '<div><div class="page-title">' + (id ? 'Edit Quote' : 'New Quote') + '</div></div>' +
+      '<button class="btn btn-secondary" onclick="navigate(\'' + (id ? 'view-quote' : 'quotes') + '\',' + (id||'null') + ')">Cancel</button>' +
+    '</div>' +
+    '<div id="quote-edit-error"></div>' +
+    '<div class="card mb-4"><div class="card-header"><span class="card-title">Quote Information</span></div><div class="card-body">' +
+      '<div class="form-row">' +
+        '<div class="form-group"><label>Customer Name *</label><input type="text" id="qt-customer" value="' + escHtml(quote ? quote.customer_name : '') + '" placeholder="Customer name" /></div>' +
+        '<div class="form-group"><label>City</label><select id="qt-city">' + cityOptions + '</select></div>' +
+      '</div>' +
+      '<div class="form-group"><label>Notes</label><textarea id="qt-notes" placeholder="Optional notes...">' + escHtml(quote ? quote.notes || '' : '') + '</textarea></div>' +
+    '</div></div>' +
+    '<div class="card mb-4"><div class="card-header"><span class="card-title">Line Items</span></div><div class="card-body">' +
+      '<div class="table-wrap"><table class="line-items-table">' +
+        '<thead><tr><th>Item #</th><th>Manufacturer</th><th>Description</th><th>Qty</th><th>Unit Price</th><th>Total</th><th></th></tr></thead>' +
+        '<tbody id="quote-line-items-body"></tbody>' +
+        '<tfoot><tr class="total-row"><td colspan="5" class="text-right" style="padding:10px">Grand Total</td><td id="quote-grand-total" style="padding:10px">$0.00</td><td></td></tr></tfoot>' +
+      '</table></div>' +
+      '<button class="btn btn-secondary btn-sm add-item-btn" onclick="addQuoteLineItem()">' + icons.plus + ' Add Item</button>' +
+    '</div></div>' +
+    '<div class="flex-gap">' +
+      '<button class="btn btn-primary" onclick="saveQuote(' + (id||'null') + ')" id="btn-save-quote">Save Quote</button>' +
+    '</div>';
+  buildQuoteLineItemRows();
+}
+
+function buildQuoteLineItemRows() {
+  const tbody = document.getElementById('quote-line-items-body');
+  if (!tbody) return;
+  tbody.innerHTML = quoteLineItems.map(function(item, i) {
+    const total = (parseFloat(item.quantity)||0) * (parseFloat(item.unit_price)||0);
+    return '<tr>' +
+      '<td><input type="text" value="' + escHtml(item.item_number||'') + '" placeholder="Item #" onchange="updateQuoteItem(' + i + ',this)" data-field="item_number" /></td>' +
+      '<td><input type="text" value="' + escHtml(item.manufacturer||'') + '" placeholder="Manufacturer" onchange="updateQuoteItem(' + i + ',this)" data-field="manufacturer" /></td>' +
+      '<td><input type="text" value="' + escHtml(item.description||'') + '" placeholder="Description *" onchange="updateQuoteItem(' + i + ',this)" data-field="description" /></td>' +
+      '<td><input type="number" value="' + escHtml(item.quantity||'') + '" min="0.01" step="0.01" onchange="updateQuoteItem(' + i + ',this)" data-field="quantity" style="width:70px" /></td>' +
+      '<td><input type="number" value="' + escHtml(item.unit_price||'') + '" min="0" step="0.01" placeholder="0.00" onchange="updateQuoteItem(' + i + ',this)" data-field="unit_price" style="width:90px" /></td>' +
+      '<td id="qt-row-total-' + i + '">$' + total.toFixed(2) + '</td>' +
+      '<td>' + (quoteLineItems.length > 1 ? '<button class="btn btn-ghost btn-sm" onclick="removeQuoteItem(' + i + ')">' + icons.trash + '</button>' : '') + '</td>' +
+    '</tr>';
+  }).join('');
+  updateQuoteGrandTotal();
+}
+
+function updateQuoteItem(i, input) {
+  quoteLineItems[i][input.dataset.field] = input.value;
+  const qty = parseFloat(quoteLineItems[i].quantity) || 0;
+  const price = parseFloat(quoteLineItems[i].unit_price) || 0;
+  const cell = document.getElementById('qt-row-total-' + i);
+  if (cell) cell.textContent = '$' + (qty * price).toFixed(2);
+  updateQuoteGrandTotal();
+}
+
+function updateQuoteGrandTotal() {
+  const total = quoteLineItems.reduce(function(sum, item) { return sum + (parseFloat(item.quantity)||0) * (parseFloat(item.unit_price)||0); }, 0);
+  const el = document.getElementById('quote-grand-total');
+  if (el) el.textContent = '$' + total.toFixed(2);
+}
+
+function addQuoteLineItem() {
+  quoteLineItems.push({ item_number: '', manufacturer: '', description: '', quantity: 1, unit_price: '' });
+  buildQuoteLineItemRows();
+}
+
+function removeQuoteItem(i) {
+  quoteLineItems.splice(i, 1);
+  buildQuoteLineItemRows();
+}
+
+async function saveQuote(id) {
+  const customer_name = document.getElementById('qt-customer').value.trim();
+  const city_code = document.getElementById('qt-city').value;
+  const notes = document.getElementById('qt-notes').value.trim();
+  if (!customer_name) { document.getElementById('quote-edit-error').innerHTML = '<div class="alert alert-error">Customer name is required.</div>'; return; }
+  const rows = document.querySelectorAll('#quote-line-items-body tr');
+  rows.forEach(function(row, i) {
+    const inputs = row.querySelectorAll('input');
+    if (inputs[0]) quoteLineItems[i].item_number = inputs[0].value;
+    if (inputs[1]) quoteLineItems[i].manufacturer = inputs[1].value;
+    if (inputs[2]) quoteLineItems[i].description = inputs[2].value;
+    if (inputs[3]) quoteLineItems[i].quantity = inputs[3].value;
+    if (inputs[4]) quoteLineItems[i].unit_price = inputs[4].value;
+  });
+  const validItems = quoteLineItems.filter(function(item){ return item.description && item.quantity && item.unit_price; });
+  if (validItems.length === 0) { document.getElementById('quote-edit-error').innerHTML = '<div class="alert alert-error">At least one complete line item is required.</div>'; return; }
+  try {
+    const btn = document.getElementById('btn-save-quote');
+    if (btn) btn.disabled = true;
+    let q;
+    if (id) {
+      q = await api('PUT', '/quotes/' + id, { customer_name, city_code: city_code || null, notes, line_items: validItems });
+      navigate('view-quote', id);
+    } else {
+      q = await api('POST', '/quotes', { customer_name, city_code: city_code || null, notes, line_items: validItems });
+      navigate('view-quote', q.id);
+    }
+  } catch(err) {
+    document.getElementById('quote-edit-error').innerHTML = '<div class="alert alert-error">' + escHtml(err.message) + '</div>';
+    const btn = document.getElementById('btn-save-quote');
+    if (btn) btn.disabled = false;
+  }
+}
+
+async function renderViewQuote(el, id) {
+  el.innerHTML = '<div class="loading">Loading…</div>';
+  try {
+    const q = await api('GET', '/quotes/' + id);
+    const canEdit = state.user.role === 'admin' || q.requester_id === state.user.id;
+    const canDelete = state.user.role === 'admin' || q.requester_id === state.user.id;
+    el.innerHTML =
+      '<div class="page-header">' +
+        '<div><div class="page-title">' + escHtml(q.quote_number) + '</div><div class="page-subtitle" style="color:var(--text-muted-color)">Quote</div></div>' +
+        '<div class="flex-gap">' +
+          '<button class="btn btn-secondary" onclick="navigate(\'quotes\')">&larr; Back</button>' +
+          '<button class="btn btn-secondary" onclick="printQuote(' + q.id + ')">' + icons.print + ' Print Quote</button>' +
+          (canEdit ? '<button class="btn btn-secondary" onclick="navigate(\'edit-quote\',' + q.id + ')">' + icons.edit + ' Edit</button>' : '') +
+          (canDelete ? '<button class="btn btn-danger btn-sm" onclick="deleteQuote(' + q.id + ')">' + icons.trash + '</button>' : '') +
+        '</div>' +
+      '</div>' +
+      '<div id="view-quote-error"></div>' +
+      '<div class="card mb-4"><div class="card-header"><span class="card-title">Quote Information</span></div><div class="card-body">' +
+        '<div class="detail-grid">' +
+          '<div class="detail-field"><label>Quote Number</label><p>' + escHtml(q.quote_number) + '</p></div>' +
+          '<div class="detail-field"><label>Customer Name</label><p>' + escHtml(q.customer_name) + '</p></div>' +
+          (q.city_code ? '<div class="detail-field"><label>City</label><p>' + escHtml(q.city_code) + '</p></div>' : '') +
+          '<div class="detail-field"><label>Prepared By</label><p>' + escHtml(q.requester_name || '—') + '</p></div>' +
+          '<div class="detail-field"><label>Date</label><p>' + formatDate(q.created_at) + '</p></div>' +
+          (q.notes ? '<div class="detail-field" style="grid-column:1/-1"><label>Notes</label><p>' + escHtml(q.notes) + '</p></div>' : '') +
+        '</div>' +
+      '</div></div>' +
+      '<div class="card"><div class="card-header"><span class="card-title">Line Items</span></div><div class="card-body">' +
+        '<div class="table-wrap"><table class="line-items-table">' +
+          '<thead><tr><th>Item #</th><th>Manufacturer</th><th>Description</th><th>Qty</th><th>Unit Price</th><th class="text-right">Total</th></tr></thead>' +
+          '<tbody>' + q.line_items.map(function(item) {
+            return '<tr>' +
+              '<td>' + escHtml(item.item_number || '—') + '</td>' +
+              '<td>' + escHtml(item.manufacturer || '—') + '</td>' +
+              '<td>' + escHtml(item.description) + '</td>' +
+              '<td>' + item.quantity + '</td>' +
+              '<td>$' + parseFloat(item.unit_price).toFixed(2) + '</td>' +
+              '<td class="text-right">$' + (parseFloat(item.quantity) * parseFloat(item.unit_price)).toFixed(2) + '</td>' +
+            '</tr>';
+          }).join('') + '</tbody>' +
+          '<tfoot><tr class="total-row"><td colspan="5" class="text-right">Grand Total</td><td class="text-right">$' + parseFloat(q.total_amount).toFixed(2) + '</td></tr></tfoot>' +
+        '</table></div>' +
+      '</div></div>';
+  } catch(err) {
+    el.innerHTML = '<div class="alert alert-error">' + escHtml(err.message) + '</div>';
+  }
+}
+
+async function deleteQuote(id) {
+  if (!confirm('Permanently delete this quote? This cannot be undone.')) return;
+  try { await api('DELETE', '/quotes/' + id); navigate('quotes'); }
+  catch(err) { document.getElementById('view-quote-error').innerHTML = '<div class="alert alert-error">' + escHtml(err.message) + '</div>'; }
+}
+
+async function printQuote(id) {
+  try {
+    const results = await Promise.all([
+      api('GET', '/quotes/' + id),
+      api('GET', '/settings').catch(function() { return {}; })
+    ]);
+    const q = results[0];
+    const settings = results[1];
+
+    function esc(s) { return String(s == null ? '' : s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
+
+    const logoHtml = settings.logo
+      ? '<img src="' + settings.logo + '" style="height:56px;max-width:200px;object-fit:contain;display:block" alt="Logo" />'
+      : '<div style="font-size:22px;font-weight:600;color:#f97316;letter-spacing:-0.3px">PO System</div>';
+
+    const detailFields = [
+      { label: 'Customer Name', value: q.customer_name },
+      { label: 'City', value: q.city_code || '—' },
+      { label: 'Prepared By', value: q.requester_name || '—' },
+      { label: 'Date', value: formatDate(q.created_at) }
+    ];
+
+    const detailGrid = detailFields.map(function(d) {
+      return '<div>' +
+        '<div style="font-size:11px;font-weight:600;color:#6b7280;text-transform:uppercase;letter-spacing:0.05em;margin-bottom:4px">' + esc(d.label) + '</div>' +
+        '<div style="font-size:14px;color:#111">' + esc(d.value) + '</div>' +
+      '</div>';
+    }).join('');
+
+    const itemRows = q.line_items.map(function(item) {
+      const lineTotal = (parseFloat(item.quantity) * parseFloat(item.unit_price)).toFixed(2);
+      return '<tr>' +
+        '<td style="padding:10px 8px;color:#6b7280;border-bottom:1px solid #f3f4f6">' + esc(item.item_number || '—') + '</td>' +
+        '<td style="padding:10px 8px;color:#6b7280;border-bottom:1px solid #f3f4f6">' + esc(item.manufacturer || '—') + '</td>' +
+        '<td style="padding:10px 8px;border-bottom:1px solid #f3f4f6">' + esc(item.description) + '</td>' +
+        '<td style="padding:10px 8px;text-align:right;border-bottom:1px solid #f3f4f6">' + esc(item.quantity) + '</td>' +
+        '<td style="padding:10px 8px;text-align:right;border-bottom:1px solid #f3f4f6">$' + parseFloat(item.unit_price).toFixed(2) + '</td>' +
+        '<td style="padding:10px 8px;text-align:right;border-bottom:1px solid #f3f4f6">$' + lineTotal + '</td>' +
+      '</tr>';
+    }).join('');
+
+    const notesHtml = q.notes
+      ? '<div style="padding:20px 32px;border-bottom:1px solid #e5e7eb">' +
+          '<div style="font-size:11px;font-weight:600;color:#6b7280;text-transform:uppercase;letter-spacing:0.05em;margin-bottom:6px">Notes</div>' +
+          '<div style="font-size:13px;color:#6b7280">' + esc(q.notes) + '</div>' +
+        '</div>'
+      : '';
+
+    const today = new Date().toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+
+    const html = '<!DOCTYPE html><html><head><meta charset="UTF-8"><title>' + esc(q.quote_number) + '</title>' +
+      '<style>' +
+      '* { margin:0; padding:0; box-sizing:border-box; }' +
+      'body { font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; background:#f3f4f6; color:#111; }' +
+      '.no-print { background:white; padding:12px 24px; border-bottom:1px solid #e5e7eb; display:flex; gap:8px; align-items:center; position:sticky; top:0; z-index:10; box-shadow:0 1px 3px rgba(0,0,0,0.08); }' +
+      '.btn-print { background:#f97316; color:white; border:none; padding:9px 18px; border-radius:6px; font-size:14px; font-weight:500; cursor:pointer; }' +
+      '.btn-print:hover { background:#ea6a00; }' +
+      '.btn-close { background:transparent; color:#6b7280; border:1px solid #d1d5db; padding:9px 18px; border-radius:6px; font-size:14px; cursor:pointer; }' +
+      '.hint { font-size:12px; color:#9ca3af; margin-left:4px; }' +
+      '.page { max-width:800px; margin:24px auto 48px; background:white; border-radius:8px; overflow:hidden; box-shadow:0 1px 4px rgba(0,0,0,0.12); }' +
+      '@media print {' +
+      '  .no-print { display:none !important; }' +
+      '  body { background:white; }' +
+      '  .page { margin:0; box-shadow:none; border-radius:0; max-width:100%; }' +
+      '  * { -webkit-print-color-adjust:exact !important; print-color-adjust:exact !important; }' +
+      '}' +
+      '</style></head><body>' +
+      '<div class="no-print">' +
+        '<button class="btn-print" onclick="window.print()">&#128438;&nbsp; Print / Save as PDF</button>' +
+        '<button class="btn-close" onclick="window.close()">Close</button>' +
+        '<span class="hint">Tip: select &ldquo;Save as PDF&rdquo; in the print dialog</span>' +
+      '</div>' +
+      '<div class="page">' +
+        '<div style="background:#0f0f0f;padding:24px 32px;display:flex;justify-content:space-between;align-items:center">' +
+          '<div>' + logoHtml + '</div>' +
+          '<div style="text-align:right">' +
+            '<div style="font-size:18px;font-weight:500;color:#f0f0f0">' + esc(q.quote_number) + '</div>' +
+            '<div style="margin-top:8px"><span style="display:inline-flex;padding:3px 12px;border-radius:20px;font-size:11px;font-weight:600;background:#0d1e30;color:#60a5fa;border:1px solid #1e3a5f">Quote</span></div>' +
+          '</div>' +
+        '</div>' +
+        '<div style="padding:24px 32px;border-bottom:1px solid #e5e7eb">' +
+          '<div style="display:grid;grid-template-columns:1fr 1fr 1fr 1fr;gap:20px">' + detailGrid + '</div>' +
+        '</div>' +
+        '<div style="padding:24px 32px;border-bottom:1px solid #e5e7eb">' +
+          '<div style="font-size:11px;font-weight:600;color:#6b7280;text-transform:uppercase;letter-spacing:0.05em;margin-bottom:12px">Line items</div>' +
+          '<table style="width:100%;border-collapse:collapse;font-size:13px">' +
+            '<thead><tr style="border-bottom:2px solid #e5e7eb">' +
+              '<th style="text-align:left;padding:8px;font-size:11px;font-weight:600;color:#6b7280;text-transform:uppercase;letter-spacing:0.05em">Item #</th>' +
+              '<th style="text-align:left;padding:8px;font-size:11px;font-weight:600;color:#6b7280;text-transform:uppercase;letter-spacing:0.05em">Manufacturer</th>' +
+              '<th style="text-align:left;padding:8px;font-size:11px;font-weight:600;color:#6b7280;text-transform:uppercase;letter-spacing:0.05em">Description</th>' +
+              '<th style="text-align:right;padding:8px;font-size:11px;font-weight:600;color:#6b7280;text-transform:uppercase;letter-spacing:0.05em">Qty</th>' +
+              '<th style="text-align:right;padding:8px;font-size:11px;font-weight:600;color:#6b7280;text-transform:uppercase;letter-spacing:0.05em">Unit price</th>' +
+              '<th style="text-align:right;padding:8px;font-size:11px;font-weight:600;color:#6b7280;text-transform:uppercase;letter-spacing:0.05em">Total</th>' +
+            '</tr></thead>' +
+            '<tbody>' + itemRows + '</tbody>' +
+            '<tfoot><tr style="border-top:2px solid #e5e7eb">' +
+              '<td colspan="5" style="padding:12px 8px;text-align:right;font-weight:600;font-size:13px;color:#6b7280">Grand total</td>' +
+              '<td style="padding:12px 8px;text-align:right;font-size:17px;font-weight:700;color:#f97316">$' + parseFloat(q.total_amount).toFixed(2) + '</td>' +
+            '</tr></tfoot>' +
+          '</table>' +
+        '</div>' +
+        notesHtml +
+        '<div style="background:#f9fafb;padding:14px 32px;display:flex;justify-content:space-between;font-size:11px;color:#9ca3af;border-top:1px solid #e5e7eb">' +
+          '<span>PO System &mdash; popalockar.com</span>' +
+          '<span>Generated ' + today + '</span>' +
+        '</div>' +
+      '</div>' +
+      '</body></html>';
+
+    const win = window.open('', '_blank', 'width=900,height=700');
+    if (!win) { alert('Pop-up blocked. Please allow pop-ups for this site to print quotes.'); return; }
+    win.document.write(html);
+    win.document.close();
+    win.focus();
+  } catch(err) {
+    alert('Print failed: ' + err.message);
+  }
 }
 
 render();
