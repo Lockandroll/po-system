@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Lock and Roll LLC</title>
+  <title>Lock and Roll</title>
   <style>
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
     :root {
@@ -718,6 +718,10 @@ async function showUserModal(id) {
           '<div class="form-group"><label>Phone</label><input type="text" id="modal-phone" value="' + escHtml(user ? user.phone || '' : '') + '" placeholder="e.g. 321-208-0441" /></div>' +
           '<div class="form-group"><label>Role</label><select id="modal-role"><option value="requester"' + (user&&user.role==='requester'?' selected':'') + '>Requester</option><option value="approver"' + (user&&user.role==='approver'?' selected':'') + '>Approver</option><option value="admin"' + (user&&user.role==='admin'?' selected':'') + '>Admin</option></select></div>' +
           '</div>' +
+        '<div class="form-group" style="display:flex;align-items:center;gap:10px">' +
+          '<input type="checkbox" id="modal-receive-emails" style="width:auto"' + (user && user.receive_emails === false ? '' : ' checked') + ' />' +
+          '<label for="modal-receive-emails" style="margin:0;cursor:pointer">Receive email notifications</label>' +
+        '</div>' +
       '</div>' +
       '<div class="modal-footer"><button class="btn btn-secondary" onclick="this.closest(\'.modal-overlay\').remove()">Cancel</button><button class="btn btn-primary" onclick="saveUser(' + (id||'null') + ', this)">Save</button></div>' +
     '</div>';
@@ -730,10 +734,11 @@ async function saveUser(id, btn) {
   const password = document.getElementById('modal-password').value;
   const role = document.getElementById('modal-role').value;
   const phone = document.getElementById('modal-phone').value.trim();
+  const receive_emails = document.getElementById('modal-receive-emails').checked;
   try {
     btn.disabled = true;
-    if (id) { await api('PUT', '/users/' + id, { name, email, password: password || undefined, role, phone: phone || undefined }); }
-    else { await api('POST', '/users', { name, email, password, role, phone: phone || undefined }); }
+    if (id) { await api('PUT', '/users/' + id, { name, email, password: password || undefined, role, phone: phone || undefined, receive_emails }); }
+    else { await api('POST', '/users', { name, email, password, role, phone: phone || undefined, receive_emails }); }
     document.querySelector('.modal-overlay').remove();
     navigate('users');
   } catch(err) {
