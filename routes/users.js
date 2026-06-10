@@ -1,89 +1,98 @@
-const express = require('express');
-const bcrypt = require('bcryptjs');
-const { pool } = require('../db');
-const { requireAuth, requireRole } = require('../middleware/auth');
+const { Pool } = require('pg');
 
-const router = express.Router();
-
-// List all users (admin only)
-router.get('/', requireAuth, requireRole('admin'), async (req, res) => {
-  const { rows } = await pool.query(
-    'SELECT id, name, email, phone, role, active, created_at FROM users ORDER BY active DESC, name ASC'
-  );
-  res.json(rows);
+const pool = new Pool({
+  connectionString: process.env.DATABASE_URL,
+  ssl: process.env.DATABASE_URL && process.env.DATABASE_URL.includes('railway.internal') ? false : (process.env.NODE_ENV === 'production' ? { rejectUnauthorized: false } : false)
 });
 
-// Create user (admin only)
-router.post('/', requireAuth, requireRole('admin'), async (req, res) => {
-  const { name, email, password, role, phone } = req.body;
-  if (!name || !email || !password || !role) {
-    return res.status(400).json({ error: 'Name, email, password, and role are required' });
-  }
-  if (!['requester', 'approver', 'admin'].includes(role)) {
-    return res.status(400).json({ error: 'Role must be requester, approver, or admin' });
-  }
-  const password_hash = await bcrypt.hash(password, 12);
+async function initDB() {
+  const client = await pool.connect();
   try {
-    const { rows } = await pool.query(
-      'INSERT INTO users (name, email, password_hash, role, phone) VALUES ($1, $2, $3, $4, $5) RETURNING id, name, email, phone, role, active',
-      [name, email, password_hash, role, phone || null]
+    await client.query(
+      'CREATE TABLE IF NOT EXISTS users (' +
+      '  id SERIAL PRIMARY KEY,' +
+      '  email VARCHAR(255) UNIQUE NOT NULL,' +
+      '  name VARCHAR(255) NOT NULL,' +
+      '  password_hash VARCHAR(255) NOT NULL,' +
+      "  role VARCHAR(50) NOT NULL DEFAULT 'requester'," +
+      '  created_at TIMESTAMP DEFAULT NOW()' +
+      ');' +
+      'CREATE TABLE IF NOT EXISTS purchase_orders (' +
+      '  id SERIAL PRIMARY KEY,' +
+      '  po_number VARCHAR(50) UNIQUE NOT NULL,' +
+      '  requester_id INTEGER REFERENCES users(id),' +
+      '  vendor_name VARCHAR(255) NOT NULL,' +
+      '  notes TEXT,' +
+      "  status VARCHAR(50) NOT NULL DEFAULT 'draft'," +
+      '  approver_id INTEGER REFERENCES users(id),' +
+      '  approved_at TIMESTAMP,' +
+      '  rejection_reason TEXT,' +
+      '  total_amount DECIMAL(10,2) DEFAULT 0,' +
+      '  created_at TIMESTAMP DEFAULT NOW(),' +
+      '  updated_at TIMESTAMP DEFAULT NOW()' +
+      ');' +
+      'CREATE TABLE IF NOT EXISTS po_line_items (' +
+      '  id SERIAL PRIMARY KEY,' +
+      '  po_id INTEGER REFERENCES purchase_orders(id) ON DELETE CASCADE,' +
+      '  description VARCHAR(500) NOT NULL,' +
+      '  quantity DECIMAL(10,2) NOT NULL,' +
+      '  unit_price DECIMAL(10,2) NOT NULL' +
+      ');'
     );
-    res.status(201).json(rows[0]);
-  } catch (err) {
-    if (err.code === '23505') return res.status(400).json({ error: 'Email already in use' });
-    throw err;
+    await client.query(
+      'CREATE TABLE IF NOT EXISTS cities (' +
+      '  id SERIAL PRIMARY KEY,' +
+      '  name VARCHAR(255) NOT NULL,' +
+      '  code CHAR(3) NOT NULL UNIQUE,' +
+      '  active BOOLEAN NOT NULL DEFAULT true,' +
+      '  created_at TIMESTAMP DEFAULT NOW()' +
+      ');'
+    );
+    await client.query(
+      'CREATE TABLE IF NOT EXISTS settings (' +
+      '  key VARCHAR(100) PRIMARY KEY,' +
+      '  value TEXT,' +
+      '  updated_at TIMESTAMP DEFAULT NOW()' +
+      ');'
+    );
+    await client.query(
+      'CREATE TABLE IF NOT EXISTS quotes (' +
+      '  id SERIAL PRIMARY KEY,' +
+      '  quote_number VARCHAR(50) UNIQUE NOT NULL,' +
+      '  requester_id INTEGER REFERENCES users(id),' +
+      '  customer_name VARCHAR(255) NOT NULL,' +
+      '  city_code CHAR(3),' +
+      '  notes TEXT,' +
+      '  total_amount DECIMAL(10,2) DEFAULT 0,' +
+      '  created_at TIMESTAMP DEFAULT NOW(),' +
+      '  updated_at TIMESTAMP DEFAULT NOW()' +
+      ');' +
+      'CREATE TABLE IF NOT EXISTS quote_line_items (' +
+      '  id SERIAL PRIMARY KEY,' +
+      '  quote_id INTEGER REFERENCES quotes(id) ON DELETE CASCADE,' +
+      '  item_number VARCHAR(100),' +
+      '  manufacturer VARCHAR(255),' +
+      '  description VARCHAR(500) NOT NULL,' +
+      '  quantity DECIMAL(10,2) NOT NULL,' +
+      '  unit_price DECIMAL(10,2) NOT NULL' +
+      ');'
+    );
+    await client.query(
+      'ALTER TABLE purchase_orders ADD COLUMN IF NOT EXISTS customer_name VARCHAR(255);' +
+      'ALTER TABLE purchase_orders ADD COLUMN IF NOT EXISTS city_code CHAR(3);' +
+      'ALTER TABLE po_line_items ADD COLUMN IF NOT EXISTS item_number VARCHAR(100);' +
+      'ALTER TABLE po_line_items ADD COLUMN IF NOT EXISTS manufacturer VARCHAR(255);' +
+      'ALTER TABLE users ADD COLUMN IF NOT EXISTS active BOOLEAN NOT NULL DEFAULT true;' +
+      'ALTER TABLE users ADD COLUMN IF NOT EXISTS phone VARCHAR(50);' +
+      'ALTER TABLE quotes ADD COLUMN IF NOT EXISTS important_info TEXT;' +
+      'ALTER TABLE quotes ADD COLUMN IF NOT EXISTS tax_rate DECIMAL(5,2) DEFAULT 0;' +
+      'ALTER TABLE quotes ADD COLUMN IF NOT EXISTS tax_amount DECIMAL(10,2) DEFAULT 0;' +
+      'ALTER TABLE quote_line_items ADD COLUMN IF NOT EXISTS list_price DECIMAL(10,2);'
+    );
+    console.log('Database initialized');
+  } finally {
+    client.release();
   }
-});
+}
 
-// Update user (admin only)
-router.put('/:id', requireAuth, requireRole('admin'), async (req, res) => {
-  const { name, email, role, password, phone } = req.body;
-  const { id } = req.params;
-  let query, params;
-  if (password) {
-    const password_hash = await bcrypt.hash(password, 12);
-    query = 'UPDATE users SET name=$1, email=$2, role=$3, password_hash=$4, phone=$5 WHERE id=$6 RETURNING id, name, email, phone, role, active';
-    params = [name, email, role, password_hash, phone || null, id];
-  } else {
-    query = 'UPDATE users SET name=$1, email=$2, role=$3, phone=$4 WHERE id=$5 RETURNING id, name, email, phone, role, active';
-    params = [name, email, role, phone || null, id];
-  }
-  const { rows } = await pool.query(query, params);
-  if (!rows[0]) return res.status(404).json({ error: 'User not found' });
-  res.json(rows[0]);
-});
-
-// Deactivate user (admin only)
-router.post('/:id/deactivate', requireAuth, requireRole('admin'), async (req, res) => {
-  const { id } = req.params;
-  if (parseInt(id) === req.user.id) {
-    return res.status(400).json({ error: 'Cannot deactivate your own account' });
-  }
-  const { rows } = await pool.query('UPDATE users SET active=false WHERE id=$1 RETURNING id', [id]);
-  if (!rows[0]) return res.status(404).json({ error: 'User not found' });
-  res.json({ success: true });
-});
-
-// Reactivate user (admin only)
-router.post('/:id/reactivate', requireAuth, requireRole('admin'), async (req, res) => {
-  const { id } = req.params;
-  const { rows } = await pool.query('UPDATE users SET active=true WHERE id=$1 RETURNING id', [id]);
-  if (!rows[0]) return res.status(404).json({ error: 'User not found' });
-  res.json({ success: true });
-});
-
-// Delete user (admin only — only if no POs)
-router.delete('/:id', requireAuth, requireRole('admin'), async (req, res) => {
-  const { id } = req.params;
-  if (parseInt(id) === req.user.id) {
-    return res.status(400).json({ error: 'Cannot delete your own account' });
-  }
-  const { rows: poRows } = await pool.query('SELECT COUNT(*) FROM purchase_orders WHERE requester_id=$1', [id]);
-  if (parseInt(poRows[0].count) > 0) {
-    return res.status(400).json({ error: 'Cannot delete user — they have existing purchase orders. Deactivate instead.' });
-  }
-  await pool.query('DELETE FROM users WHERE id = $1', [id]);
-  res.json({ success: true });
-});
-
-module.exports = router;
+module.exports = { pool, initDB };
