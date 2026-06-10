@@ -1091,6 +1091,20 @@ function resolveTokens(text) {
 
 let quoteLineItems = [];
 
+function renderQuoteRows(quotes, isAdmin) {
+  return quotes.map(function(q) {
+    return '<tr>' +
+      '<td><strong>' + escHtml(q.quote_number) + '</strong></td>' +
+      '<td>' + escHtml(q.customer_name) + '</td>' +
+      '<td>' + escHtml(q.city_code || '—') + '</td>' +
+      (isAdmin ? '<td>' + escHtml(q.requester_name || '—') + '</td>' : '') +
+      '<td>$' + parseFloat(q.total_amount).toFixed(2) + '</td>' +
+      '<td>' + formatDate(q.created_at) + '</td>' +
+      '<td><button class="btn btn-secondary btn-sm" onclick="navigate(\'view-quote\',' + q.id + ')">View</button></td>' +
+    '</tr>';
+  }).join('');
+}
+
 async function renderQuotes(el) {
   try {
     const quotes = await api('GET', '/quotes');
@@ -1102,27 +1116,40 @@ async function renderQuotes(el) {
       '</div>' +
       '<div id="quotes-error"></div>' +
       '<div class="card">' +
-        '<div class="card-header"><span class="card-title">Quote List</span></div>' +
+        '<div class="card-header" style="display:flex;justify-content:space-between;align-items:center">' +
+          '<span class="card-title">Quote List</span>' +
+          '<input type="text" id="quote-search" placeholder="Search quote #, customer, city..." style="width:280px" oninput="filterQuotes()" />' +
+        '</div>' +
         (quotes.length === 0
           ? '<div class="empty-state"><h3>No quotes yet</h3><p>Create your first quote to get started.</p></div>'
-          : '<div class="table-wrap"><table>' +
+          : '<div class="table-wrap"><table id="quotes-table">' +
               '<thead><tr><th>Quote #</th><th>Customer</th><th>City</th>' + (isAdmin ? '<th>Created By</th>' : '') + '<th>Total</th><th>Date</th><th></th></tr></thead>' +
-              '<tbody>' + quotes.map(function(q) {
-                return '<tr>' +
-                  '<td><strong>' + escHtml(q.quote_number) + '</strong></td>' +
-                  '<td>' + escHtml(q.customer_name) + '</td>' +
-                  '<td>' + escHtml(q.city_code || '—') + '</td>' +
-                  (isAdmin ? '<td>' + escHtml(q.requester_name || '—') + '</td>' : '') +
-                  '<td>$' + parseFloat(q.total_amount).toFixed(2) + '</td>' +
-                  '<td>' + formatDate(q.created_at) + '</td>' +
-                  '<td><button class="btn btn-secondary btn-sm" onclick="navigate(\'view-quote\',' + q.id + ')">View</button></td>' +
-                '</tr>';
-              }).join('') +
-            '</tbody></table></div>') +
+              '<tbody id="quotes-tbody">' + renderQuoteRows(quotes, isAdmin) + '</tbody>' +
+            '</table></div>') +
       '</div>';
+
+    window._quotesData = quotes;
+    window._quotesIsAdmin = isAdmin;
   } catch(err) {
     el.innerHTML = '<div class="alert alert-error">' + escHtml(err.message) + '</div>';
   }
+}
+
+function filterQuotes() {
+  const q = (document.getElementById('quote-search').value || '').toLowerCase();
+  const tbody = document.getElementById('quotes-tbody');
+  if (!tbody || !window._quotesData) return;
+  const filtered = q
+    ? window._quotesData.filter(function(r) {
+        return (r.quote_number||'').toLowerCase().includes(q) ||
+               (r.customer_name||'').toLowerCase().includes(q) ||
+               (r.city_code||'').toLowerCase().includes(q) ||
+               (r.requester_name||'').toLowerCase().includes(q);
+      })
+    : window._quotesData;
+  tbody.innerHTML = filtered.length
+    ? renderQuoteRows(filtered, window._quotesIsAdmin)
+    : '<tr><td colspan="7" style="text-align:center;padding:24px;color:var(--text-muted-color)">No matching quotes.</td></tr>';
 }
 
 async function renderEditQuote(el, id) {
