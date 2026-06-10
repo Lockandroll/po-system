@@ -35,6 +35,9 @@ router.post('/login', async (req, res) => {
   if (!user || !(await bcrypt.compare(password, user.password_hash))) {
     return res.status(401).json({ error: 'Invalid email or password' });
   }
+  if (user.active === false) {
+    return res.status(403).json({ error: 'Your account has been deactivated. Contact an administrator.' });
+  }
   const token = jwt.sign({ id: user.id, email: user.email, name: user.name, role: user.role }, process.env.JWT_SECRET, { expiresIn: '7d' });
   res.json({ token, user: { id: user.id, name: user.name, email: user.email, role: user.role } });
 });
