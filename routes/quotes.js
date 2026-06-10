@@ -68,11 +68,14 @@ router.post('/', requireAuth, async (req, res) => {
   const initials = getInitials(req.user.name);
   const quote_number = await generateQuoteNumber(initials);
   const taxRateVal = parseFloat(tax_rate) || 0;
-  // Subtotal and total based on list_price (customer-facing cost)
+  // Subtotal based on list_price; tax only on taxable items
   const subtotal = (line_items || []).reduce(function(sum, item) {
     return sum + ((parseFloat(item.quantity) || 0) * (parseFloat(item.list_price) || 0));
   }, 0);
-  const tax_amount = subtotal * taxRateVal / 100;
+  const taxableSubtotal = (line_items || []).reduce(function(sum, item) {
+    return item.taxable ? sum + ((parseFloat(item.quantity) || 0) * (parseFloat(item.list_price) || 0)) : sum;
+  }, 0);
+  const tax_amount = taxableSubtotal * taxRateVal / 100;
   const total = subtotal + tax_amount;
   const client = await pool.connect();
   try {
@@ -84,8 +87,8 @@ router.post('/', requireAuth, async (req, res) => {
     const quote = rows[0];
     for (const item of (line_items || [])) {
       await client.query(
-        'INSERT INTO quote_line_items (quote_id, item_number, manufacturer, description, quantity, unit_price, list_price) VALUES ($1,$2,$3,$4,$5,$6,$7)',
-        [quote.id, item.item_number || null, item.manufacturer || null, item.description, item.quantity, item.unit_price || 0, item.list_price || 0]
+        'INSERT INTO quote_line_items (quote_id, item_number, manufacturer, description, quantity, unit_price, list_price, taxable) VALUES ($1,$2,$3,$4,$5,$6,$7,$8)',
+        [quote.id, item.item_number || null, item.manufacturer || null, item.description, item.quantity, item.unit_price || 0, item.list_price || 0, item.taxable || false]
       );
     }
     await client.query('COMMIT');
@@ -114,7 +117,10 @@ router.put('/:id', requireAuth, async (req, res) => {
     const subtotal = (line_items || []).reduce(function(sum, item) {
       return sum + ((parseFloat(item.quantity) || 0) * (parseFloat(item.list_price) || 0));
     }, 0);
-    const tax_amount = subtotal * taxRateVal / 100;
+    const taxableSubtotal = (line_items || []).reduce(function(sum, item) {
+      return item.taxable ? sum + ((parseFloat(item.quantity) || 0) * (parseFloat(item.list_price) || 0)) : sum;
+    }, 0);
+    const tax_amount = taxableSubtotal * taxRateVal / 100;
     const total = subtotal + tax_amount;
     const client = await pool.connect();
     try {
@@ -126,8 +132,8 @@ router.put('/:id', requireAuth, async (req, res) => {
       await client.query('DELETE FROM quote_line_items WHERE quote_id = $1', [req.params.id]);
       for (const item of (line_items || [])) {
         await client.query(
-          'INSERT INTO quote_line_items (quote_id, item_number, manufacturer, description, quantity, unit_price, list_price) VALUES ($1,$2,$3,$4,$5,$6,$7)',
-          [req.params.id, item.item_number || null, item.manufacturer || null, item.description, item.quantity, item.unit_price || 0, item.list_price || 0]
+          'INSERT INTO quote_line_items (quote_id, item_number, manufacturer, description, quantity, unit_price, list_price, taxable) VALUES ($1,$2,$3,$4,$5,$6,$7,$8)',
+          [req.params.id, item.item_number || null, item.manufacturer || null, item.description, item.quantity, item.unit_price || 0, item.list_price || 0, item.taxable || false]
         );
       }
       await client.query('COMMIT');
