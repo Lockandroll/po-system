@@ -1,6 +1,6 @@
 const express = require('express');
 const { pool } = require('../db');
-const { requireAuth, requireRole } = require('../middleware/auth');
+const { requireAuth } = require('../middleware/auth');
 
 const router = express.Router();
 
@@ -37,11 +37,11 @@ router.get('/', requireAuth, async (req, res) => {
   }
 });
 
-// GET single quote with line items
+// GET single quote with line items and requester contact info
 router.get('/:id', requireAuth, async (req, res) => {
   try {
     const { rows } = await pool.query(
-      'SELECT q.*, u.name as requester_name FROM quotes q JOIN users u ON q.requester_id = u.id WHERE q.id = $1',
+      'SELECT q.*, u.name as requester_name, u.email as requester_email, u.phone as requester_phone FROM quotes q JOIN users u ON q.requester_id = u.id WHERE q.id = $1',
       [req.params.id]
     );
     if (!rows.length) return res.status(404).json({ error: 'Quote not found' });
@@ -63,25 +63,29 @@ router.get('/:id', requireAuth, async (req, res) => {
 
 // POST create quote
 router.post('/', requireAuth, async (req, res) => {
-  const { customer_name, city_code, notes, line_items } = req.body;
+  const { customer_name, city_code, notes, important_info, tax_rate, line_items } = req.body;
   if (!customer_name) return res.status(400).json({ error: 'Customer name is required' });
   const initials = getInitials(req.user.name);
   const quote_number = await generateQuoteNumber(initials);
-  const total = (line_items || []).reduce(function(sum, item) {
-    return sum + ((parseFloat(item.quantity) || 0) * (parseFloat(item.unit_price) || 0));
+  const taxRateVal = parseFloat(tax_rate) || 0;
+  // Subtotal and total based on list_price (customer-facing cost)
+  const subtotal = (line_items || []).reduce(function(sum, item) {
+    return sum + ((parseFloat(item.quantity) || 0) * (parseFloat(item.list_price) || 0));
   }, 0);
+  const tax_amount = subtotal * taxRateVal / 100;
+  const total = subtotal + tax_amount;
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
     const { rows } = await client.query(
-      'INSERT INTO quotes (quote_number, requester_id, customer_name, city_code, notes, total_amount) VALUES ($1,$2,$3,$4,$5,$6) RETURNING *',
-      [quote_number, req.user.id, customer_name, city_code || null, notes || null, total]
+      'INSERT INTO quotes (quote_number, requester_id, customer_name, city_code, notes, important_info, tax_rate, tax_amount, total_amount) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING *',
+      [quote_number, req.user.id, customer_name, city_code || null, notes || null, important_info || null, taxRateVal, tax_amount, total]
     );
     const quote = rows[0];
     for (const item of (line_items || [])) {
       await client.query(
-        'INSERT INTO quote_line_items (quote_id, item_number, manufacturer, description, quantity, unit_price) VALUES ($1,$2,$3,$4,$5,$6)',
-        [quote.id, item.item_number || null, item.manufacturer || null, item.description, item.quantity, item.unit_price]
+        'INSERT INTO quote_line_items (quote_id, item_number, manufacturer, description, quantity, unit_price, list_price) VALUES ($1,$2,$3,$4,$5,$6,$7)',
+        [quote.id, item.item_number || null, item.manufacturer || null, item.description, item.quantity, item.unit_price || 0, item.list_price || 0]
       );
     }
     await client.query('COMMIT');
@@ -104,23 +108,26 @@ router.put('/:id', requireAuth, async (req, res) => {
     if (req.user.role !== 'admin' && quote.requester_id !== req.user.id) {
       return res.status(403).json({ error: 'Access denied' });
     }
-    const { customer_name, city_code, notes, line_items } = req.body;
+    const { customer_name, city_code, notes, important_info, tax_rate, line_items } = req.body;
     if (!customer_name) return res.status(400).json({ error: 'Customer name is required' });
-    const total = (line_items || []).reduce(function(sum, item) {
-      return sum + ((parseFloat(item.quantity) || 0) * (parseFloat(item.unit_price) || 0));
+    const taxRateVal = parseFloat(tax_rate) || 0;
+    const subtotal = (line_items || []).reduce(function(sum, item) {
+      return sum + ((parseFloat(item.quantity) || 0) * (parseFloat(item.list_price) || 0));
     }, 0);
+    const tax_amount = subtotal * taxRateVal / 100;
+    const total = subtotal + tax_amount;
     const client = await pool.connect();
     try {
       await client.query('BEGIN');
       await client.query(
-        'UPDATE quotes SET customer_name=$1, city_code=$2, notes=$3, total_amount=$4, updated_at=NOW() WHERE id=$5',
-        [customer_name, city_code || null, notes || null, total, req.params.id]
+        'UPDATE quotes SET customer_name=$1, city_code=$2, notes=$3, important_info=$4, tax_rate=$5, tax_amount=$6, total_amount=$7, updated_at=NOW() WHERE id=$8',
+        [customer_name, city_code || null, notes || null, important_info || null, taxRateVal, tax_amount, total, req.params.id]
       );
       await client.query('DELETE FROM quote_line_items WHERE quote_id = $1', [req.params.id]);
       for (const item of (line_items || [])) {
         await client.query(
-          'INSERT INTO quote_line_items (quote_id, item_number, manufacturer, description, quantity, unit_price) VALUES ($1,$2,$3,$4,$5,$6)',
-          [req.params.id, item.item_number || null, item.manufacturer || null, item.description, item.quantity, item.unit_price]
+          'INSERT INTO quote_line_items (quote_id, item_number, manufacturer, description, quantity, unit_price, list_price) VALUES ($1,$2,$3,$4,$5,$6,$7)',
+          [req.params.id, item.item_number || null, item.manufacturer || null, item.description, item.quantity, item.unit_price || 0, item.list_price || 0]
         );
       }
       await client.query('COMMIT');
