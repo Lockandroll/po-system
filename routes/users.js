@@ -7,13 +7,15 @@ const router = express.Router();
 
 // List all users (admin only)
 router.get('/', requireAuth, requireRole('admin'), async (req, res) => {
-  const { rows } = await pool.query('SELECT id, name, email, role, active, created_at FROM users ORDER BY active DESC, name ASC');
+  const { rows } = await pool.query(
+    'SELECT id, name, email, phone, role, active, created_at FROM users ORDER BY active DESC, name ASC'
+  );
   res.json(rows);
 });
 
 // Create user (admin only)
 router.post('/', requireAuth, requireRole('admin'), async (req, res) => {
-  const { name, email, password, role } = req.body;
+  const { name, email, password, role, phone } = req.body;
   if (!name || !email || !password || !role) {
     return res.status(400).json({ error: 'Name, email, password, and role are required' });
   }
@@ -23,8 +25,8 @@ router.post('/', requireAuth, requireRole('admin'), async (req, res) => {
   const password_hash = await bcrypt.hash(password, 12);
   try {
     const { rows } = await pool.query(
-      'INSERT INTO users (name, email, password_hash, role) VALUES ($1, $2, $3, $4) RETURNING id, name, email, role, active',
-      [name, email, password_hash, role]
+      'INSERT INTO users (name, email, password_hash, role, phone) VALUES ($1, $2, $3, $4, $5) RETURNING id, name, email, phone, role, active',
+      [name, email, password_hash, role, phone || null]
     );
     res.status(201).json(rows[0]);
   } catch (err) {
@@ -35,16 +37,16 @@ router.post('/', requireAuth, requireRole('admin'), async (req, res) => {
 
 // Update user (admin only)
 router.put('/:id', requireAuth, requireRole('admin'), async (req, res) => {
-  const { name, email, role, password } = req.body;
+  const { name, email, role, password, phone } = req.body;
   const { id } = req.params;
   let query, params;
   if (password) {
     const password_hash = await bcrypt.hash(password, 12);
-    query = 'UPDATE users SET name=$1, email=$2, role=$3, password_hash=$4 WHERE id=$5 RETURNING id, name, email, role, active';
-    params = [name, email, role, password_hash, id];
+    query = 'UPDATE users SET name=$1, email=$2, role=$3, password_hash=$4, phone=$5 WHERE id=$6 RETURNING id, name, email, phone, role, active';
+    params = [name, email, role, password_hash, phone || null, id];
   } else {
-    query = 'UPDATE users SET name=$1, email=$2, role=$3 WHERE id=$4 RETURNING id, name, email, role, active';
-    params = [name, email, role, id];
+    query = 'UPDATE users SET name=$1, email=$2, role=$3, phone=$4 WHERE id=$5 RETURNING id, name, email, phone, role, active';
+    params = [name, email, role, phone || null, id];
   }
   const { rows } = await pool.query(query, params);
   if (!rows[0]) return res.status(404).json({ error: 'User not found' });
@@ -57,10 +59,7 @@ router.post('/:id/deactivate', requireAuth, requireRole('admin'), async (req, re
   if (parseInt(id) === req.user.id) {
     return res.status(400).json({ error: 'Cannot deactivate your own account' });
   }
-  const { rows } = await pool.query(
-    'UPDATE users SET active=false WHERE id=$1 RETURNING id',
-    [id]
-  );
+  const { rows } = await pool.query('UPDATE users SET active=false WHERE id=$1 RETURNING id', [id]);
   if (!rows[0]) return res.status(404).json({ error: 'User not found' });
   res.json({ success: true });
 });
@@ -68,10 +67,7 @@ router.post('/:id/deactivate', requireAuth, requireRole('admin'), async (req, re
 // Reactivate user (admin only)
 router.post('/:id/reactivate', requireAuth, requireRole('admin'), async (req, res) => {
   const { id } = req.params;
-  const { rows } = await pool.query(
-    'UPDATE users SET active=true WHERE id=$1 RETURNING id',
-    [id]
-  );
+  const { rows } = await pool.query('UPDATE users SET active=true WHERE id=$1 RETURNING id', [id]);
   if (!rows[0]) return res.status(404).json({ error: 'User not found' });
   res.json({ success: true });
 });
