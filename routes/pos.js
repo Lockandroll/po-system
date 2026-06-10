@@ -31,16 +31,47 @@ function computeTotal(items) {
   return items.reduce(function(sum, i) { return sum + parseFloat(i.quantity) * parseFloat(i.unit_price); }, 0);
 }
 
+// Helper: get user initials from name
+function getInitials(name) {
+  return (name || '').split(' ').map(function(w){ return w[0] || ''; }).join('').toUpperCase().slice(0, 3);
+}
+
 // Helper: generate PO number
-async function generatePONumber() {
+async function generatePONumber(cityCode, userInitials) {
   const year = new Date().getFullYear();
   const { rows } = await pool.query(
-    'SELECT COUNT(*) FROM purchase_orders WHERE po_number LIKE $1',
-    ['PO-' + year + '-%']
+    'SELECT COUNT(*) FROM purchase_orders WHERE EXTRACT(YEAR FROM created_at) = $1',
+    [year]
   );
   const seq = String(parseInt(rows[0].count) + 1).padStart(4, '0');
-  return 'PO-' + year + '-' + seq;
+  return cityCode + '-' + year + '-' + seq + '-' + userInitials;
 }
+
+// Export all POs with line items as JSON (for CSV download)
+router.get('/export', requireAuth, async (req, res) => {
+  const isApproverOrAdmin = ['approver', 'admin'].includes(req.user.role);
+  const poQuery = isApproverOrAdmin
+    ? 'SELECT po.*, u.name AS requester_name, a.name AS approver_name FROM purchase_orders po LEFT JOIN users u ON po.requester_id = u.id LEFT JOIN users a ON po.approver_id = a.id ORDER BY po.created_at DESC'
+    : 'SELECT po.*, u.name AS requester_name, a.name AS approver_name FROM purchase_orders po LEFT JOIN users u ON po.requester_id = u.id LEFT JOIN users a ON po.approver_id = a.id WHERE po.requester_id = $1 ORDER BY po.created_at DESC';
+  const poParams = isApproverOrAdmin ? [] : [req.user.id];
+  const { rows: pos } = await pool.query(poQuery, poParams);
+
+  const { rows: items } = await pool.query(
+    'SELECT li.*, po.po_number FROM po_line_items li JOIN purchase_orders po ON li.po_id = po.id' +
+    (isApproverOrAdmin ? '' : ' WHERE po.requester_id = $1') +
+    ' ORDER BY li.po_id, li.id',
+    isApproverOrAdmin ? [] : [req.user.id]
+  );
+
+  // Group items by po_number
+  const itemsByPO = {};
+  items.forEach(function(item) {
+    if (!itemsByPO[item.po_number]) itemsByPO[item.po_number] = [];
+    itemsByPO[item.po_number].push(item);
+  });
+
+  res.json({ pos, itemsByPO });
+});
 
 // Get all POs
 router.get('/', requireAuth, async (req, res) => {
@@ -96,20 +127,23 @@ router.get('/:id', requireAuth, async (req, res) => {
 router.post('/', requireAuth, async (req, res) => {
   const vendor_name = req.body.vendor_name;
   const customer_name = req.body.customer_name;
+  const city_code = req.body.city_code;
   const notes = req.body.notes;
   const line_items = req.body.line_items;
   if (!vendor_name) return res.status(400).json({ error: 'Vendor name is required' });
+  if (!city_code) return res.status(400).json({ error: 'City is required' });
   if (!line_items || line_items.length === 0) return res.status(400).json({ error: 'At least one line item is required' });
 
-  const po_number = await generatePONumber();
+  const userInitials = getInitials(req.user.name);
+  const po_number = await generatePONumber(city_code.toUpperCase(), userInitials);
   const total_amount = computeTotal(line_items);
 
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
     const { rows } = await client.query(
-      'INSERT INTO purchase_orders (po_number, requester_id, vendor_name, customer_name, notes, total_amount) VALUES ($1, $2, $3, $4, $5, $6) RETURNING *',
-      [po_number, req.user.id, vendor_name, customer_name || null, notes || null, total_amount]
+      'INSERT INTO purchase_orders (po_number, requester_id, vendor_name, customer_name, city_code, notes, total_amount) VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING *',
+      [po_number, req.user.id, vendor_name, customer_name || null, city_code.toUpperCase(), notes || null, total_amount]
     );
     const po = rows[0];
     for (let i = 0; i < line_items.length; i++) {
@@ -133,6 +167,7 @@ router.post('/', requireAuth, async (req, res) => {
 router.put('/:id', requireAuth, async (req, res) => {
   const vendor_name = req.body.vendor_name;
   const customer_name = req.body.customer_name;
+  const city_code = req.body.city_code;
   const notes = req.body.notes;
   const line_items = req.body.line_items;
   const { rows } = await pool.query('SELECT * FROM purchase_orders WHERE id = $1', [req.params.id]);
@@ -151,8 +186,8 @@ router.put('/:id', requireAuth, async (req, res) => {
   try {
     await client.query('BEGIN');
     const { rows: updated } = await client.query(
-      'UPDATE purchase_orders SET vendor_name=$1, customer_name=$2, notes=$3, total_amount=$4, updated_at=NOW() WHERE id=$5 RETURNING *',
-      [vendor_name || po.vendor_name, customer_name != null ? customer_name : po.customer_name, notes != null ? notes : po.notes, total_amount, req.params.id]
+      'UPDATE purchase_orders SET vendor_name=$1, customer_name=$2, city_code=$3, notes=$4, total_amount=$5, updated_at=NOW() WHERE id=$6 RETURNING *',
+      [vendor_name || po.vendor_name, customer_name != null ? customer_name : po.customer_name, city_code ? city_code.toUpperCase() : po.city_code, notes != null ? notes : po.notes, total_amount, req.params.id]
     );
     if (line_items) {
       await client.query('DELETE FROM po_line_items WHERE po_id = $1', [req.params.id]);
