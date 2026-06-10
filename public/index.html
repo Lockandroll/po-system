@@ -1078,10 +1078,15 @@ async function reactivateCity(id) {
 // ── Quotes ────────────────────────────────────────────────────────────────────
 
 function getDefaultImportantInfo() {
+  return 'This proposal is valid until {default_date}. Any major changes to the cost of parts, if any, will be discussed once the proposal is approved.\n\nPop-A-Lock will provide a 90-day warranty for the labor. Pop-A-Lock will facilitate any warranty for the parts based on the manufacturer\'s specification of warranty. After 90 days, Pop-A-Lock will charge labor to facilitate the part warranty.';
+}
+
+function resolveTokens(text) {
+  if (!text) return text;
   var d = new Date();
   d.setDate(d.getDate() + 30);
   var formatted = (d.getMonth()+1).toString().padStart(2,'0') + '/' + d.getDate().toString().padStart(2,'0') + '/' + d.getFullYear();
-  return 'This proposal is valid until ' + formatted + '. Any major changes to the cost of parts, if any, will be discussed once the proposal is approved.\n\nPop-A-Lock will provide a 90-day warranty for the labor. Pop-A-Lock will facilitate any warranty for the parts based on the manufacturer\'s specification of warranty. After 90 days, Pop-A-Lock will charge labor to facilitate the part warranty.';
+  return text.replace(/\{default_date\}/g, formatted);
 }
 
 let quoteLineItems = [];
@@ -1128,7 +1133,7 @@ async function renderEditQuote(el, id) {
     try { quote = await api('GET', '/quotes/' + id); } catch(e) { el.innerHTML = '<div class="alert alert-error">' + escHtml(e.message) + '</div>'; return; }
     quoteLineItems = quote.line_items || [];
   } else {
-    quoteLineItems = [{ item_number: '', manufacturer: '', description: '', quantity: 1, unit_price: '', list_price: '' }];
+    quoteLineItems = [{ item_number: '', manufacturer: '', description: '', quantity: 1, unit_price: '', list_price: '', taxable: false }];
   }
   const cityOptions = '<option value="">Select city (optional)...</option>' + cities.map(function(c) {
     return '<option value="' + escHtml(c.code) + '"' + (quote && quote.city_code === c.code ? ' selected' : '') + '>' + escHtml(c.name) + ' (' + escHtml(c.code) + ')</option>';
@@ -1150,12 +1155,12 @@ async function renderEditQuote(el, id) {
     '</div></div>' +
     '<div class="card mb-4"><div class="card-header"><span class="card-title">Line Items</span></div><div class="card-body">' +
       '<div class="table-wrap"><table class="line-items-table">' +
-        '<thead><tr><th>Item #</th><th>Supplier</th><th>Description</th><th>Qty</th><th>Unit Price (Our Cost)</th><th>List Price (Customer Cost)</th><th>Total</th><th></th></tr></thead>' +
+        '<thead><tr><th>Item #</th><th>Supplier</th><th>Description</th><th>Qty</th><th>Unit Price (Our Cost)</th><th>List Price (Customer Cost)</th><th>Taxable</th><th>Total</th><th></th></tr></thead>' +
         '<tbody id="quote-line-items-body"></tbody>' +
         '<tfoot>' +
-          '<tr><td colspan="6" class="text-right" style="padding:8px 10px;color:var(--text-muted-color)">Subtotal</td><td id="quote-subtotal" style="padding:8px 10px">$0.00</td><td></td></tr>' +
-          '<tr><td colspan="6" class="text-right" style="padding:8px 10px;color:var(--text-muted-color)">Tax</td><td id="quote-tax-display" style="padding:8px 10px">$0.00</td><td></td></tr>' +
-          '<tr class="total-row"><td colspan="6" class="text-right" style="padding:10px">Grand Total</td><td id="quote-grand-total" style="padding:10px">$0.00</td><td></td></tr>' +
+          '<tr><td colspan="7" class="text-right" style="padding:8px 10px;color:var(--text-muted-color)">Subtotal</td><td id="quote-subtotal" style="padding:8px 10px">$0.00</td><td></td></tr>' +
+          '<tr><td colspan="7" class="text-right" style="padding:8px 10px;color:var(--text-muted-color)">Tax</td><td id="quote-tax-display" style="padding:8px 10px">$0.00</td><td></td></tr>' +
+          '<tr class="total-row"><td colspan="7" class="text-right" style="padding:10px">Grand Total</td><td id="quote-grand-total" style="padding:10px">$0.00</td><td></td></tr>' +
         '</tfoot>' +
       '</table></div>' +
       '<div style="display:flex;justify-content:space-between;align-items:center;margin-top:8px">' +
@@ -1188,6 +1193,7 @@ function buildQuoteLineItemRows() {
       '<td><input type="number" value="' + escHtml(item.quantity||'') + '" min="0.01" step="0.01" onchange="updateQuoteItem(' + i + ',this)" data-field="quantity" style="width:70px" /></td>' +
       '<td><input type="number" value="' + escHtml(item.unit_price||'') + '" min="0" step="0.01" placeholder="0.00" onchange="updateQuoteItem(' + i + ',this)" data-field="unit_price" style="width:90px" /></td>' +
       '<td><input type="number" value="' + escHtml(item.list_price||'') + '" min="0" step="0.01" placeholder="0.00" onchange="updateQuoteItem(' + i + ',this)" data-field="list_price" style="width:90px" /></td>' +
+      '<td style="text-align:center"><input type="checkbox"' + (item.taxable ? ' checked' : '') + ' onchange="updateQuoteItem(' + i + ',this)" data-field="taxable" /></td>' +
       '<td id="qt-row-total-' + i + '">$' + total.toFixed(2) + '</td>' +
       '<td>' + (quoteLineItems.length > 1 ? '<button class="btn btn-ghost btn-sm" onclick="removeQuoteItem(' + i + ')">' + icons.trash + '</button>' : '') + '</td>' +
     '</tr>';
@@ -1196,19 +1202,20 @@ function buildQuoteLineItemRows() {
 }
 
 function updateQuoteItem(i, input) {
-  quoteLineItems[i][input.dataset.field] = input.value;
+  quoteLineItems[i][input.dataset.field] = input.type === 'checkbox' ? input.checked : input.value;
   const qty = parseFloat(quoteLineItems[i].quantity) || 0;
-  const price = parseFloat(quoteLineItems[i].unit_price) || 0;
+  const price = parseFloat(quoteLineItems[i].list_price) || 0;
   const cell = document.getElementById('qt-row-total-' + i);
   if (cell) cell.textContent = '$' + (qty * price).toFixed(2);
-  updateQuoteGrandTotal();
+  updateQuoteTotals();
 }
 
 function updateQuoteTotals() {
   const subtotal = quoteLineItems.reduce(function(sum, item) { return sum + (parseFloat(item.quantity)||0) * (parseFloat(item.list_price)||0); }, 0);
+  const taxableSubtotal = quoteLineItems.reduce(function(sum, item) { return item.taxable ? sum + (parseFloat(item.quantity)||0) * (parseFloat(item.list_price)||0) : sum; }, 0);
   const taxRateEl = document.getElementById('qt-tax-rate');
   const taxRate = taxRateEl ? (parseFloat(taxRateEl.value) || 0) : 0;
-  const taxAmt = subtotal * taxRate / 100;
+  const taxAmt = taxableSubtotal * taxRate / 100;
   const grand = subtotal + taxAmt;
   const subtotalEl = document.getElementById('quote-subtotal');
   const taxEl = document.getElementById('quote-tax-display');
@@ -1220,7 +1227,7 @@ function updateQuoteTotals() {
 function updateQuoteGrandTotal() { updateQuoteTotals(); }
 
 function addQuoteLineItem() {
-  quoteLineItems.push({ item_number: '', manufacturer: '', description: '', quantity: 1, unit_price: '', list_price: '' });
+  quoteLineItems.push({ item_number: '', manufacturer: '', description: '', quantity: 1, unit_price: '', list_price: '', taxable: false });
   buildQuoteLineItemRows();
 }
 
@@ -1245,6 +1252,7 @@ async function saveQuote(id) {
     if (inputs[3]) quoteLineItems[i].quantity = inputs[3].value;
     if (inputs[4]) quoteLineItems[i].unit_price = inputs[4].value;
     if (inputs[5]) quoteLineItems[i].list_price = inputs[5].value;
+    if (inputs[6]) quoteLineItems[i].taxable = inputs[6].checked;
   });
   const validItems = quoteLineItems.filter(function(item){ return item.description && item.quantity && item.list_price; });
   if (validItems.length === 0) { document.getElementById('quote-edit-error').innerHTML = '<div class="alert alert-error">At least one complete line item is required.</div>'; return; }
@@ -1253,10 +1261,10 @@ async function saveQuote(id) {
     if (btn) btn.disabled = true;
     let q;
     if (id) {
-      q = await api('PUT', '/quotes/' + id, { customer_name, city_code: city_code || null, notes, line_items: validItems });
+      q = await api('PUT', '/quotes/' + id, { customer_name, city_code: city_code || null, notes, important_info, tax_rate, line_items: validItems });
       navigate('view-quote', id);
     } else {
-      q = await api('POST', '/quotes', { customer_name, city_code: city_code || null, notes, line_items: validItems });
+      q = await api('POST', '/quotes', { customer_name, city_code: city_code || null, notes, important_info, tax_rate, line_items: validItems });
       navigate('view-quote', q.id);
     }
   } catch(err) {
@@ -1295,7 +1303,7 @@ async function renderViewQuote(el, id) {
       '</div></div>' +
       '<div class="card"><div class="card-header"><span class="card-title">Line Items</span></div><div class="card-body">' +
         '<div class="table-wrap"><table class="line-items-table">' +
-          '<thead><tr><th>Item #</th><th>Supplier</th><th>Description</th><th>Qty</th><th>Unit Price (Our Cost)</th><th>List Price (Customer Cost)</th><th class="text-right">Total</th></tr></thead>' +
+          '<thead><tr><th>Item #</th><th>Supplier</th><th>Description</th><th>Qty</th><th>Unit Price (Our Cost)</th><th>List Price (Customer Cost)</th><th>Taxable</th><th class="text-right">Total</th></tr></thead>' +
           '<tbody>' + q.line_items.map(function(item) {
             const listP = parseFloat(item.list_price || 0);
             const lineTotal = (parseFloat(item.quantity) * listP).toFixed(2);
@@ -1306,13 +1314,14 @@ async function renderViewQuote(el, id) {
               '<td>' + item.quantity + '</td>' +
               '<td>$' + parseFloat(item.unit_price || 0).toFixed(2) + '</td>' +
               '<td>$' + listP.toFixed(2) + '</td>' +
+              '<td style="text-align:center">' + (item.taxable ? '&#10003;' : '—') + '</td>' +
               '<td class="text-right">$' + lineTotal + '</td>' +
             '</tr>';
           }).join('') + '</tbody>' +
           '<tfoot>' +
-            '<tr><td colspan="6" class="text-right" style="padding:8px 10px;color:var(--text-muted-color)">Subtotal</td><td class="text-right" style="padding:8px 10px">$' + (parseFloat(q.total_amount) - parseFloat(q.tax_amount||0)).toFixed(2) + '</td></tr>' +
-            (parseFloat(q.tax_amount||0) > 0 ? '<tr><td colspan="6" class="text-right" style="padding:8px 10px;color:var(--text-muted-color)">Tax (' + parseFloat(q.tax_rate||0).toFixed(2) + '%)</td><td class="text-right" style="padding:8px 10px">$' + parseFloat(q.tax_amount).toFixed(2) + '</td></tr>' : '') +
-            '<tr class="total-row"><td colspan="6" class="text-right">Grand Total</td><td class="text-right">$' + parseFloat(q.total_amount).toFixed(2) + '</td></tr>' +
+            '<tr><td colspan="7" class="text-right" style="padding:8px 10px;color:var(--text-muted-color)">Subtotal</td><td class="text-right" style="padding:8px 10px">$' + (parseFloat(q.total_amount) - parseFloat(q.tax_amount||0)).toFixed(2) + '</td></tr>' +
+            (parseFloat(q.tax_amount||0) > 0 ? '<tr><td colspan="7" class="text-right" style="padding:8px 10px;color:var(--text-muted-color)">Tax (' + parseFloat(q.tax_rate||0).toFixed(2) + '%)</td><td class="text-right" style="padding:8px 10px">$' + parseFloat(q.tax_amount).toFixed(2) + '</td></tr>' : '') +
+            '<tr class="total-row"><td colspan="7" class="text-right">Grand Total</td><td class="text-right">$' + parseFloat(q.total_amount).toFixed(2) + '</td></tr>' +
           '</tfoot>' +
         '</table></div>' +
       '</div></div>';
@@ -1377,7 +1386,10 @@ async function printQuote(id) {
     const subtotal = q.line_items.reduce(function(s, item) {
       return s + (parseFloat(item.quantity) || 0) * (parseFloat(item.list_price || item.unit_price) || 0);
     }, 0);
-    const taxAmount = subtotal * taxRate / 100;
+    const taxableSubtotal = q.line_items.reduce(function(s, item) {
+      return item.taxable ? s + (parseFloat(item.quantity) || 0) * (parseFloat(item.list_price || item.unit_price) || 0) : s;
+    }, 0);
+    const taxAmount = taxableSubtotal * taxRate / 100;
     const grandTotal = subtotal + taxAmount;
 
     const itemRows = q.line_items.map(function(item) {
@@ -1406,7 +1418,7 @@ async function printQuote(id) {
     const importantHtml = q.important_info
       ? '<div style="padding:20px 32px;border-bottom:1px solid #e5e7eb">' +
           '<div style="font-size:11px;font-weight:600;color:#6b7280;text-transform:uppercase;letter-spacing:0.05em;margin-bottom:6px">Important Information</div>' +
-          '<div style="font-size:12px;color:#6b7280;white-space:pre-wrap;line-height:1.6">' + esc(q.important_info) + '</div>' +
+          '<div style="font-size:12px;color:#6b7280;white-space:pre-wrap;line-height:1.6">' + esc(resolveTokens(q.important_info)) + '</div>' +
         '</div>'
       : '';
 
