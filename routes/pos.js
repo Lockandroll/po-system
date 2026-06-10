@@ -4,26 +4,97 @@ const { requireAuth, requireRole } = require('../middleware/auth');
 
 const router = express.Router();
 
-// Helper: send email via Resend
-async function sendEmail(to, subject, html) {
+// Helper: send email via Resend (supports optional cc array)
+async function sendEmail(to, subject, html, cc) {
   if (!process.env.RESEND_API_KEY) return;
   try {
+    const body = {
+      from: process.env.FROM_EMAIL || 'Lock and Roll <onboarding@resend.dev>',
+      to: Array.isArray(to) ? to : [to],
+      subject,
+      html
+    };
+    if (cc && cc.length > 0) body.cc = Array.isArray(cc) ? cc : [cc];
     await fetch('https://api.resend.com/emails', {
       method: 'POST',
       headers: {
         Authorization: 'Bearer ' + process.env.RESEND_API_KEY,
         'Content-Type': 'application/json'
       },
-      body: JSON.stringify({
-        from: process.env.FROM_EMAIL || 'PO System <onboarding@resend.dev>',
-        to: Array.isArray(to) ? to : [to],
-        subject,
-        html
-      })
+      body: JSON.stringify(body)
     });
   } catch (err) {
     console.error('Email send failed:', err.message);
   }
+}
+
+// Helper: build PO HTML for email body
+function buildPOEmailHtml(po, items, approverName, ordererName) {
+  const rows = items.map(function(item) {
+    const lineTotal = (parseFloat(item.quantity) * parseFloat(item.unit_price)).toFixed(2);
+    return '<tr>' +
+      '<td style="padding:8px;border:1px solid #ddd">' + (item.item_number || '') + '</td>' +
+      '<td style="padding:8px;border:1px solid #ddd">' + (item.manufacturer || '') + '</td>' +
+      '<td style="padding:8px;border:1px solid #ddd">' + item.description + '</td>' +
+      '<td style="padding:8px;border:1px solid #ddd;text-align:center">' + item.quantity + '</td>' +
+      '<td style="padding:8px;border:1px solid #ddd;text-align:right">$' + parseFloat(item.unit_price).toFixed(2) + '</td>' +
+      '<td style="padding:8px;border:1px solid #ddd;text-align:right">$' + lineTotal + '</td>' +
+      '</tr>';
+  }).join('');
+
+  return '<div style="font-family:sans-serif;max-width:700px;margin:0 auto">' +
+    '<div style="background:#111;padding:20px 24px;border-bottom:3px solid #f97316">' +
+      '<h1 style="color:#f97316;margin:0;font-size:22px">Lock and Roll</h1>' +
+      '<p style="color:#aaa;margin:4px 0 0">Purchase Order — Approved</p>' +
+    '</div>' +
+    '<div style="padding:20px 24px;background:#fff">' +
+      '<table style="width:100%;margin-bottom:20px;font-size:14px">' +
+        '<tr>' +
+          '<td style="padding:4px 0;color:#555;width:160px">PO Number:</td>' +
+          '<td style="padding:4px 0;font-weight:bold">' + po.po_number + '</td>' +
+          '<td style="padding:4px 0;color:#555;width:160px">Vendor / Supplier:</td>' +
+          '<td style="padding:4px 0">' + po.vendor_name + '</td>' +
+        '</tr>' +
+        '<tr>' +
+          '<td style="padding:4px 0;color:#555">Customer:</td>' +
+          '<td style="padding:4px 0">' + (po.customer_name || '—') + '</td>' +
+          '<td style="padding:4px 0;color:#555">City:</td>' +
+          '<td style="padding:4px 0">' + (po.city_code || '—') + '</td>' +
+        '</tr>' +
+        '<tr>' +
+          '<td style="padding:4px 0;color:#555">Requested By:</td>' +
+          '<td style="padding:4px 0">' + (po.requester_name || '—') + '</td>' +
+          '<td style="padding:4px 0;color:#555">Approved By:</td>' +
+          '<td style="padding:4px 0">' + (approverName || '—') + '</td>' +
+        '</tr>' +
+        '<tr>' +
+          '<td style="padding:4px 0;color:#555">Orderer:</td>' +
+          '<td style="padding:4px 0">' + (ordererName || '—') + '</td>' +
+          '<td></td><td></td>' +
+        '</tr>' +
+        (po.notes ? '<tr><td style="padding:4px 0;color:#555">Notes:</td><td colspan="3" style="padding:4px 0">' + po.notes + '</td></tr>' : '') +
+      '</table>' +
+      '<table style="width:100%;border-collapse:collapse;font-size:13px;margin-bottom:20px">' +
+        '<thead>' +
+          '<tr style="background:#f3f4f6">' +
+            '<th style="padding:8px;border:1px solid #ddd;text-align:left">Item #</th>' +
+            '<th style="padding:8px;border:1px solid #ddd;text-align:left">Manufacturer</th>' +
+            '<th style="padding:8px;border:1px solid #ddd;text-align:left">Description</th>' +
+            '<th style="padding:8px;border:1px solid #ddd;text-align:center">Qty</th>' +
+            '<th style="padding:8px;border:1px solid #ddd;text-align:right">Unit Price</th>' +
+            '<th style="padding:8px;border:1px solid #ddd;text-align:right">Total</th>' +
+          '</tr>' +
+        '</thead>' +
+        '<tbody>' + rows + '</tbody>' +
+        '<tfoot>' +
+          '<tr>' +
+            '<td colspan="5" style="padding:8px;border:1px solid #ddd;text-align:right;font-weight:bold">Grand Total</td>' +
+            '<td style="padding:8px;border:1px solid #ddd;text-align:right;font-weight:bold">$' + parseFloat(po.total_amount).toFixed(2) + '</td>' +
+          '</tr>' +
+        '</tfoot>' +
+      '</table>' +
+    '</div>' +
+  '</div>';
 }
 
 // Helper: compute total from line items
@@ -47,12 +118,22 @@ async function generatePONumber(cityCode, userInitials) {
   return cityCode + '-' + year + '-' + seq + '-' + userInitials;
 }
 
+const PO_JOIN =
+  'SELECT po.*, ' +
+  'u.name AS requester_name, ' +
+  'a.name AS approver_name, ' +
+  'ord.name AS orderer_name, ord.email AS orderer_email ' +
+  'FROM purchase_orders po ' +
+  'LEFT JOIN users u ON po.requester_id = u.id ' +
+  'LEFT JOIN users a ON po.approver_id = a.id ' +
+  'LEFT JOIN users ord ON po.orderer_id = ord.id ';
+
 // Export all POs with line items as JSON (for CSV download)
 router.get('/export', requireAuth, async (req, res) => {
   const isApproverOrAdmin = ['approver', 'admin'].includes(req.user.role);
-  const poQuery = isApproverOrAdmin
-    ? 'SELECT po.*, u.name AS requester_name, a.name AS approver_name FROM purchase_orders po LEFT JOIN users u ON po.requester_id = u.id LEFT JOIN users a ON po.approver_id = a.id ORDER BY po.created_at DESC'
-    : 'SELECT po.*, u.name AS requester_name, a.name AS approver_name FROM purchase_orders po LEFT JOIN users u ON po.requester_id = u.id LEFT JOIN users a ON po.approver_id = a.id WHERE po.requester_id = $1 ORDER BY po.created_at DESC';
+  const poQuery = PO_JOIN +
+    (isApproverOrAdmin ? '' : 'WHERE po.requester_id = $1 ') +
+    'ORDER BY po.created_at DESC';
   const poParams = isApproverOrAdmin ? [] : [req.user.id];
   const { rows: pos } = await pool.query(poQuery, poParams);
 
@@ -63,7 +144,6 @@ router.get('/export', requireAuth, async (req, res) => {
     isApproverOrAdmin ? [] : [req.user.id]
   );
 
-  // Group items by po_number
   const itemsByPO = {};
   items.forEach(function(item) {
     if (!itemsByPO[item.po_number]) itemsByPO[item.po_number] = [];
@@ -75,24 +155,11 @@ router.get('/export', requireAuth, async (req, res) => {
 
 // Get all POs
 router.get('/', requireAuth, async (req, res) => {
-  let query, params;
   const isApproverOrAdmin = ['approver', 'admin'].includes(req.user.role);
-  if (isApproverOrAdmin) {
-    query = 'SELECT po.*, u.name AS requester_name, a.name AS approver_name ' +
-            'FROM purchase_orders po ' +
-            'LEFT JOIN users u ON po.requester_id = u.id ' +
-            'LEFT JOIN users a ON po.approver_id = a.id ' +
-            'ORDER BY po.created_at DESC';
-    params = [];
-  } else {
-    query = 'SELECT po.*, u.name AS requester_name, a.name AS approver_name ' +
-            'FROM purchase_orders po ' +
-            'LEFT JOIN users u ON po.requester_id = u.id ' +
-            'LEFT JOIN users a ON po.approver_id = a.id ' +
-            'WHERE po.requester_id = $1 ' +
-            'ORDER BY po.created_at DESC';
-    params = [req.user.id];
-  }
+  const query = PO_JOIN +
+    (isApproverOrAdmin ? '' : 'WHERE po.requester_id = $1 ') +
+    'ORDER BY po.created_at DESC';
+  const params = isApproverOrAdmin ? [] : [req.user.id];
   const { rows } = await pool.query(query, params);
   res.json(rows);
 });
@@ -100,11 +167,7 @@ router.get('/', requireAuth, async (req, res) => {
 // Get single PO with line items
 router.get('/:id', requireAuth, async (req, res) => {
   const { rows } = await pool.query(
-    'SELECT po.*, u.name AS requester_name, a.name AS approver_name ' +
-    'FROM purchase_orders po ' +
-    'LEFT JOIN users u ON po.requester_id = u.id ' +
-    'LEFT JOIN users a ON po.approver_id = a.id ' +
-    'WHERE po.id = $1',
+    PO_JOIN + 'WHERE po.id = $1',
     [req.params.id]
   );
 
@@ -209,7 +272,7 @@ router.put('/:id', requireAuth, async (req, res) => {
   }
 });
 
-// Delete PO — admins can delete any; others only their own drafts
+// Delete PO
 router.delete('/:id', requireAuth, async (req, res) => {
   const { rows } = await pool.query('SELECT * FROM purchase_orders WHERE id = $1', [req.params.id]);
   const po = rows[0];
@@ -240,17 +303,21 @@ router.post('/:id/submit', requireAuth, async (req, res) => {
 
   await pool.query('UPDATE purchase_orders SET status=$1, updated_at=NOW() WHERE id=$2', ['submitted', req.params.id]);
 
-  const { rows: approvers } = await pool.query("SELECT email, name FROM users WHERE role IN ('approver', 'admin')");
+  const appUrl = process.env.APP_URL || '';
+  const poUrl = appUrl ? appUrl + '/#view/' + po.id : null;
+
+  const { rows: approvers } = await pool.query("SELECT email, name FROM users WHERE role IN ('approver', 'admin') AND active = true");
   for (let i = 0; i < approvers.length; i++) {
     const approver = approvers[i];
     await sendEmail(
       approver.email,
-      '[PO System] New PO Needs Approval: ' + po.po_number,
+      '[Lock and Roll] New PO Needs Approval: ' + po.po_number,
       '<p>Hi ' + approver.name + ',</p>' +
       '<p><strong>' + req.user.name + '</strong> has submitted purchase order <strong>' + po.po_number + '</strong> for approval.</p>' +
       '<p><strong>Vendor:</strong> ' + po.vendor_name + '<br/>' +
       '<strong>Total:</strong> $' + parseFloat(po.total_amount).toFixed(2) + '</p>' +
-      '<p>Please log in to review and approve or reject it.</p>'
+      (poUrl ? '<p><a href="' + poUrl + '" style="background:#f97316;color:white;padding:10px 20px;text-decoration:none;border-radius:6px;display:inline-block">Review PO</a></p>' +
+               '<p style="color:#888;font-size:12px">Or copy this link: ' + poUrl + '</p>' : '<p>Please log in to review and approve or reject it.</p>')
     );
   }
 
@@ -259,6 +326,9 @@ router.post('/:id/submit', requireAuth, async (req, res) => {
 
 // Approve PO
 router.post('/:id/approve', requireAuth, requireRole('approver', 'admin'), async (req, res) => {
+  const orderer_id = req.body.orderer_id;
+  if (!orderer_id) return res.status(400).json({ error: 'Please select the person responsible for ordering' });
+
   const { rows } = await pool.query(
     'SELECT po.*, u.email AS requester_email, u.name AS requester_name FROM purchase_orders po JOIN users u ON po.requester_id = u.id WHERE po.id = $1',
     [req.params.id]
@@ -267,18 +337,31 @@ router.post('/:id/approve', requireAuth, requireRole('approver', 'admin'), async
   if (!po) return res.status(404).json({ error: 'PO not found' });
   if (po.status !== 'submitted') return res.status(400).json({ error: 'PO is not pending approval' });
 
+  const { rows: ordererRows } = await pool.query('SELECT id, name, email FROM users WHERE id = $1', [orderer_id]);
+  if (!ordererRows.length) return res.status(400).json({ error: 'Selected orderer not found' });
+  const orderer = ordererRows[0];
+
   await pool.query(
-    'UPDATE purchase_orders SET status=$1, approver_id=$2, approved_at=NOW(), updated_at=NOW() WHERE id=$3',
-    ['approved', req.user.id, req.params.id]
+    'UPDATE purchase_orders SET status=$1, approver_id=$2, orderer_id=$3, approved_at=NOW(), updated_at=NOW() WHERE id=$4',
+    ['approved', req.user.id, orderer_id, req.params.id]
   );
+
+  const { rows: items } = await pool.query('SELECT * FROM po_line_items WHERE po_id = $1 ORDER BY id', [req.params.id]);
+
+  const emailHtml = buildPOEmailHtml(po, items, req.user.name, orderer.name);
+
+  const ccEmails = [];
+  if (req.user.email && req.user.email !== po.requester_email) ccEmails.push(req.user.email);
+  if (orderer.email && orderer.email !== po.requester_email) ccEmails.push(orderer.email);
 
   await sendEmail(
     po.requester_email,
-    '[PO System] PO Approved: ' + po.po_number,
+    '[Lock and Roll] PO Approved: ' + po.po_number,
     '<p>Hi ' + po.requester_name + ',</p>' +
     '<p>Your purchase order <strong>' + po.po_number + '</strong> has been <strong style="color:green">approved</strong> by ' + req.user.name + '.</p>' +
-    '<p><strong>Vendor:</strong> ' + po.vendor_name + '<br/>' +
-    '<strong>Total:</strong> $' + parseFloat(po.total_amount).toFixed(2) + '</p>'
+    '<p><strong>' + orderer.name + '</strong> has been assigned to place the order.</p>' +
+    emailHtml,
+    ccEmails
   );
 
   res.json({ success: true });
@@ -302,7 +385,7 @@ router.post('/:id/reject', requireAuth, requireRole('approver', 'admin'), async 
 
   await sendEmail(
     po.requester_email,
-    '[PO System] PO Rejected: ' + po.po_number,
+    '[Lock and Roll] PO Rejected: ' + po.po_number,
     '<p>Hi ' + po.requester_name + ',</p>' +
     '<p>Your purchase order <strong>' + po.po_number + '</strong> has been <strong style="color:red">rejected</strong> by ' + req.user.name + '.</p>' +
     (reason ? '<p><strong>Reason:</strong> ' + reason + '</p>' : '') +
@@ -312,7 +395,7 @@ router.post('/:id/reject', requireAuth, requireRole('approver', 'admin'), async 
   res.json({ success: true });
 });
 
-// Cancel PO (admin only — works on any status except draft)
+// Cancel PO (admin only)
 router.post('/:id/cancel', requireAuth, requireRole('admin'), async (req, res) => {
   const { rows } = await pool.query(
     'SELECT po.*, u.email AS requester_email, u.name AS requester_name FROM purchase_orders po JOIN users u ON po.requester_id = u.id WHERE po.id = $1',
@@ -330,7 +413,7 @@ router.post('/:id/cancel', requireAuth, requireRole('admin'), async (req, res) =
 
   await sendEmail(
     po.requester_email,
-    '[PO System] PO Cancelled: ' + po.po_number,
+    '[Lock and Roll] PO Cancelled: ' + po.po_number,
     '<p>Hi ' + po.requester_name + ',</p>' +
     '<p>Your purchase order <strong>' + po.po_number + '</strong> has been <strong>cancelled</strong> by an administrator.</p>' +
     '<p><strong>Vendor:</strong> ' + po.vendor_name + '<br/>' +
