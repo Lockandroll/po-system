@@ -416,7 +416,7 @@ function applyFilters() {
   }
   tbody.innerHTML =
     '<div class="table-wrap"><table>' +
-    '<thead><tr><th>PO Number</th><th>City</th><th>Vendor</th><th>Customer</th>' + (isApprover ? '<th>Requested By</th>' : '') + '<th>Total</th><th>Status</th><th>Approved By</th><th>Orderer</th><th>Date</th><th></th></tr></thead>' +
+    '<thead><tr><th>PO Number</th><th>City</th><th>Vendor</th><th>Customer/Employee</th>' + (isApprover ? '<th>Requested By</th>' : '') + '<th>Total</th><th>Status</th><th>Approved By</th><th>Orderer</th><th>Date</th><th></th></tr></thead>' +
     '<tbody>' + filtered.map(function(po){
       return '<tr>' +
         '<td><strong>' + escHtml(po.po_number) + '</strong></td>' +
@@ -495,7 +495,7 @@ async function renderEditPO(el, id) {
     '<div class="card mb-4"><div class="card-header"><span class="card-title">Order Information</span></div><div class="card-body">' +
       '<div class="form-row">' +
         '<div class="form-group"><label>Vendor / Supplier *</label><input type="text" id="po-vendor" value="' + escHtml(po ? po.vendor_name : '') + '" placeholder="Vendor name" /></div>' +
-        '<div class="form-group"><label>Customer Name</label><input type="text" id="po-customer" value="' + escHtml(po && po.customer_name ? po.customer_name : '') + '" placeholder="Customer name" /></div>' +
+        '<div class="form-group"><label>Customer/Employee</label><input type="text" id="po-customer" value="' + escHtml(po && po.customer_name ? po.customer_name : '') + '" placeholder="Customer/Employee" /></div>' +
       '</div>' +
       '<div class="form-row">' +
         '<div class="form-group"><label>City *</label><select id="po-city" onchange="loadShippingAddresses()">' + cityOptions + '</select></div>' +
