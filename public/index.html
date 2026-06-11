@@ -537,7 +537,19 @@ async function loadShippingAddresses(selectedId) {
       if (selectedId && a.id === selectedId) opt.selected = true;
       addrEl.appendChild(opt);
     });
-  } catch(e) {}
+    if (addrs.length === 0) {
+      const opt = document.createElement('option');
+      opt.value = '';
+      opt.textContent = 'No addresses for this city';
+      addrEl.appendChild(opt);
+    }
+  } catch(e) {
+    console.error('loadShippingAddresses error:', e);
+    const opt = document.createElement('option');
+    opt.value = '';
+    opt.textContent = 'Error loading addresses';
+    addrEl.appendChild(opt);
+  }
 }
 
 function buildLineItemRows() {
