@@ -11,13 +11,13 @@ router.get('/', requireAuth, async (req, res) => {
 });
 
 // List all cities including inactive (admin only)
-router.get('/all', requireAuth, requireRole('admin'), async (req, res) => {
+router.get('/all', requireAuth, requireRole('admin', 'manager'), async (req, res) => {
   const { rows } = await pool.query('SELECT * FROM cities ORDER BY active DESC, name ASC');
   res.json(rows);
 });
 
 // Create city (admin only)
-router.post('/', requireAuth, requireRole('admin'), async (req, res) => {
+router.post('/', requireAuth, requireRole('admin', 'manager'), async (req, res) => {
   const { name, code } = req.body;
   if (!name || !code) return res.status(400).json({ error: 'Name and code are required' });
   if (code.length !== 3) return res.status(400).json({ error: 'Code must be exactly 3 characters' });
@@ -34,7 +34,7 @@ router.post('/', requireAuth, requireRole('admin'), async (req, res) => {
 });
 
 // Update city (admin only)
-router.put('/:id', requireAuth, requireRole('admin'), async (req, res) => {
+router.put('/:id', requireAuth, requireRole('admin', 'manager'), async (req, res) => {
   const { name, code } = req.body;
   if (!name || !code) return res.status(400).json({ error: 'Name and code are required' });
   if (code.length !== 3) return res.status(400).json({ error: 'Code must be exactly 3 characters' });
@@ -52,14 +52,14 @@ router.put('/:id', requireAuth, requireRole('admin'), async (req, res) => {
 });
 
 // Deactivate city (admin only)
-router.post('/:id/deactivate', requireAuth, requireRole('admin'), async (req, res) => {
+router.post('/:id/deactivate', requireAuth, requireRole('admin', 'manager'), async (req, res) => {
   const { rows } = await pool.query('UPDATE cities SET active=false WHERE id=$1 RETURNING id', [req.params.id]);
   if (!rows[0]) return res.status(404).json({ error: 'City not found' });
   res.json({ success: true });
 });
 
 // Reactivate city (admin only)
-router.post('/:id/reactivate', requireAuth, requireRole('admin'), async (req, res) => {
+router.post('/:id/reactivate', requireAuth, requireRole('admin', 'manager'), async (req, res) => {
   const { rows } = await pool.query('UPDATE cities SET active=true WHERE id=$1 RETURNING id', [req.params.id]);
   if (!rows[0]) return res.status(404).json({ error: 'City not found' });
   res.json({ success: true });
