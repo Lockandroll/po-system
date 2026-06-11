@@ -103,6 +103,19 @@ async function initDB() {
       '  created_at TIMESTAMP DEFAULT NOW()' +
       ');'
     );
+    await client.query(
+      'CREATE TABLE IF NOT EXISTS vendors (' +
+      '  id SERIAL PRIMARY KEY,' +
+      '  name VARCHAR(255) NOT NULL,' +
+      '  website VARCHAR(255),' +
+      '  account_number VARCHAR(255),' +
+      '  username VARCHAR(255),' +
+      '  password TEXT,' +
+      '  notes TEXT,' +
+      '  created_at TIMESTAMP DEFAULT NOW(),' +
+      '  updated_at TIMESTAMP DEFAULT NOW()' +
+      ');'
+    );
     console.log('Database initialized');
   } finally {
     client.release();
