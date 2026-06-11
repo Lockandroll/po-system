@@ -242,7 +242,7 @@ async function render() {
       '<div class="sidebar-logo"><h1>Lock and Roll LLC</h1></div>' +
       '<nav class="sidebar-nav">' +
         '<div class="nav-item ' + (state.currentView === 'dashboard' ? 'active' : '') + '" onclick="navigate(\'dashboard\')">' + icons.dashboard + ' PO Dashboard</div>' +
-        (state.user.role !== 'approver' ? '<div class="nav-item ' + (state.currentView === 'new' ? 'active' : '') + '" onclick="navigate(\'new\')">' + icons.plus + ' New PO</div>' : '') +
+        (state.user.role !== 'approver' ? '<div class="nav-item ' + (state.currentView === 'new' ? 'active' : '') + '" onclick="navigate(\'new\')" style="padding-left:28px;font-size:13px">' + icons.plus + ' New PO</div>' : '') +
         '<div class="nav-item ' + (['quotes','new-quote','edit-quote','view-quote'].includes(state.currentView) ? 'active' : '') + '" onclick="navigate(\'quotes\')">' + icons.quote + ' Quotes</div>' +
         (state.user.role === 'admin' ? '<div class="nav-item ' + (state.currentView === 'users' ? 'active' : '') + '" onclick="navigate(\'users\')">' + icons.users + ' Users</div>' : '') +
         (state.user.role === 'admin' ? '<div class="nav-item ' + (state.currentView === 'cities' ? 'active' : '') + '" onclick="navigate(\'cities\')">' + icons.map + ' Cities</div>' : '') +
