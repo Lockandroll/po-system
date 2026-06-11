@@ -246,7 +246,7 @@ async function render() {
         '<div class="nav-item ' + (['quotes','new-quote','edit-quote','view-quote'].includes(state.currentView) ? 'active' : '') + '" onclick="navigate(\'quotes\')">' + icons.quote + ' Quotes</div>' +
         (state.user.role === 'admin' ? '<div class="nav-item ' + (state.currentView === 'users' ? 'active' : '') + '" onclick="navigate(\'users\')">' + icons.users + ' Users</div>' : '') +
         (state.user.role === 'admin' ? '<div class="nav-item ' + (state.currentView === 'cities' ? 'active' : '') + '" onclick="navigate(\'cities\')">' + icons.map + ' Cities</div>' : '') +
-        (state.user.role === 'admin' ? '<div class="nav-item ' + (state.currentView === 'vendors' ? 'active' : '') + '" onclick="navigate(\'vendors\')"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 9l9-7 9 7v11a2 2 0 01-2 2H5a2 2 0 01-2-2z"/><polyline points="9 22 9 12 15 12 15 22"/></svg> Vendors</div>' : '') +
+        (state.user.role === 'admin' ? '<div class="nav-item ' + (state.currentView === 'vendors' ? 'active' : '') + '" onclick="navigate(\'vendors\')"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 9l9-7 9 7v11a2 2 0 01-2 2H5a2 2 0 01-2-2z"/><polyline points="9 22 9 12 15 12 15 22"/></svg> Accounts</div>' : '') +
         (state.user.role === 'admin' ? '<div class="nav-item ' + (state.currentView === 'settings' ? 'active' : '') + '" onclick="navigate(\'settings\')">' + icons.settings + ' Settings</div>' : '') +
       '</nav>' +
       '<div class="sidebar-footer">' +
@@ -1094,15 +1094,15 @@ async function renderVendors(el) {
   let vendors = [];
   try { vendors = await api('GET', '/vendors'); } catch(e) {}
   el.innerHTML =
-    '<div class="page-header"><div><div class="page-title">Vendors</div><div class="page-subtitle">Vendor accounts &amp; login credentials</div></div>' +
-    '<button class="btn btn-primary" onclick="showVendorModal()">+ Add Vendor</button></div>' +
+    '<div class="page-header"><div><div class="page-title">Accounts</div><div class="page-subtitle">Vendor account logins &amp; credentials</div></div>' +
+    '<button class="btn btn-primary" onclick="showVendorModal()">+ Add Account</button></div>' +
     '<div id="vendor-msg"></div>' +
     '<div class="card"><div class="table-wrap">' +
       '<table>' +
-        '<thead><tr><th>Vendor</th><th>Website</th><th>Account #</th><th>Username</th><th>Password</th><th>Notes</th><th></th></tr></thead>' +
+        '<thead><tr><th>Account Name</th><th>Website</th><th>Account #</th><th>Username</th><th>Password</th><th>Notes</th><th></th></tr></thead>' +
         '<tbody>' +
           (vendors.length === 0
-            ? '<tr><td colspan="7" style="text-align:center;color:var(--text-muted-color);padding:32px">No vendors yet.</td></tr>'
+            ? '<tr><td colspan="7" style="text-align:center;color:var(--text-muted-color);padding:32px">No accounts yet.</td></tr>'
             : vendors.map(function(v) {
                 return '<tr>' +
                   '<td style="font-weight:600;color:var(--text)">' + escHtml(v.name) + '</td>' +
@@ -1143,11 +1143,11 @@ function showVendorModal(id, name, website, account_number, username, password, 
   overlay.id = 'vendor-modal-overlay';
   overlay.innerHTML =
     '<div class="modal" style="max-width:520px">' +
-      '<div class="modal-header"><span class="modal-title">' + (isEdit ? 'Edit Vendor' : 'Add Vendor') + '</span>' +
+      '<div class="modal-header"><span class="modal-title">' + (isEdit ? 'Edit Account' : 'Add Account') + '</span>' +
         '<button class="btn btn-ghost btn-sm" onclick="document.getElementById(\'vendor-modal-overlay\').remove()">&#x2715;</button></div>' +
       '<div class="modal-body">' +
         '<div id="vendor-modal-error"></div>' +
-        '<div class="form-group"><label>Vendor Name *</label><input type="text" id="vm-name" value="' + escHtml(name||'') + '" placeholder="e.g. Amazon Business" /></div>' +
+        '<div class="form-group"><label>Account Name *</label><input type="text" id="vm-name" value="' + escHtml(name||'') + '" placeholder="e.g. Amazon Business" /></div>' +
         '<div class="form-group"><label>Website</label><input type="url" id="vm-website" value="' + escHtml(website||'') + '" placeholder="https://..." /></div>' +
         '<div class="form-row">' +
           '<div class="form-group"><label>Account #</label><input type="text" id="vm-account" value="' + escHtml(account_number||'') + '" placeholder="Account number" /></div>' +
@@ -1177,7 +1177,7 @@ function toggleVendorModalPw() {
 
 async function saveVendor(id) {
   const name = (document.getElementById('vm-name')||{}).value.trim();
-  if (!name) { document.getElementById('vendor-modal-error').innerHTML = '<div class="alert alert-error">Vendor name is required.</div>'; return; }
+  if (!name) { document.getElementById('vendor-modal-error').innerHTML = '<div class="alert alert-error">Account name is required.</div>'; return; }
   const payload = {
     name,
     website: (document.getElementById('vm-website')||{}).value.trim() || null,
@@ -1197,7 +1197,7 @@ async function saveVendor(id) {
 }
 
 async function deleteVendor(id) {
-  if (!confirm('Delete this vendor? This cannot be undone.')) return;
+  if (!confirm('Delete this account? This cannot be undone.')) return;
   try {
     await api('DELETE', '/vendors/' + id);
     await renderVendors(document.getElementById('content'));
