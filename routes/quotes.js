@@ -132,8 +132,8 @@ router.put('/:id', requireAuth, async (req, res) => {
       await client.query('DELETE FROM quote_line_items WHERE quote_id = $1', [req.params.id]);
       for (const item of (line_items || [])) {
         await client.query(
-          'INSERT INTO quote_line_items (quote_id, item_number, manufacturer, description, quantity, unit_price, list_price, taxable) VALUES ($1,$2,$3,$4,$5,$6,$7,$8)',
-          [req.params.id, item.item_number || null, item.manufacturer || null, item.description, item.quantity, item.unit_price || 0, item.list_price || 0, item.taxable || false]
+          'INSERT INTO quote_line_items (quote_id, item_number, manufacturer, description, quantity, unit_price, list_price, taxable, url) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)',
+          [req.params.id, item.item_number || null, item.manufacturer || null, item.description, item.quantity, item.unit_price || 0, item.list_price || 0, item.taxable || false, item.url || null]
         );
       }
       await client.query('COMMIT');
