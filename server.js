@@ -18,6 +18,7 @@ app.use('/api/settings', require('./routes/settings'));
 app.use('/api/pos', require('./routes/pos'));
 app.use('/api/quotes', require('./routes/quotes'));
 app.use('/api/addresses', require('./routes/addresses'));
+app.use('/api/vendors', require('./routes/vendors'));
 
 // Catch-all: serve frontend
 app.get('*', (req, res) => {
