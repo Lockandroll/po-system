@@ -4,8 +4,8 @@ const { requireAuth, requireRole } = require('../middleware/auth');
 
 const router = express.Router();
 
-// All vendor routes are admin-only
-router.use(requireAuth, requireRole('admin'));
+// All vendor routes are admin/manager only
+router.use(requireAuth, requireRole('admin', 'manager'));
 
 // GET all vendors
 router.get('/', async (req, res) => {
