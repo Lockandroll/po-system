@@ -516,10 +516,8 @@ async function renderEditPO(el, id) {
       (state.user.role !== 'approver' ? '<button class="btn btn-primary" onclick="savePO(' + (id||'null') + ', \'submit\')" id="btn-submit">Submit for Approval</button>' : '') +
     '</div>';
   buildLineItemRows();
-  // Load shipping addresses for initial city selection
-  if (po && po.city_code) {
-    loadShippingAddresses(po.shipping_address_id);
-  }
+  // Load shipping addresses for whatever city is currently selected
+  loadShippingAddresses(po ? po.shipping_address_id : null);
 }
 
 async function loadShippingAddresses(selectedId) {
@@ -527,6 +525,7 @@ async function loadShippingAddresses(selectedId) {
   const addrEl = document.getElementById('po-shipping-address');
   if (!cityEl || !addrEl) return;
   const city_code = cityEl.value;
+  // Always reset to blank first so a stale selection can't carry over
   addrEl.innerHTML = '<option value="">No shipping address</option>';
   if (!city_code) return;
   try {
