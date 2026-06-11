@@ -90,7 +90,18 @@ async function initDB() {
       'ALTER TABLE quote_line_items ADD COLUMN IF NOT EXISTS list_price DECIMAL(10,2);' +
       'ALTER TABLE quote_line_items ADD COLUMN IF NOT EXISTS taxable BOOLEAN DEFAULT false;' +
       'ALTER TABLE purchase_orders ADD COLUMN IF NOT EXISTS orderer_id INTEGER REFERENCES users(id);' +
-      'ALTER TABLE users ADD COLUMN IF NOT EXISTS receive_emails BOOLEAN NOT NULL DEFAULT true;'
+      'ALTER TABLE users ADD COLUMN IF NOT EXISTS receive_emails BOOLEAN NOT NULL DEFAULT true;' +
+      'ALTER TABLE purchase_orders ADD COLUMN IF NOT EXISTS shipping_address_id INTEGER;' +
+      'ALTER TABLE quote_line_items ADD COLUMN IF NOT EXISTS url TEXT;'
+    );
+    await client.query(
+      'CREATE TABLE IF NOT EXISTS shipping_addresses (' +
+      '  id SERIAL PRIMARY KEY,' +
+      '  city_code CHAR(3) NOT NULL,' +
+      '  name VARCHAR(255) NOT NULL,' +
+      '  address TEXT NOT NULL,' +
+      '  created_at TIMESTAMP DEFAULT NOW()' +
+      ');'
     );
     console.log('Database initialized');
   } finally {
