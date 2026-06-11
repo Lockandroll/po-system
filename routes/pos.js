@@ -122,11 +122,13 @@ const PO_JOIN =
   'SELECT po.*, ' +
   'u.name AS requester_name, ' +
   'a.name AS approver_name, ' +
-  'ord.name AS orderer_name, ord.email AS orderer_email ' +
+  'ord.name AS orderer_name, ord.email AS orderer_email, ' +
+  'sa.name AS shipping_address_name, sa.address AS shipping_address_text ' +
   'FROM purchase_orders po ' +
   'LEFT JOIN users u ON po.requester_id = u.id ' +
   'LEFT JOIN users a ON po.approver_id = a.id ' +
-  'LEFT JOIN users ord ON po.orderer_id = ord.id ';
+  'LEFT JOIN users ord ON po.orderer_id = ord.id ' +
+  'LEFT JOIN shipping_addresses sa ON po.shipping_address_id = sa.id ';
 
 // Export all POs with line items as JSON (for CSV download)
 router.get('/export', requireAuth, async (req, res) => {
@@ -193,6 +195,7 @@ router.post('/', requireAuth, async (req, res) => {
   const city_code = req.body.city_code;
   const notes = req.body.notes;
   const line_items = req.body.line_items;
+  const shipping_address_id = req.body.shipping_address_id || null;
   if (!vendor_name) return res.status(400).json({ error: 'Vendor name is required' });
   if (!city_code) return res.status(400).json({ error: 'City is required' });
   if (!line_items || line_items.length === 0) return res.status(400).json({ error: 'At least one line item is required' });
@@ -205,8 +208,8 @@ router.post('/', requireAuth, async (req, res) => {
   try {
     await client.query('BEGIN');
     const { rows } = await client.query(
-      'INSERT INTO purchase_orders (po_number, requester_id, vendor_name, customer_name, city_code, notes, total_amount) VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING *',
-      [po_number, req.user.id, vendor_name, customer_name || null, city_code.toUpperCase(), notes || null, total_amount]
+      'INSERT INTO purchase_orders (po_number, requester_id, vendor_name, customer_name, city_code, notes, total_amount, shipping_address_id) VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING *',
+      [po_number, req.user.id, vendor_name, customer_name || null, city_code.toUpperCase(), notes || null, total_amount, shipping_address_id]
     );
     const po = rows[0];
     for (let i = 0; i < line_items.length; i++) {
@@ -233,6 +236,7 @@ router.put('/:id', requireAuth, async (req, res) => {
   const city_code = req.body.city_code;
   const notes = req.body.notes;
   const line_items = req.body.line_items;
+  const shipping_address_id = req.body.shipping_address_id !== undefined ? (req.body.shipping_address_id || null) : undefined;
   const { rows } = await pool.query('SELECT * FROM purchase_orders WHERE id = $1', [req.params.id]);
   const po = rows[0];
   if (!po) return res.status(404).json({ error: 'PO not found' });
@@ -249,8 +253,8 @@ router.put('/:id', requireAuth, async (req, res) => {
   try {
     await client.query('BEGIN');
     const { rows: updated } = await client.query(
-      'UPDATE purchase_orders SET vendor_name=$1, customer_name=$2, city_code=$3, notes=$4, total_amount=$5, updated_at=NOW() WHERE id=$6 RETURNING *',
-      [vendor_name || po.vendor_name, customer_name != null ? customer_name : po.customer_name, city_code ? city_code.toUpperCase() : po.city_code, notes != null ? notes : po.notes, total_amount, req.params.id]
+      'UPDATE purchase_orders SET vendor_name=$1, customer_name=$2, city_code=$3, notes=$4, total_amount=$5, shipping_address_id=$6, updated_at=NOW() WHERE id=$7 RETURNING *',
+      [vendor_name || po.vendor_name, customer_name != null ? customer_name : po.customer_name, city_code ? city_code.toUpperCase() : po.city_code, notes != null ? notes : po.notes, total_amount, shipping_address_id !== undefined ? shipping_address_id : po.shipping_address_id, req.params.id]
     );
     if (line_items) {
       await client.query('DELETE FROM po_line_items WHERE po_id = $1', [req.params.id]);
