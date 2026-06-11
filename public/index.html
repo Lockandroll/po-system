@@ -416,12 +416,13 @@ function applyFilters() {
   }
   tbody.innerHTML =
     '<div class="table-wrap"><table>' +
-    '<thead><tr><th>PO Number</th><th>City</th><th>Vendor</th>' + (isApprover ? '<th>Requested By</th>' : '') + '<th>Total</th><th>Status</th><th>Approved By</th><th>Orderer</th><th>Date</th><th></th></tr></thead>' +
+    '<thead><tr><th>PO Number</th><th>City</th><th>Vendor</th><th>Customer</th>' + (isApprover ? '<th>Requested By</th>' : '') + '<th>Total</th><th>Status</th><th>Approved By</th><th>Orderer</th><th>Date</th><th></th></tr></thead>' +
     '<tbody>' + filtered.map(function(po){
       return '<tr>' +
         '<td><strong>' + escHtml(po.po_number) + '</strong></td>' +
         '<td>' + escHtml(po.city_code || '—') + '</td>' +
         '<td>' + escHtml(po.vendor_name) + '</td>' +
+        '<td>' + escHtml(po.customer_name || '—') + '</td>' +
         (isApprover ? '<td>' + escHtml(po.requester_name || '—') + '</td>' : '') +
         '<td>$' + parseFloat(po.total_amount).toFixed(2) + '</td>' +
         '<td>' + badgeHtml(po.status) + '</td>' +
@@ -497,7 +498,8 @@ async function renderEditPO(el, id) {
         '<div class="form-group"><label>Customer Name</label><input type="text" id="po-customer" value="' + escHtml(po && po.customer_name ? po.customer_name : '') + '" placeholder="Customer name" /></div>' +
       '</div>' +
       '<div class="form-row">' +
-        '<div class="form-group"><label>City *</label><select id="po-city">' + cityOptions + '</select></div>' +
+        '<div class="form-group"><label>City *</label><select id="po-city" onchange="loadShippingAddresses()">' + cityOptions + '</select></div>' +
+        '<div class="form-group"><label>Ship To</label><select id="po-shipping-address"><option value="">No shipping address</option></select></div>' +
       '</div>' +
       '<div class="form-group"><label>Notes</label><textarea id="po-notes" placeholder="Optional notes...">' + escHtml(po ? po.notes || '' : '') + '</textarea></div>' +
     '</div></div>' +
@@ -514,6 +516,29 @@ async function renderEditPO(el, id) {
       (state.user.role !== 'approver' ? '<button class="btn btn-primary" onclick="savePO(' + (id||'null') + ', \'submit\')" id="btn-submit">Submit for Approval</button>' : '') +
     '</div>';
   buildLineItemRows();
+  // Load shipping addresses for initial city selection
+  if (po && po.city_code) {
+    loadShippingAddresses(po.shipping_address_id);
+  }
+}
+
+async function loadShippingAddresses(selectedId) {
+  const cityEl = document.getElementById('po-city');
+  const addrEl = document.getElementById('po-shipping-address');
+  if (!cityEl || !addrEl) return;
+  const city_code = cityEl.value;
+  addrEl.innerHTML = '<option value="">No shipping address</option>';
+  if (!city_code) return;
+  try {
+    const addrs = await api('GET', '/addresses?city_code=' + city_code);
+    addrs.forEach(function(a) {
+      const opt = document.createElement('option');
+      opt.value = a.id;
+      opt.textContent = a.name + ' — ' + a.address;
+      if (selectedId && a.id === selectedId) opt.selected = true;
+      addrEl.appendChild(opt);
+    });
+  } catch(e) {}
 }
 
 function buildLineItemRows() {
@@ -564,6 +589,7 @@ async function savePO(id, action) {
   const customer_name = document.getElementById('po-customer').value.trim();
   const city_code = document.getElementById('po-city').value;
   const notes = document.getElementById('po-notes').value.trim();
+  const shipping_address_id = parseInt(document.getElementById('po-shipping-address').value) || null;
   if (!vendor_name) { document.getElementById('edit-error').innerHTML = '<div class="alert alert-error">Vendor name is required.</div>'; return; }
   if (!city_code) { document.getElementById('edit-error').innerHTML = '<div class="alert alert-error">Please select a city.</div>'; return; }
 
@@ -586,9 +612,9 @@ async function savePO(id, action) {
     document.getElementById('btn-submit') && (document.getElementById('btn-submit').disabled = true);
     let po;
     if (id) {
-      po = await api('PUT', '/pos/' + id, { vendor_name, customer_name, city_code, notes, line_items: validItems });
+      po = await api('PUT', '/pos/' + id, { vendor_name, customer_name, city_code, notes, shipping_address_id, line_items: validItems });
     } else {
-      po = await api('POST', '/pos', { vendor_name, customer_name, city_code, notes, line_items: validItems });
+      po = await api('POST', '/pos', { vendor_name, customer_name, city_code, notes, shipping_address_id, line_items: validItems });
     }
     if (action === 'submit') {
       await api('POST', '/pos/' + po.id + '/submit');
@@ -639,6 +665,7 @@ async function renderViewPO(el, id) {
           (po.approver_name ? '<div class="detail-field"><label>' + (po.status === 'approved' ? 'Approved By' : 'Reviewed By') + '</label><p>' + escHtml(po.approver_name) + '</p></div>' : '') +
           (po.approved_at ? '<div class="detail-field"><label>' + (po.status === 'approved' ? 'Approved On' : 'Reviewed On') + '</label><p>' + formatDate(po.approved_at) + '</p></div>' : '') +
           (po.orderer_name ? '<div class="detail-field"><label>Responsible for Ordering</label><p>' + escHtml(po.orderer_name) + '</p></div>' : '') +
+          (po.shipping_address_name ? '<div class="detail-field" style="grid-column:1/-1"><label>Ship To</label><p>' + escHtml(po.shipping_address_name) + ' — ' + escHtml(po.shipping_address_text) + '</p></div>' : '') +
           (po.notes ? '<div class="detail-field" style="grid-column:1/-1"><label>Notes</label><p>' + escHtml(po.notes) + '</p></div>' : '') +
           (po.rejection_reason ? '<div class="detail-field" style="grid-column:1/-1"><label>Rejection Reason</label><p style="color:var(--danger)">' + escHtml(po.rejection_reason) + '</p></div>' : '') +
         '</div>' +
@@ -1064,6 +1091,7 @@ async function renderCities(el) {
             '<td>' + (isInactive ? '<span class="badge badge-inactive">Inactive</span>' : '<span style="color:var(--success);font-size:13px">&#10003; Active</span>') + '</td>' +
             '<td class="flex-gap">' +
               '<button class="btn btn-secondary btn-sm" onclick="showCityModal(' + c.id + ')">Edit</button>' +
+              '<button class="btn btn-secondary btn-sm" onclick="showAddressesModal(\'' + escHtml(c.code) + '\', \'' + escHtml(c.name) + '\')">Addresses</button>' +
               (!isInactive ? '<button class="btn btn-danger btn-sm" onclick="deactivateCity(' + c.id + ')">Deactivate</button>' : '') +
               (isInactive ? '<button class="btn btn-success btn-sm" onclick="reactivateCity(' + c.id + ')">Reactivate</button>' : '') +
             '</td>' +
@@ -1125,6 +1153,96 @@ async function deactivateCity(id) {
 async function reactivateCity(id) {
   try { await api('POST', '/cities/' + id + '/reactivate'); navigate('cities'); }
   catch(err) { document.getElementById('cities-error').innerHTML = '<div class="alert alert-error">' + escHtml(err.message) + '</div>'; }
+}
+
+async function showAddressesModal(cityCode, cityName) {
+  const overlay = document.createElement('div');
+  overlay.className = 'modal-overlay';
+  overlay.id = 'addr-modal-overlay';
+  document.body.appendChild(overlay);
+  await refreshAddressesModal(cityCode, cityName);
+}
+
+async function refreshAddressesModal(cityCode, cityName) {
+  const overlay = document.getElementById('addr-modal-overlay');
+  if (!overlay) return;
+  let addrs = [];
+  try { addrs = await api('GET', '/addresses?city_code=' + cityCode); } catch(e) {}
+  overlay.innerHTML =
+    '<div class="modal" style="max-width:560px">' +
+      '<div class="modal-header"><span class="modal-title">Shipping Addresses — ' + escHtml(cityName) + ' (' + escHtml(cityCode) + ')</span><button class="btn btn-ghost btn-sm" onclick="document.getElementById(\'addr-modal-overlay\').remove()">&#x2715;</button></div>' +
+      '<div class="modal-body">' +
+        '<div id="addr-modal-error"></div>' +
+        (addrs.length === 0
+          ? '<p style="color:var(--text-muted-color);margin-bottom:16px">No addresses yet.</p>'
+          : '<div style="margin-bottom:16px">' + addrs.map(function(a) {
+              return '<div style="display:flex;justify-content:space-between;align-items:center;padding:10px 0;border-bottom:1px solid var(--border)">' +
+                '<div><strong style="font-size:14px">' + escHtml(a.name) + '</strong><div style="font-size:13px;color:var(--text-muted-color);margin-top:2px">' + escHtml(a.address) + '</div></div>' +
+                '<div class="flex-gap">' +
+                  '<button class="btn btn-secondary btn-sm" onclick="editAddressInline(' + a.id + ',\'' + escHtml(a.name).replace(/'/g,"\\'") + '\',\'' + escHtml(a.address).replace(/'/g,"\\'") + '\',\'' + escHtml(cityCode) + '\',\'' + escHtml(cityName) + '\')">Edit</button>' +
+                  '<button class="btn btn-danger btn-sm" onclick="deleteAddress(' + a.id + ',\'' + escHtml(cityCode) + '\',\'' + escHtml(cityName) + '\')">&#x2715;</button>' +
+                '</div>' +
+              '</div>';
+            }).join('') + '</div>') +
+        '<div style="border-top:1px solid var(--border);padding-top:16px;margin-top:8px">' +
+          '<div style="font-size:13px;font-weight:600;margin-bottom:10px">Add New Address</div>' +
+          '<div class="form-group"><label>Location Name</label><input type="text" id="new-addr-name" placeholder="e.g. Main Warehouse" /></div>' +
+          '<div class="form-group"><label>Full Address</label><input type="text" id="new-addr-address" placeholder="e.g. 123 Main St, Jacksonville, FL 32099" /></div>' +
+        '</div>' +
+      '</div>' +
+      '<div class="modal-footer">' +
+        '<button class="btn btn-secondary" onclick="document.getElementById(\'addr-modal-overlay\').remove()">Close</button>' +
+        '<button class="btn btn-primary" onclick="addAddress(\'' + escHtml(cityCode) + '\',\'' + escHtml(cityName) + '\')">Add Address</button>' +
+      '</div>' +
+    '</div>';
+}
+
+async function addAddress(cityCode, cityName) {
+  const name = (document.getElementById('new-addr-name') || {}).value.trim();
+  const address = (document.getElementById('new-addr-address') || {}).value.trim();
+  if (!name || !address) { document.getElementById('addr-modal-error').innerHTML = '<div class="alert alert-error">Name and address are required.</div>'; return; }
+  try {
+    await api('POST', '/addresses', { city_code: cityCode, name, address });
+    await refreshAddressesModal(cityCode, cityName);
+  } catch(err) { document.getElementById('addr-modal-error').innerHTML = '<div class="alert alert-error">' + escHtml(err.message) + '</div>'; }
+}
+
+async function deleteAddress(id, cityCode, cityName) {
+  if (!confirm('Delete this shipping address?')) return;
+  try { await api('DELETE', '/addresses/' + id); await refreshAddressesModal(cityCode, cityName); }
+  catch(err) { document.getElementById('addr-modal-error').innerHTML = '<div class="alert alert-error">' + escHtml(err.message) + '</div>'; }
+}
+
+function editAddressInline(id, name, address, cityCode, cityName) {
+  const editDiv = document.createElement('div');
+  editDiv.className = 'modal-overlay';
+  editDiv.style.zIndex = '200';
+  editDiv.innerHTML =
+    '<div class="modal">' +
+      '<div class="modal-header"><span class="modal-title">Edit Address</span><button class="btn btn-ghost btn-sm" onclick="this.closest(\'.modal-overlay\').remove()">&#x2715;</button></div>' +
+      '<div class="modal-body">' +
+        '<div id="edit-addr-error"></div>' +
+        '<div class="form-group"><label>Location Name</label><input type="text" id="edit-addr-name" value="' + escHtml(name) + '" /></div>' +
+        '<div class="form-group"><label>Full Address</label><input type="text" id="edit-addr-address" value="' + escHtml(address) + '" /></div>' +
+      '</div>' +
+      '<div class="modal-footer">' +
+        '<button class="btn btn-secondary" onclick="this.closest(\'.modal-overlay\').remove()">Cancel</button>' +
+        '<button class="btn btn-primary" onclick="saveEditAddress(' + id + ',\'' + escHtml(cityCode) + '\',\'' + escHtml(cityName) + '\',this)">Save</button>' +
+      '</div>' +
+    '</div>';
+  document.body.appendChild(editDiv);
+}
+
+async function saveEditAddress(id, cityCode, cityName, btn) {
+  const name = (document.getElementById('edit-addr-name') || {}).value.trim();
+  const address = (document.getElementById('edit-addr-address') || {}).value.trim();
+  if (!name || !address) { document.getElementById('edit-addr-error').innerHTML = '<div class="alert alert-error">Required.</div>'; return; }
+  try {
+    btn.disabled = true;
+    await api('PUT', '/addresses/' + id, { name, address });
+    document.querySelectorAll('.modal-overlay[style*="z-index: 200"]')[0] && document.querySelectorAll('.modal-overlay[style*="z-index: 200"]')[0].remove();
+    await refreshAddressesModal(cityCode, cityName);
+  } catch(err) { document.getElementById('edit-addr-error').innerHTML = '<div class="alert alert-error">' + escHtml(err.message) + '</div>'; btn.disabled = false; }
 }
 
 // ── Quotes ────────────────────────────────────────────────────────────────────
@@ -1218,7 +1336,7 @@ async function renderEditQuote(el, id) {
     return '<option value="' + escHtml(c.code) + '"' + (quote && quote.city_code === c.code ? ' selected' : '') + '>' + escHtml(c.name) + ' (' + escHtml(c.code) + ')</option>';
   }).join('');
   const importantInfoVal = quote ? (quote.important_info || '') : getDefaultImportantInfo();
-  const taxRateVal = quote ? (parseFloat(quote.tax_rate) || 0) : 0;
+  const taxRateVal = quote ? (quote.tax_rate !== null && quote.tax_rate !== undefined ? parseFloat(quote.tax_rate) : '') : '';
   el.innerHTML =
     '<div class="page-header">' +
       '<div><div class="page-title">' + (id ? 'Edit Quote' : 'New Quote') + '</div></div>' +
@@ -1234,19 +1352,19 @@ async function renderEditQuote(el, id) {
     '</div></div>' +
     '<div class="card mb-4"><div class="card-header"><span class="card-title">Line Items</span></div><div class="card-body">' +
       '<div class="table-wrap"><table class="line-items-table">' +
-        '<thead><tr><th>Item #</th><th>Supplier</th><th>Description</th><th>Qty</th><th>Unit Price (Our Cost)</th><th>List Price (Customer Cost)</th><th>Taxable</th><th>Total</th><th></th></tr></thead>' +
+        '<thead><tr><th>Item #</th><th>Supplier</th><th>Description</th><th>Qty</th><th>Unit Price (Our Cost)</th><th>List Price (Customer Cost)</th><th>Taxable</th><th>Part URL</th><th>Total</th><th></th></tr></thead>' +
         '<tbody id="quote-line-items-body"></tbody>' +
         '<tfoot>' +
-          '<tr><td colspan="7" class="text-right" style="padding:8px 10px;color:var(--text-muted-color)">Subtotal</td><td id="quote-subtotal" style="padding:8px 10px">$0.00</td><td></td></tr>' +
-          '<tr><td colspan="7" class="text-right" style="padding:8px 10px;color:var(--text-muted-color)">Tax</td><td id="quote-tax-display" style="padding:8px 10px">$0.00</td><td></td></tr>' +
-          '<tr class="total-row"><td colspan="7" class="text-right" style="padding:10px">Grand Total</td><td id="quote-grand-total" style="padding:10px">$0.00</td><td></td></tr>' +
+          '<tr><td colspan="8" class="text-right" style="padding:8px 10px;color:var(--text-muted-color)">Subtotal</td><td id="quote-subtotal" style="padding:8px 10px">$0.00</td><td></td></tr>' +
+          '<tr><td colspan="8" class="text-right" style="padding:8px 10px;color:var(--text-muted-color)">Tax</td><td id="quote-tax-display" style="padding:8px 10px">$0.00</td><td></td></tr>' +
+          '<tr class="total-row"><td colspan="8" class="text-right" style="padding:10px">Grand Total</td><td id="quote-grand-total" style="padding:10px">$0.00</td><td></td></tr>' +
         '</tfoot>' +
       '</table></div>' +
       '<div style="display:flex;justify-content:space-between;align-items:center;margin-top:8px">' +
         '<button class="btn btn-secondary btn-sm" onclick="addQuoteLineItem()">' + icons.plus + ' Add Item</button>' +
         '<div style="display:flex;align-items:center;gap:8px">' +
           '<label style="margin:0;font-size:13px">Tax %</label>' +
-          '<input type="number" id="qt-tax-rate" value="' + taxRateVal + '" min="0" max="100" step="0.01" style="width:80px" oninput="updateQuoteTotals()" />' +
+          '<input type="number" id="qt-tax-rate" value="' + taxRateVal + '" min="0" max="100" step="0.01" style="width:80px" placeholder="Req." oninput="updateQuoteTotals()" />' +
         '</div>' +
       '</div>' +
     '</div></div>' +
@@ -1273,6 +1391,7 @@ function buildQuoteLineItemRows() {
       '<td><input type="number" value="' + escHtml(item.unit_price||'') + '" min="0" step="0.01" placeholder="0.00" onchange="updateQuoteItem(' + i + ',this)" data-field="unit_price" style="width:90px" /></td>' +
       '<td><input type="number" value="' + escHtml(item.list_price||'') + '" min="0" step="0.01" placeholder="0.00" onchange="updateQuoteItem(' + i + ',this)" data-field="list_price" style="width:90px" /></td>' +
       '<td style="text-align:center"><input type="checkbox"' + (item.taxable ? ' checked' : '') + ' onchange="updateQuoteItem(' + i + ',this)" data-field="taxable" /></td>' +
+      '<td><input type="url" value="' + escHtml(item.url||'') + '" placeholder="https://..." onchange="updateQuoteItem(' + i + ',this)" data-field="url" style="width:120px;font-size:12px" /></td>' +
       '<td id="qt-row-total-' + i + '">$' + total.toFixed(2) + '</td>' +
       '<td>' + (quoteLineItems.length > 1 ? '<button class="btn btn-ghost btn-sm" onclick="removeQuoteItem(' + i + ')">' + icons.trash + '</button>' : '') + '</td>' +
     '</tr>';
@@ -1319,9 +1438,11 @@ async function saveQuote(id) {
   const customer_name = document.getElementById('qt-customer').value.trim();
   const city_code = document.getElementById('qt-city').value;
   const notes = document.getElementById('qt-notes').value.trim();
-  const tax_rate = parseFloat(document.getElementById('qt-tax-rate').value) || 0;
+  const taxRateRaw = document.getElementById('qt-tax-rate').value;
+  const tax_rate = parseFloat(taxRateRaw);
   const important_info = document.getElementById('qt-important-info').value.trim();
   if (!customer_name) { document.getElementById('quote-edit-error').innerHTML = '<div class="alert alert-error">Customer name is required.</div>'; return; }
+  if (taxRateRaw === '' || isNaN(tax_rate)) { document.getElementById('quote-edit-error').innerHTML = '<div class="alert alert-error">Tax % is required. Enter 0 if no tax applies.</div>'; return; }
   const rows = document.querySelectorAll('#quote-line-items-body tr');
   rows.forEach(function(row, i) {
     const inputs = row.querySelectorAll('input');
@@ -1332,6 +1453,7 @@ async function saveQuote(id) {
     if (inputs[4]) quoteLineItems[i].unit_price = inputs[4].value;
     if (inputs[5]) quoteLineItems[i].list_price = inputs[5].value;
     if (inputs[6]) quoteLineItems[i].taxable = inputs[6].checked;
+    if (inputs[7]) quoteLineItems[i].url = inputs[7].value;
   });
   const validItems = quoteLineItems.filter(function(item){ return item.description && item.quantity && item.list_price; });
   if (validItems.length === 0) { document.getElementById('quote-edit-error').innerHTML = '<div class="alert alert-error">At least one complete line item is required.</div>'; return; }
@@ -1382,7 +1504,7 @@ async function renderViewQuote(el, id) {
       '</div></div>' +
       '<div class="card"><div class="card-header"><span class="card-title">Line Items</span></div><div class="card-body">' +
         '<div class="table-wrap"><table class="line-items-table">' +
-          '<thead><tr><th>Item #</th><th>Supplier</th><th>Description</th><th>Qty</th><th>Unit Price (Our Cost)</th><th>List Price (Customer Cost)</th><th>Taxable</th><th class="text-right">Total</th></tr></thead>' +
+          '<thead><tr><th>Item #</th><th>Supplier</th><th>Description</th><th>Qty</th><th>Unit Price (Our Cost)</th><th>List Price (Customer Cost)</th><th>Taxable</th><th>URL</th><th class="text-right">Total</th></tr></thead>' +
           '<tbody>' + q.line_items.map(function(item) {
             const listP = parseFloat(item.list_price || 0);
             const lineTotal = (parseFloat(item.quantity) * listP).toFixed(2);
@@ -1394,6 +1516,7 @@ async function renderViewQuote(el, id) {
               '<td>$' + parseFloat(item.unit_price || 0).toFixed(2) + '</td>' +
               '<td>$' + listP.toFixed(2) + '</td>' +
               '<td style="text-align:center">' + (item.taxable ? '&#10003;' : '—') + '</td>' +
+              '<td>' + (item.url ? '<a href="' + escHtml(item.url) + '" target="_blank" style="color:var(--primary);font-size:12px">Link</a>' : '—') + '</td>' +
               '<td class="text-right">$' + lineTotal + '</td>' +
             '</tr>';
           }).join('') + '</tbody>' +
