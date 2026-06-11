@@ -87,8 +87,8 @@ router.post('/', requireAuth, async (req, res) => {
     const quote = rows[0];
     for (const item of (line_items || [])) {
       await client.query(
-        'INSERT INTO quote_line_items (quote_id, item_number, manufacturer, description, quantity, unit_price, list_price, taxable) VALUES ($1,$2,$3,$4,$5,$6,$7,$8)',
-        [quote.id, item.item_number || null, item.manufacturer || null, item.description, item.quantity, item.unit_price || 0, item.list_price || 0, item.taxable || false]
+        'INSERT INTO quote_line_items (quote_id, item_number, manufacturer, description, quantity, unit_price, list_price, taxable, url) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)',
+        [quote.id, item.item_number || null, item.manufacturer || null, item.description, item.quantity, item.unit_price || 0, item.list_price || 0, item.taxable || false, item.url || null]
       );
     }
     await client.query('COMMIT');
