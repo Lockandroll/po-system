@@ -22,7 +22,7 @@ router.post('/setup', async (req, res) => {
     [name, email, password_hash, 'admin']
   );
   const user = result.rows[0];
-  const token = jwt.sign({ id: user.id, email: user.email, name: user.name, role: user.role }, process.env.JWT_SECRET, { expiresIn: '7d' });
+  const token = jwt.sign({ id: user.id, email: user.email, name: user.name, role: user.role }, process.env.JWT_SECRET, { expiresIn: '24h' });
   res.json({ token, user });
 });
 
@@ -38,7 +38,7 @@ router.post('/login', async (req, res) => {
   if (user.active === false) {
     return res.status(403).json({ error: 'Your account has been deactivated. Contact an administrator.' });
   }
-  const token = jwt.sign({ id: user.id, email: user.email, name: user.name, role: user.role }, process.env.JWT_SECRET, { expiresIn: '7d' });
+  const token = jwt.sign({ id: user.id, email: user.email, name: user.name, role: user.role }, process.env.JWT_SECRET, { expiresIn: '24h' });
   res.json({ token, user: { id: user.id, name: user.name, email: user.email, role: user.role } });
 });
 
