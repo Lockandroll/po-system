@@ -813,7 +813,7 @@ async function renderUsers(el) {
     el.innerHTML =
       '<div class="page-header"><div class="page-title">Users</div>' + (state.user.role === 'admin' ? '<button class="btn btn-primary" onclick="showUserModal(null)" style="white-space:nowrap">' + icons.plus + ' Add User</button>' : '') + '</div>' +
       '<div id="users-error"></div>' +
-      '<div style="margin-bottom:16px"><input type="text" id="users-search" placeholder="Search by name, email, or role..." style="width:100%;max-width:400px;padding:8px 12px;background:var(--surface-color);border:1px solid var(--border-color);border-radius:6px;color:var(--text-color);font-size:14px" oninput="usersFilter(this.value)" /></div>' +
+      '<div style="margin-bottom:16px"><input type="text" id="users-search" placeholder="Search by name, email, or role..." style="width:100%;max-width:400px;padding:8px 12px;background:var(--surface-color);border:1px solid rgba(249,115,22,0.35);border-radius:6px;color:var(--text-color);font-size:14px;outline:none;box-shadow:0 0 0 1px rgba(249,115,22,0.15)" oninput="usersFilter(this.value)" /></div>' +
       '<div id="users-table-wrap"></div>' +
       '<div id="users-pagination" style="display:flex;gap:8px;align-items:center;margin-top:16px;flex-wrap:wrap"></div>';
     usersRenderTable();
