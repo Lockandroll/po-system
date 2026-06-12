@@ -7,7 +7,12 @@ function requireAuth(req, res, next) {
   }
   const token = header.slice(7);
   try {
-    req.user = jwt.verify(token, process.env.JWT_SECRET);
+    const payload = jwt.verify(token, process.env.JWT_SECRET);
+    req.user = payload;
+    // Issue a fresh 24h token on every request (rolling expiry)
+    const { iat, exp, ...claims } = payload;
+    const newToken = jwt.sign(claims, process.env.JWT_SECRET, { expiresIn: '24h' });
+    res.setHeader('X-New-Token', newToken);
     next();
   } catch {
     res.status(401).json({ error: 'Invalid or expired token' });
