@@ -165,6 +165,12 @@ async function api(method, path, body) {
   } catch(e) {
     throw new Error('Network error — could not reach the server. Check your connection.');
   }
+  // Rolling JWT: pick up refreshed token from every response
+  const newToken = res.headers.get('X-New-Token');
+  if (newToken) {
+    state.token = newToken;
+    localStorage.setItem('po_token', newToken);
+  }
   let data;
   try {
     data = await res.json();
@@ -248,6 +254,8 @@ async function render() {
         (state.user.role === 'admin' ? '<div class="nav-item ' + (state.currentView === 'users' ? 'active' : '') + '" onclick="navigate(\'users\')">' + icons.users + ' Users</div>' : '') +
         (['admin','manager'].includes(state.user.role) ? '<div class="nav-item ' + (state.currentView === 'cities' ? 'active' : '') + '" onclick="navigate(\'cities\')">' + icons.map + ' Cities</div>' : '') +
         (['admin','manager'].includes(state.user.role) ? '<div class="nav-item ' + (state.currentView === 'vendors' ? 'active' : '') + '" onclick="navigate(\'vendors\')"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 9l9-7 9 7v11a2 2 0 01-2 2H5a2 2 0 01-2-2z"/><polyline points="9 22 9 12 15 12 15 22"/></svg> Accounts</div>' : '') +
+        (state.user.role === 'admin' ? '<div class="nav-item ' + (state.currentView === 'audit' ? 'active' : '') + '" onclick="navigate(\'audit\')"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/><line x1="10" y1="9" x2="8" y2="9"/></svg> Audit Log</div>' : '') +
+        '<div class="nav-item ' + (state.currentView === 'ai-assistant' ? 'active' : '') + '" onclick="navigate(\'ai-assistant\')"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="6" width="18" height="13" rx="2"/><path d="M8 6V4a1 1 0 011-1h6a1 1 0 011 1v2"/><circle cx="9" cy="12" r="1" fill="currentColor"/><circle cx="15" cy="12" r="1" fill="currentColor"/><path d="M9.5 16h5"/><path d="M12 3v1"/></svg> AI Assistant</div>' +
         (state.user.role === 'admin' ? '<div class="nav-item ' + (state.currentView === 'settings' ? 'active' : '') + '" onclick="navigate(\'settings\')">' + icons.settings + ' Settings</div>' : '') +
       '</nav>' +
       '<div class="sidebar-footer">' +
@@ -274,11 +282,13 @@ async function render() {
   else if (state.currentView === 'users') await renderUsers(content);
   else if (state.currentView === 'cities') await renderCities(content);
   else if (state.currentView === 'vendors') await renderVendors(content);
+  else if (state.currentView === 'audit') await renderAuditLog(content);
   else if (state.currentView === 'settings') await renderSettings(content);
   else if (state.currentView === 'quotes') await renderQuotes(content);
   else if (state.currentView === 'new-quote') await renderEditQuote(content, null);
   else if (state.currentView === 'edit-quote') await renderEditQuote(content, state.currentParam);
   else if (state.currentView === 'view-quote') await renderViewQuote(content, state.currentParam);
+  else if (state.currentView === 'ai-assistant') await renderAIAssistant(content);
   else { state.currentView = 'dashboard'; await renderDashboard(content); }
 }
 
@@ -380,9 +390,9 @@ async function renderDashboard(el) {
         '<div class="card-header"><span class="card-title">Purchase Orders</span></div>' +
         '<div class="card-body" style="border-bottom:1px solid var(--border)">' +
           '<div class="filter-bar">' +
-            '<input type="text" id="filter-text" placeholder="Search PO #, vendor, customer..." oninput="applyFilters()" />' +
-            '<select id="filter-status" onchange="applyFilters()"><option value="">All Statuses</option><option value="draft">Draft</option><option value="submitted">Submitted</option><option value="approved">Approved</option><option value="rejected">Rejected</option><option value="cancelled">Cancelled</option></select>' +
-            '<select id="filter-city" onchange="applyFilters()">' + cityOptions + '</select>' +
+            '<input type="text" id="filter-text" placeholder="Search PO #, vendor, customer..." oninput="applyFilters(true)" />' +
+            '<select id="filter-status" onchange="applyFilters(true)"><option value="">All Statuses</option><option value="draft">Draft</option><option value="submitted">Submitted</option><option value="approved">Approved</option><option value="rejected">Rejected</option><option value="cancelled">Cancelled</option></select>' +
+            '<select id="filter-city" onchange="applyFilters(true)">' + cityOptions + '</select>' +
           '</div>' +
         '</div>' +
         '<div id="po-table-body" style="padding:0"></div>' +
@@ -394,7 +404,35 @@ async function renderDashboard(el) {
   }
 }
 
-function applyFilters() {
+function renderPagination(page, totalPages, totalItems, callbackName) {
+  if (totalPages <= 1) return '';
+  const start = (page - 1) * 10 + 1;
+  const end = Math.min(page * 10, totalItems);
+  let btns = '';
+  for (let i = 1; i <= totalPages; i++) {
+    if (i === 1 || i === totalPages || Math.abs(i - page) <= 1) {
+      btns += '<button onclick="' + callbackName + '(' + i + ')" style="min-width:32px;padding:4px 8px;border-radius:4px;border:1px solid var(--border);background:' + (i === page ? 'var(--primary)' : 'var(--bg-elevated)') + ';color:' + (i === page ? 'white' : 'var(--text-dim)') + ';cursor:pointer;font-size:13px">' + i + '</button>';
+    } else if (Math.abs(i - page) === 2) {
+      btns += '<span style="color:var(--text-muted-color);padding:0 2px">…</span>';
+    }
+  }
+  return '<div style="display:flex;align-items:center;justify-content:space-between;padding:12px 16px;border-top:1px solid var(--border)">' +
+    '<span style="font-size:13px;color:var(--text-muted-color)">Showing ' + start + '–' + end + ' of ' + totalItems + '</span>' +
+    '<div style="display:flex;gap:4px;align-items:center">' +
+      '<button onclick="' + callbackName + '(' + (page - 1) + ')" ' + (page === 1 ? 'disabled' : '') + ' style="padding:4px 8px;border-radius:4px;border:1px solid var(--border);background:var(--bg-elevated);color:var(--text-dim);cursor:pointer;font-size:13px">‹</button>' +
+      btns +
+      '<button onclick="' + callbackName + '(' + (page + 1) + ')" ' + (page === totalPages ? 'disabled' : '') + ' style="padding:4px 8px;border-radius:4px;border:1px solid var(--border);background:var(--bg-elevated);color:var(--text-dim);cursor:pointer;font-size:13px">›</button>' +
+    '</div>' +
+  '</div>';
+}
+function poPaginate(p) { _poPage = p; applyFilters(); }
+function quotePaginate(p) { _quotePage = p; filterQuotes(); }
+
+let _poPage = 1;
+const PO_PAGE_SIZE = 10;
+
+function applyFilters(resetPage) {
+  if (resetPage) _poPage = 1;
   const text = (document.getElementById('filter-text') || {}).value || '';
   const status = (document.getElementById('filter-status') || {}).value || '';
   const city = (document.getElementById('filter-city') || {}).value || '';
@@ -417,10 +455,16 @@ function applyFilters() {
     tbody.innerHTML = '<div class="empty-state"><h3>No matching purchase orders</h3><p>Try adjusting your filters.</p></div>';
     return;
   }
+
+  const totalPages = Math.ceil(filtered.length / PO_PAGE_SIZE);
+  if (_poPage > totalPages) _poPage = totalPages;
+  const start = (_poPage - 1) * PO_PAGE_SIZE;
+  const page = filtered.slice(start, start + PO_PAGE_SIZE);
+
   tbody.innerHTML =
     '<div class="table-wrap"><table>' +
     '<thead><tr><th>PO Number</th><th>City</th><th>Vendor</th><th>Customer/Employee</th>' + (isApprover ? '<th>Requested By</th>' : '') + '<th>Total</th><th>Status</th><th>Approved By</th><th>Orderer</th><th>Date</th><th></th></tr></thead>' +
-    '<tbody>' + filtered.map(function(po){
+    '<tbody>' + page.map(function(po){
       return '<tr>' +
         '<td><strong>' + escHtml(po.po_number) + '</strong></td>' +
         '<td>' + escHtml(po.city_code || '—') + '</td>' +
@@ -435,7 +479,8 @@ function applyFilters() {
         '<td><button class="btn btn-secondary btn-sm" onclick="navigate(\'view\',' + po.id + ')">View</button></td>' +
       '</tr>';
     }).join('') +
-    '</tbody></table></div>';
+    '</tbody></table></div>' +
+    renderPagination(_poPage, totalPages, filtered.length, 'poPaginate');
 }
 
 async function exportCSV() {
@@ -1411,51 +1456,65 @@ function renderQuoteRows(quotes, isAdmin) {
   }).join('');
 }
 
+let _quotePage = 1;
+const QUOTE_PAGE_SIZE = 10;
+
 async function renderQuotes(el) {
   try {
     const quotes = await api('GET', '/quotes');
     const isAdmin = state.user.role === 'admin';
+    _quotePage = 1;
+    window._quotesData = quotes;
+    window._quotesIsAdmin = isAdmin;
     el.innerHTML =
       '<div class="page-header">' +
-        '<div><div class="page-title">Quotes</div><div class="page-subtitle">' + (isAdmin ? 'All quotes' : 'Your quotes') + '</div></div>' +
+        '<div><div class="page-title">Quote Dashboard</div><div class="page-subtitle">' + (isAdmin ? 'All quotes' : 'Your quotes') + '</div></div>' +
         '<button class="btn btn-primary" onclick="navigate(\'new-quote\')" style="white-space:nowrap">' + icons.plus + ' New Quote</button>' +
       '</div>' +
       '<div id="quotes-error"></div>' +
       '<div class="card">' +
         '<div class="card-header" style="display:flex;justify-content:space-between;align-items:center">' +
           '<span class="card-title">Quote List</span>' +
-          '<input type="text" id="quote-search" placeholder="Search quote #, customer, city..." style="width:280px" oninput="filterQuotes()" />' +
+          '<input type="text" id="quote-search" placeholder="Search quote #, customer, city..." style="width:280px" oninput="filterQuotes(true)" />' +
         '</div>' +
         (quotes.length === 0
           ? '<div class="empty-state"><h3>No quotes yet</h3><p>Create your first quote to get started.</p></div>'
-          : '<div class="table-wrap"><table id="quotes-table">' +
-              '<thead><tr><th>Quote #</th><th>Customer</th><th>City</th>' + (isAdmin ? '<th>Created By</th>' : '') + '<th>Total</th><th>Date</th><th></th></tr></thead>' +
-              '<tbody id="quotes-tbody">' + renderQuoteRows(quotes, isAdmin) + '</tbody>' +
-            '</table></div>') +
+          : '<div id="quotes-table-wrap"></div>') +
       '</div>';
-
-    window._quotesData = quotes;
-    window._quotesIsAdmin = isAdmin;
+    if (quotes.length > 0) filterQuotes();
   } catch(err) {
     el.innerHTML = '<div class="alert alert-error">' + escHtml(err.message) + '</div>';
   }
 }
 
-function filterQuotes() {
-  const q = (document.getElementById('quote-search').value || '').toLowerCase();
-  const tbody = document.getElementById('quotes-tbody');
-  if (!tbody || !window._quotesData) return;
+function filterQuotes(resetPage) {
+  if (resetPage) _quotePage = 1;
+  const q = (document.getElementById('quote-search') || {}).value || '';
+  const wrap = document.getElementById('quotes-table-wrap');
+  if (!wrap || !window._quotesData) return;
+  const isAdmin = window._quotesIsAdmin;
   const filtered = q
     ? window._quotesData.filter(function(r) {
-        return (r.quote_number||'').toLowerCase().includes(q) ||
-               (r.customer_name||'').toLowerCase().includes(q) ||
-               (r.city_code||'').toLowerCase().includes(q) ||
-               (r.requester_name||'').toLowerCase().includes(q);
+        return (r.quote_number||'').toLowerCase().includes(q.toLowerCase()) ||
+               (r.customer_name||'').toLowerCase().includes(q.toLowerCase()) ||
+               (r.city_code||'').toLowerCase().includes(q.toLowerCase()) ||
+               (r.requester_name||'').toLowerCase().includes(q.toLowerCase());
       })
     : window._quotesData;
-  tbody.innerHTML = filtered.length
-    ? renderQuoteRows(filtered, window._quotesIsAdmin)
-    : '<tr><td colspan="7" style="text-align:center;padding:24px;color:var(--text-muted-color)">No matching quotes.</td></tr>';
+  if (filtered.length === 0) {
+    wrap.innerHTML = '<div class="empty-state"><h3>No matching quotes</h3><p>Try a different search.</p></div>';
+    return;
+  }
+  const totalPages = Math.ceil(filtered.length / QUOTE_PAGE_SIZE);
+  if (_quotePage > totalPages) _quotePage = totalPages;
+  const start = (_quotePage - 1) * QUOTE_PAGE_SIZE;
+  const page = filtered.slice(start, start + QUOTE_PAGE_SIZE);
+  wrap.innerHTML =
+    '<div class="table-wrap"><table id="quotes-table">' +
+    '<thead><tr><th>Quote #</th><th>Customer</th><th>City</th>' + (isAdmin ? '<th>Created By</th>' : '') + '<th>Total</th><th>Date</th><th></th></tr></thead>' +
+    '<tbody>' + renderQuoteRows(page, isAdmin) + '</tbody>' +
+    '</table></div>' +
+    renderPagination(_quotePage, totalPages, filtered.length, 'quotePaginate');
 }
 
 async function renderEditQuote(el, id) {
@@ -1834,7 +1893,207 @@ async function printQuote(id) {
   }
 }
 
+// ── Audit Log ────────────────────────────────────────────────────────────────
+async function renderAuditLog(el) {
+  if (state.user.role !== 'admin') { el.innerHTML = '<div class="alert alert-error">Access denied.</div>'; return; }
+  el.innerHTML = '<div class="loading">Loading…</div>';
+  try {
+    const logs = await api('GET', '/audit');
+    const actionColors = {
+      created: 'var(--success)', edited: '#60a5fa', deleted: 'var(--danger)',
+      submitted: 'var(--warning)', approved: 'var(--success)', rejected: 'var(--danger)', cancelled: '#c084fc'
+    };
+    el.innerHTML =
+      '<div class="page-header"><div><div class="page-title">Audit Log</div><div class="page-subtitle">All PO and Quote activity</div></div>' +
+      '<div class="flex-gap">' +
+        '<select id="audit-filter-type" onchange="auditApplyFilter()" style="width:auto"><option value="">All Types</option><option value="po">POs Only</option><option value="quote">Quotes Only</option></select>' +
+        '<select id="audit-filter-action" onchange="auditApplyFilter()" style="width:auto"><option value="">All Actions</option><option value="created">Created</option><option value="edited">Edited</option><option value="submitted">Submitted</option><option value="approved">Approved</option><option value="rejected">Rejected</option><option value="cancelled">Cancelled</option><option value="deleted">Deleted</option></select>' +
+      '</div></div>' +
+      '<div class="card"><div class="table-wrap">' +
+        '<table id="audit-table">' +
+          '<thead><tr><th>Date &amp; Time</th><th>Action</th><th>Type</th><th>Number</th><th>User</th><th>Details</th></tr></thead>' +
+          '<tbody id="audit-tbody">' + renderAuditRows(logs) + '</tbody>' +
+        '</table>' +
+        (logs.length === 0 ? '<div class="empty-state"><h3>No activity yet</h3><p>Actions will appear here as POs and Quotes are created and updated.</p></div>' : '') +
+      '</div></div>';
+    window._auditData = logs;
+  } catch(err) {
+    el.innerHTML = '<div class="alert alert-error">' + escHtml(err.message) + '</div>';
+  }
+}
+function renderAuditRows(logs) {
+  const actionColors = { created: '#22c55e', edited: '#60a5fa', deleted: '#ef4444', submitted: '#f59e0b', approved: '#22c55e', rejected: '#ef4444', cancelled: '#c084fc' };
+  if (!logs.length) return '';
+  return logs.map(function(l) {
+    const color = actionColors[l.action] || 'var(--text-muted-color)';
+    const dt = new Date(l.created_at);
+    const dateStr = dt.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }) + ' ' + dt.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' });
+    let details = '';
+    if (l.details) {
+      try {
+        const d = JSON.parse(l.details);
+        if (d.vendor) details += 'Vendor: ' + d.vendor + ' ';
+        if (d.customer) details += 'Customer: ' + d.customer + ' ';
+        if (d.total !== undefined) details += '$' + parseFloat(d.total).toFixed(2);
+        if (d.orderer) details += 'Orderer: ' + d.orderer;
+        if (d.reason) details += 'Reason: ' + d.reason;
+      } catch(e) {}
+    }
+    const numLink = l.entity_number
+      ? '<a href="#" onclick="navigate(\'' + (l.entity_type === 'po' ? 'view' : 'view-quote') + '\',' + l.entity_id + ');return false;" style="color:var(--primary)">' + escHtml(l.entity_number) + '</a>'
+      : '—';
+    return '<tr>' +
+      '<td style="white-space:nowrap;font-size:13px">' + escHtml(dateStr) + '</td>' +
+      '<td><span style="font-weight:600;color:' + color + ';text-transform:capitalize">' + escHtml(l.action) + '</span></td>' +
+      '<td><span class="badge ' + (l.entity_type === 'po' ? 'badge-submitted' : 'badge-approver') + '" style="font-size:11px">' + escHtml(l.entity_type.toUpperCase()) + '</span></td>' +
+      '<td>' + numLink + '</td>' +
+      '<td>' + escHtml(l.user_name || '—') + '</td>' +
+      '<td style="font-size:13px;color:var(--text-muted-color)">' + escHtml(details || '—') + '</td>' +
+    '</tr>';
+  }).join('');
+}
+function auditApplyFilter() {
+  const type = (document.getElementById('audit-filter-type') || {}).value || '';
+  const action = (document.getElementById('audit-filter-action') || {}).value || '';
+  const tbody = document.getElementById('audit-tbody');
+  if (!tbody || !window._auditData) return;
+  const filtered = window._auditData.filter(function(l) {
+    if (type && l.entity_type !== type) return false;
+    if (action && l.action !== action) return false;
+    return true;
+  });
+  tbody.innerHTML = filtered.length ? renderAuditRows(filtered) : '<tr><td colspan="6" style="text-align:center;padding:24px;color:var(--text-muted-color)">No matching entries.</td></tr>';
+}
+
+// ── AI Assistant ─────────────────────────────────────────────────────────────
+var _aiMessages = [];
+var _aiUsage = { daily: 0, dailyLimit: 20 };
+
+async function renderAIAssistant(el) {
+  // Fetch current usage
+  try {
+    _aiUsage = await api('GET', '/ai/usage');
+  } catch(e) {
+    _aiUsage = { daily: 0, dailyLimit: 20 };
+  }
+
+  el.innerHTML =
+    '<div class="page-header"><div>' +
+      '<div class="page-title"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="margin-right:8px;vertical-align:-4px"><rect x="3" y="6" width="18" height="13" rx="2"/><path d="M8 6V4a1 1 0 011-1h6a1 1 0 011 1v2"/><circle cx="9" cy="12" r="1" fill="currentColor"/><circle cx="15" cy="12" r="1" fill="currentColor"/><path d="M9.5 16h5"/></svg>LockBot AI Assistant</div>' +
+      '<div class="page-subtitle">Locksmith-specific questions, product info, pricing guidance, and more</div>' +
+    '</div>' +
+    '<div id="ai-usage-badge" style="font-size:12px;color:var(--text-muted-color);align-self:center">' + _aiUsage.daily + ' / ' + _aiUsage.dailyLimit + ' messages today</div>' +
+    '</div>' +
+    '<div id="ai-chat-wrap" style="display:flex;flex-direction:column;height:calc(100vh - 200px);max-width:800px;margin:0 auto">' +
+      '<div id="ai-thread" style="flex:1;overflow-y:auto;padding:16px;display:flex;flex-direction:column;gap:12px">' +
+        '<div class="ai-msg ai-msg-bot">' +
+          '<div class="ai-msg-bubble">' +
+            '<strong>LockBot</strong><br>Hi ' + escHtml(state.user.name.split(' ')[0]) + '! I\'m your locksmith assistant. Ask me anything about locks, keys, security hardware, pricing, or job scoping. What do you need help with?' +
+          '</div>' +
+        '</div>' +
+      '</div>' +
+      '<div style="padding:12px 0;border-top:1px solid var(--border-color);display:flex;gap:8px;align-items:flex-end">' +
+        '<textarea id="ai-input" rows="2" placeholder="Ask LockBot a question..." style="flex:1;resize:none;padding:10px 12px;background:var(--surface-color);border:1px solid var(--border-color);border-radius:8px;color:var(--text-color);font-size:14px;font-family:inherit;line-height:1.5" onkeydown="aiHandleKey(event)"></textarea>' +
+        '<button id="ai-send-btn" class="btn btn-primary" onclick="aiSend()" style="height:60px;padding:0 20px;white-space:nowrap">' +
+          '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg>' +
+        '</button>' +
+      '</div>' +
+    '</div>';
+
+  // Re-render any prior messages in this session
+  if (_aiMessages.length > 0) aiRenderThread();
+  setTimeout(function() { document.getElementById('ai-input') && document.getElementById('ai-input').focus(); }, 100);
+}
+
+function aiHandleKey(e) {
+  if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); aiSend(); }
+}
+
+function aiRenderThread() {
+  var thread = document.getElementById('ai-thread');
+  if (!thread) return;
+  // Keep the welcome bubble, replace everything after it
+  var welcome = thread.firstChild;
+  thread.innerHTML = '';
+  if (welcome) thread.appendChild(welcome);
+  _aiMessages.forEach(function(m) {
+    var div = document.createElement('div');
+    div.className = 'ai-msg ' + (m.role === 'user' ? 'ai-msg-user' : 'ai-msg-bot');
+    div.innerHTML = '<div class="ai-msg-bubble">' + (m.role === 'assistant' ? '<strong>LockBot</strong><br>' : '') + escHtml(m.content).replace(/\n/g, '<br>') + '</div>';
+    thread.appendChild(div);
+  });
+  thread.scrollTop = thread.scrollHeight;
+}
+
+async function aiSend() {
+  var input = document.getElementById('ai-input');
+  var btn = document.getElementById('ai-send-btn');
+  if (!input) return;
+  var text = input.value.trim();
+  if (!text) return;
+  if (_aiUsage.daily >= _aiUsage.dailyLimit) {
+    showToast('Daily limit reached (' + _aiUsage.dailyLimit + '/day). Resets at midnight.', 'error');
+    return;
+  }
+
+  input.value = '';
+  input.disabled = true;
+  if (btn) btn.disabled = true;
+
+  _aiMessages.push({ role: 'user', content: text });
+  aiRenderThread();
+
+  // Typing indicator
+  var thread = document.getElementById('ai-thread');
+  var typing = document.createElement('div');
+  typing.className = 'ai-msg ai-msg-bot';
+  typing.id = 'ai-typing';
+  typing.innerHTML = '<div class="ai-msg-bubble" style="color:var(--text-muted-color)"><em>LockBot is thinking…</em></div>';
+  if (thread) { thread.appendChild(typing); thread.scrollTop = thread.scrollHeight; }
+
+  try {
+    var data = await api('POST', '/ai/chat', { messages: _aiMessages });
+    _aiMessages.push({ role: 'assistant', content: data.reply });
+    _aiUsage.daily = data.dailyUsed;
+    var badge = document.getElementById('ai-usage-badge');
+    if (badge) badge.textContent = _aiUsage.daily + ' / ' + _aiUsage.dailyLimit + ' messages today';
+  } catch(err) {
+    _aiMessages.push({ role: 'assistant', content: '⚠️ ' + (err.message || 'Something went wrong. Try again.') });
+  }
+
+  var typingEl = document.getElementById('ai-typing');
+  if (typingEl) typingEl.remove();
+
+  if (input) input.disabled = false;
+  if (btn) btn.disabled = false;
+  aiRenderThread();
+  if (input) { input.focus(); }
+}
+
 render();
 </script>
+<style>
+.ai-msg { display:flex; }
+.ai-msg-user { justify-content:flex-end; }
+.ai-msg-bot { justify-content:flex-start; }
+.ai-msg-user .ai-msg-bubble {
+  background:var(--primary);
+  color:#fff;
+  border-radius:16px 16px 4px 16px;
+  padding:10px 14px;
+  max-width:70%;
+  font-size:14px;
+  line-height:1.5;
+}
+.ai-msg-bot .ai-msg-bubble {
+  background:var(--surface-color);
+  border:1px solid var(--border-color);
+  border-radius:16px 16px 16px 4px;
+  padding:10px 14px;
+  max-width:75%;
+  font-size:14px;
+  line-height:1.5;
+}
+</style>
 </body>
 </html>
