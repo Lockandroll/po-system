@@ -254,6 +254,7 @@ async function render() {
         (state.user.role === 'admin' ? '<div class="nav-item ' + (state.currentView === 'users' ? 'active' : '') + '" onclick="navigate(\'users\')">' + icons.users + ' Users</div>' : '') +
         (['admin','manager'].includes(state.user.role) ? '<div class="nav-item ' + (state.currentView === 'cities' ? 'active' : '') + '" onclick="navigate(\'cities\')">' + icons.map + ' Cities</div>' : '') +
         (['admin','manager'].includes(state.user.role) ? '<div class="nav-item ' + (state.currentView === 'vendors' ? 'active' : '') + '" onclick="navigate(\'vendors\')"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 9l9-7 9 7v11a2 2 0 01-2 2H5a2 2 0 01-2-2z"/><polyline points="9 22 9 12 15 12 15 22"/></svg> Accounts</div>' : '') +
+        (state.user.role === 'admin' ? '<div class="nav-item ' + (state.currentView === 'ai-conversations' ? 'active' : '') + '" onclick="navigate(\'ai-conversations\')" style="padding-left:28px;font-size:13px"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15a2 2 0 01-2 2H7l-4 4V5a2 2 0 012-2h14a2 2 0 012 2z"/></svg> Conversations</div>' : '') +
         (state.user.role === 'admin' ? '<div class="nav-item ' + (state.currentView === 'audit' ? 'active' : '') + '" onclick="navigate(\'audit\')"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/><line x1="10" y1="9" x2="8" y2="9"/></svg> Audit Log</div>' : '') +
         '<div class="nav-item ' + (state.currentView === 'ai-assistant' ? 'active' : '') + '" onclick="navigate(\'ai-assistant\')"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="6" width="18" height="13" rx="2"/><path d="M8 6V4a1 1 0 011-1h6a1 1 0 011 1v2"/><circle cx="9" cy="12" r="1" fill="currentColor"/><circle cx="15" cy="12" r="1" fill="currentColor"/><path d="M9.5 16h5"/><path d="M12 3v1"/></svg> AI Assistant</div>' +
         (state.user.role === 'admin' ? '<div class="nav-item ' + (state.currentView === 'settings' ? 'active' : '') + '" onclick="navigate(\'settings\')">' + icons.settings + ' Settings</div>' : '') +
@@ -289,6 +290,7 @@ async function render() {
   else if (state.currentView === 'edit-quote') await renderEditQuote(content, state.currentParam);
   else if (state.currentView === 'view-quote') await renderViewQuote(content, state.currentParam);
   else if (state.currentView === 'ai-assistant') await renderAIAssistant(content);
+  else if (state.currentView === 'ai-conversations') await renderAIConversations(content);
   else { state.currentView = 'dashboard'; await renderDashboard(content); }
 }
 
@@ -1983,6 +1985,60 @@ function auditApplyFilter() {
     return true;
   });
   tbody.innerHTML = filtered.length ? renderAuditRows(filtered) : '<tr><td colspan="6" style="text-align:center;padding:24px;color:var(--text-muted-color)">No matching entries.</td></tr>';
+}
+
+// ── AI Conversations (admin) ──────────────────────────────────────────────────
+async function renderAIConversations(el) {
+  if (state.user.role !== 'admin') { el.innerHTML = '<div class="alert alert-error">Access denied.</div>'; return; }
+  el.innerHTML = '<div class="loading">Loading…</div>';
+  let convos = [];
+  try { convos = await api('GET', '/ai/conversations'); } catch(e) { el.innerHTML = '<div class="alert alert-error">Failed to load conversations.</div>'; return; }
+  window._aiConvos = convos;
+
+  el.innerHTML =
+    '<div class="page-header"><div>' +
+      '<div class="page-title">AI Conversations</div>' +
+      '<div class="page-subtitle">All LockBot questions from your team</div>' +
+    '</div></div>' +
+    '<div style="display:flex;gap:8px;margin-bottom:16px;flex-wrap:wrap">' +
+      '<input id="ai-conv-search" type="text" placeholder="Search questions or answers..." style="flex:1;min-width:200px" oninput="aiConvFilter()" />' +
+    '</div>' +
+    '<div id="ai-conv-list"></div>';
+
+  aiConvRender(convos);
+}
+
+function aiConvFilter() {
+  var q = (document.getElementById('ai-conv-search') || {}).value || '';
+  var filtered = (window._aiConvos || []).filter(function(c) {
+    if (!q) return true;
+    var ql = q.toLowerCase();
+    return (c.question || '').toLowerCase().includes(ql) || (c.response || '').toLowerCase().includes(ql) || (c.user_name || '').toLowerCase().includes(ql);
+  });
+  aiConvRender(filtered);
+}
+
+function aiConvRender(convos) {
+  var el = document.getElementById('ai-conv-list');
+  if (!el) return;
+  if (!convos.length) { el.innerHTML = '<div class="alert">No conversations found.</div>'; return; }
+  el.innerHTML = convos.map(function(c) {
+    var d = new Date(c.created_at);
+    var dateStr = d.toLocaleDateString() + ' ' + d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+    return '<div class="card" style="margin-bottom:12px">' +
+      '<div class="card-body" style="padding:14px 16px">' +
+        '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">' +
+          '<span style="font-weight:600;font-size:13px">' + escHtml(c.user_name || 'Unknown') + '</span>' +
+          '<span style="font-size:12px;color:var(--text-muted-color);display:flex;align-items:center;gap:6px">' +
+            (c.has_image ? '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><polyline points="21 15 16 10 5 21"/></svg>' : '') +
+            dateStr +
+          '</span>' +
+        '</div>' +
+        '<div style="background:var(--bg-color);border-radius:6px;padding:8px 10px;margin-bottom:8px;font-size:13px"><strong>Q:</strong> ' + escHtml(c.question || '(image only)') + '</div>' +
+        '<div style="font-size:13px;color:var(--text-muted-color);line-height:1.5"><strong style="color:var(--primary)">A:</strong> ' + aiMarkdown(c.response || '') + '</div>' +
+      '</div>' +
+    '</div>';
+  }).join('');
 }
 
 // ── AI Markdown renderer ──────────────────────────────────────────────────────
