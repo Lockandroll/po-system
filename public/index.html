@@ -2168,6 +2168,8 @@ async function renderAIAssistant(el) {
     '</div>' +
     '<div id="ai-usage-badge" style="font-size:12px;color:var(--text-muted-color);align-self:center">' + _aiUsage.daily + ' / ' + _aiUsage.dailyLimit + ' messages today</div>' +
     '</div>' +
+    '<canvas id="ai-canvas-left"></canvas>' +
+    '<canvas id="ai-canvas-right"></canvas>' +
     '<svg class="ai-side-icon-left" width="160" height="160" viewBox="0 0 24 24" fill="currentColor"><path d="M12 1C9.24 1 7 3.24 7 6v2H5a2 2 0 00-2 2v11a2 2 0 002 2h14a2 2 0 002-2V10a2 2 0 00-2-2h-2V6c0-2.76-2.24-5-5-5zm0 2c1.66 0 3 1.34 3 4v2H9V6c0-1.66 1.34-3 3-3zm0 9a2 2 0 110 4 2 2 0 010-4z"/></svg>' +
     '<svg class="ai-side-icon-right" width="160" height="160" viewBox="0 0 24 24" fill="currentColor"><path d="M12 1C9.24 1 7 3.24 7 6v2H5a2 2 0 00-2 2v11a2 2 0 002 2h14a2 2 0 002-2V10a2 2 0 00-2-2h-2V6c0-2.76-2.24-5-5-5zm0 2c1.66 0 3 1.34 3 4v2H9V6c0-1.66 1.34-3 3-3zm0 9a2 2 0 110 4 2 2 0 010-4z"/></svg>' +
     '<div id="ai-chat-wrap" style="display:flex;flex-direction:column;height:calc(100vh - 200px);max-width:800px;margin:0 auto">' +
@@ -2197,6 +2199,83 @@ async function renderAIAssistant(el) {
   // Re-render any prior messages in this session
   if (_aiMessages.length > 0) aiRenderThread();
   setTimeout(function() { document.getElementById('ai-input') && document.getElementById('ai-input').focus(); }, 100);
+  setTimeout(initAiDots, 50);
+}
+
+// ── Dot field physics ──────────────────────────────────────────────────────────
+var _aiDotsRaf = null;
+var _aiDotsMouseX = -9999, _aiDotsMouseY = -9999;
+
+function initAiDots() {
+  if (_aiDotsRaf) { cancelAnimationFrame(_aiDotsRaf); _aiDotsRaf = null; }
+  var cL = document.getElementById('ai-canvas-left');
+  var cR = document.getElementById('ai-canvas-right');
+  if (!cL || !cR) return;
+  if (window.innerWidth < 1200) return;
+
+  var sidebarW = 260;
+  var chatW = 800;
+  var gap = 32;
+  var sideW = Math.floor((window.innerWidth - sidebarW - chatW) / 2 - gap);
+  if (sideW < 20) return;
+  var h = window.innerHeight;
+
+  [cL, cR].forEach(function(c) { c.width = sideW; c.height = h; });
+
+  var SPACING = 30, REPEL_R = 130, REPEL_S = 4000, SPRING = 0.07, DAMP = 0.72;
+
+  function makeDots(w, h) {
+    var d = [];
+    for (var x = SPACING / 2; x < w; x += SPACING) {
+      for (var y = SPACING / 2; y < h; y += SPACING) {
+        d.push({ ox: x, oy: y, x: x, y: y, vx: 0, vy: 0 });
+      }
+    }
+    return d;
+  }
+
+  var dotsL = makeDots(sideW, h);
+  var dotsR = makeDots(sideW, h);
+
+  function step(dots, canvas) {
+    var rect = canvas.getBoundingClientRect();
+    var mx = _aiDotsMouseX - rect.left;
+    var my = _aiDotsMouseY - rect.top;
+    var ctx = canvas.getContext('2d');
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    dots.forEach(function(d) {
+      var dx = d.x - mx, dy = d.y - my;
+      var dist = Math.sqrt(dx * dx + dy * dy) || 1;
+      d.vx += (d.ox - d.x) * SPRING;
+      d.vy += (d.oy - d.y) * SPRING;
+      if (dist < REPEL_R) {
+        var f = REPEL_S / (dist * dist);
+        d.vx += (dx / dist) * f;
+        d.vy += (dy / dist) * f;
+      }
+      d.vx *= DAMP; d.vy *= DAMP;
+      d.x += d.vx; d.y += d.vy;
+      var alpha = 0.08 + 0.14 * Math.max(0, 1 - dist / REPEL_R);
+      ctx.beginPath();
+      ctx.arc(d.x, d.y, 1.5, 0, Math.PI * 2);
+      ctx.fillStyle = 'rgba(249,115,22,' + alpha.toFixed(2) + ')';
+      ctx.fill();
+    });
+  }
+
+  function loop() {
+    if (!document.getElementById('ai-canvas-left')) return; // page changed
+    step(dotsL, cL);
+    step(dotsR, cR);
+    _aiDotsRaf = requestAnimationFrame(loop);
+  }
+
+  document.addEventListener('mousemove', function(e) {
+    _aiDotsMouseX = e.clientX;
+    _aiDotsMouseY = e.clientY;
+  });
+
+  loop();
 }
 
 var _aiPendingImage = null; // { base64, mediaType }
@@ -2355,31 +2434,18 @@ render();
   line-height:1.5;
 }
 
-/* AI page decorative side panels — only visible on wide screens */
-#ai-chat-wrap {
-  position:relative;
+/* AI page decorative side canvases */
+#ai-canvas-left, #ai-canvas-right {
+  position:fixed;
+  top:0;
+  pointer-events:none;
+  z-index:0;
+  display:none;
 }
 @media (min-width:1200px) {
-  #ai-chat-wrap::before,
-  #ai-chat-wrap::after {
-    content:'';
-    position:fixed;
-    top:0;
-    bottom:0;
-    width:calc((100vw - 260px - 800px) / 2 - 32px);
-    pointer-events:none;
-    background-image:
-      radial-gradient(circle, rgba(249,115,22,0.12) 1px, transparent 1px),
-      radial-gradient(circle, rgba(249,115,22,0.06) 1px, transparent 1px);
-    background-size:28px 28px, 14px 14px;
-    background-position:0 0, 14px 14px;
-  }
-  #ai-chat-wrap::before {
-    left:260px;
-  }
-  #ai-chat-wrap::after {
-    right:0;
-  }
+  #ai-canvas-left, #ai-canvas-right { display:block; }
+  #ai-canvas-left { left:260px; }
+  #ai-canvas-right { right:0; }
 }
 
 /* Floating lock icon watermarks on each side */
