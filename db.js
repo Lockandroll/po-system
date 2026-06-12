@@ -130,6 +130,17 @@ async function initDB() {
       ');'
     );
     await client.query(
+      'CREATE TABLE IF NOT EXISTS ai_conversations (' +
+      '  id SERIAL PRIMARY KEY,' +
+      '  user_id INTEGER,' +
+      '  user_name VARCHAR(255),' +
+      '  question TEXT,' +
+      '  response TEXT,' +
+      '  has_image BOOLEAN DEFAULT false,' +
+      '  created_at TIMESTAMP DEFAULT NOW()' +
+      ');'
+    );
+    await client.query(
       'CREATE TABLE IF NOT EXISTS ai_usage (' +
       '  id SERIAL PRIMARY KEY,' +
       '  user_id INTEGER,' +
