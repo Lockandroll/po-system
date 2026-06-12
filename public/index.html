@@ -2040,13 +2040,31 @@ function aiPreviewImage(input) {
   if (!file) return;
   var reader = new FileReader();
   reader.onload = function(e) {
-    var dataUrl = e.target.result;
-    var mediaType = file.type || 'image/jpeg';
-    var base64 = dataUrl.split(',')[1];
-    _aiPendingImage = { base64: base64, mediaType: mediaType, dataUrl: dataUrl };
-    var preview = document.getElementById('ai-image-preview');
-    var thumb = document.getElementById('ai-image-thumb');
-    if (preview && thumb) { thumb.src = dataUrl; preview.style.display = 'block'; }
+    var img = new Image();
+    img.onload = function() {
+      var canvas = document.createElement('canvas');
+      var maxDim = 1024;
+      var w = img.width, h = img.height;
+      if (w > maxDim || h > maxDim) {
+        if (w > h) { h = Math.round(h * maxDim / w); w = maxDim; }
+        else { w = Math.round(w * maxDim / h); h = maxDim; }
+      }
+      canvas.width = w; canvas.height = h;
+      canvas.getContext('2d').drawImage(img, 0, 0, w, h);
+      var dataUrl = canvas.toDataURL('image/jpeg', 0.8);
+      var base64 = dataUrl.split(',')[1];
+      // Reject if still over 4MB after resize (Anthropic API limit is 5MB)
+      if (base64.length > 4 * 1024 * 1024) {
+        showToast('Image is too large even after resizing. Please use a smaller photo.', 'error');
+        input.value = '';
+        return;
+      }
+      _aiPendingImage = { base64: base64, mediaType: 'image/jpeg', dataUrl: dataUrl };
+      var preview = document.getElementById('ai-image-preview');
+      var thumb = document.getElementById('ai-image-thumb');
+      if (preview && thumb) { thumb.src = dataUrl; preview.style.display = 'block'; }
+    };
+    img.src = e.target.result;
   };
   reader.readAsDataURL(file);
 }
@@ -2126,7 +2144,9 @@ async function aiSend() {
   if (thread) { thread.appendChild(typing); thread.scrollTop = thread.scrollHeight; }
 
   try {
-    var data = await api('POST', '/ai/chat', { messages: _aiMessages });
+    // Strip _imageDataUrl (display-only) before sending to API
+    var apiMessages = _aiMessages.map(function(m) { return { role: m.role, content: m.content }; });
+    var data = await api('POST', '/ai/chat', { messages: apiMessages });
     _aiMessages.push({ role: 'assistant', content: data.reply });
     _aiUsage.daily = data.dailyUsed;
     var badge = document.getElementById('ai-usage-badge');
