@@ -116,6 +116,35 @@ async function initDB() {
       '  updated_at TIMESTAMP DEFAULT NOW()' +
       ');'
     );
+    await client.query(
+      'CREATE TABLE IF NOT EXISTS audit_logs (' +
+      '  id SERIAL PRIMARY KEY,' +
+      '  entity_type VARCHAR(20) NOT NULL,' +
+      '  entity_id INTEGER,' +
+      '  entity_number VARCHAR(50),' +
+      '  action VARCHAR(50) NOT NULL,' +
+      '  user_id INTEGER,' +
+      '  user_name VARCHAR(255),' +
+      '  details TEXT,' +
+      '  created_at TIMESTAMP DEFAULT NOW()' +
+      ');'
+    );
+    await client.query(
+      'CREATE TABLE IF NOT EXISTS ai_usage (' +
+      '  id SERIAL PRIMARY KEY,' +
+      '  user_id INTEGER,' +
+      '  user_name VARCHAR(255),' +
+      '  message_date DATE DEFAULT CURRENT_DATE,' +
+      '  message_count INTEGER DEFAULT 0,' +
+      '  updated_at TIMESTAMP DEFAULT NOW(),' +
+      '  UNIQUE(user_id, message_date)' +
+      ');' +
+      'CREATE TABLE IF NOT EXISTS ai_monthly_usage (' +
+      '  id SERIAL PRIMARY KEY,' +
+      '  month_year VARCHAR(7) UNIQUE,' +
+      '  message_count INTEGER DEFAULT 0' +
+      ');'
+    );
     console.log('Database initialized');
   } finally {
     client.release();
