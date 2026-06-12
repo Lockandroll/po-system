@@ -6,7 +6,7 @@ const { requireAuth, requireRole } = require('../middleware/auth');
 const router = express.Router();
 
 // List all users (admin only)
-router.get('/', requireAuth, requireRole('admin'), async (req, res) => {
+router.get('/', requireAuth, requireRole('admin', 'manager'), async (req, res) => {
   const { rows } = await pool.query(
     'SELECT id, name, email, phone, role, active, receive_emails, created_at FROM users ORDER BY active DESC, name ASC'
   );
