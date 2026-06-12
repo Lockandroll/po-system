@@ -5,7 +5,7 @@ const { requireAuth, requireRole } = require('../middleware/auth');
 
 const router = express.Router();
 
-const DAILY_LIMIT = parseInt(process.env.AI_DAILY_LIMIT) || 20;
+const DAILY_LIMIT = parseInt(process.env.AI_DAILY_LIMIT) || 50;
 const MONTHLY_LIMIT = parseInt(process.env.AI_MONTHLY_LIMIT) || 40000;
 
 const SYSTEM_PROMPT = 'You are LockBot, an AI assistant for Lock and Roll LLC, a professional locksmith company. ' +
@@ -60,12 +60,12 @@ async function incrementUsage(userId, userName) {
   );
 }
 
-function callClaude(messages) {
+function callClaude(messages, systemPrompt) {
   return new Promise(function(resolve, reject) {
     const body = JSON.stringify({
       model: 'claude-haiku-4-5-20251001',
       max_tokens: 1024,
-      system: SYSTEM_PROMPT,
+      system: systemPrompt || SYSTEM_PROMPT,
       messages: messages
     });
     const options = {
@@ -145,7 +145,12 @@ router.post('/chat', requireAuth, async function(req, res) {
       return res.status(429).json({ error: 'Daily limit reached (' + DAILY_LIMIT + ' messages/day). Resets at midnight.' });
     }
 
-    const response = await callClaude(messages);
+    // Fetch custom context from settings
+    const ctxRow = await pool.query("SELECT value FROM settings WHERE key = 'ai_context'");
+    const customContext = ctxRow.rows.length && ctxRow.rows[0].value ? ctxRow.rows[0].value.trim() : '';
+    const systemPrompt = customContext ? SYSTEM_PROMPT + '\n\nAdditional company context:\n' + customContext : SYSTEM_PROMPT;
+
+    const response = await callClaude(messages, systemPrompt);
 
     if (response.error) {
       console.error('Anthropic API error:', response.error);
