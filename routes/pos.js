@@ -133,7 +133,7 @@ const PO_JOIN =
 
 // Export all POs with line items as JSON (for CSV download)
 router.get('/export', requireAuth, async (req, res) => {
-  const isApproverOrAdmin = ['approver', 'admin'].includes(req.user.role);
+  const isApproverOrAdmin = ['approver', 'admin', 'manager'].includes(req.user.role);
   const poQuery = PO_JOIN +
     (isApproverOrAdmin ? '' : 'WHERE po.requester_id = $1 ') +
     'ORDER BY po.created_at DESC';
@@ -158,7 +158,7 @@ router.get('/export', requireAuth, async (req, res) => {
 
 // Get all POs
 router.get('/', requireAuth, async (req, res) => {
-  const isApproverOrAdmin = ['approver', 'admin'].includes(req.user.role);
+  const isApproverOrAdmin = ['approver', 'admin', 'manager'].includes(req.user.role);
   const query = PO_JOIN +
     (isApproverOrAdmin ? '' : 'WHERE po.requester_id = $1 ') +
     'ORDER BY po.created_at DESC';
