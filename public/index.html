@@ -361,6 +361,8 @@ function logout() {
   state.user = null;
   localStorage.removeItem('po_token');
   localStorage.removeItem('po_user');
+  _aiMessages = [];
+  _aiSessionUserId = null;
   render();
 }
 
@@ -2166,6 +2168,8 @@ async function renderAIAssistant(el) {
     '</div>' +
     '<div id="ai-usage-badge" style="font-size:12px;color:var(--text-muted-color);align-self:center">' + _aiUsage.daily + ' / ' + _aiUsage.dailyLimit + ' messages today</div>' +
     '</div>' +
+    '<svg class="ai-side-icon-left" width="160" height="160" viewBox="0 0 24 24" fill="currentColor"><path d="M12 1C9.24 1 7 3.24 7 6v2H5a2 2 0 00-2 2v11a2 2 0 002 2h14a2 2 0 002-2V10a2 2 0 00-2-2h-2V6c0-2.76-2.24-5-5-5zm0 2c1.66 0 3 1.34 3 4v2H9V6c0-1.66 1.34-3 3-3zm0 9a2 2 0 110 4 2 2 0 010-4z"/></svg>' +
+    '<svg class="ai-side-icon-right" width="160" height="160" viewBox="0 0 24 24" fill="currentColor"><path d="M12 1C9.24 1 7 3.24 7 6v2H5a2 2 0 00-2 2v11a2 2 0 002 2h14a2 2 0 002-2V10a2 2 0 00-2-2h-2V6c0-2.76-2.24-5-5-5zm0 2c1.66 0 3 1.34 3 4v2H9V6c0-1.66 1.34-3 3-3zm0 9a2 2 0 110 4 2 2 0 010-4z"/></svg>' +
     '<div id="ai-chat-wrap" style="display:flex;flex-direction:column;height:calc(100vh - 200px);max-width:800px;margin:0 auto">' +
       '<div id="ai-thread" style="flex:1;overflow-y:auto;padding:16px;display:flex;flex-direction:column;gap:12px">' +
         '<div class="ai-msg ai-msg-bot">' +
@@ -2350,6 +2354,51 @@ render();
   font-size:14px;
   line-height:1.5;
 }
+
+/* AI page decorative side panels — only visible on wide screens */
+#ai-chat-wrap {
+  position:relative;
+}
+@media (min-width:1200px) {
+  #ai-chat-wrap::before,
+  #ai-chat-wrap::after {
+    content:'';
+    position:fixed;
+    top:0;
+    bottom:0;
+    width:calc((100vw - 260px - 800px) / 2 - 32px);
+    pointer-events:none;
+    background-image:
+      radial-gradient(circle, rgba(249,115,22,0.12) 1px, transparent 1px),
+      radial-gradient(circle, rgba(249,115,22,0.06) 1px, transparent 1px);
+    background-size:28px 28px, 14px 14px;
+    background-position:0 0, 14px 14px;
+  }
+  #ai-chat-wrap::before {
+    left:260px;
+  }
+  #ai-chat-wrap::after {
+    right:0;
+  }
+}
+
+/* Floating lock icon watermarks on each side */
+@media (min-width:1400px) {
+  .ai-side-icon-left,
+  .ai-side-icon-right {
+    display:block;
+    position:fixed;
+    top:50%;
+    transform:translateY(-50%);
+    opacity:0.04;
+    pointer-events:none;
+    color:var(--primary);
+  }
+  .ai-side-icon-left { left:calc(260px + 40px); }
+  .ai-side-icon-right { right:40px; }
+}
+.ai-side-icon-left,
+.ai-side-icon-right { display:none; }
 </style>
 </body>
 </html>
