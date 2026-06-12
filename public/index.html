@@ -2150,7 +2150,7 @@ async function loadAIUsage() {
   catch(e) { body.innerHTML = '<div class="alert alert-error">Failed to load usage data.</div>'; return; }
 
   const MONTHLY_LIMIT = 12000;
-  const COST_PER_MSG = 0.008;
+  const COST_PER_MSG = 0.015;
   const total = usage.total || 0;
   const monthlyPct = Math.min(100, Math.round((usage.monthly / MONTHLY_LIMIT) * 100));
   const estCost = (total * COST_PER_MSG).toFixed(2);
