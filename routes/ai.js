@@ -128,15 +128,22 @@ router.get('/conversations', requireAuth, requireRole('admin'), async function(r
   }
 });
 
-// GET /api/ai/admin-usage — admin only: per-user daily breakdown
+// GET /api/ai/admin-usage — admin only: per-user breakdown with optional date range
 router.get('/admin-usage', requireAuth, requireRole('admin'), async function(req, res) {
   try {
+    var now = new Date();
+    var defaultFrom = new Date(now.getFullYear(), now.getMonth(), 1).toISOString().split('T')[0];
+    var from = req.query.from || defaultFrom;
+    var to = req.query.to || today();
     const { rows } = await pool.query(
-      'SELECT user_name, SUM(message_count) as total FROM ai_usage WHERE message_date >= NOW() - INTERVAL \'30 days\' GROUP BY user_name ORDER BY total DESC'
+      'SELECT user_name, SUM(message_count) as total FROM ai_usage WHERE message_date >= $1 AND message_date <= $2 GROUP BY user_name ORDER BY total DESC',
+      [from, to]
     );
+    const rangeTotal = rows.reduce(function(sum, r) { return sum + parseInt(r.total); }, 0);
     const monthly = await pool.query('SELECT message_count FROM ai_monthly_usage WHERE month_year = $1', [monthYear()]);
     res.json({
       users: rows,
+      total: rangeTotal,
       monthly: monthly.rows.length ? monthly.rows[0].message_count : 0,
       monthlyLimit: MONTHLY_LIMIT
     });
