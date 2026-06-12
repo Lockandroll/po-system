@@ -1999,33 +1999,85 @@ async function printQuote(id) {
 }
 
 // ── Audit Log ────────────────────────────────────────────────────────────────
+var _auditPage = 1;
+var _auditPageSize = 50;
+
 async function renderAuditLog(el) {
   if (state.user.role !== 'admin') { el.innerHTML = '<div class="alert alert-error">Access denied.</div>'; return; }
   el.innerHTML = '<div class="loading">Loading…</div>';
   try {
     const logs = await api('GET', '/audit');
-    const actionColors = {
-      created: 'var(--success)', edited: '#60a5fa', deleted: 'var(--danger)',
-      submitted: 'var(--warning)', approved: 'var(--success)', rejected: 'var(--danger)', cancelled: '#c084fc'
-    };
+    window._auditData = logs;
+    _auditPage = 1;
     el.innerHTML =
       '<div class="page-header"><div><div class="page-title">Audit Log</div><div class="page-subtitle">All PO and Quote activity</div></div>' +
       '<div class="flex-gap">' +
         '<select id="audit-filter-type" onchange="auditApplyFilter()" style="width:auto"><option value="">All Types</option><option value="po">POs Only</option><option value="quote">Quotes Only</option></select>' +
         '<select id="audit-filter-action" onchange="auditApplyFilter()" style="width:auto"><option value="">All Actions</option><option value="created">Created</option><option value="edited">Edited</option><option value="submitted">Submitted</option><option value="approved">Approved</option><option value="rejected">Rejected</option><option value="cancelled">Cancelled</option><option value="deleted">Deleted</option></select>' +
       '</div></div>' +
+      '<div style="margin-bottom:16px"><input type="text" id="audit-search" placeholder="Search by number, user, action, or details..." style="width:100%;max-width:480px;padding:8px 12px;background:var(--surface-color);border:1px solid rgba(249,115,22,0.35);border-radius:6px;color:var(--text-color);font-size:14px;outline:none;box-shadow:0 0 0 1px rgba(249,115,22,0.15)" oninput="auditApplyFilter()" /></div>' +
       '<div class="card"><div class="table-wrap">' +
-        '<table id="audit-table">' +
-          '<thead><tr><th>Date &amp; Time</th><th>Action</th><th>Type</th><th>Number</th><th>User</th><th>Details</th></tr></thead>' +
-          '<tbody id="audit-tbody">' + renderAuditRows(logs) + '</tbody>' +
-        '</table>' +
-        (logs.length === 0 ? '<div class="empty-state"><h3>No activity yet</h3><p>Actions will appear here as POs and Quotes are created and updated.</p></div>' : '') +
-      '</div></div>';
-    window._auditData = logs;
+        '<table><thead><tr><th>Date &amp; Time</th><th>Action</th><th>Type</th><th>Number</th><th>User</th><th>Details</th></tr></thead>' +
+        '<tbody id="audit-tbody"></tbody></table>' +
+      '</div></div>' +
+      '<div id="audit-pagination" style="display:flex;gap:8px;align-items:center;margin-top:16px;flex-wrap:wrap"></div>';
+    auditApplyFilter();
   } catch(err) {
     el.innerHTML = '<div class="alert alert-error">' + escHtml(err.message) + '</div>';
   }
 }
+
+function auditGetFiltered() {
+  var type = (document.getElementById('audit-filter-type') || {}).value || '';
+  var action = (document.getElementById('audit-filter-action') || {}).value || '';
+  var search = ((document.getElementById('audit-search') || {}).value || '').toLowerCase();
+  return (window._auditData || []).filter(function(l) {
+    if (type && l.entity_type !== type) return false;
+    if (action && l.action !== action) return false;
+    if (search) {
+      var details = '';
+      if (l.details) { try { var d = JSON.parse(l.details); details = JSON.stringify(d).toLowerCase(); } catch(e) {} }
+      var haystack = [(l.entity_number||''), (l.user_name||''), (l.action||''), (l.entity_type||''), details].join(' ').toLowerCase();
+      if (!haystack.includes(search)) return false;
+    }
+    return true;
+  });
+}
+
+function auditApplyFilter() {
+  _auditPage = 1;
+  auditRenderTable();
+}
+
+function auditGoPage(p) {
+  var filtered = auditGetFiltered();
+  var totalPages = Math.max(1, Math.ceil(filtered.length / _auditPageSize));
+  _auditPage = Math.min(Math.max(1, p), totalPages);
+  auditRenderTable();
+}
+
+function auditRenderTable() {
+  var filtered = auditGetFiltered();
+  var totalPages = Math.max(1, Math.ceil(filtered.length / _auditPageSize));
+  if (_auditPage > totalPages) _auditPage = totalPages;
+  var start = (_auditPage - 1) * _auditPageSize;
+  var page = filtered.slice(start, start + _auditPageSize);
+  var tbody = document.getElementById('audit-tbody');
+  if (!tbody) return;
+  tbody.innerHTML = page.length ? renderAuditRows(page) : '<tr><td colspan="6" style="text-align:center;padding:24px;color:var(--text-muted-color)">No matching entries.</td></tr>';
+
+  var pg = document.getElementById('audit-pagination');
+  if (!pg) return;
+  if (totalPages <= 1) { pg.innerHTML = '<span style="font-size:13px;color:var(--text-muted-color)">' + filtered.length + ' record' + (filtered.length !== 1 ? 's' : '') + '</span>'; return; }
+  var html = '<span style="font-size:13px;color:var(--text-muted-color);margin-right:4px">' + filtered.length + ' records</span>';
+  html += '<button class="btn btn-secondary btn-sm" onclick="auditGoPage(' + (_auditPage - 1) + ')" ' + (_auditPage === 1 ? 'disabled' : '') + '>&lsaquo;</button>';
+  for (var i = 1; i <= totalPages; i++) {
+    html += '<button class="btn btn-sm ' + (i === _auditPage ? 'btn-primary' : 'btn-secondary') + '" onclick="auditGoPage(' + i + ')">' + i + '</button>';
+  }
+  html += '<button class="btn btn-secondary btn-sm" onclick="auditGoPage(' + (_auditPage + 1) + ')" ' + (_auditPage === totalPages ? 'disabled' : '') + '>&rsaquo;</button>';
+  pg.innerHTML = html;
+}
+
 function renderAuditRows(logs) {
   const actionColors = { created: '#22c55e', edited: '#60a5fa', deleted: '#ef4444', submitted: '#f59e0b', approved: '#22c55e', rejected: '#ef4444', cancelled: '#c084fc' };
   if (!logs.length) return '';
@@ -2057,68 +2109,84 @@ function renderAuditRows(logs) {
     '</tr>';
   }).join('');
 }
-function auditApplyFilter() {
-  const type = (document.getElementById('audit-filter-type') || {}).value || '';
-  const action = (document.getElementById('audit-filter-action') || {}).value || '';
-  const tbody = document.getElementById('audit-tbody');
-  if (!tbody || !window._auditData) return;
-  const filtered = window._auditData.filter(function(l) {
-    if (type && l.entity_type !== type) return false;
-    if (action && l.action !== action) return false;
-    return true;
-  });
-  tbody.innerHTML = filtered.length ? renderAuditRows(filtered) : '<tr><td colspan="6" style="text-align:center;padding:24px;color:var(--text-muted-color)">No matching entries.</td></tr>';
-}
 
 // ── AI Usage Dashboard (admin) ────────────────────────────────────────────────
+function aiUsageMonthStart() {
+  var now = new Date();
+  return new Date(now.getFullYear(), now.getMonth(), 1).toISOString().split('T')[0];
+}
+function aiUsageToday() {
+  return new Date().toISOString().split('T')[0];
+}
+
 async function renderAIUsage(el) {
   if (state.user.role !== 'admin') { el.innerHTML = '<div class="alert alert-error">Access denied.</div>'; return; }
-  el.innerHTML = '<div class="loading">Loading…</div>';
-  let usage;
-  try { usage = await api('GET', '/ai/admin-usage'); } catch(e) { el.innerHTML = '<div class="alert alert-error">Failed to load usage data.</div>'; return; }
-
-  const MONTHLY_LIMIT = 12000;
-  const COST_PER_MSG = 0.008;
-  const monthlyPct = Math.min(100, Math.round((usage.monthly / MONTHLY_LIMIT) * 100));
-  const estCost = (usage.monthly * COST_PER_MSG).toFixed(2);
-  const estCostLimit = (MONTHLY_LIMIT * COST_PER_MSG).toFixed(2);
-  const barColor = monthlyPct > 80 ? 'var(--danger-color,#ef4444)' : monthlyPct > 50 ? '#f59e0b' : 'var(--primary)';
-
+  var fromDefault = aiUsageMonthStart();
+  var toDefault = aiUsageToday();
   el.innerHTML =
     '<div class="page-header"><div>' +
       '<div class="page-title">AI Usage Dashboard</div>' +
-      '<div class="page-subtitle">Monthly spend and per-user breakdown</div>' +
+      '<div class="page-subtitle">Spend and per-user breakdown</div>' +
     '</div></div>' +
+    '<div style="display:flex;align-items:center;gap:10px;margin-bottom:24px;flex-wrap:wrap">' +
+      '<label style="font-size:13px;color:var(--text-muted-color)">From</label>' +
+      '<input type="date" id="ai-usage-from" value="' + fromDefault + '" style="padding:6px 10px;background:var(--surface-color);border:1px solid rgba(249,115,22,0.35);border-radius:6px;color:var(--text-color);font-size:13px;outline:none" />' +
+      '<label style="font-size:13px;color:var(--text-muted-color)">To</label>' +
+      '<input type="date" id="ai-usage-to" value="' + toDefault + '" style="padding:6px 10px;background:var(--surface-color);border:1px solid rgba(249,115,22,0.35);border-radius:6px;color:var(--text-color);font-size:13px;outline:none" />' +
+      '<button class="btn btn-primary btn-sm" onclick="loadAIUsage()">Apply</button>' +
+    '</div>' +
+    '<div id="ai-usage-body"><div class="loading">Loading…</div></div>';
+  loadAIUsage();
+}
 
+async function loadAIUsage() {
+  var from = (document.getElementById('ai-usage-from') || {}).value || aiUsageMonthStart();
+  var to = (document.getElementById('ai-usage-to') || {}).value || aiUsageToday();
+  var body = document.getElementById('ai-usage-body');
+  if (!body) return;
+  body.innerHTML = '<div class="loading">Loading…</div>';
+  let usage;
+  try { usage = await api('GET', '/ai/admin-usage?from=' + from + '&to=' + to); }
+  catch(e) { body.innerHTML = '<div class="alert alert-error">Failed to load usage data.</div>'; return; }
+
+  const MONTHLY_LIMIT = 12000;
+  const COST_PER_MSG = 0.008;
+  const total = usage.total || 0;
+  const monthlyPct = Math.min(100, Math.round((usage.monthly / MONTHLY_LIMIT) * 100));
+  const estCost = (total * COST_PER_MSG).toFixed(2);
+  const estCostLimit = (MONTHLY_LIMIT * COST_PER_MSG).toFixed(2);
+  const barColor = monthlyPct > 80 ? 'var(--danger-color,#ef4444)' : monthlyPct > 50 ? '#f59e0b' : 'var(--primary)';
+  const maxUser = usage.users && usage.users.length ? Math.max.apply(null, usage.users.map(function(u){ return u.total; })) : 1;
+
+  body.innerHTML =
     '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:16px;margin-bottom:24px">' +
       '<div class="card"><div class="card-body" style="text-align:center;padding:20px">' +
-        '<div style="font-size:28px;font-weight:700;color:var(--primary)">' + usage.monthly.toLocaleString() + '</div>' +
-        '<div style="font-size:12px;color:var(--text-muted-color);margin-top:4px">Messages this month</div>' +
-        '<div style="font-size:11px;color:var(--text-muted-color)">of ' + MONTHLY_LIMIT.toLocaleString() + ' limit</div>' +
+        '<div style="font-size:28px;font-weight:700;color:var(--primary)">' + total.toLocaleString() + '</div>' +
+        '<div style="font-size:12px;color:var(--text-muted-color);margin-top:4px">Messages in range</div>' +
       '</div></div>' +
       '<div class="card"><div class="card-body" style="text-align:center;padding:20px">' +
         '<div style="font-size:28px;font-weight:700;color:var(--primary)">$' + estCost + '</div>' +
         '<div style="font-size:12px;color:var(--text-muted-color);margin-top:4px">Estimated cost</div>' +
-        '<div style="font-size:11px;color:var(--text-muted-color)">of $' + estCostLimit + ' budget</div>' +
+        '<div style="font-size:11px;color:var(--text-muted-color)">of $' + estCostLimit + ' monthly budget</div>' +
       '</div></div>' +
       '<div class="card"><div class="card-body" style="text-align:center;padding:20px">' +
         '<div style="font-size:28px;font-weight:700;color:var(--primary)">' + (usage.users ? usage.users.length : 0) + '</div>' +
-        '<div style="font-size:12px;color:var(--text-muted-color);margin-top:4px">Active users (30 days)</div>' +
+        '<div style="font-size:12px;color:var(--text-muted-color);margin-top:4px">Active users</div>' +
       '</div></div>' +
     '</div>' +
 
-    '<div class="card" style="margin-bottom:24px"><div class="card-header"><span class="card-title">Monthly Budget</span></div><div class="card-body">' +
+    '<div class="card" style="margin-bottom:24px"><div class="card-header"><span class="card-title">This Month\'s Budget</span></div><div class="card-body">' +
       '<div style="display:flex;justify-content:space-between;font-size:13px;margin-bottom:6px">' +
-        '<span>' + monthlyPct + '% used</span><span>$' + estCost + ' / $' + estCostLimit + '</span>' +
+        '<span>' + monthlyPct + '% of monthly limit used</span><span>' + usage.monthly.toLocaleString() + ' / ' + MONTHLY_LIMIT.toLocaleString() + ' messages</span>' +
       '</div>' +
       '<div style="background:var(--border-color);border-radius:999px;height:12px;overflow:hidden">' +
         '<div style="width:' + monthlyPct + '%;height:100%;background:' + barColor + ';border-radius:999px;transition:width 0.5s"></div>' +
       '</div>' +
     '</div></div>' +
 
-    '<div class="card"><div class="card-header"><span class="card-title">Usage by Team Member (last 30 days)</span></div><div class="card-body">' +
+    '<div class="card"><div class="card-header"><span class="card-title">Usage by Team Member</span></div><div class="card-body">' +
       (usage.users && usage.users.length ? usage.users.map(function(u) {
-        var userPct = Math.min(100, Math.round((u.total / 50) * 100)); // 50 = daily limit proxy
+        var userPct = Math.min(100, Math.round((u.total / maxUser) * 100));
         return '<div style="margin-bottom:14px">' +
           '<div style="display:flex;justify-content:space-between;font-size:13px;margin-bottom:4px">' +
             '<span>' + escHtml(u.user_name) + '</span>' +
@@ -2128,62 +2196,96 @@ async function renderAIUsage(el) {
             '<div style="width:' + userPct + '%;height:100%;background:var(--primary);border-radius:999px"></div>' +
           '</div>' +
         '</div>';
-      }).join('') : '<div style="color:var(--text-muted-color);font-size:13px">No usage data yet.</div>') +
+      }).join('') : '<div style="color:var(--text-muted-color);font-size:13px">No usage data for this period.</div>') +
     '</div></div>';
 }
 
 // ── AI Conversations (admin) ──────────────────────────────────────────────────
+var _convPage = 1;
+var _convPageSize = 50;
+
 async function renderAIConversations(el) {
   if (state.user.role !== 'admin') { el.innerHTML = '<div class="alert alert-error">Access denied.</div>'; return; }
   el.innerHTML = '<div class="loading">Loading…</div>';
   let convos = [];
   try { convos = await api('GET', '/ai/conversations'); } catch(e) { el.innerHTML = '<div class="alert alert-error">Failed to load conversations.</div>'; return; }
   window._aiConvos = convos;
+  _convPage = 1;
 
   el.innerHTML =
     '<div class="page-header"><div>' +
       '<div class="page-title">AI Conversations</div>' +
       '<div class="page-subtitle">All Neurolock questions from your team</div>' +
     '</div></div>' +
-    '<div style="display:flex;gap:8px;margin-bottom:16px;flex-wrap:wrap">' +
-      '<input id="ai-conv-search" type="text" placeholder="Search questions or answers..." style="flex:1;min-width:200px" oninput="aiConvFilter()" />' +
-    '</div>' +
-    '<div id="ai-conv-list"></div>';
+    '<div style="margin-bottom:16px"><input id="ai-conv-search" type="text" placeholder="Search questions, answers, or user..." style="width:100%;max-width:480px;padding:8px 12px;background:var(--surface-color);border:1px solid rgba(249,115,22,0.35);border-radius:6px;color:var(--text-color);font-size:14px;outline:none;box-shadow:0 0 0 1px rgba(249,115,22,0.15)" oninput="aiConvFilter()" /></div>' +
+    '<div id="ai-conv-list"></div>' +
+    '<div id="ai-conv-pagination" style="display:flex;gap:8px;align-items:center;margin-top:16px;flex-wrap:wrap"></div>';
 
-  aiConvRender(convos);
+  aiConvRenderPage();
 }
 
 function aiConvFilter() {
-  var q = (document.getElementById('ai-conv-search') || {}).value || '';
-  var filtered = (window._aiConvos || []).filter(function(c) {
-    if (!q) return true;
-    var ql = q.toLowerCase();
-    return (c.question || '').toLowerCase().includes(ql) || (c.response || '').toLowerCase().includes(ql) || (c.user_name || '').toLowerCase().includes(ql);
-  });
-  aiConvRender(filtered);
+  _convPage = 1;
+  aiConvRenderPage();
 }
 
-function aiConvRender(convos) {
+function aiConvGetFiltered() {
+  var q = ((document.getElementById('ai-conv-search') || {}).value || '').toLowerCase();
+  return (window._aiConvos || []).filter(function(c) {
+    if (!q) return true;
+    return (c.question || '').toLowerCase().includes(q) ||
+           (c.response || '').toLowerCase().includes(q) ||
+           (c.user_name || '').toLowerCase().includes(q);
+  });
+}
+
+function aiConvGoPage(p) {
+  var filtered = aiConvGetFiltered();
+  var totalPages = Math.max(1, Math.ceil(filtered.length / _convPageSize));
+  _convPage = Math.min(Math.max(1, p), totalPages);
+  aiConvRenderPage();
+}
+
+function aiConvRenderPage() {
+  var filtered = aiConvGetFiltered();
+  var totalPages = Math.max(1, Math.ceil(filtered.length / _convPageSize));
+  if (_convPage > totalPages) _convPage = totalPages;
+  var start = (_convPage - 1) * _convPageSize;
+  var page = filtered.slice(start, start + _convPageSize);
+
   var el = document.getElementById('ai-conv-list');
   if (!el) return;
-  if (!convos.length) { el.innerHTML = '<div class="alert">No conversations found.</div>'; return; }
-  el.innerHTML = convos.map(function(c) {
-    var d = new Date(c.created_at);
-    var dateStr = d.toLocaleDateString() + ' ' + d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-    return '<div class="card" style="margin-bottom:12px">' +
-      '<div class="card-body" style="padding:14px 16px">' +
-        '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">' +
-          '<span style="font-weight:600;font-size:13px">' + escHtml(c.user_name || 'Unknown') + '</span>' +
-          '<span style="font-size:12px;color:var(--text-muted-color);display:flex;align-items:center;gap:6px">' +
-            (c.has_image ? '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><polyline points="21 15 16 10 5 21"/></svg>' : '') +
-            dateStr +
-          '</span>' +
+  if (!filtered.length) { el.innerHTML = '<div class="alert">No conversations found.</div>'; }
+  else {
+    el.innerHTML = page.map(function(c) {
+      var d = new Date(c.created_at);
+      var dateStr = d.toLocaleDateString() + ' ' + d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+      return '<div class="card" style="margin-bottom:12px">' +
+        '<div class="card-body" style="padding:14px 16px">' +
+          '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">' +
+            '<span style="font-weight:600;font-size:13px">' + escHtml(c.user_name || 'Unknown') + '</span>' +
+            '<span style="font-size:12px;color:var(--text-muted-color);display:flex;align-items:center;gap:6px">' +
+              (c.has_image ? '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><polyline points="21 15 16 10 5 21"/></svg>' : '') +
+              dateStr +
+            '</span>' +
+          '</div>' +
+          '<div style="background:var(--bg-color);border-radius:6px;padding:8px 10px;margin-bottom:8px;font-size:13px"><strong>Q:</strong> ' + escHtml(c.question || '(image only)') + '</div>' +
+          '<div style="font-size:13px;color:var(--text-muted-color);line-height:1.5"><strong style="color:var(--primary)">A:</strong> ' + aiMarkdown(c.response || '') + '</div>' +
         '</div>' +
-        '<div style="background:var(--bg-color);border-radius:6px;padding:8px 10px;margin-bottom:8px;font-size:13px"><strong>Q:</strong> ' + escHtml(c.question || '(image only)') + '</div>' +
-        '<div style="font-size:13px;color:var(--text-muted-color);line-height:1.5"><strong style="color:var(--primary)">A:</strong> ' + aiMarkdown(c.response || '') + '</div>' +
-      '</div>' +
-    '</div>';
-  }).join('');
+      '</div>';
+    }).join('');
+  }
+
+  var pg = document.getElementById('ai-conv-pagination');
+  if (!pg) return;
+  if (totalPages <= 1) { pg.innerHTML = '<span style="font-size:13px;color:var(--text-muted-color)">' + filtered.length + ' conversation' + (filtered.length !== 1 ? 's' : '') + '</span>'; return; }
+  var html = '<span style="font-size:13px;color:var(--text-muted-color);margin-right:4px">' + filtered.length + ' conversations</span>';
+  html += '<button class="btn btn-secondary btn-sm" onclick="aiConvGoPage(' + (_convPage - 1) + ')" ' + (_convPage === 1 ? 'disabled' : '') + '>&lsaquo;</button>';
+  for (var i = 1; i <= totalPages; i++) {
+    html += '<button class="btn btn-sm ' + (i === _convPage ? 'btn-primary' : 'btn-secondary') + '" onclick="aiConvGoPage(' + i + ')">' + i + '</button>';
+  }
+  html += '<button class="btn btn-secondary btn-sm" onclick="aiConvGoPage(' + (_convPage + 1) + ')" ' + (_convPage === totalPages ? 'disabled' : '') + '>&rsaquo;</button>';
+  pg.innerHTML = html;
 }
 
 // ── AI Markdown renderer ──────────────────────────────────────────────────────
