@@ -23,7 +23,7 @@ async function generateQuoteNumber(userInitials) {
 router.get('/', requireAuth, async (req, res) => {
   try {
     let query, params;
-    if (req.user.role === 'admin') {
+    if (['admin','approver','manager'].includes(req.user.role)) {
       query = 'SELECT q.*, u.name as requester_name FROM quotes q JOIN users u ON q.requester_id = u.id ORDER BY q.created_at DESC';
       params = [];
     } else {
