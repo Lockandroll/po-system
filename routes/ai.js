@@ -109,6 +109,25 @@ router.get('/usage', requireAuth, async function(req, res) {
   }
 });
 
+// GET /api/ai/conversations — admin only: full conversation log
+router.get('/conversations', requireAuth, requireRole('admin'), async function(req, res) {
+  try {
+    const { search, user_id, limit } = req.query;
+    let query = 'SELECT * FROM ai_conversations';
+    const params = [];
+    const conditions = [];
+    if (user_id) { params.push(user_id); conditions.push('user_id = $' + params.length); }
+    if (search) { params.push('%' + search + '%'); conditions.push('(question ILIKE $' + params.length + ' OR response ILIKE $' + params.length + ')'); }
+    if (conditions.length) query += ' WHERE ' + conditions.join(' AND ');
+    query += ' ORDER BY created_at DESC LIMIT ' + (parseInt(limit) || 200);
+    const { rows } = await pool.query(query, params);
+    res.json(rows);
+  } catch(err) {
+    console.error(err);
+    res.status(500).json({ error: 'Failed to fetch conversations' });
+  }
+});
+
 // GET /api/ai/admin-usage — admin only: per-user daily breakdown
 router.get('/admin-usage', requireAuth, requireRole('admin'), async function(req, res) {
   try {
@@ -162,6 +181,17 @@ router.post('/chat', requireAuth, async function(req, res) {
     }
 
     await incrementUsage(req.user.id, req.user.name);
+
+    // Log conversation (extract last user message text for the question field)
+    const lastUserMsg = messages[messages.length - 1];
+    const questionText = Array.isArray(lastUserMsg.content)
+      ? ((lastUserMsg.content.find(function(c){ return c.type === 'text'; }) || {}).text || '')
+      : (lastUserMsg.content || '');
+    const hasImage = Array.isArray(lastUserMsg.content) && lastUserMsg.content.some(function(c){ return c.type === 'image'; });
+    pool.query(
+      'INSERT INTO ai_conversations (user_id, user_name, question, response, has_image) VALUES ($1,$2,$3,$4,$5)',
+      [req.user.id, req.user.name, questionText, response.content[0].text, hasImage]
+    ).catch(function(err){ console.error('Conversation log failed:', err.message); });
 
     const newUsage = await getUsage(req.user.id);
     res.json({
