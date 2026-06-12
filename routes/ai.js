@@ -153,8 +153,12 @@ router.post('/chat', requireAuth, async function(req, res) {
     const response = await callClaude(messages, systemPrompt);
 
     if (response.error) {
-      console.error('Anthropic API error:', response.error);
-      return res.status(500).json({ error: 'AI service error: ' + response.error.message });
+      console.error('Anthropic API error:', JSON.stringify(response.error));
+      const msg = response.error.message || JSON.stringify(response.error);
+      if (msg.toLowerCase().includes('image') || msg.toLowerCase().includes('size') || msg.toLowerCase().includes('too large')) {
+        return res.status(400).json({ error: 'Image is too large for the AI to process. Please use a smaller or lower-resolution photo.' });
+      }
+      return res.status(500).json({ error: 'AI service error: ' + msg });
     }
 
     await incrementUsage(req.user.id, req.user.name);
