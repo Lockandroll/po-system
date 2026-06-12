@@ -239,7 +239,7 @@ async function render() {
   const initials = state.user.name.split(' ').map(function(w){ return w[0]; }).join('').toUpperCase().slice(0,2);
   app.innerHTML =
     '<div id="sidebar">' +
-      '<div class="sidebar-logo"><h1>Lock and Roll LLC</h1></div>' +
+      '<div class="sidebar-logo"><h1>Lock and Roll LLC v2</h1></div>' +
       '<nav class="sidebar-nav">' +
         '<div class="nav-item ' + (state.currentView === 'dashboard' ? 'active' : '') + '" onclick="navigate(\'dashboard\')">' + icons.dashboard + ' PO Dashboard</div>' +
         (state.user.role !== 'approver' ? '<div class="nav-item ' + (state.currentView === 'new' ? 'active' : '') + '" onclick="navigate(\'new\')" style="padding-left:28px;font-size:13px">' + icons.plus + ' New PO</div>' : '') +
