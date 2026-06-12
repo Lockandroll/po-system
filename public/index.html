@@ -2143,9 +2143,15 @@ function aiMarkdown(text) {
 
 // ── Locksmith AI Assistant ─────────────────────────────────────────────────────────────
 var _aiMessages = [];
+var _aiSessionUserId = null;
 var _aiUsage = { daily: 0, dailyLimit: 20 };
 
 async function renderAIAssistant(el) {
+  // Clear messages if a different user is now logged in
+  if (_aiSessionUserId !== state.user.id) {
+    _aiMessages = [];
+    _aiSessionUserId = state.user.id;
+  }
   // Fetch current usage
   try {
     _aiUsage = await api('GET', '/ai/usage');
