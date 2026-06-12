@@ -1,6 +1,7 @@
 const express = require('express');
 const { pool } = require('../db');
 const { requireAuth } = require('../middleware/auth');
+const { logAudit } = require('../utils/audit');
 
 const router = express.Router();
 
@@ -92,6 +93,7 @@ router.post('/', requireAuth, async (req, res) => {
       );
     }
     await client.query('COMMIT');
+    await logAudit({ entity_type: 'quote', entity_id: quote.id, entity_number: quote_number, action: 'created', user_id: req.user.id, user_name: req.user.name, details: { customer: customer_name, total } });
     res.status(201).json(quote);
   } catch (err) {
     await client.query('ROLLBACK');
@@ -137,6 +139,7 @@ router.put('/:id', requireAuth, async (req, res) => {
         );
       }
       await client.query('COMMIT');
+      await logAudit({ entity_type: 'quote', entity_id: parseInt(req.params.id), entity_number: quote.quote_number, action: 'edited', user_id: req.user.id, user_name: req.user.name });
       res.json({ success: true, id: parseInt(req.params.id) });
     } catch (err) {
       await client.query('ROLLBACK');
@@ -160,6 +163,7 @@ router.delete('/:id', requireAuth, async (req, res) => {
       return res.status(403).json({ error: 'Access denied' });
     }
     await pool.query('DELETE FROM quotes WHERE id = $1', [req.params.id]);
+    await logAudit({ entity_type: 'quote', entity_id: quote.id, entity_number: quote.quote_number, action: 'deleted', user_id: req.user.id, user_name: req.user.name });
     res.json({ success: true });
   } catch (err) {
     console.error(err);
