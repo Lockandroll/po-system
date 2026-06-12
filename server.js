@@ -19,6 +19,8 @@ app.use('/api/pos', require('./routes/pos'));
 app.use('/api/quotes', require('./routes/quotes'));
 app.use('/api/addresses', require('./routes/addresses'));
 app.use('/api/vendors', require('./routes/vendors'));
+app.use('/api/audit', require('./routes/audit'));
+app.use('/api/ai', require('./routes/ai'));
 
 // Catch-all: serve frontend
 app.get('*', (req, res) => {
