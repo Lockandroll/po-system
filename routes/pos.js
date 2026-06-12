@@ -1,6 +1,7 @@
 const express = require('express');
 const { pool } = require('../db');
 const { requireAuth, requireRole } = require('../middleware/auth');
+const { logAudit } = require('../utils/audit');
 
 const router = express.Router();
 
@@ -220,6 +221,7 @@ router.post('/', requireAuth, async (req, res) => {
       );
     }
     await client.query('COMMIT');
+    await logAudit({ entity_type: 'po', entity_id: po.id, entity_number: po_number, action: 'created', user_id: req.user.id, user_name: req.user.name, details: { vendor: vendor_name, total: total_amount } });
     res.status(201).json(po);
   } catch (err) {
     await client.query('ROLLBACK');
@@ -267,6 +269,7 @@ router.put('/:id', requireAuth, async (req, res) => {
       }
     }
     await client.query('COMMIT');
+    await logAudit({ entity_type: 'po', entity_id: parseInt(req.params.id), entity_number: po.po_number, action: 'edited', user_id: req.user.id, user_name: req.user.name });
     res.json(updated[0]);
   } catch (err) {
     await client.query('ROLLBACK');
@@ -292,6 +295,7 @@ router.delete('/:id', requireAuth, async (req, res) => {
     return res.status(400).json({ error: 'Only draft POs can be deleted. Ask an admin to delete or cancel this PO.' });
   }
   await pool.query('DELETE FROM purchase_orders WHERE id = $1', [req.params.id]);
+  await logAudit({ entity_type: 'po', entity_id: po.id, entity_number: po.po_number, action: 'deleted', user_id: req.user.id, user_name: req.user.name });
   res.json({ success: true });
 });
 
@@ -306,6 +310,7 @@ router.post('/:id/submit', requireAuth, async (req, res) => {
   if (po.status !== 'draft') return res.status(400).json({ error: 'PO is not in draft status' });
 
   await pool.query('UPDATE purchase_orders SET status=$1, updated_at=NOW() WHERE id=$2', ['submitted', req.params.id]);
+  await logAudit({ entity_type: 'po', entity_id: po.id, entity_number: po.po_number, action: 'submitted', user_id: req.user.id, user_name: req.user.name });
 
   const appUrl = process.env.APP_URL || '';
   const poUrl = appUrl ? appUrl + '/#view/' + po.id : null;
@@ -360,6 +365,8 @@ router.post('/:id/approve', requireAuth, requireRole('approver', 'admin'), async
   if (approverReceives && req.user.email && req.user.email !== po.requester_email) ccEmails.push(req.user.email);
   if (orderer.receive_emails !== false && orderer.email && orderer.email !== po.requester_email) ccEmails.push(orderer.email);
 
+  await logAudit({ entity_type: 'po', entity_id: po.id, entity_number: po.po_number, action: 'approved', user_id: req.user.id, user_name: req.user.name, details: { orderer: orderer.name, total: po.total_amount } });
+
   if (po.requester_receive_emails !== false) await sendEmail(
     po.requester_email,
     '[Lock and Roll] PO Approved: ' + po.po_number,
@@ -389,6 +396,8 @@ router.post('/:id/reject', requireAuth, requireRole('approver', 'admin'), async 
     ['rejected', req.user.id, reason || null, req.params.id]
   );
 
+  await logAudit({ entity_type: 'po', entity_id: po.id, entity_number: po.po_number, action: 'rejected', user_id: req.user.id, user_name: req.user.name, details: { reason } });
+
   if (po.requester_receive_emails !== false) await sendEmail(
     po.requester_email,
     '[Lock and Roll] PO Rejected: ' + po.po_number,
@@ -416,6 +425,8 @@ router.post('/:id/cancel', requireAuth, requireRole('admin'), async (req, res) =
     'UPDATE purchase_orders SET status=$1, updated_at=NOW() WHERE id=$2',
     ['cancelled', req.params.id]
   );
+
+  await logAudit({ entity_type: 'po', entity_id: po.id, entity_number: po.po_number, action: 'cancelled', user_id: req.user.id, user_name: req.user.name });
 
   if (po.requester_receive_emails !== false) await sendEmail(
     po.requester_email,
