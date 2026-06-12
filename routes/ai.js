@@ -6,7 +6,7 @@ const { requireAuth, requireRole } = require('../middleware/auth');
 const router = express.Router();
 
 const DAILY_LIMIT = parseInt(process.env.AI_DAILY_LIMIT) || 50;
-const MONTHLY_LIMIT = parseInt(process.env.AI_MONTHLY_LIMIT) || 40000;
+const MONTHLY_LIMIT = parseInt(process.env.AI_MONTHLY_LIMIT) || 12000;
 
 const SYSTEM_PROMPT = 'You are LockBot, an AI assistant for Lock and Roll LLC, a professional locksmith company. ' +
 'You help technicians and staff with locksmith-specific questions and tasks.\n\n' +
@@ -63,7 +63,7 @@ async function incrementUsage(userId, userName) {
 function callClaude(messages, systemPrompt) {
   return new Promise(function(resolve, reject) {
     const body = JSON.stringify({
-      model: 'claude-haiku-4-5-20251001',
+      model: 'claude-sonnet-4-6',
       max_tokens: 1024,
       system: systemPrompt || SYSTEM_PROMPT,
       messages: messages
