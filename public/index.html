@@ -799,31 +799,89 @@ async function cancelPO(id) {
   catch(err) { document.getElementById('view-error').innerHTML = '<div class="alert alert-error">' + escHtml(err.message) + '</div>'; }
 }
 
+var _usersData = [];
+var _usersPage = 1;
+var _usersSearch = '';
+var _usersPageSize = 15;
+
 async function renderUsers(el) {
   if (!['admin','manager'].includes(state.user.role)) { el.innerHTML = '<div class="alert alert-error">Access denied.</div>'; return; }
   try {
-    const users = await api('GET', '/users');
+    _usersData = await api('GET', '/users');
+    _usersPage = 1;
+    _usersSearch = '';
     el.innerHTML =
       '<div class="page-header"><div class="page-title">Users</div>' + (state.user.role === 'admin' ? '<button class="btn btn-primary" onclick="showUserModal(null)" style="white-space:nowrap">' + icons.plus + ' Add User</button>' : '') + '</div>' +
       '<div id="users-error"></div>' +
-      '<div class="card"><div class="card-body" style="padding:0"><div class="table-wrap"><table>' +
-        '<thead><tr><th>Name</th><th>Email</th><th>Role</th><th>Status</th>' + (state.user.role === 'admin' ? '<th></th>' : '') + '</tr></thead>' +
-        '<tbody>' + users.map(function(u) {
-          const isInactive = u.active === false;
-          return '<tr class="' + (isInactive ? 'user-row-inactive' : '') + '">' +
-            '<td>' + escHtml(u.name) + '</td>' +
-            '<td>' + escHtml(u.email) + '</td>' +
-            '<td><span class="badge badge-' + escHtml(u.role) + '">' + escHtml(u.role) + '</span></td>' +
-            '<td>' + (isInactive ? '<span class="badge badge-inactive">Access Removed</span>' : '<span style="color:var(--success);font-size:13px">&#10003; Active</span>') + '</td>' +
-            (state.user.role === 'admin' ? '<td class="flex-gap">' +
-              '<button class="btn btn-secondary btn-sm" onclick="showUserModal(' + u.id + ')">Edit</button>' +
-              (u.id !== state.user.id && !isInactive ? '<button class="btn btn-danger btn-sm" onclick="deactivateUser(' + u.id + ')">Deactivate</button>' : '') +
-              (u.id !== state.user.id && isInactive ? '<button class="btn btn-success btn-sm" onclick="reactivateUser(' + u.id + ')">Reactivate</button>' : '') +
-            '</td>' : '') +
-          '</tr>';
-        }).join('') +
-        '</tbody></table></div></div></div>';
+      '<div style="margin-bottom:16px"><input type="text" id="users-search" placeholder="Search by name, email, or role..." style="width:100%;max-width:400px;padding:8px 12px;background:var(--surface-color);border:1px solid var(--border-color);border-radius:6px;color:var(--text-color);font-size:14px" oninput="usersFilter(this.value)" /></div>' +
+      '<div id="users-table-wrap"></div>' +
+      '<div id="users-pagination" style="display:flex;gap:8px;align-items:center;margin-top:16px;flex-wrap:wrap"></div>';
+    usersRenderTable();
   } catch(err) { el.innerHTML = '<div class="alert alert-error">' + escHtml(err.message) + '</div>'; }
+}
+
+function usersFilter(val) {
+  _usersSearch = val.toLowerCase();
+  _usersPage = 1;
+  usersRenderTable();
+}
+
+function usersRenderTable() {
+  var filtered = _usersData.filter(function(u) {
+    if (!_usersSearch) return true;
+    return (u.name || '').toLowerCase().includes(_usersSearch) ||
+           (u.email || '').toLowerCase().includes(_usersSearch) ||
+           (u.role || '').toLowerCase().includes(_usersSearch);
+  });
+  var totalPages = Math.max(1, Math.ceil(filtered.length / _usersPageSize));
+  if (_usersPage > totalPages) _usersPage = totalPages;
+  var start = (_usersPage - 1) * _usersPageSize;
+  var page = filtered.slice(start, start + _usersPageSize);
+
+  var wrap = document.getElementById('users-table-wrap');
+  if (!wrap) return;
+  wrap.innerHTML =
+    '<div class="card"><div class="card-body" style="padding:0"><div class="table-wrap"><table>' +
+      '<thead><tr><th>Name</th><th>Email</th><th>Role</th><th>Status</th>' + (state.user.role === 'admin' ? '<th></th>' : '') + '</tr></thead>' +
+      '<tbody>' + (page.length ? page.map(function(u) {
+        var isInactive = u.active === false;
+        return '<tr class="' + (isInactive ? 'user-row-inactive' : '') + '">' +
+          '<td>' + escHtml(u.name) + '</td>' +
+          '<td>' + escHtml(u.email) + '</td>' +
+          '<td><span class="badge badge-' + escHtml(u.role) + '">' + escHtml(u.role) + '</span></td>' +
+          '<td>' + (isInactive ? '<span class="badge badge-inactive">Access Removed</span>' : '<span style="color:var(--success);font-size:13px">&#10003; Active</span>') + '</td>' +
+          (state.user.role === 'admin' ? '<td class="flex-gap">' +
+            '<button class="btn btn-secondary btn-sm" onclick="showUserModal(' + u.id + ')">Edit</button>' +
+            (u.id !== state.user.id && !isInactive ? '<button class="btn btn-danger btn-sm" onclick="deactivateUser(' + u.id + ')">Deactivate</button>' : '') +
+            (u.id !== state.user.id && isInactive ? '<button class="btn btn-success btn-sm" onclick="reactivateUser(' + u.id + ')">Reactivate</button>' : '') +
+          '</td>' : '') +
+        '</tr>';
+      }).join('') : '<tr><td colspan="5" style="text-align:center;color:var(--text-muted-color);padding:24px">No users found</td></tr>') +
+      '</tbody></table></div></div></div>';
+
+  // Pagination controls
+  var pg = document.getElementById('users-pagination');
+  if (!pg) return;
+  if (totalPages <= 1) { pg.innerHTML = '<span style="font-size:13px;color:var(--text-muted-color)">' + filtered.length + ' user' + (filtered.length !== 1 ? 's' : '') + '</span>'; return; }
+  var html = '<span style="font-size:13px;color:var(--text-muted-color);margin-right:4px">' + filtered.length + ' users</span>';
+  html += '<button class="btn btn-secondary btn-sm" onclick="usersGoPage(' + (_usersPage - 1) + ')" ' + (_usersPage === 1 ? 'disabled' : '') + '>&lsaquo;</button>';
+  for (var i = 1; i <= totalPages; i++) {
+    html += '<button class="btn btn-sm ' + (i === _usersPage ? 'btn-primary' : 'btn-secondary') + '" onclick="usersGoPage(' + i + ')">' + i + '</button>';
+  }
+  html += '<button class="btn btn-secondary btn-sm" onclick="usersGoPage(' + (_usersPage + 1) + ')" ' + (_usersPage === totalPages ? 'disabled' : '') + '>&rsaquo;</button>';
+  pg.innerHTML = html;
+}
+
+function usersGoPage(p) {
+  var filtered = _usersData.filter(function(u) {
+    if (!_usersSearch) return true;
+    return (u.name || '').toLowerCase().includes(_usersSearch) ||
+           (u.email || '').toLowerCase().includes(_usersSearch) ||
+           (u.role || '').toLowerCase().includes(_usersSearch);
+  });
+  var totalPages = Math.max(1, Math.ceil(filtered.length / _usersPageSize));
+  _usersPage = Math.min(Math.max(1, p), totalPages);
+  usersRenderTable();
 }
 
 async function showUserModal(id) {
