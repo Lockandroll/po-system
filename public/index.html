@@ -1219,21 +1219,42 @@ async function saveAIContext() {
 
 // ── Vendors ───────────────────────────────────────────────────────────────────
 
+var _vendorsData = [];
+
 async function renderVendors(el) {
   if (!['admin','manager'].includes(state.user.role)) { el.innerHTML = '<div class="alert alert-error">Access denied.</div>'; return; }
-  let vendors = [];
-  try { vendors = await api('GET', '/vendors'); } catch(e) {}
+  try { _vendorsData = await api('GET', '/vendors'); } catch(e) { _vendorsData = []; }
   el.innerHTML =
     '<div class="page-header"><div><div class="page-title">Accounts</div><div class="page-subtitle">Vendor account logins &amp; credentials</div></div>' +
     '<button class="btn btn-primary" onclick="showVendorModal()">+ Add Account</button></div>' +
     '<div id="vendor-msg"></div>' +
+    '<div style="margin-bottom:16px"><input type="text" id="vendors-search" placeholder="Search by name, website, or username..." style="width:100%;max-width:400px;padding:8px 12px;background:var(--surface-color);border:1px solid rgba(249,115,22,0.35);border-radius:6px;color:var(--text-color);font-size:14px;outline:none;box-shadow:0 0 0 1px rgba(249,115,22,0.15)" oninput="vendorsFilter(this.value)" /></div>' +
+    '<div id="vendors-table-wrap"></div>';
+  vendorsRenderTable('');
+}
+
+function vendorsFilter(val) {
+  vendorsRenderTable(val.toLowerCase());
+}
+
+function vendorsRenderTable(search) {
+  var filtered = _vendorsData.filter(function(v) {
+    if (!search) return true;
+    return (v.name || '').toLowerCase().includes(search) ||
+           (v.website || '').toLowerCase().includes(search) ||
+           (v.username || '').toLowerCase().includes(search) ||
+           (v.account_number || '').toLowerCase().includes(search);
+  });
+  var wrap = document.getElementById('vendors-table-wrap');
+  if (!wrap) return;
+  wrap.innerHTML =
     '<div class="card"><div class="table-wrap">' +
       '<table>' +
         '<thead><tr><th>Account Name</th><th>Website</th><th>Account #</th><th>Username</th><th>Password</th><th>Notes</th><th></th></tr></thead>' +
         '<tbody>' +
-          (vendors.length === 0
-            ? '<tr><td colspan="7" style="text-align:center;color:var(--text-muted-color);padding:32px">No accounts yet.</td></tr>'
-            : vendors.map(function(v) {
+          (filtered.length === 0
+            ? '<tr><td colspan="7" style="text-align:center;color:var(--text-muted-color);padding:32px">No accounts found.</td></tr>'
+            : filtered.map(function(v) {
                 return '<tr>' +
                   '<td style="font-weight:600;color:var(--text)">' + escHtml(v.name) + '</td>' +
                   '<td>' + (v.website ? '<a href="' + escHtml(v.website) + '" target="_blank" style="color:var(--primary)">' + escHtml(v.website) + '</a>' : '—') + '</td>' +
