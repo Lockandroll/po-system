@@ -2,100 +2,12 @@ const express = require('express');
 const { pool } = require('../db');
 const { requireAuth, requireRole } = require('../middleware/auth');
 const { logAudit } = require('../utils/audit');
+const { sendEmail, emailTemplate } = require('../utils/email');
 
 const router = express.Router();
 
-// Helper: send email via Resend (supports optional cc array)
-async function sendEmail(to, subject, html, cc) {
-  if (!process.env.RESEND_API_KEY) return;
-  try {
-    const body = {
-      from: process.env.FROM_EMAIL || 'Lock and Roll <onboarding@resend.dev>',
-      to: Array.isArray(to) ? to : [to],
-      subject,
-      html
-    };
-    if (cc && cc.length > 0) body.cc = Array.isArray(cc) ? cc : [cc];
-    await fetch('https://api.resend.com/emails', {
-      method: 'POST',
-      headers: {
-        Authorization: 'Bearer ' + process.env.RESEND_API_KEY,
-        'Content-Type': 'application/json'
-      },
-      body: JSON.stringify(body)
-    });
-  } catch (err) {
-    console.error('Email send failed:', err.message);
-  }
-}
-
-// Helper: build PO HTML for email body
-function buildPOEmailHtml(po, items, approverName, ordererName) {
-  const rows = items.map(function(item) {
-    const lineTotal = (parseFloat(item.quantity) * parseFloat(item.unit_price)).toFixed(2);
-    return '<tr>' +
-      '<td style="padding:8px;border:1px solid #ddd">' + (item.item_number || '') + '</td>' +
-      '<td style="padding:8px;border:1px solid #ddd">' + (item.manufacturer || '') + '</td>' +
-      '<td style="padding:8px;border:1px solid #ddd">' + item.description + '</td>' +
-      '<td style="padding:8px;border:1px solid #ddd;text-align:center">' + item.quantity + '</td>' +
-      '<td style="padding:8px;border:1px solid #ddd;text-align:right">$' + parseFloat(item.unit_price).toFixed(2) + '</td>' +
-      '<td style="padding:8px;border:1px solid #ddd;text-align:right">$' + lineTotal + '</td>' +
-      '</tr>';
-  }).join('');
-
-  return '<div style="font-family:sans-serif;max-width:700px;margin:0 auto">' +
-    '<div style="background:#111;padding:20px 24px;border-bottom:3px solid #f97316">' +
-      '<h1 style="color:#f97316;margin:0;font-size:22px">Lock and Roll</h1>' +
-      '<p style="color:#aaa;margin:4px 0 0">Purchase Order — Approved</p>' +
-    '</div>' +
-    '<div style="padding:20px 24px;background:#fff">' +
-      '<table style="width:100%;margin-bottom:20px;font-size:14px">' +
-        '<tr>' +
-          '<td style="padding:4px 0;color:#555;width:160px">PO Number:</td>' +
-          '<td style="padding:4px 0;font-weight:bold">' + po.po_number + '</td>' +
-          '<td style="padding:4px 0;color:#555;width:160px">Vendor / Supplier:</td>' +
-          '<td style="padding:4px 0">' + po.vendor_name + '</td>' +
-        '</tr>' +
-        '<tr>' +
-          '<td style="padding:4px 0;color:#555">Customer:</td>' +
-          '<td style="padding:4px 0">' + (po.customer_name || '—') + '</td>' +
-          '<td style="padding:4px 0;color:#555">City:</td>' +
-          '<td style="padding:4px 0">' + (po.city_code || '—') + '</td>' +
-        '</tr>' +
-        '<tr>' +
-          '<td style="padding:4px 0;color:#555">Requested By:</td>' +
-          '<td style="padding:4px 0">' + (po.requester_name || '—') + '</td>' +
-          '<td style="padding:4px 0;color:#555">Approved By:</td>' +
-          '<td style="padding:4px 0">' + (approverName || '—') + '</td>' +
-        '</tr>' +
-        '<tr>' +
-          '<td style="padding:4px 0;color:#555">Orderer:</td>' +
-          '<td style="padding:4px 0">' + (ordererName || '—') + '</td>' +
-          '<td></td><td></td>' +
-        '</tr>' +
-        (po.notes ? '<tr><td style="padding:4px 0;color:#555">Notes:</td><td colspan="3" style="padding:4px 0">' + po.notes + '</td></tr>' : '') +
-      '</table>' +
-      '<table style="width:100%;border-collapse:collapse;font-size:13px;margin-bottom:20px">' +
-        '<thead>' +
-          '<tr style="background:#f3f4f6">' +
-            '<th style="padding:8px;border:1px solid #ddd;text-align:left">Item #</th>' +
-            '<th style="padding:8px;border:1px solid #ddd;text-align:left">Manufacturer</th>' +
-            '<th style="padding:8px;border:1px solid #ddd;text-align:left">Description</th>' +
-            '<th style="padding:8px;border:1px solid #ddd;text-align:center">Qty</th>' +
-            '<th style="padding:8px;border:1px solid #ddd;text-align:right">Unit Price</th>' +
-            '<th style="padding:8px;border:1px solid #ddd;text-align:right">Total</th>' +
-          '</tr>' +
-        '</thead>' +
-        '<tbody>' + rows + '</tbody>' +
-        '<tfoot>' +
-          '<tr>' +
-            '<td colspan="5" style="padding:8px;border:1px solid #ddd;text-align:right;font-weight:bold">Grand Total</td>' +
-            '<td style="padding:8px;border:1px solid #ddd;text-align:right;font-weight:bold">$' + parseFloat(po.total_amount).toFixed(2) + '</td>' +
-          '</tr>' +
-        '</tfoot>' +
-      '</table>' +
-    '</div>' +
-  '</div>';
+function appUrl(path) {
+  return (process.env.APP_URL || '').replace(/\/$/, '') + (path || '');
 }
 
 // Helper: compute total from line items
@@ -312,22 +224,25 @@ router.post('/:id/submit', requireAuth, async (req, res) => {
   await pool.query('UPDATE purchase_orders SET status=$1, updated_at=NOW() WHERE id=$2', ['submitted', req.params.id]);
   await logAudit({ entity_type: 'po', entity_id: po.id, entity_number: po.po_number, action: 'submitted', user_id: req.user.id, user_name: req.user.name });
 
-  const appUrl = process.env.APP_URL || '';
-  const poUrl = appUrl ? appUrl + '/#view/' + po.id : null;
-
-  const { rows: approvers } = await pool.query("SELECT email, name FROM users WHERE role IN ('approver', 'admin') AND active = true AND receive_emails = true");
-  for (let i = 0; i < approvers.length; i++) {
-    const approver = approvers[i];
-    await sendEmail(
-      approver.email,
-      '[Lock and Roll] New PO Needs Approval: ' + po.po_number,
-      '<p>Hi ' + approver.name + ',</p>' +
-      '<p><strong>' + req.user.name + '</strong> has submitted purchase order <strong>' + po.po_number + '</strong> for approval.</p>' +
-      '<p><strong>Vendor:</strong> ' + po.vendor_name + '<br/>' +
-      '<strong>Total:</strong> $' + parseFloat(po.total_amount).toFixed(2) + '</p>' +
-      (poUrl ? '<p><a href="' + poUrl + '" style="background:#f97316;color:white;padding:10px 20px;text-decoration:none;border-radius:6px;display:inline-block">Review PO</a></p>' +
-               '<p style="color:#888;font-size:12px">Or copy this link: ' + poUrl + '</p>' : '<p>Please log in to review and approve or reject it.</p>')
-    );
+  const { rows: approvers } = await pool.query("SELECT email, name FROM users WHERE role IN ('approver', 'admin', 'manager') AND active = true AND receive_emails = true");
+  if (approvers.length) {
+    const emails = approvers.map(function(a) { return a.email; });
+    const html = emailTemplate({
+      badge: 'Action required',
+      title: 'Purchase order submitted for approval',
+      body: '<strong>' + req.user.name + '</strong> submitted a purchase order that needs your review.',
+      details: [
+        { label: 'PO number', value: po.po_number },
+        { label: 'Vendor', value: po.vendor_name },
+        { label: 'Customer/Employee', value: po.customer_name || '—' },
+        { label: 'City', value: po.city_code || '—' },
+        { label: 'Total', value: '$' + parseFloat(po.total_amount).toFixed(2) },
+        { label: 'Requested by', value: req.user.name }
+      ],
+      buttonText: 'Review PO',
+      buttonUrl: appUrl('?view=view&id=' + po.id)
+    });
+    await sendEmail(emails, 'Action Required: PO ' + po.po_number + ' needs approval', html);
   }
 
   res.json({ success: true });
@@ -355,10 +270,6 @@ router.post('/:id/approve', requireAuth, requireRole('approver', 'admin'), async
     ['approved', req.user.id, orderer_id, req.params.id]
   );
 
-  const { rows: items } = await pool.query('SELECT * FROM po_line_items WHERE po_id = $1 ORDER BY id', [req.params.id]);
-
-  const emailHtml = buildPOEmailHtml(po, items, req.user.name, orderer.name);
-
   const ccEmails = [];
   const { rows: approverRows } = await pool.query('SELECT receive_emails FROM users WHERE id = $1', [req.user.id]);
   const approverReceives = approverRows.length && approverRows[0].receive_emails !== false;
@@ -367,15 +278,25 @@ router.post('/:id/approve', requireAuth, requireRole('approver', 'admin'), async
 
   await logAudit({ entity_type: 'po', entity_id: po.id, entity_number: po.po_number, action: 'approved', user_id: req.user.id, user_name: req.user.name, details: { orderer: orderer.name, total: po.total_amount } });
 
-  if (po.requester_receive_emails !== false) await sendEmail(
-    po.requester_email,
-    '[Lock and Roll] PO Approved: ' + po.po_number,
-    '<p>Hi ' + po.requester_name + ',</p>' +
-    '<p>Your purchase order <strong>' + po.po_number + '</strong> has been <strong style="color:green">approved</strong> by ' + req.user.name + '.</p>' +
-    '<p><strong>' + orderer.name + '</strong> has been assigned to place the order.</p>' +
-    emailHtml,
-    ccEmails
-  );
+  if (po.requester_receive_emails !== false) {
+    const html = emailTemplate({
+      badge: 'Approved',
+      badgeColor: 'green',
+      title: 'Your purchase order has been approved',
+      body: 'Your purchase order has been approved by <strong>' + req.user.name + '</strong>. <strong>' + orderer.name + '</strong> has been assigned to place the order.',
+      details: [
+        { label: 'PO number', value: po.po_number },
+        { label: 'Vendor', value: po.vendor_name },
+        { label: 'Customer/Employee', value: po.customer_name || '—' },
+        { label: 'Total', value: '$' + parseFloat(po.total_amount).toFixed(2) },
+        { label: 'Approved by', value: req.user.name },
+        { label: 'Orderer', value: orderer.name }
+      ],
+      buttonText: 'View PO',
+      buttonUrl: appUrl('?view=view&id=' + po.id)
+    });
+    await sendEmail(po.requester_email, 'Approved: PO ' + po.po_number, html, ccEmails);
+  }
 
   res.json({ success: true });
 });
@@ -398,14 +319,24 @@ router.post('/:id/reject', requireAuth, requireRole('approver', 'admin'), async 
 
   await logAudit({ entity_type: 'po', entity_id: po.id, entity_number: po.po_number, action: 'rejected', user_id: req.user.id, user_name: req.user.name, details: { reason } });
 
-  if (po.requester_receive_emails !== false) await sendEmail(
-    po.requester_email,
-    '[Lock and Roll] PO Rejected: ' + po.po_number,
-    '<p>Hi ' + po.requester_name + ',</p>' +
-    '<p>Your purchase order <strong>' + po.po_number + '</strong> has been <strong style="color:red">rejected</strong> by ' + req.user.name + '.</p>' +
-    (reason ? '<p><strong>Reason:</strong> ' + reason + '</p>' : '') +
-    '<p>You may edit and resubmit the PO after making any needed changes.</p>'
-  );
+  if (po.requester_receive_emails !== false) {
+    const html = emailTemplate({
+      badge: 'Not approved',
+      badgeColor: 'red',
+      title: 'Your purchase order was not approved',
+      body: 'Your purchase order has been rejected by <strong>' + req.user.name + '</strong>. You may edit and resubmit after making any needed changes.',
+      details: [
+        { label: 'PO number', value: po.po_number },
+        { label: 'Vendor', value: po.vendor_name },
+        { label: 'Total', value: '$' + parseFloat(po.total_amount).toFixed(2) },
+        { label: 'Rejected by', value: req.user.name },
+        ...(reason ? [{ label: 'Reason', value: reason }] : [])
+      ],
+      buttonText: 'View & Edit PO',
+      buttonUrl: appUrl('?view=view&id=' + po.id)
+    });
+    await sendEmail(po.requester_email, 'Not Approved: PO ' + po.po_number, html);
+  }
 
   res.json({ success: true });
 });
@@ -428,14 +359,22 @@ router.post('/:id/cancel', requireAuth, requireRole('admin'), async (req, res) =
 
   await logAudit({ entity_type: 'po', entity_id: po.id, entity_number: po.po_number, action: 'cancelled', user_id: req.user.id, user_name: req.user.name });
 
-  if (po.requester_receive_emails !== false) await sendEmail(
-    po.requester_email,
-    '[Lock and Roll] PO Cancelled: ' + po.po_number,
-    '<p>Hi ' + po.requester_name + ',</p>' +
-    '<p>Your purchase order <strong>' + po.po_number + '</strong> has been <strong>cancelled</strong> by an administrator.</p>' +
-    '<p><strong>Vendor:</strong> ' + po.vendor_name + '<br/>' +
-    '<strong>Total:</strong> $' + parseFloat(po.total_amount).toFixed(2) + '</p>'
-  );
+  if (po.requester_receive_emails !== false) {
+    const html = emailTemplate({
+      badge: 'Cancelled',
+      badgeColor: 'red',
+      title: 'Your purchase order was cancelled',
+      body: 'Your purchase order <strong>' + po.po_number + '</strong> has been cancelled by an administrator.',
+      details: [
+        { label: 'PO number', value: po.po_number },
+        { label: 'Vendor', value: po.vendor_name },
+        { label: 'Total', value: '$' + parseFloat(po.total_amount).toFixed(2) }
+      ],
+      buttonText: 'View PO',
+      buttonUrl: appUrl('?view=view&id=' + po.id)
+    });
+    await sendEmail(po.requester_email, 'Cancelled: PO ' + po.po_number, html);
+  }
 
   res.json({ success: true });
 });
