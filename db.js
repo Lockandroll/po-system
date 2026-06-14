@@ -157,10 +157,29 @@ async function initDB() {
       ');'
     );
     await client.query(
+      'CREATE TABLE IF NOT EXISTS vehicles (' +
+      '  id SERIAL PRIMARY KEY,' +
+      '  year INTEGER NOT NULL,' +
+      '  make_model VARCHAR(255) NOT NULL,' +
+      '  vin VARCHAR(17),' +
+      '  key_codes VARCHAR(100),' +
+      '  assigned_user_id INTEGER REFERENCES users(id),' +
+      '  city_code CHAR(3),' +
+      '  date_of_assignment DATE,' +
+      '  license_plate VARCHAR(20),' +
+      '  mileage INTEGER,' +
+      '  active BOOLEAN NOT NULL DEFAULT true,' +
+      '  notes TEXT,' +
+      '  created_at TIMESTAMP DEFAULT NOW(),' +
+      '  updated_at TIMESTAMP DEFAULT NOW()' +
+      ');'
+    );
+    await client.query(
       'CREATE TABLE IF NOT EXISTS vehicle_repairs (' +
       '  id SERIAL PRIMARY KEY,' +
       '  vr_number VARCHAR(50) UNIQUE NOT NULL,' +
       '  requester_id INTEGER REFERENCES users(id),' +
+      '  vehicle_id INTEGER REFERENCES vehicles(id),' +
       '  assigned_user_id INTEGER REFERENCES users(id),' +
       '  vehicle VARCHAR(255) NOT NULL,' +
       '  vin_last6 CHAR(6),' +
@@ -182,6 +201,9 @@ async function initDB() {
       '  quantity DECIMAL(10,2) NOT NULL DEFAULT 1,' +
       '  unit_price DECIMAL(10,2) NOT NULL DEFAULT 0' +
       ');'
+    );
+    await client.query(
+      'ALTER TABLE vehicle_repairs ADD COLUMN IF NOT EXISTS vehicle_id INTEGER REFERENCES vehicles(id);'
     );
     console.log('Database initialized');
   } finally {
