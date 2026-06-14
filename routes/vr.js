@@ -3,31 +3,12 @@ const https = require('https');
 const { pool } = require('../db');
 const { requireAuth, requireRole } = require('../middleware/auth');
 const { logAudit } = require('../utils/audit');
+const { sendEmail, emailTemplate } = require('../utils/email');
 
 const router = express.Router();
 
-// Helper: send email via Resend
-async function sendEmail(to, subject, html, cc) {
-  if (!process.env.RESEND_API_KEY) return;
-  try {
-    const body = {
-      from: process.env.FROM_EMAIL || 'Lock and Roll <onboarding@resend.dev>',
-      to: Array.isArray(to) ? to : [to],
-      subject,
-      html
-    };
-    if (cc && cc.length > 0) body.cc = Array.isArray(cc) ? cc : [cc];
-    await fetch('https://api.resend.com/emails', {
-      method: 'POST',
-      headers: {
-        Authorization: 'Bearer ' + process.env.RESEND_API_KEY,
-        'Content-Type': 'application/json'
-      },
-      body: JSON.stringify(body)
-    });
-  } catch (err) {
-    console.error('Email send failed:', err.message);
-  }
+function appUrl(path) {
+  return (process.env.APP_URL || '').replace(/\/$/, '') + (path || '');
 }
 
 function getInitials(name) {
@@ -178,17 +159,26 @@ router.post('/:id/submit', requireAuth, async function(req, res) {
 
     // Email approvers and admins
     const { rows: approvers } = await pool.query(
-      "SELECT email, name FROM users WHERE role IN ('approver','admin') AND active = true AND receive_emails = true"
+      "SELECT email, name FROM users WHERE role IN ('approver','admin','manager') AND active = true AND receive_emails = true"
     );
     if (approvers.length) {
       const emails = approvers.map(function(a) { return a.email; });
-      await sendEmail(emails, 'Vehicle Repair Submitted: ' + vr.vr_number,
-        '<p><strong>' + req.user.name + '</strong> submitted vehicle repair <strong>' + vr.vr_number + '</strong> for approval.</p>' +
-        '<p><strong>Vehicle:</strong> ' + (vr.vehicle || '') + (vr.vin_last6 ? ' (VIN: ••••••' + vr.vin_last6 + ')' : '') + '</p>' +
-        '<p><strong>Shop:</strong> ' + (vr.shop_name || '—') + '</p>' +
-        '<p><strong>Total:</strong> $' + parseFloat(vr.total_amount).toFixed(2) + '</p>' +
-        '<p>Please log in to review and approve.</p>'
-      );
+      const html = emailTemplate({
+        badge: 'Action required',
+        title: 'Vehicle repair submitted for approval',
+        body: '<strong>' + req.user.name + '</strong> submitted a vehicle repair request that needs your review before work can proceed.',
+        details: [
+          { label: 'VR number', value: vr.vr_number },
+          { label: 'Vehicle', value: (vr.vehicle || '—') + (vr.vin_last6 ? ' (VIN: ···' + vr.vin_last6 + ')' : '') },
+          { label: 'Shop', value: vr.shop_name || '—' },
+          { label: 'City', value: vr.city_code || '—' },
+          { label: 'Total', value: '$' + parseFloat(vr.total_amount).toFixed(2) },
+          { label: 'Submitted by', value: req.user.name }
+        ],
+        buttonText: 'Review VR',
+        buttonUrl: appUrl('?view=view-vr&id=' + vr.id)
+      });
+      await sendEmail(emails, 'Action Required: VR ' + vr.vr_number + ' needs approval', html);
     }
     res.json({ success: true });
   } catch (err) {
@@ -207,11 +197,22 @@ router.post('/:id/approve', requireAuth, requireRole('admin', 'approver', 'manag
     await pool.query("UPDATE vehicle_repairs SET status='approved', approver_id=$1, approved_at=NOW(), updated_at=NOW() WHERE id=$2", [req.user.id, req.params.id]);
     await logAudit({ entity_type: 'vr', entity_id: vr.id, entity_number: vr.vr_number, action: 'approved', user_id: req.user.id, user_name: req.user.name });
     if (vr.requester_email) {
-      await sendEmail(vr.requester_email, 'Vehicle Repair Approved: ' + vr.vr_number,
-        '<p>Your vehicle repair <strong>' + vr.vr_number + '</strong> has been <strong style="color:green">approved</strong> by ' + req.user.name + '.</p>' +
-        '<p><strong>Vehicle:</strong> ' + (vr.vehicle || '') + '</p>' +
-        '<p><strong>Total:</strong> $' + parseFloat(vr.total_amount).toFixed(2) + '</p>'
-      );
+      const html = emailTemplate({
+        badge: 'Approved',
+        badgeColor: 'green',
+        title: 'Your vehicle repair has been approved',
+        body: 'Good news — your repair request has been approved by <strong>' + req.user.name + '</strong>. Work can now proceed.',
+        details: [
+          { label: 'VR number', value: vr.vr_number },
+          { label: 'Vehicle', value: vr.vehicle || '—' },
+          { label: 'Shop', value: vr.shop_name || '—' },
+          { label: 'Total', value: '$' + parseFloat(vr.total_amount).toFixed(2) },
+          { label: 'Approved by', value: req.user.name }
+        ],
+        buttonText: 'View VR',
+        buttonUrl: appUrl('?view=view-vr&id=' + vr.id)
+      });
+      await sendEmail(vr.requester_email, 'Approved: VR ' + vr.vr_number, html);
     }
     res.json({ success: true });
   } catch (err) {
@@ -231,10 +232,21 @@ router.post('/:id/reject', requireAuth, requireRole('admin', 'approver', 'manage
     await pool.query("UPDATE vehicle_repairs SET status='rejected', rejection_reason=$1, updated_at=NOW() WHERE id=$2", [reason || null, req.params.id]);
     await logAudit({ entity_type: 'vr', entity_id: vr.id, entity_number: vr.vr_number, action: 'rejected', user_id: req.user.id, user_name: req.user.name, details: { reason } });
     if (vr.requester_email) {
-      await sendEmail(vr.requester_email, 'Vehicle Repair Rejected: ' + vr.vr_number,
-        '<p>Your vehicle repair <strong>' + vr.vr_number + '</strong> was <strong style="color:red">rejected</strong> by ' + req.user.name + '.</p>' +
-        (reason ? '<p><strong>Reason:</strong> ' + reason + '</p>' : '')
-      );
+      const html = emailTemplate({
+        badge: 'Not approved',
+        badgeColor: 'red',
+        title: 'Your vehicle repair was not approved',
+        body: 'Your repair request has been rejected by <strong>' + req.user.name + '</strong>. You may edit the request and resubmit.',
+        details: [
+          { label: 'VR number', value: vr.vr_number },
+          { label: 'Vehicle', value: vr.vehicle || '—' },
+          { label: 'Rejected by', value: req.user.name },
+          ...(reason ? [{ label: 'Reason', value: reason }] : [])
+        ],
+        buttonText: 'View & Edit VR',
+        buttonUrl: appUrl('?view=view-vr&id=' + vr.id)
+      });
+      await sendEmail(vr.requester_email, 'Not Approved: VR ' + vr.vr_number, html);
     }
     res.json({ success: true });
   } catch (err) {
