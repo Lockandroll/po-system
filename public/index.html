@@ -1829,7 +1829,7 @@ async function renderViewQuote(el, id) {
               '<td>$' + parseFloat(item.unit_price || 0).toFixed(2) + '</td>' +
               '<td>$' + listP.toFixed(2) + '</td>' +
               '<td style="text-align:center">' + (item.taxable ? '&#10003;' : '—') + '</td>' +
-              '<td>' + (item.url ? '<a href="' + escHtml(item.url) + '" target="_blank" style="color:var(--primary);font-size:12px">Link</a>' : '—') + '</td>' +
+              '<td>' + (item.url ? '<a href="' + escHtml(/^https?:\/\//i.test(item.url) ? item.url : 'https://' + item.url) + '" target="_blank" rel="noopener noreferrer" style="color:var(--primary);font-size:12px">Link</a>' : '—') + '</td>' +
               '<td class="text-right">$' + lineTotal + '</td>' +
             '</tr>';
           }).join('') + '</tbody>' +
