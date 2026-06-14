@@ -159,7 +159,7 @@ router.post('/:id/submit', requireAuth, async function(req, res) {
 
     // Email approvers and admins
     const { rows: approvers } = await pool.query(
-      "SELECT email, name FROM users WHERE role IN ('approver','admin','manager') AND active = true AND receive_emails = true"
+      "SELECT email, name FROM users WHERE role = 'admin' AND active = true AND receive_emails = true"
     );
     if (approvers.length) {
       const emails = approvers.map(function(a) { return a.email; });
