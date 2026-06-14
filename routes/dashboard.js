@@ -44,10 +44,10 @@ router.get('/', requireAuth, async function(req, res) {
       "SELECT COUNT(*) FILTER (WHERE status='submitted') as pending_vr, COUNT(*) FILTER (WHERE status='approved') as approved_vr FROM vehicle_repairs"
     );
     const { rows: poStats } = await pool.query(
-      "SELECT COUNT(*) FILTER (WHERE status NOT IN ('rejected','draft')) as open_po, COALESCE(SUM(total_amount) FILTER (WHERE status NOT IN ('rejected','draft')),0) as open_po_total FROM purchase_orders"
+      "SELECT COUNT(*) as open_po, COALESCE(SUM(total_amount),0) as open_po_total FROM purchase_orders WHERE created_at >= date_trunc('month', NOW())"
     );
     const { rows: quoteStats } = await pool.query(
-      "SELECT COUNT(*) as active_quotes, COALESCE(SUM(total_amount),0) as quote_total FROM quotes"
+      "SELECT COUNT(*) as active_quotes, COALESCE(SUM(total_amount),0) as quote_total FROM quotes WHERE created_at >= date_trunc('month', NOW())"
     );
     const { rows: fleetStats } = await pool.query(
       "SELECT COUNT(*) as fleet_count FROM vehicles WHERE active = true"
