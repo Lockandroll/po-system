@@ -156,6 +156,33 @@ async function initDB() {
       '  message_count INTEGER DEFAULT 0' +
       ');'
     );
+    await client.query(
+      'CREATE TABLE IF NOT EXISTS vehicle_repairs (' +
+      '  id SERIAL PRIMARY KEY,' +
+      '  vr_number VARCHAR(50) UNIQUE NOT NULL,' +
+      '  requester_id INTEGER REFERENCES users(id),' +
+      '  assigned_user_id INTEGER REFERENCES users(id),' +
+      '  vehicle VARCHAR(255) NOT NULL,' +
+      '  vin_last6 CHAR(6),' +
+      '  shop_name VARCHAR(255),' +
+      '  city_code CHAR(3),' +
+      '  notes TEXT,' +
+      "  status VARCHAR(50) NOT NULL DEFAULT 'draft'," +
+      '  approver_id INTEGER REFERENCES users(id),' +
+      '  approved_at TIMESTAMP,' +
+      '  rejection_reason TEXT,' +
+      '  total_amount DECIMAL(10,2) DEFAULT 0,' +
+      '  created_at TIMESTAMP DEFAULT NOW(),' +
+      '  updated_at TIMESTAMP DEFAULT NOW()' +
+      ');' +
+      'CREATE TABLE IF NOT EXISTS vr_line_items (' +
+      '  id SERIAL PRIMARY KEY,' +
+      '  vr_id INTEGER REFERENCES vehicle_repairs(id) ON DELETE CASCADE,' +
+      '  description VARCHAR(500) NOT NULL,' +
+      '  quantity DECIMAL(10,2) NOT NULL DEFAULT 1,' +
+      '  unit_price DECIMAL(10,2) NOT NULL DEFAULT 0' +
+      ');'
+    );
     console.log('Database initialized');
   } finally {
     client.release();
