@@ -2612,31 +2612,55 @@ async function renderVRDashboard(el) {
   try {
     const vrs = await api('GET', '/vr');
     const isApprover = ['admin','approver','manager'].includes(state.user.role);
+    var colCount = isApprover ? 11 : 10;
+    function vrDashRender(q, statusFilter) {
+      var filtered = vrs.filter(function(vr) {
+        if (statusFilter && vr.status !== statusFilter) return false;
+        if (!q) return true;
+        var hay = [vr.vr_number, vr.vehicle, vr.vin_last6, vr.requester_name, vr.assigned_name, vr.shop_name, vr.city_code, vr.status].join(' ').toLowerCase();
+        return hay.includes(q.toLowerCase());
+      });
+      var tbody = document.getElementById('vr-tbody');
+      if (!tbody) return;
+      tbody.innerHTML = filtered.length ? filtered.map(function(vr) {
+        var sc = _vrStatusColors[vr.status] || 'var(--text-muted-color)';
+        return '<tr>' +
+          '<td><a href="#" onclick="navigate(\'view-vr\',' + vr.id + ');return false;" style="color:var(--primary);font-weight:600">' + escHtml(vr.vr_number) + '</a></td>' +
+          '<td>' + escHtml(vr.vehicle || '—') + '</td>' +
+          '<td style="font-family:monospace">' + escHtml(vr.vin_last6 || '—') + '</td>' +
+          (isApprover ? '<td>' + escHtml(vr.requester_name || '—') + '</td>' : '') +
+          '<td>' + escHtml(vr.assigned_name || '—') + '</td>' +
+          '<td>' + escHtml(vr.shop_name || '—') + '</td>' +
+          '<td>' + escHtml(vr.city_code || '—') + '</td>' +
+          '<td>$' + parseFloat(vr.total_amount || 0).toFixed(2) + '</td>' +
+          '<td><span style="font-weight:600;color:' + sc + ';text-transform:capitalize">' + escHtml(vr.status) + '</span></td>' +
+          '<td style="font-size:13px;white-space:nowrap">' + formatDate(vr.created_at) + '</td>' +
+          '<td><button class="btn btn-secondary btn-sm" onclick="navigate(\'view-vr\',' + vr.id + ')">View</button></td>' +
+        '</tr>';
+      }).join('') : '<tr><td colspan="' + colCount + '" style="text-align:center;padding:32px;color:var(--text-muted-color)">No results.</td></tr>';
+    }
     el.innerHTML =
       '<div class="page-header">' +
         '<div><div class="page-title"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="margin-right:8px;vertical-align:-4px"><rect x="1" y="3" width="15" height="13" rx="2"/><path d="M16 8h6l3 4v4h-9V8z"/><circle cx="5.5" cy="18.5" r="2.5"/><circle cx="18.5" cy="18.5" r="2.5"/></svg>Vehicle Maintenance/Repairs</div></div>' +
         (state.user.role !== 'approver' ? '<button class="btn btn-primary" onclick="navigate(\'new-vr\')" style="white-space:nowrap">' + icons.plus + ' New VR</button>' : '') +
       '</div>' +
+      '<div style="display:flex;gap:10px;margin-bottom:16px;flex-wrap:wrap">' +
+        '<input type="text" id="vr-search" placeholder="Search VR#, vehicle, shop, city…" oninput="vrDashFilter()" style="flex:1;min-width:200px" />' +
+        '<select id="vr-status-filter" onchange="vrDashFilter()" style="min-width:150px"><option value="">All Statuses</option><option value="draft">Draft</option><option value="submitted">Submitted</option><option value="approved">Approved</option><option value="rejected">Rejected</option></select>' +
+      '</div>' +
       '<div class="card"><div class="card-body" style="padding:0"><div class="table-wrap"><table>' +
         '<thead><tr><th>VR #</th><th>Vehicle</th><th>VIN</th>' + (isApprover ? '<th>Submitted By</th>' : '') + '<th>Assigned To</th><th>Shop</th><th>City</th><th>Total</th><th>Status</th><th>Date</th><th></th></tr></thead>' +
-        '<tbody>' + (vrs.length ? vrs.map(function(vr) {
-          var sc = _vrStatusColors[vr.status] || 'var(--text-muted-color)';
-          return '<tr>' +
-            '<td><a href="#" onclick="navigate(\'view-vr\',' + vr.id + ');return false;" style="color:var(--primary);font-weight:600">' + escHtml(vr.vr_number) + '</a></td>' +
-            '<td>' + escHtml(vr.vehicle || '—') + '</td>' +
-            '<td style="font-family:monospace">' + escHtml(vr.vin_last6 || '—') + '</td>' +
-            (isApprover ? '<td>' + escHtml(vr.requester_name || '—') + '</td>' : '') +
-            '<td>' + escHtml(vr.assigned_name || '—') + '</td>' +
-            '<td>' + escHtml(vr.shop_name || '—') + '</td>' +
-            '<td>' + escHtml(vr.city_code || '—') + '</td>' +
-            '<td>$' + parseFloat(vr.total_amount || 0).toFixed(2) + '</td>' +
-            '<td><span style="font-weight:600;color:' + sc + ';text-transform:capitalize">' + escHtml(vr.status) + '</span></td>' +
-            '<td style="font-size:13px;white-space:nowrap">' + formatDate(vr.created_at) + '</td>' +
-            '<td><button class="btn btn-secondary btn-sm" onclick="navigate(\'view-vr\',' + vr.id + ')">View</button></td>' +
-          '</tr>';
-        }).join('') : '<tr><td colspan="11" style="text-align:center;padding:32px;color:var(--text-muted-color)">No vehicle repairs yet.</td></tr>') +
-        '</tbody></table></div></div></div>';
+        '<tbody id="vr-tbody"></tbody>' +
+      '</table></div></div></div>';
+    window._vrDashRender = vrDashRender;
+    vrDashRender('', '');
   } catch(err) { el.innerHTML = '<div class="alert alert-error">' + escHtml(err.message) + '</div>'; }
+}
+
+function vrDashFilter() {
+  var q = (document.getElementById('vr-search')||{}).value || '';
+  var s = (document.getElementById('vr-status-filter')||{}).value || '';
+  if (window._vrDashRender) window._vrDashRender(q, s);
 }
 
 async function renderEditVR(el, id) {
@@ -3019,6 +3043,28 @@ async function renderVehicleHistory(el, vehicleId) {
     var vrs = await api('GET', '/vr?vehicle_id=' + vehicleId);
     var sc = { draft:'var(--text-muted-color)', submitted:'#f59e0b', approved:'#22c55e', rejected:'#ef4444' };
     var totalSpent = vrs.filter(function(v){ return v.status === 'approved'; }).reduce(function(s,v){ return s + parseFloat(v.total_amount||0); }, 0);
+    function vhRender(q, statusFilter) {
+      var filtered = vrs.filter(function(vr) {
+        if (statusFilter && vr.status !== statusFilter) return false;
+        if (!q) return true;
+        var hay = [vr.vr_number, vr.shop_name, vr.city_code, vr.requester_name, vr.status].join(' ').toLowerCase();
+        return hay.includes(q.toLowerCase());
+      });
+      var tbody = document.getElementById('vh-tbody');
+      if (!tbody) return;
+      tbody.innerHTML = filtered.length ? filtered.map(function(vr) {
+        return '<tr>' +
+          '<td><strong style="color:var(--primary)">' + escHtml(vr.vr_number) + '</strong></td>' +
+          '<td>' + escHtml(vr.shop_name || '—') + '</td>' +
+          '<td>' + escHtml(vr.city_code || '—') + '</td>' +
+          '<td>' + escHtml(vr.requester_name || '—') + '</td>' +
+          '<td>$' + parseFloat(vr.total_amount||0).toFixed(2) + '</td>' +
+          '<td><span style="font-weight:600;color:' + (sc[vr.status]||'var(--text-muted-color)') + ';text-transform:capitalize">' + escHtml(vr.status) + '</span></td>' +
+          '<td style="font-size:13px;white-space:nowrap">' + formatDate(vr.created_at) + '</td>' +
+          '<td><button class="btn btn-secondary btn-sm" onclick="navigate(\'view-vr\',' + vr.id + ')">View</button></td>' +
+        '</tr>';
+      }).join('') : '<tr><td colspan="8" style="text-align:center;padding:32px;color:var(--text-muted-color)">No results.</td></tr>';
+    }
     el.innerHTML =
       '<div class="page-header">' +
         '<div><div class="page-title">' + vehicle.year + ' ' + escHtml(vehicle.make_model) + ' — History</div>' +
@@ -3035,22 +3081,23 @@ async function renderVehicleHistory(el, vehicleId) {
         '<div class="card"><div class="card-body" style="text-align:center"><div style="font-size:28px;font-weight:700;color:#22c55e">$' + totalSpent.toFixed(2) + '</div><div style="font-size:13px;color:var(--text-muted-color)">Approved Spend</div></div></div>' +
         '<div class="card"><div class="card-body" style="text-align:center"><div style="font-size:28px;font-weight:700;color:#f59e0b">' + vrs.filter(function(v){ return v.status==='submitted'; }).length + '</div><div style="font-size:13px;color:var(--text-muted-color)">Pending Approval</div></div></div>' +
       '</div>' +
+      '<div style="display:flex;gap:10px;margin-bottom:16px;flex-wrap:wrap">' +
+        '<input type="text" id="vh-search" placeholder="Search VR#, shop, city…" oninput="vhFilter()" style="flex:1;min-width:200px" />' +
+        '<select id="vh-status-filter" onchange="vhFilter()" style="min-width:150px"><option value="">All Statuses</option><option value="draft">Draft</option><option value="submitted">Submitted</option><option value="approved">Approved</option><option value="rejected">Rejected</option></select>' +
+      '</div>' +
       '<div class="card"><div class="card-body" style="padding:0"><div class="table-wrap"><table>' +
         '<thead><tr><th>VR #</th><th>Shop</th><th>City</th><th>Submitted By</th><th>Total</th><th>Status</th><th>Date</th><th></th></tr></thead>' +
-        '<tbody>' + (vrs.length ? vrs.map(function(vr) {
-          return '<tr>' +
-            '<td><strong style="color:var(--primary)">' + escHtml(vr.vr_number) + '</strong></td>' +
-            '<td>' + escHtml(vr.shop_name || '—') + '</td>' +
-            '<td>' + escHtml(vr.city_code || '—') + '</td>' +
-            '<td>' + escHtml(vr.requester_name || '—') + '</td>' +
-            '<td>$' + parseFloat(vr.total_amount||0).toFixed(2) + '</td>' +
-            '<td><span style="font-weight:600;color:' + (sc[vr.status]||'var(--text-muted-color)') + ';text-transform:capitalize">' + escHtml(vr.status) + '</span></td>' +
-            '<td style="font-size:13px;white-space:nowrap">' + formatDate(vr.created_at) + '</td>' +
-            '<td><button class="btn btn-secondary btn-sm" onclick="navigate(\'view-vr\',' + vr.id + ')">View</button></td>' +
-          '</tr>';
-        }).join('') : '<tr><td colspan="8" style="text-align:center;padding:32px;color:var(--text-muted-color)">No repair or maintenance records for this vehicle.</td></tr>') +
-        '</tbody></table></div></div></div>';
+        '<tbody id="vh-tbody"></tbody>' +
+      '</table></div></div></div>';
+    window._vhRender = vhRender;
+    vhRender('', '');
   } catch(err) { el.innerHTML = '<div class="alert alert-error">' + escHtml(err.message) + '</div>'; }
+}
+
+function vhFilter() {
+  var q = (document.getElementById('vh-search')||{}).value || '';
+  var s = (document.getElementById('vh-status-filter')||{}).value || '';
+  if (window._vhRender) window._vhRender(q, s);
 }
 
 async function deactivateVehicle(id) {
