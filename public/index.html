@@ -2914,7 +2914,7 @@ async function renderFleetRegistry(el) {
         '<button class="btn btn-primary" onclick="navigate(\'new-vehicle\')" style="white-space:nowrap">' + icons.plus + ' Add Vehicle</button>' +
       '</div>' +
       '<div class="card"><div class="card-body" style="padding:0"><div class="table-wrap"><table>' +
-        '<thead><tr><th>Year</th><th>Make/Model</th><th>VIN</th><th>Key Codes</th><th>Driver</th><th>City</th><th>Date Assigned</th><th>License</th><th>Status</th><th></th></tr></thead>' +
+        '<thead><tr><th>Year</th><th>Make/Model</th><th>VIN</th><th>Key Codes</th><th>Responsible Employee</th><th>City</th><th>Date Assigned</th><th>License</th><th>Status</th><th></th></tr></thead>' +
         '<tbody>' + (vehicles.length ? vehicles.map(function(v) {
           return '<tr style="' + (v.active ? '' : 'opacity:0.5') + '">' +
             '<td>' + v.year + '</td>' +
@@ -2962,7 +2962,7 @@ async function renderEditVehicle(el, id) {
         '<div class="form-group"><label>Key Codes</label><input type="text" id="ve-keys" value="' + escHtml(vehicle ? vehicle.key_codes||'' : '') + '" placeholder="e.g. V1639" /></div>' +
       '</div>' +
       '<div class="form-row">' +
-        '<div class="form-group"><label>Driver / Assigned Employee</label><select id="ve-driver"><option value="">— Unassigned —</option>' +
+        '<div class="form-group"><label>Responsible Employee</label><select id="ve-driver"><option value="">— Unassigned —</option>' +
           users.filter(function(u){ return u.active; }).map(function(u){ return '<option value="' + u.id + '"' + (vehicle && vehicle.assigned_user_id == u.id ? ' selected' : '') + '>' + escHtml(u.name) + '</option>'; }).join('') +
         '</select></div>' +
         '<div class="form-group"><label>City</label><select id="ve-city"><option value="">— Select city —</option>' +
@@ -3023,7 +3023,7 @@ async function renderVehicleHistory(el, vehicleId) {
           '<div class="page-subtitle" style="color:var(--text-muted-color)">' +
             (vehicle.vin ? 'VIN: ' + escHtml(vehicle.vin) + ' &nbsp;·&nbsp; ' : '') +
             (vehicle.license_plate ? 'Plate: ' + escHtml(vehicle.license_plate) + ' &nbsp;·&nbsp; ' : '') +
-            (vehicle.driver_name ? 'Driver: ' + escHtml(vehicle.driver_name) : '') +
+            (vehicle.driver_name ? 'Responsible: ' + escHtml(vehicle.driver_name) : '') +
           '</div>' +
         '</div>' +
         '<button class="btn btn-secondary" onclick="navigate(\'fleet-registry\')" style="white-space:nowrap">← Fleet Registry</button>' +
