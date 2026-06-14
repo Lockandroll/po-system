@@ -253,6 +253,7 @@ async function render() {
         (state.user.role !== 'approver' ? '<div class="nav-item ' + (state.currentView === 'new-quote' ? 'active' : '') + '" onclick="navigate(\'new-quote\')" style="padding-left:28px;font-size:13px">' + icons.plus + ' New Quote</div>' : '') +
         '<div class="nav-item ' + (['vr-dashboard','new-vr','edit-vr','view-vr'].includes(state.currentView) ? 'active' : '') + '" onclick="navigate(\'vr-dashboard\')"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="1" y="3" width="15" height="13" rx="2"/><path d="M16 8h6l3 4v4h-9V8z"/><circle cx="5.5" cy="18.5" r="2.5"/><circle cx="18.5" cy="18.5" r="2.5"/></svg> Vehicle Maintenance/Repairs</div>' +
         (state.user.role !== 'approver' ? '<div class="nav-item ' + (state.currentView === 'new-vr' ? 'active' : '') + '" onclick="navigate(\'new-vr\')" style="padding-left:28px;font-size:13px">' + icons.plus + ' New VR</div>' : '') +
+        (['admin','manager'].includes(state.user.role) ? '<div class="nav-item ' + (['fleet-registry','new-vehicle','edit-vehicle'].includes(state.currentView) ? 'active' : '') + '" onclick="navigate(\'fleet-registry\')" style="padding-left:28px;font-size:13px"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="vertical-align:-2px;margin-right:4px"><ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M21 12c0 1.66-4 3-9 3s-9-1.34-9-3"/><path d="M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5"/></svg> Fleet Registry</div>' : '') +
         (['admin','manager'].includes(state.user.role) ? '<div class="nav-item ' + (state.currentView === 'users' ? 'active' : '') + '" onclick="navigate(\'users\')">' + icons.users + ' Users</div>' : '') +
         (['admin','manager'].includes(state.user.role) ? '<div class="nav-item ' + (state.currentView === 'cities' ? 'active' : '') + '" onclick="navigate(\'cities\')">' + icons.map + ' Cities</div>' : '') +
         (['admin','manager'].includes(state.user.role) ? '<div class="nav-item ' + (state.currentView === 'vendors' ? 'active' : '') + '" onclick="navigate(\'vendors\')"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 9l9-7 9 7v11a2 2 0 01-2 2H5a2 2 0 01-2-2z"/><polyline points="9 22 9 12 15 12 15 22"/></svg> Accounts</div>' : '') +
@@ -298,6 +299,9 @@ async function render() {
   else if (state.currentView === 'new-vr') await renderEditVR(content, null);
   else if (state.currentView === 'edit-vr') await renderEditVR(content, state.currentParam);
   else if (state.currentView === 'view-vr') await renderViewVR(content, state.currentParam);
+  else if (state.currentView === 'fleet-registry') await renderFleetRegistry(content);
+  else if (state.currentView === 'new-vehicle') await renderEditVehicle(content, null);
+  else if (state.currentView === 'edit-vehicle') await renderEditVehicle(content, state.currentParam);
   else if (state.currentView === 'ai-usage') await renderAIUsage(content);
   else { state.currentView = 'dashboard'; await renderDashboard(content); }
 }
@@ -2643,6 +2647,8 @@ async function renderEditVR(el, id) {
 
   window._vrItems = vr ? (vr.line_items || []).map(function(i){ return { description: i.description, quantity: parseFloat(i.quantity)||1, unit_price: parseFloat(i.unit_price)||0 }; })
     : [{ description: '', quantity: 1, unit_price: 0 }];
+  window._vrVehicles = [];
+  window._vrSelectedVehicleId = vr ? (vr.vehicle_id || null) : null;
 
   el.innerHTML =
     '<div class="page-header"><div class="page-title">' + (id ? 'Edit Vehicle Maintenance/Repair' : 'New Vehicle Maintenance/Repair') + '</div></div>' +
@@ -2655,12 +2661,18 @@ async function renderEditVR(el, id) {
       '<span id="vr-ai-status" style="font-size:13px;color:var(--text-muted-color)"></span>' +
     '</div></div></div>' +
     '<div class="card"><div class="card-body">' +
+      '<div class="form-group" style="margin-bottom:20px;padding-bottom:20px;border-bottom:1px solid var(--border-color)">' +
+        '<label style="font-weight:600">Select Vehicle from Fleet Registry</label>' +
+        '<select id="vr-vehicle-select" onchange="vrSelectVehicle(this)" disabled style="margin-top:6px;opacity:0.6">' +
+          '<option value="">— Select a city first —</option>' +
+        '</select>' +
+      '</div>' +
       '<div class="form-row">' +
         '<div class="form-group"><label>Vehicle (Year Make Model) *</label><input type="text" id="vr-vehicle" value="' + escHtml(vr ? vr.vehicle||'' : '') + '" placeholder="e.g. 2022 Ford Transit" /></div>' +
         '<div class="form-group"><label>Last 6 of VIN</label><input type="text" id="vr-vin" value="' + escHtml(vr ? vr.vin_last6||'' : '') + '" maxlength="6" placeholder="A1B2C3" oninput="this.value=this.value.toUpperCase()" style="font-family:monospace;letter-spacing:2px;text-transform:uppercase" /></div>' +
       '</div>' +
       '<div class="form-row">' +
-        '<div class="form-group"><label>City</label><select id="vr-city"><option value="">— Select city —</option>' +
+        '<div class="form-group"><label>City</label><select id="vr-city" onchange="vrCityChanged(this.value)"><option value="">— Select city —</option>' +
           cities.map(function(c){ return '<option value="' + escHtml(c.code) + '"' + (vr && vr.city_code === c.code ? ' selected' : '') + '>' + escHtml(c.name) + ' (' + escHtml(c.code) + ')</option>'; }).join('') +
         '</select></div>' +
         '<div class="form-group"><label>Assigned Employee</label><select id="vr-assigned"><option value="">— Select employee —</option>' +
@@ -2686,6 +2698,8 @@ async function renderEditVR(el, id) {
     '</div>';
 
   vrRenderItems();
+  // If editing a VR that already has a city, load the vehicle dropdown for that city
+  if (vr && vr.city_code) vrCityChanged(vr.city_code);
 }
 
 function vrRenderItems() {
@@ -2746,6 +2760,50 @@ async function vrAIExtract(input) {
   reader.readAsDataURL(file);
 }
 
+async function vrCityChanged(cityCode) {
+  var sel = document.getElementById('vr-vehicle-select');
+  if (!sel) return;
+  if (!cityCode) {
+    sel.innerHTML = '<option value="">— Select a city first —</option>';
+    sel.disabled = true;
+    sel.style.opacity = '0.6';
+    window._vrVehicles = [];
+    window._vrSelectedVehicleId = null;
+    return;
+  }
+  sel.disabled = true;
+  sel.style.opacity = '0.6';
+  sel.innerHTML = '<option value="">Loading vehicles…</option>';
+  try {
+    var vehicles = await api('GET', '/vehicles?city_code=' + encodeURIComponent(cityCode));
+    window._vrVehicles = vehicles;
+    sel.style.opacity = '1';
+    if (!vehicles.length) {
+      sel.innerHTML = '<option value="">— No vehicles registered for this city —</option>';
+      sel.disabled = true;
+    } else {
+      sel.disabled = false;
+      sel.innerHTML = '<option value="">— Select vehicle or enter manually below —</option>' +
+        vehicles.map(function(v){ return '<option value="' + v.id + '"' + (window._vrSelectedVehicleId == v.id ? ' selected' : '') + '>' + v.year + ' ' + escHtml(v.make_model) + (v.vin ? ' — VIN: …' + v.vin.slice(-6) : '') + (v.license_plate ? ' (' + escHtml(v.license_plate) + ')' : '') + '</option>'; }).join('');
+    }
+  } catch(err) {
+    sel.innerHTML = '<option value="">— Failed to load vehicles —</option>';
+    sel.disabled = true;
+  }
+}
+
+function vrSelectVehicle(sel) {
+  var vid = parseInt(sel.value) || null;
+  window._vrSelectedVehicleId = vid;
+  if (!vid) return;
+  var v = (window._vrVehicles || []).find(function(x){ return x.id === vid; });
+  if (!v) return;
+  var vField = document.getElementById('vr-vehicle');
+  var vinField = document.getElementById('vr-vin');
+  if (vField) vField.value = v.year + ' ' + v.make_model;
+  if (vinField) vinField.value = v.vin ? v.vin.slice(-6).toUpperCase() : '';
+}
+
 async function saveVR(id, btn) {
   var vehicle = ((document.getElementById('vr-vehicle')||{}).value||'').trim();
   var vin_last6 = ((document.getElementById('vr-vin')||{}).value||'').trim();
@@ -2753,13 +2811,14 @@ async function saveVR(id, btn) {
   var shop_name = ((document.getElementById('vr-shop')||{}).value||'').trim();
   var city_code = ((document.getElementById('vr-city')||{}).value)||null;
   var notes = ((document.getElementById('vr-notes')||{}).value||'').trim();
+  var vehicle_id = window._vrSelectedVehicleId || null;
   if (!vehicle) { document.getElementById('vr-edit-error').innerHTML = '<div class="alert alert-error">Vehicle is required.</div>'; return; }
   var validItems = (window._vrItems||[]).filter(function(i){ return i.description.trim(); });
   try {
     btn.disabled = true;
     var result;
-    if (id) { await api('PUT', '/vr/'+id, { vehicle, vin_last6, assigned_user_id, shop_name, city_code, notes, line_items: validItems }); navigate('view-vr', id); }
-    else { result = await api('POST', '/vr', { vehicle, vin_last6, assigned_user_id, shop_name, city_code, notes, line_items: validItems }); navigate('view-vr', result.id); }
+    if (id) { await api('PUT', '/vr/'+id, { vehicle, vin_last6, vehicle_id, assigned_user_id, shop_name, city_code, notes, line_items: validItems }); navigate('view-vr', id); }
+    else { result = await api('POST', '/vr', { vehicle, vin_last6, vehicle_id, assigned_user_id, shop_name, city_code, notes, line_items: validItems }); navigate('view-vr', result.id); }
   } catch(err) {
     document.getElementById('vr-edit-error').innerHTML = '<div class="alert alert-error">' + escHtml(err.message) + '</div>';
     btn.disabled = false;
@@ -2838,6 +2897,126 @@ async function rejectVR(id) {
 async function deleteVR(id) {
   if (!confirm('Delete this vehicle repair? This cannot be undone.')) return;
   try { await api('DELETE', '/vr/'+id); navigate('vr-dashboard'); }
+  catch(err) { alert(err.message); }
+}
+
+// ── Fleet Registry ─────────────────────────────────────────────────────────────
+
+async function renderFleetRegistry(el) {
+  if (!['admin','manager'].includes(state.user.role)) { el.innerHTML = '<div class="alert alert-error">Access denied.</div>'; return; }
+  el.innerHTML = '<div class="loading">Loading…</div>';
+  try {
+    var vehicles = await api('GET', '/vehicles/all');
+    el.innerHTML =
+      '<div class="page-header">' +
+        '<div><div class="page-title"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="margin-right:8px;vertical-align:-4px"><rect x="1" y="3" width="15" height="13" rx="2"/><path d="M16 8h6l3 4v4h-9V8z"/><circle cx="5.5" cy="18.5" r="2.5"/><circle cx="18.5" cy="18.5" r="2.5"/></svg>Fleet Registry</div></div>' +
+        '<button class="btn btn-primary" onclick="navigate(\'new-vehicle\')">' + icons.plus + ' Add Vehicle</button>' +
+      '</div>' +
+      '<div class="card"><div class="card-body" style="padding:0"><div class="table-wrap"><table>' +
+        '<thead><tr><th>Year</th><th>Make/Model</th><th>VIN</th><th>Key Codes</th><th>Driver</th><th>City</th><th>Date Assigned</th><th>License</th><th>Mileage</th><th>Status</th><th></th></tr></thead>' +
+        '<tbody>' + (vehicles.length ? vehicles.map(function(v) {
+          return '<tr style="' + (v.active ? '' : 'opacity:0.5') + '">' +
+            '<td>' + v.year + '</td>' +
+            '<td><strong>' + escHtml(v.make_model) + '</strong></td>' +
+            '<td style="font-family:monospace;font-size:13px">' + escHtml(v.vin || '—') + '</td>' +
+            '<td>' + escHtml(v.key_codes || '—') + '</td>' +
+            '<td>' + escHtml(v.driver_name || '—') + '</td>' +
+            '<td>' + escHtml(v.city_code || '—') + '</td>' +
+            '<td style="font-size:13px;white-space:nowrap">' + (v.date_of_assignment ? v.date_of_assignment.split('T')[0] : '—') + '</td>' +
+            '<td>' + escHtml(v.license_plate || '—') + '</td>' +
+            '<td>' + (v.mileage ? parseInt(v.mileage).toLocaleString() : '—') + '</td>' +
+            '<td><span style="font-weight:600;color:' + (v.active ? '#22c55e' : 'var(--text-muted-color)') + '">' + (v.active ? 'Active' : 'Inactive') + '</span></td>' +
+            '<td style="white-space:nowrap">' +
+              '<button class="btn btn-secondary btn-sm" onclick="navigate(\'edit-vehicle\',' + v.id + ')">Edit</button> ' +
+              (v.active
+                ? '<button class="btn btn-ghost btn-sm" style="color:var(--danger-color,#ef4444)" onclick="deactivateVehicle(' + v.id + ')">Deactivate</button>'
+                : '<button class="btn btn-ghost btn-sm" style="color:#22c55e" onclick="reactivateVehicle(' + v.id + ')">Reactivate</button>') +
+            '</td>' +
+          '</tr>';
+        }).join('') : '<tr><td colspan="11" style="text-align:center;padding:32px;color:var(--text-muted-color)">No vehicles in registry. Add one to get started.</td></tr>') +
+        '</tbody></table></div></div></div>';
+  } catch(err) { el.innerHTML = '<div class="alert alert-error">' + escHtml(err.message) + '</div>'; }
+}
+
+async function renderEditVehicle(el, id) {
+  if (!['admin','manager'].includes(state.user.role)) { el.innerHTML = '<div class="alert alert-error">Access denied.</div>'; return; }
+  el.innerHTML = '<div class="loading">Loading…</div>';
+  var vehicle = null, cities = [], users = [];
+  try {
+    cities = await api('GET', '/cities');
+    users = await api('GET', '/users');
+    if (id) vehicle = await api('GET', '/vehicles/' + id);
+  } catch(e) { el.innerHTML = '<div class="alert alert-error">' + escHtml(e.message) + '</div>'; return; }
+
+  el.innerHTML =
+    '<div class="page-header"><div class="page-title">' + (id ? 'Edit Vehicle' : 'Add Vehicle') + '</div></div>' +
+    '<div id="vehicle-edit-error"></div>' +
+    '<div class="card"><div class="card-body">' +
+      '<div class="form-row">' +
+        '<div class="form-group"><label>Year *</label><input type="number" id="ve-year" value="' + (vehicle ? vehicle.year : new Date().getFullYear()) + '" min="1980" max="2099" placeholder="2022" /></div>' +
+        '<div class="form-group"><label>Make / Model *</label><input type="text" id="ve-makemodel" value="' + escHtml(vehicle ? vehicle.make_model||'' : '') + '" placeholder="e.g. Chevy Express Van" /></div>' +
+      '</div>' +
+      '<div class="form-row">' +
+        '<div class="form-group"><label>VIN#</label><input type="text" id="ve-vin" value="' + escHtml(vehicle ? vehicle.vin||'' : '') + '" maxlength="17" placeholder="Full VIN (17 chars)" style="font-family:monospace;letter-spacing:1px;text-transform:uppercase" oninput="this.value=this.value.toUpperCase()" /></div>' +
+        '<div class="form-group"><label>Key Codes</label><input type="text" id="ve-keys" value="' + escHtml(vehicle ? vehicle.key_codes||'' : '') + '" placeholder="e.g. V1639" /></div>' +
+      '</div>' +
+      '<div class="form-row">' +
+        '<div class="form-group"><label>Driver / Assigned Employee</label><select id="ve-driver"><option value="">— Unassigned —</option>' +
+          users.filter(function(u){ return u.active; }).map(function(u){ return '<option value="' + u.id + '"' + (vehicle && vehicle.assigned_user_id == u.id ? ' selected' : '') + '>' + escHtml(u.name) + '</option>'; }).join('') +
+        '</select></div>' +
+        '<div class="form-group"><label>City</label><select id="ve-city"><option value="">— Select city —</option>' +
+          cities.map(function(c){ return '<option value="' + escHtml(c.code) + '"' + (vehicle && vehicle.city_code === c.code ? ' selected' : '') + '>' + escHtml(c.name) + ' (' + escHtml(c.code) + ')</option>'; }).join('') +
+        '</select></div>' +
+      '</div>' +
+      '<div class="form-row">' +
+        '<div class="form-group"><label>Date of Assignment</label><input type="date" id="ve-date" value="' + (vehicle && vehicle.date_of_assignment ? vehicle.date_of_assignment.split('T')[0] : '') + '" /></div>' +
+        '<div class="form-group"><label>License Plate</label><input type="text" id="ve-plate" value="' + escHtml(vehicle ? vehicle.license_plate||'' : '') + '" placeholder="e.g. 08FQAZ" style="text-transform:uppercase" oninput="this.value=this.value.toUpperCase()" /></div>' +
+      '</div>' +
+      '<div class="form-row">' +
+        '<div class="form-group"><label>Mileage</label><input type="number" id="ve-mileage" value="' + (vehicle && vehicle.mileage ? vehicle.mileage : '') + '" min="0" placeholder="e.g. 147000" /></div>' +
+        '<div class="form-group"><label>Notes</label><input type="text" id="ve-notes" value="' + escHtml(vehicle ? vehicle.notes||'' : '') + '" placeholder="Any additional notes" /></div>' +
+      '</div>' +
+    '</div></div>' +
+    '<div style="display:flex;gap:10px;margin-top:20px;justify-content:flex-end">' +
+      '<button class="btn btn-secondary" onclick="navigate(\'fleet-registry\')">Cancel</button>' +
+      '<button class="btn btn-primary" id="ve-save-btn" onclick="saveVehicle(' + (id||'null') + ', this)">Save Vehicle</button>' +
+    '</div>';
+}
+
+async function saveVehicle(id, btn) {
+  var year = parseInt(((document.getElementById('ve-year')||{}).value||'0'));
+  var make_model = ((document.getElementById('ve-makemodel')||{}).value||'').trim();
+  if (!year || !make_model) { document.getElementById('vehicle-edit-error').innerHTML = '<div class="alert alert-error">Year and Make/Model are required.</div>'; return; }
+  var payload = {
+    year: year,
+    make_model: make_model,
+    vin: ((document.getElementById('ve-vin')||{}).value||'').trim() || null,
+    key_codes: ((document.getElementById('ve-keys')||{}).value||'').trim() || null,
+    assigned_user_id: ((document.getElementById('ve-driver')||{}).value)||null,
+    city_code: ((document.getElementById('ve-city')||{}).value)||null,
+    date_of_assignment: ((document.getElementById('ve-date')||{}).value)||null,
+    license_plate: ((document.getElementById('ve-plate')||{}).value||'').trim() || null,
+    mileage: parseInt(((document.getElementById('ve-mileage')||{}).value||'0'))||null,
+    notes: ((document.getElementById('ve-notes')||{}).value||'').trim() || null
+  };
+  try {
+    btn.disabled = true;
+    if (id) { await api('PUT', '/vehicles/'+id, payload); }
+    else { await api('POST', '/vehicles', payload); }
+    navigate('fleet-registry');
+  } catch(err) {
+    document.getElementById('vehicle-edit-error').innerHTML = '<div class="alert alert-error">' + escHtml(err.message) + '</div>';
+    btn.disabled = false;
+  }
+}
+
+async function deactivateVehicle(id) {
+  if (!confirm('Deactivate this vehicle? It will be hidden from the VR dropdown.')) return;
+  try { await api('POST', '/vehicles/'+id+'/deactivate'); navigate('fleet-registry'); }
+  catch(err) { alert(err.message); }
+}
+async function reactivateVehicle(id) {
+  try { await api('POST', '/vehicles/'+id+'/reactivate'); navigate('fleet-registry'); }
   catch(err) { alert(err.message); }
 }
 
