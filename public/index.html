@@ -247,6 +247,7 @@ async function render() {
     '<div id="sidebar">' +
       '<div class="sidebar-logo"><h1>Lock and Roll LLC</h1></div>' +
       '<nav class="sidebar-nav">' +
+        '<div class="nav-item ' + (state.currentView === 'home' ? 'active' : '') + '" onclick="navigate(\'home\')"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 9l9-7 9 7v11a2 2 0 01-2 2H5a2 2 0 01-2-2z"/><polyline points="9 22 9 12 15 12 15 22"/></svg> Home</div>' +
         '<div class="nav-item ' + (state.currentView === 'dashboard' ? 'active' : '') + '" onclick="navigate(\'dashboard\')">' + icons.dashboard + ' PO Dashboard</div>' +
         (state.user.role !== 'approver' ? '<div class="nav-item ' + (state.currentView === 'new' ? 'active' : '') + '" onclick="navigate(\'new\')" style="padding-left:28px;font-size:13px">' + icons.plus + ' New PO</div>' : '') +
         '<div class="nav-item ' + (['quotes','new-quote','edit-quote','view-quote'].includes(state.currentView) ? 'active' : '') + '" onclick="navigate(\'quotes\')">' + icons.dashboard + ' Quote Dashboard</div>' +
@@ -280,7 +281,8 @@ async function render() {
     '</div>';
 
   const content = document.getElementById('content');
-  if (state.currentView === 'dashboard') await renderDashboard(content);
+  if (state.currentView === 'home') await renderHomeScreen(content);
+  else if (state.currentView === 'dashboard') await renderDashboard(content);
   else if (state.currentView === 'new') await renderEditPO(content, null);
   else if (state.currentView === 'edit') await renderEditPO(content, state.currentParam);
   else if (state.currentView === 'view') await renderViewPO(content, state.currentParam);
@@ -304,7 +306,7 @@ async function render() {
   else if (state.currentView === 'edit-vehicle') await renderEditVehicle(content, state.currentParam);
   else if (state.currentView === 'vehicle-history') await renderVehicleHistory(content, state.currentParam);
   else if (state.currentView === 'ai-usage') await renderAIUsage(content);
-  else { state.currentView = 'dashboard'; await renderDashboard(content); }
+  else { state.currentView = 'home'; await renderHomeScreen(content); }
 }
 
 function renderLogin(app) {
@@ -2039,7 +2041,6 @@ async function renderAuditLog(el) {
     el.innerHTML = '<div class="alert alert-error">' + escHtml(err.message) + '</div>';
   }
 }
-
 function auditGetFiltered() {
   var type = (document.getElementById('audit-filter-type') || {}).value || '';
   var action = (document.getElementById('audit-filter-action') || {}).value || '';
@@ -2056,19 +2057,16 @@ function auditGetFiltered() {
     return true;
   });
 }
-
 function auditApplyFilter() {
   _auditPage = 1;
   auditRenderTable();
 }
-
 function auditGoPage(p) {
   var filtered = auditGetFiltered();
   var totalPages = Math.max(1, Math.ceil(filtered.length / _auditPageSize));
   _auditPage = Math.min(Math.max(1, p), totalPages);
   auditRenderTable();
 }
-
 function auditRenderTable() {
   var filtered = auditGetFiltered();
   var totalPages = Math.max(1, Math.ceil(filtered.length / _auditPageSize));
@@ -2078,7 +2076,6 @@ function auditRenderTable() {
   var tbody = document.getElementById('audit-tbody');
   if (!tbody) return;
   tbody.innerHTML = page.length ? renderAuditRows(page) : '<tr><td colspan="6" style="text-align:center;padding:24px;color:var(--text-muted-color)">No matching entries.</td></tr>';
-
   var pg = document.getElementById('audit-pagination');
   if (!pg) return;
   if (totalPages <= 1) { pg.innerHTML = '<span style="font-size:13px;color:var(--text-muted-color)">' + filtered.length + ' record' + (filtered.length !== 1 ? 's' : '') + '</span>'; return; }
@@ -2090,7 +2087,6 @@ function auditRenderTable() {
   html += '<button class="btn btn-secondary btn-sm" onclick="auditGoPage(' + (_auditPage + 1) + ')" ' + (_auditPage === totalPages ? 'disabled' : '') + '>&rsaquo;</button>';
   pg.innerHTML = html;
 }
-
 function renderAuditRows(logs) {
   const actionColors = { created: '#22c55e', edited: '#60a5fa', deleted: '#ef4444', submitted: '#f59e0b', approved: '#22c55e', rejected: '#ef4444', cancelled: '#c084fc' };
   if (!logs.length) return '';
@@ -2122,7 +2118,6 @@ function renderAuditRows(logs) {
     '</tr>';
   }).join('');
 }
-
 // ── AI Usage Dashboard (admin) ────────────────────────────────────────────────
 function aiUsageMonthStart() {
   var now = new Date();
@@ -2131,7 +2126,6 @@ function aiUsageMonthStart() {
 function aiUsageToday() {
   return new Date().toISOString().split('T')[0];
 }
-
 async function renderAIUsage(el) {
   if (state.user.role !== 'admin') { el.innerHTML = '<div class="alert alert-error">Access denied.</div>'; return; }
   var fromDefault = aiUsageMonthStart();
@@ -2151,7 +2145,6 @@ async function renderAIUsage(el) {
     '<div id="ai-usage-body"><div class="loading">Loading…</div></div>';
   loadAIUsage();
 }
-
 async function loadAIUsage() {
   var from = (document.getElementById('ai-usage-from') || {}).value || aiUsageMonthStart();
   var to = (document.getElementById('ai-usage-to') || {}).value || aiUsageToday();
@@ -2161,7 +2154,6 @@ async function loadAIUsage() {
   let usage;
   try { usage = await api('GET', '/ai/admin-usage?from=' + from + '&to=' + to); }
   catch(e) { body.innerHTML = '<div class="alert alert-error">Failed to load usage data.</div>'; return; }
-
   const MONTHLY_LIMIT = 12000;
   const COST_PER_MSG = 0.015;
   const total = usage.total || 0;
@@ -2170,7 +2162,6 @@ async function loadAIUsage() {
   const estCostLimit = (MONTHLY_LIMIT * COST_PER_MSG).toFixed(2);
   const barColor = monthlyPct > 80 ? 'var(--danger-color,#ef4444)' : monthlyPct > 50 ? '#f59e0b' : 'var(--primary)';
   const maxUser = usage.users && usage.users.length ? Math.max.apply(null, usage.users.map(function(u){ return u.total; })) : 1;
-
   body.innerHTML =
     '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:16px;margin-bottom:24px">' +
       '<div class="card"><div class="card-body" style="text-align:center;padding:20px">' +
@@ -2187,7 +2178,6 @@ async function loadAIUsage() {
         '<div style="font-size:12px;color:var(--text-muted-color);margin-top:4px">Active users</div>' +
       '</div></div>' +
     '</div>' +
-
     '<div class="card" style="margin-bottom:24px"><div class="card-header"><span class="card-title">This Month\'s Budget</span></div><div class="card-body">' +
       '<div style="display:flex;justify-content:space-between;font-size:13px;margin-bottom:6px">' +
         '<span>' + monthlyPct + '% of monthly limit used</span><span>' + usage.monthly.toLocaleString() + ' / ' + MONTHLY_LIMIT.toLocaleString() + ' messages</span>' +
@@ -2196,7 +2186,6 @@ async function loadAIUsage() {
         '<div style="width:' + monthlyPct + '%;height:100%;background:' + barColor + ';border-radius:999px;transition:width 0.5s"></div>' +
       '</div>' +
     '</div></div>' +
-
     '<div class="card"><div class="card-header"><span class="card-title">Usage by Team Member</span></div><div class="card-body">' +
       (usage.users && usage.users.length ? usage.users.map(function(u) {
         var userPct = Math.min(100, Math.round((u.total / maxUser) * 100));
@@ -2212,11 +2201,9 @@ async function loadAIUsage() {
       }).join('') : '<div style="color:var(--text-muted-color);font-size:13px">No usage data for this period.</div>') +
     '</div></div>';
 }
-
 // ── AI Conversations (admin) ──────────────────────────────────────────────────
 var _convPage = 1;
 var _convPageSize = 50;
-
 async function renderAIConversations(el) {
   if (state.user.role !== 'admin') { el.innerHTML = '<div class="alert alert-error">Access denied.</div>'; return; }
   el.innerHTML = '<div class="loading">Loading…</div>';
@@ -2224,7 +2211,6 @@ async function renderAIConversations(el) {
   try { convos = await api('GET', '/ai/conversations'); } catch(e) { el.innerHTML = '<div class="alert alert-error">Failed to load conversations.</div>'; return; }
   window._aiConvos = convos;
   _convPage = 1;
-
   el.innerHTML =
     '<div class="page-header"><div>' +
       '<div class="page-title">AI Conversations</div>' +
@@ -2233,15 +2219,12 @@ async function renderAIConversations(el) {
     '<div style="margin-bottom:16px"><input id="ai-conv-search" type="text" placeholder="Search questions, answers, or user..." style="width:100%;max-width:480px;padding:8px 12px;background:var(--surface-color);border:1px solid rgba(249,115,22,0.35);border-radius:6px;color:var(--text-color);font-size:14px;outline:none;box-shadow:0 0 0 1px rgba(249,115,22,0.15)" oninput="aiConvFilter()" /></div>' +
     '<div id="ai-conv-list"></div>' +
     '<div id="ai-conv-pagination" style="display:flex;gap:8px;align-items:center;margin-top:16px;flex-wrap:wrap"></div>';
-
   aiConvRenderPage();
 }
-
 function aiConvFilter() {
   _convPage = 1;
   aiConvRenderPage();
 }
-
 function aiConvGetFiltered() {
   var q = ((document.getElementById('ai-conv-search') || {}).value || '').toLowerCase();
   return (window._aiConvos || []).filter(function(c) {
@@ -2251,21 +2234,18 @@ function aiConvGetFiltered() {
            (c.user_name || '').toLowerCase().includes(q);
   });
 }
-
 function aiConvGoPage(p) {
   var filtered = aiConvGetFiltered();
   var totalPages = Math.max(1, Math.ceil(filtered.length / _convPageSize));
   _convPage = Math.min(Math.max(1, p), totalPages);
   aiConvRenderPage();
 }
-
 function aiConvRenderPage() {
   var filtered = aiConvGetFiltered();
   var totalPages = Math.max(1, Math.ceil(filtered.length / _convPageSize));
   if (_convPage > totalPages) _convPage = totalPages;
   var start = (_convPage - 1) * _convPageSize;
   var page = filtered.slice(start, start + _convPageSize);
-
   var el = document.getElementById('ai-conv-list');
   if (!el) return;
   if (!filtered.length) { el.innerHTML = '<div class="alert">No conversations found.</div>'; }
@@ -2288,7 +2268,6 @@ function aiConvRenderPage() {
       '</div>';
     }).join('');
   }
-
   var pg = document.getElementById('ai-conv-pagination');
   if (!pg) return;
   if (totalPages <= 1) { pg.innerHTML = '<span style="font-size:13px;color:var(--text-muted-color)">' + filtered.length + ' conversation' + (filtered.length !== 1 ? 's' : '') + '</span>'; return; }
@@ -2300,61 +2279,47 @@ function aiConvRenderPage() {
   html += '<button class="btn btn-secondary btn-sm" onclick="aiConvGoPage(' + (_convPage + 1) + ')" ' + (_convPage === totalPages ? 'disabled' : '') + '>&rsaquo;</button>';
   pg.innerHTML = html;
 }
-
 // ── AI Markdown renderer ──────────────────────────────────────────────────────
 function aiMarkdown(text) {
   if (!text) return '';
-  // Escape HTML first
   var s = text
     .replace(/&/g, '&amp;')
     .replace(/</g, '&lt;')
     .replace(/>/g, '&gt;');
-  // Code blocks (``` ... ```)
   s = s.replace(/```[\w]*\n?([\s\S]*?)```/g, '<pre style="background:var(--bg-color);border:1px solid var(--border-color);border-radius:6px;padding:8px 10px;font-size:12px;overflow-x:auto;margin:6px 0"><code>$1</code></pre>');
-  // Inline code
   s = s.replace(/`([^`]+)`/g, '<code style="background:var(--bg-color);border:1px solid var(--border-color);border-radius:3px;padding:1px 4px;font-size:12px">$1</code>');
-  // Bold
   s = s.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
-  // Italic
   s = s.replace(/\*([^*]+)\*/g, '<em>$1</em>');
-  // Bullet lists (- item or * item)
   s = s.replace(/((?:^|\n)[*-] .+)+/g, function(block) {
     var items = block.trim().split('\n').map(function(line) {
       return '<li>' + line.replace(/^[*-] /, '') + '</li>';
     }).join('');
     return '<ul style="margin:6px 0;padding-left:20px">' + items + '</ul>';
   });
-  // Numbered lists
   s = s.replace(/((?:^|\n)\d+\. .+)+/g, function(block) {
     var items = block.trim().split('\n').map(function(line) {
       return '<li>' + line.replace(/^\d+\. /, '') + '</li>';
     }).join('');
     return '<ol style="margin:6px 0;padding-left:20px">' + items + '</ol>';
   });
-  // Line breaks (double newline = paragraph gap, single = br)
   s = s.replace(/\n\n/g, '<br><br>');
   s = s.replace(/\n/g, '<br>');
   return s;
 }
-
 // ── Locksmith AI Assistant ─────────────────────────────────────────────────────────────
 var _aiMessages = [];
 var _aiSessionUserId = null;
 var _aiUsage = { daily: 0, dailyLimit: 20 };
-
 async function renderAIAssistant(el) {
-  // Clear messages if a different user is now logged in
   if (_aiSessionUserId !== state.user.id) {
     _aiMessages = [];
     _aiSessionUserId = state.user.id;
   }
-  // Fetch current usage
   try {
     _aiUsage = await api('GET', '/ai/usage');
   } catch(e) {
     _aiUsage = { daily: 0, dailyLimit: 20 };
   }
-
   el.innerHTML =
     '<div class="page-header"><div>' +
       '<div class="page-title"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="margin-right:8px;vertical-align:-4px"><rect x="3" y="6" width="18" height="13" rx="2"/><path d="M8 6V4a1 1 0 011-1h6a1 1 0 011 1v2"/><circle cx="9" cy="12" r="1" fill="currentColor"/><circle cx="15" cy="12" r="1" fill="currentColor"/><path d="M9.5 16h5"/></svg>Neurolock Locksmith AI Assistant</div>' +
@@ -2389,35 +2354,27 @@ async function renderAIAssistant(el) {
         '</div>' +
       '</div>' +
     '</div>';
-
-  // Re-render any prior messages in this session
   if (_aiMessages.length > 0) aiRenderThread();
   setTimeout(function() { document.getElementById('ai-input') && document.getElementById('ai-input').focus(); }, 100);
   setTimeout(initAiDots, 50);
 }
-
 // ── Dot field physics ──────────────────────────────────────────────────────────
 var _aiDotsRaf = null;
 var _aiDotsMouseX = -9999, _aiDotsMouseY = -9999;
-
 function initAiDots() {
   if (_aiDotsRaf) { cancelAnimationFrame(_aiDotsRaf); _aiDotsRaf = null; }
   var cL = document.getElementById('ai-canvas-left');
   var cR = document.getElementById('ai-canvas-right');
   if (!cL || !cR) return;
   if (window.innerWidth < 1200) return;
-
   var sidebarW = 260;
   var chatW = 800;
   var gap = 32;
   var sideW = Math.floor((window.innerWidth - sidebarW - chatW) / 2 - gap);
   if (sideW < 20) return;
   var h = window.innerHeight;
-
   [cL, cR].forEach(function(c) { c.width = sideW; c.height = h; });
-
   var SPACING = 30, REPEL_R = 130, REPEL_S = 4000, SPRING = 0.07, DAMP = 0.72;
-
   function makeDots(w, h) {
     var d = [];
     for (var x = SPACING / 2; x < w; x += SPACING) {
@@ -2427,10 +2384,8 @@ function initAiDots() {
     }
     return d;
   }
-
   var dotsL = makeDots(sideW, h);
   var dotsR = makeDots(sideW, h);
-
   function step(dots, canvas) {
     var rect = canvas.getBoundingClientRect();
     var mx = _aiDotsMouseX - rect.left;
@@ -2456,24 +2411,19 @@ function initAiDots() {
       ctx.fill();
     });
   }
-
   function loop() {
-    if (!document.getElementById('ai-canvas-left')) return; // page changed
+    if (!document.getElementById('ai-canvas-left')) return;
     step(dotsL, cL);
     step(dotsR, cR);
     _aiDotsRaf = requestAnimationFrame(loop);
   }
-
   document.addEventListener('mousemove', function(e) {
     _aiDotsMouseX = e.clientX;
     _aiDotsMouseY = e.clientY;
   });
-
   loop();
 }
-
-var _aiPendingImage = null; // { base64, mediaType }
-
+var _aiPendingImage = null;
 function aiPreviewImage(input) {
   var file = input.files[0];
   if (!file) return;
@@ -2492,7 +2442,6 @@ function aiPreviewImage(input) {
       canvas.getContext('2d').drawImage(img, 0, 0, w, h);
       var dataUrl = canvas.toDataURL('image/jpeg', 0.8);
       var base64 = dataUrl.split(',')[1];
-      // Reject if still over 4MB after resize (Anthropic API limit is 5MB)
       if (base64.length > 4 * 1024 * 1024) {
         showToast('Image is too large even after resizing. Please use a smaller photo.', 'error');
         input.value = '';
@@ -2507,7 +2456,6 @@ function aiPreviewImage(input) {
   };
   reader.readAsDataURL(file);
 }
-
 function aiClearImage() {
   _aiPendingImage = null;
   var preview = document.getElementById('ai-image-preview');
@@ -2515,15 +2463,12 @@ function aiClearImage() {
   if (preview) preview.style.display = 'none';
   if (fileInput) fileInput.value = '';
 }
-
 function aiHandleKey(e) {
   if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); aiSend(); }
 }
-
 function aiRenderThread() {
   var thread = document.getElementById('ai-thread');
   if (!thread) return;
-  // Keep the welcome bubble, replace everything after it
   var welcome = thread.firstChild;
   thread.innerHTML = '';
   if (welcome) thread.appendChild(welcome);
@@ -2542,7 +2487,6 @@ function aiRenderThread() {
   });
   thread.scrollTop = thread.scrollHeight;
 }
-
 async function aiSend() {
   var input = document.getElementById('ai-input');
   var btn = document.getElementById('ai-send-btn');
@@ -2553,12 +2497,9 @@ async function aiSend() {
     showToast('Daily limit reached (' + _aiUsage.dailyLimit + '/day). Resets at midnight.', 'error');
     return;
   }
-
   input.value = '';
   input.disabled = true;
   if (btn) btn.disabled = true;
-
-  // Build message content — array if image attached, string if text only
   var msgContent;
   var pendingImg = _aiPendingImage;
   if (pendingImg) {
@@ -2573,17 +2514,13 @@ async function aiSend() {
     _aiMessages.push({ role: 'user', content: text });
   }
   aiRenderThread();
-
-  // Typing indicator
   var thread = document.getElementById('ai-thread');
   var typing = document.createElement('div');
   typing.className = 'ai-msg ai-msg-bot';
   typing.id = 'ai-typing';
   typing.innerHTML = '<div class="ai-msg-bubble" style="color:var(--text-muted-color)"><em>Neurolock is thinking…</em></div>';
   if (thread) { thread.appendChild(typing); thread.scrollTop = thread.scrollHeight; }
-
   try {
-    // Strip _imageDataUrl (display-only) before sending to API
     var apiMessages = _aiMessages.map(function(m) { return { role: m.role, content: m.content }; });
     var data = await api('POST', '/ai/chat', { messages: apiMessages });
     _aiMessages.push({ role: 'assistant', content: data.reply });
@@ -2593,20 +2530,15 @@ async function aiSend() {
   } catch(err) {
     _aiMessages.push({ role: 'assistant', content: '⚠️ ' + (err.message || 'Something went wrong. Try again.') });
   }
-
   var typingEl = document.getElementById('ai-typing');
   if (typingEl) typingEl.remove();
-
   if (input) input.disabled = false;
   if (btn) btn.disabled = false;
   aiRenderThread();
   if (input) { input.focus(); }
 }
-
 // ── Vehicle Repairs ────────────────────────────────────────────────────────────
-
 var _vrStatusColors = { draft:'var(--text-muted-color)', submitted:'#f59e0b', approved:'#22c55e', rejected:'#ef4444' };
-
 async function renderVRDashboard(el) {
   el.innerHTML = '<div class="loading">Loading…</div>';
   try {
@@ -2656,13 +2588,11 @@ async function renderVRDashboard(el) {
     vrDashRender('', '');
   } catch(err) { el.innerHTML = '<div class="alert alert-error">' + escHtml(err.message) + '</div>'; }
 }
-
 function vrDashFilter() {
   var q = (document.getElementById('vr-search')||{}).value || '';
   var s = (document.getElementById('vr-status-filter')||{}).value || '';
   if (window._vrDashRender) window._vrDashRender(q, s);
 }
-
 async function renderEditVR(el, id) {
   el.innerHTML = '<div class="loading">Loading…</div>';
   var vr = null, cities = [], users = [];
@@ -2671,12 +2601,10 @@ async function renderEditVR(el, id) {
     users = await api('GET', '/users');
     if (id) vr = await api('GET', '/vr/' + id);
   } catch(e) { el.innerHTML = '<div class="alert alert-error">' + escHtml(e.message) + '</div>'; return; }
-
   window._vrItems = vr ? (vr.line_items || []).map(function(i){ return { description: i.description, quantity: parseFloat(i.quantity)||1, unit_price: parseFloat(i.unit_price)||0 }; })
     : [{ description: '', quantity: 1, unit_price: 0 }];
   window._vrVehicles = [];
   window._vrSelectedVehicleId = vr ? (vr.vehicle_id || null) : null;
-
   el.innerHTML =
     '<div class="page-header"><div class="page-title">' + (id ? 'Edit Vehicle Maintenance/Repair' : 'New Vehicle Maintenance/Repair') + '</div></div>' +
     '<div id="vr-edit-error"></div>' +
@@ -2723,12 +2651,9 @@ async function renderEditVR(el, id) {
       '<button class="btn btn-secondary" onclick="navigate(\'vr-dashboard\')">Cancel</button>' +
       '<button class="btn btn-primary" id="vr-save-btn" onclick="saveVR(' + (id||'null') + ', this)">Save as Draft</button>' +
     '</div>';
-
   vrRenderItems();
-  // If editing a VR that already has a city, load the vehicle dropdown for that city
   if (vr && vr.city_code) vrCityChanged(vr.city_code);
 }
-
 function vrRenderItems() {
   var tbody = document.getElementById('vr-items');
   if (!tbody) return;
@@ -2744,7 +2669,6 @@ function vrRenderItems() {
   }).join('');
   vrUpdateTotal();
 }
-
 function vrUpdateItem(idx, field, val) {
   if (!window._vrItems) return;
   window._vrItems[idx][field] = field === 'description' ? val : parseFloat(val) || 0;
@@ -2756,7 +2680,6 @@ function vrUpdateTotal() {
   var t = (window._vrItems||[]).reduce(function(s,i){ return s+((i.quantity||0)*(i.unit_price||0)); },0);
   var el = document.getElementById('vr-total'); if (el) el.textContent = t.toFixed(2);
 }
-
 async function vrAIExtract(input) {
   var file = input.files[0]; if (!file) return;
   var status = document.getElementById('vr-ai-status');
@@ -2786,7 +2709,6 @@ async function vrAIExtract(input) {
   };
   reader.readAsDataURL(file);
 }
-
 async function vrCityChanged(cityCode) {
   var sel = document.getElementById('vr-vehicle-select');
   if (!sel) return;
@@ -2818,7 +2740,6 @@ async function vrCityChanged(cityCode) {
     sel.disabled = true;
   }
 }
-
 function vrSelectVehicle(sel) {
   var vid = parseInt(sel.value) || null;
   window._vrSelectedVehicleId = vid;
@@ -2830,7 +2751,6 @@ function vrSelectVehicle(sel) {
   if (vField) vField.value = v.year + ' ' + v.make_model;
   if (vinField) vinField.value = v.vin ? v.vin.slice(-6).toUpperCase() : '';
 }
-
 async function saveVR(id, btn) {
   var vehicle = ((document.getElementById('vr-vehicle')||{}).value||'').trim();
   var vin_last6 = ((document.getElementById('vr-vin')||{}).value||'').trim();
@@ -2851,7 +2771,6 @@ async function saveVR(id, btn) {
     btn.disabled = false;
   }
 }
-
 async function renderViewVR(el, id) {
   el.innerHTML = '<div class="loading">Loading…</div>';
   try {
@@ -2870,7 +2789,7 @@ async function renderViewVR(el, id) {
           (vr.status==='submitted' && isApprover ? '<button class="btn btn-primary" style="background:#22c55e;border-color:#22c55e" onclick="approveVR(' + vr.id + ')">Approve</button>' : '') +
           (vr.status==='submitted' && isApprover ? '<button class="btn btn-danger" onclick="rejectVR(' + vr.id + ')">Reject</button>' : '') +
           (vr.status==='draft' && (isOwner||state.user.role==='admin') ? '<button class="btn btn-danger btn-sm" onclick="deleteVR(' + vr.id + ')">Delete</button>' : '') +
-          '<button class="btn btn-secondary" onclick="navigate(\'vr-dashboard\')">← Back</button>' +
+          '<button class="btn btn-secondary" onclick="navigate(\'vr-dashboard\')"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="margin-right:4px"><polyline points="15 18 9 12 15 6"/></svg> Back</button>' +
         '</div>' +
       '</div>' +
       '<div id="vr-view-msg"></div>' +
@@ -2904,7 +2823,6 @@ async function renderViewVR(el, id) {
       '</div></div></div>';
   } catch(err) { el.innerHTML = '<div class="alert alert-error">' + escHtml(err.message) + '</div>'; }
 }
-
 async function submitVR(id) {
   if (!confirm('Submit this vehicle repair for approval?')) return;
   try { await api('POST', '/vr/'+id+'/submit'); navigate('view-vr', id); }
@@ -2926,9 +2844,7 @@ async function deleteVR(id) {
   try { await api('DELETE', '/vr/'+id); navigate('vr-dashboard'); }
   catch(err) { alert(err.message); }
 }
-
 // ── Fleet Registry ─────────────────────────────────────────────────────────────
-
 async function renderFleetRegistry(el) {
   if (!['admin','manager'].includes(state.user.role)) { el.innerHTML = '<div class="alert alert-error">Access denied.</div>'; return; }
   el.innerHTML = '<div class="loading">Loading…</div>';
@@ -2964,7 +2880,6 @@ async function renderFleetRegistry(el) {
         '</tbody></table></div></div></div>';
   } catch(err) { el.innerHTML = '<div class="alert alert-error">' + escHtml(err.message) + '</div>'; }
 }
-
 async function renderEditVehicle(el, id) {
   if (!['admin','manager'].includes(state.user.role)) { el.innerHTML = '<div class="alert alert-error">Access denied.</div>'; return; }
   el.innerHTML = '<div class="loading">Loading…</div>';
@@ -2974,7 +2889,6 @@ async function renderEditVehicle(el, id) {
     users = await api('GET', '/users');
     if (id) vehicle = await api('GET', '/vehicles/' + id);
   } catch(e) { el.innerHTML = '<div class="alert alert-error">' + escHtml(e.message) + '</div>'; return; }
-
   el.innerHTML =
     '<div class="page-header"><div class="page-title">' + (id ? 'Edit Vehicle' : 'Add Vehicle') + '</div></div>' +
     '<div id="vehicle-edit-error"></div>' +
@@ -3008,7 +2922,6 @@ async function renderEditVehicle(el, id) {
       '<button class="btn btn-primary" id="ve-save-btn" onclick="saveVehicle(' + (id||'null') + ', this)">Save Vehicle</button>' +
     '</div>';
 }
-
 async function saveVehicle(id, btn) {
   var year = parseInt(((document.getElementById('ve-year')||{}).value||'0'));
   var make_model = ((document.getElementById('ve-makemodel')||{}).value||'').trim();
@@ -3034,7 +2947,6 @@ async function saveVehicle(id, btn) {
     btn.disabled = false;
   }
 }
-
 async function renderVehicleHistory(el, vehicleId) {
   if (!['admin','manager'].includes(state.user.role)) { el.innerHTML = '<div class="alert alert-error">Access denied.</div>'; return; }
   el.innerHTML = '<div class="loading">Loading…</div>';
@@ -3069,8 +2981,8 @@ async function renderVehicleHistory(el, vehicleId) {
       '<div class="page-header">' +
         '<div><div class="page-title">' + vehicle.year + ' ' + escHtml(vehicle.make_model) + ' — History</div>' +
           '<div class="page-subtitle" style="color:var(--text-muted-color)">' +
-            (vehicle.vin ? 'VIN: ' + escHtml(vehicle.vin) + ' &nbsp;·&nbsp; ' : '') +
-            (vehicle.license_plate ? 'Plate: ' + escHtml(vehicle.license_plate) + ' &nbsp;·&nbsp; ' : '') +
+            (vehicle.vin ? 'VIN: ' + escHtml(vehicle.vin) + ' · ' : '') +
+            (vehicle.license_plate ? 'Plate: ' + escHtml(vehicle.license_plate) + ' · ' : '') +
             (vehicle.driver_name ? 'Responsible: ' + escHtml(vehicle.driver_name) : '') +
           '</div>' +
         '</div>' +
@@ -3093,13 +3005,11 @@ async function renderVehicleHistory(el, vehicleId) {
     vhRender('', '');
   } catch(err) { el.innerHTML = '<div class="alert alert-error">' + escHtml(err.message) + '</div>'; }
 }
-
 function vhFilter() {
   var q = (document.getElementById('vh-search')||{}).value || '';
   var s = (document.getElementById('vh-status-filter')||{}).value || '';
   if (window._vhRender) window._vhRender(q, s);
 }
-
 async function deactivateVehicle(id) {
   if (!confirm('Deactivate this vehicle? It will be hidden from the VR dropdown.')) return;
   try { await api('POST', '/vehicles/'+id+'/deactivate'); navigate('fleet-registry'); }
@@ -3108,6 +3018,135 @@ async function deactivateVehicle(id) {
 async function reactivateVehicle(id) {
   try { await api('POST', '/vehicles/'+id+'/reactivate'); navigate('fleet-registry'); }
   catch(err) { alert(err.message); }
+}
+// ── Home Dashboard ─────────────────────────────────────────────────────────────
+// Deep link support: ?view=view-vr&id=123 from email buttons
+(function() {
+  var params = new URLSearchParams(window.location.search);
+  var deepView = params.get('view');
+  var deepId = params.get('id');
+  if (deepView) {
+    state.currentView = deepView;
+    state.currentParam = deepId ? (isNaN(deepId) ? deepId : parseInt(deepId)) : null;
+    history.replaceState(null, '', window.location.pathname);
+  }
+})();
+
+async function renderHomeScreen(el) {
+  el.innerHTML = '<div class="loading">Loading…</div>';
+  try {
+    var data = await api('GET', '/dashboard');
+    var s = data.stats;
+    var isPrivileged = ['admin','approver','manager'].includes(state.user.role);
+    var now = new Date();
+    var hour = now.getHours();
+    var greeting = hour < 12 ? 'Good morning' : hour < 17 ? 'Good afternoon' : 'Good evening';
+    var days = ['Sunday','Monday','Tuesday','Wednesday','Thursday','Friday','Saturday'];
+    var months = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+    var dateStr = days[now.getDay()] + ', ' + months[now.getMonth()] + ' ' + now.getDate() + ', ' + now.getFullYear();
+    var pendingCount = (data.pendingVRs ? data.pendingVRs.length : 0) + (data.pendingPOs ? data.pendingPOs.length : 0);
+    var actionColors = { created:'#f97316', submitted:'#f59e0b', approved:'#22c55e', rejected:'#ef4444', edited:'#888', deleted:'#ef4444', cancelled:'#ef4444', 'order placed':'#a78bfa' };
+
+    var attnHtml = '';
+    if (isPrivileged) {
+      var items = [];
+      (data.pendingVRs || []).forEach(function(v) {
+        items.push({ type:'VR', num: v.vr_number, desc: (v.vehicle||'') + (v.shop_name ? ' · ' + v.shop_name : '') + (v.city_code ? ' · ' + v.city_code : ''), amt: '$' + parseFloat(v.total_amount||0).toFixed(2), id: v.id, view: 'view-vr' });
+      });
+      (data.pendingPOs || []).forEach(function(p) {
+        items.push({ type:'PO', num: p.po_number, desc: (p.vendor_name||'') + (p.customer_name ? ' · ' + p.customer_name : '') + (p.city_code ? ' · ' + p.city_code : ''), amt: '$' + parseFloat(p.total_amount||0).toFixed(2), id: p.id, view: 'view' });
+      });
+      if (items.length) {
+        attnHtml = items.map(function(item) {
+          return '<div style="display:flex;justify-content:space-between;align-items:center;padding:10px 0;border-bottom:0.5px solid var(--border-color)">' +
+            '<div>' +
+              '<div style="font-size:13px;font-weight:600;color:var(--primary);cursor:pointer" onclick="navigate(\'' + item.view + '\',' + item.id + ')">' + escHtml(item.num) + '</div>' +
+              '<div style="font-size:12px;color:var(--text-muted-color);margin-top:2px">' + escHtml(item.desc) + '</div>' +
+            '</div>' +
+            '<div style="display:flex;align-items:center;gap:10px">' +
+              '<span style="font-size:13px;font-weight:600">' + item.amt + '</span>' +
+              '<span style="font-size:10px;padding:2px 7px;border-radius:4px;font-weight:700;background:#2d2000;color:#f59e0b;text-transform:uppercase">' + item.type + '</span>' +
+              '<button class="btn btn-secondary btn-sm" onclick="navigate(\'' + item.view + '\',' + item.id + ')" style="white-space:nowrap">Review</button>' +
+            '</div>' +
+          '</div>';
+        }).join('');
+      } else {
+        attnHtml = '<div style="text-align:center;padding:24px;color:var(--text-muted-color);font-size:13px">Nothing pending — you\'re all caught up.</div>';
+      }
+    } else {
+      var myItems = (data.pendingVRs || []).map(function(v){ return { type:'VR', num:v.vr_number, desc:(v.vehicle||''), status:v.status, id:v.id, view:'view-vr' }; })
+        .concat((data.pendingPOs || []).map(function(p){ return { type:'PO', num:p.po_number, desc:(p.vendor_name||''), status:p.status, id:p.id, view:'view' }; }));
+      if (myItems.length) {
+        attnHtml = myItems.map(function(item) {
+          return '<div style="display:flex;justify-content:space-between;align-items:center;padding:10px 0;border-bottom:0.5px solid var(--border-color)">' +
+            '<div><div style="font-size:13px;font-weight:600;color:var(--primary);cursor:pointer" onclick="navigate(\'' + item.view + '\',' + item.id + ')">' + escHtml(item.num) + '</div>' +
+            '<div style="font-size:12px;color:var(--text-muted-color)">' + escHtml(item.desc) + '</div></div>' +
+            '<span style="font-size:11px;font-weight:600;text-transform:capitalize;color:' + (item.status==='submitted'?'#f59e0b':'#888') + '">' + item.status + '</span>' +
+          '</div>';
+        }).join('');
+      } else {
+        attnHtml = '<div style="text-align:center;padding:24px;color:var(--text-muted-color);font-size:13px">No open items — all clear.</div>';
+      }
+    }
+
+    var activityHtml = (data.activity || []).length ? data.activity.map(function(a) {
+      var col = actionColors[a.action] || '#888';
+      var label = (a.entity_type ? a.entity_type.toUpperCase() + ' ' : '') + (a.entity_number ? a.entity_number + ' ' : '') + a.action;
+      return '<div style="display:flex;gap:10px;padding:8px 0;border-bottom:0.5px solid var(--border-color);align-items:flex-start">' +
+        '<div style="width:7px;height:7px;border-radius:50%;background:' + col + ';margin-top:5px;flex-shrink:0"></div>' +
+        '<div><div style="font-size:12px;color:var(--text-color)">' + escHtml(label) + (a.user_name ? ' <span style="color:var(--text-muted-color)">by ' + escHtml(a.user_name) + '</span>' : '') + '</div>' +
+        '<div style="font-size:11px;color:var(--text-muted-color)">' + formatDate(a.created_at) + '</div></div>' +
+      '</div>';
+    }).join('') : '<div style="text-align:center;padding:24px;color:var(--text-muted-color);font-size:13px">No recent activity.</div>';
+
+    el.innerHTML =
+      '<div style="margin-bottom:24px">' +
+        '<div style="font-size:22px;font-weight:700;color:var(--text-color)">' + greeting + ', ' + escHtml(state.user.name.split(' ')[0]) + '</div>' +
+        '<div style="font-size:13px;color:var(--text-muted-color);margin-top:4px">' + dateStr + '</div>' +
+      '</div>' +
+
+      '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:12px;margin-bottom:24px">' +
+        (isPrivileged ? '<div class="card" style="cursor:pointer" onclick="navigate(\'vr-dashboard\')"><div class="card-body" style="text-align:center;padding:16px">' +
+          '<div style="font-size:28px;font-weight:700;color:' + (s.pending_vr > 0 ? '#f59e0b' : '#22c55e') + '">' + s.pending_vr + '</div>' +
+          '<div style="font-size:12px;color:var(--text-muted-color);margin-top:4px">VRs Pending Approval</div></div></div>' : '') +
+        '<div class="card" style="cursor:pointer" onclick="navigate(\'dashboard\')"><div class="card-body" style="text-align:center;padding:16px">' +
+          '<div style="font-size:28px;font-weight:700;color:var(--primary)">' + s.open_po + '</div>' +
+          '<div style="font-size:12px;color:var(--text-muted-color);margin-top:4px">Open POs</div>' +
+          '<div style="font-size:11px;color:var(--text-muted-color)">$' + parseFloat(s.open_po_total).toFixed(2) + '</div></div></div>' +
+        '<div class="card" style="cursor:pointer" onclick="navigate(\'quotes\')"><div class="card-body" style="text-align:center;padding:16px">' +
+          '<div style="font-size:28px;font-weight:700;color:#a78bfa">' + s.active_quotes + '</div>' +
+          '<div style="font-size:12px;color:var(--text-muted-color);margin-top:4px">Active Quotes</div>' +
+          '<div style="font-size:11px;color:var(--text-muted-color)">$' + parseFloat(s.quote_total).toFixed(2) + '</div></div></div>' +
+        (['admin','manager'].includes(state.user.role) ? '<div class="card" style="cursor:pointer" onclick="navigate(\'fleet-registry\')"><div class="card-body" style="text-align:center;padding:16px">' +
+          '<div style="font-size:28px;font-weight:700;color:#22c55e">' + s.fleet_count + '</div>' +
+          '<div style="font-size:12px;color:var(--text-muted-color);margin-top:4px">Fleet Vehicles</div></div></div>' : '') +
+      '</div>' +
+
+      '<div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-bottom:24px">' +
+        '<div class="card"><div class="card-header"><span class="card-title">' + (isPrivileged ? 'Needs Approval' : 'My Open Items') + '</span>' +
+          (pendingCount > 0 && isPrivileged ? '<span style="background:#f59e0b;color:#1a1000;font-size:11px;font-weight:700;padding:2px 8px;border-radius:10px">' + pendingCount + '</span>' : '') +
+        '</div><div class="card-body" style="padding:0 16px">' + attnHtml + '</div></div>' +
+        '<div class="card"><div class="card-header"><span class="card-title">Recent Activity</span>' +
+          '<button class="btn btn-secondary btn-sm" onclick="navigate(\'audit\')" style="font-size:11px">View all</button>' +
+        '</div><div class="card-body" style="padding:0 16px">' + activityHtml + '</div></div>' +
+      '</div>' +
+
+      '<div style="margin-bottom:8px;font-size:11px;color:var(--text-muted-color);text-transform:uppercase;letter-spacing:0.6px">Quick actions</div>' +
+      '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:10px">' +
+        (state.user.role !== 'approver' ? '<button class="btn btn-secondary" onclick="navigate(\'new\')" style="padding:14px;display:flex;flex-direction:column;align-items:center;gap:6px;height:auto">' +
+          '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="12" y1="18" x2="12" y2="12"/><line x1="9" y1="15" x2="15" y2="15"/></svg>' +
+          '<span style="font-size:12px">New PO</span></button>' : '') +
+        (state.user.role !== 'approver' ? '<button class="btn btn-secondary" onclick="navigate(\'new-quote\')" style="padding:14px;display:flex;flex-direction:column;align-items:center;gap:6px;height:auto">' +
+          '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/><polyline points="10 9 9 9 8 9"/></svg>' +
+          '<span style="font-size:12px">New Quote</span></button>' : '') +
+        (state.user.role !== 'approver' ? '<button class="btn btn-secondary" onclick="navigate(\'new-vr\')" style="padding:14px;display:flex;flex-direction:column;align-items:center;gap:6px;height:auto">' +
+          '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="1" y="3" width="15" height="13" rx="2"/><path d="M16 8h6l3 4v4h-9V8z"/><circle cx="5.5" cy="18.5" r="2.5"/><circle cx="18.5" cy="18.5" r="2.5"/></svg>' +
+          '<span style="font-size:12px">New VR</span></button>' : '') +
+        '<button class="btn btn-secondary" onclick="navigate(\'ai-assistant\')" style="padding:14px;display:flex;flex-direction:column;align-items:center;gap:6px;height:auto">' +
+          '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="6" width="18" height="13" rx="2"/><path d="M8 6V4a1 1 0 011-1h6a1 1 0 011 1v2"/><circle cx="9" cy="12" r="1" fill="currentColor"/><circle cx="15" cy="12" r="1" fill="currentColor"/><path d="M9.5 16h5"/></svg>' +
+          '<span style="font-size:12px">Ask Neurolock</span></button>' +
+      '</div>';
+  } catch(err) { el.innerHTML = '<div class="alert alert-error">' + escHtml(err.message) + '</div>'; }
 }
 
 render();
@@ -3134,8 +3173,6 @@ render();
   font-size:14px;
   line-height:1.5;
 }
-
-/* AI page decorative side canvases */
 #ai-canvas-left, #ai-canvas-right {
   position:fixed;
   top:0;
@@ -3148,8 +3185,6 @@ render();
   #ai-canvas-left { left:260px; }
   #ai-canvas-right { right:0; }
 }
-
-/* Floating lock icon watermarks on each side */
 @media (min-width:1400px) {
   .ai-side-icon-left,
   .ai-side-icon-right {
