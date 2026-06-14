@@ -44,16 +44,18 @@ async function generateVRNumber(userInitials) {
   return 'VR-' + year + '-' + seq + '-' + userInitials;
 }
 
-// GET all VRs
+// GET all VRs — optional ?vehicle_id=X filter
 router.get('/', requireAuth, async function(req, res) {
   try {
+    var vehicleId = req.query.vehicle_id ? parseInt(req.query.vehicle_id) : null;
+    var base = 'SELECT vr.*, u.name as requester_name, a.name as assigned_name FROM vehicle_repairs vr JOIN users u ON vr.requester_id = u.id LEFT JOIN users a ON vr.assigned_user_id = a.id';
     let query, params;
     if (['admin', 'approver', 'manager'].includes(req.user.role)) {
-      query = 'SELECT vr.*, u.name as requester_name, a.name as assigned_name FROM vehicle_repairs vr JOIN users u ON vr.requester_id = u.id LEFT JOIN users a ON vr.assigned_user_id = a.id ORDER BY vr.created_at DESC';
-      params = [];
+      query = base + (vehicleId ? ' WHERE vr.vehicle_id = $1' : '') + ' ORDER BY vr.created_at DESC';
+      params = vehicleId ? [vehicleId] : [];
     } else {
-      query = 'SELECT vr.*, u.name as requester_name, a.name as assigned_name FROM vehicle_repairs vr JOIN users u ON vr.requester_id = u.id LEFT JOIN users a ON vr.assigned_user_id = a.id WHERE vr.requester_id = $1 ORDER BY vr.created_at DESC';
-      params = [req.user.id];
+      query = base + ' WHERE vr.requester_id = $1' + (vehicleId ? ' AND vr.vehicle_id = $2' : '') + ' ORDER BY vr.created_at DESC';
+      params = vehicleId ? [req.user.id, vehicleId] : [req.user.id];
     }
     const { rows } = await pool.query(query, params);
     res.json(rows);
@@ -86,7 +88,7 @@ router.get('/:id', requireAuth, async function(req, res) {
 
 // POST create VR
 router.post('/', requireAuth, async function(req, res) {
-  const { vehicle, vin_last6, assigned_user_id, shop_name, city_code, notes, line_items } = req.body;
+  const { vehicle, vin_last6, vehicle_id, assigned_user_id, shop_name, city_code, notes, line_items } = req.body;
   if (!vehicle) return res.status(400).json({ error: 'Vehicle is required' });
   const initials = getInitials(req.user.name);
   const vr_number = await generateVRNumber(initials);
@@ -97,8 +99,8 @@ router.post('/', requireAuth, async function(req, res) {
   try {
     await client.query('BEGIN');
     const { rows } = await client.query(
-      'INSERT INTO vehicle_repairs (vr_number, requester_id, assigned_user_id, vehicle, vin_last6, shop_name, city_code, notes, total_amount) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING *',
-      [vr_number, req.user.id, assigned_user_id || null, vehicle, (vin_last6 || '').toUpperCase().slice(0, 6) || null, shop_name || null, city_code || null, notes || null, total]
+      'INSERT INTO vehicle_repairs (vr_number, requester_id, vehicle_id, assigned_user_id, vehicle, vin_last6, shop_name, city_code, notes, total_amount) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) RETURNING *',
+      [vr_number, req.user.id, vehicle_id || null, assigned_user_id || null, vehicle, (vin_last6 || '').toUpperCase().slice(0, 6) || null, shop_name || null, city_code || null, notes || null, total]
     );
     const vr = rows[0];
     for (const item of (line_items || [])) {
@@ -129,7 +131,7 @@ router.put('/:id', requireAuth, async function(req, res) {
       return res.status(403).json({ error: 'Access denied' });
     }
     if (vr.status !== 'draft') return res.status(400).json({ error: 'Only draft vehicle repairs can be edited' });
-    const { vehicle, vin_last6, assigned_user_id, shop_name, city_code, notes, line_items } = req.body;
+    const { vehicle, vin_last6, vehicle_id, assigned_user_id, shop_name, city_code, notes, line_items } = req.body;
     if (!vehicle) return res.status(400).json({ error: 'Vehicle is required' });
     const total = (line_items || []).reduce(function(sum, item) {
       return sum + ((parseFloat(item.quantity) || 0) * (parseFloat(item.unit_price) || 0));
@@ -138,8 +140,8 @@ router.put('/:id', requireAuth, async function(req, res) {
     try {
       await client.query('BEGIN');
       await client.query(
-        'UPDATE vehicle_repairs SET vehicle=$1, vin_last6=$2, assigned_user_id=$3, shop_name=$4, city_code=$5, notes=$6, total_amount=$7, updated_at=NOW() WHERE id=$8',
-        [vehicle, (vin_last6 || '').toUpperCase().slice(0, 6) || null, assigned_user_id || null, shop_name || null, city_code || null, notes || null, total, req.params.id]
+        'UPDATE vehicle_repairs SET vehicle=$1, vin_last6=$2, vehicle_id=$3, assigned_user_id=$4, shop_name=$5, city_code=$6, notes=$7, total_amount=$8, updated_at=NOW() WHERE id=$9',
+        [vehicle, (vin_last6 || '').toUpperCase().slice(0, 6) || null, vehicle_id || null, assigned_user_id || null, shop_name || null, city_code || null, notes || null, total, req.params.id]
       );
       await client.query('DELETE FROM vr_line_items WHERE vr_id = $1', [req.params.id]);
       for (const item of (line_items || [])) {
