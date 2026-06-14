@@ -254,6 +254,8 @@ async function render() {
         (['admin','manager'].includes(state.user.role) ? '<div class="nav-item ' + (state.currentView === 'users' ? 'active' : '') + '" onclick="navigate(\'users\')">' + icons.users + ' Users</div>' : '') +
         (['admin','manager'].includes(state.user.role) ? '<div class="nav-item ' + (state.currentView === 'cities' ? 'active' : '') + '" onclick="navigate(\'cities\')">' + icons.map + ' Cities</div>' : '') +
         (['admin','manager'].includes(state.user.role) ? '<div class="nav-item ' + (state.currentView === 'vendors' ? 'active' : '') + '" onclick="navigate(\'vendors\')"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 9l9-7 9 7v11a2 2 0 01-2 2H5a2 2 0 01-2-2z"/><polyline points="9 22 9 12 15 12 15 22"/></svg> Accounts</div>' : '') +
+        '<div class="nav-item ' + (['vr-dashboard','new-vr','edit-vr','view-vr'].includes(state.currentView) ? 'active' : '') + '" onclick="navigate(\'vr-dashboard\')"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="1" y="3" width="15" height="13" rx="2"/><path d="M16 8h6l3 4v4h-9V8z"/><circle cx="5.5" cy="18.5" r="2.5"/><circle cx="18.5" cy="18.5" r="2.5"/></svg> Vehicle Repairs</div>' +
+        (state.user.role !== 'approver' ? '<div class="nav-item ' + (state.currentView === 'new-vr' ? 'active' : '') + '" onclick="navigate(\'new-vr\')" style="padding-left:28px;font-size:13px">' + icons.plus + ' New VR</div>' : '') +
         (state.user.role === 'admin' ? '<div class="nav-item ' + (state.currentView === 'audit' ? 'active' : '') + '" onclick="navigate(\'audit\')"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/><line x1="10" y1="9" x2="8" y2="9"/></svg> Audit Log</div>' : '') +
         '<div class="nav-item ' + (state.currentView === 'ai-assistant' ? 'active' : '') + '" onclick="navigate(\'ai-assistant\')" id="nav-ai-assistant"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="6" width="18" height="13" rx="2"/><path d="M8 6V4a1 1 0 011-1h6a1 1 0 011 1v2"/><circle cx="9" cy="12" r="1" fill="currentColor"/><circle cx="15" cy="12" r="1" fill="currentColor"/><path d="M9.5 16h5"/><path d="M12 3v1"/></svg> Locksmith AI Assistant</div>' +
         (state.user.role === 'admin' ? '<div class="nav-item ' + (state.currentView === 'ai-conversations' ? 'active' : '') + '" onclick="navigate(\'ai-conversations\')" style="padding-left:28px;font-size:13px"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15a2 2 0 01-2 2H7l-4 4V5a2 2 0 012-2h14a2 2 0 012 2z"/></svg> Conversations</div>' : '') +
@@ -292,6 +294,10 @@ async function render() {
   else if (state.currentView === 'view-quote') await renderViewQuote(content, state.currentParam);
   else if (state.currentView === 'ai-assistant') await renderAIAssistant(content);
   else if (state.currentView === 'ai-conversations') await renderAIConversations(content);
+  else if (state.currentView === 'vr-dashboard') await renderVRDashboard(content);
+  else if (state.currentView === 'new-vr') await renderEditVR(content, null);
+  else if (state.currentView === 'edit-vr') await renderEditVR(content, state.currentParam);
+  else if (state.currentView === 'view-vr') await renderViewVR(content, state.currentParam);
   else if (state.currentView === 'ai-usage') await renderAIUsage(content);
   else { state.currentView = 'dashboard'; await renderDashboard(content); }
 }
@@ -2588,6 +2594,251 @@ async function aiSend() {
   if (btn) btn.disabled = false;
   aiRenderThread();
   if (input) { input.focus(); }
+}
+
+// ── Vehicle Repairs ────────────────────────────────────────────────────────────
+
+var _vrStatusColors = { draft:'var(--text-muted-color)', submitted:'#f59e0b', approved:'#22c55e', rejected:'#ef4444' };
+
+async function renderVRDashboard(el) {
+  el.innerHTML = '<div class="loading">Loading…</div>';
+  try {
+    const vrs = await api('GET', '/vr');
+    const isApprover = ['admin','approver','manager'].includes(state.user.role);
+    el.innerHTML =
+      '<div class="page-header">' +
+        '<div><div class="page-title"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="margin-right:8px;vertical-align:-4px"><rect x="1" y="3" width="15" height="13" rx="2"/><path d="M16 8h6l3 4v4h-9V8z"/><circle cx="5.5" cy="18.5" r="2.5"/><circle cx="18.5" cy="18.5" r="2.5"/></svg>Vehicle Repairs</div></div>' +
+        (state.user.role !== 'approver' ? '<button class="btn btn-primary" onclick="navigate(\'new-vr\')" style="white-space:nowrap">' + icons.plus + ' New VR</button>' : '') +
+      '</div>' +
+      '<div class="card"><div class="card-body" style="padding:0"><div class="table-wrap"><table>' +
+        '<thead><tr><th>VR #</th><th>Vehicle</th><th>VIN</th>' + (isApprover ? '<th>Submitted By</th>' : '') + '<th>Assigned To</th><th>Shop</th><th>City</th><th>Total</th><th>Status</th><th>Date</th><th></th></tr></thead>' +
+        '<tbody>' + (vrs.length ? vrs.map(function(vr) {
+          var sc = _vrStatusColors[vr.status] || 'var(--text-muted-color)';
+          return '<tr>' +
+            '<td><a href="#" onclick="navigate(\'view-vr\',' + vr.id + ');return false;" style="color:var(--primary);font-weight:600">' + escHtml(vr.vr_number) + '</a></td>' +
+            '<td>' + escHtml(vr.vehicle || '—') + '</td>' +
+            '<td style="font-family:monospace">' + escHtml(vr.vin_last6 || '—') + '</td>' +
+            (isApprover ? '<td>' + escHtml(vr.requester_name || '—') + '</td>' : '') +
+            '<td>' + escHtml(vr.assigned_name || '—') + '</td>' +
+            '<td>' + escHtml(vr.shop_name || '—') + '</td>' +
+            '<td>' + escHtml(vr.city_code || '—') + '</td>' +
+            '<td>$' + parseFloat(vr.total_amount || 0).toFixed(2) + '</td>' +
+            '<td><span style="font-weight:600;color:' + sc + ';text-transform:capitalize">' + escHtml(vr.status) + '</span></td>' +
+            '<td style="font-size:13px;white-space:nowrap">' + formatDate(vr.created_at) + '</td>' +
+            '<td><button class="btn btn-secondary btn-sm" onclick="navigate(\'view-vr\',' + vr.id + ')">View</button></td>' +
+          '</tr>';
+        }).join('') : '<tr><td colspan="11" style="text-align:center;padding:32px;color:var(--text-muted-color)">No vehicle repairs yet.</td></tr>') +
+        '</tbody></table></div></div></div>';
+  } catch(err) { el.innerHTML = '<div class="alert alert-error">' + escHtml(err.message) + '</div>'; }
+}
+
+async function renderEditVR(el, id) {
+  el.innerHTML = '<div class="loading">Loading…</div>';
+  var vr = null, cities = [], users = [];
+  try {
+    cities = await api('GET', '/cities');
+    users = await api('GET', '/users');
+    if (id) vr = await api('GET', '/vr/' + id);
+  } catch(e) { el.innerHTML = '<div class="alert alert-error">' + escHtml(e.message) + '</div>'; return; }
+
+  window._vrItems = vr ? (vr.line_items || []).map(function(i){ return { description: i.description, quantity: parseFloat(i.quantity)||1, unit_price: parseFloat(i.unit_price)||0 }; })
+    : [{ description: '', quantity: 1, unit_price: 0 }];
+
+  el.innerHTML =
+    '<div class="page-header"><div class="page-title">' + (id ? 'Edit Vehicle Repair' : 'New Vehicle Repair') + '</div></div>' +
+    '<div id="vr-edit-error"></div>' +
+    '<div class="card" style="margin-bottom:20px"><div class="card-header"><span class="card-title">AI Quote Extract</span>' +
+      '<span style="font-size:12px;color:var(--text-muted-color);margin-left:8px">Upload a shop estimate — Neurolock fills the form automatically</span></div>' +
+    '<div class="card-body"><div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">' +
+      '<input type="file" id="vr-ai-file" accept="image/*" style="display:none" onchange="vrAIExtract(this)" />' +
+      '<button class="btn btn-secondary" onclick="document.getElementById(\'vr-ai-file\').click()"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="margin-right:6px;vertical-align:-2px"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><polyline points="21 15 16 10 5 21"/></svg>Upload Estimate</button>' +
+      '<span id="vr-ai-status" style="font-size:13px;color:var(--text-muted-color)"></span>' +
+    '</div></div></div>' +
+    '<div class="card"><div class="card-body">' +
+      '<div class="form-row">' +
+        '<div class="form-group"><label>Vehicle (Year Make Model) *</label><input type="text" id="vr-vehicle" value="' + escHtml(vr ? vr.vehicle||'' : '') + '" placeholder="e.g. 2022 Ford Transit" /></div>' +
+        '<div class="form-group"><label>Last 6 of VIN</label><input type="text" id="vr-vin" value="' + escHtml(vr ? vr.vin_last6||'' : '') + '" maxlength="6" placeholder="A1B2C3" oninput="this.value=this.value.toUpperCase()" style="font-family:monospace;letter-spacing:2px;text-transform:uppercase" /></div>' +
+      '</div>' +
+      '<div class="form-row">' +
+        '<div class="form-group"><label>Assigned Employee</label><select id="vr-assigned"><option value="">— Select employee —</option>' +
+          users.filter(function(u){ return u.active; }).map(function(u){ return '<option value="' + u.id + '"' + (vr && vr.assigned_user_id == u.id ? ' selected' : '') + '>' + escHtml(u.name) + '</option>'; }).join('') +
+        '</select></div>' +
+        '<div class="form-group"><label>Shop / Vendor</label><input type="text" id="vr-shop" value="' + escHtml(vr ? vr.shop_name||'' : '') + '" placeholder="e.g. Pepboys, Firestone" /></div>' +
+      '</div>' +
+      '<div class="form-row">' +
+        '<div class="form-group"><label>City</label><select id="vr-city"><option value="">— Select city —</option>' +
+          cities.filter(function(c){ return c.active; }).map(function(c){ return '<option value="' + escHtml(c.code) + '"' + (vr && vr.city_code === c.code ? ' selected' : '') + '>' + escHtml(c.name) + ' (' + escHtml(c.code) + ')</option>'; }).join('') +
+        '</select></div>' +
+        '<div class="form-group"><label>Notes</label><input type="text" id="vr-notes" value="' + escHtml(vr ? vr.notes||'' : '') + '" placeholder="Additional notes or recommendations" /></div>' +
+      '</div>' +
+    '</div></div>' +
+    '<div class="card" style="margin-top:20px"><div class="card-header"><span class="card-title">Line Items</span><button class="btn btn-secondary btn-sm" onclick="vrAddRow()">+ Add Row</button></div>' +
+    '<div class="card-body" style="padding:0"><div class="table-wrap"><table>' +
+      '<thead><tr><th style="width:60%">Description</th><th>Qty</th><th>Unit Price</th><th>Total</th><th></th></tr></thead>' +
+      '<tbody id="vr-items"></tbody>' +
+    '</table></div></div>' +
+    '<div class="card-body" style="display:flex;justify-content:flex-end;border-top:1px solid var(--border-color)">' +
+      '<strong>Total: $<span id="vr-total">0.00</span></strong>' +
+    '</div></div>' +
+    '<div style="display:flex;gap:10px;margin-top:20px;justify-content:flex-end">' +
+      '<button class="btn btn-secondary" onclick="navigate(\'vr-dashboard\')">Cancel</button>' +
+      '<button class="btn btn-primary" id="vr-save-btn" onclick="saveVR(' + (id||'null') + ', this)">Save as Draft</button>' +
+    '</div>';
+
+  vrRenderItems();
+}
+
+function vrRenderItems() {
+  var tbody = document.getElementById('vr-items');
+  if (!tbody) return;
+  tbody.innerHTML = (window._vrItems || []).map(function(item, idx) {
+    var lt = ((item.quantity||0)*(item.unit_price||0)).toFixed(2);
+    return '<tr>' +
+      '<td><input type="text" value="' + escHtml(item.description) + '" oninput="vrUpdateItem(' + idx + ',\'description\',this.value)" style="width:100%" /></td>' +
+      '<td><input type="number" value="' + item.quantity + '" min="0" step="0.01" oninput="vrUpdateItem(' + idx + ',\'quantity\',this.value)" style="width:70px" /></td>' +
+      '<td><input type="number" value="' + item.unit_price + '" min="0" step="0.01" oninput="vrUpdateItem(' + idx + ',\'unit_price\',this.value)" style="width:100px" /></td>' +
+      '<td>$' + lt + '</td>' +
+      '<td><button class="btn btn-ghost btn-sm" style="color:var(--danger-color,#ef4444)" onclick="vrRemoveRow(' + idx + ')">✕</button></td>' +
+    '</tr>';
+  }).join('');
+  vrUpdateTotal();
+}
+
+function vrUpdateItem(idx, field, val) {
+  if (!window._vrItems) return;
+  window._vrItems[idx][field] = field === 'description' ? val : parseFloat(val) || 0;
+  vrUpdateTotal();
+}
+function vrAddRow() { (window._vrItems = window._vrItems||[]).push({ description:'', quantity:1, unit_price:0 }); vrRenderItems(); }
+function vrRemoveRow(idx) { window._vrItems.splice(idx,1); vrRenderItems(); }
+function vrUpdateTotal() {
+  var t = (window._vrItems||[]).reduce(function(s,i){ return s+((i.quantity||0)*(i.unit_price||0)); },0);
+  var el = document.getElementById('vr-total'); if (el) el.textContent = t.toFixed(2);
+}
+
+async function vrAIExtract(input) {
+  var file = input.files[0]; if (!file) return;
+  var status = document.getElementById('vr-ai-status');
+  status.style.color = 'var(--text-muted-color)';
+  status.textContent = 'Reading estimate…';
+  var reader = new FileReader();
+  reader.onload = async function(e) {
+    try {
+      var base64 = e.target.result.split(',')[1];
+      var mediaType = file.type || 'image/jpeg';
+      status.textContent = 'Neurolock is extracting data…';
+      var data = await api('POST', '/vr/ai-extract', { imageData: base64, mediaType: mediaType });
+      if (data.vehicle) { var v = document.getElementById('vr-vehicle'); if (v) v.value = data.vehicle; }
+      if (data.vin_last6) { var vin = document.getElementById('vr-vin'); if (vin) vin.value = data.vin_last6.toUpperCase(); }
+      if (data.shop_name) { var s = document.getElementById('vr-shop'); if (s) s.value = data.shop_name; }
+      if (data.notes) { var n = document.getElementById('vr-notes'); if (n) n.value = data.notes; }
+      if (data.line_items && data.line_items.length) {
+        window._vrItems = data.line_items.map(function(i){ return { description: i.description||'', quantity: parseFloat(i.quantity)||1, unit_price: parseFloat(i.unit_price)||0 }; });
+        vrRenderItems();
+      }
+      status.textContent = '✓ Extracted ' + (data.line_items ? data.line_items.length : 0) + ' line items — review before saving.';
+      status.style.color = '#22c55e';
+    } catch(err) {
+      status.textContent = '⚠ ' + (err.message || 'Extraction failed');
+      status.style.color = 'var(--danger-color,#ef4444)';
+    }
+  };
+  reader.readAsDataURL(file);
+}
+
+async function saveVR(id, btn) {
+  var vehicle = ((document.getElementById('vr-vehicle')||{}).value||'').trim();
+  var vin_last6 = ((document.getElementById('vr-vin')||{}).value||'').trim();
+  var assigned_user_id = ((document.getElementById('vr-assigned')||{}).value)||null;
+  var shop_name = ((document.getElementById('vr-shop')||{}).value||'').trim();
+  var city_code = ((document.getElementById('vr-city')||{}).value)||null;
+  var notes = ((document.getElementById('vr-notes')||{}).value||'').trim();
+  if (!vehicle) { document.getElementById('vr-edit-error').innerHTML = '<div class="alert alert-error">Vehicle is required.</div>'; return; }
+  var validItems = (window._vrItems||[]).filter(function(i){ return i.description.trim(); });
+  try {
+    btn.disabled = true;
+    var result;
+    if (id) { await api('PUT', '/vr/'+id, { vehicle, vin_last6, assigned_user_id, shop_name, city_code, notes, line_items: validItems }); navigate('view-vr', id); }
+    else { result = await api('POST', '/vr', { vehicle, vin_last6, assigned_user_id, shop_name, city_code, notes, line_items: validItems }); navigate('view-vr', result.id); }
+  } catch(err) {
+    document.getElementById('vr-edit-error').innerHTML = '<div class="alert alert-error">' + escHtml(err.message) + '</div>';
+    btn.disabled = false;
+  }
+}
+
+async function renderViewVR(el, id) {
+  el.innerHTML = '<div class="loading">Loading…</div>';
+  try {
+    var vr = await api('GET', '/vr/' + id);
+    var isApprover = ['admin','approver','manager'].includes(state.user.role);
+    var isOwner = vr.requester_id === state.user.id;
+    var sc = _vrStatusColors[vr.status] || 'var(--text-muted-color)';
+    el.innerHTML =
+      '<div class="page-header">' +
+        '<div><div class="page-title">' + escHtml(vr.vr_number) + '</div>' +
+          '<div class="page-subtitle" style="color:' + sc + ';font-weight:600;text-transform:capitalize">' + escHtml(vr.status) + '</div>' +
+        '</div>' +
+        '<div class="flex-gap">' +
+          (vr.status==='draft' && (isOwner||state.user.role==='admin') ? '<button class="btn btn-secondary" onclick="navigate(\'edit-vr\',' + vr.id + ')">Edit</button>' : '') +
+          (vr.status==='draft' && (isOwner||state.user.role==='admin') ? '<button class="btn btn-primary" onclick="submitVR(' + vr.id + ')">Submit for Approval</button>' : '') +
+          (vr.status==='submitted' && isApprover ? '<button class="btn btn-primary" style="background:#22c55e;border-color:#22c55e" onclick="approveVR(' + vr.id + ')">Approve</button>' : '') +
+          (vr.status==='submitted' && isApprover ? '<button class="btn btn-danger" onclick="rejectVR(' + vr.id + ')">Reject</button>' : '') +
+          (vr.status==='draft' && (isOwner||state.user.role==='admin') ? '<button class="btn btn-danger btn-sm" onclick="deleteVR(' + vr.id + ')">Delete</button>' : '') +
+          '<button class="btn btn-secondary" onclick="navigate(\'vr-dashboard\')">← Back</button>' +
+        '</div>' +
+      '</div>' +
+      '<div id="vr-view-msg"></div>' +
+      '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:16px;margin-bottom:20px">' +
+        '<div class="card"><div class="card-body">' +
+          '<div class="detail-field"><label>Vehicle</label><p>' + escHtml(vr.vehicle||'—') + '</p></div>' +
+          '<div class="detail-field"><label>VIN (last 6)</label><p style="font-family:monospace;letter-spacing:2px">' + escHtml(vr.vin_last6||'—') + '</p></div>' +
+          '<div class="detail-field"><label>Assigned Employee</label><p>' + escHtml(vr.assigned_name||'—') + '</p></div>' +
+        '</div></div>' +
+        '<div class="card"><div class="card-body">' +
+          '<div class="detail-field"><label>Shop / Vendor</label><p>' + escHtml(vr.shop_name||'—') + '</p></div>' +
+          '<div class="detail-field"><label>City</label><p>' + escHtml(vr.city_code||'—') + '</p></div>' +
+          '<div class="detail-field"><label>Submitted By</label><p>' + escHtml(vr.requester_name||'—') + '</p></div>' +
+        '</div></div>' +
+        '<div class="card"><div class="card-body">' +
+          '<div class="detail-field"><label>Date Created</label><p>' + formatDate(vr.created_at) + '</p></div>' +
+          '<div class="detail-field"><label>Notes</label><p>' + escHtml(vr.notes||'—') + '</p></div>' +
+          (vr.rejection_reason ? '<div class="detail-field"><label style="color:var(--danger-color,#ef4444)">Rejection Reason</label><p>' + escHtml(vr.rejection_reason) + '</p></div>' : '') +
+        '</div></div>' +
+      '</div>' +
+      '<div class="card"><div class="card-header"><span class="card-title">Line Items</span></div>' +
+      '<div class="card-body" style="padding:0"><div class="table-wrap"><table>' +
+        '<thead><tr><th>Description</th><th>Qty</th><th>Unit Price</th><th>Total</th></tr></thead>' +
+        '<tbody>' + (vr.line_items && vr.line_items.length ? vr.line_items.map(function(item) {
+          return '<tr><td>' + escHtml(item.description) + '</td><td>' + item.quantity + '</td><td>$' + parseFloat(item.unit_price).toFixed(2) + '</td><td>$' + (parseFloat(item.quantity)*parseFloat(item.unit_price)).toFixed(2) + '</td></tr>';
+        }).join('') : '<tr><td colspan="4" style="text-align:center;color:var(--text-muted-color);padding:20px">No line items</td></tr>') +
+        '</tbody>' +
+      '</table></div>' +
+      '<div class="card-body" style="display:flex;justify-content:flex-end;border-top:1px solid var(--border-color)">' +
+        '<strong>Total: $' + parseFloat(vr.total_amount||0).toFixed(2) + '</strong>' +
+      '</div></div></div>';
+  } catch(err) { el.innerHTML = '<div class="alert alert-error">' + escHtml(err.message) + '</div>'; }
+}
+
+async function submitVR(id) {
+  if (!confirm('Submit this vehicle repair for approval?')) return;
+  try { await api('POST', '/vr/'+id+'/submit'); navigate('view-vr', id); }
+  catch(err) { var m = document.getElementById('vr-view-msg'); if(m) m.innerHTML = '<div class="alert alert-error">'+escHtml(err.message)+'</div>'; }
+}
+async function approveVR(id) {
+  if (!confirm('Approve this vehicle repair?')) return;
+  try { await api('POST', '/vr/'+id+'/approve'); navigate('view-vr', id); }
+  catch(err) { var m = document.getElementById('vr-view-msg'); if(m) m.innerHTML = '<div class="alert alert-error">'+escHtml(err.message)+'</div>'; }
+}
+async function rejectVR(id) {
+  var reason = prompt('Rejection reason (optional):');
+  if (reason === null) return;
+  try { await api('POST', '/vr/'+id+'/reject', { reason }); navigate('view-vr', id); }
+  catch(err) { var m = document.getElementById('vr-view-msg'); if(m) m.innerHTML = '<div class="alert alert-error">'+escHtml(err.message)+'</div>'; }
+}
+async function deleteVR(id) {
+  if (!confirm('Delete this vehicle repair? This cannot be undone.')) return;
+  try { await api('DELETE', '/vr/'+id); navigate('vr-dashboard'); }
+  catch(err) { alert(err.message); }
 }
 
 render();
