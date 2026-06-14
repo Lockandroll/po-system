@@ -560,7 +560,7 @@ async function renderEditPO(el, id) {
     '<div class="card mb-4"><div class="card-header"><span class="card-title">Order Information</span></div><div class="card-body">' +
       '<div class="form-row">' +
         '<div class="form-group"><label>Vendor / Supplier *</label><input type="text" id="po-vendor" value="' + escHtml(po ? po.vendor_name : '') + '" placeholder="Vendor name" /></div>' +
-        '<div class="form-group"><label>Customer/Employee</label><input type="text" id="po-customer" value="' + escHtml(po && po.customer_name ? po.customer_name : '') + '" placeholder="Customer/Employee" /></div>' +
+        '<div class="form-group"><label>Customer/Employee *</label><input type="text" id="po-customer" value="' + escHtml(po && po.customer_name ? po.customer_name : '') + '" placeholder="Customer/Employee" /></div>' +
       '</div>' +
       '<div class="form-row">' +
         '<div class="form-group"><label>City *</label><select id="po-city" onchange="loadShippingAddresses()">' + cityOptions + '</select></div>' +
@@ -667,6 +667,7 @@ async function savePO(id, action) {
   const notes = document.getElementById('po-notes').value.trim();
   const shipping_address_id = parseInt(document.getElementById('po-shipping-address').value) || null;
   if (!vendor_name) { document.getElementById('edit-error').innerHTML = '<div class="alert alert-error">Vendor name is required.</div>'; return; }
+  if (!customer_name) { document.getElementById('edit-error').innerHTML = '<div class="alert alert-error">Customer/Employee is required.</div>'; return; }
   if (!city_code) { document.getElementById('edit-error').innerHTML = '<div class="alert alert-error">Please select a city.</div>'; return; }
 
   // Read current input values
@@ -1643,7 +1644,7 @@ async function renderEditQuote(el, id) {
   } else {
     quoteLineItems = [{ item_number: '', manufacturer: '', description: '', quantity: 1, unit_price: '', list_price: '', taxable: false }];
   }
-  const cityOptions = '<option value="">Select city (optional)...</option>' + cities.map(function(c) {
+  const cityOptions = '<option value="">— Select city —</option>' + cities.map(function(c) {
     return '<option value="' + escHtml(c.code) + '"' + (quote && quote.city_code === c.code ? ' selected' : '') + '>' + escHtml(c.name) + ' (' + escHtml(c.code) + ')</option>';
   }).join('');
   const importantInfoVal = quote ? (quote.important_info || '') : getDefaultImportantInfo();
@@ -1657,7 +1658,7 @@ async function renderEditQuote(el, id) {
     '<div class="card mb-4"><div class="card-header"><span class="card-title">Quote Information</span></div><div class="card-body">' +
       '<div class="form-row">' +
         '<div class="form-group"><label>Customer Name *</label><input type="text" id="qt-customer" value="' + escHtml(quote ? quote.customer_name : '') + '" placeholder="Customer name" /></div>' +
-        '<div class="form-group"><label>City</label><select id="qt-city">' + cityOptions + '</select></div>' +
+        '<div class="form-group"><label>City *</label><select id="qt-city">' + cityOptions + '</select></div>' +
       '</div>' +
       '<div class="form-group"><label>Notes</label><textarea id="qt-notes" placeholder="Optional notes...">' + escHtml(quote ? quote.notes || '' : '') + '</textarea></div>' +
     '</div></div>' +
@@ -1753,6 +1754,7 @@ async function saveQuote(id) {
   const tax_rate = parseFloat(taxRateRaw);
   const important_info = document.getElementById('qt-important-info').value.trim();
   if (!customer_name) { document.getElementById('quote-edit-error').innerHTML = '<div class="alert alert-error">Customer name is required.</div>'; return; }
+  if (!city_code) { document.getElementById('quote-edit-error').innerHTML = '<div class="alert alert-error">Please select a city.</div>'; return; }
   if (taxRateRaw === '' || isNaN(tax_rate)) { document.getElementById('quote-edit-error').innerHTML = '<div class="alert alert-error">Tax % is required. Enter 0 if no tax applies.</div>'; return; }
   const rows = document.querySelectorAll('#quote-line-items-body tr');
   rows.forEach(function(row, i) {
@@ -2662,16 +2664,6 @@ async function renderEditVR(el, id) {
       '<span id="vr-ai-status" style="font-size:13px;color:var(--text-muted-color)"></span>' +
     '</div></div></div>' +
     '<div class="card"><div class="card-body">' +
-      '<div class="form-group" style="margin-bottom:20px;padding-bottom:20px;border-bottom:1px solid var(--border-color)">' +
-        '<label style="font-weight:600">Select Vehicle from Fleet Registry</label>' +
-        '<select id="vr-vehicle-select" onchange="vrSelectVehicle(this)" disabled style="margin-top:6px;opacity:0.6">' +
-          '<option value="">— Select a city first —</option>' +
-        '</select>' +
-      '</div>' +
-      '<div class="form-row">' +
-        '<div class="form-group"><label>Vehicle (Year Make Model) *</label><input type="text" id="vr-vehicle" value="' + escHtml(vr ? vr.vehicle||'' : '') + '" placeholder="e.g. 2022 Ford Transit" /></div>' +
-        '<div class="form-group"><label>Last 6 of VIN</label><input type="text" id="vr-vin" value="' + escHtml(vr ? vr.vin_last6||'' : '') + '" maxlength="6" placeholder="A1B2C3" oninput="this.value=this.value.toUpperCase()" style="font-family:monospace;letter-spacing:2px;text-transform:uppercase" /></div>' +
-      '</div>' +
       '<div class="form-row">' +
         '<div class="form-group"><label>City</label><select id="vr-city" onchange="vrCityChanged(this.value)"><option value="">— Select city —</option>' +
           cities.map(function(c){ return '<option value="' + escHtml(c.code) + '"' + (vr && vr.city_code === c.code ? ' selected' : '') + '>' + escHtml(c.name) + ' (' + escHtml(c.code) + ')</option>'; }).join('') +
@@ -2679,6 +2671,16 @@ async function renderEditVR(el, id) {
         '<div class="form-group"><label>Assigned Employee</label><select id="vr-assigned"><option value="">— Select employee —</option>' +
           users.filter(function(u){ return u.active; }).map(function(u){ return '<option value="' + u.id + '"' + (vr && vr.assigned_user_id == u.id ? ' selected' : '') + '>' + escHtml(u.name) + '</option>'; }).join('') +
         '</select></div>' +
+      '</div>' +
+      '<div class="form-group" style="margin-bottom:20px;padding-bottom:20px;border-bottom:1px solid var(--border-color)">' +
+        '<label style="font-weight:600">Vehicle from Fleet Registry</label>' +
+        '<select id="vr-vehicle-select" onchange="vrSelectVehicle(this)" disabled style="margin-top:6px;opacity:0.6">' +
+          '<option value="">— Select city to see vehicles —</option>' +
+        '</select>' +
+      '</div>' +
+      '<div class="form-row">' +
+        '<div class="form-group"><label>Vehicle (Year Make Model) *</label><input type="text" id="vr-vehicle" value="' + escHtml(vr ? vr.vehicle||'' : '') + '" placeholder="e.g. 2022 Ford Transit" /></div>' +
+        '<div class="form-group"><label>Last 6 of VIN</label><input type="text" id="vr-vin" value="' + escHtml(vr ? vr.vin_last6||'' : '') + '" maxlength="6" placeholder="A1B2C3" oninput="this.value=this.value.toUpperCase()" style="font-family:monospace;letter-spacing:2px;text-transform:uppercase" /></div>' +
       '</div>' +
       '<div class="form-row">' +
         '<div class="form-group"><label>Shop / Vendor</label><input type="text" id="vr-shop" value="' + escHtml(vr ? vr.shop_name||'' : '') + '" placeholder="e.g. Pepboys, Firestone" /></div>' +
@@ -2765,7 +2767,7 @@ async function vrCityChanged(cityCode) {
   var sel = document.getElementById('vr-vehicle-select');
   if (!sel) return;
   if (!cityCode) {
-    sel.innerHTML = '<option value="">— Select a city first —</option>';
+    sel.innerHTML = '<option value="">— Select city to see vehicles —</option>';
     sel.disabled = true;
     sel.style.opacity = '0.6';
     window._vrVehicles = [];
