@@ -277,13 +277,18 @@ router.post('/ai-extract', requireAuth, async function(req, res) {
     '}\n' +
     'If a field is not found, use null. For line_items, include every part and labor charge. unit_price should be the per-unit cost as a number.';
 
+  var isPdf = (mediaType || '').toLowerCase() === 'application/pdf';
+  var contentBlock = isPdf
+    ? { type: 'document', source: { type: 'base64', media_type: 'application/pdf', data: imageData } }
+    : { type: 'image', source: { type: 'base64', media_type: mediaType || 'image/jpeg', data: imageData } };
+
   const body = JSON.stringify({
     model: 'claude-opus-4-8',
     max_tokens: 2048,
     messages: [{
       role: 'user',
       content: [
-        { type: 'image', source: { type: 'base64', media_type: mediaType || 'image/jpeg', data: imageData } },
+        contentBlock,
         { type: 'text', text: prompt }
       ]
     }]
@@ -291,16 +296,18 @@ router.post('/ai-extract', requireAuth, async function(req, res) {
 
   try {
     const result = await new Promise(function(resolve, reject) {
+      var headers = {
+        'Content-Type': 'application/json',
+        'x-api-key': process.env.ANTHROPIC_API_KEY,
+        'anthropic-version': '2023-06-01',
+        'Content-Length': Buffer.byteLength(body)
+      };
+      if (isPdf) headers['anthropic-beta'] = 'pdfs-2024-09-25';
       const options = {
         hostname: 'api.anthropic.com',
         path: '/v1/messages',
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'x-api-key': process.env.ANTHROPIC_API_KEY,
-          'anthropic-version': '2023-06-01',
-          'Content-Length': Buffer.byteLength(body)
-        }
+        headers: headers
       };
       const request = https.request(options, function(r) {
         var data = '';
