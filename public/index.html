@@ -146,6 +146,7 @@
   </style>
 </head>
 <body>
+<canvas id="ai-canvas-left" style="position:fixed;top:0;left:0;pointer-events:none;z-index:0"></canvas>
 <div id="app" class="no-sidebar"></div>
 <script>
 const state = {
@@ -2327,8 +2328,6 @@ async function renderAIAssistant(el) {
     '</div>' +
     '<div id="ai-usage-badge" style="font-size:12px;color:var(--text-muted-color);align-self:center">' + _aiUsage.daily + ' / ' + _aiUsage.dailyLimit + ' messages today</div>' +
     '</div>' +
-    '<canvas id="ai-canvas-left"></canvas>' +
-    '<canvas id="ai-canvas-right"></canvas>' +
     '<svg class="ai-side-icon-left" width="160" height="160" viewBox="0 0 24 24" fill="currentColor"><path d="M12 1C9.24 1 7 3.24 7 6v2H5a2 2 0 00-2 2v11a2 2 0 002 2h14a2 2 0 002-2V10a2 2 0 00-2-2h-2V6c0-2.76-2.24-5-5-5zm0 2c1.66 0 3 1.34 3 4v2H9V6c0-1.66 1.34-3 3-3zm0 9a2 2 0 110 4 2 2 0 010-4z"/></svg>' +
     '<svg class="ai-side-icon-right" width="160" height="160" viewBox="0 0 24 24" fill="currentColor"><path d="M12 1C9.24 1 7 3.24 7 6v2H5a2 2 0 00-2 2v11a2 2 0 002 2h14a2 2 0 002-2V10a2 2 0 00-2-2h-2V6c0-2.76-2.24-5-5-5zm0 2c1.66 0 3 1.34 3 4v2H9V6c0-1.66 1.34-3 3-3zm0 9a2 2 0 110 4 2 2 0 010-4z"/></svg>' +
     '<div id="ai-chat-wrap" style="display:flex;flex-direction:column;height:calc(100vh - 200px);max-width:800px;margin:0 auto">' +
@@ -2356,42 +2355,30 @@ async function renderAIAssistant(el) {
     '</div>';
   if (_aiMessages.length > 0) aiRenderThread();
   setTimeout(function() { document.getElementById('ai-input') && document.getElementById('ai-input').focus(); }, 100);
-  setTimeout(initAiDots, 50);
 }
-// ── Dot field physics ──────────────────────────────────────────────────────────
+// ── Dot field physics (full-screen background) ────────────────────────────────
 var _aiDotsRaf = null;
 var _aiDotsMouseX = -9999, _aiDotsMouseY = -9999;
+var _aiDotsInitialized = false;
 function initAiDots() {
   if (_aiDotsRaf) { cancelAnimationFrame(_aiDotsRaf); _aiDotsRaf = null; }
-  var cL = document.getElementById('ai-canvas-left');
-  var cR = document.getElementById('ai-canvas-right');
-  if (!cL || !cR) return;
-  if (window.innerWidth < 1200) return;
-  var sidebarW = 260;
-  var chatW = 800;
-  var gap = 32;
-  var sideW = Math.floor((window.innerWidth - sidebarW - chatW) / 2 - gap);
-  if (sideW < 20) return;
+  var canvas = document.getElementById('ai-canvas-left');
+  if (!canvas) return;
+  var w = window.innerWidth;
   var h = window.innerHeight;
-  [cL, cR].forEach(function(c) { c.width = sideW; c.height = h; });
-  var SPACING = 30, REPEL_R = 130, REPEL_S = 4000, SPRING = 0.07, DAMP = 0.72;
-  function makeDots(w, h) {
-    var d = [];
-    for (var x = SPACING / 2; x < w; x += SPACING) {
-      for (var y = SPACING / 2; y < h; y += SPACING) {
-        d.push({ ox: x, oy: y, x: x, y: y, vx: 0, vy: 0 });
-      }
+  canvas.width = w;
+  canvas.height = h;
+  var SPACING = 36, REPEL_R = 150, REPEL_S = 5000, SPRING = 0.07, DAMP = 0.72;
+  var dots = [];
+  for (var x = SPACING / 2; x < w; x += SPACING) {
+    for (var y = SPACING / 2; y < h; y += SPACING) {
+      dots.push({ ox: x, oy: y, x: x, y: y, vx: 0, vy: 0 });
     }
-    return d;
   }
-  var dotsL = makeDots(sideW, h);
-  var dotsR = makeDots(sideW, h);
-  function step(dots, canvas) {
-    var rect = canvas.getBoundingClientRect();
-    var mx = _aiDotsMouseX - rect.left;
-    var my = _aiDotsMouseY - rect.top;
+  function loop() {
     var ctx = canvas.getContext('2d');
-    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    ctx.clearRect(0, 0, w, h);
+    var mx = _aiDotsMouseX, my = _aiDotsMouseY;
     dots.forEach(function(d) {
       var dx = d.x - mx, dy = d.y - my;
       var dist = Math.sqrt(dx * dx + dy * dy) || 1;
@@ -2404,23 +2391,21 @@ function initAiDots() {
       }
       d.vx *= DAMP; d.vy *= DAMP;
       d.x += d.vx; d.y += d.vy;
-      var alpha = 0.08 + 0.14 * Math.max(0, 1 - dist / REPEL_R);
+      var alpha = 0.13 + 0.25 * Math.max(0, 1 - dist / REPEL_R);
       ctx.beginPath();
       ctx.arc(d.x, d.y, 1.5, 0, Math.PI * 2);
       ctx.fillStyle = 'rgba(249,115,22,' + alpha.toFixed(2) + ')';
       ctx.fill();
     });
-  }
-  function loop() {
-    if (!document.getElementById('ai-canvas-left')) return;
-    step(dotsL, cL);
-    step(dotsR, cR);
     _aiDotsRaf = requestAnimationFrame(loop);
   }
-  document.addEventListener('mousemove', function(e) {
-    _aiDotsMouseX = e.clientX;
-    _aiDotsMouseY = e.clientY;
-  });
+  if (!_aiDotsInitialized) {
+    document.addEventListener('mousemove', function(e) {
+      _aiDotsMouseX = e.clientX;
+      _aiDotsMouseY = e.clientY;
+    });
+    _aiDotsInitialized = true;
+  }
   loop();
 }
 var _aiPendingImage = null;
@@ -3150,6 +3135,8 @@ async function renderHomeScreen(el) {
 }
 
 render();
+initAiDots();
+window.addEventListener('resize', function() { initAiDots(); });
 </script>
 <style>
 .ai-msg { display:flex; }
@@ -3173,17 +3160,12 @@ render();
   font-size:14px;
   line-height:1.5;
 }
-#ai-canvas-left, #ai-canvas-right {
+#ai-canvas-left {
   position:fixed;
   top:0;
+  left:0;
   pointer-events:none;
   z-index:0;
-  display:none;
-}
-@media (min-width:1200px) {
-  #ai-canvas-left, #ai-canvas-right { display:block; }
-  #ai-canvas-left { left:260px; }
-  #ai-canvas-right { right:0; }
 }
 @media (min-width:1400px) {
   .ai-side-icon-left,
