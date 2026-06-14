@@ -3111,11 +3111,11 @@ async function renderHomeScreen(el) {
           '<div style="font-size:12px;color:var(--text-muted-color);margin-top:4px">VRs Pending Approval</div></div></div>' : '') +
         '<div class="card" style="cursor:pointer" onclick="navigate(\'dashboard\')"><div class="card-body" style="text-align:center;padding:16px">' +
           '<div style="font-size:28px;font-weight:700;color:var(--primary)">' + s.open_po + '</div>' +
-          '<div style="font-size:12px;color:var(--text-muted-color);margin-top:4px">Open POs</div>' +
+          '<div style="font-size:12px;color:var(--text-muted-color);margin-top:4px">POs This Month</div>' +
           '<div style="font-size:11px;color:var(--text-muted-color)">$' + parseFloat(s.open_po_total).toFixed(2) + '</div></div></div>' +
         '<div class="card" style="cursor:pointer" onclick="navigate(\'quotes\')"><div class="card-body" style="text-align:center;padding:16px">' +
           '<div style="font-size:28px;font-weight:700;color:#a78bfa">' + s.active_quotes + '</div>' +
-          '<div style="font-size:12px;color:var(--text-muted-color);margin-top:4px">Active Quotes</div>' +
+          '<div style="font-size:12px;color:var(--text-muted-color);margin-top:4px">Quotes This Month</div>' +
           '<div style="font-size:11px;color:var(--text-muted-color)">$' + parseFloat(s.quote_total).toFixed(2) + '</div></div></div>' +
         (['admin','manager'].includes(state.user.role) ? '<div class="card" style="cursor:pointer" onclick="navigate(\'fleet-registry\')"><div class="card-body" style="text-align:center;padding:16px">' +
           '<div style="font-size:28px;font-weight:700;color:#22c55e">' + s.fleet_count + '</div>' +
