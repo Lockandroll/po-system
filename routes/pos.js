@@ -24,10 +24,10 @@ function getInitials(name) {
 async function generatePONumber(cityCode, userInitials) {
   const year = new Date().getFullYear();
   const { rows } = await pool.query(
-    'SELECT COUNT(*) FROM purchase_orders WHERE EXTRACT(YEAR FROM created_at) = $1',
+    "SELECT MAX(CAST(SPLIT_PART(po_number, '-', 3) AS INTEGER)) as maxseq FROM purchase_orders WHERE EXTRACT(YEAR FROM created_at) = $1",
     [year]
   );
-  const seq = String(parseInt(rows[0].count) + 1).padStart(4, '0');
+  const seq = String((rows[0].maxseq || 0) + 1).padStart(4, '0');
   return cityCode + '-' + year + '-' + seq + '-' + userInitials;
 }
 
