@@ -262,7 +262,7 @@ router.delete('/:id', requireAuth, async function(req, res) {
     if (!rows.length) return res.status(404).json({ error: 'Not found' });
     const vr = rows[0];
     if (req.user.role !== 'admin' && vr.requester_id !== req.user.id) return res.status(403).json({ error: 'Access denied' });
-    if (vr.status !== 'draft') return res.status(400).json({ error: 'Only draft repairs can be deleted' });
+    if (req.user.role !== 'admin' && vr.status !== 'draft') return res.status(400).json({ error: 'Only draft repairs can be deleted' });
     await pool.query('DELETE FROM vehicle_repairs WHERE id = $1', [req.params.id]);
     await logAudit({ entity_type: 'vr', entity_id: vr.id, entity_number: vr.vr_number, action: 'deleted', user_id: req.user.id, user_name: req.user.name });
     res.json({ success: true });
