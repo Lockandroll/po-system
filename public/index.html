@@ -2890,7 +2890,7 @@ async function renderViewVR(el, id) {
           (vr.status==='draft' && (isOwner||state.user.role==='admin') ? '<button class="btn btn-primary" onclick="submitVR(' + vr.id + ')">Submit for Approval</button>' : '') +
           (vr.status==='submitted' && isApprover ? '<button class="btn btn-primary" style="background:#22c55e;border-color:#22c55e" onclick="approveVR(' + vr.id + ')">Approve</button>' : '') +
           (vr.status==='submitted' && isApprover ? '<button class="btn btn-danger" onclick="rejectVR(' + vr.id + ')">Reject</button>' : '') +
-          (vr.status==='draft' && (isOwner||state.user.role==='admin') ? '<button class="btn btn-danger btn-sm" onclick="deleteVR(' + vr.id + ')">Delete</button>' : '') +
+          ((vr.status==='draft' && (isOwner||state.user.role==='admin')) || state.user.role==='admin' ? '<button class="btn btn-danger btn-sm" onclick="deleteVR(' + vr.id + ')">Delete</button>' : '') +
           '<button class="btn btn-secondary" onclick="navigate(\'vr-dashboard\')"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="margin-right:4px"><polyline points="15 18 9 12 15 6"/></svg> Back</button>' +
         '</div>' +
       '</div>' +
