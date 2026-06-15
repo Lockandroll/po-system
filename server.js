@@ -3,6 +3,7 @@ const express = require('express');
 const cors = require('cors');
 const path = require('path');
 const { initDB } = require('./db');
+const { startReminders } = require('./jobs/reminders');
 
 const app = express();
 
@@ -41,5 +42,8 @@ const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => console.log('PO System running on port ' + PORT));
 
 initDB()
-  .then(() => console.log('Database initialized'))
+  .then(() => {
+    console.log('Database initialized');
+    startReminders();
+  })
   .catch(err => console.error('DB init error (non-fatal):', err));
