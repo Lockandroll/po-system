@@ -2,6 +2,7 @@ const express = require('express');
 const { pool } = require('../db');
 const { requireAuth } = require('../middleware/auth');
 const { logAudit } = require('../utils/audit');
+const { sendEmail, emailTemplate } = require('../utils/email');
 
 const router = express.Router();
 
@@ -94,6 +95,27 @@ router.post('/', requireAuth, async (req, res) => {
     }
     await client.query('COMMIT');
     await logAudit({ entity_type: 'quote', entity_id: quote.id, entity_number: quote_number, action: 'created', user_id: req.user.id, user_name: req.user.name, details: { customer: customer_name, total } });
+
+    const { rows: admins } = await pool.query("SELECT email, name FROM users WHERE role = 'admin' AND active = true AND receive_emails = true");
+    if (admins.length) {
+      const emails = admins.map(function(a) { return a.email; });
+      const html = emailTemplate({
+        badge: 'New quote',
+        title: 'A new quote has been created',
+        body: '<strong>' + req.user.name + '</strong> created a new quote.',
+        details: [
+          { label: 'Quote number', value: quote_number },
+          { label: 'Customer', value: customer_name },
+          { label: 'City', value: city_code || '—' },
+          { label: 'Total', value: '$' + total.toFixed(2) },
+          { label: 'Created by', value: req.user.name }
+        ],
+        buttonText: 'View Quote',
+        buttonUrl: (process.env.APP_URL || '').replace(/\/$/, '') + '/?view=view-quote&id=' + quote.id
+      });
+      await sendEmail(emails, 'New Quote: ' + quote_number, html);
+    }
+
     res.status(201).json(quote);
   } catch (err) {
     await client.query('ROLLBACK');
