@@ -1255,45 +1255,6 @@ async function renderSettings(el) {
   navigate('company-info');
 }
 
-  el.innerHTML =
-    '<div class="page-header"><div class="page-title">Settings</div></div>' +
-    '<div id="settings-error"></div>' +
-    '<div id="settings-success"></div>' +
-    '<div class="card"><div class="card-header"><span class="card-title">Company Logo</span></div><div class="card-body">' +
-      '<p class="text-muted mb-4" style="margin-bottom:16px">Shown in the header of printed POs. Recommended: PNG with transparent background, at least 400px wide.</p>' +
-      '<div style="display:flex;align-items:center;gap:20px;flex-wrap:wrap">' +
-        '<div id="logo-preview-area" onclick="document.getElementById(\'logo-file-input\').click()" style="width:180px;height:80px;border:1.5px dashed var(--border);border-radius:var(--radius);display:flex;align-items:center;justify-content:center;background:var(--bg-elevated);overflow:hidden;cursor:pointer;flex-shrink:0">' +
-          (settings.logo
-            ? '<img src="' + settings.logo + '" style="max-width:100%;max-height:100%;object-fit:contain" alt="Current logo" />'
-            : '<span style="font-size:13px;color:var(--text-muted-color)">Click to upload</span>') +
-        '</div>' +
-        '<div style="display:flex;flex-direction:column;gap:8px">' +
-          '<input type="file" id="logo-file-input" accept="image/png,image/jpeg,image/gif" style="display:none" onchange="previewSettingsLogo(this)" />' +
-          '<button class="btn btn-secondary" onclick="document.getElementById(\'logo-file-input\').click()">&#128247; Upload Logo</button>' +
-          (settings.logo ? '<button class="btn btn-danger btn-sm" onclick="removeLogo()">Remove Logo</button>' : '') +
-        '</div>' +
-      '</div>' +
-      '<div style="margin-top:16px">' +
-        '<button class="btn btn-primary" id="save-logo-btn" style="display:none" onclick="saveLogo()">Save Logo</button>' +
-      '</div>' +
-    '</div></div>' +
-    '<div class="card mt-4" style="margin-top:20px"><div class="card-header"><span class="card-title">Company Information</span></div><div class="card-body">' +
-      '<p class="text-muted mb-4" style="margin-bottom:16px">Shown on printed quotes below the logo. Enter your office address and main phone number.</p>' +
-      '<div class="form-row">' +
-        '<div class="form-group"><label>Company Name</label><input type="text" id="company-name" value="' + escHtml(settings.company_name || '') + '" placeholder="e.g. Pop-A-Lock" /></div>' +
-        '<div class="form-group"><label>Company Phone</label><input type="text" id="company-phone" value="' + escHtml(settings.company_phone || '') + '" placeholder="e.g. 337-873-2983" /></div>' +
-      '</div>' +
-      '<div class="form-group"><label>Address Line 1</label><input type="text" id="company-address" value="' + escHtml(settings.company_address || '') + '" placeholder="e.g. 589 Dorset Court" /></div>' +
-      '<div class="form-group"><label>City, State, ZIP</label><input type="text" id="company-city-zip" value="' + escHtml(settings.company_city_state_zip || '') + '" placeholder="e.g. Mount Dora, Florida 32757" /></div>' +
-      '<button class="btn btn-primary" onclick="saveCompanyInfo()">Save Company Info</button>' +
-    '</div></div>' +
-    '<div class="card mt-4" style="margin-top:20px"><div class="card-header"><span class="card-title"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="margin-right:6px;vertical-align:-3px"><rect x="3" y="6" width="18" height="13" rx="2"/><path d="M8 6V4a1 1 0 011-1h6a1 1 0 011 1v2"/><circle cx="9" cy="12" r="1" fill="currentColor"/><circle cx="15" cy="12" r="1" fill="currentColor"/><path d="M9.5 16h5"/></svg>Neurolock AI Context</span></div><div class="card-body">' +
-      '<p class="text-muted mb-4" style="margin-bottom:16px">Add company-specific context that Neurolock will always know — your service area, specialties, preferred brands, rate sheet, or anything else relevant to your team.</p>' +
-      '<div class="form-group"><label>Company Context</label><textarea id="ai-context-input" rows="6" placeholder="e.g. Lock and Roll LLC serves the Lafayette, LA metro area. Our standard rates: lockout $85, rekey $25/lock, deadbolt install $120. We specialize in Schlage and Medeco hardware. We also handle automotive lockouts and transponder key programming." style="width:100%;resize:vertical">' + escHtml(settings.ai_context || '') + '</textarea></div>' +
-      '<button class="btn btn-primary" onclick="saveAIContext()">Save AI Context</button>' +
-    '</div></div>';
-}
-
 function previewSettingsLogo(input) {
   const file = input.files[0];
   if (!file) return;
