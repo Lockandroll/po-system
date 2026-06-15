@@ -2908,7 +2908,7 @@ async function renderEditVehicle(el, id) {
         '<div class="form-group"><label>Make / Model *</label><input type="text" id="ve-makemodel" value="' + escHtml(vehicle ? vehicle.make_model||'' : '') + '" placeholder="e.g. Chevy Express Van" /></div>' +
       '</div>' +
       '<div class="form-row">' +
-        '<div class="form-group"><label>VIN#</label><input type="text" id="ve-vin" value="' + escHtml(vehicle ? vehicle.vin||'' : '') + '" maxlength="17" placeholder="Full VIN (17 chars)" style="font-family:monospace;letter-spacing:1px;text-transform:uppercase" oninput="this.value=this.value.toUpperCase()" /></div>' +
+        '<div class="form-group"><label>VIN#</label><div style="display:flex;gap:8px;align-items:center"><input type="text" id="ve-vin" value="' + escHtml(vehicle ? vehicle.vin||'' : '') + '" maxlength="17" placeholder="Full VIN (17 chars)" style="font-family:monospace;letter-spacing:1px;text-transform:uppercase;flex:1" oninput="this.value=this.value.toUpperCase()" /><button type="button" class="btn btn-secondary btn-sm" id="ve-decode-btn" onclick="decodeVIN()" style="white-space:nowrap">Decode VIN</button></div></div>' +
         '<div class="form-group"><label>Key Codes</label><input type="text" id="ve-keys" value="' + escHtml(vehicle ? vehicle.key_codes||'' : '') + '" placeholder="e.g. V1639" /></div>' +
       '</div>' +
       '<div class="form-row">' +
@@ -2932,6 +2932,46 @@ async function renderEditVehicle(el, id) {
       '<button class="btn btn-primary" id="ve-save-btn" onclick="saveVehicle(' + (id||'null') + ', this)">Save Vehicle</button>' +
     '</div>';
 }
+async function decodeVIN() {
+  var vinEl = document.getElementById('ve-vin');
+  var btn = document.getElementById('ve-decode-btn');
+  var errEl = document.getElementById('vehicle-edit-error');
+  var vin = (vinEl ? vinEl.value.trim().toUpperCase() : '');
+  if (vin.length !== 17) { if (errEl) errEl.innerHTML = '<div class="alert alert-error">Enter a full 17-character VIN first.</div>'; return; }
+  btn.disabled = true;
+  btn.textContent = 'Decoding…';
+  if (errEl) errEl.innerHTML = '';
+  try {
+    var res = await fetch('https://vpic.nhtsa.dot.gov/api/vehicles/decodevin/' + vin + '?format=json');
+    var data = await res.json();
+    var results = (data.Results || []);
+    function val(label) {
+      var r = results.find(function(x){ return x.Variable === label; });
+      return (r && r.Value && r.Value !== 'Not Applicable' && r.Value !== 'null' && r.Value !== null) ? r.Value : '';
+    }
+    var year = val('Model Year');
+    var make = val('Make');
+    var model = val('Model');
+    if (!year && !make && !model) {
+      if (errEl) errEl.innerHTML = '<div class="alert alert-error">Could not decode this VIN. Check that it is correct and try again.</div>';
+    } else {
+      var yearEl = document.getElementById('ve-year');
+      var mmEl = document.getElementById('ve-makemodel');
+      if (yearEl && year) yearEl.value = year;
+      if (mmEl) {
+        var makeModel = [make, model].filter(Boolean).join(' ');
+        // Title-case
+        mmEl.value = makeModel.replace(/\w\S*/g, function(w){ return w.charAt(0).toUpperCase() + w.slice(1).toLowerCase(); });
+      }
+      if (errEl) errEl.innerHTML = '<div class="alert alert-success" style="background:#052e16;color:#4ade80;border:1px solid #166534;padding:10px 14px;border-radius:6px;margin-bottom:12px">&#10003; VIN decoded: ' + escHtml(year + ' ' + make + ' ' + model) + '</div>';
+    }
+  } catch(e) {
+    if (errEl) errEl.innerHTML = '<div class="alert alert-error">Decode failed — check your internet connection.</div>';
+  }
+  btn.disabled = false;
+  btn.textContent = 'Decode VIN';
+}
+
 async function saveVehicle(id, btn) {
   var year = parseInt(((document.getElementById('ve-year')||{}).value||'0'));
   var make_model = ((document.getElementById('ve-makemodel')||{}).value||'').trim();
