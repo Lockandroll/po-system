@@ -94,6 +94,7 @@
     .badge-approved { background: #0d2d17; color: #22c55e; border: 1px solid #134d27; }
     .badge-rejected { background: #2d0d0d; color: #ef4444; border: 1px solid #4d1515; }
     .badge-cancelled { background: #1a0d2e; color: #c084fc; border: 1px solid #3b1f6e; }
+    .badge-order-placed { background: #1a0d2e; color: #a78bfa; border: 1px solid #3b1f6e; }
     .badge-admin { background: #1e1040; color: #a78bfa; }
     .badge-approver { background: #0d1e30; color: #60a5fa; }
     .badge-requester { background: #2a2a2a; color: #aaa; }
@@ -228,7 +229,8 @@ function formatDate(d) {
 }
 
 function badgeHtml(status) {
-  return '<span class="badge badge-' + escHtml(status) + '">' + escHtml(status) + '</span>';
+  var cls = (status || '').replace(/\s+/g, '-');
+  return '<span class="badge badge-' + escHtml(cls) + '">' + escHtml(status) + '</span>';
 }
 
 async function render() {
@@ -388,6 +390,7 @@ async function renderDashboard(el) {
     const total = allPOs.length;
     const pending = allPOs.filter(function(p){ return p.status === 'submitted'; }).length;
     const approved = allPOs.filter(function(p){ return p.status === 'approved'; }).length;
+    const ordered = allPOs.filter(function(p){ return p.status === 'order placed'; }).length;
     const drafts = allPOs.filter(function(p){ return p.status === 'draft'; }).length;
     const isApprover = ['approver','admin'].includes(state.user.role);
 
@@ -403,15 +406,15 @@ async function renderDashboard(el) {
       '<div class="stats-grid">' +
         '<div class="stat-card"><div class="stat-value">' + total + '</div><div class="stat-label">Total POs</div></div>' +
         '<div class="stat-card"><div class="stat-value" style="color:var(--warning)">' + pending + '</div><div class="stat-label">Pending Approval</div></div>' +
-        '<div class="stat-card"><div class="stat-value" style="color:var(--success)">' + approved + '</div><div class="stat-label">Approved</div></div>' +
-        '<div class="stat-card"><div class="stat-value" style="color:var(--text-muted-color)">' + drafts + '</div><div class="stat-label">Drafts</div></div>' +
+        '<div class="stat-card" style="cursor:pointer" onclick="document.getElementById(\'filter-status\').value=\'approved\';applyFilters(true)"><div class="stat-value" style="color:var(--success)">' + approved + '</div><div class="stat-label">Approved — Needs Ordering</div></div>' +
+        '<div class="stat-card" style="cursor:pointer" onclick="document.getElementById(\'filter-status\').value=\'order placed\';applyFilters(true)"><div class="stat-value" style="color:#a78bfa">' + ordered + '</div><div class="stat-label">Order Placed</div></div>' +
       '</div>' +
       '<div class="card">' +
         '<div class="card-header"><span class="card-title">Purchase Orders</span></div>' +
         '<div class="card-body" style="border-bottom:1px solid var(--border)">' +
           '<div class="filter-bar">' +
             '<input type="text" id="filter-text" placeholder="Search PO #, vendor, customer..." oninput="applyFilters(true)" />' +
-            '<select id="filter-status" onchange="applyFilters(true)"><option value="">All Statuses</option><option value="draft">Draft</option><option value="submitted">Submitted</option><option value="approved">Approved</option><option value="rejected">Rejected</option><option value="cancelled">Cancelled</option></select>' +
+            '<select id="filter-status" onchange="applyFilters(true)"><option value="">All Statuses</option><option value="draft">Draft</option><option value="submitted">Submitted</option><option value="approved">Approved</option><option value="order placed">Order Placed</option><option value="rejected">Rejected</option><option value="cancelled">Cancelled</option></select>' +
             '<select id="filter-city" onchange="applyFilters(true)">' + cityOptions + '</select>' +
           '</div>' +
         '</div>' +
@@ -496,7 +499,12 @@ function applyFilters(resetPage) {
         '<td>' + escHtml(po.approver_name || '—') + '</td>' +
         '<td>' + escHtml(po.orderer_name || '—') + '</td>' +
         '<td>' + formatDate(po.created_at) + '</td>' +
-        '<td><button class="btn btn-secondary btn-sm" onclick="navigate(\'view\',' + po.id + ')">View</button></td>' +
+        '<td style="white-space:nowrap">' +
+          (po.status === 'approved' && (state.user.role === 'admin' || po.orderer_id === state.user.id)
+            ? '<button class="btn btn-primary btn-sm" onclick="markOrdered(' + po.id + ')" style="margin-right:4px;background:#7c3aed;border-color:#7c3aed">Mark Ordered</button>'
+            : '') +
+          '<button class="btn btn-secondary btn-sm" onclick="navigate(\'view\',' + po.id + ')">View</button>' +
+        '</td>' +
       '</tr>';
     }).join('') +
     '</tbody></table></div>' +
@@ -717,6 +725,7 @@ async function renderViewPO(el, id) {
     const canSubmit = state.user.role !== 'approver' && po.status === 'draft' && po.requester_id === state.user.id;
     const canDelete = state.user.role === 'admin' || (state.user.role !== 'approver' && po.status === 'draft' && po.requester_id === state.user.id);
     const canApprove = ['approver','admin'].includes(state.user.role) && po.status === 'submitted';
+    const canOrder = po.status === 'approved' && (state.user.role === 'admin' || po.orderer_id === state.user.id);
     const canCancel = state.user.role === 'admin' && po.status !== 'draft' && po.status !== 'cancelled';
     let usersForApproval = [];
     if (canApprove) { try { usersForApproval = await api('GET', '/users'); } catch(e) {} }
@@ -730,6 +739,7 @@ async function renderViewPO(el, id) {
           (canEdit ? '<button class="btn btn-secondary" onclick="navigate(\'edit\',' + po.id + ')">' + icons.edit + ' Edit</button>' : '') +
           (canSubmit ? '<button class="btn btn-primary" onclick="submitPO(' + po.id + ')">Submit for Approval</button>' : '') +
           (canDelete ? '<button class="btn btn-danger btn-sm" onclick="deletePO(' + po.id + ')">' + icons.trash + '</button>' : '') +
+          (canOrder ? '<button class="btn btn-primary" onclick="markOrdered(' + po.id + ')" style="background:#7c3aed;border-color:#7c3aed">&#10003; Mark as Ordered</button>' : '') +
           (canCancel ? '<button class="btn btn-danger btn-sm" onclick="cancelPO(' + po.id + ')">&#x2715; Cancel PO</button>' : '') +
         '</div>' +
       '</div>' +
@@ -812,6 +822,20 @@ async function cancelPO(id) {
   if (!confirm('Cancel this PO? This cannot be undone.')) return;
   try { await api('POST', '/pos/' + id + '/cancel'); navigate('dashboard'); }
   catch(err) { document.getElementById('view-error').innerHTML = '<div class="alert alert-error">' + escHtml(err.message) + '</div>'; }
+}
+
+async function markOrdered(id) {
+  if (!confirm('Confirm this PO has been ordered from the vendor?')) return;
+  try {
+    await api('POST', '/pos/' + id + '/order');
+    allPOs = await api('GET', '/pos');
+    applyFilters();
+    navigate('view', id);
+  } catch(err) {
+    var errEl = document.getElementById('view-error');
+    if (errEl) errEl.innerHTML = '<div class="alert alert-error">' + escHtml(err.message) + '</div>';
+    else alert(err.message);
+  }
 }
 
 var _usersData = [];
