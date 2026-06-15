@@ -1418,8 +1418,19 @@ function vendorsRenderTable(search) {
 function toggleVendorPw(id, pw) {
   const el = document.getElementById('pw-' + id);
   const btn = el.nextElementSibling;
-  if (el.textContent === '••••••••') { el.textContent = pw; btn.textContent = 'Hide'; if (navigator.clipboard) navigator.clipboard.writeText(pw).catch(function(){}); }
-  else { el.textContent = '••••••••'; btn.textContent = 'Show'; }
+  if (el.textContent === '••••••••') {
+    el.textContent = pw; btn.textContent = 'Hide';
+    if (navigator.clipboard) navigator.clipboard.writeText(pw).then(function() {
+      var tip = document.createElement('span');
+      tip.textContent = 'Copied!';
+      tip.style.cssText = 'position:fixed;background:#22c55e;color:#fff;font-size:12px;font-weight:600;padding:4px 10px;border-radius:6px;pointer-events:none;z-index:9999;transition:opacity 0.4s;white-space:nowrap';
+      var r = btn.getBoundingClientRect();
+      tip.style.left = r.left + 'px';
+      tip.style.top = (r.top - 30) + 'px';
+      document.body.appendChild(tip);
+      setTimeout(function() { tip.style.opacity = '0'; setTimeout(function() { tip.remove(); }, 400); }, 1200);
+    }).catch(function(){});
+  } else { el.textContent = '••••••••'; btn.textContent = 'Show'; }
 }
 
 function showVendorModal(id, name, website, account_number, username, password, notes, rep_name, rep_email, rep_phone) {
