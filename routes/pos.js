@@ -379,4 +379,45 @@ router.post('/:id/cancel', requireAuth, requireRole('admin'), async (req, res) =
   res.json({ success: true });
 });
 
+// Mark PO as ordered (orderer or admin)
+router.post('/:id/order', requireAuth, async (req, res) => {
+  const { rows } = await pool.query(
+    'SELECT po.*, u.email AS requester_email, u.name AS requester_name, u.receive_emails AS requester_receive_emails FROM purchase_orders po JOIN users u ON po.requester_id = u.id WHERE po.id = $1',
+    [req.params.id]
+  );
+  const po = rows[0];
+  if (!po) return res.status(404).json({ error: 'PO not found' });
+  if (po.status !== 'approved') return res.status(400).json({ error: 'Only approved POs can be marked as ordered' });
+  if (req.user.role !== 'admin' && po.orderer_id !== req.user.id) {
+    return res.status(403).json({ error: 'Only the assigned orderer or an admin can mark this as ordered' });
+  }
+
+  await pool.query(
+    "UPDATE purchase_orders SET status='order placed', updated_at=NOW() WHERE id=$1",
+    [req.params.id]
+  );
+
+  await logAudit({ entity_type: 'po', entity_id: po.id, entity_number: po.po_number, action: 'order placed', user_id: req.user.id, user_name: req.user.name });
+
+  if (po.requester_receive_emails !== false && po.requester_email) {
+    const html = emailTemplate({
+      badge: 'Order placed',
+      badgeColor: 'purple',
+      title: 'Your purchase order has been placed',
+      body: '<strong>' + req.user.name + '</strong> has confirmed that PO <strong>' + po.po_number + '</strong> has been ordered from the vendor.',
+      details: [
+        { label: 'PO number', value: po.po_number },
+        { label: 'Vendor', value: po.vendor_name },
+        { label: 'Total', value: '$' + parseFloat(po.total_amount).toFixed(2) },
+        { label: 'Ordered by', value: req.user.name }
+      ],
+      buttonText: 'View PO',
+      buttonUrl: appUrl('?view=view&id=' + po.id)
+    });
+    await sendEmail(po.requester_email, 'Order Placed: PO ' + po.po_number, html);
+  }
+
+  res.json({ success: true });
+});
+
 module.exports = router;
