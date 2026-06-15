@@ -501,7 +501,7 @@ function applyFilters(resetPage) {
         '<td>' + formatDate(po.created_at) + '</td>' +
         '<td style="white-space:nowrap">' +
           (po.status === 'approved' && (state.user.role === 'admin' || po.orderer_id === state.user.id)
-            ? '<button class="btn btn-primary btn-sm" onclick="markOrdered(' + po.id + ')" style="margin-right:4px;background:#7c3aed;border-color:#7c3aed">Mark Ordered</button>'
+            ? '<button class="btn btn-primary btn-sm" onclick="event.stopPropagation();markOrdered(' + po.id + ')" style="margin-right:4px;background:#7c3aed;border-color:#7c3aed">Mark Ordered</button>'
             : '') +
           '<button class="btn btn-secondary btn-sm" onclick="navigate(\'view\',' + po.id + ')">View</button>' +
         '</td>' +
@@ -830,7 +830,8 @@ async function markOrdered(id) {
     await api('POST', '/pos/' + id + '/order');
     allPOs = await api('GET', '/pos');
     applyFilters();
-    navigate('view', id);
+    // If we're inside the PO view, reload it; otherwise stay on dashboard
+    if (state.currentView === 'view') navigate('view', id);
   } catch(err) {
     var errEl = document.getElementById('view-error');
     if (errEl) errEl.innerHTML = '<div class="alert alert-error">' + escHtml(err.message) + '</div>';
