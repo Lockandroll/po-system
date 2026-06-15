@@ -69,9 +69,7 @@ router.post('/', requireAuth, async (req, res) => {
   const { customer_name, city_code, notes, important_info, tax_rate, line_items } = req.body;
   if (!customer_name) return res.status(400).json({ error: 'Customer name is required' });
   const initials = getInitials(req.user.name);
-  const quote_number = await generateQuoteNumber(initials);
   const taxRateVal = parseFloat(tax_rate) || 0;
-  // Subtotal based on list_price; tax only on taxable items
   const subtotal = (line_items || []).reduce(function(sum, item) {
     return sum + ((parseFloat(item.quantity) || 0) * (parseFloat(item.list_price) || 0));
   }, 0);
@@ -80,54 +78,55 @@ router.post('/', requireAuth, async (req, res) => {
   }, 0);
   const tax_amount = taxableSubtotal * taxRateVal / 100;
   const total = subtotal + tax_amount;
-  const client = await pool.connect();
-  try {
-    await client.query('BEGIN');
-    const { rows } = await client.query(
-      'INSERT INTO quotes (quote_number, requester_id, customer_name, city_code, notes, important_info, tax_rate, tax_amount, total_amount) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING *',
-      [quote_number, req.user.id, customer_name, city_code || null, notes || null, important_info || null, taxRateVal, tax_amount, total]
-    );
-    const quote = rows[0];
-    for (const item of (line_items || [])) {
-      await client.query(
-        'INSERT INTO quote_line_items (quote_id, item_number, manufacturer, description, quantity, unit_price, list_price, taxable, url) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)',
-        [quote.id, item.item_number || null, item.manufacturer || null, item.description, item.quantity, item.unit_price || 0, item.list_price || 0, item.taxable || false, item.url || null]
-      );
-    }
-    await client.query('COMMIT');
-    try { await logAudit({ entity_type: 'quote', entity_id: quote.id, entity_number: quote_number, action: 'created', user_id: req.user.id, user_name: req.user.name, details: { customer: customer_name, total } }); } catch(auditErr) { console.error('Audit log failed:', auditErr); }
 
+  for (var attempt = 0; attempt < 10; attempt++) {
+    const quote_number = await generateQuoteNumber(initials);
+    const client = await pool.connect();
     try {
-      const { rows: admins } = await pool.query("SELECT email, name FROM users WHERE role = 'admin' AND active = true AND receive_emails = true");
-      if (admins.length) {
-        const emails = admins.map(function(a) { return a.email; });
-        const html = emailTemplate({
-          badge: 'New quote',
-          title: 'A new quote has been created',
-          body: '<strong>' + req.user.name + '</strong> created a new quote.',
-          details: [
-            { label: 'Quote number', value: quote_number },
-            { label: 'Customer', value: customer_name },
-            { label: 'City', value: city_code || '—' },
-            { label: 'Total', value: '$' + total.toFixed(2) },
-            { label: 'Created by', value: req.user.name }
-          ],
-          buttonText: 'View Quote',
-          buttonUrl: (process.env.APP_URL || '').replace(/\/$/, '') + '/?view=view-quote&id=' + quote.id
-        });
-        await sendEmail(emails, 'New Quote: ' + quote_number, html);
+      await client.query('BEGIN');
+      const { rows } = await client.query(
+        'INSERT INTO quotes (quote_number, requester_id, customer_name, city_code, notes, important_info, tax_rate, tax_amount, total_amount) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING *',
+        [quote_number, req.user.id, customer_name, city_code || null, notes || null, important_info || null, taxRateVal, tax_amount, total]
+      );
+      const quote = rows[0];
+      for (const item of (line_items || [])) {
+        await client.query(
+          'INSERT INTO quote_line_items (quote_id, item_number, manufacturer, description, quantity, unit_price, list_price, taxable, url) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)',
+          [quote.id, item.item_number || null, item.manufacturer || null, item.description, item.quantity, item.unit_price || 0, item.list_price || 0, item.taxable || false, item.url || null]
+        );
       }
-    } catch (emailErr) {
-      console.error('Quote email notification failed:', emailErr);
+      await client.query('COMMIT');
+      client.release();
+      try { await logAudit({ entity_type: 'quote', entity_id: quote.id, entity_number: quote_number, action: 'created', user_id: req.user.id, user_name: req.user.name, details: { customer: customer_name, total } }); } catch(e) {}
+      try {
+        const { rows: admins } = await pool.query("SELECT email, name FROM users WHERE role = 'admin' AND active = true AND receive_emails = true");
+        if (admins.length) {
+          const emails = admins.map(function(a) { return a.email; });
+          const html = emailTemplate({
+            badge: 'New quote', title: 'A new quote has been created',
+            body: '<strong>' + req.user.name + '</strong> created a new quote.',
+            details: [
+              { label: 'Quote number', value: quote_number },
+              { label: 'Customer', value: customer_name },
+              { label: 'City', value: city_code || '—' },
+              { label: 'Total', value: '$' + total.toFixed(2) },
+              { label: 'Created by', value: req.user.name }
+            ],
+            buttonText: 'View Quote',
+            buttonUrl: (process.env.APP_URL || '').replace(/\/$/, '') + '/?view=view-quote&id=' + quote.id
+          });
+          await sendEmail(emails, 'New Quote: ' + quote_number, html);
+        }
+      } catch(e) { console.error('Quote email failed:', e); }
+      return res.status(201).json(quote);
+    } catch (err) {
+      await client.query('ROLLBACK').catch(function(){});
+      client.release();
+      // Retry on duplicate quote number
+      if (err.code === '23505' && err.constraint === 'quotes_quote_number_key' && attempt < 9) continue;
+      console.error(err);
+      return res.status(500).json({ error: 'Failed to create quote: ' + err.message });
     }
-
-    res.status(201).json(quote);
-  } catch (err) {
-    await client.query('ROLLBACK').catch(function(){});
-    console.error(err);
-    res.status(500).json({ error: 'Failed to create quote: ' + err.message });
-  } finally {
-    client.release();
   }
 });
 
