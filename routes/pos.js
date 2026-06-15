@@ -224,7 +224,7 @@ router.post('/:id/submit', requireAuth, async (req, res) => {
   await pool.query('UPDATE purchase_orders SET status=$1, updated_at=NOW() WHERE id=$2', ['submitted', req.params.id]);
   await logAudit({ entity_type: 'po', entity_id: po.id, entity_number: po.po_number, action: 'submitted', user_id: req.user.id, user_name: req.user.name });
 
-  const { rows: approvers } = await pool.query("SELECT email, name FROM users WHERE role IN ('approver', 'admin', 'manager') AND active = true AND receive_emails = true");
+  const { rows: approvers } = await pool.query("SELECT email, name FROM users WHERE role = 'admin' AND active = true AND receive_emails = true");
   if (approvers.length) {
     const emails = approvers.map(function(a) { return a.email; });
     const html = emailTemplate({
