@@ -216,7 +216,7 @@ function getSidebarSection(view) {
   if (['quotes','new-quote','edit-quote','view-quote'].indexOf(view) !== -1) return 'quotes';
   if (['vr-dashboard','new-vr','edit-vr','view-vr','fleet-registry','new-vehicle','edit-vehicle','vehicle-history'].indexOf(view) !== -1) return 'vr';
   if (['ai-assistant','ai-conversations','ai-usage'].indexOf(view) !== -1) return 'ai';
-  if (['company-info','ai-context','settings','users','cities','vendors','audit'].indexOf(view) !== -1) return 'settings';
+  if (['company-info','ai-context','settings','users','cities','audit'].indexOf(view) !== -1) return 'settings';
   return null;
 }
 function toggleSection(section, defaultView) {
@@ -298,7 +298,7 @@ async function render() {
   var quViews = ['quotes','new-quote','edit-quote','view-quote'];
   var vrViews = ['vr-dashboard','new-vr','edit-vr','view-vr','fleet-registry','new-vehicle','edit-vehicle','vehicle-history'];
   var aiViews = ['ai-assistant','ai-conversations','ai-usage'];
-  var stViews = ['company-info','ai-context','settings','users','cities','vendors','audit'];
+  var stViews = ['company-info','ai-context','settings','users','cities','audit'];
   var navHtml =
     '<div class="nav-item' + (cv === 'home' ? ' active' : '') + '" onclick="navigate(\'home\')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 9l9-7 9 7v11a2 2 0 01-2 2H5a2 2 0 01-2-2z"/><polyline points="9 22 9 12 15 12 15 22"/></svg> Home</div>' +
     '<div class="nav-section-header' + (poViews.indexOf(cv) !== -1 ? ' section-active' : '') + (ss === 'po' ? ' open' : '') + '" onclick="toggleSection(\'po\',\'dashboard\')"><span class="s-label">' + icons.dashboard + ' Purchase Orders</span>' + chev + '</div>' +
@@ -317,6 +317,7 @@ async function render() {
       (state.user.role !== 'approver' ? '<div class="nav-sub' + (cv === 'new-vr' ? ' active' : '') + '" onclick="navigate(\'new-vr\')">' + icons.plus + ' New VR</div>' : '') +
       (isAdminMgr ? '<div class="nav-sub' + (['fleet-registry','new-vehicle','edit-vehicle','vehicle-history'].indexOf(cv) !== -1 ? ' active' : '') + '" onclick="navigate(\'fleet-registry\')">' + icoDB + ' Fleet Registry</div>' : '')
     : '') +
+    (isAdminMgr ? '<div class="nav-item' + (cv === 'vendors' ? ' active' : '') + '" onclick="navigate(\'vendors\')">' + icoAccounts + ' Accounts</div>' : '') +
     (isAdmin ?
       '<div class="nav-section-header' + (aiViews.indexOf(cv) !== -1 ? ' section-active' : '') + (ss === 'ai' ? ' open' : '') + '" onclick="toggleSection(\'ai\',\'ai-assistant\')"><span class="s-label">' + icoAI + ' Locksmith AI Assistant</span>' + chev + '</div>' +
       (ss === 'ai' ?
@@ -334,7 +335,6 @@ async function render() {
         (isAdmin ? '<div class="nav-sub' + (cv === 'ai-context' ? ' active' : '') + '" onclick="navigate(\'ai-context\')">' + icoAI + ' AI Context</div>' : '') +
         '<div class="nav-sub' + (cv === 'users' ? ' active' : '') + '" onclick="navigate(\'users\')">' + icons.users + ' Users</div>' +
         '<div class="nav-sub' + (cv === 'cities' ? ' active' : '') + '" onclick="navigate(\'cities\')">' + icons.map + ' Cities</div>' +
-        '<div class="nav-sub' + (cv === 'vendors' ? ' active' : '') + '" onclick="navigate(\'vendors\')">' + icoAccounts + ' Accounts</div>' +
         (isAdmin ? '<div class="nav-sub' + (cv === 'audit' ? ' active' : '') + '" onclick="navigate(\'audit\')">' + icoAudit + ' Audit Log</div>' : '')
       : '')
     : '');
@@ -1382,10 +1382,10 @@ function vendorsRenderTable(search) {
   wrap.innerHTML =
     '<div class="card"><div class="table-wrap">' +
       '<table>' +
-        '<thead><tr><th>Account Name</th><th>Website</th><th>Account #</th><th>Username</th><th>Password</th><th>Notes</th><th></th></tr></thead>' +
+        '<thead><tr><th>Account Name</th><th>Website</th><th>Account #</th><th>Username</th><th>Password</th><th>Notes</th><th>Rep Name</th><th>Rep Email</th><th>Rep Phone</th><th></th></tr></thead>' +
         '<tbody>' +
           (filtered.length === 0
-            ? '<tr><td colspan="7" style="text-align:center;color:var(--text-muted-color);padding:32px">No accounts found.</td></tr>'
+            ? '<tr><td colspan="10" style="text-align:center;color:var(--text-muted-color);padding:32px">No accounts found.</td></tr>'
             : filtered.map(function(v) {
                 return '<tr>' +
                   '<td style="font-weight:600;color:var(--text)">' + escHtml(v.name) + '</td>' +
@@ -1401,8 +1401,11 @@ function vendorsRenderTable(search) {
                       : '—') +
                   '</td>' +
                   '<td style="max-width:200px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">' + escHtml(v.notes || '—') + '</td>' +
+                  '<td>' + escHtml(v.rep_name || '—') + '</td>' +
+                  '<td>' + (v.rep_email ? '<a href="mailto:' + escHtml(v.rep_email) + '" style="color:var(--primary)">' + escHtml(v.rep_email) + '</a>' : '—') + '</td>' +
+                  '<td>' + escHtml(v.rep_phone || '—') + '</td>' +
                   '<td style="white-space:nowrap">' +
-                    '<button class="btn btn-secondary btn-sm" onclick="showVendorModal(' + v.id + ',\'' + escHtml(v.name).replace(/'/g,"\\'") + '\',\'' + escHtml(v.website||'').replace(/'/g,"\\'") + '\',\'' + escHtml(v.account_number||'').replace(/'/g,"\\'") + '\',\'' + escHtml(v.username||'').replace(/'/g,"\\'") + '\',\'' + escHtml(v.password||'').replace(/'/g,"\\'") + '\',\'' + escHtml(v.notes||'').replace(/'/g,"\\'") + '\')">Edit</button> ' +
+                    '<button class="btn btn-secondary btn-sm" onclick="showVendorModal(' + v.id + ',\'' + escHtml(v.name).replace(/'/g,"\\'") + '\',\'' + escHtml(v.website||'').replace(/'/g,"\\'") + '\',\'' + escHtml(v.account_number||'').replace(/'/g,"\\'") + '\',\'' + escHtml(v.username||'').replace(/'/g,"\\'") + '\',\'' + escHtml(v.password||'').replace(/'/g,"\\'") + '\',\'' + escHtml(v.notes||'').replace(/'/g,"\\'") + '\',\'' + escHtml(v.rep_name||'').replace(/'/g,"\\'") + '\',\'' + escHtml(v.rep_email||'').replace(/'/g,"\\'") + '\',\'' + escHtml(v.rep_phone||'').replace(/'/g,"\\'") + '\')">Edit</button> ' +
                     '<button class="btn btn-danger btn-sm" onclick="deleteVendor(' + v.id + ')">Delete</button>' +
                   '</td>' +
                 '</tr>';
@@ -1415,11 +1418,11 @@ function vendorsRenderTable(search) {
 function toggleVendorPw(id, pw) {
   const el = document.getElementById('pw-' + id);
   const btn = el.nextElementSibling;
-  if (el.textContent === '••••••••') { el.textContent = pw; btn.textContent = 'Hide'; }
+  if (el.textContent === '••••••••') { el.textContent = pw; btn.textContent = 'Hide'; if (navigator.clipboard) navigator.clipboard.writeText(pw).catch(function(){}); }
   else { el.textContent = '••••••••'; btn.textContent = 'Show'; }
 }
 
-function showVendorModal(id, name, website, account_number, username, password, notes) {
+function showVendorModal(id, name, website, account_number, username, password, notes, rep_name, rep_email, rep_phone) {
   const isEdit = !!id;
   const overlay = document.createElement('div');
   overlay.className = 'modal-overlay';
@@ -1442,6 +1445,12 @@ function showVendorModal(id, name, website, account_number, username, password, 
             '<button type="button" class="btn btn-secondary btn-sm" style="white-space:nowrap" onclick="toggleVendorModalPw()">Show</button>' +
           '</div></div>' +
         '<div class="form-group"><label>Notes</label><textarea id="vm-notes" placeholder="Any additional info...">' + escHtml(notes||'') + '</textarea></div>' +
+        '<div style="border-top:1px solid var(--border);margin:16px 0 12px;padding-top:12px;font-size:13px;font-weight:600;color:var(--text-muted-color);text-transform:uppercase;letter-spacing:0.05em">Rep Contact</div>' +
+        '<div class="form-group"><label>Rep Name</label><input type="text" id="vm-rep-name" value="' + escHtml(rep_name||'') + '" placeholder="Sales rep name" /></div>' +
+        '<div class="form-row">' +
+          '<div class="form-group"><label>Rep Email</label><input type="email" id="vm-rep-email" value="' + escHtml(rep_email||'') + '" placeholder="rep@vendor.com" /></div>' +
+          '<div class="form-group"><label>Rep Phone</label><input type="text" id="vm-rep-phone" value="' + escHtml(rep_phone||'') + '" placeholder="555-123-4567" /></div>' +
+        '</div>' +
       '</div>' +
       '<div class="modal-footer">' +
         '<button class="btn btn-secondary" onclick="document.getElementById(\'vendor-modal-overlay\').remove()">Cancel</button>' +
@@ -1467,7 +1476,10 @@ async function saveVendor(id) {
     account_number: (document.getElementById('vm-account')||{}).value.trim() || null,
     username: (document.getElementById('vm-username')||{}).value.trim() || null,
     password: (document.getElementById('vm-password')||{}).value || null,
-    notes: (document.getElementById('vm-notes')||{}).value.trim() || null
+    notes: (document.getElementById('vm-notes')||{}).value.trim() || null,
+    rep_name: (document.getElementById('vm-rep-name')||{}).value.trim() || null,
+    rep_email: (document.getElementById('vm-rep-email')||{}).value.trim() || null,
+    rep_phone: (document.getElementById('vm-rep-phone')||{}).value.trim() || null
   };
   try {
     if (id) { await api('PUT', '/vendors/' + id, payload); }
