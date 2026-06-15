@@ -12,11 +12,12 @@ function getInitials(name) {
 
 async function generateQuoteNumber(userInitials) {
   const year = new Date().getFullYear();
+  const prefix = 'QT-' + year + '-%';
   const { rows } = await pool.query(
-    "SELECT COUNT(*) FROM quotes WHERE EXTRACT(YEAR FROM created_at) = $1",
-    [year]
+    "SELECT MAX(CAST(SPLIT_PART(quote_number, '-', 3) AS INTEGER)) as maxseq FROM quotes WHERE quote_number LIKE $1",
+    [prefix]
   );
-  const seq = String(parseInt(rows[0].count) + 1).padStart(4, '0');
+  const seq = String((rows[0].maxseq || 0) + 1).padStart(4, '0');
   return 'QT-' + year + '-' + seq + '-' + userInitials;
 }
 
