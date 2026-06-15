@@ -94,7 +94,7 @@ router.post('/', requireAuth, async (req, res) => {
       );
     }
     await client.query('COMMIT');
-    await logAudit({ entity_type: 'quote', entity_id: quote.id, entity_number: quote_number, action: 'created', user_id: req.user.id, user_name: req.user.name, details: { customer: customer_name, total } });
+    try { await logAudit({ entity_type: 'quote', entity_id: quote.id, entity_number: quote_number, action: 'created', user_id: req.user.id, user_name: req.user.name, details: { customer: customer_name, total } }); } catch(auditErr) { console.error('Audit log failed:', auditErr); }
 
     try {
       const { rows: admins } = await pool.query("SELECT email, name FROM users WHERE role = 'admin' AND active = true AND receive_emails = true");
@@ -122,9 +122,9 @@ router.post('/', requireAuth, async (req, res) => {
 
     res.status(201).json(quote);
   } catch (err) {
-    await client.query('ROLLBACK');
+    await client.query('ROLLBACK').catch(function(){});
     console.error(err);
-    res.status(500).json({ error: 'Failed to create quote' });
+    res.status(500).json({ error: 'Failed to create quote: ' + err.message });
   } finally {
     client.release();
   }
