@@ -52,6 +52,18 @@
     .nav-item:hover { background: var(--bg-elevated); color: var(--text); }
     .nav-item.active { background: rgba(249,115,22,0.15); color: var(--primary); }
     .nav-item svg { width: 18px; height: 18px; flex-shrink: 0; }
+    .nav-section-header { display:flex; align-items:center; justify-content:space-between; padding:10px 12px; border-radius:var(--radius); cursor:pointer; color:var(--text-dim); font-size:14px; font-weight:500; transition:all 0.15s; user-select:none; margin-bottom:2px; }
+    .nav-section-header:hover { background:var(--bg-elevated); color:var(--text); }
+    .nav-section-header.open { background:var(--bg-elevated); color:var(--text); }
+    .nav-section-header.section-active { color:var(--primary); }
+    .nav-section-header .s-label { display:flex; align-items:center; gap:10px; pointer-events:none; }
+    .nav-section-header .s-label svg { width:18px; height:18px; flex-shrink:0; }
+    .nav-chevron { opacity:0.4; transition:transform 0.2s ease; flex-shrink:0; pointer-events:none; }
+    .nav-section-header.open .nav-chevron { transform:rotate(90deg); opacity:0.7; }
+    .nav-sub { display:flex; align-items:center; gap:8px; padding:7px 12px 7px 36px; border-radius:var(--radius); cursor:pointer; color:var(--text-muted-color); font-size:13px; transition:all 0.15s; margin-bottom:1px; }
+    .nav-sub:hover { background:var(--bg-elevated); color:var(--text); }
+    .nav-sub.active { background:rgba(249,115,22,0.12); color:var(--primary); font-weight:600; }
+    .nav-sub svg { width:14px; height:14px; flex-shrink:0; }
     .sidebar-footer { padding: 16px; border-top: 1px solid var(--border); }
     .sidebar-user { display: flex; align-items: center; gap: 10px; margin-bottom: 12px; }
     .avatar { width: 36px; height: 36px; border-radius: 50%; background: var(--primary); color: white; display: flex; align-items: center; justify-content: center; font-weight: 700; font-size: 14px; flex-shrink: 0; }
@@ -155,6 +167,7 @@ const state = {
   user: JSON.parse(localStorage.getItem('po_user') || 'null'),
   currentView: null,
   currentParam: null,
+  sidebarSection: null,
 };
 
 async function api(method, path, body) {
@@ -198,10 +211,32 @@ function closeSidebar() {
   if (ov) ov.classList.remove('open');
 }
 
+function getSidebarSection(view) {
+  if (['dashboard','new','edit','view'].indexOf(view) !== -1) return 'po';
+  if (['quotes','new-quote','edit-quote','view-quote'].indexOf(view) !== -1) return 'quotes';
+  if (['vr-dashboard','new-vr','edit-vr','view-vr','fleet-registry','new-vehicle','edit-vehicle','vehicle-history'].indexOf(view) !== -1) return 'vr';
+  if (['ai-assistant','ai-conversations','ai-usage'].indexOf(view) !== -1) return 'ai';
+  if (['company-info','ai-context','settings','users','cities','vendors','audit'].indexOf(view) !== -1) return 'settings';
+  return null;
+}
+function toggleSection(section, defaultView) {
+  if (state.sidebarSection === section && !defaultView) {
+    state.sidebarSection = null; render(); return;
+  }
+  state.sidebarSection = section;
+  if (defaultView) {
+    closeSidebar();
+    state.currentView = defaultView;
+    state.currentParam = null;
+  }
+  render();
+}
 function navigate(view, param) {
   closeSidebar();
   state.currentView = view;
   state.currentParam = param || null;
+  var sec = getSidebarSection(view);
+  if (sec) state.sidebarSection = sec;
   render();
 }
 
@@ -246,27 +281,67 @@ async function render() {
   }
   app.className = '';
   const initials = state.user.name.split(' ').map(function(w){ return w[0]; }).join('').toUpperCase().slice(0,2);
+  var cv = state.currentView;
+  var ss = state.sidebarSection || getSidebarSection(cv);
+  var isAdmin = state.user.role === 'admin';
+  var isAdminMgr = ['admin','manager'].includes(state.user.role);
+  var chev = '<svg class="nav-chevron" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="9 18 15 12 9 6"/></svg>';
+  var icoTruck = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="1" y="3" width="15" height="13" rx="2"/><path d="M16 8h6l3 4v4h-9V8z"/><circle cx="5.5" cy="18.5" r="2.5"/><circle cx="18.5" cy="18.5" r="2.5"/></svg>';
+  var icoAI = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="6" width="18" height="13" rx="2"/><path d="M8 6V4a1 1 0 011-1h6a1 1 0 011 1v2"/><circle cx="9" cy="12" r="1" fill="currentColor"/><circle cx="15" cy="12" r="1" fill="currentColor"/><path d="M9.5 16h5"/></svg>';
+  var icoDB = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M21 12c0 1.66-4 3-9 3s-9-1.34-9-3"/><path d="M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5"/></svg>';
+  var icoBuilding = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="7" width="20" height="14" rx="2"/><path d="M16 21V5a2 2 0 00-2-2h-4a2 2 0 00-2 2v16"/></svg>';
+  var icoChat = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15a2 2 0 01-2 2H7l-4 4V5a2 2 0 012-2h14a2 2 0 012 2z"/></svg>';
+  var icoBars = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/><line x1="6" y1="20" x2="6" y2="14"/></svg>';
+  var icoAudit = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/></svg>';
+  var icoAccounts = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 9l9-7 9 7v11a2 2 0 01-2 2H5a2 2 0 01-2-2z"/><polyline points="9 22 9 12 15 12 15 22"/></svg>';
+  var poViews = ['dashboard','new','edit','view'];
+  var quViews = ['quotes','new-quote','edit-quote','view-quote'];
+  var vrViews = ['vr-dashboard','new-vr','edit-vr','view-vr','fleet-registry','new-vehicle','edit-vehicle','vehicle-history'];
+  var aiViews = ['ai-assistant','ai-conversations','ai-usage'];
+  var stViews = ['company-info','ai-context','settings','users','cities','vendors','audit'];
+  var navHtml =
+    '<div class="nav-item' + (cv === 'home' ? ' active' : '') + '" onclick="navigate(\'home\')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 9l9-7 9 7v11a2 2 0 01-2 2H5a2 2 0 01-2-2z"/><polyline points="9 22 9 12 15 12 15 22"/></svg> Home</div>' +
+    '<div class="nav-section-header' + (poViews.indexOf(cv) !== -1 ? ' section-active' : '') + (ss === 'po' ? ' open' : '') + '" onclick="toggleSection(\'po\',\'dashboard\')"><span class="s-label">' + icons.dashboard + ' Purchase Orders</span>' + chev + '</div>' +
+    (ss === 'po' ?
+      '<div class="nav-sub' + (cv === 'dashboard' ? ' active' : '') + '" onclick="navigate(\'dashboard\')">' + icons.dashboard + ' PO Dashboard</div>' +
+      (state.user.role !== 'approver' ? '<div class="nav-sub' + (cv === 'new' ? ' active' : '') + '" onclick="navigate(\'new\')">' + icons.plus + ' New PO</div>' : '')
+    : '') +
+    '<div class="nav-section-header' + (quViews.indexOf(cv) !== -1 ? ' section-active' : '') + (ss === 'quotes' ? ' open' : '') + '" onclick="toggleSection(\'quotes\',\'quotes\')"><span class="s-label">' + icons.quote + ' Quotes</span>' + chev + '</div>' +
+    (ss === 'quotes' ?
+      '<div class="nav-sub' + (cv === 'quotes' ? ' active' : '') + '" onclick="navigate(\'quotes\')">' + icons.quote + ' Quote Dashboard</div>' +
+      (state.user.role !== 'approver' ? '<div class="nav-sub' + (cv === 'new-quote' ? ' active' : '') + '" onclick="navigate(\'new-quote\')">' + icons.plus + ' New Quote</div>' : '')
+    : '') +
+    '<div class="nav-section-header' + (vrViews.indexOf(cv) !== -1 ? ' section-active' : '') + (ss === 'vr' ? ' open' : '') + '" onclick="toggleSection(\'vr\',\'vr-dashboard\')"><span class="s-label">' + icoTruck + ' Vehicle Maint/Repairs</span>' + chev + '</div>' +
+    (ss === 'vr' ?
+      '<div class="nav-sub' + (cv === 'vr-dashboard' ? ' active' : '') + '" onclick="navigate(\'vr-dashboard\')">' + icons.dashboard + ' VR Dashboard</div>' +
+      (state.user.role !== 'approver' ? '<div class="nav-sub' + (cv === 'new-vr' ? ' active' : '') + '" onclick="navigate(\'new-vr\')">' + icons.plus + ' New VR</div>' : '') +
+      (isAdminMgr ? '<div class="nav-sub' + (['fleet-registry','new-vehicle','edit-vehicle','vehicle-history'].indexOf(cv) !== -1 ? ' active' : '') + '" onclick="navigate(\'fleet-registry\')">' + icoDB + ' Fleet Registry</div>' : '')
+    : '') +
+    (isAdmin ?
+      '<div class="nav-section-header' + (aiViews.indexOf(cv) !== -1 ? ' section-active' : '') + (ss === 'ai' ? ' open' : '') + '" onclick="toggleSection(\'ai\',\'ai-assistant\')"><span class="s-label">' + icoAI + ' Locksmith AI Assistant</span>' + chev + '</div>' +
+      (ss === 'ai' ?
+        '<div class="nav-sub' + (cv === 'ai-assistant' ? ' active' : '') + '" onclick="navigate(\'ai-assistant\')">' + icoChat + ' Conversations</div>' +
+        '<div class="nav-sub' + (cv === 'ai-conversations' ? ' active' : '') + '" onclick="navigate(\'ai-conversations\')">' + icoAudit + ' History</div>' +
+        '<div class="nav-sub' + (cv === 'ai-usage' ? ' active' : '') + '" onclick="navigate(\'ai-usage\')">' + icoBars + ' Usage</div>'
+      : '')
+    :
+      '<div class="nav-item' + (cv === 'ai-assistant' ? ' active' : '') + '" onclick="navigate(\'ai-assistant\')">' + icoAI + ' Locksmith AI Assistant</div>'
+    ) +
+    (isAdminMgr ?
+      '<div class="nav-section-header' + (stViews.indexOf(cv) !== -1 ? ' section-active' : '') + (ss === 'settings' ? ' open' : '') + '" onclick="toggleSection(\'settings\',\'company-info\')"><span class="s-label">' + icons.settings + ' Settings</span>' + chev + '</div>' +
+      (ss === 'settings' ?
+        '<div class="nav-sub' + (cv === 'company-info' || cv === 'settings' ? ' active' : '') + '" onclick="navigate(\'company-info\')">' + icoBuilding + ' Company Information</div>' +
+        (isAdmin ? '<div class="nav-sub' + (cv === 'ai-context' ? ' active' : '') + '" onclick="navigate(\'ai-context\')">' + icoAI + ' AI Context</div>' : '') +
+        '<div class="nav-sub' + (cv === 'users' ? ' active' : '') + '" onclick="navigate(\'users\')">' + icons.users + ' Users</div>' +
+        '<div class="nav-sub' + (cv === 'cities' ? ' active' : '') + '" onclick="navigate(\'cities\')">' + icons.map + ' Cities</div>' +
+        '<div class="nav-sub' + (cv === 'vendors' ? ' active' : '') + '" onclick="navigate(\'vendors\')">' + icoAccounts + ' Accounts</div>' +
+        (isAdmin ? '<div class="nav-sub' + (cv === 'audit' ? ' active' : '') + '" onclick="navigate(\'audit\')">' + icoAudit + ' Audit Log</div>' : '')
+      : '')
+    : '');
   app.innerHTML =
     '<div id="sidebar">' +
       '<div class="sidebar-logo"><h1>Lock and Roll LLC</h1></div>' +
-      '<nav class="sidebar-nav">' +
-        '<div class="nav-item ' + (state.currentView === 'home' ? 'active' : '') + '" onclick="navigate(\'home\')"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 9l9-7 9 7v11a2 2 0 01-2 2H5a2 2 0 01-2-2z"/><polyline points="9 22 9 12 15 12 15 22"/></svg> Home</div>' +
-        '<div class="nav-item ' + (state.currentView === 'dashboard' ? 'active' : '') + '" onclick="navigate(\'dashboard\')">' + icons.dashboard + ' PO Dashboard</div>' +
-        (state.user.role !== 'approver' ? '<div class="nav-item ' + (state.currentView === 'new' ? 'active' : '') + '" onclick="navigate(\'new\')" style="padding-left:28px;font-size:13px">' + icons.plus + ' New PO</div>' : '') +
-        '<div class="nav-item ' + (['quotes','new-quote','edit-quote','view-quote'].includes(state.currentView) ? 'active' : '') + '" onclick="navigate(\'quotes\')">' + icons.dashboard + ' Quote Dashboard</div>' +
-        (state.user.role !== 'approver' ? '<div class="nav-item ' + (state.currentView === 'new-quote' ? 'active' : '') + '" onclick="navigate(\'new-quote\')" style="padding-left:28px;font-size:13px">' + icons.plus + ' New Quote</div>' : '') +
-        '<div class="nav-item ' + (['vr-dashboard','new-vr','edit-vr','view-vr'].includes(state.currentView) ? 'active' : '') + '" onclick="navigate(\'vr-dashboard\')"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="1" y="3" width="15" height="13" rx="2"/><path d="M16 8h6l3 4v4h-9V8z"/><circle cx="5.5" cy="18.5" r="2.5"/><circle cx="18.5" cy="18.5" r="2.5"/></svg> Vehicle Maintenance/Repairs</div>' +
-        (state.user.role !== 'approver' ? '<div class="nav-item ' + (state.currentView === 'new-vr' ? 'active' : '') + '" onclick="navigate(\'new-vr\')" style="padding-left:28px;font-size:13px">' + icons.plus + ' New VR</div>' : '') +
-        (['admin','manager'].includes(state.user.role) ? '<div class="nav-item ' + (['fleet-registry','new-vehicle','edit-vehicle','vehicle-history'].includes(state.currentView) ? 'active' : '') + '" onclick="navigate(\'fleet-registry\')" style="padding-left:28px;font-size:13px"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="vertical-align:-2px;margin-right:4px"><ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M21 12c0 1.66-4 3-9 3s-9-1.34-9-3"/><path d="M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5"/></svg> Fleet Registry</div>' : '') +
-        (['admin','manager'].includes(state.user.role) ? '<div class="nav-item ' + (state.currentView === 'users' ? 'active' : '') + '" onclick="navigate(\'users\')">' + icons.users + ' Users</div>' : '') +
-        (['admin','manager'].includes(state.user.role) ? '<div class="nav-item ' + (state.currentView === 'cities' ? 'active' : '') + '" onclick="navigate(\'cities\')">' + icons.map + ' Cities</div>' : '') +
-        (['admin','manager'].includes(state.user.role) ? '<div class="nav-item ' + (state.currentView === 'vendors' ? 'active' : '') + '" onclick="navigate(\'vendors\')"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 9l9-7 9 7v11a2 2 0 01-2 2H5a2 2 0 01-2-2z"/><polyline points="9 22 9 12 15 12 15 22"/></svg> Accounts</div>' : '') +
-        (state.user.role === 'admin' ? '<div class="nav-item ' + (state.currentView === 'audit' ? 'active' : '') + '" onclick="navigate(\'audit\')"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/><line x1="10" y1="9" x2="8" y2="9"/></svg> Audit Log</div>' : '') +
-        '<div class="nav-item ' + (state.currentView === 'ai-assistant' ? 'active' : '') + '" onclick="navigate(\'ai-assistant\')" id="nav-ai-assistant"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="6" width="18" height="13" rx="2"/><path d="M8 6V4a1 1 0 011-1h6a1 1 0 011 1v2"/><circle cx="9" cy="12" r="1" fill="currentColor"/><circle cx="15" cy="12" r="1" fill="currentColor"/><path d="M9.5 16h5"/><path d="M12 3v1"/></svg> Locksmith AI Assistant</div>' +
-        (state.user.role === 'admin' ? '<div class="nav-item ' + (state.currentView === 'ai-conversations' ? 'active' : '') + '" onclick="navigate(\'ai-conversations\')" style="padding-left:28px;font-size:13px"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15a2 2 0 01-2 2H7l-4 4V5a2 2 0 012-2h14a2 2 0 012 2z"/></svg> Conversations</div>' : '') +
-        (state.user.role === 'admin' ? '<div class="nav-item ' + (state.currentView === 'ai-usage' ? 'active' : '') + '" onclick="navigate(\'ai-usage\')" style="padding-left:28px;font-size:13px"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/><line x1="6" y1="20" x2="6" y2="14"/></svg> Usage</div>' : '') +
-        (state.user.role === 'admin' ? '<div class="nav-item ' + (state.currentView === 'settings' ? 'active' : '') + '" onclick="navigate(\'settings\')">' + icons.settings + ' Settings</div>' : '') +
-      '</nav>' +
+      '<nav class="sidebar-nav">' + navHtml + '</nav>' +
       '<div class="sidebar-footer">' +
         '<div class="sidebar-user"><div class="avatar">' + escHtml(initials) + '</div><div class="sidebar-user-info"><div class="sidebar-user-name">' + escHtml(state.user.name) + '</div><div class="sidebar-user-role">' + escHtml(state.user.role) + '</div></div></div>' +
         '<button class="btn btn-ghost btn-sm" style="width:100%;font-size:12px;color:var(--text-muted-color);margin-top:4px" onclick="logout()">' + icons.logout + ' Sign Out</button>' +
@@ -309,6 +384,8 @@ async function render() {
   else if (state.currentView === 'edit-vehicle') await renderEditVehicle(content, state.currentParam);
   else if (state.currentView === 'vehicle-history') await renderVehicleHistory(content, state.currentParam);
   else if (state.currentView === 'ai-usage') await renderAIUsage(content);
+  else if (state.currentView === 'company-info') await renderCompanyInfo(content);
+  else if (state.currentView === 'ai-context') await renderAIContext(content);
   else { state.currentView = 'home'; await renderHomeScreen(content); }
 }
 
@@ -1119,10 +1196,64 @@ async function printPO(id) {
   }
 }
 
-async function renderSettings(el) {
+async function renderCompanyInfo(el) {
+  if (!['admin','manager'].includes(state.user.role)) { el.innerHTML = '<div class="alert alert-error">Access denied.</div>'; return; }
+  let settings = {};
+  try { settings = await api('GET', '/settings'); } catch(e) {}
+  el.innerHTML =
+    '<div class="page-header"><div class="page-title">Company Information</div></div>' +
+    '<div id="settings-error"></div>' +
+    '<div id="settings-success"></div>' +
+    '<div class="card"><div class="card-header"><span class="card-title">Company Logo</span></div><div class="card-body">' +
+      '<p class="text-muted mb-4" style="margin-bottom:16px">Shown in the header of printed POs and quotes. Recommended: PNG with transparent background, at least 400px wide.</p>' +
+      '<div style="display:flex;align-items:center;gap:20px;flex-wrap:wrap">' +
+        '<div id="logo-preview-area" onclick="document.getElementById(\'logo-file-input\').click()" style="width:180px;height:80px;border:1.5px dashed var(--border);border-radius:var(--radius);display:flex;align-items:center;justify-content:center;background:var(--bg-elevated);overflow:hidden;cursor:pointer;flex-shrink:0">' +
+          (settings.logo
+            ? '<img src="' + settings.logo + '" style="max-width:100%;max-height:100%;object-fit:contain" alt="Current logo" />'
+            : '<span style="font-size:13px;color:var(--text-muted-color)">Click to upload</span>') +
+        '</div>' +
+        '<div style="display:flex;flex-direction:column;gap:8px">' +
+          '<input type="file" id="logo-file-input" accept="image/png,image/jpeg,image/gif" style="display:none" onchange="previewSettingsLogo(this)" />' +
+          '<button class="btn btn-secondary" onclick="document.getElementById(\'logo-file-input\').click()">&#128247; Upload Logo</button>' +
+          (settings.logo ? '<button class="btn btn-danger btn-sm" onclick="removeLogo()">Remove Logo</button>' : '') +
+        '</div>' +
+      '</div>' +
+      '<div style="margin-top:16px">' +
+        '<button class="btn btn-primary" id="save-logo-btn" style="display:none" onclick="saveLogo()">Save Logo</button>' +
+      '</div>' +
+    '</div></div>' +
+    '<div class="card mt-4" style="margin-top:20px"><div class="card-header"><span class="card-title">Company Details</span></div><div class="card-body">' +
+      '<p class="text-muted mb-4" style="margin-bottom:16px">Shown on printed quotes below the logo. Enter your office address and main phone number.</p>' +
+      '<div class="form-row">' +
+        '<div class="form-group"><label>Company Name</label><input type="text" id="company-name" value="' + escHtml(settings.company_name || '') + '" placeholder="e.g. Pop-A-Lock" /></div>' +
+        '<div class="form-group"><label>Company Phone</label><input type="text" id="company-phone" value="' + escHtml(settings.company_phone || '') + '" placeholder="e.g. 337-873-2983" /></div>' +
+      '</div>' +
+      '<div class="form-group"><label>Address Line 1</label><input type="text" id="company-address" value="' + escHtml(settings.company_address || '') + '" placeholder="e.g. 589 Dorset Court" /></div>' +
+      '<div class="form-group"><label>City, State, ZIP</label><input type="text" id="company-city-zip" value="' + escHtml(settings.company_city_state_zip || '') + '" placeholder="e.g. Mount Dora, Florida 32757" /></div>' +
+      '<button class="btn btn-primary" onclick="saveCompanyInfo()">Save Company Info</button>' +
+    '</div></div>';
+}
+
+async function renderAIContext(el) {
   if (state.user.role !== 'admin') { el.innerHTML = '<div class="alert alert-error">Access denied.</div>'; return; }
   let settings = {};
   try { settings = await api('GET', '/settings'); } catch(e) {}
+  el.innerHTML =
+    '<div class="page-header"><div class="page-title">AI Context</div></div>' +
+    '<div id="settings-error"></div>' +
+    '<div id="settings-success"></div>' +
+    '<div class="card"><div class="card-header"><span class="card-title"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="margin-right:6px;vertical-align:-3px"><rect x="3" y="6" width="18" height="13" rx="2"/><path d="M8 6V4a1 1 0 011-1h6a1 1 0 011 1v2"/><circle cx="9" cy="12" r="1" fill="currentColor"/><circle cx="15" cy="12" r="1" fill="currentColor"/><path d="M9.5 16h5"/></svg>Neurolock AI Context</span></div><div class="card-body">' +
+      '<p class="text-muted mb-4" style="margin-bottom:16px">Add company-specific context that Neurolock will always know — your service area, specialties, preferred brands, rate sheet, or anything else relevant to your team.</p>' +
+      '<div class="form-group"><label>Company Context</label><textarea id="ai-context-input" rows="10" placeholder="e.g. Lock and Roll LLC serves the Lafayette, LA metro area. Our standard rates: lockout $85, rekey $25/lock, deadbolt install $120. We specialize in Schlage and Medeco hardware. We also handle automotive lockouts and transponder key programming." style="width:100%;resize:vertical">' + escHtml(settings.ai_context || '') + '</textarea></div>' +
+      '<button class="btn btn-primary" onclick="saveAIContext()">Save AI Context</button>' +
+    '</div></div>';
+}
+
+async function renderSettings(el) {
+  if (state.user.role !== 'admin') { el.innerHTML = '<div class="alert alert-error">Access denied.</div>'; return; }
+  // Legacy: redirect to new split pages
+  navigate('company-info');
+}
 
   el.innerHTML =
     '<div class="page-header"><div class="page-title">Settings</div></div>' +
@@ -1213,7 +1344,7 @@ async function removeLogo() {
   if (!confirm('Remove the company logo from printed POs?')) return;
   try {
     await api('DELETE', '/settings/logo');
-    navigate('settings');
+    navigate('company-info');
   } catch(err) {
     document.getElementById('settings-error').innerHTML = '<div class="alert alert-error">' + escHtml(err.message) + '</div>';
   }
