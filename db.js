@@ -206,7 +206,10 @@ async function initDB() {
       'ALTER TABLE vehicle_repairs ADD COLUMN IF NOT EXISTS vehicle_id INTEGER REFERENCES vehicles(id);' +
       'ALTER TABLE vehicles ADD COLUMN IF NOT EXISTS sold_to VARCHAR(255);' +
       'ALTER TABLE vehicles ADD COLUMN IF NOT EXISTS sold_for DECIMAL(10,2);' +
-      'ALTER TABLE vehicles ADD COLUMN IF NOT EXISTS sold_date DATE;'
+      'ALTER TABLE vehicles ADD COLUMN IF NOT EXISTS sold_date DATE;' +
+      'ALTER TABLE vendors ADD COLUMN IF NOT EXISTS rep_name VARCHAR(255);' +
+      'ALTER TABLE vendors ADD COLUMN IF NOT EXISTS rep_email VARCHAR(255);' +
+      'ALTER TABLE vendors ADD COLUMN IF NOT EXISTS rep_phone VARCHAR(50);'
     );
     console.log('Database initialized');
   } finally {
