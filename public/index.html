@@ -2865,10 +2865,32 @@ async function renderFleetRegistry(el) {
         '<div><div class="page-title"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="margin-right:8px;vertical-align:-4px"><rect x="1" y="3" width="15" height="13" rx="2"/><path d="M16 8h6l3 4v4h-9V8z"/><circle cx="5.5" cy="18.5" r="2.5"/><circle cx="18.5" cy="18.5" r="2.5"/></svg>Fleet Registry</div></div>' +
         '<button class="btn btn-primary" onclick="navigate(\'new-vehicle\')" style="white-space:nowrap">' + icons.plus + ' Add Vehicle</button>' +
       '</div>' +
+      '<div id="fleet-sell-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.7);z-index:1000;align-items:center;justify-content:center">' +
+        '<div class="card" style="width:100%;max-width:440px;margin:auto">' +
+          '<div class="card-header"><span class="card-title">Record Vehicle Sale</span></div>' +
+          '<div class="card-body">' +
+            '<div id="fleet-sell-error"></div>' +
+            '<div class="alert" style="background:#1a0d2e;color:#a78bfa;border:1px solid #3b1f6e;padding:12px 16px;border-radius:6px;margin-bottom:16px;font-size:13px">&#9888; Remember to <strong>remove this vehicle from insurance</strong> after recording the sale.</div>' +
+            '<div class="form-group"><label>Sold To *</label><input type="text" id="sell-buyer" placeholder="Buyer name or company" /></div>' +
+            '<div class="form-group"><label>Sale Price</label><input type="number" id="sell-price" placeholder="0.00" step="0.01" min="0" /></div>' +
+            '<div class="form-group"><label>Date of Sale *</label><input type="date" id="sell-date" /></div>' +
+          '</div>' +
+          '<div style="display:flex;gap:10px;justify-content:flex-end;padding:0 20px 20px">' +
+            '<button class="btn btn-secondary" onclick="closeSellModal()">Cancel</button>' +
+            '<button class="btn btn-primary" id="sell-confirm-btn" onclick="confirmSellVehicle()" style="background:#7c3aed;border-color:#7c3aed">Record Sale</button>' +
+          '</div>' +
+        '</div>' +
+      '</div>' +
       '<div class="card"><div class="card-body" style="padding:0"><div class="table-wrap"><table>' +
         '<thead><tr><th>Year</th><th>Make/Model</th><th>VIN</th><th>Key Codes</th><th>Responsible Employee</th><th>City</th><th>Date Assigned</th><th>License</th><th>Status</th><th></th></tr></thead>' +
         '<tbody>' + (vehicles.length ? vehicles.map(function(v) {
-          return '<tr style="' + (v.active ? '' : 'opacity:0.5') + '">' +
+          var isSold = !v.active && v.sold_to;
+          var statusHtml = v.active
+            ? '<span style="font-weight:600;color:#22c55e">Active</span>'
+            : isSold
+              ? '<span style="font-weight:600;color:#a78bfa">Sold</span><div style="font-size:11px;color:var(--text-muted-color);margin-top:2px">To: ' + escHtml(v.sold_to) + (v.sold_for ? ' · $' + parseFloat(v.sold_for).toFixed(2) : '') + (v.sold_date ? '<br>' + v.sold_date.split('T')[0] : '') + '</div>'
+              : '<span style="font-weight:600;color:var(--text-muted-color)">Inactive</span>';
+          return '<tr style="' + (!v.active ? 'opacity:0.6' : '') + '">' +
             '<td>' + v.year + '</td>' +
             '<td><strong>' + escHtml(v.make_model) + '</strong></td>' +
             '<td style="font-family:monospace;font-size:13px">' + escHtml(v.vin || '—') + '</td>' +
@@ -2877,16 +2899,17 @@ async function renderFleetRegistry(el) {
             '<td>' + escHtml(v.city_code || '—') + '</td>' +
             '<td style="font-size:13px;white-space:nowrap">' + (v.date_of_assignment ? v.date_of_assignment.split('T')[0] : '—') + '</td>' +
             '<td>' + escHtml(v.license_plate || '—') + '</td>' +
-            '<td><span style="font-weight:600;color:' + (v.active ? '#22c55e' : 'var(--text-muted-color)') + '">' + (v.active ? 'Active' : 'Inactive') + '</span></td>' +
+            '<td>' + statusHtml + '</td>' +
             '<td style="white-space:nowrap">' +
               '<button class="btn btn-secondary btn-sm" onclick="navigate(\'vehicle-history\',' + v.id + ')">History</button> ' +
-              '<button class="btn btn-secondary btn-sm" onclick="navigate(\'edit-vehicle\',' + v.id + ')">Edit</button> ' +
+              (v.active ? '<button class="btn btn-secondary btn-sm" onclick="navigate(\'edit-vehicle\',' + v.id + ')">Edit</button> ' : '') +
               (v.active
-                ? '<button class="btn btn-ghost btn-sm" style="color:var(--danger-color,#ef4444)" onclick="deactivateVehicle(' + v.id + ')">Deactivate</button>'
-                : '<button class="btn btn-ghost btn-sm" style="color:#22c55e" onclick="reactivateVehicle(' + v.id + ')">Reactivate</button>') +
+                ? '<button class="btn btn-ghost btn-sm" style="color:#a78bfa" onclick="openSellModal(' + v.id + ')">Sell</button> ' +
+                  '<button class="btn btn-ghost btn-sm" style="color:var(--danger-color,#ef4444)" onclick="deactivateVehicle(' + v.id + ')">Deactivate</button>'
+                : (!isSold ? '<button class="btn btn-ghost btn-sm" style="color:#22c55e" onclick="reactivateVehicle(' + v.id + ')">Reactivate</button>' : '')) +
             '</td>' +
           '</tr>';
-        }).join('') : '<tr><td colspan="11" style="text-align:center;padding:32px;color:var(--text-muted-color)">No vehicles in registry. Add one to get started.</td></tr>') +
+        }).join('') : '<tr><td colspan="10" style="text-align:center;padding:32px;color:var(--text-muted-color)">No vehicles in registry. Add one to get started.</td></tr>') +
         '</tbody></table></div></div></div>';
   } catch(err) { el.innerHTML = '<div class="alert alert-error">' + escHtml(err.message) + '</div>'; }
 }
@@ -3068,6 +3091,37 @@ async function deactivateVehicle(id) {
 async function reactivateVehicle(id) {
   try { await api('POST', '/vehicles/'+id+'/reactivate'); navigate('fleet-registry'); }
   catch(err) { alert(err.message); }
+}
+var _sellVehicleId = null;
+function openSellModal(id) {
+  _sellVehicleId = id;
+  document.getElementById('sell-buyer').value = '';
+  document.getElementById('sell-price').value = '';
+  document.getElementById('sell-date').value = new Date().toISOString().split('T')[0];
+  document.getElementById('fleet-sell-error').innerHTML = '';
+  var modal = document.getElementById('fleet-sell-modal');
+  modal.style.display = 'flex';
+}
+function closeSellModal() {
+  document.getElementById('fleet-sell-modal').style.display = 'none';
+  _sellVehicleId = null;
+}
+async function confirmSellVehicle() {
+  var buyer = (document.getElementById('sell-buyer').value || '').trim();
+  var price = (document.getElementById('sell-price').value || '').trim();
+  var date = (document.getElementById('sell-date').value || '').trim();
+  var errEl = document.getElementById('fleet-sell-error');
+  if (!buyer || !date) { errEl.innerHTML = '<div class="alert alert-error" style="margin-bottom:12px">Buyer name and date are required.</div>'; return; }
+  var btn = document.getElementById('sell-confirm-btn');
+  btn.disabled = true;
+  try {
+    await api('POST', '/vehicles/' + _sellVehicleId + '/sell', { sold_to: buyer, sold_for: price || null, sold_date: date });
+    closeSellModal();
+    navigate('fleet-registry');
+  } catch(err) {
+    errEl.innerHTML = '<div class="alert alert-error" style="margin-bottom:12px">' + escHtml(err.message) + '</div>';
+    btn.disabled = false;
+  }
 }
 // ── Home Dashboard ─────────────────────────────────────────────────────────────
 // Deep link support: ?view=view-vr&id=123 from email buttons
