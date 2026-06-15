@@ -106,4 +106,21 @@ router.post('/:id/reactivate', requireAuth, requireRole('admin', 'manager'), asy
   }
 });
 
+// POST sell vehicle — admin/manager only
+router.post('/:id/sell', requireAuth, requireRole('admin', 'manager'), async function(req, res) {
+  const { sold_to, sold_for, sold_date } = req.body;
+  if (!sold_to || !sold_date) return res.status(400).json({ error: 'Buyer name and sale date are required' });
+  try {
+    const { rows } = await pool.query(
+      'UPDATE vehicles SET active=false, sold_to=$1, sold_for=$2, sold_date=$3, updated_at=NOW() WHERE id=$4 RETURNING id',
+      [sold_to.trim(), sold_for ? parseFloat(sold_for) : null, sold_date, req.params.id]
+    );
+    if (!rows.length) return res.status(404).json({ error: 'Vehicle not found' });
+    res.json({ success: true });
+  } catch(err) {
+    console.error(err);
+    res.status(500).json({ error: 'Failed to record sale' });
+  }
+});
+
 module.exports = router;
