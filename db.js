@@ -203,7 +203,10 @@ async function initDB() {
       ');'
     );
     await client.query(
-      'ALTER TABLE vehicle_repairs ADD COLUMN IF NOT EXISTS vehicle_id INTEGER REFERENCES vehicles(id);'
+      'ALTER TABLE vehicle_repairs ADD COLUMN IF NOT EXISTS vehicle_id INTEGER REFERENCES vehicles(id);' +
+      'ALTER TABLE vehicles ADD COLUMN IF NOT EXISTS sold_to VARCHAR(255);' +
+      'ALTER TABLE vehicles ADD COLUMN IF NOT EXISTS sold_for DECIMAL(10,2);' +
+      'ALTER TABLE vehicles ADD COLUMN IF NOT EXISTS sold_date DATE;'
     );
     console.log('Database initialized');
   } finally {
