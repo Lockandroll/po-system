@@ -2855,11 +2855,79 @@ async function deleteVR(id) {
   catch(err) { alert(err.message); }
 }
 // ── Fleet Registry ─────────────────────────────────────────────────────────────
+var _allVehicles = [];
+var _fleetPage = 1;
+const FLEET_PAGE_SIZE = 15;
+
+function fleetPaginate(p) { _fleetPage = p; applyFleetFilters(); }
+
+function applyFleetFilters(resetPage) {
+  if (resetPage) _fleetPage = 1;
+  var text = ((document.getElementById('fleet-search') || {}).value || '').toLowerCase();
+  var status = (document.getElementById('fleet-status') || {}).value || '';
+
+  var filtered = _allVehicles.filter(function(v) {
+    if (status === 'active' && !v.active) return false;
+    if (status === 'sold' && !(v.sold_to)) return false;
+    if (status === 'inactive' && (v.active || v.sold_to)) return false;
+    if (text) {
+      var hay = [v.year, v.make_model, v.vin, v.key_codes, v.driver_name, v.city_code, v.license_plate, v.sold_to].filter(Boolean).join(' ').toLowerCase();
+      if (!hay.includes(text)) return false;
+    }
+    return true;
+  });
+
+  var tbody = document.getElementById('fleet-tbody');
+  if (!tbody) return;
+
+  var totalPages = Math.max(1, Math.ceil(filtered.length / FLEET_PAGE_SIZE));
+  if (_fleetPage > totalPages) _fleetPage = totalPages;
+  var start = (_fleetPage - 1) * FLEET_PAGE_SIZE;
+  var page = filtered.slice(start, start + FLEET_PAGE_SIZE);
+
+  if (!filtered.length) {
+    tbody.innerHTML = '<tr><td colspan="10" style="text-align:center;padding:32px;color:var(--text-muted-color)">No vehicles match your search.</td></tr>';
+    document.getElementById('fleet-pagination').innerHTML = '';
+    return;
+  }
+
+  tbody.innerHTML = page.map(function(v) {
+    var isSold = !v.active && v.sold_to;
+    var statusHtml = v.active
+      ? '<span style="font-weight:600;color:#22c55e">Active</span>'
+      : isSold
+        ? '<span style="font-weight:600;color:#a78bfa">Sold</span><div style="font-size:11px;color:var(--text-muted-color);margin-top:2px">To: ' + escHtml(v.sold_to) + (v.sold_for ? ' · $' + parseFloat(v.sold_for).toFixed(2) : '') + (v.sold_date ? '<br>' + v.sold_date.split('T')[0] : '') + '</div>'
+        : '<span style="font-weight:600;color:var(--text-muted-color)">Inactive</span>';
+    return '<tr style="' + (!v.active ? 'opacity:0.6' : '') + '">' +
+      '<td>' + v.year + '</td>' +
+      '<td><strong>' + escHtml(v.make_model) + '</strong></td>' +
+      '<td style="font-family:monospace;font-size:13px">' + escHtml(v.vin || '—') + '</td>' +
+      '<td>' + escHtml(v.key_codes || '—') + '</td>' +
+      '<td>' + escHtml(v.driver_name || '—') + '</td>' +
+      '<td>' + escHtml(v.city_code || '—') + '</td>' +
+      '<td style="font-size:13px;white-space:nowrap">' + (v.date_of_assignment ? v.date_of_assignment.split('T')[0] : '—') + '</td>' +
+      '<td>' + escHtml(v.license_plate || '—') + '</td>' +
+      '<td>' + statusHtml + '</td>' +
+      '<td style="white-space:nowrap">' +
+        '<button class="btn btn-secondary btn-sm" onclick="navigate(\'vehicle-history\',' + v.id + ')">History</button> ' +
+        (v.active ? '<button class="btn btn-secondary btn-sm" onclick="navigate(\'edit-vehicle\',' + v.id + ')">Edit</button> ' : '') +
+        (v.active
+          ? '<button class="btn btn-ghost btn-sm" style="color:#a78bfa" onclick="openSellModal(' + v.id + ')">Sell</button> ' +
+            '<button class="btn btn-ghost btn-sm" style="color:var(--danger-color,#ef4444)" onclick="deactivateVehicle(' + v.id + ')">Deactivate</button>'
+          : (!isSold ? '<button class="btn btn-ghost btn-sm" style="color:#22c55e" onclick="reactivateVehicle(' + v.id + ')">Reactivate</button>' : '')) +
+      '</td>' +
+    '</tr>';
+  }).join('');
+
+  document.getElementById('fleet-pagination').innerHTML = renderPagination(_fleetPage, totalPages, filtered.length, 'fleetPaginate');
+}
+
 async function renderFleetRegistry(el) {
   if (!['admin','manager'].includes(state.user.role)) { el.innerHTML = '<div class="alert alert-error">Access denied.</div>'; return; }
   el.innerHTML = '<div class="loading">Loading…</div>';
   try {
-    var vehicles = await api('GET', '/vehicles/all');
+    _allVehicles = await api('GET', '/vehicles/all');
+    _fleetPage = 1;
     el.innerHTML =
       '<div class="page-header">' +
         '<div><div class="page-title"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="margin-right:8px;vertical-align:-4px"><rect x="1" y="3" width="15" height="13" rx="2"/><path d="M16 8h6l3 4v4h-9V8z"/><circle cx="5.5" cy="18.5" r="2.5"/><circle cx="18.5" cy="18.5" r="2.5"/></svg>Fleet Registry</div></div>' +
@@ -2881,36 +2949,16 @@ async function renderFleetRegistry(el) {
           '</div>' +
         '</div>' +
       '</div>' +
+      '<div style="display:flex;gap:10px;margin-bottom:16px;flex-wrap:wrap">' +
+        '<input type="text" id="fleet-search" placeholder="Search year, make/model, VIN, driver, plate…" oninput="applyFleetFilters(true)" style="flex:1;min-width:220px" />' +
+        '<select id="fleet-status" onchange="applyFleetFilters(true)" style="min-width:150px"><option value="">All Statuses</option><option value="active">Active</option><option value="sold">Sold</option><option value="inactive">Inactive</option></select>' +
+      '</div>' +
       '<div class="card"><div class="card-body" style="padding:0"><div class="table-wrap"><table>' +
         '<thead><tr><th>Year</th><th>Make/Model</th><th>VIN</th><th>Key Codes</th><th>Responsible Employee</th><th>City</th><th>Date Assigned</th><th>License</th><th>Status</th><th></th></tr></thead>' +
-        '<tbody>' + (vehicles.length ? vehicles.map(function(v) {
-          var isSold = !v.active && v.sold_to;
-          var statusHtml = v.active
-            ? '<span style="font-weight:600;color:#22c55e">Active</span>'
-            : isSold
-              ? '<span style="font-weight:600;color:#a78bfa">Sold</span><div style="font-size:11px;color:var(--text-muted-color);margin-top:2px">To: ' + escHtml(v.sold_to) + (v.sold_for ? ' · $' + parseFloat(v.sold_for).toFixed(2) : '') + (v.sold_date ? '<br>' + v.sold_date.split('T')[0] : '') + '</div>'
-              : '<span style="font-weight:600;color:var(--text-muted-color)">Inactive</span>';
-          return '<tr style="' + (!v.active ? 'opacity:0.6' : '') + '">' +
-            '<td>' + v.year + '</td>' +
-            '<td><strong>' + escHtml(v.make_model) + '</strong></td>' +
-            '<td style="font-family:monospace;font-size:13px">' + escHtml(v.vin || '—') + '</td>' +
-            '<td>' + escHtml(v.key_codes || '—') + '</td>' +
-            '<td>' + escHtml(v.driver_name || '—') + '</td>' +
-            '<td>' + escHtml(v.city_code || '—') + '</td>' +
-            '<td style="font-size:13px;white-space:nowrap">' + (v.date_of_assignment ? v.date_of_assignment.split('T')[0] : '—') + '</td>' +
-            '<td>' + escHtml(v.license_plate || '—') + '</td>' +
-            '<td>' + statusHtml + '</td>' +
-            '<td style="white-space:nowrap">' +
-              '<button class="btn btn-secondary btn-sm" onclick="navigate(\'vehicle-history\',' + v.id + ')">History</button> ' +
-              (v.active ? '<button class="btn btn-secondary btn-sm" onclick="navigate(\'edit-vehicle\',' + v.id + ')">Edit</button> ' : '') +
-              (v.active
-                ? '<button class="btn btn-ghost btn-sm" style="color:#a78bfa" onclick="openSellModal(' + v.id + ')">Sell</button> ' +
-                  '<button class="btn btn-ghost btn-sm" style="color:var(--danger-color,#ef4444)" onclick="deactivateVehicle(' + v.id + ')">Deactivate</button>'
-                : (!isSold ? '<button class="btn btn-ghost btn-sm" style="color:#22c55e" onclick="reactivateVehicle(' + v.id + ')">Reactivate</button>' : '')) +
-            '</td>' +
-          '</tr>';
-        }).join('') : '<tr><td colspan="10" style="text-align:center;padding:32px;color:var(--text-muted-color)">No vehicles in registry. Add one to get started.</td></tr>') +
-        '</tbody></table></div></div></div>';
+        '<tbody id="fleet-tbody"></tbody>' +
+      '</table></div></div></div>' +
+      '<div id="fleet-pagination"></div>';
+    applyFleetFilters();
   } catch(err) { el.innerHTML = '<div class="alert alert-error">' + escHtml(err.message) + '</div>'; }
 }
 async function renderEditVehicle(el, id) {
@@ -3085,11 +3133,11 @@ function vhFilter() {
 }
 async function deactivateVehicle(id) {
   if (!confirm('Deactivate this vehicle? It will be hidden from the VR dropdown.')) return;
-  try { await api('POST', '/vehicles/'+id+'/deactivate'); navigate('fleet-registry'); }
+  try { await api('POST', '/vehicles/'+id+'/deactivate'); _allVehicles = await api('GET', '/vehicles/all'); applyFleetFilters(); }
   catch(err) { alert(err.message); }
 }
 async function reactivateVehicle(id) {
-  try { await api('POST', '/vehicles/'+id+'/reactivate'); navigate('fleet-registry'); }
+  try { await api('POST', '/vehicles/'+id+'/reactivate'); _allVehicles = await api('GET', '/vehicles/all'); applyFleetFilters(); }
   catch(err) { alert(err.message); }
 }
 var _sellVehicleId = null;
@@ -3117,7 +3165,8 @@ async function confirmSellVehicle() {
   try {
     await api('POST', '/vehicles/' + _sellVehicleId + '/sell', { sold_to: buyer, sold_for: price || null, sold_date: date });
     closeSellModal();
-    navigate('fleet-registry');
+    _allVehicles = await api('GET', '/vehicles/all');
+    applyFleetFilters();
   } catch(err) {
     errEl.innerHTML = '<div class="alert alert-error" style="margin-bottom:12px">' + escHtml(err.message) + '</div>';
     btn.disabled = false;
