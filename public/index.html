@@ -563,9 +563,9 @@ function applyFilters(resetPage) {
 
   tbody.innerHTML =
     '<div class="table-wrap"><table>' +
-    '<thead><tr><th>PO Number</th><th>City</th><th>Vendor</th><th>Customer/Employee</th>' + (isApprover ? '<th>Requested By</th>' : '') + '<th>Total</th><th>Status</th><th>Approved By</th><th>Orderer</th><th>Date</th><th></th></tr></thead>' +
+    '<thead><tr><th>PO Number</th><th>City</th><th>Vendor</th><th>Customer/Employee</th>' + (isApprover ? '<th>Requested By</th>' : '') + '<th>Total</th><th>Status</th><th>Approved By</th><th>Orderer</th><th>Date</th>' + (state.user.role === 'admin' || state.user.role === 'approver' ? '<th></th>' : '') + '</tr></thead>' +
     '<tbody>' + page.map(function(po){
-      return '<tr>' +
+      return '<tr style="cursor:pointer" onclick="navigate(\'view\',' + po.id + ')">' +
         '<td><strong>' + escHtml(po.po_number) + '</strong></td>' +
         '<td>' + escHtml(po.city_code || '—') + '</td>' +
         '<td>' + escHtml(po.vendor_name) + '</td>' +
@@ -576,12 +576,9 @@ function applyFilters(resetPage) {
         '<td>' + escHtml(po.approver_name || '—') + '</td>' +
         '<td>' + escHtml(po.orderer_name || '—') + '</td>' +
         '<td>' + formatDate(po.created_at) + '</td>' +
-        '<td style="white-space:nowrap">' +
-          (po.status === 'approved' && (state.user.role === 'admin' || po.orderer_id === state.user.id)
-            ? '<button class="btn btn-primary btn-sm" onclick="event.stopPropagation();markOrdered(' + po.id + ')" style="margin-right:4px;background:#7c3aed;border-color:#7c3aed">Mark Ordered</button>'
-            : '') +
-          '<button class="btn btn-secondary btn-sm" onclick="navigate(\'view\',' + po.id + ')">View</button>' +
-        '</td>' +
+        ((state.user.role === 'admin' || state.user.role === 'approver') && po.status === 'approved' && (state.user.role === 'admin' || po.orderer_id === state.user.id)
+          ? '<td style="white-space:nowrap"><button class="btn btn-primary btn-sm" onclick="event.stopPropagation();markOrdered(' + po.id + ')" style="background:#7c3aed;border-color:#7c3aed">Mark Ordered</button></td>'
+          : (state.user.role === 'admin' || state.user.role === 'approver' ? '<td></td>' : '')) +
       '</tr>';
     }).join('') +
     '</tbody></table></div>' +
@@ -1727,14 +1724,13 @@ let quoteLineItems = [];
 
 function renderQuoteRows(quotes, isAdmin) {
   return quotes.map(function(q) {
-    return '<tr>' +
+    return '<tr style="cursor:pointer" onclick="navigate(\'view-quote\',' + q.id + ')">' +
       '<td><strong>' + escHtml(q.quote_number) + '</strong></td>' +
       '<td>' + escHtml(q.customer_name) + '</td>' +
       '<td>' + escHtml(q.city_code || '—') + '</td>' +
       (isAdmin ? '<td>' + escHtml(q.requester_name || '—') + '</td>' : '') +
       '<td>$' + parseFloat(q.total_amount).toFixed(2) + '</td>' +
       '<td>' + formatDate(q.created_at) + '</td>' +
-      '<td><button class="btn btn-secondary btn-sm" onclick="navigate(\'view-quote\',' + q.id + ')">View</button></td>' +
     '</tr>';
   }).join('');
 }
@@ -2704,8 +2700,8 @@ async function renderVRDashboard(el) {
       if (!tbody) return;
       tbody.innerHTML = filtered.length ? filtered.map(function(vr) {
         var sc = _vrStatusColors[vr.status] || 'var(--text-muted-color)';
-        return '<tr>' +
-          '<td><a href="#" onclick="navigate(\'view-vr\',' + vr.id + ');return false;" style="color:var(--primary);font-weight:600">' + escHtml(vr.vr_number) + '</a></td>' +
+        return '<tr style="cursor:pointer" onclick="navigate(\'view-vr\',' + vr.id + ')">' +
+          '<td><strong style="color:var(--primary)">' + escHtml(vr.vr_number) + '</strong></td>' +
           '<td>' + escHtml(vr.vehicle || '—') + '</td>' +
           '<td style="font-family:monospace">' + escHtml(vr.vin_last6 || '—') + '</td>' +
           (isApprover ? '<td>' + escHtml(vr.requester_name || '—') + '</td>' : '') +
@@ -2715,7 +2711,6 @@ async function renderVRDashboard(el) {
           '<td>$' + parseFloat(vr.total_amount || 0).toFixed(2) + '</td>' +
           '<td><span style="font-weight:600;color:' + sc + ';text-transform:capitalize">' + escHtml(vr.status) + '</span></td>' +
           '<td style="font-size:13px;white-space:nowrap">' + formatDate(vr.created_at) + '</td>' +
-          '<td><button class="btn btn-secondary btn-sm" onclick="navigate(\'view-vr\',' + vr.id + ')">View</button></td>' +
         '</tr>';
       }).join('') : '<tr><td colspan="' + colCount + '" style="text-align:center;padding:32px;color:var(--text-muted-color)">No results.</td></tr>';
     }
@@ -3224,7 +3219,7 @@ async function renderVehicleHistory(el, vehicleId) {
       var tbody = document.getElementById('vh-tbody');
       if (!tbody) return;
       tbody.innerHTML = filtered.length ? filtered.map(function(vr) {
-        return '<tr>' +
+        return '<tr style="cursor:pointer" onclick="navigate(\'view-vr\',' + vr.id + ')">' +
           '<td><strong style="color:var(--primary)">' + escHtml(vr.vr_number) + '</strong></td>' +
           '<td>' + escHtml(vr.shop_name || '—') + '</td>' +
           '<td>' + escHtml(vr.city_code || '—') + '</td>' +
@@ -3232,7 +3227,6 @@ async function renderVehicleHistory(el, vehicleId) {
           '<td>$' + parseFloat(vr.total_amount||0).toFixed(2) + '</td>' +
           '<td><span style="font-weight:600;color:' + (sc[vr.status]||'var(--text-muted-color)') + ';text-transform:capitalize">' + escHtml(vr.status) + '</span></td>' +
           '<td style="font-size:13px;white-space:nowrap">' + formatDate(vr.created_at) + '</td>' +
-          '<td><button class="btn btn-secondary btn-sm" onclick="navigate(\'view-vr\',' + vr.id + ')">View</button></td>' +
         '</tr>';
       }).join('') : '<tr><td colspan="8" style="text-align:center;padding:32px;color:var(--text-muted-color)">No results.</td></tr>';
     }
