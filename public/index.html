@@ -1956,6 +1956,7 @@ async function renderEditQuote(el, id) {
       '<textarea id="qt-important-info" style="min-height:120px">' + escHtml(importantInfoVal) + '</textarea>' +
     '</div></div>' +
     '<div class="flex-gap">' +
+      '<button class="btn btn-secondary" onclick="reviewQuoteFormWithAI()" style="color:var(--primary);border-color:var(--primary);">&#10024; AI Review</button>' +
       '<button class="btn btn-primary" onclick="saveQuote(' + (id||'null') + ')" id="btn-save-quote">Save Quote</button>' +
     '</div>';
   buildQuoteLineItemRows();
@@ -2128,6 +2129,87 @@ async function deleteVR(id) {
   if (!confirm('Permanently delete this VR? This cannot be undone.')) return;
   try { await api('DELETE', '/vr/' + id); navigate('vr-dashboard'); }
   catch(err) { document.getElementById('view-vr-error') && (document.getElementById('view-vr-error').innerHTML = '<div class="alert alert-error">' + escHtml(err.message) + '</div>'); }
+}
+
+async function reviewQuoteFormWithAI() {
+  // Read data from the live edit form
+  var customer = (document.getElementById('qt-customer') || {}).value || '(not entered)';
+  var city = (document.getElementById('qt-city') || {}).value || '(not entered)';
+  var notes = (document.getElementById('qt-notes') || {}).value || '';
+
+  // Collect line item rows from the form
+  var rows = document.querySelectorAll('#qt-line-items tr[data-idx]');
+  if (!rows || rows.length === 0) {
+    alert('Add at least one line item before requesting an AI review.');
+    return;
+  }
+  var itemLines = [];
+  var subtotal = 0;
+  rows.forEach(function(row, i) {
+    var desc = (row.querySelector('.qi-desc') || {}).value || '—';
+    var itemNum = (row.querySelector('.qi-item') || {}).value || '';
+    var supplier = (row.querySelector('.qi-mfr') || {}).value || '';
+    var qty = parseFloat((row.querySelector('.qi-qty') || {}).value) || 0;
+    var cost = parseFloat((row.querySelector('.qi-unit') || {}).value) || 0;
+    var list = parseFloat((row.querySelector('.qi-list') || {}).value) || 0;
+    var taxable = (row.querySelector('.qi-tax') || {}).checked || false;
+    var margin = cost > 0 ? (((list - cost) / cost) * 100).toFixed(1) : 'N/A';
+    subtotal += qty * list;
+    itemLines.push((i+1) + '. ' + desc +
+      (itemNum ? ' | Item#: ' + itemNum : '') +
+      (supplier ? ' | Supplier: ' + supplier : '') +
+      ' | Qty: ' + qty +
+      ' | Our Cost: $' + cost.toFixed(2) +
+      ' | List Price: $' + list.toFixed(2) +
+      ' | Margin: ' + margin + '%' +
+      (taxable ? ' | Taxable' : ''));
+  });
+  var taxRate = parseFloat((document.getElementById('qt-tax') || {}).value) || 0;
+  var taxAmt = 0;
+  rows.forEach(function(row) {
+    var list = parseFloat((row.querySelector('.qi-list') || {}).value) || 0;
+    var qty = parseFloat((row.querySelector('.qi-qty') || {}).value) || 0;
+    var taxable = (row.querySelector('.qi-tax') || {}).checked || false;
+    if (taxable) taxAmt += qty * list * taxRate / 100;
+  });
+
+  // Build modal
+  var existing = document.getElementById('ai-review-modal');
+  if (existing) existing.remove();
+  var modal = document.createElement('div');
+  modal.id = 'ai-review-modal';
+  modal.style.cssText = 'position:fixed;inset:0;z-index:1000;background:rgba(0,0,0,0.7);display:flex;align-items:center;justify-content:center;padding:20px;';
+  modal.innerHTML =
+    '<div style="background:var(--card-bg);border:1px solid var(--border-color);border-radius:12px;width:100%;max-width:640px;max-height:80vh;display:flex;flex-direction:column;">' +
+      '<div style="display:flex;align-items:center;justify-content:space-between;padding:16px 20px;border-bottom:1px solid var(--border-color);">' +
+        '<div style="font-weight:700;font-size:16px;">&#10024; AI Quote Review — Draft</div>' +
+        '<button onclick="document.getElementById(\'ai-review-modal\').remove()" style="background:none;border:none;color:var(--text-muted-color);font-size:20px;cursor:pointer;line-height:1;">&times;</button>' +
+      '</div>' +
+      '<div id="ai-review-body" style="padding:20px;overflow-y:auto;flex:1;font-size:14px;line-height:1.7;color:var(--text-color);">' +
+        '<div style="color:var(--text-muted-color);">Analyzing quote...</div>' +
+      '</div>' +
+    '</div>';
+  document.body.appendChild(modal);
+  modal.addEventListener('click', function(e){ if (e.target === modal) modal.remove(); });
+
+  var prompt = 'Please review this locksmith quote in progress and flag any issues:\n\n' +
+    'Customer: ' + customer + '\n' +
+    'City: ' + city + '\n' +
+    (notes ? 'Notes: ' + notes + '\n' : '') +
+    '\nLINE ITEMS:\n' + itemLines.join('\n') + '\n\n' +
+    'Subtotal: $' + subtotal.toFixed(2) + '\n' +
+    (taxRate > 0 ? 'Tax (' + taxRate + '%): $' + taxAmt.toFixed(2) + '\n' : '') +
+    'Grand Total: $' + (subtotal + taxAmt).toFixed(2) + '\n\n' +
+    'Check for: pricing accuracy, unusually low/high margins, missing hardware dependencies (power supplies, EPTs, controllers, readers, wiring, etc.), missing info, math errors, anything that looks off. Be concise and specific.';
+
+  try {
+    var data = await api('POST', '/ai/chat', { messages: [{ role: 'user', content: prompt }] });
+    var body = document.getElementById('ai-review-body');
+    if (body) body.innerHTML = data.reply.replace(/\n/g, '<br>');
+  } catch(err) {
+    var body = document.getElementById('ai-review-body');
+    if (body) body.innerHTML = '<div class="alert alert-error">' + escHtml(err.message) + '</div>';
+  }
 }
 
 async function reviewQuoteWithAI() {
