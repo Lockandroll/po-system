@@ -212,6 +212,20 @@ async function initDB() {
       'ALTER TABLE vendors ADD COLUMN IF NOT EXISTS rep_phone VARCHAR(50);' +
       'ALTER TABLE users ADD COLUMN IF NOT EXISTS receive_sms BOOLEAN NOT NULL DEFAULT false;'
     );
+    await client.query(
+      'CREATE TABLE IF NOT EXISTS suggestions (' +
+      '  id SERIAL PRIMARY KEY,' +
+      '  category VARCHAR(100) NOT NULL,' +
+      '  suggestion TEXT NOT NULL,' +
+      '  anonymous BOOLEAN NOT NULL DEFAULT false,' +
+      '  submitter_id INTEGER REFERENCES users(id) ON DELETE SET NULL,' +
+      '  submitter_name VARCHAR(255),' +
+      "  status VARCHAR(50) NOT NULL DEFAULT 'open'," +
+      '  admin_notes TEXT,' +
+      '  created_at TIMESTAMPTZ DEFAULT NOW(),' +
+      '  updated_at TIMESTAMPTZ DEFAULT NOW()' +
+      ');'
+    );
     console.log('Database initialized');
   } finally {
     client.release();
