@@ -3,6 +3,7 @@ const { pool } = require('../db');
 const { requireAuth } = require('../middleware/auth');
 const { logAudit } = require('../utils/audit');
 const { sendEmail, emailTemplate } = require('../utils/email');
+const { sendSms } = require('../utils/sms');
 
 const router = express.Router();
 
@@ -99,9 +100,11 @@ router.post('/', requireAuth, async (req, res) => {
       client.release();
       try { await logAudit({ entity_type: 'quote', entity_id: quote.id, entity_number: quote_number, action: 'created', user_id: req.user.id, user_name: req.user.name, details: { customer: customer_name, total } }); } catch(e) {}
       try {
-        const { rows: admins } = await pool.query("SELECT email, name FROM users WHERE role = 'admin' AND active = true AND receive_emails = true");
-        if (admins.length) {
-          const emails = admins.map(function(a) { return a.email; });
+        const { rows: admins } = await pool.query("SELECT email, name, phone, receive_emails, receive_sms FROM users WHERE role = 'admin' AND active = true");
+        const emailAdmins = admins.filter(function(a) { return a.receive_emails; });
+        const smsAdmins = admins.filter(function(a) { return a.receive_sms && a.phone; });
+        if (emailAdmins.length) {
+          const emails = emailAdmins.map(function(a) { return a.email; });
           const html = emailTemplate({
             badge: 'New quote', title: 'A new quote has been created',
             body: '<strong>' + req.user.name + '</strong> created a new quote.',
@@ -117,7 +120,11 @@ router.post('/', requireAuth, async (req, res) => {
           });
           await sendEmail(emails, 'New Quote: ' + quote_number, html);
         }
-      } catch(e) { console.error('Quote email failed:', e); }
+        if (smsAdmins.length) {
+          const phones = smsAdmins.map(function(a) { return a.phone; });
+          await sendSms(phones, 'Lock & Roll: ' + req.user.name + ' created quote ' + quote_number + ' for ' + customer_name + '. Total: $' + total.toFixed(2) + '. ' + ((process.env.APP_URL || '').replace(/\/$/, '') + '/?view=view-quote&id=' + quote.id));
+        }
+      } catch(e) { console.error('Quote email/SMS failed:', e); }
       return res.status(201).json(quote);
     } catch (err) {
       await client.query('ROLLBACK').catch(function(){});
