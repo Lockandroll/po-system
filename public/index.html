@@ -294,6 +294,7 @@ async function render() {
   var icoBars = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/><line x1="6" y1="20" x2="6" y2="14"/></svg>';
   var icoAudit = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/></svg>';
   var icoAccounts = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 9l9-7 9 7v11a2 2 0 01-2 2H5a2 2 0 01-2-2z"/><polyline points="9 22 9 12 15 12 15 22"/></svg>';
+  var icoSuggestion = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 21h6"/><path d="M12 3a6 6 0 016 6c0 2.22-1.21 4.16-3 5.2V17H9v-2.8C7.21 13.16 6 11.22 6 9a6 6 0 016-6z"/></svg>';
   var poViews = ['dashboard','new','edit','view'];
   var quViews = ['quotes','new-quote','edit-quote','view-quote'];
   var vrViews = ['vr-dashboard','new-vr','edit-vr','view-vr','fleet-registry','new-vehicle','edit-vehicle','vehicle-history'];
@@ -318,6 +319,7 @@ async function render() {
       (isAdminMgr ? '<div class="nav-sub' + (['fleet-registry','new-vehicle','edit-vehicle','vehicle-history'].indexOf(cv) !== -1 ? ' active' : '') + '" onclick="navigate(\'fleet-registry\')">' + icoDB + ' Fleet Registry</div>' : '')
     : '') +
     (isAdminMgr ? '<div class="nav-item' + (cv === 'vendors' ? ' active' : '') + '" onclick="navigate(\'vendors\')">' + icoAccounts + ' Accounts</div>' : '') +
+    '<div class="nav-item' + (cv === 'suggestions' ? ' active' : '') + '" onclick="navigate(\'suggestions\')">' + icoSuggestion + ' Suggestions</div>' +
     (isAdmin ?
       '<div class="nav-section-header' + (aiViews.indexOf(cv) !== -1 ? ' section-active' : '') + (ss === 'ai' ? ' open' : '') + '" onclick="toggleSection(\'ai\',\'ai-assistant\')"><span class="s-label">' + icoAI + ' Locksmith AI Assistant</span>' + chev + '</div>' +
       (ss === 'ai' ?
@@ -386,6 +388,7 @@ async function render() {
   else if (state.currentView === 'ai-usage') await renderAIUsage(content);
   else if (state.currentView === 'company-info') await renderCompanyInfo(content);
   else if (state.currentView === 'ai-context') await renderAIContext(content);
+  else if (state.currentView === 'suggestions') await renderSuggestions(content);
   else { state.currentView = 'home'; await renderHomeScreen(content); }
 }
 
@@ -3432,6 +3435,109 @@ async function renderHomeScreen(el) {
           '<span style="font-size:12px">Ask Neurolock</span></button>' +
       '</div>';
   } catch(err) { el.innerHTML = '<div class="alert alert-error">' + escHtml(err.message) + '</div>'; }
+}
+
+async function renderSuggestions(el) {
+  var isAdminMgr = ['admin','manager'].includes(state.user.role);
+  var statusColors = { open: '#f97316', reviewed: '#3b82f6', implemented: '#22c55e', declined: '#ef4444' };
+  var html =
+    '<div class="page-header"><div class="page-title"><h2>Suggestions</h2><p>Share ideas to improve how we work</p></div></div>' +
+    '<div class="card" style="max-width:640px;margin-bottom:24px"><div class="card-body">' +
+      '<h3 style="margin-top:0;margin-bottom:16px">Submit a Suggestion</h3>' +
+      '<div id="sugg-feedback"></div>' +
+      '<div class="form-group"><label>Category</label>' +
+        '<select id="sugg-category">' +
+          '<option value="Process Improvement">Process Improvement</option>' +
+          '<option value="Equipment / Tools">Equipment / Tools</option>' +
+          '<option value="Safety">Safety</option>' +
+          '<option value="Software / Nova">Software / Nova</option>' +
+          '<option value="Other">Other</option>' +
+        '</select>' +
+      '</div>' +
+      '<div class="form-group"><label>Your Suggestion</label>' +
+        '<textarea id="sugg-text" rows="5" placeholder="Describe your idea or improvement..."></textarea>' +
+      '</div>' +
+      '<div class="form-group" style="display:flex;align-items:center;gap:10px">' +
+        '<input type="checkbox" id="sugg-anon" style="width:auto" />' +
+        '<label for="sugg-anon" style="margin:0;cursor:pointer">Submit anonymously</label>' +
+      '</div>' +
+      '<button class="btn btn-primary" onclick="submitSuggestion()">Submit Suggestion</button>' +
+    '</div></div>';
+  if (isAdminMgr) {
+    html +=
+      '<div class="card"><div class="card-body">' +
+        '<h3 style="margin-top:0;margin-bottom:16px">All Suggestions</h3>' +
+        '<div id="sugg-table-area"><div class="loading">Loading...</div></div>' +
+      '</div></div>';
+  }
+  el.innerHTML = html;
+  if (isAdminMgr) await loadSuggestionsTable();
+}
+
+async function loadSuggestionsTable() {
+  var area = document.getElementById('sugg-table-area');
+  if (!area) return;
+  try {
+    var data = await api('GET', '/suggestions');
+    if (!data.length) {
+      area.innerHTML = '<p style="color:var(--text-muted-color)">No suggestions yet.</p>';
+      return;
+    }
+    var statusColors = { open: '#f97316', reviewed: '#3b82f6', implemented: '#22c55e', declined: '#ef4444' };
+    var rows = data.map(function(s) {
+      var dot = '<span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:' + (statusColors[s.status] || '#888') + ';margin-right:6px"></span>';
+      return '<tr>' +
+        '<td style="white-space:nowrap;color:var(--text-muted-color);font-size:13px">' + new Date(s.created_at).toLocaleDateString() + '</td>' +
+        '<td style="white-space:nowrap"><span class="badge">' + escHtml(s.category) + '</span></td>' +
+        '<td style="max-width:320px;word-break:break-word">' + escHtml(s.suggestion) + '</td>' +
+        '<td style="white-space:nowrap">' + (s.anonymous ? '<em style="color:var(--text-muted-color);font-size:13px">Anonymous</em>' : escHtml(s.submitter_name || '—')) + '</td>' +
+        '<td>' +
+          '<select onchange="updateSuggestion(' + s.id + ',{status:this.value})" style="padding:4px 8px;font-size:13px;border-radius:6px">' +
+            '<option value="open"' + (s.status==='open'?' selected':'') + '>Open</option>' +
+            '<option value="reviewed"' + (s.status==='reviewed'?' selected':'') + '>Reviewed</option>' +
+            '<option value="implemented"' + (s.status==='implemented'?' selected':'') + '>Implemented</option>' +
+            '<option value="declined"' + (s.status==='declined'?' selected':'') + '>Declined</option>' +
+          '</select>' +
+        '</td>' +
+        '<td><input type="text" value="' + escHtml(s.admin_notes || '') + '" placeholder="Add note..." style="font-size:13px;padding:4px 8px;border-radius:6px;min-width:160px" onblur="updateSuggestion(' + s.id + ',{admin_notes:this.value})" /></td>' +
+      '</tr>';
+    }).join('');
+    area.innerHTML =
+      '<div class="table-wrap"><table class="table"><thead><tr>' +
+        '<th>Date</th><th>Category</th><th>Suggestion</th><th>Submitted By</th><th>Status</th><th>Notes</th>' +
+      '</tr></thead><tbody>' + rows + '</tbody></table></div>';
+  } catch(e) {
+    area.innerHTML = '<div class="alert alert-error">Failed to load suggestions</div>';
+  }
+}
+
+async function submitSuggestion() {
+  var category = document.getElementById('sugg-category').value;
+  var suggestion = document.getElementById('sugg-text').value.trim();
+  var anonymous = document.getElementById('sugg-anon').checked;
+  var fb = document.getElementById('sugg-feedback');
+  if (!suggestion) {
+    fb.innerHTML = '<div class="alert alert-error">Please enter a suggestion.</div>';
+    return;
+  }
+  try {
+    await api('POST', '/suggestions', { category, suggestion, anonymous });
+    fb.innerHTML = '<div class="alert alert-success">Suggestion submitted — thank you!</div>';
+    document.getElementById('sugg-text').value = '';
+    document.getElementById('sugg-anon').checked = false;
+    document.getElementById('sugg-category').selectedIndex = 0;
+    if (document.getElementById('sugg-table-area')) await loadSuggestionsTable();
+  } catch(e) {
+    fb.innerHTML = '<div class="alert alert-error">' + escHtml(e.message) + '</div>';
+  }
+}
+
+async function updateSuggestion(id, body) {
+  try {
+    await api('PUT', '/suggestions/' + id, body);
+  } catch(e) {
+    console.error('Failed to update suggestion:', e);
+  }
 }
 
 render();
