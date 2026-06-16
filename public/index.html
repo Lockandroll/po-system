@@ -2194,7 +2194,7 @@ async function reviewQuoteFormWithAI() {
     'Subtotal: $' + subtotal.toFixed(2) + '\n' +
     (taxRate > 0 ? 'Tax (' + taxRate + '%): $' + taxAmt.toFixed(2) + '\n' : '') +
     'Grand Total: $' + (subtotal + taxAmt).toFixed(2) + '\n\n' +
-    'Check for: pricing accuracy, unusually low/high margins, missing hardware dependencies (power supplies, EPTs, controllers, readers, wiring, etc.), missing info, math errors, anything that looks off. Be concise and specific.';
+    'Review this quote and respond in 2 parts: (1) One sentence overall status — e.g. "Looks good." or "A few things to check." (2) A short bullet list of ONLY actual issues or concerns — missing hardware dependencies, low/bad margins, missing info, math errors, suspicious pricing. Do NOT comment on anything that looks correct. If nothing is wrong, say so and stop. Skip section headers and lengthy explanations.';
 
   try {
     var data = await api('POST', '/ai/chat', { messages: [{ role: 'user', content: prompt }] });
@@ -2254,7 +2254,7 @@ async function reviewQuoteWithAI() {
     'Subtotal: $' + subtotal.toFixed(2) + '\n' +
     (parseFloat(q.tax_amount||0) > 0 ? 'Tax (' + q.tax_rate + '%): $' + parseFloat(q.tax_amount).toFixed(2) + '\n' : '') +
     'Grand Total: $' + parseFloat(q.total_amount).toFixed(2) + '\n\n' +
-    'Check for: pricing accuracy, unusually low/high margins, missing info, math errors, anything that looks off. Be concise and specific.';
+    'Review this quote and respond in 2 parts: (1) One sentence overall status — e.g. "Looks good." or "A few things to check." (2) A short bullet list of ONLY actual issues or concerns — missing hardware dependencies, low/bad margins, missing info, math errors, suspicious pricing. Do NOT comment on anything that looks correct. If nothing is wrong, say so and stop. Skip section headers and lengthy explanations.';
 
   try {
     var data = await api('POST', '/ai/chat', { messages: [{ role: 'user', content: prompt }] });
