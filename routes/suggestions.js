@@ -110,4 +110,19 @@ router.put('/:id', requireAuth, async (req, res) => {
   }
 });
 
+// DELETE /:id — delete a suggestion (managers and admins only)
+router.delete('/:id', requireAuth, async (req, res) => {
+  if (!['admin', 'manager'].includes(req.user.role)) {
+    return res.status(403).json({ error: 'Access denied' });
+  }
+  try {
+    const { rows } = await pool.query('DELETE FROM suggestions WHERE id=$1 RETURNING id', [req.params.id]);
+    if (!rows[0]) return res.status(404).json({ error: 'Suggestion not found' });
+    res.json({ success: true });
+  } catch(e) {
+    console.error(e);
+    res.status(500).json({ error: 'Failed to delete suggestion' });
+  }
+});
+
 module.exports = router;
