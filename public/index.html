@@ -135,8 +135,8 @@
     .auth-page { display: flex; align-items: center; justify-content: center; min-height: 100vh; background: var(--bg); width: 100%; }
     .auth-card { width: 100%; max-width: 400px; padding: 8px; margin: 0 auto; }
     .auth-logo { text-align: center; margin-bottom: 32px; }
-    .auth-logo h1 { font-size: 28px; font-weight: 800; color: var(--primary); }
-    .auth-logo p { color: var(--text-muted-color); margin-top: 6px; }
+    .auth-logo img { display: block; margin: 0 auto 10px; height: 72px; object-fit: contain; }
+    .auth-logo p { color: var(--text-muted-color); margin-top: 6px; font-size: 15px; }
     .modal-overlay { position: fixed; inset: 0; background: rgba(0,0,0,0.75); display: flex; align-items: center; justify-content: center; z-index: 100; padding: 16px; }
     .modal { background: var(--bg-card); border: 1px solid var(--border); border-radius: var(--radius); box-shadow: var(--shadow-md); width: 100%; max-width: 480px; }
     .modal-header { padding: 16px 20px; border-bottom: 1px solid var(--border); display: flex; align-items: center; justify-content: space-between; }
@@ -395,8 +395,8 @@ async function render() {
 function renderLogin(app) {
   app.innerHTML =
     '<div class="auth-page"><div class="auth-card">' +
-      '<div class="auth-logo"><h1>Lock and Roll LLC</h1><p>Sign in to your account</p></div>' +
-      '<div class="card"><div class="card-body">' +
+      '<div class="auth-logo"><div style="background:#fff;border-radius:14px;padding:14px 28px;display:inline-block;margin-bottom:12px;"><img src="https://www.popalock.com/wp-content/uploads/2020/11/pal-logo-highres.png" alt="Pop-A-Lock" /></div><p>Sign in to your account</p></div>' +
+      '<div class="card" style="background:transparent;border:1px solid rgba(255,255,255,0.18);"><div class="card-body">' +
         '<div id="auth-error"></div>' +
         '<div class="form-group"><label>Email</label><input type="email" id="login-email" placeholder="you@company.com" /></div>' +
         '<div class="form-group"><label>Password</label><input type="password" id="login-password" /></div>' +
@@ -424,8 +424,8 @@ async function doLogin() {
 function renderSetup(app) {
   app.innerHTML =
     '<div class="auth-page"><div class="auth-card">' +
-      '<div class="auth-logo"><h1>Lock and Roll LLC</h1><p>Create your admin account</p></div>' +
-      '<div class="card"><div class="card-body">' +
+      '<div class="auth-logo"><div style="background:#fff;border-radius:14px;padding:14px 28px;display:inline-block;margin-bottom:12px;"><img src="https://www.popalock.com/wp-content/uploads/2020/11/pal-logo-highres.png" alt="Pop-A-Lock" /></div><p>Create your admin account</p></div>' +
+      '<div class="card" style="background:transparent;border:1px solid rgba(255,255,255,0.18);"><div class="card-body">' +
         '<div id="auth-error"></div>' +
         '<div class="form-group"><label>Name</label><input type="text" id="setup-name" placeholder="Your Name" /></div>' +
         '<div class="form-group"><label>Email</label><input type="email" id="setup-email" placeholder="you@company.com" /></div>' +
