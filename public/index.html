@@ -815,9 +815,9 @@ async function renderViewPO(el, id) {
           '<button class="btn btn-secondary" style="white-space:nowrap" onclick="printPO(' + po.id + ')">' + icons.print + ' Print PO</button>' +
           (canEdit ? '<button class="btn btn-secondary" onclick="navigate(\'edit\',' + po.id + ')">' + icons.edit + ' Edit</button>' : '') +
           (canSubmit ? '<button class="btn btn-primary" onclick="submitPO(' + po.id + ')">Submit for Approval</button>' : '') +
-          (canDelete ? '<button class="btn btn-danger btn-sm" onclick="deletePO(' + po.id + ')">' + icons.trash + ' Delete PO</button>' : '') +
-          (canOrder ? '<button class="btn btn-primary" onclick="markOrdered(' + po.id + ')" style="background:#7c3aed;border-color:#7c3aed">&#10003; Mark as Ordered</button>' : '') +
-          (canCancel ? '<button class="btn btn-danger btn-sm" onclick="cancelPO(' + po.id + ')">&#x2715; Cancel PO</button>' : '') +
+          (canDelete ? '<button class="btn btn-danger btn-sm" style="white-space:nowrap" onclick="deletePO(' + po.id + ')">' + icons.trash + ' Delete PO</button>' : '') +
+          (canOrder ? '<button class="btn btn-primary" onclick="markOrdered(' + po.id + ')" style="background:#7c3aed;border-color:#7c3aed;white-space:nowrap">&#10003; Mark as Ordered</button>' : '') +
+          (canCancel ? '<button class="btn btn-danger btn-sm" style="white-space:nowrap" onclick="cancelPO(' + po.id + ')">&#x2715; Cancel PO</button>' : '') +
         '</div>' +
       '</div>' +
       '<div id="view-error"></div>' +
