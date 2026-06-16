@@ -170,6 +170,8 @@ const state = {
   currentView: null,
   currentParam: null,
   sidebarSection: null,
+  pendingUserId: null,
+  pendingVia: null,
 };
 
 async function api(method, path, body) {
@@ -274,6 +276,9 @@ async function render() {
   const app = document.getElementById('app');
   if (!state.token || !state.user) {
     app.className = 'no-sidebar';
+    var resetToken = new URLSearchParams(window.location.search).get('reset');
+    if (resetToken) { renderResetPassword(app, resetToken); return; }
+    if (state.pendingUserId) { renderTwoFactor(app); return; }
     try {
       const { needed } = await api('GET', '/auth/setup-needed');
       if (needed) { renderSetup(app); return; }
@@ -403,9 +408,11 @@ function renderLogin(app) {
         '<div class="form-group"><label>Email</label><input type="email" id="login-email" placeholder="you@company.com" /></div>' +
         '<div class="form-group"><label>Password</label><input type="password" id="login-password" /></div>' +
         '<button class="btn btn-primary" style="width:100%;justify-content:center;" onclick="doLogin()">Let&#39;s Lock and Roll!</button>' +
+        '<div style="text-align:center;margin-top:12px;"><a href="#" style="color:var(--text-muted-color);font-size:13px;text-decoration:none;" onclick="event.preventDefault();renderForgotPassword(document.getElementById(\'app\'))">Forgot password?</a></div>' +
       '</div></div>' +
     '</div></div>';
   document.getElementById('login-password').addEventListener('keydown', function(e){ if(e.key==='Enter') doLogin(); });
+  document.getElementById('login-email').addEventListener('keydown', function(e){ if(e.key==='Enter') document.getElementById('login-password').focus(); });
 }
 
 async function doLogin() {
@@ -413,11 +420,107 @@ async function doLogin() {
   const password = document.getElementById('login-password').value;
   try {
     const data = await api('POST', '/auth/login', { email, password });
+    if (data.requires2fa) {
+      state.pendingUserId = data.userId;
+      state.pendingVia = data.via;
+      render();
+      return;
+    }
     state.token = data.token;
     state.user = data.user;
     localStorage.setItem('po_token', data.token);
     localStorage.setItem('po_user', JSON.stringify(data.user));
     navigate('dashboard');
+  } catch(err) {
+    document.getElementById('auth-error').innerHTML = '<div class="alert alert-error">' + escHtml(err.message) + '</div>';
+  }
+}
+
+function renderTwoFactor(app) {
+  var via = state.pendingVia === 'sms' ? 'text message' : 'email';
+  app.innerHTML =
+    '<div class="auth-page"><div class="auth-card">' +
+      '<div class="auth-logo"><div class="logo-wrap"><img src="https://www.popalock.com/wp-content/uploads/2020/11/pal-logo-highres.png" alt="Pop-A-Lock" /></div><h2>Nova</h2><p>Two-Factor Verification</p></div>' +
+      '<div class="card" style="background:transparent;border:1px solid rgba(255,255,255,0.18);"><div class="card-body">' +
+        '<div id="auth-error"></div>' +
+        '<p style="color:var(--text-muted-color);font-size:14px;margin-bottom:16px;text-align:center;">Enter the 6-digit code sent to your ' + via + '</p>' +
+        '<div class="form-group"><label>Verification Code</label><input type="text" id="tfa-code" placeholder="000000" maxlength="6" style="text-align:center;font-size:24px;letter-spacing:8px;" /></div>' +
+        '<button class="btn btn-primary" style="width:100%;justify-content:center;" onclick="doVerify2FA()">Verify</button>' +
+        '<div style="text-align:center;margin-top:12px;"><a href="#" style="color:var(--text-muted-color);font-size:13px;text-decoration:none;" onclick="event.preventDefault();state.pendingUserId=null;state.pendingVia=null;render()">Back to login</a></div>' +
+      '</div></div>' +
+    '</div></div>';
+  document.getElementById('tfa-code').addEventListener('keydown', function(e){ if(e.key==='Enter') doVerify2FA(); });
+  document.getElementById('tfa-code').focus();
+}
+
+async function doVerify2FA() {
+  var code = (document.getElementById('tfa-code').value || '').trim();
+  if (!code) { document.getElementById('auth-error').innerHTML = '<div class="alert alert-error">Please enter the verification code</div>'; return; }
+  try {
+    const data = await api('POST', '/auth/verify-2fa', { userId: state.pendingUserId, code: code });
+    state.pendingUserId = null;
+    state.pendingVia = null;
+    state.token = data.token;
+    state.user = data.user;
+    localStorage.setItem('po_token', data.token);
+    localStorage.setItem('po_user', JSON.stringify(data.user));
+    navigate('dashboard');
+  } catch(err) {
+    document.getElementById('auth-error').innerHTML = '<div class="alert alert-error">' + escHtml(err.message) + '</div>';
+  }
+}
+
+function renderForgotPassword(app) {
+  app.innerHTML =
+    '<div class="auth-page"><div class="auth-card">' +
+      '<div class="auth-logo"><div class="logo-wrap"><img src="https://www.popalock.com/wp-content/uploads/2020/11/pal-logo-highres.png" alt="Pop-A-Lock" /></div><h2>Nova</h2><p>Reset your password</p></div>' +
+      '<div class="card" style="background:transparent;border:1px solid rgba(255,255,255,0.18);"><div class="card-body">' +
+        '<div id="auth-error"></div>' +
+        '<p style="color:var(--text-muted-color);font-size:14px;margin-bottom:16px;text-align:center;">Enter your email and we&#39;ll send you a reset link</p>' +
+        '<div class="form-group"><label>Email</label><input type="email" id="fp-email" placeholder="you@company.com" /></div>' +
+        '<button class="btn btn-primary" style="width:100%;justify-content:center;" onclick="doForgotPassword()">Send Reset Link</button>' +
+        '<div style="text-align:center;margin-top:12px;"><a href="#" style="color:var(--text-muted-color);font-size:13px;text-decoration:none;" onclick="event.preventDefault();render()">Back to login</a></div>' +
+      '</div></div>' +
+    '</div></div>';
+  document.getElementById('fp-email').addEventListener('keydown', function(e){ if(e.key==='Enter') doForgotPassword(); });
+  document.getElementById('fp-email').focus();
+}
+
+async function doForgotPassword() {
+  var email = (document.getElementById('fp-email').value || '').trim();
+  if (!email) { document.getElementById('auth-error').innerHTML = '<div class="alert alert-error">Please enter your email</div>'; return; }
+  try {
+    await api('POST', '/auth/forgot-password', { email: email });
+    document.getElementById('auth-error').innerHTML = '<div style="background:rgba(34,197,94,0.12);border:1px solid rgba(34,197,94,0.3);color:#4ade80;padding:10px;border-radius:6px;font-size:14px;text-align:center;">If that email is in our system, you&#39;ll receive a reset link shortly.</div>';
+  } catch(err) {
+    document.getElementById('auth-error').innerHTML = '<div class="alert alert-error">' + escHtml(err.message) + '</div>';
+  }
+}
+
+function renderResetPassword(app, token) {
+  app.innerHTML =
+    '<div class="auth-page"><div class="auth-card">' +
+      '<div class="auth-logo"><div class="logo-wrap"><img src="https://www.popalock.com/wp-content/uploads/2020/11/pal-logo-highres.png" alt="Pop-A-Lock" /></div><h2>Nova</h2><p>Choose a new password</p></div>' +
+      '<div class="card" style="background:transparent;border:1px solid rgba(255,255,255,0.18);"><div class="card-body">' +
+        '<div id="auth-error"></div>' +
+        '<div class="form-group"><label>New Password</label><input type="password" id="rp-password" placeholder="At least 8 characters" /></div>' +
+        '<div class="form-group"><label>Confirm Password</label><input type="password" id="rp-confirm" /></div>' +
+        '<button class="btn btn-primary" style="width:100%;justify-content:center;" onclick="doResetPassword(\'' + token + '\')">Set New Password</button>' +
+      '</div></div>' +
+    '</div></div>';
+  document.getElementById('rp-confirm').addEventListener('keydown', function(e){ if(e.key==='Enter') doResetPassword(token); });
+  document.getElementById('rp-password').focus();
+}
+
+async function doResetPassword(token) {
+  var password = document.getElementById('rp-password').value || '';
+  var confirm = document.getElementById('rp-confirm').value || '';
+  if (!password || password.length < 8) { document.getElementById('auth-error').innerHTML = '<div class="alert alert-error">Password must be at least 8 characters</div>'; return; }
+  if (password !== confirm) { document.getElementById('auth-error').innerHTML = '<div class="alert alert-error">Passwords do not match</div>'; return; }
+  try {
+    await api('POST', '/auth/reset-password', { token: token, password: password });
+    document.getElementById('auth-error').innerHTML = '<div style="background:rgba(34,197,94,0.12);border:1px solid rgba(34,197,94,0.3);color:#4ade80;padding:10px;border-radius:6px;font-size:14px;text-align:center;">Password updated! Redirecting to login...</div>';
+    setTimeout(function() { window.history.replaceState({}, '', '/'); render(); }, 2000);
   } catch(err) {
     document.getElementById('auth-error').innerHTML = '<div class="alert alert-error">' + escHtml(err.message) + '</div>';
   }
