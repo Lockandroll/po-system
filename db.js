@@ -226,6 +226,29 @@ async function initDB() {
       '  updated_at TIMESTAMPTZ DEFAULT NOW()' +
       ');'
     );
+    // Account lockout + password reset
+    await client.query(
+      'ALTER TABLE users ADD COLUMN IF NOT EXISTS failed_attempts INTEGER NOT NULL DEFAULT 0;' +
+      'ALTER TABLE users ADD COLUMN IF NOT EXISTS lockout_until TIMESTAMPTZ;'
+    );
+    await client.query(
+      'CREATE TABLE IF NOT EXISTS password_resets (' +
+      '  user_id INTEGER PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,' +
+      '  token VARCHAR(64) NOT NULL,' +
+      '  expires_at TIMESTAMPTZ NOT NULL,' +
+      '  used BOOLEAN NOT NULL DEFAULT false,' +
+      '  created_at TIMESTAMPTZ DEFAULT NOW()' +
+      ');'
+    );
+    await client.query(
+      'CREATE TABLE IF NOT EXISTS two_factor_codes (' +
+      '  user_id INTEGER PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,' +
+      '  code VARCHAR(6) NOT NULL,' +
+      '  expires_at TIMESTAMPTZ NOT NULL,' +
+      '  used BOOLEAN NOT NULL DEFAULT false,' +
+      '  created_at TIMESTAMPTZ DEFAULT NOW()' +
+      ');'
+    );
     console.log('Database initialized');
   } finally {
     client.release();
