@@ -1022,6 +1022,10 @@ async function showUserModal(id) {
           '<input type="checkbox" id="modal-receive-emails" style="width:auto"' + (user && user.receive_emails === false ? '' : ' checked') + ' />' +
           '<label for="modal-receive-emails" style="margin:0;cursor:pointer">Receive email notifications</label>' +
         '</div>' +
+        '<div class="form-group" style="display:flex;align-items:center;gap:10px">' +
+          '<input type="checkbox" id="modal-receive-sms" style="width:auto"' + (user && user.receive_sms ? ' checked' : '') + ' />' +
+          '<label for="modal-receive-sms" style="margin:0;cursor:pointer">Receive SMS notifications</label>' +
+        '</div>' +
       '</div>' +
       '<div class="modal-footer"><button class="btn btn-secondary" onclick="this.closest(\'.modal-overlay\').remove()">Cancel</button><button class="btn btn-primary" onclick="saveUser(' + (id||'null') + ', this)">Save</button></div>' +
     '</div>';
@@ -1035,10 +1039,11 @@ async function saveUser(id, btn) {
   const role = document.getElementById('modal-role').value;
   const phone = document.getElementById('modal-phone').value.trim();
   const receive_emails = document.getElementById('modal-receive-emails').checked;
+  const receive_sms = document.getElementById('modal-receive-sms').checked;
   try {
     btn.disabled = true;
-    if (id) { await api('PUT', '/users/' + id, { name, email, password: password || undefined, role, phone: phone || undefined, receive_emails }); }
-    else { await api('POST', '/users', { name, email, password, role, phone: phone || undefined, receive_emails }); }
+    if (id) { await api('PUT', '/users/' + id, { name, email, password: password || undefined, role, phone: phone || undefined, receive_emails, receive_sms }); }
+    else { await api('POST', '/users', { name, email, password, role, phone: phone || undefined, receive_emails, receive_sms }); }
     document.querySelector('.modal-overlay').remove();
     navigate('users');
   } catch(err) {
@@ -1389,7 +1394,7 @@ function vendorsRenderTable(search) {
             : filtered.map(function(v) {
                 return '<tr>' +
                   '<td style="font-weight:600;color:var(--text)">' + escHtml(v.name) + '</td>' +
-                  '<td>' + (v.website ? '<a href="' + escHtml(v.website) + '" target="_blank" style="color:var(--primary)">' + escHtml(v.website) + '</a>' : '—') + '</td>' +
+                  '<td>' + (v.website ? '<a href="#" onclick="vendorOpenSite(\'' + escHtml(v.website).replace(/'/g,"\\'") + '\',\'' + escHtml(v.password||'').replace(/'/g,"\\'") + '\');return false;" style="color:var(--primary)">' + escHtml(v.website) + '</a>' : '—') + '</td>' +
                   '<td>' + escHtml(v.account_number || '—') + '</td>' +
                   '<td>' + escHtml(v.username || '—') + '</td>' +
                   '<td>' +
@@ -1431,6 +1436,20 @@ function toggleVendorPw(id, pw) {
       setTimeout(function() { tip.style.opacity = '0'; setTimeout(function() { tip.remove(); }, 400); }, 1200);
     }).catch(function(){});
   } else { el.textContent = '••••••••'; btn.textContent = 'Show'; }
+}
+
+function vendorOpenSite(url, pw) {
+  var open = function() { window.open(url.startsWith('http') ? url : 'https://' + url, '_blank'); };
+  if (pw && navigator.clipboard) {
+    navigator.clipboard.writeText(pw).then(function() {
+      var tip = document.createElement('span');
+      tip.textContent = 'Password copied!';
+      tip.style.cssText = 'position:fixed;top:20px;right:20px;background:#22c55e;color:#fff;font-size:13px;font-weight:600;padding:8px 16px;border-radius:8px;pointer-events:none;z-index:9999;transition:opacity 0.4s;box-shadow:0 4px 12px rgba(0,0,0,0.4)';
+      document.body.appendChild(tip);
+      setTimeout(function() { tip.style.opacity = '0'; setTimeout(function() { tip.remove(); }, 400); }, 1800);
+      open();
+    }).catch(open);
+  } else { open(); }
 }
 
 function showVendorModal(id, name, website, account_number, username, password, notes, rep_name, rep_email, rep_phone) {
