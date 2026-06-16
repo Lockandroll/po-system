@@ -3,6 +3,7 @@ const { pool } = require('../db');
 const { requireAuth, requireRole } = require('../middleware/auth');
 const { logAudit } = require('../utils/audit');
 const { sendEmail, emailTemplate } = require('../utils/email');
+const { sendSms } = require('../utils/sms');
 
 const router = express.Router();
 
@@ -224,9 +225,10 @@ router.post('/:id/submit', requireAuth, async (req, res) => {
   await pool.query('UPDATE purchase_orders SET status=$1, updated_at=NOW() WHERE id=$2', ['submitted', req.params.id]);
   await logAudit({ entity_type: 'po', entity_id: po.id, entity_number: po.po_number, action: 'submitted', user_id: req.user.id, user_name: req.user.name });
 
-  const { rows: approvers } = await pool.query("SELECT email, name FROM users WHERE role = 'admin' AND active = true AND receive_emails = true");
-  if (approvers.length) {
-    const emails = approvers.map(function(a) { return a.email; });
+  const { rows: admins } = await pool.query("SELECT email, name, phone, receive_emails, receive_sms FROM users WHERE role = 'admin' AND active = true");
+  const emailAdmins = admins.filter(function(a) { return a.receive_emails; }).map(function(a) { return a.email; });
+  const smsAdmins = admins.filter(function(a) { return a.receive_sms && a.phone; }).map(function(a) { return a.phone; });
+  if (emailAdmins.length) {
     const html = emailTemplate({
       badge: 'Action required',
       title: 'Purchase order submitted for approval',
@@ -242,7 +244,10 @@ router.post('/:id/submit', requireAuth, async (req, res) => {
       buttonText: 'Review PO',
       buttonUrl: appUrl('?view=view&id=' + po.id)
     });
-    await sendEmail(emails, 'Action Required: PO ' + po.po_number + ' needs approval', html);
+    await sendEmail(emailAdmins, 'Action Required: PO ' + po.po_number + ' needs approval', html);
+  }
+  if (smsAdmins.length) {
+    await sendSms(smsAdmins, 'Lock & Roll: ' + req.user.name + ' submitted PO ' + po.po_number + ' for approval. Vendor: ' + po.vendor_name + '. Total: $' + parseFloat(po.total_amount).toFixed(2) + '. ' + appUrl('?view=view&id=' + po.id));
   }
 
   res.json({ success: true });
@@ -254,7 +259,7 @@ router.post('/:id/approve', requireAuth, requireRole('approver', 'admin'), async
   if (!orderer_id) return res.status(400).json({ error: 'Please select the person responsible for ordering' });
 
   const { rows } = await pool.query(
-    'SELECT po.*, u.email AS requester_email, u.name AS requester_name, u.receive_emails AS requester_receive_emails FROM purchase_orders po JOIN users u ON po.requester_id = u.id WHERE po.id = $1',
+    'SELECT po.*, u.email AS requester_email, u.name AS requester_name, u.phone AS requester_phone, u.receive_emails AS requester_receive_emails, u.receive_sms AS requester_receive_sms FROM purchase_orders po JOIN users u ON po.requester_id = u.id WHERE po.id = $1',
     [req.params.id]
   );
   const po = rows[0];
@@ -297,6 +302,9 @@ router.post('/:id/approve', requireAuth, requireRole('approver', 'admin'), async
     });
     await sendEmail(po.requester_email, 'Approved: PO ' + po.po_number, html, ccEmails);
   }
+  if (po.requester_receive_sms && po.requester_phone) {
+    await sendSms(po.requester_phone, 'Lock & Roll: Your PO ' + po.po_number + ' was approved by ' + req.user.name + '. ' + orderer.name + ' will place the order. ' + appUrl('?view=view&id=' + po.id));
+  }
 
   res.json({ success: true });
 });
@@ -305,7 +313,7 @@ router.post('/:id/approve', requireAuth, requireRole('approver', 'admin'), async
 router.post('/:id/reject', requireAuth, requireRole('approver', 'admin'), async (req, res) => {
   const reason = req.body.reason;
   const { rows } = await pool.query(
-    'SELECT po.*, u.email AS requester_email, u.name AS requester_name, u.receive_emails AS requester_receive_emails FROM purchase_orders po JOIN users u ON po.requester_id = u.id WHERE po.id = $1',
+    'SELECT po.*, u.email AS requester_email, u.name AS requester_name, u.phone AS requester_phone, u.receive_emails AS requester_receive_emails, u.receive_sms AS requester_receive_sms FROM purchase_orders po JOIN users u ON po.requester_id = u.id WHERE po.id = $1',
     [req.params.id]
   );
   const po = rows[0];
@@ -337,6 +345,9 @@ router.post('/:id/reject', requireAuth, requireRole('approver', 'admin'), async 
     });
     await sendEmail(po.requester_email, 'Not Approved: PO ' + po.po_number, html);
   }
+  if (po.requester_receive_sms && po.requester_phone) {
+    await sendSms(po.requester_phone, 'Lock & Roll: Your PO ' + po.po_number + ' was not approved by ' + req.user.name + (reason ? '. Reason: ' + reason : '') + '. ' + appUrl('?view=view&id=' + po.id));
+  }
 
   res.json({ success: true });
 });
@@ -344,7 +355,7 @@ router.post('/:id/reject', requireAuth, requireRole('approver', 'admin'), async 
 // Cancel PO (admin only)
 router.post('/:id/cancel', requireAuth, requireRole('admin'), async (req, res) => {
   const { rows } = await pool.query(
-    'SELECT po.*, u.email AS requester_email, u.name AS requester_name, u.receive_emails AS requester_receive_emails FROM purchase_orders po JOIN users u ON po.requester_id = u.id WHERE po.id = $1',
+    'SELECT po.*, u.email AS requester_email, u.name AS requester_name, u.phone AS requester_phone, u.receive_emails AS requester_receive_emails, u.receive_sms AS requester_receive_sms FROM purchase_orders po JOIN users u ON po.requester_id = u.id WHERE po.id = $1',
     [req.params.id]
   );
   const po = rows[0];
@@ -375,6 +386,9 @@ router.post('/:id/cancel', requireAuth, requireRole('admin'), async (req, res) =
     });
     await sendEmail(po.requester_email, 'Cancelled: PO ' + po.po_number, html);
   }
+  if (po.requester_receive_sms && po.requester_phone) {
+    await sendSms(po.requester_phone, 'Lock & Roll: Your PO ' + po.po_number + ' has been cancelled by an administrator. ' + appUrl('?view=view&id=' + po.id));
+  }
 
   res.json({ success: true });
 });
@@ -382,7 +396,7 @@ router.post('/:id/cancel', requireAuth, requireRole('admin'), async (req, res) =
 // Mark PO as ordered (orderer or admin)
 router.post('/:id/order', requireAuth, async (req, res) => {
   const { rows } = await pool.query(
-    'SELECT po.*, u.email AS requester_email, u.name AS requester_name, u.receive_emails AS requester_receive_emails FROM purchase_orders po JOIN users u ON po.requester_id = u.id WHERE po.id = $1',
+    'SELECT po.*, u.email AS requester_email, u.name AS requester_name, u.phone AS requester_phone, u.receive_emails AS requester_receive_emails, u.receive_sms AS requester_receive_sms FROM purchase_orders po JOIN users u ON po.requester_id = u.id WHERE po.id = $1',
     [req.params.id]
   );
   const po = rows[0];
@@ -415,6 +429,9 @@ router.post('/:id/order', requireAuth, async (req, res) => {
       buttonUrl: appUrl('?view=view&id=' + po.id)
     });
     await sendEmail(po.requester_email, 'Order Placed: PO ' + po.po_number, html);
+  }
+  if (po.requester_receive_sms && po.requester_phone) {
+    await sendSms(po.requester_phone, 'Lock & Roll: Your PO ' + po.po_number + ' has been ordered by ' + req.user.name + '. ' + appUrl('?view=view&id=' + po.id));
   }
 
   res.json({ success: true });
