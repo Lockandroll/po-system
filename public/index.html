@@ -568,6 +568,7 @@ function logout() {
 }
 
 let allPOs = [];
+let _currentQuote = null;
 
 async function renderDashboard(el) {
   try {
@@ -2062,6 +2063,7 @@ async function renderViewQuote(el, id) {
   el.innerHTML = '<div class="loading">Loading…</div>';
   try {
     const q = await api('GET', '/quotes/' + id);
+    _currentQuote = q;
     const canEdit = state.user.role === 'admin' || q.requester_id === state.user.id;
     const canDelete = state.user.role === 'admin' || q.requester_id === state.user.id;
     el.innerHTML =
@@ -2070,6 +2072,7 @@ async function renderViewQuote(el, id) {
         '<div class="flex-gap">' +
           '<button class="btn btn-secondary" onclick="navigate(\'quotes\')">&larr; Back</button>' +
           '<button class="btn btn-secondary" onclick="printQuote(' + q.id + ')">' + icons.print + ' Print Quote</button>' +
+          '<button class="btn btn-secondary" id="ai-review-btn" onclick="reviewQuoteWithAI()" style="color:var(--primary);border-color:var(--primary);">&#10024; AI Review</button>' +
           (canEdit ? '<button class="btn btn-secondary" onclick="navigate(\'edit-quote\',' + q.id + ')">' + icons.edit + ' Edit</button>' : '') +
           (canDelete ? '<button class="btn btn-danger btn-sm" onclick="deleteQuote(' + q.id + ')">' + icons.trash + '</button>' : '') +
         '</div>' +
@@ -2119,6 +2122,72 @@ async function deleteQuote(id) {
   if (!confirm('Permanently delete this quote? This cannot be undone.')) return;
   try { await api('DELETE', '/quotes/' + id); navigate('quotes'); }
   catch(err) { document.getElementById('view-quote-error').innerHTML = '<div class="alert alert-error">' + escHtml(err.message) + '</div>'; }
+}
+
+async function deleteVR(id) {
+  if (!confirm('Permanently delete this VR? This cannot be undone.')) return;
+  try { await api('DELETE', '/vr/' + id); navigate('vr-dashboard'); }
+  catch(err) { document.getElementById('view-vr-error') && (document.getElementById('view-vr-error').innerHTML = '<div class="alert alert-error">' + escHtml(err.message) + '</div>'); }
+}
+
+async function reviewQuoteWithAI() {
+  var q = _currentQuote;
+  if (!q) return;
+  // Build modal
+  var existing = document.getElementById('ai-review-modal');
+  if (existing) existing.remove();
+  var modal = document.createElement('div');
+  modal.id = 'ai-review-modal';
+  modal.style.cssText = 'position:fixed;inset:0;z-index:1000;background:rgba(0,0,0,0.7);display:flex;align-items:center;justify-content:center;padding:20px;';
+  modal.innerHTML =
+    '<div style="background:var(--card-bg);border:1px solid var(--border-color);border-radius:12px;width:100%;max-width:640px;max-height:80vh;display:flex;flex-direction:column;">' +
+      '<div style="display:flex;align-items:center;justify-content:space-between;padding:16px 20px;border-bottom:1px solid var(--border-color);">' +
+        '<div style="font-weight:700;font-size:16px;">&#10024; AI Quote Review — ' + escHtml(q.quote_number) + '</div>' +
+        '<button onclick="document.getElementById(\'ai-review-modal\').remove()" style="background:none;border:none;color:var(--text-muted-color);font-size:20px;cursor:pointer;line-height:1;">&times;</button>' +
+      '</div>' +
+      '<div id="ai-review-body" style="padding:20px;overflow-y:auto;flex:1;font-size:14px;line-height:1.7;color:var(--text-color);">' +
+        '<div style="color:var(--text-muted-color);">Analyzing quote...</div>' +
+      '</div>' +
+    '</div>';
+  document.body.appendChild(modal);
+  modal.addEventListener('click', function(e){ if (e.target === modal) modal.remove(); });
+
+  // Build prompt
+  var itemLines = q.line_items.map(function(item, i) {
+    var cost = parseFloat(item.unit_price || 0);
+    var list = parseFloat(item.list_price || 0);
+    var margin = cost > 0 ? (((list - cost) / cost) * 100).toFixed(1) : 'N/A';
+    return (i+1) + '. ' + (item.description || '—') +
+      ' | Qty: ' + item.quantity +
+      ' | Our Cost: $' + cost.toFixed(2) +
+      ' | List Price: $' + list.toFixed(2) +
+      ' | Margin: ' + margin + '%' +
+      (item.taxable ? ' | Taxable' : '') +
+      (item.item_number ? ' | Item#: ' + item.item_number : '') +
+      (item.manufacturer ? ' | Supplier: ' + item.manufacturer : '');
+  }).join('\n');
+
+  var subtotal = parseFloat(q.total_amount) - parseFloat(q.tax_amount || 0);
+  var prompt = 'Please review this locksmith quote and flag any issues:\n\n' +
+    'Quote: ' + q.quote_number + '\n' +
+    'Customer: ' + q.customer_name + '\n' +
+    'City: ' + (q.city_code || 'N/A') + '\n' +
+    'Prepared by: ' + (q.requester_name || 'N/A') + '\n' +
+    (q.notes ? 'Notes: ' + q.notes + '\n' : '') +
+    '\nLINE ITEMS:\n' + itemLines + '\n\n' +
+    'Subtotal: $' + subtotal.toFixed(2) + '\n' +
+    (parseFloat(q.tax_amount||0) > 0 ? 'Tax (' + q.tax_rate + '%): $' + parseFloat(q.tax_amount).toFixed(2) + '\n' : '') +
+    'Grand Total: $' + parseFloat(q.total_amount).toFixed(2) + '\n\n' +
+    'Check for: pricing accuracy, unusually low/high margins, missing info, math errors, anything that looks off. Be concise and specific.';
+
+  try {
+    var data = await api('POST', '/ai/chat', { messages: [{ role: 'user', content: prompt }] });
+    var body = document.getElementById('ai-review-body');
+    if (body) body.innerHTML = data.reply.replace(/\n/g, '<br>');
+  } catch(err) {
+    var body = document.getElementById('ai-review-body');
+    if (body) body.innerHTML = '<div class="alert alert-error">' + escHtml(err.message) + '</div>';
+  }
 }
 
 async function printQuote(id) {
