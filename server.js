@@ -25,6 +25,7 @@ app.use('/api/ai', require('./routes/ai'));
 app.use('/api/dashboard', require('./routes/dashboard'));
 app.use('/api/vehicles', require('./routes/vehicles'));
 app.use('/api/vr', require('./routes/vr'));
+app.use('/api/suggestions', require('./routes/suggestions'));
 
 // Catch-all: serve frontend
 app.get('*', (req, res) => {
