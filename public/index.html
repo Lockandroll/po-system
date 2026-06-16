@@ -2137,24 +2137,26 @@ async function reviewQuoteFormWithAI() {
   var city = (document.getElementById('qt-city') || {}).value || '(not entered)';
   var notes = (document.getElementById('qt-notes') || {}).value || '';
 
-  // Collect line item rows from the form
-  var rows = document.querySelectorAll('#qt-line-items tr[data-idx]');
-  if (!rows || rows.length === 0) {
+  // Read directly from the quoteLineItems data array (source of truth for the form)
+  if (!quoteLineItems || quoteLineItems.length === 0) {
     alert('Add at least one line item before requesting an AI review.');
     return;
   }
   var itemLines = [];
   var subtotal = 0;
-  rows.forEach(function(row, i) {
-    var desc = (row.querySelector('.qi-desc') || {}).value || '—';
-    var itemNum = (row.querySelector('.qi-item') || {}).value || '';
-    var supplier = (row.querySelector('.qi-mfr') || {}).value || '';
-    var qty = parseFloat((row.querySelector('.qi-qty') || {}).value) || 0;
-    var cost = parseFloat((row.querySelector('.qi-unit') || {}).value) || 0;
-    var list = parseFloat((row.querySelector('.qi-list') || {}).value) || 0;
-    var taxable = (row.querySelector('.qi-tax') || {}).checked || false;
+  var taxRate = parseFloat((document.getElementById('qt-tax-rate') || {}).value) || 0;
+  var taxAmt = 0;
+  quoteLineItems.forEach(function(item, i) {
+    var desc = item.description || '—';
+    var itemNum = item.item_number || '';
+    var supplier = item.manufacturer || '';
+    var qty = parseFloat(item.quantity) || 0;
+    var cost = parseFloat(item.unit_price) || 0;
+    var list = parseFloat(item.list_price) || 0;
+    var taxable = !!item.taxable;
     var margin = cost > 0 ? (((list - cost) / cost) * 100).toFixed(1) : 'N/A';
     subtotal += qty * list;
+    if (taxable) taxAmt += qty * list * taxRate / 100;
     itemLines.push((i+1) + '. ' + desc +
       (itemNum ? ' | Item#: ' + itemNum : '') +
       (supplier ? ' | Supplier: ' + supplier : '') +
@@ -2163,14 +2165,6 @@ async function reviewQuoteFormWithAI() {
       ' | List Price: $' + list.toFixed(2) +
       ' | Margin: ' + margin + '%' +
       (taxable ? ' | Taxable' : ''));
-  });
-  var taxRate = parseFloat((document.getElementById('qt-tax') || {}).value) || 0;
-  var taxAmt = 0;
-  rows.forEach(function(row) {
-    var list = parseFloat((row.querySelector('.qi-list') || {}).value) || 0;
-    var qty = parseFloat((row.querySelector('.qi-qty') || {}).value) || 0;
-    var taxable = (row.querySelector('.qi-tax') || {}).checked || false;
-    if (taxable) taxAmt += qty * list * taxRate / 100;
   });
 
   // Build modal
