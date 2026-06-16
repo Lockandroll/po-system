@@ -812,7 +812,7 @@ async function renderViewPO(el, id) {
         '<div><div class="page-title">' + escHtml(po.po_number) + '</div><div class="page-subtitle">' + badgeHtml(po.status) + '</div></div>' +
         '<div class="flex-gap">' +
           '<button class="btn btn-secondary" onclick="navigate(\'dashboard\')">&larr; Back</button>' +
-          '<button class="btn btn-secondary" onclick="printPO(' + po.id + ')">' + icons.print + ' Print PO</button>' +
+          '<button class="btn btn-secondary" style="white-space:nowrap" onclick="printPO(' + po.id + ')">' + icons.print + ' Print PO</button>' +
           (canEdit ? '<button class="btn btn-secondary" onclick="navigate(\'edit\',' + po.id + ')">' + icons.edit + ' Edit</button>' : '') +
           (canSubmit ? '<button class="btn btn-primary" onclick="submitPO(' + po.id + ')">Submit for Approval</button>' : '') +
           (canDelete ? '<button class="btn btn-danger btn-sm" onclick="deletePO(' + po.id + ')">' + icons.trash + ' Delete PO</button>' : '') +
