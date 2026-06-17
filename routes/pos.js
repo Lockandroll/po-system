@@ -222,6 +222,8 @@ router.post('/:id/submit', requireAuth, async (req, res) => {
   }
   if (po.status !== 'draft' && po.status !== 'rejected') return res.status(400).json({ error: 'PO is not in draft or rejected status' });
 
+  const wasRejected = po.status === 'rejected';
+
   await pool.query('UPDATE purchase_orders SET status=$1, rejection_reason=NULL, approver_id=NULL, updated_at=NOW() WHERE id=$2', ['submitted', req.params.id]);
   await logAudit({ entity_type: 'po', entity_id: po.id, entity_number: po.po_number, action: 'submitted', user_id: req.user.id, user_name: req.user.name });
 
@@ -231,8 +233,8 @@ router.post('/:id/submit', requireAuth, async (req, res) => {
   if (emailAdmins.length) {
     const html = emailTemplate({
       badge: 'Action required',
-      title: 'Purchase order submitted for approval',
-      body: '<strong>' + req.user.name + '</strong> submitted a purchase order that needs your review.',
+      title: wasRejected ? 'Purchase order resubmitted for approval' : 'Purchase order submitted for approval',
+      body: '<strong>' + req.user.name + '</strong> ' + (wasRejected ? 'edited and resubmitted a previously rejected purchase order' : 'submitted a purchase order') + ' that needs your review.',
       details: [
         { label: 'PO number', value: po.po_number },
         { label: 'Vendor', value: po.vendor_name },
@@ -244,10 +246,10 @@ router.post('/:id/submit', requireAuth, async (req, res) => {
       buttonText: 'Review PO',
       buttonUrl: appUrl('?view=view&id=' + po.id)
     });
-    await sendEmail(emailAdmins, 'Action Required: PO ' + po.po_number + ' needs approval', html);
+    await sendEmail(emailAdmins, 'Action Required: PO ' + po.po_number + (wasRejected ? ' resubmitted — needs approval' : ' needs approval'), html);
   }
   if (smsAdmins.length) {
-    await sendSms(smsAdmins, 'Lock & Roll: ' + req.user.name + ' submitted PO ' + po.po_number + ' for approval. Vendor: ' + po.vendor_name + '. Total: $' + parseFloat(po.total_amount).toFixed(2) + '. ' + appUrl('?view=view&id=' + po.id));
+    await sendSms(smsAdmins, 'Lock & Roll: ' + req.user.name + ' ' + (wasRejected ? 'resubmitted' : 'submitted') + ' PO ' + po.po_number + ' for approval. Vendor: ' + po.vendor_name + '. Total: $' + parseFloat(po.total_amount).toFixed(2) + '. ' + appUrl('?view=view&id=' + po.id));
   }
 
   res.json({ success: true });
