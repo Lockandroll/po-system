@@ -262,6 +262,15 @@ function escHtml(s) {
   return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
 }
 
+function copyToClipboard(text, btn) {
+  navigator.clipboard.writeText(text).then(function() {
+    if (btn) { var orig = btn.innerHTML; btn.innerHTML = '&#10003;'; btn.style.color = 'var(--success)'; setTimeout(function(){ btn.innerHTML = orig; btn.style.color = ''; }, 1200); }
+  }).catch(function() {
+    var ta = document.createElement('textarea'); ta.value = text; document.body.appendChild(ta); ta.select(); document.execCommand('copy'); document.body.removeChild(ta);
+    if (btn) { var orig = btn.innerHTML; btn.innerHTML = '&#10003;'; btn.style.color = 'var(--success)'; setTimeout(function(){ btn.innerHTML = orig; btn.style.color = ''; }, 1200); }
+  });
+}
+
 function formatDate(d) {
   if (!d) return '—';
   return new Date(d).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
@@ -675,7 +684,7 @@ function applyFilters(resetPage) {
     '<thead><tr><th>PO Number</th><th>City</th><th>Vendor</th><th>Customer/Employee</th>' + (isApprover ? '<th>Requested By</th>' : '') + '<th>Total</th><th>Status</th><th>Approved By</th><th>Orderer</th><th>Date</th>' + (state.user.role === 'admin' || state.user.role === 'approver' ? '<th></th>' : '') + '</tr></thead>' +
     '<tbody>' + page.map(function(po){
       return '<tr style="cursor:pointer" onclick="navigate(\'view\',' + po.id + ')">' +
-        '<td><strong>' + escHtml(po.po_number) + '</strong></td>' +
+        '<td style="white-space:nowrap"><strong>' + escHtml(po.po_number) + '</strong> <button class="btn btn-ghost btn-sm" title="Copy PO number" onclick="event.stopPropagation();copyToClipboard(\'' + escHtml(po.po_number) + '\',this)" style="padding:1px 5px;font-size:12px;opacity:0.55;vertical-align:middle">&#10063;</button></td>' +
         '<td>' + escHtml(po.city_code || '—') + '</td>' +
         '<td>' + escHtml(po.vendor_name) + '</td>' +
         '<td>' + escHtml(po.customer_name || '—') + '</td>' +
@@ -2954,7 +2963,7 @@ async function renderVRDashboard(el) {
       tbody.innerHTML = filtered.length ? filtered.map(function(vr) {
         var sc = _vrStatusColors[vr.status] || 'var(--text-muted-color)';
         return '<tr style="cursor:pointer" onclick="navigate(\'view-vr\',' + vr.id + ')">' +
-          '<td><strong style="color:var(--primary)">' + escHtml(vr.vr_number) + '</strong></td>' +
+          '<td style="white-space:nowrap"><strong style="color:var(--primary)">' + escHtml(vr.vr_number) + '</strong> <button class="btn btn-ghost btn-sm" title="Copy VR number" onclick="event.stopPropagation();copyToClipboard(\'' + escHtml(vr.vr_number) + '\',this)" style="padding:1px 5px;font-size:12px;opacity:0.55;vertical-align:middle">&#10063;</button></td>' +
           '<td>' + escHtml(vr.vehicle || '—') + '</td>' +
           '<td style="font-family:monospace">' + escHtml(vr.vin_last6 || '—') + '</td>' +
           (isApprover ? '<td>' + escHtml(vr.requester_name || '—') + '</td>' : '') +
@@ -3473,7 +3482,7 @@ async function renderVehicleHistory(el, vehicleId) {
       if (!tbody) return;
       tbody.innerHTML = filtered.length ? filtered.map(function(vr) {
         return '<tr style="cursor:pointer" onclick="navigate(\'view-vr\',' + vr.id + ')">' +
-          '<td><strong style="color:var(--primary)">' + escHtml(vr.vr_number) + '</strong></td>' +
+          '<td style="white-space:nowrap"><strong style="color:var(--primary)">' + escHtml(vr.vr_number) + '</strong> <button class="btn btn-ghost btn-sm" title="Copy VR number" onclick="event.stopPropagation();copyToClipboard(\'' + escHtml(vr.vr_number) + '\',this)" style="padding:1px 5px;font-size:12px;opacity:0.55;vertical-align:middle">&#10063;</button></td>' +
           '<td>' + escHtml(vr.shop_name || '—') + '</td>' +
           '<td>' + escHtml(vr.city_code || '—') + '</td>' +
           '<td>' + escHtml(vr.requester_name || '—') + '</td>' +
