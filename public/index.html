@@ -42,6 +42,12 @@
       #main { margin-left: 0; }
       .hamburger { display: flex; }
       .main-content { padding: 16px; }
+      .page-header { flex-wrap: wrap; gap: 12px; }
+      .form-row { grid-template-columns: 1fr; }
+      .detail-grid { grid-template-columns: 1fr; }
+      .table-wrap { overflow-x: auto; -webkit-overflow-scrolling: touch; }
+      .table-wrap table { min-width: 620px; }
+      .line-items-table { table-layout: auto !important; min-width: 620px; }
     }
     .sidebar-logo { padding: 20px 16px; border-bottom: 1px solid var(--border); }
     .sidebar-logo h1 { font-size: 18px; font-weight: 700; color: var(--primary); letter-spacing: -0.3px; }
@@ -171,6 +177,7 @@ const state = {
   currentView: null,
   currentParam: null,
   sidebarSection: null,
+  sidebarOpen: false,
   pendingUserId: null,
   pendingVia: null,
 };
@@ -202,14 +209,15 @@ async function api(method, path, body) {
 }
 
 function toggleSidebar() {
+  state.sidebarOpen = !state.sidebarOpen;
   var sb = document.getElementById('sidebar');
   var ov = document.getElementById('sidebar-overlay');
-  if (!sb) return;
-  var open = sb.classList.toggle('open');
-  ov && ov.classList.toggle('open', open);
+  if (sb) sb.classList.toggle('open', state.sidebarOpen);
+  if (ov) ov.classList.toggle('open', state.sidebarOpen);
 }
 
 function closeSidebar() {
+  state.sidebarOpen = false;
   var sb = document.getElementById('sidebar');
   var ov = document.getElementById('sidebar-overlay');
   if (sb) sb.classList.remove('open');
@@ -224,16 +232,10 @@ function getSidebarSection(view) {
   if (['company-info','ai-context','settings','users','cities','audit'].indexOf(view) !== -1) return 'settings';
   return null;
 }
-function toggleSection(section, defaultView) {
-  if (state.sidebarSection === section && !defaultView) {
-    state.sidebarSection = null; render(); return;
-  }
-  state.sidebarSection = section;
-  if (defaultView) {
-    closeSidebar();
-    state.currentView = defaultView;
-    state.currentParam = null;
-  }
+function toggleSection(section) {
+  // Expand/collapse the section in place. Keeps the mobile menu open so
+  // sub-items (PO Dashboard, Monthly Req, etc.) stay visible.
+  state.sidebarSection = (state.sidebarSection === section) ? null : section;
   render();
 }
 function navigate(view, param) {
@@ -378,6 +380,13 @@ async function render() {
       '<div class="main-content" id="content"><div class="loading">Loading…</div></div>' +
     '</div>';
 
+  // Preserve the mobile menu's open state across re-renders
+  if (state.sidebarOpen) {
+    var _sbOpen = document.getElementById('sidebar');
+    var _ovOpen = document.getElementById('sidebar-overlay');
+    if (_sbOpen) _sbOpen.classList.add('open');
+    if (_ovOpen) _ovOpen.classList.add('open');
+  }
   const content = document.getElementById('content');
   if (state.currentView === 'home') await renderHomeScreen(content);
   else if (state.currentView === 'dashboard') await renderDashboard(content);
