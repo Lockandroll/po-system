@@ -944,7 +944,7 @@ async function renderRunningList(el){
         '<tbody id="running-body"></tbody>' +
         '<tfoot><tr class="total-row"><td colspan="2" class="text-right" style="padding:10px">Est. Total</td><td id="running-total" style="padding:10px">$0.00</td><td colspan="4"></td></tr></tfoot>' +
       '</table></div>' +
-      '<button class="btn btn-secondary btn-sm add-item-btn" onclick="runningAddRow()">' + icons.plus + ' Add item</button>' +
+      '<button class="btn btn-secondary btn-sm add-item-btn" style="white-space:nowrap" onclick="runningAddRow()">' + icons.plus + ' Add item</button>' +
     '</div></div>';
   var cityEl = document.getElementById('running-city');
   if(cityEl) cityEl.addEventListener('change', function(){ runningCityForNew = this.value; });
@@ -1058,7 +1058,7 @@ function adminRunRenderShell(el, cities){
         '<tbody id="admin-run-body"></tbody>' +
         '<tfoot><tr class="total-row"><td colspan="3" class="text-right" style="padding:10px">Est. Total</td><td id="admin-run-total" style="padding:10px">$0.00</td><td colspan="3"></td></tr></tfoot>' +
       '</table></div>' +
-      '<button class="btn btn-secondary btn-sm add-item-btn" onclick="adminRunAddRow()">' + icons.plus + ' Add line item</button>' +
+      '<button class="btn btn-secondary btn-sm add-item-btn" style="white-space:nowrap" onclick="adminRunAddRow()">' + icons.plus + ' Add line item</button>' +
       '<div class="flex-gap" style="margin-top:16px">' +
         '<button class="btn btn-primary" onclick="adminRunCreatePO()" id="admin-run-create">Create PO from list</button>' +
       '</div>' +
