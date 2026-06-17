@@ -940,7 +940,7 @@ async function renderRunningList(el){
         '<div id="running-status" style="font-size:12px;color:var(--text-muted-color);padding-bottom:10px">All changes saved</div>' +
       '</div>' +
       '<div class="table-wrap"><table class="line-items-table">' +
-        '<thead><tr><th>Item</th><th>Qty</th><th>Est. Cost</th><th>Vendor</th><th>Part #</th><th>Link</th><th></th></tr></thead>' +
+        '<thead><tr><th>Item Description</th><th>Qty</th><th>Est. Cost</th><th>Vendor</th><th>Part Description</th><th>Link</th><th></th></tr></thead>' +
         '<tbody id="running-body"></tbody>' +
         '<tfoot><tr class="total-row"><td colspan="2" class="text-right" style="padding:10px">Est. Total</td><td id="running-total" style="padding:10px">$0.00</td><td colspan="4"></td></tr></tfoot>' +
       '</table></div>' +
@@ -964,7 +964,7 @@ function runningBuildRows(){
       '<td><input type="number" value="' + escHtml(it.quantity||'') + '" min="0" step="1" style="width:64px" data-f="quantity" onchange="runningField(' + i + ',this)" /></td>' +
       '<td><input type="number" value="' + escHtml(it.unit_price||'') + '" min="0" step="0.01" placeholder="0.00" style="width:90px" data-f="unit_price" onchange="runningField(' + i + ',this)" /></td>' +
       '<td><input type="text" value="' + escHtml(it.vendor_name||'') + '" placeholder="Vendor" data-f="vendor_name" onchange="runningField(' + i + ',this)" /></td>' +
-      '<td><input type="text" value="' + escHtml(it.part_number||'') + '" placeholder="Part #" style="width:100px" data-f="part_number" onchange="runningField(' + i + ',this)" /></td>' +
+      '<td><input type="text" value="' + escHtml(it.part_number||'') + '" placeholder="Part description" style="width:100px" data-f="part_number" onchange="runningField(' + i + ',this)" /></td>' +
       '<td><input type="text" value="' + escHtml(it.link||'') + '" placeholder="URL" style="width:110px" data-f="link" onchange="runningField(' + i + ',this)" /></td>' +
       '<td><button class="btn btn-ghost btn-sm" onclick="runningDeleteRow(' + i + ')">' + icons.trash + '</button></td>' +
     '</tr>';
@@ -1041,7 +1041,6 @@ function adminRunRenderShell(el, cities){
     totalsByCity[it.city_code].t += (parseFloat(it.quantity)||0)*(parseFloat(it.unit_price)||0);
   });
   var cityOpts = cities.map(function(c){ var s=totalsByCity[c]||{n:0,t:0}; return '<option value="' + escHtml(c) + '"' + (c===adminRunCity?' selected':'') + '>' + escHtml(c) + ' (' + s.n + ' items · $' + s.t.toFixed(2) + ')</option>'; }).join('');
-  var vendorList = adminRunVendors.map(function(v){ return '<option value="' + escHtml(v.name) + '"></option>'; }).join('');
   el.innerHTML =
     '<div class="page-header"><div><div class="page-title">Running Lists by City</div><div style="color:var(--text-muted-color);font-size:13px;margin-top:2px">Every requester&#39;s items, combined per city. Edit, trim, then push one PO.</div></div></div>' +
     '<div id="running-error"></div>' +
@@ -1055,13 +1054,12 @@ function adminRunRenderShell(el, cities){
         '<div id="running-status" style="font-size:12px;color:var(--text-muted-color);padding-bottom:10px">All changes saved</div>' +
       '</div>' +
       '<div class="table-wrap"><table class="line-items-table">' +
-        '<thead><tr><th>Item</th><th>Requester</th><th>Qty</th><th>Est. Cost</th><th>Vendor</th><th>Part #</th><th></th></tr></thead>' +
+        '<thead><tr><th>Item</th><th>Requester</th><th>Qty</th><th>Est. Cost</th><th>Vendor</th><th>Part Description</th><th></th></tr></thead>' +
         '<tbody id="admin-run-body"></tbody>' +
         '<tfoot><tr class="total-row"><td colspan="3" class="text-right" style="padding:10px">Est. Total</td><td id="admin-run-total" style="padding:10px">$0.00</td><td colspan="3"></td></tr></tfoot>' +
       '</table></div>' +
       '<button class="btn btn-secondary btn-sm add-item-btn" onclick="adminRunAddRow()">' + icons.plus + ' Add line item</button>' +
-      '<div class="flex-gap" style="margin-top:16px;align-items:flex-end">' +
-        '<div class="form-group" style="max-width:300px;margin:0"><label>Vendor for this PO *</label><input type="text" id="admin-run-vendor" list="admin-run-vendors" placeholder="Choose or type a vendor" /><datalist id="admin-run-vendors">' + vendorList + '</datalist></div>' +
+      '<div class="flex-gap" style="margin-top:16px">' +
         '<button class="btn btn-primary" onclick="adminRunCreatePO()" id="admin-run-create">Create PO from list</button>' +
       '</div>' +
     '</div></div>');
@@ -1086,7 +1084,7 @@ function adminRunBuildRows(){
       '<td><input type="number" value="' + escHtml(it.quantity||'') + '" min="0" step="1" style="width:64px" data-f="quantity" onchange="adminRunField(' + id + ',this)" /></td>' +
       '<td><input type="number" value="' + escHtml(it.unit_price||'') + '" min="0" step="0.01" placeholder="0.00" style="width:90px" data-f="unit_price" onchange="adminRunField(' + id + ',this)" /></td>' +
       '<td><input type="text" value="' + escHtml(it.vendor_name||'') + '" placeholder="Vendor" data-f="vendor_name" onchange="adminRunField(' + id + ',this)" /></td>' +
-      '<td><input type="text" value="' + escHtml(it.part_number||'') + '" placeholder="Part #" style="width:100px" data-f="part_number" onchange="adminRunField(' + id + ',this)" /></td>' +
+      '<td><input type="text" value="' + escHtml(it.part_number||'') + '" placeholder="Part description" style="width:100px" data-f="part_number" onchange="adminRunField(' + id + ',this)" /></td>' +
       '<td><button class="btn btn-ghost btn-sm" onclick="adminRunDelete(' + id + ')">' + icons.trash + '</button></td>' +
     '</tr>';
   }).join('');
@@ -1139,14 +1137,12 @@ async function adminRunDelete(id){
 }
 
 async function adminRunCreatePO(){
-  var vendor = (document.getElementById('admin-run-vendor').value||'').trim();
   var err = document.getElementById('running-error');
-  if(!vendor){ err.innerHTML = '<div class="alert alert-error">Pick a vendor for this PO first.</div>'; return; }
   if(!adminRunCityItems().length){ err.innerHTML = '<div class="alert alert-error">No items to push for this city.</div>'; return; }
   var btn = document.getElementById('admin-run-create');
   if(btn) btn.disabled = true;
   try{
-    var po = await api('POST','/running/create-po', { city_code: adminRunCity, vendor_name: vendor });
+    var po = await api('POST','/running/create-po', { city_code: adminRunCity });
     navigate('view', po.id);
   }catch(e){
     err.innerHTML = '<div class="alert alert-error">' + escHtml(e.message) + '</div>';
