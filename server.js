@@ -2,14 +2,33 @@ require('dotenv').config();
 const express = require('express');
 const cors = require('cors');
 const path = require('path');
+const rateLimit = require('express-rate-limit');
 const { initDB } = require('./db');
 const { startReminders } = require('./jobs/reminders');
 
 const app = express();
 
+// Rate limiting
+const generalLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  max: 200,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: 'Too many requests, please slow down' }
+});
+const loginLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 10,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: 'Too many login attempts, please try again in 15 minutes' }
+});
+
 app.use(cors());
 app.use(express.json({ limit: '20mb' }));
 app.use(express.static(path.join(__dirname, 'public')));
+app.use('/api/', generalLimiter);
+app.use('/api/auth/login', loginLimiter);
 
 // Routes
 app.use('/api/auth', require('./routes/auth'));
