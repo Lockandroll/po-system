@@ -3684,7 +3684,16 @@ async function renderHomeScreen(el) {
           '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="6" width="18" height="13" rx="2"/><path d="M8 6V4a1 1 0 011-1h6a1 1 0 011 1v2"/><circle cx="9" cy="12" r="1" fill="currentColor"/><circle cx="15" cy="12" r="1" fill="currentColor"/><path d="M9.5 16h5"/></svg>' +
           '<span style="font-size:12px">Ask Neurolock</span></button>' +
       '</div>';
-  } catch(err) { el.innerHTML = '<div class="alert alert-error">' + escHtml(err.message) + '</div>'; }
+  } catch(err) {
+    el.innerHTML =
+      '<div style="text-align:center;padding:48px 20px;">' +
+        '<div style="font-size:32px;margin-bottom:12px;">&#9888;&#65039;</div>' +
+        '<div style="font-weight:600;font-size:16px;margin-bottom:8px;">Couldn&#39;t load the dashboard</div>' +
+        '<div style="color:var(--text-muted-color);font-size:14px;margin-bottom:20px;">This sometimes happens after a fresh deploy. Try refreshing the page.</div>' +
+        '<button class="btn btn-primary" onclick="location.reload()">Refresh Page</button>' +
+      '</div>';
+    console.error('Dashboard load error:', err.message);
+  }
 }
 
 async function renderSuggestions(el) {
