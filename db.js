@@ -249,6 +249,25 @@ async function initDB() {
       '  created_at TIMESTAMPTZ DEFAULT NOW()' +
       ');'
     );
+    // Running list (monthly accumulating items that get rolled into a PO per city)
+    await client.query(
+      'CREATE TABLE IF NOT EXISTS running_list_items (' +
+      '  id SERIAL PRIMARY KEY,' +
+      '  requester_id INTEGER REFERENCES users(id) ON DELETE CASCADE,' +
+      '  city_code CHAR(3),' +
+      '  description VARCHAR(500) NOT NULL,' +
+      '  quantity DECIMAL(10,2) DEFAULT 1,' +
+      '  unit_price DECIMAL(10,2),' +
+      '  vendor_name VARCHAR(255),' +
+      '  part_number VARCHAR(120),' +
+      '  link TEXT,' +
+      '  notes TEXT,' +
+      "  status VARCHAR(20) NOT NULL DEFAULT 'active'," +
+      '  po_id INTEGER REFERENCES purchase_orders(id) ON DELETE SET NULL,' +
+      '  created_at TIMESTAMP DEFAULT NOW(),' +
+      '  updated_at TIMESTAMP DEFAULT NOW()' +
+      ');'
+    );
     console.log('Database initialized');
   } finally {
     client.release();
