@@ -323,6 +323,7 @@ async function render() {
       '<div class="nav-sub' + (cv === 'dashboard' ? ' active' : '') + '" onclick="navigate(\'dashboard\')">' + icons.dashboard + ' PO Dashboard</div>' +
       (state.user.role !== 'approver' ? '<div class="nav-sub' + (cv === 'new' ? ' active' : '') + '" onclick="navigate(\'new\')">' + icons.plus + ' New PO</div>' : '')
     : '') +
+    (state.user.role !== 'approver' ? '<div class="nav-item' + (cv === 'running' || cv === 'running-admin' ? ' active' : '') + '" onclick="navigate(\'' + (isAdminMgr ? 'running-admin' : 'running') + '\')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="8" y1="6" x2="21" y2="6"/><line x1="8" y1="12" x2="21" y2="12"/><line x1="8" y1="18" x2="21" y2="18"/><line x1="3" y1="6" x2="3.01" y2="6"/><line x1="3" y1="12" x2="3.01" y2="12"/><line x1="3" y1="18" x2="3.01" y2="18"/></svg> Running List</div>' : '') +
     '<div class="nav-section-header' + (quViews.indexOf(cv) !== -1 ? ' section-active' : '') + (ss === 'quotes' ? ' open' : '') + '" onclick="toggleSection(\'quotes\',\'quotes\')"><span class="s-label">' + icons.quote + ' Quotes</span>' + chev + '</div>' +
     (ss === 'quotes' ?
       '<div class="nav-sub' + (cv === 'quotes' ? ' active' : '') + '" onclick="navigate(\'quotes\')">' + icons.quote + ' Quote Dashboard</div>' +
@@ -405,6 +406,8 @@ async function render() {
   else if (state.currentView === 'company-info') await renderCompanyInfo(content);
   else if (state.currentView === 'ai-context') await renderAIContext(content);
   else if (state.currentView === 'suggestions') await renderSuggestions(content);
+  else if (state.currentView === 'running') await renderRunningList(content);
+  else if (state.currentView === 'running-admin') await renderAdminRunningList(content);
   else { state.currentView = 'home'; await renderHomeScreen(content); }
 }
 
@@ -906,6 +909,248 @@ async function savePO(id, action) {
     document.getElementById('edit-error').innerHTML = '<div class="alert alert-error">' + escHtml(err.message) + '</div>';
     document.getElementById('btn-draft') && (document.getElementById('btn-draft').disabled = false);
     document.getElementById('btn-submit') && (document.getElementById('btn-submit').disabled = false);
+  }
+}
+
+// ===== Running List (monthly accumulating PO list) =====
+var runningItems = [];
+var runningCities = [];
+var runningCityForNew = '';
+
+function runningStatus(msg, ok){
+  var el = document.getElementById('running-status');
+  if(!el) return;
+  el.textContent = msg;
+  el.style.color = ok ? 'var(--success)' : 'var(--text-muted-color)';
+}
+
+async function renderRunningList(el){
+  el.innerHTML = '<div class="loading">Loading…</div>';
+  try { runningCities = await api('GET','/cities'); } catch(e){ runningCities = []; }
+  try { runningItems = await api('GET','/running'); } catch(e){ el.innerHTML = '<div class="alert alert-error">' + escHtml(e.message) + '</div>'; return; }
+  runningCityForNew = (runningItems[0] && runningItems[0].city_code) || (runningCities[0] && runningCities[0].code) || '';
+  var cityOpts = runningCities.map(function(c){ return '<option value="' + escHtml(c.code) + '"' + (c.code===runningCityForNew?' selected':'') + '>' + escHtml(c.name) + ' (' + escHtml(c.code) + ')</option>'; }).join('');
+  el.innerHTML =
+    '<div class="page-header"><div><div class="page-title">My Running List</div><div style="color:var(--text-muted-color);font-size:13px;margin-top:2px">Add items through the month. An admin combines your city into a single PO.</div></div></div>' +
+    '<div id="running-error"></div>' +
+    '<div class="card mb-4"><div class="card-body">' +
+      '<div class="form-row" style="align-items:flex-end">' +
+        '<div class="form-group" style="max-width:280px"><label>City for new items</label><select id="running-city">' + (cityOpts || '<option value="">No cities configured</option>') + '</select></div>' +
+        '<div style="flex:1"></div>' +
+        '<div id="running-status" style="font-size:12px;color:var(--text-muted-color);padding-bottom:10px">All changes saved</div>' +
+      '</div>' +
+      '<div class="table-wrap"><table class="line-items-table">' +
+        '<thead><tr><th>Item</th><th>Qty</th><th>Est. Cost</th><th>Vendor</th><th>Part #</th><th>Link</th><th></th></tr></thead>' +
+        '<tbody id="running-body"></tbody>' +
+        '<tfoot><tr class="total-row"><td colspan="2" class="text-right" style="padding:10px">Est. Total</td><td id="running-total" style="padding:10px">$0.00</td><td colspan="4"></td></tr></tfoot>' +
+      '</table></div>' +
+      '<button class="btn btn-secondary btn-sm add-item-btn" onclick="runningAddRow()">' + icons.plus + ' Add item</button>' +
+    '</div></div>';
+  var cityEl = document.getElementById('running-city');
+  if(cityEl) cityEl.addEventListener('change', function(){ runningCityForNew = this.value; });
+  runningBuildRows();
+}
+
+function runningBuildRows(){
+  var tbody = document.getElementById('running-body');
+  if(!tbody) return;
+  if(!runningItems.length){
+    tbody.innerHTML = '<tr><td colspan="7" style="padding:14px;color:var(--text-muted-color)">No items yet. Click “Add item” to start your list.</td></tr>';
+    runningUpdateTotal(); return;
+  }
+  tbody.innerHTML = runningItems.map(function(it,i){
+    return '<tr>' +
+      '<td><input type="text" value="' + escHtml(it.description||'') + '" placeholder="Item description *" data-f="description" onchange="runningField(' + i + ',this)" /></td>' +
+      '<td><input type="number" value="' + escHtml(it.quantity||'') + '" min="0" step="1" style="width:64px" data-f="quantity" onchange="runningField(' + i + ',this)" /></td>' +
+      '<td><input type="number" value="' + escHtml(it.unit_price||'') + '" min="0" step="0.01" placeholder="0.00" style="width:90px" data-f="unit_price" onchange="runningField(' + i + ',this)" /></td>' +
+      '<td><input type="text" value="' + escHtml(it.vendor_name||'') + '" placeholder="Vendor" data-f="vendor_name" onchange="runningField(' + i + ',this)" /></td>' +
+      '<td><input type="text" value="' + escHtml(it.part_number||'') + '" placeholder="Part #" style="width:100px" data-f="part_number" onchange="runningField(' + i + ',this)" /></td>' +
+      '<td><input type="text" value="' + escHtml(it.link||'') + '" placeholder="URL" style="width:110px" data-f="link" onchange="runningField(' + i + ',this)" /></td>' +
+      '<td><button class="btn btn-ghost btn-sm" onclick="runningDeleteRow(' + i + ')">' + icons.trash + '</button></td>' +
+    '</tr>';
+  }).join('');
+  runningUpdateTotal();
+}
+
+function runningUpdateTotal(){
+  var t = runningItems.reduce(function(s,it){ return s + (parseFloat(it.quantity)||0)*(parseFloat(it.unit_price)||0); },0);
+  var el = document.getElementById('running-total');
+  if(el) el.textContent = '$' + t.toFixed(2);
+}
+
+function runningField(i, input){
+  runningItems[i][input.dataset.f] = input.value;
+  runningUpdateTotal();
+  runningPersist(i);
+}
+
+async function runningPersist(i){
+  var it = runningItems[i];
+  if(!it) return;
+  if(!it.description || !it.description.trim()) return;
+  runningStatus('Saving…', false);
+  try{
+    if(it.id){
+      await api('PUT','/running/' + it.id, { description: it.description, quantity: it.quantity||1, unit_price: it.unit_price||null, vendor_name: it.vendor_name||null, part_number: it.part_number||null, link: it.link||null });
+    } else {
+      var created = await api('POST','/running', { description: it.description, quantity: it.quantity||1, unit_price: it.unit_price||null, vendor_name: it.vendor_name||null, part_number: it.part_number||null, link: it.link||null, city_code: runningCityForNew });
+      it.id = created.id;
+    }
+    runningStatus('All changes saved', true);
+  }catch(e){ runningStatus('Save failed: ' + e.message, false); }
+}
+
+function runningAddRow(){
+  runningItems.push({ description:'', quantity:1, unit_price:'', vendor_name:'', part_number:'', link:'' });
+  runningBuildRows();
+}
+
+async function runningDeleteRow(i){
+  var it = runningItems[i];
+  runningItems.splice(i,1);
+  runningBuildRows();
+  if(it && it.id){
+    try{ await api('DELETE','/running/' + it.id); runningStatus('All changes saved', true); }
+    catch(e){ runningStatus('Delete failed: ' + e.message, false); }
+  }
+}
+
+// ===== Admin running list (combined by city) =====
+var adminRunItems = [];
+var adminRunVendors = [];
+var adminRunCity = '';
+
+async function renderAdminRunningList(el){
+  el.innerHTML = '<div class="loading">Loading…</div>';
+  try { adminRunItems = await api('GET','/running/admin'); } catch(e){ el.innerHTML = '<div class="alert alert-error">' + escHtml(e.message) + '</div>'; return; }
+  try { adminRunVendors = await api('GET','/vendors'); } catch(e){ adminRunVendors = []; }
+  var cities = [...new Set(adminRunItems.map(function(it){ return it.city_code; }).filter(Boolean))].sort();
+  if(!adminRunCity || cities.indexOf(adminRunCity)===-1) adminRunCity = cities[0] || '';
+  adminRunRenderShell(el, cities);
+}
+
+function adminRunCityItems(){
+  return adminRunItems.filter(function(it){ return it.city_code === adminRunCity; });
+}
+
+function adminRunRenderShell(el, cities){
+  var totalsByCity = {};
+  adminRunItems.forEach(function(it){
+    if(!totalsByCity[it.city_code]) totalsByCity[it.city_code] = { n:0, t:0 };
+    totalsByCity[it.city_code].n++;
+    totalsByCity[it.city_code].t += (parseFloat(it.quantity)||0)*(parseFloat(it.unit_price)||0);
+  });
+  var cityOpts = cities.map(function(c){ var s=totalsByCity[c]||{n:0,t:0}; return '<option value="' + escHtml(c) + '"' + (c===adminRunCity?' selected':'') + '>' + escHtml(c) + ' (' + s.n + ' items · $' + s.t.toFixed(2) + ')</option>'; }).join('');
+  var vendorList = adminRunVendors.map(function(v){ return '<option value="' + escHtml(v.name) + '"></option>'; }).join('');
+  el.innerHTML =
+    '<div class="page-header"><div><div class="page-title">Running Lists by City</div><div style="color:var(--text-muted-color);font-size:13px;margin-top:2px">Every requester&#39;s items, combined per city. Edit, trim, then push one PO.</div></div></div>' +
+    '<div id="running-error"></div>' +
+    (cities.length === 0
+      ? '<div class="card"><div class="card-body" style="color:var(--text-muted-color)">No active running-list items across any city yet.</div></div>'
+      :
+    '<div class="card mb-4"><div class="card-body">' +
+      '<div class="form-row" style="align-items:flex-end">' +
+        '<div class="form-group" style="max-width:340px"><label>City</label><select id="admin-run-city" onchange="adminRunSwitchCity(this.value)">' + cityOpts + '</select></div>' +
+        '<div style="flex:1"></div>' +
+        '<div id="running-status" style="font-size:12px;color:var(--text-muted-color);padding-bottom:10px">All changes saved</div>' +
+      '</div>' +
+      '<div class="table-wrap"><table class="line-items-table">' +
+        '<thead><tr><th>Item</th><th>Requester</th><th>Qty</th><th>Est. Cost</th><th>Vendor</th><th>Part #</th><th></th></tr></thead>' +
+        '<tbody id="admin-run-body"></tbody>' +
+        '<tfoot><tr class="total-row"><td colspan="3" class="text-right" style="padding:10px">Est. Total</td><td id="admin-run-total" style="padding:10px">$0.00</td><td colspan="3"></td></tr></tfoot>' +
+      '</table></div>' +
+      '<button class="btn btn-secondary btn-sm add-item-btn" onclick="adminRunAddRow()">' + icons.plus + ' Add line item</button>' +
+      '<div class="flex-gap" style="margin-top:16px;align-items:flex-end">' +
+        '<div class="form-group" style="max-width:300px;margin:0"><label>Vendor for this PO *</label><input type="text" id="admin-run-vendor" list="admin-run-vendors" placeholder="Choose or type a vendor" /><datalist id="admin-run-vendors">' + vendorList + '</datalist></div>' +
+        '<button class="btn btn-primary" onclick="adminRunCreatePO()" id="admin-run-create">Create PO from list</button>' +
+      '</div>' +
+    '</div></div>');
+  adminRunBuildRows();
+}
+
+function adminRunSwitchCity(c){ adminRunCity = c; adminRunBuildRows(); }
+
+function adminRunBuildRows(){
+  var tbody = document.getElementById('admin-run-body');
+  if(!tbody) return;
+  var items = adminRunCityItems();
+  if(!items.length){
+    tbody.innerHTML = '<tr><td colspan="7" style="padding:14px;color:var(--text-muted-color)">No items for this city.</td></tr>';
+    adminRunUpdateTotal(); return;
+  }
+  tbody.innerHTML = items.map(function(it){
+    var id = it.id;
+    return '<tr>' +
+      '<td><input type="text" value="' + escHtml(it.description||'') + '" data-f="description" onchange="adminRunField(' + id + ',this)" /></td>' +
+      '<td style="color:var(--text-muted-color);white-space:nowrap">' + escHtml(it.requester_name||'—') + '</td>' +
+      '<td><input type="number" value="' + escHtml(it.quantity||'') + '" min="0" step="1" style="width:64px" data-f="quantity" onchange="adminRunField(' + id + ',this)" /></td>' +
+      '<td><input type="number" value="' + escHtml(it.unit_price||'') + '" min="0" step="0.01" placeholder="0.00" style="width:90px" data-f="unit_price" onchange="adminRunField(' + id + ',this)" /></td>' +
+      '<td><input type="text" value="' + escHtml(it.vendor_name||'') + '" placeholder="Vendor" data-f="vendor_name" onchange="adminRunField(' + id + ',this)" /></td>' +
+      '<td><input type="text" value="' + escHtml(it.part_number||'') + '" placeholder="Part #" style="width:100px" data-f="part_number" onchange="adminRunField(' + id + ',this)" /></td>' +
+      '<td><button class="btn btn-ghost btn-sm" onclick="adminRunDelete(' + id + ')">' + icons.trash + '</button></td>' +
+    '</tr>';
+  }).join('');
+  adminRunUpdateTotal();
+}
+
+function adminRunUpdateTotal(){
+  var t = adminRunCityItems().reduce(function(s,it){ return s + (parseFloat(it.quantity)||0)*(parseFloat(it.unit_price)||0); },0);
+  var el = document.getElementById('admin-run-total');
+  if(el) el.textContent = '$' + t.toFixed(2);
+}
+
+function adminRunFindById(id){ for(var k=0;k<adminRunItems.length;k++){ if(adminRunItems[k].id===id) return adminRunItems[k]; } return null; }
+
+function adminRunField(id, input){
+  var it = adminRunFindById(id);
+  if(!it) return;
+  it[input.dataset.f] = input.value;
+  adminRunUpdateTotal();
+  adminRunPersist(it);
+}
+
+async function adminRunPersist(it){
+  runningStatus('Saving…', false);
+  try{
+    await api('PUT','/running/' + it.id, { description: it.description, quantity: it.quantity||1, unit_price: it.unit_price||null, vendor_name: it.vendor_name||null, part_number: it.part_number||null, link: it.link||null });
+    runningStatus('All changes saved', true);
+  }catch(e){ runningStatus('Save failed: ' + e.message, false); }
+}
+
+async function adminRunAddRow(){
+  if(!adminRunCity) return;
+  try{
+    var created = await api('POST','/running', { description:'New item', quantity:1, unit_price:null, city_code: adminRunCity });
+    created.requester_name = state.user.name;
+    adminRunItems.push(created);
+    adminRunBuildRows();
+    runningStatus('All changes saved', true);
+  }catch(e){ document.getElementById('running-error').innerHTML = '<div class="alert alert-error">' + escHtml(e.message) + '</div>'; }
+}
+
+async function adminRunDelete(id){
+  var idx = -1;
+  for(var k=0;k<adminRunItems.length;k++){ if(adminRunItems[k].id===id){ idx=k; break; } }
+  if(idx===-1) return;
+  adminRunItems.splice(idx,1);
+  adminRunBuildRows();
+  try{ await api('DELETE','/running/' + id); runningStatus('All changes saved', true); }
+  catch(e){ runningStatus('Delete failed: ' + e.message, false); }
+}
+
+async function adminRunCreatePO(){
+  var vendor = (document.getElementById('admin-run-vendor').value||'').trim();
+  var err = document.getElementById('running-error');
+  if(!vendor){ err.innerHTML = '<div class="alert alert-error">Pick a vendor for this PO first.</div>'; return; }
+  if(!adminRunCityItems().length){ err.innerHTML = '<div class="alert alert-error">No items to push for this city.</div>'; return; }
+  var btn = document.getElementById('admin-run-create');
+  if(btn) btn.disabled = true;
+  try{
+    var po = await api('POST','/running/create-po', { city_code: adminRunCity, vendor_name: vendor });
+    navigate('view', po.id);
+  }catch(e){
+    err.innerHTML = '<div class="alert alert-error">' + escHtml(e.message) + '</div>';
+    if(btn) btn.disabled = false;
   }
 }
 
