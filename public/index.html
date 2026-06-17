@@ -1157,8 +1157,8 @@ async function renderViewPO(el, id) {
   el.innerHTML = '<div class="loading">Loading…</div>';
   try {
     const po = await api('GET', '/pos/' + id);
-    const canEdit = state.user.role === 'admin' || (state.user.role !== 'approver' && po.status === 'draft' && po.requester_id === state.user.id);
-    const canSubmit = state.user.role !== 'approver' && po.status === 'draft' && po.requester_id === state.user.id;
+    const canEdit = state.user.role === 'admin' || (state.user.role !== 'approver' && (po.status === 'draft' || po.status === 'rejected') && po.requester_id === state.user.id);
+    const canSubmit = state.user.role !== 'approver' && (po.status === 'draft' || po.status === 'rejected') && po.requester_id === state.user.id;
     const canDelete = state.user.role === 'admin' || (state.user.role !== 'approver' && po.status === 'draft' && po.requester_id === state.user.id);
     const canApprove = ['approver','admin'].includes(state.user.role) && po.status === 'submitted';
     const canOrder = po.status === 'approved' && (state.user.role === 'admin' || po.orderer_id === state.user.id);
@@ -1173,7 +1173,7 @@ async function renderViewPO(el, id) {
           '<button class="btn btn-secondary" onclick="navigate(\'dashboard\')">&larr; Back</button>' +
           '<button class="btn btn-secondary" style="white-space:nowrap" onclick="printPO(' + po.id + ')">' + icons.print + ' Print PO</button>' +
           (canEdit ? '<button class="btn btn-secondary" onclick="navigate(\'edit\',' + po.id + ')">' + icons.edit + ' Edit</button>' : '') +
-          (canSubmit ? '<button class="btn btn-primary" onclick="submitPO(' + po.id + ')">Submit for Approval</button>' : '') +
+          (canSubmit ? '<button class="btn btn-primary" onclick="submitPO(' + po.id + ')">' + (po.status === 'rejected' ? 'Resubmit for Approval' : 'Submit for Approval') + '</button>' : '') +
           (canDelete ? '<button class="btn btn-danger btn-sm" style="white-space:nowrap" onclick="deletePO(' + po.id + ')">' + icons.trash + ' Delete PO</button>' : '') +
           (canOrder ? '<button class="btn btn-primary" onclick="markOrdered(' + po.id + ')" style="background:#7c3aed;border-color:#7c3aed;white-space:nowrap">&#10003; Mark as Ordered</button>' : '') +
           (canCancel ? '<button class="btn btn-danger btn-sm" style="white-space:nowrap" onclick="cancelPO(' + po.id + ')">&#x2715; Cancel PO</button>' : '') +
