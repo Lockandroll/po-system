@@ -101,10 +101,9 @@ router.delete('/:id', requireAuth, async (req, res) => {
 // Body: { city_code, vendor_name, item_ids? } — if item_ids omitted, pushes all active items for the city
 router.post('/create-po', requireAuth, requireRole('admin', 'manager'), async (req, res) => {
   const city_code = req.body.city_code ? req.body.city_code.toUpperCase() : null;
-  const vendor_name = (req.body.vendor_name || '').trim();
+  const requested_vendor = (req.body.vendor_name || '').trim();
   const item_ids = Array.isArray(req.body.item_ids) ? req.body.item_ids : null;
   if (!city_code) return res.status(400).json({ error: 'City is required' });
-  if (!vendor_name) return res.status(400).json({ error: 'Vendor is required' });
 
   let itemsQuery = "SELECT * FROM running_list_items WHERE status = 'active' AND city_code = $1";
   const params = [city_code];
@@ -115,6 +114,13 @@ router.post('/create-po', requireAuth, requireRole('admin', 'manager'), async (r
   itemsQuery += ' ORDER BY created_at ASC';
   const { rows: items } = await pool.query(itemsQuery, params);
   if (!items.length) return res.status(400).json({ error: 'No items to push for this city' });
+
+  // One combined PO for the whole city, including items from every vendor.
+  // The running list stores a vendor per item, but a PO has a single vendor field,
+  // so derive it from the items: the distinct vendor names joined, or a generic
+  // fallback if none are set. An explicit vendor_name in the request still wins.
+  const distinctVendors = [...new Set(items.map(function(i){ return (i.vendor_name || '').trim(); }).filter(Boolean))];
+  const vendor_name = requested_vendor || (distinctVendors.length ? distinctVendors.join(', ') : 'Various Vendors');
 
   const po_number = await generatePONumber(city_code, getInitials(req.user.name));
   const total_amount = computeTotal(items);
