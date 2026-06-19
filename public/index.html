@@ -1883,10 +1883,12 @@ function geicoRenderTable(rows) {
 // ── Vendors ───────────────────────────────────────────────────────────────────
 
 var _vendorsData = [];
+var _vendorCities = [];
 
 async function renderVendors(el) {
   if (!['admin','manager'].includes(state.user.role)) { el.innerHTML = '<div class="alert alert-error">Access denied.</div>'; return; }
   try { _vendorsData = await api('GET', '/vendors'); } catch(e) { _vendorsData = []; }
+  try { _vendorCities = await api('GET', '/cities'); } catch(e) { _vendorCities = []; }
   el.innerHTML =
     '<div class="page-header"><div><div class="page-title">Accounts</div><div class="page-subtitle">Vendor account logins &amp; credentials</div></div>' +
     '<button class="btn btn-primary" onclick="showVendorModal()">+ Add Account</button></div>' +
@@ -1913,15 +1915,16 @@ function vendorsRenderTable(search) {
   wrap.innerHTML =
     '<div class="card"><div class="table-wrap">' +
       '<table>' +
-        '<thead><tr><th>Account Name</th><th>Website</th><th>Account #</th><th>Username</th><th>Password</th><th>Notes</th><th>Rep Name</th><th>Rep Email</th><th>Rep Phone</th><th></th></tr></thead>' +
+        '<thead><tr><th>Account Name</th><th>Website</th><th>Account #</th><th>City Assigned</th><th>Username</th><th>Password</th><th>Notes</th><th>Rep Name</th><th>Rep Email</th><th>Rep Phone</th><th></th></tr></thead>' +
         '<tbody>' +
           (filtered.length === 0
-            ? '<tr><td colspan="10" style="text-align:center;color:var(--text-muted-color);padding:32px">No accounts found.</td></tr>'
+            ? '<tr><td colspan="11" style="text-align:center;color:var(--text-muted-color);padding:32px">No accounts found.</td></tr>'
             : filtered.map(function(v) {
                 return '<tr>' +
                   '<td style="font-weight:600;color:var(--text)">' + escHtml(v.name) + '</td>' +
                   '<td>' + (v.website ? '<a href="#" onclick="vendorOpenSite(\'' + escHtml(v.website).replace(/'/g,"\\'") + '\',\'' + escHtml(v.password||'').replace(/'/g,"\\'") + '\');return false;" style="color:var(--primary)">' + escHtml(v.website) + '</a>' : '—') + '</td>' +
                   '<td>' + escHtml(v.account_number || '—') + '</td>' +
+                  '<td>' + escHtml(vendorCityLabel(v.city_code)) + '</td>' +
                   '<td>' + escHtml(v.username || '—') + '</td>' +
                   '<td>' +
                     (v.password
@@ -1978,8 +1981,12 @@ function vendorOpenSite(url, pw) {
   } else { open(); }
 }
 
-function showVendorModal(id, name, website, account_number, username, password, notes, rep_name, rep_email, rep_phone) {
+function vendorCityLabel(code){ if(!code) return 'All'; var c=(_vendorCities||[]).find(function(x){return x.code===code;}); return c ? c.name : code; }
+function vendorCityOptions(selected){ var opts='<option value="">All</option>'; (_vendorCities||[]).forEach(function(c){ opts += '<option value="'+escHtml(c.code)+'"'+(c.code===selected?' selected':'')+'>'+escHtml(c.name)+'</option>'; }); return opts; }
+function showVendorModal(id) {
   const isEdit = !!id;
+  const _v = isEdit ? ((_vendorsData || []).find(function(x){ return x.id === id; }) || {}) : {};
+  const name = _v.name || '', website = _v.website || '', account_number = _v.account_number || '', username = _v.username || '', password = _v.password || '', notes = _v.notes || '', rep_name = _v.rep_name || '', rep_email = _v.rep_email || '', rep_phone = _v.rep_phone || '', city_code = _v.city_code || '';
   const overlay = document.createElement('div');
   overlay.className = 'modal-overlay';
   overlay.id = 'vendor-modal-overlay';
@@ -2000,6 +2007,7 @@ function showVendorModal(id, name, website, account_number, username, password, 
             '<input type="password" id="vm-password" value="' + escHtml(password||'') + '" placeholder="Login password" style="flex:1" />' +
             '<button type="button" class="btn btn-secondary btn-sm" style="white-space:nowrap" onclick="toggleVendorModalPw()">Show</button>' +
           '</div></div>' +
+        '<div class="form-group"><label>City Assigned</label><select id="vm-city">' + vendorCityOptions(city_code) + '</select></div>' +
         '<div class="form-group"><label>Notes</label><textarea id="vm-notes" placeholder="Any additional info...">' + escHtml(notes||'') + '</textarea></div>' +
         '<div style="border-top:1px solid var(--border);margin:16px 0 12px;padding-top:12px;font-size:13px;font-weight:600;color:var(--text-muted-color);text-transform:uppercase;letter-spacing:0.05em">Rep Contact</div>' +
         '<div class="form-group"><label>Rep Name</label><input type="text" id="vm-rep-name" value="' + escHtml(rep_name||'') + '" placeholder="Sales rep name" /></div>' +
@@ -2035,7 +2043,8 @@ async function saveVendor(id) {
     notes: (document.getElementById('vm-notes')||{}).value.trim() || null,
     rep_name: (document.getElementById('vm-rep-name')||{}).value.trim() || null,
     rep_email: (document.getElementById('vm-rep-email')||{}).value.trim() || null,
-    rep_phone: (document.getElementById('vm-rep-phone')||{}).value.trim() || null
+    rep_phone: (document.getElementById('vm-rep-phone')||{}).value.trim() || null,
+    city_code: (document.getElementById('vm-city')||{}).value || null
   };
   try {
     if (id) { await api('PUT', '/vendors/' + id, payload); }
