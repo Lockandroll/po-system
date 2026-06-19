@@ -268,6 +268,33 @@ async function initDB() {
       '  updated_at TIMESTAMP DEFAULT NOW()' +
       ');'
     );
+    // Geico ERS survey history + city attribution
+    await client.query(
+      'ALTER TABLE vendors ADD COLUMN IF NOT EXISTS city_code CHAR(3);'
+    );
+    await client.query(
+      'CREATE TABLE IF NOT EXISTS geico_surveys (' +
+      '  id SERIAL PRIMARY KEY,' +
+      '  po_number VARCHAR(100) UNIQUE NOT NULL,' +
+      '  account_number VARCHAR(50),' +
+      '  city_code CHAR(3),' +
+      '  service VARCHAR(100),' +
+      '  loss_state VARCHAR(4),' +
+      '  date_of_dispatch DATE,' +
+      '  arrived_on_time VARCHAR(20),' +
+      '  time_to_arrive VARCHAR(50),' +
+      '  rating VARCHAR(50),' +
+      '  date_received DATE,' +
+      '  internet_message_id VARCHAR(255),' +
+      '  created_at TIMESTAMPTZ DEFAULT NOW(),' +
+      '  updated_at TIMESTAMPTZ DEFAULT NOW()' +
+      ');'
+    );
+    await client.query(
+      'CREATE INDEX IF NOT EXISTS idx_geico_received ON geico_surveys(date_received);' +
+      'CREATE INDEX IF NOT EXISTS idx_geico_city ON geico_surveys(city_code);' +
+      'CREATE INDEX IF NOT EXISTS idx_geico_rating ON geico_surveys(rating);'
+    );
     console.log('Database initialized');
   } finally {
     client.release();

@@ -339,6 +339,7 @@ async function render() {
       (isAdminMgr ? '<div class="nav-sub' + (['fleet-registry','new-vehicle','edit-vehicle','vehicle-history'].indexOf(cv) !== -1 ? ' active' : '') + '" onclick="navigate(\'fleet-registry\')">' + icoDB + ' Fleet Registry</div>' : '')
     : '') +
     (isAdminMgr ? '<div class="nav-item' + (cv === 'vendors' ? ' active' : '') + '" onclick="navigate(\'vendors\')">' + icoAccounts + ' Accounts</div>' : '') +
+    (isAdminMgr ? '<div class="nav-item' + (cv === 'geico' ? ' active' : '') + '" onclick="navigate(\'geico\')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 01-2 2H5a2 2 0 01-2-2V5a2 2 0 012-2h11"/></svg> Geico Reviews</div>' : '') +
     '<div class="nav-item' + (cv === 'suggestions' ? ' active' : '') + '" onclick="navigate(\'suggestions\')">' + icoSuggestion + ' Suggestions</div>' +
     (isAdmin ?
       '<div class="nav-section-header' + (aiViews.indexOf(cv) !== -1 ? ' section-active' : '') + (ss === 'ai' ? ' open' : '') + '" onclick="toggleSection(\'ai\',\'ai-assistant\')"><span class="s-label">' + icoAI + ' Locksmith AI Assistant</span>' + chev + '</div>' +
@@ -418,6 +419,7 @@ async function render() {
   else if (state.currentView === 'suggestions') await renderSuggestions(content);
   else if (state.currentView === 'running') await renderRunningList(content);
   else if (state.currentView === 'running-admin') await renderAdminRunningList(content);
+  else if (state.currentView === 'geico') await renderGeicoReviews(content);
   else { state.currentView = 'home'; await renderHomeScreen(content); }
 }
 
@@ -1726,6 +1728,158 @@ async function saveAIContext() {
   }
 }
 
+var _geicoStats = null;
+var _geicoRows = [];
+
+async function renderGeicoReviews(el) {
+  if (!['admin','manager'].includes(state.user.role)) { el.innerHTML = '<div class="alert alert-error">Access denied.</div>'; return; }
+  var cities = [];
+  try { cities = await api('GET', '/cities'); } catch(e) { cities = []; }
+  var cityOpts = '<option value="">All cities</option>' + cities.map(function(c){ return '<option value="' + escHtml(c.code) + '">' + escHtml(c.name) + '</option>'; }).join('');
+  var iS = 'padding:8px 10px;background:var(--surface-color);border:1px solid rgba(249,115,22,0.35);border-radius:6px;color:var(--text-color);font-size:13px;outline:none';
+  var lbl = 'display:block;font-size:11px;color:var(--text-muted-color);margin-bottom:4px';
+  el.innerHTML =
+    '<div class="page-header"><div><div class="page-title">Geico Reviews</div><div class="page-subtitle">ERS survey history by city, service &amp; rating</div></div></div>' +
+    '<div id="geico-filters" style="display:flex;flex-wrap:wrap;gap:10px;align-items:end;margin-bottom:16px">' +
+      '<div><label style="' + lbl + '">From</label><input type="date" id="geico-from" style="' + iS + '" onchange="geicoLoad()" /></div>' +
+      '<div><label style="' + lbl + '">To</label><input type="date" id="geico-to" style="' + iS + '" onchange="geicoLoad()" /></div>' +
+      '<div><label style="' + lbl + '">City</label><select id="geico-city" style="' + iS + '" onchange="geicoLoad()">' + cityOpts + '</select></div>' +
+      '<div><label style="' + lbl + '">Rating</label><select id="geico-rating" style="' + iS + '" onchange="geicoLoad()"><option value="">All ratings</option></select></div>' +
+      '<div><label style="' + lbl + '">Service</label><select id="geico-service" style="' + iS + '" onchange="geicoLoad()"><option value="">All services</option></select></div>' +
+      '<div><label style="' + lbl + '">State</label><select id="geico-state" style="' + iS + '" onchange="geicoLoad()"><option value="">All states</option></select></div>' +
+      '<button class="btn btn-secondary btn-sm" onclick="geicoClearFilters()">Clear</button>' +
+    '</div>' +
+    '<div id="geico-stats" style="margin-bottom:16px"></div>' +
+    '<div id="geico-table-wrap"></div>';
+  await geicoLoad(true);
+}
+
+function geicoClearFilters() {
+  ['geico-from','geico-to','geico-city','geico-rating','geico-service','geico-state'].forEach(function(id){ var e=document.getElementById(id); if(e) e.value=''; });
+  geicoLoad();
+}
+
+function geicoDateQS() {
+  var qs = [];
+  var from = (document.getElementById('geico-from')||{}).value;
+  var to = (document.getElementById('geico-to')||{}).value;
+  if (from) qs.push('from=' + encodeURIComponent(from));
+  if (to) { var d = new Date(to + 'T00:00:00Z'); d.setUTCDate(d.getUTCDate()+1); qs.push('to=' + encodeURIComponent(d.toISOString().slice(0,10))); }
+  return qs;
+}
+
+function geicoListQS() {
+  var qs = geicoDateQS();
+  var city = (document.getElementById('geico-city')||{}).value;
+  var rating = (document.getElementById('geico-rating')||{}).value;
+  var service = (document.getElementById('geico-service')||{}).value;
+  var st = (document.getElementById('geico-state')||{}).value;
+  if (city) qs.push('city_code=' + encodeURIComponent(city));
+  if (rating) qs.push('rating=' + encodeURIComponent(rating));
+  if (service) qs.push('service=' + encodeURIComponent(service));
+  if (st) qs.push('loss_state=' + encodeURIComponent(st));
+  return qs.length ? ('?' + qs.join('&')) : '';
+}
+
+async function geicoLoad(initial) {
+  var statsEl = document.getElementById('geico-stats');
+  var tableEl = document.getElementById('geico-table-wrap');
+  if (statsEl) statsEl.innerHTML = '<div style="color:var(--text-muted-color);padding:12px">Loading...</div>';
+  var dq = geicoDateQS();
+  var dqs = dq.length ? ('?' + dq.join('&')) : '';
+  try {
+    var stats = await api('GET', '/geico/stats' + dqs);
+    var rows = await api('GET', '/geico' + geicoListQS());
+    _geicoStats = stats; _geicoRows = rows;
+    if (initial) geicoPopulateDropdowns(stats);
+    geicoRenderStats(stats);
+    geicoRenderTable(rows);
+  } catch(e) {
+    if (statsEl) statsEl.innerHTML = '<div class="alert alert-error">' + escHtml(e.message) + '</div>';
+    if (tableEl) tableEl.innerHTML = '';
+  }
+}
+
+function geicoPopulateDropdowns(stats) {
+  function fill(id, arr) {
+    var sel = document.getElementById(id); if (!sel) return;
+    var cur = sel.value;
+    var first = sel.options[0] ? sel.options[0].outerHTML : '';
+    sel.innerHTML = first + (arr||[]).filter(function(x){ return x.k && x.k !== '(none)'; }).map(function(x){ return '<option value="' + escHtml(x.k) + '">' + escHtml(x.k) + '</option>'; }).join('');
+    sel.value = cur;
+  }
+  fill('geico-rating', stats.byRating);
+  fill('geico-service', stats.byService);
+  fill('geico-state', stats.byState);
+}
+
+function geicoStatCard(label, value, sub) {
+  return '<div class="card" style="flex:1;min-width:140px;padding:16px">' +
+    '<div style="font-size:12px;color:var(--text-muted-color);text-transform:uppercase;letter-spacing:0.5px">' + escHtml(label) + '</div>' +
+    '<div style="font-size:26px;font-weight:800;color:var(--text-color);margin-top:4px">' + escHtml(String(value)) + '</div>' +
+    (sub ? '<div style="font-size:12px;color:var(--text-muted-color);margin-top:2px">' + escHtml(sub) + '</div>' : '') +
+    '</div>';
+}
+
+function geicoRenderStats(s) {
+  var el = document.getElementById('geico-stats'); if (!el) return;
+  var total = s.total || 0;
+  var exc = (s.byRating||[]).filter(function(r){ return /excellent/i.test(r.k); }).reduce(function(a,b){ return a + b.n; }, 0);
+  var excPct = total ? Math.round(exc*100/total) : 0;
+  var otPct = s.onTimeAnswered ? Math.round(s.onTime*100/s.onTimeAnswered) : 0;
+  var nCities = (s.byCity||[]).filter(function(c){ return c.k !== '(unmatched)'; }).length;
+  var unmatched = (s.byCity||[]).filter(function(c){ return c.k === '(unmatched)'; }).reduce(function(a,b){ return a + b.n; }, 0);
+  var cards =
+    geicoStatCard('Total Surveys', total, '') +
+    geicoStatCard('Excellent', excPct + '%', exc + ' of ' + total) +
+    geicoStatCard('On-Time', otPct + '%', (s.onTime||0) + ' of ' + (s.onTimeAnswered||0) + ' answered') +
+    geicoStatCard('Cities', nCities, unmatched ? (unmatched + ' unmatched') : '');
+  var breakdown =
+    '<div class="card" style="flex:2;min-width:240px;padding:16px">' +
+      '<div style="font-size:12px;color:var(--text-muted-color);text-transform:uppercase;letter-spacing:0.5px;margin-bottom:8px">By City</div>' +
+      ((s.byCity||[]).length ? (s.byCity||[]).slice(0,8).map(function(c){
+        var pct = total ? Math.round(c.n*100/total) : 0;
+        return '<div style="display:flex;align-items:center;gap:8px;margin:4px 0">' +
+          '<div style="width:120px;font-size:13px;color:var(--text-color);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">' + escHtml(c.k) + '</div>' +
+          '<div style="flex:1;background:rgba(249,115,22,0.15);border-radius:4px;height:10px"><div style="width:' + pct + '%;background:var(--primary);height:10px;border-radius:4px"></div></div>' +
+          '<div style="width:36px;text-align:right;font-size:12px;color:var(--text-muted-color)">' + c.n + '</div>' +
+        '</div>';
+      }).join('') : '<div style="color:var(--text-muted-color);font-size:13px">No data</div>') +
+    '</div>';
+  el.innerHTML = '<div style="display:flex;flex-wrap:wrap;gap:12px">' + cards + '</div>' +
+                 '<div style="display:flex;flex-wrap:wrap;gap:12px;margin-top:12px">' + breakdown + '</div>';
+}
+
+function geicoRatingBadge(r) {
+  if (!r) return '—';
+  var c = /excellent/i.test(r) ? '#22c55e' : /good/i.test(r) ? '#84cc16' : /fair/i.test(r) ? '#f59e0b' : /poor|bad/i.test(r) ? '#ef4444' : '#9ca3af';
+  return '<span style="display:inline-block;padding:2px 8px;border-radius:10px;font-size:12px;font-weight:600;color:#fff;background:' + c + '">' + escHtml(r) + '</span>';
+}
+
+function geicoRenderTable(rows) {
+  var wrap = document.getElementById('geico-table-wrap'); if (!wrap) return;
+  wrap.innerHTML =
+    '<div style="font-size:12px;color:var(--text-muted-color);margin-bottom:8px">' + rows.length + ' survey' + (rows.length===1?'':'s') + '</div>' +
+    '<div class="card"><div class="table-wrap"><table>' +
+      '<thead><tr><th>Received</th><th>Account #</th><th>City</th><th>PO #</th><th>Service</th><th>State</th><th>Dispatch</th><th>On Time</th><th>Arrival</th><th>Rating</th></tr></thead><tbody>' +
+      (rows.length === 0
+        ? '<tr><td colspan="10" style="text-align:center;color:var(--text-muted-color);padding:32px">No surveys found.</td></tr>'
+        : rows.map(function(r){
+            return '<tr>' +
+              '<td style="white-space:nowrap">' + escHtml(r.date_received||'—') + '</td>' +
+              '<td>' + escHtml(r.account_number||'—') + '</td>' +
+              '<td>' + escHtml(r.city_name||'—') + '</td>' +
+              '<td>' + escHtml(r.po_number||'—') + '</td>' +
+              '<td>' + escHtml(r.service||'—') + '</td>' +
+              '<td>' + escHtml(r.loss_state||'—') + '</td>' +
+              '<td style="white-space:nowrap">' + escHtml(r.date_of_dispatch||'—') + '</td>' +
+              '<td>' + escHtml(r.arrived_on_time||'—') + '</td>' +
+              '<td>' + escHtml(r.time_to_arrive||'—') + '</td>' +
+              '<td>' + geicoRatingBadge(r.rating) + '</td>' +
+            '</tr>';
+          }).join('')) +
+      '</tbody></table></div></div>';
+}
 // ── Vendors ───────────────────────────────────────────────────────────────────
 
 var _vendorsData = [];

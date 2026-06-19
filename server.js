@@ -5,6 +5,7 @@ const path = require('path');
 const rateLimit = require('express-rate-limit');
 const { initDB } = require('./db');
 const { startReminders } = require('./jobs/reminders');
+const { startGeicoReport, startGeicoIngest } = require('./jobs/geicoIngest');
 
 const app = express();
 
@@ -46,6 +47,7 @@ app.use('/api/vehicles', require('./routes/vehicles'));
 app.use('/api/vr', require('./routes/vr'));
 app.use('/api/suggestions', require('./routes/suggestions'));
 app.use('/api/running', require('./routes/running'));
+app.use('/api/geico', require('./routes/geico'));
 
 // Catch-all: serve frontend
 app.get('*', (req, res) => {
@@ -66,5 +68,7 @@ initDB()
   .then(() => {
     console.log('Database initialized');
     startReminders();
+    startGeicoIngest();
+    startGeicoReport();
   })
   .catch(err => console.error('DB init error (non-fatal):', err));
