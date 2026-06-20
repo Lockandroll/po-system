@@ -180,6 +180,8 @@ const state = {
   sidebarOpen: false,
   pendingUserId: null,
   pendingVia: null,
+  realUser: null,
+  viewAs: null,
   permissions: null,
   _permsLoaded: false,
 };
@@ -247,6 +249,38 @@ function navigate(view, param) {
   var sec = getSidebarSection(view);
   if (sec) state.sidebarSection = sec;
   render();
+}
+
+// --- View As (admin role preview) -------------------------------------------
+// UI-only preview: temporarily overrides state.user so all role-gated rendering
+// (including can()) reflects the chosen role. Real admin kept in state.realUser.
+// Nothing is persisted, so a page refresh exits the preview. Backend still
+// authorizes the real admin, so this previews visibility/access only.
+function enterViewAs(o) {
+  var ru = state.realUser || state.user;
+  if (!ru || ru.role !== 'admin') return;
+  state.realUser = ru;
+  state.user = { id: (o.id != null ? o.id : ru.id), name: (o.name || ru.name), email: ru.email, role: o.role };
+  state.viewAs = o.label;
+  state.sidebarSection = null;
+  navigate('home');
+}
+function viewAsRole(role) {
+  enterViewAs({ role: role, label: role.charAt(0).toUpperCase() + role.slice(1) + ' (preview)' });
+}
+function viewAsUser(id) {
+  var u = (_usersData || []).filter(function(x) { return x.id === id; })[0];
+  if (!u) return;
+  enterViewAs({ id: u.id, name: u.name, role: u.role, label: u.name + ' \u2014 ' + u.role });
+}
+function exitViewAs() {
+  if (state.realUser) { state.user = state.realUser; state.realUser = null; }
+  state.viewAs = null;
+  state.sidebarSection = null;
+  navigate('home');
+}
+function onViewAsChange(role) {
+  if (role === 'admin') exitViewAs(); else viewAsRole(role);
 }
 
 const icons = {
@@ -329,6 +363,7 @@ async function render() {
   var ss = state.sidebarSection || getSidebarSection(cv);
   var isAdmin = state.user.role === 'admin';
   var isAdminMgr = ['admin','manager'].includes(state.user.role);
+  var isRealAdmin = (state.realUser || state.user).role === 'admin';
   var chev = '<svg class="nav-chevron" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="9 18 15 12 9 6"/></svg>';
   var icoTruck = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="1" y="3" width="15" height="13" rx="2"/><path d="M16 8h6l3 4v4h-9V8z"/><circle cx="5.5" cy="18.5" r="2.5"/><circle cx="18.5" cy="18.5" r="2.5"/></svg>';
   var icoAI = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="6" width="18" height="13" rx="2"/><path d="M8 6V4a1 1 0 011-1h6a1 1 0 011 1v2"/><circle cx="9" cy="12" r="1" fill="currentColor"/><circle cx="15" cy="12" r="1" fill="currentColor"/><path d="M9.5 16h5"/></svg>';
@@ -396,12 +431,26 @@ async function render() {
       '<div class="sidebar-logo"><h1>Nova</h1></div>' +
       '<nav class="sidebar-nav">' + navHtml + '</nav>' +
       '<div class="sidebar-footer">' +
+        (isRealAdmin ?
+          '<div style="margin-bottom:10px">' +
+            '<label style="font-size:10px;letter-spacing:0.5px;color:var(--text-muted-color);display:block;margin-bottom:4px;text-transform:uppercase">View as role</label>' +
+            '<select onchange="onViewAsChange(this.value)" style="width:100%;background:var(--card-bg,#1a1a1a);color:var(--text-color,#fff);border:1px solid var(--border-color,#333);border-radius:6px;padding:6px 8px;font-size:13px;cursor:pointer">' +
+              ['admin','approver','manager','requester'].map(function(r){ return '<option value="' + r + '"' + (state.user.role === r ? ' selected' : '') + '>' + r.charAt(0).toUpperCase() + r.slice(1) + (r === 'admin' ? ' (you)' : '') + '</option>'; }).join('') +
+            '</select>' +
+          '</div>'
+        : '') +
         '<div class="sidebar-user"><div class="avatar">' + escHtml(initials) + '</div><div class="sidebar-user-info"><div class="sidebar-user-name">' + escHtml(state.user.name) + '</div><div class="sidebar-user-role">' + escHtml(roleLabel(state.user.role)) + '</div></div></div>' +
         '<button class="btn btn-ghost btn-sm" style="width:100%;font-size:12px;color:var(--text-muted-color);margin-top:4px" onclick="logout()">' + icons.logout + ' Sign Out</button>' +
       '</div>' +
     '</div>' +
     '<div id="sidebar-overlay" onclick="toggleSidebar()"></div>' +
     '<div id="main">' +
+      (state.viewAs ?
+        '<div style="background:var(--primary,#f97316);color:#1a1a1a;padding:8px 16px;display:flex;align-items:center;justify-content:space-between;gap:12px;font-size:13px;font-weight:600;position:sticky;top:0;z-index:60">' +
+          '<span><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" style="vertical-align:-2px;margin-right:6px"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>Previewing as ' + escHtml(state.viewAs) + ' \u2014 read-only view of what they see</span>' +
+          '<button onclick="exitViewAs()" style="background:#1a1a1a;color:#fff;border:none;padding:5px 12px;border-radius:6px;font-size:12px;font-weight:600;cursor:pointer;white-space:nowrap">Exit preview</button>' +
+        '</div>'
+      : '') +
       '<div class="main-header">' +
         '<div style="display:flex;align-items:center;gap:12px">' +
           '<button class="hamburger" onclick="toggleSidebar()" aria-label="Menu"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="18" x2="21" y2="18"/></svg></button>' +
@@ -1379,6 +1428,7 @@ function usersRenderTable() {
           '<td>' + (isInactive ? '<span class="badge badge-inactive">Access Removed</span>' : '<span style="color:var(--success);font-size:13px">&#10003; Active</span>') + '</td>' +
           (can('manage_users') ? '<td class="flex-gap">' +
             '<button class="btn btn-secondary btn-sm" onclick="showUserModal(' + u.id + ')">Edit</button>' +
+            ((state.realUser || state.user).role === 'admin' && u.id !== state.user.id ? '<button class="btn btn-secondary btn-sm" onclick="viewAsUser(' + u.id + ')">View as</button>' : '') +
             (u.id !== state.user.id && !isInactive ? '<button class="btn btn-danger btn-sm" onclick="deactivateUser(' + u.id + ')">Deactivate</button>' : '') +
             (u.id !== state.user.id && isInactive ? '<button class="btn btn-success btn-sm" onclick="reactivateUser(' + u.id + ')">Reactivate</button>' : '') +
           '</td>' : '') +
