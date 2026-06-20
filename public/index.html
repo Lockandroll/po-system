@@ -2517,6 +2517,7 @@ async function renderViewQuote(el, id) {
           '<button class="btn btn-secondary" onclick="navigate(\'quotes\')">&larr; Back</button>' +
           '<button class="btn btn-secondary" onclick="printQuote(' + q.id + ')">' + icons.print + ' Print Quote</button>' +
           '<button class="btn btn-secondary" id="ai-review-btn" onclick="reviewQuoteWithAI()" style="color:var(--primary);border-color:var(--primary);">&#10024; AI Review</button>' +
+          '<button class="btn btn-primary" onclick="pushQuoteToPO(' + q.id + ')" style="white-space:nowrap">&#10142; Push to PO</button>' +
           (canEdit ? '<button class="btn btn-secondary" onclick="navigate(\'edit-quote\',' + q.id + ')">' + icons.edit + ' Edit</button>' : '') +
           (canDelete ? '<button class="btn btn-danger btn-sm" onclick="deleteQuote(' + q.id + ')">' + icons.trash + '</button>' : '') +
         '</div>' +
@@ -2566,6 +2567,21 @@ async function deleteQuote(id) {
   if (!confirm('Permanently delete this quote? This cannot be undone.')) return;
   try { await api('DELETE', '/quotes/' + id); navigate('quotes'); }
   catch(err) { document.getElementById('view-quote-error').innerHTML = '<div class="alert alert-error">' + escHtml(err.message) + '</div>'; }
+}
+
+async function pushQuoteToPO(id) {
+  if (!confirm('Create purchase order(s) from this quote? One PO is created per supplier, using your cost as the unit price. You can review and submit each PO afterward.')) return;
+  try {
+    var data = await api('POST', '/quotes/' + id + '/push-to-po');
+    var pos = data.pos || [];
+    var nums = pos.map(function(p){ return p.po_number; }).join(', ');
+    alert('Created ' + pos.length + ' PO' + (pos.length === 1 ? '' : 's') + ' from this quote: ' + nums);
+    if (pos.length === 1) { navigate('view', pos[0].id); } else { navigate('dashboard'); }
+  } catch (err) {
+    var el = document.getElementById('view-quote-error');
+    if (el) el.innerHTML = '<div class="alert alert-error">' + escHtml(err.message) + '</div>';
+    else alert(err.message);
+  }
 }
 
 async function deleteVR(id) {
