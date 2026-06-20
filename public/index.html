@@ -339,6 +339,7 @@ async function render() {
   var icoAudit = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/></svg>';
   var icoAccounts = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 9l9-7 9 7v11a2 2 0 01-2 2H5a2 2 0 01-2-2z"/><polyline points="9 22 9 12 15 12 15 22"/></svg>';
   var icoSuggestion = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 21h6"/><path d="M12 3a6 6 0 016 6c0 2.22-1.21 4.16-3 5.2V17H9v-2.8C7.21 13.16 6 11.22 6 9a6 6 0 016-6z"/></svg>';
+  var icoDeposit = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="6" width="20" height="12" rx="2"/><circle cx="12" cy="12" r="2.5"/><path d="M6 9v6"/><path d="M18 9v6"/></svg>';
   var poViews = ['dashboard','new','edit','view','running','running-admin'];
   var quViews = ['quotes','new-quote','edit-quote','view-quote'];
   var vrViews = ['vr-dashboard','new-vr','edit-vr','view-vr','fleet-registry','new-vehicle','edit-vehicle','vehicle-history'];
@@ -366,6 +367,7 @@ async function render() {
     (can('manage_vendors') ? '<div class="nav-item' + (cv === 'vendors' ? ' active' : '') + '" onclick="navigate(\'vendors\')">' + icoAccounts + ' Accounts</div>' : '') +
     (can('manage_geico') ? '<div class="nav-item' + (cv === 'geico' ? ' active' : '') + '" onclick="navigate(\'geico\')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 01-2 2H5a2 2 0 01-2-2V5a2 2 0 012-2h11"/></svg> Geico Surveys</div>' : '') +
     '<div class="nav-item' + (cv === 'suggestions' ? ' active' : '') + '" onclick="navigate(\'suggestions\')">' + icoSuggestion + ' Suggestions</div>' +
+    '<div class="nav-item' + (cv === 'deposits' || cv === 'view-deposit' ? ' active' : '') + '" onclick="navigate(\'deposits\')">' + icoDeposit + ' Cash Deposits</div>' +
     '<div class="nav-item' + (['signoffs','new-signoff','edit-signoff','view-signoff','complete-signoff'].indexOf(cv) !== -1 ? ' active' : '') + '" onclick="navigate(\'signoffs\')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><path d="M9 15l2 2 4-4"/></svg> Sign-Off Sheets</div>' +
     (can('view_ai_admin') ?
       '<div class="nav-section-header' + (aiViews.indexOf(cv) !== -1 ? ' section-active' : '') + (ss === 'ai' ? ' open' : '') + '" onclick="toggleSection(\'ai\',\'ai-assistant\')"><span class="s-label">' + icoAI + ' Locksmith AI Assistant</span>' + chev + '</div>' +
@@ -447,6 +449,8 @@ async function render() {
   else if (state.currentView === 'notifications') await renderNotifications(content);
   else if (state.currentView === 'roles') await renderRoles(content);
   else if (state.currentView === 'suggestions') await renderSuggestions(content);
+  else if (state.currentView === 'deposits') await renderDeposits(content);
+  else if (state.currentView === 'view-deposit') await renderViewDeposit(content, state.currentParam);
   else if (state.currentView === 'running') await renderRunningList(content);
   else if (state.currentView === 'running-admin') await renderAdminRunningList(content);
   else if (state.currentView === 'geico') await renderGeicoReviews(content);
@@ -4408,6 +4412,199 @@ async function renderHomeScreen(el) {
         '<button class="btn btn-primary" onclick="location.reload()">Refresh Page</button>' +
       '</div>';
     console.error('Dashboard load error:', err.message);
+  }
+}
+
+var depositReceiptData = null;
+var depositReceiptName = null;
+
+async function renderDeposits(el) {
+  var canManage = ['admin','manager'].includes(state.user.role);
+  var canSeeAll = ['admin','manager','approver'].includes(state.user.role);
+  var canSubmit = state.user.role !== 'approver';
+  depositReceiptData = null;
+  depositReceiptName = null;
+  var cities = [];
+  try { cities = await api('GET', '/cities'); } catch(e) {}
+  var cityOptions = '<option value="">Select city…</option>' + cities.map(function(c) {
+    return '<option value="' + escHtml(c.code) + '">' + escHtml(c.name) + ' (' + escHtml(c.code) + ')</option>';
+  }).join('');
+  var today = new Date().toISOString().slice(0,10);
+  var html =
+    '<div class="page-header"><div class="page-title"><h2>Cash Deposits</h2><p>Upload your weekly deposit receipt</p></div>' +
+      (canManage ? '<button class="btn btn-secondary" onclick="exportDepositsCSV()">' + icons.dashboard + ' Export CSV</button>' : '') +
+    '</div>';
+  if (canSubmit) {
+    html +=
+      '<div class="card" style="max-width:640px;margin-bottom:24px"><div class="card-body">' +
+        '<h3 style="margin-top:0;margin-bottom:16px">Submit a Deposit</h3>' +
+        '<div id="dep-feedback"></div>' +
+        '<div style="display:flex;gap:12px;flex-wrap:wrap">' +
+          '<div class="form-group" style="flex:1;min-width:160px"><label>Amount ($)</label><input type="number" id="dep-amount" step="0.01" min="0" placeholder="0.00" /></div>' +
+          '<div class="form-group" style="flex:1;min-width:160px"><label>Deposit Date</label><input type="date" id="dep-date" value="' + today + '" /></div>' +
+        '</div>' +
+        '<div style="display:flex;gap:12px;flex-wrap:wrap">' +
+          '<div class="form-group" style="flex:1;min-width:160px"><label>City</label><select id="dep-city">' + cityOptions + '</select></div>' +
+          '<div class="form-group" style="flex:1;min-width:160px"><label>Bank / Account</label><input type="text" id="dep-bank" placeholder="e.g. Regions — Operating" /></div>' +
+        '</div>' +
+        '<div class="form-group"><label>Notes</label><textarea id="dep-notes" rows="2" placeholder="Optional notes…"></textarea></div>' +
+        '<div class="form-group"><label>Receipt Photo</label>' +
+          '<input type="file" id="dep-receipt" accept="image/*" onchange="previewDepositReceipt(this)" />' +
+          '<div id="dep-receipt-preview" style="margin-top:10px"></div>' +
+        '</div>' +
+        '<button class="btn btn-primary" onclick="submitDeposit()">Submit Deposit</button>' +
+      '</div></div>';
+  }
+  html +=
+    '<div class="card"><div class="card-body">' +
+      '<h3 style="margin-top:0;margin-bottom:16px">' + (canSeeAll ? 'All Deposits' : 'My Deposits') + '</h3>' +
+      '<div id="dep-table-area"><div class="loading">Loading…</div></div>' +
+    '</div></div>';
+  el.innerHTML = html;
+  await loadDepositsTable();
+}
+
+function previewDepositReceipt(input) {
+  var file = input.files[0];
+  if (!file) { depositReceiptData = null; depositReceiptName = null; return; }
+  depositReceiptName = file.name;
+  var reader = new FileReader();
+  reader.onload = function(e) {
+    var img = new Image();
+    img.onload = function() {
+      var canvas = document.createElement('canvas');
+      var w = img.width, h = img.height, maxW = 1200;
+      if (w > maxW) { h = Math.round(h * maxW / w); w = maxW; }
+      canvas.width = w; canvas.height = h;
+      canvas.getContext('2d').drawImage(img, 0, 0, w, h);
+      depositReceiptData = canvas.toDataURL('image/jpeg', 0.85);
+      var area = document.getElementById('dep-receipt-preview');
+      if (area) area.innerHTML = '<img src="' + depositReceiptData + '" style="max-width:240px;max-height:240px;border-radius:8px;border:1px solid var(--border-color)" />';
+    };
+    img.src = e.target.result;
+  };
+  reader.readAsDataURL(file);
+}
+
+async function submitDeposit() {
+  var fb = document.getElementById('dep-feedback');
+  var amount = document.getElementById('dep-amount').value;
+  var deposit_date = document.getElementById('dep-date').value;
+  var city_code = document.getElementById('dep-city').value;
+  var bank_name = document.getElementById('dep-bank').value.trim();
+  var notes = document.getElementById('dep-notes').value.trim();
+  if (!amount || parseFloat(amount) <= 0) { fb.innerHTML = '<div class="alert alert-error">Please enter a valid amount.</div>'; return; }
+  if (!deposit_date) { fb.innerHTML = '<div class="alert alert-error">Please choose a deposit date.</div>'; return; }
+  if (!depositReceiptData) { fb.innerHTML = '<div class="alert alert-error">Please attach a photo of the receipt.</div>'; return; }
+  try {
+    await api('POST', '/deposits', { amount: amount, deposit_date: deposit_date, city_code: city_code, bank_name: bank_name, notes: notes, receipt_image: depositReceiptData, receipt_filename: depositReceiptName });
+    fb.innerHTML = '<div class="alert alert-success">Deposit submitted — thank you!</div>';
+    document.getElementById('dep-amount').value = '';
+    document.getElementById('dep-bank').value = '';
+    document.getElementById('dep-notes').value = '';
+    document.getElementById('dep-receipt').value = '';
+    document.getElementById('dep-receipt-preview').innerHTML = '';
+    depositReceiptData = null; depositReceiptName = null;
+    await loadDepositsTable();
+  } catch(e) {
+    fb.innerHTML = '<div class="alert alert-error">' + escHtml(e.message) + '</div>';
+  }
+}
+
+async function loadDepositsTable() {
+  var area = document.getElementById('dep-table-area');
+  if (!area) return;
+  var canManage = ['admin','manager'].includes(state.user.role);
+  var canSeeAll = ['admin','manager','approver'].includes(state.user.role);
+  try {
+    var data = await api('GET', '/deposits');
+    if (!data.length) { area.innerHTML = '<p style="color:var(--text-muted-color)">No deposits yet.</p>'; return; }
+    var rows = data.map(function(d) {
+      var receipt = d.has_receipt ? '<a href="#" onclick="event.preventDefault();event.stopPropagation();navigate(\'view-deposit\',' + d.id + ')" style="color:#f97316">View</a>' : '<span style="color:var(--text-muted-color)">—</span>';
+      return '<tr style="cursor:pointer" onclick="navigate(\'view-deposit\',' + d.id + ')">' +
+        '<td style="white-space:nowrap">' + formatDate(d.deposit_date) + '</td>' +
+        '<td style="white-space:nowrap;color:var(--text-muted-color);font-size:13px">' + escHtml(d.deposit_number || '—') + '</td>' +
+        '<td style="white-space:nowrap;font-weight:600">$' + parseFloat(d.amount).toFixed(2) + '</td>' +
+        '<td>' + escHtml(d.city_code || '—') + '</td>' +
+        '<td>' + escHtml(d.bank_name || '—') + '</td>' +
+        (canSeeAll ? '<td>' + escHtml(d.user_name || '—') + '</td>' : '') +
+        '<td>' + receipt + '</td>' +
+        (canManage ? '<td><button class="btn btn-ghost btn-sm" onclick="event.stopPropagation();deleteDeposit(' + d.id + ')" style="color:#ef4444">Delete</button></td>' : '') +
+      '</tr>';
+    }).join('');
+    var head = '<th>Date</th><th>Deposit #</th><th>Amount</th><th>City</th><th>Bank</th>' + (canSeeAll ? '<th>Submitted By</th>' : '') + '<th>Receipt</th>' + (canManage ? '<th></th>' : '');
+    area.innerHTML = '<div class="table-wrap"><table class="table"><thead><tr>' + head + '</tr></thead><tbody>' + rows + '</tbody></table></div>';
+  } catch(e) {
+    area.innerHTML = '<div class="alert alert-error">Failed to load deposits</div>';
+  }
+}
+
+async function exportDepositsCSV() {
+  try {
+    var res = await api('GET', '/deposits/export');
+    var deposits = res.deposits || [];
+    var rows = [];
+    rows.push(['Deposit #','Date','Amount','City','Bank/Account','Submitted By','Notes','Receipt File','Has Receipt','Submitted At'].join(','));
+    deposits.forEach(function(d) {
+      rows.push([
+        d.deposit_number || '',
+        d.deposit_date ? formatDate(d.deposit_date) : '',
+        parseFloat(d.amount).toFixed(2),
+        d.city_code || '',
+        d.bank_name || '',
+        d.user_name || '',
+        d.notes || '',
+        d.receipt_filename || '',
+        d.has_receipt ? 'Yes' : 'No',
+        d.created_at ? new Date(d.created_at).toLocaleString() : ''
+      ].map(csvCell).join(','));
+    });
+    var blob = new Blob([rows.join('\n')], { type: 'text/csv' });
+    var url = URL.createObjectURL(blob);
+    var a = document.createElement('a');
+    a.href = url;
+    a.download = 'cash-deposits-' + new Date().toISOString().slice(0,10) + '.csv';
+    a.click();
+    URL.revokeObjectURL(url);
+  } catch(err) {
+    alert('Export failed: ' + err.message);
+  }
+}
+
+async function renderViewDeposit(el, id) {
+  var canManage = ['admin','manager'].includes(state.user.role);
+  var dep;
+  try { dep = await api('GET', '/deposits/' + id); }
+  catch(e) { el.innerHTML = '<div class="alert alert-error">' + escHtml(e.message) + '</div>'; return; }
+  var receipt = dep.receipt_image
+    ? '<img src="' + dep.receipt_image + '" style="max-width:100%;border-radius:10px;border:1px solid var(--border-color)" />'
+    : '<p style="color:var(--text-muted-color)">No receipt image on file.</p>';
+  el.innerHTML =
+    '<div class="page-header"><div class="page-title"><h2>Deposit ' + escHtml(dep.deposit_number || '') + '</h2><p>' + escHtml(dep.user_name || '') + '</p></div>' +
+      '<div style="display:flex;gap:8px">' +
+        '<button class="btn btn-secondary" onclick="navigate(\'deposits\')">&larr; Back</button>' +
+        (canManage ? '<button class="btn btn-secondary" onclick="deleteDeposit(' + dep.id + ')" style="color:#ef4444">' + icons.trash + ' Delete</button>' : '') +
+      '</div>' +
+    '</div>' +
+    '<div class="card" style="max-width:720px"><div class="card-body">' +
+      '<div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:20px">' +
+        '<div><div style="color:var(--text-muted-color);font-size:13px">Amount</div><div style="font-size:20px;font-weight:700;color:#f97316">$' + parseFloat(dep.amount).toFixed(2) + '</div></div>' +
+        '<div><div style="color:var(--text-muted-color);font-size:13px">Deposit Date</div><div style="font-weight:600">' + formatDate(dep.deposit_date) + '</div></div>' +
+        '<div><div style="color:var(--text-muted-color);font-size:13px">City</div><div>' + escHtml(dep.city_code || '—') + '</div></div>' +
+        '<div><div style="color:var(--text-muted-color);font-size:13px">Bank / Account</div><div>' + escHtml(dep.bank_name || '—') + '</div></div>' +
+      '</div>' +
+      (dep.notes ? '<div style="margin-bottom:20px"><div style="color:var(--text-muted-color);font-size:13px">Notes</div><div>' + escHtml(dep.notes) + '</div></div>' : '') +
+      '<div style="color:var(--text-muted-color);font-size:13px;margin-bottom:8px">Receipt</div>' + receipt +
+    '</div></div>';
+}
+
+async function deleteDeposit(id) {
+  if (!confirm('Delete this deposit? This cannot be undone.')) return;
+  try {
+    await api('DELETE', '/deposits/' + id);
+    navigate('deposits');
+  } catch(e) {
+    alert('Delete failed: ' + e.message);
   }
 }
 

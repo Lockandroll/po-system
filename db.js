@@ -343,6 +343,29 @@ async function initDB() {
       "UPDATE users SET role = 'manager' WHERE role = 'approver';" +
       "ALTER TABLE users ALTER COLUMN role SET DEFAULT 'locksmith';"
     );
+    // Weekly cash deposits — employees upload deposit receipts; managers export to CSV
+    await client.query(
+      'CREATE TABLE IF NOT EXISTS deposits (' +
+      '  id SERIAL PRIMARY KEY,' +
+      '  deposit_number VARCHAR(50) UNIQUE,' +
+      '  user_id INTEGER REFERENCES users(id) ON DELETE SET NULL,' +
+      '  user_name VARCHAR(255),' +
+      '  city_code CHAR(3),' +
+      '  amount DECIMAL(10,2) NOT NULL DEFAULT 0,' +
+      '  deposit_date DATE NOT NULL,' +
+      '  bank_name VARCHAR(255),' +
+      '  notes TEXT,' +
+      '  receipt_image TEXT,' +
+      '  receipt_filename VARCHAR(255),' +
+      '  created_at TIMESTAMPTZ DEFAULT NOW(),' +
+      '  updated_at TIMESTAMPTZ DEFAULT NOW()' +
+      ');'
+    );
+    await client.query(
+      'CREATE INDEX IF NOT EXISTS idx_deposits_user ON deposits(user_id);' +
+      'CREATE INDEX IF NOT EXISTS idx_deposits_date ON deposits(deposit_date);' +
+      'CREATE INDEX IF NOT EXISTS idx_deposits_city ON deposits(city_code);'
+    );
     console.log('Database initialized');
   } finally {
     client.release();
