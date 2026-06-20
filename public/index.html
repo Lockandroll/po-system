@@ -266,7 +266,7 @@ function enterViewAs(o) {
   navigate('home');
 }
 function viewAsRole(role) {
-  enterViewAs({ role: role, label: role.charAt(0).toUpperCase() + role.slice(1) + ' (preview)' });
+  enterViewAs({ role: role, label: roleLabel(role) + ' (preview)' });
 }
 function viewAsUser(id) {
   var u = (_usersData || []).filter(function(x) { return x.id === id; })[0];
@@ -435,7 +435,7 @@ async function render() {
           '<div style="margin-bottom:10px">' +
             '<label style="font-size:10px;letter-spacing:0.5px;color:var(--text-muted-color);display:block;margin-bottom:4px;text-transform:uppercase">View as role</label>' +
             '<select onchange="onViewAsChange(this.value)" style="width:100%;background:var(--card-bg,#1a1a1a);color:var(--text-color,#fff);border:1px solid var(--border-color,#333);border-radius:6px;padding:6px 8px;font-size:13px;cursor:pointer">' +
-              ['admin','approver','manager','requester'].map(function(r){ return '<option value="' + r + '"' + (state.user.role === r ? ' selected' : '') + '>' + r.charAt(0).toUpperCase() + r.slice(1) + (r === 'admin' ? ' (you)' : '') + '</option>'; }).join('') +
+              ['locksmith','locksmith_coordinator','roadside_technician','manager','admin'].map(function(r){ return '<option value="' + r + '"' + (state.user.role === r ? ' selected' : '') + '>' + roleLabel(r) + (r === 'admin' ? ' (you)' : '') + '</option>'; }).join('') +
             '</select>' +
           '</div>'
         : '') +
