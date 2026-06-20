@@ -2570,12 +2570,12 @@ async function deleteQuote(id) {
 }
 
 async function pushQuoteToPO(id) {
-  if (!confirm('Create purchase order(s) from this quote? One PO is created per supplier, using your cost as the unit price. You can review and submit each PO afterward.')) return;
+  if (!confirm('Create and submit purchase order(s) for approval from this quote? One PO is created per supplier, using your cost as the unit price.')) return;
   try {
     var data = await api('POST', '/quotes/' + id + '/push-to-po');
     var pos = data.pos || [];
     var nums = pos.map(function(p){ return p.po_number; }).join(', ');
-    alert('Created ' + pos.length + ' PO' + (pos.length === 1 ? '' : 's') + ' from this quote: ' + nums);
+    alert('Submitted ' + pos.length + ' PO' + (pos.length === 1 ? '' : 's') + ' for approval from this quote: ' + nums);
     if (pos.length === 1) { navigate('view', pos[0].id); } else { navigate('dashboard'); }
   } catch (err) {
     var el = document.getElementById('view-quote-error');

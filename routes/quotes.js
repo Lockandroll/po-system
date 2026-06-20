@@ -242,8 +242,8 @@ router.post('/:id/push-to-po', requireAuth, async (req, res) => {
         const po_number = city + '-' + year + '-' + String(seq).padStart(4, '0') + '-' + initials;
         const total = grp.reduce(function (s, i) { return s + (parseFloat(i.quantity) || 0) * (parseFloat(i.unit_price) || 0); }, 0);
         const poRows = await client.query(
-          'INSERT INTO purchase_orders (po_number, requester_id, vendor_name, customer_name, city_code, notes, total_amount) VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING *',
-          [po_number, req.user.id, vendor, quote.customer_name || null, city, 'From quote ' + quote.quote_number, total]
+          'INSERT INTO purchase_orders (po_number, requester_id, vendor_name, customer_name, city_code, notes, total_amount, status) VALUES ($1,$2,$3,$4,$5,$6,$7,$8) RETURNING *',
+          [po_number, req.user.id, vendor, quote.customer_name || null, city, 'From quote ' + quote.quote_number, total, 'submitted']
         );
         const po = poRows.rows[0];
         for (let i = 0; i < grp.length; i++) {
@@ -265,7 +265,29 @@ router.post('/:id/push-to-po', requireAuth, async (req, res) => {
     client.release();
     for (let c = 0; c < created.length; c++) {
       try { await logAudit({ entity_type: 'po', entity_id: created[c].id, entity_number: created[c].po_number, action: 'created', user_id: req.user.id, user_name: req.user.name, details: { vendor: created[c].vendor_name, total: created[c].total, from_quote: quote.quote_number } }); } catch (e) {}
+      try { await logAudit({ entity_type: 'po', entity_id: created[c].id, entity_number: created[c].po_number, action: 'submitted', user_id: req.user.id, user_name: req.user.name }); } catch (e) {}
     }
+    try {
+      const base = (process.env.APP_URL || '').replace(/\/$/, '');
+      const { rows: admins } = await pool.query("SELECT email, name, phone, receive_emails, receive_sms FROM users WHERE role = 'admin' AND active = true");
+      const emailAdmins = admins.filter(function (a) { return a.receive_emails; }).map(function (a) { return a.email; });
+      const smsAdmins = admins.filter(function (a) { return a.receive_sms && a.phone; }).map(function (a) { return a.phone; });
+      const listText = created.map(function (c) { return c.po_number + ' (' + c.vendor_name + ', $' + parseFloat(c.total).toFixed(2) + ')'; }).join(', ');
+      if (emailAdmins.length) {
+        const html = emailTemplate({
+          badge: 'Action required',
+          title: created.length === 1 ? 'Purchase order submitted for approval' : (created.length + ' purchase orders submitted for approval'),
+          body: '<strong>' + req.user.name + '</strong> pushed quote ' + quote.quote_number + ' to ' + created.length + ' purchase order' + (created.length === 1 ? '' : 's') + ' that need your review.',
+          details: created.map(function (c) { return { label: c.po_number, value: c.vendor_name + ' — $' + parseFloat(c.total).toFixed(2) }; }).concat([{ label: 'From quote', value: quote.quote_number }, { label: 'Customer/Employee', value: quote.customer_name || '—' }, { label: 'City', value: city }]),
+          buttonText: 'Review POs',
+          buttonUrl: base + '/?view=dashboard'
+        });
+        await sendEmail(emailAdmins, 'Action Required: ' + created.length + ' PO' + (created.length === 1 ? '' : 's') + ' from quote ' + quote.quote_number, html);
+      }
+      if (smsAdmins.length) {
+        await sendSms(smsAdmins, 'Lock & Roll: ' + req.user.name + ' submitted ' + created.length + ' PO' + (created.length === 1 ? '' : 's') + ' from quote ' + quote.quote_number + ': ' + listText + '. ' + base + '/?view=dashboard');
+      }
+    } catch (e) { console.error('Push-to-PO notify failed:', e); }
     res.status(201).json({ ok: true, count: created.length, pos: created });
   } catch (err) {
     console.error(err);
