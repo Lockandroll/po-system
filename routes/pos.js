@@ -91,7 +91,7 @@ router.get('/:id', requireAuth, async (req, res) => {
   const po = rows[0];
   if (!po) return res.status(404).json({ error: 'PO not found' });
 
-  if (req.user.role === 'requester' && po.requester_id !== req.user.id) {
+  if (!['admin', 'approver', 'manager'].includes(req.user.role) && po.requester_id !== req.user.id) {
     return res.status(403).json({ error: 'Forbidden' });
   }
 

@@ -29,7 +29,9 @@ var DEFAULTS = {
   admin: '*',
   manager: ['view_users', 'manage_cities', 'manage_geico', 'manage_running', 'manage_vehicles', 'manage_vendors', 'manage_addresses', 'approve_vr'],
   approver: ['approve_po', 'approve_vr'],
-  requester: []
+  locksmith: [],
+  locksmith_coordinator: [],
+  roadside_technician: []
 };
 
 var cache = null;

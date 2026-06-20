@@ -289,8 +289,14 @@ function badgeHtml(status) {
 var PERM_DEFAULTS = {
   manager: ['view_users','manage_cities','manage_geico','manage_running','manage_vehicles','manage_vendors','manage_addresses','approve_vr'],
   approver: ['approve_po','approve_vr'],
-  requester: []
+  locksmith: [],
+  locksmith_coordinator: [],
+  roadside_technician: []
 };
+function roleLabel(r) {
+  var m = { locksmith:'Locksmith', locksmith_coordinator:'Locksmith Coordinator', roadside_technician:'Roadside Technician', requester:'Locksmith', approver:'Approver', manager:'Manager', admin:'Admin' };
+  return m[r] || r;
+}
 function can(perm) {
   if (!state.user) return false;
   if (state.user.role === 'admin') return true;
@@ -389,7 +395,7 @@ async function render() {
       '<div class="sidebar-logo"><h1>Nova</h1></div>' +
       '<nav class="sidebar-nav">' + navHtml + '</nav>' +
       '<div class="sidebar-footer">' +
-        '<div class="sidebar-user"><div class="avatar">' + escHtml(initials) + '</div><div class="sidebar-user-info"><div class="sidebar-user-name">' + escHtml(state.user.name) + '</div><div class="sidebar-user-role">' + escHtml(state.user.role) + '</div></div></div>' +
+        '<div class="sidebar-user"><div class="avatar">' + escHtml(initials) + '</div><div class="sidebar-user-info"><div class="sidebar-user-name">' + escHtml(state.user.name) + '</div><div class="sidebar-user-role">' + escHtml(roleLabel(state.user.role)) + '</div></div></div>' +
         '<button class="btn btn-ghost btn-sm" style="width:100%;font-size:12px;color:var(--text-muted-color);margin-top:4px" onclick="logout()">' + icons.logout + ' Sign Out</button>' +
       '</div>' +
     '</div>' +
@@ -1366,7 +1372,7 @@ function usersRenderTable() {
         return '<tr class="' + (isInactive ? 'user-row-inactive' : '') + '">' +
           '<td>' + escHtml(u.name) + '</td>' +
           '<td>' + escHtml(u.email) + '</td>' +
-          '<td><span class="badge badge-' + escHtml(u.role) + '">' + escHtml(u.role) + '</span></td>' +
+          '<td><span class="badge badge-' + escHtml(u.role) + '">' + escHtml(roleLabel(u.role)) + '</span></td>' +
           '<td>' + (isInactive ? '<span class="badge badge-inactive">Access Removed</span>' : '<span style="color:var(--success);font-size:13px">&#10003; Active</span>') + '</td>' +
           (can('manage_users') ? '<td class="flex-gap">' +
             '<button class="btn btn-secondary btn-sm" onclick="showUserModal(' + u.id + ')">Edit</button>' +
@@ -1417,7 +1423,7 @@ async function showUserModal(id) {
         '<div class="form-group"><label>' + (id ? 'New Password (leave blank to keep)' : 'Password') + '</label><input type="password" id="modal-password" /></div>' +
         '<div class="form-row">' +
           '<div class="form-group"><label>Phone <span style="font-weight:400;font-size:0.8em;color:var(--text-muted)">Format: +13215550000</span></label><input type="tel" id="modal-phone" value="' + escHtml(user ? user.phone || '' : '') + '" placeholder="+13215550000" pattern="\\+1[0-9]{10}" title="Must be in format +1 followed by 10 digits (e.g. +13215550000)" /></div>' +
-          '<div class="form-group"><label>Role</label><select id="modal-role"><option value="requester"' + (user&&user.role==='requester'?' selected':'') + '>Requester</option><option value="approver"' + (user&&user.role==='approver'?' selected':'') + '>Approver</option><option value="admin"' + (user&&user.role==='admin'?' selected':'') + '>Admin</option><option value="manager"' + (user&&user.role==='manager'?' selected':'') + '>Manager</option></select></div>' +
+          '<div class="form-group"><label>Role</label><select id="modal-role">' +'<option value="locksmith"' + (user&&user.role==='locksmith'?' selected':'') + '>Locksmith</option>' +'<option value="locksmith_coordinator"' + (user&&user.role==='locksmith_coordinator'?' selected':'') + '>Locksmith Coordinator</option>' +'<option value="roadside_technician"' + (user&&user.role==='roadside_technician'?' selected':'') + '>Roadside Technician</option>' +'<option value="approver"' + (user&&user.role==='approver'?' selected':'') + '>Approver</option>' +'<option value="manager"' + (user&&user.role==='manager'?' selected':'') + '>Manager</option>' +'<option value="admin"' + (user&&user.role==='admin'?' selected':'') + '>Admin</option>' +'</select></div>' +
           '</div>' +
         '<div class="form-group" style="display:flex;align-items:center;gap:10px">' +
           '<input type="checkbox" id="modal-receive-emails" style="width:auto"' + (user && user.receive_emails === false ? '' : ' checked') + ' />' +
@@ -1701,7 +1707,7 @@ async function renderNotifications(el) {
       var on = selected.indexOf(u.id) !== -1;
       return '<label style="display:flex;align-items:center;gap:8px;padding:4px 0;cursor:pointer;font-size:13px">' +
         '<input type="checkbox" class="nb-user-' + ev.key + '" value="' + u.id + '"' + (on ? ' checked' : '') + ' style="width:auto;margin:0" /> ' +
-        escHtml(u.name) + ' <span style="color:var(--text-muted-color);font-size:12px">(' + escHtml(u.role) + (u.phone ? '' : ' &middot; no phone') + ')</span></label>';
+        escHtml(u.name) + ' <span style="color:var(--text-muted-color);font-size:12px">(' + escHtml(roleLabel(u.role)) + (u.phone ? '' : ' &middot; no phone') + ')</span></label>';
     }).join('');
     return '<div style="border:1px solid var(--border);border-radius:8px;padding:14px;margin-bottom:12px">' +
       '<div style="display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap">' +
@@ -1824,6 +1830,14 @@ async function renderRoles(el) {
     { group:'Administration', perms:[ {k:'manage_settings',l:'Company info, AI context, notifications, roles'}, {k:'view_audit',l:'View audit log'}, {k:'view_ai_admin',l:'View AI history / usage'} ] }
   ];
 
+  var cols = [
+    { role:'locksmith', label:'Locksmith' },
+    { role:'locksmith_coordinator', label:'Locksmith Coordinator' },
+    { role:'roadside_technician', label:'Roadside Technician' },
+    { role:'approver', label:'Approver' },
+    { role:'manager', label:'Manager' }
+  ];
+
   function roleHas(role, perm) {
     if (role === 'admin') return true;
     if (rules && Object.prototype.toString.call(rules[role]) === '[object Array]') return rules[role].indexOf(perm) !== -1;
@@ -1835,9 +1849,9 @@ async function renderRoles(el) {
   }
 
   var rowsHtml = groups.map(function(g) {
-    var head = '<tr><td colspan="5" style="font-weight:600;background:var(--bg-elevated);font-size:12px;text-transform:uppercase;letter-spacing:0.04em;color:var(--text-muted-color)">' + g.group + '</td></tr>';
+    var head = '<tr><td colspan="7" style="font-weight:600;background:var(--bg-elevated);font-size:12px;text-transform:uppercase;letter-spacing:0.04em;color:var(--text-muted-color)">' + g.group + '</td></tr>';
     var prows = g.perms.map(function(p) {
-      return '<tr><td>' + escHtml(p.l) + '</td>' + cell('approver', p.k) + cell('manager', p.k) + cell('requester', p.k) + cell('admin', p.k) + '</tr>';
+      return '<tr><td>' + escHtml(p.l) + '</td>' + cols.map(function(c){ return cell(c.role, p.k); }).join('') + cell('admin', p.k) + '</tr>';
     }).join('');
     return head + prows;
   }).join('');
@@ -1847,14 +1861,14 @@ async function renderRoles(el) {
     '<div id="settings-error"></div><div id="settings-success"></div>' +
     '<p class="text-muted" style="margin-bottom:16px;max-width:720px">Control what each role can do. These rules are enforced on the server for every action. <strong>Admin</strong> always has full access and cannot be restricted. Anything left unchecked falls back to that role&#39;s built-in default until you save.</p>' +
     '<div class="card"><div class="card-body" style="overflow-x:auto">' +
-      '<table style="min-width:600px"><thead><tr><th>Permission</th><th style="text-align:center">Approver</th><th style="text-align:center">Manager</th><th style="text-align:center">Requester</th><th style="text-align:center">Admin</th></tr></thead>' +
+      '<table style="min-width:820px"><thead><tr><th>Permission</th>' + cols.map(function(c){ return '<th style="text-align:center">' + escHtml(c.label) + '</th>'; }).join('') + '<th style="text-align:center">Admin</th></tr></thead>' +
       '<tbody>' + rowsHtml + '</tbody></table>' +
       '<div style="margin-top:16px"><button class="btn btn-primary" onclick="saveRoles()">Save Roles &amp; Access</button></div>' +
     '</div></div>';
 }
 
 async function saveRoles() {
-  var editRoles = ['approver', 'manager', 'requester'];
+  var editRoles = ['locksmith', 'locksmith_coordinator', 'roadside_technician', 'approver', 'manager'];
   var rules = {};
   editRoles.forEach(function(role) {
     var perms = [];

@@ -14,7 +14,7 @@ async function initDB() {
       '  email VARCHAR(255) UNIQUE NOT NULL,' +
       '  name VARCHAR(255) NOT NULL,' +
       '  password_hash VARCHAR(255) NOT NULL,' +
-      "  role VARCHAR(50) NOT NULL DEFAULT 'requester'," +
+      "  role VARCHAR(50) NOT NULL DEFAULT 'locksmith'," +
       '  created_at TIMESTAMP DEFAULT NOW()' +
       ');' +
       'CREATE TABLE IF NOT EXISTS purchase_orders (' +
@@ -337,6 +337,10 @@ async function initDB() {
     await client.query(
       'CREATE INDEX IF NOT EXISTS idx_signoff_status ON signoff_forms(status);' +
       'CREATE INDEX IF NOT EXISTS idx_signoff_photos_form ON signoff_photos(form_id);'
+    );
+    await client.query(
+      "UPDATE users SET role = 'locksmith' WHERE role = 'requester';" +
+      "ALTER TABLE users ALTER COLUMN role SET DEFAULT 'locksmith';"
     );
     console.log('Database initialized');
   } finally {
