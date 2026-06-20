@@ -58,7 +58,11 @@ router.get('/stats', adminMgr, async (req, res) => {
     const params = [];
     function add(cond, val) { params.push(val); where.push(cond.replace('$$', '$' + params.length)); }
     if (req.query.from) add('date_received >= $$', req.query.from);
-    if (req.query.to)   add('date_received < $$', req.query.to);
+    if (req.query.to)   add('date_received < $', req.query.to);
+    if (req.query.city_code)  add('city_code = $', req.query.city_code);
+    if (req.query.service)    add('service = $', req.query.service);
+    if (req.query.rating)     add('rating = $', req.query.rating);
+    if (req.query.loss_state) add('loss_state = $', req.query.loss_state);
     const whereSql = where.length ? ('WHERE ' + where.join(' AND ')) : '';
 
     const base = ' FROM geico_surveys g ' + whereSql;

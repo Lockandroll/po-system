@@ -1788,7 +1788,7 @@ async function geicoLoad(initial) {
   var dq = geicoDateQS();
   var dqs = dq.length ? ('?' + dq.join('&')) : '';
   try {
-    var stats = await api('GET', '/geico/stats' + dqs);
+    var stats = await api('GET', '/geico/stats' + geicoListQS());
     var rows = await api('GET', '/geico' + geicoListQS());
     _geicoStats = stats; _geicoRows = rows;
     if (initial) geicoPopulateDropdowns(stats);
@@ -1846,8 +1846,7 @@ function geicoRenderStats(s) {
         '</div>';
       }).join('') : '<div style="color:var(--text-muted-color);font-size:13px">No data</div>') +
     '</div>';
-  el.innerHTML = '<div style="display:flex;flex-wrap:wrap;gap:12px">' + cards + '</div>' +
-                 '<div style="display:flex;flex-wrap:wrap;gap:12px;margin-top:12px">' + breakdown + '</div>';
+  el.innerHTML = '<div style="display:flex;flex-wrap:wrap;gap:12px">' + cards + '</div>';
 }
 
 function geicoRatingBadge(r) {
