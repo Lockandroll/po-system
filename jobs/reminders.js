@@ -1,6 +1,7 @@
 const cron = require('node-cron');
 const { pool } = require('../db');
 const { sendEmail } = require('../utils/email');
+const { sendSms } = require('../utils/sms');
 
 function buildReminderEmail(ordererName, pos, appUrl) {
   var rows = pos.map(function(po) {
@@ -60,52 +61,93 @@ function buildReminderEmail(ordererName, pos, appUrl) {
   '</body></html>';
 }
 
+const OVERSIGHT_EMAIL = 'rbeechly@popalockar.com';
+
+function firstName(name) {
+  return String(name || '').trim().split(/\s+/)[0] || 'Someone';
+}
+
 async function sendOrderReminders() {
   try {
     const appUrl = process.env.APP_URL || 'http://localhost:3000';
 
     const { rows } = await pool.query(
       'SELECT po.id, po.po_number, po.vendor_name, po.total_amount, po.approved_at, po.created_at, ' +
-      '       u.id AS orderer_id, u.name AS orderer_name, u.email AS orderer_email ' +
+      '       u.id AS orderer_id, u.name AS orderer_name, u.email AS orderer_email, u.phone AS orderer_phone, ' +
+      '       u.receive_emails AS orderer_receive_emails, u.receive_sms AS orderer_receive_sms ' +
       'FROM purchase_orders po ' +
       'JOIN users u ON po.orderer_id = u.id ' +
-      "WHERE po.status = 'approved' AND u.active = true AND u.receive_emails = true " +
+      "WHERE po.status = 'approved' AND u.active = true " +
       'ORDER BY u.id, po.created_at ASC'
     );
 
     if (!rows.length) {
-      console.log('[reminders] No pending ordered POs — skipping.');
+      console.log('[reminders] No approved-unordered POs — skipping.');
       return;
     }
 
     var byOrderer = {};
-    rows.forEach(function(row) {
+    var allPos = [];
+    rows.forEach(function (row) {
       if (!byOrderer[row.orderer_id]) {
-        byOrderer[row.orderer_id] = { name: row.orderer_name, email: row.orderer_email, pos: [] };
+        byOrderer[row.orderer_id] = {
+          name: row.orderer_name, email: row.orderer_email, phone: row.orderer_phone,
+          receive_emails: row.orderer_receive_emails, receive_sms: row.orderer_receive_sms, pos: []
+        };
       }
       byOrderer[row.orderer_id].pos.push(row);
+      allPos.push(row);
     });
+
+    var oversightTexts = [];
 
     for (var id in byOrderer) {
       var orderer = byOrderer[id];
+      var fn = firstName(orderer.name);
       var subject = orderer.pos.length === 1
         ? 'Reminder: 1 PO needs to be ordered — ' + orderer.pos[0].po_number
         : 'Reminder: ' + orderer.pos.length + ' POs need to be ordered';
-      var html = buildReminderEmail(orderer.name, orderer.pos, appUrl);
-      await sendEmail(orderer.email, subject, html);
-      console.log('[reminders] Sent reminder to ' + orderer.email + ' (' + orderer.pos.length + ' POs)');
+      if (orderer.receive_emails !== false && orderer.email) {
+        try {
+          await sendEmail(orderer.email, subject, buildReminderEmail(orderer.name, orderer.pos, appUrl));
+          console.log('[reminders] Emailed ' + orderer.email + ' (' + orderer.pos.length + ' POs)');
+        } catch (e) { console.error('[reminders] orderer email failed:', e.message); }
+      }
+      if (orderer.receive_sms && orderer.phone) {
+        try { await sendSms([orderer.phone], fn + ' has a PO that has been approved, but not marked as ordered.'); } catch (e) { console.error('[reminders] orderer sms failed:', e.message); }
+      }
+      oversightTexts.push(fn + ' has a PO that has been approved, but not marked as ordered.');
     }
+
+    // Oversight: Russ gets an email summary of all pending POs + a text per orderer
+    try {
+      const { rows: ov } = await pool.query('SELECT name, email, phone FROM users WHERE LOWER(email) = $1 LIMIT 1', [OVERSIGHT_EMAIL]);
+      if (ov.length) {
+        const russ = ov[0];
+        if (russ.email) {
+          const subj = allPos.length === 1 ? 'Oversight: 1 PO approved but not ordered' : 'Oversight: ' + allPos.length + ' POs approved but not ordered';
+          await sendEmail(russ.email, subj, buildReminderEmail(firstName(russ.name), allPos, appUrl));
+          console.log('[reminders] Oversight email sent to ' + russ.email);
+        }
+        if (russ.phone && oversightTexts.length) {
+          await sendSms([russ.phone], oversightTexts.join(' '));
+          console.log('[reminders] Oversight text sent to ' + russ.phone);
+        }
+      } else {
+        console.log('[reminders] Oversight user ' + OVERSIGHT_EMAIL + ' not found — skipping oversight.');
+      }
+    } catch (e) { console.error('[reminders] oversight notify failed:', e.message); }
   } catch (err) {
     console.error('[reminders] Job failed:', err.message);
   }
 }
 
 function startReminders() {
-  cron.schedule('0 8 * * *', function() {
+  cron.schedule('0 8 * * *', function () {
     console.log('[reminders] Running daily order reminder job…');
     sendOrderReminders();
-  });
-  console.log('[reminders] Daily order reminder job scheduled (08:00 daily)');
+  }, { timezone: 'America/New_York' });
+  console.log('[reminders] Daily order reminder job scheduled (08:00 America/New_York)');
 }
 
 module.exports = { startReminders, sendOrderReminders };
