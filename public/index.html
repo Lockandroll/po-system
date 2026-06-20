@@ -1709,6 +1709,13 @@ async function renderNotifications(el) {
     '</div>';
   }).join('');
 
+  var customEmailsText = (rules.custom_emails && Array.isArray(rules.custom_emails.addresses)) ? rules.custom_emails.addresses.join('\n') : '';
+  var customEvents = (rules.custom_emails && Array.isArray(rules.custom_emails.events)) ? rules.custom_emails.events : [];
+  var customEvtRows = broadcast.map(function(ev) {
+    var on = customEvents.indexOf(ev.key) !== -1;
+    return '<label style="display:flex;align-items:center;gap:8px;padding:3px 0;cursor:pointer;font-size:13px"><input type="checkbox" class="nc-evt" value="' + ev.key + '"' + (on ? ' checked' : '') + ' style="width:auto;margin:0" /> ' + escHtml(ev.label) + '</label>';
+  }).join('');
+
   el.innerHTML =
     '<div class="page-header"><div class="page-title">Notifications</div></div>' +
     '<div id="settings-error"></div><div id="settings-success"></div>' +
@@ -1720,6 +1727,12 @@ async function renderNotifications(el) {
     '<div class="card mb-4"><div class="card-header"><span class="card-title">Status updates to the requester</span></div><div class="card-body">' +
       '<p class="text-muted" style="margin-bottom:6px;font-size:13px">These go to whoever created the PO or repair. Toggle the channel on or off.</p>' +
       rHtml +
+    '</div></div>' +
+    '<div class="card mb-4"><div class="card-header"><span class="card-title">Custom email recipients</span></div><div class="card-body">' +
+      '<p class="text-muted" style="margin-bottom:10px;font-size:13px">Add email addresses (for example a distribution list) that are not Nova users. Enter one per line or separated by commas. They are emailed for the alerts you tick below.</p>' +
+      '<textarea id="nc-emails" rows="3" placeholder="ops@company.com, dispatch@company.com" style="width:100%;resize:vertical;margin-bottom:12px">' + escHtml(customEmailsText) + '</textarea>' +
+      '<div style="font-size:12px;font-weight:600;color:var(--text-muted-color);text-transform:uppercase;letter-spacing:0.04em;margin-bottom:6px">Send these addresses:</div>' +
+      (customEvtRows || '<div style="color:var(--text-muted-color);font-size:13px">No events.</div>') +
     '</div></div>' +
     '<button class="btn btn-primary" onclick="saveNotifications()">Save Notification Settings</button>';
 
@@ -1752,6 +1765,15 @@ async function saveNotifications() {
     var smsEl = document.getElementById('nr-sms-' + key);
     rules[key] = { email: emailEl ? emailEl.checked : true, sms: smsEl ? smsEl.checked : true };
   });
+  var ncEmailsEl = document.getElementById('nc-emails');
+  var ncRaw = ncEmailsEl ? ncEmailsEl.value : '';
+  var ncAddrs = ncRaw.split(/[\s,;]+/).map(function(s) { return s.trim(); }).filter(function(s) { return s && s.indexOf('@') !== -1; });
+  var ncSeen = {}, ncList = [];
+  ncAddrs.forEach(function(a) { var k = a.toLowerCase(); if (!ncSeen[k]) { ncSeen[k] = 1; ncList.push(a); } });
+  var ncEvts = [];
+  var ncNodes = document.querySelectorAll('.nc-evt');
+  for (var ci = 0; ci < ncNodes.length; ci++) { if (ncNodes[ci].checked) ncEvts.push(ncNodes[ci].value); }
+  if (ncList.length) rules.custom_emails = { addresses: ncList, events: ncEvts };
   try {
     await api('PUT', '/settings/notification_rules', { value: JSON.stringify(rules) });
     document.getElementById('settings-success').innerHTML = '<div class="alert alert-success">Notification settings saved.</div>';

@@ -29,25 +29,36 @@ async function getRules() {
 async function broadcastRecipients(eventKey, defaultWhere) {
   const rules = await getRules();
   const rule = rules[eventKey];
+  var emails = [];
+  var phones = [];
 
   if (rule && Array.isArray(rule.users)) {
-    if (!rule.users.length) return { emails: [], phones: [] };
-    const { rows } = await pool.query(
-      'SELECT email, phone FROM users WHERE active = true AND id = ANY($1::int[])',
-      [rule.users]
+    if (rule.users.length) {
+      const { rows } = await pool.query(
+        'SELECT email, phone FROM users WHERE active = true AND id = ANY($1::int[])',
+        [rule.users]
+      );
+      emails = rule.email === false ? [] : rows.map(function (r) { return r.email; }).filter(Boolean);
+      phones = rule.sms === false ? [] : rows.map(function (r) { return r.phone; }).filter(Boolean);
+    }
+  } else {
+    // Fallback: legacy behavior — query by role and honor each user's personal prefs.
+    const res = await pool.query(
+      'SELECT email, phone, receive_emails, receive_sms FROM users WHERE active = true AND (' + defaultWhere + ')'
     );
-    const emails = rule.email === false ? [] : rows.map(function (r) { return r.email; }).filter(Boolean);
-    const phones = rule.sms === false ? [] : rows.map(function (r) { return r.phone; }).filter(Boolean);
-    return { emails: emails, phones: phones };
+    emails = res.rows.filter(function (r) { return r.receive_emails; }).map(function (r) { return r.email; }).filter(Boolean);
+    phones = res.rows.filter(function (r) { return r.receive_sms && r.phone; }).map(function (r) { return r.phone; }).filter(Boolean);
   }
 
-  // Fallback: legacy behavior — query by role and honor each user's personal prefs.
-  const res = await pool.query(
-    'SELECT email, phone, receive_emails, receive_sms FROM users WHERE active = true AND (' + defaultWhere + ')'
-  );
-  const dEmails = res.rows.filter(function (r) { return r.receive_emails; }).map(function (r) { return r.email; }).filter(Boolean);
-  const dPhones = res.rows.filter(function (r) { return r.receive_sms && r.phone; }).map(function (r) { return r.phone; }).filter(Boolean);
-  return { emails: dEmails, phones: dPhones };
+  // Append custom distribution-list emails configured for this event.
+  const custom = rules.custom_emails;
+  if (custom && Array.isArray(custom.addresses) && Array.isArray(custom.events) && custom.events.indexOf(eventKey) !== -1) {
+    custom.addresses.forEach(function (a) {
+      if (a && emails.indexOf(a) === -1) emails.push(a);
+    });
+  }
+
+  return { emails: emails, phones: phones };
 }
 
 // Requester (outcome) event channel switches. Returns { email: bool, sms: bool }.
