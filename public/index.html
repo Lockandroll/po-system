@@ -4445,7 +4445,6 @@ async function renderDeposits(el) {
         '</div>' +
         '<div style="display:flex;gap:12px;flex-wrap:wrap">' +
           '<div class="form-group" style="flex:1;min-width:160px"><label>City</label><select id="dep-city">' + cityOptions + '</select></div>' +
-          '<div class="form-group" style="flex:1;min-width:160px"><label>Bank / Account</label><input type="text" id="dep-bank" placeholder="e.g. Regions — Operating" /></div>' +
         '</div>' +
         '<div class="form-group"><label>Notes</label><textarea id="dep-notes" rows="2" placeholder="Optional notes…"></textarea></div>' +
         '<div class="form-group"><label>Receipt Photo</label>' +
@@ -4518,16 +4517,14 @@ async function submitDeposit() {
   var amount = document.getElementById('dep-amount').value;
   var deposit_date = document.getElementById('dep-date').value;
   var city_code = document.getElementById('dep-city').value;
-  var bank_name = document.getElementById('dep-bank').value.trim();
   var notes = document.getElementById('dep-notes').value.trim();
   if (!amount || parseFloat(amount) <= 0) { fb.innerHTML = '<div class="alert alert-error">Please enter a valid amount.</div>'; return; }
   if (!deposit_date) { fb.innerHTML = '<div class="alert alert-error">Please choose a deposit date.</div>'; return; }
   if (!depositReceiptData) { fb.innerHTML = '<div class="alert alert-error">Please attach a photo of the receipt.</div>'; return; }
   try {
-    await api('POST', '/deposits', { amount: amount, deposit_date: deposit_date, city_code: city_code, bank_name: bank_name, notes: notes, receipt_image: depositReceiptData, receipt_filename: depositReceiptName });
+    await api('POST', '/deposits', { amount: amount, deposit_date: deposit_date, city_code: city_code, notes: notes, receipt_image: depositReceiptData, receipt_filename: depositReceiptName });
     fb.innerHTML = '<div class="alert alert-success">Deposit submitted — thank you!</div>';
     document.getElementById('dep-amount').value = '';
-    document.getElementById('dep-bank').value = '';
     document.getElementById('dep-notes').value = '';
     document.getElementById('dep-receipt').value = '';
     document.getElementById('dep-receipt-preview').innerHTML = '';
@@ -4553,13 +4550,12 @@ async function loadDepositsTable() {
         '<td style="white-space:nowrap;color:var(--text-muted-color);font-size:13px">' + escHtml(d.deposit_number || '—') + '</td>' +
         '<td style="white-space:nowrap;font-weight:600">$' + parseFloat(d.amount).toFixed(2) + '</td>' +
         '<td>' + escHtml(d.city_code || '—') + '</td>' +
-        '<td>' + escHtml(d.bank_name || '—') + '</td>' +
         (canSeeAll ? '<td>' + escHtml(d.user_name || '—') + '</td>' : '') +
         '<td>' + receipt + '</td>' +
         (canManage ? '<td><button class="btn btn-ghost btn-sm" onclick="event.stopPropagation();deleteDeposit(' + d.id + ')" style="color:#ef4444">Delete</button></td>' : '') +
       '</tr>';
     }).join('');
-    var head = '<th>Date</th><th>Deposit #</th><th>Amount</th><th>City</th><th>Bank</th>' + (canSeeAll ? '<th>Submitted By</th>' : '') + '<th>Receipt</th>' + (canManage ? '<th></th>' : '');
+    var head = '<th>Date</th><th>Deposit #</th><th>Amount</th><th>City</th>' + (canSeeAll ? '<th>Submitted By</th>' : '') + '<th>Receipt</th>' + (canManage ? '<th></th>' : '');
     area.innerHTML = '<div class="table-wrap"><table class="table"><thead><tr>' + head + '</tr></thead><tbody>' + rows + '</tbody></table></div>';
   } catch(e) {
     area.innerHTML = '<div class="alert alert-error">Failed to load deposits</div>';
@@ -4571,14 +4567,13 @@ async function exportDepositsCSV() {
     var res = await api('GET', '/deposits/export');
     var deposits = res.deposits || [];
     var rows = [];
-    rows.push(['Deposit #','Date','Amount','City','Bank/Account','Submitted By','Notes','Receipt File','Has Receipt','Submitted At'].join(','));
+    rows.push(['Deposit #','Date','Amount','City','Submitted By','Notes','Receipt File','Has Receipt','Submitted At'].join(','));
     deposits.forEach(function(d) {
       rows.push([
         d.deposit_number || '',
         d.deposit_date ? formatDate(d.deposit_date) : '',
         parseFloat(d.amount).toFixed(2),
         d.city_code || '',
-        d.bank_name || '',
         d.user_name || '',
         d.notes || '',
         d.receipt_filename || '',
@@ -4618,7 +4613,6 @@ async function renderViewDeposit(el, id) {
         '<div><div style="color:var(--text-muted-color);font-size:13px">Amount</div><div style="font-size:20px;font-weight:700;color:#f97316">$' + parseFloat(dep.amount).toFixed(2) + '</div></div>' +
         '<div><div style="color:var(--text-muted-color);font-size:13px">Deposit Date</div><div style="font-weight:600">' + formatDate(dep.deposit_date) + '</div></div>' +
         '<div><div style="color:var(--text-muted-color);font-size:13px">City</div><div>' + escHtml(dep.city_code || '—') + '</div></div>' +
-        '<div><div style="color:var(--text-muted-color);font-size:13px">Bank / Account</div><div>' + escHtml(dep.bank_name || '—') + '</div></div>' +
       '</div>' +
       (dep.notes ? '<div style="margin-bottom:20px"><div style="color:var(--text-muted-color);font-size:13px">Notes</div><div>' + escHtml(dep.notes) + '</div></div>' : '') +
       '<div style="color:var(--text-muted-color);font-size:13px;margin-bottom:8px">Receipt</div>' + receipt +

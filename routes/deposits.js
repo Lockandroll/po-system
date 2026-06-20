@@ -86,7 +86,7 @@ router.post('/ai-extract', requireAuth, async function(req, res) {
 // POST / — submit a deposit (any authenticated user, for themselves)
 router.post('/', requireAuth, async function(req, res) {
   try {
-    const { amount, deposit_date, city_code, bank_name, notes, receipt_image, receipt_filename } = req.body;
+    const { amount, deposit_date, city_code, notes, receipt_image, receipt_filename } = req.body;
     const amt = parseFloat(amount);
     if (isNaN(amt) || amt <= 0) {
       return res.status(400).json({ error: 'A valid deposit amount is required' });
@@ -96,8 +96,8 @@ router.post('/', requireAuth, async function(req, res) {
     }
     const deposit_number = await generateDepositNumber();
     const { rows } = await pool.query(
-      'INSERT INTO deposits (deposit_number, user_id, user_name, city_code, amount, deposit_date, bank_name, notes, receipt_image, receipt_filename) ' +
-      'VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) RETURNING id, deposit_number, user_id, user_name, city_code, amount, deposit_date, bank_name, notes, receipt_filename, created_at',
+      'INSERT INTO deposits (deposit_number, user_id, user_name, city_code, amount, deposit_date, notes, receipt_image, receipt_filename) ' +
+      'VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING id, deposit_number, user_id, user_name, city_code, amount, deposit_date, notes, receipt_filename, created_at',
       [
         deposit_number,
         req.user.id,
@@ -105,7 +105,6 @@ router.post('/', requireAuth, async function(req, res) {
         city_code || null,
         amt,
         deposit_date,
-        bank_name || null,
         notes || null,
         receipt_image || null,
         receipt_filename || null
@@ -132,7 +131,7 @@ router.post('/', requireAuth, async function(req, res) {
 // Never returns the receipt image in the list (kept lightweight).
 router.get('/', requireAuth, async function(req, res) {
   try {
-    const cols = 'id, deposit_number, user_id, user_name, city_code, amount, deposit_date, bank_name, notes, receipt_filename, ' +
+    const cols = 'id, deposit_number, user_id, user_name, city_code, amount, deposit_date, notes, receipt_filename, ' +
       '(receipt_image IS NOT NULL) AS has_receipt, created_at';
     let query, params;
     if (SEE_ALL.includes(req.user.role)) {
@@ -157,7 +156,7 @@ router.get('/export', requireAuth, async function(req, res) {
   }
   try {
     const { rows } = await pool.query(
-      'SELECT deposit_number, user_name, city_code, amount, deposit_date, bank_name, notes, receipt_filename, ' +
+      'SELECT deposit_number, user_name, city_code, amount, deposit_date, notes, receipt_filename, ' +
       '(receipt_image IS NOT NULL) AS has_receipt, created_at FROM deposits ORDER BY deposit_date DESC, created_at DESC'
     );
     res.json({ deposits: rows });

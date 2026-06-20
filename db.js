@@ -353,7 +353,6 @@ async function initDB() {
       '  city_code CHAR(3),' +
       '  amount DECIMAL(10,2) NOT NULL DEFAULT 0,' +
       '  deposit_date DATE NOT NULL,' +
-      '  bank_name VARCHAR(255),' +
       '  notes TEXT,' +
       '  receipt_image TEXT,' +
       '  receipt_filename VARCHAR(255),' +
