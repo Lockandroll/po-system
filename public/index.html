@@ -383,6 +383,16 @@ async function render() {
   var stViews = ['company-info','ai-context','notifications','roles','settings','users','cities','audit'];
   var navHtml =
     '<div class="nav-item' + (cv === 'home' ? ' active' : '') + '" onclick="navigate(\'home\')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 9l9-7 9 7v11a2 2 0 01-2 2H5a2 2 0 01-2-2z"/><polyline points="9 22 9 12 15 12 15 22"/></svg> Home</div>' +
+    (can('view_ai_admin') ?
+      '<div class="nav-section-header' + (aiViews.indexOf(cv) !== -1 ? ' section-active' : '') + (ss === 'ai' ? ' open' : '') + '" onclick="toggleSection(\'ai\',\'ai-assistant\')"><span class="s-label">' + icoAI + ' Nova AI</span>' + chev + '</div>' +
+      (ss === 'ai' ?
+        '<div class="nav-sub' + (cv === 'ai-assistant' ? ' active' : '') + '" onclick="navigate(\'ai-assistant\')">' + icoChat + ' Conversations</div>' +
+        '<div class="nav-sub' + (cv === 'ai-conversations' ? ' active' : '') + '" onclick="navigate(\'ai-conversations\')">' + icoAudit + ' History</div>' +
+        '<div class="nav-sub' + (cv === 'ai-usage' ? ' active' : '') + '" onclick="navigate(\'ai-usage\')">' + icoBars + ' Usage</div>'
+      : '')
+    :
+      '<div class="nav-item' + (cv === 'ai-assistant' ? ' active' : '') + '" onclick="navigate(\'ai-assistant\')">' + icoAI + ' Nova AI</div>'
+    ) +
     (can('view_pos') ?
     '<div class="nav-section-header' + (poViews.indexOf(cv) !== -1 ? ' section-active' : '') + (ss === 'po' ? ' open' : '') + '" onclick="toggleSection(\'po\',\'dashboard\')"><span class="s-label">' + icons.dashboard + ' Purchase Orders</span>' + chev + '</div>' +
     (ss === 'po' ?
@@ -396,6 +406,7 @@ async function render() {
       '<div class="nav-sub' + (cv === 'quotes' ? ' active' : '') + '" onclick="navigate(\'quotes\')">' + icons.quote + ' Quote Dashboard</div>' +
       (can('create_quote') ? '<div class="nav-sub' + (cv === 'new-quote' ? ' active' : '') + '" onclick="navigate(\'new-quote\')">' + icons.plus + ' New Quote</div>' : '')
     : '') : '') +
+    (can('view_signoffs') ? '<div class="nav-item' + (['signoffs','new-signoff','edit-signoff','view-signoff','complete-signoff'].indexOf(cv) !== -1 ? ' active' : '') + '" onclick="navigate(\'signoffs\')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><path d="M9 15l2 2 4-4"/></svg> Sign-Off Sheets</div>' : '') +
     (can('view_vr') ?
     '<div class="nav-section-header' + (vrViews.indexOf(cv) !== -1 ? ' section-active' : '') + (ss === 'vr' ? ' open' : '') + '" onclick="toggleSection(\'vr\',\'vr-dashboard\')"><span class="s-label">' + icoTruck + ' Vehicle Maint/Repairs</span>' + chev + '</div>' +
     (ss === 'vr' ?
@@ -403,21 +414,10 @@ async function render() {
       (can('create_vr') ? '<div class="nav-sub' + (cv === 'new-vr' ? ' active' : '') + '" onclick="navigate(\'new-vr\')">' + icons.plus + ' New VR</div>' : '') +
       (can('manage_vehicles') ? '<div class="nav-sub' + (['fleet-registry','new-vehicle','edit-vehicle','vehicle-history'].indexOf(cv) !== -1 ? ' active' : '') + '" onclick="navigate(\'fleet-registry\')">' + icoDB + ' Fleet Registry</div>' : '')
     : '') : '') +
+    (can('view_deposits') ? '<div class="nav-item' + (cv === 'deposits' || cv === 'view-deposit' ? ' active' : '') + '" onclick="navigate(\'deposits\')">' + icoDeposit + ' Cash Deposits</div>' : '') +
     (can('manage_vendors') ? '<div class="nav-item' + (cv === 'vendors' ? ' active' : '') + '" onclick="navigate(\'vendors\')">' + icoAccounts + ' Accounts</div>' : '') +
     (can('manage_geico') ? '<div class="nav-item' + (cv === 'geico' ? ' active' : '') + '" onclick="navigate(\'geico\')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 01-2 2H5a2 2 0 01-2-2V5a2 2 0 012-2h11"/></svg> Geico Surveys</div>' : '') +
     '<div class="nav-item' + (cv === 'suggestions' ? ' active' : '') + '" onclick="navigate(\'suggestions\')">' + icoSuggestion + ' Suggestions</div>' +
-    (can('view_deposits') ? '<div class="nav-item' + (cv === 'deposits' || cv === 'view-deposit' ? ' active' : '') + '" onclick="navigate(\'deposits\')">' + icoDeposit + ' Cash Deposits</div>' : '') +
-    (can('view_signoffs') ? '<div class="nav-item' + (['signoffs','new-signoff','edit-signoff','view-signoff','complete-signoff'].indexOf(cv) !== -1 ? ' active' : '') + '" onclick="navigate(\'signoffs\')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><path d="M9 15l2 2 4-4"/></svg> Sign-Off Sheets</div>' : '') +
-    (can('view_ai_admin') ?
-      '<div class="nav-section-header' + (aiViews.indexOf(cv) !== -1 ? ' section-active' : '') + (ss === 'ai' ? ' open' : '') + '" onclick="toggleSection(\'ai\',\'ai-assistant\')"><span class="s-label">' + icoAI + ' Nova AI</span>' + chev + '</div>' +
-      (ss === 'ai' ?
-        '<div class="nav-sub' + (cv === 'ai-assistant' ? ' active' : '') + '" onclick="navigate(\'ai-assistant\')">' + icoChat + ' Conversations</div>' +
-        '<div class="nav-sub' + (cv === 'ai-conversations' ? ' active' : '') + '" onclick="navigate(\'ai-conversations\')">' + icoAudit + ' History</div>' +
-        '<div class="nav-sub' + (cv === 'ai-usage' ? ' active' : '') + '" onclick="navigate(\'ai-usage\')">' + icoBars + ' Usage</div>'
-      : '')
-    :
-      '<div class="nav-item' + (cv === 'ai-assistant' ? ' active' : '') + '" onclick="navigate(\'ai-assistant\')">' + icoAI + ' Nova AI</div>'
-    ) +
     (isAdmin ? '<div class="nav-item' + (cv === 'sop-library' ? ' active' : '') + '" onclick="navigate(\'sop-library\')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 19.5A2.5 2.5 0 016.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 014 19.5v-15A2.5 2.5 0 016.5 2z"/></svg> SOP Library</div>' : '') +
     ((can('view_users') || can('manage_cities') || can('view_audit') || can('manage_settings')) ?
       '<div class="nav-section-header' + (stViews.indexOf(cv) !== -1 ? ' section-active' : '') + (ss === 'settings' ? ' open' : '') + '" onclick="toggleSection(\'settings\',\'company-info\')"><span class="s-label">' + icons.settings + ' Settings</span>' + chev + '</div>' +
