@@ -321,10 +321,10 @@ function badgeHtml(status) {
 }
 
 var PERM_DEFAULTS = {
-  manager: ['view_users','manage_cities','manage_geico','manage_running','manage_vehicles','manage_vendors','manage_addresses','approve_vr'],
-  locksmith: [],
-  locksmith_coordinator: [],
-  roadside_technician: []
+  manager: ['view_users','manage_cities','manage_geico','manage_running','manage_vehicles','manage_vendors','manage_addresses','approve_vr','view_pos','view_quotes','view_vr','view_deposits'],
+  locksmith: ['view_pos','view_quotes','view_vr','view_deposits'],
+  locksmith_coordinator: ['view_pos','view_quotes','view_vr','view_deposits'],
+  roadside_technician: ['view_pos','view_quotes','view_vr','view_deposits']
 };
 function roleLabel(r) {
   var m = { locksmith:'Locksmith', locksmith_coordinator:'Locksmith Coordinator', roadside_technician:'Roadside Technician', requester:'Locksmith', approver:'Approver', manager:'Manager', admin:'Admin' };
@@ -382,27 +382,30 @@ async function render() {
   var stViews = ['company-info','ai-context','notifications','roles','settings','users','cities','audit'];
   var navHtml =
     '<div class="nav-item' + (cv === 'home' ? ' active' : '') + '" onclick="navigate(\'home\')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 9l9-7 9 7v11a2 2 0 01-2 2H5a2 2 0 01-2-2z"/><polyline points="9 22 9 12 15 12 15 22"/></svg> Home</div>' +
+    (can('view_pos') ?
     '<div class="nav-section-header' + (poViews.indexOf(cv) !== -1 ? ' section-active' : '') + (ss === 'po' ? ' open' : '') + '" onclick="toggleSection(\'po\',\'dashboard\')"><span class="s-label">' + icons.dashboard + ' Purchase Orders</span>' + chev + '</div>' +
     (ss === 'po' ?
       '<div class="nav-sub' + (cv === 'dashboard' ? ' active' : '') + '" onclick="navigate(\'dashboard\')">' + icons.dashboard + ' PO Dashboard</div>' +
       (state.user.role !== 'approver' ? '<div class="nav-sub' + (cv === 'new' ? ' active' : '') + '" onclick="navigate(\'new\')">' + icons.plus + ' New PO</div>' : '') +
       (state.user.role !== 'approver' ? '<div class="nav-sub' + (cv === 'running' || cv === 'running-admin' ? ' active' : '') + '" onclick="navigate(\'' + (can('manage_running') ? 'running-admin' : 'running') + '\')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="8" y1="6" x2="21" y2="6"/><line x1="8" y1="12" x2="21" y2="12"/><line x1="8" y1="18" x2="21" y2="18"/><line x1="3" y1="6" x2="3.01" y2="6"/><line x1="3" y1="12" x2="3.01" y2="12"/><line x1="3" y1="18" x2="3.01" y2="18"/></svg> Monthly Req</div>' : '')
-    : '') +
+    : '') : '') +
+    (can('view_quotes') ?
     '<div class="nav-section-header' + (quViews.indexOf(cv) !== -1 ? ' section-active' : '') + (ss === 'quotes' ? ' open' : '') + '" onclick="toggleSection(\'quotes\',\'quotes\')"><span class="s-label">' + icons.quote + ' Quotes</span>' + chev + '</div>' +
     (ss === 'quotes' ?
       '<div class="nav-sub' + (cv === 'quotes' ? ' active' : '') + '" onclick="navigate(\'quotes\')">' + icons.quote + ' Quote Dashboard</div>' +
       (state.user.role !== 'approver' ? '<div class="nav-sub' + (cv === 'new-quote' ? ' active' : '') + '" onclick="navigate(\'new-quote\')">' + icons.plus + ' New Quote</div>' : '')
-    : '') +
+    : '') : '') +
+    (can('view_vr') ?
     '<div class="nav-section-header' + (vrViews.indexOf(cv) !== -1 ? ' section-active' : '') + (ss === 'vr' ? ' open' : '') + '" onclick="toggleSection(\'vr\',\'vr-dashboard\')"><span class="s-label">' + icoTruck + ' Vehicle Maint/Repairs</span>' + chev + '</div>' +
     (ss === 'vr' ?
       '<div class="nav-sub' + (cv === 'vr-dashboard' ? ' active' : '') + '" onclick="navigate(\'vr-dashboard\')">' + icons.dashboard + ' VR Dashboard</div>' +
       (state.user.role !== 'approver' ? '<div class="nav-sub' + (cv === 'new-vr' ? ' active' : '') + '" onclick="navigate(\'new-vr\')">' + icons.plus + ' New VR</div>' : '') +
       (can('manage_vehicles') ? '<div class="nav-sub' + (['fleet-registry','new-vehicle','edit-vehicle','vehicle-history'].indexOf(cv) !== -1 ? ' active' : '') + '" onclick="navigate(\'fleet-registry\')">' + icoDB + ' Fleet Registry</div>' : '')
-    : '') +
+    : '') : '') +
     (can('manage_vendors') ? '<div class="nav-item' + (cv === 'vendors' ? ' active' : '') + '" onclick="navigate(\'vendors\')">' + icoAccounts + ' Accounts</div>' : '') +
     (can('manage_geico') ? '<div class="nav-item' + (cv === 'geico' ? ' active' : '') + '" onclick="navigate(\'geico\')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 01-2 2H5a2 2 0 01-2-2V5a2 2 0 012-2h11"/></svg> Geico Surveys</div>' : '') +
     '<div class="nav-item' + (cv === 'suggestions' ? ' active' : '') + '" onclick="navigate(\'suggestions\')">' + icoSuggestion + ' Suggestions</div>' +
-    '<div class="nav-item' + (cv === 'deposits' || cv === 'view-deposit' ? ' active' : '') + '" onclick="navigate(\'deposits\')">' + icoDeposit + ' Cash Deposits</div>' +
+    (can('view_deposits') ? '<div class="nav-item' + (cv === 'deposits' || cv === 'view-deposit' ? ' active' : '') + '" onclick="navigate(\'deposits\')">' + icoDeposit + ' Cash Deposits</div>' : '') +
     '<div class="nav-item' + (['signoffs','new-signoff','edit-signoff','view-signoff','complete-signoff'].indexOf(cv) !== -1 ? ' active' : '') + '" onclick="navigate(\'signoffs\')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><path d="M9 15l2 2 4-4"/></svg> Sign-Off Sheets</div>' +
     (can('view_ai_admin') ?
       '<div class="nav-section-header' + (aiViews.indexOf(cv) !== -1 ? ' section-active' : '') + (ss === 'ai' ? ' open' : '') + '" onclick="toggleSection(\'ai\',\'ai-assistant\')"><span class="s-label">' + icoAI + ' Locksmith AI Assistant</span>' + chev + '</div>' +
@@ -468,6 +471,8 @@ async function render() {
     if (_ovOpen) _ovOpen.classList.add('open');
   }
   const content = document.getElementById('content');
+  var _viewPerm = { dashboard:'view_pos', new:'view_pos', edit:'view_pos', view:'view_pos', running:'view_pos', 'running-admin':'view_pos', quotes:'view_quotes', 'new-quote':'view_quotes', 'edit-quote':'view_quotes', 'view-quote':'view_quotes', 'vr-dashboard':'view_vr', 'new-vr':'view_vr', 'edit-vr':'view_vr', 'view-vr':'view_vr', deposits:'view_deposits', 'view-deposit':'view_deposits' };
+  if (_viewPerm[state.currentView] && !can(_viewPerm[state.currentView])) { content.innerHTML = '<div class="alert alert-error">Access denied.</div>'; return; }
   if (state.currentView === 'home') await renderHomeScreen(content);
   else if (state.currentView === 'dashboard') await renderDashboard(content);
   else if (state.currentView === 'new') await renderEditPO(content, null);
@@ -1871,6 +1876,7 @@ async function renderRoles(el) {
   try { rules = JSON.parse(settings.role_permissions || '{}') || {}; } catch(e) { rules = {}; }
 
   var groups = [
+    { group:'Module Access (visibility)', perms:[ {k:'view_pos',l:'View Purchase Orders'}, {k:'view_quotes',l:'View Quotes'}, {k:'view_vr',l:'View Vehicle Repairs'}, {k:'view_deposits',l:'View Cash Deposits'} ] },
     { group:'Purchase Orders', perms:[ {k:'approve_po',l:'Approve / reject POs'}, {k:'cancel_po',l:'Cancel POs'} ] },
     { group:'Vehicle Repairs', perms:[ {k:'approve_vr',l:'Approve / reject vehicle repairs'} ] },
     { group:'Fleet &amp; Vehicles', perms:[ {k:'manage_vehicles',l:'Manage fleet registry'} ] },
@@ -4413,17 +4419,17 @@ async function renderHomeScreen(el) {
       '</div>' +
 
       '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:12px;margin-bottom:24px">' +
-        (isPrivileged ? '<div class="card" style="cursor:pointer" onclick="navigate(\'vr-dashboard\')"><div class="card-body" style="text-align:center;padding:16px">' +
+        ((isPrivileged && can('view_vr')) ? '<div class="card" style="cursor:pointer" onclick="navigate(\'vr-dashboard\')"><div class="card-body" style="text-align:center;padding:16px">' +
           '<div style="font-size:28px;font-weight:700;color:' + (s.pending_vr > 0 ? '#f59e0b' : '#22c55e') + '">' + s.pending_vr + '</div>' +
           '<div style="font-size:12px;color:var(--text-muted-color);margin-top:4px">VRs Pending Approval</div></div></div>' : '') +
-        '<div class="card" style="cursor:pointer" onclick="navigate(\'dashboard\')"><div class="card-body" style="text-align:center;padding:16px">' +
+        (can('view_pos') ? '<div class="card" style="cursor:pointer" onclick="navigate(\'dashboard\')"><div class="card-body" style="text-align:center;padding:16px">' +
           '<div style="font-size:28px;font-weight:700;color:var(--primary)">' + s.open_po + '</div>' +
           '<div style="font-size:12px;color:var(--text-muted-color);margin-top:4px">POs This Month</div>' +
-          '<div style="font-size:11px;color:var(--text-muted-color)">$' + parseFloat(s.open_po_total).toFixed(2) + '</div></div></div>' +
-        '<div class="card" style="cursor:pointer" onclick="navigate(\'quotes\')"><div class="card-body" style="text-align:center;padding:16px">' +
+          '<div style="font-size:11px;color:var(--text-muted-color)">$' + parseFloat(s.open_po_total).toFixed(2) + '</div></div></div>' : '') +
+        (can('view_quotes') ? '<div class="card" style="cursor:pointer" onclick="navigate(\'quotes\')"><div class="card-body" style="text-align:center;padding:16px">' +
           '<div style="font-size:28px;font-weight:700;color:#a78bfa">' + s.active_quotes + '</div>' +
           '<div style="font-size:12px;color:var(--text-muted-color);margin-top:4px">Quotes This Month</div>' +
-          '<div style="font-size:11px;color:var(--text-muted-color)">$' + parseFloat(s.quote_total).toFixed(2) + '</div></div></div>' +
+          '<div style="font-size:11px;color:var(--text-muted-color)">$' + parseFloat(s.quote_total).toFixed(2) + '</div></div></div>' : '') +
         (['admin','manager'].includes(state.user.role) ? '<div class="card" style="cursor:pointer" onclick="navigate(\'fleet-registry\')"><div class="card-body" style="text-align:center;padding:16px">' +
           '<div style="font-size:28px;font-weight:700;color:#22c55e">' + s.fleet_count + '</div>' +
           '<div style="font-size:12px;color:var(--text-muted-color);margin-top:4px">Fleet Vehicles</div></div></div>' : '') +
@@ -4440,13 +4446,13 @@ async function renderHomeScreen(el) {
 
       '<div style="margin-bottom:8px;font-size:11px;color:var(--text-muted-color);text-transform:uppercase;letter-spacing:0.6px">Quick actions</div>' +
       '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:10px">' +
-        (state.user.role !== 'approver' ? '<button class="btn btn-secondary" onclick="navigate(\'new\')" style="padding:14px;display:flex;flex-direction:column;align-items:center;gap:6px;height:auto">' +
+        (can('view_pos') ? '<button class="btn btn-secondary" onclick="navigate(\'new\')" style="padding:14px;display:flex;flex-direction:column;align-items:center;gap:6px;height:auto">' +
           '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="12" y1="18" x2="12" y2="12"/><line x1="9" y1="15" x2="15" y2="15"/></svg>' +
           '<span style="font-size:12px">New PO</span></button>' : '') +
-        (state.user.role !== 'approver' ? '<button class="btn btn-secondary" onclick="navigate(\'new-quote\')" style="padding:14px;display:flex;flex-direction:column;align-items:center;gap:6px;height:auto">' +
+        (can('view_quotes') ? '<button class="btn btn-secondary" onclick="navigate(\'new-quote\')" style="padding:14px;display:flex;flex-direction:column;align-items:center;gap:6px;height:auto">' +
           '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/><polyline points="10 9 9 9 8 9"/></svg>' +
           '<span style="font-size:12px">New Quote</span></button>' : '') +
-        (state.user.role !== 'approver' ? '<button class="btn btn-secondary" onclick="navigate(\'new-vr\')" style="padding:14px;display:flex;flex-direction:column;align-items:center;gap:6px;height:auto">' +
+        (can('view_vr') ? '<button class="btn btn-secondary" onclick="navigate(\'new-vr\')" style="padding:14px;display:flex;flex-direction:column;align-items:center;gap:6px;height:auto">' +
           '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="1" y="3" width="15" height="13" rx="2"/><path d="M16 8h6l3 4v4h-9V8z"/><circle cx="5.5" cy="18.5" r="2.5"/><circle cx="18.5" cy="18.5" r="2.5"/></svg>' +
           '<span style="font-size:12px">New VR</span></button>' : '') +
         '<button class="btn btn-secondary" onclick="navigate(\'ai-assistant\')" style="padding:14px;display:flex;flex-direction:column;align-items:center;gap:6px;height:auto">' +

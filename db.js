@@ -379,6 +379,29 @@ async function initDB() {
       'CREATE INDEX IF NOT EXISTS idx_audit_created ON audit_logs(created_at);' +
       'CREATE INDEX IF NOT EXISTS idx_ai_conv_created ON ai_conversations(created_at);'
     );
+    // One-time backfill: grant the new module-view permissions to existing saved
+    // role configs so nobody loses access. Guarded by a flag so it runs once and
+    // never undoes an admin's later choices.
+    const _vb = await client.query("SELECT value FROM settings WHERE key = 'view_perms_backfilled'");
+    if (!_vb.rows.length) {
+      const _rp = await client.query("SELECT value FROM settings WHERE key = 'role_permissions'");
+      if (_rp.rows.length && _rp.rows[0].value) {
+        try {
+          const obj = JSON.parse(_rp.rows[0].value);
+          if (obj && typeof obj === 'object') {
+            ['locksmith', 'locksmith_coordinator', 'roadside_technician', 'manager'].forEach(function(r) {
+              if (Array.isArray(obj[r])) {
+                ['view_pos', 'view_quotes', 'view_vr', 'view_deposits'].forEach(function(p) {
+                  if (obj[r].indexOf(p) === -1) obj[r].push(p);
+                });
+              }
+            });
+            await client.query("INSERT INTO settings (key, value, updated_at) VALUES ('role_permissions', $1, NOW()) ON CONFLICT (key) DO UPDATE SET value = $1, updated_at = NOW()", [JSON.stringify(obj)]);
+          }
+        } catch (e) { console.error('view-perm backfill failed:', e.message); }
+      }
+      await client.query("INSERT INTO settings (key, value) VALUES ('view_perms_backfilled', '1') ON CONFLICT (key) DO NOTHING");
+    }
     console.log('Database initialized');
   } finally {
     client.release();

@@ -46,7 +46,7 @@ const PO_JOIN =
   'LEFT JOIN shipping_addresses sa ON po.shipping_address_id = sa.id ';
 
 // Export all POs with line items as JSON (for CSV download)
-router.get('/export', requireAuth, async (req, res) => {
+router.get('/export', requireAuth, requirePermission('view_pos'), async (req, res) => {
   const isApproverOrAdmin = ['admin', 'manager'].includes(req.user.role);
   const poQuery = PO_JOIN +
     (isApproverOrAdmin ? '' : 'WHERE po.requester_id = $1 ') +
@@ -71,7 +71,7 @@ router.get('/export', requireAuth, async (req, res) => {
 });
 
 // Get all POs
-router.get('/', requireAuth, async (req, res) => {
+router.get('/', requireAuth, requirePermission('view_pos'), async (req, res) => {
   const isApproverOrAdmin = ['admin', 'manager'].includes(req.user.role);
   const query = PO_JOIN +
     (isApproverOrAdmin ? '' : 'WHERE po.requester_id = $1 ') +
@@ -82,7 +82,7 @@ router.get('/', requireAuth, async (req, res) => {
 });
 
 // Get single PO with line items
-router.get('/:id', requireAuth, async (req, res) => {
+router.get('/:id', requireAuth, requirePermission('view_pos'), async (req, res) => {
   const { rows } = await pool.query(
     PO_JOIN + 'WHERE po.id = $1',
     [req.params.id]
@@ -104,7 +104,7 @@ router.get('/:id', requireAuth, async (req, res) => {
 });
 
 // Create PO
-router.post('/', requireAuth, async (req, res) => {
+router.post('/', requireAuth, requirePermission('view_pos'), async (req, res) => {
   const vendor_name = req.body.vendor_name;
   const customer_name = req.body.customer_name;
   const city_code = req.body.city_code;
@@ -146,7 +146,7 @@ router.post('/', requireAuth, async (req, res) => {
 });
 
 // Update PO
-router.put('/:id', requireAuth, async (req, res) => {
+router.put('/:id', requireAuth, requirePermission('view_pos'), async (req, res) => {
   const vendor_name = req.body.vendor_name;
   const customer_name = req.body.customer_name;
   const city_code = req.body.city_code;
@@ -194,7 +194,7 @@ router.put('/:id', requireAuth, async (req, res) => {
 });
 
 // Delete PO
-router.delete('/:id', requireAuth, async (req, res) => {
+router.delete('/:id', requireAuth, requirePermission('view_pos'), async (req, res) => {
   const { rows } = await pool.query('SELECT * FROM purchase_orders WHERE id = $1', [req.params.id]);
   const po = rows[0];
   if (!po) return res.status(404).json({ error: 'PO not found' });
@@ -214,7 +214,7 @@ router.delete('/:id', requireAuth, async (req, res) => {
 });
 
 // Submit PO for approval
-router.post('/:id/submit', requireAuth, async (req, res) => {
+router.post('/:id/submit', requireAuth, requirePermission('view_pos'), async (req, res) => {
   const { rows } = await pool.query('SELECT * FROM purchase_orders WHERE id = $1', [req.params.id]);
   const po = rows[0];
   if (!po) return res.status(404).json({ error: 'PO not found' });

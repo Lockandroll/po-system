@@ -1,7 +1,7 @@
 const express = require('express');
 const https = require('https');
 const { pool } = require('../db');
-const { requireAuth } = require('../middleware/auth');
+const { requireAuth, requirePermission } = require('../middleware/auth');
 const { logAudit } = require('../utils/audit');
 
 const router = express.Router();
@@ -24,7 +24,7 @@ async function generateDepositNumber() {
 
 // POST /ai-extract — read a deposit receipt photo and return amount + date.
 // The tech reviews/edits the prefilled values before submitting.
-router.post('/ai-extract', requireAuth, async function(req, res) {
+router.post('/ai-extract', requireAuth, requirePermission('view_deposits'), async function(req, res) {
   if (!process.env.ANTHROPIC_API_KEY) return res.status(503).json({ error: 'AI not configured' });
   const { imageData, mediaType } = req.body;
   if (!imageData) return res.status(400).json({ error: 'No image data provided' });
@@ -84,7 +84,7 @@ router.post('/ai-extract', requireAuth, async function(req, res) {
 });
 
 // POST / — submit a deposit (any authenticated user, for themselves)
-router.post('/', requireAuth, async function(req, res) {
+router.post('/', requireAuth, requirePermission('view_deposits'), async function(req, res) {
   try {
     const { amount, deposit_date, city_code, notes, receipt_image, receipt_filename } = req.body;
     const amt = parseFloat(amount);
@@ -129,7 +129,7 @@ router.post('/', requireAuth, async function(req, res) {
 
 // GET / — list deposits (own for employees; all for admin/manager).
 // Never returns the receipt image in the list (kept lightweight).
-router.get('/', requireAuth, async function(req, res) {
+router.get('/', requireAuth, requirePermission('view_deposits'), async function(req, res) {
   try {
     const cols = 'id, deposit_number, user_id, user_name, city_code, amount, deposit_date, notes, receipt_filename, ' +
       '(receipt_image IS NOT NULL) AS has_receipt, created_at';
@@ -150,7 +150,7 @@ router.get('/', requireAuth, async function(req, res) {
 });
 
 // GET /export — all deposits for CSV (admin/manager only). No images.
-router.get('/export', requireAuth, async function(req, res) {
+router.get('/export', requireAuth, requirePermission('view_deposits'), async function(req, res) {
   if (!MANAGE.includes(req.user.role)) {
     return res.status(403).json({ error: 'Access denied' });
   }
@@ -167,7 +167,7 @@ router.get('/export', requireAuth, async function(req, res) {
 });
 
 // GET /:id — single deposit incl. receipt image (owner or see-all roles)
-router.get('/:id', requireAuth, async function(req, res) {
+router.get('/:id', requireAuth, requirePermission('view_deposits'), async function(req, res) {
   try {
     const { rows } = await pool.query('SELECT * FROM deposits WHERE id = $1', [req.params.id]);
     if (!rows.length) return res.status(404).json({ error: 'Deposit not found' });
@@ -183,7 +183,7 @@ router.get('/:id', requireAuth, async function(req, res) {
 });
 
 // DELETE /:id — admin/manager only
-router.delete('/:id', requireAuth, async function(req, res) {
+router.delete('/:id', requireAuth, requirePermission('view_deposits'), async function(req, res) {
   if (!MANAGE.includes(req.user.role)) {
     return res.status(403).json({ error: 'Access denied' });
   }

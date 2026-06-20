@@ -22,15 +22,20 @@ var ALL_PERMS = [
   'manage_users',     // add / edit / deactivate / delete users
   'manage_settings',  // company info, AI context, notifications, roles
   'view_audit',       // audit log
-  'view_ai_admin'     // AI conversation history / usage
+  'view_ai_admin',    // AI conversation history / usage
+  'view_pos',         // see the Purchase Orders module
+  'view_quotes',      // see the Quotes module
+  'view_vr',          // see the Vehicle Repairs module
+  'view_deposits'     // see the Cash Deposits module
 ];
 
+var VIEW_PERMS = ['view_pos', 'view_quotes', 'view_vr', 'view_deposits'];
 var DEFAULTS = {
   admin: '*',
-  manager: ['view_users', 'manage_cities', 'manage_geico', 'manage_running', 'manage_vehicles', 'manage_vendors', 'manage_addresses', 'approve_vr'],
-  locksmith: [],
-  locksmith_coordinator: [],
-  roadside_technician: []
+  manager: ['view_users', 'manage_cities', 'manage_geico', 'manage_running', 'manage_vehicles', 'manage_vendors', 'manage_addresses', 'approve_vr'].concat(VIEW_PERMS),
+  locksmith: [].concat(VIEW_PERMS),
+  locksmith_coordinator: [].concat(VIEW_PERMS),
+  roadside_technician: [].concat(VIEW_PERMS)
 };
 
 var cache = null;

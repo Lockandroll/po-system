@@ -1,6 +1,6 @@
 const express = require('express');
 const { pool } = require('../db');
-const { requireAuth } = require('../middleware/auth');
+const { requireAuth, requirePermission } = require('../middleware/auth');
 const { logAudit } = require('../utils/audit');
 const { sendEmail, emailTemplate } = require('../utils/email');
 const { sendSms } = require('../utils/sms');
@@ -24,7 +24,7 @@ async function generateQuoteNumber(userInitials) {
 }
 
 // GET all quotes (own only, unless admin)
-router.get('/', requireAuth, async (req, res) => {
+router.get('/', requireAuth, requirePermission('view_quotes'), async (req, res) => {
   try {
     let query, params;
     if (['admin','manager'].includes(req.user.role)) {
@@ -43,7 +43,7 @@ router.get('/', requireAuth, async (req, res) => {
 });
 
 // GET single quote with line items and requester contact info
-router.get('/:id', requireAuth, async (req, res) => {
+router.get('/:id', requireAuth, requirePermission('view_quotes'), async (req, res) => {
   try {
     const { rows } = await pool.query(
       'SELECT q.*, u.name as requester_name, u.email as requester_email, u.phone as requester_phone FROM quotes q JOIN users u ON q.requester_id = u.id WHERE q.id = $1',
@@ -67,7 +67,7 @@ router.get('/:id', requireAuth, async (req, res) => {
 });
 
 // POST create quote
-router.post('/', requireAuth, async (req, res) => {
+router.post('/', requireAuth, requirePermission('view_quotes'), async (req, res) => {
   const { customer_name, city_code, notes, important_info, tax_rate, line_items } = req.body;
   if (!customer_name) return res.status(400).json({ error: 'Customer name is required' });
   const initials = getInitials(req.user.name);
@@ -139,7 +139,7 @@ router.post('/', requireAuth, async (req, res) => {
 });
 
 // PUT update quote
-router.put('/:id', requireAuth, async (req, res) => {
+router.put('/:id', requireAuth, requirePermission('view_quotes'), async (req, res) => {
   try {
     const { rows } = await pool.query('SELECT * FROM quotes WHERE id = $1', [req.params.id]);
     if (!rows.length) return res.status(404).json({ error: 'Quote not found' });
@@ -188,7 +188,7 @@ router.put('/:id', requireAuth, async (req, res) => {
 });
 
 // DELETE quote
-router.delete('/:id', requireAuth, async (req, res) => {
+router.delete('/:id', requireAuth, requirePermission('view_quotes'), async (req, res) => {
   try {
     const { rows } = await pool.query('SELECT * FROM quotes WHERE id = $1', [req.params.id]);
     if (!rows.length) return res.status(404).json({ error: 'Quote not found' });
@@ -206,7 +206,7 @@ router.delete('/:id', requireAuth, async (req, res) => {
 });
 
 // POST push a quote into PO(s) - one PO per supplier (manufacturer); uses our cost (unit_price)
-router.post('/:id/push-to-po', requireAuth, async (req, res) => {
+router.post('/:id/push-to-po', requireAuth, requirePermission('view_quotes'), async (req, res) => {
   try {
     const { rows } = await pool.query('SELECT * FROM quotes WHERE id = $1', [req.params.id]);
     if (!rows.length) return res.status(404).json({ error: 'Quote not found' });
