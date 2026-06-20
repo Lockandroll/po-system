@@ -4425,19 +4425,19 @@ async function renderCompleteSignoff(el, id) {
     '<div class="card mb-4"><div class="card-header"><span class="card-title">Work Order</span></div><div class="card-body">' + signoffSummaryHtml(form) + '</div></div>' +
     '<div class="card mb-4"><div class="card-header"><span class="card-title">On-Site Details</span></div><div class="card-body">' +
       '<div class="form-row">' +
-        '<div class="form-group"><label>Start Time &amp; Date</label><input type="text" id="so-start" placeholder="e.g. 6/19/26 1:30 PM" /></div>' +
-        '<div class="form-group"><label>End Time &amp; Date</label><input type="text" id="so-end" placeholder="e.g. 6/19/26 3:00 PM" /></div>' +
+        '<div class="form-group"><label>Start Time &amp; Date *</label><input type="text" id="so-start" placeholder="e.g. 6/19/26 1:30 PM" /></div>' +
+        '<div class="form-group"><label>End Time &amp; Date *</label><input type="text" id="so-end" placeholder="e.g. 6/19/26 3:00 PM" /></div>' +
       '</div>' +
       '<div class="form-row">' +
-        '<div class="form-group"><label>Is this work 100% complete?</label><select id="so-complete"><option value="">— Select —</option><option value="yes">Yes</option><option value="no">No</option></select></div>' +
-        '<div class="form-group"><label>Number of Technicians</label><input type="number" id="so-numtech" min="0" step="1" placeholder="e.g. 2" /></div>' +
-        '<div class="form-group"><label>Invoice Number</label><input type="text" id="so-invoice-complete" placeholder="Invoice number" /></div>' +
+        '<div class="form-group"><label>Is this work 100% complete? *</label><select id="so-complete"><option value="">— Select —</option><option value="yes">Yes</option><option value="no">No</option></select></div>' +
+        '<div class="form-group"><label>Number of Technicians *</label><input type="number" id="so-numtech" min="0" step="1" placeholder="e.g. 2" /></div>' +
+        '<div class="form-group"><label>Invoice Number *</label><input type="text" id="so-invoice-complete" placeholder="Invoice number" /></div>' +
       '</div>' +
-      '<div class="form-group"><label>Technician Name(s)</label><input type="text" id="so-techs" placeholder="Names of techs on site" /></div>' +
-      '<div class="form-group"><label>Description of Work Done / Cause of Damage</label><textarea id="so-workdesc" style="min-height:120px" placeholder="Describe the work performed and/or cause of damage..."></textarea></div>' +
+      '<div class="form-group"><label>Technician Name(s) *</label><input type="text" id="so-techs" placeholder="Names of techs on site" /></div>' +
+      '<div class="form-group"><label>Description of Work Done / Cause of Damage *</label><textarea id="so-workdesc" style="min-height:120px" placeholder="Describe the work performed and/or cause of damage..."></textarea></div>' +
     '</div></div>' +
-    '<div class="card mb-4"><div class="card-header"><span class="card-title">Photos</span></div><div class="card-body">' +
-      '<p class="text-muted" style="font-size:13px;margin-bottom:10px">Add photos of the completed work. They are compressed automatically before upload.</p>' +
+    '<div class="card mb-4"><div class="card-header"><span class="card-title">Photos <span style="font-weight:500;color:var(--text-muted-color);font-size:13px">(Must have before and after photos)</span></span></div><div class="card-body">' +
+      '<p class="text-muted" style="font-size:13px;margin-bottom:10px">Add at least two photos (before and after) and label each one. They are compressed automatically before upload.</p>' +
       '<input type="file" id="so-photo-input" accept="image/*" multiple capture="environment" onchange="handleSignoffPhotos(this)" style="margin-bottom:12px" />' +
       '<div id="so-photo-grid" style="display:flex;flex-wrap:wrap;gap:10px"></div>' +
     '</div></div>' +
@@ -4498,7 +4498,7 @@ function handleSignoffPhotos(input) {
         const c = document.createElement('canvas');
         c.width = w; c.height = h;
         c.getContext('2d').drawImage(img, 0, 0, w, h);
-        signoffPhotos.push(c.toDataURL('image/jpeg', 0.7));
+        signoffPhotos.push({ image_data: c.toDataURL('image/jpeg', 0.7), caption: '' });
         renderSignoffPhotoGrid();
       };
       img.src = ev.target.result;
@@ -4511,33 +4511,56 @@ function handleSignoffPhotos(input) {
 function renderSignoffPhotoGrid() {
   const grid = document.getElementById('so-photo-grid');
   if (!grid) return;
-  if (!signoffPhotos.length) { grid.innerHTML = '<div style="color:var(--text-muted-color);font-size:13px">No photos added yet.</div>'; return; }
-  grid.innerHTML = signoffPhotos.map(function(src, i) {
-    return '<div style="position:relative;width:110px;height:110px;border-radius:8px;overflow:hidden;border:1px solid var(--border)">' +
-      '<img src="' + src + '" style="width:100%;height:100%;object-fit:cover" />' +
-      '<button type="button" onclick="removeSignoffPhoto(' + i + ')" title="Remove" style="position:absolute;top:3px;right:3px;background:rgba(0,0,0,0.6);color:#fff;border:none;border-radius:50%;width:22px;height:22px;cursor:pointer;font-size:14px;line-height:1">&times;</button>' +
+  if (!signoffPhotos.length) { grid.innerHTML = '<div style="color:var(--text-muted-color);font-size:13px">No photos added yet. Add a before and an after photo.</div>'; return; }
+  grid.innerHTML = signoffPhotos.map(function(p, i) {
+    return '<div style="width:140px">' +
+      '<div style="position:relative;width:140px;height:130px;border-radius:8px;overflow:hidden;border:1px solid var(--border)">' +
+        '<img src="' + p.image_data + '" style="width:100%;height:100%;object-fit:cover" />' +
+        '<button type="button" onclick="removeSignoffPhoto(' + i + ')" title="Remove" style="position:absolute;top:3px;right:3px;background:rgba(0,0,0,0.6);color:#fff;border:none;border-radius:50%;width:22px;height:22px;cursor:pointer;font-size:14px;line-height:1">&times;</button>' +
+      '</div>' +
+      '<input type="text" value="' + escHtml(p.caption || '') + '" onchange="updateSignoffPhotoCaption(' + i + ', this.value)" placeholder="Label (e.g. Before / After)" style="width:140px;margin-top:5px;font-size:12px;padding:5px 7px" />' +
     '</div>';
   }).join('');
 }
+
+function updateSignoffPhotoCaption(i, val) { if (signoffPhotos[i]) signoffPhotos[i].caption = val; }
 
 function removeSignoffPhoto(i) { signoffPhotos.splice(i, 1); renderSignoffPhotoGrid(); }
 
 async function submitSignoffCompletion(id) {
   function val(idn) { var e = document.getElementById(idn); return e ? e.value.trim() : ''; }
-  const completeSel = val('so-complete');
-  const manager = val('so-manager');
   const errEl = document.getElementById('signoff-complete-error');
-  if (!manager) { errEl.innerHTML = '<div class="alert alert-error">Manager name is required.</div>'; window.scrollTo(0, 0); return; }
-  if (!_signoffSigPad || !_signoffSigPad.hasInk()) { errEl.innerHTML = '<div class="alert alert-error">A manager signature is required.</div>'; window.scrollTo(0, 0); return; }
+  function fail(msg) { errEl.innerHTML = '<div class="alert alert-error">' + msg + '</div>'; window.scrollTo(0, 0); }
+  const start_time = val('so-start');
+  const end_time = val('so-end');
+  const invoice_number = val('so-invoice-complete');
+  const completeSel = val('so-complete');
+  const num_technicians = val('so-numtech');
+  const technician_names = val('so-techs');
+  const work_description = val('so-workdesc');
+  const manager = val('so-manager');
+  if (!start_time) return fail('Start time &amp; date is required.');
+  if (!end_time) return fail('End time &amp; date is required.');
+  if (!invoice_number) return fail('Invoice number is required.');
+  if (!completeSel) return fail('Please select whether the work is 100% complete.');
+  if (!num_technicians) return fail('Number of technicians is required.');
+  if (!technician_names) return fail('Technician name(s) are required.');
+  if (!work_description) return fail('Description of work done / cause of damage is required.');
+  if (signoffPhotos.length < 2) return fail('At least two photos are required (a before and an after).');
+  for (var pi = 0; pi < signoffPhotos.length; pi++) {
+    if (!signoffPhotos[pi].caption || !signoffPhotos[pi].caption.trim()) return fail('Every photo must be labeled (e.g. Before / After). Photo ' + (pi + 1) + ' is missing a label.');
+  }
+  if (!manager) return fail('Manager name is required.');
+  if (!_signoffSigPad || !_signoffSigPad.hasInk()) return fail('A manager signature is required.');
   const body = {
-    start_time: val('so-start'),
-    end_time: val('so-end'),
-    invoice_number: val('so-invoice-complete'),
-    work_complete: completeSel === 'yes' ? true : (completeSel === 'no' ? false : null),
-    num_technicians: val('so-numtech') || null,
+    start_time: start_time,
+    end_time: end_time,
+    invoice_number: invoice_number,
+    work_complete: completeSel === 'yes' ? true : false,
+    num_technicians: num_technicians,
     manager_name: manager,
-    technician_names: val('so-techs'),
-    work_description: val('so-workdesc'),
+    technician_names: technician_names,
+    work_description: work_description,
     signature_data: _signoffSigPad.canvas.toDataURL('image/png'),
     photos: signoffPhotos
   };
@@ -4584,7 +4607,8 @@ function signoffCompletedHtml(f) {
   function row(label, val) { return '<div><div style="font-size:11px;font-weight:600;color:var(--text-muted-color);text-transform:uppercase;letter-spacing:0.04em;margin-bottom:3px">' + label + '</div><div style="font-size:14px">' + escHtml(val || '—') + '</div></div>'; }
   const wc = f.work_complete === true ? 'Yes' : (f.work_complete === false ? 'No' : '—');
   const photos = (f.photos || []).map(function(p) {
-    return '<a href="' + p.image_data + '" target="_blank" rel="noopener" style="display:block;width:130px;height:130px;border-radius:8px;overflow:hidden;border:1px solid var(--border)"><img src="' + p.image_data + '" style="width:100%;height:100%;object-fit:cover" /></a>';
+    return '<div style="width:130px"><a href="' + p.image_data + '" target="_blank" rel="noopener" style="display:block;width:130px;height:130px;border-radius:8px;overflow:hidden;border:1px solid var(--border)"><img src="' + p.image_data + '" style="width:100%;height:100%;object-fit:cover" /></a>' +
+      (p.caption ? '<div style="font-size:12px;color:var(--text-dim);margin-top:4px;text-align:center">' + escHtml(p.caption) + '</div>' : '') + '</div>';
   }).join('');
   const sig = f.signature_data
     ? '<div style="background:#ffffff;border:1px solid var(--border);border-radius:8px;padding:8px;display:inline-block"><img src="' + f.signature_data + '" style="max-width:360px;max-height:160px;display:block" /></div>'
@@ -4614,32 +4638,58 @@ async function printSignoff(id) {
     const f = results[0];
     const settings = results[1];
     function esc(s) { return String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;'); }
-    const wc = f.work_complete === true ? 'Yes' : (f.work_complete === false ? 'No' : '—');
-    function cell(label, val) {
-      return '<div style="padding:10px 12px;border:1px solid #e5e7eb"><div style="font-size:10px;font-weight:700;color:#6b7280;text-transform:uppercase;letter-spacing:0.05em;margin-bottom:3px">' + esc(label) + '</div><div style="font-size:13px;color:#111">' + esc(val || '—') + '</div></div>';
+
+    const compName = esc(settings.company_name || 'Lock And Roll, LLC');
+    const addr1 = esc(settings.company_address || '589 Dorset Court');
+    const addr2 = esc(settings.company_city_state_zip || 'Mount Dora, FL 32757');
+    const phone = esc(settings.company_phone || '337-873-2983');
+    const logoUrl = settings.logo || 'https://www.popalock.com/wp-content/uploads/2020/11/pal-logo-highres.png';
+
+    function cellLbl(w, text, last) {
+      return '<div style="flex:0 0 ' + w + '%;max-width:' + w + '%;padding:8px 6px;' + (last ? '' : 'border-right:1px solid #000;') + 'display:flex;align-items:center;justify-content:center;text-align:center;font-size:12.5px;line-height:1.25">' + esc(text) + '</div>';
     }
+    function cellVal(w, html, last) {
+      const ws = w ? 'flex:0 0 ' + w + '%;max-width:' + w + '%;' : 'flex:1 1 0;';
+      return '<div style="' + ws + 'padding:8px 8px;' + (last ? '' : 'border-right:1px solid #000;') + 'display:flex;align-items:center;font-size:13px;min-width:0;word-break:break-word">' + (html || '') + '</div>';
+    }
+    function box(on) {
+      return '<span style="display:inline-flex;align-items:center;justify-content:center;width:15px;height:15px;border:1.5px solid #000;margin-right:5px;font-size:12px;line-height:1">' + (on ? '&#10003;' : '') + '</span>';
+    }
+    const yesNo = '<div style="display:flex;align-items:center;gap:22px;width:100%;justify-content:center">' +
+      '<span style="display:flex;align-items:center">' + box(f.work_complete === true) + 'Yes</span>' +
+      '<span style="display:flex;align-items:center">' + box(f.work_complete === false) + 'No</span>' +
+    '</div>';
+    const sigImg = f.signature_data ? '<img src="' + f.signature_data + '" style="max-height:46px;max-width:100%;display:block" />' : '';
+
+    const ROW = 'display:flex;border-bottom:1px solid #000;min-height:34px';
+    const grid = '<div style="border:2px solid #000;margin-top:16px">' +
+      '<div style="' + ROW + '">' + cellLbl(15, 'Account:') + cellVal(0, esc(f.account), true) + '</div>' +
+      '<div style="' + ROW + '">' + cellLbl(15, 'Store Name:') + cellVal(45, esc(f.store_name)) + cellLbl(15, 'Store Number:') + cellVal(0, esc(f.store_number), true) + '</div>' +
+      '<div style="' + ROW + '">' + cellLbl(15, 'Address:') + cellVal(0, esc(f.address), true) + '</div>' +
+      '<div style="' + ROW + '">' + cellLbl(15, 'City/State/Zip:') + cellVal(0, esc(f.city_state_zip), true) + '</div>' +
+      '<div style="' + ROW + '">' + cellLbl(33, 'Date and Time Service Requested By:') + cellVal(0, esc(f.service_requested_by), true) + '</div>' +
+      '<div style="' + ROW + '">' + cellLbl(19.5, 'Start Time and Date:') + cellVal(26, esc(f.start_time)) + cellLbl(18, 'End Time and Date:') + cellVal(0, esc(f.end_time), true) + '</div>' +
+      '<div style="' + ROW + '">' + cellLbl(25, 'Is This Work 100% Complete?') + cellVal(24, yesNo) + cellLbl(20, 'Number of Technicians') + cellVal(0, (f.num_technicians != null ? esc(String(f.num_technicians)) : ''), true) + '</div>' +
+      '<div style="' + ROW + '">' + cellLbl(25, 'Manager Name (Printed):') + cellVal(0, esc(f.manager_name), true) + '</div>' +
+      '<div style="display:flex;border-bottom:1px solid #000;min-height:54px">' + cellLbl(25, 'Manager Signature:') + cellVal(0, sigImg, true) + '</div>' +
+      '<div style="' + ROW + '">' + cellLbl(25, 'Technician Name(s):') + cellVal(0, esc(f.technician_names), true) + '</div>' +
+      '<div style="padding:8px 8px;min-height:150px;font-size:13px"><div style="margin-bottom:8px">Description of Work Done / Cause of Damage:</div><div style="white-space:pre-wrap;line-height:1.6">' + esc(f.work_description) + '</div></div>' +
+    '</div>';
+
     const photosHtml = (f.photos || []).map(function(p) {
-      return '<img src="' + p.image_data + '" style="width:31%;margin:1%;border:1px solid #e5e7eb;border-radius:4px;object-fit:cover;max-height:200px" />';
+      return '<div style="width:31%;margin:1%;display:inline-block;vertical-align:top"><img src="' + p.image_data + '" style="width:100%;border:1px solid #ccc;border-radius:4px;object-fit:cover;max-height:220px" />' +
+        (p.caption ? '<div style="font-size:11px;color:#374151;margin-top:3px;text-align:center">' + esc(p.caption) + '</div>' : '') + '</div>';
     }).join('');
-    const sigHtml = f.signature_data
-      ? '<img src="' + f.signature_data + '" style="max-width:320px;max-height:140px;display:block;border-bottom:1px solid #111;padding-bottom:4px" />'
-      : '<div style="height:60px;border-bottom:1px solid #111;width:320px"></div>';
-    const compName = esc(settings.company_name || 'Lock and Roll LLC');
-    const compAddr = (settings.company_address ? esc(settings.company_address) + '<br>' : '589 Dorset Court<br>') +
-      (settings.company_city_state_zip ? esc(settings.company_city_state_zip) + '<br>' : 'Mount Dora, FL 32757<br>') +
-      (settings.company_phone ? esc(settings.company_phone) : '337-873-2983');
+
     const html = '<!DOCTYPE html><html><head><meta charset="UTF-8"><title>' + esc(f.form_number) + '</title>' +
       '<style>' +
       '* { margin:0; padding:0; box-sizing:border-box; }' +
-      'body { font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; background:#f3f4f6; color:#111; }' +
+      'body { font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Arial,sans-serif; background:#f3f4f6; color:#000; }' +
       '.no-print { background:#fff; padding:12px 24px; border-bottom:1px solid #e5e7eb; display:flex; gap:8px; align-items:center; position:sticky; top:0; z-index:10; }' +
       '.btn-print { background:#f97316; color:#fff; border:none; padding:9px 18px; border-radius:6px; font-size:14px; font-weight:500; cursor:pointer; }' +
       '.btn-close { background:transparent; color:#6b7280; border:1px solid #d1d5db; padding:9px 18px; border-radius:6px; font-size:14px; cursor:pointer; }' +
-      '.page { max-width:800px; margin:24px auto 48px; background:#fff; padding:32px; box-shadow:0 1px 4px rgba(0,0,0,0.12); }' +
-      '.grid2 { display:grid; grid-template-columns:1fr 1fr; }' +
-      '.grid3 { display:grid; grid-template-columns:1fr 1fr 1fr; }' +
-      'h2 { font-size:13px; text-transform:uppercase; letter-spacing:0.05em; color:#374151; margin:22px 0 8px; }' +
-      '@media print { .no-print { display:none !important; } body { background:#fff; } .page { margin:0; box-shadow:none; max-width:100%; } * { -webkit-print-color-adjust:exact !important; print-color-adjust:exact !important; } }' +
+      '.page { max-width:800px; margin:24px auto 48px; background:#fff; padding:30px 34px; box-shadow:0 1px 4px rgba(0,0,0,0.12); }' +
+      '@media print { .no-print { display:none !important; } body { background:#fff; } .page { margin:0; box-shadow:none; max-width:100%; padding:18px 24px; } * { -webkit-print-color-adjust:exact !important; print-color-adjust:exact !important; } }' +
       '</style></head><body>' +
       '<div class="no-print">' +
         '<button class="btn-print" onclick="window.print()">&#128438;&nbsp; Print / Save as PDF</button>' +
@@ -4647,24 +4697,18 @@ async function printSignoff(id) {
         '<span style="font-size:12px;color:#9ca3af;margin-left:4px">Tip: choose &ldquo;Save as PDF&rdquo; in the print dialog</span>' +
       '</div>' +
       '<div class="page">' +
-        '<div style="display:flex;justify-content:space-between;align-items:flex-start;border-bottom:2px solid #111;padding-bottom:16px;margin-bottom:8px">' +
-          '<div><div style="font-size:20px;font-weight:700;color:#f97316">' + compName + '</div><div style="font-size:12px;color:#6b7280;margin-top:6px;line-height:1.5">' + compAddr + '</div></div>' +
-          '<div style="text-align:right"><div style="font-size:17px;font-weight:700">Work Order Sign Off Sheet</div><div style="font-size:13px;color:#6b7280;margin-top:4px">' + esc(f.form_number) + '</div></div>' +
+        '<div style="background:#000;color:#fff;text-align:center;font-size:15px;font-weight:600;padding:7px 0;letter-spacing:0.3px">Work Order Sign Off Sheet</div>' +
+        '<div style="display:flex;align-items:flex-start;padding:18px 4px 8px;gap:10px">' +
+          '<div style="flex:0 0 26%;display:flex;align-items:center;justify-content:center"><img src="' + logoUrl + '" style="max-width:150px;max-height:72px;object-fit:contain" /></div>' +
+          '<div style="flex:0 0 40%;text-align:center;font-size:13px;line-height:1.55">Corporate Office:<br><strong>' + compName + '</strong><br>' + addr1 + '<br>' + addr2 + '<br>' + phone + '</div>' +
+          '<div style="flex:1 1 0;font-size:13px;padding-top:6px">' +
+            '<div style="margin-bottom:30px">PO Number: <span style="display:inline-block;min-width:120px;border-bottom:1px solid #000;text-align:center;padding:0 4px">' + esc(f.po_number || '') + '</span></div>' +
+            '<div>Invoice Number: <span style="display:inline-block;min-width:110px;border-bottom:1px solid #000;text-align:center;padding:0 4px">' + esc(f.invoice_number || '') + '</span></div>' +
+          '</div>' +
         '</div>' +
-        '<div class="grid2">' + cell('PO Number', f.po_number) + cell('Invoice Number', f.invoice_number) + '</div>' +
-        '<div class="grid2">' + cell('Account', f.account) + cell('Store Name / Number', (f.store_name || '') + (f.store_number ? '  #' + f.store_number : '')) + '</div>' +
-        '<div class="grid2">' + cell('Address', f.address) + cell('City / State / Zip', f.city_state_zip) + '</div>' +
-        '<div class="grid3">' + cell('Service Requested By', f.service_requested_by) + cell('Start Time & Date', f.start_time) + cell('End Time & Date', f.end_time) + '</div>' +
-        '<div class="grid3">' + cell('Work 100% Complete?', wc) + cell('# of Technicians', f.num_technicians != null ? String(f.num_technicians) : '') + cell('Technician(s)', f.technician_names) + '</div>' +
-        '<h2>Description of Work Done / Cause of Damage</h2>' +
-        '<div style="border:1px solid #e5e7eb;padding:12px;min-height:80px;font-size:13px;white-space:pre-wrap;line-height:1.6">' + esc(f.work_description) + '</div>' +
-        (photosHtml ? '<h2>Photos</h2><div style="display:flex;flex-wrap:wrap">' + photosHtml + '</div>' : '') +
-        '<h2>Manager Sign-Off</h2>' +
-        '<div class="grid2" style="margin-top:4px">' +
-          '<div style="padding:10px 12px"><div style="font-size:10px;font-weight:700;color:#6b7280;text-transform:uppercase;margin-bottom:6px">Manager Name (Printed)</div><div style="font-size:14px;border-bottom:1px solid #111;padding-bottom:6px">' + esc(f.manager_name) + '</div></div>' +
-          '<div style="padding:10px 12px"><div style="font-size:10px;font-weight:700;color:#6b7280;text-transform:uppercase;margin-bottom:6px">Manager Signature</div>' + sigHtml + '</div>' +
-        '</div>' +
-        '<div style="margin-top:24px;font-size:11px;color:#9ca3af;border-top:1px solid #e5e7eb;padding-top:10px">Completed ' + esc(f.completed_at ? new Date(f.completed_at).toLocaleString('en-US') : '') + (f.completed_by_name ? ' by ' + esc(f.completed_by_name) : '') + '</div>' +
+        grid +
+        (photosHtml ? '<div style="margin-top:18px"><div style="font-weight:600;font-size:13px;margin-bottom:8px">Photos</div><div>' + photosHtml + '</div></div>' : '') +
+        '<div style="margin-top:16px;font-size:10.5px;color:#999;text-align:right">' + esc(f.form_number) + (f.completed_at ? ' &middot; Completed ' + esc(new Date(f.completed_at).toLocaleString('en-US')) : '') + (f.completed_by_name ? ' by ' + esc(f.completed_by_name) : '') + '</div>' +
       '</div>' +
       '</body></html>';
     const w = window.open('', '_blank');

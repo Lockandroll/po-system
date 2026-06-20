@@ -183,8 +183,10 @@ router.post('/:id/complete', requireAuth, async (req, res) => {
         const attachments = [];
         if (form.signature_data) attachments.push({ filename: form.form_number + '-signature.png', content: stripDataUrl(form.signature_data) });
         for (var j = 0; j < photos.length; j++) {
-          const pimg = typeof photos[j] === 'string' ? photos[j] : (photos[j] && photos[j].image_data);
-          if (pimg) attachments.push({ filename: form.form_number + '-photo-' + (j + 1) + '.jpg', content: stripDataUrl(pimg) });
+          const pobj = photos[j];
+          const pimg = typeof pobj === 'string' ? pobj : (pobj && pobj.image_data);
+          const pcap = (pobj && pobj.caption) ? String(pobj.caption).replace(/[^a-z0-9]+/gi, '-').replace(/^-+|-+$/g, '') : '';
+          if (pimg) attachments.push({ filename: form.form_number + '-' + (pcap || ('photo-' + (j + 1))) + '.jpg', content: stripDataUrl(pimg) });
         }
         await sendWithAttachments(emails, 'Sign-Off Completed: ' + form.form_number + (form.store_name ? ' — ' + form.store_name : ''), html, attachments);
       }
