@@ -4750,4 +4750,45 @@ window.addEventListener('resize', function() { initAiDots(); });
 .ai-msg-bot { justify-content:flex-start; }
 .ai-msg-user .ai-msg-bubble {
   background:var(--primary);
-  colo
+  color:#fff;
+  border-radius:16px 16px 4px 16px;
+  padding:10px 14px;
+  max-width:70%;
+  font-size:14px;
+  line-height:1.5;
+}
+.ai-msg-bot .ai-msg-bubble {
+  background:var(--surface-color);
+  border:1px solid var(--border-color);
+  border-radius:16px 16px 16px 4px;
+  padding:10px 14px;
+  max-width:75%;
+  font-size:14px;
+  line-height:1.5;
+}
+#ai-canvas-left {
+  position:fixed;
+  top:0;
+  left:0;
+  pointer-events:none;
+  z-index:0;
+}
+@media (min-width:1400px) {
+  .ai-side-icon-left,
+  .ai-side-icon-right {
+    display:block;
+    position:fixed;
+    top:50%;
+    transform:translateY(-50%);
+    opacity:0.04;
+    pointer-events:none;
+    color:var(--primary);
+  }
+  .ai-side-icon-left { left:calc(260px + 40px); }
+  .ai-side-icon-right { right:40px; }
+}
+.ai-side-icon-left,
+.ai-side-icon-right { display:none; }
+</style>
+</body>
+</html>
