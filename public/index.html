@@ -1481,7 +1481,7 @@ async function showUserModal(id) {
         '<div id="modal-error"></div>' +
         '<div class="form-group"><label>Name</label><input type="text" id="modal-name" value="' + escHtml(user ? user.name : '') + '" /></div>' +
         '<div class="form-group"><label>Email</label><input type="email" id="modal-email" value="' + escHtml(user ? user.email : '') + '" /></div>' +
-        '<div class="form-group"><label>' + (id ? 'New Password (leave blank to keep)' : 'Password') + '</label><input type="password" id="modal-password" /></div>' +
+        '<div class="form-group"><label>' + (id ? 'New Password (leave blank to keep)' : 'Password (optional)') + '</label><input type="password" id="modal-password" placeholder="' + (id ? '' : 'Leave blank to email an invite') + '" />' + (id ? '' : '<div style="font-size:12px;color:var(--text-muted-color);margin-top:5px">An invite email is always sent. Leave blank and the user sets their own password via the link.</div>') + '</div>' +
         '<div class="form-row">' +
           '<div class="form-group"><label>Phone <span style="font-weight:400;font-size:0.8em;color:var(--text-muted)">Format: +13215550000</span></label><input type="tel" id="modal-phone" value="' + escHtml(user ? user.phone || '' : '') + '" placeholder="+13215550000" pattern="\\+1[0-9]{10}" title="Must be in format +1 followed by 10 digits (e.g. +13215550000)" /></div>' +
           '<div class="form-group"><label>Role</label><select id="modal-role">' +'<option value="locksmith"' + (user&&user.role==='locksmith'?' selected':'') + '>Locksmith</option>' +'<option value="locksmith_coordinator"' + (user&&user.role==='locksmith_coordinator'?' selected':'') + '>Locksmith Coordinator</option>' +'<option value="roadside_technician"' + (user&&user.role==='roadside_technician'?' selected':'') + '>Roadside Technician</option>' +'<option value="manager"' + (user&&user.role==='manager'?' selected':'') + '>Manager</option>' +'<option value="admin"' + (user&&user.role==='admin'?' selected':'') + '>Admin</option>' +'</select></div>' +
@@ -1515,7 +1515,7 @@ async function saveUser(id, btn) {
   try {
     btn.disabled = true;
     if (id) { await api('PUT', '/users/' + id, { name, email, password: password || undefined, role, phone: phone || undefined, receive_emails, receive_sms }); }
-    else { await api('POST', '/users', { name, email, password, role, phone: phone || undefined, receive_emails, receive_sms }); }
+    else { await api('POST', '/users', { name, email, password: password || undefined, role, phone: phone || undefined, receive_emails, receive_sms }); }
     document.querySelector('.modal-overlay').remove();
     navigate('users');
   } catch(err) {

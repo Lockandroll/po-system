@@ -1,11 +1,49 @@
 const express = require('express');
 const bcrypt = require('bcryptjs');
+const crypto = require('crypto');
 const { pool } = require('../db');
 const { requireAuth, requireRole, requirePermission } = require('../middleware/auth');
+const { sendEmail, emailTemplate } = require('../utils/email');
 
 const router = express.Router();
 
 const VALID_ROLES = ['locksmith', 'locksmith_coordinator', 'roadside_technician', 'manager', 'admin'];
+
+const ROLE_LABELS = {
+  locksmith: 'Locksmith',
+  locksmith_coordinator: 'Locksmith Coordinator',
+  roadside_technician: 'Roadside Technician',
+  manager: 'Manager',
+  admin: 'Admin'
+};
+
+// Create an invite token and email the new user a link to set their own password.
+async function sendInvite(user, invitedByName) {
+  const token = crypto.randomBytes(32).toString('hex');
+  const expires = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000); // 7 days
+  await pool.query(
+    'INSERT INTO password_resets (user_id, token, expires_at) VALUES ($1, $2, $3) ON CONFLICT (user_id) DO UPDATE SET token=$2, expires_at=$3, used=false',
+    [user.id, token, expires]
+  );
+  const appUrl = (process.env.APP_URL || '').replace(/\/$/, '');
+  const inviteUrl = appUrl + '/?reset=' + token;
+  const html = emailTemplate({
+    badge: 'Welcome',
+    badgeColor: 'green',
+    title: 'You\'ve been invited to Nova',
+    body: 'Hi ' + user.name + ', an account has been created for you' +
+          (invitedByName ? ' by ' + invitedByName : '') +
+          ' on Nova, the Lock and Roll operations platform. Click below to set your password and finish setting up your account. This link expires in 7 days.',
+    details: [
+      { label: 'Email', value: user.email },
+      { label: 'Role', value: ROLE_LABELS[user.role] || user.role }
+    ],
+    buttonText: 'Set Your Password',
+    buttonUrl: inviteUrl,
+    footerNote: 'If you weren\'t expecting this invitation, you can ignore this email.'
+  });
+  await sendEmail([user.email], 'Welcome to Nova — set your password', html);
+}
 
 // List all users (admin only)
 router.get('/', requireAuth, requirePermission('view_users'), async (req, res) => {
@@ -18,19 +56,28 @@ router.get('/', requireAuth, requirePermission('view_users'), async (req, res) =
 // Create user (admin only)
 router.post('/', requireAuth, requirePermission('manage_users'), async (req, res) => {
   const { name, email, password, role, phone, receive_emails, receive_sms } = req.body;
-  if (!name || !email || !password || !role) {
-    return res.status(400).json({ error: 'Name, email, password, and role are required' });
+  if (!name || !email || !role) {
+    return res.status(400).json({ error: 'Name, email, and role are required' });
   }
   if (!VALID_ROLES.includes(role)) {
     return res.status(400).json({ error: 'Invalid role. Must be one of: ' + VALID_ROLES.join(', ') + '.' });
   }
-  const password_hash = await bcrypt.hash(password, 12);
+  // Password is optional — if none is set, the user picks one via the invite link.
+  // A random hash is stored so the account can never be logged into until the invite is used.
+  const rawPassword = password || crypto.randomBytes(24).toString('hex');
+  const password_hash = await bcrypt.hash(rawPassword, 12);
   try {
     const { rows } = await pool.query(
       'INSERT INTO users (name, email, password_hash, role, phone, receive_emails, receive_sms) VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING id, name, email, phone, role, active, receive_emails, receive_sms',
       [name, email, password_hash, role, phone || null, receive_emails !== false, receive_sms === true]
     );
-    res.status(201).json(rows[0]);
+    const newUser = rows[0];
+    try {
+      await sendInvite(newUser, req.user && req.user.name);
+    } catch (e) {
+      console.error('Invite email failed:', e);
+    }
+    res.status(201).json(newUser);
   } catch (err) {
     if (err.code === '23505') return res.status(400).json({ error: 'Email already in use' });
     throw err;
