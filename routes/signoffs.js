@@ -94,12 +94,12 @@ router.post('/', requireAuth, async (req, res) => {
     const form_number = await generateFormNumber(initials);
     try {
       const { rows } = await pool.query(
-        'INSERT INTO signoff_forms (form_number, status, wo_number, po_number, invoice_number, account, store_name, store_number, address, city_state_zip, service_requested_by, notes, created_by) ' +
-        'VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13) RETURNING *',
-        [form_number, 'pending', b.wo_number || null, b.po_number || null, b.invoice_number || null, b.account || null, b.store_name || null, b.store_number || null, b.address || null, b.city_state_zip || null, b.service_requested_by || null, b.notes || null, req.user.id]
+        'INSERT INTO signoff_forms (form_number, status, po_number, account, store_name, store_number, address, city_state_zip, service_requested_by, notes, created_by) ' +
+        'VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) RETURNING *',
+        [form_number, 'pending', b.po_number || null, b.account || null, b.store_name || null, b.store_number || null, b.address || null, b.city_state_zip || null, b.service_requested_by || null, b.notes || null, req.user.id]
       );
       const form = rows[0];
-      try { await logAudit({ entity_type: 'signoff', entity_id: form.id, entity_number: form_number, action: 'created', user_id: req.user.id, user_name: req.user.name, details: { store: b.store_name || null, wo: b.wo_number || null } }); } catch (e) {}
+      try { await logAudit({ entity_type: 'signoff', entity_id: form.id, entity_number: form_number, action: 'created', user_id: req.user.id, user_name: req.user.name, details: { store: b.store_name || null, po: b.po_number || null } }); } catch (e) {}
       return res.status(201).json(form);
     } catch (err) {
       if (err.code === '23505' && attempt < 9) continue;
@@ -117,8 +117,8 @@ router.put('/:id', requireAuth, async (req, res) => {
     if (!rows.length) return res.status(404).json({ error: 'Sign-off sheet not found' });
     if (rows[0].status === 'completed') return res.status(400).json({ error: 'This sheet is already completed and cannot be edited.' });
     const { rows: upd } = await pool.query(
-      'UPDATE signoff_forms SET wo_number=$1, po_number=$2, invoice_number=$3, account=$4, store_name=$5, store_number=$6, address=$7, city_state_zip=$8, service_requested_by=$9, notes=$10, updated_at=NOW() WHERE id=$11 RETURNING *',
-      [b.wo_number || null, b.po_number || null, b.invoice_number || null, b.account || null, b.store_name || null, b.store_number || null, b.address || null, b.city_state_zip || null, b.service_requested_by || null, b.notes || null, req.params.id]
+      'UPDATE signoff_forms SET po_number=$1, account=$2, store_name=$3, store_number=$4, address=$5, city_state_zip=$6, service_requested_by=$7, notes=$8, updated_at=NOW() WHERE id=$9 RETURNING *',
+      [b.po_number || null, b.account || null, b.store_name || null, b.store_number || null, b.address || null, b.city_state_zip || null, b.service_requested_by || null, b.notes || null, req.params.id]
     );
     try { await logAudit({ entity_type: 'signoff', entity_id: parseInt(req.params.id), entity_number: rows[0].form_number, action: 'edited', user_id: req.user.id, user_name: req.user.name }); } catch (e) {}
     res.json(upd[0]);
@@ -138,8 +138,8 @@ router.post('/:id/complete', requireAuth, async (req, res) => {
     const existing = rows[0];
     await client.query('BEGIN');
     const { rows: upd } = await client.query(
-      'UPDATE signoff_forms SET start_time=$1, end_time=$2, work_complete=$3, num_technicians=$4, manager_name=$5, technician_names=$6, work_description=$7, signature_data=$8, notes=COALESCE($9, notes), status=$10, completed_by=$11, completed_at=NOW(), updated_at=NOW() WHERE id=$12 RETURNING *',
-      [b.start_time || null, b.end_time || null, (b.work_complete === true || b.work_complete === false) ? b.work_complete : null, b.num_technicians ? parseInt(b.num_technicians) : null, b.manager_name || null, b.technician_names || null, b.work_description || null, b.signature_data || null, b.notes || null, 'completed', req.user.id, req.params.id]
+      'UPDATE signoff_forms SET start_time=$1, end_time=$2, invoice_number=$3, work_complete=$4, num_technicians=$5, manager_name=$6, technician_names=$7, work_description=$8, signature_data=$9, notes=COALESCE($10, notes), status=$11, completed_by=$12, completed_at=NOW(), updated_at=NOW() WHERE id=$13 RETURNING *',
+      [b.start_time || null, b.end_time || null, b.invoice_number || null, (b.work_complete === true || b.work_complete === false) ? b.work_complete : null, b.num_technicians ? parseInt(b.num_technicians) : null, b.manager_name || null, b.technician_names || null, b.work_description || null, b.signature_data || null, b.notes || null, 'completed', req.user.id, req.params.id]
     );
     const photos = Array.isArray(b.photos) ? b.photos : [];
     // Replace photos with the submitted set
@@ -168,7 +168,8 @@ router.post('/:id/complete', requireAuth, async (req, res) => {
           body: '<strong>' + (req.user.name || 'A technician') + '</strong> completed sign-off sheet ' + form.form_number + (form.store_name ? ' for ' + form.store_name : '') + '. The signed copy and photos are attached.',
           details: [
             { label: 'Form #', value: form.form_number },
-            { label: 'WO #', value: form.wo_number || '—' },
+            { label: 'PO #', value: form.po_number || '—' },
+            { label: 'Invoice #', value: form.invoice_number || '—' },
             { label: 'Account', value: form.account || '—' },
             { label: 'Store', value: (form.store_name || '—') + (form.store_number ? ' (#' + form.store_number + ')' : '') },
             { label: 'Work 100% complete', value: form.work_complete === true ? 'Yes' : (form.work_complete === false ? 'No' : '—') },

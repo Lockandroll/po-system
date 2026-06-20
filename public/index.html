@@ -4325,7 +4325,7 @@ function filterSignoffs(resetPage) {
   const page = filtered.slice(start, start + SIGNOFF_PAGE_SIZE);
   wrap.innerHTML =
     '<div class="table-wrap"><table>' +
-    '<thead><tr><th>Form #</th><th>Store</th><th>WO #</th><th>Account</th><th>Status</th><th>Created</th><th></th></tr></thead>' +
+    '<thead><tr><th>Form #</th><th>Store</th><th>PO #</th><th>Account</th><th>Status</th><th>Created</th><th></th></tr></thead>' +
     '<tbody>' + page.map(renderSignoffRow).join('') + '</tbody>' +
     '</table></div>' +
     renderPagination(_signoffPage, totalPages, filtered.length, 'signoffPaginate');
@@ -4342,7 +4342,7 @@ function renderSignoffRow(f) {
   return '<tr style="cursor:pointer" onclick="navigate(\'' + (pend ? 'complete-signoff' : 'view-signoff') + '\',' + f.id + ')">' +
     '<td><strong>' + escHtml(f.form_number) + '</strong></td>' +
     '<td>' + escHtml(f.store_name || '—') + (f.store_number ? ' <span style="color:var(--text-muted-color)">#' + escHtml(f.store_number) + '</span>' : '') + '</td>' +
-    '<td>' + escHtml(f.wo_number || '—') + '</td>' +
+    '<td>' + escHtml(f.po_number || '—') + '</td>' +
     '<td>' + escHtml(f.account || '—') + '</td>' +
     '<td>' + badge + '</td>' +
     '<td>' + formatDate(f.created_at) + '</td>' +
@@ -4364,11 +4364,7 @@ async function renderEditSignoff(el, id) {
     '</div>' +
     '<div id="signoff-edit-error"></div>' +
     '<div class="card mb-4"><div class="card-header"><span class="card-title">Work Order Details</span></div><div class="card-body">' +
-      '<div class="form-row">' +
-        '<div class="form-group"><label>WO Number</label><input type="text" id="so-wo" value="' + v('wo_number') + '" placeholder="e.g. 231008602" /></div>' +
-        '<div class="form-group"><label>PO Number</label><input type="text" id="so-po" value="' + v('po_number') + '" /></div>' +
-        '<div class="form-group"><label>Invoice Number</label><input type="text" id="so-invoice" value="' + v('invoice_number') + '" /></div>' +
-      '</div>' +
+      '<div class="form-group"><label>PO Number</label><input type="text" id="so-po" value="' + v('po_number') + '" placeholder="PO number" /></div>' +
       '<div class="form-group"><label>Account</label><input type="text" id="so-account" value="' + v('account') + '" placeholder="e.g. Ferrandino &amp; Son Inc. Contractors" /></div>' +
       '<div class="form-row">' +
         '<div class="form-group"><label>Store Name</label><input type="text" id="so-store-name" value="' + v('store_name') + '" placeholder="e.g. Camelot" /></div>' +
@@ -4385,13 +4381,13 @@ async function renderEditSignoff(el, id) {
 async function saveSignoff(id) {
   function val(idn) { var e = document.getElementById(idn); return e ? e.value.trim() : ''; }
   const body = {
-    wo_number: val('so-wo'), po_number: val('so-po'), invoice_number: val('so-invoice'),
+    po_number: val('so-po'),
     account: val('so-account'), store_name: val('so-store-name'), store_number: val('so-store-number'),
     address: val('so-address'), city_state_zip: val('so-csz'), service_requested_by: val('so-requested-by'),
     notes: val('so-notes')
   };
-  if (!body.wo_number && !body.store_name) {
-    document.getElementById('signoff-edit-error').innerHTML = '<div class="alert alert-error">Enter at least a WO number or store name.</div>';
+  if (!body.po_number && !body.store_name) {
+    document.getElementById('signoff-edit-error').innerHTML = '<div class="alert alert-error">Enter at least a PO number or store name.</div>';
     return;
   }
   const btn = document.getElementById('btn-save-signoff');
@@ -4408,7 +4404,7 @@ async function saveSignoff(id) {
 function signoffSummaryHtml(f) {
   function row(label, val) { return '<div><div style="font-size:11px;font-weight:600;color:var(--text-muted-color);text-transform:uppercase;letter-spacing:0.04em;margin-bottom:3px">' + label + '</div><div style="font-size:14px">' + escHtml(val || '—') + '</div></div>'; }
   return '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:16px">' +
-    row('Form #', f.form_number) + row('WO #', f.wo_number) + row('PO #', f.po_number) + row('Invoice #', f.invoice_number) +
+    row('Form #', f.form_number) + row('PO #', f.po_number) + row('Invoice #', f.invoice_number) +
     row('Account', f.account) + row('Store', (f.store_name || '') + (f.store_number ? ' (#' + f.store_number + ')' : '')) +
     row('Address', f.address) + row('City / State / Zip', f.city_state_zip) + row('Service Requested By', f.service_requested_by) +
   '</div>' + (f.notes ? '<div style="margin-top:14px;padding:10px 12px;background:var(--bg-elevated);border-radius:6px;font-size:13px"><strong>Setup notes:</strong> ' + escHtml(f.notes) + '</div>' : '');
@@ -4435,6 +4431,7 @@ async function renderCompleteSignoff(el, id) {
       '<div class="form-row">' +
         '<div class="form-group"><label>Is this work 100% complete?</label><select id="so-complete"><option value="">— Select —</option><option value="yes">Yes</option><option value="no">No</option></select></div>' +
         '<div class="form-group"><label>Number of Technicians</label><input type="number" id="so-numtech" min="0" step="1" placeholder="e.g. 2" /></div>' +
+        '<div class="form-group"><label>Invoice Number</label><input type="text" id="so-invoice-complete" placeholder="Invoice number" /></div>' +
       '</div>' +
       '<div class="form-group"><label>Technician Name(s)</label><input type="text" id="so-techs" placeholder="Names of techs on site" /></div>' +
       '<div class="form-group"><label>Description of Work Done / Cause of Damage</label><textarea id="so-workdesc" style="min-height:120px" placeholder="Describe the work performed and/or cause of damage..."></textarea></div>' +
@@ -4535,6 +4532,7 @@ async function submitSignoffCompletion(id) {
   const body = {
     start_time: val('so-start'),
     end_time: val('so-end'),
+    invoice_number: val('so-invoice-complete'),
     work_complete: completeSel === 'yes' ? true : (completeSel === 'no' ? false : null),
     num_technicians: val('so-numtech') || null,
     manager_name: manager,
@@ -4653,7 +4651,7 @@ async function printSignoff(id) {
           '<div><div style="font-size:20px;font-weight:700;color:#f97316">' + compName + '</div><div style="font-size:12px;color:#6b7280;margin-top:6px;line-height:1.5">' + compAddr + '</div></div>' +
           '<div style="text-align:right"><div style="font-size:17px;font-weight:700">Work Order Sign Off Sheet</div><div style="font-size:13px;color:#6b7280;margin-top:4px">' + esc(f.form_number) + '</div></div>' +
         '</div>' +
-        '<div class="grid3">' + cell('WO Number', f.wo_number) + cell('PO Number', f.po_number) + cell('Invoice Number', f.invoice_number) + '</div>' +
+        '<div class="grid2">' + cell('PO Number', f.po_number) + cell('Invoice Number', f.invoice_number) + '</div>' +
         '<div class="grid2">' + cell('Account', f.account) + cell('Store Name / Number', (f.store_name || '') + (f.store_number ? '  #' + f.store_number : '')) + '</div>' +
         '<div class="grid2">' + cell('Address', f.address) + cell('City / State / Zip', f.city_state_zip) + '</div>' +
         '<div class="grid3">' + cell('Service Requested By', f.service_requested_by) + cell('Start Time & Date', f.start_time) + cell('End Time & Date', f.end_time) + '</div>' +
