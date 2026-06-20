@@ -1835,7 +1835,7 @@ function geicoRenderStats(s) {
   var unmatched = (s.byCity||[]).filter(function(c){ return c.k === '(unmatched)'; }).reduce(function(a,b){ return a + b.n; }, 0);
   var cards =
     geicoStatCard('Total Surveys', total, '') +
-    geicoStatCard('Excellent', excPct + '%', exc + ' of ' + rated, geicoPctColor(excPct)) +
+    geicoStatCard('% Excellent Surveys', excPct + '%', exc + ' of ' + rated, geicoPctColor(excPct)) +
     geicoStatCard('On-Time', otPct + '%', (s.onTime||0) + ' of ' + (s.onTimeAnswered||0) + ' answered', geicoPctColor(otPct)) +
     geicoStatCard('Cities', nCities, unmatched ? (unmatched + ' unmatched') : '');
   var breakdown =
