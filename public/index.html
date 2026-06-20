@@ -320,7 +320,7 @@ function badgeHtml(status) {
   return '<span class="badge badge-' + escHtml(cls) + '">' + escHtml(status) + '</span>';
 }
 
-var EMPLOYEE_PERMS = ['view_pos','create_po','edit_po','delete_po','submit_po','view_quotes','create_quote','edit_quote','delete_quote','push_quote_po','view_vr','create_vr','edit_vr','delete_vr','submit_vr','view_deposits','create_deposit','delete_deposit','export_deposits'];
+var EMPLOYEE_PERMS = ['view_pos','create_po','edit_po','delete_po','submit_po','view_quotes','create_quote','edit_quote','delete_quote','push_quote_po','view_vr','create_vr','edit_vr','delete_vr','submit_vr','view_deposits','create_deposit','delete_deposit','export_deposits','view_signoffs','create_signoff','edit_signoff','complete_signoff','delete_signoff'];
 var PERM_DEFAULTS = {
   manager: ['view_users','manage_cities','manage_geico','manage_running','manage_vehicles','manage_vendors','manage_addresses','approve_vr'].concat(EMPLOYEE_PERMS),
   locksmith: EMPLOYEE_PERMS.slice(),
@@ -407,7 +407,7 @@ async function render() {
     (can('manage_geico') ? '<div class="nav-item' + (cv === 'geico' ? ' active' : '') + '" onclick="navigate(\'geico\')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 01-2 2H5a2 2 0 01-2-2V5a2 2 0 012-2h11"/></svg> Geico Surveys</div>' : '') +
     '<div class="nav-item' + (cv === 'suggestions' ? ' active' : '') + '" onclick="navigate(\'suggestions\')">' + icoSuggestion + ' Suggestions</div>' +
     (can('view_deposits') ? '<div class="nav-item' + (cv === 'deposits' || cv === 'view-deposit' ? ' active' : '') + '" onclick="navigate(\'deposits\')">' + icoDeposit + ' Cash Deposits</div>' : '') +
-    '<div class="nav-item' + (['signoffs','new-signoff','edit-signoff','view-signoff','complete-signoff'].indexOf(cv) !== -1 ? ' active' : '') + '" onclick="navigate(\'signoffs\')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><path d="M9 15l2 2 4-4"/></svg> Sign-Off Sheets</div>' +
+    (can('view_signoffs') ? '<div class="nav-item' + (['signoffs','new-signoff','edit-signoff','view-signoff','complete-signoff'].indexOf(cv) !== -1 ? ' active' : '') + '" onclick="navigate(\'signoffs\')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><path d="M9 15l2 2 4-4"/></svg> Sign-Off Sheets</div>' : '') +
     (can('view_ai_admin') ?
       '<div class="nav-section-header' + (aiViews.indexOf(cv) !== -1 ? ' section-active' : '') + (ss === 'ai' ? ' open' : '') + '" onclick="toggleSection(\'ai\',\'ai-assistant\')"><span class="s-label">' + icoAI + ' Locksmith AI Assistant</span>' + chev + '</div>' +
       (ss === 'ai' ?
@@ -472,7 +472,7 @@ async function render() {
     if (_ovOpen) _ovOpen.classList.add('open');
   }
   const content = document.getElementById('content');
-  var _viewPerm = { dashboard:'view_pos', new:'view_pos', edit:'view_pos', view:'view_pos', running:'view_pos', 'running-admin':'view_pos', quotes:'view_quotes', 'new-quote':'view_quotes', 'edit-quote':'view_quotes', 'view-quote':'view_quotes', 'vr-dashboard':'view_vr', 'new-vr':'view_vr', 'edit-vr':'view_vr', 'view-vr':'view_vr', deposits:'view_deposits', 'view-deposit':'view_deposits' };
+  var _viewPerm = { dashboard:'view_pos', view:'view_pos', running:'view_pos', 'running-admin':'view_pos', new:'create_po', edit:'edit_po', quotes:'view_quotes', 'view-quote':'view_quotes', 'new-quote':'create_quote', 'edit-quote':'edit_quote', 'vr-dashboard':'view_vr', 'view-vr':'view_vr', 'new-vr':'create_vr', 'edit-vr':'edit_vr', deposits:'view_deposits', 'view-deposit':'view_deposits', signoffs:'view_signoffs', 'view-signoff':'view_signoffs', 'new-signoff':'create_signoff', 'edit-signoff':'edit_signoff', 'complete-signoff':'complete_signoff' };
   if (_viewPerm[state.currentView] && !can(_viewPerm[state.currentView])) { content.innerHTML = '<div class="alert alert-error">Access denied.</div>'; return; }
   if (state.currentView === 'home') await renderHomeScreen(content);
   else if (state.currentView === 'dashboard') await renderDashboard(content);
@@ -1877,10 +1877,11 @@ async function renderRoles(el) {
   try { rules = JSON.parse(settings.role_permissions || '{}') || {}; } catch(e) { rules = {}; }
 
   var groups = [
-    { group:'Purchase Orders', perms:[ {k:'view_pos',l:'View / access module'}, {k:'create_po',l:'Create POs'}, {k:'edit_po',l:'Edit POs'}, {k:'delete_po',l:'Delete POs'}, {k:'submit_po',l:'Submit for approval'}, {k:'approve_po',l:'Approve / reject POs'}, {k:'cancel_po',l:'Cancel POs'} ] },
-    { group:'Quotes', perms:[ {k:'view_quotes',l:'View / access module'}, {k:'create_quote',l:'Create quotes'}, {k:'edit_quote',l:'Edit quotes'}, {k:'delete_quote',l:'Delete quotes'}, {k:'push_quote_po',l:'Push quote to PO'} ] },
-    { group:'Vehicle Repairs', perms:[ {k:'view_vr',l:'View / access module'}, {k:'create_vr',l:'Create VRs'}, {k:'edit_vr',l:'Edit VRs'}, {k:'delete_vr',l:'Delete VRs'}, {k:'submit_vr',l:'Submit for approval'}, {k:'approve_vr',l:'Approve / reject vehicle repairs'} ] },
-    { group:'Cash Deposits', perms:[ {k:'view_deposits',l:'View / access module'}, {k:'create_deposit',l:'Create / upload deposit'}, {k:'delete_deposit',l:'Delete deposit'}, {k:'export_deposits',l:'Export deposits (CSV)'} ] },
+    { group:'Purchase Orders', gate:'view_pos', perms:[ {k:'view_pos',l:'View / access module'}, {k:'create_po',l:'Create POs'}, {k:'edit_po',l:'Edit POs'}, {k:'delete_po',l:'Delete POs'}, {k:'submit_po',l:'Submit for approval'}, {k:'approve_po',l:'Approve / reject POs'}, {k:'cancel_po',l:'Cancel POs'} ] },
+    { group:'Quotes', gate:'view_quotes', perms:[ {k:'view_quotes',l:'View / access module'}, {k:'create_quote',l:'Create quotes'}, {k:'edit_quote',l:'Edit quotes'}, {k:'delete_quote',l:'Delete quotes'}, {k:'push_quote_po',l:'Push quote to PO'} ] },
+    { group:'Vehicle Repairs', gate:'view_vr', perms:[ {k:'view_vr',l:'View / access module'}, {k:'create_vr',l:'Create VRs'}, {k:'edit_vr',l:'Edit VRs'}, {k:'delete_vr',l:'Delete VRs'}, {k:'submit_vr',l:'Submit for approval'}, {k:'approve_vr',l:'Approve / reject vehicle repairs'} ] },
+    { group:'Cash Deposits', gate:'view_deposits', perms:[ {k:'view_deposits',l:'View / access module'}, {k:'create_deposit',l:'Create / upload deposit'}, {k:'delete_deposit',l:'Delete deposit'}, {k:'export_deposits',l:'Export deposits (CSV)'} ] },
+    { group:'Sign-Off Sheets', gate:'view_signoffs', perms:[ {k:'view_signoffs',l:'View / access module'}, {k:'create_signoff',l:'Create sign-off sheets'}, {k:'edit_signoff',l:'Edit setup'}, {k:'complete_signoff',l:'Complete on site'}, {k:'delete_signoff',l:'Delete sign-off sheets'} ] },
     { group:'Fleet &amp; Vehicles', perms:[ {k:'manage_vehicles',l:'Manage fleet registry'} ] },
     { group:'Vendors / Accounts', perms:[ {k:'manage_vendors',l:'Manage vendors and accounts'} ] },
     { group:'Shipping Addresses', perms:[ {k:'manage_addresses',l:'Manage shipping addresses'} ] },
@@ -1903,15 +1904,20 @@ async function renderRoles(el) {
     if (rules && Object.prototype.toString.call(rules[role]) === '[object Array]') return rules[role].indexOf(perm) !== -1;
     return (PERM_DEFAULTS[role] || []).indexOf(perm) !== -1;
   }
-  function cell(role, perm) {
+  function cell(role, perm, gate) {
     if (role === 'admin') return '<td style="text-align:center"><input type="checkbox" checked disabled style="width:auto" title="Admin always has full access" /></td>';
-    return '<td style="text-align:center"><input type="checkbox" class="rp-' + role + '" value="' + perm + '"' + (roleHas(role, perm) ? ' checked' : '') + ' style="width:auto;cursor:pointer" /></td>';
+    var isGate = (gate && perm === gate);
+    var disabled = (gate && !isGate && !roleHas(role, gate));
+    var attrs = ' class="rp-' + role + '" value="' + perm + '"';
+    if (gate) attrs += ' data-grp="' + gate + '" data-role="' + role + '"';
+    if (isGate) attrs += ' onchange="toggleModuleAccess(this)"';
+    return '<td style="text-align:center"><input type="checkbox"' + attrs + ((roleHas(role, perm) && !disabled) ? ' checked' : '') + (disabled ? ' disabled' : '') + ' style="width:auto;cursor:pointer" /></td>';
   }
 
   var rowsHtml = groups.map(function(g) {
     var head = '<tr><td colspan="6" style="font-weight:600;background:var(--bg-elevated);font-size:12px;text-transform:uppercase;letter-spacing:0.04em;color:var(--text-muted-color)">' + g.group + '</td></tr>';
     var prows = g.perms.map(function(p) {
-      return '<tr><td>' + escHtml(p.l) + '</td>' + cols.map(function(c){ return cell(c.role, p.k); }).join('') + cell('admin', p.k) + '</tr>';
+      return '<tr><td>' + escHtml(p.l) + '</td>' + cols.map(function(c){ return cell(c.role, p.k, g.gate); }).join('') + cell('admin', p.k, g.gate) + '</tr>';
     }).join('');
     return head + prows;
   }).join('');
@@ -1927,13 +1933,24 @@ async function renderRoles(el) {
     '</div></div>';
 }
 
+function toggleModuleAccess(cb) {
+  var grp = cb.getAttribute('data-grp');
+  var role = cb.getAttribute('data-role');
+  var nodes = document.querySelectorAll('input[data-grp="' + grp + '"][data-role="' + role + '"]');
+  for (var i = 0; i < nodes.length; i++) {
+    if (nodes[i] === cb) continue;
+    nodes[i].disabled = !cb.checked;
+    if (!cb.checked) nodes[i].checked = false;
+  }
+}
+
 async function saveRoles() {
   var editRoles = ['locksmith', 'locksmith_coordinator', 'roadside_technician', 'manager'];
   var rules = {};
   editRoles.forEach(function(role) {
     var perms = [];
     var nodes = document.querySelectorAll('.rp-' + role);
-    for (var i = 0; i < nodes.length; i++) { if (nodes[i].checked) perms.push(nodes[i].value); }
+    for (var i = 0; i < nodes.length; i++) { if (nodes[i].checked && !nodes[i].disabled) perms.push(nodes[i].value); }
     rules[role] = perms;
   });
   try {
@@ -4805,7 +4822,7 @@ async function renderSignoffs(el) {
     el.innerHTML =
       '<div class="page-header">' +
         '<div><div class="page-title">Sign-Off Sheets</div><div class="page-subtitle">' + pending + ' awaiting completion</div></div>' +
-        '<button class="btn btn-primary" onclick="navigate(\'new-signoff\')" style="white-space:nowrap">' + icons.plus + ' New Sign-Off Sheet</button>' +
+        (can('create_signoff') ? '<button class="btn btn-primary" onclick="navigate(\'new-signoff\')" style="white-space:nowrap">' + icons.plus + ' New Sign-Off Sheet</button>' : '') +
       '</div>' +
       '<div id="signoff-error"></div>' +
       '<div class="card">' +
@@ -5107,9 +5124,9 @@ async function renderViewSignoff(el, id) {
   try {
     const f = await api('GET', '/signoffs/' + id);
     const pend = f.status === 'pending';
-    const canDelete = state.user.role === 'admin' || f.created_by === state.user.id;
+    const canDelete = state.user.role === 'admin' || (can('delete_signoff') && f.created_by === state.user.id);
     const completedBlock = pend
-      ? '<div class="card mb-4"><div class="card-body"><div class="empty-state" style="padding:24px"><h3>Awaiting completion</h3><p>This sheet is in the queue. Open it on site to fill in details and capture the signature.</p><button class="btn btn-primary" onclick="navigate(\'complete-signoff\',' + f.id + ')" style="margin-top:8px">&#9998; Complete this sheet</button></div></div></div>'
+      ? '<div class="card mb-4"><div class="card-body"><div class="empty-state" style="padding:24px"><h3>Awaiting completion</h3><p>This sheet is in the queue. Open it on site to fill in details and capture the signature.</p>' + (can('complete_signoff') ? '<button class="btn btn-primary" onclick="navigate(\'complete-signoff\',' + f.id + ')" style="margin-top:8px">&#9998; Complete this sheet</button>' : '') + '</div></div></div>'
       : signoffCompletedHtml(f);
     el.innerHTML =
       '<div class="page-header">' +
@@ -5118,8 +5135,8 @@ async function renderViewSignoff(el, id) {
           '<button class="btn btn-secondary" onclick="navigate(\'signoffs\')">&larr; Back</button>' +
           (!pend ? '<button class="btn btn-secondary" style="white-space:nowrap" onclick="printSignoff(' + f.id + ')">' + icons.print + ' Print</button>' : '') +
           (!pend && (f.photos || []).length ? '<button class="btn btn-secondary" style="white-space:nowrap" onclick="downloadSignoffPhotos(' + f.id + ')">&#11015; Download Photos</button>' : '') +
-          (pend ? '<button class="btn btn-secondary" onclick="navigate(\'edit-signoff\',' + f.id + ')">' + icons.edit + ' Edit Setup</button>' : '') +
-          (pend ? '<button class="btn btn-primary" onclick="navigate(\'complete-signoff\',' + f.id + ')" style="white-space:nowrap">&#9998; Complete</button>' : '') +
+          (pend && can('edit_signoff') ? '<button class="btn btn-secondary" onclick="navigate(\'edit-signoff\',' + f.id + ')">' + icons.edit + ' Edit Setup</button>' : '') +
+          (pend && can('complete_signoff') ? '<button class="btn btn-primary" onclick="navigate(\'complete-signoff\',' + f.id + ')" style="white-space:nowrap">&#9998; Complete</button>' : '') +
           (canDelete ? '<button class="btn btn-danger" title="Delete sign-off sheet" onclick="deleteSignoff(' + f.id + ')"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14H6L5 6"/><path d="M10 11v6"/><path d="M14 11v6"/><path d="M9 6V4h6v2"/></svg></button>' : '') +
         '</div>' +
       '</div>' +

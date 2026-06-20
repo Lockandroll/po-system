@@ -1,6 +1,6 @@
 const express = require('express');
 const { pool } = require('../db');
-const { requireAuth } = require('../middleware/auth');
+const { requireAuth, requirePermission } = require('../middleware/auth');
 const { logAudit } = require('../utils/audit');
 const { emailTemplate } = require('../utils/email');
 const notify = require('../utils/notify');
@@ -49,7 +49,7 @@ async function sendWithAttachments(recipients, subject, html, attachments) {
 }
 
 // GET all sign-off sheets (everyone sees the shared queue). No heavy image data.
-router.get('/', requireAuth, async (req, res) => {
+router.get('/', requireAuth, requirePermission('view_signoffs'), async (req, res) => {
   try {
     const { rows } = await pool.query(
       'SELECT f.id, f.form_number, f.status, f.wo_number, f.po_number, f.account, f.store_name, f.store_number, ' +
@@ -69,7 +69,7 @@ router.get('/', requireAuth, async (req, res) => {
 });
 
 // GET single sheet with photos
-router.get('/:id', requireAuth, async (req, res) => {
+router.get('/:id', requireAuth, requirePermission('view_signoffs'), async (req, res) => {
   try {
     const { rows } = await pool.query(
       'SELECT f.*, c.name AS created_by_name, d.name AS completed_by_name ' +
@@ -88,7 +88,7 @@ router.get('/:id', requireAuth, async (req, res) => {
 });
 
 // POST create (setup) — lands in the pending queue
-router.post('/', requireAuth, async (req, res) => {
+router.post('/', requireAuth, requirePermission('create_signoff'), async (req, res) => {
   const b = req.body || {};
   const initials = getInitials(req.user.name);
   for (var attempt = 0; attempt < 10; attempt++) {
@@ -111,7 +111,7 @@ router.post('/', requireAuth, async (req, res) => {
 });
 
 // PUT update setup fields (only while pending)
-router.put('/:id', requireAuth, async (req, res) => {
+router.put('/:id', requireAuth, requirePermission('edit_signoff'), async (req, res) => {
   const b = req.body || {};
   try {
     const { rows } = await pool.query('SELECT * FROM signoff_forms WHERE id = $1', [req.params.id]);
@@ -130,7 +130,7 @@ router.put('/:id', requireAuth, async (req, res) => {
 });
 
 // POST complete — tech fills onsite, signs, attaches photos. Emails admins.
-router.post('/:id/complete', requireAuth, async (req, res) => {
+router.post('/:id/complete', requireAuth, requirePermission('complete_signoff'), async (req, res) => {
   const b = req.body || {};
   const client = await pool.connect();
   try {
@@ -203,7 +203,7 @@ router.post('/:id/complete', requireAuth, async (req, res) => {
 });
 
 // DELETE (admin or creator)
-router.delete('/:id', requireAuth, async (req, res) => {
+router.delete('/:id', requireAuth, requirePermission('delete_signoff'), async (req, res) => {
   try {
     const { rows } = await pool.query('SELECT * FROM signoff_forms WHERE id = $1', [req.params.id]);
     if (!rows.length) return res.status(404).json({ error: 'Sign-off sheet not found' });

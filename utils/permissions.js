@@ -26,14 +26,16 @@ var ALL_PERMS = [
   'view_pos', 'create_po', 'edit_po', 'delete_po', 'submit_po',
   'view_quotes', 'create_quote', 'edit_quote', 'delete_quote', 'push_quote_po',
   'view_vr', 'create_vr', 'edit_vr', 'delete_vr', 'submit_vr',
-  'view_deposits', 'create_deposit', 'delete_deposit', 'export_deposits'
+  'view_deposits', 'create_deposit', 'delete_deposit', 'export_deposits',
+  'view_signoffs', 'create_signoff', 'edit_signoff', 'complete_signoff', 'delete_signoff'
 ];
 
 var EMPLOYEE_PERMS = [
   'view_pos', 'create_po', 'edit_po', 'delete_po', 'submit_po',
   'view_quotes', 'create_quote', 'edit_quote', 'delete_quote', 'push_quote_po',
   'view_vr', 'create_vr', 'edit_vr', 'delete_vr', 'submit_vr',
-  'view_deposits', 'create_deposit', 'delete_deposit', 'export_deposits'
+  'view_deposits', 'create_deposit', 'delete_deposit', 'export_deposits',
+  'view_signoffs', 'create_signoff', 'edit_signoff', 'complete_signoff', 'delete_signoff'
 ];
 var DEFAULTS = {
   admin: '*',
