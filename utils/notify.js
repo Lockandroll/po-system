@@ -50,10 +50,9 @@ async function broadcastRecipients(eventKey, defaultWhere) {
     phones = res.rows.filter(function (r) { return r.receive_sms && r.phone; }).map(function (r) { return r.phone; }).filter(Boolean);
   }
 
-  // Append custom distribution-list emails configured for this event.
-  const custom = rules.custom_emails;
-  if (custom && Array.isArray(custom.addresses) && Array.isArray(custom.events) && custom.events.indexOf(eventKey) !== -1) {
-    custom.addresses.forEach(function (a) {
+  // Append per-event custom distribution-list emails (non-user addresses).
+  if (rule && Array.isArray(rule.extra_emails)) {
+    rule.extra_emails.forEach(function (a) {
       if (a && emails.indexOf(a) === -1) emails.push(a);
     });
   }

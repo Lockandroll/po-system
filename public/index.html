@@ -357,7 +357,7 @@ async function render() {
       (ss === 'settings' ?
         '<div class="nav-sub' + (cv === 'company-info' || cv === 'settings' ? ' active' : '') + '" onclick="navigate(\'company-info\')">' + icoBuilding + ' Company Information</div>' +
         (isAdmin ? '<div class="nav-sub' + (cv === 'ai-context' ? ' active' : '') + '" onclick="navigate(\'ai-context\')">' + icoAI + ' AI Context</div>' : '') +
-        (isAdmin ? '<div class="nav-sub' + (cv === 'notifications' ? ' active' : '') + '" onclick="navigate(\'notifications\')"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="margin-right:6px;vertical-align:-3px"><path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 0 1-3.46 0"/></svg> Notifications</div>' : '') +
+        (isAdmin ? '<div class="nav-sub' + (cv === 'notifications' ? ' active' : '') + '" onclick="navigate(\'notifications\')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 0 1-3.46 0"/></svg> Notifications</div>' : '') +
         '<div class="nav-sub' + (cv === 'users' ? ' active' : '') + '" onclick="navigate(\'users\')">' + icons.users + ' Users</div>' +
         '<div class="nav-sub' + (cv === 'cities' ? ' active' : '') + '" onclick="navigate(\'cities\')">' + icons.map + ' Cities</div>' +
         (isAdmin ? '<div class="nav-sub' + (cv === 'audit' ? ' active' : '') + '" onclick="navigate(\'audit\')">' + icoAudit + ' Audit Log</div>' : '')
@@ -1673,6 +1673,7 @@ async function renderNotifications(el) {
     var emailOn = rule ? rule.email !== false : true;
     var smsOn = rule ? rule.sms === true : false;
     var selected = custom ? rule.users : [];
+    var extraText = (rule && Array.isArray(rule.extra_emails)) ? rule.extra_emails.join(', ') : '';
     var userRows = activeUsers.map(function(u) {
       var on = selected.indexOf(u.id) !== -1;
       return '<label style="display:flex;align-items:center;gap:8px;padding:4px 0;cursor:pointer;font-size:13px">' +
@@ -1693,6 +1694,10 @@ async function renderNotifications(el) {
         '<div style="font-size:12px;font-weight:600;color:var(--text-muted-color);text-transform:uppercase;letter-spacing:0.04em;margin-bottom:4px">Recipients</div>' +
         (userRows || '<div style="color:var(--text-muted-color);font-size:13px">No active users.</div>') +
       '</div>' +
+      '<div style="margin-top:12px">' +
+        '<div style="font-size:12px;font-weight:600;color:var(--text-muted-color);text-transform:uppercase;letter-spacing:0.04em;margin-bottom:4px">Also email (non-users / distribution list)</div>' +
+        '<textarea id="nb-extra-' + ev.key + '" rows="2" placeholder="ops@company.com, dispatch@company.com" style="width:100%;resize:vertical">' + escHtml(extraText) + '</textarea>' +
+      '</div>' +
     '</div>';
   }).join('');
 
@@ -1709,17 +1714,10 @@ async function renderNotifications(el) {
     '</div>';
   }).join('');
 
-  var customEmailsText = (rules.custom_emails && Array.isArray(rules.custom_emails.addresses)) ? rules.custom_emails.addresses.join('\n') : '';
-  var customEvents = (rules.custom_emails && Array.isArray(rules.custom_emails.events)) ? rules.custom_emails.events : [];
-  var customEvtRows = broadcast.map(function(ev) {
-    var on = customEvents.indexOf(ev.key) !== -1;
-    return '<label style="display:flex;align-items:center;gap:8px;padding:3px 0;cursor:pointer;font-size:13px"><input type="checkbox" class="nc-evt" value="' + ev.key + '"' + (on ? ' checked' : '') + ' style="width:auto;margin:0" /> ' + escHtml(ev.label) + '</label>';
-  }).join('');
-
   el.innerHTML =
     '<div class="page-header"><div class="page-title">Notifications</div></div>' +
     '<div id="settings-error"></div><div id="settings-success"></div>' +
-    '<p class="text-muted" style="margin-bottom:16px;max-width:680px">Choose who gets each alert and how. Until you customize an event it keeps the current default. Outcome alerts always go to the person who created the item &mdash; you control only the channel. Login codes and password resets are always sent and are not configurable here.</p>' +
+    '<p class="text-muted" style="margin-bottom:16px;max-width:680px">Choose who gets each alert and how. Until you customize an event it keeps the current default. Use the box under each alert to also email people who are not Nova users (for example a distribution list). Outcome alerts always go to the person who created the item &mdash; you control only the channel. Login codes and password resets are always sent and are not configurable here.</p>' +
     '<div class="card mb-4"><div class="card-header"><span class="card-title">Incoming work alerts</span></div><div class="card-body">' +
       '<p class="text-muted" style="margin-bottom:14px;font-size:13px">Tick &ldquo;Customize recipients&rdquo; to pick exactly who is notified and by which channel. Leaving it unticked keeps the default audience.</p>' +
       bHtml +
@@ -1727,12 +1725,6 @@ async function renderNotifications(el) {
     '<div class="card mb-4"><div class="card-header"><span class="card-title">Status updates to the requester</span></div><div class="card-body">' +
       '<p class="text-muted" style="margin-bottom:6px;font-size:13px">These go to whoever created the PO or repair. Toggle the channel on or off.</p>' +
       rHtml +
-    '</div></div>' +
-    '<div class="card mb-4"><div class="card-header"><span class="card-title">Custom email recipients</span></div><div class="card-body">' +
-      '<p class="text-muted" style="margin-bottom:10px;font-size:13px">Add email addresses (for example a distribution list) that are not Nova users. Enter one per line or separated by commas. They are emailed for the alerts you tick below.</p>' +
-      '<textarea id="nc-emails" rows="3" placeholder="ops@company.com, dispatch@company.com" style="width:100%;resize:vertical;margin-bottom:12px">' + escHtml(customEmailsText) + '</textarea>' +
-      '<div style="font-size:12px;font-weight:600;color:var(--text-muted-color);text-transform:uppercase;letter-spacing:0.04em;margin-bottom:6px">Send these addresses:</div>' +
-      (customEvtRows || '<div style="color:var(--text-muted-color);font-size:13px">No events.</div>') +
     '</div></div>' +
     '<button class="btn btn-primary" onclick="saveNotifications()">Save Notification Settings</button>';
 
@@ -1749,31 +1741,42 @@ async function saveNotifications() {
   var broadcast = ['po_submitted','vr_submitted','quote_created','quote_to_pos','signoff_completed','suggestion_created'];
   var smsCapable = { po_submitted:1, vr_submitted:1, quote_created:1, quote_to_pos:1, suggestion_created:1 };
   var requester = ['po_approved','po_rejected','po_cancelled','po_ordered','vr_approved','vr_rejected'];
+  function parseEmails(raw) {
+    var seen = {}, out = [];
+    (raw || '').split(/[\s,;]+/).forEach(function(s) {
+      s = s.trim();
+      if (!s || s.indexOf('@') === -1) return;
+      var k = s.toLowerCase();
+      if (!seen[k]) { seen[k] = 1; out.push(s); }
+    });
+    return out;
+  }
   var rules = {};
   broadcast.forEach(function(key) {
+    var rule = {};
+    var hasRule = false;
     var custom = document.getElementById('nb-custom-' + key);
-    if (!custom || !custom.checked) return;
-    var nodes = document.querySelectorAll('.nb-user-' + key);
-    var users = [];
-    for (var i = 0; i < nodes.length; i++) { if (nodes[i].checked) users.push(parseInt(nodes[i].value, 10)); }
-    var emailEl = document.getElementById('nb-email-' + key);
-    var smsEl = document.getElementById('nb-sms-' + key);
-    rules[key] = { users: users, email: emailEl ? emailEl.checked : true, sms: (smsCapable[key] && smsEl) ? smsEl.checked : false };
+    if (custom && custom.checked) {
+      var nodes = document.querySelectorAll('.nb-user-' + key);
+      var users = [];
+      for (var i = 0; i < nodes.length; i++) { if (nodes[i].checked) users.push(parseInt(nodes[i].value, 10)); }
+      var emailEl = document.getElementById('nb-email-' + key);
+      var smsEl = document.getElementById('nb-sms-' + key);
+      rule.users = users;
+      rule.email = emailEl ? emailEl.checked : true;
+      rule.sms = (smsCapable[key] && smsEl) ? smsEl.checked : false;
+      hasRule = true;
+    }
+    var extraEl = document.getElementById('nb-extra-' + key);
+    var extras = parseEmails(extraEl ? extraEl.value : '');
+    if (extras.length) { rule.extra_emails = extras; hasRule = true; }
+    if (hasRule) rules[key] = rule;
   });
   requester.forEach(function(key) {
     var emailEl = document.getElementById('nr-email-' + key);
     var smsEl = document.getElementById('nr-sms-' + key);
     rules[key] = { email: emailEl ? emailEl.checked : true, sms: smsEl ? smsEl.checked : true };
   });
-  var ncEmailsEl = document.getElementById('nc-emails');
-  var ncRaw = ncEmailsEl ? ncEmailsEl.value : '';
-  var ncAddrs = ncRaw.split(/[\s,;]+/).map(function(s) { return s.trim(); }).filter(function(s) { return s && s.indexOf('@') !== -1; });
-  var ncSeen = {}, ncList = [];
-  ncAddrs.forEach(function(a) { var k = a.toLowerCase(); if (!ncSeen[k]) { ncSeen[k] = 1; ncList.push(a); } });
-  var ncEvts = [];
-  var ncNodes = document.querySelectorAll('.nc-evt');
-  for (var ci = 0; ci < ncNodes.length; ci++) { if (ncNodes[ci].checked) ncEvts.push(ncNodes[ci].value); }
-  if (ncList.length) rules.custom_emails = { addresses: ncList, events: ncEvts };
   try {
     await api('PUT', '/settings/notification_rules', { value: JSON.stringify(rules) });
     document.getElementById('settings-success').innerHTML = '<div class="alert alert-success">Notification settings saved.</div>';
