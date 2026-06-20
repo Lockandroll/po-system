@@ -19,7 +19,7 @@ router.post('/', requireAuth, requirePermission('manage_users'), async (req, res
   if (!name || !email || !password || !role) {
     return res.status(400).json({ error: 'Name, email, password, and role are required' });
   }
-  if (!['locksmith', 'locksmith_coordinator', 'roadside_technician', 'approver', 'manager', 'admin'].includes(role)) {
+  if (!['locksmith', 'locksmith_coordinator', 'roadside_technician', 'manager', 'admin'].includes(role)) {
     return res.status(400).json({ error: 'Role must be requester, approver, or admin' });
   }
   const password_hash = await bcrypt.hash(password, 12);

@@ -288,7 +288,6 @@ function badgeHtml(status) {
 
 var PERM_DEFAULTS = {
   manager: ['view_users','manage_cities','manage_geico','manage_running','manage_vehicles','manage_vendors','manage_addresses','approve_vr'],
-  approver: ['approve_po','approve_vr'],
   locksmith: [],
   locksmith_coordinator: [],
   roadside_technician: []
@@ -1423,7 +1422,7 @@ async function showUserModal(id) {
         '<div class="form-group"><label>' + (id ? 'New Password (leave blank to keep)' : 'Password') + '</label><input type="password" id="modal-password" /></div>' +
         '<div class="form-row">' +
           '<div class="form-group"><label>Phone <span style="font-weight:400;font-size:0.8em;color:var(--text-muted)">Format: +13215550000</span></label><input type="tel" id="modal-phone" value="' + escHtml(user ? user.phone || '' : '') + '" placeholder="+13215550000" pattern="\\+1[0-9]{10}" title="Must be in format +1 followed by 10 digits (e.g. +13215550000)" /></div>' +
-          '<div class="form-group"><label>Role</label><select id="modal-role">' +'<option value="locksmith"' + (user&&user.role==='locksmith'?' selected':'') + '>Locksmith</option>' +'<option value="locksmith_coordinator"' + (user&&user.role==='locksmith_coordinator'?' selected':'') + '>Locksmith Coordinator</option>' +'<option value="roadside_technician"' + (user&&user.role==='roadside_technician'?' selected':'') + '>Roadside Technician</option>' +'<option value="approver"' + (user&&user.role==='approver'?' selected':'') + '>Approver</option>' +'<option value="manager"' + (user&&user.role==='manager'?' selected':'') + '>Manager</option>' +'<option value="admin"' + (user&&user.role==='admin'?' selected':'') + '>Admin</option>' +'</select></div>' +
+          '<div class="form-group"><label>Role</label><select id="modal-role">' +'<option value="locksmith"' + (user&&user.role==='locksmith'?' selected':'') + '>Locksmith</option>' +'<option value="locksmith_coordinator"' + (user&&user.role==='locksmith_coordinator'?' selected':'') + '>Locksmith Coordinator</option>' +'<option value="roadside_technician"' + (user&&user.role==='roadside_technician'?' selected':'') + '>Roadside Technician</option>' +'<option value="manager"' + (user&&user.role==='manager'?' selected':'') + '>Manager</option>' +'<option value="admin"' + (user&&user.role==='admin'?' selected':'') + '>Admin</option>' +'</select></div>' +
           '</div>' +
         '<div class="form-group" style="display:flex;align-items:center;gap:10px">' +
           '<input type="checkbox" id="modal-receive-emails" style="width:auto"' + (user && user.receive_emails === false ? '' : ' checked') + ' />' +
@@ -1834,7 +1833,6 @@ async function renderRoles(el) {
     { role:'locksmith', label:'Locksmith' },
     { role:'locksmith_coordinator', label:'Locksmith Coordinator' },
     { role:'roadside_technician', label:'Roadside Technician' },
-    { role:'approver', label:'Approver' },
     { role:'manager', label:'Manager' }
   ];
 
@@ -1849,7 +1847,7 @@ async function renderRoles(el) {
   }
 
   var rowsHtml = groups.map(function(g) {
-    var head = '<tr><td colspan="7" style="font-weight:600;background:var(--bg-elevated);font-size:12px;text-transform:uppercase;letter-spacing:0.04em;color:var(--text-muted-color)">' + g.group + '</td></tr>';
+    var head = '<tr><td colspan="6" style="font-weight:600;background:var(--bg-elevated);font-size:12px;text-transform:uppercase;letter-spacing:0.04em;color:var(--text-muted-color)">' + g.group + '</td></tr>';
     var prows = g.perms.map(function(p) {
       return '<tr><td>' + escHtml(p.l) + '</td>' + cols.map(function(c){ return cell(c.role, p.k); }).join('') + cell('admin', p.k) + '</tr>';
     }).join('');
@@ -1868,7 +1866,7 @@ async function renderRoles(el) {
 }
 
 async function saveRoles() {
-  var editRoles = ['locksmith', 'locksmith_coordinator', 'roadside_technician', 'approver', 'manager'];
+  var editRoles = ['locksmith', 'locksmith_coordinator', 'roadside_technician', 'manager'];
   var rules = {};
   editRoles.forEach(function(role) {
     var perms = [];

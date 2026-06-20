@@ -340,6 +340,7 @@ async function initDB() {
     );
     await client.query(
       "UPDATE users SET role = 'locksmith' WHERE role = 'requester';" +
+      "UPDATE users SET role = 'manager' WHERE role = 'approver';" +
       "ALTER TABLE users ALTER COLUMN role SET DEFAULT 'locksmith';"
     );
     console.log('Database initialized');
