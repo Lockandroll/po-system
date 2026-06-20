@@ -48,6 +48,7 @@ app.use('/api/vr', require('./routes/vr'));
 app.use('/api/suggestions', require('./routes/suggestions'));
 app.use('/api/running', require('./routes/running'));
 app.use('/api/geico', require('./routes/geico'));
+app.use('/api/signoffs', require('./routes/signoffs'));
 
 // Catch-all: serve frontend
 app.get('*', (req, res) => {

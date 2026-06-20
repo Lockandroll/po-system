@@ -295,6 +295,49 @@ async function initDB() {
       'CREATE INDEX IF NOT EXISTS idx_geico_city ON geico_surveys(city_code);' +
       'CREATE INDEX IF NOT EXISTS idx_geico_rating ON geico_surveys(rating);'
     );
+    await client.query(
+      'CREATE TABLE IF NOT EXISTS signoff_forms (' +
+      '  id SERIAL PRIMARY KEY,' +
+      '  form_number VARCHAR(50) UNIQUE NOT NULL,' +
+      "  status VARCHAR(20) NOT NULL DEFAULT 'pending'," +
+      '  wo_number VARCHAR(100),' +
+      '  po_number VARCHAR(100),' +
+      '  invoice_number VARCHAR(100),' +
+      '  account VARCHAR(255),' +
+      '  store_name VARCHAR(255),' +
+      '  store_number VARCHAR(100),' +
+      '  address VARCHAR(255),' +
+      '  city_state_zip VARCHAR(255),' +
+      '  service_requested_by VARCHAR(255),' +
+      '  start_time VARCHAR(100),' +
+      '  end_time VARCHAR(100),' +
+      '  work_complete BOOLEAN,' +
+      '  num_technicians INTEGER,' +
+      '  manager_name VARCHAR(255),' +
+      '  technician_names TEXT,' +
+      '  work_description TEXT,' +
+      '  signature_data TEXT,' +
+      '  notes TEXT,' +
+      '  created_by INTEGER REFERENCES users(id),' +
+      '  completed_by INTEGER REFERENCES users(id),' +
+      '  completed_at TIMESTAMPTZ,' +
+      '  created_at TIMESTAMPTZ DEFAULT NOW(),' +
+      '  updated_at TIMESTAMPTZ DEFAULT NOW()' +
+      ');'
+    );
+    await client.query(
+      'CREATE TABLE IF NOT EXISTS signoff_photos (' +
+      '  id SERIAL PRIMARY KEY,' +
+      '  form_id INTEGER REFERENCES signoff_forms(id) ON DELETE CASCADE,' +
+      '  image_data TEXT,' +
+      '  caption VARCHAR(255),' +
+      '  created_at TIMESTAMPTZ DEFAULT NOW()' +
+      ');'
+    );
+    await client.query(
+      'CREATE INDEX IF NOT EXISTS idx_signoff_status ON signoff_forms(status);' +
+      'CREATE INDEX IF NOT EXISTS idx_signoff_photos_form ON signoff_photos(form_id);'
+    );
     console.log('Database initialized');
   } finally {
     client.release();

@@ -341,6 +341,7 @@ async function render() {
     (isAdminMgr ? '<div class="nav-item' + (cv === 'vendors' ? ' active' : '') + '" onclick="navigate(\'vendors\')">' + icoAccounts + ' Accounts</div>' : '') +
     (isAdminMgr ? '<div class="nav-item' + (cv === 'geico' ? ' active' : '') + '" onclick="navigate(\'geico\')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 01-2 2H5a2 2 0 01-2-2V5a2 2 0 012-2h11"/></svg> Geico Surveys</div>' : '') +
     '<div class="nav-item' + (cv === 'suggestions' ? ' active' : '') + '" onclick="navigate(\'suggestions\')">' + icoSuggestion + ' Suggestions</div>' +
+    '<div class="nav-item' + (['signoffs','new-signoff','edit-signoff','view-signoff','complete-signoff'].indexOf(cv) !== -1 ? ' active' : '') + '" onclick="navigate(\'signoffs\')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><path d="M9 15l2 2 4-4"/></svg> Sign-Off Sheets</div>' +
     (isAdmin ?
       '<div class="nav-section-header' + (aiViews.indexOf(cv) !== -1 ? ' section-active' : '') + (ss === 'ai' ? ' open' : '') + '" onclick="toggleSection(\'ai\',\'ai-assistant\')"><span class="s-label">' + icoAI + ' Locksmith AI Assistant</span>' + chev + '</div>' +
       (ss === 'ai' ?
@@ -420,6 +421,11 @@ async function render() {
   else if (state.currentView === 'running') await renderRunningList(content);
   else if (state.currentView === 'running-admin') await renderAdminRunningList(content);
   else if (state.currentView === 'geico') await renderGeicoReviews(content);
+  else if (state.currentView === 'signoffs') await renderSignoffs(content);
+  else if (state.currentView === 'new-signoff') await renderEditSignoff(content, null);
+  else if (state.currentView === 'edit-signoff') await renderEditSignoff(content, state.currentParam);
+  else if (state.currentView === 'view-signoff') await renderViewSignoff(content, state.currentParam);
+  else if (state.currentView === 'complete-signoff') await renderCompleteSignoff(content, state.currentParam);
   else { state.currentView = 'home'; await renderHomeScreen(content); }
 }
 
@@ -4255,6 +4261,418 @@ async function updateSuggestion(id, body) {
     await api('PUT', '/suggestions/' + id, body);
   } catch(e) {
     console.error('Failed to update suggestion:', e);
+  }
+}
+
+// ── Sign-Off Sheets ─────────────────────────────────────────────────────────
+let signoffPhotos = [];
+let _signoffPage = 1;
+const SIGNOFF_PAGE_SIZE = 15;
+let _signoffSigPad = null;
+
+async function renderSignoffs(el) {
+  try {
+    const forms = await api('GET', '/signoffs');
+    window._signoffData = forms;
+    _signoffPage = 1;
+    const pending = forms.filter(function(f){ return f.status === 'pending'; }).length;
+    el.innerHTML =
+      '<div class="page-header">' +
+        '<div><div class="page-title">Sign-Off Sheets</div><div class="page-subtitle">' + pending + ' awaiting completion</div></div>' +
+        '<button class="btn btn-primary" onclick="navigate(\'new-signoff\')" style="white-space:nowrap">' + icons.plus + ' New Sign-Off Sheet</button>' +
+      '</div>' +
+      '<div id="signoff-error"></div>' +
+      '<div class="card">' +
+        '<div class="card-header" style="display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap">' +
+          '<span class="card-title">Work Order Sign-Offs</span>' +
+          '<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">' +
+            '<select id="signoff-status-filter" onchange="filterSignoffs(true)" style="width:auto"><option value="">All statuses</option><option value="pending">Awaiting completion</option><option value="completed">Completed</option></select>' +
+            '<input type="text" id="signoff-search" placeholder="Search form #, store, WO #, account..." style="width:260px" oninput="filterSignoffs(true)" />' +
+          '</div>' +
+        '</div>' +
+        (forms.length === 0
+          ? '<div class="empty-state"><h3>No sign-off sheets yet</h3><p>Create one to set up a work order, then complete it on site.</p></div>'
+          : '<div id="signoff-table-wrap"></div>') +
+      '</div>';
+    if (forms.length) filterSignoffs();
+  } catch (err) {
+    el.innerHTML = '<div class="alert alert-error">' + escHtml(err.message) + '</div>';
+  }
+}
+
+function signoffPaginate(p) { _signoffPage = p; filterSignoffs(); }
+
+function filterSignoffs(resetPage) {
+  if (resetPage) _signoffPage = 1;
+  const wrap = document.getElementById('signoff-table-wrap');
+  if (!wrap || !window._signoffData) return;
+  const q = ((document.getElementById('signoff-search') || {}).value || '').toLowerCase();
+  const st = (document.getElementById('signoff-status-filter') || {}).value || '';
+  const filtered = window._signoffData.filter(function(f) {
+    if (st && f.status !== st) return false;
+    if (!q) return true;
+    return [f.form_number, f.store_name, f.store_number, f.wo_number, f.po_number, f.account, f.city_state_zip, f.created_by_name].some(function(v) {
+      return (v || '').toString().toLowerCase().indexOf(q) !== -1;
+    });
+  });
+  if (!filtered.length) {
+    wrap.innerHTML = '<div class="empty-state"><h3>No matching sheets</h3><p>Try a different search or filter.</p></div>';
+    return;
+  }
+  const totalPages = Math.ceil(filtered.length / SIGNOFF_PAGE_SIZE);
+  if (_signoffPage > totalPages) _signoffPage = totalPages;
+  const start = (_signoffPage - 1) * SIGNOFF_PAGE_SIZE;
+  const page = filtered.slice(start, start + SIGNOFF_PAGE_SIZE);
+  wrap.innerHTML =
+    '<div class="table-wrap"><table>' +
+    '<thead><tr><th>Form #</th><th>Store</th><th>WO #</th><th>Account</th><th>Status</th><th>Created</th><th></th></tr></thead>' +
+    '<tbody>' + page.map(renderSignoffRow).join('') + '</tbody>' +
+    '</table></div>' +
+    renderPagination(_signoffPage, totalPages, filtered.length, 'signoffPaginate');
+}
+
+function renderSignoffRow(f) {
+  const pend = f.status === 'pending';
+  const badge = pend
+    ? '<span class="badge" style="background:#fff3e8;color:#c2520a">Awaiting completion</span>'
+    : '<span class="badge" style="background:#dcfce7;color:#15803d">Completed</span>';
+  const action = pend
+    ? '<button class="btn btn-primary btn-sm" onclick="event.stopPropagation();navigate(\'complete-signoff\',' + f.id + ')" style="white-space:nowrap">&#9998; Complete</button>'
+    : '<button class="btn btn-secondary btn-sm" onclick="event.stopPropagation();navigate(\'view-signoff\',' + f.id + ')">View</button>';
+  return '<tr style="cursor:pointer" onclick="navigate(\'' + (pend ? 'complete-signoff' : 'view-signoff') + '\',' + f.id + ')">' +
+    '<td><strong>' + escHtml(f.form_number) + '</strong></td>' +
+    '<td>' + escHtml(f.store_name || '—') + (f.store_number ? ' <span style="color:var(--text-muted-color)">#' + escHtml(f.store_number) + '</span>' : '') + '</td>' +
+    '<td>' + escHtml(f.wo_number || '—') + '</td>' +
+    '<td>' + escHtml(f.account || '—') + '</td>' +
+    '<td>' + badge + '</td>' +
+    '<td>' + formatDate(f.created_at) + '</td>' +
+    '<td style="text-align:right">' + action + '</td>' +
+  '</tr>';
+}
+
+async function renderEditSignoff(el, id) {
+  let form = null;
+  if (id) {
+    try { form = await api('GET', '/signoffs/' + id); } catch(e) { el.innerHTML = '<div class="alert alert-error">' + escHtml(e.message) + '</div>'; return; }
+    if (form.status === 'completed') { el.innerHTML = '<div class="alert alert-error">This sheet is completed and can no longer be edited.</div>'; return; }
+  }
+  function v(k) { return form ? escHtml(form[k] || '') : ''; }
+  el.innerHTML =
+    '<div class="page-header">' +
+      '<div><div class="page-title">' + (id ? 'Edit Sign-Off Setup' : 'New Sign-Off Sheet') + '</div><div class="page-subtitle">Set up the work order, then it joins the queue for a tech to complete on site.</div></div>' +
+      '<button class="btn btn-secondary" onclick="navigate(\'' + (id ? 'view-signoff' : 'signoffs') + '\',' + (id || 'null') + ')">Cancel</button>' +
+    '</div>' +
+    '<div id="signoff-edit-error"></div>' +
+    '<div class="card mb-4"><div class="card-header"><span class="card-title">Work Order Details</span></div><div class="card-body">' +
+      '<div class="form-row">' +
+        '<div class="form-group"><label>WO Number</label><input type="text" id="so-wo" value="' + v('wo_number') + '" placeholder="e.g. 231008602" /></div>' +
+        '<div class="form-group"><label>PO Number</label><input type="text" id="so-po" value="' + v('po_number') + '" /></div>' +
+        '<div class="form-group"><label>Invoice Number</label><input type="text" id="so-invoice" value="' + v('invoice_number') + '" /></div>' +
+      '</div>' +
+      '<div class="form-group"><label>Account</label><input type="text" id="so-account" value="' + v('account') + '" placeholder="e.g. Ferrandino &amp; Son Inc. Contractors" /></div>' +
+      '<div class="form-row">' +
+        '<div class="form-group"><label>Store Name</label><input type="text" id="so-store-name" value="' + v('store_name') + '" placeholder="e.g. Camelot" /></div>' +
+        '<div class="form-group"><label>Store Number</label><input type="text" id="so-store-number" value="' + v('store_number') + '" placeholder="e.g. 1260" /></div>' +
+      '</div>' +
+      '<div class="form-group"><label>Address</label><input type="text" id="so-address" value="' + v('address') + '" placeholder="Street address" /></div>' +
+      '<div class="form-group"><label>City / State / Zip</label><input type="text" id="so-csz" value="' + v('city_state_zip') + '" placeholder="e.g. Birmingham, AL 35242" /></div>' +
+      '<div class="form-group"><label>Date &amp; Time Service Requested By</label><input type="text" id="so-requested-by" value="' + v('service_requested_by') + '" placeholder="e.g. 6/19/26 by 5:00 PM" /></div>' +
+      '<div class="form-group"><label>Setup Notes</label><textarea id="so-notes" placeholder="Anything the tech should know before arriving...">' + v('notes') + '</textarea></div>' +
+    '</div></div>' +
+    '<div class="flex-gap"><button class="btn btn-primary" id="btn-save-signoff" onclick="saveSignoff(' + (id || 'null') + ')">' + (id ? 'Save Changes' : 'Create &amp; Add to Queue') + '</button></div>';
+}
+
+async function saveSignoff(id) {
+  function val(idn) { var e = document.getElementById(idn); return e ? e.value.trim() : ''; }
+  const body = {
+    wo_number: val('so-wo'), po_number: val('so-po'), invoice_number: val('so-invoice'),
+    account: val('so-account'), store_name: val('so-store-name'), store_number: val('so-store-number'),
+    address: val('so-address'), city_state_zip: val('so-csz'), service_requested_by: val('so-requested-by'),
+    notes: val('so-notes')
+  };
+  if (!body.wo_number && !body.store_name) {
+    document.getElementById('signoff-edit-error').innerHTML = '<div class="alert alert-error">Enter at least a WO number or store name.</div>';
+    return;
+  }
+  const btn = document.getElementById('btn-save-signoff');
+  if (btn) btn.disabled = true;
+  try {
+    if (id) { await api('PUT', '/signoffs/' + id, body); navigate('view-signoff', id); }
+    else { await api('POST', '/signoffs', body); navigate('signoffs'); }
+  } catch(err) {
+    document.getElementById('signoff-edit-error').innerHTML = '<div class="alert alert-error">' + escHtml(err.message) + '</div>';
+    if (btn) btn.disabled = false;
+  }
+}
+
+function signoffSummaryHtml(f) {
+  function row(label, val) { return '<div><div style="font-size:11px;font-weight:600;color:var(--text-muted-color);text-transform:uppercase;letter-spacing:0.04em;margin-bottom:3px">' + label + '</div><div style="font-size:14px">' + escHtml(val || '—') + '</div></div>'; }
+  return '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:16px">' +
+    row('Form #', f.form_number) + row('WO #', f.wo_number) + row('PO #', f.po_number) + row('Invoice #', f.invoice_number) +
+    row('Account', f.account) + row('Store', (f.store_name || '') + (f.store_number ? ' (#' + f.store_number + ')' : '')) +
+    row('Address', f.address) + row('City / State / Zip', f.city_state_zip) + row('Service Requested By', f.service_requested_by) +
+  '</div>' + (f.notes ? '<div style="margin-top:14px;padding:10px 12px;background:var(--bg-elevated);border-radius:6px;font-size:13px"><strong>Setup notes:</strong> ' + escHtml(f.notes) + '</div>' : '');
+}
+
+async function renderCompleteSignoff(el, id) {
+  signoffPhotos = [];
+  _signoffSigPad = null;
+  let form;
+  try { form = await api('GET', '/signoffs/' + id); } catch(e) { el.innerHTML = '<div class="alert alert-error">' + escHtml(e.message) + '</div>'; return; }
+  if (form.status === 'completed') { navigate('view-signoff', id); return; }
+  el.innerHTML =
+    '<div class="page-header">' +
+      '<div><div class="page-title">Complete ' + escHtml(form.form_number) + '</div><div class="page-subtitle">Fill in on-site details, capture photos, and have the manager sign.</div></div>' +
+      '<button class="btn btn-secondary" onclick="navigate(\'signoffs\')">Cancel</button>' +
+    '</div>' +
+    '<div id="signoff-complete-error"></div>' +
+    '<div class="card mb-4"><div class="card-header"><span class="card-title">Work Order</span></div><div class="card-body">' + signoffSummaryHtml(form) + '</div></div>' +
+    '<div class="card mb-4"><div class="card-header"><span class="card-title">On-Site Details</span></div><div class="card-body">' +
+      '<div class="form-row">' +
+        '<div class="form-group"><label>Start Time &amp; Date</label><input type="text" id="so-start" placeholder="e.g. 6/19/26 1:30 PM" /></div>' +
+        '<div class="form-group"><label>End Time &amp; Date</label><input type="text" id="so-end" placeholder="e.g. 6/19/26 3:00 PM" /></div>' +
+      '</div>' +
+      '<div class="form-row">' +
+        '<div class="form-group"><label>Is this work 100% complete?</label><select id="so-complete"><option value="">— Select —</option><option value="yes">Yes</option><option value="no">No</option></select></div>' +
+        '<div class="form-group"><label>Number of Technicians</label><input type="number" id="so-numtech" min="0" step="1" placeholder="e.g. 2" /></div>' +
+      '</div>' +
+      '<div class="form-group"><label>Technician Name(s)</label><input type="text" id="so-techs" placeholder="Names of techs on site" /></div>' +
+      '<div class="form-group"><label>Description of Work Done / Cause of Damage</label><textarea id="so-workdesc" style="min-height:120px" placeholder="Describe the work performed and/or cause of damage..."></textarea></div>' +
+    '</div></div>' +
+    '<div class="card mb-4"><div class="card-header"><span class="card-title">Photos</span></div><div class="card-body">' +
+      '<p class="text-muted" style="font-size:13px;margin-bottom:10px">Add photos of the completed work. They are compressed automatically before upload.</p>' +
+      '<input type="file" id="so-photo-input" accept="image/*" multiple capture="environment" onchange="handleSignoffPhotos(this)" style="margin-bottom:12px" />' +
+      '<div id="so-photo-grid" style="display:flex;flex-wrap:wrap;gap:10px"></div>' +
+    '</div></div>' +
+    '<div class="card mb-4"><div class="card-header"><span class="card-title">Manager Sign-Off</span></div><div class="card-body">' +
+      '<div class="form-group"><label>Manager Name (Printed) *</label><input type="text" id="so-manager" placeholder="Manager name" /></div>' +
+      '<label style="display:block;margin-bottom:6px;font-size:13px;color:var(--text-dim)">Manager Signature *</label>' +
+      '<div style="border:1px solid var(--border);border-radius:8px;background:#ffffff;display:inline-block;max-width:100%">' +
+        '<canvas id="so-sigpad" width="600" height="200" style="display:block;width:100%;max-width:600px;height:200px;border-radius:8px;cursor:crosshair;touch-action:none"></canvas>' +
+      '</div>' +
+      '<div style="margin-top:8px"><button class="btn btn-secondary btn-sm" type="button" onclick="clearSignoffSignature()">Clear Signature</button></div>' +
+    '</div></div>' +
+    '<div class="flex-gap"><button class="btn btn-primary" id="btn-complete-signoff" onclick="submitSignoffCompletion(' + form.id + ')">&#10003; Submit &amp; Email Admins</button></div>';
+  setupSignaturePad();
+  renderSignoffPhotoGrid();
+}
+
+function setupSignaturePad() {
+  const canvas = document.getElementById('so-sigpad');
+  if (!canvas) return;
+  const ctx = canvas.getContext('2d');
+  ctx.lineWidth = 2.5; ctx.lineCap = 'round'; ctx.lineJoin = 'round'; ctx.strokeStyle = '#111111';
+  let drawing = false, last = null, hasInk = false;
+  function pos(e) {
+    const r = canvas.getBoundingClientRect();
+    const t = (e.touches && e.touches[0]) ? e.touches[0] : e;
+    return { x: (t.clientX - r.left) * (canvas.width / r.width), y: (t.clientY - r.top) * (canvas.height / r.height) };
+  }
+  function start(e) { e.preventDefault(); drawing = true; last = pos(e); }
+  function move(e) { if (!drawing) return; e.preventDefault(); const p = pos(e); ctx.beginPath(); ctx.moveTo(last.x, last.y); ctx.lineTo(p.x, p.y); ctx.stroke(); last = p; hasInk = true; }
+  function end() { drawing = false; }
+  canvas.addEventListener('mousedown', start);
+  canvas.addEventListener('mousemove', move);
+  window.addEventListener('mouseup', end);
+  canvas.addEventListener('touchstart', start, { passive: false });
+  canvas.addEventListener('touchmove', move, { passive: false });
+  canvas.addEventListener('touchend', end);
+  _signoffSigPad = {
+    canvas: canvas,
+    hasInk: function() { return hasInk; },
+    clear: function() { ctx.clearRect(0, 0, canvas.width, canvas.height); hasInk = false; }
+  };
+}
+
+function clearSignoffSignature() { if (_signoffSigPad) _signoffSigPad.clear(); }
+
+function handleSignoffPhotos(input) {
+  const files = Array.prototype.slice.call(input.files || []);
+  files.forEach(function(file) {
+    if (!file.type || file.type.indexOf('image/') !== 0) return;
+    const reader = new FileReader();
+    reader.onload = function(ev) {
+      const img = new Image();
+      img.onload = function() {
+        const maxDim = 1280;
+        let w = img.width, h = img.height;
+        if (w > h && w > maxDim) { h = Math.round(h * maxDim / w); w = maxDim; }
+        else if (h >= w && h > maxDim) { w = Math.round(w * maxDim / h); h = maxDim; }
+        const c = document.createElement('canvas');
+        c.width = w; c.height = h;
+        c.getContext('2d').drawImage(img, 0, 0, w, h);
+        signoffPhotos.push(c.toDataURL('image/jpeg', 0.7));
+        renderSignoffPhotoGrid();
+      };
+      img.src = ev.target.result;
+    };
+    reader.readAsDataURL(file);
+  });
+  input.value = '';
+}
+
+function renderSignoffPhotoGrid() {
+  const grid = document.getElementById('so-photo-grid');
+  if (!grid) return;
+  if (!signoffPhotos.length) { grid.innerHTML = '<div style="color:var(--text-muted-color);font-size:13px">No photos added yet.</div>'; return; }
+  grid.innerHTML = signoffPhotos.map(function(src, i) {
+    return '<div style="position:relative;width:110px;height:110px;border-radius:8px;overflow:hidden;border:1px solid var(--border)">' +
+      '<img src="' + src + '" style="width:100%;height:100%;object-fit:cover" />' +
+      '<button type="button" onclick="removeSignoffPhoto(' + i + ')" title="Remove" style="position:absolute;top:3px;right:3px;background:rgba(0,0,0,0.6);color:#fff;border:none;border-radius:50%;width:22px;height:22px;cursor:pointer;font-size:14px;line-height:1">&times;</button>' +
+    '</div>';
+  }).join('');
+}
+
+function removeSignoffPhoto(i) { signoffPhotos.splice(i, 1); renderSignoffPhotoGrid(); }
+
+async function submitSignoffCompletion(id) {
+  function val(idn) { var e = document.getElementById(idn); return e ? e.value.trim() : ''; }
+  const completeSel = val('so-complete');
+  const manager = val('so-manager');
+  const errEl = document.getElementById('signoff-complete-error');
+  if (!manager) { errEl.innerHTML = '<div class="alert alert-error">Manager name is required.</div>'; window.scrollTo(0, 0); return; }
+  if (!_signoffSigPad || !_signoffSigPad.hasInk()) { errEl.innerHTML = '<div class="alert alert-error">A manager signature is required.</div>'; window.scrollTo(0, 0); return; }
+  const body = {
+    start_time: val('so-start'),
+    end_time: val('so-end'),
+    work_complete: completeSel === 'yes' ? true : (completeSel === 'no' ? false : null),
+    num_technicians: val('so-numtech') || null,
+    manager_name: manager,
+    technician_names: val('so-techs'),
+    work_description: val('so-workdesc'),
+    signature_data: _signoffSigPad.canvas.toDataURL('image/png'),
+    photos: signoffPhotos
+  };
+  const btn = document.getElementById('btn-complete-signoff');
+  if (btn) { btn.disabled = true; btn.textContent = 'Submitting...'; }
+  try {
+    await api('POST', '/signoffs/' + id + '/complete', body);
+    navigate('view-signoff', id);
+  } catch(err) {
+    errEl.innerHTML = '<div class="alert alert-error">' + escHtml(err.message) + '</div>';
+    window.scrollTo(0, 0);
+    if (btn) { btn.disabled = false; btn.innerHTML = '&#10003; Submit &amp; Email Admins'; }
+  }
+}
+
+async function renderViewSignoff(el, id) {
+  el.innerHTML = '<div class="loading">Loading…</div>';
+  try {
+    const f = await api('GET', '/signoffs/' + id);
+    const pend = f.status === 'pending';
+    const canDelete = state.user.role === 'admin' || f.created_by === state.user.id;
+    const completedBlock = pend
+      ? '<div class="card mb-4"><div class="card-body"><div class="empty-state" style="padding:24px"><h3>Awaiting completion</h3><p>This sheet is in the queue. Open it on site to fill in details and capture the signature.</p><button class="btn btn-primary" onclick="navigate(\'complete-signoff\',' + f.id + ')" style="margin-top:8px">&#9998; Complete this sheet</button></div></div></div>'
+      : signoffCompletedHtml(f);
+    el.innerHTML =
+      '<div class="page-header">' +
+        '<div><div class="page-title">' + escHtml(f.form_number) + '</div><div class="page-subtitle">Work Order Sign-Off' + (pend ? ' · Awaiting completion' : ' · Completed') + '</div></div>' +
+        '<div class="flex-gap">' +
+          '<button class="btn btn-secondary" onclick="navigate(\'signoffs\')">&larr; Back</button>' +
+          (!pend ? '<button class="btn btn-secondary" style="white-space:nowrap" onclick="printSignoff(' + f.id + ')">' + icons.print + ' Print</button>' : '') +
+          (pend ? '<button class="btn btn-secondary" onclick="navigate(\'edit-signoff\',' + f.id + ')">' + icons.edit + ' Edit Setup</button>' : '') +
+          (pend ? '<button class="btn btn-primary" onclick="navigate(\'complete-signoff\',' + f.id + ')" style="white-space:nowrap">&#9998; Complete</button>' : '') +
+          (canDelete ? '<button class="btn btn-danger" title="Delete sign-off sheet" onclick="deleteSignoff(' + f.id + ')"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14H6L5 6"/><path d="M10 11v6"/><path d="M14 11v6"/><path d="M9 6V4h6v2"/></svg></button>' : '') +
+        '</div>' +
+      '</div>' +
+      '<div class="card mb-4"><div class="card-header"><span class="card-title">Work Order</span></div><div class="card-body">' + signoffSummaryHtml(f) + '</div></div>' +
+      completedBlock;
+  } catch(err) {
+    el.innerHTML = '<div class="alert alert-error">' + escHtml(err.message) + '</div>';
+  }
+}
+
+function signoffCompletedHtml(f) {
+  function row(label, val) { return '<div><div style="font-size:11px;font-weight:600;color:var(--text-muted-color);text-transform:uppercase;letter-spacing:0.04em;margin-bottom:3px">' + label + '</div><div style="font-size:14px">' + escHtml(val || '—') + '</div></div>'; }
+  const wc = f.work_complete === true ? 'Yes' : (f.work_complete === false ? 'No' : '—');
+  const photos = (f.photos || []).map(function(p) {
+    return '<a href="' + p.image_data + '" target="_blank" rel="noopener" style="display:block;width:130px;height:130px;border-radius:8px;overflow:hidden;border:1px solid var(--border)"><img src="' + p.image_data + '" style="width:100%;height:100%;object-fit:cover" /></a>';
+  }).join('');
+  const sig = f.signature_data
+    ? '<div style="background:#ffffff;border:1px solid var(--border);border-radius:8px;padding:8px;display:inline-block"><img src="' + f.signature_data + '" style="max-width:360px;max-height:160px;display:block" /></div>'
+    : '<div style="color:var(--text-muted-color)">No signature on file.</div>';
+  return '<div class="card mb-4"><div class="card-header"><span class="card-title">Completion Details</span></div><div class="card-body">' +
+    '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:16px">' +
+      row('Start', f.start_time) + row('End', f.end_time) + row('Work 100% Complete', wc) + row('# Technicians', f.num_technicians != null ? String(f.num_technicians) : '') +
+      row('Technician(s)', f.technician_names) + row('Completed By', f.completed_by_name) + row('Completed At', f.completed_at ? formatDate(f.completed_at) : '') +
+    '</div>' +
+    (f.work_description ? '<div style="margin-top:16px"><div style="font-size:11px;font-weight:600;color:var(--text-muted-color);text-transform:uppercase;letter-spacing:0.04em;margin-bottom:4px">Description of Work / Cause of Damage</div><div style="font-size:14px;white-space:pre-wrap;line-height:1.6">' + escHtml(f.work_description) + '</div></div>' : '') +
+  '</div></div>' +
+  '<div class="card mb-4"><div class="card-header"><span class="card-title">Photos</span></div><div class="card-body">' + (photos ? '<div style="display:flex;flex-wrap:wrap;gap:10px">' + photos + '</div>' : '<div style="color:var(--text-muted-color)">No photos attached.</div>') + '</div></div>' +
+  '<div class="card mb-4"><div class="card-header"><span class="card-title">Manager Sign-Off</span></div><div class="card-body">' +
+    '<div style="margin-bottom:12px">' + row('Manager (Printed)', f.manager_name) + '</div>' + sig +
+  '</div></div>';
+}
+
+async function deleteSignoff(id) {
+  if (!confirm('Delete this sign-off sheet? This cannot be undone.')) return;
+  try { await api('DELETE', '/signoffs/' + id); navigate('signoffs'); }
+  catch(err) { alert(err.message); }
+}
+
+async function printSignoff(id) {
+  try {
+    const results = await Promise.all([ api('GET', '/signoffs/' + id), api('GET', '/settings').catch(function() { return {}; }) ]);
+    const f = results[0];
+    const settings = results[1];
+    function esc(s) { return String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;'); }
+    const wc = f.work_complete === true ? 'Yes' : (f.work_complete === false ? 'No' : '—');
+    function cell(label, val) {
+      return '<div style="padding:10px 12px;border:1px solid #e5e7eb"><div style="font-size:10px;font-weight:700;color:#6b7280;text-transform:uppercase;letter-spacing:0.05em;margin-bottom:3px">' + esc(label) + '</div><div style="font-size:13px;color:#111">' + esc(val || '—') + '</div></div>';
+    }
+    const photosHtml = (f.photos || []).map(function(p) {
+      return '<img src="' + p.image_data + '" style="width:31%;margin:1%;border:1px solid #e5e7eb;border-radius:4px;object-fit:cover;max-height:200px" />';
+    }).join('');
+    const sigHtml = f.signature_data
+      ? '<img src="' + f.signature_data + '" style="max-width:320px;max-height:140px;display:block;border-bottom:1px solid #111;padding-bottom:4px" />'
+      : '<div style="height:60px;border-bottom:1px solid #111;width:320px"></div>';
+    const compName = esc(settings.company_name || 'Lock and Roll LLC');
+    const compAddr = (settings.company_address ? esc(settings.company_address) + '<br>' : '589 Dorset Court<br>') +
+      (settings.company_city_state_zip ? esc(settings.company_city_state_zip) + '<br>' : 'Mount Dora, FL 32757<br>') +
+      (settings.company_phone ? esc(settings.company_phone) : '337-873-2983');
+    const html = '<!DOCTYPE html><html><head><meta charset="UTF-8"><title>' + esc(f.form_number) + '</title>' +
+      '<style>' +
+      '* { margin:0; padding:0; box-sizing:border-box; }' +
+      'body { font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; background:#f3f4f6; color:#111; }' +
+      '.no-print { background:#fff; padding:12px 24px; border-bottom:1px solid #e5e7eb; display:flex; gap:8px; align-items:center; position:sticky; top:0; z-index:10; }' +
+      '.btn-print { background:#f97316; color:#fff; border:none; padding:9px 18px; border-radius:6px; font-size:14px; font-weight:500; cursor:pointer; }' +
+      '.btn-close { background:transparent; color:#6b7280; border:1px solid #d1d5db; padding:9px 18px; border-radius:6px; font-size:14px; cursor:pointer; }' +
+      '.page { max-width:800px; margin:24px auto 48px; background:#fff; padding:32px; box-shadow:0 1px 4px rgba(0,0,0,0.12); }' +
+      '.grid2 { display:grid; grid-template-columns:1fr 1fr; }' +
+      '.grid3 { display:grid; grid-template-columns:1fr 1fr 1fr; }' +
+      'h2 { font-size:13px; text-transform:uppercase; letter-spacing:0.05em; color:#374151; margin:22px 0 8px; }' +
+      '@media print { .no-print { display:none !important; } body { background:#fff; } .page { margin:0; box-shadow:none; max-width:100%; } * { -webkit-print-color-adjust:exact !important; print-color-adjust:exact !important; } }' +
+      '</style></head><body>' +
+      '<div class="no-print">' +
+        '<button class="btn-print" onclick="window.print()">&#128438;&nbsp; Print / Save as PDF</button>' +
+        '<button class="btn-close" onclick="window.close()">Close</button>' +
+        '<span style="font-size:12px;color:#9ca3af;margin-left:4px">Tip: choose &ldquo;Save as PDF&rdquo; in the print dialog</span>' +
+      '</div>' +
+      '<div class="page">' +
+        '<div style="display:flex;justify-content:space-between;align-items:flex-start;border-bottom:2px solid #111;padding-bottom:16px;margin-bottom:8px">' +
+          '<div><div style="font-size:20px;font-weight:700;color:#f97316">' + compName + '</div><div style="font-size:12px;color:#6b7280;margin-top:6px;line-height:1.5">' + compAddr + '</div></div>' +
+          '<div style="text-align:right"><div style="font-size:17px;font-weight:700">Work Order Sign Off Sheet</div><div style="font-size:13px;color:#6b7280;margin-top:4px">' + esc(f.form_number) + '</div></div>' +
+        '</div>' +
+        '<div class="grid3">' + cell('WO Number', f.wo_number) + cell('PO Number', f.po_number) + cell('Invoice Number', f.invoice_number) + '</div>' +
+        '<div class="grid2">' + cell('Account', f.account) + cell('Store Name / Number', (f.store_name || '') + (f.store_number ? '  #' + f.store_number : '')) + '</div>' +
+        '<div class="grid2">' + cell('Address', f.address) + cell('City / State / Zip', f.city_state_zip) + '</div>' +
+        '<div class="grid3">' + cell('Service Requested By', f.service_requested_by) + cell('Start Time & Date', f.start_time) + cell('End Time & Date', f.end_time) + '</div>' +
+        '<div class="grid3">' + cell('Work 100% Complete?', wc) + cell('# of Technicians', f.num_technicians != null ? String(f.num_technicians) : '') + cell('Technician(s)', f.technician_names) + '</div>' +
+        '<h2>Description of Work Done / Cause of Damage</h2>' +
+        '<div style="border:1px solid #e5e7eb;padding:12px;min-height:80px;font-size:13px;white-space:pre-wrap;line-height:1.6">' + esc(f.work_description) + '</div>' +
+        (photosHtml ? '<h2>Photos</h2><div style="display:flex;flex-wrap:wrap">' + photosHtml + '</div>' : '') +
+        '<h2>Manager Sign-Off</h2>' +
+        '<div class="grid2" style="margin-top:4px">' +
+          '<div style="padding:10px 12px"><div style="font-size:10px;font-weight:700;color:#6b7280;text-transform:uppercase;margin-bottom:6px">Manager Name (Printed)</div><div style="font-size:14px;border-bottom:1px solid #111;padding-bottom:6px">' + esc(f.manager_name) + '</div></div>' +
+          '<div style="padding:10px 12px"><div style="font-size:10px;font-weight:700;color:#6b7280;text-transform:uppercase;margin-bottom:6px">Manager Signature</div>' + sigHtml + '</div>' +
+        '</div>' +
+        '<div style="margin-top:24px;font-size:11px;color:#9ca3af;border-top:1px solid #e5e7eb;padding-top:10px">Completed ' + esc(f.completed_at ? new Date(f.completed_at).toLocaleString('en-US') : '') + (f.completed_by_name ? ' by ' + esc(f.completed_by_name) : '') + '</div>' +
+      '</div>' +
+      '</body></html>';
+    const w = window.open('', '_blank');
+    if (w) { w.document.write(html); w.document.close(); }
+  } catch(err) {
+    alert('Could not open print view: ' + err.message);
   }
 }
 
