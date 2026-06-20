@@ -407,6 +407,20 @@ async function initDB() {
       }
       await client.query("INSERT INTO settings (key, value) VALUES ('perm_matrix_v3_backfilled', '1') ON CONFLICT (key) DO NOTHING");
     }
+    // SOP documents - admin-uploaded PDFs (extracted text) that Nova AI references
+    await client.query(
+      'CREATE TABLE IF NOT EXISTS sop_documents (' +
+      '  id SERIAL PRIMARY KEY,' +
+      '  title VARCHAR(255) NOT NULL,' +
+      '  filename VARCHAR(255),' +
+      '  content TEXT NOT NULL,' +
+      '  char_count INTEGER DEFAULT 0,' +
+      '  active BOOLEAN NOT NULL DEFAULT true,' +
+      '  uploaded_by INTEGER REFERENCES users(id),' +
+      '  uploaded_by_name VARCHAR(255),' +
+      '  created_at TIMESTAMPTZ DEFAULT NOW()' +
+      ');'
+    );
     console.log('Database initialized');
   } finally {
     client.release();

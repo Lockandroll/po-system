@@ -46,6 +46,7 @@ app.use('/api/addresses', require('./routes/addresses'));
 app.use('/api/vendors', require('./routes/vendors'));
 app.use('/api/audit', require('./routes/audit'));
 app.use('/api/ai', require('./routes/ai'));
+app.use('/api/sops', require('./routes/sops'));
 app.use('/api/dashboard', require('./routes/dashboard'));
 app.use('/api/vehicles', require('./routes/vehicles'));
 app.use('/api/vr', require('./routes/vr'));

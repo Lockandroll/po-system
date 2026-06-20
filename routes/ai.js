@@ -175,7 +175,24 @@ router.post('/chat', requireAuth, async function(req, res) {
     // Fetch custom context from settings
     const ctxRow = await pool.query("SELECT value FROM settings WHERE key = 'ai_context'");
     const customContext = ctxRow.rows.length && ctxRow.rows[0].value ? ctxRow.rows[0].value.trim() : '';
-    const systemPrompt = customContext ? SYSTEM_PROMPT + '\n\nAdditional company context:\n' + customContext : SYSTEM_PROMPT;
+    let sopContext = '';
+    try {
+      const sopRows = await pool.query("SELECT title, content FROM sop_documents WHERE active = true ORDER BY created_at");
+      if (sopRows.rows.length) {
+        let budget = 60000;
+        const parts = [];
+        for (const r of sopRows.rows) {
+          if (budget <= 0) break;
+          const chunk = (r.content || '').slice(0, budget);
+          parts.push('--- ' + r.title + ' ---\n' + chunk);
+          budget -= chunk.length;
+        }
+        sopContext = '\n\nCompany SOP and reference documents (treat these as authoritative for company procedures, pricing, and policies; mention the document title when you rely on one):\n' + parts.join('\n\n');
+      }
+    } catch (e) { console.error('SOP context load failed:', e.message); }
+    let systemPrompt = SYSTEM_PROMPT;
+    if (customContext) systemPrompt += '\n\nAdditional company context:\n' + customContext;
+    if (sopContext) systemPrompt += sopContext + '\n\nWhen a question is about company procedures, pricing, or policies covered by the SOP documents above, answer using them even if it is not strictly a locksmith topic.';
 
     const response = await callClaude(messages, systemPrompt);
 

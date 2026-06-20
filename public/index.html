@@ -409,15 +409,16 @@ async function render() {
     (can('view_deposits') ? '<div class="nav-item' + (cv === 'deposits' || cv === 'view-deposit' ? ' active' : '') + '" onclick="navigate(\'deposits\')">' + icoDeposit + ' Cash Deposits</div>' : '') +
     (can('view_signoffs') ? '<div class="nav-item' + (['signoffs','new-signoff','edit-signoff','view-signoff','complete-signoff'].indexOf(cv) !== -1 ? ' active' : '') + '" onclick="navigate(\'signoffs\')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><path d="M9 15l2 2 4-4"/></svg> Sign-Off Sheets</div>' : '') +
     (can('view_ai_admin') ?
-      '<div class="nav-section-header' + (aiViews.indexOf(cv) !== -1 ? ' section-active' : '') + (ss === 'ai' ? ' open' : '') + '" onclick="toggleSection(\'ai\',\'ai-assistant\')"><span class="s-label">' + icoAI + ' Locksmith AI Assistant</span>' + chev + '</div>' +
+      '<div class="nav-section-header' + (aiViews.indexOf(cv) !== -1 ? ' section-active' : '') + (ss === 'ai' ? ' open' : '') + '" onclick="toggleSection(\'ai\',\'ai-assistant\')"><span class="s-label">' + icoAI + ' Nova AI</span>' + chev + '</div>' +
       (ss === 'ai' ?
         '<div class="nav-sub' + (cv === 'ai-assistant' ? ' active' : '') + '" onclick="navigate(\'ai-assistant\')">' + icoChat + ' Conversations</div>' +
         '<div class="nav-sub' + (cv === 'ai-conversations' ? ' active' : '') + '" onclick="navigate(\'ai-conversations\')">' + icoAudit + ' History</div>' +
         '<div class="nav-sub' + (cv === 'ai-usage' ? ' active' : '') + '" onclick="navigate(\'ai-usage\')">' + icoBars + ' Usage</div>'
       : '')
     :
-      '<div class="nav-item' + (cv === 'ai-assistant' ? ' active' : '') + '" onclick="navigate(\'ai-assistant\')">' + icoAI + ' Locksmith AI Assistant</div>'
+      '<div class="nav-item' + (cv === 'ai-assistant' ? ' active' : '') + '" onclick="navigate(\'ai-assistant\')">' + icoAI + ' Nova AI</div>'
     ) +
+    (isAdmin ? '<div class="nav-item' + (cv === 'sop-library' ? ' active' : '') + '" onclick="navigate(\'sop-library\')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 19.5A2.5 2.5 0 016.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 014 19.5v-15A2.5 2.5 0 016.5 2z"/></svg> SOP Library</div>' : '') +
     ((can('view_users') || can('manage_cities') || can('view_audit') || can('manage_settings')) ?
       '<div class="nav-section-header' + (stViews.indexOf(cv) !== -1 ? ' section-active' : '') + (ss === 'settings' ? ' open' : '') + '" onclick="toggleSection(\'settings\',\'company-info\')"><span class="s-label">' + icons.settings + ' Settings</span>' + chev + '</div>' +
       (ss === 'settings' ?
@@ -505,6 +506,7 @@ async function render() {
   else if (state.currentView === 'roles') await renderRoles(content);
   else if (state.currentView === 'suggestions') await renderSuggestions(content);
   else if (state.currentView === 'deposits') await renderDeposits(content);
+  else if (state.currentView === 'sop-library') await renderSOPLibrary(content);
   else if (state.currentView === 'view-deposit') await renderViewDeposit(content, state.currentParam);
   else if (state.currentView === 'running') await renderRunningList(content);
   else if (state.currentView === 'running-admin') await renderAdminRunningList(content);
@@ -3517,6 +3519,142 @@ function aiMarkdown(text) {
 var _aiMessages = [];
 var _aiSessionUserId = null;
 var _aiUsage = { daily: 0, dailyLimit: 20 };
+async function renderSOPLibrary(el) {
+  if (state.user.role !== 'admin') { el.innerHTML = '<div class="alert alert-error">Admin access required.</div>'; return; }
+  el.innerHTML =
+    '<div class="page-title"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="margin-right:8px;vertical-align:-4px"><path d="M4 19.5A2.5 2.5 0 016.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 014 19.5v-15A2.5 2.5 0 016.5 2z"/></svg>SOP Library</div>' +
+    '<div class="page-subtitle">Upload SOP PDFs for Nova AI to reference. Text is extracted on upload; active documents are included as context on every Nova AI question.</div>' +
+    '<div id="sop-msg"></div>' +
+    '<div class="card"><div class="card-header"><span class="card-title">Upload a SOP</span></div><div class="card-body">' +
+      '<div class="form-group"><label>Document Title</label><input type="text" id="sop-title" placeholder="e.g. Lockout Service Procedure" /></div>' +
+      '<div class="form-group"><label>PDF File</label><input type="file" id="sop-file" accept="application/pdf" /></div>' +
+      '<div id="sop-upload-status" style="font-size:13px;color:var(--text-muted-color);margin:6px 0 12px"></div>' +
+      '<button class="btn btn-primary" id="sop-upload-btn" onclick="uploadSOP()">Upload &amp; Extract Text</button>' +
+    '</div></div>' +
+    '<div class="card"><div class="card-header"><span class="card-title">Document Library</span></div><div class="card-body" id="sop-list">Loading&hellip;</div></div>';
+  loadSOPList();
+}
+
+async function loadSOPList() {
+  var box = document.getElementById('sop-list');
+  if (!box) return;
+  try {
+    var rows = await api('GET', '/sops');
+    if (!rows.length) { box.innerHTML = '<p class="text-muted">No SOPs uploaded yet.</p>'; return; }
+    var html = '<table style="width:100%;border-collapse:collapse;font-size:14px">' +
+      '<thead><tr style="text-align:left;color:var(--text-muted-color);font-size:12px">' +
+      '<th style="padding:8px">Title</th><th style="padding:8px">File</th><th style="padding:8px">Size</th><th style="padding:8px">Status</th><th style="padding:8px">Uploaded</th><th></th></tr></thead><tbody>';
+    rows.forEach(function(r) {
+      var sz = r.char_count ? (Math.round(r.char_count / 1000) + 'k chars') : '-';
+      var when = r.created_at ? new Date(r.created_at).toLocaleDateString() : '';
+      html += '<tr style="border-top:1px solid var(--border-color)">' +
+        '<td style="padding:10px 8px;font-weight:500">' + escHtml(r.title) + '</td>' +
+        '<td style="padding:10px 8px;color:var(--text-muted-color)">' + escHtml(r.filename || '-') + '</td>' +
+        '<td style="padding:10px 8px;color:var(--text-muted-color)">' + sz + '</td>' +
+        '<td style="padding:10px 8px">' + (r.active ? '<span style="color:#22c55e">Active</span>' : '<span style="color:var(--text-muted-color)">Inactive</span>') + '</td>' +
+        '<td style="padding:10px 8px;color:var(--text-muted-color)">' + escHtml(r.uploaded_by_name || '') + '<br><span style="font-size:12px">' + escHtml(when) + '</span></td>' +
+        '<td style="padding:10px 8px;white-space:nowrap;text-align:right">' +
+          '<button class="btn btn-secondary" style="padding:6px 10px;font-size:13px" onclick="toggleSOP(' + r.id + ',' + (r.active ? 'false' : 'true') + ')">' + (r.active ? 'Disable' : 'Enable') + '</button> ' +
+          '<button class="btn btn-danger" style="padding:6px 10px;font-size:13px" onclick="deleteSOP(' + r.id + ')">Delete</button>' +
+        '</td></tr>';
+    });
+    html += '</tbody></table>';
+    box.innerHTML = html;
+  } catch (e) {
+    box.innerHTML = '<div class="alert alert-error">' + escHtml(e.message) + '</div>';
+  }
+}
+
+async function uploadSOP() {
+  var titleEl = document.getElementById('sop-title');
+  var fileEl = document.getElementById('sop-file');
+  var status = document.getElementById('sop-upload-status');
+  var btn = document.getElementById('sop-upload-btn');
+  var msg = document.getElementById('sop-msg');
+  msg.innerHTML = '';
+  var title = (titleEl.value || '').trim();
+  var file = fileEl.files[0];
+  if (!file) { status.textContent = 'Please choose a PDF file first.'; return; }
+  if (file.type !== 'application/pdf') { status.textContent = 'That file is not a PDF.'; return; }
+  if (!title) title = file.name.replace(/\.pdf$/i, '');
+  btn.disabled = true;
+  try {
+    status.textContent = 'Loading PDF reader...';
+    await loadPdfJs();
+    status.textContent = 'Extracting text...';
+    var text = await extractPdfText(file);
+    if (!text || text.trim().length < 20) {
+      status.textContent = '';
+      msg.innerHTML = '<div class="alert alert-error">Could not extract readable text. This PDF is likely scanned images with no text layer - re-save it as a text-based PDF and try again.</div>';
+      btn.disabled = false; return;
+    }
+    status.textContent = 'Saving...';
+    await api('POST', '/sops', { title: title, filename: file.name, content: text });
+    status.textContent = '';
+    titleEl.value = ''; fileEl.value = '';
+    msg.innerHTML = '<div class="alert alert-success">Uploaded "' + escHtml(title) + '" - ' + text.length.toLocaleString() + ' characters extracted.</div>';
+    loadSOPList();
+  } catch (e) {
+    status.textContent = '';
+    msg.innerHTML = '<div class="alert alert-error">' + escHtml(e.message || 'Upload failed') + '</div>';
+  }
+  btn.disabled = false;
+}
+
+function loadPdfJs() {
+  return new Promise(function(resolve, reject) {
+    if (window.pdfjsLib) { resolve(window.pdfjsLib); return; }
+    var sc = document.createElement('script');
+    sc.src = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js';
+    sc.onload = function() {
+      try { window.pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js'; } catch (e) {}
+      resolve(window.pdfjsLib);
+    };
+    sc.onerror = function() { reject(new Error('Failed to load the PDF reader. Check your connection and try again.')); };
+    document.head.appendChild(sc);
+  });
+}
+
+function extractPdfText(file) {
+  return new Promise(function(resolve, reject) {
+    var reader = new FileReader();
+    reader.onload = function() {
+      try {
+        var typed = new Uint8Array(reader.result);
+        window.pdfjsLib.getDocument({ data: typed }).promise.then(function(pdf) {
+          var pages = [];
+          var seq = Promise.resolve();
+          for (var i = 1; i <= pdf.numPages; i++) {
+            (function(n) {
+              seq = seq.then(function() {
+                return pdf.getPage(n).then(function(page) {
+                  return page.getTextContent().then(function(tc) {
+                    pages.push(tc.items.map(function(it) { return it.str; }).join(' '));
+                  });
+                });
+              });
+            })(i);
+          }
+          seq.then(function() { resolve(pages.join('\n\n')); }).catch(reject);
+        }).catch(function() { reject(new Error('Could not read this PDF file.')); });
+      } catch (e) { reject(new Error('Could not read this PDF file.')); }
+    };
+    reader.onerror = function() { reject(new Error('Could not read the file.')); };
+    reader.readAsArrayBuffer(file);
+  });
+}
+
+async function toggleSOP(id, active) {
+  try { await api('PUT', '/sops/' + id, { active: active }); loadSOPList(); }
+  catch (e) { var m = document.getElementById('sop-msg'); if (m) m.innerHTML = '<div class="alert alert-error">' + escHtml(e.message) + '</div>'; }
+}
+
+async function deleteSOP(id) {
+  if (!confirm('Delete this SOP? Nova AI will no longer reference it.')) return;
+  try { await api('DELETE', '/sops/' + id); loadSOPList(); }
+  catch (e) { var m = document.getElementById('sop-msg'); if (m) m.innerHTML = '<div class="alert alert-error">' + escHtml(e.message) + '</div>'; }
+}
+
 async function renderAIAssistant(el) {
   if (_aiSessionUserId !== state.user.id) {
     _aiMessages = [];
