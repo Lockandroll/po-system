@@ -1693,10 +1693,10 @@ async function renderNotifications(el) {
         '</div>' +
         '<div style="font-size:12px;font-weight:600;color:var(--text-muted-color);text-transform:uppercase;letter-spacing:0.04em;margin-bottom:4px">Recipients</div>' +
         (userRows || '<div style="color:var(--text-muted-color);font-size:13px">No active users.</div>') +
-      '</div>' +
-      '<div style="margin-top:12px">' +
-        '<div style="font-size:12px;font-weight:600;color:var(--text-muted-color);text-transform:uppercase;letter-spacing:0.04em;margin-bottom:4px">Also email (non-users / distribution list)</div>' +
-        '<textarea id="nb-extra-' + ev.key + '" rows="2" placeholder="ops@company.com, dispatch@company.com" style="width:100%;resize:vertical">' + escHtml(extraText) + '</textarea>' +
+        '<div style="margin-top:12px">' +
+          '<div style="font-size:12px;font-weight:600;color:var(--text-muted-color);text-transform:uppercase;letter-spacing:0.04em;margin-bottom:4px">Also email (non-users / distribution list)</div>' +
+          '<textarea id="nb-extra-' + ev.key + '" rows="2" placeholder="ops@company.com, dispatch@company.com" style="width:100%;resize:vertical">' + escHtml(extraText) + '</textarea>' +
+        '</div>' +
       '</div>' +
     '</div>';
   }).join('');
@@ -1753,24 +1753,18 @@ async function saveNotifications() {
   }
   var rules = {};
   broadcast.forEach(function(key) {
-    var rule = {};
-    var hasRule = false;
     var custom = document.getElementById('nb-custom-' + key);
-    if (custom && custom.checked) {
-      var nodes = document.querySelectorAll('.nb-user-' + key);
-      var users = [];
-      for (var i = 0; i < nodes.length; i++) { if (nodes[i].checked) users.push(parseInt(nodes[i].value, 10)); }
-      var emailEl = document.getElementById('nb-email-' + key);
-      var smsEl = document.getElementById('nb-sms-' + key);
-      rule.users = users;
-      rule.email = emailEl ? emailEl.checked : true;
-      rule.sms = (smsCapable[key] && smsEl) ? smsEl.checked : false;
-      hasRule = true;
-    }
+    if (!custom || !custom.checked) return;
+    var nodes = document.querySelectorAll('.nb-user-' + key);
+    var users = [];
+    for (var i = 0; i < nodes.length; i++) { if (nodes[i].checked) users.push(parseInt(nodes[i].value, 10)); }
+    var emailEl = document.getElementById('nb-email-' + key);
+    var smsEl = document.getElementById('nb-sms-' + key);
+    var rule = { users: users, email: emailEl ? emailEl.checked : true, sms: (smsCapable[key] && smsEl) ? smsEl.checked : false };
     var extraEl = document.getElementById('nb-extra-' + key);
     var extras = parseEmails(extraEl ? extraEl.value : '');
-    if (extras.length) { rule.extra_emails = extras; hasRule = true; }
-    if (hasRule) rules[key] = rule;
+    if (extras.length) rule.extra_emails = extras;
+    rules[key] = rule;
   });
   requester.forEach(function(key) {
     var emailEl = document.getElementById('nr-email-' + key);
