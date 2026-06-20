@@ -5128,7 +5128,7 @@ async function renderCompleteSignoff(el, id) {
       '<div style="border:1px solid var(--border);border-radius:8px;background:#ffffff;display:inline-block;max-width:100%">' +
         '<canvas id="so-sigpad" width="600" height="200" style="display:block;width:100%;max-width:600px;height:200px;border-radius:8px;cursor:crosshair;touch-action:none"></canvas>' +
       '</div>' +
-      '<div style="margin-top:8px"><button class="btn btn-secondary btn-sm" type="button" onclick="clearSignoffSignature()">Clear Signature</button></div>' +
+      '<div style="margin-top:8px;display:flex;gap:8px;flex-wrap:wrap"><button class="btn btn-primary btn-sm" type="button" onclick="openSignoffFullscreen()">&#9999;&#65039; Sign Full Screen</button><button class="btn btn-secondary btn-sm" type="button" onclick="clearSignoffSignature()">Clear Signature</button></div>' +
     '</div></div>' +
     '<div class="flex-gap"><button class="btn btn-primary" id="btn-complete-signoff" onclick="submitSignoffCompletion(' + form.id + ')">&#10003; Submit &amp; Email Admins</button></div>';
   setupSignaturePad();
@@ -5158,11 +5158,86 @@ function setupSignaturePad() {
   _signoffSigPad = {
     canvas: canvas,
     hasInk: function() { return hasInk; },
+    setInk: function(v) { hasInk = v; },
     clear: function() { ctx.clearRect(0, 0, canvas.width, canvas.height); hasInk = false; }
   };
 }
 
 function clearSignoffSignature() { if (_signoffSigPad) _signoffSigPad.clear(); }
+
+// Full-screen landscape signing — lets the tech turn the phone sideways for a big signing area.
+function openSignoffFullscreen() {
+  if (!_signoffSigPad) return;
+  var portrait = window.innerHeight > window.innerWidth;
+  var ov = document.createElement('div');
+  ov.id = 'so-sig-fs';
+  ov.style.cssText = 'position:fixed;inset:0;z-index:99999;background:#ffffff;display:flex;flex-direction:column';
+  var bar = document.createElement('div');
+  bar.style.cssText = 'flex:0 0 auto;display:flex;justify-content:space-between;align-items:center;padding:10px 14px;background:#0f0f0f;color:#fff;gap:10px';
+  bar.innerHTML = '<span style="font-size:14px;font-weight:600">Manager Signature</span>' +
+    '<span style="display:flex;gap:8px">' +
+      '<button type="button" id="so-fs-clear" style="background:#333;color:#fff;border:none;border-radius:6px;padding:9px 14px;font-size:14px">Clear</button>' +
+      '<button type="button" id="so-fs-cancel" style="background:#333;color:#fff;border:none;border-radius:6px;padding:9px 14px;font-size:14px">Cancel</button>' +
+      '<button type="button" id="so-fs-done" style="background:#f97316;color:#fff;border:none;border-radius:6px;padding:9px 18px;font-size:14px;font-weight:600">Done</button>' +
+    '</span>';
+  var wrap = document.createElement('div');
+  wrap.style.cssText = 'flex:1 1 auto;position:relative';
+  var c = document.createElement('canvas');
+  c.width = 1600; c.height = 700;
+  c.style.cssText = 'position:absolute;inset:0;width:100%;height:100%;touch-action:none;background:#ffffff';
+  wrap.appendChild(c);
+  var hint = document.createElement('div');
+  hint.style.cssText = 'position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);color:#bbb;font-size:16px;text-align:center;pointer-events:none;padding:0 20px';
+  hint.textContent = portrait ? 'Turn your phone sideways, then sign here' : 'Sign here';
+  wrap.appendChild(hint);
+  ov.appendChild(bar); ov.appendChild(wrap);
+  document.body.appendChild(ov);
+  // Best effort: go fullscreen and lock landscape (Android Chrome honors this; iOS Safari ignores it).
+  try {
+    if (ov.requestFullscreen) {
+      ov.requestFullscreen().then(function() {
+        try { if (screen.orientation && screen.orientation.lock) screen.orientation.lock('landscape'); } catch(e) {}
+      }).catch(function() {});
+    }
+  } catch(e) {}
+  var ctx = c.getContext('2d');
+  ctx.lineWidth = 4; ctx.lineCap = 'round'; ctx.lineJoin = 'round'; ctx.strokeStyle = '#111111';
+  var drawing = false, last = null, hasInk = false;
+  function pos(e) {
+    var r = c.getBoundingClientRect();
+    var t = (e.touches && e.touches[0]) ? e.touches[0] : e;
+    return { x: (t.clientX - r.left) * (c.width / r.width), y: (t.clientY - r.top) * (c.height / r.height) };
+  }
+  function start(e) { e.preventDefault(); drawing = true; last = pos(e); hint.style.display = 'none'; }
+  function move(e) { if (!drawing) return; e.preventDefault(); var p = pos(e); ctx.beginPath(); ctx.moveTo(last.x, last.y); ctx.lineTo(p.x, p.y); ctx.stroke(); last = p; hasInk = true; }
+  function end() { drawing = false; }
+  c.addEventListener('mousedown', start);
+  c.addEventListener('mousemove', move);
+  window.addEventListener('mouseup', end);
+  c.addEventListener('touchstart', start, { passive: false });
+  c.addEventListener('touchmove', move, { passive: false });
+  c.addEventListener('touchend', end);
+  function cleanup() {
+    try { if (screen.orientation && screen.orientation.unlock) screen.orientation.unlock(); } catch(e) {}
+    try { if (document.fullscreenElement) document.exitFullscreen(); } catch(e) {}
+    window.removeEventListener('mouseup', end);
+    if (ov.parentNode) ov.parentNode.removeChild(ov);
+  }
+  document.getElementById('so-fs-clear').onclick = function() { ctx.clearRect(0, 0, c.width, c.height); hasInk = false; hint.style.display = ''; };
+  document.getElementById('so-fs-cancel').onclick = function() { cleanup(); };
+  document.getElementById('so-fs-done').onclick = function() {
+    if (hasInk) {
+      var pad = _signoffSigPad.canvas;
+      var pctx = pad.getContext('2d');
+      pctx.clearRect(0, 0, pad.width, pad.height);
+      var scale = Math.min(pad.width / c.width, pad.height / c.height);
+      var dw = c.width * scale, dh = c.height * scale;
+      pctx.drawImage(c, (pad.width - dw) / 2, (pad.height - dh) / 2, dw, dh);
+      _signoffSigPad.setInk(true);
+    }
+    cleanup();
+  };
+}
 
 function handleSignoffPhotos(input) {
   const files = Array.prototype.slice.call(input.files || []);
