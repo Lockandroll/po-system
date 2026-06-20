@@ -1,4 +1,5 @@
 const express = require('express');
+const https = require('https');
 const { pool } = require('../db');
 const { requireAuth } = require('../middleware/auth');
 const { logAudit } = require('../utils/audit');
@@ -20,6 +21,67 @@ async function generateDepositNumber() {
   const seq = String((rows[0].maxseq || 0) + 1).padStart(4, '0');
   return 'DEP-' + year + '-' + seq;
 }
+
+// POST /ai-extract — read a deposit receipt photo and return amount + date.
+// The tech reviews/edits the prefilled values before submitting.
+router.post('/ai-extract', requireAuth, async function(req, res) {
+  if (!process.env.ANTHROPIC_API_KEY) return res.status(503).json({ error: 'AI not configured' });
+  const { imageData, mediaType } = req.body;
+  if (!imageData) return res.status(400).json({ error: 'No image data provided' });
+
+  const prompt = 'You are reading a bank cash deposit receipt or deposit slip. ' +
+    'Extract ONLY the following fields and return ONLY valid JSON (no explanation, no markdown):\n' +
+    '{\n' +
+    '  "amount": 0.00,\n' +
+    '  "deposit_date": "YYYY-MM-DD"\n' +
+    '}\n' +
+    'amount is the total cash/deposit amount as a number with no currency symbol or commas. ' +
+    'deposit_date is the date printed on the receipt in YYYY-MM-DD format. ' +
+    'If a field is not found, use null.';
+
+  const isPdf = (mediaType || '').toLowerCase() === 'application/pdf';
+  const contentBlock = isPdf
+    ? { type: 'document', source: { type: 'base64', media_type: 'application/pdf', data: imageData } }
+    : { type: 'image', source: { type: 'base64', media_type: mediaType || 'image/jpeg', data: imageData } };
+
+  const body = JSON.stringify({
+    model: 'claude-opus-4-8',
+    max_tokens: 512,
+    messages: [{ role: 'user', content: [ contentBlock, { type: 'text', text: prompt } ] }]
+  });
+
+  try {
+    const result = await new Promise(function(resolve, reject) {
+      var headers = {
+        'Content-Type': 'application/json',
+        'x-api-key': process.env.ANTHROPIC_API_KEY,
+        'anthropic-version': '2023-06-01',
+        'Content-Length': Buffer.byteLength(body)
+      };
+      if (isPdf) headers['anthropic-beta'] = 'pdfs-2024-09-25';
+      const options = { hostname: 'api.anthropic.com', path: '/v1/messages', method: 'POST', headers: headers };
+      const request = https.request(options, function(r) {
+        var data = '';
+        r.on('data', function(chunk) { data += chunk; });
+        r.on('end', function() { try { resolve(JSON.parse(data)); } catch(e) { reject(e); } });
+      });
+      request.on('error', reject);
+      request.write(body);
+      request.end();
+    });
+    if (result.error) return res.status(500).json({ error: result.error.message });
+    const text = (result.content[0].text || '').trim();
+    // Extract the JSON object without relying on markdown fences (keeps this file backtick-free)
+    const start = text.indexOf('{');
+    const end = text.lastIndexOf('}');
+    const jsonStr = (start !== -1 && end !== -1) ? text.slice(start, end + 1) : text;
+    const extracted = JSON.parse(jsonStr);
+    res.json(extracted);
+  } catch (err) {
+    console.error('Deposit AI extract error:', err);
+    res.status(500).json({ error: 'Failed to extract data from image' });
+  }
+});
 
 // POST / — submit a deposit (any authenticated user, for themselves)
 router.post('/', requireAuth, async function(req, res) {

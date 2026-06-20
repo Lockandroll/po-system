@@ -4479,11 +4479,38 @@ function previewDepositReceipt(input) {
       canvas.getContext('2d').drawImage(img, 0, 0, w, h);
       depositReceiptData = canvas.toDataURL('image/jpeg', 0.85);
       var area = document.getElementById('dep-receipt-preview');
-      if (area) area.innerHTML = '<img src="' + depositReceiptData + '" style="max-width:240px;max-height:240px;border-radius:8px;border:1px solid var(--border-color)" />';
+      if (area) area.innerHTML = '<img src="' + depositReceiptData + '" style="max-width:240px;max-height:240px;border-radius:8px;border:1px solid var(--border-color)" /><div id="dep-extract-status" style="margin-top:8px;font-size:13px;color:var(--text-muted-color)"></div>';
+      runDepositExtract();
     };
     img.src = e.target.result;
   };
   reader.readAsDataURL(file);
+}
+
+async function runDepositExtract() {
+  if (!depositReceiptData) return;
+  var status = document.getElementById('dep-extract-status');
+  if (status) status.textContent = 'Reading receipt with AI…';
+  try {
+    var base64 = depositReceiptData.split(',')[1];
+    var data = await api('POST', '/deposits/ai-extract', { imageData: base64, mediaType: 'image/jpeg' });
+    var filled = [];
+    if (data && data.amount != null && !isNaN(parseFloat(data.amount))) {
+      var amtEl = document.getElementById('dep-amount');
+      if (amtEl) { amtEl.value = parseFloat(data.amount).toFixed(2); filled.push('amount'); }
+    }
+    if (data && data.deposit_date && /^\d{4}-\d{2}-\d{2}$/.test(data.deposit_date)) {
+      var dateEl = document.getElementById('dep-date');
+      if (dateEl) { dateEl.value = data.deposit_date; filled.push('date'); }
+    }
+    if (status) {
+      status.textContent = filled.length
+        ? '✓ AI filled ' + filled.join(' & ') + ' — please double-check before submitting.'
+        : 'Could not read the receipt automatically — please enter the details manually.';
+    }
+  } catch(e) {
+    if (status) status.textContent = 'Could not read the receipt automatically — please enter the details manually.';
+  }
 }
 
 async function submitDeposit() {
