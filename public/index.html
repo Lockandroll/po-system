@@ -1876,9 +1876,10 @@ async function renderRoles(el) {
   try { rules = JSON.parse(settings.role_permissions || '{}') || {}; } catch(e) { rules = {}; }
 
   var groups = [
-    { group:'Module Access (visibility)', perms:[ {k:'view_pos',l:'View Purchase Orders'}, {k:'view_quotes',l:'View Quotes'}, {k:'view_vr',l:'View Vehicle Repairs'}, {k:'view_deposits',l:'View Cash Deposits'} ] },
-    { group:'Purchase Orders', perms:[ {k:'approve_po',l:'Approve / reject POs'}, {k:'cancel_po',l:'Cancel POs'} ] },
-    { group:'Vehicle Repairs', perms:[ {k:'approve_vr',l:'Approve / reject vehicle repairs'} ] },
+    { group:'Purchase Orders', perms:[ {k:'view_pos',l:'View / access module'}, {k:'approve_po',l:'Approve / reject POs'}, {k:'cancel_po',l:'Cancel POs'} ] },
+    { group:'Quotes', perms:[ {k:'view_quotes',l:'View / access module'} ] },
+    { group:'Vehicle Repairs', perms:[ {k:'view_vr',l:'View / access module'}, {k:'approve_vr',l:'Approve / reject vehicle repairs'} ] },
+    { group:'Cash Deposits', perms:[ {k:'view_deposits',l:'View / access module'} ] },
     { group:'Fleet &amp; Vehicles', perms:[ {k:'manage_vehicles',l:'Manage fleet registry'} ] },
     { group:'Vendors / Accounts', perms:[ {k:'manage_vendors',l:'Manage vendors and accounts'} ] },
     { group:'Shipping Addresses', perms:[ {k:'manage_addresses',l:'Manage shipping addresses'} ] },
