@@ -2519,7 +2519,7 @@ async function renderViewQuote(el, id) {
           '<button class="btn btn-secondary" id="ai-review-btn" onclick="reviewQuoteWithAI()" style="color:var(--primary);border-color:var(--primary);">&#10024; AI Review</button>' +
           '<button class="btn btn-primary" onclick="pushQuoteToPO(' + q.id + ')" style="white-space:nowrap">&#10142; Push to PO</button>' +
           (canEdit ? '<button class="btn btn-secondary" onclick="navigate(\'edit-quote\',' + q.id + ')">' + icons.edit + ' Edit</button>' : '') +
-          (canDelete ? '<button class="btn btn-danger" title="Delete quote" onclick="deleteQuote(' + q.id + ')">' + icons.trash + '</button>' : '') +
+          (canDelete ? '<button class="btn btn-danger" title="Delete quote" onclick="deleteQuote(' + q.id + ')"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14H6L5 6"/><path d="M10 11v6"/><path d="M14 11v6"/><path d="M9 6V4h6v2"/></svg></button>' : '') +
         '</div>' +
       '</div>' +
       '<div id="view-quote-error"></div>' +
