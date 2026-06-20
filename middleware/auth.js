@@ -1,4 +1,5 @@
 const jwt = require('jsonwebtoken');
+const permissions = require('../utils/permissions');
 
 function requireAuth(req, res, next) {
   const header = req.headers.authorization;
@@ -28,4 +29,18 @@ function requireRole(...roles) {
   };
 }
 
-module.exports = { requireAuth, requireRole };
+function requirePermission(perm) {
+  return async (req, res, next) => {
+    try {
+      if (!req.user) return res.status(401).json({ error: 'Unauthorized' });
+      const ok = await permissions.hasPermission(req.user.role, perm);
+      if (!ok) return res.status(403).json({ error: 'Forbidden' });
+      return next();
+    } catch (e) {
+      try { if (req.user && permissions.defaultHas(req.user.role, perm)) return next(); } catch (_) {}
+      return res.status(403).json({ error: 'Forbidden' });
+    }
+  };
+}
+
+module.exports = { requireAuth, requireRole, requirePermission };

@@ -1,10 +1,10 @@
 const express = require('express');
 const router = express.Router();
 const { pool } = require('../db');
-const { requireAuth, requireRole } = require('../middleware/auth');
+const { requireAuth, requireRole, requirePermission } = require('../middleware/auth');
 const { runWeeklyReport, ingestRange } = require('../jobs/geicoIngest');
 
-const adminMgr = [requireAuth, requireRole('admin', 'manager')];
+const adminMgr = [requireAuth, requirePermission('manage_geico')];
 
 // Shared-secret guard for the action endpoints (so they can be curl-tested
 // without a logged-in session). Header: x-report-key: <REPORT_API_KEY>

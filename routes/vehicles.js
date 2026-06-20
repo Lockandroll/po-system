@@ -1,6 +1,6 @@
 const express = require('express');
 const { pool } = require('../db');
-const { requireAuth, requireRole } = require('../middleware/auth');
+const { requireAuth, requireRole, requirePermission } = require('../middleware/auth');
 
 const router = express.Router();
 
@@ -24,7 +24,7 @@ router.get('/', requireAuth, async function(req, res) {
 });
 
 // GET all vehicles including inactive — admin/manager only
-router.get('/all', requireAuth, requireRole('admin', 'manager'), async function(req, res) {
+router.get('/all', requireAuth, requirePermission('manage_vehicles'), async function(req, res) {
   try {
     const { rows } = await pool.query(
       'SELECT v.*, u.name as driver_name FROM vehicles v LEFT JOIN users u ON v.assigned_user_id = u.id ORDER BY v.active DESC, v.year DESC, v.make_model ASC'
@@ -52,7 +52,7 @@ router.get('/:id', requireAuth, async function(req, res) {
 });
 
 // POST create vehicle — admin/manager only
-router.post('/', requireAuth, requireRole('admin', 'manager'), async function(req, res) {
+router.post('/', requireAuth, requirePermission('manage_vehicles'), async function(req, res) {
   const { year, make_model, vin, key_codes, assigned_user_id, city_code, date_of_assignment, license_plate, mileage, notes } = req.body;
   if (!year || !make_model) return res.status(400).json({ error: 'Year and Make/Model are required' });
   try {
@@ -68,7 +68,7 @@ router.post('/', requireAuth, requireRole('admin', 'manager'), async function(re
 });
 
 // PUT update vehicle — admin/manager only
-router.put('/:id', requireAuth, requireRole('admin', 'manager'), async function(req, res) {
+router.put('/:id', requireAuth, requirePermission('manage_vehicles'), async function(req, res) {
   const { year, make_model, vin, key_codes, assigned_user_id, city_code, date_of_assignment, license_plate, mileage, notes } = req.body;
   if (!year || !make_model) return res.status(400).json({ error: 'Year and Make/Model are required' });
   try {
@@ -85,7 +85,7 @@ router.put('/:id', requireAuth, requireRole('admin', 'manager'), async function(
 });
 
 // POST deactivate vehicle — admin/manager only
-router.post('/:id/deactivate', requireAuth, requireRole('admin', 'manager'), async function(req, res) {
+router.post('/:id/deactivate', requireAuth, requirePermission('manage_vehicles'), async function(req, res) {
   try {
     const { rows } = await pool.query('UPDATE vehicles SET active=false, updated_at=NOW() WHERE id=$1 RETURNING id', [req.params.id]);
     if (!rows.length) return res.status(404).json({ error: 'Vehicle not found' });
@@ -96,7 +96,7 @@ router.post('/:id/deactivate', requireAuth, requireRole('admin', 'manager'), asy
 });
 
 // POST reactivate vehicle — admin/manager only
-router.post('/:id/reactivate', requireAuth, requireRole('admin', 'manager'), async function(req, res) {
+router.post('/:id/reactivate', requireAuth, requirePermission('manage_vehicles'), async function(req, res) {
   try {
     const { rows } = await pool.query('UPDATE vehicles SET active=true, updated_at=NOW() WHERE id=$1 RETURNING id', [req.params.id]);
     if (!rows.length) return res.status(404).json({ error: 'Vehicle not found' });
@@ -107,7 +107,7 @@ router.post('/:id/reactivate', requireAuth, requireRole('admin', 'manager'), asy
 });
 
 // POST sell vehicle — admin/manager only
-router.post('/:id/sell', requireAuth, requireRole('admin', 'manager'), async function(req, res) {
+router.post('/:id/sell', requireAuth, requirePermission('manage_vehicles'), async function(req, res) {
   const { sold_to, sold_for, sold_date } = req.body;
   if (!sold_to || !sold_date) return res.status(400).json({ error: 'Buyer name and sale date are required' });
   try {

@@ -1,7 +1,7 @@
 const express = require('express');
 const https = require('https');
 const { pool } = require('../db');
-const { requireAuth, requireRole } = require('../middleware/auth');
+const { requireAuth, requireRole, requirePermission } = require('../middleware/auth');
 
 const router = express.Router();
 
@@ -110,7 +110,7 @@ router.get('/usage', requireAuth, async function(req, res) {
 });
 
 // GET /api/ai/conversations — admin only: full conversation log
-router.get('/conversations', requireAuth, requireRole('admin'), async function(req, res) {
+router.get('/conversations', requireAuth, requirePermission('view_ai_admin'), async function(req, res) {
   try {
     const { search, user_id, limit } = req.query;
     let query = 'SELECT * FROM ai_conversations';
@@ -129,7 +129,7 @@ router.get('/conversations', requireAuth, requireRole('admin'), async function(r
 });
 
 // GET /api/ai/admin-usage — admin only: per-user breakdown with optional date range
-router.get('/admin-usage', requireAuth, requireRole('admin'), async function(req, res) {
+router.get('/admin-usage', requireAuth, requirePermission('view_ai_admin'), async function(req, res) {
   try {
     var now = new Date();
     var defaultFrom = new Date(now.getFullYear(), now.getMonth(), 1).toISOString().split('T')[0];

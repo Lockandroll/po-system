@@ -1,6 +1,6 @@
 const express = require('express');
 const { pool } = require('../db');
-const { requireAuth, requireRole } = require('../middleware/auth');
+const { requireAuth, requireRole, requirePermission } = require('../middleware/auth');
 const { logAudit } = require('../utils/audit');
 const { sendEmail, emailTemplate } = require('../utils/email');
 const { sendSms } = require('../utils/sms');
@@ -257,7 +257,7 @@ router.post('/:id/submit', requireAuth, async (req, res) => {
 });
 
 // Approve PO
-router.post('/:id/approve', requireAuth, requireRole('approver', 'admin'), async (req, res) => {
+router.post('/:id/approve', requireAuth, requirePermission('approve_po'), async (req, res) => {
   const orderer_id = req.body.orderer_id;
   if (!orderer_id) return res.status(400).json({ error: 'Please select the person responsible for ordering' });
 
@@ -314,7 +314,7 @@ router.post('/:id/approve', requireAuth, requireRole('approver', 'admin'), async
 });
 
 // Reject PO
-router.post('/:id/reject', requireAuth, requireRole('approver', 'admin'), async (req, res) => {
+router.post('/:id/reject', requireAuth, requirePermission('approve_po'), async (req, res) => {
   const reason = req.body.reason;
   const { rows } = await pool.query(
     'SELECT po.*, u.email AS requester_email, u.name AS requester_name, u.phone AS requester_phone, u.receive_emails AS requester_receive_emails, u.receive_sms AS requester_receive_sms FROM purchase_orders po JOIN users u ON po.requester_id = u.id WHERE po.id = $1',
@@ -358,7 +358,7 @@ router.post('/:id/reject', requireAuth, requireRole('approver', 'admin'), async 
 });
 
 // Cancel PO (admin only)
-router.post('/:id/cancel', requireAuth, requireRole('admin'), async (req, res) => {
+router.post('/:id/cancel', requireAuth, requirePermission('cancel_po'), async (req, res) => {
   const { rows } = await pool.query(
     'SELECT po.*, u.email AS requester_email, u.name AS requester_name, u.phone AS requester_phone, u.receive_emails AS requester_receive_emails, u.receive_sms AS requester_receive_sms FROM purchase_orders po JOIN users u ON po.requester_id = u.id WHERE po.id = $1',
     [req.params.id]

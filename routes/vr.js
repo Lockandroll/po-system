@@ -1,7 +1,7 @@
 const express = require('express');
 const https = require('https');
 const { pool } = require('../db');
-const { requireAuth, requireRole } = require('../middleware/auth');
+const { requireAuth, requireRole, requirePermission } = require('../middleware/auth');
 const { logAudit } = require('../utils/audit');
 const { sendEmail, emailTemplate } = require('../utils/email');
 const { sendSms } = require('../utils/sms');
@@ -195,7 +195,7 @@ router.post('/:id/submit', requireAuth, async function(req, res) {
 });
 
 // POST approve VR
-router.post('/:id/approve', requireAuth, requireRole('admin', 'approver', 'manager'), async function(req, res) {
+router.post('/:id/approve', requireAuth, requirePermission('approve_vr'), async function(req, res) {
   try {
     const { rows } = await pool.query('SELECT vr.*, u.email as requester_email, u.name as requester_name, u.phone as requester_phone, u.receive_emails as requester_receive_emails, u.receive_sms as requester_receive_sms FROM vehicle_repairs vr JOIN users u ON vr.requester_id = u.id WHERE vr.id = $1', [req.params.id]);
     if (!rows.length) return res.status(404).json({ error: 'Not found' });
@@ -233,7 +233,7 @@ router.post('/:id/approve', requireAuth, requireRole('admin', 'approver', 'manag
 });
 
 // POST reject VR
-router.post('/:id/reject', requireAuth, requireRole('admin', 'approver', 'manager'), async function(req, res) {
+router.post('/:id/reject', requireAuth, requirePermission('approve_vr'), async function(req, res) {
   try {
     const { reason } = req.body;
     const { rows } = await pool.query('SELECT vr.*, u.email as requester_email, u.name as requester_name, u.phone as requester_phone, u.receive_emails as requester_receive_emails, u.receive_sms as requester_receive_sms FROM vehicle_repairs vr JOIN users u ON vr.requester_id = u.id WHERE vr.id = $1', [req.params.id]);

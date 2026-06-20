@@ -1,6 +1,6 @@
 const express = require('express');
 const { pool } = require('../db');
-const { requireAuth, requireRole } = require('../middleware/auth');
+const { requireAuth, requireRole, requirePermission } = require('../middleware/auth');
 
 const router = express.Router();
 
@@ -13,7 +13,7 @@ router.get('/', requireAuth, async (req, res) => {
 });
 
 // Upsert a setting (admin only)
-router.put('/:key', requireAuth, requireRole('admin'), async (req, res) => {
+router.put('/:key', requireAuth, requirePermission('manage_settings'), async (req, res) => {
   const { value } = req.body;
   if (value === undefined || value === null) {
     return res.status(400).json({ error: 'Value is required' });
@@ -26,7 +26,7 @@ router.put('/:key', requireAuth, requireRole('admin'), async (req, res) => {
 });
 
 // Delete a setting (admin only)
-router.delete('/:key', requireAuth, requireRole('admin'), async (req, res) => {
+router.delete('/:key', requireAuth, requirePermission('manage_settings'), async (req, res) => {
   await pool.query('DELETE FROM settings WHERE key=$1', [req.params.key]);
   res.json({ success: true });
 });

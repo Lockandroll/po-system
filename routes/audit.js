@@ -1,11 +1,11 @@
 const express = require('express');
 const { pool } = require('../db');
-const { requireAuth, requireRole } = require('../middleware/auth');
+const { requireAuth, requireRole, requirePermission } = require('../middleware/auth');
 
 const router = express.Router();
 
 // GET audit logs (admin only)
-router.get('/', requireAuth, requireRole('admin'), async (req, res) => {
+router.get('/', requireAuth, requirePermission('view_audit'), async (req, res) => {
   try {
     const { entity_type, limit } = req.query;
     let query = 'SELECT * FROM audit_logs';

@@ -1,11 +1,11 @@
 const express = require('express');
 const { pool } = require('../db');
-const { requireAuth, requireRole } = require('../middleware/auth');
+const { requireAuth, requireRole, requirePermission } = require('../middleware/auth');
 
 const router = express.Router();
 
 // All vendor routes are admin/manager only
-router.use(requireAuth, requireRole('admin', 'manager'));
+router.use(requireAuth, requirePermission('manage_vendors'));
 
 // GET all vendors
 router.get('/', async (req, res) => {

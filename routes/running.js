@@ -1,6 +1,6 @@
 const express = require('express');
 const { pool } = require('../db');
-const { requireAuth, requireRole } = require('../middleware/auth');
+const { requireAuth, requireRole, requirePermission } = require('../middleware/auth');
 const { logAudit } = require('../utils/audit');
 
 const router = express.Router();
@@ -36,7 +36,7 @@ router.get('/', requireAuth, async (req, res) => {
 });
 
 // GET every active item across all requesters, with requester name (admin/manager)
-router.get('/admin', requireAuth, requireRole('admin', 'manager'), async (req, res) => {
+router.get('/admin', requireAuth, requirePermission('manage_running'), async (req, res) => {
   const { rows } = await pool.query(
     "SELECT r.*, u.name AS requester_name FROM running_list_items r " +
     "LEFT JOIN users u ON r.requester_id = u.id " +
@@ -99,7 +99,7 @@ router.delete('/:id', requireAuth, async (req, res) => {
 
 // POST roll a city's running list into a single draft PO (admin/manager)
 // Body: { city_code, vendor_name, item_ids? } — if item_ids omitted, pushes all active items for the city
-router.post('/create-po', requireAuth, requireRole('admin', 'manager'), async (req, res) => {
+router.post('/create-po', requireAuth, requirePermission('manage_running'), async (req, res) => {
   const city_code = req.body.city_code ? req.body.city_code.toUpperCase() : null;
   const requested_vendor = (req.body.vendor_name || '').trim();
   const item_ids = Array.isArray(req.body.item_ids) ? req.body.item_ids : null;

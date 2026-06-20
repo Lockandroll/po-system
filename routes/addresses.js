@@ -1,6 +1,6 @@
 const express = require('express');
 const { pool } = require('../db');
-const { requireAuth, requireRole } = require('../middleware/auth');
+const { requireAuth, requireRole, requirePermission } = require('../middleware/auth');
 
 const router = express.Router();
 
@@ -16,7 +16,7 @@ router.get('/', requireAuth, async (req, res) => {
 });
 
 // GET all addresses (admin — for settings page)
-router.get('/all', requireAuth, requireRole('admin', 'manager'), async (req, res) => {
+router.get('/all', requireAuth, requirePermission('manage_addresses'), async (req, res) => {
   const { rows } = await pool.query(
     'SELECT * FROM shipping_addresses ORDER BY city_code, name ASC'
   );
@@ -24,7 +24,7 @@ router.get('/all', requireAuth, requireRole('admin', 'manager'), async (req, res
 });
 
 // POST create address
-router.post('/', requireAuth, requireRole('admin', 'manager'), async (req, res) => {
+router.post('/', requireAuth, requirePermission('manage_addresses'), async (req, res) => {
   const { city_code, name, address } = req.body;
   if (!city_code || !name || !address) {
     return res.status(400).json({ error: 'City code, name, and address are required' });
@@ -37,7 +37,7 @@ router.post('/', requireAuth, requireRole('admin', 'manager'), async (req, res) 
 });
 
 // PUT update address
-router.put('/:id', requireAuth, requireRole('admin', 'manager'), async (req, res) => {
+router.put('/:id', requireAuth, requirePermission('manage_addresses'), async (req, res) => {
   const { name, address } = req.body;
   if (!name || !address) {
     return res.status(400).json({ error: 'Name and address are required' });
@@ -51,7 +51,7 @@ router.put('/:id', requireAuth, requireRole('admin', 'manager'), async (req, res
 });
 
 // DELETE address
-router.delete('/:id', requireAuth, requireRole('admin', 'manager'), async (req, res) => {
+router.delete('/:id', requireAuth, requirePermission('manage_addresses'), async (req, res) => {
   await pool.query('DELETE FROM shipping_addresses WHERE id = $1', [req.params.id]);
   res.json({ success: true });
 });

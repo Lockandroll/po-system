@@ -180,6 +180,8 @@ const state = {
   sidebarOpen: false,
   pendingUserId: null,
   pendingVia: null,
+  permissions: null,
+  _permsLoaded: false,
 };
 
 async function api(method, path, body) {
@@ -229,7 +231,7 @@ function getSidebarSection(view) {
   if (['quotes','new-quote','edit-quote','view-quote'].indexOf(view) !== -1) return 'quotes';
   if (['vr-dashboard','new-vr','edit-vr','view-vr','fleet-registry','new-vehicle','edit-vehicle','vehicle-history'].indexOf(view) !== -1) return 'vr';
   if (['ai-assistant','ai-conversations','ai-usage'].indexOf(view) !== -1) return 'ai';
-  if (['company-info','ai-context','notifications','settings','users','cities','audit'].indexOf(view) !== -1) return 'settings';
+  if (['company-info','ai-context','notifications','roles','settings','users','cities','audit'].indexOf(view) !== -1) return 'settings';
   return null;
 }
 function toggleSection(section) {
@@ -284,6 +286,20 @@ function badgeHtml(status) {
   return '<span class="badge badge-' + escHtml(cls) + '">' + escHtml(status) + '</span>';
 }
 
+var PERM_DEFAULTS = {
+  manager: ['view_users','manage_cities','manage_geico','manage_running','manage_vehicles','manage_vendors','manage_addresses','approve_vr'],
+  approver: ['approve_po','approve_vr'],
+  requester: []
+};
+function can(perm) {
+  if (!state.user) return false;
+  if (state.user.role === 'admin') return true;
+  var cfg = state.permissions;
+  var role = state.user.role;
+  if (cfg && Object.prototype.toString.call(cfg[role]) === '[object Array]') return cfg[role].indexOf(perm) !== -1;
+  return (PERM_DEFAULTS[role] || []).indexOf(perm) !== -1;
+}
+
 async function render() {
   const app = document.getElementById('app');
   if (!state.token || !state.user) {
@@ -299,6 +315,10 @@ async function render() {
     return;
   }
   app.className = '';
+  if (!state._permsLoaded) {
+    try { var _ps = await api('GET', '/settings'); var _rp = null; try { _rp = JSON.parse(_ps.role_permissions || 'null'); } catch(e) {} state.permissions = _rp; } catch(e) {}
+    state._permsLoaded = true;
+  }
   const initials = state.user.name.split(' ').map(function(w){ return w[0]; }).join('').toUpperCase().slice(0,2);
   var cv = state.currentView;
   var ss = state.sidebarSection || getSidebarSection(cv);
@@ -318,14 +338,14 @@ async function render() {
   var quViews = ['quotes','new-quote','edit-quote','view-quote'];
   var vrViews = ['vr-dashboard','new-vr','edit-vr','view-vr','fleet-registry','new-vehicle','edit-vehicle','vehicle-history'];
   var aiViews = ['ai-assistant','ai-conversations','ai-usage'];
-  var stViews = ['company-info','ai-context','notifications','settings','users','cities','audit'];
+  var stViews = ['company-info','ai-context','notifications','roles','settings','users','cities','audit'];
   var navHtml =
     '<div class="nav-item' + (cv === 'home' ? ' active' : '') + '" onclick="navigate(\'home\')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 9l9-7 9 7v11a2 2 0 01-2 2H5a2 2 0 01-2-2z"/><polyline points="9 22 9 12 15 12 15 22"/></svg> Home</div>' +
     '<div class="nav-section-header' + (poViews.indexOf(cv) !== -1 ? ' section-active' : '') + (ss === 'po' ? ' open' : '') + '" onclick="toggleSection(\'po\',\'dashboard\')"><span class="s-label">' + icons.dashboard + ' Purchase Orders</span>' + chev + '</div>' +
     (ss === 'po' ?
       '<div class="nav-sub' + (cv === 'dashboard' ? ' active' : '') + '" onclick="navigate(\'dashboard\')">' + icons.dashboard + ' PO Dashboard</div>' +
       (state.user.role !== 'approver' ? '<div class="nav-sub' + (cv === 'new' ? ' active' : '') + '" onclick="navigate(\'new\')">' + icons.plus + ' New PO</div>' : '') +
-      (state.user.role !== 'approver' ? '<div class="nav-sub' + (cv === 'running' || cv === 'running-admin' ? ' active' : '') + '" onclick="navigate(\'' + (isAdminMgr ? 'running-admin' : 'running') + '\')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="8" y1="6" x2="21" y2="6"/><line x1="8" y1="12" x2="21" y2="12"/><line x1="8" y1="18" x2="21" y2="18"/><line x1="3" y1="6" x2="3.01" y2="6"/><line x1="3" y1="12" x2="3.01" y2="12"/><line x1="3" y1="18" x2="3.01" y2="18"/></svg> Monthly Req</div>' : '')
+      (state.user.role !== 'approver' ? '<div class="nav-sub' + (cv === 'running' || cv === 'running-admin' ? ' active' : '') + '" onclick="navigate(\'' + (can('manage_running') ? 'running-admin' : 'running') + '\')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="8" y1="6" x2="21" y2="6"/><line x1="8" y1="12" x2="21" y2="12"/><line x1="8" y1="18" x2="21" y2="18"/><line x1="3" y1="6" x2="3.01" y2="6"/><line x1="3" y1="12" x2="3.01" y2="12"/><line x1="3" y1="18" x2="3.01" y2="18"/></svg> Monthly Req</div>' : '')
     : '') +
     '<div class="nav-section-header' + (quViews.indexOf(cv) !== -1 ? ' section-active' : '') + (ss === 'quotes' ? ' open' : '') + '" onclick="toggleSection(\'quotes\',\'quotes\')"><span class="s-label">' + icons.quote + ' Quotes</span>' + chev + '</div>' +
     (ss === 'quotes' ?
@@ -336,13 +356,13 @@ async function render() {
     (ss === 'vr' ?
       '<div class="nav-sub' + (cv === 'vr-dashboard' ? ' active' : '') + '" onclick="navigate(\'vr-dashboard\')">' + icons.dashboard + ' VR Dashboard</div>' +
       (state.user.role !== 'approver' ? '<div class="nav-sub' + (cv === 'new-vr' ? ' active' : '') + '" onclick="navigate(\'new-vr\')">' + icons.plus + ' New VR</div>' : '') +
-      (isAdminMgr ? '<div class="nav-sub' + (['fleet-registry','new-vehicle','edit-vehicle','vehicle-history'].indexOf(cv) !== -1 ? ' active' : '') + '" onclick="navigate(\'fleet-registry\')">' + icoDB + ' Fleet Registry</div>' : '')
+      (can('manage_vehicles') ? '<div class="nav-sub' + (['fleet-registry','new-vehicle','edit-vehicle','vehicle-history'].indexOf(cv) !== -1 ? ' active' : '') + '" onclick="navigate(\'fleet-registry\')">' + icoDB + ' Fleet Registry</div>' : '')
     : '') +
-    (isAdminMgr ? '<div class="nav-item' + (cv === 'vendors' ? ' active' : '') + '" onclick="navigate(\'vendors\')">' + icoAccounts + ' Accounts</div>' : '') +
-    (isAdminMgr ? '<div class="nav-item' + (cv === 'geico' ? ' active' : '') + '" onclick="navigate(\'geico\')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 01-2 2H5a2 2 0 01-2-2V5a2 2 0 012-2h11"/></svg> Geico Surveys</div>' : '') +
+    (can('manage_vendors') ? '<div class="nav-item' + (cv === 'vendors' ? ' active' : '') + '" onclick="navigate(\'vendors\')">' + icoAccounts + ' Accounts</div>' : '') +
+    (can('manage_geico') ? '<div class="nav-item' + (cv === 'geico' ? ' active' : '') + '" onclick="navigate(\'geico\')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 01-2 2H5a2 2 0 01-2-2V5a2 2 0 012-2h11"/></svg> Geico Surveys</div>' : '') +
     '<div class="nav-item' + (cv === 'suggestions' ? ' active' : '') + '" onclick="navigate(\'suggestions\')">' + icoSuggestion + ' Suggestions</div>' +
     '<div class="nav-item' + (['signoffs','new-signoff','edit-signoff','view-signoff','complete-signoff'].indexOf(cv) !== -1 ? ' active' : '') + '" onclick="navigate(\'signoffs\')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><path d="M9 15l2 2 4-4"/></svg> Sign-Off Sheets</div>' +
-    (isAdmin ?
+    (can('view_ai_admin') ?
       '<div class="nav-section-header' + (aiViews.indexOf(cv) !== -1 ? ' section-active' : '') + (ss === 'ai' ? ' open' : '') + '" onclick="toggleSection(\'ai\',\'ai-assistant\')"><span class="s-label">' + icoAI + ' Locksmith AI Assistant</span>' + chev + '</div>' +
       (ss === 'ai' ?
         '<div class="nav-sub' + (cv === 'ai-assistant' ? ' active' : '') + '" onclick="navigate(\'ai-assistant\')">' + icoChat + ' Conversations</div>' +
@@ -352,15 +372,16 @@ async function render() {
     :
       '<div class="nav-item' + (cv === 'ai-assistant' ? ' active' : '') + '" onclick="navigate(\'ai-assistant\')">' + icoAI + ' Locksmith AI Assistant</div>'
     ) +
-    (isAdminMgr ?
+    ((can('view_users') || can('manage_cities') || can('view_audit') || can('manage_settings')) ?
       '<div class="nav-section-header' + (stViews.indexOf(cv) !== -1 ? ' section-active' : '') + (ss === 'settings' ? ' open' : '') + '" onclick="toggleSection(\'settings\',\'company-info\')"><span class="s-label">' + icons.settings + ' Settings</span>' + chev + '</div>' +
       (ss === 'settings' ?
-        '<div class="nav-sub' + (cv === 'company-info' || cv === 'settings' ? ' active' : '') + '" onclick="navigate(\'company-info\')">' + icoBuilding + ' Company Information</div>' +
-        (isAdmin ? '<div class="nav-sub' + (cv === 'ai-context' ? ' active' : '') + '" onclick="navigate(\'ai-context\')">' + icoAI + ' AI Context</div>' : '') +
-        (isAdmin ? '<div class="nav-sub' + (cv === 'notifications' ? ' active' : '') + '" onclick="navigate(\'notifications\')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 0 1-3.46 0"/></svg> Notifications</div>' : '') +
-        '<div class="nav-sub' + (cv === 'users' ? ' active' : '') + '" onclick="navigate(\'users\')">' + icons.users + ' Users</div>' +
-        '<div class="nav-sub' + (cv === 'cities' ? ' active' : '') + '" onclick="navigate(\'cities\')">' + icons.map + ' Cities</div>' +
-        (isAdmin ? '<div class="nav-sub' + (cv === 'audit' ? ' active' : '') + '" onclick="navigate(\'audit\')">' + icoAudit + ' Audit Log</div>' : '')
+        (['admin','manager'].includes(state.user.role) ? '<div class="nav-sub' + (cv === 'company-info' || cv === 'settings' ? ' active' : '') + '" onclick="navigate(\'company-info\')">' + icoBuilding + ' Company Information</div>' : '') +
+        (can('manage_settings') ? '<div class="nav-sub' + (cv === 'ai-context' ? ' active' : '') + '" onclick="navigate(\'ai-context\')">' + icoAI + ' AI Context</div>' : '') +
+        (can('manage_settings') ? '<div class="nav-sub' + (cv === 'notifications' ? ' active' : '') + '" onclick="navigate(\'notifications\')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 0 1-3.46 0"/></svg> Notifications</div>' : '') +
+        (can('view_users') ? '<div class="nav-sub' + (cv === 'users' ? ' active' : '') + '" onclick="navigate(\'users\')">' + icons.users + ' Users</div>' : '') +
+        (can('manage_cities') ? '<div class="nav-sub' + (cv === 'cities' ? ' active' : '') + '" onclick="navigate(\'cities\')">' + icons.map + ' Cities</div>' : '') +
+        (can('view_audit') ? '<div class="nav-sub' + (cv === 'audit' ? ' active' : '') + '" onclick="navigate(\'audit\')">' + icoAudit + ' Audit Log</div>' : '') +
+        (can('manage_settings') ? '<div class="nav-sub' + (cv === 'roles' ? ' active' : '') + '" onclick="navigate(\'roles\')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg> Roles &amp; Access</div>' : '')
       : '')
     : '');
   app.innerHTML =
@@ -419,6 +440,7 @@ async function render() {
   else if (state.currentView === 'company-info') await renderCompanyInfo(content);
   else if (state.currentView === 'ai-context') await renderAIContext(content);
   else if (state.currentView === 'notifications') await renderNotifications(content);
+  else if (state.currentView === 'roles') await renderRoles(content);
   else if (state.currentView === 'suggestions') await renderSuggestions(content);
   else if (state.currentView === 'running') await renderRunningList(content);
   else if (state.currentView === 'running-admin') await renderAdminRunningList(content);
@@ -610,7 +632,7 @@ async function renderDashboard(el) {
     const approved = allPOs.filter(function(p){ return p.status === 'approved'; }).length;
     const ordered = allPOs.filter(function(p){ return p.status === 'order placed'; }).length;
     const drafts = allPOs.filter(function(p){ return p.status === 'draft'; }).length;
-    const isApprover = ['approver','admin'].includes(state.user.role);
+    const isApprover = can('approve_po');
 
     const cities = [...new Set(allPOs.filter(function(p){ return p.city_code; }).map(function(p){ return p.city_code; }))].sort();
     const cityOptions = '<option value="">All Cities</option>' + cities.map(function(c){ return '<option value="' + escHtml(c) + '">' + escHtml(c) + '</option>'; }).join('');
@@ -677,7 +699,7 @@ function applyFilters(resetPage) {
   const text = (document.getElementById('filter-text') || {}).value || '';
   const status = (document.getElementById('filter-status') || {}).value || '';
   const city = (document.getElementById('filter-city') || {}).value || '';
-  const isApprover = ['approver','admin'].includes(state.user.role);
+  const isApprover = can('approve_po');
 
   const filtered = allPOs.filter(function(po) {
     if (status && po.status !== status) return false;
@@ -704,7 +726,7 @@ function applyFilters(resetPage) {
 
   tbody.innerHTML =
     '<div class="table-wrap"><table>' +
-    '<thead><tr><th>PO Number</th><th>City</th><th>Vendor</th><th>Customer/Employee</th>' + (isApprover ? '<th>Requested By</th>' : '') + '<th>Total</th><th>Status</th><th>Approved By</th><th>Orderer</th><th>Date</th>' + (state.user.role === 'admin' || state.user.role === 'approver' ? '<th></th>' : '') + '</tr></thead>' +
+    '<thead><tr><th>PO Number</th><th>City</th><th>Vendor</th><th>Customer/Employee</th>' + (isApprover ? '<th>Requested By</th>' : '') + '<th>Total</th><th>Status</th><th>Approved By</th><th>Orderer</th><th>Date</th>' + (can('approve_po') ? '<th></th>' : '') + '</tr></thead>' +
     '<tbody>' + page.map(function(po){
       return '<tr style="cursor:pointer" onclick="navigate(\'view\',' + po.id + ')">' +
         '<td style="white-space:nowrap"><strong>' + escHtml(po.po_number) + '</strong> <button class="btn btn-ghost btn-sm" title="Copy PO number" onclick="event.stopPropagation();copyToClipboard(\'' + escHtml(po.po_number) + '\',this)" style="padding:2px 7px;font-size:11px;opacity:0.6;vertical-align:middle;font-weight:500">Copy</button></td>' +
@@ -717,9 +739,9 @@ function applyFilters(resetPage) {
         '<td>' + escHtml(po.approver_name || '—') + '</td>' +
         '<td>' + escHtml(po.orderer_name || '—') + '</td>' +
         '<td>' + formatDate(po.created_at) + '</td>' +
-        ((state.user.role === 'admin' || state.user.role === 'approver') && po.status === 'approved' && (state.user.role === 'admin' || po.orderer_id === state.user.id)
+        ((can('approve_po')) && po.status === 'approved' && (state.user.role === 'admin' || po.orderer_id === state.user.id)
           ? '<td style="white-space:nowrap"><button class="btn btn-primary btn-sm" onclick="event.stopPropagation();markOrdered(' + po.id + ')" style="background:#7c3aed;border-color:#7c3aed">Mark Ordered</button></td>'
-          : (state.user.role === 'admin' || state.user.role === 'approver' ? '<td></td>' : '')) +
+          : (can('approve_po') ? '<td></td>' : '')) +
       '</tr>';
     }).join('') +
     '</tbody></table></div>' +
@@ -1042,6 +1064,7 @@ var adminRunVendors = [];
 var adminRunCity = '';
 
 async function renderAdminRunningList(el){
+  if (!can('manage_running')) { el.innerHTML = '<div class="alert alert-error">Access denied.</div>'; return; }
   el.innerHTML = '<div class="loading">Loading…</div>';
   try { adminRunItems = await api('GET','/running/admin'); } catch(e){ el.innerHTML = '<div class="alert alert-error">' + escHtml(e.message) + '</div>'; return; }
   try { adminRunVendors = await api('GET','/vendors'); } catch(e){ adminRunVendors = []; }
@@ -1179,9 +1202,9 @@ async function renderViewPO(el, id) {
     const canEdit = state.user.role === 'admin' || (state.user.role !== 'approver' && (po.status === 'draft' || po.status === 'rejected') && po.requester_id === state.user.id);
     const canSubmit = state.user.role !== 'approver' && (po.status === 'draft' || po.status === 'rejected') && po.requester_id === state.user.id;
     const canDelete = state.user.role === 'admin' || (state.user.role !== 'approver' && po.status === 'draft' && po.requester_id === state.user.id);
-    const canApprove = ['approver','admin'].includes(state.user.role) && po.status === 'submitted';
+    const canApprove = can('approve_po') && po.status === 'submitted';
     const canOrder = po.status === 'approved' && (state.user.role === 'admin' || po.orderer_id === state.user.id);
-    const canCancel = state.user.role === 'admin' && po.status !== 'draft' && po.status !== 'cancelled';
+    const canCancel = can('cancel_po') && po.status !== 'draft' && po.status !== 'cancelled';
     let usersForApproval = [];
     if (canApprove) { try { usersForApproval = await api('GET', '/users'); } catch(e) {} }
 
@@ -1300,13 +1323,13 @@ var _usersSearch = '';
 var _usersPageSize = 15;
 
 async function renderUsers(el) {
-  if (!['admin','manager'].includes(state.user.role)) { el.innerHTML = '<div class="alert alert-error">Access denied.</div>'; return; }
+  if (!can('view_users')) { el.innerHTML = '<div class="alert alert-error">Access denied.</div>'; return; }
   try {
     _usersData = await api('GET', '/users');
     _usersPage = 1;
     _usersSearch = '';
     el.innerHTML =
-      '<div class="page-header"><div class="page-title">Users</div>' + (state.user.role === 'admin' ? '<button class="btn btn-primary" onclick="showUserModal(null)" style="white-space:nowrap">' + icons.plus + ' Add User</button>' : '') + '</div>' +
+      '<div class="page-header"><div class="page-title">Users</div>' + (can('manage_users') ? '<button class="btn btn-primary" onclick="showUserModal(null)" style="white-space:nowrap">' + icons.plus + ' Add User</button>' : '') + '</div>' +
       '<div id="users-error"></div>' +
       '<div style="margin-bottom:16px"><input type="text" id="users-search" placeholder="Search by name, email, or role..." style="width:100%;max-width:400px;padding:8px 12px;background:var(--surface-color);border:1px solid rgba(249,115,22,0.35);border-radius:6px;color:var(--text-color);font-size:14px;outline:none;box-shadow:0 0 0 1px rgba(249,115,22,0.15)" oninput="usersFilter(this.value)" /></div>' +
       '<div id="users-table-wrap"></div>' +
@@ -1337,7 +1360,7 @@ function usersRenderTable() {
   if (!wrap) return;
   wrap.innerHTML =
     '<div class="card"><div class="card-body" style="padding:0"><div class="table-wrap"><table>' +
-      '<thead><tr><th>Name</th><th>Email</th><th>Role</th><th>Status</th>' + (state.user.role === 'admin' ? '<th></th>' : '') + '</tr></thead>' +
+      '<thead><tr><th>Name</th><th>Email</th><th>Role</th><th>Status</th>' + (can('manage_users') ? '<th></th>' : '') + '</tr></thead>' +
       '<tbody>' + (page.length ? page.map(function(u) {
         var isInactive = u.active === false;
         return '<tr class="' + (isInactive ? 'user-row-inactive' : '') + '">' +
@@ -1345,7 +1368,7 @@ function usersRenderTable() {
           '<td>' + escHtml(u.email) + '</td>' +
           '<td><span class="badge badge-' + escHtml(u.role) + '">' + escHtml(u.role) + '</span></td>' +
           '<td>' + (isInactive ? '<span class="badge badge-inactive">Access Removed</span>' : '<span style="color:var(--success);font-size:13px">&#10003; Active</span>') + '</td>' +
-          (state.user.role === 'admin' ? '<td class="flex-gap">' +
+          (can('manage_users') ? '<td class="flex-gap">' +
             '<button class="btn btn-secondary btn-sm" onclick="showUserModal(' + u.id + ')">Edit</button>' +
             (u.id !== state.user.id && !isInactive ? '<button class="btn btn-danger btn-sm" onclick="deactivateUser(' + u.id + ')">Deactivate</button>' : '') +
             (u.id !== state.user.id && isInactive ? '<button class="btn btn-success btn-sm" onclick="reactivateUser(' + u.id + ')">Reactivate</button>' : '') +
@@ -1622,7 +1645,7 @@ async function renderCompanyInfo(el) {
 }
 
 async function renderAIContext(el) {
-  if (state.user.role !== 'admin') { el.innerHTML = '<div class="alert alert-error">Access denied.</div>'; return; }
+  if (!can('manage_settings')) { el.innerHTML = '<div class="alert alert-error">Access denied.</div>'; return; }
   let settings = {};
   try { settings = await api('GET', '/settings'); } catch(e) {}
   el.innerHTML =
@@ -1637,7 +1660,7 @@ async function renderAIContext(el) {
 }
 
 async function renderNotifications(el) {
-  if (state.user.role !== 'admin') { el.innerHTML = '<div class="alert alert-error">Access denied.</div>'; return; }
+  if (!can('manage_settings')) { el.innerHTML = '<div class="alert alert-error">Access denied.</div>'; return; }
   el.innerHTML = '<div class="loading">Loading…</div>';
   var settings = {}, users = [];
   try {
@@ -1780,6 +1803,75 @@ async function saveNotifications() {
   }
 }
 
+async function renderRoles(el) {
+  if (!can('manage_settings')) { el.innerHTML = '<div class="alert alert-error">Access denied.</div>'; return; }
+  el.innerHTML = '<div class="loading">Loading…</div>';
+  var settings = {};
+  try { settings = await api('GET', '/settings'); } catch(e) {}
+  var rules = {};
+  try { rules = JSON.parse(settings.role_permissions || '{}') || {}; } catch(e) { rules = {}; }
+
+  var groups = [
+    { group:'Purchase Orders', perms:[ {k:'approve_po',l:'Approve / reject POs'}, {k:'cancel_po',l:'Cancel POs'} ] },
+    { group:'Vehicle Repairs', perms:[ {k:'approve_vr',l:'Approve / reject vehicle repairs'} ] },
+    { group:'Fleet &amp; Vehicles', perms:[ {k:'manage_vehicles',l:'Manage fleet registry'} ] },
+    { group:'Vendors / Accounts', perms:[ {k:'manage_vendors',l:'Manage vendors and accounts'} ] },
+    { group:'Shipping Addresses', perms:[ {k:'manage_addresses',l:'Manage shipping addresses'} ] },
+    { group:'Cities', perms:[ {k:'manage_cities',l:'Manage cities'} ] },
+    { group:'Monthly Requisition', perms:[ {k:'manage_running',l:'Manage monthly requisition (admin list)'} ] },
+    { group:'GEICO', perms:[ {k:'manage_geico',l:'Manage GEICO surveys'} ] },
+    { group:'Users', perms:[ {k:'view_users',l:'View users'}, {k:'manage_users',l:'Add / edit / remove users'} ] },
+    { group:'Administration', perms:[ {k:'manage_settings',l:'Company info, AI context, notifications, roles'}, {k:'view_audit',l:'View audit log'}, {k:'view_ai_admin',l:'View AI history / usage'} ] }
+  ];
+
+  function roleHas(role, perm) {
+    if (role === 'admin') return true;
+    if (rules && Object.prototype.toString.call(rules[role]) === '[object Array]') return rules[role].indexOf(perm) !== -1;
+    return (PERM_DEFAULTS[role] || []).indexOf(perm) !== -1;
+  }
+  function cell(role, perm) {
+    if (role === 'admin') return '<td style="text-align:center"><input type="checkbox" checked disabled style="width:auto" title="Admin always has full access" /></td>';
+    return '<td style="text-align:center"><input type="checkbox" class="rp-' + role + '" value="' + perm + '"' + (roleHas(role, perm) ? ' checked' : '') + ' style="width:auto;cursor:pointer" /></td>';
+  }
+
+  var rowsHtml = groups.map(function(g) {
+    var head = '<tr><td colspan="5" style="font-weight:600;background:var(--bg-elevated);font-size:12px;text-transform:uppercase;letter-spacing:0.04em;color:var(--text-muted-color)">' + g.group + '</td></tr>';
+    var prows = g.perms.map(function(p) {
+      return '<tr><td>' + escHtml(p.l) + '</td>' + cell('approver', p.k) + cell('manager', p.k) + cell('requester', p.k) + cell('admin', p.k) + '</tr>';
+    }).join('');
+    return head + prows;
+  }).join('');
+
+  el.innerHTML =
+    '<div class="page-header"><div class="page-title">Roles &amp; Access</div></div>' +
+    '<div id="settings-error"></div><div id="settings-success"></div>' +
+    '<p class="text-muted" style="margin-bottom:16px;max-width:720px">Control what each role can do. These rules are enforced on the server for every action. <strong>Admin</strong> always has full access and cannot be restricted. Anything left unchecked falls back to that role&#39;s built-in default until you save.</p>' +
+    '<div class="card"><div class="card-body" style="overflow-x:auto">' +
+      '<table style="min-width:600px"><thead><tr><th>Permission</th><th style="text-align:center">Approver</th><th style="text-align:center">Manager</th><th style="text-align:center">Requester</th><th style="text-align:center">Admin</th></tr></thead>' +
+      '<tbody>' + rowsHtml + '</tbody></table>' +
+      '<div style="margin-top:16px"><button class="btn btn-primary" onclick="saveRoles()">Save Roles &amp; Access</button></div>' +
+    '</div></div>';
+}
+
+async function saveRoles() {
+  var editRoles = ['approver', 'manager', 'requester'];
+  var rules = {};
+  editRoles.forEach(function(role) {
+    var perms = [];
+    var nodes = document.querySelectorAll('.rp-' + role);
+    for (var i = 0; i < nodes.length; i++) { if (nodes[i].checked) perms.push(nodes[i].value); }
+    rules[role] = perms;
+  });
+  try {
+    await api('PUT', '/settings/role_permissions', { value: JSON.stringify(rules) });
+    state.permissions = rules;
+    document.getElementById('settings-success').innerHTML = '<div class="alert alert-success">Roles &amp; access saved.</div>';
+    setTimeout(function() { var e = document.getElementById('settings-success'); if (e) e.innerHTML = ''; }, 4000);
+  } catch(err) {
+    document.getElementById('settings-error').innerHTML = '<div class="alert alert-error">' + escHtml(err.message) + '</div>';
+  }
+}
+
 async function renderSettings(el) {
   if (state.user.role !== 'admin') { el.innerHTML = '<div class="alert alert-error">Access denied.</div>'; return; }
   // Legacy: redirect to new split pages
@@ -1886,7 +1978,7 @@ var _geicoPage = 1;
 var GEICO_PAGE_SIZE = 25;
 
 async function renderGeicoReviews(el) {
-  if (!['admin','manager'].includes(state.user.role)) { el.innerHTML = '<div class="alert alert-error">Access denied.</div>'; return; }
+  if (!can('manage_geico')) { el.innerHTML = '<div class="alert alert-error">Access denied.</div>'; return; }
   var cities = [];
   try { cities = await api('GET', '/cities'); } catch(e) { cities = []; }
   var cityOpts = '<option value="">All cities</option>' + cities.map(function(c){ return '<option value="' + escHtml(c.code) + '">' + escHtml(c.name) + '</option>'; }).join('');
@@ -2056,7 +2148,7 @@ var _vendorsData = [];
 var _vendorCities = [];
 
 async function renderVendors(el) {
-  if (!['admin','manager'].includes(state.user.role)) { el.innerHTML = '<div class="alert alert-error">Access denied.</div>'; return; }
+  if (!can('manage_vendors')) { el.innerHTML = '<div class="alert alert-error">Access denied.</div>'; return; }
   try { _vendorsData = await api('GET', '/vendors'); } catch(e) { _vendorsData = []; }
   try { _vendorCities = await api('GET', '/cities'); } catch(e) { _vendorCities = []; }
   el.innerHTML =
@@ -2240,7 +2332,7 @@ async function deleteVendor(id) {
 // ── Cities ───────────────────────────────────────────────────────────────────
 
 async function renderCities(el) {
-  if (!['admin','manager'].includes(state.user.role)) { el.innerHTML = '<div class="alert alert-error">Access denied.</div>'; return; }
+  if (!can('manage_cities')) { el.innerHTML = '<div class="alert alert-error">Access denied.</div>'; return; }
   try {
     const cities = await api('GET', '/cities/all');
     el.innerHTML =
@@ -3042,7 +3134,7 @@ var _auditPage = 1;
 var _auditPageSize = 50;
 
 async function renderAuditLog(el) {
-  if (state.user.role !== 'admin') { el.innerHTML = '<div class="alert alert-error">Access denied.</div>'; return; }
+  if (!can('view_audit')) { el.innerHTML = '<div class="alert alert-error">Access denied.</div>'; return; }
   el.innerHTML = '<div class="loading">Loading…</div>';
   try {
     const logs = await api('GET', '/audit');
@@ -3151,7 +3243,7 @@ function aiUsageToday() {
   return new Date().toISOString().split('T')[0];
 }
 async function renderAIUsage(el) {
-  if (state.user.role !== 'admin') { el.innerHTML = '<div class="alert alert-error">Access denied.</div>'; return; }
+  if (!can('view_ai_admin')) { el.innerHTML = '<div class="alert alert-error">Access denied.</div>'; return; }
   var fromDefault = aiUsageMonthStart();
   var toDefault = aiUsageToday();
   el.innerHTML =
@@ -3229,7 +3321,7 @@ async function loadAIUsage() {
 var _convPage = 1;
 var _convPageSize = 50;
 async function renderAIConversations(el) {
-  if (state.user.role !== 'admin') { el.innerHTML = '<div class="alert alert-error">Access denied.</div>'; return; }
+  if (!can('view_ai_admin')) { el.innerHTML = '<div class="alert alert-error">Access denied.</div>'; return; }
   el.innerHTML = '<div class="loading">Loading…</div>';
   let convos = [];
   try { convos = await api('GET', '/ai/conversations'); } catch(e) { el.innerHTML = '<div class="alert alert-error">Failed to load conversations.</div>'; return; }
@@ -3551,7 +3643,7 @@ async function renderVRDashboard(el) {
   el.innerHTML = '<div class="loading">Loading…</div>';
   try {
     const vrs = await api('GET', '/vr');
-    const isApprover = ['admin','approver','manager'].includes(state.user.role);
+    const isApprover = can('approve_vr');
     var colCount = isApprover ? 11 : 10;
     function vrDashRender(q, statusFilter) {
       var filtered = vrs.filter(function(vr) {
@@ -3782,7 +3874,7 @@ async function renderViewVR(el, id) {
   el.innerHTML = '<div class="loading">Loading…</div>';
   try {
     var vr = await api('GET', '/vr/' + id);
-    var isApprover = ['admin','approver','manager'].includes(state.user.role);
+    var isApprover = can('approve_vr');
     var isOwner = vr.requester_id === state.user.id;
     var sc = _vrStatusColors[vr.status] || 'var(--text-muted-color)';
     el.innerHTML =
@@ -3920,7 +4012,7 @@ function applyFleetFilters(resetPage) {
 }
 
 async function renderFleetRegistry(el) {
-  if (!['admin','manager'].includes(state.user.role)) { el.innerHTML = '<div class="alert alert-error">Access denied.</div>'; return; }
+  if (!can('manage_vehicles')) { el.innerHTML = '<div class="alert alert-error">Access denied.</div>'; return; }
   el.innerHTML = '<div class="loading">Loading…</div>';
   try {
     _allVehicles = await api('GET', '/vehicles/all');

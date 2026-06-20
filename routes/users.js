@@ -1,12 +1,12 @@
 const express = require('express');
 const bcrypt = require('bcryptjs');
 const { pool } = require('../db');
-const { requireAuth, requireRole } = require('../middleware/auth');
+const { requireAuth, requireRole, requirePermission } = require('../middleware/auth');
 
 const router = express.Router();
 
 // List all users (admin only)
-router.get('/', requireAuth, requireRole('admin', 'manager'), async (req, res) => {
+router.get('/', requireAuth, requirePermission('view_users'), async (req, res) => {
   const { rows } = await pool.query(
     'SELECT id, name, email, phone, role, active, receive_emails, receive_sms, created_at FROM users ORDER BY active DESC, name ASC'
   );
@@ -14,7 +14,7 @@ router.get('/', requireAuth, requireRole('admin', 'manager'), async (req, res) =
 });
 
 // Create user (admin only)
-router.post('/', requireAuth, requireRole('admin'), async (req, res) => {
+router.post('/', requireAuth, requirePermission('manage_users'), async (req, res) => {
   const { name, email, password, role, phone, receive_emails, receive_sms } = req.body;
   if (!name || !email || !password || !role) {
     return res.status(400).json({ error: 'Name, email, password, and role are required' });
@@ -36,7 +36,7 @@ router.post('/', requireAuth, requireRole('admin'), async (req, res) => {
 });
 
 // Update user (admin only)
-router.put('/:id', requireAuth, requireRole('admin'), async (req, res) => {
+router.put('/:id', requireAuth, requirePermission('manage_users'), async (req, res) => {
   const { name, email, role, password, phone, receive_emails, receive_sms } = req.body;
   const { id } = req.params;
   let query, params;
@@ -54,7 +54,7 @@ router.put('/:id', requireAuth, requireRole('admin'), async (req, res) => {
 });
 
 // Deactivate user (admin only)
-router.post('/:id/deactivate', requireAuth, requireRole('admin'), async (req, res) => {
+router.post('/:id/deactivate', requireAuth, requirePermission('manage_users'), async (req, res) => {
   const { id } = req.params;
   if (parseInt(id) === req.user.id) {
     return res.status(400).json({ error: 'Cannot deactivate your own account' });
@@ -65,7 +65,7 @@ router.post('/:id/deactivate', requireAuth, requireRole('admin'), async (req, re
 });
 
 // Reactivate user (admin only)
-router.post('/:id/reactivate', requireAuth, requireRole('admin'), async (req, res) => {
+router.post('/:id/reactivate', requireAuth, requirePermission('manage_users'), async (req, res) => {
   const { id } = req.params;
   const { rows } = await pool.query('UPDATE users SET active=true WHERE id=$1 RETURNING id', [id]);
   if (!rows[0]) return res.status(404).json({ error: 'User not found' });
@@ -73,7 +73,7 @@ router.post('/:id/reactivate', requireAuth, requireRole('admin'), async (req, re
 });
 
 // Delete user (admin only — only if no POs)
-router.delete('/:id', requireAuth, requireRole('admin'), async (req, res) => {
+router.delete('/:id', requireAuth, requirePermission('manage_users'), async (req, res) => {
   const { id } = req.params;
   if (parseInt(id) === req.user.id) {
     return res.status(400).json({ error: 'Cannot delete your own account' });
