@@ -2515,11 +2515,11 @@ async function renderViewQuote(el, id) {
         '<div><div class="page-title">' + escHtml(q.quote_number) + '</div><div class="page-subtitle" style="color:var(--text-muted-color)">Quote</div></div>' +
         '<div class="flex-gap">' +
           '<button class="btn btn-secondary" onclick="navigate(\'quotes\')">&larr; Back</button>' +
-          '<button class="btn btn-secondary" onclick="printQuote(' + q.id + ')">' + icons.print + ' Print Quote</button>' +
+          '<button class="btn btn-secondary" style="white-space:nowrap" onclick="printQuote(' + q.id + ')">' + icons.print + ' Print Quote</button>' +
           '<button class="btn btn-secondary" id="ai-review-btn" onclick="reviewQuoteWithAI()" style="color:var(--primary);border-color:var(--primary);">&#10024; AI Review</button>' +
           '<button class="btn btn-primary" onclick="pushQuoteToPO(' + q.id + ')" style="white-space:nowrap">&#10142; Push to PO</button>' +
           (canEdit ? '<button class="btn btn-secondary" onclick="navigate(\'edit-quote\',' + q.id + ')">' + icons.edit + ' Edit</button>' : '') +
-          (canDelete ? '<button class="btn btn-danger btn-sm" onclick="deleteQuote(' + q.id + ')">' + icons.trash + '</button>' : '') +
+          (canDelete ? '<button class="btn btn-danger" title="Delete quote" onclick="deleteQuote(' + q.id + ')">' + icons.trash + '</button>' : '') +
         '</div>' +
       '</div>' +
       '<div id="view-quote-error"></div>' +
