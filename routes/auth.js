@@ -11,6 +11,7 @@ const router = express.Router();
 
 const MAX_ATTEMPTS = 5;
 const LOCKOUT_MINUTES = 15;
+const MAX_2FA_ATTEMPTS = 5;
 
 // Initial setup — creates first admin account (only works when no users exist)
 router.post('/setup', async (req, res) => {
@@ -75,7 +76,7 @@ router.post('/login', async (req, res) => {
   const codeExpires = new Date(Date.now() + 10 * 60 * 1000); // 10 minutes
   await pool.query(
     'INSERT INTO two_factor_codes (user_id, code, expires_at) VALUES ($1, $2, $3) ' +
-    'ON CONFLICT (user_id) DO UPDATE SET code=$2, expires_at=$3, used=false',
+    'ON CONFLICT (user_id) DO UPDATE SET code=$2, expires_at=$3, used=false, attempts=0',
     [user.id, code, codeExpires]
   );
 
@@ -115,7 +116,15 @@ router.post('/verify-2fa', async (req, res) => {
     'SELECT * FROM two_factor_codes WHERE user_id=$1 AND used=false AND expires_at > NOW()',
     [userId]
   );
-  if (!rows[0] || rows[0].code !== String(code)) {
+  if (!rows[0]) {
+    return res.status(401).json({ error: 'Invalid or expired code. Please try logging in again.' });
+  }
+  if ((rows[0].attempts || 0) >= MAX_2FA_ATTEMPTS) {
+    await pool.query('UPDATE two_factor_codes SET used=true WHERE user_id=$1', [userId]);
+    return res.status(429).json({ error: 'Too many incorrect codes. Please log in again to get a new code.' });
+  }
+  if (rows[0].code !== String(code)) {
+    await pool.query('UPDATE two_factor_codes SET attempts = attempts + 1 WHERE user_id=$1', [userId]);
     return res.status(401).json({ error: 'Invalid or expired code. Please try logging in again.' });
   }
 

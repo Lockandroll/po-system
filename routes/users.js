@@ -5,6 +5,8 @@ const { requireAuth, requireRole, requirePermission } = require('../middleware/a
 
 const router = express.Router();
 
+const VALID_ROLES = ['locksmith', 'locksmith_coordinator', 'roadside_technician', 'manager', 'admin'];
+
 // List all users (admin only)
 router.get('/', requireAuth, requirePermission('view_users'), async (req, res) => {
   const { rows } = await pool.query(
@@ -19,8 +21,8 @@ router.post('/', requireAuth, requirePermission('manage_users'), async (req, res
   if (!name || !email || !password || !role) {
     return res.status(400).json({ error: 'Name, email, password, and role are required' });
   }
-  if (!['locksmith', 'locksmith_coordinator', 'roadside_technician', 'manager', 'admin'].includes(role)) {
-    return res.status(400).json({ error: 'Role must be requester, approver, or admin' });
+  if (!VALID_ROLES.includes(role)) {
+    return res.status(400).json({ error: 'Invalid role. Must be one of: ' + VALID_ROLES.join(', ') + '.' });
   }
   const password_hash = await bcrypt.hash(password, 12);
   try {
@@ -39,6 +41,9 @@ router.post('/', requireAuth, requirePermission('manage_users'), async (req, res
 router.put('/:id', requireAuth, requirePermission('manage_users'), async (req, res) => {
   const { name, email, role, password, phone, receive_emails, receive_sms } = req.body;
   const { id } = req.params;
+  if (role && !VALID_ROLES.includes(role)) {
+    return res.status(400).json({ error: 'Invalid role. Must be one of: ' + VALID_ROLES.join(', ') + '.' });
+  }
   let query, params;
   if (password) {
     const password_hash = await bcrypt.hash(password, 12);
@@ -48,9 +53,14 @@ router.put('/:id', requireAuth, requirePermission('manage_users'), async (req, r
     query = 'UPDATE users SET name=$1, email=$2, role=$3, phone=$4, receive_emails=$5, receive_sms=$6 WHERE id=$7 RETURNING id, name, email, phone, role, active, receive_emails, receive_sms';
     params = [name, email, role, phone || null, receive_emails !== false, receive_sms === true, id];
   }
-  const { rows } = await pool.query(query, params);
-  if (!rows[0]) return res.status(404).json({ error: 'User not found' });
-  res.json(rows[0]);
+  try {
+    const { rows } = await pool.query(query, params);
+    if (!rows[0]) return res.status(404).json({ error: 'User not found' });
+    res.json(rows[0]);
+  } catch (err) {
+    if (err.code === '23505') return res.status(400).json({ error: 'Email already in use' });
+    throw err;
+  }
 });
 
 // Deactivate user (admin only)
@@ -82,7 +92,14 @@ router.delete('/:id', requireAuth, requirePermission('manage_users'), async (req
   if (parseInt(poRows[0].count) > 0) {
     return res.status(400).json({ error: 'Cannot delete user — they have existing purchase orders. Deactivate instead.' });
   }
-  await pool.query('DELETE FROM users WHERE id = $1', [id]);
+  try {
+    await pool.query('DELETE FROM users WHERE id = $1', [id]);
+  } catch (err) {
+    if (err.code === '23503') {
+      return res.status(400).json({ error: 'Cannot delete user — they have related records (quotes, repairs, deposits, etc.). Deactivate instead.' });
+    }
+    throw err;
+  }
   res.json({ success: true });
 });
 

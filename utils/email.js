@@ -1,3 +1,7 @@
+function esc(s) {
+  return String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+}
+
 async function sendEmail(to, subject, html, cc) {
   if (!process.env.RESEND_API_KEY) { console.warn('RESEND_API_KEY not set — skipping email'); return; }
   try {
@@ -28,8 +32,8 @@ function emailTemplate({ badge, badgeColor, title, body, details, buttonText, bu
 
   var detailRows = (details || []).map(function(d) {
     return '<tr>' +
-      '<td style="color:#777777;font-size:13px;padding:7px 0;border-bottom:1px solid #eeeeee;width:45%">' + d.label + '</td>' +
-      '<td style="font-size:13px;font-weight:700;color:#111111;padding:7px 0;border-bottom:1px solid #eeeeee;text-align:right">' + d.value + '</td>' +
+      '<td style="color:#777777;font-size:13px;padding:7px 0;border-bottom:1px solid #eeeeee;width:45%">' + esc(d.label) + '</td>' +
+      '<td style="font-size:13px;font-weight:700;color:#111111;padding:7px 0;border-bottom:1px solid #eeeeee;text-align:right">' + esc(d.value) + '</td>' +
     '</tr>';
   }).join('');
 

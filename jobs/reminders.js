@@ -3,14 +3,18 @@ const { pool } = require('../db');
 const { sendEmail } = require('../utils/email');
 const { sendSms } = require('../utils/sms');
 
+function esc(s) {
+  return String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+}
+
 function buildReminderEmail(ordererName, pos, appUrl) {
   var rows = pos.map(function(po) {
     var deepLink = appUrl + '?view=view&id=' + po.id;
     var age = Math.floor((Date.now() - new Date(po.approved_at || po.created_at).getTime()) / 86400000);
     var ageStr = age === 0 ? 'today' : age === 1 ? '1 day ago' : age + ' days ago';
     return '<tr>' +
-      '<td style="padding:10px 12px;border-bottom:1px solid #eeeeee;font-size:13px;font-weight:700;color:#111111">' + po.po_number + '</td>' +
-      '<td style="padding:10px 12px;border-bottom:1px solid #eeeeee;font-size:13px;color:#444444">' + (po.vendor_name || '—') + '</td>' +
+      '<td style="padding:10px 12px;border-bottom:1px solid #eeeeee;font-size:13px;font-weight:700;color:#111111">' + esc(po.po_number) + '</td>' +
+      '<td style="padding:10px 12px;border-bottom:1px solid #eeeeee;font-size:13px;color:#444444">' + esc(po.vendor_name || '—') + '</td>' +
       '<td style="padding:10px 12px;border-bottom:1px solid #eeeeee;font-size:13px;color:#444444">$' + parseFloat(po.total_amount || 0).toFixed(2) + '</td>' +
       '<td style="padding:10px 12px;border-bottom:1px solid #eeeeee;font-size:13px;color:#888888">' + ageStr + '</td>' +
       '<td style="padding:10px 12px;border-bottom:1px solid #eeeeee;text-align:center">' +
@@ -38,7 +42,7 @@ function buildReminderEmail(ordererName, pos, appUrl) {
     '<table role="presentation" cellpadding="0" cellspacing="0" style="margin-bottom:16px"><tr>' +
       '<td style="background:#fff3e8;color:#c2520a;font-size:11px;font-weight:700;padding:4px 10px;border-radius:4px;text-transform:uppercase;letter-spacing:0.5px">Order Reminder</td>' +
     '</tr></table>' +
-    '<h1 style="font-size:20px;font-weight:700;color:#111111;margin:0 0 12px">Hi ' + ordererName + ',</h1>' +
+    '<h1 style="font-size:20px;font-weight:700;color:#111111;margin:0 0 12px">Hi ' + esc(ordererName) + ',</h1>' +
     '<p style="font-size:14px;color:#555555;line-height:1.6;margin:0 0 24px">You have <strong>' + count + ' approved ' + plural + '</strong> waiting to be ordered. Please place the order and mark ' + (count === 1 ? 'it' : 'them') + ' as ordered in the system.</p>' +
 
     '<table role="presentation" width="100%" style="border-collapse:collapse;border:1px solid #eeeeee;border-radius:6px;overflow:hidden;margin-bottom:28px">' +

@@ -7,7 +7,7 @@ const { logAudit } = require('../utils/audit');
 const router = express.Router();
 
 // Roles that can see every deposit (not just their own)
-const SEE_ALL = ['admin', 'manager', 'approver'];
+const SEE_ALL = ['admin', 'manager'];
 // Roles that can export and delete
 const MANAGE = ['admin', 'manager'];
 
@@ -127,7 +127,7 @@ router.post('/', requireAuth, async function(req, res) {
   }
 });
 
-// GET / — list deposits (own for requester; all for admin/manager/approver).
+// GET / — list deposits (own for employees; all for admin/manager).
 // Never returns the receipt image in the list (kept lightweight).
 router.get('/', requireAuth, async function(req, res) {
   try {

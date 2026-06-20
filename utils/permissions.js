@@ -34,11 +34,12 @@ var DEFAULTS = {
 };
 
 var cache = null;
+var cacheValid = false;
 var cacheAt = 0;
 var TTL_MS = 15000;
 
 async function getRolePerms() {
-  if (cache && (Date.now() - cacheAt) < TTL_MS) return cache;
+  if (cacheValid && (Date.now() - cacheAt) < TTL_MS) return cache;
   try {
     const { rows } = await pool.query("SELECT value FROM settings WHERE key = 'role_permissions'");
     if (rows.length && rows[0].value) {
@@ -46,13 +47,19 @@ async function getRolePerms() {
       if (parsed && typeof parsed === 'object') {
         cache = parsed;
         cacheAt = Date.now();
+        cacheValid = true;
         return parsed;
       }
     }
+    // No valid config — cache the empty result so we don't re-query on every check.
+    cache = null;
+    cacheAt = Date.now();
+    cacheValid = true;
+    return null;
   } catch (e) {
     console.error('Failed to load role_permissions:', e.message);
+    return null;
   }
-  return null;
 }
 
 // Synchronous default check (used as a safe fallback).

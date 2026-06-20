@@ -34,7 +34,7 @@ router.get('/', requireAuth, async function(req, res) {
     var vehicleId = req.query.vehicle_id ? parseInt(req.query.vehicle_id) : null;
     var base = 'SELECT vr.*, u.name as requester_name, a.name as assigned_name FROM vehicle_repairs vr JOIN users u ON vr.requester_id = u.id LEFT JOIN users a ON vr.assigned_user_id = a.id';
     let query, params;
-    if (['admin', 'approver', 'manager'].includes(req.user.role)) {
+    if (['admin', 'manager'].includes(req.user.role)) {
       query = base + ' WHERE vr.vr_number IS NOT NULL' + (vehicleId ? ' AND vr.vehicle_id = $1' : '') + ' ORDER BY vr.created_at DESC';
       params = vehicleId ? [vehicleId] : [];
     } else {
@@ -58,7 +58,7 @@ router.get('/:id', requireAuth, async function(req, res) {
     );
     if (!rows.length) return res.status(404).json({ error: 'Vehicle repair not found' });
     const vr = rows[0];
-    if (!['admin', 'approver', 'manager'].includes(req.user.role) && vr.requester_id !== req.user.id) {
+    if (!['admin', 'manager'].includes(req.user.role) && vr.requester_id !== req.user.id) {
       return res.status(403).json({ error: 'Access denied' });
     }
     const { rows: items } = await pool.query('SELECT * FROM vr_line_items WHERE vr_id = $1 ORDER BY id', [req.params.id]);

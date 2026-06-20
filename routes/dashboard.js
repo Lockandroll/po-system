@@ -6,7 +6,7 @@ const router = express.Router();
 
 router.get('/', requireAuth, async function(req, res) {
   try {
-    const isPrivileged = ['admin', 'approver', 'manager'].includes(req.user.role);
+    const isPrivileged = ['admin', 'manager'].includes(req.user.role);
     const userId = req.user.id;
 
     // Pending VRs (submitted, awaiting approval)

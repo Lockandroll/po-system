@@ -1,5 +1,6 @@
 require('dotenv').config();
 const express = require('express');
+require('express-async-errors');
 const cors = require('cors');
 const path = require('path');
 const rateLimit = require('express-rate-limit');
@@ -8,6 +9,9 @@ const { startReminders } = require('./jobs/reminders');
 const { startGeicoReport, startGeicoIngest } = require('./jobs/geicoIngest');
 
 const app = express();
+
+// Trust Railway's reverse proxy so express-rate-limit keys on the real client IP
+app.set('trust proxy', 1);
 
 // Rate limiting
 const generalLimiter = rateLimit({
@@ -50,6 +54,11 @@ app.use('/api/running', require('./routes/running'));
 app.use('/api/geico', require('./routes/geico'));
 app.use('/api/deposits', require('./routes/deposits'));
 app.use('/api/signoffs', require('./routes/signoffs'));
+
+// Unknown API routes return JSON 404 instead of the SPA shell
+app.use('/api', (req, res) => {
+  res.status(404).json({ error: 'Not found' });
+});
 
 // Catch-all: serve frontend
 app.get('*', (req, res) => {

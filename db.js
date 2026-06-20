@@ -249,6 +249,9 @@ async function initDB() {
       '  created_at TIMESTAMPTZ DEFAULT NOW()' +
       ');'
     );
+    await client.query(
+      'ALTER TABLE two_factor_codes ADD COLUMN IF NOT EXISTS attempts INTEGER NOT NULL DEFAULT 0;'
+    );
     // Running list (monthly accumulating items that get rolled into a PO per city)
     await client.query(
       'CREATE TABLE IF NOT EXISTS running_list_items (' +
@@ -364,6 +367,17 @@ async function initDB() {
       'CREATE INDEX IF NOT EXISTS idx_deposits_user ON deposits(user_id);' +
       'CREATE INDEX IF NOT EXISTS idx_deposits_date ON deposits(deposit_date);' +
       'CREATE INDEX IF NOT EXISTS idx_deposits_city ON deposits(city_code);'
+    );
+    // Indexes on frequently-filtered columns for the main list views
+    await client.query(
+      'CREATE INDEX IF NOT EXISTS idx_po_requester ON purchase_orders(requester_id);' +
+      'CREATE INDEX IF NOT EXISTS idx_po_status ON purchase_orders(status);' +
+      'CREATE INDEX IF NOT EXISTS idx_po_created ON purchase_orders(created_at);' +
+      'CREATE INDEX IF NOT EXISTS idx_quotes_requester ON quotes(requester_id);' +
+      'CREATE INDEX IF NOT EXISTS idx_vr_requester ON vehicle_repairs(requester_id);' +
+      'CREATE INDEX IF NOT EXISTS idx_vr_status ON vehicle_repairs(status);' +
+      'CREATE INDEX IF NOT EXISTS idx_audit_created ON audit_logs(created_at);' +
+      'CREATE INDEX IF NOT EXISTS idx_ai_conv_created ON ai_conversations(created_at);'
     );
     console.log('Database initialized');
   } finally {

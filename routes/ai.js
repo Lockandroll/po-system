@@ -88,6 +88,7 @@ function callClaude(messages, systemPrompt) {
       });
     });
     req.on('error', reject);
+    req.setTimeout(30000, function() { req.destroy(new Error('AI request timed out. Please try again.')); });
     req.write(body);
     req.end();
   });
