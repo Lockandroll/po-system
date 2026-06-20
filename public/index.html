@@ -320,11 +320,12 @@ function badgeHtml(status) {
   return '<span class="badge badge-' + escHtml(cls) + '">' + escHtml(status) + '</span>';
 }
 
+var EMPLOYEE_PERMS = ['view_pos','create_po','edit_po','delete_po','submit_po','view_quotes','create_quote','edit_quote','delete_quote','push_quote_po','view_vr','create_vr','edit_vr','delete_vr','submit_vr','view_deposits','create_deposit','delete_deposit','export_deposits'];
 var PERM_DEFAULTS = {
-  manager: ['view_users','manage_cities','manage_geico','manage_running','manage_vehicles','manage_vendors','manage_addresses','approve_vr','view_pos','view_quotes','view_vr','view_deposits'],
-  locksmith: ['view_pos','view_quotes','view_vr','view_deposits'],
-  locksmith_coordinator: ['view_pos','view_quotes','view_vr','view_deposits'],
-  roadside_technician: ['view_pos','view_quotes','view_vr','view_deposits']
+  manager: ['view_users','manage_cities','manage_geico','manage_running','manage_vehicles','manage_vendors','manage_addresses','approve_vr'].concat(EMPLOYEE_PERMS),
+  locksmith: EMPLOYEE_PERMS.slice(),
+  locksmith_coordinator: EMPLOYEE_PERMS.slice(),
+  roadside_technician: EMPLOYEE_PERMS.slice()
 };
 function roleLabel(r) {
   var m = { locksmith:'Locksmith', locksmith_coordinator:'Locksmith Coordinator', roadside_technician:'Roadside Technician', requester:'Locksmith', approver:'Approver', manager:'Manager', admin:'Admin' };
@@ -386,20 +387,20 @@ async function render() {
     '<div class="nav-section-header' + (poViews.indexOf(cv) !== -1 ? ' section-active' : '') + (ss === 'po' ? ' open' : '') + '" onclick="toggleSection(\'po\',\'dashboard\')"><span class="s-label">' + icons.dashboard + ' Purchase Orders</span>' + chev + '</div>' +
     (ss === 'po' ?
       '<div class="nav-sub' + (cv === 'dashboard' ? ' active' : '') + '" onclick="navigate(\'dashboard\')">' + icons.dashboard + ' PO Dashboard</div>' +
-      (state.user.role !== 'approver' ? '<div class="nav-sub' + (cv === 'new' ? ' active' : '') + '" onclick="navigate(\'new\')">' + icons.plus + ' New PO</div>' : '') +
+      (can('create_po') ? '<div class="nav-sub' + (cv === 'new' ? ' active' : '') + '" onclick="navigate(\'new\')">' + icons.plus + ' New PO</div>' : '') +
       (state.user.role !== 'approver' ? '<div class="nav-sub' + (cv === 'running' || cv === 'running-admin' ? ' active' : '') + '" onclick="navigate(\'' + (can('manage_running') ? 'running-admin' : 'running') + '\')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="8" y1="6" x2="21" y2="6"/><line x1="8" y1="12" x2="21" y2="12"/><line x1="8" y1="18" x2="21" y2="18"/><line x1="3" y1="6" x2="3.01" y2="6"/><line x1="3" y1="12" x2="3.01" y2="12"/><line x1="3" y1="18" x2="3.01" y2="18"/></svg> Monthly Req</div>' : '')
     : '') : '') +
     (can('view_quotes') ?
     '<div class="nav-section-header' + (quViews.indexOf(cv) !== -1 ? ' section-active' : '') + (ss === 'quotes' ? ' open' : '') + '" onclick="toggleSection(\'quotes\',\'quotes\')"><span class="s-label">' + icons.quote + ' Quotes</span>' + chev + '</div>' +
     (ss === 'quotes' ?
       '<div class="nav-sub' + (cv === 'quotes' ? ' active' : '') + '" onclick="navigate(\'quotes\')">' + icons.quote + ' Quote Dashboard</div>' +
-      (state.user.role !== 'approver' ? '<div class="nav-sub' + (cv === 'new-quote' ? ' active' : '') + '" onclick="navigate(\'new-quote\')">' + icons.plus + ' New Quote</div>' : '')
+      (can('create_quote') ? '<div class="nav-sub' + (cv === 'new-quote' ? ' active' : '') + '" onclick="navigate(\'new-quote\')">' + icons.plus + ' New Quote</div>' : '')
     : '') : '') +
     (can('view_vr') ?
     '<div class="nav-section-header' + (vrViews.indexOf(cv) !== -1 ? ' section-active' : '') + (ss === 'vr' ? ' open' : '') + '" onclick="toggleSection(\'vr\',\'vr-dashboard\')"><span class="s-label">' + icoTruck + ' Vehicle Maint/Repairs</span>' + chev + '</div>' +
     (ss === 'vr' ?
       '<div class="nav-sub' + (cv === 'vr-dashboard' ? ' active' : '') + '" onclick="navigate(\'vr-dashboard\')">' + icons.dashboard + ' VR Dashboard</div>' +
-      (state.user.role !== 'approver' ? '<div class="nav-sub' + (cv === 'new-vr' ? ' active' : '') + '" onclick="navigate(\'new-vr\')">' + icons.plus + ' New VR</div>' : '') +
+      (can('create_vr') ? '<div class="nav-sub' + (cv === 'new-vr' ? ' active' : '') + '" onclick="navigate(\'new-vr\')">' + icons.plus + ' New VR</div>' : '') +
       (can('manage_vehicles') ? '<div class="nav-sub' + (['fleet-registry','new-vehicle','edit-vehicle','vehicle-history'].indexOf(cv) !== -1 ? ' active' : '') + '" onclick="navigate(\'fleet-registry\')">' + icoDB + ' Fleet Registry</div>' : '')
     : '') : '') +
     (can('manage_vendors') ? '<div class="nav-item' + (cv === 'vendors' ? ' active' : '') + '" onclick="navigate(\'vendors\')">' + icoAccounts + ' Accounts</div>' : '') +
@@ -704,7 +705,7 @@ async function renderDashboard(el) {
       '<div class="page-header"><div><div class="page-title">PO Dashboard</div></div>' +
       '<div class="flex-gap">' +
       '<button class="btn btn-secondary" onclick="exportCSV()">&#8595; Export CSV</button>' +
-      (state.user.role !== 'approver' ? '<button class="btn btn-primary" onclick="navigate(\'new\')" style="white-space:nowrap">' + icons.plus + ' New PO</button>' : '') +
+      (can('create_po') ? '<button class="btn btn-primary" onclick="navigate(\'new\')" style="white-space:nowrap">' + icons.plus + ' New PO</button>' : '') +
       '</div></div>' +
       '<div class="stats-grid">' +
         '<div class="stat-card"><div class="stat-value">' + total + '</div><div class="stat-label">Total POs</div></div>' +
@@ -1262,9 +1263,9 @@ async function renderViewPO(el, id) {
   el.innerHTML = '<div class="loading">Loading…</div>';
   try {
     const po = await api('GET', '/pos/' + id);
-    const canEdit = state.user.role === 'admin' || (state.user.role !== 'approver' && (po.status === 'draft' || po.status === 'rejected') && po.requester_id === state.user.id);
-    const canSubmit = state.user.role !== 'approver' && (po.status === 'draft' || po.status === 'rejected') && po.requester_id === state.user.id;
-    const canDelete = state.user.role === 'admin' || (state.user.role !== 'approver' && po.status === 'draft' && po.requester_id === state.user.id);
+    const canEdit = state.user.role === 'admin' || (can('edit_po') && (po.status === 'draft' || po.status === 'rejected') && po.requester_id === state.user.id);
+    const canSubmit = can('submit_po') && (po.status === 'draft' || po.status === 'rejected') && po.requester_id === state.user.id;
+    const canDelete = state.user.role === 'admin' || (can('delete_po') && po.status === 'draft' && po.requester_id === state.user.id);
     const canApprove = can('approve_po') && po.status === 'submitted';
     const canOrder = po.status === 'approved' && (state.user.role === 'admin' || po.orderer_id === state.user.id);
     const canCancel = can('cancel_po') && po.status !== 'draft' && po.status !== 'cancelled';
@@ -1876,10 +1877,10 @@ async function renderRoles(el) {
   try { rules = JSON.parse(settings.role_permissions || '{}') || {}; } catch(e) { rules = {}; }
 
   var groups = [
-    { group:'Purchase Orders', perms:[ {k:'view_pos',l:'View / access module'}, {k:'approve_po',l:'Approve / reject POs'}, {k:'cancel_po',l:'Cancel POs'} ] },
-    { group:'Quotes', perms:[ {k:'view_quotes',l:'View / access module'} ] },
-    { group:'Vehicle Repairs', perms:[ {k:'view_vr',l:'View / access module'}, {k:'approve_vr',l:'Approve / reject vehicle repairs'} ] },
-    { group:'Cash Deposits', perms:[ {k:'view_deposits',l:'View / access module'} ] },
+    { group:'Purchase Orders', perms:[ {k:'view_pos',l:'View / access module'}, {k:'create_po',l:'Create POs'}, {k:'edit_po',l:'Edit POs'}, {k:'delete_po',l:'Delete POs'}, {k:'submit_po',l:'Submit for approval'}, {k:'approve_po',l:'Approve / reject POs'}, {k:'cancel_po',l:'Cancel POs'} ] },
+    { group:'Quotes', perms:[ {k:'view_quotes',l:'View / access module'}, {k:'create_quote',l:'Create quotes'}, {k:'edit_quote',l:'Edit quotes'}, {k:'delete_quote',l:'Delete quotes'}, {k:'push_quote_po',l:'Push quote to PO'} ] },
+    { group:'Vehicle Repairs', perms:[ {k:'view_vr',l:'View / access module'}, {k:'create_vr',l:'Create VRs'}, {k:'edit_vr',l:'Edit VRs'}, {k:'delete_vr',l:'Delete VRs'}, {k:'submit_vr',l:'Submit for approval'}, {k:'approve_vr',l:'Approve / reject vehicle repairs'} ] },
+    { group:'Cash Deposits', perms:[ {k:'view_deposits',l:'View / access module'}, {k:'create_deposit',l:'Create / upload deposit'}, {k:'delete_deposit',l:'Delete deposit'}, {k:'export_deposits',l:'Export deposits (CSV)'} ] },
     { group:'Fleet &amp; Vehicles', perms:[ {k:'manage_vehicles',l:'Manage fleet registry'} ] },
     { group:'Vendors / Accounts', perms:[ {k:'manage_vendors',l:'Manage vendors and accounts'} ] },
     { group:'Shipping Addresses', perms:[ {k:'manage_addresses',l:'Manage shipping addresses'} ] },
@@ -2617,7 +2618,7 @@ async function renderQuotes(el) {
     el.innerHTML =
       '<div class="page-header">' +
         '<div><div class="page-title">Quote Dashboard</div><div class="page-subtitle">' + (isAdmin ? 'All quotes' : 'Your quotes') + '</div></div>' +
-        '<button class="btn btn-primary" onclick="navigate(\'new-quote\')" style="white-space:nowrap">' + icons.plus + ' New Quote</button>' +
+        (can('create_quote') ? '<button class="btn btn-primary" onclick="navigate(\'new-quote\')" style="white-space:nowrap">' + icons.plus + ' New Quote</button>' : '') +
       '</div>' +
       '<div id="quotes-error"></div>' +
       '<div class="card">' +
@@ -2825,8 +2826,8 @@ async function renderViewQuote(el, id) {
   try {
     const q = await api('GET', '/quotes/' + id);
     _currentQuote = q;
-    const canEdit = state.user.role === 'admin' || q.requester_id === state.user.id;
-    const canDelete = state.user.role === 'admin' || q.requester_id === state.user.id;
+    const canEdit = state.user.role === 'admin' || (can('edit_quote') && q.requester_id === state.user.id);
+    const canDelete = state.user.role === 'admin' || (can('delete_quote') && q.requester_id === state.user.id);
     el.innerHTML =
       '<div class="page-header">' +
         '<div><div class="page-title">' + escHtml(q.quote_number) + '</div><div class="page-subtitle" style="color:var(--text-muted-color)">Quote</div></div>' +
@@ -2834,7 +2835,7 @@ async function renderViewQuote(el, id) {
           '<button class="btn btn-secondary" onclick="navigate(\'quotes\')">&larr; Back</button>' +
           '<button class="btn btn-secondary" style="white-space:nowrap" onclick="printQuote(' + q.id + ')">' + icons.print + ' Print Quote</button>' +
           '<button class="btn btn-secondary" id="ai-review-btn" onclick="reviewQuoteWithAI()" style="color:var(--primary);border-color:var(--primary);">&#10024; AI Review</button>' +
-          '<button class="btn btn-primary" onclick="pushQuoteToPO(' + q.id + ')" style="white-space:nowrap">&#10142; Push to PO</button>' +
+          (can('push_quote_po') ? '<button class="btn btn-primary" onclick="pushQuoteToPO(' + q.id + ')" style="white-space:nowrap">&#10142; Push to PO</button>' : '') +
           (canEdit ? '<button class="btn btn-secondary" onclick="navigate(\'edit-quote\',' + q.id + ')">' + icons.edit + ' Edit</button>' : '') +
           (canDelete ? '<button class="btn btn-danger" title="Delete quote" onclick="deleteQuote(' + q.id + ')"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14H6L5 6"/><path d="M10 11v6"/><path d="M14 11v6"/><path d="M9 6V4h6v2"/></svg></button>' : '') +
         '</div>' +
@@ -3746,7 +3747,7 @@ async function renderVRDashboard(el) {
     el.innerHTML =
       '<div class="page-header">' +
         '<div><div class="page-title"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="margin-right:8px;vertical-align:-4px"><rect x="1" y="3" width="15" height="13" rx="2"/><path d="M16 8h6l3 4v4h-9V8z"/><circle cx="5.5" cy="18.5" r="2.5"/><circle cx="18.5" cy="18.5" r="2.5"/></svg>Vehicle Maintenance/Repairs</div></div>' +
-        (state.user.role !== 'approver' ? '<button class="btn btn-primary" onclick="navigate(\'new-vr\')" style="white-space:nowrap">' + icons.plus + ' New VR</button>' : '') +
+        (can('create_vr') ? '<button class="btn btn-primary" onclick="navigate(\'new-vr\')" style="white-space:nowrap">' + icons.plus + ' New VR</button>' : '') +
       '</div>' +
       '<div style="display:flex;gap:10px;margin-bottom:16px;flex-wrap:wrap">' +
         '<input type="text" id="vr-search" placeholder="Search VR#, vehicle, shop, city…" oninput="vrDashFilter()" style="flex:1;min-width:200px" />' +
@@ -3956,11 +3957,11 @@ async function renderViewVR(el, id) {
           '<div class="page-subtitle" style="color:' + sc + ';font-weight:600;text-transform:capitalize">' + escHtml(vr.status) + '</div>' +
         '</div>' +
         '<div class="flex-gap">' +
-          (vr.status==='draft' && (isOwner||state.user.role==='admin') ? '<button class="btn btn-secondary" onclick="navigate(\'edit-vr\',' + vr.id + ')">Edit</button>' : '') +
-          (vr.status==='draft' && (isOwner||state.user.role==='admin') ? '<button class="btn btn-primary" onclick="submitVR(' + vr.id + ')">Submit for Approval</button>' : '') +
+          (vr.status==='draft' && (isOwner||state.user.role==='admin') && can('edit_vr') ? '<button class="btn btn-secondary" onclick="navigate(\'edit-vr\',' + vr.id + ')">Edit</button>' : '') +
+          (vr.status==='draft' && (isOwner||state.user.role==='admin') && can('submit_vr') ? '<button class="btn btn-primary" onclick="submitVR(' + vr.id + ')">Submit for Approval</button>' : '') +
           (vr.status==='submitted' && isApprover ? '<button class="btn btn-primary" style="background:#22c55e;border-color:#22c55e" onclick="approveVR(' + vr.id + ')">Approve</button>' : '') +
           (vr.status==='submitted' && isApprover ? '<button class="btn btn-danger" onclick="rejectVR(' + vr.id + ')">Reject</button>' : '') +
-          ((vr.status==='draft' && (isOwner||state.user.role==='admin')) || state.user.role==='admin' ? '<button class="btn btn-danger btn-sm" onclick="deleteVR(' + vr.id + ')">Delete</button>' : '') +
+          (((vr.status==='draft' && (isOwner||state.user.role==='admin')) || state.user.role==='admin') && can('delete_vr') ? '<button class="btn btn-danger btn-sm" onclick="deleteVR(' + vr.id + ')">Delete</button>' : '') +
           '<button class="btn btn-secondary" onclick="navigate(\'vr-dashboard\')"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="margin-right:4px"><polyline points="15 18 9 12 15 6"/></svg> Back</button>' +
         '</div>' +
       '</div>' +
@@ -4447,13 +4448,13 @@ async function renderHomeScreen(el) {
 
       '<div style="margin-bottom:8px;font-size:11px;color:var(--text-muted-color);text-transform:uppercase;letter-spacing:0.6px">Quick actions</div>' +
       '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:10px">' +
-        (can('view_pos') ? '<button class="btn btn-secondary" onclick="navigate(\'new\')" style="padding:14px;display:flex;flex-direction:column;align-items:center;gap:6px;height:auto">' +
+        (can('create_po') ? '<button class="btn btn-secondary" onclick="navigate(\'new\')" style="padding:14px;display:flex;flex-direction:column;align-items:center;gap:6px;height:auto">' +
           '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="12" y1="18" x2="12" y2="12"/><line x1="9" y1="15" x2="15" y2="15"/></svg>' +
           '<span style="font-size:12px">New PO</span></button>' : '') +
-        (can('view_quotes') ? '<button class="btn btn-secondary" onclick="navigate(\'new-quote\')" style="padding:14px;display:flex;flex-direction:column;align-items:center;gap:6px;height:auto">' +
+        (can('create_quote') ? '<button class="btn btn-secondary" onclick="navigate(\'new-quote\')" style="padding:14px;display:flex;flex-direction:column;align-items:center;gap:6px;height:auto">' +
           '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/><polyline points="10 9 9 9 8 9"/></svg>' +
           '<span style="font-size:12px">New Quote</span></button>' : '') +
-        (can('view_vr') ? '<button class="btn btn-secondary" onclick="navigate(\'new-vr\')" style="padding:14px;display:flex;flex-direction:column;align-items:center;gap:6px;height:auto">' +
+        (can('create_vr') ? '<button class="btn btn-secondary" onclick="navigate(\'new-vr\')" style="padding:14px;display:flex;flex-direction:column;align-items:center;gap:6px;height:auto">' +
           '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="1" y="3" width="15" height="13" rx="2"/><path d="M16 8h6l3 4v4h-9V8z"/><circle cx="5.5" cy="18.5" r="2.5"/><circle cx="18.5" cy="18.5" r="2.5"/></svg>' +
           '<span style="font-size:12px">New VR</span></button>' : '') +
         '<button class="btn btn-secondary" onclick="navigate(\'ai-assistant\')" style="padding:14px;display:flex;flex-direction:column;align-items:center;gap:6px;height:auto">' +
@@ -4478,7 +4479,7 @@ var depositReceiptName = null;
 async function renderDeposits(el) {
   var canManage = ['admin','manager'].includes(state.user.role);
   var canSeeAll = ['admin','manager','approver'].includes(state.user.role);
-  var canSubmit = state.user.role !== 'approver';
+  var canSubmit = can('create_deposit');
   depositReceiptData = null;
   depositReceiptName = null;
   var cities = [];
@@ -4489,7 +4490,7 @@ async function renderDeposits(el) {
   var today = new Date().toISOString().slice(0,10);
   var html =
     '<div class="page-header"><div class="page-title"><h2>Cash Deposits</h2><p>Upload your weekly deposit receipt</p></div>' +
-      (canManage ? '<button class="btn btn-secondary" onclick="exportDepositsCSV()">' + icons.dashboard + ' Export CSV</button>' : '') +
+      (can('export_deposits') ? '<button class="btn btn-secondary" onclick="exportDepositsCSV()">' + icons.dashboard + ' Export CSV</button>' : '') +
     '</div>';
   if (canSubmit) {
     html +=
@@ -4609,10 +4610,10 @@ async function loadDepositsTable() {
         '<td>' + escHtml(d.city_code || '—') + '</td>' +
         (canSeeAll ? '<td>' + escHtml(d.user_name || '—') + '</td>' : '') +
         '<td>' + receipt + '</td>' +
-        (canManage ? '<td><button class="btn btn-ghost btn-sm" onclick="event.stopPropagation();deleteDeposit(' + d.id + ')" style="color:#ef4444">Delete</button></td>' : '') +
+        (can('delete_deposit') ? '<td><button class="btn btn-ghost btn-sm" onclick="event.stopPropagation();deleteDeposit(' + d.id + ')" style="color:#ef4444">Delete</button></td>' : '') +
       '</tr>';
     }).join('');
-    var head = '<th>Date</th><th>Deposit #</th><th>Amount</th><th>City</th>' + (canSeeAll ? '<th>Submitted By</th>' : '') + '<th>Receipt</th>' + (canManage ? '<th></th>' : '');
+    var head = '<th>Date</th><th>Deposit #</th><th>Amount</th><th>City</th>' + (canSeeAll ? '<th>Submitted By</th>' : '') + '<th>Receipt</th>' + (can('delete_deposit') ? '<th></th>' : '');
     area.innerHTML = '<div class="table-wrap"><table class="table"><thead><tr>' + head + '</tr></thead><tbody>' + rows + '</tbody></table></div>';
   } catch(e) {
     area.innerHTML = '<div class="alert alert-error">Failed to load deposits</div>';
@@ -4662,7 +4663,7 @@ async function renderViewDeposit(el, id) {
     '<div class="page-header"><div class="page-title"><h2>Deposit ' + escHtml(dep.deposit_number || '') + '</h2><p>' + escHtml(dep.user_name || '') + '</p></div>' +
       '<div style="display:flex;gap:8px">' +
         '<button class="btn btn-secondary" onclick="navigate(\'deposits\')">&larr; Back</button>' +
-        (canManage ? '<button class="btn btn-secondary" onclick="deleteDeposit(' + dep.id + ')" style="color:#ef4444">' + icons.trash + ' Delete</button>' : '') +
+        (can('delete_deposit') ? '<button class="btn btn-secondary" onclick="deleteDeposit(' + dep.id + ')" style="color:#ef4444">' + icons.trash + ' Delete</button>' : '') +
       '</div>' +
     '</div>' +
     '<div class="card" style="max-width:720px"><div class="card-body">' +

@@ -23,19 +23,24 @@ var ALL_PERMS = [
   'manage_settings',  // company info, AI context, notifications, roles
   'view_audit',       // audit log
   'view_ai_admin',    // AI conversation history / usage
-  'view_pos',         // see the Purchase Orders module
-  'view_quotes',      // see the Quotes module
-  'view_vr',          // see the Vehicle Repairs module
-  'view_deposits'     // see the Cash Deposits module
+  'view_pos', 'create_po', 'edit_po', 'delete_po', 'submit_po',
+  'view_quotes', 'create_quote', 'edit_quote', 'delete_quote', 'push_quote_po',
+  'view_vr', 'create_vr', 'edit_vr', 'delete_vr', 'submit_vr',
+  'view_deposits', 'create_deposit', 'delete_deposit', 'export_deposits'
 ];
 
-var VIEW_PERMS = ['view_pos', 'view_quotes', 'view_vr', 'view_deposits'];
+var EMPLOYEE_PERMS = [
+  'view_pos', 'create_po', 'edit_po', 'delete_po', 'submit_po',
+  'view_quotes', 'create_quote', 'edit_quote', 'delete_quote', 'push_quote_po',
+  'view_vr', 'create_vr', 'edit_vr', 'delete_vr', 'submit_vr',
+  'view_deposits', 'create_deposit', 'delete_deposit', 'export_deposits'
+];
 var DEFAULTS = {
   admin: '*',
-  manager: ['view_users', 'manage_cities', 'manage_geico', 'manage_running', 'manage_vehicles', 'manage_vendors', 'manage_addresses', 'approve_vr'].concat(VIEW_PERMS),
-  locksmith: [].concat(VIEW_PERMS),
-  locksmith_coordinator: [].concat(VIEW_PERMS),
-  roadside_technician: [].concat(VIEW_PERMS)
+  manager: ['view_users', 'manage_cities', 'manage_geico', 'manage_running', 'manage_vehicles', 'manage_vendors', 'manage_addresses', 'approve_vr'].concat(EMPLOYEE_PERMS),
+  locksmith: EMPLOYEE_PERMS.slice(),
+  locksmith_coordinator: EMPLOYEE_PERMS.slice(),
+  roadside_technician: EMPLOYEE_PERMS.slice()
 };
 
 var cache = null;

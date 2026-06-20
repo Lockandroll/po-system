@@ -67,7 +67,7 @@ router.get('/:id', requireAuth, requirePermission('view_quotes'), async (req, re
 });
 
 // POST create quote
-router.post('/', requireAuth, requirePermission('view_quotes'), async (req, res) => {
+router.post('/', requireAuth, requirePermission('create_quote'), async (req, res) => {
   const { customer_name, city_code, notes, important_info, tax_rate, line_items } = req.body;
   if (!customer_name) return res.status(400).json({ error: 'Customer name is required' });
   const initials = getInitials(req.user.name);
@@ -139,7 +139,7 @@ router.post('/', requireAuth, requirePermission('view_quotes'), async (req, res)
 });
 
 // PUT update quote
-router.put('/:id', requireAuth, requirePermission('view_quotes'), async (req, res) => {
+router.put('/:id', requireAuth, requirePermission('edit_quote'), async (req, res) => {
   try {
     const { rows } = await pool.query('SELECT * FROM quotes WHERE id = $1', [req.params.id]);
     if (!rows.length) return res.status(404).json({ error: 'Quote not found' });
@@ -188,7 +188,7 @@ router.put('/:id', requireAuth, requirePermission('view_quotes'), async (req, re
 });
 
 // DELETE quote
-router.delete('/:id', requireAuth, requirePermission('view_quotes'), async (req, res) => {
+router.delete('/:id', requireAuth, requirePermission('delete_quote'), async (req, res) => {
   try {
     const { rows } = await pool.query('SELECT * FROM quotes WHERE id = $1', [req.params.id]);
     if (!rows.length) return res.status(404).json({ error: 'Quote not found' });
@@ -206,7 +206,7 @@ router.delete('/:id', requireAuth, requirePermission('view_quotes'), async (req,
 });
 
 // POST push a quote into PO(s) - one PO per supplier (manufacturer); uses our cost (unit_price)
-router.post('/:id/push-to-po', requireAuth, requirePermission('view_quotes'), async (req, res) => {
+router.post('/:id/push-to-po', requireAuth, requirePermission('push_quote_po'), async (req, res) => {
   try {
     const { rows } = await pool.query('SELECT * FROM quotes WHERE id = $1', [req.params.id]);
     if (!rows.length) return res.status(404).json({ error: 'Quote not found' });

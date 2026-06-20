@@ -382,8 +382,14 @@ async function initDB() {
     // One-time backfill: grant the new module-view permissions to existing saved
     // role configs so nobody loses access. Guarded by a flag so it runs once and
     // never undoes an admin's later choices.
-    const _vb = await client.query("SELECT value FROM settings WHERE key = 'view_perms_backfilled'");
+    const _vb = await client.query("SELECT value FROM settings WHERE key = 'perm_matrix_v2_backfilled'");
     if (!_vb.rows.length) {
+      const _newPerms = [
+        'view_pos', 'create_po', 'edit_po', 'delete_po', 'submit_po',
+        'view_quotes', 'create_quote', 'edit_quote', 'delete_quote', 'push_quote_po',
+        'view_vr', 'create_vr', 'edit_vr', 'delete_vr', 'submit_vr',
+        'view_deposits', 'create_deposit', 'delete_deposit', 'export_deposits'
+      ];
       const _rp = await client.query("SELECT value FROM settings WHERE key = 'role_permissions'");
       if (_rp.rows.length && _rp.rows[0].value) {
         try {
@@ -391,16 +397,14 @@ async function initDB() {
           if (obj && typeof obj === 'object') {
             ['locksmith', 'locksmith_coordinator', 'roadside_technician', 'manager'].forEach(function(r) {
               if (Array.isArray(obj[r])) {
-                ['view_pos', 'view_quotes', 'view_vr', 'view_deposits'].forEach(function(p) {
-                  if (obj[r].indexOf(p) === -1) obj[r].push(p);
-                });
+                _newPerms.forEach(function(p) { if (obj[r].indexOf(p) === -1) obj[r].push(p); });
               }
             });
             await client.query("INSERT INTO settings (key, value, updated_at) VALUES ('role_permissions', $1, NOW()) ON CONFLICT (key) DO UPDATE SET value = $1, updated_at = NOW()", [JSON.stringify(obj)]);
           }
-        } catch (e) { console.error('view-perm backfill failed:', e.message); }
+        } catch (e) { console.error('perm matrix v2 backfill failed:', e.message); }
       }
-      await client.query("INSERT INTO settings (key, value) VALUES ('view_perms_backfilled', '1') ON CONFLICT (key) DO NOTHING");
+      await client.query("INSERT INTO settings (key, value) VALUES ('perm_matrix_v2_backfilled', '1') ON CONFLICT (key) DO NOTHING");
     }
     console.log('Database initialized');
   } finally {

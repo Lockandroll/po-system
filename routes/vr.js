@@ -71,7 +71,7 @@ router.get('/:id', requireAuth, requirePermission('view_vr'), async function(req
 });
 
 // POST create VR
-router.post('/', requireAuth, requirePermission('view_vr'), async function(req, res) {
+router.post('/', requireAuth, requirePermission('create_vr'), async function(req, res) {
   const { vehicle, vin_last6, vehicle_id, assigned_user_id, shop_name, city_code, notes, line_items } = req.body;
   if (!vehicle) return res.status(400).json({ error: 'Vehicle is required' });
   const initials = getInitials(req.user.name);
@@ -106,7 +106,7 @@ router.post('/', requireAuth, requirePermission('view_vr'), async function(req, 
 });
 
 // PUT update VR
-router.put('/:id', requireAuth, requirePermission('view_vr'), async function(req, res) {
+router.put('/:id', requireAuth, requirePermission('edit_vr'), async function(req, res) {
   try {
     const { rows } = await pool.query('SELECT * FROM vehicle_repairs WHERE id = $1', [req.params.id]);
     if (!rows.length) return res.status(404).json({ error: 'Vehicle repair not found' });
@@ -150,7 +150,7 @@ router.put('/:id', requireAuth, requirePermission('view_vr'), async function(req
 });
 
 // POST submit VR
-router.post('/:id/submit', requireAuth, requirePermission('view_vr'), async function(req, res) {
+router.post('/:id/submit', requireAuth, requirePermission('submit_vr'), async function(req, res) {
   try {
     const { rows } = await pool.query('SELECT * FROM vehicle_repairs WHERE id = $1', [req.params.id]);
     if (!rows.length) return res.status(404).json({ error: 'Not found' });
@@ -271,7 +271,7 @@ router.post('/:id/reject', requireAuth, requirePermission('approve_vr'), async f
 });
 
 // DELETE VR
-router.delete('/:id', requireAuth, requirePermission('view_vr'), async function(req, res) {
+router.delete('/:id', requireAuth, requirePermission('delete_vr'), async function(req, res) {
   try {
     const { rows } = await pool.query('SELECT * FROM vehicle_repairs WHERE id = $1', [req.params.id]);
     if (!rows.length) return res.status(404).json({ error: 'Not found' });
@@ -288,7 +288,7 @@ router.delete('/:id', requireAuth, requirePermission('view_vr'), async function(
 });
 
 // POST /api/vr/ai-extract — parse shop estimate image/PDF and return structured data
-router.post('/ai-extract', requireAuth, requirePermission('view_vr'), async function(req, res) {
+router.post('/ai-extract', requireAuth, requirePermission('create_vr'), async function(req, res) {
   if (!process.env.ANTHROPIC_API_KEY) return res.status(503).json({ error: 'AI not configured' });
   const { imageData, mediaType } = req.body;
   if (!imageData) return res.status(400).json({ error: 'No image data provided' });

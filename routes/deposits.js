@@ -24,7 +24,7 @@ async function generateDepositNumber() {
 
 // POST /ai-extract — read a deposit receipt photo and return amount + date.
 // The tech reviews/edits the prefilled values before submitting.
-router.post('/ai-extract', requireAuth, requirePermission('view_deposits'), async function(req, res) {
+router.post('/ai-extract', requireAuth, requirePermission('create_deposit'), async function(req, res) {
   if (!process.env.ANTHROPIC_API_KEY) return res.status(503).json({ error: 'AI not configured' });
   const { imageData, mediaType } = req.body;
   if (!imageData) return res.status(400).json({ error: 'No image data provided' });
@@ -84,7 +84,7 @@ router.post('/ai-extract', requireAuth, requirePermission('view_deposits'), asyn
 });
 
 // POST / — submit a deposit (any authenticated user, for themselves)
-router.post('/', requireAuth, requirePermission('view_deposits'), async function(req, res) {
+router.post('/', requireAuth, requirePermission('create_deposit'), async function(req, res) {
   try {
     const { amount, deposit_date, city_code, notes, receipt_image, receipt_filename } = req.body;
     const amt = parseFloat(amount);
@@ -150,7 +150,7 @@ router.get('/', requireAuth, requirePermission('view_deposits'), async function(
 });
 
 // GET /export — all deposits for CSV (admin/manager only). No images.
-router.get('/export', requireAuth, requirePermission('view_deposits'), async function(req, res) {
+router.get('/export', requireAuth, requirePermission('export_deposits'), async function(req, res) {
   if (!MANAGE.includes(req.user.role)) {
     return res.status(403).json({ error: 'Access denied' });
   }
@@ -183,7 +183,7 @@ router.get('/:id', requireAuth, requirePermission('view_deposits'), async functi
 });
 
 // DELETE /:id — admin/manager only
-router.delete('/:id', requireAuth, requirePermission('view_deposits'), async function(req, res) {
+router.delete('/:id', requireAuth, requirePermission('delete_deposit'), async function(req, res) {
   if (!MANAGE.includes(req.user.role)) {
     return res.status(403).json({ error: 'Access denied' });
   }
