@@ -1742,6 +1742,7 @@ async function renderGeicoReviews(el) {
   var lbl = 'display:block;font-size:11px;color:var(--text-muted-color);margin-bottom:4px';
   el.innerHTML =
     '<div class="page-header"><div><div class="page-title">Geico Surveys</div><div class="page-subtitle">ERS survey history by city, service &amp; rating</div></div></div>' +
+    '<div id="geico-updated" style="font-size:12px;color:var(--text-muted-color);margin:-6px 0 14px">Auto-updates daily.</div>' +
     '<div id="geico-filters" style="display:flex;flex-wrap:wrap;gap:10px;align-items:end;margin-bottom:16px">' +
       '<div><label style="' + lbl + '">From</label><input type="date" id="geico-from" style="' + iS + '" onchange="geicoLoad()" /></div>' +
       '<div><label style="' + lbl + '">To</label><input type="date" id="geico-to" style="' + iS + '" onchange="geicoLoad()" /></div>' +
@@ -1796,6 +1797,7 @@ async function geicoLoad(initial) {
     if (initial) geicoPopulateDropdowns(stats);
     geicoRenderStats(stats);
     geicoRenderTable(rows);
+    var _up = document.getElementById('geico-updated'); if (_up) { var _latest = (_geicoRows[0] && _geicoRows[0].date_received) ? _geicoRows[0].date_received : 'none yet'; _up.textContent = 'Auto-updates daily. Latest survey received: ' + _latest; }
   } catch(e) {
     if (statsEl) statsEl.innerHTML = '<div class="alert alert-error">' + escHtml(e.message) + '</div>';
     if (tableEl) tableEl.innerHTML = '';
