@@ -26,7 +26,7 @@ async function cfg() {
   const enabledSetting = await getSetting('work_orders_enabled');
   const enabled = (process.env.WORK_ORDERS_ENABLED === 'true') || (enabledSetting === 'true');
   const systemUserId = parseInt(process.env.WORK_ORDERS_SYSTEM_USER_ID || (await getSetting('work_orders_system_user_id')) || '0', 10) || null;
-  const signoffOn = (await getSetting('work_orders_signoff_on')) || 'ingest';
+  const signoffOn = (await getSetting('work_orders_signoff_on')) || 'accept';
   return { mailbox: mailbox, enabled: enabled, systemUserId: systemUserId, signoffOn: signoffOn };
 }
 
