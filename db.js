@@ -432,6 +432,34 @@ async function initDB() {
       '  created_at TIMESTAMPTZ DEFAULT NOW()' +
       ');'
     );
+    // Tasks column migrations — CREATE TABLE IF NOT EXISTS won't add columns to a pre-existing table,
+    // so backfill any columns added after the tables were first created (idempotent).
+    await client.query(
+      "ALTER TABLE tasks ADD COLUMN IF NOT EXISTS description TEXT;" +
+      "ALTER TABLE tasks ADD COLUMN IF NOT EXISTS status VARCHAR(20) DEFAULT 'todo';" +
+      "ALTER TABLE tasks ADD COLUMN IF NOT EXISTS priority VARCHAR(10) DEFAULT 'medium';" +
+      "ALTER TABLE tasks ADD COLUMN IF NOT EXISTS assigned_to INTEGER;" +
+      "ALTER TABLE tasks ADD COLUMN IF NOT EXISTS created_by INTEGER;" +
+      "ALTER TABLE tasks ADD COLUMN IF NOT EXISTS due_date DATE;" +
+      "ALTER TABLE tasks ADD COLUMN IF NOT EXISTS completed_at TIMESTAMPTZ;" +
+      "ALTER TABLE tasks ADD COLUMN IF NOT EXISTS completed_by INTEGER;" +
+      "ALTER TABLE tasks ADD COLUMN IF NOT EXISTS position INTEGER DEFAULT 0;" +
+      "ALTER TABLE tasks ADD COLUMN IF NOT EXISTS recurrence VARCHAR(10);" +
+      "ALTER TABLE tasks ADD COLUMN IF NOT EXISTS recurrence_day INTEGER;" +
+      "ALTER TABLE tasks ADD COLUMN IF NOT EXISTS reminded_day_before BOOLEAN NOT NULL DEFAULT false;" +
+      "ALTER TABLE tasks ADD COLUMN IF NOT EXISTS reminded_due BOOLEAN NOT NULL DEFAULT false;" +
+      "ALTER TABLE tasks ADD COLUMN IF NOT EXISTS last_overdue_on DATE;" +
+      "ALTER TABLE tasks ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ DEFAULT NOW();" +
+      "ALTER TABLE tasks ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ DEFAULT NOW();" +
+      "ALTER TABLE task_subtasks ADD COLUMN IF NOT EXISTS done BOOLEAN NOT NULL DEFAULT false;" +
+      "ALTER TABLE task_subtasks ADD COLUMN IF NOT EXISTS position INTEGER DEFAULT 0;" +
+      "ALTER TABLE task_subtasks ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ DEFAULT NOW();" +
+      "ALTER TABLE task_activity ADD COLUMN IF NOT EXISTS user_id INTEGER;" +
+      "ALTER TABLE task_activity ADD COLUMN IF NOT EXISTS user_name VARCHAR(255);" +
+      "ALTER TABLE task_activity ADD COLUMN IF NOT EXISTS type VARCHAR(20) NOT NULL DEFAULT 'event';" +
+      "ALTER TABLE task_activity ADD COLUMN IF NOT EXISTS body TEXT;" +
+      "ALTER TABLE task_activity ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ DEFAULT NOW();"
+    );
     await client.query(
       'CREATE INDEX IF NOT EXISTS idx_tasks_assignee ON tasks(assigned_to);' +
       'CREATE INDEX IF NOT EXISTS idx_tasks_status ON tasks(status);' +
