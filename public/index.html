@@ -97,6 +97,7 @@
     label { display: block; font-size: 14px; font-weight: 500; color: var(--text-dim); margin-bottom: 6px; }
     input, select, textarea { width: 100%; padding: 9px 12px; border: 1px solid var(--border); border-radius: var(--radius); font-size: 14px; color: var(--text); background: var(--bg-elevated); transition: border 0.15s; outline: none; }
     input:focus, select:focus, textarea:focus { border-color: var(--primary); box-shadow: 0 0 0 3px rgba(249,115,22,0.15); }
+    input:-webkit-autofill, input:-webkit-autofill:hover, input:-webkit-autofill:focus, input:-webkit-autofill:active, textarea:-webkit-autofill, select:-webkit-autofill { -webkit-text-fill-color: var(--text); -webkit-box-shadow: 0 0 0 1000px var(--bg-elevated) inset; box-shadow: 0 0 0 1000px var(--bg-elevated) inset; caret-color: var(--text); transition: background-color 99999s ease-in-out 0s; }
     select option { background: var(--bg-elevated); color: var(--text); }
     textarea { resize: vertical; min-height: 80px; }
     .form-row { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
