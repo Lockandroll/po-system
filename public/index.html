@@ -162,6 +162,7 @@
     @keyframes spin { to { transform: rotate(360deg); } }
     .spinner { display:inline-block; width:16px; height:16px; border:2px solid rgba(249,115,22,0.25); border-top-color:var(--primary); border-radius:50%; animation:spin 0.7s linear infinite; vertical-align:middle; }
     .spinner-lg { width:36px; height:36px; border-width:3px; }
+    .task-dragging { opacity:0.4; }
     .flex-gap { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
     .text-right { text-align: right; }
     .text-muted { color: var(--text-muted-color); font-size: 13px; }
@@ -1983,7 +1984,8 @@ var TASK_PRIO = { urgent:{l:'Urgent',c:'#ef4444'}, high:{l:'High',c:'#f59e0b'}, 
 var _tasksData = [];
 var _taskView = 'board';
 var _taskDragId = null;
-function taskDragStart(e, id){ _taskDragId = id; if (e.dataTransfer){ e.dataTransfer.effectAllowed='move'; try { e.dataTransfer.setData('text/plain', String(id)); } catch(_){} } }
+function taskDragStart(e, id){ _taskDragId = id; var card=e.currentTarget; if (e.dataTransfer){ e.dataTransfer.effectAllowed='move'; try { e.dataTransfer.setData('text/plain', String(id)); } catch(_){} try { if (card && e.dataTransfer.setDragImage) e.dataTransfer.setDragImage(card, Math.min(card.offsetWidth/2, 140), 24); } catch(_){} } if (card) setTimeout(function(){ card.classList.add('task-dragging'); }, 0); }
+function taskDragEnd(e){ var card=e.currentTarget; if (card) card.classList.remove('task-dragging'); }
 function taskDragOver(e){ e.preventDefault(); if (e.dataTransfer) e.dataTransfer.dropEffect='move'; }
 function taskColEl(sn){ return document.getElementById('task-col-'+sn); }
 function taskDragEnter(e, sn){ var c=taskColEl(sn); if (c) c.style.outline='2px dashed var(--primary)'; }
@@ -2045,7 +2047,7 @@ function taskCardHtml(t){
   var od = taskIsOverdue(t);
   var sub = (t.subtask_total>0) ? '<span style="font-size:11px;color:var(--text-muted-color)">'+t.subtask_done+'/'+t.subtask_total+' done</span>' : '';
   var due = t.due_date ? '<span style="font-size:11px;font-weight:600;color:'+(od?'#ef4444':'var(--text-muted-color)')+'">'+(od?'Overdue · ':'')+formatDate(t.due_date)+'</span>' : '';
-  return '<div class="card" draggable="true" ondragstart="taskDragStart(event,'+t.id+')" style="margin-bottom:8px;cursor:grab" onclick="navigate(\'task-detail\','+t.id+')"><div class="card-body" style="padding:10px 12px">' +
+  return '<div class="card" draggable="true" ondragstart="taskDragStart(event,'+t.id+')" ondragend="taskDragEnd(event)" style="margin-bottom:8px;cursor:grab" onclick="navigate(\'task-detail\','+t.id+')"><div class="card-body" style="padding:10px 12px">' +
     '<div style="display:flex;align-items:center;gap:7px;margin-bottom:5px"><span style="width:8px;height:8px;border-radius:50%;background:'+p.c+';flex-shrink:0"></span><span style="font-weight:600;font-size:14px">'+escHtml(t.title)+'</span></div>' +
     '<div style="display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap">' +
       '<span style="font-size:11px;color:var(--text-muted-color)">'+escHtml(t.assignee_name||'Unassigned')+'</span>'+due +
