@@ -349,6 +349,10 @@ async function initDB() {
       'ALTER TABLE signoff_forms ADD COLUMN IF NOT EXISTS signed_at TIMESTAMPTZ;'
     );
     await client.query(
+      'ALTER TABLE deposits ADD COLUMN IF NOT EXISTS period_start DATE;' +
+      'ALTER TABLE deposits ADD COLUMN IF NOT EXISTS period_end DATE;'
+    );
+    await client.query(
       "UPDATE users SET role = 'locksmith' WHERE role = 'requester';" +
       "UPDATE users SET role = 'manager' WHERE role = 'approver';" +
       "ALTER TABLE users ALTER COLUMN role SET DEFAULT 'locksmith';"

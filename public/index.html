@@ -4630,6 +4630,25 @@ async function renderHomeScreen(el) {
 var depositReceiptData = null;
 var depositReceiptName = null;
 
+// Deposit pay-period helpers — weeks run Monday to Sunday.
+function depMonday(d) { var x = new Date(d.getFullYear(), d.getMonth(), d.getDate()); var day = x.getDay(); x.setDate(x.getDate() + (day === 0 ? -6 : 1 - day)); return x; }
+function depAddDays(d, n) { var x = new Date(d.getFullYear(), d.getMonth(), d.getDate()); x.setDate(x.getDate() + n); return x; }
+function depYmd(d) { var m = String(d.getMonth() + 1); if (m.length < 2) m = '0' + m; var da = String(d.getDate()); if (da.length < 2) da = '0' + da; return d.getFullYear() + '-' + m + '-' + da; }
+function depParseYmd(s) { var p = String(s).split('-'); return new Date(parseInt(p[0], 10), parseInt(p[1], 10) - 1, parseInt(p[2], 10)); }
+function depWeekLabel(mon) { var sun = depAddDays(mon, 6); var a = mon.toLocaleDateString('en-US', { month: 'short', day: 'numeric' }); var b = sun.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }); return a + ' \u2013 ' + b; }
+function depBuildPeriodOptions() {
+  var curMon = depMonday(new Date());
+  var defaultVal = depYmd(depAddDays(curMon, -7));
+  var out = '';
+  for (var i = 0; i <= 11; i++) {
+    var mon = depAddDays(curMon, -7 * i);
+    var val = depYmd(mon);
+    var tag = (val === depYmd(curMon)) ? ' (current week)' : (val === defaultVal ? ' (last week)' : '');
+    out += '<option value="' + val + '"' + (val === defaultVal ? ' selected' : '') + '>' + depWeekLabel(mon) + tag + '</option>';
+  }
+  return out;
+}
+
 async function renderDeposits(el) {
   var canManage = ['admin','manager'].includes(state.user.role);
   var canSeeAll = ['admin','manager','approver'].includes(state.user.role);
@@ -4654,6 +4673,9 @@ async function renderDeposits(el) {
         '<div style="display:flex;gap:12px;flex-wrap:wrap">' +
           '<div class="form-group" style="flex:1;min-width:160px"><label>Amount ($)</label><input type="number" id="dep-amount" step="0.01" min="0" placeholder="0.00" /></div>' +
           '<div class="form-group" style="flex:1;min-width:160px"><label>Deposit Date</label><input type="date" id="dep-date" value="' + today + '" /></div>' +
+        '</div>' +
+        '<div style="display:flex;gap:12px;flex-wrap:wrap">' +
+          '<div class="form-group" style="flex:1;min-width:200px"><label>Pay Period (Week)</label><select id="dep-period">' + depBuildPeriodOptions() + '</select></div>' +
         '</div>' +
         '<div style="display:flex;gap:12px;flex-wrap:wrap">' +
           '<div class="form-group" style="flex:1;min-width:160px"><label>City</label><select id="dep-city">' + cityOptions + '</select></div>' +
@@ -4728,13 +4750,17 @@ async function submitDeposit() {
   var fb = document.getElementById('dep-feedback');
   var amount = document.getElementById('dep-amount').value;
   var deposit_date = document.getElementById('dep-date').value;
+  var periodMon = document.getElementById('dep-period') ? document.getElementById('dep-period').value : '';
+  var period_start = periodMon;
+  var period_end = periodMon ? depYmd(depAddDays(depParseYmd(periodMon), 6)) : '';
   var city_code = document.getElementById('dep-city').value;
   var notes = document.getElementById('dep-notes').value.trim();
   if (!amount || parseFloat(amount) <= 0) { fb.innerHTML = '<div class="alert alert-error">Please enter a valid amount.</div>'; return; }
   if (!deposit_date) { fb.innerHTML = '<div class="alert alert-error">Please choose a deposit date.</div>'; return; }
+  if (!periodMon) { fb.innerHTML = '<div class="alert alert-error">Please select a pay period.</div>'; return; }
   if (!depositReceiptData) { fb.innerHTML = '<div class="alert alert-error">Please attach a photo of the receipt.</div>'; return; }
   try {
-    await api('POST', '/deposits', { amount: amount, deposit_date: deposit_date, city_code: city_code, notes: notes, receipt_image: depositReceiptData, receipt_filename: depositReceiptName });
+    await api('POST', '/deposits', { amount: amount, deposit_date: deposit_date, period_start: period_start, period_end: period_end, city_code: city_code, notes: notes, receipt_image: depositReceiptData, receipt_filename: depositReceiptName });
     fb.innerHTML = '<div class="alert alert-success">Deposit submitted — thank you!</div>';
     document.getElementById('dep-amount').value = '';
     document.getElementById('dep-notes').value = '';
@@ -4759,6 +4785,7 @@ async function loadDepositsTable() {
       var receipt = d.has_receipt ? '<a href="#" onclick="event.preventDefault();event.stopPropagation();navigate(\'view-deposit\',' + d.id + ')" style="color:#f97316">View</a>' : '<span style="color:var(--text-muted-color)">—</span>';
       return '<tr style="cursor:pointer" onclick="navigate(\'view-deposit\',' + d.id + ')">' +
         '<td style="white-space:nowrap">' + formatDate(d.deposit_date) + '</td>' +
+        '<td style="white-space:nowrap">' + ((d.period_start && d.period_end) ? (formatDate(d.period_start) + ' \u2013 ' + formatDate(d.period_end)) : '\u2014') + '</td>' +
         '<td style="white-space:nowrap;color:var(--text-muted-color);font-size:13px">' + escHtml(d.deposit_number || '—') + '</td>' +
         '<td style="white-space:nowrap;font-weight:600">$' + parseFloat(d.amount).toFixed(2) + '</td>' +
         '<td>' + escHtml(d.city_code || '—') + '</td>' +
@@ -4767,7 +4794,7 @@ async function loadDepositsTable() {
         (can('delete_deposit') ? '<td><button class="btn btn-ghost btn-sm" onclick="event.stopPropagation();deleteDeposit(' + d.id + ')" style="color:#ef4444">Delete</button></td>' : '') +
       '</tr>';
     }).join('');
-    var head = '<th>Date</th><th>Deposit #</th><th>Amount</th><th>City</th>' + (canSeeAll ? '<th>Submitted By</th>' : '') + '<th>Receipt</th>' + (can('delete_deposit') ? '<th></th>' : '');
+    var head = '<th>Date</th><th>Pay Period</th><th>Deposit #</th><th>Amount</th><th>City</th>' + (canSeeAll ? '<th>Submitted By</th>' : '') + '<th>Receipt</th>' + (can('delete_deposit') ? '<th></th>' : '');
     area.innerHTML = '<div class="table-wrap"><table class="table"><thead><tr>' + head + '</tr></thead><tbody>' + rows + '</tbody></table></div>';
   } catch(e) {
     area.innerHTML = '<div class="alert alert-error">Failed to load deposits</div>';
@@ -4779,11 +4806,13 @@ async function exportDepositsCSV() {
     var res = await api('GET', '/deposits/export');
     var deposits = res.deposits || [];
     var rows = [];
-    rows.push(['Deposit #','Date','Amount','City','Submitted By','Notes','Receipt File','Has Receipt','Submitted At'].join(','));
+    rows.push(['Deposit #','Date','Pay Period Start','Pay Period End','Amount','City','Submitted By','Notes','Receipt File','Has Receipt','Submitted At'].join(','));
     deposits.forEach(function(d) {
       rows.push([
         d.deposit_number || '',
         d.deposit_date ? formatDate(d.deposit_date) : '',
+        d.period_start ? formatDate(d.period_start) : '',
+        d.period_end ? formatDate(d.period_end) : '',
         parseFloat(d.amount).toFixed(2),
         d.city_code || '',
         d.user_name || '',
@@ -4824,6 +4853,7 @@ async function renderViewDeposit(el, id) {
       '<div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:20px">' +
         '<div><div style="color:var(--text-muted-color);font-size:13px">Amount</div><div style="font-size:20px;font-weight:700;color:#f97316">$' + parseFloat(dep.amount).toFixed(2) + '</div></div>' +
         '<div><div style="color:var(--text-muted-color);font-size:13px">Deposit Date</div><div style="font-weight:600">' + formatDate(dep.deposit_date) + '</div></div>' +
+        '<div><div style="color:var(--text-muted-color);font-size:13px">Pay Period</div><div style="font-weight:600">' + ((dep.period_start && dep.period_end) ? (formatDate(dep.period_start) + ' \u2013 ' + formatDate(dep.period_end)) : '\u2014') + '</div></div>' +
         '<div><div style="color:var(--text-muted-color);font-size:13px">City</div><div>' + escHtml(dep.city_code || '—') + '</div></div>' +
       '</div>' +
       (dep.notes ? '<div style="margin-bottom:20px"><div style="color:var(--text-muted-color);font-size:13px">Notes</div><div>' + escHtml(dep.notes) + '</div></div>' : '') +
