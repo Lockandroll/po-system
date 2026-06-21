@@ -37,7 +37,7 @@
     }
     body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: var(--bg); color: var(--text); min-height: 100vh; }
     #app { display: flex; min-height: 100vh; width: 100%; }
-    #sidebar { width: 240px; background: #111; border-right: 1px solid var(--border); display: flex; flex-direction: column; position: fixed; top: 0; left: 0; height: 100vh; z-index: 100; transition: transform 0.25s ease; }
+    #sidebar { width: 240px; background: #111; border-right: 1px solid var(--border); display: flex; flex-direction: column; position: fixed; top: 0; left: 0; height: 100vh; height: 100dvh; z-index: 100; transition: transform 0.25s ease; }
     #main { margin-left: 240px; flex: 1; display: flex; flex-direction: column; min-height: 100vh; }
     .main-header { background: #111; border-bottom: 1px solid var(--border); padding: 16px 24px; display: flex; align-items: center; justify-content: space-between; }
     .main-content { padding: 24px; flex: 1; }
@@ -64,7 +64,7 @@
     .sidebar-logo h1 { font-size: 18px; font-weight: 700; color: var(--primary); letter-spacing: -0.3px; }
     .sidebar-logo h1::after { content: ''; display: block; width: 32px; height: 2px; background: var(--primary); margin-top: 6px; border-radius: 2px; }
     .sidebar-logo p { font-size: 12px; color: var(--text-muted-color); margin-top: 2px; }
-    .sidebar-nav { flex: 1; padding: 12px 8px; }
+    .sidebar-nav { flex: 1; padding: 12px 8px; overflow-y: auto; -webkit-overflow-scrolling: touch; }
     .nav-item { display: flex; align-items: center; gap: 10px; padding: 10px 12px; border-radius: var(--radius); cursor: pointer; color: var(--text-dim); font-size: 14px; font-weight: 500; transition: all 0.15s; margin-bottom: 2px; }
     .nav-item:hover { background: var(--bg-elevated); color: var(--text); }
     .nav-item.active { background: rgba(249,115,22,0.15); color: var(--primary); }
@@ -81,7 +81,7 @@
     .nav-sub:hover { background:var(--bg-elevated); color:var(--text); }
     .nav-sub.active { background:rgba(249,115,22,0.12); color:var(--primary); font-weight:600; }
     .nav-sub svg { width:14px; height:14px; flex-shrink:0; }
-    .sidebar-footer { padding: 16px; border-top: 1px solid var(--border); }
+    .sidebar-footer { padding: 16px; padding-bottom: calc(16px + env(safe-area-inset-bottom)); border-top: 1px solid var(--border); }
     .sidebar-user { display: flex; align-items: center; gap: 10px; margin-bottom: 12px; }
     .avatar { width: 36px; height: 36px; border-radius: 50%; background: var(--primary); color: white; display: flex; align-items: center; justify-content: center; font-weight: 700; font-size: 14px; flex-shrink: 0; }
     .sidebar-user-info { flex: 1; min-width: 0; }
@@ -231,6 +231,15 @@ async function api(method, path, body) {
   if (newToken) {
     state.token = newToken;
     localStorage.setItem('po_token', newToken);
+  }
+  // Expired/invalid session: clear creds and bounce to login instead of getting stuck
+  if (res.status === 401 && state.token) {
+    state.token = null;
+    state.user = null;
+    localStorage.removeItem('po_token');
+    localStorage.removeItem('po_user');
+    render();
+    throw new Error('Your session expired \u2014 please sign in again.');
   }
   let data;
   try {
@@ -5147,7 +5156,8 @@ async function renderHomeScreen(el) {
       '<div style="text-align:center;padding:48px 20px;">' +
         '<div style="font-size:32px;margin-bottom:12px;">&#9888;&#65039;</div>' +
         '<div style="font-weight:600;font-size:16px;margin-bottom:8px;">Couldn&#39;t load the dashboard</div>' +
-        '<div style="color:var(--text-muted-color);font-size:14px;margin-bottom:20px;">This sometimes happens after a fresh deploy. Try refreshing the page.</div>' +
+        '<div style="color:var(--text-muted-color);font-size:14px;margin-bottom:12px;">This sometimes happens after a fresh deploy. Try refreshing the page.</div>' +
+        '<div style="color:var(--text-muted-color);font-size:12px;margin-bottom:20px;opacity:0.75;">' + escHtml(err.message || '') + '</div>' +
         '<button class="btn btn-primary" onclick="location.reload()">Refresh Page</button>' +
       '</div>';
     console.error('Dashboard load error:', err.message);
