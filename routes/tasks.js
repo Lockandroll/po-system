@@ -73,12 +73,13 @@ router.post('/', requireAuth, requirePermission('manage_tasks'), async (req, res
     const status = STATUSES.indexOf(b.status) !== -1 ? b.status : 'todo';
     const priority = PRIORITIES.indexOf(b.priority) !== -1 ? b.priority : 'medium';
     const recurrence = RECUR.indexOf(b.recurrence) !== -1 ? (b.recurrence || null) : null;
+    const recDay = (recurrence === 'weekly' || recurrence === 'monthly') && b.recurrence_day != null && b.recurrence_day !== '' ? parseInt(b.recurrence_day, 10) : null;
     const assigned_to = b.assigned_to ? parseInt(b.assigned_to, 10) : null;
     const due_date = b.due_date || null;
     const { rows } = await pool.query(
-      'INSERT INTO tasks (title, description, status, priority, assigned_to, created_by, due_date, recurrence) ' +
-      'VALUES ($1,$2,$3,$4,$5,$6,$7,$8) RETURNING *',
-      [title, b.description || null, status, priority, assigned_to, req.user.id, due_date, recurrence]
+      'INSERT INTO tasks (title, description, status, priority, assigned_to, created_by, due_date, recurrence, recurrence_day) ' +
+      'VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING *',
+      [title, b.description || null, status, priority, assigned_to, req.user.id, due_date, recurrence, recDay]
     );
     const task = rows[0];
     if (Array.isArray(b.subtasks)) {
@@ -131,16 +132,17 @@ router.put('/:id', requireAuth, requirePermission('manage_tasks'), async (req, r
     const status = STATUSES.indexOf(b.status) !== -1 ? b.status : ex.status;
     const priority = PRIORITIES.indexOf(b.priority) !== -1 ? b.priority : ex.priority;
     const recurrence = RECUR.indexOf(b.recurrence) !== -1 ? (b.recurrence || null) : ex.recurrence;
+    const recDay = (recurrence === 'weekly' || recurrence === 'monthly') ? (b.recurrence_day !== undefined ? (b.recurrence_day === '' || b.recurrence_day == null ? null : parseInt(b.recurrence_day, 10)) : ex.recurrence_day) : null;
     const assigned_to = b.assigned_to !== undefined ? (b.assigned_to ? parseInt(b.assigned_to, 10) : null) : ex.assigned_to;
     const due_date = b.due_date !== undefined ? (b.due_date || null) : ex.due_date;
     const description = b.description !== undefined ? b.description : ex.description;
     const dueChanged = String(due_date) !== String(ex.due_date);
     const assigneeChanged = (assigned_to || null) !== (ex.assigned_to || null);
     await pool.query(
-      'UPDATE tasks SET title=$1, description=$2, status=$3, priority=$4, assigned_to=$5, due_date=$6, recurrence=$7, ' +
+      'UPDATE tasks SET title=$1, description=$2, status=$3, priority=$4, assigned_to=$5, due_date=$6, recurrence=$7, recurrence_day=$8, ' +
       (dueChanged ? 'reminded_day_before=false, reminded_due=false, last_overdue_on=NULL, ' : '') +
-      'updated_at=NOW() WHERE id=$8',
-      [title, description, status, priority, assigned_to, due_date, recurrence, req.params.id]
+      'updated_at=NOW() WHERE id=$9',
+      [title, description, status, priority, assigned_to, due_date, recurrence, recDay, req.params.id]
     );
     if (assigneeChanged) await addActivity(req.params.id, req.user, 'event', assigned_to ? ('reassigned it to ' + (await nameOf(assigned_to))) : 'unassigned it');
     try { await logAudit({ entity_type: 'task', entity_id: parseInt(req.params.id), entity_number: '#' + req.params.id, action: 'edited', user_id: req.user.id, user_name: req.user.name, details: {} }); } catch (e) {}
@@ -169,17 +171,29 @@ router.patch('/:id/status', requireAuth, requirePermission('view_tasks'), async 
   } catch (err) { console.error(err); res.status(500).json({ error: 'Failed to update status' }); }
 });
 
-async function spawnRecurrence(task, user) {
+function nextRecurDue(task) {
   const base = task.due_date ? new Date(task.due_date) : new Date();
-  const x = new Date(base.getTime());
-  if (task.recurrence === 'daily') x.setDate(x.getDate() + 1);
-  else if (task.recurrence === 'weekly') x.setDate(x.getDate() + 7);
-  else if (task.recurrence === 'monthly') x.setMonth(x.getMonth() + 1);
-  const ndStr = x.toISOString().slice(0, 10);
+  if (task.recurrence === 'weekly') {
+    const target = (task.recurrence_day != null) ? task.recurrence_day : base.getUTCDay();
+    const x = new Date(base.getTime()); x.setUTCDate(x.getUTCDate() + 1);
+    while (x.getUTCDay() !== target) x.setUTCDate(x.getUTCDate() + 1);
+    return x;
+  }
+  if (task.recurrence === 'monthly') {
+    const y = base.getUTCFullYear(), m = base.getUTCMonth();
+    const ny = y + Math.floor((m + 1) / 12), nm = (m + 1) % 12;
+    const lastDay = new Date(Date.UTC(ny, nm + 1, 0)).getUTCDate();
+    const day = Math.min((task.recurrence_day != null ? task.recurrence_day : base.getUTCDate()), lastDay);
+    return new Date(Date.UTC(ny, nm, day));
+  }
+  const x = new Date(base.getTime()); x.setUTCDate(x.getUTCDate() + 1); return x;
+}
+async function spawnRecurrence(task, user) {
+  const ndStr = nextRecurDue(task).toISOString().slice(0, 10);
   const { rows } = await pool.query(
-    'INSERT INTO tasks (title, description, status, priority, assigned_to, created_by, due_date, recurrence) ' +
-    "VALUES ($1,$2,'todo',$3,$4,$5,$6,$7) RETURNING id",
-    [task.title, task.description, task.priority, task.assigned_to, task.created_by, ndStr, task.recurrence]
+    'INSERT INTO tasks (title, description, status, priority, assigned_to, created_by, due_date, recurrence, recurrence_day) ' +
+    "VALUES ($1,$2,'todo',$3,$4,$5,$6,$7,$8) RETURNING id",
+    [task.title, task.description, task.priority, task.assigned_to, task.created_by, ndStr, task.recurrence, task.recurrence_day]
   );
   const newId = rows[0].id;
   const { rows: subs } = await pool.query('SELECT title, position FROM task_subtasks WHERE task_id = $1 ORDER BY position, id', [task.id]);

@@ -1982,6 +1982,28 @@ var TASK_STATUSES = [['todo','To Do'],['in_progress','In Progress'],['done','Don
 var TASK_PRIO = { urgent:{l:'Urgent',c:'#ef4444'}, high:{l:'High',c:'#f59e0b'}, medium:{l:'Medium',c:'#3b82f6'}, low:{l:'Low',c:'#888'} };
 var _tasksData = [];
 var _taskView = 'board';
+var _taskDragId = null;
+function taskDragStart(e, id){ _taskDragId = id; if (e.dataTransfer){ e.dataTransfer.effectAllowed='move'; try { e.dataTransfer.setData('text/plain', String(id)); } catch(_){} } }
+function taskDragOver(e){ e.preventDefault(); if (e.dataTransfer) e.dataTransfer.dropEffect='move'; }
+function taskColEl(sn){ return document.getElementById('task-col-'+sn); }
+function taskDragEnter(e, sn){ var c=taskColEl(sn); if (c) c.style.outline='2px dashed var(--primary)'; }
+function taskDragLeave(e, sn){ var c=taskColEl(sn); if (c && !c.contains(e.relatedTarget)) c.style.outline=''; }
+function rerenderTaskBoard(){ var host=document.getElementById('tasks-board-host'); if (host) host.innerHTML=taskBoardHtml(); }
+async function taskDrop(e, status){
+  e.preventDefault();
+  var id=_taskDragId || (e.dataTransfer ? parseInt(e.dataTransfer.getData('text/plain'),10) : null);
+  _taskDragId=null;
+  ['todo','in_progress','done'].forEach(function(sn){ var c=taskColEl(sn); if (c) c.style.outline=''; });
+  if (!id) return;
+  var t=_tasksData.filter(function(x){ return x.id===id; })[0];
+  if (!t || t.status===status) return;
+  t.status=status;
+  rerenderTaskBoard();
+  try {
+    await api('PATCH','/tasks/'+id+'/status',{status:status});
+    if (status==='done'){ var r=await api('GET','/tasks'); _tasksData=r||[]; rerenderTaskBoard(); }
+  } catch(err){ taskFeedback(err.message,true); navigate('tasks'); }
+}
 
 function taskStatusLabel(s){ for (var i=0;i<TASK_STATUSES.length;i++) if (TASK_STATUSES[i][0]===s) return TASK_STATUSES[i][1]; return s; }
 function taskStatusBadge(s){ var m={ todo:['To Do','#888'], in_progress:['In Progress','#3b82f6'], done:['Done','#22c55e'] }; var x=m[s]||[s,'#888']; return '<span style="font-size:11px;font-weight:700;padding:2px 8px;border-radius:10px;background:'+x[1]+'22;color:'+x[1]+'">'+x[0]+'</span>'; }
@@ -2001,7 +2023,7 @@ async function renderTasks(el){
       (manage ? '<button class="btn btn-secondary" onclick="taskToggleView()">'+(_taskView==='board'?'Table view':'Board view')+'</button>' : '') +
       (manage ? '<button class="btn btn-primary" onclick="navigate(\'new-task\')">+ New Task</button>' : '') +
     '</div></div>';
-  var body = (manage && _taskView==='board') ? taskBoardHtml() : taskTableHtml(manage);
+  var body = (manage && _taskView==='board') ? ('<div id="tasks-board-host">'+taskBoardHtml()+'</div>') : taskTableHtml(manage);
   el.innerHTML = header + '<div id="tasks-feedback"></div>' + body;
 }
 
@@ -2011,7 +2033,7 @@ function taskBoardHtml(){
   var cols = TASK_STATUSES.map(function(st){
     var items = _tasksData.filter(function(t){ return t.status===st[0]; });
     var cards = items.length ? items.map(taskCardHtml).join('') : '<div style="color:var(--text-muted-color);font-size:12px;padding:6px 0">Nothing here.</div>';
-    return '<div style="flex:1;min-width:240px;background:var(--bg-elevated);border-radius:10px;padding:10px">' +
+    return '<div id="task-col-'+st[0]+'" ondragover="taskDragOver(event)" ondrop="taskDrop(event,\''+st[0]+'\')" ondragenter="taskDragEnter(event,\''+st[0]+'\')" ondragleave="taskDragLeave(event,\''+st[0]+'\')" style="flex:1;min-width:240px;background:var(--bg-elevated);border-radius:10px;padding:10px;transition:outline 0.1s">' +
       '<div style="font-size:12px;font-weight:700;text-transform:uppercase;letter-spacing:0.04em;color:var(--text-muted-color);margin-bottom:8px">'+st[1]+' ('+items.length+')</div>' +
       cards + '</div>';
   }).join('');
@@ -2023,7 +2045,7 @@ function taskCardHtml(t){
   var od = taskIsOverdue(t);
   var sub = (t.subtask_total>0) ? '<span style="font-size:11px;color:var(--text-muted-color)">'+t.subtask_done+'/'+t.subtask_total+' done</span>' : '';
   var due = t.due_date ? '<span style="font-size:11px;font-weight:600;color:'+(od?'#ef4444':'var(--text-muted-color)')+'">'+(od?'Overdue · ':'')+formatDate(t.due_date)+'</span>' : '';
-  return '<div class="card" style="margin-bottom:8px;cursor:pointer" onclick="navigate(\'task-detail\','+t.id+')"><div class="card-body" style="padding:10px 12px">' +
+  return '<div class="card" draggable="true" ondragstart="taskDragStart(event,'+t.id+')" style="margin-bottom:8px;cursor:grab" onclick="navigate(\'task-detail\','+t.id+')"><div class="card-body" style="padding:10px 12px">' +
     '<div style="display:flex;align-items:center;gap:7px;margin-bottom:5px"><span style="width:8px;height:8px;border-radius:50%;background:'+p.c+';flex-shrink:0"></span><span style="font-weight:600;font-size:14px">'+escHtml(t.title)+'</span></div>' +
     '<div style="display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap">' +
       '<span style="font-size:11px;color:var(--text-muted-color)">'+escHtml(t.assignee_name||'Unassigned')+'</span>'+due +
@@ -2067,7 +2089,7 @@ async function renderTaskDetail(el, id){
     return '<div style="padding:6px 0;font-size:12px;color:var(--text-muted-color)">'+escHtml(a.user_name||'Someone')+' '+escHtml(a.body)+' · '+formatDate(a.created_at)+'</div>';
   }).join('') : '<div style="color:var(--text-muted-color);font-size:13px">No activity yet.</div>';
   el.innerHTML =
-    '<div class="page-header"><div class="page-title"><h2>'+escHtml(t.title)+'</h2><p>'+taskStatusLabel(t.status)+(t.recurrence?(' · repeats '+escHtml(t.recurrence)):'')+'</p></div>' +
+    '<div class="page-header"><div class="page-title"><h2>'+escHtml(t.title)+'</h2><p>'+taskStatusLabel(t.status)+(t.recurrence?(' · repeats '+escHtml(taskRecurText(t))):'')+'</p></div>' +
       '<div style="display:flex;gap:8px">' +
         '<button class="btn btn-secondary" onclick="navigate(\'tasks\')">&larr; Back</button>' +
         (manage?'<button class="btn btn-secondary" onclick="navigate(\'edit-task\','+t.id+')">Edit</button>':'') +
@@ -2108,6 +2130,34 @@ async function taskAddSub(id){ var v=((document.getElementById('task-newsub')||{
 async function taskAddComment(id){ var v=((document.getElementById('task-comment')||{}).value||'').trim(); if (!v) return; try { await api('POST','/tasks/'+id+'/comments',{body:v}); navigate('task-detail',id); } catch(e){ taskFeedback(e.message,true); } }
 async function taskDelete(id){ if (!confirm('Delete this task? This cannot be undone.')) return; try { await api('DELETE','/tasks/'+id); navigate('tasks'); } catch(e){ taskFeedback(e.message,true); } }
 
+function taskRecurText(t){
+  if (!t.recurrence) return '';
+  var days=['Sunday','Monday','Tuesday','Wednesday','Thursday','Friday','Saturday'];
+  if (t.recurrence==='weekly' && t.recurrence_day!=null) return 'weekly on '+days[t.recurrence_day];
+  if (t.recurrence==='monthly' && t.recurrence_day!=null) return 'monthly on day '+t.recurrence_day;
+  return t.recurrence;
+}
+function taskRecurChanged(preselect){
+  var rec=(document.getElementById('tk-recur')||{}).value||'';
+  var wrap=document.getElementById('tk-recur-day-wrap');
+  var label=document.getElementById('tk-recur-day-label');
+  var sel=document.getElementById('tk-recur-day');
+  if (!wrap||!sel) return;
+  if (rec==='weekly'){
+    if (label) label.textContent='Repeat on (day of week)';
+    var days=['Sunday','Monday','Tuesday','Wednesday','Thursday','Friday','Saturday'];
+    var def=(preselect!=null&&preselect!=='')?parseInt(preselect,10):new Date().getDay();
+    sel.innerHTML=days.map(function(d,i){ return '<option value="'+i+'"'+(i===def?' selected':'')+'>'+d+'</option>'; }).join('');
+    wrap.style.display='';
+  } else if (rec==='monthly'){
+    if (label) label.textContent='Repeat on (day of month)';
+    var def2=(preselect!=null&&preselect!=='')?parseInt(preselect,10):new Date().getDate();
+    var opts='';
+    for (var d=1; d<=31; d++){ opts+='<option value="'+d+'"'+(d===def2?' selected':'')+'>'+d+(d>=29?' (or last day of month)':'')+'</option>'; }
+    sel.innerHTML=opts;
+    wrap.style.display='';
+  } else { wrap.style.display='none'; }
+}
 async function renderTaskForm(el, id){
   if (!can('manage_tasks')){ el.innerHTML='<div class="alert alert-error">Access denied.</div>'; return; }
   el.innerHTML='<div class="loading">Loading…</div>';
@@ -2133,11 +2183,13 @@ async function renderTaskForm(el, id){
       '</div>' +
       '<div style="display:flex;gap:12px;flex-wrap:wrap">' +
         '<div class="form-group" style="flex:1;min-width:160px"><label>Due date</label><input type="date" id="tk-due" value="'+escHtml(dueVal)+'" /></div>' +
-        '<div class="form-group" style="flex:1;min-width:160px"><label>Repeat</label><select id="tk-recur">'+recOpts+'</select></div>' +
+        '<div class="form-group" style="flex:1;min-width:160px"><label>Repeat</label><select id="tk-recur" onchange="taskRecurChanged()">'+recOpts+'</select></div>' +
       '</div>' +
+      '<div id="tk-recur-day-wrap" class="form-group" style="display:none;max-width:320px"><label id="tk-recur-day-label">Repeat on</label><select id="tk-recur-day"></select></div>' +
       (id?'':'<div class="form-group"><label>Subtasks <span style="color:var(--text-muted-color);font-weight:400">(one per line)</span></label><textarea id="tk-subs" rows="3" placeholder="Optional checklist, one item per line"></textarea></div>') +
       '<div style="display:flex;gap:8px;margin-top:8px"><button class="btn btn-primary" onclick="taskSave('+(id||'null')+')">'+(id?'Save Changes':'Create Task')+'</button></div>' +
     '</div></div>';
+  taskRecurChanged(t.recurrence_day);
 }
 
 async function taskSave(id){
@@ -2149,6 +2201,8 @@ async function taskSave(id){
     due_date: document.getElementById('tk-due').value||null,
     recurrence: document.getElementById('tk-recur').value||''
   };
+  payload.recurrence_day = (payload.recurrence==='weekly'||payload.recurrence==='monthly') ? parseInt(((document.getElementById('tk-recur-day')||{}).value),10) : null;
+  if (isNaN(payload.recurrence_day)) payload.recurrence_day = null;
   if (!payload.title){ taskFeedback('Title is required.',true); return; }
   var subsEl=document.getElementById('tk-subs');
   if (subsEl){ payload.subtasks = subsEl.value.split('\n').map(function(x){return x.trim();}).filter(Boolean); }

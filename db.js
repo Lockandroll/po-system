@@ -403,6 +403,7 @@ async function initDB() {
       '  completed_by INTEGER REFERENCES users(id) ON DELETE SET NULL,' +
       '  position INTEGER DEFAULT 0,' +
       '  recurrence VARCHAR(10),' +
+      '  recurrence_day INTEGER,' +
       '  reminded_day_before BOOLEAN NOT NULL DEFAULT false,' +
       '  reminded_due BOOLEAN NOT NULL DEFAULT false,' +
       '  last_overdue_on DATE,' +
