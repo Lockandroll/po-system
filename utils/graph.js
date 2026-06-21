@@ -125,7 +125,8 @@ async function getInboxMessages(mailbox, sinceIso, opts) {
               filename: a.name || 'attachment',
               mime: a.contentType || '',
               size: a.size || 0,
-              contentBytes: a.contentBytes
+              contentBytes: a.contentBytes,
+              isInline: !!a.isInline
             });
           }
         });
@@ -163,7 +164,7 @@ async function getMessageAttachments(mailbox, messageId) {
   const out = [];
   items.forEach(function (a) {
     if (a['@odata.type'] === '#microsoft.graph.fileAttachment' && a.contentBytes) {
-      out.push({ filename: a.name || 'attachment', mime: a.contentType || '', size: a.size || 0, contentBytes: a.contentBytes });
+      out.push({ filename: a.name || 'attachment', mime: a.contentType || '', size: a.size || 0, contentBytes: a.contentBytes, isInline: !!a.isInline });
     }
   });
   return out;

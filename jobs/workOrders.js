@@ -12,7 +12,7 @@ const notify = require('../utils/notify');
 const { logAudit } = require('../utils/audit');
 const { sendEmail, emailTemplate } = require('../utils/email');
 
-const ATTACH_MAX_BYTES = 4 * 1024 * 1024; // 4 MB per attachment cap
+const ATTACH_MAX_BYTES = 10 * 1024 * 1024; // 10 MB per attachment cap
 
 async function getSetting(key) {
   try {
@@ -161,17 +161,21 @@ async function processMessage(msg, conf, mailbox) {
   }
   const usable = [];
   rawAtts.forEach(function (a) {
+    if (a.isInline) return;            // skip email-signature logos
+    if (!a.contentBytes) return;
+    if ((a.size || 0) > ATTACH_MAX_BYTES) return;
     const mime = (a.mime || '').toLowerCase();
-    const ok = (mime.indexOf('image/') === 0 || mime.indexOf('pdf') !== -1) && (a.size || 0) <= ATTACH_MAX_BYTES;
-    if (ok && a.contentBytes) {
-      usable.push(a);
-    }
+    const name = (a.filename || '').toLowerCase();
+    const isPdf = mime.indexOf('pdf') !== -1 || /\.pdf$/.test(name);
+    const isImg = mime.indexOf('image/') === 0 || /\.(png|jpe?g|gif|webp|bmp|tiff?)$/.test(name);
+    if (!isPdf && !isImg) return;      // only docs/images go to storage + AI
+    usable.push({ filename: a.filename || null, mime: isPdf ? 'application/pdf' : (mime || 'image/jpeg'), contentBytes: a.contentBytes, size: a.size || null });
   });
   for (let i = 0; i < usable.length; i++) {
     const a = usable[i];
     await pool.query(
       'INSERT INTO work_order_attachments (work_order_id, filename, mime_type, image_data, size_bytes) VALUES ($1,$2,$3,$4,$5)',
-      [woId, a.filename || null, a.mime || null, a.contentBytes, a.size || null]
+      [woId, a.filename, a.mime, a.contentBytes, a.size]
     );
   }
 
