@@ -147,4 +147,26 @@ async function getInboxMessages(mailbox, sinceIso, opts) {
   return out;
 }
 
-module.exports = { getAppToken, getSurveyMessages, getInboxMessages };
+// Fetch file attachments for a single message as base64 (used for new
+// messages only, so we never re-download attachments on every poll).
+// Returns [{ filename, mime, size, contentBytes }].
+async function getMessageAttachments(mailbox, messageId) {
+  const token = await getAppToken();
+  const url = 'https://graph.microsoft.com/v1.0/users/' + encodeURIComponent(mailbox) +
+    '/messages/' + encodeURIComponent(messageId) + '/attachments';
+  const resp = await fetch(url, { headers: { Authorization: 'Bearer ' + token } });
+  const data = await resp.json().catch(function () { return {}; });
+  if (!resp.ok) {
+    throw new Error('Graph attachments request failed (' + resp.status + '): ' + JSON.stringify(data));
+  }
+  const items = Array.isArray(data.value) ? data.value : [];
+  const out = [];
+  items.forEach(function (a) {
+    if (a['@odata.type'] === '#microsoft.graph.fileAttachment' && a.contentBytes) {
+      out.push({ filename: a.name || 'attachment', mime: a.contentType || '', size: a.size || 0, contentBytes: a.contentBytes });
+    }
+  });
+  return out;
+}
+
+module.exports = { getAppToken, getSurveyMessages, getInboxMessages, getMessageAttachments };

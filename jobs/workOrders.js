@@ -6,7 +6,7 @@
 
 const cron = require('node-cron');
 const { pool } = require('../db');
-const { getInboxMessages } = require('../utils/graph');
+const { getInboxMessages, getMessageAttachments } = require('../utils/graph');
 const { looksLikeWorkOrder, parseWorkOrderEmail } = require('../utils/workOrderParser');
 const notify = require('../utils/notify');
 const { logAudit } = require('../utils/audit');
@@ -135,7 +135,7 @@ async function notifyReceived(wo) {
 }
 
 // Process a single Graph message into a work_orders row. Returns 'created' | 'duplicate' | 'ignored'.
-async function processMessage(msg, conf) {
+async function processMessage(msg, conf, mailbox) {
   // Dedup
   const dup = await pool.query('SELECT id FROM work_orders WHERE email_message_id = $1', [msg.internetMessageId]);
   if (dup.rows.length) return 'duplicate';
@@ -152,9 +152,15 @@ async function processMessage(msg, conf) {
   );
   const woId = ins.rows[0].id;
 
-  // Store attachments (images/pdf, under cap)
+  // Fetch + store attachments (images/pdf, under cap). Only happens here, after
+  // dedup + keyword gate, so attachments are downloaded once per NEW message.
+  let rawAtts = msg.attachments || [];
+  if (!rawAtts.length && msg.hasAttachments && mailbox) {
+    try { rawAtts = await getMessageAttachments(mailbox, msg.id); }
+    catch (e) { console.error('[work-orders] attachment fetch failed:', e.message); rawAtts = []; }
+  }
   const usable = [];
-  (msg.attachments || []).forEach(function (a) {
+  rawAtts.forEach(function (a) {
     const mime = (a.mime || '').toLowerCase();
     const ok = (mime.indexOf('image/') === 0 || mime.indexOf('pdf') !== -1) && (a.size || 0) <= ATTACH_MAX_BYTES;
     if (ok && a.contentBytes) {
@@ -238,12 +244,12 @@ async function runIngest(options) {
   }
   const sinceIso = options.sinceIso ||
     new Date(Date.now() - (parseInt(options.lookbackHours, 10) || 72) * 3600000).toISOString();
-  const messages = await getInboxMessages(conf.mailbox, sinceIso, { top: options.top || 25, expandAttachments: true, paginate: !!options.paginate });
+  const messages = await getInboxMessages(conf.mailbox, sinceIso, { top: options.top || 25, paginate: !!options.paginate });
 
   let created = 0, duplicate = 0, ignored = 0;
   for (let i = 0; i < messages.length; i++) {
     try {
-      const r = await processMessage(messages[i], conf);
+      const r = await processMessage(messages[i], conf, conf.mailbox);
       if (r === 'created') created++;
       else if (r === 'duplicate') duplicate++;
       else ignored++;
@@ -254,14 +260,18 @@ async function runIngest(options) {
   return { mailbox: conf.mailbox, fetched: messages.length, created: created, duplicate: duplicate, ignored: ignored, since: sinceIso };
 }
 
+var _woIngestRunning = false;
 function startWorkOrders() {
-  // Every 5 minutes; idempotent (dedup on email_message_id).
-  cron.schedule('*/5 * * * *', function () {
+  // Every minute; idempotent (dedup on email_message_id). Guard prevents overlapping runs.
+  cron.schedule('* * * * *', function () {
+    if (_woIngestRunning) return;
+    _woIngestRunning = true;
     runIngest({})
       .then(function (s) { if (!s.skipped && (s.created || s.fetched)) console.log('[work-orders] ingest: fetched ' + s.fetched + ', created ' + s.created + ', dup ' + s.duplicate + ', ignored ' + s.ignored); })
-      .catch(function (err) { console.error('[work-orders] ingest failed:', err.message); });
+      .catch(function (err) { console.error('[work-orders] ingest failed:', err.message); })
+      .then(function () { _woIngestRunning = false; });
   });
-  console.log('[work-orders] Mailbox ingest scheduled (every 5 min)');
+  console.log('[work-orders] Mailbox ingest scheduled (every 1 min)');
 }
 
 module.exports = {
