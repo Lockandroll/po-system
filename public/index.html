@@ -159,6 +159,9 @@
     .empty-state svg { width: 48px; height: 48px; margin: 0 auto 16px; opacity: 0.3; }
     .empty-state h3 { font-size: 16px; font-weight: 600; color: var(--text-dim); margin-bottom: 6px; }
     .loading { text-align: center; padding: 48px; color: var(--text-muted-color); }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    .spinner { display:inline-block; width:16px; height:16px; border:2px solid rgba(249,115,22,0.25); border-top-color:var(--primary); border-radius:50%; animation:spin 0.7s linear infinite; vertical-align:middle; }
+    .spinner-lg { width:36px; height:36px; border-width:3px; }
     .flex-gap { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
     .text-right { text-align: right; }
     .text-muted { color: var(--text-muted-color); font-size: 13px; }
@@ -4712,7 +4715,14 @@ function previewDepositReceipt(input) {
       canvas.getContext('2d').drawImage(img, 0, 0, w, h);
       depositReceiptData = canvas.toDataURL('image/jpeg', 0.85);
       var area = document.getElementById('dep-receipt-preview');
-      if (area) area.innerHTML = '<img src="' + depositReceiptData + '" style="max-width:240px;max-height:240px;border-radius:8px;border:1px solid var(--border-color)" /><div id="dep-extract-status" style="margin-top:8px;font-size:13px;color:var(--text-muted-color)"></div>';
+      if (area) area.innerHTML = '<div style="position:relative;display:inline-block">' +
+        '<img src="' + depositReceiptData + '" style="max-width:240px;max-height:240px;border-radius:8px;border:1px solid var(--border-color);display:block" />' +
+        '<div id="dep-extract-overlay" style="position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:10px;background:rgba(0,0,0,0.6);border-radius:8px">' +
+          '<span class="spinner spinner-lg"></span>' +
+          '<span style="color:#fff;font-size:13px;font-weight:600">Reading receipt with AI\u2026</span>' +
+        '</div>' +
+      '</div>' +
+      '<div id="dep-extract-status" style="margin-top:8px;font-size:13px;color:var(--text-muted-color)"></div>';
       runDepositExtract();
     };
     img.src = e.target.result;
@@ -4723,7 +4733,7 @@ function previewDepositReceipt(input) {
 async function runDepositExtract() {
   if (!depositReceiptData) return;
   var status = document.getElementById('dep-extract-status');
-  if (status) status.textContent = 'Reading receipt with AI…';
+  function hideOverlay() { var ov = document.getElementById('dep-extract-overlay'); if (ov) ov.style.display = 'none'; }
   try {
     var base64 = depositReceiptData.split(',')[1];
     var data = await api('POST', '/deposits/ai-extract', { imageData: base64, mediaType: 'image/jpeg' });
@@ -4736,12 +4746,14 @@ async function runDepositExtract() {
       var dateEl = document.getElementById('dep-date');
       if (dateEl) { dateEl.value = data.deposit_date; filled.push('date'); }
     }
+    hideOverlay();
     if (status) {
-      status.textContent = filled.length
-        ? '✓ AI filled ' + filled.join(' & ') + ' — please double-check before submitting.'
+      status.innerHTML = filled.length
+        ? '<span style="color:#22c55e;font-weight:600">\u2713 AI filled ' + filled.join(' &amp; ') + '</span> — please double-check before submitting.'
         : 'Could not read the receipt automatically — please enter the details manually.';
     }
   } catch(e) {
+    hideOverlay();
     if (status) status.textContent = 'Could not read the receipt automatically — please enter the details manually.';
   }
 }
