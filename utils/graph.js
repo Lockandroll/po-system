@@ -82,4 +82,69 @@ async function getSurveyMessages(mailbox, senderAddress, startIso, endIso) {
   return out;
 }
 
-module.exports = { getAppToken, getSurveyMessages };
+// Fetch recent messages from a mailbox (received on/after sinceIso), with file
+// attachments inlined as base64. Used by the Work Orders email intake job.
+// Returns [{ id, subject, receivedDateTime, internetMessageId, fromAddress,
+//            fromName, hasAttachments, bodyText, attachments:[{filename,mime,size,contentBytes}] }]
+async function getInboxMessages(mailbox, sinceIso, opts) {
+  opts = opts || {};
+  const token = await getAppToken();
+
+  const params = new URLSearchParams();
+  if (sinceIso) params.set('$filter', 'receivedDateTime ge ' + sinceIso);
+  params.set('$select', 'id,subject,receivedDateTime,internetMessageId,from,hasAttachments,body');
+  params.set('$orderby', 'receivedDateTime desc');
+  params.set('$top', String(opts.top || 25));
+  if (opts.expandAttachments) params.set('$expand', 'attachments');
+
+  let url = 'https://graph.microsoft.com/v1.0/users/' + encodeURIComponent(mailbox) +
+    '/messages?' + params.toString();
+
+  const out = [];
+  let guard = 0;
+  while (url && guard < 20) {
+    guard++;
+    const resp = await fetch(url, {
+      headers: {
+        Authorization: 'Bearer ' + token,
+        Prefer: 'outlook.body-content-type="text"'
+      }
+    });
+    const data = await resp.json().catch(function () { return {}; });
+    if (!resp.ok) {
+      throw new Error('Graph inbox request failed (' + resp.status + '): ' + JSON.stringify(data));
+    }
+    const items = Array.isArray(data.value) ? data.value : [];
+    items.forEach(function (m) {
+      const fromAddr = (m.from && m.from.emailAddress) ? m.from.emailAddress : {};
+      const atts = [];
+      if (Array.isArray(m.attachments)) {
+        m.attachments.forEach(function (a) {
+          if (a['@odata.type'] === '#microsoft.graph.fileAttachment' && a.contentBytes) {
+            atts.push({
+              filename: a.name || 'attachment',
+              mime: a.contentType || '',
+              size: a.size || 0,
+              contentBytes: a.contentBytes
+            });
+          }
+        });
+      }
+      out.push({
+        id: m.id,
+        subject: m.subject || '',
+        receivedDateTime: m.receivedDateTime || '',
+        internetMessageId: m.internetMessageId || '',
+        fromAddress: fromAddr.address || '',
+        fromName: fromAddr.name || '',
+        hasAttachments: !!m.hasAttachments,
+        bodyText: (m.body && m.body.content) ? m.body.content : '',
+        attachments: atts
+      });
+    });
+    url = (opts.paginate ? data['@odata.nextLink'] : null) || null;
+  }
+  return out;
+}
+
+module.exports = { getAppToken, getSurveyMessages, getInboxMessages };

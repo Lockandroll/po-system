@@ -325,11 +325,11 @@ function badgeHtml(status) {
   return '<span class="badge badge-' + escHtml(cls) + '">' + escHtml(status) + '</span>';
 }
 
-var EMPLOYEE_PERMS = ['view_pos','create_po','edit_po','delete_po','submit_po','view_quotes','create_quote','edit_quote','delete_quote','push_quote_po','view_vr','create_vr','edit_vr','delete_vr','submit_vr','view_deposits','create_deposit','delete_deposit','export_deposits','view_signoffs','create_signoff','edit_signoff','complete_signoff','delete_signoff','view_tasks'];
+var EMPLOYEE_PERMS = ['view_pos','create_po','edit_po','delete_po','submit_po','view_quotes','create_quote','edit_quote','delete_quote','push_quote_po','view_vr','create_vr','edit_vr','delete_vr','submit_vr','view_deposits','create_deposit','delete_deposit','export_deposits','view_signoffs','create_signoff','edit_signoff','complete_signoff','delete_signoff','view_tasks','view_work_orders'];
 var PERM_DEFAULTS = {
-  manager: ['view_users','manage_cities','manage_geico','manage_running','manage_vehicles','manage_vendors','manage_addresses','approve_vr','manage_tasks'].concat(EMPLOYEE_PERMS),
+  manager: ['view_users','manage_cities','manage_geico','manage_running','manage_vehicles','manage_vendors','manage_addresses','approve_vr','manage_tasks','manage_work_orders'].concat(EMPLOYEE_PERMS),
   locksmith: EMPLOYEE_PERMS.slice(),
-  locksmith_coordinator: EMPLOYEE_PERMS.slice(),
+  locksmith_coordinator: EMPLOYEE_PERMS.concat(['manage_work_orders']),
   roadside_technician: EMPLOYEE_PERMS.slice()
 };
 function roleLabel(r) {
@@ -413,6 +413,7 @@ async function render() {
     : '') : '') +
     (can('view_signoffs') ? '<div class="nav-item' + (['signoffs','new-signoff','edit-signoff','view-signoff','complete-signoff'].indexOf(cv) !== -1 ? ' active' : '') + '" onclick="navigate(\'signoffs\')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><path d="M9 15l2 2 4-4"/></svg> Sign-Off Sheets</div>' : '') +
     (can('view_tasks') ? '<div class="nav-item' + (['tasks','task-detail','new-task','edit-task'].indexOf(cv) !== -1 ? ' active' : '') + '" onclick="navigate(\'tasks\')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg> Tasks</div>' : '') +
+    (can('view_work_orders') ? '<div class="nav-item' + (['work-orders','view-work-order','new-work-order'].indexOf(cv) !== -1 ? ' active' : '') + '" onclick="navigate(\'work-orders\')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"/><polyline points="3.27 6.96 12 12.01 20.73 6.96"/><line x1="12" y1="22.08" x2="12" y2="12"/></svg> Work Orders</div>' : '') +
     (can('view_vr') ?
     '<div class="nav-section-header' + (vrViews.indexOf(cv) !== -1 ? ' section-active' : '') + (ss === 'vr' ? ' open' : '') + '" onclick="toggleSection(\'vr\',\'vr-dashboard\')"><span class="s-label">' + icoTruck + ' Vehicle Maint/Repairs</span>' + chev + '</div>' +
     (ss === 'vr' ?
@@ -480,7 +481,7 @@ async function render() {
     if (_ovOpen) _ovOpen.classList.add('open');
   }
   const content = document.getElementById('content');
-  var _viewPerm = { dashboard:'view_pos', view:'view_pos', running:'view_pos', 'running-admin':'view_pos', new:'create_po', edit:'edit_po', quotes:'view_quotes', 'view-quote':'view_quotes', 'new-quote':'create_quote', 'edit-quote':'edit_quote', 'vr-dashboard':'view_vr', 'view-vr':'view_vr', 'new-vr':'create_vr', 'edit-vr':'edit_vr', deposits:'view_deposits', 'view-deposit':'view_deposits', signoffs:'view_signoffs', 'view-signoff':'view_signoffs', 'new-signoff':'create_signoff', 'edit-signoff':'edit_signoff', 'complete-signoff':'complete_signoff', tasks:'view_tasks', 'task-detail':'view_tasks', 'new-task':'manage_tasks', 'edit-task':'manage_tasks' };
+  var _viewPerm = { dashboard:'view_pos', view:'view_pos', running:'view_pos', 'running-admin':'view_pos', new:'create_po', edit:'edit_po', quotes:'view_quotes', 'view-quote':'view_quotes', 'new-quote':'create_quote', 'edit-quote':'edit_quote', 'vr-dashboard':'view_vr', 'view-vr':'view_vr', 'new-vr':'create_vr', 'edit-vr':'edit_vr', deposits:'view_deposits', 'view-deposit':'view_deposits', signoffs:'view_signoffs', 'view-signoff':'view_signoffs', 'new-signoff':'create_signoff', 'edit-signoff':'edit_signoff', 'complete-signoff':'complete_signoff', tasks:'view_tasks', 'task-detail':'view_tasks', 'new-task':'manage_tasks', 'edit-task':'manage_tasks', 'work-orders':'view_work_orders', 'view-work-order':'view_work_orders', 'new-work-order':'manage_work_orders' };
   if (_viewPerm[state.currentView] && !can(_viewPerm[state.currentView])) { content.innerHTML = '<div class="alert alert-error">Access denied.</div>'; return; }
   if (state.currentView === 'home') await renderHomeScreen(content);
   else if (state.currentView === 'dashboard') await renderDashboard(content);
@@ -518,6 +519,9 @@ async function render() {
   else if (state.currentView === 'task-detail') await renderTaskDetail(content, state.currentParam);
   else if (state.currentView === 'new-task') await renderTaskForm(content, null);
   else if (state.currentView === 'edit-task') await renderTaskForm(content, state.currentParam);
+  else if (state.currentView === 'work-orders') await renderWorkOrders(content);
+  else if (state.currentView === 'view-work-order') await renderViewWorkOrder(content, state.currentParam);
+  else if (state.currentView === 'new-work-order') await renderWorkOrderForm(content);
   else if (state.currentView === 'sop-library') await renderSOPLibrary(content);
   else if (state.currentView === 'view-deposit') await renderViewDeposit(content, state.currentParam);
   else if (state.currentView === 'running') await renderRunningList(content);
@@ -5488,6 +5492,281 @@ let _signoffSigPad = null;
 let _signoffSignatureData = null;
 let _signoffGps = null;
 let _signoffSignedAt = null;
+
+// ===== Work Orders module =====================================================
+var WO_STATUS_META = {
+  received:       { label: 'Received',       bg: '#fff3e8', fg: '#c2520a' },
+  in_process:     { label: 'In Process',     bg: '#dbeafe', fg: '#1d4ed8' },
+  job_completed:  { label: 'Job Completed',  bg: '#dcfce7', fg: '#15803d' },
+  paperwork_sent: { label: 'Paperwork Sent', bg: '#ede9fe', fg: '#6d28d9' },
+  rejected:       { label: 'Rejected',       bg: '#fee2e2', fg: '#b91c1c' },
+  error:          { label: 'Parse Error',    bg: '#fee2e2', fg: '#b91c1c' }
+};
+var WO_FLOW = ['received', 'in_process', 'job_completed', 'paperwork_sent'];
+var _woState = { status: 'received', q: '', page: 1, limit: 25, total: 0 };
+
+function woBadge(s) {
+  var m = WO_STATUS_META[s] || { label: s, bg: '#eee', fg: '#333' };
+  return '<span class="badge" style="background:' + m.bg + ';color:' + m.fg + '">' + escHtml(m.label) + '</span>';
+}
+function woConfBadge(c) {
+  if (!c) return '';
+  var col = c === 'high' ? '#15803d' : (c === 'medium' ? '#b45309' : '#b91c1c');
+  return '<span class="badge" style="background:transparent;border:1px solid ' + col + ';color:' + col + ';text-transform:capitalize">' + escHtml(c) + '</span>';
+}
+
+async function renderWorkOrders(el) {
+  var counts = {};
+  try { counts = await api('GET', '/work-orders/counts'); } catch (e) {}
+  function tab(st, label) {
+    var n = counts[st] || 0;
+    var active = _woState.status === st;
+    return '<button class="btn ' + (active ? 'btn-primary' : 'btn-secondary') + ' btn-sm" onclick="woSetFilter(\'' + st + '\')" style="white-space:nowrap">' +
+      escHtml(label) + (n ? ' (' + n + ')' : '') + '</button>';
+  }
+  el.innerHTML =
+    '<div class="page-header">' +
+      '<div><div class="page-title">Work Orders</div><div class="page-subtitle">Incoming work orders to review, dispatch, and complete.</div></div>' +
+      (can('manage_work_orders') ? '<button class="btn btn-primary" onclick="navigate(\'new-work-order\')" style="white-space:nowrap">' + icons.plus + ' New Work Order</button>' : '') +
+    '</div>' +
+    '<div id="wo-error"></div>' +
+    '<div class="card">' +
+      '<div class="card-header" style="display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap">' +
+        '<div style="display:flex;gap:6px;flex-wrap:wrap">' +
+          tab('received', 'Received') + tab('in_process', 'In Process') + tab('job_completed', 'Job Completed') +
+          tab('paperwork_sent', 'Paperwork Sent') + tab('rejected', 'Rejected') + tab('', 'All') +
+        '</div>' +
+        '<input type="text" id="wo-search" placeholder="Search account, store, PO, service..." style="width:260px" value="' + escHtml(_woState.q) + '" oninput="woSearchDebounced()" />' +
+      '</div>' +
+      (can('manage_work_orders') ?
+        '<div class="card-body" style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;border-bottom:1px solid var(--border-color)">' +
+          '<span style="font-size:13px;color:var(--text-muted-color)">Bulk:</span>' +
+          '<select id="wo-bulk-status" style="width:auto"><option value="">Set status…</option>' +
+            WO_FLOW.concat(['rejected']).map(function (s) { return '<option value="' + s + '">' + WO_STATUS_META[s].label + '</option>'; }).join('') +
+          '</select>' +
+          '<button class="btn btn-secondary btn-sm" onclick="woApplyBulk()">Apply to selected</button>' +
+        '</div>'
+      : '') +
+      '<div id="wo-wrap"><div class="loading">Loading…</div></div>' +
+    '</div>';
+  await woLoad();
+}
+
+function woSetFilter(st) { _woState.status = st; _woState.page = 1; woLoad(); }
+var _woSearchTimer = null;
+function woSearchDebounced() {
+  var v = (document.getElementById('wo-search') || {}).value || '';
+  _woState.q = v;
+  if (_woSearchTimer) clearTimeout(_woSearchTimer);
+  _woSearchTimer = setTimeout(function () { _woState.page = 1; woLoad(); }, 350);
+}
+function woPaginate(p) { _woState.page = p; woLoad(); }
+
+async function woLoad() {
+  var wrap = document.getElementById('wo-wrap');
+  if (!wrap) return;
+  var qs = [];
+  if (_woState.status) qs.push('status=' + encodeURIComponent(_woState.status));
+  if (_woState.q) qs.push('q=' + encodeURIComponent(_woState.q));
+  qs.push('limit=' + _woState.limit);
+  qs.push('offset=' + ((_woState.page - 1) * _woState.limit));
+  var data;
+  try { data = await api('GET', '/work-orders?' + qs.join('&')); }
+  catch (e) { wrap.innerHTML = '<div class="alert alert-error">' + escHtml(e.message) + '</div>'; return; }
+  _woState.total = data.total || 0;
+  var items = data.items || [];
+  if (!items.length) {
+    wrap.innerHTML = '<div class="empty-state"><h3>No work orders</h3><p>' +
+      (_woState.q ? 'Nothing matches your search.' : 'Nothing in this status yet.') + '</p></div>';
+    return;
+  }
+  var manage = can('manage_work_orders');
+  var totalPages = Math.ceil(_woState.total / _woState.limit);
+  wrap.innerHTML =
+    '<div class="table-wrap"><table>' +
+    '<thead><tr>' +
+      (manage ? '<th style="width:28px"></th>' : '') +
+      '<th>Ref</th><th>Account</th><th>Store</th><th>Service</th><th>Needed</th><th>Status</th><th>Assignee</th><th></th>' +
+    '</tr></thead><tbody>' +
+    items.map(function (w) { return woRow(w, manage); }).join('') +
+    '</tbody></table></div>' +
+    renderPagination(_woState.page, totalPages, _woState.total, 'woPaginate');
+}
+
+function woRow(w, manage) {
+  var svc = w.service_requested ? (w.service_requested.length > 60 ? w.service_requested.slice(0, 60) + '…' : w.service_requested) : '—';
+  return '<tr style="cursor:pointer" onclick="navigate(\'view-work-order\',' + w.id + ')">' +
+    (manage ? '<td onclick="event.stopPropagation()"><input type="checkbox" class="wo-check" value="' + w.id + '" /></td>' : '') +
+    '<td><strong>' + escHtml(w.wo_ref || ('#' + w.id)) + '</strong>' + (w.confidence ? ' ' + woConfBadge(w.confidence) : '') + '</td>' +
+    '<td>' + escHtml(w.account_name || '—') + '</td>' +
+    '<td>' + escHtml(w.store_name || '—') + (w.store_number ? ' <span style="color:var(--text-muted-color)">#' + escHtml(w.store_number) + '</span>' : '') + '</td>' +
+    '<td>' + escHtml(svc) + '</td>' +
+    '<td>' + (w.needed_by ? formatDate(w.needed_by) : '—') + '</td>' +
+    '<td>' + woBadge(w.status) + '</td>' +
+    '<td>' + escHtml(w.assignee_name || '—') + '</td>' +
+    '<td style="text-align:right"><button class="btn btn-secondary btn-sm" onclick="event.stopPropagation();navigate(\'view-work-order\',' + w.id + ')">Open</button></td>' +
+  '</tr>';
+}
+
+async function woApplyBulk() {
+  var sel = (document.getElementById('wo-bulk-status') || {}).value || '';
+  if (!sel) { alert('Choose a status to apply.'); return; }
+  var ids = [].slice.call(document.querySelectorAll('.wo-check:checked')).map(function (c) { return parseInt(c.value, 10); });
+  if (!ids.length) { alert('Select at least one work order.'); return; }
+  try { await api('POST', '/work-orders/bulk', { ids: ids, status: sel }); await woLoad(); }
+  catch (e) { var er = document.getElementById('wo-error'); if (er) er.innerHTML = '<div class="alert alert-error">' + escHtml(e.message) + '</div>'; }
+}
+
+function woRowField(label, id, value, ph) {
+  return '<div class="form-group"><label>' + label + '</label><input type="text" id="' + id + '" value="' + escHtml(value || '') + '" placeholder="' + (ph || '') + '" /></div>';
+}
+
+async function renderViewWorkOrder(el, id) {
+  var w;
+  try { w = await api('GET', '/work-orders/' + id); }
+  catch (e) { el.innerHTML = '<div class="alert alert-error">' + escHtml(e.message) + '</div>'; return; }
+  var manage = can('manage_work_orders');
+
+  var actions = '';
+  if (manage) {
+    if (w.status === 'received' || w.status === 'error' || w.status === 'rejected') {
+      actions += '<button class="btn btn-primary" onclick="woSetStatus(' + id + ',\'in_process\')">&#10003; Approve &rarr; In Process</button>';
+      if (w.status !== 'rejected') actions += '<button class="btn btn-secondary" onclick="woSetStatus(' + id + ',\'rejected\')">Reject</button>';
+    } else if (w.status === 'in_process') {
+      actions += '<button class="btn btn-primary" onclick="woSetStatus(' + id + ',\'job_completed\')">Mark Job Completed</button>';
+    } else if (w.status === 'job_completed') {
+      actions += '<button class="btn btn-primary" onclick="woSetStatus(' + id + ',\'paperwork_sent\')">Mark Paperwork Sent</button>';
+    }
+    if (w.signoff_id && w.signoff) {
+      actions += '<button class="btn btn-secondary" onclick="navigate(\'' + (w.signoff.status === 'completed' ? 'view-signoff' : 'complete-signoff') + '\',' + w.signoff_id + ')">Open Sign-Off (' + escHtml(w.signoff.form_number || '') + ')</button>';
+    }
+    if (w.source === 'email') actions += '<button class="btn btn-secondary" onclick="woReparse(' + id + ')">Re-parse with AI</button>';
+    actions += '<button class="btn btn-ghost" style="color:#b91c1c" onclick="woDelete(' + id + ')">Delete</button>';
+  }
+
+  var emailPanel = w.source === 'email'
+    ? '<div class="card mb-4"><div class="card-header"><span class="card-title">Original Email</span></div><div class="card-body">' +
+        '<div style="font-size:13px;color:var(--text-muted-color);margin-bottom:8px">From: ' + escHtml(w.email_from || '—') + ' &middot; ' + escHtml(w.email_subject || '') + ' &middot; ' + (w.email_received_at ? formatDate(w.email_received_at) : '') + '</div>' +
+        '<pre style="white-space:pre-wrap;word-break:break-word;max-height:320px;overflow:auto;background:var(--bg-elevated);padding:12px;border-radius:6px;font-size:13px;font-family:inherit">' + escHtml(w.email_body || '(no body)') + '</pre>' +
+        (w.parse_error ? '<div class="alert alert-error" style="margin-top:10px">Parse error: ' + escHtml(w.parse_error) + '</div>' : '') +
+        (w.attachments && w.attachments.length ? '<div style="margin-top:10px;font-size:13px"><strong>Attachments:</strong> ' + w.attachments.map(function (a) { return '<a href="#" onclick="event.preventDefault();woViewAttachment(' + id + ',' + a.id + ')" style="color:var(--primary)">' + escHtml(a.filename || ('file ' + a.id)) + '</a>'; }).join(', ') + '</div>' : '') +
+      '</div></div>'
+    : '';
+
+  var fieldsEditable = manage && w.status !== 'paperwork_sent';
+  function fld(label, fid, val, ph) {
+    if (!fieldsEditable) return '<div><div style="font-size:11px;font-weight:600;color:var(--text-muted-color);text-transform:uppercase;letter-spacing:0.04em;margin-bottom:3px">' + label + '</div><div style="font-size:14px">' + escHtml(val || '—') + '</div></div>';
+    return '<div class="form-group"><label>' + label + '</label><input type="text" id="' + fid + '" value="' + escHtml(val || '') + '" placeholder="' + (ph || '') + '" /></div>';
+  }
+
+  el.innerHTML =
+    '<div class="page-header">' +
+      '<div><div class="page-title">' + escHtml(w.wo_ref || ('Work Order #' + id)) + ' ' + woBadge(w.status) + ' ' + woConfBadge(w.confidence) + '</div>' +
+        '<div class="page-subtitle">' + escHtml(w.account_name || '—') + (w.store_name ? ' &middot; ' + escHtml(w.store_name) : '') + '</div></div>' +
+      '<button class="btn btn-secondary" onclick="navigate(\'work-orders\')">&larr; Back</button>' +
+    '</div>' +
+    '<div id="wo-detail-error"></div>' +
+    emailPanel +
+    '<div class="card mb-4"><div class="card-header"><span class="card-title">' + (fieldsEditable ? 'Details (edit &amp; save)' : 'Details') + '</span></div><div class="card-body">' +
+      (fieldsEditable
+        ? '<div class="form-row">' + fld('Account', 'wo-account_name', w.account_name) + fld('Account #', 'wo-account_number', w.account_number) + '</div>' +
+          '<div class="form-row">' + fld('PO #', 'wo-po_number', w.po_number) + fld('WO # (theirs)', 'wo-wo_number', w.wo_number) + '</div>' +
+          '<div class="form-row">' + fld('Store Name', 'wo-store_name', w.store_name) + fld('Store #', 'wo-store_number', w.store_number) + '</div>' +
+          fld('Address', 'wo-address', w.address) +
+          fld('City / State / Zip', 'wo-city_state_zip', w.city_state_zip) +
+          '<div class="form-group"><label>Service Requested</label><textarea id="wo-service_requested">' + escHtml(w.service_requested || '') + '</textarea></div>' +
+          '<div class="form-row">' + fld('Service Requested By', 'wo-service_requested_by', w.service_requested_by) + '<div class="form-group"><label>Needed By (date)</label><input type="date" id="wo-needed_by" value="' + escHtml(w.needed_by ? String(w.needed_by).slice(0, 10) : '') + '" /></div></div>' +
+          '<div class="form-row">' + fld('Contact Name', 'wo-contact_name', w.contact_name) + fld('Contact Phone', 'wo-contact_phone', w.contact_phone) + '</div>' +
+          '<div class="form-row"><div class="form-group"><label>Priority</label><select id="wo-priority">' + ['low', 'normal', 'high', 'urgent'].map(function (p) { return '<option value="' + p + '"' + (w.priority === p ? ' selected' : '') + '>' + p + '</option>'; }).join('') + '</select></div></div>' +
+          '<div class="form-group"><label>Notes</label><textarea id="wo-notes">' + escHtml(w.notes || '') + '</textarea></div>' +
+          '<button class="btn btn-secondary" onclick="woSaveEdit(' + id + ')">Save changes</button>'
+        : '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:16px">' +
+            fld('Account', '', w.account_name) + fld('Account #', '', w.account_number) + fld('PO #', '', w.po_number) + fld('WO #', '', w.wo_number) +
+            fld('Store', '', (w.store_name || '') + (w.store_number ? ' (#' + w.store_number + ')' : '')) + fld('Address', '', w.address) + fld('City/State/Zip', '', w.city_state_zip) +
+            fld('Service', '', w.service_requested) + fld('Requested By', '', w.service_requested_by) + fld('Needed By', '', w.needed_by ? formatDate(w.needed_by) : '') +
+            fld('Contact', '', w.contact_name) + fld('Phone', '', w.contact_phone) + fld('Priority', '', w.priority) +
+          '</div>' + (w.notes ? '<div style="margin-top:12px;padding:10px 12px;background:var(--bg-elevated);border-radius:6px;font-size:13px"><strong>Notes:</strong> ' + escHtml(w.notes) + '</div>' : '')
+      ) +
+    '</div></div>' +
+    (actions ? '<div class="card mb-4"><div class="card-body"><div class="flex-gap" style="flex-wrap:wrap">' + actions + '</div></div></div>' : '') +
+    '<div class="card"><div class="card-header"><span class="card-title">Activity</span></div><div class="card-body">' +
+      ((w.activity && w.activity.length)
+        ? w.activity.map(function (a) { return '<div style="font-size:13px;padding:6px 0;border-bottom:1px solid var(--border-color)"><span style="color:var(--text-muted-color)">' + formatDate(a.created_at) + ' &middot; ' + escHtml(a.user_name || 'System') + '</span> — ' + escHtml(a.body || '') + '</div>'; }).join('')
+        : '<div style="color:var(--text-muted-color);font-size:13px">No activity yet.</div>') +
+    '</div></div>';
+}
+
+function woGet(fid) { var e = document.getElementById(fid); return e ? e.value.trim() : undefined; }
+async function woSaveEdit(id) {
+  var body = {
+    account_name: woGet('wo-account_name'), account_number: woGet('wo-account_number'), po_number: woGet('wo-po_number'), wo_number: woGet('wo-wo_number'),
+    store_name: woGet('wo-store_name'), store_number: woGet('wo-store_number'), address: woGet('wo-address'), city_state_zip: woGet('wo-city_state_zip'),
+    service_requested: woGet('wo-service_requested'), service_requested_by: woGet('wo-service_requested_by'), needed_by: woGet('wo-needed_by'),
+    contact_name: woGet('wo-contact_name'), contact_phone: woGet('wo-contact_phone'), priority: woGet('wo-priority'), notes: woGet('wo-notes')
+  };
+  try { await api('PUT', '/work-orders/' + id, body); navigate('view-work-order', id); }
+  catch (e) { var er = document.getElementById('wo-detail-error'); if (er) er.innerHTML = '<div class="alert alert-error">' + escHtml(e.message) + '</div>'; }
+}
+async function woSetStatus(id, status) {
+  if (status === 'rejected' && !confirm('Reject this work order?')) return;
+  try { await api('PATCH', '/work-orders/' + id + '/status', { status: status }); navigate('view-work-order', id); }
+  catch (e) { var er = document.getElementById('wo-detail-error'); if (er) er.innerHTML = '<div class="alert alert-error">' + escHtml(e.message) + '</div>'; }
+}
+async function woReparse(id) {
+  var er = document.getElementById('wo-detail-error');
+  if (er) er.innerHTML = '<div class="alert">Re-parsing with AI…</div>';
+  try { await api('POST', '/work-orders/' + id + '/reparse', {}); navigate('view-work-order', id); }
+  catch (e) { if (er) er.innerHTML = '<div class="alert alert-error">' + escHtml(e.message) + '</div>'; }
+}
+async function woDelete(id) {
+  if (!confirm('Delete this work order? This cannot be undone.')) return;
+  try { await api('DELETE', '/work-orders/' + id); navigate('work-orders'); }
+  catch (e) { var er = document.getElementById('wo-detail-error'); if (er) er.innerHTML = '<div class="alert alert-error">' + escHtml(e.message) + '</div>'; }
+}
+async function woViewAttachment(id, aid) {
+  try {
+    var r = await api('GET', '/work-orders/' + id + '/attachments/' + aid);
+    var w = window.open();
+    if (w) {
+      if ((r.mime_type || '').indexOf('pdf') !== -1) w.document.write('<iframe src="data:application/pdf;base64,' + r.image_data + '" style="border:0;width:100%;height:100%"></iframe>');
+      else w.document.write('<img src="data:' + (r.mime_type || 'image/jpeg') + ';base64,' + r.image_data + '" style="max-width:100%" />');
+    }
+  } catch (e) { alert('Could not load attachment: ' + e.message); }
+}
+
+async function renderWorkOrderForm(el) {
+  el.innerHTML =
+    '<div class="page-header">' +
+      '<div><div class="page-title">New Work Order</div><div class="page-subtitle">Enter a phone-in or walk-in job by hand.</div></div>' +
+      '<button class="btn btn-secondary" onclick="navigate(\'work-orders\')">Cancel</button>' +
+    '</div>' +
+    '<div id="wo-form-error"></div>' +
+    '<div class="card mb-4"><div class="card-body">' +
+      '<div class="form-row">' + woRowField('Account', 'wof-account_name', '', 'e.g. Ferrandino &amp; Son') + woRowField('Account #', 'wof-account_number', '', '') + '</div>' +
+      '<div class="form-row">' + woRowField('PO #', 'wof-po_number', '', '') + woRowField('WO # (theirs)', 'wof-wo_number', '', '') + '</div>' +
+      '<div class="form-row">' + woRowField('Store Name', 'wof-store_name', '', '') + woRowField('Store #', 'wof-store_number', '', '') + '</div>' +
+      woRowField('Address', 'wof-address', '', 'Street address') +
+      woRowField('City / State / Zip', 'wof-city_state_zip', '', '') +
+      '<div class="form-group"><label>Service Requested</label><textarea id="wof-service_requested" placeholder="What needs to be done"></textarea></div>' +
+      '<div class="form-row">' + woRowField('Service Requested By', 'wof-service_requested_by', '', 'e.g. 6/22/26 by 5 PM') + '<div class="form-group"><label>Needed By (date)</label><input type="date" id="wof-needed_by" /></div></div>' +
+      '<div class="form-row">' + woRowField('Contact Name', 'wof-contact_name', '', '') + woRowField('Contact Phone', 'wof-contact_phone', '', '') + '</div>' +
+      '<div class="form-group"><label>Notes</label><textarea id="wof-notes"></textarea></div>' +
+    '</div></div>' +
+    '<div class="flex-gap"><button class="btn btn-primary" onclick="woCreate()">Create Work Order</button></div>';
+}
+async function woCreate() {
+  function v(k) { var e = document.getElementById('wof-' + k); return e ? e.value.trim() : ''; }
+  var body = {
+    account_name: v('account_name'), account_number: v('account_number'), po_number: v('po_number'), wo_number: v('wo_number'),
+    store_name: v('store_name'), store_number: v('store_number'), address: v('address'), city_state_zip: v('city_state_zip'),
+    service_requested: v('service_requested'), service_requested_by: v('service_requested_by'), needed_by: v('needed_by'),
+    contact_name: v('contact_name'), contact_phone: v('contact_phone'), notes: v('notes')
+  };
+  try { var wo = await api('POST', '/work-orders', body); navigate('view-work-order', wo.id); }
+  catch (e) { var er = document.getElementById('wo-form-error'); if (er) er.innerHTML = '<div class="alert alert-error">' + escHtml(e.message) + '</div>'; }
+}
+// ===== end Work Orders module =================================================
+
 
 async function renderSignoffs(el) {
   try {

@@ -439,6 +439,78 @@ async function initDB() {
       'CREATE INDEX IF NOT EXISTS idx_task_sub ON task_subtasks(task_id);' +
       'CREATE INDEX IF NOT EXISTS idx_task_act ON task_activity(task_id);'
     );
+    // Work Orders — inbound work-order intake (email + manual). Own module, separate from Tasks.
+    await client.query(
+      'CREATE TABLE IF NOT EXISTS work_orders (' +
+      '  id SERIAL PRIMARY KEY,' +
+      '  wo_ref VARCHAR(50) UNIQUE,' +
+      "  source VARCHAR(20) NOT NULL DEFAULT 'email'," +
+      "  status VARCHAR(20) NOT NULL DEFAULT 'received'," +
+      "  priority VARCHAR(10) NOT NULL DEFAULT 'normal'," +
+      '  account_id INTEGER REFERENCES vendors(id) ON DELETE SET NULL,' +
+      '  account_name VARCHAR(255),' +
+      '  account_number VARCHAR(255),' +
+      '  city_code CHAR(3),' +
+      '  po_number VARCHAR(100),' +
+      '  wo_number VARCHAR(100),' +
+      '  store_name VARCHAR(255),' +
+      '  store_number VARCHAR(100),' +
+      '  address VARCHAR(255),' +
+      '  city_state_zip VARCHAR(255),' +
+      '  service_requested TEXT,' +
+      '  service_requested_by VARCHAR(255),' +
+      '  contact_name VARCHAR(255),' +
+      '  contact_phone VARCHAR(50),' +
+      '  needed_by DATE,' +
+      '  notes TEXT,' +
+      '  assigned_to INTEGER REFERENCES users(id) ON DELETE SET NULL,' +
+      '  signoff_id INTEGER REFERENCES signoff_forms(id) ON DELETE SET NULL,' +
+      '  reviewed_by INTEGER REFERENCES users(id) ON DELETE SET NULL,' +
+      '  reviewed_at TIMESTAMPTZ,' +
+      '  email_message_id VARCHAR(998) UNIQUE,' +
+      '  email_from VARCHAR(255),' +
+      '  email_subject TEXT,' +
+      '  email_received_at TIMESTAMPTZ,' +
+      '  email_body TEXT,' +
+      '  parsed JSONB,' +
+      '  confidence VARCHAR(10),' +
+      '  parse_error TEXT,' +
+      '  created_by INTEGER REFERENCES users(id) ON DELETE SET NULL,' +
+      '  created_at TIMESTAMPTZ DEFAULT NOW(),' +
+      '  updated_at TIMESTAMPTZ DEFAULT NOW()' +
+      ');'
+    );
+    await client.query(
+      'CREATE TABLE IF NOT EXISTS work_order_attachments (' +
+      '  id SERIAL PRIMARY KEY,' +
+      '  work_order_id INTEGER REFERENCES work_orders(id) ON DELETE CASCADE,' +
+      '  filename VARCHAR(255),' +
+      '  mime_type VARCHAR(100),' +
+      '  image_data TEXT,' +
+      '  size_bytes INTEGER,' +
+      '  created_at TIMESTAMPTZ DEFAULT NOW()' +
+      ');'
+    );
+    await client.query(
+      'CREATE TABLE IF NOT EXISTS work_order_activity (' +
+      '  id SERIAL PRIMARY KEY,' +
+      '  work_order_id INTEGER REFERENCES work_orders(id) ON DELETE CASCADE,' +
+      '  user_id INTEGER,' +
+      '  user_name VARCHAR(255),' +
+      "  type VARCHAR(20) NOT NULL DEFAULT 'event'," +
+      '  body TEXT,' +
+      '  created_at TIMESTAMPTZ DEFAULT NOW()' +
+      ');'
+    );
+    await client.query(
+      'CREATE INDEX IF NOT EXISTS idx_wo_status ON work_orders(status);' +
+      'CREATE INDEX IF NOT EXISTS idx_wo_account ON work_orders(account_id);' +
+      'CREATE INDEX IF NOT EXISTS idx_wo_assigned ON work_orders(assigned_to);' +
+      'CREATE INDEX IF NOT EXISTS idx_wo_needed ON work_orders(needed_by);' +
+      'CREATE INDEX IF NOT EXISTS idx_wo_created ON work_orders(created_at);' +
+      'CREATE INDEX IF NOT EXISTS idx_wo_att ON work_order_attachments(work_order_id);' +
+      'CREATE INDEX IF NOT EXISTS idx_wo_act ON work_order_activity(work_order_id);'
+    );
     await client.query(
       "UPDATE users SET role = 'locksmith' WHERE role = 'requester';" +
       "UPDATE users SET role = 'manager' WHERE role = 'approver';" +

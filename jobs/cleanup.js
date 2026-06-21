@@ -20,10 +20,30 @@ async function purgeOldAuditLogs() {
   }
 }
 
-function startCleanup() {
-  // Run once ~30s after boot, then every day at 03:15 server time.
-  setTimeout(purgeOldAuditLogs, 30000);
-  cron.schedule('15 3 * * *', purgeOldAuditLogs);
+const WO_RETENTION_DAYS = parseInt(process.env.WORK_ORDER_RETENTION_DAYS, 10) > 0
+  ? parseInt(process.env.WORK_ORDER_RETENTION_DAYS, 10)
+  : 180; // ~6 months
+
+async function purgeOldWorkOrders() {
+  try {
+    const res = await pool.query(
+      'DELETE FROM work_orders WHERE created_at < NOW() - make_interval(days => $1)',
+      [WO_RETENTION_DAYS]
+    );
+    if (res.rowCount) {
+      console.log('[cleanup] Deleted ' + res.rowCount + ' work_orders older than ' + WO_RETENTION_DAYS + ' days');
+    }
+  } catch (err) {
+    console.error('[cleanup] work_orders purge failed:', err.message);
+  }
 }
 
-module.exports = { startCleanup, purgeOldAuditLogs };
+function startCleanup() {
+  // Run once shortly after boot, then daily in the early morning.
+  setTimeout(purgeOldAuditLogs, 30000);
+  setTimeout(purgeOldWorkOrders, 35000);
+  cron.schedule('15 3 * * *', purgeOldAuditLogs);
+  cron.schedule('20 3 * * *', purgeOldWorkOrders);
+}
+
+module.exports = { startCleanup, purgeOldAuditLogs, purgeOldWorkOrders };

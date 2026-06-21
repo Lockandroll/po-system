@@ -156,6 +156,8 @@ router.post('/:id/complete', requireAuth, requirePermission('complete_signoff'),
 
     const form = upd[0];
     try { await logAudit({ entity_type: 'signoff', entity_id: form.id, entity_number: form.form_number, action: 'completed', user_id: req.user.id, user_name: req.user.name, details: { manager: form.manager_name, photos: photos.length } }); } catch (e) {}
+    // Auto-advance any linked work order to 'job_completed' when its sign-off is completed.
+    try { await pool.query("UPDATE work_orders SET status='job_completed', updated_at=NOW() WHERE signoff_id=$1 AND status NOT IN ('paperwork_sent','job_completed')", [form.id]); } catch (e) {}
 
     // Email admins with signature + photos attached
     try {
