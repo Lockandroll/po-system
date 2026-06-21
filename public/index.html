@@ -4948,6 +4948,9 @@ let signoffPhotos = [];
 let _signoffPage = 1;
 const SIGNOFF_PAGE_SIZE = 15;
 let _signoffSigPad = null;
+let _signoffSignatureData = null;
+let _signoffGps = null;
+let _signoffSignedAt = null;
 
 async function renderSignoffs(el) {
   try {
@@ -5092,6 +5095,9 @@ function signoffSummaryHtml(f) {
 async function renderCompleteSignoff(el, id) {
   signoffPhotos = [];
   _signoffSigPad = null;
+  _signoffSignatureData = null;
+  _signoffGps = null;
+  _signoffSignedAt = null;
   let form;
   try { form = await api('GET', '/signoffs/' + id); } catch(e) { el.innerHTML = '<div class="alert alert-error">' + escHtml(e.message) + '</div>'; return; }
   if (form.status === 'completed') { navigate('view-signoff', id); return; }
@@ -5123,13 +5129,15 @@ async function renderCompleteSignoff(el, id) {
     '<div class="card mb-4"><div class="card-header"><span class="card-title">Manager Sign-Off</span></div><div class="card-body">' +
       '<div class="form-group"><label>Manager Name (Printed) *</label><input type="text" id="so-manager" placeholder="Manager name" /></div>' +
       '<label style="display:block;margin-bottom:6px;font-size:13px;color:var(--text-dim)">Manager Signature *</label>' +
-      '<div style="border:1px solid var(--border);border-radius:8px;background:#ffffff;display:inline-block;max-width:100%">' +
-        '<canvas id="so-sigpad" width="600" height="200" style="display:block;width:100%;max-width:600px;height:200px;border-radius:8px;cursor:crosshair;touch-action:none"></canvas>' +
+      '<div id="so-sig-preview" style="display:none;margin-bottom:6px"></div>' +
+      '<div id="so-sig-prompt" style="border:1px dashed var(--border);border-radius:8px;padding:18px;text-align:center;background:var(--bg-elevated);max-width:480px">' +
+        '<div style="font-size:13px;color:var(--text-dim);margin-bottom:10px">Capture the manager signature with on-site GPS location and a time stamp.</div>' +
+        '<button class="btn btn-primary" type="button" id="so-collect-sig" onclick="collectSignoffSignature()">&#9999;&#65039; Collect Signature</button>' +
+        '<div id="so-gps-status" style="font-size:12px;color:var(--text-muted-color);margin-top:8px"></div>' +
       '</div>' +
-      '<div style="margin-top:8px;display:flex;gap:8px;flex-wrap:wrap"><button class="btn btn-primary btn-sm" type="button" onclick="openSignoffFullscreen()">&#9999;&#65039; Sign Full Screen</button><button class="btn btn-secondary btn-sm" type="button" onclick="clearSignoffSignature()">Clear Signature</button></div>' +
     '</div></div>' +
     '<div class="flex-gap"><button class="btn btn-primary" id="btn-complete-signoff" onclick="submitSignoffCompletion(' + form.id + ')">&#10003; Submit &amp; Email Admins</button></div>';
-  setupSignaturePad();
+  renderSignoffSigPreview();
   renderSignoffPhotoGrid();
 }
 
@@ -5163,9 +5171,69 @@ function setupSignaturePad() {
 
 function clearSignoffSignature() { if (_signoffSigPad) _signoffSigPad.clear(); }
 
+// Capture GPS for the on-site signer, then open the full-screen signing pad.
+function collectSignoffSignature() {
+  var btn = document.getElementById('so-collect-sig');
+  var status = document.getElementById('so-gps-status');
+  if (btn) btn.disabled = true;
+  if (status) status.textContent = 'Getting your location\u2026';
+  function proceed(gps) {
+    _signoffGps = gps;
+    if (status) {
+      if (gps && gps.lat != null) status.innerHTML = '\uD83D\uDCCD Location captured (\u00b1' + Math.round(gps.accuracy || 0) + ' m)';
+      else status.innerHTML = '\u26A0\uFE0F Location unavailable \u2014 the signature will be flagged.';
+    }
+    if (btn) btn.disabled = false;
+    openSignoffFullscreen();
+  }
+  if (navigator.geolocation && navigator.geolocation.getCurrentPosition) {
+    navigator.geolocation.getCurrentPosition(
+      function(p) { proceed({ lat: p.coords.latitude, lon: p.coords.longitude, accuracy: p.coords.accuracy, error: null }); },
+      function(err) { proceed({ lat: null, lon: null, accuracy: null, error: (err && err.message) ? err.message : 'Location permission denied.' }); },
+      { enableHighAccuracy: true, timeout: 12000, maximumAge: 0 }
+    );
+  } else {
+    proceed({ lat: null, lon: null, accuracy: null, error: 'Geolocation is not supported on this device.' });
+  }
+}
+
+// Builds the on-site stamp block (time + GPS) shown in the preview, completed view.
+function signoffStampHtml(o) {
+  o = o || {};
+  var when = o.signed_at ? new Date(o.signed_at).toLocaleString('en-US') : '\u2014';
+  var hasGps = o.gps_lat != null && o.gps_lat !== '' && o.gps_lon != null && o.gps_lon !== '';
+  var loc = hasGps
+    ? Number(o.gps_lat).toFixed(6) + ', ' + Number(o.gps_lon).toFixed(6) + (o.gps_accuracy != null && o.gps_accuracy !== '' ? ' (\u00b1' + Math.round(o.gps_accuracy) + ' m)' : '')
+    : 'Location unavailable';
+  var mapLink = hasGps ? ' \u00b7 <a href="https://www.google.com/maps?q=' + encodeURIComponent(o.gps_lat + ',' + o.gps_lon) + '" target="_blank" rel="noopener" style="color:var(--primary)">Map</a>' : '';
+  return '<div style="margin-top:10px;border:1px solid ' + (hasGps ? 'var(--border)' : '#b45309') + ';border-left:3px solid ' + (hasGps ? 'var(--primary)' : '#f59e0b') + ';border-radius:6px;padding:9px 12px;background:var(--bg-elevated);font-size:12.5px;line-height:1.7;max-width:480px">' +
+    '<div style="font-weight:600;text-transform:uppercase;letter-spacing:0.04em;font-size:10.5px;color:var(--text-muted-color);margin-bottom:3px">On-Site Signature Stamp</div>' +
+    '<div>\uD83D\uDD52 ' + escHtml(when) + '</div>' +
+    '<div>\uD83D\uDCCD ' + escHtml(loc) + mapLink + '</div>' +
+    (o.manager ? '<div>\uD83D\uDC64 ' + escHtml(o.manager) + '</div>' : '') +
+    (!hasGps && o.gps_error ? '<div style="color:#f59e0b;margin-top:3px">' + escHtml(o.gps_error) + '</div>' : '') +
+  '</div>';
+}
+
+// Show the captured signature + stamp in the complete form, hide the prompt.
+function renderSignoffSigPreview() {
+  var prev = document.getElementById('so-sig-preview');
+  var prompt = document.getElementById('so-sig-prompt');
+  if (!prev) return;
+  if (!_signoffSignatureData) { prev.style.display = 'none'; if (prompt) prompt.style.display = ''; return; }
+  var g = _signoffGps || {};
+  var mgr = ((document.getElementById('so-manager') || {}).value || '').trim();
+  prev.style.display = 'block';
+  prev.innerHTML =
+    '<div style="background:#fff;border:1px solid var(--border);border-radius:8px;padding:8px;display:inline-block;max-width:100%"><img src="' + _signoffSignatureData + '" style="max-width:100%;width:480px;display:block" /></div>' +
+    signoffStampHtml({ signed_at: _signoffSignedAt, gps_lat: g.lat, gps_lon: g.lon, gps_accuracy: g.accuracy, gps_error: g.error, manager: mgr }) +
+    '<div style="margin-top:8px"><button class="btn btn-secondary btn-sm" type="button" onclick="collectSignoffSignature()">Re-sign</button></div>';
+  if (prompt) prompt.style.display = 'none';
+}
+
 // Full-screen landscape signing — lets the tech turn the phone sideways for a big signing area.
 function openSignoffFullscreen() {
-  if (!_signoffSigPad) return;
+  if (document.getElementById('so-sig-fs')) return;
   var portrait = window.innerHeight > window.innerWidth;
   var ov = document.createElement('div');
   ov.id = 'so-sig-fs';
@@ -5225,13 +5293,9 @@ function openSignoffFullscreen() {
   document.getElementById('so-fs-cancel').onclick = function() { cleanup(); };
   document.getElementById('so-fs-done').onclick = function() {
     if (hasInk) {
-      var pad = _signoffSigPad.canvas;
-      var pctx = pad.getContext('2d');
-      pctx.clearRect(0, 0, pad.width, pad.height);
-      var scale = Math.min(pad.width / c.width, pad.height / c.height);
-      var dw = c.width * scale, dh = c.height * scale;
-      pctx.drawImage(c, (pad.width - dw) / 2, (pad.height - dh) / 2, dw, dh);
-      _signoffSigPad.setInk(true);
+      _signoffSignedAt = new Date();
+      _signoffSignatureData = c.toDataURL('image/png');
+      renderSignoffSigPreview();
     }
     cleanup();
   };
@@ -5305,7 +5369,7 @@ async function submitSignoffCompletion(id) {
     if (!signoffPhotos[pi].caption || !signoffPhotos[pi].caption.trim()) return fail('Every photo must be labeled (e.g. Before / After). Photo ' + (pi + 1) + ' is missing a label.');
   }
   if (!manager) return fail('Manager name is required.');
-  if (!_signoffSigPad || !_signoffSigPad.hasInk()) return fail('A manager signature is required.');
+  if (!_signoffSignatureData) return fail('A manager signature is required. Tap &quot;Collect Signature&quot; to capture it.');
   const body = {
     start_time: start_time,
     end_time: end_time,
@@ -5315,7 +5379,12 @@ async function submitSignoffCompletion(id) {
     manager_name: manager,
     technician_names: technician_names,
     work_description: work_description,
-    signature_data: _signoffSigPad.canvas.toDataURL('image/png'),
+    signature_data: _signoffSignatureData,
+    gps_lat: _signoffGps ? _signoffGps.lat : null,
+    gps_lon: _signoffGps ? _signoffGps.lon : null,
+    gps_accuracy: _signoffGps ? _signoffGps.accuracy : null,
+    gps_error: _signoffGps ? _signoffGps.error : null,
+    signed_at: _signoffSignedAt ? _signoffSignedAt.toISOString() : null,
     photos: signoffPhotos
   };
   const btn = document.getElementById('btn-complete-signoff');
@@ -5366,7 +5435,7 @@ function signoffCompletedHtml(f) {
       (p.caption ? '<div style="font-size:12px;color:var(--text-dim);margin-top:4px;text-align:center">' + escHtml(p.caption) + '</div>' : '') + '</div>';
   }).join('');
   const sig = f.signature_data
-    ? '<div style="background:#ffffff;border:1px solid var(--border);border-radius:8px;padding:8px;display:inline-block"><img src="' + f.signature_data + '" style="max-width:360px;max-height:160px;display:block" /></div>'
+    ? '<div style="background:#ffffff;border:1px solid var(--border);border-radius:8px;padding:8px;display:inline-block"><img src="' + f.signature_data + '" style="max-width:360px;max-height:160px;display:block" /></div>' + signoffStampHtml({ signed_at: f.signed_at || f.completed_at, gps_lat: f.gps_lat, gps_lon: f.gps_lon, gps_accuracy: f.gps_accuracy, gps_error: f.gps_error, manager: f.manager_name })
     : '<div style="color:var(--text-muted-color)">No signature on file.</div>';
   return '<div class="card mb-4"><div class="card-header"><span class="card-title">Completion Details</span></div><div class="card-body">' +
     '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:16px">' +
@@ -5436,7 +5505,9 @@ async function printSignoff(id) {
       '<span style="display:flex;align-items:center">' + box(f.work_complete === true) + 'Yes</span>' +
       '<span style="display:flex;align-items:center">' + box(f.work_complete === false) + 'No</span>' +
     '</div>';
-    const sigImg = f.signature_data ? '<img src="' + f.signature_data + '" style="max-height:46px;max-width:100%;display:block" />' : '';
+    var _stampWhen = f.signed_at ? new Date(f.signed_at).toLocaleString('en-US') : (f.completed_at ? new Date(f.completed_at).toLocaleString('en-US') : '');
+    var _stampLoc = (f.gps_lat != null && f.gps_lon != null) ? (Number(f.gps_lat).toFixed(6) + ', ' + Number(f.gps_lon).toFixed(6) + (f.gps_accuracy != null ? ' (\u00b1' + Math.round(f.gps_accuracy) + ' m)' : '')) : 'Location unavailable';
+    const sigImg = f.signature_data ? '<img src="' + f.signature_data + '" style="max-height:46px;max-width:100%;display:block" /><div style="font-size:9.5px;color:#374151;margin-top:2px;line-height:1.35">Signed ' + esc(_stampWhen) + ' &middot; GPS: ' + esc(_stampLoc) + '</div>' : '';
 
     const ROW = 'display:flex;border-bottom:1px solid #000;min-height:34px';
     const grid = '<div style="border:2px solid #000;margin-top:16px">' +

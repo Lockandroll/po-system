@@ -342,6 +342,13 @@ async function initDB() {
       'CREATE INDEX IF NOT EXISTS idx_signoff_photos_form ON signoff_photos(form_id);'
     );
     await client.query(
+      'ALTER TABLE signoff_forms ADD COLUMN IF NOT EXISTS gps_lat DECIMAL(10,7);' +
+      'ALTER TABLE signoff_forms ADD COLUMN IF NOT EXISTS gps_lon DECIMAL(10,7);' +
+      'ALTER TABLE signoff_forms ADD COLUMN IF NOT EXISTS gps_accuracy DECIMAL(10,2);' +
+      'ALTER TABLE signoff_forms ADD COLUMN IF NOT EXISTS gps_error TEXT;' +
+      'ALTER TABLE signoff_forms ADD COLUMN IF NOT EXISTS signed_at TIMESTAMPTZ;'
+    );
+    await client.query(
       "UPDATE users SET role = 'locksmith' WHERE role = 'requester';" +
       "UPDATE users SET role = 'manager' WHERE role = 'approver';" +
       "ALTER TABLE users ALTER COLUMN role SET DEFAULT 'locksmith';"

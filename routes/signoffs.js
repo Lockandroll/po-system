@@ -139,8 +139,8 @@ router.post('/:id/complete', requireAuth, requirePermission('complete_signoff'),
     const existing = rows[0];
     await client.query('BEGIN');
     const { rows: upd } = await client.query(
-      'UPDATE signoff_forms SET start_time=$1, end_time=$2, invoice_number=$3, work_complete=$4, num_technicians=$5, manager_name=$6, technician_names=$7, work_description=$8, signature_data=$9, notes=COALESCE($10, notes), status=$11, completed_by=$12, completed_at=NOW(), updated_at=NOW() WHERE id=$13 RETURNING *',
-      [b.start_time || null, b.end_time || null, b.invoice_number || null, (b.work_complete === true || b.work_complete === false) ? b.work_complete : null, b.num_technicians ? parseInt(b.num_technicians) : null, b.manager_name || null, b.technician_names || null, b.work_description || null, b.signature_data || null, b.notes || null, 'completed', req.user.id, req.params.id]
+      'UPDATE signoff_forms SET start_time=$1, end_time=$2, invoice_number=$3, work_complete=$4, num_technicians=$5, manager_name=$6, technician_names=$7, work_description=$8, signature_data=$9, notes=COALESCE($10, notes), gps_lat=$11, gps_lon=$12, gps_accuracy=$13, gps_error=$14, signed_at=$15, status=$16, completed_by=$17, completed_at=NOW(), updated_at=NOW() WHERE id=$18 RETURNING *',
+      [b.start_time || null, b.end_time || null, b.invoice_number || null, (b.work_complete === true || b.work_complete === false) ? b.work_complete : null, b.num_technicians ? parseInt(b.num_technicians) : null, b.manager_name || null, b.technician_names || null, b.work_description || null, b.signature_data || null, b.notes || null, (b.gps_lat != null && b.gps_lat !== '') ? b.gps_lat : null, (b.gps_lon != null && b.gps_lon !== '') ? b.gps_lon : null, (b.gps_accuracy != null && b.gps_accuracy !== '') ? b.gps_accuracy : null, b.gps_error || null, b.signed_at || null, 'completed', req.user.id, req.params.id]
     );
     const photos = Array.isArray(b.photos) ? b.photos : [];
     // Replace photos with the submitted set
