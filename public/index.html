@@ -2130,6 +2130,9 @@ async function taskAddSub(id){ var v=((document.getElementById('task-newsub')||{
 async function taskAddComment(id){ var v=((document.getElementById('task-comment')||{}).value||'').trim(); if (!v) return; try { await api('POST','/tasks/'+id+'/comments',{body:v}); navigate('task-detail',id); } catch(e){ taskFeedback(e.message,true); } }
 async function taskDelete(id){ if (!confirm('Delete this task? This cannot be undone.')) return; try { await api('DELETE','/tasks/'+id); navigate('tasks'); } catch(e){ taskFeedback(e.message,true); } }
 
+function taskFilterAssignees(){ var q=((document.getElementById('tk-assignee-search')||{}).value||'').toLowerCase(); document.querySelectorAll('.tk-assignee-row').forEach(function(r){ r.style.display = (!q || (r.getAttribute('data-name')||'').indexOf(q)!==-1) ? 'flex' : 'none'; }); }
+function taskSelectAllAssignees(on){ document.querySelectorAll('.tk-assignee-row').forEach(function(r){ if (r.style.display==='none') return; var c=r.querySelector('.tk-assignee'); if (c) c.checked=on; }); taskUpdateAssigneeCount(); }
+function taskUpdateAssigneeCount(){ var n=document.querySelectorAll('.tk-assignee:checked').length; var el=document.getElementById('tk-assignee-count'); if (el) el.textContent=n+' selected'; }
 function taskRecurText(t){
   if (!t.recurrence) return '';
   var days=['Sunday','Monday','Tuesday','Wednesday','Thursday','Friday','Saturday'];
@@ -2167,6 +2170,11 @@ async function renderTaskForm(el, id){
     t=r[0]||{}; users=(r[1]||[]).filter(function(u){return u.active;});
   } catch(e){ el.innerHTML='<div class="alert alert-error">'+escHtml(e.message)+'</div>'; return; }
   var userOpts='<option value="">Unassigned</option>'+users.map(function(u){ return '<option value="'+u.id+'"'+(t.assigned_to==u.id?' selected':'')+'>'+escHtml(u.name)+' ('+escHtml(roleLabel(u.role))+')</option>'; }).join('');
+  var assigneeChecks = users.map(function(u){ return '<label class="tk-assignee-row" data-name="'+escHtml((u.name||'').toLowerCase())+'" style="display:flex;align-items:center;gap:8px;padding:5px 4px;cursor:pointer"><input type="checkbox" class="tk-assignee" value="'+u.id+'" onchange="taskUpdateAssigneeCount()" style="width:auto" /> <span style="font-size:14px">'+escHtml(u.name)+'</span> <span style="font-size:12px;color:var(--text-muted-color)">('+escHtml(roleLabel(u.role))+')</span></label>'; }).join('');
+  var assigneePickerHtml = '<div class="form-group"><label>Assign to <span style="color:var(--text-muted-color);font-weight:400">(pick one or more; a task is created for each person)</span></label>' +
+    '<div style="display:flex;gap:8px;margin-bottom:6px;flex-wrap:wrap"><input type="text" id="tk-assignee-search" placeholder="Search people…" oninput="taskFilterAssignees()" style="flex:1;min-width:140px" /><button type="button" class="btn btn-secondary btn-sm" onclick="taskSelectAllAssignees(true)">Select all</button><button type="button" class="btn btn-secondary btn-sm" onclick="taskSelectAllAssignees(false)">Clear</button></div>' +
+    '<div id="tk-assignee-list" style="max-height:220px;overflow-y:auto;border:1px solid var(--border);border-radius:8px;padding:6px;background:var(--bg-elevated)">'+(assigneeChecks||'<div style="color:var(--text-muted-color);font-size:13px;padding:6px">No users found.</div>')+'</div>' +
+    '<div id="tk-assignee-count" style="font-size:12px;color:var(--text-muted-color);margin-top:5px">0 selected</div></div>';
   var prioOpts=['low','medium','high','urgent'].map(function(pp){ return '<option value="'+pp+'"'+((t.priority||'medium')===pp?' selected':'')+'>'+TASK_PRIO[pp].l+'</option>'; }).join('');
   var recOpts=[['','Does not repeat'],['daily','Daily'],['weekly','Weekly'],['monthly','Monthly']].map(function(rr){ return '<option value="'+rr[0]+'"'+((t.recurrence||'')===rr[0]?' selected':'')+'>'+rr[1]+'</option>'; }).join('');
   var dueVal = t.due_date ? String(t.due_date).slice(0,10) : '';
@@ -2177,10 +2185,10 @@ async function renderTaskForm(el, id){
     '<div class="card" style="max-width:680px"><div class="card-body">' +
       '<div class="form-group"><label>Title</label><input type="text" id="tk-title" value="'+escHtml(t.title||'')+'" placeholder="What needs doing?" /></div>' +
       '<div class="form-group"><label>Description</label><textarea id="tk-desc" rows="3" placeholder="Details…">'+escHtml(t.description||'')+'</textarea></div>' +
-      '<div style="display:flex;gap:12px;flex-wrap:wrap">' +
-        '<div class="form-group" style="flex:1;min-width:160px"><label>Assign to</label><select id="tk-assignee">'+userOpts+'</select></div>' +
-        '<div class="form-group" style="flex:1;min-width:140px"><label>Priority</label><select id="tk-priority">'+prioOpts+'</select></div>' +
-      '</div>' +
+      (id
+        ? ('<div style="display:flex;gap:12px;flex-wrap:wrap"><div class="form-group" style="flex:1;min-width:160px"><label>Assign to</label><select id="tk-assignee">'+userOpts+'</select></div><div class="form-group" style="flex:1;min-width:140px"><label>Priority</label><select id="tk-priority">'+prioOpts+'</select></div></div>')
+        : (assigneePickerHtml + '<div style="display:flex;gap:12px;flex-wrap:wrap"><div class="form-group" style="flex:1;min-width:140px"><label>Priority</label><select id="tk-priority">'+prioOpts+'</select></div></div>')
+      ) +
       '<div style="display:flex;gap:12px;flex-wrap:wrap">' +
         '<div class="form-group" style="flex:1;min-width:160px"><label>Due date</label><input type="date" id="tk-due" value="'+escHtml(dueVal)+'" /></div>' +
         '<div class="form-group" style="flex:1;min-width:160px"><label>Repeat</label><select id="tk-recur" onchange="taskRecurChanged()">'+recOpts+'</select></div>' +
@@ -2196,7 +2204,7 @@ async function taskSave(id){
   var payload = {
     title: (document.getElementById('tk-title').value||'').trim(),
     description: (document.getElementById('tk-desc').value||'').trim(),
-    assigned_to: document.getElementById('tk-assignee').value||null,
+    assigned_to: (document.getElementById('tk-assignee')||{}).value||null,
     priority: document.getElementById('tk-priority').value,
     due_date: document.getElementById('tk-due').value||null,
     recurrence: document.getElementById('tk-recur').value||''
@@ -2206,6 +2214,15 @@ async function taskSave(id){
   if (!payload.title){ taskFeedback('Title is required.',true); return; }
   var subsEl=document.getElementById('tk-subs');
   if (subsEl){ payload.subtasks = subsEl.value.split('\n').map(function(x){return x.trim();}).filter(Boolean); }
+  if (!id && document.getElementById('tk-assignee-list')){
+    var assignees=[]; document.querySelectorAll('.tk-assignee:checked').forEach(function(c){ assignees.push(parseInt(c.value,10)); });
+    payload.assignees = assignees;
+    try {
+      var rb = await api('POST','/tasks/bulk',payload);
+      if (rb && rb.ids && rb.ids.length===1) navigate('task-detail', rb.ids[0]); else navigate('tasks');
+    } catch(e){ taskFeedback(e.message,true); }
+    return;
+  }
   try {
     var saved = id ? await api('PUT','/tasks/'+id,payload) : await api('POST','/tasks',payload);
     navigate('task-detail', (saved && saved.id) || id);

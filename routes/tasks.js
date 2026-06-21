@@ -97,6 +97,42 @@ router.post('/', requireAuth, requirePermission('manage_tasks'), async (req, res
   } catch (err) { console.error(err); res.status(500).json({ error: 'Failed to create task' }); }
 });
 
+// BULK create — one task per selected assignee (managers/admin)
+router.post('/bulk', requireAuth, requirePermission('manage_tasks'), async (req, res) => {
+  try {
+    const b = req.body || {};
+    const title = (b.title || '').trim();
+    if (!title) return res.status(400).json({ error: 'Title is required' });
+    const priority = PRIORITIES.indexOf(b.priority) !== -1 ? b.priority : 'medium';
+    const recurrence = RECUR.indexOf(b.recurrence) !== -1 ? (b.recurrence || null) : null;
+    const recDay = (recurrence === 'weekly' || recurrence === 'monthly') && b.recurrence_day != null && b.recurrence_day !== '' ? parseInt(b.recurrence_day, 10) : null;
+    const due_date = b.due_date || null;
+    const subs = Array.isArray(b.subtasks) ? b.subtasks : [];
+    let assignees = Array.isArray(b.assignees) ? b.assignees.map(function (x) { return parseInt(x, 10); }).filter(function (x) { return !isNaN(x); }) : [];
+    if (!assignees.length) assignees = [null];
+    const ids = [];
+    for (let a = 0; a < assignees.length; a++) {
+      const aid = assignees[a];
+      const { rows } = await pool.query(
+        'INSERT INTO tasks (title, description, status, priority, assigned_to, created_by, due_date, recurrence, recurrence_day) ' +
+        "VALUES ($1,$2,'todo',$3,$4,$5,$6,$7,$8) RETURNING id",
+        [title, b.description || null, priority, aid, req.user.id, due_date, recurrence, recDay]
+      );
+      const id = rows[0].id;
+      ids.push(id);
+      for (let i = 0; i < subs.length; i++) {
+        const st = subs[i];
+        const tt = (typeof st === 'string' ? st : (st && st.title) || '').trim();
+        if (tt) await pool.query('INSERT INTO task_subtasks (task_id, title, position) VALUES ($1,$2,$3)', [id, tt, i]);
+      }
+      await addActivity(id, req.user, 'event', 'created this task');
+      if (aid) { await addActivity(id, req.user, 'event', 'assigned it to ' + (await nameOf(aid))); try { await notifyTaskAssigned(id); } catch (e) {} }
+    }
+    try { await logAudit({ entity_type: 'task', entity_id: ids[0], entity_number: '#' + ids[0], action: 'created', user_id: req.user.id, user_name: req.user.name, details: { title: title, count: ids.length } }); } catch (e) {}
+    res.status(201).json({ count: ids.length, ids: ids });
+  } catch (err) { console.error(err); res.status(500).json({ error: 'Failed to create tasks' }); }
+});
+
 // SUBTASK toggle (assignee or manager) — declared before /:id routes
 router.patch('/subtasks/:sid', requireAuth, requirePermission('view_tasks'), async (req, res) => {
   try {
