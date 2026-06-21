@@ -52,7 +52,7 @@ async function sendWithAttachments(recipients, subject, html, attachments) {
 router.get('/', requireAuth, requirePermission('view_signoffs'), async (req, res) => {
   try {
     const { rows } = await pool.query(
-      'SELECT f.id, f.form_number, f.status, f.wo_number, f.po_number, f.account, f.store_name, f.store_number, ' +
+      'SELECT f.id, f.form_number, f.status, f.wo_number, f.po_number, f.account, f.store_name, f.store_number, f.created_by, ' +
       '       f.address, f.city_state_zip, f.service_requested_by, f.work_complete, f.completed_at, f.created_at, ' +
       '       c.name AS created_by_name, d.name AS completed_by_name, ' +
       '       (SELECT COUNT(*) FROM signoff_photos p WHERE p.form_id = f.id) AS photo_count ' +
