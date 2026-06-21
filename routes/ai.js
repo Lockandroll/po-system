@@ -177,15 +177,17 @@ router.post('/chat', requireAuth, async function(req, res) {
     const customContext = ctxRow.rows.length && ctxRow.rows[0].value ? ctxRow.rows[0].value.trim() : '';
     let sopContext = '';
     try {
-      const sopRows = await pool.query("SELECT title, content FROM sop_documents WHERE active = true ORDER BY created_at");
+      const sopRows = await pool.query("SELECT title, content FROM sop_documents WHERE active = true ORDER BY char_count ASC, created_at");
       if (sopRows.rows.length) {
         let budget = 60000;
+        let remaining = sopRows.rows.length;
         const parts = [];
         for (const r of sopRows.rows) {
-          if (budget <= 0) break;
-          const chunk = (r.content || '').slice(0, budget);
+          const share = Math.floor(budget / remaining);
+          const chunk = (r.content || '').slice(0, share);
           parts.push('--- ' + r.title + ' ---\n' + chunk);
           budget -= chunk.length;
+          remaining -= 1;
         }
         sopContext = '\n\nCompany SOP and reference documents (treat these as authoritative for company procedures, pricing, and policies; mention the document title when you rely on one):\n' + parts.join('\n\n');
       }
