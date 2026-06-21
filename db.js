@@ -353,6 +353,43 @@ async function initDB() {
       'ALTER TABLE deposits ADD COLUMN IF NOT EXISTS period_end DATE;'
     );
     await client.query(
+      'CREATE TABLE IF NOT EXISTS scheduled_messages (' +
+      '  id SERIAL PRIMARY KEY,' +
+      '  name VARCHAR(255) NOT NULL,' +
+      '  enabled BOOLEAN NOT NULL DEFAULT true,' +
+      "  channel VARCHAR(10) NOT NULL DEFAULT 'sms'," +
+      "  audience_roles TEXT NOT NULL DEFAULT '[]'," +
+      '  ignore_opt_out BOOLEAN NOT NULL DEFAULT false,' +
+      '  day_of_week INTEGER NOT NULL DEFAULT 1,' +
+      "  send_time VARCHAR(5) NOT NULL DEFAULT '09:00'," +
+      '  subject VARCHAR(255),' +
+      '  message TEXT NOT NULL,' +
+      '  last_run_on DATE,' +
+      '  created_by INTEGER REFERENCES users(id),' +
+      '  created_at TIMESTAMPTZ DEFAULT NOW(),' +
+      '  updated_at TIMESTAMPTZ DEFAULT NOW()' +
+      ');'
+    );
+    const _smSeed = await client.query("SELECT value FROM settings WHERE key = 'scheduled_seed_v1'");
+    if (!_smSeed.rows.length) {
+      await client.query(
+        'INSERT INTO scheduled_messages (name, enabled, channel, audience_roles, ignore_opt_out, day_of_week, send_time, subject, message) ' +
+        'VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)',
+        [
+          'Monday deposit reminder',
+          true,
+          'sms',
+          JSON.stringify(['locksmith', 'roadside_technician']),
+          true,
+          1,
+          '09:00',
+          'Deposit day reminder',
+          'Reminder: today is deposit day for last week. Please make your cash deposit and upload the receipt photo in Nova.'
+        ]
+      );
+      await client.query("INSERT INTO settings (key, value, updated_at) VALUES ('scheduled_seed_v1', 'done', NOW()) ON CONFLICT (key) DO NOTHING");
+    }
+    await client.query(
       "UPDATE users SET role = 'locksmith' WHERE role = 'requester';" +
       "UPDATE users SET role = 'manager' WHERE role = 'approver';" +
       "ALTER TABLE users ALTER COLUMN role SET DEFAULT 'locksmith';"

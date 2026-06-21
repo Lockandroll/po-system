@@ -237,7 +237,7 @@ function getSidebarSection(view) {
   if (['quotes','new-quote','edit-quote','view-quote'].indexOf(view) !== -1) return 'quotes';
   if (['vr-dashboard','new-vr','edit-vr','view-vr','fleet-registry','new-vehicle','edit-vehicle','vehicle-history'].indexOf(view) !== -1) return 'vr';
   if (['ai-assistant','ai-conversations','ai-usage'].indexOf(view) !== -1) return 'ai';
-  if (['company-info','ai-context','notifications','roles','settings','users','cities','audit'].indexOf(view) !== -1) return 'settings';
+  if (['company-info','ai-context','notifications','scheduled-messages','roles','settings','users','cities','audit'].indexOf(view) !== -1) return 'settings';
   return null;
 }
 function toggleSection(section) {
@@ -384,7 +384,7 @@ async function render() {
   var quViews = ['quotes','new-quote','edit-quote','view-quote'];
   var vrViews = ['vr-dashboard','new-vr','edit-vr','view-vr','fleet-registry','new-vehicle','edit-vehicle','vehicle-history'];
   var aiViews = ['ai-assistant','ai-conversations','ai-usage'];
-  var stViews = ['company-info','ai-context','notifications','roles','settings','users','cities','audit'];
+  var stViews = ['company-info','ai-context','notifications','scheduled-messages','roles','settings','users','cities','audit'];
   var navHtml =
     '<div class="nav-item' + (cv === 'home' ? ' active' : '') + '" onclick="navigate(\'home\')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 9l9-7 9 7v11a2 2 0 01-2 2H5a2 2 0 01-2-2z"/><polyline points="9 22 9 12 15 12 15 22"/></svg> Home</div>' +
     (can('view_ai_admin') ?
@@ -429,6 +429,7 @@ async function render() {
         (['admin','manager'].includes(state.user.role) ? '<div class="nav-sub' + (cv === 'company-info' || cv === 'settings' ? ' active' : '') + '" onclick="navigate(\'company-info\')">' + icoBuilding + ' Company Information</div>' : '') +
         (can('manage_settings') ? '<div class="nav-sub' + (cv === 'ai-context' ? ' active' : '') + '" onclick="navigate(\'ai-context\')">' + icoAI + ' AI Context</div>' : '') +
         (can('manage_settings') ? '<div class="nav-sub' + (cv === 'notifications' ? ' active' : '') + '" onclick="navigate(\'notifications\')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 0 1-3.46 0"/></svg> Notifications</div>' : '') +
+        (can('manage_settings') ? '<div class="nav-sub' + (cv === 'scheduled-messages' ? ' active' : '') + '" onclick="navigate(\'scheduled-messages\')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><polyline points="12 7 12 12 15 14"/></svg> Scheduled Messages</div>' : '') +
         (can('view_users') ? '<div class="nav-sub' + (cv === 'users' ? ' active' : '') + '" onclick="navigate(\'users\')">' + icons.users + ' Users</div>' : '') +
         (can('manage_cities') ? '<div class="nav-sub' + (cv === 'cities' ? ' active' : '') + '" onclick="navigate(\'cities\')">' + icons.map + ' Cities</div>' : '') +
         (can('view_audit') ? '<div class="nav-sub' + (cv === 'audit' ? ' active' : '') + '" onclick="navigate(\'audit\')">' + icoAudit + ' Audit Log</div>' : '') +
@@ -507,6 +508,7 @@ async function render() {
   else if (state.currentView === 'company-info') await renderCompanyInfo(content);
   else if (state.currentView === 'ai-context') await renderAIContext(content);
   else if (state.currentView === 'notifications') await renderNotifications(content);
+  else if (state.currentView === 'scheduled-messages') await renderScheduledMessages(content);
   else if (state.currentView === 'roles') await renderRoles(content);
   else if (state.currentView === 'suggestions') await renderSuggestions(content);
   else if (state.currentView === 'deposits') await renderDeposits(content);
@@ -1968,6 +1970,177 @@ async function saveRoles() {
     document.getElementById('settings-error').innerHTML = '<div class="alert alert-error">' + escHtml(err.message) + '</div>';
   }
 }
+
+// ── Scheduled Messages (admin) ───────────────────────────────────────────────
+var SM_DOW = ['Sunday','Monday','Tuesday','Wednesday','Thursday','Friday','Saturday'];
+var SM_ROLES = ['locksmith','locksmith_coordinator','roadside_technician','manager','admin'];
+
+function smTime12(t) {
+  var p = String(t || '09:00').split(':');
+  var h = parseInt(p[0], 10); var mm = p[1] || '00';
+  var ap = h >= 12 ? 'PM' : 'AM'; var h12 = h % 12; if (h12 === 0) h12 = 12;
+  return h12 + ':' + mm + ' ' + ap + ' ET';
+}
+
+async function renderScheduledMessages(el) {
+  if (!can('manage_settings')) { el.innerHTML = '<div class="alert alert-error">Access denied.</div>'; return; }
+  el.innerHTML =
+    '<div class="page-header"><div class="page-title"><h2>Scheduled Messages</h2><p>Automated SMS &amp; email reminders that send on a weekly schedule.</p></div>' +
+      '<button class="btn btn-primary" onclick="smNewForm()">+ New Scheduled Message</button></div>' +
+    '<div id="sm-feedback"></div>' +
+    '<div id="sm-body"><div class="loading">Loading…</div></div>';
+  await smLoadList();
+}
+
+async function smLoadList() {
+  var body = document.getElementById('sm-body');
+  if (!body) return;
+  try {
+    var list = await api('GET', '/scheduled');
+    window._smData = list;
+    if (!list.length) {
+      body.innerHTML = '<div class="card"><div class="card-body"><p style="color:var(--text-muted-color)">No scheduled messages yet. Create one to automate a recurring reminder.</p></div></div>';
+      return;
+    }
+    body.innerHTML = list.map(smCard).join('');
+  } catch (e) {
+    body.innerHTML = '<div class="alert alert-error">' + escHtml(e.message) + '</div>';
+  }
+}
+
+function smCard(m) {
+  var roles = [];
+  try { roles = JSON.parse(m.audience_roles || '[]'); } catch (e) { roles = []; }
+  var audience = roles.length ? roles.map(roleLabel).join(', ') : 'No one selected';
+  var chan = m.channel === 'both' ? 'SMS + Email' : (m.channel === 'email' ? 'Email' : 'SMS');
+  var when = SM_DOW[m.day_of_week] + 's at ' + smTime12(m.send_time);
+  var status = m.enabled
+    ? '<span style="color:#22c55e;font-weight:600">On</span>'
+    : '<span style="color:var(--text-muted-color)">Off</span>';
+  return '<div class="card" style="margin-bottom:14px"><div class="card-body">' +
+    '<div style="display:flex;justify-content:space-between;align-items:flex-start;gap:12px;flex-wrap:wrap">' +
+      '<div style="flex:1;min-width:240px">' +
+        '<div style="font-size:16px;font-weight:700;margin-bottom:6px">' + escHtml(m.name) + ' &nbsp; ' + status + '</div>' +
+        '<div style="font-size:13px;color:var(--text-muted-color);line-height:1.7">' +
+          'When: ' + escHtml(when) + '<br>' +
+          'Sends: ' + escHtml(chan) + ' to ' + escHtml(audience) + (m.ignore_opt_out ? ' (ignores opt-out)' : '') +
+        '</div>' +
+        '<div style="font-size:13px;margin-top:8px;padding:8px 10px;background:var(--bg-elevated);border-radius:6px;white-space:pre-wrap">' + escHtml(m.message) + '</div>' +
+      '</div>' +
+      '<div style="display:flex;gap:6px;flex-wrap:wrap;align-items:flex-start">' +
+        '<button class="btn btn-secondary btn-sm" onclick="smTest(' + m.id + ', this)">Send test to me</button>' +
+        '<button class="btn btn-secondary btn-sm" onclick="smEditForm(' + m.id + ')">Edit</button>' +
+        '<button class="btn btn-secondary btn-sm" onclick="smToggle(' + m.id + ')">' + (m.enabled ? 'Turn off' : 'Turn on') + '</button>' +
+        '<button class="btn btn-ghost btn-sm" style="color:#ef4444" onclick="smDelete(' + m.id + ')">Delete</button>' +
+      '</div>' +
+    '</div>' +
+  '</div></div>';
+}
+
+function smNewForm() { smRenderForm(null); }
+function smEditForm(id) { var m = (window._smData || []).filter(function (x) { return x.id === id; })[0]; smRenderForm(m || null); }
+
+function smRenderForm(m) {
+  var body = document.getElementById('sm-body');
+  if (!body) return;
+  m = m || {};
+  var roles = [];
+  try { roles = JSON.parse(m.audience_roles || '[]'); } catch (e) { roles = []; }
+  var chan = m.channel || 'sms';
+  var dow = (m.day_of_week != null) ? m.day_of_week : 1;
+  var roleChecks = SM_ROLES.map(function (r) {
+    var ck = roles.indexOf(r) !== -1 ? ' checked' : '';
+    return '<label style="display:inline-flex;align-items:center;gap:6px;margin-right:16px;font-weight:400"><input type="checkbox" class="sm-role" value="' + r + '"' + ck + ' style="width:auto"> ' + roleLabel(r) + '</label>';
+  }).join('');
+  var dowOpts = SM_DOW.map(function (n, i) { return '<option value="' + i + '"' + (i === dow ? ' selected' : '') + '>' + n + '</option>'; }).join('');
+  body.innerHTML =
+    '<div class="card"><div class="card-body">' +
+      '<h3 style="margin-top:0">' + (m.id ? 'Edit' : 'New') + ' Scheduled Message</h3>' +
+      '<div class="form-group"><label>Name</label><input type="text" id="sm-name" value="' + escHtml(m.name || '') + '" placeholder="e.g. Monday deposit reminder" /></div>' +
+      '<div style="display:flex;gap:12px;flex-wrap:wrap">' +
+        '<div class="form-group" style="flex:1;min-width:150px"><label>Day of week</label><select id="sm-dow">' + dowOpts + '</select></div>' +
+        '<div class="form-group" style="flex:1;min-width:150px"><label>Time (ET)</label><input type="time" id="sm-time" value="' + escHtml(m.send_time || '09:00') + '" /></div>' +
+        '<div class="form-group" style="flex:1;min-width:150px"><label>Channel</label><select id="sm-channel">' +
+          '<option value="sms"' + (chan === 'sms' ? ' selected' : '') + '>SMS</option>' +
+          '<option value="email"' + (chan === 'email' ? ' selected' : '') + '>Email</option>' +
+          '<option value="both"' + (chan === 'both' ? ' selected' : '') + '>SMS + Email</option>' +
+        '</select></div>' +
+      '</div>' +
+      '<div class="form-group"><label>Send to (roles)</label><div style="padding:6px 0">' + roleChecks + '</div></div>' +
+      '<div class="form-group"><label style="display:inline-flex;align-items:center;gap:8px;font-weight:400"><input type="checkbox" id="sm-ignore"' + (m.ignore_opt_out ? ' checked' : '') + ' style="width:auto"> Send even to people who turned off notifications (recommended for required reminders)</label></div>' +
+      '<div class="form-group"><label>Email subject <span style="color:var(--text-muted-color);font-weight:400">(used only for email)</span></label><input type="text" id="sm-subject" value="' + escHtml(m.subject || '') + '" placeholder="e.g. Deposit day reminder" /></div>' +
+      '<div class="form-group"><label>Message</label><textarea id="sm-message" rows="4" placeholder="The text / email body. Use {first_name} to personalize.">' + escHtml(m.message || '') + '</textarea></div>' +
+      '<div class="form-group"><label style="display:inline-flex;align-items:center;gap:8px;font-weight:400"><input type="checkbox" id="sm-enabled"' + (m.enabled === false ? '' : ' checked') + ' style="width:auto"> Enabled</label></div>' +
+      '<div style="display:flex;gap:8px;margin-top:8px">' +
+        '<button class="btn btn-primary" onclick="smSave(' + (m.id || 'null') + ')">' + (m.id ? 'Save Changes' : 'Create') + '</button>' +
+        '<button class="btn btn-secondary" onclick="smLoadList()">Cancel</button>' +
+      '</div>' +
+    '</div></div>';
+}
+
+async function smSave(id) {
+  var roles = [];
+  document.querySelectorAll('.sm-role').forEach(function (c) { if (c.checked) roles.push(c.value); });
+  var fb = document.getElementById('sm-feedback');
+  var payload = {
+    name: document.getElementById('sm-name').value.trim(),
+    day_of_week: parseInt(document.getElementById('sm-dow').value, 10),
+    send_time: document.getElementById('sm-time').value || '09:00',
+    channel: document.getElementById('sm-channel').value,
+    audience_roles: roles,
+    ignore_opt_out: document.getElementById('sm-ignore').checked,
+    subject: document.getElementById('sm-subject').value.trim(),
+    message: document.getElementById('sm-message').value.trim(),
+    enabled: document.getElementById('sm-enabled').checked
+  };
+  if (!payload.message) { fb.innerHTML = '<div class="alert alert-error">Message text is required.</div>'; return; }
+  if (!roles.length) { fb.innerHTML = '<div class="alert alert-error">Pick at least one role to send to.</div>'; return; }
+  try {
+    if (id) await api('PUT', '/scheduled/' + id, payload);
+    else await api('POST', '/scheduled', payload);
+    fb.innerHTML = '<div class="alert alert-success">Saved.</div>';
+    await smLoadList();
+  } catch (e) {
+    fb.innerHTML = '<div class="alert alert-error">' + escHtml(e.message) + '</div>';
+  }
+}
+
+async function smToggle(id) {
+  var m = (window._smData || []).filter(function (x) { return x.id === id; })[0];
+  if (!m) return;
+  var roles = [];
+  try { roles = JSON.parse(m.audience_roles || '[]'); } catch (e) { roles = []; }
+  try {
+    await api('PUT', '/scheduled/' + id, {
+      name: m.name, day_of_week: m.day_of_week, send_time: m.send_time, channel: m.channel,
+      audience_roles: roles, ignore_opt_out: m.ignore_opt_out, subject: m.subject, message: m.message, enabled: !m.enabled
+    });
+    await smLoadList();
+  } catch (e) {
+    var fb = document.getElementById('sm-feedback');
+    if (fb) fb.innerHTML = '<div class="alert alert-error">' + escHtml(e.message) + '</div>';
+  }
+}
+
+async function smTest(id, btn) {
+  var fb = document.getElementById('sm-feedback');
+  if (btn) { btn.disabled = true; btn.textContent = 'Sending…'; }
+  try {
+    var r = await api('POST', '/scheduled/' + id + '/test', {});
+    var detail = r && r.sent ? (r.sent.sms + ' SMS, ' + r.sent.email + ' email') : 'sent';
+    if (fb) fb.innerHTML = '<div class="alert alert-success">Test sent to you (' + detail + '). If you did not get it, confirm your user has a phone and email set.</div>';
+  } catch (e) {
+    if (fb) fb.innerHTML = '<div class="alert alert-error">' + escHtml(e.message) + '</div>';
+  }
+  if (btn) { btn.disabled = false; btn.textContent = 'Send test to me'; }
+}
+
+async function smDelete(id) {
+  if (!confirm('Delete this scheduled message? This cannot be undone.')) return;
+  try { await api('DELETE', '/scheduled/' + id); await smLoadList(); }
+  catch (e) { alert(e.message); }
+}
+
 
 async function renderSettings(el) {
   if (state.user.role !== 'admin') { el.innerHTML = '<div class="alert alert-error">Access denied.</div>'; return; }
