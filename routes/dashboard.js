@@ -53,6 +53,16 @@ router.get('/', requireAuth, async function(req, res) {
       "SELECT COUNT(*) as fleet_count FROM vehicles WHERE active = true"
     );
 
+    // My open tasks (assigned to me, not done)
+    let myTasks = [];
+    try {
+      const mt = await pool.query(
+        "SELECT id, title, status, priority, due_date FROM tasks WHERE assigned_to = $1 AND status <> 'done' ORDER BY (due_date IS NULL), due_date ASC, CASE priority WHEN 'urgent' THEN 0 WHEN 'high' THEN 1 WHEN 'medium' THEN 2 ELSE 3 END LIMIT 12",
+        [userId]
+      );
+      myTasks = mt.rows;
+    } catch (e) { myTasks = []; }
+
     // Recent activity (audit log)
     const { rows: activity } = await pool.query(
       'SELECT entity_type, entity_number, action, user_name, created_at FROM audit_logs ORDER BY created_at DESC LIMIT 8'
@@ -61,6 +71,7 @@ router.get('/', requireAuth, async function(req, res) {
     res.json({
       pendingVRs,
       pendingPOs,
+      myTasks,
       stats: {
         pending_vr: parseInt(vrStats[0].pending_vr) || 0,
         open_po: parseInt(poStats[0].open_po) || 0,

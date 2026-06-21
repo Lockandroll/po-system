@@ -37,9 +37,12 @@ var EMPLOYEE_PERMS = [
   'view_deposits', 'create_deposit', 'delete_deposit', 'export_deposits',
   'view_signoffs', 'create_signoff', 'edit_signoff', 'complete_signoff', 'delete_signoff'
 ];
+EMPLOYEE_PERMS.push('view_tasks');
+ALL_PERMS.push('view_tasks', 'manage_tasks');
+
 var DEFAULTS = {
   admin: '*',
-  manager: ['view_users', 'manage_cities', 'manage_geico', 'manage_running', 'manage_vehicles', 'manage_vendors', 'manage_addresses', 'approve_vr'].concat(EMPLOYEE_PERMS),
+  manager: ['view_users', 'manage_cities', 'manage_geico', 'manage_running', 'manage_vehicles', 'manage_vendors', 'manage_addresses', 'approve_vr', 'manage_tasks'].concat(EMPLOYEE_PERMS),
   locksmith: EMPLOYEE_PERMS.slice(),
   locksmith_coordinator: EMPLOYEE_PERMS.slice(),
   roadside_technician: EMPLOYEE_PERMS.slice()

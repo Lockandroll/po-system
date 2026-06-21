@@ -9,6 +9,7 @@ const { startReminders } = require('./jobs/reminders');
 const { startGeicoReport, startGeicoIngest } = require('./jobs/geicoIngest');
 const { startCleanup } = require('./jobs/cleanup');
 const { startScheduledMessages } = require('./jobs/scheduledMessages');
+const { startTaskReminders } = require('./jobs/taskReminders');
 
 const app = express();
 
@@ -58,6 +59,7 @@ app.use('/api/geico', require('./routes/geico'));
 app.use('/api/deposits', require('./routes/deposits'));
 app.use('/api/signoffs', require('./routes/signoffs'));
 app.use('/api/scheduled', require('./routes/scheduled'));
+app.use('/api/tasks', require('./routes/tasks'));
 
 // Unknown API routes return JSON 404 instead of the SPA shell
 app.use('/api', (req, res) => {
@@ -85,6 +87,7 @@ initDB()
     startReminders();
     startCleanup();
     startScheduledMessages();
+    startTaskReminders();
     startGeicoIngest();
     startGeicoReport();
   })

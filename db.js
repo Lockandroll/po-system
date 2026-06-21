@@ -390,6 +390,55 @@ async function initDB() {
       await client.query("INSERT INTO settings (key, value, updated_at) VALUES ('scheduled_seed_v1', 'done', NOW()) ON CONFLICT (key) DO NOTHING");
     }
     await client.query(
+      'CREATE TABLE IF NOT EXISTS tasks (' +
+      '  id SERIAL PRIMARY KEY,' +
+      '  title VARCHAR(255) NOT NULL,' +
+      '  description TEXT,' +
+      "  status VARCHAR(20) NOT NULL DEFAULT 'todo'," +
+      "  priority VARCHAR(10) NOT NULL DEFAULT 'medium'," +
+      '  assigned_to INTEGER REFERENCES users(id) ON DELETE SET NULL,' +
+      '  created_by INTEGER REFERENCES users(id) ON DELETE SET NULL,' +
+      '  due_date DATE,' +
+      '  completed_at TIMESTAMPTZ,' +
+      '  completed_by INTEGER REFERENCES users(id) ON DELETE SET NULL,' +
+      '  position INTEGER DEFAULT 0,' +
+      '  recurrence VARCHAR(10),' +
+      '  reminded_day_before BOOLEAN NOT NULL DEFAULT false,' +
+      '  reminded_due BOOLEAN NOT NULL DEFAULT false,' +
+      '  last_overdue_on DATE,' +
+      '  created_at TIMESTAMPTZ DEFAULT NOW(),' +
+      '  updated_at TIMESTAMPTZ DEFAULT NOW()' +
+      ');'
+    );
+    await client.query(
+      'CREATE TABLE IF NOT EXISTS task_subtasks (' +
+      '  id SERIAL PRIMARY KEY,' +
+      '  task_id INTEGER REFERENCES tasks(id) ON DELETE CASCADE,' +
+      '  title VARCHAR(500) NOT NULL,' +
+      '  done BOOLEAN NOT NULL DEFAULT false,' +
+      '  position INTEGER DEFAULT 0,' +
+      '  created_at TIMESTAMPTZ DEFAULT NOW()' +
+      ');'
+    );
+    await client.query(
+      'CREATE TABLE IF NOT EXISTS task_activity (' +
+      '  id SERIAL PRIMARY KEY,' +
+      '  task_id INTEGER REFERENCES tasks(id) ON DELETE CASCADE,' +
+      '  user_id INTEGER,' +
+      '  user_name VARCHAR(255),' +
+      "  type VARCHAR(20) NOT NULL DEFAULT 'event'," +
+      '  body TEXT,' +
+      '  created_at TIMESTAMPTZ DEFAULT NOW()' +
+      ');'
+    );
+    await client.query(
+      'CREATE INDEX IF NOT EXISTS idx_tasks_assignee ON tasks(assigned_to);' +
+      'CREATE INDEX IF NOT EXISTS idx_tasks_status ON tasks(status);' +
+      'CREATE INDEX IF NOT EXISTS idx_tasks_due ON tasks(due_date);' +
+      'CREATE INDEX IF NOT EXISTS idx_task_sub ON task_subtasks(task_id);' +
+      'CREATE INDEX IF NOT EXISTS idx_task_act ON task_activity(task_id);'
+    );
+    await client.query(
       "UPDATE users SET role = 'locksmith' WHERE role = 'requester';" +
       "UPDATE users SET role = 'manager' WHERE role = 'approver';" +
       "ALTER TABLE users ALTER COLUMN role SET DEFAULT 'locksmith';"
