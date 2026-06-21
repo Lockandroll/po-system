@@ -70,6 +70,14 @@ async function addActivity(woId, user, type, body) {
   } catch (e) { console.error('[work-orders] activity log failed:', e.message); }
 }
 
+// All known account names (for the AI to match account_name against first).
+async function getKnownAccounts() {
+  try {
+    const { rows } = await pool.query("SELECT name FROM vendors WHERE name IS NOT NULL AND TRIM(name) <> '' ORDER BY name");
+    return rows.map(function (r) { return r.name; });
+  } catch (e) { return []; }
+}
+
 // account_number/name -> { account_id, city_code }
 async function resolveAccount(parsed) {
   const acct = strOrNull(parsed && parsed.account_number);
@@ -135,7 +143,7 @@ async function notifyReceived(wo) {
 }
 
 // Process a single Graph message into a work_orders row. Returns 'created' | 'duplicate' | 'ignored'.
-async function processMessage(msg, conf, mailbox) {
+async function processMessage(msg, conf, mailbox, knownAccounts) {
   // Dedup
   const dup = await pool.query('SELECT id FROM work_orders WHERE email_message_id = $1', [msg.internetMessageId]);
   if (dup.rows.length) return 'duplicate';
@@ -182,7 +190,7 @@ async function processMessage(msg, conf, mailbox) {
   // Parse with Claude
   let parsed = null, parseError = null;
   try {
-    parsed = await parseWorkOrderEmail(msg.bodyText, usable);
+    parsed = await parseWorkOrderEmail(msg.bodyText, usable, knownAccounts);
   } catch (e) {
     parseError = e.message || 'parse failed';
   }
@@ -249,11 +257,12 @@ async function runIngest(options) {
   const sinceIso = options.sinceIso ||
     new Date(Date.now() - (parseInt(options.lookbackHours, 10) || 72) * 3600000).toISOString();
   const messages = await getInboxMessages(conf.mailbox, sinceIso, { top: options.top || 25, paginate: !!options.paginate });
+  const knownAccounts = await getKnownAccounts();
 
   let created = 0, duplicate = 0, ignored = 0;
   for (let i = 0; i < messages.length; i++) {
     try {
-      const r = await processMessage(messages[i], conf, conf.mailbox);
+      const r = await processMessage(messages[i], conf, conf.mailbox, knownAccounts);
       if (r === 'created') created++;
       else if (r === 'duplicate') duplicate++;
       else ignored++;

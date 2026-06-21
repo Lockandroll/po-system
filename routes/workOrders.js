@@ -268,8 +268,10 @@ router.post('/:id/reparse', requireAuth, requirePermission('manage_work_orders')
     if (!ex) return res.status(404).json({ error: 'Work order not found' });
     const att = await pool.query('SELECT filename, mime_type, image_data FROM work_order_attachments WHERE work_order_id = $1', [req.params.id]);
     const attachments = att.rows.map(function (a) { return { filename: a.filename, mime: a.mime_type, contentBytes: a.image_data }; });
+    const accRows = await pool.query("SELECT name FROM vendors WHERE name IS NOT NULL AND TRIM(name) <> '' ORDER BY name");
+    const knownAccounts = accRows.rows.map(function (r) { return r.name; });
     let parsed;
-    try { parsed = await parseWorkOrderEmail(ex.email_body || '', attachments); }
+    try { parsed = await parseWorkOrderEmail(ex.email_body || '', attachments, knownAccounts); }
     catch (e) { return res.status(502).json({ error: 'AI parse failed: ' + e.message }); }
     const acct = await resolveAccountId(parsed.account_number, parsed.account_name);
     await pool.query(
