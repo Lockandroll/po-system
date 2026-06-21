@@ -162,7 +162,7 @@
     @keyframes spin { to { transform: rotate(360deg); } }
     .spinner { display:inline-block; width:16px; height:16px; border:2px solid rgba(249,115,22,0.25); border-top-color:var(--primary); border-radius:50%; animation:spin 0.7s linear infinite; vertical-align:middle; }
     .spinner-lg { width:36px; height:36px; border-width:3px; }
-    .task-dragging { opacity:0.4; }
+    .task-dragging { outline:2px solid var(--primary); outline-offset:-2px; }
     .flex-gap { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
     .text-right { text-align: right; }
     .text-muted { color: var(--text-muted-color); font-size: 13px; }
@@ -2009,8 +2009,28 @@ var TASK_PRIO = { urgent:{l:'Urgent',c:'#ef4444'}, high:{l:'High',c:'#f59e0b'}, 
 var _tasksData = [];
 var _taskView = 'board';
 var _taskDragId = null;
-function taskDragStart(e, id){ _taskDragId = id; var card=e.currentTarget; if (e.dataTransfer){ e.dataTransfer.effectAllowed='move'; try { e.dataTransfer.setData('text/plain', String(id)); } catch(_){} try { if (card && e.dataTransfer.setDragImage) e.dataTransfer.setDragImage(card, Math.min(card.offsetWidth/2, 140), 24); } catch(_){} } if (card) setTimeout(function(){ card.classList.add('task-dragging'); }, 0); }
-function taskDragEnd(e){ var card=e.currentTarget; if (card) card.classList.remove('task-dragging'); }
+var _taskDragGhost = null;
+function taskDragStart(e, id){
+  _taskDragId = id;
+  var card = e.currentTarget;
+  if (e.dataTransfer){
+    e.dataTransfer.effectAllowed='move';
+    try { e.dataTransfer.setData('text/plain', String(id)); } catch(_){}
+    try {
+      var ghost = card.cloneNode(true);
+      ghost.style.cssText = 'position:fixed;top:-2000px;left:0;margin:0;opacity:1;pointer-events:none;width:'+card.offsetWidth+'px;background:#1a1a1a;border:1px solid var(--border);border-radius:var(--radius);box-shadow:0 8px 24px rgba(0,0,0,0.5)';
+      document.body.appendChild(ghost);
+      _taskDragGhost = ghost;
+      if (e.dataTransfer.setDragImage) e.dataTransfer.setDragImage(ghost, Math.min(card.offsetWidth/2, 140), 24);
+    } catch(_){}
+  }
+  if (card) setTimeout(function(){ card.classList.add('task-dragging'); }, 0);
+}
+function taskDragEnd(e){
+  var card = e.currentTarget; if (card) card.classList.remove('task-dragging');
+  if (_taskDragGhost && _taskDragGhost.parentNode) _taskDragGhost.parentNode.removeChild(_taskDragGhost);
+  _taskDragGhost = null;
+}
 function taskDragOver(e){ e.preventDefault(); if (e.dataTransfer) e.dataTransfer.dropEffect='move'; }
 function taskColEl(sn){ return document.getElementById('task-col-'+sn); }
 function taskDragEnter(e, sn){ var c=taskColEl(sn); if (c) c.style.outline='2px dashed var(--primary)'; }
