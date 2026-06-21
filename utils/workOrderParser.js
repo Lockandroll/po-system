@@ -27,8 +27,7 @@ var SCHEMA_PROMPT =
   '{\n' +
   '  "account_name": "company that placed the order, or unknown",\n' +
   '  "account_number": "their account/customer number, or unknown",\n' +
-  '  "po_number": "purchase order number, or unknown",\n' +
-  '  "wo_number": "their work order number, or unknown",\n' +
+  '  "po_number": "the PO or work order number (PO and WO are the same thing), or unknown",\n' +
   '  "store_name": "store/site name, or unknown",\n' +
   '  "store_number": "store/site number, or unknown",\n' +
   '  "address": "street address, or unknown",\n' +

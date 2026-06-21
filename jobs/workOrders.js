@@ -102,7 +102,7 @@ async function createSignoffForWO(wo, systemUserId) {
   const { rows } = await pool.query(
     'INSERT INTO signoff_forms (form_number, status, wo_number, po_number, account, store_name, store_number, address, city_state_zip, service_requested_by, notes, created_by) ' +
     "VALUES ($1,'pending',$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) RETURNING id",
-    [formNumber, wo.wo_number || null, wo.po_number || null, wo.account_name || null, wo.store_name || null,
+    [formNumber, wo.po_number || null, wo.po_number || null, wo.account_name || null, wo.store_name || null,
      wo.store_number || null, wo.address || null, wo.city_state_zip || null, wo.service_requested_by || null,
      notesParts.join(' — ') || null, systemUserId]
   );

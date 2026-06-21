@@ -5627,6 +5627,15 @@ async function renderViewWorkOrder(el, id) {
   catch (e) { el.innerHTML = '<div class="alert alert-error">' + escHtml(e.message) + '</div>'; return; }
   var manage = can('manage_work_orders');
 
+  // Pick the document to show alongside the fields: prefer a PDF, then an image.
+  var docAtt = null;
+  if (w.attachments && w.attachments.length) {
+    docAtt = w.attachments.filter(function (a) { return (a.mime_type || '').toLowerCase().indexOf('pdf') !== -1; })[0] ||
+             w.attachments.filter(function (a) { return (a.mime_type || '').toLowerCase().indexOf('image/') === 0; })[0] || null;
+  }
+  var docData = null;
+  if (docAtt) { try { docData = await api('GET', '/work-orders/' + id + '/attachments/' + docAtt.id); } catch (e) {} }
+
   var actions = '';
   if (manage) {
     if (w.status === 'received' || w.status === 'error' || w.status === 'rejected') {
@@ -5644,20 +5653,53 @@ async function renderViewWorkOrder(el, id) {
     actions += '<button class="btn btn-ghost" style="color:#b91c1c" onclick="woDelete(' + id + ')">Delete</button>';
   }
 
-  var emailPanel = w.source === 'email'
-    ? '<div class="card mb-4"><div class="card-header"><span class="card-title">Original Email</span></div><div class="card-body">' +
-        '<div style="font-size:13px;color:var(--text-muted-color);margin-bottom:8px">From: ' + escHtml(w.email_from || '—') + ' &middot; ' + escHtml(w.email_subject || '') + ' &middot; ' + (w.email_received_at ? formatDate(w.email_received_at) : '') + '</div>' +
-        '<pre style="white-space:pre-wrap;word-break:break-word;max-height:320px;overflow:auto;background:var(--bg-elevated);padding:12px;border-radius:6px;font-size:13px;font-family:inherit">' + escHtml(w.email_body || '(no body)') + '</pre>' +
-        (w.parse_error ? '<div class="alert alert-error" style="margin-top:10px">Parse error: ' + escHtml(w.parse_error) + '</div>' : '') +
-        (w.attachments && w.attachments.length ? '<div style="margin-top:10px;font-size:13px"><strong>Attachments:</strong> ' + w.attachments.map(function (a) { return '<a href="#" onclick="event.preventDefault();woViewAttachment(' + id + ',' + a.id + ')" style="color:var(--primary)">' + escHtml(a.filename || ('file ' + a.id)) + '</a>'; }).join(', ') + '</div>' : '') +
-      '</div></div>'
+  // Left side: the original document (PDF/image), falling back to the email body.
+  var docInner;
+  if (docData && (docData.mime_type || '').toLowerCase().indexOf('pdf') !== -1) {
+    docInner = '<iframe src="data:application/pdf;base64,' + docData.image_data + '" style="width:100%;height:640px;border:0;border-radius:6px;background:#fff"></iframe>';
+  } else if (docData) {
+    docInner = '<img src="data:' + (docData.mime_type || 'image/jpeg') + ';base64,' + docData.image_data + '" style="max-width:100%;border:1px solid var(--border-color);border-radius:6px" />';
+  } else if (w.email_body) {
+    docInner = '<pre style="white-space:pre-wrap;word-break:break-word;max-height:640px;overflow:auto;background:var(--bg-elevated);padding:12px;border-radius:6px;font-size:13px;font-family:inherit">' + escHtml(w.email_body) + '</pre>';
+  } else {
+    docInner = '<div style="color:var(--text-muted-color);font-size:13px">No document or email body.</div>';
+  }
+  var srcMeta = w.source === 'email'
+    ? '<div style="font-size:12px;color:var(--text-muted-color);margin-bottom:8px">From: ' + escHtml(w.email_from || '—') + ' &middot; ' + escHtml(w.email_subject || '') + (w.email_received_at ? ' &middot; ' + formatDate(w.email_received_at) : '') + '</div>'
     : '';
+  var attLinks = (w.attachments && w.attachments.length)
+    ? '<div style="margin-top:8px;font-size:12px"><strong>Files:</strong> ' + w.attachments.map(function (a) { return '<a href="#" onclick="event.preventDefault();woViewAttachment(' + id + ',' + a.id + ')" style="color:var(--primary)">' + escHtml(a.filename || ('file ' + a.id)) + '</a>'; }).join(', ') + '</div>'
+    : '';
+  var leftCard = '<div class="card" style="margin:0"><div class="card-header"><span class="card-title">Original Document</span></div><div class="card-body">' +
+    srcMeta + docInner + attLinks +
+    (w.parse_error ? '<div class="alert alert-error" style="margin-top:10px">Parse error: ' + escHtml(w.parse_error) + '</div>' : '') +
+    '</div></div>';
 
+  // Right side: the parsed fields (editable for managers until paperwork is sent).
   var fieldsEditable = manage && w.status !== 'paperwork_sent';
   function fld(label, fid, val, ph) {
-    if (!fieldsEditable) return '<div><div style="font-size:11px;font-weight:600;color:var(--text-muted-color);text-transform:uppercase;letter-spacing:0.04em;margin-bottom:3px">' + label + '</div><div style="font-size:14px">' + escHtml(val || '—') + '</div></div>';
+    if (!fieldsEditable) return '<div style="margin-bottom:12px"><div style="font-size:11px;font-weight:600;color:var(--text-muted-color);text-transform:uppercase;letter-spacing:0.04em;margin-bottom:3px">' + label + '</div><div style="font-size:14px">' + escHtml(val || '—') + '</div></div>';
     return '<div class="form-group"><label>' + label + '</label><input type="text" id="' + fid + '" value="' + escHtml(val || '') + '" placeholder="' + (ph || '') + '" /></div>';
   }
+  var fieldsInner = fieldsEditable
+    ? '<div class="form-row">' + fld('Account', 'wo-account_name', w.account_name) + fld('Account #', 'wo-account_number', w.account_number) + '</div>' +
+      fld('PO / WO #', 'wo-po_number', w.po_number) +
+      '<div class="form-row">' + fld('Store Name', 'wo-store_name', w.store_name) + fld('Store #', 'wo-store_number', w.store_number) + '</div>' +
+      fld('Address', 'wo-address', w.address) +
+      fld('City / State / Zip', 'wo-city_state_zip', w.city_state_zip) +
+      '<div class="form-group"><label>Service Requested</label><textarea id="wo-service_requested">' + escHtml(w.service_requested || '') + '</textarea></div>' +
+      fld('Service Requested By', 'wo-service_requested_by', w.service_requested_by) +
+      '<div class="form-group"><label>Needed By (date)</label><input type="date" id="wo-needed_by" value="' + escHtml(w.needed_by ? String(w.needed_by).slice(0, 10) : '') + '" /></div>' +
+      '<div class="form-row">' + fld('Contact Name', 'wo-contact_name', w.contact_name) + fld('Contact Phone', 'wo-contact_phone', w.contact_phone) + '</div>' +
+      '<div class="form-group"><label>Priority</label><select id="wo-priority">' + ['low', 'normal', 'high', 'urgent'].map(function (p) { return '<option value="' + p + '"' + (w.priority === p ? ' selected' : '') + '>' + p + '</option>'; }).join('') + '</select></div>' +
+      '<div class="form-group"><label>Notes</label><textarea id="wo-notes">' + escHtml(w.notes || '') + '</textarea></div>' +
+      '<button class="btn btn-secondary" onclick="woSaveEdit(' + id + ')">Save changes</button>'
+    : fld('Account', '', w.account_name) + fld('Account #', '', w.account_number) + fld('PO / WO #', '', w.po_number) +
+      fld('Store', '', (w.store_name || '') + (w.store_number ? ' (#' + w.store_number + ')' : '')) + fld('Address', '', w.address) + fld('City / State / Zip', '', w.city_state_zip) +
+      fld('Service', '', w.service_requested) + fld('Requested By', '', w.service_requested_by) + fld('Needed By', '', w.needed_by ? formatDate(w.needed_by) : '') +
+      fld('Contact', '', w.contact_name) + fld('Phone', '', w.contact_phone) + fld('Priority', '', w.priority) +
+      (w.notes ? '<div style="margin-top:12px;padding:10px 12px;background:var(--bg-elevated);border-radius:6px;font-size:13px"><strong>Notes:</strong> ' + escHtml(w.notes) + '</div>' : '');
+  var rightCard = '<div class="card" style="margin:0"><div class="card-header"><span class="card-title">' + (fieldsEditable ? 'Parsed Details (check &amp; correct)' : 'Details') + '</span></div><div class="card-body">' + fieldsInner + '</div></div>';
 
   el.innerHTML =
     '<div class="page-header">' +
@@ -5666,29 +5708,8 @@ async function renderViewWorkOrder(el, id) {
       '<button class="btn btn-secondary" onclick="navigate(\'work-orders\')">&larr; Back</button>' +
     '</div>' +
     '<div id="wo-detail-error"></div>' +
-    emailPanel +
-    '<div class="card mb-4"><div class="card-header"><span class="card-title">' + (fieldsEditable ? 'Details (edit &amp; save)' : 'Details') + '</span></div><div class="card-body">' +
-      (fieldsEditable
-        ? '<div class="form-row">' + fld('Account', 'wo-account_name', w.account_name) + fld('Account #', 'wo-account_number', w.account_number) + '</div>' +
-          '<div class="form-row">' + fld('PO #', 'wo-po_number', w.po_number) + fld('WO # (theirs)', 'wo-wo_number', w.wo_number) + '</div>' +
-          '<div class="form-row">' + fld('Store Name', 'wo-store_name', w.store_name) + fld('Store #', 'wo-store_number', w.store_number) + '</div>' +
-          fld('Address', 'wo-address', w.address) +
-          fld('City / State / Zip', 'wo-city_state_zip', w.city_state_zip) +
-          '<div class="form-group"><label>Service Requested</label><textarea id="wo-service_requested">' + escHtml(w.service_requested || '') + '</textarea></div>' +
-          '<div class="form-row">' + fld('Service Requested By', 'wo-service_requested_by', w.service_requested_by) + '<div class="form-group"><label>Needed By (date)</label><input type="date" id="wo-needed_by" value="' + escHtml(w.needed_by ? String(w.needed_by).slice(0, 10) : '') + '" /></div></div>' +
-          '<div class="form-row">' + fld('Contact Name', 'wo-contact_name', w.contact_name) + fld('Contact Phone', 'wo-contact_phone', w.contact_phone) + '</div>' +
-          '<div class="form-row"><div class="form-group"><label>Priority</label><select id="wo-priority">' + ['low', 'normal', 'high', 'urgent'].map(function (p) { return '<option value="' + p + '"' + (w.priority === p ? ' selected' : '') + '>' + p + '</option>'; }).join('') + '</select></div></div>' +
-          '<div class="form-group"><label>Notes</label><textarea id="wo-notes">' + escHtml(w.notes || '') + '</textarea></div>' +
-          '<button class="btn btn-secondary" onclick="woSaveEdit(' + id + ')">Save changes</button>'
-        : '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:16px">' +
-            fld('Account', '', w.account_name) + fld('Account #', '', w.account_number) + fld('PO #', '', w.po_number) + fld('WO #', '', w.wo_number) +
-            fld('Store', '', (w.store_name || '') + (w.store_number ? ' (#' + w.store_number + ')' : '')) + fld('Address', '', w.address) + fld('City/State/Zip', '', w.city_state_zip) +
-            fld('Service', '', w.service_requested) + fld('Requested By', '', w.service_requested_by) + fld('Needed By', '', w.needed_by ? formatDate(w.needed_by) : '') +
-            fld('Contact', '', w.contact_name) + fld('Phone', '', w.contact_phone) + fld('Priority', '', w.priority) +
-          '</div>' + (w.notes ? '<div style="margin-top:12px;padding:10px 12px;background:var(--bg-elevated);border-radius:6px;font-size:13px"><strong>Notes:</strong> ' + escHtml(w.notes) + '</div>' : '')
-      ) +
-    '</div></div>' +
     (actions ? '<div class="card mb-4"><div class="card-body"><div class="flex-gap" style="flex-wrap:wrap">' + actions + '</div></div></div>' : '') +
+    '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(380px,1fr));gap:16px;align-items:start" class="mb-4">' + leftCard + rightCard + '</div>' +
     '<div class="card"><div class="card-header"><span class="card-title">Activity</span></div><div class="card-body">' +
       ((w.activity && w.activity.length)
         ? w.activity.map(function (a) { return '<div style="font-size:13px;padding:6px 0;border-bottom:1px solid var(--border-color)"><span style="color:var(--text-muted-color)">' + formatDate(a.created_at) + ' &middot; ' + escHtml(a.user_name || 'System') + '</span> — ' + escHtml(a.body || '') + '</div>'; }).join('')
@@ -5699,7 +5720,7 @@ async function renderViewWorkOrder(el, id) {
 function woGet(fid) { var e = document.getElementById(fid); return e ? e.value.trim() : undefined; }
 async function woSaveEdit(id) {
   var body = {
-    account_name: woGet('wo-account_name'), account_number: woGet('wo-account_number'), po_number: woGet('wo-po_number'), wo_number: woGet('wo-wo_number'),
+    account_name: woGet('wo-account_name'), account_number: woGet('wo-account_number'), po_number: woGet('wo-po_number'),
     store_name: woGet('wo-store_name'), store_number: woGet('wo-store_number'), address: woGet('wo-address'), city_state_zip: woGet('wo-city_state_zip'),
     service_requested: woGet('wo-service_requested'), service_requested_by: woGet('wo-service_requested_by'), needed_by: woGet('wo-needed_by'),
     contact_name: woGet('wo-contact_name'), contact_phone: woGet('wo-contact_phone'), priority: woGet('wo-priority'), notes: woGet('wo-notes')
@@ -5743,7 +5764,7 @@ async function renderWorkOrderForm(el) {
     '<div id="wo-form-error"></div>' +
     '<div class="card mb-4"><div class="card-body">' +
       '<div class="form-row">' + woRowField('Account', 'wof-account_name', '', 'e.g. Ferrandino &amp; Son') + woRowField('Account #', 'wof-account_number', '', '') + '</div>' +
-      '<div class="form-row">' + woRowField('PO #', 'wof-po_number', '', '') + woRowField('WO # (theirs)', 'wof-wo_number', '', '') + '</div>' +
+      woRowField('PO / WO #', 'wof-po_number', '', '') +
       '<div class="form-row">' + woRowField('Store Name', 'wof-store_name', '', '') + woRowField('Store #', 'wof-store_number', '', '') + '</div>' +
       woRowField('Address', 'wof-address', '', 'Street address') +
       woRowField('City / State / Zip', 'wof-city_state_zip', '', '') +
@@ -5757,7 +5778,7 @@ async function renderWorkOrderForm(el) {
 async function woCreate() {
   function v(k) { var e = document.getElementById('wof-' + k); return e ? e.value.trim() : ''; }
   var body = {
-    account_name: v('account_name'), account_number: v('account_number'), po_number: v('po_number'), wo_number: v('wo_number'),
+    account_name: v('account_name'), account_number: v('account_number'), po_number: v('po_number'),
     store_name: v('store_name'), store_number: v('store_number'), address: v('address'), city_state_zip: v('city_state_zip'),
     service_requested: v('service_requested'), service_requested_by: v('service_requested_by'), needed_by: v('needed_by'),
     contact_name: v('contact_name'), contact_phone: v('contact_phone'), notes: v('notes')
