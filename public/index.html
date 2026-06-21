@@ -6484,6 +6484,65 @@ if ('serviceWorker' in navigator) {
     });
   });
 }
+
+// ---- Install ('Add to app') prompt -------------------------------------
+(function () {
+  function isStandalone() {
+    return window.matchMedia('(display-mode: standalone)').matches || window.navigator.standalone === true;
+  }
+  if (isStandalone()) return;
+  try { if (localStorage.getItem('nova_install_dismissed') === '1') return; } catch (e) {}
+  var isIOS = /iphone|ipad|ipod/i.test(navigator.userAgent) ||
+             (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+  function dismiss() {
+    var el = document.getElementById('nova-install-banner');
+    if (el) el.parentNode.removeChild(el);
+    try { localStorage.setItem('nova_install_dismissed', '1'); } catch (e) {}
+  }
+  window.__novaInstallDismiss = dismiss;
+  function banner(inner) {
+    if (document.getElementById('nova-install-banner')) return null;
+    var b = document.createElement('div');
+    b.id = 'nova-install-banner';
+    b.style.cssText = 'position:fixed;left:50%;transform:translateX(-50%);bottom:calc(16px + env(safe-area-inset-bottom));z-index:9999;background:#1a1a1a;border:1px solid #2e2e2e;border-radius:12px;box-shadow:0 8px 24px rgba(0,0,0,0.5);padding:12px 14px;display:flex;align-items:center;gap:12px;width:360px;max-width:calc(100vw - 24px);font-family:-apple-system,BlinkMacSystemFont,Segoe UI,sans-serif;color:#f0f0f0';
+    b.innerHTML = inner;
+    document.body.appendChild(b);
+    return b;
+  }
+  var logo = '<div style="flex-shrink:0;width:36px;height:36px;border-radius:8px;background:#0f0f0f;display:flex;align-items:center;justify-content:center;color:#f97316;font-weight:800;font-size:18px">N</div>';
+  var closeBtn = '<button onclick="window.__novaInstallDismiss()" aria-label="Dismiss" style="background:none;border:none;color:#888;font-size:22px;line-height:1;cursor:pointer;flex-shrink:0;padding:0 2px">&times;</button>';
+  if (isIOS) {
+    setTimeout(function () {
+      banner(logo +
+        '<div style="flex:1;font-size:13px;line-height:1.4">Install Nova: tap <strong>Share</strong>, then <strong>Add to Home Screen</strong>.</div>' +
+        closeBtn);
+    }, 1200);
+    return;
+  }
+  var deferred = null;
+  window.addEventListener('beforeinstallprompt', function (e) {
+    e.preventDefault();
+    deferred = e;
+    var b = banner(logo +
+      '<div style="flex:1;font-size:13px;line-height:1.4"><strong>Install Nova</strong><br><span style="color:#888">Add it to your device for quick access.</span></div>' +
+      '<button id="nova-install-go" style="background:#f97316;color:#fff;border:none;border-radius:8px;padding:9px 14px;font-size:13px;font-weight:600;cursor:pointer;flex-shrink:0">Install</button>' +
+      closeBtn);
+    if (!b) return;
+    var go = document.getElementById('nova-install-go');
+    if (go) go.addEventListener('click', function () {
+      var el = document.getElementById('nova-install-banner');
+      if (el) el.parentNode.removeChild(el);
+      if (!deferred) return;
+      deferred.prompt();
+      deferred.userChoice.then(function () { deferred = null; });
+    });
+  });
+  window.addEventListener('appinstalled', function () {
+    var el = document.getElementById('nova-install-banner');
+    if (el) el.parentNode.removeChild(el);
+    try { localStorage.setItem('nova_install_dismissed', '1'); } catch (e) {}
+  });
+})();
 </script>
 </body>
 </html>
