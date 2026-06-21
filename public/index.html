@@ -1760,6 +1760,7 @@ async function renderNotifications(el) {
     { key:'quote_created', label:'New quote created', def:'all admins', sms:true },
     { key:'quote_to_pos', label:'Purchase orders created from a quote', def:'all admins', sms:true },
     { key:'signoff_completed', label:'Sign-off sheet completed', def:'all admins', sms:false },
+    { key:'work_order_received', label:'New work order received', def:'all admins and managers', sms:false },
     { key:'suggestion_created', label:'New employee suggestion', def:'all admins and managers', sms:true }
   ];
   var requester = [
@@ -1864,7 +1865,7 @@ async function renderNotifications(el) {
 }
 
 async function saveNotifications() {
-  var broadcast = ['po_submitted','vr_submitted','quote_created','quote_to_pos','signoff_completed','suggestion_created'];
+  var broadcast = ['po_submitted','vr_submitted','quote_created','quote_to_pos','signoff_completed','work_order_received','suggestion_created'];
   var smsCapable = { po_submitted:1, vr_submitted:1, quote_created:1, quote_to_pos:1, suggestion_created:1 };
   var requester = ['po_approved','po_rejected','po_cancelled','po_ordered','vr_approved','vr_rejected'];
   function parseEmails(raw) {
