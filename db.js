@@ -591,6 +591,29 @@ async function initDB() {
       '  created_at TIMESTAMPTZ DEFAULT NOW()' +
       ');'
     );
+    // SOP chunks - searchable segments of each SOP for full-text retrieval by Nova AI
+    await client.query(
+      'CREATE TABLE IF NOT EXISTS sop_chunks (' +
+      '  id SERIAL PRIMARY KEY,' +
+      '  sop_id INTEGER NOT NULL REFERENCES sop_documents(id) ON DELETE CASCADE,' +
+      '  chunk_index INTEGER NOT NULL,' +
+      '  content TEXT NOT NULL,' +
+      "  tsv tsvector GENERATED ALWAYS AS (to_tsvector('english', content)) STORED" +
+      ');'
+    );
+    await client.query('CREATE INDEX IF NOT EXISTS sop_chunks_tsv_idx ON sop_chunks USING GIN (tsv);');
+    await client.query('CREATE INDEX IF NOT EXISTS sop_chunks_sop_idx ON sop_chunks (sop_id);');
+    // Backfill chunks for any SOP documents uploaded before retrieval existed
+    try {
+      const { reindexSop } = require('./utils/sopIndex');
+      const missingChunks = await client.query(
+        'SELECT d.id, d.content FROM sop_documents d WHERE NOT EXISTS (SELECT 1 FROM sop_chunks c WHERE c.sop_id = d.id)'
+      );
+      for (const row of missingChunks.rows) {
+        await reindexSop(client, row.id, row.content);
+      }
+      if (missingChunks.rows.length) console.log('Backfilled SOP chunks for ' + missingChunks.rows.length + ' document(s)');
+    } catch (e) { console.error('SOP chunk backfill failed:', e.message); }
     console.log('Database initialized');
   } finally {
     client.release();

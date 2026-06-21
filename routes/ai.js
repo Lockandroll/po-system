@@ -36,6 +36,23 @@ function monthYear() {
   return today().substring(0, 7);
 }
 
+// Pull the user's recent question text (last 2 user turns) to drive SOP retrieval.
+function extractSopQuery(messages) {
+  var userMsgs = messages.filter(function(m) { return m && m.role === 'user'; });
+  var recent = userMsgs.slice(-2);
+  var texts = [];
+  for (var i = 0; i < recent.length; i++) {
+    var c = recent[i].content;
+    if (typeof c === 'string') texts.push(c);
+    else if (Array.isArray(c)) {
+      for (var j = 0; j < c.length; j++) {
+        if (c[j] && c[j].type === 'text' && c[j].text) texts.push(c[j].text);
+      }
+    }
+  }
+  return texts.join(' ').trim().slice(0, 2000);
+}
+
 async function getUsage(userId) {
   const [daily, monthly] = await Promise.all([
     pool.query('SELECT message_count FROM ai_usage WHERE user_id = $1 AND message_date = $2', [userId, today()]),
@@ -177,24 +194,38 @@ router.post('/chat', requireAuth, async function(req, res) {
     const customContext = ctxRow.rows.length && ctxRow.rows[0].value ? ctxRow.rows[0].value.trim() : '';
     let sopContext = '';
     try {
-      const sopRows = await pool.query("SELECT title, content FROM sop_documents WHERE active = true ORDER BY char_count ASC, created_at");
-      if (sopRows.rows.length) {
-        let budget = 60000;
-        let remaining = sopRows.rows.length;
+      const sopActive = await pool.query("SELECT COUNT(*)::int AS n FROM sop_documents WHERE active = true");
+      if (sopActive.rows[0].n > 0) {
+        const queryText = extractSopQuery(messages);
         const parts = [];
-        for (const r of sopRows.rows) {
-          const share = Math.floor(budget / remaining);
-          const chunk = (r.content || '').slice(0, share);
-          parts.push('--- ' + r.title + ' ---\n' + chunk);
-          budget -= chunk.length;
-          remaining -= 1;
+        if (queryText) {
+          // Full-text retrieval: pull the SOP chunks most relevant to the question.
+          // OR-combine the query terms (better recall than the default AND); rank chunks by overlap.
+          const retrieved = await pool.query(
+            "WITH q AS (SELECT replace(websearch_to_tsquery('english', $1)::text, '&', '|')::tsquery AS tq) " +
+            "SELECT d.title, c.content, ts_rank(c.tsv, q.tq) AS rank " +
+            "FROM sop_chunks c " +
+            "JOIN sop_documents d ON d.id = c.sop_id, q " +
+            "WHERE d.active = true AND c.tsv @@ q.tq " +
+            "ORDER BY rank DESC LIMIT 12",
+            [queryText]
+          );
+          let budget = 40000;
+          for (const r of retrieved.rows) {
+            if (budget <= 0) break;
+            const chunk = (r.content || '').slice(0, budget);
+            parts.push('--- ' + r.title + ' ---\n' + chunk);
+            budget -= chunk.length;
+          }
         }
-        sopContext = '\n\nCompany SOP and reference documents (treat these as authoritative for company procedures, pricing, and policies; mention the document title when you rely on one):\n' + parts.join('\n\n');
+        if (parts.length) {
+          sopContext = '\n\nRelevant excerpts from company SOP and reference documents (treat these as authoritative for company procedures, pricing, and policies; mention the document title when you rely on one):\n' + parts.join('\n\n');
+        }
       }
-    } catch (e) { console.error('SOP context load failed:', e.message); }
+    } catch (e) { console.error('SOP retrieval failed:', e.message); }
     let systemPrompt = SYSTEM_PROMPT;
     if (customContext) systemPrompt += '\n\nAdditional company context:\n' + customContext;
-    if (sopContext) systemPrompt += sopContext + '\n\nWhen a question is about company procedures, pricing, or policies covered by the SOP documents above, answer using them even if it is not strictly a locksmith topic.';
+    if (sopContext) systemPrompt += sopContext + '\n\nWhen a question is about company procedures, pricing, or policies, answer using the SOP excerpts above even if it is not strictly a locksmith topic. If the excerpts do not contain the answer, say you could not find it in the SOPs rather than guessing.';
 
     const response = await callClaude(messages, systemPrompt);
 

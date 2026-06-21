@@ -5504,7 +5504,7 @@ var WO_STATUS_META = {
   error:          { label: 'Parse Error',    bg: '#fee2e2', fg: '#b91c1c' }
 };
 var WO_FLOW = ['received', 'in_process', 'job_completed', 'paperwork_sent'];
-var _woState = { status: 'received', q: '', page: 1, limit: 25, total: 0 };
+var _woState = { status: 'received', q: '', page: 1, limit: 25, total: 0, counts: {} };
 
 function woBadge(s) {
   var m = WO_STATUS_META[s] || { label: s, bg: '#eee', fg: '#333' };
@@ -5516,15 +5516,19 @@ function woConfBadge(c) {
   return '<span class="badge" style="background:transparent;border:1px solid ' + col + ';color:' + col + ';text-transform:capitalize">' + escHtml(c) + '</span>';
 }
 
-async function renderWorkOrders(el) {
-  var counts = {};
-  try { counts = await api('GET', '/work-orders/counts'); } catch (e) {}
-  function tab(st, label) {
+function woTabsHtml() {
+  var counts = _woState.counts || {};
+  var defs = [['received','Received'],['in_process','In Process'],['job_completed','Job Completed'],['paperwork_sent','Paperwork Sent'],['rejected','Rejected'],['','All']];
+  return defs.map(function (d) {
+    var st = d[0], label = d[1];
     var n = counts[st] || 0;
     var active = _woState.status === st;
     return '<button class="btn ' + (active ? 'btn-primary' : 'btn-secondary') + ' btn-sm" onclick="woSetFilter(\'' + st + '\')" style="white-space:nowrap">' +
       escHtml(label) + (n ? ' (' + n + ')' : '') + '</button>';
-  }
+  }).join('');
+}
+async function renderWorkOrders(el) {
+  try { _woState.counts = await api('GET', '/work-orders/counts'); } catch (e) { _woState.counts = {}; }
   el.innerHTML =
     '<div class="page-header">' +
       '<div><div class="page-title">Work Orders</div><div class="page-subtitle">Incoming work orders to review, dispatch, and complete.</div></div>' +
@@ -5533,10 +5537,7 @@ async function renderWorkOrders(el) {
     '<div id="wo-error"></div>' +
     '<div class="card">' +
       '<div class="card-header" style="display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap">' +
-        '<div style="display:flex;gap:6px;flex-wrap:wrap">' +
-          tab('received', 'Received') + tab('in_process', 'In Process') + tab('job_completed', 'Job Completed') +
-          tab('paperwork_sent', 'Paperwork Sent') + tab('rejected', 'Rejected') + tab('', 'All') +
-        '</div>' +
+        '<div id="wo-tabs" style="display:flex;gap:6px;flex-wrap:wrap">' + woTabsHtml() + '</div>' +
         '<input type="text" id="wo-search" placeholder="Search account, store, PO, service..." style="width:260px" value="' + escHtml(_woState.q) + '" oninput="woSearchDebounced()" />' +
       '</div>' +
       (can('manage_work_orders') ?
@@ -5566,6 +5567,8 @@ function woPaginate(p) { _woState.page = p; woLoad(); }
 async function woLoad() {
   var wrap = document.getElementById('wo-wrap');
   if (!wrap) return;
+  var tabBar = document.getElementById('wo-tabs');
+  if (tabBar) tabBar.innerHTML = woTabsHtml();
   var qs = [];
   if (_woState.status) qs.push('status=' + encodeURIComponent(_woState.status));
   if (_woState.q) qs.push('q=' + encodeURIComponent(_woState.q));

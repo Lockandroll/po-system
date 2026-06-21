@@ -1,5 +1,6 @@
 const express = require('express');
 const { pool } = require('../db');
+const { reindexSop } = require('../utils/sopIndex');
 const { requireAuth, requireRole } = require('../middleware/auth');
 
 const router = express.Router();
@@ -30,6 +31,9 @@ router.post('/', requireAuth, requireRole('admin'), async function(req, res) {
       'VALUES ($1,$2,$3,$4,$5,$6) RETURNING id',
       [title.trim().slice(0, 255), (filename || '').slice(0, 255), text, text.length, req.user.id, req.user.name]
     );
+    try {
+      await reindexSop(pool, rows[0].id, text);
+    } catch (e) { console.error('SOP chunk index failed:', e.message); }
     res.json({ success: true, id: rows[0].id });
   } catch (err) {
     console.error('SOP create error:', err);
