@@ -5505,9 +5505,7 @@ async function printSignoff(id) {
       '<span style="display:flex;align-items:center">' + box(f.work_complete === true) + 'Yes</span>' +
       '<span style="display:flex;align-items:center">' + box(f.work_complete === false) + 'No</span>' +
     '</div>';
-    var _stampWhen = f.signed_at ? new Date(f.signed_at).toLocaleString('en-US') : (f.completed_at ? new Date(f.completed_at).toLocaleString('en-US') : '');
-    var _stampLoc = (f.gps_lat != null && f.gps_lon != null) ? (Number(f.gps_lat).toFixed(6) + ', ' + Number(f.gps_lon).toFixed(6) + (f.gps_accuracy != null ? ' (\u00b1' + Math.round(f.gps_accuracy) + ' m)' : '')) : 'Location unavailable';
-    const sigImg = f.signature_data ? '<img src="' + f.signature_data + '" style="max-height:46px;max-width:100%;display:block" /><div style="font-size:9.5px;color:#374151;margin-top:2px;line-height:1.35">Signed ' + esc(_stampWhen) + ' &middot; GPS: ' + esc(_stampLoc) + '</div>' : '';
+    const sigImg = f.signature_data ? '<img src="' + f.signature_data + '" style="max-height:46px;max-width:100%;display:block" />' : '';
 
     const ROW = 'display:flex;border-bottom:1px solid #000;min-height:34px';
     const grid = '<div style="border:2px solid #000;margin-top:16px">' +
