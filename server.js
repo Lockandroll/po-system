@@ -7,6 +7,7 @@ const rateLimit = require('express-rate-limit');
 const { initDB } = require('./db');
 const { startReminders } = require('./jobs/reminders');
 const { startGeicoReport, startGeicoIngest } = require('./jobs/geicoIngest');
+const { startCleanup } = require('./jobs/cleanup');
 
 const app = express();
 
@@ -80,6 +81,7 @@ initDB()
   .then(() => {
     console.log('Database initialized');
     startReminders();
+    startCleanup();
     startGeicoIngest();
     startGeicoReport();
   })
