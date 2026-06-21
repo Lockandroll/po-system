@@ -1816,6 +1816,22 @@ async function renderNotifications(el) {
     '</div>';
   }).join('');
 
+  var taskAlerts = [
+    { key:'task_assigned', label:'Task assigned to someone' },
+    { key:'task_due', label:'Task due / overdue reminders' }
+  ];
+  var tHtml = taskAlerts.map(function(ev) {
+    var rule = rules[ev.key];
+    var emailOn = rule ? rule.email !== false : true;
+    var smsOn = rule ? rule.sms !== false : true;
+    return '<div style="display:flex;align-items:center;justify-content:space-between;gap:10px;padding:8px 0;border-bottom:1px solid var(--border);font-size:13px">' +
+      '<div>' + escHtml(ev.label) + '</div>' +
+      '<div style="display:flex;gap:18px">' +
+        '<label style="display:flex;align-items:center;gap:6px;cursor:pointer">' + chk('nt-email-' + ev.key, emailOn) + ' Email</label>' +
+        '<label style="display:flex;align-items:center;gap:6px;cursor:pointer">' + chk('nt-sms-' + ev.key, smsOn) + ' SMS</label>' +
+      '</div>' +
+    '</div>';
+  }).join('');
   el.innerHTML =
     '<div class="page-header"><div class="page-title">Notifications</div></div>' +
     '<div id="settings-error"></div><div id="settings-success"></div>' +
@@ -1827,6 +1843,10 @@ async function renderNotifications(el) {
     '<div class="card mb-4"><div class="card-header"><span class="card-title">Status updates to the requester</span></div><div class="card-body">' +
       '<p class="text-muted" style="margin-bottom:6px;font-size:13px">These go to whoever created the PO or repair. Toggle the channel on or off.</p>' +
       rHtml +
+    '</div></div>' +
+    '<div class="card mb-4"><div class="card-header"><span class="card-title">Task alerts</span></div><div class="card-body">' +
+      '<p class="text-muted" style="margin-bottom:6px;font-size:13px">These go to the person a task is assigned to. Toggle the channel on or off. Reminders fire when assigned, the day before, the morning it is due, and daily while overdue.</p>' +
+      tHtml +
     '</div></div>' +
     '<button class="btn btn-primary" onclick="saveNotifications()">Save Notification Settings</button>';
 
@@ -1871,6 +1891,11 @@ async function saveNotifications() {
   requester.forEach(function(key) {
     var emailEl = document.getElementById('nr-email-' + key);
     var smsEl = document.getElementById('nr-sms-' + key);
+    rules[key] = { email: emailEl ? emailEl.checked : true, sms: smsEl ? smsEl.checked : true };
+  });
+  ['task_assigned','task_due'].forEach(function(key) {
+    var emailEl = document.getElementById('nt-email-' + key);
+    var smsEl = document.getElementById('nt-sms-' + key);
     rules[key] = { email: emailEl ? emailEl.checked : true, sms: smsEl ? smsEl.checked : true };
   });
   try {
