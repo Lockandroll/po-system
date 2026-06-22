@@ -6450,7 +6450,7 @@ async function printSignoff(id) {
 }
 
 // ===== Scheduling (Sling-style) ============================================
-var _schedMonday = null, _schedCity = '', _schedCities = [], _schedUsers = [], _schedPositions = [], _schedShifts = [], _schedEditId = null;
+var _schedMonday = null, _schedCity = '', _schedCities = [], _schedUsers = [], _schedPositions = [], _schedShifts = [], _schedEditId = null, _schedEmpCities = {}, _schedScope = null;
 
 function schedYmd(d){ return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0'); }
 function schedAddDays(ds,n){ var a=ds.split('-').map(Number); var d=new Date(a[0],a[1]-1,a[2]); d.setDate(d.getDate()+n); return schedYmd(d); }
@@ -6469,9 +6469,13 @@ async function schedLoadAdmin(){
     api('GET','/schedule/positions').catch(function(){return [];}),
     api('GET','/cities').catch(function(){return [];}),
     api('GET','/users').catch(function(){return [];}),
-    api('GET','/schedule/shifts'+q).catch(function(){return [];})
+    api('GET','/schedule/shifts'+q).catch(function(){return [];}),
+    api('GET','/schedule/my-scope').catch(function(){return {cities:null};}),
+    api('GET','/schedule/employee-cities').catch(function(){return [];})
   ]);
   _schedPositions=r[0]||[]; _schedCities=(r[1]||[]).filter(function(c){return c.active!==false;}); _schedUsers=(r[2]||[]).filter(function(u){return u.active!==false;}); _schedShifts=r[3]||[];
+  _schedScope=(r[4]&&typeof r[4].cities!=='undefined')?r[4].cities:null;
+  _schedEmpCities={}; (r[5]||[]).forEach(function(m){ _schedEmpCities[m.user_id]=m.city_codes||[]; });
 }
 
 async function renderScheduleAdmin(el){
@@ -6479,13 +6483,14 @@ async function renderScheduleAdmin(el){
   if(!_schedMonday) _schedMonday=schedMondayOf(schedToday());
   el.innerHTML='<div class="loading">Loading…</div>';
   try{ await schedLoadAdmin(); }catch(e){ el.innerHTML='<div class="alert alert-error">'+escHtml(e.message)+'</div>'; return; }
-  var cityOpts='<option value="">All cities</option>'+_schedCities.map(function(c){ return '<option value="'+escHtml((c.code||'').trim())+'"'+(_schedCity===(c.code||'').trim()?' selected':'')+'>'+escHtml(c.name)+'</option>'; }).join('');
+  var cityOpts='<option value="">All cities</option>'+schedScopedCities().map(function(c){ return '<option value="'+escHtml((c.code||'').trim())+'"'+(_schedCity===(c.code||'').trim()?' selected':'')+'>'+escHtml(c.name)+'</option>'; }).join('');
   var weekEnd=schedAddDays(_schedMonday,6);
   el.innerHTML=
     '<div class="page-header" style="flex-wrap:wrap;gap:10px"><div class="page-title">Schedule</div>'+
       '<div style="display:flex;gap:8px;flex-wrap:wrap">'+
         '<button class="btn btn-secondary btn-sm" onclick="schedCopyLastWeek()">Copy Last Week</button>'+
         '<button class="btn btn-secondary btn-sm" onclick="schedManagePositions()">Positions</button>'+
+        '<button class="btn btn-secondary btn-sm" onclick="schedAssignStaff()">Staff Cities</button>'+
         (can('manage_users')?'<button class="btn btn-secondary btn-sm" onclick="schedAssignManagers()">Assign Managers</button>':'')+
         '<button class="btn btn-primary btn-sm" onclick="schedPublishWeek()">Publish Week</button>'+
       '</div>'+
@@ -6513,7 +6518,7 @@ function schedRenderGrid(){
   var today=schedToday();
   var head='<tr><th style="position:sticky;left:0;background:var(--bg-elevated,#1a1a1a);min-width:140px;text-align:left;padding:10px 12px;z-index:2">Employee</th>'+
     days.map(function(d){ var isT=d===today; return '<th style="min-width:128px;text-align:center;padding:8px 6px'+(isT?';color:var(--primary,#f97316)':'')+'">'+escHtml(schedDateLabel(d))+'</th>'; }).join('')+'</tr>';
-  var rows=_schedUsers.map(function(u){
+  var _vis=schedVisibleUsers(); var rows=_vis.map(function(u){
     var cells=days.map(function(d){
       var list=byCell[u.id+'|'+d]||[];
       var blocks=list.sort(function(a,b){return schedTimeMin(a.start_time)-schedTimeMin(b.start_time);}).map(function(s){
@@ -6531,7 +6536,7 @@ function schedRenderGrid(){
     var label=escHtml(u.name)+' <span style="color:var(--text-muted-color,#999);font-weight:400;font-size:11px">'+(hrs?hrs.toFixed(1)+'h':'')+'</span>';
     return '<tr><td style="position:sticky;left:0;background:var(--card-bg,#161616);padding:8px 12px;font-weight:600;font-size:13px;border:1px solid var(--border,#2a2a2a);z-index:1">'+label+'</td>'+cells+'</tr>';
   }).join('');
-  if(!_schedUsers.length) rows='<tr><td colspan="8" style="padding:20px;text-align:center;color:var(--text-muted-color,#999)">No active employees.</td></tr>';
+  if(!_vis.length) rows='<tr><td colspan="8" style="padding:20px;text-align:center;color:var(--text-muted-color,#999)">No active employees.</td></tr>';
   wrap.innerHTML='<table style="border-collapse:collapse;width:100%;min-width:980px"><thead>'+head+'</thead><tbody>'+rows+'</tbody></table>';
 }
 
@@ -6544,7 +6549,8 @@ function schedCloseModal(){ var m=document.getElementById('sched-modal'); if(m) 
 
 function schedShiftForm(s){
   _schedEditId=s&&s.id?s.id:null;
-  var userOpts=_schedUsers.map(function(u){ return '<option value="'+u.id+'"'+(s&&s.user_id==u.id?' selected':'')+'>'+escHtml(u.name)+'</option>'; }).join('');
+  var _ulist=schedVisibleUsers(); if(s&&s.user_id&&!_ulist.some(function(u){return u.id==s.user_id;})){ var _su=_schedUsers.filter(function(u){return u.id==s.user_id;})[0]; if(_su) _ulist=[_su].concat(_ulist); }
+  var userOpts=_ulist.map(function(u){ return '<option value="'+u.id+'"'+(s&&s.user_id==u.id?' selected':'')+'>'+escHtml(u.name)+'</option>'; }).join('');
   var posOpts='<option value="">No position</option>'+_schedPositions.filter(function(p){return p.active!==false;}).map(function(p){ return '<option value="'+p.id+'"'+(s&&s.position_id==p.id?' selected':'')+'>'+escHtml(p.name)+'</option>'; }).join('');
   var cityOpts='<option value="">— city —</option>'+_schedCities.map(function(c){ var cc=(c.code||'').trim(); return '<option value="'+escHtml(cc)+'"'+(s&&(String(s.city_code||'').trim()===cc)?' selected':(!s&&_schedCity===cc?' selected':''))+'>'+escHtml(c.name)+'</option>'; }).join('');
   var inp='background:var(--bg-elevated,#1f1f1f);color:var(--text-color,#fff);border:1px solid var(--border,#333);border-radius:6px;padding:8px;width:100%;font-size:14px';
@@ -6626,6 +6632,33 @@ async function schedSaveManagerCities(userId){
   try{ await api('PUT','/schedule/manager-cities/'+userId,{city_codes:codes}); schedToast('Saved.','ok'); }catch(e){ alert(e.message); }
 }
 
+function schedVisibleUsers(){
+  return _schedUsers.filter(function(u){
+    var codes=_schedEmpCities[u.id]||[];
+    var unassigned=codes.length===0;
+    if(_schedCity){ return unassigned || codes.indexOf(_schedCity)!==-1; }
+    if(_schedScope===null) return true;
+    if(unassigned) return true;
+    return codes.some(function(c){ return _schedScope.indexOf(c)!==-1; });
+  });
+}
+function schedScopedCities(){
+  if(_schedScope===null) return _schedCities;
+  return _schedCities.filter(function(c){ return _schedScope.indexOf((c.code||'').trim())!==-1; });
+}
+async function schedAssignStaff(){
+  var data=[]; try{ data=await api('GET','/schedule/employee-cities'); }catch(e){ alert(e.message); return; }
+  var cityList=schedScopedCities();
+  var rows=data.map(function(m){
+    var checks=cityList.map(function(c){ var cc=(c.code||'').trim(); var on=(m.city_codes||[]).indexOf(cc)!==-1; return '<label style="display:inline-flex;align-items:center;gap:5px;margin:0 10px 6px 0;font-size:13px"><input type="checkbox" class="ec-'+m.user_id+'" value="'+escHtml(cc)+'"'+(on?' checked':'')+' style="width:auto"> '+escHtml(c.name)+'</label>'; }).join('');
+    return '<div style="border:1px solid var(--border,#333);border-radius:8px;padding:10px;margin-bottom:10px"><div style="font-weight:600;margin-bottom:6px">'+escHtml(m.name)+' <span style="color:var(--text-muted-color,#999);font-weight:400;font-size:12px">('+escHtml(roleLabel(m.role))+')</span></div>'+(checks||'<span class="text-muted">No cities</span>')+'<div style="text-align:right"><button class="btn btn-primary btn-sm" onclick="schedSaveStaffCities('+m.user_id+')">Save</button></div></div>';
+  }).join('');
+  schedModal('<h3 style="margin:0 0 6px">Assign Staff to Cities</h3><p class="text-muted" style="font-size:12.5px;margin:0 0 12px">An employee with no cities checked appears in every city&#39;s roster. Check cities to limit where they show.</p>'+(rows||'<p class="text-muted">No employees.</p>')+'<div style="text-align:right;margin-top:6px"><button class="btn btn-ghost btn-sm" onclick="schedCloseModal()">Close</button></div>');
+}
+async function schedSaveStaffCities(userId){
+  var nodes=document.querySelectorAll('.ec-'+userId); var codes=[]; for(var i=0;i<nodes.length;i++){ if(nodes[i].checked) codes.push(nodes[i].value); }
+  try{ await api('PUT','/schedule/employee-cities/'+userId,{city_codes:codes}); schedToast('Saved.','ok'); await schedLoadAdmin(); schedRenderGrid(); }catch(e){ alert(e.message); }
+}
 // ----- employee view -------------------------------------------------------
 async function renderSchedule(el){
   if(!can('view_schedule')){ el.innerHTML='<div class="alert alert-error">Access denied.</div>'; return; }

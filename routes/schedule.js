@@ -315,4 +315,28 @@ router.put('/manager-cities/:userId', requireAuth, requirePermission('manage_use
   res.json({ success: true, city_codes: codes });
 });
 
+// ---- scope + employee-city membership -------------------------------------
+router.get('/my-scope', requireAuth, requirePermission('manage_schedule'), async (req, res) => {
+  const scope = await allowedCities(req.user);
+  res.json({ cities: scope });
+});
+router.get('/employee-cities', requireAuth, requirePermission('manage_schedule'), async (req, res) => {
+  const users = await pool.query('SELECT id, name, role FROM users WHERE active=true ORDER BY name');
+  const map = await pool.query('SELECT user_id, city_code FROM employee_cities');
+  const byUser = {};
+  map.rows.forEach(function (r) { (byUser[r.user_id] = byUser[r.user_id] || []).push((r.city_code || '').trim()); });
+  res.json(users.rows.map(function (u) { return { user_id: u.id, name: u.name, role: u.role, city_codes: byUser[u.id] || [] }; }));
+});
+router.put('/employee-cities/:userId', requireAuth, requirePermission('manage_schedule'), async (req, res) => {
+  const uid = parseInt(req.params.userId, 10);
+  if (!uid) return res.status(400).json({ error: 'Invalid user' });
+  let codes = Array.isArray(req.body.city_codes) ? req.body.city_codes : [];
+  codes = Array.from(new Set(codes.map(function (c) { return String(c || '').trim().slice(0, 3); }).filter(Boolean)));
+  await pool.query('DELETE FROM employee_cities WHERE user_id=$1', [uid]);
+  for (const code of codes) {
+    await pool.query('INSERT INTO employee_cities (user_id, city_code) VALUES ($1,$2) ON CONFLICT (user_id, city_code) DO NOTHING', [uid, code]);
+  }
+  res.json({ success: true, city_codes: codes });
+});
+
 module.exports = router;

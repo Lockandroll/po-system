@@ -579,6 +579,15 @@ async function initDB() {
       ');'
     );
     await client.query(
+      'CREATE TABLE IF NOT EXISTS employee_cities (' +
+      '  id SERIAL PRIMARY KEY,' +
+      '  user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,' +
+      '  city_code CHAR(3) NOT NULL,' +
+      '  created_at TIMESTAMPTZ DEFAULT NOW(),' +
+      '  UNIQUE(user_id, city_code)' +
+      ');'
+    );
+    await client.query(
       "ALTER TABLE shifts ADD COLUMN IF NOT EXISTS position_id INTEGER;" +
       "ALTER TABLE shifts ADD COLUMN IF NOT EXISTS break_minutes INTEGER NOT NULL DEFAULT 0;" +
       "ALTER TABLE shifts ADD COLUMN IF NOT EXISTS notes TEXT;" +
@@ -592,7 +601,9 @@ async function initDB() {
       'CREATE INDEX IF NOT EXISTS idx_shifts_city ON shifts(city_code);' +
       'CREATE INDEX IF NOT EXISTS idx_shifts_status ON shifts(status);' +
       'CREATE INDEX IF NOT EXISTS idx_mgr_cities_user ON manager_cities(user_id);' +
-      'CREATE INDEX IF NOT EXISTS idx_mgr_cities_city ON manager_cities(city_code);'
+      'CREATE INDEX IF NOT EXISTS idx_mgr_cities_city ON manager_cities(city_code);' +
+      'CREATE INDEX IF NOT EXISTS idx_emp_cities_user ON employee_cities(user_id);' +
+      'CREATE INDEX IF NOT EXISTS idx_emp_cities_city ON employee_cities(city_code);'
     );
     const _spSeed = await client.query("SELECT value FROM settings WHERE key = 'schedule_seed_v1'");
     if (!_spSeed.rows.length) {
