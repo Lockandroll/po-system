@@ -8,6 +8,9 @@ const push = require('../utils/push');
 
 const router = express.Router();
 
+// Roles that see every sign-off sheet; everyone else sees only ones assigned to (or created by) them.
+const SEE_ALL = ['admin', 'manager'];
+
 function getInitials(name) {
   return String(name || '').split(' ').filter(Boolean).map(function (p) { return p[0]; }).join('').toUpperCase().slice(0, 3);
 }
@@ -52,15 +55,21 @@ async function sendWithAttachments(recipients, subject, html, attachments) {
 // GET all sign-off sheets (everyone sees the shared queue). No heavy image data.
 router.get('/', requireAuth, requirePermission('view_signoffs'), async (req, res) => {
   try {
+    const seeAll = SEE_ALL.includes(req.user.role);
+    const where = seeAll ? '' : 'WHERE (f.assigned_to = $1 OR f.created_by = $1) ';
+    const params = seeAll ? [] : [req.user.id];
     const { rows } = await pool.query(
-      'SELECT f.id, f.form_number, f.status, f.wo_number, f.po_number, f.account, f.store_name, f.store_number, f.created_by, ' +
+      'SELECT f.id, f.form_number, f.status, f.wo_number, f.po_number, f.account, f.store_name, f.store_number, f.created_by, f.assigned_to, ' +
       '       f.address, f.city_state_zip, f.service_requested_by, f.work_complete, f.completed_at, f.created_at, ' +
-      '       c.name AS created_by_name, d.name AS completed_by_name, ' +
+      '       c.name AS created_by_name, d.name AS completed_by_name, a.name AS assigned_to_name, ' +
       '       (SELECT COUNT(*) FROM signoff_photos p WHERE p.form_id = f.id) AS photo_count ' +
       'FROM signoff_forms f ' +
       'LEFT JOIN users c ON f.created_by = c.id ' +
       'LEFT JOIN users d ON f.completed_by = d.id ' +
-      'ORDER BY (f.status = \'pending\') DESC, f.created_at DESC'
+      'LEFT JOIN users a ON f.assigned_to = a.id ' +
+      where +
+      'ORDER BY (f.status = \'pending\') DESC, f.created_at DESC',
+      params
     );
     res.json(rows);
   } catch (err) {
@@ -69,16 +78,30 @@ router.get('/', requireAuth, requirePermission('view_signoffs'), async (req, res
   }
 });
 
+// GET assignable users (anyone with module access can load this for the picker)
+router.get('/assignees', requireAuth, requirePermission('view_signoffs'), async (req, res) => {
+  try {
+    const { rows } = await pool.query('SELECT id, name FROM users WHERE active IS NOT FALSE ORDER BY name ASC');
+    res.json(rows);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Failed to fetch assignees' });
+  }
+});
+
 // GET single sheet with photos
 router.get('/:id', requireAuth, requirePermission('view_signoffs'), async (req, res) => {
   try {
     const { rows } = await pool.query(
-      'SELECT f.*, c.name AS created_by_name, d.name AS completed_by_name ' +
-      'FROM signoff_forms f LEFT JOIN users c ON f.created_by = c.id LEFT JOIN users d ON f.completed_by = d.id WHERE f.id = $1',
+      'SELECT f.*, c.name AS created_by_name, d.name AS completed_by_name, a.name AS assigned_to_name ' +
+      'FROM signoff_forms f LEFT JOIN users c ON f.created_by = c.id LEFT JOIN users d ON f.completed_by = d.id LEFT JOIN users a ON f.assigned_to = a.id WHERE f.id = $1',
       [req.params.id]
     );
     if (!rows.length) return res.status(404).json({ error: 'Sign-off sheet not found' });
     const form = rows[0];
+    if (!SEE_ALL.includes(req.user.role) && form.assigned_to !== req.user.id && form.created_by !== req.user.id) {
+      return res.status(403).json({ error: 'Access denied' });
+    }
     const { rows: photos } = await pool.query('SELECT id, image_data, caption FROM signoff_photos WHERE form_id = $1 ORDER BY id', [req.params.id]);
     form.photos = photos;
     res.json(form);
@@ -96,9 +119,9 @@ router.post('/', requireAuth, requirePermission('create_signoff'), async (req, r
     const form_number = await generateFormNumber(initials);
     try {
       const { rows } = await pool.query(
-        'INSERT INTO signoff_forms (form_number, status, po_number, account, store_name, store_number, address, city_state_zip, service_requested_by, notes, created_by) ' +
-        'VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) RETURNING *',
-        [form_number, 'pending', b.po_number || null, b.account || null, b.store_name || null, b.store_number || null, b.address || null, b.city_state_zip || null, b.service_requested_by || null, b.notes || null, req.user.id]
+        'INSERT INTO signoff_forms (form_number, status, po_number, account, store_name, store_number, address, city_state_zip, service_requested_by, notes, created_by, assigned_to) ' +
+        'VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12) RETURNING *',
+        [form_number, 'pending', b.po_number || null, b.account || null, b.store_name || null, b.store_number || null, b.address || null, b.city_state_zip || null, b.service_requested_by || null, b.notes || null, req.user.id, (b.assigned_to ? (parseInt(b.assigned_to, 10) || null) : null)]
       );
       const form = rows[0];
       try { await logAudit({ entity_type: 'signoff', entity_id: form.id, entity_number: form_number, action: 'created', user_id: req.user.id, user_name: req.user.name, details: { store: b.store_name || null, po: b.po_number || null } }); } catch (e) {}
@@ -119,8 +142,8 @@ router.put('/:id', requireAuth, requirePermission('edit_signoff'), async (req, r
     if (!rows.length) return res.status(404).json({ error: 'Sign-off sheet not found' });
     if (rows[0].status === 'completed') return res.status(400).json({ error: 'This sheet is already completed and cannot be edited.' });
     const { rows: upd } = await pool.query(
-      'UPDATE signoff_forms SET po_number=$1, account=$2, store_name=$3, store_number=$4, address=$5, city_state_zip=$6, service_requested_by=$7, notes=$8, updated_at=NOW() WHERE id=$9 RETURNING *',
-      [b.po_number || null, b.account || null, b.store_name || null, b.store_number || null, b.address || null, b.city_state_zip || null, b.service_requested_by || null, b.notes || null, req.params.id]
+      'UPDATE signoff_forms SET po_number=$1, account=$2, store_name=$3, store_number=$4, address=$5, city_state_zip=$6, service_requested_by=$7, notes=$8, assigned_to=$9, updated_at=NOW() WHERE id=$10 RETURNING *',
+      [b.po_number || null, b.account || null, b.store_name || null, b.store_number || null, b.address || null, b.city_state_zip || null, b.service_requested_by || null, b.notes || null, (b.assigned_to ? (parseInt(b.assigned_to, 10) || null) : null), req.params.id]
     );
     try { await logAudit({ entity_type: 'signoff', entity_id: parseInt(req.params.id), entity_number: rows[0].form_number, action: 'edited', user_id: req.user.id, user_name: req.user.name }); } catch (e) {}
     res.json(upd[0]);

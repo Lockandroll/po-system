@@ -346,7 +346,8 @@ async function initDB() {
       'ALTER TABLE signoff_forms ADD COLUMN IF NOT EXISTS gps_lon DECIMAL(10,7);' +
       'ALTER TABLE signoff_forms ADD COLUMN IF NOT EXISTS gps_accuracy DECIMAL(10,2);' +
       'ALTER TABLE signoff_forms ADD COLUMN IF NOT EXISTS gps_error TEXT;' +
-      'ALTER TABLE signoff_forms ADD COLUMN IF NOT EXISTS signed_at TIMESTAMPTZ;'
+      'ALTER TABLE signoff_forms ADD COLUMN IF NOT EXISTS signed_at TIMESTAMPTZ;' +
+      'ALTER TABLE signoff_forms ADD COLUMN IF NOT EXISTS assigned_to INTEGER REFERENCES users(id) ON DELETE SET NULL;'
     );
     await client.query(
       'ALTER TABLE deposits ADD COLUMN IF NOT EXISTS period_start DATE;' +

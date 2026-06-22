@@ -6250,7 +6250,7 @@ function filterSignoffs(resetPage) {
   const filtered = window._signoffData.filter(function(f) {
     if (st && f.status !== st) return false;
     if (!q) return true;
-    return [f.form_number, f.store_name, f.store_number, f.wo_number, f.po_number, f.account, f.city_state_zip, f.created_by_name].some(function(v) {
+    return [f.form_number, f.store_name, f.store_number, f.wo_number, f.po_number, f.account, f.city_state_zip, f.created_by_name, f.assigned_to_name].some(function(v) {
       return (v || '').toString().toLowerCase().indexOf(q) !== -1;
     });
   });
@@ -6264,11 +6264,13 @@ function filterSignoffs(resetPage) {
   const page = filtered.slice(start, start + SIGNOFF_PAGE_SIZE);
   wrap.innerHTML =
     '<div class="table-wrap"><table>' +
-    '<thead><tr><th>Form #</th><th>Store</th><th>PO #</th><th>Account</th><th>Status</th><th>Created</th><th></th></tr></thead>' +
+    '<thead><tr><th>Form #</th><th>Store</th><th>PO #</th><th>Account</th>' + (signoffSeeAll() ? '<th>Assigned To</th>' : '') + '<th>Status</th><th>Created</th><th></th></tr></thead>' +
     '<tbody>' + page.map(renderSignoffRow).join('') + '</tbody>' +
     '</table></div>' +
     renderPagination(_signoffPage, totalPages, filtered.length, 'signoffPaginate');
 }
+
+function signoffSeeAll() { return ['admin','manager'].includes(state.user.role); }
 
 function renderSignoffRow(f) {
   const pend = f.status === 'pending';
@@ -6285,6 +6287,7 @@ function renderSignoffRow(f) {
     '<td>' + escHtml(f.store_name || '—') + (f.store_number ? ' <span style="color:var(--text-muted-color)">#' + escHtml(f.store_number) + '</span>' : '') + '</td>' +
     '<td>' + escHtml(f.po_number || '—') + '</td>' +
     '<td>' + escHtml(f.account || '—') + '</td>' +
+    (signoffSeeAll() ? '<td>' + (f.assigned_to_name ? escHtml(f.assigned_to_name) : '<span style="color:var(--text-muted-color)">Unassigned</span>') + '</td>' : '') +
     '<td>' + badge + '</td>' +
     '<td>' + formatDate(f.created_at) + '</td>' +
     '<td style="text-align:right;white-space:nowrap">' + action + delBtn + '</td>' +
@@ -6297,6 +6300,12 @@ async function renderEditSignoff(el, id) {
     try { form = await api('GET', '/signoffs/' + id); } catch(e) { el.innerHTML = '<div class="alert alert-error">' + escHtml(e.message) + '</div>'; return; }
     if (form.status === 'completed') { el.innerHTML = '<div class="alert alert-error">This sheet is completed and can no longer be edited.</div>'; return; }
   }
+  let assignees = [];
+  try { assignees = await api('GET', '/signoffs/assignees'); } catch(e) {}
+  const assignSel = form ? form.assigned_to : state.user.id;
+  const assignOpts = '<option value="">— Unassigned —</option>' + assignees.map(function(u) {
+    return '<option value="' + u.id + '"' + (String(assignSel) === String(u.id) ? ' selected' : '') + '>' + escHtml(u.name) + '</option>';
+  }).join('');
   function v(k) { return form ? escHtml(form[k] || '') : ''; }
   el.innerHTML =
     '<div class="page-header">' +
@@ -6314,6 +6323,7 @@ async function renderEditSignoff(el, id) {
       '<div class="form-group"><label>Address</label><input type="text" id="so-address" value="' + v('address') + '" placeholder="Street address" /></div>' +
       '<div class="form-group"><label>City / State / Zip</label><input type="text" id="so-csz" value="' + v('city_state_zip') + '" placeholder="e.g. Birmingham, AL 35242" /></div>' +
       '<div class="form-group"><label>Date &amp; Time Service Requested By</label><input type="text" id="so-requested-by" value="' + v('service_requested_by') + '" placeholder="e.g. 6/19/26 by 5:00 PM" /></div>' +
+      '<div class="form-group"><label>Assign To</label><select id="so-assigned">' + assignOpts + '</select><div style="font-size:12px;color:var(--text-muted-color);margin-top:4px">Only this person (plus admins and managers) will see this sheet.</div></div>' +
       '<div class="form-group"><label>Setup Notes</label><textarea id="so-notes" placeholder="Anything the tech should know before arriving...">' + v('notes') + '</textarea></div>' +
     '</div></div>' +
     '<div class="flex-gap"><button class="btn btn-primary" id="btn-save-signoff" onclick="saveSignoff(' + (id || 'null') + ')">' + (id ? 'Save Changes' : 'Create &amp; Add to Queue') + '</button></div>';
@@ -6325,7 +6335,8 @@ async function saveSignoff(id) {
     po_number: val('so-po'),
     account: val('so-account'), store_name: val('so-store-name'), store_number: val('so-store-number'),
     address: val('so-address'), city_state_zip: val('so-csz'), service_requested_by: val('so-requested-by'),
-    notes: val('so-notes')
+    notes: val('so-notes'),
+    assigned_to: (function() { var e = document.getElementById('so-assigned'); return e && e.value ? e.value : null; })()
   };
   if (!body.po_number && !body.store_name) {
     document.getElementById('signoff-edit-error').innerHTML = '<div class="alert alert-error">Enter at least a PO number or store name.</div>';
