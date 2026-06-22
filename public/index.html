@@ -6310,6 +6310,7 @@ function renderSignoffRow(f) {
     ? '<button class="btn btn-primary btn-sm" onclick="event.stopPropagation();navigate(\'complete-signoff\',' + f.id + ')" style="white-space:nowrap">&#9998; Complete</button>'
     : '<button class="btn btn-secondary btn-sm" onclick="event.stopPropagation();navigate(\'view-signoff\',' + f.id + ')">View</button>';
   var canDel = state.user.role === 'admin' || (can('delete_signoff') && f.created_by === state.user.id);
+  var editBtn = (pend && can('edit_signoff')) ? '<button class="btn btn-secondary btn-sm" title="Edit setup / reassign" onclick="event.stopPropagation();navigate(\'edit-signoff\',' + f.id + ')" style="margin-right:6px">' + icons.edit + '</button>' : '';
   var delBtn = canDel ? '<button class="btn btn-danger btn-sm" title="Delete sign-off sheet" onclick="event.stopPropagation();deleteSignoff(' + f.id + ')" style="margin-left:6px"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14H6L5 6"/><path d="M10 11v6"/><path d="M14 11v6"/><path d="M9 6V4h6v2"/></svg></button>' : '';
   return '<tr style="cursor:pointer" onclick="navigate(\'' + (pend ? 'complete-signoff' : 'view-signoff') + '\',' + f.id + ')">' +
     '<td><strong>' + escHtml(f.form_number) + '</strong></td>' +
@@ -6319,7 +6320,7 @@ function renderSignoffRow(f) {
     (signoffSeeAll() ? '<td>' + (f.assigned_to_name ? escHtml(f.assigned_to_name) : '<span style="color:var(--text-muted-color)">Unassigned</span>') + '</td>' : '') +
     '<td>' + badge + '</td>' +
     '<td>' + formatDate(f.created_at) + '</td>' +
-    '<td style="text-align:right;white-space:nowrap">' + action + delBtn + '</td>' +
+    '<td style="text-align:right;white-space:nowrap">' + editBtn + action + delBtn + '</td>' +
   '</tr>';
 }
 
