@@ -4,6 +4,7 @@ const { requireAuth, requirePermission } = require('../middleware/auth');
 const perms = require('../utils/permissions');
 const { logAudit } = require('../utils/audit');
 const { notifyTaskAssigned, notifyTaskCc, notifyTaskCcInfo } = require('../jobs/taskReminders');
+const { spawnFromTemplate, recurNextStart, recurYmd, recurFromYmd } = require('../jobs/taskReminders');
 
 const router = express.Router();
 
@@ -11,6 +12,29 @@ const STATUSES = ['todo', 'in_progress', 'done'];
 const PRIORITIES = ['low', 'medium', 'high', 'urgent'];
 const RECUR = ['', 'daily', 'weekly', 'monthly'];
 const STATUS_LABEL = { todo: 'To Do', in_progress: 'In Progress', done: 'Done' };
+function etTodayStr() { return new Intl.DateTimeFormat('en-CA', { timeZone: 'America/New_York', year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date()); }
+// Create a recurring schedule (hidden template). The daily spawner sends a real task on each send day.
+async function createRecurringTemplate(b, o, user) {
+  const startDay = (o.recStartDay != null) ? o.recStartDay : o.recDay;
+  const nextStr = recurYmd(recurNextStart(o.recurrence, startDay, recurFromYmd(etTodayStr())));
+  const { rows } = await pool.query(
+    'INSERT INTO tasks (title, description, status, priority, assigned_to, created_by, due_date, recurrence, recurrence_day, recurrence_start_day, is_template, next_run_on) ' +
+    "VALUES ($1,$2,'todo',$3,$4,$5,NULL,$6,$7,$8,true,$9) RETURNING *",
+    [o.title, o.description, o.priority, o.assigned_to, o.created_by, o.recurrence, o.recDay, startDay, nextStr]
+  );
+  const tpl = rows[0];
+  if (Array.isArray(b.subtasks)) {
+    for (let i = 0; i < b.subtasks.length; i++) {
+      const st = b.subtasks[i];
+      const tt = (typeof st === 'string' ? st : (st && st.title) || '').trim();
+      if (tt) await pool.query('INSERT INTO task_subtasks (task_id, title, position) VALUES ($1,$2,$3)', [tpl.id, tt, i]);
+    }
+  }
+  await saveCc(tpl.id, b.cc, false);
+  await saveAttachments(tpl.id, b.attachments, user);
+  if (nextStr <= etTodayStr()) { try { await spawnFromTemplate(tpl.id); } catch (e) { console.error('first send failed:', e.message); } }
+  return tpl;
+}
 
 async function nameOf(id) {
   if (!id) return 'someone';
@@ -106,19 +130,23 @@ router.get('/', requireAuth, requirePermission('view_tasks'), async (req, res) =
   try {
     const manage = await perms.hasPermission(req.user.role, 'manage_tasks');
     const audit = req.user.role === 'admin';
-    const view = req.query.view === 'assigned' ? 'assigned' : 'mine';
+    const view = req.query.view === 'assigned' ? 'assigned' : (req.query.view === 'recurring' ? 'recurring' : 'mine');
     const params = [];
     let where = '';
-    if (view === 'assigned') {
+    if (view === 'recurring') {
+      if (!manage) return res.json([]);
+      if (audit) { where = 'WHERE t.is_template = true'; }
+      else { params.push(req.user.id); where = 'WHERE t.is_template = true AND t.created_by = $1'; }
+    } else if (view === 'assigned') {
       if (!manage) return res.json([]);
       if (audit) {
         // Admin/owner oversight of all delegated/unassigned tasks (personal stays private).
-        where = 'WHERE NOT (t.assigned_to IS NOT NULL AND (t.created_by IS NULL OR t.assigned_to = t.created_by))';
+        where = 'WHERE NOT t.is_template AND NOT (t.assigned_to IS NOT NULL AND (t.created_by IS NULL OR t.assigned_to = t.created_by))';
       } else {
-        params.push(req.user.id); where = 'WHERE t.created_by = $1 AND (t.assigned_to IS NULL OR t.assigned_to <> $1)';
+        params.push(req.user.id); where = 'WHERE NOT t.is_template AND t.created_by = $1 AND (t.assigned_to IS NULL OR t.assigned_to <> $1)';
       }
     } else {
-      where = 'WHERE t.assigned_to = $1'; params.push(req.user.id);
+      where = 'WHERE t.assigned_to = $1 AND NOT t.is_template'; params.push(req.user.id);
     }
     const { rows } = await pool.query(
       'SELECT t.*, a.name AS assignee_name, c.name AS creator_name, ' +
@@ -144,13 +172,13 @@ router.get('/counts', requireAuth, requirePermission('view_tasks'), async (req, 
     const mine = await pool.query(
       "SELECT COUNT(*) FILTER (WHERE status <> 'done') AS open, " +
       "COUNT(*) FILTER (WHERE status <> 'done' AND due_date IS NOT NULL AND due_date < CURRENT_DATE) AS overdue " +
-      "FROM tasks WHERE assigned_to = $1", [uid]);
+      "FROM tasks WHERE assigned_to = $1 AND NOT is_template", [uid]);
     let assigned_open = 0, assigned_overdue = 0;
     if (manage) {
       let where = '', params = [];
       if (audit) {
-        where = 'WHERE NOT (assigned_to IS NOT NULL AND (created_by IS NULL OR assigned_to = created_by))';
-      } else { params.push(uid); where = 'WHERE created_by = $1 AND (assigned_to IS NULL OR assigned_to <> $1)'; }
+        where = 'WHERE NOT is_template AND NOT (assigned_to IS NOT NULL AND (created_by IS NULL OR assigned_to = created_by))';
+      } else { params.push(uid); where = 'WHERE NOT is_template AND created_by = $1 AND (assigned_to IS NULL OR assigned_to <> $1)'; }
       const conj = where ? (where + " AND status <> 'done'") : "WHERE status <> 'done'";
       const a = await pool.query("SELECT COUNT(*) AS open, COUNT(*) FILTER (WHERE due_date IS NOT NULL AND due_date < CURRENT_DATE) AS overdue FROM tasks " + conj, params);
       assigned_open = parseInt(a.rows[0].open) || 0;
@@ -171,10 +199,17 @@ router.post('/', requireAuth, requirePermission('view_tasks'), async (req, res) 
     const priority = PRIORITIES.indexOf(b.priority) !== -1 ? b.priority : 'medium';
     const recurrence = RECUR.indexOf(b.recurrence) !== -1 ? (b.recurrence || null) : null;
     const recDay = (recurrence === 'weekly' || recurrence === 'monthly') && b.recurrence_day != null && b.recurrence_day !== '' ? parseInt(b.recurrence_day, 10) : null;
+    const recStartDay = (recurrence === 'weekly' || recurrence === 'monthly') && b.recurrence_start_day != null && b.recurrence_start_day !== '' ? parseInt(b.recurrence_start_day, 10) : null;
     let assigned_to = b.assigned_to ? parseInt(b.assigned_to, 10) : null;
     if (!manage) {
       if (assigned_to && assigned_to !== req.user.id) return res.status(403).json({ error: 'You can only create tasks for yourself.' });
       assigned_to = req.user.id;
+    }
+    if (recurrence) {
+      const tpl = await createRecurringTemplate(b, { title: title, description: b.description || null, priority: priority, assigned_to: assigned_to, created_by: req.user.id, recurrence: recurrence, recDay: recDay, recStartDay: recStartDay }, req.user);
+      await addActivity(tpl.id, req.user, 'event', 'created this recurring schedule');
+      try { await logAudit({ entity_type: 'task', entity_id: tpl.id, entity_number: '#' + tpl.id, action: 'created', user_id: req.user.id, user_name: req.user.name, details: { title: title, recurring: true } }); } catch (e) {}
+      return res.status(201).json(await loadTask(tpl.id));
     }
     const due_date = b.due_date || null;
     const { rows } = await pool.query(
@@ -210,6 +245,7 @@ router.post('/bulk', requireAuth, requirePermission('manage_tasks'), async (req,
     const priority = PRIORITIES.indexOf(b.priority) !== -1 ? b.priority : 'medium';
     const recurrence = RECUR.indexOf(b.recurrence) !== -1 ? (b.recurrence || null) : null;
     const recDay = (recurrence === 'weekly' || recurrence === 'monthly') && b.recurrence_day != null && b.recurrence_day !== '' ? parseInt(b.recurrence_day, 10) : null;
+    const recStartDay = (recurrence === 'weekly' || recurrence === 'monthly') && b.recurrence_start_day != null && b.recurrence_start_day !== '' ? parseInt(b.recurrence_start_day, 10) : null;
     const due_date = b.due_date || null;
     const subs = Array.isArray(b.subtasks) ? b.subtasks : [];
     let assignees = Array.isArray(b.assignees) ? b.assignees.map(function (x) { return parseInt(x, 10); }).filter(function (x) { return !isNaN(x); }) : [];
@@ -218,6 +254,13 @@ router.post('/bulk', requireAuth, requirePermission('manage_tasks'), async (req,
     const assigneeNames = [];
     for (let a = 0; a < assignees.length; a++) {
       const aid = assignees[a];
+      if (recurrence) {
+        const tpl = await createRecurringTemplate(b, { title: title, description: b.description || null, priority: priority, assigned_to: aid, created_by: req.user.id, recurrence: recurrence, recDay: recDay, recStartDay: recStartDay }, req.user);
+        ids.push(tpl.id);
+        await addActivity(tpl.id, req.user, 'event', 'created this recurring schedule');
+        if (aid) assigneeNames.push(await nameOf(aid));
+        continue;
+      }
       const { rows } = await pool.query(
         'INSERT INTO tasks (title, description, status, priority, assigned_to, created_by, due_date, recurrence, recurrence_day) ' +
         "VALUES ($1,$2,'todo',$3,$4,$5,$6,$7,$8) RETURNING id",
@@ -237,7 +280,7 @@ router.post('/bulk', requireAuth, requirePermission('manage_tasks'), async (req,
     }
     try {
       const ccIds = Array.isArray(b.cc) ? b.cc.map(function (x) { return parseInt(x, 10); }).filter(function (x) { return !isNaN(x); }) : [];
-      if (ccIds.length) await notifyTaskCcInfo(ccIds, { title: title, description: b.description || null, priority: priority, due_date: due_date, assignees: assigneeNames, attCount: Array.isArray(b.attachments) ? b.attachments.length : 0 });
+      if (ccIds.length && !recurrence) await notifyTaskCcInfo(ccIds, { title: title, description: b.description || null, priority: priority, due_date: due_date, assignees: assigneeNames, attCount: Array.isArray(b.attachments) ? b.attachments.length : 0 });
     } catch (e) {}
     try { await logAudit({ entity_type: 'task', entity_id: ids[0], entity_number: '#' + ids[0], action: 'created', user_id: req.user.id, user_name: req.user.name, details: { title: title, count: ids.length } }); } catch (e) {}
     res.status(201).json({ count: ids.length, ids: ids });
@@ -317,9 +360,24 @@ router.put('/:id', requireAuth, requirePermission('manage_tasks'), async (req, r
     const priority = PRIORITIES.indexOf(b.priority) !== -1 ? b.priority : ex.priority;
     const recurrence = RECUR.indexOf(b.recurrence) !== -1 ? (b.recurrence || null) : ex.recurrence;
     const recDay = (recurrence === 'weekly' || recurrence === 'monthly') ? (b.recurrence_day !== undefined ? (b.recurrence_day === '' || b.recurrence_day == null ? null : parseInt(b.recurrence_day, 10)) : ex.recurrence_day) : null;
+    const recStartDay = (recurrence === 'weekly' || recurrence === 'monthly') ? (b.recurrence_start_day !== undefined ? (b.recurrence_start_day === '' || b.recurrence_start_day == null ? null : parseInt(b.recurrence_start_day, 10)) : ex.recurrence_start_day) : null;
     const assigned_to = b.assigned_to !== undefined ? (b.assigned_to ? parseInt(b.assigned_to, 10) : null) : ex.assigned_to;
     const due_date = b.due_date !== undefined ? (b.due_date || null) : ex.due_date;
     const description = b.description !== undefined ? b.description : ex.description;
+    if (ex.is_template) {
+      const startDay = (recStartDay != null) ? recStartDay : recDay;
+      if (recurrence) {
+        const nextStr = recurYmd(recurNextStart(recurrence, startDay, recurFromYmd(etTodayStr())));
+        await pool.query('UPDATE tasks SET title=$1, description=$2, priority=$3, assigned_to=$4, recurrence=$5, recurrence_day=$6, recurrence_start_day=$7, next_run_on=$8, updated_at=NOW() WHERE id=$9',
+          [title, description, priority, assigned_to, recurrence, recDay, startDay, nextStr, req.params.id]);
+      } else {
+        await pool.query('UPDATE tasks SET title=$1, description=$2, priority=$3, assigned_to=$4, recurrence=NULL, recurrence_day=NULL, recurrence_start_day=NULL, next_run_on=NULL, is_template=false, due_date=$5, updated_at=NOW() WHERE id=$6',
+          [title, description, priority, assigned_to, due_date, req.params.id]);
+      }
+      if (b.cc !== undefined) await saveCc(req.params.id, b.cc, true);
+      try { await logAudit({ entity_type: 'task', entity_id: parseInt(req.params.id), entity_number: '#' + req.params.id, action: 'edited', user_id: req.user.id, user_name: req.user.name, details: {} }); } catch (e) {}
+      return res.json(await loadTask(req.params.id));
+    }
     const dueChanged = String(due_date) !== String(ex.due_date);
     const assigneeChanged = (assigned_to || null) !== (ex.assigned_to || null);
     await pool.query(
@@ -347,7 +405,7 @@ router.patch('/:id/status', requireAuth, requirePermission('view_tasks'), async 
     if (status === 'done' && ex.status !== 'done') {
       await pool.query("UPDATE tasks SET status='done', completed_at=NOW(), completed_by=$1, updated_at=NOW() WHERE id=$2", [req.user.id, req.params.id]);
       await addActivity(req.params.id, req.user, 'event', 'marked it done');
-      if (ex.recurrence) await spawnRecurrence(ex, req.user);
+      if (ex.recurrence && !ex.is_template) await spawnRecurrence(ex, req.user);
     } else {
       await pool.query('UPDATE tasks SET status=$1, completed_at=NULL, completed_by=NULL, updated_at=NOW() WHERE id=$2', [status, req.params.id]);
       await addActivity(req.params.id, req.user, 'event', 'moved it to ' + (STATUS_LABEL[status] || status));

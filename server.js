@@ -9,7 +9,7 @@ const { startReminders } = require('./jobs/reminders');
 const { startGeicoReport, startGeicoIngest } = require('./jobs/geicoIngest');
 const { startCleanup } = require('./jobs/cleanup');
 const { startScheduledMessages } = require('./jobs/scheduledMessages');
-const { startTaskReminders } = require('./jobs/taskReminders');
+const { startTaskReminders, startRecurringSpawner } = require('./jobs/taskReminders');
 const { startWorkOrders } = require('./jobs/workOrders');
 
 const app = express();
@@ -93,6 +93,7 @@ initDB()
     startCleanup();
     startScheduledMessages();
     startTaskReminders();
+    startRecurringSpawner();
     startWorkOrders();
     startGeicoIngest();
     startGeicoReport();

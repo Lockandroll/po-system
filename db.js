@@ -481,6 +481,10 @@ async function initDB() {
       "ALTER TABLE tasks ADD COLUMN IF NOT EXISTS position INTEGER DEFAULT 0;" +
       "ALTER TABLE tasks ADD COLUMN IF NOT EXISTS recurrence VARCHAR(10);" +
       "ALTER TABLE tasks ADD COLUMN IF NOT EXISTS recurrence_day INTEGER;" +
+      "ALTER TABLE tasks ADD COLUMN IF NOT EXISTS recurrence_start_day INTEGER;" +
+      "ALTER TABLE tasks ADD COLUMN IF NOT EXISTS is_template BOOLEAN NOT NULL DEFAULT false;" +
+      "ALTER TABLE tasks ADD COLUMN IF NOT EXISTS next_run_on DATE;" +
+      "ALTER TABLE tasks ADD COLUMN IF NOT EXISTS series_id INTEGER;" +
       "ALTER TABLE tasks ADD COLUMN IF NOT EXISTS reminded_day_before BOOLEAN NOT NULL DEFAULT false;" +
       "ALTER TABLE tasks ADD COLUMN IF NOT EXISTS reminded_due BOOLEAN NOT NULL DEFAULT false;" +
       "ALTER TABLE tasks ADD COLUMN IF NOT EXISTS last_overdue_on DATE;" +

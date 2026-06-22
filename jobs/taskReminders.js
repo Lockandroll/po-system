@@ -123,6 +123,101 @@ async function runTaskReminders() {
   }
 }
 
+// ── Recurring task scheduler ───────────────────────────────────
+// Dates are handled as UTC-midnight DATE values, matching how DATE columns store/compare.
+function recurYmd(d) { return new Date(d).toISOString().slice(0, 10); }
+function recurFromYmd(s) { var p = String(s).slice(0, 10).split('-'); return new Date(Date.UTC(+p[0], +p[1] - 1, +p[2])); }
+function recurClampDay(y, m, day) { var last = new Date(Date.UTC(y, m + 1, 0)).getUTCDate(); return Math.min(day, last); }
+
+// Next SEND date on/after ref. weekly: startDay = 0-6 (Sun-Sat). monthly: startDay = 1-31.
+function recurNextStart(recurrence, startDay, ref) {
+  var r = recurFromYmd(recurYmd(ref));
+  if (recurrence === 'daily') return r;
+  if (recurrence === 'weekly') {
+    var add = ((startDay - r.getUTCDay()) % 7 + 7) % 7;
+    r.setUTCDate(r.getUTCDate() + add);
+    return r;
+  }
+  var y = r.getUTCFullYear(), m = r.getUTCMonth();
+  var cand = new Date(Date.UTC(y, m, recurClampDay(y, m, startDay)));
+  if (cand.getTime() < r.getTime()) cand = new Date(Date.UTC(y, m + 1, recurClampDay(y, m + 1, startDay)));
+  return cand;
+}
+// DUE date for the cycle whose send date is start. Due falls on/after the send within the cycle.
+function recurDueFromStart(recurrence, dueDay, start) {
+  var s = recurFromYmd(recurYmd(start));
+  if (recurrence === 'daily') return s;
+  if (recurrence === 'weekly') {
+    var add = ((dueDay - s.getUTCDay()) % 7 + 7) % 7;
+    var d = new Date(s.getTime()); d.setUTCDate(d.getUTCDate() + add);
+    return d;
+  }
+  var y = s.getUTCFullYear(), m = s.getUTCMonth(), sd = s.getUTCDate();
+  if (dueDay >= sd) return new Date(Date.UTC(y, m, recurClampDay(y, m, dueDay)));
+  return new Date(Date.UTC(y, m + 1, recurClampDay(y, m + 1, dueDay)));
+}
+// Advance to the NEXT cycle's send date, strictly after start.
+function recurAdvanceStart(recurrence, startDay, start) {
+  var s = recurFromYmd(recurYmd(start));
+  if (recurrence === 'daily') { s.setUTCDate(s.getUTCDate() + 1); return s; }
+  if (recurrence === 'weekly') { s.setUTCDate(s.getUTCDate() + 7); return s; }
+  var y = s.getUTCFullYear(), m = s.getUTCMonth();
+  return new Date(Date.UTC(y, m + 1, recurClampDay(y, m + 1, startDay)));
+}
+
+// Create one real task instance from a recurring template, then advance the template's next send.
+async function spawnFromTemplate(templateId) {
+  const tpl = (await pool.query('SELECT * FROM tasks WHERE id = $1 AND is_template = true', [templateId])).rows[0];
+  if (!tpl || !tpl.recurrence || !tpl.next_run_on) return null;
+  const start = recurFromYmd(recurYmd(tpl.next_run_on));
+  const dueStr = recurYmd(recurDueFromStart(tpl.recurrence, tpl.recurrence_day, start));
+  const ins = await pool.query(
+    'INSERT INTO tasks (title, description, status, priority, assigned_to, created_by, due_date, recurrence, recurrence_day, recurrence_start_day, is_template, series_id) ' +
+    "VALUES ($1,$2,'todo',$3,$4,$5,$6,NULL,NULL,NULL,false,$7) RETURNING id",
+    [tpl.title, tpl.description, tpl.priority, tpl.assigned_to, tpl.created_by, dueStr, tpl.id]
+  );
+  const newId = ins.rows[0].id;
+  const subs = (await pool.query('SELECT title, position FROM task_subtasks WHERE task_id = $1 ORDER BY position, id', [tpl.id])).rows;
+  for (let i = 0; i < subs.length; i++) await pool.query('INSERT INTO task_subtasks (task_id, title, position) VALUES ($1,$2,$3)', [newId, subs[i].title, subs[i].position]);
+  const ccs = (await pool.query('SELECT user_id FROM task_cc WHERE task_id = $1', [tpl.id])).rows;
+  for (const c of ccs) await pool.query('INSERT INTO task_cc (task_id, user_id) VALUES ($1,$2) ON CONFLICT (task_id, user_id) DO NOTHING', [newId, c.user_id]);
+  const atts = (await pool.query('SELECT filename, mime_type, image_data, size_bytes, uploaded_by, uploaded_by_name FROM task_attachments WHERE task_id = $1', [tpl.id])).rows;
+  for (const a of atts) await pool.query('INSERT INTO task_attachments (task_id, filename, mime_type, image_data, size_bytes, uploaded_by, uploaded_by_name) VALUES ($1,$2,$3,$4,$5,$6,$7)', [newId, a.filename, a.mime_type, a.image_data, a.size_bytes, a.uploaded_by, a.uploaded_by_name]);
+  await pool.query("INSERT INTO task_activity (task_id, user_id, user_name, type, body) VALUES ($1,NULL,'System','event',$2)", [newId, 'auto-created from recurring schedule #' + tpl.id]);
+  // Advance next send past today so a backlog of missed cycles produces only one instance.
+  const startDay = (tpl.recurrence_start_day != null) ? tpl.recurrence_start_day : tpl.recurrence_day;
+  const today = recurFromYmd(etDateStr(new Date()));
+  let ns = recurAdvanceStart(tpl.recurrence, startDay, start), guard = 0;
+  while (ns.getTime() <= today.getTime() && guard++ < 500) ns = recurAdvanceStart(tpl.recurrence, startDay, ns);
+  await pool.query('UPDATE tasks SET next_run_on = $1 WHERE id = $2', [recurYmd(ns), tpl.id]);
+  if (tpl.assigned_to) { try { await notifyTaskAssigned(newId); } catch (e) {} }
+  try { await notifyTaskCc(newId); } catch (e) {}
+  return newId;
+}
+
+// Daily sweep: send any recurring task whose send day has arrived.
+async function runRecurringSpawner() {
+  try {
+    const todayStr = etDateStr(new Date());
+    const { rows } = await pool.query(
+      'SELECT id FROM tasks WHERE is_template = true AND recurrence IS NOT NULL AND next_run_on IS NOT NULL AND next_run_on <= $1::date',
+      [todayStr]
+    );
+    for (const r of rows) { try { await spawnFromTemplate(r.id); } catch (e) { console.error('[tasks] spawn failed for template', r.id, e.message); } }
+    if (rows.length) console.log('[tasks] recurring spawner sent', rows.length, 'task(s)');
+  } catch (err) {
+    console.error('[tasks] recurring spawner failed:', err.message);
+  }
+}
+
+function startRecurringSpawner() {
+  cron.schedule('0 7 * * *', function () {
+    console.log('[tasks] Running recurring task spawner\u2026');
+    runRecurringSpawner();
+  }, { timezone: TZ });
+  console.log('[tasks] Recurring task spawner scheduled (07:00 ' + TZ + ')');
+}
+
 function startTaskReminders() {
   cron.schedule('0 8 * * *', function () {
     console.log('[tasks] Running daily task reminder sweep…');
@@ -131,4 +226,4 @@ function startTaskReminders() {
   console.log('[tasks] Task reminder job scheduled (08:00 ' + TZ + ')');
 }
 
-module.exports = { startTaskReminders, runTaskReminders, notifyTaskAssigned, notifyTaskCc, notifyTaskCcInfo };
+module.exports = { startTaskReminders, runTaskReminders, notifyTaskAssigned, notifyTaskCc, notifyTaskCcInfo, startRecurringSpawner, runRecurringSpawner, spawnFromTemplate, recurNextStart, recurDueFromStart, recurAdvanceStart, recurYmd, recurFromYmd };

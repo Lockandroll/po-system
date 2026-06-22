@@ -2240,7 +2240,7 @@ async function renderTasks(el){
   } catch(e){ el.innerHTML='<div class="alert alert-error">'+escHtml(e.message)+'</div>'; return; }
   var _counts={}; try { _counts = await api('GET','/tasks/counts'); } catch(e){}
   var _od = _counts.mine_overdue ? ' <span title="Past due" style="display:inline-block;min-width:18px;padding:0 6px;border-radius:9px;background:#ef4444;color:#fff;font-size:12px;font-weight:700;line-height:18px;text-align:center;vertical-align:middle">'+_counts.mine_overdue+'</span>' : '';
-  var desc = (_taskTab==='assigned') ? 'Tasks you assigned to others - track them to completion.' : 'Your personal task list. Anything you add here is private to you.';
+  var desc = (_taskTab==='assigned') ? 'Tasks you assigned to others - track them to completion.' : (_taskTab==='recurring' ? 'Recurring schedules - Nova sends each task automatically on its send day.' : 'Your personal task list. Anything you add here is private to you.');
   var header = '<div class="page-header"><div class="page-title"><h2>Tasks'+_od+'</h2><p>'+desc+'</p></div>' +
     '<div style="display:flex;gap:8px">' +
       '<button class="btn btn-secondary" onclick="taskToggleView()">'+(_taskView==='board'?'Table view':'Board view')+'</button>' +
@@ -2250,8 +2250,9 @@ async function renderTasks(el){
   var tabs = manage ? ('<div style="display:flex;gap:6px;margin-bottom:14px">' +
       '<button class="btn '+(_taskTab==='mine'?'btn-primary':'btn-secondary')+' btn-sm" onclick="taskSetTab(\'mine\')">My Tasks</button>' +
       '<button class="btn '+(_taskTab==='assigned'?'btn-primary':'btn-secondary')+' btn-sm" onclick="taskSetTab(\'assigned\')">Assigned'+(_counts.assigned_open?' <span style="display:inline-block;min-width:18px;padding:0 6px;border-radius:9px;background:#555;color:#fff;font-size:11px;font-weight:700;line-height:18px;text-align:center;vertical-align:middle">'+_counts.assigned_open+'</span>':'')+(_counts.assigned_overdue?' <span title="Past due" style="display:inline-block;min-width:18px;padding:0 6px;border-radius:9px;background:#ef4444;color:#fff;font-size:11px;font-weight:700;line-height:18px;text-align:center;vertical-align:middle">'+_counts.assigned_overdue+'</span>':'')+'</button>' +
+      '<button class="btn '+(_taskTab==='recurring'?'btn-primary':'btn-secondary')+' btn-sm" onclick="taskSetTab(\'recurring\')">Recurring</button>' +
     '</div>') : '';
-  var body = (_taskView==='board') ? ('<div id="tasks-board-host">'+taskBoardHtml()+'</div>') : taskTableHtml(manage);
+  var body = (_taskTab==='recurring') ? taskScheduleListHtml() : ((_taskView==='board') ? ('<div id="tasks-board-host">'+taskBoardHtml()+'</div>') : taskTableHtml(manage));
   el.innerHTML = header + tabs + '<div id="tasks-feedback"></div>' + body;
 }
 
@@ -2260,6 +2261,17 @@ function taskSetTab(t){ _taskTab=t; navigate('tasks'); }
 function taskNew(){ _taskForceSelf=false; navigate('new-task'); }
 function taskAddToMine(){ _taskForceSelf=true; navigate('new-task'); }
 
+function taskScheduleListHtml(){
+  if(!_tasksData.length) return '<div class="card"><div class="card-body"><p style="color:var(--text-muted-color)">No recurring schedules yet. Create a task and pick a Repeat option (weekly or monthly) to set one up.</p></div></div>';
+  return '<div style="display:flex;flex-direction:column;gap:10px">'+_tasksData.map(function(t){
+    var next=t.next_run_on?formatDate(t.next_run_on):'—';
+    return '<div class="card" style="cursor:pointer" onclick="navigate(\'task-detail\','+t.id+')"><div class="card-body" style="padding:12px 14px;display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap">'+
+      '<div><div style="font-weight:600;font-size:14px">↻ '+escHtml(t.title)+'</div>'+
+        '<div style="font-size:12px;color:var(--text-muted-color);margin-top:2px">'+escHtml(taskRecurText(t))+' · for '+escHtml(t.assignee_name||'Unassigned')+'</div></div>'+
+      '<div style="text-align:right"><div style="font-size:11px;color:var(--text-muted-color);text-transform:uppercase">Next send</div><div style="font-weight:600;font-size:13px">'+next+'</div></div>'+
+    '</div></div>';
+  }).join('')+'</div>';
+}
 function taskBoardHtml(){
   var cols = TASK_STATUSES.map(function(st){
     var items = _tasksData.filter(function(t){ return t.status===st[0]; });
@@ -2308,7 +2320,7 @@ async function renderTaskDetail(el, id){
   var canEdit = manage || (t.created_by===state.user.id);
   var p = TASK_PRIO[t.priority] || TASK_PRIO.medium;
   var od = taskIsOverdue(t);
-  var statusBtns = TASK_STATUSES.map(function(st){ var active=t.status===st[0]; return '<button class="btn '+(active?'btn-primary':'btn-secondary')+' btn-sm" onclick="taskSetStatus('+t.id+',\''+st[0]+'\')">'+st[1]+'</button>'; }).join(' ');
+  var statusBtns = t.is_template ? '' : TASK_STATUSES.map(function(st){ var active=t.status===st[0]; return '<button class="btn '+(active?'btn-primary':'btn-secondary')+' btn-sm" onclick="taskSetStatus('+t.id+',\''+st[0]+'\')">'+st[1]+'</button>'; }).join(' ');
   var subHtml = (t.subtasks||[]).length ? (t.subtasks).map(function(s){
     return '<div style="display:flex;align-items:center;gap:8px;padding:5px 0">' +
       '<input type="checkbox" '+(s.done?'checked':'')+' onchange="taskToggleSub('+s.id+',this.checked)" style="width:auto" />' +
@@ -2338,7 +2350,7 @@ async function renderTaskDetail(el, id){
           '<div style="display:flex;gap:18px;flex-wrap:wrap;margin-bottom:12px">' +
             '<div><div style="font-size:11px;color:var(--text-muted-color);text-transform:uppercase">Assignee</div><div style="font-weight:600">'+escHtml(t.assignee_name||'Unassigned')+'</div></div>' +
             '<div><div style="font-size:11px;color:var(--text-muted-color);text-transform:uppercase">Priority</div><div style="font-weight:600;color:'+p.c+'">'+p.l+'</div></div>' +
-            '<div><div style="font-size:11px;color:var(--text-muted-color);text-transform:uppercase">Due</div><div style="font-weight:600;color:'+(od?'#ef4444':'inherit')+'">'+(t.due_date?((od?'Overdue · ':'')+formatDate(t.due_date)):'—')+'</div></div>' +
+            '<div><div style="font-size:11px;color:var(--text-muted-color);text-transform:uppercase">'+(t.is_template?'Next send':'Due')+'</div><div style="font-weight:600;color:'+(od?'#ef4444':'inherit')+'">'+(t.is_template?(t.next_run_on?formatDate(t.next_run_on):'—'):(t.due_date?((od?'Overdue · ':'')+formatDate(t.due_date)):'—'))+'</div></div>' +
           '</div>' +
           (t.description?'<div style="font-size:14px;white-space:pre-wrap;line-height:1.6">'+escHtml(t.description)+'</div>':'<div style="color:var(--text-muted-color);font-size:13px">No description.</div>') +
           ccLine +
@@ -2436,30 +2448,68 @@ function taskRemovePendingFile(i){ _taskPendingFiles.splice(i,1); taskRenderPend
 function taskRecurText(t){
   if (!t.recurrence) return '';
   var days=['Sunday','Monday','Tuesday','Wednesday','Thursday','Friday','Saturday'];
-  if (t.recurrence==='weekly' && t.recurrence_day!=null) return 'weekly on '+days[t.recurrence_day];
-  if (t.recurrence==='monthly' && t.recurrence_day!=null) return 'monthly on day '+t.recurrence_day;
+  if (t.recurrence==='daily') return 'daily';
+  if (t.recurrence==='weekly'){
+    var ws=(t.recurrence_start_day!=null)?days[t.recurrence_start_day]:null;
+    var wd=(t.recurrence_day!=null)?days[t.recurrence_day]:null;
+    if (ws&&wd) return 'weekly · sent '+ws+', due '+wd;
+    if (wd) return 'weekly on '+wd;
+    return 'weekly';
+  }
+  if (t.recurrence==='monthly'){
+    var ms=(t.recurrence_start_day!=null)?t.recurrence_start_day:null;
+    var md=(t.recurrence_day!=null)?t.recurrence_day:null;
+    if (ms&&md) return 'monthly · sent day '+ms+', due day '+md;
+    if (md) return 'monthly on day '+md;
+    return 'monthly';
+  }
   return t.recurrence;
 }
-function taskRecurChanged(preselect){
+function taskRecurChanged(preStart, preDue){
   var rec=(document.getElementById('tk-recur')||{}).value||'';
   var wrap=document.getElementById('tk-recur-day-wrap');
   var label=document.getElementById('tk-recur-day-label');
-  var sel=document.getElementById('tk-recur-day');
-  if (!wrap||!sel) return;
+  var ss=document.getElementById('tk-recur-start');
+  var ds=document.getElementById('tk-recur-due');
+  var dueWrap=document.getElementById('tk-due-wrap');
+  if (!wrap||!ss||!ds) return;
   if (rec==='weekly'){
-    if (label) label.textContent='Repeat on (day of week)';
+    if (label) label.textContent='Repeats weekly';
     var days=['Sunday','Monday','Tuesday','Wednesday','Thursday','Friday','Saturday'];
-    var def=(preselect!=null&&preselect!=='')?parseInt(preselect,10):new Date().getDay();
-    sel.innerHTML=days.map(function(d,i){ return '<option value="'+i+'"'+(i===def?' selected':'')+'>'+d+'</option>'; }).join('');
-    wrap.style.display='';
+    var vs=(preStart!=null&&preStart!=='')?parseInt(preStart,10):1;
+    var vd=(preDue!=null&&preDue!=='')?parseInt(preDue,10):4;
+    ss.innerHTML=days.map(function(d,i){ return '<option value="'+i+'"'+(i===vs?' selected':'')+'>'+d+'</option>'; }).join('');
+    ds.innerHTML=days.map(function(d,i){ return '<option value="'+i+'"'+(i===vd?' selected':'')+'>'+d+'</option>'; }).join('');
+    ss.disabled=false; ds.disabled=false; wrap.style.display=''; if(dueWrap) dueWrap.style.display='none';
   } else if (rec==='monthly'){
-    if (label) label.textContent='Repeat on (day of month)';
-    var def2=(preselect!=null&&preselect!=='')?parseInt(preselect,10):new Date().getDate();
-    var opts='';
-    for (var d=1; d<=31; d++){ opts+='<option value="'+d+'"'+(d===def2?' selected':'')+'>'+d+(d>=29?' (or last day of month)':'')+'</option>'; }
-    sel.innerHTML=opts;
-    wrap.style.display='';
-  } else { wrap.style.display='none'; }
+    if (label) label.textContent='Repeats monthly';
+    var vms=(preStart!=null&&preStart!=='')?parseInt(preStart,10):1;
+    var vmd=(preDue!=null&&preDue!=='')?parseInt(preDue,10):1;
+    var o1='',o2='';
+    for (var d=1; d<=31; d++){ var lb=d+(d>=29?' (or last day)':''); o1+='<option value="'+d+'"'+(d===vms?' selected':'')+'>'+lb+'</option>'; o2+='<option value="'+d+'"'+(d===vmd?' selected':'')+'>'+lb+'</option>'; }
+    ss.innerHTML=o1; ds.innerHTML=o2;
+    ss.disabled=false; ds.disabled=false; wrap.style.display=''; if(dueWrap) dueWrap.style.display='none';
+  } else if (rec==='daily'){
+    if (label) label.textContent='Repeats daily';
+    ss.innerHTML='<option>Every day</option>'; ds.innerHTML='<option>Same day</option>';
+    ss.disabled=true; ds.disabled=true; wrap.style.display=''; if(dueWrap) dueWrap.style.display='none';
+  } else { wrap.style.display='none'; if(dueWrap) dueWrap.style.display=''; }
+  updateRecurHint();
+}
+function updateRecurHint(){
+  var rec=(document.getElementById('tk-recur')||{}).value||'';
+  var hint=document.getElementById('tk-recur-hint');
+  if(!hint) return;
+  var days=['Sunday','Monday','Tuesday','Wednesday','Thursday','Friday','Saturday'];
+  if(rec==='weekly'){
+    var sv=parseInt(document.getElementById('tk-recur-start').value,10), dv=parseInt(document.getElementById('tk-recur-due').value,10);
+    hint.textContent='Each week Nova sends this on '+days[sv]+', due '+days[dv]+'.';
+  } else if(rec==='monthly'){
+    var sv2=parseInt(document.getElementById('tk-recur-start').value,10), dv2=parseInt(document.getElementById('tk-recur-due').value,10);
+    hint.textContent='Each month Nova sends this on day '+sv2+', due day '+dv2+(dv2<sv2?' (the following month)':'')+'.';
+  } else if(rec==='daily'){
+    hint.textContent='Sent and due the same day, every day.';
+  } else hint.textContent='';
 }
 async function renderTaskForm(el, id){
   if (!can('view_tasks')){ el.innerHTML='<div class="alert alert-error">Access denied.</div>'; return; }
@@ -2507,15 +2557,15 @@ async function renderTaskForm(el, id){
       ) +
       (showAssignee ? ccPickerHtml : '') +
       '<div style="display:flex;gap:12px;flex-wrap:wrap">' +
-        '<div class="form-group" style="flex:1;min-width:160px"><label>Due date</label><input type="date" id="tk-due" value="'+escHtml(dueVal)+'" /></div>' +
+        '<div id="tk-due-wrap" class="form-group" style="flex:1;min-width:160px"><label>Due date</label><input type="date" id="tk-due" value="'+escHtml(dueVal)+'" /></div>' +
         '<div class="form-group" style="flex:1;min-width:160px"><label>Repeat</label><select id="tk-recur" onchange="taskRecurChanged()">'+recOpts+'</select></div>' +
       '</div>' +
-      '<div id="tk-recur-day-wrap" class="form-group" style="display:none;max-width:320px"><label id="tk-recur-day-label">Repeat on</label><select id="tk-recur-day"></select></div>' +
+      '<div id="tk-recur-day-wrap" class="form-group" style="display:none"><label id="tk-recur-day-label" style="display:block;margin-bottom:6px">Schedule</label><div style="display:flex;gap:12px;flex-wrap:wrap"><div style="flex:1;min-width:150px"><div style="font-size:12px;color:var(--text-muted-color);margin-bottom:4px">Send on</div><select id="tk-recur-start" onchange="updateRecurHint()"></select></div><div style="flex:1;min-width:150px"><div style="font-size:12px;color:var(--text-muted-color);margin-bottom:4px">Due on</div><select id="tk-recur-due" onchange="updateRecurHint()"></select></div></div><div id="tk-recur-hint" style="font-size:12px;color:var(--text-muted-color);margin-top:6px"></div></div>' +
       attachHtml +
       (id?'':'<div class="form-group"><label>Subtasks <span style="color:var(--text-muted-color);font-weight:400">(one per line)</span></label><textarea id="tk-subs" rows="3" placeholder="Optional checklist, one item per line"></textarea></div>') +
       '<div style="display:flex;gap:8px;margin-top:8px"><button class="btn btn-primary" onclick="taskSave('+(id||'null')+')">'+(id?'Save Changes':'Create Task')+'</button></div>' +
     '</div></div>';
-  taskRecurChanged(t.recurrence_day);
+  taskRecurChanged(t.recurrence_start_day, t.recurrence_day);
 }
 
 async function taskSave(id){
@@ -2526,8 +2576,12 @@ async function taskSave(id){
     due_date: document.getElementById('tk-due').value||null,
     recurrence: document.getElementById('tk-recur').value||''
   };
-  payload.recurrence_day = (payload.recurrence==='weekly'||payload.recurrence==='monthly') ? parseInt(((document.getElementById('tk-recur-day')||{}).value),10) : null;
-  if (isNaN(payload.recurrence_day)) payload.recurrence_day = null;
+  if (payload.recurrence==='weekly'||payload.recurrence==='monthly'){
+    payload.recurrence_start_day = parseInt(((document.getElementById('tk-recur-start')||{}).value),10);
+    payload.recurrence_day = parseInt(((document.getElementById('tk-recur-due')||{}).value),10);
+    if (isNaN(payload.recurrence_start_day)) payload.recurrence_start_day = null;
+    if (isNaN(payload.recurrence_day)) payload.recurrence_day = null;
+  } else { payload.recurrence_start_day = null; payload.recurrence_day = null; }
   if (!payload.title){ taskFeedback('Title is required.',true); return; }
   var _asg=document.getElementById('tk-assignee'); if (_asg) payload.assigned_to = _asg.value||null;
   if (!id && _taskForceSelf) payload.assigned_to = state.user.id;
