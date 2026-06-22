@@ -3,7 +3,7 @@ const { pool } = require('../db');
 const { requireAuth, requirePermission } = require('../middleware/auth');
 const perms = require('../utils/permissions');
 const { logAudit } = require('../utils/audit');
-const { notifyTaskAssigned } = require('../jobs/taskReminders');
+const { notifyTaskAssigned, notifyTaskCc, notifyTaskCcInfo } = require('../jobs/taskReminders');
 
 const router = express.Router();
 
@@ -23,6 +23,31 @@ async function addActivity(taskId, user, type, body) {
     [taskId, user ? user.id : null, user ? user.name : null, type, body]
   );
 }
+const ATT_MAX = 12 * 1024 * 1024; // 12 MB per file
+function stripDataUrl(v) { return String(v == null ? '' : v).replace(/^data:[^;]+;base64,/, ''); }
+async function saveAttachments(taskId, list, user) {
+  if (!Array.isArray(list)) return 0;
+  let n = 0;
+  for (const a of list) {
+    if (!a) continue;
+    const data = stripDataUrl(a.data || a.image_data || '');
+    if (!data) continue;
+    const size = parseInt(a.size_bytes, 10) || Math.round(data.length * 0.75);
+    if (size > ATT_MAX) continue;
+    await pool.query(
+      'INSERT INTO task_attachments (task_id, filename, mime_type, image_data, size_bytes, uploaded_by, uploaded_by_name) VALUES ($1,$2,$3,$4,$5,$6,$7)',
+      [taskId, String(a.filename || 'file').slice(0, 255), String(a.mime_type || a.mime || 'application/octet-stream').slice(0, 100), data, size, user ? user.id : null, user ? user.name : null]
+    );
+    n++;
+  }
+  return n;
+}
+async function saveCc(taskId, ids, replace) {
+  if (!Array.isArray(ids)) return;
+  const clean = Array.from(new Set(ids.map(function (x) { return parseInt(x, 10); }).filter(function (x) { return !isNaN(x); })));
+  if (replace) await pool.query('DELETE FROM task_cc WHERE task_id = $1', [taskId]);
+  for (const uid of clean) await pool.query('INSERT INTO task_cc (task_id, user_id) VALUES ($1,$2) ON CONFLICT (task_id, user_id) DO NOTHING', [taskId, uid]);
+}
 async function loadTask(id) {
   const { rows } = await pool.query(
     'SELECT t.*, a.name AS assignee_name, c.name AS creator_name ' +
@@ -35,6 +60,10 @@ async function loadTask(id) {
   const { rows: acts } = await pool.query('SELECT * FROM task_activity WHERE task_id = $1 ORDER BY created_at ASC, id ASC', [id]);
   task.subtasks = subs;
   task.activity = acts;
+  const { rows: atts } = await pool.query('SELECT id, filename, mime_type, size_bytes, uploaded_by_name, created_at FROM task_attachments WHERE task_id = $1 ORDER BY id', [id]);
+  const { rows: ccs } = await pool.query('SELECT c.user_id, u.name FROM task_cc c LEFT JOIN users u ON c.user_id = u.id WHERE c.task_id = $1 ORDER BY u.name', [id]);
+  task.attachments = atts;
+  task.cc = ccs.map(function (r) { return { user_id: r.user_id, name: r.name }; });
   return task;
 }
 async function ownerIds() {
@@ -164,7 +193,10 @@ router.post('/', requireAuth, requirePermission('view_tasks'), async (req, res) 
     await addActivity(task.id, req.user, 'event', 'created this task');
     if (assigned_to) await addActivity(task.id, req.user, 'event', 'assigned it to ' + (await nameOf(assigned_to)));
     try { await logAudit({ entity_type: 'task', entity_id: task.id, entity_number: '#' + task.id, action: 'created', user_id: req.user.id, user_name: req.user.name, details: { title: title } }); } catch (e) {}
+    await saveCc(task.id, b.cc, false);
+    await saveAttachments(task.id, b.attachments, req.user);
     if (assigned_to) { try { await notifyTaskAssigned(task.id); } catch (e) {} }
+    try { await notifyTaskCc(task.id); } catch (e) {}
     res.status(201).json(await loadTask(task.id));
   } catch (err) { console.error(err); res.status(500).json({ error: 'Failed to create task' }); }
 });
@@ -183,6 +215,7 @@ router.post('/bulk', requireAuth, requirePermission('manage_tasks'), async (req,
     let assignees = Array.isArray(b.assignees) ? b.assignees.map(function (x) { return parseInt(x, 10); }).filter(function (x) { return !isNaN(x); }) : [];
     if (!assignees.length) assignees = [null];
     const ids = [];
+    const assigneeNames = [];
     for (let a = 0; a < assignees.length; a++) {
       const aid = assignees[a];
       const { rows } = await pool.query(
@@ -197,9 +230,15 @@ router.post('/bulk', requireAuth, requirePermission('manage_tasks'), async (req,
         const tt = (typeof st === 'string' ? st : (st && st.title) || '').trim();
         if (tt) await pool.query('INSERT INTO task_subtasks (task_id, title, position) VALUES ($1,$2,$3)', [id, tt, i]);
       }
+      await saveCc(id, b.cc, false);
+      await saveAttachments(id, b.attachments, req.user);
       await addActivity(id, req.user, 'event', 'created this task');
-      if (aid) { await addActivity(id, req.user, 'event', 'assigned it to ' + (await nameOf(aid))); try { await notifyTaskAssigned(id); } catch (e) {} }
+      if (aid) { assigneeNames.push(await nameOf(aid)); await addActivity(id, req.user, 'event', 'assigned it to ' + (await nameOf(aid))); try { await notifyTaskAssigned(id); } catch (e) {} }
     }
+    try {
+      const ccIds = Array.isArray(b.cc) ? b.cc.map(function (x) { return parseInt(x, 10); }).filter(function (x) { return !isNaN(x); }) : [];
+      if (ccIds.length) await notifyTaskCcInfo(ccIds, { title: title, description: b.description || null, priority: priority, due_date: due_date, assignees: assigneeNames, attCount: Array.isArray(b.attachments) ? b.attachments.length : 0 });
+    } catch (e) {}
     try { await logAudit({ entity_type: 'task', entity_id: ids[0], entity_number: '#' + ids[0], action: 'created', user_id: req.user.id, user_name: req.user.name, details: { title: title, count: ids.length } }); } catch (e) {}
     res.status(201).json({ count: ids.length, ids: ids });
   } catch (err) { console.error(err); res.status(500).json({ error: 'Failed to create tasks' }); }
@@ -220,6 +259,42 @@ router.delete('/subtasks/:sid', requireAuth, requirePermission('manage_tasks'), 
   res.json({ success: true });
 });
 
+// GET raw attachment data (anyone who can see the task)
+router.get('/:id/attachments/:aid', requireAuth, requirePermission('view_tasks'), async (req, res) => {
+  try {
+    const task = await loadTask(req.params.id);
+    if (!task) return res.status(404).json({ error: 'Task not found' });
+    if (!(await canSee(req, task))) return res.status(403).json({ error: 'Forbidden' });
+    const { rows } = await pool.query('SELECT filename, mime_type, image_data FROM task_attachments WHERE id = $1 AND task_id = $2', [req.params.aid, req.params.id]);
+    if (!rows.length) return res.status(404).json({ error: 'Attachment not found' });
+    res.json(rows[0]);
+  } catch (err) { console.error(err); res.status(500).json({ error: 'Failed to load attachment' }); }
+});
+// ADD attachments to an existing task (anyone who can see it)
+router.post('/:id/attachments', requireAuth, requirePermission('view_tasks'), async (req, res) => {
+  try {
+    const task = await loadTask(req.params.id);
+    if (!task) return res.status(404).json({ error: 'Task not found' });
+    if (!(await canSee(req, task))) return res.status(403).json({ error: 'Forbidden' });
+    const list = Array.isArray(req.body && req.body.attachments) ? req.body.attachments : (req.body ? [req.body] : []);
+    const n = await saveAttachments(req.params.id, list, req.user);
+    if (n) await addActivity(req.params.id, req.user, 'event', 'added ' + n + ' attachment' + (n === 1 ? '' : 's'));
+    res.status(201).json(await loadTask(req.params.id));
+  } catch (err) { console.error(err); res.status(500).json({ error: 'Failed to add attachment' }); }
+});
+// DELETE an attachment (creator/manager, or the uploader)
+router.delete('/:id/attachments/:aid', requireAuth, requirePermission('view_tasks'), async (req, res) => {
+  try {
+    const task = await loadTask(req.params.id);
+    if (!task) return res.status(404).json({ error: 'Task not found' });
+    const att = (await pool.query('SELECT uploaded_by FROM task_attachments WHERE id = $1 AND task_id = $2', [req.params.aid, req.params.id])).rows[0];
+    if (!att) return res.status(404).json({ error: 'Attachment not found' });
+    const mayDelete = (att.uploaded_by === req.user.id) || (await canEdit(req, task));
+    if (!mayDelete) return res.status(403).json({ error: 'Forbidden' });
+    await pool.query('DELETE FROM task_attachments WHERE id = $1 AND task_id = $2', [req.params.aid, req.params.id]);
+    res.json({ success: true });
+  } catch (err) { console.error(err); res.status(500).json({ error: 'Failed to delete attachment' }); }
+});
 // GET one (assignee or manager)
 router.get('/:id', requireAuth, requirePermission('view_tasks'), async (req, res) => {
   try {
@@ -255,6 +330,7 @@ router.put('/:id', requireAuth, requirePermission('manage_tasks'), async (req, r
     );
     if (assigneeChanged) await addActivity(req.params.id, req.user, 'event', assigned_to ? ('reassigned it to ' + (await nameOf(assigned_to))) : 'unassigned it');
     try { await logAudit({ entity_type: 'task', entity_id: parseInt(req.params.id), entity_number: '#' + req.params.id, action: 'edited', user_id: req.user.id, user_name: req.user.name, details: {} }); } catch (e) {}
+    if (b.cc !== undefined) await saveCc(req.params.id, b.cc, true);
     if (assigneeChanged && assigned_to) { try { await notifyTaskAssigned(req.params.id); } catch (e) {} }
     res.json(await loadTask(req.params.id));
   } catch (err) { console.error(err); res.status(500).json({ error: 'Failed to update task' }); }

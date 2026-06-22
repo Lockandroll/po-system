@@ -467,6 +467,33 @@ async function initDB() {
       'CREATE INDEX IF NOT EXISTS idx_task_sub ON task_subtasks(task_id);' +
       'CREATE INDEX IF NOT EXISTS idx_task_act ON task_activity(task_id);'
     );
+    // Task attachments (files stored base64 in Postgres) + CC recipients (Nova users copied for awareness)
+    await client.query(
+      'CREATE TABLE IF NOT EXISTS task_attachments (' +
+      '  id SERIAL PRIMARY KEY,' +
+      '  task_id INTEGER REFERENCES tasks(id) ON DELETE CASCADE,' +
+      '  filename VARCHAR(255),' +
+      '  mime_type VARCHAR(100),' +
+      '  image_data TEXT,' +
+      '  size_bytes INTEGER,' +
+      '  uploaded_by INTEGER,' +
+      '  uploaded_by_name VARCHAR(255),' +
+      '  created_at TIMESTAMPTZ DEFAULT NOW()' +
+      ');'
+    );
+    await client.query(
+      'CREATE TABLE IF NOT EXISTS task_cc (' +
+      '  id SERIAL PRIMARY KEY,' +
+      '  task_id INTEGER REFERENCES tasks(id) ON DELETE CASCADE,' +
+      '  user_id INTEGER,' +
+      '  created_at TIMESTAMPTZ DEFAULT NOW(),' +
+      '  UNIQUE (task_id, user_id)' +
+      ');'
+    );
+    await client.query(
+      'CREATE INDEX IF NOT EXISTS idx_task_att ON task_attachments(task_id);' +
+      'CREATE INDEX IF NOT EXISTS idx_task_cc ON task_cc(task_id);'
+    );
     // Work Orders — inbound work-order intake (email + manual). Own module, separate from Tasks.
     await client.query(
       'CREATE TABLE IF NOT EXISTS work_orders (' +

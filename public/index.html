@@ -2116,6 +2116,7 @@ var _tasksData = [];
 var _taskView = 'board';
 var _taskTab = 'mine';
 var _taskForceSelf = false;
+var _taskPendingFiles = [];
 var _taskDragId = null;
 var _taskDragGhost = null;
 function taskDragStart(e, id){
@@ -2252,6 +2253,10 @@ async function renderTaskDetail(el, id){
       (canEdit?'<button class="btn btn-ghost btn-sm" style="margin-left:auto;color:#ef4444" onclick="taskDelSub('+s.id+')">&times;</button>':'') +
     '</div>';
   }).join('') : '<div style="color:var(--text-muted-color);font-size:13px">No subtasks.</div>';
+  var ccNames = (t.cc||[]).map(function(c){ return c.name || ('User '+c.user_id); });
+  var ccLine = ccNames.length ? '<div style="margin-top:12px;font-size:12px;color:var(--text-muted-color)"><span style="text-transform:uppercase;font-size:11px">Copied (FYI):</span> '+ccNames.map(escHtml).join(', ')+'</div>' : '';
+  var attList = t.attachments||[];
+  var attHtml = attList.length ? attList.map(function(a){ return '<div style="display:flex;align-items:center;gap:8px;padding:6px 0;border-bottom:0.5px solid var(--border-color)"><span style="font-size:13px;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;cursor:pointer;color:var(--primary,#f97316)" onclick="taskOpenAttachment('+t.id+','+a.id+')">'+escHtml(a.filename||'file')+'</span><span style="font-size:11px;color:var(--text-muted-color)">'+taskFmtBytes(a.size_bytes)+'</span>'+(canEdit?'<button class="btn btn-ghost btn-sm" style="color:#ef4444;padding:0 6px" onclick="taskDeleteAttachment('+t.id+','+a.id+')">&times;</button>':'')+'</div>'; }).join('') : '<div style="color:var(--text-muted-color);font-size:13px">No attachments yet.</div>';
   var actHtml = (t.activity||[]).length ? (t.activity).map(function(a){
     if (a.type==='comment') return '<div style="padding:8px 0;border-bottom:0.5px solid var(--border-color)"><div style="font-size:12px;color:var(--text-muted-color)">'+escHtml(a.user_name||'')+' · '+formatDate(a.created_at)+'</div><div style="font-size:14px;white-space:pre-wrap;margin-top:2px">'+escHtml(a.body)+'</div></div>';
     return '<div style="padding:6px 0;font-size:12px;color:var(--text-muted-color)">'+escHtml(a.user_name||'Someone')+' '+escHtml(a.body)+' · '+formatDate(a.created_at)+'</div>';
@@ -2273,6 +2278,7 @@ async function renderTaskDetail(el, id){
             '<div><div style="font-size:11px;color:var(--text-muted-color);text-transform:uppercase">Due</div><div style="font-weight:600;color:'+(od?'#ef4444':'inherit')+'">'+(t.due_date?((od?'Overdue · ':'')+formatDate(t.due_date)):'—')+'</div></div>' +
           '</div>' +
           (t.description?'<div style="font-size:14px;white-space:pre-wrap;line-height:1.6">'+escHtml(t.description)+'</div>':'<div style="color:var(--text-muted-color);font-size:13px">No description.</div>') +
+          ccLine +
           '<div style="margin-top:14px;display:flex;gap:6px;flex-wrap:wrap">'+statusBtns+'</div>' +
         '</div></div>' +
         '<div class="card"><div class="card-body">' +
@@ -2281,6 +2287,11 @@ async function renderTaskDetail(el, id){
         '</div></div>' +
       '</div>' +
       '<div>' +
+        '<div class="card" style="margin-bottom:16px"><div class="card-body">' +
+          '<div style="font-weight:700;margin-bottom:8px">Attachments</div>' +
+          attHtml +
+          '<div style="margin-top:10px"><input type="file" multiple onchange="taskDetailFilesPicked(this,'+t.id+')" style="font-size:13px" /></div>' +
+        '</div></div>' +
         '<div class="card"><div class="card-body">' +
           '<div style="font-weight:700;margin-bottom:8px">Activity &amp; Comments</div>' +
           '<div style="margin-bottom:8px"><textarea id="task-comment" rows="2" placeholder="Write a comment…" style="width:100%"></textarea></div>' +
@@ -2297,10 +2308,68 @@ async function taskDelSub(sid){ try { await api('DELETE','/tasks/subtasks/'+sid)
 async function taskAddSub(id){ var v=((document.getElementById('task-newsub')||{}).value||'').trim(); if (!v) return; try { await api('POST','/tasks/'+id+'/subtasks',{title:v}); navigate('task-detail',id); } catch(e){ taskFeedback(e.message,true); } }
 async function taskAddComment(id){ var v=((document.getElementById('task-comment')||{}).value||'').trim(); if (!v) return; try { await api('POST','/tasks/'+id+'/comments',{body:v}); navigate('task-detail',id); } catch(e){ taskFeedback(e.message,true); } }
 async function taskDelete(id){ if (!confirm('Delete this task? This cannot be undone.')) return; try { await api('DELETE','/tasks/'+id); navigate('tasks'); } catch(e){ taskFeedback(e.message,true); } }
+function taskB64ToBlob(b64, mime){ var bin=atob(b64||''); var len=bin.length; var arr=new Uint8Array(len); for (var i=0;i<len;i++) arr[i]=bin.charCodeAt(i); return new Blob([arr],{type:mime||'application/octet-stream'}); }
+async function taskOpenAttachment(taskId, aid){
+  try {
+    var r = await api('GET','/tasks/'+taskId+'/attachments/'+aid);
+    var blob = taskB64ToBlob(r.image_data||'', r.mime_type);
+    var url = URL.createObjectURL(blob);
+    var mt = r.mime_type||'';
+    if (mt.indexOf('image/')===0 || mt==='application/pdf'){ window.open(url,'_blank'); }
+    else { var a=document.createElement('a'); a.href=url; a.download=r.filename||'file'; document.body.appendChild(a); a.click(); a.remove(); }
+    setTimeout(function(){ URL.revokeObjectURL(url); }, 60000);
+  } catch(e){ taskFeedback(e.message,true); }
+}
+async function taskDeleteAttachment(taskId, aid){
+  if (!confirm('Remove this attachment?')) return;
+  try { await api('DELETE','/tasks/'+taskId+'/attachments/'+aid); navigate('task-detail', taskId); } catch(e){ taskFeedback(e.message,true); }
+}
+async function taskDetailFilesPicked(input, taskId){
+  var files = input && input.files ? Array.prototype.slice.call(input.files) : [];
+  var MAX = 12*1024*1024; var toSend=[]; var remaining=0;
+  files.forEach(function(f){
+    if (f.size > MAX){ taskFeedback('"'+f.name+'" is larger than 12 MB and was skipped.', true); return; }
+    remaining++;
+    var reader = new FileReader();
+    reader.onload = async function(){
+      toSend.push({ filename:f.name, mime_type:f.type||'application/octet-stream', size_bytes:f.size, data:reader.result });
+      remaining--;
+      if (remaining===0 && toSend.length){ try { await api('POST','/tasks/'+taskId+'/attachments',{attachments:toSend}); navigate('task-detail', taskId); } catch(e){ taskFeedback(e.message,true); } }
+    };
+    reader.readAsDataURL(f);
+  });
+  if (input) input.value='';
+}
 
 function taskFilterAssignees(){ var q=((document.getElementById('tk-assignee-search')||{}).value||'').toLowerCase(); document.querySelectorAll('.tk-assignee-row').forEach(function(r){ r.style.display = (!q || (r.getAttribute('data-name')||'').indexOf(q)!==-1) ? 'flex' : 'none'; }); }
 function taskSelectAllAssignees(on){ document.querySelectorAll('.tk-assignee-row').forEach(function(r){ if (r.style.display==='none') return; var c=r.querySelector('.tk-assignee'); if (c) c.checked=on; }); taskUpdateAssigneeCount(); }
 function taskUpdateAssigneeCount(){ var n=document.querySelectorAll('.tk-assignee:checked').length; var el=document.getElementById('tk-assignee-count'); if (el) el.textContent=n+' selected'; }
+function taskFilterCc(){ var q=((document.getElementById('tk-cc-search')||{}).value||'').toLowerCase(); document.querySelectorAll('.tk-cc-row').forEach(function(r){ r.style.display = (!q || (r.getAttribute('data-name')||'').indexOf(q)!==-1) ? 'flex' : 'none'; }); }
+function taskSelectAllCc(on){ document.querySelectorAll('.tk-cc-row').forEach(function(r){ if (r.style.display==='none') return; var c=r.querySelector('.tk-cc'); if (c) c.checked=on; }); taskUpdateCcCount(); }
+function taskUpdateCcCount(){ var n=document.querySelectorAll('.tk-cc:checked').length; var el=document.getElementById('tk-cc-count'); if (el) el.textContent=n+' selected'; }
+function taskFmtBytes(b){ b=parseInt(b,10)||0; if (b<1024) return b+' B'; if (b<1048576) return (b/1024).toFixed(0)+' KB'; return (b/1048576).toFixed(1)+' MB'; }
+function taskFilesPicked(input){
+  var files = input && input.files ? Array.prototype.slice.call(input.files) : [];
+  var MAX = 12*1024*1024;
+  var pending = 0;
+  files.forEach(function(f){
+    if (f.size > MAX){ taskFeedback('"'+f.name+'" is larger than 12 MB and was skipped.', true); return; }
+    pending++;
+    var reader = new FileReader();
+    reader.onload = function(){
+      _taskPendingFiles.push({ filename: f.name, mime_type: f.type || 'application/octet-stream', size_bytes: f.size, data: reader.result });
+      taskRenderPendingFiles();
+    };
+    reader.readAsDataURL(f);
+  });
+  if (input) input.value='';
+}
+function taskRenderPendingFiles(){
+  var el = document.getElementById('tk-files-list'); if (!el) return;
+  if (!_taskPendingFiles.length){ el.innerHTML=''; return; }
+  el.innerHTML = _taskPendingFiles.map(function(f,i){ return '<div style="display:flex;align-items:center;gap:8px;padding:5px 8px;background:var(--bg-elevated);border:1px solid var(--border);border-radius:6px;margin-bottom:5px"><span style="font-size:13px;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">'+escHtml(f.filename)+'</span><span style="font-size:11px;color:var(--text-muted-color)">'+taskFmtBytes(f.size_bytes)+'</span><button type="button" class="btn btn-ghost btn-sm" style="color:#ef4444;padding:0 6px" onclick="taskRemovePendingFile('+i+')">&times;</button></div>'; }).join('');
+}
+function taskRemovePendingFile(i){ _taskPendingFiles.splice(i,1); taskRenderPendingFiles(); }
 function taskRecurText(t){
   if (!t.recurrence) return '';
   var days=['Sunday','Monday','Tuesday','Wednesday','Thursday','Friday','Saturday'];
@@ -2331,6 +2400,7 @@ function taskRecurChanged(preselect){
 }
 async function renderTaskForm(el, id){
   if (!can('view_tasks')){ el.innerHTML='<div class="alert alert-error">Access denied.</div>'; return; }
+  _taskPendingFiles = [];
   var manage = can('manage_tasks');
   var personal = !id && _taskForceSelf;
   var showAssignee = manage && !personal;
@@ -2346,6 +2416,16 @@ async function renderTaskForm(el, id){
     '<div style="display:flex;gap:8px;margin-bottom:6px;flex-wrap:wrap"><input type="text" id="tk-assignee-search" placeholder="Search people…" oninput="taskFilterAssignees()" style="flex:1;min-width:140px" /><button type="button" class="btn btn-secondary btn-sm" onclick="taskSelectAllAssignees(true)">Select all</button><button type="button" class="btn btn-secondary btn-sm" onclick="taskSelectAllAssignees(false)">Clear</button></div>' +
     '<div id="tk-assignee-list" style="max-height:220px;overflow-y:auto;border:1px solid var(--border);border-radius:8px;padding:6px;background:var(--bg-elevated)">'+(assigneeChecks||'<div style="color:var(--text-muted-color);font-size:13px;padding:6px">No users found.</div>')+'</div>' +
     '<div id="tk-assignee-count" style="font-size:12px;color:var(--text-muted-color);margin-top:5px">0 selected</div></div>';
+  var ccSet = {}; (t.cc||[]).forEach(function(c){ ccSet[c.user_id]=1; });
+  var ccChecks = users.map(function(u){ return '<label class="tk-cc-row" data-name="'+escHtml((u.name||'').toLowerCase())+'" style="display:flex;align-items:center;gap:8px;padding:5px 4px;cursor:pointer"><input type="checkbox" class="tk-cc" value="'+u.id+'" onchange="taskUpdateCcCount()"'+(ccSet[u.id]?' checked':'')+' style="width:auto" /> <span style="font-size:14px">'+escHtml(u.name)+'</span> <span style="font-size:12px;color:var(--text-muted-color)">('+escHtml(roleLabel(u.role))+')</span></label>'; }).join('');
+  var ccCount0 = (t.cc||[]).length;
+  var ccPickerHtml = '<div class="form-group"><label>Copy (FYI) <span style="color:var(--text-muted-color);font-weight:400">(people emailed so they are aware \u2014 no task is created for them)</span></label>' +
+    '<div style="display:flex;gap:8px;margin-bottom:6px;flex-wrap:wrap"><input type="text" id="tk-cc-search" placeholder="Search people\u2026" oninput="taskFilterCc()" style="flex:1;min-width:140px" /><button type="button" class="btn btn-secondary btn-sm" onclick="taskSelectAllCc(true)">Select all</button><button type="button" class="btn btn-secondary btn-sm" onclick="taskSelectAllCc(false)">Clear</button></div>' +
+    '<div id="tk-cc-list" style="max-height:180px;overflow-y:auto;border:1px solid var(--border);border-radius:8px;padding:6px;background:var(--bg-elevated)">'+(ccChecks||'<div style="color:var(--text-muted-color);font-size:13px;padding:6px">No users found.</div>')+'</div>' +
+    '<div id="tk-cc-count" style="font-size:12px;color:var(--text-muted-color);margin-top:5px">'+ccCount0+' selected</div></div>';
+  var attachHtml = '<div class="form-group"><label>Attachments <span style="color:var(--text-muted-color);font-weight:400">(optional \u2014 photos, PDFs, documents)</span></label>' +
+    '<input type="file" id="tk-files" multiple onchange="taskFilesPicked(this)" style="font-size:13px" />' +
+    '<div id="tk-files-list" style="margin-top:8px"></div></div>';
   var prioOpts=['low','medium','high','urgent'].map(function(pp){ return '<option value="'+pp+'"'+((t.priority||'medium')===pp?' selected':'')+'>'+TASK_PRIO[pp].l+'</option>'; }).join('');
   var recOpts=[['','Does not repeat'],['daily','Daily'],['weekly','Weekly'],['monthly','Monthly']].map(function(rr){ return '<option value="'+rr[0]+'"'+((t.recurrence||'')===rr[0]?' selected':'')+'>'+rr[1]+'</option>'; }).join('');
   var dueVal = t.due_date ? String(t.due_date).slice(0,10) : '';
@@ -2362,11 +2442,13 @@ async function renderTaskForm(el, id){
             : (assigneePickerHtml + '<div style="display:flex;gap:12px;flex-wrap:wrap"><div class="form-group" style="flex:1;min-width:140px"><label>Priority</label><select id="tk-priority">'+prioOpts+'</select></div></div>'))
         : ('<div style="display:flex;gap:12px;flex-wrap:wrap"><div class="form-group" style="flex:1;min-width:140px"><label>Priority</label><select id="tk-priority">'+prioOpts+'</select></div></div>')
       ) +
+      (showAssignee ? ccPickerHtml : '') +
       '<div style="display:flex;gap:12px;flex-wrap:wrap">' +
         '<div class="form-group" style="flex:1;min-width:160px"><label>Due date</label><input type="date" id="tk-due" value="'+escHtml(dueVal)+'" /></div>' +
         '<div class="form-group" style="flex:1;min-width:160px"><label>Repeat</label><select id="tk-recur" onchange="taskRecurChanged()">'+recOpts+'</select></div>' +
       '</div>' +
       '<div id="tk-recur-day-wrap" class="form-group" style="display:none;max-width:320px"><label id="tk-recur-day-label">Repeat on</label><select id="tk-recur-day"></select></div>' +
+      attachHtml +
       (id?'':'<div class="form-group"><label>Subtasks <span style="color:var(--text-muted-color);font-weight:400">(one per line)</span></label><textarea id="tk-subs" rows="3" placeholder="Optional checklist, one item per line"></textarea></div>') +
       '<div style="display:flex;gap:8px;margin-top:8px"><button class="btn btn-primary" onclick="taskSave('+(id||'null')+')">'+(id?'Save Changes':'Create Task')+'</button></div>' +
     '</div></div>';
@@ -2388,19 +2470,29 @@ async function taskSave(id){
   if (!id && _taskForceSelf) payload.assigned_to = state.user.id;
   var subsEl=document.getElementById('tk-subs');
   if (subsEl){ payload.subtasks = subsEl.value.split('\n').map(function(x){return x.trim();}).filter(Boolean); }
+  if (document.getElementById('tk-cc-list')){
+    var ccIds=[]; document.querySelectorAll('.tk-cc:checked').forEach(function(c){ ccIds.push(parseInt(c.value,10)); });
+    payload.cc = ccIds;
+  }
   if (!id && document.getElementById('tk-assignee-list')){
     var assignees=[]; document.querySelectorAll('.tk-assignee:checked').forEach(function(c){ assignees.push(parseInt(c.value,10)); });
     payload.assignees = assignees;
+    payload.attachments = _taskPendingFiles;
     try {
       var rb = await api('POST','/tasks/bulk',payload);
+      _taskPendingFiles=[];
       if (rb && rb.ids && rb.ids.length===1) navigate('task-detail', rb.ids[0]); else navigate('tasks');
     } catch(e){ taskFeedback(e.message,true); }
     return;
   }
+  if (!id) payload.attachments = _taskPendingFiles;
   try {
     var saved = id ? await api('PUT','/tasks/'+id,payload) : await api('POST','/tasks',payload);
+    var savedId = (saved && saved.id) || id;
+    if (id && _taskPendingFiles.length){ try { await api('POST','/tasks/'+savedId+'/attachments',{attachments:_taskPendingFiles}); } catch(e){} }
+    _taskPendingFiles=[];
     _taskForceSelf=false;
-    navigate('task-detail', (saved && saved.id) || id);
+    navigate('task-detail', savedId);
   } catch(e){ taskFeedback(e.message,true); }
 }
 
