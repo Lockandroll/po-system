@@ -1530,6 +1530,7 @@ function usersGoPage(p) {
 async function showUserModal(id) {
   let user = null;
   if (id) { try { const users = await api('GET', '/users'); user = users.find(function(u){ return u.id === id; }); } catch(e){} }
+  let cities = []; try { cities = (await api('GET', '/cities')).filter(function(c){ return c.active !== false; }); } catch(e) { cities = []; }
   const overlay = document.createElement('div');
   overlay.className = 'modal-overlay';
   overlay.innerHTML =
@@ -1544,6 +1545,7 @@ async function showUserModal(id) {
           '<div class="form-group"><label>Phone <span style="font-weight:400;font-size:0.8em;color:var(--text-muted)">Format: +13215550000</span></label><input type="tel" id="modal-phone" value="' + escHtml(user ? user.phone || '' : '') + '" placeholder="+13215550000" pattern="\\+1[0-9]{10}" title="Must be in format +1 followed by 10 digits (e.g. +13215550000)" /></div>' +
           '<div class="form-group"><label>Role</label><select id="modal-role">' +'<option value="locksmith"' + (user&&user.role==='locksmith'?' selected':'') + '>Locksmith</option>' +'<option value="locksmith_coordinator"' + (user&&user.role==='locksmith_coordinator'?' selected':'') + '>Locksmith Coordinator</option>' +'<option value="roadside_technician"' + (user&&user.role==='roadside_technician'?' selected':'') + '>Roadside Technician</option>' +'<option value="manager"' + (user&&user.role==='manager'?' selected':'') + '>Manager</option>' +'<option value="admin"' + (user&&user.role==='admin'?' selected':'') + '>Admin</option>' +'<option value="owner"' + (user&&user.role==='owner'?' selected':'') + '>Owner</option>' +'</select></div>' +
           '</div>' +
+          '<div class="form-group"><label>Cities <span style="font-weight:400;font-size:0.8em;color:var(--text-muted-color)">(blank = all cities)</span></label><div style="display:flex;flex-wrap:wrap;gap:10px;margin-top:4px">' + (cities.length ? cities.map(function(c){ var cc=(c.code||'').trim(); var on=(user&&user.city_codes&&user.city_codes.indexOf(cc)!==-1); return '<label style="display:inline-flex;align-items:center;gap:5px;font-weight:400;font-size:13px"><input type="checkbox" class="modal-city" value="' + escHtml(cc) + '"' + (on?' checked':'') + ' style="width:auto"> ' + escHtml(c.name) + '</label>'; }).join('') : '<span style="color:var(--text-muted-color);font-size:13px">No cities yet</span>') + '</div></div>' +
         '<div class="form-group" style="display:flex;align-items:center;gap:10px">' +
           '<input type="checkbox" id="modal-receive-emails" style="width:auto"' + (user && user.receive_emails === false ? '' : ' checked') + ' />' +
           '<label for="modal-receive-emails" style="margin:0;cursor:pointer">Receive email notifications</label>' +
@@ -1566,14 +1568,15 @@ async function saveUser(id, btn) {
   const phone = document.getElementById('modal-phone').value.trim();
   const receive_emails = document.getElementById('modal-receive-emails').checked;
   const receive_sms = document.getElementById('modal-receive-sms').checked;
+  var _cityNodes = document.querySelectorAll('.modal-city'); var city_codes = []; for (var _i=0;_i<_cityNodes.length;_i++){ if(_cityNodes[_i].checked) city_codes.push(_cityNodes[_i].value); }
   if (phone && !/^\+1[0-9]{10}$/.test(phone)) {
     document.getElementById('modal-error').innerHTML = '<div class="alert alert-error">Phone must be in format +13215550000 (+1 followed by 10 digits)</div>';
     return;
   }
   try {
     btn.disabled = true;
-    if (id) { await api('PUT', '/users/' + id, { name, email, password: password || undefined, role, phone: phone || undefined, receive_emails, receive_sms }); }
-    else { await api('POST', '/users', { name, email, password: password || undefined, role, phone: phone || undefined, receive_emails, receive_sms }); }
+    if (id) { await api('PUT', '/users/' + id, { name, email, password: password || undefined, role, phone: phone || undefined, receive_emails, receive_sms, city_codes }); }
+    else { await api('POST', '/users', { name, email, password: password || undefined, role, phone: phone || undefined, receive_emails, receive_sms, city_codes }); }
     document.querySelector('.modal-overlay').remove();
     navigate('users');
   } catch(err) {
@@ -6473,7 +6476,7 @@ async function schedLoadAdmin(){
     api('GET','/users').catch(function(){return [];}),
     api('GET','/schedule/shifts'+q).catch(function(){return [];}),
     api('GET','/schedule/my-scope').catch(function(){return {cities:null};}),
-    api('GET','/schedule/employee-cities').catch(function(){return [];})
+    api('GET','/schedule/user-cities').catch(function(){return [];})
   ]);
   _schedPositions=r[0]||[]; _schedCities=(r[1]||[]).filter(function(c){return c.active!==false;}); _schedUsers=(r[2]||[]).filter(function(u){return u.active!==false;}); _schedShifts=r[3]||[];
   _schedScope=(r[4]&&typeof r[4].cities!=='undefined')?r[4].cities:null;
@@ -6492,8 +6495,6 @@ async function renderScheduleAdmin(el){
       '<div style="display:flex;gap:8px;flex-wrap:wrap">'+
         '<button class="btn btn-secondary btn-sm" onclick="schedCopyLastWeek()">Copy Last Week</button>'+
         '<button class="btn btn-secondary btn-sm" onclick="schedManagePositions()">Positions</button>'+
-        '<button class="btn btn-secondary btn-sm" onclick="schedAssignStaff()">Staff Cities</button>'+
-        (can('manage_users')?'<button class="btn btn-secondary btn-sm" onclick="schedAssignManagers()">Assign Managers</button>':'')+
         '<button class="btn btn-primary btn-sm" onclick="schedPublishWeek()">Publish Week</button>'+
       '</div>'+
     '</div>'+
@@ -6621,19 +6622,6 @@ async function schedAddPosition(){ var n=(document.getElementById('sp-new').valu
 async function schedSavePosition(id,color,name){ var p=_schedPositions.filter(function(x){return x.id===id;})[0]; if(!p) return; try{ await api('PUT','/schedule/positions/'+id,{name:name!=null?name:p.name,color:color!=null?color:p.color,active:p.active!==false}); _schedPositions=await api('GET','/schedule/positions'); }catch(e){ alert(e.message); } }
 async function schedDeletePosition(id){ if(!confirm('Delete this position?')) return; try{ await api('DELETE','/schedule/positions/'+id); _schedPositions=await api('GET','/schedule/positions'); schedManagePositions(); }catch(e){ alert(e.message); } }
 
-async function schedAssignManagers(){
-  var data=[]; try{ data=await api('GET','/schedule/manager-cities'); }catch(e){ alert(e.message); return; }
-  var rows=data.map(function(m){
-    var checks=_schedCities.map(function(c){ var cc=(c.code||'').trim(); var on=(m.city_codes||[]).indexOf(cc)!==-1; return '<label style="display:inline-flex;align-items:center;gap:5px;margin:0 10px 6px 0;font-size:13px"><input type="checkbox" class="mc-'+m.user_id+'" value="'+escHtml(cc)+'"'+(on?' checked':'')+' style="width:auto"> '+escHtml(c.name)+'</label>'; }).join('');
-    return '<div style="border:1px solid var(--border,#333);border-radius:8px;padding:10px;margin-bottom:10px"><div style="font-weight:600;margin-bottom:6px">'+escHtml(m.name)+' <span style="color:var(--text-muted-color,#999);font-weight:400;font-size:12px">('+escHtml(roleLabel(m.role))+')</span></div>'+(checks||'<span class="text-muted">No cities</span>')+'<div style="text-align:right"><button class="btn btn-primary btn-sm" onclick="schedSaveManagerCities('+m.user_id+')">Save</button></div></div>';
-  }).join('');
-  schedModal('<h3 style="margin:0 0 6px">Assign Managers to Cities</h3><p class="text-muted" style="font-size:12.5px;margin:0 0 12px">A manager with no cities checked can see all cities. Check cities to limit them.</p>'+(rows||'<p class="text-muted">No managers.</p>')+'<div style="text-align:right;margin-top:6px"><button class="btn btn-ghost btn-sm" onclick="schedCloseModal()">Close</button></div>');
-}
-async function schedSaveManagerCities(userId){
-  var nodes=document.querySelectorAll('.mc-'+userId); var codes=[]; for(var i=0;i<nodes.length;i++){ if(nodes[i].checked) codes.push(nodes[i].value); }
-  try{ await api('PUT','/schedule/manager-cities/'+userId,{city_codes:codes}); schedToast('Saved.','ok'); }catch(e){ alert(e.message); }
-}
-
 function schedVisibleUsers(){
   return _schedUsers.filter(function(u){
     var codes=_schedEmpCities[u.id]||[];
@@ -6647,19 +6635,6 @@ function schedVisibleUsers(){
 function schedScopedCities(){
   if(_schedScope===null) return _schedCities;
   return _schedCities.filter(function(c){ return _schedScope.indexOf((c.code||'').trim())!==-1; });
-}
-async function schedAssignStaff(){
-  var data=[]; try{ data=await api('GET','/schedule/employee-cities'); }catch(e){ alert(e.message); return; }
-  var cityList=schedScopedCities();
-  var rows=data.map(function(m){
-    var checks=cityList.map(function(c){ var cc=(c.code||'').trim(); var on=(m.city_codes||[]).indexOf(cc)!==-1; return '<label style="display:inline-flex;align-items:center;gap:5px;margin:0 10px 6px 0;font-size:13px"><input type="checkbox" class="ec-'+m.user_id+'" value="'+escHtml(cc)+'"'+(on?' checked':'')+' style="width:auto"> '+escHtml(c.name)+'</label>'; }).join('');
-    return '<div style="border:1px solid var(--border,#333);border-radius:8px;padding:10px;margin-bottom:10px"><div style="font-weight:600;margin-bottom:6px">'+escHtml(m.name)+' <span style="color:var(--text-muted-color,#999);font-weight:400;font-size:12px">('+escHtml(roleLabel(m.role))+')</span></div>'+(checks||'<span class="text-muted">No cities</span>')+'<div style="text-align:right"><button class="btn btn-primary btn-sm" onclick="schedSaveStaffCities('+m.user_id+')">Save</button></div></div>';
-  }).join('');
-  schedModal('<h3 style="margin:0 0 6px">Assign Staff to Cities</h3><p class="text-muted" style="font-size:12.5px;margin:0 0 12px">An employee with no cities checked appears in every city&#39;s roster. Check cities to limit where they show.</p>'+(rows||'<p class="text-muted">No employees.</p>')+'<div style="text-align:right;margin-top:6px"><button class="btn btn-ghost btn-sm" onclick="schedCloseModal()">Close</button></div>');
-}
-async function schedSaveStaffCities(userId){
-  var nodes=document.querySelectorAll('.ec-'+userId); var codes=[]; for(var i=0;i<nodes.length;i++){ if(nodes[i].checked) codes.push(nodes[i].value); }
-  try{ await api('PUT','/schedule/employee-cities/'+userId,{city_codes:codes}); schedToast('Saved.','ok'); await schedLoadAdmin(); schedRenderGrid(); }catch(e){ alert(e.message); }
 }
 // ----- employee view -------------------------------------------------------
 async function renderSchedule(el){

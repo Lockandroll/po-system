@@ -14,8 +14,17 @@ const ROLE_LABELS = {
   locksmith_coordinator: 'Locksmith Coordinator',
   roadside_technician: 'Roadside Technician',
   manager: 'Manager',
-  admin: 'Admin'
+  admin: 'Admin',
+  owner: 'Owner'
 };
+
+async function setUserCities(userId, codes) {
+  if (!Array.isArray(codes)) return null;
+  const clean = Array.from(new Set(codes.map(function (c) { return String(c || '').trim().slice(0, 3); }).filter(Boolean)));
+  await pool.query('DELETE FROM user_cities WHERE user_id=$1', [userId]);
+  for (const c of clean) await pool.query('INSERT INTO user_cities (user_id, city_code) VALUES ($1,$2) ON CONFLICT (user_id, city_code) DO NOTHING', [userId, c]);
+  return clean;
+}
 
 // Create an invite token and email the new user a link to set their own password.
 async function sendInvite(user, invitedByName) {
@@ -50,6 +59,10 @@ router.get('/', requireAuth, requirePermission('view_users'), async (req, res) =
   const { rows } = await pool.query(
     'SELECT id, name, email, phone, role, active, receive_emails, receive_sms, created_at FROM users ORDER BY active DESC, name ASC'
   );
+  const mc = await pool.query('SELECT user_id, city_code FROM user_cities');
+  const byU = {};
+  mc.rows.forEach(function (r) { (byU[r.user_id] = byU[r.user_id] || []).push((r.city_code || '').trim()); });
+  rows.forEach(function (u) { u.city_codes = byU[u.id] || []; });
   res.json(rows);
 });
 
@@ -72,6 +85,7 @@ router.post('/', requireAuth, requirePermission('manage_users'), async (req, res
       [name, email, password_hash, role, phone || null, receive_emails !== false, receive_sms === true]
     );
     const newUser = rows[0];
+    newUser.city_codes = (await setUserCities(newUser.id, req.body.city_codes)) || [];
     try {
       await sendInvite(newUser, req.user && req.user.name);
     } catch (e) {
@@ -103,6 +117,8 @@ router.put('/:id', requireAuth, requirePermission('manage_users'), async (req, r
   try {
     const { rows } = await pool.query(query, params);
     if (!rows[0]) return res.status(404).json({ error: 'User not found' });
+    const _cc = await setUserCities(rows[0].id, req.body.city_codes);
+    if (_cc) rows[0].city_codes = _cc;
     res.json(rows[0]);
   } catch (err) {
     if (err.code === '23505') return res.status(400).json({ error: 'Email already in use' });

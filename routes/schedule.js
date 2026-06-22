@@ -55,7 +55,7 @@ function fmtTime(t) {
 // explicit city assignment; otherwise the list of assigned city codes.
 async function allowedCities(user) {
   if (user.role === 'admin') return null;
-  const { rows } = await pool.query('SELECT city_code FROM manager_cities WHERE user_id = $1', [user.id]);
+  const { rows } = await pool.query('SELECT city_code FROM user_cities WHERE user_id = $1', [user.id]);
   if (!rows.length) return null;
   return rows.map(function (r) { return (r.city_code || '').trim(); });
 }
@@ -295,48 +295,17 @@ router.post('/copy-week', requireAuth, requirePermission('manage_schedule'), asy
   res.json({ copied: copied });
 });
 
-// ---- manager-city assignment (admin-level) ---------------------------------
-router.get('/manager-cities', requireAuth, requirePermission('manage_users'), async (req, res) => {
-  const mgrs = await pool.query("SELECT id, name, role FROM users WHERE active=true AND role IN ('manager','admin') ORDER BY name");
-  const map = await pool.query('SELECT user_id, city_code FROM manager_cities');
-  const byUser = {};
-  map.rows.forEach(function (r) { (byUser[r.user_id] = byUser[r.user_id] || []).push((r.city_code || '').trim()); });
-  res.json(mgrs.rows.map(function (u) { return { user_id: u.id, name: u.name, role: u.role, city_codes: byUser[u.id] || [] }; }));
-});
-router.put('/manager-cities/:userId', requireAuth, requirePermission('manage_users'), async (req, res) => {
-  const uid = parseInt(req.params.userId, 10);
-  if (!uid) return res.status(400).json({ error: 'Invalid user' });
-  let codes = Array.isArray(req.body.city_codes) ? req.body.city_codes : [];
-  codes = Array.from(new Set(codes.map(function (c) { return String(c || '').trim().slice(0, 3); }).filter(Boolean)));
-  await pool.query('DELETE FROM manager_cities WHERE user_id=$1', [uid]);
-  for (const code of codes) {
-    await pool.query('INSERT INTO manager_cities (user_id, city_code) VALUES ($1,$2) ON CONFLICT (user_id, city_code) DO NOTHING', [uid, code]);
-  }
-  res.json({ success: true, city_codes: codes });
-});
-
-// ---- scope + employee-city membership -------------------------------------
+// ---- scope + per-user city membership (assignment lives in /api/users) -----
 router.get('/my-scope', requireAuth, requirePermission('manage_schedule'), async (req, res) => {
   const scope = await allowedCities(req.user);
   res.json({ cities: scope });
 });
-router.get('/employee-cities', requireAuth, requirePermission('manage_schedule'), async (req, res) => {
+router.get('/user-cities', requireAuth, requirePermission('manage_schedule'), async (req, res) => {
   const users = await pool.query('SELECT id, name, role FROM users WHERE active=true ORDER BY name');
-  const map = await pool.query('SELECT user_id, city_code FROM employee_cities');
+  const map = await pool.query('SELECT user_id, city_code FROM user_cities');
   const byUser = {};
   map.rows.forEach(function (r) { (byUser[r.user_id] = byUser[r.user_id] || []).push((r.city_code || '').trim()); });
   res.json(users.rows.map(function (u) { return { user_id: u.id, name: u.name, role: u.role, city_codes: byUser[u.id] || [] }; }));
-});
-router.put('/employee-cities/:userId', requireAuth, requirePermission('manage_schedule'), async (req, res) => {
-  const uid = parseInt(req.params.userId, 10);
-  if (!uid) return res.status(400).json({ error: 'Invalid user' });
-  let codes = Array.isArray(req.body.city_codes) ? req.body.city_codes : [];
-  codes = Array.from(new Set(codes.map(function (c) { return String(c || '').trim().slice(0, 3); }).filter(Boolean)));
-  await pool.query('DELETE FROM employee_cities WHERE user_id=$1', [uid]);
-  for (const code of codes) {
-    await pool.query('INSERT INTO employee_cities (user_id, city_code) VALUES ($1,$2) ON CONFLICT (user_id, city_code) DO NOTHING', [uid, code]);
-  }
-  res.json({ success: true, city_codes: codes });
 });
 
 module.exports = router;
