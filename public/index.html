@@ -5705,6 +5705,19 @@ async function exportDepositsCSV() {
   }
 }
 
+// Fullscreen image viewer for deposit / expense receipts. Click anywhere to close.
+function depShowImage(src) {
+  if (!src) return;
+  var ov = document.createElement('div');
+  ov.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.85);z-index:500;display:flex;align-items:center;justify-content:center;padding:20px;cursor:zoom-out';
+  ov.onclick = function() { ov.remove(); };
+  var img = document.createElement('img');
+  img.src = src;
+  img.style.cssText = 'max-width:95%;max-height:95%;border-radius:8px;box-shadow:0 10px 40px rgba(0,0,0,0.6)';
+  ov.appendChild(img);
+  document.body.appendChild(ov);
+}
+
 async function renderViewDeposit(el, id) {
   var canManage = ['admin','manager'].includes(state.user.role);
   var dep;
@@ -5719,14 +5732,14 @@ async function renderViewDeposit(el, id) {
   var receiptList = dep.receipts || [];
   var receipts = receiptList.length
     ? '<div style="display:flex;flex-wrap:wrap;gap:12px">' + receiptList.map(function(r) {
-        return '<img src="' + r.image + '" style="max-width:320px;max-height:320px;border-radius:10px;border:1px solid var(--border-color)" />';
+        return '<img src="' + r.image + '" onclick="depShowImage(this.src)" style="max-width:320px;max-height:320px;border-radius:10px;border:1px solid var(--border-color);cursor:zoom-in" />';
       }).join('') + '</div>'
     : '<p style="color:var(--text-muted-color)">No receipt image on file.</p>';
 
   var expensesBlock = '';
   if (expList.length) {
     var expRows = expList.map(function(x) {
-      var thumb = x.receipt_image ? '<a href="' + x.receipt_image + '" target="_blank" style="color:#f97316">Photo</a>' : '<span style="color:var(--text-muted-color)">—</span>';
+      var thumb = x.receipt_image ? '<img src="' + x.receipt_image + '" onclick="depShowImage(this.src)" style="height:46px;width:46px;object-fit:cover;border-radius:6px;border:1px solid var(--border-color);cursor:zoom-in;display:block" />' : '<span style="color:var(--text-muted-color)">—</span>';
       return '<tr><td>' + escHtml(x.description || '—') + '</td><td style="white-space:nowrap;text-align:right">$' + (parseFloat(x.amount) || 0).toFixed(2) + '</td><td style="white-space:nowrap">' + thumb + '</td></tr>';
     }).join('');
     expensesBlock =

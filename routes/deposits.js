@@ -170,16 +170,16 @@ router.post('/', requireAuth, requirePermission('create_deposit'), async functio
 // Never returns receipt images in the list (kept lightweight).
 router.get('/', requireAuth, requirePermission('view_deposits'), async function(req, res) {
   try {
-    const cols = 'd.id, d.deposit_number, d.user_id, d.user_name, d.city_code, d.amount, d.pulsar_owed, d.deposit_date, d.period_start, d.period_end, d.notes, d.receipt_filename, ' +
+    const cols = 'd.id, d.deposit_number, d.user_id, COALESCE(u.name, d.user_name) AS user_name, d.city_code, d.amount, d.pulsar_owed, d.deposit_date, d.period_start, d.period_end, d.notes, d.receipt_filename, ' +
       '(d.receipt_image IS NOT NULL OR EXISTS(SELECT 1 FROM deposit_receipts r WHERE r.deposit_id = d.id)) AS has_receipt, ' +
       'COALESCE((SELECT SUM(e.amount) FROM deposit_expenses e WHERE e.deposit_id = d.id), 0) AS total_expenses, ' +
       'd.created_at';
     let query, params;
     if (SEE_ALL.includes(req.user.role)) {
-      query = 'SELECT ' + cols + ' FROM deposits d ORDER BY d.deposit_date DESC, d.created_at DESC';
+      query = 'SELECT ' + cols + ' FROM deposits d LEFT JOIN users u ON u.id = d.user_id ORDER BY d.deposit_date DESC, d.created_at DESC';
       params = [];
     } else {
-      query = 'SELECT ' + cols + ' FROM deposits d WHERE d.user_id = $1 ORDER BY d.deposit_date DESC, d.created_at DESC';
+      query = 'SELECT ' + cols + ' FROM deposits d LEFT JOIN users u ON u.id = d.user_id WHERE d.user_id = $1 ORDER BY d.deposit_date DESC, d.created_at DESC';
       params = [req.user.id];
     }
     const { rows } = await pool.query(query, params);
@@ -197,10 +197,10 @@ router.get('/export', requireAuth, requirePermission('export_deposits'), async f
   }
   try {
     const { rows } = await pool.query(
-      'SELECT d.deposit_number, d.user_name, d.city_code, d.amount, d.pulsar_owed, d.deposit_date, d.period_start, d.period_end, d.notes, d.receipt_filename, ' +
+      'SELECT d.deposit_number, COALESCE(u.name, d.user_name) AS user_name, d.city_code, d.amount, d.pulsar_owed, d.deposit_date, d.period_start, d.period_end, d.notes, d.receipt_filename, ' +
       '(d.receipt_image IS NOT NULL OR EXISTS(SELECT 1 FROM deposit_receipts r WHERE r.deposit_id = d.id)) AS has_receipt, ' +
       'COALESCE((SELECT SUM(e.amount) FROM deposit_expenses e WHERE e.deposit_id = d.id), 0) AS total_expenses, ' +
-      'd.created_at FROM deposits d ORDER BY d.deposit_date DESC, d.created_at DESC'
+      'd.created_at FROM deposits d LEFT JOIN users u ON u.id = d.user_id ORDER BY d.deposit_date DESC, d.created_at DESC'
     );
     res.json({ deposits: rows });
   } catch (err) {
@@ -212,9 +212,11 @@ router.get('/export', requireAuth, requirePermission('export_deposits'), async f
 // GET /:id — single deposit incl. receipts and expenses (owner or see-all roles)
 router.get('/:id', requireAuth, requirePermission('view_deposits'), async function(req, res) {
   try {
-    const { rows } = await pool.query('SELECT * FROM deposits WHERE id = $1', [req.params.id]);
+    const { rows } = await pool.query('SELECT d.*, u.name AS current_user_name FROM deposits d LEFT JOIN users u ON u.id = d.user_id WHERE d.id = $1', [req.params.id]);
     if (!rows.length) return res.status(404).json({ error: 'Deposit not found' });
     const dep = rows[0];
+    if (dep.current_user_name) dep.user_name = dep.current_user_name;
+    delete dep.current_user_name;
     if (!SEE_ALL.includes(req.user.role) && dep.user_id !== req.user.id) {
       return res.status(403).json({ error: 'Access denied' });
     }
