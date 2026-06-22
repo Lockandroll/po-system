@@ -6097,6 +6097,7 @@ async function loadPartsTable(q) {
   }
   var rows = _partsData.map(function(pt) {
     return '<tr>' +
+      '<td style="width:28px;text-align:center"><input type="checkbox" class="part-check" value="' + pt.id + '" onclick="partsUpdateSelection()" /></td>' +
       '<td style="white-space:nowrap">' + escHtml(pt.item_number || '-') + '</td>' +
       '<td style="white-space:nowrap">' + escHtml(pt.alias || '-') + '</td>' +
       '<td style="max-width:360px;word-break:break-word">' + escHtml(pt.description || '') + '</td>' +
@@ -6106,7 +6107,9 @@ async function loadPartsTable(q) {
         '<button class="btn btn-ghost btn-sm" style="color:var(--danger)" onclick="deletePart(' + pt.id + ')">' + icons.trash + '</button></td>' +
     '</tr>';
   }).join('');
-  area.innerHTML = '<div class="table-wrap"><table class="table"><thead><tr><th>Item #</th><th>Alias</th><th>Description</th><th>Preferred Vendor</th><th>Price</th><th></th></tr></thead><tbody>' + rows + '</tbody></table></div>';
+  area.innerHTML = '<div id="parts-bulk-bar" style="margin-bottom:10px;display:none;align-items:center;gap:10px"></div>' +
+    '<div class="table-wrap"><table class="table"><thead><tr><th style="width:28px;text-align:center"><input type="checkbox" id="parts-check-all" onclick="partsToggleAll(this)" /></th><th>Item #</th><th>Alias</th><th>Description</th><th>Preferred Vendor</th><th>Price</th><th></th></tr></thead><tbody>' + rows + '</tbody></table></div>';
+  partsUpdateSelection();
 }
 
 function openPartEditor(id) {
@@ -6156,6 +6159,43 @@ async function deletePart(id) {
   if (!confirm('Delete this part from the catalog? This does not affect existing POs.')) return;
   try {
     await api('DELETE', '/parts/' + id);
+    var q = (document.getElementById('parts-search') || {}).value || '';
+    await loadPartsTable(q.trim());
+  } catch (e) {
+    document.getElementById('parts-msg').innerHTML = '<div class="alert alert-error">' + escHtml(e.message) + '</div>';
+  }
+}
+
+function partsToggleAll(cb) {
+  document.querySelectorAll('.part-check').forEach(function (c) { c.checked = cb.checked; });
+  partsUpdateSelection();
+}
+function partsSelectedIds() {
+  var ids = [];
+  document.querySelectorAll('.part-check:checked').forEach(function (c) { ids.push(parseInt(c.value, 10)); });
+  return ids;
+}
+function partsUpdateSelection() {
+  var ids = partsSelectedIds();
+  var total = document.querySelectorAll('.part-check').length;
+  var all = document.getElementById('parts-check-all');
+  if (all) all.checked = total > 0 && ids.length === total;
+  var bar = document.getElementById('parts-bulk-bar');
+  if (!bar) return;
+  if (ids.length) {
+    bar.style.display = 'flex';
+    bar.innerHTML = '<button class="btn btn-danger btn-sm" onclick="deleteSelectedParts()">' + icons.trash + ' Delete selected (' + ids.length + ')</button>';
+  } else {
+    bar.style.display = 'none';
+    bar.innerHTML = '';
+  }
+}
+async function deleteSelectedParts() {
+  var ids = partsSelectedIds();
+  if (!ids.length) return;
+  if (!confirm('Delete ' + ids.length + ' part' + (ids.length === 1 ? '' : 's') + ' from the catalog? This cannot be undone and does not affect existing POs.')) return;
+  try {
+    await api('POST', '/parts/bulk-delete', { ids: ids });
     var q = (document.getElementById('parts-search') || {}).value || '';
     await loadPartsTable(q.trim());
   } catch (e) {

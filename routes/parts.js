@@ -66,6 +66,14 @@ router.delete('/:id', requireAuth, requirePermission('manage_parts'), async (req
   res.json({ success: true });
 });
 
+// POST /api/parts/bulk-delete  — delete several parts at once. Body: { ids: [1,2,3] }
+router.post('/bulk-delete', requireAuth, requirePermission('manage_parts'), async (req, res) => {
+  const ids = Array.isArray(req.body.ids) ? req.body.ids.map(function (x) { return parseInt(x, 10); }).filter(function (x) { return !isNaN(x); }) : [];
+  if (!ids.length) return res.status(400).json({ error: 'No parts selected.' });
+  const r = await pool.query('DELETE FROM parts WHERE id = ANY($1::int[])', [ids]);
+  res.json({ success: true, deleted: r.rowCount });
+});
+
 function callClaude(systemPrompt, userContent) {
   return new Promise(function(resolve, reject) {
     const body = JSON.stringify({
