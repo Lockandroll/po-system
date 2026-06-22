@@ -75,6 +75,9 @@ router.post('/', requireAuth, requirePermission('manage_users'), async (req, res
   if (!VALID_ROLES.includes(role)) {
     return res.status(400).json({ error: 'Invalid role. Must be one of: ' + VALID_ROLES.join(', ') + '.' });
   }
+  if (role === 'owner' && !req.user.isOwner) {
+    return res.status(403).json({ error: 'Only an owner can grant the Owner role.' });
+  }
   // Password is optional — if none is set, the user picks one via the invite link.
   // A random hash is stored so the account can never be logged into until the invite is used.
   const rawPassword = password || crypto.randomBytes(24).toString('hex');
@@ -105,6 +108,10 @@ router.put('/:id', requireAuth, requirePermission('manage_users'), async (req, r
   if (role && !VALID_ROLES.includes(role)) {
     return res.status(400).json({ error: 'Invalid role. Must be one of: ' + VALID_ROLES.join(', ') + '.' });
   }
+  const _target = (await pool.query('SELECT role FROM users WHERE id=$1', [id])).rows[0];
+  if (_target && (_target.role === 'owner' || role === 'owner') && !req.user.isOwner) {
+    return res.status(403).json({ error: 'Only an owner can manage owner accounts.' });
+  }
   let query, params;
   if (password) {
     const password_hash = await bcrypt.hash(password, 12);
@@ -132,6 +139,8 @@ router.post('/:id/deactivate', requireAuth, requirePermission('manage_users'), a
   if (parseInt(id) === req.user.id) {
     return res.status(400).json({ error: 'Cannot deactivate your own account' });
   }
+  const _t = (await pool.query('SELECT role FROM users WHERE id=$1', [id])).rows[0];
+  if (_t && _t.role === 'owner' && !req.user.isOwner) return res.status(403).json({ error: 'Only an owner can deactivate an owner account.' });
   const { rows } = await pool.query('UPDATE users SET active=false WHERE id=$1 RETURNING id', [id]);
   if (!rows[0]) return res.status(404).json({ error: 'User not found' });
   res.json({ success: true });
@@ -151,6 +160,8 @@ router.delete('/:id', requireAuth, requirePermission('manage_users'), async (req
   if (parseInt(id) === req.user.id) {
     return res.status(400).json({ error: 'Cannot delete your own account' });
   }
+  const _t2 = (await pool.query('SELECT role FROM users WHERE id=$1', [id])).rows[0];
+  if (_t2 && _t2.role === 'owner' && !req.user.isOwner) return res.status(403).json({ error: 'Only an owner can delete an owner account.' });
   const { rows: poRows } = await pool.query('SELECT COUNT(*) FROM purchase_orders WHERE requester_id=$1', [id]);
   if (parseInt(poRows[0].count) > 0) {
     return res.status(400).json({ error: 'Cannot delete user — they have existing purchase orders. Deactivate instead.' });

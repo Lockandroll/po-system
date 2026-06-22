@@ -47,25 +47,49 @@ function isOwnersOwn(task, owners) {
   if ((task.assigned_to === null || task.assigned_to === undefined) && task.created_by && owners.indexOf(task.created_by) !== -1) return true;
   return false;
 }
-async function canTouch(req, task) {
-  if (req.user.isOwner) return true;
-  if (isOwnersOwn(task, await ownerIds())) return false;
-  if (await perms.hasPermission(req.user.role, 'manage_tasks')) return true;
-  return task.assigned_to === req.user.id;
+function involved(req, task) {
+  return task.assigned_to === req.user.id || task.created_by === req.user.id;
+}
+// Visibility: you see tasks you're involved in; owner sees all; a plain admin
+// audits everything except an owner's own (personal/self) tasks.
+async function canSee(req, task) {
+  if (involved(req, task)) return true;
+  if (req.user.role === 'admin') {
+    if (req.user.isOwner) return true;
+    return !isOwnersOwn(task, await ownerIds());
+  }
+  return false;
+}
+// Edit/delete: the creator, or a manager/admin who can see it.
+async function canEdit(req, task) {
+  if (task.created_by === req.user.id) return true;
+  if (await perms.hasPermission(req.user.role, 'manage_tasks') && await canSee(req, task)) return true;
+  return false;
+}
+// Status/checklist: the assignee, or anyone who can edit.
+async function canChangeStatus(req, task) {
+  if (task.assigned_to === req.user.id) return true;
+  return canEdit(req, task);
 }
 
 // LIST — managers see all; everyone else sees tasks assigned to them.
 router.get('/', requireAuth, requirePermission('view_tasks'), async (req, res) => {
   try {
     const manage = await perms.hasPermission(req.user.role, 'manage_tasks');
+    const audit = req.user.role === 'admin';
+    const view = req.query.view === 'assigned' ? 'assigned' : 'mine';
     const params = [];
     let where = '';
-    if (req.user.isOwner) {
-      // Owner sees every task.
-    } else if (manage) {
-      // Admins/managers see all tasks except an owner's own (self-assigned or personal) tasks.
-      const owners = await ownerIds();
-      if (owners.length) { params.push(owners); where = 'WHERE NOT ( t.assigned_to = ANY($1::int[]) OR (t.assigned_to IS NULL AND t.created_by = ANY($1::int[])) )'; }
+    if (view === 'assigned') {
+      if (!manage) return res.json([]);
+      if (req.user.isOwner) {
+        // Owner: full oversight of every task.
+      } else if (audit) {
+        const owners = await ownerIds();
+        if (owners.length) { params.push(owners); where = 'WHERE NOT ( t.assigned_to = ANY($1::int[]) OR (t.assigned_to IS NULL AND t.created_by = ANY($1::int[])) )'; }
+      } else {
+        params.push(req.user.id); where = 'WHERE t.created_by = $1 AND (t.assigned_to IS NULL OR t.assigned_to <> $1)';
+      }
     } else {
       where = 'WHERE t.assigned_to = $1'; params.push(req.user.id);
     }
@@ -84,17 +108,49 @@ router.get('/', requireAuth, requirePermission('view_tasks'), async (req, res) =
   } catch (err) { console.error(err); res.status(500).json({ error: 'Failed to load tasks' }); }
 });
 
-// CREATE (managers/admin)
-router.post('/', requireAuth, requirePermission('manage_tasks'), async (req, res) => {
+// COUNTS for tab badges (open + past-due)
+router.get('/counts', requireAuth, requirePermission('view_tasks'), async (req, res) => {
+  try {
+    const uid = req.user.id;
+    const manage = await perms.hasPermission(req.user.role, 'manage_tasks');
+    const audit = req.user.role === 'admin';
+    const mine = await pool.query(
+      "SELECT COUNT(*) FILTER (WHERE status <> 'done') AS open, " +
+      "COUNT(*) FILTER (WHERE status <> 'done' AND due_date IS NOT NULL AND due_date < CURRENT_DATE) AS overdue " +
+      "FROM tasks WHERE assigned_to = $1", [uid]);
+    let assigned_open = 0, assigned_overdue = 0;
+    if (manage) {
+      let where = '', params = [];
+      if (req.user.isOwner) { where = ''; }
+      else if (audit) {
+        const owners = await ownerIds();
+        if (owners.length) { params.push(owners); where = 'WHERE NOT ( assigned_to = ANY($1::int[]) OR (assigned_to IS NULL AND created_by = ANY($1::int[])) )'; }
+      } else { params.push(uid); where = 'WHERE created_by = $1 AND (assigned_to IS NULL OR assigned_to <> $1)'; }
+      const conj = where ? (where + " AND status <> 'done'") : "WHERE status <> 'done'";
+      const a = await pool.query("SELECT COUNT(*) AS open, COUNT(*) FILTER (WHERE due_date IS NOT NULL AND due_date < CURRENT_DATE) AS overdue FROM tasks " + conj, params);
+      assigned_open = parseInt(a.rows[0].open) || 0;
+      assigned_overdue = parseInt(a.rows[0].overdue) || 0;
+    }
+    res.json({ mine_open: parseInt(mine.rows[0].open) || 0, mine_overdue: parseInt(mine.rows[0].overdue) || 0, assigned_open: assigned_open, assigned_overdue: assigned_overdue });
+  } catch (err) { console.error(err); res.status(500).json({ error: 'Failed to load task counts' }); }
+});
+
+// CREATE - anyone (view_tasks) makes a personal task; assigning to others needs manage_tasks.
+router.post('/', requireAuth, requirePermission('view_tasks'), async (req, res) => {
   try {
     const b = req.body || {};
     const title = (b.title || '').trim();
     if (!title) return res.status(400).json({ error: 'Title is required' });
+    const manage = await perms.hasPermission(req.user.role, 'manage_tasks');
     const status = STATUSES.indexOf(b.status) !== -1 ? b.status : 'todo';
     const priority = PRIORITIES.indexOf(b.priority) !== -1 ? b.priority : 'medium';
     const recurrence = RECUR.indexOf(b.recurrence) !== -1 ? (b.recurrence || null) : null;
     const recDay = (recurrence === 'weekly' || recurrence === 'monthly') && b.recurrence_day != null && b.recurrence_day !== '' ? parseInt(b.recurrence_day, 10) : null;
-    const assigned_to = b.assigned_to ? parseInt(b.assigned_to, 10) : null;
+    let assigned_to = b.assigned_to ? parseInt(b.assigned_to, 10) : null;
+    if (!manage) {
+      if (assigned_to && assigned_to !== req.user.id) return res.status(403).json({ error: 'You can only create tasks for yourself.' });
+      assigned_to = req.user.id;
+    }
     const due_date = b.due_date || null;
     const { rows } = await pool.query(
       'INSERT INTO tasks (title, description, status, priority, assigned_to, created_by, due_date, recurrence, recurrence_day) ' +
@@ -156,9 +212,9 @@ router.post('/bulk', requireAuth, requirePermission('manage_tasks'), async (req,
 // SUBTASK toggle (assignee or manager) — declared before /:id routes
 router.patch('/subtasks/:sid', requireAuth, requirePermission('view_tasks'), async (req, res) => {
   try {
-    const { rows } = await pool.query('SELECT s.*, t.assigned_to FROM task_subtasks s JOIN tasks t ON s.task_id = t.id WHERE s.id = $1', [req.params.sid]);
+    const { rows } = await pool.query('SELECT s.*, t.assigned_to, t.created_by FROM task_subtasks s JOIN tasks t ON s.task_id = t.id WHERE s.id = $1', [req.params.sid]);
     if (!rows.length) return res.status(404).json({ error: 'Subtask not found' });
-    if (!(await canTouch(req, rows[0]))) return res.status(403).json({ error: 'Forbidden' });
+    if (!(await canChangeStatus(req, rows[0]))) return res.status(403).json({ error: 'Forbidden' });
     await pool.query('UPDATE task_subtasks SET done = $1 WHERE id = $2', [!!(req.body && req.body.done), req.params.sid]);
     res.json({ success: true });
   } catch (err) { console.error(err); res.status(500).json({ error: 'Failed to update subtask' }); }
@@ -173,7 +229,7 @@ router.get('/:id', requireAuth, requirePermission('view_tasks'), async (req, res
   try {
     const task = await loadTask(req.params.id);
     if (!task) return res.status(404).json({ error: 'Task not found' });
-    if (!(await canTouch(req, task))) return res.status(403).json({ error: 'Forbidden' });
+    if (!(await canSee(req, task))) return res.status(403).json({ error: 'Forbidden' });
     res.json(task);
   } catch (err) { console.error(err); res.status(500).json({ error: 'Failed to load task' }); }
 });
@@ -184,7 +240,7 @@ router.put('/:id', requireAuth, requirePermission('manage_tasks'), async (req, r
     const b = req.body || {};
     const ex = (await pool.query('SELECT * FROM tasks WHERE id = $1', [req.params.id])).rows[0];
     if (!ex) return res.status(404).json({ error: 'Task not found' });
-    if (!(await canTouch(req, ex))) return res.status(403).json({ error: 'Forbidden' });
+    if (!(await canEdit(req, ex))) return res.status(403).json({ error: 'Forbidden' });
     const title = (b.title || ex.title || '').trim();
     const status = STATUSES.indexOf(b.status) !== -1 ? b.status : ex.status;
     const priority = PRIORITIES.indexOf(b.priority) !== -1 ? b.priority : ex.priority;
@@ -215,7 +271,7 @@ router.patch('/:id/status', requireAuth, requirePermission('view_tasks'), async 
     if (STATUSES.indexOf(status) === -1) return res.status(400).json({ error: 'Invalid status' });
     const ex = (await pool.query('SELECT * FROM tasks WHERE id = $1', [req.params.id])).rows[0];
     if (!ex) return res.status(404).json({ error: 'Task not found' });
-    if (!(await canTouch(req, ex))) return res.status(403).json({ error: 'Forbidden' });
+    if (!(await canChangeStatus(req, ex))) return res.status(403).json({ error: 'Forbidden' });
     if (status === 'done' && ex.status !== 'done') {
       await pool.query("UPDATE tasks SET status='done', completed_at=NOW(), completed_by=$1, updated_at=NOW() WHERE id=$2", [req.user.id, req.params.id]);
       await addActivity(req.params.id, req.user, 'event', 'marked it done');
@@ -274,7 +330,7 @@ router.post('/:id/comments', requireAuth, requirePermission('view_tasks'), async
     if (!body) return res.status(400).json({ error: 'Comment text required' });
     const ex = (await pool.query('SELECT * FROM tasks WHERE id = $1', [req.params.id])).rows[0];
     if (!ex) return res.status(404).json({ error: 'Task not found' });
-    if (!(await canTouch(req, ex))) return res.status(403).json({ error: 'Forbidden' });
+    if (!(await canSee(req, ex))) return res.status(403).json({ error: 'Forbidden' });
     await addActivity(req.params.id, req.user, 'comment', body);
     res.status(201).json(await loadTask(req.params.id));
   } catch (err) { console.error(err); res.status(500).json({ error: 'Failed to add comment' }); }
@@ -283,7 +339,7 @@ router.post('/:id/comments', requireAuth, requirePermission('view_tasks'), async
 // DELETE (managers/admin)
 router.delete('/:id', requireAuth, requirePermission('manage_tasks'), async (req, res) => {
   const _t = (await pool.query('SELECT assigned_to, created_by FROM tasks WHERE id = $1', [req.params.id])).rows[0];
-  if (_t && !(await canTouch(req, _t))) return res.status(403).json({ error: 'Forbidden' });
+  if (_t && !(await canEdit(req, _t))) return res.status(403).json({ error: 'Forbidden' });
   await pool.query('DELETE FROM tasks WHERE id = $1', [req.params.id]);
   try { await logAudit({ entity_type: 'task', entity_id: parseInt(req.params.id), entity_number: '#' + req.params.id, action: 'deleted', user_id: req.user.id, user_name: req.user.name, details: {} }); } catch (e) {}
   res.json({ success: true });
