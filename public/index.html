@@ -286,6 +286,7 @@ function navigate(view, param) {
   closeSidebar();
   state.currentView = view;
   state.currentParam = param || null;
+  try { localStorage.setItem('po_view', view); if (param != null && param !== '') localStorage.setItem('po_param', String(param)); else localStorage.removeItem('po_param'); } catch(e) {}
   var sec = getSidebarSection(view);
   if (sec) state.sidebarSection = sec;
   render();
@@ -781,6 +782,8 @@ function logout() {
   state.user = null;
   localStorage.removeItem('po_token');
   localStorage.removeItem('po_user');
+  localStorage.removeItem('po_view');
+  localStorage.removeItem('po_param');
   _aiMessages = [];
   _aiSessionUserId = null;
   render();
@@ -5105,6 +5108,15 @@ async function confirmSellVehicle() {
     state.currentView = deepView;
     state.currentParam = deepId ? (isNaN(deepId) ? deepId : parseInt(deepId)) : null;
     history.replaceState(null, '', window.location.pathname);
+  } else if (!state.currentView) {
+    try {
+      var savedView = localStorage.getItem('po_view');
+      if (savedView) {
+        state.currentView = savedView;
+        var savedParam = localStorage.getItem('po_param');
+        state.currentParam = (savedParam != null && savedParam !== '') ? (isNaN(savedParam) ? savedParam : parseInt(savedParam)) : null;
+      }
+    } catch(e) {}
   }
 })();
 
