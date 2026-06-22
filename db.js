@@ -252,6 +252,23 @@ async function initDB() {
     await client.query(
       'ALTER TABLE two_factor_codes ADD COLUMN IF NOT EXISTS attempts INTEGER NOT NULL DEFAULT 0;'
     );
+    // Trusted devices — remembered-device tokens ("don't challenge for 30 days")
+    await client.query(
+      'CREATE TABLE IF NOT EXISTS trusted_devices (' +
+      '  id SERIAL PRIMARY KEY,' +
+      '  user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,' +
+      '  token_hash VARCHAR(64) NOT NULL,' +
+      '  label VARCHAR(255),' +
+      '  ip VARCHAR(64),' +
+      '  created_at TIMESTAMPTZ DEFAULT NOW(),' +
+      '  last_used_at TIMESTAMPTZ DEFAULT NOW(),' +
+      '  expires_at TIMESTAMPTZ NOT NULL' +
+      ');'
+    );
+    await client.query(
+      'CREATE INDEX IF NOT EXISTS idx_trusted_devices_user ON trusted_devices(user_id);' +
+      'CREATE INDEX IF NOT EXISTS idx_trusted_devices_hash ON trusted_devices(token_hash);'
+    );
     // Running list (monthly accumulating items that get rolled into a PO per city)
     await client.query(
       'CREATE TABLE IF NOT EXISTS running_list_items (' +

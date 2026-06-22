@@ -13,6 +13,30 @@ const MAX_ATTEMPTS = 5;
 const LOCKOUT_MINUTES = 15;
 const MAX_2FA_ATTEMPTS = 5;
 
+const TRUST_DAYS = 30;
+const DEVICE_COOKIE = 'nova_device';
+
+function hashToken(t) { return crypto.createHash('sha256').update(String(t)).digest('hex'); }
+function clientIp(req) { return ((req.headers['x-forwarded-for'] || '').split(',')[0] || '').trim() || req.ip || null; }
+function getDeviceToken(req) {
+  var raw = req.headers.cookie || '';
+  var parts = raw.split(';');
+  for (var i = 0; i < parts.length; i++) {
+    var kv = parts[i].trim().split('=');
+    if (kv[0] === DEVICE_COOKIE) return decodeURIComponent(kv.slice(1).join('='));
+  }
+  return null;
+}
+function setDeviceCookie(req, res, rawToken, expiresDate) {
+  res.cookie(DEVICE_COOKIE, rawToken, { httpOnly: true, secure: !!req.secure, sameSite: 'lax', expires: expiresDate, path: '/' });
+}
+function deviceLabel(ua) {
+  ua = ua || '';
+  var os = /Windows/.test(ua) ? 'Windows' : (/iPhone|iPad|iPod/.test(ua) ? 'iOS' : (/Macintosh|Mac OS/.test(ua) ? 'macOS' : (/Android/.test(ua) ? 'Android' : (/Linux/.test(ua) ? 'Linux' : 'Unknown OS'))));
+  var br = /Edg/.test(ua) ? 'Edge' : (/OPR|Opera/.test(ua) ? 'Opera' : (/Chrome/.test(ua) ? 'Chrome' : (/Firefox/.test(ua) ? 'Firefox' : (/Safari/.test(ua) ? 'Safari' : 'Browser'))));
+  return br + ' on ' + os;
+}
+
 // Initial setup — creates first admin account (only works when no users exist)
 router.post('/setup', async (req, res) => {
   const { name, email, password } = req.body;
@@ -71,6 +95,22 @@ router.post('/login', async (req, res) => {
   // Reset lockout on success
   await pool.query('UPDATE users SET failed_attempts=0, lockout_until=NULL WHERE id=$1', [user.id]);
 
+  // Trusted device — skip the 2FA code if this device carries a valid remembered token
+  var deviceToken = getDeviceToken(req);
+  if (deviceToken) {
+    const td = await pool.query(
+      'SELECT id FROM trusted_devices WHERE user_id=$1 AND token_hash=$2 AND expires_at > NOW()',
+      [user.id, hashToken(deviceToken)]
+    );
+    if (td.rows[0]) {
+      const newExpires = new Date(Date.now() + TRUST_DAYS * 24 * 60 * 60 * 1000);
+      await pool.query('UPDATE trusted_devices SET last_used_at=NOW(), expires_at=$1, ip=$2 WHERE id=$3', [newExpires, clientIp(req), td.rows[0].id]);
+      setDeviceCookie(req, res, deviceToken, newExpires);
+      const tdToken = jwt.sign({ id: user.id, email: user.email, name: user.name, role: user.role }, process.env.JWT_SECRET, { expiresIn: '24h' });
+      return res.json({ token: tdToken, user: { id: user.id, name: user.name, email: user.email, role: user.role } });
+    }
+  }
+
   // Generate and send 2FA code
   const code = String(Math.floor(100000 + Math.random() * 900000));
   const codeExpires = new Date(Date.now() + 10 * 60 * 1000); // 10 minutes
@@ -109,7 +149,7 @@ router.post('/login', async (req, res) => {
 
 // Verify 2FA code and return JWT
 router.post('/verify-2fa', async (req, res) => {
-  const { userId, code } = req.body;
+  const { userId, code, rememberDevice } = req.body;
   if (!userId || !code) return res.status(400).json({ error: 'User ID and code required' });
 
   const { rows } = await pool.query(
@@ -140,6 +180,19 @@ router.post('/verify-2fa', async (req, res) => {
   }
 
   const token = jwt.sign({ id: user.id, email: user.email, name: user.name, role: user.role }, process.env.JWT_SECRET, { expiresIn: '24h' });
+
+  if (rememberDevice) {
+    try {
+      const rawToken = crypto.randomBytes(32).toString('hex');
+      const expires = new Date(Date.now() + TRUST_DAYS * 24 * 60 * 60 * 1000);
+      await pool.query(
+        'INSERT INTO trusted_devices (user_id, token_hash, label, ip, expires_at) VALUES ($1, $2, $3, $4, $5)',
+        [user.id, hashToken(rawToken), deviceLabel(req.headers['user-agent']), clientIp(req), expires]
+      );
+      setDeviceCookie(req, res, rawToken, expires);
+    } catch (e) { console.error('Trusted device save failed:', e); }
+  }
+
   res.json({ token, user: { id: user.id, name: user.name, email: user.email, role: user.role } });
 });
 
@@ -199,6 +252,35 @@ router.get('/me', requireAuth, async (req, res) => {
 router.get('/setup-needed', async (req, res) => {
   const { rows } = await pool.query('SELECT COUNT(*) FROM users');
   res.json({ needed: parseInt(rows[0].count) === 0 });
+});
+
+// List the current user's trusted devices
+router.get('/trusted-devices', requireAuth, async (req, res) => {
+  const current = getDeviceToken(req);
+  const currentHash = current ? hashToken(current) : null;
+  const { rows } = await pool.query(
+    'SELECT id, label, ip, created_at, last_used_at, expires_at, token_hash FROM trusted_devices WHERE user_id=$1 AND expires_at > NOW() ORDER BY last_used_at DESC',
+    [req.user.id]
+  );
+  res.json(rows.map(function(r) {
+    return { id: r.id, label: r.label, ip: r.ip, created_at: r.created_at, last_used_at: r.last_used_at, expires_at: r.expires_at, current: !!(currentHash && r.token_hash === currentHash) };
+  }));
+});
+
+// Revoke a single trusted device
+router.delete('/trusted-devices/:id', requireAuth, async (req, res) => {
+  const current = getDeviceToken(req);
+  const { rows } = await pool.query('SELECT token_hash FROM trusted_devices WHERE id=$1 AND user_id=$2', [req.params.id, req.user.id]);
+  await pool.query('DELETE FROM trusted_devices WHERE id=$1 AND user_id=$2', [req.params.id, req.user.id]);
+  if (current && rows[0] && rows[0].token_hash === hashToken(current)) res.clearCookie(DEVICE_COOKIE, { path: '/' });
+  res.json({ success: true });
+});
+
+// Revoke all trusted devices for the current user
+router.delete('/trusted-devices', requireAuth, async (req, res) => {
+  await pool.query('DELETE FROM trusted_devices WHERE user_id=$1', [req.user.id]);
+  res.clearCookie(DEVICE_COOKIE, { path: '/' });
+  res.json({ success: true });
 });
 
 module.exports = router;
