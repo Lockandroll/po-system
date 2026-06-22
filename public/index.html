@@ -6866,7 +6866,7 @@ async function printSignoff(id) {
 }
 
 // ===== Scheduling (Sling-style) ============================================
-var _schedMonday = null, _schedCity = '', _schedCities = [], _schedUsers = [], _schedPositions = [], _schedShifts = [], _schedEditId = null, _schedEmpCities = {}, _schedScope = null, _schedMode = 'week', _schedMonthAnchor = null;
+var _schedMonday = null, _schedCity = '', _schedRole = '', _schedCities = [], _schedUsers = [], _schedPositions = [], _schedShifts = [], _schedEditId = null, _schedEmpCities = {}, _schedScope = null, _schedMode = 'week', _schedMonthAnchor = null;
 
 function schedYmd(d){ return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0'); }
 function schedAddDays(ds,n){ var a=ds.split('-').map(Number); var d=new Date(a[0],a[1]-1,a[2]); d.setDate(d.getDate()+n); return schedYmd(d); }
@@ -6930,6 +6930,7 @@ async function renderScheduleAdmin(el){
     '<div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-bottom:14px">'+
       '<div style="display:flex;align-items:center;gap:6px">'+nav+'</div>'+
       '<select onchange="schedSetCity(this.value)" style="background:var(--card-bg,#1a1a1a);color:var(--text-color,#fff);border:1px solid var(--border,#333);border-radius:6px;padding:7px 10px;font-size:13px">'+cityOpts+'</select>'+
+      '<select onchange="schedSetRole(this.value)" style="background:var(--card-bg,#1a1a1a);color:var(--text-color,#fff);border:1px solid var(--border,#333);border-radius:6px;padding:7px 10px;font-size:13px">'+schedRoleOptions()+'</select>'+
     '</div>'+
     '<div class="card"><div class="card-body" style="overflow-x:auto;padding:0"><div id="sched-grid-wrap"></div></div></div>'+
     '<p class="text-muted" style="font-size:12.5px;margin-top:10px">'+(isMonth?'Click a shift to edit, or a day to jump to that week.':'Click any cell to add a shift; click a shift to edit. Dashed = draft (not yet visible to staff); solid = published.')+'</p>'+
@@ -7173,6 +7174,13 @@ function schedTouchEnd(e){
 function schedChangeWeek(n){ _schedMonday=schedAddDays(_schedMonday,n*7); renderScheduleAdmin(document.getElementById('content')); }
 function schedThisWeek(){ _schedMonday=schedMondayOf(schedToday()); renderScheduleAdmin(document.getElementById('content')); }
 function schedSetCity(c){ _schedCity=c||''; renderScheduleAdmin(document.getElementById('content')); }
+function schedSetRole(r){ _schedRole=r||''; renderScheduleAdmin(document.getElementById('content')); }
+function schedRoleOptions(){
+  var byLabel={};
+  _schedUsers.forEach(function(u){ var lbl=roleLabel(u.role); if(!byLabel[lbl]) byLabel[lbl]=[]; if(byLabel[lbl].indexOf(u.role)===-1) byLabel[lbl].push(u.role); });
+  var labels=Object.keys(byLabel).sort();
+  return '<option value="">All roles</option>'+labels.map(function(lbl){ var val=byLabel[lbl].join(','); return '<option value="'+escHtml(val)+'"'+(_schedRole===val?' selected':'')+'>'+escHtml(lbl)+'</option>'; }).join('');
+}
 
 function schedModal(html){ var m=document.getElementById('sched-modal'); if(!m) return; m.innerHTML='<div style="position:fixed;inset:0;background:rgba(0,0,0,0.6);z-index:200;display:flex;align-items:flex-start;justify-content:center;overflow:auto;padding:40px 14px" onclick="if(event.target===this)schedCloseModal()"><div style="background:var(--card-bg,#161616);border:1px solid var(--border,#333);border-radius:12px;max-width:460px;width:100%;padding:20px">'+html+'</div></div>'; }
 function schedCloseModal(){ var m=document.getElementById('sched-modal'); if(m) m.innerHTML=''; }
@@ -7252,6 +7260,7 @@ async function schedDeletePosition(id){ if(!confirm('Delete this position?')) re
 
 function schedVisibleUsers(){
   return _schedUsers.filter(function(u){
+    if(_schedRole){ if(_schedRole.split(',').indexOf(u.role)===-1) return false; }
     var codes=_schedEmpCities[u.id]||[];
     var unassigned=codes.length===0;
     if(_schedCity){ return unassigned || codes.indexOf(_schedCity)!==-1; }
