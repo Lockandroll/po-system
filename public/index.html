@@ -174,6 +174,7 @@
     .spinner { display:inline-block; width:16px; height:16px; border:2px solid rgba(249,115,22,0.25); border-top-color:var(--primary); border-radius:50%; animation:spin 0.7s linear infinite; vertical-align:middle; }
     .spinner-lg { width:36px; height:36px; border-width:3px; }
     .task-dragging { outline:2px solid var(--primary); outline-offset:-2px; }
+    .sched-drop-hot { outline:2px dashed var(--primary,#f97316); outline-offset:-2px; background:rgba(249,115,22,0.10) !important; }
     .flex-gap { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
     .text-right { text-align: right; }
     .text-muted { color: var(--text-muted-color); font-size: 13px; }
@@ -7007,11 +7008,11 @@ function schedRenderGrid(){
         var pub=s.status==='published';
         var border=pub?('1px solid '+col):('1px dashed '+col);
         var bg=pub?(col+'22'):'transparent';
-        return '<div onclick="event.stopPropagation();schedOpenShift('+s.id+')" title="'+escHtml((s.position_name||'')+(s.notes?(' — '+s.notes):''))+'" style="cursor:pointer;border:'+border+';background:'+bg+';border-left:4px solid '+col+';border-radius:5px;padding:3px 6px;margin:3px 4px;font-size:11.5px;line-height:1.35">'+
+        return '<div draggable="true" ondragstart="schedDragStart(event,'+s.id+')" ondragend="schedDragEnd(event)" ontouchstart="schedTouchStart(event,'+s.id+')" ontouchmove="schedTouchMove(event)" ontouchend="schedTouchEnd(event)" onclick="event.stopPropagation();schedOpenShift('+s.id+')" title="'+escHtml((s.position_name||'')+(s.notes?(' — '+s.notes):''))+'" style="cursor:grab;-webkit-user-select:none;user-select:none;-webkit-touch-callout:none;border:'+border+';background:'+bg+';border-left:4px solid '+col+';border-radius:5px;padding:3px 6px;margin:3px 4px;font-size:11.5px;line-height:1.35">'+
           '<div style="font-weight:600">'+escHtml(schedTimeFmt(s.start_time))+'–'+escHtml(schedTimeFmt(s.end_time))+'</div>'+
           (s.position_name?'<div style="color:var(--text-muted-color,#999)">'+escHtml(s.position_name)+'</div>':'')+'</div>';
       }).join('');
-      return '<td onclick="schedNewShift('+u.id+",'"+d+"')\" style=\"vertical-align:top;border:1px solid var(--border,#2a2a2a);min-height:54px;cursor:pointer;padding:0 0 4px\">"+blocks+'</td>';
+      return '<td data-sched-uid="'+u.id+'" data-sched-date="'+d+'" onclick="schedNewShift('+u.id+",'"+d+"')\" ondragover=\"schedDragOver(event)\" ondragenter=\"schedDragEnter(event)\" ondragleave=\"schedDragLeave(event)\" ondrop=\"schedDrop(event,"+u.id+",'"+d+"')\" style=\"vertical-align:top;border:1px solid var(--border,#2a2a2a);min-height:54px;cursor:pointer;padding:0 0 4px\">"+blocks+'</td>';
     }).join('');
     var hrs=days.reduce(function(t,d){ return t+(byCell[u.id+'|'+d]||[]).reduce(function(x,s){return x+schedShiftHrs(s);},0); },0);
     var label=escHtml(u.name)+' <span style="color:var(--text-muted-color,#999);font-weight:400;font-size:11px">'+(hrs?hrs.toFixed(1)+'h':'')+'</span>';
@@ -7019,6 +7020,98 @@ function schedRenderGrid(){
   }).join('');
   if(!_vis.length) rows='<tr><td colspan="8" style="padding:20px;text-align:center;color:var(--text-muted-color,#999)">No active employees.</td></tr>';
   wrap.innerHTML='<table style="border-collapse:collapse;width:100%;min-width:980px"><thead>'+head+'</thead><tbody>'+rows+'</tbody></table>';
+}
+
+// --- Drag-and-drop: move a shift to another day/employee by dragging it ---
+var _schedDragShiftId=null;
+function schedDragStart(e,id){
+  _schedDragShiftId=id;
+  if(e.dataTransfer){ e.dataTransfer.effectAllowed='move'; try{ e.dataTransfer.setData('text/plain',String(id)); }catch(_e){} }
+  var el=e.currentTarget; if(el) setTimeout(function(){ if(el) el.style.opacity='0.4'; },0);
+}
+function schedDragEnd(e){
+  var el=e.currentTarget; if(el) el.style.opacity='';
+  _schedDragShiftId=null;
+  var hot=document.querySelectorAll('.sched-drop-hot'); for(var i=0;i<hot.length;i++) hot[i].classList.remove('sched-drop-hot');
+}
+function schedDragOver(e){ e.preventDefault(); if(e.dataTransfer) e.dataTransfer.dropEffect='move'; }
+function schedDragEnter(e){ var td=e.currentTarget; if(td) td.classList.add('sched-drop-hot'); }
+function schedDragLeave(e){ var td=e.currentTarget; if(td) td.classList.remove('sched-drop-hot'); }
+async function schedDrop(e,userId,date){
+  e.preventDefault(); e.stopPropagation();
+  var td=e.currentTarget; if(td) td.classList.remove('sched-drop-hot');
+  var id=_schedDragShiftId; _schedDragShiftId=null;
+  await schedMoveShift(id,userId,date);
+}
+
+async function schedMoveShift(id,userId,date){
+  if(!id) return;
+  var s=_schedShifts.filter(function(x){return x.id===id;})[0];
+  if(!s) return;
+  if(String(s.user_id)===String(userId) && schedShiftDate(s)===date) return;
+  var body={ user_id:userId, shift_date:date, start_time:String(s.start_time).slice(0,5), end_time:String(s.end_time).slice(0,5), position_id:s.position_id||null, city_code:s.city_code||null, break_minutes:(parseInt(s.break_minutes,10)||0), notes:s.notes||'' };
+  try{
+    var res=await api('PUT','/schedule/shifts/'+id,body);
+    await schedLoadAdmin(); schedRenderGrid();
+    if(res&&res.conflicts&&res.conflicts.length) schedToast('Moved with warnings: '+res.conflicts.join(' '),'warn');
+    else schedToast('Shift moved.','ok');
+  }catch(err){ schedToast(err.message||'Move failed','err'); schedRenderGrid(); }
+}
+
+// Touch drag (mobile): long-press a shift to pick it up, drag onto a cell, release.
+var _schedTouch=null;
+function schedTouchStart(e,id){
+  if(e.touches && e.touches.length>1) return;
+  var t=e.touches[0];
+  var srcEl=e.currentTarget;
+  _schedTouch={ id:id, startX:t.clientX, startY:t.clientY, offX:0, offY:0, dragging:false, clone:null, srcEl:srcEl, lastCell:null, timer:null };
+  _schedTouch.timer=setTimeout(function(){
+    if(!_schedTouch) return;
+    _schedTouch.dragging=true;
+    if(navigator.vibrate){ try{ navigator.vibrate(15); }catch(_e){} }
+    var rect=srcEl.getBoundingClientRect();
+    var c=srcEl.cloneNode(true);
+    c.style.position='fixed'; c.style.left=rect.left+'px'; c.style.top=rect.top+'px';
+    c.style.width=rect.width+'px'; c.style.margin='0'; c.style.pointerEvents='none';
+    c.style.opacity='0.9'; c.style.zIndex='400'; c.style.boxShadow='0 6px 20px rgba(0,0,0,0.5)'; c.style.transform='scale(1.03)';
+    document.body.appendChild(c);
+    _schedTouch.clone=c;
+    _schedTouch.offX=_schedTouch.startX-rect.left;
+    _schedTouch.offY=_schedTouch.startY-rect.top;
+    srcEl.style.opacity='0.35';
+  },280);
+}
+function schedTouchMove(e){
+  if(!_schedTouch) return;
+  var t=e.touches[0];
+  if(!_schedTouch.dragging){
+    var dx=Math.abs(t.clientX-_schedTouch.startX), dy=Math.abs(t.clientY-_schedTouch.startY);
+    if(dx>8||dy>8){ clearTimeout(_schedTouch.timer); _schedTouch=null; }
+    return;
+  }
+  e.preventDefault();
+  var c=_schedTouch.clone;
+  if(c){ c.style.left=(t.clientX-_schedTouch.offX)+'px'; c.style.top=(t.clientY-_schedTouch.offY)+'px'; }
+  var el=document.elementFromPoint(t.clientX,t.clientY);
+  var td=el?(el.closest?el.closest('td[data-sched-uid]'):null):null;
+  if(_schedTouch.lastCell && _schedTouch.lastCell!==td) _schedTouch.lastCell.classList.remove('sched-drop-hot');
+  if(td) td.classList.add('sched-drop-hot');
+  _schedTouch.lastCell=td;
+}
+function schedTouchEnd(e){
+  if(!_schedTouch) return;
+  clearTimeout(_schedTouch.timer);
+  var st=_schedTouch; _schedTouch=null;
+  if(st.srcEl) st.srcEl.style.opacity='';
+  if(st.clone) st.clone.remove();
+  if(st.lastCell) st.lastCell.classList.remove('sched-drop-hot');
+  if(!st.dragging) return;
+  if(e.cancelable) e.preventDefault();
+  if(st.lastCell){
+    var uid=st.lastCell.getAttribute('data-sched-uid');
+    var date=st.lastCell.getAttribute('data-sched-date');
+    if(uid&&date) schedMoveShift(st.id,uid,date);
+  }
 }
 
 function schedChangeWeek(n){ _schedMonday=schedAddDays(_schedMonday,n*7); renderScheduleAdmin(document.getElementById('content')); }
