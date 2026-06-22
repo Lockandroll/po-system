@@ -57,7 +57,7 @@ async function sendInvite(user, invitedByName) {
 // List all users (admin only)
 router.get('/', requireAuth, requirePermission('view_users'), async (req, res) => {
   const { rows } = await pool.query(
-    'SELECT id, name, email, phone, role, active, receive_emails, receive_sms, pulsar_name, created_at FROM users ORDER BY active DESC, name ASC'
+    'SELECT id, name, email, phone, role, active, receive_emails, receive_sms, pulsar_name, hide_from_schedule, created_at FROM users ORDER BY active DESC, name ASC'
   );
   const mc = await pool.query('SELECT user_id, city_code FROM user_cities');
   const byU = {};
@@ -68,7 +68,7 @@ router.get('/', requireAuth, requirePermission('view_users'), async (req, res) =
 
 // Create user (admin only)
 router.post('/', requireAuth, requirePermission('manage_users'), async (req, res) => {
-  const { name, email, password, role, phone, receive_emails, receive_sms, pulsar_name } = req.body;
+  const { name, email, password, role, phone, receive_emails, receive_sms, pulsar_name, hide_from_schedule } = req.body;
   if (!name || !email || !role) {
     return res.status(400).json({ error: 'Name, email, and role are required' });
   }
@@ -85,8 +85,8 @@ router.post('/', requireAuth, requirePermission('manage_users'), async (req, res
   const password_hash = await bcrypt.hash(rawPassword, 12);
   try {
     const { rows } = await pool.query(
-      'INSERT INTO users (name, email, password_hash, role, phone, receive_emails, receive_sms, pulsar_name) VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING id, name, email, phone, role, active, receive_emails, receive_sms, pulsar_name',
-      [name, email, password_hash, role, phone || null, receive_emails !== false, receive_sms === true, pulsar_name || null]
+      'INSERT INTO users (name, email, password_hash, role, phone, receive_emails, receive_sms, pulsar_name, hide_from_schedule) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) RETURNING id, name, email, phone, role, active, receive_emails, receive_sms, pulsar_name, hide_from_schedule',
+      [name, email, password_hash, role, phone || null, receive_emails !== false, receive_sms === true, pulsar_name || null, hide_from_schedule === true]
     );
     const newUser = rows[0];
     newUser.city_codes = (await setUserCities(newUser.id, req.body.city_codes)) || [];
@@ -104,7 +104,7 @@ router.post('/', requireAuth, requirePermission('manage_users'), async (req, res
 
 // Update user (admin only)
 router.put('/:id', requireAuth, requirePermission('manage_users'), async (req, res) => {
-  const { name, email, role, password, phone, receive_emails, receive_sms, pulsar_name } = req.body;
+  const { name, email, role, password, phone, receive_emails, receive_sms, pulsar_name, hide_from_schedule } = req.body;
   const { id } = req.params;
   if (role && !VALID_ROLES.includes(role)) {
     return res.status(400).json({ error: 'Invalid role. Must be one of: ' + VALID_ROLES.join(', ') + '.' });
@@ -120,11 +120,11 @@ router.put('/:id', requireAuth, requirePermission('manage_users'), async (req, r
   let query, params;
   if (password) {
     const password_hash = await bcrypt.hash(password, 12);
-    query = 'UPDATE users SET name=$1, email=$2, role=$3, password_hash=$4, phone=$5, receive_emails=$6, receive_sms=$7, pulsar_name=$8 WHERE id=$9 RETURNING id, name, email, phone, role, active, receive_emails, receive_sms, pulsar_name';
-    params = [name, email, role, password_hash, phone || null, receive_emails !== false, receive_sms === true, pulsar_name || null, id];
+    query = 'UPDATE users SET name=$1, email=$2, role=$3, password_hash=$4, phone=$5, receive_emails=$6, receive_sms=$7, pulsar_name=$8, hide_from_schedule=$9 WHERE id=$10 RETURNING id, name, email, phone, role, active, receive_emails, receive_sms, pulsar_name, hide_from_schedule';
+    params = [name, email, role, password_hash, phone || null, receive_emails !== false, receive_sms === true, pulsar_name || null, hide_from_schedule === true, id];
   } else {
-    query = 'UPDATE users SET name=$1, email=$2, role=$3, phone=$4, receive_emails=$5, receive_sms=$6, pulsar_name=$7 WHERE id=$8 RETURNING id, name, email, phone, role, active, receive_emails, receive_sms, pulsar_name';
-    params = [name, email, role, phone || null, receive_emails !== false, receive_sms === true, pulsar_name || null, id];
+    query = 'UPDATE users SET name=$1, email=$2, role=$3, phone=$4, receive_emails=$5, receive_sms=$6, pulsar_name=$7, hide_from_schedule=$8 WHERE id=$9 RETURNING id, name, email, phone, role, active, receive_emails, receive_sms, pulsar_name, hide_from_schedule';
+    params = [name, email, role, phone || null, receive_emails !== false, receive_sms === true, pulsar_name || null, hide_from_schedule === true, id];
   }
   try {
     const { rows } = await pool.query(query, params);
