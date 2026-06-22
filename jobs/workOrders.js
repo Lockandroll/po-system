@@ -103,17 +103,18 @@ async function resolveAccount(parsed) {
 }
 
 // Create a pending sign-off sheet from a work order row. Returns signoff id.
-async function createSignoffForWO(wo, systemUserId) {
+async function createSignoffForWO(wo, systemUserId, assignedTo) {
   const formNumber = await genSignoffNumber();
   const notesParts = [];
   if (wo.service_requested) notesParts.push(wo.service_requested);
   if (wo.notes) notesParts.push(wo.notes);
   const { rows } = await pool.query(
-    'INSERT INTO signoff_forms (form_number, status, wo_number, po_number, account, store_name, store_number, address, city_state_zip, service_requested_by, notes, created_by) ' +
-    "VALUES ($1,'pending',$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) RETURNING id",
+    'INSERT INTO signoff_forms (form_number, status, wo_number, po_number, account, store_name, store_number, address, city_state_zip, service_requested_by, notes, created_by, assigned_to) ' +
+    "VALUES ($1,'pending',$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12) RETURNING id",
     [formNumber, wo.po_number || null, wo.po_number || null, wo.account_name || null, wo.store_name || null,
      wo.store_number || null, wo.address || null, wo.city_state_zip || null, wo.service_requested_by || null,
-     notesParts.join(' — ') || null, systemUserId]
+     notesParts.join(' — ') || null, systemUserId,
+     ((assignedTo !== undefined && assignedTo !== null) ? assignedTo : (wo.assigned_to || null))]
   );
   return rows[0].id;
 }

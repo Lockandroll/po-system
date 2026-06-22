@@ -6045,6 +6045,19 @@ async function renderViewWorkOrder(el, id) {
   try { w = await api('GET', '/work-orders/' + id); }
   catch (e) { el.innerHTML = '<div class="alert alert-error">' + escHtml(e.message) + '</div>'; return; }
   var manage = can('manage_work_orders');
+  var assignees = [];
+  if (manage) { try { assignees = await api('GET', '/work-orders/assignees'); } catch (e) {} }
+  var assignOpts = '<option value="">— Unassigned —</option>' + assignees.map(function (u) {
+    return '<option value="' + u.id + '"' + (String(w.assigned_to) === String(u.id) ? ' selected' : '') + '>' + escHtml(u.name) + '</option>';
+  }).join('');
+  var assignCard = manage
+    ? '<div class="card mb-4"><div class="card-body"><div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">' +
+        '<label style="font-size:13px;color:var(--text-muted-color);margin:0">Assigned Locksmith</label>' +
+        '<select id="wo-assignee" style="min-width:200px">' + assignOpts + '</select>' +
+        '<button class="btn btn-secondary btn-sm" onclick="woAssign(' + id + ')">Assign</button>' +
+        '<span style="font-size:12px;color:var(--text-muted-color)">Approving also assigns this person to the sign-off.</span>' +
+      '</div></div></div>'
+    : '';
 
   // Pick the document to show alongside the fields: prefer a PDF, then an image.
   function _isPdfAtt(a) { var m = (a.mime_type || '').toLowerCase(), n = (a.filename || '').toLowerCase(); return m.indexOf('pdf') !== -1 || /\.pdf$/.test(n); }
@@ -6128,6 +6141,7 @@ async function renderViewWorkOrder(el, id) {
       '<button class="btn btn-secondary" onclick="navigate(\'work-orders\')">&larr; Back</button>' +
     '</div>' +
     '<div id="wo-detail-error"></div>' +
+    assignCard +
     (actions ? '<div class="card mb-4"><div class="card-body"><div class="flex-gap" style="flex-wrap:wrap">' + actions + '</div></div></div>' : '') +
     '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(380px,1fr));gap:16px;align-items:start" class="mb-4">' + leftCard + rightCard + '</div>' +
     '<div class="card"><div class="card-header"><span class="card-title">Activity</span></div><div class="card-body">' +
@@ -6150,7 +6164,15 @@ async function woSaveEdit(id) {
 }
 async function woSetStatus(id, status) {
   if (status === 'rejected' && !confirm('Reject this work order?')) return;
-  try { await api('PATCH', '/work-orders/' + id + '/status', { status: status }); navigate('view-work-order', id); }
+  var ae = document.getElementById('wo-assignee');
+  var body = { status: status };
+  if (ae) body.assigned_to = ae.value || null;
+  try { await api('PATCH', '/work-orders/' + id + '/status', body); navigate('view-work-order', id); }
+  catch (e) { var er = document.getElementById('wo-detail-error'); if (er) er.innerHTML = '<div class="alert alert-error">' + escHtml(e.message) + '</div>'; }
+}
+async function woAssign(id) {
+  var ae = document.getElementById('wo-assignee');
+  try { await api('PUT', '/work-orders/' + id, { assigned_to: ae && ae.value ? ae.value : null }); navigate('view-work-order', id); }
   catch (e) { var er = document.getElementById('wo-detail-error'); if (er) er.innerHTML = '<div class="alert alert-error">' + escHtml(e.message) + '</div>'; }
 }
 async function woReparse(id) {
@@ -6393,7 +6415,10 @@ async function renderCompleteSignoff(el, id) {
     '</div></div>' +
     '<div class="card mb-4"><div class="card-header"><span class="card-title">Photos <span style="font-weight:500;color:var(--text-muted-color);font-size:13px">(Must have before and after photos)</span></span></div><div class="card-body">' +
       '<p class="text-muted" style="font-size:13px;margin-bottom:10px">Add at least two photos (before and after) and label each one. They are compressed automatically before upload.</p>' +
-      '<input type="file" id="so-photo-input" accept="image/*" multiple capture="environment" onchange="handleSignoffPhotos(this)" style="margin-bottom:12px" />' +
+      '<div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:12px">' +
+        '<label class="btn btn-primary" style="cursor:pointer;margin:0">&#128247; Take Photo<input type="file" accept="image/*" capture="environment" onchange="handleSignoffPhotos(this)" style="display:none" /></label>' +
+        '<label class="btn btn-secondary" style="cursor:pointer;margin:0">Choose Photos<input type="file" id="so-photo-input" accept="image/*" multiple onchange="handleSignoffPhotos(this)" style="display:none" /></label>' +
+      '</div>' +
       '<div id="so-photo-grid" style="display:flex;flex-wrap:wrap;gap:10px"></div>' +
     '</div></div>' +
     '<div class="card mb-4"><div class="card-header"><span class="card-title">Manager Sign-Off</span></div><div class="card-body">' +

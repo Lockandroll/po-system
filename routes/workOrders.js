@@ -123,6 +123,13 @@ async function loadWorkOrder(id) {
 }
 
 // GET /api/work-orders/:id
+router.get('/assignees', requireAuth, requirePermission('manage_work_orders'), async (req, res) => {
+  try {
+    const { rows } = await pool.query('SELECT id, name FROM users WHERE active IS NOT FALSE ORDER BY name ASC');
+    res.json(rows);
+  } catch (err) { console.error(err); res.status(500).json({ error: 'Failed to fetch assignees' }); }
+});
+
 router.get('/:id', requireAuth, requirePermission('view_work_orders'), async (req, res) => {
   try {
     const wo = await loadWorkOrder(req.params.id);
@@ -217,7 +224,8 @@ async function setStatus(req, id, status, assignTo) {
     if (!ex.signoff_id) {
       try {
         const woRow = (await pool.query('SELECT * FROM work_orders WHERE id=$1', [id])).rows[0];
-        const sid = await woJob.createSignoffForWO(woRow, req.user.id);
+        const effectiveAssignee = (assignTo !== undefined) ? (assignTo ? parseInt(assignTo, 10) : null) : (woRow.assigned_to || null);
+        const sid = await woJob.createSignoffForWO(woRow, req.user.id, effectiveAssignee);
         await pool.query('UPDATE work_orders SET signoff_id=$1 WHERE id=$2', [sid, id]);
         signoffNote = ' (pending sign-off created)';
       } catch (e) { console.error('signoff create on approve failed:', e.message); }
