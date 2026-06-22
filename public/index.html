@@ -1589,6 +1589,7 @@ async function showUserModal(id) {
           '<div class="form-group"><label>Role</label><select id="modal-role">' +'<option value="locksmith"' + (user&&user.role==='locksmith'?' selected':'') + '>Locksmith</option>' +'<option value="locksmith_coordinator"' + (user&&user.role==='locksmith_coordinator'?' selected':'') + '>Locksmith Coordinator</option>' +'<option value="roadside_technician"' + (user&&user.role==='roadside_technician'?' selected':'') + '>Roadside Technician</option>' +'<option value="manager"' + (user&&user.role==='manager'?' selected':'') + '>Manager</option>' +'<option value="admin"' + (user&&user.role==='admin'?' selected':'') + '>Admin</option>' +(((state.user&&state.user.isOwner)||!ownerExists||(user&&user.role==='owner')) ? '<option value="owner"' + (user&&user.role==='owner'?' selected':'') + '>Owner</option>' : '') +'</select></div>' +
           '</div>' +
           '<div class="form-group"><label>Cities <span style="font-weight:400;font-size:0.8em;color:var(--text-muted-color)">(blank = all cities)</span></label><div style="display:flex;flex-wrap:wrap;gap:10px;margin-top:4px">' + (cities.length ? cities.map(function(c){ var cc=(c.code||'').trim(); var on=(user&&user.city_codes&&user.city_codes.indexOf(cc)!==-1); return '<label style="display:inline-flex;align-items:center;gap:5px;font-weight:400;font-size:13px"><input type="checkbox" class="modal-city" value="' + escHtml(cc) + '"' + (on?' checked':'') + ' style="width:auto"> ' + escHtml(c.name) + '</label>'; }).join('') : '<span style="color:var(--text-muted-color);font-size:13px">No cities yet</span>') + '</div></div>' +
+        '<div class="form-group"><label>Pulsar Name <span style="font-weight:400;font-size:0.8em;color:var(--text-muted-color)">name as it appears in the call report</span></label><input type="text" id="modal-pulsar" value="' + escHtml(user ? user.pulsar_name || '' : '') + '" placeholder="e.g. Albright, Benjamin" /></div>' +
         '<div class="form-group" style="display:flex;align-items:center;gap:10px">' +
           '<input type="checkbox" id="modal-receive-emails" style="width:auto"' + (user && user.receive_emails === false ? '' : ' checked') + ' />' +
           '<label for="modal-receive-emails" style="margin:0;cursor:pointer">Receive email notifications</label>' +
@@ -1612,14 +1613,15 @@ async function saveUser(id, btn) {
   const receive_emails = document.getElementById('modal-receive-emails').checked;
   const receive_sms = document.getElementById('modal-receive-sms').checked;
   var _cityNodes = document.querySelectorAll('.modal-city'); var city_codes = []; for (var _i=0;_i<_cityNodes.length;_i++){ if(_cityNodes[_i].checked) city_codes.push(_cityNodes[_i].value); }
+  var pulsar_name=(document.getElementById('modal-pulsar')||{}).value; if(pulsar_name) pulsar_name=pulsar_name.trim();
   if (phone && !/^\+1[0-9]{10}$/.test(phone)) {
     document.getElementById('modal-error').innerHTML = '<div class="alert alert-error">Phone must be in format +13215550000 (+1 followed by 10 digits)</div>';
     return;
   }
   try {
     btn.disabled = true;
-    if (id) { await api('PUT', '/users/' + id, { name, email, password: password || undefined, role, phone: phone || undefined, receive_emails, receive_sms, city_codes }); }
-    else { await api('POST', '/users', { name, email, password: password || undefined, role, phone: phone || undefined, receive_emails, receive_sms, city_codes }); }
+    if (id) { await api('PUT', '/users/' + id, { name, email, password: password || undefined, role, phone: phone || undefined, receive_emails, receive_sms, city_codes, pulsar_name }); }
+    else { await api('POST', '/users', { name, email, password: password || undefined, role, phone: phone || undefined, receive_emails, receive_sms, city_codes, pulsar_name }); }
     document.querySelector('.modal-overlay').remove();
     navigate('users');
   } catch(err) {
@@ -2060,9 +2062,11 @@ async function renderRoles(el) {
     '<div class="page-header"><div class="page-title">Roles &amp; Access</div></div>' +
     '<div id="settings-error"></div><div id="settings-success"></div>' +
     '<p class="text-muted" style="margin-bottom:16px;max-width:720px">Control what each role can do. These rules are enforced on the server for every action. <strong>Admin</strong> always has full access and cannot be restricted. Anything left unchecked falls back to that role&#39;s built-in default until you save.</p>' +
-    '<div class="card"><div class="card-body" style="overflow-x:auto">' +
-      '<table style="min-width:820px"><thead><tr><th>Permission</th>' + cols.map(function(c){ return '<th style="text-align:center">' + escHtml(c.label) + '</th>'; }).join('') + '<th style="text-align:center">Admin</th></tr></thead>' +
+    '<div class="card"><div class="card-body">' +
+      '<div style="overflow:auto;max-height:calc(100vh - 260px)">' +
+      '<table style="min-width:820px"><thead><tr><th style="position:sticky;top:0;z-index:6;background:var(--bg-elevated,#1f1f1f);text-align:left">Permission</th>' + cols.map(function(c){ return '<th style="position:sticky;top:0;z-index:6;background:var(--bg-elevated,#1f1f1f);text-align:center">' + escHtml(c.label) + '</th>'; }).join('') + '<th style="position:sticky;top:0;z-index:6;background:var(--bg-elevated,#1f1f1f);text-align:center">Admin</th></tr></thead>' +
       '<tbody>' + rowsHtml + '</tbody></table>' +
+      '</div>' +
       '<div style="margin-top:16px"><button class="btn btn-primary" onclick="saveRoles()">Save Roles &amp; Access</button></div>' +
     '</div></div>';
 }
@@ -6882,6 +6886,7 @@ async function renderNoWorkReport(el){
     '</div></div>'+
     '<div id="nw-results" style="margin-top:16px"></div>';
 }
+function nwNorm(s){ return (s||'').trim().toLowerCase().replace(/\s+/g,' '); }
 async function nwRun(){
   var res=document.getElementById('nw-results');
   var fileEl=document.getElementById('nw-file');
@@ -6898,25 +6903,29 @@ async function nwRun(){
   var techIdx=header.indexOf('Dispatch Closed'), dateIdx=header.indexOf('Date Disp');
   if(techIdx===-1){ res.innerHTML='<div class="alert alert-error">Could not find a "Dispatch Closed" column.</div>'; return; }
   if(dateIdx===-1){ res.innerHTML='<div class="alert alert-error">Could not find a "Date Disp" column (needed for the per-day comparison).</div>'; return; }
-  var workedByDate={}, workedKeysAll={}, workedNames={};
+  var keyByDate={}, normByDate={}, allWorked={};
   for(var i=1;i<rows.length;i++){
     var r=rows[i]; if(!r||techIdx>=r.length) continue;
     var d=nwDateToYmd(r[dateIdx]); if(!d||d<from||d>to) continue;
     var nm=(r[techIdx]||'').trim(); if(!nm) continue;
-    var k=nwKey(nm); if(!k||k==='|') continue;
-    (workedByDate[d]=workedByDate[d]||{})[k]=1; workedKeysAll[k]=1; if(!workedNames[k]) workedNames[k]=nm;
+    var k=nwKey(nm), nrm=nwNorm(nm);
+    (keyByDate[d]=keyByDate[d]||{})[k]=1;
+    (normByDate[d]=normByDate[d]||{})[nrm]=1;
+    if(!allWorked[k]) allWorked[k]={name:nm,norm:nrm};
   }
   var scheduled=[];
   try{ scheduled=await api('GET','/schedule/scheduled-users?from='+from+'&to='+to+(city?'&city='+encodeURIComponent(city):'')); }catch(e){ res.innerHTML='<div class="alert alert-error">'+escHtml(e.message)+'</div>'; return; }
-  var noWorkByUser={}, schedKeys={}, slots=0, workedSlots=0, noWorkSlots=0;
+  var noWorkByUser={}, schedKeySet={}, schedNormSet={}, slots=0, workedSlots=0, noWorkSlots=0;
   scheduled.forEach(function(row){
     slots++;
-    var k=nwKey(row.name); schedKeys[k]=1;
-    var did=workedByDate[row.shift_date] && workedByDate[row.shift_date][k];
+    schedKeySet[nwKey(row.name)]=1;
+    var pn = row.pulsar_name ? nwNorm(row.pulsar_name) : '';
+    if(pn) schedNormSet[pn]=1;
+    var did = pn ? (normByDate[row.shift_date] && normByDate[row.shift_date][pn]) : (keyByDate[row.shift_date] && keyByDate[row.shift_date][nwKey(row.name)]);
     if(did){ workedSlots++; }
     else { noWorkSlots++; (noWorkByUser[row.user_id]=noWorkByUser[row.user_id]||{name:row.name,days:[]}).days.push(row.shift_date); }
   });
-  var extra=[]; Object.keys(workedKeysAll).forEach(function(k){ if(!schedKeys[k]) extra.push(workedNames[k]); }); extra.sort();
+  var extra=[]; Object.keys(allWorked).forEach(function(k){ var w=allWorked[k]; if(!schedKeySet[k] && !schedNormSet[w.norm]) extra.push(w.name); }); extra.sort();
   var userList=Object.keys(noWorkByUser).map(function(id){return noWorkByUser[id];}).sort(function(a,b){return (a.name||'').localeCompare(b.name||'');});
   var html='<div class="card"><div class="card-body">'+
     '<div style="display:flex;gap:18px;flex-wrap:wrap;margin-bottom:14px;font-size:14px">'+
@@ -6930,6 +6939,7 @@ async function nwRun(){
   '</div></div>';
   res.innerHTML=html;
 }
+
 // ----- employee view -------------------------------------------------------
 async function renderSchedule(el){
   if(!can('view_schedule')){ el.innerHTML='<div class="alert alert-error">Access denied.</div>'; return; }

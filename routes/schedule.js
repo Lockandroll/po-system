@@ -361,14 +361,14 @@ router.get('/scheduled-users', requireAuth, requirePermission('manage_schedule')
   const to = RE_DATE.test(req.query.to) ? req.query.to : addDays(from, 6);
   const scope = await allowedCities(req.user);
   const params = [from, to];
-  let sql = 'SELECT DISTINCT s.user_id, COALESCE(u.name, s.user_name) AS name, s.shift_date FROM shifts s LEFT JOIN users u ON u.id = s.user_id WHERE s.shift_date BETWEEN $1 AND $2 AND s.user_id IS NOT NULL';
+  let sql = 'SELECT DISTINCT s.user_id, COALESCE(u.name, s.user_name) AS name, u.pulsar_name, s.shift_date FROM shifts s LEFT JOIN users u ON u.id = s.user_id WHERE s.shift_date BETWEEN $1 AND $2 AND s.user_id IS NOT NULL';
   if (req.query.city && String(req.query.city).trim()) { params.push(String(req.query.city).trim()); sql += ' AND s.city_code = $' + params.length; }
   if (scope !== null) { if (!scope.length) return res.json([]); params.push(scope); sql += ' AND s.city_code = ANY($' + params.length + '::text[])'; }
   sql += ' ORDER BY name';
   const { rows } = await pool.query(sql, params);
   res.json(rows.map(function (r) {
     var sd = r.shift_date instanceof Date ? ymd(new Date(Date.UTC(r.shift_date.getUTCFullYear(), r.shift_date.getUTCMonth(), r.shift_date.getUTCDate()))) : String(r.shift_date).slice(0, 10);
-    return { user_id: r.user_id, name: r.name, shift_date: sd };
+    return { user_id: r.user_id, name: r.name, pulsar_name: r.pulsar_name || null, shift_date: sd };
   }));
 });
 
