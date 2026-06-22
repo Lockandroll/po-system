@@ -55,7 +55,7 @@ function involved(req, task) {
 async function canSee(req, task) {
   if (involved(req, task)) return true;
   // Personal (self-assigned) tasks are private to that person - no audit.
-  if (task.assigned_to && task.assigned_to === task.created_by) return false;
+  if (task.assigned_to && (task.created_by == null || task.assigned_to === task.created_by)) return false;
   // Admins and owners can audit delegated / unassigned tasks.
   if (req.user.role === 'admin') return true;
   return false;
@@ -84,7 +84,7 @@ router.get('/', requireAuth, requirePermission('view_tasks'), async (req, res) =
       if (!manage) return res.json([]);
       if (audit) {
         // Admin/owner oversight of all delegated/unassigned tasks (personal stays private).
-        where = 'WHERE NOT (t.assigned_to IS NOT NULL AND t.assigned_to = t.created_by)';
+        where = 'WHERE NOT (t.assigned_to IS NOT NULL AND (t.created_by IS NULL OR t.assigned_to = t.created_by))';
       } else {
         params.push(req.user.id); where = 'WHERE t.created_by = $1 AND (t.assigned_to IS NULL OR t.assigned_to <> $1)';
       }
@@ -120,7 +120,7 @@ router.get('/counts', requireAuth, requirePermission('view_tasks'), async (req, 
     if (manage) {
       let where = '', params = [];
       if (audit) {
-        where = 'WHERE NOT (assigned_to IS NOT NULL AND assigned_to = created_by)';
+        where = 'WHERE NOT (assigned_to IS NOT NULL AND (created_by IS NULL OR assigned_to = created_by))';
       } else { params.push(uid); where = 'WHERE created_by = $1 AND (assigned_to IS NULL OR assigned_to <> $1)'; }
       const conj = where ? (where + " AND status <> 'done'") : "WHERE status <> 'done'";
       const a = await pool.query("SELECT COUNT(*) AS open, COUNT(*) FILTER (WHERE due_date IS NOT NULL AND due_date < CURRENT_DATE) AS overdue FROM tasks " + conj, params);
