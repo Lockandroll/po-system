@@ -5884,41 +5884,65 @@ async function renderSuggestions(el) {
   if (isAdminMgr) await loadSuggestionsTable();
 }
 
+var _suggestionsData = [];
+var _suggestionsStatusFilter = 'all';
+
 async function loadSuggestionsTable() {
   var area = document.getElementById('sugg-table-area');
   if (!area) return;
   try {
-    var data = await api('GET', '/suggestions');
-    if (!data.length) {
-      area.innerHTML = '<p style="color:var(--text-muted-color)">No suggestions yet.</p>';
-      return;
-    }
-    var statusColors = { open: '#f97316', reviewed: '#3b82f6', implemented: '#22c55e', declined: '#ef4444' };
-    var rows = data.map(function(s) {
-      var dot = '<span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:' + (statusColors[s.status] || '#888') + ';margin-right:6px"></span>';
-      return '<tr>' +
-        '<td style="white-space:nowrap;color:var(--text-muted-color);font-size:13px">' + new Date(s.created_at).toLocaleDateString() + '</td>' +
-        '<td style="white-space:nowrap"><span class="badge">' + escHtml(s.category) + '</span></td>' +
-        '<td style="max-width:320px;word-break:break-word">' + escHtml(s.suggestion) + '</td>' +
-        '<td style="white-space:nowrap">' + (s.anonymous ? '<em style="color:var(--text-muted-color);font-size:13px">Anonymous</em>' : escHtml(s.submitter_name || '—')) + '</td>' +
-        '<td>' +
-          '<select onchange="updateSuggestion(' + s.id + ',{status:this.value})" style="padding:4px 8px;font-size:13px;border-radius:6px">' +
-            '<option value="open"' + (s.status==='open'?' selected':'') + '>Open</option>' +
-            '<option value="reviewed"' + (s.status==='reviewed'?' selected':'') + '>Reviewed</option>' +
-            '<option value="implemented"' + (s.status==='implemented'?' selected':'') + '>Implemented</option>' +
-            '<option value="declined"' + (s.status==='declined'?' selected':'') + '>Declined</option>' +
-          '</select>' +
-        '</td>' +
-        '<td><input type="text" value="' + escHtml(s.admin_notes || '') + '" placeholder="Add note..." style="font-size:13px;padding:4px 8px;border-radius:6px;min-width:160px" onblur="updateSuggestion(' + s.id + ',{admin_notes:this.value})" /></td>' +
-      '</tr>';
-    }).join('');
-    area.innerHTML =
-      '<div class="table-wrap"><table class="table"><thead><tr>' +
-        '<th>Date</th><th>Category</th><th>Suggestion</th><th>Submitted By</th><th>Status</th><th>Notes</th>' +
-      '</tr></thead><tbody>' + rows + '</tbody></table></div>';
+    _suggestionsData = await api('GET', '/suggestions');
+    renderSuggestionsTable();
   } catch(e) {
     area.innerHTML = '<div class="alert alert-error">Failed to load suggestions</div>';
   }
+}
+
+function renderSuggestionsTable() {
+  var area = document.getElementById('sugg-table-area');
+  if (!area) return;
+  if (!_suggestionsData.length) {
+    area.innerHTML = '<p style="color:var(--text-muted-color)">No suggestions yet.</p>';
+    return;
+  }
+  var statusColors = { open: '#f97316', reviewed: '#3b82f6', implemented: '#22c55e', declined: '#ef4444' };
+  var counts = { all: _suggestionsData.length, open: 0, reviewed: 0, implemented: 0, declined: 0 };
+  _suggestionsData.forEach(function(s) { if (counts[s.status] !== undefined) counts[s.status]++; });
+  var opts = [['all','All'],['open','Open'],['reviewed','Reviewed'],['implemented','Implemented'],['declined','Declined']].map(function(o) {
+    return '<option value="' + o[0] + '"' + (_suggestionsStatusFilter===o[0]?' selected':'') + '>' + o[1] + ' (' + counts[o[0]] + ')</option>';
+  }).join('');
+  var filterBar =
+    '<div style="display:flex;align-items:center;gap:8px;margin-bottom:14px">' +
+      '<label style="margin:0;font-size:13px;color:var(--text-muted-color)">Filter by status</label>' +
+      '<select onchange="_suggestionsStatusFilter=this.value;renderSuggestionsTable()" style="padding:4px 8px;font-size:13px;border-radius:6px">' + opts + '</select>' +
+    '</div>';
+  var filtered = _suggestionsStatusFilter === 'all' ? _suggestionsData : _suggestionsData.filter(function(s) { return s.status === _suggestionsStatusFilter; });
+  if (!filtered.length) {
+    area.innerHTML = filterBar + '<p style="color:var(--text-muted-color)">No suggestions with this status.</p>';
+    return;
+  }
+  var rows = filtered.map(function(s) {
+    var dot = '<span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:' + (statusColors[s.status] || '#888') + ';margin-right:6px"></span>';
+    return '<tr>' +
+      '<td style="white-space:nowrap;color:var(--text-muted-color);font-size:13px">' + new Date(s.created_at).toLocaleDateString() + '</td>' +
+      '<td style="white-space:nowrap"><span class="badge">' + escHtml(s.category) + '</span></td>' +
+      '<td style="max-width:320px;word-break:break-word">' + escHtml(s.suggestion) + '</td>' +
+      '<td style="white-space:nowrap">' + (s.anonymous ? '<em style="color:var(--text-muted-color);font-size:13px">Anonymous</em>' : escHtml(s.submitter_name || '—')) + '</td>' +
+      '<td>' +
+        '<select onchange="updateSuggestion(' + s.id + ',{status:this.value})" style="padding:4px 8px;font-size:13px;border-radius:6px">' +
+          '<option value="open"' + (s.status==='open'?' selected':'') + '>Open</option>' +
+          '<option value="reviewed"' + (s.status==='reviewed'?' selected':'') + '>Reviewed</option>' +
+          '<option value="implemented"' + (s.status==='implemented'?' selected':'') + '>Implemented</option>' +
+          '<option value="declined"' + (s.status==='declined'?' selected':'') + '>Declined</option>' +
+        '</select>' +
+      '</td>' +
+      '<td><input type="text" value="' + escHtml(s.admin_notes || '') + '" placeholder="Add note..." style="font-size:13px;padding:4px 8px;border-radius:6px;min-width:160px" onblur="updateSuggestion(' + s.id + ',{admin_notes:this.value})" /></td>' +
+    '</tr>';
+  }).join('');
+  area.innerHTML = filterBar +
+    '<div class="table-wrap"><table class="table"><thead><tr>' +
+      '<th>Date</th><th>Category</th><th>Suggestion</th><th>Submitted By</th><th>Status</th><th>Notes</th>' +
+    '</tr></thead><tbody>' + rows + '</tbody></table></div>';
 }
 
 async function submitSuggestion() {
@@ -5945,6 +5969,9 @@ async function submitSuggestion() {
 async function updateSuggestion(id, body) {
   try {
     await api('PUT', '/suggestions/' + id, body);
+    var item = _suggestionsData.find(function(s) { return s.id === id; });
+    if (item) Object.assign(item, body);
+    if (body.status !== undefined) renderSuggestionsTable();
   } catch(e) {
     console.error('Failed to update suggestion:', e);
   }
