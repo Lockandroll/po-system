@@ -6574,7 +6574,8 @@ async function renderScheduleAdmin(el){
     '<div class="page-header" style="flex-wrap:wrap;gap:10px"><div class="page-title">Schedule</div>'+
       '<div style="display:flex;gap:8px;flex-wrap:wrap">'+
         '<button class="btn btn-secondary btn-sm" onclick="schedSetMode(\''+(isMonth?'week':'month')+'\')">'+(isMonth?'Week view':'Month view')+'</button>'+
-        (isMonth?'':'<button class="btn btn-secondary btn-sm" onclick="schedRecurringForm()">Recurring</button>')+
+        (isMonth?'':'<button class="btn btn-secondary btn-sm" onclick="schedSwitchType(\'single\')">Add Shift</button>')+
+        (isMonth?'':'<button class="btn btn-secondary btn-sm" onclick="schedBulkForm()">Bulk edit</button>')+
         '<button class="btn btn-secondary btn-sm" onclick="schedCopyLastWeek()">Copy Last Week</button>'+
         '<button class="btn btn-secondary btn-sm" onclick="schedManagePositions()">Positions</button>'+
         '<button class="btn btn-secondary btn-sm" onclick="navigate(\'schedule-nowork\')">No-Work Report</button>'+
@@ -6641,7 +6642,7 @@ function schedRecurringForm(){
   var days=[['1','Mon',true],['2','Tue',true],['3','Wed',true],['4','Thu',true],['5','Fri',true],['6','Sat',false],['0','Sun',false]];
   var dayChecks=days.map(function(dd){ return '<label style="display:inline-flex;align-items:center;gap:4px;margin:0 8px 6px 0;font-size:13px"><input type="checkbox" class="rc-dow" value="'+dd[0]+'"'+(dd[2]?' checked':'')+' style="width:auto"> '+dd[1]+'</label>'; }).join('');
   schedModal(
-    '<h3 style="margin:0 0 14px">Recurring Shift</h3>'+
+    '<h3 style="margin:0 0 14px">Recurring Shift</h3>'+schedTypeToggle('recurring')+
     '<div id="rc-err"></div>'+
     '<div class="form-group"><label>Employee</label><select id="rc-user" style="'+inp+'">'+userOpts+'</select></div>'+
     '<div class="form-group"><label>Days of week</label><div>'+dayChecks+'</div></div>'+
@@ -6661,6 +6662,44 @@ async function schedSaveRecurring(){
   if(!body.user_id||!dows.length||!body.start_date||!body.start_time||!body.end_time){ document.getElementById('rc-err').innerHTML='<div class="alert alert-error">Employee, at least one day, date, and times are required.</div>'; return; }
   try{ var r=await api('POST','/schedule/recurring',body); schedCloseModal(); await schedLoadAdmin(); if(_schedMode==='month') schedRenderMonth(); else schedRenderGrid(); schedToast('Created '+r.created+' shift(s) as drafts.','ok'); }
   catch(e){ document.getElementById('rc-err').innerHTML='<div class="alert alert-error">'+escHtml(e.message)+'</div>'; }
+}
+function schedTypeToggle(active){
+  function b(label,mode,on){ return '<button class="btn '+(on?'btn-primary':'btn-secondary')+' btn-sm" onclick="schedSwitchType(\''+mode+'\')">'+label+'</button>'; }
+  return '<div style="display:flex;gap:6px;margin-bottom:12px">'+b('Single','single',active==='single')+b('Recurring','recurring',active==='recurring')+'</div>';
+}
+function schedSwitchType(mode){ if(mode==='recurring') schedRecurringForm(); else schedShiftForm({ _date:(_schedMonday||schedToday()), shift_date:(_schedMonday||schedToday()) }); }
+function schedBulkForm(){
+  var userOpts=schedVisibleUsers().map(function(u){ return '<option value="'+u.id+'">'+escHtml(u.name)+'</option>'; }).join('');
+  var posOpts='<option value="">— leave unchanged —</option>'+_schedPositions.filter(function(p){return p.active!==false;}).map(function(p){ return '<option value="'+p.id+'">'+escHtml(p.name)+'</option>'; }).join('');
+  var cityOpts='<option value="">All cities</option>'+_schedCities.map(function(c){ var cc=(c.code||'').trim(); return '<option value="'+escHtml(cc)+'"'+(_schedCity===cc?' selected':'')+'>'+escHtml(c.name)+'</option>'; }).join('');
+  var inp='background:var(--bg-elevated,#1f1f1f);color:var(--text-color,#fff);border:1px solid var(--border,#333);border-radius:6px;padding:8px;width:100%;font-size:14px';
+  schedModal(
+    '<h3 style="margin:0 0 14px">Bulk edit shifts</h3>'+
+    '<div id="bk-err"></div>'+
+    '<div class="form-group"><label>Employee</label><select id="bk-user" style="'+inp+'">'+userOpts+'</select></div>'+
+    '<div style="display:flex;gap:10px"><div class="form-group" style="flex:1"><label>From</label><input type="date" id="bk-from" value="'+(_schedMonday||schedToday())+'" style="'+inp+'"></div>'+
+    '<div class="form-group" style="flex:1"><label>To</label><input type="date" id="bk-to" value="'+schedAddDays(_schedMonday||schedToday(),6)+'" style="'+inp+'"></div></div>'+
+    '<div class="form-group"><label>City</label><select id="bk-city" style="'+inp+'">'+cityOpts+'</select></div>'+
+    '<div class="form-group"><label>Action</label><select id="bk-action" onchange="schedBulkActionChange()" style="'+inp+'"><option value="delete">Remove shifts (e.g. vacation)</option><option value="update">Change shifts</option></select></div>'+
+    '<div id="bk-change" style="display:none">'+
+      '<div style="display:flex;gap:10px"><div class="form-group" style="flex:1"><label>New start</label><input type="time" id="bk-start" style="'+inp+'"></div>'+
+      '<div class="form-group" style="flex:1"><label>New end</label><input type="time" id="bk-end" style="'+inp+'"></div></div>'+
+      '<div style="display:flex;gap:10px"><div class="form-group" style="flex:1"><label>Position</label><select id="bk-pos" style="'+inp+'">'+posOpts+'</select></div>'+
+      '<div class="form-group" style="flex:1"><label>Break (min)</label><input type="number" id="bk-break" min="0" placeholder="unchanged" style="'+inp+'"></div></div>'+
+      '<p class="text-muted" style="font-size:12px;margin:0 0 8px">Leave a field blank to keep it as-is.</p>'+
+    '</div>'+
+    '<div style="display:flex;justify-content:flex-end;gap:8px;margin-top:8px"><button class="btn btn-ghost btn-sm" onclick="schedCloseModal()">Cancel</button><button class="btn btn-primary btn-sm" onclick="schedSaveBulk()">Apply</button></div>'
+  );
+}
+function schedBulkActionChange(){ var c=document.getElementById('bk-change'); var a=document.getElementById('bk-action').value; if(c) c.style.display=(a==='update')?'':'none'; }
+async function schedSaveBulk(){
+  var action=document.getElementById('bk-action').value;
+  var body={ user_id:document.getElementById('bk-user').value, from:document.getElementById('bk-from').value, to:document.getElementById('bk-to').value, city:document.getElementById('bk-city').value||null, action:action };
+  if(!body.user_id||!body.from||!body.to){ document.getElementById('bk-err').innerHTML='<div class="alert alert-error">Employee and date range are required.</div>'; return; }
+  if(action==='update'){ var st=document.getElementById('bk-start').value; if(st) body.start_time=st; var en=document.getElementById('bk-end').value; if(en) body.end_time=en; var po=document.getElementById('bk-pos').value; if(po) body.position_id=po; var bm=document.getElementById('bk-break').value; if(bm!=='') body.break_minutes=bm; }
+  if(action==='delete' && !confirm('Remove all of this person’s shifts in that date range?')) return;
+  try{ var r=await api('POST','/schedule/bulk',body); schedCloseModal(); await schedLoadAdmin(); if(_schedMode==='month') schedRenderMonth(); else schedRenderGrid(); schedToast((action==='delete'?'Removed ':'Updated ')+r.affected+' shift(s).','ok'); }
+  catch(e){ document.getElementById('bk-err').innerHTML='<div class="alert alert-error">'+escHtml(e.message)+'</div>'; }
 }
 
 function schedRenderGrid(){
@@ -6708,7 +6747,7 @@ function schedShiftForm(s){
   var cityOpts='<option value="">— city —</option>'+_schedCities.map(function(c){ var cc=(c.code||'').trim(); return '<option value="'+escHtml(cc)+'"'+(s&&(String(s.city_code||'').trim()===cc)?' selected':(!s&&_schedCity===cc?' selected':''))+'>'+escHtml(c.name)+'</option>'; }).join('');
   var inp='background:var(--bg-elevated,#1f1f1f);color:var(--text-color,#fff);border:1px solid var(--border,#333);border-radius:6px;padding:8px;width:100%;font-size:14px';
   schedModal(
-    '<h3 style="margin:0 0 14px">'+(_schedEditId?'Edit Shift':'New Shift')+'</h3>'+
+    '<h3 style="margin:0 0 14px">'+(_schedEditId?'Edit Shift':'New Shift')+'</h3>'+(_schedEditId?'':schedTypeToggle('single'))+
     '<div id="sched-form-err"></div>'+
     '<div class="form-group"><label>Employee</label><select id="sf-user" style="'+inp+'">'+userOpts+'</select></div>'+
     '<div class="form-group"><label>Date</label><input type="date" id="sf-date" value="'+escHtml(s&&s.shift_date?schedShiftDate(s):(s&&s._date?s._date:''))+'" style="'+inp+'"></div>'+
@@ -6824,19 +6863,20 @@ function nwDateToYmd(s){
 }
 async function renderNoWorkReport(el){
   if(!can('manage_schedule')){ el.innerHTML='<div class="alert alert-error">Access denied.</div>'; return; }
-  var mon=schedMondayOf(schedToday());
+  var mon=schedMondayOf(schedToday()), sun=schedAddDays(mon,6);
   var cities=[]; try{ cities=(await api('GET','/cities')).filter(function(c){return c.active!==false;}); }catch(e){}
   var cityOpts='<option value="">All cities</option>'+cities.map(function(c){var cc=(c.code||'').trim();return '<option value="'+escHtml(cc)+'">'+escHtml(c.name)+'</option>';}).join('');
-  var inp='background:var(--bg-elevated,#1f1f1f);color:var(--text-color,#fff);border:1px solid var(--border,#333);border-radius:6px;padding:8px';
+  var inp='background:var(--bg-elevated,#1f1f1f);color:var(--text-color,#fff);border:1px solid var(--border,#333);border-radius:6px;padding:8px;width:100%';
   el.innerHTML=
-    '<div class="page-header"><div class="page-title"><h2>No-Work Report</h2><p>Upload a weekly call report and compare it to the schedule to see who was scheduled but pulled no calls.</p></div>'+
+    '<div class="page-header"><div class="page-title"><h2>No-Work Report</h2><p>Upload a call report and compare it day-by-day to the schedule to see who was scheduled but pulled no calls that day.</p></div>'+
       '<button class="btn btn-secondary" onclick="navigate(\'schedule-admin\')">&larr; Back to schedule</button></div>'+
-    '<div class="card" style="max-width:680px"><div class="card-body">'+
+    '<div class="card" style="max-width:720px"><div class="card-body">'+
       '<div style="display:flex;gap:12px;flex-wrap:wrap">'+
-        '<div class="form-group" style="flex:1;min-width:160px"><label>Week of (any day)</label><input type="date" id="nw-week" value="'+mon+'" style="'+inp+';width:100%"></div>'+
-        '<div class="form-group" style="flex:1;min-width:160px"><label>City</label><select id="nw-city" style="'+inp+';width:100%">'+cityOpts+'</select></div>'+
+        '<div class="form-group" style="flex:1;min-width:150px"><label>From</label><input type="date" id="nw-from" value="'+mon+'" style="'+inp+'"></div>'+
+        '<div class="form-group" style="flex:1;min-width:150px"><label>To</label><input type="date" id="nw-to" value="'+sun+'" style="'+inp+'"></div>'+
+        '<div class="form-group" style="flex:1;min-width:150px"><label>City</label><select id="nw-city" style="'+inp+'">'+cityOpts+'</select></div>'+
       '</div>'+
-      '<div class="form-group"><label>Call report CSV</label><input type="file" id="nw-file" accept=".csv" style="'+inp+';width:100%"></div>'+
+      '<div class="form-group"><label>Call report CSV</label><input type="file" id="nw-file" accept=".csv" style="'+inp+'"></div>'+
       '<button class="btn btn-primary" onclick="nwRun()">Run report</button>'+
     '</div></div>'+
     '<div id="nw-results" style="margin-top:16px"></div>';
@@ -6844,42 +6884,47 @@ async function renderNoWorkReport(el){
 async function nwRun(){
   var res=document.getElementById('nw-results');
   var fileEl=document.getElementById('nw-file');
-  if(!fileEl.files || !fileEl.files[0]){ res.innerHTML='<div class="alert alert-error">Please choose a CSV file.</div>'; return; }
-  var weekStart=document.getElementById('nw-week').value;
-  if(!weekStart){ res.innerHTML='<div class="alert alert-error">Please choose the week.</div>'; return; }
-  var mon=schedMondayOf(weekStart), sun=schedAddDays(mon,6);
+  if(!fileEl.files||!fileEl.files[0]){ res.innerHTML='<div class="alert alert-error">Please choose a CSV file.</div>'; return; }
+  var from=document.getElementById('nw-from').value, to=document.getElementById('nw-to').value;
+  if(!from||!to){ res.innerHTML='<div class="alert alert-error">Please choose a date range.</div>'; return; }
+  if(from>to){ var t=from; from=to; to=t; }
   var city=document.getElementById('nw-city').value;
   res.innerHTML='<div class="loading">Reading…</div>';
-  var text;
-  try{ text=await fileEl.files[0].text(); }catch(e){ res.innerHTML='<div class="alert alert-error">Could not read file.</div>'; return; }
+  var text; try{ text=await fileEl.files[0].text(); }catch(e){ res.innerHTML='<div class="alert alert-error">Could not read file.</div>'; return; }
   var rows=nwParseCSV(text);
   if(!rows.length){ res.innerHTML='<div class="alert alert-error">Empty file.</div>'; return; }
   var header=rows[0].map(function(h){return (h||'').trim();});
-  var techIdx=header.indexOf('Dispatch Closed');
-  var dateIdx=header.indexOf('Date Disp');
-  if(techIdx===-1){ res.innerHTML='<div class="alert alert-error">Could not find a "Dispatch Closed" column in this CSV.</div>'; return; }
-  var workedKeys={}, workedNames={};
+  var techIdx=header.indexOf('Dispatch Closed'), dateIdx=header.indexOf('Date Disp');
+  if(techIdx===-1){ res.innerHTML='<div class="alert alert-error">Could not find a "Dispatch Closed" column.</div>'; return; }
+  if(dateIdx===-1){ res.innerHTML='<div class="alert alert-error">Could not find a "Date Disp" column (needed for the per-day comparison).</div>'; return; }
+  var workedByDate={}, workedKeysAll={}, workedNames={};
   for(var i=1;i<rows.length;i++){
-    var r=rows[i]; if(!r || techIdx>=r.length) continue;
-    if(dateIdx!==-1){ var d=nwDateToYmd(r[dateIdx]); if(d && (d<mon||d>sun)) continue; }
+    var r=rows[i]; if(!r||techIdx>=r.length) continue;
+    var d=nwDateToYmd(r[dateIdx]); if(!d||d<from||d>to) continue;
     var nm=(r[techIdx]||'').trim(); if(!nm) continue;
     var k=nwKey(nm); if(!k||k==='|') continue;
-    workedKeys[k]=1; if(!workedNames[k]) workedNames[k]=nm;
+    (workedByDate[d]=workedByDate[d]||{})[k]=1; workedKeysAll[k]=1; if(!workedNames[k]) workedNames[k]=nm;
   }
   var scheduled=[];
-  try{ scheduled=await api('GET','/schedule/scheduled-users?from='+mon+'&to='+sun+(city?'&city='+encodeURIComponent(city):'')); }catch(e){ res.innerHTML='<div class="alert alert-error">'+escHtml(e.message)+'</div>'; return; }
-  var noWork=[], worked=[], schedKeys={};
-  scheduled.forEach(function(u){ var k=nwKey(u.name); schedKeys[k]=1; if(workedKeys[k]) worked.push(u); else noWork.push(u); });
-  var extra=[]; Object.keys(workedKeys).forEach(function(k){ if(!schedKeys[k]) extra.push(workedNames[k]); });
-  extra.sort();
+  try{ scheduled=await api('GET','/schedule/scheduled-users?from='+from+'&to='+to+(city?'&city='+encodeURIComponent(city):'')); }catch(e){ res.innerHTML='<div class="alert alert-error">'+escHtml(e.message)+'</div>'; return; }
+  var noWorkByUser={}, schedKeys={}, slots=0, workedSlots=0, noWorkSlots=0;
+  scheduled.forEach(function(row){
+    slots++;
+    var k=nwKey(row.name); schedKeys[k]=1;
+    var did=workedByDate[row.shift_date] && workedByDate[row.shift_date][k];
+    if(did){ workedSlots++; }
+    else { noWorkSlots++; (noWorkByUser[row.user_id]=noWorkByUser[row.user_id]||{name:row.name,days:[]}).days.push(row.shift_date); }
+  });
+  var extra=[]; Object.keys(workedKeysAll).forEach(function(k){ if(!schedKeys[k]) extra.push(workedNames[k]); }); extra.sort();
+  var userList=Object.keys(noWorkByUser).map(function(id){return noWorkByUser[id];}).sort(function(a,b){return (a.name||'').localeCompare(b.name||'');});
   var html='<div class="card"><div class="card-body">'+
     '<div style="display:flex;gap:18px;flex-wrap:wrap;margin-bottom:14px;font-size:14px">'+
-      '<div><strong style="font-size:20px">'+scheduled.length+'</strong><div class="text-muted" style="font-size:12px">Scheduled</div></div>'+
-      '<div><strong style="font-size:20px;color:#22c55e">'+worked.length+'</strong><div class="text-muted" style="font-size:12px">Worked</div></div>'+
-      '<div><strong style="font-size:20px;color:#ef4444">'+noWork.length+'</strong><div class="text-muted" style="font-size:12px">No work</div></div>'+
+      '<div><strong style="font-size:20px">'+slots+'</strong><div class="text-muted" style="font-size:12px">Scheduled shifts</div></div>'+
+      '<div><strong style="font-size:20px;color:#22c55e">'+workedSlots+'</strong><div class="text-muted" style="font-size:12px">Worked</div></div>'+
+      '<div><strong style="font-size:20px;color:#ef4444">'+noWorkSlots+'</strong><div class="text-muted" style="font-size:12px">No work</div></div>'+
     '</div>'+
-    '<div style="font-weight:700;margin-bottom:6px;color:#ef4444">Scheduled but pulled no calls ('+escHtml(mon)+' to '+escHtml(sun)+')</div>'+
-    (noWork.length? '<table style="width:100%"><tbody>'+noWork.map(function(u){return '<tr><td style="padding:5px 0">'+escHtml(u.name)+'</td><td style="text-align:right;color:var(--text-muted-color);font-size:12px">'+escHtml(u.city_code||'')+'</td></tr>';}).join('')+'</tbody></table>' : '<p class="text-muted">Everyone scheduled pulled at least one call.</p>')+
+    '<div style="font-weight:700;margin-bottom:8px;color:#ef4444">Scheduled but pulled no calls ('+escHtml(from)+' to '+escHtml(to)+')</div>'+
+    (userList.length? userList.map(function(u){ return '<div style="padding:6px 0;border-bottom:0.5px solid var(--border,#2a2a2a)"><strong>'+escHtml(u.name)+'</strong><div style="font-size:12.5px;color:var(--text-muted-color,#999)">'+u.days.sort().map(function(d){return escHtml(schedDateLabel(d));}).join(' · ')+'</div></div>'; }).join('') : '<p class="text-muted">Everyone pulled at least one call on every day they were scheduled.</p>')+
     (extra.length? '<div style="font-weight:700;margin:16px 0 6px">Pulled calls but not on the schedule</div><div class="text-muted" style="font-size:13px">'+extra.map(escHtml).join(', ')+'</div>' : '')+
   '</div></div>';
   res.innerHTML=html;

@@ -310,20 +310,56 @@ router.post('/recurring', requireAuth, requirePermission('manage_schedule'), asy
   res.json({ created: created });
 });
 
-// Distinct users who have a shift in the range (for the no-work report comparison).
+// Bulk delete or update an employee's shifts across a date range (e.g. vacation).
+router.post('/bulk', requireAuth, requirePermission('manage_schedule'), async (req, res) => {
+  const b = req.body || {};
+  const user_id = parseInt(b.user_id, 10) || null;
+  const from = RE_DATE.test(b.from) ? b.from : null;
+  const to = RE_DATE.test(b.to) ? b.to : null;
+  if (!user_id || !from || !to) return res.status(400).json({ error: 'Employee and date range are required' });
+  const action = b.action === 'update' ? 'update' : 'delete';
+  const scope = await allowedCities(req.user);
+  function cityClause(params) {
+    let sql = '';
+    if (b.city && String(b.city).trim()) { params.push(String(b.city).trim()); sql += ' AND city_code = $' + params.length; }
+    if (scope !== null) { if (!scope.length) return null; params.push(scope); sql += ' AND city_code = ANY($' + params.length + '::text[])'; }
+    return sql;
+  }
+  if (action === 'delete') {
+    const params = [user_id, from, to];
+    const cc = cityClause(params); if (cc === null) return res.json({ affected: 0 });
+    const r = await pool.query('DELETE FROM shifts WHERE user_id=$1 AND shift_date BETWEEN $2 AND $3' + cc, params);
+    return res.json({ affected: r.rowCount });
+  }
+  const sets = [], params = [];
+  if (RE_TIME.test(b.start_time)) { params.push(b.start_time); sets.push('start_time=$' + params.length); }
+  if (RE_TIME.test(b.end_time)) { params.push(b.end_time); sets.push('end_time=$' + params.length); }
+  if (b.position_id !== undefined && b.position_id !== null && b.position_id !== '') { params.push(parseInt(b.position_id, 10) || null); sets.push('position_id=$' + params.length); }
+  if (b.break_minutes !== undefined && b.break_minutes !== '' && b.break_minutes !== null) { params.push(Math.max(0, parseInt(b.break_minutes, 10) || 0)); sets.push('break_minutes=$' + params.length); }
+  if (!sets.length) return res.status(400).json({ error: 'Nothing to change' });
+  params.push(user_id); const pu = params.length; params.push(from); const pf = params.length; params.push(to); const pt = params.length;
+  let sql = 'UPDATE shifts SET ' + sets.join(', ') + ', updated_at=NOW() WHERE user_id=$' + pu + ' AND shift_date BETWEEN $' + pf + ' AND $' + pt;
+  const cc = cityClause(params); if (cc === null) return res.json({ affected: 0 });
+  sql += cc;
+  const r = await pool.query(sql, params);
+  res.json({ affected: r.rowCount });
+});
+
+// Each (user, day) scheduled in the range (for the per-day no-work comparison).
 router.get('/scheduled-users', requireAuth, requirePermission('manage_schedule'), async (req, res) => {
   const from = RE_DATE.test(req.query.from) ? req.query.from : mondayOf(ymd(new Date()));
   const to = RE_DATE.test(req.query.to) ? req.query.to : addDays(from, 6);
   const scope = await allowedCities(req.user);
   const params = [from, to];
-  let sql = 'SELECT s.user_id, COALESCE(u.name, s.user_name) AS name, s.city_code FROM shifts s LEFT JOIN users u ON u.id = s.user_id WHERE s.shift_date BETWEEN $1 AND $2 AND s.user_id IS NOT NULL';
+  let sql = 'SELECT DISTINCT s.user_id, COALESCE(u.name, s.user_name) AS name, s.shift_date FROM shifts s LEFT JOIN users u ON u.id = s.user_id WHERE s.shift_date BETWEEN $1 AND $2 AND s.user_id IS NOT NULL';
   if (req.query.city && String(req.query.city).trim()) { params.push(String(req.query.city).trim()); sql += ' AND s.city_code = $' + params.length; }
   if (scope !== null) { if (!scope.length) return res.json([]); params.push(scope); sql += ' AND s.city_code = ANY($' + params.length + '::text[])'; }
+  sql += ' ORDER BY name';
   const { rows } = await pool.query(sql, params);
-  const seen = {}, out = [];
-  rows.forEach(function (r) { if (!seen[r.user_id]) { seen[r.user_id] = 1; out.push({ user_id: r.user_id, name: r.name, city_code: (r.city_code || '').trim() }); } });
-  out.sort(function (a, b) { return (a.name || '').localeCompare(b.name || ''); });
-  res.json(out);
+  res.json(rows.map(function (r) {
+    var sd = r.shift_date instanceof Date ? ymd(new Date(Date.UTC(r.shift_date.getUTCFullYear(), r.shift_date.getUTCMonth(), r.shift_date.getUTCDate()))) : String(r.shift_date).slice(0, 10);
+    return { user_id: r.user_id, name: r.name, shift_date: sd };
+  }));
 });
 
 module.exports = router;
