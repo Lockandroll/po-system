@@ -539,6 +539,86 @@ async function initDB() {
       'CREATE INDEX IF NOT EXISTS idx_wo_att ON work_order_attachments(work_order_id);' +
       'CREATE INDEX IF NOT EXISTS idx_wo_act ON work_order_activity(work_order_id);'
     );
+    // Scheduling — manager-built weekly shift schedule (Sling-style). Wall-clock
+    // times (shift_date + start/end time) keep the grid DST-proof for the local day.
+    await client.query(
+      'CREATE TABLE IF NOT EXISTS shift_positions (' +
+      '  id SERIAL PRIMARY KEY,' +
+      '  name VARCHAR(100) NOT NULL,' +
+      "  color VARCHAR(20) NOT NULL DEFAULT '#f97316'," +
+      '  active BOOLEAN NOT NULL DEFAULT true,' +
+      '  created_at TIMESTAMPTZ DEFAULT NOW()' +
+      ');'
+    );
+    await client.query(
+      'CREATE TABLE IF NOT EXISTS shifts (' +
+      '  id SERIAL PRIMARY KEY,' +
+      '  user_id INTEGER REFERENCES users(id) ON DELETE CASCADE,' +
+      '  user_name VARCHAR(255),' +
+      '  city_code CHAR(3),' +
+      '  position_id INTEGER REFERENCES shift_positions(id) ON DELETE SET NULL,' +
+      '  shift_date DATE NOT NULL,' +
+      '  start_time VARCHAR(5) NOT NULL,' +
+      '  end_time VARCHAR(5) NOT NULL,' +
+      '  break_minutes INTEGER NOT NULL DEFAULT 0,' +
+      '  notes TEXT,' +
+      "  status VARCHAR(20) NOT NULL DEFAULT 'draft'," +
+      '  published_at TIMESTAMPTZ,' +
+      '  created_by INTEGER REFERENCES users(id) ON DELETE SET NULL,' +
+      '  created_at TIMESTAMPTZ DEFAULT NOW(),' +
+      '  updated_at TIMESTAMPTZ DEFAULT NOW()' +
+      ');'
+    );
+    await client.query(
+      'CREATE TABLE IF NOT EXISTS manager_cities (' +
+      '  id SERIAL PRIMARY KEY,' +
+      '  user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,' +
+      '  city_code CHAR(3) NOT NULL,' +
+      '  created_at TIMESTAMPTZ DEFAULT NOW(),' +
+      '  UNIQUE(user_id, city_code)' +
+      ');'
+    );
+    await client.query(
+      "ALTER TABLE shifts ADD COLUMN IF NOT EXISTS position_id INTEGER;" +
+      "ALTER TABLE shifts ADD COLUMN IF NOT EXISTS break_minutes INTEGER NOT NULL DEFAULT 0;" +
+      "ALTER TABLE shifts ADD COLUMN IF NOT EXISTS notes TEXT;" +
+      "ALTER TABLE shifts ADD COLUMN IF NOT EXISTS published_at TIMESTAMPTZ;" +
+      "ALTER TABLE shifts ADD COLUMN IF NOT EXISTS user_name VARCHAR(255);" +
+      "ALTER TABLE shifts ADD COLUMN IF NOT EXISTS city_code CHAR(3);"
+    );
+    await client.query(
+      'CREATE INDEX IF NOT EXISTS idx_shifts_user ON shifts(user_id);' +
+      'CREATE INDEX IF NOT EXISTS idx_shifts_date ON shifts(shift_date);' +
+      'CREATE INDEX IF NOT EXISTS idx_shifts_city ON shifts(city_code);' +
+      'CREATE INDEX IF NOT EXISTS idx_shifts_status ON shifts(status);' +
+      'CREATE INDEX IF NOT EXISTS idx_mgr_cities_user ON manager_cities(user_id);' +
+      'CREATE INDEX IF NOT EXISTS idx_mgr_cities_city ON manager_cities(city_code);'
+    );
+    const _spSeed = await client.query("SELECT value FROM settings WHERE key = 'schedule_seed_v1'");
+    if (!_spSeed.rows.length) {
+      await client.query(
+        "INSERT INTO shift_positions (name, color) VALUES " +
+        "('Locksmith', '#f97316'), ('Roadside', '#3b82f6'), ('Counter', '#22c55e'), ('On Call', '#a855f7')"
+      );
+      await client.query("INSERT INTO settings (key, value, updated_at) VALUES ('schedule_seed_v1', 'done', NOW()) ON CONFLICT (key) DO NOTHING");
+    }
+    const _v4 = await client.query("SELECT value FROM settings WHERE key = 'perm_matrix_v4_backfilled'");
+    if (!_v4.rows.length) {
+      const _rp4 = await client.query("SELECT value FROM settings WHERE key = 'role_permissions'");
+      if (_rp4.rows.length && _rp4.rows[0].value) {
+        try {
+          const obj = JSON.parse(_rp4.rows[0].value);
+          if (obj && typeof obj === 'object') {
+            ['locksmith', 'locksmith_coordinator', 'roadside_technician', 'manager'].forEach(function(r) {
+              if (Array.isArray(obj[r]) && obj[r].indexOf('view_schedule') === -1) obj[r].push('view_schedule');
+            });
+            if (Array.isArray(obj.manager) && obj.manager.indexOf('manage_schedule') === -1) obj.manager.push('manage_schedule');
+            await client.query("INSERT INTO settings (key, value, updated_at) VALUES ('role_permissions', $1, NOW()) ON CONFLICT (key) DO UPDATE SET value = $1, updated_at = NOW()", [JSON.stringify(obj)]);
+          }
+        } catch (e) { console.error('perm matrix v4 backfill failed:', e.message); }
+      }
+      await client.query("INSERT INTO settings (key, value) VALUES ('perm_matrix_v4_backfilled', '1') ON CONFLICT (key) DO NOTHING");
+    }
     await client.query(
       "UPDATE users SET role = 'locksmith' WHERE role = 'requester';" +
       "UPDATE users SET role = 'manager' WHERE role = 'approver';" +

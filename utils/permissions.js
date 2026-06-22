@@ -41,10 +41,12 @@ EMPLOYEE_PERMS.push('view_tasks');
 ALL_PERMS.push('view_tasks', 'manage_tasks');
 EMPLOYEE_PERMS.push('view_work_orders');
 ALL_PERMS.push('view_work_orders', 'manage_work_orders');
+EMPLOYEE_PERMS.push('view_schedule');
+ALL_PERMS.push('view_schedule', 'manage_schedule');
 
 var DEFAULTS = {
   admin: '*',
-  manager: ['view_users', 'manage_cities', 'manage_geico', 'manage_running', 'manage_vehicles', 'manage_vendors', 'manage_addresses', 'approve_vr', 'manage_tasks', 'manage_work_orders'].concat(EMPLOYEE_PERMS),
+  manager: ['view_users', 'manage_cities', 'manage_geico', 'manage_running', 'manage_vehicles', 'manage_vendors', 'manage_addresses', 'approve_vr', 'manage_tasks', 'manage_work_orders', 'manage_schedule'].concat(EMPLOYEE_PERMS),
   locksmith: EMPLOYEE_PERMS.slice(),
   locksmith_coordinator: EMPLOYEE_PERMS.concat(['manage_work_orders']),
   roadside_technician: EMPLOYEE_PERMS.slice()
