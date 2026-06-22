@@ -76,7 +76,8 @@ router.post('/', requireAuth, requirePermission('manage_users'), async (req, res
     return res.status(400).json({ error: 'Invalid role. Must be one of: ' + VALID_ROLES.join(', ') + '.' });
   }
   if (role === 'owner' && !req.user.isOwner) {
-    return res.status(403).json({ error: 'Only an owner can grant the Owner role.' });
+    const _oc = (await pool.query("SELECT COUNT(*)::int AS n FROM users WHERE role = 'owner' AND active = true")).rows[0].n;
+    if (_oc > 0) return res.status(403).json({ error: 'Only an owner can grant the Owner role.' });
   }
   // Password is optional — if none is set, the user picks one via the invite link.
   // A random hash is stored so the account can never be logged into until the invite is used.
@@ -109,8 +110,12 @@ router.put('/:id', requireAuth, requirePermission('manage_users'), async (req, r
     return res.status(400).json({ error: 'Invalid role. Must be one of: ' + VALID_ROLES.join(', ') + '.' });
   }
   const _target = (await pool.query('SELECT role FROM users WHERE id=$1', [id])).rows[0];
-  if (_target && (_target.role === 'owner' || role === 'owner') && !req.user.isOwner) {
+  if (_target && _target.role === 'owner' && !req.user.isOwner) {
     return res.status(403).json({ error: 'Only an owner can manage owner accounts.' });
+  }
+  if (role === 'owner' && (!_target || _target.role !== 'owner') && !req.user.isOwner) {
+    const _oc = (await pool.query("SELECT COUNT(*)::int AS n FROM users WHERE role = 'owner' AND active = true")).rows[0].n;
+    if (_oc > 0) return res.status(403).json({ error: 'Only an owner can grant the Owner role.' });
   }
   let query, params;
   if (password) {

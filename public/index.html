@@ -1565,8 +1565,10 @@ function usersGoPage(p) {
 }
 
 async function showUserModal(id) {
-  let user = null;
-  if (id) { try { const users = await api('GET', '/users'); user = users.find(function(u){ return u.id === id; }); } catch(e){} }
+  let user = null, _allUsers = [];
+  try { _allUsers = await api('GET', '/users'); } catch(e){}
+  if (id) user = _allUsers.find(function(u){ return u.id === id; }) || null;
+  var ownerExists = _allUsers.some(function(u){ return u.role === 'owner'; });
   let cities = []; try { cities = (await api('GET', '/cities')).filter(function(c){ return c.active !== false; }); } catch(e) { cities = []; }
   const overlay = document.createElement('div');
   overlay.className = 'modal-overlay';
@@ -1580,7 +1582,7 @@ async function showUserModal(id) {
         '<div class="form-group"><label>' + (id ? 'New Password (leave blank to keep)' : 'Password (optional)') + '</label><input type="password" id="modal-password" placeholder="' + (id ? '' : 'Leave blank to email an invite') + '" />' + (id ? '' : '<div style="font-size:12px;color:var(--text-muted-color);margin-top:5px">An invite email is always sent. Leave blank and the user sets their own password via the link.</div>') + '</div>' +
         '<div class="form-row">' +
           '<div class="form-group"><label>Phone <span style="font-weight:400;font-size:0.8em;color:var(--text-muted)">Format: +13215550000</span></label><input type="tel" id="modal-phone" value="' + escHtml(user ? user.phone || '' : '') + '" placeholder="+13215550000" pattern="\\+1[0-9]{10}" title="Must be in format +1 followed by 10 digits (e.g. +13215550000)" /></div>' +
-          '<div class="form-group"><label>Role</label><select id="modal-role">' +'<option value="locksmith"' + (user&&user.role==='locksmith'?' selected':'') + '>Locksmith</option>' +'<option value="locksmith_coordinator"' + (user&&user.role==='locksmith_coordinator'?' selected':'') + '>Locksmith Coordinator</option>' +'<option value="roadside_technician"' + (user&&user.role==='roadside_technician'?' selected':'') + '>Roadside Technician</option>' +'<option value="manager"' + (user&&user.role==='manager'?' selected':'') + '>Manager</option>' +'<option value="admin"' + (user&&user.role==='admin'?' selected':'') + '>Admin</option>' +(((state.user&&state.user.isOwner)||(user&&user.role==='owner')) ? '<option value="owner"' + (user&&user.role==='owner'?' selected':'') + '>Owner</option>' : '') +'</select></div>' +
+          '<div class="form-group"><label>Role</label><select id="modal-role">' +'<option value="locksmith"' + (user&&user.role==='locksmith'?' selected':'') + '>Locksmith</option>' +'<option value="locksmith_coordinator"' + (user&&user.role==='locksmith_coordinator'?' selected':'') + '>Locksmith Coordinator</option>' +'<option value="roadside_technician"' + (user&&user.role==='roadside_technician'?' selected':'') + '>Roadside Technician</option>' +'<option value="manager"' + (user&&user.role==='manager'?' selected':'') + '>Manager</option>' +'<option value="admin"' + (user&&user.role==='admin'?' selected':'') + '>Admin</option>' +(((state.user&&state.user.isOwner)||!ownerExists||(user&&user.role==='owner')) ? '<option value="owner"' + (user&&user.role==='owner'?' selected':'') + '>Owner</option>' : '') +'</select></div>' +
           '</div>' +
           '<div class="form-group"><label>Cities <span style="font-weight:400;font-size:0.8em;color:var(--text-muted-color)">(blank = all cities)</span></label><div style="display:flex;flex-wrap:wrap;gap:10px;margin-top:4px">' + (cities.length ? cities.map(function(c){ var cc=(c.code||'').trim(); var on=(user&&user.city_codes&&user.city_codes.indexOf(cc)!==-1); return '<label style="display:inline-flex;align-items:center;gap:5px;font-weight:400;font-size:13px"><input type="checkbox" class="modal-city" value="' + escHtml(cc) + '"' + (on?' checked':'') + ' style="width:auto"> ' + escHtml(c.name) + '</label>'; }).join('') : '<span style="color:var(--text-muted-color);font-size:13px">No cities yet</span>') + '</div></div>' +
         '<div class="form-group" style="display:flex;align-items:center;gap:10px">' +
