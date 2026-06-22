@@ -180,10 +180,11 @@ router.post('/shifts', requireAuth, requirePermission('manage_schedule'), async 
   if (!cityOk(scope, c.city_code)) return res.status(403).json({ error: 'You are not assigned to that city' });
   const u = await pool.query('SELECT name FROM users WHERE id=$1', [c.user_id]);
   const uname = u.rows.length ? u.rows[0].name : null;
+  const publish = !!(req.body && (req.body.publish === true || req.body.publish === 'true'));
   const { rows } = await pool.query(
-    'INSERT INTO shifts (user_id, user_name, city_code, position_id, shift_date, start_time, end_time, break_minutes, notes, status, created_by) ' +
-    "VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,'draft',$10) RETURNING *",
-    [c.user_id, uname, c.city_code, c.position_id, c.shift_date, c.start_time, c.end_time, c.break_minutes, c.notes, req.user.id]
+    'INSERT INTO shifts (user_id, user_name, city_code, position_id, shift_date, start_time, end_time, break_minutes, notes, status, published_at, created_by) ' +
+    'VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12) RETURNING *',
+    [c.user_id, uname, c.city_code, c.position_id, c.shift_date, c.start_time, c.end_time, c.break_minutes, c.notes, publish ? 'published' : 'draft', publish ? new Date() : null, req.user.id]
   );
   const conflicts = await computeConflicts(c, rows[0].id);
   res.status(201).json({ shift: rows[0], conflicts: conflicts });
@@ -198,9 +199,17 @@ router.put('/shifts/:id', requireAuth, requirePermission('manage_schedule'), asy
   if (!cityOk(scope, c.city_code)) return res.status(403).json({ error: 'You are not assigned to that city' });
   const u = await pool.query('SELECT name FROM users WHERE id=$1', [c.user_id]);
   const uname = u.rows.length ? u.rows[0].name : null;
+  const params = [c.user_id, uname, c.city_code, c.position_id, c.shift_date, c.start_time, c.end_time, c.break_minutes, c.notes];
+  let extra = '';
+  if (req.body && Object.prototype.hasOwnProperty.call(req.body, 'publish')) {
+    const publish = (req.body.publish === true || req.body.publish === 'true');
+    params.push(publish ? 'published' : 'draft'); extra += ', status=$' + params.length;
+    params.push(publish ? new Date() : null); extra += ', published_at=$' + params.length;
+  }
+  params.push(req.params.id);
   const { rows } = await pool.query(
-    'UPDATE shifts SET user_id=$1, user_name=$2, city_code=$3, position_id=$4, shift_date=$5, start_time=$6, end_time=$7, break_minutes=$8, notes=$9, updated_at=NOW() WHERE id=$10 RETURNING *',
-    [c.user_id, uname, c.city_code, c.position_id, c.shift_date, c.start_time, c.end_time, c.break_minutes, c.notes, req.params.id]
+    'UPDATE shifts SET user_id=$1, user_name=$2, city_code=$3, position_id=$4, shift_date=$5, start_time=$6, end_time=$7, break_minutes=$8, notes=$9' + extra + ', updated_at=NOW() WHERE id=$' + params.length + ' RETURNING *',
+    params
   );
   if (!rows.length) return res.status(404).json({ error: 'Shift not found' });
   const conflicts = await computeConflicts(c, rows[0].id);
@@ -291,6 +300,7 @@ router.post('/recurring', requireAuth, requirePermission('manage_schedule'), asy
   const city_code = b.city_code ? String(b.city_code).trim().slice(0, 3) : null;
   const break_minutes = Math.max(0, parseInt(b.break_minutes, 10) || 0);
   const notes = (b.notes || '').toString().trim() || null;
+  const publish = !!(b.publish === true || b.publish === 'true');
   const scope = await allowedCities(req.user);
   if (!cityOk(scope, city_code)) return res.status(403).json({ error: 'You are not assigned to that city' });
   const u = await pool.query('SELECT name FROM users WHERE id=$1', [user_id]);
@@ -301,9 +311,9 @@ router.post('/recurring', requireAuth, requirePermission('manage_schedule'), asy
     const d = addDays(start_date, i);
     if (dows.indexOf(dowOf(d)) === -1) continue;
     await pool.query(
-      'INSERT INTO shifts (user_id, user_name, city_code, position_id, shift_date, start_time, end_time, break_minutes, notes, status, created_by) ' +
-      "VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,'draft',$10)",
-      [user_id, uname, city_code, position_id, d, start_time, end_time, break_minutes, notes, req.user.id]
+      'INSERT INTO shifts (user_id, user_name, city_code, position_id, shift_date, start_time, end_time, break_minutes, notes, status, published_at, created_by) ' +
+      'VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)',
+      [user_id, uname, city_code, position_id, d, start_time, end_time, break_minutes, notes, publish ? 'published' : 'draft', publish ? new Date() : null, req.user.id]
     );
     created++;
   }

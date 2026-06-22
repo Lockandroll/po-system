@@ -6576,7 +6576,6 @@ async function renderScheduleAdmin(el){
         '<button class="btn btn-secondary btn-sm" onclick="schedSetMode(\''+(isMonth?'week':'month')+'\')">'+(isMonth?'Week view':'Month view')+'</button>'+
         (isMonth?'':'<button class="btn btn-secondary btn-sm" onclick="schedSwitchType(\'single\')">Add Shift</button>')+
         (isMonth?'':'<button class="btn btn-secondary btn-sm" onclick="schedBulkForm()">Bulk edit</button>')+
-        '<button class="btn btn-secondary btn-sm" onclick="schedCopyLastWeek()">Copy Last Week</button>'+
         '<button class="btn btn-secondary btn-sm" onclick="schedManagePositions()">Positions</button>'+
         '<button class="btn btn-secondary btn-sm" onclick="navigate(\'schedule-nowork\')">No-Work Report</button>'+
         (isMonth?'':'<button class="btn btn-primary btn-sm" onclick="schedPublishWeek()">Publish Week</button>')+
@@ -6653,12 +6652,13 @@ function schedRecurringForm(){
     '<div style="display:flex;gap:10px"><div class="form-group" style="flex:1"><label>Start date</label><input type="date" id="rc-startdate" value="'+(_schedMonday||schedMondayOf(schedToday()))+'" style="'+inp+'"></div>'+
     '<div class="form-group" style="flex:1"><label>Repeat for (weeks)</label><input type="number" id="rc-weeks" min="1" max="53" value="52" style="'+inp+'"></div></div>'+
     '<div class="form-group"><label>Unpaid break (min)</label><input type="number" id="rc-break" min="0" value="0" style="'+inp+'"></div>'+
+    '<div class="form-group" style="display:flex;align-items:center;gap:8px"><input type="checkbox" id="rc-publish" style="width:auto"><label for="rc-publish" style="margin:0;cursor:pointer">Publish now (visible to staff)</label></div>'+
     '<div style="display:flex;justify-content:flex-end;gap:8px;margin-top:8px"><button class="btn btn-ghost btn-sm" onclick="schedCloseModal()">Cancel</button><button class="btn btn-primary btn-sm" onclick="schedSaveRecurring()">Create shifts</button></div>'
   );
 }
 async function schedSaveRecurring(){
   var dows=[]; document.querySelectorAll('.rc-dow:checked').forEach(function(c){ dows.push(c.value); });
-  var body={ user_id:document.getElementById('rc-user').value, weekdays:dows, start_time:document.getElementById('rc-start').value, end_time:document.getElementById('rc-end').value, position_id:document.getElementById('rc-pos').value||null, city_code:document.getElementById('rc-city').value||null, start_date:document.getElementById('rc-startdate').value, weeks:document.getElementById('rc-weeks').value||1, break_minutes:document.getElementById('rc-break').value||0 };
+  var body={ user_id:document.getElementById('rc-user').value, weekdays:dows, start_time:document.getElementById('rc-start').value, end_time:document.getElementById('rc-end').value, position_id:document.getElementById('rc-pos').value||null, city_code:document.getElementById('rc-city').value||null, start_date:document.getElementById('rc-startdate').value, weeks:document.getElementById('rc-weeks').value||1, break_minutes:document.getElementById('rc-break').value||0, publish:document.getElementById('rc-publish').checked };
   if(!body.user_id||!dows.length||!body.start_date||!body.start_time||!body.end_time){ document.getElementById('rc-err').innerHTML='<div class="alert alert-error">Employee, at least one day, date, and times are required.</div>'; return; }
   try{ var r=await api('POST','/schedule/recurring',body); schedCloseModal(); await schedLoadAdmin(); if(_schedMode==='month') schedRenderMonth(); else schedRenderGrid(); schedToast('Created '+r.created+' shift(s) as drafts.','ok'); }
   catch(e){ document.getElementById('rc-err').innerHTML='<div class="alert alert-error">'+escHtml(e.message)+'</div>'; }
@@ -6757,6 +6757,7 @@ function schedShiftForm(s){
     '<div class="form-group" style="flex:1"><label>City</label><select id="sf-city" style="'+inp+'">'+cityOpts+'</select></div></div>'+
     '<div class="form-group"><label>Unpaid break (min)</label><input type="number" id="sf-break" min="0" value="'+(s&&s.break_minutes?parseInt(s.break_minutes,10):0)+'" style="'+inp+'"></div>'+
     '<div class="form-group"><label>Notes</label><input type="text" id="sf-notes" value="'+escHtml(s&&s.notes?s.notes:'')+'" style="'+inp+'"></div>'+
+    '<div class="form-group" style="display:flex;align-items:center;gap:8px"><input type="checkbox" id="sf-publish"'+((s&&s.status==='published')?' checked':'')+' style="width:auto"><label for="sf-publish" style="margin:0;cursor:pointer">Publish now (visible to staff)</label></div>'+
     '<div style="display:flex;justify-content:space-between;gap:8px;margin-top:8px">'+
       (_schedEditId?'<button class="btn btn-danger btn-sm" onclick="schedDeleteShift()">Delete</button>':'<span></span>')+
       '<div style="display:flex;gap:8px"><button class="btn btn-ghost btn-sm" onclick="schedCloseModal()">Cancel</button><button class="btn btn-primary btn-sm" onclick="schedSaveShift()">Save</button></div>'+
@@ -6767,7 +6768,7 @@ function schedNewShift(userId,date){ schedShiftForm({ user_id:userId, _date:date
 function schedOpenShift(id){ var s=_schedShifts.filter(function(x){return x.id===id;})[0]; if(s) schedShiftForm(s); }
 
 async function schedSaveShift(){
-  var body={ user_id:document.getElementById('sf-user').value, shift_date:document.getElementById('sf-date').value, start_time:document.getElementById('sf-start').value, end_time:document.getElementById('sf-end').value, position_id:document.getElementById('sf-pos').value||null, city_code:document.getElementById('sf-city').value||null, break_minutes:document.getElementById('sf-break').value||0, notes:document.getElementById('sf-notes').value };
+  var body={ user_id:document.getElementById('sf-user').value, shift_date:document.getElementById('sf-date').value, start_time:document.getElementById('sf-start').value, end_time:document.getElementById('sf-end').value, position_id:document.getElementById('sf-pos').value||null, city_code:document.getElementById('sf-city').value||null, break_minutes:document.getElementById('sf-break').value||0, notes:document.getElementById('sf-notes').value, publish:document.getElementById('sf-publish').checked };
   if(!body.shift_date||!body.start_time||!body.end_time){ document.getElementById('sched-form-err').innerHTML='<div class="alert alert-error">Date, start and end are required.</div>'; return; }
   try{
     var res=_schedEditId?await api('PUT','/schedule/shifts/'+_schedEditId,body):await api('POST','/schedule/shifts',body);
@@ -6924,7 +6925,7 @@ async function nwRun(){
       '<div><strong style="font-size:20px;color:#ef4444">'+noWorkSlots+'</strong><div class="text-muted" style="font-size:12px">No work</div></div>'+
     '</div>'+
     '<div style="font-weight:700;margin-bottom:8px;color:#ef4444">Scheduled but pulled no calls ('+escHtml(from)+' to '+escHtml(to)+')</div>'+
-    (userList.length? userList.map(function(u){ return '<div style="padding:6px 0;border-bottom:0.5px solid var(--border,#2a2a2a)"><strong>'+escHtml(u.name)+'</strong><div style="font-size:12.5px;color:var(--text-muted-color,#999)">'+u.days.sort().map(function(d){return escHtml(schedDateLabel(d));}).join(' · ')+'</div></div>'; }).join('') : '<p class="text-muted">Everyone pulled at least one call on every day they were scheduled.</p>')+
+    (slots===0 ? '<p class="text-muted">No shifts were scheduled in this date range. Check that the dates match the week people are actually scheduled.</p>' : (userList.length? userList.map(function(u){ return '<div style="padding:6px 0;border-bottom:0.5px solid var(--border,#2a2a2a)"><strong>'+escHtml(u.name)+'</strong><div style="font-size:12.5px;color:var(--text-muted-color,#999)">'+u.days.sort().map(function(d){return escHtml(schedDateLabel(d));}).join(' · ')+'</div></div>'; }).join('') : '<p class="text-muted">Everyone pulled at least one call on every day they were scheduled.</p>'))+
     (extra.length? '<div style="font-weight:700;margin:16px 0 6px">Pulled calls but not on the schedule</div><div class="text-muted" style="font-size:13px">'+extra.map(escHtml).join(', ')+'</div>' : '')+
   '</div></div>';
   res.innerHTML=html;
