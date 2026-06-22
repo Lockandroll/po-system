@@ -5,6 +5,7 @@ const { logAudit } = require('../utils/audit');
 const { emailTemplate } = require('../utils/email');
 const notify = require('../utils/notify');
 const push = require('../utils/push');
+const { buildSignoffPdf } = require('../utils/signoffPdf');
 
 const router = express.Router();
 
@@ -193,7 +194,7 @@ router.post('/:id/complete', requireAuth, requirePermission('complete_signoff'),
         const html = emailTemplate({
           badge: 'Sign-off completed', badgeColor: 'green',
           title: 'Work order sign-off completed',
-          body: '<strong>' + (req.user.name || 'A technician') + '</strong> completed sign-off sheet ' + form.form_number + (form.store_name ? ' for ' + form.store_name : '') + '. The photos are attached.',
+          body: '<strong>' + (req.user.name || 'A technician') + '</strong> completed sign-off sheet ' + form.form_number + (form.store_name ? ' for ' + form.store_name : '') + '. The signed sign-off PDF and photos are attached.',
           details: [
             { label: 'Form #', value: form.form_number },
             { label: 'PO #', value: form.po_number || '—' },
@@ -208,13 +209,32 @@ router.post('/:id/complete', requireAuth, requirePermission('complete_signoff'),
           buttonUrl: base + '/?view=view-signoff&id=' + form.id,
           footerNote: 'Automated notification from Nova when a work order sign-off sheet is completed.'
         });
+        // Company header for the PDF (falls back to the app defaults).
+        var company = { name: 'Lock And Roll, LLC', address: '589 Dorset Court', csz: 'Mount Dora, FL 32757', phone: '337-873-2983' };
+        try {
+          const cs = await pool.query("SELECT key, value FROM settings WHERE key IN ('company_name','company_address','company_city_state_zip','company_phone')");
+          const cmap = {}; cs.rows.forEach(function (r) { cmap[r.key] = r.value; });
+          if (cmap.company_name) company.name = cmap.company_name;
+          if (cmap.company_address) company.address = cmap.company_address;
+          if (cmap.company_city_state_zip) company.csz = cmap.company_city_state_zip;
+          if (cmap.company_phone) company.phone = cmap.company_phone;
+        } catch (e) {}
+
+        function fileSafe(x) { return String(x == null ? '' : x).replace(/[\/\\:*?"<>|]+/g, ' ').replace(/\s+/g, ' ').trim(); }
+        var poLabel = form.po_number ? ('PO ' + String(form.po_number)) : form.form_number;
+
         const attachments = [];
-        // Signature image intentionally not attached to admin email.
+        // PDF of the full sign-off sheet, named "PO xxxx Sign Off.pdf".
+        try {
+          const pdfBuf = await buildSignoffPdf(form, photos, { company: company, completedBy: req.user.name });
+          if (pdfBuf && pdfBuf.length) attachments.push({ filename: fileSafe(poLabel + ' Sign Off') + '.pdf', content: pdfBuf.toString('base64') });
+        } catch (e) { console.error('Sign-off PDF build failed:', e && e.message); }
+        // Photos named "PO xxxx <label>.jpg".
         for (var j = 0; j < photos.length; j++) {
           const pobj = photos[j];
           const pimg = typeof pobj === 'string' ? pobj : (pobj && pobj.image_data);
-          const pcap = (pobj && pobj.caption) ? String(pobj.caption).replace(/[^a-z0-9]+/gi, '-').replace(/^-+|-+$/g, '') : '';
-          if (pimg) attachments.push({ filename: form.form_number + '-' + (pcap || ('photo-' + (j + 1))) + '.jpg', content: stripDataUrl(pimg) });
+          const plabel = (pobj && pobj.caption) ? String(pobj.caption) : ('Picture ' + (j + 1));
+          if (pimg) attachments.push({ filename: fileSafe(poLabel + ' ' + plabel) + '.jpg', content: stripDataUrl(pimg) });
         }
         await sendWithAttachments(emails, 'Sign-Off Completed: ' + form.form_number + (form.store_name ? ' — ' + form.store_name : ''), html, attachments);
       }
