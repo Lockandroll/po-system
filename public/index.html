@@ -1046,8 +1046,10 @@ async function renderEditPO(el, id) {
         '<tbody id="line-items-body"></tbody>' +
         '<tfoot><tr class="total-row"><td colspan="5" class="text-right" style="padding:10px">Grand Total</td><td id="grand-total" style="padding:10px">$0.00</td><td></td></tr></tfoot>' +
       '</table></div>' +
-      '<button class="btn btn-secondary btn-sm add-item-btn" onclick="addLineItem()">' + icons.plus + ' Add Item</button>' +
-      '<button class="btn btn-secondary btn-sm" style="margin-left:8px;white-space:nowrap" onclick="openPartsPicker(\'po\')"><svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" style="vertical-align:-2px"><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"/></svg> Add from Parts List</button>' +
+      '<div class="row-actions">' +
+        '<button class="btn btn-secondary btn-sm add-item-btn" onclick="addLineItem()">' + icons.plus + ' Add Item</button>' +
+        '<button class="btn btn-secondary btn-sm" style="white-space:nowrap" onclick="openPartsPicker(\'po\')"><svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" style="vertical-align:-2px"><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"/></svg> Add from Parts List</button>' +
+      '</div>' +
     '</div></div>' +
     '<div class="flex-gap">' +
       '<button class="btn btn-secondary" onclick="savePO(' + (id||'null') + ', \'draft\')" id="btn-draft">Save Draft</button>' +
@@ -1212,8 +1214,10 @@ async function renderRunningList(el){
         '<tbody id="running-body"></tbody>' +
         '<tfoot><tr class="total-row"><td colspan="3" class="text-right" style="padding:10px">Est. Total</td><td id="running-total" style="padding:10px">$0.00</td><td colspan="3"></td></tr></tfoot>' +
       '</table></div>' +
-      '<button class="btn btn-secondary btn-sm add-item-btn" style="white-space:nowrap" onclick="runningAddRow()">' + icons.plus + ' Add item</button>' +
-      '<button class="btn btn-secondary btn-sm" style="white-space:nowrap;margin-left:8px" onclick="openPartsPicker(\'running\')"><svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" style="vertical-align:-2px"><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"/></svg> Add from Parts List</button>' +
+      '<div class="row-actions">' +
+        '<button class="btn btn-secondary btn-sm add-item-btn" style="white-space:nowrap" onclick="runningAddRow()">' + icons.plus + ' Add item</button>' +
+        '<button class="btn btn-secondary btn-sm" style="white-space:nowrap" onclick="openPartsPicker(\'running\')"><svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" style="vertical-align:-2px"><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"/></svg> Add from Parts List</button>' +
+      '</div>' +
     '</div></div>';
   var cityEl = document.getElementById('running-city');
   if(cityEl) cityEl.addEventListener('change', function(){ runningCityForNew = this.value; });
@@ -3485,8 +3489,11 @@ async function renderEditQuote(el, id) {
           '<tr class="total-row"><td colspan="8" class="text-right" style="padding:10px">Grand Total</td><td id="quote-grand-total" style="padding:10px">$0.00</td><td></td></tr>' +
         '</tfoot>' +
       '</table></div>' +
-      '<div style="display:flex;justify-content:space-between;align-items:center;margin-top:8px">' +
-        '<button class="btn btn-secondary btn-sm" onclick="addQuoteLineItem()">' + icons.plus + ' Add Item</button>' +
+      '<div style="display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap;margin-top:8px">' +
+        '<div class="row-actions">' +
+          '<button class="btn btn-secondary btn-sm" onclick="addQuoteLineItem()">' + icons.plus + ' Add Item</button>' +
+          '<button class="btn btn-secondary btn-sm" style="white-space:nowrap" onclick="openPartsPicker(\'quote\')"><svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" style="vertical-align:-2px"><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"/></svg> Add from Parts List</button>' +
+        '</div>' +
         '<div style="display:flex;align-items:center;gap:8px">' +
           '<label style="margin:0;font-size:13px">Tax %</label>' +
           '<input type="number" id="qt-tax-rate" value="' + taxRateVal + '" min="0" max="100" step="0.01" style="width:80px" placeholder="Req." oninput="updateQuoteTotals()" />' +
@@ -6267,7 +6274,7 @@ async function openPartsPicker(context) {
       '<div class="modal-header"><span class="modal-title">Add from Parts List</span><button class="btn btn-ghost btn-sm" onclick="this.closest(\'.modal-overlay\').remove()">&#x2715;</button></div>' +
       '<div class="modal-body">' +
         '<input type="text" id="picker-search" placeholder="Search by item #, alias, description, vendor..." style="width:100%;margin-bottom:10px" oninput="pickerSearchDebounced()" />' +
-        '<div style="font-size:12px;color:var(--text-muted-color);margin-bottom:8px">Check the parts you want, adjust qty / price / description for this ' + (context === 'po' ? 'PO' : 'list') + ' if needed, then Add. Edits here only affect this ' + (context === 'po' ? 'PO' : 'list') + ' &mdash; the master parts list is not changed.</div>' +
+        '<div style="font-size:12px;color:var(--text-muted-color);margin-bottom:8px">Check the parts you want, adjust qty / price / description for this ' + (context === 'po' ? 'PO' : (context === 'quote' ? 'quote' : 'list')) + ' if needed, then Add. Edits here only affect this ' + (context === 'po' ? 'PO' : (context === 'quote' ? 'quote' : 'list')) + ' &mdash; the master parts list is not changed.</div>' +
         '<div id="picker-list" style="max-height:52vh;overflow:auto;border:1px solid var(--border);border-radius:8px"></div>' +
       '</div>' +
       '<div class="modal-footer"><button class="btn btn-secondary" onclick="this.closest(\'.modal-overlay\').remove()">Cancel</button><button class="btn btn-primary" onclick="pickerAddSelected()">Add Selected</button></div>' +
@@ -6346,6 +6353,16 @@ function pickerAddSelected() {
     });
     runningBuildRows();
     for (var k = startLen; k < runningItems.length; k++) { runningPersist(k); }
+  } else if (_pickerContext === 'quote') {
+    if (quoteLineItems.length === 1) {
+      var fq = quoteLineItems[0];
+      if (!(fq.item_number || '').toString().trim() && !(fq.description || '').toString().trim() && !(fq.list_price || '').toString().trim() && !(fq.unit_price || '').toString().trim()) quoteLineItems = [];
+    }
+    chosen.forEach(function(c) {
+      var pv = (c.price === '' || c.price == null) ? '' : c.price;
+      quoteLineItems.push({ item_number: c.part.item_number || '', manufacturer: '', description: c.description, quantity: c.quantity || 1, unit_price: pv, list_price: pv, taxable: false, url: '' });
+    });
+    buildQuoteLineItemRows();
   }
   var ov = document.getElementById('parts-picker-overlay');
   if (ov) ov.remove();
