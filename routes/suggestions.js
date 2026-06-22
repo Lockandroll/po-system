@@ -4,6 +4,7 @@ const { requireAuth } = require('../middleware/auth');
 const { sendEmail, emailTemplate } = require('../utils/email');
 const { sendSms } = require('../utils/sms');
 const notify = require('../utils/notify');
+const push = require('../utils/push');
 
 const router = express.Router();
 
@@ -32,6 +33,7 @@ router.post('/', requireAuth, async (req, res) => {
     // Notify admins and managers
     try {
       const _sg = await notify.broadcastRecipients('suggestion_created', "role IN ('admin', 'manager', 'owner')");
+      await push.sendPushToUsers(_sg.userIds, { title: 'New suggestion', body: 'A new suggestion was submitted.', url: '/' });
       const emailUsers = _sg.emails;
       const smsUsers = _sg.phones;
       const submittedBy = isAnon ? 'Anonymous' : req.user.name;

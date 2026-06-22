@@ -2,6 +2,7 @@ const cron = require('node-cron');
 const { pool } = require('../db');
 const { sendSms } = require('../utils/sms');
 const { sendEmail, emailTemplate } = require('../utils/email');
+const push = require('../utils/push');
 
 const TZ = 'America/New_York';
 const APP = (process.env.APP_URL || '').replace(/\/$/, '');
@@ -58,6 +59,7 @@ async function notifyTaskAssigned(taskId) {
   const sms = 'New task assigned to you: ' + t.title + due + '. Open Nova to view it.';
   const ch = await getChannels('task_assigned');
   await deliver(t, sms, 'New task: ' + t.title, taskEmail(t, 'You have been assigned a new task.'), ch);
+  await push.sendPushToUsers([t.assigned_to], { title: 'New task', body: t.title + due, url: '/' });
 }
 
 // Daily sweep: day-before, due-today, and overdue reminders.

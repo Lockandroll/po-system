@@ -5,6 +5,7 @@ const { logAudit } = require('../utils/audit');
 const { sendEmail, emailTemplate } = require('../utils/email');
 const { sendSms } = require('../utils/sms');
 const notify = require('../utils/notify');
+const push = require('../utils/push');
 
 const router = express.Router();
 
@@ -229,6 +230,7 @@ router.post('/:id/submit', requireAuth, requirePermission('submit_po'), async (r
   await logAudit({ entity_type: 'po', entity_id: po.id, entity_number: po.po_number, action: 'submitted', user_id: req.user.id, user_name: req.user.name });
 
   const _po = await notify.broadcastRecipients('po_submitted', "role IN ('admin', 'owner')");
+  await push.sendPushToUsers(_po.userIds, { title: 'PO needs approval', body: req.user.name + ' submitted ' + po.po_number, url: '/' });
   const emailAdmins = _po.emails;
   const smsAdmins = _po.phones;
   if (emailAdmins.length) {
@@ -287,6 +289,7 @@ router.post('/:id/approve', requireAuth, requirePermission('approve_po'), async 
   await logAudit({ entity_type: 'po', entity_id: po.id, entity_number: po.po_number, action: 'approved', user_id: req.user.id, user_name: req.user.name, details: { orderer: orderer.name, total: po.total_amount } });
 
   const _ch = await notify.requesterChannels('po_approved');
+  await push.sendPushToUsers([po.requester_id], { title: 'PO approved', body: 'Your PO ' + po.po_number + ' was approved.', url: '/' });
   if (_ch.email && po.requester_receive_emails !== false) {
     const html = emailTemplate({
       badge: 'Approved',
@@ -332,6 +335,7 @@ router.post('/:id/reject', requireAuth, requirePermission('approve_po'), async (
   await logAudit({ entity_type: 'po', entity_id: po.id, entity_number: po.po_number, action: 'rejected', user_id: req.user.id, user_name: req.user.name, details: { reason } });
 
   const _ch = await notify.requesterChannels('po_rejected');
+  await push.sendPushToUsers([po.requester_id], { title: 'PO not approved', body: 'Your PO ' + po.po_number + ' was not approved.', url: '/' });
   if (_ch.email && po.requester_receive_emails !== false) {
     const html = emailTemplate({
       badge: 'Not approved',
@@ -376,6 +380,7 @@ router.post('/:id/cancel', requireAuth, requirePermission('cancel_po'), async (r
   await logAudit({ entity_type: 'po', entity_id: po.id, entity_number: po.po_number, action: 'cancelled', user_id: req.user.id, user_name: req.user.name });
 
   const _ch = await notify.requesterChannels('po_cancelled');
+  await push.sendPushToUsers([po.requester_id], { title: 'PO cancelled', body: 'Your PO ' + po.po_number + ' was cancelled.', url: '/' });
   if (_ch.email && po.requester_receive_emails !== false) {
     const html = emailTemplate({
       badge: 'Cancelled',
@@ -420,6 +425,7 @@ router.post('/:id/order', requireAuth, async (req, res) => {
   await logAudit({ entity_type: 'po', entity_id: po.id, entity_number: po.po_number, action: 'order placed', user_id: req.user.id, user_name: req.user.name });
 
   const _ch = await notify.requesterChannels('po_ordered');
+  await push.sendPushToUsers([po.requester_id], { title: 'PO order placed', body: 'PO ' + po.po_number + ' has been ordered.', url: '/' });
   if (_ch.email && po.requester_receive_emails !== false && po.requester_email) {
     const html = emailTemplate({
       badge: 'Order placed',

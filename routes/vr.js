@@ -6,6 +6,7 @@ const { logAudit } = require('../utils/audit');
 const { sendEmail, emailTemplate } = require('../utils/email');
 const { sendSms } = require('../utils/sms');
 const notify = require('../utils/notify');
+const push = require('../utils/push');
 
 const router = express.Router();
 
@@ -162,6 +163,7 @@ router.post('/:id/submit', requireAuth, requirePermission('submit_vr'), async fu
 
     // Email and SMS admins
     const _vr = await notify.broadcastRecipients('vr_submitted', "role IN ('admin', 'owner')");
+    await push.sendPushToUsers(_vr.userIds, { title: 'Vehicle repair needs approval', body: req.user.name + ' submitted ' + vr.vr_number + '.', url: '/' });
     const emailApprovers = _vr.emails;
     const smsApprovers = _vr.phones;
     if (emailApprovers.length) {
@@ -204,6 +206,7 @@ router.post('/:id/approve', requireAuth, requirePermission('approve_vr'), async 
     await pool.query("UPDATE vehicle_repairs SET status='approved', approver_id=$1, approved_at=NOW(), updated_at=NOW() WHERE id=$2", [req.user.id, req.params.id]);
     await logAudit({ entity_type: 'vr', entity_id: vr.id, entity_number: vr.vr_number, action: 'approved', user_id: req.user.id, user_name: req.user.name });
     const _ch = await notify.requesterChannels('vr_approved');
+    await push.sendPushToUsers([vr.requester_id], { title: 'Repair approved', body: 'Your repair ' + vr.vr_number + ' was approved.', url: '/' });
     if (_ch.email && vr.requester_receive_emails !== false && vr.requester_email) {
       const html = emailTemplate({
         badge: 'Approved',
@@ -243,6 +246,7 @@ router.post('/:id/reject', requireAuth, requirePermission('approve_vr'), async f
     await pool.query("UPDATE vehicle_repairs SET status='rejected', rejection_reason=$1, updated_at=NOW() WHERE id=$2", [reason || null, req.params.id]);
     await logAudit({ entity_type: 'vr', entity_id: vr.id, entity_number: vr.vr_number, action: 'rejected', user_id: req.user.id, user_name: req.user.name, details: { reason } });
     const _ch = await notify.requesterChannels('vr_rejected');
+    await push.sendPushToUsers([vr.requester_id], { title: 'Repair not approved', body: 'Your repair ' + vr.vr_number + ' was not approved.', url: '/' });
     if (_ch.email && vr.requester_receive_emails !== false && vr.requester_email) {
       const html = emailTemplate({
         badge: 'Not approved',

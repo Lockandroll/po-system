@@ -2,7 +2,7 @@
 // IMPORTANT: never use backticks/template literals in this file (Windows
 // corrupts backticks in .js files). Use string concatenation only.
 // Bump CACHE_VERSION whenever the shell or cached assets change.
-var CACHE_VERSION = 'nova-v4';
+var CACHE_VERSION = 'nova-v5';
 var SHELL_ASSETS = [
   '/',
   '/index.html',
@@ -87,4 +87,32 @@ self.addEventListener('fetch', function (event) {
 // Allow the page to tell a waiting worker to take over immediately.
 self.addEventListener('message', function (event) {
   if (event.data === 'SKIP_WAITING') { self.skipWaiting(); }
+});
+
+// --- Web push notifications ---
+self.addEventListener('push', function (event) {
+  var data = {};
+  try { data = event.data ? event.data.json() : {}; }
+  catch (e) { data = { body: event.data ? event.data.text() : '' }; }
+  var title = data.title || 'Nova';
+  var options = {
+    body: data.body || '',
+    icon: '/icon-192.png',
+    badge: '/favicon-32.png',
+    data: { url: data.url || '/' }
+  };
+  event.waitUntil(self.registration.showNotification(title, options));
+});
+
+self.addEventListener('notificationclick', function (event) {
+  event.notification.close();
+  var url = (event.notification.data && event.notification.data.url) || '/';
+  event.waitUntil(
+    clients.matchAll({ type: 'window', includeUncontrolled: true }).then(function (list) {
+      for (var i = 0; i < list.length; i++) {
+        if (list[i].url.indexOf(url) !== -1 && 'focus' in list[i]) return list[i].focus();
+      }
+      if (clients.openWindow) return clients.openWindow(url);
+    })
+  );
 });

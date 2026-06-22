@@ -9,6 +9,7 @@ const { pool } = require('../db');
 const { getInboxMessages, getMessageAttachments } = require('../utils/graph');
 const { looksLikeWorkOrder, parseWorkOrderEmail } = require('../utils/workOrderParser');
 const notify = require('../utils/notify');
+const push = require('../utils/push');
 const { logAudit } = require('../utils/audit');
 const { sendEmail, emailTemplate } = require('../utils/email');
 
@@ -120,6 +121,7 @@ async function createSignoffForWO(wo, systemUserId) {
 async function notifyReceived(wo) {
   try {
     const rec = await notify.broadcastRecipients('work_order_received', "role IN ('admin','manager')");
+    await push.sendPushToUsers(rec.userIds, { title: 'New work order', body: 'A new work order was received.', url: '/' });
     const emails = rec.emails || [];
     if (!emails.length) return;
     const base = (process.env.APP_URL || '').replace(/\/$/, '');

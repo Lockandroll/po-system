@@ -31,23 +31,26 @@ async function broadcastRecipients(eventKey, defaultWhere) {
   const rule = rules[eventKey];
   var emails = [];
   var phones = [];
+  var userIds = [];
 
   if (rule && Array.isArray(rule.users)) {
     if (rule.users.length) {
       const { rows } = await pool.query(
-        'SELECT email, phone FROM users WHERE active = true AND id = ANY($1::int[])',
+        'SELECT id, email, phone FROM users WHERE active = true AND id = ANY($1::int[])',
         [rule.users]
       );
       emails = rule.email === false ? [] : rows.map(function (r) { return r.email; }).filter(Boolean);
       phones = rule.sms === false ? [] : rows.map(function (r) { return r.phone; }).filter(Boolean);
+      userIds = rows.map(function (r) { return r.id; });
     }
   } else {
     // Fallback: legacy behavior — query by role and honor each user's personal prefs.
     const res = await pool.query(
-      'SELECT email, phone, receive_emails, receive_sms FROM users WHERE active = true AND (' + defaultWhere + ')'
+      'SELECT id, email, phone, receive_emails, receive_sms FROM users WHERE active = true AND (' + defaultWhere + ')'
     );
     emails = res.rows.filter(function (r) { return r.receive_emails; }).map(function (r) { return r.email; }).filter(Boolean);
     phones = res.rows.filter(function (r) { return r.receive_sms && r.phone; }).map(function (r) { return r.phone; }).filter(Boolean);
+    userIds = res.rows.map(function (r) { return r.id; });
   }
 
   // Append per-event custom distribution-list emails (non-user addresses).
@@ -57,7 +60,7 @@ async function broadcastRecipients(eventKey, defaultWhere) {
     });
   }
 
-  return { emails: emails, phones: phones };
+  return { emails: emails, phones: phones, userIds: userIds };
 }
 
 // Requester (outcome) event channel switches. Returns { email: bool, sms: bool }.

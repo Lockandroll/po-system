@@ -4,6 +4,7 @@ const { requireAuth, requirePermission } = require('../middleware/auth');
 const { logAudit } = require('../utils/audit');
 const { emailTemplate } = require('../utils/email');
 const notify = require('../utils/notify');
+const push = require('../utils/push');
 
 const router = express.Router();
 
@@ -163,6 +164,7 @@ router.post('/:id/complete', requireAuth, requirePermission('complete_signoff'),
     try {
       const base = (process.env.APP_URL || '').replace(/\/$/, '');
       const _so = await notify.broadcastRecipients('signoff_completed', "role IN ('admin', 'owner')");
+      await push.sendPushToUsers(_so.userIds, { title: 'Sign-off completed', body: req.user.name + ' completed a sign-off sheet.', url: '/' });
       const emails = _so.emails;
       if (emails.length) {
         const html = emailTemplate({

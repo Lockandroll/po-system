@@ -594,6 +594,17 @@ async function initDB() {
       'CREATE INDEX IF NOT EXISTS idx_user_cities_user ON user_cities(user_id);' +
       'CREATE INDEX IF NOT EXISTS idx_user_cities_city ON user_cities(city_code);'
     );
+    await client.query(
+      'CREATE TABLE IF NOT EXISTS push_subscriptions (' +
+      '  id SERIAL PRIMARY KEY,' +
+      '  user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,' +
+      '  endpoint TEXT NOT NULL UNIQUE,' +
+      '  p256dh TEXT NOT NULL,' +
+      '  auth TEXT NOT NULL,' +
+      '  created_at TIMESTAMPTZ DEFAULT NOW()' +
+      ');'
+    );
+    await client.query('CREATE INDEX IF NOT EXISTS idx_push_subs_user ON push_subscriptions(user_id);');
     const _spSeed = await client.query("SELECT value FROM settings WHERE key = 'schedule_seed_v1'");
     if (!_spSeed.rows.length) {
       await client.query(

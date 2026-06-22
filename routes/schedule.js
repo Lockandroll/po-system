@@ -4,6 +4,7 @@ const { requireAuth, requirePermission } = require('../middleware/auth');
 const { sendEmail, emailTemplate } = require('../utils/email');
 const { sendSms } = require('../utils/sms');
 const { logAudit } = require('../utils/audit');
+const push = require('../utils/push');
 
 const router = express.Router();
 
@@ -258,6 +259,7 @@ router.post('/publish', requireAuth, requirePermission('manage_schedule'), async
       if (usr.phone && usr.receive_sms === true) {
         await sendSms([usr.phone], 'Nova schedule published:\n' + lines.join('\n'));
       }
+      await push.sendPushToUsers([uid], { title: 'Schedule published', body: 'Your shifts for the week are posted.', url: '/' });
       notified++;
     } catch (e) { console.error('[schedule] publish notify failed for user ' + uid + ':', e.message); }
   }
