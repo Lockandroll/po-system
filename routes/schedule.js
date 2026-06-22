@@ -44,6 +44,7 @@ function mondayOf(dateStr) {
   const back = day === 0 ? 6 : day - 1;
   return addDays(dateStr, -back);
 }
+function dowOf(dateStr) { const a = dateStr.split('-').map(Number); return new Date(Date.UTC(a[0], a[1] - 1, a[2])).getUTCDay(); }
 function fmtTime(t) {
   const mm = timeToMin(t);
   let h = Math.floor(mm / 60), min = mm % 60;
@@ -226,45 +227,8 @@ router.post('/publish', requireAuth, requirePermission('manage_schedule'), async
   }
   sql += ' RETURNING user_id';
   const { rows } = await pool.query(sql, params);
-  const userIds = Array.from(new Set(rows.map(function (r) { return r.user_id; }).filter(Boolean)));
-
-  let notified = 0;
-  for (const uid of userIds) {
-    try {
-      const ur = await pool.query('SELECT name, email, phone, receive_emails, receive_sms FROM users WHERE id=$1 AND active=true', [uid]);
-      if (!ur.rows.length) continue;
-      const usr = ur.rows[0];
-      const sr = await pool.query(
-        'SELECT s.shift_date, s.start_time, s.end_time, p.name AS position_name FROM shifts s LEFT JOIN shift_positions p ON p.id=s.position_id ' +
-        "WHERE s.user_id=$1 AND s.status='published' AND s.shift_date BETWEEN $2 AND $3 ORDER BY s.shift_date, s.start_time",
-        [uid, from, to]
-      );
-      if (!sr.rows.length) continue;
-      const lines = sr.rows.map(function (s) {
-        const d = new Date(s.shift_date);
-        const dl = d.toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric', timeZone: 'UTC' });
-        return dl + ': ' + fmtTime(s.start_time) + ' – ' + fmtTime(s.end_time) + (s.position_name ? ' (' + s.position_name + ')' : '');
-      });
-      const appUrl = process.env.APP_URL || 'https://www.popalockar.com';
-      if (usr.email && usr.receive_emails !== false) {
-        const html = emailTemplate({
-          badge: 'Schedule', badgeColor: 'orange',
-          title: 'Your schedule is published',
-          body: 'Hi ' + (usr.name ? usr.name.split(' ')[0] : 'there') + ', here are your shifts:<br><br>' + lines.join('<br>'),
-          buttonText: 'View in Nova', buttonUrl: appUrl,
-          footerNote: 'Automated schedule notification from Nova.'
-        });
-        await sendEmail(usr.email, 'Your Nova schedule (' + from + ')', html);
-      }
-      if (usr.phone && usr.receive_sms === true) {
-        await sendSms([usr.phone], 'Nova schedule published:\n' + lines.join('\n'));
-      }
-      await push.sendPushToUsers([uid], { title: 'Schedule published', body: 'Your shifts for the week are posted.', url: '/' });
-      notified++;
-    } catch (e) { console.error('[schedule] publish notify failed for user ' + uid + ':', e.message); }
-  }
-  await logAudit({ entity_type: 'schedule', action: 'published', user_id: req.user.id, user_name: req.user.name, details: { from: from, to: to, shifts: rows.length, notified: notified } });
-  res.json({ published: rows.length, notified: notified });
+  await logAudit({ entity_type: 'schedule', action: 'published', user_id: req.user.id, user_name: req.user.name, details: { from: from, to: to, shifts: rows.length } });
+  res.json({ published: rows.length });
 });
 
 // ---- copy week -------------------------------------------------------------
@@ -308,6 +272,58 @@ router.get('/user-cities', requireAuth, requirePermission('manage_schedule'), as
   const byUser = {};
   map.rows.forEach(function (r) { (byUser[r.user_id] = byUser[r.user_id] || []).push((r.city_code || '').trim()); });
   res.json(users.rows.map(function (u) { return { user_id: u.id, name: u.name, role: u.role, city_codes: byUser[u.id] || [] }; }));
+});
+
+// Bulk recurring shifts: generate a draft shift on each selected weekday for N weeks.
+router.post('/recurring', requireAuth, requirePermission('manage_schedule'), async (req, res) => {
+  const b = req.body || {};
+  const user_id = parseInt(b.user_id, 10) || null;
+  const start_date = RE_DATE.test(b.start_date) ? b.start_date : null;
+  const start_time = RE_TIME.test(b.start_time) ? b.start_time : null;
+  const end_time = RE_TIME.test(b.end_time) ? b.end_time : null;
+  let weeks = parseInt(b.weeks, 10); if (isNaN(weeks) || weeks < 1) weeks = 1; if (weeks > 53) weeks = 53;
+  let dows = Array.isArray(b.weekdays) ? b.weekdays.map(function (x) { return parseInt(x, 10); }).filter(function (x) { return x >= 0 && x <= 6; }) : [];
+  dows = Array.from(new Set(dows));
+  if (!user_id || !start_date || !start_time || !end_time || !dows.length) {
+    return res.status(400).json({ error: 'Employee, start date, times, and at least one weekday are required' });
+  }
+  const position_id = b.position_id ? (parseInt(b.position_id, 10) || null) : null;
+  const city_code = b.city_code ? String(b.city_code).trim().slice(0, 3) : null;
+  const break_minutes = Math.max(0, parseInt(b.break_minutes, 10) || 0);
+  const notes = (b.notes || '').toString().trim() || null;
+  const scope = await allowedCities(req.user);
+  if (!cityOk(scope, city_code)) return res.status(403).json({ error: 'You are not assigned to that city' });
+  const u = await pool.query('SELECT name FROM users WHERE id=$1', [user_id]);
+  const uname = u.rows.length ? u.rows[0].name : null;
+  let created = 0;
+  const total = weeks * 7;
+  for (let i = 0; i < total; i++) {
+    const d = addDays(start_date, i);
+    if (dows.indexOf(dowOf(d)) === -1) continue;
+    await pool.query(
+      'INSERT INTO shifts (user_id, user_name, city_code, position_id, shift_date, start_time, end_time, break_minutes, notes, status, created_by) ' +
+      "VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,'draft',$10)",
+      [user_id, uname, city_code, position_id, d, start_time, end_time, break_minutes, notes, req.user.id]
+    );
+    created++;
+  }
+  res.json({ created: created });
+});
+
+// Distinct users who have a shift in the range (for the no-work report comparison).
+router.get('/scheduled-users', requireAuth, requirePermission('manage_schedule'), async (req, res) => {
+  const from = RE_DATE.test(req.query.from) ? req.query.from : mondayOf(ymd(new Date()));
+  const to = RE_DATE.test(req.query.to) ? req.query.to : addDays(from, 6);
+  const scope = await allowedCities(req.user);
+  const params = [from, to];
+  let sql = 'SELECT s.user_id, COALESCE(u.name, s.user_name) AS name, s.city_code FROM shifts s LEFT JOIN users u ON u.id = s.user_id WHERE s.shift_date BETWEEN $1 AND $2 AND s.user_id IS NOT NULL';
+  if (req.query.city && String(req.query.city).trim()) { params.push(String(req.query.city).trim()); sql += ' AND s.city_code = $' + params.length; }
+  if (scope !== null) { if (!scope.length) return res.json([]); params.push(scope); sql += ' AND s.city_code = ANY($' + params.length + '::text[])'; }
+  const { rows } = await pool.query(sql, params);
+  const seen = {}, out = [];
+  rows.forEach(function (r) { if (!seen[r.user_id]) { seen[r.user_id] = 1; out.push({ user_id: r.user_id, name: r.name, city_code: (r.city_code || '').trim() }); } });
+  out.sort(function (a, b) { return (a.name || '').localeCompare(b.name || ''); });
+  res.json(out);
 });
 
 module.exports = router;

@@ -561,7 +561,7 @@ async function render() {
     if (_ovOpen) _ovOpen.classList.add('open');
   }
   const content = document.getElementById('content');
-  var _viewPerm = { dashboard:'view_pos', view:'view_pos', running:'view_pos', 'running-admin':'view_pos', new:'create_po', edit:'edit_po', quotes:'view_quotes', 'view-quote':'view_quotes', 'new-quote':'create_quote', 'edit-quote':'edit_quote', 'vr-dashboard':'view_vr', 'view-vr':'view_vr', 'new-vr':'create_vr', 'edit-vr':'edit_vr', deposits:'view_deposits', 'view-deposit':'view_deposits', signoffs:'view_signoffs', 'view-signoff':'view_signoffs', 'new-signoff':'create_signoff', 'edit-signoff':'edit_signoff', 'complete-signoff':'complete_signoff', tasks:'view_tasks', 'task-detail':'view_tasks', 'new-task':'view_tasks', 'edit-task':'view_tasks', 'work-orders':'view_work_orders', 'view-work-order':'view_work_orders', 'new-work-order':'manage_work_orders', schedule:'view_schedule', 'schedule-admin':'manage_schedule' };
+  var _viewPerm = { dashboard:'view_pos', view:'view_pos', running:'view_pos', 'running-admin':'view_pos', new:'create_po', edit:'edit_po', quotes:'view_quotes', 'view-quote':'view_quotes', 'new-quote':'create_quote', 'edit-quote':'edit_quote', 'vr-dashboard':'view_vr', 'view-vr':'view_vr', 'new-vr':'create_vr', 'edit-vr':'edit_vr', deposits:'view_deposits', 'view-deposit':'view_deposits', signoffs:'view_signoffs', 'view-signoff':'view_signoffs', 'new-signoff':'create_signoff', 'edit-signoff':'edit_signoff', 'complete-signoff':'complete_signoff', tasks:'view_tasks', 'task-detail':'view_tasks', 'new-task':'view_tasks', 'edit-task':'view_tasks', 'work-orders':'view_work_orders', 'view-work-order':'view_work_orders', 'new-work-order':'manage_work_orders', schedule:'view_schedule', 'schedule-admin':'manage_schedule', 'schedule-nowork':'manage_schedule' };
   if (_viewPerm[state.currentView] && !can(_viewPerm[state.currentView])) { content.innerHTML = '<div class="alert alert-error">Access denied.</div>'; return; }
   if (state.currentView === 'home') await renderHomeScreen(content);
   else if (state.currentView === 'dashboard') await renderDashboard(content);
@@ -604,6 +604,7 @@ async function render() {
   else if (state.currentView === 'new-work-order') await renderWorkOrderForm(content);
   else if (state.currentView === 'schedule') await renderSchedule(content);
   else if (state.currentView === 'schedule-admin') await renderScheduleAdmin(content);
+  else if (state.currentView === 'schedule-nowork') await renderNoWorkReport(content);
   else if (state.currentView === 'sop-library') await renderSOPLibrary(content);
   else if (state.currentView === 'view-deposit') await renderViewDeposit(content, state.currentParam);
   else if (state.currentView === 'running') await renderRunningList(content);
@@ -2102,6 +2103,7 @@ var TASK_PRIO = { urgent:{l:'Urgent',c:'#ef4444'}, high:{l:'High',c:'#f59e0b'}, 
 var _tasksData = [];
 var _taskView = 'board';
 var _taskTab = 'mine';
+var _taskForceSelf = false;
 var _taskDragId = null;
 var _taskDragGhost = null;
 function taskDragStart(e, id){
@@ -2166,7 +2168,8 @@ async function renderTasks(el){
   var header = '<div class="page-header"><div class="page-title"><h2>Tasks'+_od+'</h2><p>'+desc+'</p></div>' +
     '<div style="display:flex;gap:8px">' +
       '<button class="btn btn-secondary" onclick="taskToggleView()">'+(_taskView==='board'?'Table view':'Board view')+'</button>' +
-      '<button class="btn btn-primary" onclick="navigate(\'new-task\')">+ New Task</button>' +
+      (manage ? '<button class="btn btn-secondary" onclick="taskAddToMine()" title="Add a task to your own list">+ My list</button>' : '') +
+      '<button class="btn btn-primary" onclick="taskNew()">+ New Task</button>' +
     '</div></div>';
   var tabs = manage ? ('<div style="display:flex;gap:6px;margin-bottom:14px">' +
       '<button class="btn '+(_taskTab==='mine'?'btn-primary':'btn-secondary')+' btn-sm" onclick="taskSetTab(\'mine\')">My Tasks</button>' +
@@ -2178,6 +2181,8 @@ async function renderTasks(el){
 
 function taskToggleView(){ _taskView = (_taskView==='board') ? 'table' : 'board'; navigate('tasks'); }
 function taskSetTab(t){ _taskTab=t; navigate('tasks'); }
+function taskNew(){ _taskForceSelf=false; navigate('new-task'); }
+function taskAddToMine(){ _taskForceSelf=true; navigate('new-task'); }
 
 function taskBoardHtml(){
   var cols = TASK_STATUSES.map(function(st){
@@ -2315,6 +2320,8 @@ function taskRecurChanged(preselect){
 async function renderTaskForm(el, id){
   if (!can('view_tasks')){ el.innerHTML='<div class="alert alert-error">Access denied.</div>'; return; }
   var manage = can('manage_tasks');
+  var personal = !id && _taskForceSelf;
+  var showAssignee = manage && !personal;
   el.innerHTML='<div class="loading">Loading…</div>';
   var t={}, users=[];
   try {
@@ -2331,13 +2338,13 @@ async function renderTaskForm(el, id){
   var recOpts=[['','Does not repeat'],['daily','Daily'],['weekly','Weekly'],['monthly','Monthly']].map(function(rr){ return '<option value="'+rr[0]+'"'+((t.recurrence||'')===rr[0]?' selected':'')+'>'+rr[1]+'</option>'; }).join('');
   var dueVal = t.due_date ? String(t.due_date).slice(0,10) : '';
   el.innerHTML =
-    '<div class="page-header"><div class="page-title"><h2>'+(id?'Edit':'New')+' Task</h2></div>' +
+    '<div class="page-header"><div class="page-title"><h2>'+(id?'Edit':(personal?'New Personal':'New'))+' Task</h2></div>' +
       '<button class="btn btn-secondary" onclick="navigate(\''+(id?'task-detail':'tasks')+'\''+(id?(','+id):'')+')">Cancel</button></div>' +
     '<div id="tasks-feedback"></div>' +
     '<div class="card" style="max-width:680px"><div class="card-body">' +
       '<div class="form-group"><label>Title</label><input type="text" id="tk-title" value="'+escHtml(t.title||'')+'" placeholder="What needs doing?" /></div>' +
       '<div class="form-group"><label>Description</label><textarea id="tk-desc" rows="3" placeholder="Details…">'+escHtml(t.description||'')+'</textarea></div>' +
-      (manage
+      (showAssignee
         ? (id
             ? ('<div style="display:flex;gap:12px;flex-wrap:wrap"><div class="form-group" style="flex:1;min-width:160px"><label>Assign to</label><select id="tk-assignee">'+userOpts+'</select></div><div class="form-group" style="flex:1;min-width:140px"><label>Priority</label><select id="tk-priority">'+prioOpts+'</select></div></div>')
             : (assigneePickerHtml + '<div style="display:flex;gap:12px;flex-wrap:wrap"><div class="form-group" style="flex:1;min-width:140px"><label>Priority</label><select id="tk-priority">'+prioOpts+'</select></div></div>'))
@@ -2366,6 +2373,7 @@ async function taskSave(id){
   if (isNaN(payload.recurrence_day)) payload.recurrence_day = null;
   if (!payload.title){ taskFeedback('Title is required.',true); return; }
   var _asg=document.getElementById('tk-assignee'); if (_asg) payload.assigned_to = _asg.value||null;
+  if (!id && _taskForceSelf) payload.assigned_to = state.user.id;
   var subsEl=document.getElementById('tk-subs');
   if (subsEl){ payload.subtasks = subsEl.value.split('\n').map(function(x){return x.trim();}).filter(Boolean); }
   if (!id && document.getElementById('tk-assignee-list')){
@@ -2379,6 +2387,7 @@ async function taskSave(id){
   }
   try {
     var saved = id ? await api('PUT','/tasks/'+id,payload) : await api('POST','/tasks',payload);
+    _taskForceSelf=false;
     navigate('task-detail', (saved && saved.id) || id);
   } catch(e){ taskFeedback(e.message,true); }
 }
@@ -6511,7 +6520,7 @@ async function printSignoff(id) {
 }
 
 // ===== Scheduling (Sling-style) ============================================
-var _schedMonday = null, _schedCity = '', _schedCities = [], _schedUsers = [], _schedPositions = [], _schedShifts = [], _schedEditId = null, _schedEmpCities = {}, _schedScope = null;
+var _schedMonday = null, _schedCity = '', _schedCities = [], _schedUsers = [], _schedPositions = [], _schedShifts = [], _schedEditId = null, _schedEmpCities = {}, _schedScope = null, _schedMode = 'week', _schedMonthAnchor = null;
 
 function schedYmd(d){ return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0'); }
 function schedAddDays(ds,n){ var a=ds.split('-').map(Number); var d=new Date(a[0],a[1]-1,a[2]); d.setDate(d.getDate()+n); return schedYmd(d); }
@@ -6524,7 +6533,9 @@ function schedDateLabel(ds){ var a=ds.split('-').map(Number); var d=new Date(a[0
 function schedShiftDate(s){ return String(s.shift_date).slice(0,10); }
 
 async function schedLoadAdmin(){
-  var from=_schedMonday, to=schedAddDays(_schedMonday,6);
+  var from, to;
+  if(_schedMode==='month'){ if(!_schedMonthAnchor) _schedMonthAnchor=schedMonthFirst(schedToday()); from=schedMondayOf(_schedMonthAnchor); var _ld=schedAddDays(schedAddMonths(_schedMonthAnchor,1),-1); to=schedAddDays(schedMondayOf(_ld),6); }
+  else { from=_schedMonday; to=schedAddDays(_schedMonday,6); }
   var q='?from='+from+'&to='+to+(_schedCity?'&city='+encodeURIComponent(_schedCity):'');
   var r=await Promise.all([
     api('GET','/schedule/positions').catch(function(){return [];}),
@@ -6545,28 +6556,111 @@ async function renderScheduleAdmin(el){
   el.innerHTML='<div class="loading">Loading…</div>';
   try{ await schedLoadAdmin(); }catch(e){ el.innerHTML='<div class="alert alert-error">'+escHtml(e.message)+'</div>'; return; }
   var cityOpts='<option value="">All cities</option>'+schedScopedCities().map(function(c){ return '<option value="'+escHtml((c.code||'').trim())+'"'+(_schedCity===(c.code||'').trim()?' selected':'')+'>'+escHtml(c.name)+'</option>'; }).join('');
-  var weekEnd=schedAddDays(_schedMonday,6);
+  var isMonth=_schedMode==='month';
+  var nav;
+  if(isMonth){
+    nav='<button class="btn btn-ghost btn-sm" onclick="schedChangeMonth(-1)">&lsaquo; Prev</button>'+
+        '<span style="font-weight:600;min-width:150px;text-align:center">'+escHtml(schedMonthLabel(_schedMonthAnchor))+'</span>'+
+        '<button class="btn btn-ghost btn-sm" onclick="schedChangeMonth(1)">Next &rsaquo;</button>'+
+        '<button class="btn btn-ghost btn-sm" onclick="schedGoToday()">Today</button>';
+  } else {
+    var weekEnd=schedAddDays(_schedMonday,6);
+    nav='<button class="btn btn-ghost btn-sm" onclick="schedChangeWeek(-1)">&lsaquo; Prev</button>'+
+        '<span style="font-weight:600;min-width:170px;text-align:center">'+escHtml(schedDateLabel(_schedMonday))+' – '+escHtml(schedDateLabel(weekEnd))+'</span>'+
+        '<button class="btn btn-ghost btn-sm" onclick="schedChangeWeek(1)">Next &rsaquo;</button>'+
+        '<button class="btn btn-ghost btn-sm" onclick="schedGoToday()">Today</button>';
+  }
   el.innerHTML=
     '<div class="page-header" style="flex-wrap:wrap;gap:10px"><div class="page-title">Schedule</div>'+
       '<div style="display:flex;gap:8px;flex-wrap:wrap">'+
+        '<button class="btn btn-secondary btn-sm" onclick="schedSetMode(\''+(isMonth?'week':'month')+'\')">'+(isMonth?'Week view':'Month view')+'</button>'+
+        (isMonth?'':'<button class="btn btn-secondary btn-sm" onclick="schedRecurringForm()">Recurring</button>')+
         '<button class="btn btn-secondary btn-sm" onclick="schedCopyLastWeek()">Copy Last Week</button>'+
         '<button class="btn btn-secondary btn-sm" onclick="schedManagePositions()">Positions</button>'+
-        '<button class="btn btn-primary btn-sm" onclick="schedPublishWeek()">Publish Week</button>'+
+        '<button class="btn btn-secondary btn-sm" onclick="navigate(\'schedule-nowork\')">No-Work Report</button>'+
+        (isMonth?'':'<button class="btn btn-primary btn-sm" onclick="schedPublishWeek()">Publish Week</button>')+
       '</div>'+
     '</div>'+
     '<div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-bottom:14px">'+
-      '<div style="display:flex;align-items:center;gap:6px">'+
-        '<button class="btn btn-ghost btn-sm" onclick="schedChangeWeek(-1)">&lsaquo; Prev</button>'+
-        '<span style="font-weight:600;min-width:170px;text-align:center">'+escHtml(schedDateLabel(_schedMonday))+' – '+escHtml(schedDateLabel(weekEnd))+'</span>'+
-        '<button class="btn btn-ghost btn-sm" onclick="schedChangeWeek(1)">Next &rsaquo;</button>'+
-        '<button class="btn btn-ghost btn-sm" onclick="schedThisWeek()">Today</button>'+
-      '</div>'+
+      '<div style="display:flex;align-items:center;gap:6px">'+nav+'</div>'+
       '<select onchange="schedSetCity(this.value)" style="background:var(--card-bg,#1a1a1a);color:var(--text-color,#fff);border:1px solid var(--border,#333);border-radius:6px;padding:7px 10px;font-size:13px">'+cityOpts+'</select>'+
     '</div>'+
     '<div class="card"><div class="card-body" style="overflow-x:auto;padding:0"><div id="sched-grid-wrap"></div></div></div>'+
-    '<p class="text-muted" style="font-size:12.5px;margin-top:10px">Click any cell to add a shift; click a shift to edit. Dashed = draft (not yet visible to staff); solid = published.</p>'+
+    '<p class="text-muted" style="font-size:12.5px;margin-top:10px">'+(isMonth?'Click a shift to edit, or a day to jump to that week.':'Click any cell to add a shift; click a shift to edit. Dashed = draft (not yet visible to staff); solid = published.')+'</p>'+
     '<div id="sched-modal"></div>';
-  schedRenderGrid();
+  if(isMonth) schedRenderMonth(); else schedRenderGrid();
+}
+function schedSetMode(m){ _schedMode=m; if(m==='month' && !_schedMonthAnchor) _schedMonthAnchor=schedMonthFirst(_schedMonday||schedToday()); renderScheduleAdmin(document.getElementById('content')); }
+function schedChangeMonth(n){ _schedMonthAnchor=schedAddMonths(_schedMonthAnchor||schedMonthFirst(schedToday()), n); renderScheduleAdmin(document.getElementById('content')); }
+function schedGoToday(){ if(_schedMode==='month'){ _schedMonthAnchor=schedMonthFirst(schedToday()); } else { _schedMonday=schedMondayOf(schedToday()); } renderScheduleAdmin(document.getElementById('content')); }
+function schedJumpWeek(day){ _schedMonday=schedMondayOf(day); _schedMode='week'; renderScheduleAdmin(document.getElementById('content')); }
+function schedMonthFirst(ds){ return ds.slice(0,7)+'-01'; }
+function schedAddMonths(ds,n){ var a=ds.split('-').map(Number); var y=a[0], m=a[1]-1+n; y+=Math.floor(m/12); m=((m%12)+12)%12; return y+'-'+String(m+1).padStart(2,'0')+'-01'; }
+function schedMonthLabel(ds){ var a=ds.split('-').map(Number); var d=new Date(a[0],a[1]-1,1); return d.toLocaleDateString('en-US',{month:'long',year:'numeric'}); }
+function schedRenderMonth(){
+  var wrap=document.getElementById('sched-grid-wrap'); if(!wrap) return;
+  var first=_schedMonthAnchor||schedMonthFirst(schedToday());
+  var gridStart=schedMondayOf(first);
+  var lastDay=schedAddDays(schedAddMonths(first,1),-1);
+  var gridEnd=schedAddDays(schedMondayOf(lastDay),6);
+  var monthNum=parseInt(first.slice(5,7),10);
+  var vis={}; schedVisibleUsers().forEach(function(u){ vis[u.id]=1; });
+  var byDate={};
+  _schedShifts.forEach(function(s){ if(!vis[s.user_id]) return; var dd=schedShiftDate(s); (byDate[dd]=byDate[dd]||[]).push(s); });
+  var today=schedToday();
+  var dayNames=['Mon','Tue','Wed','Thu','Fri','Sat','Sun'];
+  var head='<tr>'+dayNames.map(function(dn){return '<th style="padding:6px;text-align:center;font-size:11px;color:var(--text-muted-color,#999)">'+dn+'</th>';}).join('')+'</tr>';
+  var rowsHtml='';
+  var d=gridStart;
+  while(d<=gridEnd){
+    var cells='';
+    for(var i=0;i<7;i++){
+      var day=schedAddDays(d,i);
+      var inMonth=parseInt(day.slice(5,7),10)===monthNum;
+      var list=(byDate[day]||[]).sort(function(a,b){return schedTimeMin(a.start_time)-schedTimeMin(b.start_time);});
+      var dim=inMonth?'':'opacity:0.35;';
+      var isT=day===today;
+      var items=list.slice(0,4).map(function(s){
+        var col=s.position_color||'#f97316';
+        return '<div onclick="event.stopPropagation();schedOpenShift('+s.id+')" title="'+escHtml((s.user_name||'')+' '+schedTimeFmt(s.start_time)+'-'+schedTimeFmt(s.end_time))+'" style="cursor:pointer;border-left:3px solid '+col+';background:'+col+'22;border-radius:3px;padding:1px 4px;margin:2px 0;font-size:10.5px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">'+escHtml(schedTimeFmt(s.start_time))+' '+escHtml((s.user_name||'').split(' ')[0])+'</div>';
+      }).join('');
+      var more=list.length>4?('<div style="font-size:10px;color:var(--text-muted-color,#999)">+'+(list.length-4)+' more</div>'):'';
+      cells+='<td onclick="schedJumpWeek(\''+day+'\')" style="vertical-align:top;border:1px solid var(--border,#2a2a2a);height:96px;width:14.28%;cursor:pointer;padding:3px;'+dim+'">'+
+        '<div style="font-size:11px;font-weight:600;text-align:right;'+(isT?'color:var(--primary,#f97316)':'')+'">'+parseInt(day.slice(8,10),10)+'</div>'+items+more+'</td>';
+    }
+    rowsHtml+='<tr>'+cells+'</tr>';
+    d=schedAddDays(d,7);
+  }
+  wrap.innerHTML='<table style="border-collapse:collapse;width:100%;table-layout:fixed;min-width:760px"><thead>'+head+'</thead><tbody>'+rowsHtml+'</tbody></table>';
+}
+function schedRecurringForm(){
+  var userOpts=schedVisibleUsers().map(function(u){ return '<option value="'+u.id+'">'+escHtml(u.name)+'</option>'; }).join('');
+  var posOpts='<option value="">No position</option>'+_schedPositions.filter(function(p){return p.active!==false;}).map(function(p){ return '<option value="'+p.id+'">'+escHtml(p.name)+'</option>'; }).join('');
+  var cityOpts='<option value="">— city —</option>'+_schedCities.map(function(c){ var cc=(c.code||'').trim(); return '<option value="'+escHtml(cc)+'"'+(_schedCity===cc?' selected':'')+'>'+escHtml(c.name)+'</option>'; }).join('');
+  var inp='background:var(--bg-elevated,#1f1f1f);color:var(--text-color,#fff);border:1px solid var(--border,#333);border-radius:6px;padding:8px;width:100%;font-size:14px';
+  var days=[['1','Mon',true],['2','Tue',true],['3','Wed',true],['4','Thu',true],['5','Fri',true],['6','Sat',false],['0','Sun',false]];
+  var dayChecks=days.map(function(dd){ return '<label style="display:inline-flex;align-items:center;gap:4px;margin:0 8px 6px 0;font-size:13px"><input type="checkbox" class="rc-dow" value="'+dd[0]+'"'+(dd[2]?' checked':'')+' style="width:auto"> '+dd[1]+'</label>'; }).join('');
+  schedModal(
+    '<h3 style="margin:0 0 14px">Recurring Shift</h3>'+
+    '<div id="rc-err"></div>'+
+    '<div class="form-group"><label>Employee</label><select id="rc-user" style="'+inp+'">'+userOpts+'</select></div>'+
+    '<div class="form-group"><label>Days of week</label><div>'+dayChecks+'</div></div>'+
+    '<div style="display:flex;gap:10px"><div class="form-group" style="flex:1"><label>Start</label><input type="time" id="rc-start" value="09:00" style="'+inp+'"></div>'+
+    '<div class="form-group" style="flex:1"><label>End</label><input type="time" id="rc-end" value="17:00" style="'+inp+'"></div></div>'+
+    '<div style="display:flex;gap:10px"><div class="form-group" style="flex:1"><label>Position</label><select id="rc-pos" style="'+inp+'">'+posOpts+'</select></div>'+
+    '<div class="form-group" style="flex:1"><label>City</label><select id="rc-city" style="'+inp+'">'+cityOpts+'</select></div></div>'+
+    '<div style="display:flex;gap:10px"><div class="form-group" style="flex:1"><label>Start date</label><input type="date" id="rc-startdate" value="'+(_schedMonday||schedMondayOf(schedToday()))+'" style="'+inp+'"></div>'+
+    '<div class="form-group" style="flex:1"><label>Repeat for (weeks)</label><input type="number" id="rc-weeks" min="1" max="53" value="52" style="'+inp+'"></div></div>'+
+    '<div class="form-group"><label>Unpaid break (min)</label><input type="number" id="rc-break" min="0" value="0" style="'+inp+'"></div>'+
+    '<div style="display:flex;justify-content:flex-end;gap:8px;margin-top:8px"><button class="btn btn-ghost btn-sm" onclick="schedCloseModal()">Cancel</button><button class="btn btn-primary btn-sm" onclick="schedSaveRecurring()">Create shifts</button></div>'
+  );
+}
+async function schedSaveRecurring(){
+  var dows=[]; document.querySelectorAll('.rc-dow:checked').forEach(function(c){ dows.push(c.value); });
+  var body={ user_id:document.getElementById('rc-user').value, weekdays:dows, start_time:document.getElementById('rc-start').value, end_time:document.getElementById('rc-end').value, position_id:document.getElementById('rc-pos').value||null, city_code:document.getElementById('rc-city').value||null, start_date:document.getElementById('rc-startdate').value, weeks:document.getElementById('rc-weeks').value||1, break_minutes:document.getElementById('rc-break').value||0 };
+  if(!body.user_id||!dows.length||!body.start_date||!body.start_time||!body.end_time){ document.getElementById('rc-err').innerHTML='<div class="alert alert-error">Employee, at least one day, date, and times are required.</div>'; return; }
+  try{ var r=await api('POST','/schedule/recurring',body); schedCloseModal(); await schedLoadAdmin(); if(_schedMode==='month') schedRenderMonth(); else schedRenderGrid(); schedToast('Created '+r.created+' shift(s) as drafts.','ok'); }
+  catch(e){ document.getElementById('rc-err').innerHTML='<div class="alert alert-error">'+escHtml(e.message)+'</div>'; }
 }
 
 function schedRenderGrid(){
@@ -6651,7 +6745,7 @@ async function schedDeleteShift(){
 async function schedPublishWeek(){
   var from=_schedMonday, to=schedAddDays(_schedMonday,6);
   if(!confirm('Publish all draft shifts for this week'+(_schedCity?' in the selected city':'')+'? Affected staff will be notified.')) return;
-  try{ var r=await api('POST','/schedule/publish',{from:from,to:to,city:_schedCity||null}); schedToast('Published '+r.published+' shift(s); notified '+r.notified+' employee(s).','ok'); await schedLoadAdmin(); schedRenderGrid(); }catch(e){ alert(e.message); }
+  try{ var r=await api('POST','/schedule/publish',{from:from,to:to,city:_schedCity||null}); schedToast('Published '+r.published+' shift(s).','ok'); await schedLoadAdmin(); schedRenderGrid(); }catch(e){ alert(e.message); }
 }
 async function schedCopyLastWeek(){
   var src=schedAddDays(_schedMonday,-7);
@@ -6691,6 +6785,104 @@ function schedVisibleUsers(){
 function schedScopedCities(){
   if(_schedScope===null) return _schedCities;
   return _schedCities.filter(function(c){ return _schedScope.indexOf((c.code||'').trim())!==-1; });
+}
+function nwKey(name){
+  name=(name||'').trim().toLowerCase().replace(/\./g,'');
+  if(!name) return '';
+  var suf={'jr':1,'sr':1,'ii':1,'iii':1,'iv':1,'v':1};
+  var first='', last='';
+  if(name.indexOf(',')!==-1){
+    var parts=name.split(',');
+    var lp=parts[0].trim().split(/\s+/).filter(function(t){return !suf[t];});
+    last=lp[0]||'';
+    var fp=(parts[1]||'').trim().split(/\s+/);
+    first=fp[0]||'';
+  } else {
+    var toks=name.split(/\s+/).filter(function(t){return !suf[t];});
+    first=toks[0]||''; last=toks[toks.length-1]||'';
+  }
+  return first+'|'+last;
+}
+function nwParseCSV(text){
+  var rows=[], row=[], field='', inQ=false, i=0;
+  for(; i<text.length; i++){
+    var c=text[i];
+    if(inQ){ if(c==='"'){ if(text[i+1]==='"'){field+='"';i++;} else inQ=false; } else field+=c; continue; }
+    if(c==='"'){ inQ=true; continue; }
+    if(c===','){ row.push(field); field=''; continue; }
+    if(c==='\r'){ continue; }
+    if(c==='\n'){ row.push(field); rows.push(row); row=[]; field=''; continue; }
+    field+=c;
+  }
+  if(field.length||row.length){ row.push(field); rows.push(row); }
+  return rows;
+}
+function nwDateToYmd(s){
+  var m=String(s||'').trim().match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})/);
+  if(!m) return '';
+  return m[3]+'-'+String(m[1]).padStart(2,'0')+'-'+String(m[2]).padStart(2,'0');
+}
+async function renderNoWorkReport(el){
+  if(!can('manage_schedule')){ el.innerHTML='<div class="alert alert-error">Access denied.</div>'; return; }
+  var mon=schedMondayOf(schedToday());
+  var cities=[]; try{ cities=(await api('GET','/cities')).filter(function(c){return c.active!==false;}); }catch(e){}
+  var cityOpts='<option value="">All cities</option>'+cities.map(function(c){var cc=(c.code||'').trim();return '<option value="'+escHtml(cc)+'">'+escHtml(c.name)+'</option>';}).join('');
+  var inp='background:var(--bg-elevated,#1f1f1f);color:var(--text-color,#fff);border:1px solid var(--border,#333);border-radius:6px;padding:8px';
+  el.innerHTML=
+    '<div class="page-header"><div class="page-title"><h2>No-Work Report</h2><p>Upload a weekly call report and compare it to the schedule to see who was scheduled but pulled no calls.</p></div>'+
+      '<button class="btn btn-secondary" onclick="navigate(\'schedule-admin\')">&larr; Back to schedule</button></div>'+
+    '<div class="card" style="max-width:680px"><div class="card-body">'+
+      '<div style="display:flex;gap:12px;flex-wrap:wrap">'+
+        '<div class="form-group" style="flex:1;min-width:160px"><label>Week of (any day)</label><input type="date" id="nw-week" value="'+mon+'" style="'+inp+';width:100%"></div>'+
+        '<div class="form-group" style="flex:1;min-width:160px"><label>City</label><select id="nw-city" style="'+inp+';width:100%">'+cityOpts+'</select></div>'+
+      '</div>'+
+      '<div class="form-group"><label>Call report CSV</label><input type="file" id="nw-file" accept=".csv" style="'+inp+';width:100%"></div>'+
+      '<button class="btn btn-primary" onclick="nwRun()">Run report</button>'+
+    '</div></div>'+
+    '<div id="nw-results" style="margin-top:16px"></div>';
+}
+async function nwRun(){
+  var res=document.getElementById('nw-results');
+  var fileEl=document.getElementById('nw-file');
+  if(!fileEl.files || !fileEl.files[0]){ res.innerHTML='<div class="alert alert-error">Please choose a CSV file.</div>'; return; }
+  var weekStart=document.getElementById('nw-week').value;
+  if(!weekStart){ res.innerHTML='<div class="alert alert-error">Please choose the week.</div>'; return; }
+  var mon=schedMondayOf(weekStart), sun=schedAddDays(mon,6);
+  var city=document.getElementById('nw-city').value;
+  res.innerHTML='<div class="loading">Reading…</div>';
+  var text;
+  try{ text=await fileEl.files[0].text(); }catch(e){ res.innerHTML='<div class="alert alert-error">Could not read file.</div>'; return; }
+  var rows=nwParseCSV(text);
+  if(!rows.length){ res.innerHTML='<div class="alert alert-error">Empty file.</div>'; return; }
+  var header=rows[0].map(function(h){return (h||'').trim();});
+  var techIdx=header.indexOf('Dispatch Closed');
+  var dateIdx=header.indexOf('Date Disp');
+  if(techIdx===-1){ res.innerHTML='<div class="alert alert-error">Could not find a "Dispatch Closed" column in this CSV.</div>'; return; }
+  var workedKeys={}, workedNames={};
+  for(var i=1;i<rows.length;i++){
+    var r=rows[i]; if(!r || techIdx>=r.length) continue;
+    if(dateIdx!==-1){ var d=nwDateToYmd(r[dateIdx]); if(d && (d<mon||d>sun)) continue; }
+    var nm=(r[techIdx]||'').trim(); if(!nm) continue;
+    var k=nwKey(nm); if(!k||k==='|') continue;
+    workedKeys[k]=1; if(!workedNames[k]) workedNames[k]=nm;
+  }
+  var scheduled=[];
+  try{ scheduled=await api('GET','/schedule/scheduled-users?from='+mon+'&to='+sun+(city?'&city='+encodeURIComponent(city):'')); }catch(e){ res.innerHTML='<div class="alert alert-error">'+escHtml(e.message)+'</div>'; return; }
+  var noWork=[], worked=[], schedKeys={};
+  scheduled.forEach(function(u){ var k=nwKey(u.name); schedKeys[k]=1; if(workedKeys[k]) worked.push(u); else noWork.push(u); });
+  var extra=[]; Object.keys(workedKeys).forEach(function(k){ if(!schedKeys[k]) extra.push(workedNames[k]); });
+  extra.sort();
+  var html='<div class="card"><div class="card-body">'+
+    '<div style="display:flex;gap:18px;flex-wrap:wrap;margin-bottom:14px;font-size:14px">'+
+      '<div><strong style="font-size:20px">'+scheduled.length+'</strong><div class="text-muted" style="font-size:12px">Scheduled</div></div>'+
+      '<div><strong style="font-size:20px;color:#22c55e">'+worked.length+'</strong><div class="text-muted" style="font-size:12px">Worked</div></div>'+
+      '<div><strong style="font-size:20px;color:#ef4444">'+noWork.length+'</strong><div class="text-muted" style="font-size:12px">No work</div></div>'+
+    '</div>'+
+    '<div style="font-weight:700;margin-bottom:6px;color:#ef4444">Scheduled but pulled no calls ('+escHtml(mon)+' to '+escHtml(sun)+')</div>'+
+    (noWork.length? '<table style="width:100%"><tbody>'+noWork.map(function(u){return '<tr><td style="padding:5px 0">'+escHtml(u.name)+'</td><td style="text-align:right;color:var(--text-muted-color);font-size:12px">'+escHtml(u.city_code||'')+'</td></tr>';}).join('')+'</tbody></table>' : '<p class="text-muted">Everyone scheduled pulled at least one call.</p>')+
+    (extra.length? '<div style="font-weight:700;margin:16px 0 6px">Pulled calls but not on the schedule</div><div class="text-muted" style="font-size:13px">'+extra.map(escHtml).join(', ')+'</div>' : '')+
+  '</div></div>';
+  res.innerHTML=html;
 }
 // ----- employee view -------------------------------------------------------
 async function renderSchedule(el){
