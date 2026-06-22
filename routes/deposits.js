@@ -83,21 +83,31 @@ router.post('/ai-extract', requireAuth, requirePermission('create_deposit'), asy
   }
 });
 
-// POST / — submit a deposit (any authenticated user, for themselves)
+// POST / — submit a deposit with optional Pulsar-owed figure, multiple receipt
+// photos, and expense lines (each expense may carry its own photo).
 router.post('/', requireAuth, requirePermission('create_deposit'), async function(req, res) {
+  const client = await pool.connect();
   try {
-    const { amount, deposit_date, period_start, period_end, city_code, notes, receipt_image, receipt_filename } = req.body;
+    const { amount, deposit_date, period_start, period_end, city_code, notes, pulsar_owed, receipt_image, receipt_filename } = req.body;
     const amt = parseFloat(amount);
     if (isNaN(amt) || amt <= 0) {
+      client.release();
       return res.status(400).json({ error: 'A valid deposit amount is required' });
     }
     if (!deposit_date) {
+      client.release();
       return res.status(400).json({ error: 'Deposit date is required' });
     }
+    const owed = (pulsar_owed === '' || pulsar_owed == null || isNaN(parseFloat(pulsar_owed))) ? null : parseFloat(pulsar_owed);
+    // Receipts: prefer the receipts[] array; fall back to the legacy single image.
+    let receipts = Array.isArray(req.body.receipts) ? req.body.receipts : [];
+    if (!receipts.length && receipt_image) receipts = [{ image: receipt_image, filename: receipt_filename || null }];
+    const expenses = Array.isArray(req.body.expenses) ? req.body.expenses : [];
     const deposit_number = await generateDepositNumber();
-    const { rows } = await pool.query(
-      'INSERT INTO deposits (deposit_number, user_id, user_name, city_code, amount, deposit_date, period_start, period_end, notes, receipt_image, receipt_filename) ' +
-      'VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) RETURNING id, deposit_number, user_id, user_name, city_code, amount, deposit_date, period_start, period_end, notes, receipt_filename, created_at',
+    await client.query('BEGIN');
+    const { rows } = await client.query(
+      'INSERT INTO deposits (deposit_number, user_id, user_name, city_code, amount, deposit_date, period_start, period_end, notes, pulsar_owed) ' +
+      'VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) RETURNING id, deposit_number, user_id, user_name, city_code, amount, deposit_date, period_start, period_end, notes, pulsar_owed, created_at',
       [
         deposit_number,
         req.user.id,
@@ -108,11 +118,34 @@ router.post('/', requireAuth, requirePermission('create_deposit'), async functio
         period_start || null,
         period_end || null,
         notes || null,
-        receipt_image || null,
-        receipt_filename || null
+        owed
       ]
     );
     const dep = rows[0];
+    for (let i = 0; i < receipts.length; i++) {
+      const rc = receipts[i];
+      if (rc && rc.image) {
+        await client.query(
+          'INSERT INTO deposit_receipts (deposit_id, image, filename) VALUES ($1,$2,$3)',
+          [dep.id, rc.image, rc.filename || null]
+        );
+      }
+    }
+    let expenseTotal = 0;
+    for (let j = 0; j < expenses.length; j++) {
+      const ex = expenses[j];
+      if (!ex) continue;
+      const exAmt = parseFloat(ex.amount);
+      const desc = (ex.description == null ? '' : String(ex.description)).slice(0, 500);
+      if (!desc && isNaN(exAmt)) continue;
+      const safeAmt = isNaN(exAmt) ? 0 : exAmt;
+      expenseTotal += safeAmt;
+      await client.query(
+        'INSERT INTO deposit_expenses (deposit_id, description, amount, receipt_image, receipt_filename) VALUES ($1,$2,$3,$4,$5)',
+        [dep.id, desc || null, safeAmt, ex.image || null, ex.filename || null]
+      );
+    }
+    await client.query('COMMIT');
     await logAudit({
       entity_type: 'deposit',
       entity_id: dep.id,
@@ -120,27 +153,33 @@ router.post('/', requireAuth, requirePermission('create_deposit'), async functio
       action: 'created',
       user_id: req.user.id,
       user_name: req.user.name,
-      details: { amount: amt, city_code: city_code || null }
+      details: { amount: amt, pulsar_owed: owed, expense_total: expenseTotal, city_code: city_code || null }
     });
     res.status(201).json(dep);
   } catch (err) {
+    try { await client.query('ROLLBACK'); } catch (e) {}
     console.error(err);
     res.status(500).json({ error: 'Failed to submit deposit' });
+  } finally {
+    client.release();
   }
 });
 
-// GET / — list deposits (own for employees; all for admin/manager).
-// Never returns the receipt image in the list (kept lightweight).
+// GET / — list deposits (own for employees; all for see-all roles).
+// Includes pulsar_owed and a summed expense total so the client can show Over/Short.
+// Never returns receipt images in the list (kept lightweight).
 router.get('/', requireAuth, requirePermission('view_deposits'), async function(req, res) {
   try {
-    const cols = 'id, deposit_number, user_id, user_name, city_code, amount, deposit_date, period_start, period_end, notes, receipt_filename, ' +
-      '(receipt_image IS NOT NULL) AS has_receipt, created_at';
+    const cols = 'd.id, d.deposit_number, d.user_id, d.user_name, d.city_code, d.amount, d.pulsar_owed, d.deposit_date, d.period_start, d.period_end, d.notes, d.receipt_filename, ' +
+      '(d.receipt_image IS NOT NULL OR EXISTS(SELECT 1 FROM deposit_receipts r WHERE r.deposit_id = d.id)) AS has_receipt, ' +
+      'COALESCE((SELECT SUM(e.amount) FROM deposit_expenses e WHERE e.deposit_id = d.id), 0) AS total_expenses, ' +
+      'd.created_at';
     let query, params;
     if (SEE_ALL.includes(req.user.role)) {
-      query = 'SELECT ' + cols + ' FROM deposits ORDER BY deposit_date DESC, created_at DESC';
+      query = 'SELECT ' + cols + ' FROM deposits d ORDER BY d.deposit_date DESC, d.created_at DESC';
       params = [];
     } else {
-      query = 'SELECT ' + cols + ' FROM deposits WHERE user_id = $1 ORDER BY deposit_date DESC, created_at DESC';
+      query = 'SELECT ' + cols + ' FROM deposits d WHERE d.user_id = $1 ORDER BY d.deposit_date DESC, d.created_at DESC';
       params = [req.user.id];
     }
     const { rows } = await pool.query(query, params);
@@ -158,8 +197,10 @@ router.get('/export', requireAuth, requirePermission('export_deposits'), async f
   }
   try {
     const { rows } = await pool.query(
-      'SELECT deposit_number, user_name, city_code, amount, deposit_date, period_start, period_end, notes, receipt_filename, ' +
-      '(receipt_image IS NOT NULL) AS has_receipt, created_at FROM deposits ORDER BY deposit_date DESC, created_at DESC'
+      'SELECT d.deposit_number, d.user_name, d.city_code, d.amount, d.pulsar_owed, d.deposit_date, d.period_start, d.period_end, d.notes, d.receipt_filename, ' +
+      '(d.receipt_image IS NOT NULL OR EXISTS(SELECT 1 FROM deposit_receipts r WHERE r.deposit_id = d.id)) AS has_receipt, ' +
+      'COALESCE((SELECT SUM(e.amount) FROM deposit_expenses e WHERE e.deposit_id = d.id), 0) AS total_expenses, ' +
+      'd.created_at FROM deposits d ORDER BY d.deposit_date DESC, d.created_at DESC'
     );
     res.json({ deposits: rows });
   } catch (err) {
@@ -168,7 +209,7 @@ router.get('/export', requireAuth, requirePermission('export_deposits'), async f
   }
 });
 
-// GET /:id — single deposit incl. receipt image (owner or see-all roles)
+// GET /:id — single deposit incl. receipts and expenses (owner or see-all roles)
 router.get('/:id', requireAuth, requirePermission('view_deposits'), async function(req, res) {
   try {
     const { rows } = await pool.query('SELECT * FROM deposits WHERE id = $1', [req.params.id]);
@@ -177,6 +218,14 @@ router.get('/:id', requireAuth, requirePermission('view_deposits'), async functi
     if (!SEE_ALL.includes(req.user.role) && dep.user_id !== req.user.id) {
       return res.status(403).json({ error: 'Access denied' });
     }
+    const rc = await pool.query('SELECT id, image, filename FROM deposit_receipts WHERE deposit_id = $1 ORDER BY id', [dep.id]);
+    dep.receipts = rc.rows;
+    // Back-compat: surface the legacy single image as a receipt if no child rows exist.
+    if (!dep.receipts.length && dep.receipt_image) {
+      dep.receipts = [{ id: null, image: dep.receipt_image, filename: dep.receipt_filename || null }];
+    }
+    const ex = await pool.query('SELECT id, description, amount, receipt_image, receipt_filename FROM deposit_expenses WHERE deposit_id = $1 ORDER BY id', [dep.id]);
+    dep.expenses = ex.rows;
     res.json(dep);
   } catch (err) {
     console.error(err);
@@ -184,7 +233,7 @@ router.get('/:id', requireAuth, requirePermission('view_deposits'), async functi
   }
 });
 
-// DELETE /:id — admin/manager only
+// DELETE /:id — admin/manager only. Child receipts/expenses cascade.
 router.delete('/:id', requireAuth, requirePermission('delete_deposit'), async function(req, res) {
   if (!MANAGE.includes(req.user.role)) {
     return res.status(403).json({ error: 'Access denied' });

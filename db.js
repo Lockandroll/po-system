@@ -686,6 +686,34 @@ async function initDB() {
       'CREATE INDEX IF NOT EXISTS idx_deposits_date ON deposits(deposit_date);' +
       'CREATE INDEX IF NOT EXISTS idx_deposits_city ON deposits(city_code);'
     );
+    // Cash deposit reconciliation: Pulsar-owed figure + multiple receipts + expense lines
+    await client.query(
+      'ALTER TABLE deposits ADD COLUMN IF NOT EXISTS pulsar_owed DECIMAL(10,2);'
+    );
+    await client.query(
+      'CREATE TABLE IF NOT EXISTS deposit_receipts (' +
+      '  id SERIAL PRIMARY KEY,' +
+      '  deposit_id INTEGER REFERENCES deposits(id) ON DELETE CASCADE,' +
+      '  image TEXT,' +
+      '  filename VARCHAR(255),' +
+      '  created_at TIMESTAMPTZ DEFAULT NOW()' +
+      ');'
+    );
+    await client.query(
+      'CREATE TABLE IF NOT EXISTS deposit_expenses (' +
+      '  id SERIAL PRIMARY KEY,' +
+      '  deposit_id INTEGER REFERENCES deposits(id) ON DELETE CASCADE,' +
+      '  description VARCHAR(500),' +
+      '  amount DECIMAL(10,2) NOT NULL DEFAULT 0,' +
+      '  receipt_image TEXT,' +
+      '  receipt_filename VARCHAR(255),' +
+      '  created_at TIMESTAMPTZ DEFAULT NOW()' +
+      ');'
+    );
+    await client.query(
+      'CREATE INDEX IF NOT EXISTS idx_deposit_receipts_dep ON deposit_receipts(deposit_id);' +
+      'CREATE INDEX IF NOT EXISTS idx_deposit_expenses_dep ON deposit_expenses(deposit_id);'
+    );
     // Indexes on frequently-filtered columns for the main list views
     await client.query(
       'CREATE INDEX IF NOT EXISTS idx_po_requester ON purchase_orders(requester_id);' +

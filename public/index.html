@@ -650,7 +650,7 @@ async function doLogin() {
     state.user = normalizeUserRole(data.user);
     localStorage.setItem('po_token', data.token);
     localStorage.setItem('po_user', JSON.stringify(data.user));
-    navigate('dashboard');
+    navigate('home');
   } catch(err) {
     document.getElementById('auth-error').innerHTML = '<div class="alert alert-error">' + escHtml(err.message) + '</div>';
   }
@@ -684,7 +684,7 @@ async function doVerify2FA() {
     state.user = normalizeUserRole(data.user);
     localStorage.setItem('po_token', data.token);
     localStorage.setItem('po_user', JSON.stringify(data.user));
-    navigate('dashboard');
+    navigate('home');
   } catch(err) {
     document.getElementById('auth-error').innerHTML = '<div class="alert alert-error">' + escHtml(err.message) + '</div>';
   }
@@ -771,7 +771,7 @@ async function doSetup() {
     state.user = normalizeUserRole(data.user);
     localStorage.setItem('po_token', data.token);
     localStorage.setItem('po_user', JSON.stringify(data.user));
-    navigate('dashboard');
+    navigate('home');
   } catch(err) {
     document.getElementById('auth-error').innerHTML = '<div class="alert alert-error">' + escHtml(err.message) + '</div>';
   }
@@ -5354,15 +5354,16 @@ async function renderHomeScreen(el) {
   }
 }
 
-var depositReceiptData = null;
-var depositReceiptName = null;
+var depositReceipts = [];   // [{ data, name }] for the deposit slip / cash-count photos
+var depositExpenses = [];   // [{ description, amount, data, name }] cash paid out
+var depExtractTried = false;
 
 // Deposit pay-period helpers — weeks run Monday to Sunday.
 function depMonday(d) { var x = new Date(d.getFullYear(), d.getMonth(), d.getDate()); var day = x.getDay(); x.setDate(x.getDate() + (day === 0 ? -6 : 1 - day)); return x; }
 function depAddDays(d, n) { var x = new Date(d.getFullYear(), d.getMonth(), d.getDate()); x.setDate(x.getDate() + n); return x; }
 function depYmd(d) { var m = String(d.getMonth() + 1); if (m.length < 2) m = '0' + m; var da = String(d.getDate()); if (da.length < 2) da = '0' + da; return d.getFullYear() + '-' + m + '-' + da; }
 function depParseYmd(s) { var p = String(s).split('-'); return new Date(parseInt(p[0], 10), parseInt(p[1], 10) - 1, parseInt(p[2], 10)); }
-function depWeekLabel(mon) { var sun = depAddDays(mon, 6); var a = mon.toLocaleDateString('en-US', { month: 'short', day: 'numeric' }); var b = sun.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }); return a + ' \u2013 ' + b; }
+function depWeekLabel(mon) { var sun = depAddDays(mon, 6); var a = mon.toLocaleDateString('en-US', { month: 'short', day: 'numeric' }); var b = sun.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }); return a + ' – ' + b; }
 function depBuildPeriodOptions() {
   var curMon = depMonday(new Date());
   var defaultVal = depYmd(depAddDays(curMon, -7));
@@ -5380,8 +5381,9 @@ async function renderDeposits(el) {
   var canManage = ['admin','manager'].includes(state.user.role);
   var canSeeAll = ['admin','manager','approver'].includes(state.user.role);
   var canSubmit = can('create_deposit');
-  depositReceiptData = null;
-  depositReceiptName = null;
+  depositReceipts = [];
+  depositExpenses = [];
+  depExtractTried = false;
   var cities = [];
   try { cities = await api('GET', '/cities'); } catch(e) {}
   var cityOptions = '<option value="">Select city…</option>' + cities.map(function(c) {
@@ -5394,24 +5396,32 @@ async function renderDeposits(el) {
     '</div>';
   if (canSubmit) {
     html +=
-      '<div class="card" style="max-width:640px;margin-bottom:24px"><div class="card-body">' +
+      '<div class="card" style="max-width:680px;margin-bottom:24px"><div class="card-body">' +
         '<h3 style="margin-top:0;margin-bottom:16px">Submit a Deposit</h3>' +
         '<div id="dep-feedback"></div>' +
         '<div style="display:flex;gap:12px;flex-wrap:wrap">' +
-          '<div class="form-group" style="flex:1;min-width:160px"><label>Amount ($)</label><input type="number" id="dep-amount" step="0.01" min="0" placeholder="0.00" /></div>' +
-          '<div class="form-group" style="flex:1;min-width:160px"><label>Deposit Date</label><input type="date" id="dep-date" value="' + today + '" /></div>' +
+          '<div class="form-group" style="flex:1;min-width:160px"><label>Deposit Amount ($)</label><input type="number" id="dep-amount" step="0.01" min="0" placeholder="0.00" oninput="recalcOverShort()" /></div>' +
+          '<div class="form-group" style="flex:1;min-width:160px"><label>Pulsar Shows Owed ($)</label><input type="number" id="dep-pulsar" step="0.01" min="0" placeholder="0.00" oninput="recalcOverShort()" /></div>' +
         '</div>' +
         '<div style="display:flex;gap:12px;flex-wrap:wrap">' +
+          '<div class="form-group" style="flex:1;min-width:160px"><label>Deposit Date</label><input type="date" id="dep-date" value="' + today + '" /></div>' +
           '<div class="form-group" style="flex:1;min-width:200px"><label>Pay Period (Week)</label><select id="dep-period">' + depBuildPeriodOptions() + '</select></div>' +
         '</div>' +
         '<div style="display:flex;gap:12px;flex-wrap:wrap">' +
           '<div class="form-group" style="flex:1;min-width:160px"><label>City</label><select id="dep-city">' + cityOptions + '</select></div>' +
         '</div>' +
-        '<div class="form-group"><label>Notes</label><textarea id="dep-notes" rows="2" placeholder="Optional notes…"></textarea></div>' +
-        '<div class="form-group"><label>Receipt Photo</label>' +
-          '<input type="file" id="dep-receipt" accept="image/*" onchange="previewDepositReceipt(this)" />' +
+        '<div class="form-group"><label>Receipt Photos</label>' +
+          '<input type="file" id="dep-receipt" accept="image/*" multiple onchange="addDepositReceipts(this)" />' +
+          '<div style="font-size:12px;color:var(--text-muted-color);margin-top:4px">You can attach more than one photo (deposit slip, cash count sheet, etc.).</div>' +
           '<div id="dep-receipt-preview" style="margin-top:10px"></div>' +
         '</div>' +
+        '<div class="form-group"><label>Expenses</label>' +
+          '<div style="font-size:12px;color:var(--text-muted-color);margin-bottom:8px">Cash paid out before depositing (parts, supplies, etc.). Attach a photo of each receipt if you have one.</div>' +
+          '<div id="dep-expense-list"></div>' +
+          '<button type="button" class="btn btn-secondary btn-sm" onclick="addDepositExpense()">+ Add expense</button>' +
+        '</div>' +
+        '<div class="form-group"><label>Notes</label><textarea id="dep-notes" rows="2" placeholder="Optional notes…"></textarea></div>' +
+        '<div id="dep-overshort" style="margin:4px 0 16px;padding:12px;border-radius:8px;background:var(--bg-color);border:1px solid var(--border-color);font-size:14px"></div>' +
         '<button class="btn btn-primary" onclick="submitDeposit()">Submit Deposit</button>' +
       '</div></div>';
   }
@@ -5421,70 +5431,158 @@ async function renderDeposits(el) {
       '<div id="dep-table-area"><div class="loading">Loading…</div></div>' +
     '</div></div>';
   el.innerHTML = html;
+  if (canSubmit) { renderDepositExpenses(); recalcOverShort(); }
   await loadDepositsTable();
 }
 
-function previewDepositReceipt(input) {
-  var file = input.files[0];
-  if (!file) { depositReceiptData = null; depositReceiptName = null; return; }
-  depositReceiptName = file.name;
-  var reader = new FileReader();
-  reader.onload = function(e) {
-    var img = new Image();
-    img.onload = function() {
-      var canvas = document.createElement('canvas');
-      var w = img.width, h = img.height, maxW = 1200;
-      if (w > maxW) { h = Math.round(h * maxW / w); w = maxW; }
-      canvas.width = w; canvas.height = h;
-      canvas.getContext('2d').drawImage(img, 0, 0, w, h);
-      depositReceiptData = canvas.toDataURL('image/jpeg', 0.85);
-      var area = document.getElementById('dep-receipt-preview');
-      if (area) area.innerHTML = '<div style="position:relative;display:inline-block">' +
-        '<img src="' + depositReceiptData + '" style="max-width:240px;max-height:240px;border-radius:8px;border:1px solid var(--border-color);display:block" />' +
-        '<div id="dep-extract-overlay" style="position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:10px;background:rgba(0,0,0,0.6);border-radius:8px">' +
-          '<span class="spinner spinner-lg"></span>' +
-          '<span style="color:#fff;font-size:13px;font-weight:600">Reading receipt with AI\u2026</span>' +
-        '</div>' +
-      '</div>' +
-      '<div id="dep-extract-status" style="margin-top:8px;font-size:13px;color:var(--text-muted-color)"></div>';
-      runDepositExtract();
+// Resize an image File to a JPEG data URL (max width 1200). Resolves null on failure.
+function depResizeImage(file) {
+  return new Promise(function(resolve) {
+    var reader = new FileReader();
+    reader.onload = function(e) {
+      var img = new Image();
+      img.onload = function() {
+        var canvas = document.createElement('canvas');
+        var w = img.width, h = img.height, maxW = 1200;
+        if (w > maxW) { h = Math.round(h * maxW / w); w = maxW; }
+        canvas.width = w; canvas.height = h;
+        canvas.getContext('2d').drawImage(img, 0, 0, w, h);
+        resolve(canvas.toDataURL('image/jpeg', 0.85));
+      };
+      img.onerror = function() { resolve(null); };
+      img.src = e.target.result;
     };
-    img.src = e.target.result;
-  };
-  reader.readAsDataURL(file);
+    reader.onerror = function() { resolve(null); };
+    reader.readAsDataURL(file);
+  });
 }
 
+async function addDepositReceipts(input) {
+  var files = Array.prototype.slice.call(input.files || []);
+  for (var i = 0; i < files.length; i++) {
+    var data = await depResizeImage(files[i]);
+    if (data) depositReceipts.push({ data: data, name: files[i].name });
+  }
+  input.value = '';
+  renderDepositReceipts();
+  if (depositReceipts.length && !depExtractTried) { depExtractTried = true; runDepositExtract(); }
+}
+
+function renderDepositReceipts() {
+  var area = document.getElementById('dep-receipt-preview');
+  if (!area) return;
+  var thumbs = depositReceipts.map(function(r, idx) {
+    return '<div style="position:relative;display:inline-block;margin:0 8px 8px 0">' +
+      '<img src="' + r.data + '" style="width:120px;height:120px;object-fit:cover;border-radius:8px;border:1px solid var(--border-color);display:block" />' +
+      '<button type="button" title="Remove" onclick="removeDepositReceipt(' + idx + ')" style="position:absolute;top:-8px;right:-8px;background:#ef4444;color:#fff;border:none;border-radius:50%;width:22px;height:22px;cursor:pointer;font-weight:700;line-height:1">×</button>' +
+    '</div>';
+  }).join('');
+  area.innerHTML = thumbs + '<div id="dep-extract-status" style="margin-top:4px;font-size:13px;color:var(--text-muted-color)"></div>';
+}
+
+function removeDepositReceipt(i) { depositReceipts.splice(i, 1); renderDepositReceipts(); }
+
 async function runDepositExtract() {
-  if (!depositReceiptData) return;
+  if (!depositReceipts.length) return;
   var status = document.getElementById('dep-extract-status');
-  function hideOverlay() { var ov = document.getElementById('dep-extract-overlay'); if (ov) ov.style.display = 'none'; }
+  if (status) status.innerHTML = '<span class="spinner"></span> Reading receipt with AI…';
   try {
-    var base64 = depositReceiptData.split(',')[1];
+    var base64 = depositReceipts[0].data.split(',')[1];
     var data = await api('POST', '/deposits/ai-extract', { imageData: base64, mediaType: 'image/jpeg' });
     var filled = [];
     if (data && data.amount != null && !isNaN(parseFloat(data.amount))) {
       var amtEl = document.getElementById('dep-amount');
-      if (amtEl) { amtEl.value = parseFloat(data.amount).toFixed(2); filled.push('amount'); }
+      if (amtEl && !amtEl.value) { amtEl.value = parseFloat(data.amount).toFixed(2); filled.push('amount'); }
     }
     if (data && data.deposit_date && /^\d{4}-\d{2}-\d{2}$/.test(data.deposit_date)) {
       var dateEl = document.getElementById('dep-date');
       if (dateEl) { dateEl.value = data.deposit_date; filled.push('date'); }
     }
-    hideOverlay();
+    recalcOverShort();
+    status = document.getElementById('dep-extract-status');
     if (status) {
       status.innerHTML = filled.length
-        ? '<span style="color:#22c55e;font-weight:600">\u2713 AI filled ' + filled.join(' &amp; ') + '</span> — please double-check before submitting.'
+        ? '<span style="color:#22c55e;font-weight:600">✓ AI filled ' + filled.join(' &amp; ') + '</span> — please double-check before submitting.'
         : 'Could not read the receipt automatically — please enter the details manually.';
     }
   } catch(e) {
-    hideOverlay();
+    status = document.getElementById('dep-extract-status');
     if (status) status.textContent = 'Could not read the receipt automatically — please enter the details manually.';
   }
+}
+
+function addDepositExpense() {
+  depositExpenses.push({ description: '', amount: '', data: null, name: null });
+  renderDepositExpenses();
+}
+
+function renderDepositExpenses() {
+  var area = document.getElementById('dep-expense-list');
+  if (!area) return;
+  if (!depositExpenses.length) {
+    area.innerHTML = '<p style="color:var(--text-muted-color);font-size:13px;margin:0 0 8px">No expenses added.</p>';
+    recalcOverShort();
+    return;
+  }
+  area.innerHTML = depositExpenses.map(function(ex, idx) {
+    var amtVal = (ex.amount === '' || ex.amount == null) ? '' : escHtml(String(ex.amount));
+    var photo = ex.data
+      ? '<div style="position:relative;display:inline-block"><img src="' + ex.data + '" style="width:48px;height:48px;object-fit:cover;border-radius:6px;border:1px solid var(--border-color);display:block" /><button type="button" title="Remove photo" onclick="removeDepositExpensePhoto(' + idx + ')" style="position:absolute;top:-6px;right:-6px;background:#ef4444;color:#fff;border:none;border-radius:50%;width:18px;height:18px;cursor:pointer;font-size:11px;line-height:1">×</button></div>'
+      : '<label class="btn btn-secondary btn-sm" style="cursor:pointer;margin:0;white-space:nowrap">Photo<input type="file" accept="image/*" style="display:none" onchange="setDepositExpensePhoto(' + idx + ',this)" /></label>';
+    return '<div style="display:flex;gap:8px;align-items:center;margin-bottom:8px">' +
+      '<input type="text" placeholder="Description" value="' + escHtml(ex.description || '') + '" oninput="updateDepositExpense(' + idx + ',\'description\',this.value)" style="flex:2;min-width:120px" />' +
+      '<input type="number" step="0.01" min="0" placeholder="0.00" value="' + amtVal + '" oninput="updateDepositExpense(' + idx + ',\'amount\',this.value);recalcOverShort()" style="flex:1;min-width:90px" />' +
+      photo +
+      '<button type="button" class="btn btn-ghost btn-sm" onclick="removeDepositExpense(' + idx + ')" style="color:#ef4444">Remove</button>' +
+    '</div>';
+  }).join('');
+  recalcOverShort();
+}
+
+function updateDepositExpense(idx, field, val) { if (depositExpenses[idx]) depositExpenses[idx][field] = val; }
+function removeDepositExpense(idx) { depositExpenses.splice(idx, 1); renderDepositExpenses(); }
+async function setDepositExpensePhoto(idx, input) {
+  var file = input.files[0];
+  if (!file || !depositExpenses[idx]) return;
+  var data = await depResizeImage(file);
+  if (data) { depositExpenses[idx].data = data; depositExpenses[idx].name = file.name; }
+  renderDepositExpenses();
+}
+function removeDepositExpensePhoto(idx) { if (depositExpenses[idx]) { depositExpenses[idx].data = null; depositExpenses[idx].name = null; } renderDepositExpenses(); }
+
+function depExpenseTotal() {
+  var t = 0;
+  depositExpenses.forEach(function(ex) { var a = parseFloat(ex.amount); if (!isNaN(a)) t += a; });
+  return t;
+}
+
+// Over/Short = Pulsar owed − deposit − expenses.  Positive = short, negative = over.
+function recalcOverShort() {
+  var el = document.getElementById('dep-overshort');
+  if (!el) return;
+  var owedEl = document.getElementById('dep-pulsar');
+  var amtEl = document.getElementById('dep-amount');
+  var owed = parseFloat(owedEl && owedEl.value);
+  var dep = parseFloat(amtEl && amtEl.value);
+  var exp = depExpenseTotal();
+  if (isNaN(owed)) {
+    el.innerHTML = '<span style="color:var(--text-muted-color)">Enter what Pulsar shows owed to see Over / Short.</span>';
+    return;
+  }
+  if (isNaN(dep)) dep = 0;
+  var os = owed - dep - exp;
+  var label, color;
+  if (Math.abs(os) < 0.005) { label = 'Balanced'; color = '#22c55e'; }
+  else if (os > 0) { label = 'Short $' + os.toFixed(2); color = '#ef4444'; }
+  else { label = 'Over $' + Math.abs(os).toFixed(2); color = '#f59e0b'; }
+  el.innerHTML = 'Pulsar owed $' + owed.toFixed(2) + ' &minus; deposit $' + dep.toFixed(2) + ' &minus; expenses $' + exp.toFixed(2) +
+    ' = <span style="font-weight:700;color:' + color + '">' + label + '</span>';
 }
 
 async function submitDeposit() {
   var fb = document.getElementById('dep-feedback');
   var amount = document.getElementById('dep-amount').value;
+  var pulsar_owed = document.getElementById('dep-pulsar').value;
   var deposit_date = document.getElementById('dep-date').value;
   var periodMon = document.getElementById('dep-period') ? document.getElementById('dep-period').value : '';
   var period_start = periodMon;
@@ -5494,15 +5592,28 @@ async function submitDeposit() {
   if (!amount || parseFloat(amount) <= 0) { fb.innerHTML = '<div class="alert alert-error">Please enter a valid amount.</div>'; return; }
   if (!deposit_date) { fb.innerHTML = '<div class="alert alert-error">Please choose a deposit date.</div>'; return; }
   if (!periodMon) { fb.innerHTML = '<div class="alert alert-error">Please select a pay period.</div>'; return; }
-  if (!depositReceiptData) { fb.innerHTML = '<div class="alert alert-error">Please attach a photo of the receipt.</div>'; return; }
+  if (!depositReceipts.length) { fb.innerHTML = '<div class="alert alert-error">Please attach at least one receipt photo.</div>'; return; }
+  var receipts = depositReceipts.map(function(r) { return { image: r.data, filename: r.name }; });
+  var expenses = depositExpenses.filter(function(ex) {
+    var hasDesc = ex.description && ex.description.trim();
+    var hasAmt = ex.amount !== '' && ex.amount != null && !isNaN(parseFloat(ex.amount));
+    return hasDesc || hasAmt;
+  }).map(function(ex) {
+    return { description: ex.description || '', amount: parseFloat(ex.amount) || 0, image: ex.data || null, filename: ex.name || null };
+  });
   try {
-    await api('POST', '/deposits', { amount: amount, deposit_date: deposit_date, period_start: period_start, period_end: period_end, city_code: city_code, notes: notes, receipt_image: depositReceiptData, receipt_filename: depositReceiptName });
+    await api('POST', '/deposits', { amount: amount, pulsar_owed: pulsar_owed || null, deposit_date: deposit_date, period_start: period_start, period_end: period_end, city_code: city_code, notes: notes, receipts: receipts, expenses: expenses });
     fb.innerHTML = '<div class="alert alert-success">Deposit submitted — thank you!</div>';
     document.getElementById('dep-amount').value = '';
+    document.getElementById('dep-pulsar').value = '';
     document.getElementById('dep-notes').value = '';
     document.getElementById('dep-receipt').value = '';
-    document.getElementById('dep-receipt-preview').innerHTML = '';
-    depositReceiptData = null; depositReceiptName = null;
+    depositReceipts = [];
+    depositExpenses = [];
+    depExtractTried = false;
+    renderDepositReceipts();
+    renderDepositExpenses();
+    recalcOverShort();
     await loadDepositsTable();
   } catch(e) {
     fb.innerHTML = '<div class="alert alert-error">' + escHtml(e.message) + '</div>';
@@ -5519,18 +5630,34 @@ async function loadDepositsTable() {
     if (!data.length) { area.innerHTML = '<p style="color:var(--text-muted-color)">No deposits yet.</p>'; return; }
     var rows = data.map(function(d) {
       var receipt = d.has_receipt ? '<a href="#" onclick="event.preventDefault();event.stopPropagation();navigate(\'view-deposit\',' + d.id + ')" style="color:#f97316">View</a>' : '<span style="color:var(--text-muted-color)">—</span>';
+      var depAmt = parseFloat(d.amount) || 0;
+      var exp = parseFloat(d.total_expenses) || 0;
+      var owed = (d.pulsar_owed == null) ? null : parseFloat(d.pulsar_owed);
+      var osCell;
+      if (owed == null) { osCell = '<span style="color:var(--text-muted-color)">—</span>'; }
+      else {
+        var os = owed - depAmt - exp;
+        var c, t;
+        if (Math.abs(os) < 0.005) { c = '#22c55e'; t = 'Even'; }
+        else if (os > 0) { c = '#ef4444'; t = 'Short $' + os.toFixed(2); }
+        else { c = '#f59e0b'; t = 'Over $' + Math.abs(os).toFixed(2); }
+        osCell = '<span style="font-weight:600;color:' + c + '">' + t + '</span>';
+      }
       return '<tr style="cursor:pointer" onclick="navigate(\'view-deposit\',' + d.id + ')">' +
         '<td style="white-space:nowrap">' + formatDate(d.deposit_date) + '</td>' +
-        '<td style="white-space:nowrap">' + ((d.period_start && d.period_end) ? (formatDate(d.period_start) + ' \u2013 ' + formatDate(d.period_end)) : '\u2014') + '</td>' +
+        '<td style="white-space:nowrap">' + ((d.period_start && d.period_end) ? (formatDate(d.period_start) + ' – ' + formatDate(d.period_end)) : '—') + '</td>' +
         '<td style="white-space:nowrap;color:var(--text-muted-color);font-size:13px">' + escHtml(d.deposit_number || '—') + '</td>' +
-        '<td style="white-space:nowrap;font-weight:600">$' + parseFloat(d.amount).toFixed(2) + '</td>' +
+        '<td style="white-space:nowrap;font-weight:600">$' + depAmt.toFixed(2) + '</td>' +
+        '<td style="white-space:nowrap">' + (owed == null ? '—' : '$' + owed.toFixed(2)) + '</td>' +
+        '<td style="white-space:nowrap">' + (exp > 0 ? '$' + exp.toFixed(2) : '—') + '</td>' +
+        '<td style="white-space:nowrap">' + osCell + '</td>' +
         '<td>' + escHtml(d.city_code || '—') + '</td>' +
         (canSeeAll ? '<td>' + escHtml(d.user_name || '—') + '</td>' : '') +
         '<td>' + receipt + '</td>' +
         (can('delete_deposit') ? '<td><button class="btn btn-ghost btn-sm" onclick="event.stopPropagation();deleteDeposit(' + d.id + ')" style="color:#ef4444">Delete</button></td>' : '') +
       '</tr>';
     }).join('');
-    var head = '<th>Date</th><th>Pay Period</th><th>Deposit #</th><th>Amount</th><th>City</th>' + (canSeeAll ? '<th>Submitted By</th>' : '') + '<th>Receipt</th>' + (can('delete_deposit') ? '<th></th>' : '');
+    var head = '<th>Date</th><th>Pay Period</th><th>Deposit #</th><th>Amount</th><th>Pulsar Owed</th><th>Expenses</th><th>Over/Short</th><th>City</th>' + (canSeeAll ? '<th>Submitted By</th>' : '') + '<th>Receipt</th>' + (can('delete_deposit') ? '<th></th>' : '');
     area.innerHTML = '<div class="table-wrap"><table class="table"><thead><tr>' + head + '</tr></thead><tbody>' + rows + '</tbody></table></div>';
   } catch(e) {
     area.innerHTML = '<div class="alert alert-error">Failed to load deposits</div>';
@@ -5542,14 +5669,21 @@ async function exportDepositsCSV() {
     var res = await api('GET', '/deposits/export');
     var deposits = res.deposits || [];
     var rows = [];
-    rows.push(['Deposit #','Date','Pay Period Start','Pay Period End','Amount','City','Submitted By','Notes','Receipt File','Has Receipt','Submitted At'].join(','));
+    rows.push(['Deposit #','Date','Pay Period Start','Pay Period End','Amount','Pulsar Owed','Total Expenses','Over/Short','City','Submitted By','Notes','Receipt File','Has Receipt','Submitted At'].join(','));
     deposits.forEach(function(d) {
+      var depAmt = parseFloat(d.amount) || 0;
+      var exp = parseFloat(d.total_expenses) || 0;
+      var owed = (d.pulsar_owed == null) ? null : parseFloat(d.pulsar_owed);
+      var os = (owed == null) ? '' : (owed - depAmt - exp).toFixed(2);
       rows.push([
         d.deposit_number || '',
         d.deposit_date ? formatDate(d.deposit_date) : '',
         d.period_start ? formatDate(d.period_start) : '',
         d.period_end ? formatDate(d.period_end) : '',
-        parseFloat(d.amount).toFixed(2),
+        depAmt.toFixed(2),
+        owed == null ? '' : owed.toFixed(2),
+        exp.toFixed(2),
+        os,
         d.city_code || '',
         d.user_name || '',
         d.notes || '',
@@ -5575,9 +5709,48 @@ async function renderViewDeposit(el, id) {
   var dep;
   try { dep = await api('GET', '/deposits/' + id); }
   catch(e) { el.innerHTML = '<div class="alert alert-error">' + escHtml(e.message) + '</div>'; return; }
-  var receipt = dep.receipt_image
-    ? '<img src="' + dep.receipt_image + '" style="max-width:100%;border-radius:10px;border:1px solid var(--border-color)" />'
+  var depAmt = parseFloat(dep.amount) || 0;
+  var owed = (dep.pulsar_owed == null) ? null : parseFloat(dep.pulsar_owed);
+  var expList = dep.expenses || [];
+  var expTotal = 0;
+  expList.forEach(function(x) { var a = parseFloat(x.amount); if (!isNaN(a)) expTotal += a; });
+
+  var receiptList = dep.receipts || [];
+  var receipts = receiptList.length
+    ? '<div style="display:flex;flex-wrap:wrap;gap:12px">' + receiptList.map(function(r) {
+        return '<img src="' + r.image + '" style="max-width:320px;max-height:320px;border-radius:10px;border:1px solid var(--border-color)" />';
+      }).join('') + '</div>'
     : '<p style="color:var(--text-muted-color)">No receipt image on file.</p>';
+
+  var expensesBlock = '';
+  if (expList.length) {
+    var expRows = expList.map(function(x) {
+      var thumb = x.receipt_image ? '<a href="' + x.receipt_image + '" target="_blank" style="color:#f97316">Photo</a>' : '<span style="color:var(--text-muted-color)">—</span>';
+      return '<tr><td>' + escHtml(x.description || '—') + '</td><td style="white-space:nowrap;text-align:right">$' + (parseFloat(x.amount) || 0).toFixed(2) + '</td><td style="white-space:nowrap">' + thumb + '</td></tr>';
+    }).join('');
+    expensesBlock =
+      '<div style="margin-bottom:20px">' +
+        '<div style="color:var(--text-muted-color);font-size:13px;margin-bottom:8px">Expenses</div>' +
+        '<div class="table-wrap"><table class="table"><thead><tr><th>Description</th><th style="text-align:right">Amount</th><th>Receipt</th></tr></thead><tbody>' + expRows +
+          '<tr><td style="font-weight:700">Total</td><td style="text-align:right;font-weight:700">$' + expTotal.toFixed(2) + '</td><td></td></tr>' +
+        '</tbody></table></div>' +
+      '</div>';
+  }
+
+  var overShortBlock = '';
+  if (owed != null) {
+    var os = owed - depAmt - expTotal;
+    var label, color;
+    if (Math.abs(os) < 0.005) { label = 'Balanced'; color = '#22c55e'; }
+    else if (os > 0) { label = 'Short $' + os.toFixed(2); color = '#ef4444'; }
+    else { label = 'Over $' + Math.abs(os).toFixed(2); color = '#f59e0b'; }
+    overShortBlock =
+      '<div style="margin-bottom:20px;padding:12px;border-radius:8px;background:var(--bg-color);border:1px solid var(--border-color);font-size:14px">' +
+        'Pulsar owed $' + owed.toFixed(2) + ' &minus; deposit $' + depAmt.toFixed(2) + ' &minus; expenses $' + expTotal.toFixed(2) +
+        ' = <span style="font-weight:700;color:' + color + '">' + label + '</span>' +
+      '</div>';
+  }
+
   el.innerHTML =
     '<div class="page-header"><div class="page-title"><h2>Deposit ' + escHtml(dep.deposit_number || '') + '</h2><p>' + escHtml(dep.user_name || '') + '</p></div>' +
       '<div style="display:flex;gap:8px">' +
@@ -5585,15 +5758,18 @@ async function renderViewDeposit(el, id) {
         (can('delete_deposit') ? '<button class="btn btn-secondary" onclick="deleteDeposit(' + dep.id + ')" style="color:#ef4444">' + icons.trash + ' Delete</button>' : '') +
       '</div>' +
     '</div>' +
-    '<div class="card" style="max-width:720px"><div class="card-body">' +
+    '<div class="card" style="max-width:760px"><div class="card-body">' +
       '<div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:20px">' +
-        '<div><div style="color:var(--text-muted-color);font-size:13px">Amount</div><div style="font-size:20px;font-weight:700;color:#f97316">$' + parseFloat(dep.amount).toFixed(2) + '</div></div>' +
+        '<div><div style="color:var(--text-muted-color);font-size:13px">Deposit Amount</div><div style="font-size:20px;font-weight:700;color:#f97316">$' + depAmt.toFixed(2) + '</div></div>' +
+        '<div><div style="color:var(--text-muted-color);font-size:13px">Pulsar Shows Owed</div><div style="font-size:20px;font-weight:700">' + (owed == null ? '—' : '$' + owed.toFixed(2)) + '</div></div>' +
         '<div><div style="color:var(--text-muted-color);font-size:13px">Deposit Date</div><div style="font-weight:600">' + formatDate(dep.deposit_date) + '</div></div>' +
-        '<div><div style="color:var(--text-muted-color);font-size:13px">Pay Period</div><div style="font-weight:600">' + ((dep.period_start && dep.period_end) ? (formatDate(dep.period_start) + ' \u2013 ' + formatDate(dep.period_end)) : '\u2014') + '</div></div>' +
+        '<div><div style="color:var(--text-muted-color);font-size:13px">Pay Period</div><div style="font-weight:600">' + ((dep.period_start && dep.period_end) ? (formatDate(dep.period_start) + ' – ' + formatDate(dep.period_end)) : '—') + '</div></div>' +
         '<div><div style="color:var(--text-muted-color);font-size:13px">City</div><div>' + escHtml(dep.city_code || '—') + '</div></div>' +
       '</div>' +
+      overShortBlock +
       (dep.notes ? '<div style="margin-bottom:20px"><div style="color:var(--text-muted-color);font-size:13px">Notes</div><div>' + escHtml(dep.notes) + '</div></div>' : '') +
-      '<div style="color:var(--text-muted-color);font-size:13px;margin-bottom:8px">Receipt</div>' + receipt +
+      expensesBlock +
+      '<div style="color:var(--text-muted-color);font-size:13px;margin-bottom:8px">Receipts</div>' + receipts +
     '</div></div>';
 }
 
