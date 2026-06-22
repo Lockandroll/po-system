@@ -159,11 +159,12 @@ router.post('/', requireAuth, requirePermission('manage_work_orders'), async (re
     const acct = await resolveAccountId(b.account_number, b.account_name);
     const { rows } = await pool.query(
       'INSERT INTO work_orders (wo_ref, source, status, priority, account_id, account_name, account_number, city_code, po_number, wo_number, ' +
-      'store_name, store_number, address, city_state_zip, service_requested, service_requested_by, contact_name, contact_phone, needed_by, notes, created_by) ' +
-      "VALUES ($1,'manual','received',$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19) RETURNING id",
+      'store_name, store_number, address, city_state_zip, service_requested, service_requested_by, contact_name, contact_phone, needed_by, notes, created_by, assigned_to) ' +
+      "VALUES ($1,'manual','received',$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20) RETURNING id",
       [woRef, PRIORITIES.indexOf(b.priority) !== -1 ? b.priority : 'normal', acct.account_id, strOrNull(b.account_name), strOrNull(b.account_number), acct.city_code,
        strOrNull(b.po_number), strOrNull(b.wo_number), strOrNull(b.store_name), strOrNull(b.store_number), strOrNull(b.address), strOrNull(b.city_state_zip),
-       strOrNull(b.service_requested), strOrNull(b.service_requested_by), strOrNull(b.contact_name), strOrNull(b.contact_phone), dateOrNull(b.needed_by), strOrNull(b.notes), req.user.id]
+       strOrNull(b.service_requested), strOrNull(b.service_requested_by), strOrNull(b.contact_name), strOrNull(b.contact_phone), dateOrNull(b.needed_by), strOrNull(b.notes), req.user.id,
+       (b.assigned_to ? parseInt(b.assigned_to, 10) : null)]
     );
     const id = rows[0].id;
     await woJob.addActivity(id, req.user, 'event', 'created this work order manually');

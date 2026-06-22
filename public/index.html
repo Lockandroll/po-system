@@ -6198,6 +6198,11 @@ async function woViewAttachment(id, aid) {
 }
 
 async function renderWorkOrderForm(el) {
+  var assignees = [];
+  try { assignees = await api('GET', '/work-orders/assignees'); } catch (e) {}
+  var assignOpts = '<option value="">— Unassigned —</option>' + assignees.map(function (u) {
+    return '<option value="' + u.id + '">' + escHtml(u.name) + '</option>';
+  }).join('');
   el.innerHTML =
     '<div class="page-header">' +
       '<div><div class="page-title">New Work Order</div><div class="page-subtitle">Enter a phone-in or walk-in job by hand.</div></div>' +
@@ -6213,6 +6218,7 @@ async function renderWorkOrderForm(el) {
       '<div class="form-group"><label>Service Requested</label><textarea id="wof-service_requested" placeholder="What needs to be done"></textarea></div>' +
       '<div class="form-row">' + woRowField('Service Requested By', 'wof-service_requested_by', '', 'e.g. 6/22/26 by 5 PM') + '<div class="form-group"><label>Needed By (date)</label><input type="date" id="wof-needed_by" /></div></div>' +
       '<div class="form-row">' + woRowField('Contact Name', 'wof-contact_name', '', '') + woRowField('Contact Phone', 'wof-contact_phone', '', '') + '</div>' +
+      '<div class="form-group"><label>Assign To (Locksmith)</label><select id="wof-assigned">' + assignOpts + '</select></div>' +
       '<div class="form-group"><label>Notes</label><textarea id="wof-notes"></textarea></div>' +
     '</div></div>' +
     '<div class="flex-gap"><button class="btn btn-primary" onclick="woCreate()">Create Work Order</button></div>';
@@ -6223,7 +6229,8 @@ async function woCreate() {
     account_name: v('account_name'), account_number: v('account_number'), po_number: v('po_number'),
     store_name: v('store_name'), store_number: v('store_number'), address: v('address'), city_state_zip: v('city_state_zip'),
     service_requested: v('service_requested'), service_requested_by: v('service_requested_by'), needed_by: v('needed_by'),
-    contact_name: v('contact_name'), contact_phone: v('contact_phone'), notes: v('notes')
+    contact_name: v('contact_name'), contact_phone: v('contact_phone'), notes: v('notes'),
+    assigned_to: (function () { var e = document.getElementById('wof-assigned'); return e && e.value ? e.value : null; })()
   };
   try { var wo = await api('POST', '/work-orders', body); navigate('view-work-order', wo.id); }
   catch (e) { var er = document.getElementById('wo-form-error'); if (er) er.innerHTML = '<div class="alert alert-error">' + escHtml(e.message) + '</div>'; }
