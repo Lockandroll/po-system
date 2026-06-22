@@ -269,6 +269,23 @@ async function initDB() {
       'CREATE INDEX IF NOT EXISTS idx_trusted_devices_user ON trusted_devices(user_id);' +
       'CREATE INDEX IF NOT EXISTS idx_trusted_devices_hash ON trusted_devices(token_hash);'
     );
+    // Parts catalog — master list of parts (item number is vendor-specific)
+    await client.query(
+      'CREATE TABLE IF NOT EXISTS parts (' +
+      '  id SERIAL PRIMARY KEY,' +
+      '  item_number VARCHAR(150),' +
+      '  alias VARCHAR(150),' +
+      '  description VARCHAR(500) NOT NULL,' +
+      '  price DECIMAL(10,2),' +
+      '  preferred_vendor VARCHAR(255),' +
+      '  created_at TIMESTAMPTZ DEFAULT NOW(),' +
+      '  updated_at TIMESTAMPTZ DEFAULT NOW()' +
+      ');'
+    );
+    await client.query(
+      'CREATE INDEX IF NOT EXISTS idx_parts_item_number ON parts(item_number);' +
+      'CREATE INDEX IF NOT EXISTS idx_parts_alias ON parts(alias);'
+    );
     // Running list (monthly accumulating items that get rolled into a PO per city)
     await client.query(
       'CREATE TABLE IF NOT EXISTS running_list_items (' +

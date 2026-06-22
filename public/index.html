@@ -366,7 +366,7 @@ function badgeHtml(status) {
 
 var EMPLOYEE_PERMS = ['view_pos','create_po','edit_po','delete_po','submit_po','view_quotes','create_quote','edit_quote','delete_quote','push_quote_po','view_vr','create_vr','edit_vr','delete_vr','submit_vr','view_deposits','create_deposit','delete_deposit','export_deposits','view_signoffs','create_signoff','edit_signoff','complete_signoff','delete_signoff','view_tasks','view_work_orders','view_schedule'];
 var PERM_DEFAULTS = {
-  manager: ['view_users','manage_cities','manage_geico','manage_running','manage_vehicles','manage_vendors','manage_addresses','approve_vr','manage_tasks','manage_work_orders','manage_schedule'].concat(EMPLOYEE_PERMS),
+  manager: ['view_users','manage_cities','manage_geico','manage_running','manage_vehicles','manage_vendors','manage_addresses','approve_vr','manage_tasks','manage_work_orders','manage_schedule','manage_parts'].concat(EMPLOYEE_PERMS),
   locksmith: EMPLOYEE_PERMS.slice(),
   locksmith_coordinator: EMPLOYEE_PERMS.concat(['manage_work_orders']),
   roadside_technician: EMPLOYEE_PERMS.slice()
@@ -461,7 +461,7 @@ async function render() {
   var quViews = ['quotes','new-quote','edit-quote','view-quote'];
   var vrViews = ['vr-dashboard','new-vr','edit-vr','view-vr','fleet-registry','new-vehicle','edit-vehicle','vehicle-history'];
   var aiViews = ['ai-assistant','ai-conversations','ai-usage'];
-  var stViews = ['company-info','ai-context','notifications','scheduled-messages','roles','settings','users','cities','audit'];
+  var stViews = ['company-info','ai-context','notifications','scheduled-messages','roles','settings','users','cities','audit','parts-list'];
   var navHtml =
     '<div class="nav-item' + (cv === 'home' ? ' active' : '') + '" onclick="navigate(\'home\')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 9l9-7 9 7v11a2 2 0 01-2 2H5a2 2 0 01-2-2z"/><polyline points="9 22 9 12 15 12 15 22"/></svg> Home</div>' +
     (can('view_ai_admin') ?
@@ -504,11 +504,12 @@ async function render() {
     '<div class="nav-item' + (cv === 'suggestions' ? ' active' : '') + '" onclick="navigate(\'suggestions\')">' + icoSuggestion + ' Suggestions</div>' +
     '<div class="nav-item" onclick="window.open(\'https://www.idssonline.com/pulsar.html\',\'_blank\',\'noopener\')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg> Pulsar Download</div>' +
     (isAdmin ? '<div class="nav-item' + (cv === 'sop-library' ? ' active' : '') + '" onclick="navigate(\'sop-library\')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 19.5A2.5 2.5 0 016.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 014 19.5v-15A2.5 2.5 0 016.5 2z"/></svg> SOP Library</div>' : '') +
-    ((can('view_users') || can('manage_cities') || can('view_audit') || can('manage_settings')) ?
+    ((can('view_users') || can('manage_cities') || can('view_audit') || can('manage_settings') || can('manage_parts')) ?
       '<div class="nav-section-header' + (stViews.indexOf(cv) !== -1 ? ' section-active' : '') + (ss === 'settings' ? ' open' : '') + '" onclick="toggleSection(\'settings\',\'company-info\')"><span class="s-label">' + icons.settings + ' Settings</span>' + chev + '</div>' +
       (ss === 'settings' ?
         (['admin','manager'].includes(state.user.role) ? '<div class="nav-sub' + (cv === 'company-info' || cv === 'settings' ? ' active' : '') + '" onclick="navigate(\'company-info\')">' + icoBuilding + ' Company Information</div>' : '') +
         (can('manage_settings') ? '<div class="nav-sub' + (cv === 'ai-context' ? ' active' : '') + '" onclick="navigate(\'ai-context\')">' + icoAI + ' AI Context</div>' : '') +
+        (can('manage_parts') ? '<div class="nav-sub' + (cv === 'parts-list' ? ' active' : '') + '" onclick="navigate(\'parts-list\')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"/><polyline points="3.27 6.96 12 12.01 20.73 6.96"/><line x1="12" y1="22.08" x2="12" y2="12"/></svg> Parts List</div>' : '') +
         (can('manage_settings') ? '<div class="nav-sub' + (cv === 'notifications' ? ' active' : '') + '" onclick="navigate(\'notifications\')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 0 1-3.46 0"/></svg> Notifications</div>' : '') +
         (can('manage_settings') ? '<div class="nav-sub' + (cv === 'scheduled-messages' ? ' active' : '') + '" onclick="navigate(\'scheduled-messages\')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><polyline points="12 7 12 12 15 14"/></svg> Scheduled Messages</div>' : '') +
         (can('view_users') ? '<div class="nav-sub' + (cv === 'users' ? ' active' : '') + '" onclick="navigate(\'users\')">' + icons.users + ' Users</div>' : '') +
@@ -598,6 +599,7 @@ async function render() {
   else if (state.currentView === 'security') await renderSecurity(content);
   else if (state.currentView === 'scheduled-messages') await renderScheduledMessages(content);
   else if (state.currentView === 'roles') await renderRoles(content);
+  else if (state.currentView === 'parts-list') await renderPartsList(content);
   else if (state.currentView === 'suggestions') await renderSuggestions(content);
   else if (state.currentView === 'deposits') await renderDeposits(content);
   else if (state.currentView === 'tasks') await renderTasks(content);
@@ -1042,6 +1044,7 @@ async function renderEditPO(el, id) {
         '<tfoot><tr class="total-row"><td colspan="5" class="text-right" style="padding:10px">Grand Total</td><td id="grand-total" style="padding:10px">$0.00</td><td></td></tr></tfoot>' +
       '</table></div>' +
       '<button class="btn btn-secondary btn-sm add-item-btn" onclick="addLineItem()">' + icons.plus + ' Add Item</button>' +
+      '<button class="btn btn-secondary btn-sm" style="margin-left:8px" onclick="openPartsPicker(\'po\')"><svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" style="vertical-align:-2px"><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"/></svg> Add from Parts List</button>' +
     '</div></div>' +
     '<div class="flex-gap">' +
       '<button class="btn btn-secondary" onclick="savePO(' + (id||'null') + ', \'draft\')" id="btn-draft">Save Draft</button>' +
@@ -1207,6 +1210,7 @@ async function renderRunningList(el){
         '<tfoot><tr class="total-row"><td colspan="3" class="text-right" style="padding:10px">Est. Total</td><td id="running-total" style="padding:10px">$0.00</td><td colspan="3"></td></tr></tfoot>' +
       '</table></div>' +
       '<button class="btn btn-secondary btn-sm add-item-btn" style="white-space:nowrap" onclick="runningAddRow()">' + icons.plus + ' Add item</button>' +
+      '<button class="btn btn-secondary btn-sm" style="white-space:nowrap;margin-left:8px" onclick="openPartsPicker(\'running\')"><svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" style="vertical-align:-2px"><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"/></svg> Add from Parts List</button>' +
     '</div></div>';
   var cityEl = document.getElementById('running-city');
   if(cityEl) cityEl.addEventListener('change', function(){ runningCityForNew = this.value; });
@@ -2082,6 +2086,7 @@ async function renderRoles(el) {
     { group:'Shipping Addresses', perms:[ {k:'manage_addresses',l:'Manage shipping addresses'} ] },
     { group:'Cities', perms:[ {k:'manage_cities',l:'Manage cities'} ] },
     { group:'Monthly Requisition', perms:[ {k:'manage_running',l:'Manage monthly requisition (admin list)'} ] },
+    { group:'Parts Catalog', perms:[ {k:'manage_parts',l:'Manage parts catalog (add / edit / import). Everyone can still search parts.'} ] },
     { group:'GEICO', perms:[ {k:'manage_geico',l:'Manage GEICO surveys'} ] },
     { group:'Users', perms:[ {k:'view_users',l:'View users'}, {k:'manage_users',l:'Add / edit / remove users'} ] },
     { group:'Administration', perms:[ {k:'manage_settings',l:'Company info, AI context, notifications, roles'}, {k:'view_audit',l:'View audit log'}, {k:'view_ai_admin',l:'View AI history / usage'} ] }
@@ -5987,6 +5992,362 @@ let _signoffGps = null;
 let _signoffSignedAt = null;
 
 // ===== Work Orders module =====================================================
+// ===== Parts List (master catalog) ==========================================
+var _partsData = [];
+var _partsSearchTimer = null;
+
+async function renderPartsList(el) {
+  if (!can('manage_parts')) { el.innerHTML = '<div class="alert alert-error">Access denied.</div>'; return; }
+  el.innerHTML =
+    '<div class="page-header"><div><div class="page-title">Parts List</div><div class="page-subtitle">Master catalog of parts used on POs and the Monthly Requisition</div></div>' +
+      '<div style="display:flex;gap:8px;flex-wrap:wrap">' +
+        '<button class="btn btn-secondary btn-sm" onclick="downloadPartsSample()">Download sample CSV</button>' +
+        '<button class="btn btn-secondary btn-sm" onclick="document.getElementById(\'parts-csv-input\').click()">Import CSV</button>' +
+        '<button class="btn btn-primary btn-sm" onclick="openPartEditor(null)">' + icons.plus + ' Add Part</button>' +
+      '</div></div>' +
+    '<input type="file" id="parts-csv-input" accept=".csv,text/csv" style="display:none" onchange="onPartsCsvChosen(this)" />' +
+    '<div id="parts-msg"></div>' +
+    '<div class="card"><div class="card-body">' +
+      '<input type="text" id="parts-search" placeholder="Search by item #, alias, description, vendor..." style="max-width:340px;margin-bottom:14px" oninput="partsSearchDebounced()" />' +
+      '<div id="parts-table-area"><div class="loading">Loading...</div></div>' +
+    '</div></div>';
+  await loadPartsTable('');
+}
+
+function partsSearchDebounced() {
+  clearTimeout(_partsSearchTimer);
+  _partsSearchTimer = setTimeout(function() {
+    var q = (document.getElementById('parts-search') || {}).value || '';
+    loadPartsTable(q.trim());
+  }, 250);
+}
+
+async function loadPartsTable(q) {
+  var area = document.getElementById('parts-table-area');
+  if (!area) return;
+  try { _partsData = await api('GET', '/parts' + (q ? ('?q=' + encodeURIComponent(q)) : '')); }
+  catch (e) { area.innerHTML = '<div class="alert alert-error">' + escHtml(e.message) + '</div>'; return; }
+  if (!_partsData.length) {
+    area.innerHTML = '<p style="color:var(--text-muted-color)">' + (q ? 'No parts match your search.' : 'No parts yet. Add one or import a CSV.') + '</p>';
+    return;
+  }
+  var rows = _partsData.map(function(pt) {
+    return '<tr>' +
+      '<td style="white-space:nowrap">' + escHtml(pt.item_number || '-') + '</td>' +
+      '<td style="white-space:nowrap">' + escHtml(pt.alias || '-') + '</td>' +
+      '<td style="max-width:360px;word-break:break-word">' + escHtml(pt.description || '') + '</td>' +
+      '<td>' + escHtml(pt.preferred_vendor || '-') + '</td>' +
+      '<td style="white-space:nowrap">' + (pt.price != null ? ('$' + Number(pt.price).toFixed(2)) : '-') + '</td>' +
+      '<td style="white-space:nowrap"><button class="btn btn-ghost btn-sm" onclick="openPartEditor(' + pt.id + ')">Edit</button>' +
+        '<button class="btn btn-ghost btn-sm" style="color:var(--danger)" onclick="deletePart(' + pt.id + ')">' + icons.trash + '</button></td>' +
+    '</tr>';
+  }).join('');
+  area.innerHTML = '<div class="table-wrap"><table class="table"><thead><tr><th>Item #</th><th>Alias</th><th>Description</th><th>Preferred Vendor</th><th>Price</th><th></th></tr></thead><tbody>' + rows + '</tbody></table></div>';
+}
+
+function openPartEditor(id) {
+  var pt = id ? _partsData.find(function(x){ return x.id === id; }) : null;
+  var overlay = document.createElement('div');
+  overlay.className = 'modal-overlay';
+  overlay.innerHTML =
+    '<div class="modal">' +
+      '<div class="modal-header"><span class="modal-title">' + (id ? 'Edit Part' : 'Add Part') + '</span><button class="btn btn-ghost btn-sm" onclick="this.closest(\'.modal-overlay\').remove()">&#x2715;</button></div>' +
+      '<div class="modal-body">' +
+        '<div id="part-modal-error"></div>' +
+        '<div class="form-group"><label>Item Number <span style="font-weight:400;font-size:0.8em;color:var(--text-muted-color)">vendor-specific</span></label><input type="text" id="part-item" value="' + escHtml(pt ? pt.item_number || '' : '') + '" /></div>' +
+        '<div class="form-group"><label>Alias <span style="font-weight:400;font-size:0.8em;color:var(--text-muted-color)">e.g. H94, HON-484</span></label><input type="text" id="part-alias" value="' + escHtml(pt ? pt.alias || '' : '') + '" /></div>' +
+        '<div class="form-group"><label>Description *</label><input type="text" id="part-desc" value="' + escHtml(pt ? pt.description || '' : '') + '" /></div>' +
+        '<div class="form-row">' +
+          '<div class="form-group"><label>Price</label><input type="number" id="part-price" min="0" step="0.01" value="' + escHtml(pt && pt.price != null ? pt.price : '') + '" /></div>' +
+          '<div class="form-group"><label>Preferred Vendor <span style="font-weight:400;font-size:0.8em;color:var(--text-muted-color)">optional</span></label><input type="text" id="part-vendor" value="' + escHtml(pt ? pt.preferred_vendor || '' : '') + '" /></div>' +
+        '</div>' +
+      '</div>' +
+      '<div class="modal-footer"><button class="btn btn-secondary" onclick="this.closest(\'.modal-overlay\').remove()">Cancel</button><button class="btn btn-primary" onclick="savePart(' + (id || 'null') + ', this)">Save</button></div>' +
+    '</div>';
+  document.body.appendChild(overlay);
+}
+
+async function savePart(id, btn) {
+  var body = {
+    item_number: (document.getElementById('part-item').value || '').trim(),
+    alias: (document.getElementById('part-alias').value || '').trim(),
+    description: (document.getElementById('part-desc').value || '').trim(),
+    price: (document.getElementById('part-price').value || '').trim(),
+    preferred_vendor: (document.getElementById('part-vendor').value || '').trim()
+  };
+  if (!body.description) { document.getElementById('part-modal-error').innerHTML = '<div class="alert alert-error">Description is required.</div>'; return; }
+  try {
+    btn.disabled = true;
+    if (id) await api('PUT', '/parts/' + id, body); else await api('POST', '/parts', body);
+    var ov = btn.closest('.modal-overlay'); if (ov) ov.remove();
+    var q = (document.getElementById('parts-search') || {}).value || '';
+    await loadPartsTable(q.trim());
+  } catch (e) {
+    document.getElementById('part-modal-error').innerHTML = '<div class="alert alert-error">' + escHtml(e.message) + '</div>';
+    btn.disabled = false;
+  }
+}
+
+async function deletePart(id) {
+  if (!confirm('Delete this part from the catalog? This does not affect existing POs.')) return;
+  try {
+    await api('DELETE', '/parts/' + id);
+    var q = (document.getElementById('parts-search') || {}).value || '';
+    await loadPartsTable(q.trim());
+  } catch (e) {
+    document.getElementById('parts-msg').innerHTML = '<div class="alert alert-error">' + escHtml(e.message) + '</div>';
+  }
+}
+
+function downloadPartsSample() {
+  var csv = 'item_number,alias,description,price,preferred_vendor\r\n' +
+    'HON-484,H94,"Honda HON66 transponder key blank",12.50,Acme Locksmith Supply\r\n' +
+    'KW1,,"Kwikset KW1 key blank",0.85,Keyline\r\n' +
+    'SC1,,"Schlage SC1 key blank",0.90,Keyline\r\n';
+  var blob = new Blob([csv], { type: 'text/csv' });
+  var a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = 'parts-sample.csv';
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(a.href);
+}
+
+function parsePartsCSV(text) {
+  var rows = [], row = [], field = '', inQ = false;
+  text = String(text).replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+  for (var i = 0; i < text.length; i++) {
+    var ch = text[i];
+    if (inQ) {
+      if (ch === '"') { if (text[i + 1] === '"') { field += '"'; i++; } else { inQ = false; } }
+      else { field += ch; }
+    } else {
+      if (ch === '"') { inQ = true; }
+      else if (ch === ',') { row.push(field); field = ''; }
+      else if (ch === '\n') { row.push(field); rows.push(row); row = []; field = ''; }
+      else { field += ch; }
+    }
+  }
+  if (field.length || row.length) { row.push(field); rows.push(row); }
+  return rows.filter(function(r) { return r.some(function(c) { return (c || '').trim() !== ''; }); });
+}
+
+function onPartsCsvChosen(input) {
+  var file = input.files && input.files[0];
+  if (!file) return;
+  var reader = new FileReader();
+  reader.onload = function(e) { input.value = ''; handlePartsCsv(e.target.result); };
+  reader.readAsText(file);
+}
+
+var _importRows = [];
+var _importResults = [];
+var _importDecisions = [];
+
+async function handlePartsCsv(text) {
+  var grid = parsePartsCSV(text);
+  if (grid.length < 2) { alert('That CSV looks empty. Use the sample CSV as a template.'); return; }
+  var header = grid[0].map(function(h) { return (h || '').trim().toLowerCase().replace(/\s+/g, '_'); });
+  function colIdx(names) { for (var n = 0; n < names.length; n++) { var k = header.indexOf(names[n]); if (k !== -1) return k; } return -1; }
+  var ci = {
+    item_number: colIdx(['item_number', 'item', 'item_no', 'item#', 'part_number', 'part_no', 'sku']),
+    alias: colIdx(['alias', 'aliases', 'alt', 'alternate']),
+    description: colIdx(['description', 'desc', 'name']),
+    price: colIdx(['price', 'cost', 'unit_price']),
+    preferred_vendor: colIdx(['preferred_vendor', 'vendor', 'supplier'])
+  };
+  if (ci.description === -1) { alert('Your CSV needs a "description" column. Download the sample CSV for the right format.'); return; }
+  _importRows = [];
+  for (var i = 1; i < grid.length; i++) {
+    var r = grid[i];
+    function cell(idx) { return idx > -1 ? (r[idx] || '').trim() : ''; }
+    var obj = {
+      item_number: cell(ci.item_number),
+      alias: cell(ci.alias),
+      description: cell(ci.description),
+      price: cell(ci.price).replace(/[$,]/g, ''),
+      preferred_vendor: cell(ci.preferred_vendor)
+    };
+    if (obj.description) _importRows.push(obj);
+  }
+  if (!_importRows.length) { alert('No rows with a description were found in that CSV.'); return; }
+  showImportReview(true);
+  try {
+    var resp = await api('POST', '/parts/check-duplicates', { rows: _importRows });
+    _importResults = resp.results || [];
+    renderImportReview(!!resp.ai_used);
+  } catch (e) {
+    var b = document.getElementById('import-review-body');
+    if (b) b.innerHTML = '<div class="alert alert-error">' + escHtml(e.message) + '</div>';
+  }
+}
+
+function showImportReview(loading) {
+  var existing = document.getElementById('import-review-overlay');
+  if (existing) existing.remove();
+  var overlay = document.createElement('div');
+  overlay.className = 'modal-overlay';
+  overlay.id = 'import-review-overlay';
+  overlay.innerHTML =
+    '<div class="modal" style="max-width:760px;width:100%">' +
+      '<div class="modal-header"><span class="modal-title">Review CSV Import</span><button class="btn btn-ghost btn-sm" onclick="this.closest(\'.modal-overlay\').remove()">&#x2715;</button></div>' +
+      '<div class="modal-body"><div id="import-review-body">' + (loading ? '<div style="padding:24px;text-align:center;color:var(--text-muted-color)">Checking for duplicates...</div>' : '') + '</div></div>' +
+      '<div class="modal-footer"><button class="btn btn-secondary" onclick="this.closest(\'.modal-overlay\').remove()">Cancel</button><button class="btn btn-primary" onclick="doPartsImport(this)">Import Selected</button></div>' +
+    '</div>';
+  document.body.appendChild(overlay);
+}
+
+function renderImportReview(aiUsed) {
+  var body = document.getElementById('import-review-body');
+  if (!body) return;
+  var dupCount = _importResults.filter(function(r) { return r.status === 'duplicate'; }).length;
+  _importDecisions = _importResults.map(function(r) { return r.status === 'duplicate' ? 'skip' : 'add'; });
+  var rowsHtml = _importResults.map(function(r, i) {
+    var row = _importRows[i];
+    var isDup = r.status === 'duplicate';
+    var matchHtml = isDup ? (r.matches || []).map(function(m) {
+      var where = m.kind === 'existing' ? 'In catalog' : 'In this file';
+      var parts = [m.item_number, m.alias, m.description].filter(Boolean).join(' &middot; ');
+      return '<div style="font-size:12px;color:#f59e0b;margin-top:3px">&#9888; ' + escHtml(where) + ': ' + escHtml(parts) + ' &mdash; ' + escHtml(m.reason || '') + '</div>';
+    }).join('') : '';
+    var control = isDup
+      ? '<select class="import-dec" data-i="' + i + '" style="font-size:13px;padding:4px 8px;border-radius:6px"><option value="skip" selected>Skip</option><option value="add">Add anyway</option></select>'
+      : '<label style="display:flex;align-items:center;gap:6px;font-size:13px"><input type="checkbox" class="import-inc" data-i="' + i + '" checked style="width:auto" /> Include</label>';
+    var meta = [row.item_number && ('Item ' + row.item_number), row.alias && ('Alias ' + row.alias), row.preferred_vendor, (row.price !== '' && row.price != null) && ('$' + row.price)].filter(Boolean).join('  &middot;  ');
+    return '<div style="padding:10px;border-top:1px solid var(--border);' + (isDup ? 'background:rgba(245,158,11,0.06)' : '') + '">' +
+      '<div style="display:flex;justify-content:space-between;gap:12px;align-items:flex-start">' +
+        '<div style="font-size:13px"><strong>' + escHtml(row.description || '(no description)') + '</strong>' +
+          '<div style="color:var(--text-muted-color);font-size:12px">' + meta + '</div>' + matchHtml +
+        '</div>' +
+        '<div style="white-space:nowrap">' + control + '</div>' +
+      '</div></div>';
+  }).join('');
+  body.innerHTML =
+    '<div style="font-size:13px;margin-bottom:10px">' + _importRows.length + ' row' + (_importRows.length === 1 ? '' : 's') + ' parsed &middot; ' + dupCount + ' suspected duplicate' + (dupCount === 1 ? '' : 's') + ' &middot; ' + (aiUsed ? 'AI checked' : 'basic matching only') + '. Suspected duplicates are set to Skip &mdash; switch any to &ldquo;Add anyway&rdquo; to keep it.</div>' +
+    '<div style="max-height:46vh;overflow:auto;border:1px solid var(--border);border-radius:8px">' + rowsHtml + '</div>';
+  body.querySelectorAll('.import-dec').forEach(function(sel) { sel.addEventListener('change', function() { _importDecisions[parseInt(this.getAttribute('data-i'), 10)] = this.value; }); });
+  body.querySelectorAll('.import-inc').forEach(function(cb) { cb.addEventListener('change', function() { _importDecisions[parseInt(this.getAttribute('data-i'), 10)] = this.checked ? 'add' : 'skip'; }); });
+}
+
+async function doPartsImport(btn) {
+  var toAdd = [];
+  _importResults.forEach(function(r, i) { if (_importDecisions[i] === 'add') toAdd.push(_importRows[i]); });
+  if (!toAdd.length) { alert('Nothing selected to import.'); return; }
+  try {
+    btn.disabled = true;
+    var resp = await api('POST', '/parts/bulk', { rows: toAdd });
+    var ov = document.getElementById('import-review-overlay'); if (ov) ov.remove();
+    var msg = document.getElementById('parts-msg');
+    if (msg) { msg.innerHTML = '<div class="alert alert-success">Imported ' + resp.inserted + ' part' + (resp.inserted === 1 ? '' : 's') + '.</div>'; setTimeout(function() { if (msg) msg.innerHTML = ''; }, 4000); }
+    var q = (document.getElementById('parts-search') || {}).value || '';
+    await loadPartsTable(q.trim());
+  } catch (e) {
+    btn.disabled = false;
+    var b = document.getElementById('import-review-body');
+    if (b) b.innerHTML = '<div class="alert alert-error" style="margin-bottom:10px">' + escHtml(e.message) + '</div>' + b.innerHTML;
+  }
+}
+
+// ===== Parts picker (shared by PO form + Monthly Requisition) ================
+var _pickerContext = null;
+var _pickerParts = [];
+var _pickerSearchTimer = null;
+
+async function openPartsPicker(context) {
+  _pickerContext = context;
+  var overlay = document.createElement('div');
+  overlay.className = 'modal-overlay';
+  overlay.id = 'parts-picker-overlay';
+  overlay.innerHTML =
+    '<div class="modal" style="max-width:940px;width:100%">' +
+      '<div class="modal-header"><span class="modal-title">Add from Parts List</span><button class="btn btn-ghost btn-sm" onclick="this.closest(\'.modal-overlay\').remove()">&#x2715;</button></div>' +
+      '<div class="modal-body">' +
+        '<input type="text" id="picker-search" placeholder="Search by item #, alias, description, vendor..." style="width:100%;margin-bottom:10px" oninput="pickerSearchDebounced()" />' +
+        '<div style="font-size:12px;color:var(--text-muted-color);margin-bottom:8px">Check the parts you want, adjust qty / price / description for this ' + (context === 'po' ? 'PO' : 'list') + ' if needed, then Add. Edits here only affect this ' + (context === 'po' ? 'PO' : 'list') + ' &mdash; the master parts list is not changed.</div>' +
+        '<div id="picker-list" style="max-height:52vh;overflow:auto;border:1px solid var(--border);border-radius:8px"></div>' +
+      '</div>' +
+      '<div class="modal-footer"><button class="btn btn-secondary" onclick="this.closest(\'.modal-overlay\').remove()">Cancel</button><button class="btn btn-primary" onclick="pickerAddSelected()">Add Selected</button></div>' +
+    '</div>';
+  document.body.appendChild(overlay);
+  await pickerLoad('');
+}
+
+function pickerSearchDebounced() {
+  clearTimeout(_pickerSearchTimer);
+  _pickerSearchTimer = setTimeout(function() {
+    var q = (document.getElementById('picker-search') || {}).value || '';
+    pickerLoad(q.trim());
+  }, 250);
+}
+
+async function pickerLoad(q) {
+  var box = document.getElementById('picker-list');
+  if (!box) return;
+  box.innerHTML = '<div style="padding:14px;color:var(--text-muted-color)">Loading...</div>';
+  try { _pickerParts = await api('GET', '/parts' + (q ? ('?q=' + encodeURIComponent(q)) : '')); }
+  catch (e) { box.innerHTML = '<div style="padding:14px"><div class="alert alert-error">' + escHtml(e.message) + '</div></div>'; return; }
+  pickerRender();
+}
+
+function pickerRender() {
+  var box = document.getElementById('picker-list');
+  if (!box) return;
+  if (!_pickerParts.length) {
+    box.innerHTML = '<div style="padding:14px;color:var(--text-muted-color)">No parts found. Add parts under Settings &rarr; Parts List.</div>';
+    return;
+  }
+  var gridCols = 'grid-template-columns:28px 1.1fr 0.7fr 2fr 64px 96px';
+  var head = '<div style="display:grid;' + gridCols + ';gap:8px;padding:8px 10px;font-size:11px;text-transform:uppercase;letter-spacing:0.04em;color:var(--text-muted-color);position:sticky;top:0;background:var(--bg-elevated,#1f1f1f);z-index:2">' +
+    '<div></div><div>Item #</div><div>Alias</div><div>Description</div><div>Qty</div><div>Price</div></div>';
+  var rows = _pickerParts.map(function(pt, i) {
+    return '<div style="display:grid;' + gridCols + ';gap:8px;padding:8px 10px;align-items:center;border-top:1px solid var(--border)">' +
+      '<div><input type="checkbox" class="picker-cb" data-i="' + i + '" style="width:auto" /></div>' +
+      '<div style="font-size:13px">' + escHtml(pt.item_number || '-') + (pt.preferred_vendor ? ('<div style="font-size:11px;color:var(--text-muted-color)">' + escHtml(pt.preferred_vendor) + '</div>') : '') + '</div>' +
+      '<div style="font-size:13px">' + escHtml(pt.alias || '-') + '</div>' +
+      '<div><input type="text" class="picker-desc" data-i="' + i + '" value="' + escHtml(pt.description || '') + '" style="width:100%;box-sizing:border-box;font-size:13px" /></div>' +
+      '<div><input type="number" class="picker-qty" data-i="' + i + '" value="1" min="0" step="1" style="width:100%;box-sizing:border-box;font-size:13px" /></div>' +
+      '<div><input type="number" class="picker-price" data-i="' + i + '" value="' + escHtml(pt.price != null ? pt.price : '') + '" min="0" step="0.01" placeholder="0.00" style="width:100%;box-sizing:border-box;font-size:13px" /></div>' +
+    '</div>';
+  }).join('');
+  box.innerHTML = head + rows;
+}
+
+function pickerAddSelected() {
+  var cbs = document.querySelectorAll('.picker-cb');
+  var chosen = [];
+  cbs.forEach(function(cb) {
+    if (!cb.checked) return;
+    var i = cb.getAttribute('data-i');
+    var pt = _pickerParts[i];
+    if (!pt) return;
+    var desc = (document.querySelector('.picker-desc[data-i="' + i + '"]') || {}).value;
+    var qty = (document.querySelector('.picker-qty[data-i="' + i + '"]') || {}).value;
+    var price = (document.querySelector('.picker-price[data-i="' + i + '"]') || {}).value;
+    chosen.push({ part: pt, description: (desc != null && desc !== '') ? desc : (pt.description || ''), quantity: (qty === '' || qty == null) ? 1 : qty, price: price });
+  });
+  if (!chosen.length) { alert('Select at least one part first.'); return; }
+  if (_pickerContext === 'po') {
+    if (lineItems.length === 1) {
+      var f = lineItems[0];
+      if (!(f.item_number || '').toString().trim() && !(f.description || '').toString().trim() && !(f.unit_price || '').toString().trim()) lineItems = [];
+    }
+    chosen.forEach(function(c) {
+      lineItems.push({ item_number: c.part.item_number || '', manufacturer: '', description: c.description, quantity: c.quantity || 1, unit_price: (c.price === '' || c.price == null) ? '' : c.price });
+    });
+    buildLineItemRows();
+  } else if (_pickerContext === 'running') {
+    var startLen = runningItems.length;
+    chosen.forEach(function(c) {
+      runningItems.push({ description: c.description, quantity: c.quantity || 1, unit_price: (c.price === '' || c.price == null) ? '' : c.price, vendor_name: c.part.preferred_vendor || '', part_number: c.part.item_number || '', link: '' });
+    });
+    runningBuildRows();
+    for (var k = startLen; k < runningItems.length; k++) { runningPersist(k); }
+  }
+  var ov = document.getElementById('parts-picker-overlay');
+  if (ov) ov.remove();
+}
+
 var WO_STATUS_META = {
   received:       { label: 'Received',       bg: '#fff3e8', fg: '#c2520a' },
   in_process:     { label: 'In Process',     bg: '#dbeafe', fg: '#1d4ed8' },
