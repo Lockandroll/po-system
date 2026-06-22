@@ -23,7 +23,7 @@ async function addActivity(taskId, user, type, body) {
     [taskId, user ? user.id : null, user ? user.name : null, type, body]
   );
 }
-const ATT_MAX = 12 * 1024 * 1024; // 12 MB per file
+const ATT_MAX = 50 * 1024 * 1024; // 50 MB per file
 function stripDataUrl(v) { return String(v == null ? '' : v).replace(/^data:[^;]+;base64,/, ''); }
 async function saveAttachments(taskId, list, user) {
   if (!Array.isArray(list)) return 0;

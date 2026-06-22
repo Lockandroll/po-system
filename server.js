@@ -34,7 +34,7 @@ const loginLimiter = rateLimit({
 });
 
 app.use(cors());
-app.use(express.json({ limit: '20mb' }));
+app.use(express.json({ limit: '80mb' }));
 app.use(express.static(path.join(__dirname, 'public')));
 app.use('/api/', generalLimiter);
 app.use('/api/auth/login', loginLimiter);

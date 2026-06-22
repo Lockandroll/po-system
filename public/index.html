@@ -2389,9 +2389,9 @@ async function taskDeleteAttachment(taskId, aid){
 }
 async function taskDetailFilesPicked(input, taskId){
   var files = input && input.files ? Array.prototype.slice.call(input.files) : [];
-  var MAX = 12*1024*1024; var toSend=[]; var remaining=0;
+  var MAX = 50*1024*1024; var toSend=[]; var remaining=0;
   files.forEach(function(f){
-    if (f.size > MAX){ taskFeedback('"'+f.name+'" is larger than 12 MB and was skipped.', true); return; }
+    if (f.size > MAX){ taskFeedback('"'+f.name+'" is larger than 50 MB and was skipped.', true); return; }
     remaining++;
     var reader = new FileReader();
     reader.onload = async function(){
@@ -2413,10 +2413,10 @@ function taskUpdateCcCount(){ var n=document.querySelectorAll('.tk-cc:checked').
 function taskFmtBytes(b){ b=parseInt(b,10)||0; if (b<1024) return b+' B'; if (b<1048576) return (b/1024).toFixed(0)+' KB'; return (b/1048576).toFixed(1)+' MB'; }
 function taskFilesPicked(input){
   var files = input && input.files ? Array.prototype.slice.call(input.files) : [];
-  var MAX = 12*1024*1024;
+  var MAX = 50*1024*1024;
   var pending = 0;
   files.forEach(function(f){
-    if (f.size > MAX){ taskFeedback('"'+f.name+'" is larger than 12 MB and was skipped.', true); return; }
+    if (f.size > MAX){ taskFeedback('"'+f.name+'" is larger than 50 MB and was skipped.', true); return; }
     pending++;
     var reader = new FileReader();
     reader.onload = function(){
