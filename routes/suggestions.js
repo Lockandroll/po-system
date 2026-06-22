@@ -31,7 +31,7 @@ router.post('/', requireAuth, async (req, res) => {
     const s = rows[0];
     // Notify admins and managers
     try {
-      const _sg = await notify.broadcastRecipients('suggestion_created', "role IN ('admin', 'manager')");
+      const _sg = await notify.broadcastRecipients('suggestion_created', "role IN ('admin', 'manager', 'owner')");
       const emailUsers = _sg.emails;
       const smsUsers = _sg.phones;
       const submittedBy = isAnon ? 'Anonymous' : req.user.name;

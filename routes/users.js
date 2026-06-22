@@ -7,7 +7,7 @@ const { sendEmail, emailTemplate } = require('../utils/email');
 
 const router = express.Router();
 
-const VALID_ROLES = ['locksmith', 'locksmith_coordinator', 'roadside_technician', 'manager', 'admin'];
+const VALID_ROLES = ['locksmith', 'locksmith_coordinator', 'roadside_technician', 'manager', 'admin', 'owner'];
 
 const ROLE_LABELS = {
   locksmith: 'Locksmith',

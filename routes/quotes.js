@@ -101,7 +101,7 @@ router.post('/', requireAuth, requirePermission('create_quote'), async (req, res
       client.release();
       try { await logAudit({ entity_type: 'quote', entity_id: quote.id, entity_number: quote_number, action: 'created', user_id: req.user.id, user_name: req.user.name, details: { customer: customer_name, total } }); } catch(e) {}
       try {
-        const _q = await notify.broadcastRecipients('quote_created', "role = 'admin'");
+        const _q = await notify.broadcastRecipients('quote_created', "role IN ('admin', 'owner')");
         const emailAdmins = _q.emails;
         const smsAdmins = _q.phones;
         if (emailAdmins.length) {
@@ -270,7 +270,7 @@ router.post('/:id/push-to-po', requireAuth, requirePermission('push_quote_po'), 
     }
     try {
       const base = (process.env.APP_URL || '').replace(/\/$/, '');
-      const _q2 = await notify.broadcastRecipients('quote_to_pos', "role = 'admin'");
+      const _q2 = await notify.broadcastRecipients('quote_to_pos', "role IN ('admin', 'owner')");
       const emailAdmins = _q2.emails;
       const smsAdmins = _q2.phones;
       const listText = created.map(function (c) { return c.po_number + ' (' + c.vendor_name + ', $' + parseFloat(c.total).toFixed(2) + ')'; }).join(', ');

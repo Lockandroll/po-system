@@ -203,7 +203,7 @@
 <script>
 const state = {
   token: localStorage.getItem('po_token'),
-  user: JSON.parse(localStorage.getItem('po_user') || 'null'),
+  user: normalizeUserRole(JSON.parse(localStorage.getItem('po_user') || 'null')),
   currentView: null,
   currentParam: null,
   sidebarSection: null,
@@ -367,9 +367,11 @@ var PERM_DEFAULTS = {
   roadside_technician: EMPLOYEE_PERMS.slice()
 };
 function roleLabel(r) {
-  var m = { locksmith:'Locksmith', locksmith_coordinator:'Locksmith Coordinator', roadside_technician:'Roadside Technician', requester:'Locksmith', approver:'Approver', manager:'Manager', admin:'Admin' };
+  var m = { locksmith:'Locksmith', locksmith_coordinator:'Locksmith Coordinator', roadside_technician:'Roadside Technician', requester:'Locksmith', approver:'Approver', manager:'Manager', admin:'Admin', owner:'Owner' };
   return m[r] || r;
 }
+// Owner is treated as admin everywhere in the UI; isOwner is kept for labels.
+function normalizeUserRole(u){ if (u && u.role === 'owner') { u.isOwner = true; u.role = 'admin'; } return u; }
 function can(perm) {
   if (!state.user) return false;
   if (state.user.role === 'admin') return true;
@@ -487,7 +489,7 @@ async function render() {
             '</select>' +
           '</div>'
         : '') +
-        '<div class="sidebar-user"><div class="avatar">' + escHtml(initials) + '</div><div class="sidebar-user-info"><div class="sidebar-user-name">' + escHtml(state.user.name) + '</div><div class="sidebar-user-role">' + escHtml(roleLabel(state.user.role)) + '</div></div></div>' +
+        '<div class="sidebar-user"><div class="avatar">' + escHtml(initials) + '</div><div class="sidebar-user-info"><div class="sidebar-user-name">' + escHtml(state.user.name) + '</div><div class="sidebar-user-role">' + escHtml(state.user.isOwner ? 'Owner' : roleLabel(state.user.role)) + '</div></div></div>' +
         '<button class="btn btn-ghost btn-sm" style="width:100%;font-size:12px;color:var(--text-muted-color);margin-top:4px" onclick="logout()">' + icons.logout + ' Sign Out</button>' +
       '</div>' +
     '</div>' +
@@ -603,7 +605,7 @@ async function doLogin() {
       return;
     }
     state.token = data.token;
-    state.user = data.user;
+    state.user = normalizeUserRole(data.user);
     localStorage.setItem('po_token', data.token);
     localStorage.setItem('po_user', JSON.stringify(data.user));
     navigate('dashboard');
@@ -637,7 +639,7 @@ async function doVerify2FA() {
     state.pendingUserId = null;
     state.pendingVia = null;
     state.token = data.token;
-    state.user = data.user;
+    state.user = normalizeUserRole(data.user);
     localStorage.setItem('po_token', data.token);
     localStorage.setItem('po_user', JSON.stringify(data.user));
     navigate('dashboard');
@@ -724,7 +726,7 @@ async function doSetup() {
     await api('POST', '/auth/setup', { name, email, password });
     const data = await api('POST', '/auth/login', { email, password });
     state.token = data.token;
-    state.user = data.user;
+    state.user = normalizeUserRole(data.user);
     localStorage.setItem('po_token', data.token);
     localStorage.setItem('po_user', JSON.stringify(data.user));
     navigate('dashboard');
@@ -1540,7 +1542,7 @@ async function showUserModal(id) {
         '<div class="form-group"><label>' + (id ? 'New Password (leave blank to keep)' : 'Password (optional)') + '</label><input type="password" id="modal-password" placeholder="' + (id ? '' : 'Leave blank to email an invite') + '" />' + (id ? '' : '<div style="font-size:12px;color:var(--text-muted-color);margin-top:5px">An invite email is always sent. Leave blank and the user sets their own password via the link.</div>') + '</div>' +
         '<div class="form-row">' +
           '<div class="form-group"><label>Phone <span style="font-weight:400;font-size:0.8em;color:var(--text-muted)">Format: +13215550000</span></label><input type="tel" id="modal-phone" value="' + escHtml(user ? user.phone || '' : '') + '" placeholder="+13215550000" pattern="\\+1[0-9]{10}" title="Must be in format +1 followed by 10 digits (e.g. +13215550000)" /></div>' +
-          '<div class="form-group"><label>Role</label><select id="modal-role">' +'<option value="locksmith"' + (user&&user.role==='locksmith'?' selected':'') + '>Locksmith</option>' +'<option value="locksmith_coordinator"' + (user&&user.role==='locksmith_coordinator'?' selected':'') + '>Locksmith Coordinator</option>' +'<option value="roadside_technician"' + (user&&user.role==='roadside_technician'?' selected':'') + '>Roadside Technician</option>' +'<option value="manager"' + (user&&user.role==='manager'?' selected':'') + '>Manager</option>' +'<option value="admin"' + (user&&user.role==='admin'?' selected':'') + '>Admin</option>' +'</select></div>' +
+          '<div class="form-group"><label>Role</label><select id="modal-role">' +'<option value="locksmith"' + (user&&user.role==='locksmith'?' selected':'') + '>Locksmith</option>' +'<option value="locksmith_coordinator"' + (user&&user.role==='locksmith_coordinator'?' selected':'') + '>Locksmith Coordinator</option>' +'<option value="roadside_technician"' + (user&&user.role==='roadside_technician'?' selected':'') + '>Roadside Technician</option>' +'<option value="manager"' + (user&&user.role==='manager'?' selected':'') + '>Manager</option>' +'<option value="admin"' + (user&&user.role==='admin'?' selected':'') + '>Admin</option>' +'<option value="owner"' + (user&&user.role==='owner'?' selected':'') + '>Owner</option>' +'</select></div>' +
           '</div>' +
         '<div class="form-group" style="display:flex;align-items:center;gap:10px">' +
           '<input type="checkbox" id="modal-receive-emails" style="width:auto"' + (user && user.receive_emails === false ? '' : ' checked') + ' />' +

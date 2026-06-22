@@ -228,7 +228,7 @@ router.post('/:id/submit', requireAuth, requirePermission('submit_po'), async (r
   await pool.query('UPDATE purchase_orders SET status=$1, rejection_reason=NULL, approver_id=NULL, updated_at=NOW() WHERE id=$2', ['submitted', req.params.id]);
   await logAudit({ entity_type: 'po', entity_id: po.id, entity_number: po.po_number, action: 'submitted', user_id: req.user.id, user_name: req.user.name });
 
-  const _po = await notify.broadcastRecipients('po_submitted', "role = 'admin'");
+  const _po = await notify.broadcastRecipients('po_submitted', "role IN ('admin', 'owner')");
   const emailAdmins = _po.emails;
   const smsAdmins = _po.phones;
   if (emailAdmins.length) {

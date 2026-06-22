@@ -37,7 +37,19 @@ async function loadTask(id) {
   task.activity = acts;
   return task;
 }
+async function ownerIds() {
+  const r = await pool.query("SELECT id FROM users WHERE role = 'owner'");
+  return r.rows.map(function (x) { return x.id; });
+}
+function isOwnersOwn(task, owners) {
+  if (!owners || !owners.length) return false;
+  if (task.assigned_to && owners.indexOf(task.assigned_to) !== -1) return true;
+  if ((task.assigned_to === null || task.assigned_to === undefined) && task.created_by && owners.indexOf(task.created_by) !== -1) return true;
+  return false;
+}
 async function canTouch(req, task) {
+  if (req.user.isOwner) return true;
+  if (isOwnersOwn(task, await ownerIds())) return false;
   if (await perms.hasPermission(req.user.role, 'manage_tasks')) return true;
   return task.assigned_to === req.user.id;
 }
@@ -48,7 +60,15 @@ router.get('/', requireAuth, requirePermission('view_tasks'), async (req, res) =
     const manage = await perms.hasPermission(req.user.role, 'manage_tasks');
     const params = [];
     let where = '';
-    if (!manage) { where = 'WHERE t.assigned_to = $1'; params.push(req.user.id); }
+    if (req.user.isOwner) {
+      // Owner sees every task.
+    } else if (manage) {
+      // Admins/managers see all tasks except an owner's own (self-assigned or personal) tasks.
+      const owners = await ownerIds();
+      if (owners.length) { params.push(owners); where = 'WHERE NOT ( t.assigned_to = ANY($1::int[]) OR (t.assigned_to IS NULL AND t.created_by = ANY($1::int[])) )'; }
+    } else {
+      where = 'WHERE t.assigned_to = $1'; params.push(req.user.id);
+    }
     const { rows } = await pool.query(
       'SELECT t.*, a.name AS assignee_name, c.name AS creator_name, ' +
       '(SELECT COUNT(*) FROM task_subtasks s WHERE s.task_id = t.id) AS subtask_total, ' +
@@ -164,6 +184,7 @@ router.put('/:id', requireAuth, requirePermission('manage_tasks'), async (req, r
     const b = req.body || {};
     const ex = (await pool.query('SELECT * FROM tasks WHERE id = $1', [req.params.id])).rows[0];
     if (!ex) return res.status(404).json({ error: 'Task not found' });
+    if (!(await canTouch(req, ex))) return res.status(403).json({ error: 'Forbidden' });
     const title = (b.title || ex.title || '').trim();
     const status = STATUSES.indexOf(b.status) !== -1 ? b.status : ex.status;
     const priority = PRIORITIES.indexOf(b.priority) !== -1 ? b.priority : ex.priority;
@@ -261,6 +282,8 @@ router.post('/:id/comments', requireAuth, requirePermission('view_tasks'), async
 
 // DELETE (managers/admin)
 router.delete('/:id', requireAuth, requirePermission('manage_tasks'), async (req, res) => {
+  const _t = (await pool.query('SELECT assigned_to, created_by FROM tasks WHERE id = $1', [req.params.id])).rows[0];
+  if (_t && !(await canTouch(req, _t))) return res.status(403).json({ error: 'Forbidden' });
   await pool.query('DELETE FROM tasks WHERE id = $1', [req.params.id]);
   try { await logAudit({ entity_type: 'task', entity_id: parseInt(req.params.id), entity_number: '#' + req.params.id, action: 'deleted', user_id: req.user.id, user_name: req.user.name, details: {} }); } catch (e) {}
   res.json({ success: true });

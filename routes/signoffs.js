@@ -162,7 +162,7 @@ router.post('/:id/complete', requireAuth, requirePermission('complete_signoff'),
     // Email admins with signature + photos attached
     try {
       const base = (process.env.APP_URL || '').replace(/\/$/, '');
-      const _so = await notify.broadcastRecipients('signoff_completed', "role = 'admin'");
+      const _so = await notify.broadcastRecipients('signoff_completed', "role IN ('admin', 'owner')");
       const emails = _so.emails;
       if (emails.length) {
         const html = emailTemplate({

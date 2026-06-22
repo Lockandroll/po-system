@@ -161,7 +161,7 @@ router.post('/:id/submit', requireAuth, requirePermission('submit_vr'), async fu
     await logAudit({ entity_type: 'vr', entity_id: vr.id, entity_number: vr.vr_number, action: 'submitted', user_id: req.user.id, user_name: req.user.name });
 
     // Email and SMS admins
-    const _vr = await notify.broadcastRecipients('vr_submitted', "role = 'admin'");
+    const _vr = await notify.broadcastRecipients('vr_submitted', "role IN ('admin', 'owner')");
     const emailApprovers = _vr.emails;
     const smsApprovers = _vr.phones;
     if (emailApprovers.length) {

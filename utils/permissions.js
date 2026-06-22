@@ -83,7 +83,7 @@ async function getRolePerms() {
 
 // Synchronous default check (used as a safe fallback).
 function defaultHas(role, perm) {
-  if (role === 'admin') return true;
+  if (role === 'admin' || role === 'owner') return true;
   const d = DEFAULTS[role];
   return Array.isArray(d) && d.indexOf(perm) !== -1;
 }
@@ -91,7 +91,7 @@ function defaultHas(role, perm) {
 // Authoritative async check: admin always allowed; otherwise use the configured
 // matrix for that role if present, else fall back to defaults.
 async function hasPermission(role, perm) {
-  if (role === 'admin') return true;
+  if (role === 'admin' || role === 'owner') return true;
   const cfg = await getRolePerms();
   if (cfg && Array.isArray(cfg[role])) return cfg[role].indexOf(perm) !== -1;
   return defaultHas(role, perm);

@@ -14,6 +14,10 @@ function requireAuth(req, res, next) {
     const { iat, exp, ...claims } = payload;
     const newToken = jwt.sign(claims, process.env.JWT_SECRET, { expiresIn: '24h' });
     res.setHeader('X-New-Token', newToken);
+    // Owner is a superset of admin: authorize as admin everywhere, but keep an
+    // isOwner flag (and the real role on the token) for owner-only logic.
+    req.user.isOwner = (payload.role === 'owner');
+    if (req.user.isOwner) req.user.role = 'admin';
     next();
   } catch {
     res.status(401).json({ error: 'Invalid or expired token' });

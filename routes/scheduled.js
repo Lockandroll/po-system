@@ -5,7 +5,7 @@ const { runScheduledMessage } = require('../jobs/scheduledMessages');
 
 const router = express.Router();
 
-const VALID_ROLES = ['locksmith', 'locksmith_coordinator', 'roadside_technician', 'manager', 'admin'];
+const VALID_ROLES = ['locksmith', 'locksmith_coordinator', 'roadside_technician', 'manager', 'admin', 'owner'];
 
 function clean(b) {
   let roles = [];
