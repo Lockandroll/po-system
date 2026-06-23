@@ -90,7 +90,41 @@ async function notifyTaskCcInfo(ccUserIds, info) {
   try { await sendEmail(emails, 'FYI \u2014 task: ' + info.title, taskEmail(t, line, info.attCount || 0)); } catch (e) { console.error('[tasks] cc email failed:', e.message); }
 }
 
-// Daily sweep: day-before, due-today, and overdue reminders.
+// Small helpers for the daily digest.
+function esc(s) {
+  return String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+}
+function firstName(name) {
+  return String(name || '').trim().split(/\s+/)[0] || 'there';
+}
+function digestSection(title, color, items) {
+  if (!items.length) return '';
+  var rows = items.map(function (t) {
+    var due = t.due_date ? fmtDate(t.due_date) : '';
+    return '<tr><td style="padding:7px 0;font-size:14px;color:#111111;border-bottom:1px solid #f0f0f0">' +
+      '<strong>' + esc(t.title) + '</strong>' +
+      '<span style="color:#888888;font-size:12px"> — ' + esc(t.priority || 'normal') + (due ? (' · due ' + esc(due)) : '') + '</span>' +
+      '</td></tr>';
+  }).join('');
+  return '<div style="margin:0 0 18px">' +
+    '<div style="font-size:12px;font-weight:700;text-transform:uppercase;letter-spacing:0.5px;color:' + color + ';margin:0 0 4px">' + esc(title) + ' (' + items.length + ')</div>' +
+    '<table role="presentation" width="100%" cellpadding="0" cellspacing="0">' + rows + '</table></div>';
+}
+function buildTaskDigestEmail(name, g) {
+  var body = 'Hi ' + esc(firstName(name)) + ', here are your open tasks that need attention:<br><br>' +
+    digestSection('Overdue', '#dc2626', g.overdue) +
+    digestSection('Due today', '#c2520a', g.today) +
+    digestSection('Due tomorrow', '#2563eb', g.tomorrow);
+  return emailTemplate({
+    badge: 'Task reminders', badgeColor: 'orange',
+    title: 'Your task reminders',
+    body: body,
+    buttonText: 'View Tasks', buttonUrl: APP + '/?view=tasks',
+    footerNote: 'Automated daily task summary from Nova.'
+  });
+}
+
+// Daily sweep: one digest per person covering day-before, due-today, and overdue tasks.
 async function runTaskReminders() {
   try {
     const now = new Date();
@@ -98,25 +132,47 @@ async function runTaskReminders() {
     const tmrwStr = etDateStr(new Date(now.getTime() + 86400000));
     const { rows } = await pool.query(
       "SELECT t.*, u.name AS assignee_name, u.phone, u.email FROM tasks t JOIN users u ON t.assigned_to = u.id " +
-      "WHERE t.status <> 'done' AND t.due_date IS NOT NULL"
+      "WHERE t.status <> 'done' AND t.due_date IS NOT NULL ORDER BY t.due_date ASC, t.priority ASC"
     );
     const ch = await getChannels('task_due');
+
+    // Group the tasks that are due for a reminder today by assignee.
+    var byUser = {};
     for (let i = 0; i < rows.length; i++) {
       const t = rows[i];
       const dueStr = calDateStr(t.due_date);
-      if (dueStr === tmrwStr && !t.reminded_day_before) {
-        await deliver(t, 'Reminder: task "' + t.title + '" is due tomorrow (' + fmtDate(t.due_date) + ').', 'Task due tomorrow: ' + t.title, taskEmail(t, 'This task is due tomorrow.'), ch);
-        await pool.query('UPDATE tasks SET reminded_day_before = true WHERE id = $1', [t.id]);
-      } else if (dueStr === todayStr && !t.reminded_due) {
-        await deliver(t, 'Reminder: task "' + t.title + '" is due today.', 'Task due today: ' + t.title, taskEmail(t, 'This task is due today.'), ch);
-        await pool.query('UPDATE tasks SET reminded_due = true WHERE id = $1', [t.id]);
-      } else if (dueStr < todayStr) {
+      var bucket = null;
+      if (dueStr === tmrwStr && !t.reminded_day_before) bucket = 'tomorrow';
+      else if (dueStr === todayStr && !t.reminded_due) bucket = 'today';
+      else if (dueStr < todayStr) {
         const lastStr = t.last_overdue_on ? calDateStr(t.last_overdue_on) : null;
-        if (lastStr !== todayStr) {
-          await deliver(t, 'Reminder: task "' + t.title + '" is OVERDUE (was due ' + fmtDate(t.due_date) + ').', 'Task overdue: ' + t.title, taskEmail(t, 'This task is overdue.'), ch);
-          await pool.query('UPDATE tasks SET last_overdue_on = $1 WHERE id = $2', [todayStr, t.id]);
-        }
+        if (lastStr !== todayStr) bucket = 'overdue';
       }
+      if (!bucket) continue;
+      var g = byUser[t.assigned_to] || (byUser[t.assigned_to] = {
+        user: { name: t.assignee_name, email: t.email, phone: t.phone },
+        overdue: [], today: [], tomorrow: []
+      });
+      g[bucket].push(t);
+    }
+
+    for (const id in byUser) {
+      const g = byUser[id];
+      const total = g.overdue.length + g.today.length + g.tomorrow.length;
+      if (!total) continue;
+      var parts = [];
+      if (g.overdue.length) parts.push(g.overdue.length + ' overdue');
+      if (g.today.length) parts.push(g.today.length + ' due today');
+      if (g.tomorrow.length) parts.push(g.tomorrow.length + ' due tomorrow');
+      const summary = parts.join(', ');
+      const subject = 'Your tasks: ' + summary;
+      const sms = firstName(g.user.name) + ', Nova tasks — ' + summary + '. Open Nova to view.';
+      await deliver(g.user, sms, subject, buildTaskDigestEmail(g.user.name, g), ch);
+
+      // Mark each task reminded so it is not re-sent (same flags as before).
+      for (let k = 0; k < g.tomorrow.length; k++) await pool.query('UPDATE tasks SET reminded_day_before = true WHERE id = $1', [g.tomorrow[k].id]);
+      for (let k = 0; k < g.today.length; k++) await pool.query('UPDATE tasks SET reminded_due = true WHERE id = $1', [g.today[k].id]);
+      for (let k = 0; k < g.overdue.length; k++) await pool.query('UPDATE tasks SET last_overdue_on = $1 WHERE id = $2', [todayStr, g.overdue[k].id]);
     }
   } catch (err) {
     console.error('[tasks] reminder sweep failed:', err.message);
