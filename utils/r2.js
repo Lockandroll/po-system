@@ -52,9 +52,15 @@ async function presignDownload(key, filename, inline) {
   return getSignedUrl(client(), cmd, { expiresIn: 300 });
 }
 
+async function getObjectBuffer(key) {
+  const res = await client().send(new GetObjectCommand({ Bucket: BUCKET, Key: key }));
+  const bytes = await res.Body.transformToByteArray();
+  return Buffer.from(bytes);
+}
+
 async function deleteObject(key) {
   if (!key) return;
   await client().send(new DeleteObjectCommand({ Bucket: BUCKET, Key: key }));
 }
 
-module.exports = { configured, presignUpload, presignDownload, deleteObject };
+module.exports = { configured, presignUpload, presignDownload, getObjectBuffer, deleteObject };

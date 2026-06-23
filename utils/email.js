@@ -2,7 +2,7 @@ function esc(s) {
   return String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 }
 
-async function sendEmail(to, subject, html, cc) {
+async function sendEmail(to, subject, html, cc, attachments) {
   if (!process.env.RESEND_API_KEY) { console.warn('RESEND_API_KEY not set — skipping email'); return; }
   try {
     const body = {
@@ -12,6 +12,7 @@ async function sendEmail(to, subject, html, cc) {
       html
     };
     if (cc && cc.length > 0) body.cc = Array.isArray(cc) ? cc : [cc];
+    if (attachments && attachments.length) body.attachments = attachments;
     const resp = await fetch('https://api.resend.com/emails', {
       method: 'POST',
       headers: { Authorization: 'Bearer ' + process.env.RESEND_API_KEY, 'Content-Type': 'application/json' },

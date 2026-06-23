@@ -4,6 +4,7 @@ const { pool } = require('../db');
 const { requireAuth } = require('../middleware/auth');
 const { logAudit } = require('../utils/audit');
 const r2 = require('../utils/r2');
+const { sendEmail } = require('../utils/email');
 
 const router = express.Router();
 
@@ -118,7 +119,7 @@ router.get('/', requireAuth, async function (req, res) {
       'SELECT id, name, parent_id, owner_id, owner_name, created_at FROM document_folders ORDER BY name ASC'
     )).rows;
     const allFiles = (await pool.query(
-      "SELECT id, name, folder_id, mime_type, size_bytes, owner_id, owner_name, created_at " +
+      "SELECT id, name, folder_id, mime_type, size_bytes, owner_id, owner_name, emailable, created_at " +
       "FROM documents WHERE status = 'ready' ORDER BY name ASC"
     )).rows;
 
@@ -158,7 +159,7 @@ router.get('/', requireAuth, async function (req, res) {
         return {
           id: f.id, name: f.name, mime_type: f.mime_type, size_bytes: Number(f.size_bytes) || 0,
           owner_name: f.owner_name, created_at: f.created_at,
-          mine: f.owner_id === req.user.id, canEdit: canEditFile(ctx, f),
+          mine: f.owner_id === req.user.id, canEdit: canEditFile(ctx, f), emailable: !!f.emailable,
           shareCount: shareCounts['file:' + f.id] || 0
         };
       })
@@ -336,6 +337,10 @@ router.put('/:id', requireAuth, async function (req, res) {
     if (!dr.rows.length) return res.status(404).json({ error: 'File not found' });
     if (!canEditFile(ctx, dr.rows[0])) return res.status(403).json({ error: 'You cannot edit this file' });
     const sets = [], params = [];
+    if (req.body.emailable !== undefined) {
+      if (req.user.role !== 'admin') return res.status(403).json({ error: 'Only admins can change email permission' });
+      params.push(!!req.body.emailable); sets.push('emailable = $' + params.length);
+    }
     if (typeof req.body.name === 'string' && req.body.name.trim()) {
       params.push(req.body.name.trim().slice(0, 255)); sets.push('name = $' + params.length);
     }
@@ -375,6 +380,50 @@ router.delete('/:id', requireAuth, async function (req, res) {
   } catch (err) {
     console.error('File delete error:', err);
     res.status(500).json({ error: 'Failed to delete file' });
+  }
+});
+
+// Email a document as an attachment. Only docs flagged emailable (admins set that)
+// can be sent; any viewer may send. The sender is CC'd a copy; from = no-reply.
+function escEmail(x) { return String(x == null ? '' : x).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;'); }
+router.post('/:id/email', requireAuth, async function (req, res) {
+  try {
+    if (!r2.configured()) return res.status(503).json({ error: 'Document storage is not configured yet.' });
+    const ctx = await loadContext(req.user);
+    const id = parseInt(req.params.id, 10);
+    const dr = await pool.query("SELECT id, name, r2_key, folder_id, owner_id, mime_type, size_bytes, emailable FROM documents WHERE id = $1 AND status = 'ready'", [id]);
+    if (!dr.rows.length) return res.status(404).json({ error: 'File not found' });
+    const file = dr.rows[0];
+    if (!canViewFile(ctx, file)) return res.status(403).json({ error: 'You do not have access to this file' });
+    if (!file.emailable) return res.status(403).json({ error: 'This document is not approved for emailing. An admin must allow it first.' });
+    const to = (req.body.to || '').trim();
+    if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(to)) return res.status(400).json({ error: 'Enter a valid recipient email address' });
+    if (Number(file.size_bytes) > 20 * 1024 * 1024) return res.status(413).json({ error: 'This file is over 20 MB and is too large to email as an attachment.' });
+    const toName = (req.body.to_name || '').toString().slice(0, 120);
+    const message = (req.body.message || '').toString().slice(0, 2000);
+    let buf;
+    try { buf = await r2.getObjectBuffer(file.r2_key); }
+    catch (e) { console.error('R2 fetch for email failed:', e.message); return res.status(502).json({ error: 'Could not retrieve the file to send.' }); }
+    const safeMsg = message ? escEmail(message).replace(/\n/g, '<br>') : '';
+    const html = '<div style="font-family:Arial,Helvetica,sans-serif;font-size:14px;color:#222;line-height:1.6">' +
+      '<p>' + (toName ? ('Hi ' + escEmail(toName) + ',') : 'Hello,') + '</p>' +
+      '<p>Please find the attached document: <strong>' + escEmail(file.name) + '</strong>.</p>' +
+      (safeMsg ? ('<p>' + safeMsg + '</p>') : '') +
+      '<p>Sent by ' + escEmail(req.user.name) + ' on behalf of Lock and Roll LLC.</p>' +
+      '<p style="color:#888;font-size:12px;border-top:1px solid #eee;padding-top:10px;margin-top:18px">This message was sent from an unmonitored address. Please contact Lock and Roll LLC directly with any questions.</p>' +
+      '</div>';
+    await sendEmail(
+      to,
+      'Document from Lock and Roll LLC: ' + file.name,
+      html,
+      req.user.email || null,
+      [{ filename: file.name, content: buf.toString('base64'), content_type: file.mime_type || 'application/octet-stream' }]
+    );
+    logAudit({ entity_type: 'document', entity_id: id, action: 'email', user_id: req.user.id, user_name: req.user.name, details: { name: file.name, to: to } });
+    res.json({ success: true });
+  } catch (err) {
+    console.error('Document email error:', err);
+    res.status(500).json({ error: 'Failed to send the document' });
   }
 });
 
