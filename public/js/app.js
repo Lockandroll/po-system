@@ -3021,7 +3021,8 @@ function reviewsRenderTally(r, ctx) {
     return;
   }
   var rowsHtml = techs.map(function(t){
-    return '<tr><td>' + escHtml(t.name || '—') + '</td><td style="text-align:right">' + (parseInt(t.count, 10) || 0) + '</td></tr>';
+    var city = escHtml(t.location || '—') + (t.multiCity ? ' <span style="color:var(--text-muted-color);font-size:11px">(+ others)</span>' : '');
+    return '<tr><td>' + escHtml(t.name || '—') + '</td><td>' + city + '</td><td style="text-align:right">' + (parseInt(t.count, 10) || 0) + '</td></tr>';
   }).join('');
   var note = 'Analyzed ' + (r.analyzed || 0) + ' review' + ((r.analyzed === 1) ? '' : 's');
   if (r.unnamed) note += ' • ' + r.unnamed + ' with no technician named';
@@ -3029,7 +3030,7 @@ function reviewsRenderTally(r, ctx) {
   el.innerHTML =
     '<div class="card" style="padding:16px">' +
       '<div style="font-size:12px;color:var(--text-muted-color);text-transform:uppercase;letter-spacing:0.5px;margin-bottom:8px">Reviews by technician — ' + escHtml(rangeLabel) + '</div>' +
-      '<div class="table-wrap"><table><thead><tr><th>Technician</th><th style="text-align:right">Reviews</th></tr></thead><tbody>' + rowsHtml + '</tbody></table></div>' +
+      '<div class="table-wrap"><table><thead><tr><th>Technician</th><th>City</th><th style="text-align:right">Reviews</th></tr></thead><tbody>' + rowsHtml + '</tbody></table></div>' +
       '<div style="font-size:12px;color:var(--text-muted-color);margin-top:8px">' + escHtml(note) + '</div>' +
     '</div>';
 }

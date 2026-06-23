@@ -176,7 +176,7 @@ router.post('/tech-tally', requireAuth, async (req, res) => {
     const { whereSql, params } = buildReviewFilters(req.body || {});
     const CAP = 800; // keep the prompt within sane token limits
     const sql =
-      "SELECT review_text FROM reviews " + whereSql +
+      "SELECT location_name, review_text FROM reviews " + whereSql +
       " ORDER BY review_date DESC NULLS LAST, id DESC LIMIT " + (CAP + 1);
     const { rows } = await pool.query(sql, params);
 
@@ -189,31 +189,62 @@ router.post('/tech-tally', requireAuth, async (req, res) => {
       return (i + 1) + '. ' + ((r.review_text || '').replace(/\s+/g, ' ').trim() || '(no comment)');
     }).join('\n');
 
+    // Ask the AI only to extract the technician named in EACH review (in order).
+    // We then group by the city we already know from the database, so the city
+    // attribution is exact rather than guessed by the model.
     const system =
       'You analyze Google reviews for Pop-A-Lock, a mobile locksmith and roadside ' +
-      'assistance company. Reviews frequently name the technician/employee who ' +
-      'provided the service (for example: Austin, Dylan, Scooter, Paris). Your job ' +
-      'is to read each review and tally how many reviews name each employee. Treat ' +
-      'obvious nickname and spelling variants as the same person. Count a review as ' +
-      '"unnamed" if it names no employee. A single review names at most one employee ' +
-      'for tallying purposes (use the main technician credited). Respond with ONLY ' +
+      'company. Each review may name the technician/employee who provided service ' +
+      '(for example: Austin, Dylan, Scooter, Paris). For EACH numbered review, give ' +
+      'the single employee name credited, or null if none is named. Treat obvious ' +
+      'nickname and spelling variants as the same canonical name. Respond with ONLY ' +
       'raw JSON, no markdown and no backticks, in exactly this shape: ' +
-      '{"technicians":[{"name":"Austin","count":12}],"unnamed":5,"total":40}. ' +
-      'Sort technicians by count descending. total must equal the number of reviews provided.';
-    const user = 'Here are ' + sample.length + ' reviews. Tally the employees named:\n\n' + list;
+      '{"names":["Austin",null,"Dylan"]} with exactly one entry per review, in the ' +
+      'same order as given.';
+    const user = 'Here are ' + sample.length + ' reviews:\n\n' + list;
 
-    const ai = await callClaude(system, user, 2048);
+    const ai = await callClaude(system, user, 4096);
     let text = '';
     try { text = ai.content[0].text; } catch (e) { text = ''; }
     const match = text.match(/\{[\s\S]*\}/);
     if (!match) {
-      return res.status(502).json({ error: 'AI did not return a readable tally. Try a smaller range.' });
+      return res.status(502).json({ error: 'AI did not return a readable result. Try a smaller range.' });
     }
-    const parsed = JSON.parse(match[0]);
-    parsed.analyzed = sample.length;
-    parsed.capped = capped;
-    if (!Array.isArray(parsed.technicians)) parsed.technicians = [];
-    res.json(parsed);
+    let parsed;
+    try { parsed = JSON.parse(match[0]); } catch (e) {
+      return res.status(502).json({ error: 'AI returned malformed data. Try a smaller range.' });
+    }
+    const names = Array.isArray(parsed.names) ? parsed.names : [];
+
+    // Group by technician; track which city each tech appeared in.
+    const techMap = {};
+    let unnamed = 0;
+    sample.forEach(function (r, i) {
+      let nm = names[i];
+      nm = (typeof nm === 'string') ? nm.trim() : '';
+      if (!nm) { unnamed++; return; }
+      if (!techMap[nm]) techMap[nm] = { count: 0, cities: {} };
+      techMap[nm].count++;
+      const city = r.location_name || '—';
+      techMap[nm].cities[city] = (techMap[nm].cities[city] || 0) + 1;
+    });
+
+    const technicians = Object.keys(techMap).map(function (nm) {
+      const t = techMap[nm];
+      let topCity = '—', topN = -1;
+      Object.keys(t.cities).forEach(function (c) {
+        if (t.cities[c] > topN) { topN = t.cities[c]; topCity = c; }
+      });
+      return { name: nm, location: topCity, multiCity: Object.keys(t.cities).length > 1, count: t.count };
+    }).sort(function (a, b) { return b.count - a.count; });
+
+    res.json({
+      technicians: technicians,
+      unnamed: unnamed,
+      total: sample.length,
+      analyzed: sample.length,
+      capped: capped
+    });
   } catch (err) {
     console.error('POST /api/reviews/tech-tally failed:', err.message);
     res.status(502).json({ error: 'Tally failed: ' + err.message });
