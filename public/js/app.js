@@ -1,0 +1,9459 @@
+const state = {
+  token: localStorage.getItem('po_token'),
+  user: normalizeUserRole(JSON.parse(localStorage.getItem('po_user') || 'null')),
+  currentView: null,
+  currentParam: null,
+  sidebarSection: null,
+  sidebarOpen: false,
+  pendingUserId: null,
+  pendingVia: null,
+  realUser: null,
+  viewAs: null,
+  permissions: null,
+  _permsLoaded: false,
+};
+
+async function api(method, path, body) {
+  const opts = { method, headers: { 'Content-Type': 'application/json' } };
+  if (state.token) opts.headers['Authorization'] = 'Bearer ' + state.token;
+  if (state.viewAsId) opts.headers['X-View-As'] = String(state.viewAsId);
+  if (body) opts.body = JSON.stringify(body);
+  let res;
+  try {
+    res = await fetch('/api' + path, opts);
+  } catch(e) {
+    throw new Error('Network error — could not reach the server. Check your connection.');
+  }
+  // Rolling JWT: pick up refreshed token from every response
+  const newToken = res.headers.get('X-New-Token');
+  if (newToken) {
+    state.token = newToken;
+    localStorage.setItem('po_token', newToken);
+  }
+  // Expired/invalid session: clear creds and bounce to login instead of getting stuck
+  if (res.status === 401 && state.token) {
+    state.token = null;
+    state.user = null;
+    localStorage.removeItem('po_token');
+    localStorage.removeItem('po_user');
+    render();
+    throw new Error('Your session expired \u2014 please sign in again.');
+  }
+  let data;
+  try {
+    data = await res.json();
+  } catch(e) {
+    throw new Error('Server error (status ' + res.status + '). Try again or check Railway logs.');
+  }
+  if (!res.ok) throw new Error(data.error || 'Request failed (status ' + res.status + ')');
+  return data;
+}
+
+function toggleSidebar() {
+  state.sidebarOpen = !state.sidebarOpen;
+  var sb = document.getElementById('sidebar');
+  var ov = document.getElementById('sidebar-overlay');
+  if (sb) sb.classList.toggle('open', state.sidebarOpen);
+  if (ov) ov.classList.toggle('open', state.sidebarOpen);
+}
+
+function closeSidebar() {
+  state.sidebarOpen = false;
+  var sb = document.getElementById('sidebar');
+  var ov = document.getElementById('sidebar-overlay');
+  if (sb) sb.classList.remove('open');
+  if (ov) ov.classList.remove('open');
+}
+
+function getSidebarSection(view) {
+  if (['dashboard','new','edit','view','running','running-admin'].indexOf(view) !== -1) return 'po';
+  if (['quotes','new-quote','edit-quote','view-quote'].indexOf(view) !== -1) return 'quotes';
+  if (['invoices','new-invoice','edit-invoice','view-invoice','invoice-setup','invoice-parts'].indexOf(view) !== -1) return 'invoices';
+  if (['vr-dashboard','new-vr','edit-vr','view-vr','fleet-registry','new-vehicle','edit-vehicle','vehicle-history'].indexOf(view) !== -1) return 'vr';
+  if (['ai-assistant','ai-conversations','ai-usage'].indexOf(view) !== -1) return 'ai';
+  if (['company-info','ai-context','notifications','scheduled-messages','roles','settings','users','cities','audit'].indexOf(view) !== -1) return 'settings';
+  return null;
+}
+function toggleSection(section) {
+  // Expand/collapse the section in place. Keeps the mobile menu open so
+  // sub-items (PO Dashboard, Monthly Req, etc.) stay visible.
+  state.sidebarSection = (state.sidebarSection === section) ? null : section;
+  render();
+}
+function navigate(view, param) {
+  closeSidebar();
+  state.currentView = view;
+  state.currentParam = param || null;
+  try { localStorage.setItem('po_view', view); if (param != null && param !== '') localStorage.setItem('po_param', String(param)); else localStorage.removeItem('po_param'); } catch(e) {}
+  var sec = getSidebarSection(view);
+  if (sec) state.sidebarSection = sec;
+  render();
+}
+
+// --- View As (admin role preview) -------------------------------------------
+// UI-only preview: temporarily overrides state.user so all role-gated rendering
+// (including can()) reflects the chosen role. Real admin kept in state.realUser.
+// Nothing is persisted, so a page refresh exits the preview. Backend still
+// authorizes the real admin, so this previews visibility/access only.
+function enterViewAs(o) {
+  var ru = state.realUser || state.user;
+  if (!ru || ru.role !== 'admin') return;
+  state.realUser = ru;
+  state.user = { id: (o.id != null ? o.id : ru.id), name: (o.name || ru.name), email: ru.email, role: o.role };
+  state.viewAsId = (o.id != null && o.id !== ru.id) ? o.id : null;
+  state.viewAs = o.label;
+  state.sidebarSection = null;
+  navigate('home');
+}
+function viewAsRole(role) {
+  enterViewAs({ role: role, label: roleLabel(role) + ' (preview)' });
+}
+function viewAsUser(id) {
+  var u = (_usersData || []).filter(function(x) { return x.id === id; })[0];
+  if (!u) return;
+  enterViewAs({ id: u.id, name: u.name, role: u.role, label: u.name + ' \u2014 ' + u.role });
+}
+function exitViewAs() {
+  if (state.realUser) { state.user = state.realUser; state.realUser = null; }
+  state.viewAsId = null;
+  state.viewAs = null;
+  state.sidebarSection = null;
+  navigate('home');
+}
+function onViewAsChange(role) {
+  if (role === 'admin') exitViewAs(); else viewAsRole(role);
+}
+
+const icons = {
+  dashboard: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/></svg>',
+  plus: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>',
+  users: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>',
+  edit: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>',
+  trash: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14H6L5 6"/><path d="M10 11v6"/><path d="M14 11v6"/><path d="M9 6V4h6v2"/></svg>',
+  logout: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/></svg>',
+  map: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="1 6 1 22 8 18 16 22 23 18 23 2 16 6 8 2 1 6"/><line x1="8" y1="2" x2="8" y2="18"/><line x1="16" y1="6" x2="16" y2="22"/></svg>',
+  settings: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>',
+  print: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="6 9 6 2 18 2 18 9"/><path d="M6 18H4a2 2 0 0 1-2-2v-5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2h-2"/><rect x="6" y="14" width="12" height="8"/></svg>',
+  quote: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/><polyline points="10 9 9 9 8 9"/></svg>',
+};
+
+function escHtml(s) {
+  if (s == null) return '';
+  return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+
+function copyToClipboard(text, btn) {
+  navigator.clipboard.writeText(text).then(function() {
+    if (btn) { var orig = btn.innerHTML; btn.innerHTML = '&#10003;'; btn.style.color = 'var(--success)'; setTimeout(function(){ btn.innerHTML = orig; btn.style.color = ''; }, 1200); }
+  }).catch(function() {
+    var ta = document.createElement('textarea'); ta.value = text; document.body.appendChild(ta); ta.select(); document.execCommand('copy'); document.body.removeChild(ta);
+    if (btn) { var orig = btn.innerHTML; btn.innerHTML = '&#10003;'; btn.style.color = 'var(--success)'; setTimeout(function(){ btn.innerHTML = orig; btn.style.color = ''; }, 1200); }
+  });
+}
+
+function formatDate(d) {
+  if (!d) return '—';
+  return new Date(d).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+}
+function formatDateTime(d) {
+  if (!d) return '—';
+  var dt = new Date(d);
+  return dt.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }) + ' ' + dt.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' });
+}
+function timeAgo(d) {
+  if (!d) return null;
+  var diff = Date.now() - new Date(d).getTime();
+  if (diff < 0) diff = 0;
+  var m = Math.floor(diff / 60000);
+  if (m < 2) return 'now';
+  if (m < 60) return m + 'm ago';
+  var h = Math.floor(m / 60);
+  if (h < 24) return h + 'h ago';
+  var days = Math.floor(h / 24);
+  if (days < 7) return days + 'd ago';
+  return null;
+}
+function userActivityCell(u) {
+  var ago = timeAgo(u.last_seen_at);
+  if (ago === 'now') return '<span style="color:var(--success);font-size:13px;white-space:nowrap">&#9679; Active now</span>';
+  if (ago) return '<span style="color:var(--text-muted-color);font-size:13px;white-space:nowrap">' + escHtml(ago) + '</span>';
+  return '<span style="color:var(--text-muted-color);font-size:13px">' + (u.last_seen_at ? escHtml(formatDate(u.last_seen_at)) : '—') + '</span>';
+}
+
+function badgeHtml(status) {
+  var cls = (status || '').replace(/\s+/g, '-');
+  return '<span class="badge badge-' + escHtml(cls) + '">' + escHtml(status) + '</span>';
+}
+
+var EMPLOYEE_PERMS = ['view_pos','create_po','edit_po','delete_po','submit_po','view_quotes','create_quote','edit_quote','delete_quote','push_quote_po','view_vr','create_vr','edit_vr','delete_vr','submit_vr','view_deposits','create_deposit','delete_deposit','export_deposits','view_signoffs','create_signoff','edit_signoff','complete_signoff','delete_signoff','view_tasks','view_work_orders','view_schedule'];
+var PERM_DEFAULTS = {
+  manager: ['view_users','manage_cities','manage_geico','manage_running','manage_vehicles','manage_vendors','manage_addresses','approve_vr','manage_tasks','manage_work_orders','manage_schedule','manage_parts'].concat(EMPLOYEE_PERMS),
+  locksmith: EMPLOYEE_PERMS.slice(),
+  locksmith_coordinator: EMPLOYEE_PERMS.concat(['manage_work_orders']),
+  roadside_technician: EMPLOYEE_PERMS.slice()
+};
+function roleLabel(r) {
+  var m = { locksmith:'Locksmith', locksmith_coordinator:'Locksmith Coordinator', roadside_technician:'Roadside Technician', requester:'Locksmith', approver:'Approver', manager:'Manager', admin:'Admin', owner:'Owner' };
+  return m[r] || r;
+}
+// Owner is treated as admin everywhere in the UI; isOwner is kept for labels.
+function normalizeUserRole(u){ if (u && u.role === 'owner') { u.isOwner = true; u.role = 'admin'; } return u; }
+function can(perm) {
+  if (!state.user) return false;
+  if (state.user.role === 'admin') return true;
+  var cfg = state.permissions;
+  var role = state.user.role;
+  if (cfg && Object.prototype.toString.call(cfg[role]) === '[object Array]') return cfg[role].indexOf(perm) !== -1;
+  return (PERM_DEFAULTS[role] || []).indexOf(perm) !== -1;
+}
+
+function urlB64ToUint8Array(base64String){
+  var padding='='.repeat((4 - base64String.length % 4) % 4);
+  var base64=(base64String + padding).replace(/-/g,'+').replace(/_/g,'/');
+  var raw=atob(base64); var out=new Uint8Array(raw.length);
+  for (var i=0;i<raw.length;i++) out[i]=raw.charCodeAt(i);
+  return out;
+}
+async function pushRefreshBtn(){
+  var btn=document.getElementById('push-btn'); if(!btn) return;
+  var bell='<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="vertical-align:-2px"><path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 0 1-3.46 0"/></svg> ';
+  if(!('serviceWorker' in navigator)||!('PushManager' in window)||!('Notification' in window)){ btn.style.display='none'; return; }
+  try{
+    var reg=await navigator.serviceWorker.ready;
+    var sub=await reg.pushManager.getSubscription();
+    btn.innerHTML=bell+(sub?'Notifications on':'Enable notifications');
+  }catch(e){ btn.innerHTML=bell+'Enable notifications'; }
+}
+async function pushToggle(){
+  if(!('serviceWorker' in navigator)||!('PushManager' in window)||!('Notification' in window)){ alert('This browser does not support notifications.'); return; }
+  try{
+    var reg=await navigator.serviceWorker.ready;
+    var sub=await reg.pushManager.getSubscription();
+    if(sub){
+      try{ await api('POST','/push/unsubscribe',{endpoint:sub.endpoint}); }catch(e){}
+      await sub.unsubscribe(); pushRefreshBtn(); return;
+    }
+    var perm=await Notification.requestPermission();
+    if(perm!=='granted'){ alert('Notifications were not enabled. You can turn them on in your browser site settings.'); return; }
+    var keyResp=await api('GET','/push/key');
+    if(!keyResp||!keyResp.key){ alert('Notifications are not set up on the server yet.'); return; }
+    var newSub=await reg.pushManager.subscribe({ userVisibleOnly:true, applicationServerKey:urlB64ToUint8Array(keyResp.key) });
+    await api('POST','/push/subscribe',{ subscription:newSub.toJSON() });
+    pushRefreshBtn();
+  }catch(e){ alert('Could not enable notifications: '+(e&&e.message?e.message:e)); }
+}
+async function render() {
+  const app = document.getElementById('app');
+  if (!state.token || !state.user) {
+    app.className = 'no-sidebar';
+    var resetToken = new URLSearchParams(window.location.search).get('reset');
+    if (resetToken) { renderResetPassword(app, resetToken); return; }
+    if (state.pendingUserId) { renderTwoFactor(app); return; }
+    try {
+      const { needed } = await api('GET', '/auth/setup-needed');
+      if (needed) { renderSetup(app); return; }
+    } catch(e) {}
+    renderLogin(app);
+    return;
+  }
+  app.className = '';
+  if (!state._permsLoaded) {
+    try { var _ps = await api('GET', '/settings'); var _rp = null; try { _rp = JSON.parse(_ps.role_permissions || 'null'); } catch(e) {} state.permissions = _rp; } catch(e) {}
+    state._permsLoaded = true;
+  }
+  const initials = state.user.name.split(' ').map(function(w){ return w[0]; }).join('').toUpperCase().slice(0,2);
+  var cv = state.currentView;
+  var ss = state.sidebarSection || getSidebarSection(cv);
+  var isAdmin = state.user.role === 'admin';
+  var isAdminMgr = ['admin','manager'].includes(state.user.role);
+  var isRealAdmin = (state.realUser || state.user).role === 'admin';
+  var chev = '<svg class="nav-chevron" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="9 18 15 12 9 6"/></svg>';
+  var icoTruck = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="1" y="3" width="15" height="13" rx="2"/><path d="M16 8h6l3 4v4h-9V8z"/><circle cx="5.5" cy="18.5" r="2.5"/><circle cx="18.5" cy="18.5" r="2.5"/></svg>';
+  var icoAI = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="6" width="18" height="13" rx="2"/><path d="M8 6V4a1 1 0 011-1h6a1 1 0 011 1v2"/><circle cx="9" cy="12" r="1" fill="currentColor"/><circle cx="15" cy="12" r="1" fill="currentColor"/><path d="M9.5 16h5"/></svg>';
+  var icoDB = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M21 12c0 1.66-4 3-9 3s-9-1.34-9-3"/><path d="M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5"/></svg>';
+  var icoBuilding = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="7" width="20" height="14" rx="2"/><path d="M16 21V5a2 2 0 00-2-2h-4a2 2 0 00-2 2v16"/></svg>';
+  var icoChat = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15a2 2 0 01-2 2H7l-4 4V5a2 2 0 012-2h14a2 2 0 012 2z"/></svg>';
+  var icoBars = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/><line x1="6" y1="20" x2="6" y2="14"/></svg>';
+  var icoAudit = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/></svg>';
+  var icoAccounts = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 9l9-7 9 7v11a2 2 0 01-2 2H5a2 2 0 01-2-2z"/><polyline points="9 22 9 12 15 12 15 22"/></svg>';
+  var icoSuggestion = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 21h6"/><path d="M12 3a6 6 0 016 6c0 2.22-1.21 4.16-3 5.2V17H9v-2.8C7.21 13.16 6 11.22 6 9a6 6 0 016-6z"/></svg>';
+  var icoDeposit = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="6" width="20" height="12" rx="2"/><circle cx="12" cy="12" r="2.5"/><path d="M6 9v6"/><path d="M18 9v6"/></svg>';
+  var icoReceipt = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 2v20l2-1 2 1 2-1 2 1 2-1 2 1 2-1 2 1V2l-2 1-2-1-2 1-2-1-2 1-2-1-2 1z"/><path d="M8 7h8M8 11h8M8 15h5"/></svg>';
+  var poViews = ['dashboard','new','edit','view','running','running-admin'];
+  var quViews = ['quotes','new-quote','edit-quote','view-quote'];
+  var vrViews = ['vr-dashboard','new-vr','edit-vr','view-vr','fleet-registry','new-vehicle','edit-vehicle','vehicle-history'];
+  var aiViews = ['ai-assistant','ai-conversations','ai-usage'];
+  var invViews = ['invoices','new-invoice','edit-invoice','view-invoice','invoice-setup','invoice-parts'];
+  var stViews = ['company-info','ai-context','notifications','scheduled-messages','roles','settings','users','cities','audit','parts-list'];
+  var navHtml =
+    '<div class="nav-item' + (cv === 'home' ? ' active' : '') + '" onclick="navigate(\'home\')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 9l9-7 9 7v11a2 2 0 01-2 2H5a2 2 0 01-2-2z"/><polyline points="9 22 9 12 15 12 15 22"/></svg> Home</div>' +
+    (can('view_ai_admin') ?
+      '<div class="nav-section-header' + (aiViews.indexOf(cv) !== -1 ? ' section-active' : '') + (ss === 'ai' ? ' open' : '') + '" onclick="toggleSection(\'ai\',\'ai-assistant\')"><span class="s-label">' + icoAI + ' Nova AI</span>' + chev + '</div>' +
+      (ss === 'ai' ?
+        '<div class="nav-sub' + (cv === 'ai-assistant' ? ' active' : '') + '" onclick="navigate(\'ai-assistant\')">' + icoChat + ' Conversations</div>' +
+        '<div class="nav-sub' + (cv === 'ai-conversations' ? ' active' : '') + '" onclick="navigate(\'ai-conversations\')">' + icoAudit + ' History</div>' +
+        '<div class="nav-sub' + (cv === 'ai-usage' ? ' active' : '') + '" onclick="navigate(\'ai-usage\')">' + icoBars + ' Usage</div>'
+      : '')
+    :
+      '<div class="nav-item' + (cv === 'ai-assistant' ? ' active' : '') + '" onclick="navigate(\'ai-assistant\')">' + icoAI + ' Nova AI</div>'
+    ) +
+    (can('view_pos') ?
+    '<div class="nav-section-header' + (poViews.indexOf(cv) !== -1 ? ' section-active' : '') + (ss === 'po' ? ' open' : '') + '" onclick="toggleSection(\'po\',\'dashboard\')"><span class="s-label">' + icons.dashboard + ' Purchase Orders</span>' + chev + '</div>' +
+    (ss === 'po' ?
+      '<div class="nav-sub' + (cv === 'dashboard' ? ' active' : '') + '" onclick="navigate(\'dashboard\')">' + icons.dashboard + ' PO Dashboard</div>' +
+      (can('create_po') ? '<div class="nav-sub' + (cv === 'new' ? ' active' : '') + '" onclick="navigate(\'new\')">' + icons.plus + ' New PO</div>' : '') +
+      (state.user.role !== 'approver' ? '<div class="nav-sub' + (cv === 'running' || cv === 'running-admin' ? ' active' : '') + '" onclick="navigate(\'' + (can('manage_running') ? 'running-admin' : 'running') + '\')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="8" y1="6" x2="21" y2="6"/><line x1="8" y1="12" x2="21" y2="12"/><line x1="8" y1="18" x2="21" y2="18"/><line x1="3" y1="6" x2="3.01" y2="6"/><line x1="3" y1="12" x2="3.01" y2="12"/><line x1="3" y1="18" x2="3.01" y2="18"/></svg> Monthly Req</div>' : '')
+    : '') : '') +
+    (can('view_quotes') ?
+    '<div class="nav-section-header' + (quViews.indexOf(cv) !== -1 ? ' section-active' : '') + (ss === 'quotes' ? ' open' : '') + '" onclick="toggleSection(\'quotes\',\'quotes\')"><span class="s-label">' + icons.quote + ' Quotes</span>' + chev + '</div>' +
+    (ss === 'quotes' ?
+      '<div class="nav-sub' + (cv === 'quotes' ? ' active' : '') + '" onclick="navigate(\'quotes\')">' + icons.quote + ' Quote Dashboard</div>' +
+      (can('create_quote') ? '<div class="nav-sub' + (cv === 'new-quote' ? ' active' : '') + '" onclick="navigate(\'new-quote\')">' + icons.plus + ' New Quote</div>' : '')
+    : '') : '') +
+    (can('view_invoices') ?
+    '<div class="nav-section-header' + (invViews.indexOf(cv) !== -1 ? ' section-active' : '') + (ss === 'invoices' ? ' open' : '') + '" onclick="toggleSection(\'invoices\',\'invoices\')"><span class="s-label">' + icoReceipt + ' Invoices</span>' + chev + '</div>' +
+    (ss === 'invoices' ?
+      '<div class="nav-sub' + (cv === 'invoices' ? ' active' : '') + '" onclick="navigate(\'invoices\')">' + icoReceipt + ' Invoice Dashboard</div>' +
+      (can('create_invoice') ? '<div class="nav-sub' + (cv === 'new-invoice' ? ' active' : '') + '" onclick="navigate(\'new-invoice\')">' + icons.plus + ' New Invoice</div>' : '') +
+      '<div class="nav-sub' + (cv === 'invoice-parts' ? ' active' : '') + '" onclick="navigate(\'invoice-parts\')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"/></svg> Parts Used</div>' +
+      (can('manage_invoice_setup') ? '<div class="nav-sub' + (cv === 'invoice-setup' ? ' active' : '') + '" onclick="navigate(\'invoice-setup\')">' + icons.settings + ' Invoice Setup</div>' : '')
+    : '') : '') +
+    (can('view_work_orders') ? '<div class="nav-item' + (['work-orders','view-work-order','new-work-order'].indexOf(cv) !== -1 ? ' active' : '') + '" onclick="navigate(\'work-orders\')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"/><polyline points="3.27 6.96 12 12.01 20.73 6.96"/><line x1="12" y1="22.08" x2="12" y2="12"/></svg> Work Orders</div>' : '') +
+    (can('view_signoffs') ? '<div class="nav-item' + (['signoffs','new-signoff','edit-signoff','view-signoff','complete-signoff'].indexOf(cv) !== -1 ? ' active' : '') + '" onclick="navigate(\'signoffs\')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><path d="M9 15l2 2 4-4"/></svg> Sign-Off Sheets</div>' : '') +
+    (can('view_tasks') ? '<div class="nav-item' + (['tasks','task-detail','new-task','edit-task'].indexOf(cv) !== -1 ? ' active' : '') + '" onclick="navigate(\'tasks\')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg> Tasks</div>' : '') +
+    (can('view_schedule') ? '<div class="nav-item' + (['schedule','schedule-admin'].indexOf(cv) !== -1 ? ' active' : '') + '" onclick="navigate(\'' + (can('manage_schedule') ? 'schedule-admin' : 'schedule') + '\')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="4" width="18" height="18" rx="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></svg> Schedule</div>' : '') +
+    (can('view_vr') ?
+    '<div class="nav-section-header' + (vrViews.indexOf(cv) !== -1 ? ' section-active' : '') + (ss === 'vr' ? ' open' : '') + '" onclick="toggleSection(\'vr\',\'vr-dashboard\')"><span class="s-label">' + icoTruck + ' Vehicle Maint/Repairs</span>' + chev + '</div>' +
+    (ss === 'vr' ?
+      '<div class="nav-sub' + (cv === 'vr-dashboard' ? ' active' : '') + '" onclick="navigate(\'vr-dashboard\')">' + icons.dashboard + ' VR Dashboard</div>' +
+      (can('create_vr') ? '<div class="nav-sub' + (cv === 'new-vr' ? ' active' : '') + '" onclick="navigate(\'new-vr\')">' + icons.plus + ' New VR</div>' : '') +
+      (can('manage_vehicles') ? '<div class="nav-sub' + (['fleet-registry','new-vehicle','edit-vehicle','vehicle-history'].indexOf(cv) !== -1 ? ' active' : '') + '" onclick="navigate(\'fleet-registry\')">' + icoDB + ' Fleet Registry</div>' : '')
+    : '') : '') +
+    (can('view_deposits') ? '<div class="nav-item' + (cv === 'deposits' || cv === 'view-deposit' ? ' active' : '') + '" onclick="navigate(\'deposits\')">' + icoDeposit + ' Cash Deposits</div>' : '') +
+    (can('manage_vendors') ? '<div class="nav-item' + (cv === 'vendors' ? ' active' : '') + '" onclick="navigate(\'vendors\')">' + icoAccounts + ' Accounts</div>' : '') +
+    (can('manage_geico') ? '<div class="nav-item' + (cv === 'geico' ? ' active' : '') + '" onclick="navigate(\'geico\')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 01-2 2H5a2 2 0 01-2-2V5a2 2 0 012-2h11"/></svg> Geico Surveys</div>' : '') +
+    '<div class="nav-item' + (cv === 'suggestions' ? ' active' : '') + '" onclick="navigate(\'suggestions\')">' + icoSuggestion + ' Suggestions</div>' +
+    '<div class="nav-item" onclick="window.open(\'https://www.idssonline.com/pulsar.html\',\'_blank\',\'noopener\')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg> Pulsar Download</div>' +
+    '<div class="nav-item' + (cv === 'documents' ? ' active' : '') + '" onclick="navigate(\'documents\')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg> Document Vault</div>' +
+    (isAdmin ? '<div class="nav-item' + (cv === 'sop-library' ? ' active' : '') + '" onclick="navigate(\'sop-library\')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 19.5A2.5 2.5 0 016.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 014 19.5v-15A2.5 2.5 0 016.5 2z"/></svg> SOP Library</div>' : '') +
+    ((can('view_users') || can('manage_cities') || can('view_audit') || can('manage_settings') || can('manage_parts')) ?
+      '<div class="nav-section-header' + (stViews.indexOf(cv) !== -1 ? ' section-active' : '') + (ss === 'settings' ? ' open' : '') + '" onclick="toggleSection(\'settings\',\'company-info\')"><span class="s-label">' + icons.settings + ' Settings</span>' + chev + '</div>' +
+      (ss === 'settings' ?
+        (['admin','manager'].includes(state.user.role) ? '<div class="nav-sub' + (cv === 'company-info' || cv === 'settings' ? ' active' : '') + '" onclick="navigate(\'company-info\')">' + icoBuilding + ' Company Information</div>' : '') +
+        (can('manage_settings') ? '<div class="nav-sub' + (cv === 'ai-context' ? ' active' : '') + '" onclick="navigate(\'ai-context\')">' + icoAI + ' AI Context</div>' : '') +
+        (can('manage_parts') ? '<div class="nav-sub' + (cv === 'parts-list' ? ' active' : '') + '" onclick="navigate(\'parts-list\')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"/><polyline points="3.27 6.96 12 12.01 20.73 6.96"/><line x1="12" y1="22.08" x2="12" y2="12"/></svg> Parts List</div>' : '') +
+        (can('manage_settings') ? '<div class="nav-sub' + (cv === 'notifications' ? ' active' : '') + '" onclick="navigate(\'notifications\')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 0 1-3.46 0"/></svg> Notifications</div>' : '') +
+        (can('manage_settings') ? '<div class="nav-sub' + (cv === 'scheduled-messages' ? ' active' : '') + '" onclick="navigate(\'scheduled-messages\')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><polyline points="12 7 12 12 15 14"/></svg> Scheduled Messages</div>' : '') +
+        (can('view_users') ? '<div class="nav-sub' + (cv === 'users' ? ' active' : '') + '" onclick="navigate(\'users\')">' + icons.users + ' Users</div>' : '') +
+        (can('manage_cities') ? '<div class="nav-sub' + (cv === 'cities' ? ' active' : '') + '" onclick="navigate(\'cities\')">' + icons.map + ' Cities</div>' : '') +
+        (can('view_audit') ? '<div class="nav-sub' + (cv === 'audit' ? ' active' : '') + '" onclick="navigate(\'audit\')">' + icoAudit + ' Audit Log</div>' : '') +
+        (can('manage_settings') ? '<div class="nav-sub' + (cv === 'roles' ? ' active' : '') + '" onclick="navigate(\'roles\')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg> Roles &amp; Access</div>' : '')
+      : '')
+    : '');
+  app.innerHTML =
+    '<div id="sidebar">' +
+      '<div class="sidebar-logo"><h1>Nova</h1></div>' +
+      '<nav class="sidebar-nav">' + navHtml + '</nav>' +
+      '<div class="sidebar-footer">' +
+        (isRealAdmin ?
+          '<div style="margin-bottom:10px">' +
+            '<label style="font-size:10px;letter-spacing:0.5px;color:var(--text-muted-color);display:block;margin-bottom:4px;text-transform:uppercase">View as role</label>' +
+            '<select onchange="onViewAsChange(this.value)" style="width:100%;background:var(--card-bg,#1a1a1a);color:var(--text-color,#fff);border:1px solid var(--border-color,#333);border-radius:6px;padding:6px 8px;font-size:13px;cursor:pointer">' +
+              ['locksmith','locksmith_coordinator','roadside_technician','manager','admin'].map(function(r){ return '<option value="' + r + '"' + (state.user.role === r ? ' selected' : '') + '>' + roleLabel(r) + (r === 'admin' ? ' (you)' : '') + '</option>'; }).join('') +
+            '</select>' +
+          '</div>'
+        : '') +
+        '<div class="sidebar-user"><div class="avatar">' + escHtml(initials) + '</div><div class="sidebar-user-info"><div class="sidebar-user-name">' + escHtml(state.user.name) + '</div><div class="sidebar-user-role">' + escHtml(state.user.isOwner ? 'Owner' : roleLabel(state.user.role)) + '</div></div></div>' +
+        '<button id="push-btn" class="btn btn-ghost btn-sm" style="width:100%;font-size:12px;color:var(--text-muted-color);margin-top:4px" onclick="pushToggle()">Enable notifications</button>' +
+        '<button class="btn btn-ghost btn-sm" style="width:100%;font-size:12px;color:var(--text-muted-color);margin-top:4px" onclick="navigate(\'security\')"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="vertical-align:-2px;margin-right:4px"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg> Trusted devices</button>' +
+        '<button class="btn btn-ghost btn-sm" style="width:100%;font-size:12px;color:var(--text-muted-color);margin-top:4px" onclick="logout()">' + icons.logout + ' Sign Out</button>' +
+      '</div>' +
+    '</div>' +
+    '<div id="sidebar-overlay" onclick="toggleSidebar()"></div>' +
+    '<div id="main">' +
+      (state.viewAs ?
+        '<div style="background:var(--primary,#f97316);color:#1a1a1a;padding:8px 16px;display:flex;align-items:center;justify-content:space-between;gap:12px;font-size:13px;font-weight:600;position:sticky;top:0;z-index:60">' +
+          '<span><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" style="vertical-align:-2px;margin-right:6px"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>Previewing as ' + escHtml(state.viewAs) + ' \u2014 read-only view of what they see</span>' +
+          '<button onclick="exitViewAs()" style="background:#1a1a1a;color:#fff;border:none;padding:5px 12px;border-radius:6px;font-size:12px;font-weight:600;cursor:pointer;white-space:nowrap">Exit preview</button>' +
+        '</div>'
+      : '') +
+      '<div class="main-header">' +
+        '<div style="display:flex;align-items:center;gap:12px">' +
+          '<button class="hamburger" onclick="toggleSidebar()" aria-label="Menu"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="18" x2="21" y2="18"/></svg></button>' +
+          '<span style="font-size:15px;font-weight:600">Welcome back, ' + escHtml(state.user.name) + '</span>' +
+        '</div>' +
+        '<button onclick="location.reload()" aria-label="Refresh" title="Refresh" style="background:none;border:1px solid var(--border);color:var(--text-dim);cursor:pointer;border-radius:8px;width:40px;height:40px;display:inline-flex;align-items:center;justify-content:center;flex-shrink:0">' +
+          '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 4 23 10 17 10"/><polyline points="1 20 1 14 7 14"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/></svg>' +
+        '</button>' +
+      '</div>' +
+      '<div class="main-content" id="content"><div class="loading">Loading…</div></div>' +
+    '</div>';
+
+  pushRefreshBtn();
+  // Preserve the mobile menu's open state across re-renders
+  if (state.sidebarOpen) {
+    var _sbOpen = document.getElementById('sidebar');
+    var _ovOpen = document.getElementById('sidebar-overlay');
+    if (_sbOpen) _sbOpen.classList.add('open');
+    if (_ovOpen) _ovOpen.classList.add('open');
+  }
+  const content = document.getElementById('content');
+  var _viewPerm = { dashboard:'view_pos', view:'view_pos', running:'view_pos', 'running-admin':'view_pos', new:'create_po', edit:'edit_po', quotes:'view_quotes', 'view-quote':'view_quotes', 'new-quote':'create_quote', 'edit-quote':'edit_quote', 'vr-dashboard':'view_vr', 'view-vr':'view_vr', 'new-vr':'create_vr', 'edit-vr':'edit_vr', deposits:'view_deposits', 'view-deposit':'view_deposits', signoffs:'view_signoffs', 'view-signoff':'view_signoffs', 'new-signoff':'create_signoff', 'edit-signoff':'edit_signoff', 'complete-signoff':'complete_signoff', tasks:'view_tasks', 'task-detail':'view_tasks', 'new-task':'view_tasks', 'edit-task':'view_tasks', 'work-orders':'view_work_orders', 'view-work-order':'view_work_orders', 'new-work-order':'manage_work_orders', schedule:'view_schedule', 'schedule-admin':'manage_schedule', 'schedule-nowork':'manage_schedule', invoices:'view_invoices', 'view-invoice':'view_invoices', 'new-invoice':'create_invoice', 'edit-invoice':'edit_invoice', 'invoice-parts':'view_invoices', 'invoice-setup':'manage_invoice_setup' };
+  if (_viewPerm[state.currentView] && !can(_viewPerm[state.currentView])) { content.innerHTML = '<div class="alert alert-error">Access denied.</div>'; return; }
+  if (state.currentView === 'home') await renderHomeScreen(content);
+  else if (state.currentView === 'dashboard') await renderDashboard(content);
+  else if (state.currentView === 'new') await renderEditPO(content, null);
+  else if (state.currentView === 'edit') await renderEditPO(content, state.currentParam);
+  else if (state.currentView === 'view') await renderViewPO(content, state.currentParam);
+  else if (state.currentView === 'users') await renderUsers(content);
+  else if (state.currentView === 'cities') await renderCities(content);
+  else if (state.currentView === 'vendors') await renderVendors(content);
+  else if (state.currentView === 'audit') await renderAuditLog(content);
+  else if (state.currentView === 'settings') await renderSettings(content);
+  else if (state.currentView === 'quotes') await renderQuotes(content);
+  else if (state.currentView === 'new-quote') await renderEditQuote(content, null);
+  else if (state.currentView === 'edit-quote') await renderEditQuote(content, state.currentParam);
+  else if (state.currentView === 'view-quote') await renderViewQuote(content, state.currentParam);
+  else if (state.currentView === 'ai-assistant') await renderAIAssistant(content);
+  else if (state.currentView === 'ai-conversations') await renderAIConversations(content);
+  else if (state.currentView === 'vr-dashboard') await renderVRDashboard(content);
+  else if (state.currentView === 'new-vr') await renderEditVR(content, null);
+  else if (state.currentView === 'edit-vr') await renderEditVR(content, state.currentParam);
+  else if (state.currentView === 'view-vr') await renderViewVR(content, state.currentParam);
+  else if (state.currentView === 'fleet-registry') await renderFleetRegistry(content);
+  else if (state.currentView === 'new-vehicle') await renderEditVehicle(content, null);
+  else if (state.currentView === 'edit-vehicle') await renderEditVehicle(content, state.currentParam);
+  else if (state.currentView === 'vehicle-history') await renderVehicleHistory(content, state.currentParam);
+  else if (state.currentView === 'ai-usage') await renderAIUsage(content);
+  else if (state.currentView === 'company-info') await renderCompanyInfo(content);
+  else if (state.currentView === 'ai-context') await renderAIContext(content);
+  else if (state.currentView === 'notifications') await renderNotifications(content);
+  else if (state.currentView === 'security') await renderSecurity(content);
+  else if (state.currentView === 'scheduled-messages') await renderScheduledMessages(content);
+  else if (state.currentView === 'roles') await renderRoles(content);
+  else if (state.currentView === 'parts-list') await renderPartsList(content);
+  else if (state.currentView === 'suggestions') await renderSuggestions(content);
+  else if (state.currentView === 'deposits') await renderDeposits(content);
+  else if (state.currentView === 'tasks') await renderTasks(content);
+  else if (state.currentView === 'task-detail') await renderTaskDetail(content, state.currentParam);
+  else if (state.currentView === 'new-task') await renderTaskForm(content, null);
+  else if (state.currentView === 'edit-task') await renderTaskForm(content, state.currentParam);
+  else if (state.currentView === 'work-orders') await renderWorkOrders(content);
+  else if (state.currentView === 'view-work-order') await renderViewWorkOrder(content, state.currentParam);
+  else if (state.currentView === 'new-work-order') await renderWorkOrderForm(content);
+  else if (state.currentView === 'schedule') await renderSchedule(content);
+  else if (state.currentView === 'schedule-admin') await renderScheduleAdmin(content);
+  else if (state.currentView === 'schedule-nowork') await renderNoWorkReport(content);
+  else if (state.currentView === 'documents') await renderDocuments(content);
+  else if (state.currentView === 'sop-library') await renderSOPLibrary(content);
+  else if (state.currentView === 'view-deposit') await renderViewDeposit(content, state.currentParam);
+  else if (state.currentView === 'running') await renderRunningList(content);
+  else if (state.currentView === 'running-admin') await renderAdminRunningList(content);
+  else if (state.currentView === 'geico') await renderGeicoReviews(content);
+  else if (state.currentView === 'signoffs') await renderSignoffs(content);
+  else if (state.currentView === 'new-signoff') await renderEditSignoff(content, null);
+  else if (state.currentView === 'edit-signoff') await renderEditSignoff(content, state.currentParam);
+  else if (state.currentView === 'view-signoff') await renderViewSignoff(content, state.currentParam);
+  else if (state.currentView === 'complete-signoff') await renderCompleteSignoff(content, state.currentParam);
+  else if (state.currentView === 'invoices') await renderInvoices(content);
+  else if (state.currentView === 'new-invoice') await renderEditInvoice(content, null);
+  else if (state.currentView === 'edit-invoice') await renderEditInvoice(content, state.currentParam);
+  else if (state.currentView === 'view-invoice') await renderViewInvoice(content, state.currentParam);
+  else if (state.currentView === 'invoice-parts') await renderInvoiceParts(content);
+  else if (state.currentView === 'invoice-setup') await renderInvoiceSetup(content);
+  else { state.currentView = 'home'; await renderHomeScreen(content); }
+}
+
+function renderLogin(app) {
+  app.innerHTML =
+    '<div class="auth-page"><div class="auth-card">' +
+      '<div class="auth-logo"><div class="logo-wrap"><img src="https://www.popalock.com/wp-content/uploads/2020/11/pal-logo-highres.png" alt="Pop-A-Lock" /></div><h2>Nova</h2><p>Sign in to your account</p></div>' +
+      '<div class="card" style="background:transparent;border:1px solid rgba(255,255,255,0.18);"><div class="card-body">' +
+        '<div id="auth-error"></div>' +
+        '<div class="form-group"><label>Email</label><input type="email" id="login-email" placeholder="you@company.com" /></div>' +
+        '<div class="form-group"><label>Password</label><input type="password" id="login-password" /></div>' +
+        '<button class="btn btn-primary" style="width:100%;justify-content:center;" onclick="doLogin()">Let&#39;s Lock and Roll!</button>' +
+        '<div style="text-align:center;margin-top:12px;"><a href="#" style="color:var(--text-muted-color);font-size:13px;text-decoration:none;" onclick="event.preventDefault();renderForgotPassword(document.getElementById(\'app\'))">Forgot password?</a></div>' +
+      '</div></div>' +
+    '</div></div>';
+  document.getElementById('login-password').addEventListener('keydown', function(e){ if(e.key==='Enter') doLogin(); });
+  document.getElementById('login-email').addEventListener('keydown', function(e){ if(e.key==='Enter') document.getElementById('login-password').focus(); });
+}
+
+async function doLogin() {
+  const email = document.getElementById('login-email').value.trim();
+  const password = document.getElementById('login-password').value;
+  try {
+    const data = await api('POST', '/auth/login', { email, password });
+    if (data.requires2fa) {
+      state.pendingUserId = data.userId;
+      state.pendingVia = data.via;
+      render();
+      return;
+    }
+    state.token = data.token;
+    state.user = normalizeUserRole(data.user);
+    localStorage.setItem('po_token', data.token);
+    localStorage.setItem('po_user', JSON.stringify(data.user));
+    navigate('home');
+  } catch(err) {
+    document.getElementById('auth-error').innerHTML = '<div class="alert alert-error">' + escHtml(err.message) + '</div>';
+  }
+}
+
+function renderTwoFactor(app) {
+  var via = state.pendingVia === 'sms' ? 'text message' : 'email';
+  app.innerHTML =
+    '<div class="auth-page"><div class="auth-card">' +
+      '<div class="auth-logo"><div class="logo-wrap"><img src="https://www.popalock.com/wp-content/uploads/2020/11/pal-logo-highres.png" alt="Pop-A-Lock" /></div><h2>Nova</h2><p>Two-Factor Verification</p></div>' +
+      '<div class="card" style="background:transparent;border:1px solid rgba(255,255,255,0.18);"><div class="card-body">' +
+        '<div id="auth-error"></div>' +
+        '<p style="color:var(--text-muted-color);font-size:14px;margin-bottom:16px;text-align:center;">Enter the 6-digit code sent to your ' + via + '</p>' +
+        '<div class="form-group"><label>Verification Code</label><input type="text" id="tfa-code" placeholder="000000" maxlength="6" style="text-align:center;font-size:24px;letter-spacing:8px;" /></div>' +
+        '<label style="display:flex;align-items:center;gap:8px;justify-content:center;margin:0 0 14px;font-size:13px;color:var(--text-muted-color);cursor:pointer;"><input type="checkbox" id="tfa-remember" style="width:auto;margin:0;" /> Don&#39;t ask again on this device for 30 days</label>' +
+        '<button class="btn btn-primary" style="width:100%;justify-content:center;" onclick="doVerify2FA()">Verify</button>' +
+        '<div style="text-align:center;margin-top:12px;"><a href="#" style="color:var(--text-muted-color);font-size:13px;text-decoration:none;" onclick="event.preventDefault();state.pendingUserId=null;state.pendingVia=null;render()">Back to login</a></div>' +
+      '</div></div>' +
+    '</div></div>';
+  document.getElementById('tfa-code').addEventListener('keydown', function(e){ if(e.key==='Enter') doVerify2FA(); });
+  document.getElementById('tfa-code').focus();
+}
+
+async function doVerify2FA() {
+  var code = (document.getElementById('tfa-code').value || '').trim();
+  if (!code) { document.getElementById('auth-error').innerHTML = '<div class="alert alert-error">Please enter the verification code</div>'; return; }
+  try {
+    var remember = !!(document.getElementById('tfa-remember') && document.getElementById('tfa-remember').checked);
+    const data = await api('POST', '/auth/verify-2fa', { userId: state.pendingUserId, code: code, rememberDevice: remember });
+    state.pendingUserId = null;
+    state.pendingVia = null;
+    state.token = data.token;
+    state.user = normalizeUserRole(data.user);
+    localStorage.setItem('po_token', data.token);
+    localStorage.setItem('po_user', JSON.stringify(data.user));
+    navigate('home');
+  } catch(err) {
+    document.getElementById('auth-error').innerHTML = '<div class="alert alert-error">' + escHtml(err.message) + '</div>';
+  }
+}
+
+async function renderSecurity(el) {
+  el.innerHTML =
+    '<div class="page-header"><div><div class="page-title">Trusted devices</div><div class="page-subtitle">Devices that skip the verification code at login</div></div></div>' +
+    '<div id="security-msg"></div>' +
+    '<p class="text-muted" style="margin-bottom:16px;max-width:680px">When you check &ldquo;Don&rsquo;t ask again on this device&rdquo; at login, that device stays trusted for 30 days and won&rsquo;t need a texted or emailed code. Forget a device to require a code there again &mdash; do this for any shared or lost device.</p>' +
+    '<div id="td-list" class="card"><div class="card-body"><div class="loading">Loading\u2026</div></div></div>';
+  await loadTrustedDevices();
+}
+
+async function loadTrustedDevices() {
+  var box = document.getElementById('td-list');
+  if (!box) return;
+  try {
+    var devices = await api('GET', '/auth/trusted-devices');
+    if (!devices.length) {
+      box.innerHTML = '<div class="card-body"><p class="text-muted" style="margin:0">No trusted devices yet.</p></div>';
+      return;
+    }
+    var rows = devices.map(function(d) {
+      var last = d.last_used_at ? new Date(d.last_used_at).toLocaleString() : '\u2014';
+      var exp = d.expires_at ? new Date(d.expires_at).toLocaleDateString() : '\u2014';
+      return '<div style="display:flex;align-items:center;justify-content:space-between;gap:12px;padding:12px 0;border-bottom:1px solid var(--border)">' +
+        '<div><div style="font-weight:600">' + escHtml(d.label || 'Unknown device') + (d.current ? ' <span style="color:var(--primary);font-size:12px;font-weight:600">(this device)</span>' : '') + '</div>' +
+        '<div style="font-size:12px;color:var(--text-muted-color)">Last used ' + escHtml(last) + ' &middot; ' + escHtml(d.ip || 'no IP') + ' &middot; expires ' + escHtml(exp) + '</div></div>' +
+        '<button class="btn btn-ghost btn-sm" style="color:#ef4444" onclick="revokeDevice(' + d.id + ')">Forget</button>' +
+      '</div>';
+    }).join('');
+    box.innerHTML = '<div class="card-body">' + rows + '<div style="margin-top:14px"><button class="btn btn-ghost btn-sm" onclick="revokeAllDevices()">Forget all devices</button></div></div>';
+  } catch (err) {
+    box.innerHTML = '<div class="card-body"><div class="alert alert-error">' + escHtml(err.message) + '</div></div>';
+  }
+}
+
+async function revokeDevice(id) {
+  if (!confirm('Forget this device? It will need a verification code next time it logs in.')) return;
+  try { await api('DELETE', '/auth/trusted-devices/' + id); await loadTrustedDevices(); }
+  catch (err) { var m = document.getElementById('security-msg'); if (m) m.innerHTML = '<div class="alert alert-error">' + escHtml(err.message) + '</div>'; }
+}
+
+async function revokeAllDevices() {
+  if (!confirm('Forget all trusted devices? Every device will need a verification code at next login.')) return;
+  try { await api('DELETE', '/auth/trusted-devices'); await loadTrustedDevices(); }
+  catch (err) { var m = document.getElementById('security-msg'); if (m) m.innerHTML = '<div class="alert alert-error">' + escHtml(err.message) + '</div>'; }
+}
+
+function renderForgotPassword(app) {
+  app.innerHTML =
+    '<div class="auth-page"><div class="auth-card">' +
+      '<div class="auth-logo"><div class="logo-wrap"><img src="https://www.popalock.com/wp-content/uploads/2020/11/pal-logo-highres.png" alt="Pop-A-Lock" /></div><h2>Nova</h2><p>Reset your password</p></div>' +
+      '<div class="card" style="background:transparent;border:1px solid rgba(255,255,255,0.18);"><div class="card-body">' +
+        '<div id="auth-error"></div>' +
+        '<p style="color:var(--text-muted-color);font-size:14px;margin-bottom:16px;text-align:center;">Enter your email and we&#39;ll send you a reset link</p>' +
+        '<div class="form-group"><label>Email</label><input type="email" id="fp-email" placeholder="you@company.com" /></div>' +
+        '<button class="btn btn-primary" style="width:100%;justify-content:center;" onclick="doForgotPassword()">Send Reset Link</button>' +
+        '<div style="text-align:center;margin-top:12px;"><a href="#" style="color:var(--text-muted-color);font-size:13px;text-decoration:none;" onclick="event.preventDefault();render()">Back to login</a></div>' +
+      '</div></div>' +
+    '</div></div>';
+  document.getElementById('fp-email').addEventListener('keydown', function(e){ if(e.key==='Enter') doForgotPassword(); });
+  document.getElementById('fp-email').focus();
+}
+
+async function doForgotPassword() {
+  var email = (document.getElementById('fp-email').value || '').trim();
+  if (!email) { document.getElementById('auth-error').innerHTML = '<div class="alert alert-error">Please enter your email</div>'; return; }
+  try {
+    await api('POST', '/auth/forgot-password', { email: email });
+    document.getElementById('auth-error').innerHTML = '<div style="background:rgba(34,197,94,0.12);border:1px solid rgba(34,197,94,0.3);color:#4ade80;padding:10px;border-radius:6px;font-size:14px;text-align:center;">If that email is in our system, you&#39;ll receive a reset link shortly.</div>';
+  } catch(err) {
+    document.getElementById('auth-error').innerHTML = '<div class="alert alert-error">' + escHtml(err.message) + '</div>';
+  }
+}
+
+function renderResetPassword(app, token) {
+  app.innerHTML =
+    '<div class="auth-page"><div class="auth-card">' +
+      '<div class="auth-logo"><div class="logo-wrap"><img src="https://www.popalock.com/wp-content/uploads/2020/11/pal-logo-highres.png" alt="Pop-A-Lock" /></div><h2>Nova</h2><p>Choose a new password</p></div>' +
+      '<div class="card" style="background:transparent;border:1px solid rgba(255,255,255,0.18);"><div class="card-body">' +
+        '<div id="auth-error"></div>' +
+        '<div class="form-group"><label>New Password</label><input type="password" id="rp-password" placeholder="At least 8 characters" /></div>' +
+        '<div class="form-group"><label>Confirm Password</label><input type="password" id="rp-confirm" /></div>' +
+        '<button class="btn btn-primary" style="width:100%;justify-content:center;" onclick="doResetPassword(\'' + token + '\')">Set New Password</button>' +
+      '</div></div>' +
+    '</div></div>';
+  document.getElementById('rp-confirm').addEventListener('keydown', function(e){ if(e.key==='Enter') doResetPassword(token); });
+  document.getElementById('rp-password').focus();
+}
+
+async function doResetPassword(token) {
+  var password = document.getElementById('rp-password').value || '';
+  var confirm = document.getElementById('rp-confirm').value || '';
+  if (!password || password.length < 8) { document.getElementById('auth-error').innerHTML = '<div class="alert alert-error">Password must be at least 8 characters</div>'; return; }
+  if (password !== confirm) { document.getElementById('auth-error').innerHTML = '<div class="alert alert-error">Passwords do not match</div>'; return; }
+  try {
+    await api('POST', '/auth/reset-password', { token: token, password: password });
+    document.getElementById('auth-error').innerHTML = '<div style="background:rgba(34,197,94,0.12);border:1px solid rgba(34,197,94,0.3);color:#4ade80;padding:10px;border-radius:6px;font-size:14px;text-align:center;">Password updated! Redirecting to login...</div>';
+    setTimeout(function() { window.history.replaceState({}, '', '/'); render(); }, 2000);
+  } catch(err) {
+    document.getElementById('auth-error').innerHTML = '<div class="alert alert-error">' + escHtml(err.message) + '</div>';
+  }
+}
+
+function renderSetup(app) {
+  app.innerHTML =
+    '<div class="auth-page"><div class="auth-card">' +
+      '<div class="auth-logo"><div class="logo-wrap"><img src="https://www.popalock.com/wp-content/uploads/2020/11/pal-logo-highres.png" alt="Pop-A-Lock" /></div><h2>Nova</h2><p>Create your admin account</p></div>' +
+      '<div class="card" style="background:transparent;border:1px solid rgba(255,255,255,0.18);"><div class="card-body">' +
+        '<div id="auth-error"></div>' +
+        '<div class="form-group"><label>Name</label><input type="text" id="setup-name" placeholder="Your Name" /></div>' +
+        '<div class="form-group"><label>Email</label><input type="email" id="setup-email" placeholder="you@company.com" /></div>' +
+        '<div class="form-group"><label>Password</label><input type="password" id="setup-password" /></div>' +
+        '<button class="btn btn-primary" style="width:100%" onclick="doSetup()">Create Admin Account</button>' +
+      '</div></div>' +
+    '</div></div>';
+}
+
+async function doSetup() {
+  const name = document.getElementById('setup-name').value.trim();
+  const email = document.getElementById('setup-email').value.trim();
+  const password = document.getElementById('setup-password').value;
+  try {
+    await api('POST', '/auth/setup', { name, email, password });
+    const data = await api('POST', '/auth/login', { email, password });
+    state.token = data.token;
+    state.user = normalizeUserRole(data.user);
+    localStorage.setItem('po_token', data.token);
+    localStorage.setItem('po_user', JSON.stringify(data.user));
+    navigate('home');
+  } catch(err) {
+    document.getElementById('auth-error').innerHTML = '<div class="alert alert-error">' + escHtml(err.message) + '</div>';
+  }
+}
+
+function logout() {
+  state.token = null;
+  state.user = null;
+  localStorage.removeItem('po_token');
+  localStorage.removeItem('po_user');
+  localStorage.removeItem('po_view');
+  localStorage.removeItem('po_param');
+  _aiMessages = [];
+  _aiSessionUserId = null;
+  render();
+}
+
+let allPOs = [];
+let _currentQuote = null;
+
+async function renderDashboard(el) {
+  try {
+    allPOs = await api('GET', '/pos');
+    const total = allPOs.length;
+    const pending = allPOs.filter(function(p){ return p.status === 'submitted'; }).length;
+    const approved = allPOs.filter(function(p){ return p.status === 'approved'; }).length;
+    const ordered = allPOs.filter(function(p){ return p.status === 'order placed'; }).length;
+    const drafts = allPOs.filter(function(p){ return p.status === 'draft'; }).length;
+    const isApprover = can('approve_po');
+
+    const cities = [...new Set(allPOs.filter(function(p){ return p.city_code; }).map(function(p){ return p.city_code; }))].sort();
+    const cityOptions = '<option value="">All Cities</option>' + cities.map(function(c){ return '<option value="' + escHtml(c) + '">' + escHtml(c) + '</option>'; }).join('');
+
+    el.innerHTML =
+      '<div class="page-header"><div><div class="page-title">PO Dashboard</div></div>' +
+      '<div class="flex-gap">' +
+      '<button class="btn btn-secondary" onclick="exportCSV()">&#8595; Export CSV</button>' +
+      (can('create_po') ? '<button class="btn btn-primary" onclick="navigate(\'new\')" style="white-space:nowrap">' + icons.plus + ' New PO</button>' : '') +
+      '</div></div>' +
+      '<div class="stats-grid">' +
+        '<div class="stat-card"><div class="stat-value">' + total + '</div><div class="stat-label">Total POs</div></div>' +
+        '<div class="stat-card"><div class="stat-value" style="color:var(--warning)">' + pending + '</div><div class="stat-label">Pending Approval</div></div>' +
+        '<div class="stat-card" style="cursor:pointer" onclick="document.getElementById(\'filter-status\').value=\'approved\';applyFilters(true)"><div class="stat-value" style="color:var(--success)">' + approved + '</div><div class="stat-label">Approved — Needs Ordering</div></div>' +
+        '<div class="stat-card" style="cursor:pointer" onclick="document.getElementById(\'filter-status\').value=\'order placed\';applyFilters(true)"><div class="stat-value" style="color:#a78bfa">' + ordered + '</div><div class="stat-label">Order Placed</div></div>' +
+      '</div>' +
+      '<div class="card">' +
+        '<div class="card-header"><span class="card-title">Purchase Orders</span></div>' +
+        '<div class="card-body" style="border-bottom:1px solid var(--border)">' +
+          '<div class="filter-bar">' +
+            '<input type="text" id="filter-text" placeholder="Search PO #, vendor, customer..." oninput="applyFilters(true)" />' +
+            '<select id="filter-status" onchange="applyFilters(true)"><option value="">All Statuses</option><option value="draft">Draft</option><option value="submitted">Submitted</option><option value="approved">Approved</option><option value="order placed">Order Placed</option><option value="rejected">Rejected</option><option value="cancelled">Cancelled</option></select>' +
+            '<select id="filter-city" onchange="applyFilters(true)">' + cityOptions + '</select>' +
+          '</div>' +
+        '</div>' +
+        '<div id="po-table-body" style="padding:0"></div>' +
+      '</div>';
+
+    applyFilters();
+  } catch(err) {
+    el.innerHTML = '<div class="alert alert-error">' + escHtml(err.message) + '</div>';
+  }
+}
+
+const PAGE_SIZE_CHOICES = [10, 25, 50, 100];
+function parsePageSize(v) { return v === 'all' ? 1e9 : (parseInt(v, 10) || 10); }
+function pageSizeControl(current, cb) {
+  var choices = PAGE_SIZE_CHOICES.slice();
+  if (current < 1e9 && choices.indexOf(current) === -1) choices.push(current);
+  choices.sort(function(x, y) { return x - y; });
+  var opts = choices.map(function(n) { return '<option value="' + n + '"' + (current === n ? ' selected' : '') + '>' + n + '</option>'; }).join('');
+  opts += '<option value="all"' + (current >= 1e9 ? ' selected' : '') + '>All</option>';
+  return '<label style="font-size:13px;color:var(--text-muted-color);display:inline-flex;align-items:center;gap:6px">Rows: <select onchange="' + cb + '(this.value)" style="background:var(--bg-elevated);color:var(--text-dim);border:1px solid var(--border);border-radius:4px;padding:3px 6px;font-size:13px;cursor:pointer">' + opts + '</select></label>';
+}
+function renderPagination(page, totalPages, totalItems, callbackName, pageSize, sizeCb) {
+  if (!totalItems) return '';
+  pageSize = pageSize || 10;
+  var sizeCtl = sizeCb ? pageSizeControl(pageSize, sizeCb) : '';
+  if (totalPages <= 1 || pageSize >= 1e9) {
+    return '<div style="display:flex;align-items:center;justify-content:space-between;padding:12px 16px;border-top:1px solid var(--border);flex-wrap:wrap;gap:8px">' +
+      '<span style="font-size:13px;color:var(--text-muted-color)">Showing all ' + totalItems + '</span>' +
+      (sizeCtl ? ('<div style="display:flex;gap:12px;align-items:center">' + sizeCtl + '</div>') : '') +
+    '</div>';
+  }
+  const start = (page - 1) * pageSize + 1;
+  const end = Math.min(page * pageSize, totalItems);
+  let btns = '';
+  for (let i = 1; i <= totalPages; i++) {
+    if (i === 1 || i === totalPages || Math.abs(i - page) <= 1) {
+      btns += '<button onclick="' + callbackName + '(' + i + ')" style="min-width:32px;padding:4px 8px;border-radius:4px;border:1px solid var(--border);background:' + (i === page ? 'var(--primary)' : 'var(--bg-elevated)') + ';color:' + (i === page ? 'white' : 'var(--text-dim)') + ';cursor:pointer;font-size:13px">' + i + '</button>';
+    } else if (Math.abs(i - page) === 2) {
+      btns += '<span style="color:var(--text-muted-color);padding:0 2px">&hellip;</span>';
+    }
+  }
+  return '<div style="display:flex;align-items:center;justify-content:space-between;padding:12px 16px;border-top:1px solid var(--border);flex-wrap:wrap;gap:8px">' +
+    '<span style="font-size:13px;color:var(--text-muted-color)">Showing ' + start + '&ndash;' + end + ' of ' + totalItems + '</span>' +
+    '<div style="display:flex;gap:12px;align-items:center;flex-wrap:wrap">' +
+      sizeCtl +
+      '<div style="display:flex;gap:4px;align-items:center">' +
+        '<button onclick="' + callbackName + '(' + (page - 1) + ')" ' + (page === 1 ? 'disabled' : '') + ' style="padding:4px 8px;border-radius:4px;border:1px solid var(--border);background:var(--bg-elevated);color:var(--text-dim);cursor:pointer;font-size:13px">&lsaquo;</button>' +
+        btns +
+        '<button onclick="' + callbackName + '(' + (page + 1) + ')" ' + (page === totalPages ? 'disabled' : '') + ' style="padding:4px 8px;border-radius:4px;border:1px solid var(--border);background:var(--bg-elevated);color:var(--text-dim);cursor:pointer;font-size:13px">&rsaquo;</button>' +
+      '</div>' +
+    '</div>' +
+  '</div>';
+}
+function poPaginate(p) { _poPage = p; applyFilters(); }
+function poPageSize(v) { PO_PAGE_SIZE = parsePageSize(v); _poPage = 1; applyFilters(); }
+function quotePaginate(p) { _quotePage = p; filterQuotes(); }
+function quotePageSize(v) { QUOTE_PAGE_SIZE = parsePageSize(v); _quotePage = 1; filterQuotes(); }
+
+let _poPage = 1;
+let PO_PAGE_SIZE = 10;
+
+function applyFilters(resetPage) {
+  if (resetPage) _poPage = 1;
+  const text = (document.getElementById('filter-text') || {}).value || '';
+  const status = (document.getElementById('filter-status') || {}).value || '';
+  const city = (document.getElementById('filter-city') || {}).value || '';
+  const isApprover = can('approve_po');
+
+  const filtered = allPOs.filter(function(po) {
+    if (status && po.status !== status) return false;
+    if (city && po.city_code !== city) return false;
+    if (text) {
+      const q = text.toLowerCase();
+      const haystack = ((po.po_number || '') + ' ' + (po.vendor_name || '') + ' ' + (po.customer_name || '') + ' ' + (po.requester_name || '')).toLowerCase();
+      if (!haystack.includes(q)) return false;
+    }
+    return true;
+  });
+
+  const tbody = document.getElementById('po-table-body');
+  if (!tbody) return;
+  if (filtered.length === 0) {
+    tbody.innerHTML = '<div class="empty-state"><h3>No matching purchase orders</h3><p>Try adjusting your filters.</p></div>';
+    return;
+  }
+
+  const totalPages = Math.ceil(filtered.length / PO_PAGE_SIZE);
+  if (_poPage > totalPages) _poPage = totalPages;
+  const start = (_poPage - 1) * PO_PAGE_SIZE;
+  const page = filtered.slice(start, start + PO_PAGE_SIZE);
+
+  tbody.innerHTML =
+    '<div class="table-wrap"><table>' +
+    '<thead><tr><th>PO Number</th><th>City</th><th>Vendor</th><th>Customer/Employee</th>' + (isApprover ? '<th>Requested By</th>' : '') + '<th>Total</th><th>Status</th><th>Approved By</th><th>Orderer</th><th>Date</th>' + (can('approve_po') ? '<th></th>' : '') + '</tr></thead>' +
+    '<tbody>' + page.map(function(po){
+      return '<tr style="cursor:pointer" onclick="navigate(\'view\',' + po.id + ')">' +
+        '<td style="white-space:nowrap"><strong>' + escHtml(po.po_number) + '</strong> <button class="btn btn-ghost btn-sm" title="Copy PO number" onclick="event.stopPropagation();copyToClipboard(\'' + escHtml(po.po_number) + '\',this)" style="padding:2px 7px;font-size:11px;opacity:0.6;vertical-align:middle;font-weight:500">Copy</button></td>' +
+        '<td>' + escHtml(po.city_code || '—') + '</td>' +
+        '<td>' + escHtml(po.vendor_name) + '</td>' +
+        '<td>' + escHtml(po.customer_name || '—') + '</td>' +
+        (isApprover ? '<td>' + escHtml(po.requester_name || '—') + '</td>' : '') +
+        '<td>$' + parseFloat(po.total_amount).toFixed(2) + '</td>' +
+        '<td>' + badgeHtml(po.status) + '</td>' +
+        '<td>' + escHtml(po.approver_name || '—') + '</td>' +
+        '<td>' + escHtml(po.orderer_name || '—') + '</td>' +
+        '<td>' + formatDate(po.created_at) + '</td>' +
+        ((can('approve_po')) && po.status === 'approved' && (state.user.role === 'admin' || po.orderer_id === state.user.id)
+          ? '<td style="white-space:nowrap"><button class="btn btn-primary btn-sm" onclick="event.stopPropagation();markOrdered(' + po.id + ')" style="background:#7c3aed;border-color:#7c3aed">Mark Ordered</button></td>'
+          : (can('approve_po') ? '<td></td>' : '')) +
+      '</tr>';
+    }).join('') +
+    '</tbody></table></div>' +
+    renderPagination(_poPage, totalPages, filtered.length, 'poPaginate', PO_PAGE_SIZE, 'poPageSize');
+}
+
+async function exportCSV() {
+  try {
+    const { pos, itemsByPO } = await api('GET', '/pos/export');
+    const rows = [];
+    rows.push(['PO Number','Status','City','Vendor','Customer Name','Requested By','Date','PO Total','Item #','Manufacturer','Description','Quantity','Unit Price','Line Total'].join(','));
+    pos.forEach(function(po) {
+      const items = itemsByPO[po.po_number] || [];
+      if (items.length === 0) {
+        rows.push([po.po_number, po.status, po.city_code||'', po.vendor_name, po.customer_name||'', po.requester_name||'', formatDate(po.created_at), parseFloat(po.total_amount).toFixed(2), '', '', '', '', '', ''].map(csvCell).join(','));
+      } else {
+        items.forEach(function(item) {
+          const lineTotal = (parseFloat(item.quantity) * parseFloat(item.unit_price)).toFixed(2);
+          rows.push([po.po_number, po.status, po.city_code||'', po.vendor_name, po.customer_name||'', po.requester_name||'', formatDate(po.created_at), parseFloat(po.total_amount).toFixed(2), item.item_number||'', item.manufacturer||'', item.description, item.quantity, parseFloat(item.unit_price).toFixed(2), lineTotal].map(csvCell).join(','));
+        });
+      }
+    });
+    const blob = new Blob([rows.join('\n')], { type: 'text/csv' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = 'purchase-orders-' + new Date().toISOString().slice(0,10) + '.csv';
+    a.click();
+    URL.revokeObjectURL(url);
+  } catch(err) {
+    alert('Export failed: ' + err.message);
+  }
+}
+
+function csvCell(val) {
+  const s = String(val == null ? '' : val);
+  if (s.includes(',') || s.includes('"') || s.includes('\n')) return '"' + s.replace(/"/g, '""') + '"';
+  return s;
+}
+
+let lineItems = [];
+
+async function renderEditPO(el, id) {
+  let po = null;
+  let cities = [];
+  try { cities = await api('GET', '/cities'); } catch(e) {}
+  if (id) {
+    try { po = await api('GET', '/pos/' + id); } catch(e) { el.innerHTML = '<div class="alert alert-error">' + escHtml(e.message) + '</div>'; return; }
+    lineItems = po.line_items || [];
+  } else {
+    lineItems = [{ item_number: '', manufacturer: '', description: '', quantity: 1, unit_price: '' }];
+  }
+  const cityOptions = cities.length === 0
+    ? '<option value="">No cities configured — add in Cities settings</option>'
+    : '<option value="">Select city...</option>' + cities.map(function(c) {
+        return '<option value="' + escHtml(c.code) + '"' + (po && po.city_code === c.code ? ' selected' : '') + '>' + escHtml(c.name) + ' (' + escHtml(c.code) + ')</option>';
+      }).join('');
+  el.innerHTML =
+    '<div class="page-header">' +
+      '<div><div class="page-title">' + (id ? 'Edit PO' : 'New Purchase Order') + '</div></div>' +
+      '<button class="btn btn-secondary" onclick="navigate(id ? \'view\' : \'dashboard\', ' + (id||'null') + ')">Cancel</button>' +
+    '</div>' +
+    '<div id="edit-error"></div>' +
+    '<div class="card mb-4"><div class="card-header"><span class="card-title">Order Information</span></div><div class="card-body">' +
+      '<div class="form-row">' +
+        '<div class="form-group"><label>Vendor / Supplier *</label><input type="text" id="po-vendor" value="' + escHtml(po ? po.vendor_name : '') + '" placeholder="Vendor name" /></div>' +
+        '<div class="form-group"><label>Customer/Employee *</label><input type="text" id="po-customer" value="' + escHtml(po && po.customer_name ? po.customer_name : '') + '" placeholder="Customer/Employee" /></div>' +
+      '</div>' +
+      '<div class="form-row">' +
+        '<div class="form-group"><label>City *</label><select id="po-city" onchange="loadShippingAddresses()">' + cityOptions + '</select></div>' +
+        '<div class="form-group"><label>Ship To</label><select id="po-shipping-address"><option value="">No shipping address</option></select></div>' +
+      '</div>' +
+      '<div class="form-group"><label>Notes</label><textarea id="po-notes" placeholder="Optional notes...">' + escHtml(po ? po.notes || '' : '') + '</textarea></div>' +
+    '</div></div>' +
+    '<div class="card mb-4"><div class="card-header"><span class="card-title">Line Items</span></div><div class="card-body">' +
+      '<div class="table-wrap"><table class="line-items-table">' +
+        '<thead><tr><th>Item #</th><th>Manufacturer</th><th>Description</th><th>Qty</th><th>Unit Price</th><th>Total</th><th></th></tr></thead>' +
+        '<tbody id="line-items-body"></tbody>' +
+        '<tfoot><tr class="total-row"><td colspan="5" class="text-right" style="padding:10px">Grand Total</td><td id="grand-total" style="padding:10px">$0.00</td><td></td></tr></tfoot>' +
+      '</table></div>' +
+      '<div class="row-actions">' +
+        '<button class="btn btn-secondary btn-sm add-item-btn" onclick="addLineItem()">' + icons.plus + ' Add Item</button>' +
+        '<button class="btn btn-secondary btn-sm" style="white-space:nowrap" onclick="openPartsPicker(\'po\')"><svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" style="vertical-align:-2px"><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"/></svg> Add from Parts List</button>' +
+      '</div>' +
+    '</div></div>' +
+    '<div class="flex-gap">' +
+      '<button class="btn btn-secondary" onclick="savePO(' + (id||'null') + ', \'draft\')" id="btn-draft">Save Draft</button>' +
+      (state.user.role !== 'approver' ? '<button class="btn btn-primary" onclick="savePO(' + (id||'null') + ', \'submit\')" id="btn-submit">Submit for Approval</button>' : '') +
+    '</div>';
+  buildLineItemRows();
+  // Load shipping addresses for whatever city is currently selected
+  loadShippingAddresses(po ? po.shipping_address_id : null);
+}
+
+async function loadShippingAddresses(selectedId) {
+  const cityEl = document.getElementById('po-city');
+  const addrEl = document.getElementById('po-shipping-address');
+  if (!cityEl || !addrEl) return;
+  const city_code = cityEl.value;
+  // Always reset to blank first so a stale selection can't carry over
+  addrEl.innerHTML = '<option value="">No shipping address</option>';
+  if (!city_code) return;
+  try {
+    const addrs = await api('GET', '/addresses?city_code=' + city_code);
+    addrs.forEach(function(a) {
+      const opt = document.createElement('option');
+      opt.value = a.id;
+      opt.textContent = a.name + ' — ' + a.address;
+      if (selectedId && a.id === selectedId) opt.selected = true;
+      addrEl.appendChild(opt);
+    });
+    if (addrs.length === 0) {
+      const opt = document.createElement('option');
+      opt.value = '';
+      opt.textContent = 'No addresses for this city';
+      addrEl.appendChild(opt);
+    }
+  } catch(e) {
+    console.error('loadShippingAddresses error:', e);
+    const opt = document.createElement('option');
+    opt.value = '';
+    opt.textContent = 'Error loading addresses';
+    addrEl.appendChild(opt);
+  }
+}
+
+function buildLineItemRows() {
+  const tbody = document.getElementById('line-items-body');
+  if (!tbody) return;
+  tbody.innerHTML = lineItems.map(function(item, i) {
+    const total = (parseFloat(item.quantity)||0) * (parseFloat(item.unit_price)||0);
+    return '<tr>' +
+      '<td><input type="text" value="' + escHtml(item.item_number||'') + '" placeholder="Item #" onchange="updateItem(' + i + ',this)" data-field="item_number" /></td>' +
+      '<td><input type="text" value="' + escHtml(item.manufacturer||'') + '" placeholder="Manufacturer" onchange="updateItem(' + i + ',this)" data-field="manufacturer" /></td>' +
+      '<td><input type="text" value="' + escHtml(item.description||'') + '" placeholder="Description *" onchange="updateItem(' + i + ',this)" data-field="description" /></td>' +
+      '<td><input type="number" value="' + escHtml(item.quantity||'') + '" min="0.01" step="0.01" onchange="updateItem(' + i + ',this)" data-field="quantity" style="width:70px" /></td>' +
+      '<td><input type="number" value="' + escHtml(item.unit_price||'') + '" min="0" step="0.01" placeholder="0.00" onchange="updateItem(' + i + ',this)" data-field="unit_price" style="width:90px" /></td>' +
+      '<td id="row-total-' + i + '">$' + total.toFixed(2) + '</td>' +
+      '<td>' + (lineItems.length > 1 ? '<button class="btn btn-ghost btn-sm" onclick="removeItem(' + i + ')">' + icons.trash + '</button>' : '') + '</td>' +
+    '</tr>';
+  }).join('');
+  updateGrandTotal();
+}
+
+function updateItem(i, input) {
+  lineItems[i][input.dataset.field] = input.value;
+  const qty = parseFloat(lineItems[i].quantity) || 0;
+  const price = parseFloat(lineItems[i].unit_price) || 0;
+  const cell = document.getElementById('row-total-' + i);
+  if (cell) cell.textContent = '$' + (qty * price).toFixed(2);
+  updateGrandTotal();
+}
+
+function updateGrandTotal() {
+  const total = lineItems.reduce(function(sum, item) { return sum + (parseFloat(item.quantity)||0) * (parseFloat(item.unit_price)||0); }, 0);
+  const el = document.getElementById('grand-total');
+  if (el) el.textContent = '$' + total.toFixed(2);
+}
+
+function addLineItem() {
+  lineItems.push({ item_number: '', manufacturer: '', description: '', quantity: 1, unit_price: '' });
+  buildLineItemRows();
+}
+
+function removeItem(i) {
+  lineItems.splice(i, 1);
+  buildLineItemRows();
+}
+
+async function savePO(id, action) {
+  const vendor_name = document.getElementById('po-vendor').value.trim();
+  const customer_name = document.getElementById('po-customer').value.trim();
+  const city_code = document.getElementById('po-city').value;
+  const notes = document.getElementById('po-notes').value.trim();
+  const shipping_address_id = parseInt(document.getElementById('po-shipping-address').value) || null;
+  if (!vendor_name) { document.getElementById('edit-error').innerHTML = '<div class="alert alert-error">Vendor name is required.</div>'; return; }
+  if (!customer_name) { document.getElementById('edit-error').innerHTML = '<div class="alert alert-error">Customer/Employee is required.</div>'; return; }
+  if (!city_code) { document.getElementById('edit-error').innerHTML = '<div class="alert alert-error">Please select a city.</div>'; return; }
+
+  // Read current input values
+  const rows = document.querySelectorAll('#line-items-body tr');
+  rows.forEach(function(row, i) {
+    const inputs = row.querySelectorAll('input');
+    if (inputs[0]) lineItems[i].item_number = inputs[0].value;
+    if (inputs[1]) lineItems[i].manufacturer = inputs[1].value;
+    if (inputs[2]) lineItems[i].description = inputs[2].value;
+    if (inputs[3]) lineItems[i].quantity = inputs[3].value;
+    if (inputs[4]) lineItems[i].unit_price = inputs[4].value;
+  });
+
+  const validItems = lineItems.filter(function(item){ return item.description && item.quantity && item.unit_price; });
+  if (validItems.length === 0) { document.getElementById('edit-error').innerHTML = '<div class="alert alert-error">At least one complete line item is required.</div>'; return; }
+
+  try {
+    document.getElementById('btn-draft') && (document.getElementById('btn-draft').disabled = true);
+    document.getElementById('btn-submit') && (document.getElementById('btn-submit').disabled = true);
+    let po;
+    if (id) {
+      po = await api('PUT', '/pos/' + id, { vendor_name, customer_name, city_code, notes, shipping_address_id, line_items: validItems });
+    } else {
+      po = await api('POST', '/pos', { vendor_name, customer_name, city_code, notes, shipping_address_id, line_items: validItems });
+    }
+    if (action === 'submit') {
+      await api('POST', '/pos/' + po.id + '/submit');
+      navigate('dashboard');
+    } else {
+      navigate('view', po.id);
+    }
+  } catch(err) {
+    document.getElementById('edit-error').innerHTML = '<div class="alert alert-error">' + escHtml(err.message) + '</div>';
+    document.getElementById('btn-draft') && (document.getElementById('btn-draft').disabled = false);
+    document.getElementById('btn-submit') && (document.getElementById('btn-submit').disabled = false);
+  }
+}
+
+// ===== Running List (monthly accumulating PO list) =====
+var runningItems = [];
+var runningCities = [];
+var runningCityForNew = '';
+
+function runningStatus(msg, ok){
+  var el = document.getElementById('running-status');
+  if(!el) return;
+  el.textContent = msg;
+  el.style.color = ok ? 'var(--success)' : 'var(--text-muted-color)';
+}
+
+async function renderRunningList(el){
+  el.innerHTML = '<div class="loading">Loading…</div>';
+  try { runningCities = await api('GET','/cities/mine'); } catch(e){ runningCities = []; }
+  try { runningItems = await api('GET','/running'); } catch(e){ el.innerHTML = '<div class="alert alert-error">' + escHtml(e.message) + '</div>'; return; }
+  var _allowedCodes = runningCities.map(function(c){ return c.code; });
+  runningCityForNew = ((runningItems[0] && _allowedCodes.indexOf(runningItems[0].city_code) !== -1) ? runningItems[0].city_code : (runningCities[0] && runningCities[0].code)) || '';
+  var cityOpts = runningCities.map(function(c){ return '<option value="' + escHtml(c.code) + '"' + (c.code===runningCityForNew?' selected':'') + '>' + escHtml(c.name) + ' (' + escHtml(c.code) + ')</option>'; }).join('');
+  el.innerHTML =
+    '<div class="page-header"><div><div class="page-title">My Running List</div><div style="color:var(--text-muted-color);font-size:13px;margin-top:2px">Add items through the month. An admin combines your city into a single PO.</div></div></div>' +
+    '<div id="running-error"></div>' +
+    '<div class="card mb-4"><div class="card-body">' +
+      '<div class="form-row" style="align-items:flex-end">' +
+        '<div class="form-group" style="max-width:280px"><label>City for new items</label><select id="running-city">' + (cityOpts || '<option value="">No cities configured</option>') + '</select></div>' +
+        '<div style="flex:1"></div>' +
+        '<div id="running-status" style="font-size:12px;color:var(--text-muted-color);padding-bottom:10px">All changes saved</div>' +
+      '</div>' +
+      '<div class="table-wrap"><table class="line-items-table" style="table-layout:fixed">' +
+        '<colgroup><col style="width:6%"><col style="width:24%"><col style="width:8%"><col style="width:12%"><col style="width:22%"><col style="width:14%"><col style="width:14%"></colgroup>' +
+        '<thead><tr><th></th><th>Item Description</th><th>Qty</th><th>Est. Cost</th><th>Vendor</th><th>Part Description</th><th>Link</th></tr></thead>' +
+        '<tbody id="running-body"></tbody>' +
+        '<tfoot><tr class="total-row"><td colspan="3" class="text-right" style="padding:10px">Est. Total</td><td id="running-total" style="padding:10px">$0.00</td><td colspan="3"></td></tr></tfoot>' +
+      '</table></div>' +
+      '<div class="row-actions">' +
+        '<button class="btn btn-secondary btn-sm add-item-btn" style="white-space:nowrap" onclick="runningAddRow()">' + icons.plus + ' Add item</button>' +
+        '<button class="btn btn-secondary btn-sm" style="white-space:nowrap" onclick="openPartsPicker(\'running\')"><svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" style="vertical-align:-2px"><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"/></svg> Add from Parts List</button>' +
+      '</div>' +
+    '</div></div>';
+  var cityEl = document.getElementById('running-city');
+  if(cityEl) cityEl.addEventListener('change', function(){ runningCityForNew = this.value; });
+  runningBuildRows();
+}
+
+function runningBuildRows(){
+  var tbody = document.getElementById('running-body');
+  if(!tbody) return;
+  if(!runningItems.length){
+    tbody.innerHTML = '<tr><td colspan="7" style="padding:14px;color:var(--text-muted-color)">No items yet. Click “Add item” to start your list.</td></tr>';
+    runningUpdateTotal(); return;
+  }
+  tbody.innerHTML = runningItems.map(function(it,i){
+    return '<tr>' +
+      '<td style="text-align:center"><button class="btn btn-ghost btn-sm" style="color:var(--danger)" onclick="runningDeleteRow(' + i + ')">' + icons.trash + '</button></td>' +
+      '<td><input type="text" value="' + escHtml(it.description||'') + '" placeholder="Item description *" style="width:100%;box-sizing:border-box" data-f="description" onchange="runningField(' + i + ',this)" /></td>' +
+      '<td><input type="number" value="' + escHtml(it.quantity||'') + '" min="0" step="1" style="width:100%;box-sizing:border-box" data-f="quantity" onchange="runningField(' + i + ',this)" /></td>' +
+      '<td><input type="number" value="' + escHtml(it.unit_price||'') + '" min="0" step="0.01" placeholder="0.00" style="width:100%;box-sizing:border-box" data-f="unit_price" onchange="runningField(' + i + ',this)" /></td>' +
+      '<td><input type="text" value="' + escHtml(it.vendor_name||'') + '" placeholder="Vendor" style="width:100%;box-sizing:border-box" data-f="vendor_name" onchange="runningField(' + i + ',this)" /></td>' +
+      '<td><input type="text" value="' + escHtml(it.part_number||'') + '" placeholder="Part description" style="width:100%;box-sizing:border-box" data-f="part_number" onchange="runningField(' + i + ',this)" /></td>' +
+      '<td><input type="text" value="' + escHtml(it.link||'') + '" placeholder="URL" style="width:100%;box-sizing:border-box" data-f="link" onchange="runningField(' + i + ',this)" /></td>' +
+    '</tr>';
+  }).join('');
+  runningUpdateTotal();
+}
+
+function runningUpdateTotal(){
+  var t = runningItems.reduce(function(s,it){ return s + (parseFloat(it.quantity)||0)*(parseFloat(it.unit_price)||0); },0);
+  var el = document.getElementById('running-total');
+  if(el) el.textContent = '$' + t.toFixed(2);
+}
+
+function runningField(i, input){
+  runningItems[i][input.dataset.f] = input.value;
+  runningUpdateTotal();
+  runningPersist(i);
+}
+
+async function runningPersist(i){
+  var it = runningItems[i];
+  if(!it) return;
+  if(!it.description || !it.description.trim()) return;
+  runningStatus('Saving…', false);
+  try{
+    if(it.id){
+      await api('PUT','/running/' + it.id, { description: it.description, quantity: it.quantity||1, unit_price: it.unit_price||null, vendor_name: it.vendor_name||null, part_number: it.part_number||null, link: it.link||null });
+    } else {
+      var created = await api('POST','/running', { description: it.description, quantity: it.quantity||1, unit_price: it.unit_price||null, vendor_name: it.vendor_name||null, part_number: it.part_number||null, link: it.link||null, city_code: runningCityForNew });
+      it.id = created.id;
+    }
+    runningStatus('All changes saved', true);
+  }catch(e){ runningStatus('Save failed: ' + e.message, false); }
+}
+
+function runningAddRow(){
+  runningItems.push({ description:'', quantity:1, unit_price:'', vendor_name:'', part_number:'', link:'' });
+  runningBuildRows();
+}
+
+async function runningDeleteRow(i){
+  var it = runningItems[i];
+  runningItems.splice(i,1);
+  runningBuildRows();
+  if(it && it.id){
+    try{ await api('DELETE','/running/' + it.id); runningStatus('All changes saved', true); }
+    catch(e){ runningStatus('Delete failed: ' + e.message, false); }
+  }
+}
+
+// ===== Admin running list (combined by city) =====
+var adminRunItems = [];
+var adminRunVendors = [];
+var adminRunCity = '';
+var adminRunAllCities = [];
+var adminRunEl = null;
+
+async function renderAdminRunningList(el){
+  if (!can('manage_running')) { el.innerHTML = '<div class="alert alert-error">Access denied.</div>'; return; }
+  adminRunEl = el;
+  el.innerHTML = '<div class="loading">Loading…</div>';
+  try { adminRunItems = await api('GET','/running/admin'); } catch(e){ el.innerHTML = '<div class="alert alert-error">' + escHtml(e.message) + '</div>'; return; }
+  try { adminRunVendors = await api('GET','/vendors'); } catch(e){ adminRunVendors = []; }
+  try { adminRunAllCities = await api('GET','/cities'); } catch(e){ adminRunAllCities = []; }
+  var cities = [...new Set(adminRunItems.map(function(it){ return it.city_code; }).filter(Boolean))].sort();
+  if(!adminRunCity || cities.indexOf(adminRunCity)===-1) adminRunCity = cities[0] || '';
+  adminRunRenderShell(el, cities);
+}
+
+function adminRunCityItems(){
+  return adminRunItems.filter(function(it){ return it.city_code === adminRunCity; });
+}
+
+function adminRunRenderShell(el, cities){
+  var totalsByCity = {};
+  adminRunItems.forEach(function(it){
+    if(!totalsByCity[it.city_code]) totalsByCity[it.city_code] = { n:0, t:0 };
+    totalsByCity[it.city_code].n++;
+    totalsByCity[it.city_code].t += (parseFloat(it.quantity)||0)*(parseFloat(it.unit_price)||0);
+  });
+  var cityOpts = cities.map(function(c){ var s=totalsByCity[c]||{n:0,t:0}; return '<option value="' + escHtml(c) + '"' + (c===adminRunCity?' selected':'') + '>' + escHtml(c) + ' (' + s.n + ' items · $' + s.t.toFixed(2) + ')</option>'; }).join('');
+  el.innerHTML =
+    '<div class="page-header"><div><div class="page-title">Running Lists by City</div><div style="color:var(--text-muted-color);font-size:13px;margin-top:2px">Every requester&#39;s items, combined per city. Edit, trim, then push one PO.</div></div></div>' +
+    '<div id="running-error"></div>' +
+    (cities.length === 0
+      ? '<div class="card"><div class="card-body" style="color:var(--text-muted-color)">No active running-list items across any city yet.</div></div>'
+      :
+    '<div class="card mb-4"><div class="card-body">' +
+      '<div class="form-row" style="align-items:flex-end">' +
+        '<div class="form-group" style="max-width:340px"><label>City</label><select id="admin-run-city" onchange="adminRunSwitchCity(this.value)">' + cityOpts + '</select></div>' +
+        '<div style="flex:1"></div>' +
+        '<div id="running-status" style="font-size:12px;color:var(--text-muted-color);padding-bottom:10px">All changes saved</div>' +
+      '</div>' +
+      '<div class="table-wrap"><table class="line-items-table" style="table-layout:fixed">' +
+        '<colgroup><col style="width:5%"><col style="width:21%"><col style="width:11%"><col style="width:11%"><col style="width:7%"><col style="width:11%"><col style="width:18%"><col style="width:16%"></colgroup>' +
+        '<thead><tr><th></th><th>Item</th><th>Requester</th><th>City</th><th>Qty</th><th>Est. Cost</th><th>Vendor</th><th>Part Description</th></tr></thead>' +
+        '<tbody id="admin-run-body"></tbody>' +
+        '<tfoot><tr class="total-row"><td colspan="5" class="text-right" style="padding:10px">Est. Total</td><td id="admin-run-total" style="padding:10px">$0.00</td><td colspan="2"></td></tr></tfoot>' +
+      '</table></div>' +
+      '<button class="btn btn-secondary btn-sm add-item-btn" style="white-space:nowrap" onclick="adminRunAddRow()">' + icons.plus + ' Add line item</button>' +
+      '<div class="flex-gap" style="margin-top:16px">' +
+        '<button class="btn btn-primary" onclick="adminRunCreatePO()" id="admin-run-create">Create PO from list</button>' +
+      '</div>' +
+    '</div></div>');
+  adminRunBuildRows();
+}
+
+function adminRunSwitchCity(c){ adminRunCity = c; adminRunBuildRows(); }
+
+function adminRunBuildRows(){
+  var tbody = document.getElementById('admin-run-body');
+  if(!tbody) return;
+  var items = adminRunCityItems();
+  if(!items.length){
+    tbody.innerHTML = '<tr><td colspan="8" style="padding:14px;color:var(--text-muted-color)">No items for this city.</td></tr>';
+    adminRunUpdateTotal(); return;
+  }
+  tbody.innerHTML = items.map(function(it){
+    var id = it.id;
+    return '<tr>' +
+      '<td style="text-align:center"><button class="btn btn-ghost btn-sm" style="color:var(--danger)" onclick="adminRunDelete(' + id + ')">' + icons.trash + '</button></td>' +
+      '<td><input type="text" value="' + escHtml(it.description||'') + '" style="width:100%;box-sizing:border-box" data-f="description" onchange="adminRunField(' + id + ',this)" /></td>' +
+      '<td style="color:var(--text-muted-color);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">' + escHtml(it.requester_name||'—') + '</td>' +
+      '<td>' + adminRunCityCell(it) + '</td>' +
+      '<td><input type="number" value="' + escHtml(it.quantity||'') + '" min="0" step="1" style="width:100%;box-sizing:border-box" data-f="quantity" onchange="adminRunField(' + id + ',this)" /></td>' +
+      '<td><input type="number" value="' + escHtml(it.unit_price||'') + '" min="0" step="0.01" placeholder="0.00" style="width:100%;box-sizing:border-box" data-f="unit_price" onchange="adminRunField(' + id + ',this)" /></td>' +
+      '<td><input type="text" value="' + escHtml(it.vendor_name||'') + '" placeholder="Vendor" style="width:100%;box-sizing:border-box" data-f="vendor_name" onchange="adminRunField(' + id + ',this)" /></td>' +
+      '<td><input type="text" value="' + escHtml(it.part_number||'') + '" placeholder="Part description" style="width:100%;box-sizing:border-box" data-f="part_number" onchange="adminRunField(' + id + ',this)" /></td>' +
+    '</tr>';
+  }).join('');
+  adminRunUpdateTotal();
+}
+
+function adminRunUpdateTotal(){
+  var t = adminRunCityItems().reduce(function(s,it){ return s + (parseFloat(it.quantity)||0)*(parseFloat(it.unit_price)||0); },0);
+  var el = document.getElementById('admin-run-total');
+  if(el) el.textContent = '$' + t.toFixed(2);
+}
+
+function adminRunFindById(id){ for(var k=0;k<adminRunItems.length;k++){ if(adminRunItems[k].id===id) return adminRunItems[k]; } return null; }
+
+function adminRunCityCell(it){
+  var list = adminRunAllCities && adminRunAllCities.length ? adminRunAllCities : [];
+  var opts;
+  if(list.length){
+    opts = list.map(function(c){ return '<option value="' + escHtml(c.code) + '"' + (c.code===it.city_code?' selected':'') + '>' + escHtml(c.code) + '</option>'; }).join('');
+  } else {
+    opts = '<option value="' + escHtml(it.city_code||'') + '" selected>' + escHtml(it.city_code||'') + '</option>';
+  }
+  return '<select style="width:100%;box-sizing:border-box" onchange="adminRunMove(' + it.id + ',this.value)">' + opts + '</select>';
+}
+function adminRunMove(id, newCity){
+  var it = adminRunFindById(id);
+  if(!it || !newCity || newCity === it.city_code) return;
+  runningStatus('Moving\u2026', false);
+  api('PUT','/running/' + id, { city_code: newCity }).then(function(){
+    it.city_code = newCity;
+    runningStatus('Moved to ' + newCity, true);
+    var cities = []; var seen = {};
+    adminRunItems.forEach(function(x){ if(x.city_code && !seen[x.city_code]){ seen[x.city_code]=1; cities.push(x.city_code); } });
+    cities.sort();
+    if(cities.indexOf(adminRunCity) === -1) adminRunCity = cities[0] || '';
+    if(adminRunEl) adminRunRenderShell(adminRunEl, cities);
+  }).catch(function(e){ runningStatus('Move failed: ' + e.message, false); });
+}
+
+function adminRunField(id, input){
+  var it = adminRunFindById(id);
+  if(!it) return;
+  it[input.dataset.f] = input.value;
+  adminRunUpdateTotal();
+  adminRunPersist(it);
+}
+
+async function adminRunPersist(it){
+  runningStatus('Saving…', false);
+  try{
+    await api('PUT','/running/' + it.id, { description: it.description, quantity: it.quantity||1, unit_price: it.unit_price||null, vendor_name: it.vendor_name||null, part_number: it.part_number||null, link: it.link||null });
+    runningStatus('All changes saved', true);
+  }catch(e){ runningStatus('Save failed: ' + e.message, false); }
+}
+
+async function adminRunAddRow(){
+  if(!adminRunCity) return;
+  try{
+    var created = await api('POST','/running', { description:'New item', quantity:1, unit_price:null, city_code: adminRunCity });
+    created.requester_name = state.user.name;
+    adminRunItems.push(created);
+    adminRunBuildRows();
+    runningStatus('All changes saved', true);
+  }catch(e){ document.getElementById('running-error').innerHTML = '<div class="alert alert-error">' + escHtml(e.message) + '</div>'; }
+}
+
+async function adminRunDelete(id){
+  var idx = -1;
+  for(var k=0;k<adminRunItems.length;k++){ if(adminRunItems[k].id===id){ idx=k; break; } }
+  if(idx===-1) return;
+  adminRunItems.splice(idx,1);
+  adminRunBuildRows();
+  try{ await api('DELETE','/running/' + id); runningStatus('All changes saved', true); }
+  catch(e){ runningStatus('Delete failed: ' + e.message, false); }
+}
+
+async function adminRunCreatePO(){
+  var err = document.getElementById('running-error');
+  if(!adminRunCityItems().length){ err.innerHTML = '<div class="alert alert-error">No items to push for this city.</div>'; return; }
+  var btn = document.getElementById('admin-run-create');
+  if(btn) btn.disabled = true;
+  try{
+    var po = await api('POST','/running/create-po', { city_code: adminRunCity });
+    navigate('view', po.id);
+  }catch(e){
+    err.innerHTML = '<div class="alert alert-error">' + escHtml(e.message) + '</div>';
+    if(btn) btn.disabled = false;
+  }
+}
+
+async function renderViewPO(el, id) {
+  el.innerHTML = '<div class="loading">Loading…</div>';
+  try {
+    const po = await api('GET', '/pos/' + id);
+    const canEdit = state.user.role === 'admin' || (can('edit_po') && (po.status === 'draft' || po.status === 'rejected') && po.requester_id === state.user.id);
+    const canSubmit = can('submit_po') && (po.status === 'draft' || po.status === 'rejected') && po.requester_id === state.user.id;
+    const canDelete = state.user.role === 'admin' || (can('delete_po') && po.status === 'draft' && po.requester_id === state.user.id);
+    const canApprove = can('approve_po') && po.status === 'submitted';
+    const canOrder = po.status === 'approved' && (state.user.role === 'admin' || po.orderer_id === state.user.id);
+    const canCancel = can('cancel_po') && po.status !== 'draft' && po.status !== 'cancelled';
+    let usersForApproval = [];
+    if (canApprove) { try { usersForApproval = await api('GET', '/users'); } catch(e) {} }
+
+    el.innerHTML =
+      '<div class="page-header">' +
+        '<div><div class="page-title">' + escHtml(po.po_number) + '</div><div class="page-subtitle">' + badgeHtml(po.status) + '</div></div>' +
+        '<div class="flex-gap">' +
+          '<button class="btn btn-secondary" onclick="navigate(\'dashboard\')">&larr; Back</button>' +
+          '<button class="btn btn-secondary" style="white-space:nowrap" onclick="printPO(' + po.id + ')">' + icons.print + ' Print PO</button>' +
+          (canEdit ? '<button class="btn btn-secondary" onclick="navigate(\'edit\',' + po.id + ')">' + icons.edit + ' Edit</button>' : '') +
+          (canSubmit ? '<button class="btn btn-primary" onclick="submitPO(' + po.id + ')">' + (po.status === 'rejected' ? 'Resubmit for Approval' : 'Submit for Approval') + '</button>' : '') +
+          (canDelete ? '<button class="btn btn-danger btn-sm" style="white-space:nowrap" onclick="deletePO(' + po.id + ')">' + icons.trash + ' Delete PO</button>' : '') +
+          (canOrder ? '<button class="btn btn-primary" onclick="markOrdered(' + po.id + ')" style="background:#7c3aed;border-color:#7c3aed;white-space:nowrap">&#10003; Mark as Ordered</button>' : '') +
+          (canCancel ? '<button class="btn btn-danger btn-sm" style="white-space:nowrap" onclick="cancelPO(' + po.id + ')">&#x2715; Cancel PO</button>' : '') +
+        '</div>' +
+      '</div>' +
+      '<div id="view-error"></div>' +
+      '<div class="card mb-4"><div class="card-header"><span class="card-title">Order Information</span></div><div class="card-body">' +
+        '<div class="detail-grid">' +
+          '<div class="detail-field"><label>PO Number</label><p>' + escHtml(po.po_number) + '</p></div>' +
+          '<div class="detail-field"><label>Vendor / Supplier</label><p>' + escHtml(po.vendor_name) + '</p></div>' +
+          (po.city_code ? '<div class="detail-field"><label>City</label><p>' + escHtml(po.city_code) + '</p></div>' : '') +
+          (po.customer_name ? '<div class="detail-field"><label>Customer Name</label><p>' + escHtml(po.customer_name) + '</p></div>' : '') +
+          '<div class="detail-field"><label>Requested By</label><p>' + escHtml(po.requester_name || '—') + '</p></div>' +
+          '<div class="detail-field"><label>Created</label><p>' + formatDate(po.created_at) + '</p></div>' +
+          (po.approver_name ? '<div class="detail-field"><label>' + (po.status === 'approved' ? 'Approved By' : 'Reviewed By') + '</label><p>' + escHtml(po.approver_name) + '</p></div>' : '') +
+          (po.approved_at ? '<div class="detail-field"><label>' + (po.status === 'approved' ? 'Approved On' : 'Reviewed On') + '</label><p>' + formatDate(po.approved_at) + '</p></div>' : '') +
+          (po.orderer_name ? '<div class="detail-field"><label>Responsible for Ordering</label><p>' + escHtml(po.orderer_name) + '</p></div>' : '') +
+          (po.shipping_address_name ? '<div class="detail-field" style="grid-column:1/-1"><label>Ship To</label><p>' + escHtml(po.shipping_address_name) + ' — ' + escHtml(po.shipping_address_text) + '</p></div>' : '') +
+          (po.notes ? '<div class="detail-field" style="grid-column:1/-1"><label>Notes</label><p>' + escHtml(po.notes) + '</p></div>' : '') +
+          (po.rejection_reason ? '<div class="detail-field" style="grid-column:1/-1"><label>Rejection Reason</label><p style="color:var(--danger)">' + escHtml(po.rejection_reason) + '</p></div>' : '') +
+        '</div>' +
+      '</div></div>' +
+      '<div class="card mb-4"><div class="card-header"><span class="card-title">Line Items</span></div><div class="card-body">' +
+        '<div class="table-wrap"><table class="line-items-table">' +
+          '<thead><tr><th>Item #</th><th>Manufacturer</th><th>Description</th><th>Qty</th><th>Unit Price</th><th class="text-right">Total</th></tr></thead>' +
+          '<tbody>' + po.line_items.map(function(item) {
+            return '<tr>' +
+              '<td>' + escHtml(item.item_number || '—') + '</td>' +
+              '<td>' + escHtml(item.manufacturer || '—') + '</td>' +
+              '<td>' + escHtml(item.description) + '</td>' +
+              '<td>' + item.quantity + '</td>' +
+              '<td>$' + parseFloat(item.unit_price).toFixed(2) + '</td>' +
+              '<td class="text-right">$' + (parseFloat(item.quantity) * parseFloat(item.unit_price)).toFixed(2) + '</td>' +
+            '</tr>';
+          }).join('') + '</tbody>' +
+          '<tfoot><tr class="total-row"><td colspan="5" class="text-right">Grand Total</td><td class="text-right">$' + parseFloat(po.total_amount).toFixed(2) + '</td></tr></tfoot>' +
+        '</table></div>' +
+      '</div></div>' +
+      (canApprove ?
+        '<div class="card"><div class="card-header"><span class="card-title">Approval Decision</span></div><div class="card-body">' +
+          '<div class="form-group"><label>Person Responsible for Ordering *</label>' +
+            '<select id="orderer-id" required>' +
+              '<option value="">Select user...</option>' +
+              usersForApproval.filter(function(u){ return u.active !== false; }).map(function(u){ return '<option value="' + u.id + '">' + escHtml(u.name) + '</option>'; }).join('') +
+            '</select>' +
+          '</div>' +
+          '<div class="form-group"><label>Rejection Reason (required if rejecting)</label><textarea id="reject-reason" placeholder="Explain why this PO is being rejected..."></textarea></div>' +
+          '<div class="flex-gap"><button class="btn btn-success" onclick="approvePO(' + po.id + ')">&#10003; Approve</button><button class="btn btn-danger" onclick="rejectPO(' + po.id + ')">&#10007; Reject</button></div>' +
+        '</div></div>' : '');
+  } catch(err) {
+    el.innerHTML = '<div class="alert alert-error">' + escHtml(err.message) + '</div>';
+  }
+}
+
+async function submitPO(id) {
+  try { await api('POST', '/pos/' + id + '/submit'); navigate('dashboard'); }
+  catch(err) { document.getElementById('view-error').innerHTML = '<div class="alert alert-error">' + escHtml(err.message) + '</div>'; }
+}
+
+async function approvePO(id) {
+  const ordererEl = document.getElementById('orderer-id');
+  const orderer_id = ordererEl ? ordererEl.value : '';
+  if (!orderer_id) { document.getElementById('view-error').innerHTML = '<div class="alert alert-error">Please select the person responsible for ordering.</div>'; return; }
+  try { await api('POST', '/pos/' + id + '/approve', { orderer_id: parseInt(orderer_id) }); navigate('dashboard'); }
+  catch(err) { document.getElementById('view-error').innerHTML = '<div class="alert alert-error">' + escHtml(err.message) + '</div>'; }
+}
+
+async function rejectPO(id) {
+  const reason = document.getElementById('reject-reason').value.trim();
+  if (!reason) { document.getElementById('view-error').innerHTML = '<div class="alert alert-error">Please enter a rejection reason.</div>'; return; }
+  try { await api('POST', '/pos/' + id + '/reject', { reason }); navigate('dashboard'); }
+  catch(err) { document.getElementById('view-error').innerHTML = '<div class="alert alert-error">' + escHtml(err.message) + '</div>'; }
+}
+
+async function deletePO(id) {
+  if (!confirm('Permanently delete this PO? This cannot be undone.')) return;
+  try { await api('DELETE', '/pos/' + id); navigate('dashboard'); }
+  catch(err) { document.getElementById('view-error').innerHTML = '<div class="alert alert-error">' + escHtml(err.message) + '</div>'; }
+}
+
+async function cancelPO(id) {
+  if (!confirm('Cancel this PO? This cannot be undone.')) return;
+  try { await api('POST', '/pos/' + id + '/cancel'); navigate('dashboard'); }
+  catch(err) { document.getElementById('view-error').innerHTML = '<div class="alert alert-error">' + escHtml(err.message) + '</div>'; }
+}
+
+async function markOrdered(id) {
+  if (!confirm('Confirm this PO has been ordered from the vendor?')) return;
+  try {
+    await api('POST', '/pos/' + id + '/order');
+    allPOs = await api('GET', '/pos');
+    applyFilters();
+    // If we're inside the PO view, reload it; otherwise stay on dashboard
+    if (state.currentView === 'view') navigate('view', id);
+  } catch(err) {
+    var errEl = document.getElementById('view-error');
+    if (errEl) errEl.innerHTML = '<div class="alert alert-error">' + escHtml(err.message) + '</div>';
+    else alert(err.message);
+  }
+}
+
+var _usersData = [];
+var _usersPage = 1;
+var _usersSearch = '';
+var _usersPageSize = 15;
+
+async function renderUsers(el) {
+  if (!can('view_users')) { el.innerHTML = '<div class="alert alert-error">Access denied.</div>'; return; }
+  try {
+    _usersData = await api('GET', '/users');
+    _usersPage = 1;
+    _usersSearch = '';
+    el.innerHTML =
+      '<div class="page-header"><div class="page-title">Users</div>' + (can('manage_users') ? '<button class="btn btn-primary" onclick="showUserModal(null)" style="white-space:nowrap">' + icons.plus + ' Add User</button>' : '') + '</div>' +
+      '<div id="users-error"></div>' +
+      '<div style="margin-bottom:16px"><input type="text" id="users-search" placeholder="Search by name, email, or role..." style="width:100%;max-width:400px;padding:8px 12px;background:var(--surface-color);border:1px solid rgba(249,115,22,0.35);border-radius:6px;color:var(--text-color);font-size:14px;outline:none;box-shadow:0 0 0 1px rgba(249,115,22,0.15)" oninput="usersFilter(this.value)" /></div>' +
+      '<div id="users-table-wrap"></div>' +
+      '<div id="users-pagination" style="display:flex;gap:8px;align-items:center;margin-top:16px;flex-wrap:wrap"></div>';
+    usersRenderTable();
+  } catch(err) { el.innerHTML = '<div class="alert alert-error">' + escHtml(err.message) + '</div>'; }
+}
+
+function usersFilter(val) {
+  _usersSearch = val.toLowerCase();
+  _usersPage = 1;
+  usersRenderTable();
+}
+
+function usersRenderTable() {
+  var filtered = _usersData.filter(function(u) {
+    if (!_usersSearch) return true;
+    return (u.name || '').toLowerCase().includes(_usersSearch) ||
+           (u.email || '').toLowerCase().includes(_usersSearch) ||
+           (u.role || '').toLowerCase().includes(_usersSearch);
+  });
+  var totalPages = Math.max(1, Math.ceil(filtered.length / _usersPageSize));
+  if (_usersPage > totalPages) _usersPage = totalPages;
+  var start = (_usersPage - 1) * _usersPageSize;
+  var page = filtered.slice(start, start + _usersPageSize);
+
+  var wrap = document.getElementById('users-table-wrap');
+  if (!wrap) return;
+  wrap.innerHTML =
+    '<div class="card"><div class="card-body" style="padding:0"><div class="table-wrap"><table>' +
+      '<thead><tr><th>Name</th><th>Email</th><th>Role</th><th>Status</th><th>Last Login</th><th>Last Active</th>' + (can('manage_users') ? '<th></th>' : '') + '</tr></thead>' +
+      '<tbody>' + (page.length ? page.map(function(u) {
+        var isInactive = u.active === false;
+        return '<tr class="' + (isInactive ? 'user-row-inactive' : '') + '">' +
+          '<td>' + escHtml(u.name) + '</td>' +
+          '<td>' + escHtml(u.email) + '</td>' +
+          '<td><span class="badge badge-' + escHtml(u.role) + '">' + escHtml(roleLabel(u.role)) + '</span></td>' +
+          '<td>' + (isInactive ? '<span class="badge badge-inactive">Access Removed</span>' : '<span style="color:var(--success);font-size:13px">&#10003; Active</span>') + '</td>' +
+          '<td style="font-size:13px;white-space:nowrap;color:var(--text-muted-color)">' + (u.last_login_at ? escHtml(formatDateTime(u.last_login_at)) : '\u2014') + '</td>' +
+          '<td>' + userActivityCell(u) + '</td>' +
+          (can('manage_users') ? '<td class="flex-gap">' +
+            '<button class="btn btn-secondary btn-sm" onclick="showUserModal(' + u.id + ')">Edit</button>' +
+            ((state.realUser || state.user).role === 'admin' && u.id !== state.user.id ? '<button class="btn btn-secondary btn-sm" onclick="viewAsUser(' + u.id + ')">View as</button>' : '') +
+            (u.id !== state.user.id && !isInactive ? '<button class="btn btn-danger btn-sm" onclick="deactivateUser(' + u.id + ')">Deactivate</button>' : '') +
+            (u.id !== state.user.id && isInactive ? '<button class="btn btn-success btn-sm" onclick="reactivateUser(' + u.id + ')">Reactivate</button>' : '') +
+          '</td>' : '') +
+        '</tr>';
+      }).join('') : '<tr><td colspan="' + (can('manage_users') ? 7 : 6) + '" style="text-align:center;color:var(--text-muted-color);padding:24px">No users found</td></tr>') +
+      '</tbody></table></div></div></div>';
+
+  // Pagination controls
+  var pg = document.getElementById('users-pagination');
+  if (!pg) return;
+  var sizeCtl = pageSizeControl(_usersPageSize, 'usersPageSize');
+  if (totalPages <= 1) { pg.innerHTML = sizeCtl + '<span style="font-size:13px;color:var(--text-muted-color)">' + filtered.length + ' user' + (filtered.length !== 1 ? 's' : '') + '</span>'; return; }
+  var html = sizeCtl + '<span style="font-size:13px;color:var(--text-muted-color);margin-right:4px">' + filtered.length + ' users</span>';
+  html += '<button class="btn btn-secondary btn-sm" onclick="usersGoPage(' + (_usersPage - 1) + ')" ' + (_usersPage === 1 ? 'disabled' : '') + '>&lsaquo;</button>';
+  for (var i = 1; i <= totalPages; i++) {
+    html += '<button class="btn btn-sm ' + (i === _usersPage ? 'btn-primary' : 'btn-secondary') + '" onclick="usersGoPage(' + i + ')">' + i + '</button>';
+  }
+  html += '<button class="btn btn-secondary btn-sm" onclick="usersGoPage(' + (_usersPage + 1) + ')" ' + (_usersPage === totalPages ? 'disabled' : '') + '>&rsaquo;</button>';
+  pg.innerHTML = html;
+}
+
+function usersPageSize(v) { _usersPageSize = parsePageSize(v); _usersPage = 1; usersRenderTable(); }
+function usersGoPage(p) {
+  var filtered = _usersData.filter(function(u) {
+    if (!_usersSearch) return true;
+    return (u.name || '').toLowerCase().includes(_usersSearch) ||
+           (u.email || '').toLowerCase().includes(_usersSearch) ||
+           (u.role || '').toLowerCase().includes(_usersSearch);
+  });
+  var totalPages = Math.max(1, Math.ceil(filtered.length / _usersPageSize));
+  _usersPage = Math.min(Math.max(1, p), totalPages);
+  usersRenderTable();
+}
+
+async function showUserModal(id) {
+  let user = null, _allUsers = [];
+  try { _allUsers = await api('GET', '/users'); } catch(e){}
+  if (id) user = _allUsers.find(function(u){ return u.id === id; }) || null;
+  var ownerExists = _allUsers.some(function(u){ return u.role === 'owner'; });
+  let cities = []; try { cities = (await api('GET', '/cities')).filter(function(c){ return c.active !== false; }); } catch(e) { cities = []; }
+  const overlay = document.createElement('div');
+  overlay.className = 'modal-overlay';
+  overlay.innerHTML =
+    '<div class="modal">' +
+      '<div class="modal-header"><span class="modal-title">' + (id ? 'Edit User' : 'Add User') + '</span><button class="btn btn-ghost btn-sm" onclick="this.closest(\'.modal-overlay\').remove()">&#x2715;</button></div>' +
+      '<div class="modal-body">' +
+        '<div id="modal-error"></div>' +
+        '<div class="form-group"><label>Name</label><input type="text" id="modal-name" value="' + escHtml(user ? user.name : '') + '" /></div>' +
+        '<div class="form-group"><label>Email</label><input type="email" id="modal-email" value="' + escHtml(user ? user.email : '') + '" /></div>' +
+        '<div class="form-group"><label>' + (id ? 'New Password (leave blank to keep)' : 'Password (optional)') + '</label><input type="password" id="modal-password" placeholder="' + (id ? '' : 'Leave blank to email an invite') + '" />' + (id ? '' : '<div style="font-size:12px;color:var(--text-muted-color);margin-top:5px">An invite email is always sent. Leave blank and the user sets their own password via the link.</div>') + '</div>' +
+        '<div class="form-row">' +
+          '<div class="form-group"><label>Phone <span style="font-weight:400;font-size:0.8em;color:var(--text-muted)">Format: +13215550000</span></label><input type="tel" id="modal-phone" value="' + escHtml(user ? user.phone || '' : '') + '" placeholder="+13215550000" pattern="\\+1[0-9]{10}" title="Must be in format +1 followed by 10 digits (e.g. +13215550000)" /></div>' +
+          '<div class="form-group"><label>Role</label><select id="modal-role">' +'<option value="locksmith"' + (user&&user.role==='locksmith'?' selected':'') + '>Locksmith</option>' +'<option value="locksmith_coordinator"' + (user&&user.role==='locksmith_coordinator'?' selected':'') + '>Locksmith Coordinator</option>' +'<option value="roadside_technician"' + (user&&user.role==='roadside_technician'?' selected':'') + '>Roadside Technician</option>' +'<option value="manager"' + (user&&user.role==='manager'?' selected':'') + '>Manager</option>' +'<option value="admin"' + (user&&user.role==='admin'?' selected':'') + '>Admin</option>' +(((state.user&&state.user.isOwner)||!ownerExists||(user&&user.role==='owner')) ? '<option value="owner"' + (user&&user.role==='owner'?' selected':'') + '>Owner</option>' : '') +'</select></div>' +
+          '</div>' +
+          '<div class="form-group"><label>Cities <span style="font-weight:400;font-size:0.8em;color:var(--text-muted-color)">(blank = all cities)</span></label><div style="display:flex;flex-wrap:wrap;gap:10px;margin-top:4px">' + (cities.length ? cities.map(function(c){ var cc=(c.code||'').trim(); var on=(user&&user.city_codes&&user.city_codes.indexOf(cc)!==-1); return '<label style="display:inline-flex;align-items:center;gap:5px;font-weight:400;font-size:13px"><input type="checkbox" class="modal-city" value="' + escHtml(cc) + '"' + (on?' checked':'') + ' style="width:auto"> ' + escHtml(c.name) + '</label>'; }).join('') : '<span style="color:var(--text-muted-color);font-size:13px">No cities yet</span>') + '</div></div>' +
+        '<div class="form-group"><label>Pulsar Name <span style="font-weight:400;font-size:0.8em;color:var(--text-muted-color)">name as it appears in the call report</span></label><input type="text" id="modal-pulsar" value="' + escHtml(user ? user.pulsar_name || '' : '') + '" placeholder="e.g. Albright, Benjamin" /></div>' +
+        '<div class="form-group" style="display:flex;align-items:center;gap:10px">' +
+          '<input type="checkbox" id="modal-receive-emails" style="width:auto"' + (user && user.receive_emails === false ? '' : ' checked') + ' />' +
+          '<label for="modal-receive-emails" style="margin:0;cursor:pointer">Receive email notifications</label>' +
+        '</div>' +
+        '<div class="form-group" style="display:flex;align-items:center;gap:10px">' +
+          '<input type="checkbox" id="modal-receive-sms" style="width:auto"' + (user && user.receive_sms ? ' checked' : '') + ' />' +
+          '<label for="modal-receive-sms" style="margin:0;cursor:pointer">Receive SMS notifications</label>' +
+        '</div>' +
+        '<div class="form-group" style="display:flex;align-items:center;gap:10px">' +
+          '<input type="checkbox" id="modal-hide-schedule" style="width:auto"' + (user && user.hide_from_schedule ? ' checked' : '') + ' />' +
+          '<label for="modal-hide-schedule" style="margin:0;cursor:pointer">Hide from Schedule <span style="font-weight:400;font-size:0.8em;color:var(--text-muted-color)">(won&#39;t appear in the staff scheduler)</span></label>' +
+        '</div>' +
+      '</div>' +
+      '<div class="modal-footer"><button class="btn btn-secondary" onclick="this.closest(\'.modal-overlay\').remove()">Cancel</button><button class="btn btn-primary" onclick="saveUser(' + (id||'null') + ', this)">Save</button></div>' +
+    '</div>';
+  document.body.appendChild(overlay);
+}
+
+async function saveUser(id, btn) {
+  const name = document.getElementById('modal-name').value.trim();
+  const email = document.getElementById('modal-email').value.trim();
+  const password = document.getElementById('modal-password').value;
+  const role = document.getElementById('modal-role').value;
+  const phone = document.getElementById('modal-phone').value.trim();
+  const receive_emails = document.getElementById('modal-receive-emails').checked;
+  const receive_sms = document.getElementById('modal-receive-sms').checked;
+  const hide_from_schedule = (document.getElementById('modal-hide-schedule')||{}).checked === true;
+  var _cityNodes = document.querySelectorAll('.modal-city'); var city_codes = []; for (var _i=0;_i<_cityNodes.length;_i++){ if(_cityNodes[_i].checked) city_codes.push(_cityNodes[_i].value); }
+  var pulsar_name=(document.getElementById('modal-pulsar')||{}).value; if(pulsar_name) pulsar_name=pulsar_name.trim();
+  if (phone && !/^\+1[0-9]{10}$/.test(phone)) {
+    document.getElementById('modal-error').innerHTML = '<div class="alert alert-error">Phone must be in format +13215550000 (+1 followed by 10 digits)</div>';
+    return;
+  }
+  try {
+    btn.disabled = true;
+    if (id) { await api('PUT', '/users/' + id, { name, email, password: password || undefined, role, phone: phone || undefined, receive_emails, receive_sms, city_codes, pulsar_name, hide_from_schedule }); }
+    else { await api('POST', '/users', { name, email, password: password || undefined, role, phone: phone || undefined, receive_emails, receive_sms, city_codes, pulsar_name, hide_from_schedule }); }
+    document.querySelector('.modal-overlay').remove();
+    navigate('users');
+  } catch(err) {
+    document.getElementById('modal-error').innerHTML = '<div class="alert alert-error">' + escHtml(err.message) + '</div>';
+    btn.disabled = false;
+  }
+}
+
+async function deactivateUser(id) {
+  if (!confirm('Remove access for this user? They will no longer be able to log in.')) return;
+  try { await api('POST', '/users/' + id + '/deactivate'); navigate('users'); }
+  catch(err) { document.getElementById('users-error').innerHTML = '<div class="alert alert-error">' + escHtml(err.message) + '</div>'; }
+}
+
+async function reactivateUser(id) {
+  try { await api('POST', '/users/' + id + '/reactivate'); navigate('users'); }
+  catch(err) { document.getElementById('users-error').innerHTML = '<div class="alert alert-error">' + escHtml(err.message) + '</div>'; }
+}
+
+async function printPO(id) {
+  try {
+    const results = await Promise.all([
+      api('GET', '/pos/' + id),
+      api('GET', '/settings').catch(function() { return {}; })
+    ]);
+    const po = results[0];
+    const settings = results[1];
+
+    function esc(s) { return String(s == null ? '' : s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
+
+    const logoHtml = settings.logo
+      ? '<img src="' + settings.logo + '" style="height:56px;max-width:200px;object-fit:contain;display:block" alt="Logo" />'
+      : '<div style="font-size:22px;font-weight:600;color:#f97316;letter-spacing:-0.3px">Lock and Roll LLC</div>';
+
+    const badgeStyles = {
+      draft: 'background:#2a2a2a;color:#aaa',
+      submitted: 'background:#2d2100;color:#f59e0b',
+      approved: 'background:#0d2d17;color:#22c55e',
+      rejected: 'background:#2d0d0d;color:#ef4444',
+      cancelled: 'background:#1a0d2e;color:#c084fc'
+    };
+    const badgeStyle = badgeStyles[po.status] || 'background:#2a2a2a;color:#aaa';
+
+    const detailFields = [
+      { label: 'Vendor / Supplier', value: po.vendor_name },
+      { label: 'Customer Name', value: po.customer_name || '—' },
+      { label: 'City', value: po.city_code || '—' },
+      { label: 'Requested By', value: po.requester_name || '—' },
+      { label: 'Date', value: formatDate(po.created_at) },
+      { label: po.status === 'approved' ? 'Approved By' : 'Reviewed By', value: po.approver_name || '—' }
+    ];
+
+    const detailGrid = detailFields.map(function(d) {
+      return '<div>' +
+        '<div style="font-size:11px;font-weight:600;color:#6b7280;text-transform:uppercase;letter-spacing:0.05em;margin-bottom:4px">' + esc(d.label) + '</div>' +
+        '<div style="font-size:14px;color:#111">' + esc(d.value) + '</div>' +
+      '</div>';
+    }).join('');
+
+    const itemRows = po.line_items.map(function(item) {
+      const lineTotal = (parseFloat(item.quantity) * parseFloat(item.unit_price)).toFixed(2);
+      return '<tr>' +
+        '<td style="padding:10px 8px;color:#6b7280;border-bottom:1px solid #f3f4f6;white-space:nowrap">' + esc(item.item_number || '—') + '</td>' +
+        '<td style="padding:10px 8px;color:#6b7280;border-bottom:1px solid #f3f4f6;white-space:nowrap">' + esc(item.manufacturer || '—') + '</td>' +
+        '<td style="padding:10px 8px;border-bottom:1px solid #f3f4f6;word-break:break-word">' + esc(item.description) + '</td>' +
+        '<td style="padding:10px 8px;text-align:right;border-bottom:1px solid #f3f4f6;white-space:nowrap">' + esc(item.quantity) + '</td>' +
+        '<td style="padding:10px 8px;text-align:right;border-bottom:1px solid #f3f4f6;white-space:nowrap">$' + parseFloat(item.unit_price).toFixed(2) + '</td>' +
+        '<td style="padding:10px 8px;text-align:right;border-bottom:1px solid #f3f4f6;white-space:nowrap">$' + lineTotal + '</td>' +
+      '</tr>';
+    }).join('');
+
+    const notesHtml = po.notes
+      ? '<div style="padding:20px 32px;border-bottom:1px solid #e5e7eb">' +
+          '<div style="font-size:11px;font-weight:600;color:#6b7280;text-transform:uppercase;letter-spacing:0.05em;margin-bottom:6px">Notes</div>' +
+          '<div style="font-size:13px;color:#6b7280">' + esc(po.notes) + '</div>' +
+        '</div>'
+      : '';
+
+    const rejectionHtml = po.rejection_reason
+      ? '<div style="padding:20px 32px;border-bottom:1px solid #e5e7eb">' +
+          '<div style="font-size:11px;font-weight:600;color:#dc2626;text-transform:uppercase;letter-spacing:0.05em;margin-bottom:6px">Rejection Reason</div>' +
+          '<div style="font-size:13px;color:#dc2626">' + esc(po.rejection_reason) + '</div>' +
+        '</div>'
+      : '';
+
+    const today = new Date().toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+
+    const html = '<!DOCTYPE html><html><head><meta charset="UTF-8"><title>' + esc(po.po_number) + '</title>' +
+      '<style>' +
+      '* { margin:0; padding:0; box-sizing:border-box; }' +
+      'body { font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; background:#f3f4f6; color:#111; }' +
+      '.no-print { background:white; padding:12px 24px; border-bottom:1px solid #e5e7eb; display:flex; gap:8px; align-items:center; position:sticky; top:0; z-index:10; box-shadow:0 1px 3px rgba(0,0,0,0.08); }' +
+      '.btn-print { background:#f97316; color:white; border:none; padding:9px 18px; border-radius:6px; font-size:14px; font-weight:500; cursor:pointer; }' +
+      '.btn-print:hover { background:#ea6a00; }' +
+      '.btn-close { background:transparent; color:#6b7280; border:1px solid #d1d5db; padding:9px 18px; border-radius:6px; font-size:14px; cursor:pointer; }' +
+      '.hint { font-size:12px; color:#9ca3af; margin-left:4px; }' +
+      '.page { max-width:800px; margin:24px auto 48px; background:white; border-radius:8px; overflow:hidden; box-shadow:0 1px 4px rgba(0,0,0,0.12); }' +
+      '@media print {' +
+      '  .no-print { display:none !important; }' +
+      '  body { background:white; }' +
+      '  .page { margin:0; box-shadow:none; border-radius:0; max-width:100%; }' +
+      '  * { -webkit-print-color-adjust:exact !important; print-color-adjust:exact !important; }' +
+      '}' +
+      '</style></head><body>' +
+      '<div class="no-print">' +
+        '<button class="btn-print" onclick="window.print()">&#128438;&nbsp; Print / Save as PDF</button>' +
+        '<button class="btn-close" onclick="window.close()">Close</button>' +
+        '<span class="hint">Tip: select &ldquo;Save as PDF&rdquo; in the print dialog</span>' +
+      '</div>' +
+      '<div class="page">' +
+        '<div style="background:#0f0f0f;padding:24px 32px;display:flex;justify-content:space-between;align-items:center">' +
+          '<div>' + logoHtml + '</div>' +
+          '<div style="text-align:right">' +
+            '<div style="font-size:18px;font-weight:500;color:#f0f0f0">' + esc(po.po_number) + '</div>' +
+            '<div style="margin-top:8px"><span style="display:inline-flex;padding:3px 12px;border-radius:20px;font-size:11px;font-weight:600;text-transform:capitalize;' + badgeStyle + '">' + esc(po.status) + '</span></div>' +
+          '</div>' +
+        '</div>' +
+        '<div style="padding:24px 32px;border-bottom:1px solid #e5e7eb">' +
+          '<div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:20px">' + detailGrid + '</div>' +
+        '</div>' +
+        '<div style="padding:24px 32px;border-bottom:1px solid #e5e7eb">' +
+          '<div style="font-size:11px;font-weight:600;color:#6b7280;text-transform:uppercase;letter-spacing:0.05em;margin-bottom:12px">Line items</div>' +
+          '<table style="width:100%;border-collapse:collapse;font-size:13px">' +
+            '<thead><tr style="border-bottom:2px solid #e5e7eb">' +
+              '<th style="text-align:left;padding:8px;font-size:11px;font-weight:600;color:#6b7280;text-transform:uppercase;letter-spacing:0.05em">Item #</th>' +
+              '<th style="text-align:left;padding:8px;font-size:11px;font-weight:600;color:#6b7280;text-transform:uppercase;letter-spacing:0.05em">Manufacturer</th>' +
+              '<th style="text-align:left;padding:8px;font-size:11px;font-weight:600;color:#6b7280;text-transform:uppercase;letter-spacing:0.05em">Description</th>' +
+              '<th style="text-align:right;padding:8px;font-size:11px;font-weight:600;color:#6b7280;text-transform:uppercase;letter-spacing:0.05em">Qty</th>' +
+              '<th style="text-align:right;padding:8px;font-size:11px;font-weight:600;color:#6b7280;text-transform:uppercase;letter-spacing:0.05em">Unit price</th>' +
+              '<th style="text-align:right;padding:8px;font-size:11px;font-weight:600;color:#6b7280;text-transform:uppercase;letter-spacing:0.05em">Total</th>' +
+            '</tr></thead>' +
+            '<tbody>' + itemRows + '</tbody>' +
+            '<tfoot><tr style="border-top:2px solid #e5e7eb">' +
+              '<td colspan="5" style="padding:12px 8px;text-align:right;font-weight:600;font-size:13px;color:#6b7280">Grand total</td>' +
+              '<td style="padding:12px 8px;text-align:right;font-size:17px;font-weight:700;color:#f97316">$' + parseFloat(po.total_amount).toFixed(2) + '</td>' +
+            '</tr></tfoot>' +
+          '</table>' +
+        '</div>' +
+        notesHtml +
+        rejectionHtml +
+        '<div style="background:#f9fafb;padding:14px 32px;display:flex;justify-content:space-between;font-size:11px;color:#9ca3af;border-top:1px solid #e5e7eb">' +
+          '<span>Lock and Roll LLC &mdash; popalockar.com</span>' +
+          '<span>Generated ' + today + '</span>' +
+        '</div>' +
+      '</div>' +
+      '</body></html>';
+
+    const win = window.open('', '_blank', 'width=900,height=700');
+    if (!win) { alert('Pop-up blocked. Please allow pop-ups for this site to print POs.'); return; }
+    win.document.write(html);
+    win.document.close();
+    win.focus();
+  } catch(err) {
+    alert('Print failed: ' + err.message);
+  }
+}
+
+async function renderCompanyInfo(el) {
+  if (!['admin','manager'].includes(state.user.role)) { el.innerHTML = '<div class="alert alert-error">Access denied.</div>'; return; }
+  let settings = {};
+  try { settings = await api('GET', '/settings'); } catch(e) {}
+  el.innerHTML =
+    '<div class="page-header"><div class="page-title">Company Information</div></div>' +
+    '<div id="settings-error"></div>' +
+    '<div id="settings-success"></div>' +
+    '<div class="card"><div class="card-header"><span class="card-title">Company Logo</span></div><div class="card-body">' +
+      '<p class="text-muted mb-4" style="margin-bottom:16px">Shown in the header of printed POs and quotes. Recommended: PNG with transparent background, at least 400px wide.</p>' +
+      '<div style="display:flex;align-items:center;gap:20px;flex-wrap:wrap">' +
+        '<div id="logo-preview-area" onclick="document.getElementById(\'logo-file-input\').click()" style="width:180px;height:80px;border:1.5px dashed var(--border);border-radius:var(--radius);display:flex;align-items:center;justify-content:center;background:var(--bg-elevated);overflow:hidden;cursor:pointer;flex-shrink:0">' +
+          (settings.logo
+            ? '<img src="' + settings.logo + '" style="max-width:100%;max-height:100%;object-fit:contain" alt="Current logo" />'
+            : '<span style="font-size:13px;color:var(--text-muted-color)">Click to upload</span>') +
+        '</div>' +
+        '<div style="display:flex;flex-direction:column;gap:8px">' +
+          '<input type="file" id="logo-file-input" accept="image/png,image/jpeg,image/gif" style="display:none" onchange="previewSettingsLogo(this)" />' +
+          '<button class="btn btn-secondary" onclick="document.getElementById(\'logo-file-input\').click()">&#128247; Upload Logo</button>' +
+          (settings.logo ? '<button class="btn btn-danger btn-sm" onclick="removeLogo()">Remove Logo</button>' : '') +
+        '</div>' +
+      '</div>' +
+      '<div style="margin-top:16px">' +
+        '<button class="btn btn-primary" id="save-logo-btn" style="display:none" onclick="saveLogo()">Save Logo</button>' +
+      '</div>' +
+    '</div></div>' +
+    '<div class="card mt-4" style="margin-top:20px"><div class="card-header"><span class="card-title">Company Details</span></div><div class="card-body">' +
+      '<p class="text-muted mb-4" style="margin-bottom:16px">Shown on printed quotes below the logo. Enter your office address and main phone number.</p>' +
+      '<div class="form-row">' +
+        '<div class="form-group"><label>Company Name</label><input type="text" id="company-name" value="' + escHtml(settings.company_name || '') + '" placeholder="e.g. Pop-A-Lock" /></div>' +
+        '<div class="form-group"><label>Company Phone</label><input type="text" id="company-phone" value="' + escHtml(settings.company_phone || '') + '" placeholder="e.g. 337-873-2983" /></div>' +
+      '</div>' +
+      '<div class="form-group"><label>Address Line 1</label><input type="text" id="company-address" value="' + escHtml(settings.company_address || '') + '" placeholder="e.g. 589 Dorset Court" /></div>' +
+      '<div class="form-group"><label>City, State, ZIP</label><input type="text" id="company-city-zip" value="' + escHtml(settings.company_city_state_zip || '') + '" placeholder="e.g. Mount Dora, Florida 32757" /></div>' +
+      '<button class="btn btn-primary" onclick="saveCompanyInfo()">Save Company Info</button>' +
+    '</div></div>';
+}
+
+async function renderAIContext(el) {
+  if (!can('manage_settings')) { el.innerHTML = '<div class="alert alert-error">Access denied.</div>'; return; }
+  let settings = {};
+  try { settings = await api('GET', '/settings'); } catch(e) {}
+  el.innerHTML =
+    '<div class="page-header"><div class="page-title">AI Context</div></div>' +
+    '<div id="settings-error"></div>' +
+    '<div id="settings-success"></div>' +
+    '<div class="card"><div class="card-header"><span class="card-title"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="margin-right:6px;vertical-align:-3px"><rect x="3" y="6" width="18" height="13" rx="2"/><path d="M8 6V4a1 1 0 011-1h6a1 1 0 011 1v2"/><circle cx="9" cy="12" r="1" fill="currentColor"/><circle cx="15" cy="12" r="1" fill="currentColor"/><path d="M9.5 16h5"/></svg>Neurolock AI Context</span></div><div class="card-body">' +
+      '<p class="text-muted mb-4" style="margin-bottom:16px">Add company-specific context that Neurolock will always know — your service area, specialties, preferred brands, rate sheet, or anything else relevant to your team.</p>' +
+      '<div class="form-group"><label>Company Context</label><textarea id="ai-context-input" rows="10" placeholder="e.g. Lock and Roll LLC serves the Lafayette, LA metro area. Our standard rates: lockout $85, rekey $25/lock, deadbolt install $120. We specialize in Schlage and Medeco hardware. We also handle automotive lockouts and transponder key programming." style="width:100%;resize:vertical">' + escHtml(settings.ai_context || '') + '</textarea></div>' +
+      '<button class="btn btn-primary" onclick="saveAIContext()">Save AI Context</button>' +
+    '</div></div>';
+}
+
+async function renderNotifications(el) {
+  if (!can('manage_settings')) { el.innerHTML = '<div class="alert alert-error">Access denied.</div>'; return; }
+  el.innerHTML = '<div class="loading">Loading…</div>';
+  var settings = {}, users = [];
+  try {
+    var res = await Promise.all([ api('GET', '/settings').catch(function(){ return {}; }), api('GET', '/users').catch(function(){ return []; }) ]);
+    settings = res[0] || {}; users = res[1] || [];
+  } catch(e) {}
+  var activeUsers = users.filter(function(u){ return u.active; });
+  var rules = {};
+  try { rules = JSON.parse(settings.notification_rules || '{}') || {}; } catch(e) { rules = {}; }
+
+  var broadcast = [
+    { key:'po_submitted', label:'Purchase order needs approval', def:'all admins', sms:true },
+    { key:'vr_submitted', label:'Vehicle repair needs approval', def:'all admins', sms:true },
+    { key:'quote_created', label:'New quote created', def:'all admins', sms:true },
+    { key:'quote_to_pos', label:'Purchase orders created from a quote', def:'all admins', sms:true },
+    { key:'signoff_completed', label:'Sign-off sheet completed', def:'all admins', sms:false },
+    { key:'work_order_received', label:'New work order received', def:'all admins and managers', sms:false },
+    { key:'suggestion_created', label:'New employee suggestion', def:'all admins and managers', sms:true }
+  ];
+  var requester = [
+    { key:'po_approved', label:'PO approved' },
+    { key:'po_rejected', label:'PO rejected' },
+    { key:'po_cancelled', label:'PO cancelled' },
+    { key:'po_ordered', label:'PO marked as ordered' },
+    { key:'vr_approved', label:'Vehicle repair approved' },
+    { key:'vr_rejected', label:'Vehicle repair rejected' }
+  ];
+
+  function chk(id, on) { return '<input type="checkbox" id="' + id + '"' + (on ? ' checked' : '') + ' style="width:auto;margin:0" />'; }
+
+  var bHtml = broadcast.map(function(ev) {
+    var rule = rules[ev.key];
+    var custom = !!(rule && Object.prototype.toString.call(rule.users) === '[object Array]');
+    var emailOn = rule ? rule.email !== false : true;
+    var smsOn = rule ? rule.sms === true : false;
+    var selected = custom ? rule.users : [];
+    var extraText = (rule && Array.isArray(rule.extra_emails)) ? rule.extra_emails.join(', ') : '';
+    var userRows = activeUsers.map(function(u) {
+      var on = selected.indexOf(u.id) !== -1;
+      return '<label style="display:flex;align-items:center;gap:8px;padding:4px 0;cursor:pointer;font-size:13px">' +
+        '<input type="checkbox" class="nb-user-' + ev.key + '" value="' + u.id + '"' + (on ? ' checked' : '') + ' style="width:auto;margin:0" /> ' +
+        escHtml(u.name) + ' <span style="color:var(--text-muted-color);font-size:12px">(' + escHtml(roleLabel(u.role)) + (u.phone ? '' : ' &middot; no phone') + ')</span></label>';
+    }).join('');
+    return '<div style="border:1px solid var(--border);border-radius:8px;padding:14px;margin-bottom:12px">' +
+      '<div style="display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap">' +
+        '<div style="font-weight:600">' + escHtml(ev.label) + '</div>' +
+        '<label style="display:flex;align-items:center;gap:8px;cursor:pointer;font-size:13px">' + chk('nb-custom-' + ev.key, custom) + ' Customize recipients</label>' +
+      '</div>' +
+      '<div id="nb-default-' + ev.key + '" style="color:var(--text-muted-color);font-size:13px;margin-top:6px;' + (custom ? 'display:none' : '') + '">Using default &mdash; ' + ev.def + '.</div>' +
+      '<div id="nb-cfg-' + ev.key + '" style="margin-top:12px;' + (custom ? '' : 'display:none') + '">' +
+        '<div style="display:flex;gap:18px;margin-bottom:10px;font-size:13px">' +
+          '<label style="display:flex;align-items:center;gap:6px;cursor:pointer">' + chk('nb-email-' + ev.key, emailOn) + ' Email</label>' +
+          (ev.sms ? '<label style="display:flex;align-items:center;gap:6px;cursor:pointer">' + chk('nb-sms-' + ev.key, smsOn) + ' SMS</label>' : '<span style="color:var(--text-muted-color)">Email only</span>') +
+        '</div>' +
+        '<div style="font-size:12px;font-weight:600;color:var(--text-muted-color);text-transform:uppercase;letter-spacing:0.04em;margin-bottom:4px">Recipients</div>' +
+        (userRows || '<div style="color:var(--text-muted-color);font-size:13px">No active users.</div>') +
+        '<div style="margin-top:12px">' +
+          '<div style="font-size:12px;font-weight:600;color:var(--text-muted-color);text-transform:uppercase;letter-spacing:0.04em;margin-bottom:4px">Also email (non-users / distribution list)</div>' +
+          '<textarea id="nb-extra-' + ev.key + '" rows="2" placeholder="ops@company.com, dispatch@company.com" style="width:100%;resize:vertical">' + escHtml(extraText) + '</textarea>' +
+        '</div>' +
+      '</div>' +
+    '</div>';
+  }).join('');
+
+  var rHtml = requester.map(function(ev) {
+    var rule = rules[ev.key];
+    var emailOn = rule ? rule.email !== false : true;
+    var smsOn = rule ? rule.sms !== false : true;
+    return '<div style="display:flex;align-items:center;justify-content:space-between;gap:10px;padding:8px 0;border-bottom:1px solid var(--border);font-size:13px">' +
+      '<div>' + escHtml(ev.label) + '</div>' +
+      '<div style="display:flex;gap:18px">' +
+        '<label style="display:flex;align-items:center;gap:6px;cursor:pointer">' + chk('nr-email-' + ev.key, emailOn) + ' Email</label>' +
+        '<label style="display:flex;align-items:center;gap:6px;cursor:pointer">' + chk('nr-sms-' + ev.key, smsOn) + ' SMS</label>' +
+      '</div>' +
+    '</div>';
+  }).join('');
+
+  var taskAlerts = [
+    { key:'task_assigned', label:'Task assigned to someone' },
+    { key:'task_due', label:'Task due / overdue reminders' }
+  ];
+  var tHtml = taskAlerts.map(function(ev) {
+    var rule = rules[ev.key];
+    var emailOn = rule ? rule.email !== false : true;
+    var smsOn = rule ? rule.sms !== false : true;
+    return '<div style="display:flex;align-items:center;justify-content:space-between;gap:10px;padding:8px 0;border-bottom:1px solid var(--border);font-size:13px">' +
+      '<div>' + escHtml(ev.label) + '</div>' +
+      '<div style="display:flex;gap:18px">' +
+        '<label style="display:flex;align-items:center;gap:6px;cursor:pointer">' + chk('nt-email-' + ev.key, emailOn) + ' Email</label>' +
+        '<label style="display:flex;align-items:center;gap:6px;cursor:pointer">' + chk('nt-sms-' + ev.key, smsOn) + ' SMS</label>' +
+      '</div>' +
+    '</div>';
+  }).join('');
+  el.innerHTML =
+    '<div class="page-header"><div class="page-title">Notifications</div></div>' +
+    '<div id="settings-error"></div><div id="settings-success"></div>' +
+    '<p class="text-muted" style="margin-bottom:16px;max-width:680px">Choose who gets each alert and how. Until you customize an event it keeps the current default. Use the box under each alert to also email people who are not Nova users (for example a distribution list). Outcome alerts always go to the person who created the item &mdash; you control only the channel. Login codes and password resets are always sent and are not configurable here.</p>' +
+    '<div class="card mb-4"><div class="card-header"><span class="card-title">Incoming work alerts</span></div><div class="card-body">' +
+      '<p class="text-muted" style="margin-bottom:14px;font-size:13px">Tick &ldquo;Customize recipients&rdquo; to pick exactly who is notified and by which channel. Leaving it unticked keeps the default audience.</p>' +
+      bHtml +
+    '</div></div>' +
+    '<div class="card mb-4"><div class="card-header"><span class="card-title">Status updates to the requester</span></div><div class="card-body">' +
+      '<p class="text-muted" style="margin-bottom:6px;font-size:13px">These go to whoever created the PO or repair. Toggle the channel on or off.</p>' +
+      rHtml +
+    '</div></div>' +
+    '<div class="card mb-4"><div class="card-header"><span class="card-title">Task alerts</span></div><div class="card-body">' +
+      '<p class="text-muted" style="margin-bottom:6px;font-size:13px">These go to the person a task is assigned to. Toggle the channel on or off. Reminders fire when assigned, the day before, the morning it is due, and daily while overdue.</p>' +
+      tHtml +
+    '</div></div>' +
+    '<button class="btn btn-primary" onclick="saveNotifications()">Save Notification Settings</button>';
+
+  broadcast.forEach(function(ev) {
+    var cb = document.getElementById('nb-custom-' + ev.key);
+    if (cb) cb.addEventListener('change', function() {
+      document.getElementById('nb-cfg-' + ev.key).style.display = cb.checked ? '' : 'none';
+      document.getElementById('nb-default-' + ev.key).style.display = cb.checked ? 'none' : '';
+    });
+  });
+}
+
+async function saveNotifications() {
+  var broadcast = ['po_submitted','vr_submitted','quote_created','quote_to_pos','signoff_completed','work_order_received','suggestion_created'];
+  var smsCapable = { po_submitted:1, vr_submitted:1, quote_created:1, quote_to_pos:1, suggestion_created:1 };
+  var requester = ['po_approved','po_rejected','po_cancelled','po_ordered','vr_approved','vr_rejected'];
+  function parseEmails(raw) {
+    var seen = {}, out = [];
+    (raw || '').split(/[\s,;]+/).forEach(function(s) {
+      s = s.trim();
+      if (!s || s.indexOf('@') === -1) return;
+      var k = s.toLowerCase();
+      if (!seen[k]) { seen[k] = 1; out.push(s); }
+    });
+    return out;
+  }
+  var rules = {};
+  broadcast.forEach(function(key) {
+    var custom = document.getElementById('nb-custom-' + key);
+    if (!custom || !custom.checked) return;
+    var nodes = document.querySelectorAll('.nb-user-' + key);
+    var users = [];
+    for (var i = 0; i < nodes.length; i++) { if (nodes[i].checked) users.push(parseInt(nodes[i].value, 10)); }
+    var emailEl = document.getElementById('nb-email-' + key);
+    var smsEl = document.getElementById('nb-sms-' + key);
+    var rule = { users: users, email: emailEl ? emailEl.checked : true, sms: (smsCapable[key] && smsEl) ? smsEl.checked : false };
+    var extraEl = document.getElementById('nb-extra-' + key);
+    var extras = parseEmails(extraEl ? extraEl.value : '');
+    if (extras.length) rule.extra_emails = extras;
+    rules[key] = rule;
+  });
+  requester.forEach(function(key) {
+    var emailEl = document.getElementById('nr-email-' + key);
+    var smsEl = document.getElementById('nr-sms-' + key);
+    rules[key] = { email: emailEl ? emailEl.checked : true, sms: smsEl ? smsEl.checked : true };
+  });
+  ['task_assigned','task_due'].forEach(function(key) {
+    var emailEl = document.getElementById('nt-email-' + key);
+    var smsEl = document.getElementById('nt-sms-' + key);
+    rules[key] = { email: emailEl ? emailEl.checked : true, sms: smsEl ? smsEl.checked : true };
+  });
+  try {
+    await api('PUT', '/settings/notification_rules', { value: JSON.stringify(rules) });
+    document.getElementById('settings-success').innerHTML = '<div class="alert alert-success">Notification settings saved.</div>';
+    setTimeout(function() { var e = document.getElementById('settings-success'); if (e) e.innerHTML = ''; }, 4000);
+  } catch(err) {
+    document.getElementById('settings-error').innerHTML = '<div class="alert alert-error">' + escHtml(err.message) + '</div>';
+  }
+}
+
+async function renderRoles(el) {
+  if (!can('manage_settings')) { el.innerHTML = '<div class="alert alert-error">Access denied.</div>'; return; }
+  el.innerHTML = '<div class="loading">Loading…</div>';
+  var settings = {};
+  try { settings = await api('GET', '/settings'); } catch(e) {}
+  var rules = {};
+  try { rules = JSON.parse(settings.role_permissions || '{}') || {}; } catch(e) { rules = {}; }
+
+  var groups = [
+    { group:'Purchase Orders', gate:'view_pos', perms:[ {k:'view_pos',l:'View / access module'}, {k:'create_po',l:'Create POs'}, {k:'edit_po',l:'Edit POs'}, {k:'delete_po',l:'Delete POs'}, {k:'submit_po',l:'Submit for approval'}, {k:'approve_po',l:'Approve / reject POs'}, {k:'cancel_po',l:'Cancel POs'} ] },
+    { group:'Quotes', gate:'view_quotes', perms:[ {k:'view_quotes',l:'View / access module'}, {k:'create_quote',l:'Create quotes'}, {k:'edit_quote',l:'Edit quotes'}, {k:'delete_quote',l:'Delete quotes'}, {k:'push_quote_po',l:'Push quote to PO'} ] },
+    { group:'Vehicle Repairs', gate:'view_vr', perms:[ {k:'view_vr',l:'View / access module'}, {k:'create_vr',l:'Create VRs'}, {k:'edit_vr',l:'Edit VRs'}, {k:'delete_vr',l:'Delete VRs'}, {k:'submit_vr',l:'Submit for approval'}, {k:'approve_vr',l:'Approve / reject vehicle repairs'} ] },
+    { group:'Cash Deposits', gate:'view_deposits', perms:[ {k:'view_deposits',l:'View / access module'}, {k:'create_deposit',l:'Create / upload deposit'}, {k:'delete_deposit',l:'Delete deposit'}, {k:'export_deposits',l:'Export deposits (CSV)'} ] },
+    { group:'Sign-Off Sheets', gate:'view_signoffs', perms:[ {k:'view_signoffs',l:'View / access module'}, {k:'create_signoff',l:'Create sign-off sheets'}, {k:'edit_signoff',l:'Edit setup'}, {k:'complete_signoff',l:'Complete on site'}, {k:'delete_signoff',l:'Delete sign-off sheets'} ] },
+    { group:'Tasks', gate:'view_tasks', perms:[ {k:'view_tasks',l:'My Tasks - see &amp; add your own personal tasks'}, {k:'manage_tasks',l:'Assign tasks to others &amp; oversee them'} ] },
+    { group:'Scheduling', gate:'view_schedule', perms:[ {k:'view_schedule',l:'View / access schedule'}, {k:'manage_schedule',l:'Build, publish &amp; manage schedules'} ] },
+    { group:'Fleet &amp; Vehicles', perms:[ {k:'manage_vehicles',l:'Manage fleet registry'} ] },
+    { group:'Vendors / Accounts', perms:[ {k:'manage_vendors',l:'Manage vendors and accounts'} ] },
+    { group:'Shipping Addresses', perms:[ {k:'manage_addresses',l:'Manage shipping addresses'} ] },
+    { group:'Cities', perms:[ {k:'manage_cities',l:'Manage cities'} ] },
+    { group:'Monthly Requisition', perms:[ {k:'manage_running',l:'Manage monthly requisition (admin list)'} ] },
+    { group:'Parts Catalog', perms:[ {k:'manage_parts',l:'Manage parts catalog (add / edit / import). Everyone can still search parts.'} ] },
+    { group:'GEICO', perms:[ {k:'manage_geico',l:'Manage GEICO surveys'} ] },
+    { group:'Users', perms:[ {k:'view_users',l:'View users'}, {k:'manage_users',l:'Add / edit / remove users'} ] },
+    { group:'Administration', perms:[ {k:'manage_settings',l:'Company info, AI context, notifications, roles'}, {k:'view_audit',l:'View audit log'}, {k:'view_ai_admin',l:'View AI history / usage'} ] }
+  ];
+
+  var cols = [
+    { role:'locksmith', label:'Locksmith' },
+    { role:'locksmith_coordinator', label:'Locksmith Coordinator' },
+    { role:'roadside_technician', label:'Roadside Technician' },
+    { role:'manager', label:'Manager' }
+  ];
+
+  function roleHas(role, perm) {
+    if (role === 'admin') return true;
+    if (rules && Object.prototype.toString.call(rules[role]) === '[object Array]') return rules[role].indexOf(perm) !== -1;
+    return (PERM_DEFAULTS[role] || []).indexOf(perm) !== -1;
+  }
+  function cell(role, perm, gate) {
+    if (role === 'admin') return '<td style="text-align:center"><input type="checkbox" checked disabled style="width:auto" title="Admin always has full access" /></td>';
+    var isGate = (gate && perm === gate);
+    var disabled = (gate && !isGate && !roleHas(role, gate));
+    var attrs = ' class="rp-' + role + '" value="' + perm + '"';
+    if (gate) attrs += ' data-grp="' + gate + '" data-role="' + role + '"';
+    if (isGate) attrs += ' onchange="toggleModuleAccess(this)"';
+    return '<td style="text-align:center"><input type="checkbox"' + attrs + ((roleHas(role, perm) && !disabled) ? ' checked' : '') + (disabled ? ' disabled' : '') + ' style="width:auto;cursor:pointer" /></td>';
+  }
+
+  var rowsHtml = groups.map(function(g) {
+    var head = '<tr><td colspan="6" style="font-weight:600;background:var(--bg-elevated);font-size:12px;text-transform:uppercase;letter-spacing:0.04em;color:var(--text-muted-color)">' + g.group + '</td></tr>';
+    var prows = g.perms.map(function(p) {
+      return '<tr><td>' + escHtml(p.l) + '</td>' + cols.map(function(c){ return cell(c.role, p.k, g.gate); }).join('') + cell('admin', p.k, g.gate) + '</tr>';
+    }).join('');
+    return head + prows;
+  }).join('');
+
+  el.innerHTML =
+    '<div class="page-header"><div class="page-title">Roles &amp; Access</div></div>' +
+    '<div id="settings-error"></div><div id="settings-success"></div>' +
+    '<p class="text-muted" style="margin-bottom:16px;max-width:720px">Control what each role can do. These rules are enforced on the server for every action. <strong>Admin</strong> always has full access and cannot be restricted. Anything left unchecked falls back to that role&#39;s built-in default until you save.</p>' +
+    '<div class="card"><div class="card-body">' +
+      '<div style="overflow:auto;max-height:calc(100vh - 260px)">' +
+      '<table style="min-width:820px"><thead><tr><th style="position:sticky;top:0;z-index:6;background:var(--bg-elevated,#1f1f1f);text-align:left">Permission</th>' + cols.map(function(c){ return '<th style="position:sticky;top:0;z-index:6;background:var(--bg-elevated,#1f1f1f);text-align:center">' + escHtml(c.label) + '</th>'; }).join('') + '<th style="position:sticky;top:0;z-index:6;background:var(--bg-elevated,#1f1f1f);text-align:center">Admin</th></tr></thead>' +
+      '<tbody>' + rowsHtml + '</tbody></table>' +
+      '</div>' +
+      '<div style="margin-top:16px"><button class="btn btn-primary" onclick="saveRoles()">Save Roles &amp; Access</button></div>' +
+    '</div></div>';
+}
+
+function toggleModuleAccess(cb) {
+  var grp = cb.getAttribute('data-grp');
+  var role = cb.getAttribute('data-role');
+  var nodes = document.querySelectorAll('input[data-grp="' + grp + '"][data-role="' + role + '"]');
+  for (var i = 0; i < nodes.length; i++) {
+    if (nodes[i] === cb) continue;
+    nodes[i].disabled = !cb.checked;
+    if (!cb.checked) nodes[i].checked = false;
+  }
+}
+
+async function saveRoles() {
+  var editRoles = ['locksmith', 'locksmith_coordinator', 'roadside_technician', 'manager'];
+  var rules = {};
+  editRoles.forEach(function(role) {
+    var perms = [];
+    var nodes = document.querySelectorAll('.rp-' + role);
+    for (var i = 0; i < nodes.length; i++) { if (nodes[i].checked && !nodes[i].disabled) perms.push(nodes[i].value); }
+    rules[role] = perms;
+  });
+  try {
+    await api('PUT', '/settings/role_permissions', { value: JSON.stringify(rules) });
+    state.permissions = rules;
+    document.getElementById('settings-success').innerHTML = '<div class="alert alert-success">Roles &amp; access saved.</div>';
+    setTimeout(function() { var e = document.getElementById('settings-success'); if (e) e.innerHTML = ''; }, 4000);
+  } catch(err) {
+    document.getElementById('settings-error').innerHTML = '<div class="alert alert-error">' + escHtml(err.message) + '</div>';
+  }
+}
+
+// ── Tasks ────────────────────────────────────────────────────────────────────
+var TASK_STATUSES = [['todo','To Do'],['in_progress','In Progress'],['done','Done']];
+var TASK_PRIO = { urgent:{l:'Urgent',c:'#ef4444'}, high:{l:'High',c:'#f59e0b'}, medium:{l:'Medium',c:'#3b82f6'}, low:{l:'Low',c:'#888'} };
+var _tasksData = [];
+var _taskView = 'board';
+var _taskTab = 'mine';
+var _taskForceSelf = false;
+var _taskPendingFiles = [];
+var _taskDragId = null;
+var _taskDragGhost = null;
+function taskDragStart(e, id){
+  _taskDragId = id;
+  var card = e.currentTarget;
+  if (e.dataTransfer){
+    e.dataTransfer.effectAllowed='move';
+    try { e.dataTransfer.setData('text/plain', String(id)); } catch(_){}
+    try {
+      var ghost = card.cloneNode(true);
+      ghost.style.cssText = 'position:fixed;top:-2000px;left:0;margin:0;opacity:1;pointer-events:none;width:'+card.offsetWidth+'px;background:#1a1a1a;border:1px solid var(--border);border-radius:var(--radius);box-shadow:0 8px 24px rgba(0,0,0,0.5)';
+      document.body.appendChild(ghost);
+      _taskDragGhost = ghost;
+      if (e.dataTransfer.setDragImage) e.dataTransfer.setDragImage(ghost, Math.min(card.offsetWidth/2, 140), 24);
+    } catch(_){}
+  }
+  if (card) setTimeout(function(){ card.classList.add('task-dragging'); }, 0);
+}
+function taskDragEnd(e){
+  var card = e.currentTarget; if (card) card.classList.remove('task-dragging');
+  if (_taskDragGhost && _taskDragGhost.parentNode) _taskDragGhost.parentNode.removeChild(_taskDragGhost);
+  _taskDragGhost = null;
+}
+function taskDragOver(e){ e.preventDefault(); if (e.dataTransfer) e.dataTransfer.dropEffect='move'; }
+function taskColEl(sn){ return document.getElementById('task-col-'+sn); }
+function taskDragEnter(e, sn){ var c=taskColEl(sn); if (c) c.style.outline='2px dashed var(--primary)'; }
+function taskDragLeave(e, sn){ var c=taskColEl(sn); if (c && !c.contains(e.relatedTarget)) c.style.outline=''; }
+function rerenderTaskBoard(){ var host=document.getElementById('tasks-board-host'); if (host) host.innerHTML=taskBoardHtml(); }
+async function taskDrop(e, status){
+  e.preventDefault();
+  var id=_taskDragId || (e.dataTransfer ? parseInt(e.dataTransfer.getData('text/plain'),10) : null);
+  _taskDragId=null;
+  ['todo','in_progress','done'].forEach(function(sn){ var c=taskColEl(sn); if (c) c.style.outline=''; });
+  if (!id) return;
+  var t=_tasksData.filter(function(x){ return x.id===id; })[0];
+  if (!t || t.status===status) return;
+  t.status=status;
+  rerenderTaskBoard();
+  try {
+    await api('PATCH','/tasks/'+id+'/status',{status:status});
+    if (status==='done'){ var r=await api('GET','/tasks?view='+_taskTab); _tasksData=r||[]; rerenderTaskBoard(); }
+  } catch(err){ taskFeedback(err.message,true); navigate('tasks'); }
+}
+
+function taskStatusLabel(s){ for (var i=0;i<TASK_STATUSES.length;i++) if (TASK_STATUSES[i][0]===s) return TASK_STATUSES[i][1]; return s; }
+function taskStatusBadge(s){ var m={ todo:['To Do','#888'], in_progress:['In Progress','#3b82f6'], done:['Done','#22c55e'] }; var x=m[s]||[s,'#888']; return '<span style="font-size:11px;font-weight:700;padding:2px 8px;border-radius:10px;background:'+x[1]+'22;color:'+x[1]+'">'+x[0]+'</span>'; }
+function taskIsOverdue(t){ if (!t.due_date || t.status==='done') return false; var d=new Date(t.due_date); var today=new Date(); today.setHours(0,0,0,0); return d < today; }
+function taskFeedback(msg, isErr){ var fb=document.getElementById('tasks-feedback'); if (fb) fb.innerHTML='<div class="alert '+(isErr?'alert-error':'alert-success')+'">'+escHtml(msg)+'</div>'; }
+
+async function renderTasks(el){
+  if (!can('view_tasks')){ el.innerHTML='<div class="alert alert-error">Access denied.</div>'; return; }
+  var manage = can('manage_tasks');
+  if (_taskTab==='assigned' && !manage) _taskTab='mine';
+  el.innerHTML='<div class="loading">Loading…</div>';
+  try {
+    var r = await api('GET','/tasks?view='+_taskTab);
+    _tasksData = r || [];
+  } catch(e){ el.innerHTML='<div class="alert alert-error">'+escHtml(e.message)+'</div>'; return; }
+  var _counts={}; try { _counts = await api('GET','/tasks/counts'); } catch(e){}
+  var _od = _counts.mine_overdue ? ' <span title="Past due" style="display:inline-block;min-width:18px;padding:0 6px;border-radius:9px;background:#ef4444;color:#fff;font-size:12px;font-weight:700;line-height:18px;text-align:center;vertical-align:middle">'+_counts.mine_overdue+'</span>' : '';
+  var desc = (_taskTab==='assigned') ? 'Tasks you assigned to others - track them to completion.' : (_taskTab==='recurring' ? 'Recurring schedules - Nova sends each task automatically on its send day.' : 'Your personal task list. Anything you add here is private to you.');
+  var header = '<div class="page-header"><div class="page-title"><h2>Tasks'+_od+'</h2><p>'+desc+'</p></div>' +
+    '<div style="display:flex;gap:8px">' +
+      '<button class="btn btn-secondary" onclick="taskToggleView()">'+(_taskView==='board'?'Table view':'Board view')+'</button>' +
+      (manage ? '<button class="btn btn-secondary" onclick="taskAddToMine()" title="Add a task to your own list">+ My list</button>' : '') +
+      '<button class="btn btn-primary" onclick="taskNew()">+ New Task</button>' +
+    '</div></div>';
+  var tabs = manage ? ('<div style="display:flex;gap:6px;margin-bottom:14px">' +
+      '<button class="btn '+(_taskTab==='mine'?'btn-primary':'btn-secondary')+' btn-sm" onclick="taskSetTab(\'mine\')">My Tasks</button>' +
+      '<button class="btn '+(_taskTab==='assigned'?'btn-primary':'btn-secondary')+' btn-sm" onclick="taskSetTab(\'assigned\')">Assigned'+(_counts.assigned_open?' <span style="display:inline-block;min-width:18px;padding:0 6px;border-radius:9px;background:#555;color:#fff;font-size:11px;font-weight:700;line-height:18px;text-align:center;vertical-align:middle">'+_counts.assigned_open+'</span>':'')+(_counts.assigned_overdue?' <span title="Past due" style="display:inline-block;min-width:18px;padding:0 6px;border-radius:9px;background:#ef4444;color:#fff;font-size:11px;font-weight:700;line-height:18px;text-align:center;vertical-align:middle">'+_counts.assigned_overdue+'</span>':'')+'</button>' +
+      '<button class="btn '+(_taskTab==='recurring'?'btn-primary':'btn-secondary')+' btn-sm" onclick="taskSetTab(\'recurring\')">Recurring</button>' +
+    '</div>') : '';
+  var body = (_taskTab==='recurring') ? taskScheduleListHtml() : ((_taskView==='board') ? ('<div id="tasks-board-host">'+taskBoardHtml()+'</div>') : taskTableHtml(manage));
+  el.innerHTML = header + tabs + '<div id="tasks-feedback"></div>' + body;
+}
+
+function taskToggleView(){ _taskView = (_taskView==='board') ? 'table' : 'board'; navigate('tasks'); }
+function taskSetTab(t){ _taskTab=t; navigate('tasks'); }
+function taskNew(){ _taskForceSelf=false; navigate('new-task'); }
+function taskAddToMine(){ _taskForceSelf=true; navigate('new-task'); }
+
+function taskScheduleListHtml(){
+  if(!_tasksData.length) return '<div class="card"><div class="card-body"><p style="color:var(--text-muted-color)">No recurring schedules yet. Create a task and pick a Repeat option (weekly or monthly) to set one up.</p></div></div>';
+  return '<div style="display:flex;flex-direction:column;gap:10px">'+_tasksData.map(function(t){
+    var next=t.next_run_on?formatDate(t.next_run_on):'—';
+    return '<div class="card" style="cursor:pointer" onclick="navigate(\'task-detail\','+t.id+')"><div class="card-body" style="padding:12px 14px;display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap">'+
+      '<div><div style="font-weight:600;font-size:14px">↻ '+escHtml(t.title)+'</div>'+
+        '<div style="font-size:12px;color:var(--text-muted-color);margin-top:2px">'+escHtml(taskRecurText(t))+' · for '+escHtml(t.assignee_name||'Unassigned')+'</div></div>'+
+      '<div style="text-align:right"><div style="font-size:11px;color:var(--text-muted-color);text-transform:uppercase">Next send</div><div style="font-weight:600;font-size:13px">'+next+'</div></div>'+
+    '</div></div>';
+  }).join('')+'</div>';
+}
+function taskBoardHtml(){
+  var cols = TASK_STATUSES.map(function(st){
+    var items = _tasksData.filter(function(t){ return t.status===st[0]; });
+    var cards = items.length ? items.map(taskCardHtml).join('') : '<div style="color:var(--text-muted-color);font-size:12px;padding:6px 0">Nothing here.</div>';
+    return '<div id="task-col-'+st[0]+'" ondragover="taskDragOver(event)" ondrop="taskDrop(event,\''+st[0]+'\')" ondragenter="taskDragEnter(event,\''+st[0]+'\')" ondragleave="taskDragLeave(event,\''+st[0]+'\')" style="flex:1;min-width:240px;background:var(--bg-elevated);border-radius:10px;padding:10px;transition:outline 0.1s">' +
+      '<div style="font-size:12px;font-weight:700;text-transform:uppercase;letter-spacing:0.04em;color:var(--text-muted-color);margin-bottom:8px">'+st[1]+' ('+items.length+')</div>' +
+      cards + '</div>';
+  }).join('');
+  return '<div style="display:flex;gap:12px;flex-wrap:wrap;align-items:flex-start">'+cols+'</div>';
+}
+
+function taskCardHtml(t){
+  var p = TASK_PRIO[t.priority] || TASK_PRIO.medium;
+  var od = taskIsOverdue(t);
+  var sub = (t.subtask_total>0) ? '<span style="font-size:11px;color:var(--text-muted-color)">'+t.subtask_done+'/'+t.subtask_total+' done</span>' : '';
+  var due = t.due_date ? '<span style="font-size:11px;font-weight:600;color:'+(od?'#ef4444':'var(--text-muted-color)')+'">'+(od?'Overdue · ':'')+formatDate(t.due_date)+'</span>' : '';
+  return '<div class="card" draggable="true" ondragstart="taskDragStart(event,'+t.id+')" ondragend="taskDragEnd(event)" style="margin-bottom:8px;cursor:grab" onclick="navigate(\'task-detail\','+t.id+')"><div class="card-body" style="padding:10px 12px">' +
+    '<div style="display:flex;align-items:center;gap:7px;margin-bottom:5px"><span style="width:8px;height:8px;border-radius:50%;background:'+p.c+';flex-shrink:0"></span><span style="font-weight:600;font-size:14px">'+escHtml(t.title)+'</span></div>' +
+    '<div style="display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap">' +
+      '<span style="font-size:11px;color:var(--text-muted-color)">'+escHtml(t.assignee_name||'Unassigned')+'</span>'+due +
+    '</div>' + (sub?'<div style="margin-top:4px">'+sub+'</div>':'') +
+  '</div></div>';
+}
+
+function taskTableHtml(manage){
+  if (!_tasksData.length) return '<div class="card"><div class="card-body"><p style="color:var(--text-muted-color)">No tasks'+(manage?'':' assigned to you')+' yet.</p></div></div>';
+  var rows = _tasksData.map(function(t){
+    var p = TASK_PRIO[t.priority] || TASK_PRIO.medium; var od = taskIsOverdue(t);
+    return '<tr style="cursor:pointer" onclick="navigate(\'task-detail\','+t.id+')">' +
+      '<td><span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:'+p.c+';margin-right:7px"></span>'+escHtml(t.title)+'</td>' +
+      '<td>'+escHtml(t.assignee_name||'—')+'</td>' +
+      '<td><span style="color:'+p.c+';font-weight:600">'+p.l+'</span></td>' +
+      '<td style="white-space:nowrap;color:'+(od?'#ef4444':'inherit')+'">'+(t.due_date?((od?'Overdue · ':'')+formatDate(t.due_date)):'—')+'</td>' +
+      '<td>'+taskStatusBadge(t.status)+'</td>' +
+    '</tr>';
+  }).join('');
+  return '<div class="card"><div class="card-body"><div class="table-wrap"><table class="table"><thead><tr><th>Task</th><th>Assignee</th><th>Priority</th><th>Due</th><th>Status</th></tr></thead><tbody>'+rows+'</tbody></table></div></div></div>';
+}
+
+async function renderTaskDetail(el, id){
+  el.innerHTML='<div class="loading">Loading…</div>';
+  var t;
+  try { t = await api('GET','/tasks/'+id); } catch(e){ el.innerHTML='<div class="alert alert-error">'+escHtml(e.message)+'</div>'; return; }
+  window._taskCurrent = t;
+  var manage = can('manage_tasks');
+  var canEdit = manage || (t.created_by===state.user.id);
+  var p = TASK_PRIO[t.priority] || TASK_PRIO.medium;
+  var od = taskIsOverdue(t);
+  var statusBtns = t.is_template ? '' : TASK_STATUSES.map(function(st){ var active=t.status===st[0]; return '<button class="btn '+(active?'btn-primary':'btn-secondary')+' btn-sm" onclick="taskSetStatus('+t.id+',\''+st[0]+'\')">'+st[1]+'</button>'; }).join(' ');
+  var subHtml = (t.subtasks||[]).length ? (t.subtasks).map(function(s){
+    return '<div style="display:flex;align-items:center;gap:8px;padding:5px 0">' +
+      '<input type="checkbox" '+(s.done?'checked':'')+' onchange="taskToggleSub('+s.id+',this.checked)" style="width:auto" />' +
+      '<span style="font-size:14px;'+(s.done?'text-decoration:line-through;color:var(--text-muted-color)':'')+'">'+escHtml(s.title)+'</span>' +
+      (canEdit?'<button class="btn btn-ghost btn-sm" style="margin-left:auto;color:#ef4444" onclick="taskDelSub('+s.id+')">&times;</button>':'') +
+    '</div>';
+  }).join('') : '<div style="color:var(--text-muted-color);font-size:13px">No subtasks.</div>';
+  var ccNames = (t.cc||[]).map(function(c){ return c.name || ('User '+c.user_id); });
+  var ccLine = ccNames.length ? '<div style="margin-top:12px;font-size:12px;color:var(--text-muted-color)"><span style="text-transform:uppercase;font-size:11px">Copied (FYI):</span> '+ccNames.map(escHtml).join(', ')+'</div>' : '';
+  var attList = t.attachments||[];
+  var attHtml = attList.length ? attList.map(function(a){ return '<div style="display:flex;align-items:center;gap:8px;padding:6px 0;border-bottom:0.5px solid var(--border-color)"><span style="font-size:13px;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;cursor:pointer;color:var(--primary,#f97316)" onclick="taskOpenAttachment('+t.id+','+a.id+')">'+escHtml(a.filename||'file')+'</span><span style="font-size:11px;color:var(--text-muted-color)">'+taskFmtBytes(a.size_bytes)+'</span>'+(canEdit?'<button class="btn btn-ghost btn-sm" style="color:#ef4444;padding:0 6px" onclick="taskDeleteAttachment('+t.id+','+a.id+')">&times;</button>':'')+'</div>'; }).join('') : '<div style="color:var(--text-muted-color);font-size:13px">No attachments yet.</div>';
+  var actHtml = (t.activity||[]).length ? (t.activity).map(function(a){
+    if (a.type==='comment') return '<div style="padding:8px 0;border-bottom:0.5px solid var(--border-color)"><div style="font-size:12px;color:var(--text-muted-color)">'+escHtml(a.user_name||'')+' · '+formatDate(a.created_at)+'</div><div style="font-size:14px;white-space:pre-wrap;margin-top:2px">'+escHtml(a.body)+'</div></div>';
+    return '<div style="padding:6px 0;font-size:12px;color:var(--text-muted-color)">'+escHtml(a.user_name||'Someone')+' '+escHtml(a.body)+' · '+formatDate(a.created_at)+'</div>';
+  }).join('') : '<div style="color:var(--text-muted-color);font-size:13px">No activity yet.</div>';
+  el.innerHTML =
+    '<div class="page-header"><div class="page-title"><h2>'+escHtml(t.title)+'</h2><p>'+taskStatusLabel(t.status)+(t.recurrence?(' · repeats '+escHtml(taskRecurText(t))):'')+'</p></div>' +
+      '<div style="display:flex;gap:8px">' +
+        '<button class="btn btn-secondary" onclick="navigate(\'tasks\')">&larr; Back</button>' +
+        (canEdit?'<button class="btn btn-secondary" onclick="navigate(\'edit-task\','+t.id+')">Edit</button>':'') +
+        (canEdit?'<button class="btn btn-secondary" style="color:#ef4444" onclick="taskDelete('+t.id+')">Delete</button>':'') +
+      '</div></div>' +
+    '<div id="tasks-feedback"></div>' +
+    '<div style="display:grid;grid-template-columns:1fr 1fr;gap:20px" class="detail-grid">' +
+      '<div>' +
+        '<div class="card" style="margin-bottom:16px"><div class="card-body">' +
+          '<div style="display:flex;gap:18px;flex-wrap:wrap;margin-bottom:12px">' +
+            '<div><div style="font-size:11px;color:var(--text-muted-color);text-transform:uppercase">Assignee</div><div style="font-weight:600">'+escHtml(t.assignee_name||'Unassigned')+'</div></div>' +
+            '<div><div style="font-size:11px;color:var(--text-muted-color);text-transform:uppercase">Priority</div><div style="font-weight:600;color:'+p.c+'">'+p.l+'</div></div>' +
+            '<div><div style="font-size:11px;color:var(--text-muted-color);text-transform:uppercase">'+(t.is_template?'Next send':'Due')+'</div><div style="font-weight:600;color:'+(od?'#ef4444':'inherit')+'">'+(t.is_template?(t.next_run_on?formatDate(t.next_run_on):'—'):(t.due_date?((od?'Overdue · ':'')+formatDate(t.due_date)):'—'))+'</div></div>' +
+          '</div>' +
+          (t.description?'<div style="font-size:14px;white-space:pre-wrap;line-height:1.6">'+escHtml(t.description)+'</div>':'<div style="color:var(--text-muted-color);font-size:13px">No description.</div>') +
+          ccLine +
+          '<div style="margin-top:14px;display:flex;gap:6px;flex-wrap:wrap">'+statusBtns+'</div>' +
+        '</div></div>' +
+        '<div class="card"><div class="card-body">' +
+          '<div style="font-weight:700;margin-bottom:8px">Subtasks</div>'+subHtml +
+          (canEdit?'<div style="display:flex;gap:6px;margin-top:10px"><input type="text" id="task-newsub" placeholder="Add a subtask" /><button class="btn btn-secondary btn-sm" onclick="taskAddSub('+t.id+')">Add</button></div>':'') +
+        '</div></div>' +
+      '</div>' +
+      '<div>' +
+        '<div class="card" style="margin-bottom:16px"><div class="card-body">' +
+          '<div style="font-weight:700;margin-bottom:8px">Attachments</div>' +
+          attHtml +
+          '<div style="margin-top:10px"><input type="file" multiple onchange="taskDetailFilesPicked(this,'+t.id+')" style="font-size:13px" /></div>' +
+        '</div></div>' +
+        '<div class="card"><div class="card-body">' +
+          '<div style="font-weight:700;margin-bottom:8px">Activity &amp; Comments</div>' +
+          '<div style="margin-bottom:8px"><textarea id="task-comment" rows="2" placeholder="Write a comment…" style="width:100%"></textarea></div>' +
+          '<div style="margin-bottom:12px"><button class="btn btn-secondary btn-sm" onclick="taskAddComment('+t.id+')">Post comment</button></div>' +
+          actHtml +
+        '</div></div>' +
+      '</div>' +
+    '</div>';
+}
+
+async function taskSetStatus(id, status){ try { await api('PATCH','/tasks/'+id+'/status',{status:status}); navigate('task-detail',id); } catch(e){ taskFeedback(e.message,true); } }
+async function taskToggleSub(sid, done){ try { await api('PATCH','/tasks/subtasks/'+sid,{done:done}); } catch(e){ taskFeedback(e.message,true); } }
+async function taskDelSub(sid){ try { await api('DELETE','/tasks/subtasks/'+sid); var t=window._taskCurrent; if (t) navigate('task-detail',t.id); } catch(e){ taskFeedback(e.message,true); } }
+async function taskAddSub(id){ var v=((document.getElementById('task-newsub')||{}).value||'').trim(); if (!v) return; try { await api('POST','/tasks/'+id+'/subtasks',{title:v}); navigate('task-detail',id); } catch(e){ taskFeedback(e.message,true); } }
+async function taskAddComment(id){ var v=((document.getElementById('task-comment')||{}).value||'').trim(); if (!v) return; try { await api('POST','/tasks/'+id+'/comments',{body:v}); navigate('task-detail',id); } catch(e){ taskFeedback(e.message,true); } }
+async function taskDelete(id){ if (!confirm('Delete this task? This cannot be undone.')) return; try { await api('DELETE','/tasks/'+id); navigate('tasks'); } catch(e){ taskFeedback(e.message,true); } }
+function taskB64ToBlob(b64, mime){ var bin=atob(b64||''); var len=bin.length; var arr=new Uint8Array(len); for (var i=0;i<len;i++) arr[i]=bin.charCodeAt(i); return new Blob([arr],{type:mime||'application/octet-stream'}); }
+async function taskOpenAttachment(taskId, aid){
+  try {
+    var r = await api('GET','/tasks/'+taskId+'/attachments/'+aid);
+    var blob = taskB64ToBlob(r.image_data||'', r.mime_type);
+    var url = URL.createObjectURL(blob);
+    var mt = r.mime_type||'';
+    if (mt.indexOf('image/')===0 || mt==='application/pdf'){ window.open(url,'_blank'); }
+    else { var a=document.createElement('a'); a.href=url; a.download=r.filename||'file'; document.body.appendChild(a); a.click(); a.remove(); }
+    setTimeout(function(){ URL.revokeObjectURL(url); }, 60000);
+  } catch(e){ taskFeedback(e.message,true); }
+}
+async function taskDeleteAttachment(taskId, aid){
+  if (!confirm('Remove this attachment?')) return;
+  try { await api('DELETE','/tasks/'+taskId+'/attachments/'+aid); navigate('task-detail', taskId); } catch(e){ taskFeedback(e.message,true); }
+}
+async function taskDetailFilesPicked(input, taskId){
+  var files = input && input.files ? Array.prototype.slice.call(input.files) : [];
+  var MAX = 50*1024*1024; var toSend=[]; var remaining=0;
+  files.forEach(function(f){
+    if (f.size > MAX){ taskFeedback('"'+f.name+'" is larger than 50 MB and was skipped.', true); return; }
+    remaining++;
+    var reader = new FileReader();
+    reader.onload = async function(){
+      toSend.push({ filename:f.name, mime_type:f.type||'application/octet-stream', size_bytes:f.size, data:reader.result });
+      remaining--;
+      if (remaining===0 && toSend.length){ try { await api('POST','/tasks/'+taskId+'/attachments',{attachments:toSend}); navigate('task-detail', taskId); } catch(e){ taskFeedback(e.message,true); } }
+    };
+    reader.readAsDataURL(f);
+  });
+  if (input) input.value='';
+}
+
+function taskFilterAssignees(){ var q=((document.getElementById('tk-assignee-search')||{}).value||'').toLowerCase(); document.querySelectorAll('.tk-assignee-row').forEach(function(r){ r.style.display = (!q || (r.getAttribute('data-name')||'').indexOf(q)!==-1) ? 'flex' : 'none'; }); }
+function taskSelectAllAssignees(on){ document.querySelectorAll('.tk-assignee-row').forEach(function(r){ if (r.style.display==='none') return; var c=r.querySelector('.tk-assignee'); if (c) c.checked=on; }); taskUpdateAssigneeCount(); }
+function taskUpdateAssigneeCount(){ var n=document.querySelectorAll('.tk-assignee:checked').length; var el=document.getElementById('tk-assignee-count'); if (el) el.textContent=n+' selected'; }
+function taskFilterCc(){ var q=((document.getElementById('tk-cc-search')||{}).value||'').toLowerCase(); document.querySelectorAll('.tk-cc-row').forEach(function(r){ r.style.display = (!q || (r.getAttribute('data-name')||'').indexOf(q)!==-1) ? 'flex' : 'none'; }); }
+function taskSelectAllCc(on){ document.querySelectorAll('.tk-cc-row').forEach(function(r){ if (r.style.display==='none') return; var c=r.querySelector('.tk-cc'); if (c) c.checked=on; }); taskUpdateCcCount(); }
+function taskUpdateCcCount(){ var n=document.querySelectorAll('.tk-cc:checked').length; var el=document.getElementById('tk-cc-count'); if (el) el.textContent=n+' selected'; }
+function taskFmtBytes(b){ b=parseInt(b,10)||0; if (b<1024) return b+' B'; if (b<1048576) return (b/1024).toFixed(0)+' KB'; return (b/1048576).toFixed(1)+' MB'; }
+function taskFilesPicked(input){
+  var files = input && input.files ? Array.prototype.slice.call(input.files) : [];
+  var MAX = 50*1024*1024;
+  var pending = 0;
+  files.forEach(function(f){
+    if (f.size > MAX){ taskFeedback('"'+f.name+'" is larger than 50 MB and was skipped.', true); return; }
+    pending++;
+    var reader = new FileReader();
+    reader.onload = function(){
+      _taskPendingFiles.push({ filename: f.name, mime_type: f.type || 'application/octet-stream', size_bytes: f.size, data: reader.result });
+      taskRenderPendingFiles();
+    };
+    reader.readAsDataURL(f);
+  });
+  if (input) input.value='';
+}
+function taskRenderPendingFiles(){
+  var el = document.getElementById('tk-files-list'); if (!el) return;
+  if (!_taskPendingFiles.length){ el.innerHTML=''; return; }
+  el.innerHTML = _taskPendingFiles.map(function(f,i){ return '<div style="display:flex;align-items:center;gap:8px;padding:5px 8px;background:var(--bg-elevated);border:1px solid var(--border);border-radius:6px;margin-bottom:5px"><span style="font-size:13px;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">'+escHtml(f.filename)+'</span><span style="font-size:11px;color:var(--text-muted-color)">'+taskFmtBytes(f.size_bytes)+'</span><button type="button" class="btn btn-ghost btn-sm" style="color:#ef4444;padding:0 6px" onclick="taskRemovePendingFile('+i+')">&times;</button></div>'; }).join('');
+}
+function taskRemovePendingFile(i){ _taskPendingFiles.splice(i,1); taskRenderPendingFiles(); }
+function taskRecurText(t){
+  if (!t.recurrence) return '';
+  var days=['Sunday','Monday','Tuesday','Wednesday','Thursday','Friday','Saturday'];
+  if (t.recurrence==='daily') return 'daily';
+  if (t.recurrence==='weekly'){
+    var ws=(t.recurrence_start_day!=null)?days[t.recurrence_start_day]:null;
+    var wd=(t.recurrence_day!=null)?days[t.recurrence_day]:null;
+    if (ws&&wd) return 'weekly · sent '+ws+', due '+wd;
+    if (wd) return 'weekly on '+wd;
+    return 'weekly';
+  }
+  if (t.recurrence==='monthly'){
+    var ms=(t.recurrence_start_day!=null)?t.recurrence_start_day:null;
+    var md=(t.recurrence_day!=null)?t.recurrence_day:null;
+    if (ms&&md) return 'monthly · sent day '+ms+', due day '+md;
+    if (md) return 'monthly on day '+md;
+    return 'monthly';
+  }
+  return t.recurrence;
+}
+function taskRecurChanged(preStart, preDue){
+  var rec=(document.getElementById('tk-recur')||{}).value||'';
+  var wrap=document.getElementById('tk-recur-day-wrap');
+  var label=document.getElementById('tk-recur-day-label');
+  var ss=document.getElementById('tk-recur-start');
+  var ds=document.getElementById('tk-recur-due');
+  var dueWrap=document.getElementById('tk-due-wrap');
+  if (!wrap||!ss||!ds) return;
+  if (rec==='weekly'){
+    if (label) label.textContent='Repeats weekly';
+    var days=['Sunday','Monday','Tuesday','Wednesday','Thursday','Friday','Saturday'];
+    var vs=(preStart!=null&&preStart!=='')?parseInt(preStart,10):1;
+    var vd=(preDue!=null&&preDue!=='')?parseInt(preDue,10):4;
+    ss.innerHTML=days.map(function(d,i){ return '<option value="'+i+'"'+(i===vs?' selected':'')+'>'+d+'</option>'; }).join('');
+    ds.innerHTML=days.map(function(d,i){ return '<option value="'+i+'"'+(i===vd?' selected':'')+'>'+d+'</option>'; }).join('');
+    ss.disabled=false; ds.disabled=false; wrap.style.display=''; if(dueWrap) dueWrap.style.display='none';
+  } else if (rec==='monthly'){
+    if (label) label.textContent='Repeats monthly';
+    var vms=(preStart!=null&&preStart!=='')?parseInt(preStart,10):1;
+    var vmd=(preDue!=null&&preDue!=='')?parseInt(preDue,10):1;
+    var o1='',o2='';
+    for (var d=1; d<=31; d++){ var lb=d+(d>=29?' (or last day)':''); o1+='<option value="'+d+'"'+(d===vms?' selected':'')+'>'+lb+'</option>'; o2+='<option value="'+d+'"'+(d===vmd?' selected':'')+'>'+lb+'</option>'; }
+    ss.innerHTML=o1; ds.innerHTML=o2;
+    ss.disabled=false; ds.disabled=false; wrap.style.display=''; if(dueWrap) dueWrap.style.display='none';
+  } else if (rec==='daily'){
+    if (label) label.textContent='Repeats daily';
+    ss.innerHTML='<option>Every day</option>'; ds.innerHTML='<option>Same day</option>';
+    ss.disabled=true; ds.disabled=true; wrap.style.display=''; if(dueWrap) dueWrap.style.display='none';
+  } else { wrap.style.display='none'; if(dueWrap) dueWrap.style.display=''; }
+  updateRecurHint();
+}
+function updateRecurHint(){
+  var rec=(document.getElementById('tk-recur')||{}).value||'';
+  var hint=document.getElementById('tk-recur-hint');
+  if(!hint) return;
+  var days=['Sunday','Monday','Tuesday','Wednesday','Thursday','Friday','Saturday'];
+  if(rec==='weekly'){
+    var sv=parseInt(document.getElementById('tk-recur-start').value,10), dv=parseInt(document.getElementById('tk-recur-due').value,10);
+    hint.textContent='Each week Nova sends this on '+days[sv]+', due '+days[dv]+'.';
+  } else if(rec==='monthly'){
+    var sv2=parseInt(document.getElementById('tk-recur-start').value,10), dv2=parseInt(document.getElementById('tk-recur-due').value,10);
+    hint.textContent='Each month Nova sends this on day '+sv2+', due day '+dv2+(dv2<sv2?' (the following month)':'')+'.';
+  } else if(rec==='daily'){
+    hint.textContent='Sent and due the same day, every day.';
+  } else hint.textContent='';
+}
+async function renderTaskForm(el, id){
+  if (!can('view_tasks')){ el.innerHTML='<div class="alert alert-error">Access denied.</div>'; return; }
+  _taskPendingFiles = [];
+  var manage = can('manage_tasks');
+  var personal = !id && _taskForceSelf;
+  var showAssignee = manage && !personal;
+  el.innerHTML='<div class="loading">Loading…</div>';
+  var t={}, users=[];
+  try {
+    var r = await Promise.all([ id?api('GET','/tasks/'+id):Promise.resolve({}), api('GET','/users').catch(function(){return [];}) ]);
+    t=r[0]||{}; users=(r[1]||[]).filter(function(u){return u.active;});
+  } catch(e){ el.innerHTML='<div class="alert alert-error">'+escHtml(e.message)+'</div>'; return; }
+  var userOpts='<option value="">Unassigned</option>'+users.map(function(u){ return '<option value="'+u.id+'"'+(t.assigned_to==u.id?' selected':'')+'>'+escHtml(u.name)+' ('+escHtml(roleLabel(u.role))+')</option>'; }).join('');
+  var assigneeChecks = users.map(function(u){ return '<label class="tk-assignee-row" data-name="'+escHtml((u.name||'').toLowerCase())+'" style="display:flex;align-items:center;gap:8px;padding:5px 4px;cursor:pointer"><input type="checkbox" class="tk-assignee" value="'+u.id+'" onchange="taskUpdateAssigneeCount()" style="width:auto" /> <span style="font-size:14px">'+escHtml(u.name)+'</span> <span style="font-size:12px;color:var(--text-muted-color)">('+escHtml(roleLabel(u.role))+')</span></label>'; }).join('');
+  var assigneePickerHtml = '<div class="form-group"><label>Assign to <span style="color:var(--text-muted-color);font-weight:400">(pick one or more; a task is created for each person)</span></label>' +
+    '<div style="display:flex;gap:8px;margin-bottom:6px;flex-wrap:wrap"><input type="text" id="tk-assignee-search" placeholder="Search people…" oninput="taskFilterAssignees()" style="flex:1;min-width:140px" /><button type="button" class="btn btn-secondary btn-sm" onclick="taskSelectAllAssignees(true)">Select all</button><button type="button" class="btn btn-secondary btn-sm" onclick="taskSelectAllAssignees(false)">Clear</button></div>' +
+    '<div id="tk-assignee-list" style="max-height:220px;overflow-y:auto;border:1px solid var(--border);border-radius:8px;padding:6px;background:var(--bg-elevated)">'+(assigneeChecks||'<div style="color:var(--text-muted-color);font-size:13px;padding:6px">No users found.</div>')+'</div>' +
+    '<div id="tk-assignee-count" style="font-size:12px;color:var(--text-muted-color);margin-top:5px">0 selected</div></div>';
+  var ccSet = {}; (t.cc||[]).forEach(function(c){ ccSet[c.user_id]=1; });
+  var ccChecks = users.map(function(u){ return '<label class="tk-cc-row" data-name="'+escHtml((u.name||'').toLowerCase())+'" style="display:flex;align-items:center;gap:8px;padding:5px 4px;cursor:pointer"><input type="checkbox" class="tk-cc" value="'+u.id+'" onchange="taskUpdateCcCount()"'+(ccSet[u.id]?' checked':'')+' style="width:auto" /> <span style="font-size:14px">'+escHtml(u.name)+'</span> <span style="font-size:12px;color:var(--text-muted-color)">('+escHtml(roleLabel(u.role))+')</span></label>'; }).join('');
+  var ccCount0 = (t.cc||[]).length;
+  var ccPickerHtml = '<div class="form-group"><label>Copy (FYI) <span style="color:var(--text-muted-color);font-weight:400">(people emailed so they are aware \u2014 no task is created for them)</span></label>' +
+    '<div style="display:flex;gap:8px;margin-bottom:6px;flex-wrap:wrap"><input type="text" id="tk-cc-search" placeholder="Search people\u2026" oninput="taskFilterCc()" style="flex:1;min-width:140px" /><button type="button" class="btn btn-secondary btn-sm" onclick="taskSelectAllCc(true)">Select all</button><button type="button" class="btn btn-secondary btn-sm" onclick="taskSelectAllCc(false)">Clear</button></div>' +
+    '<div id="tk-cc-list" style="max-height:180px;overflow-y:auto;border:1px solid var(--border);border-radius:8px;padding:6px;background:var(--bg-elevated)">'+(ccChecks||'<div style="color:var(--text-muted-color);font-size:13px;padding:6px">No users found.</div>')+'</div>' +
+    '<div id="tk-cc-count" style="font-size:12px;color:var(--text-muted-color);margin-top:5px">'+ccCount0+' selected</div></div>';
+  var attachHtml = '<div class="form-group"><label>Attachments <span style="color:var(--text-muted-color);font-weight:400">(optional \u2014 photos, PDFs, documents)</span></label>' +
+    '<input type="file" id="tk-files" multiple onchange="taskFilesPicked(this)" style="font-size:13px" />' +
+    '<div id="tk-files-list" style="margin-top:8px"></div></div>';
+  var prioOpts=['low','medium','high','urgent'].map(function(pp){ return '<option value="'+pp+'"'+((t.priority||'medium')===pp?' selected':'')+'>'+TASK_PRIO[pp].l+'</option>'; }).join('');
+  var recOpts=[['','Does not repeat'],['daily','Daily'],['weekly','Weekly'],['monthly','Monthly']].map(function(rr){ return '<option value="'+rr[0]+'"'+((t.recurrence||'')===rr[0]?' selected':'')+'>'+rr[1]+'</option>'; }).join('');
+  var dueVal = t.due_date ? String(t.due_date).slice(0,10) : '';
+  el.innerHTML =
+    '<div class="page-header"><div class="page-title"><h2>'+(id?'Edit':(personal?'New Personal':'New'))+' Task</h2></div>' +
+      '<button class="btn btn-secondary" onclick="navigate(\''+(id?'task-detail':'tasks')+'\''+(id?(','+id):'')+')">Cancel</button></div>' +
+    '<div id="tasks-feedback"></div>' +
+    '<div class="card" style="max-width:680px"><div class="card-body">' +
+      '<div class="form-group"><label>Title</label><input type="text" id="tk-title" value="'+escHtml(t.title||'')+'" placeholder="What needs doing?" /></div>' +
+      '<div class="form-group"><label>Description</label><textarea id="tk-desc" rows="3" placeholder="Details…">'+escHtml(t.description||'')+'</textarea></div>' +
+      (showAssignee
+        ? (id
+            ? ('<div style="display:flex;gap:12px;flex-wrap:wrap"><div class="form-group" style="flex:1;min-width:160px"><label>Assign to</label><select id="tk-assignee">'+userOpts+'</select></div><div class="form-group" style="flex:1;min-width:140px"><label>Priority</label><select id="tk-priority">'+prioOpts+'</select></div></div>')
+            : (assigneePickerHtml + '<div style="display:flex;gap:12px;flex-wrap:wrap"><div class="form-group" style="flex:1;min-width:140px"><label>Priority</label><select id="tk-priority">'+prioOpts+'</select></div></div>'))
+        : ('<div style="display:flex;gap:12px;flex-wrap:wrap"><div class="form-group" style="flex:1;min-width:140px"><label>Priority</label><select id="tk-priority">'+prioOpts+'</select></div></div>')
+      ) +
+      (showAssignee ? ccPickerHtml : '') +
+      '<div style="display:flex;gap:12px;flex-wrap:wrap">' +
+        '<div id="tk-due-wrap" class="form-group" style="flex:1;min-width:160px"><label>Due date</label><input type="date" id="tk-due" value="'+escHtml(dueVal)+'" /></div>' +
+        '<div class="form-group" style="flex:1;min-width:160px"><label>Repeat</label><select id="tk-recur" onchange="taskRecurChanged()">'+recOpts+'</select></div>' +
+      '</div>' +
+      '<div id="tk-recur-day-wrap" class="form-group" style="display:none"><label id="tk-recur-day-label" style="display:block;margin-bottom:6px">Schedule</label><div style="display:flex;gap:12px;flex-wrap:wrap"><div style="flex:1;min-width:150px"><div style="font-size:12px;color:var(--text-muted-color);margin-bottom:4px">Send on</div><select id="tk-recur-start" onchange="updateRecurHint()"></select></div><div style="flex:1;min-width:150px"><div style="font-size:12px;color:var(--text-muted-color);margin-bottom:4px">Due on</div><select id="tk-recur-due" onchange="updateRecurHint()"></select></div></div><div id="tk-recur-hint" style="font-size:12px;color:var(--text-muted-color);margin-top:6px"></div></div>' +
+      attachHtml +
+      (id?'':'<div class="form-group"><label>Subtasks <span style="color:var(--text-muted-color);font-weight:400">(one per line)</span></label><textarea id="tk-subs" rows="3" placeholder="Optional checklist, one item per line"></textarea></div>') +
+      '<div style="display:flex;gap:8px;margin-top:8px"><button class="btn btn-primary" onclick="taskSave('+(id||'null')+')">'+(id?'Save Changes':'Create Task')+'</button></div>' +
+    '</div></div>';
+  taskRecurChanged(t.recurrence_start_day, t.recurrence_day);
+}
+
+async function taskSave(id){
+  var payload = {
+    title: (document.getElementById('tk-title').value||'').trim(),
+    description: (document.getElementById('tk-desc').value||'').trim(),
+    priority: document.getElementById('tk-priority').value,
+    due_date: document.getElementById('tk-due').value||null,
+    recurrence: document.getElementById('tk-recur').value||''
+  };
+  if (payload.recurrence==='weekly'||payload.recurrence==='monthly'){
+    payload.recurrence_start_day = parseInt(((document.getElementById('tk-recur-start')||{}).value),10);
+    payload.recurrence_day = parseInt(((document.getElementById('tk-recur-due')||{}).value),10);
+    if (isNaN(payload.recurrence_start_day)) payload.recurrence_start_day = null;
+    if (isNaN(payload.recurrence_day)) payload.recurrence_day = null;
+  } else { payload.recurrence_start_day = null; payload.recurrence_day = null; }
+  if (!payload.title){ taskFeedback('Title is required.',true); return; }
+  var _asg=document.getElementById('tk-assignee'); if (_asg) payload.assigned_to = _asg.value||null;
+  if (!id && _taskForceSelf) payload.assigned_to = state.user.id;
+  var subsEl=document.getElementById('tk-subs');
+  if (subsEl){ payload.subtasks = subsEl.value.split('\n').map(function(x){return x.trim();}).filter(Boolean); }
+  if (document.getElementById('tk-cc-list')){
+    var ccIds=[]; document.querySelectorAll('.tk-cc:checked').forEach(function(c){ ccIds.push(parseInt(c.value,10)); });
+    payload.cc = ccIds;
+  }
+  if (!id && document.getElementById('tk-assignee-list')){
+    var assignees=[]; document.querySelectorAll('.tk-assignee:checked').forEach(function(c){ assignees.push(parseInt(c.value,10)); });
+    payload.assignees = assignees;
+    payload.attachments = _taskPendingFiles;
+    try {
+      var rb = await api('POST','/tasks/bulk',payload);
+      _taskPendingFiles=[];
+      if (rb && rb.ids && rb.ids.length===1) navigate('task-detail', rb.ids[0]); else navigate('tasks');
+    } catch(e){ taskFeedback(e.message,true); }
+    return;
+  }
+  if (!id) payload.attachments = _taskPendingFiles;
+  try {
+    var saved = id ? await api('PUT','/tasks/'+id,payload) : await api('POST','/tasks',payload);
+    var savedId = (saved && saved.id) || id;
+    if (id && _taskPendingFiles.length){ try { await api('POST','/tasks/'+savedId+'/attachments',{attachments:_taskPendingFiles}); } catch(e){} }
+    _taskPendingFiles=[];
+    _taskForceSelf=false;
+    navigate('task-detail', savedId);
+  } catch(e){ taskFeedback(e.message,true); }
+}
+
+
+// ── Scheduled Messages (admin) ───────────────────────────────────────────────
+var SM_DOW = ['Sunday','Monday','Tuesday','Wednesday','Thursday','Friday','Saturday'];
+var SM_ROLES = ['locksmith','locksmith_coordinator','roadside_technician','manager','admin'];
+
+function smTime12(t) {
+  var p = String(t || '09:00').split(':');
+  var h = parseInt(p[0], 10); var mm = p[1] || '00';
+  var ap = h >= 12 ? 'PM' : 'AM'; var h12 = h % 12; if (h12 === 0) h12 = 12;
+  return h12 + ':' + mm + ' ' + ap + ' ET';
+}
+
+async function renderScheduledMessages(el) {
+  if (!can('manage_settings')) { el.innerHTML = '<div class="alert alert-error">Access denied.</div>'; return; }
+  el.innerHTML =
+    '<div class="page-header"><div class="page-title"><h2>Scheduled Messages</h2><p>Automated SMS &amp; email reminders that send on a weekly schedule.</p></div>' +
+      '<button class="btn btn-primary" onclick="smNewForm()">+ New Scheduled Message</button></div>' +
+    '<div id="sm-feedback"></div>' +
+    '<div id="sm-body"><div class="loading">Loading…</div></div>';
+  await smLoadList();
+}
+
+async function smLoadList() {
+  var body = document.getElementById('sm-body');
+  if (!body) return;
+  try {
+    var list = await api('GET', '/scheduled');
+    window._smData = list;
+    if (!list.length) {
+      body.innerHTML = '<div class="card"><div class="card-body"><p style="color:var(--text-muted-color)">No scheduled messages yet. Create one to automate a recurring reminder.</p></div></div>';
+      return;
+    }
+    body.innerHTML = list.map(smCard).join('');
+  } catch (e) {
+    body.innerHTML = '<div class="alert alert-error">' + escHtml(e.message) + '</div>';
+  }
+}
+
+function smCard(m) {
+  var roles = [];
+  try { roles = JSON.parse(m.audience_roles || '[]'); } catch (e) { roles = []; }
+  var audience = roles.length ? roles.map(roleLabel).join(', ') : 'No one selected';
+  var chan = m.channel === 'both' ? 'SMS + Email' : (m.channel === 'email' ? 'Email' : 'SMS');
+  var when = SM_DOW[m.day_of_week] + 's at ' + smTime12(m.send_time);
+  var status = m.enabled
+    ? '<span style="color:#22c55e;font-weight:600">On</span>'
+    : '<span style="color:var(--text-muted-color)">Off</span>';
+  return '<div class="card" style="margin-bottom:14px"><div class="card-body">' +
+    '<div style="display:flex;justify-content:space-between;align-items:flex-start;gap:12px;flex-wrap:wrap">' +
+      '<div style="flex:1;min-width:240px">' +
+        '<div style="font-size:16px;font-weight:700;margin-bottom:6px">' + escHtml(m.name) + ' &nbsp; ' + status + '</div>' +
+        '<div style="font-size:13px;color:var(--text-muted-color);line-height:1.7">' +
+          'When: ' + escHtml(when) + '<br>' +
+          'Sends: ' + escHtml(chan) + ' to ' + escHtml(audience) + (m.ignore_opt_out ? ' (ignores opt-out)' : '') +
+        '</div>' +
+        '<div style="font-size:13px;margin-top:8px;padding:8px 10px;background:var(--bg-elevated);border-radius:6px;white-space:pre-wrap">' + escHtml(m.message) + '</div>' +
+      '</div>' +
+      '<div style="display:flex;gap:6px;flex-wrap:wrap;align-items:flex-start">' +
+        '<button class="btn btn-secondary btn-sm" onclick="smTest(' + m.id + ', this)">Send test to me</button>' +
+        '<button class="btn btn-secondary btn-sm" onclick="smEditForm(' + m.id + ')">Edit</button>' +
+        '<button class="btn btn-secondary btn-sm" onclick="smToggle(' + m.id + ')">' + (m.enabled ? 'Turn off' : 'Turn on') + '</button>' +
+        '<button class="btn btn-ghost btn-sm" style="color:#ef4444" onclick="smDelete(' + m.id + ')">Delete</button>' +
+      '</div>' +
+    '</div>' +
+  '</div></div>';
+}
+
+function smNewForm() { smRenderForm(null); }
+function smEditForm(id) { var m = (window._smData || []).filter(function (x) { return x.id === id; })[0]; smRenderForm(m || null); }
+
+function smRenderForm(m) {
+  var body = document.getElementById('sm-body');
+  if (!body) return;
+  m = m || {};
+  var roles = [];
+  try { roles = JSON.parse(m.audience_roles || '[]'); } catch (e) { roles = []; }
+  var chan = m.channel || 'sms';
+  var dow = (m.day_of_week != null) ? m.day_of_week : 1;
+  var roleChecks = SM_ROLES.map(function (r) {
+    var ck = roles.indexOf(r) !== -1 ? ' checked' : '';
+    return '<label style="display:inline-flex;align-items:center;gap:6px;margin-right:16px;font-weight:400"><input type="checkbox" class="sm-role" value="' + r + '"' + ck + ' style="width:auto"> ' + roleLabel(r) + '</label>';
+  }).join('');
+  var dowOpts = SM_DOW.map(function (n, i) { return '<option value="' + i + '"' + (i === dow ? ' selected' : '') + '>' + n + '</option>'; }).join('');
+  body.innerHTML =
+    '<div class="card"><div class="card-body">' +
+      '<h3 style="margin-top:0">' + (m.id ? 'Edit' : 'New') + ' Scheduled Message</h3>' +
+      '<div class="form-group"><label>Name</label><input type="text" id="sm-name" value="' + escHtml(m.name || '') + '" placeholder="e.g. Monday deposit reminder" /></div>' +
+      '<div style="display:flex;gap:12px;flex-wrap:wrap">' +
+        '<div class="form-group" style="flex:1;min-width:150px"><label>Day of week</label><select id="sm-dow">' + dowOpts + '</select></div>' +
+        '<div class="form-group" style="flex:1;min-width:150px"><label>Time (ET)</label><input type="time" id="sm-time" value="' + escHtml(m.send_time || '09:00') + '" /></div>' +
+        '<div class="form-group" style="flex:1;min-width:150px"><label>Channel</label><select id="sm-channel">' +
+          '<option value="sms"' + (chan === 'sms' ? ' selected' : '') + '>SMS</option>' +
+          '<option value="email"' + (chan === 'email' ? ' selected' : '') + '>Email</option>' +
+          '<option value="both"' + (chan === 'both' ? ' selected' : '') + '>SMS + Email</option>' +
+        '</select></div>' +
+      '</div>' +
+      '<div class="form-group"><label>Send to (roles)</label><div style="padding:6px 0">' + roleChecks + '</div></div>' +
+      '<div class="form-group"><label style="display:inline-flex;align-items:center;gap:8px;font-weight:400"><input type="checkbox" id="sm-ignore"' + (m.ignore_opt_out ? ' checked' : '') + ' style="width:auto"> Send even to people who turned off notifications (recommended for required reminders)</label></div>' +
+      '<div class="form-group"><label>Email subject <span style="color:var(--text-muted-color);font-weight:400">(used only for email)</span></label><input type="text" id="sm-subject" value="' + escHtml(m.subject || '') + '" placeholder="e.g. Deposit day reminder" /></div>' +
+      '<div class="form-group"><label>Message</label><textarea id="sm-message" rows="4" placeholder="The text / email body. Use {first_name} to personalize.">' + escHtml(m.message || '') + '</textarea></div>' +
+      '<div class="form-group"><label style="display:inline-flex;align-items:center;gap:8px;font-weight:400"><input type="checkbox" id="sm-enabled"' + (m.enabled === false ? '' : ' checked') + ' style="width:auto"> Enabled</label></div>' +
+      '<div style="display:flex;gap:8px;margin-top:8px">' +
+        '<button class="btn btn-primary" onclick="smSave(' + (m.id || 'null') + ')">' + (m.id ? 'Save Changes' : 'Create') + '</button>' +
+        '<button class="btn btn-secondary" onclick="smLoadList()">Cancel</button>' +
+      '</div>' +
+    '</div></div>';
+}
+
+async function smSave(id) {
+  var roles = [];
+  document.querySelectorAll('.sm-role').forEach(function (c) { if (c.checked) roles.push(c.value); });
+  var fb = document.getElementById('sm-feedback');
+  var payload = {
+    name: document.getElementById('sm-name').value.trim(),
+    day_of_week: parseInt(document.getElementById('sm-dow').value, 10),
+    send_time: document.getElementById('sm-time').value || '09:00',
+    channel: document.getElementById('sm-channel').value,
+    audience_roles: roles,
+    ignore_opt_out: document.getElementById('sm-ignore').checked,
+    subject: document.getElementById('sm-subject').value.trim(),
+    message: document.getElementById('sm-message').value.trim(),
+    enabled: document.getElementById('sm-enabled').checked
+  };
+  if (!payload.message) { fb.innerHTML = '<div class="alert alert-error">Message text is required.</div>'; return; }
+  if (!roles.length) { fb.innerHTML = '<div class="alert alert-error">Pick at least one role to send to.</div>'; return; }
+  try {
+    if (id) await api('PUT', '/scheduled/' + id, payload);
+    else await api('POST', '/scheduled', payload);
+    fb.innerHTML = '<div class="alert alert-success">Saved.</div>';
+    await smLoadList();
+  } catch (e) {
+    fb.innerHTML = '<div class="alert alert-error">' + escHtml(e.message) + '</div>';
+  }
+}
+
+async function smToggle(id) {
+  var m = (window._smData || []).filter(function (x) { return x.id === id; })[0];
+  if (!m) return;
+  var roles = [];
+  try { roles = JSON.parse(m.audience_roles || '[]'); } catch (e) { roles = []; }
+  try {
+    await api('PUT', '/scheduled/' + id, {
+      name: m.name, day_of_week: m.day_of_week, send_time: m.send_time, channel: m.channel,
+      audience_roles: roles, ignore_opt_out: m.ignore_opt_out, subject: m.subject, message: m.message, enabled: !m.enabled
+    });
+    await smLoadList();
+  } catch (e) {
+    var fb = document.getElementById('sm-feedback');
+    if (fb) fb.innerHTML = '<div class="alert alert-error">' + escHtml(e.message) + '</div>';
+  }
+}
+
+async function smTest(id, btn) {
+  var fb = document.getElementById('sm-feedback');
+  if (btn) { btn.disabled = true; btn.textContent = 'Sending…'; }
+  try {
+    var r = await api('POST', '/scheduled/' + id + '/test', {});
+    var detail = r && r.sent ? (r.sent.sms + ' SMS, ' + r.sent.email + ' email') : 'sent';
+    if (fb) fb.innerHTML = '<div class="alert alert-success">Test sent to you (' + detail + '). If you did not get it, confirm your user has a phone and email set.</div>';
+  } catch (e) {
+    if (fb) fb.innerHTML = '<div class="alert alert-error">' + escHtml(e.message) + '</div>';
+  }
+  if (btn) { btn.disabled = false; btn.textContent = 'Send test to me'; }
+}
+
+async function smDelete(id) {
+  if (!confirm('Delete this scheduled message? This cannot be undone.')) return;
+  try { await api('DELETE', '/scheduled/' + id); await smLoadList(); }
+  catch (e) { alert(e.message); }
+}
+
+
+async function renderSettings(el) {
+  if (state.user.role !== 'admin') { el.innerHTML = '<div class="alert alert-error">Access denied.</div>'; return; }
+  // Legacy: redirect to new split pages
+  navigate('company-info');
+}
+
+function previewSettingsLogo(input) {
+  const file = input.files[0];
+  if (!file) return;
+  const reader = new FileReader();
+  reader.onload = function(e) {
+    const img = new Image();
+    img.onload = function() {
+      const canvas = document.createElement('canvas');
+      var w = img.width, h = img.height, maxW = 500;
+      if (w > maxW) { h = Math.round(h * maxW / w); w = maxW; }
+      canvas.width = w; canvas.height = h;
+      canvas.getContext('2d').drawImage(img, 0, 0, w, h);
+      const resized = canvas.toDataURL('image/png');
+      const area = document.getElementById('logo-preview-area');
+      area.innerHTML = '<img src="' + resized + '" style="max-width:100%;max-height:100%;object-fit:contain" />';
+      area.dataset.logoData = resized;
+      const btn = document.getElementById('save-logo-btn');
+      if (btn) { btn.style.display = 'inline-flex'; }
+    };
+    img.src = e.target.result;
+  };
+  reader.readAsDataURL(file);
+}
+
+async function saveLogo() {
+  const area = document.getElementById('logo-preview-area');
+  const logoData = area && area.dataset.logoData;
+  if (!logoData) return;
+  const btn = document.getElementById('save-logo-btn');
+  try {
+    if (btn) btn.disabled = true;
+    await api('PUT', '/settings/logo', { value: logoData });
+    document.getElementById('settings-success').innerHTML = '<div class="alert alert-success">Logo saved. It will appear on all printed POs.</div>';
+    if (btn) btn.style.display = 'none';
+    delete area.dataset.logoData;
+    setTimeout(function() {
+      const el = document.getElementById('settings-success');
+      if (el) el.innerHTML = '';
+    }, 4000);
+  } catch(err) {
+    document.getElementById('settings-error').innerHTML = '<div class="alert alert-error">' + escHtml(err.message) + '</div>';
+  } finally {
+    if (btn) btn.disabled = false;
+  }
+}
+
+async function removeLogo() {
+  if (!confirm('Remove the company logo from printed POs?')) return;
+  try {
+    await api('DELETE', '/settings/logo');
+    navigate('company-info');
+  } catch(err) {
+    document.getElementById('settings-error').innerHTML = '<div class="alert alert-error">' + escHtml(err.message) + '</div>';
+  }
+}
+
+async function saveCompanyInfo() {
+  const fields = [
+    { key: 'company_name', id: 'company-name' },
+    { key: 'company_phone', id: 'company-phone' },
+    { key: 'company_address', id: 'company-address' },
+    { key: 'company_city_state_zip', id: 'company-city-zip' }
+  ];
+  try {
+    for (const f of fields) {
+      const val = (document.getElementById(f.id) || {}).value || '';
+      if (val.trim()) {
+        await api('PUT', '/settings/' + f.key, { value: val.trim() });
+      } else {
+        await api('DELETE', '/settings/' + f.key).catch(function(){});
+      }
+    }
+    document.getElementById('settings-success').innerHTML = '<div class="alert alert-success">Company information saved.</div>';
+    setTimeout(function() { const el = document.getElementById('settings-success'); if (el) el.innerHTML = ''; }, 4000);
+  } catch(err) {
+    document.getElementById('settings-error').innerHTML = '<div class="alert alert-error">' + escHtml(err.message) + '</div>';
+  }
+}
+
+async function saveAIContext() {
+  const val = (document.getElementById('ai-context-input') || {}).value || '';
+  try {
+    if (val.trim()) {
+      await api('PUT', '/settings/ai_context', { value: val.trim() });
+    } else {
+      await api('DELETE', '/settings/ai_context').catch(function(){});
+    }
+    document.getElementById('settings-success').innerHTML = '<div class="alert alert-success">Neurolock context saved.</div>';
+    setTimeout(function() { const el = document.getElementById('settings-success'); if (el) el.innerHTML = ''; }, 4000);
+  } catch(err) {
+    document.getElementById('settings-error').innerHTML = '<div class="alert alert-error">' + escHtml(err.message) + '</div>';
+  }
+}
+
+var _geicoStats = null;
+var _geicoRows = [];
+var _geicoPage = 1;
+var GEICO_PAGE_SIZE = 25;
+
+async function renderGeicoReviews(el) {
+  if (!can('manage_geico')) { el.innerHTML = '<div class="alert alert-error">Access denied.</div>'; return; }
+  var cities = [];
+  try { cities = await api('GET', '/cities'); } catch(e) { cities = []; }
+  var cityOpts = '<option value="">All cities</option>' + cities.map(function(c){ return '<option value="' + escHtml(c.code) + '">' + escHtml(c.name) + '</option>'; }).join('');
+  var iS = 'padding:8px 10px;background:var(--surface-color);border:1px solid rgba(249,115,22,0.35);border-radius:6px;color:var(--text-color);font-size:13px;outline:none';
+  var lbl = 'display:block;font-size:11px;color:var(--text-muted-color);margin-bottom:4px';
+  el.innerHTML =
+    '<div class="page-header"><div><div class="page-title">Geico Surveys</div><div class="page-subtitle">ERS survey history by city, service &amp; rating</div></div></div>' +
+    '<div id="geico-updated" style="font-size:12px;color:var(--text-muted-color);margin:-6px 0 14px">Auto-updates daily at 2:30 PM EST.</div>' +
+    '<div id="geico-filters" style="display:flex;flex-wrap:wrap;gap:10px;align-items:end;margin-bottom:16px">' +
+      '<div><label style="' + lbl + '">From</label><input type="date" id="geico-from" style="' + iS + '" onchange="geicoLoad()" /></div>' +
+      '<div><label style="' + lbl + '">To</label><input type="date" id="geico-to" style="' + iS + '" onchange="geicoLoad()" /></div>' +
+      '<div><label style="' + lbl + '">City</label><select id="geico-city" style="' + iS + '" onchange="geicoLoad()">' + cityOpts + '</select></div>' +
+      '<div><label style="' + lbl + '">Rating</label><select id="geico-rating" style="' + iS + '" onchange="geicoLoad()"><option value="">All ratings</option></select></div>' +
+      '<div><label style="' + lbl + '">Service</label><select id="geico-service" style="' + iS + '" onchange="geicoLoad()"><option value="">All services</option></select></div>' +
+      '<div><label style="' + lbl + '">State</label><select id="geico-state" style="' + iS + '" onchange="geicoLoad()"><option value="">All states</option></select></div>' +
+      '<button class="btn btn-secondary btn-sm" onclick="geicoClearFilters()">Clear</button>' +
+    '</div>' +
+    '<div id="geico-stats" style="margin-bottom:16px"></div>' +
+    '<div id="geico-table-wrap"></div>';
+  await geicoLoad(true);
+}
+
+function geicoClearFilters() {
+  ['geico-from','geico-to','geico-city','geico-rating','geico-service','geico-state'].forEach(function(id){ var e=document.getElementById(id); if(e) e.value=''; });
+  geicoLoad();
+}
+
+function geicoDateQS() {
+  var qs = [];
+  var from = (document.getElementById('geico-from')||{}).value;
+  var to = (document.getElementById('geico-to')||{}).value;
+  if (from) qs.push('from=' + encodeURIComponent(from));
+  if (to) { var d = new Date(to + 'T00:00:00Z'); d.setUTCDate(d.getUTCDate()+1); qs.push('to=' + encodeURIComponent(d.toISOString().slice(0,10))); }
+  return qs;
+}
+
+function geicoListQS() {
+  var qs = geicoDateQS();
+  var city = (document.getElementById('geico-city')||{}).value;
+  var rating = (document.getElementById('geico-rating')||{}).value;
+  var service = (document.getElementById('geico-service')||{}).value;
+  var st = (document.getElementById('geico-state')||{}).value;
+  if (city) qs.push('city_code=' + encodeURIComponent(city));
+  if (rating) qs.push('rating=' + encodeURIComponent(rating));
+  if (service) qs.push('service=' + encodeURIComponent(service));
+  if (st) qs.push('loss_state=' + encodeURIComponent(st));
+  return qs.length ? ('?' + qs.join('&')) : '';
+}
+
+async function geicoLoad(initial) {
+  var statsEl = document.getElementById('geico-stats');
+  var tableEl = document.getElementById('geico-table-wrap');
+  if (statsEl) statsEl.innerHTML = '<div style="color:var(--text-muted-color);padding:12px">Loading...</div>';
+  var dq = geicoDateQS();
+  var dqs = dq.length ? ('?' + dq.join('&')) : '';
+  try {
+    var stats = await api('GET', '/geico/stats' + geicoListQS());
+    var rows = await api('GET', '/geico' + geicoListQS());
+    _geicoStats = stats; _geicoRows = rows; _geicoPage = 1;
+    if (initial) geicoPopulateDropdowns(stats);
+    geicoRenderStats(stats);
+    geicoRenderTable(rows);
+  } catch(e) {
+    if (statsEl) statsEl.innerHTML = '<div class="alert alert-error">' + escHtml(e.message) + '</div>';
+    if (tableEl) tableEl.innerHTML = '';
+  }
+}
+
+function geicoPopulateDropdowns(stats) {
+  function fill(id, arr) {
+    var sel = document.getElementById(id); if (!sel) return;
+    var cur = sel.value;
+    var first = sel.options[0] ? sel.options[0].outerHTML : '';
+    sel.innerHTML = first + (arr||[]).filter(function(x){ return x.k && x.k !== '(none)'; }).map(function(x){ return '<option value="' + escHtml(x.k) + '">' + escHtml(x.k) + '</option>'; }).join('');
+    sel.value = cur;
+  }
+  fill('geico-rating', stats.byRating);
+  fill('geico-service', stats.byService);
+  fill('geico-state', stats.byState);
+}
+
+function geicoStatCard(label, value, sub, color) {
+  return '<div class="card" style="flex:1;min-width:140px;padding:16px">' +
+    '<div style="font-size:12px;color:var(--text-muted-color);text-transform:uppercase;letter-spacing:0.5px">' + escHtml(label) + '</div>' +
+    '<div style="font-size:26px;font-weight:800;color:' + (color || 'var(--text-color)') + ';margin-top:4px">' + escHtml(String(value)) + '</div>' +
+    (sub ? '<div style="font-size:12px;color:var(--text-muted-color);margin-top:2px">' + escHtml(sub) + '</div>' : '') +
+    '</div>';
+}
+
+function geicoPctColor(p){ return p >= 90 ? '#4f9d69' : (p >= 80 ? '#c9a13b' : '#cf5a52'); }
+function geicoRenderStats(s) {
+  var el = document.getElementById('geico-stats'); if (!el) return;
+  var total = s.total || 0;
+  var exc = (s.byRating||[]).filter(function(r){ return /excellent/i.test(r.k); }).reduce(function(a,b){ return a + b.n; }, 0);
+  var rated = (s.byRating||[]).filter(function(r){ return r.k !== '(none)'; }).reduce(function(a,b){ return a + b.n; }, 0);
+  var excPct = rated ? Math.round(exc*100/rated) : 0;
+  var otPct = s.onTimeAnswered ? Math.round(s.onTime*100/s.onTimeAnswered) : 0;
+  var nCities = (s.byCity||[]).filter(function(c){ return c.k !== '(unmatched)'; }).length;
+  var unmatched = (s.byCity||[]).filter(function(c){ return c.k === '(unmatched)'; }).reduce(function(a,b){ return a + b.n; }, 0);
+  var cards =
+    geicoStatCard('Total Surveys', total, '') +
+    geicoStatCard('% Excellent Surveys', excPct + '%', exc + ' of ' + rated, geicoPctColor(excPct)) +
+    geicoStatCard('On-Time', otPct + '%', (s.onTime||0) + ' of ' + (s.onTimeAnswered||0) + ' answered', geicoPctColor(otPct)) +
+    geicoStatCard('Cities', nCities, unmatched ? (unmatched + ' unmatched') : '');
+  var breakdown =
+    '<div class="card" style="flex:2;min-width:240px;padding:16px">' +
+      '<div style="font-size:12px;color:var(--text-muted-color);text-transform:uppercase;letter-spacing:0.5px;margin-bottom:8px">By City</div>' +
+      ((s.byCity||[]).length ? (s.byCity||[]).slice(0,8).map(function(c){
+        var pct = total ? Math.round(c.n*100/total) : 0;
+        return '<div style="display:flex;align-items:center;gap:8px;margin:4px 0">' +
+          '<div style="width:120px;font-size:13px;color:var(--text-color);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">' + escHtml(c.k) + '</div>' +
+          '<div style="flex:1;background:rgba(249,115,22,0.15);border-radius:4px;height:10px"><div style="width:' + pct + '%;background:var(--primary);height:10px;border-radius:4px"></div></div>' +
+          '<div style="width:36px;text-align:right;font-size:12px;color:var(--text-muted-color)">' + c.n + '</div>' +
+        '</div>';
+      }).join('') : '<div style="color:var(--text-muted-color);font-size:13px">No data</div>') +
+    '</div>';
+  el.innerHTML = '<div style="display:flex;flex-wrap:wrap;gap:12px">' + cards + '</div>';
+}
+
+function geicoRatingBadge(r) {
+  if (!r) return '—';
+  var c = /excellent/i.test(r) ? '#22c55e' : /good/i.test(r) ? '#84cc16' : /fair/i.test(r) ? '#f59e0b' : /poor|bad/i.test(r) ? '#ef4444' : '#9ca3af';
+  return '<span style="display:inline-block;padding:2px 8px;border-radius:10px;font-size:12px;font-weight:600;color:#fff;background:' + c + '">' + escHtml(r) + '</span>';
+}
+
+function geicoPaginate(p) { _geicoPage = p; geicoRenderTable(_geicoRows); }
+function geicoPageSize(v) { GEICO_PAGE_SIZE = parsePageSize(v); _geicoPage = 1; geicoRenderTable(_geicoRows); }
+function geicoRenderTable(rows) {
+  var wrap = document.getElementById('geico-table-wrap'); if (!wrap) return;
+  var total = rows.length;
+  var totalPages = Math.max(1, Math.ceil(total / GEICO_PAGE_SIZE));
+  if (_geicoPage > totalPages) _geicoPage = totalPages;
+  if (_geicoPage < 1) _geicoPage = 1;
+  var _start = (_geicoPage - 1) * GEICO_PAGE_SIZE;
+  var page = rows.slice(_start, _start + GEICO_PAGE_SIZE);
+  var _showing = total === 0 ? '0' : ((_start + 1) + '-' + Math.min(_start + GEICO_PAGE_SIZE, total));
+  var _sizeCtl = pageSizeControl(GEICO_PAGE_SIZE, 'geicoPageSize');
+  var _btns = '';
+  if (totalPages > 1) {
+    for (var _i = 1; _i <= totalPages; _i++) { _btns += '<button class="btn btn-sm ' + (_i === _geicoPage ? 'btn-primary' : 'btn-secondary') + '" onclick="geicoPaginate(' + _i + ')">' + _i + '</button> '; }
+    _btns = '<button class="btn btn-secondary btn-sm" onclick="geicoPaginate(' + (_geicoPage-1) + ')" ' + (_geicoPage===1?'disabled':'') + '>&lsaquo;</button> ' + _btns + '<button class="btn btn-secondary btn-sm" onclick="geicoPaginate(' + (_geicoPage+1) + ')" ' + (_geicoPage===totalPages?'disabled':'') + '>&rsaquo;</button>';
+  }
+  var _pager = '<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:12px">' + _sizeCtl + _btns + '</div>';
+  wrap.innerHTML =
+    '<div style="font-size:12px;color:var(--text-muted-color);margin-bottom:8px">Showing ' + _showing + ' of ' + total + ' survey' + (total===1?'':'s') + '</div>' +
+    '<div class="card"><div class="table-wrap"><table>' +
+      '<thead><tr><th>Received</th><th>Account #</th><th>City</th><th>PO #</th><th>Service</th><th>State</th><th>Dispatch</th><th>On Time</th><th>Arrival</th><th>Rating</th></tr></thead><tbody>' +
+      (total === 0
+        ? '<tr><td colspan="10" style="text-align:center;color:var(--text-muted-color);padding:32px">No surveys found.</td></tr>'
+        : page.map(function(r){
+            return '<tr>' +
+              '<td style="white-space:nowrap">' + escHtml(r.date_received||'—') + '</td>' +
+              '<td>' + escHtml(r.account_number||'—') + '</td>' +
+              '<td>' + escHtml(r.city_name||'—') + '</td>' +
+              '<td>' + escHtml(r.po_number||'—') + '</td>' +
+              '<td>' + escHtml(r.service||'—') + '</td>' +
+              '<td>' + escHtml(r.loss_state||'—') + '</td>' +
+              '<td style="white-space:nowrap">' + escHtml(r.date_of_dispatch||'—') + '</td>' +
+              '<td>' + escHtml(r.arrived_on_time||'—') + '</td>' +
+              '<td>' + escHtml(r.time_to_arrive||'—') + '</td>' +
+              '<td>' + geicoRatingBadge(r.rating) + '</td>' +
+            '</tr>';
+          }).join('')) +
+      '</tbody></table></div></div>' + _pager;
+}
+// ── Vendors ───────────────────────────────────────────────────────────────────
+
+var _vendorsData = [];
+var _vendorCities = [];
+
+async function renderVendors(el) {
+  if (!can('manage_vendors')) { el.innerHTML = '<div class="alert alert-error">Access denied.</div>'; return; }
+  try { _vendorsData = await api('GET', '/vendors'); } catch(e) { _vendorsData = []; }
+  try { _vendorCities = await api('GET', '/cities'); } catch(e) { _vendorCities = []; }
+  el.innerHTML =
+    '<div class="page-header"><div><div class="page-title">Accounts</div><div class="page-subtitle">Vendor account logins &amp; credentials</div></div>' +
+    '<button class="btn btn-primary" onclick="showVendorModal()">+ Add Account</button></div>' +
+    '<div id="vendor-msg"></div>' +
+    '<div style="margin-bottom:16px"><input type="text" id="vendors-search" placeholder="Search by name, website, or username..." style="width:100%;max-width:400px;padding:8px 12px;background:var(--surface-color);border:1px solid rgba(249,115,22,0.35);border-radius:6px;color:var(--text-color);font-size:14px;outline:none;box-shadow:0 0 0 1px rgba(249,115,22,0.15)" oninput="vendorsFilter(this.value)" /></div>' +
+    '<div id="vendors-table-wrap"></div>';
+  vendorsRenderTable('');
+}
+
+function vendorsFilter(val) {
+  vendorsRenderTable(val.toLowerCase());
+}
+
+function vendorsRenderTable(search) {
+  var filtered = _vendorsData.filter(function(v) {
+    if (!search) return true;
+    return (v.name || '').toLowerCase().includes(search) ||
+           (v.website || '').toLowerCase().includes(search) ||
+           (v.username || '').toLowerCase().includes(search) ||
+           (v.account_number || '').toLowerCase().includes(search);
+  });
+  var wrap = document.getElementById('vendors-table-wrap');
+  if (!wrap) return;
+  wrap.innerHTML =
+    '<div class="card"><div class="table-wrap">' +
+      '<table>' +
+        '<thead><tr><th>Account Name</th><th>Website</th><th>Account #</th><th>City Assigned</th><th>Username</th><th>Password</th><th>Notes</th><th>Rep Name</th><th>Rep Email</th><th>Rep Phone</th><th></th></tr></thead>' +
+        '<tbody>' +
+          (filtered.length === 0
+            ? '<tr><td colspan="11" style="text-align:center;color:var(--text-muted-color);padding:32px">No accounts found.</td></tr>'
+            : filtered.map(function(v) {
+                return '<tr>' +
+                  '<td style="font-weight:600;color:var(--text)">' + escHtml(v.name) + '</td>' +
+                  '<td>' + (v.website ? '<a href="#" onclick="vendorOpenSite(\'' + escHtml(v.website).replace(/'/g,"\\'") + '\',\'' + escHtml(v.password||'').replace(/'/g,"\\'") + '\');return false;" style="color:var(--primary)">' + escHtml(v.website) + '</a>' : '—') + '</td>' +
+                  '<td>' + escHtml(v.account_number || '—') + '</td>' +
+                  '<td>' + escHtml(vendorCityLabel(v.city_code)) + '</td>' +
+                  '<td>' + escHtml(v.username || '—') + '</td>' +
+                  '<td>' +
+                    (v.password
+                      ? '<span style="display:flex;align-items:center;gap:6px">' +
+                          '<span id="pw-' + v.id + '" style="font-family:monospace;letter-spacing:2px">••••••••</span>' +
+                          '<button class="btn btn-ghost btn-sm" style="padding:2px 6px;font-size:12px" onclick="toggleVendorPw(' + v.id + ',\'' + escHtml(v.password).replace(/'/g, "\\'") + '\')">Show</button>' +
+                        '</span>'
+                      : '—') +
+                  '</td>' +
+                  '<td style="max-width:200px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">' + escHtml(v.notes || '—') + '</td>' +
+                  '<td>' + escHtml(v.rep_name || '—') + '</td>' +
+                  '<td>' + (v.rep_email ? '<a href="mailto:' + escHtml(v.rep_email) + '" style="color:var(--primary)">' + escHtml(v.rep_email) + '</a>' : '—') + '</td>' +
+                  '<td>' + escHtml(v.rep_phone || '—') + '</td>' +
+                  '<td style="white-space:nowrap">' +
+                    '<button class="btn btn-secondary btn-sm" onclick="showVendorModal(' + v.id + ',\'' + escHtml(v.name).replace(/'/g,"\\'") + '\',\'' + escHtml(v.website||'').replace(/'/g,"\\'") + '\',\'' + escHtml(v.account_number||'').replace(/'/g,"\\'") + '\',\'' + escHtml(v.username||'').replace(/'/g,"\\'") + '\',\'' + escHtml(v.password||'').replace(/'/g,"\\'") + '\',\'' + escHtml(v.notes||'').replace(/'/g,"\\'") + '\',\'' + escHtml(v.rep_name||'').replace(/'/g,"\\'") + '\',\'' + escHtml(v.rep_email||'').replace(/'/g,"\\'") + '\',\'' + escHtml(v.rep_phone||'').replace(/'/g,"\\'") + '\')">Edit</button> ' +
+                    '<button class="btn btn-danger btn-sm" onclick="deleteVendor(' + v.id + ')">Delete</button>' +
+                  '</td>' +
+                '</tr>';
+              }).join('')) +
+        '</tbody>' +
+      '</table>' +
+    '</div></div>';
+}
+
+function toggleVendorPw(id, pw) {
+  const el = document.getElementById('pw-' + id);
+  const btn = el.nextElementSibling;
+  if (el.textContent === '••••••••') {
+    el.textContent = pw; btn.textContent = 'Hide';
+    if (navigator.clipboard) navigator.clipboard.writeText(pw).then(function() {
+      var tip = document.createElement('span');
+      tip.textContent = 'Copied!';
+      tip.style.cssText = 'position:fixed;background:#22c55e;color:#fff;font-size:12px;font-weight:600;padding:4px 10px;border-radius:6px;pointer-events:none;z-index:9999;transition:opacity 0.4s;white-space:nowrap';
+      var r = btn.getBoundingClientRect();
+      tip.style.left = r.left + 'px';
+      tip.style.top = (r.top - 30) + 'px';
+      document.body.appendChild(tip);
+      setTimeout(function() { tip.style.opacity = '0'; setTimeout(function() { tip.remove(); }, 400); }, 1200);
+    }).catch(function(){});
+  } else { el.textContent = '••••••••'; btn.textContent = 'Show'; }
+}
+
+function vendorOpenSite(url, pw) {
+  var open = function() { window.open(url.startsWith('http') ? url : 'https://' + url, '_blank'); };
+  if (pw && navigator.clipboard) {
+    navigator.clipboard.writeText(pw).then(function() {
+      var tip = document.createElement('span');
+      tip.textContent = 'Password copied!';
+      tip.style.cssText = 'position:fixed;top:20px;right:20px;background:#22c55e;color:#fff;font-size:13px;font-weight:600;padding:8px 16px;border-radius:8px;pointer-events:none;z-index:9999;transition:opacity 0.4s;box-shadow:0 4px 12px rgba(0,0,0,0.4)';
+      document.body.appendChild(tip);
+      setTimeout(function() { tip.style.opacity = '0'; setTimeout(function() { tip.remove(); }, 400); }, 1800);
+      open();
+    }).catch(open);
+  } else { open(); }
+}
+
+function vendorCityLabel(code){ if(!code) return 'All'; var c=(_vendorCities||[]).find(function(x){return x.code===code;}); return c ? c.name : code; }
+function vendorCityOptions(selected){ var opts='<option value="">All</option>'; (_vendorCities||[]).forEach(function(c){ opts += '<option value="'+escHtml(c.code)+'"'+(c.code===selected?' selected':'')+'>'+escHtml(c.name)+'</option>'; }); return opts; }
+function showVendorModal(id) {
+  const isEdit = !!id;
+  const _v = isEdit ? ((_vendorsData || []).find(function(x){ return x.id === id; }) || {}) : {};
+  const name = _v.name || '', website = _v.website || '', account_number = _v.account_number || '', username = _v.username || '', password = _v.password || '', notes = _v.notes || '', rep_name = _v.rep_name || '', rep_email = _v.rep_email || '', rep_phone = _v.rep_phone || '', city_code = _v.city_code || '';
+  const overlay = document.createElement('div');
+  overlay.className = 'modal-overlay';
+  overlay.id = 'vendor-modal-overlay';
+  overlay.innerHTML =
+    '<div class="modal" style="max-width:520px">' +
+      '<div class="modal-header"><span class="modal-title">' + (isEdit ? 'Edit Account' : 'Add Account') + '</span>' +
+        '<button class="btn btn-ghost btn-sm" onclick="document.getElementById(\'vendor-modal-overlay\').remove()">&#x2715;</button></div>' +
+      '<div class="modal-body">' +
+        '<div id="vendor-modal-error"></div>' +
+        '<div class="form-group"><label>Account Name *</label><input type="text" id="vm-name" value="' + escHtml(name||'') + '" placeholder="e.g. Amazon Business" /></div>' +
+        '<div class="form-group"><label>Website</label><input type="url" id="vm-website" value="' + escHtml(website||'') + '" placeholder="https://..." /></div>' +
+        '<div class="form-row">' +
+          '<div class="form-group"><label>Account #</label><input type="text" id="vm-account" value="' + escHtml(account_number||'') + '" placeholder="Account number" /></div>' +
+          '<div class="form-group"><label>Username</label><input type="text" id="vm-username" value="' + escHtml(username||'') + '" placeholder="Login username" /></div>' +
+        '</div>' +
+        '<div class="form-group"><label>Password</label>' +
+          '<div style="display:flex;gap:8px;align-items:center">' +
+            '<input type="password" id="vm-password" value="' + escHtml(password||'') + '" placeholder="Login password" style="flex:1" />' +
+            '<button type="button" class="btn btn-secondary btn-sm" style="white-space:nowrap" onclick="toggleVendorModalPw()">Show</button>' +
+          '</div></div>' +
+        '<div class="form-group"><label>City Assigned</label><select id="vm-city">' + vendorCityOptions(city_code) + '</select></div>' +
+        '<div class="form-group"><label>Notes</label><textarea id="vm-notes" placeholder="Any additional info...">' + escHtml(notes||'') + '</textarea></div>' +
+        '<div style="border-top:1px solid var(--border);margin:16px 0 12px;padding-top:12px;font-size:13px;font-weight:600;color:var(--text-muted-color);text-transform:uppercase;letter-spacing:0.05em">Rep Contact</div>' +
+        '<div class="form-group"><label>Rep Name</label><input type="text" id="vm-rep-name" value="' + escHtml(rep_name||'') + '" placeholder="Sales rep name" /></div>' +
+        '<div class="form-row">' +
+          '<div class="form-group"><label>Rep Email</label><input type="email" id="vm-rep-email" value="' + escHtml(rep_email||'') + '" placeholder="rep@vendor.com" /></div>' +
+          '<div class="form-group"><label>Rep Phone</label><input type="text" id="vm-rep-phone" value="' + escHtml(rep_phone||'') + '" placeholder="555-123-4567" /></div>' +
+        '</div>' +
+      '</div>' +
+      '<div class="modal-footer">' +
+        '<button class="btn btn-secondary" onclick="document.getElementById(\'vendor-modal-overlay\').remove()">Cancel</button>' +
+        '<button class="btn btn-primary" onclick="saveVendor(' + (id||'null') + ')">Save</button>' +
+      '</div>' +
+    '</div>';
+  document.body.appendChild(overlay);
+}
+
+function toggleVendorModalPw() {
+  const input = document.getElementById('vm-password');
+  const btn = input.nextElementSibling;
+  if (input.type === 'password') { input.type = 'text'; btn.textContent = 'Hide'; }
+  else { input.type = 'password'; btn.textContent = 'Show'; }
+}
+
+async function saveVendor(id) {
+  const name = (document.getElementById('vm-name')||{}).value.trim();
+  if (!name) { document.getElementById('vendor-modal-error').innerHTML = '<div class="alert alert-error">Account name is required.</div>'; return; }
+  const payload = {
+    name,
+    website: (document.getElementById('vm-website')||{}).value.trim() || null,
+    account_number: (document.getElementById('vm-account')||{}).value.trim() || null,
+    username: (document.getElementById('vm-username')||{}).value.trim() || null,
+    password: (document.getElementById('vm-password')||{}).value || null,
+    notes: (document.getElementById('vm-notes')||{}).value.trim() || null,
+    rep_name: (document.getElementById('vm-rep-name')||{}).value.trim() || null,
+    rep_email: (document.getElementById('vm-rep-email')||{}).value.trim() || null,
+    rep_phone: (document.getElementById('vm-rep-phone')||{}).value.trim() || null,
+    city_code: (document.getElementById('vm-city')||{}).value || null
+  };
+  try {
+    if (id) { await api('PUT', '/vendors/' + id, payload); }
+    else { await api('POST', '/vendors', payload); }
+    document.getElementById('vendor-modal-overlay').remove();
+    await renderVendors(document.getElementById('content'));
+  } catch(err) {
+    document.getElementById('vendor-modal-error').innerHTML = '<div class="alert alert-error">' + escHtml(err.message) + '</div>';
+  }
+}
+
+async function deleteVendor(id) {
+  if (!confirm('Delete this account? This cannot be undone.')) return;
+  try {
+    await api('DELETE', '/vendors/' + id);
+    await renderVendors(document.getElementById('content'));
+  } catch(err) {
+    const msg = document.getElementById('vendor-msg');
+    if (msg) msg.innerHTML = '<div class="alert alert-error">' + escHtml(err.message) + '</div>';
+  }
+}
+
+// ── Cities ───────────────────────────────────────────────────────────────────
+
+async function renderCities(el) {
+  if (!can('manage_cities')) { el.innerHTML = '<div class="alert alert-error">Access denied.</div>'; return; }
+  try {
+    const cities = await api('GET', '/cities/all');
+    el.innerHTML =
+      '<div class="page-header"><div><div class="page-title">Cities</div><div class="page-subtitle">Manage city codes used in PO numbers</div></div><button class="btn btn-primary" onclick="showCityModal(null)" style="white-space:nowrap">' + icons.plus + ' Add City</button></div>' +
+      '<div id="cities-error"></div>' +
+      '<div class="card"><div class="card-body" style="padding:0"><div class="table-wrap"><table>' +
+        '<thead><tr><th>Code</th><th>Name</th><th>Status</th><th></th></tr></thead>' +
+        '<tbody>' + cities.map(function(c) {
+          const isInactive = c.active === false;
+          return '<tr class="' + (isInactive ? 'user-row-inactive' : '') + '">' +
+            '<td><strong style="font-family:monospace;color:var(--primary)">' + escHtml(c.code) + '</strong></td>' +
+            '<td>' + escHtml(c.name) + '</td>' +
+            '<td>' + (isInactive ? '<span class="badge badge-inactive">Inactive</span>' : '<span style="color:var(--success);font-size:13px">&#10003; Active</span>') + '</td>' +
+            '<td class="flex-gap">' +
+              '<button class="btn btn-secondary btn-sm" onclick="showCityModal(' + c.id + ')">Edit</button>' +
+              '<button class="btn btn-secondary btn-sm" onclick="showAddressesModal(\'' + escHtml(c.code) + '\', \'' + escHtml(c.name) + '\')">Addresses</button>' +
+              (!isInactive ? '<button class="btn btn-danger btn-sm" onclick="deactivateCity(' + c.id + ')">Deactivate</button>' : '') +
+              (isInactive ? '<button class="btn btn-success btn-sm" onclick="reactivateCity(' + c.id + ')">Reactivate</button>' : '') +
+            '</td>' +
+          '</tr>';
+        }).join('') +
+        '</tbody></table></div>' +
+        (cities.length === 0 ? '<div class="empty-state"><h3>No cities yet</h3><p>Add your first city to start creating POs.</p></div>' : '') +
+      '</div></div>';
+  } catch(err) { el.innerHTML = '<div class="alert alert-error">' + escHtml(err.message) + '</div>'; }
+}
+
+async function showCityModal(id) {
+  let city = null;
+  if (id) {
+    try {
+      const all = await api('GET', '/cities/all');
+      city = all.find(function(c){ return c.id === id; });
+    } catch(e) {}
+  }
+  const overlay = document.createElement('div');
+  overlay.className = 'modal-overlay';
+  overlay.innerHTML =
+    '<div class="modal">' +
+      '<div class="modal-header"><span class="modal-title">' + (id ? 'Edit City' : 'Add City') + '</span><button class="btn btn-ghost btn-sm" onclick="this.closest(\'.modal-overlay\').remove()">&#x2715;</button></div>' +
+      '<div class="modal-body">' +
+        '<div id="modal-error"></div>' +
+        '<div class="form-group"><label>City Name</label><input type="text" id="modal-city-name" value="' + escHtml(city ? city.name : '') + '" placeholder="e.g. Chicago" /></div>' +
+        '<div class="form-group"><label>3-Letter Code</label><input type="text" id="modal-city-code" value="' + escHtml(city ? city.code : '') + '" placeholder="e.g. CHI" maxlength="3" style="text-transform:uppercase" /></div>' +
+        '<div class="text-muted mt-2">The code appears at the start of PO numbers, e.g. <strong>CHI</strong>-2026-0001-TM</div>' +
+      '</div>' +
+      '<div class="modal-footer"><button class="btn btn-secondary" onclick="this.closest(\'.modal-overlay\').remove()">Cancel</button><button class="btn btn-primary" onclick="saveCity(' + (id||'null') + ', this)">Save</button></div>' +
+    '</div>';
+  document.body.appendChild(overlay);
+}
+
+async function saveCity(id, btn) {
+  const name = document.getElementById('modal-city-name').value.trim();
+  const code = document.getElementById('modal-city-code').value.trim().toUpperCase();
+  if (!name || !code) { document.getElementById('modal-error').innerHTML = '<div class="alert alert-error">Name and code are required.</div>'; return; }
+  if (code.length !== 3) { document.getElementById('modal-error').innerHTML = '<div class="alert alert-error">Code must be exactly 3 characters.</div>'; return; }
+  try {
+    btn.disabled = true;
+    if (id) { await api('PUT', '/cities/' + id, { name, code }); }
+    else { await api('POST', '/cities', { name, code }); }
+    document.querySelector('.modal-overlay').remove();
+    navigate('cities');
+  } catch(err) {
+    document.getElementById('modal-error').innerHTML = '<div class="alert alert-error">' + escHtml(err.message) + '</div>';
+    btn.disabled = false;
+  }
+}
+
+async function deactivateCity(id) {
+  if (!confirm('Deactivate this city? It will no longer appear in the PO city dropdown.')) return;
+  try { await api('POST', '/cities/' + id + '/deactivate'); navigate('cities'); }
+  catch(err) { document.getElementById('cities-error').innerHTML = '<div class="alert alert-error">' + escHtml(err.message) + '</div>'; }
+}
+
+async function reactivateCity(id) {
+  try { await api('POST', '/cities/' + id + '/reactivate'); navigate('cities'); }
+  catch(err) { document.getElementById('cities-error').innerHTML = '<div class="alert alert-error">' + escHtml(err.message) + '</div>'; }
+}
+
+async function showAddressesModal(cityCode, cityName) {
+  const overlay = document.createElement('div');
+  overlay.className = 'modal-overlay';
+  overlay.id = 'addr-modal-overlay';
+  document.body.appendChild(overlay);
+  await refreshAddressesModal(cityCode, cityName);
+}
+
+async function refreshAddressesModal(cityCode, cityName) {
+  const overlay = document.getElementById('addr-modal-overlay');
+  if (!overlay) return;
+  let addrs = [];
+  try { addrs = await api('GET', '/addresses?city_code=' + cityCode); } catch(e) {}
+  overlay.innerHTML =
+    '<div class="modal" style="max-width:560px">' +
+      '<div class="modal-header"><span class="modal-title">Shipping Addresses — ' + escHtml(cityName) + ' (' + escHtml(cityCode) + ')</span><button class="btn btn-ghost btn-sm" onclick="document.getElementById(\'addr-modal-overlay\').remove()">&#x2715;</button></div>' +
+      '<div class="modal-body">' +
+        '<div id="addr-modal-error"></div>' +
+        (addrs.length === 0
+          ? '<p style="color:var(--text-muted-color);margin-bottom:16px">No addresses yet.</p>'
+          : '<div style="margin-bottom:16px">' + addrs.map(function(a) {
+              return '<div style="display:flex;justify-content:space-between;align-items:center;padding:10px 0;border-bottom:1px solid var(--border)">' +
+                '<div><strong style="font-size:14px">' + escHtml(a.name) + '</strong><div style="font-size:13px;color:var(--text-muted-color);margin-top:2px">' + escHtml(a.address) + '</div></div>' +
+                '<div class="flex-gap">' +
+                  '<button class="btn btn-secondary btn-sm" onclick="editAddressInline(' + a.id + ',\'' + escHtml(a.name).replace(/'/g,"\\'") + '\',\'' + escHtml(a.address).replace(/'/g,"\\'") + '\',\'' + escHtml(cityCode) + '\',\'' + escHtml(cityName) + '\')">Edit</button>' +
+                  '<button class="btn btn-danger btn-sm" onclick="deleteAddress(' + a.id + ',\'' + escHtml(cityCode) + '\',\'' + escHtml(cityName) + '\')">&#x2715;</button>' +
+                '</div>' +
+              '</div>';
+            }).join('') + '</div>') +
+        '<div style="border-top:1px solid var(--border);padding-top:16px;margin-top:8px">' +
+          '<div style="font-size:13px;font-weight:600;margin-bottom:10px">Add New Address</div>' +
+          '<div class="form-group"><label>Location Name</label><input type="text" id="new-addr-name" placeholder="e.g. Main Warehouse" /></div>' +
+          '<div class="form-group"><label>Full Address</label><input type="text" id="new-addr-address" placeholder="e.g. 123 Main St, Jacksonville, FL 32099" /></div>' +
+        '</div>' +
+      '</div>' +
+      '<div class="modal-footer">' +
+        '<button class="btn btn-secondary" onclick="document.getElementById(\'addr-modal-overlay\').remove()">Close</button>' +
+        '<button class="btn btn-primary" onclick="addAddress(\'' + escHtml(cityCode) + '\',\'' + escHtml(cityName) + '\')">Add Address</button>' +
+      '</div>' +
+    '</div>';
+}
+
+async function addAddress(cityCode, cityName) {
+  const name = (document.getElementById('new-addr-name') || {}).value.trim();
+  const address = (document.getElementById('new-addr-address') || {}).value.trim();
+  if (!name || !address) { document.getElementById('addr-modal-error').innerHTML = '<div class="alert alert-error">Name and address are required.</div>'; return; }
+  try {
+    await api('POST', '/addresses', { city_code: cityCode, name, address });
+    await refreshAddressesModal(cityCode, cityName);
+  } catch(err) { document.getElementById('addr-modal-error').innerHTML = '<div class="alert alert-error">' + escHtml(err.message) + '</div>'; }
+}
+
+async function deleteAddress(id, cityCode, cityName) {
+  if (!confirm('Delete this shipping address?')) return;
+  try { await api('DELETE', '/addresses/' + id); await refreshAddressesModal(cityCode, cityName); }
+  catch(err) { document.getElementById('addr-modal-error').innerHTML = '<div class="alert alert-error">' + escHtml(err.message) + '</div>'; }
+}
+
+function editAddressInline(id, name, address, cityCode, cityName) {
+  const editDiv = document.createElement('div');
+  editDiv.className = 'modal-overlay';
+  editDiv.style.zIndex = '200';
+  editDiv.innerHTML =
+    '<div class="modal">' +
+      '<div class="modal-header"><span class="modal-title">Edit Address</span><button class="btn btn-ghost btn-sm" onclick="this.closest(\'.modal-overlay\').remove()">&#x2715;</button></div>' +
+      '<div class="modal-body">' +
+        '<div id="edit-addr-error"></div>' +
+        '<div class="form-group"><label>Location Name</label><input type="text" id="edit-addr-name" value="' + escHtml(name) + '" /></div>' +
+        '<div class="form-group"><label>Full Address</label><input type="text" id="edit-addr-address" value="' + escHtml(address) + '" /></div>' +
+      '</div>' +
+      '<div class="modal-footer">' +
+        '<button class="btn btn-secondary" onclick="this.closest(\'.modal-overlay\').remove()">Cancel</button>' +
+        '<button class="btn btn-primary" onclick="saveEditAddress(' + id + ',\'' + escHtml(cityCode) + '\',\'' + escHtml(cityName) + '\',this)">Save</button>' +
+      '</div>' +
+    '</div>';
+  document.body.appendChild(editDiv);
+}
+
+async function saveEditAddress(id, cityCode, cityName, btn) {
+  const name = (document.getElementById('edit-addr-name') || {}).value.trim();
+  const address = (document.getElementById('edit-addr-address') || {}).value.trim();
+  if (!name || !address) { document.getElementById('edit-addr-error').innerHTML = '<div class="alert alert-error">Required.</div>'; return; }
+  try {
+    btn.disabled = true;
+    await api('PUT', '/addresses/' + id, { name, address });
+    document.querySelectorAll('.modal-overlay[style*="z-index: 200"]')[0] && document.querySelectorAll('.modal-overlay[style*="z-index: 200"]')[0].remove();
+    await refreshAddressesModal(cityCode, cityName);
+  } catch(err) { document.getElementById('edit-addr-error').innerHTML = '<div class="alert alert-error">' + escHtml(err.message) + '</div>'; btn.disabled = false; }
+}
+
+// ── Quotes ────────────────────────────────────────────────────────────────────
+
+function getDefaultImportantInfo() {
+  return 'This proposal is valid until {default_date}. Any major changes to the cost of parts, if any, will be discussed once the proposal is approved.\n\nPop-A-Lock will provide a 90-day warranty for the labor. Pop-A-Lock will facilitate any warranty for the parts based on the manufacturer\'s specification of warranty. After 90 days, Pop-A-Lock will charge labor to facilitate the part warranty.';
+}
+
+function resolveTokens(text) {
+  if (!text) return text;
+  var d = new Date();
+  d.setDate(d.getDate() + 30);
+  var formatted = (d.getMonth()+1).toString().padStart(2,'0') + '/' + d.getDate().toString().padStart(2,'0') + '/' + d.getFullYear();
+  return text.replace(/\{default_date\}/g, formatted);
+}
+
+let quoteLineItems = [];
+
+function renderQuoteRows(quotes, isAdmin) {
+  return quotes.map(function(q) {
+    return '<tr style="cursor:pointer" onclick="navigate(\'view-quote\',' + q.id + ')">' +
+      '<td><strong>' + escHtml(q.quote_number) + '</strong></td>' +
+      '<td>' + escHtml(q.customer_name) + '</td>' +
+      '<td>' + escHtml(q.city_code || '—') + '</td>' +
+      (isAdmin ? '<td>' + escHtml(q.requester_name || '—') + '</td>' : '') +
+      '<td>$' + parseFloat(q.total_amount).toFixed(2) + '</td>' +
+      '<td>' + formatDate(q.created_at) + '</td>' +
+    '</tr>';
+  }).join('');
+}
+
+let _quotePage = 1;
+let QUOTE_PAGE_SIZE = 10;
+
+async function renderQuotes(el) {
+  try {
+    const quotes = await api('GET', '/quotes');
+    const isAdmin = state.user.role === 'admin';
+    _quotePage = 1;
+    window._quotesData = quotes;
+    window._quotesIsAdmin = isAdmin;
+    el.innerHTML =
+      '<div class="page-header">' +
+        '<div><div class="page-title">Quote Dashboard</div><div class="page-subtitle">' + (isAdmin ? 'All quotes' : 'Your quotes') + '</div></div>' +
+        (can('create_quote') ? '<button class="btn btn-primary" onclick="navigate(\'new-quote\')" style="white-space:nowrap">' + icons.plus + ' New Quote</button>' : '') +
+      '</div>' +
+      '<div id="quotes-error"></div>' +
+      '<div class="card">' +
+        '<div class="card-header" style="display:flex;justify-content:space-between;align-items:center">' +
+          '<span class="card-title">Quote List</span>' +
+          '<input type="text" id="quote-search" placeholder="Search quote #, customer, city..." style="width:280px" oninput="filterQuotes(true)" />' +
+        '</div>' +
+        (quotes.length === 0
+          ? '<div class="empty-state"><h3>No quotes yet</h3><p>Create your first quote to get started.</p></div>'
+          : '<div id="quotes-table-wrap"></div>') +
+      '</div>';
+    if (quotes.length > 0) filterQuotes();
+  } catch(err) {
+    el.innerHTML = '<div class="alert alert-error">' + escHtml(err.message) + '</div>';
+  }
+}
+
+function filterQuotes(resetPage) {
+  if (resetPage) _quotePage = 1;
+  const q = (document.getElementById('quote-search') || {}).value || '';
+  const wrap = document.getElementById('quotes-table-wrap');
+  if (!wrap || !window._quotesData) return;
+  const isAdmin = window._quotesIsAdmin;
+  const filtered = q
+    ? window._quotesData.filter(function(r) {
+        return (r.quote_number||'').toLowerCase().includes(q.toLowerCase()) ||
+               (r.customer_name||'').toLowerCase().includes(q.toLowerCase()) ||
+               (r.city_code||'').toLowerCase().includes(q.toLowerCase()) ||
+               (r.requester_name||'').toLowerCase().includes(q.toLowerCase());
+      })
+    : window._quotesData;
+  if (filtered.length === 0) {
+    wrap.innerHTML = '<div class="empty-state"><h3>No matching quotes</h3><p>Try a different search.</p></div>';
+    return;
+  }
+  const totalPages = Math.ceil(filtered.length / QUOTE_PAGE_SIZE);
+  if (_quotePage > totalPages) _quotePage = totalPages;
+  const start = (_quotePage - 1) * QUOTE_PAGE_SIZE;
+  const page = filtered.slice(start, start + QUOTE_PAGE_SIZE);
+  wrap.innerHTML =
+    '<div class="table-wrap"><table id="quotes-table">' +
+    '<thead><tr><th>Quote #</th><th>Customer</th><th>City</th>' + (isAdmin ? '<th>Created By</th>' : '') + '<th>Total</th><th>Date</th><th></th></tr></thead>' +
+    '<tbody>' + renderQuoteRows(page, isAdmin) + '</tbody>' +
+    '</table></div>' +
+    renderPagination(_quotePage, totalPages, filtered.length, 'quotePaginate', QUOTE_PAGE_SIZE, 'quotePageSize');
+}
+
+async function renderEditQuote(el, id) {
+  let quote = null;
+  let cities = [];
+  try { cities = await api('GET', '/cities'); } catch(e) {}
+  if (id) {
+    try { quote = await api('GET', '/quotes/' + id); } catch(e) { el.innerHTML = '<div class="alert alert-error">' + escHtml(e.message) + '</div>'; return; }
+    quoteLineItems = quote.line_items || [];
+  } else {
+    quoteLineItems = [{ item_number: '', manufacturer: '', description: '', quantity: 1, unit_price: '', list_price: '', taxable: false }];
+  }
+  const cityOptions = '<option value="">— Select city —</option>' + cities.map(function(c) {
+    return '<option value="' + escHtml(c.code) + '"' + (quote && quote.city_code === c.code ? ' selected' : '') + '>' + escHtml(c.name) + ' (' + escHtml(c.code) + ')</option>';
+  }).join('');
+  const importantInfoVal = quote ? (quote.important_info || '') : getDefaultImportantInfo();
+  const taxRateVal = quote ? (quote.tax_rate !== null && quote.tax_rate !== undefined ? parseFloat(quote.tax_rate) : '') : '';
+  el.innerHTML =
+    '<div class="page-header">' +
+      '<div><div class="page-title">' + (id ? 'Edit Quote' : 'New Quote') + '</div></div>' +
+      '<button class="btn btn-secondary" onclick="navigate(\'' + (id ? 'view-quote' : 'quotes') + '\',' + (id||'null') + ')">Cancel</button>' +
+    '</div>' +
+    '<div id="quote-edit-error"></div>' +
+    '<div class="card mb-4"><div class="card-header"><span class="card-title">Quote Information</span></div><div class="card-body">' +
+      '<div class="form-row">' +
+        '<div class="form-group"><label>Customer Name *</label><input type="text" id="qt-customer" value="' + escHtml(quote ? quote.customer_name : '') + '" placeholder="Customer name" /></div>' +
+        '<div class="form-group"><label>City *</label><select id="qt-city">' + cityOptions + '</select></div>' +
+      '</div>' +
+      '<div class="form-group"><label>Notes</label><textarea id="qt-notes" placeholder="Optional notes...">' + escHtml(quote ? quote.notes || '' : '') + '</textarea></div>' +
+    '</div></div>' +
+    '<div class="card mb-4"><div class="card-header"><span class="card-title">Line Items</span></div><div class="card-body">' +
+      '<div class="table-wrap"><table class="line-items-table">' +
+        '<thead><tr><th>Item #</th><th>Supplier</th><th>Description</th><th>Qty</th><th>Unit Price (Our Cost)</th><th>List Price (Customer Cost)</th><th>Taxable</th><th>Part URL</th><th>Total</th><th></th></tr></thead>' +
+        '<tbody id="quote-line-items-body"></tbody>' +
+        '<tfoot>' +
+          '<tr><td colspan="8" class="text-right" style="padding:8px 10px;color:var(--text-muted-color)">Subtotal</td><td id="quote-subtotal" style="padding:8px 10px">$0.00</td><td></td></tr>' +
+          '<tr><td colspan="8" class="text-right" style="padding:8px 10px;color:var(--text-muted-color)">Tax</td><td id="quote-tax-display" style="padding:8px 10px">$0.00</td><td></td></tr>' +
+          '<tr class="total-row"><td colspan="8" class="text-right" style="padding:10px">Grand Total</td><td id="quote-grand-total" style="padding:10px">$0.00</td><td></td></tr>' +
+        '</tfoot>' +
+      '</table></div>' +
+      '<div style="display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap;margin-top:8px">' +
+        '<div class="row-actions">' +
+          '<button class="btn btn-secondary btn-sm" onclick="addQuoteLineItem()">' + icons.plus + ' Add Item</button>' +
+          '<button class="btn btn-secondary btn-sm" style="white-space:nowrap" onclick="openPartsPicker(\'quote\')"><svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" style="vertical-align:-2px"><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"/></svg> Add from Parts List</button>' +
+        '</div>' +
+        '<div style="display:flex;align-items:center;gap:8px">' +
+          '<label style="margin:0;font-size:13px">Tax %</label>' +
+          '<input type="number" id="qt-tax-rate" value="' + taxRateVal + '" min="0" max="100" step="0.01" style="width:80px" placeholder="Req." oninput="updateQuoteTotals()" />' +
+        '</div>' +
+      '</div>' +
+    '</div></div>' +
+    '<div class="card mb-4"><div class="card-header"><span class="card-title">Important Information</span></div><div class="card-body">' +
+      '<p class="text-muted" style="margin-bottom:12px;font-size:13px">Printed at the bottom of the quote. Edit as needed.</p>' +
+      '<textarea id="qt-important-info" style="min-height:120px">' + escHtml(importantInfoVal) + '</textarea>' +
+    '</div></div>' +
+    '<div class="flex-gap">' +
+      '<button class="btn btn-secondary" onclick="reviewQuoteFormWithAI()" style="color:var(--primary);border-color:var(--primary);">&#10024; AI Review</button>' +
+      '<button class="btn btn-primary" onclick="saveQuote(' + (id||'null') + ')" id="btn-save-quote">Save Quote</button>' +
+    '</div>';
+  buildQuoteLineItemRows();
+}
+
+function buildQuoteLineItemRows() {
+  const tbody = document.getElementById('quote-line-items-body');
+  if (!tbody) return;
+  tbody.innerHTML = quoteLineItems.map(function(item, i) {
+    const total = (parseFloat(item.quantity)||0) * (parseFloat(item.list_price)||0);
+    return '<tr>' +
+      '<td><input type="text" value="' + escHtml(item.item_number||'') + '" placeholder="Item #" onchange="updateQuoteItem(' + i + ',this)" data-field="item_number" /></td>' +
+      '<td><input type="text" value="' + escHtml(item.manufacturer||'') + '" placeholder="Supplier" onchange="updateQuoteItem(' + i + ',this)" data-field="manufacturer" /></td>' +
+      '<td><input type="text" value="' + escHtml(item.description||'') + '" placeholder="Description *" onchange="updateQuoteItem(' + i + ',this)" data-field="description" /></td>' +
+      '<td><input type="number" value="' + escHtml(item.quantity||'') + '" min="0.01" step="0.01" onchange="updateQuoteItem(' + i + ',this)" data-field="quantity" style="width:70px" /></td>' +
+      '<td><input type="number" value="' + escHtml(item.unit_price||'') + '" min="0" step="0.01" placeholder="0.00" onchange="updateQuoteItem(' + i + ',this)" data-field="unit_price" style="width:90px" /></td>' +
+      '<td><input type="number" value="' + escHtml(item.list_price||'') + '" min="0" step="0.01" placeholder="0.00" onchange="updateQuoteItem(' + i + ',this)" data-field="list_price" style="width:90px" /></td>' +
+      '<td style="text-align:center"><input type="checkbox"' + (item.taxable ? ' checked' : '') + ' onchange="updateQuoteItem(' + i + ',this)" data-field="taxable" /></td>' +
+      '<td><input type="url" value="' + escHtml(item.url||'') + '" placeholder="https://..." onchange="updateQuoteItem(' + i + ',this)" data-field="url" style="width:120px;font-size:12px" /></td>' +
+      '<td id="qt-row-total-' + i + '">$' + total.toFixed(2) + '</td>' +
+      '<td>' + (quoteLineItems.length > 1 ? '<button class="btn btn-ghost btn-sm" onclick="removeQuoteItem(' + i + ')">' + icons.trash + '</button>' : '') + '</td>' +
+    '</tr>';
+  }).join('');
+  updateQuoteTotals();
+}
+
+function updateQuoteItem(i, input) {
+  quoteLineItems[i][input.dataset.field] = input.type === 'checkbox' ? input.checked : input.value;
+  const qty = parseFloat(quoteLineItems[i].quantity) || 0;
+  const price = parseFloat(quoteLineItems[i].list_price) || 0;
+  const cell = document.getElementById('qt-row-total-' + i);
+  if (cell) cell.textContent = '$' + (qty * price).toFixed(2);
+  updateQuoteTotals();
+}
+
+function updateQuoteTotals() {
+  const subtotal = quoteLineItems.reduce(function(sum, item) { return sum + (parseFloat(item.quantity)||0) * (parseFloat(item.list_price)||0); }, 0);
+  const taxableSubtotal = quoteLineItems.reduce(function(sum, item) { return item.taxable ? sum + (parseFloat(item.quantity)||0) * (parseFloat(item.list_price)||0) : sum; }, 0);
+  const taxRateEl = document.getElementById('qt-tax-rate');
+  const taxRate = taxRateEl ? (parseFloat(taxRateEl.value) || 0) : 0;
+  const taxAmt = taxableSubtotal * taxRate / 100;
+  const grand = subtotal + taxAmt;
+  const subtotalEl = document.getElementById('quote-subtotal');
+  const taxEl = document.getElementById('quote-tax-display');
+  const grandEl = document.getElementById('quote-grand-total');
+  if (subtotalEl) subtotalEl.textContent = '$' + subtotal.toFixed(2);
+  if (taxEl) taxEl.textContent = '$' + taxAmt.toFixed(2);
+  if (grandEl) grandEl.textContent = '$' + grand.toFixed(2);
+}
+function updateQuoteGrandTotal() { updateQuoteTotals(); }
+
+function addQuoteLineItem() {
+  quoteLineItems.push({ item_number: '', manufacturer: '', description: '', quantity: 1, unit_price: '', list_price: '', taxable: false });
+  buildQuoteLineItemRows();
+}
+
+function removeQuoteItem(i) {
+  quoteLineItems.splice(i, 1);
+  buildQuoteLineItemRows();
+}
+
+async function saveQuote(id) {
+  const customer_name = document.getElementById('qt-customer').value.trim();
+  const city_code = document.getElementById('qt-city').value;
+  const notes = document.getElementById('qt-notes').value.trim();
+  const taxRateRaw = document.getElementById('qt-tax-rate').value;
+  const tax_rate = parseFloat(taxRateRaw);
+  const important_info = document.getElementById('qt-important-info').value.trim();
+  if (!customer_name) { document.getElementById('quote-edit-error').innerHTML = '<div class="alert alert-error">Customer name is required.</div>'; return; }
+  if (!city_code) { document.getElementById('quote-edit-error').innerHTML = '<div class="alert alert-error">Please select a city.</div>'; return; }
+  if (taxRateRaw === '' || isNaN(tax_rate)) { document.getElementById('quote-edit-error').innerHTML = '<div class="alert alert-error">Tax % is required. Enter 0 if no tax applies.</div>'; return; }
+  const rows = document.querySelectorAll('#quote-line-items-body tr');
+  rows.forEach(function(row, i) {
+    const inputs = row.querySelectorAll('input');
+    if (inputs[0]) quoteLineItems[i].item_number = inputs[0].value;
+    if (inputs[1]) quoteLineItems[i].manufacturer = inputs[1].value;
+    if (inputs[2]) quoteLineItems[i].description = inputs[2].value;
+    if (inputs[3]) quoteLineItems[i].quantity = inputs[3].value;
+    if (inputs[4]) quoteLineItems[i].unit_price = inputs[4].value;
+    if (inputs[5]) quoteLineItems[i].list_price = inputs[5].value;
+    if (inputs[6]) quoteLineItems[i].taxable = inputs[6].checked;
+    if (inputs[7]) quoteLineItems[i].url = inputs[7].value;
+  });
+  const validItems = quoteLineItems.filter(function(item){ return item.description && item.quantity && item.list_price; });
+  if (validItems.length === 0) { document.getElementById('quote-edit-error').innerHTML = '<div class="alert alert-error">At least one complete line item is required.</div>'; return; }
+  try {
+    const btn = document.getElementById('btn-save-quote');
+    if (btn) btn.disabled = true;
+    let q;
+    if (id) {
+      q = await api('PUT', '/quotes/' + id, { customer_name, city_code: city_code || null, notes, important_info, tax_rate, line_items: validItems });
+      navigate('view-quote', id);
+    } else {
+      q = await api('POST', '/quotes', { customer_name, city_code: city_code || null, notes, important_info, tax_rate, line_items: validItems });
+      navigate('view-quote', q.id);
+    }
+  } catch(err) {
+    document.getElementById('quote-edit-error').innerHTML = '<div class="alert alert-error">' + escHtml(err.message) + '</div>';
+    const btn = document.getElementById('btn-save-quote');
+    if (btn) btn.disabled = false;
+  }
+}
+
+async function renderViewQuote(el, id) {
+  el.innerHTML = '<div class="loading">Loading…</div>';
+  try {
+    const q = await api('GET', '/quotes/' + id);
+    _currentQuote = q;
+    const canEdit = state.user.role === 'admin' || (can('edit_quote') && q.requester_id === state.user.id);
+    const canDelete = state.user.role === 'admin' || (can('delete_quote') && q.requester_id === state.user.id);
+    el.innerHTML =
+      '<div class="page-header">' +
+        '<div><div class="page-title">' + escHtml(q.quote_number) + '</div><div class="page-subtitle" style="color:var(--text-muted-color)">Quote</div></div>' +
+        '<div class="flex-gap">' +
+          '<button class="btn btn-secondary" onclick="navigate(\'quotes\')">&larr; Back</button>' +
+          '<button class="btn btn-secondary" style="white-space:nowrap" onclick="printQuote(' + q.id + ')">' + icons.print + ' Print Quote</button>' +
+          '<button class="btn btn-secondary" id="ai-review-btn" onclick="reviewQuoteWithAI()" style="color:var(--primary);border-color:var(--primary);">&#10024; AI Review</button>' +
+          (can('push_quote_po') ? '<button class="btn btn-primary" onclick="pushQuoteToPO(' + q.id + ')" style="white-space:nowrap">&#10142; Push to PO</button>' : '') +
+          (canEdit ? '<button class="btn btn-secondary" onclick="navigate(\'edit-quote\',' + q.id + ')">' + icons.edit + ' Edit</button>' : '') +
+          (canDelete ? '<button class="btn btn-danger" title="Delete quote" onclick="deleteQuote(' + q.id + ')"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14H6L5 6"/><path d="M10 11v6"/><path d="M14 11v6"/><path d="M9 6V4h6v2"/></svg></button>' : '') +
+        '</div>' +
+      '</div>' +
+      '<div id="view-quote-error"></div>' +
+      '<div class="card mb-4"><div class="card-header"><span class="card-title">Quote Information</span></div><div class="card-body">' +
+        '<div class="detail-grid">' +
+          '<div class="detail-field"><label>Quote Number</label><p>' + escHtml(q.quote_number) + '</p></div>' +
+          '<div class="detail-field"><label>Customer Name</label><p>' + escHtml(q.customer_name) + '</p></div>' +
+          (q.city_code ? '<div class="detail-field"><label>City</label><p>' + escHtml(q.city_code) + '</p></div>' : '') +
+          '<div class="detail-field"><label>Prepared By</label><p>' + escHtml(q.requester_name || '—') + '</p></div>' +
+          '<div class="detail-field"><label>Date</label><p>' + formatDate(q.created_at) + '</p></div>' +
+          (q.notes ? '<div class="detail-field" style="grid-column:1/-1"><label>Notes</label><p>' + escHtml(q.notes) + '</p></div>' : '') +
+        '</div>' +
+      '</div></div>' +
+      '<div class="card"><div class="card-header"><span class="card-title">Line Items</span></div><div class="card-body">' +
+        '<div class="table-wrap"><table class="line-items-table">' +
+          '<thead><tr><th>Item #</th><th>Supplier</th><th>Description</th><th>Qty</th><th>Unit Price (Our Cost)</th><th>List Price (Customer Cost)</th><th>Taxable</th><th>URL</th><th class="text-right">Total</th></tr></thead>' +
+          '<tbody>' + q.line_items.map(function(item) {
+            const listP = parseFloat(item.list_price || 0);
+            const lineTotal = (parseFloat(item.quantity) * listP).toFixed(2);
+            return '<tr>' +
+              '<td>' + escHtml(item.item_number || '—') + '</td>' +
+              '<td>' + escHtml(item.manufacturer || '—') + '</td>' +
+              '<td>' + escHtml(item.description) + '</td>' +
+              '<td>' + item.quantity + '</td>' +
+              '<td>$' + parseFloat(item.unit_price || 0).toFixed(2) + '</td>' +
+              '<td>$' + listP.toFixed(2) + '</td>' +
+              '<td style="text-align:center">' + (item.taxable ? '&#10003;' : '—') + '</td>' +
+              '<td>' + (item.url ? '<a href="' + escHtml(/^https?:\/\//i.test(item.url) ? item.url : 'https://' + item.url) + '" target="_blank" rel="noopener noreferrer" style="color:var(--primary);font-size:12px">Link</a>' : '—') + '</td>' +
+              '<td class="text-right">$' + lineTotal + '</td>' +
+            '</tr>';
+          }).join('') + '</tbody>' +
+          '<tfoot>' +
+            '<tr><td colspan="7" class="text-right" style="padding:8px 10px;color:var(--text-muted-color)">Subtotal</td><td class="text-right" style="padding:8px 10px">$' + (parseFloat(q.total_amount) - parseFloat(q.tax_amount||0)).toFixed(2) + '</td></tr>' +
+            (parseFloat(q.tax_amount||0) > 0 ? '<tr><td colspan="7" class="text-right" style="padding:8px 10px;color:var(--text-muted-color)">Tax (' + parseFloat(q.tax_rate||0).toFixed(2) + '%)</td><td class="text-right" style="padding:8px 10px">$' + parseFloat(q.tax_amount).toFixed(2) + '</td></tr>' : '') +
+            '<tr class="total-row"><td colspan="7" class="text-right">Grand Total</td><td class="text-right">$' + parseFloat(q.total_amount).toFixed(2) + '</td></tr>' +
+          '</tfoot>' +
+        '</table></div>' +
+      '</div></div>';
+  } catch(err) {
+    el.innerHTML = '<div class="alert alert-error">' + escHtml(err.message) + '</div>';
+  }
+}
+
+async function deleteQuote(id) {
+  if (!confirm('Permanently delete this quote? This cannot be undone.')) return;
+  try { await api('DELETE', '/quotes/' + id); navigate('quotes'); }
+  catch(err) { document.getElementById('view-quote-error').innerHTML = '<div class="alert alert-error">' + escHtml(err.message) + '</div>'; }
+}
+
+async function pushQuoteToPO(id) {
+  if (!confirm('Create and submit purchase order(s) for approval from this quote? One PO is created per supplier, using your cost as the unit price.')) return;
+  try {
+    var data = await api('POST', '/quotes/' + id + '/push-to-po');
+    var pos = data.pos || [];
+    var nums = pos.map(function(p){ return p.po_number; }).join(', ');
+    alert('Submitted ' + pos.length + ' PO' + (pos.length === 1 ? '' : 's') + ' for approval from this quote: ' + nums);
+    if (pos.length === 1) { navigate('view', pos[0].id); } else { navigate('dashboard'); }
+  } catch (err) {
+    var el = document.getElementById('view-quote-error');
+    if (el) el.innerHTML = '<div class="alert alert-error">' + escHtml(err.message) + '</div>';
+    else alert(err.message);
+  }
+}
+
+async function deleteVR(id) {
+  if (!confirm('Permanently delete this VR? This cannot be undone.')) return;
+  try { await api('DELETE', '/vr/' + id); navigate('vr-dashboard'); }
+  catch(err) { document.getElementById('view-vr-error') && (document.getElementById('view-vr-error').innerHTML = '<div class="alert alert-error">' + escHtml(err.message) + '</div>'); }
+}
+
+async function reviewQuoteFormWithAI() {
+  // Read data from the live edit form
+  var customer = (document.getElementById('qt-customer') || {}).value || '(not entered)';
+  var city = (document.getElementById('qt-city') || {}).value || '(not entered)';
+  var notes = (document.getElementById('qt-notes') || {}).value || '';
+
+  // Read directly from the quoteLineItems data array (source of truth for the form)
+  if (!quoteLineItems || quoteLineItems.length === 0) {
+    alert('Add at least one line item before requesting an AI review.');
+    return;
+  }
+  var itemLines = [];
+  var subtotal = 0;
+  var taxRate = parseFloat((document.getElementById('qt-tax-rate') || {}).value) || 0;
+  var taxAmt = 0;
+  quoteLineItems.forEach(function(item, i) {
+    var desc = item.description || '—';
+    var itemNum = item.item_number || '';
+    var supplier = item.manufacturer || '';
+    var qty = parseFloat(item.quantity) || 0;
+    var cost = parseFloat(item.unit_price) || 0;
+    var list = parseFloat(item.list_price) || 0;
+    var taxable = !!item.taxable;
+    var margin = cost > 0 ? (((list - cost) / cost) * 100).toFixed(1) : 'N/A';
+    subtotal += qty * list;
+    if (taxable) taxAmt += qty * list * taxRate / 100;
+    itemLines.push((i+1) + '. ' + desc +
+      (itemNum ? ' | Item#: ' + itemNum : '') +
+      (supplier ? ' | Supplier: ' + supplier : '') +
+      ' | Qty: ' + qty +
+      ' | Our Cost: $' + cost.toFixed(2) +
+      ' | List Price: $' + list.toFixed(2) +
+      ' | Margin: ' + margin + '%' +
+      (taxable ? ' | Taxable' : ''));
+  });
+
+  // Build modal
+  var existing = document.getElementById('ai-review-modal');
+  if (existing) existing.remove();
+  var modal = document.createElement('div');
+  modal.id = 'ai-review-modal';
+  modal.style.cssText = 'position:fixed;inset:0;z-index:1000;background:rgba(0,0,0,0.7);display:flex;align-items:center;justify-content:center;padding:20px;';
+  modal.innerHTML =
+    '<div style="background:var(--card-bg);border:1px solid var(--border-color);border-radius:12px;width:100%;max-width:640px;max-height:80vh;display:flex;flex-direction:column;">' +
+      '<div style="display:flex;align-items:center;justify-content:space-between;padding:16px 20px;border-bottom:1px solid var(--border-color);">' +
+        '<div style="font-weight:700;font-size:16px;">&#10024; AI Quote Review — Draft</div>' +
+        '<button onclick="document.getElementById(\'ai-review-modal\').remove()" style="background:none;border:none;color:var(--text-muted-color);font-size:20px;cursor:pointer;line-height:1;">&times;</button>' +
+      '</div>' +
+      '<div id="ai-review-body" style="padding:20px;overflow-y:auto;flex:1;font-size:14px;line-height:1.7;color:var(--text-color);">' +
+        '<div style="color:var(--text-muted-color);">Analyzing quote...</div>' +
+      '</div>' +
+    '</div>';
+  document.body.appendChild(modal);
+  modal.addEventListener('click', function(e){ if (e.target === modal) modal.remove(); });
+
+  var prompt = 'Please review this locksmith quote in progress and flag any issues:\n\n' +
+    'Customer: ' + customer + '\n' +
+    'City: ' + city + '\n' +
+    (notes ? 'Notes: ' + notes + '\n' : '') +
+    '\nLINE ITEMS:\n' + itemLines.join('\n') + '\n\n' +
+    'Subtotal: $' + subtotal.toFixed(2) + '\n' +
+    (taxRate > 0 ? 'Tax (' + taxRate + '%): $' + taxAmt.toFixed(2) + '\n' : '') +
+    'Grand Total: $' + (subtotal + taxAmt).toFixed(2) + '\n\n' +
+    'Review this quote and respond in 2 parts: (1) One sentence overall status — e.g. "Looks good." or "A few things to check." (2) A short bullet list of ONLY actual issues or concerns — missing hardware dependencies, low/bad margins, missing info, math errors, suspicious pricing. Do NOT comment on anything that looks correct. If nothing is wrong, say so and stop. Skip section headers and lengthy explanations.';
+
+  try {
+    var data = await api('POST', '/ai/chat', { messages: [{ role: 'user', content: prompt }] });
+    var body = document.getElementById('ai-review-body');
+    if (body) body.innerHTML = data.reply.replace(/\n/g, '<br>');
+  } catch(err) {
+    var body = document.getElementById('ai-review-body');
+    if (body) body.innerHTML = '<div class="alert alert-error">' + escHtml(err.message) + '</div>';
+  }
+}
+
+async function reviewQuoteWithAI() {
+  var q = _currentQuote;
+  if (!q) return;
+  // Build modal
+  var existing = document.getElementById('ai-review-modal');
+  if (existing) existing.remove();
+  var modal = document.createElement('div');
+  modal.id = 'ai-review-modal';
+  modal.style.cssText = 'position:fixed;inset:0;z-index:1000;background:rgba(0,0,0,0.7);display:flex;align-items:center;justify-content:center;padding:20px;';
+  modal.innerHTML =
+    '<div style="background:var(--card-bg);border:1px solid var(--border-color);border-radius:12px;width:100%;max-width:640px;max-height:80vh;display:flex;flex-direction:column;">' +
+      '<div style="display:flex;align-items:center;justify-content:space-between;padding:16px 20px;border-bottom:1px solid var(--border-color);">' +
+        '<div style="font-weight:700;font-size:16px;">&#10024; AI Quote Review — ' + escHtml(q.quote_number) + '</div>' +
+        '<button onclick="document.getElementById(\'ai-review-modal\').remove()" style="background:none;border:none;color:var(--text-muted-color);font-size:20px;cursor:pointer;line-height:1;">&times;</button>' +
+      '</div>' +
+      '<div id="ai-review-body" style="padding:20px;overflow-y:auto;flex:1;font-size:14px;line-height:1.7;color:var(--text-color);">' +
+        '<div style="color:var(--text-muted-color);">Analyzing quote...</div>' +
+      '</div>' +
+    '</div>';
+  document.body.appendChild(modal);
+  modal.addEventListener('click', function(e){ if (e.target === modal) modal.remove(); });
+
+  // Build prompt
+  var itemLines = q.line_items.map(function(item, i) {
+    var cost = parseFloat(item.unit_price || 0);
+    var list = parseFloat(item.list_price || 0);
+    var margin = cost > 0 ? (((list - cost) / cost) * 100).toFixed(1) : 'N/A';
+    return (i+1) + '. ' + (item.description || '—') +
+      ' | Qty: ' + item.quantity +
+      ' | Our Cost: $' + cost.toFixed(2) +
+      ' | List Price: $' + list.toFixed(2) +
+      ' | Margin: ' + margin + '%' +
+      (item.taxable ? ' | Taxable' : '') +
+      (item.item_number ? ' | Item#: ' + item.item_number : '') +
+      (item.manufacturer ? ' | Supplier: ' + item.manufacturer : '');
+  }).join('\n');
+
+  var subtotal = parseFloat(q.total_amount) - parseFloat(q.tax_amount || 0);
+  var prompt = 'Please review this locksmith quote and flag any issues:\n\n' +
+    'Quote: ' + q.quote_number + '\n' +
+    'Customer: ' + q.customer_name + '\n' +
+    'City: ' + (q.city_code || 'N/A') + '\n' +
+    'Prepared by: ' + (q.requester_name || 'N/A') + '\n' +
+    (q.notes ? 'Notes: ' + q.notes + '\n' : '') +
+    '\nLINE ITEMS:\n' + itemLines + '\n\n' +
+    'Subtotal: $' + subtotal.toFixed(2) + '\n' +
+    (parseFloat(q.tax_amount||0) > 0 ? 'Tax (' + q.tax_rate + '%): $' + parseFloat(q.tax_amount).toFixed(2) + '\n' : '') +
+    'Grand Total: $' + parseFloat(q.total_amount).toFixed(2) + '\n\n' +
+    'Review this quote and respond in 2 parts: (1) One sentence overall status — e.g. "Looks good." or "A few things to check." (2) A short bullet list of ONLY actual issues or concerns — missing hardware dependencies, low/bad margins, missing info, math errors, suspicious pricing. Do NOT comment on anything that looks correct. If nothing is wrong, say so and stop. Skip section headers and lengthy explanations.';
+
+  try {
+    var data = await api('POST', '/ai/chat', { messages: [{ role: 'user', content: prompt }] });
+    var body = document.getElementById('ai-review-body');
+    if (body) body.innerHTML = data.reply.replace(/\n/g, '<br>');
+  } catch(err) {
+    var body = document.getElementById('ai-review-body');
+    if (body) body.innerHTML = '<div class="alert alert-error">' + escHtml(err.message) + '</div>';
+  }
+}
+
+async function printQuote(id) {
+  try {
+    const results = await Promise.all([
+      api('GET', '/quotes/' + id),
+      api('GET', '/settings').catch(function() { return {}; })
+    ]);
+    const q = results[0];
+    const settings = results[1];
+
+    function esc(s) { return String(s == null ? '' : s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
+
+    const logoHtml = settings.logo
+      ? '<img src="' + settings.logo + '" style="height:56px;max-width:200px;object-fit:contain;display:block" alt="Logo" />'
+      : '<div style="font-size:22px;font-weight:600;color:#f97316;letter-spacing:-0.3px">' + esc(settings.company_name || 'Lock and Roll LLC') + '</div>';
+
+    const companyAddrHtml = (settings.company_address || settings.company_city_state_zip || settings.company_phone)
+      ? '<div style="margin-top:10px;font-size:12px;color:#d1d5db;line-height:1.6">' +
+          (settings.company_address ? esc(settings.company_address) + '<br>' : '') +
+          (settings.company_city_state_zip ? esc(settings.company_city_state_zip) + '<br>' : '') +
+          (settings.company_phone ? esc(settings.company_phone) : '') +
+        '</div>'
+      : '';
+
+    const locksmiths = '<div style="padding:20px 32px;border-bottom:1px solid #e5e7eb;background:#fafafa">' +
+      '<div style="font-size:11px;font-weight:600;color:#6b7280;text-transform:uppercase;letter-spacing:0.05em;margin-bottom:10px">Your Locksmith</div>' +
+      '<div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px">' +
+        '<div><div style="font-size:11px;font-weight:600;color:#9ca3af;text-transform:uppercase;letter-spacing:0.05em;margin-bottom:3px">Name</div><div style="font-size:13px;color:#111">' + esc(q.requester_name || '—') + '</div></div>' +
+        '<div><div style="font-size:11px;font-weight:600;color:#9ca3af;text-transform:uppercase;letter-spacing:0.05em;margin-bottom:3px">Phone</div><div style="font-size:13px;color:#111">' + esc(q.requester_phone || '—') + '</div></div>' +
+        '<div><div style="font-size:11px;font-weight:600;color:#9ca3af;text-transform:uppercase;letter-spacing:0.05em;margin-bottom:3px">Email</div><div style="font-size:13px;color:#111">' + esc(q.requester_email || '—') + '</div></div>' +
+      '</div>' +
+    '</div>';
+
+    const detailFields = [
+      { label: 'Customer Name', value: q.customer_name },
+      { label: 'City', value: q.city_code || '—' },
+      { label: 'Quote Date', value: formatDate(q.created_at) },
+      { label: 'Quote Number', value: q.quote_number }
+    ];
+
+    const detailGrid = detailFields.map(function(d) {
+      return '<div>' +
+        '<div style="font-size:11px;font-weight:600;color:#6b7280;text-transform:uppercase;letter-spacing:0.05em;margin-bottom:4px">' + esc(d.label) + '</div>' +
+        '<div style="font-size:14px;color:#111">' + esc(d.value) + '</div>' +
+      '</div>';
+    }).join('');
+
+    const taxRate = parseFloat(q.tax_rate) || 0;
+    const subtotal = q.line_items.reduce(function(s, item) {
+      return s + (parseFloat(item.quantity) || 0) * (parseFloat(item.list_price || item.unit_price) || 0);
+    }, 0);
+    const taxableSubtotal = q.line_items.reduce(function(s, item) {
+      return item.taxable ? s + (parseFloat(item.quantity) || 0) * (parseFloat(item.list_price || item.unit_price) || 0) : s;
+    }, 0);
+    const taxAmount = taxableSubtotal * taxRate / 100;
+    const grandTotal = subtotal + taxAmount;
+
+    const itemRows = q.line_items.map(function(item) {
+      const price = parseFloat(item.list_price || item.unit_price) || 0;
+      const lineTotal = ((parseFloat(item.quantity) || 0) * price).toFixed(2);
+      return '<tr>' +
+        '<td style="padding:10px 8px;border-bottom:1px solid #f3f4f6">' + esc(item.description) + '</td>' +
+        '<td style="padding:10px 8px;text-align:right;border-bottom:1px solid #f3f4f6">' + esc(item.quantity) + '</td>' +
+        '<td style="padding:10px 8px;text-align:right;border-bottom:1px solid #f3f4f6">$' + price.toFixed(2) + '</td>' +
+        '<td style="padding:10px 8px;text-align:right;border-bottom:1px solid #f3f4f6">$' + lineTotal + '</td>' +
+      '</tr>';
+    }).join('');
+
+    const taxRows = taxRate > 0
+      ? '<tr><td colspan="3" style="padding:8px;text-align:right;font-size:13px;color:#6b7280">Subtotal</td><td style="padding:8px;text-align:right;font-size:13px;color:#6b7280">$' + subtotal.toFixed(2) + '</td></tr>' +
+        '<tr><td colspan="3" style="padding:8px;text-align:right;font-size:13px;color:#6b7280">Tax (' + taxRate + '%)</td><td style="padding:8px;text-align:right;font-size:13px;color:#6b7280">$' + taxAmount.toFixed(2) + '</td></tr>'
+      : '';
+
+    const notesHtml = q.notes
+      ? '<div style="padding:20px 32px;border-bottom:1px solid #e5e7eb">' +
+          '<div style="font-size:11px;font-weight:600;color:#6b7280;text-transform:uppercase;letter-spacing:0.05em;margin-bottom:6px">Notes</div>' +
+          '<div style="font-size:13px;color:#6b7280">' + esc(q.notes) + '</div>' +
+        '</div>'
+      : '';
+
+    const importantHtml = q.important_info
+      ? '<div style="padding:20px 32px;border-bottom:1px solid #e5e7eb">' +
+          '<div style="font-size:11px;font-weight:600;color:#6b7280;text-transform:uppercase;letter-spacing:0.05em;margin-bottom:6px">Important Information</div>' +
+          '<div style="font-size:12px;color:#6b7280;white-space:pre-wrap;line-height:1.6">' + esc(resolveTokens(q.important_info)) + '</div>' +
+        '</div>'
+      : '';
+
+    const today = new Date().toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+
+    const html = '<!DOCTYPE html><html><head><meta charset="UTF-8"><title>' + esc(q.quote_number) + '</title>' +
+      '<style>' +
+      '* { margin:0; padding:0; box-sizing:border-box; }' +
+      'body { font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; background:#f3f4f6; color:#111; }' +
+      '.no-print { background:white; padding:12px 24px; border-bottom:1px solid #e5e7eb; display:flex; gap:8px; align-items:center; position:sticky; top:0; z-index:10; box-shadow:0 1px 3px rgba(0,0,0,0.08); }' +
+      '.btn-print { background:#f97316; color:white; border:none; padding:9px 18px; border-radius:6px; font-size:14px; font-weight:500; cursor:pointer; }' +
+      '.btn-print:hover { background:#ea6a00; }' +
+      '.btn-close { background:transparent; color:#6b7280; border:1px solid #d1d5db; padding:9px 18px; border-radius:6px; font-size:14px; cursor:pointer; }' +
+      '.hint { font-size:12px; color:#9ca3af; margin-left:4px; }' +
+      '.page { max-width:800px; margin:24px auto 48px; background:white; border-radius:8px; overflow:hidden; box-shadow:0 1px 4px rgba(0,0,0,0.12); }' +
+      '@media print {' +
+      '  .no-print { display:none !important; }' +
+      '  body { background:white; }' +
+      '  .page { margin:0; box-shadow:none; border-radius:0; max-width:100%; }' +
+      '  * { -webkit-print-color-adjust:exact !important; print-color-adjust:exact !important; }' +
+      '}' +
+      '</style></head><body>' +
+      '<div class="no-print">' +
+        '<button class="btn-print" onclick="window.print()">&#128438;&nbsp; Print / Save as PDF</button>' +
+        '<button class="btn-close" onclick="window.close()">Close</button>' +
+        '<span class="hint">Tip: select &ldquo;Save as PDF&rdquo; in the print dialog</span>' +
+      '</div>' +
+      '<div class="page">' +
+        '<div style="background:#0f0f0f;padding:24px 32px;display:flex;justify-content:space-between;align-items:flex-start">' +
+          '<div>' + logoHtml + companyAddrHtml + '</div>' +
+          '<div style="text-align:right">' +
+            '<div style="font-size:18px;font-weight:500;color:#f0f0f0">' + esc(q.quote_number) + '</div>' +
+            '<div style="margin-top:8px"><span style="display:inline-flex;padding:3px 12px;border-radius:20px;font-size:11px;font-weight:600;background:#0d1e30;color:#60a5fa;border:1px solid #1e3a5f">Quote</span></div>' +
+          '</div>' +
+        '</div>' +
+        locksmiths +
+        '<div style="padding:24px 32px;border-bottom:1px solid #e5e7eb">' +
+          '<div style="display:grid;grid-template-columns:1fr 1fr 1fr 1fr;gap:20px">' + detailGrid + '</div>' +
+        '</div>' +
+        '<div style="padding:24px 32px;border-bottom:1px solid #e5e7eb">' +
+          '<div style="font-size:11px;font-weight:600;color:#6b7280;text-transform:uppercase;letter-spacing:0.05em;margin-bottom:12px">Line items</div>' +
+          '<table style="width:100%;border-collapse:collapse;font-size:13px">' +
+            '<thead><tr style="border-bottom:2px solid #e5e7eb">' +
+              '<th style="text-align:left;padding:8px;font-size:11px;font-weight:600;color:#6b7280;text-transform:uppercase;letter-spacing:0.05em">Description</th>' +
+              '<th style="text-align:right;padding:8px;font-size:11px;font-weight:600;color:#6b7280;text-transform:uppercase;letter-spacing:0.05em">Qty</th>' +
+              '<th style="text-align:right;padding:8px;font-size:11px;font-weight:600;color:#6b7280;text-transform:uppercase;letter-spacing:0.05em">Price</th>' +
+              '<th style="text-align:right;padding:8px;font-size:11px;font-weight:600;color:#6b7280;text-transform:uppercase;letter-spacing:0.05em">Total</th>' +
+            '</tr></thead>' +
+            '<tbody>' + itemRows + '</tbody>' +
+            '<tfoot>' +
+              taxRows +
+              '<tr style="border-top:2px solid #e5e7eb">' +
+                '<td colspan="3" style="padding:12px 8px;text-align:right;font-weight:600;font-size:13px;color:#6b7280">Grand total</td>' +
+                '<td style="padding:12px 8px;text-align:right;font-size:17px;font-weight:700;color:#f97316">$' + grandTotal.toFixed(2) + '</td>' +
+              '</tr>' +
+            '</tfoot>' +
+          '</table>' +
+        '</div>' +
+        notesHtml +
+        importantHtml +
+        '<div style="background:#f9fafb;padding:14px 32px;display:flex;justify-content:space-between;font-size:11px;color:#9ca3af;border-top:1px solid #e5e7eb">' +
+          '<span>' + esc(settings.company_name || 'Lock and Roll LLC') + '</span>' +
+          '<span>Generated ' + today + '</span>' +
+        '</div>' +
+      '</div>' +
+      '</body></html>';
+
+    const win = window.open('', '_blank', 'width=900,height=700');
+    if (!win) { alert('Pop-up blocked. Please allow pop-ups for this site to print quotes.'); return; }
+    win.document.write(html);
+    win.document.close();
+    win.focus();
+  } catch(err) {
+    alert('Print failed: ' + err.message);
+  }
+}
+
+// ── Audit Log ────────────────────────────────────────────────────────────────
+var _auditPage = 1;
+var _auditPageSize = 50;
+
+async function renderAuditLog(el) {
+  if (!can('view_audit')) { el.innerHTML = '<div class="alert alert-error">Access denied.</div>'; return; }
+  el.innerHTML = '<div class="loading">Loading…</div>';
+  try {
+    const logs = await api('GET', '/audit');
+    window._auditData = logs;
+    _auditPage = 1;
+    el.innerHTML =
+      '<div class="page-header"><div><div class="page-title">Audit Log</div><div class="page-subtitle">All PO, Quote, and login activity</div></div>' +
+      '<div class="flex-gap">' +
+        '<select id="audit-filter-type" onchange="auditApplyFilter()" style="width:auto"><option value="">All Types</option><option value="po">POs Only</option><option value="quote">Quotes Only</option><option value="auth">Logins</option></select>' +
+        '<select id="audit-filter-action" onchange="auditApplyFilter()" style="width:auto"><option value="">All Actions</option><option value="login">Login</option><option value="created">Created</option><option value="edited">Edited</option><option value="submitted">Submitted</option><option value="approved">Approved</option><option value="rejected">Rejected</option><option value="cancelled">Cancelled</option><option value="deleted">Deleted</option></select>' +
+      '</div></div>' +
+      '<div style="margin-bottom:16px"><input type="text" id="audit-search" placeholder="Search by number, user, action, or details..." style="width:100%;max-width:480px;padding:8px 12px;background:var(--surface-color);border:1px solid rgba(249,115,22,0.35);border-radius:6px;color:var(--text-color);font-size:14px;outline:none;box-shadow:0 0 0 1px rgba(249,115,22,0.15)" oninput="auditApplyFilter()" /></div>' +
+      '<div class="card"><div class="table-wrap">' +
+        '<table><thead><tr><th>Date &amp; Time</th><th>Action</th><th>Type</th><th>Number</th><th>User</th><th>Details</th></tr></thead>' +
+        '<tbody id="audit-tbody"></tbody></table>' +
+      '</div></div>' +
+      '<div id="audit-pagination" style="display:flex;gap:8px;align-items:center;margin-top:16px;flex-wrap:wrap"></div>';
+    auditApplyFilter();
+  } catch(err) {
+    el.innerHTML = '<div class="alert alert-error">' + escHtml(err.message) + '</div>';
+  }
+}
+function auditGetFiltered() {
+  var type = (document.getElementById('audit-filter-type') || {}).value || '';
+  var action = (document.getElementById('audit-filter-action') || {}).value || '';
+  var search = ((document.getElementById('audit-search') || {}).value || '').toLowerCase();
+  return (window._auditData || []).filter(function(l) {
+    if (type && l.entity_type !== type) return false;
+    if (action && l.action !== action) return false;
+    if (search) {
+      var details = '';
+      if (l.details) { try { var d = JSON.parse(l.details); details = JSON.stringify(d).toLowerCase(); } catch(e) {} }
+      var haystack = [(l.entity_number||''), (l.user_name||''), (l.action||''), (l.entity_type||''), details].join(' ').toLowerCase();
+      if (!haystack.includes(search)) return false;
+    }
+    return true;
+  });
+}
+function auditApplyFilter() {
+  _auditPage = 1;
+  auditRenderTable();
+}
+function auditPageSize(v) { _auditPageSize = parsePageSize(v); _auditPage = 1; auditRenderTable(); }
+function auditGoPage(p) {
+  var filtered = auditGetFiltered();
+  var totalPages = Math.max(1, Math.ceil(filtered.length / _auditPageSize));
+  _auditPage = Math.min(Math.max(1, p), totalPages);
+  auditRenderTable();
+}
+function auditRenderTable() {
+  var filtered = auditGetFiltered();
+  var totalPages = Math.max(1, Math.ceil(filtered.length / _auditPageSize));
+  if (_auditPage > totalPages) _auditPage = totalPages;
+  var start = (_auditPage - 1) * _auditPageSize;
+  var page = filtered.slice(start, start + _auditPageSize);
+  var tbody = document.getElementById('audit-tbody');
+  if (!tbody) return;
+  tbody.innerHTML = page.length ? renderAuditRows(page) : '<tr><td colspan="6" style="text-align:center;padding:24px;color:var(--text-muted-color)">No matching entries.</td></tr>';
+  var pg = document.getElementById('audit-pagination');
+  if (!pg) return;
+  var sizeCtl = pageSizeControl(_auditPageSize, 'auditPageSize');
+  if (totalPages <= 1) { pg.innerHTML = sizeCtl + '<span style="font-size:13px;color:var(--text-muted-color)">' + filtered.length + ' record' + (filtered.length !== 1 ? 's' : '') + '</span>'; return; }
+  var html = sizeCtl + '<span style="font-size:13px;color:var(--text-muted-color);margin-right:4px">' + filtered.length + ' records</span>';
+  html += '<button class="btn btn-secondary btn-sm" onclick="auditGoPage(' + (_auditPage - 1) + ')" ' + (_auditPage === 1 ? 'disabled' : '') + '>&lsaquo;</button>';
+  for (var i = 1; i <= totalPages; i++) {
+    html += '<button class="btn btn-sm ' + (i === _auditPage ? 'btn-primary' : 'btn-secondary') + '" onclick="auditGoPage(' + i + ')">' + i + '</button>';
+  }
+  html += '<button class="btn btn-secondary btn-sm" onclick="auditGoPage(' + (_auditPage + 1) + ')" ' + (_auditPage === totalPages ? 'disabled' : '') + '>&rsaquo;</button>';
+  pg.innerHTML = html;
+}
+function renderAuditRows(logs) {
+  const actionColors = { created: '#22c55e', edited: '#60a5fa', deleted: '#ef4444', submitted: '#f59e0b', approved: '#22c55e', rejected: '#ef4444', cancelled: '#c084fc', login: '#34d399' };
+  if (!logs.length) return '';
+  return logs.map(function(l) {
+    const color = actionColors[l.action] || 'var(--text-muted-color)';
+    const dt = new Date(l.created_at);
+    const dateStr = dt.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }) + ' ' + dt.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' });
+    let details = '';
+    if (l.details) {
+      try {
+        const d = JSON.parse(l.details);
+        if (d.vendor) details += 'Vendor: ' + d.vendor + ' ';
+        if (d.customer) details += 'Customer: ' + d.customer + ' ';
+        if (d.total !== undefined) details += '$' + parseFloat(d.total).toFixed(2);
+        if (d.orderer) details += 'Orderer: ' + d.orderer;
+        if (d.reason) details += 'Reason: ' + d.reason;
+        if (d.method) details += 'Via: ' + d.method + ' ';
+        if (d.ip) details += '(' + d.ip + ')';
+      } catch(e) {}
+    }
+    const numLink = l.entity_number
+      ? '<a href="#" onclick="navigate(\'' + (l.entity_type === 'po' ? 'view' : 'view-quote') + '\',' + l.entity_id + ');return false;" style="color:var(--primary)">' + escHtml(l.entity_number) + '</a>'
+      : '—';
+    return '<tr>' +
+      '<td style="white-space:nowrap;font-size:13px">' + escHtml(dateStr) + '</td>' +
+      '<td><span style="font-weight:600;color:' + color + ';text-transform:capitalize">' + escHtml(l.action) + '</span></td>' +
+      '<td><span class="badge ' + (l.entity_type === 'po' ? 'badge-submitted' : 'badge-approver') + '" style="font-size:11px">' + escHtml(l.entity_type.toUpperCase()) + '</span></td>' +
+      '<td>' + numLink + '</td>' +
+      '<td>' + escHtml(l.user_name || '—') + '</td>' +
+      '<td style="font-size:13px;color:var(--text-muted-color)">' + escHtml(details || '—') + '</td>' +
+    '</tr>';
+  }).join('');
+}
+// ── AI Usage Dashboard (admin) ────────────────────────────────────────────────
+function aiUsageMonthStart() {
+  var now = new Date();
+  return new Date(now.getFullYear(), now.getMonth(), 1).toISOString().split('T')[0];
+}
+function aiUsageToday() {
+  return new Date().toISOString().split('T')[0];
+}
+async function renderAIUsage(el) {
+  if (!can('view_ai_admin')) { el.innerHTML = '<div class="alert alert-error">Access denied.</div>'; return; }
+  var fromDefault = aiUsageMonthStart();
+  var toDefault = aiUsageToday();
+  el.innerHTML =
+    '<div class="page-header"><div>' +
+      '<div class="page-title">AI Usage Dashboard</div>' +
+      '<div class="page-subtitle">Spend and per-user breakdown</div>' +
+    '</div></div>' +
+    '<div style="display:flex;align-items:center;gap:10px;margin-bottom:24px;flex-wrap:wrap">' +
+      '<label style="font-size:13px;color:var(--text-muted-color)">From</label>' +
+      '<input type="date" id="ai-usage-from" value="' + fromDefault + '" style="padding:6px 10px;background:var(--surface-color);border:1px solid rgba(249,115,22,0.35);border-radius:6px;color:var(--text-color);font-size:13px;outline:none" />' +
+      '<label style="font-size:13px;color:var(--text-muted-color)">To</label>' +
+      '<input type="date" id="ai-usage-to" value="' + toDefault + '" style="padding:6px 10px;background:var(--surface-color);border:1px solid rgba(249,115,22,0.35);border-radius:6px;color:var(--text-color);font-size:13px;outline:none" />' +
+      '<button class="btn btn-primary btn-sm" onclick="loadAIUsage()">Apply</button>' +
+    '</div>' +
+    '<div id="ai-usage-body"><div class="loading">Loading…</div></div>';
+  loadAIUsage();
+}
+async function loadAIUsage() {
+  var from = (document.getElementById('ai-usage-from') || {}).value || aiUsageMonthStart();
+  var to = (document.getElementById('ai-usage-to') || {}).value || aiUsageToday();
+  var body = document.getElementById('ai-usage-body');
+  if (!body) return;
+  body.innerHTML = '<div class="loading">Loading…</div>';
+  let usage;
+  try { usage = await api('GET', '/ai/admin-usage?from=' + from + '&to=' + to); }
+  catch(e) { body.innerHTML = '<div class="alert alert-error">Failed to load usage data.</div>'; return; }
+  const MONTHLY_LIMIT = 12000;
+  const COST_PER_MSG = 0.015;
+  const total = usage.total || 0;
+  const monthlyPct = Math.min(100, Math.round((usage.monthly / MONTHLY_LIMIT) * 100));
+  const estCost = (total * COST_PER_MSG).toFixed(2);
+  const estCostLimit = (MONTHLY_LIMIT * COST_PER_MSG).toFixed(2);
+  const barColor = monthlyPct > 80 ? 'var(--danger-color,#ef4444)' : monthlyPct > 50 ? '#f59e0b' : 'var(--primary)';
+  const maxUser = usage.users && usage.users.length ? Math.max.apply(null, usage.users.map(function(u){ return u.total; })) : 1;
+  body.innerHTML =
+    '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:16px;margin-bottom:24px">' +
+      '<div class="card"><div class="card-body" style="text-align:center;padding:20px">' +
+        '<div style="font-size:28px;font-weight:700;color:var(--primary)">' + total.toLocaleString() + '</div>' +
+        '<div style="font-size:12px;color:var(--text-muted-color);margin-top:4px">Messages in range</div>' +
+      '</div></div>' +
+      '<div class="card"><div class="card-body" style="text-align:center;padding:20px">' +
+        '<div style="font-size:28px;font-weight:700;color:var(--primary)">$' + estCost + '</div>' +
+        '<div style="font-size:12px;color:var(--text-muted-color);margin-top:4px">Estimated cost</div>' +
+        '<div style="font-size:11px;color:var(--text-muted-color)">of $' + estCostLimit + ' monthly budget</div>' +
+      '</div></div>' +
+      '<div class="card"><div class="card-body" style="text-align:center;padding:20px">' +
+        '<div style="font-size:28px;font-weight:700;color:var(--primary)">' + (usage.users ? usage.users.length : 0) + '</div>' +
+        '<div style="font-size:12px;color:var(--text-muted-color);margin-top:4px">Active users</div>' +
+      '</div></div>' +
+    '</div>' +
+    '<div class="card" style="margin-bottom:24px"><div class="card-header"><span class="card-title">This Month\'s Budget</span></div><div class="card-body">' +
+      '<div style="display:flex;justify-content:space-between;font-size:13px;margin-bottom:6px">' +
+        '<span>' + monthlyPct + '% of monthly limit used</span><span>' + usage.monthly.toLocaleString() + ' / ' + MONTHLY_LIMIT.toLocaleString() + ' messages</span>' +
+      '</div>' +
+      '<div style="background:var(--border-color);border-radius:999px;height:12px;overflow:hidden">' +
+        '<div style="width:' + monthlyPct + '%;height:100%;background:' + barColor + ';border-radius:999px;transition:width 0.5s"></div>' +
+      '</div>' +
+    '</div></div>' +
+    '<div class="card"><div class="card-header"><span class="card-title">Usage by Team Member</span></div><div class="card-body">' +
+      (usage.users && usage.users.length ? usage.users.map(function(u) {
+        var userPct = Math.min(100, Math.round((u.total / maxUser) * 100));
+        return '<div style="margin-bottom:14px">' +
+          '<div style="display:flex;justify-content:space-between;font-size:13px;margin-bottom:4px">' +
+            '<span>' + escHtml(u.user_name) + '</span>' +
+            '<span style="color:var(--text-muted-color)">' + u.total + ' messages · ~$' + (u.total * COST_PER_MSG).toFixed(2) + '</span>' +
+          '</div>' +
+          '<div style="background:var(--border-color);border-radius:999px;height:8px;overflow:hidden">' +
+            '<div style="width:' + userPct + '%;height:100%;background:var(--primary);border-radius:999px"></div>' +
+          '</div>' +
+        '</div>';
+      }).join('') : '<div style="color:var(--text-muted-color);font-size:13px">No usage data for this period.</div>') +
+    '</div></div>';
+}
+// ── AI Conversations (admin) ──────────────────────────────────────────────────
+var _convPage = 1;
+var _convPageSize = 50;
+async function renderAIConversations(el) {
+  if (!can('view_ai_admin')) { el.innerHTML = '<div class="alert alert-error">Access denied.</div>'; return; }
+  el.innerHTML = '<div class="loading">Loading…</div>';
+  let convos = [];
+  try { convos = await api('GET', '/ai/conversations'); } catch(e) { el.innerHTML = '<div class="alert alert-error">Failed to load conversations.</div>'; return; }
+  window._aiConvos = convos;
+  _convPage = 1;
+  el.innerHTML =
+    '<div class="page-header"><div>' +
+      '<div class="page-title">AI Conversations</div>' +
+      '<div class="page-subtitle">All Neurolock questions from your team</div>' +
+    '</div></div>' +
+    '<div style="margin-bottom:16px"><input id="ai-conv-search" type="text" placeholder="Search questions, answers, or user..." style="width:100%;max-width:480px;padding:8px 12px;background:var(--surface-color);border:1px solid rgba(249,115,22,0.35);border-radius:6px;color:var(--text-color);font-size:14px;outline:none;box-shadow:0 0 0 1px rgba(249,115,22,0.15)" oninput="aiConvFilter()" /></div>' +
+    '<div id="ai-conv-list"></div>' +
+    '<div id="ai-conv-pagination" style="display:flex;gap:8px;align-items:center;margin-top:16px;flex-wrap:wrap"></div>';
+  aiConvRenderPage();
+}
+function aiConvFilter() {
+  _convPage = 1;
+  aiConvRenderPage();
+}
+function aiConvGetFiltered() {
+  var q = ((document.getElementById('ai-conv-search') || {}).value || '').toLowerCase();
+  return (window._aiConvos || []).filter(function(c) {
+    if (!q) return true;
+    return (c.question || '').toLowerCase().includes(q) ||
+           (c.response || '').toLowerCase().includes(q) ||
+           (c.user_name || '').toLowerCase().includes(q);
+  });
+}
+function aiConvPageSize(v) { _convPageSize = parsePageSize(v); _convPage = 1; aiConvRenderPage(); }
+function aiConvGoPage(p) {
+  var filtered = aiConvGetFiltered();
+  var totalPages = Math.max(1, Math.ceil(filtered.length / _convPageSize));
+  _convPage = Math.min(Math.max(1, p), totalPages);
+  aiConvRenderPage();
+}
+function aiConvRenderPage() {
+  var filtered = aiConvGetFiltered();
+  var totalPages = Math.max(1, Math.ceil(filtered.length / _convPageSize));
+  if (_convPage > totalPages) _convPage = totalPages;
+  var start = (_convPage - 1) * _convPageSize;
+  var page = filtered.slice(start, start + _convPageSize);
+  var el = document.getElementById('ai-conv-list');
+  if (!el) return;
+  if (!filtered.length) { el.innerHTML = '<div class="alert">No conversations found.</div>'; }
+  else {
+    el.innerHTML = page.map(function(c) {
+      var d = new Date(c.created_at);
+      var dateStr = d.toLocaleDateString() + ' ' + d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+      return '<div class="card" style="margin-bottom:12px">' +
+        '<div class="card-body" style="padding:14px 16px">' +
+          '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">' +
+            '<span style="font-weight:600;font-size:13px">' + escHtml(c.user_name || 'Unknown') + '</span>' +
+            '<span style="font-size:12px;color:var(--text-muted-color);display:flex;align-items:center;gap:6px">' +
+              (c.has_image ? '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><polyline points="21 15 16 10 5 21"/></svg>' : '') +
+              dateStr +
+            '</span>' +
+          '</div>' +
+          '<div style="background:var(--bg-color);border-radius:6px;padding:8px 10px;margin-bottom:8px;font-size:13px"><strong>Q:</strong> ' + escHtml(c.question || '(image only)') + '</div>' +
+          '<div style="font-size:13px;color:var(--text-muted-color);line-height:1.5"><strong style="color:var(--primary)">A:</strong> ' + aiMarkdown(c.response || '') + '</div>' +
+        '</div>' +
+      '</div>';
+    }).join('');
+  }
+  var pg = document.getElementById('ai-conv-pagination');
+  if (!pg) return;
+  var sizeCtl = pageSizeControl(_convPageSize, 'aiConvPageSize');
+  if (totalPages <= 1) { pg.innerHTML = sizeCtl + '<span style="font-size:13px;color:var(--text-muted-color)">' + filtered.length + ' conversation' + (filtered.length !== 1 ? 's' : '') + '</span>'; return; }
+  var html = sizeCtl + '<span style="font-size:13px;color:var(--text-muted-color);margin-right:4px">' + filtered.length + ' conversations</span>';
+  html += '<button class="btn btn-secondary btn-sm" onclick="aiConvGoPage(' + (_convPage - 1) + ')" ' + (_convPage === 1 ? 'disabled' : '') + '>&lsaquo;</button>';
+  for (var i = 1; i <= totalPages; i++) {
+    html += '<button class="btn btn-sm ' + (i === _convPage ? 'btn-primary' : 'btn-secondary') + '" onclick="aiConvGoPage(' + i + ')">' + i + '</button>';
+  }
+  html += '<button class="btn btn-secondary btn-sm" onclick="aiConvGoPage(' + (_convPage + 1) + ')" ' + (_convPage === totalPages ? 'disabled' : '') + '>&rsaquo;</button>';
+  pg.innerHTML = html;
+}
+// ── AI Markdown renderer ──────────────────────────────────────────────────────
+function aiMarkdown(text) {
+  if (!text) return '';
+  var s = text
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;');
+  s = s.replace(/```[\w]*\n?([\s\S]*?)```/g, '<pre style="background:var(--bg-color);border:1px solid var(--border-color);border-radius:6px;padding:8px 10px;font-size:12px;overflow-x:auto;margin:6px 0"><code>$1</code></pre>');
+  s = s.replace(/`([^`]+)`/g, '<code style="background:var(--bg-color);border:1px solid var(--border-color);border-radius:3px;padding:1px 4px;font-size:12px">$1</code>');
+  s = s.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
+  s = s.replace(/\*([^*]+)\*/g, '<em>$1</em>');
+  s = s.replace(/((?:^|\n)[*-] .+)+/g, function(block) {
+    var items = block.trim().split('\n').map(function(line) {
+      return '<li>' + line.replace(/^[*-] /, '') + '</li>';
+    }).join('');
+    return '<ul style="margin:6px 0;padding-left:20px">' + items + '</ul>';
+  });
+  s = s.replace(/((?:^|\n)\d+\. .+)+/g, function(block) {
+    var items = block.trim().split('\n').map(function(line) {
+      return '<li>' + line.replace(/^\d+\. /, '') + '</li>';
+    }).join('');
+    return '<ol style="margin:6px 0;padding-left:20px">' + items + '</ol>';
+  });
+  s = s.replace(/\n\n/g, '<br><br>');
+  s = s.replace(/\n/g, '<br>');
+  return s;
+}
+// ── Locksmith AI Assistant ─────────────────────────────────────────────────────────────
+var _aiMessages = [];
+var _aiSessionUserId = null;
+var _aiUsage = { daily: 0, dailyLimit: 20 };
+var docClipboard = null;
+var docCache = { folders: [], files: [] };
+var docCanWrite = false;
+var docStorageReady = false;
+
+function docFmtSize(n) {
+  n = Number(n) || 0;
+  if (n < 1024) return n + ' B';
+  if (n < 1048576) return (n / 1024).toFixed(1) + ' KB';
+  if (n < 1073741824) return (n / 1048576).toFixed(1) + ' MB';
+  return (n / 1073741824).toFixed(2) + ' GB';
+}
+function docIcon(mime) {
+  mime = mime || '';
+  var c = '#9ca3af';
+  if (mime.indexOf('pdf') !== -1) c = '#ef4444';
+  else if (mime.indexOf('image') !== -1) c = '#22c55e';
+  else if (mime.indexOf('word') !== -1 || mime.indexOf('document') !== -1) c = '#3b82f6';
+  else if (mime.indexOf('sheet') !== -1 || mime.indexOf('excel') !== -1 || mime.indexOf('csv') !== -1) c = '#16a34a';
+  return '<svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="' + c + '" stroke-width="2" style="vertical-align:-4px;flex-shrink:0"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>';
+}
+var docFolderIcon = '<svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="#f59e0b" stroke-width="2" style="vertical-align:-4px;flex-shrink:0"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>';
+
+async function renderDocuments(el) {
+  var folderId = state.currentParam ? parseInt(state.currentParam, 10) : null;
+  el.innerHTML = '<div class="loading">Loading...</div>';
+  var data;
+  try {
+    data = await api('GET', '/documents' + (folderId ? ('?folder=' + folderId) : ''));
+  } catch (e) {
+    el.innerHTML = '<div class="alert alert-error">' + escHtml(e.message) + '</div>';
+    return;
+  }
+  docCache = { folders: data.folders, files: data.files };
+  docCanWrite = !!data.canWriteHere;
+  docStorageReady = !!data.storageReady;
+
+  var crumb = '<span onclick="navigate(\'documents\')" style="cursor:pointer;color:var(--primary)">Document Vault</span>';
+  (data.ancestors || []).forEach(function (a) {
+    crumb += '<span style="color:var(--text-muted-color);margin:0 6px">/</span><span onclick="navigate(\'documents\',' + a.id + ')" style="cursor:pointer;color:var(--primary)">' + escHtml(a.name) + '</span>';
+  });
+  if (data.folder) {
+    crumb += '<span style="color:var(--text-muted-color);margin:0 6px">/</span><span>' + escHtml(data.folder.name) + '</span>';
+  }
+
+  var actions = '';
+  if (data.canWriteHere) {
+    actions =
+      '<button class="btn btn-secondary btn-sm" onclick="docNewFolder()"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="vertical-align:-3px"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/><line x1="12" y1="11" x2="12" y2="17"/><line x1="9" y1="14" x2="15" y2="14"/></svg> New Folder</button> ' +
+      '<button class="btn btn-primary btn-sm" onclick="docPickFiles()"' + (data.storageReady ? '' : ' disabled') + '><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="vertical-align:-3px"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg> Upload</button>' +
+      '<input type="file" id="doc-file-input" multiple style="display:none" onchange="docUploadFiles(this)" />';
+  }
+
+  var paste = '';
+  if (docClipboard) {
+    paste = '<div style="background:rgba(249,115,22,0.12);border:1px solid var(--primary);border-radius:8px;padding:10px 14px;display:flex;justify-content:space-between;align-items:center;gap:10px;margin-bottom:14px;flex-wrap:wrap">' +
+      '<span>Moving <strong>' + escHtml(docClipboard.name) + '</strong> &mdash; open a destination folder, then move it here.</span>' +
+      '<span><button class="btn btn-primary btn-sm" onclick="docPasteHere()"' + (data.canWriteHere ? '' : ' disabled') + '>Move here</button> ' +
+      '<button class="btn btn-ghost btn-sm" onclick="docCancelMove()">Cancel</button></span></div>';
+  }
+
+  var warn = '';
+  if (!data.storageReady) {
+    warn = '<div style="background:rgba(234,179,8,0.12);border:1px solid #eab308;border-radius:8px;padding:10px 14px;margin-bottom:14px;font-size:13px">File storage is not configured yet. Folders and sharing work now, but uploads and downloads need the R2_* environment variables set in Railway. Your folder structure is safe.</div>';
+  }
+
+  var rows = '';
+  data.folders.forEach(function (f) {
+    rows += '<div style="display:flex;align-items:center;gap:12px;padding:11px 14px;border-bottom:1px solid var(--border)">' +
+      '<div style="flex:1;min-width:0;cursor:pointer;display:flex;align-items:center;gap:10px" onclick="navigate(\'documents\',' + f.id + ')">' + docFolderIcon +
+      '<span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + escHtml(f.name) + '</span>' +
+      (f.shareCount ? '<span class="doc-badge">shared</span>' : '') + '</div>' +
+      '<div class="doc-hide-sm" style="width:150px;color:var(--text-muted-color);font-size:13px">' + escHtml(f.owner_name || '') + '</div>' +
+      '<div style="text-align:right;white-space:nowrap">' + docMenu('folder', f.id, f.canEdit) + '</div>' +
+      '</div>';
+  });
+  data.files.forEach(function (f) {
+    rows += '<div style="display:flex;align-items:center;gap:12px;padding:11px 14px;border-bottom:1px solid var(--border)">' +
+      '<div style="flex:1;min-width:0;cursor:pointer;display:flex;align-items:center;gap:10px" onclick="docDownload(' + f.id + ')">' + docIcon(f.mime_type) +
+      '<span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + escHtml(f.name) + '</span>' +
+      (f.shareCount ? '<span class="doc-badge">shared</span>' : '') +
+      (f.emailable ? '<span class="doc-badge" style="background:rgba(59,130,246,0.15);color:#3b82f6">email</span>' : '') + '</div>' +
+      '<div class="doc-hide-sm" style="width:80px;color:var(--text-muted-color);font-size:13px;text-align:right">' + docFmtSize(f.size_bytes) + '</div>' +
+      '<div class="doc-hide-sm" style="width:150px;color:var(--text-muted-color);font-size:13px">' + escHtml(f.owner_name || '') + '</div>' +
+      '<div style="text-align:right;white-space:nowrap">' + docMenu('file', f.id, f.canEdit, f.emailable) + '</div>' +
+      '</div>';
+  });
+  if (!data.folders.length && !data.files.length) {
+    rows = '<div style="padding:44px;text-align:center;color:var(--text-muted-color)">This folder is empty.</div>';
+  }
+
+  el.innerHTML =
+    '<div class="page-title"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="margin-right:8px;vertical-align:-4px"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>Document Vault</div>' +
+    '<div class="page-subtitle">Secure file storage. Share folders or files with specific people or whole roles.</div>' +
+    warn + paste +
+    '<div style="display:flex;justify-content:space-between;align-items:center;gap:12px;margin:14px 0;flex-wrap:wrap">' +
+    '<div style="font-size:14px">' + crumb + '</div>' +
+    '<div>' + actions + '</div>' +
+    '</div>' +
+    '<div class="card" id="doc-droparea"' + ((data.canWriteHere && data.storageReady) ? ' ondragover="docDragOver(event)" ondragleave="docDragLeave(event)" ondrop="docDrop(event)"' : '') + '><div class="card-body" style="padding:0">' + rows + '</div></div>' +
+    ((data.canWriteHere && data.storageReady) ? '<div style="margin-top:10px;font-size:12px;color:var(--text-muted-color);display:flex;align-items:center;gap:6px"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="flex-shrink:0"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>Drag files from your computer onto the list to upload them here.</div>' : '');
+}
+
+function docMenu(type, id, canEdit, emailable) {
+  var isAdm = !!(state.user && (state.user.role === 'admin' || state.user.isOwner));
+  var b = '';
+  if (type === 'file') {
+    b += '<button class="btn btn-ghost btn-sm doc-act" title="Download" onclick="event.stopPropagation();docDownload(' + id + ',1)">&#x2913;</button>';
+    if (emailable) b += '<button class="btn btn-ghost btn-sm doc-act" title="Email this document" onclick="event.stopPropagation();docEmail(' + id + ')"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="vertical-align:-2px"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg></button>';
+    if (isAdm) b += '<button class="btn btn-ghost btn-sm doc-act" title="' + (emailable ? 'Emailing allowed (click to disable)' : 'Allow emailing') + '" onclick="event.stopPropagation();docToggleEmail(' + id + ',' + (emailable ? 1 : 0) + ')"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="' + (emailable ? '#f97316' : 'currentColor') + '" stroke-width="2" style="vertical-align:-2px"><rect x="3" y="5" width="18" height="14" rx="2"/><path d="M3 7l9 6 9-6"/></svg></button>';
+  }
+  if (canEdit) {
+    b += '<button class="btn btn-ghost btn-sm doc-act" title="Share" onclick="event.stopPropagation();docShare(\'' + type + '\',' + id + ')">&#9737;</button>';
+    b += '<button class="btn btn-ghost btn-sm doc-act" title="Rename" onclick="event.stopPropagation();docRename(\'' + type + '\',' + id + ')">&#9998;</button>';
+    b += '<button class="btn btn-ghost btn-sm doc-act" title="Move" onclick="event.stopPropagation();docMove(\'' + type + '\',' + id + ')">&#8644;</button>';
+    b += '<button class="btn btn-ghost btn-sm doc-act" title="Delete" onclick="event.stopPropagation();docDelete(\'' + type + '\',' + id + ')">&#128465;</button>';
+  }
+  return b;
+}
+
+function docReload() { renderDocuments(document.getElementById('content')); }
+function docFind(type, id) {
+  var list = type === 'folder' ? docCache.folders : docCache.files;
+  for (var i = 0; i < list.length; i++) if (list[i].id === id) return list[i];
+  return null;
+}
+
+async function docNewFolder() {
+  var name = prompt('New folder name:');
+  if (!name || !name.trim()) return;
+  var folderId = state.currentParam ? parseInt(state.currentParam, 10) : null;
+  try { await api('POST', '/documents/folders', { name: name.trim(), parent_id: folderId }); docReload(); }
+  catch (e) { alert(e.message); }
+}
+
+function docPickFiles() { var i = document.getElementById('doc-file-input'); if (i) i.click(); }
+
+async function docUploadFiles(input) {
+  var files = Array.prototype.slice.call(input.files || []);
+  input.value = '';
+  await docUploadFileList(files);
+}
+
+async function docUploadFileList(files) {
+  if (!files || !files.length) return;
+  var folderId = state.currentParam ? parseInt(state.currentParam, 10) : null;
+  for (var i = 0; i < files.length; i++) {
+    var file = files[i];
+    try {
+      var reserve = await api('POST', '/documents/upload-url', { name: file.name, folder_id: folderId, mime_type: file.type || 'application/octet-stream' });
+      var put = await fetch(reserve.uploadUrl, { method: 'PUT', body: file, headers: { 'Content-Type': file.type || 'application/octet-stream' } });
+      if (!put.ok) throw new Error('Upload failed for ' + file.name);
+      await api('POST', '/documents/' + reserve.id + '/confirm', { size_bytes: file.size });
+    } catch (e) { alert(e.message); }
+  }
+  docReload();
+}
+
+// Drag files from the desktop onto the list to upload into the current folder.
+function docDragHasFiles(e) {
+  if (!e.dataTransfer) return false;
+  var t = e.dataTransfer.types;
+  if (!t) return false;
+  return Array.prototype.indexOf.call(t, 'Files') !== -1;
+}
+function docDragOver(e) {
+  if (!docCanWrite || !docStorageReady || !docDragHasFiles(e)) return;
+  e.preventDefault();
+  e.dataTransfer.dropEffect = 'copy';
+  var a = document.getElementById('doc-droparea');
+  if (a) a.classList.add('doc-drop-hot');
+}
+function docDragLeave(e) {
+  var a = document.getElementById('doc-droparea');
+  if (a && (!e.relatedTarget || !a.contains(e.relatedTarget))) a.classList.remove('doc-drop-hot');
+}
+function docDrop(e) {
+  e.preventDefault();
+  var a = document.getElementById('doc-droparea');
+  if (a) a.classList.remove('doc-drop-hot');
+  if (!docCanWrite || !docStorageReady) return;
+  var files = (e.dataTransfer && e.dataTransfer.files) ? Array.prototype.slice.call(e.dataTransfer.files) : [];
+  if (files.length) docUploadFileList(files);
+}
+
+async function docDownload(id, forceAttach) {
+  var f = docFind('file', id);
+  var mime = f ? (f.mime_type || '') : '';
+  var inline = !forceAttach && (mime.indexOf('pdf') !== -1 || mime.indexOf('image') !== -1);
+  try {
+    var r = await api('GET', '/documents/' + id + '/download' + (inline ? '?inline=1' : ''));
+    window.open(r.url, '_blank', 'noopener');
+  } catch (e) { alert(e.message); }
+}
+
+async function docRename(type, id) {
+  var item = docFind(type, id);
+  var name = prompt('Rename to:', item ? item.name : '');
+  if (!name || !name.trim()) return;
+  var path = type === 'folder' ? '/documents/folders/' + id : '/documents/' + id;
+  try { await api('PUT', path, { name: name.trim() }); docReload(); }
+  catch (e) { alert(e.message); }
+}
+
+function docMove(type, id) {
+  var item = docFind(type, id);
+  docClipboard = { type: type, id: id, name: item ? item.name : '' };
+  docReload();
+}
+function docCancelMove() { docClipboard = null; docReload(); }
+async function docPasteHere() {
+  if (!docClipboard) return;
+  var folderId = state.currentParam ? parseInt(state.currentParam, 10) : null;
+  var c = docClipboard;
+  var path = c.type === 'folder' ? '/documents/folders/' + c.id : '/documents/' + c.id;
+  try { await api('PUT', path, { folder_id: folderId }); docClipboard = null; docReload(); }
+  catch (e) { alert(e.message); }
+}
+
+async function docDelete(type, id) {
+  var msg = type === 'folder' ? 'Delete this folder and everything inside it? This cannot be undone.' : 'Delete this file? This cannot be undone.';
+  if (!confirm(msg)) return;
+  var path = type === 'folder' ? '/documents/folders/' + id : '/documents/' + id;
+  try { await api('DELETE', path); docReload(); }
+  catch (e) { alert(e.message); }
+}
+
+async function docShare(type, id) {
+  var item = docFind(type, id);
+  var name = item ? item.name : '';
+  var picker, shares;
+  try {
+    picker = await api('GET', '/documents/users-list');
+    shares = await api('GET', '/documents/shares/' + type + '/' + id);
+  } catch (e) { alert(e.message); return; }
+  var overlay = document.createElement('div');
+  overlay.className = 'modal-overlay';
+  overlay.id = 'doc-share-modal';
+  overlay.innerHTML =
+    '<div class="modal">' +
+    '<div class="modal-header"><span class="modal-title">Share: ' + escHtml(name) + '</span>' +
+    '<button class="btn btn-ghost btn-sm" onclick="docCloseShare()">&#x2715;</button></div>' +
+    '<div class="modal-body">' +
+    '<div id="doc-share-list"></div>' +
+    '<div style="margin-top:16px;border-top:1px solid var(--border);padding-top:14px">' +
+    '<label style="font-size:13px;display:block;margin-bottom:6px">Add access (select one or more)</label>' +
+    '<div id="doc-share-picker" style="max-height:190px;overflow:auto;border:1px solid var(--border);border-radius:6px;padding:8px;margin-bottom:8px">' +
+    '<div style="font-size:11px;text-transform:uppercase;letter-spacing:0.5px;color:var(--text-muted-color);margin:2px 0 6px">People</div>' +
+    picker.users.map(function (u) { return '<label style="display:flex;align-items:center;gap:8px;padding:4px 2px;font-size:14px;cursor:pointer"><input type="checkbox" class="doc-share-cb" value="user:' + u.id + '" style="width:auto;flex:0 0 auto;margin:0;padding:0" /> ' + escHtml(u.name) + ' <span style="color:var(--text-muted-color);font-size:12px">(' + escHtml(roleLabel(u.role)) + ')</span></label>'; }).join('') +
+    '<div style="font-size:11px;text-transform:uppercase;letter-spacing:0.5px;color:var(--text-muted-color);margin:10px 0 6px">Entire role</div>' +
+    picker.roles.map(function (r) { return '<label style="display:flex;align-items:center;gap:8px;padding:4px 2px;font-size:14px;cursor:pointer"><input type="checkbox" class="doc-share-cb" value="role:' + r + '" style="width:auto;flex:0 0 auto;margin:0;padding:0" /> Everyone: ' + escHtml(roleLabel(r)) + '</label>'; }).join('') +
+    '</div>' +
+    '<label style="font-size:13px;display:flex;align-items:center;gap:8px;margin-bottom:10px"><input type="checkbox" id="doc-share-edit" style="width:auto;flex:0 0 auto;margin:0;padding:0" /> Allow editing (rename, move, delete, upload)</label>' +
+    '<button class="btn btn-primary btn-sm" onclick="docAddShare(\'' + type + '\',' + id + ')">Add selected</button>' +
+    '</div>' +
+    '</div>' +
+    '</div>';
+  document.body.appendChild(overlay);
+  docRenderShareList(type, id, shares.shares);
+}
+
+function docRenderShareList(type, id, shares) {
+  var box = document.getElementById('doc-share-list');
+  if (!box) return;
+  if (!shares.length) { box.innerHTML = '<p style="color:var(--text-muted-color);font-size:13px;margin:0">Not shared yet. Only you and admins can see this.</p>'; return; }
+  box.innerHTML = shares.map(function (s) {
+    var who = s.grantee_type === 'user' ? escHtml(s.user_name || 'User') : ('Everyone: ' + escHtml(roleLabel(s.grantee_role)));
+    return '<div style="display:flex;align-items:center;justify-content:space-between;gap:10px;padding:6px 0">' +
+      '<span style="font-size:14px">' + who + '</span>' +
+      '<span style="display:flex;align-items:center;gap:8px"><span class="doc-badge">' + (s.can_edit ? 'can edit' : 'view') + '</span>' +
+      '<button class="btn btn-ghost btn-sm" onclick="docRemoveShare(' + s.id + ',\'' + type + '\',' + id + ')">Remove</button></span></div>';
+  }).join('');
+}
+
+async function docAddShare(type, id) {
+  var cbs = Array.prototype.slice.call(document.querySelectorAll('#doc-share-picker .doc-share-cb:checked'));
+  if (!cbs.length) { alert('Pick at least one person or role.'); return; }
+  var canEdit = document.getElementById('doc-share-edit').checked;
+  for (var i = 0; i < cbs.length; i++) {
+    var parts = cbs[i].value.split(':');
+    var body = { resource_type: type, resource_id: id, grantee_type: parts[0], can_edit: canEdit };
+    if (parts[0] === 'user') body.grantee_user_id = parseInt(parts[1], 10);
+    else body.grantee_role = parts[1];
+    try { await api('POST', '/documents/shares', body); } catch (e) { alert(e.message); }
+  }
+  cbs.forEach(function (c) { c.checked = false; });
+  var ed = document.getElementById('doc-share-edit'); if (ed) ed.checked = false;
+  try { var shares = await api('GET', '/documents/shares/' + type + '/' + id); docRenderShareList(type, id, shares.shares); } catch (e) {}
+}
+
+async function docRemoveShare(shareId, type, id) {
+  try {
+    await api('DELETE', '/documents/shares/' + shareId);
+    var shares = await api('GET', '/documents/shares/' + type + '/' + id);
+    docRenderShareList(type, id, shares.shares);
+  } catch (e) { alert(e.message); }
+}
+
+function docCloseShare() { var m = document.getElementById('doc-share-modal'); if (m) m.remove(); docReload(); }
+
+async function docToggleEmail(id, current) {
+  try { await api('PUT', '/documents/' + id, { emailable: !current }); docReload(); }
+  catch (e) { alert(e.message); }
+}
+
+function docEmail(id) {
+  var f = docFind('file', id);
+  if (!f) return;
+  var myEmail = (state.user && state.user.email) ? state.user.email : 'you';
+  var overlay = document.createElement('div');
+  overlay.className = 'modal-overlay';
+  overlay.id = 'doc-email-modal';
+  overlay.innerHTML =
+    '<div class="modal">' +
+    '<div class="modal-header"><span class="modal-title">Email: ' + escHtml(f.name) + '</span>' +
+    '<button class="btn btn-ghost btn-sm" onclick="docCloseEmail()">&#x2715;</button></div>' +
+    '<div class="modal-body">' +
+    '<div id="doc-email-err"></div>' +
+    '<p style="font-size:13px;color:var(--text-muted-color);margin:0 0 14px">The file is attached and sent from your company no-reply address. A copy is sent to you (' + escHtml(myEmail) + ').</p>' +
+    '<div class="form-group"><label>Recipient email</label><input type="email" id="doc-email-to" placeholder="name@example.com" /></div>' +
+    '<div class="form-group"><label>Recipient name (optional)</label><input type="text" id="doc-email-name" /></div>' +
+    '<div class="form-group"><label>Message (optional)</label><textarea id="doc-email-msg" rows="3"></textarea></div>' +
+    '</div>' +
+    '<div class="modal-footer">' +
+    '<button class="btn btn-ghost btn-sm" onclick="docCloseEmail()">Cancel</button>' +
+    '<button class="btn btn-primary btn-sm" id="doc-email-send" onclick="docSendEmail(' + id + ')">Send</button>' +
+    '</div>' +
+    '</div>';
+  document.body.appendChild(overlay);
+}
+
+async function docSendEmail(id) {
+  var to = (document.getElementById('doc-email-to').value || '').trim();
+  var errBox = document.getElementById('doc-email-err');
+  if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(to)) {
+    errBox.innerHTML = '<div class="alert alert-error">Enter a valid recipient email address.</div>';
+    return;
+  }
+  var name = (document.getElementById('doc-email-name').value || '').trim();
+  var msg = (document.getElementById('doc-email-msg').value || '').trim();
+  var btn = document.getElementById('doc-email-send');
+  btn.disabled = true; btn.textContent = 'Sending...';
+  try {
+    await api('POST', '/documents/' + id + '/email', { to: to, to_name: name, message: msg });
+    docCloseEmail();
+    alert('Document sent to ' + to + '.');
+  } catch (e) {
+    errBox.innerHTML = '<div class="alert alert-error">' + escHtml(e.message) + '</div>';
+    btn.disabled = false; btn.textContent = 'Send';
+  }
+}
+
+function docCloseEmail() { var m = document.getElementById('doc-email-modal'); if (m) m.remove(); }
+
+async function renderSOPLibrary(el) {
+  if (state.user.role !== 'admin') { el.innerHTML = '<div class="alert alert-error">Admin access required.</div>'; return; }
+  el.innerHTML =
+    '<div class="page-title"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="margin-right:8px;vertical-align:-4px"><path d="M4 19.5A2.5 2.5 0 016.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 014 19.5v-15A2.5 2.5 0 016.5 2z"/></svg>SOP Library</div>' +
+    '<div class="page-subtitle">Upload SOP PDFs for Nova AI to reference. Text is extracted on upload; active documents are included as context on every Nova AI question.</div>' +
+    '<div id="sop-msg"></div>' +
+    '<div class="card"><div class="card-header"><span class="card-title">Upload a SOP</span></div><div class="card-body">' +
+      '<div class="form-group"><label>Document Title</label><input type="text" id="sop-title" placeholder="e.g. Lockout Service Procedure" /></div>' +
+      '<div class="form-group"><label>PDF File</label><input type="file" id="sop-file" accept="application/pdf" /></div>' +
+      '<div id="sop-upload-status" style="font-size:13px;color:var(--text-muted-color);margin:6px 0 12px"></div>' +
+      '<button class="btn btn-primary" id="sop-upload-btn" onclick="uploadSOP()">Upload &amp; Extract Text</button>' +
+    '</div></div>' +
+    '<div class="card"><div class="card-header"><span class="card-title">Document Library</span></div><div class="card-body" id="sop-list">Loading&hellip;</div></div>';
+  loadSOPList();
+}
+
+async function loadSOPList() {
+  var box = document.getElementById('sop-list');
+  if (!box) return;
+  try {
+    var rows = await api('GET', '/sops');
+    if (!rows.length) { box.innerHTML = '<p class="text-muted">No SOPs uploaded yet.</p>'; return; }
+    var html = '<table style="width:100%;border-collapse:collapse;font-size:14px">' +
+      '<thead><tr style="text-align:left;color:var(--text-muted-color);font-size:12px">' +
+      '<th style="padding:8px">Title</th><th style="padding:8px">File</th><th style="padding:8px">Size</th><th style="padding:8px">Status</th><th style="padding:8px">Uploaded</th><th></th></tr></thead><tbody>';
+    rows.forEach(function(r) {
+      var sz = r.char_count ? (Math.round(r.char_count / 1000) + 'k chars') : '-';
+      var when = r.created_at ? new Date(r.created_at).toLocaleDateString() : '';
+      html += '<tr style="border-top:1px solid var(--border-color)">' +
+        '<td style="padding:10px 8px;font-weight:500">' + escHtml(r.title) + '</td>' +
+        '<td style="padding:10px 8px;color:var(--text-muted-color)">' + escHtml(r.filename || '-') + '</td>' +
+        '<td style="padding:10px 8px;color:var(--text-muted-color)">' + sz + '</td>' +
+        '<td style="padding:10px 8px">' + (r.active ? '<span style="color:#22c55e">Active</span>' : '<span style="color:var(--text-muted-color)">Inactive</span>') + '</td>' +
+        '<td style="padding:10px 8px;color:var(--text-muted-color)">' + escHtml(r.uploaded_by_name || '') + '<br><span style="font-size:12px">' + escHtml(when) + '</span></td>' +
+        '<td style="padding:10px 8px;white-space:nowrap;text-align:right">' +
+          '<button class="btn btn-secondary" style="padding:6px 10px;font-size:13px" onclick="toggleSOP(' + r.id + ',' + (r.active ? 'false' : 'true') + ')">' + (r.active ? 'Disable' : 'Enable') + '</button> ' +
+          '<button class="btn btn-danger" style="padding:6px 10px;font-size:13px" onclick="deleteSOP(' + r.id + ')">Delete</button>' +
+        '</td></tr>';
+    });
+    html += '</tbody></table>';
+    box.innerHTML = html;
+  } catch (e) {
+    box.innerHTML = '<div class="alert alert-error">' + escHtml(e.message) + '</div>';
+  }
+}
+
+async function uploadSOP() {
+  var titleEl = document.getElementById('sop-title');
+  var fileEl = document.getElementById('sop-file');
+  var status = document.getElementById('sop-upload-status');
+  var btn = document.getElementById('sop-upload-btn');
+  var msg = document.getElementById('sop-msg');
+  msg.innerHTML = '';
+  var title = (titleEl.value || '').trim();
+  var file = fileEl.files[0];
+  if (!file) { status.textContent = 'Please choose a PDF file first.'; return; }
+  if (file.type !== 'application/pdf') { status.textContent = 'That file is not a PDF.'; return; }
+  if (!title) title = file.name.replace(/\.pdf$/i, '');
+  btn.disabled = true;
+  try {
+    status.textContent = 'Loading PDF reader...';
+    await loadPdfJs();
+    status.textContent = 'Extracting text...';
+    var text = await extractPdfText(file);
+    if (!text || text.trim().length < 20) {
+      status.textContent = '';
+      msg.innerHTML = '<div class="alert alert-error">Could not extract readable text. This PDF is likely scanned images with no text layer - re-save it as a text-based PDF and try again.</div>';
+      btn.disabled = false; return;
+    }
+    status.textContent = 'Saving...';
+    await api('POST', '/sops', { title: title, filename: file.name, content: text });
+    status.textContent = '';
+    titleEl.value = ''; fileEl.value = '';
+    msg.innerHTML = '<div class="alert alert-success">Uploaded "' + escHtml(title) + '" - ' + text.length.toLocaleString() + ' characters extracted.</div>';
+    loadSOPList();
+  } catch (e) {
+    status.textContent = '';
+    msg.innerHTML = '<div class="alert alert-error">' + escHtml(e.message || 'Upload failed') + '</div>';
+  }
+  btn.disabled = false;
+}
+
+function loadPdfJs() {
+  return new Promise(function(resolve, reject) {
+    if (window.pdfjsLib) { resolve(window.pdfjsLib); return; }
+    var sc = document.createElement('script');
+    sc.src = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js';
+    sc.onload = function() {
+      try { window.pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js'; } catch (e) {}
+      resolve(window.pdfjsLib);
+    };
+    sc.onerror = function() { reject(new Error('Failed to load the PDF reader. Check your connection and try again.')); };
+    document.head.appendChild(sc);
+  });
+}
+
+function extractPdfText(file) {
+  return new Promise(function(resolve, reject) {
+    var reader = new FileReader();
+    reader.onload = function() {
+      try {
+        var typed = new Uint8Array(reader.result);
+        window.pdfjsLib.getDocument({ data: typed }).promise.then(function(pdf) {
+          var pages = [];
+          var seq = Promise.resolve();
+          for (var i = 1; i <= pdf.numPages; i++) {
+            (function(n) {
+              seq = seq.then(function() {
+                return pdf.getPage(n).then(function(page) {
+                  return page.getTextContent().then(function(tc) {
+                    pages.push(tc.items.map(function(it) { return it.str; }).join(' '));
+                  });
+                });
+              });
+            })(i);
+          }
+          seq.then(function() { resolve(pages.join('\n\n')); }).catch(reject);
+        }).catch(function() { reject(new Error('Could not read this PDF file.')); });
+      } catch (e) { reject(new Error('Could not read this PDF file.')); }
+    };
+    reader.onerror = function() { reject(new Error('Could not read the file.')); };
+    reader.readAsArrayBuffer(file);
+  });
+}
+
+async function toggleSOP(id, active) {
+  try { await api('PUT', '/sops/' + id, { active: active }); loadSOPList(); }
+  catch (e) { var m = document.getElementById('sop-msg'); if (m) m.innerHTML = '<div class="alert alert-error">' + escHtml(e.message) + '</div>'; }
+}
+
+async function deleteSOP(id) {
+  if (!confirm('Delete this SOP? Nova AI will no longer reference it.')) return;
+  try { await api('DELETE', '/sops/' + id); loadSOPList(); }
+  catch (e) { var m = document.getElementById('sop-msg'); if (m) m.innerHTML = '<div class="alert alert-error">' + escHtml(e.message) + '</div>'; }
+}
+
+async function renderAIAssistant(el) {
+  if (_aiSessionUserId !== state.user.id) {
+    _aiMessages = [];
+    _aiSessionUserId = state.user.id;
+  }
+  try {
+    _aiUsage = await api('GET', '/ai/usage');
+  } catch(e) {
+    _aiUsage = { daily: 0, dailyLimit: 20 };
+  }
+  el.innerHTML =
+    '<div class="page-header"><div>' +
+      '<div class="page-title"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="margin-right:8px;vertical-align:-4px"><rect x="3" y="6" width="18" height="13" rx="2"/><path d="M8 6V4a1 1 0 011-1h6a1 1 0 011 1v2"/><circle cx="9" cy="12" r="1" fill="currentColor"/><circle cx="15" cy="12" r="1" fill="currentColor"/><path d="M9.5 16h5"/></svg>Neurolock Locksmith AI Assistant</div>' +
+      '<div class="page-subtitle">Locksmith-specific questions, product info, pricing guidance, and more</div>' +
+    '</div>' +
+    '<div id="ai-usage-badge" style="font-size:12px;color:var(--text-muted-color);align-self:center">' + _aiUsage.daily + ' / ' + _aiUsage.dailyLimit + ' messages today</div>' +
+    '</div>' +
+    '<div id="ai-chat-wrap" style="display:flex;flex-direction:column;height:calc(100vh - 200px);max-width:800px;margin:0 auto">' +
+      '<div id="ai-thread" style="flex:1;overflow-y:auto;padding:16px;display:flex;flex-direction:column;gap:12px">' +
+        '<div class="ai-msg ai-msg-bot">' +
+          '<div class="ai-msg-bubble">' +
+            '<strong>Neurolock</strong><br>Hi ' + escHtml(state.user.name.split(' ')[0]) + '! I\'m your locksmith assistant. Ask me anything about locks, keys, security hardware, pricing, or job scoping. What do you need help with?' +
+          '</div>' +
+        '</div>' +
+      '</div>' +
+      '<div style="padding:12px 0;border-top:1px solid var(--border-color)">' +
+        '<div id="ai-image-preview" style="display:none;margin-bottom:8px;position:relative;width:fit-content">' +
+          '<img id="ai-image-thumb" style="max-height:80px;max-width:200px;border-radius:6px;border:1px solid var(--border-color)" />' +
+          '<button onclick="aiClearImage()" style="position:absolute;top:-6px;right:-6px;width:20px;height:20px;border-radius:50%;background:var(--danger-color,#ef4444);border:none;color:#fff;cursor:pointer;font-size:12px;line-height:1;padding:0">&#x2715;</button>' +
+        '</div>' +
+        '<div style="display:flex;gap:8px;align-items:flex-end">' +
+          '<input type="file" id="ai-image-input" accept="image/*" style="display:none" onchange="aiPreviewImage(this)" />' +
+          '<button title="Attach image" onclick="document.getElementById(\'ai-image-input\').click()" style="height:60px;width:44px;padding:0;background:var(--surface-color);border:1px solid var(--border-color);border-radius:8px;color:var(--text-muted-color);cursor:pointer;flex-shrink:0;display:flex;align-items:center;justify-content:center"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><polyline points="21 15 16 10 5 21"/></svg></button>' +
+          '<textarea id="ai-input" rows="2" placeholder="Ask Neurolock a question..." style="flex:1;resize:none;padding:10px 12px;background:var(--surface-color);border:1px solid var(--border-color);border-radius:8px;color:var(--text-color);font-size:14px;font-family:inherit;line-height:1.5" onkeydown="aiHandleKey(event)"></textarea>' +
+          '<button id="ai-send-btn" class="btn btn-primary" onclick="aiSend()" style="height:60px;padding:0 20px;white-space:nowrap">' +
+            '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg>' +
+          '</button>' +
+        '</div>' +
+      '</div>' +
+    '</div>';
+  if (_aiMessages.length > 0) aiRenderThread();
+  setTimeout(function() { document.getElementById('ai-input') && document.getElementById('ai-input').focus(); }, 100);
+}
+// ── Dot field physics (full-screen background) ────────────────────────────────
+var _aiDotsRaf = null;
+var _aiDotsMouseX = -9999, _aiDotsMouseY = -9999;
+var _aiDotsInitialized = false;
+function initAiDots() {
+  if (_aiDotsRaf) { cancelAnimationFrame(_aiDotsRaf); _aiDotsRaf = null; }
+  var canvas = document.getElementById('ai-canvas-left');
+  if (!canvas) return;
+  var w = window.innerWidth;
+  var h = window.innerHeight;
+  canvas.width = w;
+  canvas.height = h;
+  var SPACING = 36, REPEL_R = 150, REPEL_S = 5000, SPRING = 0.07, DAMP = 0.72;
+  var dots = [];
+  for (var x = SPACING / 2; x < w; x += SPACING) {
+    for (var y = SPACING / 2; y < h; y += SPACING) {
+      dots.push({ ox: x, oy: y, x: x, y: y, vx: 0, vy: 0 });
+    }
+  }
+  function loop() {
+    var ctx = canvas.getContext('2d');
+    ctx.clearRect(0, 0, w, h);
+    var mx = _aiDotsMouseX, my = _aiDotsMouseY;
+    dots.forEach(function(d) {
+      var dx = d.x - mx, dy = d.y - my;
+      var dist = Math.sqrt(dx * dx + dy * dy) || 1;
+      d.vx += (d.ox - d.x) * SPRING;
+      d.vy += (d.oy - d.y) * SPRING;
+      if (dist < REPEL_R) {
+        var f = REPEL_S / (dist * dist);
+        d.vx += (dx / dist) * f;
+        d.vy += (dy / dist) * f;
+      }
+      d.vx *= DAMP; d.vy *= DAMP;
+      d.x += d.vx; d.y += d.vy;
+      var alpha = 0.13 + 0.25 * Math.max(0, 1 - dist / REPEL_R);
+      ctx.beginPath();
+      ctx.arc(d.x, d.y, 1.5, 0, Math.PI * 2);
+      ctx.fillStyle = 'rgba(249,115,22,' + alpha.toFixed(2) + ')';
+      ctx.fill();
+    });
+    _aiDotsRaf = requestAnimationFrame(loop);
+  }
+  if (!_aiDotsInitialized) {
+    document.addEventListener('mousemove', function(e) {
+      _aiDotsMouseX = e.clientX;
+      _aiDotsMouseY = e.clientY;
+    });
+    _aiDotsInitialized = true;
+  }
+  loop();
+}
+var _aiPendingImage = null;
+function aiPreviewImage(input) {
+  var file = input.files[0];
+  if (!file) return;
+  var reader = new FileReader();
+  reader.onload = function(e) {
+    var img = new Image();
+    img.onload = function() {
+      var canvas = document.createElement('canvas');
+      var maxDim = 1024;
+      var w = img.width, h = img.height;
+      if (w > maxDim || h > maxDim) {
+        if (w > h) { h = Math.round(h * maxDim / w); w = maxDim; }
+        else { w = Math.round(w * maxDim / h); h = maxDim; }
+      }
+      canvas.width = w; canvas.height = h;
+      canvas.getContext('2d').drawImage(img, 0, 0, w, h);
+      var dataUrl = canvas.toDataURL('image/jpeg', 0.8);
+      var base64 = dataUrl.split(',')[1];
+      if (base64.length > 4 * 1024 * 1024) {
+        showToast('Image is too large even after resizing. Please use a smaller photo.', 'error');
+        input.value = '';
+        return;
+      }
+      _aiPendingImage = { base64: base64, mediaType: 'image/jpeg', dataUrl: dataUrl };
+      var preview = document.getElementById('ai-image-preview');
+      var thumb = document.getElementById('ai-image-thumb');
+      if (preview && thumb) { thumb.src = dataUrl; preview.style.display = 'block'; }
+    };
+    img.src = e.target.result;
+  };
+  reader.readAsDataURL(file);
+}
+function aiClearImage() {
+  _aiPendingImage = null;
+  var preview = document.getElementById('ai-image-preview');
+  var fileInput = document.getElementById('ai-image-input');
+  if (preview) preview.style.display = 'none';
+  if (fileInput) fileInput.value = '';
+}
+function aiHandleKey(e) {
+  if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); aiSend(); }
+}
+function aiRenderThread() {
+  var thread = document.getElementById('ai-thread');
+  if (!thread) return;
+  var welcome = thread.firstChild;
+  thread.innerHTML = '';
+  if (welcome) thread.appendChild(welcome);
+  _aiMessages.forEach(function(m) {
+    var div = document.createElement('div');
+    div.className = 'ai-msg ' + (m.role === 'user' ? 'ai-msg-user' : 'ai-msg-bot');
+    var bubbleContent = '';
+    if (m.role === 'assistant') bubbleContent += '<strong>Neurolock</strong><br>';
+    if (m._imageDataUrl) {
+      bubbleContent += '<img src="' + m._imageDataUrl + '" style="max-width:200px;max-height:150px;border-radius:6px;display:block;margin-bottom:6px" />';
+    }
+    var textContent = typeof m.content === 'string' ? m.content : (Array.isArray(m.content) ? (m.content.find(function(c){ return c.type === 'text'; }) || {}).text || '' : '');
+    bubbleContent += m.role === 'assistant' ? aiMarkdown(textContent) : escHtml(textContent).replace(/\n/g, '<br>');
+    div.innerHTML = '<div class="ai-msg-bubble">' + bubbleContent + '</div>';
+    thread.appendChild(div);
+  });
+  thread.scrollTop = thread.scrollHeight;
+}
+async function aiSend() {
+  var input = document.getElementById('ai-input');
+  var btn = document.getElementById('ai-send-btn');
+  if (!input) return;
+  var text = input.value.trim();
+  if (!text) return;
+  if (_aiUsage.daily >= _aiUsage.dailyLimit) {
+    showToast('Daily limit reached (' + _aiUsage.dailyLimit + '/day). Resets at midnight.', 'error');
+    return;
+  }
+  input.value = '';
+  input.disabled = true;
+  if (btn) btn.disabled = true;
+  var msgContent;
+  var pendingImg = _aiPendingImage;
+  if (pendingImg) {
+    msgContent = [
+      { type: 'image', source: { type: 'base64', media_type: pendingImg.mediaType, data: pendingImg.base64 } },
+      { type: 'text', text: text || 'What can you tell me about this?' }
+    ];
+    _aiMessages.push({ role: 'user', content: msgContent, _imageDataUrl: pendingImg.dataUrl });
+    aiClearImage();
+  } else {
+    msgContent = text;
+    _aiMessages.push({ role: 'user', content: text });
+  }
+  aiRenderThread();
+  var thread = document.getElementById('ai-thread');
+  var typing = document.createElement('div');
+  typing.className = 'ai-msg ai-msg-bot';
+  typing.id = 'ai-typing';
+  typing.innerHTML = '<div class="ai-msg-bubble" style="color:var(--text-muted-color)"><em>Neurolock is thinking…</em></div>';
+  if (thread) { thread.appendChild(typing); thread.scrollTop = thread.scrollHeight; }
+  try {
+    var apiMessages = _aiMessages.map(function(m) { return { role: m.role, content: m.content }; });
+    var data = await api('POST', '/ai/chat', { messages: apiMessages });
+    _aiMessages.push({ role: 'assistant', content: data.reply });
+    _aiUsage.daily = data.dailyUsed;
+    var badge = document.getElementById('ai-usage-badge');
+    if (badge) badge.textContent = _aiUsage.daily + ' / ' + _aiUsage.dailyLimit + ' messages today';
+  } catch(err) {
+    _aiMessages.push({ role: 'assistant', content: '⚠️ ' + (err.message || 'Something went wrong. Try again.') });
+  }
+  var typingEl = document.getElementById('ai-typing');
+  if (typingEl) typingEl.remove();
+  if (input) input.disabled = false;
+  if (btn) btn.disabled = false;
+  aiRenderThread();
+  if (input) { input.focus(); }
+}
+// ── Vehicle Repairs ────────────────────────────────────────────────────────────
+var _vrStatusColors = { draft:'var(--text-muted-color)', submitted:'#f59e0b', approved:'#22c55e', rejected:'#ef4444' };
+async function renderVRDashboard(el) {
+  el.innerHTML = '<div class="loading">Loading…</div>';
+  try {
+    const vrs = await api('GET', '/vr');
+    const isApprover = can('approve_vr');
+    var colCount = isApprover ? 11 : 10;
+    function vrDashRender(q, statusFilter) {
+      var filtered = vrs.filter(function(vr) {
+        if (statusFilter && vr.status !== statusFilter) return false;
+        if (!q) return true;
+        var hay = [vr.vr_number, vr.vehicle, vr.vin_last6, vr.requester_name, vr.assigned_name, vr.shop_name, vr.city_code, vr.status].join(' ').toLowerCase();
+        return hay.includes(q.toLowerCase());
+      });
+      var tbody = document.getElementById('vr-tbody');
+      if (!tbody) return;
+      tbody.innerHTML = filtered.length ? filtered.map(function(vr) {
+        var sc = _vrStatusColors[vr.status] || 'var(--text-muted-color)';
+        return '<tr style="cursor:pointer" onclick="navigate(\'view-vr\',' + vr.id + ')">' +
+          '<td style="white-space:nowrap"><strong style="color:var(--primary)">' + escHtml(vr.vr_number) + '</strong> <button class="btn btn-ghost btn-sm" title="Copy VR number" onclick="event.stopPropagation();copyToClipboard(\'' + escHtml(vr.vr_number) + '\',this)" style="padding:2px 7px;font-size:11px;opacity:0.6;vertical-align:middle;font-weight:500">Copy</button></td>' +
+          '<td>' + escHtml(vr.vehicle || '—') + '</td>' +
+          '<td style="font-family:monospace">' + escHtml(vr.vin_last6 || '—') + '</td>' +
+          (isApprover ? '<td>' + escHtml(vr.requester_name || '—') + '</td>' : '') +
+          '<td>' + escHtml(vr.assigned_name || '—') + '</td>' +
+          '<td>' + escHtml(vr.shop_name || '—') + '</td>' +
+          '<td>' + escHtml(vr.city_code || '—') + '</td>' +
+          '<td>$' + parseFloat(vr.total_amount || 0).toFixed(2) + '</td>' +
+          '<td><span style="font-weight:600;color:' + sc + ';text-transform:capitalize">' + escHtml(vr.status) + '</span></td>' +
+          '<td style="font-size:13px;white-space:nowrap">' + formatDate(vr.created_at) + '</td>' +
+        '</tr>';
+      }).join('') : '<tr><td colspan="' + colCount + '" style="text-align:center;padding:32px;color:var(--text-muted-color)">No results.</td></tr>';
+    }
+    el.innerHTML =
+      '<div class="page-header">' +
+        '<div><div class="page-title"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="margin-right:8px;vertical-align:-4px"><rect x="1" y="3" width="15" height="13" rx="2"/><path d="M16 8h6l3 4v4h-9V8z"/><circle cx="5.5" cy="18.5" r="2.5"/><circle cx="18.5" cy="18.5" r="2.5"/></svg>Vehicle Maintenance/Repairs</div></div>' +
+        (can('create_vr') ? '<button class="btn btn-primary" onclick="navigate(\'new-vr\')" style="white-space:nowrap">' + icons.plus + ' New VR</button>' : '') +
+      '</div>' +
+      '<div style="display:flex;gap:10px;margin-bottom:16px;flex-wrap:wrap">' +
+        '<input type="text" id="vr-search" placeholder="Search VR#, vehicle, shop, city…" oninput="vrDashFilter()" style="flex:1;min-width:200px" />' +
+        '<select id="vr-status-filter" onchange="vrDashFilter()" style="min-width:150px"><option value="">All Statuses</option><option value="draft">Draft</option><option value="submitted">Submitted</option><option value="approved">Approved</option><option value="rejected">Rejected</option></select>' +
+      '</div>' +
+      '<div class="card"><div class="card-body" style="padding:0"><div class="table-wrap"><table>' +
+        '<thead><tr><th>VR #</th><th>Vehicle</th><th>VIN</th>' + (isApprover ? '<th>Submitted By</th>' : '') + '<th>Assigned To</th><th>Shop</th><th>City</th><th>Total</th><th>Status</th><th>Date</th><th></th></tr></thead>' +
+        '<tbody id="vr-tbody"></tbody>' +
+      '</table></div></div></div>';
+    window._vrDashRender = vrDashRender;
+    vrDashRender('', '');
+  } catch(err) { el.innerHTML = '<div class="alert alert-error">' + escHtml(err.message) + '</div>'; }
+}
+function vrDashFilter() {
+  var q = (document.getElementById('vr-search')||{}).value || '';
+  var s = (document.getElementById('vr-status-filter')||{}).value || '';
+  if (window._vrDashRender) window._vrDashRender(q, s);
+}
+async function renderEditVR(el, id) {
+  el.innerHTML = '<div class="loading">Loading…</div>';
+  var vr = null, cities = [], users = [];
+  try {
+    cities = await api('GET', '/cities');
+    users = await api('GET', '/users');
+    if (id) vr = await api('GET', '/vr/' + id);
+  } catch(e) { el.innerHTML = '<div class="alert alert-error">' + escHtml(e.message) + '</div>'; return; }
+  window._vrItems = vr ? (vr.line_items || []).map(function(i){ return { description: i.description, quantity: parseFloat(i.quantity)||1, unit_price: parseFloat(i.unit_price)||0 }; })
+    : [{ description: '', quantity: 1, unit_price: 0 }];
+  window._vrVehicles = [];
+  window._vrSelectedVehicleId = vr ? (vr.vehicle_id || null) : null;
+  el.innerHTML =
+    '<div class="page-header"><div class="page-title">' + (id ? 'Edit Vehicle Maintenance/Repair' : 'New Vehicle Maintenance/Repair') + '</div></div>' +
+    '<div id="vr-edit-error"></div>' +
+    '<div class="card" style="margin-bottom:20px"><div class="card-header"><span class="card-title">AI Quote Extract</span>' +
+      '<span style="font-size:12px;color:var(--text-muted-color);margin-left:8px">Upload a shop estimate — Neurolock fills the form automatically</span></div>' +
+    '<div class="card-body"><div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">' +
+      '<input type="file" id="vr-ai-file" accept="image/*,application/pdf" style="display:none" onchange="vrAIExtract(this)" />' +
+      '<button class="btn btn-secondary" onclick="document.getElementById(\'vr-ai-file\').click()"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="margin-right:6px;vertical-align:-2px"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><polyline points="21 15 16 10 5 21"/></svg>Upload Estimate</button>' +
+      '<span id="vr-ai-status" style="font-size:13px;color:var(--text-muted-color)"></span>' +
+    '</div></div></div>' +
+    '<div class="card"><div class="card-body">' +
+      '<div class="form-row">' +
+        '<div class="form-group"><label>City</label><select id="vr-city" onchange="vrCityChanged(this.value)"><option value="">— Select city —</option>' +
+          cities.map(function(c){ return '<option value="' + escHtml(c.code) + '"' + (vr && vr.city_code === c.code ? ' selected' : '') + '>' + escHtml(c.name) + ' (' + escHtml(c.code) + ')</option>'; }).join('') +
+        '</select></div>' +
+        '<div class="form-group"><label>Assigned Employee</label><select id="vr-assigned"><option value="">— Select employee —</option>' +
+          users.filter(function(u){ return u.active; }).map(function(u){ return '<option value="' + u.id + '"' + (vr && vr.assigned_user_id == u.id ? ' selected' : '') + '>' + escHtml(u.name) + '</option>'; }).join('') +
+        '</select></div>' +
+      '</div>' +
+      '<div class="form-group" style="margin-bottom:20px;padding-bottom:20px;border-bottom:1px solid var(--border-color)">' +
+        '<label style="font-weight:600">Vehicle from Fleet Registry</label>' +
+        '<select id="vr-vehicle-select" onchange="vrSelectVehicle(this)" disabled style="margin-top:6px;opacity:0.6">' +
+          '<option value="">— Select city to see vehicles —</option>' +
+        '</select>' +
+      '</div>' +
+      '<div class="form-row">' +
+        '<div class="form-group"><label>Vehicle (Year Make Model) *</label><input type="text" id="vr-vehicle" value="' + escHtml(vr ? vr.vehicle||'' : '') + '" placeholder="e.g. 2022 Ford Transit" /></div>' +
+        '<div class="form-group"><label>Last 6 of VIN</label><input type="text" id="vr-vin" value="' + escHtml(vr ? vr.vin_last6||'' : '') + '" maxlength="6" placeholder="A1B2C3" oninput="this.value=this.value.toUpperCase()" style="font-family:monospace;letter-spacing:2px;text-transform:uppercase" /></div>' +
+      '</div>' +
+      '<div class="form-row">' +
+        '<div class="form-group"><label>Shop / Vendor</label><input type="text" id="vr-shop" value="' + escHtml(vr ? vr.shop_name||'' : '') + '" placeholder="e.g. Pepboys, Firestone" /></div>' +
+        '<div class="form-group"><label>Notes</label><input type="text" id="vr-notes" value="' + escHtml(vr ? vr.notes||'' : '') + '" placeholder="Additional notes or recommendations" /></div>' +
+      '</div>' +
+    '</div></div>' +
+    '<div class="card" style="margin-top:20px"><div class="card-header"><span class="card-title">Line Items</span><button class="btn btn-secondary btn-sm" onclick="vrAddRow()">+ Add Row</button></div>' +
+    '<div class="card-body" style="padding:0"><div class="table-wrap"><table>' +
+      '<thead><tr><th style="width:60%">Description</th><th>Qty</th><th>Unit Price</th><th>Total</th><th></th></tr></thead>' +
+      '<tbody id="vr-items"></tbody>' +
+    '</table></div></div>' +
+    '<div class="card-body" style="display:flex;justify-content:flex-end;border-top:1px solid var(--border-color)">' +
+      '<strong>Total: $<span id="vr-total">0.00</span></strong>' +
+    '</div></div>' +
+    '<div style="display:flex;gap:10px;margin-top:20px;justify-content:flex-end">' +
+      '<button class="btn btn-secondary" onclick="navigate(\'vr-dashboard\')">Cancel</button>' +
+      '<button class="btn btn-primary" id="vr-save-btn" onclick="saveVR(' + (id||'null') + ', this)">Save as Draft</button>' +
+    '</div>';
+  vrRenderItems();
+  if (vr && vr.city_code) vrCityChanged(vr.city_code);
+}
+function vrRenderItems() {
+  var tbody = document.getElementById('vr-items');
+  if (!tbody) return;
+  tbody.innerHTML = (window._vrItems || []).map(function(item, idx) {
+    var lt = ((item.quantity||0)*(item.unit_price||0)).toFixed(2);
+    return '<tr>' +
+      '<td><input type="text" value="' + escHtml(item.description) + '" oninput="vrUpdateItem(' + idx + ',\'description\',this.value)" style="width:100%" /></td>' +
+      '<td><input type="number" value="' + item.quantity + '" min="0" step="0.01" oninput="vrUpdateItem(' + idx + ',\'quantity\',this.value)" style="width:70px" /></td>' +
+      '<td><input type="number" value="' + item.unit_price + '" min="0" step="0.01" oninput="vrUpdateItem(' + idx + ',\'unit_price\',this.value)" style="width:100px" /></td>' +
+      '<td>$' + lt + '</td>' +
+      '<td><button class="btn btn-ghost btn-sm" style="color:var(--danger-color,#ef4444)" onclick="vrRemoveRow(' + idx + ')">✕</button></td>' +
+    '</tr>';
+  }).join('');
+  vrUpdateTotal();
+}
+function vrUpdateItem(idx, field, val) {
+  if (!window._vrItems) return;
+  window._vrItems[idx][field] = field === 'description' ? val : parseFloat(val) || 0;
+  vrUpdateTotal();
+}
+function vrAddRow() { (window._vrItems = window._vrItems||[]).push({ description:'', quantity:1, unit_price:0 }); vrRenderItems(); }
+function vrRemoveRow(idx) { window._vrItems.splice(idx,1); vrRenderItems(); }
+function vrUpdateTotal() {
+  var t = (window._vrItems||[]).reduce(function(s,i){ return s+((i.quantity||0)*(i.unit_price||0)); },0);
+  var el = document.getElementById('vr-total'); if (el) el.textContent = t.toFixed(2);
+}
+async function vrAIExtract(input) {
+  var file = input.files[0]; if (!file) return;
+  var status = document.getElementById('vr-ai-status');
+  status.style.color = 'var(--text-muted-color)';
+  status.textContent = 'Reading estimate…';
+  var reader = new FileReader();
+  reader.onload = async function(e) {
+    try {
+      var base64 = e.target.result.split(',')[1];
+      var mediaType = file.type || 'image/jpeg';
+      status.textContent = 'Neurolock is extracting data…';
+      var data = await api('POST', '/vr/ai-extract', { imageData: base64, mediaType: mediaType });
+      if (data.vehicle) { var v = document.getElementById('vr-vehicle'); if (v) v.value = data.vehicle; }
+      if (data.vin_last6) { var vin = document.getElementById('vr-vin'); if (vin) vin.value = data.vin_last6.toUpperCase(); }
+      if (data.shop_name) { var s = document.getElementById('vr-shop'); if (s) s.value = data.shop_name; }
+      if (data.notes) { var n = document.getElementById('vr-notes'); if (n) n.value = data.notes; }
+      if (data.line_items && data.line_items.length) {
+        window._vrItems = data.line_items.map(function(i){ return { description: i.description||'', quantity: parseFloat(i.quantity)||1, unit_price: parseFloat(i.unit_price)||0 }; });
+        vrRenderItems();
+      }
+      status.textContent = '✓ Extracted ' + (data.line_items ? data.line_items.length : 0) + ' line items — review before saving.';
+      status.style.color = '#22c55e';
+    } catch(err) {
+      status.textContent = '⚠ ' + (err.message || 'Extraction failed');
+      status.style.color = 'var(--danger-color,#ef4444)';
+    }
+  };
+  reader.readAsDataURL(file);
+}
+async function vrCityChanged(cityCode) {
+  var sel = document.getElementById('vr-vehicle-select');
+  if (!sel) return;
+  if (!cityCode) {
+    sel.innerHTML = '<option value="">— Select city to see vehicles —</option>';
+    sel.disabled = true;
+    sel.style.opacity = '0.6';
+    window._vrVehicles = [];
+    window._vrSelectedVehicleId = null;
+    return;
+  }
+  sel.disabled = true;
+  sel.style.opacity = '0.6';
+  sel.innerHTML = '<option value="">Loading vehicles…</option>';
+  try {
+    var vehicles = await api('GET', '/vehicles?city_code=' + encodeURIComponent(cityCode));
+    window._vrVehicles = vehicles;
+    sel.style.opacity = '1';
+    if (!vehicles.length) {
+      sel.innerHTML = '<option value="">— No vehicles registered for this city —</option>';
+      sel.disabled = true;
+    } else {
+      sel.disabled = false;
+      sel.innerHTML = '<option value="">— Select vehicle or enter manually below —</option>' +
+        vehicles.map(function(v){ return '<option value="' + v.id + '"' + (window._vrSelectedVehicleId == v.id ? ' selected' : '') + '>' + v.year + ' ' + escHtml(v.make_model) + (v.vin ? ' — VIN: …' + v.vin.slice(-6) : '') + (v.license_plate ? ' (' + escHtml(v.license_plate) + ')' : '') + '</option>'; }).join('');
+    }
+  } catch(err) {
+    sel.innerHTML = '<option value="">— Failed to load vehicles —</option>';
+    sel.disabled = true;
+  }
+}
+function vrSelectVehicle(sel) {
+  var vid = parseInt(sel.value) || null;
+  window._vrSelectedVehicleId = vid;
+  if (!vid) return;
+  var v = (window._vrVehicles || []).find(function(x){ return x.id === vid; });
+  if (!v) return;
+  var vField = document.getElementById('vr-vehicle');
+  var vinField = document.getElementById('vr-vin');
+  if (vField) vField.value = v.year + ' ' + v.make_model;
+  if (vinField) vinField.value = v.vin ? v.vin.slice(-6).toUpperCase() : '';
+}
+async function saveVR(id, btn) {
+  var vehicle = ((document.getElementById('vr-vehicle')||{}).value||'').trim();
+  var vin_last6 = ((document.getElementById('vr-vin')||{}).value||'').trim();
+  var assigned_user_id = ((document.getElementById('vr-assigned')||{}).value)||null;
+  var shop_name = ((document.getElementById('vr-shop')||{}).value||'').trim();
+  var city_code = ((document.getElementById('vr-city')||{}).value)||null;
+  var notes = ((document.getElementById('vr-notes')||{}).value||'').trim();
+  var vehicle_id = window._vrSelectedVehicleId || null;
+  if (!vehicle) { document.getElementById('vr-edit-error').innerHTML = '<div class="alert alert-error">Vehicle is required.</div>'; return; }
+  var validItems = (window._vrItems||[]).filter(function(i){ return i.description.trim(); });
+  try {
+    btn.disabled = true;
+    var result;
+    if (id) { await api('PUT', '/vr/'+id, { vehicle, vin_last6, vehicle_id, assigned_user_id, shop_name, city_code, notes, line_items: validItems }); navigate('view-vr', id); }
+    else { result = await api('POST', '/vr', { vehicle, vin_last6, vehicle_id, assigned_user_id, shop_name, city_code, notes, line_items: validItems }); navigate('view-vr', result.id); }
+  } catch(err) {
+    document.getElementById('vr-edit-error').innerHTML = '<div class="alert alert-error">' + escHtml(err.message) + '</div>';
+    btn.disabled = false;
+  }
+}
+async function renderViewVR(el, id) {
+  el.innerHTML = '<div class="loading">Loading…</div>';
+  try {
+    var vr = await api('GET', '/vr/' + id);
+    var isApprover = can('approve_vr');
+    var isOwner = vr.requester_id === state.user.id;
+    var sc = _vrStatusColors[vr.status] || 'var(--text-muted-color)';
+    el.innerHTML =
+      '<div class="page-header">' +
+        '<div><div class="page-title">' + escHtml(vr.vr_number) + '</div>' +
+          '<div class="page-subtitle" style="color:' + sc + ';font-weight:600;text-transform:capitalize">' + escHtml(vr.status) + '</div>' +
+        '</div>' +
+        '<div class="flex-gap">' +
+          (vr.status==='draft' && (isOwner||state.user.role==='admin') && can('edit_vr') ? '<button class="btn btn-secondary" onclick="navigate(\'edit-vr\',' + vr.id + ')">Edit</button>' : '') +
+          (vr.status==='draft' && (isOwner||state.user.role==='admin') && can('submit_vr') ? '<button class="btn btn-primary" onclick="submitVR(' + vr.id + ')">Submit for Approval</button>' : '') +
+          (vr.status==='submitted' && isApprover ? '<button class="btn btn-primary" style="background:#22c55e;border-color:#22c55e" onclick="approveVR(' + vr.id + ')">Approve</button>' : '') +
+          (vr.status==='submitted' && isApprover ? '<button class="btn btn-danger" onclick="rejectVR(' + vr.id + ')">Reject</button>' : '') +
+          (((vr.status==='draft' && (isOwner||state.user.role==='admin')) || state.user.role==='admin') && can('delete_vr') ? '<button class="btn btn-danger btn-sm" onclick="deleteVR(' + vr.id + ')">Delete</button>' : '') +
+          '<button class="btn btn-secondary" onclick="navigate(\'vr-dashboard\')"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="margin-right:4px"><polyline points="15 18 9 12 15 6"/></svg> Back</button>' +
+        '</div>' +
+      '</div>' +
+      '<div id="vr-view-msg"></div>' +
+      '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:16px;margin-bottom:20px">' +
+        '<div class="card"><div class="card-body">' +
+          '<div class="detail-field"><label>Vehicle</label><p>' + escHtml(vr.vehicle||'—') + '</p></div>' +
+          '<div class="detail-field"><label>VIN (last 6)</label><p style="font-family:monospace;letter-spacing:2px">' + escHtml(vr.vin_last6||'—') + '</p></div>' +
+          '<div class="detail-field"><label>Assigned Employee</label><p>' + escHtml(vr.assigned_name||'—') + '</p></div>' +
+        '</div></div>' +
+        '<div class="card"><div class="card-body">' +
+          '<div class="detail-field"><label>Shop / Vendor</label><p>' + escHtml(vr.shop_name||'—') + '</p></div>' +
+          '<div class="detail-field"><label>City</label><p>' + escHtml(vr.city_code||'—') + '</p></div>' +
+          '<div class="detail-field"><label>Submitted By</label><p>' + escHtml(vr.requester_name||'—') + '</p></div>' +
+        '</div></div>' +
+        '<div class="card"><div class="card-body">' +
+          '<div class="detail-field"><label>Date Created</label><p>' + formatDate(vr.created_at) + '</p></div>' +
+          '<div class="detail-field"><label>Notes</label><p>' + escHtml(vr.notes||'—') + '</p></div>' +
+          (vr.rejection_reason ? '<div class="detail-field"><label style="color:var(--danger-color,#ef4444)">Rejection Reason</label><p>' + escHtml(vr.rejection_reason) + '</p></div>' : '') +
+        '</div></div>' +
+      '</div>' +
+      '<div class="card"><div class="card-header"><span class="card-title">Line Items</span></div>' +
+      '<div class="card-body" style="padding:0"><div class="table-wrap"><table>' +
+        '<thead><tr><th>Description</th><th>Qty</th><th>Unit Price</th><th>Total</th></tr></thead>' +
+        '<tbody>' + (vr.line_items && vr.line_items.length ? vr.line_items.map(function(item) {
+          return '<tr><td>' + escHtml(item.description) + '</td><td>' + item.quantity + '</td><td>$' + parseFloat(item.unit_price).toFixed(2) + '</td><td>$' + (parseFloat(item.quantity)*parseFloat(item.unit_price)).toFixed(2) + '</td></tr>';
+        }).join('') : '<tr><td colspan="4" style="text-align:center;color:var(--text-muted-color);padding:20px">No line items</td></tr>') +
+        '</tbody>' +
+      '</table></div>' +
+      '<div class="card-body" style="display:flex;justify-content:flex-end;border-top:1px solid var(--border-color)">' +
+        '<strong>Total: $' + parseFloat(vr.total_amount||0).toFixed(2) + '</strong>' +
+      '</div></div></div>';
+  } catch(err) { el.innerHTML = '<div class="alert alert-error">' + escHtml(err.message) + '</div>'; }
+}
+async function submitVR(id) {
+  if (!confirm('Submit this vehicle repair for approval?')) return;
+  try { await api('POST', '/vr/'+id+'/submit'); navigate('view-vr', id); }
+  catch(err) { var m = document.getElementById('vr-view-msg'); if(m) m.innerHTML = '<div class="alert alert-error">'+escHtml(err.message)+'</div>'; }
+}
+async function approveVR(id) {
+  if (!confirm('Approve this vehicle repair?')) return;
+  try { await api('POST', '/vr/'+id+'/approve'); navigate('view-vr', id); }
+  catch(err) { var m = document.getElementById('vr-view-msg'); if(m) m.innerHTML = '<div class="alert alert-error">'+escHtml(err.message)+'</div>'; }
+}
+async function rejectVR(id) {
+  var reason = prompt('Rejection reason (optional):');
+  if (reason === null) return;
+  try { await api('POST', '/vr/'+id+'/reject', { reason }); navigate('view-vr', id); }
+  catch(err) { var m = document.getElementById('vr-view-msg'); if(m) m.innerHTML = '<div class="alert alert-error">'+escHtml(err.message)+'</div>'; }
+}
+async function deleteVR(id) {
+  if (!confirm('Delete this vehicle repair? This cannot be undone.')) return;
+  try { await api('DELETE', '/vr/'+id); navigate('vr-dashboard'); }
+  catch(err) { alert(err.message); }
+}
+// ── Fleet Registry ─────────────────────────────────────────────────────────────
+var _allVehicles = [];
+var _fleetPage = 1;
+let FLEET_PAGE_SIZE = 15;
+
+function fleetPaginate(p) { _fleetPage = p; applyFleetFilters(); }
+function fleetPageSize(v) { FLEET_PAGE_SIZE = parsePageSize(v); _fleetPage = 1; applyFleetFilters(); }
+
+function applyFleetFilters(resetPage) {
+  if (resetPage) _fleetPage = 1;
+  var text = ((document.getElementById('fleet-search') || {}).value || '').toLowerCase();
+  var status = (document.getElementById('fleet-status') || {}).value || '';
+
+  var filtered = _allVehicles.filter(function(v) {
+    if (status === 'active' && !v.active) return false;
+    if (status === 'sold' && !(v.sold_to)) return false;
+    if (status === 'inactive' && (v.active || v.sold_to)) return false;
+    if (text) {
+      var hay = [v.year, v.make_model, v.vin, v.key_codes, v.driver_name, v.city_code, v.license_plate, v.sold_to].filter(Boolean).join(' ').toLowerCase();
+      if (!hay.includes(text)) return false;
+    }
+    return true;
+  });
+
+  var tbody = document.getElementById('fleet-tbody');
+  if (!tbody) return;
+
+  var totalPages = Math.max(1, Math.ceil(filtered.length / FLEET_PAGE_SIZE));
+  if (_fleetPage > totalPages) _fleetPage = totalPages;
+  var start = (_fleetPage - 1) * FLEET_PAGE_SIZE;
+  var page = filtered.slice(start, start + FLEET_PAGE_SIZE);
+
+  if (!filtered.length) {
+    tbody.innerHTML = '<tr><td colspan="10" style="text-align:center;padding:32px;color:var(--text-muted-color)">No vehicles match your search.</td></tr>';
+    document.getElementById('fleet-pagination').innerHTML = '';
+    return;
+  }
+
+  tbody.innerHTML = page.map(function(v) {
+    var isSold = !v.active && v.sold_to;
+    var statusHtml = v.active
+      ? '<span style="font-weight:600;color:#22c55e">Active</span>'
+      : isSold
+        ? '<span style="font-weight:600;color:#a78bfa">Sold</span><div style="font-size:11px;color:var(--text-muted-color);margin-top:2px">To: ' + escHtml(v.sold_to) + (v.sold_for ? ' · $' + parseFloat(v.sold_for).toFixed(2) : '') + (v.sold_date ? '<br>' + v.sold_date.split('T')[0] : '') + '</div>'
+        : '<span style="font-weight:600;color:var(--text-muted-color)">Inactive</span>';
+    return '<tr style="' + (!v.active ? 'opacity:0.6' : '') + '">' +
+      '<td>' + v.year + '</td>' +
+      '<td><strong>' + escHtml(v.make_model) + '</strong></td>' +
+      '<td style="font-family:monospace;font-size:13px">' + escHtml(v.vin || '—') + '</td>' +
+      '<td>' + escHtml(v.key_codes || '—') + '</td>' +
+      '<td>' + escHtml(v.driver_name || '—') + '</td>' +
+      '<td>' + escHtml(v.city_code || '—') + '</td>' +
+      '<td style="font-size:13px;white-space:nowrap">' + (v.date_of_assignment ? v.date_of_assignment.split('T')[0] : '—') + '</td>' +
+      '<td>' + escHtml(v.license_plate || '—') + '</td>' +
+      '<td>' + statusHtml + '</td>' +
+      '<td style="white-space:nowrap">' +
+        '<button class="btn btn-secondary btn-sm" onclick="navigate(\'vehicle-history\',' + v.id + ')">History</button> ' +
+        (v.active ? '<button class="btn btn-secondary btn-sm" onclick="navigate(\'edit-vehicle\',' + v.id + ')">Edit</button> ' : '') +
+        (v.active
+          ? '<button class="btn btn-ghost btn-sm" style="color:#a78bfa" onclick="openSellModal(' + v.id + ')">Sell</button> ' +
+            '<button class="btn btn-ghost btn-sm" style="color:var(--danger-color,#ef4444)" onclick="deactivateVehicle(' + v.id + ')">Deactivate</button>'
+          : (!isSold ? '<button class="btn btn-ghost btn-sm" style="color:#22c55e" onclick="reactivateVehicle(' + v.id + ')">Reactivate</button>' : '')) +
+      '</td>' +
+    '</tr>';
+  }).join('');
+
+  document.getElementById('fleet-pagination').innerHTML = renderPagination(_fleetPage, totalPages, filtered.length, 'fleetPaginate', FLEET_PAGE_SIZE, 'fleetPageSize');
+}
+
+async function renderFleetRegistry(el) {
+  if (!can('manage_vehicles')) { el.innerHTML = '<div class="alert alert-error">Access denied.</div>'; return; }
+  el.innerHTML = '<div class="loading">Loading…</div>';
+  try {
+    _allVehicles = await api('GET', '/vehicles/all');
+    _fleetPage = 1;
+    el.innerHTML =
+      '<div class="page-header">' +
+        '<div><div class="page-title"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="margin-right:8px;vertical-align:-4px"><rect x="1" y="3" width="15" height="13" rx="2"/><path d="M16 8h6l3 4v4h-9V8z"/><circle cx="5.5" cy="18.5" r="2.5"/><circle cx="18.5" cy="18.5" r="2.5"/></svg>Fleet Registry</div></div>' +
+        '<button class="btn btn-primary" onclick="navigate(\'new-vehicle\')" style="white-space:nowrap">' + icons.plus + ' Add Vehicle</button>' +
+      '</div>' +
+      '<div id="fleet-sell-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.7);z-index:1000;align-items:center;justify-content:center">' +
+        '<div class="card" style="width:100%;max-width:440px;margin:auto">' +
+          '<div class="card-header"><span class="card-title">Record Vehicle Sale</span></div>' +
+          '<div class="card-body">' +
+            '<div id="fleet-sell-error"></div>' +
+            '<div class="alert" style="background:#1a0d2e;color:#a78bfa;border:1px solid #3b1f6e;padding:12px 16px;border-radius:6px;margin-bottom:16px;font-size:13px">&#9888; Remember to <strong>remove this vehicle from insurance</strong> after recording the sale.</div>' +
+            '<div class="form-group"><label>Sold To *</label><input type="text" id="sell-buyer" placeholder="Buyer name or company" /></div>' +
+            '<div class="form-group"><label>Sale Price</label><input type="number" id="sell-price" placeholder="0.00" step="0.01" min="0" /></div>' +
+            '<div class="form-group"><label>Date of Sale *</label><input type="date" id="sell-date" /></div>' +
+          '</div>' +
+          '<div style="display:flex;gap:10px;justify-content:flex-end;padding:0 20px 20px">' +
+            '<button class="btn btn-secondary" onclick="closeSellModal()">Cancel</button>' +
+            '<button class="btn btn-primary" id="sell-confirm-btn" onclick="confirmSellVehicle()" style="background:#7c3aed;border-color:#7c3aed">Record Sale</button>' +
+          '</div>' +
+        '</div>' +
+      '</div>' +
+      '<div style="display:flex;gap:10px;margin-bottom:16px;flex-wrap:wrap">' +
+        '<input type="text" id="fleet-search" placeholder="Search year, make/model, VIN, driver, plate…" oninput="applyFleetFilters(true)" style="flex:1;min-width:220px" />' +
+        '<select id="fleet-status" onchange="applyFleetFilters(true)" style="min-width:150px"><option value="">All Statuses</option><option value="active">Active</option><option value="sold">Sold</option><option value="inactive">Inactive</option></select>' +
+      '</div>' +
+      '<div class="card"><div class="card-body" style="padding:0"><div class="table-wrap"><table>' +
+        '<thead><tr><th>Year</th><th>Make/Model</th><th>VIN</th><th>Key Codes</th><th>Responsible Employee</th><th>City</th><th>Date Assigned</th><th>License</th><th>Status</th><th></th></tr></thead>' +
+        '<tbody id="fleet-tbody"></tbody>' +
+      '</table></div></div></div>' +
+      '<div id="fleet-pagination"></div>';
+    applyFleetFilters();
+  } catch(err) { el.innerHTML = '<div class="alert alert-error">' + escHtml(err.message) + '</div>'; }
+}
+async function renderEditVehicle(el, id) {
+  if (!['admin','manager'].includes(state.user.role)) { el.innerHTML = '<div class="alert alert-error">Access denied.</div>'; return; }
+  el.innerHTML = '<div class="loading">Loading…</div>';
+  var vehicle = null, cities = [], users = [];
+  try {
+    cities = await api('GET', '/cities');
+    users = await api('GET', '/users');
+    if (id) vehicle = await api('GET', '/vehicles/' + id);
+  } catch(e) { el.innerHTML = '<div class="alert alert-error">' + escHtml(e.message) + '</div>'; return; }
+  el.innerHTML =
+    '<div class="page-header"><div class="page-title">' + (id ? 'Edit Vehicle' : 'Add Vehicle') + '</div></div>' +
+    '<div id="vehicle-edit-error"></div>' +
+    '<div class="card"><div class="card-body">' +
+      '<div class="form-row">' +
+        '<div class="form-group"><label>Year *</label><input type="number" id="ve-year" value="' + (vehicle ? vehicle.year : new Date().getFullYear()) + '" min="1980" max="2099" placeholder="2022" /></div>' +
+        '<div class="form-group"><label>Make / Model *</label><input type="text" id="ve-makemodel" value="' + escHtml(vehicle ? vehicle.make_model||'' : '') + '" placeholder="e.g. Chevy Express Van" /></div>' +
+      '</div>' +
+      '<div class="form-row">' +
+        '<div class="form-group"><label>VIN#</label><div style="display:flex;gap:8px;align-items:center"><input type="text" id="ve-vin" value="' + escHtml(vehicle ? vehicle.vin||'' : '') + '" maxlength="17" placeholder="Full VIN (17 chars)" style="font-family:monospace;letter-spacing:1px;text-transform:uppercase;flex:1" oninput="this.value=this.value.toUpperCase()" /><button type="button" class="btn btn-secondary btn-sm" id="ve-decode-btn" onclick="decodeVIN()" style="white-space:nowrap">Decode VIN</button></div></div>' +
+        '<div class="form-group"><label>Key Codes</label><input type="text" id="ve-keys" value="' + escHtml(vehicle ? vehicle.key_codes||'' : '') + '" placeholder="e.g. V1639" /></div>' +
+      '</div>' +
+      '<div class="form-row">' +
+        '<div class="form-group"><label>Responsible Employee</label><select id="ve-driver"><option value="">— Unassigned —</option>' +
+          users.filter(function(u){ return u.active; }).map(function(u){ return '<option value="' + u.id + '"' + (vehicle && vehicle.assigned_user_id == u.id ? ' selected' : '') + '>' + escHtml(u.name) + '</option>'; }).join('') +
+        '</select></div>' +
+        '<div class="form-group"><label>City</label><select id="ve-city"><option value="">— Select city —</option>' +
+          cities.map(function(c){ return '<option value="' + escHtml(c.code) + '"' + (vehicle && vehicle.city_code === c.code ? ' selected' : '') + '>' + escHtml(c.name) + ' (' + escHtml(c.code) + ')</option>'; }).join('') +
+        '</select></div>' +
+      '</div>' +
+      '<div class="form-row">' +
+        '<div class="form-group"><label>Date of Assignment</label><input type="date" id="ve-date" value="' + (vehicle && vehicle.date_of_assignment ? vehicle.date_of_assignment.split('T')[0] : '') + '" /></div>' +
+        '<div class="form-group"><label>License Plate</label><input type="text" id="ve-plate" value="' + escHtml(vehicle ? vehicle.license_plate||'' : '') + '" placeholder="e.g. 08FQAZ" style="text-transform:uppercase" oninput="this.value=this.value.toUpperCase()" /></div>' +
+      '</div>' +
+      '<div class="form-row">' +
+        '<div class="form-group"><label>Notes</label><input type="text" id="ve-notes" value="' + escHtml(vehicle ? vehicle.notes||'' : '') + '" placeholder="Any additional notes" /></div>' +
+      '</div>' +
+    '</div></div>' +
+    '<div style="display:flex;gap:10px;margin-top:20px;justify-content:flex-end">' +
+      '<button class="btn btn-secondary" onclick="navigate(\'fleet-registry\')">Cancel</button>' +
+      '<button class="btn btn-primary" id="ve-save-btn" onclick="saveVehicle(' + (id||'null') + ', this)">Save Vehicle</button>' +
+    '</div>';
+}
+async function decodeVIN() {
+  var vinEl = document.getElementById('ve-vin');
+  var btn = document.getElementById('ve-decode-btn');
+  var errEl = document.getElementById('vehicle-edit-error');
+  var vin = (vinEl ? vinEl.value.trim().toUpperCase() : '');
+  if (vin.length !== 17) { if (errEl) errEl.innerHTML = '<div class="alert alert-error">Enter a full 17-character VIN first.</div>'; return; }
+  btn.disabled = true;
+  btn.textContent = 'Decoding…';
+  if (errEl) errEl.innerHTML = '';
+  try {
+    var res = await fetch('https://vpic.nhtsa.dot.gov/api/vehicles/decodevin/' + vin + '?format=json');
+    var data = await res.json();
+    var results = (data.Results || []);
+    function val(label) {
+      var r = results.find(function(x){ return x.Variable === label; });
+      return (r && r.Value && r.Value !== 'Not Applicable' && r.Value !== 'null' && r.Value !== null) ? r.Value : '';
+    }
+    var year = val('Model Year');
+    var make = val('Make');
+    var model = val('Model');
+    if (!year && !make && !model) {
+      if (errEl) errEl.innerHTML = '<div class="alert alert-error">Could not decode this VIN. Check that it is correct and try again.</div>';
+    } else {
+      var yearEl = document.getElementById('ve-year');
+      var mmEl = document.getElementById('ve-makemodel');
+      if (yearEl && year) yearEl.value = year;
+      if (mmEl) {
+        var makeModel = [make, model].filter(Boolean).join(' ');
+        // Title-case
+        mmEl.value = makeModel.replace(/\w\S*/g, function(w){ return w.charAt(0).toUpperCase() + w.slice(1).toLowerCase(); });
+      }
+      if (errEl) errEl.innerHTML = '<div class="alert alert-success" style="background:#052e16;color:#4ade80;border:1px solid #166534;padding:10px 14px;border-radius:6px;margin-bottom:12px">&#10003; VIN decoded: ' + escHtml(year + ' ' + make + ' ' + model) + '</div>';
+    }
+  } catch(e) {
+    if (errEl) errEl.innerHTML = '<div class="alert alert-error">Decode failed — check your internet connection.</div>';
+  }
+  btn.disabled = false;
+  btn.textContent = 'Decode VIN';
+}
+
+async function saveVehicle(id, btn) {
+  var year = parseInt(((document.getElementById('ve-year')||{}).value||'0'));
+  var make_model = ((document.getElementById('ve-makemodel')||{}).value||'').trim();
+  if (!year || !make_model) { document.getElementById('vehicle-edit-error').innerHTML = '<div class="alert alert-error">Year and Make/Model are required.</div>'; return; }
+  var payload = {
+    year: year,
+    make_model: make_model,
+    vin: ((document.getElementById('ve-vin')||{}).value||'').trim() || null,
+    key_codes: ((document.getElementById('ve-keys')||{}).value||'').trim() || null,
+    assigned_user_id: ((document.getElementById('ve-driver')||{}).value)||null,
+    city_code: ((document.getElementById('ve-city')||{}).value)||null,
+    date_of_assignment: ((document.getElementById('ve-date')||{}).value)||null,
+    license_plate: ((document.getElementById('ve-plate')||{}).value||'').trim() || null,
+    notes: ((document.getElementById('ve-notes')||{}).value||'').trim() || null
+  };
+  try {
+    btn.disabled = true;
+    if (id) { await api('PUT', '/vehicles/'+id, payload); }
+    else { await api('POST', '/vehicles', payload); }
+    navigate('fleet-registry');
+  } catch(err) {
+    document.getElementById('vehicle-edit-error').innerHTML = '<div class="alert alert-error">' + escHtml(err.message) + '</div>';
+    btn.disabled = false;
+  }
+}
+async function renderVehicleHistory(el, vehicleId) {
+  if (!['admin','manager'].includes(state.user.role)) { el.innerHTML = '<div class="alert alert-error">Access denied.</div>'; return; }
+  el.innerHTML = '<div class="loading">Loading…</div>';
+  try {
+    var vehicle = await api('GET', '/vehicles/' + vehicleId);
+    var vrs = await api('GET', '/vr?vehicle_id=' + vehicleId);
+    var sc = { draft:'var(--text-muted-color)', submitted:'#f59e0b', approved:'#22c55e', rejected:'#ef4444' };
+    var totalSpent = vrs.filter(function(v){ return v.status === 'approved'; }).reduce(function(s,v){ return s + parseFloat(v.total_amount||0); }, 0);
+    function vhRender(q, statusFilter) {
+      var filtered = vrs.filter(function(vr) {
+        if (statusFilter && vr.status !== statusFilter) return false;
+        if (!q) return true;
+        var hay = [vr.vr_number, vr.shop_name, vr.city_code, vr.requester_name, vr.status].join(' ').toLowerCase();
+        return hay.includes(q.toLowerCase());
+      });
+      var tbody = document.getElementById('vh-tbody');
+      if (!tbody) return;
+      tbody.innerHTML = filtered.length ? filtered.map(function(vr) {
+        return '<tr style="cursor:pointer" onclick="navigate(\'view-vr\',' + vr.id + ')">' +
+          '<td style="white-space:nowrap"><strong style="color:var(--primary)">' + escHtml(vr.vr_number) + '</strong> <button class="btn btn-ghost btn-sm" title="Copy VR number" onclick="event.stopPropagation();copyToClipboard(\'' + escHtml(vr.vr_number) + '\',this)" style="padding:2px 7px;font-size:11px;opacity:0.6;vertical-align:middle;font-weight:500">Copy</button></td>' +
+          '<td>' + escHtml(vr.shop_name || '—') + '</td>' +
+          '<td>' + escHtml(vr.city_code || '—') + '</td>' +
+          '<td>' + escHtml(vr.requester_name || '—') + '</td>' +
+          '<td>$' + parseFloat(vr.total_amount||0).toFixed(2) + '</td>' +
+          '<td><span style="font-weight:600;color:' + (sc[vr.status]||'var(--text-muted-color)') + ';text-transform:capitalize">' + escHtml(vr.status) + '</span></td>' +
+          '<td style="font-size:13px;white-space:nowrap">' + formatDate(vr.created_at) + '</td>' +
+        '</tr>';
+      }).join('') : '<tr><td colspan="8" style="text-align:center;padding:32px;color:var(--text-muted-color)">No results.</td></tr>';
+    }
+    el.innerHTML =
+      '<div class="page-header">' +
+        '<div><div class="page-title">' + vehicle.year + ' ' + escHtml(vehicle.make_model) + ' — History</div>' +
+          '<div class="page-subtitle" style="color:var(--text-muted-color)">' +
+            (vehicle.vin ? 'VIN: ' + escHtml(vehicle.vin) + ' · ' : '') +
+            (vehicle.license_plate ? 'Plate: ' + escHtml(vehicle.license_plate) + ' · ' : '') +
+            (vehicle.driver_name ? 'Responsible: ' + escHtml(vehicle.driver_name) : '') +
+          '</div>' +
+        '</div>' +
+        '<button class="btn btn-secondary" onclick="navigate(\'fleet-registry\')" style="white-space:nowrap">← Fleet Registry</button>' +
+      '</div>' +
+      '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:16px;margin-bottom:20px">' +
+        '<div class="card"><div class="card-body" style="text-align:center"><div style="font-size:28px;font-weight:700;color:var(--primary)">' + vrs.length + '</div><div style="font-size:13px;color:var(--text-muted-color)">Total Records</div></div></div>' +
+        '<div class="card"><div class="card-body" style="text-align:center"><div style="font-size:28px;font-weight:700;color:#22c55e">$' + totalSpent.toFixed(2) + '</div><div style="font-size:13px;color:var(--text-muted-color)">Approved Spend</div></div></div>' +
+        '<div class="card"><div class="card-body" style="text-align:center"><div style="font-size:28px;font-weight:700;color:#f59e0b">' + vrs.filter(function(v){ return v.status==='submitted'; }).length + '</div><div style="font-size:13px;color:var(--text-muted-color)">Pending Approval</div></div></div>' +
+      '</div>' +
+      '<div style="display:flex;gap:10px;margin-bottom:16px;flex-wrap:wrap">' +
+        '<input type="text" id="vh-search" placeholder="Search VR#, shop, city…" oninput="vhFilter()" style="flex:1;min-width:200px" />' +
+        '<select id="vh-status-filter" onchange="vhFilter()" style="min-width:150px"><option value="">All Statuses</option><option value="draft">Draft</option><option value="submitted">Submitted</option><option value="approved">Approved</option><option value="rejected">Rejected</option></select>' +
+      '</div>' +
+      '<div class="card"><div class="card-body" style="padding:0"><div class="table-wrap"><table>' +
+        '<thead><tr><th>VR #</th><th>Shop</th><th>City</th><th>Submitted By</th><th>Total</th><th>Status</th><th>Date</th><th></th></tr></thead>' +
+        '<tbody id="vh-tbody"></tbody>' +
+      '</table></div></div></div>';
+    window._vhRender = vhRender;
+    vhRender('', '');
+  } catch(err) { el.innerHTML = '<div class="alert alert-error">' + escHtml(err.message) + '</div>'; }
+}
+function vhFilter() {
+  var q = (document.getElementById('vh-search')||{}).value || '';
+  var s = (document.getElementById('vh-status-filter')||{}).value || '';
+  if (window._vhRender) window._vhRender(q, s);
+}
+async function deactivateVehicle(id) {
+  if (!confirm('Deactivate this vehicle? It will be hidden from the VR dropdown.')) return;
+  try { await api('POST', '/vehicles/'+id+'/deactivate'); _allVehicles = await api('GET', '/vehicles/all'); applyFleetFilters(); }
+  catch(err) { alert(err.message); }
+}
+async function reactivateVehicle(id) {
+  try { await api('POST', '/vehicles/'+id+'/reactivate'); _allVehicles = await api('GET', '/vehicles/all'); applyFleetFilters(); }
+  catch(err) { alert(err.message); }
+}
+var _sellVehicleId = null;
+function openSellModal(id) {
+  _sellVehicleId = id;
+  document.getElementById('sell-buyer').value = '';
+  document.getElementById('sell-price').value = '';
+  document.getElementById('sell-date').value = new Date().toISOString().split('T')[0];
+  document.getElementById('fleet-sell-error').innerHTML = '';
+  var modal = document.getElementById('fleet-sell-modal');
+  modal.style.display = 'flex';
+}
+function closeSellModal() {
+  document.getElementById('fleet-sell-modal').style.display = 'none';
+  _sellVehicleId = null;
+}
+async function confirmSellVehicle() {
+  var buyer = (document.getElementById('sell-buyer').value || '').trim();
+  var price = (document.getElementById('sell-price').value || '').trim();
+  var date = (document.getElementById('sell-date').value || '').trim();
+  var errEl = document.getElementById('fleet-sell-error');
+  if (!buyer || !date) { errEl.innerHTML = '<div class="alert alert-error" style="margin-bottom:12px">Buyer name and date are required.</div>'; return; }
+  var btn = document.getElementById('sell-confirm-btn');
+  btn.disabled = true;
+  try {
+    await api('POST', '/vehicles/' + _sellVehicleId + '/sell', { sold_to: buyer, sold_for: price || null, sold_date: date });
+    closeSellModal();
+    _allVehicles = await api('GET', '/vehicles/all');
+    applyFleetFilters();
+  } catch(err) {
+    errEl.innerHTML = '<div class="alert alert-error" style="margin-bottom:12px">' + escHtml(err.message) + '</div>';
+    btn.disabled = false;
+  }
+}
+// ── Home Dashboard ─────────────────────────────────────────────────────────────
+// Deep link support: ?view=view-vr&id=123 from email buttons
+(function() {
+  var params = new URLSearchParams(window.location.search);
+  var deepView = params.get('view');
+  var deepId = params.get('id');
+  if (deepView) {
+    state.currentView = deepView;
+    state.currentParam = deepId ? (isNaN(deepId) ? deepId : parseInt(deepId)) : null;
+    history.replaceState(null, '', window.location.pathname);
+  } else if (!state.currentView) {
+    try {
+      var savedView = localStorage.getItem('po_view');
+      if (savedView) {
+        state.currentView = savedView;
+        var savedParam = localStorage.getItem('po_param');
+        state.currentParam = (savedParam != null && savedParam !== '') ? (isNaN(savedParam) ? savedParam : parseInt(savedParam)) : null;
+      }
+    } catch(e) {}
+  }
+})();
+
+async function renderHomeScreen(el) {
+  el.innerHTML = '<div class="loading">Loading…</div>';
+  try {
+    var data = await api('GET', '/dashboard');
+    var s = data.stats;
+    var isPrivileged = ['admin','approver','manager'].includes(state.user.role);
+    var now = new Date();
+    var hour = now.getHours();
+    var greeting = hour < 12 ? 'Good morning' : hour < 17 ? 'Good afternoon' : 'Good evening';
+    var days = ['Sunday','Monday','Tuesday','Wednesday','Thursday','Friday','Saturday'];
+    var months = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+    var dateStr = days[now.getDay()] + ', ' + months[now.getMonth()] + ' ' + now.getDate() + ', ' + now.getFullYear();
+    var pendingCount = (data.pendingVRs ? data.pendingVRs.length : 0) + (data.pendingPOs ? data.pendingPOs.length : 0);
+    var myTasks = data.myTasks || [];
+    var myTasksHtml = myTasks.length ? myTasks.map(function(t){
+      var od = t.due_date && t.status !== 'done' && new Date(t.due_date) < new Date(new Date().toDateString());
+      var pc = ({urgent:'#ef4444',high:'#f59e0b',medium:'#3b82f6',low:'#888'})[t.priority] || '#888';
+      var due = t.due_date ? formatDate(t.due_date) : 'No due date';
+      return '<div style="display:flex;justify-content:space-between;align-items:center;padding:9px 0;border-bottom:0.5px solid var(--border-color);cursor:pointer" onclick="navigate(\'task-detail\','+t.id+')">' +
+        '<div style="display:flex;align-items:center;gap:9px;min-width:0"><span style="width:8px;height:8px;border-radius:50%;background:'+pc+';flex-shrink:0"></span>' +
+        '<span style="font-size:13px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">'+escHtml(t.title)+'</span></div>' +
+        '<span style="font-size:11px;font-weight:600;white-space:nowrap;margin-left:10px;color:'+(od?'#ef4444':'var(--text-muted-color)')+'">'+(od?'Overdue · ':'')+escHtml(due)+'</span>' +
+      '</div>';
+    }).join('') : '<div style="text-align:center;padding:20px;color:var(--text-muted-color);font-size:13px">No open tasks assigned to you.</div>';
+    var actionColors = { created:'#f97316', submitted:'#f59e0b', approved:'#22c55e', rejected:'#ef4444', edited:'#888', deleted:'#ef4444', cancelled:'#ef4444', 'order placed':'#a78bfa' };
+
+    var attnHtml = '';
+    if (isPrivileged) {
+      var items = [];
+      (data.pendingVRs || []).forEach(function(v) {
+        items.push({ type:'VR', num: v.vr_number, desc: (v.vehicle||'') + (v.shop_name ? ' · ' + v.shop_name : '') + (v.city_code ? ' · ' + v.city_code : ''), amt: '$' + parseFloat(v.total_amount||0).toFixed(2), id: v.id, view: 'view-vr' });
+      });
+      (data.pendingPOs || []).forEach(function(p) {
+        items.push({ type:'PO', num: p.po_number, desc: (p.vendor_name||'') + (p.customer_name ? ' · ' + p.customer_name : '') + (p.city_code ? ' · ' + p.city_code : ''), amt: '$' + parseFloat(p.total_amount||0).toFixed(2), id: p.id, view: 'view' });
+      });
+      if (items.length) {
+        attnHtml = items.map(function(item) {
+          return '<div style="display:flex;justify-content:space-between;align-items:center;padding:10px 0;border-bottom:0.5px solid var(--border-color)">' +
+            '<div>' +
+              '<div style="font-size:13px;font-weight:600;color:var(--primary);cursor:pointer" onclick="navigate(\'' + item.view + '\',' + item.id + ')">' + escHtml(item.num) + '</div>' +
+              '<div style="font-size:12px;color:var(--text-muted-color);margin-top:2px">' + escHtml(item.desc) + '</div>' +
+            '</div>' +
+            '<div style="display:flex;align-items:center;gap:10px">' +
+              '<span style="font-size:13px;font-weight:600">' + item.amt + '</span>' +
+              '<span style="font-size:10px;padding:2px 7px;border-radius:4px;font-weight:700;background:#2d2000;color:#f59e0b;text-transform:uppercase">' + item.type + '</span>' +
+              '<button class="btn btn-secondary btn-sm" onclick="navigate(\'' + item.view + '\',' + item.id + ')" style="white-space:nowrap">Review</button>' +
+            '</div>' +
+          '</div>';
+        }).join('');
+      } else {
+        attnHtml = '<div style="text-align:center;padding:24px;color:var(--text-muted-color);font-size:13px">Nothing pending — you\'re all caught up.</div>';
+      }
+    } else {
+      var myItems = (data.pendingVRs || []).map(function(v){ return { type:'VR', num:v.vr_number, desc:(v.vehicle||''), status:v.status, id:v.id, view:'view-vr' }; })
+        .concat((data.pendingPOs || []).map(function(p){ return { type:'PO', num:p.po_number, desc:(p.vendor_name||''), status:p.status, id:p.id, view:'view' }; }));
+      if (myItems.length) {
+        attnHtml = myItems.map(function(item) {
+          return '<div style="display:flex;justify-content:space-between;align-items:center;padding:10px 0;border-bottom:0.5px solid var(--border-color)">' +
+            '<div><div style="font-size:13px;font-weight:600;color:var(--primary);cursor:pointer" onclick="navigate(\'' + item.view + '\',' + item.id + ')">' + escHtml(item.num) + '</div>' +
+            '<div style="font-size:12px;color:var(--text-muted-color)">' + escHtml(item.desc) + '</div></div>' +
+            '<span style="font-size:11px;font-weight:600;text-transform:capitalize;color:' + (item.status==='submitted'?'#f59e0b':'#888') + '">' + item.status + '</span>' +
+          '</div>';
+        }).join('');
+      } else {
+        attnHtml = '<div style="text-align:center;padding:24px;color:var(--text-muted-color);font-size:13px">No open items — all clear.</div>';
+      }
+    }
+
+    var activityHtml = (data.activity || []).length ? data.activity.map(function(a) {
+      var col = actionColors[a.action] || '#888';
+      var label = (a.entity_type ? a.entity_type.toUpperCase() + ' ' : '') + (a.entity_number ? a.entity_number + ' ' : '') + a.action;
+      return '<div style="display:flex;gap:10px;padding:8px 0;border-bottom:0.5px solid var(--border-color);align-items:flex-start">' +
+        '<div style="width:7px;height:7px;border-radius:50%;background:' + col + ';margin-top:5px;flex-shrink:0"></div>' +
+        '<div><div style="font-size:12px;color:var(--text-color)">' + escHtml(label) + (a.user_name ? ' <span style="color:var(--text-muted-color)">by ' + escHtml(a.user_name) + '</span>' : '') + '</div>' +
+        '<div style="font-size:11px;color:var(--text-muted-color)">' + formatDate(a.created_at) + '</div></div>' +
+      '</div>';
+    }).join('') : '<div style="text-align:center;padding:24px;color:var(--text-muted-color);font-size:13px">No recent activity.</div>';
+
+    el.innerHTML =
+      '<div style="margin-bottom:24px">' +
+        '<div style="font-size:22px;font-weight:700;color:var(--text-color)">' + greeting + ', ' + escHtml(state.user.name.split(' ')[0]) + '</div>' +
+        '<div style="font-size:13px;color:var(--text-muted-color);margin-top:4px">' + dateStr + '</div>' +
+      '</div>' +
+      (can('view_tasks') ? ('<div class="card" style="margin-bottom:24px"><div class="card-body">' +
+        '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px"><div style="font-size:15px;font-weight:700">My Tasks</div>' +
+        '<span style="font-size:12px;color:var(--primary);cursor:pointer" onclick="navigate(\'tasks\')">View all</span></div>' + myTasksHtml +
+      '</div></div>') : '') +
+
+      '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:12px;margin-bottom:24px">' +
+        ((isPrivileged && can('view_vr')) ? '<div class="card" style="cursor:pointer" onclick="navigate(\'vr-dashboard\')"><div class="card-body" style="text-align:center;padding:16px">' +
+          '<div style="font-size:28px;font-weight:700;color:' + (s.pending_vr > 0 ? '#f59e0b' : '#22c55e') + '">' + s.pending_vr + '</div>' +
+          '<div style="font-size:12px;color:var(--text-muted-color);margin-top:4px">VRs Pending Approval</div></div></div>' : '') +
+        (can('view_pos') ? '<div class="card" style="cursor:pointer" onclick="navigate(\'dashboard\')"><div class="card-body" style="text-align:center;padding:16px">' +
+          '<div style="font-size:28px;font-weight:700;color:var(--primary)">' + s.open_po + '</div>' +
+          '<div style="font-size:12px;color:var(--text-muted-color);margin-top:4px">POs This Month</div>' +
+          '<div style="font-size:11px;color:var(--text-muted-color)">$' + parseFloat(s.open_po_total).toFixed(2) + '</div></div></div>' : '') +
+        (can('view_quotes') ? '<div class="card" style="cursor:pointer" onclick="navigate(\'quotes\')"><div class="card-body" style="text-align:center;padding:16px">' +
+          '<div style="font-size:28px;font-weight:700;color:#a78bfa">' + s.active_quotes + '</div>' +
+          '<div style="font-size:12px;color:var(--text-muted-color);margin-top:4px">Quotes This Month</div>' +
+          '<div style="font-size:11px;color:var(--text-muted-color)">$' + parseFloat(s.quote_total).toFixed(2) + '</div></div></div>' : '') +
+        (['admin','manager'].includes(state.user.role) ? '<div class="card" style="cursor:pointer" onclick="navigate(\'fleet-registry\')"><div class="card-body" style="text-align:center;padding:16px">' +
+          '<div style="font-size:28px;font-weight:700;color:#22c55e">' + s.fleet_count + '</div>' +
+          '<div style="font-size:12px;color:var(--text-muted-color);margin-top:4px">Fleet Vehicles</div></div></div>' : '') +
+      '</div>' +
+
+      '<div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-bottom:24px">' +
+        '<div class="card"><div class="card-header"><span class="card-title">' + (isPrivileged ? 'Needs Approval' : 'My Open Items') + '</span>' +
+          (pendingCount > 0 && isPrivileged ? '<span style="background:#f59e0b;color:#1a1000;font-size:11px;font-weight:700;padding:2px 8px;border-radius:10px">' + pendingCount + '</span>' : '') +
+        '</div><div class="card-body" style="padding:0 16px">' + attnHtml + '</div></div>' +
+        '<div class="card"><div class="card-header"><span class="card-title">Recent Activity</span>' +
+          '<button class="btn btn-secondary btn-sm" onclick="navigate(\'audit\')" style="font-size:11px">View all</button>' +
+        '</div><div class="card-body" style="padding:0 16px">' + activityHtml + '</div></div>' +
+      '</div>' +
+
+      '<div style="margin-bottom:8px;font-size:11px;color:var(--text-muted-color);text-transform:uppercase;letter-spacing:0.6px">Quick actions</div>' +
+      '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:10px">' +
+        (can('create_po') ? '<button class="btn btn-secondary" onclick="navigate(\'new\')" style="padding:14px;display:flex;flex-direction:column;align-items:center;gap:6px;height:auto">' +
+          '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="12" y1="18" x2="12" y2="12"/><line x1="9" y1="15" x2="15" y2="15"/></svg>' +
+          '<span style="font-size:12px">New PO</span></button>' : '') +
+        (can('create_quote') ? '<button class="btn btn-secondary" onclick="navigate(\'new-quote\')" style="padding:14px;display:flex;flex-direction:column;align-items:center;gap:6px;height:auto">' +
+          '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/><polyline points="10 9 9 9 8 9"/></svg>' +
+          '<span style="font-size:12px">New Quote</span></button>' : '') +
+        (can('create_vr') ? '<button class="btn btn-secondary" onclick="navigate(\'new-vr\')" style="padding:14px;display:flex;flex-direction:column;align-items:center;gap:6px;height:auto">' +
+          '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="1" y="3" width="15" height="13" rx="2"/><path d="M16 8h6l3 4v4h-9V8z"/><circle cx="5.5" cy="18.5" r="2.5"/><circle cx="18.5" cy="18.5" r="2.5"/></svg>' +
+          '<span style="font-size:12px">New VR</span></button>' : '') +
+        '<button class="btn btn-secondary" onclick="navigate(\'ai-assistant\')" style="padding:14px;display:flex;flex-direction:column;align-items:center;gap:6px;height:auto">' +
+          '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="6" width="18" height="13" rx="2"/><path d="M8 6V4a1 1 0 011-1h6a1 1 0 011 1v2"/><circle cx="9" cy="12" r="1" fill="currentColor"/><circle cx="15" cy="12" r="1" fill="currentColor"/><path d="M9.5 16h5"/></svg>' +
+          '<span style="font-size:12px">Ask Neurolock</span></button>' +
+      '</div>';
+  } catch(err) {
+    el.innerHTML =
+      '<div style="text-align:center;padding:48px 20px;">' +
+        '<div style="font-size:32px;margin-bottom:12px;">&#9888;&#65039;</div>' +
+        '<div style="font-weight:600;font-size:16px;margin-bottom:8px;">Couldn&#39;t load the dashboard</div>' +
+        '<div style="color:var(--text-muted-color);font-size:14px;margin-bottom:12px;">This sometimes happens after a fresh deploy. Try refreshing the page.</div>' +
+        '<div style="color:var(--text-muted-color);font-size:12px;margin-bottom:20px;opacity:0.75;">' + escHtml(err.message || '') + '</div>' +
+        '<button class="btn btn-primary" onclick="location.reload()">Refresh Page</button>' +
+      '</div>';
+    console.error('Dashboard load error:', err.message);
+  }
+}
+
+var depositReceipts = [];   // [{ data, name }] for the deposit slip / cash-count photos
+var depositExpenses = [];   // [{ description, amount, data, name }] cash paid out
+var depExtractTried = false;
+
+// Deposit pay-period helpers — weeks run Monday to Sunday.
+function depMonday(d) { var x = new Date(d.getFullYear(), d.getMonth(), d.getDate()); var day = x.getDay(); x.setDate(x.getDate() + (day === 0 ? -6 : 1 - day)); return x; }
+function depAddDays(d, n) { var x = new Date(d.getFullYear(), d.getMonth(), d.getDate()); x.setDate(x.getDate() + n); return x; }
+function depYmd(d) { var m = String(d.getMonth() + 1); if (m.length < 2) m = '0' + m; var da = String(d.getDate()); if (da.length < 2) da = '0' + da; return d.getFullYear() + '-' + m + '-' + da; }
+function depParseYmd(s) { var p = String(s).split('-'); return new Date(parseInt(p[0], 10), parseInt(p[1], 10) - 1, parseInt(p[2], 10)); }
+function depWeekLabel(mon) { var sun = depAddDays(mon, 6); var a = mon.toLocaleDateString('en-US', { month: 'short', day: 'numeric' }); var b = sun.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }); return a + ' – ' + b; }
+function depBuildPeriodOptions() {
+  var curMon = depMonday(new Date());
+  var defaultVal = depYmd(depAddDays(curMon, -7));
+  var out = '';
+  for (var i = 0; i <= 11; i++) {
+    var mon = depAddDays(curMon, -7 * i);
+    var val = depYmd(mon);
+    var tag = (val === depYmd(curMon)) ? ' (current week)' : (val === defaultVal ? ' (last week)' : '');
+    out += '<option value="' + val + '"' + (val === defaultVal ? ' selected' : '') + '>' + depWeekLabel(mon) + tag + '</option>';
+  }
+  return out;
+}
+
+async function renderDeposits(el) {
+  var canManage = ['admin','manager'].includes(state.user.role);
+  var canSeeAll = ['admin','manager','approver'].includes(state.user.role);
+  var canSubmit = can('create_deposit');
+  depositReceipts = [];
+  depositExpenses = [];
+  depExtractTried = false;
+  var cities = [];
+  try { cities = await api('GET', '/cities'); } catch(e) {}
+  var cityOptions = '<option value="">Select city…</option>' + cities.map(function(c) {
+    return '<option value="' + escHtml(c.code) + '">' + escHtml(c.name) + ' (' + escHtml(c.code) + ')</option>';
+  }).join('');
+  var today = new Date().toISOString().slice(0,10);
+  var html =
+    '<div class="page-header"><div class="page-title"><h2>Cash Deposits</h2><p>Upload your weekly deposit receipt</p></div>' +
+      (can('export_deposits') ? '<button class="btn btn-secondary" onclick="exportDepositsCSV()">' + icons.dashboard + ' Export CSV</button>' : '') +
+    '</div>';
+  if (canSubmit) {
+    html +=
+      '<div class="card" style="max-width:680px;margin-bottom:24px"><div class="card-body">' +
+        '<h3 style="margin-top:0;margin-bottom:16px">Submit a Deposit</h3>' +
+        '<div id="dep-feedback"></div>' +
+        '<div style="display:flex;gap:12px;flex-wrap:wrap">' +
+          '<div class="form-group" style="flex:1;min-width:160px"><label>Deposit Amount ($)</label><input type="number" id="dep-amount" step="0.01" min="0" placeholder="0.00" oninput="recalcOverShort()" /></div>' +
+          '<div class="form-group" style="flex:1;min-width:160px"><label>Pulsar Shows Owed ($)</label><input type="number" id="dep-pulsar" step="0.01" min="0" placeholder="0.00" oninput="recalcOverShort()" /></div>' +
+        '</div>' +
+        '<div style="display:flex;gap:12px;flex-wrap:wrap">' +
+          '<div class="form-group" style="flex:1;min-width:160px"><label>Deposit Date</label><input type="date" id="dep-date" value="' + today + '" /></div>' +
+          '<div class="form-group" style="flex:1;min-width:200px"><label>Pay Period (Week)</label><select id="dep-period">' + depBuildPeriodOptions() + '</select></div>' +
+        '</div>' +
+        '<div style="display:flex;gap:12px;flex-wrap:wrap">' +
+          '<div class="form-group" style="flex:1;min-width:160px"><label>City</label><select id="dep-city">' + cityOptions + '</select></div>' +
+        '</div>' +
+        '<div class="form-group"><label>Receipt Photos</label>' +
+          '<input type="file" id="dep-receipt" accept="image/*" multiple onchange="addDepositReceipts(this)" />' +
+          '<div style="font-size:12px;color:var(--text-muted-color);margin-top:4px">You can attach more than one photo (deposit slip, cash count sheet, etc.).</div>' +
+          '<div id="dep-receipt-preview" style="margin-top:10px"></div>' +
+        '</div>' +
+        '<div class="form-group"><label>Expenses</label>' +
+          '<div style="font-size:12px;color:var(--text-muted-color);margin-bottom:8px">Cash paid out before depositing (parts, supplies, etc.). Attach a photo of each receipt if you have one.</div>' +
+          '<div id="dep-expense-list"></div>' +
+          '<button type="button" class="btn btn-secondary btn-sm" onclick="addDepositExpense()">+ Add expense</button>' +
+        '</div>' +
+        '<div class="form-group"><label>Notes</label><textarea id="dep-notes" rows="2" placeholder="Optional notes…"></textarea></div>' +
+        '<div id="dep-overshort" style="margin:4px 0 16px;padding:12px;border-radius:8px;background:var(--bg-color);border:1px solid var(--border-color);font-size:14px"></div>' +
+        '<button class="btn btn-primary" onclick="submitDeposit()">Submit Deposit</button>' +
+      '</div></div>';
+  }
+  html +=
+    '<div class="card"><div class="card-body">' +
+      '<h3 style="margin-top:0;margin-bottom:16px">' + (canSeeAll ? 'All Deposits' : 'My Deposits') + '</h3>' +
+      '<div id="dep-table-area"><div class="loading">Loading…</div></div>' +
+    '</div></div>';
+  el.innerHTML = html;
+  if (canSubmit) { renderDepositExpenses(); recalcOverShort(); }
+  await loadDepositsTable();
+}
+
+// Resize an image File to a JPEG data URL (max width 1200). Resolves null on failure.
+function depResizeImage(file) {
+  return new Promise(function(resolve) {
+    var reader = new FileReader();
+    reader.onload = function(e) {
+      var img = new Image();
+      img.onload = function() {
+        var canvas = document.createElement('canvas');
+        var w = img.width, h = img.height, maxW = 1200;
+        if (w > maxW) { h = Math.round(h * maxW / w); w = maxW; }
+        canvas.width = w; canvas.height = h;
+        canvas.getContext('2d').drawImage(img, 0, 0, w, h);
+        resolve(canvas.toDataURL('image/jpeg', 0.85));
+      };
+      img.onerror = function() { resolve(null); };
+      img.src = e.target.result;
+    };
+    reader.onerror = function() { resolve(null); };
+    reader.readAsDataURL(file);
+  });
+}
+
+async function addDepositReceipts(input) {
+  var files = Array.prototype.slice.call(input.files || []);
+  for (var i = 0; i < files.length; i++) {
+    var data = await depResizeImage(files[i]);
+    if (data) depositReceipts.push({ data: data, name: files[i].name });
+  }
+  input.value = '';
+  renderDepositReceipts();
+  if (depositReceipts.length && !depExtractTried) { depExtractTried = true; runDepositExtract(); }
+}
+
+function renderDepositReceipts() {
+  var area = document.getElementById('dep-receipt-preview');
+  if (!area) return;
+  var thumbs = depositReceipts.map(function(r, idx) {
+    return '<div style="position:relative;display:inline-block;margin:0 8px 8px 0">' +
+      '<img src="' + r.data + '" style="width:120px;height:120px;object-fit:cover;border-radius:8px;border:1px solid var(--border-color);display:block" />' +
+      '<button type="button" title="Remove" onclick="removeDepositReceipt(' + idx + ')" style="position:absolute;top:-8px;right:-8px;background:#ef4444;color:#fff;border:none;border-radius:50%;width:22px;height:22px;cursor:pointer;font-weight:700;line-height:1">×</button>' +
+    '</div>';
+  }).join('');
+  area.innerHTML = thumbs + '<div id="dep-extract-status" style="margin-top:4px;font-size:13px;color:var(--text-muted-color)"></div>';
+}
+
+function removeDepositReceipt(i) { depositReceipts.splice(i, 1); renderDepositReceipts(); }
+
+async function runDepositExtract() {
+  if (!depositReceipts.length) return;
+  var status = document.getElementById('dep-extract-status');
+  if (status) status.innerHTML = '<span class="spinner"></span> Reading receipt with AI…';
+  try {
+    var base64 = depositReceipts[0].data.split(',')[1];
+    var data = await api('POST', '/deposits/ai-extract', { imageData: base64, mediaType: 'image/jpeg' });
+    var filled = [];
+    if (data && data.amount != null && !isNaN(parseFloat(data.amount))) {
+      var amtEl = document.getElementById('dep-amount');
+      if (amtEl && !amtEl.value) { amtEl.value = parseFloat(data.amount).toFixed(2); filled.push('amount'); }
+    }
+    if (data && data.deposit_date && /^\d{4}-\d{2}-\d{2}$/.test(data.deposit_date)) {
+      var dateEl = document.getElementById('dep-date');
+      if (dateEl) { dateEl.value = data.deposit_date; filled.push('date'); }
+    }
+    recalcOverShort();
+    status = document.getElementById('dep-extract-status');
+    if (status) {
+      status.innerHTML = filled.length
+        ? '<span style="color:#22c55e;font-weight:600">✓ AI filled ' + filled.join(' &amp; ') + '</span> — please double-check before submitting.'
+        : 'Could not read the receipt automatically — please enter the details manually.';
+    }
+  } catch(e) {
+    status = document.getElementById('dep-extract-status');
+    if (status) status.textContent = 'Could not read the receipt automatically — please enter the details manually.';
+  }
+}
+
+function addDepositExpense() {
+  depositExpenses.push({ description: '', amount: '', data: null, name: null });
+  renderDepositExpenses();
+}
+
+function renderDepositExpenses() {
+  var area = document.getElementById('dep-expense-list');
+  if (!area) return;
+  if (!depositExpenses.length) {
+    area.innerHTML = '<p style="color:var(--text-muted-color);font-size:13px;margin:0 0 8px">No expenses added.</p>';
+    recalcOverShort();
+    return;
+  }
+  area.innerHTML = depositExpenses.map(function(ex, idx) {
+    var amtVal = (ex.amount === '' || ex.amount == null) ? '' : escHtml(String(ex.amount));
+    var photo = ex.data
+      ? '<div style="position:relative;display:inline-block"><img src="' + ex.data + '" style="width:48px;height:48px;object-fit:cover;border-radius:6px;border:1px solid var(--border-color);display:block" /><button type="button" title="Remove photo" onclick="removeDepositExpensePhoto(' + idx + ')" style="position:absolute;top:-6px;right:-6px;background:#ef4444;color:#fff;border:none;border-radius:50%;width:18px;height:18px;cursor:pointer;font-size:11px;line-height:1">×</button></div>'
+      : '<label class="btn btn-secondary btn-sm" style="cursor:pointer;margin:0;white-space:nowrap">Photo<input type="file" accept="image/*" style="display:none" onchange="setDepositExpensePhoto(' + idx + ',this)" /></label>';
+    return '<div style="display:flex;gap:8px;align-items:center;margin-bottom:8px">' +
+      '<input type="text" placeholder="Description" value="' + escHtml(ex.description || '') + '" oninput="updateDepositExpense(' + idx + ',\'description\',this.value)" style="flex:2;min-width:120px" />' +
+      '<input type="number" step="0.01" min="0" placeholder="0.00" value="' + amtVal + '" oninput="updateDepositExpense(' + idx + ',\'amount\',this.value);recalcOverShort()" style="flex:1;min-width:90px" />' +
+      photo +
+      '<button type="button" class="btn btn-ghost btn-sm" onclick="removeDepositExpense(' + idx + ')" style="color:#ef4444">Remove</button>' +
+    '</div>';
+  }).join('');
+  recalcOverShort();
+}
+
+function updateDepositExpense(idx, field, val) { if (depositExpenses[idx]) depositExpenses[idx][field] = val; }
+function removeDepositExpense(idx) { depositExpenses.splice(idx, 1); renderDepositExpenses(); }
+async function setDepositExpensePhoto(idx, input) {
+  var file = input.files[0];
+  if (!file || !depositExpenses[idx]) return;
+  var data = await depResizeImage(file);
+  if (data) { depositExpenses[idx].data = data; depositExpenses[idx].name = file.name; }
+  renderDepositExpenses();
+}
+function removeDepositExpensePhoto(idx) { if (depositExpenses[idx]) { depositExpenses[idx].data = null; depositExpenses[idx].name = null; } renderDepositExpenses(); }
+
+function depExpenseTotal() {
+  var t = 0;
+  depositExpenses.forEach(function(ex) { var a = parseFloat(ex.amount); if (!isNaN(a)) t += a; });
+  return t;
+}
+
+// Over/Short = Pulsar owed − deposit − expenses.  Positive = short, negative = over.
+function recalcOverShort() {
+  var el = document.getElementById('dep-overshort');
+  if (!el) return;
+  var owedEl = document.getElementById('dep-pulsar');
+  var amtEl = document.getElementById('dep-amount');
+  var owed = parseFloat(owedEl && owedEl.value);
+  var dep = parseFloat(amtEl && amtEl.value);
+  var exp = depExpenseTotal();
+  if (isNaN(owed)) {
+    el.innerHTML = '<span style="color:var(--text-muted-color)">Enter what Pulsar shows owed to see Over / Short.</span>';
+    return;
+  }
+  if (isNaN(dep)) dep = 0;
+  var os = owed - dep - exp;
+  var label, color;
+  if (Math.abs(os) < 0.005) { label = 'Balanced'; color = '#22c55e'; }
+  else if (os > 0) { label = 'Short $' + os.toFixed(2); color = '#ef4444'; }
+  else { label = 'Over $' + Math.abs(os).toFixed(2); color = '#f59e0b'; }
+  el.innerHTML = 'Pulsar owed $' + owed.toFixed(2) + ' &minus; deposit $' + dep.toFixed(2) + ' &minus; expenses $' + exp.toFixed(2) +
+    ' = <span style="font-weight:700;color:' + color + '">' + label + '</span>';
+}
+
+async function submitDeposit() {
+  var fb = document.getElementById('dep-feedback');
+  var amount = document.getElementById('dep-amount').value;
+  var pulsar_owed = document.getElementById('dep-pulsar').value;
+  var deposit_date = document.getElementById('dep-date').value;
+  var periodMon = document.getElementById('dep-period') ? document.getElementById('dep-period').value : '';
+  var period_start = periodMon;
+  var period_end = periodMon ? depYmd(depAddDays(depParseYmd(periodMon), 6)) : '';
+  var city_code = document.getElementById('dep-city').value;
+  var notes = document.getElementById('dep-notes').value.trim();
+  if (!amount || parseFloat(amount) <= 0) { fb.innerHTML = '<div class="alert alert-error">Please enter a valid amount.</div>'; return; }
+  if (!deposit_date) { fb.innerHTML = '<div class="alert alert-error">Please choose a deposit date.</div>'; return; }
+  if (!periodMon) { fb.innerHTML = '<div class="alert alert-error">Please select a pay period.</div>'; return; }
+  if (!depositReceipts.length) { fb.innerHTML = '<div class="alert alert-error">Please attach at least one receipt photo.</div>'; return; }
+  var receipts = depositReceipts.map(function(r) { return { image: r.data, filename: r.name }; });
+  var expenses = depositExpenses.filter(function(ex) {
+    var hasDesc = ex.description && ex.description.trim();
+    var hasAmt = ex.amount !== '' && ex.amount != null && !isNaN(parseFloat(ex.amount));
+    return hasDesc || hasAmt;
+  }).map(function(ex) {
+    return { description: ex.description || '', amount: parseFloat(ex.amount) || 0, image: ex.data || null, filename: ex.name || null };
+  });
+  try {
+    await api('POST', '/deposits', { amount: amount, pulsar_owed: pulsar_owed || null, deposit_date: deposit_date, period_start: period_start, period_end: period_end, city_code: city_code, notes: notes, receipts: receipts, expenses: expenses });
+    fb.innerHTML = '<div class="alert alert-success">Deposit submitted — thank you!</div>';
+    document.getElementById('dep-amount').value = '';
+    document.getElementById('dep-pulsar').value = '';
+    document.getElementById('dep-notes').value = '';
+    document.getElementById('dep-receipt').value = '';
+    depositReceipts = [];
+    depositExpenses = [];
+    depExtractTried = false;
+    renderDepositReceipts();
+    renderDepositExpenses();
+    recalcOverShort();
+    await loadDepositsTable();
+  } catch(e) {
+    fb.innerHTML = '<div class="alert alert-error">' + escHtml(e.message) + '</div>';
+  }
+}
+
+async function loadDepositsTable() {
+  var area = document.getElementById('dep-table-area');
+  if (!area) return;
+  var canManage = ['admin','manager'].includes(state.user.role);
+  var canSeeAll = ['admin','manager','approver'].includes(state.user.role);
+  try {
+    var data = await api('GET', '/deposits');
+    if (!data.length) { area.innerHTML = '<p style="color:var(--text-muted-color)">No deposits yet.</p>'; return; }
+    var rows = data.map(function(d) {
+      var receipt = d.has_receipt ? '<a href="#" onclick="event.preventDefault();event.stopPropagation();navigate(\'view-deposit\',' + d.id + ')" style="color:#f97316">View</a>' : '<span style="color:var(--text-muted-color)">—</span>';
+      var depAmt = parseFloat(d.amount) || 0;
+      var exp = parseFloat(d.total_expenses) || 0;
+      var owed = (d.pulsar_owed == null) ? null : parseFloat(d.pulsar_owed);
+      var osCell;
+      if (owed == null) { osCell = '<span style="color:var(--text-muted-color)">—</span>'; }
+      else {
+        var os = owed - depAmt - exp;
+        var c, t;
+        if (Math.abs(os) < 0.005) { c = '#22c55e'; t = 'Even'; }
+        else if (os > 0) { c = '#ef4444'; t = 'Short $' + os.toFixed(2); }
+        else { c = '#f59e0b'; t = 'Over $' + Math.abs(os).toFixed(2); }
+        osCell = '<span style="font-weight:600;color:' + c + '">' + t + '</span>';
+      }
+      return '<tr style="cursor:pointer" onclick="navigate(\'view-deposit\',' + d.id + ')">' +
+        '<td style="white-space:nowrap">' + formatDate(d.deposit_date) + '</td>' +
+        '<td style="white-space:nowrap">' + ((d.period_start && d.period_end) ? (formatDate(d.period_start) + ' – ' + formatDate(d.period_end)) : '—') + '</td>' +
+        '<td style="white-space:nowrap;color:var(--text-muted-color);font-size:13px">' + escHtml(d.deposit_number || '—') + '</td>' +
+        '<td style="white-space:nowrap;font-weight:600">$' + depAmt.toFixed(2) + '</td>' +
+        '<td style="white-space:nowrap">' + (owed == null ? '—' : '$' + owed.toFixed(2)) + '</td>' +
+        '<td style="white-space:nowrap">' + (exp > 0 ? '$' + exp.toFixed(2) : '—') + '</td>' +
+        '<td style="white-space:nowrap">' + osCell + '</td>' +
+        '<td>' + escHtml(d.city_code || '—') + '</td>' +
+        (canSeeAll ? '<td>' + escHtml(d.user_name || '—') + '</td>' : '') +
+        '<td>' + receipt + '</td>' +
+        (can('delete_deposit') ? '<td><button class="btn btn-ghost btn-sm" onclick="event.stopPropagation();deleteDeposit(' + d.id + ')" style="color:#ef4444">Delete</button></td>' : '') +
+      '</tr>';
+    }).join('');
+    var head = '<th>Date</th><th>Pay Period</th><th>Deposit #</th><th>Amount</th><th>Pulsar Owed</th><th>Expenses</th><th>Over/Short</th><th>City</th>' + (canSeeAll ? '<th>Submitted By</th>' : '') + '<th>Receipt</th>' + (can('delete_deposit') ? '<th></th>' : '');
+    area.innerHTML = '<div class="table-wrap"><table class="table"><thead><tr>' + head + '</tr></thead><tbody>' + rows + '</tbody></table></div>';
+  } catch(e) {
+    area.innerHTML = '<div class="alert alert-error">Failed to load deposits</div>';
+  }
+}
+
+async function exportDepositsCSV() {
+  try {
+    var res = await api('GET', '/deposits/export');
+    var deposits = res.deposits || [];
+    var rows = [];
+    rows.push(['Deposit #','Date','Pay Period Start','Pay Period End','Amount','Pulsar Owed','Total Expenses','Over/Short','City','Submitted By','Notes','Receipt File','Has Receipt','Submitted At'].join(','));
+    deposits.forEach(function(d) {
+      var depAmt = parseFloat(d.amount) || 0;
+      var exp = parseFloat(d.total_expenses) || 0;
+      var owed = (d.pulsar_owed == null) ? null : parseFloat(d.pulsar_owed);
+      var os = (owed == null) ? '' : (owed - depAmt - exp).toFixed(2);
+      rows.push([
+        d.deposit_number || '',
+        d.deposit_date ? formatDate(d.deposit_date) : '',
+        d.period_start ? formatDate(d.period_start) : '',
+        d.period_end ? formatDate(d.period_end) : '',
+        depAmt.toFixed(2),
+        owed == null ? '' : owed.toFixed(2),
+        exp.toFixed(2),
+        os,
+        d.city_code || '',
+        d.user_name || '',
+        d.notes || '',
+        d.receipt_filename || '',
+        d.has_receipt ? 'Yes' : 'No',
+        d.created_at ? new Date(d.created_at).toLocaleString() : ''
+      ].map(csvCell).join(','));
+    });
+    var blob = new Blob([rows.join('\n')], { type: 'text/csv' });
+    var url = URL.createObjectURL(blob);
+    var a = document.createElement('a');
+    a.href = url;
+    a.download = 'cash-deposits-' + new Date().toISOString().slice(0,10) + '.csv';
+    a.click();
+    URL.revokeObjectURL(url);
+  } catch(err) {
+    alert('Export failed: ' + err.message);
+  }
+}
+
+// Fullscreen image viewer for deposit / expense receipts. Click anywhere to close.
+function depShowImage(src) {
+  if (!src) return;
+  var ov = document.createElement('div');
+  ov.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.85);z-index:500;display:flex;align-items:center;justify-content:center;padding:20px;cursor:zoom-out';
+  ov.onclick = function() { ov.remove(); };
+  var img = document.createElement('img');
+  img.src = src;
+  img.style.cssText = 'max-width:95%;max-height:95%;border-radius:8px;box-shadow:0 10px 40px rgba(0,0,0,0.6)';
+  ov.appendChild(img);
+  document.body.appendChild(ov);
+}
+
+async function renderViewDeposit(el, id) {
+  var canManage = ['admin','manager'].includes(state.user.role);
+  var dep;
+  try { dep = await api('GET', '/deposits/' + id); }
+  catch(e) { el.innerHTML = '<div class="alert alert-error">' + escHtml(e.message) + '</div>'; return; }
+  var depAmt = parseFloat(dep.amount) || 0;
+  var owed = (dep.pulsar_owed == null) ? null : parseFloat(dep.pulsar_owed);
+  var expList = dep.expenses || [];
+  var expTotal = 0;
+  expList.forEach(function(x) { var a = parseFloat(x.amount); if (!isNaN(a)) expTotal += a; });
+
+  var receiptList = dep.receipts || [];
+  var receipts = receiptList.length
+    ? '<div style="display:flex;flex-wrap:wrap;gap:12px">' + receiptList.map(function(r) {
+        return '<img src="' + r.image + '" onclick="depShowImage(this.src)" style="max-width:320px;max-height:320px;border-radius:10px;border:1px solid var(--border-color);cursor:zoom-in" />';
+      }).join('') + '</div>'
+    : '<p style="color:var(--text-muted-color)">No receipt image on file.</p>';
+
+  var expensesBlock = '';
+  if (expList.length) {
+    var expRows = expList.map(function(x) {
+      var thumb = x.receipt_image ? '<img src="' + x.receipt_image + '" onclick="depShowImage(this.src)" style="height:46px;width:46px;object-fit:cover;border-radius:6px;border:1px solid var(--border-color);cursor:zoom-in;display:block" />' : '<span style="color:var(--text-muted-color)">—</span>';
+      return '<tr><td>' + escHtml(x.description || '—') + '</td><td style="white-space:nowrap;text-align:right">$' + (parseFloat(x.amount) || 0).toFixed(2) + '</td><td style="white-space:nowrap">' + thumb + '</td></tr>';
+    }).join('');
+    expensesBlock =
+      '<div style="margin-bottom:20px">' +
+        '<div style="color:var(--text-muted-color);font-size:13px;margin-bottom:8px">Expenses</div>' +
+        '<div class="table-wrap"><table class="table"><thead><tr><th>Description</th><th style="text-align:right">Amount</th><th>Receipt</th></tr></thead><tbody>' + expRows +
+          '<tr><td style="font-weight:700">Total</td><td style="text-align:right;font-weight:700">$' + expTotal.toFixed(2) + '</td><td></td></tr>' +
+        '</tbody></table></div>' +
+      '</div>';
+  }
+
+  var overShortBlock = '';
+  if (owed != null) {
+    var os = owed - depAmt - expTotal;
+    var label, color;
+    if (Math.abs(os) < 0.005) { label = 'Balanced'; color = '#22c55e'; }
+    else if (os > 0) { label = 'Short $' + os.toFixed(2); color = '#ef4444'; }
+    else { label = 'Over $' + Math.abs(os).toFixed(2); color = '#f59e0b'; }
+    overShortBlock =
+      '<div style="margin-bottom:20px;padding:12px;border-radius:8px;background:var(--bg-color);border:1px solid var(--border-color);font-size:14px">' +
+        'Pulsar owed $' + owed.toFixed(2) + ' &minus; deposit $' + depAmt.toFixed(2) + ' &minus; expenses $' + expTotal.toFixed(2) +
+        ' = <span style="font-weight:700;color:' + color + '">' + label + '</span>' +
+      '</div>';
+  }
+
+  el.innerHTML =
+    '<div class="page-header"><div class="page-title"><h2>Deposit ' + escHtml(dep.deposit_number || '') + '</h2><p>' + escHtml(dep.user_name || '') + '</p></div>' +
+      '<div style="display:flex;gap:8px">' +
+        '<button class="btn btn-secondary" onclick="navigate(\'deposits\')">&larr; Back</button>' +
+        (can('delete_deposit') ? '<button class="btn btn-secondary" onclick="deleteDeposit(' + dep.id + ')" style="color:#ef4444">' + icons.trash + ' Delete</button>' : '') +
+      '</div>' +
+    '</div>' +
+    '<div class="card" style="max-width:760px"><div class="card-body">' +
+      '<div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:20px">' +
+        '<div><div style="color:var(--text-muted-color);font-size:13px">Deposit Amount</div><div style="font-size:20px;font-weight:700;color:#f97316">$' + depAmt.toFixed(2) + '</div></div>' +
+        '<div><div style="color:var(--text-muted-color);font-size:13px">Pulsar Shows Owed</div><div style="font-size:20px;font-weight:700">' + (owed == null ? '—' : '$' + owed.toFixed(2)) + '</div></div>' +
+        '<div><div style="color:var(--text-muted-color);font-size:13px">Deposit Date</div><div style="font-weight:600">' + formatDate(dep.deposit_date) + '</div></div>' +
+        '<div><div style="color:var(--text-muted-color);font-size:13px">Pay Period</div><div style="font-weight:600">' + ((dep.period_start && dep.period_end) ? (formatDate(dep.period_start) + ' – ' + formatDate(dep.period_end)) : '—') + '</div></div>' +
+        '<div><div style="color:var(--text-muted-color);font-size:13px">City</div><div>' + escHtml(dep.city_code || '—') + '</div></div>' +
+      '</div>' +
+      overShortBlock +
+      (dep.notes ? '<div style="margin-bottom:20px"><div style="color:var(--text-muted-color);font-size:13px">Notes</div><div>' + escHtml(dep.notes) + '</div></div>' : '') +
+      expensesBlock +
+      '<div style="color:var(--text-muted-color);font-size:13px;margin-bottom:8px">Receipts</div>' + receipts +
+    '</div></div>';
+}
+
+async function deleteDeposit(id) {
+  if (!confirm('Delete this deposit? This cannot be undone.')) return;
+  try {
+    await api('DELETE', '/deposits/' + id);
+    navigate('deposits');
+  } catch(e) {
+    alert('Delete failed: ' + e.message);
+  }
+}
+
+async function renderSuggestions(el) {
+  var isAdminMgr = ['admin','manager'].includes(state.user.role);
+  var statusColors = { open: '#f97316', reviewed: '#3b82f6', implemented: '#22c55e', declined: '#ef4444' };
+  var html =
+    '<div class="page-header"><div class="page-title"><h2>Suggestions</h2><p>Share ideas to improve how we work</p></div></div>' +
+    '<div class="card" style="max-width:640px;margin-bottom:24px"><div class="card-body">' +
+      '<h3 style="margin-top:0;margin-bottom:16px">Submit a Suggestion</h3>' +
+      '<div id="sugg-feedback"></div>' +
+      '<div class="form-group"><label>Category</label>' +
+        '<select id="sugg-category">' +
+          '<option value="Process Improvement">Process Improvement</option>' +
+          '<option value="Equipment / Tools">Equipment / Tools</option>' +
+          '<option value="Safety">Safety</option>' +
+          '<option value="Software / Nova">Software / Nova</option>' +
+          '<option value="Other">Other</option>' +
+        '</select>' +
+      '</div>' +
+      '<div class="form-group"><label>Your Suggestion</label>' +
+        '<textarea id="sugg-text" rows="5" placeholder="Describe your idea or improvement..."></textarea>' +
+      '</div>' +
+      '<div class="form-group" style="display:flex;align-items:center;gap:10px">' +
+        '<input type="checkbox" id="sugg-anon" style="width:auto" />' +
+        '<label for="sugg-anon" style="margin:0;cursor:pointer">Submit anonymously</label>' +
+      '</div>' +
+      '<button class="btn btn-primary" onclick="submitSuggestion()">Submit Suggestion</button>' +
+    '</div></div>';
+  if (isAdminMgr) {
+    html +=
+      '<div class="card"><div class="card-body">' +
+        '<h3 style="margin-top:0;margin-bottom:16px">All Suggestions</h3>' +
+        '<div id="sugg-table-area"><div class="loading">Loading...</div></div>' +
+      '</div></div>';
+  }
+  el.innerHTML = html;
+  if (isAdminMgr) await loadSuggestionsTable();
+}
+
+var _suggestionsData = [];
+var _suggestionsStatusFilter = 'all';
+
+async function loadSuggestionsTable() {
+  var area = document.getElementById('sugg-table-area');
+  if (!area) return;
+  try {
+    _suggestionsData = await api('GET', '/suggestions');
+    renderSuggestionsTable();
+  } catch(e) {
+    area.innerHTML = '<div class="alert alert-error">Failed to load suggestions</div>';
+  }
+}
+
+function renderSuggestionsTable() {
+  var area = document.getElementById('sugg-table-area');
+  if (!area) return;
+  if (!_suggestionsData.length) {
+    area.innerHTML = '<p style="color:var(--text-muted-color)">No suggestions yet.</p>';
+    return;
+  }
+  var statusColors = { open: '#f97316', reviewed: '#3b82f6', implemented: '#22c55e', declined: '#ef4444' };
+  var counts = { all: _suggestionsData.length, open: 0, reviewed: 0, implemented: 0, declined: 0 };
+  _suggestionsData.forEach(function(s) { if (counts[s.status] !== undefined) counts[s.status]++; });
+  var opts = [['all','All'],['open','Open'],['reviewed','Reviewed'],['implemented','Implemented'],['declined','Declined']].map(function(o) {
+    return '<option value="' + o[0] + '"' + (_suggestionsStatusFilter===o[0]?' selected':'') + '>' + o[1] + ' (' + counts[o[0]] + ')</option>';
+  }).join('');
+  var filterBar =
+    '<div style="display:flex;align-items:center;gap:8px;margin-bottom:14px">' +
+      '<label style="margin:0;font-size:13px;color:var(--text-muted-color)">Filter by status</label>' +
+      '<select onchange="_suggestionsStatusFilter=this.value;renderSuggestionsTable()" style="padding:4px 8px;font-size:13px;border-radius:6px">' + opts + '</select>' +
+    '</div>';
+  var filtered = _suggestionsStatusFilter === 'all' ? _suggestionsData : _suggestionsData.filter(function(s) { return s.status === _suggestionsStatusFilter; });
+  if (!filtered.length) {
+    area.innerHTML = filterBar + '<p style="color:var(--text-muted-color)">No suggestions with this status.</p>';
+    return;
+  }
+  var rows = filtered.map(function(s) {
+    var dot = '<span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:' + (statusColors[s.status] || '#888') + ';margin-right:6px"></span>';
+    return '<tr>' +
+      '<td style="white-space:nowrap;color:var(--text-muted-color);font-size:13px">' + new Date(s.created_at).toLocaleDateString() + '</td>' +
+      '<td style="white-space:nowrap"><span class="badge">' + escHtml(s.category) + '</span></td>' +
+      '<td style="max-width:320px;word-break:break-word">' + escHtml(s.suggestion) + '</td>' +
+      '<td style="white-space:nowrap">' + (s.anonymous ? '<em style="color:var(--text-muted-color);font-size:13px">Anonymous</em>' : escHtml(s.submitter_name || '—')) + '</td>' +
+      '<td>' +
+        '<select onchange="updateSuggestion(' + s.id + ',{status:this.value})" style="padding:4px 8px;font-size:13px;border-radius:6px">' +
+          '<option value="open"' + (s.status==='open'?' selected':'') + '>Open</option>' +
+          '<option value="reviewed"' + (s.status==='reviewed'?' selected':'') + '>Reviewed</option>' +
+          '<option value="implemented"' + (s.status==='implemented'?' selected':'') + '>Implemented</option>' +
+          '<option value="declined"' + (s.status==='declined'?' selected':'') + '>Declined</option>' +
+        '</select>' +
+      '</td>' +
+      '<td><input type="text" value="' + escHtml(s.admin_notes || '') + '" placeholder="Add note..." style="font-size:13px;padding:4px 8px;border-radius:6px;min-width:160px" onblur="updateSuggestion(' + s.id + ',{admin_notes:this.value})" /></td>' +
+    '</tr>';
+  }).join('');
+  area.innerHTML = filterBar +
+    '<div class="table-wrap"><table class="table"><thead><tr>' +
+      '<th>Date</th><th>Category</th><th>Suggestion</th><th>Submitted By</th><th>Status</th><th>Notes</th>' +
+    '</tr></thead><tbody>' + rows + '</tbody></table></div>';
+}
+
+async function submitSuggestion() {
+  var category = document.getElementById('sugg-category').value;
+  var suggestion = document.getElementById('sugg-text').value.trim();
+  var anonymous = document.getElementById('sugg-anon').checked;
+  var fb = document.getElementById('sugg-feedback');
+  if (!suggestion) {
+    fb.innerHTML = '<div class="alert alert-error">Please enter a suggestion.</div>';
+    return;
+  }
+  try {
+    await api('POST', '/suggestions', { category, suggestion, anonymous });
+    fb.innerHTML = '<div class="alert alert-success">Suggestion submitted — thank you!</div>';
+    document.getElementById('sugg-text').value = '';
+    document.getElementById('sugg-anon').checked = false;
+    document.getElementById('sugg-category').selectedIndex = 0;
+    if (document.getElementById('sugg-table-area')) await loadSuggestionsTable();
+  } catch(e) {
+    fb.innerHTML = '<div class="alert alert-error">' + escHtml(e.message) + '</div>';
+  }
+}
+
+async function updateSuggestion(id, body) {
+  try {
+    await api('PUT', '/suggestions/' + id, body);
+    var item = _suggestionsData.find(function(s) { return s.id === id; });
+    if (item) Object.assign(item, body);
+    if (body.status !== undefined) renderSuggestionsTable();
+  } catch(e) {
+    console.error('Failed to update suggestion:', e);
+  }
+}
+
+// ── Sign-Off Sheets ─────────────────────────────────────────────────────────
+let signoffPhotos = [];
+let _signoffPage = 1;
+let SIGNOFF_PAGE_SIZE = 15;
+let _signoffSigPad = null;
+let _signoffSignatureData = null;
+let _signoffGps = null;
+let _signoffSignedAt = null;
+
+// ===== Work Orders module =====================================================
+// ===== Parts List (master catalog) ==========================================
+var _partsData = [];
+var _partsSearchTimer = null;
+
+async function renderPartsList(el) {
+  if (!can('manage_parts')) { el.innerHTML = '<div class="alert alert-error">Access denied.</div>'; return; }
+  el.innerHTML =
+    '<div class="page-header"><div><div class="page-title">Parts List</div><div class="page-subtitle">Master catalog of parts used on POs and the Monthly Requisition</div></div>' +
+      '<div class="row-actions">' +
+        '<button class="btn btn-secondary btn-sm" onclick="downloadPartsSample()">Download sample CSV</button>' +
+        '<button class="btn btn-secondary btn-sm" onclick="document.getElementById(\'parts-csv-input\').click()">Import CSV</button>' +
+        '<button class="btn btn-primary btn-sm" onclick="openPartEditor(null)">' + icons.plus + ' Add Part</button>' +
+      '</div></div>' +
+    '<input type="file" id="parts-csv-input" accept=".csv,text/csv" style="display:none" onchange="onPartsCsvChosen(this)" />' +
+    '<div id="parts-msg"></div>' +
+    '<div class="card"><div class="card-body">' +
+      '<input type="text" id="parts-search" placeholder="Search by item #, alias, description, vendor..." style="max-width:340px;margin-bottom:14px" oninput="partsSearchDebounced()" />' +
+      '<div id="parts-table-area"><div class="loading">Loading...</div></div>' +
+    '</div></div>';
+  await loadPartsTable('');
+}
+
+function partsSearchDebounced() {
+  clearTimeout(_partsSearchTimer);
+  _partsSearchTimer = setTimeout(function() {
+    var q = (document.getElementById('parts-search') || {}).value || '';
+    loadPartsTable(q.trim());
+  }, 250);
+}
+
+async function loadPartsTable(q) {
+  var area = document.getElementById('parts-table-area');
+  if (!area) return;
+  try { _partsData = await api('GET', '/parts' + (q ? ('?q=' + encodeURIComponent(q)) : '')); }
+  catch (e) { area.innerHTML = '<div class="alert alert-error">' + escHtml(e.message) + '</div>'; return; }
+  if (!_partsData.length) {
+    area.innerHTML = '<p style="color:var(--text-muted-color)">' + (q ? 'No parts match your search.' : 'No parts yet. Add one or import a CSV.') + '</p>';
+    return;
+  }
+  var rows = _partsData.map(function(pt) {
+    return '<tr>' +
+      '<td style="width:28px;text-align:center"><input type="checkbox" class="part-check" value="' + pt.id + '" onclick="partsUpdateSelection()" /></td>' +
+      '<td style="white-space:nowrap">' + escHtml(pt.item_number || '-') + '</td>' +
+      '<td style="white-space:nowrap">' + escHtml(pt.alias || '-') + '</td>' +
+      '<td style="max-width:360px;word-break:break-word">' + escHtml(pt.description || '') + '</td>' +
+      '<td>' + escHtml(pt.preferred_vendor || '-') + '</td>' +
+      '<td style="white-space:nowrap">' + (pt.price != null ? ('$' + Number(pt.price).toFixed(2)) : '-') + '</td>' +
+      '<td style="white-space:nowrap"><button class="btn btn-ghost btn-sm" onclick="openPartEditor(' + pt.id + ')">Edit</button>' +
+        '<button class="btn btn-ghost btn-sm" style="color:var(--danger)" onclick="deletePart(' + pt.id + ')">' + icons.trash + '</button></td>' +
+    '</tr>';
+  }).join('');
+  area.innerHTML = '<div id="parts-bulk-bar" style="margin-bottom:10px;display:none;align-items:center;gap:10px"></div>' +
+    '<div class="table-wrap"><table class="table"><thead><tr><th style="width:28px;text-align:center"><input type="checkbox" id="parts-check-all" onclick="partsToggleAll(this)" /></th><th>Item #</th><th>Alias</th><th>Description</th><th>Preferred Vendor</th><th>Price</th><th></th></tr></thead><tbody>' + rows + '</tbody></table></div>';
+  partsUpdateSelection();
+}
+
+function openPartEditor(id) {
+  var pt = id ? _partsData.find(function(x){ return x.id === id; }) : null;
+  var overlay = document.createElement('div');
+  overlay.className = 'modal-overlay';
+  overlay.innerHTML =
+    '<div class="modal">' +
+      '<div class="modal-header"><span class="modal-title">' + (id ? 'Edit Part' : 'Add Part') + '</span><button class="btn btn-ghost btn-sm" onclick="this.closest(\'.modal-overlay\').remove()">&#x2715;</button></div>' +
+      '<div class="modal-body">' +
+        '<div id="part-modal-error"></div>' +
+        '<div class="form-group"><label>Item Number <span style="font-weight:400;font-size:0.8em;color:var(--text-muted-color)">vendor-specific</span></label><input type="text" id="part-item" value="' + escHtml(pt ? pt.item_number || '' : '') + '" /></div>' +
+        '<div class="form-group"><label>Alias <span style="font-weight:400;font-size:0.8em;color:var(--text-muted-color)">e.g. H94, HON-484</span></label><input type="text" id="part-alias" value="' + escHtml(pt ? pt.alias || '' : '') + '" /></div>' +
+        '<div class="form-group"><label>Description *</label><input type="text" id="part-desc" value="' + escHtml(pt ? pt.description || '' : '') + '" /></div>' +
+        '<div class="form-row">' +
+          '<div class="form-group"><label>Price</label><input type="number" id="part-price" min="0" step="0.01" value="' + escHtml(pt && pt.price != null ? pt.price : '') + '" /></div>' +
+          '<div class="form-group"><label>Preferred Vendor <span style="font-weight:400;font-size:0.8em;color:var(--text-muted-color)">optional</span></label><input type="text" id="part-vendor" value="' + escHtml(pt ? pt.preferred_vendor || '' : '') + '" /></div>' +
+        '</div>' +
+      '</div>' +
+      '<div class="modal-footer"><button class="btn btn-secondary" onclick="this.closest(\'.modal-overlay\').remove()">Cancel</button><button class="btn btn-primary" onclick="savePart(' + (id || 'null') + ', this)">Save</button></div>' +
+    '</div>';
+  document.body.appendChild(overlay);
+}
+
+async function savePart(id, btn) {
+  var body = {
+    item_number: (document.getElementById('part-item').value || '').trim(),
+    alias: (document.getElementById('part-alias').value || '').trim(),
+    description: (document.getElementById('part-desc').value || '').trim(),
+    price: (document.getElementById('part-price').value || '').trim(),
+    preferred_vendor: (document.getElementById('part-vendor').value || '').trim()
+  };
+  if (!body.description) { document.getElementById('part-modal-error').innerHTML = '<div class="alert alert-error">Description is required.</div>'; return; }
+  try {
+    btn.disabled = true;
+    if (id) await api('PUT', '/parts/' + id, body); else await api('POST', '/parts', body);
+    var ov = btn.closest('.modal-overlay'); if (ov) ov.remove();
+    var q = (document.getElementById('parts-search') || {}).value || '';
+    await loadPartsTable(q.trim());
+  } catch (e) {
+    document.getElementById('part-modal-error').innerHTML = '<div class="alert alert-error">' + escHtml(e.message) + '</div>';
+    btn.disabled = false;
+  }
+}
+
+async function deletePart(id) {
+  if (!confirm('Delete this part from the catalog? This does not affect existing POs.')) return;
+  try {
+    await api('DELETE', '/parts/' + id);
+    var q = (document.getElementById('parts-search') || {}).value || '';
+    await loadPartsTable(q.trim());
+  } catch (e) {
+    document.getElementById('parts-msg').innerHTML = '<div class="alert alert-error">' + escHtml(e.message) + '</div>';
+  }
+}
+
+function partsToggleAll(cb) {
+  document.querySelectorAll('.part-check').forEach(function (c) { c.checked = cb.checked; });
+  partsUpdateSelection();
+}
+function partsSelectedIds() {
+  var ids = [];
+  document.querySelectorAll('.part-check:checked').forEach(function (c) { ids.push(parseInt(c.value, 10)); });
+  return ids;
+}
+function partsUpdateSelection() {
+  var ids = partsSelectedIds();
+  var total = document.querySelectorAll('.part-check').length;
+  var all = document.getElementById('parts-check-all');
+  if (all) all.checked = total > 0 && ids.length === total;
+  var bar = document.getElementById('parts-bulk-bar');
+  if (!bar) return;
+  if (ids.length) {
+    bar.style.display = 'flex';
+    bar.innerHTML = '<button class="btn btn-danger btn-sm" style="white-space:nowrap" onclick="deleteSelectedParts()"><svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" style="vertical-align:-2px;margin-right:5px"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14H6L5 6"/><path d="M10 11v6"/><path d="M14 11v6"/><path d="M9 6V4h6v2"/></svg>Delete selected (' + ids.length + ')</button>';
+  } else {
+    bar.style.display = 'none';
+    bar.innerHTML = '';
+  }
+}
+async function deleteSelectedParts() {
+  var ids = partsSelectedIds();
+  if (!ids.length) return;
+  if (!confirm('Delete ' + ids.length + ' part' + (ids.length === 1 ? '' : 's') + ' from the catalog? This cannot be undone and does not affect existing POs.')) return;
+  try {
+    await api('POST', '/parts/bulk-delete', { ids: ids });
+    var q = (document.getElementById('parts-search') || {}).value || '';
+    await loadPartsTable(q.trim());
+  } catch (e) {
+    document.getElementById('parts-msg').innerHTML = '<div class="alert alert-error">' + escHtml(e.message) + '</div>';
+  }
+}
+
+function downloadPartsSample() {
+  var csv = 'item_number,alias,description,price,preferred_vendor\r\n' +
+    'HON-484,H94,"Honda HON66 transponder key blank",12.50,Acme Locksmith Supply\r\n' +
+    'KW1,,"Kwikset KW1 key blank",0.85,Keyline\r\n' +
+    'SC1,,"Schlage SC1 key blank",0.90,Keyline\r\n';
+  var blob = new Blob([csv], { type: 'text/csv' });
+  var a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = 'parts-sample.csv';
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(a.href);
+}
+
+function parsePartsCSV(text) {
+  var rows = [], row = [], field = '', inQ = false;
+  text = String(text).replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+  for (var i = 0; i < text.length; i++) {
+    var ch = text[i];
+    if (inQ) {
+      if (ch === '"') { if (text[i + 1] === '"') { field += '"'; i++; } else { inQ = false; } }
+      else { field += ch; }
+    } else {
+      if (ch === '"') { inQ = true; }
+      else if (ch === ',') { row.push(field); field = ''; }
+      else if (ch === '\n') { row.push(field); rows.push(row); row = []; field = ''; }
+      else { field += ch; }
+    }
+  }
+  if (field.length || row.length) { row.push(field); rows.push(row); }
+  return rows.filter(function(r) { return r.some(function(c) { return (c || '').trim() !== ''; }); });
+}
+
+function onPartsCsvChosen(input) {
+  var file = input.files && input.files[0];
+  if (!file) return;
+  var reader = new FileReader();
+  reader.onload = function(e) { input.value = ''; handlePartsCsv(e.target.result); };
+  reader.readAsText(file);
+}
+
+var _importRows = [];
+var _importResults = [];
+var _importDecisions = [];
+
+async function handlePartsCsv(text) {
+  var grid = parsePartsCSV(text);
+  if (grid.length < 2) { alert('That CSV looks empty. Use the sample CSV as a template.'); return; }
+  var header = grid[0].map(function(h) { return (h || '').trim().toLowerCase().replace(/\s+/g, '_'); });
+  function colIdx(names) { for (var n = 0; n < names.length; n++) { var k = header.indexOf(names[n]); if (k !== -1) return k; } return -1; }
+  var ci = {
+    item_number: colIdx(['item_number', 'item', 'item_no', 'item#', 'part_number', 'part_no', 'sku']),
+    alias: colIdx(['alias', 'aliases', 'alt', 'alternate']),
+    description: colIdx(['description', 'desc', 'name']),
+    price: colIdx(['price', 'cost', 'unit_price']),
+    preferred_vendor: colIdx(['preferred_vendor', 'vendor', 'supplier'])
+  };
+  if (ci.description === -1) { alert('Your CSV needs a "description" column. Download the sample CSV for the right format.'); return; }
+  _importRows = [];
+  for (var i = 1; i < grid.length; i++) {
+    var r = grid[i];
+    function cell(idx) { return idx > -1 ? (r[idx] || '').trim() : ''; }
+    var obj = {
+      item_number: cell(ci.item_number),
+      alias: cell(ci.alias),
+      description: cell(ci.description),
+      price: cell(ci.price).replace(/[$,]/g, ''),
+      preferred_vendor: cell(ci.preferred_vendor)
+    };
+    if (obj.description) _importRows.push(obj);
+  }
+  if (!_importRows.length) { alert('No rows with a description were found in that CSV.'); return; }
+  showImportReview(true);
+  try {
+    var resp = await api('POST', '/parts/check-duplicates', { rows: _importRows });
+    _importResults = resp.results || [];
+    renderImportReview(!!resp.ai_used);
+  } catch (e) {
+    var b = document.getElementById('import-review-body');
+    if (b) b.innerHTML = '<div class="alert alert-error">' + escHtml(e.message) + '</div>';
+  }
+}
+
+function showImportReview(loading) {
+  var existing = document.getElementById('import-review-overlay');
+  if (existing) existing.remove();
+  var overlay = document.createElement('div');
+  overlay.className = 'modal-overlay';
+  overlay.id = 'import-review-overlay';
+  overlay.innerHTML =
+    '<div class="modal" style="max-width:760px;width:100%">' +
+      '<div class="modal-header"><span class="modal-title">Review CSV Import</span><button class="btn btn-ghost btn-sm" onclick="this.closest(\'.modal-overlay\').remove()">&#x2715;</button></div>' +
+      '<div class="modal-body"><div id="import-review-body">' + (loading ? '<div style="padding:24px;text-align:center;color:var(--text-muted-color)">Checking for duplicates...</div>' : '') + '</div></div>' +
+      '<div class="modal-footer"><button class="btn btn-secondary" onclick="this.closest(\'.modal-overlay\').remove()">Cancel</button><button class="btn btn-primary" onclick="doPartsImport(this)">Import Selected</button></div>' +
+    '</div>';
+  document.body.appendChild(overlay);
+}
+
+function renderImportReview(aiUsed) {
+  var body = document.getElementById('import-review-body');
+  if (!body) return;
+  var dupCount = _importResults.filter(function(r) { return r.status === 'duplicate'; }).length;
+  _importDecisions = _importResults.map(function(r) { return r.status === 'duplicate' ? 'skip' : 'add'; });
+  var rowsHtml = _importResults.map(function(r, i) {
+    var row = _importRows[i];
+    var isDup = r.status === 'duplicate';
+    var matchHtml = isDup ? (r.matches || []).map(function(m) {
+      var where = m.kind === 'existing' ? 'In catalog' : 'In this file';
+      var parts = [m.item_number, m.alias, m.description].filter(Boolean).join(' &middot; ');
+      return '<div style="font-size:12px;color:#f59e0b;margin-top:3px">&#9888; ' + escHtml(where) + ': ' + escHtml(parts) + ' &mdash; ' + escHtml(m.reason || '') + '</div>';
+    }).join('') : '';
+    var control = isDup
+      ? '<select class="import-dec" data-i="' + i + '" style="font-size:13px;padding:4px 8px;border-radius:6px"><option value="skip" selected>Skip</option><option value="add">Add anyway</option></select>'
+      : '<label style="display:flex;align-items:center;gap:6px;font-size:13px"><input type="checkbox" class="import-inc" data-i="' + i + '" checked style="width:auto" /> Include</label>';
+    var meta = [row.item_number && ('Item ' + row.item_number), row.alias && ('Alias ' + row.alias), row.preferred_vendor, (row.price !== '' && row.price != null) && ('$' + row.price)].filter(Boolean).join('  &middot;  ');
+    return '<div style="padding:10px;border-top:1px solid var(--border);' + (isDup ? 'background:rgba(245,158,11,0.06)' : '') + '">' +
+      '<div style="display:flex;justify-content:space-between;gap:12px;align-items:flex-start">' +
+        '<div style="font-size:13px"><strong>' + escHtml(row.description || '(no description)') + '</strong>' +
+          '<div style="color:var(--text-muted-color);font-size:12px">' + meta + '</div>' + matchHtml +
+        '</div>' +
+        '<div style="white-space:nowrap">' + control + '</div>' +
+      '</div></div>';
+  }).join('');
+  body.innerHTML =
+    '<div style="font-size:13px;margin-bottom:10px">' + _importRows.length + ' row' + (_importRows.length === 1 ? '' : 's') + ' parsed &middot; ' + dupCount + ' suspected duplicate' + (dupCount === 1 ? '' : 's') + ' &middot; ' + (aiUsed ? 'AI checked' : 'basic matching only') + '. Suspected duplicates are set to Skip &mdash; switch any to &ldquo;Add anyway&rdquo; to keep it.</div>' +
+    '<div style="max-height:46vh;overflow:auto;border:1px solid var(--border);border-radius:8px">' + rowsHtml + '</div>';
+  body.querySelectorAll('.import-dec').forEach(function(sel) { sel.addEventListener('change', function() { _importDecisions[parseInt(this.getAttribute('data-i'), 10)] = this.value; }); });
+  body.querySelectorAll('.import-inc').forEach(function(cb) { cb.addEventListener('change', function() { _importDecisions[parseInt(this.getAttribute('data-i'), 10)] = this.checked ? 'add' : 'skip'; }); });
+}
+
+async function doPartsImport(btn) {
+  var toAdd = [];
+  _importResults.forEach(function(r, i) { if (_importDecisions[i] === 'add') toAdd.push(_importRows[i]); });
+  if (!toAdd.length) { alert('Nothing selected to import.'); return; }
+  try {
+    btn.disabled = true;
+    var resp = await api('POST', '/parts/bulk', { rows: toAdd });
+    var ov = document.getElementById('import-review-overlay'); if (ov) ov.remove();
+    var msg = document.getElementById('parts-msg');
+    if (msg) { msg.innerHTML = '<div class="alert alert-success">Imported ' + resp.inserted + ' part' + (resp.inserted === 1 ? '' : 's') + '.</div>'; setTimeout(function() { if (msg) msg.innerHTML = ''; }, 4000); }
+    var q = (document.getElementById('parts-search') || {}).value || '';
+    await loadPartsTable(q.trim());
+  } catch (e) {
+    btn.disabled = false;
+    var b = document.getElementById('import-review-body');
+    if (b) b.innerHTML = '<div class="alert alert-error" style="margin-bottom:10px">' + escHtml(e.message) + '</div>' + b.innerHTML;
+  }
+}
+
+// ===== Parts picker (shared by PO form + Monthly Requisition) ================
+var _pickerContext = null;
+var _pickerParts = [];
+var _pickerSearchTimer = null;
+
+async function openPartsPicker(context) {
+  _pickerContext = context;
+  var overlay = document.createElement('div');
+  overlay.className = 'modal-overlay';
+  overlay.id = 'parts-picker-overlay';
+  overlay.innerHTML =
+    '<div class="modal" style="max-width:940px;width:100%">' +
+      '<div class="modal-header"><span class="modal-title">Add from Parts List</span><button class="btn btn-ghost btn-sm" onclick="this.closest(\'.modal-overlay\').remove()">&#x2715;</button></div>' +
+      '<div class="modal-body">' +
+        '<input type="text" id="picker-search" placeholder="Search by item #, alias, description, vendor..." style="width:100%;margin-bottom:10px" oninput="pickerSearchDebounced()" />' +
+        '<div style="font-size:12px;color:var(--text-muted-color);margin-bottom:8px">Check the parts you want, adjust qty / price / description for this ' + (context === 'po' ? 'PO' : (context === 'quote' ? 'quote' : 'list')) + ' if needed, then Add. Edits here only affect this ' + (context === 'po' ? 'PO' : (context === 'quote' ? 'quote' : 'list')) + ' &mdash; the master parts list is not changed.</div>' +
+        '<div id="picker-list" style="max-height:52vh;overflow:auto;border:1px solid var(--border);border-radius:8px"></div>' +
+      '</div>' +
+      '<div class="modal-footer"><button class="btn btn-secondary" onclick="this.closest(\'.modal-overlay\').remove()">Cancel</button><button class="btn btn-primary" onclick="pickerAddSelected()">Add Selected</button></div>' +
+    '</div>';
+  document.body.appendChild(overlay);
+  await pickerLoad('');
+}
+
+function pickerSearchDebounced() {
+  clearTimeout(_pickerSearchTimer);
+  _pickerSearchTimer = setTimeout(function() {
+    var q = (document.getElementById('picker-search') || {}).value || '';
+    pickerLoad(q.trim());
+  }, 250);
+}
+
+async function pickerLoad(q) {
+  var box = document.getElementById('picker-list');
+  if (!box) return;
+  box.innerHTML = '<div style="padding:14px;color:var(--text-muted-color)">Loading...</div>';
+  try { _pickerParts = await api('GET', '/parts' + (q ? ('?q=' + encodeURIComponent(q)) : '')); }
+  catch (e) { box.innerHTML = '<div style="padding:14px"><div class="alert alert-error">' + escHtml(e.message) + '</div></div>'; return; }
+  pickerRender();
+}
+
+function pickerRender() {
+  var box = document.getElementById('picker-list');
+  if (!box) return;
+  if (!_pickerParts.length) {
+    box.innerHTML = '<div style="padding:14px;color:var(--text-muted-color)">No parts found. Add parts under Settings &rarr; Parts List.</div>';
+    return;
+  }
+  var gridCols = 'grid-template-columns:28px 1.1fr 0.7fr 2fr 64px 96px';
+  var head = '<div style="display:grid;' + gridCols + ';gap:8px;padding:8px 10px;font-size:11px;text-transform:uppercase;letter-spacing:0.04em;color:var(--text-muted-color);position:sticky;top:0;background:var(--bg-elevated,#1f1f1f);z-index:2">' +
+    '<div></div><div>Item #</div><div>Alias</div><div>Description</div><div>Qty</div><div>Price</div></div>';
+  var rows = _pickerParts.map(function(pt, i) {
+    return '<div style="display:grid;' + gridCols + ';gap:8px;padding:8px 10px;align-items:center;border-top:1px solid var(--border)">' +
+      '<div><input type="checkbox" class="picker-cb" data-i="' + i + '" style="width:auto" /></div>' +
+      '<div style="font-size:13px">' + escHtml(pt.item_number || '-') + (pt.preferred_vendor ? ('<div style="font-size:11px;color:var(--text-muted-color)">' + escHtml(pt.preferred_vendor) + '</div>') : '') + '</div>' +
+      '<div style="font-size:13px">' + escHtml(pt.alias || '-') + '</div>' +
+      '<div><input type="text" class="picker-desc" data-i="' + i + '" value="' + escHtml(pt.description || '') + '" style="width:100%;box-sizing:border-box;font-size:13px" /></div>' +
+      '<div><input type="number" class="picker-qty" data-i="' + i + '" value="1" min="0" step="1" style="width:100%;box-sizing:border-box;font-size:13px" /></div>' +
+      '<div><input type="number" class="picker-price" data-i="' + i + '" value="' + escHtml(pt.price != null ? pt.price : '') + '" min="0" step="0.01" placeholder="0.00" style="width:100%;box-sizing:border-box;font-size:13px" /></div>' +
+    '</div>';
+  }).join('');
+  box.innerHTML = head + rows;
+}
+
+function pickerAddSelected() {
+  var cbs = document.querySelectorAll('.picker-cb');
+  var chosen = [];
+  cbs.forEach(function(cb) {
+    if (!cb.checked) return;
+    var i = cb.getAttribute('data-i');
+    var pt = _pickerParts[i];
+    if (!pt) return;
+    var desc = (document.querySelector('.picker-desc[data-i="' + i + '"]') || {}).value;
+    var qty = (document.querySelector('.picker-qty[data-i="' + i + '"]') || {}).value;
+    var price = (document.querySelector('.picker-price[data-i="' + i + '"]') || {}).value;
+    chosen.push({ part: pt, description: (desc != null && desc !== '') ? desc : (pt.description || ''), quantity: (qty === '' || qty == null) ? 1 : qty, price: price });
+  });
+  if (!chosen.length) { alert('Select at least one part first.'); return; }
+  if (_pickerContext === 'po') {
+    if (lineItems.length === 1) {
+      var f = lineItems[0];
+      if (!(f.item_number || '').toString().trim() && !(f.description || '').toString().trim() && !(f.unit_price || '').toString().trim()) lineItems = [];
+    }
+    chosen.forEach(function(c) {
+      lineItems.push({ item_number: c.part.item_number || '', manufacturer: '', description: c.description, quantity: c.quantity || 1, unit_price: (c.price === '' || c.price == null) ? '' : c.price });
+    });
+    buildLineItemRows();
+  } else if (_pickerContext === 'running') {
+    var startLen = runningItems.length;
+    chosen.forEach(function(c) {
+      runningItems.push({ description: c.description, quantity: c.quantity || 1, unit_price: (c.price === '' || c.price == null) ? '' : c.price, vendor_name: c.part.preferred_vendor || '', part_number: c.part.item_number || '', link: '' });
+    });
+    runningBuildRows();
+    for (var k = startLen; k < runningItems.length; k++) { runningPersist(k); }
+  } else if (_pickerContext === 'quote') {
+    if (quoteLineItems.length === 1) {
+      var fq = quoteLineItems[0];
+      if (!(fq.item_number || '').toString().trim() && !(fq.description || '').toString().trim() && !(fq.list_price || '').toString().trim() && !(fq.unit_price || '').toString().trim()) quoteLineItems = [];
+    }
+    chosen.forEach(function(c) {
+      var pv = (c.price === '' || c.price == null) ? '' : c.price;
+      quoteLineItems.push({ item_number: c.part.item_number || '', manufacturer: '', description: c.description, quantity: c.quantity || 1, unit_price: pv, list_price: pv, taxable: false, url: '' });
+    });
+    buildQuoteLineItemRows();
+  } else if (_pickerContext === 'invoice') {
+    if (invoiceLineItems.length === 1) {
+      var fi = invoiceLineItems[0];
+      if (!(fi.item_number || '').toString().trim() && !(fi.description || '').toString().trim() && !(fi.unit_price || '').toString().trim()) invoiceLineItems = [];
+    }
+    chosen.forEach(function(c) {
+      var pvi = (c.price === '' || c.price == null) ? '' : c.price;
+      invoiceLineItems.push({ line_type: 'part', part_id: c.part.id || null, item_number: c.part.item_number || '', description: c.description, quantity: c.quantity || 1, unit_price: pvi, taxable: false });
+    });
+    buildInvoiceLineItemRows();
+  }
+  var ov = document.getElementById('parts-picker-overlay');
+
+  if (ov) ov.remove();
+}
+
+// ===================== INVOICES MODULE =====================
+var invoiceLineItems = [];
+var _invoiceAccounts = [];
+var _invoiceDefaultAgreement = '';
+var _currentInvoice = null;
+var _invoiceSigPad = null;
+var _invoiceExistingSig = null;
+var _invoiceAutoAppliedFor = null;
+var _invSetupVendors = [];
+var INV_PAY_TYPES = ['Cash','Check','Visa','Mastercard','Amex','Discover','Debit','Motor Club','Account / Invoice','Other'];
+var INV_STATUSES = ['draft','completed','paid'];
+
+function invExt(it){ return (parseFloat(it.quantity)||0) * (parseFloat(it.unit_price)||0); }
+function invMoney(n){ return '$' + (parseFloat(n)||0).toFixed(2); }
+function invStatusLabel(s){ return s ? (s.charAt(0).toUpperCase() + s.slice(1)) : ''; }
+
+// ---------- Dashboard / list ----------
+async function renderInvoices(el) {
+  try {
+    var invoices = await api('GET', '/invoices');
+    var seeAll = ['admin','manager'].indexOf(state.user.role) !== -1;
+    window._invoicesData = invoices;
+    window._invoicesSeeAll = seeAll;
+    el.innerHTML =
+      '<div class="page-header">' +
+        '<div><div class="page-title">Invoices</div><div class="page-subtitle">' + (seeAll ? 'All invoices' : 'Your invoices') + '</div></div>' +
+        (can('create_invoice') ? '<button class="btn btn-primary" onclick="navigate(\'new-invoice\')" style="white-space:nowrap">' + icons.plus + ' New Invoice</button>' : '') +
+      '</div>' +
+      '<div class="card">' +
+        '<div class="card-header" style="display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap">' +
+          '<span class="card-title">Invoice List</span>' +
+          '<input type="text" id="invoice-search" placeholder="Search #, customer, account, vehicle..." style="width:280px" oninput="filterInvoices()" />' +
+        '</div>' +
+        (invoices.length === 0
+          ? '<div class="empty-state"><h3>No invoices yet</h3><p>Create your first invoice to get started.</p></div>'
+          : '<div id="invoices-table-wrap"></div>') +
+      '</div>';
+    if (invoices.length) filterInvoices();
+  } catch(err) {
+    el.innerHTML = '<div class="alert alert-error">' + escHtml(err.message) + '</div>';
+  }
+}
+
+function filterInvoices() {
+  var wrap = document.getElementById('invoices-table-wrap');
+  if (!wrap || !window._invoicesData) return;
+  var seeAll = window._invoicesSeeAll;
+  var q = ((document.getElementById('invoice-search') || {}).value || '').toLowerCase();
+  var rows = window._invoicesData.filter(function(r){
+    if (!q) return true;
+    var veh = [r.vehicle_year, r.vehicle_make, r.vehicle_model].filter(Boolean).join(' ');
+    return String(r.invoice_number||'').toLowerCase().indexOf(q) !== -1 ||
+           (r.customer_name||'').toLowerCase().indexOf(q) !== -1 ||
+           (r.account_name||'').toLowerCase().indexOf(q) !== -1 ||
+           (veh).toLowerCase().indexOf(q) !== -1 ||
+           (r.locksmith_name||r.locksmith_name_join||'').toLowerCase().indexOf(q) !== -1;
+  });
+  if (!rows.length) { wrap.innerHTML = '<div class="empty-state"><h3>No matching invoices</h3><p>Try a different search.</p></div>'; return; }
+  wrap.innerHTML =
+    '<div class="table-wrap"><table>' +
+    '<thead><tr><th>Invoice #</th><th>Customer</th><th>Account</th><th>Vehicle</th>' + (seeAll ? '<th>Locksmith</th>' : '') + '<th>Status</th><th class="text-right">Total</th><th>Date</th></tr></thead>' +
+    '<tbody>' + rows.map(function(r){
+      var veh = [r.vehicle_year, r.vehicle_make, r.vehicle_model].filter(Boolean).join(' ') || '—';
+      return '<tr style="cursor:pointer" onclick="navigate(\'view-invoice\',' + r.id + ')">' +
+        '<td style="font-weight:600">#' + escHtml(r.invoice_number) + '</td>' +
+        '<td>' + escHtml(r.customer_name || '—') + '</td>' +
+        '<td>' + escHtml(r.account_name || '—') + '</td>' +
+        '<td>' + escHtml(veh) + '</td>' +
+        (seeAll ? '<td>' + escHtml(r.locksmith_name || r.locksmith_name_join || '—') + '</td>' : '') +
+        '<td>' + badgeHtml(r.status) + '</td>' +
+        '<td class="text-right">' + invMoney(r.grand_total) + '</td>' +
+        '<td>' + formatDate(r.invoice_date || r.created_at) + '</td>' +
+      '</tr>';
+    }).join('') + '</tbody></table></div>';
+}
+
+// ---------- Create / edit form ----------
+async function renderEditInvoice(el, id) {
+  el.innerHTML = '<div class="loading">Loading…</div>';
+  var invoice = null;
+  try {
+    var cfg = await api('GET', '/invoices/config').catch(function(){ return {}; });
+    _invoiceDefaultAgreement = (cfg && cfg.default_agreement) || '';
+    _invoiceAccounts = await api('GET', '/invoices/accounts').catch(function(){ return []; });
+  } catch(e) { _invoiceAccounts = []; }
+  if (id) {
+    try { invoice = await api('GET', '/invoices/' + id); }
+    catch(e) { el.innerHTML = '<div class="alert alert-error">' + escHtml(e.message) + '</div>'; return; }
+    invoiceLineItems = (invoice.line_items || []).map(function(li){
+      return { line_type: li.line_type || 'part', part_id: li.part_id || null, item_number: li.item_number || '', description: li.description || '', quantity: li.quantity, unit_price: li.unit_price, taxable: !!li.taxable };
+    });
+    _invoiceExistingSig = invoice.signature_image || null;
+    _invoiceAutoAppliedFor = invoice.account_id || null;
+  } else {
+    invoiceLineItems = [];
+    _invoiceExistingSig = null;
+    _invoiceAutoAppliedFor = null;
+  }
+  _currentInvoice = invoice;
+  var v = invoice || {};
+  var today = new Date().toISOString().split('T')[0];
+  var dateVal = v.invoice_date ? String(v.invoice_date).split('T')[0] : today;
+  var agreementVal = (v.agreement_text != null && v.agreement_text !== '') ? v.agreement_text : _invoiceDefaultAgreement;
+
+  var acctOptions = '<option value="">— Select account —</option>' + _invoiceAccounts.map(function(a){
+    return '<option value="' + a.id + '"' + (v.account_id === a.id ? ' selected' : '') + '>' + escHtml(a.name) + '</option>';
+  }).join('');
+  var payOptions = '<option value="">— Select —</option>' + INV_PAY_TYPES.map(function(p){
+    return '<option value="' + escHtml(p) + '"' + (v.pay_type === p ? ' selected' : '') + '>' + escHtml(p) + '</option>';
+  }).join('');
+  var statusOptions = INV_STATUSES.map(function(s){
+    return '<option value="' + s + '"' + ((v.status||'draft') === s ? ' selected' : '') + '>' + invStatusLabel(s) + '</option>';
+  }).join('');
+
+  el.innerHTML =
+    '<div class="page-header">' +
+      '<div><div class="page-title">' + (id ? 'Edit Invoice' : 'New Invoice') + '</div>' +
+        '<div class="page-subtitle">Locksmith: ' + escHtml(state.user.name) + (id ? ' • #' + escHtml(v.invoice_number) : '') + '</div></div>' +
+      '<button class="btn btn-secondary" onclick="navigate(\'' + (id ? 'view-invoice' : 'invoices') + '\',' + (id||'null') + ')">Cancel</button>' +
+    '</div>' +
+    '<div id="inv-edit-error"></div>' +
+
+    '<div class="card mb-4"><div class="card-header"><span class="card-title">Account &amp; Payment</span></div><div class="card-body">' +
+      '<div class="form-row">' +
+        '<div class="form-group"><label>Account</label><select id="inv-account" onchange="invAccountChange()">' + acctOptions + '</select></div>' +
+        '<div class="form-group"><label>Date</label><input type="date" id="inv-date" value="' + escHtml(dateVal) + '" /></div>' +
+        '<div class="form-group"><label>Status</label><select id="inv-status">' + statusOptions + '</select></div>' +
+      '</div>' +
+      '<div id="inv-account-notes" style="display:none;margin:0 0 12px;padding:10px 12px;border:1px solid var(--primary);border-radius:8px;background:rgba(249,115,22,0.08);font-size:13px;white-space:pre-wrap"></div>' +
+      '<div class="form-row">' +
+        '<div class="form-group"><label>Customer PO / WO #</label><input type="text" id="inv-po" value="' + escHtml(v.customer_po_wo||'') + '" /></div>' +
+        '<div class="form-group"><label>Pay Type</label><select id="inv-pay">' + payOptions + '</select></div>' +
+        '<div class="form-group"><label>Card Last 4</label><input type="text" id="inv-last4" maxlength="4" inputmode="numeric" value="' + escHtml(v.card_last4||'') + '" placeholder="1234" /></div>' +
+      '</div>' +
+      '<div class="form-row">' +
+        '<div class="form-group"><label>Time In</label><input type="time" id="inv-timein" value="' + escHtml(v.time_in||'') + '" /></div>' +
+        '<div class="form-group"><label>Time Out</label><input type="time" id="inv-timeout" value="' + escHtml(v.time_out||'') + '" /></div>' +
+        '<div class="form-group" style="display:flex;align-items:flex-end"><label style="display:flex;align-items:center;gap:8px;margin:0"><input type="checkbox" id="inv-cconline" style="width:auto"' + (v.cc_online ? ' checked' : '') + ' /> CC Online</label></div>' +
+      '</div>' +
+    '</div></div>' +
+
+    '<div class="card mb-4"><div class="card-header" style="display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap"><span class="card-title">Customer Information</span>' +
+      (can('create_invoice') ? '<button class="btn btn-secondary btn-sm" onclick="invScanId()"><svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" style="vertical-align:-2px"><rect x="3" y="4" width="18" height="16" rx="2"/><circle cx="9" cy="10" r="2"/><path d="M14 9h4M14 13h4M5 16h10"/></svg> Scan ID</button>' : '') +
+    '</div><div class="card-body">' +
+      '<input type="file" id="inv-id-file" accept="image/*" capture="environment" style="display:none" onchange="invHandleIdFile(this)" />' +
+      '<div class="form-row">' +
+        '<div class="form-group" style="flex:2"><label>Customer Name</label><input type="text" id="inv-customer" value="' + escHtml(v.customer_name||'') + '" /></div>' +
+        '<div class="form-group"><label>Driver License #</label><input type="text" id="inv-dl" value="' + escHtml(v.dl_number||'') + '" /></div>' +
+        '<div class="form-group" style="max-width:90px"><label>DL State</label><input type="text" id="inv-dlstate" maxlength="2" value="' + escHtml(v.dl_state||'') + '" style="text-transform:uppercase" /></div>' +
+      '</div>' +
+      '<div class="form-row">' +
+        '<div class="form-group" style="flex:2"><label>Street Address</label><input type="text" id="inv-street" value="' + escHtml(v.street_address||'') + '" /></div>' +
+        '<div class="form-group"><label>City</label><input type="text" id="inv-city" value="' + escHtml(v.city||'') + '" /></div>' +
+        '<div class="form-group" style="max-width:90px"><label>State</label><input type="text" id="inv-state" maxlength="2" value="' + escHtml(v.state||'') + '" style="text-transform:uppercase" /></div>' +
+        '<div class="form-group" style="max-width:110px"><label>Zip</label><input type="text" id="inv-zip" value="' + escHtml(v.zip||'') + '" /></div>' +
+      '</div>' +
+      '<div class="form-row">' +
+        '<div class="form-group"><label>Phone</label><input type="tel" id="inv-phone" value="' + escHtml(v.phone||'') + '" /></div>' +
+        '<div class="form-group" style="flex:2"><label>Email</label><input type="email" id="inv-email" value="' + escHtml(v.email||'') + '" /></div>' +
+      '</div>' +
+      '<div id="inv-scan-status" style="font-size:12px;color:var(--text-muted-color)"></div>' +
+    '</div></div>' +
+
+    '<div class="card mb-4"><div class="card-header"><span class="card-title">Vehicle</span></div><div class="card-body">' +
+      '<div class="form-row">' +
+        '<div class="form-group" style="flex:2"><label>VIN</label><div style="display:flex;gap:6px"><input type="text" id="inv-vin" value="' + escHtml(v.vin||'') + '" style="text-transform:uppercase" /><button class="btn btn-secondary btn-sm" style="white-space:nowrap" onclick="invDecodeVin()">Decode</button></div></div>' +
+        '<div class="form-group" style="max-width:90px"><label>Year</label><input type="text" id="inv-vyear" value="' + escHtml(v.vehicle_year||'') + '" /></div>' +
+        '<div class="form-group"><label>Make</label><input type="text" id="inv-vmake" value="' + escHtml(v.vehicle_make||'') + '" /></div>' +
+        '<div class="form-group"><label>Model</label><input type="text" id="inv-vmodel" value="' + escHtml(v.vehicle_model||'') + '" /></div>' +
+      '</div>' +
+      '<div class="form-row">' +
+        '<div class="form-group"><label>License / Tag #</label><input type="text" id="inv-tag" value="' + escHtml(v.license_tag||'') + '" /></div>' +
+        '<div class="form-group" style="max-width:90px"><label>Tag State</label><input type="text" id="inv-tagstate" maxlength="2" value="' + escHtml(v.tag_state||'') + '" style="text-transform:uppercase" /></div>' +
+        '<div class="form-group"><label>Mileage</label><input type="text" id="inv-mileage" value="' + escHtml(v.mileage||'') + '" /></div>' +
+      '</div>' +
+      '<div id="inv-vin-status" style="font-size:12px;color:var(--text-muted-color)"></div>' +
+    '</div></div>' +
+
+    '<div class="card mb-4"><div class="card-header"><span class="card-title">Labor / Parts</span></div><div class="card-body">' +
+      '<div class="table-wrap"><table class="line-items-table">' +
+        '<thead><tr><th>Type</th><th>Item #</th><th>Description</th><th>Qty</th><th>Unit Price</th><th>Tax</th><th class="text-right">Extension</th><th></th></tr></thead>' +
+        '<tbody id="inv-line-body"></tbody>' +
+      '</table></div>' +
+      '<div class="row-actions" style="margin-top:8px;flex-wrap:wrap">' +
+        '<button class="btn btn-secondary btn-sm" onclick="addInvoiceLine(\'labor\')">' + icons.plus + ' Add Labor</button>' +
+        '<button class="btn btn-secondary btn-sm" onclick="addInvoiceLine(\'part\')">' + icons.plus + ' Add Part</button>' +
+        '<button class="btn btn-secondary btn-sm" style="white-space:nowrap" onclick="openPartsPicker(\'invoice\')"><svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" style="vertical-align:-2px"><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"/></svg> Add from Parts List</button>' +
+      '</div>' +
+      '<div style="display:flex;justify-content:flex-end;margin-top:14px"><div style="min-width:280px">' +
+        '<div style="display:flex;justify-content:space-between;padding:3px 0;font-size:13px"><span>Labor</span><span id="inv-labor">$0.00</span></div>' +
+        '<div style="display:flex;justify-content:space-between;padding:3px 0;font-size:13px"><span>Parts</span><span id="inv-parts">$0.00</span></div>' +
+        '<div style="display:flex;justify-content:space-between;padding:3px 0;font-size:13px;border-top:1px solid var(--border)"><span>Subtotal</span><span id="inv-subtotal">$0.00</span></div>' +
+        '<div style="display:flex;justify-content:space-between;align-items:center;padding:3px 0;font-size:13px"><span>Tax %<input type="number" id="inv-tax" value="' + (v.tax_rate != null ? parseFloat(v.tax_rate) : '') + '" min="0" max="100" step="0.01" style="width:70px;margin-left:8px" oninput="updateInvoiceTotals()" /></span><span id="inv-tax-amt">$0.00</span></div>' +
+        '<div style="display:flex;justify-content:space-between;align-items:center;padding:3px 0;font-size:13px"><span>Tip $<input type="number" id="inv-tip" value="' + (v.tip_amount != null && parseFloat(v.tip_amount) ? parseFloat(v.tip_amount) : '') + '" min="0" step="0.01" style="width:70px;margin-left:8px" oninput="updateInvoiceTotals()" /></span><span></span></div>' +
+        '<div style="display:flex;justify-content:space-between;padding:6px 0;font-size:16px;font-weight:700;border-top:2px solid var(--border)"><span>Grand Total</span><span id="inv-grand">$0.00</span></div>' +
+      '</div></div>' +
+    '</div></div>' +
+
+    '<div class="card mb-4"><div class="card-header"><span class="card-title">Entitlement Documentation Provided</span></div><div class="card-body">' +
+      '<div style="display:flex;gap:18px;flex-wrap:wrap">' +
+        '<label style="display:flex;align-items:center;gap:6px;margin:0"><input type="checkbox" id="inv-ent-reg" style="width:auto"' + (v.ent_registration ? ' checked' : '') + ' /> Registration</label>' +
+        '<label style="display:flex;align-items:center;gap:6px;margin:0"><input type="checkbox" id="inv-ent-ins" style="width:auto"' + (v.ent_insurance ? ' checked' : '') + ' /> Insurance</label>' +
+        '<label style="display:flex;align-items:center;gap:6px;margin:0"><input type="checkbox" id="inv-ent-title" style="width:auto"' + (v.ent_title ? ' checked' : '') + ' /> Title</label>' +
+        '<label style="display:flex;align-items:center;gap:6px;margin:0"><input type="checkbox" id="inv-ent-rental" style="width:auto"' + (v.ent_rental ? ' checked' : '') + ' /> Rental Agreement</label>' +
+      '</div>' +
+    '</div></div>' +
+
+    '<div class="card mb-4"><div class="card-header"><span class="card-title">Payments &amp; Notes</span></div><div class="card-body">' +
+      '<div class="form-group"><label>Payments</label><input type="text" id="inv-payments" value="' + escHtml(v.payments_note||'') + '" placeholder="Payment details / collected by..." /></div>' +
+      '<div class="form-group"><label>Notes</label><textarea id="inv-notes" placeholder="Notes...">' + escHtml(v.notes||'') + '</textarea></div>' +
+    '</div></div>' +
+
+    '<div class="card mb-4"><div class="card-header"><span class="card-title">Authorization &amp; Signature</span></div><div class="card-body">' +
+      '<div class="form-group"><label>Agreement Text (printed above the signature; {customer} is replaced with the customer name)</label><textarea id="inv-agreement" style="min-height:140px">' + escHtml(agreementVal) + '</textarea></div>' +
+      '<div class="form-group"><label>Signed By (name)</label><input type="text" id="inv-signed-name" value="' + escHtml(v.signed_name||'') + '" placeholder="Customer name as signed" /></div>' +
+      '<label style="display:block;margin-bottom:4px">Signature</label>' +
+      (_invoiceExistingSig ? '<div id="inv-existing-sig" style="margin-bottom:8px;background:#fff;border:1px solid var(--border);border-radius:8px;padding:8px;display:inline-block"><img src="' + _invoiceExistingSig + '" style="max-width:320px;max-height:120px;display:block" /><div style="font-size:11px;color:#666;margin-top:4px">Current signature — draw below to replace</div></div>' : '') +
+      '<div style="background:#fff;border:1px solid var(--border);border-radius:8px;display:inline-block"><canvas id="inv-sigpad" width="600" height="180" style="touch-action:none;width:100%;max-width:600px;display:block"></canvas></div>' +
+      '<div style="margin-top:6px"><button class="btn btn-ghost btn-sm" onclick="clearInvoiceSignature()">Clear signature</button></div>' +
+    '</div></div>' +
+
+    '<div class="flex-gap" style="margin-bottom:40px">' +
+      '<button class="btn btn-primary" id="inv-save-btn" onclick="saveInvoice(' + (id||'null') + ')">Save Invoice</button>' +
+    '</div>';
+
+  if (invoiceLineItems.length === 0) { invoiceLineItems.push({ line_type: 'labor', item_number: '', description: '', quantity: 1, unit_price: '', taxable: false }); }
+  buildInvoiceLineItemRows();
+  setupInvoiceSignaturePad();
+  if (v.account_id) { var sel = document.getElementById('inv-account'); if (sel) invAccountChange(true); }
+}
+
+function invAccountChange(skipAutoItems) {
+  var sel = document.getElementById('inv-account');
+  if (!sel) return;
+  var id = parseInt(sel.value, 10);
+  var acct = _invoiceAccounts.filter(function(a){ return a.id === id; })[0];
+  var notesBox = document.getElementById('inv-account-notes');
+  if (notesBox) {
+    if (acct && acct.invoice_notes) { notesBox.style.display = 'block'; notesBox.textContent = acct.invoice_notes; }
+    else { notesBox.style.display = 'none'; notesBox.textContent = ''; }
+  }
+  if (!skipAutoItems && acct && acct.agreement_text) {
+    var agr = document.getElementById('inv-agreement');
+    if (agr) agr.value = acct.agreement_text;
+  }
+  // Auto line items — append once per account selection (not on initial edit load).
+  if (!skipAutoItems && acct && Array.isArray(acct.auto_line_items) && acct.auto_line_items.length && _invoiceAutoAppliedFor !== id) {
+    if (invoiceLineItems.length === 1) {
+      var f = invoiceLineItems[0];
+      if (!(f.item_number||'').toString().trim() && !(f.description||'').toString().trim() && !(f.unit_price||'').toString().trim()) invoiceLineItems = [];
+    }
+    acct.auto_line_items.forEach(function(li){
+      invoiceLineItems.push({ line_type: li.line_type === 'labor' ? 'labor' : 'part', part_id: null, item_number: li.item_number || '', description: li.description || '', quantity: li.quantity != null ? li.quantity : 1, unit_price: li.unit_price != null ? li.unit_price : '', taxable: li.taxable === true });
+    });
+    _invoiceAutoAppliedFor = id;
+    buildInvoiceLineItemRows();
+  }
+}
+
+function buildInvoiceLineItemRows() {
+  var tbody = document.getElementById('inv-line-body');
+  if (!tbody) return;
+  tbody.innerHTML = invoiceLineItems.map(function(it, i){
+    return '<tr>' +
+      '<td><select onchange="updateInvoiceItem(' + i + ',this)" data-field="line_type" style="width:90px">' +
+        '<option value="labor"' + (it.line_type === 'labor' ? ' selected' : '') + '>Labor</option>' +
+        '<option value="part"' + (it.line_type !== 'labor' ? ' selected' : '') + '>Part</option>' +
+      '</select></td>' +
+      '<td><input type="text" value="' + escHtml(it.item_number||'') + '" placeholder="Item #" onchange="updateInvoiceItem(' + i + ',this)" data-field="item_number" style="width:100px" /></td>' +
+      '<td><input type="text" value="' + escHtml(it.description||'') + '" placeholder="Description *" onchange="updateInvoiceItem(' + i + ',this)" data-field="description" /></td>' +
+      '<td><input type="number" value="' + escHtml(it.quantity||'') + '" min="0" step="1" onchange="updateInvoiceItem(' + i + ',this)" data-field="quantity" style="width:64px" /></td>' +
+      '<td><input type="number" value="' + escHtml(it.unit_price||'') + '" min="0" step="0.01" placeholder="0.00" onchange="updateInvoiceItem(' + i + ',this)" data-field="unit_price" style="width:90px" /></td>' +
+      '<td style="text-align:center"><input type="checkbox"' + (it.taxable ? ' checked' : '') + ' onchange="updateInvoiceItem(' + i + ',this)" data-field="taxable" style="width:auto" /></td>' +
+      '<td class="text-right" id="inv-ext-' + i + '">' + invMoney(invExt(it)) + '</td>' +
+      '<td>' + (invoiceLineItems.length > 1 ? '<button class="btn btn-ghost btn-sm" onclick="removeInvoiceItem(' + i + ')">' + icons.trash + '</button>' : '') + '</td>' +
+    '</tr>';
+  }).join('');
+  updateInvoiceTotals();
+}
+
+function updateInvoiceItem(i, input) {
+  invoiceLineItems[i][input.dataset.field] = input.type === 'checkbox' ? input.checked : input.value;
+  var cell = document.getElementById('inv-ext-' + i);
+  if (cell) cell.textContent = invMoney(invExt(invoiceLineItems[i]));
+  updateInvoiceTotals();
+}
+
+function addInvoiceLine(type) {
+  invoiceLineItems.push({ line_type: type === 'part' ? 'part' : 'labor', item_number: '', description: '', quantity: 1, unit_price: '', taxable: type === 'part' });
+  buildInvoiceLineItemRows();
+}
+function removeInvoiceItem(i) { invoiceLineItems.splice(i, 1); buildInvoiceLineItemRows(); }
+
+function updateInvoiceTotals() {
+  var labor = 0, parts = 0, taxable = 0;
+  invoiceLineItems.forEach(function(it){
+    var ext = invExt(it);
+    if (it.line_type === 'labor') labor += ext; else parts += ext;
+    if (it.taxable) taxable += ext;
+  });
+  var subtotal = labor + parts;
+  var rate = parseFloat((document.getElementById('inv-tax')||{}).value) || 0;
+  var tax = taxable * rate / 100;
+  var tip = parseFloat((document.getElementById('inv-tip')||{}).value) || 0;
+  var grand = subtotal + tax + tip;
+  function set(id, val){ var e = document.getElementById(id); if (e) e.textContent = invMoney(val); }
+  set('inv-labor', labor); set('inv-parts', parts); set('inv-subtotal', subtotal); set('inv-tax-amt', tax); set('inv-grand', grand);
+}
+
+// ---------- Signature pad ----------
+function setupInvoiceSignaturePad() {
+  var canvas = document.getElementById('inv-sigpad');
+  if (!canvas) return;
+  var ctx = canvas.getContext('2d');
+  ctx.lineWidth = 2.5; ctx.lineCap = 'round'; ctx.lineJoin = 'round'; ctx.strokeStyle = '#111111';
+  var drawing = false, last = null, hasInk = false;
+  function pos(e){ var r = canvas.getBoundingClientRect(); var t = (e.touches && e.touches[0]) ? e.touches[0] : e; return { x: (t.clientX - r.left) * (canvas.width / r.width), y: (t.clientY - r.top) * (canvas.height / r.height) }; }
+  function start(e){ e.preventDefault(); drawing = true; last = pos(e); }
+  function move(e){ if (!drawing) return; e.preventDefault(); var p = pos(e); ctx.beginPath(); ctx.moveTo(last.x, last.y); ctx.lineTo(p.x, p.y); ctx.stroke(); last = p; hasInk = true; }
+  function end(){ drawing = false; }
+  canvas.addEventListener('mousedown', start);
+  canvas.addEventListener('mousemove', move);
+  window.addEventListener('mouseup', end);
+  canvas.addEventListener('touchstart', start, { passive: false });
+  canvas.addEventListener('touchmove', move, { passive: false });
+  canvas.addEventListener('touchend', end);
+  _invoiceSigPad = { canvas: canvas, hasInk: function(){ return hasInk; }, clear: function(){ ctx.clearRect(0,0,canvas.width,canvas.height); hasInk = false; } };
+}
+function clearInvoiceSignature() { if (_invoiceSigPad) _invoiceSigPad.clear(); }
+
+// ---------- VIN + ID smart inputs ----------
+async function invDecodeVin() {
+  var vinEl = document.getElementById('inv-vin');
+  var status = document.getElementById('inv-vin-status');
+  var vin = (vinEl.value || '').trim();
+  if (vin.length < 11) { if (status) status.textContent = 'Enter a full VIN first.'; return; }
+  if (status) status.textContent = 'Decoding VIN…';
+  try {
+    var d = await api('GET', '/invoices/decode-vin/' + encodeURIComponent(vin));
+    if (d.year) document.getElementById('inv-vyear').value = d.year;
+    if (d.make) document.getElementById('inv-vmake').value = d.make;
+    if (d.model) document.getElementById('inv-vmodel').value = d.model;
+    if (status) status.textContent = (d.year || d.make || d.model) ? 'Decoded: ' + [d.year, d.make, d.model].filter(Boolean).join(' ') : 'No match found — enter manually.';
+  } catch(e) { if (status) status.textContent = e.message; }
+}
+
+function invScanId() { var f = document.getElementById('inv-id-file'); if (f) f.click(); }
+async function invHandleIdFile(input) {
+  var status = document.getElementById('inv-scan-status');
+  var file = input.files && input.files[0];
+  if (!file) return;
+  if (status) status.textContent = 'Reading ID…';
+  try {
+    var dataUrl = await invFileToCompressedDataUrl(file, 1600);
+    var d = await api('POST', '/invoices/scan-id', { image: dataUrl });
+    function setIf(id, val){ if (val) { var e = document.getElementById(id); if (e && !e.value) e.value = val; else if (e) e.value = val; } }
+    setIf('inv-customer', d.customer_name);
+    setIf('inv-dl', d.dl_number);
+    setIf('inv-dlstate', d.dl_state);
+    setIf('inv-street', d.street_address);
+    setIf('inv-city', d.city);
+    setIf('inv-state', d.state);
+    setIf('inv-zip', d.zip);
+    if (status) status.textContent = 'ID read — please verify the fields above.';
+  } catch(e) { if (status) status.textContent = e.message; }
+  input.value = '';
+}
+function invFileToCompressedDataUrl(file, maxDim) {
+  return new Promise(function(resolve, reject){
+    var reader = new FileReader();
+    reader.onload = function(ev){
+      var img = new Image();
+      img.onload = function(){
+        var w = img.width, h = img.height;
+        if (w > maxDim || h > maxDim) { if (w >= h) { h = Math.round(h * maxDim / w); w = maxDim; } else { w = Math.round(w * maxDim / h); h = maxDim; } }
+        var c = document.createElement('canvas'); c.width = w; c.height = h;
+        c.getContext('2d').drawImage(img, 0, 0, w, h);
+        resolve(c.toDataURL('image/jpeg', 0.85));
+      };
+      img.onerror = function(){ reject(new Error('Could not read image.')); };
+      img.src = ev.target.result;
+    };
+    reader.onerror = function(){ reject(new Error('Could not read file.')); };
+    reader.readAsDataURL(file);
+  });
+}
+
+// ---------- Save ----------
+async function saveInvoice(id) {
+  var errEl = document.getElementById('inv-edit-error');
+  function val(idv){ var e = document.getElementById(idv); return e ? e.value : ''; }
+  function chk(idv){ var e = document.getElementById(idv); return e ? e.checked : false; }
+  // Sync line items from DOM (in case last edit not blurred)
+  var rows = document.querySelectorAll('#inv-line-body tr');
+  rows.forEach(function(row, i){
+    var typeSel = row.querySelector('select[data-field="line_type"]');
+    var inputs = row.querySelectorAll('input');
+    if (typeSel) invoiceLineItems[i].line_type = typeSel.value;
+    if (inputs[0]) invoiceLineItems[i].item_number = inputs[0].value;
+    if (inputs[1]) invoiceLineItems[i].description = inputs[1].value;
+    if (inputs[2]) invoiceLineItems[i].quantity = inputs[2].value;
+    if (inputs[3]) invoiceLineItems[i].unit_price = inputs[3].value;
+    if (inputs[4]) invoiceLineItems[i].taxable = inputs[4].checked;
+  });
+  var customer = val('inv-customer').trim();
+  if (!customer) { if (errEl) errEl.innerHTML = '<div class="alert alert-error">Customer name is required.</div>'; window.scrollTo(0,0); return; }
+  var items = invoiceLineItems.filter(function(it){ return (it.description||'').toString().trim(); });
+  if (!items.length) { if (errEl) errEl.innerHTML = '<div class="alert alert-error">Add at least one line item with a description.</div>'; window.scrollTo(0,0); return; }
+  var accountSel = document.getElementById('inv-account');
+  var accountId = accountSel && accountSel.value ? parseInt(accountSel.value, 10) : null;
+  var accountName = accountSel && accountSel.options[accountSel.selectedIndex] && accountId ? accountSel.options[accountSel.selectedIndex].text : null;
+  var signature = _invoiceExistingSig || null;
+  if (_invoiceSigPad && _invoiceSigPad.hasInk()) signature = _invoiceSigPad.canvas.toDataURL('image/png');
+  var payload = {
+    invoice_date: val('inv-date'),
+    status: val('inv-status') || 'draft',
+    account_id: accountId,
+    account_name: accountName,
+    customer_po_wo: val('inv-po').trim(),
+    pay_type: val('inv-pay'),
+    card_last4: val('inv-last4').trim(),
+    cc_online: chk('inv-cconline'),
+    time_in: val('inv-timein'),
+    time_out: val('inv-timeout'),
+    customer_name: customer,
+    dl_number: val('inv-dl').trim(),
+    dl_state: val('inv-dlstate').trim().toUpperCase(),
+    street_address: val('inv-street').trim(),
+    city: val('inv-city').trim(),
+    state: val('inv-state').trim().toUpperCase(),
+    zip: val('inv-zip').trim(),
+    phone: val('inv-phone').trim(),
+    email: val('inv-email').trim(),
+    vin: val('inv-vin').trim().toUpperCase(),
+    vehicle_year: val('inv-vyear').trim(),
+    vehicle_make: val('inv-vmake').trim(),
+    vehicle_model: val('inv-vmodel').trim(),
+    license_tag: val('inv-tag').trim(),
+    tag_state: val('inv-tagstate').trim().toUpperCase(),
+    mileage: val('inv-mileage').trim(),
+    ent_registration: chk('inv-ent-reg'),
+    ent_insurance: chk('inv-ent-ins'),
+    ent_title: chk('inv-ent-title'),
+    ent_rental: chk('inv-ent-rental'),
+    tax_rate: parseFloat(val('inv-tax')) || 0,
+    tip_amount: parseFloat(val('inv-tip')) || 0,
+    notes: val('inv-notes').trim(),
+    payments_note: val('inv-payments').trim(),
+    agreement_text: val('inv-agreement'),
+    signature_image: signature,
+    signed_name: val('inv-signed-name').trim(),
+    line_items: items
+  };
+  var btn = document.getElementById('inv-save-btn');
+  if (btn) btn.disabled = true;
+  try {
+    if (id) { await api('PUT', '/invoices/' + id, payload); navigate('view-invoice', id); }
+    else { var created = await api('POST', '/invoices', payload); navigate('view-invoice', created.id); }
+  } catch(err) {
+    if (errEl) errEl.innerHTML = '<div class="alert alert-error">' + escHtml(err.message) + '</div>';
+    if (btn) btn.disabled = false;
+    window.scrollTo(0,0);
+  }
+}
+
+// ---------- View ----------
+async function renderViewInvoice(el, id) {
+  el.innerHTML = '<div class="loading">Loading…</div>';
+  try {
+    var inv = await api('GET', '/invoices/' + id);
+    _currentInvoice = inv;
+    var seeAll = ['admin','manager'].indexOf(state.user.role) !== -1;
+    var canEdit = seeAll || (can('edit_invoice') && inv.locksmith_id === state.user.id);
+    var canDel = seeAll || (can('delete_invoice') && inv.locksmith_id === state.user.id);
+    var veh = [inv.vehicle_year, inv.vehicle_make, inv.vehicle_model].filter(Boolean).join(' ') || '—';
+    var ent = [];
+    if (inv.ent_registration) ent.push('Registration');
+    if (inv.ent_insurance) ent.push('Insurance');
+    if (inv.ent_title) ent.push('Title');
+    if (inv.ent_rental) ent.push('Rental Agreement');
+    function field(label, value){ return '<div class="detail-field"><label>' + label + '</label><p>' + escHtml(value || '—') + '</p></div>'; }
+    var itemsHtml = (inv.line_items||[]).map(function(it){
+      return '<tr>' +
+        '<td>' + (it.line_type === 'labor' ? 'Labor' : 'Part') + '</td>' +
+        '<td>' + escHtml(it.item_number || '—') + '</td>' +
+        '<td>' + escHtml(it.description) + '</td>' +
+        '<td>' + invMoney(it.unit_price) + '</td>' +
+        '<td>' + (parseFloat(it.quantity)||0) + '</td>' +
+        '<td style="text-align:center">' + (it.taxable ? 'Y' : 'N') + '</td>' +
+        '<td class="text-right">' + invMoney(invExt(it)) + '</td>' +
+      '</tr>';
+    }).join('');
+    var agreement = (inv.agreement_text || '').split('{customer}').join(inv.customer_name || '__________');
+    el.innerHTML =
+      '<div class="page-header">' +
+        '<div><div class="page-title">Invoice #' + escHtml(inv.invoice_number) + '</div><div class="page-subtitle">' + badgeHtml(inv.status) + ' • ' + formatDate(inv.invoice_date || inv.created_at) + '</div></div>' +
+        '<div class="flex-gap">' +
+          '<button class="btn btn-secondary" onclick="navigate(\'invoices\')">&larr; Back</button>' +
+          '<button class="btn btn-secondary" style="white-space:nowrap" onclick="printInvoice(' + inv.id + ')">' + icons.print + ' Print</button>' +
+          (canEdit ? '<button class="btn btn-secondary" onclick="navigate(\'edit-invoice\',' + inv.id + ')">' + icons.edit + ' Edit</button>' : '') +
+          (canDel ? '<button class="btn btn-danger" title="Delete invoice" onclick="deleteInvoice(' + inv.id + ')"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14H6L5 6"/><path d="M10 11v6"/><path d="M14 11v6"/><path d="M9 6V4h6v2"/></svg></button>' : '') +
+        '</div>' +
+      '</div>' +
+      '<div id="view-invoice-error"></div>' +
+      '<div class="card mb-4"><div class="card-header"><span class="card-title">Customer &amp; Account</span></div><div class="card-body"><div class="detail-grid">' +
+        field('Customer', inv.customer_name) + field('Phone', inv.phone) + field('Email', inv.email) +
+        field('Address', [inv.street_address, inv.city, inv.state, inv.zip].filter(Boolean).join(', ')) +
+        field('Driver License', inv.dl_number ? (inv.dl_number + (inv.dl_state ? ' (' + inv.dl_state + ')' : '')) : '') +
+        field('Account', inv.account_name) + field('Customer PO / WO', inv.customer_po_wo) +
+        field('Pay Type', inv.pay_type ? (inv.pay_type + (inv.card_last4 ? ' ****' + inv.card_last4 : '')) : '') +
+        field('Locksmith', inv.locksmith_name || inv.locksmith_name_join) +
+        field('Time In / Out', [inv.time_in, inv.time_out].filter(Boolean).join(' – ')) +
+        (inv.cc_online ? '<div class="detail-field"><label>CC Online</label><p>Yes</p></div>' : '') +
+        (ent.length ? '<div class="detail-field" style="grid-column:1/-1"><label>Entitlement Provided</label><p>' + escHtml(ent.join(', ')) + '</p></div>' : '') +
+      '</div></div></div>' +
+      '<div class="card mb-4"><div class="card-header"><span class="card-title">Vehicle</span></div><div class="card-body"><div class="detail-grid">' +
+        field('Vehicle', veh) + field('VIN', inv.vin) + field('License / Tag', inv.license_tag ? (inv.license_tag + (inv.tag_state ? ' (' + inv.tag_state + ')' : '')) : '') + field('Mileage', inv.mileage) +
+      '</div></div></div>' +
+      '<div class="card mb-4"><div class="card-header"><span class="card-title">Labor / Parts</span></div><div class="card-body">' +
+        '<div class="table-wrap"><table class="line-items-table">' +
+        '<thead><tr><th>Type</th><th>Item #</th><th>Description</th><th>Unit Price</th><th>Qty</th><th>Tax</th><th class="text-right">Extension</th></tr></thead>' +
+        '<tbody>' + itemsHtml + '</tbody></table></div>' +
+        '<div style="display:flex;justify-content:flex-end;margin-top:12px"><div style="min-width:260px">' +
+          '<div style="display:flex;justify-content:space-between;padding:3px 0;font-size:13px"><span>Labor</span><span>' + invMoney(inv.labor_amount) + '</span></div>' +
+          '<div style="display:flex;justify-content:space-between;padding:3px 0;font-size:13px"><span>Parts</span><span>' + invMoney(inv.parts_amount) + '</span></div>' +
+          '<div style="display:flex;justify-content:space-between;padding:3px 0;font-size:13px;border-top:1px solid var(--border)"><span>Subtotal</span><span>' + invMoney(inv.subtotal) + '</span></div>' +
+          '<div style="display:flex;justify-content:space-between;padding:3px 0;font-size:13px"><span>Sales Tax (' + (parseFloat(inv.tax_rate)||0).toFixed(2) + '%)</span><span>' + invMoney(inv.tax_amount) + '</span></div>' +
+          (parseFloat(inv.tip_amount) ? '<div style="display:flex;justify-content:space-between;padding:3px 0;font-size:13px"><span>Tip</span><span>' + invMoney(inv.tip_amount) + '</span></div>' : '') +
+          '<div style="display:flex;justify-content:space-between;padding:6px 0;font-size:16px;font-weight:700;border-top:2px solid var(--border)"><span>Grand Total</span><span>' + invMoney(inv.grand_total) + '</span></div>' +
+        '</div></div>' +
+        (inv.payments_note ? '<div style="margin-top:10px;font-size:13px"><strong>Payments:</strong> ' + escHtml(inv.payments_note) + '</div>' : '') +
+        (inv.notes ? '<div style="margin-top:6px;font-size:13px"><strong>Notes:</strong> ' + escHtml(inv.notes) + '</div>' : '') +
+      '</div></div>' +
+      '<div class="card mb-4"><div class="card-header"><span class="card-title">Authorization</span></div><div class="card-body">' +
+        '<div style="white-space:pre-wrap;font-size:12px;color:var(--text-muted-color);line-height:1.6">' + escHtml(agreement) + '</div>' +
+        (inv.signature_image
+          ? '<div style="margin-top:14px"><div style="font-size:12px;color:var(--text-muted-color);margin-bottom:4px">Signed by ' + escHtml(inv.signed_name || inv.customer_name || '') + (inv.signed_at ? ' on ' + formatDateTime(inv.signed_at) : '') + '</div><div style="background:#fff;border:1px solid var(--border);border-radius:8px;padding:8px;display:inline-block"><img src="' + inv.signature_image + '" style="max-width:340px;max-height:140px;display:block" /></div></div>'
+          : '<div style="margin-top:14px;font-size:13px;color:var(--text-muted-color)">No signature captured.</div>') +
+      '</div></div>';
+  } catch(err) {
+    el.innerHTML = '<div class="alert alert-error">' + escHtml(err.message) + '</div>';
+  }
+}
+
+async function deleteInvoice(id) {
+  if (!confirm('Permanently delete this invoice? This cannot be undone.')) return;
+  try { await api('DELETE', '/invoices/' + id); navigate('invoices'); }
+  catch(err) { var e = document.getElementById('view-invoice-error'); if (e) e.innerHTML = '<div class="alert alert-error">' + escHtml(err.message) + '</div>'; else alert(err.message); }
+}
+
+// ---------- Print ----------
+async function printInvoice(id) {
+  try {
+    var results = await Promise.all([ api('GET', '/invoices/' + id), api('GET', '/settings').catch(function(){ return {}; }) ]);
+    var inv = results[0]; var s = results[1];
+    function esc(x){ return String(x == null ? '' : x).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
+    var logo = s.logo ? '<img src="' + s.logo + '" style="height:54px;max-width:200px;object-fit:contain" />' : '<div style="font-size:22px;font-weight:700;color:#f97316">' + esc(s.company_name || 'Pop-A-Lock') + '</div>';
+    var compAddr = [s.company_address, s.company_city_state_zip, s.company_phone].filter(Boolean).map(esc).join('<br>');
+    var veh = [inv.vehicle_year, inv.vehicle_make, inv.vehicle_model].filter(Boolean).join(' ');
+    var ent = []; if (inv.ent_registration) ent.push('Registration'); if (inv.ent_insurance) ent.push('Insurance'); if (inv.ent_title) ent.push('Title'); if (inv.ent_rental) ent.push('Rental Agreement');
+    function cell(lbl, val){ return '<div style="padding:4px 0"><div style="font-size:9px;text-transform:uppercase;letter-spacing:.04em;color:#888">' + lbl + '</div><div style="font-size:12px;color:#111">' + esc(val || '') + '</div></div>'; }
+    var lines = (inv.line_items||[]).map(function(it){
+      return '<tr>' +
+        '<td style="padding:5px 6px;border-bottom:1px solid #eee">' + esc(it.description) + '<div style="font-size:10px;color:#999">' + (it.line_type === 'labor' ? 'Labor' : 'Part') + '</div></td>' +
+        '<td style="padding:5px 6px;border-bottom:1px solid #eee">' + esc(it.item_number || '') + '</td>' +
+        '<td style="padding:5px 6px;border-bottom:1px solid #eee;text-align:right">' + invMoney(it.unit_price) + '</td>' +
+        '<td style="padding:5px 6px;border-bottom:1px solid #eee;text-align:center">' + (parseFloat(it.quantity)||0) + '</td>' +
+        '<td style="padding:5px 6px;border-bottom:1px solid #eee;text-align:center">' + (it.taxable ? 'Y' : 'N') + '</td>' +
+        '<td style="padding:5px 6px;border-bottom:1px solid #eee;text-align:right">' + invMoney(invExt(it)) + '</td>' +
+      '</tr>';
+    }).join('');
+    var agreement = (inv.agreement_text || '').split('{customer}').join(inv.customer_name || '__________');
+    var agreementHtml = esc(agreement).split('\n').filter(function(p){ return p.trim(); }).map(function(p){ return '<p style="margin:0 0 8px">' + p + '</p>'; }).join('');
+    var sigHtml = inv.signature_image
+      ? '<img src="' + inv.signature_image + '" style="max-height:60px;max-width:300px;display:block" />'
+      : '<div style="height:50px;border-bottom:1px solid #333;width:300px"></div>';
+    var html =
+      '<html><head><title>Invoice ' + esc(inv.invoice_number) + '</title><meta charset="utf-8" /></head>' +
+      '<body style="font-family:Arial,Helvetica,sans-serif;margin:0;padding:24px;color:#111">' +
+      '<div style="max-width:760px;margin:0 auto">' +
+      '<div style="display:flex;justify-content:space-between;align-items:flex-start;border-bottom:3px solid #f97316;padding-bottom:12px">' +
+        '<div>' + logo + (compAddr ? '<div style="margin-top:8px;font-size:11px;color:#555;line-height:1.5">' + compAddr + '</div>' : '') + '</div>' +
+        '<div style="text-align:right"><div style="border:1px solid #111;padding:6px 14px;display:inline-block"><div style="font-size:13px;font-weight:700;letter-spacing:.1em">INVOICE</div><div style="font-size:18px;font-weight:700;color:#f97316">' + esc(inv.invoice_number) + '</div></div>' +
+          '<div style="margin-top:8px;font-size:12px">Locksmith: <strong>' + esc(inv.locksmith_name || inv.locksmith_name_join || '') + '</strong></div>' +
+          '<div style="font-size:12px">Date: <strong>' + esc(formatDate(inv.invoice_date || inv.created_at)) + '</strong></div>' +
+        '</div>' +
+      '</div>' +
+      '<div style="display:grid;grid-template-columns:1fr 1fr;gap:18px;margin-top:14px">' +
+        '<div><div style="background:#111;color:#fff;font-size:11px;font-weight:700;padding:4px 8px;letter-spacing:.05em">JOB / CONTACT INFORMATION</div>' +
+          cell('Customer Name', inv.customer_name) + cell('Driver License', (inv.dl_number||'') + (inv.dl_state ? ' (' + inv.dl_state + ')' : '')) +
+          cell('Street Address', inv.street_address) + cell('City / State / Zip', [inv.city, inv.state, inv.zip].filter(Boolean).join(', ')) +
+          cell('Phone', inv.phone) + cell('Email', inv.email) +
+        '</div>' +
+        '<div><div style="background:#111;color:#fff;font-size:11px;font-weight:700;padding:4px 8px;letter-spacing:.05em">ACCOUNT / PAYMENT INFORMATION</div>' +
+          cell('Account', inv.account_name) + cell('Customer PO / WO #', inv.customer_po_wo) +
+          cell('Pay Type', (inv.pay_type||'') + (inv.card_last4 ? '  ****' + inv.card_last4 : '')) +
+          cell('Time In / Out', [inv.time_in, inv.time_out].filter(Boolean).join('  –  ')) +
+          cell('Entitlement', ent.join(', ')) +
+        '</div>' +
+      '</div>' +
+      '<div style="display:grid;grid-template-columns:repeat(5,1fr);gap:10px;margin-top:10px;border-top:1px solid #ddd;padding-top:8px">' +
+        cell('Year/Make/Model', veh) + cell('License #', (inv.license_tag||'') + (inv.tag_state ? ' (' + inv.tag_state + ')' : '')) + cell('VIN', inv.vin) + cell('Mileage', inv.mileage) + cell('Status', invStatusLabel(inv.status)) +
+      '</div>' +
+      '<table style="width:100%;border-collapse:collapse;margin-top:14px;font-size:12px">' +
+        '<thead><tr style="background:#111;color:#fff"><th style="padding:6px;text-align:left">Labor / Parts Description</th><th style="padding:6px;text-align:left">Item #</th><th style="padding:6px;text-align:right">Unit Price</th><th style="padding:6px;text-align:center">Qty</th><th style="padding:6px;text-align:center">TX</th><th style="padding:6px;text-align:right">Extension</th></tr></thead>' +
+        '<tbody>' + lines + '</tbody>' +
+      '</table>' +
+      '<div style="display:flex;justify-content:flex-end;margin-top:12px"><table style="font-size:12px">' +
+        '<tr><td style="padding:3px 10px;text-align:right;color:#555">Labor Amount</td><td style="padding:3px 10px;text-align:right">' + invMoney(inv.labor_amount) + '</td></tr>' +
+        '<tr><td style="padding:3px 10px;text-align:right;color:#555">Parts Amount</td><td style="padding:3px 10px;text-align:right">' + invMoney(inv.parts_amount) + '</td></tr>' +
+        '<tr><td style="padding:3px 10px;text-align:right;color:#555">Sub-Total</td><td style="padding:3px 10px;text-align:right">' + invMoney(inv.subtotal) + '</td></tr>' +
+        '<tr><td style="padding:3px 10px;text-align:right;color:#555">Sales Tax</td><td style="padding:3px 10px;text-align:right">' + invMoney(inv.tax_amount) + '</td></tr>' +
+        (parseFloat(inv.tip_amount) ? '<tr><td style="padding:3px 10px;text-align:right;color:#555">Tip</td><td style="padding:3px 10px;text-align:right">' + invMoney(inv.tip_amount) + '</td></tr>' : '') +
+        '<tr style="border-top:2px solid #111"><td style="padding:5px 10px;text-align:right;font-weight:700">Grand Total</td><td style="padding:5px 10px;text-align:right;font-weight:700">' + invMoney(inv.grand_total) + '</td></tr>' +
+      '</table></div>' +
+      (inv.payments_note ? '<div style="margin-top:8px;font-size:11px"><strong>Payments:</strong> ' + esc(inv.payments_note) + '</div>' : '') +
+      (inv.notes ? '<div style="margin-top:4px;font-size:11px"><strong>Notes:</strong> ' + esc(inv.notes) + '</div>' : '') +
+      '<div style="margin-top:18px;border-top:1px solid #ddd;padding-top:10px;font-size:11px;color:#333;line-height:1.5">' + agreementHtml + '</div>' +
+      '<div style="margin-top:16px"><div style="font-size:10px;color:#888;text-transform:uppercase">Signature</div>' + sigHtml +
+        '<div style="margin-top:4px;font-size:11px">' + esc(inv.signed_name || inv.customer_name || '') + (inv.signed_at ? '  •  ' + esc(formatDateTime(inv.signed_at)) : '') + '</div>' +
+      '</div>' +
+      '</div></body></html>';
+    var w = window.open('', '_blank');
+    if (!w) { alert('Pop-up blocked. Allow pop-ups to print.'); return; }
+    w.document.write(html); w.document.close();
+    setTimeout(function(){ w.focus(); w.print(); }, 400);
+  } catch(err) { alert('Could not print: ' + err.message); }
+}
+
+// ---------- Parts used report ----------
+async function renderInvoiceParts(el) {
+  el.innerHTML = '<div class="loading">Loading…</div>';
+  var now = new Date();
+  var month = now.getFullYear() + '-' + String(now.getMonth()+1).padStart(2,'0');
+  var cities = [];
+  try { cities = await api('GET', '/cities'); } catch(e) {}
+  var cityOpts = '<option value="">— No city —</option>' + cities.map(function(c){ return '<option value="' + escHtml(c.code) + '">' + escHtml(c.name) + ' (' + escHtml(c.code) + ')</option>'; }).join('');
+  el.innerHTML =
+    '<div class="page-header"><div><div class="page-title">Parts Used</div><div class="page-subtitle">Parts consumed on invoices — for month-end ordering</div></div></div>' +
+    '<div class="card mb-4"><div class="card-body" style="display:flex;gap:12px;align-items:flex-end;flex-wrap:wrap">' +
+      '<div class="form-group" style="margin:0"><label>Month</label><input type="month" id="inv-parts-month" value="' + month + '" /></div>' +
+      '<button class="btn btn-secondary" onclick="loadInvoiceParts()">Load</button>' +
+      (can('manage_running') ? '<div class="form-group" style="margin:0"><label>Add to Monthly Req for city</label><select id="inv-parts-city">' + cityOpts + '</select></div>' : '') +
+      (can('manage_running') ? '<button class="btn btn-primary" onclick="invPartsAddToReq()">Add Selected to Monthly Req</button>' : '') +
+    '</div></div>' +
+    '<div id="inv-parts-result"></div>';
+  loadInvoiceParts();
+}
+
+async function loadInvoiceParts() {
+  var box = document.getElementById('inv-parts-result');
+  var month = (document.getElementById('inv-parts-month')||{}).value || '';
+  if (box) box.innerHTML = '<div class="loading">Loading…</div>';
+  try {
+    var data = await api('GET', '/invoices/parts-report?month=' + encodeURIComponent(month));
+    window._invPartsData = data.items || [];
+    if (!data.items.length) { box.innerHTML = '<div class="card"><div class="empty-state"><h3>No parts used</h3><p>No part line items on invoices for ' + escHtml(data.month) + '.</p></div></div>'; return; }
+    box.innerHTML =
+      '<div class="card"><div class="card-header"><span class="card-title">Parts used in ' + escHtml(data.month) + '</span></div>' +
+      '<div class="table-wrap"><table>' +
+      '<thead><tr>' + (can('manage_running') ? '<th><input type="checkbox" onchange="invPartsToggleAll(this)" /></th>' : '') + '<th>Item #</th><th>Description</th><th>Vendor</th><th class="text-right">Total Qty</th><th class="text-right">Invoices</th><th class="text-right">Avg Price</th></tr></thead>' +
+      '<tbody>' + data.items.map(function(it, i){
+        return '<tr>' +
+          (can('manage_running') ? '<td><input type="checkbox" class="inv-part-cb" data-i="' + i + '" /></td>' : '') +
+          '<td>' + escHtml(it.item_number || '—') + '</td>' +
+          '<td>' + escHtml(it.description) + '</td>' +
+          '<td>' + escHtml(it.preferred_vendor || '—') + '</td>' +
+          '<td class="text-right">' + (parseFloat(it.total_qty)||0) + '</td>' +
+          '<td class="text-right">' + (parseInt(it.invoice_count)||0) + '</td>' +
+          '<td class="text-right">' + invMoney(it.avg_price) + '</td>' +
+        '</tr>';
+      }).join('') + '</tbody></table></div></div>';
+  } catch(err) { if (box) box.innerHTML = '<div class="alert alert-error">' + escHtml(err.message) + '</div>'; }
+}
+function invPartsToggleAll(cb) { document.querySelectorAll('.inv-part-cb').forEach(function(c){ c.checked = cb.checked; }); }
+async function invPartsAddToReq() {
+  var chosen = [];
+  document.querySelectorAll('.inv-part-cb').forEach(function(cb){ if (cb.checked) { var it = window._invPartsData[cb.getAttribute('data-i')]; if (it) chosen.push({ description: it.description, quantity: it.total_qty, item_number: it.item_number, vendor_name: it.preferred_vendor, unit_price: it.avg_price }); } });
+  if (!chosen.length) { alert('Select at least one part.'); return; }
+  var city = (document.getElementById('inv-parts-city')||{}).value || null;
+  try { var r = await api('POST', '/invoices/parts-report/add-to-req', { items: chosen, city_code: city }); alert('Added ' + r.added + ' part(s) to the Monthly Req.'); }
+  catch(err) { alert(err.message); }
+}
+
+// ---------- Invoice Setup (account config + default agreement) ----------
+async function renderInvoiceSetup(el) {
+  el.innerHTML = '<div class="loading">Loading…</div>';
+  var vendors = [], cfg = {};
+  try { vendors = await api('GET', '/vendors'); } catch(e) { el.innerHTML = '<div class="alert alert-error">' + escHtml(e.message) + '</div>'; return; }
+  try { cfg = await api('GET', '/invoices/config'); } catch(e) {}
+  _invSetupVendors = vendors.map(function(v){ return v; });
+  var defAgr = (cfg && cfg.default_agreement) || '';
+  el.innerHTML =
+    '<div class="page-header"><div><div class="page-title">Invoice Setup</div><div class="page-subtitle">Choose which accounts appear on invoices, set their notes, auto line items, and agreement text</div></div></div>' +
+    '<div id="inv-setup-msg"></div>' +
+    (can('manage_settings') ?
+      '<div class="card mb-4"><div class="card-header"><span class="card-title">Default Agreement Text</span></div><div class="card-body">' +
+        '<p class="text-muted" style="font-size:13px;margin-bottom:10px">Used on any invoice whose account has no agreement of its own. Use {customer} where the customer name should appear.</p>' +
+        '<textarea id="inv-def-agreement" style="min-height:170px">' + escHtml(defAgr) + '</textarea>' +
+        '<div style="margin-top:10px"><button class="btn btn-primary" onclick="saveInvoiceDefaultAgreement()">Save Default Agreement</button></div>' +
+      '</div></div>' : '') +
+    '<div class="card"><div class="card-header"><span class="card-title">Accounts</span></div><div class="card-body" id="inv-setup-accounts"></div></div>';
+  renderInvSetupAccounts();
+}
+
+function renderInvSetupAccounts() {
+  var box = document.getElementById('inv-setup-accounts');
+  if (!box) return;
+  if (!_invSetupVendors.length) { box.innerHTML = '<div class="empty-state"><h3>No accounts</h3><p>Add accounts under the Accounts page first.</p></div>'; return; }
+  box.innerHTML = _invSetupVendors.map(function(v, i){
+    var open = !!v._open;
+    return '<div style="border:1px solid var(--border);border-radius:8px;margin-bottom:10px">' +
+      '<div style="display:flex;align-items:center;justify-content:space-between;gap:10px;padding:10px 12px">' +
+        '<label style="display:flex;align-items:center;gap:8px;margin:0;font-weight:600"><input type="checkbox"' + (v.show_in_invoice ? ' checked' : '') + ' style="width:auto" onchange="invSetupToggleShow(' + i + ',this)" /> ' + escHtml(v.name) + '</label>' +
+        '<button class="btn btn-ghost btn-sm" onclick="invSetupToggleOpen(' + i + ')">' + (open ? 'Close' : 'Configure') + '</button>' +
+      '</div>' +
+      (open ?
+        '<div style="padding:0 12px 12px">' +
+          '<div class="form-group"><label>Invoice notes (shown as a popup when this account is selected — rates, important info)</label><textarea id="invset-notes-' + i + '" style="min-height:70px">' + escHtml(v.invoice_notes||'') + '</textarea></div>' +
+          '<div class="form-group"><label>Agreement text for this account (leave blank to use the default; use {customer})</label><textarea id="invset-agr-' + i + '" style="min-height:90px">' + escHtml(v.agreement_text||'') + '</textarea></div>' +
+          '<label style="display:block;margin-bottom:4px">Auto line items (pre-loaded when this account is chosen)</label>' +
+          '<div id="invset-auto-' + i + '"></div>' +
+          '<button class="btn btn-secondary btn-sm" style="margin-top:6px" onclick="invSetupAddAuto(' + i + ')">' + icons.plus + ' Add auto line</button>' +
+          '<div style="margin-top:12px"><button class="btn btn-primary btn-sm" onclick="invSetupSave(' + i + ')">Save Account</button></div>' +
+        '</div>' : '') +
+    '</div>';
+  }).join('');
+  _invSetupVendors.forEach(function(v, i){ if (v._open) renderInvSetupAuto(i); });
+}
+
+function renderInvSetupAuto(i) {
+  var box = document.getElementById('invset-auto-' + i);
+  if (!box) return;
+  var v = _invSetupVendors[i];
+  if (!Array.isArray(v.auto_line_items)) v.auto_line_items = [];
+  if (!v.auto_line_items.length) { box.innerHTML = '<div style="font-size:12px;color:var(--text-muted-color)">No auto line items.</div>'; return; }
+  box.innerHTML = '<div class="table-wrap"><table class="line-items-table"><thead><tr><th>Type</th><th>Item #</th><th>Description</th><th>Qty</th><th>Unit Price</th><th>Tax</th><th></th></tr></thead><tbody>' +
+    v.auto_line_items.map(function(li, j){
+      return '<tr>' +
+        '<td><select onchange="invSetupAutoEdit(' + i + ',' + j + ',this)" data-field="line_type" style="width:84px"><option value="labor"' + (li.line_type==='labor'?' selected':'') + '>Labor</option><option value="part"' + (li.line_type!=='labor'?' selected':'') + '>Part</option></select></td>' +
+        '<td><input value="' + escHtml(li.item_number||'') + '" onchange="invSetupAutoEdit(' + i + ',' + j + ',this)" data-field="item_number" style="width:90px" /></td>' +
+        '<td><input value="' + escHtml(li.description||'') + '" onchange="invSetupAutoEdit(' + i + ',' + j + ',this)" data-field="description" /></td>' +
+        '<td><input type="number" value="' + escHtml(li.quantity!=null?li.quantity:1) + '" onchange="invSetupAutoEdit(' + i + ',' + j + ',this)" data-field="quantity" style="width:60px" /></td>' +
+        '<td><input type="number" value="' + escHtml(li.unit_price!=null?li.unit_price:'') + '" onchange="invSetupAutoEdit(' + i + ',' + j + ',this)" data-field="unit_price" style="width:84px" /></td>' +
+        '<td style="text-align:center"><input type="checkbox"' + (li.taxable?' checked':'') + ' onchange="invSetupAutoEdit(' + i + ',' + j + ',this)" data-field="taxable" style="width:auto" /></td>' +
+        '<td><button class="btn btn-ghost btn-sm" onclick="invSetupRemoveAuto(' + i + ',' + j + ')">' + icons.trash + '</button></td>' +
+      '</tr>';
+    }).join('') + '</tbody></table></div>';
+}
+function invSetupToggleShow(i, cb) { _invSetupVendors[i].show_in_invoice = cb.checked; }
+function invSetupToggleOpen(i) { _invSetupVendors[i]._open = !_invSetupVendors[i]._open; renderInvSetupAccounts(); }
+function invSetupAddAuto(i) {
+  var v = _invSetupVendors[i];
+  if (!Array.isArray(v.auto_line_items)) v.auto_line_items = [];
+  // capture current text edits before re-render
+  var n = document.getElementById('invset-notes-' + i); if (n) v.invoice_notes = n.value;
+  var a = document.getElementById('invset-agr-' + i); if (a) v.agreement_text = a.value;
+  v.auto_line_items.push({ line_type: 'part', item_number: '', description: '', quantity: 1, unit_price: '', taxable: false });
+  renderInvSetupAuto(i);
+}
+function invSetupAutoEdit(i, j, input) {
+  var f = input.dataset.field;
+  _invSetupVendors[i].auto_line_items[j][f] = input.type === 'checkbox' ? input.checked : input.value;
+}
+function invSetupRemoveAuto(i, j) { _invSetupVendors[i].auto_line_items.splice(j, 1); renderInvSetupAuto(i); }
+async function invSetupSave(i) {
+  var v = _invSetupVendors[i];
+  var n = document.getElementById('invset-notes-' + i); if (n) v.invoice_notes = n.value;
+  var a = document.getElementById('invset-agr-' + i); if (a) v.agreement_text = a.value;
+  var payload = {
+    name: v.name, website: v.website, account_number: v.account_number, username: v.username, password: v.password,
+    notes: v.notes, rep_name: v.rep_name, rep_email: v.rep_email, rep_phone: v.rep_phone, city_code: v.city_code,
+    show_in_invoice: v.show_in_invoice === true, invoice_notes: v.invoice_notes || null,
+    agreement_text: v.agreement_text || null,
+    auto_line_items: (v.auto_line_items && v.auto_line_items.length) ? v.auto_line_items.filter(function(li){ return (li.description||'').trim(); }) : null
+  };
+  var msg = document.getElementById('inv-setup-msg');
+  try { await api('PUT', '/vendors/' + v.id, payload); if (msg) { msg.innerHTML = '<div class="alert alert-success">Saved ' + escHtml(v.name) + '.</div>'; setTimeout(function(){ if (msg) msg.innerHTML=''; }, 2500); } }
+  catch(err) { if (msg) msg.innerHTML = '<div class="alert alert-error">' + escHtml(err.message) + '</div>'; }
+}
+async function saveInvoiceDefaultAgreement() {
+  var t = (document.getElementById('inv-def-agreement')||{}).value || '';
+  var msg = document.getElementById('inv-setup-msg');
+  try { await api('PUT', '/settings/invoice_default_agreement', { value: t }); if (msg) { msg.innerHTML = '<div class="alert alert-success">Default agreement saved.</div>'; setTimeout(function(){ if (msg) msg.innerHTML=''; }, 2500); } }
+  catch(err) { if (msg) msg.innerHTML = '<div class="alert alert-error">' + escHtml(err.message) + '</div>'; }
+}
+// ===================== END INVOICES MODULE =====================
+
+
+var WO_STATUS_META = {
+  received:       { label: 'Received',       bg: '#fff3e8', fg: '#c2520a' },
+  in_process:     { label: 'In Process',     bg: '#dbeafe', fg: '#1d4ed8' },
+  job_completed:  { label: 'Job Completed',  bg: '#dcfce7', fg: '#15803d' },
+  paperwork_sent: { label: 'Paperwork Sent', bg: '#ede9fe', fg: '#6d28d9' },
+  rejected:       { label: 'Rejected',       bg: '#fee2e2', fg: '#b91c1c' },
+  error:          { label: 'Parse Error',    bg: '#fee2e2', fg: '#b91c1c' }
+};
+var WO_FLOW = ['received', 'in_process', 'job_completed', 'paperwork_sent'];
+var _woState = { status: 'received', q: '', page: 1, limit: 25, total: 0, counts: {} };
+
+function woBadge(s) {
+  var m = WO_STATUS_META[s] || { label: s, bg: '#eee', fg: '#333' };
+  return '<span class="badge" style="background:' + m.bg + ';color:' + m.fg + '">' + escHtml(m.label) + '</span>';
+}
+function woConfBadge(c) {
+  if (!c) return '';
+  var col = c === 'high' ? '#15803d' : (c === 'medium' ? '#b45309' : '#b91c1c');
+  return '<span class="badge" style="background:transparent;border:1px solid ' + col + ';color:' + col + ';text-transform:capitalize">' + escHtml(c) + '</span>';
+}
+
+function woTabsHtml() {
+  var counts = _woState.counts || {};
+  var defs = [['received','Received'],['in_process','In Process'],['job_completed','Job Completed'],['paperwork_sent','Paperwork Sent'],['rejected','Rejected'],['','All']];
+  return defs.map(function (d) {
+    var st = d[0], label = d[1];
+    var n = counts[st] || 0;
+    var active = _woState.status === st;
+    return '<button class="btn ' + (active ? 'btn-primary' : 'btn-secondary') + ' btn-sm" onclick="woSetFilter(\'' + st + '\')" style="white-space:nowrap">' +
+      escHtml(label) + (n ? ' (' + n + ')' : '') + '</button>';
+  }).join('');
+}
+async function renderWorkOrders(el) {
+  try { _woState.counts = await api('GET', '/work-orders/counts'); } catch (e) { _woState.counts = {}; }
+  el.innerHTML =
+    '<div class="page-header">' +
+      '<div><div class="page-title">Work Orders</div><div class="page-subtitle">Incoming work orders to review, dispatch, and complete.</div></div>' +
+      (can('manage_work_orders') ? '<button class="btn btn-primary" onclick="navigate(\'new-work-order\')" style="white-space:nowrap">' + icons.plus + ' New Work Order</button>' : '') +
+    '</div>' +
+    '<div id="wo-error"></div>' +
+    '<div class="card">' +
+      '<div class="card-header" style="display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap">' +
+        '<div id="wo-tabs" style="display:flex;gap:6px;flex-wrap:wrap">' + woTabsHtml() + '</div>' +
+        '<input type="text" id="wo-search" placeholder="Search account, store, PO, service..." style="width:260px" value="' + escHtml(_woState.q) + '" oninput="woSearchDebounced()" />' +
+      '</div>' +
+      (can('manage_work_orders') ?
+        '<div class="card-body" style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;border-bottom:1px solid var(--border-color)">' +
+          '<span style="font-size:13px;color:var(--text-muted-color)">Bulk:</span>' +
+          '<select id="wo-bulk-status" style="width:auto"><option value="">Set status…</option>' +
+            WO_FLOW.concat(['rejected']).map(function (s) { return '<option value="' + s + '">' + WO_STATUS_META[s].label + '</option>'; }).join('') +
+          '</select>' +
+          '<button class="btn btn-secondary btn-sm" onclick="woApplyBulk()">Apply to selected</button>' +
+        '</div>'
+      : '') +
+      '<div id="wo-wrap"><div class="loading">Loading…</div></div>' +
+    '</div>';
+  await woLoad();
+}
+
+function woSetFilter(st) { _woState.status = st; _woState.page = 1; woLoad(); }
+var _woSearchTimer = null;
+function woSearchDebounced() {
+  var v = (document.getElementById('wo-search') || {}).value || '';
+  _woState.q = v;
+  if (_woSearchTimer) clearTimeout(_woSearchTimer);
+  _woSearchTimer = setTimeout(function () { _woState.page = 1; woLoad(); }, 350);
+}
+function woPaginate(p) { _woState.page = p; woLoad(); }
+
+async function woLoad() {
+  var wrap = document.getElementById('wo-wrap');
+  if (!wrap) return;
+  var tabBar = document.getElementById('wo-tabs');
+  if (tabBar) tabBar.innerHTML = woTabsHtml();
+  var qs = [];
+  if (_woState.status) qs.push('status=' + encodeURIComponent(_woState.status));
+  if (_woState.q) qs.push('q=' + encodeURIComponent(_woState.q));
+  qs.push('limit=' + _woState.limit);
+  qs.push('offset=' + ((_woState.page - 1) * _woState.limit));
+  var data;
+  try { data = await api('GET', '/work-orders?' + qs.join('&')); }
+  catch (e) { wrap.innerHTML = '<div class="alert alert-error">' + escHtml(e.message) + '</div>'; return; }
+  _woState.total = data.total || 0;
+  var items = data.items || [];
+  if (!items.length) {
+    wrap.innerHTML = '<div class="empty-state"><h3>No work orders</h3><p>' +
+      (_woState.q ? 'Nothing matches your search.' : 'Nothing in this status yet.') + '</p></div>';
+    return;
+  }
+  var manage = can('manage_work_orders');
+  var totalPages = Math.ceil(_woState.total / _woState.limit);
+  wrap.innerHTML =
+    '<div class="table-wrap"><table>' +
+    '<thead><tr>' +
+      (manage ? '<th style="width:28px"></th>' : '') +
+      '<th>Ref</th><th>Account</th><th>Store</th><th>Service</th><th>Needed</th><th>Status</th><th>Assignee</th><th></th>' +
+    '</tr></thead><tbody>' +
+    items.map(function (w) { return woRow(w, manage); }).join('') +
+    '</tbody></table></div>' +
+    renderPagination(_woState.page, totalPages, _woState.total, 'woPaginate');
+}
+
+function woRow(w, manage) {
+  var svc = w.service_requested ? (w.service_requested.length > 60 ? w.service_requested.slice(0, 60) + '…' : w.service_requested) : '—';
+  return '<tr style="cursor:pointer" onclick="navigate(\'view-work-order\',' + w.id + ')">' +
+    (manage ? '<td onclick="event.stopPropagation()"><input type="checkbox" class="wo-check" value="' + w.id + '" /></td>' : '') +
+    '<td><strong>' + escHtml(w.wo_ref || ('#' + w.id)) + '</strong>' + (w.confidence ? ' ' + woConfBadge(w.confidence) : '') + '</td>' +
+    '<td>' + escHtml(w.account_name || '—') + '</td>' +
+    '<td>' + escHtml(w.store_name || '—') + (w.store_number ? ' <span style="color:var(--text-muted-color)">#' + escHtml(w.store_number) + '</span>' : '') + '</td>' +
+    '<td>' + escHtml(svc) + '</td>' +
+    '<td>' + (w.needed_by ? formatDate(w.needed_by) : '—') + '</td>' +
+    '<td>' + woBadge(w.status) + '</td>' +
+    '<td>' + escHtml(w.assignee_name || '—') + '</td>' +
+    '<td style="text-align:right"><button class="btn btn-secondary btn-sm" onclick="event.stopPropagation();navigate(\'view-work-order\',' + w.id + ')">Open</button></td>' +
+  '</tr>';
+}
+
+async function woApplyBulk() {
+  var sel = (document.getElementById('wo-bulk-status') || {}).value || '';
+  if (!sel) { alert('Choose a status to apply.'); return; }
+  var ids = [].slice.call(document.querySelectorAll('.wo-check:checked')).map(function (c) { return parseInt(c.value, 10); });
+  if (!ids.length) { alert('Select at least one work order.'); return; }
+  try { await api('POST', '/work-orders/bulk', { ids: ids, status: sel }); await woLoad(); }
+  catch (e) { var er = document.getElementById('wo-error'); if (er) er.innerHTML = '<div class="alert alert-error">' + escHtml(e.message) + '</div>'; }
+}
+
+function woRowField(label, id, value, ph) {
+  return '<div class="form-group"><label>' + label + '</label><input type="text" id="' + id + '" value="' + escHtml(value || '') + '" placeholder="' + (ph || '') + '" /></div>';
+}
+
+async function renderViewWorkOrder(el, id) {
+  var w;
+  try { w = await api('GET', '/work-orders/' + id); }
+  catch (e) { el.innerHTML = '<div class="alert alert-error">' + escHtml(e.message) + '</div>'; return; }
+  var manage = can('manage_work_orders');
+  var assignees = [];
+  if (manage) { try { assignees = await api('GET', '/work-orders/assignees'); } catch (e) {} }
+  var assignOpts = '<option value="">— Unassigned —</option>' + assignees.map(function (u) {
+    return '<option value="' + u.id + '"' + (String(w.assigned_to) === String(u.id) ? ' selected' : '') + '>' + escHtml(u.name) + '</option>';
+  }).join('');
+  var assignCard = manage
+    ? '<div class="card mb-4"><div class="card-body"><div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">' +
+        '<label style="font-size:13px;color:var(--text-muted-color);margin:0">Assigned Locksmith</label>' +
+        '<select id="wo-assignee" style="min-width:200px">' + assignOpts + '</select>' +
+        '<button class="btn btn-secondary btn-sm" onclick="woAssign(' + id + ')">Assign</button>' +
+        '<span style="font-size:12px;color:var(--text-muted-color)">Approving also assigns this person to the sign-off.</span>' +
+      '</div></div></div>'
+    : '';
+
+  // Pick the document to show alongside the fields: prefer a PDF, then an image.
+  function _isPdfAtt(a) { var m = (a.mime_type || '').toLowerCase(), n = (a.filename || '').toLowerCase(); return m.indexOf('pdf') !== -1 || /\.pdf$/.test(n); }
+  function _isImgAtt(a) { var m = (a.mime_type || '').toLowerCase(), n = (a.filename || '').toLowerCase(); return m.indexOf('image/') === 0 || /\.(png|jpe?g|gif|webp|bmp|tiff?)$/.test(n); }
+  var docAtt = null;
+  if (w.attachments && w.attachments.length) {
+    docAtt = w.attachments.filter(_isPdfAtt)[0] || w.attachments.filter(_isImgAtt)[0] || null;
+  }
+  var docData = null;
+  if (docAtt) { try { docData = await api('GET', '/work-orders/' + id + '/attachments/' + docAtt.id); } catch (e) {} }
+
+  var actions = '';
+  if (manage) {
+    if (w.status === 'received' || w.status === 'error' || w.status === 'rejected') {
+      actions += '<button class="btn btn-primary" onclick="woSetStatus(' + id + ',\'in_process\')">&#10003; Approve &rarr; In Process</button>';
+      if (w.status !== 'rejected') actions += '<button class="btn btn-secondary" onclick="woSetStatus(' + id + ',\'rejected\')">Reject</button>';
+    } else if (w.status === 'in_process') {
+      actions += '<button class="btn btn-primary" onclick="woSetStatus(' + id + ',\'job_completed\')">Mark Job Completed</button>';
+    } else if (w.status === 'job_completed') {
+      actions += '<button class="btn btn-primary" onclick="woSetStatus(' + id + ',\'paperwork_sent\')">Mark Paperwork Sent</button>';
+    }
+    if (w.signoff_id && w.signoff) {
+      actions += '<button class="btn btn-secondary" onclick="navigate(\'' + (w.signoff.status === 'completed' ? 'view-signoff' : 'complete-signoff') + '\',' + w.signoff_id + ')">Open Sign-Off (' + escHtml(w.signoff.form_number || '') + ')</button>';
+    }
+    if (w.source === 'email') actions += '<button class="btn btn-secondary" onclick="woReparse(' + id + ')">Re-parse with AI</button>';
+    actions += '<button class="btn btn-ghost" style="color:#b91c1c" onclick="woDelete(' + id + ')">Delete</button>';
+  }
+
+  // Left side: the original document (PDF/image), falling back to the email body.
+  var docInner;
+  if (docData && docAtt && _isPdfAtt(docAtt)) {
+    docInner = '<iframe src="data:application/pdf;base64,' + docData.image_data + '" style="width:100%;height:640px;border:0;border-radius:6px;background:#fff"></iframe>';
+  } else if (docData) {
+    docInner = '<img src="data:' + (docData.mime_type || 'image/jpeg') + ';base64,' + docData.image_data + '" style="max-width:100%;border:1px solid var(--border-color);border-radius:6px" />';
+  } else if (w.email_body) {
+    docInner = '<pre style="white-space:pre-wrap;word-break:break-word;max-height:640px;overflow:auto;background:var(--bg-elevated);padding:12px;border-radius:6px;font-size:13px;font-family:inherit">' + escHtml(w.email_body) + '</pre>';
+  } else {
+    docInner = '<div style="color:var(--text-muted-color);font-size:13px">No document or email body.</div>';
+  }
+  var srcMeta = w.source === 'email'
+    ? '<div style="font-size:12px;color:var(--text-muted-color);margin-bottom:8px">From: ' + escHtml(w.email_from || '—') + ' &middot; ' + escHtml(w.email_subject || '') + (w.email_received_at ? ' &middot; ' + formatDate(w.email_received_at) : '') + '</div>'
+    : '';
+  var attLinks = (w.attachments && w.attachments.length)
+    ? '<div style="margin-top:8px;font-size:12px"><strong>Files:</strong> ' + w.attachments.map(function (a) { return '<a href="#" onclick="event.preventDefault();woViewAttachment(' + id + ',' + a.id + ')" style="color:var(--primary)">' + escHtml(a.filename || ('file ' + a.id)) + '</a>'; }).join(', ') + '</div>'
+    : '';
+  var leftCard = '<div class="card" style="margin:0"><div class="card-header"><span class="card-title">Original Document</span></div><div class="card-body">' +
+    srcMeta + docInner + attLinks +
+    (w.parse_error ? '<div class="alert alert-error" style="margin-top:10px">Parse error: ' + escHtml(w.parse_error) + '</div>' : '') +
+    '</div></div>';
+
+  // Right side: the parsed fields (editable for managers until paperwork is sent).
+  var fieldsEditable = manage && w.status !== 'paperwork_sent';
+  function fld(label, fid, val, ph) {
+    if (!fieldsEditable) return '<div style="margin-bottom:12px"><div style="font-size:11px;font-weight:600;color:var(--text-muted-color);text-transform:uppercase;letter-spacing:0.04em;margin-bottom:3px">' + label + '</div><div style="font-size:14px">' + escHtml(val || '—') + '</div></div>';
+    return '<div class="form-group"><label>' + label + '</label><input type="text" id="' + fid + '" value="' + escHtml(val || '') + '" placeholder="' + (ph || '') + '" /></div>';
+  }
+  var fieldsInner = fieldsEditable
+    ? '<div class="form-row">' + fld('Account', 'wo-account_name', w.account_name) + fld('Account #', 'wo-account_number', w.account_number) + '</div>' +
+      fld('PO / WO #', 'wo-po_number', w.po_number) +
+      '<div class="form-row">' + fld('Store Name', 'wo-store_name', w.store_name) + fld('Store #', 'wo-store_number', w.store_number) + '</div>' +
+      fld('Address', 'wo-address', w.address) +
+      fld('City / State / Zip', 'wo-city_state_zip', w.city_state_zip) +
+      '<div class="form-group"><label>Service Requested</label><textarea id="wo-service_requested">' + escHtml(w.service_requested || '') + '</textarea></div>' +
+      fld('Service Requested By', 'wo-service_requested_by', w.service_requested_by) +
+      '<div class="form-group"><label>Needed By (date)</label><input type="date" id="wo-needed_by" value="' + escHtml(w.needed_by ? String(w.needed_by).slice(0, 10) : '') + '" /></div>' +
+      '<div class="form-row">' + fld('Contact Name', 'wo-contact_name', w.contact_name) + fld('Contact Phone', 'wo-contact_phone', w.contact_phone) + '</div>' +
+      '<div class="form-group"><label>Priority</label><select id="wo-priority">' + ['low', 'normal', 'high', 'urgent'].map(function (p) { return '<option value="' + p + '"' + (w.priority === p ? ' selected' : '') + '>' + p + '</option>'; }).join('') + '</select></div>' +
+      '<div class="form-group"><label>Notes</label><textarea id="wo-notes">' + escHtml(w.notes || '') + '</textarea></div>' +
+      '<button class="btn btn-secondary" onclick="woSaveEdit(' + id + ')">Save changes</button>'
+    : fld('Account', '', w.account_name) + fld('Account #', '', w.account_number) + fld('PO / WO #', '', w.po_number) +
+      fld('Store', '', (w.store_name || '') + (w.store_number ? ' (#' + w.store_number + ')' : '')) + fld('Address', '', w.address) + fld('City / State / Zip', '', w.city_state_zip) +
+      fld('Service', '', w.service_requested) + fld('Requested By', '', w.service_requested_by) + fld('Needed By', '', w.needed_by ? formatDate(w.needed_by) : '') +
+      fld('Contact', '', w.contact_name) + fld('Phone', '', w.contact_phone) + fld('Priority', '', w.priority) +
+      (w.notes ? '<div style="margin-top:12px;padding:10px 12px;background:var(--bg-elevated);border-radius:6px;font-size:13px"><strong>Notes:</strong> ' + escHtml(w.notes) + '</div>' : '');
+  var rightCard = '<div class="card" style="margin:0"><div class="card-header"><span class="card-title">' + (fieldsEditable ? 'Parsed Details (check &amp; correct)' : 'Details') + '</span></div><div class="card-body">' + fieldsInner + '</div></div>';
+
+  el.innerHTML =
+    '<div class="page-header">' +
+      '<div><div class="page-title">' + escHtml(w.wo_ref || ('Work Order #' + id)) + ' ' + woBadge(w.status) + ' ' + woConfBadge(w.confidence) + '</div>' +
+        '<div class="page-subtitle">' + escHtml(w.account_name || '—') + (w.store_name ? ' &middot; ' + escHtml(w.store_name) : '') + '</div></div>' +
+      '<button class="btn btn-secondary" onclick="navigate(\'work-orders\')">&larr; Back</button>' +
+    '</div>' +
+    '<div id="wo-detail-error"></div>' +
+    assignCard +
+    (actions ? '<div class="card mb-4"><div class="card-body"><div class="flex-gap" style="flex-wrap:wrap">' + actions + '</div></div></div>' : '') +
+    '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(380px,1fr));gap:16px;align-items:start" class="mb-4">' + leftCard + rightCard + '</div>' +
+    '<div class="card"><div class="card-header"><span class="card-title">Activity</span></div><div class="card-body">' +
+      ((w.activity && w.activity.length)
+        ? w.activity.map(function (a) { return '<div style="font-size:13px;padding:6px 0;border-bottom:1px solid var(--border-color)"><span style="color:var(--text-muted-color)">' + formatDate(a.created_at) + ' &middot; ' + escHtml(a.user_name || 'System') + '</span> — ' + escHtml(a.body || '') + '</div>'; }).join('')
+        : '<div style="color:var(--text-muted-color);font-size:13px">No activity yet.</div>') +
+    '</div></div>';
+}
+
+function woGet(fid) { var e = document.getElementById(fid); return e ? e.value.trim() : undefined; }
+async function woSaveEdit(id) {
+  var body = {
+    account_name: woGet('wo-account_name'), account_number: woGet('wo-account_number'), po_number: woGet('wo-po_number'),
+    store_name: woGet('wo-store_name'), store_number: woGet('wo-store_number'), address: woGet('wo-address'), city_state_zip: woGet('wo-city_state_zip'),
+    service_requested: woGet('wo-service_requested'), service_requested_by: woGet('wo-service_requested_by'), needed_by: woGet('wo-needed_by'),
+    contact_name: woGet('wo-contact_name'), contact_phone: woGet('wo-contact_phone'), priority: woGet('wo-priority'), notes: woGet('wo-notes')
+  };
+  try { await api('PUT', '/work-orders/' + id, body); navigate('view-work-order', id); }
+  catch (e) { var er = document.getElementById('wo-detail-error'); if (er) er.innerHTML = '<div class="alert alert-error">' + escHtml(e.message) + '</div>'; }
+}
+async function woSetStatus(id, status) {
+  if (status === 'rejected' && !confirm('Reject this work order?')) return;
+  var ae = document.getElementById('wo-assignee');
+  var body = { status: status };
+  if (ae) body.assigned_to = ae.value || null;
+  try { await api('PATCH', '/work-orders/' + id + '/status', body); navigate('view-work-order', id); }
+  catch (e) { var er = document.getElementById('wo-detail-error'); if (er) er.innerHTML = '<div class="alert alert-error">' + escHtml(e.message) + '</div>'; }
+}
+async function woAssign(id) {
+  var ae = document.getElementById('wo-assignee');
+  try { await api('PUT', '/work-orders/' + id, { assigned_to: ae && ae.value ? ae.value : null }); navigate('view-work-order', id); }
+  catch (e) { var er = document.getElementById('wo-detail-error'); if (er) er.innerHTML = '<div class="alert alert-error">' + escHtml(e.message) + '</div>'; }
+}
+async function woReparse(id) {
+  var er = document.getElementById('wo-detail-error');
+  if (er) er.innerHTML = '<div class="alert">Re-parsing with AI…</div>';
+  try { await api('POST', '/work-orders/' + id + '/reparse', {}); navigate('view-work-order', id); }
+  catch (e) { if (er) er.innerHTML = '<div class="alert alert-error">' + escHtml(e.message) + '</div>'; }
+}
+async function woDelete(id) {
+  if (!confirm('Delete this work order? This cannot be undone.')) return;
+  try { await api('DELETE', '/work-orders/' + id); navigate('work-orders'); }
+  catch (e) { var er = document.getElementById('wo-detail-error'); if (er) er.innerHTML = '<div class="alert alert-error">' + escHtml(e.message) + '</div>'; }
+}
+async function woViewAttachment(id, aid) {
+  try {
+    var r = await api('GET', '/work-orders/' + id + '/attachments/' + aid);
+    var w = window.open();
+    if (w) {
+      if ((r.mime_type || '').indexOf('pdf') !== -1) w.document.write('<iframe src="data:application/pdf;base64,' + r.image_data + '" style="border:0;width:100%;height:100%"></iframe>');
+      else w.document.write('<img src="data:' + (r.mime_type || 'image/jpeg') + ';base64,' + r.image_data + '" style="max-width:100%" />');
+    }
+  } catch (e) { alert('Could not load attachment: ' + e.message); }
+}
+
+async function renderWorkOrderForm(el) {
+  var assignees = [];
+  try { assignees = await api('GET', '/work-orders/assignees'); } catch (e) {}
+  var assignOpts = '<option value="">— Unassigned —</option>' + assignees.map(function (u) {
+    return '<option value="' + u.id + '">' + escHtml(u.name) + '</option>';
+  }).join('');
+  el.innerHTML =
+    '<div class="page-header">' +
+      '<div><div class="page-title">New Work Order</div><div class="page-subtitle">Enter a phone-in or walk-in job by hand.</div></div>' +
+      '<button class="btn btn-secondary" onclick="navigate(\'work-orders\')">Cancel</button>' +
+    '</div>' +
+    '<div id="wo-form-error"></div>' +
+    '<div class="card mb-4"><div class="card-body">' +
+      '<div class="form-row">' + woRowField('Account', 'wof-account_name', '', 'e.g. Ferrandino &amp; Son') + woRowField('Account #', 'wof-account_number', '', '') + '</div>' +
+      woRowField('PO / WO #', 'wof-po_number', '', '') +
+      '<div class="form-row">' + woRowField('Store Name', 'wof-store_name', '', '') + woRowField('Store #', 'wof-store_number', '', '') + '</div>' +
+      woRowField('Address', 'wof-address', '', 'Street address') +
+      woRowField('City / State / Zip', 'wof-city_state_zip', '', '') +
+      '<div class="form-group"><label>Service Requested</label><textarea id="wof-service_requested" placeholder="What needs to be done"></textarea></div>' +
+      '<div class="form-row">' + woRowField('Service Requested By', 'wof-service_requested_by', '', 'e.g. 6/22/26 by 5 PM') + '<div class="form-group"><label>Needed By (date)</label><input type="date" id="wof-needed_by" /></div></div>' +
+      '<div class="form-row">' + woRowField('Contact Name', 'wof-contact_name', '', '') + woRowField('Contact Phone', 'wof-contact_phone', '', '') + '</div>' +
+      '<div class="form-group"><label>Assign To (Locksmith)</label><select id="wof-assigned">' + assignOpts + '</select></div>' +
+      '<div class="form-group"><label>Notes</label><textarea id="wof-notes"></textarea></div>' +
+    '</div></div>' +
+    '<div class="flex-gap"><button class="btn btn-primary" onclick="woCreate()">Create Work Order</button></div>';
+}
+async function woCreate() {
+  function v(k) { var e = document.getElementById('wof-' + k); return e ? e.value.trim() : ''; }
+  var body = {
+    account_name: v('account_name'), account_number: v('account_number'), po_number: v('po_number'),
+    store_name: v('store_name'), store_number: v('store_number'), address: v('address'), city_state_zip: v('city_state_zip'),
+    service_requested: v('service_requested'), service_requested_by: v('service_requested_by'), needed_by: v('needed_by'),
+    contact_name: v('contact_name'), contact_phone: v('contact_phone'), notes: v('notes'),
+    assigned_to: (function () { var e = document.getElementById('wof-assigned'); return e && e.value ? e.value : null; })()
+  };
+  try { var wo = await api('POST', '/work-orders', body); navigate('view-work-order', wo.id); }
+  catch (e) { var er = document.getElementById('wo-form-error'); if (er) er.innerHTML = '<div class="alert alert-error">' + escHtml(e.message) + '</div>'; }
+}
+// ===== end Work Orders module =================================================
+
+
+async function renderSignoffs(el) {
+  try {
+    const forms = await api('GET', '/signoffs');
+    window._signoffData = forms;
+    _signoffPage = 1;
+    const pending = forms.filter(function(f){ return f.status === 'pending'; }).length;
+    el.innerHTML =
+      '<div class="page-header">' +
+        '<div><div class="page-title">Sign-Off Sheets</div><div class="page-subtitle">' + pending + ' awaiting completion</div></div>' +
+        (can('create_signoff') ? '<button class="btn btn-primary" onclick="navigate(\'new-signoff\')" style="white-space:nowrap">' + icons.plus + ' New Sign-Off Sheet</button>' : '') +
+      '</div>' +
+      '<div id="signoff-error"></div>' +
+      '<div class="card">' +
+        '<div class="card-header" style="display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap">' +
+          '<span class="card-title">Work Order Sign-Offs</span>' +
+          '<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">' +
+            '<select id="signoff-status-filter" onchange="filterSignoffs(true)" style="width:auto"><option value="">All statuses</option><option value="pending">Awaiting completion</option><option value="completed">Completed</option></select>' +
+            '<input type="text" id="signoff-search" placeholder="Search form #, store, PO #, account..." style="width:260px" oninput="filterSignoffs(true)" />' +
+          '</div>' +
+        '</div>' +
+        (forms.length === 0
+          ? '<div class="empty-state"><h3>No sign-off sheets yet</h3><p>Create one to set up a work order, then complete it on site.</p></div>'
+          : '<div id="signoff-table-wrap"></div>') +
+      '</div>';
+    if (forms.length) filterSignoffs();
+  } catch (err) {
+    el.innerHTML = '<div class="alert alert-error">' + escHtml(err.message) + '</div>';
+  }
+}
+
+function signoffPaginate(p) { _signoffPage = p; filterSignoffs(); }
+function signoffPageSize(v) { SIGNOFF_PAGE_SIZE = parsePageSize(v); _signoffPage = 1; filterSignoffs(); }
+
+function filterSignoffs(resetPage) {
+  if (resetPage) _signoffPage = 1;
+  const wrap = document.getElementById('signoff-table-wrap');
+  if (!wrap || !window._signoffData) return;
+  const q = ((document.getElementById('signoff-search') || {}).value || '').toLowerCase();
+  const st = (document.getElementById('signoff-status-filter') || {}).value || '';
+  const filtered = window._signoffData.filter(function(f) {
+    if (st && f.status !== st) return false;
+    if (!q) return true;
+    return [f.form_number, f.store_name, f.store_number, f.wo_number, f.po_number, f.account, f.city_state_zip, f.created_by_name, f.assigned_to_name].some(function(v) {
+      return (v || '').toString().toLowerCase().indexOf(q) !== -1;
+    });
+  });
+  if (!filtered.length) {
+    wrap.innerHTML = '<div class="empty-state"><h3>No matching sheets</h3><p>Try a different search or filter.</p></div>';
+    return;
+  }
+  const totalPages = Math.ceil(filtered.length / SIGNOFF_PAGE_SIZE);
+  if (_signoffPage > totalPages) _signoffPage = totalPages;
+  const start = (_signoffPage - 1) * SIGNOFF_PAGE_SIZE;
+  const page = filtered.slice(start, start + SIGNOFF_PAGE_SIZE);
+  wrap.innerHTML =
+    '<div class="table-wrap"><table>' +
+    '<thead><tr><th>Form #</th><th>Store</th><th>PO #</th><th>Account</th>' + (signoffSeeAll() ? '<th>Assigned To</th>' : '') + '<th>Status</th><th>Created</th><th></th></tr></thead>' +
+    '<tbody>' + page.map(renderSignoffRow).join('') + '</tbody>' +
+    '</table></div>' +
+    renderPagination(_signoffPage, totalPages, filtered.length, 'signoffPaginate', SIGNOFF_PAGE_SIZE, 'signoffPageSize');
+}
+
+function signoffSeeAll() { return ['admin','manager'].includes(state.user.role); }
+
+function renderSignoffRow(f) {
+  const pend = f.status === 'pending';
+  const badge = pend
+    ? '<span class="badge" style="background:#fff3e8;color:#c2520a">Awaiting completion</span>'
+    : '<span class="badge" style="background:#dcfce7;color:#15803d">Completed</span>';
+  const action = pend
+    ? '<button class="btn btn-primary btn-sm" onclick="event.stopPropagation();navigate(\'complete-signoff\',' + f.id + ')" style="white-space:nowrap">&#9998; Complete</button>'
+    : '<button class="btn btn-secondary btn-sm" onclick="event.stopPropagation();navigate(\'view-signoff\',' + f.id + ')">View</button>';
+  var canDel = state.user.role === 'admin' || (can('delete_signoff') && f.created_by === state.user.id);
+  var editBtn = (pend && can('edit_signoff')) ? '<button class="btn btn-secondary btn-sm" title="Edit setup / reassign" onclick="event.stopPropagation();navigate(\'edit-signoff\',' + f.id + ')" style="margin-right:6px">' + icons.edit + '</button>' : '';
+  var delBtn = canDel ? '<button class="btn btn-danger btn-sm" title="Delete sign-off sheet" onclick="event.stopPropagation();deleteSignoff(' + f.id + ')" style="margin-left:6px"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14H6L5 6"/><path d="M10 11v6"/><path d="M14 11v6"/><path d="M9 6V4h6v2"/></svg></button>' : '';
+  return '<tr style="cursor:pointer" onclick="navigate(\'' + (pend ? 'complete-signoff' : 'view-signoff') + '\',' + f.id + ')">' +
+    '<td><strong>' + escHtml(f.form_number) + '</strong></td>' +
+    '<td>' + escHtml(f.store_name || '—') + (f.store_number ? ' <span style="color:var(--text-muted-color)">#' + escHtml(f.store_number) + '</span>' : '') + '</td>' +
+    '<td>' + escHtml(f.po_number || '—') + '</td>' +
+    '<td>' + escHtml(f.account || '—') + '</td>' +
+    (signoffSeeAll() ? '<td>' + (f.assigned_to_name ? escHtml(f.assigned_to_name) : '<span style="color:var(--text-muted-color)">Unassigned</span>') + '</td>' : '') +
+    '<td>' + badge + '</td>' +
+    '<td>' + formatDate(f.created_at) + '</td>' +
+    '<td style="text-align:right;white-space:nowrap">' + editBtn + action + delBtn + '</td>' +
+  '</tr>';
+}
+
+async function renderEditSignoff(el, id) {
+  let form = null;
+  if (id) {
+    try { form = await api('GET', '/signoffs/' + id); } catch(e) { el.innerHTML = '<div class="alert alert-error">' + escHtml(e.message) + '</div>'; return; }
+    if (form.status === 'completed') { el.innerHTML = '<div class="alert alert-error">This sheet is completed and can no longer be edited.</div>'; return; }
+  }
+  let assignees = [];
+  try { assignees = await api('GET', '/signoffs/assignees'); } catch(e) {}
+  const assignSel = form ? form.assigned_to : state.user.id;
+  const assignOpts = '<option value="">— Unassigned —</option>' + assignees.map(function(u) {
+    return '<option value="' + u.id + '"' + (String(assignSel) === String(u.id) ? ' selected' : '') + '>' + escHtml(u.name) + '</option>';
+  }).join('');
+  function v(k) { return form ? escHtml(form[k] || '') : ''; }
+  el.innerHTML =
+    '<div class="page-header">' +
+      '<div><div class="page-title">' + (id ? 'Edit Sign-Off Setup' : 'New Sign-Off Sheet') + '</div><div class="page-subtitle">Set up the work order, then it joins the queue for a tech to complete on site.</div></div>' +
+      '<button class="btn btn-secondary" onclick="navigate(\'' + (id ? 'view-signoff' : 'signoffs') + '\',' + (id || 'null') + ')">Cancel</button>' +
+    '</div>' +
+    '<div id="signoff-edit-error"></div>' +
+    '<div class="card mb-4"><div class="card-header"><span class="card-title">Work Order Details</span></div><div class="card-body">' +
+      '<div class="form-group"><label>PO Number</label><input type="text" id="so-po" value="' + v('po_number') + '" placeholder="PO number" /></div>' +
+      '<div class="form-group"><label>Account</label><input type="text" id="so-account" value="' + v('account') + '" placeholder="e.g. Ferrandino &amp; Son Inc. Contractors" /></div>' +
+      '<div class="form-row">' +
+        '<div class="form-group"><label>Store Name</label><input type="text" id="so-store-name" value="' + v('store_name') + '" placeholder="e.g. Camelot" /></div>' +
+        '<div class="form-group"><label>Store Number</label><input type="text" id="so-store-number" value="' + v('store_number') + '" placeholder="e.g. 1260" /></div>' +
+      '</div>' +
+      '<div class="form-group"><label>Address</label><input type="text" id="so-address" value="' + v('address') + '" placeholder="Street address" /></div>' +
+      '<div class="form-group"><label>City / State / Zip</label><input type="text" id="so-csz" value="' + v('city_state_zip') + '" placeholder="e.g. Birmingham, AL 35242" /></div>' +
+      '<div class="form-group"><label>Date &amp; Time Service Requested By</label><input type="text" id="so-requested-by" value="' + v('service_requested_by') + '" placeholder="e.g. 6/19/26 by 5:00 PM" /></div>' +
+      '<div class="form-group"><label>Assign To</label><select id="so-assigned">' + assignOpts + '</select><div style="font-size:12px;color:var(--text-muted-color);margin-top:4px">Only this person (plus admins and managers) will see this sheet.</div></div>' +
+      '<div class="form-group"><label>Setup Notes</label><textarea id="so-notes" placeholder="Anything the tech should know before arriving...">' + v('notes') + '</textarea></div>' +
+    '</div></div>' +
+    '<div class="flex-gap"><button class="btn btn-primary" id="btn-save-signoff" onclick="saveSignoff(' + (id || 'null') + ')">' + (id ? 'Save Changes' : 'Create &amp; Add to Queue') + '</button></div>';
+}
+
+async function saveSignoff(id) {
+  function val(idn) { var e = document.getElementById(idn); return e ? e.value.trim() : ''; }
+  const body = {
+    po_number: val('so-po'),
+    account: val('so-account'), store_name: val('so-store-name'), store_number: val('so-store-number'),
+    address: val('so-address'), city_state_zip: val('so-csz'), service_requested_by: val('so-requested-by'),
+    notes: val('so-notes'),
+    assigned_to: (function() { var e = document.getElementById('so-assigned'); return e && e.value ? e.value : null; })()
+  };
+  if (!body.po_number && !body.store_name) {
+    document.getElementById('signoff-edit-error').innerHTML = '<div class="alert alert-error">Enter at least a PO number or store name.</div>';
+    return;
+  }
+  const btn = document.getElementById('btn-save-signoff');
+  if (btn) btn.disabled = true;
+  try {
+    if (id) { await api('PUT', '/signoffs/' + id, body); navigate('view-signoff', id); }
+    else { await api('POST', '/signoffs', body); navigate('signoffs'); }
+  } catch(err) {
+    document.getElementById('signoff-edit-error').innerHTML = '<div class="alert alert-error">' + escHtml(err.message) + '</div>';
+    if (btn) btn.disabled = false;
+  }
+}
+
+function signoffSummaryHtml(f) {
+  function row(label, val) { return '<div><div style="font-size:11px;font-weight:600;color:var(--text-muted-color);text-transform:uppercase;letter-spacing:0.04em;margin-bottom:3px">' + label + '</div><div style="font-size:14px">' + escHtml(val || '—') + '</div></div>'; }
+  return '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:16px">' +
+    row('Form #', f.form_number) + row('PO #', f.po_number) + row('Invoice #', f.invoice_number) +
+    row('Account', f.account) + row('Store', (f.store_name || '') + (f.store_number ? ' (#' + f.store_number + ')' : '')) +
+    row('Address', f.address) + row('City / State / Zip', f.city_state_zip) + row('Service Requested By', f.service_requested_by) +
+  '</div>' + (f.notes ? '<div style="margin-top:14px;padding:10px 12px;background:var(--bg-elevated);border-radius:6px;font-size:13px"><strong>Setup notes:</strong> ' + escHtml(f.notes) + '</div>' : '');
+}
+
+async function renderCompleteSignoff(el, id) {
+  signoffPhotos = [];
+  _signoffSigPad = null;
+  _signoffSignatureData = null;
+  _signoffGps = null;
+  _signoffSignedAt = null;
+  let form;
+  try { form = await api('GET', '/signoffs/' + id); } catch(e) { el.innerHTML = '<div class="alert alert-error">' + escHtml(e.message) + '</div>'; return; }
+  if (form.status === 'completed') { navigate('view-signoff', id); return; }
+  el.innerHTML =
+    '<div class="page-header">' +
+      '<div><div class="page-title">Complete ' + escHtml(form.form_number) + '</div><div class="page-subtitle">Fill in on-site details, capture photos, and have the manager sign.</div></div>' +
+      '<button class="btn btn-secondary" onclick="navigate(\'signoffs\')">Cancel</button>' +
+    '</div>' +
+    '<div id="signoff-complete-error"></div>' +
+    '<div class="card mb-4"><div class="card-header"><span class="card-title">Work Order</span></div><div class="card-body">' + signoffSummaryHtml(form) + '</div></div>' +
+    '<div class="card mb-4"><div class="card-header"><span class="card-title">On-Site Details</span></div><div class="card-body">' +
+      '<div class="form-row">' +
+        '<div class="form-group"><label>Start Time &amp; Date *</label><input type="text" id="so-start" placeholder="e.g. 6/19/26 1:30 PM" /></div>' +
+        '<div class="form-group"><label>End Time &amp; Date *</label><input type="text" id="so-end" placeholder="e.g. 6/19/26 3:00 PM" /></div>' +
+      '</div>' +
+      '<div class="form-row">' +
+        '<div class="form-group"><label>Is this work 100% complete? *</label><select id="so-complete"><option value="">— Select —</option><option value="yes">Yes</option><option value="no">No</option></select></div>' +
+        '<div class="form-group"><label>Number of Technicians *</label><input type="number" id="so-numtech" min="0" step="1" placeholder="e.g. 2" /></div>' +
+        '<div class="form-group"><label>Invoice Number *</label><input type="text" id="so-invoice-complete" placeholder="Invoice number" /></div>' +
+      '</div>' +
+      '<div class="form-group"><label>Technician Name(s) *</label><input type="text" id="so-techs" placeholder="Names of techs on site" /></div>' +
+      '<div class="form-group"><label>Description of Work Done / Cause of Damage *</label><textarea id="so-workdesc" style="min-height:120px" placeholder="Describe the work performed and/or cause of damage..."></textarea></div>' +
+    '</div></div>' +
+    '<div class="card mb-4"><div class="card-header"><span class="card-title">Photos <span style="font-weight:500;color:var(--text-muted-color);font-size:13px">(Must have before and after photos)</span></span></div><div class="card-body">' +
+      '<p class="text-muted" style="font-size:13px;margin-bottom:10px">Add at least two photos (before and after) and label each one. They are compressed automatically before upload.</p>' +
+      '<div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:12px">' +
+        '<label class="btn btn-primary" style="cursor:pointer;margin:0">&#128247; Take Photo<input type="file" accept="image/*" capture="environment" onchange="handleSignoffPhotos(this)" style="display:none" /></label>' +
+        '<label class="btn btn-secondary" style="cursor:pointer;margin:0">Choose Photos<input type="file" id="so-photo-input" accept="image/*" multiple onchange="handleSignoffPhotos(this)" style="display:none" /></label>' +
+      '</div>' +
+      '<div id="so-photo-grid" style="display:flex;flex-wrap:wrap;gap:10px"></div>' +
+    '</div></div>' +
+    '<div class="card mb-4"><div class="card-header"><span class="card-title">Manager Sign-Off</span></div><div class="card-body">' +
+      '<div class="form-group"><label>Manager Name (Printed) *</label><input type="text" id="so-manager" placeholder="Manager name" /></div>' +
+      '<label style="display:block;margin-bottom:6px;font-size:13px;color:var(--text-dim)">Manager Signature *</label>' +
+      '<div id="so-sig-preview" style="display:none;margin-bottom:6px"></div>' +
+      '<div id="so-sig-prompt" style="border:1px dashed var(--border);border-radius:8px;padding:18px;text-align:center;background:var(--bg-elevated);max-width:480px">' +
+        '<div style="font-size:13px;color:var(--text-dim);margin-bottom:10px">Capture the manager signature with on-site GPS location and a time stamp.</div>' +
+        '<button class="btn btn-primary" type="button" id="so-collect-sig" onclick="collectSignoffSignature()">&#9999;&#65039; Collect Signature</button>' +
+        '<div id="so-gps-status" style="font-size:12px;color:var(--text-muted-color);margin-top:8px"></div>' +
+      '</div>' +
+    '</div></div>' +
+    '<div class="flex-gap"><button class="btn btn-primary" id="btn-complete-signoff" onclick="submitSignoffCompletion(' + form.id + ')">&#10003; Submit &amp; Email Admins</button></div>';
+  renderSignoffSigPreview();
+  renderSignoffPhotoGrid();
+}
+
+function setupSignaturePad() {
+  const canvas = document.getElementById('so-sigpad');
+  if (!canvas) return;
+  const ctx = canvas.getContext('2d');
+  ctx.lineWidth = 2.5; ctx.lineCap = 'round'; ctx.lineJoin = 'round'; ctx.strokeStyle = '#111111';
+  let drawing = false, last = null, hasInk = false;
+  function pos(e) {
+    const r = canvas.getBoundingClientRect();
+    const t = (e.touches && e.touches[0]) ? e.touches[0] : e;
+    return { x: (t.clientX - r.left) * (canvas.width / r.width), y: (t.clientY - r.top) * (canvas.height / r.height) };
+  }
+  function start(e) { e.preventDefault(); drawing = true; last = pos(e); }
+  function move(e) { if (!drawing) return; e.preventDefault(); const p = pos(e); ctx.beginPath(); ctx.moveTo(last.x, last.y); ctx.lineTo(p.x, p.y); ctx.stroke(); last = p; hasInk = true; }
+  function end() { drawing = false; }
+  canvas.addEventListener('mousedown', start);
+  canvas.addEventListener('mousemove', move);
+  window.addEventListener('mouseup', end);
+  canvas.addEventListener('touchstart', start, { passive: false });
+  canvas.addEventListener('touchmove', move, { passive: false });
+  canvas.addEventListener('touchend', end);
+  _signoffSigPad = {
+    canvas: canvas,
+    hasInk: function() { return hasInk; },
+    setInk: function(v) { hasInk = v; },
+    clear: function() { ctx.clearRect(0, 0, canvas.width, canvas.height); hasInk = false; }
+  };
+}
+
+function clearSignoffSignature() { if (_signoffSigPad) _signoffSigPad.clear(); }
+
+// Capture GPS for the on-site signer, then open the full-screen signing pad.
+function collectSignoffSignature() {
+  var btn = document.getElementById('so-collect-sig');
+  var status = document.getElementById('so-gps-status');
+  if (btn) btn.disabled = true;
+  if (status) status.textContent = 'Getting your location\u2026';
+  function proceed(gps) {
+    _signoffGps = gps;
+    if (status) {
+      if (gps && gps.lat != null) status.innerHTML = '\uD83D\uDCCD Location captured (\u00b1' + Math.round(gps.accuracy || 0) + ' m)';
+      else status.innerHTML = '\u26A0\uFE0F Location unavailable \u2014 the signature will be flagged.';
+    }
+    if (btn) btn.disabled = false;
+    openSignoffFullscreen();
+  }
+  if (navigator.geolocation && navigator.geolocation.getCurrentPosition) {
+    navigator.geolocation.getCurrentPosition(
+      function(p) { proceed({ lat: p.coords.latitude, lon: p.coords.longitude, accuracy: p.coords.accuracy, error: null }); },
+      function(err) { proceed({ lat: null, lon: null, accuracy: null, error: (err && err.message) ? err.message : 'Location permission denied.' }); },
+      { enableHighAccuracy: true, timeout: 12000, maximumAge: 0 }
+    );
+  } else {
+    proceed({ lat: null, lon: null, accuracy: null, error: 'Geolocation is not supported on this device.' });
+  }
+}
+
+// Builds the on-site stamp block (time + GPS) shown in the preview, completed view.
+function signoffStampHtml(o) {
+  o = o || {};
+  var when = o.signed_at ? new Date(o.signed_at).toLocaleString('en-US') : '\u2014';
+  var hasGps = o.gps_lat != null && o.gps_lat !== '' && o.gps_lon != null && o.gps_lon !== '';
+  var loc = hasGps
+    ? Number(o.gps_lat).toFixed(6) + ', ' + Number(o.gps_lon).toFixed(6) + (o.gps_accuracy != null && o.gps_accuracy !== '' ? ' (\u00b1' + Math.round(o.gps_accuracy) + ' m)' : '')
+    : 'Location unavailable';
+  var mapLink = hasGps ? ' \u00b7 <a href="https://www.google.com/maps?q=' + encodeURIComponent(o.gps_lat + ',' + o.gps_lon) + '" target="_blank" rel="noopener" style="color:var(--primary)">Map</a>' : '';
+  return '<div style="margin-top:10px;border:1px solid ' + (hasGps ? 'var(--border)' : '#b45309') + ';border-left:3px solid ' + (hasGps ? 'var(--primary)' : '#f59e0b') + ';border-radius:6px;padding:9px 12px;background:var(--bg-elevated);font-size:12.5px;line-height:1.7;max-width:480px">' +
+    '<div style="font-weight:600;text-transform:uppercase;letter-spacing:0.04em;font-size:10.5px;color:var(--text-muted-color);margin-bottom:3px">On-Site Signature Stamp</div>' +
+    '<div>\uD83D\uDD52 ' + escHtml(when) + '</div>' +
+    '<div>\uD83D\uDCCD ' + escHtml(loc) + mapLink + '</div>' +
+    (o.manager ? '<div>\uD83D\uDC64 ' + escHtml(o.manager) + '</div>' : '') +
+    (!hasGps && o.gps_error ? '<div style="color:#f59e0b;margin-top:3px">' + escHtml(o.gps_error) + '</div>' : '') +
+  '</div>';
+}
+
+// Show the captured signature + stamp in the complete form, hide the prompt.
+function renderSignoffSigPreview() {
+  var prev = document.getElementById('so-sig-preview');
+  var prompt = document.getElementById('so-sig-prompt');
+  if (!prev) return;
+  if (!_signoffSignatureData) { prev.style.display = 'none'; if (prompt) prompt.style.display = ''; return; }
+  var g = _signoffGps || {};
+  var mgr = ((document.getElementById('so-manager') || {}).value || '').trim();
+  prev.style.display = 'block';
+  prev.innerHTML =
+    '<div style="background:#fff;border:1px solid var(--border);border-radius:8px;padding:8px;display:inline-block;max-width:100%"><img src="' + _signoffSignatureData + '" style="max-width:100%;width:480px;display:block" /></div>' +
+    signoffStampHtml({ signed_at: _signoffSignedAt, gps_lat: g.lat, gps_lon: g.lon, gps_accuracy: g.accuracy, gps_error: g.error, manager: mgr }) +
+    '<div style="margin-top:8px"><button class="btn btn-secondary btn-sm" type="button" onclick="collectSignoffSignature()">Re-sign</button></div>';
+  if (prompt) prompt.style.display = 'none';
+}
+
+// Full-screen landscape signing — lets the tech turn the phone sideways for a big signing area.
+function openSignoffFullscreen() {
+  if (document.getElementById('so-sig-fs')) return;
+  var portrait = window.innerHeight > window.innerWidth;
+  var ov = document.createElement('div');
+  ov.id = 'so-sig-fs';
+  ov.style.cssText = 'position:fixed;inset:0;z-index:99999;background:#ffffff;display:flex;flex-direction:column';
+  var bar = document.createElement('div');
+  bar.style.cssText = 'flex:0 0 auto;display:flex;justify-content:space-between;align-items:center;padding:10px 14px;background:#0f0f0f;color:#fff;gap:10px';
+  bar.innerHTML = '<span style="font-size:14px;font-weight:600">Manager Signature</span>' +
+    '<span style="display:flex;gap:8px">' +
+      '<button type="button" id="so-fs-clear" style="background:#333;color:#fff;border:none;border-radius:6px;padding:9px 14px;font-size:14px">Clear</button>' +
+      '<button type="button" id="so-fs-cancel" style="background:#333;color:#fff;border:none;border-radius:6px;padding:9px 14px;font-size:14px">Cancel</button>' +
+      '<button type="button" id="so-fs-done" style="background:#f97316;color:#fff;border:none;border-radius:6px;padding:9px 18px;font-size:14px;font-weight:600">Done</button>' +
+    '</span>';
+  var wrap = document.createElement('div');
+  wrap.style.cssText = 'flex:1 1 auto;position:relative';
+  var c = document.createElement('canvas');
+  c.width = 1600; c.height = 700;
+  c.style.cssText = 'position:absolute;inset:0;width:100%;height:100%;touch-action:none;background:#ffffff';
+  wrap.appendChild(c);
+  var hint = document.createElement('div');
+  hint.style.cssText = 'position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);color:#bbb;font-size:16px;text-align:center;pointer-events:none;padding:0 20px';
+  hint.textContent = portrait ? 'Turn your phone sideways, then sign here' : 'Sign here';
+  wrap.appendChild(hint);
+  ov.appendChild(bar); ov.appendChild(wrap);
+  document.body.appendChild(ov);
+  // Best effort: go fullscreen and lock landscape (Android Chrome honors this; iOS Safari ignores it).
+  try {
+    if (ov.requestFullscreen) {
+      ov.requestFullscreen().then(function() {
+        try { if (screen.orientation && screen.orientation.lock) screen.orientation.lock('landscape'); } catch(e) {}
+      }).catch(function() {});
+    }
+  } catch(e) {}
+  var ctx = c.getContext('2d');
+  ctx.lineWidth = 4; ctx.lineCap = 'round'; ctx.lineJoin = 'round'; ctx.strokeStyle = '#111111';
+  var drawing = false, last = null, hasInk = false;
+  function pos(e) {
+    var r = c.getBoundingClientRect();
+    var t = (e.touches && e.touches[0]) ? e.touches[0] : e;
+    return { x: (t.clientX - r.left) * (c.width / r.width), y: (t.clientY - r.top) * (c.height / r.height) };
+  }
+  function start(e) { e.preventDefault(); drawing = true; last = pos(e); hint.style.display = 'none'; }
+  function move(e) { if (!drawing) return; e.preventDefault(); var p = pos(e); ctx.beginPath(); ctx.moveTo(last.x, last.y); ctx.lineTo(p.x, p.y); ctx.stroke(); last = p; hasInk = true; }
+  function end() { drawing = false; }
+  c.addEventListener('mousedown', start);
+  c.addEventListener('mousemove', move);
+  window.addEventListener('mouseup', end);
+  c.addEventListener('touchstart', start, { passive: false });
+  c.addEventListener('touchmove', move, { passive: false });
+  c.addEventListener('touchend', end);
+  function cleanup() {
+    try { if (screen.orientation && screen.orientation.unlock) screen.orientation.unlock(); } catch(e) {}
+    try { if (document.fullscreenElement) document.exitFullscreen(); } catch(e) {}
+    window.removeEventListener('mouseup', end);
+    if (ov.parentNode) ov.parentNode.removeChild(ov);
+  }
+  document.getElementById('so-fs-clear').onclick = function() { ctx.clearRect(0, 0, c.width, c.height); hasInk = false; hint.style.display = ''; };
+  document.getElementById('so-fs-cancel').onclick = function() { cleanup(); };
+  document.getElementById('so-fs-done').onclick = function() {
+    if (hasInk) {
+      _signoffSignedAt = new Date();
+      _signoffSignatureData = c.toDataURL('image/png');
+      renderSignoffSigPreview();
+    }
+    cleanup();
+  };
+}
+
+function handleSignoffPhotos(input) {
+  const files = Array.prototype.slice.call(input.files || []);
+  files.forEach(function(file) {
+    if (!file.type || file.type.indexOf('image/') !== 0) return;
+    const reader = new FileReader();
+    reader.onload = function(ev) {
+      const img = new Image();
+      img.onload = function() {
+        const maxDim = 1280;
+        let w = img.width, h = img.height;
+        if (w > h && w > maxDim) { h = Math.round(h * maxDim / w); w = maxDim; }
+        else if (h >= w && h > maxDim) { w = Math.round(w * maxDim / h); h = maxDim; }
+        const c = document.createElement('canvas');
+        c.width = w; c.height = h;
+        c.getContext('2d').drawImage(img, 0, 0, w, h);
+        signoffPhotos.push({ image_data: c.toDataURL('image/jpeg', 0.7), caption: '' });
+        renderSignoffPhotoGrid();
+      };
+      img.src = ev.target.result;
+    };
+    reader.readAsDataURL(file);
+  });
+  input.value = '';
+}
+
+function renderSignoffPhotoGrid() {
+  const grid = document.getElementById('so-photo-grid');
+  if (!grid) return;
+  if (!signoffPhotos.length) { grid.innerHTML = '<div style="color:var(--text-muted-color);font-size:13px">No photos added yet. Add a before and an after photo.</div>'; return; }
+  grid.innerHTML = signoffPhotos.map(function(p, i) {
+    return '<div style="width:140px">' +
+      '<div style="position:relative;width:140px;height:130px;border-radius:8px;overflow:hidden;border:1px solid var(--border)">' +
+        '<img src="' + p.image_data + '" style="width:100%;height:100%;object-fit:cover" />' +
+        '<button type="button" onclick="removeSignoffPhoto(' + i + ')" title="Remove" style="position:absolute;top:3px;right:3px;background:rgba(0,0,0,0.6);color:#fff;border:none;border-radius:50%;width:22px;height:22px;cursor:pointer;font-size:14px;line-height:1">&times;</button>' +
+      '</div>' +
+      '<input type="text" value="' + escHtml(p.caption || '') + '" onchange="updateSignoffPhotoCaption(' + i + ', this.value)" placeholder="Label (e.g. Before / After)" style="width:140px;margin-top:5px;font-size:12px;padding:5px 7px" />' +
+    '</div>';
+  }).join('');
+}
+
+function updateSignoffPhotoCaption(i, val) { if (signoffPhotos[i]) signoffPhotos[i].caption = val; }
+
+function removeSignoffPhoto(i) { signoffPhotos.splice(i, 1); renderSignoffPhotoGrid(); }
+
+async function submitSignoffCompletion(id) {
+  function val(idn) { var e = document.getElementById(idn); return e ? e.value.trim() : ''; }
+  const errEl = document.getElementById('signoff-complete-error');
+  function fail(msg) { errEl.innerHTML = '<div class="alert alert-error">' + msg + '</div>'; window.scrollTo(0, 0); }
+  const start_time = val('so-start');
+  const end_time = val('so-end');
+  const invoice_number = val('so-invoice-complete');
+  const completeSel = val('so-complete');
+  const num_technicians = val('so-numtech');
+  const technician_names = val('so-techs');
+  const work_description = val('so-workdesc');
+  const manager = val('so-manager');
+  if (!start_time) return fail('Start time &amp; date is required.');
+  if (!end_time) return fail('End time &amp; date is required.');
+  if (!invoice_number) return fail('Invoice number is required.');
+  if (!completeSel) return fail('Please select whether the work is 100% complete.');
+  if (!num_technicians) return fail('Number of technicians is required.');
+  if (!technician_names) return fail('Technician name(s) are required.');
+  if (!work_description) return fail('Description of work done / cause of damage is required.');
+  if (signoffPhotos.length < 2) return fail('At least two photos are required (a before and an after).');
+  for (var pi = 0; pi < signoffPhotos.length; pi++) {
+    if (!signoffPhotos[pi].caption || !signoffPhotos[pi].caption.trim()) return fail('Every photo must be labeled (e.g. Before / After). Photo ' + (pi + 1) + ' is missing a label.');
+  }
+  if (!manager) return fail('Manager name is required.');
+  if (!_signoffSignatureData) return fail('A manager signature is required. Tap &quot;Collect Signature&quot; to capture it.');
+  const body = {
+    start_time: start_time,
+    end_time: end_time,
+    invoice_number: invoice_number,
+    work_complete: completeSel === 'yes' ? true : false,
+    num_technicians: num_technicians,
+    manager_name: manager,
+    technician_names: technician_names,
+    work_description: work_description,
+    signature_data: _signoffSignatureData,
+    gps_lat: _signoffGps ? _signoffGps.lat : null,
+    gps_lon: _signoffGps ? _signoffGps.lon : null,
+    gps_accuracy: _signoffGps ? _signoffGps.accuracy : null,
+    gps_error: _signoffGps ? _signoffGps.error : null,
+    signed_at: _signoffSignedAt ? _signoffSignedAt.toISOString() : null,
+    photos: signoffPhotos
+  };
+  const btn = document.getElementById('btn-complete-signoff');
+  if (btn) { btn.disabled = true; btn.textContent = 'Submitting...'; }
+  try {
+    await api('POST', '/signoffs/' + id + '/complete', body);
+    navigate('view-signoff', id);
+  } catch(err) {
+    errEl.innerHTML = '<div class="alert alert-error">' + escHtml(err.message) + '</div>';
+    window.scrollTo(0, 0);
+    if (btn) { btn.disabled = false; btn.innerHTML = '&#10003; Submit &amp; Email Admins'; }
+  }
+}
+
+async function renderViewSignoff(el, id) {
+  el.innerHTML = '<div class="loading">Loading…</div>';
+  try {
+    const f = await api('GET', '/signoffs/' + id);
+    const pend = f.status === 'pending';
+    const canDelete = state.user.role === 'admin' || (can('delete_signoff') && f.created_by === state.user.id);
+    const completedBlock = pend
+      ? '<div class="card mb-4"><div class="card-body"><div class="empty-state" style="padding:24px"><h3>Awaiting completion</h3><p>This sheet is in the queue. Open it on site to fill in details and capture the signature.</p>' + (can('complete_signoff') ? '<button class="btn btn-primary" onclick="navigate(\'complete-signoff\',' + f.id + ')" style="margin-top:8px">&#9998; Complete this sheet</button>' : '') + '</div></div></div>'
+      : signoffCompletedHtml(f);
+    el.innerHTML =
+      '<div class="page-header">' +
+        '<div><div class="page-title">' + escHtml(f.form_number) + '</div><div class="page-subtitle">Work Order Sign-Off' + (pend ? ' · Awaiting completion' : ' · Completed') + '</div></div>' +
+        '<div class="flex-gap">' +
+          '<button class="btn btn-secondary" onclick="navigate(\'signoffs\')">&larr; Back</button>' +
+          (!pend ? '<button class="btn btn-secondary" style="white-space:nowrap" onclick="printSignoff(' + f.id + ')">' + icons.print + ' Print</button>' : '') +
+          (!pend && (f.photos || []).length ? '<button class="btn btn-secondary" style="white-space:nowrap" onclick="downloadSignoffPhotos(' + f.id + ')">&#11015; Download Photos</button>' : '') +
+          (pend && can('edit_signoff') ? '<button class="btn btn-secondary" onclick="navigate(\'edit-signoff\',' + f.id + ')">' + icons.edit + ' Edit Setup</button>' : '') +
+          (pend && can('complete_signoff') ? '<button class="btn btn-primary" onclick="navigate(\'complete-signoff\',' + f.id + ')" style="white-space:nowrap">&#9998; Complete</button>' : '') +
+          (canDelete ? '<button class="btn btn-danger" title="Delete sign-off sheet" onclick="deleteSignoff(' + f.id + ')"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14H6L5 6"/><path d="M10 11v6"/><path d="M14 11v6"/><path d="M9 6V4h6v2"/></svg></button>' : '') +
+        '</div>' +
+      '</div>' +
+      '<div class="card mb-4"><div class="card-header"><span class="card-title">Work Order</span></div><div class="card-body">' + signoffSummaryHtml(f) + '</div></div>' +
+      completedBlock;
+  } catch(err) {
+    el.innerHTML = '<div class="alert alert-error">' + escHtml(err.message) + '</div>';
+  }
+}
+
+function signoffCompletedHtml(f) {
+  function row(label, val) { return '<div><div style="font-size:11px;font-weight:600;color:var(--text-muted-color);text-transform:uppercase;letter-spacing:0.04em;margin-bottom:3px">' + label + '</div><div style="font-size:14px">' + escHtml(val || '—') + '</div></div>'; }
+  const wc = f.work_complete === true ? 'Yes' : (f.work_complete === false ? 'No' : '—');
+  const photos = (f.photos || []).map(function(p) {
+    return '<div style="width:130px"><a href="' + p.image_data + '" target="_blank" rel="noopener" style="display:block;width:130px;height:130px;border-radius:8px;overflow:hidden;border:1px solid var(--border)"><img src="' + p.image_data + '" style="width:100%;height:100%;object-fit:cover" /></a>' +
+      (p.caption ? '<div style="font-size:12px;color:var(--text-dim);margin-top:4px;text-align:center">' + escHtml(p.caption) + '</div>' : '') + '</div>';
+  }).join('');
+  const sig = f.signature_data
+    ? '<div style="background:#ffffff;border:1px solid var(--border);border-radius:8px;padding:8px;display:inline-block"><img src="' + f.signature_data + '" style="max-width:360px;max-height:160px;display:block" /></div>' + signoffStampHtml({ signed_at: f.signed_at || f.completed_at, gps_lat: f.gps_lat, gps_lon: f.gps_lon, gps_accuracy: f.gps_accuracy, gps_error: f.gps_error, manager: f.manager_name })
+    : '<div style="color:var(--text-muted-color)">No signature on file.</div>';
+  return '<div class="card mb-4"><div class="card-header"><span class="card-title">Completion Details</span></div><div class="card-body">' +
+    '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:16px">' +
+      row('Start', f.start_time) + row('End', f.end_time) + row('Work 100% Complete', wc) + row('# Technicians', f.num_technicians != null ? String(f.num_technicians) : '') +
+      row('Technician(s)', f.technician_names) + row('Completed By', f.completed_by_name) + row('Completed At', f.completed_at ? formatDate(f.completed_at) : '') +
+    '</div>' +
+    (f.work_description ? '<div style="margin-top:16px"><div style="font-size:11px;font-weight:600;color:var(--text-muted-color);text-transform:uppercase;letter-spacing:0.04em;margin-bottom:4px">Description of Work / Cause of Damage</div><div style="font-size:14px;white-space:pre-wrap;line-height:1.6">' + escHtml(f.work_description) + '</div></div>' : '') +
+  '</div></div>' +
+  '<div class="card mb-4"><div class="card-header"><span class="card-title">Photos</span></div><div class="card-body">' + (photos ? '<div style="display:flex;flex-wrap:wrap;gap:10px">' + photos + '</div>' : '<div style="color:var(--text-muted-color)">No photos attached.</div>') + '</div></div>' +
+  '<div class="card mb-4"><div class="card-header"><span class="card-title">Manager Sign-Off</span></div><div class="card-body">' +
+    '<div style="margin-bottom:12px">' + row('Manager (Printed)', f.manager_name) + '</div>' + sig +
+  '</div></div>';
+}
+
+async function downloadSignoffPhotos(id) {
+  try {
+    const f = await api('GET', '/signoffs/' + id);
+    const photos = f.photos || [];
+    if (!photos.length) { alert('No photos are attached to this sheet.'); return; }
+    const base = f.po_number ? ('PO ' + f.po_number) : (f.form_number || 'signoff');
+    photos.forEach(function(p, i) {
+      setTimeout(function() {
+        const cap = (p.caption || ('Photo ' + (i + 1))).replace(/[/:*?"<>|]+/g, '').trim();
+        const a = document.createElement('a');
+        a.href = p.image_data;
+        a.download = base + ' ' + (cap || ('Photo ' + (i + 1))) + '.jpg';
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+      }, i * 400);
+    });
+  } catch (err) {
+    alert('Could not download photos: ' + err.message);
+  }
+}
+
+async function deleteSignoff(id) {
+  if (!confirm('Delete this sign-off sheet? This cannot be undone.')) return;
+  try { await api('DELETE', '/signoffs/' + id); navigate('signoffs'); }
+  catch(err) { alert(err.message); }
+}
+
+async function printSignoff(id) {
+  try {
+    const results = await Promise.all([ api('GET', '/signoffs/' + id), api('GET', '/settings').catch(function() { return {}; }) ]);
+    const f = results[0];
+    const settings = results[1];
+    function esc(s) { return String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;'); }
+
+    const compName = esc(settings.company_name || 'Lock And Roll, LLC');
+    const addr1 = esc(settings.company_address || '589 Dorset Court');
+    const addr2 = esc(settings.company_city_state_zip || 'Mount Dora, FL 32757');
+    const phone = esc(settings.company_phone || '337-873-2983');
+    const logoUrl = settings.logo || 'https://www.popalock.com/wp-content/uploads/2020/11/pal-logo-highres.png';
+
+    function cellLbl(w, text, last) {
+      return '<div style="flex:0 0 ' + w + '%;max-width:' + w + '%;padding:8px 6px;' + (last ? '' : 'border-right:1px solid #000;') + 'display:flex;align-items:center;justify-content:center;text-align:center;font-size:12.5px;line-height:1.25">' + esc(text) + '</div>';
+    }
+    function cellVal(w, html, last) {
+      const ws = w ? 'flex:0 0 ' + w + '%;max-width:' + w + '%;' : 'flex:1 1 0;';
+      return '<div style="' + ws + 'padding:8px 8px;' + (last ? '' : 'border-right:1px solid #000;') + 'display:flex;align-items:center;font-size:13px;min-width:0;word-break:break-word">' + (html || '') + '</div>';
+    }
+    function box(on) {
+      return '<span style="display:inline-flex;align-items:center;justify-content:center;width:15px;height:15px;border:1.5px solid #000;margin-right:5px;font-size:12px;line-height:1">' + (on ? '&#10003;' : '') + '</span>';
+    }
+    const yesNo = '<div style="display:flex;align-items:center;gap:22px;width:100%;justify-content:center">' +
+      '<span style="display:flex;align-items:center">' + box(f.work_complete === true) + 'Yes</span>' +
+      '<span style="display:flex;align-items:center">' + box(f.work_complete === false) + 'No</span>' +
+    '</div>';
+    const sigImg = f.signature_data ? '<img src="' + f.signature_data + '" style="max-height:46px;max-width:100%;display:block" />' : '';
+
+    const ROW = 'display:flex;border-bottom:1px solid #000;min-height:34px';
+    const grid = '<div style="border:2px solid #000;margin-top:16px">' +
+      '<div style="' + ROW + '">' + cellLbl(15, 'Account:') + cellVal(0, esc(f.account), true) + '</div>' +
+      '<div style="' + ROW + '">' + cellLbl(15, 'Store Name:') + cellVal(45, esc(f.store_name)) + cellLbl(15, 'Store Number:') + cellVal(0, esc(f.store_number), true) + '</div>' +
+      '<div style="' + ROW + '">' + cellLbl(15, 'Address:') + cellVal(0, esc(f.address), true) + '</div>' +
+      '<div style="' + ROW + '">' + cellLbl(15, 'City/State/Zip:') + cellVal(0, esc(f.city_state_zip), true) + '</div>' +
+      '<div style="' + ROW + '">' + cellLbl(33, 'Date and Time Service Requested By:') + cellVal(0, esc(f.service_requested_by), true) + '</div>' +
+      '<div style="' + ROW + '">' + cellLbl(19.5, 'Start Time and Date:') + cellVal(26, esc(f.start_time)) + cellLbl(18, 'End Time and Date:') + cellVal(0, esc(f.end_time), true) + '</div>' +
+      '<div style="' + ROW + '">' + cellLbl(25, 'Is This Work 100% Complete?') + cellVal(24, yesNo) + cellLbl(20, 'Number of Technicians') + cellVal(0, (f.num_technicians != null ? esc(String(f.num_technicians)) : ''), true) + '</div>' +
+      '<div style="' + ROW + '">' + cellLbl(25, 'Manager Name (Printed):') + cellVal(0, esc(f.manager_name), true) + '</div>' +
+      '<div style="display:flex;border-bottom:1px solid #000;min-height:54px">' + cellLbl(25, 'Manager Signature:') + cellVal(0, sigImg, true) + '</div>' +
+      '<div style="' + ROW + '">' + cellLbl(25, 'Technician Name(s):') + cellVal(0, esc(f.technician_names), true) + '</div>' +
+      '<div style="padding:8px 8px;min-height:150px;font-size:13px"><div style="margin-bottom:8px">Description of Work Done / Cause of Damage:</div><div style="white-space:pre-wrap;line-height:1.6">' + esc(f.work_description) + '</div></div>' +
+    '</div>';
+
+    const photosHtml = (f.photos || []).map(function(p) {
+      return '<div style="width:31%;margin:1%;display:inline-block;vertical-align:top"><img src="' + p.image_data + '" style="width:100%;border:1px solid #ccc;border-radius:4px;object-fit:cover;max-height:220px" />' +
+        (p.caption ? '<div style="font-size:11px;color:#374151;margin-top:3px;text-align:center">' + esc(p.caption) + '</div>' : '') + '</div>';
+    }).join('');
+
+    const html = '<!DOCTYPE html><html><head><meta charset="UTF-8"><title>' + (f.po_number ? 'PO ' + esc(f.po_number) + ' Sign Off Sheet' : esc(f.form_number) + ' Sign Off Sheet') + '</title>' +
+      '<style>' +
+      '* { margin:0; padding:0; box-sizing:border-box; }' +
+      'body { font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Arial,sans-serif; background:#f3f4f6; color:#000; }' +
+      '.no-print { background:#fff; padding:12px 24px; border-bottom:1px solid #e5e7eb; display:flex; gap:8px; align-items:center; position:sticky; top:0; z-index:10; }' +
+      '.btn-print { background:#f97316; color:#fff; border:none; padding:9px 18px; border-radius:6px; font-size:14px; font-weight:500; cursor:pointer; }' +
+      '.btn-close { background:transparent; color:#6b7280; border:1px solid #d1d5db; padding:9px 18px; border-radius:6px; font-size:14px; cursor:pointer; }' +
+      '.page { max-width:800px; margin:24px auto 48px; background:#fff; padding:30px 34px; box-shadow:0 1px 4px rgba(0,0,0,0.12); }' +
+      '@media print { .no-print { display:none !important; } body { background:#fff; } .page { margin:0; box-shadow:none; max-width:100%; padding:18px 24px; } * { -webkit-print-color-adjust:exact !important; print-color-adjust:exact !important; } }' +
+      '</style></head><body>' +
+      '<div class="no-print">' +
+        '<button class="btn-print" onclick="window.print()">&#128438;&nbsp; Print / Save as PDF</button>' +
+        '<button class="btn-close" onclick="window.close()">Close</button>' +
+        '<span style="font-size:12px;color:#9ca3af;margin-left:4px">Tip: choose &ldquo;Save as PDF&rdquo; in the print dialog</span>' +
+      '</div>' +
+      '<div class="page">' +
+        '<div style="background:#000;color:#fff;text-align:center;font-size:15px;font-weight:600;padding:7px 0;letter-spacing:0.3px">Work Order Sign Off Sheet</div>' +
+        '<div style="display:flex;align-items:flex-start;padding:18px 4px 8px;gap:10px">' +
+          '<div style="flex:0 0 26%;display:flex;align-items:center;justify-content:center"><img src="' + logoUrl + '" style="max-width:150px;max-height:72px;object-fit:contain" /></div>' +
+          '<div style="flex:0 0 40%;text-align:center;font-size:13px;line-height:1.55">Corporate Office:<br><strong>' + compName + '</strong><br>' + addr1 + '<br>' + addr2 + '<br>' + phone + '</div>' +
+          '<div style="flex:1 1 0;font-size:13px;padding-top:6px">' +
+            '<div style="margin-bottom:30px">PO Number: <span style="display:inline-block;min-width:120px;border-bottom:1px solid #000;text-align:center;padding:0 4px">' + esc(f.po_number || '') + '</span></div>' +
+            '<div>Invoice Number: <span style="display:inline-block;min-width:110px;border-bottom:1px solid #000;text-align:center;padding:0 4px">' + esc(f.invoice_number || '') + '</span></div>' +
+          '</div>' +
+        '</div>' +
+        grid +
+        '<div style="margin-top:16px;font-size:10.5px;color:#999;text-align:right">' + esc(f.form_number) + (f.completed_at ? ' &middot; Completed ' + esc(new Date(f.completed_at).toLocaleString('en-US')) : '') + (f.completed_by_name ? ' by ' + esc(f.completed_by_name) : '') + '</div>' +
+      '</div>' +
+      '</body></html>';
+    const w = window.open('', '_blank');
+    if (w) { w.document.write(html); w.document.close(); }
+  } catch(err) {
+    alert('Could not open print view: ' + err.message);
+  }
+}
+
+// ===== Scheduling (Sling-style) ============================================
+var _schedMonday = null, _schedCity = '', _schedRole = '', _schedCities = [], _schedUsers = [], _schedPositions = [], _schedShifts = [], _schedEditId = null, _schedEmpCities = {}, _schedScope = null, _schedMode = 'week', _schedMonthAnchor = null;
+
+function schedYmd(d){ return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0'); }
+function schedAddDays(ds,n){ var a=ds.split('-').map(Number); var d=new Date(a[0],a[1]-1,a[2]); d.setDate(d.getDate()+n); return schedYmd(d); }
+function schedMondayOf(ds){ var a=ds.split('-').map(Number); var d=new Date(a[0],a[1]-1,a[2]); var day=d.getDay(); var back=day===0?6:day-1; return schedAddDays(ds,-back); }
+function schedToday(){ return schedYmd(new Date()); }
+function schedTimeMin(t){ var m=String(t||'').match(/^(\d{1,2}):(\d{2})/); return m?(parseInt(m[1],10)*60+parseInt(m[2],10)):0; }
+function schedTimeFmt(t){ var mm=schedTimeMin(t); var h=Math.floor(mm/60), mn=mm%60; var ap=h>=12?'PM':'AM'; h=h%12; if(h===0) h=12; return h+':'+String(mn).padStart(2,'0')+' '+ap; }
+function schedShiftHrs(s){ var st=schedTimeMin(s.start_time), en=schedTimeMin(s.end_time); if(en<=st) en+=1440; var m=en-st-(parseInt(s.break_minutes,10)||0); return m>0?m/60:0; }
+function schedDateLabel(ds){ var a=ds.split('-').map(Number); var d=new Date(a[0],a[1]-1,a[2]); return d.toLocaleDateString('en-US',{weekday:'short',month:'short',day:'numeric'}); }
+function schedShiftDate(s){ return String(s.shift_date).slice(0,10); }
+
+async function schedLoadAdmin(){
+  var from, to;
+  if(_schedMode==='month'){ if(!_schedMonthAnchor) _schedMonthAnchor=schedMonthFirst(schedToday()); from=schedMondayOf(_schedMonthAnchor); var _ld=schedAddDays(schedAddMonths(_schedMonthAnchor,1),-1); to=schedAddDays(schedMondayOf(_ld),6); }
+  else { from=_schedMonday; to=schedAddDays(_schedMonday,6); }
+  var q='?from='+from+'&to='+to+(_schedCity?'&city='+encodeURIComponent(_schedCity):'');
+  var r=await Promise.all([
+    api('GET','/schedule/positions').catch(function(){return [];}),
+    api('GET','/cities').catch(function(){return [];}),
+    api('GET','/users').catch(function(){return [];}),
+    api('GET','/schedule/shifts'+q).catch(function(){return [];}),
+    api('GET','/schedule/my-scope').catch(function(){return {cities:null};}),
+    api('GET','/schedule/user-cities').catch(function(){return [];})
+  ]);
+  _schedPositions=r[0]||[]; _schedCities=(r[1]||[]).filter(function(c){return c.active!==false;}); _schedUsers=(r[2]||[]).filter(function(u){return u.active!==false && u.hide_from_schedule!==true;}); _schedShifts=r[3]||[];
+  _schedScope=(r[4]&&typeof r[4].cities!=='undefined')?r[4].cities:null;
+  _schedEmpCities={}; (r[5]||[]).forEach(function(m){ _schedEmpCities[m.user_id]=m.city_codes||[]; });
+}
+
+async function renderScheduleAdmin(el){
+  if(!can('manage_schedule')){ el.innerHTML='<div class="alert alert-error">Access denied.</div>'; return; }
+  if(!_schedMonday) _schedMonday=schedMondayOf(schedToday());
+  el.innerHTML='<div class="loading">Loading…</div>';
+  try{ await schedLoadAdmin(); }catch(e){ el.innerHTML='<div class="alert alert-error">'+escHtml(e.message)+'</div>'; return; }
+  var cityOpts='<option value="">All cities</option>'+schedScopedCities().map(function(c){ return '<option value="'+escHtml((c.code||'').trim())+'"'+(_schedCity===(c.code||'').trim()?' selected':'')+'>'+escHtml(c.name)+'</option>'; }).join('');
+  var isMonth=_schedMode==='month';
+  var nav;
+  if(isMonth){
+    nav='<button class="btn btn-ghost btn-sm" onclick="schedChangeMonth(-1)">&lsaquo; Prev</button>'+
+        '<span style="font-weight:600;min-width:150px;text-align:center">'+escHtml(schedMonthLabel(_schedMonthAnchor))+'</span>'+
+        '<button class="btn btn-ghost btn-sm" onclick="schedChangeMonth(1)">Next &rsaquo;</button>'+
+        '<button class="btn btn-ghost btn-sm" onclick="schedGoToday()">Today</button>';
+  } else {
+    var weekEnd=schedAddDays(_schedMonday,6);
+    nav='<button class="btn btn-ghost btn-sm" onclick="schedChangeWeek(-1)">&lsaquo; Prev</button>'+
+        '<span style="font-weight:600;min-width:170px;text-align:center">'+escHtml(schedDateLabel(_schedMonday))+' – '+escHtml(schedDateLabel(weekEnd))+'</span>'+
+        '<button class="btn btn-ghost btn-sm" onclick="schedChangeWeek(1)">Next &rsaquo;</button>'+
+        '<button class="btn btn-ghost btn-sm" onclick="schedGoToday()">Today</button>';
+  }
+  el.innerHTML=
+    '<div class="page-header" style="flex-wrap:wrap;gap:10px"><div class="page-title">Schedule</div>'+
+      '<div style="display:flex;gap:8px;flex-wrap:wrap">'+
+        '<button class="btn btn-secondary btn-sm" onclick="schedSetMode(\''+(isMonth?'week':'month')+'\')">'+(isMonth?'Week view':'Month view')+'</button>'+
+        (isMonth?'':'<button class="btn btn-secondary btn-sm" onclick="schedSwitchType(\'single\')">Add Shift</button>')+
+        (isMonth?'':'<button class="btn btn-secondary btn-sm" onclick="schedBulkForm()">Bulk edit</button>')+
+        '<button class="btn btn-secondary btn-sm" onclick="schedManagePositions()">Positions</button>'+
+        '<button class="btn btn-secondary btn-sm" onclick="navigate(\'schedule-nowork\')">No-Work Report</button>'+
+        (isMonth?'':'<button class="btn btn-primary btn-sm" onclick="schedPublishWeek()">Publish Week</button>')+
+      '</div>'+
+    '</div>'+
+    '<div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-bottom:14px">'+
+      '<div style="display:flex;align-items:center;gap:6px">'+nav+'</div>'+
+      '<select onchange="schedSetCity(this.value)" style="background:var(--card-bg,#1a1a1a);color:var(--text-color,#fff);border:1px solid var(--border,#333);border-radius:6px;padding:7px 10px;font-size:13px">'+cityOpts+'</select>'+
+      '<select onchange="schedSetRole(this.value)" style="background:var(--card-bg,#1a1a1a);color:var(--text-color,#fff);border:1px solid var(--border,#333);border-radius:6px;padding:7px 10px;font-size:13px">'+schedRoleOptions()+'</select>'+
+    '</div>'+
+    '<div class="card"><div class="card-body" style="overflow-x:auto;padding:0"><div id="sched-grid-wrap"></div></div></div>'+
+    '<p class="text-muted" style="font-size:12.5px;margin-top:10px">'+(isMonth?'Click a shift to edit, or a day to jump to that week.':'Click any cell to add a shift; click a shift to edit. Dashed = draft (not yet visible to staff); solid = published.')+'</p>'+
+    '<div id="sched-modal"></div>';
+  if(isMonth) schedRenderMonth(); else schedRenderGrid();
+}
+function schedSetMode(m){ _schedMode=m; if(m==='month' && !_schedMonthAnchor) _schedMonthAnchor=schedMonthFirst(_schedMonday||schedToday()); renderScheduleAdmin(document.getElementById('content')); }
+function schedChangeMonth(n){ _schedMonthAnchor=schedAddMonths(_schedMonthAnchor||schedMonthFirst(schedToday()), n); renderScheduleAdmin(document.getElementById('content')); }
+function schedGoToday(){ if(_schedMode==='month'){ _schedMonthAnchor=schedMonthFirst(schedToday()); } else { _schedMonday=schedMondayOf(schedToday()); } renderScheduleAdmin(document.getElementById('content')); }
+function schedJumpWeek(day){ _schedMonday=schedMondayOf(day); _schedMode='week'; renderScheduleAdmin(document.getElementById('content')); }
+function schedMonthFirst(ds){ return ds.slice(0,7)+'-01'; }
+function schedAddMonths(ds,n){ var a=ds.split('-').map(Number); var y=a[0], m=a[1]-1+n; y+=Math.floor(m/12); m=((m%12)+12)%12; return y+'-'+String(m+1).padStart(2,'0')+'-01'; }
+function schedMonthLabel(ds){ var a=ds.split('-').map(Number); var d=new Date(a[0],a[1]-1,1); return d.toLocaleDateString('en-US',{month:'long',year:'numeric'}); }
+function schedRenderMonth(){
+  var wrap=document.getElementById('sched-grid-wrap'); if(!wrap) return;
+  var first=_schedMonthAnchor||schedMonthFirst(schedToday());
+  var gridStart=schedMondayOf(first);
+  var lastDay=schedAddDays(schedAddMonths(first,1),-1);
+  var gridEnd=schedAddDays(schedMondayOf(lastDay),6);
+  var monthNum=parseInt(first.slice(5,7),10);
+  var vis={}; schedVisibleUsers().forEach(function(u){ vis[u.id]=1; });
+  var byDate={};
+  _schedShifts.forEach(function(s){ if(!vis[s.user_id]) return; var dd=schedShiftDate(s); (byDate[dd]=byDate[dd]||[]).push(s); });
+  var today=schedToday();
+  var dayNames=['Mon','Tue','Wed','Thu','Fri','Sat','Sun'];
+  var head='<tr>'+dayNames.map(function(dn){return '<th style="padding:6px;text-align:center;font-size:11px;color:var(--text-muted-color,#999)">'+dn+'</th>';}).join('')+'</tr>';
+  var rowsHtml='';
+  var d=gridStart;
+  while(d<=gridEnd){
+    var cells='';
+    for(var i=0;i<7;i++){
+      var day=schedAddDays(d,i);
+      var inMonth=parseInt(day.slice(5,7),10)===monthNum;
+      var list=(byDate[day]||[]).sort(function(a,b){return schedTimeMin(a.start_time)-schedTimeMin(b.start_time);});
+      var dim=inMonth?'':'opacity:0.35;';
+      var isT=day===today;
+      var items=list.slice(0,4).map(function(s){
+        var col=s.position_color||'#f97316';
+        return '<div onclick="event.stopPropagation();schedOpenShift('+s.id+')" title="'+escHtml((s.user_name||'')+' '+schedTimeFmt(s.start_time)+'-'+schedTimeFmt(s.end_time))+'" style="cursor:pointer;border-left:3px solid '+col+';background:'+col+'22;border-radius:3px;padding:1px 4px;margin:2px 0;font-size:10.5px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">'+escHtml(schedTimeFmt(s.start_time))+' '+escHtml((s.user_name||'').split(' ')[0])+'</div>';
+      }).join('');
+      var more=list.length>4?('<div style="font-size:10px;color:var(--text-muted-color,#999)">+'+(list.length-4)+' more</div>'):'';
+      cells+='<td onclick="schedJumpWeek(\''+day+'\')" style="vertical-align:top;border:1px solid var(--border,#2a2a2a);height:96px;width:14.28%;cursor:pointer;padding:3px;'+dim+'">'+
+        '<div style="font-size:11px;font-weight:600;text-align:right;'+(isT?'color:var(--primary,#f97316)':'')+'">'+parseInt(day.slice(8,10),10)+'</div>'+items+more+'</td>';
+    }
+    rowsHtml+='<tr>'+cells+'</tr>';
+    d=schedAddDays(d,7);
+  }
+  wrap.innerHTML='<table style="border-collapse:collapse;width:100%;table-layout:fixed;min-width:760px"><thead>'+head+'</thead><tbody>'+rowsHtml+'</tbody></table>';
+}
+function schedRecurringForm(){
+  var userOpts=schedVisibleUsers().map(function(u){ return '<option value="'+u.id+'">'+escHtml(u.name)+'</option>'; }).join('');
+  var posOpts='<option value="">No position</option>'+_schedPositions.filter(function(p){return p.active!==false;}).map(function(p){ return '<option value="'+p.id+'">'+escHtml(p.name)+'</option>'; }).join('');
+  var cityOpts='<option value="">— city —</option>'+_schedCities.map(function(c){ var cc=(c.code||'').trim(); return '<option value="'+escHtml(cc)+'"'+(_schedCity===cc?' selected':'')+'>'+escHtml(c.name)+'</option>'; }).join('');
+  var inp='background:var(--bg-elevated,#1f1f1f);color:var(--text-color,#fff);border:1px solid var(--border,#333);border-radius:6px;padding:8px;width:100%;font-size:14px';
+  var days=[['1','Mon',true],['2','Tue',true],['3','Wed',true],['4','Thu',true],['5','Fri',true],['6','Sat',false],['0','Sun',false]];
+  var dayChecks=days.map(function(dd){ return '<label style="display:inline-flex;align-items:center;gap:4px;margin:0 8px 6px 0;font-size:13px"><input type="checkbox" class="rc-dow" value="'+dd[0]+'"'+(dd[2]?' checked':'')+' style="width:auto"> '+dd[1]+'</label>'; }).join('');
+  schedModal(
+    '<h3 style="margin:0 0 14px">Recurring Shift</h3>'+schedTypeToggle('recurring')+
+    '<div id="rc-err"></div>'+
+    '<div class="form-group"><label>Employee</label><select id="rc-user" style="'+inp+'">'+userOpts+'</select></div>'+
+    '<div class="form-group"><label>Days of week</label><div>'+dayChecks+'</div></div>'+
+    '<div style="display:flex;gap:10px"><div class="form-group" style="flex:1"><label>Start</label><input type="time" id="rc-start" value="09:00" style="'+inp+'"></div>'+
+    '<div class="form-group" style="flex:1"><label>End</label><input type="time" id="rc-end" value="17:00" style="'+inp+'"></div></div>'+
+    '<div style="display:flex;gap:10px"><div class="form-group" style="flex:1"><label>Position</label><select id="rc-pos" style="'+inp+'">'+posOpts+'</select></div>'+
+    '<div class="form-group" style="flex:1"><label>City</label><select id="rc-city" style="'+inp+'">'+cityOpts+'</select></div></div>'+
+    '<div style="display:flex;gap:10px"><div class="form-group" style="flex:1"><label>Start date</label><input type="date" id="rc-startdate" value="'+(_schedMonday||schedMondayOf(schedToday()))+'" style="'+inp+'"></div>'+
+    '<div class="form-group" style="flex:1"><label>Repeat for (weeks)</label><input type="number" id="rc-weeks" min="1" max="53" value="52" style="'+inp+'"></div></div>'+
+    '<div class="form-group"><label>Unpaid break (min)</label><input type="number" id="rc-break" min="0" value="0" style="'+inp+'"></div>'+
+    '<div class="form-group" style="display:flex;align-items:center;gap:8px"><input type="checkbox" id="rc-publish" style="width:auto"><label for="rc-publish" style="margin:0;cursor:pointer">Publish now (visible to staff)</label></div>'+
+    '<div style="display:flex;justify-content:flex-end;gap:8px;margin-top:8px"><button class="btn btn-ghost btn-sm" onclick="schedCloseModal()">Cancel</button><button class="btn btn-primary btn-sm" onclick="schedSaveRecurring()">Create shifts</button></div>'
+  );
+}
+async function schedSaveRecurring(){
+  var dows=[]; document.querySelectorAll('.rc-dow:checked').forEach(function(c){ dows.push(c.value); });
+  var body={ user_id:document.getElementById('rc-user').value, weekdays:dows, start_time:document.getElementById('rc-start').value, end_time:document.getElementById('rc-end').value, position_id:document.getElementById('rc-pos').value||null, city_code:document.getElementById('rc-city').value||null, start_date:document.getElementById('rc-startdate').value, weeks:document.getElementById('rc-weeks').value||1, break_minutes:document.getElementById('rc-break').value||0, publish:document.getElementById('rc-publish').checked };
+  if(!body.user_id||!dows.length||!body.start_date||!body.start_time||!body.end_time){ document.getElementById('rc-err').innerHTML='<div class="alert alert-error">Employee, at least one day, date, and times are required.</div>'; return; }
+  try{ var r=await api('POST','/schedule/recurring',body); schedCloseModal(); await schedLoadAdmin(); if(_schedMode==='month') schedRenderMonth(); else schedRenderGrid(); schedToast('Created '+r.created+' shift(s) as drafts.','ok'); }
+  catch(e){ document.getElementById('rc-err').innerHTML='<div class="alert alert-error">'+escHtml(e.message)+'</div>'; }
+}
+function schedTypeToggle(active){
+  function b(label,mode,on){ return '<button class="btn '+(on?'btn-primary':'btn-secondary')+' btn-sm" onclick="schedSwitchType(\''+mode+'\')">'+label+'</button>'; }
+  return '<div style="display:flex;gap:6px;margin-bottom:12px">'+b('Single','single',active==='single')+b('Recurring','recurring',active==='recurring')+'</div>';
+}
+function schedSwitchType(mode){ if(mode==='recurring') schedRecurringForm(); else schedShiftForm({ _date:(_schedMonday||schedToday()), shift_date:(_schedMonday||schedToday()) }); }
+function schedBulkForm(){
+  var userOpts=schedVisibleUsers().map(function(u){ return '<option value="'+u.id+'">'+escHtml(u.name)+'</option>'; }).join('');
+  var posOpts='<option value="">— leave unchanged —</option>'+_schedPositions.filter(function(p){return p.active!==false;}).map(function(p){ return '<option value="'+p.id+'">'+escHtml(p.name)+'</option>'; }).join('');
+  var cityOpts='<option value="">All cities</option>'+_schedCities.map(function(c){ var cc=(c.code||'').trim(); return '<option value="'+escHtml(cc)+'"'+(_schedCity===cc?' selected':'')+'>'+escHtml(c.name)+'</option>'; }).join('');
+  var inp='background:var(--bg-elevated,#1f1f1f);color:var(--text-color,#fff);border:1px solid var(--border,#333);border-radius:6px;padding:8px;width:100%;font-size:14px';
+  schedModal(
+    '<h3 style="margin:0 0 14px">Bulk edit shifts</h3>'+
+    '<div id="bk-err"></div>'+
+    '<div class="form-group"><label>Employee</label><select id="bk-user" style="'+inp+'">'+userOpts+'</select></div>'+
+    '<div style="display:flex;gap:10px"><div class="form-group" style="flex:1"><label>From</label><input type="date" id="bk-from" value="'+(_schedMonday||schedToday())+'" style="'+inp+'"></div>'+
+    '<div class="form-group" style="flex:1"><label>To</label><input type="date" id="bk-to" value="'+schedAddDays(_schedMonday||schedToday(),6)+'" style="'+inp+'"></div></div>'+
+    '<div class="form-group"><label>City</label><select id="bk-city" style="'+inp+'">'+cityOpts+'</select></div>'+
+    '<div class="form-group"><label>Action</label><select id="bk-action" onchange="schedBulkActionChange()" style="'+inp+'"><option value="delete">Remove shifts (e.g. vacation)</option><option value="update">Change shifts</option></select></div>'+
+    '<div id="bk-change" style="display:none">'+
+      '<div style="display:flex;gap:10px"><div class="form-group" style="flex:1"><label>New start</label><input type="time" id="bk-start" style="'+inp+'"></div>'+
+      '<div class="form-group" style="flex:1"><label>New end</label><input type="time" id="bk-end" style="'+inp+'"></div></div>'+
+      '<div style="display:flex;gap:10px"><div class="form-group" style="flex:1"><label>Position</label><select id="bk-pos" style="'+inp+'">'+posOpts+'</select></div>'+
+      '<div class="form-group" style="flex:1"><label>Break (min)</label><input type="number" id="bk-break" min="0" placeholder="unchanged" style="'+inp+'"></div></div>'+
+      '<p class="text-muted" style="font-size:12px;margin:0 0 8px">Leave a field blank to keep it as-is.</p>'+
+    '</div>'+
+    '<div style="display:flex;justify-content:flex-end;gap:8px;margin-top:8px"><button class="btn btn-ghost btn-sm" onclick="schedCloseModal()">Cancel</button><button class="btn btn-primary btn-sm" onclick="schedSaveBulk()">Apply</button></div>'
+  );
+}
+function schedBulkActionChange(){ var c=document.getElementById('bk-change'); var a=document.getElementById('bk-action').value; if(c) c.style.display=(a==='update')?'':'none'; }
+async function schedSaveBulk(){
+  var action=document.getElementById('bk-action').value;
+  var body={ user_id:document.getElementById('bk-user').value, from:document.getElementById('bk-from').value, to:document.getElementById('bk-to').value, city:document.getElementById('bk-city').value||null, action:action };
+  if(!body.user_id||!body.from||!body.to){ document.getElementById('bk-err').innerHTML='<div class="alert alert-error">Employee and date range are required.</div>'; return; }
+  if(action==='update'){ var st=document.getElementById('bk-start').value; if(st) body.start_time=st; var en=document.getElementById('bk-end').value; if(en) body.end_time=en; var po=document.getElementById('bk-pos').value; if(po) body.position_id=po; var bm=document.getElementById('bk-break').value; if(bm!=='') body.break_minutes=bm; }
+  if(action==='delete' && !confirm('Remove all of this person’s shifts in that date range?')) return;
+  try{ var r=await api('POST','/schedule/bulk',body); schedCloseModal(); await schedLoadAdmin(); if(_schedMode==='month') schedRenderMonth(); else schedRenderGrid(); schedToast((action==='delete'?'Removed ':'Updated ')+r.affected+' shift(s).','ok'); }
+  catch(e){ document.getElementById('bk-err').innerHTML='<div class="alert alert-error">'+escHtml(e.message)+'</div>'; }
+}
+
+function schedRenderGrid(){
+  var wrap=document.getElementById('sched-grid-wrap'); if(!wrap) return;
+  var days=[]; for(var i=0;i<7;i++) days.push(schedAddDays(_schedMonday,i));
+  var byCell={};
+  _schedShifts.forEach(function(s){ var k=s.user_id+'|'+schedShiftDate(s); (byCell[k]=byCell[k]||[]).push(s); });
+  var today=schedToday();
+  var head='<tr><th style="position:sticky;left:0;background:var(--bg-elevated,#1a1a1a);min-width:140px;text-align:left;padding:10px 12px;z-index:2">Employee</th>'+
+    days.map(function(d){ var isT=d===today; return '<th style="min-width:128px;text-align:center;padding:8px 6px'+(isT?';color:var(--primary,#f97316)':'')+'">'+escHtml(schedDateLabel(d))+'</th>'; }).join('')+'</tr>';
+  var _vis=schedVisibleUsers(); var rows=_vis.map(function(u){
+    var cells=days.map(function(d){
+      var list=byCell[u.id+'|'+d]||[];
+      var blocks=list.sort(function(a,b){return schedTimeMin(a.start_time)-schedTimeMin(b.start_time);}).map(function(s){
+        var col=s.position_color||'#f97316';
+        var pub=s.status==='published';
+        var border=pub?('1px solid '+col):('1px dashed '+col);
+        var bg=pub?(col+'22'):'transparent';
+        return '<div draggable="true" ondragstart="schedDragStart(event,'+s.id+')" ondragend="schedDragEnd(event)" ontouchstart="schedTouchStart(event,'+s.id+')" ontouchmove="schedTouchMove(event)" ontouchend="schedTouchEnd(event)" onclick="event.stopPropagation();schedOpenShift('+s.id+')" title="'+escHtml((s.position_name||'')+(s.notes?(' — '+s.notes):''))+'" style="cursor:grab;-webkit-user-select:none;user-select:none;-webkit-touch-callout:none;border:'+border+';background:'+bg+';border-left:4px solid '+col+';border-radius:5px;padding:3px 6px;margin:3px 4px;font-size:11.5px;line-height:1.35">'+
+          '<div style="font-weight:600">'+escHtml(schedTimeFmt(s.start_time))+'–'+escHtml(schedTimeFmt(s.end_time))+'</div>'+
+          (s.position_name?'<div style="color:var(--text-muted-color,#999)">'+escHtml(s.position_name)+'</div>':'')+'</div>';
+      }).join('');
+      return '<td data-sched-uid="'+u.id+'" data-sched-date="'+d+'" onclick="schedNewShift('+u.id+",'"+d+"')\" ondragover=\"schedDragOver(event)\" ondragenter=\"schedDragEnter(event)\" ondragleave=\"schedDragLeave(event)\" ondrop=\"schedDrop(event,"+u.id+",'"+d+"')\" style=\"vertical-align:top;border:1px solid var(--border,#2a2a2a);min-height:54px;cursor:pointer;padding:0 0 4px\">"+blocks+'</td>';
+    }).join('');
+    var hrs=days.reduce(function(t,d){ return t+(byCell[u.id+'|'+d]||[]).reduce(function(x,s){return x+schedShiftHrs(s);},0); },0);
+    var label=escHtml(u.name)+' <span style="color:var(--text-muted-color,#999);font-weight:400;font-size:11px">'+(hrs?hrs.toFixed(1)+'h':'')+'</span>';
+    return '<tr><td style="position:sticky;left:0;background:var(--card-bg,#161616);padding:8px 12px;font-weight:600;font-size:13px;border:1px solid var(--border,#2a2a2a);z-index:1">'+label+'</td>'+cells+'</tr>';
+  }).join('');
+  if(!_vis.length) rows='<tr><td colspan="8" style="padding:20px;text-align:center;color:var(--text-muted-color,#999)">No active employees.</td></tr>';
+  wrap.innerHTML='<table style="border-collapse:collapse;width:100%;min-width:980px"><thead>'+head+'</thead><tbody>'+rows+'</tbody></table>';
+}
+
+// --- Drag-and-drop: move a shift to another day/employee by dragging it ---
+var _schedDragShiftId=null;
+function schedDragStart(e,id){
+  _schedDragShiftId=id;
+  if(e.dataTransfer){ e.dataTransfer.effectAllowed='move'; try{ e.dataTransfer.setData('text/plain',String(id)); }catch(_e){} }
+  var el=e.currentTarget; if(el) setTimeout(function(){ if(el) el.style.opacity='0.4'; },0);
+}
+function schedDragEnd(e){
+  var el=e.currentTarget; if(el) el.style.opacity='';
+  _schedDragShiftId=null;
+  var hot=document.querySelectorAll('.sched-drop-hot'); for(var i=0;i<hot.length;i++) hot[i].classList.remove('sched-drop-hot');
+}
+function schedDragOver(e){ e.preventDefault(); if(e.dataTransfer) e.dataTransfer.dropEffect='move'; }
+function schedDragEnter(e){ var td=e.currentTarget; if(td) td.classList.add('sched-drop-hot'); }
+function schedDragLeave(e){ var td=e.currentTarget; if(td) td.classList.remove('sched-drop-hot'); }
+async function schedDrop(e,userId,date){
+  e.preventDefault(); e.stopPropagation();
+  var td=e.currentTarget; if(td) td.classList.remove('sched-drop-hot');
+  var id=_schedDragShiftId; _schedDragShiftId=null;
+  await schedMoveShift(id,userId,date);
+}
+
+async function schedMoveShift(id,userId,date){
+  if(!id) return;
+  var s=_schedShifts.filter(function(x){return x.id===id;})[0];
+  if(!s) return;
+  if(String(s.user_id)===String(userId) && schedShiftDate(s)===date) return;
+  var body={ user_id:userId, shift_date:date, start_time:String(s.start_time).slice(0,5), end_time:String(s.end_time).slice(0,5), position_id:s.position_id||null, city_code:s.city_code||null, break_minutes:(parseInt(s.break_minutes,10)||0), notes:s.notes||'' };
+  try{
+    var res=await api('PUT','/schedule/shifts/'+id,body);
+    await schedLoadAdmin(); schedRenderGrid();
+    if(res&&res.conflicts&&res.conflicts.length) schedToast('Moved with warnings: '+res.conflicts.join(' '),'warn');
+    else schedToast('Shift moved.','ok');
+  }catch(err){ schedToast(err.message||'Move failed','err'); schedRenderGrid(); }
+}
+
+// Touch drag (mobile): long-press a shift to pick it up, drag onto a cell, release.
+var _schedTouch=null;
+function schedTouchStart(e,id){
+  if(e.touches && e.touches.length>1) return;
+  var t=e.touches[0];
+  var srcEl=e.currentTarget;
+  _schedTouch={ id:id, startX:t.clientX, startY:t.clientY, offX:0, offY:0, dragging:false, clone:null, srcEl:srcEl, lastCell:null, timer:null };
+  _schedTouch.timer=setTimeout(function(){
+    if(!_schedTouch) return;
+    _schedTouch.dragging=true;
+    if(navigator.vibrate){ try{ navigator.vibrate(15); }catch(_e){} }
+    var rect=srcEl.getBoundingClientRect();
+    var c=srcEl.cloneNode(true);
+    c.style.position='fixed'; c.style.left=rect.left+'px'; c.style.top=rect.top+'px';
+    c.style.width=rect.width+'px'; c.style.margin='0'; c.style.pointerEvents='none';
+    c.style.opacity='0.9'; c.style.zIndex='400'; c.style.boxShadow='0 6px 20px rgba(0,0,0,0.5)'; c.style.transform='scale(1.03)';
+    document.body.appendChild(c);
+    _schedTouch.clone=c;
+    _schedTouch.offX=_schedTouch.startX-rect.left;
+    _schedTouch.offY=_schedTouch.startY-rect.top;
+    srcEl.style.opacity='0.35';
+  },280);
+}
+function schedTouchMove(e){
+  if(!_schedTouch) return;
+  var t=e.touches[0];
+  if(!_schedTouch.dragging){
+    var dx=Math.abs(t.clientX-_schedTouch.startX), dy=Math.abs(t.clientY-_schedTouch.startY);
+    if(dx>8||dy>8){ clearTimeout(_schedTouch.timer); _schedTouch=null; }
+    return;
+  }
+  e.preventDefault();
+  var c=_schedTouch.clone;
+  if(c){ c.style.left=(t.clientX-_schedTouch.offX)+'px'; c.style.top=(t.clientY-_schedTouch.offY)+'px'; }
+  var el=document.elementFromPoint(t.clientX,t.clientY);
+  var td=el?(el.closest?el.closest('td[data-sched-uid]'):null):null;
+  if(_schedTouch.lastCell && _schedTouch.lastCell!==td) _schedTouch.lastCell.classList.remove('sched-drop-hot');
+  if(td) td.classList.add('sched-drop-hot');
+  _schedTouch.lastCell=td;
+}
+function schedTouchEnd(e){
+  if(!_schedTouch) return;
+  clearTimeout(_schedTouch.timer);
+  var st=_schedTouch; _schedTouch=null;
+  if(st.srcEl) st.srcEl.style.opacity='';
+  if(st.clone) st.clone.remove();
+  if(st.lastCell) st.lastCell.classList.remove('sched-drop-hot');
+  if(!st.dragging) return;
+  if(e.cancelable) e.preventDefault();
+  if(st.lastCell){
+    var uid=st.lastCell.getAttribute('data-sched-uid');
+    var date=st.lastCell.getAttribute('data-sched-date');
+    if(uid&&date) schedMoveShift(st.id,uid,date);
+  }
+}
+
+function schedChangeWeek(n){ _schedMonday=schedAddDays(_schedMonday,n*7); renderScheduleAdmin(document.getElementById('content')); }
+function schedThisWeek(){ _schedMonday=schedMondayOf(schedToday()); renderScheduleAdmin(document.getElementById('content')); }
+function schedSetCity(c){ _schedCity=c||''; renderScheduleAdmin(document.getElementById('content')); }
+function schedSetRole(r){ _schedRole=r||''; renderScheduleAdmin(document.getElementById('content')); }
+function schedRoleOptions(){
+  var byLabel={};
+  ['locksmith','locksmith_coordinator','roadside_technician','manager','admin'].forEach(function(rl){ var lbl=roleLabel(rl); if(!byLabel[lbl]) byLabel[lbl]=[]; if(byLabel[lbl].indexOf(rl)===-1) byLabel[lbl].push(rl); });
+  _schedUsers.forEach(function(u){ var lbl=roleLabel(u.role); if(!byLabel[lbl]) byLabel[lbl]=[]; if(byLabel[lbl].indexOf(u.role)===-1) byLabel[lbl].push(u.role); });
+  var labels=Object.keys(byLabel).sort();
+  return '<option value="">All roles</option>'+labels.map(function(lbl){ var val=byLabel[lbl].join(','); return '<option value="'+escHtml(val)+'"'+(_schedRole===val?' selected':'')+'>'+escHtml(lbl)+'</option>'; }).join('');
+}
+
+function schedModal(html){ var m=document.getElementById('sched-modal'); if(!m) return; m.innerHTML='<div style="position:fixed;inset:0;background:rgba(0,0,0,0.6);z-index:200;display:flex;align-items:flex-start;justify-content:center;overflow:auto;padding:40px 14px" onclick="if(event.target===this)schedCloseModal()"><div style="background:var(--card-bg,#161616);border:1px solid var(--border,#333);border-radius:12px;max-width:460px;width:100%;padding:20px">'+html+'</div></div>'; }
+function schedCloseModal(){ var m=document.getElementById('sched-modal'); if(m) m.innerHTML=''; }
+
+function schedShiftForm(s){
+  _schedEditId=s&&s.id?s.id:null;
+  var _ulist=schedVisibleUsers(); if(s&&s.user_id&&!_ulist.some(function(u){return u.id==s.user_id;})){ var _su=_schedUsers.filter(function(u){return u.id==s.user_id;})[0]; if(_su) _ulist=[_su].concat(_ulist); }
+  var userOpts=_ulist.map(function(u){ return '<option value="'+u.id+'"'+(s&&s.user_id==u.id?' selected':'')+'>'+escHtml(u.name)+'</option>'; }).join('');
+  var posOpts='<option value="">No position</option>'+_schedPositions.filter(function(p){return p.active!==false;}).map(function(p){ return '<option value="'+p.id+'"'+(s&&s.position_id==p.id?' selected':'')+'>'+escHtml(p.name)+'</option>'; }).join('');
+  var cityOpts='<option value="">— city —</option>'+_schedCities.map(function(c){ var cc=(c.code||'').trim(); return '<option value="'+escHtml(cc)+'"'+(s&&(String(s.city_code||'').trim()===cc)?' selected':(!s&&_schedCity===cc?' selected':''))+'>'+escHtml(c.name)+'</option>'; }).join('');
+  var inp='background:var(--bg-elevated,#1f1f1f);color:var(--text-color,#fff);border:1px solid var(--border,#333);border-radius:6px;padding:8px;width:100%;font-size:14px';
+  schedModal(
+    '<h3 style="margin:0 0 14px">'+(_schedEditId?'Edit Shift':'New Shift')+'</h3>'+(_schedEditId?'':schedTypeToggle('single'))+
+    '<div id="sched-form-err"></div>'+
+    '<div class="form-group"><label>Employee</label><select id="sf-user" style="'+inp+'">'+userOpts+'</select></div>'+
+    '<div class="form-group"><label>Date</label><input type="date" id="sf-date" value="'+escHtml(s&&s.shift_date?schedShiftDate(s):(s&&s._date?s._date:''))+'" style="'+inp+'"></div>'+
+    '<div style="display:flex;gap:10px"><div class="form-group" style="flex:1"><label>Start</label><input type="time" id="sf-start" value="'+escHtml(s&&s.start_time?String(s.start_time).slice(0,5):'09:00')+'" style="'+inp+'"></div>'+
+    '<div class="form-group" style="flex:1"><label>End</label><input type="time" id="sf-end" value="'+escHtml(s&&s.end_time?String(s.end_time).slice(0,5):'17:00')+'" style="'+inp+'"></div></div>'+
+    '<div style="display:flex;gap:10px"><div class="form-group" style="flex:1"><label>Position</label><select id="sf-pos" style="'+inp+'">'+posOpts+'</select></div>'+
+    '<div class="form-group" style="flex:1"><label>City</label><select id="sf-city" style="'+inp+'">'+cityOpts+'</select></div></div>'+
+    '<div class="form-group"><label>Unpaid break (min)</label><input type="number" id="sf-break" min="0" value="'+(s&&s.break_minutes?parseInt(s.break_minutes,10):0)+'" style="'+inp+'"></div>'+
+    '<div class="form-group"><label>Notes</label><input type="text" id="sf-notes" value="'+escHtml(s&&s.notes?s.notes:'')+'" style="'+inp+'"></div>'+
+    '<div class="form-group" style="display:flex;align-items:center;gap:8px"><input type="checkbox" id="sf-publish"'+((s&&s.status==='published')?' checked':'')+' style="width:auto"><label for="sf-publish" style="margin:0;cursor:pointer">Publish now (visible to staff)</label></div>'+
+    '<div style="display:flex;justify-content:space-between;gap:8px;margin-top:8px">'+
+      (_schedEditId?'<button class="btn btn-danger btn-sm" onclick="schedDeleteShift()">Delete</button>':'<span></span>')+
+      '<div style="display:flex;gap:8px"><button class="btn btn-ghost btn-sm" onclick="schedCloseModal()">Cancel</button><button class="btn btn-primary btn-sm" onclick="schedSaveShift()">Save</button></div>'+
+    '</div>'
+  );
+}
+function schedNewShift(userId,date){ schedShiftForm({ user_id:userId, _date:date, shift_date:date }); }
+function schedOpenShift(id){ var s=_schedShifts.filter(function(x){return x.id===id;})[0]; if(s) schedShiftForm(s); }
+
+async function schedSaveShift(){
+  var body={ user_id:document.getElementById('sf-user').value, shift_date:document.getElementById('sf-date').value, start_time:document.getElementById('sf-start').value, end_time:document.getElementById('sf-end').value, position_id:document.getElementById('sf-pos').value||null, city_code:document.getElementById('sf-city').value||null, break_minutes:document.getElementById('sf-break').value||0, notes:document.getElementById('sf-notes').value, publish:document.getElementById('sf-publish').checked };
+  if(!body.shift_date||!body.start_time||!body.end_time){ document.getElementById('sched-form-err').innerHTML='<div class="alert alert-error">Date, start and end are required.</div>'; return; }
+  try{
+    var res=_schedEditId?await api('PUT','/schedule/shifts/'+_schedEditId,body):await api('POST','/schedule/shifts',body);
+    schedCloseModal();
+    await schedLoadAdmin(); schedRenderGrid();
+    if(res&&res.conflicts&&res.conflicts.length) schedToast('Saved with warnings: '+res.conflicts.join(' '),'warn');
+  }catch(e){ document.getElementById('sched-form-err').innerHTML='<div class="alert alert-error">'+escHtml(e.message)+'</div>'; }
+}
+async function schedDeleteShift(){
+  if(!_schedEditId) return; if(!confirm('Delete this shift?')) return;
+  try{ await api('DELETE','/schedule/shifts/'+_schedEditId); schedCloseModal(); await schedLoadAdmin(); schedRenderGrid(); }catch(e){ alert(e.message); }
+}
+
+async function schedPublishWeek(){
+  var from=_schedMonday, to=schedAddDays(_schedMonday,6);
+  if(!confirm('Publish all draft shifts for this week'+(_schedCity?' in the selected city':'')+'? Affected staff will be notified.')) return;
+  try{ var r=await api('POST','/schedule/publish',{from:from,to:to,city:_schedCity||null}); schedToast('Published '+r.published+' shift(s).','ok'); await schedLoadAdmin(); schedRenderGrid(); }catch(e){ alert(e.message); }
+}
+async function schedCopyLastWeek(){
+  var src=schedAddDays(_schedMonday,-7);
+  if(!confirm('Copy last week’s shifts into this week as drafts?')) return;
+  try{ var r=await api('POST','/schedule/copy-week',{source_monday:src,target_monday:_schedMonday,city:_schedCity||null}); schedToast('Copied '+r.copied+' shift(s) as drafts.','ok'); await schedLoadAdmin(); schedRenderGrid(); }catch(e){ alert(e.message); }
+}
+
+function schedToast(msg,kind){
+  var c=kind==='ok'?'rgba(34,197,94,0.15)':kind==='warn'?'rgba(245,158,11,0.15)':'rgba(239,68,68,0.15)';
+  var bd=kind==='ok'?'#22c55e':kind==='warn'?'#f59e0b':'#ef4444';
+  var t=document.createElement('div'); t.style.cssText='position:fixed;bottom:20px;left:50%;transform:translateX(-50%);background:'+c+';border:1px solid '+bd+';color:var(--text-color,#fff);padding:11px 18px;border-radius:8px;z-index:300;font-size:13.5px;max-width:90%;box-shadow:0 6px 24px rgba(0,0,0,0.4)';
+  t.textContent=msg; document.body.appendChild(t); setTimeout(function(){ t.remove(); },5000);
+}
+
+async function schedManagePositions(){
+  var list=_schedPositions.map(function(p){
+    return '<div style="display:flex;align-items:center;gap:8px;margin-bottom:8px"><input type="color" value="'+escHtml(p.color||'#f97316')+'" onchange="schedSavePosition('+p.id+",this.value,null)\" style=\"width:34px;height:32px;padding:0;border:none;background:none\"><input type=\"text\" value=\""+escHtml(p.name)+'" onchange="schedSavePosition('+p.id+",null,this.value)\" style=\"flex:1;background:var(--bg-elevated,#1f1f1f);color:var(--text-color,#fff);border:1px solid var(--border,#333);border-radius:6px;padding:7px\"><button class=\"btn btn-danger btn-sm\" onclick=\"schedDeletePosition("+p.id+')">&times;</button></div>';
+  }).join('');
+  schedModal('<h3 style="margin:0 0 14px">Positions</h3>'+(list||'<p class="text-muted">No positions yet.</p>')+
+    '<div style="display:flex;gap:8px;margin-top:12px"><input type="text" id="sp-new" placeholder="New position name" style="flex:1;background:var(--bg-elevated,#1f1f1f);color:var(--text-color,#fff);border:1px solid var(--border,#333);border-radius:6px;padding:8px"><button class="btn btn-primary btn-sm" onclick="schedAddPosition()">Add</button></div>'+
+    '<div style="text-align:right;margin-top:14px"><button class="btn btn-ghost btn-sm" onclick="schedCloseModal()">Done</button></div>');
+}
+async function schedAddPosition(){ var n=(document.getElementById('sp-new').value||'').trim(); if(!n) return; try{ await api('POST','/schedule/positions',{name:n,color:'#f97316'}); _schedPositions=await api('GET','/schedule/positions'); schedManagePositions(); }catch(e){ alert(e.message); } }
+async function schedSavePosition(id,color,name){ var p=_schedPositions.filter(function(x){return x.id===id;})[0]; if(!p) return; try{ await api('PUT','/schedule/positions/'+id,{name:name!=null?name:p.name,color:color!=null?color:p.color,active:p.active!==false}); _schedPositions=await api('GET','/schedule/positions'); }catch(e){ alert(e.message); } }
+async function schedDeletePosition(id){ if(!confirm('Delete this position?')) return; try{ await api('DELETE','/schedule/positions/'+id); _schedPositions=await api('GET','/schedule/positions'); schedManagePositions(); }catch(e){ alert(e.message); } }
+
+function schedVisibleUsers(){
+  return _schedUsers.filter(function(u){
+    if(_schedRole){ if(_schedRole.split(',').indexOf(u.role)===-1) return false; }
+    var codes=_schedEmpCities[u.id]||[];
+    var unassigned=codes.length===0;
+    if(_schedCity){ return unassigned || codes.indexOf(_schedCity)!==-1; }
+    if(_schedScope===null) return true;
+    if(unassigned) return true;
+    return codes.some(function(c){ return _schedScope.indexOf(c)!==-1; });
+  });
+}
+function schedScopedCities(){
+  if(_schedScope===null) return _schedCities;
+  return _schedCities.filter(function(c){ return _schedScope.indexOf((c.code||'').trim())!==-1; });
+}
+function nwKey(name){
+  name=(name||'').trim().toLowerCase().replace(/\./g,'');
+  if(!name) return '';
+  var suf={'jr':1,'sr':1,'ii':1,'iii':1,'iv':1,'v':1};
+  var first='', last='';
+  if(name.indexOf(',')!==-1){
+    var parts=name.split(',');
+    var lp=parts[0].trim().split(/\s+/).filter(function(t){return !suf[t];});
+    last=lp[0]||'';
+    var fp=(parts[1]||'').trim().split(/\s+/);
+    first=fp[0]||'';
+  } else {
+    var toks=name.split(/\s+/).filter(function(t){return !suf[t];});
+    first=toks[0]||''; last=toks[toks.length-1]||'';
+  }
+  return first+'|'+last;
+}
+function nwParseCSV(text){
+  var rows=[], row=[], field='', inQ=false, i=0;
+  for(; i<text.length; i++){
+    var c=text[i];
+    if(inQ){ if(c==='"'){ if(text[i+1]==='"'){field+='"';i++;} else inQ=false; } else field+=c; continue; }
+    if(c==='"'){ inQ=true; continue; }
+    if(c===','){ row.push(field); field=''; continue; }
+    if(c==='\r'){ continue; }
+    if(c==='\n'){ row.push(field); rows.push(row); row=[]; field=''; continue; }
+    field+=c;
+  }
+  if(field.length||row.length){ row.push(field); rows.push(row); }
+  return rows;
+}
+function nwDateToYmd(s){
+  var m=String(s||'').trim().match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})/);
+  if(!m) return '';
+  return m[3]+'-'+String(m[1]).padStart(2,'0')+'-'+String(m[2]).padStart(2,'0');
+}
+async function renderNoWorkReport(el){
+  if(!can('manage_schedule')){ el.innerHTML='<div class="alert alert-error">Access denied.</div>'; return; }
+  var mon=schedMondayOf(schedToday()), sun=schedAddDays(mon,6);
+  var cities=[]; try{ cities=(await api('GET','/cities')).filter(function(c){return c.active!==false;}); }catch(e){}
+  var cityOpts='<option value="">All cities</option>'+cities.map(function(c){var cc=(c.code||'').trim();return '<option value="'+escHtml(cc)+'">'+escHtml(c.name)+'</option>';}).join('');
+  var inp='background:var(--bg-elevated,#1f1f1f);color:var(--text-color,#fff);border:1px solid var(--border,#333);border-radius:6px;padding:8px;width:100%';
+  el.innerHTML=
+    '<div class="page-header"><div class="page-title"><h2>No-Work Report</h2><p>Upload a call report and compare it day-by-day to the schedule to see who was scheduled but pulled no calls that day.</p></div>'+
+      '<button class="btn btn-secondary" onclick="navigate(\'schedule-admin\')">&larr; Back to schedule</button></div>'+
+    '<div class="card" style="max-width:720px"><div class="card-body">'+
+      '<div style="display:flex;gap:12px;flex-wrap:wrap">'+
+        '<div class="form-group" style="flex:1;min-width:150px"><label>From</label><input type="date" id="nw-from" value="'+mon+'" style="'+inp+'"></div>'+
+        '<div class="form-group" style="flex:1;min-width:150px"><label>To</label><input type="date" id="nw-to" value="'+sun+'" style="'+inp+'"></div>'+
+        '<div class="form-group" style="flex:1;min-width:150px"><label>City</label><select id="nw-city" style="'+inp+'">'+cityOpts+'</select></div>'+
+      '</div>'+
+      '<div class="form-group"><label>Call report CSV</label><input type="file" id="nw-file" accept=".csv" style="'+inp+'"></div>'+
+      '<button class="btn btn-primary" onclick="nwRun()">Run report</button>'+
+    '</div></div>'+
+    '<div id="nw-results" style="margin-top:16px"></div>';
+}
+function nwNorm(s){ return (s||'').trim().toLowerCase().replace(/\s+/g,' '); }
+async function nwRun(){
+  var res=document.getElementById('nw-results');
+  var fileEl=document.getElementById('nw-file');
+  if(!fileEl.files||!fileEl.files[0]){ res.innerHTML='<div class="alert alert-error">Please choose a CSV file.</div>'; return; }
+  var from=document.getElementById('nw-from').value, to=document.getElementById('nw-to').value;
+  if(!from||!to){ res.innerHTML='<div class="alert alert-error">Please choose a date range.</div>'; return; }
+  if(from>to){ var t=from; from=to; to=t; }
+  var city=document.getElementById('nw-city').value;
+  res.innerHTML='<div class="loading">Reading…</div>';
+  var text; try{ text=await fileEl.files[0].text(); }catch(e){ res.innerHTML='<div class="alert alert-error">Could not read file.</div>'; return; }
+  var rows=nwParseCSV(text);
+  if(!rows.length){ res.innerHTML='<div class="alert alert-error">Empty file.</div>'; return; }
+  var header=rows[0].map(function(h){return (h||'').trim();});
+  var techIdx=header.indexOf('Dispatch Closed'), dateIdx=header.indexOf('Date Disp');
+  if(techIdx===-1){ res.innerHTML='<div class="alert alert-error">Could not find a "Dispatch Closed" column.</div>'; return; }
+  if(dateIdx===-1){ res.innerHTML='<div class="alert alert-error">Could not find a "Date Disp" column (needed for the per-day comparison).</div>'; return; }
+  var keyByDate={}, normByDate={}, allWorked={};
+  for(var i=1;i<rows.length;i++){
+    var r=rows[i]; if(!r||techIdx>=r.length) continue;
+    var d=nwDateToYmd(r[dateIdx]); if(!d||d<from||d>to) continue;
+    var nm=(r[techIdx]||'').trim(); if(!nm) continue;
+    var k=nwKey(nm), nrm=nwNorm(nm);
+    (keyByDate[d]=keyByDate[d]||{})[k]=1;
+    (normByDate[d]=normByDate[d]||{})[nrm]=1;
+    if(!allWorked[k]) allWorked[k]={name:nm,norm:nrm};
+  }
+  var scheduled=[];
+  try{ scheduled=await api('GET','/schedule/scheduled-users?from='+from+'&to='+to+(city?'&city='+encodeURIComponent(city):'')); }catch(e){ res.innerHTML='<div class="alert alert-error">'+escHtml(e.message)+'</div>'; return; }
+  var noWorkByUser={}, schedKeySet={}, schedNormSet={}, slots=0, workedSlots=0, noWorkSlots=0;
+  scheduled.forEach(function(row){
+    slots++;
+    schedKeySet[nwKey(row.name)]=1;
+    var pn = row.pulsar_name ? nwNorm(row.pulsar_name) : '';
+    if(pn) schedNormSet[pn]=1;
+    var did = pn ? (normByDate[row.shift_date] && normByDate[row.shift_date][pn]) : (keyByDate[row.shift_date] && keyByDate[row.shift_date][nwKey(row.name)]);
+    if(did){ workedSlots++; }
+    else { noWorkSlots++; (noWorkByUser[row.user_id]=noWorkByUser[row.user_id]||{name:row.name,days:[]}).days.push(row.shift_date); }
+  });
+  var extra=[]; Object.keys(allWorked).forEach(function(k){ var w=allWorked[k]; if(!schedKeySet[k] && !schedNormSet[w.norm]) extra.push(w.name); }); extra.sort();
+  var userList=Object.keys(noWorkByUser).map(function(id){return noWorkByUser[id];}).sort(function(a,b){return (a.name||'').localeCompare(b.name||'');});
+  var html='<div class="card"><div class="card-body">'+
+    '<div style="display:flex;gap:18px;flex-wrap:wrap;margin-bottom:14px;font-size:14px">'+
+      '<div><strong style="font-size:20px">'+slots+'</strong><div class="text-muted" style="font-size:12px">Scheduled shifts</div></div>'+
+      '<div><strong style="font-size:20px;color:#22c55e">'+workedSlots+'</strong><div class="text-muted" style="font-size:12px">Worked</div></div>'+
+      '<div><strong style="font-size:20px;color:#ef4444">'+noWorkSlots+'</strong><div class="text-muted" style="font-size:12px">No work</div></div>'+
+    '</div>'+
+    '<div style="font-weight:700;margin-bottom:8px;color:#ef4444">Scheduled but pulled no calls ('+escHtml(from)+' to '+escHtml(to)+')</div>'+
+    (slots===0 ? '<p class="text-muted">No shifts were scheduled in this date range. Check that the dates match the week people are actually scheduled.</p>' : (userList.length? userList.map(function(u){ return '<div style="padding:6px 0;border-bottom:0.5px solid var(--border,#2a2a2a)"><strong>'+escHtml(u.name)+'</strong><div style="font-size:12.5px;color:var(--text-muted-color,#999)">'+u.days.sort().map(function(d){return escHtml(schedDateLabel(d));}).join(' · ')+'</div></div>'; }).join('') : '<p class="text-muted">Everyone pulled at least one call on every day they were scheduled.</p>'))+
+    (extra.length? '<div style="font-weight:700;margin:16px 0 6px">Pulled calls but not on the schedule</div><div class="text-muted" style="font-size:13px">'+extra.map(escHtml).join(', ')+'</div>' : '')+
+  '</div></div>';
+  res.innerHTML=html;
+}
+
+// ----- employee view -------------------------------------------------------
+async function renderSchedule(el){
+  if(!can('view_schedule')){ el.innerHTML='<div class="alert alert-error">Access denied.</div>'; return; }
+  el.innerHTML='<div class="loading">Loading…</div>';
+  var from=schedMondayOf(schedToday()), to=schedAddDays(from,13);
+  var shifts=[]; try{ shifts=await api('GET','/schedule/me?from='+from+'&to='+to); }catch(e){ el.innerHTML='<div class="alert alert-error">'+escHtml(e.message)+'</div>'; return; }
+  var byDay={}; shifts.forEach(function(s){ (byDay[schedShiftDate(s)]=byDay[schedShiftDate(s)]||[]).push(s); });
+  var days=[]; for(var i=0;i<14;i++) days.push(schedAddDays(from,i));
+  var today=schedToday();
+  var body=days.map(function(d){
+    var list=(byDay[d]||[]).sort(function(a,b){return schedTimeMin(a.start_time)-schedTimeMin(b.start_time);});
+    if(!list.length) return '';
+    var items=list.map(function(s){ var col=s.position_color||'#f97316'; return '<div style="display:flex;align-items:center;gap:10px;padding:9px 12px;border-left:4px solid '+col+';background:var(--card-bg,#161616);border:1px solid var(--border,#2a2a2a);border-left:4px solid '+col+';border-radius:6px;margin-bottom:7px"><div style="font-weight:600">'+escHtml(schedTimeFmt(s.start_time))+' – '+escHtml(schedTimeFmt(s.end_time))+'</div><div style="color:var(--text-muted-color,#999);font-size:13px">'+escHtml(s.position_name||'')+(s.city_name?(' · '+escHtml(s.city_name)):'')+(s.notes?(' · '+escHtml(s.notes)):'')+'</div></div>'; }).join('');
+    return '<div style="margin-bottom:16px"><div style="font-weight:700;font-size:13px;margin-bottom:7px'+(d===today?';color:var(--primary,#f97316)':'')+'">'+escHtml(schedDateLabel(d))+(d===today?' · Today':'')+'</div>'+items+'</div>';
+  }).join('');
+  if(!shifts.length) body='<div class="card"><div class="card-body"><p class="text-muted" style="margin:0">No published shifts in the next two weeks.</p></div></div>';
+  el.innerHTML='<div class="page-header"><div class="page-title">My Schedule</div></div><p class="text-muted" style="margin-bottom:16px">Your published shifts for the next two weeks.</p>'+body;
+}
+
+/* ===================== Nova QOL helpers (command palette, offline banner, nav help) ===================== */
+/* Added: Ctrl+K command palette, offline status banner, and a floating navigation help chatbot. */
+(function () {
+  if (window.__novaHelpersLoaded) return;
+  window.__novaHelpersLoaded = true;
+
+  // ---------- styles ----------
+  var css = [
+    '#nova-offline-banner{position:fixed;left:0;right:0;bottom:0;z-index:9000;background:#7f1d1d;color:#fff;font-size:13px;padding:9px 14px;text-align:center;display:none;box-shadow:0 -2px 10px rgba(0,0,0,.35)}',
+    '#nova-offline-banner.show{display:block}',
+    '#nova-cp-overlay{position:fixed;inset:0;z-index:9500;background:rgba(0,0,0,.55);display:none;align-items:flex-start;justify-content:center;padding-top:12vh}',
+    '#nova-cp-overlay.show{display:flex}',
+    '#nova-cp{width:92%;max-width:560px;background:var(--card-bg,#161616);border:1px solid var(--border,#2a2a2a);border-radius:12px;box-shadow:0 20px 60px rgba(0,0,0,.55);overflow:hidden}',
+    '#nova-cp-input{width:100%;box-sizing:border-box;border:none;outline:none;background:transparent;color:var(--text-color,#fff);font-size:16px;padding:16px 18px;border-bottom:1px solid var(--border,#2a2a2a)}',
+    '#nova-cp-list{max-height:50vh;overflow-y:auto;padding:6px}',
+    '.nova-cp-item{display:flex;align-items:center;gap:10px;padding:10px 12px;border-radius:8px;cursor:pointer;color:var(--text-color,#eee);font-size:14px}',
+    '.nova-cp-item .nova-cp-sub{color:var(--text-muted-color,#888);font-size:12px;margin-left:auto}',
+    '.nova-cp-item.active,.nova-cp-item:hover{background:var(--primary,#f97316);color:#fff}',
+    '.nova-cp-item.active .nova-cp-sub,.nova-cp-item:hover .nova-cp-sub{color:rgba(255,255,255,.85)}',
+    '.nova-cp-empty{padding:18px;color:var(--text-muted-color,#888);font-size:14px;text-align:center}',
+    '.nova-cp-hint{padding:8px 14px;font-size:11px;color:var(--text-muted-color,#777);border-top:1px solid var(--border,#2a2a2a);display:flex;gap:16px;justify-content:center;flex-wrap:wrap}',
+    '#nova-help-fab{position:fixed;right:18px;bottom:18px;z-index:8500;width:52px;height:52px;border-radius:50%;background:var(--primary,#f97316);color:#fff;border:none;cursor:pointer;box-shadow:0 6px 20px rgba(0,0,0,.35);display:none;align-items:center;justify-content:center}',
+    '#nova-help-fab.show{display:flex}',
+    '#nova-help-fab svg{width:24px;height:24px}',
+    '#nova-help-panel{position:fixed;right:18px;bottom:80px;z-index:8600;width:340px;max-width:calc(100vw - 24px);height:460px;max-height:calc(100vh - 120px);background:var(--card-bg,#161616);border:1px solid var(--border,#2a2a2a);border-radius:14px;box-shadow:0 18px 50px rgba(0,0,0,.55);display:none;flex-direction:column;overflow:hidden}',
+    '#nova-help-panel.show{display:flex}',
+    '#nova-help-head{display:flex;align-items:center;gap:8px;padding:12px 14px;background:#0f0f0f;color:#fff;border-bottom:1px solid var(--border,#2a2a2a)}',
+    '#nova-help-head .t{font-weight:700;font-size:14px}',
+    '#nova-help-head .x{margin-left:auto;background:none;border:none;color:#aaa;font-size:22px;cursor:pointer;line-height:1;padding:0 2px}',
+    '#nova-help-body{flex:1;overflow-y:auto;padding:12px;display:flex;flex-direction:column;gap:10px}',
+    '.nova-help-msg{max-width:90%;padding:9px 12px;border-radius:12px;font-size:13.5px;line-height:1.45;overflow-wrap:anywhere}',
+    '.nova-help-bot{align-self:flex-start;background:var(--bg-elevated,#222);border:1px solid var(--border,#2a2a2a);color:var(--text-color,#eee);border-bottom-left-radius:4px}',
+    '.nova-help-typing{opacity:.9}',
+    '.nova-help-dots{display:inline-flex;gap:4px;align-items:center}',
+    '.nova-help-dots i{width:6px;height:6px;border-radius:50%;background:var(--text-muted-color,#888);display:inline-block;animation:novaBlink 1.2s infinite}',
+    '.nova-help-dots i:nth-child(2){animation-delay:.2s}',
+    '.nova-help-dots i:nth-child(3){animation-delay:.4s}',
+    '@keyframes novaBlink{0%,80%,100%{opacity:.2}40%{opacity:1}}',
+    '.nova-help-user{align-self:flex-end;background:var(--primary,#f97316);color:#fff;border-bottom-right-radius:4px}',
+    '.nova-help-go{display:inline-block;margin-top:8px;background:#0f0f0f;color:#fff;border:1px solid var(--primary,#f97316);border-radius:7px;padding:6px 11px;font-size:12px;cursor:pointer}',
+    '.nova-help-chips{display:flex;flex-wrap:wrap;gap:6px;margin-top:2px}',
+    '.nova-help-chip{background:var(--bg-elevated,#222);border:1px solid var(--border,#2a2a2a);color:var(--text-color,#ddd);border-radius:14px;padding:6px 11px;font-size:12px;cursor:pointer}',
+    '#nova-help-foot{display:flex;gap:6px;padding:10px;border-top:1px solid var(--border,#2a2a2a)}',
+    '#nova-help-input{flex:1;resize:none;border:1px solid var(--border,#2a2a2a);background:var(--surface-color,#1a1a1a);color:var(--text-color,#fff);border-radius:8px;padding:8px 10px;font-size:13px;font-family:inherit;line-height:1.4}',
+    '#nova-help-send{background:var(--primary,#f97316);color:#fff;border:none;border-radius:8px;padding:0 13px;font-size:13px;font-weight:600;cursor:pointer}',
+    '@media(max-width:600px){#nova-help-fab{width:46px;height:46px;right:12px;bottom:12px}#nova-help-panel{right:8px;left:8px;width:auto;bottom:66px;height:64vh}}'
+  ].join('');
+  var st = document.createElement('style'); st.textContent = css; document.head.appendChild(st);
+
+  // ---------- DOM ----------
+  var wrap = document.createElement('div');
+  wrap.innerHTML =
+    '<div id="nova-offline-banner">You are offline &mdash; you can keep viewing, but changes will not save until you reconnect.</div>' +
+    '<div id="nova-cp-overlay"><div id="nova-cp">' +
+      '<input id="nova-cp-input" type="text" placeholder="Jump to a page or action&hellip;" autocomplete="off" spellcheck="false" />' +
+      '<div id="nova-cp-list"></div>' +
+      '<div class="nova-cp-hint"><span>&uarr;&darr; to move</span><span>&crarr; to open</span><span>Esc to close</span></div>' +
+    '</div></div>' +
+    '<button id="nova-help-fab" title="Help" aria-label="Help"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg></button>' +
+    '<div id="nova-help-panel">' +
+      '<div id="nova-help-head"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#f97316" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg><span class="t">Nova Help</span><button class="x" id="nova-help-close" aria-label="Close">&times;</button></div>' +
+      '<div id="nova-help-body"></div>' +
+      '<div id="nova-help-foot"><textarea id="nova-help-input" rows="1" placeholder="Ask how to find or do something&hellip;"></textarea><button id="nova-help-send">Send</button></div>' +
+    '</div>';
+  while (wrap.firstChild) document.body.appendChild(wrap.firstChild);
+
+  // ---------- destinations (mirror the sidebar's permission gates) ----------
+  function dests() {
+    var roleMgr = function () { return state.user && (['admin', 'manager'].indexOf(state.user.role) !== -1); };
+    var isAdmin = state.user && state.user.role === 'admin';
+    var T = function () { return true; };
+    var all = [
+      { label: 'Home', view: 'home', kw: 'home dashboard start main', show: T },
+      { label: 'Nova AI Assistant', view: 'ai-assistant', kw: 'ai neurolock assistant chat ask question locksmith', show: T },
+      { label: 'PO Dashboard', view: 'dashboard', kw: 'purchase order po list', show: function () { return can('view_pos'); } },
+      { label: 'New Purchase Order', view: 'new', kw: 'create po new purchase order add make', show: function () { return can('create_po'); } },
+      { label: 'Monthly Req', view: (typeof can === 'function' && can('manage_running')) ? 'running-admin' : 'running', kw: 'monthly req running requisition', show: function () { return can('view_pos') && state.user.role !== 'approver'; } },
+      { label: 'Quote Dashboard', view: 'quotes', kw: 'quote estimate list', show: function () { return can('view_quotes'); } },
+      { label: 'New Quote', view: 'new-quote', kw: 'create quote new estimate add make', show: function () { return can('create_quote'); } },
+      { label: 'Work Orders', view: 'work-orders', kw: 'work order job ticket', show: function () { return can('view_work_orders'); } },
+      { label: 'Sign-Off Sheets', view: 'signoffs', kw: 'sign off signoff sheet', show: function () { return can('view_signoffs'); } },
+      { label: 'Tasks', view: 'tasks', kw: 'task todo to-do checklist', show: function () { return can('view_tasks'); } },
+      { label: 'Schedule', view: (typeof can === 'function' && can('manage_schedule')) ? 'schedule-admin' : 'schedule', kw: 'schedule shift calendar roster', show: function () { return can('view_schedule'); } },
+      { label: 'VR Dashboard', view: 'vr-dashboard', kw: 'vehicle repair maintenance vr fleet truck', show: function () { return can('view_vr'); } },
+      { label: 'New Vehicle Repair', view: 'new-vr', kw: 'create vr new vehicle repair maintenance add make', show: function () { return can('create_vr'); } },
+      { label: 'Fleet Registry', view: 'fleet-registry', kw: 'fleet vehicle registry truck van car', show: function () { return can('manage_vehicles'); } },
+      { label: 'Cash Deposits', view: 'deposits', kw: 'cash deposit money bank', show: function () { return can('view_deposits'); } },
+      { label: 'Accounts', view: 'vendors', kw: 'vendor account supplier accounts', show: function () { return can('manage_vendors'); } },
+      { label: 'Geico Surveys', view: 'geico', kw: 'geico survey insurance', show: function () { return can('manage_geico'); } },
+      { label: 'Suggestions', view: 'suggestions', kw: 'suggestion idea feedback box', show: T },
+      { label: 'Document Vault', view: 'documents', kw: 'document vault file folder storage', show: T },
+      { label: 'SOP Library', view: 'sop-library', kw: 'sop standard operating procedure library', show: function () { return isAdmin; } },
+      { label: 'Company Information', view: 'company-info', kw: 'company info settings business', show: roleMgr },
+      { label: 'AI Context', view: 'ai-context', kw: 'ai context neurolock settings prompt', show: function () { return can('manage_settings'); } },
+      { label: 'Parts List', view: 'parts-list', kw: 'parts catalog part inventory', show: function () { return can('manage_parts'); } },
+      { label: 'Notifications', view: 'notifications', kw: 'notification email settings alerts', show: function () { return can('manage_settings'); } },
+      { label: 'Scheduled Messages', view: 'scheduled-messages', kw: 'scheduled message reminder', show: function () { return can('manage_settings'); } },
+      { label: 'Users', view: 'users', kw: 'user employee staff people account team', show: function () { return can('view_users'); } },
+      { label: 'Cities', view: 'cities', kw: 'city location branch', show: function () { return can('manage_cities'); } },
+      { label: 'Audit Log', view: 'audit', kw: 'audit log history activity', show: function () { return can('view_audit'); } },
+      { label: 'Roles & Access', view: 'roles', kw: 'role access permission security', show: function () { return can('manage_settings'); } },
+      { label: 'Trusted Devices', view: 'security', kw: 'security trusted device password 2fa sign out', show: T }
+    ];
+    return all.filter(function (d) { try { return d.show(); } catch (e) { return false; } });
+  }
+
+  // ---------- command palette ----------
+  var cpOverlay = document.getElementById('nova-cp-overlay');
+  var cpInput = document.getElementById('nova-cp-input');
+  var cpList = document.getElementById('nova-cp-list');
+  var cpResults = [];
+  var cpActive = 0;
+
+  function cpFilter(q) {
+    var items = dests();
+    q = (q || '').trim().toLowerCase();
+    if (!q) return items;
+    var words = q.split(/\s+/);
+    return items.filter(function (d) {
+      var hay = (d.label + ' ' + d.kw).toLowerCase();
+      return words.every(function (w) { return hay.indexOf(w) !== -1; });
+    });
+  }
+  function cpRender() {
+    cpResults = cpFilter(cpInput.value);
+    if (cpActive >= cpResults.length) cpActive = 0;
+    if (!cpResults.length) { cpList.innerHTML = '<div class="nova-cp-empty">No matches.</div>'; return; }
+    cpList.innerHTML = cpResults.map(function (d, i) {
+      return '<div class="nova-cp-item' + (i === cpActive ? ' active' : '') + '" data-i="' + i + '">' +
+        '<span>' + escHtml(d.label) + '</span><span class="nova-cp-sub">' + escHtml(d.view) + '</span></div>';
+    }).join('');
+    Array.prototype.forEach.call(cpList.querySelectorAll('.nova-cp-item'), function (el) {
+      el.addEventListener('click', function () { cpGo(parseInt(el.getAttribute('data-i'), 10)); });
+    });
+  }
+  function cpGo(i) {
+    var d = cpResults[i];
+    if (!d) return;
+    cpClose();
+    navigate(d.view);
+  }
+  function cpEnter() { cpGo(cpActive); }
+  function cpMove(delta) {
+    if (!cpResults.length) return;
+    cpActive = (cpActive + delta + cpResults.length) % cpResults.length;
+    cpRender();
+    var act = cpList.querySelector('.nova-cp-item.active');
+    if (act && act.scrollIntoView) act.scrollIntoView({ block: 'nearest' });
+  }
+  function cpOpen() {
+    if (!(state.token && state.user)) return;
+    cpActive = 0;
+    cpInput.value = '';
+    cpOverlay.classList.add('show');
+    cpRender();
+    setTimeout(function () { cpInput.focus(); }, 30);
+  }
+  function cpClose() { cpOverlay.classList.remove('show'); }
+  function cpToggle() { if (cpOverlay.classList.contains('show')) cpClose(); else cpOpen(); }
+  cpInput.addEventListener('input', function () { cpActive = 0; cpRender(); });
+  cpOverlay.addEventListener('mousedown', function (e) { if (e.target === cpOverlay) cpClose(); });
+  window.novaCommandPalette = cpToggle;
+
+  // ---------- navigation help chatbot ----------
+  var fab = document.getElementById('nova-help-fab');
+  var panel = document.getElementById('nova-help-panel');
+  var hbody = document.getElementById('nova-help-body');
+  var hinput = document.getElementById('nova-help-input');
+  var hsend = document.getElementById('nova-help-send');
+  var greeted = false;
+  var _helpHistory = [];
+
+  function helpBubble(role, text, target) {
+    var div = document.createElement('div');
+    div.className = 'nova-help-msg ' + (role === 'user' ? 'nova-help-user' : 'nova-help-bot');
+    div.innerHTML = escHtml(text).replace(/\n/g, '<br>');
+    if (target) {
+      var btn = document.createElement('button');
+      btn.className = 'nova-help-go';
+      btn.textContent = 'Open ' + target.label;
+      btn.addEventListener('click', function () { navigate(target.view); helpClose(); });
+      div.appendChild(document.createElement('br'));
+      div.appendChild(btn);
+    }
+    hbody.appendChild(div);
+    hbody.scrollTop = hbody.scrollHeight;
+    return div;
+  }
+  function helpChips() {
+    var quick = [
+      { t: 'Create a quote', q: 'create a quote' },
+      { t: 'Create a PO', q: 'create a purchase order' },
+      { t: 'Log a vehicle repair', q: 'new vehicle repair' },
+      { t: 'My tasks', q: 'tasks' },
+      { t: 'My schedule', q: 'schedule' }
+    ];
+    var wrapc = document.createElement('div');
+    wrapc.className = 'nova-help-msg nova-help-bot';
+    wrapc.innerHTML = 'Quick links:';
+    var chips = document.createElement('div');
+    chips.className = 'nova-help-chips';
+    quick.forEach(function (c) {
+      var b = document.createElement('button');
+      b.className = 'nova-help-chip';
+      b.textContent = c.t;
+      b.addEventListener('click', function () { helpAsk(c.q); });
+      chips.appendChild(b);
+    });
+    wrapc.appendChild(chips);
+    hbody.appendChild(wrapc);
+    hbody.scrollTop = hbody.scrollHeight;
+  }
+  function helpGreet() {
+    if (greeted) return;
+    greeted = true;
+    var name = (state.user && state.user.name) ? state.user.name.split(' ')[0] : 'there';
+    helpBubble('bot', 'Hi ' + name + '! I am your Nova guide. Ask me how to do something, where to find it, or any question about the app and I will walk you through it. I can also jump you straight to the right screen.');
+    helpChips();
+  }
+  // Map common words/phrases to a destination. Phrase + whole-word matching
+  // avoids false hits like "do" inside "Document". Longest match wins.
+  // Each intent carries phrases, where it lives, what it IS (info), and how to
+  // create one (how). The bot explains, then offers a link to go there.
+  // Each intent carries phrases, where it lives, what it IS (info), and how to
+  // create one (how). The bot explains, then offers a link to go there.
+  function helpIntents() {
+    var schedV = (typeof can === 'function' && can('manage_schedule')) ? 'schedule-admin' : 'schedule';
+    var runV = (typeof can === 'function' && can('manage_running')) ? 'running-admin' : 'running';
+    return [
+      { ph: ['purchase order', 'purchase orders', 'po', 'pos'], dash: 'dashboard', create: 'new', obj: 'Purchase Orders',
+        info: 'Purchase Orders track parts and supplies you buy from vendors. Each PO has line items, a vendor, and a city, and runs through an approval workflow before it is ordered.',
+        how: 'To create one: open New Purchase Order, pick the vendor and city, add your line items (description, quantity, price), then submit it for approval.' },
+      { ph: ['quote', 'quotes', 'estimate', 'estimates'], dash: 'quotes', create: 'new-quote', obj: 'Quotes',
+        info: 'Quotes are customer estimates. Each line item has a cost and a list price, and Nova works out the margin and tax for you. You can print a quote or run an AI review before sending it.',
+        how: 'To create one: open New Quote, add the customer, then add line items with their cost and list price. The totals and margin fill in automatically, and you can print or AI-review it.' },
+      { ph: ['vehicle repair', 'vehicle repairs', 'vehicle maintenance', 'vr', 'repair', 'maintenance'], dash: 'vr-dashboard', create: 'new-vr', obj: 'Vehicle Repairs',
+        info: 'Vehicle Repairs (VRs) log maintenance and repair work on your fleet, with line items and an approval step. You can even upload a photo of a shop estimate and let AI fill in the details.',
+        how: 'To create one: open New Vehicle Repair, choose the vehicle, add the work as line items, and submit. You can attach a photo of a shop estimate to auto-fill it.' },
+      { ph: ['monthly req', 'requisition', 'running list'], dash: runV, obj: 'Monthly Req',
+        info: 'Monthly Req is the running list of items your team needs through the month. It can be rolled up into a purchase order when you are ready to order.' },
+      { ph: ['fleet', 'vehicle', 'vehicles', 'truck', 'trucks', 'van', 'vans'], dash: 'fleet-registry', create: 'new-vehicle', obj: 'Fleet Registry',
+        info: 'The Fleet Registry is your list of company vehicles and their repair and maintenance history.',
+        how: 'To add a vehicle: open Fleet Registry and use New Vehicle, then fill in its details.' },
+      { ph: ['work order', 'work orders'], dash: 'work-orders', obj: 'Work Orders',
+        info: 'Work Orders track jobs and tickets for work to be done.' },
+      { ph: ['sign off', 'sign-off', 'signoff', 'sign off sheet', 'sign-off sheet'], dash: 'signoffs', obj: 'Sign-Off Sheets',
+        info: 'Sign-Off Sheets are checklists you complete and sign off on for a job.' },
+      { ph: ['task', 'tasks', 'to do', 'to-do', 'todo'], dash: 'tasks', obj: 'Tasks',
+        info: 'Tasks is your team to-do list, with subtasks, comments, attachments, and recurring tasks.',
+        how: 'To add one: open Tasks and use New Task, then give it a title, owner, and due date.' },
+      { ph: ['schedule', 'shift', 'shifts', 'roster'], dash: schedV, obj: 'Schedule',
+        info: 'Schedule shows shifts by week, organized per city. Managers build and publish the schedule, and everyone else sees their published shifts.' },
+      { ph: ['deposit', 'deposits', 'cash deposit', 'cash deposits'], dash: 'deposits', obj: 'Cash Deposits',
+        info: 'Cash Deposits track cash drop-offs to the bank.' },
+      { ph: ['vendor', 'vendors', 'account', 'accounts', 'supplier', 'suppliers'], dash: 'vendors', obj: 'Accounts',
+        info: 'Accounts is where you manage vendors and supplier accounts that get used on purchase orders.' },
+      { ph: ['part', 'parts', 'parts list', 'catalog'], dash: 'parts-list', obj: 'Parts List',
+        info: 'The Parts List is your master parts catalog. It lets you quickly add known parts to POs and the Monthly Req instead of retyping them.' },
+      { ph: ['document', 'documents', 'vault', 'document vault'], dash: 'documents', obj: 'Document Vault',
+        info: 'The Document Vault is Drive-style file storage with folders and per-person sharing.' },
+      { ph: ['suggestion', 'suggestions', 'idea', 'ideas', 'feedback'], dash: 'suggestions', obj: 'Suggestions',
+        info: 'Suggestions is the employee suggestion box. Drop ideas or feedback for the team here.' },
+      { ph: ['user', 'users', 'employee', 'employees', 'staff'], dash: 'users', obj: 'Users',
+        info: 'Users is where admins manage employee accounts, their role, contact info, and access.' },
+      { ph: ['city', 'cities'], dash: 'cities', obj: 'Cities',
+        info: 'Cities manages your service-area locations and branches, which POs, quotes, and schedules are tied to.' },
+      { ph: ['audit', 'audit log'], dash: 'audit', obj: 'Audit Log',
+        info: 'The Audit Log records who did what across Nova, which is useful for tracking changes.' },
+      { ph: ['geico', 'geico survey', 'geico surveys'], dash: 'geico', obj: 'Geico Surveys',
+        info: 'Geico Surveys tracks Geico-related survey work.' },
+      { ph: ['sop', 'sops', 'standard operating procedure', 'standard operating procedures'], dash: 'sop-library', obj: 'SOP Library',
+        info: 'The SOP Library holds your standard operating procedures, which Nova AI can also pull from when answering questions.' },
+      { ph: ['notification', 'notifications'], dash: 'notifications', obj: 'Notifications',
+        info: 'Notifications is where you control which email and SMS alerts go out and to whom.' },
+      { ph: ['role', 'roles', 'permission', 'permissions', 'access'], dash: 'roles', obj: 'Roles & Access',
+        info: 'Roles & Access controls what each role is allowed to see and do in Nova.' },
+      { ph: ['password', 'trusted device', 'trusted devices', '2fa', 'two factor', 'security'], dash: 'security', obj: 'Trusted Devices',
+        info: 'Security is where you manage your password, two-factor login, and trusted devices, so you can skip 2FA on devices you trust for 30 days.' },
+      { ph: ['company info', 'company information', 'company settings'], dash: 'company-info', obj: 'Company Information',
+        info: 'Company Information holds your business details and company-wide settings.' },
+      { ph: ['neurolock', 'ai assistant', 'ask ai'], dash: 'ai-assistant', obj: 'Nova AI Assistant',
+        info: 'Nova AI (Neurolock) is your locksmith assistant. Ask it about locks, keys, hardware, pricing, or scoping a job. It can also read a photo of an estimate.' }
+    ];
+  }
+  // Compact glossary so the AI fallback can explain the app accurately.
+  var HELP_AI_PROMPT = 'You are the in-app help assistant for Nova, an operations app for a locksmith company. Explain things clearly and briefly (a few sentences). Nova modules: Purchase Orders (buy parts from vendors, approval workflow); Quotes (customer estimates with cost and list price, margin, tax, print, AI review); Vehicle Repairs (fleet maintenance with approval and photo-to-form AI); Fleet Registry (company vehicles and history); Monthly Req (running needs list that rolls into a PO); Work Orders; Sign-Off Sheets; Tasks (to-dos, subtasks, recurring); Schedule (weekly shifts per city); Cash Deposits; Accounts (vendors); Parts List (master parts catalog); Document Vault (file storage); Suggestions (idea box); Users, Cities, Roles, Audit Log (admin). If the question is about navigating, say which module to use.';
+  function helpHasPhrase(q, phrase) {
+    var esc = phrase.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    return new RegExp('(^|[^a-z0-9])' + esc + '([^a-z0-9]|$)').test(q);
+  }
+  function helpFindDest(view) {
+    var list = dests();
+    for (var i = 0; i < list.length; i++) { if (list[i].view === view) return list[i]; }
+    return null;
+  }
+  function helpMatch(q) {
+    var ints = helpIntents();
+    var match = null, matchLen = 0;
+    ints.forEach(function (it) {
+      it.ph.forEach(function (p) {
+        if (p.length > matchLen && helpHasPhrase(q, p)) { match = it; matchLen = p.length; }
+      });
+    });
+    if (!match) return null;
+    var wantsAction = /(^|[^a-z])(create|creating|make|making|add|adding|new|start|starting|log|logging|file|filing|enter|submit|raise)([^a-z]|$)/.test(q);
+    return { intent: match, wantsAction: wantsAction };
+  }
+  async function helpAsk(text) {
+    text = (text || '').trim();
+    if (!text) return;
+    helpBubble('user', text);
+    _helpHistory.push({ role: 'user', content: text });
+    var ql = ' ' + text.toLowerCase().replace(/[^a-z0-9 ]+/g, ' ') + ' ';
+    var m = helpMatch(ql);
+    // Fast path: a pure "take me there" command navigates instantly, no AI call.
+    var navCmd = /(^|\s)(go to|goto|open|take me to|navigate to|jump to|bring me to|show me the)(\s|$)/.test(ql);
+    if (navCmd && m) {
+      var itc = m.intent;
+      var dc = helpFindDest((m.wantsAction && itc.create) ? itc.create : itc.dash) || helpFindDest(itc.dash);
+      if (dc) {
+        helpBubble('bot', 'Sure, opening ' + dc.label + ' for you.', dc);
+        _helpHistory.push({ role: 'assistant', content: 'Opened ' + dc.label + '.' });
+        return;
+      }
+    }
+    // Otherwise let Nova AI actually help, with the user's context and recent history.
+    var typing = helpBubble('bot', '');
+    typing.classList.add('nova-help-typing');
+    typing.innerHTML = '<span class="nova-help-dots"><i></i><i></i><i></i></span>';
+    hbody.scrollTop = hbody.scrollHeight;
+    try {
+      var ctx = { name: (state.user && state.user.name) || '', role: (state.user && state.user.role) || '', view: state.currentView || '' };
+      var msgs = _helpHistory.slice(-8);
+      while (msgs.length && msgs[0].role === 'assistant') msgs = msgs.slice(1);
+      var data = await api('POST', '/ai/chat', { mode: 'help', context: ctx, messages: msgs });
+      var reply = data.reply || 'Sorry, I could not get an answer.';
+      _helpHistory.push({ role: 'assistant', content: reply });
+      typing.classList.remove('nova-help-typing');
+      typing.innerHTML = (typeof aiMarkdown === 'function') ? aiMarkdown(reply) : escHtml(reply).replace(/\n/g, '<br>');
+      if (m) {
+        var itb = m.intent;
+        var db = helpFindDest((m.wantsAction && itb.create) ? itb.create : itb.dash) || helpFindDest(itb.dash);
+        if (db) {
+          var go = document.createElement('button');
+          go.className = 'nova-help-go';
+          go.textContent = 'Open ' + db.label;
+          go.addEventListener('click', function () { navigate(db.view); helpClose(); });
+          typing.appendChild(document.createElement('br'));
+          typing.appendChild(go);
+        }
+      }
+    } catch (err) {
+      typing.classList.remove('nova-help-typing');
+      var em = (err && err.message) ? err.message : 'error';
+      typing.innerHTML = escHtml('Sorry, I could not reach Nova AI right now (' + em + '). You can still use the menu, or press Ctrl+K to jump to any page.');
+    }
+    hbody.scrollTop = hbody.scrollHeight;
+  }
+  function helpOpen() { panel.classList.add('show'); helpGreet(); setTimeout(function () { hinput.focus(); }, 30); }
+  function helpClose() { panel.classList.remove('show'); }
+  function helpToggle() { if (panel.classList.contains('show')) helpClose(); else helpOpen(); }
+  fab.addEventListener('click', helpToggle);
+  document.getElementById('nova-help-close').addEventListener('click', helpClose);
+  hsend.addEventListener('click', function () { var v = hinput.value; hinput.value = ''; helpAsk(v); });
+  hinput.addEventListener('keydown', function (e) { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); var v = hinput.value; hinput.value = ''; helpAsk(v); } });
+
+  // ---------- offline banner ----------
+  function offlineSync() {
+    var b = document.getElementById('nova-offline-banner');
+    if (b) b.classList.toggle('show', !navigator.onLine);
+  }
+  window.addEventListener('online', offlineSync);
+  window.addEventListener('offline', offlineSync);
+
+  // ---------- show/hide helpers based on auth ----------
+  function helpersSync() {
+    var authed = !!(state.token && state.user);
+    fab.classList.toggle('show', authed);
+    if (!authed) { helpClose(); cpClose(); }
+  }
+  window.novaHelpersSync = helpersSync;
+
+  // ---------- global keyboard ----------
+  document.addEventListener('keydown', function (e) {
+    if ((e.ctrlKey || e.metaKey) && (e.key === 'k' || e.key === 'K')) {
+      if (state.token && state.user) { e.preventDefault(); cpToggle(); }
+      return;
+    }
+    if (e.key === 'Escape' && cpOverlay.classList.contains('show')) { cpClose(); return; }
+    if (cpOverlay.classList.contains('show')) {
+      if (e.key === 'ArrowDown') { e.preventDefault(); cpMove(1); }
+      else if (e.key === 'ArrowUp') { e.preventDefault(); cpMove(-1); }
+      else if (e.key === 'Enter') { e.preventDefault(); cpEnter(); }
+    }
+  });
+
+  // ---------- wrap navigate/render so helpers stay in sync without editing those functions ----------
+  try {
+    if (typeof navigate === 'function') {
+      var _navOrig = navigate;
+      navigate = function (v, p) { var r = _navOrig(v, p); cpClose(); helpersSync(); return r; };
+      window.navigate = navigate;
+    }
+  } catch (e) {}
+  try {
+    if (typeof render === 'function') {
+      var _renderOrig = render;
+      render = function () {
+        var r = _renderOrig.apply(this, arguments);
+        if (r && typeof r.then === 'function') r.then(helpersSync, helpersSync); else helpersSync();
+        return r;
+      };
+      window.render = render;
+    }
+  } catch (e) {}
+
+  // ---------- idle auto-logout (60 min of inactivity) ----------
+  var NOVA_IDLE_MS = 60 * 60 * 1000;
+  var novaIdleLast = Date.now();
+  var novaIdleThrottle = 0;
+  function novaIdleBump() { var now = Date.now(); if (now - novaIdleThrottle > 5000) { novaIdleThrottle = now; novaIdleLast = now; } }
+  ['mousedown', 'mousemove', 'keydown', 'touchstart', 'scroll', 'click'].forEach(function (ev) { document.addEventListener(ev, novaIdleBump, { passive: true }); });
+  function novaIdleCheck() {
+    if (state.token && state.user && (Date.now() - novaIdleLast) >= NOVA_IDLE_MS) {
+      try { if (typeof logout === 'function') logout(); } catch (e) {}
+      var n = document.createElement('div');
+      n.textContent = 'You were signed out after 1 hour of inactivity.';
+      n.style.cssText = 'position:fixed;left:50%;bottom:24px;transform:translateX(-50%);z-index:9999;background:#0f0f0f;color:#fff;border:1px solid var(--primary,#f97316);border-radius:10px;padding:12px 18px;font-size:14px;box-shadow:0 8px 30px rgba(0,0,0,.5)';
+      document.body.appendChild(n);
+      setTimeout(function () { if (n.parentNode) n.parentNode.removeChild(n); }, 8000);
+    }
+  }
+  setInterval(novaIdleCheck, 30000);
+
+  // ---------- init ----------
+  offlineSync();
+  helpersSync();
+})();
+/* =================== end Nova QOL helpers =================== */
+
+render();
+initAiDots();
+window.addEventListener('resize', function() { initAiDots(); });

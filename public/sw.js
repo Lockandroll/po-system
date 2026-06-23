@@ -2,10 +2,11 @@
 // IMPORTANT: never use backticks/template literals in this file (Windows
 // corrupts backticks in .js files). Use string concatenation only.
 // Bump CACHE_VERSION whenever the shell or cached assets change.
-var CACHE_VERSION = 'nova-v9';
+var CACHE_VERSION = 'nova-v10';
 var SHELL_ASSETS = [
   '/',
   '/index.html',
+  '/js/app.js',
   '/manifest.webmanifest',
   '/icon-192.png',
   '/icon-512.png',
@@ -69,17 +70,18 @@ self.addEventListener('fetch', function (event) {
     return;
   }
 
-  // Static assets: cache-first, then network (and cache the result).
+  // Static assets: stale-while-revalidate. Serve the cached copy instantly and
+  // refresh it in the background so a new deploy lands on the next load.
   event.respondWith(
     caches.match(req).then(function (cached) {
-      if (cached) { return cached; }
-      return fetch(req).then(function (res) {
+      var network = fetch(req).then(function (res) {
         if (res && res.status === 200 && res.type === 'basic') {
           var copy = res.clone();
           caches.open(CACHE_VERSION).then(function (cache) { cache.put(req, copy); });
         }
         return res;
-      });
+      }).catch(function () { return cached; });
+      return cached || network;
     })
   );
 });
