@@ -8341,6 +8341,12 @@ async function renderSchedule(el){
     '#nova-help-body{flex:1;overflow-y:auto;padding:12px;display:flex;flex-direction:column;gap:10px}',
     '.nova-help-msg{max-width:90%;padding:9px 12px;border-radius:12px;font-size:13.5px;line-height:1.45;overflow-wrap:anywhere}',
     '.nova-help-bot{align-self:flex-start;background:var(--bg-elevated,#222);border:1px solid var(--border,#2a2a2a);color:var(--text-color,#eee);border-bottom-left-radius:4px}',
+    '.nova-help-typing{opacity:.9}',
+    '.nova-help-dots{display:inline-flex;gap:4px;align-items:center}',
+    '.nova-help-dots i{width:6px;height:6px;border-radius:50%;background:var(--text-muted-color,#888);display:inline-block;animation:novaBlink 1.2s infinite}',
+    '.nova-help-dots i:nth-child(2){animation-delay:.2s}',
+    '.nova-help-dots i:nth-child(3){animation-delay:.4s}',
+    '@keyframes novaBlink{0%,80%,100%{opacity:.2}40%{opacity:1}}',
     '.nova-help-user{align-self:flex-end;background:var(--primary,#f97316);color:#fff;border-bottom-right-radius:4px}',
     '.nova-help-go{display:inline-block;margin-top:8px;background:#0f0f0f;color:#fff;border:1px solid var(--primary,#f97316);border-radius:7px;padding:6px 11px;font-size:12px;cursor:pointer}',
     '.nova-help-chips{display:flex;flex-wrap:wrap;gap:6px;margin-top:2px}',
@@ -8473,6 +8479,7 @@ async function renderSchedule(el){
   var hinput = document.getElementById('nova-help-input');
   var hsend = document.getElementById('nova-help-send');
   var greeted = false;
+  var _helpHistory = [];
 
   function helpBubble(role, text, target) {
     var div = document.createElement('div');
@@ -8518,7 +8525,7 @@ async function renderSchedule(el){
     if (greeted) return;
     greeted = true;
     var name = (state.user && state.user.name) ? state.user.name.split(' ')[0] : 'there';
-    helpBubble('bot', 'Hi ' + name + '! I can help you find your way around Nova. Tell me what you want to do and I will take you there. For locksmith or pricing questions, I will hand you to Nova AI.');
+    helpBubble('bot', 'Hi ' + name + '! I am your Nova guide. Ask me how to do something, where to find it, or any question about the app and I will walk you through it. I can also jump you straight to the right screen.');
     helpChips();
   }
   // Map common words/phrases to a destination. Phrase + whole-word matching
@@ -8613,26 +8620,50 @@ async function renderSchedule(el){
     text = (text || '').trim();
     if (!text) return;
     helpBubble('user', text);
+    _helpHistory.push({ role: 'user', content: text });
     var ql = ' ' + text.toLowerCase().replace(/[^a-z0-9 ]+/g, ' ') + ' ';
     var m = helpMatch(ql);
-    if (m) {
-      var it = m.intent;
-      var explanation = (m.wantsAction && it.how) ? (it.info + ' ' + it.how) : (it.info || (it.obj + ' is in the menu.'));
-      var destView = (m.wantsAction && it.create) ? it.create : it.dash;
-      var d = helpFindDest(destView) || helpFindDest(it.dash);
-      if (!d) {
-        helpBubble('bot', explanation + '\n\nYour account does not have access to open it. Ask an admin if you need it.');
+    // Fast path: a pure "take me there" command navigates instantly, no AI call.
+    var navCmd = /(^|\s)(go to|goto|open|take me to|navigate to|jump to|bring me to|show me the)(\s|$)/.test(ql);
+    if (navCmd && m) {
+      var itc = m.intent;
+      var dc = helpFindDest((m.wantsAction && itc.create) ? itc.create : itc.dash) || helpFindDest(itc.dash);
+      if (dc) {
+        helpBubble('bot', 'Sure, opening ' + dc.label + ' for you.', dc);
+        _helpHistory.push({ role: 'assistant', content: 'Opened ' + dc.label + '.' });
         return;
       }
-      helpBubble('bot', explanation, d);
-      return;
     }
-    var typing = helpBubble('bot', 'Let me check with Nova AI...');
+    // Otherwise let Nova AI actually help, with the user's context and recent history.
+    var typing = helpBubble('bot', '');
+    typing.classList.add('nova-help-typing');
+    typing.innerHTML = '<span class="nova-help-dots"><i></i><i></i><i></i></span>';
+    hbody.scrollTop = hbody.scrollHeight;
     try {
-      var data = await api('POST', '/ai/chat', { messages: [{ role: 'user', content: HELP_AI_PROMPT + '\n\nQuestion: ' + text }] });
-      typing.innerHTML = escHtml(data.reply || 'Sorry, I could not get an answer.').replace(/\n/g, '<br>');
+      var ctx = { name: (state.user && state.user.name) || '', role: (state.user && state.user.role) || '', view: state.currentView || '' };
+      var msgs = _helpHistory.slice(-8);
+      while (msgs.length && msgs[0].role === 'assistant') msgs = msgs.slice(1);
+      var data = await api('POST', '/ai/chat', { mode: 'help', context: ctx, messages: msgs });
+      var reply = data.reply || 'Sorry, I could not get an answer.';
+      _helpHistory.push({ role: 'assistant', content: reply });
+      typing.classList.remove('nova-help-typing');
+      typing.innerHTML = (typeof aiMarkdown === 'function') ? aiMarkdown(reply) : escHtml(reply).replace(/\n/g, '<br>');
+      if (m) {
+        var itb = m.intent;
+        var db = helpFindDest((m.wantsAction && itb.create) ? itb.create : itb.dash) || helpFindDest(itb.dash);
+        if (db) {
+          var go = document.createElement('button');
+          go.className = 'nova-help-go';
+          go.textContent = 'Open ' + db.label;
+          go.addEventListener('click', function () { navigate(db.view); helpClose(); });
+          typing.appendChild(document.createElement('br'));
+          typing.appendChild(go);
+        }
+      }
     } catch (err) {
-      typing.innerHTML = escHtml('I could not reach Nova AI (' + (err && err.message ? err.message : 'error') + '). For navigation, try naming a page like "quotes" or "new PO", or press Ctrl+K to jump anywhere.');
+      typing.classList.remove('nova-help-typing');
+      var em = (err && err.message) ? err.message : 'error';
+      typing.innerHTML = escHtml('Sorry, I could not reach Nova AI right now (' + em + '). You can still use the menu, or press Ctrl+K to jump to any page.');
     }
     hbody.scrollTop = hbody.scrollHeight;
   }
