@@ -6740,6 +6740,8 @@ var _invoiceExistingSig = null;
 var _invoiceAutoAppliedFor = null;
 var _invSetupVendors = [];
 var INV_PAY_TYPES = ['Cash','Check','Visa','Mastercard','Amex','Discover','Debit','Motor Club','Account / Invoice','Other'];
+var _invoicePayTypes = INV_PAY_TYPES.slice();
+var _invSetupPayTypes = [];
 var INV_STATUSES = ['draft','completed','paid'];
 
 function invExt(it){ return (parseFloat(it.quantity)||0) * (parseFloat(it.unit_price)||0); }
@@ -6813,6 +6815,7 @@ async function renderEditInvoice(el, id) {
   try {
     var cfg = await api('GET', '/invoices/config').catch(function(){ return {}; });
     _invoiceDefaultAgreement = (cfg && cfg.default_agreement) || '';
+    _invoicePayTypes = (cfg && Array.isArray(cfg.pay_types) && cfg.pay_types.length) ? cfg.pay_types : INV_PAY_TYPES;
     _invoiceAccounts = await api('GET', '/invoices/accounts').catch(function(){ return []; });
   } catch(e) { _invoiceAccounts = []; }
   if (id) {
@@ -6837,7 +6840,7 @@ async function renderEditInvoice(el, id) {
   var acctOptions = '<option value="">— Select account —</option>' + _invoiceAccounts.map(function(a){
     return '<option value="' + a.id + '"' + (v.account_id === a.id ? ' selected' : '') + '>' + escHtml(a.name) + '</option>';
   }).join('');
-  var payOptions = '<option value="">— Select —</option>' + INV_PAY_TYPES.map(function(p){
+  var payOptions = '<option value="">— Select —</option>' + _invoicePayTypes.map(function(p){
     return '<option value="' + escHtml(p) + '"' + (v.pay_type === p ? ' selected' : '') + '>' + escHtml(p) + '</option>';
   }).join('');
   var statusOptions = INV_STATUSES.map(function(s){
@@ -6863,11 +6866,7 @@ async function renderEditInvoice(el, id) {
         '<div class="form-group"><label>Customer PO / WO #</label><input type="text" id="inv-po" value="' + escHtml(v.customer_po_wo||'') + '" /></div>' +
         '<div class="form-group"><label>Pay Type</label><select id="inv-pay">' + payOptions + '</select></div>' +
         '<div class="form-group"><label>Card Last 4</label><input type="text" id="inv-last4" maxlength="4" inputmode="numeric" value="' + escHtml(v.card_last4||'') + '" placeholder="1234" /></div>' +
-      '</div>' +
-      '<div class="form-row">' +
-        '<div class="form-group"><label>Time In</label><input type="time" id="inv-timein" value="' + escHtml(v.time_in||'') + '" /></div>' +
-        '<div class="form-group"><label>Time Out</label><input type="time" id="inv-timeout" value="' + escHtml(v.time_out||'') + '" /></div>' +
-        '<div class="form-group" style="display:flex;align-items:flex-end"><label style="display:flex;align-items:center;gap:8px;margin:0"><input type="checkbox" id="inv-cconline" style="width:auto"' + (v.cc_online ? ' checked' : '') + ' /> CC Online</label></div>' +
+        '<div class="form-group"><label>Approval #</label><input type="text" id="inv-approval" value="' + escHtml(v.approval_code||'') + '" placeholder="Auth/approval code" /></div>' +
       '</div>' +
     '</div></div>' +
 
@@ -6895,7 +6894,7 @@ async function renderEditInvoice(el, id) {
 
     '<div class="card mb-4"><div class="card-header"><span class="card-title">Vehicle</span></div><div class="card-body">' +
       '<div class="form-row">' +
-        '<div class="form-group" style="flex:2"><label>VIN</label><div style="display:flex;gap:6px"><input type="text" id="inv-vin" value="' + escHtml(v.vin||'') + '" style="text-transform:uppercase" /><button class="btn btn-secondary btn-sm" style="white-space:nowrap" onclick="invDecodeVin()">Decode</button></div></div>' +
+        '<div class="form-group" style="flex:2"><label>VIN</label><div style="display:flex;gap:6px"><input type="text" id="inv-vin" value="' + escHtml(v.vin||'') + '" style="text-transform:uppercase" /><button class="btn btn-secondary btn-sm" style="white-space:nowrap" onclick="invScanVin()">Scan</button><button class="btn btn-secondary btn-sm" style="white-space:nowrap" onclick="invDecodeVin()">Decode</button></div><input type="file" id="inv-vin-file" accept="image/*" capture="environment" style="display:none" onchange="invHandleVinFile(this)" /></div>' +
         '<div class="form-group" style="max-width:90px"><label>Year</label><input type="text" id="inv-vyear" value="' + escHtml(v.vehicle_year||'') + '" /></div>' +
         '<div class="form-group"><label>Make</label><input type="text" id="inv-vmake" value="' + escHtml(v.vehicle_make||'') + '" /></div>' +
         '<div class="form-group"><label>Model</label><input type="text" id="inv-vmodel" value="' + escHtml(v.vehicle_model||'') + '" /></div>' +
@@ -6922,6 +6921,7 @@ async function renderEditInvoice(el, id) {
         '<div style="display:flex;justify-content:space-between;padding:3px 0;font-size:13px"><span>Labor</span><span id="inv-labor">$0.00</span></div>' +
         '<div style="display:flex;justify-content:space-between;padding:3px 0;font-size:13px"><span>Parts</span><span id="inv-parts">$0.00</span></div>' +
         '<div style="display:flex;justify-content:space-between;padding:3px 0;font-size:13px;border-top:1px solid var(--border)"><span>Subtotal</span><span id="inv-subtotal">$0.00</span></div>' +
+        '<div style="display:flex;justify-content:space-between;align-items:center;padding:3px 0;font-size:13px"><label style="display:flex;align-items:center;gap:6px;margin:0;cursor:pointer"><input type="checkbox" id="inv-tax-exempt" style="width:auto"' + (v.tax_exempt ? ' checked' : '') + ' onchange="updateInvoiceTotals()" /> Tax Exempt</label><span></span></div>' +
         '<div style="display:flex;justify-content:space-between;align-items:center;padding:3px 0;font-size:13px"><span>Tax %<input type="number" id="inv-tax" value="' + (v.tax_rate != null ? parseFloat(v.tax_rate) : '') + '" min="0" max="100" step="0.01" style="width:70px;margin-left:8px" oninput="updateInvoiceTotals()" /></span><span id="inv-tax-amt">$0.00</span></div>' +
         '<div style="display:flex;justify-content:space-between;align-items:center;padding:3px 0;font-size:13px"><span>Tip $<input type="number" id="inv-tip" value="' + (v.tip_amount != null && parseFloat(v.tip_amount) ? parseFloat(v.tip_amount) : '') + '" min="0" step="0.01" style="width:70px;margin-left:8px" oninput="updateInvoiceTotals()" /></span><span></span></div>' +
         '<div style="display:flex;justify-content:space-between;padding:6px 0;font-size:16px;font-weight:700;border-top:2px solid var(--border)"><span>Grand Total</span><span id="inv-grand">$0.00</span></div>' +
@@ -6937,14 +6937,12 @@ async function renderEditInvoice(el, id) {
       '</div>' +
     '</div></div>' +
 
-    '<div class="card mb-4"><div class="card-header"><span class="card-title">Payments &amp; Notes</span></div><div class="card-body">' +
-      '<div class="form-group"><label>Payments</label><input type="text" id="inv-payments" value="' + escHtml(v.payments_note||'') + '" placeholder="Payment details / collected by..." /></div>' +
+    '<div class="card mb-4"><div class="card-header"><span class="card-title">Notes</span></div><div class="card-body">' +
       '<div class="form-group"><label>Notes</label><textarea id="inv-notes" placeholder="Notes...">' + escHtml(v.notes||'') + '</textarea></div>' +
     '</div></div>' +
 
     '<div class="card mb-4"><div class="card-header"><span class="card-title">Authorization &amp; Signature</span></div><div class="card-body">' +
       '<div class="form-group"><label>Agreement Text (printed above the signature; {customer} is replaced with the customer name)</label><textarea id="inv-agreement" style="min-height:140px">' + escHtml(agreementVal) + '</textarea></div>' +
-      '<div class="form-group"><label>Signed By (name)</label><input type="text" id="inv-signed-name" value="' + escHtml(v.signed_name||'') + '" placeholder="Customer name as signed" /></div>' +
       '<label style="display:block;margin-bottom:4px">Signature</label>' +
       (_invoiceExistingSig ? '<div id="inv-existing-sig" style="margin-bottom:8px;background:#fff;border:1px solid var(--border);border-radius:8px;padding:8px;display:inline-block"><img src="' + _invoiceExistingSig + '" style="max-width:320px;max-height:120px;display:block" /><div style="font-size:11px;color:#666;margin-top:4px">Current signature — draw below to replace</div></div>' : '') +
       '<div style="background:#fff;border:1px solid var(--border);border-radius:8px;display:inline-block"><canvas id="inv-sigpad" width="600" height="180" style="touch-action:none;width:100%;max-width:600px;display:block"></canvas></div>' +
@@ -7032,7 +7030,8 @@ function updateInvoiceTotals() {
   });
   var subtotal = labor + parts;
   var rate = parseFloat((document.getElementById('inv-tax')||{}).value) || 0;
-  var tax = taxable * rate / 100;
+  var exempt = (document.getElementById('inv-tax-exempt')||{}).checked;
+  var tax = exempt ? 0 : (taxable * rate / 100);
   var tip = parseFloat((document.getElementById('inv-tip')||{}).value) || 0;
   var grand = subtotal + tax + tip;
   function set(id, val){ var e = document.getElementById(id); if (e) e.textContent = invMoney(val); }
@@ -7093,8 +7092,9 @@ async function invHandleIdFile(input) {
     setIf('inv-city', d.city);
     setIf('inv-state', d.state);
     setIf('inv-zip', d.zip);
-    if (status) status.textContent = 'ID read — please verify the fields above.';
-  } catch(e) { if (status) status.textContent = e.message; }
+    var filled = [d.customer_name, d.dl_number, d.dl_state, d.street_address, d.city, d.state, d.zip].some(function(x){ return x && String(x).trim(); });
+    if (status) { status.style.color = filled ? 'var(--success)' : 'var(--danger, #ef4444)'; status.textContent = filled ? 'ID read — please verify the fields above.' : 'Could not read details. Use a clear, well-lit photo of the FRONT of the license, or type the info in manually.'; }
+  } catch(e) { if (status) { status.style.color = 'var(--danger, #ef4444)'; status.textContent = e.message; } }
   input.value = '';
 }
 function invFileToCompressedDataUrl(file, maxDim) {
@@ -7115,6 +7115,27 @@ function invFileToCompressedDataUrl(file, maxDim) {
     reader.onerror = function(){ reject(new Error('Could not read file.')); };
     reader.readAsDataURL(file);
   });
+}
+
+function invScanVin() { var f = document.getElementById('inv-vin-file'); if (f) f.click(); }
+async function invHandleVinFile(input) {
+  var status = document.getElementById('inv-vin-status');
+  var file = input.files && input.files[0];
+  if (!file) return;
+  if (status) { status.style.color = ''; status.textContent = 'Reading VIN…'; }
+  try {
+    var dataUrl = await invFileToCompressedDataUrl(file, 1600);
+    var d = await api('POST', '/invoices/scan-vin', { image: dataUrl });
+    if (d.vin && d.vin.length >= 11) {
+      var vinEl = document.getElementById('inv-vin');
+      if (vinEl) vinEl.value = d.vin;
+      if (status) status.textContent = 'VIN read: ' + d.vin + ' — decoding…';
+      await invDecodeVin();
+    } else {
+      if (status) { status.style.color = 'var(--danger, #ef4444)'; status.textContent = 'Could not read a VIN from that photo. Try a clearer shot of the VIN plate or barcode, or type it in.'; }
+    }
+  } catch(e) { if (status) { status.style.color = 'var(--danger, #ef4444)'; status.textContent = e.message; } }
+  input.value = '';
 }
 
 // ---------- Save ----------
@@ -7151,9 +7172,7 @@ async function saveInvoice(id) {
     customer_po_wo: val('inv-po').trim(),
     pay_type: val('inv-pay'),
     card_last4: val('inv-last4').trim(),
-    cc_online: chk('inv-cconline'),
-    time_in: val('inv-timein'),
-    time_out: val('inv-timeout'),
+    approval_code: val('inv-approval').trim(),
     customer_name: customer,
     dl_number: val('inv-dl').trim(),
     dl_state: val('inv-dlstate').trim().toUpperCase(),
@@ -7175,12 +7194,11 @@ async function saveInvoice(id) {
     ent_title: chk('inv-ent-title'),
     ent_rental: chk('inv-ent-rental'),
     tax_rate: parseFloat(val('inv-tax')) || 0,
+    tax_exempt: chk('inv-tax-exempt'),
     tip_amount: parseFloat(val('inv-tip')) || 0,
     notes: val('inv-notes').trim(),
-    payments_note: val('inv-payments').trim(),
     agreement_text: val('inv-agreement'),
     signature_image: signature,
-    signed_name: val('inv-signed-name').trim(),
     line_items: items
   };
   var btn = document.getElementById('inv-save-btn');
@@ -7240,9 +7258,8 @@ async function renderViewInvoice(el, id) {
         field('Driver License', inv.dl_number ? (inv.dl_number + (inv.dl_state ? ' (' + inv.dl_state + ')' : '')) : '') +
         field('Account', inv.account_name) + field('Customer PO / WO', inv.customer_po_wo) +
         field('Pay Type', inv.pay_type ? (inv.pay_type + (inv.card_last4 ? ' ****' + inv.card_last4 : '')) : '') +
+        (inv.approval_code ? '<div class="detail-field"><label>Approval #</label><p>' + escHtml(inv.approval_code) + '</p></div>' : '') +
         field('Locksmith', inv.locksmith_name || inv.locksmith_name_join) +
-        field('Time In / Out', [inv.time_in, inv.time_out].filter(Boolean).join(' – ')) +
-        (inv.cc_online ? '<div class="detail-field"><label>CC Online</label><p>Yes</p></div>' : '') +
         (ent.length ? '<div class="detail-field" style="grid-column:1/-1"><label>Entitlement Provided</label><p>' + escHtml(ent.join(', ')) + '</p></div>' : '') +
       '</div></div></div>' +
       '<div class="card mb-4"><div class="card-header"><span class="card-title">Vehicle</span></div><div class="card-body"><div class="detail-grid">' +
@@ -7326,7 +7343,7 @@ async function printInvoice(id) {
         '<div><div style="background:#111;color:#fff;font-size:11px;font-weight:700;padding:4px 8px;letter-spacing:.05em">ACCOUNT / PAYMENT INFORMATION</div>' +
           cell('Account', inv.account_name) + cell('Customer PO / WO #', inv.customer_po_wo) +
           cell('Pay Type', (inv.pay_type||'') + (inv.card_last4 ? '  ****' + inv.card_last4 : '')) +
-          cell('Time In / Out', [inv.time_in, inv.time_out].filter(Boolean).join('  –  ')) +
+          cell('Approval #', inv.approval_code) +
           cell('Entitlement', ent.join(', ')) +
         '</div>' +
       '</div>' +
@@ -7422,6 +7439,7 @@ async function renderInvoiceSetup(el) {
   try { cfg = await api('GET', '/invoices/config'); } catch(e) {}
   _invSetupVendors = vendors.map(function(v){ return v; });
   var defAgr = (cfg && cfg.default_agreement) || '';
+  _invSetupPayTypes = (cfg && Array.isArray(cfg.pay_types)) ? cfg.pay_types.slice() : [];
   el.innerHTML =
     '<div class="page-header"><div><div class="page-title">Invoice Setup</div><div class="page-subtitle">Choose which accounts appear on invoices, set their notes, auto line items, and agreement text</div></div></div>' +
     '<div id="inv-setup-msg"></div>' +
@@ -7431,8 +7449,15 @@ async function renderInvoiceSetup(el) {
         '<textarea id="inv-def-agreement" style="min-height:170px">' + escHtml(defAgr) + '</textarea>' +
         '<div style="margin-top:10px"><button class="btn btn-primary" onclick="saveInvoiceDefaultAgreement()">Save Default Agreement</button></div>' +
       '</div></div>' : '') +
+    '<div class="card mb-4"><div class="card-header"><span class="card-title">Pay Types</span></div><div class="card-body">' +
+      '<p class="text-muted" style="font-size:13px;margin-bottom:10px">These appear in the Pay Type dropdown on invoices.</p>' +
+      '<div id="inv-paytypes-list"></div>' +
+      '<button class="btn btn-secondary btn-sm" style="margin-top:6px" onclick="invSetupAddPayType()">' + icons.plus + ' Add pay type</button>' +
+      '<div style="margin-top:10px"><button class="btn btn-primary" onclick="invSetupSavePayTypes()">Save Pay Types</button></div>' +
+    '</div></div>' +
     '<div class="card"><div class="card-header"><span class="card-title">Accounts</span></div><div class="card-body" id="inv-setup-accounts"></div></div>';
   renderInvSetupAccounts();
+  renderInvSetupPayTypes();
 }
 
 function renderInvSetupAccounts() {
@@ -7514,6 +7539,23 @@ async function saveInvoiceDefaultAgreement() {
   var t = (document.getElementById('inv-def-agreement')||{}).value || '';
   var msg = document.getElementById('inv-setup-msg');
   try { await api('PUT', '/settings/invoice_default_agreement', { value: t }); if (msg) { msg.innerHTML = '<div class="alert alert-success">Default agreement saved.</div>'; setTimeout(function(){ if (msg) msg.innerHTML=''; }, 2500); } }
+  catch(err) { if (msg) msg.innerHTML = '<div class="alert alert-error">' + escHtml(err.message) + '</div>'; }
+}
+function renderInvSetupPayTypes() {
+  var box = document.getElementById('inv-paytypes-list');
+  if (!box) return;
+  if (!_invSetupPayTypes.length) { box.innerHTML = '<div style="font-size:12px;color:var(--text-muted-color);margin-bottom:6px">No pay types yet.</div>'; return; }
+  box.innerHTML = _invSetupPayTypes.map(function(p, i){
+    return '<div style="display:flex;gap:8px;align-items:center;margin-bottom:6px"><input type="text" value="' + escHtml(p) + '" onchange="invSetupPayTypeEdit(' + i + ',this)" style="max-width:280px" /><button class="btn btn-ghost btn-sm" onclick="invSetupRemovePayType(' + i + ')">' + icons.trash + '</button></div>';
+  }).join('');
+}
+function invSetupAddPayType() { _invSetupPayTypes.push(''); renderInvSetupPayTypes(); }
+function invSetupPayTypeEdit(i, input) { _invSetupPayTypes[i] = input.value; }
+function invSetupRemovePayType(i) { _invSetupPayTypes.splice(i, 1); renderInvSetupPayTypes(); }
+async function invSetupSavePayTypes() {
+  var clean = _invSetupPayTypes.map(function(p){ return (p||'').trim(); }).filter(Boolean);
+  var msg = document.getElementById('inv-setup-msg');
+  try { var r = await api('POST', '/invoices/pay-types', { pay_types: clean }); _invSetupPayTypes = r.pay_types || clean; renderInvSetupPayTypes(); if (msg) { msg.innerHTML = '<div class="alert alert-success">Pay types saved.</div>'; setTimeout(function(){ if (msg) msg.innerHTML=''; }, 2500); } }
   catch(err) { if (msg) msg.innerHTML = '<div class="alert alert-error">' + escHtml(err.message) + '</div>'; }
 }
 // ===================== END INVOICES MODULE =====================

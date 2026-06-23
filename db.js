@@ -975,6 +975,27 @@ async function initDB() {
     if (!_invStart.rows.length) {
       await client.query("INSERT INTO settings (key, value, updated_at) VALUES ('invoice_start_number', '100001', NOW()) ON CONFLICT (key) DO NOTHING");
     }
+    // Invoice: approval code + tax-exempt columns
+    await client.query(
+      'ALTER TABLE invoices ADD COLUMN IF NOT EXISTS approval_code VARCHAR(50);' +
+      'ALTER TABLE invoices ADD COLUMN IF NOT EXISTS tax_exempt BOOLEAN DEFAULT false;'
+    );
+    // Editable pay-type list for invoices
+    const _invPay = await client.query("SELECT value FROM settings WHERE key = 'invoice_pay_types'");
+    if (!_invPay.rows.length) {
+      await client.query("INSERT INTO settings (key, value, updated_at) VALUES ('invoice_pay_types', $1, NOW()) ON CONFLICT (key) DO NOTHING", [JSON.stringify(['Cash', 'Check', 'Visa', 'Mastercard', 'Amex', 'Discover', 'Debit', 'Motor Club', 'Account / Invoice', 'Other'])]);
+    }
+    // Seed standard Core Market accounts into the invoice dropdown (once)
+    const _invAcctSeed = await client.query("SELECT value FROM settings WHERE key = 'invoice_core_accounts_seed_v1'");
+    if (!_invAcctSeed.rows.length) {
+      const _coreAccts = ['Core Market - Commercial', 'Core Market - Residential', 'Core Market - Automotive'];
+      for (const _an of _coreAccts) {
+        const _ex = await client.query('SELECT id FROM vendors WHERE name = $1', [_an]);
+        if (!_ex.rows.length) await client.query('INSERT INTO vendors (name, show_in_invoice) VALUES ($1, true)', [_an]);
+        else await client.query('UPDATE vendors SET show_in_invoice = true WHERE id = $1', [_ex.rows[0].id]);
+      }
+      await client.query("INSERT INTO settings (key, value) VALUES ('invoice_core_accounts_seed_v1', 'done') ON CONFLICT (key) DO NOTHING");
+    }
     // Backfill invoice permissions into saved role configs (run once)
     const _v5 = await client.query("SELECT value FROM settings WHERE key = 'perm_matrix_v5_backfilled'");
     if (!_v5.rows.length) {

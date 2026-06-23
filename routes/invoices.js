@@ -27,7 +27,7 @@ async function generateInvoiceNumber() {
   return maxn != null ? (maxn + 1) : start;
 }
 
-function computeTotals(line_items, tax_rate, tip_amount) {
+function computeTotals(line_items, tax_rate, tip_amount, tax_exempt) {
   const rate = parseFloat(tax_rate) || 0;
   let labor = 0, parts = 0, taxable = 0;
   (line_items || []).forEach(function (it) {
@@ -36,7 +36,7 @@ function computeTotals(line_items, tax_rate, tip_amount) {
     if (it.taxable) taxable += ext;
   });
   const subtotal = labor + parts;
-  const tax_amount = taxable * rate / 100;
+  const tax_amount = tax_exempt ? 0 : (taxable * rate / 100);
   const tip = parseFloat(tip_amount) || 0;
   const grand_total = subtotal + tax_amount + tip;
   return { labor: labor, parts: parts, subtotal: subtotal, tax_amount: tax_amount, tip: tip, grand_total: grand_total };
@@ -116,13 +116,47 @@ router.get('/accounts', requireAuth, requirePermission('view_invoices'), async (
 router.get('/config', requireAuth, requirePermission('view_invoices'), async (req, res) => {
   try {
     const agreement = await getSetting('invoice_default_agreement', '');
-    res.json({ default_agreement: agreement });
+    let pay_types = [];
+    try { pay_types = JSON.parse(await getSetting('invoice_pay_types', '[]')); } catch (e) { pay_types = []; }
+    if (!Array.isArray(pay_types) || !pay_types.length) pay_types = ['Cash', 'Check', 'Visa', 'Mastercard', 'Amex', 'Discover', 'Debit', 'Motor Club', 'Account / Invoice', 'Other'];
+    res.json({ default_agreement: agreement, pay_types: pay_types });
   } catch (err) {
     res.status(500).json({ error: 'Failed to fetch invoice config' });
   }
 });
 
 // ---- smart inputs ----------------------------------------------------------
+
+// Save the editable pay-type list (managers/admin).
+router.post('/pay-types', requireAuth, requirePermission('manage_invoice_setup'), async (req, res) => {
+  const { pay_types } = req.body;
+  if (!Array.isArray(pay_types)) return res.status(400).json({ error: 'pay_types must be an array' });
+  const clean = pay_types.map(function (p) { return String(p == null ? '' : p).trim(); }).filter(Boolean);
+  try {
+    await pool.query("INSERT INTO settings (key, value, updated_at) VALUES ('invoice_pay_types', $1, NOW()) ON CONFLICT (key) DO UPDATE SET value = $1, updated_at = NOW()", [JSON.stringify(clean)]);
+    res.json({ ok: true, pay_types: clean });
+  } catch (err) { console.error(err); res.status(500).json({ error: 'Failed to save pay types' }); }
+});
+
+// Scan VIN from a photo: AI reads the 17-character VIN off the plate/sticker/barcode.
+router.post('/scan-vin', requireAuth, requirePermission('create_invoice'), async (req, res) => {
+  const { image } = req.body;
+  if (!image) return res.status(400).json({ error: 'No image provided.' });
+  const instruction = 'This image shows a vehicle VIN (dash, door-jamb sticker, or a barcode label). Find the 17-character Vehicle Identification Number and respond with ONLY a JSON object: {"vin":""}. A VIN is exactly 17 characters of letters and digits (no I, O, or Q). If you cannot read it, return {"vin":""}.';
+  try {
+    const resp = await anthropicVision(image, instruction);
+    let text = '';
+    if (resp && Array.isArray(resp.content)) resp.content.forEach(function (b) { if (b.type === 'text') text += b.text; });
+    let parsed = {};
+    const jm = text.match(/\{[\s\S]*\}/);
+    try { parsed = JSON.parse(jm ? jm[0] : text); } catch (e) { parsed = {}; }
+    const vin = String(parsed.vin || '').toUpperCase().replace(/[^A-Z0-9]/g, '');
+    res.json({ vin: vin });
+  } catch (err) {
+    console.error('VIN scan failed:', err.message);
+    res.status(502).json({ error: 'Could not read the VIN. Enter it manually.' });
+  }
+});
 
 // VIN decode via NHTSA vPIC (free, no key). Returns year/make/model.
 router.get('/decode-vin/:vin', requireAuth, requirePermission('create_invoice'), async (req, res) => {
@@ -300,7 +334,9 @@ function pickInvoiceFields(b) {
     payments_note: b.payments_note || null,
     agreement_text: b.agreement_text || null,
     signature_image: b.signature_image || null,
-    signed_name: b.signed_name || null
+    signed_name: b.signed_name || b.customer_name || null,
+    approval_code: b.approval_code || null,
+    tax_exempt: b.tax_exempt === true
   };
 }
 
@@ -320,7 +356,7 @@ router.post('/', requireAuth, requirePermission('create_invoice'), async (req, r
   const f = pickInvoiceFields(b);
   const status = ['draft', 'completed', 'paid'].indexOf(b.status) !== -1 ? b.status : 'draft';
   const tax_rate = parseFloat(b.tax_rate) || 0;
-  const t = computeTotals(b.line_items, tax_rate, b.tip_amount);
+  const t = computeTotals(b.line_items, tax_rate, b.tip_amount, b.tax_exempt === true);
   const invoice_date = b.invoice_date || new Date().toISOString().split('T')[0];
   const signedAt = f.signature_image ? new Date() : null;
 
@@ -330,9 +366,9 @@ router.post('/', requireAuth, requirePermission('create_invoice'), async (req, r
     try {
       await client.query('BEGIN');
       const ins = await client.query(
-        'INSERT INTO invoices (invoice_number, locksmith_id, locksmith_name, invoice_date, status, account_id, account_name, customer_po_wo, pay_type, card_last4, cc_online, time_in, time_out, customer_name, dl_number, dl_state, street_address, city, state, zip, phone, email, vehicle_year, vehicle_make, vehicle_model, license_tag, tag_state, vin, mileage, ent_registration, ent_insurance, ent_title, ent_rental, tax_rate, labor_amount, parts_amount, subtotal, tax_amount, tip_amount, grand_total, notes, payments_note, agreement_text, signature_image, signed_name, signed_at) ' +
-        'VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31,$32,$33,$34,$35,$36,$37,$38,$39,$40,$41,$42,$43,$44,$45,$46) RETURNING *',
-        [invoice_number, req.user.id, req.user.name, invoice_date, status, f.account_id, f.account_name, f.customer_po_wo, f.pay_type, f.card_last4, f.cc_online, f.time_in, f.time_out, f.customer_name, f.dl_number, f.dl_state, f.street_address, f.city, f.state, f.zip, f.phone, f.email, f.vehicle_year, f.vehicle_make, f.vehicle_model, f.license_tag, f.tag_state, f.vin, f.mileage, f.ent_registration, f.ent_insurance, f.ent_title, f.ent_rental, tax_rate, t.labor, t.parts, t.subtotal, t.tax_amount, t.tip, t.grand_total, f.notes, f.payments_note, f.agreement_text, f.signature_image, f.signed_name, signedAt]
+        'INSERT INTO invoices (invoice_number, locksmith_id, locksmith_name, invoice_date, status, account_id, account_name, customer_po_wo, pay_type, card_last4, cc_online, time_in, time_out, customer_name, dl_number, dl_state, street_address, city, state, zip, phone, email, vehicle_year, vehicle_make, vehicle_model, license_tag, tag_state, vin, mileage, ent_registration, ent_insurance, ent_title, ent_rental, tax_rate, labor_amount, parts_amount, subtotal, tax_amount, tip_amount, grand_total, notes, payments_note, agreement_text, signature_image, signed_name, signed_at, approval_code, tax_exempt) ' +
+        'VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31,$32,$33,$34,$35,$36,$37,$38,$39,$40,$41,$42,$43,$44,$45,$46,$47,$48) RETURNING *',
+        [invoice_number, req.user.id, req.user.name, invoice_date, status, f.account_id, f.account_name, f.customer_po_wo, f.pay_type, f.card_last4, f.cc_online, f.time_in, f.time_out, f.customer_name, f.dl_number, f.dl_state, f.street_address, f.city, f.state, f.zip, f.phone, f.email, f.vehicle_year, f.vehicle_make, f.vehicle_model, f.license_tag, f.tag_state, f.vin, f.mileage, f.ent_registration, f.ent_insurance, f.ent_title, f.ent_rental, tax_rate, t.labor, t.parts, t.subtotal, t.tax_amount, t.tip, t.grand_total, f.notes, f.payments_note, f.agreement_text, f.signature_image, f.signed_name, signedAt, f.approval_code, f.tax_exempt]
       );
       const invoice = ins.rows[0];
       await insertLineItems(client, invoice.id, b.line_items);
@@ -382,7 +418,7 @@ router.put('/:id', requireAuth, requirePermission('edit_invoice'), async (req, r
     const f = pickInvoiceFields(b);
     const status = ['draft', 'completed', 'paid'].indexOf(b.status) !== -1 ? b.status : existing.status;
     const tax_rate = parseFloat(b.tax_rate) || 0;
-    const t = computeTotals(b.line_items, tax_rate, b.tip_amount);
+    const t = computeTotals(b.line_items, tax_rate, b.tip_amount, b.tax_exempt === true);
     const invoice_date = b.invoice_date || existing.invoice_date;
     // Preserve original sign time; set it the first time a signature appears.
     let signedAt = existing.signed_at;
@@ -392,8 +428,8 @@ router.put('/:id', requireAuth, requirePermission('edit_invoice'), async (req, r
     try {
       await client.query('BEGIN');
       await client.query(
-        'UPDATE invoices SET account_id=$1, account_name=$2, customer_po_wo=$3, pay_type=$4, card_last4=$5, cc_online=$6, time_in=$7, time_out=$8, customer_name=$9, dl_number=$10, dl_state=$11, street_address=$12, city=$13, state=$14, zip=$15, phone=$16, email=$17, vehicle_year=$18, vehicle_make=$19, vehicle_model=$20, license_tag=$21, tag_state=$22, vin=$23, mileage=$24, ent_registration=$25, ent_insurance=$26, ent_title=$27, ent_rental=$28, tax_rate=$29, labor_amount=$30, parts_amount=$31, subtotal=$32, tax_amount=$33, tip_amount=$34, grand_total=$35, notes=$36, payments_note=$37, agreement_text=$38, signature_image=$39, signed_name=$40, signed_at=$41, status=$42, invoice_date=$43, updated_at=NOW() WHERE id=$44',
-        [f.account_id, f.account_name, f.customer_po_wo, f.pay_type, f.card_last4, f.cc_online, f.time_in, f.time_out, f.customer_name, f.dl_number, f.dl_state, f.street_address, f.city, f.state, f.zip, f.phone, f.email, f.vehicle_year, f.vehicle_make, f.vehicle_model, f.license_tag, f.tag_state, f.vin, f.mileage, f.ent_registration, f.ent_insurance, f.ent_title, f.ent_rental, tax_rate, t.labor, t.parts, t.subtotal, t.tax_amount, t.tip, t.grand_total, f.notes, f.payments_note, f.agreement_text, f.signature_image, f.signed_name, signedAt, status, invoice_date, req.params.id]
+        'UPDATE invoices SET account_id=$1, account_name=$2, customer_po_wo=$3, pay_type=$4, card_last4=$5, cc_online=$6, time_in=$7, time_out=$8, customer_name=$9, dl_number=$10, dl_state=$11, street_address=$12, city=$13, state=$14, zip=$15, phone=$16, email=$17, vehicle_year=$18, vehicle_make=$19, vehicle_model=$20, license_tag=$21, tag_state=$22, vin=$23, mileage=$24, ent_registration=$25, ent_insurance=$26, ent_title=$27, ent_rental=$28, tax_rate=$29, labor_amount=$30, parts_amount=$31, subtotal=$32, tax_amount=$33, tip_amount=$34, grand_total=$35, notes=$36, payments_note=$37, agreement_text=$38, signature_image=$39, signed_name=$40, signed_at=$41, status=$42, invoice_date=$43, approval_code=$44, tax_exempt=$45, updated_at=NOW() WHERE id=$46',
+        [f.account_id, f.account_name, f.customer_po_wo, f.pay_type, f.card_last4, f.cc_online, f.time_in, f.time_out, f.customer_name, f.dl_number, f.dl_state, f.street_address, f.city, f.state, f.zip, f.phone, f.email, f.vehicle_year, f.vehicle_make, f.vehicle_model, f.license_tag, f.tag_state, f.vin, f.mileage, f.ent_registration, f.ent_insurance, f.ent_title, f.ent_rental, tax_rate, t.labor, t.parts, t.subtotal, t.tax_amount, t.tip, t.grand_total, f.notes, f.payments_note, f.agreement_text, f.signature_image, f.signed_name, signedAt, status, invoice_date, f.approval_code, f.tax_exempt, req.params.id]
       );
       await client.query('DELETE FROM invoice_line_items WHERE invoice_id = $1', [req.params.id]);
       await insertLineItems(client, parseInt(req.params.id, 10), b.line_items);
