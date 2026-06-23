@@ -7452,7 +7452,7 @@ async function renderInvoiceSetup(el) {
     '<div class="card mb-4"><div class="card-header"><span class="card-title">Pay Types</span></div><div class="card-body">' +
       '<p class="text-muted" style="font-size:13px;margin-bottom:10px">These appear in the Pay Type dropdown on invoices.</p>' +
       '<div id="inv-paytypes-list"></div>' +
-      '<button class="btn btn-secondary btn-sm" style="margin-top:6px" onclick="invSetupAddPayType()">' + icons.plus + ' Add pay type</button>' +
+      '<button class="btn btn-secondary btn-sm" style="margin-top:6px;white-space:nowrap" onclick="invSetupAddPayType()">' + '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" style="vertical-align:-2px;flex-shrink:0"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>' + ' Add pay type</button>' +
       '<div style="margin-top:10px"><button class="btn btn-primary" onclick="invSetupSavePayTypes()">Save Pay Types</button></div>' +
     '</div></div>' +
     '<div class="card"><div class="card-header"><span class="card-title">Accounts</span></div><div class="card-body" id="inv-setup-accounts"></div></div>';
@@ -7477,7 +7477,7 @@ function renderInvSetupAccounts() {
           '<div class="form-group"><label>Agreement text for this account (leave blank to use the default; use {customer})</label><textarea id="invset-agr-' + i + '" style="min-height:90px">' + escHtml(v.agreement_text||'') + '</textarea></div>' +
           '<label style="display:block;margin-bottom:4px">Auto line items (pre-loaded when this account is chosen)</label>' +
           '<div id="invset-auto-' + i + '"></div>' +
-          '<button class="btn btn-secondary btn-sm" style="margin-top:6px" onclick="invSetupAddAuto(' + i + ')">' + icons.plus + ' Add auto line</button>' +
+          '<button class="btn btn-secondary btn-sm" style="margin-top:6px;white-space:nowrap" onclick="invSetupAddAuto(' + i + ')">' + '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" style="vertical-align:-2px;flex-shrink:0"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>' + ' Add auto line</button>' +
           '<div style="margin-top:12px"><button class="btn btn-primary btn-sm" onclick="invSetupSave(' + i + ')">Save Account</button></div>' +
         '</div>' : '') +
     '</div>';
