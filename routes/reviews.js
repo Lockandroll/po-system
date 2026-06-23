@@ -55,27 +55,61 @@ router.get('/', requireAuth, async (req, res) => {
   }
 });
 
-// GET /api/reviews/stats — global totals + per-location breakdown
+// GET /api/reviews/stats — global totals + per-location breakdown.
+// Prefers Google's OFFICIAL totals (location_totals, written by the review-bot
+// from the v4 reviews endpoint's totalReviewCount/averageRating) so the
+// dashboard matches the public Google counts exactly. Falls back to a raw row
+// count of the logged reviews if those totals are not available yet (e.g. the
+// bot has not deployed/run since this feature was added).
 router.get('/stats', requireAuth, async (req, res) => {
   const pool = getReviewsPool();
   if (!pool) return notConfigured(res);
   try {
-    const overall = await pool.query(
-      'SELECT COUNT(*)::int AS total, COALESCE(ROUND(AVG(rating)::numeric, 2), 0) AS avg_rating, ' +
-      'COUNT(*) FILTER (WHERE rating = 5)::int AS five_star FROM reviews'
+    // Per-location: official Google totals when present, else logged-row counts.
+    let byLoc;
+    try {
+      byLoc = await pool.query(
+        'SELECT r.location_name, ' +
+        'COALESCE(lt.total_review_count, r.row_count)::int AS count, ' +
+        'COALESCE(lt.average_rating, r.row_avg)::numeric AS avg_rating ' +
+        'FROM (SELECT location_name, COUNT(*)::int AS row_count, ' +
+        'COALESCE(ROUND(AVG(rating)::numeric, 2), 0) AS row_avg ' +
+        'FROM reviews GROUP BY location_name) r ' +
+        'LEFT JOIN location_totals lt ON lt.location_name = r.location_name ' +
+        'ORDER BY count DESC'
+      );
+    } catch (joinErr) {
+      // location_totals does not exist yet — fall back to raw row counts.
+      byLoc = await pool.query(
+        'SELECT location_name, COUNT(*)::int AS count, ' +
+        'COALESCE(ROUND(AVG(rating)::numeric, 2), 0) AS avg_rating ' +
+        'FROM reviews GROUP BY location_name ORDER BY count DESC'
+      );
+    }
+
+    const fiveStarRes = await pool.query(
+      'SELECT COUNT(*) FILTER (WHERE rating = 5)::int AS five_star FROM reviews'
     );
-    const byLoc = await pool.query(
-      'SELECT location_name, COUNT(*)::int AS count, COALESCE(ROUND(AVG(rating)::numeric, 2), 0) AS avg_rating ' +
-      'FROM reviews GROUP BY location_name ORDER BY count DESC'
+    const dist = await pool.query(
+      'SELECT rating, COUNT(*)::int AS count FROM reviews GROUP BY rating ORDER BY rating DESC'
     );
-    const dist = await pool.query('SELECT rating, COUNT(*)::int AS count FROM reviews GROUP BY rating ORDER BY rating DESC');
-    const o = overall.rows[0] || {};
+
+    const rows = byLoc.rows;
+    let total = 0;
+    let weighted = 0;
+    rows.forEach(function (r) {
+      const c = parseInt(r.count, 10) || 0;
+      total += c;
+      weighted += c * (parseFloat(r.avg_rating) || 0);
+    });
+    const avg_rating = total ? Math.round((weighted / total) * 100) / 100 : 0;
+
     res.json({
-      total: o.total || 0,
-      avg_rating: parseFloat(o.avg_rating) || 0,
-      five_star: o.five_star || 0,
-      by_location: byLoc.rows,
-      locations: byLoc.rows.map(function (r) { return r.location_name; }),
+      total: total,
+      avg_rating: avg_rating,
+      five_star: (fiveStarRes.rows[0] || {}).five_star || 0,
+      by_location: rows,
+      locations: rows.map(function (r) { return r.location_name; }),
       distribution: dist.rows
     });
   } catch (err) {
