@@ -7,6 +7,15 @@ const router = express.Router();
 
 const ADMIN = ['admin', 'manager'];
 
+// Returns the uppercased city codes a user may use, or null for no restriction
+// (admins/managers, and users with no assigned cities, are unrestricted).
+async function allowedCityCodes(user) {
+  if (ADMIN.includes(user.role)) return null;
+  const { rows } = await pool.query('SELECT city_code FROM user_cities WHERE user_id = $1', [user.id]);
+  const codes = rows.map(function (r) { return (r.city_code || '').trim().toUpperCase(); }).filter(Boolean);
+  return codes.length ? codes : null;
+}
+
 function getInitials(name) {
   return (name || '').split(' ').map(function(w){ return w[0] || ''; }).join('').toUpperCase().slice(0, 3);
 }
@@ -51,6 +60,10 @@ router.post('/', requireAuth, async (req, res) => {
   const city_code = req.body.city_code ? req.body.city_code.toUpperCase() : null;
   if (!description) return res.status(400).json({ error: 'Description is required' });
   if (!city_code) return res.status(400).json({ error: 'City is required' });
+  const allowed = await allowedCityCodes(req.user);
+  if (allowed && allowed.indexOf(city_code) === -1) {
+    return res.status(403).json({ error: 'You can only add items for your assigned cities.' });
+  }
   const { rows } = await pool.query(
     'INSERT INTO running_list_items (requester_id, city_code, description, quantity, unit_price, vendor_name, part_number, link, notes) ' +
     'VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING *',
@@ -68,6 +81,12 @@ router.put('/:id', requireAuth, async (req, res) => {
     return res.status(403).json({ error: 'Forbidden' });
   }
   const b = req.body;
+  if (b.city_code) {
+    const allowedMove = await allowedCityCodes(req.user);
+    if (allowedMove && allowedMove.indexOf(b.city_code.toUpperCase()) === -1) {
+      return res.status(403).json({ error: 'You can only move items to your assigned cities.' });
+    }
+  }
   const { rows: updated } = await pool.query(
     'UPDATE running_list_items SET description=$1, quantity=$2, unit_price=$3, vendor_name=$4, part_number=$5, link=$6, notes=$7, city_code=$8, updated_at=NOW() WHERE id=$9 RETURNING *',
     [

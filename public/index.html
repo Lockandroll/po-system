@@ -1200,9 +1200,10 @@ function runningStatus(msg, ok){
 
 async function renderRunningList(el){
   el.innerHTML = '<div class="loading">Loading…</div>';
-  try { runningCities = await api('GET','/cities'); } catch(e){ runningCities = []; }
+  try { runningCities = await api('GET','/cities/mine'); } catch(e){ runningCities = []; }
   try { runningItems = await api('GET','/running'); } catch(e){ el.innerHTML = '<div class="alert alert-error">' + escHtml(e.message) + '</div>'; return; }
-  runningCityForNew = (runningItems[0] && runningItems[0].city_code) || (runningCities[0] && runningCities[0].code) || '';
+  var _allowedCodes = runningCities.map(function(c){ return c.code; });
+  runningCityForNew = ((runningItems[0] && _allowedCodes.indexOf(runningItems[0].city_code) !== -1) ? runningItems[0].city_code : (runningCities[0] && runningCities[0].code)) || '';
   var cityOpts = runningCities.map(function(c){ return '<option value="' + escHtml(c.code) + '"' + (c.code===runningCityForNew?' selected':'') + '>' + escHtml(c.name) + ' (' + escHtml(c.code) + ')</option>'; }).join('');
   el.innerHTML =
     '<div class="page-header"><div><div class="page-title">My Running List</div><div style="color:var(--text-muted-color);font-size:13px;margin-top:2px">Add items through the month. An admin combines your city into a single PO.</div></div></div>' +
@@ -1297,12 +1298,16 @@ async function runningDeleteRow(i){
 var adminRunItems = [];
 var adminRunVendors = [];
 var adminRunCity = '';
+var adminRunAllCities = [];
+var adminRunEl = null;
 
 async function renderAdminRunningList(el){
   if (!can('manage_running')) { el.innerHTML = '<div class="alert alert-error">Access denied.</div>'; return; }
+  adminRunEl = el;
   el.innerHTML = '<div class="loading">Loading…</div>';
   try { adminRunItems = await api('GET','/running/admin'); } catch(e){ el.innerHTML = '<div class="alert alert-error">' + escHtml(e.message) + '</div>'; return; }
   try { adminRunVendors = await api('GET','/vendors'); } catch(e){ adminRunVendors = []; }
+  try { adminRunAllCities = await api('GET','/cities'); } catch(e){ adminRunAllCities = []; }
   var cities = [...new Set(adminRunItems.map(function(it){ return it.city_code; }).filter(Boolean))].sort();
   if(!adminRunCity || cities.indexOf(adminRunCity)===-1) adminRunCity = cities[0] || '';
   adminRunRenderShell(el, cities);
@@ -1333,10 +1338,10 @@ function adminRunRenderShell(el, cities){
         '<div id="running-status" style="font-size:12px;color:var(--text-muted-color);padding-bottom:10px">All changes saved</div>' +
       '</div>' +
       '<div class="table-wrap"><table class="line-items-table" style="table-layout:fixed">' +
-        '<colgroup><col style="width:6%"><col style="width:23%"><col style="width:13%"><col style="width:8%"><col style="width:12%"><col style="width:23%"><col style="width:15%"></colgroup>' +
-        '<thead><tr><th></th><th>Item</th><th>Requester</th><th>Qty</th><th>Est. Cost</th><th>Vendor</th><th>Part Description</th></tr></thead>' +
+        '<colgroup><col style="width:5%"><col style="width:21%"><col style="width:11%"><col style="width:11%"><col style="width:7%"><col style="width:11%"><col style="width:18%"><col style="width:16%"></colgroup>' +
+        '<thead><tr><th></th><th>Item</th><th>Requester</th><th>City</th><th>Qty</th><th>Est. Cost</th><th>Vendor</th><th>Part Description</th></tr></thead>' +
         '<tbody id="admin-run-body"></tbody>' +
-        '<tfoot><tr class="total-row"><td colspan="4" class="text-right" style="padding:10px">Est. Total</td><td id="admin-run-total" style="padding:10px">$0.00</td><td colspan="2"></td></tr></tfoot>' +
+        '<tfoot><tr class="total-row"><td colspan="5" class="text-right" style="padding:10px">Est. Total</td><td id="admin-run-total" style="padding:10px">$0.00</td><td colspan="2"></td></tr></tfoot>' +
       '</table></div>' +
       '<button class="btn btn-secondary btn-sm add-item-btn" style="white-space:nowrap" onclick="adminRunAddRow()">' + icons.plus + ' Add line item</button>' +
       '<div class="flex-gap" style="margin-top:16px">' +
@@ -1353,7 +1358,7 @@ function adminRunBuildRows(){
   if(!tbody) return;
   var items = adminRunCityItems();
   if(!items.length){
-    tbody.innerHTML = '<tr><td colspan="7" style="padding:14px;color:var(--text-muted-color)">No items for this city.</td></tr>';
+    tbody.innerHTML = '<tr><td colspan="8" style="padding:14px;color:var(--text-muted-color)">No items for this city.</td></tr>';
     adminRunUpdateTotal(); return;
   }
   tbody.innerHTML = items.map(function(it){
@@ -1362,6 +1367,7 @@ function adminRunBuildRows(){
       '<td style="text-align:center"><button class="btn btn-ghost btn-sm" style="color:var(--danger)" onclick="adminRunDelete(' + id + ')">' + icons.trash + '</button></td>' +
       '<td><input type="text" value="' + escHtml(it.description||'') + '" style="width:100%;box-sizing:border-box" data-f="description" onchange="adminRunField(' + id + ',this)" /></td>' +
       '<td style="color:var(--text-muted-color);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">' + escHtml(it.requester_name||'—') + '</td>' +
+      '<td>' + adminRunCityCell(it) + '</td>' +
       '<td><input type="number" value="' + escHtml(it.quantity||'') + '" min="0" step="1" style="width:100%;box-sizing:border-box" data-f="quantity" onchange="adminRunField(' + id + ',this)" /></td>' +
       '<td><input type="number" value="' + escHtml(it.unit_price||'') + '" min="0" step="0.01" placeholder="0.00" style="width:100%;box-sizing:border-box" data-f="unit_price" onchange="adminRunField(' + id + ',this)" /></td>' +
       '<td><input type="text" value="' + escHtml(it.vendor_name||'') + '" placeholder="Vendor" style="width:100%;box-sizing:border-box" data-f="vendor_name" onchange="adminRunField(' + id + ',this)" /></td>' +
@@ -1378,6 +1384,31 @@ function adminRunUpdateTotal(){
 }
 
 function adminRunFindById(id){ for(var k=0;k<adminRunItems.length;k++){ if(adminRunItems[k].id===id) return adminRunItems[k]; } return null; }
+
+function adminRunCityCell(it){
+  var list = adminRunAllCities && adminRunAllCities.length ? adminRunAllCities : [];
+  var opts;
+  if(list.length){
+    opts = list.map(function(c){ return '<option value="' + escHtml(c.code) + '"' + (c.code===it.city_code?' selected':'') + '>' + escHtml(c.code) + '</option>'; }).join('');
+  } else {
+    opts = '<option value="' + escHtml(it.city_code||'') + '" selected>' + escHtml(it.city_code||'') + '</option>';
+  }
+  return '<select style="width:100%;box-sizing:border-box" onchange="adminRunMove(' + it.id + ',this.value)">' + opts + '</select>';
+}
+function adminRunMove(id, newCity){
+  var it = adminRunFindById(id);
+  if(!it || !newCity || newCity === it.city_code) return;
+  runningStatus('Moving\u2026', false);
+  api('PUT','/running/' + id, { city_code: newCity }).then(function(){
+    it.city_code = newCity;
+    runningStatus('Moved to ' + newCity, true);
+    var cities = []; var seen = {};
+    adminRunItems.forEach(function(x){ if(x.city_code && !seen[x.city_code]){ seen[x.city_code]=1; cities.push(x.city_code); } });
+    cities.sort();
+    if(cities.indexOf(adminRunCity) === -1) adminRunCity = cities[0] || '';
+    if(adminRunEl) adminRunRenderShell(adminRunEl, cities);
+  }).catch(function(e){ runningStatus('Move failed: ' + e.message, false); });
+}
 
 function adminRunField(id, input){
   var it = adminRunFindById(id);

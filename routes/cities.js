@@ -10,6 +10,17 @@ router.get('/', requireAuth, async (req, res) => {
   res.json(rows);
 });
 
+// List the cities the current user may use: their assigned cities, or all
+// active cities if they have none assigned (or are admin/manager).
+router.get('/mine', requireAuth, async (req, res) => {
+  const all = (await pool.query('SELECT id, name, code FROM cities WHERE active=true ORDER BY name ASC')).rows;
+  if (['admin', 'manager'].includes(req.user.role)) return res.json(all);
+  const mine = (await pool.query('SELECT city_code FROM user_cities WHERE user_id = $1', [req.user.id])).rows
+    .map(function (r) { return (r.city_code || '').trim().toUpperCase(); });
+  if (!mine.length) return res.json(all);
+  res.json(all.filter(function (c) { return mine.indexOf((c.code || '').trim().toUpperCase()) !== -1; }));
+});
+
 // List all cities including inactive (admin only)
 router.get('/all', requireAuth, requirePermission('manage_cities'), async (req, res) => {
   const { rows } = await pool.query('SELECT * FROM cities ORDER BY active DESC, name ASC');
