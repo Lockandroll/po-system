@@ -9,64 +9,62 @@ router.get('/', requireAuth, async function(req, res) {
     const isPrivileged = ['admin', 'manager'].includes(req.user.role);
     const userId = req.user.id;
 
-    // Pending VRs (submitted, awaiting approval)
-    let pendingVRs = [], pendingPOs = [];
-    if (isPrivileged) {
-      const { rows: vrs } = await pool.query(
-        'SELECT vr.id, vr.vr_number, vr.vehicle, vr.shop_name, vr.city_code, vr.total_amount, vr.created_at, u.name as requester_name ' +
-        'FROM vehicle_repairs vr JOIN users u ON vr.requester_id = u.id ' +
-        "WHERE vr.status = 'submitted' ORDER BY vr.created_at ASC"
-      );
-      pendingVRs = vrs;
+    // Build all queries up front and run them concurrently (Promise.all) instead
+    // of awaiting each in sequence — the dashboard makes ~8 independent reads and
+    // sequential round-trips were stacking into multi-second load times.
+    const pendingVRsQ = isPrivileged
+      ? pool.query(
+          'SELECT vr.id, vr.vr_number, vr.vehicle, vr.shop_name, vr.city_code, vr.total_amount, vr.created_at, u.name as requester_name ' +
+          'FROM vehicle_repairs vr JOIN users u ON vr.requester_id = u.id ' +
+          "WHERE vr.status = 'submitted' ORDER BY vr.created_at ASC"
+        )
+      : pool.query(
+          "SELECT id, vr_number, vehicle, shop_name, city_code, total_amount, status, created_at FROM vehicle_repairs WHERE requester_id = $1 AND status IN ('draft','submitted') ORDER BY created_at DESC LIMIT 5",
+          [userId]
+        );
 
-      const { rows: pos } = await pool.query(
-        'SELECT po.id, po.po_number, po.vendor_name, po.customer_name, po.city_code, po.total_amount, po.created_at, u.name as requester_name ' +
-        'FROM purchase_orders po JOIN users u ON po.requester_id = u.id ' +
-        "WHERE po.status = 'submitted' ORDER BY po.created_at ASC"
-      );
-      pendingPOs = pos;
-    } else {
-      // Requesters see their own submitted items
-      const { rows: vrs } = await pool.query(
-        "SELECT id, vr_number, vehicle, shop_name, city_code, total_amount, status, created_at FROM vehicle_repairs WHERE requester_id = $1 AND status IN ('draft','submitted') ORDER BY created_at DESC LIMIT 5",
-        [userId]
-      );
-      pendingVRs = vrs;
-      const { rows: pos } = await pool.query(
-        "SELECT id, po_number, vendor_name, customer_name, city_code, total_amount, status, created_at FROM purchase_orders WHERE requester_id = $1 AND status IN ('draft','submitted') ORDER BY created_at DESC LIMIT 5",
-        [userId]
-      );
-      pendingPOs = pos;
-    }
+    const pendingPOsQ = isPrivileged
+      ? pool.query(
+          'SELECT po.id, po.po_number, po.vendor_name, po.customer_name, po.city_code, po.total_amount, po.created_at, u.name as requester_name ' +
+          'FROM purchase_orders po JOIN users u ON po.requester_id = u.id ' +
+          "WHERE po.status = 'submitted' ORDER BY po.created_at ASC"
+        )
+      : pool.query(
+          "SELECT id, po_number, vendor_name, customer_name, city_code, total_amount, status, created_at FROM purchase_orders WHERE requester_id = $1 AND status IN ('draft','submitted') ORDER BY created_at DESC LIMIT 5",
+          [userId]
+        );
 
-    // Stats
-    const { rows: vrStats } = await pool.query(
+    const vrStatsQ = pool.query(
       "SELECT COUNT(*) FILTER (WHERE status='submitted') as pending_vr, COUNT(*) FILTER (WHERE status='approved') as approved_vr FROM vehicle_repairs"
     );
-    const { rows: poStats } = await pool.query(
+    const poStatsQ = pool.query(
       "SELECT COUNT(*) as open_po, COALESCE(SUM(total_amount),0) as open_po_total FROM purchase_orders WHERE created_at >= date_trunc('month', NOW())"
     );
-    const { rows: quoteStats } = await pool.query(
+    const quoteStatsQ = pool.query(
       "SELECT COUNT(*) as active_quotes, COALESCE(SUM(total_amount),0) as quote_total FROM quotes WHERE created_at >= date_trunc('month', NOW())"
     );
-    const { rows: fleetStats } = await pool.query(
+    const fleetStatsQ = pool.query(
       "SELECT COUNT(*) as fleet_count FROM vehicles WHERE active = true"
     );
-
-    // My open tasks (assigned to me, not done)
-    let myTasks = [];
-    try {
-      const mt = await pool.query(
-        "SELECT id, title, status, priority, due_date FROM tasks WHERE assigned_to = $1 AND status <> 'done' ORDER BY (due_date IS NULL), due_date ASC, CASE priority WHEN 'urgent' THEN 0 WHEN 'high' THEN 1 WHEN 'medium' THEN 2 ELSE 3 END LIMIT 12",
-        [userId]
-      );
-      myTasks = mt.rows;
-    } catch (e) { myTasks = []; }
-
-    // Recent activity (audit log)
-    const { rows: activity } = await pool.query(
+    const myTasksQ = pool.query(
+      "SELECT id, title, status, priority, due_date FROM tasks WHERE assigned_to = $1 AND status <> 'done' ORDER BY (due_date IS NULL), due_date ASC, CASE priority WHEN 'urgent' THEN 0 WHEN 'high' THEN 1 WHEN 'medium' THEN 2 ELSE 3 END LIMIT 12",
+      [userId]
+    ).catch(function() { return { rows: [] }; });
+    const activityQ = pool.query(
       'SELECT entity_type, entity_number, action, user_name, created_at FROM audit_logs ORDER BY created_at DESC LIMIT 8'
     );
+
+    const results = await Promise.all([
+      pendingVRsQ, pendingPOsQ, vrStatsQ, poStatsQ, quoteStatsQ, fleetStatsQ, myTasksQ, activityQ
+    ]);
+    const pendingVRs = results[0].rows;
+    const pendingPOs = results[1].rows;
+    const vrStats = results[2].rows;
+    const poStats = results[3].rows;
+    const quoteStats = results[4].rows;
+    const fleetStats = results[5].rows;
+    const myTasks = results[6].rows;
+    const activity = results[7].rows;
 
     res.json({
       pendingVRs,
