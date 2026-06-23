@@ -8278,6 +8278,320 @@ async function renderSchedule(el){
   el.innerHTML='<div class="page-header"><div class="page-title">My Schedule</div></div><p class="text-muted" style="margin-bottom:16px">Your published shifts for the next two weeks.</p>'+body;
 }
 
+/* ===================== Nova QOL helpers (command palette, offline banner, nav help) ===================== */
+/* Added: Ctrl+K command palette, offline status banner, and a floating navigation help chatbot. */
+(function () {
+  if (window.__novaHelpersLoaded) return;
+  window.__novaHelpersLoaded = true;
+
+  // ---------- styles ----------
+  var css = [
+    '#nova-offline-banner{position:fixed;left:0;right:0;bottom:0;z-index:9000;background:#7f1d1d;color:#fff;font-size:13px;padding:9px 14px;text-align:center;display:none;box-shadow:0 -2px 10px rgba(0,0,0,.35)}',
+    '#nova-offline-banner.show{display:block}',
+    '#nova-cp-overlay{position:fixed;inset:0;z-index:9500;background:rgba(0,0,0,.55);display:none;align-items:flex-start;justify-content:center;padding-top:12vh}',
+    '#nova-cp-overlay.show{display:flex}',
+    '#nova-cp{width:92%;max-width:560px;background:var(--card-bg,#161616);border:1px solid var(--border,#2a2a2a);border-radius:12px;box-shadow:0 20px 60px rgba(0,0,0,.55);overflow:hidden}',
+    '#nova-cp-input{width:100%;box-sizing:border-box;border:none;outline:none;background:transparent;color:var(--text-color,#fff);font-size:16px;padding:16px 18px;border-bottom:1px solid var(--border,#2a2a2a)}',
+    '#nova-cp-list{max-height:50vh;overflow-y:auto;padding:6px}',
+    '.nova-cp-item{display:flex;align-items:center;gap:10px;padding:10px 12px;border-radius:8px;cursor:pointer;color:var(--text-color,#eee);font-size:14px}',
+    '.nova-cp-item .nova-cp-sub{color:var(--text-muted-color,#888);font-size:12px;margin-left:auto}',
+    '.nova-cp-item.active,.nova-cp-item:hover{background:var(--primary,#f97316);color:#fff}',
+    '.nova-cp-item.active .nova-cp-sub,.nova-cp-item:hover .nova-cp-sub{color:rgba(255,255,255,.85)}',
+    '.nova-cp-empty{padding:18px;color:var(--text-muted-color,#888);font-size:14px;text-align:center}',
+    '.nova-cp-hint{padding:8px 14px;font-size:11px;color:var(--text-muted-color,#777);border-top:1px solid var(--border,#2a2a2a);display:flex;gap:16px;justify-content:center;flex-wrap:wrap}',
+    '#nova-help-fab{position:fixed;right:18px;bottom:18px;z-index:8500;width:52px;height:52px;border-radius:50%;background:var(--primary,#f97316);color:#fff;border:none;cursor:pointer;box-shadow:0 6px 20px rgba(0,0,0,.35);display:none;align-items:center;justify-content:center}',
+    '#nova-help-fab.show{display:flex}',
+    '#nova-help-fab svg{width:24px;height:24px}',
+    '#nova-help-panel{position:fixed;right:18px;bottom:80px;z-index:8600;width:340px;max-width:calc(100vw - 24px);height:460px;max-height:calc(100vh - 120px);background:var(--card-bg,#161616);border:1px solid var(--border,#2a2a2a);border-radius:14px;box-shadow:0 18px 50px rgba(0,0,0,.55);display:none;flex-direction:column;overflow:hidden}',
+    '#nova-help-panel.show{display:flex}',
+    '#nova-help-head{display:flex;align-items:center;gap:8px;padding:12px 14px;background:#0f0f0f;color:#fff;border-bottom:1px solid var(--border,#2a2a2a)}',
+    '#nova-help-head .t{font-weight:700;font-size:14px}',
+    '#nova-help-head .x{margin-left:auto;background:none;border:none;color:#aaa;font-size:22px;cursor:pointer;line-height:1;padding:0 2px}',
+    '#nova-help-body{flex:1;overflow-y:auto;padding:12px;display:flex;flex-direction:column;gap:10px}',
+    '.nova-help-msg{max-width:90%;padding:9px 12px;border-radius:12px;font-size:13.5px;line-height:1.45;overflow-wrap:anywhere}',
+    '.nova-help-bot{align-self:flex-start;background:var(--bg-elevated,#222);border:1px solid var(--border,#2a2a2a);color:var(--text-color,#eee);border-bottom-left-radius:4px}',
+    '.nova-help-user{align-self:flex-end;background:var(--primary,#f97316);color:#fff;border-bottom-right-radius:4px}',
+    '.nova-help-go{display:inline-block;margin-top:8px;background:#0f0f0f;color:#fff;border:1px solid var(--primary,#f97316);border-radius:7px;padding:6px 11px;font-size:12px;cursor:pointer}',
+    '.nova-help-chips{display:flex;flex-wrap:wrap;gap:6px;margin-top:2px}',
+    '.nova-help-chip{background:var(--bg-elevated,#222);border:1px solid var(--border,#2a2a2a);color:var(--text-color,#ddd);border-radius:14px;padding:6px 11px;font-size:12px;cursor:pointer}',
+    '#nova-help-foot{display:flex;gap:6px;padding:10px;border-top:1px solid var(--border,#2a2a2a)}',
+    '#nova-help-input{flex:1;resize:none;border:1px solid var(--border,#2a2a2a);background:var(--surface-color,#1a1a1a);color:var(--text-color,#fff);border-radius:8px;padding:8px 10px;font-size:13px;font-family:inherit;line-height:1.4}',
+    '#nova-help-send{background:var(--primary,#f97316);color:#fff;border:none;border-radius:8px;padding:0 13px;font-size:13px;font-weight:600;cursor:pointer}',
+    '@media(max-width:600px){#nova-help-fab{width:46px;height:46px;right:12px;bottom:12px}#nova-help-panel{right:8px;left:8px;width:auto;bottom:66px;height:64vh}}'
+  ].join('');
+  var st = document.createElement('style'); st.textContent = css; document.head.appendChild(st);
+
+  // ---------- DOM ----------
+  var wrap = document.createElement('div');
+  wrap.innerHTML =
+    '<div id="nova-offline-banner">You are offline &mdash; you can keep viewing, but changes will not save until you reconnect.</div>' +
+    '<div id="nova-cp-overlay"><div id="nova-cp">' +
+      '<input id="nova-cp-input" type="text" placeholder="Jump to a page or action&hellip;" autocomplete="off" spellcheck="false" />' +
+      '<div id="nova-cp-list"></div>' +
+      '<div class="nova-cp-hint"><span>&uarr;&darr; to move</span><span>&crarr; to open</span><span>Esc to close</span></div>' +
+    '</div></div>' +
+    '<button id="nova-help-fab" title="Help" aria-label="Help"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg></button>' +
+    '<div id="nova-help-panel">' +
+      '<div id="nova-help-head"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#f97316" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg><span class="t">Nova Help</span><button class="x" id="nova-help-close" aria-label="Close">&times;</button></div>' +
+      '<div id="nova-help-body"></div>' +
+      '<div id="nova-help-foot"><textarea id="nova-help-input" rows="1" placeholder="Ask how to find or do something&hellip;"></textarea><button id="nova-help-send">Send</button></div>' +
+    '</div>';
+  while (wrap.firstChild) document.body.appendChild(wrap.firstChild);
+
+  // ---------- destinations (mirror the sidebar's permission gates) ----------
+  function dests() {
+    var roleMgr = function () { return state.user && (['admin', 'manager'].indexOf(state.user.role) !== -1); };
+    var isAdmin = state.user && state.user.role === 'admin';
+    var T = function () { return true; };
+    var all = [
+      { label: 'Home', view: 'home', kw: 'home dashboard start main', show: T },
+      { label: 'Nova AI Assistant', view: 'ai-assistant', kw: 'ai neurolock assistant chat ask question locksmith', show: T },
+      { label: 'PO Dashboard', view: 'dashboard', kw: 'purchase order po list', show: function () { return can('view_pos'); } },
+      { label: 'New Purchase Order', view: 'new', kw: 'create po new purchase order add make', show: function () { return can('create_po'); } },
+      { label: 'Monthly Req', view: (typeof can === 'function' && can('manage_running')) ? 'running-admin' : 'running', kw: 'monthly req running requisition', show: function () { return can('view_pos') && state.user.role !== 'approver'; } },
+      { label: 'Quote Dashboard', view: 'quotes', kw: 'quote estimate list', show: function () { return can('view_quotes'); } },
+      { label: 'New Quote', view: 'new-quote', kw: 'create quote new estimate add make', show: function () { return can('create_quote'); } },
+      { label: 'Work Orders', view: 'work-orders', kw: 'work order job ticket', show: function () { return can('view_work_orders'); } },
+      { label: 'Sign-Off Sheets', view: 'signoffs', kw: 'sign off signoff sheet', show: function () { return can('view_signoffs'); } },
+      { label: 'Tasks', view: 'tasks', kw: 'task todo to-do checklist', show: function () { return can('view_tasks'); } },
+      { label: 'Schedule', view: (typeof can === 'function' && can('manage_schedule')) ? 'schedule-admin' : 'schedule', kw: 'schedule shift calendar roster', show: function () { return can('view_schedule'); } },
+      { label: 'VR Dashboard', view: 'vr-dashboard', kw: 'vehicle repair maintenance vr fleet truck', show: function () { return can('view_vr'); } },
+      { label: 'New Vehicle Repair', view: 'new-vr', kw: 'create vr new vehicle repair maintenance add make', show: function () { return can('create_vr'); } },
+      { label: 'Fleet Registry', view: 'fleet-registry', kw: 'fleet vehicle registry truck van car', show: function () { return can('manage_vehicles'); } },
+      { label: 'Cash Deposits', view: 'deposits', kw: 'cash deposit money bank', show: function () { return can('view_deposits'); } },
+      { label: 'Accounts', view: 'vendors', kw: 'vendor account supplier accounts', show: function () { return can('manage_vendors'); } },
+      { label: 'Geico Surveys', view: 'geico', kw: 'geico survey insurance', show: function () { return can('manage_geico'); } },
+      { label: 'Suggestions', view: 'suggestions', kw: 'suggestion idea feedback box', show: T },
+      { label: 'Document Vault', view: 'documents', kw: 'document vault file folder storage', show: T },
+      { label: 'SOP Library', view: 'sop-library', kw: 'sop standard operating procedure library', show: function () { return isAdmin; } },
+      { label: 'Company Information', view: 'company-info', kw: 'company info settings business', show: roleMgr },
+      { label: 'AI Context', view: 'ai-context', kw: 'ai context neurolock settings prompt', show: function () { return can('manage_settings'); } },
+      { label: 'Parts List', view: 'parts-list', kw: 'parts catalog part inventory', show: function () { return can('manage_parts'); } },
+      { label: 'Notifications', view: 'notifications', kw: 'notification email settings alerts', show: function () { return can('manage_settings'); } },
+      { label: 'Scheduled Messages', view: 'scheduled-messages', kw: 'scheduled message reminder', show: function () { return can('manage_settings'); } },
+      { label: 'Users', view: 'users', kw: 'user employee staff people account team', show: function () { return can('view_users'); } },
+      { label: 'Cities', view: 'cities', kw: 'city location branch', show: function () { return can('manage_cities'); } },
+      { label: 'Audit Log', view: 'audit', kw: 'audit log history activity', show: function () { return can('view_audit'); } },
+      { label: 'Roles & Access', view: 'roles', kw: 'role access permission security', show: function () { return can('manage_settings'); } },
+      { label: 'Trusted Devices', view: 'security', kw: 'security trusted device password 2fa sign out', show: T }
+    ];
+    return all.filter(function (d) { try { return d.show(); } catch (e) { return false; } });
+  }
+
+  // ---------- command palette ----------
+  var cpOverlay = document.getElementById('nova-cp-overlay');
+  var cpInput = document.getElementById('nova-cp-input');
+  var cpList = document.getElementById('nova-cp-list');
+  var cpResults = [];
+  var cpActive = 0;
+
+  function cpFilter(q) {
+    var items = dests();
+    q = (q || '').trim().toLowerCase();
+    if (!q) return items;
+    var words = q.split(/\s+/);
+    return items.filter(function (d) {
+      var hay = (d.label + ' ' + d.kw).toLowerCase();
+      return words.every(function (w) { return hay.indexOf(w) !== -1; });
+    });
+  }
+  function cpRender() {
+    cpResults = cpFilter(cpInput.value);
+    if (cpActive >= cpResults.length) cpActive = 0;
+    if (!cpResults.length) { cpList.innerHTML = '<div class="nova-cp-empty">No matches.</div>'; return; }
+    cpList.innerHTML = cpResults.map(function (d, i) {
+      return '<div class="nova-cp-item' + (i === cpActive ? ' active' : '') + '" data-i="' + i + '">' +
+        '<span>' + escHtml(d.label) + '</span><span class="nova-cp-sub">' + escHtml(d.view) + '</span></div>';
+    }).join('');
+    Array.prototype.forEach.call(cpList.querySelectorAll('.nova-cp-item'), function (el) {
+      el.addEventListener('click', function () { cpGo(parseInt(el.getAttribute('data-i'), 10)); });
+    });
+  }
+  function cpGo(i) {
+    var d = cpResults[i];
+    if (!d) return;
+    cpClose();
+    navigate(d.view);
+  }
+  function cpEnter() { cpGo(cpActive); }
+  function cpMove(delta) {
+    if (!cpResults.length) return;
+    cpActive = (cpActive + delta + cpResults.length) % cpResults.length;
+    cpRender();
+    var act = cpList.querySelector('.nova-cp-item.active');
+    if (act && act.scrollIntoView) act.scrollIntoView({ block: 'nearest' });
+  }
+  function cpOpen() {
+    if (!(state.token && state.user)) return;
+    cpActive = 0;
+    cpInput.value = '';
+    cpOverlay.classList.add('show');
+    cpRender();
+    setTimeout(function () { cpInput.focus(); }, 30);
+  }
+  function cpClose() { cpOverlay.classList.remove('show'); }
+  function cpToggle() { if (cpOverlay.classList.contains('show')) cpClose(); else cpOpen(); }
+  cpInput.addEventListener('input', function () { cpActive = 0; cpRender(); });
+  cpOverlay.addEventListener('mousedown', function (e) { if (e.target === cpOverlay) cpClose(); });
+  window.novaCommandPalette = cpToggle;
+
+  // ---------- navigation help chatbot ----------
+  var fab = document.getElementById('nova-help-fab');
+  var panel = document.getElementById('nova-help-panel');
+  var hbody = document.getElementById('nova-help-body');
+  var hinput = document.getElementById('nova-help-input');
+  var hsend = document.getElementById('nova-help-send');
+  var greeted = false;
+
+  function helpBubble(role, text, target) {
+    var div = document.createElement('div');
+    div.className = 'nova-help-msg ' + (role === 'user' ? 'nova-help-user' : 'nova-help-bot');
+    div.innerHTML = escHtml(text).replace(/\n/g, '<br>');
+    if (target) {
+      var btn = document.createElement('button');
+      btn.className = 'nova-help-go';
+      btn.textContent = 'Open ' + target.label;
+      btn.addEventListener('click', function () { navigate(target.view); helpClose(); });
+      div.appendChild(document.createElement('br'));
+      div.appendChild(btn);
+    }
+    hbody.appendChild(div);
+    hbody.scrollTop = hbody.scrollHeight;
+    return div;
+  }
+  function helpChips() {
+    var quick = [
+      { t: 'Create a quote', q: 'create a quote' },
+      { t: 'Create a PO', q: 'create a purchase order' },
+      { t: 'Log a vehicle repair', q: 'new vehicle repair' },
+      { t: 'My tasks', q: 'tasks' },
+      { t: 'My schedule', q: 'schedule' }
+    ];
+    var wrapc = document.createElement('div');
+    wrapc.className = 'nova-help-msg nova-help-bot';
+    wrapc.innerHTML = 'Quick links:';
+    var chips = document.createElement('div');
+    chips.className = 'nova-help-chips';
+    quick.forEach(function (c) {
+      var b = document.createElement('button');
+      b.className = 'nova-help-chip';
+      b.textContent = c.t;
+      b.addEventListener('click', function () { helpAsk(c.q); });
+      chips.appendChild(b);
+    });
+    wrapc.appendChild(chips);
+    hbody.appendChild(wrapc);
+    hbody.scrollTop = hbody.scrollHeight;
+  }
+  function helpGreet() {
+    if (greeted) return;
+    greeted = true;
+    var name = (state.user && state.user.name) ? state.user.name.split(' ')[0] : 'there';
+    helpBubble('bot', 'Hi ' + name + '! I can help you find your way around Nova. Tell me what you want to do and I will take you there. For locksmith or pricing questions, I will hand you to Nova AI.');
+    helpChips();
+  }
+  function helpScore(q, d) {
+    var hay = (d.label + ' ' + d.kw).toLowerCase();
+    var words = q.split(/\s+/).filter(function (w) { return w.length > 1; });
+    var score = 0;
+    words.forEach(function (w) { if (hay.indexOf(w) !== -1) score += (d.label.toLowerCase().indexOf(w) !== -1 ? 2 : 1); });
+    return score;
+  }
+  function helpBestTarget(q) {
+    var items = dests();
+    var best = null, bestScore = 0;
+    items.forEach(function (d) {
+      var s = helpScore(q, d);
+      if (s > bestScore) { bestScore = s; best = d; }
+    });
+    return bestScore >= 2 ? best : null;
+  }
+  async function helpAsk(text) {
+    text = (text || '').trim();
+    if (!text) return;
+    helpBubble('user', text);
+    var ql = text.toLowerCase();
+    var target = helpBestTarget(ql);
+    var wantsAction = /\b(create|make|add|new|start|log|file|enter|submit)\b/.test(ql);
+    if (target) {
+      var verb = wantsAction ? 'You can do that here.' : 'Here you go.';
+      helpBubble('bot', verb + ' ' + target.label + ' is in the menu.', target);
+      return;
+    }
+    // Fallback to Nova AI for anything that is not a navigation request.
+    var typing = helpBubble('bot', 'Let me check with Nova AI…');
+    try {
+      var data = await api('POST', '/ai/chat', { messages: [{ role: 'user', content: 'You are the in-app help assistant for Nova, a locksmith operations app (purchase orders, quotes, vehicle repairs, fleet, tasks, schedule). Answer the user briefly and practically. If it is about navigating the app, explain where to find it. Question: ' + text }] });
+      typing.innerHTML = escHtml(data.reply || 'Sorry, I could not get an answer.').replace(/\n/g, '<br>');
+    } catch (err) {
+      typing.innerHTML = escHtml('I could not reach Nova AI (' + (err && err.message ? err.message : 'error') + '). For navigation, try naming a page like "quotes" or "new PO", or press Ctrl+K to jump anywhere.');
+    }
+    hbody.scrollTop = hbody.scrollHeight;
+  }
+  function helpOpen() { panel.classList.add('show'); helpGreet(); setTimeout(function () { hinput.focus(); }, 30); }
+  function helpClose() { panel.classList.remove('show'); }
+  function helpToggle() { if (panel.classList.contains('show')) helpClose(); else helpOpen(); }
+  fab.addEventListener('click', helpToggle);
+  document.getElementById('nova-help-close').addEventListener('click', helpClose);
+  hsend.addEventListener('click', function () { var v = hinput.value; hinput.value = ''; helpAsk(v); });
+  hinput.addEventListener('keydown', function (e) { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); var v = hinput.value; hinput.value = ''; helpAsk(v); } });
+
+  // ---------- offline banner ----------
+  function offlineSync() {
+    var b = document.getElementById('nova-offline-banner');
+    if (b) b.classList.toggle('show', !navigator.onLine);
+  }
+  window.addEventListener('online', offlineSync);
+  window.addEventListener('offline', offlineSync);
+
+  // ---------- show/hide helpers based on auth ----------
+  function helpersSync() {
+    var authed = !!(state.token && state.user);
+    fab.classList.toggle('show', authed);
+    if (!authed) { helpClose(); cpClose(); }
+  }
+  window.novaHelpersSync = helpersSync;
+
+  // ---------- global keyboard ----------
+  document.addEventListener('keydown', function (e) {
+    if ((e.ctrlKey || e.metaKey) && (e.key === 'k' || e.key === 'K')) {
+      if (state.token && state.user) { e.preventDefault(); cpToggle(); }
+      return;
+    }
+    if (e.key === 'Escape' && cpOverlay.classList.contains('show')) { cpClose(); return; }
+    if (cpOverlay.classList.contains('show')) {
+      if (e.key === 'ArrowDown') { e.preventDefault(); cpMove(1); }
+      else if (e.key === 'ArrowUp') { e.preventDefault(); cpMove(-1); }
+      else if (e.key === 'Enter') { e.preventDefault(); cpEnter(); }
+    }
+  });
+
+  // ---------- wrap navigate/render so helpers stay in sync without editing those functions ----------
+  try {
+    if (typeof navigate === 'function') {
+      var _navOrig = navigate;
+      navigate = function (v, p) { var r = _navOrig(v, p); cpClose(); helpersSync(); return r; };
+      window.navigate = navigate;
+    }
+  } catch (e) {}
+  try {
+    if (typeof render === 'function') {
+      var _renderOrig = render;
+      render = function () {
+        var r = _renderOrig.apply(this, arguments);
+        if (r && typeof r.then === 'function') r.then(helpersSync, helpersSync); else helpersSync();
+        return r;
+      };
+      window.render = render;
+    }
+  } catch (e) {}
+
+  // ---------- init ----------
+  offlineSync();
+  helpersSync();
+})();
+/* =================== end Nova QOL helpers =================== */
+
 render();
 initAiDots();
 window.addEventListener('resize', function() { initAiDots(); });
