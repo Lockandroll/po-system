@@ -8,21 +8,23 @@ const { sendEmail } = require('../utils/email');
 
 const router = express.Router();
 
-// Roles that can be granted access via a "share with role" (admins/owner already
-// see everything, so they are not offered as share targets).
-const SHAREABLE_ROLES = ['manager', 'locksmith_coordinator', 'locksmith', 'roadside_technician'];
+// Roles that can be granted access via a "share with role". Only owners see
+// everything by default; admins must be granted access like anyone else, so the
+// admin role is offered as a share target (lets an owner grant the whole group).
+const SHAREABLE_ROLES = ['admin', 'manager', 'locksmith_coordinator', 'locksmith', 'roadside_technician'];
 
 function sanitizeName(name) {
   return String(name || 'file').replace(/[^A-Za-z0-9._-]/g, '_').slice(0, 200) || 'file';
 }
 
-// Build the per-request access picture for a non-admin user. Admins skip this and
-// are allowed everything. We load the folder tree once and expand ownership and
-// shares downward (a folder grant cascades to all descendants).
+// Build the per-request access picture for a user. Only owners see everything;
+// admins (and everyone else) are limited to what they own or have been shared.
+// We load the folder tree once and expand ownership and shares downward (a folder
+// grant cascades to all descendants).
 async function loadContext(user) {
-  const isAdmin = user.role === 'admin'; // owner is coerced to admin upstream
+  const isOwner = !!user.isOwner; // owner role is coerced to 'admin' upstream, but isOwner is preserved
   const ctx = {
-    isAdmin: isAdmin,
+    isOwner: isOwner,
     userId: user.id,
     viewFolders: new Set(),
     editFolders: new Set(),
@@ -35,7 +37,7 @@ async function loadContext(user) {
     if (!ctx.childrenOf.has(f.parent_id)) ctx.childrenOf.set(f.parent_id, []);
     ctx.childrenOf.get(f.parent_id).push(f.id);
   });
-  if (isAdmin) return ctx;
+  if (isOwner) return ctx;
 
   function addDescendants(id, set) {
     set.add(id);
@@ -63,16 +65,16 @@ async function loadContext(user) {
   return ctx;
 }
 
-function canViewFolder(ctx, id) { return ctx.isAdmin || ctx.viewFolders.has(id); }
-function canEditFolder(ctx, id) { return ctx.isAdmin || ctx.editFolders.has(id); }
+function canViewFolder(ctx, id) { return ctx.isOwner || ctx.viewFolders.has(id); }
+function canEditFolder(ctx, id) { return ctx.isOwner || ctx.editFolders.has(id); }
 function canViewFile(ctx, file) {
-  if (ctx.isAdmin) return true;
+  if (ctx.isOwner) return true;
   if (file.owner_id === ctx.userId) return true;
   if (ctx.viewFiles.has(file.id)) return true;
   return file.folder_id != null && ctx.viewFolders.has(file.folder_id);
 }
 function canEditFile(ctx, file) {
-  if (ctx.isAdmin) return true;
+  if (ctx.isOwner) return true;
   if (file.owner_id === ctx.userId) return true;
   if (ctx.editFiles.has(file.id)) return true;
   return file.folder_id != null && ctx.editFolders.has(file.folder_id);

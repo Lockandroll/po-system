@@ -181,6 +181,7 @@
     .spinner-lg { width:36px; height:36px; border-width:3px; }
     .task-dragging { outline:2px solid var(--primary); outline-offset:-2px; }
     .sched-drop-hot { outline:2px dashed var(--primary,#f97316); outline-offset:-2px; background:rgba(249,115,22,0.10) !important; }
+    .doc-drop-hot { outline:2px dashed var(--primary,#f97316); outline-offset:-3px; background:rgba(249,115,22,0.08); }
     .flex-gap { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
     .text-right { text-align: right; }
     .text-muted { color: var(--text-muted-color); font-size: 13px; }
@@ -4408,6 +4409,8 @@ var _aiSessionUserId = null;
 var _aiUsage = { daily: 0, dailyLimit: 20 };
 var docClipboard = null;
 var docCache = { folders: [], files: [] };
+var docCanWrite = false;
+var docStorageReady = false;
 
 function docFmtSize(n) {
   n = Number(n) || 0;
@@ -4438,6 +4441,8 @@ async function renderDocuments(el) {
     return;
   }
   docCache = { folders: data.folders, files: data.files };
+  docCanWrite = !!data.canWriteHere;
+  docStorageReady = !!data.storageReady;
 
   var crumb = '<span onclick="navigate(\'documents\')" style="cursor:pointer;color:var(--primary)">Document Vault</span>';
   (data.ancestors || []).forEach(function (a) {
@@ -4501,7 +4506,8 @@ async function renderDocuments(el) {
     '<div style="font-size:14px">' + crumb + '</div>' +
     '<div>' + actions + '</div>' +
     '</div>' +
-    '<div class="card"><div class="card-body" style="padding:0">' + rows + '</div></div>';
+    '<div class="card" id="doc-droparea"' + ((data.canWriteHere && data.storageReady) ? ' ondragover="docDragOver(event)" ondragleave="docDragLeave(event)" ondrop="docDrop(event)"' : '') + '><div class="card-body" style="padding:0">' + rows + '</div></div>' +
+    ((data.canWriteHere && data.storageReady) ? '<div style="margin-top:10px;font-size:12px;color:var(--text-muted-color);display:flex;align-items:center;gap:6px"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="flex-shrink:0"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>Drag files from your computer onto the list to upload them here.</div>' : '');
 }
 
 function docMenu(type, id, canEdit, emailable) {
@@ -4541,7 +4547,11 @@ function docPickFiles() { var i = document.getElementById('doc-file-input'); if 
 async function docUploadFiles(input) {
   var files = Array.prototype.slice.call(input.files || []);
   input.value = '';
-  if (!files.length) return;
+  await docUploadFileList(files);
+}
+
+async function docUploadFileList(files) {
+  if (!files || !files.length) return;
   var folderId = state.currentParam ? parseInt(state.currentParam, 10) : null;
   for (var i = 0; i < files.length; i++) {
     var file = files[i];
@@ -4553,6 +4563,33 @@ async function docUploadFiles(input) {
     } catch (e) { alert(e.message); }
   }
   docReload();
+}
+
+// Drag files from the desktop onto the list to upload into the current folder.
+function docDragHasFiles(e) {
+  if (!e.dataTransfer) return false;
+  var t = e.dataTransfer.types;
+  if (!t) return false;
+  return Array.prototype.indexOf.call(t, 'Files') !== -1;
+}
+function docDragOver(e) {
+  if (!docCanWrite || !docStorageReady || !docDragHasFiles(e)) return;
+  e.preventDefault();
+  e.dataTransfer.dropEffect = 'copy';
+  var a = document.getElementById('doc-droparea');
+  if (a) a.classList.add('doc-drop-hot');
+}
+function docDragLeave(e) {
+  var a = document.getElementById('doc-droparea');
+  if (a && (!e.relatedTarget || !a.contains(e.relatedTarget))) a.classList.remove('doc-drop-hot');
+}
+function docDrop(e) {
+  e.preventDefault();
+  var a = document.getElementById('doc-droparea');
+  if (a) a.classList.remove('doc-drop-hot');
+  if (!docCanWrite || !docStorageReady) return;
+  var files = (e.dataTransfer && e.dataTransfer.files) ? Array.prototype.slice.call(e.dataTransfer.files) : [];
+  if (files.length) docUploadFileList(files);
 }
 
 async function docDownload(id, forceAttach) {
