@@ -8490,38 +8490,83 @@ async function renderSchedule(el){
     helpBubble('bot', 'Hi ' + name + '! I can help you find your way around Nova. Tell me what you want to do and I will take you there. For locksmith or pricing questions, I will hand you to Nova AI.');
     helpChips();
   }
-  function helpScore(q, d) {
-    var hay = (d.label + ' ' + d.kw).toLowerCase();
-    var words = q.split(/\s+/).filter(function (w) { return w.length > 1; });
-    var score = 0;
-    words.forEach(function (w) { if (hay.indexOf(w) !== -1) score += (d.label.toLowerCase().indexOf(w) !== -1 ? 2 : 1); });
-    return score;
+  // Map common words/phrases to a destination. Phrase + whole-word matching
+  // avoids false hits like "do" inside "Document". Longest match wins.
+  function helpIntents() {
+    var schedV = (typeof can === 'function' && can('manage_schedule')) ? 'schedule-admin' : 'schedule';
+    var runV = (typeof can === 'function' && can('manage_running')) ? 'running-admin' : 'running';
+    return [
+      { ph: ['purchase order', 'purchase orders', 'po', 'pos'], dash: 'dashboard', create: 'new', obj: 'Purchase Orders' },
+      { ph: ['quote', 'quotes', 'estimate', 'estimates'], dash: 'quotes', create: 'new-quote', obj: 'Quotes' },
+      { ph: ['vehicle repair', 'vehicle repairs', 'vehicle maintenance', 'vr', 'repair', 'maintenance'], dash: 'vr-dashboard', create: 'new-vr', obj: 'Vehicle Repairs' },
+      { ph: ['monthly req', 'requisition', 'running list'], dash: runV, obj: 'Monthly Req' },
+      { ph: ['fleet', 'vehicle', 'vehicles', 'truck', 'trucks', 'van', 'vans'], dash: 'fleet-registry', create: 'new-vehicle', obj: 'Fleet Registry' },
+      { ph: ['work order', 'work orders'], dash: 'work-orders', obj: 'Work Orders' },
+      { ph: ['sign off', 'sign-off', 'signoff', 'sign off sheet', 'sign-off sheet'], dash: 'signoffs', obj: 'Sign-Off Sheets' },
+      { ph: ['task', 'tasks', 'to do', 'to-do', 'todo'], dash: 'tasks', obj: 'Tasks' },
+      { ph: ['schedule', 'shift', 'shifts', 'roster'], dash: schedV, obj: 'Schedule' },
+      { ph: ['deposit', 'deposits', 'cash deposit', 'cash deposits'], dash: 'deposits', obj: 'Cash Deposits' },
+      { ph: ['vendor', 'vendors', 'account', 'accounts', 'supplier', 'suppliers'], dash: 'vendors', obj: 'Accounts' },
+      { ph: ['part', 'parts', 'parts list', 'catalog'], dash: 'parts-list', obj: 'Parts List' },
+      { ph: ['document', 'documents', 'vault', 'document vault'], dash: 'documents', obj: 'Document Vault' },
+      { ph: ['suggestion', 'suggestions', 'idea', 'ideas', 'feedback'], dash: 'suggestions', obj: 'Suggestions' },
+      { ph: ['user', 'users', 'employee', 'employees', 'staff'], dash: 'users', obj: 'Users' },
+      { ph: ['city', 'cities'], dash: 'cities', obj: 'Cities' },
+      { ph: ['audit', 'audit log'], dash: 'audit', obj: 'Audit Log' },
+      { ph: ['geico', 'geico survey', 'geico surveys'], dash: 'geico', obj: 'Geico Surveys' },
+      { ph: ['sop', 'sops', 'standard operating procedure', 'standard operating procedures'], dash: 'sop-library', obj: 'SOP Library' },
+      { ph: ['notification', 'notifications'], dash: 'notifications', obj: 'Notifications' },
+      { ph: ['role', 'roles', 'permission', 'permissions', 'access'], dash: 'roles', obj: 'Roles & Access' },
+      { ph: ['password', 'trusted device', 'trusted devices', '2fa', 'two factor', 'security'], dash: 'security', obj: 'Trusted Devices' },
+      { ph: ['company info', 'company information', 'company settings'], dash: 'company-info', obj: 'Company Information' },
+      { ph: ['neurolock', 'ai assistant', 'ask ai'], dash: 'ai-assistant', obj: 'Nova AI Assistant' }
+    ];
   }
-  function helpBestTarget(q) {
-    var items = dests();
-    var best = null, bestScore = 0;
-    items.forEach(function (d) {
-      var s = helpScore(q, d);
-      if (s > bestScore) { bestScore = s; best = d; }
+  function helpHasPhrase(q, phrase) {
+    var esc = phrase.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    return new RegExp('(^|[^a-z0-9])' + esc + '([^a-z0-9]|$)').test(q);
+  }
+  function helpFindDest(view) {
+    var list = dests();
+    for (var i = 0; i < list.length; i++) { if (list[i].view === view) return list[i]; }
+    return null;
+  }
+  function helpResolve(q) {
+    var ints = helpIntents();
+    var match = null, matchLen = 0;
+    ints.forEach(function (it) {
+      it.ph.forEach(function (p) {
+        if (p.length > matchLen && helpHasPhrase(q, p)) { match = it; matchLen = p.length; }
+      });
     });
-    return bestScore >= 2 ? best : null;
+    if (!match) return null;
+    var wantsAction = /(^|[^a-z])(create|creating|make|making|add|adding|new|start|starting|log|logging|file|filing|enter|submit|raise)([^a-z]|$)/.test(q);
+    if (wantsAction && match.create) {
+      var c = helpFindDest(match.create);
+      if (c) return c;
+    }
+    var d = helpFindDest(match.dash);
+    if (d) return d;
+    return { _denied: true, label: match.obj };
   }
   async function helpAsk(text) {
     text = (text || '').trim();
     if (!text) return;
     helpBubble('user', text);
-    var ql = text.toLowerCase();
-    var target = helpBestTarget(ql);
-    var wantsAction = /\b(create|make|add|new|start|log|file|enter|submit)\b/.test(ql);
-    if (target) {
-      var verb = wantsAction ? 'You can do that here.' : 'Here you go.';
-      helpBubble('bot', verb + ' ' + target.label + ' is in the menu.', target);
+    var ql = ' ' + text.toLowerCase().replace(/[^a-z0-9 ]+/g, ' ') + ' ';
+    var target = helpResolve(ql);
+    if (target && target._denied) {
+      helpBubble('bot', 'Looks like you are asking about ' + target.label + ', but your account does not have access to that section. Ask an admin if you think you should.');
       return;
     }
-    // Fallback to Nova AI for anything that is not a navigation request.
+    if (target) {
+      helpBubble('bot', target.label + ' is right here — tap below to open it.', target);
+      return;
+    }
+    // No navigation match -> hand off to Nova AI.
     var typing = helpBubble('bot', 'Let me check with Nova AI…');
     try {
-      var data = await api('POST', '/ai/chat', { messages: [{ role: 'user', content: 'You are the in-app help assistant for Nova, a locksmith operations app (purchase orders, quotes, vehicle repairs, fleet, tasks, schedule). Answer the user briefly and practically. If it is about navigating the app, explain where to find it. Question: ' + text }] });
+      var data = await api('POST', '/ai/chat', { messages: [{ role: 'user', content: 'You are the in-app help assistant for Nova, a locksmith operations app (purchase orders, quotes, vehicle repairs, fleet, tasks, schedule). Answer briefly and practically. If it is about navigating the app, explain where to find it. Question: ' + text }] });
       typing.innerHTML = escHtml(data.reply || 'Sorry, I could not get an answer.').replace(/\n/g, '<br>');
     } catch (err) {
       typing.innerHTML = escHtml('I could not reach Nova AI (' + (err && err.message ? err.message : 'error') + '). For navigation, try naming a page like "quotes" or "new PO", or press Ctrl+K to jump anywhere.');
