@@ -6,6 +6,7 @@ const { pool } = require('../db');
 const { requireAuth } = require('../middleware/auth');
 const { sendEmail, emailTemplate } = require('../utils/email');
 const { sendSms } = require('../utils/sms');
+const { logAudit } = require('../utils/audit');
 
 const router = express.Router();
 
@@ -54,6 +55,7 @@ router.post('/setup', async (req, res) => {
   );
   const user = result.rows[0];
   const token = jwt.sign({ id: user.id, email: user.email, name: user.name, role: user.role }, process.env.JWT_SECRET, { expiresIn: '24h' });
+  logAudit({ entity_type: 'auth', action: 'login', user_id: user.id, user_name: user.name, details: { method: 'account setup', ip: clientIp(req) } });
   res.json({ token, user });
 });
 
@@ -107,6 +109,7 @@ router.post('/login', async (req, res) => {
       await pool.query('UPDATE trusted_devices SET last_used_at=NOW(), expires_at=$1, ip=$2 WHERE id=$3', [newExpires, clientIp(req), td.rows[0].id]);
       setDeviceCookie(req, res, deviceToken, newExpires);
       const tdToken = jwt.sign({ id: user.id, email: user.email, name: user.name, role: user.role }, process.env.JWT_SECRET, { expiresIn: '24h' });
+      logAudit({ entity_type: 'auth', action: 'login', user_id: user.id, user_name: user.name, details: { method: 'trusted device', ip: clientIp(req) } });
       return res.json({ token: tdToken, user: { id: user.id, name: user.name, email: user.email, role: user.role } });
     }
   }
@@ -193,6 +196,7 @@ router.post('/verify-2fa', async (req, res) => {
     } catch (e) { console.error('Trusted device save failed:', e); }
   }
 
+  logAudit({ entity_type: 'auth', action: 'login', user_id: user.id, user_name: user.name, details: { method: '2FA', ip: clientIp(req) } });
   res.json({ token, user: { id: user.id, name: user.name, email: user.email, role: user.role } });
 });
 
