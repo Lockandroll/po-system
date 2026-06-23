@@ -3096,18 +3096,19 @@ function reviewsRenderStats(s) {
     reviewsStatCard('Average Rating', avg + ' <span style="font-size:16px;color:#f5b400">★</span>', '', '#f5b400') +
     reviewsStatCard('5-Star', fivePct + '%', (s.five_star||0) + ' of ' + total) +
     reviewsStatCard('Locations', (s.by_location||[]).length, '');
-  var maxCount = (s.by_location||[]).reduce(function(m,c){ return Math.max(m, c.count); }, 0) || 1;
+  var cityCards = (s.by_location||[]).length ? (s.by_location||[]).map(function(c){
+    var cnt = parseInt(c.count, 10) || 0;
+    var rate = parseFloat(c.avg_rating) || 0;
+    return '<div class="card" style="padding:14px 16px;min-width:140px;flex:0 0 auto;text-align:center">' +
+        '<div style="font-size:12px;color:var(--text-muted-color);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;margin-bottom:8px">' + escHtml(c.location_name) + '</div>' +
+        '<div style="font-size:30px;font-weight:800;color:#f5b400;line-height:1">' + rate.toFixed(1) + '<span style="font-size:18px"> ★</span></div>' +
+        '<div style="font-size:13px;color:var(--text-muted-color);margin-top:6px">' + cnt.toLocaleString() + ' reviews</div>' +
+      '</div>';
+  }).join('') : '<div style="color:var(--text-muted-color);font-size:13px">No data</div>';
   var breakdown =
     '<div class="card" style="flex:1;min-width:260px;padding:16px">' +
-      '<div style="font-size:12px;color:var(--text-muted-color);text-transform:uppercase;letter-spacing:0.5px;margin-bottom:8px">By Location</div>' +
-      ((s.by_location||[]).length ? (s.by_location||[]).map(function(c){
-        var pct = Math.round(c.count*100/maxCount);
-        return '<div style="display:flex;align-items:center;gap:8px;margin:5px 0">' +
-          '<div style="width:150px;font-size:13px;color:var(--text-color);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">' + escHtml(c.location_name) + '</div>' +
-          '<div style="flex:1;background:rgba(249,115,22,0.15);border-radius:4px;height:10px"><div style="width:' + pct + '%;background:var(--primary);height:10px;border-radius:4px"></div></div>' +
-          '<div style="width:92px;text-align:right;font-size:12px;color:var(--text-muted-color)">' + c.count + ' • ' + parseFloat(c.avg_rating).toFixed(1) + '★</div>' +
-        '</div>';
-      }).join('') : '<div style="color:var(--text-muted-color);font-size:13px">No data</div>') +
+      '<div style="font-size:12px;color:var(--text-muted-color);text-transform:uppercase;letter-spacing:0.5px;margin-bottom:12px">By Location</div>' +
+      '<div style="display:flex;flex-wrap:wrap;gap:12px">' + cityCards + '</div>' +
     '</div>';
   el.innerHTML = '<div style="display:flex;flex-wrap:wrap;gap:12px;margin-bottom:12px">' + cards + '</div><div style="display:flex;flex-wrap:wrap;gap:12px">' + breakdown + '</div>';
 }
