@@ -332,6 +332,7 @@ async function render() {
     (can('view_deposits') ? '<div class="nav-item' + (cv === 'deposits' || cv === 'view-deposit' ? ' active' : '') + '" onclick="navigate(\'deposits\')">' + icoDeposit + ' Cash Deposits</div>' : '') +
     (can('manage_vendors') ? '<div class="nav-item' + (cv === 'vendors' ? ' active' : '') + '" onclick="navigate(\'vendors\')">' + icoAccounts + ' Accounts</div>' : '') +
     (can('manage_geico') ? '<div class="nav-item' + (cv === 'geico' ? ' active' : '') + '" onclick="navigate(\'geico\')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 01-2 2H5a2 2 0 01-2-2V5a2 2 0 012-2h11"/></svg> Geico Surveys</div>' : '') +
+    '<div class="nav-item' + (cv === 'reviews' ? ' active' : '') + '" onclick="navigate(\'reviews\')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/></svg> Google Reviews</div>' + 
     '<div class="nav-item' + (cv === 'suggestions' ? ' active' : '') + '" onclick="navigate(\'suggestions\')">' + icoSuggestion + ' Suggestions</div>' +
     '<div class="nav-item" onclick="window.open(\'https://www.idssonline.com/pulsar.html\',\'_blank\',\'noopener\')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg> Pulsar Download</div>' +
     '<div class="nav-item' + (cv === 'documents' ? ' active' : '') + '" onclick="navigate(\'documents\')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg> Document Vault</div>' +
@@ -450,6 +451,7 @@ async function render() {
   else if (state.currentView === 'running') await renderRunningList(content);
   else if (state.currentView === 'running-admin') await renderAdminRunningList(content);
   else if (state.currentView === 'geico') await renderGeicoReviews(content);
+  else if (state.currentView === 'reviews') await renderReviews(content);
   else if (state.currentView === 'signoffs') await renderSignoffs(content);
   else if (state.currentView === 'new-signoff') await renderEditSignoff(content, null);
   else if (state.currentView === 'edit-signoff') await renderEditSignoff(content, state.currentParam);
@@ -2955,6 +2957,143 @@ function geicoRenderTable(rows) {
 
 var _vendorsData = [];
 var _vendorCities = [];
+
+// ── Google Reviews ─────────────────────────────────────────────────────────
+var _reviewsRows = [];
+var _reviewsStats = null;
+var _reviewsPage = 1;
+var REVIEWS_PAGE_SIZE = 25;
+var _reviewsSearchTimer = null;
+
+async function renderReviews(el) {
+  var iS = 'padding:8px 10px;background:var(--surface-color);border:1px solid rgba(249,115,22,0.35);border-radius:6px;color:var(--text-color);font-size:13px;outline:none';
+  var lbl = 'display:block;font-size:11px;color:var(--text-muted-color);margin-bottom:4px';
+  el.innerHTML =
+    '<div class="page-header"><div><div class="page-title">Google Reviews</div><div class="page-subtitle">Customer reviews by location &amp; rating</div></div></div>' +
+    '<div id="reviews-filters" style="display:flex;flex-wrap:wrap;gap:10px;align-items:end;margin-bottom:16px">' +
+      '<div><label style="' + lbl + '">Location</label><select id="reviews-location" style="' + iS + '" onchange="reviewsLoad()"><option value="">All locations</option></select></div>' +
+      '<div><label style="' + lbl + '">Rating</label><select id="reviews-rating" style="' + iS + '" onchange="reviewsLoad()"><option value="">All ratings</option><option value="5">5 stars</option><option value="4">4 stars</option><option value="3">3 stars</option><option value="2">2 stars</option><option value="1">1 star</option></select></div>' +
+      '<div style="flex:1;min-width:200px"><label style="' + lbl + '">Search</label><input type="text" id="reviews-search" placeholder="Reviewer or text..." style="' + iS + ';width:100%;box-sizing:border-box" oninput="reviewsSearchDebounced()" /></div>' +
+      '<button class="btn btn-secondary btn-sm" onclick="reviewsClearFilters()">Clear</button>' +
+    '</div>' +
+    '<div id="reviews-stats" style="margin-bottom:16px"></div>' +
+    '<div id="reviews-table-wrap"></div>';
+  await reviewsLoad(true);
+}
+
+function reviewsSearchDebounced() { clearTimeout(_reviewsSearchTimer); _reviewsSearchTimer = setTimeout(function(){ reviewsLoad(); }, 300); }
+function reviewsClearFilters() {
+  ['reviews-location','reviews-rating','reviews-search'].forEach(function(id){ var e=document.getElementById(id); if(e) e.value=''; });
+  reviewsLoad();
+}
+function reviewsListQS() {
+  var qs = [];
+  var loc = (document.getElementById('reviews-location')||{}).value;
+  var rating = (document.getElementById('reviews-rating')||{}).value;
+  var search = (document.getElementById('reviews-search')||{}).value;
+  if (loc) qs.push('location=' + encodeURIComponent(loc));
+  if (rating) qs.push('rating=' + encodeURIComponent(rating));
+  if (search) qs.push('search=' + encodeURIComponent(search));
+  return qs.length ? ('?' + qs.join('&')) : '';
+}
+async function reviewsLoad(initial) {
+  var statsEl = document.getElementById('reviews-stats');
+  var tableEl = document.getElementById('reviews-table-wrap');
+  if (statsEl && initial) statsEl.innerHTML = '<div style="color:var(--text-muted-color);padding:12px">Loading…</div>';
+  try {
+    if (initial) {
+      _reviewsStats = await api('GET', '/reviews/stats');
+      reviewsPopulateLocations(_reviewsStats);
+      reviewsRenderStats(_reviewsStats);
+    }
+    var rows = await api('GET', '/reviews' + reviewsListQS());
+    _reviewsRows = rows; _reviewsPage = 1;
+    reviewsRenderTable(rows);
+  } catch(e) {
+    if (statsEl && initial) statsEl.innerHTML = '<div class="alert alert-error">' + escHtml(e.message) + '</div>';
+    if (tableEl && !initial) tableEl.innerHTML = '<div class="alert alert-error">' + escHtml(e.message) + '</div>';
+  }
+}
+function reviewsPopulateLocations(s) {
+  var sel = document.getElementById('reviews-location'); if (!sel) return;
+  var cur = sel.value;
+  sel.innerHTML = '<option value="">All locations</option>' + (s.locations||[]).map(function(l){ return '<option value="' + escHtml(l) + '">' + escHtml(l) + '</option>'; }).join('');
+  sel.value = cur;
+}
+function reviewsStars(n) {
+  n = parseInt(n, 10) || 0;
+  var full = '', empty = '';
+  for (var i=0;i<n;i++) full += '★';
+  for (var j=n;j<5;j++) empty += '★';
+  return '<span style="color:#f5b400;letter-spacing:1px">' + full + '</span><span style="color:var(--border);letter-spacing:1px">' + empty + '</span>';
+}
+function reviewsStatCard(label, value, sub, color) {
+  return '<div class="card" style="flex:1;min-width:140px;padding:16px">' +
+    '<div style="font-size:12px;color:var(--text-muted-color);text-transform:uppercase;letter-spacing:0.5px">' + escHtml(label) + '</div>' +
+    '<div style="font-size:26px;font-weight:800;color:' + (color || 'var(--text-color)') + ';margin-top:4px">' + value + '</div>' +
+    (sub ? '<div style="font-size:12px;color:var(--text-muted-color);margin-top:2px">' + escHtml(sub) + '</div>' : '') +
+    '</div>';
+}
+function reviewsRenderStats(s) {
+  var el = document.getElementById('reviews-stats'); if (!el) return;
+  var total = s.total || 0;
+  var fivePct = total ? Math.round((s.five_star||0)*100/total) : 0;
+  var avg = (s.avg_rating || 0).toFixed(2);
+  var cards =
+    reviewsStatCard('Total Reviews', total, '') +
+    reviewsStatCard('Average Rating', avg + ' <span style="font-size:16px;color:#f5b400">★</span>', '', '#f5b400') +
+    reviewsStatCard('5-Star', fivePct + '%', (s.five_star||0) + ' of ' + total) +
+    reviewsStatCard('Locations', (s.by_location||[]).length, '');
+  var maxCount = (s.by_location||[]).reduce(function(m,c){ return Math.max(m, c.count); }, 0) || 1;
+  var breakdown =
+    '<div class="card" style="flex:1;min-width:260px;padding:16px">' +
+      '<div style="font-size:12px;color:var(--text-muted-color);text-transform:uppercase;letter-spacing:0.5px;margin-bottom:8px">By Location</div>' +
+      ((s.by_location||[]).length ? (s.by_location||[]).map(function(c){
+        var pct = Math.round(c.count*100/maxCount);
+        return '<div style="display:flex;align-items:center;gap:8px;margin:5px 0">' +
+          '<div style="width:150px;font-size:13px;color:var(--text-color);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">' + escHtml(c.location_name) + '</div>' +
+          '<div style="flex:1;background:rgba(249,115,22,0.15);border-radius:4px;height:10px"><div style="width:' + pct + '%;background:var(--primary);height:10px;border-radius:4px"></div></div>' +
+          '<div style="width:92px;text-align:right;font-size:12px;color:var(--text-muted-color)">' + c.count + ' • ' + parseFloat(c.avg_rating).toFixed(1) + '★</div>' +
+        '</div>';
+      }).join('') : '<div style="color:var(--text-muted-color);font-size:13px">No data</div>') +
+    '</div>';
+  el.innerHTML = '<div style="display:flex;flex-wrap:wrap;gap:12px;margin-bottom:12px">' + cards + '</div><div style="display:flex;flex-wrap:wrap;gap:12px">' + breakdown + '</div>';
+}
+function reviewsPaginate(p) { _reviewsPage = p; reviewsRenderTable(_reviewsRows); }
+function reviewsPageSize(v) { REVIEWS_PAGE_SIZE = parsePageSize(v); _reviewsPage = 1; reviewsRenderTable(_reviewsRows); }
+function reviewsRenderTable(rows) {
+  var wrap = document.getElementById('reviews-table-wrap'); if (!wrap) return;
+  var total = rows.length;
+  var totalPages = Math.max(1, Math.ceil(total / REVIEWS_PAGE_SIZE));
+  if (_reviewsPage > totalPages) _reviewsPage = totalPages;
+  if (_reviewsPage < 1) _reviewsPage = 1;
+  var _start = (_reviewsPage - 1) * REVIEWS_PAGE_SIZE;
+  var page = rows.slice(_start, _start + REVIEWS_PAGE_SIZE);
+  var _showing = total === 0 ? '0' : ((_start + 1) + '-' + Math.min(_start + REVIEWS_PAGE_SIZE, total));
+  var _sizeCtl = pageSizeControl(REVIEWS_PAGE_SIZE, 'reviewsPageSize');
+  var _btns = '';
+  if (totalPages > 1) {
+    for (var _i = 1; _i <= totalPages; _i++) { _btns += '<button class="btn btn-sm ' + (_i === _reviewsPage ? 'btn-primary' : 'btn-secondary') + '" onclick="reviewsPaginate(' + _i + ')">' + _i + '</button> '; }
+    _btns = '<button class="btn btn-secondary btn-sm" onclick="reviewsPaginate(' + (_reviewsPage-1) + ')" ' + (_reviewsPage===1?'disabled':'') + '>&lsaquo;</button> ' + _btns + '<button class="btn btn-secondary btn-sm" onclick="reviewsPaginate(' + (_reviewsPage+1) + ')" ' + (_reviewsPage===totalPages?'disabled':'') + '>&rsaquo;</button>';
+  }
+  var _pager = '<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:12px">' + _sizeCtl + _btns + '</div>';
+  wrap.innerHTML =
+    '<div style="font-size:12px;color:var(--text-muted-color);margin-bottom:8px">Showing ' + _showing + ' of ' + total + ' review' + (total===1?'':'s') + '</div>' +
+    '<div class="card"><div class="table-wrap"><table>' +
+      '<thead><tr><th>Location</th><th>Reviewer</th><th>Rating</th><th>Review</th><th>Date</th></tr></thead><tbody>' +
+      (total === 0
+        ? '<tr><td colspan="5" style="text-align:center;color:var(--text-muted-color);padding:32px">No reviews found.</td></tr>'
+        : page.map(function(r){
+            return '<tr>' +
+              '<td style="white-space:nowrap">' + escHtml(r.location_name||'—') + '</td>' +
+              '<td style="white-space:nowrap">' + escHtml(r.reviewer_name||'—') + '</td>' +
+              '<td style="white-space:nowrap">' + reviewsStars(r.rating) + '</td>' +
+              '<td style="min-width:280px">' + escHtml(r.review_text||'') + '</td>' +
+              '<td style="white-space:nowrap">' + escHtml(r.review_date||'—') + '</td>' +
+            '</tr>';
+          }).join('')) +
+      '</tbody></table></div></div>' + _pager;
+}
 
 async function renderVendors(el) {
   if (!can('manage_vendors')) { el.innerHTML = '<div class="alert alert-error">Access denied.</div>'; return; }
