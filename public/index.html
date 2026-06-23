@@ -4559,11 +4559,11 @@ async function docShare(type, id) {
     '<label style="font-size:13px;display:block;margin-bottom:6px">Add access (select one or more)</label>' +
     '<div id="doc-share-picker" style="max-height:190px;overflow:auto;border:1px solid var(--border);border-radius:6px;padding:8px;margin-bottom:8px">' +
     '<div style="font-size:11px;text-transform:uppercase;letter-spacing:0.5px;color:var(--text-muted-color);margin:2px 0 6px">People</div>' +
-    picker.users.map(function (u) { return '<label style="display:flex;align-items:center;gap:8px;padding:4px 2px;font-size:14px;cursor:pointer"><input type="checkbox" class="doc-share-cb" value="user:' + u.id + '" /> ' + escHtml(u.name) + ' <span style="color:var(--text-muted-color);font-size:12px">(' + escHtml(roleLabel(u.role)) + ')</span></label>'; }).join('') +
+    picker.users.map(function (u) { return '<label style="display:flex;align-items:center;gap:8px;padding:4px 2px;font-size:14px;cursor:pointer"><input type="checkbox" class="doc-share-cb" value="user:' + u.id + '" style="width:auto;flex:0 0 auto;margin:0;padding:0" /> ' + escHtml(u.name) + ' <span style="color:var(--text-muted-color);font-size:12px">(' + escHtml(roleLabel(u.role)) + ')</span></label>'; }).join('') +
     '<div style="font-size:11px;text-transform:uppercase;letter-spacing:0.5px;color:var(--text-muted-color);margin:10px 0 6px">Entire role</div>' +
-    picker.roles.map(function (r) { return '<label style="display:flex;align-items:center;gap:8px;padding:4px 2px;font-size:14px;cursor:pointer"><input type="checkbox" class="doc-share-cb" value="role:' + r + '" /> Everyone: ' + escHtml(roleLabel(r)) + '</label>'; }).join('') +
+    picker.roles.map(function (r) { return '<label style="display:flex;align-items:center;gap:8px;padding:4px 2px;font-size:14px;cursor:pointer"><input type="checkbox" class="doc-share-cb" value="role:' + r + '" style="width:auto;flex:0 0 auto;margin:0;padding:0" /> Everyone: ' + escHtml(roleLabel(r)) + '</label>'; }).join('') +
     '</div>' +
-    '<label style="font-size:13px;display:flex;align-items:center;gap:8px;margin-bottom:10px"><input type="checkbox" id="doc-share-edit" /> Allow editing (rename, move, delete, upload)</label>' +
+    '<label style="font-size:13px;display:flex;align-items:center;gap:8px;margin-bottom:10px"><input type="checkbox" id="doc-share-edit" style="width:auto;flex:0 0 auto;margin:0;padding:0" /> Allow editing (rename, move, delete, upload)</label>' +
     '<button class="btn btn-primary btn-sm" onclick="docAddShare(\'' + type + '\',' + id + ')">Add selected</button>' +
     '</div>' +
     '</div>' +
