@@ -829,6 +829,54 @@ async function initDB() {
       }
       if (missingChunks.rows.length) console.log('Backfilled SOP chunks for ' + missingChunks.rows.length + ' document(s)');
     } catch (e) { console.error('SOP chunk backfill failed:', e.message); }
+    // ===== Document Vault =====
+    // Folders form a tree (parent_id NULL = root). Files live in a folder or root.
+    // Actual file bytes live in Cloudflare R2; we only store metadata + the R2 key.
+    await client.query(
+      'CREATE TABLE IF NOT EXISTS document_folders (' +
+      '  id SERIAL PRIMARY KEY,' +
+      '  name VARCHAR(255) NOT NULL,' +
+      '  parent_id INTEGER REFERENCES document_folders(id) ON DELETE CASCADE,' +
+      '  owner_id INTEGER REFERENCES users(id),' +
+      '  owner_name VARCHAR(255),' +
+      '  created_at TIMESTAMPTZ DEFAULT NOW()' +
+      ');'
+    );
+    await client.query(
+      'CREATE TABLE IF NOT EXISTS documents (' +
+      '  id SERIAL PRIMARY KEY,' +
+      '  name VARCHAR(255) NOT NULL,' +
+      '  folder_id INTEGER REFERENCES document_folders(id) ON DELETE CASCADE,' +
+      '  r2_key VARCHAR(512) UNIQUE NOT NULL,' +
+      '  mime_type VARCHAR(255),' +
+      '  size_bytes BIGINT DEFAULT 0,' +
+      "  status VARCHAR(20) NOT NULL DEFAULT 'pending'," +
+      '  owner_id INTEGER REFERENCES users(id),' +
+      '  owner_name VARCHAR(255),' +
+      '  created_at TIMESTAMPTZ DEFAULT NOW(),' +
+      '  updated_at TIMESTAMPTZ DEFAULT NOW()' +
+      ');'
+    );
+    // Drive-style sharing. A share grants a user OR a whole role access to a file
+    // or folder. Folder shares cascade to everything inside (resolved in the route).
+    await client.query(
+      'CREATE TABLE IF NOT EXISTS document_shares (' +
+      '  id SERIAL PRIMARY KEY,' +
+      '  resource_type VARCHAR(10) NOT NULL,' +
+      '  resource_id INTEGER NOT NULL,' +
+      '  grantee_type VARCHAR(10) NOT NULL,' +
+      '  grantee_user_id INTEGER REFERENCES users(id) ON DELETE CASCADE,' +
+      '  grantee_role VARCHAR(50),' +
+      '  can_edit BOOLEAN NOT NULL DEFAULT false,' +
+      '  created_by INTEGER REFERENCES users(id),' +
+      '  created_at TIMESTAMPTZ DEFAULT NOW()' +
+      ');'
+    );
+    await client.query('CREATE INDEX IF NOT EXISTS document_folders_parent_idx ON document_folders (parent_id);');
+    await client.query('CREATE INDEX IF NOT EXISTS documents_folder_idx ON documents (folder_id);');
+    await client.query('CREATE INDEX IF NOT EXISTS document_shares_resource_idx ON document_shares (resource_type, resource_id);');
+    await client.query('CREATE INDEX IF NOT EXISTS document_shares_user_idx ON document_shares (grantee_user_id);');
+    await client.query('CREATE INDEX IF NOT EXISTS document_shares_role_idx ON document_shares (grantee_role);');
     console.log('Database initialized');
   } finally {
     client.release();

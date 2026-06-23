@@ -65,6 +65,7 @@ app.use('/api/tasks', require('./routes/tasks'));
 app.use('/api/work-orders', require('./routes/workOrders'));
 app.use('/api/schedule', require('./routes/schedule'));
 app.use('/api/push', require('./routes/push'));
+app.use('/api/documents', require('./routes/documents'));
 
 // Unknown API routes return JSON 404 instead of the SPA shell
 app.use('/api', (req, res) => {
