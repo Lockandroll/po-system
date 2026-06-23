@@ -880,6 +880,121 @@ async function initDB() {
     await client.query('CREATE INDEX IF NOT EXISTS document_shares_user_idx ON document_shares (grantee_user_id);');
     await client.query('CREATE INDEX IF NOT EXISTS document_shares_role_idx ON document_shares (grantee_role);');
     await client.query('ALTER TABLE documents ADD COLUMN IF NOT EXISTS emailable BOOLEAN NOT NULL DEFAULT false;');
+    // ===== Invoices (field invoicing) =====
+    const DEFAULT_AGREEMENT = [
+      "I, {customer}, confirm that the information given by me is correct, I have the authority to authorize these services, and I indemnify and hold harmless the locksmith and Pop-A-Lock against liability. Also I authorize Pop-A-Lock to perform the above described service and agree to pay (or authorize my motor club to pay) all applicable charges.",
+      "I, {customer}, understand that all electronic keys or remotes must be present when the locksmith programs new keys or remotes to my vehicle. I understand that keys or remotes that are not present during the service will no longer work the vehicle. Furthermore, the attempted use of non-working keys may cause my vehicle to become inoperative and require dealer service.",
+      "I, {customer}, accept the work as satisfactory and that the vehicle and/or property has been left in good working condition and that no damage occurred as a result of the performance of service. Furthermore, I understand Pop-A-Lock will warranty all parts and labor for 90 days from the date of this invoice. Pop-A-Lock will facilitate the exchange of any parts warrantied past 90 days by the manufacturer, however I will be responsible for the labor cost associated with the warranty replacement."
+    ].join("\n\n");
+    await client.query(
+      'CREATE TABLE IF NOT EXISTS invoices (' +
+      '  id SERIAL PRIMARY KEY,' +
+      '  invoice_number BIGINT UNIQUE NOT NULL,' +
+      '  locksmith_id INTEGER REFERENCES users(id),' +
+      '  locksmith_name VARCHAR(255),' +
+      '  invoice_date DATE DEFAULT CURRENT_DATE,' +
+      "  status VARCHAR(20) NOT NULL DEFAULT 'draft'," +
+      '  account_id INTEGER REFERENCES vendors(id) ON DELETE SET NULL,' +
+      '  account_name VARCHAR(255),' +
+      '  customer_po_wo VARCHAR(255),' +
+      '  pay_type VARCHAR(50),' +
+      '  card_last4 VARCHAR(4),' +
+      '  cc_online BOOLEAN DEFAULT false,' +
+      '  time_in VARCHAR(20),' +
+      '  time_out VARCHAR(20),' +
+      '  customer_name VARCHAR(255),' +
+      '  dl_number VARCHAR(100),' +
+      '  dl_state VARCHAR(4),' +
+      '  street_address VARCHAR(255),' +
+      '  city VARCHAR(120),' +
+      '  state VARCHAR(4),' +
+      '  zip VARCHAR(12),' +
+      '  phone VARCHAR(50),' +
+      '  email VARCHAR(255),' +
+      '  vehicle_year VARCHAR(8),' +
+      '  vehicle_make VARCHAR(100),' +
+      '  vehicle_model VARCHAR(100),' +
+      '  license_tag VARCHAR(40),' +
+      '  tag_state VARCHAR(4),' +
+      '  vin VARCHAR(20),' +
+      '  mileage VARCHAR(20),' +
+      '  ent_registration BOOLEAN DEFAULT false,' +
+      '  ent_insurance BOOLEAN DEFAULT false,' +
+      '  ent_title BOOLEAN DEFAULT false,' +
+      '  ent_rental BOOLEAN DEFAULT false,' +
+      '  tax_rate DECIMAL(5,2) DEFAULT 0,' +
+      '  labor_amount DECIMAL(10,2) DEFAULT 0,' +
+      '  parts_amount DECIMAL(10,2) DEFAULT 0,' +
+      '  subtotal DECIMAL(10,2) DEFAULT 0,' +
+      '  tax_amount DECIMAL(10,2) DEFAULT 0,' +
+      '  tip_amount DECIMAL(10,2) DEFAULT 0,' +
+      '  grand_total DECIMAL(10,2) DEFAULT 0,' +
+      '  notes TEXT,' +
+      '  payments_note TEXT,' +
+      '  agreement_text TEXT,' +
+      '  signature_image TEXT,' +
+      '  signed_name VARCHAR(255),' +
+      '  signed_at TIMESTAMPTZ,' +
+      '  created_at TIMESTAMPTZ DEFAULT NOW(),' +
+      '  updated_at TIMESTAMPTZ DEFAULT NOW()' +
+      ');' +
+      'CREATE TABLE IF NOT EXISTS invoice_line_items (' +
+      '  id SERIAL PRIMARY KEY,' +
+      '  invoice_id INTEGER REFERENCES invoices(id) ON DELETE CASCADE,' +
+      "  line_type VARCHAR(10) NOT NULL DEFAULT 'part'," +
+      '  part_id INTEGER REFERENCES parts(id) ON DELETE SET NULL,' +
+      '  item_number VARCHAR(150),' +
+      '  description VARCHAR(500) NOT NULL,' +
+      '  quantity DECIMAL(10,2) NOT NULL DEFAULT 1,' +
+      '  unit_price DECIMAL(10,2) NOT NULL DEFAULT 0,' +
+      '  taxable BOOLEAN DEFAULT false,' +
+      '  position INTEGER DEFAULT 0' +
+      ');'
+    );
+    await client.query(
+      'CREATE INDEX IF NOT EXISTS idx_invoices_date ON invoices(invoice_date);' +
+      'CREATE INDEX IF NOT EXISTS idx_invoices_locksmith ON invoices(locksmith_id);' +
+      'CREATE INDEX IF NOT EXISTS idx_invoices_status ON invoices(status);' +
+      'CREATE INDEX IF NOT EXISTS idx_invoice_items_invoice ON invoice_line_items(invoice_id);' +
+      'CREATE INDEX IF NOT EXISTS idx_invoice_items_part ON invoice_line_items(part_id);'
+    );
+    // Per-account (vendor) config for the invoice account dropdown
+    await client.query(
+      'ALTER TABLE vendors ADD COLUMN IF NOT EXISTS show_in_invoice BOOLEAN NOT NULL DEFAULT false;' +
+      'ALTER TABLE vendors ADD COLUMN IF NOT EXISTS invoice_notes TEXT;' +
+      'ALTER TABLE vendors ADD COLUMN IF NOT EXISTS auto_line_items JSONB;' +
+      'ALTER TABLE vendors ADD COLUMN IF NOT EXISTS agreement_text TEXT;'
+    );
+    // Default authorization/agreement text (used when an account has none)
+    const _invAgr = await client.query("SELECT value FROM settings WHERE key = 'invoice_default_agreement'");
+    if (!_invAgr.rows.length) {
+      await client.query("INSERT INTO settings (key, value, updated_at) VALUES ('invoice_default_agreement', $1, NOW()) ON CONFLICT (key) DO NOTHING", [DEFAULT_AGREEMENT]);
+    }
+    // Starting invoice number (numeric, incrementing). Configurable later via settings.
+    const _invStart = await client.query("SELECT value FROM settings WHERE key = 'invoice_start_number'");
+    if (!_invStart.rows.length) {
+      await client.query("INSERT INTO settings (key, value, updated_at) VALUES ('invoice_start_number', '100001', NOW()) ON CONFLICT (key) DO NOTHING");
+    }
+    // Backfill invoice permissions into saved role configs (run once)
+    const _v5 = await client.query("SELECT value FROM settings WHERE key = 'perm_matrix_v5_backfilled'");
+    if (!_v5.rows.length) {
+      const _rp5 = await client.query("SELECT value FROM settings WHERE key = 'role_permissions'");
+      if (_rp5.rows.length && _rp5.rows[0].value) {
+        try {
+          const obj = JSON.parse(_rp5.rows[0].value);
+          if (obj && typeof obj === 'object') {
+            ['locksmith', 'locksmith_coordinator', 'roadside_technician', 'manager'].forEach(function(r) {
+              if (Array.isArray(obj[r])) {
+                ['view_invoices', 'create_invoice', 'edit_invoice', 'delete_invoice'].forEach(function(p) { if (obj[r].indexOf(p) === -1) obj[r].push(p); });
+              }
+            });
+            if (Array.isArray(obj.manager) && obj.manager.indexOf('manage_invoice_setup') === -1) obj.manager.push('manage_invoice_setup');
+            await client.query("INSERT INTO settings (key, value, updated_at) VALUES ('role_permissions', $1, NOW()) ON CONFLICT (key) DO UPDATE SET value = $1, updated_at = NOW()", [JSON.stringify(obj)]);
+          }
+        } catch (e) { console.error('perm matrix v5 backfill failed:', e.message); }
+      }
+      await client.query("INSERT INTO settings (key, value) VALUES ('perm_matrix_v5_backfilled', '1') ON CONFLICT (key) DO NOTHING");
+    }
     console.log('Database initialized');
   } finally {
     client.release();
