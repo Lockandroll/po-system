@@ -921,32 +921,55 @@ async function renderDashboard(el) {
   }
 }
 
-function renderPagination(page, totalPages, totalItems, callbackName) {
-  if (totalPages <= 1) return '';
-  const start = (page - 1) * 10 + 1;
-  const end = Math.min(page * 10, totalItems);
+const PAGE_SIZE_CHOICES = [10, 25, 50, 100];
+function parsePageSize(v) { return v === 'all' ? 1e9 : (parseInt(v, 10) || 10); }
+function pageSizeControl(current, cb) {
+  var choices = PAGE_SIZE_CHOICES.slice();
+  if (current < 1e9 && choices.indexOf(current) === -1) choices.push(current);
+  choices.sort(function(x, y) { return x - y; });
+  var opts = choices.map(function(n) { return '<option value="' + n + '"' + (current === n ? ' selected' : '') + '>' + n + '</option>'; }).join('');
+  opts += '<option value="all"' + (current >= 1e9 ? ' selected' : '') + '>All</option>';
+  return '<label style="font-size:13px;color:var(--text-muted-color);display:inline-flex;align-items:center;gap:6px">Rows: <select onchange="' + cb + '(this.value)" style="background:var(--bg-elevated);color:var(--text-dim);border:1px solid var(--border);border-radius:4px;padding:3px 6px;font-size:13px;cursor:pointer">' + opts + '</select></label>';
+}
+function renderPagination(page, totalPages, totalItems, callbackName, pageSize, sizeCb) {
+  if (!totalItems) return '';
+  pageSize = pageSize || 10;
+  var sizeCtl = sizeCb ? pageSizeControl(pageSize, sizeCb) : '';
+  if (totalPages <= 1 || pageSize >= 1e9) {
+    return '<div style="display:flex;align-items:center;justify-content:space-between;padding:12px 16px;border-top:1px solid var(--border);flex-wrap:wrap;gap:8px">' +
+      '<span style="font-size:13px;color:var(--text-muted-color)">Showing all ' + totalItems + '</span>' +
+      (sizeCtl ? ('<div style="display:flex;gap:12px;align-items:center">' + sizeCtl + '</div>') : '') +
+    '</div>';
+  }
+  const start = (page - 1) * pageSize + 1;
+  const end = Math.min(page * pageSize, totalItems);
   let btns = '';
   for (let i = 1; i <= totalPages; i++) {
     if (i === 1 || i === totalPages || Math.abs(i - page) <= 1) {
       btns += '<button onclick="' + callbackName + '(' + i + ')" style="min-width:32px;padding:4px 8px;border-radius:4px;border:1px solid var(--border);background:' + (i === page ? 'var(--primary)' : 'var(--bg-elevated)') + ';color:' + (i === page ? 'white' : 'var(--text-dim)') + ';cursor:pointer;font-size:13px">' + i + '</button>';
     } else if (Math.abs(i - page) === 2) {
-      btns += '<span style="color:var(--text-muted-color);padding:0 2px">…</span>';
+      btns += '<span style="color:var(--text-muted-color);padding:0 2px">&hellip;</span>';
     }
   }
-  return '<div style="display:flex;align-items:center;justify-content:space-between;padding:12px 16px;border-top:1px solid var(--border)">' +
-    '<span style="font-size:13px;color:var(--text-muted-color)">Showing ' + start + '–' + end + ' of ' + totalItems + '</span>' +
-    '<div style="display:flex;gap:4px;align-items:center">' +
-      '<button onclick="' + callbackName + '(' + (page - 1) + ')" ' + (page === 1 ? 'disabled' : '') + ' style="padding:4px 8px;border-radius:4px;border:1px solid var(--border);background:var(--bg-elevated);color:var(--text-dim);cursor:pointer;font-size:13px">‹</button>' +
-      btns +
-      '<button onclick="' + callbackName + '(' + (page + 1) + ')" ' + (page === totalPages ? 'disabled' : '') + ' style="padding:4px 8px;border-radius:4px;border:1px solid var(--border);background:var(--bg-elevated);color:var(--text-dim);cursor:pointer;font-size:13px">›</button>' +
+  return '<div style="display:flex;align-items:center;justify-content:space-between;padding:12px 16px;border-top:1px solid var(--border);flex-wrap:wrap;gap:8px">' +
+    '<span style="font-size:13px;color:var(--text-muted-color)">Showing ' + start + '&ndash;' + end + ' of ' + totalItems + '</span>' +
+    '<div style="display:flex;gap:12px;align-items:center;flex-wrap:wrap">' +
+      sizeCtl +
+      '<div style="display:flex;gap:4px;align-items:center">' +
+        '<button onclick="' + callbackName + '(' + (page - 1) + ')" ' + (page === 1 ? 'disabled' : '') + ' style="padding:4px 8px;border-radius:4px;border:1px solid var(--border);background:var(--bg-elevated);color:var(--text-dim);cursor:pointer;font-size:13px">&lsaquo;</button>' +
+        btns +
+        '<button onclick="' + callbackName + '(' + (page + 1) + ')" ' + (page === totalPages ? 'disabled' : '') + ' style="padding:4px 8px;border-radius:4px;border:1px solid var(--border);background:var(--bg-elevated);color:var(--text-dim);cursor:pointer;font-size:13px">&rsaquo;</button>' +
+      '</div>' +
     '</div>' +
   '</div>';
 }
 function poPaginate(p) { _poPage = p; applyFilters(); }
+function poPageSize(v) { PO_PAGE_SIZE = parsePageSize(v); _poPage = 1; applyFilters(); }
 function quotePaginate(p) { _quotePage = p; filterQuotes(); }
+function quotePageSize(v) { QUOTE_PAGE_SIZE = parsePageSize(v); _quotePage = 1; filterQuotes(); }
 
 let _poPage = 1;
-const PO_PAGE_SIZE = 10;
+let PO_PAGE_SIZE = 10;
 
 function applyFilters(resetPage) {
   if (resetPage) _poPage = 1;
@@ -999,7 +1022,7 @@ function applyFilters(resetPage) {
       '</tr>';
     }).join('') +
     '</tbody></table></div>' +
-    renderPagination(_poPage, totalPages, filtered.length, 'poPaginate');
+    renderPagination(_poPage, totalPages, filtered.length, 'poPaginate', PO_PAGE_SIZE, 'poPageSize');
 }
 
 async function exportCSV() {
@@ -1674,8 +1697,9 @@ function usersRenderTable() {
   // Pagination controls
   var pg = document.getElementById('users-pagination');
   if (!pg) return;
-  if (totalPages <= 1) { pg.innerHTML = '<span style="font-size:13px;color:var(--text-muted-color)">' + filtered.length + ' user' + (filtered.length !== 1 ? 's' : '') + '</span>'; return; }
-  var html = '<span style="font-size:13px;color:var(--text-muted-color);margin-right:4px">' + filtered.length + ' users</span>';
+  var sizeCtl = pageSizeControl(_usersPageSize, 'usersPageSize');
+  if (totalPages <= 1) { pg.innerHTML = sizeCtl + '<span style="font-size:13px;color:var(--text-muted-color)">' + filtered.length + ' user' + (filtered.length !== 1 ? 's' : '') + '</span>'; return; }
+  var html = sizeCtl + '<span style="font-size:13px;color:var(--text-muted-color);margin-right:4px">' + filtered.length + ' users</span>';
   html += '<button class="btn btn-secondary btn-sm" onclick="usersGoPage(' + (_usersPage - 1) + ')" ' + (_usersPage === 1 ? 'disabled' : '') + '>&lsaquo;</button>';
   for (var i = 1; i <= totalPages; i++) {
     html += '<button class="btn btn-sm ' + (i === _usersPage ? 'btn-primary' : 'btn-secondary') + '" onclick="usersGoPage(' + i + ')">' + i + '</button>';
@@ -1684,6 +1708,7 @@ function usersRenderTable() {
   pg.innerHTML = html;
 }
 
+function usersPageSize(v) { _usersPageSize = parsePageSize(v); _usersPage = 1; usersRenderTable(); }
 function usersGoPage(p) {
   var filtered = _usersData.filter(function(u) {
     if (!_usersSearch) return true;
@@ -3081,6 +3106,7 @@ function geicoRatingBadge(r) {
 }
 
 function geicoPaginate(p) { _geicoPage = p; geicoRenderTable(_geicoRows); }
+function geicoPageSize(v) { GEICO_PAGE_SIZE = parsePageSize(v); _geicoPage = 1; geicoRenderTable(_geicoRows); }
 function geicoRenderTable(rows) {
   var wrap = document.getElementById('geico-table-wrap'); if (!wrap) return;
   var total = rows.length;
@@ -3090,12 +3116,13 @@ function geicoRenderTable(rows) {
   var _start = (_geicoPage - 1) * GEICO_PAGE_SIZE;
   var page = rows.slice(_start, _start + GEICO_PAGE_SIZE);
   var _showing = total === 0 ? '0' : ((_start + 1) + '-' + Math.min(_start + GEICO_PAGE_SIZE, total));
-  var _pager = '';
+  var _sizeCtl = pageSizeControl(GEICO_PAGE_SIZE, 'geicoPageSize');
+  var _btns = '';
   if (totalPages > 1) {
-    var _btns = '';
     for (var _i = 1; _i <= totalPages; _i++) { _btns += '<button class="btn btn-sm ' + (_i === _geicoPage ? 'btn-primary' : 'btn-secondary') + '" onclick="geicoPaginate(' + _i + ')">' + _i + '</button> '; }
-    _pager = '<div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;margin-top:12px">' + '<button class="btn btn-secondary btn-sm" onclick="geicoPaginate(' + (_geicoPage-1) + ')" ' + (_geicoPage===1?'disabled':'') + '>&lsaquo;</button> ' + _btns + '<button class="btn btn-secondary btn-sm" onclick="geicoPaginate(' + (_geicoPage+1) + ')" ' + (_geicoPage===totalPages?'disabled':'') + '>&rsaquo;</button>' + '</div>';
+    _btns = '<button class="btn btn-secondary btn-sm" onclick="geicoPaginate(' + (_geicoPage-1) + ')" ' + (_geicoPage===1?'disabled':'') + '>&lsaquo;</button> ' + _btns + '<button class="btn btn-secondary btn-sm" onclick="geicoPaginate(' + (_geicoPage+1) + ')" ' + (_geicoPage===totalPages?'disabled':'') + '>&rsaquo;</button>';
   }
+  var _pager = '<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:12px">' + _sizeCtl + _btns + '</div>';
   wrap.innerHTML =
     '<div style="font-size:12px;color:var(--text-muted-color);margin-bottom:8px">Showing ' + _showing + ' of ' + total + ' survey' + (total===1?'':'s') + '</div>' +
     '<div class="card"><div class="table-wrap"><table>' +
@@ -3508,7 +3535,7 @@ function renderQuoteRows(quotes, isAdmin) {
 }
 
 let _quotePage = 1;
-const QUOTE_PAGE_SIZE = 10;
+let QUOTE_PAGE_SIZE = 10;
 
 async function renderQuotes(el) {
   try {
@@ -3565,7 +3592,7 @@ function filterQuotes(resetPage) {
     '<thead><tr><th>Quote #</th><th>Customer</th><th>City</th>' + (isAdmin ? '<th>Created By</th>' : '') + '<th>Total</th><th>Date</th><th></th></tr></thead>' +
     '<tbody>' + renderQuoteRows(page, isAdmin) + '</tbody>' +
     '</table></div>' +
-    renderPagination(_quotePage, totalPages, filtered.length, 'quotePaginate');
+    renderPagination(_quotePage, totalPages, filtered.length, 'quotePaginate', QUOTE_PAGE_SIZE, 'quotePageSize');
 }
 
 async function renderEditQuote(el, id) {
@@ -4156,6 +4183,7 @@ function auditApplyFilter() {
   _auditPage = 1;
   auditRenderTable();
 }
+function auditPageSize(v) { _auditPageSize = parsePageSize(v); _auditPage = 1; auditRenderTable(); }
 function auditGoPage(p) {
   var filtered = auditGetFiltered();
   var totalPages = Math.max(1, Math.ceil(filtered.length / _auditPageSize));
@@ -4173,8 +4201,9 @@ function auditRenderTable() {
   tbody.innerHTML = page.length ? renderAuditRows(page) : '<tr><td colspan="6" style="text-align:center;padding:24px;color:var(--text-muted-color)">No matching entries.</td></tr>';
   var pg = document.getElementById('audit-pagination');
   if (!pg) return;
-  if (totalPages <= 1) { pg.innerHTML = '<span style="font-size:13px;color:var(--text-muted-color)">' + filtered.length + ' record' + (filtered.length !== 1 ? 's' : '') + '</span>'; return; }
-  var html = '<span style="font-size:13px;color:var(--text-muted-color);margin-right:4px">' + filtered.length + ' records</span>';
+  var sizeCtl = pageSizeControl(_auditPageSize, 'auditPageSize');
+  if (totalPages <= 1) { pg.innerHTML = sizeCtl + '<span style="font-size:13px;color:var(--text-muted-color)">' + filtered.length + ' record' + (filtered.length !== 1 ? 's' : '') + '</span>'; return; }
+  var html = sizeCtl + '<span style="font-size:13px;color:var(--text-muted-color);margin-right:4px">' + filtered.length + ' records</span>';
   html += '<button class="btn btn-secondary btn-sm" onclick="auditGoPage(' + (_auditPage - 1) + ')" ' + (_auditPage === 1 ? 'disabled' : '') + '>&lsaquo;</button>';
   for (var i = 1; i <= totalPages; i++) {
     html += '<button class="btn btn-sm ' + (i === _auditPage ? 'btn-primary' : 'btn-secondary') + '" onclick="auditGoPage(' + i + ')">' + i + '</button>';
@@ -4331,6 +4360,7 @@ function aiConvGetFiltered() {
            (c.user_name || '').toLowerCase().includes(q);
   });
 }
+function aiConvPageSize(v) { _convPageSize = parsePageSize(v); _convPage = 1; aiConvRenderPage(); }
 function aiConvGoPage(p) {
   var filtered = aiConvGetFiltered();
   var totalPages = Math.max(1, Math.ceil(filtered.length / _convPageSize));
@@ -4367,8 +4397,9 @@ function aiConvRenderPage() {
   }
   var pg = document.getElementById('ai-conv-pagination');
   if (!pg) return;
-  if (totalPages <= 1) { pg.innerHTML = '<span style="font-size:13px;color:var(--text-muted-color)">' + filtered.length + ' conversation' + (filtered.length !== 1 ? 's' : '') + '</span>'; return; }
-  var html = '<span style="font-size:13px;color:var(--text-muted-color);margin-right:4px">' + filtered.length + ' conversations</span>';
+  var sizeCtl = pageSizeControl(_convPageSize, 'aiConvPageSize');
+  if (totalPages <= 1) { pg.innerHTML = sizeCtl + '<span style="font-size:13px;color:var(--text-muted-color)">' + filtered.length + ' conversation' + (filtered.length !== 1 ? 's' : '') + '</span>'; return; }
+  var html = sizeCtl + '<span style="font-size:13px;color:var(--text-muted-color);margin-right:4px">' + filtered.length + ' conversations</span>';
   html += '<button class="btn btn-secondary btn-sm" onclick="aiConvGoPage(' + (_convPage - 1) + ')" ' + (_convPage === 1 ? 'disabled' : '') + '>&lsaquo;</button>';
   for (var i = 1; i <= totalPages; i++) {
     html += '<button class="btn btn-sm ' + (i === _convPage ? 'btn-primary' : 'btn-secondary') + '" onclick="aiConvGoPage(' + i + ')">' + i + '</button>';
@@ -5415,9 +5446,10 @@ async function deleteVR(id) {
 // ── Fleet Registry ─────────────────────────────────────────────────────────────
 var _allVehicles = [];
 var _fleetPage = 1;
-const FLEET_PAGE_SIZE = 15;
+let FLEET_PAGE_SIZE = 15;
 
 function fleetPaginate(p) { _fleetPage = p; applyFleetFilters(); }
+function fleetPageSize(v) { FLEET_PAGE_SIZE = parsePageSize(v); _fleetPage = 1; applyFleetFilters(); }
 
 function applyFleetFilters(resetPage) {
   if (resetPage) _fleetPage = 1;
@@ -5477,7 +5509,7 @@ function applyFleetFilters(resetPage) {
     '</tr>';
   }).join('');
 
-  document.getElementById('fleet-pagination').innerHTML = renderPagination(_fleetPage, totalPages, filtered.length, 'fleetPaginate');
+  document.getElementById('fleet-pagination').innerHTML = renderPagination(_fleetPage, totalPages, filtered.length, 'fleetPaginate', FLEET_PAGE_SIZE, 'fleetPageSize');
 }
 
 async function renderFleetRegistry(el) {
@@ -6468,7 +6500,7 @@ async function updateSuggestion(id, body) {
 // ── Sign-Off Sheets ─────────────────────────────────────────────────────────
 let signoffPhotos = [];
 let _signoffPage = 1;
-const SIGNOFF_PAGE_SIZE = 15;
+let SIGNOFF_PAGE_SIZE = 15;
 let _signoffSigPad = null;
 let _signoffSignatureData = null;
 let _signoffGps = null;
@@ -7240,6 +7272,7 @@ async function renderSignoffs(el) {
 }
 
 function signoffPaginate(p) { _signoffPage = p; filterSignoffs(); }
+function signoffPageSize(v) { SIGNOFF_PAGE_SIZE = parsePageSize(v); _signoffPage = 1; filterSignoffs(); }
 
 function filterSignoffs(resetPage) {
   if (resetPage) _signoffPage = 1;
@@ -7267,7 +7300,7 @@ function filterSignoffs(resetPage) {
     '<thead><tr><th>Form #</th><th>Store</th><th>PO #</th><th>Account</th>' + (signoffSeeAll() ? '<th>Assigned To</th>' : '') + '<th>Status</th><th>Created</th><th></th></tr></thead>' +
     '<tbody>' + page.map(renderSignoffRow).join('') + '</tbody>' +
     '</table></div>' +
-    renderPagination(_signoffPage, totalPages, filtered.length, 'signoffPaginate');
+    renderPagination(_signoffPage, totalPages, filtered.length, 'signoffPaginate', SIGNOFF_PAGE_SIZE, 'signoffPageSize');
 }
 
 function signoffSeeAll() { return ['admin','manager'].includes(state.user.role); }
@@ -8149,6 +8182,7 @@ function schedSetCity(c){ _schedCity=c||''; renderScheduleAdmin(document.getElem
 function schedSetRole(r){ _schedRole=r||''; renderScheduleAdmin(document.getElementById('content')); }
 function schedRoleOptions(){
   var byLabel={};
+  ['locksmith','locksmith_coordinator','roadside_technician','manager','admin'].forEach(function(rl){ var lbl=roleLabel(rl); if(!byLabel[lbl]) byLabel[lbl]=[]; if(byLabel[lbl].indexOf(rl)===-1) byLabel[lbl].push(rl); });
   _schedUsers.forEach(function(u){ var lbl=roleLabel(u.role); if(!byLabel[lbl]) byLabel[lbl]=[]; if(byLabel[lbl].indexOf(u.role)===-1) byLabel[lbl].push(u.role); });
   var labels=Object.keys(byLabel).sort();
   return '<option value="">All roles</option>'+labels.map(function(lbl){ var val=byLabel[lbl].join(','); return '<option value="'+escHtml(val)+'"'+(_schedRole===val?' selected':'')+'>'+escHtml(lbl)+'</option>'; }).join('');
