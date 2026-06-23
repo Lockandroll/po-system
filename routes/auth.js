@@ -56,6 +56,7 @@ router.post('/setup', async (req, res) => {
   const user = result.rows[0];
   const token = jwt.sign({ id: user.id, email: user.email, name: user.name, role: user.role }, process.env.JWT_SECRET, { expiresIn: '24h' });
   logAudit({ entity_type: 'auth', action: 'login', user_id: user.id, user_name: user.name, details: { method: 'account setup', ip: clientIp(req) } });
+  pool.query('UPDATE users SET last_login_at = NOW(), last_seen_at = NOW() WHERE id = $1', [user.id]).catch(function(){});
   res.json({ token, user });
 });
 
@@ -110,6 +111,7 @@ router.post('/login', async (req, res) => {
       setDeviceCookie(req, res, deviceToken, newExpires);
       const tdToken = jwt.sign({ id: user.id, email: user.email, name: user.name, role: user.role }, process.env.JWT_SECRET, { expiresIn: '24h' });
       logAudit({ entity_type: 'auth', action: 'login', user_id: user.id, user_name: user.name, details: { method: 'trusted device', ip: clientIp(req) } });
+      pool.query('UPDATE users SET last_login_at = NOW(), last_seen_at = NOW() WHERE id = $1', [user.id]).catch(function(){});
       return res.json({ token: tdToken, user: { id: user.id, name: user.name, email: user.email, role: user.role } });
     }
   }
@@ -197,6 +199,7 @@ router.post('/verify-2fa', async (req, res) => {
   }
 
   logAudit({ entity_type: 'auth', action: 'login', user_id: user.id, user_name: user.name, details: { method: '2FA', ip: clientIp(req) } });
+  pool.query('UPDATE users SET last_login_at = NOW(), last_seen_at = NOW() WHERE id = $1', [user.id]).catch(function(){});
   res.json({ token, user: { id: user.id, name: user.name, email: user.email, role: user.role } });
 });
 

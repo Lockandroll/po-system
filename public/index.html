@@ -364,6 +364,30 @@ function formatDate(d) {
   if (!d) return '—';
   return new Date(d).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
 }
+function formatDateTime(d) {
+  if (!d) return '—';
+  var dt = new Date(d);
+  return dt.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }) + ' ' + dt.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' });
+}
+function timeAgo(d) {
+  if (!d) return null;
+  var diff = Date.now() - new Date(d).getTime();
+  if (diff < 0) diff = 0;
+  var m = Math.floor(diff / 60000);
+  if (m < 2) return 'now';
+  if (m < 60) return m + 'm ago';
+  var h = Math.floor(m / 60);
+  if (h < 24) return h + 'h ago';
+  var days = Math.floor(h / 24);
+  if (days < 7) return days + 'd ago';
+  return null;
+}
+function userActivityCell(u) {
+  var ago = timeAgo(u.last_seen_at);
+  if (ago === 'now') return '<span style="color:var(--success);font-size:13px;white-space:nowrap">&#9679; Active now</span>';
+  if (ago) return '<span style="color:var(--text-muted-color);font-size:13px;white-space:nowrap">' + escHtml(ago) + '</span>';
+  return '<span style="color:var(--text-muted-color);font-size:13px">' + (u.last_seen_at ? escHtml(formatDate(u.last_seen_at)) : '—') + '</span>';
+}
 
 function badgeHtml(status) {
   var cls = (status || '').replace(/\s+/g, '-');
@@ -1626,7 +1650,7 @@ function usersRenderTable() {
   if (!wrap) return;
   wrap.innerHTML =
     '<div class="card"><div class="card-body" style="padding:0"><div class="table-wrap"><table>' +
-      '<thead><tr><th>Name</th><th>Email</th><th>Role</th><th>Status</th>' + (can('manage_users') ? '<th></th>' : '') + '</tr></thead>' +
+      '<thead><tr><th>Name</th><th>Email</th><th>Role</th><th>Status</th><th>Last Login</th><th>Last Active</th>' + (can('manage_users') ? '<th></th>' : '') + '</tr></thead>' +
       '<tbody>' + (page.length ? page.map(function(u) {
         var isInactive = u.active === false;
         return '<tr class="' + (isInactive ? 'user-row-inactive' : '') + '">' +
@@ -1634,6 +1658,8 @@ function usersRenderTable() {
           '<td>' + escHtml(u.email) + '</td>' +
           '<td><span class="badge badge-' + escHtml(u.role) + '">' + escHtml(roleLabel(u.role)) + '</span></td>' +
           '<td>' + (isInactive ? '<span class="badge badge-inactive">Access Removed</span>' : '<span style="color:var(--success);font-size:13px">&#10003; Active</span>') + '</td>' +
+          '<td style="font-size:13px;white-space:nowrap;color:var(--text-muted-color)">' + (u.last_login_at ? escHtml(formatDateTime(u.last_login_at)) : '\u2014') + '</td>' +
+          '<td>' + userActivityCell(u) + '</td>' +
           (can('manage_users') ? '<td class="flex-gap">' +
             '<button class="btn btn-secondary btn-sm" onclick="showUserModal(' + u.id + ')">Edit</button>' +
             ((state.realUser || state.user).role === 'admin' && u.id !== state.user.id ? '<button class="btn btn-secondary btn-sm" onclick="viewAsUser(' + u.id + ')">View as</button>' : '') +
@@ -1641,7 +1667,7 @@ function usersRenderTable() {
             (u.id !== state.user.id && isInactive ? '<button class="btn btn-success btn-sm" onclick="reactivateUser(' + u.id + ')">Reactivate</button>' : '') +
           '</td>' : '') +
         '</tr>';
-      }).join('') : '<tr><td colspan="5" style="text-align:center;color:var(--text-muted-color);padding:24px">No users found</td></tr>') +
+      }).join('') : '<tr><td colspan="' + (can('manage_users') ? 7 : 6) + '" style="text-align:center;color:var(--text-muted-color);padding:24px">No users found</td></tr>') +
       '</tbody></table></div></div></div>';
 
   // Pagination controls
@@ -8726,6 +8752,24 @@ async function renderSchedule(el){
       window.render = render;
     }
   } catch (e) {}
+
+  // ---------- idle auto-logout (60 min of inactivity) ----------
+  var NOVA_IDLE_MS = 60 * 60 * 1000;
+  var novaIdleLast = Date.now();
+  var novaIdleThrottle = 0;
+  function novaIdleBump() { var now = Date.now(); if (now - novaIdleThrottle > 5000) { novaIdleThrottle = now; novaIdleLast = now; } }
+  ['mousedown', 'mousemove', 'keydown', 'touchstart', 'scroll', 'click'].forEach(function (ev) { document.addEventListener(ev, novaIdleBump, { passive: true }); });
+  function novaIdleCheck() {
+    if (state.token && state.user && (Date.now() - novaIdleLast) >= NOVA_IDLE_MS) {
+      try { if (typeof logout === 'function') logout(); } catch (e) {}
+      var n = document.createElement('div');
+      n.textContent = 'You were signed out after 1 hour of inactivity.';
+      n.style.cssText = 'position:fixed;left:50%;bottom:24px;transform:translateX(-50%);z-index:9999;background:#0f0f0f;color:#fff;border:1px solid var(--primary,#f97316);border-radius:10px;padding:12px 18px;font-size:14px;box-shadow:0 8px 30px rgba(0,0,0,.5)';
+      document.body.appendChild(n);
+      setTimeout(function () { if (n.parentNode) n.parentNode.removeChild(n); }, 8000);
+    }
+  }
+  setInterval(novaIdleCheck, 30000);
 
   // ---------- init ----------
   offlineSync();

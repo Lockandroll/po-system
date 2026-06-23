@@ -17,6 +17,8 @@ async function requireAuth(req, res, next) {
   // Issue a fresh 24h token on every request (rolling expiry) for the REAL user.
   const { iat, exp, ...claims } = payload;
   res.setHeader('X-New-Token', jwt.sign(claims, process.env.JWT_SECRET, { expiresIn: '24h' }));
+  // Track activity for the real user (throttled to at most once per minute).
+  pool.query("UPDATE users SET last_seen_at = NOW() WHERE id = $1 AND (last_seen_at IS NULL OR last_seen_at < NOW() - INTERVAL '60 seconds')", [payload.id]).catch(function(){});
   // Real user; owner is coerced to admin-level for authorization.
   req.user = { id: payload.id, email: payload.email, name: payload.name, role: payload.role };
   req.user.isOwner = (payload.role === 'owner');

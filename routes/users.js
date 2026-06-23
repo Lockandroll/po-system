@@ -57,7 +57,7 @@ async function sendInvite(user, invitedByName) {
 // List all users (admin only)
 router.get('/', requireAuth, requirePermission('view_users'), async (req, res) => {
   const { rows } = await pool.query(
-    'SELECT id, name, email, phone, role, active, receive_emails, receive_sms, pulsar_name, hide_from_schedule, created_at FROM users ORDER BY active DESC, name ASC'
+    'SELECT id, name, email, phone, role, active, receive_emails, receive_sms, pulsar_name, hide_from_schedule, created_at, last_login_at, last_seen_at FROM users ORDER BY active DESC, name ASC'
   );
   const mc = await pool.query('SELECT user_id, city_code FROM user_cities');
   const byU = {};
