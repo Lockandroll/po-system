@@ -3099,10 +3099,10 @@ function reviewsRenderStats(s) {
   var cityCards = (s.by_location||[]).length ? (s.by_location||[]).map(function(c){
     var cnt = parseInt(c.count, 10) || 0;
     var rate = parseFloat(c.avg_rating) || 0;
-    return '<div class="card" style="padding:14px 16px;min-width:140px;flex:0 0 auto;text-align:center">' +
-        '<div style="font-size:12px;color:var(--text-muted-color);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;margin-bottom:8px">' + escHtml(c.location_name) + '</div>' +
-        '<div style="font-size:30px;font-weight:800;color:#f5b400;line-height:1">' + rate.toFixed(1) + '<span style="font-size:18px"> ★</span></div>' +
-        '<div style="font-size:13px;color:var(--text-muted-color);margin-top:6px">' + cnt.toLocaleString() + ' reviews</div>' +
+    return '<div class="card" style="padding:16px;min-width:150px;flex:0 0 auto;text-align:center">' +
+        '<div style="font-size:13px;color:var(--text-muted-color)">' + cnt.toLocaleString() + ' reviews</div>' +
+        '<div style="font-size:32px;font-weight:800;color:#f5b400;line-height:1.1;margin:2px 0 8px">' + rate.toFixed(1) + '<span style="font-size:18px"> ★</span></div>' +
+        '<div style="font-size:13px;color:var(--text-color);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">' + escHtml(c.location_name) + '</div>' +
       '</div>';
   }).join('') : '<div style="color:var(--text-muted-color);font-size:13px">No data</div>';
   var breakdown =
