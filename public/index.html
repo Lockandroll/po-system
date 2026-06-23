@@ -8492,36 +8492,71 @@ async function renderSchedule(el){
   }
   // Map common words/phrases to a destination. Phrase + whole-word matching
   // avoids false hits like "do" inside "Document". Longest match wins.
+  // Each intent carries phrases, where it lives, what it IS (info), and how to
+  // create one (how). The bot explains, then offers a link to go there.
+  // Each intent carries phrases, where it lives, what it IS (info), and how to
+  // create one (how). The bot explains, then offers a link to go there.
   function helpIntents() {
     var schedV = (typeof can === 'function' && can('manage_schedule')) ? 'schedule-admin' : 'schedule';
     var runV = (typeof can === 'function' && can('manage_running')) ? 'running-admin' : 'running';
     return [
-      { ph: ['purchase order', 'purchase orders', 'po', 'pos'], dash: 'dashboard', create: 'new', obj: 'Purchase Orders' },
-      { ph: ['quote', 'quotes', 'estimate', 'estimates'], dash: 'quotes', create: 'new-quote', obj: 'Quotes' },
-      { ph: ['vehicle repair', 'vehicle repairs', 'vehicle maintenance', 'vr', 'repair', 'maintenance'], dash: 'vr-dashboard', create: 'new-vr', obj: 'Vehicle Repairs' },
-      { ph: ['monthly req', 'requisition', 'running list'], dash: runV, obj: 'Monthly Req' },
-      { ph: ['fleet', 'vehicle', 'vehicles', 'truck', 'trucks', 'van', 'vans'], dash: 'fleet-registry', create: 'new-vehicle', obj: 'Fleet Registry' },
-      { ph: ['work order', 'work orders'], dash: 'work-orders', obj: 'Work Orders' },
-      { ph: ['sign off', 'sign-off', 'signoff', 'sign off sheet', 'sign-off sheet'], dash: 'signoffs', obj: 'Sign-Off Sheets' },
-      { ph: ['task', 'tasks', 'to do', 'to-do', 'todo'], dash: 'tasks', obj: 'Tasks' },
-      { ph: ['schedule', 'shift', 'shifts', 'roster'], dash: schedV, obj: 'Schedule' },
-      { ph: ['deposit', 'deposits', 'cash deposit', 'cash deposits'], dash: 'deposits', obj: 'Cash Deposits' },
-      { ph: ['vendor', 'vendors', 'account', 'accounts', 'supplier', 'suppliers'], dash: 'vendors', obj: 'Accounts' },
-      { ph: ['part', 'parts', 'parts list', 'catalog'], dash: 'parts-list', obj: 'Parts List' },
-      { ph: ['document', 'documents', 'vault', 'document vault'], dash: 'documents', obj: 'Document Vault' },
-      { ph: ['suggestion', 'suggestions', 'idea', 'ideas', 'feedback'], dash: 'suggestions', obj: 'Suggestions' },
-      { ph: ['user', 'users', 'employee', 'employees', 'staff'], dash: 'users', obj: 'Users' },
-      { ph: ['city', 'cities'], dash: 'cities', obj: 'Cities' },
-      { ph: ['audit', 'audit log'], dash: 'audit', obj: 'Audit Log' },
-      { ph: ['geico', 'geico survey', 'geico surveys'], dash: 'geico', obj: 'Geico Surveys' },
-      { ph: ['sop', 'sops', 'standard operating procedure', 'standard operating procedures'], dash: 'sop-library', obj: 'SOP Library' },
-      { ph: ['notification', 'notifications'], dash: 'notifications', obj: 'Notifications' },
-      { ph: ['role', 'roles', 'permission', 'permissions', 'access'], dash: 'roles', obj: 'Roles & Access' },
-      { ph: ['password', 'trusted device', 'trusted devices', '2fa', 'two factor', 'security'], dash: 'security', obj: 'Trusted Devices' },
-      { ph: ['company info', 'company information', 'company settings'], dash: 'company-info', obj: 'Company Information' },
-      { ph: ['neurolock', 'ai assistant', 'ask ai'], dash: 'ai-assistant', obj: 'Nova AI Assistant' }
+      { ph: ['purchase order', 'purchase orders', 'po', 'pos'], dash: 'dashboard', create: 'new', obj: 'Purchase Orders',
+        info: 'Purchase Orders track parts and supplies you buy from vendors. Each PO has line items, a vendor, and a city, and runs through an approval workflow before it is ordered.',
+        how: 'To create one: open New Purchase Order, pick the vendor and city, add your line items (description, quantity, price), then submit it for approval.' },
+      { ph: ['quote', 'quotes', 'estimate', 'estimates'], dash: 'quotes', create: 'new-quote', obj: 'Quotes',
+        info: 'Quotes are customer estimates. Each line item has a cost and a list price, and Nova works out the margin and tax for you. You can print a quote or run an AI review before sending it.',
+        how: 'To create one: open New Quote, add the customer, then add line items with their cost and list price. The totals and margin fill in automatically, and you can print or AI-review it.' },
+      { ph: ['vehicle repair', 'vehicle repairs', 'vehicle maintenance', 'vr', 'repair', 'maintenance'], dash: 'vr-dashboard', create: 'new-vr', obj: 'Vehicle Repairs',
+        info: 'Vehicle Repairs (VRs) log maintenance and repair work on your fleet, with line items and an approval step. You can even upload a photo of a shop estimate and let AI fill in the details.',
+        how: 'To create one: open New Vehicle Repair, choose the vehicle, add the work as line items, and submit. You can attach a photo of a shop estimate to auto-fill it.' },
+      { ph: ['monthly req', 'requisition', 'running list'], dash: runV, obj: 'Monthly Req',
+        info: 'Monthly Req is the running list of items your team needs through the month. It can be rolled up into a purchase order when you are ready to order.' },
+      { ph: ['fleet', 'vehicle', 'vehicles', 'truck', 'trucks', 'van', 'vans'], dash: 'fleet-registry', create: 'new-vehicle', obj: 'Fleet Registry',
+        info: 'The Fleet Registry is your list of company vehicles and their repair and maintenance history.',
+        how: 'To add a vehicle: open Fleet Registry and use New Vehicle, then fill in its details.' },
+      { ph: ['work order', 'work orders'], dash: 'work-orders', obj: 'Work Orders',
+        info: 'Work Orders track jobs and tickets for work to be done.' },
+      { ph: ['sign off', 'sign-off', 'signoff', 'sign off sheet', 'sign-off sheet'], dash: 'signoffs', obj: 'Sign-Off Sheets',
+        info: 'Sign-Off Sheets are checklists you complete and sign off on for a job.' },
+      { ph: ['task', 'tasks', 'to do', 'to-do', 'todo'], dash: 'tasks', obj: 'Tasks',
+        info: 'Tasks is your team to-do list, with subtasks, comments, attachments, and recurring tasks.',
+        how: 'To add one: open Tasks and use New Task, then give it a title, owner, and due date.' },
+      { ph: ['schedule', 'shift', 'shifts', 'roster'], dash: schedV, obj: 'Schedule',
+        info: 'Schedule shows shifts by week, organized per city. Managers build and publish the schedule, and everyone else sees their published shifts.' },
+      { ph: ['deposit', 'deposits', 'cash deposit', 'cash deposits'], dash: 'deposits', obj: 'Cash Deposits',
+        info: 'Cash Deposits track cash drop-offs to the bank.' },
+      { ph: ['vendor', 'vendors', 'account', 'accounts', 'supplier', 'suppliers'], dash: 'vendors', obj: 'Accounts',
+        info: 'Accounts is where you manage vendors and supplier accounts that get used on purchase orders.' },
+      { ph: ['part', 'parts', 'parts list', 'catalog'], dash: 'parts-list', obj: 'Parts List',
+        info: 'The Parts List is your master parts catalog. It lets you quickly add known parts to POs and the Monthly Req instead of retyping them.' },
+      { ph: ['document', 'documents', 'vault', 'document vault'], dash: 'documents', obj: 'Document Vault',
+        info: 'The Document Vault is Drive-style file storage with folders and per-person sharing.' },
+      { ph: ['suggestion', 'suggestions', 'idea', 'ideas', 'feedback'], dash: 'suggestions', obj: 'Suggestions',
+        info: 'Suggestions is the employee suggestion box. Drop ideas or feedback for the team here.' },
+      { ph: ['user', 'users', 'employee', 'employees', 'staff'], dash: 'users', obj: 'Users',
+        info: 'Users is where admins manage employee accounts, their role, contact info, and access.' },
+      { ph: ['city', 'cities'], dash: 'cities', obj: 'Cities',
+        info: 'Cities manages your service-area locations and branches, which POs, quotes, and schedules are tied to.' },
+      { ph: ['audit', 'audit log'], dash: 'audit', obj: 'Audit Log',
+        info: 'The Audit Log records who did what across Nova, which is useful for tracking changes.' },
+      { ph: ['geico', 'geico survey', 'geico surveys'], dash: 'geico', obj: 'Geico Surveys',
+        info: 'Geico Surveys tracks Geico-related survey work.' },
+      { ph: ['sop', 'sops', 'standard operating procedure', 'standard operating procedures'], dash: 'sop-library', obj: 'SOP Library',
+        info: 'The SOP Library holds your standard operating procedures, which Nova AI can also pull from when answering questions.' },
+      { ph: ['notification', 'notifications'], dash: 'notifications', obj: 'Notifications',
+        info: 'Notifications is where you control which email and SMS alerts go out and to whom.' },
+      { ph: ['role', 'roles', 'permission', 'permissions', 'access'], dash: 'roles', obj: 'Roles & Access',
+        info: 'Roles & Access controls what each role is allowed to see and do in Nova.' },
+      { ph: ['password', 'trusted device', 'trusted devices', '2fa', 'two factor', 'security'], dash: 'security', obj: 'Trusted Devices',
+        info: 'Security is where you manage your password, two-factor login, and trusted devices, so you can skip 2FA on devices you trust for 30 days.' },
+      { ph: ['company info', 'company information', 'company settings'], dash: 'company-info', obj: 'Company Information',
+        info: 'Company Information holds your business details and company-wide settings.' },
+      { ph: ['neurolock', 'ai assistant', 'ask ai'], dash: 'ai-assistant', obj: 'Nova AI Assistant',
+        info: 'Nova AI (Neurolock) is your locksmith assistant. Ask it about locks, keys, hardware, pricing, or scoping a job. It can also read a photo of an estimate.' }
     ];
   }
+  // Compact glossary so the AI fallback can explain the app accurately.
+  var HELP_AI_PROMPT = 'You are the in-app help assistant for Nova, an operations app for a locksmith company. Explain things clearly and briefly (a few sentences). Nova modules: Purchase Orders (buy parts from vendors, approval workflow); Quotes (customer estimates with cost and list price, margin, tax, print, AI review); Vehicle Repairs (fleet maintenance with approval and photo-to-form AI); Fleet Registry (company vehicles and history); Monthly Req (running needs list that rolls into a PO); Work Orders; Sign-Off Sheets; Tasks (to-dos, subtasks, recurring); Schedule (weekly shifts per city); Cash Deposits; Accounts (vendors); Parts List (master parts catalog); Document Vault (file storage); Suggestions (idea box); Users, Cities, Roles, Audit Log (admin). If the question is about navigating, say which module to use.';
   function helpHasPhrase(q, phrase) {
     var esc = phrase.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
     return new RegExp('(^|[^a-z0-9])' + esc + '([^a-z0-9]|$)').test(q);
@@ -8531,7 +8566,7 @@ async function renderSchedule(el){
     for (var i = 0; i < list.length; i++) { if (list[i].view === view) return list[i]; }
     return null;
   }
-  function helpResolve(q) {
+  function helpMatch(q) {
     var ints = helpIntents();
     var match = null, matchLen = 0;
     ints.forEach(function (it) {
@@ -8541,32 +8576,29 @@ async function renderSchedule(el){
     });
     if (!match) return null;
     var wantsAction = /(^|[^a-z])(create|creating|make|making|add|adding|new|start|starting|log|logging|file|filing|enter|submit|raise)([^a-z]|$)/.test(q);
-    if (wantsAction && match.create) {
-      var c = helpFindDest(match.create);
-      if (c) return c;
-    }
-    var d = helpFindDest(match.dash);
-    if (d) return d;
-    return { _denied: true, label: match.obj };
+    return { intent: match, wantsAction: wantsAction };
   }
   async function helpAsk(text) {
     text = (text || '').trim();
     if (!text) return;
     helpBubble('user', text);
     var ql = ' ' + text.toLowerCase().replace(/[^a-z0-9 ]+/g, ' ') + ' ';
-    var target = helpResolve(ql);
-    if (target && target._denied) {
-      helpBubble('bot', 'Looks like you are asking about ' + target.label + ', but your account does not have access to that section. Ask an admin if you think you should.');
+    var m = helpMatch(ql);
+    if (m) {
+      var it = m.intent;
+      var explanation = (m.wantsAction && it.how) ? (it.info + ' ' + it.how) : (it.info || (it.obj + ' is in the menu.'));
+      var destView = (m.wantsAction && it.create) ? it.create : it.dash;
+      var d = helpFindDest(destView) || helpFindDest(it.dash);
+      if (!d) {
+        helpBubble('bot', explanation + '\n\nYour account does not have access to open it. Ask an admin if you need it.');
+        return;
+      }
+      helpBubble('bot', explanation, d);
       return;
     }
-    if (target) {
-      helpBubble('bot', target.label + ' is right here — tap below to open it.', target);
-      return;
-    }
-    // No navigation match -> hand off to Nova AI.
-    var typing = helpBubble('bot', 'Let me check with Nova AI…');
+    var typing = helpBubble('bot', 'Let me check with Nova AI...');
     try {
-      var data = await api('POST', '/ai/chat', { messages: [{ role: 'user', content: 'You are the in-app help assistant for Nova, a locksmith operations app (purchase orders, quotes, vehicle repairs, fleet, tasks, schedule). Answer briefly and practically. If it is about navigating the app, explain where to find it. Question: ' + text }] });
+      var data = await api('POST', '/ai/chat', { messages: [{ role: 'user', content: HELP_AI_PROMPT + '\n\nQuestion: ' + text }] });
       typing.innerHTML = escHtml(data.reply || 'Sorry, I could not get an answer.').replace(/\n/g, '<br>');
     } catch (err) {
       typing.innerHTML = escHtml('I could not reach Nova AI (' + (err && err.message ? err.message : 'error') + '). For navigation, try naming a page like "quotes" or "new PO", or press Ctrl+K to jump anywhere.');
