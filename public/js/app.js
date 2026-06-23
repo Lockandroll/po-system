@@ -2973,27 +2973,79 @@ async function renderReviews(el) {
     '<div id="reviews-filters" style="display:flex;flex-wrap:wrap;gap:10px;align-items:end;margin-bottom:16px">' +
       '<div><label style="' + lbl + '">Location</label><select id="reviews-location" style="' + iS + '" onchange="reviewsLoad()"><option value="">All locations</option></select></div>' +
       '<div><label style="' + lbl + '">Rating</label><select id="reviews-rating" style="' + iS + '" onchange="reviewsLoad()"><option value="">All ratings</option><option value="5">5 stars</option><option value="4">4 stars</option><option value="3">3 stars</option><option value="2">2 stars</option><option value="1">1 star</option></select></div>' +
+      '<div><label style="' + lbl + '">From</label><input type="date" id="reviews-from" style="' + iS + '" onchange="reviewsLoad()" /></div>' +
+      '<div><label style="' + lbl + '">To</label><input type="date" id="reviews-to" style="' + iS + '" onchange="reviewsLoad()" /></div>' +
       '<div style="flex:1;min-width:200px"><label style="' + lbl + '">Search</label><input type="text" id="reviews-search" placeholder="Reviewer or text..." style="' + iS + ';width:100%;box-sizing:border-box" oninput="reviewsSearchDebounced()" /></div>' +
       '<button class="btn btn-secondary btn-sm" onclick="reviewsClearFilters()">Clear</button>' +
+      '<button class="btn btn-primary btn-sm" onclick="reviewsTechTally()">Tally by Tech (AI)</button>' +
     '</div>' +
     '<div id="reviews-stats" style="margin-bottom:16px"></div>' +
+    '<div id="reviews-tally" style="margin-bottom:16px"></div>' +
     '<div id="reviews-table-wrap"></div>';
   await reviewsLoad(true);
 }
 
 function reviewsSearchDebounced() { clearTimeout(_reviewsSearchTimer); _reviewsSearchTimer = setTimeout(function(){ reviewsLoad(); }, 300); }
 function reviewsClearFilters() {
-  ['reviews-location','reviews-rating','reviews-search'].forEach(function(id){ var e=document.getElementById(id); if(e) e.value=''; });
+  ['reviews-location','reviews-rating','reviews-search','reviews-from','reviews-to'].forEach(function(id){ var e=document.getElementById(id); if(e) e.value=''; });
+  var _t=document.getElementById('reviews-tally'); if(_t) _t.innerHTML='';
   reviewsLoad();
 }
+async function reviewsTechTally() {
+  var el = document.getElementById('reviews-tally'); if (!el) return;
+  el.innerHTML = '<div class="card" style="padding:16px;color:var(--text-muted-color)">Analyzing reviews with AI…</div>';
+  var body = {};
+  var loc = (document.getElementById('reviews-location')||{}).value;
+  var rating = (document.getElementById('reviews-rating')||{}).value;
+  var search = (document.getElementById('reviews-search')||{}).value;
+  var from = (document.getElementById('reviews-from')||{}).value;
+  var to = (document.getElementById('reviews-to')||{}).value;
+  if (loc) body.location = loc;
+  if (rating) body.rating = rating;
+  if (search) body.search = search;
+  if (from) body.from = from;
+  if (to) body.to = to;
+  try {
+    var r = await api('POST', '/reviews/tech-tally', body);
+    reviewsRenderTally(r, { from: from, to: to, loc: loc });
+  } catch (e) {
+    el.innerHTML = '<div class="alert alert-error">' + escHtml(e.message) + '</div>';
+  }
+}
+function reviewsRenderTally(r, ctx) {
+  var el = document.getElementById('reviews-tally'); if (!el) return;
+  var techs = (r && r.technicians) || [];
+  var rangeLabel = (ctx.from || 'start') + ' to ' + (ctx.to || 'now') + (ctx.loc ? (' • ' + ctx.loc) : '');
+  if (!techs.length) {
+    el.innerHTML = '<div class="card" style="padding:16px"><div style="font-size:12px;color:var(--text-muted-color);text-transform:uppercase;letter-spacing:0.5px;margin-bottom:6px">Reviews by technician — ' + escHtml(rangeLabel) + '</div><div style="color:var(--text-muted-color);font-size:13px">No named technicians found in this range.</div></div>';
+    return;
+  }
+  var rowsHtml = techs.map(function(t){
+    return '<tr><td>' + escHtml(t.name || '—') + '</td><td style="text-align:right">' + (parseInt(t.count, 10) || 0) + '</td></tr>';
+  }).join('');
+  var note = 'Analyzed ' + (r.analyzed || 0) + ' review' + ((r.analyzed === 1) ? '' : 's');
+  if (r.unnamed) note += ' • ' + r.unnamed + ' with no technician named';
+  if (r.capped) note += ' • range too large — only the most recent 800 analyzed, narrow the dates';
+  el.innerHTML =
+    '<div class="card" style="padding:16px">' +
+      '<div style="font-size:12px;color:var(--text-muted-color);text-transform:uppercase;letter-spacing:0.5px;margin-bottom:8px">Reviews by technician — ' + escHtml(rangeLabel) + '</div>' +
+      '<div class="table-wrap"><table><thead><tr><th>Technician</th><th style="text-align:right">Reviews</th></tr></thead><tbody>' + rowsHtml + '</tbody></table></div>' +
+      '<div style="font-size:12px;color:var(--text-muted-color);margin-top:8px">' + escHtml(note) + '</div>' +
+    '</div>';
+}
+
 function reviewsListQS() {
   var qs = [];
   var loc = (document.getElementById('reviews-location')||{}).value;
   var rating = (document.getElementById('reviews-rating')||{}).value;
   var search = (document.getElementById('reviews-search')||{}).value;
+  var from = (document.getElementById('reviews-from')||{}).value;
+  var to = (document.getElementById('reviews-to')||{}).value;
   if (loc) qs.push('location=' + encodeURIComponent(loc));
   if (rating) qs.push('rating=' + encodeURIComponent(rating));
   if (search) qs.push('search=' + encodeURIComponent(search));
+  if (from) qs.push('from=' + encodeURIComponent(from));
+  if (to) qs.push('to=' + encodeURIComponent(to));
   return qs.length ? ('?' + qs.join('&')) : '';
 }
 async function reviewsLoad(initial) {

@@ -1,4 +1,5 @@
 const express = require('express');
+const https = require('https');
 const { Pool } = require('pg');
 const { requireAuth } = require('../middleware/auth');
 
@@ -31,17 +32,26 @@ function notConfigured(res) {
   return res.status(503).json({ error: 'Reviews database is not connected yet. Add a REVIEWS_DATABASE_URL variable in Nova’s Railway settings (the review-bot Postgres public URL).' });
 }
 
-// GET /api/reviews — filtered list (location, rating, search)
+// Build the shared WHERE clause used by both the list and the AI tally, from a
+// plain object of filters (location, rating, search, from, to). Returns
+// { whereSql, params } with $1.. placeholders.
+function buildReviewFilters(f) {
+  const where = [];
+  const params = [];
+  if (f.location) { params.push(f.location); where.push('location_name = $' + params.length); }
+  if (f.rating)   { params.push(parseInt(f.rating, 10)); where.push('rating = $' + params.length); }
+  if (f.search)   { params.push('%' + f.search + '%'); where.push('(reviewer_name ILIKE $' + params.length + ' OR review_text ILIKE $' + params.length + ')'); }
+  if (f.from)     { params.push(f.from); where.push('review_date >= $' + params.length + '::date'); }
+  if (f.to)       { params.push(f.to); where.push("review_date < ($" + params.length + "::date + INTERVAL '1 day')"); }
+  return { whereSql: where.length ? ('WHERE ' + where.join(' AND ')) : '', params: params };
+}
+
+// GET /api/reviews — filtered list (location, rating, search, from, to)
 router.get('/', requireAuth, async (req, res) => {
   const pool = getReviewsPool();
   if (!pool) return notConfigured(res);
   try {
-    const where = [];
-    const params = [];
-    if (req.query.location) { params.push(req.query.location); where.push('location_name = $' + params.length); }
-    if (req.query.rating)   { params.push(parseInt(req.query.rating, 10)); where.push('rating = $' + params.length); }
-    if (req.query.search)   { params.push('%' + req.query.search + '%'); where.push('(reviewer_name ILIKE $' + params.length + ' OR review_text ILIKE $' + params.length + ')'); }
-    const whereSql = where.length ? ('WHERE ' + where.join(' AND ')) : '';
+    const { whereSql, params } = buildReviewFilters(req.query);
     const limit = Math.min(parseInt(req.query.limit, 10) || 1000, 5000);
     const sql =
       "SELECT id, review_id, location_name, reviewer_name, rating, review_text, " +
@@ -115,6 +125,98 @@ router.get('/stats', requireAuth, async (req, res) => {
   } catch (err) {
     console.error('GET /api/reviews/stats failed:', err.message);
     res.status(502).json({ error: 'Could not reach the reviews database. Check REVIEWS_DATABASE_URL.' });
+  }
+});
+
+// Minimal direct-HTTPS call to Claude (no SDK), mirroring routes/ai.js.
+function callClaude(system, userContent, maxTokens) {
+  return new Promise(function (resolve, reject) {
+    const body = JSON.stringify({
+      model: 'claude-opus-4-8',
+      max_tokens: maxTokens || 2048,
+      system: system,
+      messages: [{ role: 'user', content: userContent }]
+    });
+    const options = {
+      hostname: 'api.anthropic.com',
+      path: '/v1/messages',
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-api-key': process.env.ANTHROPIC_API_KEY,
+        'anthropic-version': '2023-06-01',
+        'Content-Length': Buffer.byteLength(body)
+      }
+    };
+    const r = https.request(options, function (resp) {
+      let data = '';
+      resp.on('data', function (chunk) { data += chunk; });
+      resp.on('end', function () {
+        try { resolve(JSON.parse(data)); }
+        catch (e) { reject(new Error('Failed to parse Anthropic response')); }
+      });
+    });
+    r.on('error', reject);
+    r.setTimeout(60000, function () { r.destroy(new Error('AI request timed out. Try a smaller date range.')); });
+    r.write(body);
+    r.end();
+  });
+}
+
+// POST /api/reviews/tech-tally — within the same filters as the list
+// (location, rating, search, from, to), ask Claude to tally how many reviews
+// name each technician/employee. Supports the per-review employee incentive.
+router.post('/tech-tally', requireAuth, async (req, res) => {
+  const pool = getReviewsPool();
+  if (!pool) return notConfigured(res);
+  if (!process.env.ANTHROPIC_API_KEY) {
+    return res.status(503).json({ error: 'AI is not configured (missing ANTHROPIC_API_KEY).' });
+  }
+  try {
+    const { whereSql, params } = buildReviewFilters(req.body || {});
+    const CAP = 800; // keep the prompt within sane token limits
+    const sql =
+      "SELECT review_text FROM reviews " + whereSql +
+      " ORDER BY review_date DESC NULLS LAST, id DESC LIMIT " + (CAP + 1);
+    const { rows } = await pool.query(sql, params);
+
+    if (rows.length === 0) {
+      return res.json({ technicians: [], unnamed: 0, total: 0, analyzed: 0, capped: false });
+    }
+    const capped = rows.length > CAP;
+    const sample = rows.slice(0, CAP);
+    const list = sample.map(function (r, i) {
+      return (i + 1) + '. ' + ((r.review_text || '').replace(/\s+/g, ' ').trim() || '(no comment)');
+    }).join('\n');
+
+    const system =
+      'You analyze Google reviews for Pop-A-Lock, a mobile locksmith and roadside ' +
+      'assistance company. Reviews frequently name the technician/employee who ' +
+      'provided the service (for example: Austin, Dylan, Scooter, Paris). Your job ' +
+      'is to read each review and tally how many reviews name each employee. Treat ' +
+      'obvious nickname and spelling variants as the same person. Count a review as ' +
+      '"unnamed" if it names no employee. A single review names at most one employee ' +
+      'for tallying purposes (use the main technician credited). Respond with ONLY ' +
+      'raw JSON, no markdown and no backticks, in exactly this shape: ' +
+      '{"technicians":[{"name":"Austin","count":12}],"unnamed":5,"total":40}. ' +
+      'Sort technicians by count descending. total must equal the number of reviews provided.';
+    const user = 'Here are ' + sample.length + ' reviews. Tally the employees named:\n\n' + list;
+
+    const ai = await callClaude(system, user, 2048);
+    let text = '';
+    try { text = ai.content[0].text; } catch (e) { text = ''; }
+    const match = text.match(/\{[\s\S]*\}/);
+    if (!match) {
+      return res.status(502).json({ error: 'AI did not return a readable tally. Try a smaller range.' });
+    }
+    const parsed = JSON.parse(match[0]);
+    parsed.analyzed = sample.length;
+    parsed.capped = capped;
+    if (!Array.isArray(parsed.technicians)) parsed.technicians = [];
+    res.json(parsed);
+  } catch (err) {
+    console.error('POST /api/reviews/tech-tally failed:', err.message);
+    res.status(502).json({ error: 'Tally failed: ' + err.message });
   }
 });
 
