@@ -1,3 +1,6 @@
+// App version — bump together with CACHE_VERSION in public/sw.js on each deploy.
+var APP_VERSION = 'v14';
+
 const state = {
   token: localStorage.getItem('po_token'),
   user: normalizeUserRole(JSON.parse(localStorage.getItem('po_user') || 'null')),
@@ -353,7 +356,7 @@ async function render() {
     : '');
   app.innerHTML =
     '<div id="sidebar">' +
-      '<div class="sidebar-logo"><h1>Nova</h1></div>' +
+      '<div class="sidebar-logo"><h1>Nova</h1><span style="display:block;font-size:10px;font-weight:600;letter-spacing:0.06em;color:var(--text-muted-color);margin-top:-2px">' + APP_VERSION + '</span></div>' +
       '<nav class="sidebar-nav">' + navHtml + '</nav>' +
       '<div class="sidebar-footer">' +
         (isRealAdmin ?
