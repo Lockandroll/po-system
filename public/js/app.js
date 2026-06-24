@@ -7263,15 +7263,15 @@ async function invDecodeVin() {
   var vinEl = document.getElementById('inv-vin');
   var status = document.getElementById('inv-vin-status');
   var vin = (vinEl.value || '').trim();
-  if (vin.length < 11) { if (status) status.textContent = 'Enter a full VIN first.'; return; }
-  if (status) status.textContent = 'Decoding VIN…';
+  if (vin.length < 11) { if (status) { status.style.color = 'var(--danger, #ef4444)'; status.textContent = 'Enter a full VIN first.'; } return; }
+  if (status) { status.style.color = 'var(--primary)'; status.innerHTML = '<span class="spinner"></span> Decoding VIN…'; }
   try {
     var d = await api('GET', '/invoices/decode-vin/' + encodeURIComponent(vin));
     if (d.year) document.getElementById('inv-vyear').value = d.year;
     if (d.make) document.getElementById('inv-vmake').value = d.make;
     if (d.model) document.getElementById('inv-vmodel').value = d.model;
-    if (status) status.textContent = (d.year || d.make || d.model) ? 'Decoded: ' + [d.year, d.make, d.model].filter(Boolean).join(' ') : 'No match found — enter manually.';
-  } catch(e) { if (status) status.textContent = e.message; }
+    if (status) { status.style.color = ''; status.textContent = (d.year || d.make || d.model) ? 'Decoded: ' + [d.year, d.make, d.model].filter(Boolean).join(' ') : 'No match found — enter manually.'; }
+  } catch(e) { if (status) { status.style.color = 'var(--danger, #ef4444)'; status.textContent = e.message; } }
 }
 
 function invScanId() { var f = document.getElementById('inv-id-file'); if (f) f.click(); }
@@ -7279,7 +7279,7 @@ async function invHandleIdFile(input) {
   var status = document.getElementById('inv-scan-status');
   var file = input.files && input.files[0];
   if (!file) return;
-  if (status) status.textContent = 'Reading ID…';
+  if (status) { status.style.color = 'var(--primary)'; status.innerHTML = '<span class="spinner"></span> Photo accepted — AI is reading the ID…'; }
   try {
     var dataUrl = await invFileToCompressedDataUrl(file, 1600);
     var d = await api('POST', '/invoices/scan-id', { image: dataUrl });
@@ -7321,14 +7321,14 @@ async function invHandleVinFile(input) {
   var status = document.getElementById('inv-vin-status');
   var file = input.files && input.files[0];
   if (!file) return;
-  if (status) { status.style.color = ''; status.textContent = 'Reading VIN…'; }
+  if (status) { status.style.color = 'var(--primary)'; status.innerHTML = '<span class="spinner"></span> Photo accepted — AI is reading the VIN…'; }
   try {
     var dataUrl = await invFileToCompressedDataUrl(file, 1600);
     var d = await api('POST', '/invoices/scan-vin', { image: dataUrl });
     if (d.vin && d.vin.length >= 11) {
       var vinEl = document.getElementById('inv-vin');
       if (vinEl) vinEl.value = d.vin;
-      if (status) status.textContent = 'VIN read: ' + d.vin + ' — decoding…';
+      if (status) { status.style.color = 'var(--primary)'; status.innerHTML = '<span class="spinner"></span> VIN read: ' + escHtml(d.vin) + ' — decoding…'; }
       await invDecodeVin();
     } else {
       if (status) { status.style.color = 'var(--danger, #ef4444)'; status.textContent = 'Could not read a VIN from that photo. Try a clearer shot of the VIN plate or barcode, or type it in.'; }
