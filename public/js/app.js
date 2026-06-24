@@ -2979,8 +2979,10 @@ async function renderReviews(el) {
       '<div style="flex:1;min-width:200px"><label style="' + lbl + '">Search</label><input type="text" id="reviews-search" placeholder="Reviewer or text..." style="' + iS + ';width:100%;box-sizing:border-box" oninput="reviewsSearchDebounced()" /></div>' +
       '<button class="btn btn-secondary btn-sm" onclick="reviewsClearFilters()">Clear</button>' +
       '<button class="btn btn-primary btn-sm" onclick="reviewsTechTally()">Tally by Tech (AI)</button>' +
+      '<button class="btn btn-secondary btn-sm" onclick="reviewsSimulator()">Rating Simulator</button>' +
     '</div>' +
     '<div id="reviews-stats" style="margin-bottom:16px"></div>' +
+    '<div id="reviews-sim" style="margin-bottom:16px"></div>' +
     '<div id="reviews-tally" style="margin-bottom:16px"></div>' +
     '<div id="reviews-table-wrap"></div>';
   await reviewsLoad(true);
@@ -3113,6 +3115,59 @@ function reviewsRenderStats(s) {
       '<div style="display:flex;flex-wrap:wrap;gap:12px">' + cityCards + '</div>' +
     '</div>';
   el.innerHTML = '<div style="display:flex;flex-wrap:wrap;gap:12px;margin-bottom:12px">' + cards + '</div><div style="display:flex;flex-wrap:wrap;gap:12px">' + breakdown + '</div>';
+}
+function reviewsSimOptions() {
+  var s = _reviewsStats || {};
+  var opts = '<option value="">All locations (' + (s.total||0).toLocaleString() + ' reviews · ' + (s.avg_rating||0).toFixed(2) + '★)</option>';
+  (s.by_location||[]).forEach(function(c){
+    var cnt = parseInt(c.count,10)||0, rate = parseFloat(c.avg_rating)||0;
+    opts += '<option value="' + escHtml(c.location_name) + '">' + escHtml(c.location_name) + ' (' + cnt.toLocaleString() + ' · ' + rate.toFixed(2) + '★)</option>';
+  });
+  return opts;
+}
+function reviewsSimContext() {
+  var s = _reviewsStats || {};
+  var loc = (document.getElementById('rsim-loc')||{}).value || '';
+  if (!loc) return { name: 'All locations', count: s.total||0, avg: s.avg_rating||0 };
+  var hit = (s.by_location||[]).filter(function(c){ return c.location_name === loc; })[0] || {};
+  return { name: loc, count: parseInt(hit.count,10)||0, avg: parseFloat(hit.avg_rating)||0 };
+}
+function reviewsSimulator() {
+  var el = document.getElementById('reviews-sim'); if (!el) return;
+  if (el.innerHTML.trim()) { el.innerHTML = ''; return; }
+  var iS = 'padding:8px 10px;background:var(--surface-color);border:1px solid rgba(249,115,22,0.35);border-radius:6px;color:var(--text-color);font-size:14px;outline:none';
+  var lbl = 'display:block;font-size:11px;color:var(--text-muted-color);margin-bottom:4px';
+  el.innerHTML =
+    '<div class="card" style="padding:16px">' +
+      '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">' +
+        '<div style="font-size:12px;color:var(--text-muted-color);text-transform:uppercase;letter-spacing:0.5px">Rating Simulator — 5-star reviews needed</div>' +
+        '<a href="#" onclick="reviewsSimulator();return false" style="color:var(--text-muted-color);font-size:18px;line-height:1;text-decoration:none">&times;</a>' +
+      '</div>' +
+      '<div style="display:flex;flex-wrap:wrap;gap:14px;align-items:end">' +
+        '<div style="min-width:240px"><label style="' + lbl + '">Location</label><select id="rsim-loc" style="' + iS + '" onchange="reviewsSimCalc()">' + reviewsSimOptions() + '</select></div>' +
+        '<div><label style="' + lbl + '">Target overall rating</label><input type="number" id="rsim-target" min="0" max="5" step="0.01" placeholder="e.g. 4.90" style="' + iS + ';width:130px" oninput="reviewsSimCalc()" /></div>' +
+      '</div>' +
+      '<div id="rsim-result" style="margin-top:14px;color:var(--text-muted-color);font-size:13px">Enter a target rating above to see how many consecutive 5★ reviews it would take.</div>' +
+    '</div>';
+}
+function reviewsSimCalc() {
+  var out = document.getElementById('rsim-result'); if (!out) return;
+  var ctx = reviewsSimContext();
+  var N = ctx.count, R = ctx.avg;
+  var raw = (document.getElementById('rsim-target')||{}).value;
+  var D = parseFloat(raw);
+  if (raw === '' || isNaN(D)) { out.innerHTML = 'Enter a target rating above to see how many consecutive 5★ reviews it would take.'; return; }
+  var info = '<div style="color:var(--text-muted-color);margin-bottom:6px">' + escHtml(ctx.name) + ': currently <strong style="color:var(--text-color)">' + R.toFixed(2) + '★</strong> across <strong style="color:var(--text-color)">' + N.toLocaleString() + '</strong> reviews.</div>';
+  if (D <= 0 || D > 5) { out.innerHTML = info + '<div class="alert alert-error">Target must be between 0 and 5.</div>'; return; }
+  if (!N) { out.innerHTML = info + '<div class="alert alert-error">No reviews on record for this location yet.</div>'; return; }
+  if (D <= R) { out.innerHTML = info + '<div style="font-size:15px;color:#16a34a;font-weight:700">Already there — current rating already meets ' + D.toFixed(2) + '★.</div>'; return; }
+  if (D >= 5) { out.innerHTML = info + '<div class="alert alert-error">A 5.00★ overall is only reachable if every review is 5★. Pick a target just under 5.</div>'; return; }
+  var x = Math.ceil((N * (D - R)) / (5 - D));
+  var newAvg = (R * N + 5 * x) / (N + x);
+  out.innerHTML = info +
+    '<div style="font-size:15px;color:var(--text-color)">Need <strong style="font-size:22px;color:var(--primary)">' + x.toLocaleString() + '</strong> consecutive 5★ review' + (x===1?'':'s') +
+    ' to reach <strong>' + D.toFixed(2) + '★</strong>.</div>' +
+    '<div style="font-size:12px;color:var(--text-muted-color);margin-top:4px">That would put the overall at ' + newAvg.toFixed(2) + '★ (' + (N + x).toLocaleString() + ' reviews). Assumes no new non-5★ reviews arrive in the meantime.</div>';
 }
 function reviewsPaginate(p) { _reviewsPage = p; reviewsRenderTable(_reviewsRows); }
 function reviewsPageSize(v) { REVIEWS_PAGE_SIZE = parsePageSize(v); _reviewsPage = 1; reviewsRenderTable(_reviewsRows); }
