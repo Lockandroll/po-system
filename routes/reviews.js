@@ -53,12 +53,18 @@ router.get('/', requireAuth, async (req, res) => {
   try {
     const { whereSql, params } = buildReviewFilters(req.query);
     const limit = Math.min(parseInt(req.query.limit, 10) || 1000, 5000);
-    const sql =
-      "SELECT id, review_id, location_name, reviewer_name, rating, review_text, " +
-      "to_char(review_date, 'YYYY-MM-DD') AS review_date, to_char(created_at, 'YYYY-MM-DD') AS created_at " +
-      "FROM reviews " + whereSql + " ORDER BY review_date DESC NULLS LAST, id DESC LIMIT " + limit;
-    const { rows } = await pool.query(sql, params);
-    res.json(rows);
+    const cols =
+      "id, review_id, location_name, reviewer_name, rating, review_text, reply_text, " +
+      "to_char(review_date, 'YYYY-MM-DD') AS review_date, to_char(created_at, 'YYYY-MM-DD') AS created_at";
+    const tail = " FROM reviews " + whereSql + " ORDER BY review_date DESC NULLS LAST, id DESC LIMIT " + limit;
+    let result;
+    try {
+      result = await pool.query("SELECT " + cols + tail, params);
+    } catch (colErr) {
+      // reply_text column may not exist yet (review-bot not deployed) — retry without it
+      result = await pool.query("SELECT " + cols.replace('reply_text, ', '') + tail, params);
+    }
+    res.json(result.rows);
   } catch (err) {
     console.error('GET /api/reviews failed:', err.message);
     res.status(502).json({ error: 'Could not reach the reviews database. Check REVIEWS_DATABASE_URL.' });
@@ -86,14 +92,14 @@ router.get('/stats', requireAuth, async (req, res) => {
         'COALESCE(ROUND(AVG(rating)::numeric, 2), 0) AS row_avg ' +
         'FROM reviews GROUP BY location_name) r ' +
         'LEFT JOIN location_totals lt ON lt.location_name = r.location_name ' +
-        'ORDER BY count DESC'
+        'ORDER BY avg_rating DESC, count DESC'
       );
     } catch (joinErr) {
       // location_totals does not exist yet — fall back to raw row counts.
       byLoc = await pool.query(
         'SELECT location_name, COUNT(*)::int AS count, ' +
         'COALESCE(ROUND(AVG(rating)::numeric, 2), 0) AS avg_rating ' +
-        'FROM reviews GROUP BY location_name ORDER BY count DESC'
+        'FROM reviews GROUP BY location_name ORDER BY avg_rating DESC, count DESC'
       );
     }
 

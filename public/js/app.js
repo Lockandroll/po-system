@@ -3115,6 +3115,11 @@ function reviewsRenderStats(s) {
 }
 function reviewsPaginate(p) { _reviewsPage = p; reviewsRenderTable(_reviewsRows); }
 function reviewsPageSize(v) { REVIEWS_PAGE_SIZE = parsePageSize(v); _reviewsPage = 1; reviewsRenderTable(_reviewsRows); }
+function reviewsToggleReply(e, id) {
+  if (e && e.preventDefault) e.preventDefault();
+  var d = document.getElementById('rvreply-' + id);
+  if (d) d.style.display = (d.style.display === 'none' ? 'block' : 'none');
+}
 function reviewsRenderTable(rows) {
   var wrap = document.getElementById('reviews-table-wrap'); if (!wrap) return;
   var total = rows.length;
@@ -3134,9 +3139,9 @@ function reviewsRenderTable(rows) {
   wrap.innerHTML =
     '<div style="font-size:12px;color:var(--text-muted-color);margin-bottom:8px">Showing ' + _showing + ' of ' + total + ' review' + (total===1?'':'s') + '</div>' +
     '<div class="card"><div class="table-wrap"><table>' +
-      '<thead><tr><th>Location</th><th>Reviewer</th><th>Rating</th><th>Review</th><th>Date</th></tr></thead><tbody>' +
+      '<thead><tr><th>Location</th><th>Reviewer</th><th>Rating</th><th>Review</th><th>Date</th><th>Reply</th></tr></thead><tbody>' +
       (total === 0
-        ? '<tr><td colspan="5" style="text-align:center;color:var(--text-muted-color);padding:32px">No reviews found.</td></tr>'
+        ? '<tr><td colspan="6" style="text-align:center;color:var(--text-muted-color);padding:32px">No reviews found.</td></tr>'
         : page.map(function(r){
             return '<tr>' +
               '<td style="white-space:nowrap">' + escHtml(r.location_name||'—') + '</td>' +
@@ -3144,6 +3149,7 @@ function reviewsRenderTable(rows) {
               '<td style="white-space:nowrap">' + reviewsStars(r.rating) + '</td>' +
               '<td style="min-width:280px">' + escHtml(r.review_text||'') + '</td>' +
               '<td style="white-space:nowrap">' + escHtml(r.review_date||'—') + '</td>' +
+              '<td style="white-space:nowrap">' + (r.reply_text ? ('<a href="#" onclick="reviewsToggleReply(event,&#39;' + r.id + '&#39;)" style="color:var(--primary)">See Reply</a><div id="rvreply-' + r.id + '" style="display:none;margin-top:6px;color:var(--text-muted-color);font-size:12px;white-space:normal;max-width:340px">' + escHtml(r.reply_text) + '</div>') : '<span style="color:var(--text-muted-color)">No Reply</span>') + '</td>' +
             '</tr>';
           }).join('')) +
       '</tbody></table></div></div>' + _pager;
