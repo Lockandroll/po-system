@@ -12,6 +12,7 @@ const { startScheduledMessages } = require('./jobs/scheduledMessages');
 const { startTaskReminders, startRecurringSpawner } = require('./jobs/taskReminders');
 const { startWorkOrders } = require('./jobs/workOrders');
 const { startDocExpiry } = require('./jobs/docExpiry');
+const { startReviewRatings } = require('./jobs/reviewRatings');
 
 const app = express();
 
@@ -100,6 +101,7 @@ initDB()
     startRecurringSpawner();
     startWorkOrders();
     startDocExpiry();
+    startReviewRatings();
     startGeicoIngest();
     startGeicoReport();
   })

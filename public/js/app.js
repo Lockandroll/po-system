@@ -1821,7 +1821,8 @@ async function renderNotifications(el) {
     { key:'signoff_completed', label:'Sign-off sheet completed', def:'all admins', sms:false },
     { key:'work_order_received', label:'New work order received', def:'all admins and managers', sms:false },
     { key:'suggestion_created', label:'New employee suggestion', def:'all admins and managers', sms:true },
-    { key:'document_expiring', label:'Document expiration reminder', def:'all admins and managers', sms:false }
+    { key:'document_expiring', label:'Document expiration reminder', def:'all admins and managers', sms:false },
+    { key:'review_rating_changed', label:'Google rating changed for a location', def:'all admins', sms:false }
   ];
   var requester = [
     { key:'po_approved', label:'PO approved' },
@@ -1925,7 +1926,7 @@ async function renderNotifications(el) {
 }
 
 async function saveNotifications() {
-  var broadcast = ['po_submitted','vr_submitted','quote_created','quote_to_pos','signoff_completed','work_order_received','suggestion_created','document_expiring'];
+  var broadcast = ['po_submitted','vr_submitted','quote_created','quote_to_pos','signoff_completed','work_order_received','suggestion_created','document_expiring','review_rating_changed'];
   var smsCapable = { po_submitted:1, vr_submitted:1, quote_created:1, quote_to_pos:1, suggestion_created:1 };
   var requester = ['po_approved','po_rejected','po_cancelled','po_ordered','vr_approved','vr_rejected'];
   function parseEmails(raw) {
@@ -2965,6 +2966,7 @@ var _vendorCities = [];
 // ── Google Reviews ─────────────────────────────────────────────────────────
 var _reviewsRows = [];
 var _reviewsStats = null;
+var _reviewsAllStats = null;
 var _reviewsPage = 1;
 var REVIEWS_PAGE_SIZE = 25;
 var _reviewsSearchTimer = null;
@@ -3060,12 +3062,17 @@ async function reviewsLoad(initial) {
   var tableEl = document.getElementById('reviews-table-wrap');
   if (statsEl && initial) statsEl.innerHTML = '<div style="color:var(--text-muted-color);padding:12px">Loading…</div>';
   try {
+    var qs = reviewsListQS();
     if (initial) {
-      _reviewsStats = await api('GET', '/reviews/stats');
-      reviewsPopulateLocations(_reviewsStats);
-      reviewsRenderStats(_reviewsStats);
+      // Unfiltered stats power the location dropdown and the simulator's full list.
+      _reviewsAllStats = await api('GET', '/reviews/stats');
+      reviewsPopulateLocations(_reviewsAllStats);
     }
-    var rows = await api('GET', '/reviews' + reviewsListQS());
+    // Scorecards reflect the SAME filters as the list below.
+    _reviewsStats = await api('GET', '/reviews/stats' + qs);
+    reviewsRenderStats(_reviewsStats);
+    if (initial) { var _sim = document.getElementById('reviews-sim'); if (_sim && !_sim.innerHTML.trim()) reviewsSimulator(); }
+    var rows = await api('GET', '/reviews' + qs);
     _reviewsRows = rows; _reviewsPage = 1;
     reviewsRenderTable(rows);
   } catch(e) {
@@ -3114,13 +3121,13 @@ function reviewsRenderStats(s) {
   }).join('') : '<div style="color:var(--text-muted-color);font-size:13px">No data</div>';
   var breakdown =
     '<div class="card" style="flex:1;min-width:260px;padding:16px">' +
-      '<div style="font-size:12px;color:var(--text-muted-color);text-transform:uppercase;letter-spacing:0.5px;margin-bottom:12px">By Location</div>' +
+      '<div style="font-size:12px;color:var(--text-muted-color);text-transform:uppercase;letter-spacing:0.5px;margin-bottom:12px">By Location' + (s.filtered ? ' <span style="text-transform:none;color:var(--primary)">(filtered)</span>' : '') + '</div>' +
       '<div style="display:flex;flex-wrap:wrap;gap:12px">' + cityCards + '</div>' +
     '</div>';
   el.innerHTML = '<div style="display:flex;flex-wrap:wrap;gap:12px;margin-bottom:12px">' + cards + '</div><div style="display:flex;flex-wrap:wrap;gap:12px">' + breakdown + '</div>';
 }
 function reviewsSimOptions() {
-  var s = _reviewsStats || {};
+  var s = _reviewsAllStats || _reviewsStats || {};
   var opts = '<option value="">All locations (' + (s.total||0).toLocaleString() + ' reviews · ' + (s.avg_rating||0).toFixed(2) + '★)</option>';
   (s.by_location||[]).forEach(function(c){
     var cnt = parseInt(c.count,10)||0, rate = parseFloat(c.avg_rating)||0;
@@ -3129,7 +3136,7 @@ function reviewsSimOptions() {
   return opts;
 }
 function reviewsSimContext() {
-  var s = _reviewsStats || {};
+  var s = _reviewsAllStats || _reviewsStats || {};
   var loc = (document.getElementById('rsim-loc')||{}).value || '';
   if (!loc) return { name: 'All locations', count: s.total||0, avg: s.avg_rating||0 };
   var hit = (s.by_location||[]).filter(function(c){ return c.location_name === loc; })[0] || {};

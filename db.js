@@ -1022,6 +1022,15 @@ async function initDB() {
       }
       await client.query("INSERT INTO settings (key, value) VALUES ('perm_matrix_v5_backfilled', '1') ON CONFLICT (key) DO NOTHING");
     }
+    await client.query(
+      'CREATE TABLE IF NOT EXISTS review_rating_snapshots (' +
+      '  location_name TEXT PRIMARY KEY,' +
+      '  displayed_rating NUMERIC(3,1) NOT NULL,' +
+      '  avg_rating NUMERIC(4,2),' +
+      '  review_count INTEGER,' +
+      '  updated_at TIMESTAMPTZ DEFAULT NOW()' +
+      ')'
+    );
     console.log('Database initialized');
   } finally {
     client.release();

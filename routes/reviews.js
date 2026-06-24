@@ -80,34 +80,49 @@ router.get('/', requireAuth, async (req, res) => {
 router.get('/stats', requireAuth, async (req, res) => {
   const pool = getReviewsPool();
   if (!pool) return notConfigured(res);
+  const { whereSql, params } = buildReviewFilters(req.query);
+  const hasFilter = !!whereSql;
   try {
-    // Per-location: official Google totals when present, else logged-row counts.
+    // Per-location aggregates. With NO filter we prefer Google's OFFICIAL totals
+    // (location_totals) so the dashboard matches the public Google counts exactly.
+    // Once ANY filter is applied (rating/date/search/location), those lifetime
+    // totals no longer describe the slice, so we count the matching logged rows.
     let byLoc;
-    try {
-      byLoc = await pool.query(
-        'SELECT r.location_name, ' +
-        'COALESCE(lt.total_review_count, r.row_count)::int AS count, ' +
-        'COALESCE(lt.average_rating, r.row_avg)::numeric AS avg_rating ' +
-        'FROM (SELECT location_name, COUNT(*)::int AS row_count, ' +
-        'COALESCE(ROUND(AVG(rating)::numeric, 2), 0) AS row_avg ' +
-        'FROM reviews GROUP BY location_name) r ' +
-        'LEFT JOIN location_totals lt ON lt.location_name = r.location_name ' +
-        'ORDER BY avg_rating DESC, count DESC'
-      );
-    } catch (joinErr) {
-      // location_totals does not exist yet — fall back to raw row counts.
+    if (!hasFilter) {
+      try {
+        byLoc = await pool.query(
+          'SELECT r.location_name, ' +
+          'COALESCE(lt.total_review_count, r.row_count)::int AS count, ' +
+          'COALESCE(lt.average_rating, r.row_avg)::numeric AS avg_rating ' +
+          'FROM (SELECT location_name, COUNT(*)::int AS row_count, ' +
+          'COALESCE(ROUND(AVG(rating)::numeric, 2), 0) AS row_avg ' +
+          'FROM reviews GROUP BY location_name) r ' +
+          'LEFT JOIN location_totals lt ON lt.location_name = r.location_name ' +
+          'ORDER BY avg_rating DESC, count DESC'
+        );
+      } catch (joinErr) {
+        byLoc = await pool.query(
+          'SELECT location_name, COUNT(*)::int AS count, ' +
+          'COALESCE(ROUND(AVG(rating)::numeric, 2), 0) AS avg_rating ' +
+          'FROM reviews GROUP BY location_name ORDER BY avg_rating DESC, count DESC'
+        );
+      }
+    } else {
       byLoc = await pool.query(
         'SELECT location_name, COUNT(*)::int AS count, ' +
         'COALESCE(ROUND(AVG(rating)::numeric, 2), 0) AS avg_rating ' +
-        'FROM reviews GROUP BY location_name ORDER BY avg_rating DESC, count DESC'
+        'FROM reviews ' + whereSql + ' GROUP BY location_name ORDER BY avg_rating DESC, count DESC',
+        params
       );
     }
 
     const fiveStarRes = await pool.query(
-      'SELECT COUNT(*) FILTER (WHERE rating = 5)::int AS five_star FROM reviews'
+      'SELECT COUNT(*) FILTER (WHERE rating = 5)::int AS five_star FROM reviews ' + whereSql,
+      params
     );
     const dist = await pool.query(
-      'SELECT rating, COUNT(*)::int AS count FROM reviews GROUP BY rating ORDER BY rating DESC'
+      'SELECT rating, COUNT(*)::int AS count FROM reviews ' + whereSql + ' GROUP BY rating ORDER BY rating DESC',
+      params
     );
 
     const rows = byLoc.rows;
@@ -126,7 +141,8 @@ router.get('/stats', requireAuth, async (req, res) => {
       five_star: (fiveStarRes.rows[0] || {}).five_star || 0,
       by_location: rows,
       locations: rows.map(function (r) { return r.location_name; }),
-      distribution: dist.rows
+      distribution: dist.rows,
+      filtered: hasFilter
     });
   } catch (err) {
     console.error('GET /api/reviews/stats failed:', err.message);
@@ -258,3 +274,4 @@ router.post('/tech-tally', requireAuth, async (req, res) => {
 });
 
 module.exports = router;
+module.exports.getReviewsPool = getReviewsPool;
