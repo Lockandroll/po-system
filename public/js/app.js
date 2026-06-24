@@ -3014,7 +3014,7 @@ function geicoExportCSV() {
 }
 
 function geicoDownloadSample() {
-  var csv = 'PO #,Employee\r\n' +
+  var csv = 'Account PO,Tech ID\r\n' +
     'G587926170,"Benson, Chris"\r\n' +
     'G143226170,"Jacques, Daniel"\r\n' +
     'G328826170,"Sims, Jason"\r\n';
@@ -3039,10 +3039,10 @@ async function geicoHandleCsv(text) {
   if (grid.length < 2) { alert('That CSV looks empty. Export the surveys first, fill in the Employee column, then import.'); return; }
   var header = grid[0].map(function(h){ return (h||'').trim().toLowerCase().replace(/[\s#]+/g,'_').replace(/_+$/,''); });
   function colIdx(names){ for (var n=0;n<names.length;n++){ var k=header.indexOf(names[n]); if (k!==-1) return k; } return -1; }
-  var poi = colIdx(['po','po_number','po_no','ponumber']);
-  var ei = colIdx(['employee','employee_name','name','tech','technician']);
-  if (poi === -1) { alert('Could not find a "PO #" column in that CSV. Use the exported file as your template.'); return; }
-  if (ei === -1) { alert('Could not find an "Employee" column in that CSV. Use the exported file as your template.'); return; }
+  var poi = colIdx(['account_po','po','po_number','po_no','ponumber']);
+  var ei = colIdx(['tech_id','employee','employee_name','name','tech','technician']);
+  if (poi === -1) { alert('Could not find an "Account PO" (or "PO #") column in that CSV. Use the Import Sample CSV as your template.'); return; }
+  if (ei === -1) { alert('Could not find a "Tech ID" (or "Employee") column in that CSV. Use the Import Sample CSV as your template.'); return; }
   var rows = [];
   for (var i=1;i<grid.length;i++){
     var po=(grid[i][poi]||'').trim();
