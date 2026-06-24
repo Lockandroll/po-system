@@ -2789,7 +2789,10 @@ async function saveAIContext() {
 var _geicoStats = null;
 var _geicoRows = [];
 var _geicoPage = 1;
-var GEICO_PAGE_SIZE = 25;
+var GEICO_PAGE_SIZE = 10;
+var _geicoEmpRows = [];
+var _geicoEmpPage = 1;
+var GEICO_EMP_PAGE_SIZE = 10;
 
 async function renderGeicoReviews(el) {
   if (!can('manage_geico')) { el.innerHTML = '<div class="alert alert-error">Access denied.</div>'; return; }
@@ -2816,7 +2819,8 @@ async function renderGeicoReviews(el) {
       '<input type="file" id="geico-csv-input" accept=".csv,text/csv" style="display:none" onchange="geicoOnCsvChosen(this)" />' +
     '</div>' +
     '<div id="geico-stats" style="margin-bottom:16px"></div>' +
-    '<div id="geico-table-wrap"></div>';
+    '<div id="geico-table-wrap"></div>' +
+    '<div id="geico-employee-wrap" style="margin-top:16px"></div>';
   await geicoLoad(true);
 }
 
@@ -2922,28 +2926,69 @@ function geicoRenderStats(s) {
         '</div>';
       }).join('') : '<div style="color:var(--text-muted-color);font-size:13px">No data</div>') +
     '</div>';
-  el.innerHTML = '<div style="display:flex;flex-wrap:wrap;gap:12px">' + cards + '</div>' + geicoEmployeeBreakdown(s);
+  el.innerHTML = '<div style="display:flex;flex-wrap:wrap;gap:12px">' + cards + '</div>';
+  _geicoEmpPage = 1;
+  geicoRenderEmployeeTable(s);
 }
 
-function geicoEmployeeBreakdown(s) {
-  var emps = (s.byEmployee||[]).filter(function(e){ return e.k !== '(unassigned)'; });
+function geicoEmployeeScored(s) {
+  var all = (s.byEmployee||[]).filter(function(e){ return e.k !== '(unassigned)'; });
+  var totExc = 0, totRated = 0;
+  all.forEach(function(e){ totExc += (e.excellent||0); totRated += (e.rated||0); });
+  var globalExc = totRated ? (totExc/totRated) : 0.85;
+  var C = 5; // prior strength (in surveys) — pulls small samples toward the team average
+  all.forEach(function(e){
+    var rated = e.rated||0, exc = e.excellent||0;
+    e._excPct = rated ? Math.round(exc*100/rated) : 0;
+    e._otPct = e.answered ? Math.round((e.on_time||0)*100/e.answered) : 0;
+    e._score = (exc + C*globalExc) / (rated + C); // survey-weighted (Bayesian) excellent rate
+  });
+  all.sort(function(a,b){ return (b._score - a._score) || ((b.n||0)-(a.n||0)) || String(a.k).localeCompare(String(b.k)); });
+  return all;
+}
+
+function geicoEmpPaginate(p) { _geicoEmpPage = p; geicoRenderEmployeeTable(_geicoStats); }
+function geicoEmpPageSize(v) { GEICO_EMP_PAGE_SIZE = parsePageSize(v); _geicoEmpPage = 1; geicoRenderEmployeeTable(_geicoStats); }
+
+function geicoRenderEmployeeTable(s) {
+  var el = document.getElementById('geico-employee-wrap'); if (!el || !s) return;
+  var emps = geicoEmployeeScored(s);
+  _geicoEmpRows = emps;
   var unassigned = (s.byEmployee||[]).filter(function(e){ return e.k === '(unassigned)'; }).reduce(function(a,b){ return a + b.n; }, 0);
   var head = '<div style="font-size:12px;color:var(--text-muted-color);text-transform:uppercase;letter-spacing:0.5px;margin-bottom:8px">By Employee' + (unassigned ? ' &middot; ' + unassigned + ' unassigned' : '') + '</div>';
   if (!emps.length) {
-    return '<div class="card" style="padding:16px;margin-top:12px">' + head + '<div style="color:var(--text-muted-color);font-size:13px">No employees assigned yet. Export the surveys, fill in the Employee column, then use Import Employees.</div></div>';
+    el.innerHTML = '<div class="card" style="padding:16px">' + head + '<div style="color:var(--text-muted-color);font-size:13px">No employees assigned yet. Export the surveys, fill in the Employee column, then use Import Employees.</div></div>';
+    return;
   }
-  var body = emps.map(function(e){
-    var excPct = e.rated ? Math.round(e.excellent*100/e.rated) : 0;
-    var otPct = e.answered ? Math.round(e.on_time*100/e.answered) : 0;
+  var total = emps.length;
+  var totalPages = Math.max(1, Math.ceil(total / GEICO_EMP_PAGE_SIZE));
+  if (_geicoEmpPage > totalPages) _geicoEmpPage = totalPages;
+  if (_geicoEmpPage < 1) _geicoEmpPage = 1;
+  var start = (_geicoEmpPage - 1) * GEICO_EMP_PAGE_SIZE;
+  var page = emps.slice(start, start + GEICO_EMP_PAGE_SIZE);
+  var body = page.map(function(e, i){
+    var rank = start + i + 1;
+    var score = Math.round(e._score*100);
     return '<tr>' +
+      '<td style="text-align:right;color:var(--text-muted-color);width:28px">' + rank + '</td>' +
       '<td>' + escHtml(e.k) + '</td>' +
       '<td style="text-align:right">' + e.n + '</td>' +
-      '<td style="text-align:right;color:' + geicoPctColor(excPct) + '">' + excPct + '% <span style="color:var(--text-muted-color)">(' + e.excellent + '/' + e.rated + ')</span></td>' +
-      '<td style="text-align:right;color:' + geicoPctColor(otPct) + '">' + otPct + '% <span style="color:var(--text-muted-color)">(' + e.on_time + '/' + e.answered + ')</span></td>' +
+      '<td style="text-align:right;color:' + geicoPctColor(e._excPct) + '">' + e._excPct + '% <span style="color:var(--text-muted-color)">(' + e.excellent + '/' + e.rated + ')</span></td>' +
+      '<td style="text-align:right;color:' + geicoPctColor(e._otPct) + '">' + e._otPct + '% <span style="color:var(--text-muted-color)">(' + e.on_time + '/' + e.answered + ')</span></td>' +
+      '<td style="text-align:right;font-weight:700;color:' + geicoPctColor(score) + '">' + score + '</td>' +
     '</tr>';
   }).join('');
-  return '<div class="card" style="padding:16px;margin-top:12px">' + head +
-    '<div class="table-wrap"><table><thead><tr><th>Employee</th><th style="text-align:right">Surveys</th><th style="text-align:right">% Excellent</th><th style="text-align:right">On-Time</th></tr></thead><tbody>' + body + '</tbody></table></div></div>';
+  var sizeCtl = pageSizeControl(GEICO_EMP_PAGE_SIZE, 'geicoEmpPageSize');
+  var btns = '';
+  if (totalPages > 1) {
+    for (var i2 = 1; i2 <= totalPages; i2++) { btns += '<button class="btn btn-sm ' + (i2 === _geicoEmpPage ? 'btn-primary' : 'btn-secondary') + '" onclick="geicoEmpPaginate(' + i2 + ')">' + i2 + '</button> '; }
+    btns = '<button class="btn btn-secondary btn-sm" onclick="geicoEmpPaginate(' + (_geicoEmpPage-1) + ')" ' + (_geicoEmpPage===1?'disabled':'') + '>&lsaquo;</button> ' + btns + '<button class="btn btn-secondary btn-sm" onclick="geicoEmpPaginate(' + (_geicoEmpPage+1) + ')" ' + (_geicoEmpPage===totalPages?'disabled':'') + '>&rsaquo;</button>';
+  }
+  var showing = (start+1) + '-' + Math.min(start+GEICO_EMP_PAGE_SIZE, total);
+  el.innerHTML = '<div class="card" style="padding:16px">' + head +
+    '<div style="font-size:12px;color:var(--text-muted-color);margin-bottom:8px">Ranked by survey-weighted score &middot; showing ' + showing + ' of ' + total + '</div>' +
+    '<div class="table-wrap"><table><thead><tr><th style="text-align:right">#</th><th>Employee</th><th style="text-align:right">Surveys</th><th style="text-align:right">% Excellent</th><th style="text-align:right">On-Time</th><th style="text-align:right" title="Survey-weighted Excellent rate: small samples are pulled toward the team average so high-volume performers rank fairly">Score</th></tr></thead><tbody>' + body + '</tbody></table></div>' +
+    '<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:12px">' + sizeCtl + ' ' + btns + '</div></div>';
 }
 
 function geicoRatingBadge(r) {
