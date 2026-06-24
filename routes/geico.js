@@ -29,6 +29,7 @@ router.get('/', adminMgr, async (req, res) => {
     if (req.query.service)    add('g.service = $$', req.query.service);
     if (req.query.rating)     add('g.rating = $$', req.query.rating);
     if (req.query.loss_state) add('g.loss_state = $$', req.query.loss_state);
+    if (req.query.employee)   add('g.employee_name = $$', req.query.employee);
 
     const whereSql = where.length ? ('WHERE ' + where.join(' AND ')) : '';
     const limit = Math.min(parseInt(req.query.limit, 10) || 500, 2000);
@@ -38,7 +39,7 @@ router.get('/', adminMgr, async (req, res) => {
       "SELECT g.id, to_char(g.date_received,'YYYY-MM-DD') AS date_received, g.account_number, " +
       "       g.city_code, COALESCE(c.name,'') AS city_name, g.po_number, g.service, g.loss_state, " +
       "       to_char(g.date_of_dispatch,'MM/DD/YYYY') AS date_of_dispatch, g.arrived_on_time, " +
-      "       g.time_to_arrive, g.rating " +
+      "       g.time_to_arrive, g.rating, g.employee_name " +
       "FROM geico_surveys g LEFT JOIN cities c ON c.code = g.city_code " +
       whereSql + " ORDER BY g.date_received DESC, c.name ASC NULLS LAST " +
       "LIMIT " + limit + " OFFSET " + offset;
@@ -63,6 +64,7 @@ router.get('/stats', adminMgr, async (req, res) => {
     if (req.query.service)    add('service = $$', req.query.service);
     if (req.query.rating)     add('rating = $$', req.query.rating);
     if (req.query.loss_state) add('loss_state = $$', req.query.loss_state);
+    if (req.query.employee)   add('employee_name = $$', req.query.employee);
     const whereSql = where.length ? ('WHERE ' + where.join(' AND ')) : '';
 
     const base = ' FROM geico_surveys g ' + whereSql;
@@ -80,8 +82,16 @@ router.get('/stats', adminMgr, async (req, res) => {
       "FROM geico_surveys g LEFT JOIN cities c ON c.code = g.city_code " +
       whereSql + " GROUP BY 1 ORDER BY n DESC", params);
 
-    const [total, onTime, rating, service, state, city] =
-      await Promise.all([totalQ, onTimeQ, ratingQ, serviceQ, stateQ, cityQ]);
+    const employeeQ = pool.query(
+      "SELECT COALESCE(NULLIF(g.employee_name,''),'(unassigned)') AS k, COUNT(*)::int AS n, " +
+      " SUM(CASE WHEN g.rating ILIKE 'excellent' THEN 1 ELSE 0 END)::int AS excellent, " +
+      " SUM(CASE WHEN g.rating IS NOT NULL AND g.rating <> '' THEN 1 ELSE 0 END)::int AS rated, " +
+      " SUM(CASE WHEN g.arrived_on_time ILIKE 'yes' THEN 1 ELSE 0 END)::int AS on_time, " +
+      " SUM(CASE WHEN g.arrived_on_time IS NOT NULL AND g.arrived_on_time <> '' THEN 1 ELSE 0 END)::int AS answered" +
+      base + " GROUP BY 1 ORDER BY n DESC", params);
+
+    const [total, onTime, rating, service, state, city, employee] =
+      await Promise.all([totalQ, onTimeQ, ratingQ, serviceQ, stateQ, cityQ, employeeQ]);
 
     res.json({
       total: total.rows[0].n,
@@ -90,7 +100,8 @@ router.get('/stats', adminMgr, async (req, res) => {
       byRating: rating.rows,
       byService: service.rows,
       byState: state.rows,
-      byCity: city.rows
+      byCity: city.rows,
+      byEmployee: employee.rows
     });
   } catch (err) {
     console.error('GET /api/geico/stats failed:', err);
@@ -126,6 +137,31 @@ router.post('/ingest', keyAuth, async (req, res) => {
   } catch (err) {
     console.error('POST /api/geico/ingest failed:', err);
     res.status(500).json({ error: err.message || 'Failed to ingest' });
+  }
+});
+
+// POST /api/geico/import-employees - reverse import: attach employee names by PO # (admin/manager)
+//   body: { rows: [{ po_number, employee_name }] }
+router.post('/import-employees', adminMgr, async (req, res) => {
+  try {
+    const rows = Array.isArray(req.body && req.body.rows) ? req.body.rows : [];
+    if (!rows.length) return res.status(400).json({ error: 'No rows provided' });
+    let updated = 0, skipped = 0, notFound = 0;
+    const notFoundList = [];
+    for (let i = 0; i < rows.length; i++) {
+      const po = (rows[i].po_number == null ? '' : String(rows[i].po_number)).trim();
+      const emp = (rows[i].employee_name == null ? '' : String(rows[i].employee_name)).trim();
+      if (!po || !emp) { skipped++; continue; }
+      const r = await pool.query(
+        'UPDATE geico_surveys SET employee_name = $1, updated_at = NOW() WHERE po_number = $2',
+        [emp, po]);
+      if (r.rowCount > 0) { updated += r.rowCount; }
+      else { notFound++; if (notFoundList.length < 25) notFoundList.push(po); }
+    }
+    res.json({ ok: true, updated, skipped, notFound, notFoundList });
+  } catch (err) {
+    console.error('POST /api/geico/import-employees failed:', err);
+    res.status(500).json({ error: 'Failed to import employees' });
   }
 });
 

@@ -2808,7 +2808,12 @@ async function renderGeicoReviews(el) {
       '<div><label style="' + lbl + '">Rating</label><select id="geico-rating" style="' + iS + '" onchange="geicoLoad()"><option value="">All ratings</option></select></div>' +
       '<div><label style="' + lbl + '">Service</label><select id="geico-service" style="' + iS + '" onchange="geicoLoad()"><option value="">All services</option></select></div>' +
       '<div><label style="' + lbl + '">State</label><select id="geico-state" style="' + iS + '" onchange="geicoLoad()"><option value="">All states</option></select></div>' +
+      '<div><label style="' + lbl + '">Employee</label><select id="geico-employee" style="' + iS + '" onchange="geicoLoad()"><option value="">All employees</option></select></div>' +
       '<button class="btn btn-secondary btn-sm" onclick="geicoClearFilters()">Clear</button>' +
+      '<button class="btn btn-secondary btn-sm" onclick="geicoExportCSV()">&#8595; Export CSV</button>' +
+      '<button class="btn btn-secondary btn-sm" onclick="document.getElementById(\'geico-csv-input\').click()">&#8593; Import Employees</button>' +
+      '<button class="btn btn-secondary btn-sm" onclick="geicoDownloadSample()">Sample CSV</button>' +
+      '<input type="file" id="geico-csv-input" accept=".csv,text/csv" style="display:none" onchange="geicoOnCsvChosen(this)" />' +
     '</div>' +
     '<div id="geico-stats" style="margin-bottom:16px"></div>' +
     '<div id="geico-table-wrap"></div>';
@@ -2816,7 +2821,7 @@ async function renderGeicoReviews(el) {
 }
 
 function geicoClearFilters() {
-  ['geico-from','geico-to','geico-city','geico-rating','geico-service','geico-state'].forEach(function(id){ var e=document.getElementById(id); if(e) e.value=''; });
+  ['geico-from','geico-to','geico-city','geico-rating','geico-service','geico-state','geico-employee'].forEach(function(id){ var e=document.getElementById(id); if(e) e.value=''; });
   geicoLoad();
 }
 
@@ -2835,10 +2840,12 @@ function geicoListQS() {
   var rating = (document.getElementById('geico-rating')||{}).value;
   var service = (document.getElementById('geico-service')||{}).value;
   var st = (document.getElementById('geico-state')||{}).value;
+  var emp = (document.getElementById('geico-employee')||{}).value;
   if (city) qs.push('city_code=' + encodeURIComponent(city));
   if (rating) qs.push('rating=' + encodeURIComponent(rating));
   if (service) qs.push('service=' + encodeURIComponent(service));
   if (st) qs.push('loss_state=' + encodeURIComponent(st));
+  if (emp) qs.push('employee=' + encodeURIComponent(emp));
   return qs.length ? ('?' + qs.join('&')) : '';
 }
 
@@ -2872,6 +2879,12 @@ function geicoPopulateDropdowns(stats) {
   fill('geico-rating', stats.byRating);
   fill('geico-service', stats.byService);
   fill('geico-state', stats.byState);
+  var esel = document.getElementById('geico-employee');
+  if (esel) {
+    var ecur = esel.value;
+    esel.innerHTML = '<option value="">All employees</option>' + (stats.byEmployee||[]).filter(function(x){ return x.k && x.k !== '(unassigned)'; }).map(function(x){ return '<option value="' + escHtml(x.k) + '">' + escHtml(x.k) + '</option>'; }).join('');
+    esel.value = ecur;
+  }
 }
 
 function geicoStatCard(label, value, sub, color) {
@@ -2909,7 +2922,28 @@ function geicoRenderStats(s) {
         '</div>';
       }).join('') : '<div style="color:var(--text-muted-color);font-size:13px">No data</div>') +
     '</div>';
-  el.innerHTML = '<div style="display:flex;flex-wrap:wrap;gap:12px">' + cards + '</div>';
+  el.innerHTML = '<div style="display:flex;flex-wrap:wrap;gap:12px">' + cards + '</div>' + geicoEmployeeBreakdown(s);
+}
+
+function geicoEmployeeBreakdown(s) {
+  var emps = (s.byEmployee||[]).filter(function(e){ return e.k !== '(unassigned)'; });
+  var unassigned = (s.byEmployee||[]).filter(function(e){ return e.k === '(unassigned)'; }).reduce(function(a,b){ return a + b.n; }, 0);
+  var head = '<div style="font-size:12px;color:var(--text-muted-color);text-transform:uppercase;letter-spacing:0.5px;margin-bottom:8px">By Employee' + (unassigned ? ' &middot; ' + unassigned + ' unassigned' : '') + '</div>';
+  if (!emps.length) {
+    return '<div class="card" style="padding:16px;margin-top:12px">' + head + '<div style="color:var(--text-muted-color);font-size:13px">No employees assigned yet. Export the surveys, fill in the Employee column, then use Import Employees.</div></div>';
+  }
+  var body = emps.map(function(e){
+    var excPct = e.rated ? Math.round(e.excellent*100/e.rated) : 0;
+    var otPct = e.answered ? Math.round(e.on_time*100/e.answered) : 0;
+    return '<tr>' +
+      '<td>' + escHtml(e.k) + '</td>' +
+      '<td style="text-align:right">' + e.n + '</td>' +
+      '<td style="text-align:right;color:' + geicoPctColor(excPct) + '">' + excPct + '% <span style="color:var(--text-muted-color)">(' + e.excellent + '/' + e.rated + ')</span></td>' +
+      '<td style="text-align:right;color:' + geicoPctColor(otPct) + '">' + otPct + '% <span style="color:var(--text-muted-color)">(' + e.on_time + '/' + e.answered + ')</span></td>' +
+    '</tr>';
+  }).join('');
+  return '<div class="card" style="padding:16px;margin-top:12px">' + head +
+    '<div class="table-wrap"><table><thead><tr><th>Employee</th><th style="text-align:right">Surveys</th><th style="text-align:right">% Excellent</th><th style="text-align:right">On-Time</th></tr></thead><tbody>' + body + '</tbody></table></div></div>';
 }
 
 function geicoRatingBadge(r) {
@@ -2939,9 +2973,9 @@ function geicoRenderTable(rows) {
   wrap.innerHTML =
     '<div style="font-size:12px;color:var(--text-muted-color);margin-bottom:8px">Showing ' + _showing + ' of ' + total + ' survey' + (total===1?'':'s') + '</div>' +
     '<div class="card"><div class="table-wrap"><table>' +
-      '<thead><tr><th>Received</th><th>Account #</th><th>City</th><th>PO #</th><th>Service</th><th>State</th><th>Dispatch</th><th>On Time</th><th>Arrival</th><th>Rating</th></tr></thead><tbody>' +
+      '<thead><tr><th>Received</th><th>Account #</th><th>City</th><th>PO #</th><th>Service</th><th>State</th><th>Dispatch</th><th>On Time</th><th>Arrival</th><th>Rating</th><th>Employee</th></tr></thead><tbody>' +
       (total === 0
-        ? '<tr><td colspan="10" style="text-align:center;color:var(--text-muted-color);padding:32px">No surveys found.</td></tr>'
+        ? '<tr><td colspan="11" style="text-align:center;color:var(--text-muted-color);padding:32px">No surveys found.</td></tr>'
         : page.map(function(r){
             return '<tr>' +
               '<td style="white-space:nowrap">' + escHtml(r.date_received||'—') + '</td>' +
@@ -2954,9 +2988,78 @@ function geicoRenderTable(rows) {
               '<td>' + escHtml(r.arrived_on_time||'—') + '</td>' +
               '<td>' + escHtml(r.time_to_arrive||'—') + '</td>' +
               '<td>' + geicoRatingBadge(r.rating) + '</td>' +
+              '<td>' + escHtml(r.employee_name||'\u2014') + '</td>' +
             '</tr>';
           }).join('')) +
       '</tbody></table></div></div>' + _pager;
+}
+
+function geicoExportCSV() {
+  var rows = _geicoRows || [];
+  if (!rows.length) { alert('Nothing to export with the current filters.'); return; }
+  var header = ['Received','Account #','City','PO #','Service','State','Dispatch','On Time','Arrival','Rating','Employee'];
+  var lines = [header.map(csvCell).join(',')];
+  rows.forEach(function(r){
+    lines.push([
+      r.date_received||'', r.account_number||'', r.city_name||'', r.po_number||'', r.service||'',
+      r.loss_state||'', r.date_of_dispatch||'', r.arrived_on_time||'', r.time_to_arrive||'', r.rating||'', r.employee_name||''
+    ].map(csvCell).join(','));
+  });
+  var blob = new Blob([lines.join('\r\n')], { type: 'text/csv' });
+  var a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = 'geico-surveys-' + new Date().toISOString().slice(0,10) + '.csv';
+  document.body.appendChild(a); a.click(); document.body.removeChild(a);
+  URL.revokeObjectURL(a.href);
+}
+
+function geicoDownloadSample() {
+  var csv = 'Received,Account #,City,PO #,Service,State,Dispatch,On Time,Arrival,Rating,Employee\r\n' +
+    '2026-06-23,FL2685376,Jacksonville,G587926170,LOCKOUT,FL,06/19/2026,Yes,Less then 30 minutes,Excellent,Jane Smith\r\n' +
+    '2026-06-23,FL2685381,Orlando,G143226170,JUMP START,FL,06/19/2026,Yes,31-45 minutes,Excellent,John Doe\r\n';
+  var blob = new Blob([csv], { type: 'text/csv' });
+  var a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = 'geico-employees-sample.csv';
+  document.body.appendChild(a); a.click(); document.body.removeChild(a);
+  URL.revokeObjectURL(a.href);
+}
+
+function geicoOnCsvChosen(input) {
+  var file = input.files && input.files[0];
+  if (!file) return;
+  var reader = new FileReader();
+  reader.onload = function(e){ input.value = ''; geicoHandleCsv(e.target.result); };
+  reader.readAsText(file);
+}
+
+async function geicoHandleCsv(text) {
+  var grid = parsePartsCSV(text);
+  if (grid.length < 2) { alert('That CSV looks empty. Export the surveys first, fill in the Employee column, then import.'); return; }
+  var header = grid[0].map(function(h){ return (h||'').trim().toLowerCase().replace(/[\s#]+/g,'_').replace(/_+$/,''); });
+  function colIdx(names){ for (var n=0;n<names.length;n++){ var k=header.indexOf(names[n]); if (k!==-1) return k; } return -1; }
+  var poi = colIdx(['po','po_number','po_no','ponumber']);
+  var ei = colIdx(['employee','employee_name','name','tech','technician']);
+  if (poi === -1) { alert('Could not find a "PO #" column in that CSV. Use the exported file as your template.'); return; }
+  if (ei === -1) { alert('Could not find an "Employee" column in that CSV. Use the exported file as your template.'); return; }
+  var rows = [];
+  for (var i=1;i<grid.length;i++){
+    var po=(grid[i][poi]||'').trim();
+    var emp=(grid[i][ei]||'').trim();
+    if (po && emp) rows.push({ po_number: po, employee_name: emp });
+  }
+  if (!rows.length) { alert('No rows had both a PO # and an Employee name. Fill in the Employee column and try again.'); return; }
+  if (!confirm('Assign employee names to ' + rows.length + ' survey' + (rows.length===1?'':'s') + '?')) return;
+  try {
+    var resp = await api('POST', '/geico/import-employees', { rows: rows });
+    var msg = 'Updated ' + resp.updated + ' survey' + (resp.updated===1?'':'s') + '.';
+    if (resp.skipped) msg += '\nSkipped ' + resp.skipped + ' row(s) with a missing PO # or name.';
+    if (resp.notFound) { msg += '\n' + resp.notFound + ' PO #(s) were not found'; if (resp.notFoundList && resp.notFoundList.length) msg += ': ' + resp.notFoundList.join(', '); msg += '.'; }
+    alert(msg);
+    geicoLoad(true);
+  } catch(e) {
+    alert('Import failed: ' + (e && e.message ? e.message : e));
+  }
 }
 // ── Vendors ───────────────────────────────────────────────────────────────────
 

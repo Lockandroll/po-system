@@ -333,6 +333,9 @@ async function initDB() {
       'CREATE INDEX IF NOT EXISTS idx_geico_rating ON geico_surveys(rating);'
     );
     await client.query(
+      'ALTER TABLE geico_surveys ADD COLUMN IF NOT EXISTS employee_name VARCHAR(120);'
+    );
+    await client.query(
       'CREATE TABLE IF NOT EXISTS signoff_forms (' +
       '  id SERIAL PRIMARY KEY,' +
       '  form_number VARCHAR(50) UNIQUE NOT NULL,' +
