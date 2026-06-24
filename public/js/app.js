@@ -7230,10 +7230,11 @@ async function renderEditInvoice(el, id) {
         '<div class="form-group"><label>Model</label><input type="text" id="inv-vmodel" value="' + escHtml(v.vehicle_model||'') + '" /></div>' +
       '</div>' +
       '<div class="form-row">' +
-        '<div class="form-group"><label>License / Tag #</label><input type="text" id="inv-tag" value="' + escHtml(v.license_tag||'') + '" /></div>' +
+        '<div class="form-group"><label>License / Tag #</label><div style="display:flex;gap:6px"><input type="text" id="inv-tag" value="' + escHtml(v.license_tag||'') + '" style="text-transform:uppercase" oninput="this.value=this.value.toUpperCase()" /><button class="btn btn-secondary btn-sm" style="white-space:nowrap" onclick="invScanPlate()">Scan</button></div><input type="file" id="inv-plate-file" accept="image/*" capture="environment" style="display:none" onchange="invHandlePlateFile(this)" /></div>' +
         '<div class="form-group" style="max-width:90px"><label>Tag State</label><input type="text" id="inv-tagstate" maxlength="2" value="' + escHtml(v.tag_state||'') + '" style="text-transform:uppercase" /></div>' +
         '<div class="form-group"><label>Mileage</label><input type="text" id="inv-mileage" value="' + escHtml(v.mileage||'') + '" /></div>' +
       '</div>' +
+      '<div id="inv-plate-status" style="font-size:12px;color:var(--text-muted-color)"></div>' +
       '<div id="inv-vin-status" style="font-size:12px;color:var(--text-muted-color)"></div>' +
     '</div></div>' +
 
@@ -7463,6 +7464,27 @@ async function invHandleVinFile(input) {
       await invDecodeVin();
     } else {
       if (status) { status.style.color = 'var(--danger, #ef4444)'; status.textContent = 'Could not read a VIN from that photo. Try a clearer shot of the VIN plate or barcode, or type it in.'; }
+    }
+  } catch(e) { if (status) { status.style.color = 'var(--danger, #ef4444)'; status.textContent = e.message; } }
+  input.value = '';
+}
+
+function invScanPlate() { var f = document.getElementById('inv-plate-file'); if (f) f.click(); }
+async function invHandlePlateFile(input) {
+  var status = document.getElementById('inv-plate-status');
+  var file = input.files && input.files[0];
+  if (!file) return;
+  if (status) { status.style.color = 'var(--primary)'; status.innerHTML = '<span class="spinner"></span> Photo accepted \u2014 AI is reading the plate\u2026'; }
+  try {
+    var dataUrl = await invFileToCompressedDataUrl(file, 1600);
+    var d = await api('POST', '/invoices/scan-plate', { image: dataUrl });
+    if (d.plate) {
+      var tagEl = document.getElementById('inv-tag');
+      if (tagEl) tagEl.value = d.plate;
+      if (d.state) { var stEl = document.getElementById('inv-tagstate'); if (stEl) stEl.value = d.state; }
+      if (status) { status.style.color = 'var(--success)'; status.textContent = 'Plate read: ' + d.plate + (d.state ? ' (' + d.state + ')' : '') + ' \u2014 please verify.'; }
+    } else {
+      if (status) { status.style.color = 'var(--danger, #ef4444)'; status.textContent = 'Could not read a plate from that photo. Try a clearer, straight-on shot, or type it in.'; }
     }
   } catch(e) { if (status) { status.style.color = 'var(--danger, #ef4444)'; status.textContent = e.message; } }
   input.value = '';

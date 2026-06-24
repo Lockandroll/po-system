@@ -208,6 +208,28 @@ router.post('/scan-id', requireAuth, requirePermission('create_invoice'), async 
   }
 });
 
+
+// Plate scan: read a license plate number + state from a photo.
+router.post('/scan-plate', requireAuth, requirePermission('create_invoice'), async (req, res) => {
+  const { image } = req.body;
+  if (!image) return res.status(400).json({ error: 'No image provided.' });
+  const instruction = 'This is a photo of a vehicle license plate (tag). Read the plate and respond with ONLY a JSON object, no prose, using these exact keys (use an empty string if a field is not present): {"plate":"","state":""}. plate is the alphanumeric plate/tag number with no spaces or dashes, uppercase. state is the 2-letter code of the issuing state if it is printed on the plate. Ignore slogans, county names, sticker months, and the word the state spells out unless it is the issuing state. If you cannot read the plate, return {"plate":"","state":""}.';
+  try {
+    const resp = await anthropicVision(image, instruction);
+    let text = '';
+    if (resp && Array.isArray(resp.content)) resp.content.forEach(function (b) { if (b.type === 'text') text += b.text; });
+    let parsed = {};
+    const jm = text.match(/\{[\s\S]*\}/);
+    try { parsed = JSON.parse(jm ? jm[0] : text); } catch (e) { parsed = {}; }
+    const plate = String(parsed.plate || '').toUpperCase().replace(/[^A-Z0-9]/g, '');
+    const state = String(parsed.state || '').toUpperCase().replace(/[^A-Z]/g, '').slice(0, 2);
+    res.json({ plate: plate, state: state });
+  } catch (err) {
+    console.error('Plate scan failed:', err.message);
+    res.status(502).json({ error: 'Could not read the plate. Enter it manually.' });
+  }
+});
+
 // ---- parts usage report ----------------------------------------------------
 
 // Aggregated part usage for a month (YYYY-MM). Feeds month-end ordering.
