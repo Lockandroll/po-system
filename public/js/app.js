@@ -2812,7 +2812,7 @@ async function renderGeicoReviews(el) {
       '<button class="btn btn-secondary btn-sm" onclick="geicoClearFilters()">Clear</button>' +
       '<button class="btn btn-secondary btn-sm" onclick="geicoExportCSV()">&#8595; Export CSV</button>' +
       '<button class="btn btn-secondary btn-sm" onclick="document.getElementById(\'geico-csv-input\').click()">&#8593; Import Employees</button>' +
-      '<button class="btn btn-secondary btn-sm" onclick="geicoDownloadSample()">Sample CSV</button>' +
+      '<button class="btn btn-secondary btn-sm" onclick="geicoDownloadSample()">Import Sample CSV</button>' +
       '<input type="file" id="geico-csv-input" accept=".csv,text/csv" style="display:none" onchange="geicoOnCsvChosen(this)" />' +
     '</div>' +
     '<div id="geico-stats" style="margin-bottom:16px"></div>' +
@@ -3014,13 +3014,14 @@ function geicoExportCSV() {
 }
 
 function geicoDownloadSample() {
-  var csv = 'Received,Account #,City,PO #,Service,State,Dispatch,On Time,Arrival,Rating,Employee\r\n' +
-    '2026-06-23,FL2685376,Jacksonville,G587926170,LOCKOUT,FL,06/19/2026,Yes,Less then 30 minutes,Excellent,Jane Smith\r\n' +
-    '2026-06-23,FL2685381,Orlando,G143226170,JUMP START,FL,06/19/2026,Yes,31-45 minutes,Excellent,John Doe\r\n';
+  var csv = 'PO #,Employee\r\n' +
+    'G587926170,"Benson, Chris"\r\n' +
+    'G143226170,"Jacques, Daniel"\r\n' +
+    'G328826170,"Sims, Jason"\r\n';
   var blob = new Blob([csv], { type: 'text/csv' });
   var a = document.createElement('a');
   a.href = URL.createObjectURL(blob);
-  a.download = 'geico-employees-sample.csv';
+  a.download = 'geico-import-sample.csv';
   document.body.appendChild(a); a.click(); document.body.removeChild(a);
   URL.revokeObjectURL(a.href);
 }
