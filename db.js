@@ -880,6 +880,12 @@ async function initDB() {
     await client.query('CREATE INDEX IF NOT EXISTS document_shares_user_idx ON document_shares (grantee_user_id);');
     await client.query('CREATE INDEX IF NOT EXISTS document_shares_role_idx ON document_shares (grantee_role);');
     await client.query('ALTER TABLE documents ADD COLUMN IF NOT EXISTS emailable BOOLEAN NOT NULL DEFAULT false;');
+    // Document expiration + reminder lead time (number + unit days/weeks/months).
+    await client.query('ALTER TABLE documents ADD COLUMN IF NOT EXISTS expires_on DATE;');
+    await client.query('ALTER TABLE documents ADD COLUMN IF NOT EXISTS reminder_lead_num INTEGER;');
+    await client.query("ALTER TABLE documents ADD COLUMN IF NOT EXISTS reminder_lead_unit VARCHAR(10);");
+    await client.query('ALTER TABLE documents ADD COLUMN IF NOT EXISTS reminder_sent_at TIMESTAMPTZ;');
+    await client.query('ALTER TABLE documents ADD COLUMN IF NOT EXISTS expiry_notice_sent_at TIMESTAMPTZ;');
     // ===== Invoices (field invoicing) =====
     const DEFAULT_AGREEMENT = [
       "I, {customer}, confirm that the information given by me is correct, I have the authority to authorize these services, and I indemnify and hold harmless the locksmith and Pop-A-Lock against liability. Also I authorize Pop-A-Lock to perform the above described service and agree to pay (or authorize my motor club to pay) all applicable charges.",

@@ -1817,7 +1817,8 @@ async function renderNotifications(el) {
     { key:'quote_to_pos', label:'Purchase orders created from a quote', def:'all admins', sms:true },
     { key:'signoff_completed', label:'Sign-off sheet completed', def:'all admins', sms:false },
     { key:'work_order_received', label:'New work order received', def:'all admins and managers', sms:false },
-    { key:'suggestion_created', label:'New employee suggestion', def:'all admins and managers', sms:true }
+    { key:'suggestion_created', label:'New employee suggestion', def:'all admins and managers', sms:true },
+    { key:'document_expiring', label:'Document expiration reminder', def:'all admins and managers', sms:false }
   ];
   var requester = [
     { key:'po_approved', label:'PO approved' },
@@ -1921,7 +1922,7 @@ async function renderNotifications(el) {
 }
 
 async function saveNotifications() {
-  var broadcast = ['po_submitted','vr_submitted','quote_created','quote_to_pos','signoff_completed','work_order_received','suggestion_created'];
+  var broadcast = ['po_submitted','vr_submitted','quote_created','quote_to_pos','signoff_completed','work_order_received','suggestion_created','document_expiring'];
   var smsCapable = { po_submitted:1, vr_submitted:1, quote_created:1, quote_to_pos:1, suggestion_created:1 };
   var requester = ['po_approved','po_rejected','po_cancelled','po_ordered','vr_approved','vr_rejected'];
   function parseEmails(raw) {
@@ -4524,7 +4525,8 @@ async function renderDocuments(el) {
       '<div style="flex:1;min-width:0;cursor:pointer;display:flex;align-items:center;gap:10px" onclick="docDownload(' + f.id + ')">' + docIcon(f.mime_type) +
       '<span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + escHtml(f.name) + '</span>' +
       (f.shareCount ? '<span class="doc-badge">shared</span>' : '') +
-      (f.emailable ? '<span class="doc-badge" style="background:rgba(59,130,246,0.15);color:#3b82f6">email</span>' : '') + '</div>' +
+      (f.emailable ? '<span class="doc-badge" style="background:rgba(59,130,246,0.15);color:#3b82f6">email</span>' : '') +
+      docExpiryBadge(f) + '</div>' +
       '<div class="doc-hide-sm" style="width:80px;color:var(--text-muted-color);font-size:13px;text-align:right">' + docFmtSize(f.size_bytes) + '</div>' +
       '<div class="doc-hide-sm" style="width:150px;color:var(--text-muted-color);font-size:13px">' + escHtml(f.owner_name || '') + '</div>' +
       '<div style="text-align:right;white-space:nowrap">' + docMenu('file', f.id, f.canEdit, f.emailable) + '</div>' +
@@ -4553,6 +4555,7 @@ function docMenu(type, id, canEdit, emailable) {
     b += '<button class="btn btn-ghost btn-sm doc-act" title="Download" onclick="event.stopPropagation();docDownload(' + id + ',1)">&#x2913;</button>';
     if (emailable) b += '<button class="btn btn-ghost btn-sm doc-act" title="Email this document" onclick="event.stopPropagation();docEmail(' + id + ')"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="vertical-align:-2px"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg></button>';
     if (isAdm) b += '<button class="btn btn-ghost btn-sm doc-act" title="' + (emailable ? 'Emailing allowed (click to disable)' : 'Allow emailing') + '" onclick="event.stopPropagation();docToggleEmail(' + id + ',' + (emailable ? 1 : 0) + ')"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="' + (emailable ? '#f97316' : 'currentColor') + '" stroke-width="2" style="vertical-align:-2px"><rect x="3" y="5" width="18" height="14" rx="2"/><path d="M3 7l9 6 9-6"/></svg></button>';
+    if (canEdit) b += '<button class="btn btn-ghost btn-sm doc-act" title="Set expiration" onclick="event.stopPropagation();docSetExpiry(' + id + ')"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="vertical-align:-2px"><rect x="3" y="4" width="18" height="18" rx="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></svg></button>';
   }
   if (canEdit) {
     b += '<button class="btn btn-ghost btn-sm doc-act" title="Share" onclick="event.stopPropagation();docShare(\'' + type + '\',' + id + ')">&#9737;</button>';
@@ -4747,6 +4750,76 @@ async function docToggleEmail(id, current) {
   try { await api('PUT', '/documents/' + id, { emailable: !current }); docReload(); }
   catch (e) { alert(e.message); }
 }
+
+// ---- Document expiration ----
+function docLeadDate(expISO, num, unit) {
+  var d = new Date(String(expISO).slice(0, 10) + 'T00:00:00');
+  num = parseInt(num, 10) || 0;
+  if (unit === 'days') d.setDate(d.getDate() - num);
+  else if (unit === 'weeks') d.setDate(d.getDate() - num * 7);
+  else if (unit === 'months') d.setMonth(d.getMonth() - num);
+  return d;
+}
+function docExpiryBadge(f) {
+  if (!f.expires_on) return '';
+  var exp = new Date(String(f.expires_on).slice(0, 10) + 'T00:00:00');
+  if (isNaN(exp.getTime())) return '';
+  var today = new Date(); today.setHours(0, 0, 0, 0);
+  var fmt = exp.toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' });
+  if (today.getTime() >= exp.getTime())
+    return ' <span class="doc-badge" title="Expired" style="background:rgba(239,68,68,0.16);color:#ef4444">expired ' + escHtml(fmt) + '</span>';
+  var lead = docLeadDate(f.expires_on, f.reminder_lead_num, f.reminder_lead_unit);
+  if (today.getTime() >= lead.getTime())
+    return ' <span class="doc-badge" title="Expires " style="background:rgba(234,179,8,0.18);color:#eab308">expiring ' + escHtml(fmt) + '</span>';
+  return '';
+}
+function docSetExpiry(id) {
+  var f = docFind('file', id);
+  if (!f) return;
+  var curDate = f.expires_on ? String(f.expires_on).slice(0, 10) : '';
+  var curNum = f.reminder_lead_num || 2;
+  var curUnit = f.reminder_lead_unit || 'weeks';
+  function unitOpt(v, label) { return '<option value="' + v + '"' + (curUnit === v ? ' selected' : '') + '>' + label + '</option>'; }
+  var overlay = document.createElement('div');
+  overlay.className = 'modal-overlay';
+  overlay.id = 'doc-expiry-modal';
+  overlay.innerHTML =
+    '<div class="modal">' +
+    '<div class="modal-header"><span class="modal-title">Expiration: ' + escHtml(f.name) + '</span>' +
+    '<button class="btn btn-ghost btn-sm" onclick="docCloseExpiry()">&#x2715;</button></div>' +
+    '<div class="modal-body">' +
+    '<div id="doc-expiry-err"></div>' +
+    '<p style="font-size:13px;color:var(--text-muted-color);margin:0 0 14px">Set an expiration date and how far ahead to send a reminder. An email goes to the distribution list configured under Notifications &rarr; Document expiration reminder, and a second notice goes out on the expiration day.</p>' +
+    '<div class="form-group"><label>Expiration date</label><input type="date" id="doc-expiry-date" value="' + curDate + '" /></div>' +
+    '<div class="form-group"><label>Remind before expiration</label>' +
+      '<div style="display:flex;gap:8px">' +
+      '<input type="number" id="doc-expiry-num" min="1" max="999" value="' + curNum + '" style="width:90px" />' +
+      '<select id="doc-expiry-unit" style="flex:1">' + unitOpt('days', 'Days') + unitOpt('weeks', 'Weeks') + unitOpt('months', 'Months') + '</select>' +
+      '</div></div>' +
+    '</div>' +
+    '<div class="modal-footer">' +
+    (curDate ? '<button class="btn btn-ghost btn-sm" style="color:#ef4444" onclick="docClearExpiry(' + id + ')">Clear expiration</button>' : '') +
+    '<button class="btn btn-ghost btn-sm" onclick="docCloseExpiry()">Cancel</button>' +
+    '<button class="btn btn-primary btn-sm" onclick="docSaveExpiry(' + id + ')">Save</button>' +
+    '</div>' +
+    '</div>';
+  document.body.appendChild(overlay);
+}
+async function docSaveExpiry(id) {
+  var date = (document.getElementById('doc-expiry-date') || {}).value || '';
+  if (!date) { document.getElementById('doc-expiry-err').innerHTML = '<div class="alert alert-error">Pick an expiration date, or use Clear expiration.</div>'; return; }
+  var num = parseInt((document.getElementById('doc-expiry-num') || {}).value, 10) || 1;
+  var unit = (document.getElementById('doc-expiry-unit') || {}).value || 'weeks';
+  try {
+    await api('PUT', '/documents/' + id, { expires_on: date, reminder_lead_num: num, reminder_lead_unit: unit });
+    docCloseExpiry(); docReload();
+  } catch (e) { document.getElementById('doc-expiry-err').innerHTML = '<div class="alert alert-error">' + escHtml(e.message) + '</div>'; }
+}
+async function docClearExpiry(id) {
+  try { await api('PUT', '/documents/' + id, { expires_on: null }); docCloseExpiry(); docReload(); }
+  catch (e) { document.getElementById('doc-expiry-err').innerHTML = '<div class="alert alert-error">' + escHtml(e.message) + '</div>'; }
+}
+function docCloseExpiry() { var m = document.getElementById('doc-expiry-modal'); if (m) m.remove(); }
 
 function docEmail(id) {
   var f = docFind('file', id);

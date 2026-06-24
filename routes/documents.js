@@ -121,7 +121,8 @@ router.get('/', requireAuth, async function (req, res) {
       'SELECT id, name, parent_id, owner_id, owner_name, created_at FROM document_folders ORDER BY name ASC'
     )).rows;
     const allFiles = (await pool.query(
-      "SELECT id, name, folder_id, mime_type, size_bytes, owner_id, owner_name, emailable, created_at " +
+      "SELECT id, name, folder_id, mime_type, size_bytes, owner_id, owner_name, emailable, created_at, " +
+      "expires_on, reminder_lead_num, reminder_lead_unit " +
       "FROM documents WHERE status = 'ready' ORDER BY name ASC"
     )).rows;
 
@@ -162,6 +163,7 @@ router.get('/', requireAuth, async function (req, res) {
           id: f.id, name: f.name, mime_type: f.mime_type, size_bytes: Number(f.size_bytes) || 0,
           owner_name: f.owner_name, created_at: f.created_at,
           mine: f.owner_id === req.user.id, canEdit: canEditFile(ctx, f), emailable: !!f.emailable,
+          expires_on: f.expires_on, reminder_lead_num: f.reminder_lead_num, reminder_lead_unit: f.reminder_lead_unit,
           shareCount: shareCounts['file:' + f.id] || 0
         };
       })
@@ -219,6 +221,25 @@ router.put('/folders/:id', requireAuth, async function (req, res) {
     const sets = [], params = [];
     if (typeof req.body.name === 'string' && req.body.name.trim()) {
       params.push(req.body.name.trim().slice(0, 255)); sets.push('name = $' + params.length);
+    }
+    // Expiration + reminder lead time. Changing the expiry re-arms both reminders.
+    if (req.body.expires_on !== undefined) {
+      var exp = req.body.expires_on;
+      if (exp === null || exp === '') {
+        sets.push('expires_on = NULL'); sets.push('reminder_lead_num = NULL'); sets.push('reminder_lead_unit = NULL');
+        sets.push('reminder_sent_at = NULL'); sets.push('expiry_notice_sent_at = NULL');
+      } else {
+        if (!/^\d{4}-\d{2}-\d{2}$/.test(String(exp))) return res.status(400).json({ error: 'Invalid expiration date' });
+        var num = parseInt(req.body.reminder_lead_num, 10);
+        var unit = String(req.body.reminder_lead_unit || '');
+        if (!num || num < 1) num = 1;
+        if (num > 999) num = 999;
+        if (['days','weeks','months'].indexOf(unit) === -1) unit = 'weeks';
+        params.push(exp); sets.push('expires_on = $' + params.length);
+        params.push(num); sets.push('reminder_lead_num = $' + params.length);
+        params.push(unit); sets.push('reminder_lead_unit = $' + params.length);
+        sets.push('reminder_sent_at = NULL'); sets.push('expiry_notice_sent_at = NULL');
+      }
     }
     if (req.body.parent_id !== undefined) {
       const target = req.body.parent_id === null ? null : parseInt(req.body.parent_id, 10);
