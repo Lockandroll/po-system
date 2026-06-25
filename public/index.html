@@ -283,6 +283,13 @@
     .alert { animation: novaSlideDown .25s ease both; }
     @keyframes novaSlideDown { from { opacity:0; transform: translateY(-6px); } to { opacity:1; transform: translateY(0); } }
     #nova-progress { position:fixed; top:0; left:0; height:3px; width:0; background:linear-gradient(90deg, var(--primary), #ffb066); box-shadow:0 0 8px rgba(249,115,22,.6); z-index:99999; opacity:0; pointer-events:none; border-top-right-radius:3px; border-bottom-right-radius:3px; }
+    .loading { animation: novaPulse 1.4s ease-in-out infinite; }
+    @keyframes novaPulse { 0%,100%{ opacity:.55; } 50%{ opacity:1; } }
+    .empty-state svg { animation: novaFloat 3.5s ease-in-out infinite; }
+    @keyframes novaFloat { 0%,100%{ transform: translateY(0); } 50%{ transform: translateY(-6px); } }
+    .table-wrap tbody tr { animation: novaRowFade .2s ease both; }
+    @keyframes novaRowFade { from{ opacity:0; } to{ opacity:1; } }
+    @media (prefers-reduced-motion: reduce) { .loading,.empty-state svg,.table-wrap tbody tr{ animation:none; } }
     @media (prefers-reduced-motion: reduce) { .main-content,.modal-overlay,.modal,.alert{animation:none} .btn:hover,.btn:active{transform:none} }
     @media (prefers-reduced-motion: reduce) { .stats-grid .stat-card{opacity:1;animation:none} .stat-card:hover,.nova-tile:hover,.nav-item:hover,.nav-sub:hover{transform:none} .stat-card::before,.nova-tile::before,.nav-item::before,.nav-sub::before,.nav-section-header::before{display:none} }
   </style>
