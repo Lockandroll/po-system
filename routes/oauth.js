@@ -12,6 +12,7 @@ var crypto = require('crypto');
 var bcrypt = require('bcryptjs');
 var jwt = require('jsonwebtoken');
 var pool = require('../db').pool;
+var diag = require('../lib/diag');
 
 var router = express.Router();
 var urlenc = express.urlencoded({ extended: false });
@@ -40,6 +41,7 @@ function esc(s) {
 
 // ---- Discovery: Protected Resource Metadata (RFC 9728) ----
 function protectedResource(req, res) {
+  diag.log('PRM fetched');
   res.json({
     resource: resourceUrl(req),
     authorization_servers: [baseUrl(req)],
@@ -52,6 +54,7 @@ router.get('/.well-known/oauth-protected-resource/*', protectedResource);
 
 // ---- Discovery: Authorization Server Metadata (RFC 8414) ----
 function authServerMeta(req, res) {
+  diag.log('AS-metadata fetched');
   var b = baseUrl(req);
   res.json({
     issuer: b,
@@ -73,7 +76,7 @@ router.get('/oauth/debug', async function (req, res) {
   try {
     var a = await pool.query('SELECT COUNT(*)::int AS n, MAX(created_at) AS last FROM oauth_clients');
     var b = await pool.query('SELECT COUNT(*)::int AS n FROM oauth_codes');
-    res.json({ clients: a.rows[0].n, lastClientAt: a.rows[0].last, codes: b.rows[0].n });
+    res.json({ clients: a.rows[0].n, lastClientAt: a.rows[0].last, codes: b.rows[0].n, events: diag.getEvents() });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
@@ -81,8 +84,10 @@ router.get('/oauth/debug', async function (req, res) {
 router.post('/oauth/register', async function (req, res) {
   try {
     var b = req.body || {};
+    diag.log('register POST ct=' + (req.headers['content-type']||'') + ' keys=' + Object.keys(b).join(','));
     var uris = b.redirect_uris;
     if (!Array.isArray(uris) || !uris.length) {
+      diag.log('register 400: redirect_uris missing');
       return res.status(400).json({ error: 'invalid_redirect_uri', error_description: 'redirect_uris is required' });
     }
     for (var i = 0; i < uris.length; i++) {
@@ -97,7 +102,7 @@ router.post('/oauth/register', async function (req, res) {
       'INSERT INTO oauth_clients (client_id, client_secret, client_name, redirect_uris) VALUES ($1,$2,$3,$4)',
       [clientId, clientSecret, name, JSON.stringify(uris)]
     );
-    console.log('[oauth] registered client_id=' + clientId);
+    diag.log('register OK client_id=' + clientId + ' uris=' + JSON.stringify(uris));
     res.status(201).json({
       client_id: clientId,
       client_secret: clientSecret,
@@ -109,6 +114,7 @@ router.post('/oauth/register', async function (req, res) {
       token_endpoint_auth_method: 'client_secret_post'
     });
   } catch (e) {
+    diag.log('register ERROR ' + e.message);
     console.error('DCR failed:', e);
     res.status(500).json({ error: 'server_error' });
   }
@@ -182,7 +188,7 @@ function redirectError(res, p, code, desc) {
 router.get('/oauth/authorize', async function (req, res) {
   try {
     var q = req.query || {};
-    console.log('[oauth] authorize GET client_id=' + q.client_id);
+    diag.log('authorize GET client_id=' + q.client_id + ' redirect_uri=' + q.redirect_uri);
     var client = await getClient(q.client_id);
     if (!client) {
       try { var cc = await pool.query('SELECT COUNT(*)::int AS n FROM oauth_clients'); console.log('[oauth] unknown client_id=' + q.client_id + ' total=' + cc.rows[0].n); } catch (e) { console.error('[oauth] count failed: ' + e.message); }
@@ -273,6 +279,7 @@ router.post('/oauth/token', urlenc, async function (req, res) {
   try {
     var b = req.body || {};
     var grant = b.grant_type;
+    diag.log('token POST grant=' + grant + ' client_id=' + b.client_id);
     if (grant === 'authorization_code') {
       var cr = await pool.query('SELECT * FROM oauth_codes WHERE code=$1', [b.code]);
       var row = cr.rows[0];

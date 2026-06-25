@@ -8,6 +8,7 @@
 var express = require('express');
 var jwt = require('jsonwebtoken');
 var novaTools = require('../lib/novaTools');
+var diag = require('../lib/diag');
 
 var router = express.Router();
 
@@ -87,6 +88,7 @@ function isNotification(msg) {
 }
 
 router.post('/', async function (req, res) {
+  diag.log('mcp POST auth=' + (req.headers.authorization ? 'yes' : 'no') + ' method=' + (req.body && !Array.isArray(req.body) ? req.body.method : 'batch'));
   // Every call is on a protected resource: require a valid token, otherwise
   // return 401 with WWW-Authenticate so Claude can start OAuth discovery.
   var actor = actorFromAuth(req);
@@ -113,6 +115,6 @@ router.post('/', async function (req, res) {
 
 // Some MCP clients open a GET for a server-to-client SSE stream. Nova uses
 // JSON-response mode only, so we politely decline the stream.
-router.get('/', function (req, res) { res.status(405).json(rpcError(null, -32000, 'Method Not Allowed')); });
+router.get('/', function (req, res) { diag.log('mcp GET (sse decline)'); res.status(405).json(rpcError(null, -32000, 'Method Not Allowed')); });
 
 module.exports = router;
