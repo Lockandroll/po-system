@@ -1,5 +1,5 @@
 // App version — bump together with CACHE_VERSION in public/sw.js on each deploy.
-var APP_VERSION = 'v31';
+var APP_VERSION = 'v33';
 
 const state = {
   token: localStorage.getItem('po_token'),
@@ -4758,7 +4758,6 @@ function aiMarkdown(text) {
 }
 // ── Locksmith AI Assistant ─────────────────────────────────────────────────────────────
 var _aiMessages = [];
-var _aiActionMode = false;
 var _aiSessionUserId = null;
 var _aiUsage = { daily: 0, dailyLimit: 20 };
 var docClipboard = null;
@@ -5349,10 +5348,6 @@ async function renderAIAssistant(el) {
         '</div>' +
       '</div>' +
       '<div style="padding:12px 0;border-top:1px solid var(--border-color)">' +
-        '<label style="display:flex;align-items:center;gap:6px;font-size:12px;color:var(--text-muted-color);margin-bottom:8px;cursor:pointer">' +
-          '<input type="checkbox" id="ai-action-toggle" ' + (_aiActionMode ? 'checked ' : '') + 'onchange="_aiActionMode=this.checked" style="cursor:pointer" />' +
-          ' Actions mode &mdash; let Neurolock look things up and create tasks' +
-        '</label>' +
         '<div id="ai-image-preview" style="display:none;margin-bottom:8px;position:relative;width:fit-content">' +
           '<img id="ai-image-thumb" style="max-height:80px;max-width:200px;border-radius:6px;border:1px solid var(--border-color)" />' +
           '<button onclick="aiClearImage()" style="position:absolute;top:-6px;right:-6px;width:20px;height:20px;border-radius:50%;background:var(--danger-color,#ef4444);border:none;color:#fff;cursor:pointer;font-size:12px;line-height:1;padding:0">&#x2715;</button>' +
@@ -5521,8 +5516,7 @@ async function aiSend() {
   if (thread) { thread.appendChild(typing); thread.scrollTop = thread.scrollHeight; }
   try {
     var apiMessages = _aiMessages.map(function(m) { return { role: m.role, content: m.content }; });
-    var _aiEndpoint = _aiActionMode ? '/ai/agent' : '/ai/chat';
-    var data = await api('POST', _aiEndpoint, { messages: apiMessages });
+    var data = await api('POST', '/ai/agent', { messages: apiMessages });
     _aiMessages.push({ role: 'assistant', content: data.reply });
     _aiUsage.daily = data.dailyUsed;
     var badge = document.getElementById('ai-usage-badge');
