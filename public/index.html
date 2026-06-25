@@ -302,6 +302,14 @@
     .qa-grid .btn:hover svg { color: var(--primary); }
     .qa-grid .btn:active { transform: translateY(-1px) scale(.98); }
     @media (prefers-reduced-motion: reduce) { .qa-grid .btn:hover, .qa-grid .btn:active { transform:none; } }
+    .nova-dialog-overlay { position:fixed; inset:0; background:rgba(0,0,0,.62); display:flex; align-items:center; justify-content:center; z-index:10000; padding:16px; animation: novaFade .15s ease both; }
+    .nova-dialog-overlay.closing { animation:none; opacity:0; transition: opacity .14s ease; }
+    .nova-dlg { background:var(--bg-card); border:1px solid var(--border); border-radius:14px; box-shadow:var(--shadow-md); width:100%; max-width:380px; padding:20px 22px; animation: novaPop .26s cubic-bezier(.34,1.56,.64,1) both; }
+    .nova-dlg-title { font-size:16px; font-weight:700; color:var(--text); margin-bottom:6px; }
+    .nova-dlg-msg { font-size:14px; color:var(--text-dim); line-height:1.5; margin-bottom:14px; }
+    .nova-dlg-input { width:100%; margin-bottom:16px; }
+    .nova-dlg-actions { display:flex; gap:8px; justify-content:flex-end; }
+    @media (prefers-reduced-motion: reduce) { .nova-dialog-overlay, .nova-dlg { animation:none; } }
     @media (prefers-reduced-motion: reduce) { .main-content,.modal-overlay,.modal,.alert{animation:none} .btn:hover,.btn:active{transform:none} }
     @media (prefers-reduced-motion: reduce) { .stats-grid .stat-card{opacity:1;animation:none} .stat-card:hover,.nova-tile:hover,.nav-item:hover,.nav-sub:hover{transform:none} .stat-card::before,.nova-tile::before,.nav-item::before,.nav-sub::before,.nav-section-header::before{display:none} }
   </style>

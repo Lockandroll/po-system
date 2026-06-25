@@ -1,5 +1,5 @@
 // App version — bump together with CACHE_VERSION in public/sw.js on each deploy.
-var APP_VERSION = 'v29';
+var APP_VERSION = 'v30';
 
 const state = {
   token: localStorage.getItem('po_token'),
@@ -49,6 +49,38 @@ function novaBtnReset(btn) {
   btn.disabled = false;
 }
 function novaEvtBtn() { var e = window.event; var t = e && e.target; return (t && t.closest) ? t.closest('.btn') : null; }
+function _novaDialog(o){
+  return new Promise(function(resolve){
+    var isPrompt = o.type === 'prompt', isAlert = o.type === 'alert';
+    var ov = document.createElement('div');
+    ov.className = 'nova-dialog-overlay';
+    var defv = (o.def != null ? String(o.def) : '').replace(/"/g, '&quot;');
+    var msg = o.message ? '<div class="nova-dlg-msg">' + escHtml(o.message).replace(/\n/g, '<br>') + '</div>' : '';
+    var inp = isPrompt ? '<input id="nova-dlg-input" type="text" value="' + defv + '" class="nova-dlg-input">' : '';
+    var cancel = isAlert ? '' : '<button class="btn btn-secondary" id="nova-dlg-cancel">' + escHtml(o.cancelText || 'Never mind') + '</button>';
+    ov.innerHTML = '<div class="nova-dlg" role="dialog" aria-modal="true">' +
+      '<div class="nova-dlg-title">' + escHtml(o.title || '') + '</div>' + msg + inp +
+      '<div class="nova-dlg-actions">' + cancel +
+      '<button class="btn btn-primary" id="nova-dlg-ok">' + escHtml(o.okText || 'OK') + '</button>' +
+      '</div></div>';
+    document.body.appendChild(ov);
+    var input = ov.querySelector('#nova-dlg-input');
+    var okBtn = ov.querySelector('#nova-dlg-ok');
+    var cancelBtn = ov.querySelector('#nova-dlg-cancel');
+    if (input) { input.focus(); input.select(); } else if (okBtn) { okBtn.focus(); }
+    function close(val){ ov.classList.add('closing'); document.removeEventListener('keydown', onKey); setTimeout(function(){ if (ov.parentNode) ov.parentNode.removeChild(ov); }, 140); resolve(val); }
+    function ok(){ close(isPrompt ? (input ? input.value : '') : true); }
+    function cancelFn(){ close(isPrompt ? null : false); }
+    okBtn.addEventListener('click', ok);
+    if (cancelBtn) cancelBtn.addEventListener('click', cancelFn);
+    ov.addEventListener('mousedown', function(e){ if (e.target === ov) cancelFn(); });
+    function onKey(e){ if (e.key === 'Enter') { e.preventDefault(); ok(); } else if (e.key === 'Escape') { e.preventDefault(); cancelFn(); } }
+    document.addEventListener('keydown', onKey);
+  });
+}
+function novaConfirm(message, o){ o = o || {}; return _novaDialog({ type:'confirm', message:message, title:o.title||'Quick check', okText:o.okText||'Yep, go ahead', cancelText:o.cancelText||'Never mind' }); }
+function novaPrompt(message, def, o){ o = o || {}; return _novaDialog({ type:'prompt', message:message, def:def, title:o.title||'Quick one', okText:o.okText||'Save it', cancelText:o.cancelText||'Never mind' }); }
+function novaAlert(message, o){ o = o || {}; return _novaDialog({ type:'alert', message:message, title:o.title||'Heads up', okText:o.okText||'Got it' }); }
 async function api(method, path, body) {
   novaProgressStart();
   try {
@@ -292,7 +324,7 @@ async function pushRefreshBtn(){
   }catch(e){ btn.innerHTML=bell+'Enable notifications'; }
 }
 async function pushToggle(){
-  if(!('serviceWorker' in navigator)||!('PushManager' in window)||!('Notification' in window)){ alert('This browser does not support notifications.'); return; }
+  if(!('serviceWorker' in navigator)||!('PushManager' in window)||!('Notification' in window)){ novaAlert('This browser does not support notifications.'); return; }
   try{
     var reg=await navigator.serviceWorker.ready;
     var sub=await reg.pushManager.getSubscription();
@@ -301,13 +333,13 @@ async function pushToggle(){
       await sub.unsubscribe(); pushRefreshBtn(); return;
     }
     var perm=await Notification.requestPermission();
-    if(perm!=='granted'){ alert('Notifications were not enabled. You can turn them on in your browser site settings.'); return; }
+    if(perm!=='granted'){ novaAlert('Notifications were not enabled. You can turn them on in your browser site settings.'); return; }
     var keyResp=await api('GET','/push/key');
-    if(!keyResp||!keyResp.key){ alert('Notifications are not set up on the server yet.'); return; }
+    if(!keyResp||!keyResp.key){ novaAlert('Notifications are not set up on the server yet.'); return; }
     var newSub=await reg.pushManager.subscribe({ userVisibleOnly:true, applicationServerKey:urlB64ToUint8Array(keyResp.key) });
     await api('POST','/push/subscribe',{ subscription:newSub.toJSON() });
     pushRefreshBtn();
-  }catch(e){ alert('Could not enable notifications: '+(e&&e.message?e.message:e)); }
+  }catch(e){ novaAlert('Could not enable notifications: '+(e&&e.message?e.message:e)); }
 }
 async function render() {
   const app = document.getElementById('app');
@@ -643,13 +675,13 @@ async function loadTrustedDevices() {
 }
 
 async function revokeDevice(id) {
-  if (!confirm('Forget this device? It will need a verification code next time it logs in.')) return;
+  if (!await novaConfirm('Forget this device? It will need a verification code next time it logs in.')) return;
   try { await api('DELETE', '/auth/trusted-devices/' + id); await loadTrustedDevices(); }
   catch (err) { var m = document.getElementById('security-msg'); if (m) m.innerHTML = '<div class="alert alert-error">' + escHtml(err.message) + '</div>'; }
 }
 
 async function revokeAllDevices() {
-  if (!confirm('Forget all trusted devices? Every device will need a verification code at next login.')) return;
+  if (!await novaConfirm('Forget all trusted devices? Every device will need a verification code at next login.')) return;
   try { await api('DELETE', '/auth/trusted-devices'); await loadTrustedDevices(); }
   catch (err) { var m = document.getElementById('security-msg'); if (m) m.innerHTML = '<div class="alert alert-error">' + escHtml(err.message) + '</div>'; }
 }
@@ -927,7 +959,7 @@ async function exportCSV() {
     a.click();
     URL.revokeObjectURL(url);
   } catch(err) {
-    alert('Export failed: ' + err.message);
+    novaAlert('Export failed: ' + err.message);
   }
 }
 
@@ -1487,20 +1519,20 @@ async function rejectPO(id) {
 }
 
 async function deletePO(id) {
-  if (!confirm('Permanently delete this PO? This cannot be undone.')) return;
+  if (!await novaConfirm('Permanently delete this PO? This cannot be undone.')) return;
   try { await api('DELETE', '/pos/' + id); navigate('dashboard'); }
   catch(err) { document.getElementById('view-error').innerHTML = '<div class="alert alert-error">' + escHtml(err.message) + '</div>'; }
 }
 
 async function cancelPO(id) {
-  if (!confirm('Cancel this PO? This cannot be undone.')) return;
+  if (!await novaConfirm('Cancel this PO? This cannot be undone.')) return;
   var _b = novaEvtBtn();
   try { novaBtnBusy(_b, 'Cancelling\u2026'); await api('POST', '/pos/' + id + '/cancel'); navigate('dashboard'); }
   catch(err) { novaBtnReset(_b); document.getElementById('view-error').innerHTML = '<div class="alert alert-error">' + escHtml(err.message) + '</div>'; }
 }
 
 async function markOrdered(id) {
-  if (!confirm('Confirm this PO has been ordered from the vendor?')) return;
+  if (!await novaConfirm('Confirm this PO has been ordered from the vendor?')) return;
   var _b = novaEvtBtn();
   try {
     novaBtnBusy(_b, 'Updating\u2026');
@@ -1513,7 +1545,7 @@ async function markOrdered(id) {
     novaBtnReset(_b);
     var errEl = document.getElementById('view-error');
     if (errEl) errEl.innerHTML = '<div class="alert alert-error">' + escHtml(err.message) + '</div>';
-    else alert(err.message);
+    else novaAlert(err.message);
   }
 }
 
@@ -1675,7 +1707,7 @@ async function saveUser(id, btn) {
 }
 
 async function deactivateUser(id) {
-  if (!confirm('Remove access for this user? They will no longer be able to log in.')) return;
+  if (!await novaConfirm('Remove access for this user? They will no longer be able to log in.')) return;
   try { await api('POST', '/users/' + id + '/deactivate'); navigate('users'); }
   catch(err) { document.getElementById('users-error').innerHTML = '<div class="alert alert-error">' + escHtml(err.message) + '</div>'; }
 }
@@ -1814,12 +1846,12 @@ async function printPO(id) {
       '</body></html>';
 
     const win = window.open('', '_blank', 'width=900,height=700');
-    if (!win) { alert('Pop-up blocked. Please allow pop-ups for this site to print POs.'); return; }
+    if (!win) { novaAlert('Pop-up blocked. Please allow pop-ups for this site to print POs.'); return; }
     win.document.write(html);
     win.document.close();
     win.focus();
   } catch(err) {
-    alert('Print failed: ' + err.message);
+    novaAlert('Print failed: ' + err.message);
   }
 }
 
@@ -2358,7 +2390,7 @@ async function taskToggleSub(sid, done){ try { await api('PATCH','/tasks/subtask
 async function taskDelSub(sid){ try { await api('DELETE','/tasks/subtasks/'+sid); var t=window._taskCurrent; if (t) navigate('task-detail',t.id); } catch(e){ taskFeedback(e.message,true); } }
 async function taskAddSub(id){ var v=((document.getElementById('task-newsub')||{}).value||'').trim(); if (!v) return; try { await api('POST','/tasks/'+id+'/subtasks',{title:v}); navigate('task-detail',id); } catch(e){ taskFeedback(e.message,true); } }
 async function taskAddComment(id){ var v=((document.getElementById('task-comment')||{}).value||'').trim(); if (!v) return; try { await api('POST','/tasks/'+id+'/comments',{body:v}); navigate('task-detail',id); } catch(e){ taskFeedback(e.message,true); } }
-async function taskDelete(id){ if (!confirm('Delete this task? This cannot be undone.')) return; try { await api('DELETE','/tasks/'+id); navigate('tasks'); } catch(e){ taskFeedback(e.message,true); } }
+async function taskDelete(id){ if (!await novaConfirm('Delete this task? This cannot be undone.')) return; try { await api('DELETE','/tasks/'+id); navigate('tasks'); } catch(e){ taskFeedback(e.message,true); } }
 function taskB64ToBlob(b64, mime){ var bin=atob(b64||''); var len=bin.length; var arr=new Uint8Array(len); for (var i=0;i<len;i++) arr[i]=bin.charCodeAt(i); return new Blob([arr],{type:mime||'application/octet-stream'}); }
 async function taskOpenAttachment(taskId, aid){
   try {
@@ -2372,7 +2404,7 @@ async function taskOpenAttachment(taskId, aid){
   } catch(e){ taskFeedback(e.message,true); }
 }
 async function taskDeleteAttachment(taskId, aid){
-  if (!confirm('Remove this attachment?')) return;
+  if (!await novaConfirm('Remove this attachment?')) return;
   try { await api('DELETE','/tasks/'+taskId+'/attachments/'+aid); navigate('task-detail', taskId); } catch(e){ taskFeedback(e.message,true); }
 }
 async function taskDetailFilesPicked(input, taskId){
@@ -2755,9 +2787,9 @@ async function smTest(id, btn) {
 }
 
 async function smDelete(id) {
-  if (!confirm('Delete this scheduled message? This cannot be undone.')) return;
+  if (!await novaConfirm('Delete this scheduled message? This cannot be undone.')) return;
   try { await api('DELETE', '/scheduled/' + id); await smLoadList(); }
-  catch (e) { alert(e.message); }
+  catch (e) { novaAlert(e.message); }
 }
 
 
@@ -2814,7 +2846,7 @@ async function saveLogo() {
 }
 
 async function removeLogo() {
-  if (!confirm('Remove the company logo from printed POs?')) return;
+  if (!await novaConfirm('Remove the company logo from printed POs?')) return;
   try {
     await api('DELETE', '/settings/logo');
     navigate('company-info');
@@ -3116,7 +3148,7 @@ function geicoRenderTable(rows) {
 
 function geicoExportCSV() {
   var rows = _geicoRows || [];
-  if (!rows.length) { alert('Nothing to export with the current filters.'); return; }
+  if (!rows.length) { novaAlert('Nothing to export with the current filters.'); return; }
   var header = ['Received','Account #','City','PO #','Service','State','Dispatch','On Time','Arrival','Rating','Employee'];
   var lines = [header.map(csvCell).join(',')];
   rows.forEach(function(r){
@@ -3156,30 +3188,30 @@ function geicoOnCsvChosen(input) {
 
 async function geicoHandleCsv(text) {
   var grid = parsePartsCSV(text);
-  if (grid.length < 2) { alert('That CSV looks empty. Export the surveys first, fill in the Employee column, then import.'); return; }
+  if (grid.length < 2) { novaAlert('That CSV looks empty. Export the surveys first, fill in the Employee column, then import.'); return; }
   var header = grid[0].map(function(h){ return (h||'').trim().toLowerCase().replace(/[\s#]+/g,'_').replace(/_+$/,''); });
   function colIdx(names){ for (var n=0;n<names.length;n++){ var k=header.indexOf(names[n]); if (k!==-1) return k; } return -1; }
   var poi = colIdx(['account_po','po','po_number','po_no','ponumber']);
   var ei = colIdx(['tech_id','employee','employee_name','name','tech','technician']);
-  if (poi === -1) { alert('Could not find an "Account PO" (or "PO #") column in that CSV. Use the Import Sample CSV as your template.'); return; }
-  if (ei === -1) { alert('Could not find a "Tech ID" (or "Employee") column in that CSV. Use the Import Sample CSV as your template.'); return; }
+  if (poi === -1) { novaAlert('Could not find an "Account PO" (or "PO #") column in that CSV. Use the Import Sample CSV as your template.'); return; }
+  if (ei === -1) { novaAlert('Could not find a "Tech ID" (or "Employee") column in that CSV. Use the Import Sample CSV as your template.'); return; }
   var rows = [];
   for (var i=1;i<grid.length;i++){
     var po=(grid[i][poi]||'').trim();
     var emp=(grid[i][ei]||'').trim();
     if (po && emp) rows.push({ po_number: po, employee_name: emp });
   }
-  if (!rows.length) { alert('No rows had both a PO # and an Employee name. Fill in the Employee column and try again.'); return; }
-  if (!confirm('Assign employee names to ' + rows.length + ' survey' + (rows.length===1?'':'s') + '?')) return;
+  if (!rows.length) { novaAlert('No rows had both a PO # and an Employee name. Fill in the Employee column and try again.'); return; }
+  if (!await novaConfirm('Assign employee names to ' + rows.length + ' survey' + (rows.length===1?'':'s') + '?')) return;
   try {
     var resp = await api('POST', '/geico/import-employees', { rows: rows });
     var msg = 'Updated ' + resp.updated + ' survey' + (resp.updated===1?'':'s') + '.';
     if (resp.skipped) msg += '\nSkipped ' + resp.skipped + ' row(s) with a missing PO # or name.';
     if (resp.notFound) { msg += '\n' + resp.notFound + ' PO #(s) were not found'; if (resp.notFoundList && resp.notFoundList.length) msg += ': ' + resp.notFoundList.join(', '); msg += '.'; }
-    alert(msg);
+    novaAlert(msg);
     geicoLoad(true);
   } catch(e) {
-    alert('Import failed: ' + (e && e.message ? e.message : e));
+    novaAlert('Import failed: ' + (e && e.message ? e.message : e));
   }
 }
 // ── Vendors ───────────────────────────────────────────────────────────────────
@@ -3617,7 +3649,7 @@ async function saveVendor(id) {
 }
 
 async function deleteVendor(id) {
-  if (!confirm('Delete this account? This cannot be undone.')) return;
+  if (!await novaConfirm('Delete this account? This cannot be undone.')) return;
   try {
     await api('DELETE', '/vendors/' + id);
     await renderVendors(document.getElementById('content'));
@@ -3700,7 +3732,7 @@ async function saveCity(id, btn) {
 }
 
 async function deactivateCity(id) {
-  if (!confirm('Deactivate this city? It will no longer appear in the PO city dropdown.')) return;
+  if (!await novaConfirm('Deactivate this city? It will no longer appear in the PO city dropdown.')) return;
   try { await api('POST', '/cities/' + id + '/deactivate'); navigate('cities'); }
   catch(err) { document.getElementById('cities-error').innerHTML = '<div class="alert alert-error">' + escHtml(err.message) + '</div>'; }
 }
@@ -3763,7 +3795,7 @@ async function addAddress(cityCode, cityName) {
 }
 
 async function deleteAddress(id, cityCode, cityName) {
-  if (!confirm('Delete this shipping address?')) return;
+  if (!await novaConfirm('Delete this shipping address?')) return;
   try { await api('DELETE', '/addresses/' + id); await refreshAddressesModal(cityCode, cityName); }
   catch(err) { document.getElementById('addr-modal-error').innerHTML = '<div class="alert alert-error">' + escHtml(err.message) + '</div>'; }
 }
@@ -4109,23 +4141,23 @@ async function renderViewQuote(el, id) {
 }
 
 async function deleteQuote(id) {
-  if (!confirm('Permanently delete this quote? This cannot be undone.')) return;
+  if (!await novaConfirm('Permanently delete this quote? This cannot be undone.')) return;
   try { await api('DELETE', '/quotes/' + id); navigate('quotes'); }
   catch(err) { document.getElementById('view-quote-error').innerHTML = '<div class="alert alert-error">' + escHtml(err.message) + '</div>'; }
 }
 
 async function pushQuoteToPO(id) {
-  if (!confirm('Create and submit purchase order(s) for approval from this quote? One PO is created per supplier, using your cost as the unit price.')) return;
+  if (!await novaConfirm('Create and submit purchase order(s) for approval from this quote? One PO is created per supplier, using your cost as the unit price.')) return;
   try {
     var data = await api('POST', '/quotes/' + id + '/push-to-po');
     var pos = data.pos || [];
     var nums = pos.map(function(p){ return p.po_number; }).join(', ');
-    alert('Submitted ' + pos.length + ' PO' + (pos.length === 1 ? '' : 's') + ' for approval from this quote: ' + nums);
+    novaAlert('Submitted ' + pos.length + ' PO' + (pos.length === 1 ? '' : 's') + ' for approval from this quote: ' + nums);
     if (pos.length === 1) { navigate('view', pos[0].id); } else { navigate('dashboard'); }
   } catch (err) {
     var el = document.getElementById('view-quote-error');
     if (el) el.innerHTML = '<div class="alert alert-error">' + escHtml(err.message) + '</div>';
-    else alert(err.message);
+    else novaAlert(err.message);
   }
 }
 
@@ -4138,7 +4170,7 @@ async function reviewQuoteFormWithAI() {
 
   // Read directly from the quoteLineItems data array (source of truth for the form)
   if (!quoteLineItems || quoteLineItems.length === 0) {
-    alert('Add at least one line item before requesting an AI review.');
+    novaAlert('Add at least one line item before requesting an AI review.');
     return;
   }
   var itemLines = [];
@@ -4416,12 +4448,12 @@ async function printQuote(id) {
       '</body></html>';
 
     const win = window.open('', '_blank', 'width=900,height=700');
-    if (!win) { alert('Pop-up blocked. Please allow pop-ups for this site to print quotes.'); return; }
+    if (!win) { novaAlert('Pop-up blocked. Please allow pop-ups for this site to print quotes.'); return; }
     win.document.write(html);
     win.document.close();
     win.focus();
   } catch(err) {
-    alert('Print failed: ' + err.message);
+    novaAlert('Print failed: ' + err.message);
   }
 }
 
@@ -4858,11 +4890,11 @@ function docFind(type, id) {
 }
 
 async function docNewFolder() {
-  var name = prompt('New folder name:');
+  var name = await novaPrompt('New folder name:');
   if (!name || !name.trim()) return;
   var folderId = state.currentParam ? parseInt(state.currentParam, 10) : null;
   try { await api('POST', '/documents/folders', { name: name.trim(), parent_id: folderId }); docReload(); }
-  catch (e) { alert(e.message); }
+  catch (e) { novaAlert(e.message); }
 }
 
 function docPickFiles() { var i = document.getElementById('doc-file-input'); if (i) i.click(); }
@@ -4883,7 +4915,7 @@ async function docUploadFileList(files) {
       var put = await fetch(reserve.uploadUrl, { method: 'PUT', body: file, headers: { 'Content-Type': file.type || 'application/octet-stream' } });
       if (!put.ok) throw new Error('Upload failed for ' + file.name);
       await api('POST', '/documents/' + reserve.id + '/confirm', { size_bytes: file.size });
-    } catch (e) { alert(e.message); }
+    } catch (e) { novaAlert(e.message); }
   }
   docReload();
 }
@@ -4922,16 +4954,16 @@ async function docDownload(id, forceAttach) {
   try {
     var r = await api('GET', '/documents/' + id + '/download' + (inline ? '?inline=1' : ''));
     window.open(r.url, '_blank', 'noopener');
-  } catch (e) { alert(e.message); }
+  } catch (e) { novaAlert(e.message); }
 }
 
 async function docRename(type, id) {
   var item = docFind(type, id);
-  var name = prompt('Rename to:', item ? item.name : '');
+  var name = await novaPrompt('Rename to:', item ? item.name : '');
   if (!name || !name.trim()) return;
   var path = type === 'folder' ? '/documents/folders/' + id : '/documents/' + id;
   try { await api('PUT', path, { name: name.trim() }); docReload(); }
-  catch (e) { alert(e.message); }
+  catch (e) { novaAlert(e.message); }
 }
 
 function docMove(type, id) {
@@ -4946,15 +4978,15 @@ async function docPasteHere() {
   var c = docClipboard;
   var path = c.type === 'folder' ? '/documents/folders/' + c.id : '/documents/' + c.id;
   try { await api('PUT', path, { folder_id: folderId }); docClipboard = null; docReload(); }
-  catch (e) { alert(e.message); }
+  catch (e) { novaAlert(e.message); }
 }
 
 async function docDelete(type, id) {
   var msg = type === 'folder' ? 'Delete this folder and everything inside it? This cannot be undone.' : 'Delete this file? This cannot be undone.';
-  if (!confirm(msg)) return;
+  if (!await novaConfirm(msg)) return;
   var path = type === 'folder' ? '/documents/folders/' + id : '/documents/' + id;
   try { await api('DELETE', path); docReload(); }
-  catch (e) { alert(e.message); }
+  catch (e) { novaAlert(e.message); }
 }
 
 async function docShare(type, id) {
@@ -4964,7 +4996,7 @@ async function docShare(type, id) {
   try {
     picker = await api('GET', '/documents/users-list');
     shares = await api('GET', '/documents/shares/' + type + '/' + id);
-  } catch (e) { alert(e.message); return; }
+  } catch (e) { novaAlert(e.message); return; }
   var overlay = document.createElement('div');
   overlay.className = 'modal-overlay';
   overlay.id = 'doc-share-modal';
@@ -5006,14 +5038,14 @@ function docRenderShareList(type, id, shares) {
 
 async function docAddShare(type, id) {
   var cbs = Array.prototype.slice.call(document.querySelectorAll('#doc-share-picker .doc-share-cb:checked'));
-  if (!cbs.length) { alert('Pick at least one person or role.'); return; }
+  if (!cbs.length) { novaAlert('Pick at least one person or role.'); return; }
   var canEdit = document.getElementById('doc-share-edit').checked;
   for (var i = 0; i < cbs.length; i++) {
     var parts = cbs[i].value.split(':');
     var body = { resource_type: type, resource_id: id, grantee_type: parts[0], can_edit: canEdit };
     if (parts[0] === 'user') body.grantee_user_id = parseInt(parts[1], 10);
     else body.grantee_role = parts[1];
-    try { await api('POST', '/documents/shares', body); } catch (e) { alert(e.message); }
+    try { await api('POST', '/documents/shares', body); } catch (e) { novaAlert(e.message); }
   }
   cbs.forEach(function (c) { c.checked = false; });
   var ed = document.getElementById('doc-share-edit'); if (ed) ed.checked = false;
@@ -5025,14 +5057,14 @@ async function docRemoveShare(shareId, type, id) {
     await api('DELETE', '/documents/shares/' + shareId);
     var shares = await api('GET', '/documents/shares/' + type + '/' + id);
     docRenderShareList(type, id, shares.shares);
-  } catch (e) { alert(e.message); }
+  } catch (e) { novaAlert(e.message); }
 }
 
 function docCloseShare() { var m = document.getElementById('doc-share-modal'); if (m) m.remove(); docReload(); }
 
 async function docToggleEmail(id, current) {
   try { await api('PUT', '/documents/' + id, { emailable: !current }); docReload(); }
-  catch (e) { alert(e.message); }
+  catch (e) { novaAlert(e.message); }
 }
 
 // ---- Document expiration ----
@@ -5145,7 +5177,7 @@ async function docSendEmail(id) {
   try {
     await api('POST', '/documents/' + id + '/email', { to: to, to_name: name, message: msg });
     docCloseEmail();
-    alert('Document sent to ' + to + '.');
+    novaAlert('Document sent to ' + to + '.');
   } catch (e) {
     errBox.innerHTML = '<div class="alert alert-error">' + escHtml(e.message) + '</div>';
     btn.disabled = false; btn.textContent = 'Send';
@@ -5285,7 +5317,7 @@ async function toggleSOP(id, active) {
 }
 
 async function deleteSOP(id) {
-  if (!confirm('Delete this SOP? Nova AI will no longer reference it.')) return;
+  if (!await novaConfirm('Delete this SOP? Nova AI will no longer reference it.')) return;
   try { await api('DELETE', '/sops/' + id); loadSOPList(); }
   catch (e) { var m = document.getElementById('sop-msg'); if (m) m.innerHTML = '<div class="alert alert-error">' + escHtml(e.message) + '</div>'; }
 }
@@ -5788,26 +5820,26 @@ async function renderViewVR(el, id) {
   } catch(err) { el.innerHTML = '<div class="alert alert-error">' + escHtml(err.message) + '</div>'; }
 }
 async function submitVR(id) {
-  if (!confirm('Submit this vehicle repair for approval?')) return;
+  if (!await novaConfirm('Submit this vehicle repair for approval?')) return;
   var _b = novaEvtBtn();
   try { novaBtnBusy(_b, 'Submitting\u2026'); await api('POST', '/vr/'+id+'/submit'); window._novaPulseStatus = 1; navigate('view-vr', id); }
   catch(err) { novaBtnReset(_b); var m = document.getElementById('vr-view-msg'); if(m) m.innerHTML = '<div class="alert alert-error">'+escHtml(err.message)+'</div>'; }
 }
 async function approveVR(id) {
-  if (!confirm('Approve this vehicle repair?')) return;
+  if (!await novaConfirm('Approve this vehicle repair?')) return;
   var _b = novaEvtBtn();
   try { novaBtnBusy(_b, 'Approving\u2026'); await api('POST', '/vr/'+id+'/approve'); window._novaPulseStatus = 1; navigate('view-vr', id); }
   catch(err) { novaBtnReset(_b); var m = document.getElementById('vr-view-msg'); if(m) m.innerHTML = '<div class="alert alert-error">'+escHtml(err.message)+'</div>'; }
 }
 async function rejectVR(id) {
-  var reason = prompt('Rejection reason (optional):');
+  var reason = await novaPrompt('Rejection reason (optional):');
   if (reason === null) return;
   var _b = novaEvtBtn();
   try { novaBtnBusy(_b, 'Rejecting\u2026'); await api('POST', '/vr/'+id+'/reject', { reason }); window._novaPulseStatus = 1; navigate('view-vr', id); }
   catch(err) { novaBtnReset(_b); var m = document.getElementById('vr-view-msg'); if(m) m.innerHTML = '<div class="alert alert-error">'+escHtml(err.message)+'</div>'; }
 }
 async function deleteVR(id) {
-  if (!confirm('Permanently delete this vehicle repair? This cannot be undone.')) return;
+  if (!await novaConfirm('Permanently delete this vehicle repair? This cannot be undone.')) return;
   try { await api('DELETE', '/vr/'+id); navigate('vr-dashboard'); }
   catch(err) { showToast(err.message, 'error'); }
 }
@@ -6089,13 +6121,13 @@ function vhFilter() {
   if (window._vhRender) window._vhRender(q, s);
 }
 async function deactivateVehicle(id) {
-  if (!confirm('Deactivate this vehicle? It will be hidden from the VR dropdown.')) return;
+  if (!await novaConfirm('Deactivate this vehicle? It will be hidden from the VR dropdown.')) return;
   try { await api('POST', '/vehicles/'+id+'/deactivate'); _allVehicles = await api('GET', '/vehicles/all'); applyFleetFilters(); }
-  catch(err) { alert(err.message); }
+  catch(err) { novaAlert(err.message); }
 }
 async function reactivateVehicle(id) {
   try { await api('POST', '/vehicles/'+id+'/reactivate'); _allVehicles = await api('GET', '/vehicles/all'); applyFleetFilters(); }
-  catch(err) { alert(err.message); }
+  catch(err) { novaAlert(err.message); }
 }
 var _sellVehicleId = null;
 function openSellModal(id) {
@@ -6639,7 +6671,7 @@ async function exportDepositsCSV() {
     a.click();
     URL.revokeObjectURL(url);
   } catch(err) {
-    alert('Export failed: ' + err.message);
+    novaAlert('Export failed: ' + err.message);
   }
 }
 
@@ -6726,12 +6758,12 @@ async function renderViewDeposit(el, id) {
 }
 
 async function deleteDeposit(id) {
-  if (!confirm('Delete this deposit? This cannot be undone.')) return;
+  if (!await novaConfirm('Delete this deposit? This cannot be undone.')) return;
   try {
     await api('DELETE', '/deposits/' + id);
     navigate('deposits');
   } catch(e) {
-    alert('Delete failed: ' + e.message);
+    novaAlert('Delete failed: ' + e.message);
   }
 }
 
@@ -6975,7 +7007,7 @@ async function savePart(id, btn) {
 }
 
 async function deletePart(id) {
-  if (!confirm('Delete this part from the catalog? This does not affect existing POs.')) return;
+  if (!await novaConfirm('Delete this part from the catalog? This does not affect existing POs.')) return;
   try {
     await api('DELETE', '/parts/' + id);
     var q = (document.getElementById('parts-search') || {}).value || '';
@@ -7012,7 +7044,7 @@ function partsUpdateSelection() {
 async function deleteSelectedParts() {
   var ids = partsSelectedIds();
   if (!ids.length) return;
-  if (!confirm('Delete ' + ids.length + ' part' + (ids.length === 1 ? '' : 's') + ' from the catalog? This cannot be undone and does not affect existing POs.')) return;
+  if (!await novaConfirm('Delete ' + ids.length + ' part' + (ids.length === 1 ? '' : 's') + ' from the catalog? This cannot be undone and does not affect existing POs.')) return;
   try {
     await api('POST', '/parts/bulk-delete', { ids: ids });
     var q = (document.getElementById('parts-search') || {}).value || '';
@@ -7070,7 +7102,7 @@ var _importDecisions = [];
 
 async function handlePartsCsv(text) {
   var grid = parsePartsCSV(text);
-  if (grid.length < 2) { alert('That CSV looks empty. Use the sample CSV as a template.'); return; }
+  if (grid.length < 2) { novaAlert('That CSV looks empty. Use the sample CSV as a template.'); return; }
   var header = grid[0].map(function(h) { return (h || '').trim().toLowerCase().replace(/\s+/g, '_'); });
   function colIdx(names) { for (var n = 0; n < names.length; n++) { var k = header.indexOf(names[n]); if (k !== -1) return k; } return -1; }
   var ci = {
@@ -7080,7 +7112,7 @@ async function handlePartsCsv(text) {
     price: colIdx(['price', 'cost', 'unit_price']),
     preferred_vendor: colIdx(['preferred_vendor', 'vendor', 'supplier'])
   };
-  if (ci.description === -1) { alert('Your CSV needs a "description" column. Download the sample CSV for the right format.'); return; }
+  if (ci.description === -1) { novaAlert('Your CSV needs a "description" column. Download the sample CSV for the right format.'); return; }
   _importRows = [];
   for (var i = 1; i < grid.length; i++) {
     var r = grid[i];
@@ -7094,7 +7126,7 @@ async function handlePartsCsv(text) {
     };
     if (obj.description) _importRows.push(obj);
   }
-  if (!_importRows.length) { alert('No rows with a description were found in that CSV.'); return; }
+  if (!_importRows.length) { novaAlert('No rows with a description were found in that CSV.'); return; }
   showImportReview(true);
   try {
     var resp = await api('POST', '/parts/check-duplicates', { rows: _importRows });
@@ -7156,7 +7188,7 @@ function renderImportReview(aiUsed) {
 async function doPartsImport(btn) {
   var toAdd = [];
   _importResults.forEach(function(r, i) { if (_importDecisions[i] === 'add') toAdd.push(_importRows[i]); });
-  if (!toAdd.length) { alert('Nothing selected to import.'); return; }
+  if (!toAdd.length) { novaAlert('Nothing selected to import.'); return; }
   try {
     btn.disabled = true;
     var resp = await api('POST', '/parts/bulk', { rows: toAdd });
@@ -7249,7 +7281,7 @@ function pickerAddSelected() {
     var price = (document.querySelector('.picker-price[data-i="' + i + '"]') || {}).value;
     chosen.push({ part: pt, description: (desc != null && desc !== '') ? desc : (pt.description || ''), quantity: (qty === '' || qty == null) ? 1 : qty, price: price });
   });
-  if (!chosen.length) { alert('Select at least one part first.'); return; }
+  if (!chosen.length) { novaAlert('Select at least one part first.'); return; }
   if (_pickerContext === 'po') {
     if (lineItems.length === 1) {
       var f = lineItems[0];
@@ -7876,9 +7908,9 @@ async function renderViewInvoice(el, id) {
 }
 
 async function deleteInvoice(id) {
-  if (!confirm('Permanently delete this invoice? This cannot be undone.')) return;
+  if (!await novaConfirm('Permanently delete this invoice? This cannot be undone.')) return;
   try { await api('DELETE', '/invoices/' + id); navigate('invoices'); }
-  catch(err) { var e = document.getElementById('view-invoice-error'); if (e) e.innerHTML = '<div class="alert alert-error">' + escHtml(err.message) + '</div>'; else alert(err.message); }
+  catch(err) { var e = document.getElementById('view-invoice-error'); if (e) e.innerHTML = '<div class="alert alert-error">' + escHtml(err.message) + '</div>'; else novaAlert(err.message); }
 }
 
 // ---------- Print ----------
@@ -7954,10 +7986,10 @@ async function printInvoice(id) {
       '</div>' +
       '</div></body></html>';
     var w = window.open('', '_blank');
-    if (!w) { alert('Pop-up blocked. Allow pop-ups to print.'); return; }
+    if (!w) { novaAlert('Pop-up blocked. Allow pop-ups to print.'); return; }
     w.document.write(html); w.document.close();
     setTimeout(function(){ w.focus(); w.print(); }, 400);
-  } catch(err) { alert('Could not print: ' + err.message); }
+  } catch(err) { novaAlert('Could not print: ' + err.message); }
 }
 
 // ---------- Parts used report ----------
@@ -8009,10 +8041,10 @@ function invPartsToggleAll(cb) { document.querySelectorAll('.inv-part-cb').forEa
 async function invPartsAddToReq() {
   var chosen = [];
   document.querySelectorAll('.inv-part-cb').forEach(function(cb){ if (cb.checked) { var it = window._invPartsData[cb.getAttribute('data-i')]; if (it) chosen.push({ description: it.description, quantity: it.total_qty, item_number: it.item_number, vendor_name: it.preferred_vendor, unit_price: it.avg_price }); } });
-  if (!chosen.length) { alert('Select at least one part.'); return; }
+  if (!chosen.length) { novaAlert('Select at least one part.'); return; }
   var city = (document.getElementById('inv-parts-city')||{}).value || null;
-  try { var r = await api('POST', '/invoices/parts-report/add-to-req', { items: chosen, city_code: city }); alert('Added ' + r.added + ' part(s) to the Monthly Req.'); }
-  catch(err) { alert(err.message); }
+  try { var r = await api('POST', '/invoices/parts-report/add-to-req', { items: chosen, city_code: city }); novaAlert('Added ' + r.added + ' part(s) to the Monthly Req.'); }
+  catch(err) { novaAlert(err.message); }
 }
 
 // ---------- Invoice Setup (account config + default agreement) ----------
@@ -8264,9 +8296,9 @@ function woRow(w, manage) {
 
 async function woApplyBulk() {
   var sel = (document.getElementById('wo-bulk-status') || {}).value || '';
-  if (!sel) { alert('Choose a status to apply.'); return; }
+  if (!sel) { novaAlert('Choose a status to apply.'); return; }
   var ids = [].slice.call(document.querySelectorAll('.wo-check:checked')).map(function (c) { return parseInt(c.value, 10); });
-  if (!ids.length) { alert('Select at least one work order.'); return; }
+  if (!ids.length) { novaAlert('Select at least one work order.'); return; }
   try { await api('POST', '/work-orders/bulk', { ids: ids, status: sel }); await woLoad(); }
   catch (e) { var er = document.getElementById('wo-error'); if (er) er.innerHTML = '<div class="alert alert-error">' + escHtml(e.message) + '</div>'; }
 }
@@ -8398,7 +8430,7 @@ async function woSaveEdit(id) {
   catch (e) { var er = document.getElementById('wo-detail-error'); if (er) er.innerHTML = '<div class="alert alert-error">' + escHtml(e.message) + '</div>'; }
 }
 async function woSetStatus(id, status) {
-  if (status === 'rejected' && !confirm('Reject this work order?')) return;
+  if (status === 'rejected' && !await novaConfirm('Reject this work order?')) return;
   var ae = document.getElementById('wo-assignee');
   var body = { status: status };
   if (ae) body.assigned_to = ae.value || null;
@@ -8417,7 +8449,7 @@ async function woReparse(id) {
   catch (e) { if (er) er.innerHTML = '<div class="alert alert-error">' + escHtml(e.message) + '</div>'; }
 }
 async function woDelete(id) {
-  if (!confirm('Delete this work order? This cannot be undone.')) return;
+  if (!await novaConfirm('Delete this work order? This cannot be undone.')) return;
   try { await api('DELETE', '/work-orders/' + id); navigate('work-orders'); }
   catch (e) { var er = document.getElementById('wo-detail-error'); if (er) er.innerHTML = '<div class="alert alert-error">' + escHtml(e.message) + '</div>'; }
 }
@@ -8429,7 +8461,7 @@ async function woViewAttachment(id, aid) {
       if ((r.mime_type || '').indexOf('pdf') !== -1) w.document.write('<iframe src="data:application/pdf;base64,' + r.image_data + '" style="border:0;width:100%;height:100%"></iframe>');
       else w.document.write('<img src="data:' + (r.mime_type || 'image/jpeg') + ';base64,' + r.image_data + '" style="max-width:100%" />');
     }
-  } catch (e) { alert('Could not load attachment: ' + e.message); }
+  } catch (e) { novaAlert('Could not load attachment: ' + e.message); }
 }
 
 async function renderWorkOrderForm(el) {
@@ -8993,7 +9025,7 @@ async function downloadSignoffPhotos(id) {
   try {
     const f = await api('GET', '/signoffs/' + id);
     const photos = f.photos || [];
-    if (!photos.length) { alert('No photos are attached to this sheet.'); return; }
+    if (!photos.length) { novaAlert('No photos are attached to this sheet.'); return; }
     const base = f.po_number ? ('PO ' + f.po_number) : (f.form_number || 'signoff');
     photos.forEach(function(p, i) {
       setTimeout(function() {
@@ -9007,14 +9039,14 @@ async function downloadSignoffPhotos(id) {
       }, i * 400);
     });
   } catch (err) {
-    alert('Could not download photos: ' + err.message);
+    novaAlert('Could not download photos: ' + err.message);
   }
 }
 
 async function deleteSignoff(id) {
-  if (!confirm('Delete this sign-off sheet? This cannot be undone.')) return;
+  if (!await novaConfirm('Delete this sign-off sheet? This cannot be undone.')) return;
   try { await api('DELETE', '/signoffs/' + id); navigate('signoffs'); }
-  catch(err) { alert(err.message); }
+  catch(err) { novaAlert(err.message); }
 }
 
 async function printSignoff(id) {
@@ -9098,7 +9130,7 @@ async function printSignoff(id) {
     const w = window.open('', '_blank');
     if (w) { w.document.write(html); w.document.close(); }
   } catch(err) {
-    alert('Could not open print view: ' + err.message);
+    novaAlert('Could not open print view: ' + err.message);
   }
 }
 
@@ -9281,7 +9313,7 @@ async function schedSaveBulk(){
   var body={ user_id:document.getElementById('bk-user').value, from:document.getElementById('bk-from').value, to:document.getElementById('bk-to').value, city:document.getElementById('bk-city').value||null, action:action };
   if(!body.user_id||!body.from||!body.to){ document.getElementById('bk-err').innerHTML='<div class="alert alert-error">Employee and date range are required.</div>'; return; }
   if(action==='update'){ var st=document.getElementById('bk-start').value; if(st) body.start_time=st; var en=document.getElementById('bk-end').value; if(en) body.end_time=en; var po=document.getElementById('bk-pos').value; if(po) body.position_id=po; var bm=document.getElementById('bk-break').value; if(bm!=='') body.break_minutes=bm; }
-  if(action==='delete' && !confirm('Remove all of this person’s shifts in that date range?')) return;
+  if(action==='delete' && !await novaConfirm('Remove all of this person’s shifts in that date range?')) return;
   try{ var r=await api('POST','/schedule/bulk',body); schedCloseModal(); await schedLoadAdmin(); if(_schedMode==='month') schedRenderMonth(); else schedRenderGrid(); schedToast((action==='delete'?'Removed ':'Updated ')+r.affected+' shift(s).','ok'); }
   catch(e){ document.getElementById('bk-err').innerHTML='<div class="alert alert-error">'+escHtml(e.message)+'</div>'; }
 }
@@ -9462,19 +9494,19 @@ async function schedSaveShift(){
   }catch(e){ document.getElementById('sched-form-err').innerHTML='<div class="alert alert-error">'+escHtml(e.message)+'</div>'; }
 }
 async function schedDeleteShift(){
-  if(!_schedEditId) return; if(!confirm('Delete this shift?')) return;
-  try{ await api('DELETE','/schedule/shifts/'+_schedEditId); schedCloseModal(); await schedLoadAdmin(); schedRenderGrid(); }catch(e){ alert(e.message); }
+  if(!_schedEditId) return; if(!await novaConfirm('Delete this shift?')) return;
+  try{ await api('DELETE','/schedule/shifts/'+_schedEditId); schedCloseModal(); await schedLoadAdmin(); schedRenderGrid(); }catch(e){ novaAlert(e.message); }
 }
 
 async function schedPublishWeek(){
   var from=_schedMonday, to=schedAddDays(_schedMonday,6);
-  if(!confirm('Publish all draft shifts for this week'+(_schedCity?' in the selected city':'')+'? Affected staff will be notified.')) return;
-  try{ var r=await api('POST','/schedule/publish',{from:from,to:to,city:_schedCity||null}); schedToast('Published '+r.published+' shift(s).','ok'); await schedLoadAdmin(); schedRenderGrid(); }catch(e){ alert(e.message); }
+  if(!await novaConfirm('Publish all draft shifts for this week'+(_schedCity?' in the selected city':'')+'? Affected staff will be notified.')) return;
+  try{ var r=await api('POST','/schedule/publish',{from:from,to:to,city:_schedCity||null}); schedToast('Published '+r.published+' shift(s).','ok'); await schedLoadAdmin(); schedRenderGrid(); }catch(e){ novaAlert(e.message); }
 }
 async function schedCopyLastWeek(){
   var src=schedAddDays(_schedMonday,-7);
-  if(!confirm('Copy last week’s shifts into this week as drafts?')) return;
-  try{ var r=await api('POST','/schedule/copy-week',{source_monday:src,target_monday:_schedMonday,city:_schedCity||null}); schedToast('Copied '+r.copied+' shift(s) as drafts.','ok'); await schedLoadAdmin(); schedRenderGrid(); }catch(e){ alert(e.message); }
+  if(!await novaConfirm('Copy last week’s shifts into this week as drafts?')) return;
+  try{ var r=await api('POST','/schedule/copy-week',{source_monday:src,target_monday:_schedMonday,city:_schedCity||null}); schedToast('Copied '+r.copied+' shift(s) as drafts.','ok'); await schedLoadAdmin(); schedRenderGrid(); }catch(e){ novaAlert(e.message); }
 }
 
 function schedToast(msg,kind){
@@ -9492,9 +9524,9 @@ async function schedManagePositions(){
     '<div style="display:flex;gap:8px;margin-top:12px"><input type="text" id="sp-new" placeholder="New position name" style="flex:1;background:var(--bg-elevated,#1f1f1f);color:var(--text-color,#fff);border:1px solid var(--border,#333);border-radius:6px;padding:8px"><button class="btn btn-primary btn-sm" onclick="schedAddPosition()">Add</button></div>'+
     '<div style="text-align:right;margin-top:14px"><button class="btn btn-ghost btn-sm" onclick="schedCloseModal()">Done</button></div>');
 }
-async function schedAddPosition(){ var n=(document.getElementById('sp-new').value||'').trim(); if(!n) return; try{ await api('POST','/schedule/positions',{name:n,color:'#f97316'}); _schedPositions=await api('GET','/schedule/positions'); schedManagePositions(); }catch(e){ alert(e.message); } }
-async function schedSavePosition(id,color,name){ var p=_schedPositions.filter(function(x){return x.id===id;})[0]; if(!p) return; try{ await api('PUT','/schedule/positions/'+id,{name:name!=null?name:p.name,color:color!=null?color:p.color,active:p.active!==false}); _schedPositions=await api('GET','/schedule/positions'); }catch(e){ alert(e.message); } }
-async function schedDeletePosition(id){ if(!confirm('Delete this position?')) return; try{ await api('DELETE','/schedule/positions/'+id); _schedPositions=await api('GET','/schedule/positions'); schedManagePositions(); }catch(e){ alert(e.message); } }
+async function schedAddPosition(){ var n=(document.getElementById('sp-new').value||'').trim(); if(!n) return; try{ await api('POST','/schedule/positions',{name:n,color:'#f97316'}); _schedPositions=await api('GET','/schedule/positions'); schedManagePositions(); }catch(e){ novaAlert(e.message); } }
+async function schedSavePosition(id,color,name){ var p=_schedPositions.filter(function(x){return x.id===id;})[0]; if(!p) return; try{ await api('PUT','/schedule/positions/'+id,{name:name!=null?name:p.name,color:color!=null?color:p.color,active:p.active!==false}); _schedPositions=await api('GET','/schedule/positions'); }catch(e){ novaAlert(e.message); } }
+async function schedDeletePosition(id){ if(!await novaConfirm('Delete this position?')) return; try{ await api('DELETE','/schedule/positions/'+id); _schedPositions=await api('GET','/schedule/positions'); schedManagePositions(); }catch(e){ novaAlert(e.message); } }
 
 function schedVisibleUsers(){
   return _schedUsers.filter(function(u){
