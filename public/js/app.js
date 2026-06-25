@@ -378,7 +378,7 @@ async function render() {
         (isRealAdmin ?
           '<div style="margin-bottom:10px">' +
             '<label style="font-size:10px;letter-spacing:0.5px;color:var(--text-muted-color);display:block;margin-bottom:4px;text-transform:uppercase">View as role</label>' +
-            '<select onchange="onViewAsChange(this.value)" style="width:100%;background:var(--card-bg,#1a1a1a);color:var(--text-color,#fff);border:1px solid var(--border-color,#333);border-radius:6px;padding:6px 8px;font-size:13px;cursor:pointer">' +
+            '<select onchange="onViewAsChange(this.value)" style="width:100%;background:var(--bg-card);color:var(--text);border:1px solid var(--border);border-radius:6px;padding:6px 8px;font-size:13px;cursor:pointer">' +
               ['locksmith','locksmith_coordinator','roadside_technician','manager','admin'].map(function(r){ return '<option value="' + r + '"' + (state.user.role === r ? ' selected' : '') + '>' + roleLabel(r) + (r === 'admin' ? ' (you)' : '') + '</option>'; }).join('') +
             '</select>' +
           '</div>'
