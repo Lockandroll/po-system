@@ -494,7 +494,8 @@ if ('serviceWorker' in navigator) {
     for (var i=0;i<kids.length;i++){
       var el = kids[i], d = (i*STAG/1000) + "s";
       var sticky = el.querySelector && (el.querySelector("#sched-grid-wrap") || el.querySelector("[style*=\"position:sticky\"]") || el.querySelector("[style*=\"position: sticky\"]"));
-      el.style.animation = sticky ? "novaCascFade .4s ease both" : ("novaCascIn .5s " + EASE + " both");
+      if (sticky) continue;
+      el.style.animation = "novaCascIn .5s " + EASE + " both";
       el.style.animationDelay = d;
       el.addEventListener("animationend", function(ev){ if (ev.animationName === "novaCascIn"){ this.style.animation=""; this.style.transform=""; } });
     }
