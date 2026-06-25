@@ -2131,10 +2131,10 @@ async function renderRoles(el) {
     { group:'Vehicle Repairs', gate:'view_vr', perms:[ {k:'view_vr',l:'View / access module'}, {k:'create_vr',l:'Create VRs'}, {k:'edit_vr',l:'Edit VRs'}, {k:'delete_vr',l:'Delete VRs'}, {k:'submit_vr',l:'Submit for approval'}, {k:'approve_vr',l:'Approve / reject vehicle repairs'} ] },
     { group:'Cash Deposits', gate:'view_deposits', perms:[ {k:'view_deposits',l:'View / access module'}, {k:'create_deposit',l:'Create / upload deposit'}, {k:'delete_deposit',l:'Delete deposit'}, {k:'export_deposits',l:'Export deposits (CSV)'} ] },
     { group:'Invoices', gate:'view_invoices', perms:[ {k:'view_invoices',l:'View / access module'}, {k:'create_invoice',l:'Create invoices'}, {k:'edit_invoice',l:'Edit invoices'}, {k:'delete_invoice',l:'Delete invoices'}, {k:'manage_invoice_setup',l:'Manage invoice setup (accounts, agreement, defaults)'} ] },
-    { group:'Work Orders', gate:'view_work_orders', perms:[ {k:'view_work_orders',l:'View / access module'}, {k:'manage_work_orders',l:'Create, edit, dispatch &amp; delete work orders'} ] },
+    { group:'Work Orders', gate:'view_work_orders', perms:[ {k:'view_work_orders',l:'View / access module'}, {k:'manage_work_orders',l:'Create, edit, dispatch & delete work orders'} ] },
     { group:'Sign-Off Sheets', gate:'view_signoffs', perms:[ {k:'view_signoffs',l:'View / access module'}, {k:'create_signoff',l:'Create sign-off sheets'}, {k:'edit_signoff',l:'Edit setup'}, {k:'complete_signoff',l:'Complete on site'}, {k:'delete_signoff',l:'Delete sign-off sheets'} ] },
-    { group:'Tasks', gate:'view_tasks', perms:[ {k:'view_tasks',l:'My Tasks - see &amp; add your own personal tasks'}, {k:'manage_tasks',l:'Assign tasks to others &amp; oversee them'} ] },
-    { group:'Scheduling', gate:'view_schedule', perms:[ {k:'view_schedule',l:'View / access schedule'}, {k:'manage_schedule',l:'Build, publish &amp; manage schedules'} ] },
+    { group:'Tasks', gate:'view_tasks', perms:[ {k:'view_tasks',l:'My Tasks - see & add your own personal tasks'}, {k:'manage_tasks',l:'Assign tasks to others & oversee them'} ] },
+    { group:'Scheduling', gate:'view_schedule', perms:[ {k:'view_schedule',l:'View / access schedule'}, {k:'manage_schedule',l:'Build, publish & manage schedules'} ] },
     { group:'Fleet &amp; Vehicles', perms:[ {k:'manage_vehicles',l:'Manage fleet registry'} ] },
     { group:'Vendors / Accounts', perms:[ {k:'manage_vendors',l:'Manage vendors and accounts'} ] },
     { group:'Shipping Addresses', perms:[ {k:'manage_addresses',l:'Manage shipping addresses'} ] },
@@ -2170,7 +2170,7 @@ async function renderRoles(el) {
   }
 
   var rowsHtml = groups.map(function(g) {
-    var head = '<tr><td colspan="6" style="font-weight:600;background:var(--bg-elevated);font-size:12px;text-transform:uppercase;letter-spacing:0.04em;color:var(--text-muted-color)">' + g.group + '</td></tr>';
+    var head = '<tr><td colspan="6" style="font-weight:800;background:var(--bg-elevated);font-size:12px;text-transform:uppercase;letter-spacing:0.08em;color:var(--primary);border-left:3px solid var(--primary);border-top:1px solid var(--border-color);padding:11px 10px 9px">' + g.group + '</td></tr>';
     var prows = g.perms.map(function(p) {
       return '<tr><td>' + escHtml(p.l) + '</td>' + cols.map(function(c){ return cell(c.role, p.k, g.gate); }).join('') + cell('admin', p.k, g.gate) + '</tr>';
     }).join('');
