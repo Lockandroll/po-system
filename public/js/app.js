@@ -1,5 +1,5 @@
 // App version — bump together with CACHE_VERSION in public/sw.js on each deploy.
-var APP_VERSION = 'v19';
+var APP_VERSION = 'v20';
 
 const state = {
   token: localStorage.getItem('po_token'),
@@ -37,6 +37,16 @@ function novaProgressDone() {
     clearTimeout(_npTimer);
     _npTimer = setTimeout(function () { b.style.transition = 'none'; b.style.width = '0%'; }, 650);
   }
+}
+function novaBtnBusy(btn, label) {
+  if (!btn || btn.dataset.busy) return;
+  btn.dataset.busy = '1'; btn.dataset.orig = btn.innerHTML; btn.disabled = true;
+  btn.innerHTML = '<span style="display:inline-block;width:14px;height:14px;border:2px solid rgba(255,255,255,.4);border-top-color:#fff;border-radius:50%;animation:spin .7s linear infinite;vertical-align:middle"></span> ' + (label || 'Saving\u2026');
+}
+function novaBtnReset(btn) {
+  if (!btn) return;
+  if (btn.dataset.busy) { btn.innerHTML = btn.dataset.orig; delete btn.dataset.busy; delete btn.dataset.orig; }
+  btn.disabled = false;
 }
 async function api(method, path, body) {
   novaProgressStart();
@@ -1080,8 +1090,9 @@ async function savePO(id, action) {
   if (validItems.length === 0) { document.getElementById('edit-error').innerHTML = '<div class="alert alert-error">At least one complete line item is required.</div>'; return; }
 
   try {
-    document.getElementById('btn-draft') && (document.getElementById('btn-draft').disabled = true);
-    document.getElementById('btn-submit') && (document.getElementById('btn-submit').disabled = true);
+    novaBtnBusy(document.getElementById(action === 'submit' ? 'btn-submit' : 'btn-draft'), action === 'submit' ? 'Submitting\u2026' : 'Saving\u2026');
+    var _poOther = document.getElementById(action === 'submit' ? 'btn-draft' : 'btn-submit');
+    if (_poOther) _poOther.disabled = true;
     let po;
     if (id) {
       po = await api('PUT', '/pos/' + id, { vendor_name, customer_name, city_code, notes, shipping_address_id, line_items: validItems });
@@ -1096,8 +1107,8 @@ async function savePO(id, action) {
     }
   } catch(err) {
     document.getElementById('edit-error').innerHTML = '<div class="alert alert-error">' + escHtml(err.message) + '</div>';
-    document.getElementById('btn-draft') && (document.getElementById('btn-draft').disabled = false);
-    document.getElementById('btn-submit') && (document.getElementById('btn-submit').disabled = false);
+    novaBtnReset(document.getElementById('btn-draft'));
+    novaBtnReset(document.getElementById('btn-submit'));
   }
 }
 
@@ -4013,7 +4024,7 @@ async function saveQuote(id) {
   if (validItems.length === 0) { document.getElementById('quote-edit-error').innerHTML = '<div class="alert alert-error">At least one complete line item is required.</div>'; return; }
   try {
     const btn = document.getElementById('btn-save-quote');
-    if (btn) btn.disabled = true;
+    novaBtnBusy(btn, 'Saving\u2026');
     let q;
     if (id) {
       q = await api('PUT', '/quotes/' + id, { customer_name, city_code: city_code || null, notes, important_info, tax_rate, line_items: validItems });
@@ -4025,7 +4036,7 @@ async function saveQuote(id) {
   } catch(err) {
     document.getElementById('quote-edit-error').innerHTML = '<div class="alert alert-error">' + escHtml(err.message) + '</div>';
     const btn = document.getElementById('btn-save-quote');
-    if (btn) btn.disabled = false;
+    novaBtnReset(btn);
   }
 }
 
@@ -5706,13 +5717,13 @@ async function saveVR(id, btn) {
   if (!vehicle) { document.getElementById('vr-edit-error').innerHTML = '<div class="alert alert-error">Vehicle is required.</div>'; return; }
   var validItems = (window._vrItems||[]).filter(function(i){ return i.description.trim(); });
   try {
-    btn.disabled = true;
+    novaBtnBusy(btn, 'Saving\u2026');
     var result;
     if (id) { await api('PUT', '/vr/'+id, { vehicle, vin_last6, vehicle_id, assigned_user_id, shop_name, city_code, notes, line_items: validItems }); navigate('view-vr', id); }
     else { result = await api('POST', '/vr', { vehicle, vin_last6, vehicle_id, assigned_user_id, shop_name, city_code, notes, line_items: validItems }); navigate('view-vr', result.id); }
   } catch(err) {
     document.getElementById('vr-edit-error').innerHTML = '<div class="alert alert-error">' + escHtml(err.message) + '</div>';
-    btn.disabled = false;
+    novaBtnReset(btn);
   }
 }
 async function renderViewVR(el, id) {
