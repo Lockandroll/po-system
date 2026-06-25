@@ -52,6 +52,22 @@ async function api(method, path, body) {
   return data;
 }
 
+function themeIcon() {
+  var light = document.documentElement.getAttribute('data-theme') === 'light';
+  // Show the icon for the mode you'd switch TO: moon while light, sun while dark.
+  return light
+    ? '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 9 0 0 0 21 12.79z"/></svg>'
+    : '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="5"/><line x1="12" y1="1" x2="12" y2="3"/><line x1="12" y1="21" x2="12" y2="23"/><line x1="4.22" y1="4.22" x2="5.64" y2="5.64"/><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"/><line x1="1" y1="12" x2="3" y2="12"/><line x1="21" y1="12" x2="23" y2="12"/><line x1="4.22" y1="19.78" x2="5.64" y2="18.36"/><line x1="18.36" y1="5.64" x2="19.78" y2="4.22"/></svg>';
+}
+function toggleTheme() {
+  var nowLight = document.documentElement.getAttribute('data-theme') === 'light';
+  var next = nowLight ? 'dark' : 'light';
+  if (next === 'light') document.documentElement.setAttribute('data-theme', 'light');
+  else document.documentElement.removeAttribute('data-theme');
+  try { localStorage.setItem('po_theme', next); } catch (e) {}
+  var btn = document.getElementById('theme-toggle-btn');
+  if (btn) btn.innerHTML = themeIcon();
+}
 function toggleSidebar() {
   state.sidebarOpen = !state.sidebarOpen;
   var sb = document.getElementById('sidebar');
@@ -386,9 +402,12 @@ async function render() {
           '<button class="hamburger" onclick="toggleSidebar()" aria-label="Menu"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="18" x2="21" y2="18"/></svg></button>' +
           '<span style="font-size:15px;font-weight:600">Welcome back, ' + escHtml(state.user.name) + '</span>' +
         '</div>' +
+        '<div style="display:flex;align-items:center;gap:8px">' +
+        '<button onclick="toggleTheme()" id="theme-toggle-btn" aria-label="Toggle theme" title="Toggle light / dark" style="background:none;border:1px solid var(--border);color:var(--text-dim);cursor:pointer;border-radius:8px;width:40px;height:40px;display:inline-flex;align-items:center;justify-content:center;flex-shrink:0">' + themeIcon() + '</button>' +
         '<button onclick="location.reload()" aria-label="Refresh" title="Refresh" style="background:none;border:1px solid var(--border);color:var(--text-dim);cursor:pointer;border-radius:8px;width:40px;height:40px;display:inline-flex;align-items:center;justify-content:center;flex-shrink:0">' +
           '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 4 23 10 17 10"/><polyline points="1 20 1 14 7 14"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/></svg>' +
         '</button>' +
+        '</div>' +
       '</div>' +
       '<div class="main-content" id="content"><div class="loading">Loading…</div></div>' +
     '</div>';
