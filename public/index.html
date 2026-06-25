@@ -274,7 +274,6 @@
     .btn-danger:hover  { box-shadow: 0 4px 14px rgba(239,68,68,.25); }
     .badge { transition: background-color .3s ease, color .3s ease, border-color .3s ease; }
     td { transition: background-color .15s ease; }
-    .main-content { animation: novaViewIn .22s ease both; }
     @keyframes novaViewIn { from { opacity:0; transform: translateY(6px); } to { opacity:1; transform: translateY(0); } }
     .modal-overlay { animation: novaFade .18s ease both; }
     .modal { animation: novaPop .22s cubic-bezier(.34,1.4,.5,1) both; }
@@ -294,6 +293,11 @@
     @keyframes novaStatusPulse { 0%{ transform:scale(1); } 15%{ transform:scale(1.18); } 45%{ transform:scale(1); } }
     @media (prefers-reduced-motion: reduce) { .line-items-table tbody tr,.nova-status-pulse{ animation:none; } }
     @media (prefers-reduced-motion: reduce) { .loading,.empty-state svg,.table-wrap tbody tr{ animation:none; } }
+    @keyframes novaCascIn { from { opacity:0; transform: translateY(18px); } to { opacity:1; transform: translateY(0); } }
+    .nova-casc { position: relative; }
+    .nova-casc::after { content:""; position:absolute; inset:-1px; border-radius:inherit; border:2px solid rgba(249,115,22,.5); opacity:0; pointer-events:none; animation: novaGlowRing .6s ease both; animation-delay: var(--casc-d, 0s); }
+    @keyframes novaGlowRing { 0% { opacity:.7; transform: scale(.99); } 100% { opacity:0; transform: scale(1.03); } }
+    @media (prefers-reduced-motion: reduce) { .nova-casc::after { animation:none; display:none; } }
     @media (prefers-reduced-motion: reduce) { .main-content,.modal-overlay,.modal,.alert{animation:none} .btn:hover,.btn:active{transform:none} }
     @media (prefers-reduced-motion: reduce) { .stats-grid .stat-card{opacity:1;animation:none} .stat-card:hover,.nova-tile:hover,.nav-item:hover,.nav-sub:hover{transform:none} .stat-card::before,.nova-tile::before,.nav-item::before,.nav-sub::before,.nav-section-header::before{display:none} }
   </style>
@@ -463,6 +467,45 @@ if ('serviceWorker' in navigator) {
       else if (_tiltLast) { _tiltLast.style.transform=''; _tiltLast=null; }
     });
   }
+})();
+</script>
+<script>
+(function(){
+  if (window.matchMedia && matchMedia("(prefers-reduced-motion:reduce)").matches) return;
+  var STAG = 60, EASE = "cubic-bezier(.34,2,.64,1)";
+  function viewKey(){ try { return state.currentView + "|" + (state.currentParam==null?"":state.currentParam); } catch(e){ return ""; } }
+  function cascade(mc){
+    var key = viewKey();
+    if (key && key === window._novaCascKey) return;
+    window._novaCascKey = key;
+    var kids = mc.children;
+    for (var i=0;i<kids.length;i++){
+      var el = kids[i], d = (i*STAG/1000) + "s";
+      el.style.animation = "novaCascIn .5s " + EASE + " both";
+      el.style.animationDelay = d;
+      el.style.setProperty("--casc-d", d);
+      el.classList.add("nova-casc");
+    }
+  }
+  function tryCascade(mc){
+    var kids = mc.children;
+    if (!kids || kids.length===0) return;
+    if (kids.length===1 && kids[0].classList && (kids[0].classList.contains("loading") || kids[0].classList.contains("spinner"))) return;
+    cascade(mc);
+  }
+  var obs = new MutationObserver(function(muts){
+    for (var i=0;i<muts.length;i++){
+      var ns = muts[i].addedNodes;
+      for (var j=0;j<ns.length;j++){
+        var nn = ns[j];
+        if (nn.nodeType!==1) continue;
+        var mc = (nn.classList && nn.classList.contains("main-content")) ? nn : (nn.closest ? nn.closest(".main-content") : null);
+        if (mc) tryCascade(mc);
+      }
+    }
+  });
+  var appEl = document.getElementById("app");
+  if (appEl) obs.observe(appEl, { childList:true, subtree:true });
 })();
 </script>
 </body>
