@@ -2,7 +2,7 @@
 // IMPORTANT: never use backticks/template literals in this file (Windows
 // corrupts backticks in .js files). Use string concatenation only.
 // Bump CACHE_VERSION whenever the shell or cached assets change.
-var CACHE_VERSION = 'nova-v41';
+var CACHE_VERSION = 'nova-v42';
 var SHELL_ASSETS = [
   '/',
   '/index.html',
@@ -86,9 +86,16 @@ self.addEventListener('fetch', function (event) {
   );
 });
 
-// Allow the page to tell a waiting worker to take over immediately.
+// Allow the page to tell a waiting worker to take over immediately, and to ask
+// the active worker which version it is (so the UI can show the real version).
 self.addEventListener('message', function (event) {
-  if (event.data === 'SKIP_WAITING') { self.skipWaiting(); }
+  if (event.data === 'SKIP_WAITING') { self.skipWaiting(); return; }
+  if (event.data && event.data.type === 'GET_VERSION') {
+    var v = CACHE_VERSION.replace(/^nova-/, '');
+    var reply = { type: 'VERSION', version: v };
+    if (event.ports && event.ports[0]) { event.ports[0].postMessage(reply); }
+    else if (event.source && event.source.postMessage) { event.source.postMessage(reply); }
+  }
 });
 
 // --- Web push notifications ---

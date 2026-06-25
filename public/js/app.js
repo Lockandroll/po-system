@@ -1,5 +1,40 @@
-// App version — bump together with CACHE_VERSION in public/sw.js on each deploy.
-var APP_VERSION = 'v33';
+// App version shown in the sidebar. The real source of truth is CACHE_VERSION in
+// public/sw.js (the only thing bumped each deploy) — the badge asks the active
+// service worker for it at runtime. This value is just the fallback shown when no
+// service worker is available (e.g. very first visit before it installs).
+var APP_VERSION = 'v42';
+var _resolvedAppVersion = null;
+
+// Ask the active service worker for its CACHE_VERSION (without the 'nova-' prefix).
+function getServiceWorkerVersion() {
+  return new Promise(function (resolve) {
+    if (_resolvedAppVersion) { resolve(_resolvedAppVersion); return; }
+    if (!('serviceWorker' in navigator)) { resolve(null); return; }
+    navigator.serviceWorker.ready.then(function (reg) {
+      var sw = reg.active;
+      if (!sw) { resolve(null); return; }
+      var ch = new MessageChannel();
+      var done = false;
+      ch.port1.onmessage = function (e) {
+        done = true;
+        if (e.data && e.data.type === 'VERSION' && e.data.version) {
+          _resolvedAppVersion = e.data.version;
+          resolve(e.data.version);
+        } else { resolve(null); }
+      };
+      try { sw.postMessage({ type: 'GET_VERSION' }, [ch.port2]); }
+      catch (err) { resolve(null); return; }
+      setTimeout(function () { if (!done) resolve(null); }, 1500);
+    }).catch(function () { resolve(null); });
+  });
+}
+
+// Update the sidebar version badge with the live service-worker version.
+function refreshAppVersionBadge() {
+  var el = document.getElementById('app-version');
+  if (!el) return;
+  getServiceWorkerVersion().then(function (v) { if (v) el.textContent = v; });
+}
 
 const state = {
   token: localStorage.getItem('po_token'),
@@ -453,7 +488,7 @@ async function render() {
     : '');
   app.innerHTML =
     '<div id="sidebar">' +
-      '<div class="sidebar-logo"><h1>Nova</h1><span style="display:block;font-size:10px;font-weight:600;letter-spacing:0.06em;color:var(--text-muted-color);margin-top:-2px">' + APP_VERSION + '</span></div>' +
+      '<div class="sidebar-logo"><h1>Nova</h1><span id="app-version" style="display:block;font-size:10px;font-weight:600;letter-spacing:0.06em;color:var(--text-muted-color);margin-top:-2px">' + APP_VERSION + '</span></div>' +
       '<nav class="sidebar-nav">' + navHtml + '</nav>' +
       '<div class="sidebar-footer">' +
         (isRealAdmin ?
@@ -494,6 +529,7 @@ async function render() {
     '</div>';
 
   pushRefreshBtn();
+  refreshAppVersionBadge();
   // Preserve the mobile menu's open state across re-renders
   if (state.sidebarOpen) {
     var _sbOpen = document.getElementById('sidebar');
