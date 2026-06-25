@@ -294,10 +294,12 @@
     @media (prefers-reduced-motion: reduce) { .line-items-table tbody tr,.nova-status-pulse{ animation:none; } }
     @media (prefers-reduced-motion: reduce) { .loading,.empty-state svg,.table-wrap tbody tr{ animation:none; } }
     @keyframes novaCascIn { from { opacity:0; transform: translateY(18px); } to { opacity:1; transform: translateY(0); } }
-    .nova-casc { position: relative; }
-    .nova-casc::after { content:""; position:absolute; inset:-1px; border-radius:inherit; border:2px solid rgba(249,115,22,.5); opacity:0; pointer-events:none; animation: novaGlowRing .6s ease both; animation-delay: var(--casc-d, 0s); }
-    @keyframes novaGlowRing { 0% { opacity:.7; transform: scale(.99); } 100% { opacity:0; transform: scale(1.03); } }
-    @media (prefers-reduced-motion: reduce) { .nova-casc::after { animation:none; display:none; } }
+    .qa-grid .btn { transition: transform .18s ease, box-shadow .25s, border-color .25s, background-color .2s, color .2s; }
+    .qa-grid .btn svg { transition: color .2s; }
+    .qa-grid .btn:hover { transform: translateY(-3px); border-color: rgba(249,115,22,.5); background:#232323; color: var(--text); box-shadow: 0 10px 24px rgba(0,0,0,.45), 0 0 0 1px rgba(249,115,22,.22), 0 6px 18px rgba(249,115,22,.12); }
+    .qa-grid .btn:hover svg { color: var(--primary); }
+    .qa-grid .btn:active { transform: translateY(-1px) scale(.98); }
+    @media (prefers-reduced-motion: reduce) { .qa-grid .btn:hover, .qa-grid .btn:active { transform:none; } }
     @media (prefers-reduced-motion: reduce) { .main-content,.modal-overlay,.modal,.alert{animation:none} .btn:hover,.btn:active{transform:none} }
     @media (prefers-reduced-motion: reduce) { .stats-grid .stat-card{opacity:1;animation:none} .stat-card:hover,.nova-tile:hover,.nav-item:hover,.nav-sub:hover{transform:none} .stat-card::before,.nova-tile::before,.nav-item::before,.nav-sub::before,.nav-section-header::before{display:none} }
   </style>
@@ -483,8 +485,6 @@ if ('serviceWorker' in navigator) {
       var el = kids[i], d = (i*STAG/1000) + "s";
       el.style.animation = "novaCascIn .5s " + EASE + " both";
       el.style.animationDelay = d;
-      el.style.setProperty("--casc-d", d);
-      el.classList.add("nova-casc");
       el.addEventListener("animationend", function(ev){ if (ev.animationName === "novaCascIn"){ this.style.animation=""; this.style.transform=""; } });
     }
   }

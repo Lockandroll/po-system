@@ -1,5 +1,5 @@
 // App version — bump together with CACHE_VERSION in public/sw.js on each deploy.
-var APP_VERSION = 'v26';
+var APP_VERSION = 'v27';
 
 const state = {
   token: localStorage.getItem('po_token'),
@@ -6266,7 +6266,7 @@ async function renderHomeScreen(el) {
       '</div>' +
 
       '<div style="margin-bottom:8px;font-size:11px;color:var(--text-muted-color);text-transform:uppercase;letter-spacing:0.6px">Quick actions</div>' +
-      '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:10px">' +
+      '<div class="qa-grid" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:10px">' +
         (can('create_po') ? '<button class="btn btn-secondary" onclick="navigate(\'new\')" style="padding:14px;display:flex;flex-direction:column;align-items:center;gap:6px;height:auto">' +
           '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="12" y1="18" x2="12" y2="12"/><line x1="9" y1="15" x2="15" y2="15"/></svg>' +
           '<span style="font-size:12px">New PO</span></button>' : '') +
