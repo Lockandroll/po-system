@@ -1,5 +1,5 @@
 // App version — bump together with CACHE_VERSION in public/sw.js on each deploy.
-var APP_VERSION = 'v16';
+var APP_VERSION = 'v17';
 
 const state = {
   token: localStorage.getItem('po_token'),
@@ -93,6 +93,17 @@ function getSidebarSection(view) {
   if (['company-info','ai-context','notifications','scheduled-messages','roles','settings','users','cities','audit'].indexOf(view) !== -1) return 'settings';
   return null;
 }
+function showToast(message, type) {
+  var host = document.getElementById('nova-toast-host');
+  if (!host) { host = document.createElement('div'); host.id = 'nova-toast-host'; document.body.appendChild(host); }
+  var el = document.createElement('div');
+  el.className = 'nova-toast nova-toast-' + (type === 'error' ? 'error' : type === 'success' ? 'success' : 'info');
+  el.textContent = message;
+  host.appendChild(el);
+  requestAnimationFrame(function(){ el.classList.add('show'); });
+  setTimeout(function(){ el.classList.remove('show'); setTimeout(function(){ if (el.parentNode) el.parentNode.removeChild(el); }, 260); }, type === 'error' ? 5000 : 3200);
+}
+
 function toggleSection(section, defaultView) {
   // Clicking a section header jumps to its first page (e.g. Purchase Orders -> PO Dashboard)
   // and expands the section (navigate() opens the right section via getSidebarSection()).
@@ -4074,11 +4085,6 @@ async function pushQuoteToPO(id) {
   }
 }
 
-async function deleteVR(id) {
-  if (!confirm('Permanently delete this VR? This cannot be undone.')) return;
-  try { await api('DELETE', '/vr/' + id); navigate('vr-dashboard'); }
-  catch(err) { document.getElementById('view-vr-error') && (document.getElementById('view-vr-error').innerHTML = '<div class="alert alert-error">' + escHtml(err.message) + '</div>'); }
-}
 
 async function reviewQuoteFormWithAI() {
   // Read data from the live edit form
@@ -5751,9 +5757,9 @@ async function rejectVR(id) {
   catch(err) { var m = document.getElementById('vr-view-msg'); if(m) m.innerHTML = '<div class="alert alert-error">'+escHtml(err.message)+'</div>'; }
 }
 async function deleteVR(id) {
-  if (!confirm('Delete this vehicle repair? This cannot be undone.')) return;
+  if (!confirm('Permanently delete this vehicle repair? This cannot be undone.')) return;
   try { await api('DELETE', '/vr/'+id); navigate('vr-dashboard'); }
-  catch(err) { alert(err.message); }
+  catch(err) { showToast(err.message, 'error'); }
 }
 // ── Fleet Registry ─────────────────────────────────────────────────────────────
 var _allVehicles = [];

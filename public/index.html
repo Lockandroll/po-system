@@ -138,6 +138,11 @@
     .nova-info .ni-pop { position: absolute; left: 0; top: calc(100% + 8px); width: 290px; max-width: 78vw; background: var(--bg-elevated); border: 1px solid var(--border); border-radius: var(--radius); padding: 11px 13px; font-size: 12px; line-height: 1.55; color: var(--text-dim); box-shadow: var(--shadow-md); z-index: 60; opacity: 0; visibility: hidden; transform: translateY(-3px); transition: opacity .15s, transform .15s; text-transform: none; letter-spacing: normal; font-weight: 400; text-align: left; white-space: normal; }
     .nova-info .ni-pop strong { color: var(--text); font-weight: 600; display: block; margin-bottom: 4px; }
     .nova-info:hover .ni-pop, .nova-info.open .ni-pop { opacity: 1; visibility: visible; transform: translateY(0); }
+    #nova-toast-host { position: fixed; left: 50%; bottom: calc(20px + env(safe-area-inset-bottom)); transform: translateX(-50%); z-index: 9999; display: flex; flex-direction: column; gap: 8px; align-items: center; pointer-events: none; }
+    .nova-toast { pointer-events: auto; min-width: 220px; max-width: 90vw; padding: 11px 16px; border-radius: var(--radius); font-size: 13px; font-weight: 500; color: var(--text); background: var(--bg-elevated); border: 1px solid var(--border); box-shadow: var(--shadow-md); opacity: 0; transform: translateY(8px); transition: opacity .25s, transform .25s; }
+    .nova-toast.show { opacity: 1; transform: translateY(0); }
+    .nova-toast-error { background: #2d0d0d; border-color: #4d1515; color: #fca5a5; }
+    .nova-toast-success { background: #0d2d17; border-color: #134d27; color: #86efac; }
     .btn-ghost { background: transparent; color: var(--text-muted-color); }
     .btn-ghost:hover { background: var(--bg-elevated); color: var(--text-dim); }
     .btn:disabled { opacity: 0.4; cursor: not-allowed; }
@@ -259,6 +264,25 @@
     .nav-item::before, .nav-sub::before, .nav-section-header::before { content:""; position:absolute; left:5px; top:50%; height:58%; width:3px; border-radius:3px; background: var(--primary); transform: translateY(-50%) scaleY(0); transform-origin:center; opacity:0; transition: transform .3s cubic-bezier(.34,1.4,.5,1), opacity .25s; }
     .nav-item:hover::before, .nav-item.active::before, .nav-sub:hover::before, .nav-sub.active::before, .nav-section-header:hover::before, .nav-section-header.section-active::before { transform: translateY(-50%) scaleY(1); opacity:1; }
     .nav-item:hover, .nav-sub:hover { transform: translateX(3px); }
+    /* UI/UX pilot pass 2 (2026-06-25): CSS-only micro-interactions. Revert: delete this block. */
+    .btn { transition: background-color .15s, color .15s, transform .12s ease, box-shadow .2s ease; }
+    .btn:hover { transform: translateY(-1px); }
+    .btn:active { transform: translateY(0) scale(.97); }
+    .btn:disabled:hover, .btn:disabled:active { transform: none; }
+    .btn-primary:hover { box-shadow: 0 4px 14px rgba(249,115,22,.28); }
+    .btn-success:hover { box-shadow: 0 4px 14px rgba(34,197,94,.25); }
+    .btn-danger:hover  { box-shadow: 0 4px 14px rgba(239,68,68,.25); }
+    .badge { transition: background-color .3s ease, color .3s ease, border-color .3s ease; }
+    td { transition: background-color .15s ease; }
+    .main-content { animation: novaViewIn .22s ease both; }
+    @keyframes novaViewIn { from { opacity:0; transform: translateY(6px); } to { opacity:1; transform: translateY(0); } }
+    .modal-overlay { animation: novaFade .18s ease both; }
+    .modal { animation: novaPop .22s cubic-bezier(.34,1.4,.5,1) both; }
+    @keyframes novaFade { from { opacity:0; } to { opacity:1; } }
+    @keyframes novaPop { from { opacity:0; transform: translateY(10px) scale(.97); } to { opacity:1; transform: translateY(0) scale(1); } }
+    .alert { animation: novaSlideDown .25s ease both; }
+    @keyframes novaSlideDown { from { opacity:0; transform: translateY(-6px); } to { opacity:1; transform: translateY(0); } }
+    @media (prefers-reduced-motion: reduce) { .main-content,.modal-overlay,.modal,.alert{animation:none} .btn:hover,.btn:active{transform:none} }
     @media (prefers-reduced-motion: reduce) { .stats-grid .stat-card{opacity:1;animation:none} .stat-card:hover,.nova-tile:hover,.nav-item:hover,.nav-sub:hover{transform:none} .stat-card::before,.nova-tile::before,.nav-item::before,.nav-sub::before,.nav-section-header::before{display:none} }
   </style>
   <script>(function(){try{if(localStorage.getItem("po_theme")==="light")document.documentElement.setAttribute("data-theme","light");}catch(e){}})();</script>
