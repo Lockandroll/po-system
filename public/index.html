@@ -485,6 +485,7 @@ if ('serviceWorker' in navigator) {
       el.style.animationDelay = d;
       el.style.setProperty("--casc-d", d);
       el.classList.add("nova-casc");
+      el.addEventListener("animationend", function(ev){ if (ev.animationName === "novaCascIn"){ this.style.animation=""; this.style.transform=""; } });
     }
   }
   function tryCascade(mc){
