@@ -398,11 +398,11 @@ async function render() {
         '</div>'
       : '') +
       '<div class="main-header">' +
-        '<div style="display:flex;align-items:center;gap:12px">' +
+        '<div style="display:flex;align-items:center;gap:12px;min-width:0;flex:1">' +
           '<button class="hamburger" onclick="toggleSidebar()" aria-label="Menu"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="18" x2="21" y2="18"/></svg></button>' +
-          '<span style="font-size:15px;font-weight:600">Welcome back, ' + escHtml(state.user.name) + '</span>' +
+          '<span style="font-size:15px;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0">Welcome back, ' + escHtml(state.user.name) + '</span>' +
         '</div>' +
-        '<div style="display:flex;align-items:center;gap:8px">' +
+        '<div style="display:flex;align-items:center;gap:8px;flex-shrink:0">' +
         '<button onclick="toggleTheme()" id="theme-toggle-btn" aria-label="Toggle theme" title="Toggle light / dark" style="background:none;border:1px solid var(--border);color:var(--text-dim);cursor:pointer;border-radius:8px;width:40px;height:40px;display:inline-flex;align-items:center;justify-content:center;flex-shrink:0">' + themeIcon() + '</button>' +
         '<button onclick="location.reload()" aria-label="Refresh" title="Refresh" style="background:none;border:1px solid var(--border);color:var(--text-dim);cursor:pointer;border-radius:8px;width:40px;height:40px;display:inline-flex;align-items:center;justify-content:center;flex-shrink:0">' +
           '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 4 23 10 17 10"/><polyline points="1 20 1 14 7 14"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/></svg>' +
