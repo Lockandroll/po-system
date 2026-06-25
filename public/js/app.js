@@ -1958,23 +1958,23 @@ async function renderNotifications(el) {
   try { rules = JSON.parse(settings.notification_rules || '{}') || {}; } catch(e) { rules = {}; }
 
   var broadcast = [
-    { key:'po_submitted', label:'Purchase order needs approval', def:'all admins', sms:true },
-    { key:'vr_submitted', label:'Vehicle repair needs approval', def:'all admins', sms:true },
-    { key:'quote_created', label:'New quote created', def:'all admins', sms:true },
-    { key:'quote_to_pos', label:'Purchase orders created from a quote', def:'all admins', sms:true },
-    { key:'signoff_completed', label:'Sign-off sheet completed', def:'all admins', sms:false },
-    { key:'work_order_received', label:'New work order received', def:'all admins and managers', sms:false },
-    { key:'suggestion_created', label:'New employee suggestion', def:'all admins and managers', sms:true },
-    { key:'document_expiring', label:'Document expiration reminder', def:'all admins and managers', sms:false },
-    { key:'review_rating_changed', label:'Google rating changed for a location', def:'all admins', sms:false }
+    { key:'po_submitted', label:'Purchase order needs approval', def:'all admins', sms:true, desc:'Someone submitted a purchase order that needs an approver to review it.' },
+    { key:'vr_submitted', label:'Vehicle repair needs approval', def:'all admins', sms:true, desc:'A vehicle repair was submitted and is waiting on approval.' },
+    { key:'quote_created', label:'New quote created', def:'all admins', sms:true, desc:'A new customer quote was created.' },
+    { key:'quote_to_pos', label:'Purchase orders created from a quote', def:'all admins', sms:true, desc:'A quote was pushed into purchase orders (one per supplier).' },
+    { key:'signoff_completed', label:'Sign-off sheet completed', def:'all admins', sms:false, desc:'A technician finished and signed a sign-off sheet on site.' },
+    { key:'work_order_received', label:'New work order received', def:'all admins and managers', sms:false, desc:'A new incoming work order / job ticket arrived to be dispatched.' },
+    { key:'suggestion_created', label:'New employee suggestion', def:'all admins and managers', sms:true, desc:'An employee submitted an idea through the suggestion box.' },
+    { key:'document_expiring', label:'Document expiration reminder', def:'all admins and managers', sms:false, desc:'A stored document is approaching its expiration date and may need renewing.' },
+    { key:'review_rating_changed', label:'Google rating changed for a location', def:'all admins', sms:false, desc:'A location\'s Google star rating went up or down.' }
   ];
   var requester = [
-    { key:'po_approved', label:'PO approved' },
-    { key:'po_rejected', label:'PO rejected' },
-    { key:'po_cancelled', label:'PO cancelled' },
-    { key:'po_ordered', label:'PO marked as ordered' },
-    { key:'vr_approved', label:'Vehicle repair approved' },
-    { key:'vr_rejected', label:'Vehicle repair rejected' }
+    { key:'po_approved', label:'PO approved', desc:'Tells the person who created the PO that it was approved.' },
+    { key:'po_rejected', label:'PO rejected', desc:'Tells the creator their PO was rejected.' },
+    { key:'po_cancelled', label:'PO cancelled', desc:'Tells the creator their PO was cancelled.' },
+    { key:'po_ordered', label:'PO marked as ordered', desc:'Tells the creator their PO was marked as ordered.' },
+    { key:'vr_approved', label:'Vehicle repair approved', desc:'Tells the creator their vehicle repair was approved.' },
+    { key:'vr_rejected', label:'Vehicle repair rejected', desc:'Tells the creator their vehicle repair was rejected.' }
   ];
 
   function chk(id, on) { return '<input type="checkbox" id="' + id + '"' + (on ? ' checked' : '') + ' style="width:auto;margin:0" />'; }
@@ -1994,8 +1994,8 @@ async function renderNotifications(el) {
     }).join('');
     return '<div style="border:1px solid var(--border);border-radius:8px;padding:14px;margin-bottom:12px">' +
       '<div style="display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap">' +
-        '<div style="font-weight:600">' + escHtml(ev.label) + '</div>' +
-        '<label style="display:flex;align-items:center;gap:8px;cursor:pointer;font-size:13px">' + chk('nb-custom-' + ev.key, custom) + ' Customize recipients</label>' +
+        '<div style="flex:1;min-width:220px"><div style="font-weight:600">' + escHtml(ev.label) + '</div>' + (ev.desc ? '<div style="color:var(--text-muted-color);font-size:12px;margin-top:2px">' + escHtml(ev.desc) + '</div>' : '') + '</div>' +
+        '<label style="display:flex;align-items:center;gap:8px;cursor:pointer;font-size:13px;white-space:nowrap">' + chk('nb-custom-' + ev.key, custom) + ' Customize recipients</label>' +
       '</div>' +
       '<div id="nb-default-' + ev.key + '" style="color:var(--text-muted-color);font-size:13px;margin-top:6px;' + (custom ? 'display:none' : '') + '">Using default &mdash; ' + ev.def + '.</div>' +
       '<div id="nb-cfg-' + ev.key + '" style="margin-top:12px;' + (custom ? '' : 'display:none') + '">' +
@@ -2017,8 +2017,8 @@ async function renderNotifications(el) {
     var rule = rules[ev.key];
     var emailOn = rule ? rule.email !== false : true;
     var smsOn = rule ? rule.sms !== false : true;
-    return '<div style="display:flex;align-items:center;justify-content:space-between;gap:10px;padding:8px 0;border-bottom:1px solid var(--border);font-size:13px">' +
-      '<div>' + escHtml(ev.label) + '</div>' +
+    return '<div style="display:flex;align-items:flex-start;justify-content:space-between;gap:10px;padding:8px 0;border-bottom:1px solid var(--border);font-size:13px">' +
+      '<div style="flex:1;min-width:200px"><div>' + escHtml(ev.label) + '</div>' + (ev.desc ? '<div style="color:var(--text-muted-color);font-size:12px;margin-top:2px">' + escHtml(ev.desc) + '</div>' : '') + '</div>' +
       '<div style="display:flex;gap:18px">' +
         '<label style="display:flex;align-items:center;gap:6px;cursor:pointer">' + chk('nr-email-' + ev.key, emailOn) + ' Email</label>' +
         '<label style="display:flex;align-items:center;gap:6px;cursor:pointer">' + chk('nr-sms-' + ev.key, smsOn) + ' SMS</label>' +
@@ -2027,15 +2027,15 @@ async function renderNotifications(el) {
   }).join('');
 
   var taskAlerts = [
-    { key:'task_assigned', label:'Task assigned to someone' },
-    { key:'task_due', label:'Task due / overdue reminders' }
+    { key:'task_assigned', label:'Task assigned to someone', desc:'Notifies the person a task was assigned to.' },
+    { key:'task_due', label:'Task due / overdue reminders', desc:'Reminds the assignee when a task is due or already overdue.' }
   ];
   var tHtml = taskAlerts.map(function(ev) {
     var rule = rules[ev.key];
     var emailOn = rule ? rule.email !== false : true;
     var smsOn = rule ? rule.sms !== false : true;
-    return '<div style="display:flex;align-items:center;justify-content:space-between;gap:10px;padding:8px 0;border-bottom:1px solid var(--border);font-size:13px">' +
-      '<div>' + escHtml(ev.label) + '</div>' +
+    return '<div style="display:flex;align-items:flex-start;justify-content:space-between;gap:10px;padding:8px 0;border-bottom:1px solid var(--border);font-size:13px">' +
+      '<div style="flex:1;min-width:200px"><div>' + escHtml(ev.label) + '</div>' + (ev.desc ? '<div style="color:var(--text-muted-color);font-size:12px;margin-top:2px">' + escHtml(ev.desc) + '</div>' : '') + '</div>' +
       '<div style="display:flex;gap:18px">' +
         '<label style="display:flex;align-items:center;gap:6px;cursor:pointer">' + chk('nt-email-' + ev.key, emailOn) + ' Email</label>' +
         '<label style="display:flex;align-items:center;gap:6px;cursor:pointer">' + chk('nt-sms-' + ev.key, smsOn) + ' SMS</label>' +
