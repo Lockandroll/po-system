@@ -1,5 +1,5 @@
 // App version — bump together with CACHE_VERSION in public/sw.js on each deploy.
-var APP_VERSION = 'v28';
+var APP_VERSION = 'v29';
 
 const state = {
   token: localStorage.getItem('po_token'),

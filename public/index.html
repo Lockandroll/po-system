@@ -295,6 +295,7 @@
     @media (prefers-reduced-motion: reduce) { .line-items-table tbody tr,.nova-status-pulse{ animation:none; } }
     @media (prefers-reduced-motion: reduce) { .loading,.empty-state svg,.table-wrap tbody tr{ animation:none; } }
     @keyframes novaCascIn { from { opacity:0; transform: translateY(18px); } to { opacity:1; transform: translateY(0); } }
+    @keyframes novaCascFade { from { opacity:0; } to { opacity:1; } }
     .qa-grid .btn { transition: transform .18s ease, box-shadow .25s, border-color .25s, background-color .2s, color .2s; }
     .qa-grid .btn svg { transition: color .2s; }
     .qa-grid .btn:hover { transform: translateY(-3px); border-color: rgba(249,115,22,.5); background-color:#232323; color: var(--text); box-shadow: 0 10px 24px rgba(0,0,0,.45), 0 0 0 1px rgba(249,115,22,.22), 0 6px 18px rgba(249,115,22,.12); }
@@ -484,7 +485,8 @@ if ('serviceWorker' in navigator) {
     var kids = mc.children;
     for (var i=0;i<kids.length;i++){
       var el = kids[i], d = (i*STAG/1000) + "s";
-      el.style.animation = "novaCascIn .5s " + EASE + " both";
+      var sticky = el.querySelector && (el.querySelector("#sched-grid-wrap") || el.querySelector("[style*=\"position:sticky\"]") || el.querySelector("[style*=\"position: sticky\"]"));
+      el.style.animation = sticky ? "novaCascFade .4s ease both" : ("novaCascIn .5s " + EASE + " both");
       el.style.animationDelay = d;
       el.addEventListener("animationend", function(ev){ if (ev.animationName === "novaCascIn"){ this.style.animation=""; this.style.transform=""; } });
     }
