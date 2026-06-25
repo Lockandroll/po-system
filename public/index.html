@@ -239,12 +239,12 @@
     }
     /* UI/UX pilot: motion & depth (2026-06-24). Revert: restore index.html from backup. */
     #app { position: relative; z-index: 1; }
-    .stats-grid { perspective: 900px; }
+    .nova-tile { position: relative; overflow: hidden; transition: transform .18s ease-out, box-shadow .3s, border-color .3s; will-change: transform; }
     .stat-card { position: relative; overflow: hidden; transition: transform .18s ease-out, box-shadow .3s, border-color .3s; will-change: transform; }
-    .stat-card::before { content:""; position:absolute; inset:0; border-radius: var(--radius); opacity:0; transition: opacity .3s; pointer-events:none; background: radial-gradient(180px circle at var(--gx,50%) var(--gy,50%), rgba(249,115,22,.16), transparent 60%); }
-    .stat-card > * { position: relative; }
-    .stat-card:hover { transform: translateY(-4px); border-color: #3a3a3a; box-shadow: 0 14px 30px rgba(0,0,0,.55), 0 0 0 1px rgba(249,115,22,.22), 0 8px 26px rgba(249,115,22,.12); }
-    .stat-card:hover::before { opacity:1; }
+    .stat-card::before, .nova-tile::before { content:""; position:absolute; inset:0; border-radius: var(--radius); opacity:0; transition: opacity .3s; pointer-events:none; background: radial-gradient(180px circle at var(--gx,50%) var(--gy,50%), rgba(249,115,22,.16), transparent 60%); }
+    .stat-card > *, .nova-tile > * { position: relative; }
+    .stat-card:hover, .nova-tile:hover { transform: translateY(-4px); border-color: #3a3a3a; box-shadow: 0 14px 30px rgba(0,0,0,.55), 0 0 0 1px rgba(249,115,22,.22), 0 8px 26px rgba(249,115,22,.12); }
+    .stat-card:hover::before, .nova-tile:hover::before { opacity:1; }
     .stats-grid .stat-card { opacity:0; animation: novaRise .55s ease forwards; }
     .stats-grid .stat-card:nth-child(1){animation-delay:.04s} .stats-grid .stat-card:nth-child(2){animation-delay:.13s}
     .stats-grid .stat-card:nth-child(3){animation-delay:.22s} .stats-grid .stat-card:nth-child(4){animation-delay:.31s}
@@ -253,7 +253,7 @@
     .nav-item::before, .nav-sub::before, .nav-section-header::before { content:""; position:absolute; left:5px; top:50%; height:58%; width:3px; border-radius:3px; background: var(--primary); transform: translateY(-50%) scaleY(0); transform-origin:center; opacity:0; transition: transform .3s cubic-bezier(.34,1.4,.5,1), opacity .25s; }
     .nav-item:hover::before, .nav-item.active::before, .nav-sub:hover::before, .nav-sub.active::before, .nav-section-header:hover::before, .nav-section-header.section-active::before { transform: translateY(-50%) scaleY(1); opacity:1; }
     .nav-item:hover, .nav-sub:hover { transform: translateX(3px); }
-    @media (prefers-reduced-motion: reduce) { .stats-grid .stat-card{opacity:1;animation:none} .stat-card:hover,.nav-item:hover,.nav-sub:hover{transform:none} .stat-card::before,.nav-item::before,.nav-sub::before,.nav-section-header::before{display:none} }
+    @media (prefers-reduced-motion: reduce) { .stats-grid .stat-card{opacity:1;animation:none} .stat-card:hover,.nova-tile:hover,.nav-item:hover,.nav-sub:hover{transform:none} .stat-card::before,.nova-tile::before,.nav-item::before,.nav-sub::before,.nav-section-header::before{display:none} }
   </style>
   <script>(function(){try{if(localStorage.getItem("po_theme")==="light")document.documentElement.setAttribute("data-theme","light");}catch(e){}})();</script>
 </head>
@@ -391,18 +391,20 @@ if ('serviceWorker' in navigator) {
         el.textContent=pre+v.toLocaleString('en-US',{minimumFractionDigits:dec,maximumFractionDigits:dec})+suf;
         if(p<1) requestAnimationFrame(step); }
       requestAnimationFrame(step); }
-    var obs=new MutationObserver(function(muts){ for(var i=0;i<muts.length;i++){ var ns=muts[i].addedNodes;
+    function tagTiles(scope){ (scope||document).querySelectorAll('.card[onclick]').forEach(function(card){ if(card.dataset.tile) return; var body=card.querySelector(':scope > .card-body'); if(!body) return; if(((body.getAttribute('style')||'')).indexOf('text-align:center')===-1) return; var big=body.querySelector('div'); if(!big) return; if(!/^[^\d-]*-?[\d,]+/.test((big.textContent||'').trim())) return; card.dataset.tile='1'; card.classList.add('nova-tile'); animateStat(big); }); }
+    var obs=new MutationObserver(function(muts){ tagTiles(document); for(var i=0;i<muts.length;i++){ var ns=muts[i].addedNodes;
       for(var j=0;j<ns.length;j++){ var nn=ns[j]; if(nn.nodeType!==1) continue;
         if(nn.classList && nn.classList.contains('stat-value')) animateStat(nn);
         if(nn.querySelectorAll) nn.querySelectorAll('.stat-value').forEach(animateStat); } } });
     var appEl=document.getElementById('app'); if(appEl) obs.observe(appEl,{childList:true,subtree:true});
     document.querySelectorAll('.stat-value').forEach(animateStat);
+    tagTiles(document);
     var _tiltLast=null;
     document.addEventListener('mousemove', function(e){
-      var c = (e.target && e.target.closest) ? e.target.closest('.stat-card') : null;
+      var c = (e.target && e.target.closest) ? e.target.closest('.stat-card, .nova-tile') : null;
       if (c) { var r=c.getBoundingClientRect(); var px=(e.clientX-r.left)/r.width, py=(e.clientY-r.top)/r.height;
         c.style.setProperty('--gx',(px*100).toFixed(1)+'%'); c.style.setProperty('--gy',(py*100).toFixed(1)+'%');
-        c.style.transform='translateY(-4px) rotateX('+((0.5-py)*7).toFixed(2)+'deg) rotateY('+((px-0.5)*7).toFixed(2)+'deg)';
+        c.style.transform='perspective(700px) translateY(-4px) rotateX('+((0.5-py)*7).toFixed(2)+'deg) rotateY('+((px-0.5)*7).toFixed(2)+'deg)';
         _tiltLast=c; }
       else if (_tiltLast) { _tiltLast.style.transform=''; _tiltLast=null; }
     });
