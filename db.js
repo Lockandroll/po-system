@@ -1051,6 +1051,20 @@ async function initDB() {
       '  updated_at TIMESTAMPTZ DEFAULT NOW()' +
       ')'
     );
+    // Who a Google review is credited to. The reviews themselves live in the
+    // review-bot's SEPARATE database (read-only); assignments are owned by Nova
+    // and keyed on Google's stable review_id so they survive a re-sync.
+    // source: 'ai' (filled by the tech tally) or 'manual' (set by a person);
+    // the AI tally never overwrites a 'manual' row.
+    await client.query(
+      'CREATE TABLE IF NOT EXISTS review_assignments (' +
+      '  review_id TEXT PRIMARY KEY,' +
+      '  assignee TEXT NOT NULL,' +
+      "  source TEXT NOT NULL DEFAULT 'manual'," +
+      '  assigned_by INTEGER REFERENCES users(id) ON DELETE SET NULL,' +
+      '  updated_at TIMESTAMPTZ DEFAULT NOW()' +
+      ')'
+    );
     await client.query(
       'CREATE TABLE IF NOT EXISTS oauth_clients (' +
       '  client_id TEXT PRIMARY KEY,' +

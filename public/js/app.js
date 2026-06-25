@@ -286,7 +286,7 @@ function badgeHtml(status) {
 
 var EMPLOYEE_PERMS = ['view_pos','create_po','edit_po','delete_po','submit_po','view_quotes','create_quote','edit_quote','delete_quote','push_quote_po','view_vr','create_vr','edit_vr','delete_vr','submit_vr','view_deposits','create_deposit','delete_deposit','export_deposits','view_signoffs','create_signoff','edit_signoff','complete_signoff','delete_signoff','view_tasks','view_work_orders','view_schedule'];
 var PERM_DEFAULTS = {
-  manager: ['view_users','manage_cities','manage_geico','manage_running','manage_vehicles','manage_vendors','manage_addresses','approve_vr','manage_tasks','manage_work_orders','manage_schedule','manage_parts'].concat(EMPLOYEE_PERMS),
+  manager: ['view_users','manage_cities','manage_geico','manage_running','manage_vehicles','manage_vendors','manage_addresses','approve_vr','manage_tasks','manage_work_orders','manage_schedule','manage_parts','assign_reviews'].concat(EMPLOYEE_PERMS),
   locksmith: EMPLOYEE_PERMS.slice(),
   locksmith_coordinator: EMPLOYEE_PERMS.concat(['manage_work_orders']),
   roadside_technician: EMPLOYEE_PERMS.slice()
@@ -3226,6 +3226,7 @@ var _reviewsAllStats = null;
 var _reviewsPage = 1;
 var REVIEWS_PAGE_SIZE = 25;
 var _reviewsSearchTimer = null;
+var _reviewAssignees = [];
 
 async function renderReviews(el) {
   var iS = 'padding:8px 10px;background:var(--surface-color);border:1px solid rgba(249,115,22,0.35);border-radius:6px;color:var(--text-color);font-size:13px;outline:none';
@@ -3245,8 +3246,42 @@ async function renderReviews(el) {
     '<div id="reviews-stats" style="margin-bottom:16px"></div>' +
     '<div id="reviews-sim" style="margin-bottom:16px"></div>' +
     '<div id="reviews-tally" style="margin-bottom:16px"></div>' +
+    '<datalist id="review-assignees"></datalist>' +
     '<div id="reviews-table-wrap"></div>';
+  reviewsLoadAssignees();
   await reviewsLoad(true);
+}
+
+// Fetch the name suggestions for the "Assigned To" picker and fill the datalist.
+async function reviewsLoadAssignees() {
+  try { _reviewAssignees = await api('GET', '/reviews/assignees') || []; }
+  catch (e) { _reviewAssignees = []; }
+  var dl = document.getElementById('review-assignees');
+  if (dl) dl.innerHTML = _reviewAssignees.map(function(n){ return '<option value="' + escHtml(n) + '"></option>'; }).join('');
+}
+
+// Save (or clear) a manual assignment, then reflect it locally without a full reload.
+async function reviewsAssign(reviewId, value, inputEl) {
+  var name = (value || '').trim();
+  try {
+    var r = await api('PUT', '/reviews/assign', { review_id: reviewId, assignee: name });
+    for (var i = 0; i < _reviewsRows.length; i++) {
+      if (_reviewsRows[i].review_id === reviewId) {
+        _reviewsRows[i].assignee = r.assignee || null;
+        _reviewsRows[i].assignee_source = r.source || null;
+        break;
+      }
+    }
+    // Add a brand-new name to the suggestion list for the rest of the session.
+    if (name && _reviewAssignees.indexOf(name) === -1) {
+      _reviewAssignees.push(name);
+      var dl = document.getElementById('review-assignees');
+      if (dl) dl.innerHTML += '<option value="' + escHtml(name) + '"></option>';
+    }
+    reviewsRenderTable(_reviewsRows);
+  } catch (e) {
+    if (inputEl) { inputEl.style.borderColor = '#dc2626'; inputEl.title = e.message; }
+  }
 }
 
 function reviewsSearchDebounced() { clearTimeout(_reviewsSearchTimer); _reviewsSearchTimer = setTimeout(function(){ reviewsLoad(); }, 300); }
@@ -3272,6 +3307,10 @@ async function reviewsTechTally() {
   try {
     var r = await api('POST', '/reviews/tech-tally', body);
     reviewsRenderTally(r, { from: from, to: to, loc: loc });
+    // The tally writes AI names into the assignment table — refresh the list and
+    // the picker so the "Assigned To" column reflects what was just credited.
+    reviewsLoadAssignees();
+    reviewsLoad();
   } catch (e) {
     el.innerHTML = '<div class="alert alert-error">' + escHtml(e.message) + '</div>';
   }
@@ -3288,9 +3327,10 @@ function reviewsRenderTally(r, ctx) {
     var city = escHtml(t.location || '—') + (t.multiCity ? ' <span style="color:var(--text-muted-color);font-size:11px">(+ others)</span>' : '');
     return '<tr><td>' + escHtml(t.name || '—') + '</td><td>' + city + '</td><td style="text-align:right">' + (parseInt(t.count, 10) || 0) + '</td></tr>';
   }).join('');
-  var note = 'Analyzed ' + (r.analyzed || 0) + ' review' + ((r.analyzed === 1) ? '' : 's');
-  if (r.unnamed) note += ' • ' + r.unnamed + ' with no technician named';
-  if (r.capped) note += ' • range too large — only the most recent 800 analyzed, narrow the dates';
+  var note = 'AI checked ' + (r.analyzed || 0) + ' review' + ((r.analyzed === 1) ? '' : 's') + ' this run';
+  if (typeof r.written === 'number') note += ' • credited ' + r.written;
+  if (r.unnamed) note += ' • ' + r.unnamed + ' still unassigned (assign them in the list below)';
+  if (r.capped) note += ' • more reviews remain — run again to keep crediting';
   el.innerHTML =
     '<div class="card" style="padding:16px">' +
       '<div style="font-size:12px;color:var(--text-muted-color);text-transform:uppercase;letter-spacing:0.5px;margin-bottom:8px">Reviews by technician — ' + escHtml(rangeLabel) + '</div>' +
@@ -3458,18 +3498,31 @@ function reviewsRenderTable(rows) {
     _btns = '<button class="btn btn-secondary btn-sm" onclick="reviewsPaginate(' + (_reviewsPage-1) + ')" ' + (_reviewsPage===1?'disabled':'') + '>&lsaquo;</button> ' + _btns + '<button class="btn btn-secondary btn-sm" onclick="reviewsPaginate(' + (_reviewsPage+1) + ')" ' + (_reviewsPage===totalPages?'disabled':'') + '>&rsaquo;</button>';
   }
   var _pager = '<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:12px">' + _sizeCtl + _btns + '</div>';
+  var canAssign = can('assign_reviews');
+  var assignedCount = 0;
+  for (var _a = 0; _a < rows.length; _a++) { if (rows[_a].assignee) assignedCount++; }
+  var coverage = total ? (' • ' + assignedCount + ' of ' + total + ' assigned') : '';
   wrap.innerHTML =
-    '<div style="font-size:12px;color:var(--text-muted-color);margin-bottom:8px">Showing ' + _showing + ' of ' + total + ' review' + (total===1?'':'s') + '</div>' +
+    '<div style="font-size:12px;color:var(--text-muted-color);margin-bottom:8px">Showing ' + _showing + ' of ' + total + ' review' + (total===1?'':'s') + coverage + '</div>' +
     '<div class="card"><div class="table-wrap"><table>' +
-      '<thead><tr><th>Location</th><th>Reviewer</th><th>Rating</th><th>Review</th><th>Date</th><th>Reply</th></tr></thead><tbody>' +
+      '<thead><tr><th>Location</th><th>Reviewer</th><th>Rating</th><th>Review</th><th>Assigned To</th><th>Date</th><th>Reply</th></tr></thead><tbody>' +
       (total === 0
-        ? '<tr><td colspan="6" style="text-align:center;color:var(--text-muted-color);padding:32px">No reviews found.</td></tr>'
+        ? '<tr><td colspan="7" style="text-align:center;color:var(--text-muted-color);padding:32px">No reviews found.</td></tr>'
         : page.map(function(r){
+            var aName = r.assignee || '';
+            var badge = (r.assignee_source === 'ai') ? ' <span title="Suggested by AI — edit to confirm" style="font-size:9px;font-weight:700;color:var(--primary);border:1px solid var(--primary);border-radius:3px;padding:0 3px;vertical-align:middle">AI</span>' : '';
+            var assignCell;
+            if (canAssign && r.review_id) {
+              assignCell = '<input type="text" list="review-assignees" value="' + escHtml(aName) + '" placeholder="Assign…" onchange="reviewsAssign(&#39;' + escHtml(String(r.review_id)) + '&#39;, this.value, this)" style="width:118px;padding:4px 6px;background:var(--surface-color);border:1px solid rgba(249,115,22,0.35);border-radius:5px;color:var(--text-color);font-size:12px;outline:none" />' + badge;
+            } else {
+              assignCell = (aName ? escHtml(aName) : '<span style="color:var(--text-muted-color)">—</span>') + badge;
+            }
             return '<tr>' +
               '<td style="white-space:nowrap">' + escHtml(r.location_name||'—') + '</td>' +
               '<td style="white-space:nowrap">' + escHtml(r.reviewer_name||'—') + '</td>' +
               '<td style="white-space:nowrap">' + reviewsStars(r.rating) + '</td>' +
               '<td style="min-width:280px">' + escHtml(r.review_text||'') + '</td>' +
+              '<td style="white-space:nowrap">' + assignCell + '</td>' +
               '<td style="white-space:nowrap">' + escHtml(r.review_date||'—') + '</td>' +
               '<td style="white-space:nowrap">' + (r.reply_text ? ('<a href="#" onclick="reviewsToggleReply(event,&#39;' + r.id + '&#39;)" style="color:var(--primary)">See Reply</a><div id="rvreply-' + r.id + '" style="display:none;margin-top:6px;color:var(--text-muted-color);font-size:12px;white-space:normal;max-width:340px">' + escHtml(r.reply_text) + '</div>') : '<span style="color:var(--text-muted-color)">No Reply</span>') + '</td>' +
             '</tr>';
