@@ -255,6 +255,7 @@
     .nova-tile { position: relative; overflow: hidden; transition: transform .18s ease-out, box-shadow .3s, border-color .3s; will-change: transform; }
     .stat-card { position: relative; overflow: hidden; transition: transform .18s ease-out, box-shadow .3s, border-color .3s; will-change: transform; }
     .card.glow-on, .stat-card.glow-on { background-image: radial-gradient(200px circle at var(--gx,50%) var(--gy,50%), rgba(249,115,22,.06), transparent 65%); }
+    .qa-grid .btn.glow-on { background-image: radial-gradient(150px circle at var(--gx,50%) var(--gy,50%), rgba(249,115,22,.16), transparent 62%); }
     .stat-card:hover, .nova-tile:hover { transform: translateY(-4px); border-color: #3a3a3a; box-shadow: 0 14px 30px rgba(0,0,0,.55), 0 0 0 1px rgba(249,115,22,.22), 0 8px 26px rgba(249,115,22,.12); }
     .stats-grid .stat-card { opacity:0; animation: novaRise .55s ease forwards; }
     .stats-grid .stat-card:nth-child(1){animation-delay:.04s} .stats-grid .stat-card:nth-child(2){animation-delay:.13s}
@@ -296,7 +297,7 @@
     @keyframes novaCascIn { from { opacity:0; transform: translateY(18px); } to { opacity:1; transform: translateY(0); } }
     .qa-grid .btn { transition: transform .18s ease, box-shadow .25s, border-color .25s, background-color .2s, color .2s; }
     .qa-grid .btn svg { transition: color .2s; }
-    .qa-grid .btn:hover { transform: translateY(-3px); border-color: rgba(249,115,22,.5); background:#232323; color: var(--text); box-shadow: 0 10px 24px rgba(0,0,0,.45), 0 0 0 1px rgba(249,115,22,.22), 0 6px 18px rgba(249,115,22,.12); }
+    .qa-grid .btn:hover { transform: translateY(-3px); border-color: rgba(249,115,22,.5); background-color:#232323; color: var(--text); box-shadow: 0 10px 24px rgba(0,0,0,.45), 0 0 0 1px rgba(249,115,22,.22), 0 6px 18px rgba(249,115,22,.12); }
     .qa-grid .btn:hover svg { color: var(--primary); }
     .qa-grid .btn:active { transform: translateY(-1px) scale(.98); }
     @media (prefers-reduced-motion: reduce) { .qa-grid .btn:hover, .qa-grid .btn:active { transform:none; } }
@@ -459,7 +460,7 @@ if ('serviceWorker' in navigator) {
     tagTiles(document);
     var _glowLast=null, _tiltLast=null;
     document.addEventListener('mousemove', function(e){
-      var g = (e.target && e.target.closest) ? e.target.closest('.card, .stat-card') : null;
+      var g = (e.target && e.target.closest) ? e.target.closest('.card, .stat-card, .qa-grid .btn') : null;
       if (g !== _glowLast) { if (_glowLast) _glowLast.classList.remove('glow-on'); if (g) g.classList.add('glow-on'); _glowLast=g; }
       if (g) { var rg=g.getBoundingClientRect(); g.style.setProperty('--gx',(((e.clientX-rg.left)/rg.width)*100).toFixed(1)+'%'); g.style.setProperty('--gy',(((e.clientY-rg.top)/rg.height)*100).toFixed(1)+'%'); }
       var c = (e.target && e.target.closest) ? e.target.closest('.stat-card, .nova-tile') : null;
