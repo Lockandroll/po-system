@@ -1,5 +1,5 @@
 // App version — bump together with CACHE_VERSION in public/sw.js on each deploy.
-var APP_VERSION = 'v17';
+var APP_VERSION = 'v18';
 
 const state = {
   token: localStorage.getItem('po_token'),
@@ -5436,7 +5436,7 @@ async function aiSend() {
   var typing = document.createElement('div');
   typing.className = 'ai-msg ai-msg-bot';
   typing.id = 'ai-typing';
-  typing.innerHTML = '<div class="ai-msg-bubble" style="color:var(--text-muted-color)"><em>Neurolock is thinking…</em></div>';
+  typing.innerHTML = '<div class="ai-msg-bubble" style="color:var(--text-muted-color)"><span class="ai-typing-dots"><span></span><span></span><span></span></span></div>';
   if (thread) { thread.appendChild(typing); thread.scrollTop = thread.scrollHeight; }
   try {
     var apiMessages = _aiMessages.map(function(m) { return { role: m.role, content: m.content }; });
@@ -5453,6 +5453,8 @@ async function aiSend() {
   if (input) input.disabled = false;
   if (btn) btn.disabled = false;
   aiRenderThread();
+  var _aiThread = document.getElementById('ai-thread');
+  if (_aiThread) { var _bubs = _aiThread.querySelectorAll('.ai-msg-bot .ai-msg-bubble'); if (_bubs.length) _bubs[_bubs.length - 1].classList.add('nova-bubble-in'); }
   if (input) { input.focus(); }
 }
 // ── Vehicle Repairs ────────────────────────────────────────────────────────────
