@@ -68,6 +68,15 @@ function authServerMeta(req, res) {
 router.get('/.well-known/oauth-authorization-server', authServerMeta);
 router.get('/.well-known/oauth-authorization-server/*', authServerMeta);
 
+// TEMP diagnostic (no secrets) - remove after debugging
+router.get('/oauth/debug', async function (req, res) {
+  try {
+    var a = await pool.query('SELECT COUNT(*)::int AS n, MAX(created_at) AS last FROM oauth_clients');
+    var b = await pool.query('SELECT COUNT(*)::int AS n FROM oauth_codes');
+    res.json({ clients: a.rows[0].n, lastClientAt: a.rows[0].last, codes: b.rows[0].n });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
 // ---- Dynamic Client Registration (RFC 7591) ----
 router.post('/oauth/register', async function (req, res) {
   try {
@@ -88,6 +97,7 @@ router.post('/oauth/register', async function (req, res) {
       'INSERT INTO oauth_clients (client_id, client_secret, client_name, redirect_uris) VALUES ($1,$2,$3,$4)',
       [clientId, clientSecret, name, JSON.stringify(uris)]
     );
+    console.log('[oauth] registered client_id=' + clientId);
     res.status(201).json({
       client_id: clientId,
       client_secret: clientSecret,
@@ -172,8 +182,12 @@ function redirectError(res, p, code, desc) {
 router.get('/oauth/authorize', async function (req, res) {
   try {
     var q = req.query || {};
+    console.log('[oauth] authorize GET client_id=' + q.client_id);
     var client = await getClient(q.client_id);
-    if (!client) return res.status(400).send(errorPage('Unknown application', 'This application is not registered with Nova.'));
+    if (!client) {
+      try { var cc = await pool.query('SELECT COUNT(*)::int AS n FROM oauth_clients'); console.log('[oauth] unknown client_id=' + q.client_id + ' total=' + cc.rows[0].n); } catch (e) { console.error('[oauth] count failed: ' + e.message); }
+      return res.status(400).send(errorPage('Unknown application', 'This application is not registered with Nova.'));
+    }
     if (client.redirect_uris.indexOf(q.redirect_uri) === -1) {
       return res.status(400).send(errorPage('Invalid redirect', 'The redirect address does not match what was registered.'));
     }
