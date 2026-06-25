@@ -1,5 +1,5 @@
 // App version — bump together with CACHE_VERSION in public/sw.js on each deploy.
-var APP_VERSION = 'v15';
+var APP_VERSION = 'v16';
 
 const state = {
   token: localStorage.getItem('po_token'),
@@ -93,9 +93,10 @@ function getSidebarSection(view) {
   if (['company-info','ai-context','notifications','scheduled-messages','roles','settings','users','cities','audit'].indexOf(view) !== -1) return 'settings';
   return null;
 }
-function toggleSection(section) {
-  // Expand/collapse the section in place. Keeps the mobile menu open so
-  // sub-items (PO Dashboard, Monthly Req, etc.) stay visible.
+function toggleSection(section, defaultView) {
+  // Clicking a section header jumps to its first page (e.g. Purchase Orders -> PO Dashboard)
+  // and expands the section (navigate() opens the right section via getSidebarSection()).
+  if (defaultView) { navigate(defaultView); return; }
   state.sidebarSection = (state.sidebarSection === section) ? null : section;
   render();
 }
