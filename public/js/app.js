@@ -1,5 +1,5 @@
 // App version — bump together with CACHE_VERSION in public/sw.js on each deploy.
-var APP_VERSION = 'v21';
+var APP_VERSION = 'v22';
 
 const state = {
   token: localStorage.getItem('po_token'),
@@ -48,6 +48,7 @@ function novaBtnReset(btn) {
   if (btn.dataset.busy) { btn.innerHTML = btn.dataset.orig; delete btn.dataset.busy; delete btn.dataset.orig; }
   btn.disabled = false;
 }
+function novaEvtBtn() { var e = window.event; var t = e && e.target; return (t && t.closest) ? t.closest('.btn') : null; }
 async function api(method, path, body) {
   novaProgressStart();
   try {
@@ -1463,23 +1464,26 @@ async function renderViewPO(el, id) {
 }
 
 async function submitPO(id) {
-  try { await api('POST', '/pos/' + id + '/submit'); navigate('dashboard'); }
-  catch(err) { document.getElementById('view-error').innerHTML = '<div class="alert alert-error">' + escHtml(err.message) + '</div>'; }
+  var _b = novaEvtBtn();
+  try { novaBtnBusy(_b, 'Submitting\u2026'); await api('POST', '/pos/' + id + '/submit'); navigate('dashboard'); }
+  catch(err) { novaBtnReset(_b); document.getElementById('view-error').innerHTML = '<div class="alert alert-error">' + escHtml(err.message) + '</div>'; }
 }
 
 async function approvePO(id) {
   const ordererEl = document.getElementById('orderer-id');
   const orderer_id = ordererEl ? ordererEl.value : '';
   if (!orderer_id) { document.getElementById('view-error').innerHTML = '<div class="alert alert-error">Please select the person responsible for ordering.</div>'; return; }
-  try { await api('POST', '/pos/' + id + '/approve', { orderer_id: parseInt(orderer_id) }); navigate('dashboard'); }
-  catch(err) { document.getElementById('view-error').innerHTML = '<div class="alert alert-error">' + escHtml(err.message) + '</div>'; }
+  var _b = novaEvtBtn();
+  try { novaBtnBusy(_b, 'Approving\u2026'); await api('POST', '/pos/' + id + '/approve', { orderer_id: parseInt(orderer_id) }); navigate('dashboard'); }
+  catch(err) { novaBtnReset(_b); document.getElementById('view-error').innerHTML = '<div class="alert alert-error">' + escHtml(err.message) + '</div>'; }
 }
 
 async function rejectPO(id) {
   const reason = document.getElementById('reject-reason').value.trim();
   if (!reason) { document.getElementById('view-error').innerHTML = '<div class="alert alert-error">Please enter a rejection reason.</div>'; return; }
-  try { await api('POST', '/pos/' + id + '/reject', { reason }); navigate('dashboard'); }
-  catch(err) { document.getElementById('view-error').innerHTML = '<div class="alert alert-error">' + escHtml(err.message) + '</div>'; }
+  var _b = novaEvtBtn();
+  try { novaBtnBusy(_b, 'Rejecting\u2026'); await api('POST', '/pos/' + id + '/reject', { reason }); navigate('dashboard'); }
+  catch(err) { novaBtnReset(_b); document.getElementById('view-error').innerHTML = '<div class="alert alert-error">' + escHtml(err.message) + '</div>'; }
 }
 
 async function deletePO(id) {
@@ -1490,19 +1494,23 @@ async function deletePO(id) {
 
 async function cancelPO(id) {
   if (!confirm('Cancel this PO? This cannot be undone.')) return;
-  try { await api('POST', '/pos/' + id + '/cancel'); navigate('dashboard'); }
-  catch(err) { document.getElementById('view-error').innerHTML = '<div class="alert alert-error">' + escHtml(err.message) + '</div>'; }
+  var _b = novaEvtBtn();
+  try { novaBtnBusy(_b, 'Cancelling\u2026'); await api('POST', '/pos/' + id + '/cancel'); navigate('dashboard'); }
+  catch(err) { novaBtnReset(_b); document.getElementById('view-error').innerHTML = '<div class="alert alert-error">' + escHtml(err.message) + '</div>'; }
 }
 
 async function markOrdered(id) {
   if (!confirm('Confirm this PO has been ordered from the vendor?')) return;
+  var _b = novaEvtBtn();
   try {
+    novaBtnBusy(_b, 'Updating\u2026');
     await api('POST', '/pos/' + id + '/order');
     allPOs = await api('GET', '/pos');
     applyFilters();
     // If we're inside the PO view, reload it; otherwise stay on dashboard
     if (state.currentView === 'view') navigate('view', id);
   } catch(err) {
+    novaBtnReset(_b);
     var errEl = document.getElementById('view-error');
     if (errEl) errEl.innerHTML = '<div class="alert alert-error">' + escHtml(err.message) + '</div>';
     else alert(err.message);
@@ -5780,19 +5788,22 @@ async function renderViewVR(el, id) {
 }
 async function submitVR(id) {
   if (!confirm('Submit this vehicle repair for approval?')) return;
-  try { await api('POST', '/vr/'+id+'/submit'); navigate('view-vr', id); }
-  catch(err) { var m = document.getElementById('vr-view-msg'); if(m) m.innerHTML = '<div class="alert alert-error">'+escHtml(err.message)+'</div>'; }
+  var _b = novaEvtBtn();
+  try { novaBtnBusy(_b, 'Submitting\u2026'); await api('POST', '/vr/'+id+'/submit'); navigate('view-vr', id); }
+  catch(err) { novaBtnReset(_b); var m = document.getElementById('vr-view-msg'); if(m) m.innerHTML = '<div class="alert alert-error">'+escHtml(err.message)+'</div>'; }
 }
 async function approveVR(id) {
   if (!confirm('Approve this vehicle repair?')) return;
-  try { await api('POST', '/vr/'+id+'/approve'); navigate('view-vr', id); }
-  catch(err) { var m = document.getElementById('vr-view-msg'); if(m) m.innerHTML = '<div class="alert alert-error">'+escHtml(err.message)+'</div>'; }
+  var _b = novaEvtBtn();
+  try { novaBtnBusy(_b, 'Approving\u2026'); await api('POST', '/vr/'+id+'/approve'); navigate('view-vr', id); }
+  catch(err) { novaBtnReset(_b); var m = document.getElementById('vr-view-msg'); if(m) m.innerHTML = '<div class="alert alert-error">'+escHtml(err.message)+'</div>'; }
 }
 async function rejectVR(id) {
   var reason = prompt('Rejection reason (optional):');
   if (reason === null) return;
-  try { await api('POST', '/vr/'+id+'/reject', { reason }); navigate('view-vr', id); }
-  catch(err) { var m = document.getElementById('vr-view-msg'); if(m) m.innerHTML = '<div class="alert alert-error">'+escHtml(err.message)+'</div>'; }
+  var _b = novaEvtBtn();
+  try { novaBtnBusy(_b, 'Rejecting\u2026'); await api('POST', '/vr/'+id+'/reject', { reason }); navigate('view-vr', id); }
+  catch(err) { novaBtnReset(_b); var m = document.getElementById('vr-view-msg'); if(m) m.innerHTML = '<div class="alert alert-error">'+escHtml(err.message)+'</div>'; }
 }
 async function deleteVR(id) {
   if (!confirm('Permanently delete this vehicle repair? This cannot be undone.')) return;
