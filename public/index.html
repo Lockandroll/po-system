@@ -79,6 +79,8 @@
     .hamburger svg { display: block; }
     #sidebar-overlay { display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.6); z-index: 99; }
     @media (max-width: 768px) {
+      /* iOS Safari auto-zooms when focusing an input under 16px; keep form controls at 16px on phones to stop the zoom-on-open. */
+      input, select, textarea { font-size: 16px; }
       #sidebar { transform: translateX(-100%); }
       #sidebar.open { transform: translateX(0); }
       #sidebar-overlay.open { display: block; }
