@@ -376,6 +376,25 @@ router.put('/:id', requireAuth, async function (req, res) {
       }
       params.push(target); sets.push('folder_id = $' + params.length);
     }
+    // Expiration + reminder lead time. Changing the expiry re-arms both reminders.
+    if (req.body.expires_on !== undefined) {
+      var exp = req.body.expires_on;
+      if (exp === null || exp === '') {
+        sets.push('expires_on = NULL'); sets.push('reminder_lead_num = NULL'); sets.push('reminder_lead_unit = NULL');
+        sets.push('reminder_sent_at = NULL'); sets.push('expiry_notice_sent_at = NULL');
+      } else {
+        if (!/^\d{4}-\d{2}-\d{2}$/.test(String(exp))) return res.status(400).json({ error: 'Invalid expiration date' });
+        var num = parseInt(req.body.reminder_lead_num, 10);
+        var unit = String(req.body.reminder_lead_unit || '');
+        if (!num || num < 1) num = 1;
+        if (num > 999) num = 999;
+        if (['days','weeks','months'].indexOf(unit) === -1) unit = 'weeks';
+        params.push(exp); sets.push('expires_on = $' + params.length);
+        params.push(num); sets.push('reminder_lead_num = $' + params.length);
+        params.push(unit); sets.push('reminder_lead_unit = $' + params.length);
+        sets.push('reminder_sent_at = NULL'); sets.push('expiry_notice_sent_at = NULL');
+      }
+    }
     if (!sets.length) return res.status(400).json({ error: 'Nothing to update' });
     sets.push('updated_at = NOW()');
     params.push(id);
