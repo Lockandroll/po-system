@@ -1,5 +1,5 @@
 // App version — bump together with CACHE_VERSION in public/sw.js on each deploy.
-var APP_VERSION = 'v18';
+var APP_VERSION = 'v19';
 
 const state = {
   token: localStorage.getItem('po_token'),
@@ -16,7 +16,31 @@ const state = {
   _permsLoaded: false,
 };
 
+// ── Global top loading bar (driven by every api() call) ──────────────────────
+var _npCount = 0, _npEl = null, _npTimer = null;
+function _npBar() { if (!_npEl) { _npEl = document.createElement('div'); _npEl.id = 'nova-progress'; document.body.appendChild(_npEl); } return _npEl; }
+function novaProgressStart() {
+  _npCount++;
+  if (_npCount === 1) {
+    var b = _npBar(); clearTimeout(_npTimer);
+    b.style.transition = 'none'; b.style.opacity = '1'; b.style.width = '0%';
+    void b.offsetWidth;
+    b.style.transition = 'width 10s cubic-bezier(.1,.7,.6,1)'; b.style.width = '85%';
+  }
+}
+function novaProgressDone() {
+  _npCount = Math.max(0, _npCount - 1);
+  if (_npCount === 0) {
+    var b = _npBar();
+    b.style.transition = 'width .25s ease, opacity .35s ease .15s';
+    b.style.width = '100%'; b.style.opacity = '0';
+    clearTimeout(_npTimer);
+    _npTimer = setTimeout(function () { b.style.transition = 'none'; b.style.width = '0%'; }, 650);
+  }
+}
 async function api(method, path, body) {
+  novaProgressStart();
+  try {
   const opts = { method, headers: { 'Content-Type': 'application/json' } };
   if (state.token) opts.headers['Authorization'] = 'Bearer ' + state.token;
   if (state.viewAsId) opts.headers['X-View-As'] = String(state.viewAsId);
@@ -50,6 +74,7 @@ async function api(method, path, body) {
   }
   if (!res.ok) throw new Error(data.error || 'Request failed (status ' + res.status + ')');
   return data;
+  } finally { novaProgressDone(); }
 }
 
 function themeIcon() {
