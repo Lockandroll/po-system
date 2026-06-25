@@ -1,5 +1,5 @@
 // App version — bump together with CACHE_VERSION in public/sw.js on each deploy.
-var APP_VERSION = 'v22';
+var APP_VERSION = 'v23';
 
 const state = {
   token: localStorage.getItem('po_token'),
@@ -5735,6 +5735,7 @@ async function saveVR(id, btn) {
   }
 }
 async function renderViewVR(el, id) {
+  var _pulse = window._novaPulseStatus; window._novaPulseStatus = 0;
   el.innerHTML = '<div class="loading">Loading…</div>';
   try {
     var vr = await api('GET', '/vr/' + id);
@@ -5744,7 +5745,7 @@ async function renderViewVR(el, id) {
     el.innerHTML =
       '<div class="page-header">' +
         '<div><div class="page-title">' + escHtml(vr.vr_number) + '</div>' +
-          '<div class="page-subtitle" style="color:' + sc + ';font-weight:600;text-transform:capitalize">' + escHtml(vr.status) + '</div>' +
+          '<div class="page-subtitle' + (_pulse ? ' nova-status-pulse' : '') + '" style="color:' + sc + ';font-weight:600;text-transform:capitalize">' + escHtml(vr.status) + '</div>' +
         '</div>' +
         '<div class="flex-gap">' +
           (vr.status==='draft' && (isOwner||state.user.role==='admin') && can('edit_vr') ? '<button class="btn btn-secondary" onclick="navigate(\'edit-vr\',' + vr.id + ')">Edit</button>' : '') +
@@ -5789,20 +5790,20 @@ async function renderViewVR(el, id) {
 async function submitVR(id) {
   if (!confirm('Submit this vehicle repair for approval?')) return;
   var _b = novaEvtBtn();
-  try { novaBtnBusy(_b, 'Submitting\u2026'); await api('POST', '/vr/'+id+'/submit'); navigate('view-vr', id); }
+  try { novaBtnBusy(_b, 'Submitting\u2026'); await api('POST', '/vr/'+id+'/submit'); window._novaPulseStatus = 1; navigate('view-vr', id); }
   catch(err) { novaBtnReset(_b); var m = document.getElementById('vr-view-msg'); if(m) m.innerHTML = '<div class="alert alert-error">'+escHtml(err.message)+'</div>'; }
 }
 async function approveVR(id) {
   if (!confirm('Approve this vehicle repair?')) return;
   var _b = novaEvtBtn();
-  try { novaBtnBusy(_b, 'Approving\u2026'); await api('POST', '/vr/'+id+'/approve'); navigate('view-vr', id); }
+  try { novaBtnBusy(_b, 'Approving\u2026'); await api('POST', '/vr/'+id+'/approve'); window._novaPulseStatus = 1; navigate('view-vr', id); }
   catch(err) { novaBtnReset(_b); var m = document.getElementById('vr-view-msg'); if(m) m.innerHTML = '<div class="alert alert-error">'+escHtml(err.message)+'</div>'; }
 }
 async function rejectVR(id) {
   var reason = prompt('Rejection reason (optional):');
   if (reason === null) return;
   var _b = novaEvtBtn();
-  try { novaBtnBusy(_b, 'Rejecting\u2026'); await api('POST', '/vr/'+id+'/reject', { reason }); navigate('view-vr', id); }
+  try { novaBtnBusy(_b, 'Rejecting\u2026'); await api('POST', '/vr/'+id+'/reject', { reason }); window._novaPulseStatus = 1; navigate('view-vr', id); }
   catch(err) { novaBtnReset(_b); var m = document.getElementById('vr-view-msg'); if(m) m.innerHTML = '<div class="alert alert-error">'+escHtml(err.message)+'</div>'; }
 }
 async function deleteVR(id) {
