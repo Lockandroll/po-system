@@ -3444,7 +3444,7 @@ function vendorsRenderTable(search) {
                   '<td>' + escHtml(v.rep_phone || '—') + '</td>' +
                   '<td style="white-space:nowrap">' +
                     '<button class="btn btn-secondary btn-sm" onclick="showVendorModal(' + v.id + ',\'' + escHtml(v.name).replace(/'/g,"\\'") + '\',\'' + escHtml(v.website||'').replace(/'/g,"\\'") + '\',\'' + escHtml(v.account_number||'').replace(/'/g,"\\'") + '\',\'' + escHtml(v.username||'').replace(/'/g,"\\'") + '\',\'' + escHtml(v.password||'').replace(/'/g,"\\'") + '\',\'' + escHtml(v.notes||'').replace(/'/g,"\\'") + '\',\'' + escHtml(v.rep_name||'').replace(/'/g,"\\'") + '\',\'' + escHtml(v.rep_email||'').replace(/'/g,"\\'") + '\',\'' + escHtml(v.rep_phone||'').replace(/'/g,"\\'") + '\')">Edit</button> ' +
-                    '<button class="btn btn-danger btn-sm" onclick="deleteVendor(' + v.id + ')">Delete</button>' +
+                    '<button class="btn btn-danger btn-sm" onclick="deleteVendor(' + v.id + ')">' + icons.trash + ' Delete</button>' +
                   '</td>' +
                 '</tr>';
               }).join('')) +
@@ -3679,7 +3679,7 @@ async function refreshAddressesModal(cityCode, cityName) {
                 '<div><strong style="font-size:14px">' + escHtml(a.name) + '</strong><div style="font-size:13px;color:var(--text-muted-color);margin-top:2px">' + escHtml(a.address) + '</div></div>' +
                 '<div class="flex-gap">' +
                   '<button class="btn btn-secondary btn-sm" onclick="editAddressInline(' + a.id + ',\'' + escHtml(a.name).replace(/'/g,"\\'") + '\',\'' + escHtml(a.address).replace(/'/g,"\\'") + '\',\'' + escHtml(cityCode) + '\',\'' + escHtml(cityName) + '\')">Edit</button>' +
-                  '<button class="btn btn-danger btn-sm" onclick="deleteAddress(' + a.id + ',\'' + escHtml(cityCode) + '\',\'' + escHtml(cityName) + '\')">&#x2715;</button>' +
+                  '<button class="btn btn-danger btn-sm" onclick="deleteAddress(' + a.id + ',\'' + escHtml(cityCode) + '\',\'' + escHtml(cityName) + '\')">' + icons.trash + ' Delete</button>' +
                 '</div>' +
               '</div>';
             }).join('') + '</div>') +
@@ -4008,7 +4008,7 @@ async function renderViewQuote(el, id) {
           '<button class="btn btn-secondary" id="ai-review-btn" onclick="reviewQuoteWithAI()" style="color:var(--primary);border-color:var(--primary);">&#10024; AI Review</button>' +
           (can('push_quote_po') ? '<button class="btn btn-primary" onclick="pushQuoteToPO(' + q.id + ')" style="white-space:nowrap">&#10142; Push to PO</button>' : '') +
           (canEdit ? '<button class="btn btn-secondary" onclick="navigate(\'edit-quote\',' + q.id + ')">' + icons.edit + ' Edit</button>' : '') +
-          (canDelete ? '<button class="btn btn-danger" title="Delete quote" onclick="deleteQuote(' + q.id + ')"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14H6L5 6"/><path d="M10 11v6"/><path d="M14 11v6"/><path d="M9 6V4h6v2"/></svg></button>' : '') +
+          (canDelete ? '<button class="btn btn-danger" title="Delete quote" onclick="deleteQuote(' + q.id + ')"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14H6L5 6"/><path d="M10 11v6"/><path d="M14 11v6"/><path d="M9 6V4h6v2"/></svg> Delete</button>' : '') +
         '</div>' +
       '</div>' +
       '<div id="view-quote-error"></div>' +
@@ -5698,7 +5698,7 @@ async function renderViewVR(el, id) {
           (vr.status==='draft' && (isOwner||state.user.role==='admin') && can('submit_vr') ? '<button class="btn btn-primary" onclick="submitVR(' + vr.id + ')">Submit for Approval</button>' : '') +
           (vr.status==='submitted' && isApprover ? '<button class="btn btn-primary" style="background:#22c55e;border-color:#22c55e" onclick="approveVR(' + vr.id + ')">Approve</button>' : '') +
           (vr.status==='submitted' && isApprover ? '<button class="btn btn-danger" onclick="rejectVR(' + vr.id + ')">Reject</button>' : '') +
-          (((vr.status==='draft' && (isOwner||state.user.role==='admin')) || state.user.role==='admin') && can('delete_vr') ? '<button class="btn btn-danger btn-sm" onclick="deleteVR(' + vr.id + ')">Delete</button>' : '') +
+          (((vr.status==='draft' && (isOwner||state.user.role==='admin')) || state.user.role==='admin') && can('delete_vr') ? '<button class="btn btn-danger btn-sm" onclick="deleteVR(' + vr.id + ')">' + icons.trash + ' Delete</button>' : '') +
           '<button class="btn btn-secondary" onclick="navigate(\'vr-dashboard\')"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="margin-right:4px"><polyline points="15 18 9 12 15 6"/></svg> Back</button>' +
         '</div>' +
       '</div>' +
@@ -7775,7 +7775,7 @@ async function renderViewInvoice(el, id) {
           '<button class="btn btn-secondary" onclick="navigate(\'invoices\')">&larr; Back</button>' +
           '<button class="btn btn-secondary" style="white-space:nowrap" onclick="printInvoice(' + inv.id + ')">' + icons.print + ' Print</button>' +
           (canEdit ? '<button class="btn btn-secondary" onclick="navigate(\'edit-invoice\',' + inv.id + ')">' + icons.edit + ' Edit</button>' : '') +
-          (canDel ? '<button class="btn btn-danger" title="Delete invoice" onclick="deleteInvoice(' + inv.id + ')"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14H6L5 6"/><path d="M10 11v6"/><path d="M14 11v6"/><path d="M9 6V4h6v2"/></svg></button>' : '') +
+          (canDel ? '<button class="btn btn-danger" title="Delete invoice" onclick="deleteInvoice(' + inv.id + ')"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14H6L5 6"/><path d="M10 11v6"/><path d="M14 11v6"/><path d="M9 6V4h6v2"/></svg> Delete</button>' : '') +
         '</div>' +
       '</div>' +
       '<div id="view-invoice-error"></div>' +
@@ -8489,8 +8489,8 @@ function renderSignoffRow(f) {
     ? '<button class="btn btn-primary btn-sm" onclick="event.stopPropagation();navigate(\'complete-signoff\',' + f.id + ')" style="white-space:nowrap">&#9998; Complete</button>'
     : '<button class="btn btn-secondary btn-sm" onclick="event.stopPropagation();navigate(\'view-signoff\',' + f.id + ')">View</button>';
   var canDel = state.user.role === 'admin' || (can('delete_signoff') && f.created_by === state.user.id);
-  var editBtn = (pend && can('edit_signoff')) ? '<button class="btn btn-secondary btn-sm" title="Edit setup / reassign" onclick="event.stopPropagation();navigate(\'edit-signoff\',' + f.id + ')" style="margin-right:6px">' + icons.edit + '</button>' : '';
-  var delBtn = canDel ? '<button class="btn btn-danger btn-sm" title="Delete sign-off sheet" onclick="event.stopPropagation();deleteSignoff(' + f.id + ')" style="margin-left:6px"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14H6L5 6"/><path d="M10 11v6"/><path d="M14 11v6"/><path d="M9 6V4h6v2"/></svg></button>' : '';
+  var editBtn = (pend && can('edit_signoff')) ? '<button class="btn btn-secondary btn-sm" title="Edit setup / reassign" onclick="event.stopPropagation();navigate(\'edit-signoff\',' + f.id + ')" style="margin-right:6px;white-space:nowrap"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg> Edit / Reassign</button>' : '';
+  var delBtn = canDel ? '<button class="btn btn-danger btn-sm" title="Delete sign-off sheet" onclick="event.stopPropagation();deleteSignoff(' + f.id + ')" style="margin-left:6px"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14H6L5 6"/><path d="M10 11v6"/><path d="M14 11v6"/><path d="M9 6V4h6v2"/></svg> Delete</button>' : '';
   return '<tr style="cursor:pointer" onclick="navigate(\'' + (pend ? 'complete-signoff' : 'view-signoff') + '\',' + f.id + ')">' +
     '<td><strong>' + escHtml(f.form_number) + '</strong></td>' +
     '<td>' + escHtml(f.store_name || '—') + (f.store_number ? ' <span style="color:var(--text-muted-color)">#' + escHtml(f.store_number) + '</span>' : '') + '</td>' +
@@ -8899,7 +8899,7 @@ async function renderViewSignoff(el, id) {
           (!pend && (f.photos || []).length ? '<button class="btn btn-secondary" style="white-space:nowrap" onclick="downloadSignoffPhotos(' + f.id + ')">&#11015; Download Photos</button>' : '') +
           (pend && can('edit_signoff') ? '<button class="btn btn-secondary" onclick="navigate(\'edit-signoff\',' + f.id + ')">' + icons.edit + ' Edit Setup</button>' : '') +
           (pend && can('complete_signoff') ? '<button class="btn btn-primary" onclick="navigate(\'complete-signoff\',' + f.id + ')" style="white-space:nowrap">&#9998; Complete</button>' : '') +
-          (canDelete ? '<button class="btn btn-danger" title="Delete sign-off sheet" onclick="deleteSignoff(' + f.id + ')"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14H6L5 6"/><path d="M10 11v6"/><path d="M14 11v6"/><path d="M9 6V4h6v2"/></svg></button>' : '') +
+          (canDelete ? '<button class="btn btn-danger" title="Delete sign-off sheet" onclick="deleteSignoff(' + f.id + ')"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14H6L5 6"/><path d="M10 11v6"/><path d="M14 11v6"/><path d="M9 6V4h6v2"/></svg> Delete</button>' : '') +
         '</div>' +
       '</div>' +
       '<div class="card mb-4"><div class="card-header"><span class="card-title">Work Order</span></div><div class="card-body">' + signoffSummaryHtml(f) + '</div></div>' +
