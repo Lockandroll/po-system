@@ -2,6 +2,7 @@ const express = require('express');
 const https = require('https');
 const { pool } = require('../db');
 const { requireAuth, requireRole, requirePermission } = require('../middleware/auth');
+const novaTools = require('../lib/novaTools');
 
 const router = express.Router();
 
@@ -290,6 +291,152 @@ router.post('/chat', requireAuth, async function(req, res) {
     });
   } catch(err) {
     console.error('AI chat error:', err);
+    res.status(500).json({ error: 'Failed to get AI response. Check Railway logs.' });
+  }
+});
+
+
+// ---- Agentic Neurolock (tool use) ----
+
+function callClaudeAgent(messages, systemPrompt, tools) {
+  return new Promise(function (resolve, reject) {
+    var payload = {
+      model: 'claude-opus-4-8',
+      max_tokens: 2048,
+      system: systemPrompt,
+      messages: messages
+    };
+    if (tools && tools.length) payload.tools = tools;
+    var body = JSON.stringify(payload);
+    var options = {
+      hostname: 'api.anthropic.com',
+      path: '/v1/messages',
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-api-key': process.env.ANTHROPIC_API_KEY,
+        'anthropic-version': '2023-06-01',
+        'Content-Length': Buffer.byteLength(body)
+      }
+    };
+    var rq = https.request(options, function (resp) {
+      var data = '';
+      resp.on('data', function (chunk) { data += chunk; });
+      resp.on('end', function () {
+        try { resolve(JSON.parse(data)); }
+        catch (e) { reject(new Error('Failed to parse Anthropic response')); }
+      });
+    });
+    rq.on('error', reject);
+    rq.setTimeout(45000, function () { rq.destroy(new Error('AI request timed out. Please try again.')); });
+    rq.write(body);
+    rq.end();
+  });
+}
+
+function etTodayAgent() {
+  return new Intl.DateTimeFormat('en-CA', { timeZone: 'America/New_York', year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date());
+}
+
+var AGENT_SYSTEM_PROMPT = 'You are Neurolock, the AI assistant for Lock and Roll LLC (a Pop-A-Lock locksmith franchise), running inside the Nova operations app. ' +
+  'You can both answer questions and TAKE ACTIONS in Nova using the provided tools. ' +
+  'Use a tool whenever it is the right way to fulfill a request (for example, looking up Geico survey performance, listing the user tasks, or creating a task). ' +
+  'Rules: ' +
+  '1) Only perform write actions (like creating a task) when the user has clearly asked for it; if the request is ambiguous, ask a short clarifying question first instead of guessing. ' +
+  '2) Tools run as the current user and respect their permissions. If a tool returns a permission or access error, tell the user plainly that they do not have access rather than trying another way. ' +
+  '3) When you create or change something, briefly confirm what you did, including any ID returned. ' +
+  '4) Keep replies tight and practical; you are talking to working locksmiths and office staff. ' +
+  'Compute any relative dates (like "in 3 days") yourself from the current date.';
+
+// POST /api/ai/agent - Neurolock with tool use
+router.post('/agent', requireAuth, async function (req, res) {
+  if (!process.env.ANTHROPIC_API_KEY) {
+    return res.status(503).json({ error: 'AI assistant is not configured. Add ANTHROPIC_API_KEY in Railway Variables.' });
+  }
+  var messages = req.body && req.body.messages;
+  if (!messages || !Array.isArray(messages) || messages.length === 0) {
+    return res.status(400).json({ error: 'Messages array is required' });
+  }
+  try {
+    var usage = await getUsage(req.user.id);
+    if (usage.monthly >= MONTHLY_LIMIT) {
+      return res.status(429).json({ error: 'Monthly usage limit reached. Contact your administrator.' });
+    }
+    if (usage.daily >= DAILY_LIMIT) {
+      return res.status(429).json({ error: 'Daily limit reached (' + DAILY_LIMIT + ' messages/day). Resets at midnight.' });
+    }
+
+    var systemPrompt = AGENT_SYSTEM_PROMPT + '\n\nCurrent date (America/New_York): ' + etTodayAgent() + '.';
+    systemPrompt += '\nYou are helping ' + (req.user.name || 'a team member') + ' (role: ' + req.user.role + ').';
+    try {
+      var ctxRow = await pool.query("SELECT value FROM settings WHERE key = 'ai_context'");
+      if (ctxRow.rows.length && ctxRow.rows[0].value) {
+        systemPrompt += '\n\nAdditional company context:\n' + ctxRow.rows[0].value.trim();
+      }
+    } catch (e) { /* non-fatal */ }
+
+    var tools = novaTools.toAnthropicTools();
+    var working = messages.slice();
+    var actions = [];
+    var finalText = '';
+    var MAX_ITERS = 6;
+
+    for (var iter = 0; iter < MAX_ITERS; iter++) {
+      var response = await callClaudeAgent(working, systemPrompt, tools);
+      if (response.error) {
+        console.error('Anthropic API error:', JSON.stringify(response.error));
+        return res.status(500).json({ error: 'AI service error: ' + (response.error.message || 'unknown') });
+      }
+      var content = response.content || [];
+      var textParts = [];
+      var toolUses = [];
+      for (var i = 0; i < content.length; i++) {
+        if (content[i].type === 'text') textParts.push(content[i].text);
+        else if (content[i].type === 'tool_use') toolUses.push(content[i]);
+      }
+      if (textParts.length) finalText = textParts.join('\n');
+      if (response.stop_reason !== 'tool_use' || !toolUses.length) break;
+
+      working.push({ role: 'assistant', content: content });
+      var toolResults = [];
+      for (var j = 0; j < toolUses.length; j++) {
+        var tu = toolUses[j];
+        var tool = novaTools.getTool(tu.name);
+        var resultBlock;
+        try {
+          if (!tool) throw new Error('Unknown tool: ' + tu.name);
+          var out = await tool.run(req.user, tu.input || {});
+          resultBlock = { type: 'tool_result', tool_use_id: tu.id, content: JSON.stringify(out) };
+          actions.push({ tool: tu.name, ok: true });
+        } catch (e) {
+          resultBlock = { type: 'tool_result', tool_use_id: tu.id, content: 'Error: ' + e.message, is_error: true };
+          actions.push({ tool: tu.name, ok: false, error: e.message });
+        }
+        toolResults.push(resultBlock);
+      }
+      working.push({ role: 'user', content: toolResults });
+    }
+
+    await incrementUsage(req.user.id, req.user.name);
+
+    var lastUserMsg = messages[messages.length - 1];
+    var questionText = Array.isArray(lastUserMsg.content)
+      ? ((lastUserMsg.content.find(function (c) { return c.type === 'text'; }) || {}).text || '')
+      : (lastUserMsg.content || '');
+    pool.query(
+      'INSERT INTO ai_conversations (user_id, user_name, question, response, has_image) VALUES ($1,$2,$3,$4,$5)',
+      [req.user.id, req.user.name, questionText, finalText, false]
+    ).catch(function (err) { console.error('Conversation log failed:', err.message); });
+
+    var newUsage = await getUsage(req.user.id);
+    res.json({
+      reply: finalText,
+      actions: actions,
+      dailyUsed: newUsage.daily,
+      dailyLimit: DAILY_LIMIT
+    });
+  } catch (err) {
+    console.error('AI agent error:', err);
     res.status(500).json({ error: 'Failed to get AI response. Check Railway logs.' });
   }
 });
