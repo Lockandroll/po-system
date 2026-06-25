@@ -132,6 +132,12 @@
     .btn-secondary:hover { background: #2a2a2a; color: var(--text); }
     .btn-sm { padding: 5px 10px; font-size: 13px; }
     .btn svg { width: 15px; height: 15px; flex-shrink: 0; }
+    .nova-info { position: relative; display: inline-flex; align-items: center; cursor: pointer; margin: 0 2px 0 5px; vertical-align: middle; }
+    .nova-info .ni-ico { width: 14px; height: 14px; border-radius: 50%; border: 1px solid var(--text-muted-color); color: var(--text-muted-color); font-size: 10px; font-weight: 700; font-style: normal; display: inline-flex; align-items: center; justify-content: center; line-height: 1; font-family: Georgia, serif; }
+    .nova-info:hover .ni-ico { border-color: var(--primary); color: var(--primary); }
+    .nova-info .ni-pop { position: absolute; left: 0; top: calc(100% + 8px); width: 290px; max-width: 78vw; background: var(--bg-elevated); border: 1px solid var(--border); border-radius: var(--radius); padding: 11px 13px; font-size: 12px; line-height: 1.55; color: var(--text-dim); box-shadow: var(--shadow-md); z-index: 60; opacity: 0; visibility: hidden; transform: translateY(-3px); transition: opacity .15s, transform .15s; text-transform: none; letter-spacing: normal; font-weight: 400; text-align: left; white-space: normal; }
+    .nova-info .ni-pop strong { color: var(--text); font-weight: 600; display: block; margin-bottom: 4px; }
+    .nova-info:hover .ni-pop, .nova-info.open .ni-pop { opacity: 1; visibility: visible; transform: translateY(0); }
     .btn-ghost { background: transparent; color: var(--text-muted-color); }
     .btn-ghost:hover { background: var(--bg-elevated); color: var(--text-dim); }
     .btn:disabled { opacity: 0.4; cursor: not-allowed; }

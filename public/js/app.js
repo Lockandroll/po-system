@@ -3005,7 +3005,7 @@ function geicoRenderEmployeeTable(s) {
   }
   var showing = (start+1) + '-' + Math.min(start+GEICO_EMP_PAGE_SIZE, total);
   el.innerHTML = '<div class="card" style="padding:16px">' + head +
-    '<div style="font-size:12px;color:var(--text-muted-color);margin-bottom:8px">Ranked by survey-weighted score &middot; showing ' + showing + ' of ' + total + '</div>' +
+    '<div style="font-size:12px;color:var(--text-muted-color);margin-bottom:8px">Ranked by survey-weighted score<span class="nova-info" onclick="this.classList.toggle(\'open\');event.stopPropagation()"><i class="ni-ico">i</i><span class="ni-pop"><strong>How the Score works</strong>It is a survey-weighted Excellent rate. Each person starts with 5 baseline surveys at the team average, then their real surveys are added on top. Someone with only 1-2 surveys stays near the team average instead of topping the list on a tiny sample; as more surveys come in, the Score moves to their true Excellent %. This keeps proven, high-volume performers ranked fairly against small samples.</span></span> &middot; showing ' + showing + ' of ' + total + '</div>' +
     '<div class="table-wrap"><table><thead><tr><th style="text-align:right">#</th><th>Employee</th><th style="text-align:right">Surveys</th><th style="text-align:right">% Excellent</th><th style="text-align:right">On-Time</th><th style="text-align:right" title="Survey-weighted Excellent rate: small samples are pulled toward the team average so high-volume performers rank fairly">Score</th></tr></thead><tbody>' + body + '</tbody></table></div>' +
     '<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:12px">' + sizeCtl + ' ' + btns + '</div></div>';
 }
