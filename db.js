@@ -889,6 +889,23 @@ async function initDB() {
     await client.query("ALTER TABLE documents ADD COLUMN IF NOT EXISTS reminder_lead_unit VARCHAR(10);");
     await client.query('ALTER TABLE documents ADD COLUMN IF NOT EXISTS reminder_sent_at TIMESTAMPTZ;');
     await client.query('ALTER TABLE documents ADD COLUMN IF NOT EXISTS expiry_notice_sent_at TIMESTAMPTZ;');
+    // ===== Quote photos (R2-backed reference images attached to a quote) =====
+    // Like documents, only metadata + the R2 key live here; bytes live in R2.
+    await client.query(
+      'CREATE TABLE IF NOT EXISTS quote_photos (' +
+      '  id SERIAL PRIMARY KEY,' +
+      '  quote_id INTEGER NOT NULL REFERENCES quotes(id) ON DELETE CASCADE,' +
+      '  name VARCHAR(255) NOT NULL,' +
+      '  r2_key VARCHAR(512) UNIQUE NOT NULL,' +
+      '  mime_type VARCHAR(255),' +
+      '  size_bytes BIGINT DEFAULT 0,' +
+      "  status VARCHAR(20) NOT NULL DEFAULT 'pending'," +
+      '  uploaded_by INTEGER REFERENCES users(id),' +
+      '  uploaded_by_name VARCHAR(255),' +
+      '  created_at TIMESTAMPTZ DEFAULT NOW()' +
+      ');'
+    );
+    await client.query('CREATE INDEX IF NOT EXISTS quote_photos_quote_idx ON quote_photos (quote_id);');
     // ===== Invoices (field invoicing) =====
     const DEFAULT_AGREEMENT = [
       "I, {customer}, confirm that the information given by me is correct, I have the authority to authorize these services, and I indemnify and hold harmless the locksmith and Pop-A-Lock against liability. Also I authorize Pop-A-Lock to perform the above described service and agree to pay (or authorize my motor club to pay) all applicable charges.",

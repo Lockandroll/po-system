@@ -1,7 +1,9 @@
 const express = require('express');
+const crypto = require('crypto');
 const { pool } = require('../db');
 const { requireAuth, requirePermission } = require('../middleware/auth');
 const { logAudit } = require('../utils/audit');
+const r2 = require('../utils/r2');
 const { sendEmail, emailTemplate } = require('../utils/email');
 const { sendSms } = require('../utils/sms');
 const notify = require('../utils/notify');
@@ -296,6 +298,120 @@ router.post('/:id/push-to-po', requireAuth, requirePermission('push_quote_po'), 
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: 'Failed to push to PO' });
+  }
+});
+
+// ===== Quote photos =====
+// Reference images attached to a quote. Bytes live in Cloudflare R2; only
+// metadata + the R2 key are stored here. Same access rule as the quote itself:
+// admins/managers see all, everyone else only their own quotes.
+function canAccessQuote(user, quote) {
+  return user.role === 'admin' || user.role === 'manager' || quote.requester_id === user.id;
+}
+
+function sanitizePhotoName(name) {
+  return String(name || 'photo').replace(/[^A-Za-z0-9._-]/g, '_').slice(0, 200) || 'photo';
+}
+
+// List the ready photos for a quote, each with a short-lived inline preview URL.
+router.get('/:id/photos', requireAuth, requirePermission('view_quotes'), async (req, res) => {
+  try {
+    const qr = await pool.query('SELECT id, requester_id FROM quotes WHERE id = $1', [req.params.id]);
+    if (!qr.rows.length) return res.status(404).json({ error: 'Quote not found' });
+    if (!canAccessQuote(req.user, qr.rows[0])) return res.status(403).json({ error: 'Access denied' });
+    const { rows } = await pool.query(
+      "SELECT id, name, mime_type, size_bytes, uploaded_by_name, created_at, r2_key FROM quote_photos WHERE quote_id = $1 AND status = 'ready' ORDER BY id",
+      [req.params.id]
+    );
+    const out = [];
+    for (const p of rows) {
+      let url = null;
+      if (r2.configured()) {
+        try { url = await r2.presignDownload(p.r2_key, p.name, true); } catch (e) {}
+      }
+      out.push({ id: p.id, name: p.name, mime_type: p.mime_type, size_bytes: p.size_bytes, uploaded_by_name: p.uploaded_by_name, created_at: p.created_at, url: url });
+    }
+    res.json(out);
+  } catch (err) {
+    console.error('List quote photos error:', err);
+    res.status(500).json({ error: 'Failed to fetch photos' });
+  }
+});
+
+// Step 1: reserve a record + presigned PUT URL. Browser uploads bytes to R2.
+router.post('/:id/photos/upload-url', requireAuth, requirePermission('edit_quote'), async (req, res) => {
+  try {
+    if (!r2.configured()) return res.status(503).json({ error: 'Photo storage is not configured yet. Add the R2_* environment variables in Railway.' });
+    const qr = await pool.query('SELECT id, requester_id FROM quotes WHERE id = $1', [req.params.id]);
+    if (!qr.rows.length) return res.status(404).json({ error: 'Quote not found' });
+    if (!canAccessQuote(req.user, qr.rows[0])) return res.status(403).json({ error: 'Access denied' });
+    const name = (req.body.name || '').trim();
+    const mime = (req.body.mime_type || 'application/octet-stream').slice(0, 255);
+    if (!name) return res.status(400).json({ error: 'File name is required' });
+    const key = 'quote-photos/' + req.params.id + '/' + crypto.randomUUID() + '/' + sanitizePhotoName(name);
+    const { rows } = await pool.query(
+      "INSERT INTO quote_photos (quote_id, name, r2_key, mime_type, uploaded_by, uploaded_by_name, status) VALUES ($1,$2,$3,$4,$5,$6,'pending') RETURNING id",
+      [req.params.id, name.slice(0, 255), key, mime, req.user.id, req.user.name]
+    );
+    const uploadUrl = await r2.presignUpload(key, mime);
+    res.json({ id: rows[0].id, uploadUrl: uploadUrl });
+  } catch (err) {
+    console.error('Quote photo upload-url error:', err);
+    res.status(500).json({ error: 'Failed to start upload' });
+  }
+});
+
+// Step 2: confirm the upload completed; record the size and mark it ready.
+router.post('/photos/:photoId/confirm', requireAuth, requirePermission('edit_quote'), async (req, res) => {
+  try {
+    const pr = await pool.query(
+      'SELECT p.id, p.quote_id, q.requester_id FROM quote_photos p JOIN quotes q ON p.quote_id = q.id WHERE p.id = $1',
+      [req.params.photoId]
+    );
+    if (!pr.rows.length) return res.status(404).json({ error: 'Photo not found' });
+    if (!canAccessQuote(req.user, pr.rows[0])) return res.status(403).json({ error: 'Access denied' });
+    const size = Math.max(0, parseInt(req.body.size_bytes, 10) || 0);
+    await pool.query("UPDATE quote_photos SET size_bytes = $1, status = 'ready' WHERE id = $2", [size, req.params.photoId]);
+    res.json({ success: true });
+  } catch (err) {
+    console.error('Quote photo confirm error:', err);
+    res.status(500).json({ error: 'Failed to confirm upload' });
+  }
+});
+
+// Download / preview a single photo via a short-lived presigned GET URL.
+router.get('/photos/:photoId/download', requireAuth, requirePermission('view_quotes'), async (req, res) => {
+  try {
+    if (!r2.configured()) return res.status(503).json({ error: 'Photo storage is not configured yet.' });
+    const pr = await pool.query(
+      "SELECT p.id, p.name, p.r2_key, p.quote_id, q.requester_id FROM quote_photos p JOIN quotes q ON p.quote_id = q.id WHERE p.id = $1 AND p.status = 'ready'",
+      [req.params.photoId]
+    );
+    if (!pr.rows.length) return res.status(404).json({ error: 'Photo not found' });
+    if (!canAccessQuote(req.user, pr.rows[0])) return res.status(403).json({ error: 'Access denied' });
+    const url = await r2.presignDownload(pr.rows[0].r2_key, pr.rows[0].name, req.query.inline === '1');
+    res.json({ url: url });
+  } catch (err) {
+    console.error('Quote photo download error:', err);
+    res.status(500).json({ error: 'Failed to generate download link' });
+  }
+});
+
+// Delete a photo: remove the R2 object and the metadata row.
+router.delete('/photos/:photoId', requireAuth, requirePermission('edit_quote'), async (req, res) => {
+  try {
+    const pr = await pool.query(
+      'SELECT p.id, p.r2_key, p.quote_id, q.requester_id FROM quote_photos p JOIN quotes q ON p.quote_id = q.id WHERE p.id = $1',
+      [req.params.photoId]
+    );
+    if (!pr.rows.length) return res.status(404).json({ error: 'Photo not found' });
+    if (!canAccessQuote(req.user, pr.rows[0])) return res.status(403).json({ error: 'Access denied' });
+    try { if (r2.configured()) await r2.deleteObject(pr.rows[0].r2_key); } catch (e) { console.error('R2 delete failed:', e); }
+    await pool.query('DELETE FROM quote_photos WHERE id = $1', [req.params.photoId]);
+    res.json({ success: true });
+  } catch (err) {
+    console.error('Quote photo delete error:', err);
+    res.status(500).json({ error: 'Failed to delete photo' });
   }
 });
 

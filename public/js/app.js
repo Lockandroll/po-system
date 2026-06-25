@@ -3975,11 +3975,20 @@ async function renderEditQuote(el, id) {
       '<p class="text-muted" style="margin-bottom:12px;font-size:13px">Printed at the bottom of the quote. Edit as needed.</p>' +
       '<textarea id="qt-important-info" style="min-height:120px">' + escHtml(importantInfoVal) + '</textarea>' +
     '</div></div>' +
+    '<div class="card mb-4"><div class="card-header"><span class="card-title">Photos</span></div><div class="card-body">' +
+      (id
+        ? '<p class="text-muted" style="margin-bottom:12px;font-size:13px">Attach reference photos (job site, hardware, key blanks, etc.) to help with this quote.</p>' +
+          '<input type="file" id="quote-photo-input" accept="image/*" multiple style="display:none" onchange="quoteUploadPhotos(' + id + ', this)" />' +
+          '<button type="button" class="btn btn-secondary btn-sm" onclick="document.getElementById(\'quote-photo-input\').click()">' + icons.plus + ' Add Photos</button>' +
+          '<div id="quote-photos-list" style="margin-top:12px"></div>'
+        : '<p class="text-muted" style="font-size:13px">Save the quote first, then you can attach reference photos to it.</p>') +
+    '</div></div>' +
     '<div class="flex-gap">' +
       '<button class="btn btn-secondary" onclick="reviewQuoteFormWithAI()" style="color:var(--primary);border-color:var(--primary);">&#10024; AI Review</button>' +
       '<button class="btn btn-primary" onclick="saveQuote(' + (id||'null') + ')" id="btn-save-quote">Save Quote</button>' +
     '</div>';
   buildQuoteLineItemRows();
+  if (id) loadQuotePhotos(id, true);
 }
 
 function buildQuoteLineItemRows() {
@@ -4134,10 +4143,105 @@ async function renderViewQuote(el, id) {
             '<tr class="total-row"><td colspan="7" class="text-right">Grand Total</td><td class="text-right">$' + parseFloat(q.total_amount).toFixed(2) + '</td></tr>' +
           '</tfoot>' +
         '</table></div>' +
+      '</div></div>' +
+      '<div class="card" style="margin-top:16px"><div class="card-header"><span class="card-title">Photos</span></div><div class="card-body">' +
+        (canEdit
+          ? '<input type="file" id="quote-photo-input" accept="image/*" multiple style="display:none" onchange="quoteUploadPhotos(' + q.id + ', this)" />' +
+            '<button type="button" class="btn btn-secondary btn-sm" style="margin-bottom:12px" onclick="document.getElementById(\'quote-photo-input\').click()">' + icons.plus + ' Add Photos</button>'
+          : '') +
+        '<div id="quote-photos-list"></div>' +
       '</div></div>';
+    loadQuotePhotos(q.id, canEdit);
   } catch(err) {
     el.innerHTML = '<div class="alert alert-error">' + escHtml(err.message) + '</div>';
   }
+}
+
+// ===== Quote photos (attach-only reference images, stored in R2) =====
+function loadQuotePhotos(id, canEdit) {
+  var container = document.getElementById('quote-photos-list');
+  if (!container) return;
+  container.innerHTML = '<div class="text-muted" style="font-size:13px">Loading photos…</div>';
+  api('GET', '/quotes/' + id + '/photos').then(function(photos) {
+    quoteRenderPhotos(id, photos, canEdit);
+  }).catch(function(err) {
+    container.innerHTML = '<div class="text-muted" style="font-size:13px">Could not load photos: ' + escHtml(err.message) + '</div>';
+  });
+}
+
+function quoteRenderPhotos(id, photos, canEdit) {
+  var container = document.getElementById('quote-photos-list');
+  if (!container) return;
+  container.innerHTML = '';
+  if (!photos || !photos.length) {
+    container.innerHTML = '<div class="text-muted" style="font-size:13px">No photos attached yet.</div>';
+    return;
+  }
+  var grid = document.createElement('div');
+  grid.style.cssText = 'display:flex;flex-wrap:wrap;gap:10px';
+  photos.forEach(function(p) {
+    var cell = document.createElement('div');
+    cell.style.cssText = 'position:relative;width:120px';
+    var img = document.createElement('img');
+    img.src = p.url || '';
+    img.alt = p.name || 'photo';
+    img.title = p.name || '';
+    img.style.cssText = 'width:120px;height:120px;object-fit:cover;border-radius:8px;border:1px solid var(--border-color);cursor:pointer;background:var(--bg-color)';
+    img.onclick = function() { quotePhotoLightbox(p.url, p.name); };
+    cell.appendChild(img);
+    if (canEdit) {
+      var del = document.createElement('button');
+      del.type = 'button';
+      del.className = 'btn btn-danger btn-sm';
+      del.innerHTML = '&times;';
+      del.title = 'Delete photo';
+      del.style.cssText = 'position:absolute;top:4px;right:4px;padding:0;width:22px;height:22px;line-height:1;border-radius:50%';
+      del.onclick = function() { deleteQuotePhoto(p.id, id, canEdit); };
+      cell.appendChild(del);
+    }
+    grid.appendChild(cell);
+  });
+  container.appendChild(grid);
+}
+
+function quotePhotoLightbox(url, name) {
+  if (!url) return;
+  var existing = document.getElementById('quote-photo-lightbox');
+  if (existing) existing.remove();
+  var ov = document.createElement('div');
+  ov.id = 'quote-photo-lightbox';
+  ov.style.cssText = 'position:fixed;inset:0;z-index:1100;background:rgba(0,0,0,0.85);display:flex;align-items:center;justify-content:center;padding:20px;cursor:zoom-out';
+  var img = document.createElement('img');
+  img.src = url;
+  img.alt = name || '';
+  img.style.cssText = 'max-width:95%;max-height:95%;border-radius:8px;box-shadow:0 8px 40px rgba(0,0,0,0.6)';
+  ov.appendChild(img);
+  ov.addEventListener('click', function() { ov.remove(); });
+  document.body.appendChild(ov);
+}
+
+async function quoteUploadPhotos(id, input) {
+  var files = Array.prototype.slice.call(input.files || []);
+  input.value = '';
+  if (!files.length) return;
+  var container = document.getElementById('quote-photos-list');
+  if (container) container.innerHTML = '<div class="text-muted" style="font-size:13px">Uploading…</div>';
+  for (var i = 0; i < files.length; i++) {
+    var file = files[i];
+    try {
+      var reserve = await api('POST', '/quotes/' + id + '/photos/upload-url', { name: file.name, mime_type: file.type || 'application/octet-stream' });
+      var put = await fetch(reserve.uploadUrl, { method: 'PUT', body: file, headers: { 'Content-Type': file.type || 'application/octet-stream' } });
+      if (!put.ok) throw new Error('Upload failed for ' + file.name);
+      await api('POST', '/quotes/photos/' + reserve.id + '/confirm', { size_bytes: file.size });
+    } catch (e) { novaAlert(e.message); }
+  }
+  loadQuotePhotos(id, true);
+}
+
+async function deleteQuotePhoto(photoId, id, canEdit) {
+  if (!await novaConfirm('Delete this photo? This cannot be undone.')) return;
+  try { await api('DELETE', '/quotes/photos/' + photoId); loadQuotePhotos(id, canEdit); }
+  catch (e) { novaAlert(e.message); }
 }
 
 async function deleteQuote(id) {
