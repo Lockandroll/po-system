@@ -97,6 +97,7 @@
     .sidebar-logo h1 { font-size: 18px; font-weight: 700; color: var(--primary); letter-spacing: -0.3px; }
     .sidebar-logo h1::after { content: ''; display: block; width: 32px; height: 2px; background: var(--primary); margin-top: 6px; border-radius: 2px; }
     .sidebar-logo p { font-size: 12px; color: var(--text-muted-color); margin-top: 2px; }
+    .sidebar-logo span { margin-top: 6px !important; }
     .sidebar-nav { flex: 1; padding: 12px 8px; overflow-y: auto; -webkit-overflow-scrolling: touch; }
     .nav-item { display: flex; align-items: center; gap: 10px; padding: 10px 12px; border-radius: var(--radius); cursor: pointer; color: var(--text-dim); font-size: 14px; font-weight: 500; transition: all 0.15s; margin-bottom: 2px; }
     .nav-item:hover { background: var(--bg-elevated); color: var(--text); }
@@ -241,10 +242,8 @@
     #app { position: relative; z-index: 1; }
     .nova-tile { position: relative; overflow: hidden; transition: transform .18s ease-out, box-shadow .3s, border-color .3s; will-change: transform; }
     .stat-card { position: relative; overflow: hidden; transition: transform .18s ease-out, box-shadow .3s, border-color .3s; will-change: transform; }
-    .stat-card::before, .nova-tile::before { content:""; position:absolute; inset:0; border-radius: var(--radius); opacity:0; transition: opacity .3s; pointer-events:none; background: radial-gradient(180px circle at var(--gx,50%) var(--gy,50%), rgba(249,115,22,.16), transparent 60%); }
-    .stat-card > *, .nova-tile > * { position: relative; }
+    .card.glow-on, .stat-card.glow-on { background-image: radial-gradient(200px circle at var(--gx,50%) var(--gy,50%), rgba(249,115,22,.18), transparent 65%); }
     .stat-card:hover, .nova-tile:hover { transform: translateY(-4px); border-color: #3a3a3a; box-shadow: 0 14px 30px rgba(0,0,0,.55), 0 0 0 1px rgba(249,115,22,.22), 0 8px 26px rgba(249,115,22,.12); }
-    .stat-card:hover::before, .nova-tile:hover::before { opacity:1; }
     .stats-grid .stat-card { opacity:0; animation: novaRise .55s ease forwards; }
     .stats-grid .stat-card:nth-child(1){animation-delay:.04s} .stats-grid .stat-card:nth-child(2){animation-delay:.13s}
     .stats-grid .stat-card:nth-child(3){animation-delay:.22s} .stats-grid .stat-card:nth-child(4){animation-delay:.31s}
@@ -399,11 +398,13 @@ if ('serviceWorker' in navigator) {
     var appEl=document.getElementById('app'); if(appEl) obs.observe(appEl,{childList:true,subtree:true});
     document.querySelectorAll('.stat-value').forEach(animateStat);
     tagTiles(document);
-    var _tiltLast=null;
+    var _glowLast=null, _tiltLast=null;
     document.addEventListener('mousemove', function(e){
+      var g = (e.target && e.target.closest) ? e.target.closest('.card, .stat-card') : null;
+      if (g !== _glowLast) { if (_glowLast) _glowLast.classList.remove('glow-on'); if (g) g.classList.add('glow-on'); _glowLast=g; }
+      if (g) { var rg=g.getBoundingClientRect(); g.style.setProperty('--gx',(((e.clientX-rg.left)/rg.width)*100).toFixed(1)+'%'); g.style.setProperty('--gy',(((e.clientY-rg.top)/rg.height)*100).toFixed(1)+'%'); }
       var c = (e.target && e.target.closest) ? e.target.closest('.stat-card, .nova-tile') : null;
       if (c) { var r=c.getBoundingClientRect(); var px=(e.clientX-r.left)/r.width, py=(e.clientY-r.top)/r.height;
-        c.style.setProperty('--gx',(px*100).toFixed(1)+'%'); c.style.setProperty('--gy',(py*100).toFixed(1)+'%');
         c.style.transform='perspective(700px) translateY(-4px) rotateX('+((0.5-py)*7).toFixed(2)+'deg) rotateY('+((px-0.5)*7).toFixed(2)+'deg)';
         _tiltLast=c; }
       else if (_tiltLast) { _tiltLast.style.transform=''; _tiltLast=null; }
