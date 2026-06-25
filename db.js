@@ -1034,6 +1034,38 @@ async function initDB() {
       '  updated_at TIMESTAMPTZ DEFAULT NOW()' +
       ')'
     );
+    await client.query(
+      'CREATE TABLE IF NOT EXISTS oauth_clients (' +
+      '  client_id TEXT PRIMARY KEY,' +
+      '  client_secret TEXT,' +
+      '  client_name TEXT,' +
+      '  redirect_uris TEXT NOT NULL,' +
+      '  created_at TIMESTAMPTZ DEFAULT NOW()' +
+      ');' +
+      'CREATE TABLE IF NOT EXISTS oauth_codes (' +
+      '  code TEXT PRIMARY KEY,' +
+      '  client_id TEXT NOT NULL,' +
+      '  user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,' +
+      '  redirect_uri TEXT NOT NULL,' +
+      '  code_challenge TEXT NOT NULL,' +
+      '  scope TEXT,' +
+      '  used BOOLEAN DEFAULT false,' +
+      '  expires_at TIMESTAMPTZ NOT NULL,' +
+      '  created_at TIMESTAMPTZ DEFAULT NOW()' +
+      ');' +
+      'CREATE TABLE IF NOT EXISTS oauth_refresh_tokens (' +
+      '  token_hash TEXT PRIMARY KEY,' +
+      '  client_id TEXT NOT NULL,' +
+      '  user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,' +
+      '  scope TEXT,' +
+      '  revoked BOOLEAN DEFAULT false,' +
+      '  expires_at TIMESTAMPTZ NOT NULL,' +
+      '  created_at TIMESTAMPTZ DEFAULT NOW()' +
+      ');' +
+      'CREATE INDEX IF NOT EXISTS idx_oauth_codes_expires ON oauth_codes(expires_at);' +
+      'CREATE INDEX IF NOT EXISTS idx_oauth_refresh_user ON oauth_refresh_tokens(user_id);'
+    );
+
     console.log('Database initialized');
   } finally {
     client.release();

@@ -21,12 +21,19 @@ function resourceMetadataUrl(req) {
   return proto + '://' + host + '/.well-known/oauth-protected-resource';
 }
 
+function resourceUrl(req) {
+  var proto = (req.headers['x-forwarded-proto'] || req.protocol || 'https').split(',')[0];
+  var host = req.headers['x-forwarded-host'] || req.headers.host;
+  return proto + '://' + host + '/api/mcp';
+}
+
 // Resolve the acting Nova user from the bearer token (mirrors middleware/auth.js).
 function actorFromAuth(req) {
   var h = req.headers.authorization;
   if (!h || h.indexOf('Bearer ') !== 0) return null;
   try {
     var p = jwt.verify(h.slice(7), process.env.JWT_SECRET);
+    if (p.aud && p.aud !== resourceUrl(req)) return null;
     var actor = { id: p.id, email: p.email, name: p.name, role: p.role };
     if (p.role === 'owner') actor.role = 'admin';
     return actor;
