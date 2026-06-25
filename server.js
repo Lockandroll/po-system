@@ -70,6 +70,7 @@ app.use('/api/push', require('./routes/push'));
 app.use('/api/documents', require('./routes/documents'));
 app.use('/api/invoices', require('./routes/invoices'));
 app.use('/api/reviews', require('./routes/reviews'));
+app.use('/api/mcp', require('./routes/mcp'));
 
 // Unknown API routes return JSON 404 instead of the SPA shell
 app.use('/api', (req, res) => {
