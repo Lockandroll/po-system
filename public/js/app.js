@@ -29,11 +29,22 @@ function getServiceWorkerVersion() {
   });
 }
 
-// Update the sidebar version badge with the live service-worker version.
+// Update the sidebar version badge. Primary source is /api/version (read from
+// sw.js on the server) — the service worker never caches /api, so this is always
+// the live deployed version with no lag. Falls back to asking the active service
+// worker, then to the hard-coded APP_VERSION.
 function refreshAppVersionBadge() {
   var el = document.getElementById('app-version');
   if (!el) return;
-  getServiceWorkerVersion().then(function (v) { if (v) el.textContent = v; });
+  if (_resolvedAppVersion) { el.textContent = _resolvedAppVersion; return; }
+  fetch('/api/version', { cache: 'no-store' }).then(function (r) {
+    return r.ok ? r.json() : null;
+  }).then(function (d) {
+    if (d && d.version) { _resolvedAppVersion = d.version; el.textContent = d.version; }
+    else { getServiceWorkerVersion().then(function (v) { if (v) el.textContent = v; }); }
+  }).catch(function () {
+    getServiceWorkerVersion().then(function (v) { if (v) el.textContent = v; });
+  });
 }
 
 const state = {

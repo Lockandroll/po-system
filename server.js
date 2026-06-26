@@ -3,6 +3,7 @@ const express = require('express');
 require('express-async-errors');
 const cors = require('cors');
 const path = require('path');
+const fs = require('fs');
 const rateLimit = require('express-rate-limit');
 const { initDB } = require('./db');
 const { startReminders } = require('./jobs/reminders');
@@ -38,6 +39,18 @@ const loginLimiter = rateLimit({
 app.use(cors());
 app.use(express.json({ limit: '80mb' }));
 app.use(express.static(path.join(__dirname, 'public')));
+
+// App version — read once at startup from sw.js (the single source of truth,
+// bumped each deploy). Served under /api so the service worker never caches it,
+// which means the version badge always reflects the live deploy with no SW lag.
+var APP_VERSION = 'unknown';
+try {
+  var swSrc = fs.readFileSync(path.join(__dirname, 'public', 'sw.js'), 'utf8');
+  var vMatch = swSrc.match(/CACHE_VERSION\s*=\s*['"]nova-([^'"]+)['"]/);
+  if (vMatch) APP_VERSION = vMatch[1];
+} catch (e) { console.error('Could not read app version from sw.js:', e.message); }
+app.get('/api/version', function (req, res) { res.json({ version: APP_VERSION }); });
+
 app.use('/api/', generalLimiter);
 app.use('/api/auth/login', loginLimiter);
 
