@@ -116,7 +116,7 @@ router.get('/me', requireAuth, requirePermission('view_schedule'), async (req, r
   const from = RE_DATE.test(req.query.from) ? req.query.from : mondayOf(ymd(new Date()));
   const to = RE_DATE.test(req.query.to) ? req.query.to : addDays(from, 13);
   const { rows } = await pool.query(
-    'SELECT s.*, p.name AS position_name, p.color AS position_color, c.name AS city_name ' +
+    'SELECT s.*, p.name AS position_name, p.color AS position_color, c.name AS city_name, c.color AS city_color ' +
     'FROM shifts s LEFT JOIN shift_positions p ON p.id = s.position_id LEFT JOIN cities c ON c.code = s.city_code ' +
     "WHERE s.user_id = $1 AND s.status = 'published' AND s.shift_date BETWEEN $2 AND $3 " +
     'ORDER BY s.shift_date, s.start_time',
@@ -157,8 +157,8 @@ router.get('/shifts', requireAuth, requirePermission('manage_schedule'), async (
   const to = RE_DATE.test(req.query.to) ? req.query.to : addDays(from, 6);
   const scope = await allowedCities(req.user);
   const params = [from, to];
-  let sql = 'SELECT s.*, p.name AS position_name, p.color AS position_color FROM shifts s ' +
-    'LEFT JOIN shift_positions p ON p.id = s.position_id WHERE s.shift_date BETWEEN $1 AND $2';
+  let sql = 'SELECT s.*, p.name AS position_name, p.color AS position_color, c.color AS city_color, c.name AS city_name FROM shifts s ' +
+    'LEFT JOIN shift_positions p ON p.id = s.position_id LEFT JOIN cities c ON c.code = s.city_code WHERE s.shift_date BETWEEN $1 AND $2';
   if (req.query.city && String(req.query.city).trim()) {
     params.push(String(req.query.city).trim()); sql += ' AND s.city_code = $' + params.length;
   }

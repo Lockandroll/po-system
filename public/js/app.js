@@ -3773,12 +3773,13 @@ async function renderCities(el) {
       '<div class="page-header"><div><div class="page-title">Cities</div><div class="page-subtitle">Manage city codes used in PO numbers</div></div><button class="btn btn-primary" onclick="showCityModal(null)" style="white-space:nowrap">' + icons.plus + ' Add City</button></div>' +
       '<div id="cities-error"></div>' +
       '<div class="card"><div class="card-body" style="padding:0"><div class="table-wrap"><table>' +
-        '<thead><tr><th>Code</th><th>Name</th><th>Status</th><th></th></tr></thead>' +
+        '<thead><tr><th>Code</th><th>Name</th><th>Color</th><th>Status</th><th></th></tr></thead>' +
         '<tbody>' + cities.map(function(c) {
           const isInactive = c.active === false;
           return '<tr class="' + (isInactive ? 'user-row-inactive' : '') + '">' +
             '<td><strong style="font-family:monospace;color:var(--primary)">' + escHtml(c.code) + '</strong></td>' +
             '<td>' + escHtml(c.name) + '</td>' +
+            '<td><span style="display:inline-block;width:18px;height:18px;border-radius:4px;border:1px solid var(--border,#2a2a2a);vertical-align:middle;background:' + escHtml(c.color || '#f97316') + '"></span></td>' +
             '<td>' + (isInactive ? '<span class="badge badge-inactive">Inactive</span>' : '<span style="color:var(--success);font-size:13px">&#10003; Active</span>') + '</td>' +
             '<td class="flex-gap">' +
               '<button class="btn btn-secondary btn-sm" onclick="showCityModal(' + c.id + ')">Edit</button>' +
@@ -3812,6 +3813,7 @@ async function showCityModal(id) {
         '<div class="form-group"><label>City Name</label><input type="text" id="modal-city-name" value="' + escHtml(city ? city.name : '') + '" placeholder="e.g. Chicago" /></div>' +
         '<div class="form-group"><label>3-Letter Code</label><input type="text" id="modal-city-code" value="' + escHtml(city ? city.code : '') + '" placeholder="e.g. CHI" maxlength="3" style="text-transform:uppercase" /></div>' +
         '<div class="text-muted mt-2">The code appears at the start of PO numbers, e.g. <strong>CHI</strong>-2026-0001-TM</div>' +
+        '<div class="form-group mt-2"><label>Schedule Color</label><div style="display:flex;align-items:center;gap:10px"><input type="color" id="modal-city-color" value="' + escHtml(city && city.color ? city.color : '#f97316') + '" style="width:54px;height:36px;padding:2px;cursor:pointer;background:transparent;border:1px solid var(--border,#2a2a2a);border-radius:6px" /><span class="text-muted">Colors this city&#39;s shifts on the schedule.</span></div></div>' +
       '</div>' +
       '<div class="modal-footer"><button class="btn btn-secondary" onclick="this.closest(\'.modal-overlay\').remove()">Cancel</button><button class="btn btn-primary" onclick="saveCity(' + (id||'null') + ', this)">Save</button></div>' +
     '</div>';
@@ -3821,12 +3823,13 @@ async function showCityModal(id) {
 async function saveCity(id, btn) {
   const name = document.getElementById('modal-city-name').value.trim();
   const code = document.getElementById('modal-city-code').value.trim().toUpperCase();
+  const color = document.getElementById('modal-city-color').value || '#f97316';
   if (!name || !code) { document.getElementById('modal-error').innerHTML = '<div class="alert alert-error">Name and code are required.</div>'; return; }
   if (code.length !== 3) { document.getElementById('modal-error').innerHTML = '<div class="alert alert-error">Code must be exactly 3 characters.</div>'; return; }
   try {
     btn.disabled = true;
-    if (id) { await api('PUT', '/cities/' + id, { name, code }); }
-    else { await api('POST', '/cities', { name, code }); }
+    if (id) { await api('PUT', '/cities/' + id, { name, code, color }); }
+    else { await api('POST', '/cities', { name, code, color }); }
     document.querySelector('.modal-overlay').remove();
     navigate('cities');
   } catch(err) {
@@ -9526,7 +9529,7 @@ function schedRenderMonth(){
       var dim=inMonth?'':'opacity:0.35;';
       var isT=day===today;
       var items=list.slice(0,4).map(function(s){
-        var col=s.position_color||'#f97316';
+        var col=s.city_color||'#f97316';
         return '<div onclick="event.stopPropagation();schedOpenShift('+s.id+')" title="'+escHtml((s.user_name||'')+' '+schedTimeFmt(s.start_time)+'-'+schedTimeFmt(s.end_time))+'" style="cursor:pointer;border-left:3px solid '+col+';background:'+col+'22;border-radius:3px;padding:1px 4px;margin:2px 0;font-size:10.5px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">'+escHtml(schedTimeFmt(s.start_time))+' '+escHtml((s.user_name||'').split(' ')[0])+'</div>';
       }).join('');
       var more=list.length>4?('<div style="font-size:10px;color:var(--text-muted-color,#999)">+'+(list.length-4)+' more</div>'):'';
@@ -9619,7 +9622,7 @@ function schedRenderGrid(){
     var cells=days.map(function(d){
       var list=byCell[u.id+'|'+d]||[];
       var blocks=list.sort(function(a,b){return schedTimeMin(a.start_time)-schedTimeMin(b.start_time);}).map(function(s){
-        var col=s.position_color||'#f97316';
+        var col=s.city_color||'#f97316';
         var pub=s.status==='published';
         var border=pub?('1px solid '+col):('1px dashed '+col);
         var bg=pub?(col+'22'):'transparent';
@@ -9954,7 +9957,7 @@ async function renderSchedule(el){
   var body=days.map(function(d){
     var list=(byDay[d]||[]).sort(function(a,b){return schedTimeMin(a.start_time)-schedTimeMin(b.start_time);});
     if(!list.length) return '';
-    var items=list.map(function(s){ var col=s.position_color||'#f97316'; return '<div style="display:flex;align-items:center;gap:10px;padding:9px 12px;border-left:4px solid '+col+';background:var(--card-bg,#161616);border:1px solid var(--border,#2a2a2a);border-left:4px solid '+col+';border-radius:6px;margin-bottom:7px"><div style="font-weight:600">'+escHtml(schedTimeFmt(s.start_time))+' – '+escHtml(schedTimeFmt(s.end_time))+'</div><div style="color:var(--text-muted-color,#999);font-size:13px">'+escHtml(s.position_name||'')+(s.city_name?(' · '+escHtml(s.city_name)):'')+(s.notes?(' · '+escHtml(s.notes)):'')+'</div></div>'; }).join('');
+    var items=list.map(function(s){ var col=s.city_color||'#f97316'; return '<div style="display:flex;align-items:center;gap:10px;padding:9px 12px;border-left:4px solid '+col+';background:var(--card-bg,#161616);border:1px solid var(--border,#2a2a2a);border-left:4px solid '+col+';border-radius:6px;margin-bottom:7px"><div style="font-weight:600">'+escHtml(schedTimeFmt(s.start_time))+' – '+escHtml(schedTimeFmt(s.end_time))+'</div><div style="color:var(--text-muted-color,#999);font-size:13px">'+escHtml(s.position_name||'')+(s.city_name?(' · '+escHtml(s.city_name)):'')+(s.notes?(' · '+escHtml(s.notes)):'')+'</div></div>'; }).join('');
     return '<div style="margin-bottom:16px"><div style="font-weight:700;font-size:13px;margin-bottom:7px'+(d===today?';color:var(--primary,#f97316)':'')+'">'+escHtml(schedDateLabel(d))+(d===today?' · Today':'')+'</div>'+items+'</div>';
   }).join('');
   if(!shifts.length) body='<div class="card"><div class="card-body"><p class="text-muted" style="margin:0">No published shifts in the next two weeks.</p></div></div>';
