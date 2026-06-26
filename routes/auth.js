@@ -17,6 +17,8 @@ const MAX_2FA_ATTEMPTS = 5;
 const TRUST_DAYS = 30;
 const DEVICE_COOKIE = 'nova_device';
 
+function sessionTtl(remember) { return remember ? '30d' : '24h'; }
+
 function hashToken(t) { return crypto.createHash('sha256').update(String(t)).digest('hex'); }
 function clientIp(req) { return ((req.headers['x-forwarded-for'] || '').split(',')[0] || '').trim() || req.ip || null; }
 function getDeviceToken(req) {
@@ -62,7 +64,7 @@ router.post('/setup', async (req, res) => {
 
 // Login with lockout and 2FA
 router.post('/login', async (req, res) => {
-  const { email, password } = req.body;
+  const { email, password, rememberMe } = req.body;
   if (!email || !password) return res.status(400).json({ error: 'Email and password required' });
 
   const { rows } = await pool.query('SELECT * FROM users WHERE email = $1', [email]);
@@ -109,7 +111,9 @@ router.post('/login', async (req, res) => {
       const newExpires = new Date(Date.now() + TRUST_DAYS * 24 * 60 * 60 * 1000);
       await pool.query('UPDATE trusted_devices SET last_used_at=NOW(), expires_at=$1, ip=$2 WHERE id=$3', [newExpires, clientIp(req), td.rows[0].id]);
       setDeviceCookie(req, res, deviceToken, newExpires);
-      const tdToken = jwt.sign({ id: user.id, email: user.email, name: user.name, role: user.role }, process.env.JWT_SECRET, { expiresIn: '24h' });
+      const tdClaims = { id: user.id, email: user.email, name: user.name, role: user.role };
+      if (rememberMe) tdClaims.remember = true;
+      const tdToken = jwt.sign(tdClaims, process.env.JWT_SECRET, { expiresIn: sessionTtl(rememberMe) });
       logAudit({ entity_type: 'auth', action: 'login', user_id: user.id, user_name: user.name, details: { method: 'trusted device', ip: clientIp(req) } });
       pool.query('UPDATE users SET last_login_at = NOW(), last_seen_at = NOW() WHERE id = $1', [user.id]).catch(function(){});
       return res.json({ token: tdToken, user: { id: user.id, name: user.name, email: user.email, role: user.role } });
@@ -154,7 +158,7 @@ router.post('/login', async (req, res) => {
 
 // Verify 2FA code and return JWT
 router.post('/verify-2fa', async (req, res) => {
-  const { userId, code, rememberDevice } = req.body;
+  const { userId, code, rememberDevice, rememberMe } = req.body;
   if (!userId || !code) return res.status(400).json({ error: 'User ID and code required' });
 
   const { rows } = await pool.query(
@@ -184,9 +188,12 @@ router.post('/verify-2fa', async (req, res) => {
     return res.status(403).json({ error: 'Account not found or deactivated' });
   }
 
-  const token = jwt.sign({ id: user.id, email: user.email, name: user.name, role: user.role }, process.env.JWT_SECRET, { expiresIn: '24h' });
+  const remember = !!(rememberMe || rememberDevice);
+  const tokenClaims = { id: user.id, email: user.email, name: user.name, role: user.role };
+  if (remember) tokenClaims.remember = true;
+  const token = jwt.sign(tokenClaims, process.env.JWT_SECRET, { expiresIn: sessionTtl(remember) });
 
-  if (rememberDevice) {
+  if (remember) {
     try {
       const rawToken = crypto.randomBytes(32).toString('hex');
       const expires = new Date(Date.now() + TRUST_DAYS * 24 * 60 * 60 * 1000);

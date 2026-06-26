@@ -55,6 +55,7 @@ const state = {
   sidebarSection: null,
   sidebarOpen: false,
   pendingUserId: null,
+  pendingRemember: false,
   pendingVia: null,
   realUser: null,
   viewAs: null,
@@ -624,6 +625,7 @@ function renderLogin(app) {
         '<div id="auth-error"></div>' +
         '<div class="form-group"><label>Email</label><input type="email" id="login-email" placeholder="you@company.com" /></div>' +
         '<div class="form-group"><label>Password</label><input type="password" id="login-password" /></div>' +
+        '<label style="display:flex;align-items:center;gap:8px;margin:0 0 14px;font-size:13px;color:var(--text-muted-color);cursor:pointer;"><input type="checkbox" id="login-remember" checked style="width:auto;margin:0;" /> Keep me signed in for 30 days</label>' +
         '<button class="btn btn-primary" style="width:100%;justify-content:center;" onclick="doLogin()">Let&#39;s Lock and Roll!</button>' +
         '<div style="text-align:center;margin-top:12px;"><a href="#" style="color:var(--text-muted-color);font-size:13px;text-decoration:none;" onclick="event.preventDefault();renderForgotPassword(document.getElementById(\'app\'))">Forgot password?</a></div>' +
       '</div></div>' +
@@ -636,10 +638,12 @@ async function doLogin() {
   const email = document.getElementById('login-email').value.trim();
   const password = document.getElementById('login-password').value;
   try {
-    const data = await api('POST', '/auth/login', { email, password });
+    const remember = !(document.getElementById('login-remember') && document.getElementById('login-remember').checked === false);
+    const data = await api('POST', '/auth/login', { email, password, rememberMe: remember });
     if (data.requires2fa) {
       state.pendingUserId = data.userId;
       state.pendingVia = data.via;
+      state.pendingRemember = remember;
       render();
       return;
     }
@@ -662,7 +666,6 @@ function renderTwoFactor(app) {
         '<div id="auth-error"></div>' +
         '<p style="color:var(--text-muted-color);font-size:14px;margin-bottom:16px;text-align:center;">Enter the 6-digit code sent to your ' + via + '</p>' +
         '<div class="form-group"><label>Verification Code</label><input type="text" id="tfa-code" placeholder="000000" maxlength="6" style="text-align:center;font-size:24px;letter-spacing:8px;" /></div>' +
-        '<label style="display:flex;align-items:center;gap:8px;justify-content:center;margin:0 0 14px;font-size:13px;color:var(--text-muted-color);cursor:pointer;"><input type="checkbox" id="tfa-remember" style="width:auto;margin:0;" /> Don&#39;t ask again on this device for 30 days</label>' +
         '<button class="btn btn-primary" style="width:100%;justify-content:center;" onclick="doVerify2FA()">Verify</button>' +
         '<div style="text-align:center;margin-top:12px;"><a href="#" style="color:var(--text-muted-color);font-size:13px;text-decoration:none;" onclick="event.preventDefault();state.pendingUserId=null;state.pendingVia=null;render()">Back to login</a></div>' +
       '</div></div>' +
@@ -675,10 +678,11 @@ async function doVerify2FA() {
   var code = (document.getElementById('tfa-code').value || '').trim();
   if (!code) { document.getElementById('auth-error').innerHTML = '<div class="alert alert-error">Please enter the verification code</div>'; return; }
   try {
-    var remember = !!(document.getElementById('tfa-remember') && document.getElementById('tfa-remember').checked);
-    const data = await api('POST', '/auth/verify-2fa', { userId: state.pendingUserId, code: code, rememberDevice: remember });
+    var remember = !!state.pendingRemember;
+    const data = await api('POST', '/auth/verify-2fa', { userId: state.pendingUserId, code: code, rememberMe: remember });
     state.pendingUserId = null;
     state.pendingVia = null;
+    state.pendingRemember = false;
     state.token = data.token;
     state.user = normalizeUserRole(data.user);
     localStorage.setItem('po_token', data.token);
@@ -693,7 +697,7 @@ async function renderSecurity(el) {
   el.innerHTML =
     '<div class="page-header"><div><div class="page-title">Trusted devices</div><div class="page-subtitle">Devices that skip the verification code at login</div></div></div>' +
     '<div id="security-msg"></div>' +
-    '<p class="text-muted" style="margin-bottom:16px;max-width:680px">When you check &ldquo;Don&rsquo;t ask again on this device&rdquo; at login, that device stays trusted for 30 days and won&rsquo;t need a texted or emailed code. Forget a device to require a code there again &mdash; do this for any shared or lost device.</p>' +
+    '<p class="text-muted" style="margin-bottom:16px;max-width:680px">When you check &ldquo;Keep me signed in for 30 days&rdquo; at login, that device stays trusted for 30 days and won&rsquo;t need a texted or emailed code. Forget a device to require a code there again &mdash; do this for any shared or lost device.</p>' +
     '<div id="td-list" class="card"><div class="card-body"><div class="loading">Loading\u2026</div></div></div>';
   await loadTrustedDevices();
 }
