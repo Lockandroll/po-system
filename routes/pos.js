@@ -131,8 +131,8 @@ router.post('/', requireAuth, requirePermission('create_po'), async (req, res) =
     for (let i = 0; i < line_items.length; i++) {
       const item = line_items[i];
       await client.query(
-        'INSERT INTO po_line_items (po_id, item_number, manufacturer, description, quantity, unit_price) VALUES ($1, $2, $3, $4, $5, $6)',
-        [po.id, item.item_number || null, item.manufacturer || null, item.description, item.quantity, item.unit_price]
+        'INSERT INTO po_line_items (po_id, item_number, manufacturer, description, quantity, unit_price, tracking_number) VALUES ($1, $2, $3, $4, $5, $6, $7)',
+        [po.id, item.item_number || null, item.manufacturer || null, item.description, item.quantity, item.unit_price, item.tracking_number || null]
       );
     }
     await client.query('COMMIT');
@@ -178,8 +178,8 @@ router.put('/:id', requireAuth, requirePermission('edit_po'), async (req, res) =
       for (let i = 0; i < line_items.length; i++) {
         const item = line_items[i];
         await client.query(
-          'INSERT INTO po_line_items (po_id, item_number, manufacturer, description, quantity, unit_price) VALUES ($1, $2, $3, $4, $5, $6)',
-          [req.params.id, item.item_number || null, item.manufacturer || null, item.description, item.quantity, item.unit_price]
+          'INSERT INTO po_line_items (po_id, item_number, manufacturer, description, quantity, unit_price, tracking_number) VALUES ($1, $2, $3, $4, $5, $6, $7)',
+          [req.params.id, item.item_number || null, item.manufacturer || null, item.description, item.quantity, item.unit_price, item.tracking_number || null]
         );
       }
     }

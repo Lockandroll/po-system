@@ -83,6 +83,7 @@ async function initDB() {
       "ALTER TABLE cities ADD COLUMN IF NOT EXISTS color VARCHAR(20) DEFAULT '#f97316';" +
       'ALTER TABLE po_line_items ADD COLUMN IF NOT EXISTS item_number VARCHAR(100);' +
       'ALTER TABLE po_line_items ADD COLUMN IF NOT EXISTS manufacturer VARCHAR(255);' +
+      'ALTER TABLE po_line_items ADD COLUMN IF NOT EXISTS tracking_number VARCHAR(255);' +
       'ALTER TABLE users ADD COLUMN IF NOT EXISTS active BOOLEAN NOT NULL DEFAULT true;' +
       'ALTER TABLE users ADD COLUMN IF NOT EXISTS phone VARCHAR(50);' +
       'ALTER TABLE quotes ADD COLUMN IF NOT EXISTS important_info TEXT;' +

@@ -991,7 +991,7 @@ async function exportCSV() {
   try {
     const { pos, itemsByPO } = await api('GET', '/pos/export');
     const rows = [];
-    rows.push(['PO Number','Status','City','Vendor','Customer Name','Requested By','Date','PO Total','Item #','Manufacturer','Description','Quantity','Unit Price','Line Total'].join(','));
+    rows.push(['PO Number','Status','City','Vendor','Customer Name','Requested By','Date','PO Total','Item #','Manufacturer','Description','Quantity','Unit Price','Tracking #','Line Total'].join(','));
     pos.forEach(function(po) {
       const items = itemsByPO[po.po_number] || [];
       if (items.length === 0) {
@@ -999,7 +999,7 @@ async function exportCSV() {
       } else {
         items.forEach(function(item) {
           const lineTotal = (parseFloat(item.quantity) * parseFloat(item.unit_price)).toFixed(2);
-          rows.push([po.po_number, po.status, po.city_code||'', po.vendor_name, po.customer_name||'', po.requester_name||'', formatDate(po.created_at), parseFloat(po.total_amount).toFixed(2), item.item_number||'', item.manufacturer||'', item.description, item.quantity, parseFloat(item.unit_price).toFixed(2), lineTotal].map(csvCell).join(','));
+          rows.push([po.po_number, po.status, po.city_code||'', po.vendor_name, po.customer_name||'', po.requester_name||'', formatDate(po.created_at), parseFloat(po.total_amount).toFixed(2), item.item_number||'', item.manufacturer||'', item.description, item.quantity, parseFloat(item.unit_price).toFixed(2), item.tracking_number||'', lineTotal].map(csvCell).join(','));
         });
       }
     });
@@ -1031,7 +1031,7 @@ async function renderEditPO(el, id) {
     try { po = await api('GET', '/pos/' + id); } catch(e) { el.innerHTML = '<div class="alert alert-error">' + escHtml(e.message) + '</div>'; return; }
     lineItems = po.line_items || [];
   } else {
-    lineItems = [{ item_number: '', manufacturer: '', description: '', quantity: 1, unit_price: '' }];
+    lineItems = [{ item_number: '', manufacturer: '', description: '', quantity: 1, unit_price: '', tracking_number: '' }];
   }
   const cityOptions = cities.length === 0
     ? '<option value="">No cities configured — add in Cities settings</option>'
@@ -1057,9 +1057,9 @@ async function renderEditPO(el, id) {
     '</div></div>' +
     '<div class="card mb-4"><div class="card-header"><span class="card-title">Line Items</span></div><div class="card-body">' +
       '<div class="table-wrap"><table class="line-items-table">' +
-        '<thead><tr><th>Item #</th><th>Manufacturer</th><th>Description</th><th>Qty</th><th>Unit Price</th><th>Total</th><th></th></tr></thead>' +
+        '<thead><tr><th>Item #</th><th>Manufacturer</th><th>Description</th><th>Qty</th><th>Unit Price</th><th>Tracking #</th><th>Total</th><th></th></tr></thead>' +
         '<tbody id="line-items-body"></tbody>' +
-        '<tfoot><tr class="total-row"><td colspan="5" class="text-right" style="padding:10px">Grand Total</td><td id="grand-total" style="padding:10px">$0.00</td><td></td></tr></tfoot>' +
+        '<tfoot><tr class="total-row"><td colspan="6" class="text-right" style="padding:10px">Grand Total</td><td id="grand-total" style="padding:10px">$0.00</td><td></td></tr></tfoot>' +
       '</table></div>' +
       '<div class="row-actions">' +
         '<button class="btn btn-secondary btn-sm add-item-btn" onclick="addLineItem()">' + icons.plus + ' Add Item</button>' +
@@ -1118,6 +1118,7 @@ function buildLineItemRows() {
       '<td><input type="text" value="' + escHtml(item.description||'') + '" placeholder="Description *" onchange="updateItem(' + i + ',this)" data-field="description" /></td>' +
       '<td><input type="number" value="' + escHtml(item.quantity||'') + '" min="0.01" step="0.01" onchange="updateItem(' + i + ',this)" data-field="quantity" style="width:70px" /></td>' +
       '<td><input type="number" value="' + escHtml(item.unit_price||'') + '" min="0" step="0.01" placeholder="0.00" onchange="updateItem(' + i + ',this)" data-field="unit_price" style="width:90px" /></td>' +
+      '<td><input type="text" value="' + escHtml(item.tracking_number||'') + '" placeholder="Tracking #" onchange="updateItem(' + i + ',this)" data-field="tracking_number" style="width:120px" /></td>' +
       '<td id="row-total-' + i + '">$' + total.toFixed(2) + '</td>' +
       '<td>' + (lineItems.length > 1 ? '<button class="btn btn-ghost btn-sm" onclick="removeItem(' + i + ')">' + icons.trash + '</button>' : '') + '</td>' +
     '</tr>';
@@ -1141,7 +1142,7 @@ function updateGrandTotal() {
 }
 
 function addLineItem() {
-  lineItems.push({ item_number: '', manufacturer: '', description: '', quantity: 1, unit_price: '' });
+  lineItems.push({ item_number: '', manufacturer: '', description: '', quantity: 1, unit_price: '', tracking_number: '' });
   buildLineItemRows();
 }
 
@@ -1169,6 +1170,7 @@ async function savePO(id, action) {
     if (inputs[2]) lineItems[i].description = inputs[2].value;
     if (inputs[3]) lineItems[i].quantity = inputs[3].value;
     if (inputs[4]) lineItems[i].unit_price = inputs[4].value;
+    if (inputs[5]) lineItems[i].tracking_number = inputs[5].value;
   });
 
   const validItems = lineItems.filter(function(item){ return item.description && item.quantity && item.unit_price; });
@@ -1517,7 +1519,7 @@ async function renderViewPO(el, id) {
       '</div></div>' +
       '<div class="card mb-4"><div class="card-header"><span class="card-title">Line Items</span></div><div class="card-body">' +
         '<div class="table-wrap"><table class="line-items-table">' +
-          '<thead><tr><th>Item #</th><th>Manufacturer</th><th>Description</th><th>Qty</th><th>Unit Price</th><th class="text-right">Total</th></tr></thead>' +
+          '<thead><tr><th>Item #</th><th>Manufacturer</th><th>Description</th><th>Qty</th><th>Unit Price</th><th>Tracking #</th><th class="text-right">Total</th></tr></thead>' +
           '<tbody>' + po.line_items.map(function(item) {
             return '<tr>' +
               '<td>' + escHtml(item.item_number || '—') + '</td>' +
@@ -1525,10 +1527,11 @@ async function renderViewPO(el, id) {
               '<td>' + escHtml(item.description) + '</td>' +
               '<td>' + item.quantity + '</td>' +
               '<td>$' + parseFloat(item.unit_price).toFixed(2) + '</td>' +
+              '<td>' + escHtml(item.tracking_number || '\u2014') + '</td>' +
               '<td class="text-right">$' + (parseFloat(item.quantity) * parseFloat(item.unit_price)).toFixed(2) + '</td>' +
             '</tr>';
           }).join('') + '</tbody>' +
-          '<tfoot><tr class="total-row"><td colspan="5" class="text-right">Grand Total</td><td class="text-right">$' + parseFloat(po.total_amount).toFixed(2) + '</td></tr></tfoot>' +
+          '<tfoot><tr class="total-row"><td colspan="6" class="text-right">Grand Total</td><td class="text-right">$' + parseFloat(po.total_amount).toFixed(2) + '</td></tr></tfoot>' +
         '</table></div>' +
       '</div></div>' +
       (canApprove ?
@@ -1817,6 +1820,7 @@ async function printPO(id) {
         '<td style="padding:10px 8px;border-bottom:1px solid #f3f4f6;word-break:break-word">' + esc(item.description) + '</td>' +
         '<td style="padding:10px 8px;text-align:right;border-bottom:1px solid #f3f4f6;white-space:nowrap">' + esc(item.quantity) + '</td>' +
         '<td style="padding:10px 8px;text-align:right;border-bottom:1px solid #f3f4f6;white-space:nowrap">$' + parseFloat(item.unit_price).toFixed(2) + '</td>' +
+        '<td style="padding:10px 8px;color:#6b7280;border-bottom:1px solid #f3f4f6;white-space:nowrap">' + esc(item.tracking_number || '\u2014') + '</td>' +
         '<td style="padding:10px 8px;text-align:right;border-bottom:1px solid #f3f4f6;white-space:nowrap">$' + lineTotal + '</td>' +
       '</tr>';
     }).join('');
@@ -1879,11 +1883,12 @@ async function printPO(id) {
               '<th style="text-align:left;padding:8px;font-size:11px;font-weight:600;color:#6b7280;text-transform:uppercase;letter-spacing:0.05em">Description</th>' +
               '<th style="text-align:right;padding:8px;font-size:11px;font-weight:600;color:#6b7280;text-transform:uppercase;letter-spacing:0.05em">Qty</th>' +
               '<th style="text-align:right;padding:8px;font-size:11px;font-weight:600;color:#6b7280;text-transform:uppercase;letter-spacing:0.05em">Unit price</th>' +
+              '<th style="text-align:left;padding:8px;font-size:11px;font-weight:600;color:#6b7280;text-transform:uppercase;letter-spacing:0.05em">Tracking #</th>' +
               '<th style="text-align:right;padding:8px;font-size:11px;font-weight:600;color:#6b7280;text-transform:uppercase;letter-spacing:0.05em">Total</th>' +
             '</tr></thead>' +
             '<tbody>' + itemRows + '</tbody>' +
             '<tfoot><tr style="border-top:2px solid #e5e7eb">' +
-              '<td colspan="5" style="padding:12px 8px;text-align:right;font-weight:600;font-size:13px;color:#6b7280">Grand total</td>' +
+              '<td colspan="6" style="padding:12px 8px;text-align:right;font-weight:600;font-size:13px;color:#6b7280">Grand total</td>' +
               '<td style="padding:12px 8px;text-align:right;font-size:17px;font-weight:700;color:#f97316">$' + parseFloat(po.total_amount).toFixed(2) + '</td>' +
             '</tr></tfoot>' +
           '</table>' +
@@ -9814,7 +9819,7 @@ function schedToast(msg,kind){
 
 async function schedManagePositions(){
   var list=_schedPositions.map(function(p){
-    return '<div style="display:flex;align-items:center;gap:8px;margin-bottom:8px"><input type="color" value="'+escHtml(p.color||'#f97316')+'" onchange="schedSavePosition('+p.id+",this.value,null)\" style=\"width:34px;height:32px;padding:0;border:none;background:none\"><input type=\"text\" value=\""+escHtml(p.name)+'" onchange="schedSavePosition('+p.id+",null,this.value)\" style=\"flex:1;background:var(--bg-elevated,#1f1f1f);color:var(--text-color,#fff);border:1px solid var(--border,#333);border-radius:6px;padding:7px\"><button class=\"btn btn-danger btn-sm\" onclick=\"schedDeletePosition("+p.id+')">&times;</button></div>';
+    return '<div style="display:flex;align-items:center;gap:8px;margin-bottom:8px"><input type="text" value="'+escHtml(p.name)+'" onchange="schedSavePosition('+p.id+',null,this.value)" style="flex:1;background:var(--bg-elevated,#1f1f1f);color:var(--text-color,#fff);border:1px solid var(--border,#333);border-radius:6px;padding:7px"><button class="btn btn-danger btn-sm" onclick="schedDeletePosition('+p.id+')">&times;</button></div>';
   }).join('');
   schedModal('<h3 style="margin:0 0 14px">Positions</h3>'+(list||'<p class="text-muted">No positions yet.</p>')+
     '<div style="display:flex;gap:8px;margin-top:12px"><input type="text" id="sp-new" placeholder="New position name" style="flex:1;background:var(--bg-elevated,#1f1f1f);color:var(--text-color,#fff);border:1px solid var(--border,#333);border-radius:6px;padding:8px"><button class="btn btn-primary btn-sm" onclick="schedAddPosition()">Add</button></div>'+
