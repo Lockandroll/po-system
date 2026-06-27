@@ -452,6 +452,9 @@ async function initDB() {
       ');'
     );
     await client.query(
+      'ALTER TABLE purchase_orders ADD COLUMN IF NOT EXISTS order_task_id INTEGER;'
+    );
+    await client.query(
       'CREATE TABLE IF NOT EXISTS task_subtasks (' +
       '  id SERIAL PRIMARY KEY,' +
       '  task_id INTEGER REFERENCES tasks(id) ON DELETE CASCADE,' +

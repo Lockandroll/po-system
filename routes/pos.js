@@ -6,12 +6,16 @@ const { sendEmail, emailTemplate } = require('../utils/email');
 const { sendSms } = require('../utils/sms');
 const notify = require('../utils/notify');
 const push = require('../utils/push');
+const { notifyTaskAssigned } = require('../jobs/taskReminders');
 
 const router = express.Router();
 
 function appUrl(path) {
   return (process.env.APP_URL || '').replace(/\/$/, '') + (path || '');
 }
+
+// Today's date (America/New_York) as YYYY-MM-DD for same-day task due dates
+function etTodayStr() { return new Intl.DateTimeFormat('en-CA', { timeZone: 'America/New_York', year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date()); }
 
 // Helper: compute total from line items
 function computeTotal(items) {
@@ -288,6 +292,27 @@ router.post('/:id/approve', requireAuth, requirePermission('approve_po'), async 
 
   await logAudit({ entity_type: 'po', entity_id: po.id, entity_number: po.po_number, action: 'approved', user_id: req.user.id, user_name: req.user.name, details: { orderer: orderer.name, total: po.total_amount } });
 
+  // Auto-create a same-day task on the orderer's list to place the order
+  try {
+    const taskTitle = 'Place order: PO ' + po.po_number + ' (' + (po.vendor_name || 'vendor') + ')';
+    const taskDesc = 'PO ' + po.po_number + ' was approved by ' + req.user.name + ' and assigned to you to place with the vendor.' +
+      '\nVendor: ' + (po.vendor_name || '-') +
+      '\nCustomer/Employee: ' + (po.customer_name || '-') +
+      '\nTotal: $' + parseFloat(po.total_amount).toFixed(2) +
+      '\nView: ' + appUrl('?view=view&id=' + po.id);
+    const { rows: taskRows } = await pool.query(
+      "INSERT INTO tasks (title, description, status, priority, assigned_to, created_by, due_date) VALUES ($1,$2,'todo','high',$3,$4,$5) RETURNING id",
+      [taskTitle, taskDesc, orderer_id, req.user.id, etTodayStr()]
+    );
+    const orderTaskId = taskRows[0].id;
+    await pool.query('UPDATE purchase_orders SET order_task_id=$1 WHERE id=$2', [orderTaskId, po.id]);
+    await pool.query(
+      "INSERT INTO task_activity (task_id, user_id, user_name, type, body) VALUES ($1,$2,$3,'event',$4)",
+      [orderTaskId, req.user.id, req.user.name, 'created this task from PO ' + po.po_number]
+    );
+    try { await notifyTaskAssigned(orderTaskId); } catch (e) {}
+  } catch (e) { console.error('orderer task creation failed:', e.message); }
+
   const _ch = await notify.requesterChannels('po_approved');
   await push.sendPushToUsers([po.requester_id], { title: 'PO approved', body: 'Your PO ' + po.po_number + ' was approved.', url: '/' });
   if (_ch.email && po.requester_receive_emails !== false) {
@@ -377,6 +402,20 @@ router.post('/:id/cancel', requireAuth, requirePermission('cancel_po'), async (r
     ['cancelled', req.params.id]
   );
 
+  // Close any open 'place order' task tied to a cancelled PO
+  if (po.order_task_id) {
+    try {
+      await pool.query(
+        "UPDATE tasks SET status='done', completed_at=NOW(), completed_by=$1, updated_at=NOW() WHERE id=$2 AND status <> 'done'",
+        [req.user.id, po.order_task_id]
+      );
+      await pool.query(
+        "INSERT INTO task_activity (task_id, user_id, user_name, type, body) VALUES ($1,$2,$3,'event',$4)",
+        [po.order_task_id, req.user.id, req.user.name, 'closed because PO ' + po.po_number + ' was cancelled']
+      );
+    } catch (e) { console.error('cancel task cleanup failed:', e.message); }
+  }
+
   await logAudit({ entity_type: 'po', entity_id: po.id, entity_number: po.po_number, action: 'cancelled', user_id: req.user.id, user_name: req.user.name });
 
   const _ch = await notify.requesterChannels('po_cancelled');
@@ -421,6 +460,20 @@ router.post('/:id/order', requireAuth, async (req, res) => {
     "UPDATE purchase_orders SET status='order placed', updated_at=NOW() WHERE id=$1",
     [req.params.id]
   );
+
+  // Auto-complete the linked 'place order' task so it leaves the orderer's list
+  if (po.order_task_id) {
+    try {
+      await pool.query(
+        "UPDATE tasks SET status='done', completed_at=NOW(), completed_by=$1, updated_at=NOW() WHERE id=$2 AND status <> 'done'",
+        [req.user.id, po.order_task_id]
+      );
+      await pool.query(
+        "INSERT INTO task_activity (task_id, user_id, user_name, type, body) VALUES ($1,$2,$3,'event',$4)",
+        [po.order_task_id, req.user.id, req.user.name, 'completed by marking PO ' + po.po_number + ' as ordered']
+      );
+    } catch (e) { console.error('order task completion failed:', e.message); }
+  }
 
   await logAudit({ entity_type: 'po', entity_id: po.id, entity_number: po.po_number, action: 'order placed', user_id: req.user.id, user_name: req.user.name });
 
