@@ -93,11 +93,14 @@ router.post('/email', async function (req, res) {
       try {
         if (!data.email_id) { console.log('[feedback] webhook missing email_id'); return; }
         const full = await fetchReceivedEmail(data.email_id);
+        console.log('[feedback-diag] full keys=' + (full ? Object.keys(full).join(',') : 'null') + ' textLen=' + ((full && full.text || '').length) + ' htmlLen=' + ((full && full.html || '').length));
         const parsed = parsePulsarEmail({
           subject: (full && full.subject) || data.subject || '',
           text: (full && full.text) || '',
           html: (full && full.html) || ''
         });
+        console.log('[feedback-diag] parsed customer=' + parsed.customer_name + ' city=' + parsed.location_raw + ' incidentLen=' + ((parsed.incident_text || '').length));
+        try { console.log('[feedback-diag] bodyPreview=' + JSON.stringify(((full && (full.text || full.html)) || '').slice(0, 400))); } catch (e) {}
         const result = await intakeFeedback(parsed, {
           source: 'pulsar',
           external_ref: data.email_id,
