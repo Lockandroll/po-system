@@ -4,6 +4,7 @@ const { pool } = require('../db');
 const { requireAuth } = require('../middleware/auth');
 const { parseEmailToTask } = require('../utils/taskParse');
 const { resolveAssignee, createTaskFromParsed } = require('../utils/taskFromEmail');
+const { notifyTaskCc } = require('../jobs/taskReminders');
 
 const router = express.Router();
 
@@ -72,7 +73,26 @@ router.post('/create', requireAuth, async function (req, res) {
     };
     const creator = { id: req.user.id, name: req.user.name };
     const result = await createTaskFromParsed(parsed, creator, 'outlook_addin', b.assignee_id || null);
-    res.status(201).json({ id: result.task.id, assignee_name: result.assignee.name });
+
+    // FYI / copied-in users: awareness-only email, no task/SMS/push.
+    var ccIds = Array.isArray(b.cc)
+      ? b.cc.map(function (x) { return parseInt(x, 10); }).filter(function (x) { return !isNaN(x); })
+      : [];
+    // Don't copy the assignee on their own task.
+    ccIds = ccIds.filter(function (x) { return x !== result.assignee.id; });
+    var ccNames = [];
+    if (ccIds.length) {
+      for (var i = 0; i < ccIds.length; i++) {
+        await pool.query('INSERT INTO task_cc (task_id, user_id) VALUES ($1,$2) ON CONFLICT (task_id, user_id) DO NOTHING', [result.task.id, ccIds[i]]);
+      }
+      try {
+        const cc = await pool.query('SELECT u.name FROM task_cc c JOIN users u ON c.user_id = u.id WHERE c.task_id = $1 ORDER BY u.name', [result.task.id]);
+        ccNames = cc.rows.map(function (r) { return r.name; });
+      } catch (e) {}
+      try { await notifyTaskCc(result.task.id); } catch (e) {}
+    }
+
+    res.status(201).json({ id: result.task.id, assignee_name: result.assignee.name, cc_names: ccNames });
   } catch (e) {
     console.error('[addin] create failed:', e.message);
     res.status(500).json({ error: 'Failed to create task' });
