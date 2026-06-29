@@ -9916,7 +9916,7 @@ function schedRenderGrid(){
         var pub=s.status==='published';
         var border=pub?('1px solid '+col):('1px dashed '+col);
         var bg=pub?(col+'22'):'transparent';
-        return '<div data-shift-id="'+s.id+'" draggable="'+(_schedSelMode?'false':'true')+'" ondragstart="schedDragStart(event,'+s.id+')" ondragend="schedDragEnd(event)" ontouchstart="schedTouchStart(event,'+s.id+')" ontouchmove="schedTouchMove(event)" ontouchend="schedTouchEnd(event)" onclick="event.stopPropagation();schedShiftClick('+s.id+')" title="'+escHtml((s.position_name||'')+(s.notes?(' — '+s.notes):''))+'" style="cursor:'+(_schedSelMode?'pointer':'grab')+';-webkit-user-select:none;user-select:none;-webkit-touch-callout:none;border:'+border+';background:'+bg+';border-left:4px solid '+col+';border-radius:5px;padding:3px 6px;margin:3px 4px;font-size:11.5px;line-height:1.35'+(_schedSel[s.id]?';box-shadow:0 0 0 2px var(--primary,#f97316);outline:1px solid var(--primary,#f97316);outline-offset:1px':'')+'">'+
+        return '<div class="sched-shift'+(_schedSel[s.id]?' sel':'')+'" data-shift-id="'+s.id+'" draggable="'+(_schedSelMode?'false':'true')+'" ondragstart="schedDragStart(event,'+s.id+')" ondragend="schedDragEnd(event)" ontouchstart="schedTouchStart(event,'+s.id+')" ontouchmove="schedTouchMove(event)" ontouchend="schedTouchEnd(event)" onclick="event.stopPropagation();schedShiftClick('+s.id+')" title="'+escHtml((s.position_name||'')+(s.notes?(' — '+s.notes):''))+'" style="cursor:'+(_schedSelMode?'pointer':'grab')+';-webkit-user-select:none;user-select:none;-webkit-touch-callout:none;border:'+border+';background:'+bg+';border-left:4px solid '+col+';border-radius:5px;padding:3px 6px;margin:3px 4px;font-size:11.5px;line-height:1.35">'+
           '<div style="font-weight:600">'+escHtml(schedTimeFmt(s.start_time))+'–'+escHtml(schedTimeFmt(s.end_time))+'</div>'+
           (s.position_name?'<div style="color:var(--text-muted-color,#999)">'+escHtml(s.position_name)+'</div>':'')+'</div>';
       }).join('');
@@ -9928,6 +9928,7 @@ function schedRenderGrid(){
   }).join('');
   if(!_vis.length) rows='<tr><td colspan="8" style="padding:20px;text-align:center;color:var(--text-muted-color,#999)">No active employees.</td></tr>';
   wrap.innerHTML='<table style="border-collapse:collapse;width:100%;min-width:980px"><thead>'+head+'</thead><tbody>'+rows+'</tbody></table>';
+  schedInjectSelCss(); wrap.className=_schedSelMode?'sched-grid-selecting':'';
 }
 
 // --- Bulk multi-select on the week grid ---
@@ -9935,7 +9936,8 @@ function schedToggleSelectMode(){ _schedSelMode=!_schedSelMode; if(!_schedSelMod
 function schedShiftClick(id){ if(_schedSelMode) schedToggleSel(id); else schedOpenShift(id); }
 function schedSelIds(){ return Object.keys(_schedSel).map(Number); }
 function schedSelCount(){ return Object.keys(_schedSel).length; }
-function schedStyleShiftSel(el,on){ if(!el) return; el.style.boxShadow=on?'0 0 0 2px var(--primary,#f97316)':''; el.style.outline=on?'1px solid var(--primary,#f97316)':''; el.style.outlineOffset=on?'1px':''; }
+function schedStyleShiftSel(el,on){ if(!el) return; el.classList.toggle('sel', !!on); }
+function schedInjectSelCss(){ if(document.getElementById('sched-sel-css')) return; var st=document.createElement('style'); st.id='sched-sel-css'; st.textContent=".sched-shift.sel{outline:3px solid #f97316 !important;outline-offset:0 !important;box-shadow:0 0 0 3px rgba(249,115,22,.55),0 4px 14px rgba(0,0,0,.55) !important;position:relative !important;z-index:5}.sched-shift.sel::after{content:'\\2713';position:absolute;top:-8px;right:-8px;width:18px;height:18px;line-height:18px;text-align:center;background:#f97316;color:#fff;font-size:12px;font-weight:700;border-radius:50%;box-shadow:0 1px 4px rgba(0,0,0,.6);pointer-events:none}.sched-grid-selecting .sched-shift:not(.sel){opacity:.32}"; document.head.appendChild(st); }
 function schedToggleSel(id){ if(_schedSel[id]) delete _schedSel[id]; else _schedSel[id]=1; var el=document.querySelector('[data-shift-id="'+id+'"]'); schedStyleShiftSel(el,!!_schedSel[id]); schedUpdateSelBar(); }
 function schedClearSel(){ _schedSel={}; var els=document.querySelectorAll('[data-shift-id]'); for(var i=0;i<els.length;i++) schedStyleShiftSel(els[i],false); schedUpdateSelBar(); }
 function schedSelectAllVisible(){ var els=document.querySelectorAll('[data-shift-id]'); for(var i=0;i<els.length;i++){ var id=parseInt(els[i].getAttribute('data-shift-id'),10); _schedSel[id]=1; schedStyleShiftSel(els[i],true); } schedUpdateSelBar(); }
