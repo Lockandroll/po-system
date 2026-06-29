@@ -10,8 +10,8 @@
   <DefaultLocale>en-US</DefaultLocale>
   <DisplayName DefaultValue="Send to Nova" />
   <Description DefaultValue="Turn the selected email into a Nova task with AI." />
-  <IconUrl DefaultValue="https://www.popalockar.com/icon-192.png" />
-  <HighResolutionIconUrl DefaultValue="https://www.popalockar.com/icon-512.png" />
+  <IconUrl DefaultValue="https://www.popalockar.com/addin/icon-64.png" />
+  <HighResolutionIconUrl DefaultValue="https://www.popalockar.com/addin/icon-128.png" />
   <SupportUrl DefaultValue="https://www.popalockar.com" />
   <AppDomains>
     <AppDomain>https://www.popalockar.com</AppDomain>
@@ -75,9 +75,9 @@
     </Hosts>
     <Resources>
       <bt:Images>
-        <bt:Image id="icon16" DefaultValue="https://www.popalockar.com/favicon-32.png" />
-        <bt:Image id="icon32" DefaultValue="https://www.popalockar.com/favicon-32.png" />
-        <bt:Image id="icon80" DefaultValue="https://www.popalockar.com/icon-192.png" />
+        <bt:Image id="icon16" DefaultValue="https://www.popalockar.com/addin/icon-16.png" />
+        <bt:Image id="icon32" DefaultValue="https://www.popalockar.com/addin/icon-32.png" />
+        <bt:Image id="icon80" DefaultValue="https://www.popalockar.com/addin/icon-80.png" />
       </bt:Images>
       <bt:Urls>
         <bt:Url id="taskpaneUrl" DefaultValue="https://www.popalockar.com/addin/taskpane.html" />
@@ -88,9 +88,6 @@
         <bt:String id="buttonLabel" DefaultValue="Send to Nova" />
         <bt:String id="buttonTip" DefaultValue="Create a Nova task from this email" />
       </bt:ShortStrings>
-      <bt:LongStrings>
-        <bt:String id="buttonTipLong" DefaultValue="Reads the open email and creates a Nova task you can review before saving." />
-      </bt:LongStrings>
     </Resources>
   </VersionOverrides>
 </OfficeApp>
