@@ -37,6 +37,11 @@ const loginLimiter = rateLimit({
 });
 
 app.use(cors());
+
+// Inbound email webhook (Resend) - mounted before express.json so the route can
+// read the raw body for Svix signature verification.
+app.use('/api/inbound', require('./routes/inbound'));
+
 app.use(express.json({ limit: '80mb' }));
 app.use(express.static(path.join(__dirname, 'public')));
 
@@ -84,6 +89,7 @@ app.use('/api/documents', require('./routes/documents'));
 app.use('/api/invoices', require('./routes/invoices'));
 app.use('/api/reviews', require('./routes/reviews'));
 app.use('/api/mcp', require('./routes/mcp'));
+app.use('/api/addin', require('./routes/addin'));
 
 // OAuth 2.1 authorization server for the remote MCP (must be before the SPA catch-all)
 app.use('/', require('./routes/oauth'));

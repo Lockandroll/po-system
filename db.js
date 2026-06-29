@@ -498,6 +498,7 @@ async function initDB() {
       "ALTER TABLE tasks ADD COLUMN IF NOT EXISTS last_overdue_on DATE;" +
       "ALTER TABLE tasks ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ DEFAULT NOW();" +
       "ALTER TABLE tasks ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ DEFAULT NOW();" +
+      "ALTER TABLE tasks ADD COLUMN IF NOT EXISTS source VARCHAR(20);" +
       "ALTER TABLE task_subtasks ADD COLUMN IF NOT EXISTS done BOOLEAN NOT NULL DEFAULT false;" +
       "ALTER TABLE task_subtasks ADD COLUMN IF NOT EXISTS position INTEGER DEFAULT 0;" +
       "ALTER TABLE task_subtasks ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ DEFAULT NOW();" +

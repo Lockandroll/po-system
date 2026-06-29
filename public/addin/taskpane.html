@@ -1,0 +1,214 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Send to Nova</title>
+  <script src="https://appsforoffice.microsoft.com/lib/1/hosted/office.js"></script>
+  <style>
+    :root { --pal: #f97316; --bg: #0f0f0f; --panel: #1a1a1a; --line: #2a2a2a; --text: #f5f5f5; --muted: #9a9a9a; }
+    * { box-sizing: border-box; }
+    body { margin: 0; font-family: 'Segoe UI', system-ui, sans-serif; background: var(--bg); color: var(--text); font-size: 14px; }
+    .wrap { padding: 14px; }
+    h1 { font-size: 16px; margin: 0 0 12px; display: flex; align-items: center; gap: 8px; }
+    .dot { width: 10px; height: 10px; border-radius: 50%; background: var(--pal); display: inline-block; }
+    label { display: block; font-size: 12px; color: var(--muted); margin: 10px 0 4px; }
+    input, select, textarea {
+      width: 100%; background: var(--panel); border: 1px solid var(--line); color: var(--text);
+      border-radius: 8px; padding: 8px 10px; font-size: 14px; font-family: inherit;
+    }
+    textarea { resize: vertical; min-height: 72px; }
+    input:focus, select:focus, textarea:focus { outline: none; border-color: var(--pal); }
+    button {
+      width: 100%; background: var(--pal); color: #111; border: none; border-radius: 8px;
+      padding: 11px; font-size: 14px; font-weight: 700; cursor: pointer; margin-top: 14px;
+    }
+    button.secondary { background: var(--panel); color: var(--text); border: 1px solid var(--line); }
+    button:disabled { opacity: .5; cursor: default; }
+    .row { display: flex; gap: 8px; }
+    .row > div { flex: 1; }
+    .msg { margin-top: 12px; padding: 10px; border-radius: 8px; font-size: 13px; display: none; }
+    .msg.err { background: #2a1414; color: #fca5a5; display: block; }
+    .msg.ok { background: #13241a; color: #86efac; display: block; }
+    .hide { display: none; }
+    .muted { color: var(--muted); font-size: 12px; }
+  </style>
+</head>
+<body>
+<div class="wrap">
+  <h1><span class="dot"></span> Send to Nova</h1>
+
+  <!-- Login -->
+  <div id="login">
+    <p class="muted">Sign in to Nova to create tasks.</p>
+    <label>Email</label>
+    <input id="email" type="email" autocomplete="username" />
+    <label>Password</label>
+    <input id="password" type="password" autocomplete="current-password" />
+    <div id="codeBox" class="hide">
+      <label>Verification code (sent to you)</label>
+      <input id="code" inputmode="numeric" />
+    </div>
+    <button id="loginBtn">Sign in</button>
+  </div>
+
+  <!-- Task form -->
+  <div id="form" class="hide">
+    <p class="muted" id="who"></p>
+    <label>Title</label>
+    <input id="title" />
+    <label>Description</label>
+    <textarea id="description"></textarea>
+    <div class="row">
+      <div>
+        <label>Priority</label>
+        <select id="priority">
+          <option value="low">Low</option>
+          <option value="medium" selected>Medium</option>
+          <option value="high">High</option>
+          <option value="urgent">Urgent</option>
+        </select>
+      </div>
+      <div>
+        <label>Due date</label>
+        <input id="due" type="date" />
+      </div>
+    </div>
+    <label>Assign to</label>
+    <select id="assignee"></select>
+    <button id="regenBtn" class="secondary">Re-read email with AI</button>
+    <button id="createBtn">Create task</button>
+  </div>
+
+  <div id="msg" class="msg"></div>
+</div>
+
+<script>
+  var TOKEN = '';
+  var emailCtx = { subject: '', body: '' };
+
+  function setMsg(text, kind) {
+    var el = document.getElementById('msg');
+    el.textContent = text || '';
+    el.className = 'msg' + (kind ? ' ' + kind : '');
+    if (!text) el.style.display = 'none';
+  }
+
+  function api(path, method, body) {
+    var headers = { 'Content-Type': 'application/json' };
+    if (TOKEN) headers['Authorization'] = 'Bearer ' + TOKEN;
+    return fetch(path, { method: method || 'GET', headers: headers, body: body ? JSON.stringify(body) : undefined })
+      .then(function (res) {
+        var nt = res.headers.get('X-New-Token');
+        if (nt) { TOKEN = nt; try { localStorage.setItem('nova_addin_token', nt); } catch (e) {} }
+        return res.json().then(function (data) {
+          if (!res.ok) throw new Error((data && data.error) || ('Error ' + res.status));
+          return data;
+        });
+      });
+  }
+
+  Office.onReady(function () {
+    try { TOKEN = localStorage.getItem('nova_addin_token') || ''; } catch (e) {}
+    var item = Office.context.mailbox.item;
+    emailCtx.subject = (item && item.subject) || '';
+    if (item && item.body) {
+      item.body.getAsync('text', function (r) {
+        emailCtx.body = (r && r.status === 'succeeded') ? (r.value || '') : '';
+        if (TOKEN) showForm();
+      });
+    } else if (TOKEN) { showForm(); }
+  });
+
+  // ---- Login ----
+  document.getElementById('loginBtn').addEventListener('click', function () {
+    var codeBox = document.getElementById('codeBox');
+    if (!codeBox.classList.contains('hide')) return verify();
+    var email = document.getElementById('email').value.trim();
+    var password = document.getElementById('password').value;
+    if (!email || !password) return setMsg('Enter your email and password.', 'err');
+    setMsg('Signing in...', '');
+    api('/api/auth/login', 'POST', { email: email, password: password })
+      .then(function (data) {
+        if (data.token) { TOKEN = data.token; saveToken(); return showForm(); }
+        if (data.requires2fa) {
+          window._pendingUser = data.userId;
+          codeBox.classList.remove('hide');
+          document.getElementById('loginBtn').textContent = 'Verify code';
+          setMsg('Code sent via ' + (data.via || 'email') + '. Enter it above.', 'ok');
+        }
+      })
+      .catch(function (e) { setMsg(e.message, 'err'); });
+  });
+
+  function verify() {
+    var code = document.getElementById('code').value.trim();
+    if (!code) return setMsg('Enter the verification code.', 'err');
+    setMsg('Verifying...', '');
+    api('/api/auth/verify-2fa', 'POST', { userId: window._pendingUser, code: code, rememberDevice: true })
+      .then(function (data) { TOKEN = data.token; saveToken(); showForm(); })
+      .catch(function (e) { setMsg(e.message, 'err'); });
+  }
+
+  function saveToken() { try { localStorage.setItem('nova_addin_token', TOKEN); } catch (e) {} }
+
+  // ---- Form ----
+  function showForm() {
+    document.getElementById('login').classList.add('hide');
+    document.getElementById('form').classList.remove('hide');
+    setMsg('', '');
+    loadUsers().then(generate);
+  }
+
+  function loadUsers() {
+    return api('/api/addin/users', 'GET').then(function (users) {
+      var sel = document.getElementById('assignee');
+      sel.innerHTML = '<option value="">(default: me)</option>';
+      users.forEach(function (u) {
+        var o = document.createElement('option');
+        o.value = u.id; o.textContent = u.name;
+        sel.appendChild(o);
+      });
+    }).catch(function () {});
+  }
+
+  function generate() {
+    setMsg('Reading the email with AI...', '');
+    document.getElementById('regenBtn').disabled = true;
+    api('/api/addin/parse', 'POST', { subject: emailCtx.subject, body: emailCtx.body })
+      .then(function (d) {
+        document.getElementById('title').value = d.title || emailCtx.subject || '';
+        document.getElementById('description').value = d.description || '';
+        document.getElementById('priority').value = d.priority || 'medium';
+        document.getElementById('due').value = d.due_date || '';
+        if (d.assignee_id) document.getElementById('assignee').value = String(d.assignee_id);
+        document.getElementById('who').textContent = d.assignee_name ? ('Suggested assignee: ' + d.assignee_name) : '';
+        setMsg('', '');
+      })
+      .catch(function (e) { setMsg(e.message, 'err'); })
+      .then(function () { document.getElementById('regenBtn').disabled = false; });
+  }
+
+  document.getElementById('regenBtn').addEventListener('click', generate);
+
+  document.getElementById('createBtn').addEventListener('click', function () {
+    var payload = {
+      title: document.getElementById('title').value.trim(),
+      description: document.getElementById('description').value.trim(),
+      priority: document.getElementById('priority').value,
+      due_date: document.getElementById('due').value || null,
+      assignee_id: document.getElementById('assignee').value || null
+    };
+    if (!payload.title) return setMsg('Title is required.', 'err');
+    setMsg('Creating task...', '');
+    document.getElementById('createBtn').disabled = true;
+    api('/api/addin/create', 'POST', payload)
+      .then(function (d) {
+        setMsg('Task #' + d.id + ' created and assigned to ' + d.assignee_name + '.', 'ok');
+      })
+      .catch(function (e) { setMsg(e.message, 'err'); })
+      .then(function () { document.getElementById('createBtn').disabled = false; });
+  });
+</script>
+</body>
+</html>
