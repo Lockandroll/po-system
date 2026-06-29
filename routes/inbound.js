@@ -98,8 +98,15 @@ router.post('/email', async function (req, res) {
         var text = data.text || '';
         var html = data.html || '';
         if (!text && !html && data.email_id) {
-          const full = await fetchReceivedEmail(data.email_id);
-          if (full && !full.statusCode && !full.message && !full.name) {
+          let full = await fetchReceivedEmail(data.email_id);
+          if (full && full.statusCode) {
+            // Retry once in case the email isn't queryable the instant the webhook fires.
+            await new Promise(function (r) { setTimeout(r, 2500); });
+            full = await fetchReceivedEmail(data.email_id);
+          }
+          if (full && full.statusCode) {
+            console.log('[feedback-diag] fetch error: ' + JSON.stringify(full).slice(0, 300));
+          } else if (full) {
             subject = subject || full.subject || '';
             text = full.text || '';
             html = full.html || '';
