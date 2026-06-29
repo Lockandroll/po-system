@@ -273,8 +273,10 @@ router.post('/sms', async function (req, res) {
         'The assigned manager, ' + user.name + ', just replied by SMS: "' + body + '". ' +
         'Interpret their intent and take the appropriate actions ON THIS RECORD (id ' + feedbackId + ') with the feedback tools: ' +
         'assign a tech (use list_users to resolve a name), set a followup date/time, change status, or record damages/refund. ' +
-        'Their message is already saved as a note, so do NOT call add_feedback_note. Do NOT resolve or close unless they explicitly say to close it. ' +
-        'Then reply with ONE short SMS sentence (under 140 chars) confirming exactly what you changed; if nothing was actionable, just acknowledge.';
+        'Their exact message is already saved to the timeline as a note, so do NOT call add_feedback_note and do not duplicate it. ' +
+        'If they are simply leaving a comment or asking to note something (no field change), that is fine - just confirm it has been noted. ' +
+        'Do NOT resolve or close unless they explicitly say to close it. ' +
+        'Always reply with ONE short SMS sentence (under 140 chars) confirming what you did, or that the note was saved - never say you could not do anything, since their note is always saved.';
       const out = await runAgentForActor(user, prompt);
       if (out && out.reply) ack = out.reply.replace(/\s+/g, ' ').trim().slice(0, 300);
     } catch (e) { console.error('[feedback-sms] agent failed:', e.message); }
