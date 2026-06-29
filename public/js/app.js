@@ -206,6 +206,7 @@ function getSidebarSection(view) {
   if (['vr-dashboard','new-vr','edit-vr','view-vr','fleet-registry','new-vehicle','edit-vehicle','vehicle-history'].indexOf(view) !== -1) return 'vr';
   if (['ai-assistant','ai-conversations','ai-usage'].indexOf(view) !== -1) return 'ai';
   if (['company-info','ai-context','notifications','scheduled-messages','roles','settings','users','cities','audit'].indexOf(view) !== -1) return 'settings';
+  if (['geico','reviews','feedback','feedback-detail'].indexOf(view) !== -1) return 'feedback';
   return null;
 }
 function showToast(message, type) {
@@ -477,8 +478,12 @@ async function render() {
     : '') : '') +
     (can('view_deposits') ? '<div class="nav-item' + (cv === 'deposits' || cv === 'view-deposit' ? ' active' : '') + '" onclick="navigate(\'deposits\')">' + icoDeposit + ' Cash Deposits</div>' : '') +
     (can('manage_vendors') ? '<div class="nav-item' + (cv === 'vendors' ? ' active' : '') + '" onclick="navigate(\'vendors\')">' + icoAccounts + ' Accounts</div>' : '') +
-    (can('manage_geico') ? '<div class="nav-item' + (cv === 'geico' ? ' active' : '') + '" onclick="navigate(\'geico\')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 01-2 2H5a2 2 0 01-2-2V5a2 2 0 012-2h11"/></svg> Geico Surveys</div>' : '') +
-    '<div class="nav-item' + (cv === 'reviews' ? ' active' : '') + '" onclick="navigate(\'reviews\')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/></svg> Google Reviews</div>' + 
+    ('<div class="nav-section-header' + (['geico','reviews','feedback','feedback-detail'].indexOf(cv) !== -1 ? ' section-active' : '') + (ss === 'feedback' ? ' open' : '') + '" onclick="toggleSection(\'feedback\',\'reviews\')"><span class="s-label"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg> Reviews &amp; Feedback</span>' + chev + '</div>' +
+      (ss === 'feedback' ?
+        (can('manage_geico') ? '<div class="nav-sub' + (cv === 'geico' ? ' active' : '') + '" onclick="navigate(\'geico\')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 01-2 2H5a2 2 0 01-2-2V5a2 2 0 012-2h11"/></svg> Geico Surveys</div>' : '') +
+        '<div class="nav-sub' + (cv === 'reviews' ? ' active' : '') + '" onclick="navigate(\'reviews\')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/></svg> Google Reviews</div>' +
+        (can('view_feedback') ? '<div class="nav-sub' + (['feedback','feedback-detail'].indexOf(cv) !== -1 ? ' active' : '') + '" onclick="navigate(\'feedback\')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg> Customer Feedback</div>' : '')
+      : '')) +
     '<div class="nav-item' + (cv === 'suggestions' ? ' active' : '') + '" onclick="navigate(\'suggestions\')">' + icoSuggestion + ' Suggestions</div>' +
     '<div class="nav-item" onclick="window.open(\'https://www.idssonline.com/pulsar.html\',\'_blank\',\'noopener\')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg> Pulsar Download</div>' +
     '<div class="nav-item" onclick="window.open(\'https://discord.gg/cMbHbbz47\',\'_blank\',\'noopener\')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 11.5a8.38 8.38 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.38 8.38 0 0 1-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.38 8.38 0 0 1 3.8-.9h.5a8.48 8.48 0 0 1 8 8v.5z"/></svg> Discord Channel</div>' +
@@ -550,7 +555,7 @@ async function render() {
     if (_ovOpen) _ovOpen.classList.add('open');
   }
   const content = document.getElementById('content');
-  var _viewPerm = { dashboard:'view_pos', view:'view_pos', running:'view_pos', 'running-admin':'view_pos', new:'create_po', edit:'edit_po', quotes:'view_quotes', 'view-quote':'view_quotes', 'new-quote':'create_quote', 'edit-quote':'edit_quote', 'vr-dashboard':'view_vr', 'view-vr':'view_vr', 'new-vr':'create_vr', 'edit-vr':'edit_vr', deposits:'view_deposits', 'view-deposit':'view_deposits', signoffs:'view_signoffs', 'view-signoff':'view_signoffs', 'new-signoff':'create_signoff', 'edit-signoff':'edit_signoff', 'complete-signoff':'complete_signoff', tasks:'view_tasks', 'task-detail':'view_tasks', 'new-task':'view_tasks', 'edit-task':'view_tasks', 'work-orders':'view_work_orders', 'view-work-order':'view_work_orders', 'new-work-order':'manage_work_orders', schedule:'view_schedule', 'schedule-admin':'manage_schedule', 'schedule-nowork':'manage_schedule', invoices:'view_invoices', 'view-invoice':'view_invoices', 'new-invoice':'create_invoice', 'edit-invoice':'edit_invoice', 'invoice-parts':'view_invoices', 'invoice-setup':'manage_invoice_setup' };
+  var _viewPerm = { dashboard:'view_pos', view:'view_pos', running:'view_pos', 'running-admin':'view_pos', new:'create_po', edit:'edit_po', quotes:'view_quotes', 'view-quote':'view_quotes', 'new-quote':'create_quote', 'edit-quote':'edit_quote', 'vr-dashboard':'view_vr', 'view-vr':'view_vr', 'new-vr':'create_vr', 'edit-vr':'edit_vr', deposits:'view_deposits', 'view-deposit':'view_deposits', signoffs:'view_signoffs', 'view-signoff':'view_signoffs', 'new-signoff':'create_signoff', 'edit-signoff':'edit_signoff', 'complete-signoff':'complete_signoff', tasks:'view_tasks', 'task-detail':'view_tasks', 'new-task':'view_tasks', 'edit-task':'view_tasks', 'work-orders':'view_work_orders', 'view-work-order':'view_work_orders', 'new-work-order':'manage_work_orders', schedule:'view_schedule', 'schedule-admin':'manage_schedule', 'schedule-nowork':'manage_schedule', invoices:'view_invoices', 'view-invoice':'view_invoices', 'new-invoice':'create_invoice', 'edit-invoice':'edit_invoice', 'invoice-parts':'view_invoices', 'invoice-setup':'manage_invoice_setup', feedback:'view_feedback', 'feedback-detail':'view_feedback' };
   if (_viewPerm[state.currentView] && !can(_viewPerm[state.currentView])) { content.innerHTML = '<div class="alert alert-error">Access denied.</div>'; return; }
   if (state.currentView === 'home') await renderHomeScreen(content);
   else if (state.currentView === 'dashboard') await renderDashboard(content);
@@ -603,6 +608,8 @@ async function render() {
   else if (state.currentView === 'running-admin') await renderAdminRunningList(content);
   else if (state.currentView === 'geico') await renderGeicoReviews(content);
   else if (state.currentView === 'reviews') await renderReviews(content);
+  else if (state.currentView === 'feedback') await renderFeedback(content);
+  else if (state.currentView === 'feedback-detail') await renderFeedbackDetail(content, state.currentParam);
   else if (state.currentView === 'signoffs') await renderSignoffs(content);
   else if (state.currentView === 'new-signoff') await renderEditSignoff(content, null);
   else if (state.currentView === 'edit-signoff') await renderEditSignoff(content, state.currentParam);
@@ -3287,6 +3294,240 @@ var _reviewsPage = 1;
 var REVIEWS_PAGE_SIZE = 25;
 var _reviewsSearchTimer = null;
 var _reviewAssignees = [];
+
+// ── Customer Feedback ──────────────────────────────────────────────────────
+var FB_STATUS = { new:'New', complaint_pending:'Complaint pending', customer_contacted:'Customer contacted', in_progress:'In progress', resolved:'Resolved', closed:'Closed' };
+var _feedbackRows = [];
+var _fbSearchT = null;
+
+function fbMoney(x){ var n = Number(x); if (isNaN(n)) n = 0; return '$' + n.toFixed(2); }
+function feedbackOpen(id){ navigate('feedback-detail', id); }
+function feedbackOpenTask(id){ navigate('task-detail', id); }
+function feedbackSearchDebounced(){ if (_fbSearchT) clearTimeout(_fbSearchT); _fbSearchT = setTimeout(feedbackLoad, 350); }
+
+function fbSevBadge(s){
+  if (!s) return '<span style="color:var(--text-muted-color)">&mdash;</span>';
+  var c = { critical:['#7f1d1d','#fecaca'], high:['#A32D2D','#FCEBEB'], medium:['#854F0B','#FAEEDA'], low:['#3f3f46','#e4e4e7'] }[s] || ['#3f3f46','#e4e4e7'];
+  return '<span style="background:' + c[0] + ';color:' + c[1] + ';padding:2px 8px;border-radius:6px;font-size:12px">' + escHtml(s) + '</span>';
+}
+function fbLastCell(row){
+  var d = row.last_interaction_at;
+  if (!d) return '<span style="color:var(--text-muted-color)">&mdash;</span>';
+  var diffDays = (Date.now() - new Date(d).getTime()) / 86400000;
+  var ago = timeAgo(d) || (Math.floor(diffDays) + 'd ago');
+  var stale = (!row.is_resolved) && diffDays >= 7;
+  if (stale) return '<span style="color:#e24b4a;white-space:nowrap">&#9888; ' + escHtml(ago) + '</span>';
+  return '<span style="color:var(--text-muted-color);white-space:nowrap">' + escHtml(ago) + '</span>';
+}
+function fbLocalDt(d){
+  if (!d) return '';
+  var t = new Date(d); if (isNaN(t.getTime())) return '';
+  var p = function(n){ return (n < 10 ? '0' : '') + n; };
+  return t.getFullYear() + '-' + p(t.getMonth() + 1) + '-' + p(t.getDate()) + 'T' + p(t.getHours()) + ':' + p(t.getMinutes());
+}
+
+async function renderFeedback(el){
+  if (!can('view_feedback')) { el.innerHTML = '<div class="alert alert-error">Access denied.</div>'; return; }
+  var iS = 'padding:8px 10px;background:var(--surface-color);border:1px solid rgba(249,115,22,0.35);border-radius:6px;color:var(--text-color);font-size:13px;outline:none';
+  var lbl = 'display:block;font-size:11px;color:var(--text-muted-color);margin-bottom:4px';
+  var statusOpts = Object.keys(FB_STATUS).map(function(k){ return '<option value="' + k + '">' + FB_STATUS[k] + '</option>'; }).join('');
+  el.innerHTML =
+    '<div class="page-header"><div><div class="page-title">Customer Feedback</div><div class="page-subtitle">Complaints &amp; feedback by city, tech &amp; severity</div></div></div>' +
+    '<div style="display:flex;flex-wrap:wrap;gap:10px;align-items:end;margin-bottom:16px">' +
+      '<div><label style="' + lbl + '">City</label><select id="fb-city" style="' + iS + '" onchange="feedbackLoad()"><option value="">All cities</option></select></div>' +
+      '<div><label style="' + lbl + '">Severity</label><select id="fb-sev" style="' + iS + '" onchange="feedbackLoad()"><option value="">All</option><option value="critical">Critical</option><option value="high">High</option><option value="medium">Medium</option><option value="low">Low</option></select></div>' +
+      '<div><label style="' + lbl + '">Status</label><select id="fb-status" style="' + iS + '" onchange="feedbackLoad()"><option value="">All</option>' + statusOpts + '</select></div>' +
+      '<div><label style="' + lbl + '">Show</label><select id="fb-resolved" style="' + iS + '" onchange="feedbackLoad()"><option value="">All</option><option value="false">Open</option><option value="true">Resolved</option></select></div>' +
+      '<div style="flex:1;min-width:200px"><label style="' + lbl + '">Search</label><input type="text" id="fb-search" placeholder="Customer or incident..." style="' + iS + ';width:100%;box-sizing:border-box" oninput="feedbackSearchDebounced()" /></div>' +
+      '<button class="btn btn-secondary btn-sm" onclick="feedbackClear()">Clear</button>' +
+    '</div>' +
+    '<div id="fb-count" style="font-size:12px;color:var(--text-muted-color);margin-bottom:8px"></div>' +
+    '<div id="fb-table-wrap"><div class="loading">Loading&hellip;</div></div>';
+  try {
+    var cs = await api('GET', '/cities');
+    var sel = document.getElementById('fb-city');
+    if (sel && Array.isArray(cs)) cs.forEach(function(c){ sel.innerHTML += '<option value="' + escHtml(c.code) + '">' + escHtml(c.name) + '</option>'; });
+  } catch (e) {}
+  await feedbackLoad();
+}
+
+function feedbackClear(){
+  ['fb-city','fb-sev','fb-status','fb-resolved','fb-search'].forEach(function(id){ var e = document.getElementById(id); if (e) e.value = ''; });
+  feedbackLoad();
+}
+
+async function feedbackLoad(){
+  var wrap = document.getElementById('fb-table-wrap'); if (!wrap) return;
+  function g(id){ var e = document.getElementById(id); return e ? e.value : ''; }
+  var q = [];
+  if (g('fb-city')) q.push('city=' + encodeURIComponent(g('fb-city')));
+  if (g('fb-sev')) q.push('severity=' + encodeURIComponent(g('fb-sev')));
+  if (g('fb-status')) q.push('status=' + encodeURIComponent(g('fb-status')));
+  if (g('fb-resolved')) q.push('resolved=' + encodeURIComponent(g('fb-resolved')));
+  if (g('fb-search')) q.push('search=' + encodeURIComponent(g('fb-search')));
+  try {
+    var r = await api('GET', '/feedback' + (q.length ? ('?' + q.join('&')) : ''));
+    _feedbackRows = r.feedback || [];
+    var cnt = document.getElementById('fb-count'); if (cnt) cnt.textContent = (r.total || _feedbackRows.length) + ' record' + ((r.total || _feedbackRows.length) === 1 ? '' : 's');
+    feedbackRenderTable();
+  } catch (e) { wrap.innerHTML = '<div class="alert alert-error">' + escHtml(e.message) + '</div>'; }
+}
+
+function feedbackRenderTable(){
+  var wrap = document.getElementById('fb-table-wrap'); if (!wrap) return;
+  if (!_feedbackRows.length) { wrap.innerHTML = '<div style="color:var(--text-muted-color);padding:24px 0">No feedback found.</div>'; return; }
+  var cs = 'padding:9px 10px;border-bottom:1px solid var(--border)';
+  var rows = _feedbackRows.map(function(f){
+    var cat = f.category ? escHtml(f.category.replace(/_/g, ' ')) : '&mdash;';
+    var review = f.needs_review ? ' <span title="Needs review" style="color:#e24b4a">&#9679;</span>' : '';
+    return '<tr style="cursor:pointer" onclick="feedbackOpen(' + f.id + ')" onmouseover="this.style.background=&quot;rgba(249,115,22,0.06)&quot;" onmouseout="this.style.background=&quot;&quot;">' +
+      '<td style="' + cs + ';font-weight:600">' + escHtml(f.customer_name || 'Unknown') + '</td>' +
+      '<td style="' + cs + ';color:var(--text-muted-color)">' + escHtml(f.city_name || f.city_code || '—') + '</td>' +
+      '<td style="' + cs + ';color:var(--text-muted-color)">' + escHtml(f.tech_name || f.tech_name_raw || '—') + '</td>' +
+      '<td style="' + cs + '">' + cat + '</td>' +
+      '<td style="' + cs + '">' + fbSevBadge(f.severity) + '</td>' +
+      '<td style="' + cs + ';color:var(--text-muted-color)">' + escHtml(FB_STATUS[f.status] || f.status || '—') + review + '</td>' +
+      '<td style="' + cs + '">' + fbLastCell(f) + '</td>' +
+      '<td style="' + cs + ';color:var(--text-muted-color)">' + escHtml(f.assigned_name || '—') + '</td>' +
+    '</tr>';
+  }).join('');
+  wrap.innerHTML = '<div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse;font-size:13px;min-width:760px">' +
+    '<thead><tr style="text-align:left;color:var(--text-muted-color);border-bottom:1px solid var(--border)">' +
+    ['Customer','City','Tech','Category','Severity','Status','Last Interaction','Assigned'].map(function(h){ return '<th style="padding:8px 10px;font-weight:600;white-space:nowrap">' + h + '</th>'; }).join('') +
+    '</tr></thead><tbody>' + rows + '</tbody></table></div>';
+}
+
+async function renderFeedbackDetail(el, id){
+  if (!can('view_feedback')) { el.innerHTML = '<div class="alert alert-error">Access denied.</div>'; return; }
+  el.innerHTML = '<div class="loading">Loading&hellip;</div>';
+  var data;
+  try { data = await api('GET', '/feedback/' + id); }
+  catch (e) { el.innerHTML = '<div class="alert alert-error">' + escHtml(e.message) + '</div>'; return; }
+  var f = data.feedback; var acts = data.activity || [];
+  var canEdit = can('manage_feedback');
+  var users = [];
+  try { users = await api('GET', '/users') || []; } catch (e) {}
+  users = users.filter(function(u){ return u.active !== false; }).sort(function(a, b){ return (a.name || '').localeCompare(b.name || ''); });
+
+  var iS = 'padding:8px 10px;background:var(--surface-color);border:1px solid var(--border);border-radius:6px;color:var(--text-color);font-size:13px;outline:none;width:100%;box-sizing:border-box';
+  var lbl = 'display:block;font-size:11px;color:var(--text-muted-color);margin-bottom:4px';
+  var cardS = 'background:var(--surface-color);border:1px solid var(--border);border-radius:10px;padding:16px;margin-bottom:14px';
+  var dis = canEdit ? '' : ' disabled';
+
+  var techOpts = '<option value="">Select tech&hellip;</option>' + users.map(function(u){ return '<option value="' + u.id + '"' + (u.id === f.tech_user_id ? ' selected' : '') + '>' + escHtml(u.name) + '</option>'; }).join('');
+  var asgOpts = '<option value="">Unassigned</option>' + users.map(function(u){ return '<option value="' + u.id + '"' + (u.id === f.assigned_to ? ' selected' : '') + '>' + escHtml(u.name) + '</option>'; }).join('');
+  var statusOpts = Object.keys(FB_STATUS).map(function(k){ return '<option value="' + k + '"' + (f.status === k ? ' selected' : '') + '>' + FB_STATUS[k] + '</option>'; }).join('');
+  var faultCur = f.tech_at_fault === true ? 'yes' : f.tech_at_fault === false ? 'no' : 'tbd';
+  var faultOpts = [['tbd','TBD'],['yes','Yes'],['no','No']].map(function(o){ return '<option value="' + o[0] + '"' + (faultCur === o[0] ? ' selected' : '') + '>' + o[1] + '</option>'; }).join('');
+  var refCur = f.refunded ? 'yes' : 'no';
+  var refOpts = [['no','No'],['yes','Yes']].map(function(o){ return '<option value="' + o[0] + '"' + (refCur === o[0] ? ' selected' : '') + '>' + o[1] + '</option>'; }).join('');
+
+  var vehicle = [f.vehicle_year, f.vehicle_make, f.vehicle_model].filter(Boolean).join(' ') || '—';
+  var sevChip = f.severity ? fbSevBadge(f.severity) : '';
+  var catChip = f.category ? '<span style="background:rgba(249,115,22,0.15);color:var(--primary);padding:2px 8px;border-radius:6px;font-size:12px">' + escHtml(f.category.replace(/_/g, ' ')) + '</span>' : '';
+  var reviewFlag = f.needs_review ? '<span style="background:#7f1d1d;color:#fecaca;padding:2px 8px;border-radius:6px;font-size:12px">Needs review</span>' : '';
+
+  var custCard = '<div style="' + cardS + '">' +
+    '<div style="font-size:12px;color:var(--text-muted-color);margin-bottom:10px">Customer &amp; vehicle</div>' +
+    '<table style="width:100%;font-size:13px">' +
+      '<tr><td style="color:var(--text-muted-color);padding:4px 0">Phone</td><td style="text-align:right;color:var(--primary)">' + escHtml(f.customer_phone || '—') + '</td></tr>' +
+      '<tr><td style="color:var(--text-muted-color);padding:4px 0">Email</td><td style="text-align:right">' + escHtml(f.customer_email || '—') + '</td></tr>' +
+      '<tr><td style="color:var(--text-muted-color);padding:4px 0">City</td><td style="text-align:right">' + escHtml(f.city_name || f.city_code || '—') + '</td></tr>' +
+      '<tr><td style="color:var(--text-muted-color);padding:4px 0">Vehicle</td><td style="text-align:right">' + escHtml(vehicle) + '</td></tr>' +
+      '<tr><td style="color:var(--text-muted-color);padding:4px 0">Service task</td><td style="text-align:right">' + escHtml(f.service_task || '—') + '</td></tr>' +
+      '<tr><td style="color:var(--text-muted-color);padding:4px 0">Source</td><td style="text-align:right">' + escHtml((f.source || 'pulsar') + (f.received_at ? ' · ' + formatDate(f.received_at) : '')) + '</td></tr>' +
+    '</table></div>';
+
+  var aiLine = f.ai_summary ? '<div style="margin-top:10px;padding-top:10px;border-top:1px solid var(--border);font-size:12px;color:var(--text-muted-color)">AI: ' + escHtml(f.ai_summary) + '</div>' : '';
+  var incCard = '<div style="' + cardS + '">' +
+    '<div style="font-size:12px;color:var(--text-muted-color);margin-bottom:8px">Incident</div>' +
+    '<div style="font-size:14px;line-height:1.6;white-space:pre-wrap">' + escHtml(f.incident_text || '—') + '</div>' + aiLine + '</div>';
+
+  var taskLink = f.task_id ? '<span style="font-size:12px;color:var(--primary);cursor:pointer" onclick="feedbackOpenTask(' + f.task_id + ')">Linked task #' + f.task_id + '</span>' : '<span style="font-size:12px;color:var(--text-muted-color)">No linked task</span>';
+  var handleCard = '<div style="' + cardS + '">' +
+    '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px"><div style="font-size:12px;color:var(--text-muted-color)">Handling</div>' + taskLink + '</div>' +
+    '<div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">' +
+      '<div><label style="' + lbl + '">Tech <span style="color:#e24b4a">*</span></label><select id="fb-d-tech" style="' + iS + '"' + dis + '>' + techOpts + '</select>' + (f.tech_name_raw ? '<div style="font-size:11px;color:var(--text-muted-color);margin-top:3px">Pulsar said: ' + escHtml(f.tech_name_raw) + '</div>' : '') + '</div>' +
+      '<div><label style="' + lbl + '">Status</label><select id="fb-d-status" style="' + iS + '"' + dis + '>' + statusOpts + '</select></div>' +
+      '<div><label style="' + lbl + '">Tech at fault <span style="color:#e24b4a">*</span></label><select id="fb-d-fault" style="' + iS + '"' + dis + '>' + faultOpts + '</select></div>' +
+      '<div><label style="' + lbl + '">Total damages <span style="color:#e24b4a">*</span></label><input type="number" step="0.01" id="fb-d-damages" value="' + (f.total_damages != null ? f.total_damages : 0) + '" style="' + iS + '"' + dis + ' /></div>' +
+      '<div><label style="' + lbl + '">Refunded <span style="color:#e24b4a">*</span></label><select id="fb-d-refunded" style="' + iS + '"' + dis + '>' + refOpts + '</select></div>' +
+      '<div><label style="' + lbl + '">Refunded amount</label><input type="number" step="0.01" id="fb-d-refamt" value="' + (f.refunded_amount != null ? f.refunded_amount : 0) + '" style="' + iS + '"' + dis + ' /></div>' +
+      '<div><label style="' + lbl + '">Assigned to</label><select id="fb-d-assigned" style="' + iS + '"' + dis + '>' + asgOpts + '</select></div>' +
+      '<div><label style="' + lbl + '">Status note</label><input type="text" id="fb-d-statusnotes" value="' + escHtml(f.status_notes || '') + '" style="' + iS + '"' + dis + ' /></div>' +
+      '<div><label style="' + lbl + '"><input type="checkbox" id="fb-d-followupneeded"' + (f.followup_needed ? ' checked' : '') + dis + ' style="vertical-align:-1px"> Followup needed</label><input type="datetime-local" id="fb-d-followupat" value="' + fbLocalDt(f.followup_at) + '" style="' + iS + ';margin-top:4px"' + dis + ' /><div style="font-size:11px;color:var(--text-muted-color);margin-top:3px">Sends SMS + email when due</div></div>' +
+      '<div><label style="' + lbl + '">Followup note</label><input type="text" id="fb-d-followupnotes" value="' + escHtml(f.followup_notes || '') + '" style="' + iS + '"' + dis + ' /></div>' +
+      '<div style="grid-column:1 / -1"><label style="' + lbl + '">Resolution note</label><input type="text" id="fb-d-resolvednotes" value="' + escHtml(f.resolved_notes || '') + '" style="' + iS + '"' + dis + ' /></div>' +
+    '</div>' +
+    (canEdit ? '<div style="display:flex;gap:8px;margin-top:14px">' +
+      '<button class="btn btn-secondary btn-sm" onclick="feedbackSave(' + f.id + ')">Save changes</button>' +
+      (f.is_resolved ? '<button class="btn btn-secondary btn-sm" onclick="feedbackReopen(' + f.id + ')">Reopen</button>' : '<button class="btn btn-primary btn-sm" style="flex:1" onclick="feedbackResolve(' + f.id + ')">Resolve &amp; close</button>') +
+    '</div>' +
+    '<div style="font-size:11px;color:var(--text-muted-color);margin-top:6px">To close: assign a tech and set tech at fault to Yes or No. Damages and refund are recorded.</div>' : '') +
+    '</div>';
+
+  var actItems = acts.map(function(a){
+    var ch = a.channel === 'sms' ? ' <span style="color:var(--text-muted-color)">&middot; via SMS</span>' : '';
+    var when = timeAgo(a.created_at) || formatDateTime(a.created_at);
+    var who = a.user_name ? escHtml(a.user_name) : 'System';
+    var bodyTxt = a.type === 'event' ? (who + ' ' + escHtml(a.body || '')) : (who + ': ' + escHtml(a.body || ''));
+    return '<div style="display:flex;gap:10px;margin-bottom:12px">' +
+      '<div style="width:8px;height:8px;border-radius:50%;background:' + (a.type === 'note' ? 'var(--primary)' : 'var(--text-muted-color)') + ';margin-top:6px;flex-shrink:0"></div>' +
+      '<div><div style="font-size:13px;line-height:1.5">' + bodyTxt + '</div><div style="font-size:11px;color:var(--text-muted-color);margin-top:2px">' + escHtml(when) + ch + '</div></div>' +
+    '</div>';
+  }).join('') || '<div style="color:var(--text-muted-color);font-size:13px">No activity yet.</div>';
+
+  var noteBox = canEdit ? '<div style="display:flex;gap:8px;margin-top:10px"><input type="text" id="fb-d-note" placeholder="Add a note&hellip;" style="' + iS + '" onkeydown="if(event.key===&quot;Enter&quot;)feedbackAddNote(' + f.id + ')" /><button class="btn btn-secondary btn-sm" onclick="feedbackAddNote(' + f.id + ')">Add</button></div>' : '';
+  var actCard = '<div style="' + cardS + '"><div style="font-size:12px;color:var(--text-muted-color);margin-bottom:12px">Activity</div>' + actItems + noteBox + '</div>';
+
+  el.innerHTML =
+    '<div style="margin-bottom:12px"><button class="btn btn-ghost btn-sm" onclick="navigate(\'feedback\')">&larr; Back to feedback</button></div>' +
+    '<div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:14px"><div class="page-title" style="margin:0">' + escHtml(f.customer_name || 'Unknown') + '</div>' + catChip + sevChip + reviewFlag + '</div>' +
+    '<div style="display:flex;gap:16px;flex-wrap:wrap;align-items:flex-start">' +
+      '<div style="flex:2;min-width:340px">' + custCard + incCard + handleCard + '</div>' +
+      '<div style="flex:1;min-width:260px">' + actCard + '</div>' +
+    '</div>';
+}
+
+function _fbCollect(){
+  function v(x){ var e = document.getElementById(x); return e ? e.value : undefined; }
+  function c(x){ var e = document.getElementById(x); return e ? e.checked : undefined; }
+  var faultV = v('fb-d-fault');
+  var dmg = v('fb-d-damages'); var ramt = v('fb-d-refamt');
+  return {
+    status: v('fb-d-status'),
+    status_notes: v('fb-d-statusnotes'),
+    tech_user_id: v('fb-d-tech') ? parseInt(v('fb-d-tech'), 10) : null,
+    assigned_to: v('fb-d-assigned') ? parseInt(v('fb-d-assigned'), 10) : null,
+    tech_at_fault: faultV === 'yes' ? true : faultV === 'no' ? false : null,
+    total_damages: (dmg !== '' && dmg != null) ? parseFloat(dmg) : 0,
+    refunded: v('fb-d-refunded') === 'yes',
+    refunded_amount: (ramt !== '' && ramt != null) ? parseFloat(ramt) : 0,
+    followup_needed: c('fb-d-followupneeded'),
+    followup_at: v('fb-d-followupat') || null,
+    followup_notes: v('fb-d-followupnotes'),
+    resolved_notes: v('fb-d-resolvednotes')
+  };
+}
+async function feedbackSave(id){
+  try { await api('PATCH', '/feedback/' + id, _fbCollect()); showToast('Saved', 'success'); navigate('feedback-detail', id); }
+  catch (e) { showToast(e.message, 'error'); }
+}
+async function feedbackResolve(id){
+  var body = _fbCollect(); body.status = 'resolved'; body.is_resolved = true;
+  try { await api('PATCH', '/feedback/' + id, body); showToast('Resolved', 'success'); navigate('feedback-detail', id); }
+  catch (e) { showToast(e.message, 'error'); }
+}
+async function feedbackReopen(id){
+  try { await api('PATCH', '/feedback/' + id, { is_resolved: false, status: 'in_progress' }); showToast('Reopened', 'success'); navigate('feedback-detail', id); }
+  catch (e) { showToast(e.message, 'error'); }
+}
+async function feedbackAddNote(id){
+  var e = document.getElementById('fb-d-note'); if (!e) return;
+  var body = (e.value || '').trim(); if (!body) return;
+  try { await api('POST', '/feedback/' + id + '/notes', { body: body }); e.value = ''; navigate('feedback-detail', id); }
+  catch (err) { showToast(err.message, 'error'); }
+}
 
 async function renderReviews(el) {
   var iS = 'padding:8px 10px;background:var(--surface-color);border:1px solid rgba(249,115,22,0.35);border-radius:6px;color:var(--text-color);font-size:13px;outline:none';
@@ -10062,6 +10303,7 @@ async function renderSchedule(el){
       { label: 'Cash Deposits', view: 'deposits', kw: 'cash deposit money bank', show: function () { return can('view_deposits'); } },
       { label: 'Accounts', view: 'vendors', kw: 'vendor account supplier accounts', show: function () { return can('manage_vendors'); } },
       { label: 'Geico Surveys', view: 'geico', kw: 'geico survey insurance', show: function () { return can('manage_geico'); } },
+      { label: 'Customer Feedback', view: 'feedback', kw: 'feedback complaint pulsar customer tech conduct', show: function () { return can('view_feedback'); } },
       { label: 'Suggestions', view: 'suggestions', kw: 'suggestion idea feedback box', show: T },
       { label: 'Document Vault', view: 'documents', kw: 'document vault file folder storage', show: T },
       { label: 'SOP Library', view: 'sop-library', kw: 'sop standard operating procedure library', show: function () { return isAdmin; } },
