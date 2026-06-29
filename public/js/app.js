@@ -1624,6 +1624,7 @@ async function renderUsers(el) {
     _usersSearch = '';
     el.innerHTML =
       '<div class="page-header"><div class="page-title">Users</div>' + (can('manage_users') ? '<button class="btn btn-primary" onclick="showUserModal(null)" style="white-space:nowrap">' + icons.plus + ' Add User</button>' : '') + '</div>' +
+      importantDetails('users') +
       '<div id="users-error"></div>' +
       '<div style="margin-bottom:16px"><input type="text" id="users-search" placeholder="Search by name, email, or role..." style="width:100%;max-width:400px;padding:8px 12px;background:var(--surface-color);border:1px solid rgba(249,115,22,0.35);border-radius:6px;color:var(--text-color);font-size:14px;outline:none;box-shadow:0 0 0 1px rgba(249,115,22,0.15)" oninput="usersFilter(this.value)" /></div>' +
       '<div id="users-table-wrap"></div>' +
@@ -3328,6 +3329,31 @@ function fbLocalDt(d){
   return t.getFullYear() + '-' + p(t.getMonth() + 1) + '-' + p(t.getDate()) + 'T' + p(t.getHours()) + ':' + p(t.getMinutes());
 }
 
+// Per-view "Important details" notes — surfaces the non-obvious behaviors of a
+// module in-app (collapsible). Add a view key here to give that page a panel.
+var IMPORTANT_DETAILS = {
+  feedback: [
+    'Feedback is routed to the manager(s) assigned to its city. Set this in Settings &rarr; Users &rarr; edit a user &rarr; Cities. If no manager has that city checked, it falls back to admins.',
+    'A record can&#39;t be resolved until a tech is assigned and Tech at fault is set to Yes or No. Total damages and refund are recorded too (0 is a valid answer).',
+    'High or critical severity auto-escalates: an immediate text + email to the assigned manager, on top of the normal task.',
+    'Pulsar emails sent to feedback@in.popalockar.com create these records automatically; AI fills in the category, severity, and summary.',
+    'A manager can reply by text to a feedback alert and it&#39;s logged as a note on the record.',
+    'Who gets the &quot;new feedback&quot; heads-up is controlled in Settings &rarr; Notifications (the &quot;New customer feedback received&quot; event).'
+  ],
+  users: [
+    'The Cities checked on a user control which city&#39;s data they see. For Customer Feedback routing specifically, a manager must have the city checked to receive that city&#39;s complaints &mdash; blank does NOT mean &quot;all&quot; for feedback.'
+  ]
+};
+function importantDetails(view) {
+  var notes = IMPORTANT_DETAILS[view];
+  if (!notes || !notes.length) return '';
+  var ico = '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="var(--primary)" stroke-width="2" style="flex-shrink:0"><circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/></svg>';
+  return '<details style="margin:0 0 16px;border:1px solid var(--border);border-radius:8px;background:var(--surface-color);overflow:hidden">' +
+    '<summary style="cursor:pointer;padding:10px 14px;font-size:13px;font-weight:600;color:var(--text-color);display:flex;align-items:center;gap:8px">' + ico + ' Important details</summary>' +
+    '<ul style="margin:0;padding:4px 18px 14px 36px;color:var(--text-muted-color);font-size:13px;line-height:1.6">' +
+    notes.map(function (n) { return '<li style="margin-bottom:6px">' + n + '</li>'; }).join('') +
+    '</ul></details>';
+}
 async function renderFeedback(el){
   if (!can('view_feedback')) { el.innerHTML = '<div class="alert alert-error">Access denied.</div>'; return; }
   var iS = 'padding:8px 10px;background:var(--surface-color);border:1px solid rgba(249,115,22,0.35);border-radius:6px;color:var(--text-color);font-size:13px;outline:none';
@@ -3335,6 +3361,7 @@ async function renderFeedback(el){
   var statusOpts = Object.keys(FB_STATUS).map(function(k){ return '<option value="' + k + '">' + FB_STATUS[k] + '</option>'; }).join('');
   el.innerHTML =
     '<div class="page-header"><div><div class="page-title">Customer Feedback</div><div class="page-subtitle">Complaints &amp; feedback by city, tech &amp; severity</div></div></div>' +
+    importantDetails('feedback') +
     '<div style="display:flex;flex-wrap:wrap;gap:10px;align-items:end;margin-bottom:16px">' +
       '<div><label style="' + lbl + '">City</label><select id="fb-city" style="' + iS + '" onchange="feedbackLoad()"><option value="">All cities</option></select></div>' +
       '<div><label style="' + lbl + '">Severity</label><select id="fb-sev" style="' + iS + '" onchange="feedbackLoad()"><option value="">All</option><option value="critical">Critical</option><option value="high">High</option><option value="medium">Medium</option><option value="low">Low</option></select></div>' +
