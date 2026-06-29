@@ -83,6 +83,33 @@ router.post('/email', async function (req, res) {
   try {
     const data = event.data || {};
     const senderEmail = emailFromHeader(data.from);
+
+    // Resend uses ONE catch-all webhook per receiving domain, routed by recipient
+    // here in the app. Mail to the feedback address goes to the customer-feedback
+    // intake (no known-sender gate, since Pulsar is an external system).
+    const toRaw = Array.isArray(data.to) ? data.to.join(',') : (data.to || '');
+    const fbAddr = (process.env.FEEDBACK_INBOUND_ADDRESS || 'feedback@').toLowerCase();
+    if (toRaw.toLowerCase().indexOf(fbAddr) !== -1) {
+      try {
+        if (!data.email_id) { console.log('[feedback] webhook missing email_id'); return; }
+        const full = await fetchReceivedEmail(data.email_id);
+        const parsed = parsePulsarEmail({
+          subject: (full && full.subject) || data.subject || '',
+          text: (full && full.text) || '',
+          html: (full && full.html) || ''
+        });
+        const result = await intakeFeedback(parsed, {
+          source: 'pulsar',
+          external_ref: data.email_id,
+          raw_email: (full && (full.text || full.html)) || '',
+          raw_subject: (full && full.subject) || data.subject || ''
+        });
+        if (result && result.duplicate) { console.log('[feedback] duplicate email ignored'); return; }
+        console.log('[feedback] created record #' + (result && result.id));
+      } catch (e) { console.error('[feedback] processing failed:', e.message); }
+      return;
+    }
+
     const sender = await findUserByEmail(senderEmail);
     if (!sender) {
       console.log('[inbound] ignoring email from unknown sender:', senderEmail);
