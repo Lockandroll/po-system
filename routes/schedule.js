@@ -278,6 +278,66 @@ router.post('/publish', requireAuth, requirePermission('manage_schedule'), async
   res.json({ published: rows.length });
 });
 
+// ---- bulk action on a specific set of shift ids (grid multi-select) -------
+router.post('/bulk-ids', requireAuth, requirePermission('manage_schedule'), async (req, res) => {
+  const b = req.body || {};
+  const action = String(b.action || '').trim();
+  let ids = Array.isArray(b.ids) ? b.ids.map(function (x) { return parseInt(x, 10); }).filter(function (x) { return Number.isInteger(x) && x > 0; }) : [];
+  ids = Array.from(new Set(ids));
+  if (!ids.length) return res.status(400).json({ error: 'No shifts selected' });
+  if (ids.length > 1000) return res.status(400).json({ error: 'Too many shifts selected (max 1000)' });
+  const scope = await allowedCities(req.user);
+  // Build the id (+ city-scope) guard, appended after any SET params.
+  function guard(setParams) {
+    const params = setParams.slice();
+    params.push(ids); let clause = ' WHERE id = ANY($' + params.length + '::int[])';
+    if (scope !== null) {
+      if (!scope.length) return null; // assigned to no cities -> affects nothing
+      params.push(scope); clause += ' AND TRIM(city_code) = ANY($' + params.length + '::text[])';
+    }
+    return { clause: clause, params: params };
+  }
+
+  if (action === 'delete') {
+    const g = guard([]); if (!g) return res.json({ affected: 0 });
+    const r = await pool.query('DELETE FROM shifts' + g.clause + ' RETURNING id', g.params);
+    await logAudit({ entity_type: 'schedule', action: 'bulk_delete', user_id: req.user.id, user_name: req.user.name, details: { count: r.rows.length } });
+    return res.json({ affected: r.rows.length });
+  }
+
+  if (action === 'publish' || action === 'unpublish') {
+    const pub = action === 'publish';
+    const g = guard([pub ? 'published' : 'draft', pub ? new Date() : null]); if (!g) return res.json({ affected: 0 });
+    const r = await pool.query('UPDATE shifts SET status=$1, published_at=$2, updated_at=NOW()' + g.clause + ' RETURNING id', g.params);
+    await logAudit({ entity_type: 'schedule', action: pub ? 'bulk_publish' : 'bulk_unpublish', user_id: req.user.id, user_name: req.user.name, details: { count: r.rows.length } });
+    return res.json({ affected: r.rows.length });
+  }
+
+  if (action === 'update') {
+    const sets = []; const vals = [];
+    if (RE_TIME.test(b.start_time)) { vals.push(b.start_time); sets.push('start_time=$' + vals.length); }
+    if (RE_TIME.test(b.end_time)) { vals.push(b.end_time); sets.push('end_time=$' + vals.length); }
+    if (Object.prototype.hasOwnProperty.call(b, 'position_id')) { vals.push(b.position_id ? (parseInt(b.position_id, 10) || null) : null); sets.push('position_id=$' + vals.length); }
+    if (b.break_minutes !== undefined && b.break_minutes !== '' && b.break_minutes !== null) { vals.push(Math.max(0, parseInt(b.break_minutes, 10) || 0)); sets.push('break_minutes=$' + vals.length); }
+    if (!sets.length) return res.status(400).json({ error: 'Nothing to update' });
+    const g = guard(vals); if (!g) return res.json({ affected: 0 });
+    const r = await pool.query('UPDATE shifts SET ' + sets.join(', ') + ', updated_at=NOW()' + g.clause + ' RETURNING id', g.params);
+    return res.json({ affected: r.rows.length });
+  }
+
+  if (action === 'reassign') {
+    const uid = parseInt(b.user_id, 10) || null;
+    if (!uid) return res.status(400).json({ error: 'Pick an employee to reassign to' });
+    const u = await pool.query('SELECT name FROM users WHERE id=$1', [uid]);
+    if (!u.rows.length) return res.status(400).json({ error: 'Employee not found' });
+    const g = guard([uid, u.rows[0].name]); if (!g) return res.json({ affected: 0 });
+    const r = await pool.query('UPDATE shifts SET user_id=$1, user_name=$2, updated_at=NOW()' + g.clause + ' RETURNING id', g.params);
+    return res.json({ affected: r.rows.length });
+  }
+
+  return res.status(400).json({ error: 'Unknown action' });
+});
+
 // ---- copy week -------------------------------------------------------------
 router.post('/copy-week', requireAuth, requirePermission('manage_schedule'), async (req, res) => {
   const src = RE_DATE.test(req.body.source_monday) ? req.body.source_monday : null;

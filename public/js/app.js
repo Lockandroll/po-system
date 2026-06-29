@@ -9714,6 +9714,7 @@ async function printSignoff(id) {
 
 // ===== Scheduling (Sling-style) ============================================
 var _schedMonday = null, _schedCity = '', _schedRole = '', _schedCities = [], _schedUsers = [], _schedPositions = [], _schedShifts = [], _schedEditId = null, _schedEmpCities = {}, _schedScope = null, _schedMode = 'week', _schedMonthAnchor = null;
+var _schedSelMode = false, _schedSel = {};
 
 function schedYmd(d){ return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0'); }
 function schedAddDays(ds,n){ var a=ds.split('-').map(Number); var d=new Date(a[0],a[1]-1,a[2]); d.setDate(d.getDate()+n); return schedYmd(d); }
@@ -9769,6 +9770,7 @@ async function renderScheduleAdmin(el){
         '<button class="btn btn-secondary btn-sm" onclick="schedSetMode(\''+(isMonth?'week':'month')+'\')">'+(isMonth?'Week view':'Month view')+'</button>'+
         (isMonth?'':'<button class="btn btn-secondary btn-sm" onclick="schedSwitchType(\'single\')">Add Shift</button>')+
         (isMonth?'':'<button class="btn btn-secondary btn-sm" onclick="schedBulkForm()">Bulk edit</button>')+
+        (isMonth?'':'<button class="btn '+(_schedSelMode?'btn-primary':'btn-secondary')+' btn-sm" onclick="schedToggleSelectMode()">'+(_schedSelMode?'Exit select':'Select')+'</button>')+
         '<button class="btn btn-secondary btn-sm" onclick="schedManagePositions()">Positions</button>'+
         '<button class="btn btn-secondary btn-sm" onclick="navigate(\'schedule-nowork\')">No-Work Report</button>'+
         (isMonth?'':'<button class="btn btn-primary btn-sm" onclick="schedPublishWeek()">Publish Week</button>')+
@@ -9779,10 +9781,12 @@ async function renderScheduleAdmin(el){
       '<select onchange="schedSetCity(this.value)" style="background:var(--card-bg,#1a1a1a);color:var(--text-color,#fff);border:1px solid var(--border,#333);border-radius:6px;padding:7px 10px;font-size:13px">'+cityOpts+'</select>'+
       '<select onchange="schedSetRole(this.value)" style="background:var(--card-bg,#1a1a1a);color:var(--text-color,#fff);border:1px solid var(--border,#333);border-radius:6px;padding:7px 10px;font-size:13px">'+schedRoleOptions()+'</select>'+
     '</div>'+
+    '<div id="sched-selbar" style="position:sticky;top:0;z-index:60"></div>'+
     '<div class="card"><div class="card-body" style="overflow-x:auto;padding:0"><div id="sched-grid-wrap"></div></div></div>'+
     '<p class="text-muted" style="font-size:12.5px;margin-top:10px">'+(isMonth?'Click a shift to edit, or a day to jump to that week.':'Click any cell to add a shift; click a shift to edit. Dashed = draft (not yet visible to staff); solid = published.')+'</p>'+
     '<div id="sched-modal"></div>';
   if(isMonth) schedRenderMonth(); else schedRenderGrid();
+  schedUpdateSelBar();
 }
 function schedSetMode(m){ _schedMode=m; if(m==='month' && !_schedMonthAnchor) _schedMonthAnchor=schedMonthFirst(_schedMonday||schedToday()); renderScheduleAdmin(document.getElementById('content')); }
 function schedChangeMonth(n){ _schedMonthAnchor=schedAddMonths(_schedMonthAnchor||schedMonthFirst(schedToday()), n); renderScheduleAdmin(document.getElementById('content')); }
@@ -9912,7 +9916,7 @@ function schedRenderGrid(){
         var pub=s.status==='published';
         var border=pub?('1px solid '+col):('1px dashed '+col);
         var bg=pub?(col+'22'):'transparent';
-        return '<div draggable="true" ondragstart="schedDragStart(event,'+s.id+')" ondragend="schedDragEnd(event)" ontouchstart="schedTouchStart(event,'+s.id+')" ontouchmove="schedTouchMove(event)" ontouchend="schedTouchEnd(event)" onclick="event.stopPropagation();schedOpenShift('+s.id+')" title="'+escHtml((s.position_name||'')+(s.notes?(' — '+s.notes):''))+'" style="cursor:grab;-webkit-user-select:none;user-select:none;-webkit-touch-callout:none;border:'+border+';background:'+bg+';border-left:4px solid '+col+';border-radius:5px;padding:3px 6px;margin:3px 4px;font-size:11.5px;line-height:1.35">'+
+        return '<div data-shift-id="'+s.id+'" draggable="'+(_schedSelMode?'false':'true')+'" ondragstart="schedDragStart(event,'+s.id+')" ondragend="schedDragEnd(event)" ontouchstart="schedTouchStart(event,'+s.id+')" ontouchmove="schedTouchMove(event)" ontouchend="schedTouchEnd(event)" onclick="event.stopPropagation();schedShiftClick('+s.id+')" title="'+escHtml((s.position_name||'')+(s.notes?(' — '+s.notes):''))+'" style="cursor:'+(_schedSelMode?'pointer':'grab')+';-webkit-user-select:none;user-select:none;-webkit-touch-callout:none;border:'+border+';background:'+bg+';border-left:4px solid '+col+';border-radius:5px;padding:3px 6px;margin:3px 4px;font-size:11.5px;line-height:1.35'+(_schedSel[s.id]?';box-shadow:0 0 0 2px var(--primary,#f97316);outline:1px solid var(--primary,#f97316);outline-offset:1px':'')+'">'+
           '<div style="font-weight:600">'+escHtml(schedTimeFmt(s.start_time))+'–'+escHtml(schedTimeFmt(s.end_time))+'</div>'+
           (s.position_name?'<div style="color:var(--text-muted-color,#999)">'+escHtml(s.position_name)+'</div>':'')+'</div>';
       }).join('');
@@ -9926,9 +9930,97 @@ function schedRenderGrid(){
   wrap.innerHTML='<table style="border-collapse:collapse;width:100%;min-width:980px"><thead>'+head+'</thead><tbody>'+rows+'</tbody></table>';
 }
 
+// --- Bulk multi-select on the week grid ---
+function schedToggleSelectMode(){ _schedSelMode=!_schedSelMode; if(!_schedSelMode) _schedSel={}; renderScheduleAdmin(document.getElementById('content')); }
+function schedShiftClick(id){ if(_schedSelMode) schedToggleSel(id); else schedOpenShift(id); }
+function schedSelIds(){ return Object.keys(_schedSel).map(Number); }
+function schedSelCount(){ return Object.keys(_schedSel).length; }
+function schedStyleShiftSel(el,on){ if(!el) return; el.style.boxShadow=on?'0 0 0 2px var(--primary,#f97316)':''; el.style.outline=on?'1px solid var(--primary,#f97316)':''; el.style.outlineOffset=on?'1px':''; }
+function schedToggleSel(id){ if(_schedSel[id]) delete _schedSel[id]; else _schedSel[id]=1; var el=document.querySelector('[data-shift-id="'+id+'"]'); schedStyleShiftSel(el,!!_schedSel[id]); schedUpdateSelBar(); }
+function schedClearSel(){ _schedSel={}; var els=document.querySelectorAll('[data-shift-id]'); for(var i=0;i<els.length;i++) schedStyleShiftSel(els[i],false); schedUpdateSelBar(); }
+function schedSelectAllVisible(){ var els=document.querySelectorAll('[data-shift-id]'); for(var i=0;i<els.length;i++){ var id=parseInt(els[i].getAttribute('data-shift-id'),10); _schedSel[id]=1; schedStyleShiftSel(els[i],true); } schedUpdateSelBar(); }
+function schedAfterBulk(){ if(_schedMode==='month') schedRenderMonth(); else schedRenderGrid(); schedUpdateSelBar(); }
+function schedUpdateSelBar(){
+  var bar=document.getElementById('sched-selbar'); if(!bar) return;
+  if(!_schedSelMode){ bar.innerHTML=''; return; }
+  var n=schedSelCount();
+  bar.innerHTML='<div style="background:var(--card-bg,#161616);border:1px solid var(--border,#2a2a2a);border-radius:10px;box-shadow:0 6px 20px rgba(0,0,0,.4);padding:9px 12px;display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:10px">'+
+    '<span style="font-weight:600;font-size:13px;margin-right:2px">'+n+' selected</span>'+
+    '<button class="btn btn-secondary btn-sm" onclick="schedSelectAllVisible()">Select all</button>'+
+    (n?'<button class="btn btn-secondary btn-sm" onclick="schedBulkIdsPublish(true)">Publish</button>':'')+
+    (n?'<button class="btn btn-secondary btn-sm" onclick="schedBulkIdsPublish(false)">Unpublish</button>':'')+
+    (n?'<button class="btn btn-secondary btn-sm" onclick="schedBulkIdsEditForm()">Edit times/position</button>':'')+
+    (n?'<button class="btn btn-secondary btn-sm" onclick="schedBulkIdsReassignForm()">Reassign</button>':'')+
+    (n?'<button class="btn btn-danger btn-sm" onclick="schedBulkIdsDelete()">Delete</button>':'')+
+    (n?'<button class="btn btn-ghost btn-sm" onclick="schedClearSel()">Clear</button>':'')+
+    '<button class="btn btn-ghost btn-sm" style="margin-left:auto" onclick="schedToggleSelectMode()">Done</button>'+
+  '</div>';
+}
+async function schedBulkIdsDelete(){
+  var ids=schedSelIds(); if(!ids.length) return;
+  if(!await novaConfirm('Delete '+ids.length+' selected shift(s)? This cannot be undone.')) return;
+  try{ var r=await api('POST','/schedule/bulk-ids',{action:'delete',ids:ids}); _schedSel={}; await schedLoadAdmin(); schedAfterBulk(); schedToast('Deleted '+r.affected+' shift(s).','ok'); }
+  catch(e){ schedToast(e.message||'Delete failed','err'); }
+}
+async function schedBulkIdsPublish(pub){
+  var ids=schedSelIds(); if(!ids.length) return;
+  try{ var r=await api('POST','/schedule/bulk-ids',{action:pub?'publish':'unpublish',ids:ids}); _schedSel={}; await schedLoadAdmin(); schedAfterBulk(); schedToast((pub?'Published ':'Unpublished ')+r.affected+' shift(s).','ok'); }
+  catch(e){ schedToast(e.message||'Failed','err'); }
+}
+function schedBulkIdsEditForm(){
+  var ids=schedSelIds(); if(!ids.length) return;
+  var inp='background:var(--bg-elevated,#1f1f1f);color:var(--text-color,#fff);border:1px solid var(--border,#333);border-radius:6px;padding:8px;width:100%;font-size:14px;box-sizing:border-box';
+  var posOpts='<option value="">— leave unchanged —</option>'+_schedPositions.filter(function(pp){return pp.active!==false;}).map(function(pp){ return '<option value="'+pp.id+'">'+escHtml(pp.name)+'</option>'; }).join('');
+  schedModal(
+    '<h3 style="margin:0 0 4px">Edit '+ids.length+' shift(s)</h3>'+
+    '<p class="text-muted" style="font-size:12.5px;margin:0 0 12px">Leave a field blank to keep it unchanged on each shift.</p>'+
+    '<div id="bki-err"></div>'+
+    '<div style="display:flex;gap:10px;flex-wrap:wrap">'+
+      '<div style="flex:1;min-width:120px"><div style="font-size:12px;color:var(--text-muted-color);margin-bottom:4px">Start</div><input type="time" id="bki-start" style="'+inp+'"></div>'+
+      '<div style="flex:1;min-width:120px"><div style="font-size:12px;color:var(--text-muted-color);margin-bottom:4px">End</div><input type="time" id="bki-end" style="'+inp+'"></div>'+
+    '</div>'+
+    '<div style="display:flex;gap:10px;flex-wrap:wrap;margin-top:10px">'+
+      '<div style="flex:1;min-width:120px"><div style="font-size:12px;color:var(--text-muted-color);margin-bottom:4px">Position</div><select id="bki-pos" style="'+inp+'">'+posOpts+'</select></div>'+
+      '<div style="flex:1;min-width:120px"><div style="font-size:12px;color:var(--text-muted-color);margin-bottom:4px">Break (min)</div><input type="number" min="0" id="bki-break" placeholder="unchanged" style="'+inp+'"></div>'+
+    '</div>'+
+    '<div style="display:flex;justify-content:flex-end;gap:8px;margin-top:14px"><button class="btn btn-ghost btn-sm" onclick="schedCloseModal()">Cancel</button><button class="btn btn-primary btn-sm" onclick="schedBulkIdsEditSave()">Apply</button></div>'
+  );
+}
+async function schedBulkIdsEditSave(){
+  var ids=schedSelIds(); if(!ids.length){ schedCloseModal(); return; }
+  var body={action:'update',ids:ids};
+  var st=(document.getElementById('bki-start')||{}).value; if(st) body.start_time=st;
+  var en=(document.getElementById('bki-end')||{}).value; if(en) body.end_time=en;
+  var po=(document.getElementById('bki-pos')||{}).value; if(po) body.position_id=po;
+  var bm=(document.getElementById('bki-break')||{}).value; if(bm!==''&&bm!==undefined) body.break_minutes=bm;
+  if(!body.start_time && !body.end_time && !body.position_id && body.break_minutes===undefined){ document.getElementById('bki-err').innerHTML='<div class="alert alert-error">Enter at least one change.</div>'; return; }
+  try{ var r=await api('POST','/schedule/bulk-ids',body); _schedSel={}; schedCloseModal(); await schedLoadAdmin(); schedAfterBulk(); schedToast('Updated '+r.affected+' shift(s).','ok'); }
+  catch(e){ document.getElementById('bki-err').innerHTML='<div class="alert alert-error">'+escHtml(e.message)+'</div>'; }
+}
+function schedBulkIdsReassignForm(){
+  var ids=schedSelIds(); if(!ids.length) return;
+  var inp='background:var(--bg-elevated,#1f1f1f);color:var(--text-color,#fff);border:1px solid var(--border,#333);border-radius:6px;padding:8px;width:100%;font-size:14px;box-sizing:border-box';
+  var userOpts='<option value="">— pick employee —</option>'+schedVisibleUsers().map(function(u){ return '<option value="'+u.id+'">'+escHtml(u.name)+'</option>'; }).join('');
+  schedModal(
+    '<h3 style="margin:0 0 4px">Reassign '+ids.length+' shift(s)</h3>'+
+    '<p class="text-muted" style="font-size:12.5px;margin:0 0 12px">Move every selected shift to this employee.</p>'+
+    '<div id="bki-err"></div>'+
+    '<div style="font-size:12px;color:var(--text-muted-color);margin-bottom:4px">Employee</div><select id="bki-user" style="'+inp+'">'+userOpts+'</select>'+
+    '<div style="display:flex;justify-content:flex-end;gap:8px;margin-top:14px"><button class="btn btn-ghost btn-sm" onclick="schedCloseModal()">Cancel</button><button class="btn btn-primary btn-sm" onclick="schedBulkIdsReassignSave()">Reassign</button></div>'
+  );
+}
+async function schedBulkIdsReassignSave(){
+  var ids=schedSelIds(); if(!ids.length){ schedCloseModal(); return; }
+  var uid=(document.getElementById('bki-user')||{}).value;
+  if(!uid){ document.getElementById('bki-err').innerHTML='<div class="alert alert-error">Pick an employee.</div>'; return; }
+  try{ var r=await api('POST','/schedule/bulk-ids',{action:'reassign',ids:ids,user_id:uid}); _schedSel={}; schedCloseModal(); await schedLoadAdmin(); schedAfterBulk(); schedToast('Reassigned '+r.affected+' shift(s).','ok'); }
+  catch(e){ document.getElementById('bki-err').innerHTML='<div class="alert alert-error">'+escHtml(e.message)+'</div>'; }
+}
+
 // --- Drag-and-drop: move a shift to another day/employee by dragging it ---
 var _schedDragShiftId=null;
 function schedDragStart(e,id){
+  if(_schedSelMode){ e.preventDefault(); return; }
   _schedDragShiftId=id;
   if(e.dataTransfer){ e.dataTransfer.effectAllowed='move'; try{ e.dataTransfer.setData('text/plain',String(id)); }catch(_e){} }
   var el=e.currentTarget; if(el) setTimeout(function(){ if(el) el.style.opacity='0.4'; },0);
@@ -10058,7 +10150,7 @@ function schedShiftForm(s){
     '</div>'
   );
 }
-function schedNewShift(userId,date){ schedShiftForm({ user_id:userId, _date:date, shift_date:date }); }
+function schedNewShift(userId,date){ if(_schedSelMode) return; schedShiftForm({ user_id:userId, _date:date, shift_date:date }); }
 function schedOpenShift(id){ var s=_schedShifts.filter(function(x){return x.id===id;})[0]; if(s) schedShiftForm(s); }
 
 async function schedSaveShift(){

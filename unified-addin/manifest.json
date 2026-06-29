@@ -26,8 +26,8 @@
     "www.popalockar.com"
   ],
   "webApplicationInfo": {
-    "id": "REPLACE_WITH_ENTRA_APP_CLIENT_ID",
-    "resource": "api://www.popalockar.com/REPLACE_WITH_ENTRA_APP_CLIENT_ID"
+    "id": "c8202a71-94a0-4a36-93fe-79b76d1c27bd",
+    "resource": "api://www.popalockar.com/c8202a71-94a0-4a36-93fe-79b76d1c27bd"
   },
   "extensions": [
     {
