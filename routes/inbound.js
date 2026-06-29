@@ -230,7 +230,7 @@ router.post('/sms', async function (req, res) {
     const key = phoneKey(from);
     var user = null;
     if (key) {
-      const u = await pool.query("SELECT id, name, phone FROM users WHERE right(regexp_replace(coalesce(phone,''), '\\D', '', 'g'), 10) = $1 AND active = true LIMIT 1", [key]);
+      const u = await pool.query("SELECT id, name, email, role FROM users WHERE right(regexp_replace(coalesce(phone,''), '\\D', '', 'g'), 10) = $1 AND active = true LIMIT 1", [key]);
       if (u.rows.length) user = u.rows[0];
     }
 
