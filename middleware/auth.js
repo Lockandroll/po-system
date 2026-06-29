@@ -61,15 +61,28 @@ function requireRole(...roles) {
   };
 }
 
+// Per-user permission grants live in users.extra_perms (TEXT[]). These let an
+// admin give an individual a capability (e.g. manage_schedule) without changing
+// their role. Only checked when the role itself lacks the permission.
+async function userHasExtraPerm(userId, perm) {
+  try {
+    const r = await pool.query('SELECT extra_perms FROM users WHERE id = $1', [userId]);
+    const ep = r.rows.length ? r.rows[0].extra_perms : null;
+    return Array.isArray(ep) && ep.indexOf(perm) !== -1;
+  } catch (e) { return false; }
+}
+
 function requirePermission(perm) {
   return async (req, res, next) => {
     try {
       if (!req.user) return res.status(401).json({ error: 'Unauthorized' });
       const ok = await permissions.hasPermission(req.user.role, perm);
-      if (!ok) return res.status(403).json({ error: 'Forbidden' });
-      return next();
+      if (ok) return next();
+      if (req.user.id && await userHasExtraPerm(req.user.id, perm)) return next();
+      return res.status(403).json({ error: 'Forbidden' });
     } catch (e) {
       try { if (req.user && permissions.defaultHas(req.user.role, perm)) return next(); } catch (_) {}
+      try { if (req.user && req.user.id && await userHasExtraPerm(req.user.id, perm)) return next(); } catch (_) {}
       return res.status(403).json({ error: 'Forbidden' });
     }
   };

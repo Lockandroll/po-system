@@ -682,6 +682,7 @@ async function initDB() {
     await client.query('CREATE INDEX IF NOT EXISTS idx_push_subs_user ON push_subscriptions(user_id);');
     await client.query("ALTER TABLE users ADD COLUMN IF NOT EXISTS pulsar_name VARCHAR(255);");
     await client.query("ALTER TABLE users ADD COLUMN IF NOT EXISTS hide_from_schedule BOOLEAN NOT NULL DEFAULT false;");
+    await client.query("ALTER TABLE users ADD COLUMN IF NOT EXISTS extra_perms TEXT[] NOT NULL DEFAULT '{}';");
     await client.query("ALTER TABLE users ADD COLUMN IF NOT EXISTS last_login_at TIMESTAMPTZ;");
     await client.query("ALTER TABLE users ADD COLUMN IF NOT EXISTS last_seen_at TIMESTAMPTZ;");
     const _spSeed = await client.query("SELECT value FROM settings WHERE key = 'schedule_seed_v1'");

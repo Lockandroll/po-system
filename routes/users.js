@@ -57,7 +57,7 @@ async function sendInvite(user, invitedByName) {
 // List all users (admin only)
 router.get('/', requireAuth, requirePermission('view_users'), async (req, res) => {
   const { rows } = await pool.query(
-    'SELECT id, name, email, phone, role, active, receive_emails, receive_sms, pulsar_name, hide_from_schedule, created_at, last_login_at, last_seen_at FROM users ORDER BY active DESC, name ASC'
+    'SELECT id, name, email, phone, role, active, receive_emails, receive_sms, pulsar_name, hide_from_schedule, extra_perms, created_at, last_login_at, last_seen_at FROM users ORDER BY active DESC, name ASC'
   );
   const mc = await pool.query('SELECT user_id, city_code FROM user_cities');
   const byU = {};
@@ -65,6 +65,16 @@ router.get('/', requireAuth, requirePermission('view_users'), async (req, res) =
   rows.forEach(function (u) { u.city_codes = byU[u.id] || []; });
   res.json(rows);
 });
+
+// Per-user grantable permissions. Only these may be set via the user form so the
+// checkbox UI can never accidentally elevate someone to manage_users/settings.
+const GRANTABLE_PERMS = ['manage_schedule'];
+function cleanExtraPerms(v) {
+  if (!Array.isArray(v)) return null; // null = caller didn't send it; leave unchanged
+  const out = [];
+  v.forEach(function (p) { if (GRANTABLE_PERMS.indexOf(p) !== -1 && out.indexOf(p) === -1) out.push(p); });
+  return out;
+}
 
 // Create user (admin only)
 router.post('/', requireAuth, requirePermission('manage_users'), async (req, res) => {
@@ -85,8 +95,8 @@ router.post('/', requireAuth, requirePermission('manage_users'), async (req, res
   const password_hash = await bcrypt.hash(rawPassword, 12);
   try {
     const { rows } = await pool.query(
-      'INSERT INTO users (name, email, password_hash, role, phone, receive_emails, receive_sms, pulsar_name, hide_from_schedule) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) RETURNING id, name, email, phone, role, active, receive_emails, receive_sms, pulsar_name, hide_from_schedule',
-      [name, email, password_hash, role, phone || null, receive_emails !== false, receive_sms === true, pulsar_name || null, hide_from_schedule === true]
+      'INSERT INTO users (name, email, password_hash, role, phone, receive_emails, receive_sms, pulsar_name, hide_from_schedule, extra_perms) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) RETURNING id, name, email, phone, role, active, receive_emails, receive_sms, pulsar_name, hide_from_schedule, extra_perms',
+      [name, email, password_hash, role, phone || null, receive_emails !== false, receive_sms === true, pulsar_name || null, hide_from_schedule === true, cleanExtraPerms(req.body.extra_perms) || []]
     );
     const newUser = rows[0];
     newUser.city_codes = (await setUserCities(newUser.id, req.body.city_codes)) || [];
@@ -120,11 +130,11 @@ router.put('/:id', requireAuth, requirePermission('manage_users'), async (req, r
   let query, params;
   if (password) {
     const password_hash = await bcrypt.hash(password, 12);
-    query = 'UPDATE users SET name=$1, email=$2, role=$3, password_hash=$4, phone=$5, receive_emails=$6, receive_sms=$7, pulsar_name=$8, hide_from_schedule=$9 WHERE id=$10 RETURNING id, name, email, phone, role, active, receive_emails, receive_sms, pulsar_name, hide_from_schedule';
-    params = [name, email, role, password_hash, phone || null, receive_emails !== false, receive_sms === true, pulsar_name || null, hide_from_schedule === true, id];
+    query = 'UPDATE users SET name=$1, email=$2, role=$3, password_hash=$4, phone=$5, receive_emails=$6, receive_sms=$7, pulsar_name=$8, hide_from_schedule=$9, extra_perms=COALESCE($10, extra_perms) WHERE id=$11 RETURNING id, name, email, phone, role, active, receive_emails, receive_sms, pulsar_name, hide_from_schedule, extra_perms';
+    params = [name, email, role, password_hash, phone || null, receive_emails !== false, receive_sms === true, pulsar_name || null, hide_from_schedule === true, cleanExtraPerms(req.body.extra_perms), id];
   } else {
-    query = 'UPDATE users SET name=$1, email=$2, role=$3, phone=$4, receive_emails=$5, receive_sms=$6, pulsar_name=$7, hide_from_schedule=$8 WHERE id=$9 RETURNING id, name, email, phone, role, active, receive_emails, receive_sms, pulsar_name, hide_from_schedule';
-    params = [name, email, role, phone || null, receive_emails !== false, receive_sms === true, pulsar_name || null, hide_from_schedule === true, id];
+    query = 'UPDATE users SET name=$1, email=$2, role=$3, phone=$4, receive_emails=$5, receive_sms=$6, pulsar_name=$7, hide_from_schedule=$8, extra_perms=COALESCE($9, extra_perms) WHERE id=$10 RETURNING id, name, email, phone, role, active, receive_emails, receive_sms, pulsar_name, hide_from_schedule, extra_perms';
+    params = [name, email, role, phone || null, receive_emails !== false, receive_sms === true, pulsar_name || null, hide_from_schedule === true, cleanExtraPerms(req.body.extra_perms), id];
   }
   try {
     const { rows } = await pool.query(query, params);

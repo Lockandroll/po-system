@@ -348,6 +348,7 @@ function normalizeUserRole(u){ if (u && u.role === 'owner') { u.isOwner = true; 
 function can(perm) {
   if (!state.user) return false;
   if (state.user.role === 'admin') return true;
+  if (state.user.extra_perms && state.user.extra_perms.indexOf(perm) !== -1) return true;
   var cfg = state.permissions;
   var role = state.user.role;
   if (cfg && Object.prototype.toString.call(cfg[role]) === '[object Array]') return cfg[role].indexOf(perm) !== -1;
@@ -406,6 +407,7 @@ async function render() {
   app.className = '';
   if (!state._permsLoaded) {
     try { var _ps = await api('GET', '/settings'); var _rp = null; try { _rp = JSON.parse(_ps.role_permissions || 'null'); } catch(e) {} state.permissions = _rp; } catch(e) {}
+    try { var _me = await api('GET', '/auth/me'); if (_me) { state.user.extra_perms = _me.extra_perms || []; try { localStorage.setItem('po_user', JSON.stringify(state.user)); } catch(e) {} } } catch(e) {}
     state._permsLoaded = true;
   }
   const initials = state.user.name.split(' ').map(function(w){ return w[0]; }).join('').toUpperCase().slice(0,2);
@@ -1736,6 +1738,10 @@ async function showUserModal(id) {
           '<input type="checkbox" id="modal-hide-schedule" style="width:auto"' + (user && user.hide_from_schedule ? ' checked' : '') + ' />' +
           '<label for="modal-hide-schedule" style="margin:0;cursor:pointer">Hide from Schedule <span style="font-weight:400;font-size:0.8em;color:var(--text-muted-color)">(won&#39;t appear in the staff scheduler)</span></label>' +
         '</div>' +
+        '<div class="form-group" style="display:flex;align-items:center;gap:10px">' +
+          '<input type="checkbox" id="modal-edit-schedule" style="width:auto"' + (user && user.extra_perms && user.extra_perms.indexOf('manage_schedule') !== -1 ? ' checked' : '') + ' />' +
+          '<label for="modal-edit-schedule" style="margin:0;cursor:pointer">Can build &amp; edit the schedule <span style="font-weight:400;font-size:0.8em;color:var(--text-muted-color)">(gives this non-manager the full schedule builder for their assigned cities)</span></label>' +
+        '</div>' +
       '</div>' +
       '<div class="modal-footer"><button class="btn btn-secondary" onclick="this.closest(\'.modal-overlay\').remove()">Cancel</button><button class="btn btn-primary" onclick="saveUser(' + (id||'null') + ', this)">Save</button></div>' +
     '</div>';
@@ -1751,6 +1757,7 @@ async function saveUser(id, btn) {
   const receive_emails = document.getElementById('modal-receive-emails').checked;
   const receive_sms = document.getElementById('modal-receive-sms').checked;
   const hide_from_schedule = (document.getElementById('modal-hide-schedule')||{}).checked === true;
+  var extra_perms = []; if ((document.getElementById('modal-edit-schedule')||{}).checked === true) extra_perms.push('manage_schedule');
   var _cityNodes = document.querySelectorAll('.modal-city'); var city_codes = []; for (var _i=0;_i<_cityNodes.length;_i++){ if(_cityNodes[_i].checked) city_codes.push(_cityNodes[_i].value); }
   var pulsar_name=(document.getElementById('modal-pulsar')||{}).value; if(pulsar_name) pulsar_name=pulsar_name.trim();
   if (phone && !/^\+1[0-9]{10}$/.test(phone)) {
@@ -1759,8 +1766,8 @@ async function saveUser(id, btn) {
   }
   try {
     btn.disabled = true;
-    if (id) { await api('PUT', '/users/' + id, { name, email, password: password || undefined, role, phone: phone || undefined, receive_emails, receive_sms, city_codes, pulsar_name, hide_from_schedule }); }
-    else { await api('POST', '/users', { name, email, password: password || undefined, role, phone: phone || undefined, receive_emails, receive_sms, city_codes, pulsar_name, hide_from_schedule }); }
+    if (id) { await api('PUT', '/users/' + id, { name, email, password: password || undefined, role, phone: phone || undefined, receive_emails, receive_sms, city_codes, pulsar_name, hide_from_schedule, extra_perms }); }
+    else { await api('POST', '/users', { name, email, password: password || undefined, role, phone: phone || undefined, receive_emails, receive_sms, city_codes, pulsar_name, hide_from_schedule, extra_perms }); }
     document.querySelector('.modal-overlay').remove();
     navigate('users');
   } catch(err) {

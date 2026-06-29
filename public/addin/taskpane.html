@@ -144,14 +144,51 @@
       TOKEN = t || '';
       var item = Office.context.mailbox.item;
       emailCtx.subject = (item && item.subject) || '';
+      var ready = function () {
+        if (TOKEN) { showForm(); }
+        else { attemptSso(); }  // no stored token -> passwordless sign-in, then password fallback
+      };
       if (item && item.body) {
         item.body.getAsync('text', function (r) {
           emailCtx.body = (r && r.status === 'succeeded') ? (r.value || '') : '';
-          if (TOKEN) showForm();
+          ready();
         });
-      } else if (TOKEN) { showForm(); }
+      } else { ready(); }
     });
   });
+
+  // ---- Office SSO (passwordless) ----
+  // Ask Outlook for a Microsoft token for the signed-in account and trade it for
+  // a Nova add-in token. New Outlook wipes all client storage between launches,
+  // so this is how the pane re-authenticates silently instead of re-prompting.
+  function ssoExchange(ssoToken) {
+    return fetch('/api/addin/sso', {
+      method: 'POST',
+      headers: { 'Authorization': 'Bearer ' + ssoToken, 'Content-Type': 'application/json' }
+    }).then(function (res) {
+      return res.json().then(function (d) {
+        if (!res.ok) throw new Error((d && d.error) || ('Error ' + res.status));
+        return d;
+      });
+    });
+  }
+
+  function attemptSso() {
+    if (!(window.Office && Office.auth && Office.auth.getAccessToken)) return; // password form already visible
+    setMsg('Signing you in...', '');
+    Office.auth.getAccessToken({ allowSignInPrompt: true, allowConsentPrompt: true })
+      .then(function (ssoToken) { return ssoExchange(ssoToken); })
+      .then(function (d) {
+        if (d && d.token) { TOKEN = d.token; saveToken(); showForm(); }
+        else { setMsg('', ''); }
+      })
+      .catch(function (e) {
+        // Office SSO errors (13xxx) or no matching Nova account: fall back to the
+        // password form. Only surface a message for the account-mismatch case.
+        var msg = (e && /Nova account/.test(e.message || '')) ? e.message : '';
+        setMsg(msg, msg ? 'err' : '');
+      });
+  }
 
   // ---- Login ----
   document.getElementById('loginBtn').addEventListener('click', function () {

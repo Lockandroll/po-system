@@ -25,6 +25,10 @@
   "validDomains": [
     "www.popalockar.com"
   ],
+  "webApplicationInfo": {
+    "id": "REPLACE_WITH_ENTRA_APP_CLIENT_ID",
+    "resource": "api://www.popalockar.com/REPLACE_WITH_ENTRA_APP_CLIENT_ID"
+  },
   "extensions": [
     {
       "requirements": {

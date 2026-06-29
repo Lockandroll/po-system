@@ -5,6 +5,7 @@ const { requireAuth } = require('../middleware/auth');
 const { parseEmailToTask } = require('../utils/taskParse');
 const { resolveAssignee, createTaskFromParsed } = require('../utils/taskFromEmail');
 const { notifyTaskCc } = require('../jobs/taskReminders');
+const { verifyOfficeSsoToken } = require('../utils/addinSso');
 
 const router = express.Router();
 
@@ -96,6 +97,40 @@ router.post('/create', requireAuth, async function (req, res) {
   } catch (e) {
     console.error('[addin] create failed:', e.message);
     res.status(500).json({ error: 'Failed to create task' });
+  }
+});
+
+// POST /api/addin/sso - passwordless sign-in for the Outlook pane.
+// The pane sends the Microsoft token from Office.auth.getAccessToken as the
+// Bearer; we validate it, map the email claim to a Nova user, and mint a 90d
+// add-in token. No Nova password is ever entered. NOT requireAuth-gated: the
+// incoming credential is a Microsoft token, not a Nova token.
+router.post('/sso', async function (req, res) {
+  try {
+    const header = req.headers.authorization || '';
+    if (!header.startsWith('Bearer ')) return res.status(401).json({ error: 'Missing Microsoft token' });
+    var claims;
+    try {
+      claims = await verifyOfficeSsoToken(header.slice(7));
+    } catch (ve) {
+      console.error('[addin] sso token invalid:', ve.message);
+      return res.status(401).json({ error: 'Could not verify Microsoft sign-in' });
+    }
+    const email = String(claims.preferred_username || claims.upn || claims.email || '').trim().toLowerCase();
+    if (!email) return res.status(401).json({ error: 'Microsoft token had no email' });
+
+    const { rows } = await pool.query('SELECT id, name, email, role FROM users WHERE lower(email) = lower($1) AND active = true', [email]);
+    if (!rows.length) return res.status(403).json({ error: 'No active Nova account for ' + email + '. Sign in with your Nova password instead.' });
+    const u = rows[0];
+    const token = jwt.sign(
+      { id: u.id, email: u.email, name: u.name, role: u.role, addin: true },
+      process.env.JWT_SECRET,
+      { expiresIn: '90d' }
+    );
+    res.json({ token: token, name: u.name });
+  } catch (e) {
+    console.error('[addin] sso failed:', e.message);
+    res.status(500).json({ error: 'SSO sign-in failed' });
   }
 });
 
