@@ -9,6 +9,7 @@ const { resolveAssignee } = require('./taskFromEmail');
 const { notifyTaskAssigned } = require('../jobs/taskReminders');
 const { sendSms } = require('./sms');
 const { classifyFeedback } = require('./feedbackAI');
+const notify = require('./notify');
 
 const APP = (process.env.APP_URL || '').replace(/\/$/, '');
 
@@ -59,21 +60,6 @@ async function resolveTechUserId(techNameRaw) {
     var u = await resolveAssignee(techNameRaw);
     return u ? u.id : null;
   } catch (e) { return null; }
-}
-
-async function listAdmins() {
-  try {
-    var r = await pool.query("SELECT id, name, email FROM users WHERE role IN ('admin','owner') AND active = true AND email IS NOT NULL");
-    return r.rows;
-  } catch (e) { return []; }
-}
-
-async function fyiEnabled() {
-  try {
-    var r = await pool.query("SELECT value FROM settings WHERE key = 'feedback_admin_fyi'");
-    if (r.rows.length && String(r.rows[0].value) === '0') return false;
-  } catch (e) {}
-  return true;
 }
 
 // Map AI severity to a task priority (tasks use low/medium/high/urgent).
@@ -206,31 +192,34 @@ async function intakeFeedback(parsed, meta) {
       }
       await logActivity(fb.id, null, 'event', 'Escalated (' + severity + ') to ' + assignee.name + ' via SMS + email.', null);
     } catch (e) { console.error('[feedback] escalation:', e.message); }
-  }  // Admin FYI email.
+  }
+
+  // Admin / manager FYI via the Notifications system (feedback_received event).
   try {
-    if (await fyiEnabled()) {
-      var admins = await listAdmins();
-      var to = admins.map(function (a) { return a.email; }).filter(Boolean);
-      if (to.length) {
-        var details = [
-          { label: 'Customer', value: parsed.customer_name || 'Unknown' },
-          { label: 'City', value: cityCode || (parsed.location_raw || 'Unknown') },
-          { label: 'Tech', value: parsed.tech_name_raw || 'Unknown' },
-          { label: 'Category', value: category },
-          { label: 'Assigned to', value: assignee ? assignee.name : 'Unassigned (needs review)' }
-        ];
-        var html = emailTemplate({
-          badge: 'New Feedback', badgeColor: 'orange',
-          title: 'New customer feedback received',
-          body: parsed.incident_text || 'A new customer feedback record was created.',
-          details: details,
-          buttonText: 'View Feedback', buttonUrl: APP + '/?view=feedback&id=' + fb.id,
-          footerNote: 'FYI only - no action required. The assigned manager has a task.'
-        });
-        await sendEmail(to[0], 'New customer feedback: ' + (parsed.customer_name || 'Unknown'), html, to.slice(1));
-      }
+    var rec = await notify.broadcastRecipients('feedback_received', "role IN ('admin','manager','owner')");
+    var fyiDetails = [
+      { label: 'Customer', value: parsed.customer_name || 'Unknown' },
+      { label: 'City', value: cityCode || (parsed.location_raw || 'Unknown') },
+      { label: 'Tech', value: parsed.tech_name_raw || 'Unknown' },
+      { label: 'Category', value: category },
+      { label: 'Severity', value: severity || 'unrated' },
+      { label: 'Assigned to', value: assignee ? assignee.name : 'Unassigned (needs review)' }
+    ];
+    if (rec.emails && rec.emails.length) {
+      var fyiHtml = emailTemplate({
+        badge: 'New Feedback', badgeColor: 'orange',
+        title: 'New customer feedback received',
+        body: aiSummary || parsed.incident_text || 'A new customer feedback record was created.',
+        details: fyiDetails,
+        buttonText: 'View Feedback', buttonUrl: APP + '/?view=feedback&id=' + fb.id,
+        footerNote: 'FYI only - no action required. The assigned manager has a task.'
+      });
+      await sendEmail(rec.emails, 'New customer feedback: ' + (parsed.customer_name || 'Unknown'), fyiHtml);
     }
-  } catch (e) { console.error('[feedback] admin FYI:', e.message); }
+    if (rec.phones && rec.phones.length) {
+      await sendSms(rec.phones, 'Nova: new customer feedback from ' + (parsed.customer_name || 'Unknown') + (cityCode ? ' (' + cityCode + ')' : '') + '. ' + APP + '/?view=feedback&id=' + fb.id);
+    }
+  } catch (e) { console.error('[feedback] FYI notify:', e.message); }
 
   return { duplicate: false, id: fb.id, feedback: fb, task: task, assignee: assignee, needsReview: needsReview };
 }

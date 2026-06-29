@@ -334,7 +334,7 @@ function badgeHtml(status) {
 
 var EMPLOYEE_PERMS = ['view_pos','create_po','edit_po','delete_po','submit_po','view_quotes','create_quote','edit_quote','delete_quote','push_quote_po','view_vr','create_vr','edit_vr','delete_vr','submit_vr','view_deposits','create_deposit','delete_deposit','export_deposits','view_signoffs','create_signoff','edit_signoff','complete_signoff','delete_signoff','view_tasks','view_work_orders','view_schedule','view_invoices','create_invoice','edit_invoice','delete_invoice'];
 var PERM_DEFAULTS = {
-  manager: ['view_users','manage_cities','manage_geico','manage_running','manage_vehicles','manage_vendors','manage_addresses','approve_vr','manage_tasks','manage_work_orders','manage_schedule','manage_parts','manage_invoice_setup','assign_reviews'].concat(EMPLOYEE_PERMS),
+  manager: ['view_users','manage_cities','manage_geico','manage_running','manage_vehicles','manage_vendors','manage_addresses','approve_vr','manage_tasks','manage_work_orders','manage_schedule','manage_parts','manage_invoice_setup','assign_reviews','view_feedback','manage_feedback'].concat(EMPLOYEE_PERMS),
   locksmith: EMPLOYEE_PERMS.slice(),
   locksmith_coordinator: EMPLOYEE_PERMS.concat(['manage_work_orders']),
   roadside_technician: EMPLOYEE_PERMS.slice()
@@ -1985,6 +1985,7 @@ async function renderNotifications(el) {
   try { rules = JSON.parse(settings.notification_rules || '{}') || {}; } catch(e) { rules = {}; }
 
   var broadcast = [
+    { key:'feedback_received', label:'New customer feedback received', def:'all admins and managers', sms:true, desc:'A customer complaint or feedback arrived (e.g. a Pulsar tech-conduct report).' },
     { key:'po_submitted', label:'Purchase order needs approval', def:'all admins', sms:true, desc:'Someone submitted a purchase order that needs an approver to review it.' },
     { key:'vr_submitted', label:'Vehicle repair needs approval', def:'all admins', sms:true, desc:'A vehicle repair was submitted and is waiting on approval.' },
     { key:'quote_created', label:'New quote created', def:'all admins', sms:true, desc:'A new customer quote was created.' },
@@ -2170,6 +2171,7 @@ async function renderRoles(el) {
     { group:'Parts Catalog', perms:[ {k:'manage_parts',l:'Manage parts catalog (add / edit / import). Everyone can still search parts.'} ] },
     { group:'GEICO', perms:[ {k:'manage_geico',l:'Manage GEICO surveys'} ] },
     { group:'Reviews', perms:[ {k:'assign_reviews',l:'Assign Google reviews to technicians'} ] },
+    { group:'Customer Feedback', gate:'view_feedback', perms:[ {k:'view_feedback',l:'View / access module'}, {k:'manage_feedback',l:'Manage feedback (resolve, reassign, add notes)'} ] },
     { group:'Users', perms:[ {k:'view_users',l:'View users'}, {k:'manage_users',l:'Add / edit / remove users'} ] },
     { group:'Administration', perms:[ {k:'manage_settings',l:'Company info, AI context, notifications, roles'}, {k:'view_audit',l:'View audit log'}, {k:'view_ai_admin',l:'View AI history / usage'} ] }
   ];
