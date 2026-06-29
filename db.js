@@ -1103,6 +1103,77 @@ async function initDB() {
       'CREATE INDEX IF NOT EXISTS idx_oauth_refresh_user ON oauth_refresh_tokens(user_id);'
     );
 
+    // Customer Feedback module - Pulsar tech-conduct emails land here, plus a
+    // full resolution lifecycle (status, tech-at-fault, damages, refund, followup).
+    await client.query(
+      'CREATE TABLE IF NOT EXISTS customer_feedback (' +
+      '  id SERIAL PRIMARY KEY,' +
+      "  source VARCHAR(30) NOT NULL DEFAULT 'pulsar'," +
+      '  external_ref VARCHAR(255),' +
+      '  received_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),' +
+      '  raw_email TEXT,' +
+      '  raw_subject VARCHAR(500),' +
+      '  customer_name VARCHAR(255),' +
+      '  customer_phone VARCHAR(50),' +
+      '  customer_email VARCHAR(255),' +
+      '  vehicle_make VARCHAR(100),' +
+      '  vehicle_model VARCHAR(100),' +
+      '  vehicle_year VARCHAR(10),' +
+      '  service_task VARCHAR(100),' +
+      '  job_location VARCHAR(255),' +
+      '  location_raw VARCHAR(255),' +
+      '  city_code CHAR(3),' +
+      '  tech_name_raw VARCHAR(255),' +
+      '  tech_user_id INTEGER REFERENCES users(id),' +
+      '  incident_text TEXT,' +
+      '  invoice_ref VARCHAR(100),' +
+      '  category VARCHAR(40),' +
+      '  sentiment VARCHAR(20),' +
+      '  severity VARCHAR(20),' +
+      '  ai_summary VARCHAR(500),' +
+      '  ai_processed BOOLEAN DEFAULT false,' +
+      "  status VARCHAR(30) NOT NULL DEFAULT 'new'," +
+      '  status_notes VARCHAR(255),' +
+      '  assigned_to INTEGER REFERENCES users(id),' +
+      '  task_id INTEGER,' +
+      '  tech_at_fault BOOLEAN,' +
+      '  total_damages DECIMAL(10,2) DEFAULT 0,' +
+      '  refunded BOOLEAN DEFAULT false,' +
+      '  refunded_amount DECIMAL(10,2) DEFAULT 0,' +
+      '  followup_needed BOOLEAN DEFAULT false,' +
+      '  followup_at TIMESTAMPTZ,' +
+      '  followup_notes VARCHAR(255),' +
+      '  followup_sent_at TIMESTAMPTZ,' +
+      '  is_resolved BOOLEAN DEFAULT false,' +
+      '  resolved_at TIMESTAMPTZ,' +
+      '  resolved_notes VARCHAR(255),' +
+      '  needs_review BOOLEAN DEFAULT false,' +
+      '  last_interaction_at TIMESTAMPTZ DEFAULT NOW(),' +
+      '  created_at TIMESTAMPTZ DEFAULT NOW(),' +
+      '  updated_at TIMESTAMPTZ DEFAULT NOW()' +
+      ');' +
+      'CREATE TABLE IF NOT EXISTS customer_feedback_activity (' +
+      '  id SERIAL PRIMARY KEY,' +
+      '  feedback_id INTEGER NOT NULL REFERENCES customer_feedback(id) ON DELETE CASCADE,' +
+      '  user_id INTEGER REFERENCES users(id),' +
+      '  user_name VARCHAR(255),' +
+      "  type VARCHAR(20) NOT NULL DEFAULT 'note'," +
+      '  channel VARCHAR(20),' +
+      '  body TEXT,' +
+      '  created_at TIMESTAMPTZ DEFAULT NOW()' +
+      ');'
+    );
+    await client.query(
+      'CREATE UNIQUE INDEX IF NOT EXISTS idx_feedback_dedupe ON customer_feedback(source, external_ref) WHERE external_ref IS NOT NULL;' +
+      'CREATE INDEX IF NOT EXISTS idx_feedback_city ON customer_feedback(city_code);' +
+      'CREATE INDEX IF NOT EXISTS idx_feedback_tech ON customer_feedback(tech_user_id);' +
+      'CREATE INDEX IF NOT EXISTS idx_feedback_status ON customer_feedback(status);' +
+      'CREATE INDEX IF NOT EXISTS idx_feedback_severity ON customer_feedback(severity);' +
+      'CREATE INDEX IF NOT EXISTS idx_feedback_last ON customer_feedback(last_interaction_at);' +
+      'CREATE INDEX IF NOT EXISTS idx_feedback_followup ON customer_feedback(followup_at) WHERE followup_needed = true AND followup_sent_at IS NULL;' +
+      'CREATE INDEX IF NOT EXISTS idx_feedback_act_fid ON customer_feedback_activity(feedback_id);'
+    );
+
     console.log('Database initialized');
   } finally {
     client.release();
