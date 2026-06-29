@@ -100,7 +100,7 @@
     return fetch(path, { method: method || 'GET', headers: headers, body: body ? JSON.stringify(body) : undefined })
       .then(function (res) {
         var nt = res.headers.get('X-New-Token');
-        if (nt) { TOKEN = nt; try { localStorage.setItem('nova_addin_token', nt); } catch (e) {} }
+        if (nt) { TOKEN = nt; saveToken(); }
         return res.json().then(function (data) {
           if (!res.ok) throw new Error((data && data.error) || ('Error ' + res.status));
           return data;
@@ -109,7 +109,7 @@
   }
 
   Office.onReady(function () {
-    try { TOKEN = localStorage.getItem('nova_addin_token') || ''; } catch (e) {}
+    TOKEN = loadToken();
     var item = Office.context.mailbox.item;
     emailCtx.subject = (item && item.subject) || '';
     if (item && item.body) {
@@ -130,7 +130,7 @@
     setMsg('Signing in...', '');
     api('/api/auth/login', 'POST', { email: email, password: password })
       .then(function (data) {
-        if (data.token) { TOKEN = data.token; saveToken(); return showForm(); }
+        if (data.token) { TOKEN = data.token; saveToken(); return exchangeForAddinToken().then(showForm); }
         if (data.requires2fa) {
           window._pendingUser = data.userId;
           codeBox.classList.remove('hide');
@@ -146,11 +146,35 @@
     if (!code) return setMsg('Enter the verification code.', 'err');
     setMsg('Verifying...', '');
     api('/api/auth/verify-2fa', 'POST', { userId: window._pendingUser, code: code, rememberDevice: true })
-      .then(function (data) { TOKEN = data.token; saveToken(); showForm(); })
+      .then(function (data) { TOKEN = data.token; saveToken(); exchangeForAddinToken().then(showForm); })
       .catch(function (e) { setMsg(e.message, 'err'); });
   }
 
-  function saveToken() { try { localStorage.setItem('nova_addin_token', TOKEN); } catch (e) {} }
+  // Persist the Nova token in Office roamingSettings, which survives add-in
+  // restarts - unlike localStorage, which Outlook routinely clears in the
+  // add-in sandbox (the reason the old build asked you to sign in every time).
+  function saveToken() {
+    try { localStorage.setItem('nova_addin_token', TOKEN); } catch (e) {}
+    try {
+      var rs = Office.context && Office.context.roamingSettings;
+      if (rs) { rs.set('nova_addin_token', TOKEN); rs.saveAsync(function () {}); }
+    } catch (e) {}
+  }
+  function loadToken() {
+    try {
+      var rs = Office.context && Office.context.roamingSettings;
+      var t = rs && rs.get('nova_addin_token');
+      if (t) return t;
+    } catch (e) {}
+    try { return localStorage.getItem('nova_addin_token') || ''; } catch (e) { return ''; }
+  }
+  // Trade the just-issued session token for a long-lived (90d) add-in token so
+  // the user signs in only once. Falls back to the session token on failure.
+  function exchangeForAddinToken() {
+    return api('/api/addin/token', 'POST')
+      .then(function (d) { if (d && d.token) { TOKEN = d.token; saveToken(); } })
+      .catch(function () {});
+  }
 
   // ---- Form ----
   function showForm() {

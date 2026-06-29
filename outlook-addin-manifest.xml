@@ -4,12 +4,12 @@
            xmlns:bt="http://schemas.microsoft.com/office/officeappbasictypes/1.0"
            xmlns:mailappor="http://schemas.microsoft.com/office/mailappversionoverrides/1.0"
            xsi:type="MailApp">
-  <Id>4b9a1f20-7c3e-4d6a-9e2b-1a2b3c4d5e6f</Id>
+  <Id>d12cb71a-b5d8-4d33-9bb5-d0c04f4b683b</Id>
   <Version>1.0.0.0</Version>
   <ProviderName>Lock and Roll LLC</ProviderName>
   <DefaultLocale>en-US</DefaultLocale>
   <DisplayName DefaultValue="Send to Nova" />
-  <Description DefaultValue="Turn the selected email into a Nova task with AI." />
+  <Description DefaultValue="Send to Nova reads the open email and creates a task in Nova, the Lock and Roll operations app, with an AI-suggested title, priority, due date, and assignee." />
   <IconUrl DefaultValue="https://www.popalockar.com/addin/icon-64.png" />
   <HighResolutionIconUrl DefaultValue="https://www.popalockar.com/addin/icon-128.png" />
   <SupportUrl DefaultValue="https://www.popalockar.com" />

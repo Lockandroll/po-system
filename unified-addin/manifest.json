@@ -1,0 +1,98 @@
+{
+  "$schema": "https://developer.microsoft.com/json-schemas/teams/v1.17/MicrosoftTeams.schema.json",
+  "manifestVersion": "1.17",
+  "id": "d12cb71a-b5d8-4d33-9bb5-d0c04f4b683b",
+  "version": "1.0.0",
+  "name": {
+    "short": "Send to Nova",
+    "full": "Send to Nova - create tasks from email"
+  },
+  "description": {
+    "short": "Create a Nova task from the open email with AI.",
+    "full": "Send to Nova reads the open email and creates a task in Nova, the Lock and Roll operations app, with an AI-suggested title, priority, due date, and assignee that you can review before saving."
+  },
+  "developer": {
+    "name": "Lock and Roll LLC",
+    "websiteUrl": "https://www.popalockar.com",
+    "privacyUrl": "https://www.popalockar.com/privacy",
+    "termsOfUseUrl": "https://www.popalockar.com/terms"
+  },
+  "icons": {
+    "outline": "outline.png",
+    "color": "color.png"
+  },
+  "accentColor": "#f97316",
+  "validDomains": [
+    "www.popalockar.com"
+  ],
+  "extensions": [
+    {
+      "requirements": {
+        "scopes": [ "mail" ],
+        "capabilities": [
+          { "name": "Mailbox", "minVersion": "1.3" }
+        ]
+      },
+      "runtimes": [
+        {
+          "requirements": {
+            "capabilities": [
+              { "name": "Mailbox", "minVersion": "1.3" }
+            ]
+          },
+          "id": "TaskPaneRuntime",
+          "type": "general",
+          "code": {
+            "page": "https://www.popalockar.com/addin/taskpane.html"
+          },
+          "lifetime": "short",
+          "actions": [
+            {
+              "id": "ShowTaskPane",
+              "type": "openPage",
+              "view": "homepage"
+            }
+          ]
+        }
+      ],
+      "ribbons": [
+        {
+          "contexts": [ "mailRead" ],
+          "tabs": [
+            {
+              "builtInTabId": "TabDefault",
+              "groups": [
+                {
+                  "id": "novaGroup",
+                  "label": "Nova",
+                  "icons": [
+                    { "size": 16, "url": "https://www.popalockar.com/addin/icon-16.png" },
+                    { "size": 32, "url": "https://www.popalockar.com/addin/icon-32.png" },
+                    { "size": 80, "url": "https://www.popalockar.com/addin/icon-80.png" }
+                  ],
+                  "controls": [
+                    {
+                      "id": "novaTaskButton",
+                      "type": "button",
+                      "label": "Send to Nova",
+                      "icons": [
+                        { "size": 16, "url": "https://www.popalockar.com/addin/icon-16.png" },
+                        { "size": 32, "url": "https://www.popalockar.com/addin/icon-32.png" },
+                        { "size": 80, "url": "https://www.popalockar.com/addin/icon-80.png" }
+                      ],
+                      "supertip": {
+                        "title": "Send to Nova",
+                        "description": "Create a Nova task from this email."
+                      },
+                      "actionId": "ShowTaskPane"
+                    }
+                  ]
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

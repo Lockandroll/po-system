@@ -1,4 +1,5 @@
 const express = require('express');
+const jwt = require('jsonwebtoken');
 const { pool } = require('../db');
 const { requireAuth } = require('../middleware/auth');
 const { parseEmailToTask } = require('../utils/taskParse');
@@ -75,6 +76,26 @@ router.post('/create', requireAuth, async function (req, res) {
   } catch (e) {
     console.error('[addin] create failed:', e.message);
     res.status(500).json({ error: 'Failed to create task' });
+  }
+});
+
+// POST /api/addin/token - exchange a valid session for a long-lived (90d)
+// add-in token. The Outlook pane stores this so users sign in only once.
+// requireAuth scopes addin tokens to /api/addin/* and renews them on every call.
+router.post('/token', requireAuth, async function (req, res) {
+  try {
+    const { rows } = await pool.query('SELECT id, name, email, role FROM users WHERE id = $1 AND active = true', [req.user.id]);
+    if (!rows.length) return res.status(403).json({ error: 'Account not found or deactivated' });
+    const u = rows[0];
+    const token = jwt.sign(
+      { id: u.id, email: u.email, name: u.name, role: u.role, addin: true },
+      process.env.JWT_SECRET,
+      { expiresIn: '90d' }
+    );
+    res.json({ token: token });
+  } catch (e) {
+    console.error('[addin] token mint failed:', e.message);
+    res.status(500).json({ error: 'Failed to issue add-in token' });
   }
 });
 

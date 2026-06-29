@@ -14,9 +14,14 @@ async function requireAuth(req, res, next) {
   } catch {
     return res.status(401).json({ error: 'Invalid or expired token' });
   }
+  // Add-in tokens are long-lived; limit them to the /api/addin/* surface so a
+  // leaked token cannot reach the rest of the API.
+  if (payload.addin && (req.originalUrl || req.url || '').indexOf('/api/addin') !== 0) {
+    return res.status(403).json({ error: 'This token is limited to Outlook add-in actions.' });
+  }
   // Issue a fresh 24h token on every request (rolling expiry) for the REAL user.
   const { iat, exp, ...claims } = payload;
-  const sessTtl = claims.remember ? '30d' : '24h';
+  const sessTtl = claims.addin ? '90d' : (claims.remember ? '30d' : '24h');
   res.setHeader('X-New-Token', jwt.sign(claims, process.env.JWT_SECRET, { expiresIn: sessTtl }));
   // Track activity for the real user (throttled to at most once per minute).
   pool.query("UPDATE users SET last_seen_at = NOW() WHERE id = $1 AND (last_seen_at IS NULL OR last_seen_at < NOW() - INTERVAL '60 seconds')", [payload.id]).catch(function(){});
