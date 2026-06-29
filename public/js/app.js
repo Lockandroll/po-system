@@ -10225,22 +10225,122 @@ async function nwRun(){
 }
 
 // ----- employee view -------------------------------------------------------
+var _mySchedMode='week', _mySchedScope='mine', _mySchedMonday=null, _mySchedMonthAnchor=null, _mySchedCity='', _mySchedCities=[], _mySchedShifts=[];
+
 async function renderSchedule(el){
   if(!can('view_schedule')){ el.innerHTML='<div class="alert alert-error">Access denied.</div>'; return; }
+  if(!_mySchedMonday) _mySchedMonday=schedMondayOf(schedToday());
+  if(_mySchedMode==='month' && !_mySchedMonthAnchor) _mySchedMonthAnchor=schedMonthFirst(schedToday());
   el.innerHTML='<div class="loading">Loading…</div>';
-  var from=schedMondayOf(schedToday()), to=schedAddDays(from,13);
-  var shifts=[]; try{ shifts=await api('GET','/schedule/me?from='+from+'&to='+to); }catch(e){ el.innerHTML='<div class="alert alert-error">'+escHtml(e.message)+'</div>'; return; }
-  var byDay={}; shifts.forEach(function(s){ (byDay[schedShiftDate(s)]=byDay[schedShiftDate(s)]||[]).push(s); });
-  var days=[]; for(var i=0;i<14;i++) days.push(schedAddDays(from,i));
+  var from, to;
+  if(_mySchedMode==='month'){ from=schedMondayOf(_mySchedMonthAnchor); var _ld=schedAddDays(schedAddMonths(_mySchedMonthAnchor,1),-1); to=schedAddDays(schedMondayOf(_ld),6); }
+  else { from=_mySchedMonday; to=schedAddDays(_mySchedMonday,6); }
+  try{
+    if(_mySchedScope==='city'){
+      var q='?from='+from+'&to='+to+(_mySchedCity?'&city='+encodeURIComponent(_mySchedCity):'');
+      var r=await api('GET','/schedule/city'+q);
+      _mySchedCities=r.cities||[]; _mySchedShifts=r.shifts||[];
+    } else {
+      _mySchedShifts=await api('GET','/schedule/me?from='+from+'&to='+to);
+    }
+  }catch(e){ el.innerHTML='<div class="alert alert-error">'+escHtml(e.message)+'</div>'; return; }
+
+  var isMonth=_mySchedMode==='month';
+  var nav;
+  if(isMonth){
+    nav='<button class="btn btn-ghost btn-sm" onclick="mySchedNav(-1)">&lsaquo; Prev</button>'+
+        '<span style="font-weight:600;min-width:150px;text-align:center">'+escHtml(schedMonthLabel(_mySchedMonthAnchor))+'</span>'+
+        '<button class="btn btn-ghost btn-sm" onclick="mySchedNav(1)">Next &rsaquo;</button>'+
+        '<button class="btn btn-ghost btn-sm" onclick="mySchedToday()">Today</button>';
+  } else {
+    var we=schedAddDays(_mySchedMonday,6);
+    nav='<button class="btn btn-ghost btn-sm" onclick="mySchedNav(-1)">&lsaquo; Prev</button>'+
+        '<span style="font-weight:600;min-width:170px;text-align:center">'+escHtml(schedDateLabel(_mySchedMonday))+' – '+escHtml(schedDateLabel(we))+'</span>'+
+        '<button class="btn btn-ghost btn-sm" onclick="mySchedNav(1)">Next &rsaquo;</button>'+
+        '<button class="btn btn-ghost btn-sm" onclick="mySchedToday()">Today</button>';
+  }
+  function segBtn(active,onclick,label){ return '<button class="btn btn-sm" style="border-radius:0;border:none;'+(active?'background:var(--primary,#f97316);color:#fff':'background:transparent;color:var(--text-color,#ccc)')+'" onclick="'+onclick+'">'+label+'</button>'; }
+  var scopeBtns='<div style="display:flex;border:1px solid var(--border,#333);border-radius:6px;overflow:hidden">'+
+    segBtn(_mySchedScope==='mine',"mySchedSetScope('mine')",'My shifts')+
+    segBtn(_mySchedScope==='city',"mySchedSetScope('city')",'City schedule')+'</div>';
+  var modeBtns='<div style="display:flex;border:1px solid var(--border,#333);border-radius:6px;overflow:hidden">'+
+    segBtn(!isMonth,"mySchedSetMode('week')",'Week')+
+    segBtn(isMonth,"mySchedSetMode('month')",'Month')+'</div>';
+  var citySel='';
+  if(_mySchedScope==='city'){
+    var co='<option value="">All my cities</option>'+_mySchedCities.map(function(c){ var cc=(c.code||'').trim(); return '<option value="'+escHtml(cc)+'"'+(_mySchedCity===cc?' selected':'')+'>'+escHtml(c.name)+'</option>'; }).join('');
+    citySel='<select onchange="mySchedSetCity(this.value)" style="background:var(--card-bg,#1a1a1a);color:var(--text-color,#fff);border:1px solid var(--border,#333);border-radius:6px;padding:7px 10px;font-size:13px">'+co+'</select>';
+  }
+  var grid=isMonth?mySchedMonthHtml():mySchedWeekHtml(from);
+  el.innerHTML=
+    '<div class="page-header" style="flex-wrap:wrap;gap:10px"><div class="page-title">My Schedule</div>'+
+      '<div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">'+scopeBtns+modeBtns+'</div>'+
+    '</div>'+
+    '<div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-bottom:14px">'+
+      '<div style="display:flex;align-items:center;gap:6px">'+nav+'</div>'+citySel+
+    '</div>'+
+    '<div class="card"><div class="card-body" style="overflow-x:auto'+(isMonth?';padding:0':'')+'">'+grid+'</div></div>'+
+    '<p class="text-muted" style="font-size:12.5px;margin-top:10px">'+(_mySchedScope==='city'?'Published shifts for your city.':'Your published shifts.')+(isMonth?' Click a day to open that week.':'')+'</p>';
+}
+
+function mySchedSetScope(s){ _mySchedScope=s; renderSchedule(document.getElementById('content')); }
+function mySchedSetMode(m){ _mySchedMode=m; if(m==='month' && !_mySchedMonthAnchor) _mySchedMonthAnchor=schedMonthFirst(_mySchedMonday||schedToday()); renderSchedule(document.getElementById('content')); }
+function mySchedSetCity(c){ _mySchedCity=c; renderSchedule(document.getElementById('content')); }
+function mySchedNav(n){ if(_mySchedMode==='month'){ _mySchedMonthAnchor=schedAddMonths(_mySchedMonthAnchor||schedMonthFirst(schedToday()),n); } else { _mySchedMonday=schedAddDays(_mySchedMonday||schedMondayOf(schedToday()),7*n); } renderSchedule(document.getElementById('content')); }
+function mySchedToday(){ if(_mySchedMode==='month'){ _mySchedMonthAnchor=schedMonthFirst(schedToday()); } else { _mySchedMonday=schedMondayOf(schedToday()); } renderSchedule(document.getElementById('content')); }
+function mySchedJumpWeek(day){ _mySchedMonday=schedMondayOf(day); _mySchedMode='week'; renderSchedule(document.getElementById('content')); }
+
+function mySchedWeekHtml(from){
+  var showName=_mySchedScope==='city';
+  var byDay={}; _mySchedShifts.forEach(function(s){ (byDay[schedShiftDate(s)]=byDay[schedShiftDate(s)]||[]).push(s); });
   var today=schedToday();
-  var body=days.map(function(d){
+  var cols='';
+  for(var i=0;i<7;i++){
+    var d=schedAddDays(from,i);
     var list=(byDay[d]||[]).sort(function(a,b){return schedTimeMin(a.start_time)-schedTimeMin(b.start_time);});
-    if(!list.length) return '';
-    var items=list.map(function(s){ var col=s.city_color||'#f97316'; return '<div style="display:flex;align-items:center;gap:10px;padding:9px 12px;border-left:4px solid '+col+';background:var(--card-bg,#161616);border:1px solid var(--border,#2a2a2a);border-left:4px solid '+col+';border-radius:6px;margin-bottom:7px"><div style="font-weight:600">'+escHtml(schedTimeFmt(s.start_time))+' – '+escHtml(schedTimeFmt(s.end_time))+'</div><div style="color:var(--text-muted-color,#999);font-size:13px">'+escHtml(s.position_name||'')+(s.city_name?(' · '+escHtml(s.city_name)):'')+(s.notes?(' · '+escHtml(s.notes)):'')+'</div></div>'; }).join('');
-    return '<div style="margin-bottom:16px"><div style="font-weight:700;font-size:13px;margin-bottom:7px'+(d===today?';color:var(--primary,#f97316)':'')+'">'+escHtml(schedDateLabel(d))+(d===today?' · Today':'')+'</div>'+items+'</div>';
-  }).join('');
-  if(!shifts.length) body='<div class="card"><div class="card-body"><p class="text-muted" style="margin:0">No published shifts in the next two weeks.</p></div></div>';
-  el.innerHTML='<div class="page-header"><div class="page-title">My Schedule</div></div><p class="text-muted" style="margin-bottom:16px">Your published shifts for the next two weeks.</p>'+body;
+    var isT=d===today;
+    var items=list.map(function(s){
+      var col=s.city_color||'#f97316';
+      var who=showName?('<div style="font-weight:600;font-size:12px">'+escHtml((s.user_name||'').trim())+'</div>'):'';
+      var meta=[]; if(s.position_name) meta.push(escHtml(s.position_name)); if(s.city_name) meta.push(escHtml(s.city_name)); if(s.notes) meta.push(escHtml(s.notes));
+      return '<div style="background:'+col+'14;border:1px solid var(--border,#2a2a2a);border-left:3px solid '+col+';border-radius:6px;padding:6px 8px;margin-bottom:6px">'+who+'<div style="font-weight:600;font-size:12.5px">'+escHtml(schedTimeFmt(s.start_time))+' – '+escHtml(schedTimeFmt(s.end_time))+'</div>'+(meta.length?'<div style="color:var(--text-muted-color,#999);font-size:11.5px">'+meta.join(' · ')+'</div>':'')+'</div>';
+    }).join('') || '<div style="color:var(--text-muted-color,#777);font-size:11.5px;padding:4px 2px">—</div>';
+    cols+='<div style="flex:1 1 150px;min-width:150px"><div style="font-weight:700;font-size:12px;margin-bottom:7px;padding-bottom:5px;border-bottom:1px solid var(--border,#2a2a2a)'+(isT?';color:var(--primary,#f97316)':'')+'">'+escHtml(schedDateLabel(d))+(isT?' · Today':'')+'</div>'+items+'</div>';
+  }
+  return '<div style="display:flex;gap:10px;flex-wrap:wrap">'+cols+'</div>';
+}
+
+function mySchedMonthHtml(){
+  var first=_mySchedMonthAnchor||schedMonthFirst(schedToday());
+  var gridStart=schedMondayOf(first);
+  var lastDay=schedAddDays(schedAddMonths(first,1),-1);
+  var gridEnd=schedAddDays(schedMondayOf(lastDay),6);
+  var monthNum=parseInt(first.slice(5,7),10);
+  var showName=_mySchedScope==='city';
+  var byDate={}; _mySchedShifts.forEach(function(s){ var dd=schedShiftDate(s); (byDate[dd]=byDate[dd]||[]).push(s); });
+  var today=schedToday();
+  var dayNames=['Mon','Tue','Wed','Thu','Fri','Sat','Sun'];
+  var head='<tr>'+dayNames.map(function(dn){return '<th style="padding:6px;text-align:center;font-size:11px;color:var(--text-muted-color,#999)">'+dn+'</th>';}).join('')+'</tr>';
+  var rowsHtml=''; var d=gridStart;
+  while(d<=gridEnd){
+    var cells='';
+    for(var i=0;i<7;i++){
+      var day=schedAddDays(d,i);
+      var inMonth=parseInt(day.slice(5,7),10)===monthNum;
+      var list=(byDate[day]||[]).sort(function(a,b){return schedTimeMin(a.start_time)-schedTimeMin(b.start_time);});
+      var dim=inMonth?'':'opacity:0.35;';
+      var isT=day===today;
+      var items=list.slice(0,4).map(function(s){
+        var col=s.city_color||'#f97316';
+        var extra=showName?(' '+escHtml((s.user_name||'').split(' ')[0])):'';
+        return '<div title="'+escHtml((s.user_name||'')+' '+schedTimeFmt(s.start_time)+'-'+schedTimeFmt(s.end_time))+'" style="border-left:3px solid '+col+';background:'+col+'22;border-radius:3px;padding:1px 4px;margin:2px 0;font-size:10.5px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">'+escHtml(schedTimeFmt(s.start_time))+extra+'</div>';
+      }).join('');
+      var more=list.length>4?('<div style="font-size:10px;color:var(--text-muted-color,#999)">+'+(list.length-4)+' more</div>'):'';
+      cells+='<td onclick="mySchedJumpWeek(\''+day+'\')" style="vertical-align:top;border:1px solid var(--border,#2a2a2a);height:92px;width:14.28%;cursor:pointer;padding:3px;'+dim+'"><div style="font-size:11px;font-weight:600;text-align:right;'+(isT?'color:var(--primary,#f97316)':'')+'">'+parseInt(day.slice(8,10),10)+'</div>'+items+more+'</td>';
+    }
+    rowsHtml+='<tr>'+cells+'</tr>'; d=schedAddDays(d,7);
+  }
+  return '<table style="border-collapse:collapse;width:100%;table-layout:fixed;min-width:760px"><thead>'+head+'</thead><tbody>'+rowsHtml+'</tbody></table>';
 }
 
 /* ===================== Nova QOL helpers (command palette, offline banner, nav help) ===================== */

@@ -125,6 +125,44 @@ router.get('/me', requireAuth, requirePermission('view_schedule'), async (req, r
   res.json(rows);
 });
 
+// ---- employee: whole-city schedule ----------------------------------------
+router.get('/city', requireAuth, requirePermission('view_schedule'), async (req, res) => {
+  const from = RE_DATE.test(req.query.from) ? req.query.from : mondayOf(ymd(new Date()));
+  const to = RE_DATE.test(req.query.to) ? req.query.to : addDays(from, 13);
+  const scope = await allowedCities(req.user); // null = all cities
+  const reqCity = (req.query.city || '').toString().trim().slice(0, 3);
+
+  // Cities this employee is allowed to view
+  let cities;
+  if (scope === null) {
+    cities = (await pool.query('SELECT code, name, color FROM cities WHERE active IS NOT FALSE ORDER BY name ASC')).rows;
+  } else if (scope.length) {
+    cities = (await pool.query('SELECT code, name, color FROM cities WHERE TRIM(code) = ANY($1) AND active IS NOT FALSE ORDER BY name ASC', [scope])).rows;
+  } else {
+    cities = [];
+  }
+
+  // Which city codes to actually pull shifts for
+  let codes;
+  if (reqCity && (scope === null || scope.indexOf(reqCity) !== -1)) codes = [reqCity];
+  else codes = cities.map(function (c) { return (c.code || '').trim(); });
+
+  let shifts = [];
+  if (codes.length) {
+    const r = await pool.query(
+      'SELECT s.*, p.name AS position_name, p.color AS position_color, c.name AS city_name, c.color AS city_color, u.name AS user_name ' +
+      'FROM shifts s LEFT JOIN shift_positions p ON p.id = s.position_id LEFT JOIN cities c ON c.code = s.city_code ' +
+      'JOIN users u ON u.id = s.user_id ' +
+      "WHERE s.status = 'published' AND TRIM(s.city_code) = ANY($1) AND s.shift_date BETWEEN $2 AND $3 " +
+      'AND COALESCE(u.hide_from_schedule, false) = false ' +
+      'ORDER BY s.shift_date, s.start_time',
+      [codes, from, to]
+    );
+    shifts = r.rows;
+  }
+  res.json({ cities: cities, shifts: shifts });
+});
+
 // ---- positions -------------------------------------------------------------
 router.get('/positions', requireAuth, requirePermission('view_schedule'), async (req, res) => {
   const { rows } = await pool.query('SELECT * FROM shift_positions ORDER BY active DESC, name ASC');
