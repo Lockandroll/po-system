@@ -91,24 +91,30 @@ router.post('/email', async function (req, res) {
     const fbAddr = (process.env.FEEDBACK_INBOUND_ADDRESS || 'feedback@').toLowerCase();
     if (toRaw.toLowerCase().indexOf(fbAddr) !== -1) {
       try {
-        if (!data.email_id) { console.log('[feedback] webhook missing email_id'); return; }
-        const full = await fetchReceivedEmail(data.email_id);
-        console.log('[feedback-diag] full keys=' + (full ? Object.keys(full).join(',') : 'null') + ' textLen=' + ((full && full.text || '').length) + ' htmlLen=' + ((full && full.html || '').length));
-        const parsed = parsePulsarEmail({
-          subject: (full && full.subject) || data.subject || '',
-          text: (full && full.text) || '',
-          html: (full && full.html) || ''
-        });
-        console.log('[feedback-diag] parsed customer=' + parsed.customer_name + ' city=' + parsed.location_raw + ' incidentLen=' + ((parsed.incident_text || '').length));
-        try { console.log('[feedback-diag] bodyPreview=' + JSON.stringify(((full && (full.text || full.html)) || '').slice(0, 400))); } catch (e) {}
+        // The webhook payload itself carries the email body (text/html). Use that
+        // first; only fall back to the receiving API if it's absent, and ignore
+        // Resend error objects ({statusCode,message,name}).
+        var subject = data.subject || '';
+        var text = data.text || '';
+        var html = data.html || '';
+        if (!text && !html && data.email_id) {
+          const full = await fetchReceivedEmail(data.email_id);
+          if (full && !full.statusCode && !full.message && !full.name) {
+            subject = subject || full.subject || '';
+            text = full.text || '';
+            html = full.html || '';
+          }
+        }
+        console.log('[feedback-diag] dataKeys=' + Object.keys(data).join(',') + ' textLen=' + text.length + ' htmlLen=' + html.length);
+        const parsed = parsePulsarEmail({ subject: subject, text: text, html: html });
         const result = await intakeFeedback(parsed, {
           source: 'pulsar',
-          external_ref: data.email_id,
-          raw_email: (full && (full.text || full.html)) || '',
-          raw_subject: (full && full.subject) || data.subject || ''
+          external_ref: data.email_id || data.id || data.message_id || null,
+          raw_email: text || html || '',
+          raw_subject: subject
         });
         if (result && result.duplicate) { console.log('[feedback] duplicate email ignored'); return; }
-        console.log('[feedback] created record #' + (result && result.id));
+        console.log('[feedback] created record #' + (result && result.id) + ' customer=' + parsed.customer_name + ' city=' + parsed.location_raw);
       } catch (e) { console.error('[feedback] processing failed:', e.message); }
       return;
     }
