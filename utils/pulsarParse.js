@@ -6,12 +6,17 @@ function stripHtml(html) {
   if (!html) return '';
   return String(html)
     .replace(/<\s*br\s*\/?>/gi, '\n')
-    .replace(/<\s*\/p\s*>/gi, '\n')
+    .replace(/<\s*(div|p|li|tr|h[1-6])\b[^>]*>/gi, '\n')
+    .replace(/<\s*\/\s*(div|p|li|tr|td|h[1-6]|table|ul|ol|blockquote)\s*>/gi, '\n')
     .replace(/<[^>]+>/g, '')
     .replace(/&nbsp;/gi, ' ')
     .replace(/&amp;/gi, '&')
+    .replace(/&lt;/gi, '<')
+    .replace(/&gt;/gi, '>')
     .replace(/&#39;/g, "'")
-    .replace(/&quot;/gi, '"');
+    .replace(/&quot;/gi, '"')
+    .replace(/[ \t]+\n/g, '\n')
+    .replace(/\n{3,}/g, '\n\n');
 }
 
 // 'Tech Conduct' -> 'tech_conduct'

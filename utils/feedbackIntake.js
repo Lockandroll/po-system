@@ -196,7 +196,7 @@ async function intakeFeedback(parsed, meta) {
 
   // Admin / manager FYI via the Notifications system (feedback_received event).
   try {
-    var rec = await notify.broadcastRecipients('feedback_received', "role IN ('admin','manager','owner')");
+    var rec = await notify.broadcastRecipients('feedback_received', "role IN ('admin','owner')");
     var fyiDetails = [
       { label: 'Customer', value: parsed.customer_name || 'Unknown' },
       { label: 'City', value: cityCode || (parsed.location_raw || 'Unknown') },

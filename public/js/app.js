@@ -1986,7 +1986,7 @@ async function renderNotifications(el) {
   try { rules = JSON.parse(settings.notification_rules || '{}') || {}; } catch(e) { rules = {}; }
 
   var broadcast = [
-    { key:'feedback_received', label:'New customer feedback received', def:'all admins and managers', sms:true, desc:'A customer complaint or feedback arrived (e.g. a Pulsar tech-conduct report).' },
+    { key:'feedback_received', label:'New customer feedback received', def:'all admins', sms:true, desc:'A customer complaint or feedback arrived (e.g. a Pulsar tech-conduct report).' },
     { key:'po_submitted', label:'Purchase order needs approval', def:'all admins', sms:true, desc:'Someone submitted a purchase order that needs an approver to review it.' },
     { key:'vr_submitted', label:'Vehicle repair needs approval', def:'all admins', sms:true, desc:'A vehicle repair was submitted and is waiting on approval.' },
     { key:'quote_created', label:'New quote created', def:'all admins', sms:true, desc:'A new customer quote was created.' },
