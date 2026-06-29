@@ -3497,7 +3497,7 @@ async function renderFeedbackDetail(el, id){
     '</div>' +
     (canEdit ? '<div style="display:flex;gap:8px;margin-top:14px">' +
       '<button class="btn btn-secondary btn-sm" onclick="feedbackSave(' + f.id + ')">Save changes</button>' +
-      (f.is_resolved ? '<button class="btn btn-secondary btn-sm" onclick="feedbackReopen(' + f.id + ')">Reopen</button>' : '<button class="btn btn-primary btn-sm" style="flex:1" onclick="feedbackResolve(' + f.id + ')">Resolve &amp; close</button>') +
+      (f.is_resolved ? '<button class="btn btn-secondary btn-sm" onclick="feedbackReopen(' + f.id + ')">Reopen</button>' : '<button class="btn btn-primary btn-sm" onclick="feedbackResolve(' + f.id + ')">Resolve &amp; close</button>') +
     '</div>' +
     '<div style="font-size:11px;color:var(--text-muted-color);margin-top:6px">To close: assign a tech and set tech at fault to Yes or No. Damages and refund are recorded.</div>' : '') +
     '</div>';

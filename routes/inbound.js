@@ -265,9 +265,23 @@ router.post('/sms', async function (req, res) {
     // Clear a due followup, if any.
     await pool.query('UPDATE customer_feedback SET followup_sent_at = COALESCE(followup_sent_at, NOW()) WHERE id = $1 AND followup_needed = true', [feedbackId]);
 
-    try { await sendSms(from, 'Got it - added your note to FB-' + feedbackId + '.'); }
+    // Let Neurolock interpret the reply and act on this record (assign tech, set followup, etc.).
+    var ack = 'Got it - added your note to FB-' + feedbackId + '.';
+    try {
+      const { runAgentForActor } = require('./ai');
+      const prompt = 'You are handling customer feedback record id ' + feedbackId + ' (call it FB-' + feedbackId + '). ' +
+        'The assigned manager, ' + user.name + ', just replied by SMS: "' + body + '". ' +
+        'Interpret their intent and take the appropriate actions ON THIS RECORD (id ' + feedbackId + ') with the feedback tools: ' +
+        'assign a tech (use list_users to resolve a name), set a followup date/time, change status, or record damages/refund. ' +
+        'Their message is already saved as a note, so do NOT call add_feedback_note. Do NOT resolve or close unless they explicitly say to close it. ' +
+        'Then reply with ONE short SMS sentence (under 140 chars) confirming exactly what you changed; if nothing was actionable, just acknowledge.';
+      const out = await runAgentForActor(user, prompt);
+      if (out && out.reply) ack = out.reply.replace(/\s+/g, ' ').trim().slice(0, 300);
+    } catch (e) { console.error('[feedback-sms] agent failed:', e.message); }
+
+    try { await sendSms(from, ack); }
     catch (e) { console.error('[feedback-sms] ack failed:', e.message); }
-    console.log('[feedback-sms] note added to FB-' + feedbackId + ' by ' + user.name);
+    console.log('[feedback-sms] handled FB-' + feedbackId + ' from ' + user.name);
   } catch (e) {
     console.error('[feedback-sms] processing failed:', e.message);
   }

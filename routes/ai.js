@@ -441,4 +441,55 @@ router.post('/agent', requireAuth, async function (req, res) {
   }
 });
 
+// Run the Neurolock agent for a given actor on one text instruction; returns
+// { reply, actions }. Used by SMS-driven feedback handling. Mirrors the /agent
+// loop but takes a user object directly (no HTTP round-trip).
+async function runAgentForActor(user, userText) {
+  if (!process.env.ANTHROPIC_API_KEY) throw new Error('AI assistant is not configured.');
+  var systemPrompt = AGENT_SYSTEM_PROMPT + '\n\nCurrent date (America/New_York): ' + etTodayAgent() + '.';
+  systemPrompt += '\nYou are helping ' + (user.name || 'a team member') + ' (role: ' + user.role + '), who is interacting over SMS, so be brief.';
+  try {
+    var ctxRow = await pool.query("SELECT value FROM settings WHERE key = 'ai_context'");
+    if (ctxRow.rows.length && ctxRow.rows[0].value) systemPrompt += '\n\nAdditional company context:\n' + ctxRow.rows[0].value.trim();
+  } catch (e) { /* non-fatal */ }
+  var tools = novaTools.toAnthropicTools();
+  var working = [{ role: 'user', content: userText }];
+  var actions = [];
+  var finalText = '';
+  var MAX_ITERS = 6;
+  for (var iter = 0; iter < MAX_ITERS; iter++) {
+    var response = await callClaudeAgent(working, systemPrompt, tools);
+    if (response.error) throw new Error((response.error && response.error.message) || 'AI service error');
+    var content = response.content || [];
+    var textParts = [];
+    var toolUses = [];
+    for (var i = 0; i < content.length; i++) {
+      if (content[i].type === 'text') textParts.push(content[i].text);
+      else if (content[i].type === 'tool_use') toolUses.push(content[i]);
+    }
+    if (textParts.length) finalText = textParts.join('\n');
+    if (response.stop_reason !== 'tool_use' || !toolUses.length) break;
+    working.push({ role: 'assistant', content: content });
+    var toolResults = [];
+    for (var j = 0; j < toolUses.length; j++) {
+      var tu = toolUses[j];
+      var tool = novaTools.getTool(tu.name);
+      var resultBlock;
+      try {
+        if (!tool) throw new Error('Unknown tool: ' + tu.name);
+        var out = await tool.run(user, tu.input || {});
+        resultBlock = { type: 'tool_result', tool_use_id: tu.id, content: JSON.stringify(out) };
+        actions.push({ tool: tu.name, ok: true });
+      } catch (e) {
+        resultBlock = { type: 'tool_result', tool_use_id: tu.id, content: 'Error: ' + e.message, is_error: true };
+        actions.push({ tool: tu.name, ok: false, error: e.message });
+      }
+      toolResults.push(resultBlock);
+    }
+    working.push({ role: 'user', content: toolResults });
+  }
+  try { await incrementUsage(user.id, user.name); } catch (e) { /* non-fatal */ }
+  return { reply: finalText, actions: actions };
+}
 module.exports = router;
+module.exports.runAgentForActor = runAgentForActor;
