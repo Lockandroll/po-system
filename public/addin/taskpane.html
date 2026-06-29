@@ -109,15 +109,17 @@
   }
 
   Office.onReady(function () {
-    TOKEN = loadToken();
-    var item = Office.context.mailbox.item;
-    emailCtx.subject = (item && item.subject) || '';
-    if (item && item.body) {
-      item.body.getAsync('text', function (r) {
-        emailCtx.body = (r && r.status === 'succeeded') ? (r.value || '') : '';
-        if (TOKEN) showForm();
-      });
-    } else if (TOKEN) { showForm(); }
+    loadToken().then(function (t) {
+      TOKEN = t || '';
+      var item = Office.context.mailbox.item;
+      emailCtx.subject = (item && item.subject) || '';
+      if (item && item.body) {
+        item.body.getAsync('text', function (r) {
+          emailCtx.body = (r && r.status === 'succeeded') ? (r.value || '') : '';
+          if (TOKEN) showForm();
+        });
+      } else if (TOKEN) { showForm(); }
+    });
   });
 
   // ---- Login ----
@@ -154,13 +156,36 @@
   // restarts - unlike localStorage, which Outlook routinely clears in the
   // add-in sandbox (the reason the old build asked you to sign in every time).
   function saveToken() {
+    // Write to every store we can. OfficeRuntime.storage is the one that
+    // actually persists in NEW Outlook; roamingSettings and localStorage are
+    // cleared there, which is why the pane kept asking you to sign in.
     try { localStorage.setItem('nova_addin_token', TOKEN); } catch (e) {}
     try {
       var rs = Office.context && Office.context.roamingSettings;
       if (rs) { rs.set('nova_addin_token', TOKEN); rs.saveAsync(function () {}); }
     } catch (e) {}
+    try {
+      if (window.OfficeRuntime && OfficeRuntime.storage) {
+        OfficeRuntime.storage.setItem('nova_addin_token', TOKEN);
+      }
+    } catch (e) {}
   }
+  // Async: OfficeRuntime.storage.getItem returns a promise. Resolves to the
+  // saved token, falling back to roamingSettings/localStorage, or '' if none.
   function loadToken() {
+    return new Promise(function (resolve) {
+      try {
+        if (window.OfficeRuntime && OfficeRuntime.storage) {
+          OfficeRuntime.storage.getItem('nova_addin_token').then(function (t) {
+            resolve(t || loadTokenFallback());
+          }).catch(function () { resolve(loadTokenFallback()); });
+          return;
+        }
+      } catch (e) {}
+      resolve(loadTokenFallback());
+    });
+  }
+  function loadTokenFallback() {
     try {
       var rs = Office.context && Office.context.roamingSettings;
       var t = rs && rs.get('nova_addin_token');
