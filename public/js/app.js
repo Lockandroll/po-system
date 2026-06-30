@@ -2,7 +2,7 @@
 // public/sw.js (the only thing bumped each deploy) — the badge asks the active
 // service worker for it at runtime. This value is just the fallback shown when no
 // service worker is available (e.g. very first visit before it installs).
-var APP_VERSION = 'v70';
+var APP_VERSION = 'v71';
 var _resolvedAppVersion = null;
 
 // Ask the active service worker for its CACHE_VERSION (without the 'nova-' prefix).
@@ -11768,13 +11768,36 @@ function sigSignPaintFields() {
   });
 }
 
+var SIG_TYPE_FONTS = [
+  { l: 'Script', f: '"Segoe Script","Snell Roundhand","Brush Script MT",cursive' },
+  { l: 'Brush', f: '"Brush Script MT","Bradley Hand","Snell Roundhand",cursive' },
+  { l: 'Casual', f: '"Bradley Hand","Segoe Print","Comic Sans MS",cursive' }
+];
+var _sigPadMode = 'draw';
+var _sigTypeFont = SIG_TYPE_FONTS[0].f;
 function sigSignPad(idx) {
   var f = sigSign.fields[idx];
+  var isInit = (f.field_type === 'initials');
+  _sigPadMode = 'draw'; _sigTypeFont = SIG_TYPE_FONTS[0].f;
   var ov = document.createElement('div'); ov.id = 'sig-pad-ov';
   ov.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.6);z-index:9999;display:flex;align-items:center;justify-content:center;padding:16px';
+  var fontBtns = SIG_TYPE_FONTS.map(function (ft, i) {
+    return '<button class="btn btn-sm ' + (i === 0 ? 'btn-primary' : 'btn-ghost') + '" data-sigfont="' + i + '" onclick="sigTypeFont(' + i + ')" style="font-family:' + ft.f + ';font-size:18px">' + (isInit ? 'Ab' : 'Abc') + '</button>';
+  }).join('');
   ov.innerHTML = '<div style="background:var(--bg-card);border-radius:12px;padding:16px;max-width:480px;width:100%">' +
-    '<div style="font-weight:600;margin-bottom:8px">' + (f.field_type === 'initials' ? 'Draw your initials' : 'Draw your signature') + '</div>' +
-    '<canvas id="sig-pad-canvas" width="440" height="180" style="width:100%;height:180px;background:#fff;border:1px solid var(--border);border-radius:8px;touch-action:none;cursor:crosshair"></canvas>' +
+    '<div style="font-weight:600;margin-bottom:10px">' + (isInit ? 'Add your initials' : 'Add your signature') + '</div>' +
+    '<div style="display:flex;gap:6px;margin-bottom:12px">' +
+      '<button class="btn btn-sm btn-primary" id="sig-pad-tab-draw" onclick="sigPadMode(\'draw\')">Draw</button>' +
+      '<button class="btn btn-sm btn-ghost" id="sig-pad-tab-type" onclick="sigPadMode(\'type\')">Type</button>' +
+    '</div>' +
+    '<div id="sig-pad-draw">' +
+      '<canvas id="sig-pad-canvas" width="440" height="180" style="width:100%;height:180px;background:#fff;border:1px solid var(--border);border-radius:8px;touch-action:none;cursor:crosshair"></canvas>' +
+    '</div>' +
+    '<div id="sig-pad-type" style="display:none">' +
+      '<input id="sig-type-text" class="input" style="width:100%;margin-bottom:10px;color:#fff" placeholder="' + (isInit ? 'Your initials' : 'Type your name') + '" oninput="sigTypePreview()" />' +
+      '<div style="display:flex;gap:6px;margin-bottom:10px;flex-wrap:wrap">' + fontBtns + '</div>' +
+      '<div id="sig-type-preview" style="height:90px;display:flex;align-items:center;justify-content:center;background:#fff;border:1px solid var(--border);border-radius:8px;color:#111;font-size:46px;overflow:hidden;white-space:nowrap;font-family:' + _sigTypeFont + '"></div>' +
+    '</div>' +
     '<div style="display:flex;gap:8px;justify-content:flex-end;margin-top:12px">' +
       '<button class="btn btn-ghost btn-sm" onclick="sigPadClear()">Clear</button>' +
       '<button class="btn btn-ghost btn-sm" onclick="sigPadClose()">Cancel</button>' +
@@ -11782,6 +11805,28 @@ function sigSignPad(idx) {
     '</div></div>';
   document.body.appendChild(ov);
   sigPadInit();
+  var ti = document.getElementById('sig-type-text');
+  if (ti && !isInit && sigSign.signer && sigSign.signer.name) ti.value = sigSign.signer.name;
+}
+function sigPadMode(mode) {
+  _sigPadMode = mode;
+  var dr = document.getElementById('sig-pad-draw'), ty = document.getElementById('sig-pad-type');
+  var tdr = document.getElementById('sig-pad-tab-draw'), tty = document.getElementById('sig-pad-tab-type');
+  if (dr) dr.style.display = (mode === 'draw') ? '' : 'none';
+  if (ty) ty.style.display = (mode === 'type') ? '' : 'none';
+  if (tdr) tdr.className = 'btn btn-sm ' + (mode === 'draw' ? 'btn-primary' : 'btn-ghost');
+  if (tty) tty.className = 'btn btn-sm ' + (mode === 'type' ? 'btn-primary' : 'btn-ghost');
+  if (mode === 'type') sigTypePreview();
+}
+function sigTypeFont(i) {
+  _sigTypeFont = SIG_TYPE_FONTS[i] ? SIG_TYPE_FONTS[i].f : SIG_TYPE_FONTS[0].f;
+  var btns = document.querySelectorAll('[data-sigfont]');
+  for (var k = 0; k < btns.length; k++) { btns[k].className = 'btn btn-sm ' + (parseInt(btns[k].getAttribute('data-sigfont'), 10) === i ? 'btn-primary' : 'btn-ghost'); }
+  sigTypePreview();
+}
+function sigTypePreview() {
+  var pv = document.getElementById('sig-type-preview'); var ti = document.getElementById('sig-type-text');
+  if (!pv) return; pv.style.fontFamily = _sigTypeFont; pv.textContent = (ti && ti.value) ? ti.value : '';
 }
 function sigPadInit() {
   var c = document.getElementById('sig-pad-canvas'); if (!c) return;
@@ -11798,9 +11843,25 @@ function sigPadInit() {
   c.onpointerup = function () { _sigPad.drawing = false; };
   c.onpointerleave = function () { _sigPad.drawing = false; };
 }
-function sigPadClear() { if (_sigPad) { _sigPad.ctx.clearRect(0, 0, _sigPad.c.width, _sigPad.c.height); _sigPad.ink = false; } }
+function sigPadClear() {
+  if (_sigPadMode === 'type') { var ti = document.getElementById('sig-type-text'); if (ti) ti.value = ''; sigTypePreview(); return; }
+  if (_sigPad) { _sigPad.ctx.clearRect(0, 0, _sigPad.c.width, _sigPad.c.height); _sigPad.ink = false; }
+}
 function sigPadClose() { var ov = document.getElementById('sig-pad-ov'); if (ov) ov.remove(); _sigPad = null; }
 function sigPadApply(idx) {
+  if (_sigPadMode === 'type') {
+    var ti = document.getElementById('sig-type-text');
+    var txt = ((ti && ti.value) || '').trim();
+    if (!txt) { showToast('Type your name first', ''); return; }
+    var c = document.createElement('canvas'); c.width = 600; c.height = 200;
+    var ctx = c.getContext('2d');
+    ctx.fillStyle = '#111'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+    var size = 120; ctx.font = size + 'px ' + _sigTypeFont;
+    while (size > 24 && ctx.measureText(txt).width > c.width - 40) { size -= 6; ctx.font = size + 'px ' + _sigTypeFont; }
+    ctx.fillText(txt, c.width / 2, c.height / 2);
+    sigSign.fields[idx].image = c.toDataURL('image/png');
+    sigPadClose(); sigSignPaintFields(); return;
+  }
   if (!_sigPad || !_sigPad.ink) { showToast('Please draw your signature first', ''); return; }
   sigSign.fields[idx].image = _sigPad.c.toDataURL('image/png');
   sigPadClose(); sigSignPaintFields();
