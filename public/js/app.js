@@ -2603,7 +2603,33 @@ function updateRecurHint(){
     hint.textContent='Sent and due the same day, every day.';
   } else hint.textContent='';
 }
-function varLegendHtml(note){
+var _novaLastField = null;
+if (typeof document !== 'undefined' && !window._novaVarFocusBound) {
+  window._novaVarFocusBound = true;
+  document.addEventListener('focusin', function(e){
+    var el = e.target;
+    if (el && (el.tagName === 'TEXTAREA' || (el.tagName === 'INPUT' && /^(text|search|url|email|tel|)$/i.test(el.type||'')))) { _novaLastField = el; }
+  });
+}
+function insertVarToken(token, idsCsv){
+  var ids = String(idsCsv||'').split(',').filter(Boolean);
+  var target = null;
+  if (_novaLastField && document.body.contains(_novaLastField) && ids.indexOf(_novaLastField.id) !== -1) target = _novaLastField;
+  if (!target){ for (var i=ids.length-1;i>=0;i--){ var el=document.getElementById(ids[i]); if (el){ target=el; break; } } }
+  if (!target) return;
+  var v = target.value||'';
+  var start = (typeof target.selectionStart==='number')?target.selectionStart:v.length;
+  var end = (typeof target.selectionEnd==='number')?target.selectionEnd:v.length;
+  target.value = v.slice(0,start)+token+v.slice(end);
+  var pos = start+token.length;
+  target.focus();
+  try{ target.setSelectionRange(pos,pos); }catch(e){}
+  try{ target.dispatchEvent(new Event('input',{bubbles:true})); }catch(e){}
+  _novaLastField = target;
+}
+function varLegendHtml(note, idsCsv){
+  idsCsv = idsCsv || '';
+  var clickable = !!idsCsv;
   var rows=[
     ['{today}','today, e.g. Jun 29'],
     ['{tomorrow}','tomorrow'],
@@ -2613,10 +2639,17 @@ function varLegendHtml(note){
     ['{next_month}','name of next month, e.g. July'],
     ['{prev_month}','name of previous month, e.g. May']
   ];
-  var items=rows.map(function(r){ return '<div style="display:flex;gap:8px;margin:3px 0;align-items:baseline"><code style="background:var(--bg-color);border:1px solid var(--border);border-radius:4px;padding:1px 6px;font-size:12px;color:var(--primary);white-space:nowrap">'+r[0]+'</code><span style="font-size:12px;color:var(--text-muted-color)">'+r[1]+'</span></div>'; }).join('');
+  var items=rows.map(function(r){
+    var cs='background:var(--bg-color);border:1px solid var(--border);border-radius:4px;padding:1px 6px;font-size:12px;color:var(--primary);white-space:nowrap'+(clickable?';cursor:pointer':'');
+    var code = clickable
+      ? '<code onclick="insertVarToken(\''+r[0]+'\',\''+idsCsv+'\')" title="Click to insert at cursor" style="'+cs+'">'+r[0]+'</code>'
+      : '<code style="'+cs+'">'+r[0]+'</code>';
+    return '<div style="display:flex;gap:8px;margin:3px 0;align-items:baseline">'+code+'<span style="font-size:12px;color:var(--text-muted-color)">'+r[1]+'</span></div>';
+  }).join('');
+  var hint = clickable ? ' Click a variable to drop it where your cursor is.' : '';
   return '<div style="margin-top:10px;padding:10px 12px;border:1px solid var(--border);border-radius:8px;background:var(--bg-elevated)">'+
     '<div style="font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:0.05em;color:var(--text-muted-color);margin-bottom:6px">Dynamic variables</div>'+
-    '<div style="font-size:12px;color:var(--text-muted-color);margin-bottom:8px">'+(note||'Type any of these in the text. Nova fills in the real dates each time it is sent.')+'</div>'+
+    '<div style="font-size:12px;color:var(--text-muted-color);margin-bottom:8px">'+(note||'Type any of these in the text. Nova fills in the real dates each time it is sent.')+hint+'</div>'+
     items+'</div>';
 }
 async function renderTaskForm(el, id){
@@ -2668,7 +2701,7 @@ async function renderTaskForm(el, id){
         '<div id="tk-due-wrap" class="form-group" style="flex:1;min-width:160px"><label>Due date</label><input type="date" id="tk-due" value="'+escHtml(dueVal)+'" /></div>' +
         '<div class="form-group" style="flex:1;min-width:160px"><label>Repeat</label><select id="tk-recur" onchange="taskRecurChanged()">'+recOpts+'</select></div>' +
       '</div>' +
-      '<div id="tk-recur-day-wrap" class="form-group" style="display:none"><label id="tk-recur-day-label" style="display:block;margin-bottom:6px">Schedule</label><div style="display:flex;gap:12px;flex-wrap:wrap"><div style="flex:1;min-width:150px"><div style="font-size:12px;color:var(--text-muted-color);margin-bottom:4px">Send on</div><select id="tk-recur-start" onchange="updateRecurHint()"></select></div><div style="flex:1;min-width:150px"><div style="font-size:12px;color:var(--text-muted-color);margin-bottom:4px">Due on</div><select id="tk-recur-due" onchange="updateRecurHint()"></select></div></div><div id="tk-recur-hint" style="font-size:12px;color:var(--text-muted-color);margin-top:6px"></div>' + varLegendHtml('Type these in the Title or Description above. Nova fills in the real dates each time it sends this task.') + '</div>' +
+      '<div id="tk-recur-day-wrap" class="form-group" style="display:none"><label id="tk-recur-day-label" style="display:block;margin-bottom:6px">Schedule</label><div style="display:flex;gap:12px;flex-wrap:wrap"><div style="flex:1;min-width:150px"><div style="font-size:12px;color:var(--text-muted-color);margin-bottom:4px">Send on</div><select id="tk-recur-start" onchange="updateRecurHint()"></select></div><div style="flex:1;min-width:150px"><div style="font-size:12px;color:var(--text-muted-color);margin-bottom:4px">Due on</div><select id="tk-recur-due" onchange="updateRecurHint()"></select></div></div><div id="tk-recur-hint" style="font-size:12px;color:var(--text-muted-color);margin-top:6px"></div>' + varLegendHtml('Type these in the Title or Description above. Nova fills in the real dates each time it sends this task.', 'tk-title,tk-desc') + '</div>' +
       attachHtml +
       (id?'':'<div class="form-group"><label>Subtasks <span style="color:var(--text-muted-color);font-weight:400">(one per line)</span></label><textarea id="tk-subs" rows="3" placeholder="Optional checklist, one item per line"></textarea></div>') +
       '<div style="display:flex;gap:8px;margin-top:8px"><button class="btn btn-primary" onclick="taskSave('+(id||'null')+')">'+(id?'Save Changes':'Create Task')+'</button></div>' +
@@ -2820,7 +2853,7 @@ function smRenderForm(m) {
       '<div class="form-group"><label>Send to (roles)</label><div style="padding:6px 0">' + roleChecks + '</div></div>' +
       '<div class="form-group"><label style="display:inline-flex;align-items:center;gap:8px;font-weight:400"><input type="checkbox" id="sm-ignore"' + (m.ignore_opt_out ? ' checked' : '') + ' style="width:auto"> Send even to people who turned off notifications (recommended for required reminders)</label></div>' +
       '<div class="form-group"><label>Email subject <span style="color:var(--text-muted-color);font-weight:400">(used only for email)</span></label><input type="text" id="sm-subject" value="' + escHtml(m.subject || '') + '" placeholder="e.g. Deposit day reminder" /></div>' +
-      '<div class="form-group"><label>Message</label><textarea id="sm-message" rows="4" placeholder="The text / email body. Use {first_name} to personalize and date variables like {prev_week}.">' + escHtml(m.message || '') + '</textarea>' + varLegendHtml('Type these in the message above (or the email subject). Nova fills in the real dates each time it sends. {first_name} also works to personalize.') + '</div>' +
+      '<div class="form-group"><label>Message</label><textarea id="sm-message" rows="4" placeholder="The text / email body. Use {first_name} to personalize and date variables like {prev_week}.">' + escHtml(m.message || '') + '</textarea>' + varLegendHtml('Type these in the message above (or the email subject). Nova fills in the real dates each time it sends. {first_name} also works to personalize.', 'sm-subject,sm-message') + '</div>' +
       '<div class="form-group"><label style="display:inline-flex;align-items:center;gap:8px;font-weight:400"><input type="checkbox" id="sm-enabled"' + (m.enabled === false ? '' : ' checked') + ' style="width:auto"> Enabled</label></div>' +
       '<div style="display:flex;gap:8px;margin-top:8px">' +
         '<button class="btn btn-primary" onclick="smSave(' + (m.id || 'null') + ')">' + (m.id ? 'Save Changes' : 'Create') + '</button>' +
@@ -4434,7 +4467,7 @@ async function renderEditQuote(el, id) {
     '</div></div>' +
     '<div class="card mb-4"><div class="card-header"><span class="card-title">Important Information</span></div><div class="card-body">' +
       '<p class="text-muted" style="margin-bottom:12px;font-size:13px">Printed at the bottom of the quote. Edit as needed.</p>' +
-      '<textarea id="qt-important-info" style="min-height:120px">' + escHtml(importantInfoVal) + '</textarea>' + varLegendHtml('These dynamic date variables auto-fill on recurring tasks and scheduled messages. You can reference them here too.') +
+      '<textarea id="qt-important-info" style="min-height:120px">' + escHtml(importantInfoVal) + '</textarea>' + varLegendHtml('These dynamic date variables auto-fill on recurring tasks and scheduled messages. You can reference them here too.', 'qt-important-info') +
     '</div></div>' +
     '<div class="card mb-4"><div class="card-header"><span class="card-title">Photos</span></div><div class="card-body">' +
       '<p class="text-muted" style="margin-bottom:12px;font-size:13px">Attach reference photos (job site, hardware, key blanks, etc.) to help with this quote. Photos are saved when you save the quote.</p>' +
