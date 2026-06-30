@@ -178,7 +178,7 @@ router.get('/:id', requireAuth, requirePermission('view_signatures'), async (req
       [id]
     )).rows;
     const fields = (await pool.query(
-      'SELECT id, signer_id, field_type, page, x, y, w, h, required, label, ai_detected, ai_confidence, value, value_r2_key, font_size ' +
+      'SELECT id, signer_id, field_type, page, x, y, w, h, required, label, ai_detected, ai_confidence, value, value_r2_key, font_size, locked ' +
       'FROM signature_fields WHERE request_id = $1 ORDER BY page, id',
       [id]
     )).rows;
@@ -432,7 +432,7 @@ router.put('/:id/layout', requireAuth, requirePermission('manage_signatures'), a
         required: (f.required === false) ? false : true,
         label: f.label ? String(f.label).slice(0, 255) : null,
         font_size: (f.font_size != null && isFinite(f.font_size)) ? Number(f.font_size) : null,
-        value: fval });
+        value: fval, locked: (f.locked === true) });
     }
 
     const client = await pool.connect();
@@ -453,9 +453,9 @@ router.put('/:id/layout', requireAuth, requirePermission('manage_signatures'), a
         var fl = fields[b];
         var sid = (fl.signer != null) ? ids[fl.signer] : null;
         await client.query(
-          'INSERT INTO signature_fields (request_id, signer_id, field_type, page, x, y, w, h, required, label, ai_detected, font_size, value) ' +
-          'VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,false,$11,$12)',
-          [id, sid, fl.field_type, fl.page, fl.x, fl.y, fl.w, fl.h, fl.required, fl.label, fl.font_size, fl.value]
+          'INSERT INTO signature_fields (request_id, signer_id, field_type, page, x, y, w, h, required, label, ai_detected, font_size, value, locked) ' +
+          'VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,false,$11,$12,$13)',
+          [id, sid, fl.field_type, fl.page, fl.x, fl.y, fl.w, fl.h, fl.required, fl.label, fl.font_size, fl.value, fl.locked]
         );
       }
       await client.query('UPDATE signature_requests SET updated_at = NOW() WHERE id = $1', [id]);
@@ -694,7 +694,7 @@ pub.get('/:token', async (req, res) => {
       await pool.query("UPDATE signature_signers SET status = 'viewed' WHERE id = $1", [signer.id]);
       await logEvent(request.id, signer.id, 'viewed', signer.name, req, {});
     }
-    const fields = (await pool.query('SELECT id, field_type, page, x, y, w, h, required, label, value FROM signature_fields WHERE request_id = $1 AND signer_id = $2 ORDER BY page, id', [request.id, signer.id])).rows;
+    const fields = (await pool.query('SELECT id, field_type, page, x, y, w, h, required, label, value, locked FROM signature_fields WHERE request_id = $1 AND signer_id = $2 ORDER BY page, id', [request.id, signer.id])).rows;
     var pdfUrl = null;
     try { pdfUrl = await r2.presignDownload(request.source_r2_key, request.request_number + '.pdf', true); } catch (e) {}
     res.json({
@@ -735,7 +735,7 @@ pub.post('/:token/submit', async (req, res) => {
     // Required-field validation
     for (var v = 0; v < fields.length; v++) {
       var f = fields[v]; var entry = values[f.id] || {};
-      if (!f.required) continue;
+      if (!f.required || f.locked) continue;
       var has;
       if (f.field_type === 'signature' || f.field_type === 'initials') has = !!entry.image;
       else if (f.field_type === 'checkbox') has = true; // checkbox required = must be acknowledged; accept either state
@@ -745,6 +745,7 @@ pub.post('/:token/submit', async (req, res) => {
     // Persist values
     for (var k = 0; k < fields.length; k++) {
       var fl = fields[k]; var e2 = values[fl.id] || {};
+      if (fl.locked) continue;
       if (fl.field_type === 'signature' || fl.field_type === 'initials') {
         if (e2.image) {
           var b64 = String(e2.image).replace(/^data:image\/png;base64,/, '');

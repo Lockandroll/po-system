@@ -1275,6 +1275,7 @@ async function initDB() {
     await client.query('CREATE INDEX IF NOT EXISTS signature_fields_request_idx ON signature_fields (request_id);');
     await client.query('CREATE INDEX IF NOT EXISTS signature_fields_signer_idx ON signature_fields (signer_id);');
     await client.query('CREATE INDEX IF NOT EXISTS signature_events_request_idx ON signature_events (request_id);');
+    await client.query('ALTER TABLE signature_fields ADD COLUMN IF NOT EXISTS locked BOOLEAN NOT NULL DEFAULT false;');
 
     console.log('Database initialized');
   } finally {
