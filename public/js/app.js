@@ -234,6 +234,13 @@ function navigate(view, param) {
   try { localStorage.setItem('po_view', view); if (param != null && param !== '') localStorage.setItem('po_param', String(param)); else localStorage.removeItem('po_param'); } catch(e) {}
   var sec = getSidebarSection(view);
   if (sec) state.sidebarSection = sec;
+  try {
+    var _pk = (param != null ? String(param) : '');
+    var _cur = history.state;
+    if (!_cur || _cur.navView !== view || String(_cur.navParam == null ? '' : _cur.navParam) !== _pk) {
+      history.pushState({ navView: view, navParam: (param != null ? param : null) }, '');
+    }
+  } catch (e) {}
   render();
 }
 
@@ -10933,6 +10940,21 @@ function mySchedMonthHtml(){
 })();
 /* =================== end Nova QOL helpers =================== */
 
+// Browser back/forward support: navigate() pushes history; restore here on pop.
+window.addEventListener('popstate', function (e) {
+  closeSidebar();
+  var st = e.state;
+  if (st && st.navView) {
+    state.currentView = st.navView;
+    state.currentParam = (st.navParam != null ? st.navParam : null);
+  } else if (!state.currentView) {
+    state.currentView = 'home';
+  }
+  var sec = getSidebarSection(state.currentView);
+  state.sidebarSection = sec || null;
+  render();
+});
+try { history.replaceState({ navView: (state.currentView || 'home'), navParam: (state.currentParam != null ? state.currentParam : null) }, ''); } catch (e) {}
 render();
 initAiDots();
 window.addEventListener('resize', function() { initAiDots(); });
