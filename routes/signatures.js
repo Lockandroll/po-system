@@ -787,6 +787,49 @@ pub.post('/:token/submit', async (req, res) => {
   }
 });
 
+pub.post('/:token/delegate', async (req, res) => {
+  try {
+    const ctx = await loadSignerByToken(req.params.token);
+    if (!ctx) return res.status(404).json({ error: 'Invalid link.' });
+    const signer = ctx.signer, request = ctx.request;
+    var te = tokenError(signer, request);
+    if (te) return res.status(te.code).json({ error: te.msg });
+    if (signer.status === 'signed') return res.status(409).json({ error: 'You have already signed this document.' });
+    var name = (req.body.name || '').toString().trim().slice(0, 255);
+    var email = (req.body.email || '').toString().trim().slice(0, 255);
+    var reason = (req.body.reason || '').toString().slice(0, 500);
+    if (!name || !email || email.indexOf('@') === -1) return res.status(400).json({ error: 'A name and valid email are required.' });
+    var oldName = signer.name, oldEmail = signer.email;
+    var newToken = crypto.randomBytes(32).toString('hex');
+    var expires = signer.token_expires_at ? new Date(signer.token_expires_at) : new Date(Date.now() + 30 * 86400000);
+    // Reassign this signer slot to the delegate (their field assignments carry over),
+    // issue a fresh single-use token, and reset their progress.
+    await pool.query("UPDATE signature_signers SET name = $1, email = $2, token = $3, token_expires_at = $4, status = 'pending', consent_accepted = false, signed_at = NULL WHERE id = $5", [name, email, newToken, expires, signer.id]);
+    await logEvent(request.id, signer.id, 'delegated', oldName || oldEmail, req, { to_name: name, to_email: email, reason: reason });
+    var link = (process.env.APP_URL || '').replace(/\/$/, '') + '/sign/' + newToken;
+    try {
+      var html = emailTemplate({ badge: 'Signature requested', badgeColor: 'orange', title: 'Please sign: ' + request.title,
+        body: 'Hi ' + name + ',<br><br>' + (oldName || 'Someone') + ' has asked you to sign this document on their behalf.' + (reason ? ('<br><br>Note: ' + reason) : ''),
+        details: [{ label: 'Document', value: request.title }, { label: 'Reference', value: request.request_number }],
+        buttonText: 'Review & sign', buttonUrl: link, footerNote: 'Secure, single-use signing link. Do not forward it.' });
+      await sendEmail(email, 'Signature requested: ' + request.title, html);
+    } catch (e) { console.error('Delegate email failed:', e.message); }
+    try {
+      var creator = (await pool.query('SELECT email FROM users WHERE id = $1', [request.created_by])).rows[0];
+      if (creator && creator.email) {
+        var chtml = emailTemplate({ badge: 'Forwarded', badgeColor: 'orange', title: 'Signer forwarded: ' + request.title,
+          body: (oldName || oldEmail || 'A signer') + ' forwarded their signature to <strong>' + name + ' (' + email + ')</strong>.' + (reason ? ('<br><br>Reason: ' + reason) : ''),
+          details: [{ label: 'Reference', value: request.request_number }], footerNote: 'Automated Nova notification.' });
+        await sendEmail(creator.email, 'Signer forwarded: ' + request.title, chtml);
+      }
+    } catch (e) {}
+    res.json({ success: true });
+  } catch (err) {
+    console.error('Delegate error:', err);
+    res.status(500).json({ error: 'Failed to forward the request' });
+  }
+});
+
 pub.post('/:token/decline', async (req, res) => {
   try {
     const ctx = await loadSignerByToken(req.params.token);

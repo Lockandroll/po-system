@@ -2,7 +2,7 @@
 // public/sw.js (the only thing bumped each deploy) — the badge asks the active
 // service worker for it at runtime. This value is just the fallback shown when no
 // service worker is available (e.g. very first visit before it installs).
-var APP_VERSION = 'v64';
+var APP_VERSION = 'v65';
 var _resolvedAppVersion = null;
 
 // Ask the active service worker for its CACHE_VERSION (without the 'nova-' prefix).
@@ -11658,6 +11658,7 @@ function sigSignShellHtml() {
       '<span>I agree to sign this document electronically, and that my electronic signature is legally binding.</span></label>' +
     '<div id="sig-sign-pages"><div class="loading">Rendering document...</div></div>' +
     '<div style="position:sticky;bottom:0;background:var(--bg);border-top:1px solid var(--border);padding:12px 0;margin-top:14px;display:flex;gap:8px;justify-content:flex-end">' +
+      '<button class="btn btn-ghost" onclick="sigSignDelegate()">Forward to someone else</button>' +
       '<button class="btn btn-ghost" onclick="sigSignDecline()">Decline</button>' +
       '<button class="btn btn-primary" id="sig-sign-submit" onclick="sigSignSubmit()">Finish &amp; submit</button>' +
     '</div></div>';
@@ -11698,7 +11699,7 @@ function sigSignPaintFields() {
     d.style.width = (f.w * pg.w) + 'px'; d.style.height = (f.h * pg.h) + 'px';
     if (f.locked) {
       d.style.display = 'flex'; d.style.alignItems = 'center'; d.style.padding = '0 4px'; d.style.border = '1px solid var(--border)'; d.style.background = 'rgba(255,255,255,.04)';
-      d.innerHTML = '<span style="font-size:12px;color:var(--text);overflow:hidden;white-space:nowrap;text-overflow:ellipsis">' + escHtml(f.field_type === 'checkbox' ? (f.value === 'true' ? '\u2713' : '') : (f.value || '')) + '</span>';
+      d.innerHTML = '<span style="font-size:12px;color:#111;overflow:hidden;white-space:nowrap;text-overflow:ellipsis">' + escHtml(f.field_type === 'checkbox' ? (f.value === 'true' ? '\u2713' : '') : (f.value || '')) + '</span>';
       o.appendChild(d); return;
     }
     if (f.field_type === 'signature' || f.field_type === 'initials') {
@@ -11715,7 +11716,7 @@ function sigSignPaintFields() {
     } else {
       var inp = document.createElement('input'); inp.type = 'text'; inp.value = f.value || '';
       inp.placeholder = f.label || (f.field_type === 'date' ? 'Date' : (f.field_type === 'name' ? 'Name' : 'Text'));
-      inp.style.cssText = 'width:100%;height:100%;border:2px solid #3b82f6;border-radius:3px;padding:2px 5px;font:inherit;font-size:13px;background:rgba(59,130,246,.08);box-sizing:border-box';
+      inp.style.cssText = 'width:100%;height:100%;border:2px solid #3b82f6;border-radius:3px;padding:2px 5px;font:inherit;font-size:13px;color:#111;background:rgba(255,255,255,.92);box-sizing:border-box';
       inp.oninput = (function (ix) { return function (e) { sigSign.fields[ix].value = e.target.value; }; })(idx);
       d.appendChild(inp);
     }
@@ -11790,6 +11791,41 @@ async function sigSignDecline() {
     var d = await r.json(); if (!r.ok) throw new Error(d.error || 'Failed.');
     document.getElementById('app').innerHTML = sigSignDoneHtml('You have declined to sign. The sender has been notified.');
   } catch (e) { novaAlert(e.message); }
+}
+
+function sigSignDelegate() {
+  var ov = document.createElement('div'); ov.id = 'sig-deleg-ov';
+  ov.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.6);z-index:9999;display:flex;align-items:center;justify-content:center;padding:16px';
+  ov.innerHTML = '<div style="background:var(--bg-card);border-radius:12px;padding:18px;max-width:420px;width:100%">' +
+    '<div style="font-weight:600;font-size:16px;margin-bottom:4px">Forward to someone else</div>' +
+    '<div style="font-size:13px;color:var(--text-muted-color);margin-bottom:12px">They will get the signing link and your fields. Your link will stop working.</div>' +
+    '<label style="font-size:12px;font-weight:600;display:block;margin:0 0 4px">Their name</label>' +
+    '<input id="sig-deleg-name" class="input" style="width:100%;margin-bottom:10px" />' +
+    '<label style="font-size:12px;font-weight:600;display:block;margin:0 0 4px">Their email</label>' +
+    '<input id="sig-deleg-email" type="email" class="input" style="width:100%;margin-bottom:10px" />' +
+    '<label style="font-size:12px;font-weight:600;display:block;margin:0 0 4px">Note (optional)</label>' +
+    '<input id="sig-deleg-note" class="input" style="width:100%;margin-bottom:14px" placeholder="Why you are forwarding" />' +
+    '<div id="sig-deleg-msg" style="margin-bottom:10px"></div>' +
+    '<div style="display:flex;gap:8px;justify-content:flex-end">' +
+      '<button class="btn btn-ghost btn-sm" onclick="sigDelegClose()">Cancel</button>' +
+      '<button class="btn btn-primary btn-sm" id="sig-deleg-send" onclick="sigDelegSend()">Forward</button>' +
+    '</div></div>';
+  document.body.appendChild(ov);
+}
+function sigDelegClose() { var ov = document.getElementById('sig-deleg-ov'); if (ov) ov.remove(); }
+async function sigDelegSend() {
+  var name = (document.getElementById('sig-deleg-name').value || '').trim();
+  var email = (document.getElementById('sig-deleg-email').value || '').trim();
+  var note = (document.getElementById('sig-deleg-note').value || '').trim();
+  var msg = document.getElementById('sig-deleg-msg');
+  if (!name || !email || email.indexOf('@') === -1) { msg.innerHTML = '<div class="alert alert-error">Enter a name and a valid email.</div>'; return; }
+  var btn = document.getElementById('sig-deleg-send'); if (btn) btn.disabled = true;
+  try {
+    var r = await fetch('/api/sign/' + encodeURIComponent(sigSign.token) + '/delegate', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name: name, email: email, reason: note }) });
+    var d = await r.json(); if (!r.ok) throw new Error(d.error || 'Failed to forward.');
+    sigDelegClose();
+    document.getElementById('app').innerHTML = sigSignDoneHtml('Forwarded to ' + name + '. They will receive a signing link by email.');
+  } catch (e) { msg.innerHTML = '<div class="alert alert-error">' + escHtml(e.message) + '</div>'; if (btn) btn.disabled = false; }
 }
 /* =================== end Signatures public signing =================== */
 
