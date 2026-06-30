@@ -500,6 +500,7 @@ async function render() {
     '<div class="nav-item" onclick="window.open(\'https://discord.gg/cMbHbbz47\',\'_blank\',\'noopener\')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 11.5a8.38 8.38 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.38 8.38 0 0 1-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.38 8.38 0 0 1 3.8-.9h.5a8.48 8.48 0 0 1 8 8v.5z"/></svg> Discord Channel</div>' +
     '<div class="nav-item' + (cv === 'documents' ? ' active' : '') + '" onclick="navigate(\'documents\')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg> Document Vault</div>' +
     (can('view_signatures') ? '<div class="nav-item' + (['signatures','new-signature','signature-editor'].indexOf(cv) !== -1 ? ' active' : '') + '" onclick="navigate(\'signatures\')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 17v4h4l11-11-4-4L3 17z"/><path d="M14 6l4 4"/></svg> Signatures</div>' : '') +
+    ((state.user.isOwner && !state.realUser) ? '<div class="nav-item' + (cv === 'vault' ? ' active' : '') + '" onclick="navigate(\'vault\')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg> Vault</div>' : '') +
     (isAdmin ? '<div class="nav-item' + (cv === 'sop-library' ? ' active' : '') + '" onclick="navigate(\'sop-library\')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 19.5A2.5 2.5 0 016.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 014 19.5v-15A2.5 2.5 0 016.5 2z"/></svg> SOP Library</div>' : '') +
     ((can('view_users') || can('manage_cities') || can('view_audit') || can('manage_settings') || can('manage_parts')) ?
       '<div class="nav-section-header' + (stViews.indexOf(cv) !== -1 ? ' section-active' : '') + (ss === 'settings' ? ' open' : '') + '" onclick="toggleSection(\'settings\',\'company-info\')"><span class="s-label">' + icons.settings + ' Settings</span>' + chev + '</div>' +
@@ -617,6 +618,7 @@ async function render() {
   else if (state.currentView === 'signatures') await renderSignatures(content);
   else if (state.currentView === 'new-signature') await renderNewSignature(content);
   else if (state.currentView === 'signature-editor') await renderSignatureEditor(content, state.currentParam);
+  else if (state.currentView === 'vault') await renderVault(content);
   else if (state.currentView === 'sop-library') await renderSOPLibrary(content);
   else if (state.currentView === 'view-deposit') await renderViewDeposit(content, state.currentParam);
   else if (state.currentView === 'running') await renderRunningList(content);

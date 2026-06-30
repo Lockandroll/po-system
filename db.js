@@ -1293,6 +1293,43 @@ async function initDB() {
       ');'
     );
 
+    // --- Secure Vault (owner-only credential store) ---------------------------
+    // Zero-knowledge: the server stores ONLY salts and ciphertext. The master
+    // password, recovery key, decryption key (DEK), and all plaintext live solely
+    // in the owner's browser. A DB dump or env leak cannot reveal any credential.
+    await client.query(
+      'CREATE TABLE IF NOT EXISTS vault_config (' +
+      '  user_id INTEGER PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,' +
+      '  kdf_salt VARCHAR(128) NOT NULL,' +            // hex salt for master-password KDF
+      '  kdf_iterations INTEGER NOT NULL,' +           // PBKDF2 iteration count
+      '  wrapped_dek TEXT NOT NULL,' +                 // DEK encrypted by master-password key (JSON {iv,ct})
+      '  recovery_salt VARCHAR(128),' +                // hex salt for recovery-key KDF
+      '  wrapped_dek_recovery TEXT,' +                 // DEK encrypted by recovery key (JSON {iv,ct})
+      '  created_at TIMESTAMPTZ DEFAULT NOW(),' +
+      '  updated_at TIMESTAMPTZ DEFAULT NOW()' +
+      ');'
+    );
+    await client.query(
+      'CREATE TABLE IF NOT EXISTS vault_entries (' +
+      '  id SERIAL PRIMARY KEY,' +
+      '  user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,' +
+      '  iv VARCHAR(64) NOT NULL,' +                   // per-entry AES-GCM IV (hex)
+      '  ciphertext TEXT NOT NULL,' +                  // encrypted JSON {title,url,username,password,notes,totp}
+      '  created_at TIMESTAMPTZ DEFAULT NOW(),' +
+      '  updated_at TIMESTAMPTZ DEFAULT NOW()' +
+      ');'
+    );
+    await client.query('CREATE INDEX IF NOT EXISTS idx_vault_entries_user ON vault_entries(user_id);');
+    await client.query(
+      'CREATE TABLE IF NOT EXISTS vault_challenges (' +
+      '  user_id INTEGER PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,' +
+      '  code VARCHAR(6) NOT NULL,' +
+      '  attempts INTEGER NOT NULL DEFAULT 0,' +
+      '  expires_at TIMESTAMPTZ NOT NULL,' +
+      '  created_at TIMESTAMPTZ DEFAULT NOW()' +
+      ');'
+    );
+
     console.log('Database initialized');
   } finally {
     client.release();

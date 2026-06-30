@@ -36,6 +36,14 @@ const loginLimiter = rateLimit({
   legacyHeaders: false,
   message: { error: 'Too many login attempts, please try again in 15 minutes' }
 });
+// Strict limiter for vault unlock (fresh 2FA + password step-up) to throttle brute force.
+const vaultGateLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 20,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: 'Too many vault unlock attempts. Try again in 15 minutes.' }
+});
 
 app.use(cors());
 
@@ -59,6 +67,8 @@ app.get('/api/version', function (req, res) { res.json({ version: APP_VERSION })
 
 app.use('/api/', generalLimiter);
 app.use('/api/auth/login', loginLimiter);
+app.use('/api/vault/challenge', vaultGateLimiter);
+app.use('/api/vault/verify-gate', vaultGateLimiter);
 
 // Routes
 app.use('/api/auth', require('./routes/auth'));
@@ -92,6 +102,7 @@ app.use('/api/reviews', require('./routes/reviews'));
 app.use('/api/feedback', require('./routes/feedback'));
 app.use('/api/mcp', require('./routes/mcp'));
 app.use('/api/addin', require('./routes/addin'));
+app.use('/api/vault', require('./routes/vault'));
 app.use('/api/signatures', require('./routes/signatures'));
 app.use('/api/sign', require('./routes/signatures').publicRouter);
 
