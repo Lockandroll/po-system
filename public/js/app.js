@@ -2,7 +2,7 @@
 // public/sw.js (the only thing bumped each deploy) — the badge asks the active
 // service worker for it at runtime. This value is just the fallback shown when no
 // service worker is available (e.g. very first visit before it installs).
-var APP_VERSION = 'v62';
+var APP_VERSION = 'v63';
 var _resolvedAppVersion = null;
 
 // Ask the active service worker for its CACHE_VERSION (without the 'nova-' prefix).
@@ -11399,7 +11399,7 @@ async function sigRenderPages() {
     var canvas = document.createElement('canvas'); canvas.width = vp.width; canvas.height = vp.height;
     wrap.appendChild(canvas);
     var overlay = document.createElement('div'); overlay.className = 'sig-overlay'; overlay.setAttribute('data-page', (i - 1));
-    overlay.onclick = (function (idx) { return function (ev) { sigPlaceField(ev, idx); }; })(i - 1);
+    overlay.onpointerdown = (function (idx) { return function (ev) { sigBeginDraw(ev, idx); }; })(i - 1);
     wrap.appendChild(overlay);
     host.appendChild(wrap);
     sigEd.pagePx[i - 1] = { w: vp.width, h: vp.height };
@@ -11442,19 +11442,41 @@ function sigPaintFields() {
   });
 }
 
-function sigPlaceField(ev, page) {
+// Click-and-drag on empty page space to draw a box (preview follows the cursor);
+// a plain click without dragging drops a default-sized box at that point.
+function sigBeginDraw(ev, page) {
   if (!sigEd || sigEd.readOnly) return;
-  if (!ev.target.classList.contains('sig-overlay')) return;
+  if (!ev.target.classList.contains('sig-overlay')) return; // ignore presses on existing boxes
   if (!sigEd.tool) { showToast('Pick a field type first', ''); return; }
+  var overlay = ev.currentTarget;
   var pg = sigEd.pagePx[page]; if (!pg) return;
-  var rect = ev.currentTarget.getBoundingClientRect();
-  var px = ev.clientX - rect.left, py = ev.clientY - rect.top;
-  var sz = SIG_DEFAULT_SIZE[sigEd.tool] || { w: 0.2, h: 0.04 };
-  var x = Math.max(0, Math.min(1 - sz.w, (px / pg.w) - sz.w / 2));
-  var y = Math.max(0, Math.min(1 - sz.h, (py / pg.h) - sz.h / 2));
-  sigEd.fields.push({ id: null, signerIdx: sigEd.activeSigner, field_type: sigEd.tool, page: page, x: x, y: y, w: sz.w, h: sz.h, required: true, label: null, ai_detected: false, value: '', locked: false });
-  sigEd.selected = sigEd.fields.length - 1;
-  sigPaintFields(); sigRenderInspector();
+  ev.preventDefault();
+  var rect = overlay.getBoundingClientRect();
+  var sx = ev.clientX - rect.left, sy = ev.clientY - rect.top;
+  var prev = document.createElement('div');
+  prev.style.cssText = 'position:absolute;border:2px dashed #f97316;background:rgba(249,115,22,.15);pointer-events:none;left:' + sx + 'px;top:' + sy + 'px;width:0;height:0';
+  overlay.appendChild(prev);
+  var moved = false;
+  function mv(e) {
+    var cx = e.clientX - rect.left, cy = e.clientY - rect.top;
+    var x = Math.min(sx, cx), y = Math.min(sy, cy), w = Math.abs(cx - sx), h = Math.abs(cy - sy);
+    if (w > 3 || h > 3) moved = true;
+    prev.style.left = x + 'px'; prev.style.top = y + 'px'; prev.style.width = w + 'px'; prev.style.height = h + 'px';
+  }
+  function up(e) {
+    document.removeEventListener('pointermove', mv); document.removeEventListener('pointerup', up);
+    if (prev.parentNode) prev.parentNode.removeChild(prev);
+    var cx = e.clientX - rect.left, cy = e.clientY - rect.top;
+    var x, y, w, h;
+    if (moved) { x = Math.min(sx, cx); y = Math.min(sy, cy); w = Math.abs(cx - sx); h = Math.abs(cy - sy); }
+    else { var sz = SIG_DEFAULT_SIZE[sigEd.tool] || { w: 0.2, h: 0.04 }; w = sz.w * pg.w; h = sz.h * pg.h; x = sx - w / 2; y = sy - h / 2; }
+    w = Math.max(w, 12); h = Math.max(h, 10);
+    x = Math.max(0, Math.min(pg.w - w, x)); y = Math.max(0, Math.min(pg.h - h, y));
+    sigEd.fields.push({ id: null, signerIdx: sigEd.activeSigner, field_type: sigEd.tool, page: page, x: x / pg.w, y: y / pg.h, w: w / pg.w, h: h / pg.h, required: true, label: null, ai_detected: false, value: '', locked: false });
+    sigEd.selected = sigEd.fields.length - 1;
+    sigPaintFields(); sigRenderInspector();
+  }
+  document.addEventListener('pointermove', mv); document.addEventListener('pointerup', up);
 }
 
 function sigStartMove(ev, idx) {
