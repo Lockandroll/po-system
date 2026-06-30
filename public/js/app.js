@@ -2,7 +2,7 @@
 // public/sw.js (the only thing bumped each deploy) — the badge asks the active
 // service worker for it at runtime. This value is just the fallback shown when no
 // service worker is available (e.g. very first visit before it installs).
-var APP_VERSION = 'v71';
+var APP_VERSION = 'v72';
 var _resolvedAppVersion = null;
 
 // Ask the active service worker for its CACHE_VERSION (without the 'nova-' prefix).
@@ -11212,7 +11212,7 @@ async function renderSignatureEditor(el, id) {
   try { data = await api('GET', '/signatures/' + id); }
   catch (e) { el.innerHTML = '<div class="alert alert-error">' + escHtml(e.message) + '</div>'; return; }
   sigEd = { id: id, request: data.request, status: data.request.status, readOnly: (data.request.status !== 'draft'),
-    tool: null, selected: null, activeSigner: null, pdfDoc: null, pagePx: [], signers: [], fields: [], zoom: 1, _listFilter: (sigEd && sigEd._listFilter) || '' };
+    tool: null, selected: null, activeSigner: null, pdfDoc: null, pagePx: [], signers: [], fields: [], zoom: 1, snap: true, _listFilter: (sigEd && sigEd._listFilter) || '' };
   sigEditorLoad(data);
   if (sigEd.signers.length) sigEd.activeSigner = 0;
 
@@ -11272,7 +11272,37 @@ function sigRenderToolbar() {
   if (sigEd.readOnly) { host.innerHTML = '<span style="font-size:13px;color:var(--text-muted-color)">Read-only</span>'; return; }
   host.innerHTML = SIG_FIELD_ORDER.map(function (t) {
     return '<button class="sig-tool' + (sigEd.tool === t ? ' on' : '') + '" onclick="sigSelectTool(\'' + t + '\')">' + SIG_FIELD_LABELS[t] + '</button>';
-  }).join('');
+  }).join('') +
+    '<div style="width:100%;height:1px;background:var(--border);margin:8px 0"></div>' +
+    '<button class="sig-tool' + (sigEd.snap ? ' on' : '') + '" style="width:100%;justify-content:center" onclick="sigToggleSnap()">' + (sigEd.snap ? '\u2317 Snap &amp; align: On' : 'Snap off \u2014 free pull') + '</button>';
+}
+function sigToggleSnap() { if (sigEd) { sigEd.snap = !sigEd.snap; sigRenderToolbar(); showToast(sigEd.snap ? 'Snapping on' : 'Free pull (no snap)', ''); } }
+// Snap helpers: align a moving box's edges (left/right/center) to other boxes on the
+// same page, falling back to a fine grid. Resizing also snaps to matching sizes.
+function sigSnapAxis(pos, sz, guides) {
+  var thr = 6, delta = null, bd = thr;
+  [pos, pos + sz, pos + sz / 2].forEach(function (e) { guides.forEach(function (g) { var d = g - e; if (Math.abs(d) < bd) { bd = Math.abs(d); delta = d; } }); });
+  if (delta != null) return pos + delta;
+  var grid = 5; return Math.round(pos / grid) * grid;
+}
+function sigSnapMove(leftPx, topPx, w, h, idx, page, pg) {
+  if (!sigEd.snap) return { x: leftPx, y: topPx };
+  var vx = [], vy = [];
+  sigEd.fields.forEach(function (o, k) { if (k === idx || o.page !== page) return; vx.push(o.x * pg.w, (o.x + o.w) * pg.w, (o.x + o.w / 2) * pg.w); vy.push(o.y * pg.h, (o.y + o.h) * pg.h, (o.y + o.h / 2) * pg.h); });
+  return { x: sigSnapAxis(leftPx, w, vx), y: sigSnapAxis(topPx, h, vy) };
+}
+function sigSnapDim(start, sz, edgeGuides, sizeGuides) {
+  var thr = 6, bd = thr, best = null;
+  sizeGuides.forEach(function (d) { if (Math.abs(sz - d) < bd) { bd = Math.abs(sz - d); best = d; } });
+  edgeGuides.forEach(function (g) { var cand = g - start; if (cand > 8 && Math.abs(sz - cand) < bd) { bd = Math.abs(sz - cand); best = cand; } });
+  if (best != null) return best;
+  var grid = 5; return Math.max(grid, Math.round(sz / grid) * grid);
+}
+function sigSnapResize(leftPx, topPx, w, h, idx, page, pg) {
+  if (!sigEd.snap) return { w: w, h: h };
+  var vx = [], vy = [], ws = [], hs = [];
+  sigEd.fields.forEach(function (o, k) { if (k === idx || o.page !== page) return; vx.push(o.x * pg.w, (o.x + o.w) * pg.w); vy.push(o.y * pg.h, (o.y + o.h) * pg.h); ws.push(o.w * pg.w); hs.push(o.h * pg.h); });
+  return { w: sigSnapDim(leftPx, w, vx, ws), h: sigSnapDim(topPx, h, vy, hs) };
 }
 
 function sigSelectTool(t) { sigEd.tool = (sigEd.tool === t) ? null : t; sigRenderToolbar(); }
@@ -11537,8 +11567,10 @@ function sigStartMove(ev, idx) {
   sigSelectField(idx);
   box = document.querySelector('#sig-pages .sig-field[data-idx="' + idx + '"]');
   function mv(e) {
-    var nl = Math.max(0, Math.min(pg.w - bw, origL + (e.clientX - startX)));
-    var nt = Math.max(0, Math.min(pg.h - bh, origT + (e.clientY - startY)));
+    var rl = origL + (e.clientX - startX), rt = origT + (e.clientY - startY);
+    var sn = sigSnapMove(rl, rt, bw, bh, idx, f.page, pg);
+    var nl = Math.max(0, Math.min(pg.w - bw, sn.x));
+    var nt = Math.max(0, Math.min(pg.h - bh, sn.y));
     f.x = nl / pg.w; f.y = nt / pg.h;
     if (box) { box.style.left = nl + 'px'; box.style.top = nt + 'px'; }
   }
@@ -11555,8 +11587,10 @@ function sigStartResize(ev, idx) {
   var origW = f.w * pg.w, origH = f.h * pg.h;
   var minW = 14, minH = 12;
   function mv(e) {
-    var nw = Math.max(minW, Math.min(pg.w - f.x * pg.w, origW + (e.clientX - startX)));
-    var nh = Math.max(minH, Math.min(pg.h - f.y * pg.h, origH + (e.clientY - startY)));
+    var rw = origW + (e.clientX - startX), rh = origH + (e.clientY - startY);
+    var sn = sigSnapResize(f.x * pg.w, f.y * pg.h, rw, rh, idx, f.page, pg);
+    var nw = Math.max(minW, Math.min(pg.w - f.x * pg.w, sn.w));
+    var nh = Math.max(minH, Math.min(pg.h - f.y * pg.h, sn.h));
     f.w = nw / pg.w; f.h = nh / pg.h;
     if (box) { box.style.width = nw + 'px'; box.style.height = nh + 'px'; }
   }

@@ -1293,18 +1293,27 @@ async function initDB() {
       ');'
     );
 
-    // --- Secure Vault (owner-only credential store) ---------------------------
-    // Zero-knowledge: the server stores ONLY salts and ciphertext. The master
-    // password, recovery key, decryption key (DEK), and all plaintext live solely
-    // in the owner's browser. A DB dump or env leak cannot reveal any credential.
+    // --- Secure Vault (owner-only, SHARED credential store) -------------------
+    // Zero-knowledge: the server stores ONLY salts, public keys and ciphertext.
+    // One shared data key (DEK) encrypts every entry. Each owner has a personal
+    // keypair; their private key is encrypted under their own master password
+    // (and their own recovery key), and the shared DEK is wrapped to each owner's
+    // PUBLIC key. So master passwords, recovery keys, private keys and the DEK
+    // itself never reach the server. A new owner is admitted by an existing
+    // owner wrapping the DEK to the newcomer's public key — entirely client-side.
     await client.query(
-      'CREATE TABLE IF NOT EXISTS vault_config (' +
-      '  user_id INTEGER PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,' +
-      '  kdf_salt VARCHAR(128) NOT NULL,' +            // hex salt for master-password KDF
-      '  kdf_iterations INTEGER NOT NULL,' +           // PBKDF2 iteration count
-      '  wrapped_dek TEXT NOT NULL,' +                 // DEK encrypted by master-password key (JSON {iv,ct})
-      '  recovery_salt VARCHAR(128),' +                // hex salt for recovery-key KDF
-      '  wrapped_dek_recovery TEXT,' +                 // DEK encrypted by recovery key (JSON {iv,ct})
+      'CREATE TABLE IF NOT EXISTS vault_members (' +
+      "  user_id INTEGER PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE," +
+      "  status VARCHAR(20) NOT NULL DEFAULT 'pending'," +   // 'active' | 'pending'
+      '  public_key TEXT NOT NULL,' +                 // RSA-OAEP public key (SPKI, base64)
+      '  kdf_salt VARCHAR(128) NOT NULL,' +           // hex salt for master-password KDF
+      '  kdf_iterations INTEGER NOT NULL,' +          // PBKDF2 iteration count
+      '  enc_private_key TEXT NOT NULL,' +            // private key encrypted under master key (JSON {iv,ct})
+      '  wrapped_dek TEXT,' +                         // shared DEK encrypted to THIS owner key (base64); NULL while pending
+      '  recovery_salt VARCHAR(128),' +              // hex salt for recovery-key KDF
+      '  enc_private_key_recovery TEXT,' +            // private key encrypted under recovery key (JSON {iv,ct})
+      '  approved_by INTEGER,' +
+      '  approved_at TIMESTAMPTZ,' +
       '  created_at TIMESTAMPTZ DEFAULT NOW(),' +
       '  updated_at TIMESTAMPTZ DEFAULT NOW()' +
       ');'
