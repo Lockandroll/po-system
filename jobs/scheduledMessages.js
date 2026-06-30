@@ -58,11 +58,11 @@ async function runScheduledMessage(msg, opts) {
       try {
         const html = emailTemplate({
           badge: 'Reminder', badgeColor: 'orange',
-          title: msg.subject || msg.name,
+          title: applyTokens(msg.subject || msg.name, ue),
           body: applyTokens(msg.message, ue).replace(/\n/g, '<br>'),
           footerNote: 'Automated scheduled message from Nova.'
         });
-        await sendEmail(ue.email, msg.subject || msg.name, html);
+        await sendEmail(ue.email, applyTokens(msg.subject || msg.name, ue), html);
         emailCount++;
       } catch (e) { console.error('[scheduled] email failed:', e.message); }
     }
