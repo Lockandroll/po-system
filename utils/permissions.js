@@ -48,10 +48,12 @@ EMPLOYEE_PERMS.push('view_invoices', 'create_invoice', 'edit_invoice', 'delete_i
 ALL_PERMS.push('view_invoices', 'create_invoice', 'edit_invoice', 'delete_invoice', 'manage_invoice_setup');
 ALL_PERMS.push('assign_reviews');  // credit Google reviews to a technician
 ALL_PERMS.push('view_feedback', 'manage_feedback');  // customer feedback module
+ALL_PERMS.push('view_signatures', 'manage_signatures');  // e-signature module
+EMPLOYEE_PERMS.push('view_signatures');
 
 var DEFAULTS = {
   admin: '*',
-  manager: ['view_users', 'manage_cities', 'manage_geico', 'manage_running', 'manage_vehicles', 'manage_vendors', 'manage_addresses', 'approve_vr', 'manage_tasks', 'manage_work_orders', 'manage_schedule', 'manage_parts', 'manage_invoice_setup', 'assign_reviews', 'view_feedback', 'manage_feedback'].concat(EMPLOYEE_PERMS),
+  manager: ['view_users', 'manage_cities', 'manage_geico', 'manage_running', 'manage_vehicles', 'manage_vendors', 'manage_addresses', 'approve_vr', 'manage_tasks', 'manage_work_orders', 'manage_schedule', 'manage_parts', 'manage_invoice_setup', 'assign_reviews', 'view_feedback', 'manage_feedback', 'manage_signatures'].concat(EMPLOYEE_PERMS),
   locksmith: EMPLOYEE_PERMS.slice(),
   locksmith_coordinator: EMPLOYEE_PERMS.concat(['manage_work_orders']),
   roadside_technician: EMPLOYEE_PERMS.slice()
