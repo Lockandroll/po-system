@@ -5,6 +5,7 @@
 // normalized(0-1) -> PDF-point coordinate mapping used by the editor and flatten.
 const express = require('express');
 const crypto = require('crypto');
+const https = require('https');
 const { PDFDocument } = require('pdf-lib');
 const { pool } = require('../db');
 const { requireAuth, requirePermission } = require('../middleware/auth');
@@ -12,6 +13,97 @@ const { logAudit } = require('../utils/audit');
 const r2 = require('../utils/r2');
 
 const router = express.Router();
+
+// Field types allowed in v1 (mirrors signature_fields.field_type).
+const FIELD_TYPES = ['signature', 'initials', 'date', 'name', 'text', 'checkbox'];
+
+// Detection runs as its own Anthropic vision call so it has an independent token
+// budget and prompt, separate from the Neurolock chat in routes/ai.js.
+function callVision(systemPrompt, content, maxTokens) {
+  return new Promise(function (resolve, reject) {
+    const body = JSON.stringify({
+      model: 'claude-opus-4-8',
+      max_tokens: maxTokens || 4096,
+      system: systemPrompt,
+      messages: [{ role: 'user', content: content }]
+    });
+    const options = {
+      hostname: 'api.anthropic.com',
+      path: '/v1/messages',
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-api-key': process.env.ANTHROPIC_API_KEY,
+        'anthropic-version': '2023-06-01',
+        'Content-Length': Buffer.byteLength(body)
+      }
+    };
+    const r = https.request(options, function (resp) {
+      var data = '';
+      resp.on('data', function (c) { data += c; });
+      resp.on('end', function () {
+        try { resolve(JSON.parse(data)); }
+        catch (e) { reject(new Error('Failed to parse Anthropic response')); }
+      });
+    });
+    r.on('error', reject);
+    r.setTimeout(60000, function () { r.destroy(new Error('AI detection timed out. Please try again.')); });
+    r.write(body);
+    r.end();
+  });
+}
+
+// Pull a JSON array out of the model reply, tolerating code fences / stray prose.
+function extractJsonArray(text) {
+  if (!text) return [];
+  var t = String(text).trim();
+  var start = t.indexOf('[');
+  var end = t.lastIndexOf(']');
+  if (start === -1 || end === -1 || end < start) return [];
+  try { var parsed = JSON.parse(t.slice(start, end + 1)); return Array.isArray(parsed) ? parsed : []; }
+  catch (e) { return []; }
+}
+
+function clamp01(n) { n = Number(n); if (!isFinite(n)) return 0; return Math.max(0, Math.min(1, n)); }
+
+// Validate + clamp the model's raw detections into rows we are willing to store.
+function normalizeDetected(raw, pageCount) {
+  const out = [];
+  if (!Array.isArray(raw)) return out;
+  for (var i = 0; i < raw.length; i++) {
+    var f = raw[i];
+    if (!f || FIELD_TYPES.indexOf(f.field_type) === -1) continue;
+    var page = parseInt(f.page, 10); if (!Number.isInteger(page) || page < 0) page = 0;
+    if (pageCount && page > pageCount - 1) continue;
+    var x = clamp01(f.x), y = clamp01(f.y), w = clamp01(f.w), h = clamp01(f.h);
+    if (w <= 0 || h <= 0) continue;
+    if (x + w > 1) w = 1 - x;
+    if (y + h > 1) h = 1 - y;
+    var conf = (f.confidence == null) ? null : clamp01(f.confidence);
+    out.push({ page: page, field_type: f.field_type, x: x, y: y, w: w, h: h,
+      label: (f.label ? String(f.label).slice(0, 255) : null), confidence: conf });
+  }
+  return out;
+}
+
+// Split a data URL or raw base64 into an image block source.
+function parseImage(img) {
+  if (!img) return null;
+  var m = String(img).match(/^data:(image\/(?:png|jpeg|jpg|webp|gif));base64,(.*)$/);
+  if (m) { var mt = (m[1] === 'image/jpg') ? 'image/jpeg' : m[1]; return { media_type: mt, data: m[2] }; }
+  return { media_type: 'image/png', data: String(img) };
+}
+
+const DETECT_SYSTEM =
+  'You are a precise document-analysis tool that locates fillable and signable fields in a document. ' +
+  'You are shown the pages of one document as images, in order. Identify the places a person must fill in or sign: ' +
+  'signature lines, initial blocks, date blanks, printed-name blanks, generic text blanks, and checkboxes. ' +
+  'Respond with ONLY a JSON array, no prose and no markdown fences. Each element must be: ' +
+  '{"page": <0-based integer matching the labeled page>, "field_type": one of ["signature","initials","date","name","text","checkbox"], ' +
+  '"x": <number>, "y": <number>, "w": <number>, "h": <number>, "label": <short string>, "confidence": <number 0-1>}. ' +
+  'x, y, w, h are fractions of THAT page width/height in the range 0 to 1, origin at the TOP-LEFT of the page; ' +
+  'x,y is the top-left corner of the field box. Be conservative and only include real fields. If there are none, return [].';
+
 
 // Year-sequenced request number, e.g. SIG-2026-0001.
 async function generateRequestNumber() {
@@ -202,5 +294,85 @@ router.delete('/:id', requireAuth, requirePermission('manage_signatures'), async
     res.status(500).json({ error: 'Failed to delete signature request' });
   }
 });
+
+// ---- Phase 3: AI field detection over rendered page images ----
+// Client (pdf.js) renders each page to a PNG and posts them here; we ask Claude
+// to locate fields and store them as AI drafts the human then corrects.
+router.post('/:id/detect', requireAuth, requirePermission('manage_signatures'), async (req, res) => {
+  try {
+    if (!process.env.ANTHROPIC_API_KEY) {
+      return res.status(503).json({ error: 'AI is not configured. Add ANTHROPIC_API_KEY in Railway Variables.' });
+    }
+    const id = parseInt(req.params.id, 10);
+    const rr = await pool.query('SELECT id, created_by, page_count FROM signature_requests WHERE id = $1', [id]);
+    if (!rr.rows.length) return res.status(404).json({ error: 'Signature request not found' });
+    if (rr.rows[0].created_by !== req.user.id && req.user.role !== 'admin') {
+      return res.status(403).json({ error: 'Not your request' });
+    }
+    const pageCount = rr.rows[0].page_count || 0;
+
+    var pages = Array.isArray(req.body.pages) ? req.body.pages : [];
+    if (!pages.length) return res.status(400).json({ error: 'Page images are required to run detection.' });
+    if (pages.length > 15) pages = pages.slice(0, 15); // bound token cost; extra pages get human-added fields
+
+    // Multi-image message: a 'Page i:' label precedes each page image so the model
+    // ties every detection back to the right page index.
+    var content = [{ type: 'text', text: 'Here are the ' + pages.length + ' page(s) of the document, in order.' }];
+    for (var i = 0; i < pages.length; i++) {
+      var pg = pages[i] || {};
+      var pageIndex = Number.isInteger(pg.page) ? pg.page : i;
+      var parsed = parseImage(pg.image);
+      if (!parsed) continue;
+      content.push({ type: 'text', text: 'Page ' + pageIndex + ':' });
+      content.push({ type: 'image', source: { type: 'base64', media_type: parsed.media_type, data: parsed.data } });
+    }
+    if (content.length === 1) return res.status(400).json({ error: 'No valid page images were provided.' });
+
+    const response = await callVision(DETECT_SYSTEM, content, 4096);
+    if (response.error) {
+      console.error('Detection API error:', JSON.stringify(response.error));
+      const msg = (response.error.message || '').toLowerCase();
+      if (msg.indexOf('image') !== -1 || msg.indexOf('size') !== -1 || msg.indexOf('large') !== -1) {
+        return res.status(400).json({ error: 'The page images are too large. Render them at a lower resolution and retry.' });
+      }
+      return res.status(502).json({ error: 'AI detection failed. Please try again.' });
+    }
+    const text = (response.content && response.content[0] && response.content[0].text) ? response.content[0].text : '';
+    const valid = normalizeDetected(extractJsonArray(text), pageCount);
+
+    // Replace only AI drafts; keep any human-added or edited fields intact.
+    const client = await pool.connect();
+    try {
+      await client.query('BEGIN');
+      await client.query('DELETE FROM signature_fields WHERE request_id = $1 AND ai_detected = true', [id]);
+      for (var j = 0; j < valid.length; j++) {
+        var f = valid[j];
+        await client.query(
+          'INSERT INTO signature_fields (request_id, signer_id, field_type, page, x, y, w, h, required, label, ai_detected, ai_confidence) ' +
+          'VALUES ($1, NULL, $2, $3, $4, $5, $6, $7, true, $8, true, $9)',
+          [id, f.field_type, f.page, f.x, f.y, f.w, f.h, f.label, f.confidence]
+        );
+      }
+      await client.query('UPDATE signature_requests SET updated_at = NOW() WHERE id = $1', [id]);
+      await client.query('COMMIT');
+    } catch (e) {
+      await client.query('ROLLBACK');
+      throw e;
+    } finally {
+      client.release();
+    }
+
+    await logEvent(id, null, 'ai_detected', req.user.name, req, { detected: valid.length, pages: pages.length });
+    const fields = (await pool.query(
+      'SELECT id, signer_id, field_type, page, x, y, w, h, required, label, ai_detected, ai_confidence FROM signature_fields WHERE request_id = $1 ORDER BY page, id',
+      [id]
+    )).rows;
+    res.json({ detected: valid.length, fields: fields });
+  } catch (err) {
+    console.error('Signature detect error:', err);
+    res.status(500).json({ error: 'Failed to run field detection.' });
+  }
+});
+
 
 module.exports = router;
