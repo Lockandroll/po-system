@@ -2610,7 +2610,8 @@ function varLegendHtml(note){
     ['{yesterday}','yesterday'],
     ['{prev_week}','previous week, Monday to Sunday (Jun 22 \u2013 Jun 28)'],
     ['{this_week}','this week, Monday to Sunday'],
-    ['{next_month}','name of next month, e.g. July']
+    ['{next_month}','name of next month, e.g. July'],
+    ['{prev_month}','name of previous month, e.g. May']
   ];
   var items=rows.map(function(r){ return '<div style="display:flex;gap:8px;margin:3px 0;align-items:baseline"><code style="background:var(--bg-color);border:1px solid var(--border);border-radius:4px;padding:1px 6px;font-size:12px;color:var(--primary);white-space:nowrap">'+r[0]+'</code><span style="font-size:12px;color:var(--text-muted-color)">'+r[1]+'</span></div>'; }).join('');
   return '<div style="margin-top:10px;padding:10px 12px;border:1px solid var(--border);border-radius:8px;background:var(--bg-elevated)">'+

@@ -9,6 +9,7 @@
 //   {this_week}      -> this Mon - Sun range
 //   {this_week_mon}  {this_week_sun}
 //   {next_month}     -> name of next month (e.g. "July")
+//   {prev_month}     -> name of previous month (e.g. "May")
 
 var TZ = 'America/New_York';
 
@@ -44,6 +45,7 @@ function dateTokenMap(ref) {
   var prevMon = addDays(thisMon, -7);
   var prevSun = addDays(thisMon, -1);
   var nextMonth = new Date(Date.UTC(base.getUTCFullYear(), base.getUTCMonth() + 1, 1));
+  var prevMonth = new Date(Date.UTC(base.getUTCFullYear(), base.getUTCMonth() - 1, 1));
   var DASH = ' – ';
   return {
     today: fmt(base),
@@ -55,7 +57,8 @@ function dateTokenMap(ref) {
     this_week: fmt(thisMon) + DASH + fmt(thisSun),
     this_week_mon: fmt(thisMon),
     this_week_sun: fmt(thisSun),
-    next_month: monthName(nextMonth)
+    next_month: monthName(nextMonth),
+    prev_month: monthName(prevMonth)
   };
 }
 
@@ -63,7 +66,7 @@ function resolveDateTokens(text, ref) {
   if (!text) return text;
   var map = dateTokenMap(ref);
   return String(text).replace(
-    /\{(today|tomorrow|yesterday|prev_week_mon|prev_week_sun|prev_week|this_week_mon|this_week_sun|this_week|next_month)\}/g,
+    /\{(today|tomorrow|yesterday|prev_week_mon|prev_week_sun|prev_week|this_week_mon|this_week_sun|this_week|next_month|prev_month)\}/g,
     function (m, key) { return (map[key] != null) ? map[key] : m; }
   );
 }
