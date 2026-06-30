@@ -375,4 +375,100 @@ router.post('/:id/detect', requireAuth, requirePermission('manage_signatures'), 
 });
 
 
+// ---- Phase 4: replace the draft layout (signers + fields) from the editor ----
+// Atomic: wipes the request's signers + fields and re-inserts them, mapping each
+// field's signer index to the freshly-inserted signer id. Draft-only (a sent
+// request is locked). Fields saved here are ai_detected=false (human-authored).
+router.put('/:id/layout', requireAuth, requirePermission('manage_signatures'), async (req, res) => {
+  try {
+    const id = parseInt(req.params.id, 10);
+    const rr = await pool.query('SELECT id, created_by, status, page_count FROM signature_requests WHERE id = $1', [id]);
+    if (!rr.rows.length) return res.status(404).json({ error: 'Signature request not found' });
+    const reqRow = rr.rows[0];
+    if (reqRow.created_by !== req.user.id && req.user.role !== 'admin') {
+      return res.status(403).json({ error: 'Not your request' });
+    }
+    if (reqRow.status !== 'draft') {
+      return res.status(409).json({ error: 'This request has already been sent and can no longer be edited.' });
+    }
+    const pageCount = reqRow.page_count || 0;
+
+    var signersIn = Array.isArray(req.body.signers) ? req.body.signers : [];
+    var fieldsIn = Array.isArray(req.body.fields) ? req.body.fields : [];
+    if (signersIn.length > 20) return res.status(400).json({ error: 'Too many signers (max 20).' });
+
+    var signers = [];
+    for (var i = 0; i < signersIn.length; i++) {
+      var sIn = signersIn[i] || {};
+      var nm = (sIn.name || '').toString().trim().slice(0, 255);
+      if (!nm) continue;
+      signers.push({
+        name: nm,
+        email: (sIn.email || '').toString().trim().slice(0, 255) || null,
+        phone: (sIn.phone || '').toString().trim().slice(0, 50) || null,
+        role_label: (sIn.role_label || '').toString().trim().slice(0, 100) || null
+      });
+    }
+
+    var fields = [];
+    for (var j = 0; j < fieldsIn.length; j++) {
+      var f = fieldsIn[j] || {};
+      if (FIELD_TYPES.indexOf(f.field_type) === -1) continue;
+      var page = parseInt(f.page, 10); if (!Number.isInteger(page) || page < 0) page = 0;
+      if (pageCount && page > pageCount - 1) continue;
+      var x = clamp01(f.x), y = clamp01(f.y), w = clamp01(f.w), h = clamp01(f.h);
+      if (w <= 0 || h <= 0) continue;
+      if (x + w > 1) w = 1 - x;
+      if (y + h > 1) h = 1 - y;
+      var si = (f.signer == null) ? null : parseInt(f.signer, 10);
+      if (si != null && (!Number.isInteger(si) || si < 0 || si >= signers.length)) si = null;
+      fields.push({ signer: si, field_type: f.field_type, page: page, x: x, y: y, w: w, h: h,
+        required: (f.required === false) ? false : true,
+        label: f.label ? String(f.label).slice(0, 255) : null,
+        font_size: (f.font_size != null && isFinite(f.font_size)) ? Number(f.font_size) : null });
+    }
+
+    const client = await pool.connect();
+    try {
+      await client.query('BEGIN');
+      await client.query('DELETE FROM signature_fields WHERE request_id = $1', [id]);
+      await client.query('DELETE FROM signature_signers WHERE request_id = $1', [id]);
+      var ids = [];
+      for (var a = 0; a < signers.length; a++) {
+        var sr = await client.query(
+          'INSERT INTO signature_signers (request_id, name, email, phone, role_label, sign_order, status) ' +
+          "VALUES ($1,$2,$3,$4,$5,$6,'pending') RETURNING id",
+          [id, signers[a].name, signers[a].email, signers[a].phone, signers[a].role_label, a]
+        );
+        ids.push(sr.rows[0].id);
+      }
+      for (var b = 0; b < fields.length; b++) {
+        var fl = fields[b];
+        var sid = (fl.signer != null) ? ids[fl.signer] : null;
+        await client.query(
+          'INSERT INTO signature_fields (request_id, signer_id, field_type, page, x, y, w, h, required, label, ai_detected, font_size) ' +
+          'VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,false,$11)',
+          [id, sid, fl.field_type, fl.page, fl.x, fl.y, fl.w, fl.h, fl.required, fl.label, fl.font_size]
+        );
+      }
+      await client.query('UPDATE signature_requests SET updated_at = NOW() WHERE id = $1', [id]);
+      await client.query('COMMIT');
+    } catch (e) {
+      await client.query('ROLLBACK');
+      throw e;
+    } finally {
+      client.release();
+    }
+
+    await logEvent(id, null, 'layout_saved', req.user.name, req, { signers: signers.length, fields: fields.length });
+    const outSigners = (await pool.query('SELECT id, name, email, phone, role_label, sign_order, status FROM signature_signers WHERE request_id = $1 ORDER BY sign_order, id', [id])).rows;
+    const outFields = (await pool.query('SELECT id, signer_id, field_type, page, x, y, w, h, required, label, ai_detected, ai_confidence, font_size FROM signature_fields WHERE request_id = $1 ORDER BY page, id', [id])).rows;
+    res.json({ signers: outSigners, fields: outFields });
+  } catch (err) {
+    console.error('Signature layout save error:', err);
+    res.status(500).json({ error: 'Failed to save layout' });
+  }
+});
+
+
 module.exports = router;

@@ -2,7 +2,7 @@
 // public/sw.js (the only thing bumped each deploy) — the badge asks the active
 // service worker for it at runtime. This value is just the fallback shown when no
 // service worker is available (e.g. very first visit before it installs).
-var APP_VERSION = 'v42';
+var APP_VERSION = 'v43';
 var _resolvedAppVersion = null;
 
 // Ask the active service worker for its CACHE_VERSION (without the 'nova-' prefix).
@@ -497,6 +497,7 @@ async function render() {
     '<div class="nav-item" onclick="window.open(\'https://www.idssonline.com/pulsar.html\',\'_blank\',\'noopener\')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg> Pulsar Download</div>' +
     '<div class="nav-item" onclick="window.open(\'https://discord.gg/cMbHbbz47\',\'_blank\',\'noopener\')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 11.5a8.38 8.38 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.38 8.38 0 0 1-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.38 8.38 0 0 1 3.8-.9h.5a8.48 8.48 0 0 1 8 8v.5z"/></svg> Discord Channel</div>' +
     '<div class="nav-item' + (cv === 'documents' ? ' active' : '') + '" onclick="navigate(\'documents\')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg> Document Vault</div>' +
+    (can('view_signatures') ? '<div class="nav-item' + (['signatures','new-signature','signature-editor'].indexOf(cv) !== -1 ? ' active' : '') + '" onclick="navigate(\'signatures\')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 17v4h4l11-11-4-4L3 17z"/><path d="M14 6l4 4"/></svg> Signatures</div>' : '') +
     (isAdmin ? '<div class="nav-item' + (cv === 'sop-library' ? ' active' : '') + '" onclick="navigate(\'sop-library\')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 19.5A2.5 2.5 0 016.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 014 19.5v-15A2.5 2.5 0 016.5 2z"/></svg> SOP Library</div>' : '') +
     ((can('view_users') || can('manage_cities') || can('view_audit') || can('manage_settings') || can('manage_parts')) ?
       '<div class="nav-section-header' + (stViews.indexOf(cv) !== -1 ? ' section-active' : '') + (ss === 'settings' ? ' open' : '') + '" onclick="toggleSection(\'settings\',\'company-info\')"><span class="s-label">' + icons.settings + ' Settings</span>' + chev + '</div>' +
@@ -564,7 +565,7 @@ async function render() {
     if (_ovOpen) _ovOpen.classList.add('open');
   }
   const content = document.getElementById('content');
-  var _viewPerm = { dashboard:'view_pos', view:'view_pos', running:'view_pos', 'running-admin':'view_pos', new:'create_po', edit:'edit_po', quotes:'view_quotes', 'view-quote':'view_quotes', 'new-quote':'create_quote', 'edit-quote':'edit_quote', 'vr-dashboard':'view_vr', 'view-vr':'view_vr', 'new-vr':'create_vr', 'edit-vr':'edit_vr', deposits:'view_deposits', 'view-deposit':'view_deposits', signoffs:'view_signoffs', 'view-signoff':'view_signoffs', 'new-signoff':'create_signoff', 'edit-signoff':'edit_signoff', 'complete-signoff':'complete_signoff', tasks:'view_tasks', 'task-detail':'view_tasks', 'new-task':'view_tasks', 'edit-task':'view_tasks', 'work-orders':'view_work_orders', 'view-work-order':'view_work_orders', 'new-work-order':'manage_work_orders', schedule:'view_schedule', 'schedule-admin':'manage_schedule', 'schedule-nowork':'manage_schedule', invoices:'view_invoices', 'view-invoice':'view_invoices', 'new-invoice':'create_invoice', 'edit-invoice':'edit_invoice', 'invoice-parts':'view_invoices', 'invoice-setup':'manage_invoice_setup', feedback:'view_feedback', 'feedback-detail':'view_feedback' };
+  var _viewPerm = { dashboard:'view_pos', view:'view_pos', running:'view_pos', 'running-admin':'view_pos', new:'create_po', edit:'edit_po', quotes:'view_quotes', 'view-quote':'view_quotes', 'new-quote':'create_quote', 'edit-quote':'edit_quote', 'vr-dashboard':'view_vr', 'view-vr':'view_vr', 'new-vr':'create_vr', 'edit-vr':'edit_vr', deposits:'view_deposits', 'view-deposit':'view_deposits', signoffs:'view_signoffs', 'view-signoff':'view_signoffs', 'new-signoff':'create_signoff', 'edit-signoff':'edit_signoff', 'complete-signoff':'complete_signoff', tasks:'view_tasks', 'task-detail':'view_tasks', 'new-task':'view_tasks', 'edit-task':'view_tasks', 'work-orders':'view_work_orders', 'view-work-order':'view_work_orders', 'new-work-order':'manage_work_orders', schedule:'view_schedule', 'schedule-admin':'manage_schedule', 'schedule-nowork':'manage_schedule', invoices:'view_invoices', 'view-invoice':'view_invoices', 'new-invoice':'create_invoice', 'edit-invoice':'edit_invoice', 'invoice-parts':'view_invoices', 'invoice-setup':'manage_invoice_setup', feedback:'view_feedback', 'feedback-detail':'view_feedback', signatures:'view_signatures', 'new-signature':'manage_signatures', 'signature-editor':'manage_signatures' };
   if (_viewPerm[state.currentView] && !can(_viewPerm[state.currentView])) { content.innerHTML = '<div class="alert alert-error">Access denied.</div>'; return; }
   if (state.currentView === 'home') await renderHomeScreen(content);
   else if (state.currentView === 'dashboard') await renderDashboard(content);
@@ -611,6 +612,9 @@ async function render() {
   else if (state.currentView === 'schedule-admin') await renderScheduleAdmin(content);
   else if (state.currentView === 'schedule-nowork') await renderNoWorkReport(content);
   else if (state.currentView === 'documents') await renderDocuments(content);
+  else if (state.currentView === 'signatures') await renderSignatures(content);
+  else if (state.currentView === 'new-signature') await renderNewSignature(content);
+  else if (state.currentView === 'signature-editor') await renderSignatureEditor(content, state.currentParam);
   else if (state.currentView === 'sop-library') await renderSOPLibrary(content);
   else if (state.currentView === 'view-deposit') await renderViewDeposit(content, state.currentParam);
   else if (state.currentView === 'running') await renderRunningList(content);
@@ -10988,6 +10992,480 @@ function mySchedMonthHtml(){
   helpersSync();
 })();
 /* =================== end Nova QOL helpers =================== */
+
+/* ===================== Signatures module (Phase 4) ===================== */
+var sigEd = null;  // active editor state
+var SIG_COLORS = ['#f97316', '#3b82f6', '#10b981', '#a855f7', '#ec4899', '#eab308', '#06b6d4', '#ef4444'];
+var SIG_FIELD_LABELS = { signature: 'Signature', initials: 'Initials', date: 'Date', name: 'Name', text: 'Text', checkbox: 'Check' };
+var SIG_FIELD_ORDER = ['signature', 'initials', 'date', 'name', 'text', 'checkbox'];
+var SIG_DEFAULT_SIZE = {
+  signature: { w: 0.26, h: 0.06 }, initials: { w: 0.09, h: 0.05 }, date: { w: 0.16, h: 0.035 },
+  name: { w: 0.24, h: 0.04 }, text: { w: 0.26, h: 0.04 }, checkbox: { w: 0.03, h: 0.03 }
+};
+
+function sigHexA(hex, a) {
+  var h = (hex || '#888').replace('#', '');
+  if (h.length === 3) h = h[0] + h[0] + h[1] + h[1] + h[2] + h[2];
+  var n = parseInt(h, 16);
+  return 'rgba(' + ((n >> 16) & 255) + ',' + ((n >> 8) & 255) + ',' + (n & 255) + ',' + a + ')';
+}
+
+function sigStatusBadge(status) {
+  var map = {
+    draft: ['#9ca3af', 'Draft'], sent: ['#3b82f6', 'Sent'], partially_signed: ['#eab308', 'Partially signed'],
+    completed: ['#10b981', 'Completed'], declined: ['#ef4444', 'Declined'], expired: ['#6b7280', 'Expired'], voided: ['#6b7280', 'Voided']
+  };
+  var m = map[status] || ['#9ca3af', status || 'Draft'];
+  return '<span style="display:inline-block;padding:2px 9px;border-radius:999px;font-size:11px;font-weight:600;color:' + m[0] + ';background:' + sigHexA(m[0], 0.15) + '">' + escHtml(m[1]) + '</span>';
+}
+
+function sigEnsureStyles() {
+  if (document.getElementById('sig-styles')) return;
+  var st = document.createElement('style');
+  st.id = 'sig-styles';
+  st.textContent =
+    '.sig-page{position:relative;margin:0 auto 18px;box-shadow:0 2px 14px rgba(0,0,0,.35);background:#fff;max-width:100%}' +
+    '.sig-page canvas{display:block;width:100%;height:auto}' +
+    '.sig-overlay{position:absolute;inset:0;cursor:crosshair}' +
+    '.sig-field{position:absolute;border:2px solid #f97316;border-radius:3px;box-sizing:border-box;cursor:move;touch-action:none;min-width:14px;min-height:12px}' +
+    '.sig-field.sel{box-shadow:0 0 0 2px #fff,0 0 0 4px #f97316}' +
+    '.sig-field-tag{position:absolute;top:-9px;left:-2px;font-size:9px;font-weight:700;line-height:1;padding:2px 4px;border-radius:3px;background:#111;color:#fff;white-space:nowrap;pointer-events:none;letter-spacing:.02em}' +
+    '.sig-field-del{position:absolute;top:-9px;right:-9px;width:17px;height:17px;border:none;border-radius:50%;background:#ef4444;color:#fff;font-size:13px;line-height:15px;cursor:pointer;padding:0}' +
+    '.sig-resize{position:absolute;right:-5px;bottom:-5px;width:12px;height:12px;background:#f97316;border:2px solid #fff;border-radius:50%;cursor:nwse-resize;touch-action:none}' +
+    '.sig-tool{display:inline-flex;align-items:center;gap:5px;padding:7px 11px;border:1px solid var(--border);border-radius:8px;background:var(--bg-card);color:var(--text);cursor:pointer;font-size:13px;font-weight:500}' +
+    '.sig-tool.on{border-color:var(--primary);background:rgba(249,115,22,.14);color:var(--primary)}' +
+    '.sig-signer-row{display:flex;flex-wrap:wrap;gap:6px;align-items:center;padding:8px;border:1px solid var(--border);border-radius:8px;margin-bottom:8px}' +
+    '.sig-signer-row.active{border-color:var(--primary)}' +
+    '.sig-swatch{width:14px;height:14px;border-radius:4px;flex-shrink:0}' +
+    '.sig-ed-grid{display:flex;gap:18px;align-items:flex-start;flex-wrap:wrap}' +
+    '.sig-ed-main{flex:1;min-width:300px}' +
+    '.sig-ed-side{width:300px;max-width:100%;position:sticky;top:14px}' +
+    '@media(max-width:820px){.sig-ed-side{width:100%;position:static}}';
+  document.head.appendChild(st);
+}
+
+// ----- Dashboard -----
+async function renderSignatures(el) {
+  el.innerHTML = '<div class="loading">Loading...</div>';
+  var filter = sigEd && sigEd._listFilter ? sigEd._listFilter : '';
+  var rows;
+  try { rows = await api('GET', '/signatures' + (filter ? ('?status=' + filter) : '')); }
+  catch (e) { el.innerHTML = '<div class="alert alert-error">' + escHtml(e.message) + '</div>'; return; }
+
+  var chips = ['', 'draft', 'sent', 'partially_signed', 'completed', 'declined'].map(function (s) {
+    var lbl = s === '' ? 'All' : (sigStatusBadge(s).replace(/<[^>]+>/g, ''));
+    var on = (filter === s);
+    return '<button class="btn btn-sm ' + (on ? 'btn-primary' : 'btn-ghost') + '" onclick="sigSetListFilter(\'' + s + '\')">' + escHtml(lbl) + '</button>';
+  }).join(' ');
+
+  var body = '';
+  if (!rows.length) {
+    body = '<div style="padding:44px;text-align:center;color:var(--text-muted-color)">No signature requests yet.</div>';
+  } else {
+    rows.forEach(function (r) {
+      var signed = parseInt(r.signed_count || 0, 10), total = parseInt(r.signer_count || 0, 10);
+      var canManage = can('manage_signatures');
+      body += '<div style="display:flex;align-items:center;gap:12px;padding:12px 14px;border-bottom:1px solid var(--border)">' +
+        '<div style="flex:1;min-width:0;cursor:pointer" onclick="navigate(\'signature-editor\',' + r.id + ')">' +
+          '<div style="font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + escHtml(r.title || '(untitled)') + '</div>' +
+          '<div style="font-size:12px;color:var(--text-muted-color)">' + escHtml(r.request_number) + ' &middot; ' + escHtml(r.created_by_name || '') + ' &middot; ' + (total ? (signed + '/' + total + ' signed') : 'no signers yet') + '</div>' +
+        '</div>' +
+        '<div class="doc-hide-sm">' + sigStatusBadge(r.status) + '</div>' +
+        '<div style="white-space:nowrap;text-align:right">' +
+          '<button class="btn btn-ghost btn-sm" title="Open" onclick="navigate(\'signature-editor\',' + r.id + ')">Open</button>' +
+          (canManage ? '<button class="btn btn-ghost btn-sm" title="Delete" onclick="sigDeleteRequest(' + r.id + ')">&#128465;</button>' : '') +
+        '</div>' +
+      '</div>';
+    });
+  }
+
+  el.innerHTML =
+    '<div class="page-title"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="margin-right:8px;vertical-align:-4px"><path d="M3 17v4h4l11-11-4-4L3 17z"/><path d="M14 6l4 4"/></svg>Signatures</div>' +
+    '<div class="page-subtitle">Drop in a PDF, let AI find the fields, then send it out for signature.</div>' +
+    '<div style="display:flex;justify-content:space-between;align-items:center;gap:12px;margin:14px 0;flex-wrap:wrap">' +
+      '<div style="display:flex;gap:6px;flex-wrap:wrap">' + chips + '</div>' +
+      (can('manage_signatures') ? '<button class="btn btn-primary btn-sm" onclick="navigate(\'new-signature\')"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="vertical-align:-3px"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg> New Request</button>' : '') +
+    '</div>' +
+    '<div class="card"><div class="card-body" style="padding:0">' + body + '</div></div>';
+}
+
+function sigSetListFilter(s) { sigEd = sigEd || {}; sigEd._listFilter = s; renderSignatures(document.getElementById('content')); }
+
+async function sigDeleteRequest(id) {
+  var ok = await novaConfirm('Delete this signature request and its document? This cannot be undone.');
+  if (!ok) return;
+  try { await api('DELETE', '/signatures/' + id); showToast('Deleted', 'success'); renderSignatures(document.getElementById('content')); }
+  catch (e) { novaAlert(e.message); }
+}
+
+// ----- New request (upload) -----
+async function renderNewSignature(el) {
+  sigEnsureStyles();
+  el.innerHTML =
+    '<div class="page-title">New Signature Request</div>' +
+    '<div class="page-subtitle">Upload a PDF. Next you will place the fields and add signers.</div>' +
+    '<div class="card" style="max-width:560px"><div class="card-body">' +
+      '<label style="font-size:13px;font-weight:600;display:block;margin-bottom:5px">Document title</label>' +
+      '<input id="sig-new-title" class="input" placeholder="e.g. Vendor agreement &ndash; ABC Supply" style="width:100%;margin-bottom:14px" />' +
+      '<label style="font-size:13px;font-weight:600;display:block;margin-bottom:5px">PDF file</label>' +
+      '<input id="sig-new-file" type="file" accept="application/pdf" style="width:100%;margin-bottom:16px" />' +
+      '<div id="sig-new-msg" style="margin-bottom:12px"></div>' +
+      '<button class="btn btn-primary" id="sig-new-btn" onclick="sigCreateUpload()">Upload &amp; continue</button> ' +
+      '<button class="btn btn-ghost" onclick="navigate(\'signatures\')">Cancel</button>' +
+    '</div></div>';
+}
+
+async function sigCreateUpload() {
+  var titleEl = document.getElementById('sig-new-title');
+  var fileEl = document.getElementById('sig-new-file');
+  var msg = document.getElementById('sig-new-msg');
+  var btn = document.getElementById('sig-new-btn');
+  var title = (titleEl.value || '').trim();
+  var file = fileEl.files && fileEl.files[0];
+  if (!title) { msg.innerHTML = '<div class="alert alert-error">Please enter a title.</div>'; return; }
+  if (!file) { msg.innerHTML = '<div class="alert alert-error">Please choose a PDF.</div>'; return; }
+  if (file.type !== 'application/pdf') { msg.innerHTML = '<div class="alert alert-error">That file is not a PDF.</div>'; return; }
+  btn.disabled = true;
+  try {
+    msg.innerHTML = '<div class="loading">Uploading...</div>';
+    var reserve = await api('POST', '/signatures/upload-url', { title: title, file_name: file.name, mime_type: 'application/pdf' });
+    var put = await fetch(reserve.uploadUrl, { method: 'PUT', body: file, headers: { 'Content-Type': 'application/pdf' } });
+    if (!put.ok) throw new Error('Upload to storage failed.');
+    msg.innerHTML = '<div class="loading">Reading the document...</div>';
+    await api('POST', '/signatures/' + reserve.id + '/confirm', {});
+    navigate('signature-editor', reserve.id);
+  } catch (e) {
+    msg.innerHTML = '<div class="alert alert-error">' + escHtml(e.message) + '</div>';
+    btn.disabled = false;
+  }
+}
+
+// ----- Editor -----
+function sigEditorLoad(data) {
+  sigEd.signers = (data.signers || []).map(function (s, i) {
+    return { id: s.id, name: s.name || '', email: s.email || '', phone: s.phone || '', role_label: s.role_label || '', _color: SIG_COLORS[i % SIG_COLORS.length] };
+  });
+  var idToIdx = {};
+  sigEd.signers.forEach(function (s, i) { if (s.id != null) idToIdx[s.id] = i; });
+  sigEd.fields = (data.fields || []).map(function (f) {
+    return {
+      id: f.id, signerIdx: (f.signer_id != null && idToIdx[f.signer_id] != null) ? idToIdx[f.signer_id] : null,
+      field_type: f.field_type, page: f.page, x: +f.x, y: +f.y, w: +f.w, h: +f.h,
+      required: f.required !== false, label: f.label || null, ai_detected: !!f.ai_detected
+    };
+  });
+}
+
+async function renderSignatureEditor(el, id) {
+  sigEnsureStyles();
+  el.innerHTML = '<div class="loading">Loading...</div>';
+  var data;
+  try { data = await api('GET', '/signatures/' + id); }
+  catch (e) { el.innerHTML = '<div class="alert alert-error">' + escHtml(e.message) + '</div>'; return; }
+  sigEd = { id: id, request: data.request, status: data.request.status, readOnly: (data.request.status !== 'draft'),
+    tool: null, selected: null, activeSigner: null, pdfDoc: null, pagePx: [], signers: [], fields: [], _listFilter: (sigEd && sigEd._listFilter) || '' };
+  sigEditorLoad(data);
+  if (sigEd.signers.length) sigEd.activeSigner = 0;
+
+  el.innerHTML =
+    '<div style="display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap;margin-bottom:6px">' +
+      '<div class="page-title" style="margin:0">' + escHtml(data.request.title || 'Untitled') + ' ' + sigStatusBadge(data.request.status) + '</div>' +
+      '<div style="white-space:nowrap">' +
+        '<button class="btn btn-ghost btn-sm" onclick="navigate(\'signatures\')">&larr; Back</button> ' +
+        (sigEd.readOnly ? '' :
+          '<button class="btn btn-secondary btn-sm" id="sig-detect-btn" onclick="sigRunDetect()">&#10024; Auto-detect fields</button> ' +
+          '<button class="btn btn-primary btn-sm" id="sig-save-btn" onclick="sigSaveLayout(true)">Save</button>') +
+      '</div>' +
+    '</div>' +
+    '<div class="page-subtitle">' + escHtml(data.request.request_number) +
+      (sigEd.readOnly ? ' &middot; this request has been sent and is read-only.' : ' &middot; pick a field type, then click on the document to place it. Drag to move, corner to resize.') + '</div>' +
+    '<div class="sig-ed-grid">' +
+      '<div class="sig-ed-main"><div id="sig-pages"><div class="loading">Rendering...</div></div></div>' +
+      '<div class="sig-ed-side">' +
+        '<div class="card" style="margin-bottom:14px"><div class="card-body">' +
+          '<div style="font-weight:600;margin-bottom:8px">Field types</div>' +
+          '<div id="sig-toolbar" style="display:flex;flex-wrap:wrap;gap:6px"></div>' +
+        '</div></div>' +
+        '<div class="card" style="margin-bottom:14px"><div class="card-body">' +
+          '<div style="font-weight:600;margin-bottom:8px">Signers</div>' +
+          '<div id="sig-signers"></div>' +
+        '</div></div>' +
+        '<div class="card"><div class="card-body">' +
+          '<div style="font-weight:600;margin-bottom:8px">Selected field</div>' +
+          '<div id="sig-inspector"></div>' +
+        '</div></div>' +
+      '</div>' +
+    '</div>';
+
+  sigRenderToolbar();
+  sigRenderSigners();
+  sigRenderInspector();
+  sigRenderPages();
+}
+
+function sigRenderToolbar() {
+  var host = document.getElementById('sig-toolbar'); if (!host) return;
+  if (sigEd.readOnly) { host.innerHTML = '<span style="font-size:13px;color:var(--text-muted-color)">Read-only</span>'; return; }
+  host.innerHTML = SIG_FIELD_ORDER.map(function (t) {
+    return '<button class="sig-tool' + (sigEd.tool === t ? ' on' : '') + '" onclick="sigSelectTool(\'' + t + '\')">' + SIG_FIELD_LABELS[t] + '</button>';
+  }).join('');
+}
+
+function sigSelectTool(t) { sigEd.tool = (sigEd.tool === t) ? null : t; sigRenderToolbar(); }
+
+function sigRenderSigners() {
+  var host = document.getElementById('sig-signers'); if (!host) return;
+  var ro = sigEd.readOnly;
+  var html = '';
+  sigEd.signers.forEach(function (s, i) {
+    html += '<div class="sig-signer-row' + (sigEd.activeSigner === i ? ' active' : '') + '">' +
+      '<span class="sig-swatch" style="background:' + s._color + '"></span>' +
+      (ro ?
+        '<div style="flex:1"><div style="font-weight:600">' + escHtml(s.name) + '</div><div style="font-size:12px;color:var(--text-muted-color)">' + escHtml(s.email || '') + (s.role_label ? (' &middot; ' + escHtml(s.role_label)) : '') + '</div></div>'
+        :
+        '<div style="flex:1;min-width:150px;display:flex;flex-direction:column;gap:4px">' +
+          '<input class="input" style="width:100%" placeholder="Name" value="' + escHtml(s.name) + '" oninput="sigUpdateSigner(' + i + ',\'name\',this.value)" />' +
+          '<input class="input" style="width:100%" placeholder="Email" value="' + escHtml(s.email) + '" oninput="sigUpdateSigner(' + i + ',\'email\',this.value)" />' +
+          '<input class="input" style="width:100%" placeholder="Role (optional)" value="' + escHtml(s.role_label) + '" oninput="sigUpdateSigner(' + i + ',\'role_label\',this.value)" />' +
+        '</div>') +
+      (ro ? '' :
+        '<div style="display:flex;flex-direction:column;gap:4px">' +
+          '<button class="btn btn-ghost btn-sm" title="Place new fields for this signer" onclick="sigSetActiveSigner(' + i + ')">' + (sigEd.activeSigner === i ? '&#10003; active' : 'use') + '</button>' +
+          '<button class="btn btn-ghost btn-sm" title="Remove signer" onclick="sigRemoveSigner(' + i + ')">&times;</button>' +
+        '</div>') +
+    '</div>';
+  });
+  if (!sigEd.signers.length) html += '<div style="font-size:13px;color:var(--text-muted-color);margin-bottom:8px">No signers yet.</div>';
+  if (!ro) html += '<button class="btn btn-secondary btn-sm" onclick="sigAddSigner()">+ Add signer</button>';
+  host.innerHTML = html;
+}
+
+function sigUpdateSigner(i, field, val) { if (sigEd.signers[i]) sigEd.signers[i][field] = val; }
+function sigSetActiveSigner(i) { sigEd.activeSigner = i; sigRenderSigners(); }
+function sigAddSigner() {
+  var i = sigEd.signers.length;
+  sigEd.signers.push({ id: null, name: '', email: '', phone: '', role_label: '', _color: SIG_COLORS[i % SIG_COLORS.length] });
+  sigEd.activeSigner = i;
+  sigRenderSigners();
+}
+function sigRemoveSigner(i) {
+  sigEd.signers.splice(i, 1);
+  sigEd.fields.forEach(function (f) {
+    if (f.signerIdx === i) f.signerIdx = null;
+    else if (f.signerIdx != null && f.signerIdx > i) f.signerIdx -= 1;
+  });
+  if (sigEd.activeSigner === i) sigEd.activeSigner = sigEd.signers.length ? 0 : null;
+  else if (sigEd.activeSigner != null && sigEd.activeSigner > i) sigEd.activeSigner -= 1;
+  sigRenderSigners(); sigPaintFields(); sigRenderInspector();
+}
+
+function sigRenderInspector() {
+  var host = document.getElementById('sig-inspector'); if (!host) return;
+  if (sigEd.selected == null || !sigEd.fields[sigEd.selected]) {
+    host.innerHTML = '<div style="font-size:13px;color:var(--text-muted-color)">Click a field on the document to edit it.</div>';
+    return;
+  }
+  var f = sigEd.fields[sigEd.selected];
+  var opts = '<option value="">Unassigned</option>' + sigEd.signers.map(function (s, i) {
+    return '<option value="' + i + '"' + (f.signerIdx === i ? ' selected' : '') + '>' + escHtml(s.name || ('Signer ' + (i + 1))) + '</option>';
+  }).join('');
+  host.innerHTML =
+    '<div style="font-size:13px;margin-bottom:8px"><strong>' + SIG_FIELD_LABELS[f.field_type] + '</strong> on page ' + (f.page + 1) + (f.ai_detected ? ' <span style="color:var(--text-muted-color)">(AI)</span>' : '') + '</div>' +
+    (sigEd.readOnly ? '' :
+      '<label style="font-size:12px;font-weight:600;display:block;margin-bottom:4px">Assigned signer</label>' +
+      '<select class="input" style="width:100%;margin-bottom:10px" onchange="sigAssignField(' + sigEd.selected + ',this.value)">' + opts + '</select>' +
+      '<label style="font-size:13px;display:flex;align-items:center;gap:6px;margin-bottom:10px"><input type="checkbox"' + (f.required ? ' checked' : '') + ' onchange="sigToggleRequired(' + sigEd.selected + ',this.checked)" /> Required</label>' +
+      '<button class="btn btn-ghost btn-sm" onclick="sigDeleteField(' + sigEd.selected + ')">Delete field</button>');
+}
+
+function sigAssignField(idx, val) { if (sigEd.fields[idx]) { sigEd.fields[idx].signerIdx = (val === '') ? null : parseInt(val, 10); sigPaintFields(); } }
+function sigToggleRequired(idx, v) { if (sigEd.fields[idx]) sigEd.fields[idx].required = !!v; }
+function sigSelectField(idx) { sigEd.selected = idx; sigPaintFields(); sigRenderInspector(); }
+function sigDeleteField(idx) {
+  sigEd.fields.splice(idx, 1);
+  if (sigEd.selected === idx) sigEd.selected = null;
+  else if (sigEd.selected != null && sigEd.selected > idx) sigEd.selected -= 1;
+  sigPaintFields(); sigRenderInspector();
+}
+
+async function sigLoadPdf() {
+  if (sigEd.pdfDoc) return sigEd.pdfDoc;
+  await loadPdfJs();
+  var dl = await api('GET', '/signatures/' + sigEd.id + '/download?inline=1');
+  var resp = await fetch(dl.url);
+  if (!resp.ok) throw new Error('Could not load the document.');
+  var buf = await resp.arrayBuffer();
+  sigEd.pdfDoc = await window.pdfjsLib.getDocument({ data: new Uint8Array(buf) }).promise;
+  return sigEd.pdfDoc;
+}
+
+async function sigRenderPages() {
+  var host = document.getElementById('sig-pages'); if (!host) return;
+  host.innerHTML = '<div class="loading">Rendering document...</div>';
+  try { await sigLoadPdf(); } catch (e) { host.innerHTML = '<div class="alert alert-error">' + escHtml(e.message) + '</div>'; return; }
+  var pdf = sigEd.pdfDoc;
+  host.innerHTML = '';
+  sigEd.pagePx = [];
+  var maxW = Math.min(host.clientWidth || 760, 820);
+  for (var i = 1; i <= pdf.numPages; i++) {
+    var page = await pdf.getPage(i);
+    var base = page.getViewport({ scale: 1 });
+    var scale = maxW / base.width;
+    var vp = page.getViewport({ scale: scale });
+    var wrap = document.createElement('div'); wrap.className = 'sig-page';
+    wrap.style.width = vp.width + 'px'; wrap.style.height = vp.height + 'px';
+    var canvas = document.createElement('canvas'); canvas.width = vp.width; canvas.height = vp.height;
+    wrap.appendChild(canvas);
+    var overlay = document.createElement('div'); overlay.className = 'sig-overlay'; overlay.setAttribute('data-page', (i - 1));
+    overlay.onclick = (function (idx) { return function (ev) { sigPlaceField(ev, idx); }; })(i - 1);
+    wrap.appendChild(overlay);
+    host.appendChild(wrap);
+    sigEd.pagePx[i - 1] = { w: vp.width, h: vp.height };
+    await page.render({ canvasContext: canvas.getContext('2d'), viewport: vp }).promise;
+  }
+  sigPaintFields();
+}
+
+function sigPaintFields() {
+  if (!sigEd) return;
+  var overlays = document.querySelectorAll('#sig-pages .sig-overlay');
+  for (var k = 0; k < overlays.length; k++) overlays[k].innerHTML = '';
+  sigEd.fields.forEach(function (f, idx) {
+    var pg = sigEd.pagePx[f.page]; if (!pg) return;
+    var o = document.querySelector('#sig-pages .sig-overlay[data-page="' + f.page + '"]'); if (!o) return;
+    var color = (f.signerIdx != null && sigEd.signers[f.signerIdx]) ? sigEd.signers[f.signerIdx]._color : '#9ca3af';
+    var d = document.createElement('div');
+    d.className = 'sig-field' + (sigEd.selected === idx ? ' sel' : '');
+    d.setAttribute('data-idx', idx);
+    d.style.left = (f.x * pg.w) + 'px'; d.style.top = (f.y * pg.h) + 'px';
+    d.style.width = (f.w * pg.w) + 'px'; d.style.height = (f.h * pg.h) + 'px';
+    d.style.borderColor = color; d.style.background = sigHexA(color, 0.16);
+    d.innerHTML = '<span class="sig-field-tag" style="background:' + color + '">' + SIG_FIELD_LABELS[f.field_type] + (f.signerIdx == null ? ' ?' : '') + '</span>' +
+      (sigEd.readOnly ? '' : '<button class="sig-field-del">&times;</button><span class="sig-resize"></span>');
+    if (!sigEd.readOnly) {
+      d.onpointerdown = (function (ix) {
+        return function (ev) {
+          if (ev.target.classList.contains('sig-resize')) sigStartResize(ev, ix);
+          else if (ev.target.classList.contains('sig-field-del')) { /* delete handled on click */ }
+          else sigStartMove(ev, ix);
+        };
+      })(idx);
+      var del = d.querySelector('.sig-field-del');
+      if (del) del.onclick = (function (ix) { return function (ev) { ev.stopPropagation(); sigDeleteField(ix); }; })(idx);
+    } else {
+      d.style.cursor = 'default';
+    }
+    o.appendChild(d);
+  });
+}
+
+function sigPlaceField(ev, page) {
+  if (!sigEd || sigEd.readOnly) return;
+  if (!ev.target.classList.contains('sig-overlay')) return;
+  if (!sigEd.tool) { showToast('Pick a field type first', ''); return; }
+  var pg = sigEd.pagePx[page]; if (!pg) return;
+  var rect = ev.currentTarget.getBoundingClientRect();
+  var px = ev.clientX - rect.left, py = ev.clientY - rect.top;
+  var sz = SIG_DEFAULT_SIZE[sigEd.tool] || { w: 0.2, h: 0.04 };
+  var x = Math.max(0, Math.min(1 - sz.w, (px / pg.w) - sz.w / 2));
+  var y = Math.max(0, Math.min(1 - sz.h, (py / pg.h) - sz.h / 2));
+  sigEd.fields.push({ id: null, signerIdx: sigEd.activeSigner, field_type: sigEd.tool, page: page, x: x, y: y, w: sz.w, h: sz.h, required: true, label: null, ai_detected: false });
+  sigEd.selected = sigEd.fields.length - 1;
+  sigPaintFields(); sigRenderInspector();
+}
+
+function sigStartMove(ev, idx) {
+  if (sigEd.readOnly) return;
+  ev.preventDefault();
+  var f = sigEd.fields[idx]; var pg = sigEd.pagePx[f.page]; if (!pg) return;
+  var box = document.querySelector('#sig-pages .sig-field[data-idx="' + idx + '"]');
+  var startX = ev.clientX, startY = ev.clientY;
+  var origL = f.x * pg.w, origT = f.y * pg.h;
+  var bw = f.w * pg.w, bh = f.h * pg.h;
+  sigSelectField(idx);
+  box = document.querySelector('#sig-pages .sig-field[data-idx="' + idx + '"]');
+  function mv(e) {
+    var nl = Math.max(0, Math.min(pg.w - bw, origL + (e.clientX - startX)));
+    var nt = Math.max(0, Math.min(pg.h - bh, origT + (e.clientY - startY)));
+    f.x = nl / pg.w; f.y = nt / pg.h;
+    if (box) { box.style.left = nl + 'px'; box.style.top = nt + 'px'; }
+  }
+  function up() { document.removeEventListener('pointermove', mv); document.removeEventListener('pointerup', up); }
+  document.addEventListener('pointermove', mv); document.addEventListener('pointerup', up);
+}
+
+function sigStartResize(ev, idx) {
+  if (sigEd.readOnly) return;
+  ev.preventDefault(); ev.stopPropagation();
+  var f = sigEd.fields[idx]; var pg = sigEd.pagePx[f.page]; if (!pg) return;
+  var box = document.querySelector('#sig-pages .sig-field[data-idx="' + idx + '"]');
+  var startX = ev.clientX, startY = ev.clientY;
+  var origW = f.w * pg.w, origH = f.h * pg.h;
+  var minW = 14, minH = 12;
+  function mv(e) {
+    var nw = Math.max(minW, Math.min(pg.w - f.x * pg.w, origW + (e.clientX - startX)));
+    var nh = Math.max(minH, Math.min(pg.h - f.y * pg.h, origH + (e.clientY - startY)));
+    f.w = nw / pg.w; f.h = nh / pg.h;
+    if (box) { box.style.width = nw + 'px'; box.style.height = nh + 'px'; }
+  }
+  function up() { document.removeEventListener('pointermove', mv); document.removeEventListener('pointerup', up); }
+  document.addEventListener('pointermove', mv); document.addEventListener('pointerup', up);
+}
+
+function sigLayoutBody() {
+  return {
+    signers: sigEd.signers.map(function (s) { return { name: s.name, email: s.email, phone: s.phone, role_label: s.role_label }; }),
+    fields: sigEd.fields.map(function (f) { return { signer: f.signerIdx, field_type: f.field_type, page: f.page, x: f.x, y: f.y, w: f.w, h: f.h, required: f.required, label: f.label }; })
+  };
+}
+
+async function sigSaveLayout(notify) {
+  if (sigEd.readOnly) return null;
+  var btn = document.getElementById('sig-save-btn'); if (btn) btn.disabled = true;
+  try {
+    var resp = await api('PUT', '/signatures/' + sigEd.id + '/layout', sigLayoutBody());
+    var sel = sigEd.selected, active = sigEd.activeSigner;
+    sigEditorLoad(resp);
+    sigEd.selected = (sel != null && sigEd.fields[sel]) ? sel : null;
+    sigEd.activeSigner = (active != null && sigEd.signers[active]) ? active : (sigEd.signers.length ? 0 : null);
+    sigRenderSigners(); sigPaintFields(); sigRenderInspector();
+    if (notify) showToast('Saved', 'success');
+    return resp;
+  } catch (e) { novaAlert(e.message); return null; }
+  finally { if (btn) btn.disabled = false; }
+}
+
+async function sigRunDetect() {
+  if (sigEd.readOnly) return;
+  var btn = document.getElementById('sig-detect-btn'); if (btn) { btn.disabled = true; btn.textContent = 'Working...'; }
+  try {
+    // Persist current work first so human fields survive the detect replace.
+    var saved = await sigSaveLayout(false);
+    if (saved === null) return;
+    await sigLoadPdf();
+    var pdf = sigEd.pdfDoc;
+    var pages = [];
+    var n = Math.min(pdf.numPages, 15);
+    for (var i = 1; i <= n; i++) {
+      var page = await pdf.getPage(i);
+      var base = page.getViewport({ scale: 1 });
+      var scale = Math.min(1400 / base.width, 2);
+      var vp = page.getViewport({ scale: scale });
+      var c = document.createElement('canvas'); c.width = vp.width; c.height = vp.height;
+      await page.render({ canvasContext: c.getContext('2d'), viewport: vp }).promise;
+      pages.push({ page: i - 1, image: c.toDataURL('image/png') });
+    }
+    var resp = await api('POST', '/signatures/' + sigEd.id + '/detect', { pages: pages });
+    // Reload full field set; detected fields come back unassigned.
+    var full = await api('GET', '/signatures/' + sigEd.id);
+    sigEditorLoad(full);
+    sigEd.selected = null;
+    sigPaintFields(); sigRenderSigners(); sigRenderInspector();
+    showToast((resp.detected || 0) + ' field(s) detected. Assign them to signers.', 'success');
+  } catch (e) { novaAlert(e.message); }
+  finally { if (btn) { btn.disabled = false; btn.innerHTML = '&#10024; Auto-detect fields'; } }
+}
+/* =================== end Signatures module =================== */
 
 // Browser back/forward support: navigate() pushes history; restore here on pop.
 window.addEventListener('popstate', function (e) {
