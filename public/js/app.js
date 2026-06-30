@@ -2,7 +2,7 @@
 // public/sw.js (the only thing bumped each deploy) — the badge asks the active
 // service worker for it at runtime. This value is just the fallback shown when no
 // service worker is available (e.g. very first visit before it installs).
-var APP_VERSION = 'v45';
+var APP_VERSION = 'v47';
 var _resolvedAppVersion = null;
 
 // Ask the active service worker for its CACHE_VERSION (without the 'nova-' prefix).
@@ -11026,7 +11026,7 @@ function sigEnsureStyles() {
   var st = document.createElement('style');
   st.id = 'sig-styles';
   st.textContent =
-    '.sig-page{position:relative;margin:0 auto 18px;box-shadow:0 2px 14px rgba(0,0,0,.35);background:#fff;max-width:100%}' +
+    '.sig-page{position:relative;margin:0 auto 18px;box-shadow:0 2px 14px rgba(0,0,0,.35);background:#fff}' +
     '.sig-page canvas{display:block;width:100%;height:auto}' +
     '.sig-overlay{position:absolute;inset:0;cursor:crosshair}' +
     '.sig-field{position:absolute;border:2px solid #f97316;border-radius:3px;box-sizing:border-box;cursor:move;touch-action:none;min-width:14px;min-height:12px}' +
@@ -11160,12 +11160,13 @@ function sigEditorLoad(data) {
 
 async function renderSignatureEditor(el, id) {
   sigEnsureStyles();
+  sigBindKeys();
   el.innerHTML = '<div class="loading">Loading...</div>';
   var data;
   try { data = await api('GET', '/signatures/' + id); }
   catch (e) { el.innerHTML = '<div class="alert alert-error">' + escHtml(e.message) + '</div>'; return; }
   sigEd = { id: id, request: data.request, status: data.request.status, readOnly: (data.request.status !== 'draft'),
-    tool: null, selected: null, activeSigner: null, pdfDoc: null, pagePx: [], signers: [], fields: [], _listFilter: (sigEd && sigEd._listFilter) || '' };
+    tool: null, selected: null, activeSigner: null, pdfDoc: null, pagePx: [], signers: [], fields: [], zoom: 1, _listFilter: (sigEd && sigEd._listFilter) || '' };
   sigEditorLoad(data);
   if (sigEd.signers.length) sigEd.activeSigner = 0;
 
@@ -11185,9 +11186,17 @@ async function renderSignatureEditor(el, id) {
       '</div>' +
     '</div>' +
     '<div class="page-subtitle">' + escHtml(data.request.request_number) +
-      (sigEd.readOnly ? ' &middot; this request has been sent and is read-only.' : ' &middot; pick a field type, then click on the document to place it. Drag to move, corner to resize.') + '</div>' +
+      (sigEd.readOnly ? ' &middot; this request has been sent and is read-only.' : ' &middot; pick a field type, then click on the document to place it. Drag to move, corner to resize, arrow keys to nudge (Shift for bigger steps), Delete to remove.') + '</div>' +
     '<div class="sig-ed-grid">' +
-      '<div class="sig-ed-main"><div id="sig-pages"><div class="loading">Rendering...</div></div></div>' +
+      '<div class="sig-ed-main">' +
+        '<div style="display:flex;align-items:center;gap:6px;margin-bottom:8px">' +
+          '<button class="btn btn-ghost btn-sm" title="Zoom out" onclick="sigZoom(-0.25)">&minus;</button>' +
+          '<span id="sig-zoom-label" style="font-size:13px;min-width:46px;text-align:center">100%</span>' +
+          '<button class="btn btn-ghost btn-sm" title="Zoom in" onclick="sigZoom(0.25)">+</button>' +
+          '<button class="btn btn-ghost btn-sm" title="Fit to width" onclick="sigZoomFit()">Fit</button>' +
+        '</div>' +
+        '<div id="sig-pages" style="overflow-x:auto"><div class="loading">Rendering...</div></div>' +
+      '</div>' +
       '<div class="sig-ed-side">' +
         '<div class="card" style="margin-bottom:14px"><div class="card-body">' +
           '<div style="font-weight:600;margin-bottom:8px">Field types</div>' +
@@ -11304,6 +11313,32 @@ function sigAssignAllFields(i) {
   showToast('All ' + sigEd.fields.length + ' field(s) assigned to ' + (sigEd.signers[i] ? (sigEd.signers[i].name || ('Signer ' + (i + 1))) : ''), 'success');
 }
 
+// Arrow keys nudge the selected field (Shift = bigger step); Delete removes it.
+var _sigKeysBound = false;
+function sigBindKeys() { if (_sigKeysBound) return; _sigKeysBound = true; document.addEventListener('keydown', sigOnKeydown); }
+function sigOnKeydown(e) {
+  if (!sigEd || sigEd.readOnly) return;
+  if (state.currentView !== 'signature-editor') return;
+  var t = e.target;
+  if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.tagName === 'SELECT' || t.isContentEditable)) return;
+  if (sigEd.selected == null || !sigEd.fields[sigEd.selected]) return;
+  var f = sigEd.fields[sigEd.selected];
+  var pg = sigEd.pagePx[f.page]; if (!pg) return;
+  if (e.key === 'Delete') { e.preventDefault(); sigDeleteField(sigEd.selected); return; }
+  if (e.key !== 'ArrowUp' && e.key !== 'ArrowDown' && e.key !== 'ArrowLeft' && e.key !== 'ArrowRight') return;
+  e.preventDefault();
+  var step = e.shiftKey ? 10 : 1;
+  var dx = (e.key === 'ArrowLeft') ? -step : (e.key === 'ArrowRight') ? step : 0;
+  var dy = (e.key === 'ArrowUp') ? -step : (e.key === 'ArrowDown') ? step : 0;
+  f.x = Math.max(0, Math.min(1 - f.w, f.x + dx / pg.w));
+  f.y = Math.max(0, Math.min(1 - f.h, f.y + dy / pg.h));
+  sigPaintFields();
+}
+
+function sigUpdateZoomLabel() { var el = document.getElementById('sig-zoom-label'); if (el) el.textContent = Math.round((sigEd.zoom || 1) * 100) + '%'; }
+function sigZoom(d) { if (!sigEd) return; sigEd.zoom = Math.max(0.5, Math.min(3, (sigEd.zoom || 1) + d)); sigUpdateZoomLabel(); sigRenderPages(); }
+function sigZoomFit() { if (!sigEd) return; sigEd.zoom = 1; sigUpdateZoomLabel(); sigRenderPages(); }
+
 function sigAssignField(idx, val) { if (sigEd.fields[idx]) { sigEd.fields[idx].signerIdx = (val === '') ? null : parseInt(val, 10); sigPaintFields(); } }
 function sigToggleRequired(idx, v) { if (sigEd.fields[idx]) sigEd.fields[idx].required = !!v; }
 function sigSelectField(idx) { sigEd.selected = idx; sigPaintFields(); sigRenderInspector(); }
@@ -11332,7 +11367,7 @@ async function sigRenderPages() {
   var pdf = sigEd.pdfDoc;
   host.innerHTML = '';
   sigEd.pagePx = [];
-  var maxW = Math.min(host.clientWidth || 760, 820);
+  var maxW = Math.min(host.clientWidth || 760, 820) * (sigEd.zoom || 1);
   for (var i = 1; i <= pdf.numPages; i++) {
     var page = await pdf.getPage(i);
     var base = page.getViewport({ scale: 1 });
