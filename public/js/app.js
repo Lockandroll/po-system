@@ -2,7 +2,7 @@
 // public/sw.js (the only thing bumped each deploy) — the badge asks the active
 // service worker for it at runtime. This value is just the fallback shown when no
 // service worker is available (e.g. very first visit before it installs).
-var APP_VERSION = 'v65';
+var APP_VERSION = 'v66';
 var _resolvedAppVersion = null;
 
 // Ask the active service worker for its CACHE_VERSION (without the 'nova-' prefix).
@@ -11089,6 +11089,7 @@ async function renderSignatures(el) {
     '<div class="page-subtitle">Drop in a PDF, let AI find the fields, then send it out for signature.</div>' +
     '<div style="display:flex;justify-content:space-between;align-items:center;gap:12px;margin:14px 0;flex-wrap:wrap">' +
       '<div style="display:flex;gap:6px;flex-wrap:wrap">' + chips + '</div>' +
+      (can('manage_signatures') ? '<button class="btn btn-secondary btn-sm" onclick="sigShowTemplates()">Templates</button> ' : '') +
       (can('manage_signatures') ? '<button class="btn btn-primary btn-sm" onclick="navigate(\'new-signature\')"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="vertical-align:-3px"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg> New Request</button>' : '') +
     '</div>' +
     '<div class="card"><div class="card-body" style="padding:0">' + body + '</div></div>';
@@ -11100,6 +11101,45 @@ async function sigDeleteRequest(id) {
   var ok = await novaConfirm('Delete this signature request and its document? This cannot be undone.');
   if (!ok) return;
   try { await api('DELETE', '/signatures/' + id); showToast('Deleted', 'success'); renderSignatures(document.getElementById('content')); }
+  catch (e) { novaAlert(e.message); }
+}
+
+// ----- Templates -----
+async function sigSaveAsTemplate(id) {
+  var saved = await sigSaveLayout(false); if (saved === null) return;
+  var name = await novaPrompt('Template name:', (sigEd && sigEd.request && sigEd.request.title) || '');
+  if (!name || !name.trim()) return;
+  try { await api('POST', '/signatures/templates/from-request/' + id, { name: name.trim() }); showToast('Saved as template', 'success'); }
+  catch (e) { novaAlert(e.message); }
+}
+async function sigShowTemplates() {
+  var list;
+  try { list = await api('GET', '/signatures/templates'); } catch (e) { novaAlert(e.message); return; }
+  var rows = list.length ? list.map(function (t) {
+    return '<div style="display:flex;align-items:center;gap:10px;padding:10px 0;border-bottom:1px solid var(--border)">' +
+      '<div style="flex:1;min-width:0"><div style="font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + escHtml(t.name) + '</div>' +
+      '<div style="font-size:12px;color:var(--text-muted-color)">' + (t.page_count || 0) + ' page(s) &middot; ' + escHtml(t.created_by_name || '') + '</div></div>' +
+      '<button class="btn btn-primary btn-sm" onclick="sigUseTemplate(' + t.id + ')">Use</button>' +
+      '<button class="btn btn-ghost btn-sm" onclick="sigDeleteTemplate(' + t.id + ')">&#128465;</button>' +
+      '</div>';
+  }).join('') : '<div style="padding:24px;text-align:center;color:var(--text-muted-color)">No templates yet. Open a draft request, set up its fields, then click &ldquo;Save as template&rdquo;.</div>';
+  var ov = document.createElement('div'); ov.id = 'sig-tmpl-ov';
+  ov.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.6);z-index:9999;display:flex;align-items:center;justify-content:center;padding:16px';
+  ov.innerHTML = '<div style="background:var(--bg-card);border-radius:12px;padding:18px;max-width:520px;width:100%;max-height:80vh;overflow:auto">' +
+    '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px"><div style="font-weight:600;font-size:16px">Templates</div>' +
+    '<button class="btn btn-ghost btn-sm" onclick="sigTmplClose()">Close</button></div>' + rows + '</div>';
+  document.body.appendChild(ov);
+}
+function sigTmplClose() { var ov = document.getElementById('sig-tmpl-ov'); if (ov) ov.remove(); }
+async function sigUseTemplate(tid) {
+  var title = await novaPrompt('Title for the new request:', '');
+  if (title === null) return;
+  try { var r = await api('POST', '/signatures/templates/' + tid + '/use', { title: title || '' }); sigTmplClose(); showToast('Created from template', 'success'); navigate('signature-editor', r.id); }
+  catch (e) { novaAlert(e.message); }
+}
+async function sigDeleteTemplate(tid) {
+  var ok = await novaConfirm('Delete this template? This cannot be undone.'); if (!ok) return;
+  try { await api('DELETE', '/signatures/templates/' + tid); showToast('Template deleted', 'success'); sigTmplClose(); sigShowTemplates(); }
   catch (e) { novaAlert(e.message); }
 }
 
@@ -11185,6 +11225,7 @@ async function renderSignatureEditor(el, id) {
           :
           '<button class="btn btn-secondary btn-sm" id="sig-detect-btn" onclick="sigRunDetect()">&#10024; Auto-detect fields</button> ' +
           '<button class="btn btn-primary btn-sm" id="sig-save-btn" onclick="sigSaveLayout(true)">Save</button> ' +
+          '<button class="btn btn-ghost btn-sm" onclick="sigSaveAsTemplate(' + id + ')">Save as template</button> ' +
           '<button class="btn btn-primary btn-sm" onclick="sigSendRequest(' + id + ')">Send</button>') +
       '</div>' +
     '</div>' +

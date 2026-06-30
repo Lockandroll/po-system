@@ -1276,6 +1276,22 @@ async function initDB() {
     await client.query('CREATE INDEX IF NOT EXISTS signature_fields_signer_idx ON signature_fields (signer_id);');
     await client.query('CREATE INDEX IF NOT EXISTS signature_events_request_idx ON signature_events (request_id);');
     await client.query('ALTER TABLE signature_fields ADD COLUMN IF NOT EXISTS locked BOOLEAN NOT NULL DEFAULT false;');
+    // Reusable signature templates: a saved form (PDF in R2) + its field layout and
+    // signer role slots, stored as JSON. 'Use template' clones these into a new request.
+    await client.query(
+      'CREATE TABLE IF NOT EXISTS signature_templates (' +
+      '  id SERIAL PRIMARY KEY,' +
+      '  name VARCHAR(255) NOT NULL,' +
+      '  source_r2_key VARCHAR(512),' +
+      '  page_count INTEGER DEFAULT 0,' +
+      '  page_dimensions JSONB,' +
+      '  roles JSONB,' +
+      '  fields JSONB,' +
+      '  created_by INTEGER REFERENCES users(id),' +
+      '  created_at TIMESTAMPTZ DEFAULT NOW(),' +
+      '  updated_at TIMESTAMPTZ DEFAULT NOW()' +
+      ');'
+    );
 
     console.log('Database initialized');
   } finally {

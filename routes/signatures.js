@@ -164,6 +164,105 @@ router.get('/', requireAuth, requirePermission('view_signatures'), async (req, r
 });
 
 // ---- Detail (request + signers + fields + events) ----
+// ===================== Templates (reusable forms) =====================
+// NOTE: these must be registered BEFORE the generic '/:id' route below, or
+// '/templates' would be captured as an id.
+router.get('/templates', requireAuth, requirePermission('view_signatures'), async (req, res) => {
+  try {
+    const rows = (await pool.query(
+      'SELECT t.id, t.name, t.page_count, t.created_at, u.name AS created_by_name FROM signature_templates t LEFT JOIN users u ON u.id = t.created_by ORDER BY t.name ASC'
+    )).rows;
+    res.json(rows);
+  } catch (err) { console.error('Template list error:', err); res.status(500).json({ error: 'Failed to load templates' }); }
+});
+
+router.get('/templates/:tid', requireAuth, requirePermission('view_signatures'), async (req, res) => {
+  try {
+    const r = await pool.query('SELECT * FROM signature_templates WHERE id = $1', [parseInt(req.params.tid, 10)]);
+    if (!r.rows.length) return res.status(404).json({ error: 'Template not found' });
+    res.json(r.rows[0]);
+  } catch (err) { console.error('Template get error:', err); res.status(500).json({ error: 'Failed to load template' }); }
+});
+
+// Save a draft request's document + layout as a reusable template.
+router.post('/templates/from-request/:id', requireAuth, requirePermission('manage_signatures'), async (req, res) => {
+  try {
+    if (!r2.configured()) return res.status(503).json({ error: 'Document storage is not configured yet.' });
+    const id = parseInt(req.params.id, 10);
+    const rr = await pool.query('SELECT * FROM signature_requests WHERE id = $1', [id]);
+    if (!rr.rows.length) return res.status(404).json({ error: 'Signature request not found' });
+    const request = rr.rows[0];
+    if (request.created_by !== req.user.id && req.user.role !== 'admin') return res.status(403).json({ error: 'Not your request' });
+    if (!request.source_r2_key) return res.status(400).json({ error: 'This request has no document.' });
+    var name = (req.body.name || request.title || 'Template').toString().trim().slice(0, 255);
+    const signers = (await pool.query('SELECT id, name, role_label, sign_order FROM signature_signers WHERE request_id = $1 ORDER BY sign_order, id', [id])).rows;
+    const fields = (await pool.query('SELECT * FROM signature_fields WHERE request_id = $1 ORDER BY page, id', [id])).rows;
+    var roleIdx = {};
+    var roles = signers.map(function (sg, i) { roleIdx[sg.id] = i; return { label: (sg.role_label || sg.name || ('Signer ' + (i + 1))) }; });
+    var tfields = fields.map(function (f) {
+      return { role: (f.signer_id != null && roleIdx[f.signer_id] != null) ? roleIdx[f.signer_id] : null,
+        field_type: f.field_type, page: f.page, x: +f.x, y: +f.y, w: +f.w, h: +f.h,
+        required: f.required, label: f.label, value: f.value, locked: !!f.locked };
+    });
+    var newKey = 'signature-templates/' + crypto.randomUUID() + '/' + name.replace(/[^A-Za-z0-9._-]/g, '_').slice(0, 80) + '.pdf';
+    try { var buf = await r2.getObjectBuffer(request.source_r2_key); await r2.putObject(newKey, buf, 'application/pdf'); }
+    catch (e) { console.error('Template copy failed:', e.message); return res.status(500).json({ error: 'Could not copy the document.' }); }
+    const ins = await pool.query(
+      'INSERT INTO signature_templates (name, source_r2_key, page_count, page_dimensions, roles, fields, created_by) VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING id',
+      [name, newKey, request.page_count || 0, JSON.stringify(request.page_dimensions || null), JSON.stringify(roles), JSON.stringify(tfields), req.user.id]
+    );
+    res.json({ id: ins.rows[0].id, name: name });
+  } catch (err) { console.error('Template save error:', err); res.status(500).json({ error: 'Failed to save template' }); }
+});
+
+// Create a fresh draft request from a template (clones the PDF + fields + role slots).
+router.post('/templates/:tid/use', requireAuth, requirePermission('manage_signatures'), async (req, res) => {
+  try {
+    if (!r2.configured()) return res.status(503).json({ error: 'Document storage is not configured yet.' });
+    const t = (await pool.query('SELECT * FROM signature_templates WHERE id = $1', [parseInt(req.params.tid, 10)])).rows[0];
+    if (!t) return res.status(404).json({ error: 'Template not found' });
+    var title = (req.body.title || t.name || 'Untitled').toString().trim().slice(0, 255);
+    var roles = Array.isArray(t.roles) ? t.roles : [];
+    var fields = Array.isArray(t.fields) ? t.fields : [];
+    var newKey = 'signatures/' + crypto.randomUUID() + '/' + title.replace(/[^A-Za-z0-9._-]/g, '_').slice(0, 80) + '.pdf';
+    try { var buf = await r2.getObjectBuffer(t.source_r2_key); await r2.putObject(newKey, buf, 'application/pdf'); }
+    catch (e) { console.error('Template use copy failed:', e.message); return res.status(500).json({ error: 'Could not copy the template document.' }); }
+    const requestNumber = await generateRequestNumber();
+    const rq = await pool.query(
+      "INSERT INTO signature_requests (request_number, title, created_by, status, source_r2_key, page_count, page_dimensions) VALUES ($1,$2,$3,'draft',$4,$5,$6) RETURNING id",
+      [requestNumber, title, req.user.id, newKey, t.page_count || 0, JSON.stringify(t.page_dimensions || null)]
+    );
+    var reqId = rq.rows[0].id;
+    var roleToSigner = {};
+    for (var i = 0; i < roles.length; i++) {
+      var lbl = (roles[i] && roles[i].label) ? String(roles[i].label).slice(0, 100) : ('Signer ' + (i + 1));
+      var sr = await pool.query("INSERT INTO signature_signers (request_id, name, email, role_label, sign_order, status) VALUES ($1,'','',$2,$3,'pending') RETURNING id", [reqId, lbl, i]);
+      roleToSigner[i] = sr.rows[0].id;
+    }
+    for (var j = 0; j < fields.length; j++) {
+      var f = fields[j];
+      var sid = (f.role != null && roleToSigner[f.role] != null) ? roleToSigner[f.role] : null;
+      await pool.query(
+        'INSERT INTO signature_fields (request_id, signer_id, field_type, page, x, y, w, h, required, label, ai_detected, font_size, value, locked) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,false,NULL,$11,$12)',
+        [reqId, sid, f.field_type, f.page || 0, f.x, f.y, f.w, f.h, (f.required === false ? false : true), f.label || null, (f.value != null ? f.value : null), !!f.locked]
+      );
+    }
+    await logEvent(reqId, null, 'created', req.user.name, req, { from_template: t.id, pages: t.page_count || 0 });
+    res.json({ id: reqId, request_number: requestNumber });
+  } catch (err) { console.error('Template use error:', err); res.status(500).json({ error: 'Failed to create from template' }); }
+});
+
+router.delete('/templates/:tid', requireAuth, requirePermission('manage_signatures'), async (req, res) => {
+  try {
+    const t = (await pool.query('SELECT id, source_r2_key, created_by FROM signature_templates WHERE id = $1', [parseInt(req.params.tid, 10)])).rows[0];
+    if (!t) return res.status(404).json({ error: 'Template not found' });
+    if (t.created_by !== req.user.id && req.user.role !== 'admin') return res.status(403).json({ error: 'Not your template' });
+    try { await r2.deleteObject(t.source_r2_key); } catch (e) {}
+    await pool.query('DELETE FROM signature_templates WHERE id = $1', [t.id]);
+    res.json({ success: true });
+  } catch (err) { console.error('Template delete error:', err); res.status(500).json({ error: 'Failed to delete template' }); }
+});
+
 router.get('/:id', requireAuth, requirePermission('view_signatures'), async (req, res) => {
   try {
     const id = parseInt(req.params.id, 10);
