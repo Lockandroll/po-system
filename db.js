@@ -1191,6 +1191,91 @@ async function initDB() {
       'CREATE INDEX IF NOT EXISTS idx_feedback_att_fid ON customer_feedback_attachments(feedback_id);'
     );
 
+    // ===== Signatures module (Adobe Sign style) =====
+    // E-signature requests. Source + flattened PDFs and signature images live in
+    // Cloudflare R2; only metadata + R2 keys are stored here. page_dimensions holds
+    // per-page width/height in PDF points (source of truth for normalized->point mapping).
+    await client.query(
+      'CREATE TABLE IF NOT EXISTS signature_requests (' +
+      '  id SERIAL PRIMARY KEY,' +
+      '  request_number VARCHAR(50) UNIQUE NOT NULL,' +
+      '  title VARCHAR(255) NOT NULL,' +
+      '  created_by INTEGER REFERENCES users(id),' +
+      "  status VARCHAR(20) NOT NULL DEFAULT 'draft'," +
+      '  source_r2_key VARCHAR(512),' +
+      '  signed_r2_key VARCHAR(512),' +
+      '  page_count INTEGER DEFAULT 0,' +
+      '  page_dimensions JSONB,' +
+      '  message TEXT,' +
+      '  expires_at TIMESTAMPTZ,' +
+      '  sent_at TIMESTAMPTZ,' +
+      '  completed_at TIMESTAMPTZ,' +
+      '  created_at TIMESTAMPTZ DEFAULT NOW(),' +
+      '  updated_at TIMESTAMPTZ DEFAULT NOW()' +
+      ');'
+    );
+    // Each signer of a request. token gives no-login access to the public signing page.
+    await client.query(
+      'CREATE TABLE IF NOT EXISTS signature_signers (' +
+      '  id SERIAL PRIMARY KEY,' +
+      '  request_id INTEGER NOT NULL REFERENCES signature_requests(id) ON DELETE CASCADE,' +
+      '  name VARCHAR(255) NOT NULL,' +
+      '  email VARCHAR(255),' +
+      '  phone VARCHAR(50),' +
+      '  role_label VARCHAR(100),' +
+      '  sign_order INTEGER,' +
+      "  status VARCHAR(20) NOT NULL DEFAULT 'pending'," +
+      '  token VARCHAR(128) UNIQUE,' +
+      '  token_expires_at TIMESTAMPTZ,' +
+      '  signed_at TIMESTAMPTZ,' +
+      '  declined_reason TEXT,' +
+      '  consent_accepted BOOLEAN NOT NULL DEFAULT false,' +
+      '  user_id INTEGER REFERENCES users(id),' +
+      '  created_at TIMESTAMPTZ DEFAULT NOW()' +
+      ');'
+    );
+    // Field boxes. Position stored normalized 0-1 of page w/h, top-left origin
+    // (render-resolution independent); the top-left->bottom-left flip happens at flatten time.
+    await client.query(
+      'CREATE TABLE IF NOT EXISTS signature_fields (' +
+      '  id SERIAL PRIMARY KEY,' +
+      '  request_id INTEGER NOT NULL REFERENCES signature_requests(id) ON DELETE CASCADE,' +
+      '  signer_id INTEGER REFERENCES signature_signers(id) ON DELETE CASCADE,' +
+      '  field_type VARCHAR(20) NOT NULL,' +
+      '  page INTEGER NOT NULL DEFAULT 0,' +
+      '  x NUMERIC(8,6) NOT NULL,' +
+      '  y NUMERIC(8,6) NOT NULL,' +
+      '  w NUMERIC(8,6) NOT NULL,' +
+      '  h NUMERIC(8,6) NOT NULL,' +
+      '  required BOOLEAN NOT NULL DEFAULT true,' +
+      '  label VARCHAR(255),' +
+      '  ai_detected BOOLEAN NOT NULL DEFAULT false,' +
+      '  ai_confidence NUMERIC(4,3),' +
+      '  value TEXT,' +
+      '  value_r2_key VARCHAR(512),' +
+      '  font_size NUMERIC(5,2),' +
+      '  created_at TIMESTAMPTZ DEFAULT NOW()' +
+      ');'
+    );
+    // Tamper-evident audit trail: one row per lifecycle event (who/when/IP/UA).
+    await client.query(
+      'CREATE TABLE IF NOT EXISTS signature_events (' +
+      '  id SERIAL PRIMARY KEY,' +
+      '  request_id INTEGER NOT NULL REFERENCES signature_requests(id) ON DELETE CASCADE,' +
+      '  signer_id INTEGER REFERENCES signature_signers(id) ON DELETE SET NULL,' +
+      '  event_type VARCHAR(30) NOT NULL,' +
+      '  actor VARCHAR(255),' +
+      '  ip VARCHAR(64),' +
+      '  user_agent TEXT,' +
+      '  detail JSONB,' +
+      '  created_at TIMESTAMPTZ DEFAULT NOW()' +
+      ');'
+    );
+    await client.query('CREATE INDEX IF NOT EXISTS signature_signers_request_idx ON signature_signers (request_id);');
+    await client.query('CREATE INDEX IF NOT EXISTS signature_fields_request_idx ON signature_fields (request_id);');
+    await client.query('CREATE INDEX IF NOT EXISTS signature_fields_signer_idx ON signature_fields (signer_id);');
+    await client.query('CREATE INDEX IF NOT EXISTS signature_events_request_idx ON signature_events (request_id);');
+
     console.log('Database initialized');
   } finally {
     client.release();
