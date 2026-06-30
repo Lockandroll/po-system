@@ -2,7 +2,7 @@
 // public/sw.js (the only thing bumped each deploy) — the badge asks the active
 // service worker for it at runtime. This value is just the fallback shown when no
 // service worker is available (e.g. very first visit before it installs).
-var APP_VERSION = 'v44';
+var APP_VERSION = 'v45';
 var _resolvedAppVersion = null;
 
 // Ask the active service worker for its CACHE_VERSION (without the 'nova-' prefix).
@@ -11153,7 +11153,7 @@ function sigEditorLoad(data) {
     return {
       id: f.id, signerIdx: (f.signer_id != null && idToIdx[f.signer_id] != null) ? idToIdx[f.signer_id] : null,
       field_type: f.field_type, page: f.page, x: +f.x, y: +f.y, w: +f.w, h: +f.h,
-      required: f.required !== false, label: f.label || null, ai_detected: !!f.ai_detected
+      required: f.required !== false, label: f.label || null, ai_detected: !!f.ai_detected, value: (f.value != null ? f.value : '')
     };
   });
 }
@@ -11237,6 +11237,7 @@ function sigRenderSigners() {
         '</div>') +
       (ro ? '' :
         '<div style="display:flex;flex-direction:column;gap:4px">' +
+          '<button class="btn btn-ghost btn-sm" title="Assign EVERY field to this signer" onclick="sigAssignAllFields(' + i + ')">all fields</button>' +
           '<button class="btn btn-ghost btn-sm" title="Place new fields for this signer" onclick="sigSetActiveSigner(' + i + ')">' + (sigEd.activeSigner === i ? '&#10003; active' : 'use') + '</button>' +
           '<button class="btn btn-ghost btn-sm" title="Remove signer" onclick="sigRemoveSigner(' + i + ')">&times;</button>' +
         '</div>') +
@@ -11276,13 +11277,31 @@ function sigRenderInspector() {
   var opts = '<option value="">Unassigned</option>' + sigEd.signers.map(function (s, i) {
     return '<option value="' + i + '"' + (f.signerIdx === i ? ' selected' : '') + '>' + escHtml(s.name || ('Signer ' + (i + 1))) + '</option>';
   }).join('');
+  var sel = sigEd.selected;
+  var pre = '';
+  if (['text', 'date', 'name'].indexOf(f.field_type) !== -1) {
+    pre = '<label style="font-size:12px;font-weight:600;display:block;margin:0 0 4px">Pre-filled value (optional)</label>' +
+      '<input type="text" style="width:100%;margin-bottom:12px" placeholder="Leave blank for the signer" value="' + escHtml(f.value || '') + '" oninput="sigSetFieldValue(' + sel + ',this.value)" />';
+  } else if (f.field_type === 'checkbox') {
+    pre = '<div style="display:flex;align-items:center;gap:8px;margin-bottom:12px"><input type="checkbox"' + (f.value === 'true' ? ' checked' : '') + ' onchange="sigSetFieldCheck(' + sel + ',this.checked)" style="width:16px;height:16px;flex:0 0 auto;margin:0" /><span style="font-size:13px">Pre-checked</span></div>';
+  }
   host.innerHTML =
-    '<div style="font-size:13px;margin-bottom:8px"><strong>' + SIG_FIELD_LABELS[f.field_type] + '</strong> on page ' + (f.page + 1) + (f.ai_detected ? ' <span style="color:var(--text-muted-color)">(AI)</span>' : '') + '</div>' +
+    '<div style="font-size:13px;margin-bottom:10px"><strong>' + SIG_FIELD_LABELS[f.field_type] + '</strong> on page ' + (f.page + 1) + (f.ai_detected ? ' <span style="color:var(--text-muted-color)">(AI)</span>' : '') + '</div>' +
     (sigEd.readOnly ? '' :
-      '<label style="font-size:12px;font-weight:600;display:block;margin-bottom:4px">Assigned signer</label>' +
-      '<select class="input" style="width:100%;margin-bottom:10px" onchange="sigAssignField(' + sigEd.selected + ',this.value)">' + opts + '</select>' +
-      '<label style="font-size:13px;display:flex;align-items:center;gap:6px;margin-bottom:10px"><input type="checkbox"' + (f.required ? ' checked' : '') + ' onchange="sigToggleRequired(' + sigEd.selected + ',this.checked)" /> Required</label>' +
-      '<button class="btn btn-ghost btn-sm" onclick="sigDeleteField(' + sigEd.selected + ')">Delete field</button>');
+      '<label style="font-size:12px;font-weight:600;display:block;margin:0 0 4px">Assigned signer</label>' +
+      '<select class="input" style="width:100%;margin-bottom:12px" onchange="sigAssignField(' + sel + ',this.value)">' + opts + '</select>' +
+      pre +
+      '<div style="display:flex;align-items:center;gap:8px;margin-bottom:14px"><input type="checkbox"' + (f.required ? ' checked' : '') + ' onchange="sigToggleRequired(' + sel + ',this.checked)" style="width:16px;height:16px;flex:0 0 auto;margin:0" /><span style="font-size:13px">Required</span></div>' +
+      '<button class="btn btn-ghost btn-sm" style="color:#ef4444" onclick="sigDeleteField(' + sel + ')">Delete field</button>');
+}
+
+function sigSetFieldValue(idx, val) { if (sigEd.fields[idx]) { sigEd.fields[idx].value = val; sigPaintFields(); } }
+function sigSetFieldCheck(idx, b) { if (sigEd.fields[idx]) { sigEd.fields[idx].value = b ? 'true' : ''; sigPaintFields(); } }
+function sigAssignAllFields(i) {
+  if (!sigEd.fields.length) { showToast('No fields to assign yet', ''); return; }
+  sigEd.fields.forEach(function (f) { f.signerIdx = i; });
+  sigPaintFields(); sigRenderInspector();
+  showToast('All ' + sigEd.fields.length + ' field(s) assigned to ' + (sigEd.signers[i] ? (sigEd.signers[i].name || ('Signer ' + (i + 1))) : ''), 'success');
 }
 
 function sigAssignField(idx, val) { if (sigEd.fields[idx]) { sigEd.fields[idx].signerIdx = (val === '') ? null : parseInt(val, 10); sigPaintFields(); } }
@@ -11348,6 +11367,7 @@ function sigPaintFields() {
     d.style.width = (f.w * pg.w) + 'px'; d.style.height = (f.h * pg.h) + 'px';
     d.style.borderColor = color; d.style.background = sigHexA(color, 0.16);
     d.innerHTML = '<span class="sig-field-tag" style="background:' + color + '">' + SIG_FIELD_LABELS[f.field_type] + (f.signerIdx == null ? ' ?' : '') + '</span>' +
+      (((f.field_type !== 'signature' && f.field_type !== 'initials') && f.value) ? '<span style="position:absolute;left:3px;right:3px;top:50%;transform:translateY(-50%);font-size:10px;color:#111;pointer-events:none;overflow:hidden;white-space:nowrap;text-overflow:ellipsis">' + escHtml(f.field_type === 'checkbox' ? (f.value === 'true' ? '\u2713' : '') : f.value) + '</span>' : '') +
       (sigEd.readOnly ? '' : '<button class="sig-field-del">&times;</button><span class="sig-resize"></span>');
     if (!sigEd.readOnly) {
       d.onpointerdown = (function (ix) {
@@ -11376,7 +11396,7 @@ function sigPlaceField(ev, page) {
   var sz = SIG_DEFAULT_SIZE[sigEd.tool] || { w: 0.2, h: 0.04 };
   var x = Math.max(0, Math.min(1 - sz.w, (px / pg.w) - sz.w / 2));
   var y = Math.max(0, Math.min(1 - sz.h, (py / pg.h) - sz.h / 2));
-  sigEd.fields.push({ id: null, signerIdx: sigEd.activeSigner, field_type: sigEd.tool, page: page, x: x, y: y, w: sz.w, h: sz.h, required: true, label: null, ai_detected: false });
+  sigEd.fields.push({ id: null, signerIdx: sigEd.activeSigner, field_type: sigEd.tool, page: page, x: x, y: y, w: sz.w, h: sz.h, required: true, label: null, ai_detected: false, value: '' });
   sigEd.selected = sigEd.fields.length - 1;
   sigPaintFields(); sigRenderInspector();
 }
@@ -11422,7 +11442,7 @@ function sigStartResize(ev, idx) {
 function sigLayoutBody() {
   return {
     signers: sigEd.signers.map(function (s) { return { name: s.name, email: s.email, phone: s.phone, role_label: s.role_label }; }),
-    fields: sigEd.fields.map(function (f) { return { signer: f.signerIdx, field_type: f.field_type, page: f.page, x: f.x, y: f.y, w: f.w, h: f.h, required: f.required, label: f.label }; })
+    fields: sigEd.fields.map(function (f) { return { signer: f.signerIdx, field_type: f.field_type, page: f.page, x: f.x, y: f.y, w: f.w, h: f.h, required: f.required, label: f.label, value: f.value }; })
   };
 }
 
@@ -11553,7 +11573,7 @@ function sigSignShellHtml() {
     '</div>' +
     (r.message ? ('<div class="card" style="margin-bottom:12px"><div class="card-body" style="font-size:14px">' + escHtml(r.message) + '</div></div>') : '') +
     '<label style="display:flex;align-items:flex-start;gap:8px;font-size:13px;background:var(--bg-card);border:1px solid var(--border);border-radius:8px;padding:11px 13px;margin-bottom:14px">' +
-      '<input type="checkbox" id="sig-consent"' + (sigSign.consent ? ' checked' : '') + ' onchange="sigSign.consent=this.checked" style="margin-top:2px" />' +
+      '<input type="checkbox" id="sig-consent"' + (sigSign.consent ? ' checked' : '') + ' onchange="sigSign.consent=this.checked" style="width:16px;height:16px;flex:0 0 auto;margin-top:2px" />' +
       '<span>I agree to sign this document electronically, and that my electronic signature is legally binding.</span></label>' +
     '<div id="sig-sign-pages"><div class="loading">Rendering document...</div></div>' +
     '<div style="position:sticky;bottom:0;background:var(--bg);border-top:1px solid var(--border);padding:12px 0;margin-top:14px;display:flex;gap:8px;justify-content:flex-end">' +
@@ -11602,7 +11622,8 @@ function sigSignPaintFields() {
       else { d.innerHTML = '<span style="font-size:11px;color:#c2520a;font-weight:700">' + (f.field_type === 'initials' ? 'Initial' : 'Sign') + '</span>'; }
       d.onclick = (function (ix) { return function () { sigSignPad(ix); }; })(idx);
     } else if (f.field_type === 'checkbox') {
-      var cb = document.createElement('input'); cb.type = 'checkbox'; cb.checked = (f.value === 'true'); cb.style.width = '100%'; cb.style.height = '100%'; cb.style.cursor = 'pointer';
+      d.style.display = 'flex'; d.style.alignItems = 'center'; d.style.justifyContent = 'center';
+      var cb = document.createElement('input'); cb.type = 'checkbox'; cb.checked = (f.value === 'true'); cb.style.cssText = 'width:20px;height:20px;cursor:pointer;flex:0 0 auto';
       cb.onchange = (function (ix) { return function (e) { sigSign.fields[ix].value = e.target.checked ? 'true' : 'false'; }; })(idx);
       d.appendChild(cb);
     } else {

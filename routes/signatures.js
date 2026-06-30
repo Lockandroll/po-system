@@ -425,10 +425,14 @@ router.put('/:id/layout', requireAuth, requirePermission('manage_signatures'), a
       if (y + h > 1) h = 1 - y;
       var si = (f.signer == null) ? null : parseInt(f.signer, 10);
       if (si != null && (!Number.isInteger(si) || si < 0 || si >= signers.length)) si = null;
+      var fval = null;
+      if (f.field_type === 'checkbox') fval = (f.value === 'true' || f.value === true) ? 'true' : null;
+      else if (f.field_type !== 'signature' && f.field_type !== 'initials') fval = (f.value != null && String(f.value).trim() !== '') ? String(f.value).slice(0, 2000) : null;
       fields.push({ signer: si, field_type: f.field_type, page: page, x: x, y: y, w: w, h: h,
         required: (f.required === false) ? false : true,
         label: f.label ? String(f.label).slice(0, 255) : null,
-        font_size: (f.font_size != null && isFinite(f.font_size)) ? Number(f.font_size) : null });
+        font_size: (f.font_size != null && isFinite(f.font_size)) ? Number(f.font_size) : null,
+        value: fval });
     }
 
     const client = await pool.connect();
@@ -449,9 +453,9 @@ router.put('/:id/layout', requireAuth, requirePermission('manage_signatures'), a
         var fl = fields[b];
         var sid = (fl.signer != null) ? ids[fl.signer] : null;
         await client.query(
-          'INSERT INTO signature_fields (request_id, signer_id, field_type, page, x, y, w, h, required, label, ai_detected, font_size) ' +
-          'VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,false,$11)',
-          [id, sid, fl.field_type, fl.page, fl.x, fl.y, fl.w, fl.h, fl.required, fl.label, fl.font_size]
+          'INSERT INTO signature_fields (request_id, signer_id, field_type, page, x, y, w, h, required, label, ai_detected, font_size, value) ' +
+          'VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,false,$11,$12)',
+          [id, sid, fl.field_type, fl.page, fl.x, fl.y, fl.w, fl.h, fl.required, fl.label, fl.font_size, fl.value]
         );
       }
       await client.query('UPDATE signature_requests SET updated_at = NOW() WHERE id = $1', [id]);
