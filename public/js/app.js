@@ -2603,6 +2603,21 @@ function updateRecurHint(){
     hint.textContent='Sent and due the same day, every day.';
   } else hint.textContent='';
 }
+function varLegendHtml(note){
+  var rows=[
+    ['{today}','today, e.g. Jun 29'],
+    ['{tomorrow}','tomorrow'],
+    ['{yesterday}','yesterday'],
+    ['{prev_week}','previous week, Monday to Sunday (Jun 22 \u2013 Jun 28)'],
+    ['{this_week}','this week, Monday to Sunday'],
+    ['{next_month}','name of next month, e.g. July']
+  ];
+  var items=rows.map(function(r){ return '<div style="display:flex;gap:8px;margin:3px 0;align-items:baseline"><code style="background:var(--bg-color);border:1px solid var(--border);border-radius:4px;padding:1px 6px;font-size:12px;color:var(--primary);white-space:nowrap">'+r[0]+'</code><span style="font-size:12px;color:var(--text-muted-color)">'+r[1]+'</span></div>'; }).join('');
+  return '<div style="margin-top:10px;padding:10px 12px;border:1px solid var(--border);border-radius:8px;background:var(--bg-elevated)">'+
+    '<div style="font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:0.05em;color:var(--text-muted-color);margin-bottom:6px">Dynamic variables</div>'+
+    '<div style="font-size:12px;color:var(--text-muted-color);margin-bottom:8px">'+(note||'Type any of these in the text. Nova fills in the real dates each time it is sent.')+'</div>'+
+    items+'</div>';
+}
 async function renderTaskForm(el, id){
   if (!can('view_tasks')){ el.innerHTML='<div class="alert alert-error">Access denied.</div>'; return; }
   _taskPendingFiles = [];
@@ -2652,7 +2667,7 @@ async function renderTaskForm(el, id){
         '<div id="tk-due-wrap" class="form-group" style="flex:1;min-width:160px"><label>Due date</label><input type="date" id="tk-due" value="'+escHtml(dueVal)+'" /></div>' +
         '<div class="form-group" style="flex:1;min-width:160px"><label>Repeat</label><select id="tk-recur" onchange="taskRecurChanged()">'+recOpts+'</select></div>' +
       '</div>' +
-      '<div id="tk-recur-day-wrap" class="form-group" style="display:none"><label id="tk-recur-day-label" style="display:block;margin-bottom:6px">Schedule</label><div style="display:flex;gap:12px;flex-wrap:wrap"><div style="flex:1;min-width:150px"><div style="font-size:12px;color:var(--text-muted-color);margin-bottom:4px">Send on</div><select id="tk-recur-start" onchange="updateRecurHint()"></select></div><div style="flex:1;min-width:150px"><div style="font-size:12px;color:var(--text-muted-color);margin-bottom:4px">Due on</div><select id="tk-recur-due" onchange="updateRecurHint()"></select></div></div><div id="tk-recur-hint" style="font-size:12px;color:var(--text-muted-color);margin-top:6px"></div></div>' +
+      '<div id="tk-recur-day-wrap" class="form-group" style="display:none"><label id="tk-recur-day-label" style="display:block;margin-bottom:6px">Schedule</label><div style="display:flex;gap:12px;flex-wrap:wrap"><div style="flex:1;min-width:150px"><div style="font-size:12px;color:var(--text-muted-color);margin-bottom:4px">Send on</div><select id="tk-recur-start" onchange="updateRecurHint()"></select></div><div style="flex:1;min-width:150px"><div style="font-size:12px;color:var(--text-muted-color);margin-bottom:4px">Due on</div><select id="tk-recur-due" onchange="updateRecurHint()"></select></div></div><div id="tk-recur-hint" style="font-size:12px;color:var(--text-muted-color);margin-top:6px"></div>' + varLegendHtml('Type these in the Title or Description above. Nova fills in the real dates each time it sends this task.') + '</div>' +
       attachHtml +
       (id?'':'<div class="form-group"><label>Subtasks <span style="color:var(--text-muted-color);font-weight:400">(one per line)</span></label><textarea id="tk-subs" rows="3" placeholder="Optional checklist, one item per line"></textarea></div>') +
       '<div style="display:flex;gap:8px;margin-top:8px"><button class="btn btn-primary" onclick="taskSave('+(id||'null')+')">'+(id?'Save Changes':'Create Task')+'</button></div>' +
@@ -4418,7 +4433,7 @@ async function renderEditQuote(el, id) {
     '</div></div>' +
     '<div class="card mb-4"><div class="card-header"><span class="card-title">Important Information</span></div><div class="card-body">' +
       '<p class="text-muted" style="margin-bottom:12px;font-size:13px">Printed at the bottom of the quote. Edit as needed.</p>' +
-      '<textarea id="qt-important-info" style="min-height:120px">' + escHtml(importantInfoVal) + '</textarea>' +
+      '<textarea id="qt-important-info" style="min-height:120px">' + escHtml(importantInfoVal) + '</textarea>' + varLegendHtml('These dynamic date variables auto-fill on recurring tasks and scheduled messages. You can reference them here too.') +
     '</div></div>' +
     '<div class="card mb-4"><div class="card-header"><span class="card-title">Photos</span></div><div class="card-body">' +
       '<p class="text-muted" style="margin-bottom:12px;font-size:13px">Attach reference photos (job site, hardware, key blanks, etc.) to help with this quote. Photos are saved when you save the quote.</p>' +

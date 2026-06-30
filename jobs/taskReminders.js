@@ -3,6 +3,7 @@ const { pool } = require('../db');
 const { sendSms } = require('../utils/sms');
 const { sendEmail, emailTemplate } = require('../utils/email');
 const push = require('../utils/push');
+const { resolveDateTokens } = require('../utils/messageTokens');
 
 const TZ = 'America/New_York';
 const APP = (process.env.APP_URL || '').replace(/\/$/, '');
@@ -230,7 +231,7 @@ async function spawnFromTemplate(templateId) {
   const ins = await pool.query(
     'INSERT INTO tasks (title, description, status, priority, assigned_to, created_by, due_date, recurrence, recurrence_day, recurrence_start_day, is_template, series_id) ' +
     "VALUES ($1,$2,'todo',$3,$4,$5,$6,NULL,NULL,NULL,false,$7) RETURNING id",
-    [tpl.title, tpl.description, tpl.priority, tpl.assigned_to, tpl.created_by, dueStr, tpl.id]
+    [resolveDateTokens(tpl.title, recurYmd(start)), resolveDateTokens(tpl.description, recurYmd(start)), tpl.priority, tpl.assigned_to, tpl.created_by, dueStr, tpl.id]
   );
   const newId = ins.rows[0].id;
   const subs = (await pool.query('SELECT title, position FROM task_subtasks WHERE task_id = $1 ORDER BY position, id', [tpl.id])).rows;

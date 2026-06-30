@@ -2,11 +2,12 @@ const cron = require('node-cron');
 const { pool } = require('../db');
 const { sendSms } = require('../utils/sms');
 const { sendEmail, emailTemplate } = require('../utils/email');
+const { resolveDateTokens } = require('../utils/messageTokens');
 
 const TZ = 'America/New_York';
 
 function firstName(name) { return String(name || '').trim().split(/\s+/)[0] || 'there'; }
-function applyTokens(text, user) { return String(text || '').replace(/\{first_name\}/g, firstName(user && user.name)); }
+function applyTokens(text, user) { return resolveDateTokens(String(text || '').replace(/\{first_name\}/g, firstName(user && user.name))); }
 
 // Current day-of-week (0=Sun..6=Sat), HH:MM and YYYY-MM-DD in America/New_York.
 function nowParts() {
