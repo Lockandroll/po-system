@@ -2,6 +2,8 @@ const express = require('express');
 const { pool } = require('../db');
 const { requireAuth, requirePermission } = require('../middleware/auth');
 const { logActivity } = require('../utils/feedbackIntake');
+const r2 = require('../utils/r2');
+const crypto = require('crypto');
 
 const router = express.Router();
 
@@ -79,7 +81,8 @@ router.get('/:id', requireAuth, requirePermission('view_feedback'), async functi
       return res.status(403).json({ error: 'Not in your cities' });
     }
     const acts = await pool.query('SELECT * FROM customer_feedback_activity WHERE feedback_id = $1 ORDER BY created_at DESC', [id]);
-    res.json({ feedback: r.rows[0], activity: acts.rows });
+    const atts = await pool.query("SELECT id, file_name, mime_type, size_bytes, uploaded_by_name, created_at FROM customer_feedback_attachments WHERE feedback_id = $1 AND status = 'ready' ORDER BY created_at DESC", [id]);
+    res.json({ feedback: r.rows[0], activity: acts.rows, attachments: atts.rows, storageReady: r2.configured() });
   } catch (e) {
     console.error('GET /feedback/:id:', e.message);
     res.status(500).json({ error: 'Failed to load record' });
@@ -175,6 +178,73 @@ router.post('/:id/notes', requireAuth, requirePermission('manage_feedback'), asy
     console.error('POST /feedback/:id/notes:', e.message);
     res.status(500).json({ error: 'Failed to add note' });
   }
+});
+
+
+// ---- Attachments (bytes live in Cloudflare R2; only metadata lives here) ----
+function sanitizeName(s) {
+  return String(s || 'file').replace(/[^a-zA-Z0-9._-]+/g, '_').slice(0, 200) || 'file';
+}
+
+// Step 1: presigned upload URL (browser uploads bytes straight to R2).
+router.post('/:id/attachments/upload-url', requireAuth, requirePermission('manage_feedback'), async function (req, res) {
+  try {
+    if (!r2.configured()) return res.status(503).json({ error: 'File storage is not configured. Add the R2_* environment variables in Railway.' });
+    const id = parseInt(req.params.id, 10);
+    const exists = await pool.query('SELECT id FROM customer_feedback WHERE id = $1', [id]);
+    if (!exists.rows.length) return res.status(404).json({ error: 'Not found' });
+    const fileName = (req.body && req.body.file_name || '').trim();
+    if (!fileName) return res.status(400).json({ error: 'File name is required' });
+    const mime = (req.body && req.body.mime_type || 'application/octet-stream').slice(0, 255);
+    const key = 'feedback/' + id + '/' + crypto.randomUUID() + '/' + sanitizeName(fileName);
+    const ins = await pool.query(
+      "INSERT INTO customer_feedback_attachments (feedback_id, r2_key, file_name, mime_type, uploaded_by, uploaded_by_name, status) VALUES ($1,$2,$3,$4,$5,$6,'pending') RETURNING id",
+      [id, key, fileName.slice(0, 255), mime, req.user.id, req.user.name]
+    );
+    const uploadUrl = await r2.presignUpload(key, mime);
+    res.json({ attachment_id: ins.rows[0].id, uploadUrl: uploadUrl });
+  } catch (e) { console.error('feedback upload-url:', e.message); res.status(500).json({ error: 'Failed to start upload' }); }
+});
+
+// Step 2: confirm upload finished; mark ready + record size + timeline note.
+router.post('/:id/attachments/:attId/confirm', requireAuth, requirePermission('manage_feedback'), async function (req, res) {
+  try {
+    const id = parseInt(req.params.id, 10);
+    const attId = parseInt(req.params.attId, 10);
+    const ar = await pool.query('SELECT id, file_name FROM customer_feedback_attachments WHERE id = $1 AND feedback_id = $2', [attId, id]);
+    if (!ar.rows.length) return res.status(404).json({ error: 'Attachment not found' });
+    const size = Math.max(0, parseInt(req.body && req.body.size_bytes, 10) || 0);
+    await pool.query("UPDATE customer_feedback_attachments SET size_bytes = $1, status = 'ready' WHERE id = $2", [size, attId]);
+    await logActivity(id, { id: req.user.id, name: req.user.name }, 'event', 'attached a file: ' + ar.rows[0].file_name + '.', null);
+    res.json({ success: true });
+  } catch (e) { console.error('feedback att confirm:', e.message); res.status(500).json({ error: 'Failed to confirm upload' }); }
+});
+
+// Presigned download / preview URL.
+router.get('/:id/attachments/:attId/url', requireAuth, requirePermission('view_feedback'), async function (req, res) {
+  try {
+    if (!r2.configured()) return res.status(503).json({ error: 'File storage is not configured.' });
+    const id = parseInt(req.params.id, 10);
+    const attId = parseInt(req.params.attId, 10);
+    const ar = await pool.query("SELECT r2_key, file_name FROM customer_feedback_attachments WHERE id = $1 AND feedback_id = $2 AND status = 'ready'", [attId, id]);
+    if (!ar.rows.length) return res.status(404).json({ error: 'Attachment not found' });
+    const url = await r2.presignDownload(ar.rows[0].r2_key, ar.rows[0].file_name, req.query.inline === '1');
+    res.json({ url: url });
+  } catch (e) { console.error('feedback att url:', e.message); res.status(500).json({ error: 'Failed to generate link' }); }
+});
+
+// Delete an attachment (from R2 and the table).
+router.delete('/:id/attachments/:attId', requireAuth, requirePermission('manage_feedback'), async function (req, res) {
+  try {
+    const id = parseInt(req.params.id, 10);
+    const attId = parseInt(req.params.attId, 10);
+    const ar = await pool.query('SELECT r2_key, file_name FROM customer_feedback_attachments WHERE id = $1 AND feedback_id = $2', [attId, id]);
+    if (!ar.rows.length) return res.status(404).json({ error: 'Attachment not found' });
+    try { await r2.deleteObject(ar.rows[0].r2_key); } catch (e) { console.error('R2 delete failed:', e.message); }
+    await pool.query('DELETE FROM customer_feedback_attachments WHERE id = $1', [attId]);
+    await logActivity(id, { id: req.user.id, name: req.user.name }, 'event', 'removed an attachment: ' + ar.rows[0].file_name + '.', null);
+    res.json({ success: true });
+  } catch (e) { console.error('feedback att delete:', e.message); res.status(500).json({ error: 'Failed to delete attachment' }); }
 });
 
 module.exports = router;

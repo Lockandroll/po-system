@@ -3479,6 +3479,19 @@ async function renderFeedbackDetail(el, id){
     '<div style="font-size:12px;color:var(--text-muted-color);margin-bottom:8px">Incident</div>' +
     '<div style="font-size:14px;line-height:1.6;white-space:pre-wrap">' + escHtml(f.incident_text || '—') + '</div>' + aiLine + '</div>';
 
+  var atts = data.attachments || [];
+  var attRows = atts.map(function (a) {
+    var sz = a.size_bytes ? (a.size_bytes < 1048576 ? Math.round(a.size_bytes / 1024) + ' KB' : (a.size_bytes / 1048576).toFixed(1) + ' MB') : '';
+    return '<div style="display:flex;align-items:center;gap:8px;padding:7px 0;border-bottom:1px solid var(--border);font-size:13px">' +
+      '<span style="flex:1;cursor:pointer;color:var(--text-color);text-decoration:underline" onclick="feedbackOpenAttachment(' + f.id + ',' + a.id + ')">' + escHtml(a.file_name) + '</span>' +
+      '<span style="color:var(--text-muted-color);font-size:11px;white-space:nowrap">' + sz + '</span>' +
+      (canEdit ? '<span style="cursor:pointer;color:#e24b4a;font-size:12px;white-space:nowrap" onclick="feedbackDeleteAttachment(' + f.id + ',' + a.id + ')">Remove</span>' : '') +
+      '</div>';
+  }).join('') || '<div style="color:var(--text-muted-color);font-size:13px">No attachments yet.</div>';
+  var attUpload = (canEdit && data.storageReady) ?
+    '<label style="display:inline-block;margin-top:10px;cursor:pointer;font-size:13px;color:var(--primary)"><input type="file" multiple style="display:none" onchange="feedbackUploadAttachment(' + f.id + ', this)">+ Upload files</label>' :
+    (!data.storageReady ? '<div style="color:var(--text-muted-color);font-size:12px;margin-top:8px">File storage isn&#39;t configured yet (R2_* env vars).</div>' : '');
+  var attCard = '<div style="' + cardS + '"><div style="font-size:12px;color:var(--text-muted-color);margin-bottom:8px">Attachments</div>' + attRows + attUpload + '</div>';
   var taskLink = f.task_id ? '<span style="font-size:12px;color:var(--primary);cursor:pointer" onclick="feedbackOpenTask(' + f.task_id + ')">Linked task #' + f.task_id + '</span>' : '<span style="font-size:12px;color:var(--text-muted-color)">No linked task</span>';
   var handleCard = '<div style="' + cardS + '">' +
     '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px"><div style="font-size:12px;color:var(--text-muted-color)">Handling</div>' + taskLink + '</div>' +
@@ -3520,7 +3533,7 @@ async function renderFeedbackDetail(el, id){
     '<div style="margin-bottom:12px"><button class="btn btn-ghost btn-sm" onclick="navigate(\'feedback\')">&larr; Back to feedback</button></div>' +
     '<div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:14px"><div class="page-title" style="margin:0">' + escHtml(f.customer_name || 'Unknown') + '</div>' + catChip + sevChip + reviewFlag + '</div>' +
     '<div style="display:flex;gap:16px;flex-wrap:wrap;align-items:flex-start">' +
-      '<div style="flex:2;min-width:340px">' + custCard + incCard + handleCard + '</div>' +
+      '<div style="flex:2;min-width:340px">' + custCard + incCard + attCard + handleCard + '</div>' +
       '<div style="flex:1;min-width:260px">' + actCard + '</div>' +
     '</div>';
 }
@@ -3565,6 +3578,31 @@ async function feedbackAddNote(id){
   catch (err) { showToast(err.message, 'error'); }
 }
 
+async function feedbackUploadAttachment(id, input) {
+  var files = input && input.files; if (!files || !files.length) return;
+  showToast('Uploading…', 'info');
+  for (var i = 0; i < files.length; i++) {
+    var file = files[i];
+    try {
+      var mime = file.type || 'application/octet-stream';
+      var pre = await api('POST', '/feedback/' + id + '/attachments/upload-url', { file_name: file.name, mime_type: mime });
+      var put = await fetch(pre.uploadUrl, { method: 'PUT', headers: { 'Content-Type': mime }, body: file });
+      if (!put.ok) throw new Error('Upload failed (' + put.status + ')');
+      await api('POST', '/feedback/' + id + '/attachments/' + pre.attachment_id + '/confirm', { size_bytes: file.size });
+    } catch (e) { showToast((e && e.message) || 'Upload failed', 'error'); }
+  }
+  input.value = '';
+  navigate('feedback-detail', id);
+}
+async function feedbackOpenAttachment(id, attId) {
+  try { var r = await api('GET', '/feedback/' + id + '/attachments/' + attId + '/url?inline=1'); if (r && r.url) window.open(r.url, '_blank', 'noopener'); }
+  catch (e) { showToast(e.message, 'error'); }
+}
+async function feedbackDeleteAttachment(id, attId) {
+  if (!await novaConfirm('Remove this attachment?')) return;
+  try { await api('DELETE', '/feedback/' + id + '/attachments/' + attId); showToast('Removed', 'success'); navigate('feedback-detail', id); }
+  catch (e) { showToast(e.message, 'error'); }
+}
 async function renderReviews(el) {
   var iS = 'padding:8px 10px;background:var(--surface-color);border:1px solid rgba(249,115,22,0.35);border-radius:6px;color:var(--text-color);font-size:13px;outline:none';
   var lbl = 'display:block;font-size:11px;color:var(--text-muted-color);margin-bottom:4px';
@@ -9923,7 +9961,9 @@ function schedRenderGrid(){
       return '<td data-sched-uid="'+u.id+'" data-sched-date="'+d+'" onclick="schedNewShift('+u.id+",'"+d+"')\" ondragover=\"schedDragOver(event)\" ondragenter=\"schedDragEnter(event)\" ondragleave=\"schedDragLeave(event)\" ondrop=\"schedDrop(event,"+u.id+",'"+d+"')\" style=\"vertical-align:top;border:1px solid var(--border,#2a2a2a);min-height:54px;cursor:pointer;padding:0 0 4px\">"+blocks+'</td>';
     }).join('');
     var hrs=days.reduce(function(t,d){ return t+(byCell[u.id+'|'+d]||[]).reduce(function(x,s){return x+schedShiftHrs(s);},0); },0);
-    var label=escHtml(u.name)+' <span style="color:var(--text-muted-color,#999);font-weight:400;font-size:11px">'+(hrs?hrs.toFixed(1)+'h':'')+'</span>';
+    var _city=schedUserPrimaryCity(u);
+    var label=escHtml(u.name)+' <span style="color:var(--text-muted-color,#999);font-weight:400;font-size:11px">'+(hrs?hrs.toFixed(1)+'h':'')+'</span>'+
+      (_city?'<div style="color:var(--text-muted-color,#999);font-weight:400;font-size:10.5px;margin-top:1px">'+escHtml(_city)+'</div>':'');
     return '<tr><td style="position:sticky;left:0;background:var(--card-bg,#161616);padding:8px 12px;font-weight:600;font-size:13px;border:1px solid var(--border,#2a2a2a);z-index:1">'+label+'</td>'+cells+'</tr>';
   }).join('');
   if(!_vis.length) rows='<tr><td colspan="8" style="padding:20px;text-align:center;color:var(--text-muted-color,#999)">No active employees.</td></tr>';
@@ -10200,6 +10240,8 @@ async function schedAddPosition(){ var n=(document.getElementById('sp-new').valu
 async function schedSavePosition(id,color,name){ var p=_schedPositions.filter(function(x){return x.id===id;})[0]; if(!p) return; try{ await api('PUT','/schedule/positions/'+id,{name:name!=null?name:p.name,color:color!=null?color:p.color,active:p.active!==false}); _schedPositions=await api('GET','/schedule/positions'); }catch(e){ novaAlert(e.message); } }
 async function schedDeletePosition(id){ if(!await novaConfirm('Delete this position?')) return; try{ await api('DELETE','/schedule/positions/'+id); _schedPositions=await api('GET','/schedule/positions'); schedManagePositions(); }catch(e){ novaAlert(e.message); } }
 
+function schedCityName(code){ var cc=String(code||'').trim(); for(var i=0;i<_schedCities.length;i++){ if((_schedCities[i].code||'').trim()===cc) return _schedCities[i].name||cc; } return cc; }
+function schedUserPrimaryCity(u){ var codes=(_schedEmpCities[u.id]||[]).slice(); if(!codes.length) return ''; var names=codes.map(function(c){return schedCityName(c);}); names.sort(function(a,b){return a.toLowerCase().localeCompare(b.toLowerCase());}); return names[0]; }
 function schedVisibleUsers(){
   return _schedUsers.filter(function(u){
     if(_schedRole){ if(_schedRole.split(',').indexOf(u.role)===-1) return false; }
@@ -10209,6 +10251,12 @@ function schedVisibleUsers(){
     if(_schedScope===null) return true;
     if(unassigned) return true;
     return codes.some(function(c){ return _schedScope.indexOf(c)!==-1; });
+  }).sort(function(a,b){
+    var ca=schedUserPrimaryCity(a), cb=schedUserPrimaryCity(b);
+    if(!ca&&cb) return 1; if(ca&&!cb) return -1;
+    var d=ca.toLowerCase().localeCompare(cb.toLowerCase());
+    if(d!==0) return d;
+    return String(a.name||'').toLowerCase().localeCompare(String(b.name||'').toLowerCase());
   });
 }
 function schedScopedCities(){

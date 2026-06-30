@@ -1174,6 +1174,22 @@ async function initDB() {
       'CREATE INDEX IF NOT EXISTS idx_feedback_followup ON customer_feedback(followup_at) WHERE followup_needed = true AND followup_sent_at IS NULL;' +
       'CREATE INDEX IF NOT EXISTS idx_feedback_act_fid ON customer_feedback_activity(feedback_id);'
     );
+    // Feedback attachments - metadata only; bytes live in Cloudflare R2 (like documents).
+    await client.query(
+      'CREATE TABLE IF NOT EXISTS customer_feedback_attachments (' +
+      '  id SERIAL PRIMARY KEY,' +
+      '  feedback_id INTEGER NOT NULL REFERENCES customer_feedback(id) ON DELETE CASCADE,' +
+      '  r2_key VARCHAR(512) UNIQUE NOT NULL,' +
+      '  file_name VARCHAR(255) NOT NULL,' +
+      '  mime_type VARCHAR(255),' +
+      '  size_bytes BIGINT DEFAULT 0,' +
+      "  status VARCHAR(20) NOT NULL DEFAULT 'pending'," +
+      '  uploaded_by INTEGER REFERENCES users(id),' +
+      '  uploaded_by_name VARCHAR(255),' +
+      '  created_at TIMESTAMPTZ DEFAULT NOW()' +
+      ');' +
+      'CREATE INDEX IF NOT EXISTS idx_feedback_att_fid ON customer_feedback_attachments(feedback_id);'
+    );
 
     console.log('Database initialized');
   } finally {
