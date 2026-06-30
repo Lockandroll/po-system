@@ -233,8 +233,10 @@ router.post('/:id/push-to-po', requireAuth, requirePermission('push_quote_po'), 
     const initials = getInitials(req.user.name);
     const city = String(quote.city_code).toUpperCase();
     const year = new Date().getFullYear();
-    const created = [];
+    let created = [];
 
+    for (var attempt = 0; attempt < 10; attempt++) {
+    created = [];
     const client = await pool.connect();
     try {
       await client.query('BEGIN');
@@ -261,13 +263,16 @@ router.post('/:id/push-to-po', requireAuth, requirePermission('push_quote_po'), 
         created.push({ id: po.id, po_number: po_number, vendor_name: vendor, total: total });
       }
       await client.query('COMMIT');
-    } catch (err) {
-      await client.query('ROLLBACK');
       client.release();
+      break;
+    } catch (err) {
+      await client.query('ROLLBACK').catch(function(){});
+      client.release();
+      if (err.code === '23505' && attempt < 9) continue;
       console.error(err);
       return res.status(500).json({ error: 'Failed to create PO(s): ' + err.message });
     }
-    client.release();
+    }
     for (let c = 0; c < created.length; c++) {
       try { await logAudit({ entity_type: 'po', entity_id: created[c].id, entity_number: created[c].po_number, action: 'created', user_id: req.user.id, user_name: req.user.name, details: { vendor: created[c].vendor_name, total: created[c].total, from_quote: quote.quote_number } }); } catch (e) {}
       try { await logAudit({ entity_type: 'po', entity_id: created[c].id, entity_number: created[c].po_number, action: 'submitted', user_id: req.user.id, user_name: req.user.name }); } catch (e) {}

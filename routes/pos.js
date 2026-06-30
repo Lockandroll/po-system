@@ -121,9 +121,10 @@ router.post('/', requireAuth, requirePermission('create_po'), async (req, res) =
   if (!line_items || line_items.length === 0) return res.status(400).json({ error: 'At least one line item is required' });
 
   const userInitials = getInitials(req.user.name);
-  const po_number = await generatePONumber(city_code.toUpperCase(), userInitials);
   const total_amount = computeTotal(line_items);
 
+  for (var attempt = 0; attempt < 10; attempt++) {
+  const po_number = await generatePONumber(city_code.toUpperCase(), userInitials);
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
@@ -140,13 +141,15 @@ router.post('/', requireAuth, requirePermission('create_po'), async (req, res) =
       );
     }
     await client.query('COMMIT');
-    await logAudit({ entity_type: 'po', entity_id: po.id, entity_number: po_number, action: 'created', user_id: req.user.id, user_name: req.user.name, details: { vendor: vendor_name, total: total_amount } });
-    res.status(201).json(po);
-  } catch (err) {
-    await client.query('ROLLBACK');
-    throw err;
-  } finally {
     client.release();
+    await logAudit({ entity_type: 'po', entity_id: po.id, entity_number: po_number, action: 'created', user_id: req.user.id, user_name: req.user.name, details: { vendor: vendor_name, total: total_amount } });
+    return res.status(201).json(po);
+  } catch (err) {
+    await client.query('ROLLBACK').catch(function () {});
+    client.release();
+    if (err.code === '23505' && attempt < 9) continue;
+    throw err;
+  }
   }
 });
 

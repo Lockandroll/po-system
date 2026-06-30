@@ -103,7 +103,12 @@ router.post('/', requireAuth, requirePermission('create_deposit'), async functio
     let receipts = Array.isArray(req.body.receipts) ? req.body.receipts : [];
     if (!receipts.length && receipt_image) receipts = [{ image: receipt_image, filename: receipt_filename || null }];
     const expenses = Array.isArray(req.body.expenses) ? req.body.expenses : [];
+    let dep = null;
+    let expenseTotal = 0;
+    for (var attempt = 0; attempt < 10; attempt++) {
+    expenseTotal = 0;
     const deposit_number = await generateDepositNumber();
+    try {
     await client.query('BEGIN');
     const { rows } = await client.query(
       'INSERT INTO deposits (deposit_number, user_id, user_name, city_code, amount, deposit_date, period_start, period_end, notes, pulsar_owed) ' +
@@ -121,7 +126,7 @@ router.post('/', requireAuth, requirePermission('create_deposit'), async functio
         owed
       ]
     );
-    const dep = rows[0];
+    dep = rows[0];
     for (let i = 0; i < receipts.length; i++) {
       const rc = receipts[i];
       if (rc && rc.image) {
@@ -131,7 +136,6 @@ router.post('/', requireAuth, requirePermission('create_deposit'), async functio
         );
       }
     }
-    let expenseTotal = 0;
     for (let j = 0; j < expenses.length; j++) {
       const ex = expenses[j];
       if (!ex) continue;
@@ -146,6 +150,13 @@ router.post('/', requireAuth, requirePermission('create_deposit'), async functio
       );
     }
     await client.query('COMMIT');
+    break;
+    } catch (err) {
+      try { await client.query('ROLLBACK'); } catch (e) {}
+      if (err.code === '23505' && attempt < 9) continue;
+      throw err;
+    }
+    }
     await logAudit({
       entity_type: 'deposit',
       entity_id: dep.id,

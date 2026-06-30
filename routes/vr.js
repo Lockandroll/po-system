@@ -76,10 +76,11 @@ router.post('/', requireAuth, requirePermission('create_vr'), async function(req
   const { vehicle, vin_last6, vehicle_id, assigned_user_id, shop_name, city_code, notes, line_items } = req.body;
   if (!vehicle) return res.status(400).json({ error: 'Vehicle is required' });
   const initials = getInitials(req.user.name);
-  const vr_number = await generateVRNumber(initials);
   const total = (line_items || []).reduce(function(sum, item) {
     return sum + ((parseFloat(item.quantity) || 0) * (parseFloat(item.unit_price) || 0));
   }, 0);
+  for (var attempt = 0; attempt < 10; attempt++) {
+  const vr_number = await generateVRNumber(initials);
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
@@ -95,14 +96,16 @@ router.post('/', requireAuth, requirePermission('create_vr'), async function(req
       );
     }
     await client.query('COMMIT');
-    await logAudit({ entity_type: 'vr', entity_id: vr.id, entity_number: vr_number, action: 'created', user_id: req.user.id, user_name: req.user.name, details: { vehicle, total } });
-    res.status(201).json(vr);
-  } catch (err) {
-    await client.query('ROLLBACK');
-    console.error(err);
-    res.status(500).json({ error: 'Failed to create vehicle repair' });
-  } finally {
     client.release();
+    await logAudit({ entity_type: 'vr', entity_id: vr.id, entity_number: vr_number, action: 'created', user_id: req.user.id, user_name: req.user.name, details: { vehicle, total } });
+    return res.status(201).json(vr);
+  } catch (err) {
+    await client.query('ROLLBACK').catch(function () {});
+    client.release();
+    if (err.code === '23505' && attempt < 9) continue;
+    console.error(err);
+    return res.status(500).json({ error: 'Failed to create vehicle repair' });
+  }
   }
 });
 
