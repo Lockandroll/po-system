@@ -2,7 +2,7 @@
 // public/sw.js (the only thing bumped each deploy) — the badge asks the active
 // service worker for it at runtime. This value is just the fallback shown when no
 // service worker is available (e.g. very first visit before it installs).
-var APP_VERSION = 'v43';
+var APP_VERSION = 'v44';
 var _resolvedAppVersion = null;
 
 // Ask the active service worker for its CACHE_VERSION (without the 'nova-' prefix).
@@ -399,6 +399,8 @@ async function pushToggle(){
 }
 async function render() {
   const app = document.getElementById('app');
+  var _signTok = sigGetUrlToken();
+  if (_signTok) { await renderSignPage(app, _signTok); return; }
   if (!state.token || !state.user) {
     app.className = 'no-sidebar';
     var resetToken = new URLSearchParams(window.location.search).get('reset');
@@ -11143,7 +11145,7 @@ async function sigCreateUpload() {
 // ----- Editor -----
 function sigEditorLoad(data) {
   sigEd.signers = (data.signers || []).map(function (s, i) {
-    return { id: s.id, name: s.name || '', email: s.email || '', phone: s.phone || '', role_label: s.role_label || '', _color: SIG_COLORS[i % SIG_COLORS.length] };
+    return { id: s.id, name: s.name || '', email: s.email || '', phone: s.phone || '', role_label: s.role_label || '', _status: s.status || null, _color: SIG_COLORS[i % SIG_COLORS.length] };
   });
   var idToIdx = {};
   sigEd.signers.forEach(function (s, i) { if (s.id != null) idToIdx[s.id] = i; });
@@ -11172,9 +11174,14 @@ async function renderSignatureEditor(el, id) {
       '<div class="page-title" style="margin:0">' + escHtml(data.request.title || 'Untitled') + ' ' + sigStatusBadge(data.request.status) + '</div>' +
       '<div style="white-space:nowrap">' +
         '<button class="btn btn-ghost btn-sm" onclick="navigate(\'signatures\')">&larr; Back</button> ' +
-        (sigEd.readOnly ? '' :
+        (sigEd.readOnly ?
+          ((['sent','partially_signed'].indexOf(sigEd.status) !== -1) ?
+            '<button class="btn btn-secondary btn-sm" onclick="sigRemind(' + id + ')">Send reminder</button> ' +
+            '<button class="btn btn-ghost btn-sm" onclick="sigVoidRequest(' + id + ')">Void</button>' : '')
+          :
           '<button class="btn btn-secondary btn-sm" id="sig-detect-btn" onclick="sigRunDetect()">&#10024; Auto-detect fields</button> ' +
-          '<button class="btn btn-primary btn-sm" id="sig-save-btn" onclick="sigSaveLayout(true)">Save</button>') +
+          '<button class="btn btn-primary btn-sm" id="sig-save-btn" onclick="sigSaveLayout(true)">Save</button> ' +
+          '<button class="btn btn-primary btn-sm" onclick="sigSendRequest(' + id + ')">Send</button>') +
       '</div>' +
     '</div>' +
     '<div class="page-subtitle">' + escHtml(data.request.request_number) +
@@ -11221,7 +11228,7 @@ function sigRenderSigners() {
     html += '<div class="sig-signer-row' + (sigEd.activeSigner === i ? ' active' : '') + '">' +
       '<span class="sig-swatch" style="background:' + s._color + '"></span>' +
       (ro ?
-        '<div style="flex:1"><div style="font-weight:600">' + escHtml(s.name) + '</div><div style="font-size:12px;color:var(--text-muted-color)">' + escHtml(s.email || '') + (s.role_label ? (' &middot; ' + escHtml(s.role_label)) : '') + '</div></div>'
+        '<div style="flex:1"><div style="font-weight:600">' + escHtml(s.name) + '</div><div style="font-size:12px;color:var(--text-muted-color)">' + escHtml(s.email || '') + (s.role_label ? (' &middot; ' + escHtml(s.role_label)) : '') + (s._status ? (' &middot; ' + escHtml(s._status)) : '') + '</div></div>'
         :
         '<div style="flex:1;min-width:150px;display:flex;flex-direction:column;gap:4px">' +
           '<input class="input" style="width:100%" placeholder="Name" value="' + escHtml(s.name) + '" oninput="sigUpdateSigner(' + i + ',\'name\',this.value)" />' +
@@ -11466,6 +11473,218 @@ async function sigRunDetect() {
   finally { if (btn) { btn.disabled = false; btn.innerHTML = '&#10024; Auto-detect fields'; } }
 }
 /* =================== end Signatures module =================== */
+
+/* ===================== Signatures: send actions + public signing ===================== */
+async function sigSendRequest(id) {
+  if (!sigEd) return;
+  var saved = await sigSaveLayout(false);
+  if (saved === null) return;
+  if (!sigEd.signers.length) { novaAlert('Add at least one signer first.'); return; }
+  if (!sigEd.fields.length) { novaAlert('Add at least one field first.'); return; }
+  var ok = await novaConfirm('Send this document to the signers now? Once sent it can no longer be edited.');
+  if (!ok) return;
+  try { await api('POST', '/signatures/' + id + '/send', {}); showToast('Sent to signers', 'success'); navigate('signatures'); }
+  catch (e) { novaAlert(e.message); }
+}
+async function sigRemind(id) {
+  try { var r = await api('POST', '/signatures/' + id + '/remind', {}); showToast('Reminded ' + (r.reminded || 0) + ' signer(s)', 'success'); }
+  catch (e) { novaAlert(e.message); }
+}
+async function sigVoidRequest(id) {
+  var ok = await novaConfirm('Void this request? Signers will no longer be able to sign.');
+  if (!ok) return;
+  try { await api('POST', '/signatures/' + id + '/void', {}); showToast('Voided', 'success'); navigate('signatures'); }
+  catch (e) { novaAlert(e.message); }
+}
+
+// ----- Public signing page (no login) -----
+var sigSign = null;
+var _sigPad = null;
+
+function sigGetUrlToken() {
+  try {
+    var m = (location.pathname || '').match(/^\/sign\/([A-Za-z0-9]+)/);
+    if (m) return m[1];
+    return new URLSearchParams(location.search).get('sign') || null;
+  } catch (e) { return null; }
+}
+
+function sigSignDoneHtml(msg) {
+  return '<div style="max-width:560px;margin:60px auto;padding:0 16px;text-align:center">' +
+    '<div class="card"><div class="card-body">' +
+    '<div style="font-size:42px;line-height:1;margin-bottom:12px;color:var(--primary)">&#10003;</div>' +
+    '<div style="font-size:16px">' + escHtml(msg) + '</div>' +
+    '</div></div></div>';
+}
+
+async function renderSignPage(app, token) {
+  sigEnsureStyles();
+  app.className = 'no-sidebar';
+  app.innerHTML = '<div class="loading" style="padding:48px">Loading document...</div>';
+  var data;
+  try {
+    var r = await fetch('/api/sign/' + encodeURIComponent(token));
+    data = await r.json();
+    if (!r.ok) throw new Error(data.error || 'This signing link is not valid.');
+  } catch (e) {
+    app.innerHTML = '<div style="max-width:560px;margin:60px auto;padding:0 16px"><div class="alert alert-error">' + escHtml(e.message) + '</div></div>';
+    return;
+  }
+  if (data.signer.status === 'signed') { app.innerHTML = sigSignDoneHtml('You have already signed this document. Thank you!'); return; }
+  if (data.signer.status === 'declined') { app.innerHTML = sigSignDoneHtml('You previously declined to sign this document.'); return; }
+  sigSign = {
+    token: token, request: data.request, signer: data.signer, pdfUrl: data.pdfUrl, pdfDoc: null, pagePx: [],
+    consent: !!data.signer.consent_accepted,
+    fields: (data.fields || []).map(function (f) {
+      return { id: f.id, field_type: f.field_type, page: f.page, x: +f.x, y: +f.y, w: +f.w, h: +f.h, required: f.required, label: f.label, value: f.value || '', image: null };
+    })
+  };
+  app.innerHTML = sigSignShellHtml();
+  sigSignRenderPages();
+}
+
+function sigSignShellHtml() {
+  var r = sigSign.request, s = sigSign.signer;
+  return '<div style="max-width:920px;margin:0 auto;padding:16px">' +
+    '<div style="display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap;margin-bottom:10px">' +
+      '<div><div style="font-size:18px;font-weight:700">' + escHtml(r.title || 'Document') + '</div>' +
+      '<div style="font-size:13px;color:var(--text-muted-color)">' + escHtml(r.request_number) + ' &middot; Signing as ' + escHtml(s.name || s.email || '') + '</div></div>' +
+      '<div style="font-size:13px;color:var(--text-muted-color)">Powered by Nova</div>' +
+    '</div>' +
+    (r.message ? ('<div class="card" style="margin-bottom:12px"><div class="card-body" style="font-size:14px">' + escHtml(r.message) + '</div></div>') : '') +
+    '<label style="display:flex;align-items:flex-start;gap:8px;font-size:13px;background:var(--bg-card);border:1px solid var(--border);border-radius:8px;padding:11px 13px;margin-bottom:14px">' +
+      '<input type="checkbox" id="sig-consent"' + (sigSign.consent ? ' checked' : '') + ' onchange="sigSign.consent=this.checked" style="margin-top:2px" />' +
+      '<span>I agree to sign this document electronically, and that my electronic signature is legally binding.</span></label>' +
+    '<div id="sig-sign-pages"><div class="loading">Rendering document...</div></div>' +
+    '<div style="position:sticky;bottom:0;background:var(--bg);border-top:1px solid var(--border);padding:12px 0;margin-top:14px;display:flex;gap:8px;justify-content:flex-end">' +
+      '<button class="btn btn-ghost" onclick="sigSignDecline()">Decline</button>' +
+      '<button class="btn btn-primary" id="sig-sign-submit" onclick="sigSignSubmit()">Finish &amp; submit</button>' +
+    '</div></div>';
+}
+
+async function sigSignRenderPages() {
+  var host = document.getElementById('sig-sign-pages'); if (!host) return;
+  try {
+    await loadPdfJs();
+    var resp = await fetch(sigSign.pdfUrl);
+    var buf = await resp.arrayBuffer();
+    sigSign.pdfDoc = await window.pdfjsLib.getDocument({ data: new Uint8Array(buf) }).promise;
+  } catch (e) { host.innerHTML = '<div class="alert alert-error">Could not load the document.</div>'; return; }
+  var pdf = sigSign.pdfDoc; host.innerHTML = ''; sigSign.pagePx = [];
+  var maxW = Math.min(host.clientWidth || 880, 900);
+  for (var i = 1; i <= pdf.numPages; i++) {
+    var page = await pdf.getPage(i);
+    var base = page.getViewport({ scale: 1 });
+    var vp = page.getViewport({ scale: maxW / base.width });
+    var wrap = document.createElement('div'); wrap.className = 'sig-page'; wrap.style.width = vp.width + 'px'; wrap.style.height = vp.height + 'px';
+    var canvas = document.createElement('canvas'); canvas.width = vp.width; canvas.height = vp.height; wrap.appendChild(canvas);
+    var overlay = document.createElement('div'); overlay.className = 'sig-overlay'; overlay.style.cursor = 'default'; overlay.setAttribute('data-page', (i - 1)); wrap.appendChild(overlay);
+    host.appendChild(wrap); sigSign.pagePx[i - 1] = { w: vp.width, h: vp.height };
+    await page.render({ canvasContext: canvas.getContext('2d'), viewport: vp }).promise;
+  }
+  sigSignPaintFields();
+}
+
+function sigSignPaintFields() {
+  var overlays = document.querySelectorAll('#sig-sign-pages .sig-overlay');
+  for (var k = 0; k < overlays.length; k++) overlays[k].innerHTML = '';
+  sigSign.fields.forEach(function (f, idx) {
+    var pg = sigSign.pagePx[f.page]; if (!pg) return;
+    var o = document.querySelector('#sig-sign-pages .sig-overlay[data-page="' + f.page + '"]'); if (!o) return;
+    var d = document.createElement('div');
+    d.style.position = 'absolute'; d.style.boxSizing = 'border-box';
+    d.style.left = (f.x * pg.w) + 'px'; d.style.top = (f.y * pg.h) + 'px';
+    d.style.width = (f.w * pg.w) + 'px'; d.style.height = (f.h * pg.h) + 'px';
+    if (f.field_type === 'signature' || f.field_type === 'initials') {
+      d.style.cursor = 'pointer'; d.style.border = '2px dashed #f97316'; d.style.background = 'rgba(249,115,22,.12)';
+      d.style.display = 'flex'; d.style.alignItems = 'center'; d.style.justifyContent = 'center';
+      if (f.image) { var im = document.createElement('img'); im.src = f.image; im.style.maxWidth = '100%'; im.style.maxHeight = '100%'; d.appendChild(im); }
+      else { d.innerHTML = '<span style="font-size:11px;color:#c2520a;font-weight:700">' + (f.field_type === 'initials' ? 'Initial' : 'Sign') + '</span>'; }
+      d.onclick = (function (ix) { return function () { sigSignPad(ix); }; })(idx);
+    } else if (f.field_type === 'checkbox') {
+      var cb = document.createElement('input'); cb.type = 'checkbox'; cb.checked = (f.value === 'true'); cb.style.width = '100%'; cb.style.height = '100%'; cb.style.cursor = 'pointer';
+      cb.onchange = (function (ix) { return function (e) { sigSign.fields[ix].value = e.target.checked ? 'true' : 'false'; }; })(idx);
+      d.appendChild(cb);
+    } else {
+      var inp = document.createElement('input'); inp.type = 'text'; inp.value = f.value || '';
+      inp.placeholder = f.label || (f.field_type === 'date' ? 'Date' : (f.field_type === 'name' ? 'Name' : 'Text'));
+      inp.style.cssText = 'width:100%;height:100%;border:2px solid #3b82f6;border-radius:3px;padding:2px 5px;font:inherit;font-size:13px;background:rgba(59,130,246,.08);box-sizing:border-box';
+      inp.oninput = (function (ix) { return function (e) { sigSign.fields[ix].value = e.target.value; }; })(idx);
+      d.appendChild(inp);
+    }
+    o.appendChild(d);
+  });
+}
+
+function sigSignPad(idx) {
+  var f = sigSign.fields[idx];
+  var ov = document.createElement('div'); ov.id = 'sig-pad-ov';
+  ov.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.6);z-index:9999;display:flex;align-items:center;justify-content:center;padding:16px';
+  ov.innerHTML = '<div style="background:var(--bg-card);border-radius:12px;padding:16px;max-width:480px;width:100%">' +
+    '<div style="font-weight:600;margin-bottom:8px">' + (f.field_type === 'initials' ? 'Draw your initials' : 'Draw your signature') + '</div>' +
+    '<canvas id="sig-pad-canvas" width="440" height="180" style="width:100%;height:180px;background:#fff;border:1px solid var(--border);border-radius:8px;touch-action:none;cursor:crosshair"></canvas>' +
+    '<div style="display:flex;gap:8px;justify-content:flex-end;margin-top:12px">' +
+      '<button class="btn btn-ghost btn-sm" onclick="sigPadClear()">Clear</button>' +
+      '<button class="btn btn-ghost btn-sm" onclick="sigPadClose()">Cancel</button>' +
+      '<button class="btn btn-primary btn-sm" onclick="sigPadApply(' + idx + ')">Apply</button>' +
+    '</div></div>';
+  document.body.appendChild(ov);
+  sigPadInit();
+}
+function sigPadInit() {
+  var c = document.getElementById('sig-pad-canvas'); if (!c) return;
+  var ctx = c.getContext('2d'); ctx.lineWidth = 2.5; ctx.lineCap = 'round'; ctx.lineJoin = 'round'; ctx.strokeStyle = '#111';
+  _sigPad = { c: c, ctx: ctx, drawing: false, ink: false, last: null };
+  function pos(e) {
+    var r = c.getBoundingClientRect();
+    var cx = (e.touches ? e.touches[0].clientX : e.clientX) - r.left;
+    var cy = (e.touches ? e.touches[0].clientY : e.clientY) - r.top;
+    return { x: cx * (c.width / r.width), y: cy * (c.height / r.height) };
+  }
+  c.onpointerdown = function (e) { e.preventDefault(); _sigPad.drawing = true; _sigPad.last = pos(e); };
+  c.onpointermove = function (e) { if (!_sigPad.drawing) return; e.preventDefault(); var p = pos(e); ctx.beginPath(); ctx.moveTo(_sigPad.last.x, _sigPad.last.y); ctx.lineTo(p.x, p.y); ctx.stroke(); _sigPad.last = p; _sigPad.ink = true; };
+  c.onpointerup = function () { _sigPad.drawing = false; };
+  c.onpointerleave = function () { _sigPad.drawing = false; };
+}
+function sigPadClear() { if (_sigPad) { _sigPad.ctx.clearRect(0, 0, _sigPad.c.width, _sigPad.c.height); _sigPad.ink = false; } }
+function sigPadClose() { var ov = document.getElementById('sig-pad-ov'); if (ov) ov.remove(); _sigPad = null; }
+function sigPadApply(idx) {
+  if (!_sigPad || !_sigPad.ink) { showToast('Please draw your signature first', ''); return; }
+  sigSign.fields[idx].image = _sigPad.c.toDataURL('image/png');
+  sigPadClose(); sigSignPaintFields();
+}
+
+async function sigSignSubmit() {
+  if (!sigSign.consent) { novaAlert('Please check the box agreeing to sign electronically first.'); return; }
+  for (var i = 0; i < sigSign.fields.length; i++) {
+    var f = sigSign.fields[i]; if (!f.required) continue;
+    var has = (f.field_type === 'signature' || f.field_type === 'initials') ? !!f.image
+      : (f.field_type === 'checkbox') ? true : (f.value && String(f.value).trim() !== '');
+    if (!has) { novaAlert('Please complete all required fields before submitting.'); return; }
+  }
+  var values = {};
+  sigSign.fields.forEach(function (f) {
+    values[f.id] = (f.field_type === 'signature' || f.field_type === 'initials') ? { image: f.image } : { value: f.value };
+  });
+  var btn = document.getElementById('sig-sign-submit'); if (btn) btn.disabled = true;
+  try {
+    var r = await fetch('/api/sign/' + encodeURIComponent(sigSign.token) + '/submit', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ consent: true, values: values }) });
+    var d = await r.json(); if (!r.ok) throw new Error(d.error || 'Submit failed.');
+    document.getElementById('app').innerHTML = sigSignDoneHtml('Thank you! Your signature has been recorded.');
+  } catch (e) { novaAlert(e.message); if (btn) btn.disabled = false; }
+}
+
+async function sigSignDecline() {
+  var ok = await novaConfirm('Decline to sign this document? The sender will be notified.');
+  if (!ok) return;
+  var reason = await novaPrompt('Optionally, add a reason (or leave blank):', '');
+  try {
+    var r = await fetch('/api/sign/' + encodeURIComponent(sigSign.token) + '/decline', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ reason: reason || '' }) });
+    var d = await r.json(); if (!r.ok) throw new Error(d.error || 'Failed.');
+    document.getElementById('app').innerHTML = sigSignDoneHtml('You have declined to sign. The sender has been notified.');
+  } catch (e) { novaAlert(e.message); }
+}
+/* =================== end Signatures public signing =================== */
 
 // Browser back/forward support: navigate() pushes history; restore here on pop.
 window.addEventListener('popstate', function (e) {

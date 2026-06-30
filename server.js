@@ -14,6 +14,7 @@ const { startTaskReminders, startRecurringSpawner } = require('./jobs/taskRemind
 const { startWorkOrders } = require('./jobs/workOrders');
 const { startDocExpiry } = require('./jobs/docExpiry');
 const { startReviewRatings } = require('./jobs/reviewRatings');
+const { startSignatureReminders } = require('./jobs/signatureReminders');
 
 const app = express();
 
@@ -92,6 +93,7 @@ app.use('/api/feedback', require('./routes/feedback'));
 app.use('/api/mcp', require('./routes/mcp'));
 app.use('/api/addin', require('./routes/addin'));
 app.use('/api/signatures', require('./routes/signatures'));
+app.use('/api/sign', require('./routes/signatures').publicRouter);
 
 // OAuth 2.1 authorization server for the remote MCP (must be before the SPA catch-all)
 app.use('/', require('./routes/oauth'));
@@ -127,6 +129,7 @@ initDB()
     startWorkOrders();
     startDocExpiry();
     startReviewRatings();
+    startSignatureReminders();
     startGeicoIngest();
     startGeicoReport();
   })

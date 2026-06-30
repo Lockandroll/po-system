@@ -6,7 +6,9 @@
 const express = require('express');
 const crypto = require('crypto');
 const https = require('https');
-const { PDFDocument } = require('pdf-lib');
+const { PDFDocument, StandardFonts, rgb } = require('pdf-lib');
+const { sendEmail, emailTemplate } = require('../utils/email');
+const { sendSms } = require('../utils/sms');
 const { pool } = require('../db');
 const { requireAuth, requirePermission } = require('../middleware/auth');
 const { logAudit } = require('../utils/audit');
@@ -122,6 +124,7 @@ function sanitizeName(name) {
 }
 
 function clientIp(req) {
+  if (!req || !req.headers) return '';
   const xf = (req.headers['x-forwarded-for'] || '').toString().split(',')[0].trim();
   return (xf || req.ip || '').toString().slice(0, 64);
 }
@@ -471,4 +474,328 @@ router.put('/:id/layout', requireAuth, requirePermission('manage_signatures'), a
 });
 
 
+// ===================== Phase 5: send / remind / void =====================
+function sigLink(token) { return (process.env.APP_URL || '').replace(/\/$/, '') + '/sign/' + token; }
+
+// Email (+ optional SMS) a signer their single-use signing link.
+async function sigNotifySigner(request, signer) {
+  if (!signer.email) return;
+  var link = sigLink(signer.token);
+  var html = emailTemplate({
+    badge: 'Signature requested', badgeColor: 'orange',
+    title: 'Please sign: ' + request.title,
+    body: 'Hi ' + (signer.name || 'there') + ',<br><br>You have a document waiting for your signature.' + (request.message ? ('<br><br>' + request.message) : ''),
+    details: [{ label: 'Document', value: request.title }, { label: 'Reference', value: request.request_number }],
+    buttonText: 'Review & sign', buttonUrl: link,
+    footerNote: 'This is a secure, single-use signing link. Do not forward it.'
+  });
+  await sendEmail(signer.email, 'Signature requested: ' + request.title, html);
+  if (signer.phone) { try { await sendSms(signer.phone, 'You have a document to sign: ' + request.title + ' ' + link); } catch (e) {} }
+}
+
+router.post('/:id/send', requireAuth, requirePermission('manage_signatures'), async (req, res) => {
+  try {
+    const id = parseInt(req.params.id, 10);
+    const rr = await pool.query('SELECT * FROM signature_requests WHERE id = $1', [id]);
+    if (!rr.rows.length) return res.status(404).json({ error: 'Signature request not found' });
+    const request = rr.rows[0];
+    if (request.created_by !== req.user.id && req.user.role !== 'admin') return res.status(403).json({ error: 'Not your request' });
+    if (request.status !== 'draft') return res.status(409).json({ error: 'This request has already been sent.' });
+
+    const signers = (await pool.query('SELECT * FROM signature_signers WHERE request_id = $1 ORDER BY sign_order, id', [id])).rows;
+    const fields = (await pool.query('SELECT id, signer_id FROM signature_fields WHERE request_id = $1', [id])).rows;
+    if (!signers.length) return res.status(400).json({ error: 'Add at least one signer before sending.' });
+    if (!fields.length) return res.status(400).json({ error: 'Add at least one field before sending.' });
+    if (signers.some(function (s) { return !s.email; })) return res.status(400).json({ error: 'Every signer needs an email address.' });
+    var unassigned = fields.filter(function (f) { return f.signer_id == null; });
+    if (unassigned.length) return res.status(400).json({ error: unassigned.length + ' field(s) are not assigned to a signer.' });
+    var withField = {}; fields.forEach(function (f) { withField[f.signer_id] = true; });
+    var empty = signers.filter(function (s) { return !withField[s.id]; });
+    if (empty.length) return res.status(400).json({ error: 'Each signer needs at least one field: ' + empty.map(function (s) { return s.name; }).join(', ') });
+
+    var expires = request.expires_at ? new Date(request.expires_at) : new Date(Date.now() + 30 * 86400000);
+    for (var i = 0; i < signers.length; i++) {
+      var token = crypto.randomBytes(32).toString('hex');
+      await pool.query("UPDATE signature_signers SET token = $1, token_expires_at = $2, status = 'pending' WHERE id = $3", [token, expires, signers[i].id]);
+      signers[i].token = token;
+    }
+    await pool.query("UPDATE signature_requests SET status = 'sent', sent_at = NOW(), expires_at = $2, updated_at = NOW() WHERE id = $1", [id, expires]);
+    for (var j = 0; j < signers.length; j++) {
+      sigNotifySigner(request, signers[j]).catch(function (e) { console.error('Signer notify failed:', e.message); });
+      await logEvent(id, signers[j].id, 'sent', req.user.name, req, { to: signers[j].email });
+    }
+    res.json({ success: true });
+  } catch (err) {
+    console.error('Signature send error:', err);
+    res.status(500).json({ error: 'Failed to send request' });
+  }
+});
+
+router.post('/:id/remind', requireAuth, requirePermission('manage_signatures'), async (req, res) => {
+  try {
+    const id = parseInt(req.params.id, 10);
+    const rr = await pool.query('SELECT * FROM signature_requests WHERE id = $1', [id]);
+    if (!rr.rows.length) return res.status(404).json({ error: 'Signature request not found' });
+    const request = rr.rows[0];
+    if (request.created_by !== req.user.id && req.user.role !== 'admin') return res.status(403).json({ error: 'Not your request' });
+    if (['sent', 'partially_signed'].indexOf(request.status) === -1) return res.status(409).json({ error: 'Nothing to remind - this request is ' + request.status + '.' });
+    const pending = (await pool.query("SELECT * FROM signature_signers WHERE request_id = $1 AND status <> 'signed' AND status <> 'declined' AND token IS NOT NULL", [id])).rows;
+    for (var i = 0; i < pending.length; i++) {
+      sigNotifySigner(request, pending[i]).catch(function (e) { console.error('Reminder failed:', e.message); });
+      await logEvent(id, pending[i].id, 'reminder_sent', req.user.name, req, {});
+    }
+    res.json({ success: true, reminded: pending.length });
+  } catch (err) {
+    console.error('Signature remind error:', err);
+    res.status(500).json({ error: 'Failed to send reminders' });
+  }
+});
+
+router.post('/:id/void', requireAuth, requirePermission('manage_signatures'), async (req, res) => {
+  try {
+    const id = parseInt(req.params.id, 10);
+    const rr = await pool.query('SELECT id, created_by, status FROM signature_requests WHERE id = $1', [id]);
+    if (!rr.rows.length) return res.status(404).json({ error: 'Signature request not found' });
+    if (rr.rows[0].created_by !== req.user.id && req.user.role !== 'admin') return res.status(403).json({ error: 'Not your request' });
+    if (rr.rows[0].status === 'completed') return res.status(409).json({ error: 'A completed request cannot be voided.' });
+    await pool.query("UPDATE signature_requests SET status = 'voided', updated_at = NOW() WHERE id = $1", [id]);
+    await pool.query("UPDATE signature_signers SET token = NULL WHERE request_id = $1", [id]);
+    await logEvent(id, null, 'voided', req.user.name, req, {});
+    res.json({ success: true });
+  } catch (err) {
+    console.error('Signature void error:', err);
+    res.status(500).json({ error: 'Failed to void request' });
+  }
+});
+
+// ===================== Phase 7: flatten + complete =====================
+async function flattenAndComplete(requestId) {
+  const request = (await pool.query('SELECT * FROM signature_requests WHERE id = $1', [requestId])).rows[0];
+  if (!request) return;
+  const fields = (await pool.query('SELECT * FROM signature_fields WHERE request_id = $1', [requestId])).rows;
+  const signers = (await pool.query('SELECT * FROM signature_signers WHERE request_id = $1 ORDER BY sign_order, id', [requestId])).rows;
+  const events = (await pool.query('SELECT * FROM signature_events WHERE request_id = $1 ORDER BY created_at, id', [requestId])).rows;
+
+  const srcBuf = await r2.getObjectBuffer(request.source_r2_key);
+  const pdf = await PDFDocument.load(srcBuf, { ignoreEncryption: true });
+  const font = await pdf.embedFont(StandardFonts.Helvetica);
+  const pages = pdf.getPages();
+
+  for (var i = 0; i < fields.length; i++) {
+    var f = fields[i];
+    var page = pages[f.page]; if (!page) continue;
+    var sz = page.getSize(); var W = sz.width, Hh = sz.height;
+    // normalized (top-left) -> PDF points (bottom-left)
+    var bx = (+f.x) * W, bw = (+f.w) * W, bh = (+f.h) * Hh;
+    var by = Hh - ((+f.y) * Hh) - bh;
+    if (f.field_type === 'signature' || f.field_type === 'initials') {
+      if (f.value_r2_key) {
+        try {
+          var imgBuf = await r2.getObjectBuffer(f.value_r2_key);
+          var png = await pdf.embedPng(imgBuf);
+          var d = png.scale(1);
+          var ar = Math.min(bw / d.width, bh / d.height);
+          var dw = d.width * ar, dh = d.height * ar;
+          page.drawImage(png, { x: bx + (bw - dw) / 2, y: by + (bh - dh) / 2, width: dw, height: dh });
+        } catch (e) { console.error('Embed signature failed:', e.message); }
+      }
+    } else if (f.field_type === 'checkbox') {
+      if (f.value === 'true') {
+        var cs = Math.min(bw, bh);
+        page.drawText('X', { x: bx + cs * 0.15, y: by + cs * 0.12, size: cs * 0.78, font: font, color: rgb(0.1, 0.1, 0.1) });
+      }
+    } else if (f.value) {
+      var fs = f.font_size ? Number(f.font_size) : Math.min(bh * 0.7, 12);
+      if (fs < 6) fs = 6; if (fs > 14) fs = 14;
+      page.drawText(String(f.value).slice(0, 200), { x: bx + 2, y: by + (bh - fs) / 2 + 1, size: fs, font: font, color: rgb(0.05, 0.05, 0.05) });
+    }
+  }
+
+  // ----- Certificate of completion -----
+  var cert = pdf.addPage();
+  var yy = cert.getSize().height - 60;
+  function certLine(txt, size, color) {
+    if (yy < 56) { cert = pdf.addPage(); yy = cert.getSize().height - 60; }
+    cert.drawText(String(txt).slice(0, 110), { x: 50, y: yy, size: size || 11, font: font, color: color || rgb(0.12, 0.12, 0.12) });
+    yy -= (size || 11) + 8;
+  }
+  certLine('Certificate of Completion', 18); yy -= 6;
+  certLine('Document: ' + (request.title || ''), 11);
+  certLine('Reference: ' + request.request_number, 11);
+  certLine('Completed: ' + new Date().toISOString(), 11); yy -= 8;
+  certLine('Signers', 13);
+  signers.forEach(function (s) { certLine('- ' + (s.name || '') + '  <' + (s.email || '') + '>  ' + (s.status || '') + (s.signed_at ? ('  ' + new Date(s.signed_at).toISOString()) : ''), 10); });
+  yy -= 8; certLine('Audit trail', 13);
+  events.forEach(function (e) { certLine(new Date(e.created_at).toISOString() + '  ' + e.event_type + (e.actor ? ('  ' + e.actor) : '') + (e.ip ? ('  [' + e.ip + ']') : ''), 9); });
+
+  const outBuf = Buffer.from(await pdf.save());
+  const key = 'signatures/' + request.id + '/' + request.request_number + '-signed.pdf';
+  await r2.putObject(key, outBuf, 'application/pdf');
+  await pool.query("UPDATE signature_requests SET signed_r2_key = $1, status = 'completed', completed_at = NOW(), updated_at = NOW() WHERE id = $2", [key, request.id]);
+  await logEvent(request.id, null, 'completed', null, null, { signed_key: key });
+
+  // Auto-drop the signed PDF into the Documents vault (owned by the creator).
+  var creator = (await pool.query('SELECT email, name FROM users WHERE id = $1', [request.created_by])).rows[0] || {};
+  try {
+    await pool.query(
+      "INSERT INTO documents (name, folder_id, r2_key, mime_type, size_bytes, status, owner_id, owner_name) " +
+      "VALUES ($1, NULL, $2, 'application/pdf', $3, 'ready', $4, $5)",
+      [(request.title || request.request_number) + ' (signed).pdf', key, outBuf.length, request.created_by, creator.name || null]
+    );
+  } catch (e) { console.error('Vault drop failed:', e.message); }
+
+  // Email the completed PDF to all signers + the creator.
+  try {
+    var recips = signers.map(function (s) { return s.email; }).filter(Boolean);
+    if (creator.email) recips.push(creator.email);
+    if (recips.length) {
+      var html = emailTemplate({
+        badge: 'Completed', badgeColor: 'green', title: 'Signed: ' + request.title,
+        body: 'All parties have signed. The completed document is attached.',
+        details: [{ label: 'Reference', value: request.request_number }],
+        footerNote: 'Signed electronically via Nova.'
+      });
+      await sendEmail(recips, 'Completed: ' + request.title, html, null, [{ filename: request.request_number + '-signed.pdf', content: outBuf.toString('base64') }]);
+    }
+  } catch (e) { console.error('Completion email failed:', e.message); }
+}
+
+// ===================== Phase 6: public signing (no auth) =====================
+const pub = express.Router();
+
+async function loadSignerByToken(token) {
+  if (!token) return null;
+  const sr = await pool.query('SELECT * FROM signature_signers WHERE token = $1', [token]);
+  if (!sr.rows.length) return null;
+  const signer = sr.rows[0];
+  const rr = await pool.query('SELECT * FROM signature_requests WHERE id = $1', [signer.request_id]);
+  if (!rr.rows.length) return null;
+  return { signer: signer, request: rr.rows[0] };
+}
+
+function tokenError(signer, request) {
+  if (request.status === 'voided') return { code: 410, msg: 'This request has been canceled.' };
+  if (signer.token_expires_at && new Date(signer.token_expires_at) < new Date()) return { code: 410, msg: 'This signing link has expired.' };
+  return null;
+}
+
+pub.get('/:token', async (req, res) => {
+  try {
+    const ctx = await loadSignerByToken(req.params.token);
+    if (!ctx) return res.status(404).json({ error: 'This signing link is not valid.' });
+    const signer = ctx.signer, request = ctx.request;
+    var te = tokenError(signer, request);
+    if (te) return res.status(te.code).json({ error: te.msg });
+    if (signer.status === 'pending') {
+      await pool.query("UPDATE signature_signers SET status = 'viewed' WHERE id = $1", [signer.id]);
+      await logEvent(request.id, signer.id, 'viewed', signer.name, req, {});
+    }
+    const fields = (await pool.query('SELECT id, field_type, page, x, y, w, h, required, label, value FROM signature_fields WHERE request_id = $1 AND signer_id = $2 ORDER BY page, id', [request.id, signer.id])).rows;
+    var pdfUrl = null;
+    try { pdfUrl = await r2.presignDownload(request.source_r2_key, request.request_number + '.pdf', true); } catch (e) {}
+    res.json({
+      request: { id: request.id, title: request.title, request_number: request.request_number, page_count: request.page_count, page_dimensions: request.page_dimensions, message: request.message, status: request.status },
+      signer: { id: signer.id, name: signer.name, email: signer.email, role_label: signer.role_label, status: signer.status, consent_accepted: signer.consent_accepted },
+      fields: fields, pdfUrl: pdfUrl
+    });
+  } catch (err) {
+    console.error('Public sign load error:', err);
+    res.status(500).json({ error: 'Failed to load the document.' });
+  }
+});
+
+pub.post('/:token/consent', async (req, res) => {
+  try {
+    const ctx = await loadSignerByToken(req.params.token);
+    if (!ctx) return res.status(404).json({ error: 'Invalid link.' });
+    var te = tokenError(ctx.signer, ctx.request);
+    if (te) return res.status(te.code).json({ error: te.msg });
+    await pool.query('UPDATE signature_signers SET consent_accepted = true WHERE id = $1', [ctx.signer.id]);
+    await logEvent(ctx.request.id, ctx.signer.id, 'consented', ctx.signer.name, req, {});
+    res.json({ success: true });
+  } catch (err) { console.error('Consent error:', err); res.status(500).json({ error: 'Failed to record consent' }); }
+});
+
+pub.post('/:token/submit', async (req, res) => {
+  try {
+    const ctx = await loadSignerByToken(req.params.token);
+    if (!ctx) return res.status(404).json({ error: 'Invalid link.' });
+    const signer = ctx.signer, request = ctx.request;
+    var te = tokenError(signer, request);
+    if (te) return res.status(te.code).json({ error: te.msg });
+    if (signer.status === 'signed') return res.status(409).json({ error: 'You have already signed this document.' });
+    if (!signer.consent_accepted && !req.body.consent) return res.status(400).json({ error: 'You must agree to sign electronically first.' });
+
+    const fields = (await pool.query('SELECT * FROM signature_fields WHERE request_id = $1 AND signer_id = $2', [request.id, signer.id])).rows;
+    var values = req.body.values || {};
+    // Required-field validation
+    for (var v = 0; v < fields.length; v++) {
+      var f = fields[v]; var entry = values[f.id] || {};
+      if (!f.required) continue;
+      var has;
+      if (f.field_type === 'signature' || f.field_type === 'initials') has = !!entry.image;
+      else if (f.field_type === 'checkbox') has = true; // checkbox required = must be acknowledged; accept either state
+      else has = (entry.value != null && String(entry.value).trim() !== '');
+      if (!has) return res.status(400).json({ error: 'Please complete all required fields before submitting.' });
+    }
+    // Persist values
+    for (var k = 0; k < fields.length; k++) {
+      var fl = fields[k]; var e2 = values[fl.id] || {};
+      if (fl.field_type === 'signature' || fl.field_type === 'initials') {
+        if (e2.image) {
+          var b64 = String(e2.image).replace(/^data:image\/png;base64,/, '');
+          var key = 'signatures/' + request.id + '/sig-' + fl.id + '-' + Date.now() + '.png';
+          try { await r2.putObject(key, Buffer.from(b64, 'base64'), 'image/png'); await pool.query('UPDATE signature_fields SET value_r2_key = $1 WHERE id = $2', [key, fl.id]); }
+          catch (e) { console.error('Signature upload failed:', e.message); }
+        }
+      } else if (fl.field_type === 'checkbox') {
+        await pool.query('UPDATE signature_fields SET value = $1 WHERE id = $2', [e2.value ? 'true' : 'false', fl.id]);
+      } else {
+        await pool.query('UPDATE signature_fields SET value = $1 WHERE id = $2', [String(e2.value || '').slice(0, 2000), fl.id]);
+      }
+    }
+    await pool.query("UPDATE signature_signers SET status = 'signed', signed_at = NOW(), consent_accepted = true, token = NULL WHERE id = $1", [signer.id]);
+    await logEvent(request.id, signer.id, 'signed', signer.name, req, {});
+
+    var remaining = (await pool.query("SELECT COUNT(*)::int AS n FROM signature_signers WHERE request_id = $1 AND status <> 'signed'", [request.id])).rows[0].n;
+    if (remaining === 0) {
+      try { await flattenAndComplete(request.id); }
+      catch (e) { console.error('Flatten failed, marking completed anyway:', e.message); await pool.query("UPDATE signature_requests SET status = 'completed', completed_at = NOW() WHERE id = $1", [request.id]); }
+    } else {
+      await pool.query("UPDATE signature_requests SET status = 'partially_signed', updated_at = NOW() WHERE id = $1", [request.id]);
+    }
+    res.json({ success: true });
+  } catch (err) {
+    console.error('Submit error:', err);
+    res.status(500).json({ error: 'Failed to submit your signature' });
+  }
+});
+
+pub.post('/:token/decline', async (req, res) => {
+  try {
+    const ctx = await loadSignerByToken(req.params.token);
+    if (!ctx) return res.status(404).json({ error: 'Invalid link.' });
+    const signer = ctx.signer, request = ctx.request;
+    var te = tokenError(signer, request);
+    if (te) return res.status(te.code).json({ error: te.msg });
+    var reason = (req.body.reason || '').toString().slice(0, 500);
+    await pool.query("UPDATE signature_signers SET status = 'declined', declined_reason = $1, token = NULL WHERE id = $2", [reason || null, signer.id]);
+    await pool.query("UPDATE signature_requests SET status = 'declined', updated_at = NOW() WHERE id = $1", [request.id]);
+    await logEvent(request.id, signer.id, 'declined', signer.name, req, { reason: reason });
+    // Notify the creator.
+    try {
+      var creator = (await pool.query('SELECT email FROM users WHERE id = $1', [request.created_by])).rows[0];
+      if (creator && creator.email) {
+        var html = emailTemplate({ badge: 'Declined', badgeColor: 'red', title: 'Declined: ' + request.title,
+          body: (signer.name || 'A signer') + ' declined to sign.' + (reason ? ('<br><br>Reason: ' + reason) : ''),
+          details: [{ label: 'Reference', value: request.request_number }], footerNote: 'Nova signatures.' });
+        await sendEmail(creator.email, 'Declined: ' + request.title, html);
+      }
+    } catch (e) {}
+    res.json({ success: true });
+  } catch (err) { console.error('Decline error:', err); res.status(500).json({ error: 'Failed to record decline' }); }
+});
+
 module.exports = router;
+module.exports.publicRouter = pub;
+

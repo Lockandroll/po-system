@@ -52,6 +52,12 @@ async function presignDownload(key, filename, inline) {
   return getSignedUrl(client(), cmd, { expiresIn: 300 });
 }
 
+// Upload bytes straight from this server (used for AI-signature images and the
+// final flattened PDF, which are produced server-side rather than in the browser).
+async function putObject(key, body, contentType) {
+  await client().send(new PutObjectCommand({ Bucket: BUCKET, Key: key, Body: body, ContentType: contentType || 'application/octet-stream' }));
+}
+
 async function getObjectBuffer(key) {
   const res = await client().send(new GetObjectCommand({ Bucket: BUCKET, Key: key }));
   const bytes = await res.Body.transformToByteArray();
@@ -63,4 +69,4 @@ async function deleteObject(key) {
   await client().send(new DeleteObjectCommand({ Bucket: BUCKET, Key: key }));
 }
 
-module.exports = { configured, presignUpload, presignDownload, getObjectBuffer, deleteObject };
+module.exports = { configured, presignUpload, presignDownload, getObjectBuffer, putObject, deleteObject };
