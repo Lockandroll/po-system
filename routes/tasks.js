@@ -5,6 +5,7 @@ const perms = require('../utils/permissions');
 const { logAudit } = require('../utils/audit');
 const { notifyTaskAssigned, notifyTaskCc, notifyTaskCcInfo } = require('../jobs/taskReminders');
 const { spawnFromTemplate, recurNextStart, recurYmd, recurFromYmd } = require('../jobs/taskReminders');
+const { resolveDateTokens } = require('../utils/messageTokens');
 
 const router = express.Router();
 
@@ -212,10 +213,12 @@ router.post('/', requireAuth, requirePermission('view_tasks'), async (req, res) 
       return res.status(201).json(await loadTask(tpl.id));
     }
     const due_date = b.due_date || null;
+    const rTitle = resolveDateTokens(title);
+    const rDesc = b.description ? resolveDateTokens(b.description) : null;
     const { rows } = await pool.query(
       'INSERT INTO tasks (title, description, status, priority, assigned_to, created_by, due_date, recurrence, recurrence_day) ' +
       'VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING *',
-      [title, b.description || null, status, priority, assigned_to, req.user.id, due_date, recurrence, recDay]
+      [rTitle, rDesc, status, priority, assigned_to, req.user.id, due_date, recurrence, recDay]
     );
     const task = rows[0];
     if (Array.isArray(b.subtasks)) {
@@ -247,6 +250,8 @@ router.post('/bulk', requireAuth, requirePermission('manage_tasks'), async (req,
     const recDay = (recurrence === 'weekly' || recurrence === 'monthly') && b.recurrence_day != null && b.recurrence_day !== '' ? parseInt(b.recurrence_day, 10) : null;
     const recStartDay = (recurrence === 'weekly' || recurrence === 'monthly') && b.recurrence_start_day != null && b.recurrence_start_day !== '' ? parseInt(b.recurrence_start_day, 10) : null;
     const due_date = b.due_date || null;
+    const rTitle = recurrence ? title : resolveDateTokens(title);
+    const rDesc = b.description ? (recurrence ? b.description : resolveDateTokens(b.description)) : null;
     const subs = Array.isArray(b.subtasks) ? b.subtasks : [];
     let assignees = Array.isArray(b.assignees) ? b.assignees.map(function (x) { return parseInt(x, 10); }).filter(function (x) { return !isNaN(x); }) : [];
     if (!assignees.length) assignees = [null];
@@ -264,7 +269,7 @@ router.post('/bulk', requireAuth, requirePermission('manage_tasks'), async (req,
       const { rows } = await pool.query(
         'INSERT INTO tasks (title, description, status, priority, assigned_to, created_by, due_date, recurrence, recurrence_day) ' +
         "VALUES ($1,$2,'todo',$3,$4,$5,$6,$7,$8) RETURNING id",
-        [title, b.description || null, priority, aid, req.user.id, due_date, recurrence, recDay]
+        [rTitle, rDesc, priority, aid, req.user.id, due_date, recurrence, recDay]
       );
       const id = rows[0].id;
       ids.push(id);

@@ -2,7 +2,7 @@
 // public/sw.js (the only thing bumped each deploy) — the badge asks the active
 // service worker for it at runtime. This value is just the fallback shown when no
 // service worker is available (e.g. very first visit before it installs).
-var APP_VERSION = 'v69';
+var APP_VERSION = 'v70';
 var _resolvedAppVersion = null;
 
 // Ask the active service worker for its CACHE_VERSION (without the 'nova-' prefix).
@@ -2699,6 +2699,7 @@ async function renderTaskForm(el, id){
     '<div class="card" style="max-width:680px"><div class="card-body">' +
       '<div class="form-group"><label>Title</label><input type="text" id="tk-title" value="'+escHtml(t.title||'')+'" placeholder="What needs doing?" /></div>' +
       '<div class="form-group"><label>Description</label><textarea id="tk-desc" rows="3" placeholder="Details…">'+escHtml(t.description||'')+'</textarea></div>' +
+      varLegendHtml('Type any of these in the Title or Description and Nova fills in the real dates.', 'tk-title,tk-desc') +
       (showAssignee
         ? (id
             ? ('<div style="display:flex;gap:12px;flex-wrap:wrap"><div class="form-group" style="flex:1;min-width:160px"><label>Assign to</label><select id="tk-assignee">'+userOpts+'</select></div><div class="form-group" style="flex:1;min-width:140px"><label>Priority</label><select id="tk-priority">'+prioOpts+'</select></div></div>')
