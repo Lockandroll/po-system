@@ -2,7 +2,7 @@
 // public/sw.js (the only thing bumped each deploy) — the badge asks the active
 // service worker for it at runtime. This value is just the fallback shown when no
 // service worker is available (e.g. very first visit before it installs).
-var APP_VERSION = 'v63';
+var APP_VERSION = 'v64';
 var _resolvedAppVersion = null;
 
 // Ask the active service worker for its CACHE_VERSION (without the 'nova-' prefix).
@@ -339,9 +339,9 @@ function badgeHtml(status) {
   return '<span class="badge badge-' + escHtml(cls) + '">' + escHtml(status) + '</span>';
 }
 
-var EMPLOYEE_PERMS = ['view_pos','create_po','edit_po','delete_po','submit_po','view_quotes','create_quote','edit_quote','delete_quote','push_quote_po','view_vr','create_vr','edit_vr','delete_vr','submit_vr','view_deposits','create_deposit','delete_deposit','export_deposits','view_signoffs','create_signoff','edit_signoff','complete_signoff','delete_signoff','view_tasks','view_work_orders','view_schedule','view_invoices','create_invoice','edit_invoice','delete_invoice'];
+var EMPLOYEE_PERMS = ['view_pos','create_po','edit_po','delete_po','submit_po','view_quotes','create_quote','edit_quote','delete_quote','push_quote_po','view_vr','create_vr','edit_vr','delete_vr','submit_vr','view_deposits','create_deposit','delete_deposit','export_deposits','view_signoffs','create_signoff','edit_signoff','complete_signoff','delete_signoff','view_tasks','view_work_orders','view_schedule','view_invoices','create_invoice','edit_invoice','delete_invoice','view_signatures'];
 var PERM_DEFAULTS = {
-  manager: ['view_users','manage_cities','manage_geico','manage_running','manage_vehicles','manage_vendors','manage_addresses','approve_vr','manage_tasks','manage_work_orders','manage_schedule','manage_parts','manage_invoice_setup','assign_reviews','view_feedback','manage_feedback'].concat(EMPLOYEE_PERMS),
+  manager: ['view_users','manage_cities','manage_geico','manage_running','manage_vehicles','manage_vendors','manage_addresses','approve_vr','manage_tasks','manage_work_orders','manage_schedule','manage_parts','manage_invoice_setup','assign_reviews','view_feedback','manage_feedback','manage_signatures'].concat(EMPLOYEE_PERMS),
   locksmith: EMPLOYEE_PERMS.slice(),
   locksmith_coordinator: EMPLOYEE_PERMS.concat(['manage_work_orders']),
   roadside_technician: EMPLOYEE_PERMS.slice()
@@ -2015,7 +2015,9 @@ async function renderNotifications(el) {
     { key:'work_order_received', label:'New work order received', def:'all admins and managers', sms:false, desc:'A new incoming work order / job ticket arrived to be dispatched.' },
     { key:'suggestion_created', label:'New employee suggestion', def:'all admins and managers', sms:true, desc:'An employee submitted an idea through the suggestion box.' },
     { key:'document_expiring', label:'Document expiration reminder', def:'all admins and managers', sms:false, desc:'A stored document is approaching its expiration date and may need renewing.' },
-    { key:'review_rating_changed', label:'Google rating changed for a location', def:'all admins', sms:false, desc:'A location\'s Google star rating went up or down.' }
+    { key:'review_rating_changed', label:'Google rating changed for a location', def:'all admins', sms:false, desc:'A location\'s Google star rating went up or down.' },
+    { key:'signature_completed', label:'Signature request completed', def:'all admins', sms:false, desc:'Everyone has signed a document and it was finalized.' },
+    { key:'signature_declined', label:'Signature request declined', def:'all admins', sms:false, desc:'A signer declined to sign a document.' }
   ];
   var requester = [
     { key:'po_approved', label:'PO approved', desc:'Tells the person who created the PO that it was approved.' },
@@ -2119,7 +2121,7 @@ async function renderNotifications(el) {
 }
 
 async function saveNotifications() {
-  var broadcast = ['po_submitted','vr_submitted','quote_created','quote_to_pos','signoff_completed','work_order_received','suggestion_created','document_expiring','review_rating_changed'];
+  var broadcast = ['po_submitted','vr_submitted','quote_created','quote_to_pos','signoff_completed','work_order_received','suggestion_created','document_expiring','review_rating_changed','signature_completed','signature_declined'];
   var smsCapable = { po_submitted:1, vr_submitted:1, quote_created:1, quote_to_pos:1, suggestion_created:1 };
   var requester = ['po_approved','po_rejected','po_cancelled','po_ordered','vr_approved','vr_rejected'];
   function parseEmails(raw) {
@@ -2180,6 +2182,7 @@ async function renderRoles(el) {
     { group:'Vehicle Repairs', gate:'view_vr', perms:[ {k:'view_vr',l:'View / access module'}, {k:'create_vr',l:'Create VRs'}, {k:'edit_vr',l:'Edit VRs'}, {k:'delete_vr',l:'Delete VRs'}, {k:'submit_vr',l:'Submit for approval'}, {k:'approve_vr',l:'Approve / reject vehicle repairs'} ] },
     { group:'Cash Deposits', gate:'view_deposits', perms:[ {k:'view_deposits',l:'View / access module'}, {k:'create_deposit',l:'Create / upload deposit'}, {k:'delete_deposit',l:'Delete deposit'}, {k:'export_deposits',l:'Export deposits (CSV)'} ] },
     { group:'Invoices', gate:'view_invoices', perms:[ {k:'view_invoices',l:'View / access module'}, {k:'create_invoice',l:'Create invoices'}, {k:'edit_invoice',l:'Edit invoices'}, {k:'delete_invoice',l:'Delete invoices'}, {k:'manage_invoice_setup',l:'Manage invoice setup (accounts, agreement, defaults)'} ] },
+    { group:'Signatures', gate:'view_signatures', perms:[ {k:'view_signatures',l:'View / access module'}, {k:'manage_signatures',l:'Create, send, edit & void signature requests'} ] },
     { group:'Work Orders', gate:'view_work_orders', perms:[ {k:'view_work_orders',l:'View / access module'}, {k:'manage_work_orders',l:'Create, edit, dispatch & delete work orders'} ] },
     { group:'Sign-Off Sheets', gate:'view_signoffs', perms:[ {k:'view_signoffs',l:'View / access module'}, {k:'create_signoff',l:'Create sign-off sheets'}, {k:'edit_signoff',l:'Edit setup'}, {k:'complete_signoff',l:'Complete on site'}, {k:'delete_signoff',l:'Delete sign-off sheets'} ] },
     { group:'Tasks', gate:'view_tasks', perms:[ {k:'view_tasks',l:'My Tasks - see & add your own personal tasks'}, {k:'manage_tasks',l:'Assign tasks to others & oversee them'} ] },

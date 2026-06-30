@@ -9,6 +9,7 @@ const https = require('https');
 const { PDFDocument, StandardFonts, rgb } = require('pdf-lib');
 const { sendEmail, emailTemplate } = require('../utils/email');
 const { sendSms } = require('../utils/sms');
+const notify = require('../utils/notify');
 const { pool } = require('../db');
 const { requireAuth, requirePermission } = require('../middleware/auth');
 const { logAudit } = require('../utils/audit');
@@ -662,6 +663,16 @@ async function flattenAndComplete(requestId) {
       await sendEmail(recips, 'Completed: ' + request.title, html, null, [{ filename: request.request_number + '-signed.pdf', content: outBuf.toString('base64') }]);
     }
   } catch (e) { console.error('Completion email failed:', e.message); }
+  // Internal broadcast (configurable in Settings > Notifications > 'Signature request completed').
+  try {
+    var _bc = await notify.broadcastRecipients('signature_completed', "role IN ('admin','owner')");
+    if (_bc.emails && _bc.emails.length) {
+      var bhtml = emailTemplate({ badge: 'Completed', badgeColor: 'green', title: 'Signature completed: ' + request.title,
+        body: 'All parties have signed "' + (request.title || '') + '". The signed document is saved in the Document Vault.',
+        details: [{ label: 'Reference', value: request.request_number }], footerNote: 'Automated Nova notification.' });
+      await sendEmail(_bc.emails, 'Signature completed: ' + request.title, bhtml);
+    }
+  } catch (e) { console.error('Completion broadcast failed:', e.message); }
 }
 
 // ===================== Phase 6: public signing (no auth) =====================
@@ -795,6 +806,15 @@ pub.post('/:token/decline', async (req, res) => {
           body: (signer.name || 'A signer') + ' declined to sign.' + (reason ? ('<br><br>Reason: ' + reason) : ''),
           details: [{ label: 'Reference', value: request.request_number }], footerNote: 'Nova signatures.' });
         await sendEmail(creator.email, 'Declined: ' + request.title, html);
+      }
+    } catch (e) {}
+    try {
+      var _bd = await notify.broadcastRecipients('signature_declined', "role IN ('admin','owner')");
+      if (_bd.emails && _bd.emails.length) {
+        var dhtml = emailTemplate({ badge: 'Declined', badgeColor: 'red', title: 'Signature declined: ' + request.title,
+          body: (signer.name || 'A signer') + ' declined to sign "' + (request.title || '') + '".' + (reason ? ('<br><br>Reason: ' + reason) : ''),
+          details: [{ label: 'Reference', value: request.request_number }], footerNote: 'Automated Nova notification.' });
+        await sendEmail(_bd.emails, 'Signature declined: ' + request.title, dhtml);
       }
     } catch (e) {}
     res.json({ success: true });
