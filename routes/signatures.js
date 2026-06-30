@@ -105,7 +105,7 @@ const DETECT_SYSTEM =
   '{"page": <0-based integer matching the labeled page>, "field_type": one of ["signature","initials","date","name","text","checkbox"], ' +
   '"x": <number>, "y": <number>, "w": <number>, "h": <number>, "label": <short string>, "confidence": <number 0-1>}. ' +
   'x, y, w, h are fractions of THAT page width/height in the range 0 to 1, origin at the TOP-LEFT of the page; ' +
-  'x,y is the top-left corner of the field box. Be conservative and only include real fields. If there are none, return [].';
+  'x,y is the top-left corner of the field box. For fields that sit on a printed underline (signatures, dates, printed names), treat the underline as the BOTTOM edge of the box and place the box just ABOVE it, not below. Be conservative and only include real fields. If there are none, return [].';
 
 
 // Year-sequenced request number, e.g. SIG-2026-0001.
@@ -534,6 +534,9 @@ router.put('/:id/layout', requireAuth, requirePermission('manage_signatures'), a
       if (pageCount && page > pageCount - 1) continue;
       var x = clamp01(f.x), y = clamp01(f.y), w = clamp01(f.w), h = clamp01(f.h);
       if (w <= 0 || h <= 0) continue;
+      // The model tends to anchor line-based fields at the underline, leaving the box a
+      // touch low; lift non-checkbox fields so they sit on the line instead of below it.
+      if (f.field_type !== 'checkbox') y = Math.max(0, y - h * 0.4);
       if (x + w > 1) w = 1 - x;
       if (y + h > 1) h = 1 - y;
       var si = (f.signer == null) ? null : parseInt(f.signer, 10);
