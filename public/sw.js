@@ -122,7 +122,4 @@ self.addEventListener('notificationclick', function (event) {
       for (var i = 0; i < list.length; i++) {
         if (list[i].url.indexOf(url) !== -1 && 'focus' in list[i]) return list[i].focus();
       }
-      if (clients.openWindow) return clients.openWindow(url);
-    })
-  );
-});
+      if (clients.openWindow) return clients.openWindow(url)
