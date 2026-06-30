@@ -211,6 +211,19 @@ router.post('/templates/from-request/:id', requireAuth, requirePermission('manag
       'INSERT INTO signature_templates (name, source_r2_key, page_count, page_dimensions, roles, fields, created_by) VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING id',
       [name, newKey, request.page_count || 0, JSON.stringify(request.page_dimensions || null), JSON.stringify(roles), JSON.stringify(tfields), req.user.id]
     );
+    // Also drop a browsable copy into the Documents vault, in a 'Signature Templates' folder.
+    try {
+      var folderId = null;
+      var ff = await pool.query("SELECT id FROM document_folders WHERE name = 'Signature Templates' AND owner_id = $1 AND parent_id IS NULL", [req.user.id]);
+      if (ff.rows.length) folderId = ff.rows[0].id;
+      else { var nf = await pool.query("INSERT INTO document_folders (name, parent_id, owner_id, owner_name) VALUES ('Signature Templates', NULL, $1, $2) RETURNING id", [req.user.id, req.user.name]); folderId = nf.rows[0].id; }
+      var vaultKey = 'documents/' + crypto.randomUUID() + '/' + name.replace(/[^A-Za-z0-9._-]/g, '_').slice(0, 80) + '.pdf';
+      await r2.putObject(vaultKey, buf, 'application/pdf');
+      await pool.query(
+        "INSERT INTO documents (name, folder_id, r2_key, mime_type, size_bytes, status, owner_id, owner_name) VALUES ($1, $2, $3, 'application/pdf', $4, 'ready', $5, $6)",
+        [name + ' (template).pdf', folderId, vaultKey, buf.length, req.user.id, req.user.name]
+      );
+    } catch (e) { console.error('Template vault drop failed:', e.message); }
     res.json({ id: ins.rows[0].id, name: name });
   } catch (err) { console.error('Template save error:', err); res.status(500).json({ error: 'Failed to save template' }); }
 });
@@ -741,10 +754,14 @@ async function flattenAndComplete(requestId) {
   // Auto-drop the signed PDF into the Documents vault (owned by the creator).
   var creator = (await pool.query('SELECT email, name FROM users WHERE id = $1', [request.created_by])).rows[0] || {};
   try {
+    var signedFolderId = null;
+    var sf = await pool.query("SELECT id FROM document_folders WHERE name = 'Signed Documents' AND owner_id = $1 AND parent_id IS NULL", [request.created_by]);
+    if (sf.rows.length) signedFolderId = sf.rows[0].id;
+    else { var nsf = await pool.query("INSERT INTO document_folders (name, parent_id, owner_id, owner_name) VALUES ('Signed Documents', NULL, $1, $2) RETURNING id", [request.created_by, creator.name || null]); signedFolderId = nsf.rows[0].id; }
     await pool.query(
       "INSERT INTO documents (name, folder_id, r2_key, mime_type, size_bytes, status, owner_id, owner_name) " +
-      "VALUES ($1, NULL, $2, 'application/pdf', $3, 'ready', $4, $5)",
-      [(request.title || request.request_number) + ' (signed).pdf', key, outBuf.length, request.created_by, creator.name || null]
+      "VALUES ($1, $2, $3, 'application/pdf', $4, 'ready', $5, $6)",
+      [(request.title || request.request_number) + ' (signed).pdf', signedFolderId, key, outBuf.length, request.created_by, creator.name || null]
     );
   } catch (e) { console.error('Vault drop failed:', e.message); }
 
