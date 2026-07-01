@@ -1764,6 +1764,10 @@ async function showUserModal(id) {
           '<label for="modal-hide-schedule" style="margin:0;cursor:pointer">Hide from Schedule <span style="font-weight:400;font-size:0.8em;color:var(--text-muted-color)">(won&#39;t appear in the staff scheduler)</span></label>' +
         '</div>' +
         '<div class="form-group" style="display:flex;align-items:center;gap:10px">' +
+          '<input type="checkbox" id="modal-hide-org" style="width:auto"' + (user && user.hide_from_org ? ' checked' : '') + ' />' +
+          '<label for="modal-hide-org" style="margin:0;cursor:pointer">Hide from Org Chart <span style="font-weight:400;font-size:0.8em;color:var(--text-muted-color)">(won&#39;t appear on the organization chart)</span></label>' +
+        '</div>' +
+        '<div class="form-group" style="display:flex;align-items:center;gap:10px">' +
           '<input type="checkbox" id="modal-edit-schedule" style="width:auto"' + (user && user.extra_perms && user.extra_perms.indexOf('manage_schedule') !== -1 ? ' checked' : '') + ' />' +
           '<label for="modal-edit-schedule" style="margin:0;cursor:pointer">Can build &amp; edit the schedule <span style="font-weight:400;font-size:0.8em;color:var(--text-muted-color)">(gives this non-manager the full schedule builder for their assigned cities)</span></label>' +
         '</div>' +
@@ -1782,6 +1786,7 @@ async function saveUser(id, btn) {
   const receive_emails = document.getElementById('modal-receive-emails').checked;
   const receive_sms = document.getElementById('modal-receive-sms').checked;
   const hide_from_schedule = (document.getElementById('modal-hide-schedule')||{}).checked === true;
+  const hide_from_org = (document.getElementById('modal-hide-org')||{}).checked === true;
   var extra_perms = []; if ((document.getElementById('modal-edit-schedule')||{}).checked === true) extra_perms.push('manage_schedule');
   var _cityNodes = document.querySelectorAll('.modal-city'); var city_codes = []; for (var _i=0;_i<_cityNodes.length;_i++){ if(_cityNodes[_i].checked) city_codes.push(_cityNodes[_i].value); }
   var pulsar_name=(document.getElementById('modal-pulsar')||{}).value; if(pulsar_name) pulsar_name=pulsar_name.trim();
@@ -1795,8 +1800,8 @@ async function saveUser(id, btn) {
   }
   try {
     btn.disabled = true;
-    if (id) { await api('PUT', '/users/' + id, { name, email, password: password || undefined, role, phone: phone || undefined, receive_emails, receive_sms, city_codes, pulsar_name, hide_from_schedule, pay_type, supervisor_id, extra_perms, title, org_level }); }
-    else { await api('POST', '/users', { name, email, password: password || undefined, role, phone: phone || undefined, receive_emails, receive_sms, city_codes, pulsar_name, hide_from_schedule, pay_type, supervisor_id, extra_perms, title, org_level }); }
+    if (id) { await api('PUT', '/users/' + id, { name, email, password: password || undefined, role, phone: phone || undefined, receive_emails, receive_sms, city_codes, pulsar_name, hide_from_schedule, pay_type, supervisor_id, extra_perms, title, org_level, hide_from_org }); }
+    else { await api('POST', '/users', { name, email, password: password || undefined, role, phone: phone || undefined, receive_emails, receive_sms, city_codes, pulsar_name, hide_from_schedule, pay_type, supervisor_id, extra_perms, title, org_level, hide_from_org }); }
     document.querySelector('.modal-overlay').remove();
     navigate('users');
   } catch(err) {
@@ -12324,7 +12329,7 @@ async function renderOrgChart(content){
   content.innerHTML='<div class="tc-wrap" style="max-width:100%"><div class="tc-card"><div class="tc-dim">Loading…</div></div></div>';
   var users;
   try{users=await api('GET','/users');}catch(e){content.innerHTML='<div class="tc-wrap"><div class="tc-card">Could not load org chart.</div></div>';return;}
-  users=(users||[]).filter(function(u){return u.active!==false;});
+  users=(users||[]).filter(function(u){return u.active!==false && u.hide_from_org!==true;});
   if(!users.length){content.innerHTML='<div class="tc-wrap"><div class="tc-card"><div class="tc-h">Organization Chart</div><div class="tc-dim">No users.</div></div></div>';return;}
   var byId={};users.forEach(function(u){byId[u.id]=u;u._kids=[];});
   var roots=[];
@@ -12344,12 +12349,16 @@ async function renderOrgChart(content){
   var levels=Object.keys(bands).map(Number).sort(function(a,b){return a-b;});
   levels.forEach(function(L){bands[L].sort(function(a,b){return a._ord-b._ord;});});
   var slotW=180,boxW=152,bandH=128,boxH=86,padTop=14;
-  var maxN=1;levels.forEach(function(L){if(bands[L].length>maxN)maxN=bands[L].length;});
-  var W=Math.max(maxN*slotW,340),H=levels.length*bandH+padTop;
+  var bandIndex={};levels.forEach(function(L,i){bandIndex[L]=i;});
+  // Tidy layout: each parent is centered over its children so reports cluster under the right manager.
+  var nextX=0;
+  function assignX(u){var k=u._kids.slice().sort(byRank);if(!k.length){u._xi=nextX;nextX++;}else{k.forEach(assignX);u._xi=(k[0]._xi+k[k.length-1]._xi)/2;}}
+  roots.slice().sort(function(a,b){return byRank(a,b)||(a.name||'').localeCompare(b.name||'');}).forEach(function(r){assignX(r);nextX+=1;});
+  var W=Math.max(nextX*slotW,340),H=levels.length*bandH+padTop;
   var pos={};
-  levels.forEach(function(L,bi){var arr=bands[L],n=arr.length,startX=(W-n*slotW)/2;arr.forEach(function(u,i){pos[u.id]={cx:startX+i*slotW+slotW/2,yTop:bi*bandH+padTop};});});
+  users.forEach(function(u){pos[u.id]={cx:(u._xi||0)*slotW+slotW/2,yTop:bandIndex[u._lv]*bandH+padTop};});
   var paths='';
-  users.forEach(function(u){var s=u.supervisor_id&&byId[u.supervisor_id];if(!s||!pos[s.id]||!pos[u.id])return;var p=pos[s.id],c=pos[u.id];var pby=p.yTop+boxH;if(c.yTop<=pby)return;var midY=pby+(c.yTop-pby)/2;paths+='<path d="M'+p.cx+' '+pby+' V'+midY+' H'+c.cx+' V'+c.yTop+'" fill="none" stroke="#3a3a3a" stroke-width="2"/>';});
+  users.forEach(function(u){var s=u.supervisor_id&&byId[u.supervisor_id];if(!s||!pos[s.id]||!pos[u.id])return;var p=pos[s.id],c=pos[u.id];var pby=p.yTop+boxH;if(c.yTop<=pby)return;var midY=pby+Math.min(26,(c.yTop-pby)/2);paths+='<path d="M'+p.cx+' '+pby+' V'+midY+' H'+c.cx+' V'+c.yTop+'" fill="none" stroke="#3a3a3a" stroke-width="2"/>';});
   var boxes='';
   users.forEach(function(u){var pp=pos[u.id];var isRoot=!(u.supervisor_id&&byId[u.supervisor_id]);var sub=u.title?('<div class="org-tl">'+escHtml(u.title)+'</div>'):('<div class="org-rl">'+escHtml(tcRoleLabel(u.role))+'</div>');boxes+='<div class="org-box'+(isRoot?' root':'')+'" style="left:'+(pp.cx-boxW/2)+'px;top:'+pp.yTop+'px"><span class="org-chip">L'+u._lv+'</span><span class="org-av">'+tcInitials(u.name)+'</span><div class="org-nm">'+escHtml(u.name||'')+'</div>'+sub+'</div>';});
   var svg='<svg width="'+W+'" height="'+H+'" viewBox="0 0 '+W+' '+H+'">'+paths+'</svg>';
