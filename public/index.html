@@ -208,6 +208,16 @@
     .row-actions { display: flex; gap: 8px; flex-wrap: nowrap; align-items: center; }
     .row-actions .btn { white-space: nowrap; flex-shrink: 0; }
     @media (max-width: 560px) { .row-actions { flex-wrap: wrap; } }
+    /* Mobile: relax hardcoded multi-column inline grids so cards stop crowding on phones. */
+    /* These grids are set via inline styles, so the override needs the attribute selector + !important. */
+    @media (max-width: 560px) {
+      [style*="grid-template-columns:1fr 1fr 1fr"],
+      [style*="grid-template-columns:repeat(5"] { grid-template-columns: 1fr 1fr !important; }
+    }
+    @media (max-width: 430px) {
+      [style*="grid-template-columns:1fr 1fr"],
+      [style*="grid-template-columns:repeat(5"] { grid-template-columns: 1fr !important; }
+    }
     .modal-overlay { position: fixed; inset: 0; background: rgba(0,0,0,0.75); display: flex; align-items: center; justify-content: center; z-index: 100; padding: 16px; }
     .modal { background: var(--bg-card); border: 1px solid var(--border); border-radius: var(--radius); box-shadow: var(--shadow-md); width: 100%; max-width: 480px; }
     .modal-header { padding: 16px 20px; border-bottom: 1px solid var(--border); display: flex; align-items: center; justify-content: space-between; }
