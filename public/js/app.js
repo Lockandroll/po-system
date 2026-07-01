@@ -12402,6 +12402,7 @@ function tcOrgBindDrag(editable){
       var v=window._orgView||{scale:1};
       if(Math.abs(e.clientX-d.sx)+Math.abs(e.clientY-d.sy)>3)d.moved=true;
       var ncx=d.cx0+(e.clientX-d.sx)/v.scale;
+      ncx=tcOrgSnapX(d.id,ncx);
       window._orgPos[d.id].cx=ncx;
       d.el.style.left=(ncx-window._orgBoxW/2)+'px';
       tcOrgRedrawEdges(d.id);
@@ -12436,4 +12437,15 @@ async function tcOrgReposition(id,cx){
   try{await api('PATCH','/users/'+id+'/org',{org_x:Math.round(cx)});}
   catch(e){alert(e.message||'Could not move.');return;}
   var c=document.getElementById('content');if(c)renderOrgChart(c);
+}
+function tcOrgSnapX(id,x){
+  var pos=window._orgPos;if(!pos)return x;
+  var boxW=window._orgBoxW||152,GAP=20,SNAP=12;
+  var myY=pos[id]?pos[id].yTop:null;
+  var best=x,bestD=SNAP;
+  for(var k in pos){ if(+k===id)continue; var oc=pos[k].cx; var cands=[oc];
+    if(myY!=null&&pos[k].yTop===myY){cands.push(oc+(boxW+GAP));cands.push(oc-(boxW+GAP));}
+    for(var i=0;i<cands.length;i++){var dd=Math.abs(x-cands[i]);if(dd<bestD){bestD=dd;best=cands[i];}}
+  }
+  return best;
 }
