@@ -246,7 +246,10 @@ router.get('/admin', requireAuth, requirePermission('manage_timeclock'), async f
   const to = /^\d{4}-\d{2}-\d{2}$/.test(req.query.to || '') ? req.query.to : addDays(from, 6);
   const wkStart = mondayOf(from);
   const users = (await pool.query(
-    "SELECT id, name, pay_type FROM users WHERE active = true AND COALESCE(pay_type,'hourly') = 'hourly' ORDER BY name"
+    "SELECT DISTINCT u.id, u.name, u.pay_type FROM users u " +
+    "JOIN time_entries e ON e.user_id = u.id AND (e.clock_in_at AT TIME ZONE $1)::date BETWEEN $2 AND $3 " +
+    "WHERE u.active = true ORDER BY u.name",
+    [TZ, from, to]
   )).rows;
   const out = [];
   for (const u of users) {

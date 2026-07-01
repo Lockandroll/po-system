@@ -12017,18 +12017,59 @@ function tcInjectStyles(){
     '.tc-live{display:inline-block;width:8px;height:8px;border-radius:50%;background:#22c55e;margin-right:6px}';
   document.head.appendChild(el);
 }
+function tcInjectMgrStyles(){
+  if(document.getElementById('tc-mgr-styles'))return;
+  var el=document.createElement('style');el.id='tc-mgr-styles';
+  el.textContent=
+    '.tc-wide{max-width:960px}'+
+    '.tc-tabs{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:16px}'+
+    '.tc-tab{background:var(--card-bg,#181818);border:1px solid var(--border,#2c2c2c);color:var(--text-muted-color,#a1a1aa);padding:8px 14px;border-radius:8px;cursor:pointer;font-size:13px;font-weight:700}'+
+    '.tc-tab.active{background:#f97316;color:#111;border-color:#f97316}'+
+    '.tc-grid{display:grid;grid-template-columns:1fr 1fr;gap:12px}'+
+    '@media(max-width:640px){.tc-grid{grid-template-columns:1fr}}'+
+    '.tc-person{background:var(--card-bg-2,#202020);border:1px solid var(--border,#2c2c2c);border-radius:12px;padding:14px;display:flex;justify-content:space-between;align-items:center;gap:10px}'+
+    '.tc-person.tc-flag{border-left:3px solid #ef4444}'+
+    '.tc-pl{display:flex;align-items:center;gap:10px;min-width:0}'+
+    '.tc-av{width:34px;height:34px;border-radius:50%;background:#c2560f;color:#fff;display:inline-flex;align-items:center;justify-content:center;font-weight:700;font-size:13px;flex:0 0 auto}'+
+    '.tc-nm{font-weight:700}'+
+    '.tc-mt{font-size:12px;color:var(--text-muted-color,#71717a);margin-top:2px}'+
+    '.tc-live.brk{background:#eab308}';
+  document.head.appendChild(el);
+}
 function tcHM(m){m=Math.max(0,Math.round(m||0));return Math.floor(m/60)+':'+String(m%60).padStart(2,'0');}
 function tcClock(ts){if(!ts)return '—';return new Date(ts).toLocaleTimeString('en-US',{hour:'numeric',minute:'2-digit'});}
+function tcDay(ts){if(!ts)return '';return new Date(ts).toLocaleDateString('en-US',{weekday:'short',month:'short',day:'numeric'});}
+function tcElapsed(ts){if(!ts)return '';var mins=Math.max(0,Math.floor((Date.now()-new Date(ts).getTime())/60000));return Math.floor(mins/60)+':'+String(mins%60).padStart(2,'0');}
+function tcInitials(name){name=(name||'').trim();var p=name.split(/\s+/);return (((p[0]||'')[0]||'')+((p[1]||'')[0]||'')).toUpperCase()||'?';}
+function tcRoleLabel(r){var m={locksmith:'Locksmith',roadside_technician:'Roadside',locksmith_coordinator:'Coordinator',manager:'Manager',admin:'Admin',owner:'Owner',counter:'Counter'};return m[r]||r||'';}
+function tcAddDays(ds,n){var a=ds.split('-').map(Number);var d=new Date(Date.UTC(a[0],a[1]-1,a[2]));d.setUTCDate(d.getUTCDate()+n);return d.getUTCFullYear()+'-'+String(d.getUTCMonth()+1).padStart(2,'0')+'-'+String(d.getUTCDate()).padStart(2,'0');}
 var _tcTimer=null;
 function tcStopTimer(){if(_tcTimer){clearInterval(_tcTimer);_tcTimer=null;}}
-function tcRerender(){var c=document.getElementById('content');if(c)renderTimeClock(c);}
+var _tcTab='punch';
+var _tcWeek=null;
+function tcReload(){var c=document.getElementById('content');if(c)renderTimeClock(c);}
+function tcTab(t){_tcTab=t;if(t!=='mysheet')_tcWeek=null;tcReload();}
 
 async function renderTimeClock(content){
-  tcInjectStyles();tcStopTimer();
-  content.innerHTML='<div class="tc-wrap"><div class="tc-card"><div class="tc-dim">Loading…</div></div></div>';
+  tcInjectStyles();tcInjectMgrStyles();tcStopTimer();
+  var isMgr=(typeof can==='function')&&can('manage_timeclock');
+  if(!isMgr&&(_tcTab==='in'||_tcTab==='sheets'))_tcTab='punch';
+  var tabs=[{k:'punch',l:'Employee Punch'},{k:'mysheet',l:'My Timesheet'}];
+  if(isMgr){tabs.push({k:'in',l:"Who's In"});tabs.push({k:'sheets',l:'Timesheets & Approval'});}
+  var bar='<div class="tc-tabs">'+tabs.map(function(t){return '<button class="tc-tab'+(_tcTab===t.k?' active':'')+'" onclick="tcTab(\''+t.k+'\')">'+t.l+'</button>';}).join('')+'</div>';
+  content.innerHTML='<div class="tc-wrap tc-wide">'+bar+'<div id="tc-body"><div class="tc-dim" style="padding:14px">Loading…</div></div></div>';
+  var body=document.getElementById('tc-body');
+  if(_tcTab==='mysheet')return tcRenderMySheet(body);
+  if(_tcTab==='in')return tcRenderWhosIn(body);
+  if(_tcTab==='sheets')return tcRenderSheets(body);
+  return tcRenderPunch(body);
+}
+async function renderTimeClockManager(content){_tcTab='in';return renderTimeClock(content);}
+
+async function tcRenderPunch(body){
   var st;
   try{st=await api('GET','/timeclock/status');}
-  catch(e){content.innerHTML='<div class="tc-wrap"><div class="tc-card">Could not load time clock.</div></div>';return;}
+  catch(e){body.innerHTML='<div class="tc-card">Could not load time clock.</div>';return;}
   var cfg={out:{pill:'Clocked Out',pc:'rgba(239,68,68,.13)',ptc:'#f87171',btn:'CLOCK IN',bg:'#22c55e'},
            in:{pill:'On the Clock',pc:'rgba(34,197,94,.15)',ptc:'#22c55e',btn:'CLOCK OUT',bg:'#ef4444'},
            brk:{pill:'On Break',pc:'rgba(234,179,8,.15)',ptc:'#facc15',btn:'END BREAK',bg:'#eab308'}}[st.state==='break'?'brk':st.state];
@@ -12044,9 +12085,8 @@ async function renderTimeClock(content){
   }).join('')||'<div class="tc-row"><span class="tc-dim">No punches yet today.</span></div>';
   var ot=40*60;
   var otChip=st.weekMinutes>ot?' <span class="tc-tag" style="background:rgba(234,179,8,.15);color:#facc15">OT '+tcHM(st.weekMinutes-ot)+'</span>':'';
-  var mgrBtn=can('manage_timeclock')?'<button class="tc-sbtn" onclick="navigate(\'timeclock-manager\')">Manager view</button>':'';
-  content.innerHTML=
-    '<div class="tc-wrap">'+
+  body.innerHTML=
+    '<div style="max-width:560px;margin:0 auto">'+
       '<div class="tc-card" style="text-align:center">'+
         '<div class="tc-pill" style="background:'+cfg.pc+';color:'+cfg.ptc+'">'+cfg.pill+'</div>'+
         '<div class="tc-timer" id="tc-timer">0:00:00</div>'+
@@ -12056,10 +12096,8 @@ async function renderTimeClock(content){
       '</div>'+
       '<div class="tc-card"><div class="tc-h">Today</div>'+punches+'</div>'+
       '<div class="tc-card"><div class="tc-h">This week (Mon-Sun)</div>'+
-        '<div style="display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap">'+
-          '<div style="font-size:26px;font-weight:800">'+tcHM(st.weekMinutes)+otChip+'</div>'+
-          '<div style="display:flex;gap:8px;flex-wrap:wrap">'+mgrBtn+'<button class="tc-sbtn" onclick="tcApproveWeek(\''+st.weekStart+'\')">Approve my week</button></div>'+
-        '</div></div>'+
+        '<div style="font-size:26px;font-weight:800">'+tcHM(st.weekMinutes)+otChip+'</div>'+
+        '<div class="tc-dim" style="font-size:12px;margin-top:4px">Use the My Timesheet tab to review &amp; approve past weeks.</div></div>'+
     '</div>';
   var baseWorked=(st.today||[]).reduce(function(a,e){return a+(e.clock_out_at?(e.worked_minutes||0):0);},0)*60;
   var entryStart=st.openEntry?new Date(st.openEntry.clock_in_at).getTime():null;
@@ -12083,41 +12121,49 @@ async function tcPunch(){
     else if(st.state==='in')await api('POST','/timeclock/clock-out');
     else if(st.state==='break')await api('POST','/timeclock/break/end');
   }catch(e){alert(e.message);}
-  tcRerender();
+  tcReload();
 }
 async function tcBreak(type){
   try{await api('POST','/timeclock/break/start',{type:type});}catch(e){alert(e.message);}
-  tcRerender();
-}
-async function tcApproveWeek(ws){
-  if(!confirm('Approve your hours for this week? Your manager reviews next.'))return;
-  try{await api('POST','/timeclock/week/approve',{weekStart:ws});alert('Week approved - sent to your manager.');}catch(e){alert(e.message);}
+  tcReload();
 }
 
-function tcInjectMgrStyles(){
-  if(document.getElementById('tc-mgr-styles'))return;
-  var el=document.createElement('style');el.id='tc-mgr-styles';
-  el.textContent=
-    '.tc-wide{max-width:960px}'+
-    '.tc-tabs{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:16px}'+
-    '.tc-tab{background:var(--card-bg,#181818);border:1px solid var(--border,#2c2c2c);color:var(--text-muted-color,#a1a1aa);padding:8px 14px;border-radius:8px;cursor:pointer;font-size:13px;font-weight:700}'+
-    '.tc-tab.active{background:#f97316;color:#111;border-color:#f97316}'+
-    '.tc-grid{display:grid;grid-template-columns:1fr 1fr;gap:12px}'+
-    '@media(max-width:640px){.tc-grid{grid-template-columns:1fr}}'+
-    '.tc-person{background:var(--card-bg-2,#202020);border:1px solid var(--border,#2c2c2c);border-radius:12px;padding:14px;display:flex;justify-content:space-between;align-items:center;gap:10px}'+
-    '.tc-person.tc-flag{border-left:3px solid #ef4444}'+
-    '.tc-pl{display:flex;align-items:center;gap:10px;min-width:0}'+
-    '.tc-av{width:34px;height:34px;border-radius:50%;background:#c2560f;color:#fff;display:inline-flex;align-items:center;justify-content:center;font-weight:700;font-size:13px;flex:0 0 auto}'+
-    '.tc-nm{font-weight:700}'+
-    '.tc-mt{font-size:12px;color:var(--text-muted-color,#71717a);margin-top:2px}'+
-    '.tc-live.brk{background:#eab308}';
-  document.head.appendChild(el);
+async function tcRenderMySheet(body){
+  var q=_tcWeek?('?from='+_tcWeek+'&to='+tcAddDays(_tcWeek,6)):'';
+  var data;
+  try{data=await api('GET','/timeclock/timesheet'+q);}
+  catch(e){body.innerHTML='<div class="tc-card">Could not load timesheet.</div>';return;}
+  _tcWeek=data.from;
+  var ap=data.approval||{};
+  var rows=(data.entries||[]).map(function(e){
+    var unpaid=0;(e.breaks||[]).forEach(function(b){if(b.type==='unpaid'&&b.break_end_at)unpaid+=Math.round((new Date(b.break_end_at)-new Date(b.break_start_at))/60000);});
+    return '<tr><td>'+tcDay(e.clock_in_at)+'</td><td>'+tcClock(e.clock_in_at)+'</td><td>'+tcClock(e.clock_out_at)+'</td><td>'+(unpaid?unpaid+'m':'')+'</td><td style="text-align:right">'+(e.worked_minutes!=null?tcHM(e.worked_minutes):'open')+'</td></tr>';
+  }).join('')||'<tr><td colspan="5" class="tc-dim">No punches this week.</td></tr>';
+  var total=(data.entries||[]).reduce(function(s,e){return s+(e.worked_minutes||0);},0);
+  var st=ap.status||'open';
+  var locked=(st!=='open'&&st!=='reopened');
+  var right=locked?('<span class="tc-tag" style="background:rgba(34,197,94,.15);color:#22c55e">'+escHtml(st)+'</span>')
+                  :('<button class="tc-sbtn" onclick="tcApproveWeek(\''+data.from+'\')">Approve this week</button>');
+  body.innerHTML=
+    '<div class="tc-card">'+
+      '<div style="display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:12px">'+
+        '<div style="display:flex;gap:6px;align-items:center">'+
+          '<button class="tc-sbtn" onclick="tcWeekNav(-7)">&#8249; Prev</button>'+
+          '<span class="tc-h" style="margin:0">Week of '+escHtml(data.from)+'</span>'+
+          '<button class="tc-sbtn" onclick="tcWeekNav(7)">Next &#8250;</button>'+
+        '</div>'+
+        '<div style="font-size:22px;font-weight:800">'+tcHM(total)+'</div>'+
+      '</div>'+
+      '<table class="tc-table"><thead><tr><th>Day</th><th>In</th><th>Out</th><th>Unpaid</th><th style="text-align:right">Worked</th></tr></thead><tbody>'+rows+'</tbody></table>'+
+      '<div style="margin-top:14px;text-align:right">'+right+'</div>'+
+    '</div>';
 }
-var _tcMgrTab='in';
-function tcMgrTab(t){_tcMgrTab=t;var c=document.getElementById('content');if(c)renderTimeClockManager(c);}
-function tcRoleLabel(r){var m={locksmith:'Locksmith',roadside_technician:'Roadside',locksmith_coordinator:'Coordinator',manager:'Manager',admin:'Admin',owner:'Owner',counter:'Counter'};return m[r]||r||'';}
-function tcElapsed(ts){if(!ts)return '';var mins=Math.max(0,Math.floor((Date.now()-new Date(ts).getTime())/60000));return Math.floor(mins/60)+':'+String(mins%60).padStart(2,'0');}
-function tcInitials(name){name=(name||'').trim();var p=name.split(/\s+/);return (((p[0]||'')[0]||'')+((p[1]||'')[0]||'')).toUpperCase()||'?';}
+function tcWeekNav(n){_tcWeek=tcAddDays(_tcWeek,n);var b=document.getElementById('tc-body');if(b)tcRenderMySheet(b);}
+async function tcApproveWeek(ws){
+  if(!confirm('Approve your hours for the week of '+ws+'? Your manager reviews next.'))return;
+  try{await api('POST','/timeclock/week/approve',{weekStart:ws});}catch(e){alert(e.message);return;}
+  var b=document.getElementById('tc-body');if(b)tcRenderMySheet(b);
+}
 
 function tcWhosInHtml(board){
   var open=(board.open||[]).map(function(e){
@@ -12140,6 +12186,18 @@ function tcWhosInHtml(board){
   return '<div class="tc-card"><div class="tc-h">Clocked in right now · '+(board.open||[]).length+'</div><div class="tc-grid">'+open+'</div></div>'+
          '<div class="tc-card"><div class="tc-h">Needs review · '+(board.flags||[]).length+'</div><div class="tc-grid">'+flags+'</div></div>';
 }
+async function tcRenderWhosIn(body){
+  var board;
+  try{board=await api('GET','/timeclock/board');}
+  catch(e){body.innerHTML='<div class="tc-card">Could not load board.</div>';return;}
+  body.innerHTML=tcWhosInHtml(board);
+}
+async function tcReviewFlag(id){
+  if(!confirm('Mark this entry reviewed? Keeps the current times and clears the flag. Correct times from the person\'s timesheet.'))return;
+  try{await api('PATCH','/timeclock/entry/'+id,{reason:'Reviewed by manager'});}catch(e){alert(e.message);}
+  tcReload();
+}
+
 function tcSheetsHtml(sheet){
   var rows=(sheet.users||[]).map(function(u){
     var ap=u.approval||{};var action;
@@ -12148,34 +12206,22 @@ function tcSheetsHtml(sheet){
     else if(ap.status==='submitted')action='<span class="tc-tag" style="background:rgba(34,197,94,.15);color:#22c55e">submitted</span>';
     else action='<span class="tc-dim">awaiting employee</span>';
     return '<tr><td>'+escHtml(u.user.name)+'</td><td>'+tcHM(u.minutes)+'</td><td>'+escHtml(ap.status||'open')+'</td><td style="text-align:right">'+action+'</td></tr>';
-  }).join('')||'<tr><td colspan="4" class="tc-dim">No hourly employees this week. (Only Hourly staff appear here.)</td></tr>';
+  }).join('')||'<tr><td colspan="4" class="tc-dim">No punches recorded this week.</td></tr>';
   return '<div class="tc-card"><div class="tc-h">Timesheets — week of '+escHtml(sheet.weekStart)+'</div>'+
     '<table class="tc-table"><thead><tr><th>Employee</th><th>Worked</th><th>Status</th><th></th></tr></thead><tbody>'+rows+'</tbody></table></div>';
 }
-async function renderTimeClockManager(content){
-  tcInjectStyles();tcInjectMgrStyles();tcStopTimer();
-  content.innerHTML='<div class="tc-wrap tc-wide"><div class="tc-dim" style="padding:14px">Loading…</div></div>';
-  var board,sheet;
-  try{board=await api('GET','/timeclock/board');sheet=await api('GET','/timeclock/admin');}
-  catch(e){content.innerHTML='<div class="tc-wrap tc-wide"><div class="tc-card">Could not load timesheets.</div></div>';return;}
-  var tabs='<div class="tc-tabs">'+
-    '<button class="tc-tab'+(_tcMgrTab==='in'?' active':'')+'" onclick="tcMgrTab(\'in\')">Who\'s In</button>'+
-    '<button class="tc-tab'+(_tcMgrTab==='sheets'?' active':'')+'" onclick="tcMgrTab(\'sheets\')">Timesheets & Approval</button>'+
-    '</div>';
-  var body=_tcMgrTab==='sheets'?tcSheetsHtml(sheet):tcWhosInHtml(board);
-  content.innerHTML='<div class="tc-wrap tc-wide">'+tabs+body+'</div>';
-}
-async function tcReviewFlag(id){
-  if(!confirm('Mark this entry reviewed? Keeps the current times and clears the flag. Use the employee timesheet to correct times.'))return;
-  try{await api('PATCH','/timeclock/entry/'+id,{reason:'Reviewed by manager'});}catch(e){alert(e.message);}
-  var c=document.getElementById('content');if(c)renderTimeClockManager(c);
+async function tcRenderSheets(body){
+  var sheet;
+  try{sheet=await api('GET','/timeclock/admin');}
+  catch(e){body.innerHTML='<div class="tc-card">Could not load timesheets.</div>';return;}
+  body.innerHTML=tcSheetsHtml(sheet);
 }
 async function tcMgrApprove(id,ws){
   try{await api('POST','/timeclock/week/mgr-approve',{user_id:id,weekStart:ws});}catch(e){alert(e.message);}
-  var c=document.getElementById('content');if(c)renderTimeClockManager(c);
+  tcReload();
 }
 async function tcSubmit(id,ws){
   if(!confirm('Submit this week and email the Excel sheet to payroll?'))return;
   try{await api('POST','/timeclock/week/submit',{user_id:id,weekStart:ws});alert('Submitted - Excel emailed to payroll.');}catch(e){alert(e.message);}
-  var c=document.getElementById('content');if(c)renderTimeClockManager(c);
+  tcReload();
 }
