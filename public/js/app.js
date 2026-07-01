@@ -12363,7 +12363,7 @@ async function renderOrgChart(content){
   var boxes='';
   users.forEach(function(u){var pp=pos[u.id];var dragAttr=editable?(' id="orgbox-'+u.id+'" data-id="'+u.id+'"'):'';var isRoot=!(u.supervisor_id&&byId[u.supervisor_id]);var sub=u.title?('<div class="org-tl">'+escHtml(u.title)+'</div>'):('<div class="org-rl">'+escHtml(tcRoleLabel(u.role))+'</div>');boxes+='<div class="org-box'+(isRoot?' root':'')+'"'+dragAttr+' style="left:'+(pp.cx-boxW/2)+'px;top:'+pp.yTop+'px"><span class="org-chip">L'+u._lv+'</span><span class="org-av">'+tcInitials(u.name)+'</span><div class="org-nm">'+escHtml(u.name||'')+'</div>'+sub+'</div>';});
   var svg='<svg width="'+W+'" height="'+H+'" viewBox="0 0 '+W+' '+H+'">'+paths+'</svg>';
-  var note=(typeof can==='function'&&can('manage_users'))?'<div class="tc-dim" style="font-size:12px;margin-top:10px">Drag a box onto a manager to re-assign who they report to; drop in open space to nudge them left/right. Pan with the background, scroll to zoom.</div>':'<div class="tc-dim" style="font-size:12px;margin-top:10px">Drag to pan, scroll to zoom.</div>';
+  var note=(typeof can==='function'&&can('manage_users'))?'<div class="tc-dim" style="font-size:12px;margin-top:10px">Drag a box onto a manager to re-assign who they report to; drop in open space to nudge them left/right. Double-click a person to edit them. Pan with the background, scroll to zoom.</div>':'<div class="tc-dim" style="font-size:12px;margin-top:10px">Drag to pan, scroll to zoom.</div>';
   content.innerHTML='<div class="tc-wrap" style="max-width:100%"><div class="tc-card">'+
     '<div class="tc-h" style="display:flex;justify-content:space-between;align-items:center">Organization Chart'+
       '<span class="org-ctrls"><button title="Zoom out" onclick="tcOrgZoom(-1)">−</button><button title="Zoom in" onclick="tcOrgZoom(1)">+</button><button title="Fit to view" onclick="tcOrgFit()">Fit</button></span></div>'+
@@ -12386,6 +12386,7 @@ function tcOrgSetEdge(childId){var p=document.getElementById('edge-'+childId);if
 function tcOrgRedrawEdges(id){var byId=window._orgById;if(!byId)return;tcOrgSetEdge(id);var n=byId[id];if(n&&n._kids)n._kids.forEach(function(k){tcOrgSetEdge(k.id);});}
 function tcOrgBindDrag(editable){
   var cv=document.getElementById('org-canvas');if(!cv||!editable)return;
+  cv.addEventListener('dblclick',function(e){var b=e.target.closest&&e.target.closest('.org-box');if(!b)return;var id=parseInt(b.getAttribute('data-id'),10);if(id&&typeof showUserModal==='function')showUserModal(id);});
   cv.addEventListener('mousedown',function(e){
     var b=e.target.closest&&e.target.closest('.org-box');if(!b)return;
     e.preventDefault();e.stopPropagation();
