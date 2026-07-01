@@ -220,7 +220,7 @@
       return '<tr><td><b>' + escHtml(p.name) + '</b>' + warn + '<br><span class="pto-sub">' + escHtml(p.title || '') + (p.exempt ? ' · exempt' : '') + '</span></td>' +
         '<td>' + escHtml(p.pay_type) + '</td><td><b>' + fmtAmt(Number(p.balance_hours), p.pay_type) + '</b></td>' +
         '<td>' + (p.pending ? fmtDate(p.pending) : '—') + '</td>' +
-        '<td style="white-space:nowrap"><button class="pto-btn ghost sm" onclick="ptoLedger(' + p.id + ',this)">View ledger</button> <button class="pto-btn ghost sm" onclick="ptoOpenSetup(' + p.id + ')">Setup</button> <button class="pto-btn sm" onclick="ptoOpenLog(' + p.id + ')">Log PTO</button></td></tr>' +
+        '<td style="white-space:nowrap"><button class="pto-btn ghost sm" onclick="ptoLedger(' + p.id + ',this)">View ledger</button> <button class="pto-btn sm" onclick="ptoOpenLog(' + p.id + ')">Log PTO</button></td></tr>' +
         '<tr id="pto-led-' + p.id + '" style="display:none"><td colspan="5"></td></tr>';
     }).join('');
     body.innerHTML = '<div class="pto-panel"><h3>Team PTO</h3><div class="pto-desc">Read-only. Everyone in your reporting line. Click a person to view their append-only ledger.</div>' +
@@ -272,30 +272,7 @@
     };
   };
 
-  // ---- PER-USER SETUP (hire date / exempt / starting balance) --------------
-  window.ptoOpenSetup = function (id) {
-    var person = null; (CACHE.team || []).forEach(function (p) { if (p.id === id) person = p; });
-    if (!person) return;
-    var admin = !!(state.user && (state.user.isOwner || state.user.role === 'admin'));
-    var curDays = (Number(person.balance_hours) / HRS_PER_DAY).toFixed(1);
-    var m = document.createElement('div'); m.className = 'pto-mask';
-    m.innerHTML = '<div class="pto-dlg"><h3>PTO Setup — ' + escHtml(person.name) + '</h3>' +
-      '<div class="pto-desc">Hire date drives the 90-day wait and the accrual tenure band. Exempt employees do not accrue.</div>' +
-      '<div class="pto-row"><div><label class="pto-label">Hire date</label><input type="date" id="pto-set-hire" class="pto-input" value="' + (person.hire_date || '') + '"></div>' +
-      '<div style="display:flex;align-items:flex-end"><label class="pto-label" style="margin:0;display:flex;align-items:center;gap:8px"><input type="checkbox" id="pto-set-exempt" style="width:auto"' + (person.exempt ? ' checked' : '') + '> Exempt from accrual</label></div></div>' +
-      (admin ? '<label class="pto-label">Set starting balance (days) — optional</label><input type="number" min="0" step="0.5" id="pto-set-bal" class="pto-input" placeholder="blank = keep current (' + curDays + ' days)">' : '') +
-      '<div class="pto-warn" id="pto-set-err" style="display:none"></div>' +
-      '<div style="margin-top:14px;display:flex;gap:10px;justify-content:flex-end"><button class="pto-btn ghost" id="pto-set-cancel">Cancel</button><button class="pto-btn ok" id="pto-set-ok">Save</button></div></div>';
-    document.body.appendChild(m);
-    m.querySelector('#pto-set-cancel').onclick = function () { document.body.removeChild(m); };
-    m.querySelector('#pto-set-ok').onclick = async function () {
-      var payload = { hire_date: m.querySelector('#pto-set-hire').value, exempt: m.querySelector('#pto-set-exempt').checked };
-      var balEl = m.querySelector('#pto-set-bal');
-      if (balEl && balEl.value !== '') payload.set_balance_days = Number(balEl.value);
-      try { await api('PUT', '/pto/user/' + id, payload); document.body.removeChild(m); showToast('PTO setup saved.', 'success'); reload(); }
-      catch (ex) { var e = m.querySelector('#pto-set-err'); e.textContent = ex.message || 'Save failed.'; e.style.display = 'block'; }
-    };
-  };
+  // (Per-user PTO setup lives on the Edit User form now — hire date + balance.)
 
   // ---- SETTINGS ------------------------------------------------------------
   var BANDS = [];
