@@ -511,7 +511,7 @@ async function render() {
         (can('manage_parts') ? '<div class="nav-sub' + (cv === 'parts-list' ? ' active' : '') + '" onclick="navigate(\'parts-list\')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"/><polyline points="3.27 6.96 12 12.01 20.73 6.96"/><line x1="12" y1="22.08" x2="12" y2="12"/></svg> Parts List</div>' : '') +
         (can('manage_settings') ? '<div class="nav-sub' + (cv === 'notifications' ? ' active' : '') + '" onclick="navigate(\'notifications\')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 0 1-3.46 0"/></svg> Notifications</div>' : '') +
         (can('manage_settings') ? '<div class="nav-sub' + (cv === 'scheduled-messages' ? ' active' : '') + '" onclick="navigate(\'scheduled-messages\')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><polyline points="12 7 12 12 15 14"/></svg> Scheduled Messages</div>' : '') +
-        (can('view_users') ? '<div class="nav-sub' + (cv === 'users' ? ' active' : '') + '" onclick="navigate(\'users\')">' + icons.users + ' Users</div>' : '') +
+        (can('view_users') ? '<div class="nav-sub' + (cv === 'users' ? ' active' : '') + '" onclick="navigate(\'users\')">' + icons.users + ' Users</div>' : '') + (can('view_users') ? '<div class="nav-sub' + (cv === 'org-chart' ? ' active' : '') + '" onclick="navigate(\'org-chart\')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="7" y="3" width="10" height="5" rx="1"/><rect x="3" y="16" width="6" height="5" rx="1"/><rect x="15" y="16" width="6" height="5" rx="1"/><path d="M12 8v3M6 16v-2h12v2"/></svg> Org Chart</div>' : '') +
         (can('manage_cities') ? '<div class="nav-sub' + (cv === 'cities' ? ' active' : '') + '" onclick="navigate(\'cities\')">' + icons.map + ' Cities</div>' : '') +
         (can('view_audit') ? '<div class="nav-sub' + (cv === 'audit' ? ' active' : '') + '" onclick="navigate(\'audit\')">' + icoAudit + ' Audit Log</div>' : '') +
         (can('manage_settings') ? '<div class="nav-sub' + (cv === 'roles' ? ' active' : '') + '" onclick="navigate(\'roles\')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg> Roles &amp; Access</div>' : '')
@@ -569,7 +569,7 @@ async function render() {
     if (_ovOpen) _ovOpen.classList.add('open');
   }
   const content = document.getElementById('content');
-  var _viewPerm = { dashboard:'view_pos', view:'view_pos', running:'view_pos', 'running-admin':'view_pos', new:'create_po', edit:'edit_po', quotes:'view_quotes', 'view-quote':'view_quotes', 'new-quote':'create_quote', 'edit-quote':'edit_quote', 'vr-dashboard':'view_vr', 'view-vr':'view_vr', 'new-vr':'create_vr', 'edit-vr':'edit_vr', deposits:'view_deposits', 'view-deposit':'view_deposits', signoffs:'view_signoffs', 'view-signoff':'view_signoffs', 'new-signoff':'create_signoff', 'edit-signoff':'edit_signoff', 'complete-signoff':'complete_signoff', tasks:'view_tasks', 'task-detail':'view_tasks', 'new-task':'view_tasks', 'edit-task':'view_tasks', 'work-orders':'view_work_orders', 'view-work-order':'view_work_orders', 'new-work-order':'manage_work_orders', schedule:'view_schedule', 'schedule-admin':'manage_schedule', 'schedule-nowork':'manage_schedule', invoices:'view_invoices', 'view-invoice':'view_invoices', 'new-invoice':'create_invoice', 'edit-invoice':'edit_invoice', 'invoice-parts':'view_invoices', 'invoice-setup':'manage_invoice_setup', feedback:'view_feedback', 'feedback-detail':'view_feedback', signatures:'view_signatures', 'new-signature':'manage_signatures', 'signature-editor':'manage_signatures', timeclock:'view_timeclock', 'timeclock-manager':'manage_timeclock' };
+  var _viewPerm = { dashboard:'view_pos', view:'view_pos', running:'view_pos', 'running-admin':'view_pos', new:'create_po', edit:'edit_po', quotes:'view_quotes', 'view-quote':'view_quotes', 'new-quote':'create_quote', 'edit-quote':'edit_quote', 'vr-dashboard':'view_vr', 'view-vr':'view_vr', 'new-vr':'create_vr', 'edit-vr':'edit_vr', deposits:'view_deposits', 'view-deposit':'view_deposits', signoffs:'view_signoffs', 'view-signoff':'view_signoffs', 'new-signoff':'create_signoff', 'edit-signoff':'edit_signoff', 'complete-signoff':'complete_signoff', tasks:'view_tasks', 'task-detail':'view_tasks', 'new-task':'view_tasks', 'edit-task':'view_tasks', 'work-orders':'view_work_orders', 'view-work-order':'view_work_orders', 'new-work-order':'manage_work_orders', schedule:'view_schedule', 'schedule-admin':'manage_schedule', 'schedule-nowork':'manage_schedule', invoices:'view_invoices', 'view-invoice':'view_invoices', 'new-invoice':'create_invoice', 'edit-invoice':'edit_invoice', 'invoice-parts':'view_invoices', 'invoice-setup':'manage_invoice_setup', feedback:'view_feedback', 'feedback-detail':'view_feedback', signatures:'view_signatures', 'new-signature':'manage_signatures', 'signature-editor':'manage_signatures', timeclock:'view_timeclock', 'timeclock-manager':'manage_timeclock', 'org-chart':'view_users' };
   if (_viewPerm[state.currentView] && !can(_viewPerm[state.currentView])) { content.innerHTML = '<div class="alert alert-error">Access denied.</div>'; return; }
   if (state.currentView === 'home') await renderHomeScreen(content);
   else if (state.currentView === 'dashboard') await renderDashboard(content);
@@ -616,6 +616,7 @@ async function render() {
   else if (state.currentView === 'schedule-admin') await renderScheduleAdmin(content);
   else if (state.currentView === 'timeclock') await renderTimeClock(content);
   else if (state.currentView === 'timeclock-manager') await renderTimeClockManager(content);
+  else if (state.currentView === 'org-chart') await renderOrgChart(content);
   else if (state.currentView === 'schedule-nowork') await renderNoWorkReport(content);
   else if (state.currentView === 'documents') await renderDocuments(content);
   else if (state.currentView === 'signatures') await renderSignatures(content);
@@ -1728,6 +1729,8 @@ async function showUserModal(id) {
   if (id) user = _allUsers.find(function(u){ return u.id === id; }) || null;
   var ownerExists = _allUsers.some(function(u){ return u.role === 'owner'; });
   let cities = []; try { cities = (await api('GET', '/cities')).filter(function(c){ return c.active !== false; }); } catch(e) { cities = []; }
+  var _sup = (user && user.supervisor_id) ? String(user.supervisor_id) : '';
+  var reportsOpts = '<option value="">— None —</option>' + _allUsers.filter(function(x){ return !user || x.id !== user.id; }).sort(function(a,b){ return (a.name||'').localeCompare(b.name||''); }).map(function(x){ return '<option value="' + x.id + '"' + (_sup===String(x.id)?' selected':'') + '>' + escHtml(x.name) + '</option>'; }).join('');
   const overlay = document.createElement('div');
   overlay.className = 'modal-overlay';
   overlay.innerHTML =
@@ -1743,7 +1746,7 @@ async function showUserModal(id) {
           '<div class="form-group"><label>Role</label><select id="modal-role">' +'<option value="locksmith"' + (user&&user.role==='locksmith'?' selected':'') + '>Locksmith</option>' +'<option value="locksmith_coordinator"' + (user&&user.role==='locksmith_coordinator'?' selected':'') + '>Locksmith Coordinator</option>' +'<option value="roadside_technician"' + (user&&user.role==='roadside_technician'?' selected':'') + '>Roadside Technician</option>' +'<option value="manager"' + (user&&user.role==='manager'?' selected':'') + '>Manager</option>' +'<option value="admin"' + (user&&user.role==='admin'?' selected':'') + '>Admin</option>' +(((state.user&&state.user.isOwner)||!ownerExists||(user&&user.role==='owner')) ? '<option value="owner"' + (user&&user.role==='owner'?' selected':'') + '>Owner</option>' : '') +'</select></div>' +
           '</div>' +
           '<div class="form-group"><label>Cities <span style="font-weight:400;font-size:0.8em;color:var(--text-muted-color)">(blank = all cities)</span></label><div style="display:flex;flex-wrap:wrap;gap:10px;margin-top:4px">' + (cities.length ? cities.map(function(c){ var cc=(c.code||'').trim(); var on=(user&&user.city_codes&&user.city_codes.indexOf(cc)!==-1); return '<label style="display:inline-flex;align-items:center;gap:5px;font-weight:400;font-size:13px"><input type="checkbox" class="modal-city" value="' + escHtml(cc) + '"' + (on?' checked':'') + ' style="width:auto"> ' + escHtml(c.name) + '</label>'; }).join('') : '<span style="color:var(--text-muted-color);font-size:13px">No cities yet</span>') + '</div></div>' +
-        '<div class="form-group"><label>Pay Structure</label><select id="modal-pay-type">' + '<option value="hourly"' + ((user&&user.pay_type==='hourly')||!user?' selected':'') + '>Hourly</option>' + '<option value="salary"' + (user&&user.pay_type==='salary'?' selected':'') + '>Salary</option>' + '<option value="commission"' + (user&&user.pay_type==='commission'?' selected':'') + '>Commission</option>' + '</select><div style="font-size:0.8em;color:var(--text-muted-color);margin-top:4px">Only Hourly employees are time-tracked and receive late clock-in texts.</div></div>' + '<div class="form-group"><label>Pulsar Name <span style="font-weight:400;font-size:0.8em;color:var(--text-muted-color)">name as it appears in the call report</span></label><input type="text" id="modal-pulsar" value="' + escHtml(user ? user.pulsar_name || '' : '') + '" placeholder="e.g. Albright, Benjamin" /></div>' +
+        '<div class="form-group"><label>Pay Structure</label><select id="modal-pay-type">' + '<option value="hourly"' + ((user&&user.pay_type==='hourly')||!user?' selected':'') + '>Hourly</option>' + '<option value="salary"' + (user&&user.pay_type==='salary'?' selected':'') + '>Salary</option>' + '<option value="commission"' + (user&&user.pay_type==='commission'?' selected':'') + '>Commission</option>' + '</select><div style="font-size:0.8em;color:var(--text-muted-color);margin-top:4px">Only Hourly employees are time-tracked and receive late clock-in texts.</div></div>' + '<div class="form-group"><label>Pulsar Name <span style="font-weight:400;font-size:0.8em;color:var(--text-muted-color)">name as it appears in the call report</span></label><input type="text" id="modal-pulsar" value="' + escHtml(user ? user.pulsar_name || '' : '') + '" placeholder="e.g. Albright, Benjamin" /></div>' + '<div class="form-group"><label>Reports To <span style="font-weight:400;font-size:0.8em;color:var(--text-muted-color)">who manages this person (drives late-clock-in texts &amp; the org chart)</span></label><select id="modal-reports-to">' + reportsOpts + '</select></div>' +
         '<div class="form-group" style="display:flex;align-items:center;gap:10px">' +
           '<input type="checkbox" id="modal-receive-emails" style="width:auto"' + (user && user.receive_emails === false ? '' : ' checked') + ' />' +
           '<label for="modal-receive-emails" style="margin:0;cursor:pointer">Receive email notifications</label>' +
@@ -1779,14 +1782,15 @@ async function saveUser(id, btn) {
   var _cityNodes = document.querySelectorAll('.modal-city'); var city_codes = []; for (var _i=0;_i<_cityNodes.length;_i++){ if(_cityNodes[_i].checked) city_codes.push(_cityNodes[_i].value); }
   var pulsar_name=(document.getElementById('modal-pulsar')||{}).value; if(pulsar_name) pulsar_name=pulsar_name.trim();
   var pay_type=(document.getElementById('modal-pay-type')||{}).value||'hourly';
+  var supervisor_id=(document.getElementById('modal-reports-to')||{}).value; supervisor_id = supervisor_id ? parseInt(supervisor_id,10) : null;
   if (phone && !/^\+1[0-9]{10}$/.test(phone)) {
     document.getElementById('modal-error').innerHTML = '<div class="alert alert-error">Phone must be in format +13215550000 (+1 followed by 10 digits)</div>';
     return;
   }
   try {
     btn.disabled = true;
-    if (id) { await api('PUT', '/users/' + id, { name, email, password: password || undefined, role, phone: phone || undefined, receive_emails, receive_sms, city_codes, pulsar_name, hide_from_schedule, pay_type, extra_perms }); }
-    else { await api('POST', '/users', { name, email, password: password || undefined, role, phone: phone || undefined, receive_emails, receive_sms, city_codes, pulsar_name, hide_from_schedule, pay_type, extra_perms }); }
+    if (id) { await api('PUT', '/users/' + id, { name, email, password: password || undefined, role, phone: phone || undefined, receive_emails, receive_sms, city_codes, pulsar_name, hide_from_schedule, pay_type, supervisor_id, extra_perms }); }
+    else { await api('POST', '/users', { name, email, password: password || undefined, role, phone: phone || undefined, receive_emails, receive_sms, city_codes, pulsar_name, hide_from_schedule, pay_type, supervisor_id, extra_perms }); }
     document.querySelector('.modal-overlay').remove();
     navigate('users');
   } catch(err) {
@@ -12224,4 +12228,40 @@ async function tcSubmit(id,ws){
   if(!confirm('Submit this week and email the Excel sheet to payroll?'))return;
   try{await api('POST','/timeclock/week/submit',{user_id:id,weekStart:ws});alert('Submitted - Excel emailed to payroll.');}catch(e){alert(e.message);}
   tcReload();
+}
+
+
+/* ===================== Org Chart ===================== */
+function tcInjectOrgStyles(){
+  if(document.getElementById('tc-org-styles'))return;
+  var el=document.createElement('style');el.id='tc-org-styles';
+  el.textContent=
+    '.org-tree{padding-left:2px}'+
+    '.org-node{position:relative}'+
+    '.org-card{display:flex;align-items:center;gap:10px;background:var(--card-bg-2,#202020);border:1px solid var(--border,#2c2c2c);border-radius:12px;padding:10px 12px;margin:6px 0}'+
+    '.org-kids{margin-left:20px;padding-left:16px;border-left:2px solid var(--border,#2c2c2c)}';
+  document.head.appendChild(el);
+}
+async function renderOrgChart(content){
+  tcInjectStyles();tcInjectMgrStyles();tcInjectOrgStyles();
+  content.innerHTML='<div class="tc-wrap tc-wide"><div class="tc-card"><div class="tc-dim">Loading…</div></div></div>';
+  var users;
+  try{users=await api('GET','/users');}catch(e){content.innerHTML='<div class="tc-wrap tc-wide"><div class="tc-card">Could not load org chart.</div></div>';return;}
+  users=(users||[]).filter(function(u){return u.active!==false;});
+  var byId={};users.forEach(function(u){byId[u.id]=u;u._kids=[];});
+  var roots=[];
+  users.forEach(function(u){var pid=u.supervisor_id;if(pid&&byId[pid]){byId[pid]._kids.push(u);}else{roots.push(u);}});
+  function sortKids(list){list.sort(function(a,b){return (a.name||'').localeCompare(b.name||'');});list.forEach(function(u){sortKids(u._kids);});}
+  sortKids(roots);
+  function nodeHtml(u){
+    var n=u._kids.length;
+    var count=n?'<span class="tc-dim" style="font-size:11px"> · '+n+' report'+(n>1?'s':'')+'</span>':'';
+    var kids=n?'<div class="org-kids">'+u._kids.map(nodeHtml).join('')+'</div>':'';
+    return '<div class="org-node"><div class="org-card"><span class="tc-av">'+tcInitials(u.name)+'</span>'+
+      '<div style="min-width:0"><div class="tc-nm">'+escHtml(u.name||'')+'</div>'+
+      '<div class="tc-mt">'+escHtml(tcRoleLabel(u.role))+count+'</div></div></div>'+kids+'</div>';
+  }
+  var body=roots.map(nodeHtml).join('')||'<div class="tc-dim">No users.</div>';
+  var note=(typeof can==='function'&&can('manage_users'))?'<div class="tc-dim" style="font-size:12px;margin-top:14px">Set who each person reports to in Users → edit a person → Reports To. People with no manager set show at the top.</div>':'';
+  content.innerHTML='<div class="tc-wrap tc-wide"><div class="tc-card"><div class="tc-h">Organization Chart</div><div class="org-tree">'+body+'</div>'+note+'</div></div>';
 }

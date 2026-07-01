@@ -33,7 +33,7 @@ async function settingVal(key, fallback) {
 // City roles -> managers assigned to the shift's city. Locksmith coordinators ->
 // their supervisor (managed outside a city). Fallback to admins.
 async function managerRecipients(employee, cityCode) {
-  if (employee.role === 'locksmith_coordinator' && employee.supervisor_id) {
+  if (employee.supervisor_id) {
     const r = await pool.query('SELECT id, name, phone, email, receive_sms FROM users WHERE id = $1 AND active = true', [employee.supervisor_id]);
     if (r.rows.length) return r.rows;
   }
