@@ -1750,7 +1750,7 @@ async function showUserModal(id) {
           '</div>' +
           '<div class="form-group"><label>Title <span style="font-weight:400;font-size:0.8em;color:var(--text-muted-color)">shown on the org chart &amp; user lists in place of the role (optional)</span></label><input type="text" id="modal-title" value="' + escHtml(user ? user.title || '' : '') + '" placeholder="e.g. Field Operations Manager" /></div>' +
           '<div class="form-group"><label>Cities <span style="font-weight:400;font-size:0.8em;color:var(--text-muted-color)">(blank = all cities)</span></label><div style="display:flex;flex-wrap:wrap;gap:10px;margin-top:4px">' + (cities.length ? cities.map(function(c){ var cc=(c.code||'').trim(); var on=(user&&user.city_codes&&user.city_codes.indexOf(cc)!==-1); return '<label style="display:inline-flex;align-items:center;gap:5px;font-weight:400;font-size:13px"><input type="checkbox" class="modal-city" value="' + escHtml(cc) + '"' + (on?' checked':'') + ' style="width:auto"> ' + escHtml(c.name) + '</label>'; }).join('') : '<span style="color:var(--text-muted-color);font-size:13px">No cities yet</span>') + '</div></div>' +
-        '<div class="form-group"><label>Pay Structure</label><select id="modal-pay-type">' + '<option value="hourly"' + ((user&&user.pay_type==='hourly')||!user?' selected':'') + '>Hourly</option>' + '<option value="salary"' + (user&&user.pay_type==='salary'?' selected':'') + '>Salary</option>' + '<option value="commission"' + (user&&user.pay_type==='commission'?' selected':'') + '>Commission</option>' + '</select><div style="font-size:0.8em;color:var(--text-muted-color);margin-top:4px">Only Hourly employees are time-tracked and receive late clock-in texts.</div></div>' + '<div class="form-group"><label>Pulsar Name <span style="font-weight:400;font-size:0.8em;color:var(--text-muted-color)">name as it appears in the call report</span></label><input type="text" id="modal-pulsar" value="' + escHtml(user ? user.pulsar_name || '' : '') + '" placeholder="e.g. Albright, Benjamin" /></div>' + '<div class="form-group"><label>Reports To <span style="font-weight:400;font-size:0.8em;color:var(--text-muted-color)">who manages this person (drives late-clock-in texts &amp; the org chart)</span></label><select id="modal-reports-to">' + reportsOpts + '</select></div>' +
+        '<div class="form-group"><label>Pay Structure</label><select id="modal-pay-type">' + '<option value="hourly"' + ((user&&user.pay_type==='hourly')||!user?' selected':'') + '>Hourly</option>' + '<option value="salary"' + (user&&user.pay_type==='salary'?' selected':'') + '>Salary</option>' + '<option value="commission"' + (user&&user.pay_type==='commission'?' selected':'') + '>Commission</option>' + '</select><div style="font-size:0.8em;color:var(--text-muted-color);margin-top:4px">Only Hourly employees are time-tracked and receive late clock-in texts.</div></div>' + '<div class="form-group"><label>Pulsar Name <span style="font-weight:400;font-size:0.8em;color:var(--text-muted-color)">name as it appears in the call report</span></label><input type="text" id="modal-pulsar" value="' + escHtml(user ? user.pulsar_name || '' : '') + '" placeholder="e.g. Albright, Benjamin" /></div>' + '<div class="form-group"><label>Reports To <span style="font-weight:400;font-size:0.8em;color:var(--text-muted-color)">who manages this person (drives late-clock-in texts &amp; the org chart)</span></label><select id="modal-reports-to">' + reportsOpts + '</select></div>' + '<div class="form-group"><label>Org Level <span style="font-weight:400;font-size:0.8em;color:var(--text-muted-color)">1 = top; sets the row on the org chart (blank = auto by depth)</span></label><input type="number" min="1" id="modal-org-level" value="' + escHtml(user && user.org_level ? String(user.org_level) : '') + '" placeholder="e.g. 2" /></div>' +
         '<div class="form-group" style="display:flex;align-items:center;gap:10px">' +
           '<input type="checkbox" id="modal-receive-emails" style="width:auto"' + (user && user.receive_emails === false ? '' : ' checked') + ' />' +
           '<label for="modal-receive-emails" style="margin:0;cursor:pointer">Receive email notifications</label>' +
@@ -1788,14 +1788,15 @@ async function saveUser(id, btn) {
   var pay_type=(document.getElementById('modal-pay-type')||{}).value||'hourly';
   var supervisor_id=(document.getElementById('modal-reports-to')||{}).value; supervisor_id = supervisor_id ? parseInt(supervisor_id,10) : null;
   var title=(document.getElementById('modal-title')||{}).value; if(title) title=title.trim();
+  var org_level=(document.getElementById('modal-org-level')||{}).value; org_level = org_level ? parseInt(org_level,10) : null;
   if (phone && !/^\+1[0-9]{10}$/.test(phone)) {
     document.getElementById('modal-error').innerHTML = '<div class="alert alert-error">Phone must be in format +13215550000 (+1 followed by 10 digits)</div>';
     return;
   }
   try {
     btn.disabled = true;
-    if (id) { await api('PUT', '/users/' + id, { name, email, password: password || undefined, role, phone: phone || undefined, receive_emails, receive_sms, city_codes, pulsar_name, hide_from_schedule, pay_type, supervisor_id, extra_perms, title }); }
-    else { await api('POST', '/users', { name, email, password: password || undefined, role, phone: phone || undefined, receive_emails, receive_sms, city_codes, pulsar_name, hide_from_schedule, pay_type, supervisor_id, extra_perms, title }); }
+    if (id) { await api('PUT', '/users/' + id, { name, email, password: password || undefined, role, phone: phone || undefined, receive_emails, receive_sms, city_codes, pulsar_name, hide_from_schedule, pay_type, supervisor_id, extra_perms, title, org_level }); }
+    else { await api('POST', '/users', { name, email, password: password || undefined, role, phone: phone || undefined, receive_emails, receive_sms, city_codes, pulsar_name, hide_from_schedule, pay_type, supervisor_id, extra_perms, title, org_level }); }
     document.querySelector('.modal-overlay').remove();
     navigate('users');
   } catch(err) {
@@ -1990,6 +1991,11 @@ async function renderCompanyInfo(el) {
       '<div class="form-group"><label>Address Line 1</label><input type="text" id="company-address" value="' + escHtml(settings.company_address || '') + '" placeholder="e.g. 589 Dorset Court" /></div>' +
       '<div class="form-group"><label>City, State, ZIP</label><input type="text" id="company-city-zip" value="' + escHtml(settings.company_city_state_zip || '') + '" placeholder="e.g. Mount Dora, Florida 32757" /></div>' +
       '<button class="btn btn-primary" onclick="saveCompanyInfo()">Save Company Info</button>' +
+    '</div></div>' +
+    '<div class="card mt-4" style="margin-top:20px"><div class="card-header"><span class="card-title">Payroll</span></div><div class="card-body">' +
+      '<p class="text-muted mb-4" style="margin-bottom:16px">Approved time sheets are emailed here as an Excel attachment when a manager submits a week. Leave blank to fall back to the system sender address.</p>' +
+      '<div class="form-group"><label>Payroll Email</label><input type="email" id="payroll-email" value="' + escHtml(settings.timeclock_payroll_email || '') + '" placeholder="e.g. payroll@popalockar.com" /></div>' +
+      '<button class="btn btn-primary" onclick="savePayrollEmail()">Save Payroll Email</button>' +
     '</div></div>';
 }
 
@@ -3031,6 +3037,21 @@ async function saveCompanyInfo() {
       }
     }
     document.getElementById('settings-success').innerHTML = '<div class="alert alert-success">Company information saved.</div>';
+    setTimeout(function() { const el = document.getElementById('settings-success'); if (el) el.innerHTML = ''; }, 4000);
+  } catch(err) {
+    document.getElementById('settings-error').innerHTML = '<div class="alert alert-error">' + escHtml(err.message) + '</div>';
+  }
+}
+
+async function savePayrollEmail() {
+  const val = (document.getElementById('payroll-email') || {}).value || '';
+  try {
+    if (val.trim()) {
+      await api('PUT', '/settings/timeclock_payroll_email', { value: val.trim() });
+    } else {
+      await api('DELETE', '/settings/timeclock_payroll_email').catch(function(){});
+    }
+    document.getElementById('settings-success').innerHTML = '<div class="alert alert-success">Payroll email saved.</div>';
     setTimeout(function() { const el = document.getElementById('settings-success'); if (el) el.innerHTML = ''; }, 4000);
   } catch(err) {
     document.getElementById('settings-error').innerHTML = '<div class="alert alert-error">' + escHtml(err.message) + '</div>';
@@ -12239,44 +12260,54 @@ function tcInjectOrgStyles(){
   if(document.getElementById('tc-org-styles'))return;
   var el=document.createElement('style');el.id='tc-org-styles';
   el.textContent=
-    '.org-scroll{overflow-x:auto;padding:14px 4px 6px}'+
-    '.org-tree{display:inline-block;min-width:100%;text-align:center}'+
-    '.org-tree ul{display:flex;justify-content:center;padding-top:22px;position:relative;margin:0;padding-left:0;list-style:none}'+
-    '.org-tree li{list-style:none;position:relative;padding:22px 10px 0 10px;text-align:center}'+
-    '.org-tree li::before,.org-tree li::after{content:"";position:absolute;top:0;right:50%;border-top:2px solid var(--border,#2c2c2c);width:50%;height:22px}'+
-    '.org-tree li::after{right:auto;left:50%;border-left:2px solid var(--border,#2c2c2c)}'+
-    '.org-tree li:only-child::after,.org-tree li:only-child::before{display:none}'+
-    '.org-tree li:only-child{padding-top:0}'+
-    '.org-tree li:first-child::before,.org-tree li:last-child::after{border:0 none}'+
-    '.org-tree li:last-child::before{border-right:2px solid var(--border,#2c2c2c);border-radius:0 6px 0 0}'+
-    '.org-tree li:first-child::after{border-radius:6px 0 0 0}'+
-    '.org-tree ul ul::before{content:"";position:absolute;top:0;left:50%;border-left:2px solid var(--border,#2c2c2c);width:0;height:22px}'+
-    '.org-tree > ul > li{padding-top:0}'+
-    '.org-tree > ul > li::before,.org-tree > ul > li::after{display:none}'+
-    '.org-box{display:inline-flex;flex-direction:column;align-items:center;gap:5px;min-width:130px;background:var(--card-bg-2,#202020);border:1px solid var(--border,#2c2c2c);border-radius:12px;padding:12px 14px}'+
+    '.org-scroll{overflow-x:auto;padding:8px 4px 4px}'+
+    '.org-canvas{position:relative;margin:0 auto}'+
+    '.org-canvas svg{position:absolute;inset:0;z-index:0}'+
+    '.org-box{position:absolute;width:152px;display:flex;flex-direction:column;align-items:center;gap:3px;background:var(--card-bg-2,#202020);border:1px solid var(--border,#2c2c2c);border-radius:12px;padding:11px 12px;z-index:1}'+
     '.org-box.root{border-color:#f97316}'+
+    '.org-chip{position:absolute;top:7px;right:8px;font-size:9.5px;font-weight:800;color:var(--text-muted-color,#71717a);background:rgba(0,0,0,.28);border:1px solid var(--border,#2c2c2c);border-radius:6px;padding:1px 5px}'+
     '.org-av{width:38px;height:38px;border-radius:50%;background:#c2560f;color:#fff;display:inline-flex;align-items:center;justify-content:center;font-weight:700;font-size:14px}'+
-    '.org-nm{font-weight:700;font-size:13px;white-space:nowrap}'+
-    '.org-rl{font-size:11px;color:var(--text-muted-color,#a1a1aa)}';
+    '.org-nm{font-weight:700;font-size:13px;text-align:center;line-height:1.15;white-space:nowrap}'+
+    '.org-tl{font-size:11px;color:#fdba74;font-weight:600;text-align:center;white-space:nowrap}'+
+    '.org-rl{font-size:10.5px;color:var(--text-muted-color,#71717a);white-space:nowrap}';
   document.head.appendChild(el);
 }
 async function renderOrgChart(content){
   tcInjectStyles();tcInjectOrgStyles();
-  content.innerHTML='<div class="tc-wrap" style="max-width:1100px"><div class="tc-card"><div class="tc-dim">Loading…</div></div></div>';
+  content.innerHTML='<div class="tc-wrap" style="max-width:100%"><div class="tc-card"><div class="tc-dim">Loading…</div></div></div>';
   var users;
-  try{users=await api('GET','/users');}catch(e){content.innerHTML='<div class="tc-wrap" style="max-width:1100px"><div class="tc-card">Could not load org chart.</div></div>';return;}
+  try{users=await api('GET','/users');}catch(e){content.innerHTML='<div class="tc-wrap"><div class="tc-card">Could not load org chart.</div></div>';return;}
   users=(users||[]).filter(function(u){return u.active!==false;});
+  if(!users.length){content.innerHTML='<div class="tc-wrap"><div class="tc-card"><div class="tc-h">Organization Chart</div><div class="tc-dim">No users.</div></div></div>';return;}
   var byId={};users.forEach(function(u){byId[u.id]=u;u._kids=[];});
   var roots=[];
-  users.forEach(function(u){var pid=u.supervisor_id;if(pid&&byId[pid]){byId[pid]._kids.push(u);}else{roots.push(u);}});
-  function sortKids(list){list.sort(function(a,b){return (a.name||'').localeCompare(b.name||'');});list.forEach(function(u){sortKids(u._kids);});}
-  sortKids(roots);
-  function node(u,isRoot){
-    var kids=u._kids.length?'<ul>'+u._kids.map(function(k){return node(k,false);}).join('')+'</ul>':'';
-    return '<li><div class="org-box'+(isRoot?' root':'')+'"><span class="org-av">'+tcInitials(u.name)+'</span>'+
-      '<div class="org-nm">'+escHtml(u.name||'')+'</div><div class="org-rl">'+escHtml(userTitle(u))+'</div></div>'+kids+'</li>';
+  users.forEach(function(u){var pid=u.supervisor_id;if(pid&&byId[pid]&&pid!==u.id){byId[pid]._kids.push(u);}else{roots.push(u);}});
+  function lvlOf(u,guard){
+    if(u._lv)return u._lv;
+    guard=guard||0;
+    var v;
+    if(u.org_level&&u.org_level>0)v=u.org_level;
+    else{var s=u.supervisor_id&&byId[u.supervisor_id];v=(s&&guard<50)?lvlOf(s,guard+1)+1:1;}
+    u._lv=v;return v;
   }
-  var tree=roots.length?('<div class="org-scroll"><div class="org-tree"><ul>'+roots.map(function(r){return node(r,true);}).join('')+'</ul></div></div>'):'<div class="tc-dim">No users.</div>';
-  var note=(typeof can==='function'&&can('manage_users'))?'<div class="tc-dim" style="font-size:12px;margin-top:8px">Set who each person reports to in Users → edit a person → Reports To. Anyone without a manager shows at the top.</div>':'';
-  content.innerHTML='<div class="tc-wrap" style="max-width:1100px"><div class="tc-card"><div class="tc-h">Organization Chart</div>'+tree+note+'</div></div>';
+  users.forEach(function(u){lvlOf(u);});
+  function byRank(a,b){return (a._lv-b._lv)||((a.org_level||999)-(b.org_level||999))||(a.name||'').localeCompare(b.name||'');}
+  var ord=0;
+  function dfs(u){u._ord=ord++;u._kids.slice().sort(byRank).forEach(dfs);}
+  roots.slice().sort(function(a,b){return (a.name||'').localeCompare(b.name||'');}).forEach(dfs);
+  var bands={};users.forEach(function(u){(bands[u._lv]=bands[u._lv]||[]).push(u);});
+  var levels=Object.keys(bands).map(Number).sort(function(a,b){return a-b;});
+  levels.forEach(function(L){bands[L].sort(function(a,b){return a._ord-b._ord;});});
+  var slotW=180,boxW=152,bandH=128,boxH=86,padTop=14;
+  var maxN=1;levels.forEach(function(L){if(bands[L].length>maxN)maxN=bands[L].length;});
+  var W=Math.max(maxN*slotW,340),H=levels.length*bandH+padTop;
+  var pos={};
+  levels.forEach(function(L,bi){var arr=bands[L],n=arr.length,startX=(W-n*slotW)/2;arr.forEach(function(u,i){pos[u.id]={cx:startX+i*slotW+slotW/2,yTop:bi*bandH+padTop};});});
+  var paths='';
+  users.forEach(function(u){var s=u.supervisor_id&&byId[u.supervisor_id];if(!s||!pos[s.id]||!pos[u.id])return;var p=pos[s.id],c=pos[u.id];var pby=p.yTop+boxH;if(c.yTop<=pby)return;var midY=pby+(c.yTop-pby)/2;paths+='<path d="M'+p.cx+' '+pby+' V'+midY+' H'+c.cx+' V'+c.yTop+'" fill="none" stroke="#3a3a3a" stroke-width="2"/>';});
+  var boxes='';
+  users.forEach(function(u){var pp=pos[u.id];var isRoot=!(u.supervisor_id&&byId[u.supervisor_id]);var sub=u.title?('<div class="org-tl">'+escHtml(u.title)+'</div>'):('<div class="org-rl">'+escHtml(tcRoleLabel(u.role))+'</div>');boxes+='<div class="org-box'+(isRoot?' root':'')+'" style="left:'+(pp.cx-boxW/2)+'px;top:'+pp.yTop+'px"><span class="org-chip">L'+u._lv+'</span><span class="org-av">'+tcInitials(u.name)+'</span><div class="org-nm">'+escHtml(u.name||'')+'</div>'+sub+'</div>';});
+  var svg='<svg width="'+W+'" height="'+H+'" viewBox="0 0 '+W+' '+H+'">'+paths+'</svg>';
+  var note=(typeof can==='function'&&can('manage_users'))?'<div class="tc-dim" style="font-size:12px;margin-top:10px">Set each person\'s Reports To (draws the lines) and Org Level (the row) in Users → edit. Blank level auto-places them by depth under their manager.</div>':'';
+  content.innerHTML='<div class="tc-wrap" style="max-width:100%"><div class="tc-card"><div class="tc-h">Organization Chart</div><div class="org-scroll"><div class="org-canvas" style="width:'+W+'px;height:'+H+'px">'+svg+boxes+'</div></div>'+note+'</div></div>';
 }

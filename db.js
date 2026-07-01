@@ -1394,7 +1394,8 @@ async function initDB() {
     // New user columns: pay structure + supervisor (for coordinator late-alert routing).
     await client.query(
       "ALTER TABLE users ADD COLUMN IF NOT EXISTS pay_type VARCHAR(12) NOT NULL DEFAULT 'hourly';" +   // hourly | salary | commission
-      'ALTER TABLE users ADD COLUMN IF NOT EXISTS supervisor_id INTEGER;'
+      'ALTER TABLE users ADD COLUMN IF NOT EXISTS supervisor_id INTEGER;' +
+      'ALTER TABLE users ADD COLUMN IF NOT EXISTS org_level INTEGER;'
     );
     // Late-alert fire-once flag on the matched shift.
     await client.query('ALTER TABLE shifts ADD COLUMN IF NOT EXISTS late_alerted_at TIMESTAMPTZ;');

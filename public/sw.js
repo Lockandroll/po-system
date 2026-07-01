@@ -2,7 +2,7 @@
 // IMPORTANT: never use backticks/template literals in this file (Windows
 // corrupts backticks in .js files). Use string concatenation only.
 // Bump CACHE_VERSION whenever the shell or cached assets change.
-var CACHE_VERSION = 'nova-v81';
+var CACHE_VERSION = 'nova-v82';
 var SHELL_ASSETS = [
   '/',
   '/index.html',
@@ -122,4 +122,7 @@ self.addEventListener('notificationclick', function (event) {
       for (var i = 0; i < list.length; i++) {
         if (list[i].url.indexOf(url) !== -1 && 'focus' in list[i]) return list[i].focus();
       }
-      if (clients.openWindow) return clients.openWindow(url)
+      if (clients.openWindow) return clients.openWindow(url);
+    })
+  );
+});
