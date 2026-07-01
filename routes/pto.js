@@ -538,7 +538,8 @@ router.put('/user/:id', requireAuth, requirePermission('manage_pto'), async (req
   if (!isAdmin && !(await inDownline(req.user.id, target))) return res.status(403).json({ error: 'Not in your team' });
   const b = req.body || {};
   const hire = RE_DATE.test(b.hire_date) ? b.hire_date : null;
-  await pool.query('UPDATE users SET hire_date = COALESCE($1, hire_date), pto_exempt = $2 WHERE id = $3', [hire, b.exempt === true, target]);
+  const exemptVal = (b.exempt === true) ? true : (b.exempt === false ? false : null); // only change when provided
+  await pool.query('UPDATE users SET hire_date = COALESCE($1, hire_date), pto_exempt = COALESCE($2, pto_exempt) WHERE id = $3', [hire, exemptVal, target]);
 
   if (isAdmin && b.set_balance_days !== undefined && b.set_balance_days !== null && String(b.set_balance_days) !== '') {
     const targetHours = Number(b.set_balance_days) * HRS_PER_DAY;

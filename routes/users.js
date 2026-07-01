@@ -57,7 +57,7 @@ async function sendInvite(user, invitedByName) {
 // List all users (admin only)
 router.get('/', requireAuth, requirePermission('view_users'), async (req, res) => {
   const { rows } = await pool.query(
-    'SELECT id, name, email, phone, role, title, active, receive_emails, receive_sms, pulsar_name, hide_from_schedule, hide_from_org, pay_type, supervisor_id, org_level, hire_date, org_x, extra_perms, created_at, last_login_at, last_seen_at FROM users ORDER BY active DESC, name ASC'
+    'SELECT id, name, email, phone, role, title, active, receive_emails, receive_sms, pulsar_name, hide_from_schedule, hide_from_org, pay_type, supervisor_id, org_level, hire_date, pto_balance_hours, org_x, extra_perms, created_at, last_login_at, last_seen_at FROM users ORDER BY active DESC, name ASC'
   );
   const mc = await pool.query('SELECT user_id, city_code FROM user_cities');
   const byU = {};
@@ -218,6 +218,91 @@ router.patch('/:id/org', requireAuth, requirePermission('manage_users'), async (
   const { rows } = await pool.query('UPDATE users SET ' + sets.join(', ') + ' WHERE id=$' + i + ' RETURNING id', vals);
   if (!rows.length) return res.status(404).json({ error: 'User not found.' });
   res.json({ ok: true });
+});
+
+// ---- Bulk CSV import: create or update users, matched by email --------------
+router.post('/import', requireAuth, requirePermission('manage_users'), async (req, res) => {
+  const rows = Array.isArray(req.body && req.body.rows) ? req.body.rows : null;
+  if (!rows || !rows.length) return res.status(400).json({ error: 'No rows to import' });
+  const HRS = 8;
+  const norm = function (v) { return (v === undefined || v === null) ? '' : String(v).trim(); };
+  const asBool = function (v, dflt) { const s = norm(v).toLowerCase(); if (s === '') return dflt; return (s === 'true' || s === 'yes' || s === '1' || s === 'y'); };
+  const allUsers = (await pool.query('SELECT id, LOWER(email) AS email FROM users')).rows;
+  const emailToId = {}; allUsers.forEach(function (u) { emailToId[u.email] = u.id; });
+
+  let created = 0, updated = 0; const errors = [];
+  for (let idx = 0; idx < rows.length; idx++) {
+    const r = rows[idx] || {};
+    const email = norm(r.email).toLowerCase();
+    const name = norm(r.name);
+    if (!email) { errors.push({ row: idx + 1, error: 'Missing email' }); continue; }
+    try {
+      const role = norm(r.role).toLowerCase();
+      if (role && !VALID_ROLES.includes(role)) { errors.push({ row: idx + 1, email: email, error: 'Invalid role: ' + role }); continue; }
+      const pay_type = ['hourly', 'salary', 'commission'].indexOf(norm(r.pay_type).toLowerCase()) !== -1 ? norm(r.pay_type).toLowerCase() : null;
+      const phone = norm(r.phone) || null;
+      const title = norm(r.title) || null;
+      const org_level = norm(r.org_level) ? (parseInt(r.org_level, 10) || null) : null;
+      const hire_date = /^\d{4}-\d{2}-\d{2}$/.test(norm(r.hire_date)) ? norm(r.hire_date) : null;
+      const supEmail = norm(r.supervisor_email).toLowerCase();
+      const supervisor_id = supEmail ? (emailToId[supEmail] || null) : null;
+      if (supEmail && !supervisor_id) errors.push({ row: idx + 1, email: email, error: 'Supervisor not found: ' + supEmail + ' (left blank)' });
+      const balRaw = norm(r.pto_balance_days);
+      const setBal = balRaw !== '' && !isNaN(Number(balRaw));
+      const recvE = asBool(r.receive_emails, true);
+      const recvS = asBool(r.receive_sms, false);
+
+      let userId = emailToId[email];
+      if (userId) {
+        const sets = ['email = $1']; const vals = [email]; let p = 2;
+        if (name) { sets.push('name = $' + p); vals.push(name); p++; }
+        if (role) { sets.push('role = $' + p); vals.push(role); p++; }
+        if (phone !== null) { sets.push('phone = $' + p); vals.push(phone); p++; }
+        if (title !== null) { sets.push('title = $' + p); vals.push(title); p++; }
+        if (pay_type) { sets.push('pay_type = $' + p); vals.push(pay_type); p++; }
+        if (org_level !== null) { sets.push('org_level = $' + p); vals.push(org_level); p++; }
+        if (hire_date) { sets.push('hire_date = $' + p); vals.push(hire_date); p++; }
+        if (supervisor_id) { sets.push('supervisor_id = $' + p); vals.push(supervisor_id); p++; }
+        if (norm(r.receive_emails) !== '') { sets.push('receive_emails = $' + p); vals.push(recvE); p++; }
+        if (norm(r.receive_sms) !== '') { sets.push('receive_sms = $' + p); vals.push(recvS); p++; }
+        vals.push(userId);
+        await pool.query('UPDATE users SET ' + sets.join(', ') + ' WHERE id = $' + p, vals);
+        updated++;
+      } else {
+        if (!name) { errors.push({ row: idx + 1, email: email, error: 'New user needs a name' }); continue; }
+        const roleFinal = role || 'locksmith';
+        if (roleFinal === 'owner') { errors.push({ row: idx + 1, email: email, error: 'Cannot bulk-create an owner' }); continue; }
+        const password_hash = await bcrypt.hash(crypto.randomBytes(24).toString('hex'), 12);
+        const ins = await pool.query(
+          'INSERT INTO users (name, email, password_hash, role, phone, receive_emails, receive_sms, pay_type, supervisor_id, title, org_level, hire_date) ' +
+          'VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12) RETURNING id',
+          [name, email, password_hash, roleFinal, phone, recvE, recvS, (pay_type || 'hourly'), supervisor_id, title, org_level, hire_date]
+        );
+        userId = ins.rows[0].id;
+        emailToId[email] = userId;
+        created++;
+      }
+
+      if (norm(r.cities) !== '') { try { await setUserCities(userId, norm(r.cities).split(/[;|]/)); } catch (e) { /* ignore city errors */ } }
+
+      if (setBal) {
+        const targetHours = Number(balRaw) * HRS;
+        const cur = await pool.query('SELECT COALESCE(pto_balance_hours,0) AS b FROM users WHERE id = $1', [userId]);
+        const delta = targetHours - Number(cur.rows[0].b);
+        if (delta !== 0) {
+          await pool.query(
+            'INSERT INTO pto_ledger (user_id, entry_date, kind, amount_hours, description, created_by) ' +
+            "VALUES ($1, CURRENT_DATE, 'adjustment', $2, $3, $4)",
+            [userId, delta, 'Opening balance set to ' + Number(balRaw) + ' days (CSV import)', req.user.id]
+          );
+          await pool.query('UPDATE users SET pto_balance_hours = $1 WHERE id = $2', [targetHours, userId]);
+        }
+      }
+    } catch (e) {
+      errors.push({ row: idx + 1, email: email, error: e.message });
+    }
+  }
+  res.json({ created: created, updated: updated, errors: errors });
 });
 
 module.exports = router;

@@ -391,7 +391,7 @@ if ('serviceWorker' in navigator) {
     document.body.appendChild(b);
     return b;
   }
-  var logo = '<div style="flex-shrink:0;width:36px;height:36px;border-radius:8px;background:#0f0f0f;display:flex;align-items:center;justify-content:center;color:#f97316;font-weight:800;font-size:18px">N</div>';
+  var logo = '<img src="/icon-192.png" alt="Nova" style="flex-shrink:0;width:36px;height:36px;border-radius:8px" />';
   var closeBtn = '<button onclick="window.__novaInstallDismiss()" aria-label="Dismiss" style="background:none;border:none;color:#888;font-size:22px;line-height:1;cursor:pointer;flex-shrink:0;padding:0 2px">&times;</button>';
   if (isIOS) {
     setTimeout(function () {
@@ -521,7 +521,3 @@ if ('serviceWorker' in navigator) {
   });
   var appEl = document.getElementById("app");
   if (appEl) obs.observe(appEl, { childList:true, subtree:true });
-})();
-</script>
-</body>
-</html>

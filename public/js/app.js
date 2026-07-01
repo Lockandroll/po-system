@@ -1642,6 +1642,71 @@ var _usersPage = 1;
 var _usersSearch = '';
 var _usersPageSize = 15;
 
+var USERS_CSV_COLS = ['name','email','role','phone','title','pay_type','org_level','supervisor_email','hire_date','pto_balance_days','cities','receive_emails','receive_sms'];
+function usersCsvEsc(v){ v = (v==null?'':String(v)); return /[",\n]/.test(v) ? '"'+v.replace(/"/g,'""')+'"' : v; }
+function usersDownloadText(fname, text){
+  var blob=new Blob([text],{type:'text/csv;charset=utf-8'}); var url=URL.createObjectURL(blob);
+  var a=document.createElement('a'); a.href=url; a.download=fname; document.body.appendChild(a); a.click(); document.body.removeChild(a); setTimeout(function(){URL.revokeObjectURL(url);},1000);
+}
+function usersExportCsv(){
+  var byId={}; (_usersData||[]).forEach(function(u){ byId[u.id]=u; });
+  var lines=[USERS_CSV_COLS.join(',')];
+  (_usersData||[]).forEach(function(u){
+    var sup = (u.supervisor_id && byId[u.supervisor_id]) ? byId[u.supervisor_id].email : '';
+    var balDays = (u.pto_balance_hours!=null && u.pto_balance_hours!=='') ? String(Number(u.pto_balance_hours)/8) : '';
+    var row=[u.name||'', u.email||'', u.role||'', u.phone||'', u.title||'', u.pay_type||'', (u.org_level!=null?u.org_level:''), sup, (u.hire_date?String(u.hire_date).slice(0,10):''), balDays, '', (u.receive_emails!==false), (u.receive_sms===true)];
+    lines.push(row.map(usersCsvEsc).join(','));
+  });
+  usersDownloadText('nova-users.csv', lines.join('\n'));
+}
+function usersSampleCsv(){
+  var lines=[USERS_CSV_COLS.join(',')];
+  lines.push(['Jane Doe','jane@example.com','locksmith','+13215550000','Field Tech','hourly','5','manager@example.com','2024-03-15','5','JAX;ORL','true','false'].map(usersCsvEsc).join(','));
+  lines.push(['John Smith','john@example.com','manager','','Ops Manager','salary','4','','2022-01-10','10','','true','true'].map(usersCsvEsc).join(','));
+  usersDownloadText('nova-users-sample.csv', lines.join('\n'));
+}
+function usersParseCsv(text){
+  var rows=[], row=[], field='', i=0, inQ=false; text=String(text).replace(/\r\n?/g,'\n');
+  while(i<text.length){
+    var ch=text[i];
+    if(inQ){ if(ch==='"'){ if(text[i+1]==='"'){ field+='"'; i+=2; continue; } inQ=false; i++; continue; } field+=ch; i++; continue; }
+    if(ch==='"'){ inQ=true; i++; continue; }
+    if(ch===','){ row.push(field); field=''; i++; continue; }
+    if(ch==='\n'){ row.push(field); rows.push(row); row=[]; field=''; i++; continue; }
+    field+=ch; i++;
+  }
+  row.push(field); rows.push(row);
+  return rows;
+}
+function usersImportPick(){ var el=document.getElementById('users-import-file'); if(el) el.click(); }
+async function usersImportFile(input){
+  var f = input.files && input.files[0]; if(!f) return;
+  var text = await f.text();
+  var grid = usersParseCsv(text);
+  if(grid.length < 2){ showToast('That CSV has no data rows.','error'); input.value=''; return; }
+  var header = grid[0].map(function(h){ return String(h||'').trim().toLowerCase(); });
+  var objs=[];
+  for(var r=1;r<grid.length;r++){
+    if(grid[r].length===1 && String(grid[r][0]||'').trim()==='') continue;
+    var o={}; for(var c=0;c<header.length;c++){ o[header[c]] = grid[r][c]!==undefined?grid[r][c]:''; }
+    if(String(o.email||'').trim()) objs.push(o);
+  }
+  if(!objs.length){ showToast('No rows with an email address found.','error'); input.value=''; return; }
+  if(!await novaConfirm('Import '+objs.length+' row(s)? Existing users (matched by email) are updated; new emails create a new user.')){ input.value=''; return; }
+  try {
+    var res = await api('POST','/users/import',{rows:objs});
+    var msg = 'Import complete: '+res.created+' created, '+res.updated+' updated'+((res.errors&&res.errors.length)?', '+res.errors.length+' skipped':'')+'.';
+    showToast(msg, (res.errors&&res.errors.length)?'info':'success');
+    await renderUsers(document.getElementById('content'));
+    if(res.errors && res.errors.length){
+      document.getElementById('users-error').innerHTML='<div class="alert alert-info">'+escHtml(res.errors.length+' row(s) had issues: '+res.errors.slice(0,6).map(function(e){return 'row '+e.row+(e.email?' ('+e.email+')':'')+' — '+e.error;}).join('; '))+(res.errors.length>6?' …':'')+'</div>';
+    }
+  } catch(e){
+    document.getElementById('users-error').innerHTML='<div class="alert alert-error">'+escHtml(e.message)+'</div>';
+  }
+  input.value='';
+}
+
 async function renderUsers(el) {
   if (!can('view_users')) { el.innerHTML = '<div class="alert alert-error">Access denied.</div>'; return; }
   try {
@@ -1649,7 +1714,7 @@ async function renderUsers(el) {
     _usersPage = 1;
     _usersSearch = '';
     el.innerHTML =
-      '<div class="page-header"><div class="page-title">Users</div>' + (can('manage_users') ? '<button class="btn btn-primary" onclick="showUserModal(null)" style="white-space:nowrap">' + icons.plus + ' Add User</button>' : '') + '</div>' +
+      '<div class="page-header"><div class="page-title">Users</div><div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">' + (can('view_users') ? '<button class="btn btn-ghost btn-sm" onclick="usersExportCsv()">Download CSV</button><button class="btn btn-ghost btn-sm" onclick="usersSampleCsv()">Sample CSV</button>' : '') + (can('manage_users') ? '<button class="btn btn-ghost btn-sm" onclick="usersImportPick()">Import CSV</button><input type="file" id="users-import-file" accept=".csv,text/csv" style="display:none" onchange="usersImportFile(this)" /><button class="btn btn-primary" onclick="showUserModal(null)" style="white-space:nowrap">' + icons.plus + ' Add User</button>' : '') + '</div></div>' +
       importantDetails('users') +
       '<div id="users-error"></div>' +
       '<div style="margin-bottom:16px"><input type="text" id="users-search" placeholder="Search by name, email, or role..." style="width:100%;max-width:400px;padding:8px 12px;background:var(--surface-color);border:1px solid rgba(249,115,22,0.35);border-radius:6px;color:var(--text-color);font-size:14px;outline:none;box-shadow:0 0 0 1px rgba(249,115,22,0.15)" oninput="usersFilter(this.value)" /></div>' +
@@ -1753,7 +1818,7 @@ async function showUserModal(id, returnView) {
           '</div>' +
           '<div class="form-group"><label>Title <span style="font-weight:400;font-size:0.8em;color:var(--text-muted-color)">shown on the org chart &amp; user lists in place of the role (optional)</span></label><input type="text" id="modal-title" value="' + escHtml(user ? user.title || '' : '') + '" placeholder="e.g. Field Operations Manager" /></div>' +
           '<div class="form-group"><label>Cities <span style="font-weight:400;font-size:0.8em;color:var(--text-muted-color)">(blank = all cities)</span></label><div style="display:flex;flex-wrap:wrap;gap:10px;margin-top:4px">' + (cities.length ? cities.map(function(c){ var cc=(c.code||'').trim(); var on=(user&&user.city_codes&&user.city_codes.indexOf(cc)!==-1); return '<label style="display:inline-flex;align-items:center;gap:5px;font-weight:400;font-size:13px"><input type="checkbox" class="modal-city" value="' + escHtml(cc) + '"' + (on?' checked':'') + ' style="width:auto"> ' + escHtml(c.name) + '</label>'; }).join('') : '<span style="color:var(--text-muted-color);font-size:13px">No cities yet</span>') + '</div></div>' +
-        '<div class="form-group"><label>Pay Structure</label><select id="modal-pay-type">' + '<option value="hourly"' + ((user&&user.pay_type==='hourly')||!user?' selected':'') + '>Hourly</option>' + '<option value="salary"' + (user&&user.pay_type==='salary'?' selected':'') + '>Salary</option>' + '<option value="commission"' + (user&&user.pay_type==='commission'?' selected':'') + '>Commission</option>' + '</select><div style="font-size:0.8em;color:var(--text-muted-color);margin-top:4px">Only Hourly employees are time-tracked and receive late clock-in texts.</div></div>' + '<div class="form-group"><label>Pulsar Name <span style="font-weight:400;font-size:0.8em;color:var(--text-muted-color)">name as it appears in the call report</span></label><input type="text" id="modal-pulsar" value="' + escHtml(user ? user.pulsar_name || '' : '') + '" placeholder="e.g. Albright, Benjamin" /></div>' + '<div class="form-group"><label>Reports To <span style="font-weight:400;font-size:0.8em;color:var(--text-muted-color)">who manages this person (drives late-clock-in texts &amp; the org chart)</span></label><select id="modal-reports-to">' + reportsOpts + '</select></div>' + '<div class="form-group"><label>Org Level <span style="font-weight:400;font-size:0.8em;color:var(--text-muted-color)">1 = top; sets the row on the org chart (blank = auto by depth)</span></label><input type="number" min="1" id="modal-org-level" value="' + escHtml(user && user.org_level ? String(user.org_level) : '') + '" placeholder="e.g. 2" /></div>' + '<div class="form-group"><label>Hire Date <span style="font-weight:400;font-size:0.8em;color:var(--text-muted-color)">drives PTO eligibility &amp; accrual tenure</span></label><input type="date" id="modal-hire-date" value="' + escHtml(user && user.hire_date ? String(user.hire_date).slice(0,10) : '') + '" /></div>' +
+        '<div class="form-group"><label>Pay Structure</label><select id="modal-pay-type">' + '<option value="hourly"' + ((user&&user.pay_type==='hourly')||!user?' selected':'') + '>Hourly</option>' + '<option value="salary"' + (user&&user.pay_type==='salary'?' selected':'') + '>Salary</option>' + '<option value="commission"' + (user&&user.pay_type==='commission'?' selected':'') + '>Commission</option>' + '</select><div style="font-size:0.8em;color:var(--text-muted-color);margin-top:4px">Only Hourly employees are time-tracked and receive late clock-in texts.</div></div>' + '<div class="form-group"><label>Pulsar Name <span style="font-weight:400;font-size:0.8em;color:var(--text-muted-color)">name as it appears in the call report</span></label><input type="text" id="modal-pulsar" value="' + escHtml(user ? user.pulsar_name || '' : '') + '" placeholder="e.g. Albright, Benjamin" /></div>' + '<div class="form-group"><label>Reports To <span style="font-weight:400;font-size:0.8em;color:var(--text-muted-color)">who manages this person (drives late-clock-in texts &amp; the org chart)</span></label><select id="modal-reports-to">' + reportsOpts + '</select></div>' + '<div class="form-group"><label>Org Level <span style="font-weight:400;font-size:0.8em;color:var(--text-muted-color)">1 = top; sets the row on the org chart (blank = auto by depth)</span></label><input type="number" min="1" id="modal-org-level" value="' + escHtml(user && user.org_level ? String(user.org_level) : '') + '" placeholder="e.g. 2" /></div>' + '<div class="form-group"><label>Hire Date <span style="font-weight:400;font-size:0.8em;color:var(--text-muted-color)">drives PTO eligibility &amp; accrual tenure</span></label><input type="date" id="modal-hire-date" value="' + escHtml(user && user.hire_date ? String(user.hire_date).slice(0,10) : '') + '" /></div>' + '<div class="form-group"><label>Current PTO Balance <span style="font-weight:400;font-size:0.8em;color:var(--text-muted-color)">days &mdash; their existing banked PTO (writes a ledger entry)</span></label><input type="number" min="0" step="0.5" id="modal-pto-balance" value="' + escHtml(user && user.pto_balance_hours != null ? String(Number(user.pto_balance_hours)/8) : '') + '" placeholder="e.g. 5" /></div>' +
         '<div class="form-group" style="display:flex;align-items:center;gap:10px">' +
           '<input type="checkbox" id="modal-receive-emails" style="width:auto"' + (user && user.receive_emails === false ? '' : ' checked') + ' />' +
           '<label for="modal-receive-emails" style="margin:0;cursor:pointer">Receive email notifications</label>' +
@@ -1804,8 +1869,11 @@ async function saveUser(id, btn) {
   }
   try {
     btn.disabled = true;
-    if (id) { await api('PUT', '/users/' + id, { name, email, password: password || undefined, role, phone: phone || undefined, receive_emails, receive_sms, city_codes, pulsar_name, hide_from_schedule, pay_type, supervisor_id, extra_perms, title, org_level, hide_from_org, hire_date }); }
-    else { await api('POST', '/users', { name, email, password: password || undefined, role, phone: phone || undefined, receive_emails, receive_sms, city_codes, pulsar_name, hide_from_schedule, pay_type, supervisor_id, extra_perms, title, org_level, hide_from_org, hire_date }); }
+    var _uPayload = { name, email, password: password || undefined, role, phone: phone || undefined, receive_emails, receive_sms, city_codes, pulsar_name, hide_from_schedule, pay_type, supervisor_id, extra_perms, title, org_level, hide_from_org, hire_date };
+    var _savedUser = id ? await api('PUT', '/users/' + id, _uPayload) : await api('POST', '/users', _uPayload);
+    var _ptoUid = id || (_savedUser && _savedUser.id);
+    var _ptoBal = (document.getElementById('modal-pto-balance') || {}).value;
+    if (_ptoUid && _ptoBal !== '' && _ptoBal != null) { try { await api('PUT', '/pto/user/' + _ptoUid, { set_balance_days: Number(_ptoBal) }); } catch (e) { /* balance is best-effort */ } }
     document.querySelector('.modal-overlay').remove();
     var _rv=window._userModalReturn;window._userModalReturn=null;navigate(_rv||'users');
   } catch(err) {
