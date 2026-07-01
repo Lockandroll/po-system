@@ -688,6 +688,48 @@ async function initDB() {
     await client.query("ALTER TABLE users ADD COLUMN IF NOT EXISTS hide_from_schedule BOOLEAN NOT NULL DEFAULT false;");
     await client.query("ALTER TABLE users ADD COLUMN IF NOT EXISTS hide_from_org BOOLEAN NOT NULL DEFAULT false;");
     await client.query("ALTER TABLE users ADD COLUMN IF NOT EXISTS org_x INTEGER;");
+    // ---- PTO module ----
+    await client.query("ALTER TABLE users ADD COLUMN IF NOT EXISTS hire_date DATE;");
+    await client.query("ALTER TABLE users ADD COLUMN IF NOT EXISTS pto_balance_hours NUMERIC(8,2) NOT NULL DEFAULT 0;");
+    await client.query("ALTER TABLE users ADD COLUMN IF NOT EXISTS pto_exempt BOOLEAN NOT NULL DEFAULT false;");
+    await client.query(
+      'CREATE TABLE IF NOT EXISTS pto_requests (' +
+      '  id SERIAL PRIMARY KEY,' +
+      '  user_id INTEGER REFERENCES users(id),' +
+      '  start_date DATE NOT NULL,' +
+      '  end_date DATE NOT NULL,' +
+      '  business_days INTEGER NOT NULL DEFAULT 0,' +
+      '  hours NUMERIC(8,2) NOT NULL DEFAULT 0,' +
+      "  type VARCHAR(40) NOT NULL DEFAULT 'Vacation'," +
+      '  paid BOOLEAN NOT NULL DEFAULT true,' +
+      "  status VARCHAR(20) NOT NULL DEFAULT 'pending'," +
+      '  required_level INTEGER,' +
+      '  approver_id INTEGER REFERENCES users(id),' +
+      '  decided_at TIMESTAMP,' +
+      '  decision_reason TEXT,' +
+      '  coverage_override BOOLEAN NOT NULL DEFAULT false,' +
+      '  override_reason TEXT,' +
+      '  retroactive BOOLEAN NOT NULL DEFAULT false,' +
+      '  created_at TIMESTAMP DEFAULT NOW(),' +
+      '  updated_at TIMESTAMP DEFAULT NOW()' +
+      ');'
+    );
+    await client.query(
+      'CREATE TABLE IF NOT EXISTS pto_ledger (' +
+      '  id SERIAL PRIMARY KEY,' +
+      '  user_id INTEGER REFERENCES users(id),' +
+      '  entry_date DATE NOT NULL,' +
+      '  kind VARCHAR(20) NOT NULL,' +
+      '  amount_hours NUMERIC(8,2) NOT NULL,' +
+      '  description TEXT,' +
+      '  accrual_period CHAR(7),' +
+      '  request_id INTEGER REFERENCES pto_requests(id) ON DELETE SET NULL,' +
+      '  created_by INTEGER REFERENCES users(id),' +
+      '  created_at TIMESTAMP DEFAULT NOW()' +
+      ');'
+    );
+    await client.query('CREATE INDEX IF NOT EXISTS idx_pto_ledger_user ON pto_ledger(user_id);');
+    await client.query("CREATE UNIQUE INDEX IF NOT EXISTS uq_pto_accrual_month ON pto_ledger(user_id, accrual_period) WHERE kind = 'accrual';");
     await client.query("ALTER TABLE users ADD COLUMN IF NOT EXISTS extra_perms TEXT[] NOT NULL DEFAULT '{}';");
     await client.query("ALTER TABLE users ADD COLUMN IF NOT EXISTS last_login_at TIMESTAMPTZ;");
     await client.query("ALTER TABLE users ADD COLUMN IF NOT EXISTS last_seen_at TIMESTAMPTZ;");
