@@ -1726,7 +1726,8 @@ function usersGoPage(p) {
   usersRenderTable();
 }
 
-async function showUserModal(id) {
+async function showUserModal(id, returnView) {
+  window._userModalReturn = returnView || null;
   let user = null, _allUsers = [];
   try { _allUsers = await api('GET', '/users'); } catch(e){}
   if (id) user = _allUsers.find(function(u){ return u.id === id; }) || null;
@@ -1803,7 +1804,7 @@ async function saveUser(id, btn) {
     if (id) { await api('PUT', '/users/' + id, { name, email, password: password || undefined, role, phone: phone || undefined, receive_emails, receive_sms, city_codes, pulsar_name, hide_from_schedule, pay_type, supervisor_id, extra_perms, title, org_level, hide_from_org }); }
     else { await api('POST', '/users', { name, email, password: password || undefined, role, phone: phone || undefined, receive_emails, receive_sms, city_codes, pulsar_name, hide_from_schedule, pay_type, supervisor_id, extra_perms, title, org_level, hide_from_org }); }
     document.querySelector('.modal-overlay').remove();
-    navigate('users');
+    var _rv=window._userModalReturn;window._userModalReturn=null;navigate(_rv||'users');
   } catch(err) {
     document.getElementById('modal-error').innerHTML = '<div class="alert alert-error">' + escHtml(err.message) + '</div>';
     btn.disabled = false;
@@ -12415,7 +12416,7 @@ function tcOrgBindDrag(editable){
       var d=window._orgBoxDrag;if(!d)return;window._orgBoxDrag=null;
       d.el.style.pointerEvents='';d.el.style.zIndex='';document.body.style.userSelect='';
       tcOrgClearHi();
-      if(!d.moved){var now=Date.now();if(window._orgLastClick&&window._orgLastClick.id===d.id&&(now-window._orgLastClick.t)<350){window._orgLastClick=null;if(typeof showUserModal==='function')showUserModal(d.id);}else{window._orgLastClick={id:d.id,t:now};}return;}
+      if(!d.moved){var now=Date.now();if(window._orgLastClick&&window._orgLastClick.id===d.id&&(now-window._orgLastClick.t)<350){window._orgLastClick=null;if(typeof showUserModal==='function')showUserModal(d.id,'org-chart');}else{window._orgLastClick={id:d.id,t:now};}return;}
       if(d.target&&d.target!==d.id){tcOrgReparent(d.id,d.target);return;}
       tcOrgReposition(d.id,window._orgPos[d.id].cx);
     });
