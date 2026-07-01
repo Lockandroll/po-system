@@ -57,7 +57,7 @@ async function sendInvite(user, invitedByName) {
 // List all users (admin only)
 router.get('/', requireAuth, requirePermission('view_users'), async (req, res) => {
   const { rows } = await pool.query(
-    'SELECT id, name, email, phone, role, title, active, receive_emails, receive_sms, pulsar_name, hide_from_schedule, hide_from_org, pay_type, supervisor_id, org_level, extra_perms, created_at, last_login_at, last_seen_at FROM users ORDER BY active DESC, name ASC'
+    'SELECT id, name, email, phone, role, title, active, receive_emails, receive_sms, pulsar_name, hide_from_schedule, hide_from_org, pay_type, supervisor_id, org_level, org_x, extra_perms, created_at, last_login_at, last_seen_at FROM users ORDER BY active DESC, name ASC'
   );
   const mc = await pool.query('SELECT user_id, city_code FROM user_cities');
   const byU = {};
@@ -190,6 +190,34 @@ router.delete('/:id', requireAuth, requirePermission('manage_users'), async (req
     throw err;
   }
   res.json({ success: true });
+});
+
+// Lightweight re-parent for the drag-and-drop org chart: updates ONLY the
+// reporting line + level, nothing else on the user.
+router.patch('/:id/org', requireAuth, requirePermission('manage_users'), async (req, res) => {
+  const id = parseInt(req.params.id, 10);
+  const sets = [], vals = []; let i = 1;
+  if (Object.prototype.hasOwnProperty.call(req.body, 'supervisor_id')) {
+    let s = req.body.supervisor_id;
+    s = (s === null || s === undefined || s === '') ? null : parseInt(s, 10);
+    if (s === id) return res.status(400).json({ error: 'A person cannot report to themselves.' });
+    sets.push('supervisor_id=$' + (i++)); vals.push(s);
+  }
+  if (Object.prototype.hasOwnProperty.call(req.body, 'org_level')) {
+    let l = req.body.org_level;
+    l = (l === null || l === undefined || l === '') ? null : parseInt(l, 10);
+    sets.push('org_level=$' + (i++)); vals.push(l);
+  }
+  if (Object.prototype.hasOwnProperty.call(req.body, 'org_x')) {
+    let x = req.body.org_x;
+    x = (x === null || x === undefined || x === '') ? null : Math.round(parseFloat(x));
+    sets.push('org_x=$' + (i++)); vals.push(x);
+  }
+  if (!sets.length) return res.json({ ok: true });
+  vals.push(id);
+  const { rows } = await pool.query('UPDATE users SET ' + sets.join(', ') + ' WHERE id=$' + i + ' RETURNING id', vals);
+  if (!rows.length) return res.status(404).json({ error: 'User not found.' });
+  res.json({ ok: true });
 });
 
 module.exports = router;

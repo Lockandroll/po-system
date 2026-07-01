@@ -12279,7 +12279,7 @@ function tcInjectOrgStyles(){
     '.org-av{width:38px;height:38px;border-radius:50%;background:#c2560f;color:#fff;display:inline-flex;align-items:center;justify-content:center;font-weight:700;font-size:14px}'+
     '.org-nm{font-weight:700;font-size:13px;text-align:center;line-height:1.15;white-space:nowrap}'+
     '.org-tl{font-size:11px;color:#fdba74;font-weight:600;text-align:center;white-space:nowrap}'+
-    '.org-rl{font-size:10.5px;color:var(--text-muted-color,#71717a);white-space:nowrap}';
+    '.org-rl{font-size:10.5px;color:var(--text-muted-color,#71717a);white-space:nowrap}'+'.org-box[draggable="true"]{cursor:grab}'+'.org-box.org-drop{outline:2px solid #f97316;outline-offset:2px}';
   document.head.appendChild(el);
 }
 function tcApplyOrgTransform(){
@@ -12331,7 +12331,7 @@ async function renderOrgChart(content){
   try{users=await api('GET','/users');}catch(e){content.innerHTML='<div class="tc-wrap"><div class="tc-card">Could not load org chart.</div></div>';return;}
   users=(users||[]).filter(function(u){return u.active!==false && u.hide_from_org!==true;});
   if(!users.length){content.innerHTML='<div class="tc-wrap"><div class="tc-card"><div class="tc-h">Organization Chart</div><div class="tc-dim">No users.</div></div></div>';return;}
-  var byId={};users.forEach(function(u){byId[u.id]=u;u._kids=[];});
+  var byId={};users.forEach(function(u){byId[u.id]=u;u._kids=[];});window._orgById=byId;
   var roots=[];
   users.forEach(function(u){var pid=u.supervisor_id;if(pid&&byId[pid]&&pid!==u.id){byId[pid]._kids.push(u);}else{roots.push(u);}});
   function lvlOf(u,guard){
@@ -12356,17 +12356,45 @@ async function renderOrgChart(content){
   roots.slice().sort(function(a,b){return byRank(a,b)||(a.name||'').localeCompare(b.name||'');}).forEach(function(r){assignX(r);nextX+=1;});
   var W=Math.max(nextX*slotW,340),H=levels.length*bandH+padTop;
   var pos={};
-  users.forEach(function(u){pos[u.id]={cx:(u._xi||0)*slotW+slotW/2,yTop:bandIndex[u._lv]*bandH+padTop};});
+  users.forEach(function(u){pos[u.id]={cx:(u.org_x!=null?u.org_x:((u._xi||0)*slotW+slotW/2)),yTop:bandIndex[u._lv]*bandH+padTop};});
   var paths='';
   users.forEach(function(u){var s=u.supervisor_id&&byId[u.supervisor_id];if(!s||!pos[s.id]||!pos[u.id])return;var p=pos[s.id],c=pos[u.id];var pby=p.yTop+boxH;if(c.yTop<=pby)return;var midY=pby+Math.min(26,(c.yTop-pby)/2);paths+='<path d="M'+p.cx+' '+pby+' V'+midY+' H'+c.cx+' V'+c.yTop+'" fill="none" stroke="#3a3a3a" stroke-width="2"/>';});
+  var editable=(typeof can==='function')&&can('manage_users');
   var boxes='';
-  users.forEach(function(u){var pp=pos[u.id];var isRoot=!(u.supervisor_id&&byId[u.supervisor_id]);var sub=u.title?('<div class="org-tl">'+escHtml(u.title)+'</div>'):('<div class="org-rl">'+escHtml(tcRoleLabel(u.role))+'</div>');boxes+='<div class="org-box'+(isRoot?' root':'')+'" style="left:'+(pp.cx-boxW/2)+'px;top:'+pp.yTop+'px"><span class="org-chip">L'+u._lv+'</span><span class="org-av">'+tcInitials(u.name)+'</span><div class="org-nm">'+escHtml(u.name||'')+'</div>'+sub+'</div>';});
+  users.forEach(function(u){var pp=pos[u.id];var dragAttr=editable?(' draggable="true" data-id="'+u.id+'" onmousedown="event.stopPropagation()"'):'';var isRoot=!(u.supervisor_id&&byId[u.supervisor_id]);var sub=u.title?('<div class="org-tl">'+escHtml(u.title)+'</div>'):('<div class="org-rl">'+escHtml(tcRoleLabel(u.role))+'</div>');boxes+='<div class="org-box'+(isRoot?' root':'')+'"'+dragAttr+' style="left:'+(pp.cx-boxW/2)+'px;top:'+pp.yTop+'px"><span class="org-chip">L'+u._lv+'</span><span class="org-av">'+tcInitials(u.name)+'</span><div class="org-nm">'+escHtml(u.name||'')+'</div>'+sub+'</div>';});
   var svg='<svg width="'+W+'" height="'+H+'" viewBox="0 0 '+W+' '+H+'">'+paths+'</svg>';
-  var note=(typeof can==='function'&&can('manage_users'))?'<div class="tc-dim" style="font-size:12px;margin-top:10px">Drag to pan, scroll to zoom. Set each person\'s Reports To (draws the lines) and Org Level (the row) in Users → edit.</div>':'<div class="tc-dim" style="font-size:12px;margin-top:10px">Drag to pan, scroll to zoom.</div>';
+  var note=(typeof can==='function'&&can('manage_users'))?'<div class="tc-dim" style="font-size:12px;margin-top:10px">Drag a box onto a manager to re-assign who they report to; drop in open space to nudge them left/right. Pan with the background, scroll to zoom.</div>':'<div class="tc-dim" style="font-size:12px;margin-top:10px">Drag to pan, scroll to zoom.</div>';
   content.innerHTML='<div class="tc-wrap" style="max-width:100%"><div class="tc-card">'+
     '<div class="tc-h" style="display:flex;justify-content:space-between;align-items:center">Organization Chart'+
       '<span class="org-ctrls"><button title="Zoom out" onclick="tcOrgZoom(-1)">−</button><button title="Zoom in" onclick="tcOrgZoom(1)">+</button><button title="Fit to view" onclick="tcOrgFit()">Fit</button></span></div>'+
-    '<div class="org-viewport" id="org-viewport"><div class="org-pan" id="org-pan"><div class="org-canvas" style="width:'+W+'px;height:'+H+'px">'+svg+boxes+'</div></div></div>'+
+    '<div class="org-viewport" id="org-viewport"><div class="org-pan" id="org-pan"><div class="org-canvas" id="org-canvas" style="width:'+W+'px;height:'+H+'px">'+svg+boxes+'</div></div></div>'+
     note+'</div></div>';
   tcOrgBindPanZoom(W,H);
+  tcOrgBindDrag(editable);
+}
+
+function tcOrgBindDrag(editable){
+  var cv=document.getElementById('org-canvas');if(!cv||!editable)return;
+  function clearHi(){var n=cv.querySelectorAll('.org-drop');for(var i=0;i<n.length;i++)n[i].classList.remove('org-drop');}
+  cv.addEventListener('dragstart',function(e){var b=e.target.closest&&e.target.closest('.org-box');if(!b)return;window._orgDragId=parseInt(b.getAttribute('data-id'),10);if(e.dataTransfer){e.dataTransfer.effectAllowed='move';try{e.dataTransfer.setData('text/plain',String(window._orgDragId));}catch(_){}}});
+  cv.addEventListener('dragover',function(e){e.preventDefault();var b=e.target.closest&&e.target.closest('.org-box');clearHi();if(b){var tid=parseInt(b.getAttribute('data-id'),10);if(tid!==window._orgDragId)b.classList.add('org-drop');}});
+  cv.addEventListener('dragleave',function(e){var b=e.target.closest&&e.target.closest('.org-box');if(b)b.classList.remove('org-drop');});
+  cv.addEventListener('drop',function(e){e.preventDefault();clearHi();var b=e.target.closest&&e.target.closest('.org-box');var tid=b?parseInt(b.getAttribute('data-id'),10):null;if(tid&&tid!==window._orgDragId){tcOrgReparent(window._orgDragId,tid);return;}var vp=document.getElementById('org-viewport');if(!vp||!window._orgView)return;var r=vp.getBoundingClientRect();var v=window._orgView;var cx=(e.clientX-r.left-v.x)/v.scale;tcOrgReposition(window._orgDragId,cx);});
+  cv.addEventListener('dragend',clearHi);
+}
+async function tcOrgReparent(childId,targetId){
+  if(!childId||!targetId||childId===targetId)return;
+  var byId=window._orgById||{};
+  var cur=byId[targetId],g=0;
+  while(cur&&g<100){if(cur.supervisor_id===childId){alert('That would create a loop in the chart.');return;}cur=byId[cur.supervisor_id];g++;}
+  var mgr=byId[targetId];var newLevel=((mgr&&mgr._lv)?mgr._lv:1)+1;
+  try{await api('PATCH','/users/'+childId+'/org',{supervisor_id:targetId,org_level:newLevel,org_x:null});}
+  catch(e){alert(e.message||'Could not update.');return;}
+  var c=document.getElementById('content');if(c)renderOrgChart(c);
+}
+async function tcOrgReposition(id,cx){
+  if(!id)return;
+  try{await api('PATCH','/users/'+id+'/org',{org_x:Math.round(cx)});}
+  catch(e){alert(e.message||'Could not move.');return;}
+  var c=document.getElementById('content');if(c)renderOrgChart(c);
 }
