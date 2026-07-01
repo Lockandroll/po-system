@@ -481,6 +481,7 @@ async function render() {
     (can('view_tasks') ? '<div class="nav-item' + (['tasks','task-detail','new-task','edit-task'].indexOf(cv) !== -1 ? ' active' : '') + '" onclick="navigate(\'tasks\')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg> Tasks</div>' : '') +
     (can('view_schedule') ? '<div class="nav-item' + (['schedule','schedule-admin'].indexOf(cv) !== -1 ? ' active' : '') + '" onclick="navigate(\'' + (can('manage_schedule') ? 'schedule-admin' : 'schedule') + '\')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="4" width="18" height="18" rx="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></svg> Schedule</div>' : '') +
     (can('view_timeclock') ? '<div class="nav-item' + (['timeclock','timeclock-manager'].indexOf(cv) !== -1 ? ' active' : '') + '" onclick="navigate(\'timeclock\')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><polyline points="12 7 12 12 15 14"/></svg> Time Clock</div>' : '') +
+    '<div class="nav-item' + (cv === 'org-chart' ? ' active' : '') + '" onclick="navigate(\'org-chart\')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="7" y="3" width="10" height="5" rx="1"/><rect x="3" y="16" width="6" height="5" rx="1"/><rect x="15" y="16" width="6" height="5" rx="1"/><path d="M12 8v3M6 16v-2h12v2"/></svg> Org Chart</div>' +
     (can('view_vr') ?
     '<div class="nav-section-header' + (vrViews.indexOf(cv) !== -1 ? ' section-active' : '') + (ss === 'vr' ? ' open' : '') + '" onclick="toggleSection(\'vr\',\'vr-dashboard\')"><span class="s-label">' + icoTruck + ' Vehicle Maint/Repairs</span>' + chev + '</div>' +
     (ss === 'vr' ?
@@ -511,7 +512,7 @@ async function render() {
         (can('manage_parts') ? '<div class="nav-sub' + (cv === 'parts-list' ? ' active' : '') + '" onclick="navigate(\'parts-list\')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"/><polyline points="3.27 6.96 12 12.01 20.73 6.96"/><line x1="12" y1="22.08" x2="12" y2="12"/></svg> Parts List</div>' : '') +
         (can('manage_settings') ? '<div class="nav-sub' + (cv === 'notifications' ? ' active' : '') + '" onclick="navigate(\'notifications\')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 0 1-3.46 0"/></svg> Notifications</div>' : '') +
         (can('manage_settings') ? '<div class="nav-sub' + (cv === 'scheduled-messages' ? ' active' : '') + '" onclick="navigate(\'scheduled-messages\')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><polyline points="12 7 12 12 15 14"/></svg> Scheduled Messages</div>' : '') +
-        (can('view_users') ? '<div class="nav-sub' + (cv === 'users' ? ' active' : '') + '" onclick="navigate(\'users\')">' + icons.users + ' Users</div>' : '') + (can('view_users') ? '<div class="nav-sub' + (cv === 'org-chart' ? ' active' : '') + '" onclick="navigate(\'org-chart\')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="7" y="3" width="10" height="5" rx="1"/><rect x="3" y="16" width="6" height="5" rx="1"/><rect x="15" y="16" width="6" height="5" rx="1"/><path d="M12 8v3M6 16v-2h12v2"/></svg> Org Chart</div>' : '') +
+        (can('view_users') ? '<div class="nav-sub' + (cv === 'users' ? ' active' : '') + '" onclick="navigate(\'users\')">' + icons.users + ' Users</div>' : '') + 
         (can('manage_cities') ? '<div class="nav-sub' + (cv === 'cities' ? ' active' : '') + '" onclick="navigate(\'cities\')">' + icons.map + ' Cities</div>' : '') +
         (can('view_audit') ? '<div class="nav-sub' + (cv === 'audit' ? ' active' : '') + '" onclick="navigate(\'audit\')">' + icoAudit + ' Audit Log</div>' : '') +
         (can('manage_settings') ? '<div class="nav-sub' + (cv === 'roles' ? ' active' : '') + '" onclick="navigate(\'roles\')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg> Roles &amp; Access</div>' : '')
@@ -569,7 +570,7 @@ async function render() {
     if (_ovOpen) _ovOpen.classList.add('open');
   }
   const content = document.getElementById('content');
-  var _viewPerm = { dashboard:'view_pos', view:'view_pos', running:'view_pos', 'running-admin':'view_pos', new:'create_po', edit:'edit_po', quotes:'view_quotes', 'view-quote':'view_quotes', 'new-quote':'create_quote', 'edit-quote':'edit_quote', 'vr-dashboard':'view_vr', 'view-vr':'view_vr', 'new-vr':'create_vr', 'edit-vr':'edit_vr', deposits:'view_deposits', 'view-deposit':'view_deposits', signoffs:'view_signoffs', 'view-signoff':'view_signoffs', 'new-signoff':'create_signoff', 'edit-signoff':'edit_signoff', 'complete-signoff':'complete_signoff', tasks:'view_tasks', 'task-detail':'view_tasks', 'new-task':'view_tasks', 'edit-task':'view_tasks', 'work-orders':'view_work_orders', 'view-work-order':'view_work_orders', 'new-work-order':'manage_work_orders', schedule:'view_schedule', 'schedule-admin':'manage_schedule', 'schedule-nowork':'manage_schedule', invoices:'view_invoices', 'view-invoice':'view_invoices', 'new-invoice':'create_invoice', 'edit-invoice':'edit_invoice', 'invoice-parts':'view_invoices', 'invoice-setup':'manage_invoice_setup', feedback:'view_feedback', 'feedback-detail':'view_feedback', signatures:'view_signatures', 'new-signature':'manage_signatures', 'signature-editor':'manage_signatures', timeclock:'view_timeclock', 'timeclock-manager':'manage_timeclock', 'org-chart':'view_users' };
+  var _viewPerm = { dashboard:'view_pos', view:'view_pos', running:'view_pos', 'running-admin':'view_pos', new:'create_po', edit:'edit_po', quotes:'view_quotes', 'view-quote':'view_quotes', 'new-quote':'create_quote', 'edit-quote':'edit_quote', 'vr-dashboard':'view_vr', 'view-vr':'view_vr', 'new-vr':'create_vr', 'edit-vr':'edit_vr', deposits:'view_deposits', 'view-deposit':'view_deposits', signoffs:'view_signoffs', 'view-signoff':'view_signoffs', 'new-signoff':'create_signoff', 'edit-signoff':'edit_signoff', 'complete-signoff':'complete_signoff', tasks:'view_tasks', 'task-detail':'view_tasks', 'new-task':'view_tasks', 'edit-task':'view_tasks', 'work-orders':'view_work_orders', 'view-work-order':'view_work_orders', 'new-work-order':'manage_work_orders', schedule:'view_schedule', 'schedule-admin':'manage_schedule', 'schedule-nowork':'manage_schedule', invoices:'view_invoices', 'view-invoice':'view_invoices', 'new-invoice':'create_invoice', 'edit-invoice':'edit_invoice', 'invoice-parts':'view_invoices', 'invoice-setup':'manage_invoice_setup', feedback:'view_feedback', 'feedback-detail':'view_feedback', signatures:'view_signatures', 'new-signature':'manage_signatures', 'signature-editor':'manage_signatures', timeclock:'view_timeclock', 'timeclock-manager':'manage_timeclock' };
   if (_viewPerm[state.currentView] && !can(_viewPerm[state.currentView])) { content.innerHTML = '<div class="alert alert-error">Access denied.</div>'; return; }
   if (state.currentView === 'home') await renderHomeScreen(content);
   else if (state.currentView === 'dashboard') await renderDashboard(content);
@@ -12234,32 +12235,44 @@ function tcInjectOrgStyles(){
   if(document.getElementById('tc-org-styles'))return;
   var el=document.createElement('style');el.id='tc-org-styles';
   el.textContent=
-    '.org-tree{padding-left:2px}'+
-    '.org-node{position:relative}'+
-    '.org-card{display:flex;align-items:center;gap:10px;background:var(--card-bg-2,#202020);border:1px solid var(--border,#2c2c2c);border-radius:12px;padding:10px 12px;margin:6px 0}'+
-    '.org-kids{margin-left:20px;padding-left:16px;border-left:2px solid var(--border,#2c2c2c)}';
+    '.org-scroll{overflow-x:auto;padding:14px 4px 6px}'+
+    '.org-tree{display:inline-block;min-width:100%;text-align:center}'+
+    '.org-tree ul{display:flex;justify-content:center;padding-top:22px;position:relative;margin:0;padding-left:0;list-style:none}'+
+    '.org-tree li{list-style:none;position:relative;padding:22px 10px 0 10px;text-align:center}'+
+    '.org-tree li::before,.org-tree li::after{content:"";position:absolute;top:0;right:50%;border-top:2px solid var(--border,#2c2c2c);width:50%;height:22px}'+
+    '.org-tree li::after{right:auto;left:50%;border-left:2px solid var(--border,#2c2c2c)}'+
+    '.org-tree li:only-child::after,.org-tree li:only-child::before{display:none}'+
+    '.org-tree li:only-child{padding-top:0}'+
+    '.org-tree li:first-child::before,.org-tree li:last-child::after{border:0 none}'+
+    '.org-tree li:last-child::before{border-right:2px solid var(--border,#2c2c2c);border-radius:0 6px 0 0}'+
+    '.org-tree li:first-child::after{border-radius:6px 0 0 0}'+
+    '.org-tree ul ul::before{content:"";position:absolute;top:0;left:50%;border-left:2px solid var(--border,#2c2c2c);width:0;height:22px}'+
+    '.org-tree > ul > li{padding-top:0}'+
+    '.org-tree > ul > li::before,.org-tree > ul > li::after{display:none}'+
+    '.org-box{display:inline-flex;flex-direction:column;align-items:center;gap:5px;min-width:130px;background:var(--card-bg-2,#202020);border:1px solid var(--border,#2c2c2c);border-radius:12px;padding:12px 14px}'+
+    '.org-box.root{border-color:#f97316}'+
+    '.org-av{width:38px;height:38px;border-radius:50%;background:#c2560f;color:#fff;display:inline-flex;align-items:center;justify-content:center;font-weight:700;font-size:14px}'+
+    '.org-nm{font-weight:700;font-size:13px;white-space:nowrap}'+
+    '.org-rl{font-size:11px;color:var(--text-muted-color,#a1a1aa)}';
   document.head.appendChild(el);
 }
 async function renderOrgChart(content){
-  tcInjectStyles();tcInjectMgrStyles();tcInjectOrgStyles();
-  content.innerHTML='<div class="tc-wrap tc-wide"><div class="tc-card"><div class="tc-dim">Loading…</div></div></div>';
+  tcInjectStyles();tcInjectOrgStyles();
+  content.innerHTML='<div class="tc-wrap" style="max-width:1100px"><div class="tc-card"><div class="tc-dim">Loading…</div></div></div>';
   var users;
-  try{users=await api('GET','/users');}catch(e){content.innerHTML='<div class="tc-wrap tc-wide"><div class="tc-card">Could not load org chart.</div></div>';return;}
+  try{users=await api('GET','/users');}catch(e){content.innerHTML='<div class="tc-wrap" style="max-width:1100px"><div class="tc-card">Could not load org chart.</div></div>';return;}
   users=(users||[]).filter(function(u){return u.active!==false;});
   var byId={};users.forEach(function(u){byId[u.id]=u;u._kids=[];});
   var roots=[];
   users.forEach(function(u){var pid=u.supervisor_id;if(pid&&byId[pid]){byId[pid]._kids.push(u);}else{roots.push(u);}});
   function sortKids(list){list.sort(function(a,b){return (a.name||'').localeCompare(b.name||'');});list.forEach(function(u){sortKids(u._kids);});}
   sortKids(roots);
-  function nodeHtml(u){
-    var n=u._kids.length;
-    var count=n?'<span class="tc-dim" style="font-size:11px"> · '+n+' report'+(n>1?'s':'')+'</span>':'';
-    var kids=n?'<div class="org-kids">'+u._kids.map(nodeHtml).join('')+'</div>':'';
-    return '<div class="org-node"><div class="org-card"><span class="tc-av">'+tcInitials(u.name)+'</span>'+
-      '<div style="min-width:0"><div class="tc-nm">'+escHtml(u.name||'')+'</div>'+
-      '<div class="tc-mt">'+escHtml(tcRoleLabel(u.role))+count+'</div></div></div>'+kids+'</div>';
+  function node(u,isRoot){
+    var kids=u._kids.length?'<ul>'+u._kids.map(function(k){return node(k,false);}).join('')+'</ul>':'';
+    return '<li><div class="org-box'+(isRoot?' root':'')+'"><span class="org-av">'+tcInitials(u.name)+'</span>'+
+      '<div class="org-nm">'+escHtml(u.name||'')+'</div><div class="org-rl">'+escHtml(tcRoleLabel(u.role))+'</div></div>'+kids+'</li>';
   }
-  var body=roots.map(nodeHtml).join('')||'<div class="tc-dim">No users.</div>';
-  var note=(typeof can==='function'&&can('manage_users'))?'<div class="tc-dim" style="font-size:12px;margin-top:14px">Set who each person reports to in Users → edit a person → Reports To. People with no manager set show at the top.</div>':'';
-  content.innerHTML='<div class="tc-wrap tc-wide"><div class="tc-card"><div class="tc-h">Organization Chart</div><div class="org-tree">'+body+'</div>'+note+'</div></div>';
+  var tree=roots.length?('<div class="org-scroll"><div class="org-tree"><ul>'+roots.map(function(r){return node(r,true);}).join('')+'</ul></div></div>'):'<div class="tc-dim">No users.</div>';
+  var note=(typeof can==='function'&&can('manage_users'))?'<div class="tc-dim" style="font-size:12px;margin-top:8px">Set who each person reports to in Users → edit a person → Reports To. Anyone without a manager shows at the top.</div>':'';
+  content.innerHTML='<div class="tc-wrap" style="max-width:1100px"><div class="tc-card"><div class="tc-h">Organization Chart</div>'+tree+note+'</div></div>';
 }
