@@ -370,7 +370,7 @@ router.post('/requests/:id/cancel', requireAuth, async (req, res) => {
 
 router.get('/team', requireAuth, requirePermission('manage_pto'), async (req, res) => {
   const isAdmin = req.user.role === 'admin' || req.user.isOwner;
-  const ur = await pool.query('SELECT id, name, title, pay_type, org_level, hire_date, pto_balance_hours, supervisor_id FROM users WHERE active IS NOT FALSE ORDER BY name ASC');
+  const ur = await pool.query('SELECT id, name, title, pay_type, org_level, hire_date, pto_exempt, pto_balance_hours, supervisor_id FROM users WHERE active IS NOT FALSE ORDER BY name ASC');
   const out = [];
   for (let i = 0; i < ur.rows.length; i++) {
     const u = ur.rows[i];
@@ -380,6 +380,8 @@ router.get('/team', requireAuth, requirePermission('manage_pto'), async (req, re
       out.push({
         id: u.id, name: u.name, title: u.title, pay_type: u.pay_type || 'hourly',
         balance_hours: Number(u.pto_balance_hours) || 0,
+        hire_date: u.hire_date ? String(u.hire_date).slice(0, 10) : null,
+        exempt: u.pto_exempt === true,
         pending: pend.rows.length ? (String(pend.rows[0].start_date).slice(0, 10)) : null
       });
     }
@@ -468,6 +470,39 @@ router.put('/settings', requireAuth, requirePermission('manage_pto'), async (req
   await put('pto_coverage_caps', b.coverage_caps);
   await put('pto_coverage_default', b.coverage_default);
   await logAudit({ entity_type: 'pto_settings', action: 'updated', user_id: req.user.id, user_name: req.user.name, details: {} });
+  res.json({ success: true });
+});
+
+// ---- PER-USER PTO SETUP (hire date, exempt, optional starting balance) ------
+// hire_date + exempt can be set by any manager over the person; setting a starting
+// balance is admin/owner only (it writes a one-time adjustment line to the ledger).
+router.put('/user/:id', requireAuth, requirePermission('manage_pto'), async (req, res) => {
+  const target = parseInt(req.params.id, 10) || 0;
+  if (!target) return res.status(400).json({ error: 'Employee is required' });
+  const isAdmin = req.user.role === 'admin' || req.user.isOwner;
+  if (!isAdmin && !(await inDownline(req.user.id, target))) return res.status(403).json({ error: 'Not in your team' });
+  const b = req.body || {};
+  const hire = RE_DATE.test(b.hire_date) ? b.hire_date : null;
+  await pool.query('UPDATE users SET hire_date = COALESCE($1, hire_date), pto_exempt = $2 WHERE id = $3', [hire, b.exempt === true, target]);
+
+  if (isAdmin && b.set_balance_days !== undefined && b.set_balance_days !== null && String(b.set_balance_days) !== '') {
+    const targetHours = Number(b.set_balance_days) * HRS_PER_DAY;
+    const cur = await pool.query('SELECT COALESCE(pto_balance_hours,0) AS b, name FROM users WHERE id = $1', [target]);
+    const delta = targetHours - Number(cur.rows[0].b);
+    if (delta !== 0) {
+      const client = await pool.connect();
+      try {
+        await client.query('BEGIN');
+        await postLedger(client, {
+          user_id: target, entry_date: ymd(new Date()), kind: 'adjustment', amount_hours: delta,
+          description: 'Starting balance set to ' + Number(b.set_balance_days) + ' days', created_by: req.user.id
+        });
+        await client.query('COMMIT');
+      } catch (e) { await client.query('ROLLBACK'); return res.status(500).json({ error: 'Balance set failed: ' + e.message }); }
+      finally { client.release(); }
+    }
+  }
+  await logAudit({ entity_type: 'pto_user', entity_id: target, action: 'setup', user_id: req.user.id, user_name: req.user.name, details: { hire_date: hire, exempt: b.exempt === true } });
   res.json({ success: true });
 });
 
