@@ -6,6 +6,10 @@ const { pool } = require('../db');
 const { requireAuth, requirePermission } = require('../middleware/auth');
 const { logAudit } = require('../utils/audit');
 let notify = null; try { notify = require('../utils/notify'); } catch (e) { notify = null; }
+let sendEmail = null, emailTemplate = null, sendSms = null;
+try { var _em = require('../utils/email'); sendEmail = _em.sendEmail; emailTemplate = _em.emailTemplate; } catch (e) { /* optional */ }
+try { sendSms = require('../utils/sms').sendSms; } catch (e) { /* optional */ }
+function appUrl(path) { return (process.env.APP_URL || '').replace(/\/$/, '') + (path || ''); }
 
 const router = express.Router();
 
@@ -144,6 +148,61 @@ async function coverageCap(cityCode) {
   return def === null || def === undefined ? null : Number(def);
 }
 
+// ---- notifications (email + SMS, non-fatal) --------------------------------
+async function notifyApprover(supId, requesterName, from, to, days, paid, type, tierText) {
+  if (!supId) return;
+  try {
+    var rec = notify ? await notify.broadcastRecipients('pto_submitted', 'id = ' + supId) : { emails: [], phones: [] };
+    var dates = from + (to !== from ? ' to ' + to : '');
+    if (rec.emails && rec.emails.length && sendEmail && emailTemplate) {
+      var html = emailTemplate({
+        badge: 'PTO Request', badgeColor: 'orange', title: requesterName + ' requested time off',
+        body: 'A PTO request is waiting for your approval. Nothing is taken until you approve.',
+        details: [
+          { label: 'Employee', value: requesterName },
+          { label: 'Dates', value: dates },
+          { label: 'Business days', value: String(days) },
+          { label: 'Type', value: (paid ? 'Paid' : 'Unpaid') + ' ' + type },
+          { label: 'Approval needed', value: tierText }
+        ],
+        buttonText: 'Review in Nova', buttonUrl: appUrl('/'), footerNote: 'Open Nova, then Time Off, then Approvals.'
+      });
+      await sendEmail(rec.emails, 'PTO approval needed: ' + requesterName + ' (' + dates + ')', html);
+    }
+    if (rec.phones && rec.phones.length && sendSms) {
+      await sendSms(rec.phones, 'Lock & Roll: ' + requesterName + ' requested PTO ' + dates + ' (' + days + ' days). Approve in Nova: ' + appUrl('/'));
+    }
+  } catch (e) { console.error('[pto] approver notify failed:', e.message); }
+}
+async function notifyRequester(userId, decision, from, to, days, approverName, reason) {
+  if (!userId) return;
+  try {
+    var rec = notify ? await notify.broadcastRecipients('pto_decided', 'id = ' + userId) : { emails: [], phones: [] };
+    var dates = from + (to !== from ? ' to ' + to : '');
+    var approved = decision === 'approved';
+    if (rec.emails && rec.emails.length && sendEmail && emailTemplate) {
+      var html = emailTemplate({
+        badge: approved ? 'Approved' : 'Not Approved', badgeColor: approved ? 'green' : 'red',
+        title: approved ? 'Your PTO is approved' : 'Your PTO was not approved',
+        body: approved ? 'Your time off has been approved. This is your clearance to take the time.' : ('Your PTO request was not approved' + (reason ? ': ' + reason : '.')),
+        details: [
+          { label: 'Dates', value: dates },
+          { label: 'Business days', value: String(days) },
+          { label: approved ? 'Approved by' : 'Reviewed by', value: approverName || 'your manager' }
+        ],
+        buttonText: 'View in Nova', buttonUrl: appUrl('/')
+      });
+      await sendEmail(rec.emails, (approved ? 'PTO approved: ' : 'PTO not approved: ') + dates, html);
+    }
+    if (rec.phones && rec.phones.length && sendSms) {
+      var msg = approved
+        ? ('Lock & Roll: Your PTO ' + dates + ' was approved by ' + (approverName || 'your manager') + '.')
+        : ('Lock & Roll: Your PTO ' + dates + ' was not approved' + (reason ? ' (' + reason + ')' : '') + '.');
+      await sendSms(rec.phones, msg + ' ' + appUrl('/'));
+    }
+  } catch (e) { console.error('[pto] requester notify failed:', e.message); }
+}
+
 // ---- MY PTO ----------------------------------------------------------------
 
 router.get('/me', requireAuth, async (req, res) => {
@@ -213,12 +272,8 @@ router.post('/requests', requireAuth, async (req, res) => {
   );
   const reqRow = ins.rows[0];
   await logAudit({ entity_type: 'pto_request', entity_id: reqRow.id, action: 'submitted', user_id: uid, user_name: u.name, details: { start, end, days, tier: tier.label } });
-  // Notify the approver line (supervisor). Non-fatal if notify unavailable.
-  try {
-    if (notify && notify.broadcastRecipients) {
-      await notify.broadcastRecipients('pto_submitted', 'id = ' + (parseInt(u.supervisor_id, 10) || 0));
-    }
-  } catch (e) { /* ignore */ }
+  // Notify the approver line (supervisor) by email + SMS.
+  await notifyApprover(parseInt(u.supervisor_id, 10) || 0, u.name, start, end, days, paid, (b.type || 'Vacation'), tier.label);
   res.json(reqRow);
 });
 
@@ -301,7 +356,7 @@ router.post('/requests/:id/approve', requireAuth, async (req, res) => {
     user_id: req.user.id, user_name: req.user.name,
     details: { dates: from + ' to ' + to, coverage_used: already + 1, coverage_cap: cap, override_reason: over ? overrideReason : null }
   });
-  try { if (notify && notify.broadcastRecipients) await notify.broadcastRecipients('pto_decided', 'id = ' + r.user_id); } catch (e) { /* ignore */ }
+  await notifyRequester(r.user_id, 'approved', from, to, r.business_days, req.user.name, null);
   res.json({ success: true, coverage_override: over });
 });
 
@@ -320,7 +375,7 @@ router.post('/requests/:id/deny', requireAuth, async (req, res) => {
     ['denied', req.user.id, reason || null, id]
   );
   await logAudit({ entity_type: 'pto_request', entity_id: id, action: 'denied', user_id: req.user.id, user_name: req.user.name, details: { reason: reason } });
-  try { if (notify && notify.broadcastRecipients) await notify.broadcastRecipients('pto_decided', 'id = ' + r.user_id); } catch (e) { /* ignore */ }
+  await notifyRequester(r.user_id, 'denied', String(r.start_date).slice(0, 10), String(r.end_date).slice(0, 10), r.business_days, req.user.name, reason);
   res.json({ success: true });
 });
 
