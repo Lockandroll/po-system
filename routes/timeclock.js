@@ -228,8 +228,10 @@ router.post('/week/approve', requireAuth, async function (req, res) {
 // Who's clocked in right now + who's on break.
 router.get('/board', requireAuth, requirePermission('manage_timeclock'), async function (req, res) {
   const rows = (await pool.query(
-    "SELECT e.*, (SELECT type FROM time_breaks b WHERE b.entry_id = e.id AND b.break_end_at IS NULL LIMIT 1) AS on_break_type " +
-    "FROM time_entries e WHERE e.status = 'open' ORDER BY e.clock_in_at"
+    "SELECT e.*, u.role AS user_role, b.type AS on_break_type, b.break_start_at AS on_break_since " +
+    "FROM time_entries e JOIN users u ON u.id = e.user_id " +
+    "LEFT JOIN time_breaks b ON b.entry_id = e.id AND b.break_end_at IS NULL " +
+    "WHERE e.status = 'open' ORDER BY e.clock_in_at"
   )).rows;
   // Flags needing review
   const flags = (await pool.query(
