@@ -12358,7 +12358,7 @@ async function renderOrgChart(content){
   var pos={};
   users.forEach(function(u){pos[u.id]={cx:(u.org_x!=null?u.org_x:((u._xi||0)*slotW+slotW/2)),yTop:bandIndex[u._lv]*bandH+padTop};});window._orgPos=pos;window._orgBoxW=boxW;window._orgBoxH=boxH;
   var paths='';
-  users.forEach(function(u){var s=u.supervisor_id&&byId[u.supervisor_id];if(!s||!pos[s.id]||!pos[u.id])return;var p=pos[s.id],c=pos[u.id];var pby=p.yTop+boxH;if(c.yTop<=pby)return;var midY=pby+Math.min(26,(c.yTop-pby)/2);paths+='<path id="edge-'+u.id+'" d="M'+p.cx+' '+pby+' V'+midY+' H'+c.cx+' V'+c.yTop+'" fill="none" stroke="#3a3a3a" stroke-width="2"/>';});
+  users.forEach(function(u){var s=u.supervisor_id&&byId[u.supervisor_id];if(!s||!pos[s.id]||!pos[u.id])return;var p=pos[s.id],c=pos[u.id];var pby=p.yTop+boxH;if(c.yTop<=pby)return;var midY=pby+24;paths+='<path id="edge-'+u.id+'" d="M'+p.cx+' '+pby+' V'+midY+' H'+c.cx+' V'+c.yTop+'" fill="none" stroke="#3a3a3a" stroke-width="2"/>';});
   var editable=(typeof can==='function')&&can('manage_users');
   var boxes='';
   users.forEach(function(u){var pp=pos[u.id];var dragAttr=editable?(' id="orgbox-'+u.id+'" data-id="'+u.id+'"'):'';var isRoot=!(u.supervisor_id&&byId[u.supervisor_id]);var sub=u.title?('<div class="org-tl">'+escHtml(u.title)+'</div>'):('<div class="org-rl">'+escHtml(tcRoleLabel(u.role))+'</div>');boxes+='<div class="org-box'+(isRoot?' root':'')+'"'+dragAttr+' style="left:'+(pp.cx-boxW/2)+'px;top:'+pp.yTop+'px"><span class="org-chip">L'+u._lv+'</span><span class="org-av">'+tcInitials(u.name)+'</span><div class="org-nm">'+escHtml(u.name||'')+'</div>'+sub+'</div>';});
@@ -12379,7 +12379,7 @@ function tcOrgEdgePath(childId){
   var s=c.supervisor_id&&byId[c.supervisor_id];if(!s)return '';
   var pp=pos[s.id],cc=pos[childId];if(!pp||!cc)return '';
   var pby=pp.yTop+window._orgBoxH;if(cc.yTop<=pby)return '';
-  var midY=pby+Math.min(26,(cc.yTop-pby)/2);
+  var midY=pby+24;
   return 'M'+pp.cx+' '+pby+' V'+midY+' H'+cc.cx+' V'+cc.yTop;
 }
 function tcOrgSetEdge(childId){var p=document.getElementById('edge-'+childId);if(p)p.setAttribute('d',tcOrgEdgePath(childId));}
