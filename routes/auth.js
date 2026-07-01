@@ -258,7 +258,7 @@ router.post('/reset-password', async (req, res) => {
 
 // Get current user
 router.get('/me', requireAuth, async (req, res) => {
-  const { rows } = await pool.query('SELECT id, name, email, role, extra_perms, created_at FROM users WHERE id = $1', [req.user.id]);
+  const { rows } = await pool.query('SELECT id, name, email, role, title, extra_perms, created_at FROM users WHERE id = $1', [req.user.id]);
   res.json(rows[0]);
 });
 

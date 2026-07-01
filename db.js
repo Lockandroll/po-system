@@ -2,8 +2,12 @@ const { Pool } = require('pg');
 
 const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
-  ssl: process.env.DATABASE_URL && process.env.DATABASE_URL.includes('railway.internal') ? false : (process.env.NODE_ENV === 'production' ? { rejectUnauthorized: false } : false)
+  ssl: process.env.DATABASE_URL && process.env.DATABASE_URL.includes('railway.internal') ? false : (process.env.NODE_ENV === 'production' ? { rejectUnauthorized: false } : false),
+  max: 15,
+  idleTimeoutMillis: 30000,
+  connectionTimeoutMillis: 10000
 });
+pool.on('error', function (err) { console.error('Unexpected idle DB client error:', err.message); });
 
 async function initDB() {
   const client = await pool.connect();
@@ -685,6 +689,7 @@ async function initDB() {
     await client.query("ALTER TABLE users ADD COLUMN IF NOT EXISTS extra_perms TEXT[] NOT NULL DEFAULT '{}';");
     await client.query("ALTER TABLE users ADD COLUMN IF NOT EXISTS last_login_at TIMESTAMPTZ;");
     await client.query("ALTER TABLE users ADD COLUMN IF NOT EXISTS last_seen_at TIMESTAMPTZ;");
+    await client.query("ALTER TABLE users ADD COLUMN IF NOT EXISTS title VARCHAR(120);");
     const _spSeed = await client.query("SELECT value FROM settings WHERE key = 'schedule_seed_v1'");
     if (!_spSeed.rows.length) {
       await client.query(

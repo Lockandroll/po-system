@@ -350,6 +350,8 @@ function roleLabel(r) {
   var m = { locksmith:'Locksmith', locksmith_coordinator:'Locksmith Coordinator', roadside_technician:'Roadside Technician', requester:'Locksmith', approver:'Approver', manager:'Manager', admin:'Admin', owner:'Owner' };
   return m[r] || r;
 }
+// Returns a user's custom job title if set, otherwise falls back to their role label.
+function userTitle(u){ if (u && u.title && String(u.title).trim()) return String(u.title).trim(); if (u && u.isOwner) return 'Owner'; return roleLabel(u && u.role); }
 // Owner is treated as admin everywhere in the UI; isOwner is kept for labels.
 function normalizeUserRole(u){ if (u && u.role === 'owner') { u.isOwner = true; u.role = 'admin'; } return u; }
 function can(perm) {
@@ -531,7 +533,7 @@ async function render() {
             '</select>' +
           '</div>'
         : '') +
-        '<div class="sidebar-user"><div class="avatar">' + escHtml(initials) + '</div><div class="sidebar-user-info"><div class="sidebar-user-name">' + escHtml(state.user.name) + '</div><div class="sidebar-user-role">' + escHtml(state.user.isOwner ? 'Owner' : roleLabel(state.user.role)) + '</div></div></div>' +
+        '<div class="sidebar-user"><div class="avatar">' + escHtml(initials) + '</div><div class="sidebar-user-info"><div class="sidebar-user-name">' + escHtml(state.user.name) + '</div><div class="sidebar-user-role">' + escHtml(userTitle(state.user)) + '</div></div></div>' +
         '<button id="push-btn" class="btn btn-ghost btn-sm" style="width:100%;font-size:12px;color:var(--text-muted-color);margin-top:4px" onclick="pushToggle()">Enable notifications</button>' +
         '<button class="btn btn-ghost btn-sm" style="width:100%;font-size:12px;color:var(--text-muted-color);margin-top:4px" onclick="navigate(\'security\')"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="vertical-align:-2px;margin-right:4px"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg> Trusted devices</button>' +
         '<button class="btn btn-ghost btn-sm" style="width:100%;font-size:12px;color:var(--text-muted-color);margin-top:4px" onclick="logout()">' + icons.logout + ' Sign Out</button>' +
@@ -1683,7 +1685,7 @@ function usersRenderTable() {
         return '<tr class="' + (isInactive ? 'user-row-inactive' : '') + '">' +
           '<td>' + escHtml(u.name) + '</td>' +
           '<td>' + escHtml(u.email) + '</td>' +
-          '<td><span class="badge badge-' + escHtml(u.role) + '">' + escHtml(roleLabel(u.role)) + '</span></td>' +
+          '<td><span class="badge badge-' + escHtml(u.role) + '">' + escHtml(userTitle(u)) + '</span></td>' +
           '<td>' + (isInactive ? '<span class="badge badge-inactive">Access Removed</span>' : '<span style="color:var(--success);font-size:13px">&#10003; Active</span>') + '</td>' +
           '<td style="font-size:13px;white-space:nowrap;color:var(--text-muted-color)">' + (u.last_login_at ? escHtml(formatDateTime(u.last_login_at)) : '\u2014') + '</td>' +
           '<td>' + userActivityCell(u) + '</td>' +
@@ -1746,6 +1748,7 @@ async function showUserModal(id) {
           '<div class="form-group"><label>Phone <span style="font-weight:400;font-size:0.8em;color:var(--text-muted)">Format: +13215550000</span></label><input type="tel" id="modal-phone" value="' + escHtml(user ? user.phone || '' : '') + '" placeholder="+13215550000" pattern="\\+1[0-9]{10}" title="Must be in format +1 followed by 10 digits (e.g. +13215550000)" /></div>' +
           '<div class="form-group"><label>Role</label><select id="modal-role">' +'<option value="locksmith"' + (user&&user.role==='locksmith'?' selected':'') + '>Locksmith</option>' +'<option value="locksmith_coordinator"' + (user&&user.role==='locksmith_coordinator'?' selected':'') + '>Locksmith Coordinator</option>' +'<option value="roadside_technician"' + (user&&user.role==='roadside_technician'?' selected':'') + '>Roadside Technician</option>' +'<option value="manager"' + (user&&user.role==='manager'?' selected':'') + '>Manager</option>' +'<option value="admin"' + (user&&user.role==='admin'?' selected':'') + '>Admin</option>' +(((state.user&&state.user.isOwner)||!ownerExists||(user&&user.role==='owner')) ? '<option value="owner"' + (user&&user.role==='owner'?' selected':'') + '>Owner</option>' : '') +'</select></div>' +
           '</div>' +
+          '<div class="form-group"><label>Title <span style="font-weight:400;font-size:0.8em;color:var(--text-muted-color)">shown on the org chart &amp; user lists in place of the role (optional)</span></label><input type="text" id="modal-title" value="' + escHtml(user ? user.title || '' : '') + '" placeholder="e.g. Field Operations Manager" /></div>' +
           '<div class="form-group"><label>Cities <span style="font-weight:400;font-size:0.8em;color:var(--text-muted-color)">(blank = all cities)</span></label><div style="display:flex;flex-wrap:wrap;gap:10px;margin-top:4px">' + (cities.length ? cities.map(function(c){ var cc=(c.code||'').trim(); var on=(user&&user.city_codes&&user.city_codes.indexOf(cc)!==-1); return '<label style="display:inline-flex;align-items:center;gap:5px;font-weight:400;font-size:13px"><input type="checkbox" class="modal-city" value="' + escHtml(cc) + '"' + (on?' checked':'') + ' style="width:auto"> ' + escHtml(c.name) + '</label>'; }).join('') : '<span style="color:var(--text-muted-color);font-size:13px">No cities yet</span>') + '</div></div>' +
         '<div class="form-group"><label>Pay Structure</label><select id="modal-pay-type">' + '<option value="hourly"' + ((user&&user.pay_type==='hourly')||!user?' selected':'') + '>Hourly</option>' + '<option value="salary"' + (user&&user.pay_type==='salary'?' selected':'') + '>Salary</option>' + '<option value="commission"' + (user&&user.pay_type==='commission'?' selected':'') + '>Commission</option>' + '</select><div style="font-size:0.8em;color:var(--text-muted-color);margin-top:4px">Only Hourly employees are time-tracked and receive late clock-in texts.</div></div>' + '<div class="form-group"><label>Pulsar Name <span style="font-weight:400;font-size:0.8em;color:var(--text-muted-color)">name as it appears in the call report</span></label><input type="text" id="modal-pulsar" value="' + escHtml(user ? user.pulsar_name || '' : '') + '" placeholder="e.g. Albright, Benjamin" /></div>' + '<div class="form-group"><label>Reports To <span style="font-weight:400;font-size:0.8em;color:var(--text-muted-color)">who manages this person (drives late-clock-in texts &amp; the org chart)</span></label><select id="modal-reports-to">' + reportsOpts + '</select></div>' +
         '<div class="form-group" style="display:flex;align-items:center;gap:10px">' +
@@ -1784,14 +1787,15 @@ async function saveUser(id, btn) {
   var pulsar_name=(document.getElementById('modal-pulsar')||{}).value; if(pulsar_name) pulsar_name=pulsar_name.trim();
   var pay_type=(document.getElementById('modal-pay-type')||{}).value||'hourly';
   var supervisor_id=(document.getElementById('modal-reports-to')||{}).value; supervisor_id = supervisor_id ? parseInt(supervisor_id,10) : null;
+  var title=(document.getElementById('modal-title')||{}).value; if(title) title=title.trim();
   if (phone && !/^\+1[0-9]{10}$/.test(phone)) {
     document.getElementById('modal-error').innerHTML = '<div class="alert alert-error">Phone must be in format +13215550000 (+1 followed by 10 digits)</div>';
     return;
   }
   try {
     btn.disabled = true;
-    if (id) { await api('PUT', '/users/' + id, { name, email, password: password || undefined, role, phone: phone || undefined, receive_emails, receive_sms, city_codes, pulsar_name, hide_from_schedule, pay_type, supervisor_id, extra_perms }); }
-    else { await api('POST', '/users', { name, email, password: password || undefined, role, phone: phone || undefined, receive_emails, receive_sms, city_codes, pulsar_name, hide_from_schedule, pay_type, supervisor_id, extra_perms }); }
+    if (id) { await api('PUT', '/users/' + id, { name, email, password: password || undefined, role, phone: phone || undefined, receive_emails, receive_sms, city_codes, pulsar_name, hide_from_schedule, pay_type, supervisor_id, extra_perms, title }); }
+    else { await api('POST', '/users', { name, email, password: password || undefined, role, phone: phone || undefined, receive_emails, receive_sms, city_codes, pulsar_name, hide_from_schedule, pay_type, supervisor_id, extra_perms, title }); }
     document.querySelector('.modal-overlay').remove();
     navigate('users');
   } catch(err) {
@@ -2052,7 +2056,7 @@ async function renderNotifications(el) {
       var on = selected.indexOf(u.id) !== -1;
       return '<label style="display:flex;align-items:center;gap:8px;padding:4px 0;cursor:pointer;font-size:13px">' +
         '<input type="checkbox" class="nb-user-' + ev.key + '" value="' + u.id + '"' + (on ? ' checked' : '') + ' style="width:auto;margin:0" /> ' +
-        escHtml(u.name) + ' <span style="color:var(--text-muted-color);font-size:12px">(' + escHtml(roleLabel(u.role)) + (u.phone ? '' : ' &middot; no phone') + ')</span></label>';
+        escHtml(u.name) + ' <span style="color:var(--text-muted-color);font-size:12px">(' + escHtml(userTitle(u)) + (u.phone ? '' : ' &middot; no phone') + ')</span></label>';
     }).join('');
     return '<div style="border:1px solid var(--border);border-radius:8px;padding:14px;margin-bottom:12px">' +
       '<div style="display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap">' +
@@ -2685,14 +2689,14 @@ async function renderTaskForm(el, id){
     var r = await Promise.all([ id?api('GET','/tasks/'+id):Promise.resolve({}), api('GET','/users').catch(function(){return [];}) ]);
     t=r[0]||{}; users=(r[1]||[]).filter(function(u){return u.active;});
   } catch(e){ el.innerHTML='<div class="alert alert-error">'+escHtml(e.message)+'</div>'; return; }
-  var userOpts='<option value="">Unassigned</option>'+users.map(function(u){ return '<option value="'+u.id+'"'+(t.assigned_to==u.id?' selected':'')+'>'+escHtml(u.name)+' ('+escHtml(roleLabel(u.role))+')</option>'; }).join('');
-  var assigneeChecks = users.map(function(u){ return '<label class="tk-assignee-row" data-name="'+escHtml((u.name||'').toLowerCase())+'" style="display:flex;align-items:center;gap:8px;padding:5px 4px;cursor:pointer"><input type="checkbox" class="tk-assignee" value="'+u.id+'" onchange="taskUpdateAssigneeCount()" style="width:auto" /> <span style="font-size:14px">'+escHtml(u.name)+'</span> <span style="font-size:12px;color:var(--text-muted-color)">('+escHtml(roleLabel(u.role))+')</span></label>'; }).join('');
+  var userOpts='<option value="">Unassigned</option>'+users.map(function(u){ return '<option value="'+u.id+'"'+(t.assigned_to==u.id?' selected':'')+'>'+escHtml(u.name)+' ('+escHtml(userTitle(u))+')</option>'; }).join('');
+  var assigneeChecks = users.map(function(u){ return '<label class="tk-assignee-row" data-name="'+escHtml((u.name||'').toLowerCase())+'" style="display:flex;align-items:center;gap:8px;padding:5px 4px;cursor:pointer"><input type="checkbox" class="tk-assignee" value="'+u.id+'" onchange="taskUpdateAssigneeCount()" style="width:auto" /> <span style="font-size:14px">'+escHtml(u.name)+'</span> <span style="font-size:12px;color:var(--text-muted-color)">('+escHtml(userTitle(u))+')</span></label>'; }).join('');
   var assigneePickerHtml = '<div class="form-group"><label>Assign to <span style="color:var(--text-muted-color);font-weight:400">(pick one or more; a task is created for each person)</span></label>' +
     '<div style="display:flex;gap:8px;margin-bottom:6px;flex-wrap:wrap"><input type="text" id="tk-assignee-search" placeholder="Search people…" oninput="taskFilterAssignees()" style="flex:1;min-width:140px" /><button type="button" class="btn btn-secondary btn-sm" onclick="taskSelectAllAssignees(true)">Select all</button><button type="button" class="btn btn-secondary btn-sm" onclick="taskSelectAllAssignees(false)">Clear</button></div>' +
     '<div id="tk-assignee-list" style="max-height:220px;overflow-y:auto;border:1px solid var(--border);border-radius:8px;padding:6px;background:var(--bg-elevated)">'+(assigneeChecks||'<div style="color:var(--text-muted-color);font-size:13px;padding:6px">No users found.</div>')+'</div>' +
     '<div id="tk-assignee-count" style="font-size:12px;color:var(--text-muted-color);margin-top:5px">0 selected</div></div>';
   var ccSet = {}; (t.cc||[]).forEach(function(c){ ccSet[c.user_id]=1; });
-  var ccChecks = users.map(function(u){ return '<label class="tk-cc-row" data-name="'+escHtml((u.name||'').toLowerCase())+'" style="display:flex;align-items:center;gap:8px;padding:5px 4px;cursor:pointer"><input type="checkbox" class="tk-cc" value="'+u.id+'" onchange="taskUpdateCcCount()"'+(ccSet[u.id]?' checked':'')+' style="width:auto" /> <span style="font-size:14px">'+escHtml(u.name)+'</span> <span style="font-size:12px;color:var(--text-muted-color)">('+escHtml(roleLabel(u.role))+')</span></label>'; }).join('');
+  var ccChecks = users.map(function(u){ return '<label class="tk-cc-row" data-name="'+escHtml((u.name||'').toLowerCase())+'" style="display:flex;align-items:center;gap:8px;padding:5px 4px;cursor:pointer"><input type="checkbox" class="tk-cc" value="'+u.id+'" onchange="taskUpdateCcCount()"'+(ccSet[u.id]?' checked':'')+' style="width:auto" /> <span style="font-size:14px">'+escHtml(u.name)+'</span> <span style="font-size:12px;color:var(--text-muted-color)">('+escHtml(userTitle(u))+')</span></label>'; }).join('');
   var ccCount0 = (t.cc||[]).length;
   var ccPickerHtml = '<div class="form-group"><label>Copy (FYI) <span style="color:var(--text-muted-color);font-weight:400">(people emailed so they are aware \u2014 no task is created for them)</span></label>' +
     '<div style="display:flex;gap:8px;margin-bottom:6px;flex-wrap:wrap"><input type="text" id="tk-cc-search" placeholder="Search people\u2026" oninput="taskFilterCc()" style="flex:1;min-width:140px" /><button type="button" class="btn btn-secondary btn-sm" onclick="taskSelectAllCc(true)">Select all</button><button type="button" class="btn btn-secondary btn-sm" onclick="taskSelectAllCc(false)">Clear</button></div>' +
@@ -5704,7 +5708,7 @@ async function docShare(type, id) {
     '<label style="font-size:13px;display:block;margin-bottom:6px">Add access (select one or more)</label>' +
     '<div id="doc-share-picker" style="max-height:190px;overflow:auto;border:1px solid var(--border);border-radius:6px;padding:8px;margin-bottom:8px">' +
     '<div style="font-size:11px;text-transform:uppercase;letter-spacing:0.5px;color:var(--text-muted-color);margin:2px 0 6px">People</div>' +
-    picker.users.map(function (u) { return '<label style="display:flex;align-items:center;gap:8px;padding:4px 2px;font-size:14px;cursor:pointer"><input type="checkbox" class="doc-share-cb" value="user:' + u.id + '" style="width:auto;flex:0 0 auto;margin:0;padding:0" /> ' + escHtml(u.name) + ' <span style="color:var(--text-muted-color);font-size:12px">(' + escHtml(roleLabel(u.role)) + ')</span></label>'; }).join('') +
+    picker.users.map(function (u) { return '<label style="display:flex;align-items:center;gap:8px;padding:4px 2px;font-size:14px;cursor:pointer"><input type="checkbox" class="doc-share-cb" value="user:' + u.id + '" style="width:auto;flex:0 0 auto;margin:0;padding:0" /> ' + escHtml(u.name) + ' <span style="color:var(--text-muted-color);font-size:12px">(' + escHtml(userTitle(u)) + ')</span></label>'; }).join('') +
     '<div style="font-size:11px;text-transform:uppercase;letter-spacing:0.5px;color:var(--text-muted-color);margin:10px 0 6px">Entire role</div>' +
     picker.roles.map(function (r) { return '<label style="display:flex;align-items:center;gap:8px;padding:4px 2px;font-size:14px;cursor:pointer"><input type="checkbox" class="doc-share-cb" value="role:' + r + '" style="width:auto;flex:0 0 auto;margin:0;padding:0" /> Everyone: ' + escHtml(roleLabel(r)) + '</label>'; }).join('') +
     '</div>' +
@@ -12270,7 +12274,7 @@ async function renderOrgChart(content){
   function node(u,isRoot){
     var kids=u._kids.length?'<ul>'+u._kids.map(function(k){return node(k,false);}).join('')+'</ul>':'';
     return '<li><div class="org-box'+(isRoot?' root':'')+'"><span class="org-av">'+tcInitials(u.name)+'</span>'+
-      '<div class="org-nm">'+escHtml(u.name||'')+'</div><div class="org-rl">'+escHtml(tcRoleLabel(u.role))+'</div></div>'+kids+'</li>';
+      '<div class="org-nm">'+escHtml(u.name||'')+'</div><div class="org-rl">'+escHtml(userTitle(u))+'</div></div>'+kids+'</li>';
   }
   var tree=roots.length?('<div class="org-scroll"><div class="org-tree"><ul>'+roots.map(function(r){return node(r,true);}).join('')+'</ul></div></div>'):'<div class="tc-dim">No users.</div>';
   var note=(typeof can==='function'&&can('manage_users'))?'<div class="tc-dim" style="font-size:12px;margin-top:8px">Set who each person reports to in Users → edit a person → Reports To. Anyone without a manager shows at the top.</div>':'';
