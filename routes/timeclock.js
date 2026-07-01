@@ -82,6 +82,24 @@ async function setting(key, fallback) {
   } catch (e) { return fallback; }
 }
 
+// Approval is restricted to the employee's manager — anyone up their reports-to
+// chain — or any admin/owner (owner is coerced to role 'admin' by middleware).
+async function inChain(managerId, employeeId) {
+  let cur = employeeId, depth = 0;
+  while (cur && depth < 25) {
+    const r = await pool.query('SELECT supervisor_id FROM users WHERE id = $1', [cur]);
+    const sup = r.rows.length ? r.rows[0].supervisor_id : null;
+    if (!sup) return false;
+    if (sup === managerId) return true;
+    cur = sup; depth++;
+  }
+  return false;
+}
+async function canApprove(user, employeeId) {
+  if (user.role === 'admin') return true;
+  return inChain(user.id, employeeId);
+}
+
 // ============================================================================
 //  EMPLOYEE — punch + own timesheet
 // ============================================================================
@@ -255,7 +273,7 @@ router.get('/admin', requireAuth, requirePermission('manage_timeclock'), async f
   for (const u of users) {
     const rows = await timesheetRows(u.id, from, to);
     const mins = rows.reduce(function (s, e) { return s + (e.worked_minutes || 0); }, 0);
-    out.push({ user: u, minutes: mins, approval: await weekApproval(u.id, wkStart), entries: rows });
+    out.push({ user: u, minutes: mins, approval: await weekApproval(u.id, wkStart), canApprove: await canApprove(req.user, u.id), entries: rows });
   }
   res.json({ from: from, to: to, weekStart: wkStart, users: out });
 });
@@ -307,6 +325,7 @@ router.post('/entry', requireAuth, requirePermission('manage_timeclock'), async 
 // Manager approves an employee's week (employee must have approved first).
 router.post('/week/mgr-approve', requireAuth, requirePermission('manage_timeclock'), async function (req, res) {
   const uid = parseInt(req.body.user_id, 10);
+  if (!(await canApprove(req.user, uid))) return res.status(403).json({ error: 'Only this person\'s manager or an admin can approve their timesheet.' });
   const wkStart = mondayOf(req.body.weekStart || nyDateStr(new Date()));
   const wk = await ensureWeek(uid, wkStart);
   if (!wk.employee_approved_at) return res.status(409).json({ error: 'Employee has not approved this week yet.' });
@@ -321,6 +340,7 @@ router.post('/week/mgr-approve', requireAuth, requirePermission('manage_timecloc
 // Submit an approved week: build the Excel sheet and email it to payroll.
 router.post('/week/submit', requireAuth, requirePermission('manage_timeclock'), async function (req, res) {
   const uid = parseInt(req.body.user_id, 10);
+  if (!(await canApprove(req.user, uid))) return res.status(403).json({ error: 'Only this person\'s manager or an admin can submit their timesheet.' });
   const wkStart = mondayOf(req.body.weekStart || nyDateStr(new Date()));
   const wk = await ensureWeek(uid, wkStart);
   if (wk.status !== 'mgr_approved') return res.status(409).json({ error: 'Both employee and manager must approve before submitting.' });

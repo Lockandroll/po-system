@@ -12205,8 +12205,8 @@ async function tcReviewFlag(id){
 function tcSheetsHtml(sheet){
   var rows=(sheet.users||[]).map(function(u){
     var ap=u.approval||{};var action;
-    if(ap.status==='emp_approved')action='<button class="tc-sbtn" onclick="tcMgrApprove('+u.user.id+',\''+sheet.weekStart+'\')">Approve</button>';
-    else if(ap.status==='mgr_approved')action='<button class="tc-sbtn" onclick="tcSubmit('+u.user.id+',\''+sheet.weekStart+'\')">Submit to Excel</button>';
+    if(ap.status==='emp_approved')action=u.canApprove?'<button class="tc-sbtn" onclick="tcMgrApprove('+u.user.id+',\''+sheet.weekStart+'\')">Approve</button>':'<span class="tc-dim">awaiting their manager</span>';
+    else if(ap.status==='mgr_approved')action=u.canApprove?'<button class="tc-sbtn" onclick="tcSubmit('+u.user.id+',\''+sheet.weekStart+'\')">Submit to Excel</button>':'<span class="tc-tag" style="background:rgba(34,197,94,.15);color:#22c55e">approved</span>';
     else if(ap.status==='submitted')action='<span class="tc-tag" style="background:rgba(34,197,94,.15);color:#22c55e">submitted</span>';
     else action='<span class="tc-dim">awaiting employee</span>';
     return '<tr><td>'+escHtml(u.user.name)+'</td><td>'+tcHM(u.minutes)+'</td><td>'+escHtml(ap.status||'open')+'</td><td style="text-align:right">'+action+'</td></tr>';
