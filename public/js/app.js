@@ -128,8 +128,64 @@ function _novaDialog(o){
 function novaConfirm(message, o){ o = o || {}; return _novaDialog({ type:'confirm', message:message, title:o.title||'Quick check', okText:o.okText||'Yep, go ahead', cancelText:o.cancelText||'Never mind' }); }
 function novaPrompt(message, def, o){ o = o || {}; return _novaDialog({ type:'prompt', message:message, def:def, title:o.title||'Quick one', okText:o.okText||'Save it', cancelText:o.cancelText||'Never mind' }); }
 function novaAlert(message, o){ o = o || {}; return _novaDialog({ type:'alert', message:message, title:o.title||'Heads up', okText:o.okText||'Got it' }); }
+// ---- App-level GET cache (stale-while-revalidate) ---------------------------
+// Navigation used to re-fetch every list from Railway on each click, so revisits
+// felt slow. We now serve the last response instantly from memory and quietly
+// revalidate in the background. Any write (POST/PUT/PATCH/DELETE) clears the
+// cache, so you never see stale data after a change.
+var _apiCache = {};        // key -> { data, ts }
+var _apiInflight = {};     // key -> Promise (dedupe concurrent identical GETs)
+var _apiCacheGen = 0;      // bumped on every write; guards late background writes
+var API_CACHE_TTL = 60000; // serve a cached copy instantly for up to 60s
+var API_CACHE_SWR = 6000;  // if the cached copy is older than this, refresh in the background
+function _apiNoCache(path) {
+  // Endpoints that must always be live (session/auth, AI, exports, time clock, notifications).
+  return /^\/auth(\/|$)/.test(path) || /^\/ai(\/|$)/.test(path) || /export/.test(path) ||
+         /setup-needed/.test(path) || /verify/.test(path) || /usage/.test(path) ||
+         /token/.test(path) || /^\/timeclock/.test(path) || /notif/.test(path);
+}
+function _apiCacheKey(path) { return (state.viewAsId ? 'v' + state.viewAsId + ' ' : '') + path; }
+function _apiClone(d) { try { return JSON.parse(JSON.stringify(d)); } catch (e) { return d; } }
+// Clear cached reads. No arg = clear everything (used after any write); a string
+// arg clears only keys containing that substring.
+function apiBustCache(pattern) {
+  _apiCacheGen++;
+  if (!pattern) { _apiCache = {}; return; }
+  Object.keys(_apiCache).forEach(function (k) { if (k.indexOf(pattern) !== -1) delete _apiCache[k]; });
+}
+
 async function api(method, path, body) {
-  novaProgressStart();
+  var isGet = String(method).toUpperCase() === 'GET';
+  if (isGet && !_apiNoCache(path)) {
+    var key = _apiCacheKey(path);
+    var now = Date.now();
+    var hit = _apiCache[key];
+    if (hit && (now - hit.ts) < API_CACHE_TTL) {
+      // Serve instantly; if it is a little stale, refresh quietly for next time.
+      if ((now - hit.ts) > API_CACHE_SWR && !_apiInflight[key]) {
+        var bgGen = _apiCacheGen;
+        _apiInflight[key] = _apiFetch('GET', path, null, true).then(function (d) {
+          if (bgGen === _apiCacheGen) _apiCache[key] = { data: d, ts: Date.now() };
+          delete _apiInflight[key]; return d;
+        }, function () { delete _apiInflight[key]; });
+      }
+      return _apiClone(hit.data);
+    }
+    if (_apiInflight[key]) return _apiClone(await _apiInflight[key]);
+    var fgGen = _apiCacheGen;
+    _apiInflight[key] = _apiFetch('GET', path).then(function (d) {
+      if (fgGen === _apiCacheGen) _apiCache[key] = { data: d, ts: Date.now() };
+      delete _apiInflight[key]; return d;
+    }, function (e) { delete _apiInflight[key]; throw e; });
+    return _apiClone(await _apiInflight[key]);
+  }
+  var result = await _apiFetch(method, path, body);
+  if (!isGet) apiBustCache(); // any write invalidates cached reads so nothing goes stale
+  return result;
+}
+
+async function _apiFetch(method, path, body, silent) {
+  if (!silent) novaProgressStart();
   try {
   const opts = { method, headers: { 'Content-Type': 'application/json' } };
   if (state.token) opts.headers['Authorization'] = 'Bearer ' + state.token;
@@ -153,6 +209,7 @@ async function api(method, path, body) {
     state.user = null;
     localStorage.removeItem('po_token');
     localStorage.removeItem('po_user');
+    _apiCache = {};
     render();
     throw new Error('Your session expired \u2014 please sign in again.');
   }
@@ -164,7 +221,7 @@ async function api(method, path, body) {
   }
   if (!res.ok) throw new Error(data.error || 'Request failed (status ' + res.status + ')');
   return data;
-  } finally { novaProgressDone(); }
+  } finally { if (!silent) novaProgressDone(); }
 }
 
 function themeIcon() {
