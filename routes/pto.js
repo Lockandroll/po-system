@@ -1,0 +1,474 @@
+// PTO — requests, approvals, ledger, team visibility, retroactive logging, settings.
+// Everything is stored in HOURS (8 hrs = 1 day). The frontend displays hours for
+// hourly/salary staff and days for commission staff. No backticks in this file.
+const express = require('express');
+const { pool } = require('../db');
+const { requireAuth, requirePermission } = require('../middleware/auth');
+const { logAudit } = require('../utils/audit');
+let notify = null; try { notify = require('../utils/notify'); } catch (e) { notify = null; }
+
+const router = express.Router();
+
+const HRS_PER_DAY = 8;
+const RE_DATE = /^\d{4}-\d{2}-\d{2}$/;
+const APPROVED_VACATION_POSITION_ID = 5; // shift_positions row "Approved Vacation Day"
+const UNPAID_VACATION_POSITION_ID = 7;   // shift_positions row "Unpaid Vacation Day"
+
+// ---- small helpers ---------------------------------------------------------
+
+function ymd(d) {
+  const y = d.getFullYear(), m = String(d.getMonth() + 1).padStart(2, '0'), day = String(d.getDate()).padStart(2, '0');
+  return y + '-' + m + '-' + day;
+}
+function parseDate(v) {
+  if (!RE_DATE.test(String(v || ''))) return null;
+  const p = String(v).split('-');
+  return new Date(+p[0], +p[1] - 1, +p[2]);
+}
+function businessDays(a, b) {
+  const s = parseDate(a), e = parseDate(b);
+  if (!s || !e || e < s) return 0;
+  let n = 0; const d = new Date(s);
+  while (d <= e) { const w = d.getDay(); if (w !== 0 && w !== 6) n++; d.setDate(d.getDate() + 1); }
+  return n;
+}
+async function getSetting(key, fallback) {
+  const r = await pool.query('SELECT value FROM settings WHERE key = $1', [key]);
+  if (!r.rows.length) return fallback;
+  return r.rows[0].value;
+}
+async function getJsonSetting(key, fallback) {
+  const raw = await getSetting(key, null);
+  if (raw === null || raw === undefined) return fallback;
+  try { return typeof raw === 'string' ? JSON.parse(raw) : raw; } catch (e) { return fallback; }
+}
+
+// Length-based escalation, mapped to org tiers.
+// <=5 days = direct supervisor (t4); 6-10 = supervisor + COO (t2); >10 = CEO (t1).
+function requiredTier(days) {
+  if (days > 10) return { level: 1, label: 'CEO approval' };
+  if (days > 5) return { level: 2, label: 'Supervisor + COO' };
+  return { level: 4, label: 'Direct supervisor' };
+}
+
+// Walk the supervisor chain upward, returning ancestor user ids (closest first).
+async function chainIds(userId) {
+  const ids = []; let cur = userId, guard = 0;
+  while (guard++ < 25) {
+    const r = await pool.query('SELECT supervisor_id FROM users WHERE id = $1', [cur]);
+    if (!r.rows.length || !r.rows[0].supervisor_id) break;
+    const sid = r.rows[0].supervisor_id;
+    if (ids.indexOf(sid) !== -1) break; // cycle guard
+    ids.push(sid); cur = sid;
+  }
+  return ids;
+}
+// Approver may act if admin/owner, or if they sit above the requester in the chain.
+async function canApprove(user, requesterId) {
+  if (user.role === 'admin' || user.isOwner) return true;
+  if (user.id === requesterId) return false; // never approve your own
+  const chain = await chainIds(requesterId);
+  return chain.indexOf(user.id) !== -1;
+}
+// True when managerId is somewhere above targetId (i.e. target is in manager's downline).
+async function inDownline(managerId, targetId) {
+  const chain = await chainIds(targetId);
+  return chain.indexOf(managerId) !== -1;
+}
+
+// Tenure in whole years between hire date and now.
+function tenureYears(hireDate) {
+  if (!hireDate) return 0;
+  const h = hireDate instanceof Date ? hireDate : parseDate(String(hireDate).slice(0, 10));
+  if (!h) return 0;
+  const now = new Date();
+  let y = now.getFullYear() - h.getFullYear();
+  const anniv = new Date(now.getFullYear(), h.getMonth(), h.getDate());
+  if (now < anniv) y -= 1;
+  return Math.max(0, y);
+}
+// Default accrual bands (days/year) if none configured in settings.
+const DEFAULT_BANDS = [
+  { from: 0, to: 1, days_per_year: 10 },
+  { from: 1, to: 3, days_per_year: 12 },
+  { from: 3, to: 5, days_per_year: 15 },
+  { from: 5, to: null, days_per_year: 20 }
+];
+function resolveBand(bands, years) {
+  const list = (Array.isArray(bands) && bands.length) ? bands : DEFAULT_BANDS;
+  for (let i = 0; i < list.length; i++) {
+    const b = list[i];
+    const from = Number(b.from) || 0;
+    const to = (b.to === null || b.to === undefined || b.to === '') ? Infinity : Number(b.to);
+    if (years >= from && years < to) return b;
+  }
+  return list[list.length - 1];
+}
+function monthlyHoursFromBand(band) {
+  const dpy = Number(band && band.days_per_year) || 0;
+  return (dpy * HRS_PER_DAY) / 12;
+}
+
+async function eligibleInfo(user, waitingDays) {
+  const hire = user.hire_date ? parseDate(String(user.hire_date).slice(0, 10)) : null;
+  if (!hire) return { eligible_date: null, eligible_now: true };
+  const elig = new Date(hire); elig.setDate(elig.getDate() + (Number(waitingDays) || 0));
+  return { eligible_date: ymd(elig), eligible_now: new Date() >= elig };
+}
+
+// Insert a ledger line and move the cached balance in one shot (call inside a tx).
+async function postLedger(client, e) {
+  await client.query(
+    'INSERT INTO pto_ledger (user_id, entry_date, kind, amount_hours, description, accrual_period, request_id, created_by) ' +
+    'VALUES ($1,$2,$3,$4,$5,$6,$7,$8)',
+    [e.user_id, e.entry_date, e.kind, e.amount_hours, e.description || null, e.accrual_period || null, e.request_id || null, e.created_by || null]
+  );
+  await client.query('UPDATE users SET pto_balance_hours = COALESCE(pto_balance_hours,0) + $1 WHERE id = $2', [e.amount_hours, e.user_id]);
+}
+
+// Count distinct people already off (approved) on any day overlapping [from,to].
+async function coverageOverlapCount(from, to, excludeUserId) {
+  const r = await pool.query(
+    'SELECT COUNT(DISTINCT user_id)::int AS c FROM pto_requests ' +
+    'WHERE status = $1 AND NOT (end_date < $2 OR start_date > $3) AND user_id <> $4',
+    ['approved', from, to, excludeUserId || 0]
+  );
+  return r.rows.length ? r.rows[0].c : 0;
+}
+// The coverage cap that applies (per-market caps are keyed by city_code; MVP falls
+// back to a single default when we cannot resolve the requester's market).
+async function coverageCap(cityCode) {
+  const caps = await getJsonSetting('pto_coverage_caps', {});
+  if (cityCode && caps && caps[cityCode] !== undefined) return Number(caps[cityCode]);
+  const def = await getSetting('pto_coverage_default', null);
+  return def === null || def === undefined ? null : Number(def);
+}
+
+// ---- MY PTO ----------------------------------------------------------------
+
+router.get('/me', requireAuth, async (req, res) => {
+  const uid = req.user.id;
+  const ur = await pool.query('SELECT id, name, pay_type, hire_date, pto_balance_hours, pto_exempt, org_level FROM users WHERE id = $1', [uid]);
+  if (!ur.rows.length) return res.status(404).json({ error: 'User not found' });
+  const u = ur.rows[0];
+  const bands = await getJsonSetting('pto_accrual_bands', DEFAULT_BANDS);
+  const waiting = Number(await getSetting('pto_waiting_days', 90)) || 90;
+  const years = tenureYears(u.hire_date);
+  const band = resolveBand(bands, years);
+  const monthlyHours = monthlyHoursFromBand(band);
+  const elig = await eligibleInfo(u, waiting);
+  const ledger = await pool.query(
+    'SELECT id, entry_date, kind, amount_hours, description, created_at FROM pto_ledger WHERE user_id = $1 ORDER BY entry_date DESC, id DESC LIMIT 100',
+    [uid]
+  );
+  const reqs = await pool.query(
+    'SELECT id, start_date, end_date, business_days, hours, type, paid, status, required_level, override_reason, created_at ' +
+    'FROM pto_requests WHERE user_id = $1 ORDER BY created_at DESC LIMIT 100',
+    [uid]
+  );
+  res.json({
+    pay_type: u.pay_type || 'hourly',
+    balance_hours: Number(u.pto_balance_hours) || 0,
+    accrual_monthly_hours: monthlyHours,
+    accrual_days_per_year: Number(band && band.days_per_year) || 0,
+    tenure_years: years,
+    exempt: u.pto_exempt === true,
+    eligible_date: elig.eligible_date,
+    eligible_now: elig.eligible_now,
+    ledger: ledger.rows,
+    requests: reqs.rows
+  });
+});
+
+// ---- CREATE A REQUEST ------------------------------------------------------
+
+router.post('/requests', requireAuth, async (req, res) => {
+  const b = req.body || {};
+  const uid = req.user.id;
+  if (!RE_DATE.test(b.start_date)) return res.status(400).json({ error: 'Start date is required' });
+  const start = b.start_date;
+  const end = RE_DATE.test(b.end_date) ? b.end_date : b.start_date;
+  if (parseDate(end) < parseDate(start)) return res.status(400).json({ error: 'End date is before start date' });
+  const days = businessDays(start, end);
+  if (!days) return res.status(400).json({ error: 'Select at least one business day' });
+  const hours = days * HRS_PER_DAY;
+
+  const ur = await pool.query('SELECT id, name, hire_date, pto_balance_hours, supervisor_id FROM users WHERE id = $1', [uid]);
+  const u = ur.rows[0];
+  const waiting = Number(await getSetting('pto_waiting_days', 90)) || 90;
+  const elig = await eligibleInfo(u, waiting);
+  if (!elig.eligible_now) return res.status(400).json({ error: 'You are inside your first ' + waiting + ' days. Eligible ' + elig.eligible_date + '.' });
+
+  const balance = Number(u.pto_balance_hours) || 0;
+  const paid = b.paid !== false;
+  // The no-negative-balance wall applies only to paid time.
+  if (paid && balance - hours < 0) {
+    return res.status(400).json({ error: 'This exceeds your balance. No negative balances.' });
+  }
+  const tier = requiredTier(days);
+  const ins = await pool.query(
+    'INSERT INTO pto_requests (user_id, start_date, end_date, business_days, hours, type, paid, status, required_level, created_at, updated_at) ' +
+    'VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,NOW(),NOW()) RETURNING *',
+    [uid, start, end, days, hours, (b.type || 'Vacation'), paid, 'pending', tier.level]
+  );
+  const reqRow = ins.rows[0];
+  await logAudit({ entity_type: 'pto_request', entity_id: reqRow.id, action: 'submitted', user_id: uid, user_name: u.name, details: { start, end, days, tier: tier.label } });
+  // Notify the approver line (supervisor). Non-fatal if notify unavailable.
+  try {
+    if (notify && notify.broadcastRecipients) {
+      await notify.broadcastRecipients('pto_submitted', 'id = ' + (parseInt(u.supervisor_id, 10) || 0));
+    }
+  } catch (e) { /* ignore */ }
+  res.json(reqRow);
+});
+
+// ---- APPROVALS QUEUE (requests I can act on) -------------------------------
+
+router.get('/approvals', requireAuth, async (req, res) => {
+  const pend = await pool.query(
+    'SELECT r.*, u.name AS user_name, u.pay_type FROM pto_requests r JOIN users u ON u.id = r.user_id ' +
+    "WHERE r.status IN ('pending','cancel_requested') ORDER BY r.created_at ASC"
+  );
+  const out = [];
+  for (let i = 0; i < pend.rows.length; i++) {
+    const r = pend.rows[i];
+    if (await canApprove(req.user, r.user_id)) {
+      const already = await coverageOverlapCount(String(r.start_date).slice(0, 10), String(r.end_date).slice(0, 10), r.user_id);
+      const cap = await coverageCap(null);
+      r.coverage_used = already + 1;
+      r.coverage_cap = cap;
+      r.coverage_over = cap !== null && (already + 1) > cap;
+      out.push(r);
+    }
+  }
+  res.json(out);
+});
+
+// ---- APPROVE ---------------------------------------------------------------
+
+router.post('/requests/:id/approve', requireAuth, async (req, res) => {
+  const id = parseInt(req.params.id, 10) || 0;
+  const rr = await pool.query('SELECT * FROM pto_requests WHERE id = $1', [id]);
+  if (!rr.rows.length) return res.status(404).json({ error: 'Request not found' });
+  const r = rr.rows[0];
+  if (!(await canApprove(req.user, r.user_id))) return res.status(403).json({ error: 'Not your request to approve' });
+  if (r.status !== 'pending') return res.status(400).json({ error: 'Request is not pending' });
+
+  const from = String(r.start_date).slice(0, 10), to = String(r.end_date).slice(0, 10);
+  const already = await coverageOverlapCount(from, to, r.user_id);
+  const cap = await coverageCap(null);
+  const over = cap !== null && (already + 1) > cap;
+  const overrideReason = String((req.body && req.body.override_reason) || '').trim();
+  if (over && !overrideReason) {
+    return res.status(400).json({ error: 'coverage_override_required', coverage_used: already + 1, coverage_cap: cap });
+  }
+
+  // Re-check the hard wall at approval time for paid requests.
+  if (r.paid) {
+    const bal = await pool.query('SELECT COALESCE(pto_balance_hours,0) AS b FROM users WHERE id = $1', [r.user_id]);
+    if (Number(bal.rows[0].b) - Number(r.hours) < 0) return res.status(400).json({ error: 'Employee no longer has the balance for this.' });
+  }
+
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    await client.query(
+      'UPDATE pto_requests SET status = $1, approver_id = $2, decided_at = NOW(), coverage_override = $3, override_reason = $4, updated_at = NOW() WHERE id = $5',
+      ['approved', req.user.id, over, over ? overrideReason : null, id]
+    );
+    if (r.paid) {
+      await postLedger(client, {
+        user_id: r.user_id, entry_date: from, kind: 'usage', amount_hours: -Number(r.hours),
+        description: 'PTO ' + from + (to !== from ? ' to ' + to : ''), request_id: id, created_by: req.user.id
+      });
+    }
+    // Flip the scheduled shifts to Approved / Unpaid Vacation Day (kept visible, not deleted).
+    const posId = r.paid ? APPROVED_VACATION_POSITION_ID : UNPAID_VACATION_POSITION_ID;
+    await client.query(
+      'UPDATE shifts SET position_id = $1, updated_at = NOW() WHERE user_id = $2 AND shift_date BETWEEN $3 AND $4',
+      [posId, r.user_id, from, to]
+    );
+    await client.query('COMMIT');
+  } catch (e) {
+    await client.query('ROLLBACK');
+    return res.status(500).json({ error: 'Approve failed: ' + e.message });
+  } finally {
+    client.release();
+  }
+
+  await logAudit({
+    entity_type: 'pto_request', entity_id: id, action: over ? 'approved_override' : 'approved',
+    user_id: req.user.id, user_name: req.user.name,
+    details: { dates: from + ' to ' + to, coverage_used: already + 1, coverage_cap: cap, override_reason: over ? overrideReason : null }
+  });
+  try { if (notify && notify.broadcastRecipients) await notify.broadcastRecipients('pto_decided', 'id = ' + r.user_id); } catch (e) { /* ignore */ }
+  res.json({ success: true, coverage_override: over });
+});
+
+// ---- DENY ------------------------------------------------------------------
+
+router.post('/requests/:id/deny', requireAuth, async (req, res) => {
+  const id = parseInt(req.params.id, 10) || 0;
+  const rr = await pool.query('SELECT * FROM pto_requests WHERE id = $1', [id]);
+  if (!rr.rows.length) return res.status(404).json({ error: 'Request not found' });
+  const r = rr.rows[0];
+  if (!(await canApprove(req.user, r.user_id))) return res.status(403).json({ error: 'Not your request to approve' });
+  if (r.status !== 'pending' && r.status !== 'cancel_requested') return res.status(400).json({ error: 'Nothing to deny' });
+  const reason = String((req.body && req.body.reason) || '').trim();
+  await pool.query(
+    'UPDATE pto_requests SET status = $1, approver_id = $2, decided_at = NOW(), decision_reason = $3, updated_at = NOW() WHERE id = $4',
+    ['denied', req.user.id, reason || null, id]
+  );
+  await logAudit({ entity_type: 'pto_request', entity_id: id, action: 'denied', user_id: req.user.id, user_name: req.user.name, details: { reason: reason } });
+  try { if (notify && notify.broadcastRecipients) await notify.broadcastRecipients('pto_decided', 'id = ' + r.user_id); } catch (e) { /* ignore */ }
+  res.json({ success: true });
+});
+
+// ---- CANCEL / WITHDRAW -----------------------------------------------------
+
+router.post('/requests/:id/cancel', requireAuth, async (req, res) => {
+  const id = parseInt(req.params.id, 10) || 0;
+  const rr = await pool.query('SELECT * FROM pto_requests WHERE id = $1', [id]);
+  if (!rr.rows.length) return res.status(404).json({ error: 'Request not found' });
+  const r = rr.rows[0];
+  const mine = r.user_id === req.user.id;
+  const canApp = await canApprove(req.user, r.user_id);
+  if (!mine && !canApp) return res.status(403).json({ error: 'Not allowed' });
+
+  // Pending request: withdraw outright (nothing was deducted).
+  if (r.status === 'pending') {
+    await pool.query('UPDATE pto_requests SET status = $1, updated_at = NOW() WHERE id = $2', ['cancelled', id]);
+    return res.json({ success: true, status: 'cancelled' });
+  }
+  // Approved request: employee asks, approver confirms; only then restore + revert.
+  if (r.status === 'approved') {
+    if (mine && !canApp) {
+      await pool.query('UPDATE pto_requests SET status = $1, updated_at = NOW() WHERE id = $2', ['cancel_requested', id]);
+      return res.json({ success: true, status: 'cancel_requested' });
+    }
+    const from = String(r.start_date).slice(0, 10), to = String(r.end_date).slice(0, 10);
+    const client = await pool.connect();
+    try {
+      await client.query('BEGIN');
+      if (r.paid) {
+        await postLedger(client, { user_id: r.user_id, entry_date: from, kind: 'reversal', amount_hours: Number(r.hours), description: 'PTO cancelled ' + from, request_id: id, created_by: req.user.id });
+      }
+      await client.query('UPDATE pto_requests SET status = $1, updated_at = NOW() WHERE id = $2', ['cancelled', id]);
+      await client.query('UPDATE shifts SET position_id = NULL, updated_at = NOW() WHERE user_id = $1 AND shift_date BETWEEN $2 AND $3 AND position_id = ANY($4::int[])', [r.user_id, from, to, [APPROVED_VACATION_POSITION_ID, UNPAID_VACATION_POSITION_ID]]);
+      await client.query('COMMIT');
+    } catch (e) {
+      await client.query('ROLLBACK');
+      return res.status(500).json({ error: 'Cancel failed: ' + e.message });
+    } finally { client.release(); }
+    await logAudit({ entity_type: 'pto_request', entity_id: id, action: 'cancelled', user_id: req.user.id, user_name: req.user.name, details: { dates: from + ' to ' + to } });
+    return res.json({ success: true, status: 'cancelled' });
+  }
+  return res.status(400).json({ error: 'Nothing to cancel' });
+});
+
+// ---- TEAM (read-only, downline) -------------------------------------------
+
+router.get('/team', requireAuth, requirePermission('manage_pto'), async (req, res) => {
+  const isAdmin = req.user.role === 'admin' || req.user.isOwner;
+  const ur = await pool.query('SELECT id, name, title, pay_type, org_level, hire_date, pto_balance_hours, supervisor_id FROM users WHERE active IS NOT FALSE ORDER BY name ASC');
+  const out = [];
+  for (let i = 0; i < ur.rows.length; i++) {
+    const u = ur.rows[i];
+    if (u.id === req.user.id) continue;
+    if (isAdmin || (await inDownline(req.user.id, u.id))) {
+      const pend = await pool.query("SELECT start_date, end_date FROM pto_requests WHERE user_id = $1 AND status = 'pending' ORDER BY start_date ASC LIMIT 1", [u.id]);
+      out.push({
+        id: u.id, name: u.name, title: u.title, pay_type: u.pay_type || 'hourly',
+        balance_hours: Number(u.pto_balance_hours) || 0,
+        pending: pend.rows.length ? (String(pend.rows[0].start_date).slice(0, 10)) : null
+      });
+    }
+  }
+  res.json(out);
+});
+
+router.get('/team/:userId/ledger', requireAuth, requirePermission('manage_pto'), async (req, res) => {
+  const target = parseInt(req.params.userId, 10) || 0;
+  const isAdmin = req.user.role === 'admin' || req.user.isOwner;
+  if (!isAdmin && !(await inDownline(req.user.id, target))) return res.status(403).json({ error: 'Not in your team' });
+  const rows = await pool.query('SELECT id, entry_date, kind, amount_hours, description, created_at FROM pto_ledger WHERE user_id = $1 ORDER BY entry_date DESC, id DESC LIMIT 200', [target]);
+  res.json(rows.rows);
+});
+
+// ---- RETROACTIVE LOG (manager/admin, for a downline report) ----------------
+
+router.post('/log', requireAuth, requirePermission('manage_pto'), async (req, res) => {
+  const b = req.body || {};
+  const target = parseInt(b.user_id, 10) || 0;
+  if (!target) return res.status(400).json({ error: 'Employee is required' });
+  const isAdmin = req.user.role === 'admin' || req.user.isOwner;
+  if (!isAdmin && !(await inDownline(req.user.id, target))) return res.status(403).json({ error: 'Not in your team' });
+  if (!RE_DATE.test(b.start_date)) return res.status(400).json({ error: 'Start date is required' });
+  const from = b.start_date, to = RE_DATE.test(b.end_date) ? b.end_date : b.start_date;
+  const days = businessDays(from, to);
+  if (!days) return res.status(400).json({ error: 'Select at least one business day' });
+  const paid = b.paid !== false;
+  const reason = String(b.reason || '').trim();
+  if (!reason) return res.status(400).json({ error: 'A reason is required to log PTO after the fact' });
+  const hours = days * HRS_PER_DAY;
+
+  const ur = await pool.query('SELECT name, COALESCE(pto_balance_hours,0) AS bal FROM users WHERE id = $1', [target]);
+  if (!ur.rows.length) return res.status(404).json({ error: 'Employee not found' });
+  if (paid && Number(ur.rows[0].bal) - hours < 0) return res.status(400).json({ error: 'Exceeds available balance. No negative balances.' });
+
+  const client = await pool.connect();
+  let reqId = null;
+  try {
+    await client.query('BEGIN');
+    const ins = await client.query(
+      'INSERT INTO pto_requests (user_id, start_date, end_date, business_days, hours, type, paid, status, required_level, approver_id, decided_at, retroactive, decision_reason, created_at, updated_at) ' +
+      'VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,NOW(),TRUE,$11,NOW(),NOW()) RETURNING id',
+      [target, from, to, days, hours, (b.type || 'Vacation'), paid, 'approved', 4, req.user.id, reason]
+    );
+    reqId = ins.rows[0].id;
+    if (paid) {
+      await postLedger(client, { user_id: target, entry_date: from, kind: 'usage', amount_hours: -hours, description: 'Logged after the fact — ' + from + ' (' + reason + ')', request_id: reqId, created_by: req.user.id });
+    }
+    const posId = paid ? APPROVED_VACATION_POSITION_ID : UNPAID_VACATION_POSITION_ID;
+    await client.query('UPDATE shifts SET position_id = $1, updated_at = NOW() WHERE user_id = $2 AND shift_date BETWEEN $3 AND $4', [posId, target, from, to]);
+    await client.query('COMMIT');
+  } catch (e) {
+    await client.query('ROLLBACK');
+    return res.status(500).json({ error: 'Log failed: ' + e.message });
+  } finally { client.release(); }
+
+  await logAudit({ entity_type: 'pto_request', entity_id: reqId, action: 'logged_retroactive', user_id: req.user.id, user_name: req.user.name, details: { target: target, dates: from + ' to ' + to, reason: reason, paid: paid } });
+  res.json({ success: true, request_id: reqId });
+});
+
+// ---- SETTINGS (accrual bands, coverage caps, waiting/carryover) ------------
+
+router.get('/settings', requireAuth, requirePermission('manage_pto'), async (req, res) => {
+  res.json({
+    accrual_bands: await getJsonSetting('pto_accrual_bands', DEFAULT_BANDS),
+    waiting_days: Number(await getSetting('pto_waiting_days', 90)) || 90,
+    carryover_days: await getSetting('pto_carryover_days', null),
+    balance_cap_days: await getSetting('pto_balance_cap_days', null),
+    coverage_caps: await getJsonSetting('pto_coverage_caps', {}),
+    coverage_default: await getSetting('pto_coverage_default', null)
+  });
+});
+
+router.put('/settings', requireAuth, requirePermission('manage_pto'), async (req, res) => {
+  const b = req.body || {};
+  async function put(key, val) {
+    if (val === undefined) return;
+    const v = (typeof val === 'object') ? JSON.stringify(val) : String(val);
+    await pool.query('INSERT INTO settings (key, value, updated_at) VALUES ($1,$2,NOW()) ON CONFLICT (key) DO UPDATE SET value=$2, updated_at=NOW()', [key, v]);
+  }
+  await put('pto_accrual_bands', b.accrual_bands);
+  await put('pto_waiting_days', b.waiting_days);
+  await put('pto_carryover_days', b.carryover_days);
+  await put('pto_balance_cap_days', b.balance_cap_days);
+  await put('pto_coverage_caps', b.coverage_caps);
+  await put('pto_coverage_default', b.coverage_default);
+  await logAudit({ entity_type: 'pto_settings', action: 'updated', user_id: req.user.id, user_name: req.user.name, details: {} });
+  res.json({ success: true });
+});
+
+module.exports = router;
