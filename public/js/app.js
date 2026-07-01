@@ -12260,9 +12260,14 @@ function tcInjectOrgStyles(){
   if(document.getElementById('tc-org-styles'))return;
   var el=document.createElement('style');el.id='tc-org-styles';
   el.textContent=
-    '.org-scroll{overflow-x:auto;padding:8px 4px 4px}'+
-    '.org-canvas{position:relative;margin:0 auto}'+
+    '.org-viewport{position:relative;overflow:hidden;height:72vh;min-height:420px;border:1px solid var(--border,#2c2c2c);border-radius:12px;background:rgba(0,0,0,.18);cursor:grab;touch-action:none}'+
+    '.org-viewport.grabbing{cursor:grabbing}'+
+    '.org-pan{position:absolute;top:0;left:0;transform-origin:0 0;will-change:transform}'+
+    '.org-canvas{position:relative}'+
     '.org-canvas svg{position:absolute;inset:0;z-index:0}'+
+    '.org-ctrls{display:inline-flex;gap:6px}'+
+    '.org-ctrls button{background:var(--card-bg-2,#202020);border:1px solid var(--border,#2c2c2c);color:var(--text-color,#f4f4f5);height:28px;min-width:30px;padding:0 9px;border-radius:8px;font-weight:700;cursor:pointer;font-size:14px}'+
+    '.org-ctrls button:hover{border-color:#f97316}'+
     '.org-box{position:absolute;width:152px;display:flex;flex-direction:column;align-items:center;gap:3px;background:var(--card-bg-2,#202020);border:1px solid var(--border,#2c2c2c);border-radius:12px;padding:11px 12px;z-index:1}'+
     '.org-box.root{border-color:#f97316}'+
     '.org-chip{position:absolute;top:7px;right:8px;font-size:9.5px;font-weight:800;color:var(--text-muted-color,#71717a);background:rgba(0,0,0,.28);border:1px solid var(--border,#2c2c2c);border-radius:6px;padding:1px 5px}'+
@@ -12271,6 +12276,48 @@ function tcInjectOrgStyles(){
     '.org-tl{font-size:11px;color:#fdba74;font-weight:600;text-align:center;white-space:nowrap}'+
     '.org-rl{font-size:10.5px;color:var(--text-muted-color,#71717a);white-space:nowrap}';
   document.head.appendChild(el);
+}
+function tcApplyOrgTransform(){
+  var pan=document.getElementById('org-pan');if(!pan||!window._orgView)return;
+  var v=window._orgView;
+  pan.style.transform='translate('+v.x+'px,'+v.y+'px) scale('+v.scale+')';
+}
+function tcOrgFit(){
+  var d=window._orgDim,vp=document.getElementById('org-viewport');if(!d||!vp)return;
+  var r=vp.getBoundingClientRect();
+  var s=Math.min(1,(r.width-40)/d.W,(r.height-40)/d.H);s=Math.max(0.3,s);
+  window._orgView={scale:s,x:(r.width-d.W*s)/2,y:24};
+  tcApplyOrgTransform();
+}
+function tcOrgZoom(dir){
+  var vp=document.getElementById('org-viewport');if(!vp||!window._orgView)return;
+  var r=vp.getBoundingClientRect(),cx=r.width/2,cy=r.height/2,v=window._orgView;
+  var ns=Math.min(2.5,Math.max(0.3,v.scale*(dir>0?1.2:1/1.2)));
+  v.x=cx-(cx-v.x)*(ns/v.scale);v.y=cy-(cy-v.y)*(ns/v.scale);v.scale=ns;
+  tcApplyOrgTransform();
+}
+function tcOrgBindPanZoom(W,H){
+  window._orgDim={W:W,H:H};
+  var vp=document.getElementById('org-viewport');if(!vp)return;
+  if(!window._orgView){tcOrgFit();}else{tcApplyOrgTransform();}
+  var st=window._orgDrag=(window._orgDrag||{});
+  vp.onmousedown=function(e){st.active=true;st.sx=e.clientX;st.sy=e.clientY;st.ox=window._orgView.x;st.oy=window._orgView.y;vp.classList.add('grabbing');e.preventDefault();};
+  vp.onwheel=function(e){
+    e.preventDefault();
+    var r=vp.getBoundingClientRect(),v=window._orgView;
+    var mx=e.clientX-r.left,my=e.clientY-r.top;
+    var ns=Math.min(2.5,Math.max(0.3,v.scale*(e.deltaY<0?1.12:1/1.12)));
+    v.x=mx-(mx-v.x)*(ns/v.scale);v.y=my-(my-v.y)*(ns/v.scale);v.scale=ns;
+    tcApplyOrgTransform();
+  };
+  vp.ontouchstart=function(e){if(e.touches.length===1){st.active=true;st.sx=e.touches[0].clientX;st.sy=e.touches[0].clientY;st.ox=window._orgView.x;st.oy=window._orgView.y;}};
+  vp.ontouchmove=function(e){if(st.active&&e.touches.length===1){window._orgView.x=st.ox+(e.touches[0].clientX-st.sx);window._orgView.y=st.oy+(e.touches[0].clientY-st.sy);tcApplyOrgTransform();e.preventDefault();}};
+  vp.ontouchend=function(){st.active=false;};
+  if(!window._orgPanBound){
+    window._orgPanBound=true;
+    window.addEventListener('mousemove',function(e){var st=window._orgDrag;if(!st||!st.active||!window._orgView)return;window._orgView.x=st.ox+(e.clientX-st.sx);window._orgView.y=st.oy+(e.clientY-st.sy);tcApplyOrgTransform();});
+    window.addEventListener('mouseup',function(){var st=window._orgDrag;if(st&&st.active){st.active=false;var vp=document.getElementById('org-viewport');if(vp)vp.classList.remove('grabbing');}});
+  }
 }
 async function renderOrgChart(content){
   tcInjectStyles();tcInjectOrgStyles();
@@ -12283,9 +12330,7 @@ async function renderOrgChart(content){
   var roots=[];
   users.forEach(function(u){var pid=u.supervisor_id;if(pid&&byId[pid]&&pid!==u.id){byId[pid]._kids.push(u);}else{roots.push(u);}});
   function lvlOf(u,guard){
-    if(u._lv)return u._lv;
-    guard=guard||0;
-    var v;
+    if(u._lv)return u._lv;guard=guard||0;var v;
     if(u.org_level&&u.org_level>0)v=u.org_level;
     else{var s=u.supervisor_id&&byId[u.supervisor_id];v=(s&&guard<50)?lvlOf(s,guard+1)+1:1;}
     u._lv=v;return v;
@@ -12308,6 +12353,11 @@ async function renderOrgChart(content){
   var boxes='';
   users.forEach(function(u){var pp=pos[u.id];var isRoot=!(u.supervisor_id&&byId[u.supervisor_id]);var sub=u.title?('<div class="org-tl">'+escHtml(u.title)+'</div>'):('<div class="org-rl">'+escHtml(tcRoleLabel(u.role))+'</div>');boxes+='<div class="org-box'+(isRoot?' root':'')+'" style="left:'+(pp.cx-boxW/2)+'px;top:'+pp.yTop+'px"><span class="org-chip">L'+u._lv+'</span><span class="org-av">'+tcInitials(u.name)+'</span><div class="org-nm">'+escHtml(u.name||'')+'</div>'+sub+'</div>';});
   var svg='<svg width="'+W+'" height="'+H+'" viewBox="0 0 '+W+' '+H+'">'+paths+'</svg>';
-  var note=(typeof can==='function'&&can('manage_users'))?'<div class="tc-dim" style="font-size:12px;margin-top:10px">Set each person\'s Reports To (draws the lines) and Org Level (the row) in Users → edit. Blank level auto-places them by depth under their manager.</div>':'';
-  content.innerHTML='<div class="tc-wrap" style="max-width:100%"><div class="tc-card"><div class="tc-h">Organization Chart</div><div class="org-scroll"><div class="org-canvas" style="width:'+W+'px;height:'+H+'px">'+svg+boxes+'</div></div>'+note+'</div></div>';
+  var note=(typeof can==='function'&&can('manage_users'))?'<div class="tc-dim" style="font-size:12px;margin-top:10px">Drag to pan, scroll to zoom. Set each person\'s Reports To (draws the lines) and Org Level (the row) in Users → edit.</div>':'<div class="tc-dim" style="font-size:12px;margin-top:10px">Drag to pan, scroll to zoom.</div>';
+  content.innerHTML='<div class="tc-wrap" style="max-width:100%"><div class="tc-card">'+
+    '<div class="tc-h" style="display:flex;justify-content:space-between;align-items:center">Organization Chart'+
+      '<span class="org-ctrls"><button title="Zoom out" onclick="tcOrgZoom(-1)">−</button><button title="Zoom in" onclick="tcOrgZoom(1)">+</button><button title="Fit to view" onclick="tcOrgFit()">Fit</button></span></div>'+
+    '<div class="org-viewport" id="org-viewport"><div class="org-pan" id="org-pan"><div class="org-canvas" style="width:'+W+'px;height:'+H+'px">'+svg+boxes+'</div></div></div>'+
+    note+'</div></div>';
+  tcOrgBindPanZoom(W,H);
 }
