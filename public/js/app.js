@@ -12025,7 +12025,7 @@ function tcInjectMgrStyles(){
   if(document.getElementById('tc-mgr-styles'))return;
   var el=document.createElement('style');el.id='tc-mgr-styles';
   el.textContent=
-    '.tc-wide{max-width:960px}'+
+    '.tc-wide{max-width:720px}'+
     '.tc-tabs{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:16px}'+
     '.tc-tab{background:var(--card-bg,#181818);border:1px solid var(--border,#2c2c2c);color:var(--text-muted-color,#a1a1aa);padding:8px 14px;border-radius:8px;cursor:pointer;font-size:13px;font-weight:700}'+
     '.tc-tab.active{background:#f97316;color:#111;border-color:#f97316}'+
@@ -12090,7 +12090,6 @@ async function tcRenderPunch(body){
   var ot=40*60;
   var otChip=st.weekMinutes>ot?' <span class="tc-tag" style="background:rgba(234,179,8,.15);color:#facc15">OT '+tcHM(st.weekMinutes-ot)+'</span>':'';
   body.innerHTML=
-    '<div style="max-width:560px;margin:0 auto">'+
       '<div class="tc-card" style="text-align:center">'+
         '<div class="tc-pill" style="background:'+cfg.pc+';color:'+cfg.ptc+'">'+cfg.pill+'</div>'+
         '<div class="tc-timer" id="tc-timer">0:00:00</div>'+
@@ -12101,8 +12100,7 @@ async function tcRenderPunch(body){
       '<div class="tc-card"><div class="tc-h">Today</div>'+punches+'</div>'+
       '<div class="tc-card"><div class="tc-h">This week (Mon-Sun)</div>'+
         '<div style="font-size:26px;font-weight:800">'+tcHM(st.weekMinutes)+otChip+'</div>'+
-        '<div class="tc-dim" style="font-size:12px;margin-top:4px">Use the My Timesheet tab to review &amp; approve past weeks.</div></div>'+
-    '</div>';
+        '<div class="tc-dim" style="font-size:12px;margin-top:4px">Use the My Timesheet tab to review &amp; approve past weeks.</div></div>';
   var baseWorked=(st.today||[]).reduce(function(a,e){return a+(e.clock_out_at?(e.worked_minutes||0):0);},0)*60;
   var entryStart=st.openEntry?new Date(st.openEntry.clock_in_at).getTime():null;
   var breakStart=st.openBreak?new Date(st.openBreak.break_start_at).getTime():null;
