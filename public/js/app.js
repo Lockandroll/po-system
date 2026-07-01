@@ -480,6 +480,7 @@ async function render() {
     (can('view_signoffs') ? '<div class="nav-item' + (['signoffs','new-signoff','edit-signoff','view-signoff','complete-signoff'].indexOf(cv) !== -1 ? ' active' : '') + '" onclick="navigate(\'signoffs\')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><path d="M9 15l2 2 4-4"/></svg> Sign-Off Sheets</div>' : '') +
     (can('view_tasks') ? '<div class="nav-item' + (['tasks','task-detail','new-task','edit-task'].indexOf(cv) !== -1 ? ' active' : '') + '" onclick="navigate(\'tasks\')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg> Tasks</div>' : '') +
     (can('view_schedule') ? '<div class="nav-item' + (['schedule','schedule-admin'].indexOf(cv) !== -1 ? ' active' : '') + '" onclick="navigate(\'' + (can('manage_schedule') ? 'schedule-admin' : 'schedule') + '\')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="4" width="18" height="18" rx="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></svg> Schedule</div>' : '') +
+    (can('view_timeclock') ? '<div class="nav-item' + (['timeclock','timeclock-manager'].indexOf(cv) !== -1 ? ' active' : '') + '" onclick="navigate(\'timeclock\')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><polyline points="12 7 12 12 15 14"/></svg> Time Clock</div>' : '') +
     (can('view_vr') ?
     '<div class="nav-section-header' + (vrViews.indexOf(cv) !== -1 ? ' section-active' : '') + (ss === 'vr' ? ' open' : '') + '" onclick="toggleSection(\'vr\',\'vr-dashboard\')"><span class="s-label">' + icoTruck + ' Vehicle Maint/Repairs</span>' + chev + '</div>' +
     (ss === 'vr' ?
@@ -568,7 +569,7 @@ async function render() {
     if (_ovOpen) _ovOpen.classList.add('open');
   }
   const content = document.getElementById('content');
-  var _viewPerm = { dashboard:'view_pos', view:'view_pos', running:'view_pos', 'running-admin':'view_pos', new:'create_po', edit:'edit_po', quotes:'view_quotes', 'view-quote':'view_quotes', 'new-quote':'create_quote', 'edit-quote':'edit_quote', 'vr-dashboard':'view_vr', 'view-vr':'view_vr', 'new-vr':'create_vr', 'edit-vr':'edit_vr', deposits:'view_deposits', 'view-deposit':'view_deposits', signoffs:'view_signoffs', 'view-signoff':'view_signoffs', 'new-signoff':'create_signoff', 'edit-signoff':'edit_signoff', 'complete-signoff':'complete_signoff', tasks:'view_tasks', 'task-detail':'view_tasks', 'new-task':'view_tasks', 'edit-task':'view_tasks', 'work-orders':'view_work_orders', 'view-work-order':'view_work_orders', 'new-work-order':'manage_work_orders', schedule:'view_schedule', 'schedule-admin':'manage_schedule', 'schedule-nowork':'manage_schedule', invoices:'view_invoices', 'view-invoice':'view_invoices', 'new-invoice':'create_invoice', 'edit-invoice':'edit_invoice', 'invoice-parts':'view_invoices', 'invoice-setup':'manage_invoice_setup', feedback:'view_feedback', 'feedback-detail':'view_feedback', signatures:'view_signatures', 'new-signature':'manage_signatures', 'signature-editor':'manage_signatures' };
+  var _viewPerm = { dashboard:'view_pos', view:'view_pos', running:'view_pos', 'running-admin':'view_pos', new:'create_po', edit:'edit_po', quotes:'view_quotes', 'view-quote':'view_quotes', 'new-quote':'create_quote', 'edit-quote':'edit_quote', 'vr-dashboard':'view_vr', 'view-vr':'view_vr', 'new-vr':'create_vr', 'edit-vr':'edit_vr', deposits:'view_deposits', 'view-deposit':'view_deposits', signoffs:'view_signoffs', 'view-signoff':'view_signoffs', 'new-signoff':'create_signoff', 'edit-signoff':'edit_signoff', 'complete-signoff':'complete_signoff', tasks:'view_tasks', 'task-detail':'view_tasks', 'new-task':'view_tasks', 'edit-task':'view_tasks', 'work-orders':'view_work_orders', 'view-work-order':'view_work_orders', 'new-work-order':'manage_work_orders', schedule:'view_schedule', 'schedule-admin':'manage_schedule', 'schedule-nowork':'manage_schedule', invoices:'view_invoices', 'view-invoice':'view_invoices', 'new-invoice':'create_invoice', 'edit-invoice':'edit_invoice', 'invoice-parts':'view_invoices', 'invoice-setup':'manage_invoice_setup', feedback:'view_feedback', 'feedback-detail':'view_feedback', signatures:'view_signatures', 'new-signature':'manage_signatures', 'signature-editor':'manage_signatures', timeclock:'view_timeclock', 'timeclock-manager':'manage_timeclock' };
   if (_viewPerm[state.currentView] && !can(_viewPerm[state.currentView])) { content.innerHTML = '<div class="alert alert-error">Access denied.</div>'; return; }
   if (state.currentView === 'home') await renderHomeScreen(content);
   else if (state.currentView === 'dashboard') await renderDashboard(content);
@@ -613,6 +614,8 @@ async function render() {
   else if (state.currentView === 'new-work-order') await renderWorkOrderForm(content);
   else if (state.currentView === 'schedule') await renderSchedule(content);
   else if (state.currentView === 'schedule-admin') await renderScheduleAdmin(content);
+  else if (state.currentView === 'timeclock') await renderTimeClock(content);
+  else if (state.currentView === 'timeclock-manager') await renderTimeClockManager(content);
   else if (state.currentView === 'schedule-nowork') await renderNoWorkReport(content);
   else if (state.currentView === 'documents') await renderDocuments(content);
   else if (state.currentView === 'signatures') await renderSignatures(content);
@@ -11986,3 +11989,143 @@ try { history.replaceState({ navView: (state.currentView || 'home'), navParam: (
 render();
 initAiDots();
 window.addEventListener('resize', function() { initAiDots(); });
+
+
+/* ===================== Time Clock (frontend) ===================== */
+function tcInjectStyles(){
+  if(document.getElementById('tc-styles'))return;
+  var el=document.createElement('style');el.id='tc-styles';
+  el.textContent=
+    '.tc-wrap{max-width:640px;margin:0 auto}'+
+    '.tc-card{background:var(--card-bg,#181818);border:1px solid var(--border,#2c2c2c);border-radius:14px;padding:20px;margin-bottom:16px}'+
+    '.tc-h{font-size:12px;text-transform:uppercase;letter-spacing:.8px;color:var(--text-muted-color,#a1a1aa);font-weight:700;margin-bottom:12px}'+
+    '.tc-pill{display:inline-block;padding:5px 14px;border-radius:999px;font-size:12px;font-weight:700;letter-spacing:.5px;text-transform:uppercase;margin-bottom:12px}'+
+    '.tc-timer{font-size:52px;font-weight:800;font-variant-numeric:tabular-nums;text-align:center}'+
+    '.tc-lbl{color:var(--text-muted-color,#71717a);font-size:11px;text-transform:uppercase;letter-spacing:1px;text-align:center;margin-top:2px}'+
+    '.tc-big{width:100%;max-width:340px;margin:18px auto 6px;display:block;border:none;border-radius:16px;padding:20px;font-size:19px;font-weight:800;letter-spacing:.5px;cursor:pointer;color:#111}'+
+    '.tc-subs{display:flex;gap:10px;justify-content:center;flex-wrap:wrap;margin-top:8px}'+
+    '.tc-sbtn{border:1px solid var(--border,#2c2c2c);background:var(--card-bg,#202020);color:var(--text-color,#f4f4f5);padding:11px 16px;border-radius:12px;font-weight:700;font-size:14px;cursor:pointer}'+
+    '.tc-row{display:flex;justify-content:space-between;padding:9px 0;border-bottom:1px solid var(--border,#2c2c2c)}'+
+    '.tc-row:last-child{border-bottom:none}'+
+    '.tc-tag{font-size:11px;font-weight:700;padding:2px 8px;border-radius:6px;text-transform:uppercase}'+
+    '.tc-muted{color:var(--text-muted-color,#a1a1aa)}.tc-dim{color:var(--text-muted-color,#71717a)}'+
+    '.tc-table{width:100%;border-collapse:collapse;font-size:14px}'+
+    '.tc-table th{text-align:left;color:var(--text-muted-color,#71717a);font-size:11px;text-transform:uppercase;padding:7px 8px;border-bottom:1px solid var(--border,#2c2c2c)}'+
+    '.tc-table td{padding:8px;border-bottom:1px solid var(--border,#2c2c2c)}'+
+    '.tc-live{display:inline-block;width:8px;height:8px;border-radius:50%;background:#22c55e;margin-right:6px}';
+  document.head.appendChild(el);
+}
+function tcHM(m){m=Math.max(0,Math.round(m||0));return Math.floor(m/60)+':'+String(m%60).padStart(2,'0');}
+function tcClock(ts){if(!ts)return '—';return new Date(ts).toLocaleTimeString('en-US',{hour:'numeric',minute:'2-digit'});}
+var _tcTimer=null;
+function tcStopTimer(){if(_tcTimer){clearInterval(_tcTimer);_tcTimer=null;}}
+function tcRerender(){var c=document.getElementById('content');if(c)renderTimeClock(c);}
+
+async function renderTimeClock(content){
+  tcInjectStyles();tcStopTimer();
+  content.innerHTML='<div class="tc-wrap"><div class="tc-card"><div class="tc-dim">Loading…</div></div></div>';
+  var st;
+  try{st=await api('GET','/timeclock/status');}
+  catch(e){content.innerHTML='<div class="tc-wrap"><div class="tc-card">Could not load time clock.</div></div>';return;}
+  var cfg={out:{pill:'Clocked Out',pc:'rgba(239,68,68,.13)',ptc:'#f87171',btn:'CLOCK IN',bg:'#22c55e'},
+           in:{pill:'On the Clock',pc:'rgba(34,197,94,.15)',ptc:'#22c55e',btn:'CLOCK OUT',bg:'#ef4444'},
+           brk:{pill:'On Break',pc:'rgba(234,179,8,.15)',ptc:'#facc15',btn:'END BREAK',bg:'#eab308'}}[st.state==='break'?'brk':st.state];
+  var subs='';
+  if(st.state==='in'){
+    subs='<button class="tc-sbtn" style="border-color:#5b4a12;color:#facc15" onclick="tcBreak(\'unpaid\')">Start Lunch (unpaid)</button>'+
+         '<button class="tc-sbtn" style="border-color:#14432a;color:#22c55e" onclick="tcBreak(\'paid\')">Start Break (paid)</button>';
+  }
+  var punches=(st.today||[]).map(function(e){
+    return '<div class="tc-row"><span><span class="tc-tag" style="background:rgba(34,197,94,.15);color:#22c55e">IN '+tcClock(e.clock_in_at)+'</span>'+
+      (e.clock_out_at?' <span class="tc-tag" style="background:rgba(239,68,68,.13);color:#f87171">OUT '+tcClock(e.clock_out_at)+'</span>':'')+
+      '</span><span class="tc-muted">'+(e.worked_minutes!=null?tcHM(e.worked_minutes):'open')+'</span></div>';
+  }).join('')||'<div class="tc-row"><span class="tc-dim">No punches yet today.</span></div>';
+  var ot=40*60;
+  var otChip=st.weekMinutes>ot?' <span class="tc-tag" style="background:rgba(234,179,8,.15);color:#facc15">OT '+tcHM(st.weekMinutes-ot)+'</span>':'';
+  var mgrBtn=can('manage_timeclock')?'<button class="tc-sbtn" onclick="navigate(\'timeclock-manager\')">Manager view</button>':'';
+  content.innerHTML=
+    '<div class="tc-wrap">'+
+      '<div class="tc-card" style="text-align:center">'+
+        '<div class="tc-pill" style="background:'+cfg.pc+';color:'+cfg.ptc+'">'+cfg.pill+'</div>'+
+        '<div class="tc-timer" id="tc-timer">0:00:00</div>'+
+        '<div class="tc-lbl">'+(st.state==='break'?'On '+(st.breakType||'')+' break':'Worked today')+'</div>'+
+        '<button class="tc-big" style="background:'+cfg.bg+'" onclick="tcPunch()">'+cfg.btn+'</button>'+
+        '<div class="tc-subs">'+subs+'</div>'+
+      '</div>'+
+      '<div class="tc-card"><div class="tc-h">Today</div>'+punches+'</div>'+
+      '<div class="tc-card"><div class="tc-h">This week (Mon-Sun)</div>'+
+        '<div style="display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap">'+
+          '<div style="font-size:26px;font-weight:800">'+tcHM(st.weekMinutes)+otChip+'</div>'+
+          '<div style="display:flex;gap:8px;flex-wrap:wrap">'+mgrBtn+'<button class="tc-sbtn" onclick="tcApproveWeek(\''+st.weekStart+'\')">Approve my week</button></div>'+
+        '</div></div>'+
+    '</div>';
+  var baseWorked=(st.today||[]).reduce(function(a,e){return a+(e.clock_out_at?(e.worked_minutes||0):0);},0)*60;
+  var entryStart=st.openEntry?new Date(st.openEntry.clock_in_at).getTime():null;
+  var breakStart=st.openBreak?new Date(st.openBreak.break_start_at).getTime():null;
+  function tick(){
+    var el=document.getElementById('tc-timer');if(!el){tcStopTimer();return;}
+    var secs;
+    if(st.state==='break'){secs=(Date.now()-breakStart)/1000;}
+    else if(st.state==='in'){secs=baseWorked+(Date.now()-entryStart)/1000;}
+    else{secs=baseWorked;}
+    secs=Math.max(0,Math.floor(secs));
+    var h=Math.floor(secs/3600),m=Math.floor(secs%3600/60),ss=secs%60;
+    el.textContent=h+':'+String(m).padStart(2,'0')+':'+String(ss).padStart(2,'0');
+  }
+  tick();_tcTimer=setInterval(tick,500);
+}
+async function tcPunch(){
+  var st;try{st=await api('GET','/timeclock/status');}catch(e){alert(e.message);return;}
+  try{
+    if(st.state==='out')await api('POST','/timeclock/clock-in');
+    else if(st.state==='in')await api('POST','/timeclock/clock-out');
+    else if(st.state==='break')await api('POST','/timeclock/break/end');
+  }catch(e){alert(e.message);}
+  tcRerender();
+}
+async function tcBreak(type){
+  try{await api('POST','/timeclock/break/start',{type:type});}catch(e){alert(e.message);}
+  tcRerender();
+}
+async function tcApproveWeek(ws){
+  if(!confirm('Approve your hours for this week? Your manager reviews next.'))return;
+  try{await api('POST','/timeclock/week/approve',{weekStart:ws});alert('Week approved - sent to your manager.');}catch(e){alert(e.message);}
+}
+
+async function renderTimeClockManager(content){
+  tcInjectStyles();tcStopTimer();
+  content.innerHTML='<div class="tc-card"><div class="tc-dim">Loading…</div></div>';
+  var board,sheet;
+  try{board=await api('GET','/timeclock/board');sheet=await api('GET','/timeclock/admin');}
+  catch(e){content.innerHTML='<div class="tc-card">Could not load timesheets.</div>';return;}
+  var open=(board.open||[]).map(function(e){
+    var b=e.on_break_type;
+    return '<div class="tc-row"><span><span class="tc-live" style="'+(b?'background:#eab308':'')+'"></span>'+escHtml(e.user_name||'')+' <span class="tc-dim">'+escHtml(e.city_code||'')+'</span></span>'+
+      '<span class="tc-tag" style="background:'+(b?'rgba(234,179,8,.15);color:#facc15':'rgba(34,197,94,.15);color:#22c55e')+'">'+(b?escHtml(b)+' break':'on clock')+'</span></div>';
+  }).join('')||'<div class="tc-dim">Nobody is clocked in.</div>';
+  var flags=(board.flags||[]).map(function(e){
+    return '<div class="tc-row"><span>'+escHtml(e.user_name||'')+' <span class="tc-dim">'+tcClock(e.clock_in_at)+'</span></span><span class="tc-muted">'+escHtml(e.status)+'</span></div>';
+  }).join('')||'<div class="tc-dim">No flags.</div>';
+  var rows=(sheet.users||[]).map(function(u){
+    var ap=u.approval||{};var action;
+    if(ap.status==='emp_approved')action='<button class="tc-sbtn" onclick="tcMgrApprove('+u.user.id+',\''+sheet.weekStart+'\')">Approve</button>';
+    else if(ap.status==='mgr_approved')action='<button class="tc-sbtn" onclick="tcSubmit('+u.user.id+',\''+sheet.weekStart+'\')">Submit to Excel</button>';
+    else if(ap.status==='submitted')action='<span class="tc-tag" style="background:rgba(34,197,94,.15);color:#22c55e">submitted</span>';
+    else action='<span class="tc-dim">awaiting employee</span>';
+    return '<tr><td>'+escHtml(u.user.name)+'</td><td>'+tcHM(u.minutes)+'</td><td>'+escHtml(ap.status||'open')+'</td><td style="text-align:right">'+action+'</td></tr>';
+  }).join('');
+  content.innerHTML=
+    '<div class="tc-card"><div class="tc-h">Clocked in now ('+(board.open||[]).length+')</div>'+open+'</div>'+
+    '<div class="tc-card"><div class="tc-h">Needs review</div>'+flags+'</div>'+
+    '<div class="tc-card"><div class="tc-h">Timesheets - week of '+escHtml(sheet.weekStart)+'</div>'+
+      '<table class="tc-table"><thead><tr><th>Employee</th><th>Worked</th><th>Status</th><th></th></tr></thead><tbody>'+rows+'</tbody></table></div>';
+}
+async function tcMgrApprove(id,ws){
+  try{await api('POST','/timeclock/week/mgr-approve',{user_id:id,weekStart:ws});}catch(e){alert(e.message);}
+  var c=document.getElementById('content');if(c)renderTimeClockManager(c);
+}
+async function tcSubmit(id,ws){
+  if(!confirm('Submit this week and email the Excel sheet to payroll?'))return;
+  try{await api('POST','/timeclock/week/submit',{user_id:id,weekStart:ws});alert('Submitted - Excel emailed to payroll.');}catch(e){alert(e.message);}
+  var c=document.getElementById('content');if(c)renderTimeClockManager(c);
+}

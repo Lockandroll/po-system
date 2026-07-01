@@ -15,6 +15,7 @@ const { startWorkOrders } = require('./jobs/workOrders');
 const { startDocExpiry } = require('./jobs/docExpiry');
 const { startReviewRatings } = require('./jobs/reviewRatings');
 const { startSignatureReminders } = require('./jobs/signatureReminders');
+const { startTimeClock } = require('./jobs/timeclock');
 
 const app = express();
 
@@ -95,6 +96,7 @@ app.use('/api/scheduled', require('./routes/scheduled'));
 app.use('/api/tasks', require('./routes/tasks'));
 app.use('/api/work-orders', require('./routes/workOrders'));
 app.use('/api/schedule', require('./routes/schedule'));
+app.use('/api/timeclock', require('./routes/timeclock'));
 app.use('/api/push', require('./routes/push'));
 app.use('/api/documents', require('./routes/documents'));
 app.use('/api/invoices', require('./routes/invoices'));
@@ -138,6 +140,7 @@ initDB()
     startTaskReminders();
     startRecurringSpawner();
     startWorkOrders();
+    startTimeClock();
     startDocExpiry();
     startReviewRatings();
     startSignatureReminders();

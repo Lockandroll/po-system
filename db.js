@@ -1339,6 +1339,96 @@ async function initDB() {
       ');'
     );
 
+    // Time Clock — one row per work session (punch in -> punch out)
+    await client.query(
+      'CREATE TABLE IF NOT EXISTS time_entries (' +
+      '  id SERIAL PRIMARY KEY,' +
+      '  user_id INTEGER REFERENCES users(id) ON DELETE CASCADE,' +
+      '  user_name VARCHAR(255),' +
+      '  city_code CHAR(3),' +
+      '  shift_id INTEGER REFERENCES shifts(id) ON DELETE SET NULL,' +
+      '  clock_in_at TIMESTAMPTZ NOT NULL,' +
+      '  clock_out_at TIMESTAMPTZ,' +
+      "  status VARCHAR(20) NOT NULL DEFAULT 'open'," +   // open | closed | auto_closed | flagged
+      '  worked_minutes INTEGER,' +
+      '  late_minutes INTEGER,' +
+      "  source VARCHAR(20) DEFAULT 'pwa'," +
+      '  edited_by INTEGER,' +
+      '  edited_at TIMESTAMPTZ,' +
+      '  edit_reason TEXT,' +
+      '  created_at TIMESTAMPTZ DEFAULT NOW(),' +
+      '  updated_at TIMESTAMPTZ DEFAULT NOW()' +
+      ');'
+    );
+    // Breaks within an entry. Unpaid (lunch) is subtracted from worked time; paid counts.
+    await client.query(
+      'CREATE TABLE IF NOT EXISTS time_breaks (' +
+      '  id SERIAL PRIMARY KEY,' +
+      '  entry_id INTEGER REFERENCES time_entries(id) ON DELETE CASCADE,' +
+      "  type VARCHAR(10) NOT NULL," +                    // paid | unpaid
+      '  break_start_at TIMESTAMPTZ NOT NULL,' +
+      '  break_end_at TIMESTAMPTZ,' +
+      '  minutes INTEGER,' +
+      '  created_at TIMESTAMPTZ DEFAULT NOW()' +
+      ');'
+    );
+    // One approval row per user per pay week (Mon).
+    await client.query(
+      'CREATE TABLE IF NOT EXISTS time_week_approvals (' +
+      '  id SERIAL PRIMARY KEY,' +
+      '  user_id INTEGER REFERENCES users(id) ON DELETE CASCADE,' +
+      '  week_start DATE NOT NULL,' +
+      '  employee_approved_at TIMESTAMPTZ,' +
+      '  manager_approved_by INTEGER,' +
+      '  manager_approved_at TIMESTAMPTZ,' +
+      '  submitted_at TIMESTAMPTZ,' +
+      "  status VARCHAR(20) DEFAULT 'open'," +            // open | emp_approved | mgr_approved | submitted | reopened
+      '  UNIQUE(user_id, week_start)' +
+      ');'
+    );
+    // New user columns: pay structure + supervisor (for coordinator late-alert routing).
+    await client.query(
+      "ALTER TABLE users ADD COLUMN IF NOT EXISTS pay_type VARCHAR(12) NOT NULL DEFAULT 'hourly';" +   // hourly | salary | commission
+      'ALTER TABLE users ADD COLUMN IF NOT EXISTS supervisor_id INTEGER;'
+    );
+    // Late-alert fire-once flag on the matched shift.
+    await client.query('ALTER TABLE shifts ADD COLUMN IF NOT EXISTS late_alerted_at TIMESTAMPTZ;');
+    // Indexes
+    await client.query(
+      "CREATE INDEX IF NOT EXISTS idx_time_entries_user_open ON time_entries(user_id) WHERE status = 'open';" +
+      'CREATE INDEX IF NOT EXISTS idx_time_entries_user_date ON time_entries(user_id, clock_in_at);' +
+      'CREATE INDEX IF NOT EXISTS idx_time_breaks_entry ON time_breaks(entry_id);' +
+      'CREATE INDEX IF NOT EXISTS idx_time_week_appr ON time_week_approvals(user_id, week_start);'
+    );
+    // Default settings (only inserted once)
+    await client.query(
+      "INSERT INTO settings (key, value) VALUES " +
+      "('timeclock_overtime_threshold','40')," +
+      "('timeclock_late_grace_min','10')," +
+      "('timeclock_max_shift_hours','16')," +
+      "('timeclock_late_target','both')," +
+      "('timeclock_payroll_email','') " +
+      "ON CONFLICT (key) DO NOTHING;"
+    );
+    // Grant the new permissions to existing saved role matrices (fire once).
+    const _tcPerm = await client.query("SELECT value FROM settings WHERE key = 'perm_timeclock_backfilled'");
+    if (!_tcPerm.rows.length) {
+      const _rpT = await client.query("SELECT value FROM settings WHERE key = 'role_permissions'");
+      if (_rpT.rows.length && _rpT.rows[0].value) {
+        try {
+          const obj = JSON.parse(_rpT.rows[0].value);
+          if (obj && typeof obj === 'object') {
+            ['locksmith', 'locksmith_coordinator', 'roadside_technician', 'manager'].forEach(function (r) {
+              if (Array.isArray(obj[r]) && obj[r].indexOf('view_timeclock') === -1) obj[r].push('view_timeclock');
+            });
+            if (Array.isArray(obj.manager) && obj.manager.indexOf('manage_timeclock') === -1) obj.manager.push('manage_timeclock');
+            await client.query("INSERT INTO settings (key, value, updated_at) VALUES ('role_permissions', $1, NOW()) ON CONFLICT (key) DO UPDATE SET value = $1, updated_at = NOW()", [JSON.stringify(obj)]);
+          }
+        } catch (e) { console.error('timeclock perm backfill failed:', e.message); }
+      }
+      await client.query("INSERT INTO settings (key, value) VALUES ('perm_timeclock_backfilled', '1') ON CONFLICT (key) DO NOTHING");
+    }
+
     console.log('Database initialized');
   } finally {
     client.release();
