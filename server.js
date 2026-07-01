@@ -5,6 +5,7 @@ const cors = require('cors');
 const path = require('path');
 const fs = require('fs');
 const rateLimit = require('express-rate-limit');
+const compression = require('compression');
 const { initDB } = require('./db');
 const { startReminders } = require('./jobs/reminders');
 const { startGeicoReport, startGeicoIngest } = require('./jobs/geicoIngest');
@@ -21,6 +22,9 @@ const app = express();
 
 // Trust Railway's reverse proxy so express-rate-limit keys on the real client IP
 app.set('trust proxy', 1);
+
+// Gzip all responses (app.js bundle + JSON payloads)
+app.use(compression());
 
 // Rate limiting
 const generalLimiter = rateLimit({
