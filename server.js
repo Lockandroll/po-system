@@ -18,6 +18,7 @@ const { startReviewRatings } = require('./jobs/reviewRatings');
 const { startSignatureReminders } = require('./jobs/signatureReminders');
 const { startTimeClock } = require('./jobs/timeclock');
 const { startPtoAccrual } = require('./jobs/ptoAccrual');
+const { startQuiz } = require('./jobs/quiz');
 
 const app = express();
 
@@ -113,6 +114,8 @@ app.use('/api/vault', require('./routes/vault'));
 app.use('/api/signatures', require('./routes/signatures'));
 app.use('/api/sign', require('./routes/signatures').publicRouter);
 app.use('/api/pto', require('./routes/pto'));
+app.use('/api/quiz', require('./routes/quiz'));
+app.use('/api/quiz-take', require('./routes/quiz').publicRouter);
 
 // OAuth 2.1 authorization server for the remote MCP (must be before the SPA catch-all)
 app.use('/', require('./routes/oauth'));
@@ -153,5 +156,6 @@ initDB()
     startPtoAccrual();
     startGeicoIngest();
     startGeicoReport();
+    startQuiz();
   })
   .catch(err => console.error('DB init error (non-fatal):', err));

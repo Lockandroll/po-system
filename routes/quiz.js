@@ -13,6 +13,64 @@ const { generateQuiz, weekMonday } = require('../utils/quizGen');
 const router = express.Router();       // admin surface
 const pub = express.Router();          // public token surface
 
+// Self-bootstrapping: create the quiz tables + seed default settings on load, so
+// this module works without editing db.js. All statements are idempotent.
+async function ensureQuizTables() {
+  await pool.query(
+    'CREATE TABLE IF NOT EXISTS quizzes (' +
+    '  id SERIAL PRIMARY KEY,' +
+    '  week_of DATE NOT NULL UNIQUE,' +
+    '  sop_id INTEGER REFERENCES sop_documents(id),' +
+    '  sop_title VARCHAR(255),' +
+    "  status VARCHAR(20) NOT NULL DEFAULT 'draft'," +
+    '  created_at TIMESTAMPTZ DEFAULT NOW(),' +
+    '  sent_at TIMESTAMPTZ' +
+    ');'
+  );
+  await pool.query(
+    'CREATE TABLE IF NOT EXISTS quiz_questions (' +
+    '  id SERIAL PRIMARY KEY,' +
+    '  quiz_id INTEGER NOT NULL REFERENCES quizzes(id) ON DELETE CASCADE,' +
+    '  position INTEGER NOT NULL,' +
+    '  prompt TEXT NOT NULL,' +
+    '  options JSONB NOT NULL,' +
+    '  correct_index INTEGER NOT NULL' +
+    ');'
+  );
+  await pool.query(
+    'CREATE TABLE IF NOT EXISTS quiz_assignments (' +
+    '  id SERIAL PRIMARY KEY,' +
+    '  quiz_id INTEGER NOT NULL REFERENCES quizzes(id) ON DELETE CASCADE,' +
+    '  user_id INTEGER NOT NULL REFERENCES users(id),' +
+    '  token VARCHAR(64) NOT NULL UNIQUE,' +
+    "  status VARCHAR(20) NOT NULL DEFAULT 'pending'," +
+    '  score INTEGER,' +
+    '  passed BOOLEAN,' +
+    '  sent_at TIMESTAMPTZ,' +
+    '  completed_at TIMESTAMPTZ,' +
+    '  reminders_sent INTEGER NOT NULL DEFAULT 0' +
+    ');'
+  );
+  await pool.query(
+    'CREATE TABLE IF NOT EXISTS quiz_answers (' +
+    '  id SERIAL PRIMARY KEY,' +
+    '  assignment_id INTEGER NOT NULL REFERENCES quiz_assignments(id) ON DELETE CASCADE,' +
+    '  question_id INTEGER NOT NULL REFERENCES quiz_questions(id),' +
+    '  selected_index INTEGER,' +
+    '  correct BOOLEAN' +
+    ');'
+  );
+  await pool.query('CREATE INDEX IF NOT EXISTS idx_quiz_assign_quiz ON quiz_assignments(quiz_id);');
+  await pool.query('CREATE INDEX IF NOT EXISTS idx_quiz_assign_token ON quiz_assignments(token);');
+  await pool.query(
+    "INSERT INTO settings (key, value) VALUES " +
+    "('quiz_enabled','false'),('quiz_send_dow','1'),('quiz_send_time','09:00')," +
+    "('quiz_roles','[\"locksmith\",\"locksmith_coordinator\",\"roadside_technician\",\"manager\"]')," +
+    "('quiz_pass_score','2') ON CONFLICT (key) DO NOTHING;"
+  );
+}
+ensureQuizTables().catch(function (e) { console.error('[quiz] table init failed:', e.message); });
+
 // ---- settings helpers ------------------------------------------------------
 
 var SETTING_KEYS = ['quiz_enabled', 'quiz_send_dow', 'quiz_send_time', 'quiz_roles', 'quiz_pass_score'];
