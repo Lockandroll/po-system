@@ -1903,7 +1903,7 @@ async function showUserModal(id, returnView) {
           '</div>' +
           '<div class="form-group"><label>Title <span style="font-weight:400;font-size:0.8em;color:var(--text-muted-color)">shown on the org chart &amp; user lists in place of the role (optional)</span></label><input type="text" id="modal-title" value="' + escHtml(user ? user.title || '' : '') + '" placeholder="e.g. Field Operations Manager" /></div>' +
           '<div class="form-group"><label>Cities <span style="font-weight:400;font-size:0.8em;color:var(--text-muted-color)">(blank = all cities)</span></label><div style="display:flex;flex-wrap:wrap;gap:10px;margin-top:4px">' + (cities.length ? cities.map(function(c){ var cc=(c.code||'').trim(); var on=(user&&user.city_codes&&user.city_codes.indexOf(cc)!==-1); return '<label style="display:inline-flex;align-items:center;gap:5px;font-weight:400;font-size:13px"><input type="checkbox" class="modal-city" value="' + escHtml(cc) + '"' + (on?' checked':'') + ' style="width:auto"> ' + escHtml(c.name) + '</label>'; }).join('') : '<span style="color:var(--text-muted-color);font-size:13px">No cities yet</span>') + '</div></div>' +
-        '<div class="form-group"><label>Pay Structure</label><select id="modal-pay-type">' + '<option value="hourly"' + ((user&&user.pay_type==='hourly')||!user?' selected':'') + '>Hourly</option>' + '<option value="salary"' + (user&&user.pay_type==='salary'?' selected':'') + '>Salary</option>' + '<option value="commission"' + (user&&user.pay_type==='commission'?' selected':'') + '>Commission</option>' + '</select><div style="font-size:0.8em;color:var(--text-muted-color);margin-top:4px">Only Hourly employees are time-tracked and receive late clock-in texts.</div></div>' + '<div class="form-group"><label>Pulsar Name <span style="font-weight:400;font-size:0.8em;color:var(--text-muted-color)">name as it appears in the call report</span></label><input type="text" id="modal-pulsar" value="' + escHtml(user ? user.pulsar_name || '' : '') + '" placeholder="e.g. Albright, Benjamin" /></div>' + '<div class="form-group"><label>Reports To <span style="font-weight:400;font-size:0.8em;color:var(--text-muted-color)">who manages this person (drives late-clock-in texts &amp; the org chart)</span></label><select id="modal-reports-to">' + reportsOpts + '</select></div>' + '<div class="form-group"><label>Org Level <span style="font-weight:400;font-size:0.8em;color:var(--text-muted-color)">1 = top; sets the row on the org chart (blank = auto by depth)</span></label><input type="number" min="1" id="modal-org-level" value="' + escHtml(user && user.org_level ? String(user.org_level) : '') + '" placeholder="e.g. 2" /></div>' + '<div class="form-group"><label>Hire Date <span style="font-weight:400;font-size:0.8em;color:var(--text-muted-color)">drives PTO eligibility &amp; accrual tenure</span></label><input type="date" id="modal-hire-date" value="' + escHtml(user && user.hire_date ? String(user.hire_date).slice(0,10) : '') + '" /></div>' +
+        '<div class="form-group"><label>Pay Structure</label><select id="modal-pay-type">' + '<option value="hourly"' + ((user&&user.pay_type==='hourly')||!user?' selected':'') + '>Hourly</option>' + '<option value="salary"' + (user&&user.pay_type==='salary'?' selected':'') + '>Salary</option>' + '<option value="commission"' + (user&&user.pay_type==='commission'?' selected':'') + '>Commission</option>' + '</select><div style="font-size:0.8em;color:var(--text-muted-color);margin-top:4px">Only Hourly employees are time-tracked and receive late clock-in texts.</div></div>' + '<div class="form-group"><label>Pulsar Name <span style="font-weight:400;font-size:0.8em;color:var(--text-muted-color)">name as it appears in the call report</span></label><input type="text" id="modal-pulsar" value="' + escHtml(user ? user.pulsar_name || '' : '') + '" placeholder="e.g. Albright, Benjamin" /></div>' + '<div class="form-group"><label>Nickname(s) <span style="font-weight:400;font-size:0.8em;color:var(--text-muted-color)">what customers call them in reviews — comma-separate multiples</span></label><input type="text" id="modal-nickname" value="' + escHtml(user ? user.nickname || '' : '') + '" placeholder="e.g. Scooter" /></div>' + '<div class="form-group"><label>Reports To <span style="font-weight:400;font-size:0.8em;color:var(--text-muted-color)">who manages this person (drives late-clock-in texts &amp; the org chart)</span></label><select id="modal-reports-to">' + reportsOpts + '</select></div>' + '<div class="form-group"><label>Org Level <span style="font-weight:400;font-size:0.8em;color:var(--text-muted-color)">1 = top; sets the row on the org chart (blank = auto by depth)</span></label><input type="number" min="1" id="modal-org-level" value="' + escHtml(user && user.org_level ? String(user.org_level) : '') + '" placeholder="e.g. 2" /></div>' + '<div class="form-group"><label>Hire Date <span style="font-weight:400;font-size:0.8em;color:var(--text-muted-color)">drives PTO eligibility &amp; accrual tenure</span></label><input type="date" id="modal-hire-date" value="' + escHtml(user && user.hire_date ? String(user.hire_date).slice(0,10) : '') + '" /></div>' +
         '<div class="form-group" style="display:flex;align-items:center;gap:10px">' +
           '<input type="checkbox" id="modal-receive-emails" style="width:auto"' + (user && user.receive_emails === false ? '' : ' checked') + ' />' +
           '<label for="modal-receive-emails" style="margin:0;cursor:pointer">Receive email notifications</label>' +
@@ -1943,6 +1943,7 @@ async function saveUser(id, btn) {
   var extra_perms = []; if ((document.getElementById('modal-edit-schedule')||{}).checked === true) extra_perms.push('manage_schedule');
   var _cityNodes = document.querySelectorAll('.modal-city'); var city_codes = []; for (var _i=0;_i<_cityNodes.length;_i++){ if(_cityNodes[_i].checked) city_codes.push(_cityNodes[_i].value); }
   var pulsar_name=(document.getElementById('modal-pulsar')||{}).value; if(pulsar_name) pulsar_name=pulsar_name.trim();
+  var nickname=(document.getElementById('modal-nickname')||{}).value; if(nickname) nickname=nickname.trim();
   var pay_type=(document.getElementById('modal-pay-type')||{}).value||'hourly';
   var supervisor_id=(document.getElementById('modal-reports-to')||{}).value; supervisor_id = supervisor_id ? parseInt(supervisor_id,10) : null;
   var title=(document.getElementById('modal-title')||{}).value; if(title) title=title.trim();
@@ -1954,7 +1955,7 @@ async function saveUser(id, btn) {
   }
   try {
     btn.disabled = true;
-    var _uPayload = { name, email, password: password || undefined, role, phone: phone || undefined, receive_emails, receive_sms, city_codes, pulsar_name, hide_from_schedule, pay_type, supervisor_id, extra_perms, title, org_level, hide_from_org, hire_date };
+    var _uPayload = { name, email, password: password || undefined, role, phone: phone || undefined, receive_emails, receive_sms, city_codes, pulsar_name, nickname, hide_from_schedule, pay_type, supervisor_id, extra_perms, title, org_level, hide_from_org, hire_date };
     var _savedUser = id ? await api('PUT', '/users/' + id, _uPayload) : await api('POST', '/users', _uPayload);
     document.querySelector('.modal-overlay').remove();
     var _rv=window._userModalReturn;window._userModalReturn=null;navigate(_rv||'users');
@@ -3885,41 +3886,47 @@ async function renderReviews(el) {
     '<div id="reviews-stats" style="margin-bottom:16px"></div>' +
     '<div id="reviews-sim" style="margin-bottom:16px"></div>' +
     '<div id="reviews-tally" style="margin-bottom:16px"></div>' +
-    '<datalist id="review-assignees"></datalist>' +
     '<div id="reviews-table-wrap"></div>';
   reviewsLoadAssignees();
   await reviewsLoad(true);
 }
 
-// Fetch the name suggestions for the "Assigned To" picker and fill the datalist.
+// Fetch the real-user list for the "Assigned To" dropdowns. Users only (active
+// first, former employees grouped) — unmatched AI guesses are shown as
+// estimates but are never selectable.
 async function reviewsLoadAssignees() {
   try { _reviewAssignees = await api('GET', '/reviews/assignees') || []; }
   catch (e) { _reviewAssignees = []; }
-  var dl = document.getElementById('review-assignees');
-  if (dl) dl.innerHTML = _reviewAssignees.map(function(n){ return '<option value="' + escHtml(n) + '"></option>'; }).join('');
+}
+// Build the <option> list for an assign dropdown, selecting selectedId if set.
+function reviewsAssigneeOptions(selectedId) {
+  var act = '', former = '';
+  for (var i = 0; i < _reviewAssignees.length; i++) {
+    var u = _reviewAssignees[i];
+    var opt = '<option value="' + u.id + '"' + (String(selectedId || '') === String(u.id) ? ' selected' : '') + '>' + escHtml(u.name || '') + '</option>';
+    if (u.active) act += opt; else former += opt;
+  }
+  return '<option value="">Assign…</option>' + act + (former ? '<optgroup label="Former">' + former + '</optgroup>' : '');
 }
 
-// Save (or clear) a manual assignment, then reflect it locally without a full reload.
-async function reviewsAssign(reviewId, value, inputEl) {
-  var name = (value || '').trim();
+// Save (or clear) a manual assignment, then reflect it locally without a full
+// reload. Manual picks are real users only — the AI's unmatched guesses are
+// never selectable, so forcing an assignment always links a user id.
+async function reviewsAssign(reviewId, userId, selEl) {
   try {
-    var r = await api('PUT', '/reviews/assign', { review_id: reviewId, assignee: name });
+    var r = await api('PUT', '/reviews/assign', { review_id: reviewId, user_id: userId ? parseInt(userId, 10) : null });
     for (var i = 0; i < _reviewsRows.length; i++) {
       if (_reviewsRows[i].review_id === reviewId) {
         _reviewsRows[i].assignee = r.assignee || null;
         _reviewsRows[i].assignee_source = r.source || null;
+        _reviewsRows[i].assignee_user_id = r.user_id || null;
+        _reviewsRows[i].assignee_confidence = null;
         break;
       }
     }
-    // Add a brand-new name to the suggestion list for the rest of the session.
-    if (name && _reviewAssignees.indexOf(name) === -1) {
-      _reviewAssignees.push(name);
-      var dl = document.getElementById('review-assignees');
-      if (dl) dl.innerHTML += '<option value="' + escHtml(name) + '"></option>';
-    }
     reviewsRenderTable(_reviewsRows);
   } catch (e) {
-    if (inputEl) { inputEl.style.borderColor = '#dc2626'; inputEl.title = e.message; }
+    if (selEl) { selEl.style.borderColor = '#dc2626'; selEl.title = e.message; }
   }
 }
 
@@ -3964,10 +3971,11 @@ function reviewsRenderTally(r, ctx) {
   }
   var rowsHtml = techs.map(function(t){
     var city = escHtml(t.location || '—') + (t.multiCity ? ' <span style="color:var(--text-muted-color);font-size:11px">(+ others)</span>' : '');
-    return '<tr><td>' + escHtml(t.name || '—') + '</td><td>' + city + '</td><td style="text-align:right">' + (parseInt(t.count, 10) || 0) + '</td></tr>';
+    var tn = escHtml(t.name || '—') + (t.matched === false ? ' <span title="Not linked to a user — assign in the list below to force it" style="font-size:10px;font-style:italic;color:var(--text-muted-color)">unmatched</span>' : '');
+    return '<tr><td>' + tn + '</td><td>' + city + '</td><td style="text-align:right">' + (parseInt(t.count, 10) || 0) + '</td></tr>';
   }).join('');
   var note = 'AI checked ' + (r.analyzed || 0) + ' review' + ((r.analyzed === 1) ? '' : 's') + ' this run';
-  if (typeof r.written === 'number') note += ' • credited ' + r.written;
+  if (typeof r.written === 'number') note += ' • credited ' + r.written + (typeof r.linked === 'number' ? ' (' + r.linked + ' linked to users)' : '');
   if (r.unnamed) note += ' • ' + r.unnamed + ' still unassigned (assign them in the list below)';
   if (r.capped) note += ' • more reviews remain — run again to keep crediting';
   el.innerHTML =
@@ -4138,9 +4146,9 @@ function reviewsRenderTable(rows) {
   }
   var _pager = '<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:12px">' + _sizeCtl + _btns + '</div>';
   var canAssign = can('assign_reviews');
-  var assignedCount = 0;
-  for (var _a = 0; _a < rows.length; _a++) { if (rows[_a].assignee) assignedCount++; }
-  var coverage = total ? (' • ' + assignedCount + ' of ' + total + ' assigned') : '';
+  var assignedCount = 0, guessCount = 0;
+  for (var _a = 0; _a < rows.length; _a++) { if (rows[_a].assignee_user_id) assignedCount++; else if (rows[_a].assignee) guessCount++; }
+  var coverage = total ? (' • ' + assignedCount + ' of ' + total + ' assigned' + (guessCount ? ' • ' + guessCount + ' unmatched AI guess' + (guessCount === 1 ? '' : 'es') : '')) : '';
   wrap.innerHTML =
     '<div style="font-size:12px;color:var(--text-muted-color);margin-bottom:8px">Showing ' + _showing + ' of ' + total + ' review' + (total===1?'':'s') + coverage + '</div>' +
     '<div class="card"><div class="table-wrap"><table>' +
@@ -4149,12 +4157,18 @@ function reviewsRenderTable(rows) {
         ? '<tr><td colspan="7" style="text-align:center;color:var(--text-muted-color);padding:32px">No reviews found.</td></tr>'
         : page.map(function(r){
             var aName = r.assignee || '';
-            var badge = (r.assignee_source === 'ai') ? ' <span title="Suggested by AI — edit to confirm" style="font-size:9px;font-weight:700;color:var(--primary);border:1px solid var(--primary);border-radius:3px;padding:0 3px;vertical-align:middle">AI</span>' : '';
+            var aUid = r.assignee_user_id || null;
+            var aConf = (r.assignee_confidence == null) ? null : parseInt(r.assignee_confidence, 10);
+            var badge = (r.assignee_source === 'ai' && aUid) ? ' <span title="Matched by AI' + (aConf != null ? ' at ' + aConf + '% confidence' : '') + ' — change the dropdown to override" style="font-size:9px;font-weight:700;color:var(--primary);border:1px solid var(--primary);border-radius:3px;padding:0 3px;vertical-align:middle">AI</span>' : '';
+            var guess = '';
+            if (aName && !aUid) {
+              guess = '<div title="Estimated name — not linked to a user. Pick from the dropdown to force it." style="font-size:11px;font-style:italic;color:var(--text-muted-color);margin-top:2px;max-width:150px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">' + (r.assignee_source === 'ai' ? 'AI guess: ' : '') + escHtml(aName) + (aConf != null ? ' (' + aConf + '%)' : '') + '</div>';
+            }
             var assignCell;
             if (canAssign && r.review_id) {
-              assignCell = '<input type="text" list="review-assignees" value="' + escHtml(aName) + '" placeholder="Assign…" onchange="reviewsAssign(&#39;' + escHtml(String(r.review_id)) + '&#39;, this.value, this)" style="width:118px;padding:4px 6px;background:var(--surface-color);border:1px solid rgba(249,115,22,0.35);border-radius:5px;color:var(--text-color);font-size:12px;outline:none" />' + badge;
+              assignCell = '<select onchange="reviewsAssign(&#39;' + escHtml(String(r.review_id)) + '&#39;, this.value, this)" style="width:130px;padding:4px 6px;background:var(--surface-color);border:1px solid rgba(249,115,22,0.35);border-radius:5px;color:var(--text-color);font-size:12px;outline:none">' + reviewsAssigneeOptions(aUid) + '</select>' + badge + guess;
             } else {
-              assignCell = (aName ? escHtml(aName) : '<span style="color:var(--text-muted-color)">—</span>') + badge;
+              assignCell = (aUid && aName ? escHtml(aName) : '') + badge + guess + ((aName || aUid) ? '' : '<span style="color:var(--text-muted-color)">—</span>');
             }
             return '<tr>' +
               '<td style="white-space:nowrap">' + escHtml(r.location_name||'—') + '</td>' +

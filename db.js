@@ -685,6 +685,7 @@ async function initDB() {
     );
     await client.query('CREATE INDEX IF NOT EXISTS idx_push_subs_user ON push_subscriptions(user_id);');
     await client.query("ALTER TABLE users ADD COLUMN IF NOT EXISTS pulsar_name VARCHAR(255);");
+    await client.query("ALTER TABLE users ADD COLUMN IF NOT EXISTS nickname VARCHAR(255);");
     await client.query("ALTER TABLE users ADD COLUMN IF NOT EXISTS hide_from_schedule BOOLEAN NOT NULL DEFAULT false;");
     await client.query("ALTER TABLE users ADD COLUMN IF NOT EXISTS hide_from_org BOOLEAN NOT NULL DEFAULT false;");
     await client.query("ALTER TABLE users ADD COLUMN IF NOT EXISTS org_x INTEGER;");
@@ -1120,6 +1121,28 @@ async function initDB() {
       '  assigned_by INTEGER REFERENCES users(id) ON DELETE SET NULL,' +
       '  updated_at TIMESTAMPTZ DEFAULT NOW()' +
       ')'
+    );
+    // Link an assignment to a real Nova user (AI match or manual pick) plus the
+    // AI's 0-100 match confidence. user_id NULL = an unmatched AI guess — the UI
+    // shows it as an estimate but never offers it as a selectable choice.
+    await client.query('ALTER TABLE review_assignments ADD COLUMN IF NOT EXISTS user_id INTEGER REFERENCES users(id) ON DELETE SET NULL;');
+    await client.query('ALTER TABLE review_assignments ADD COLUMN IF NOT EXISTS confidence INTEGER;');
+    // Backfill: link existing text-only assignments whose name exactly equals a
+    // user's full name, dispatch (pulsar) name, or one of their nicknames
+    // (case-insensitive). First names link only when exactly one user has that
+    // first name. Idempotent — only touches rows that are not linked yet.
+    await client.query(
+      "UPDATE review_assignments ra SET user_id = u.id FROM users u WHERE ra.user_id IS NULL AND TRIM(ra.assignee) <> '' AND (" +
+      " LOWER(TRIM(ra.assignee)) = LOWER(TRIM(u.name))" +
+      " OR LOWER(TRIM(ra.assignee)) = LOWER(TRIM(COALESCE(u.pulsar_name, '')))" +
+      " OR LOWER(TRIM(ra.assignee)) IN (SELECT LOWER(TRIM(x)) FROM unnest(string_to_array(COALESCE(u.nickname, ''), ',')) AS x)" +
+      ")"
+    );
+    await client.query(
+      "UPDATE review_assignments ra SET user_id = u.id FROM users u " +
+      "WHERE ra.user_id IS NULL AND TRIM(ra.assignee) <> '' " +
+      "AND LOWER(TRIM(ra.assignee)) = LOWER(split_part(TRIM(u.name), ' ', 1)) " +
+      "AND (SELECT COUNT(*) FROM users u2 WHERE LOWER(split_part(TRIM(u2.name), ' ', 1)) = LOWER(TRIM(ra.assignee))) = 1"
     );
     await client.query(
       'CREATE TABLE IF NOT EXISTS oauth_clients (' +

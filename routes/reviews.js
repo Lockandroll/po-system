@@ -7,18 +7,19 @@ const { requireAuth, requirePermission } = require('../middleware/auth');
 const router = express.Router();
 
 // Load Nova-owned review assignments for a set of Google review_ids.
-// Returns a map: review_id -> { assignee, source }. Never throws — if the
-// table or the main pool is unavailable, callers just get an empty map.
+// Returns a map: review_id -> { assignee, source, user_id, confidence }.
+// Never throws — if the table or the main pool is unavailable, callers just
+// get an empty map.
 async function loadAssignments(ids) {
   const map = {};
   const clean = (ids || []).filter(Boolean);
   if (!clean.length) return map;
   try {
     const { rows } = await novaPool.query(
-      'SELECT review_id, assignee, source FROM review_assignments WHERE review_id = ANY($1)',
+      'SELECT review_id, assignee, source, user_id, confidence FROM review_assignments WHERE review_id = ANY($1)',
       [clean]
     );
-    rows.forEach(function (r) { map[r.review_id] = { assignee: r.assignee, source: r.source }; });
+    rows.forEach(function (r) { map[r.review_id] = { assignee: r.assignee, source: r.source, user_id: r.user_id, confidence: r.confidence }; });
   } catch (e) {
     console.error('loadAssignments failed:', e.message);
   }
@@ -91,6 +92,8 @@ router.get('/', requireAuth, async (req, res) => {
       const a = r.review_id ? amap[r.review_id] : null;
       r.assignee = a ? a.assignee : null;
       r.assignee_source = a ? a.source : null;
+      r.assignee_user_id = a ? a.user_id : null;
+      r.assignee_confidence = a ? a.confidence : null;
     });
     res.json(rows);
   } catch (err) {
@@ -213,48 +216,45 @@ function callClaude(system, userContent, maxTokens) {
   });
 }
 
-// GET /api/reviews/assignees — name suggestions for the "Assigned To" picker.
-// Combines active Nova users (real name + dispatch/pulsar name) with any name
-// already credited on a review, so the common techs are one click and new
-// (e.g. roadside) names appear once you have used them.
+// GET /api/reviews/assignees — the people picker for "Assigned To".
+// REAL Nova users only (active first; former employees included because older
+// reviews still credit them). Every manual assignment must link to a user id —
+// unmatched AI guesses are displayed as estimates but are never offered here.
 router.get('/assignees', requireAuth, async (req, res) => {
-  const set = {};
   try {
-    const u = await novaPool.query("SELECT name, pulsar_name FROM users WHERE active = true");
-    u.rows.forEach(function (r) {
-      if (r.name && r.name.trim()) set[r.name.trim()] = true;
-      if (r.pulsar_name && r.pulsar_name.trim()) set[r.pulsar_name.trim()] = true;
-    });
-  } catch (e) { console.error('assignees users query failed:', e.message); }
-  try {
-    const a = await novaPool.query('SELECT DISTINCT assignee FROM review_assignments');
-    a.rows.forEach(function (r) { if (r.assignee && r.assignee.trim()) set[r.assignee.trim()] = true; });
-  } catch (e) { console.error('assignees assignment query failed:', e.message); }
-  const names = Object.keys(set).sort(function (a, b) { return a.toLowerCase().localeCompare(b.toLowerCase()); });
-  res.json(names);
+    const { rows } = await novaPool.query(
+      'SELECT id, name, nickname, active FROM users ORDER BY active DESC, name ASC'
+    );
+    res.json(rows);
+  } catch (e) {
+    console.error('assignees query failed:', e.message);
+    res.json([]);
+  }
 });
 
-// PUT /api/reviews/assign — manually credit a review to a technician.
-// Body: { review_id, assignee }. An empty assignee clears the assignment.
+// PUT /api/reviews/assign — manually credit a review to a real Nova user.
+// Body: { review_id, user_id }. A null/empty user_id clears the assignment.
 // Manual assignments are marked source='manual' and the AI tally never
 // overwrites them.
 router.put('/assign', requireAuth, requirePermission('assign_reviews'), async (req, res) => {
   const reviewId = (req.body && req.body.review_id != null) ? String(req.body.review_id).trim() : '';
-  const assignee = (req.body && req.body.assignee != null) ? String(req.body.assignee).trim() : '';
+  const userId = parseInt(req.body && req.body.user_id, 10);
   if (!reviewId) return res.status(400).json({ error: 'review_id is required' });
   try {
-    if (!assignee) {
+    if (!userId || isNaN(userId)) {
       await novaPool.query('DELETE FROM review_assignments WHERE review_id = $1', [reviewId]);
-      return res.json({ review_id: reviewId, assignee: null, source: null });
+      return res.json({ review_id: reviewId, assignee: null, user_id: null, source: null });
     }
+    const u = await novaPool.query('SELECT id, name FROM users WHERE id = $1', [userId]);
+    if (!u.rows[0]) return res.status(400).json({ error: 'That user does not exist.' });
     await novaPool.query(
-      "INSERT INTO review_assignments (review_id, assignee, source, assigned_by, updated_at) " +
-      "VALUES ($1, $2, 'manual', $3, NOW()) " +
-      "ON CONFLICT (review_id) DO UPDATE SET assignee = EXCLUDED.assignee, source = 'manual', " +
-      "assigned_by = EXCLUDED.assigned_by, updated_at = NOW()",
-      [reviewId, assignee, req.user.id]
+      "INSERT INTO review_assignments (review_id, assignee, user_id, confidence, source, assigned_by, updated_at) " +
+      "VALUES ($1, $2, $3, NULL, 'manual', $4, NOW()) " +
+      "ON CONFLICT (review_id) DO UPDATE SET assignee = EXCLUDED.assignee, user_id = EXCLUDED.user_id, " +
+      "confidence = NULL, source = 'manual', assigned_by = EXCLUDED.assigned_by, updated_at = NOW()",
+      [reviewId, u.rows[0].name, userId, req.user.id]
     );
-    res.json({ review_id: reviewId, assignee: assignee, source: 'manual' });
+    res.json({ review_id: reviewId, assignee: u.rows[0].name, user_id: userId, source: 'manual' });
   } catch (err) {
     console.error('PUT /api/reviews/assign failed:', err.message);
     res.status(500).json({ error: 'Failed to save assignment.' });
@@ -262,8 +262,12 @@ router.put('/assign', requireAuth, requirePermission('assign_reviews'), async (r
 });
 
 // POST /api/reviews/tech-tally — within the same filters as the list
-// (location, rating, search, from, to), ask Claude to tally how many reviews
-// name each technician/employee. Supports the per-review employee incentive.
+// (location, rating, search, from, to), ask Claude to credit each review to an
+// employee. The AI extracts the name from the review text and matches it
+// against the REAL user roster (full name, nickname(s), dispatch/pulsar name).
+// A match at MATCH_MIN%+ confidence is hard-linked (user_id + canonical name);
+// anything weaker is stored as an unmatched guess (user_id NULL) that the UI
+// shows as an estimate but never offers as a selectable choice.
 router.post('/tech-tally', requireAuth, async (req, res) => {
   const rpool = getReviewsPool();
   if (!rpool) return notConfigured(res);
@@ -272,15 +276,17 @@ router.post('/tech-tally', requireAuth, async (req, res) => {
   }
   try {
     const { whereSql, params } = buildReviewFilters(req.body || {});
-    const FETCH = 1500; // how many filtered reviews we consider for the counts
-    const AICAP = 800;  // how many we will spend AI tokens on in one run
+    const FETCH = 1500;     // how many filtered reviews we consider for the counts
+    const AICAP = 800;      // how many we will spend AI tokens on in one run
+    const CHUNK = 200;      // reviews per AI call (keeps each JSON reply small and parseable)
+    const MATCH_MIN = 85;   // % confidence required to hard-link a roster user
     const sql =
       "SELECT review_id, location_name, review_text FROM reviews " + whereSql +
       " ORDER BY review_date DESC NULLS LAST, id DESC LIMIT " + FETCH;
     const { rows } = await rpool.query(sql, params);
 
     if (rows.length === 0) {
-      return res.json({ technicians: [], unnamed: 0, total: 0, analyzed: 0, written: 0, capped: false });
+      return res.json({ technicians: [], unnamed: 0, total: 0, analyzed: 0, written: 0, linked: 0, capped: false });
     }
 
     // What is already credited (manual or a prior AI run)?
@@ -300,69 +306,97 @@ router.post('/tech-tally', requireAuth, async (req, res) => {
     const capped = candidates.length > AICAP;
 
     let written = 0;
+    let linked = 0;
     if (aiBatch.length) {
-      const list = aiBatch.map(function (r, i) {
-        return (i + 1) + '. ' + ((r.review_text || '').replace(/\s+/g, ' ').trim() || '(no comment)');
+      // The roster the AI matches against — real Nova users, including former
+      // employees (their names still appear on older reviews).
+      const rosterRes = await novaPool.query(
+        'SELECT id, name, nickname, pulsar_name FROM users ORDER BY active DESC, name ASC'
+      );
+      const rosterById = {};
+      rosterRes.rows.forEach(function (u) { rosterById[u.id] = u; });
+      const rosterLines = rosterRes.rows.map(function (u) {
+        return u.id + ' | ' + (u.name || '-') + ' | ' + (u.nickname || '-') + ' | ' + (u.pulsar_name || '-');
       }).join('\n');
       const system =
         'You analyze Google reviews for Pop-A-Lock, a mobile locksmith and roadside ' +
-        'company. Each review may name the technician/employee who provided service ' +
-        '(for example: Austin, Dylan, Scooter, Paris). For EACH numbered review, give ' +
-        'the single employee name credited, or null if none is named. Treat obvious ' +
-        'nickname and spelling variants as the same canonical name. Respond with ONLY ' +
-        'raw JSON, no markdown and no backticks, in exactly this shape: ' +
-        '{"names":["Austin",null,"Dylan"]} with exactly one entry per review, in the ' +
-        'same order as given.';
-      const user = 'Here are ' + aiBatch.length + ' reviews:\n\n' + list;
+        'company. Below is the employee roster, one person per line, formatted as: ' +
+        'id | full name | nickname(s) | dispatch name\n\n' + rosterLines + '\n\n' +
+        'For EACH numbered review: extract the single employee name the customer ' +
+        'credits for the service (null if no employee is named). Then decide which ' +
+        'roster person that name most likely refers to — consider first names, ' +
+        'nicknames, dispatch names, and obvious spelling variants — and rate your ' +
+        'confidence 0-100 that it is the right person (use null and 0 when nothing ' +
+        'plausibly matches). Respond with ONLY raw JSON, no markdown and no ' +
+        'backticks, in exactly this shape: {"results":[["Kevin",12,95],[null,null,0]]} ' +
+        '— one [extracted_name, roster_id_or_null, confidence] triple per review, in ' +
+        'the same order as given.';
 
-      const ai = await callClaude(system, user, 4096);
-      let text = '';
-      try { text = ai.content[0].text; } catch (e) { text = ''; }
-      const match = text.match(/\{[\s\S]*\}/);
-      let names = [];
-      if (match) { try { names = JSON.parse(match[0]).names || []; } catch (e) { names = []; } }
-      if (!Array.isArray(names)) names = [];
+      for (let off = 0; off < aiBatch.length; off += CHUNK) {
+        const chunk = aiBatch.slice(off, off + CHUNK);
+        const list = chunk.map(function (r, i) {
+          return (i + 1) + '. ' + ((r.review_text || '').replace(/\s+/g, ' ').trim() || '(no comment)');
+        }).join('\n');
+        const ai = await callClaude(system, 'Here are ' + chunk.length + ' reviews:\n\n' + list, 8192);
+        let text = '';
+        try { text = ai.content[0].text; } catch (e) { text = ''; }
+        const match = text.match(/\{[\s\S]*\}/);
+        let results = [];
+        if (match) { try { results = JSON.parse(match[0]).results || []; } catch (e) { results = []; } }
+        if (!Array.isArray(results)) results = [];
 
-      // Write each AI name, but never overwrite a manual assignment.
-      for (let i = 0; i < aiBatch.length; i++) {
-        let nm = names[i];
-        nm = (typeof nm === 'string') ? nm.trim() : '';
-        if (!nm) continue;
-        try {
-          await novaPool.query(
-            "INSERT INTO review_assignments (review_id, assignee, source, updated_at) " +
-            "VALUES ($1, $2, 'ai', NOW()) " +
-            "ON CONFLICT (review_id) DO UPDATE SET assignee = EXCLUDED.assignee, source = 'ai', " +
-            "updated_at = NOW() WHERE review_assignments.source <> 'manual'",
-            [aiBatch[i].review_id, nm]
-          );
-          written++;
-          existing[aiBatch[i].review_id] = { assignee: nm, source: 'ai' };
-        } catch (e) { console.error('tally upsert failed:', e.message); }
+        // Write each result, but never overwrite a manual assignment.
+        for (let i = 0; i < chunk.length; i++) {
+          const trip = Array.isArray(results[i]) ? results[i] : [null, null, 0];
+          let nm = (typeof trip[0] === 'string') ? trip[0].trim() : '';
+          const uid = parseInt(trip[1], 10);
+          let conf = parseInt(trip[2], 10);
+          if (isNaN(conf)) conf = null; else conf = Math.max(0, Math.min(100, conf));
+          const user = (!isNaN(uid) && rosterById[uid]) ? rosterById[uid] : null;
+          const isLinked = !!(user && conf != null && conf >= MATCH_MIN);
+          if (isLinked) nm = user.name; // store the canonical user name
+          if (!nm) continue;            // nobody named — leave unassigned
+          try {
+            await novaPool.query(
+              "INSERT INTO review_assignments (review_id, assignee, user_id, confidence, source, updated_at) " +
+              "VALUES ($1, $2, $3, $4, 'ai', NOW()) " +
+              "ON CONFLICT (review_id) DO UPDATE SET assignee = EXCLUDED.assignee, user_id = EXCLUDED.user_id, " +
+              "confidence = EXCLUDED.confidence, source = 'ai', updated_at = NOW() " +
+              "WHERE review_assignments.source <> 'manual'",
+              [chunk[i].review_id, nm, isLinked ? user.id : null, conf]
+            );
+            written++;
+            if (isLinked) linked++;
+            existing[chunk[i].review_id] = { assignee: nm, source: 'ai', user_id: isLinked ? user.id : null, confidence: conf };
+          } catch (e) { console.error('tally upsert failed:', e.message); }
+        }
       }
     }
 
     // Counts come from the STORED assignments (manual + ai) over the filtered
     // set, so manual fixes and blanks-filled are reflected in the totals.
+    // Linked assignments group by user id (canonical name); unmatched guesses
+    // group by the raw guessed name and are flagged matched:false.
     const techMap = {};
     let unnamed = 0;
     rows.forEach(function (r) {
       const e = r.review_id ? existing[r.review_id] : null;
       const nm = e && e.assignee ? e.assignee : '';
       if (!nm) { unnamed++; return; }
-      if (!techMap[nm]) techMap[nm] = { count: 0, cities: {} };
-      techMap[nm].count++;
+      const key = (e.user_id ? ('u' + e.user_id) : ('n' + nm.toLowerCase()));
+      if (!techMap[key]) techMap[key] = { name: nm, matched: !!e.user_id, count: 0, cities: {} };
+      techMap[key].count++;
       const city = r.location_name || '—';
-      techMap[nm].cities[city] = (techMap[nm].cities[city] || 0) + 1;
+      techMap[key].cities[city] = (techMap[key].cities[city] || 0) + 1;
     });
 
-    const technicians = Object.keys(techMap).map(function (nm) {
-      const t = techMap[nm];
+    const technicians = Object.keys(techMap).map(function (k) {
+      const t = techMap[k];
       let topCity = '—', topN = -1;
       Object.keys(t.cities).forEach(function (c) {
         if (t.cities[c] > topN) { topN = t.cities[c]; topCity = c; }
       });
-      return { name: nm, location: topCity, multiCity: Object.keys(t.cities).length > 1, count: t.count };
+      return { name: t.name, matched: t.matched, location: topCity, multiCity: Object.keys(t.cities).length > 1, count: t.count };
     }).sort(function (a, b) { return b.count - a.count; });
 
     res.json({
@@ -371,6 +405,7 @@ router.post('/tech-tally', requireAuth, async (req, res) => {
       total: rows.length,
       analyzed: aiBatch.length,
       written: written,
+      linked: linked,
       capped: capped
     });
   } catch (err) {
