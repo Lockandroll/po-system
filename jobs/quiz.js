@@ -106,7 +106,7 @@ async function remindTick() {
 
     var pend = await pool.query(
       "SELECT a.id, a.token, u.phone FROM quiz_assignments a JOIN users u ON u.id = a.user_id " +
-      "WHERE a.quiz_id = $1 AND a.status = 'pending' AND u.active = true AND u.phone IS NOT NULL",
+      "WHERE a.quiz_id = $1 AND a.status = 'pending' AND u.active = true AND u.receive_sms = true AND u.phone IS NOT NULL",
       [quiz.id]
     );
     var link = appUrl() + '/?quiz=';

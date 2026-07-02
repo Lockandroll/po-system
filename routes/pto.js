@@ -370,6 +370,12 @@ router.post('/requests/:id/deny', requireAuth, async (req, res) => {
   if (!(await canApprove(req.user, r.user_id))) return res.status(403).json({ error: 'Not your request to approve' });
   if (r.status !== 'pending' && r.status !== 'cancel_requested') return res.status(400).json({ error: 'Nothing to deny' });
   const reason = String((req.body && req.body.reason) || '').trim();
+  // Denying a CANCELLATION request keeps the PTO approved — nothing is reversed.
+  if (r.status === 'cancel_requested') {
+    await pool.query('UPDATE pto_requests SET status = $1, decision_reason = $2, updated_at = NOW() WHERE id = $3', ['approved', reason || null, id]);
+    await logAudit({ entity_type: 'pto_request', entity_id: id, action: 'cancel_denied', user_id: req.user.id, user_name: req.user.name, details: { reason: reason } });
+    return res.json({ success: true, status: 'approved' });
+  }
   await pool.query(
     'UPDATE pto_requests SET status = $1, approver_id = $2, decided_at = NOW(), decision_reason = $3, updated_at = NOW() WHERE id = $4',
     ['denied', req.user.id, reason || null, id]
@@ -396,8 +402,9 @@ router.post('/requests/:id/cancel', requireAuth, async (req, res) => {
     return res.json({ success: true, status: 'cancelled' });
   }
   // Approved request: employee asks, approver confirms; only then restore + revert.
-  if (r.status === 'approved') {
+  if (r.status === 'approved' || r.status === 'cancel_requested') {
     if (mine && !canApp) {
+      if (r.status === 'cancel_requested') return res.json({ success: true, status: 'cancel_requested' });
       await pool.query('UPDATE pto_requests SET status = $1, updated_at = NOW() WHERE id = $2', ['cancel_requested', id]);
       return res.json({ success: true, status: 'cancel_requested' });
     }

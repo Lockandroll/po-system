@@ -54,7 +54,7 @@ router.get('/:id', requireAuth, requirePermission('view_quotes'), async (req, re
     );
     if (!rows.length) return res.status(404).json({ error: 'Quote not found' });
     const quote = rows[0];
-    if (req.user.role !== 'admin' && quote.requester_id !== req.user.id) {
+    if (!['admin', 'manager'].includes(req.user.role) && quote.requester_id !== req.user.id) {
       return res.status(403).json({ error: 'Access denied' });
     }
     const { rows: items } = await pool.query(

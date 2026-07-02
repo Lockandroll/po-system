@@ -202,10 +202,14 @@
       var d = fmtDate(r.start_date) + (String(r.end_date).slice(0, 10) !== String(r.start_date).slice(0, 10) ? ' – ' + fmtDate(r.end_date) : '');
       var cov = r.coverage_cap === null || r.coverage_cap === undefined ? '<span class="pto-sub">no cap</span>'
         : '<span class="pto-pill ' + (r.coverage_over ? 'denied' : 'approved') + '">' + (r.coverage_over ? '⚠ ' : '') + r.coverage_used + ' of ' + r.coverage_cap + '</span>';
-      return '<tr><td><b>' + escHtml(r.user_name || '') + '</b><br><span class="pto-sub">' + escHtml(r.pay_type || '') + '</span></td>' +
+      var isCancel = r.status === 'cancel_requested';
+      var acts = isCancel
+        ? '<button class="pto-btn ok sm" onclick="ptoCancelConfirm(' + r.id + ')">Approve cancellation</button> <button class="pto-btn no sm" onclick="ptoCancelKeep(' + r.id + ')">Keep approved</button>'
+        : '<button class="pto-btn ok sm" onclick="ptoApprove(' + r.id + ',' + (r.coverage_over ? 'true' : 'false') + ')">Approve</button> <button class="pto-btn no sm" onclick="ptoDeny(' + r.id + ')">Deny</button>';
+      return '<tr><td><b>' + escHtml(r.user_name || '') + '</b>' + (isCancel ? ' <span class="pto-pill denied">CANCELLATION</span>' : '') + '<br><span class="pto-sub">' + escHtml(r.pay_type || '') + '</span></td>' +
         '<td>' + d + '</td><td>' + r.business_days + '</td><td>' + fmtAmt(Number(r.hours), r.pay_type) + '</td>' +
         '<td>' + cov + '</td>' +
-        '<td style="white-space:nowrap"><button class="pto-btn ok sm" onclick="ptoApprove(' + r.id + ',' + (r.coverage_over ? 'true' : 'false') + ')">Approve</button> <button class="pto-btn no sm" onclick="ptoDeny(' + r.id + ')">Deny</button></td></tr>';
+        '<td style="white-space:nowrap">' + acts + '</td></tr>';
     }).join('');
     body.innerHTML = '<div class="pto-panel"><h3>Pending Approvals</h3><div class="pto-desc">Requests from your reporting line. Approving over the coverage cap requires a reason (logged to audit).</div>' +
       '<table class="pto-table"><thead><tr><th>Employee</th><th>Dates</th><th>Days</th><th>Amount</th><th>Coverage</th><th>Actions</th></tr></thead><tbody>' +
@@ -223,6 +227,16 @@
     var reason = window.prompt('Reason for denial (optional):', '') || '';
     try { await api('POST', '/pto/requests/' + id + '/deny', { reason: reason }); showToast('Request denied.', 'info'); reload(); }
     catch (e) { showToast(e.message || 'Deny failed.', 'error'); }
+  };
+  window.ptoCancelConfirm = async function (id) {
+    if (!window.confirm('Approve this cancellation? Any deducted hours are restored and the vacation shifts are cleared.')) return;
+    try { await api('POST', '/pto/requests/' + id + '/cancel', {}); showToast('Cancellation approved — hours restored.', 'success'); reload(); }
+    catch (e) { showToast(e.message || 'Cancel failed.', 'error'); }
+  };
+  window.ptoCancelKeep = async function (id) {
+    var reason = window.prompt('Reason for keeping the PTO approved (optional):', '') || '';
+    try { await api('POST', '/pto/requests/' + id + '/deny', { reason: reason }); showToast('Cancellation declined — PTO stays approved.', 'info'); reload(); }
+    catch (e) { showToast(e.message || 'Failed.', 'error'); }
   };
   function openOverride(id) {
     var m = document.createElement('div'); m.className = 'pto-mask';
