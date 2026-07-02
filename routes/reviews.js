@@ -28,7 +28,9 @@ async function loadAssignments(ids) {
 
 // Link text-only assignments (old free-text names or low-confidence guesses)
 // to real users whose full name, dispatch (pulsar) name, or nickname exactly
-// matches — first names only when exactly one user has that first name.
+// matches. A bare first name links when every user with that first name has
+// the same full name (duplicate accounts of one person; the active account
+// wins) — genuinely different people sharing a first name stay unlinked.
 // Idempotent; runs at boot (db.js) AND before every tally, so adding a
 // nickname takes effect on the next tally run without a redeploy.
 async function backfillAssignmentLinks() {
@@ -41,10 +43,12 @@ async function backfillAssignmentLinks() {
       ")"
     );
     await novaPool.query(
-      "UPDATE review_assignments ra SET user_id = u.id FROM users u " +
+      "UPDATE review_assignments ra SET user_id = (" +
+      "SELECT u.id FROM users u WHERE LOWER(split_part(TRIM(u.name), ' ', 1)) = LOWER(TRIM(ra.assignee)) " +
+      "ORDER BY u.active DESC, u.id DESC LIMIT 1) " +
       "WHERE ra.user_id IS NULL AND TRIM(ra.assignee) <> '' " +
-      "AND LOWER(TRIM(ra.assignee)) = LOWER(split_part(TRIM(u.name), ' ', 1)) " +
-      "AND (SELECT COUNT(*) FROM users u2 WHERE LOWER(split_part(TRIM(u2.name), ' ', 1)) = LOWER(TRIM(ra.assignee))) = 1"
+      "AND (SELECT COUNT(DISTINCT LOWER(TRIM(u2.name))) FROM users u2 " +
+      "WHERE LOWER(split_part(TRIM(u2.name), ' ', 1)) = LOWER(TRIM(ra.assignee))) = 1"
     );
   } catch (e) { console.error('assignment backfill failed:', e.message); }
 }
@@ -338,12 +342,12 @@ router.post('/tech-tally', requireAuth, async (req, res) => {
       // The roster the AI matches against — real Nova users, including former
       // employees (their names still appear on older reviews).
       const rosterRes = await novaPool.query(
-        'SELECT id, name, nickname, pulsar_name FROM users ORDER BY active DESC, name ASC'
+        'SELECT id, name, nickname, pulsar_name, active FROM users ORDER BY active DESC, name ASC'
       );
       const rosterById = {};
       rosterRes.rows.forEach(function (u) { rosterById[u.id] = u; });
       const rosterLines = rosterRes.rows.map(function (u) {
-        return u.id + ' | ' + (u.name || '-') + ' | ' + (u.nickname || '-') + ' | ' + (u.pulsar_name || '-');
+        return u.id + ' | ' + (u.name || '-') + (u.active === false ? ' (FORMER employee)' : '') + ' | ' + (u.nickname || '-') + ' | ' + (u.pulsar_name || '-');
       }).join('\n');
       const system =
         'You analyze Google reviews for Pop-A-Lock, a mobile locksmith and roadside ' +
@@ -352,7 +356,8 @@ router.post('/tech-tally', requireAuth, async (req, res) => {
         'For EACH numbered review: extract the single employee name the customer ' +
         'credits for the service (null if no employee is named). Then decide which ' +
         'roster person that name most likely refers to — consider first names, ' +
-        'nicknames, dispatch names, and obvious spelling variants — and rate your ' +
+        'nicknames, dispatch names, and obvious spelling variants; when both a current ' +
+        'and a FORMER employee fit equally, prefer the current one — and rate your ' +
         'confidence 0-100 that it is the right person (use null and 0 when nothing ' +
         'plausibly matches). Respond with ONLY raw JSON, no markdown and no ' +
         'backticks, in exactly this shape: {"results":[["Kevin",12,95],[null,null,0]]} ' +

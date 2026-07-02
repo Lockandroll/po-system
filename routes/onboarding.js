@@ -31,6 +31,110 @@ function passScore(step) { var v = parseInt(cfg(step).pass_score, 10); return (v
 function questionCount(step) { var v = parseInt(cfg(step).question_count, 10); return (v >= 1 && v <= 10) ? v : DEFAULT_QUESTION_COUNT; }
 function minSeconds(step) { var v = parseInt(cfg(step).min_seconds, 10); return (v >= 0 && v <= 7200) ? v : DEFAULT_MIN_SECONDS; }
 
+// ---- completion action (notify a chosen person + create a task on finish) ---
+// Global default lives in settings key 'onboarding_completion'. A per-hire
+// override on users.onboarding_completion_override (JSONB) is merged on top.
+var DEFAULT_COMPLETION = {
+  enabled: false,
+  recipient_id: null,
+  notify: true,
+  create_task: true,
+  task_title: 'Onboarding wrap-up for {{name}}',
+  task_description: '{{name}} ({{role}}) finished onboarding on {{date}}, signed off by {{signer}}. Handle any remaining first-week items: equipment, accounts, keys, and schedule.',
+  task_priority: 'medium',
+  task_due_days: 3
+};
+
+function roleLabelSafe(role) {
+  var s = String(role || '').split('_').map(function (w) { return w ? (w.charAt(0).toUpperCase() + w.slice(1)) : ''; }).join(' ');
+  return s || 'New hire';
+}
+function fillTemplate(str, vars) {
+  return String(str == null ? '' : str).replace(/\{\{(\w+)\}\}/g, function (m, k) { return (vars[k] != null ? String(vars[k]) : ''); });
+}
+function parseJsonMaybe(v) {
+  if (v && typeof v === 'string') { try { return JSON.parse(v); } catch (e) { return null; } }
+  return (v && typeof v === 'object') ? v : null;
+}
+async function getCompletionConfig() {
+  var out = {}; Object.keys(DEFAULT_COMPLETION).forEach(function (k) { out[k] = DEFAULT_COMPLETION[k]; });
+  try {
+    var r = await pool.query("SELECT value FROM settings WHERE key = 'onboarding_completion'");
+    var v = r.rows.length ? parseJsonMaybe(r.rows[0].value) : null;
+    if (v) Object.keys(v).forEach(function (k) { if (v[k] !== undefined && v[k] !== null) out[k] = v[k]; });
+  } catch (e) { console.error('[onboarding] completion config read failed:', e.message); }
+  return out;
+}
+function mergeOverride(base, override) {
+  var out = {}; Object.keys(base).forEach(function (k) { out[k] = base[k]; });
+  var ov = parseJsonMaybe(override);
+  if (ov) Object.keys(ov).forEach(function (k) { if (ov[k] !== undefined && ov[k] !== null && ov[k] !== '') out[k] = ov[k]; });
+  return out;
+}
+function cleanCompletion(b) {
+  b = b || {};
+  var days = parseInt(b.task_due_days, 10);
+  return {
+    enabled: b.enabled === true,
+    recipient_id: parseInt(b.recipient_id, 10) || null,
+    notify: b.notify !== false,
+    create_task: b.create_task !== false,
+    task_title: String(b.task_title || '').slice(0, 300),
+    task_description: String(b.task_description || '').slice(0, 4000),
+    task_priority: (['low', 'medium', 'high'].indexOf(b.task_priority) >= 0) ? b.task_priority : 'medium',
+    task_due_days: (days >= 0 && days <= 60) ? days : 3
+  };
+}
+// newHire: { id, name, role, onboarding_completion_override }; signer: req.user
+async function runCompletionAction(newHire, signer) {
+  var conf = mergeOverride(await getCompletionConfig(), newHire.onboarding_completion_override);
+  if (!conf.enabled) return;
+  var recipientId = parseInt(conf.recipient_id, 10) || 0;
+  if (!recipientId) return;
+  var rr = await pool.query('SELECT id, name, email, phone, receive_emails, receive_sms FROM users WHERE id = $1 AND active = true', [recipientId]);
+  if (!rr.rows.length) return;
+  var rec = rr.rows[0];
+  var vars = {
+    name: newHire.name, role: roleLabelSafe(newHire.role),
+    date: new Date().toLocaleDateString('en-US'), signer: signer.name, recipient: rec.name
+  };
+  var title = fillTemplate(conf.task_title, vars).trim() || ('Onboarding wrap-up for ' + newHire.name);
+  var desc = fillTemplate(conf.task_description, vars);
+
+  if (conf.create_task !== false) {
+    try {
+      var due = null; var days = parseInt(conf.task_due_days, 10);
+      if (days >= 0) { var d = new Date(); d.setDate(d.getDate() + days); due = d.toISOString().slice(0, 10); }
+      var pr = (['low', 'medium', 'high'].indexOf(conf.task_priority) >= 0) ? conf.task_priority : 'medium';
+      var tr = await pool.query(
+        "INSERT INTO tasks (title, description, status, priority, assigned_to, created_by, due_date, source) VALUES ($1,$2,'todo',$3,$4,$5,$6,'onboarding') RETURNING id",
+        [title, desc, pr, recipientId, signer.id, due]
+      );
+      var taskId = tr.rows[0].id;
+      try { await pool.query("INSERT INTO task_activity (task_id, user_id, user_name, type, body) VALUES ($1,$2,$3,'event',$4)", [taskId, signer.id, signer.name, 'created this task — ' + newHire.name + ' finished onboarding']); } catch (e) {}
+    } catch (e) { console.error('[onboarding] completion task failed:', e.message); }
+  }
+
+  if (conf.notify !== false) {
+    try {
+      await push.sendPushToUsers([recipientId], { title: 'Onboarding complete', body: newHire.name + ' finished onboarding.', url: appUrl('/?view=tasks') });
+      if (rec.receive_emails !== false && rec.email) {
+        var html = emailTemplate({
+          badge: 'Onboarding complete', badgeColor: 'green',
+          title: newHire.name + ' finished onboarding',
+          body: '<strong>' + newHire.name + '</strong> (' + vars.role + ') completed onboarding and was signed off by <strong>' + signer.name + '</strong>.' + (conf.create_task !== false ? ' A task has been created and assigned to you.' : ''),
+          details: [{ label: 'New hire', value: newHire.name }, { label: 'Role', value: vars.role }, { label: 'Signed off by', value: signer.name }],
+          buttonText: 'Open tasks', buttonUrl: appUrl('/?view=tasks')
+        });
+        await sendEmail(rec.email, newHire.name + ' finished onboarding', html);
+      }
+      if (rec.receive_sms && rec.phone) {
+        await sendSms(rec.phone, 'Lock & Roll: ' + newHire.name + ' finished onboarding' + (conf.create_task !== false ? ' — a task was assigned to you.' : '.'));
+      }
+    } catch (e) { console.error('[onboarding] completion notify failed:', e.message); }
+  }
+}
+
 // ---- shared queries ---------------------------------------------------------
 
 async function activeSteps() {
@@ -453,7 +557,7 @@ admin.get('/progress', async (req, res) => {
   const steps = await activeSteps();
   const total = steps.length;
   const ur = await pool.query(
-    "SELECT u.id, u.name, u.title, u.role, u.onboarding_enrolled_at, u.supervisor_id, s.name AS supervisor_name " +
+    "SELECT u.id, u.name, u.title, u.role, u.onboarding_enrolled_at, u.supervisor_id, u.onboarding_completion_override, s.name AS supervisor_name " +
     "FROM users u LEFT JOIN users s ON s.id = u.supervisor_id " +
     "WHERE u.active = true AND u.onboarding_status IS NOT NULL AND u.onboarding_status <> 'complete' ORDER BY u.onboarding_enrolled_at ASC NULLS LAST, u.name ASC"
   );
@@ -471,7 +575,8 @@ admin.get('/progress', async (req, res) => {
       steps_done: done, steps_total: total,
       current_step: current ? current.title : null,
       ready_for_signoff: !current && total > 0,
-      can_sign_off: await canSignOff(req.user, u.id)
+      can_sign_off: await canSignOff(req.user, u.id),
+      completion_override: parseJsonMaybe(u.onboarding_completion_override)
     });
   }
   res.json({ users: out, steps_total: total });
@@ -495,7 +600,7 @@ admin.post('/enroll', async (req, res) => {
 // Supervisor sign-off — the final gate. Requires every step done.
 admin.post('/users/:id/signoff', async (req, res) => {
   const target = parseInt(req.params.id, 10) || 0;
-  const ur = await pool.query('SELECT id, name, email, phone, receive_emails, receive_sms, onboarding_status FROM users WHERE id = $1', [target]);
+  const ur = await pool.query('SELECT id, name, email, phone, receive_emails, receive_sms, onboarding_status, role, onboarding_completion_override FROM users WHERE id = $1', [target]);
   if (!ur.rows.length) return res.status(404).json({ error: 'User not found' });
   const u = ur.rows[0];
   if (!u.onboarding_status || u.onboarding_status === 'complete') return res.status(400).json({ error: 'This user is not in onboarding' });
@@ -526,6 +631,9 @@ admin.post('/users/:id/signoff', async (req, res) => {
       await sendSms(u.phone, 'Lock & Roll: Onboarding complete — ' + req.user.name + ' signed you off. Nova is unlocked! ' + appUrl('/'));
     }
   } catch (e) { console.error('[onboarding] welcome notify failed:', e.message); }
+
+  // Completion action: notify a chosen person + create a task for them (customizable).
+  try { await runCompletionAction(u, req.user); } catch (e) { console.error('[onboarding] completion action failed:', e.message); }
 
   res.json({ success: true });
 });
@@ -562,6 +670,45 @@ admin.get('/users/:id/detail', async (req, res) => {
       completed_at: p ? p.completed_at : null
     };
   }));
+});
+
+// ---- completion-action config (global default) ------------------------------
+admin.get('/completion', async (req, res) => {
+  res.json(await getCompletionConfig());
+});
+admin.put('/completion', async (req, res) => {
+  var conf = cleanCompletion(req.body);
+  await pool.query(
+    "INSERT INTO settings (key, value, updated_at) VALUES ('onboarding_completion', $1, NOW()) ON CONFLICT (key) DO UPDATE SET value = $1, updated_at = NOW()",
+    [JSON.stringify(conf)]
+  );
+  await logAudit({ entity_type: 'onboarding', entity_id: 0, action: 'completion_config_updated', user_id: req.user.id, user_name: req.user.name, details: { enabled: conf.enabled, recipient_id: conf.recipient_id } });
+  res.json({ success: true, config: conf });
+});
+
+// ---- per-hire override ------------------------------------------------------
+// Body: { override: { ...partial fields } } or { override: null } to clear.
+admin.put('/users/:id/completion-override', async (req, res) => {
+  var target = parseInt(req.params.id, 10) || 0;
+  var ur = await pool.query('SELECT id FROM users WHERE id = $1', [target]);
+  if (!ur.rows.length) return res.status(404).json({ error: 'User not found' });
+  var raw = req.body && req.body.override;
+  var clean = null;
+  if (raw && typeof raw === 'object') {
+    clean = {};
+    if (raw.enabled != null) clean.enabled = raw.enabled === true;
+    if (raw.notify != null) clean.notify = raw.notify === true;
+    if (raw.create_task != null) clean.create_task = raw.create_task === true;
+    var rid = parseInt(raw.recipient_id, 10); if (rid) clean.recipient_id = rid;
+    if (raw.task_title != null && String(raw.task_title).trim() !== '') clean.task_title = String(raw.task_title).slice(0, 300);
+    if (raw.task_description != null && String(raw.task_description).trim() !== '') clean.task_description = String(raw.task_description).slice(0, 4000);
+    if (['low', 'medium', 'high'].indexOf(raw.task_priority) >= 0) clean.task_priority = raw.task_priority;
+    if (raw.task_due_days != null && raw.task_due_days !== '') { var dd = parseInt(raw.task_due_days, 10); if (dd >= 0 && dd <= 60) clean.task_due_days = dd; }
+    if (!Object.keys(clean).length) clean = null;
+  }
+  await pool.query('UPDATE users SET onboarding_completion_override = $1 WHERE id = $2', [clean ? JSON.stringify(clean) : null, target]);
+  await logAudit({ entity_type: 'onboarding', entity_id: target, action: clean ? 'completion_override_set' : 'completion_override_cleared', user_id: req.user.id, user_name: req.user.name, details: {} });
+  res.json({ success: true, override: clean });
 });
 
 module.exports = router;

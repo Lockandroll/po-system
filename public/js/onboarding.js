@@ -282,10 +282,12 @@
     var tabs = '<div style="display:flex;gap:8px;margin-bottom:18px">' +
       '<button class="onb-btn' + (window._onbTab === 'hires' ? '' : ' ghost') + '" onclick="onbTab(\'hires\')">New Hires</button>' +
       '<button class="onb-btn' + (window._onbTab === 'path' ? '' : ' ghost') + '" onclick="onbTab(\'path\')">Onboarding Path</button>' +
+      '<button class="onb-btn' + (window._onbTab === 'completion' ? '' : ' ghost') + '" onclick="onbTab(\'completion\')">Completion</button>' +
       '</div>';
     content.innerHTML = '<h1 style="margin-bottom:14px">Onboarding</h1>' + tabs + '<div id="onb-admin-body"><div class="loading">Loading…</div></div>';
     var body = document.getElementById('onb-admin-body');
     if (window._onbTab === 'hires') await onbAdminHires(body);
+    else if (window._onbTab === 'completion') await onbAdminCompletion(body);
     else await onbAdminPath(body);
   };
   window.onbTab = function (t) { window._onbTab = t; renderOnboardingAdmin(document.getElementById('content')); };
@@ -294,6 +296,8 @@
     var data, users = [];
     try { data = await api('GET', '/onboarding/admin/progress'); } catch (e) { body.innerHTML = escHtml(e.message || 'Failed'); return; }
     try { users = await api('GET', '/users'); } catch (e) {}
+    window._onbProgress = data.users || [];
+    window._onbUsers = users;
     var inOnb = {};
     (data.users || []).forEach(function (u) { inOnb[u.id] = true; });
     var opts = (users || []).filter(function (u) { return u.active !== false && !inOnb[u.id] && u.role !== 'owner'; })
@@ -308,9 +312,11 @@
         '<td style="white-space:nowrap">' +
           (u.ready_for_signoff && u.can_sign_off ? '<button class="onb-btn" style="padding:8px 14px;font-size:13px" onclick="onbSignOff(' + u.id + ',\'' + escHtml(u.name).replace(/'/g, '') + '\')">Sign off &amp; unlock</button> ' : '') +
           '<button class="onb-btn ghost" style="padding:8px 12px;font-size:13px" onclick="onbDetail(' + u.id + ')">Details</button> ' +
+          '<button class="onb-btn ghost" style="padding:8px 12px;font-size:13px" onclick="onbOverride(' + u.id + ')">Completion' + (u.completion_override ? ' •' : '') + '</button> ' +
           '<button class="onb-btn ghost" style="padding:8px 12px;font-size:13px" onclick="onbRemove(' + u.id + ')">Remove</button>' +
         '</td></tr>' +
-        '<tr id="onb-detail-' + u.id + '" style="display:none"><td colspan="4"></td></tr>';
+        '<tr id="onb-detail-' + u.id + '" style="display:none"><td colspan="4"></td></tr>' +
+        '<tr id="onb-ovr-' + u.id + '" style="display:none"><td colspan="4"></td></tr>';
     }).join('');
 
     body.innerHTML =
@@ -455,6 +461,125 @@
   window.onbDeleteStep = async function (id) {
     if (!window.confirm('Remove this step from the path?')) return;
     try { await api('DELETE', '/onboarding/admin/steps/' + id); showToast('Step removed.', 'info'); renderOnboardingAdmin(document.getElementById('content')); }
+    catch (e) { showToast(e.message || 'Failed.', 'error'); }
+  };
+
+  // ---- Completion action config -------------------------------------------
+  var INP = 'background:var(--bg-card);color:var(--text);border:1px solid var(--border);border-radius:8px;padding:10px';
+  function userOptions(users, selectedId, placeholder) {
+    var o = placeholder ? '<option value="">' + escHtml(placeholder) + '</option>' : '';
+    (users || []).forEach(function (u) {
+      if (u.active === false) return;
+      o += '<option value="' + u.id + '"' + (String(u.id) === String(selectedId) ? ' selected' : '') + '>' + escHtml(u.name) + '</option>';
+    });
+    return o;
+  }
+  function prioOptions(sel) {
+    return ['low', 'medium', 'high'].map(function (p) {
+      return '<option value="' + p + '"' + (p === sel ? ' selected' : '') + '>' + p.charAt(0).toUpperCase() + p.slice(1) + '</option>';
+    }).join('');
+  }
+  var PLACEHOLDER_HINT = 'Placeholders: {{name}} (new hire), {{role}}, {{date}}, {{signer}}, {{recipient}}';
+
+  async function onbAdminCompletion(body) {
+    var conf, users = [];
+    try { conf = await api('GET', '/onboarding/admin/completion'); } catch (e) { body.innerHTML = escHtml(e.message || 'Failed'); return; }
+    try { users = await api('GET', '/users'); } catch (e) {}
+    window._onbUsers = users;
+    body.innerHTML =
+      '<div class="onb-card">' +
+      '<h2>When a new hire finishes onboarding</h2>' +
+      '<div class="onb-desc">On supervisor sign-off, notify a chosen person and create a task for them. This is the global default — you can override it per hire from the New Hires tab.</div>' +
+      '<label style="display:flex;align-items:center;gap:8px;margin-bottom:14px;cursor:pointer">' +
+        '<input type="checkbox" id="onc-enabled"' + (conf.enabled ? ' checked' : '') + '> <b>Enable completion notification &amp; task</b></label>' +
+      '<div style="display:grid;gap:12px">' +
+        '<div><div class="onb-note" style="margin-bottom:4px">Notify &amp; assign to</div>' +
+          '<select id="onc-recipient" style="width:100%;' + INP + '">' + userOptions(users, conf.recipient_id, 'Pick a person…') + '</select></div>' +
+        '<div style="display:flex;gap:18px;flex-wrap:wrap">' +
+          '<label style="display:flex;align-items:center;gap:6px;cursor:pointer"><input type="checkbox" id="onc-notify"' + (conf.notify !== false ? ' checked' : '') + '> Send notification (email / SMS / push)</label>' +
+          '<label style="display:flex;align-items:center;gap:6px;cursor:pointer"><input type="checkbox" id="onc-task"' + (conf.create_task !== false ? ' checked' : '') + '> Create a task</label>' +
+        '</div>' +
+        '<div><div class="onb-note" style="margin-bottom:4px">Task title</div>' +
+          '<input id="onc-title" value="' + escHtml(conf.task_title || '') + '" style="width:100%;' + INP + '"></div>' +
+        '<div><div class="onb-note" style="margin-bottom:4px">Task description</div>' +
+          '<textarea id="onc-desc" rows="4" style="width:100%;' + INP + ';resize:vertical">' + escHtml(conf.task_description || '') + '</textarea></div>' +
+        '<div class="onb-note">' + escHtml(PLACEHOLDER_HINT) + '</div>' +
+        '<div style="display:flex;gap:18px;flex-wrap:wrap;align-items:flex-end">' +
+          '<label class="onb-note">Priority<br><select id="onc-prio" style="' + INP + '">' + prioOptions(conf.task_priority || 'medium') + '</select></label>' +
+          '<label class="onb-note">Due in (days after completion)<br><input id="onc-due" type="number" min="0" max="60" value="' + (conf.task_due_days != null ? conf.task_due_days : 3) + '" style="width:90px;' + INP + '"></label>' +
+        '</div>' +
+      '</div>' +
+      '<button class="onb-btn" style="margin-top:16px" id="onc-save" onclick="onbSaveCompletion()">Save</button>' +
+      '</div>';
+  }
+
+  function readCompletionForm() {
+    return {
+      enabled: !!(document.getElementById('onc-enabled') || {}).checked,
+      recipient_id: parseInt((document.getElementById('onc-recipient') || {}).value, 10) || null,
+      notify: !!(document.getElementById('onc-notify') || {}).checked,
+      create_task: !!(document.getElementById('onc-task') || {}).checked,
+      task_title: (document.getElementById('onc-title') || {}).value || '',
+      task_description: (document.getElementById('onc-desc') || {}).value || '',
+      task_priority: (document.getElementById('onc-prio') || {}).value || 'medium',
+      task_due_days: parseInt((document.getElementById('onc-due') || {}).value, 10)
+    };
+  }
+  window.onbSaveCompletion = async function () {
+    var payload = readCompletionForm();
+    if (payload.enabled && !payload.recipient_id) { showToast('Pick who to notify.', 'error'); return; }
+    if (payload.enabled && !payload.notify && !payload.create_task) { showToast('Turn on notification, a task, or both.', 'error'); return; }
+    var btn = document.getElementById('onc-save'); if (btn) btn.disabled = true;
+    try { await api('PUT', '/onboarding/admin/completion', payload); showToast('Saved.', 'success'); }
+    catch (e) { showToast(e.message || 'Save failed.', 'error'); }
+    finally { if (btn) btn.disabled = false; }
+  };
+
+  // ---- Per-hire override (New Hires tab) ----------------------------------
+  window.onbOverride = async function (id) {
+    var row = document.getElementById('onb-ovr-' + id);
+    if (!row) return;
+    if (row.style.display !== 'none') { row.style.display = 'none'; return; }
+    row.style.display = '';
+    var cell = row.firstChild;
+    cell.innerHTML = '<div class="onb-note" style="padding:10px 14px">Loading…</div>';
+    var hire = (window._onbProgress || []).filter(function (u) { return u.id === id; })[0] || {};
+    var ov = hire.completion_override || {};
+    var users = window._onbUsers || [];
+    if (!users.length) { try { users = await api('GET', '/users'); window._onbUsers = users; } catch (e) {} }
+    cell.innerHTML =
+      '<div style="padding:12px 14px">' +
+      '<div class="onb-note" style="margin-bottom:8px">Override the global completion action for <b>' + escHtml(hire.name || 'this hire') + '</b>. Leave a field blank to use the default.</div>' +
+      '<div style="display:grid;gap:10px">' +
+        '<select id="ovr-recipient-' + id + '" style="' + INP + '">' + userOptions(users, ov.recipient_id, 'Recipient — use default') + '</select>' +
+        '<input id="ovr-title-' + id + '" value="' + escHtml(ov.task_title || '') + '" placeholder="Task title — use default" style="' + INP + '">' +
+        '<textarea id="ovr-desc-' + id + '" rows="3" placeholder="Task description — use default" style="' + INP + ';resize:vertical">' + escHtml(ov.task_description || '') + '</textarea>' +
+        '<div style="display:flex;gap:14px;flex-wrap:wrap;align-items:flex-end">' +
+          '<label class="onb-note">Priority<br><select id="ovr-prio-' + id + '" style="' + INP + '"><option value="">Default</option>' + prioOptions(ov.task_priority || '') + '</select></label>' +
+          '<label class="onb-note">Due in days<br><input id="ovr-due-' + id + '" type="number" min="0" max="60" value="' + (ov.task_due_days != null ? ov.task_due_days : '') + '" placeholder="def" style="width:80px;' + INP + '"></label>' +
+        '</div>' +
+        '<div class="onb-note">' + escHtml(PLACEHOLDER_HINT) + '</div>' +
+      '</div>' +
+      '<div style="margin-top:12px;display:flex;gap:8px">' +
+        '<button class="onb-btn" style="padding:8px 14px;font-size:13px" onclick="onbSaveOverride(' + id + ')">Save override</button>' +
+        '<button class="onb-btn ghost" style="padding:8px 14px;font-size:13px" onclick="onbClearOverride(' + id + ')">Clear</button>' +
+      '</div></div>';
+  };
+  window.onbSaveOverride = async function (id) {
+    var prio = (document.getElementById('ovr-prio-' + id) || {}).value || '';
+    var due = (document.getElementById('ovr-due-' + id) || {}).value;
+    var override = {
+      recipient_id: parseInt((document.getElementById('ovr-recipient-' + id) || {}).value, 10) || undefined,
+      task_title: ((document.getElementById('ovr-title-' + id) || {}).value || '').trim() || undefined,
+      task_description: ((document.getElementById('ovr-desc-' + id) || {}).value || '').trim() || undefined,
+      task_priority: prio || undefined,
+      task_due_days: (due === '' || due == null) ? undefined : parseInt(due, 10)
+    };
+    try { await api('PUT', '/onboarding/admin/users/' + id + '/completion-override', { override: override }); showToast('Override saved.', 'success'); renderOnboardingAdmin(document.getElementById('content')); }
+    catch (e) { showToast(e.message || 'Save failed.', 'error'); }
+  };
+  window.onbClearOverride = async function (id) {
+    try { await api('PUT', '/onboarding/admin/users/' + id + '/completion-override', { override: null }); showToast('Override cleared.', 'info'); renderOnboardingAdmin(document.getElementById('content')); }
     catch (e) { showToast(e.message || 'Failed.', 'error'); }
   };
 })();

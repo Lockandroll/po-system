@@ -1129,8 +1129,11 @@ async function initDB() {
     await client.query('ALTER TABLE review_assignments ADD COLUMN IF NOT EXISTS confidence INTEGER;');
     // Backfill: link existing text-only assignments whose name exactly equals a
     // user's full name, dispatch (pulsar) name, or one of their nicknames
-    // (case-insensitive). First names link only when exactly one user has that
-    // first name. Idempotent — only touches rows that are not linked yet.
+    // (case-insensitive). A bare first name links when every user with that
+    // first name shares the SAME full name (i.e. duplicate accounts of one
+    // person) — the active account wins. Two genuinely different people with
+    // the same first name stay unlinked. Idempotent — only touches rows that
+    // are not linked yet.
     await client.query(
       "UPDATE review_assignments ra SET user_id = u.id FROM users u WHERE ra.user_id IS NULL AND TRIM(ra.assignee) <> '' AND (" +
       " LOWER(TRIM(ra.assignee)) = LOWER(TRIM(u.name))" +
@@ -1139,10 +1142,12 @@ async function initDB() {
       ")"
     );
     await client.query(
-      "UPDATE review_assignments ra SET user_id = u.id FROM users u " +
+      "UPDATE review_assignments ra SET user_id = (" +
+      "SELECT u.id FROM users u WHERE LOWER(split_part(TRIM(u.name), ' ', 1)) = LOWER(TRIM(ra.assignee)) " +
+      "ORDER BY u.active DESC, u.id DESC LIMIT 1) " +
       "WHERE ra.user_id IS NULL AND TRIM(ra.assignee) <> '' " +
-      "AND LOWER(TRIM(ra.assignee)) = LOWER(split_part(TRIM(u.name), ' ', 1)) " +
-      "AND (SELECT COUNT(*) FROM users u2 WHERE LOWER(split_part(TRIM(u2.name), ' ', 1)) = LOWER(TRIM(ra.assignee))) = 1"
+      "AND (SELECT COUNT(DISTINCT LOWER(TRIM(u2.name))) FROM users u2 " +
+      "WHERE LOWER(split_part(TRIM(u2.name), ' ', 1)) = LOWER(TRIM(ra.assignee))) = 1"
     );
     await client.query(
       'CREATE TABLE IF NOT EXISTS oauth_clients (' +
@@ -1505,6 +1510,7 @@ async function initDB() {
     // ---- Onboarding module (gated new-hire track) ----
     await client.query("ALTER TABLE users ADD COLUMN IF NOT EXISTS onboarding_status VARCHAR(20) NOT NULL DEFAULT 'complete';");
     await client.query("ALTER TABLE users ADD COLUMN IF NOT EXISTS onboarding_enrolled_at TIMESTAMPTZ;");
+    await client.query("ALTER TABLE users ADD COLUMN IF NOT EXISTS onboarding_completion_override JSONB;");
     await client.query(
       'CREATE TABLE IF NOT EXISTS onboarding_steps (' +
       '  id SERIAL PRIMARY KEY,' +
