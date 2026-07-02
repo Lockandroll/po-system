@@ -1525,6 +1525,34 @@ async function initDB() {
     );
     await client.query('CREATE INDEX IF NOT EXISTS idx_onboarding_progress_user ON onboarding_progress(user_id);');
 
+    // ---- Dispatcher role (mirror of Locksmith Coordinator) ----
+    // Copy the coordinator's saved permission set to the new role, and include
+    // dispatchers in the weekly SOP quiz audience if coordinators are in it (fire once).
+    const _dsp = await client.query("SELECT value FROM settings WHERE key = 'dispatcher_role_backfilled'");
+    if (!_dsp.rows.length) {
+      const _rpD = await client.query("SELECT value FROM settings WHERE key = 'role_permissions'");
+      if (_rpD.rows.length && _rpD.rows[0].value) {
+        try {
+          const obj = JSON.parse(_rpD.rows[0].value);
+          if (obj && typeof obj === 'object' && !Array.isArray(obj.dispatcher) && Array.isArray(obj.locksmith_coordinator)) {
+            obj.dispatcher = obj.locksmith_coordinator.slice();
+            await client.query("INSERT INTO settings (key, value, updated_at) VALUES ('role_permissions', $1, NOW()) ON CONFLICT (key) DO UPDATE SET value = $1, updated_at = NOW()", [JSON.stringify(obj)]);
+          }
+        } catch (e) { console.error('dispatcher perm backfill failed:', e.message); }
+      }
+      const _qrD = await client.query("SELECT value FROM settings WHERE key = 'quiz_roles'");
+      if (_qrD.rows.length && _qrD.rows[0].value) {
+        try {
+          const qr = JSON.parse(_qrD.rows[0].value);
+          if (Array.isArray(qr) && qr.indexOf('locksmith_coordinator') !== -1 && qr.indexOf('dispatcher') === -1) {
+            qr.push('dispatcher');
+            await client.query("INSERT INTO settings (key, value, updated_at) VALUES ('quiz_roles', $1, NOW()) ON CONFLICT (key) DO UPDATE SET value = $1, updated_at = NOW()", [JSON.stringify(qr)]);
+          }
+        } catch (e) { console.error('dispatcher quiz backfill failed:', e.message); }
+      }
+      await client.query("INSERT INTO settings (key, value) VALUES ('dispatcher_role_backfilled', '1') ON CONFLICT (key) DO NOTHING");
+    }
+
     console.log('Database initialized');
   } finally {
     client.release();

@@ -66,7 +66,7 @@ async function ensureQuizTables() {
   await pool.query(
     "INSERT INTO settings (key, value) VALUES " +
     "('quiz_enabled','false'),('quiz_send_dow','1'),('quiz_send_time','09:00')," +
-    "('quiz_roles','[\"locksmith\",\"locksmith_coordinator\",\"roadside_technician\",\"manager\"]')," +
+    "('quiz_roles','[\"locksmith\",\"locksmith_coordinator\",\"dispatcher\",\"roadside_technician\",\"manager\"]')," +
     "('quiz_pass_score','2'),('quiz_due_days','3') ON CONFLICT (key) DO NOTHING;"
   );
 }
@@ -82,7 +82,7 @@ async function getQuizSettings() {
   rows.forEach(function (r) { map[r.key] = r.value; });
   var roles;
   try { roles = JSON.parse(map.quiz_roles); } catch (e) { roles = null; }
-  if (!Array.isArray(roles)) roles = ['locksmith', 'locksmith_coordinator', 'roadside_technician', 'manager'];
+  if (!Array.isArray(roles)) roles = ['locksmith', 'locksmith_coordinator', 'dispatcher', 'roadside_technician', 'manager'];
   return {
     enabled: map.quiz_enabled === 'true' || map.quiz_enabled === true,
     dow: map.quiz_send_dow !== undefined ? parseInt(map.quiz_send_dow, 10) : 1, // 1 = Monday

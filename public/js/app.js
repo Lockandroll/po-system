@@ -2,7 +2,7 @@
 // public/sw.js (the only thing bumped each deploy) — the badge asks the active
 // service worker for it at runtime. This value is just the fallback shown when no
 // service worker is available (e.g. very first visit before it installs).
-var APP_VERSION = 'v72';
+var APP_VERSION = 'v73';
 var _resolvedAppVersion = null;
 
 // Ask the active service worker for its CACHE_VERSION (without the 'nova-' prefix).
@@ -403,10 +403,11 @@ var PERM_DEFAULTS = {
   manager: ['view_users','manage_cities','manage_geico','manage_running','manage_vehicles','manage_vendors','manage_addresses','approve_vr','manage_tasks','manage_work_orders','manage_schedule','manage_parts','manage_invoice_setup','assign_reviews','view_feedback','manage_feedback','manage_signatures','manage_timeclock','manage_pto'].concat(EMPLOYEE_PERMS),
   locksmith: EMPLOYEE_PERMS.slice(),
   locksmith_coordinator: EMPLOYEE_PERMS.concat(['manage_work_orders']),
+  dispatcher: EMPLOYEE_PERMS.concat(['manage_work_orders']),
   roadside_technician: EMPLOYEE_PERMS.slice()
 };
 function roleLabel(r) {
-  var m = { locksmith:'Locksmith', locksmith_coordinator:'Locksmith Coordinator', roadside_technician:'Roadside Technician', requester:'Locksmith', approver:'Approver', manager:'Manager', admin:'Admin', owner:'Owner' };
+  var m = { locksmith:'Locksmith', locksmith_coordinator:'Locksmith Coordinator', dispatcher:'Dispatcher', roadside_technician:'Roadside Technician', requester:'Locksmith', approver:'Approver', manager:'Manager', admin:'Admin', owner:'Owner' };
   return m[r] || r;
 }
 // Returns a user's custom job title if set, otherwise falls back to their role label.
@@ -611,7 +612,7 @@ async function render() {
           '<div style="margin-bottom:10px">' +
             '<label style="font-size:10px;letter-spacing:0.5px;color:var(--text-muted-color);display:block;margin-bottom:4px;text-transform:uppercase">View as role</label>' +
             '<select onchange="onViewAsChange(this.value)" style="width:100%;background:var(--bg-card);color:var(--text);border:1px solid var(--border);border-radius:6px;padding:6px 8px;font-size:13px;cursor:pointer">' +
-              ['locksmith','locksmith_coordinator','roadside_technician','manager','admin'].map(function(r){ return '<option value="' + r + '"' + (state.user.role === r ? ' selected' : '') + '>' + roleLabel(r) + (r === 'admin' ? ' (you)' : '') + '</option>'; }).join('') +
+              ['locksmith','locksmith_coordinator','dispatcher','roadside_technician','manager','admin'].map(function(r){ return '<option value="' + r + '"' + (state.user.role === r ? ' selected' : '') + '>' + roleLabel(r) + (r === 'admin' ? ' (you)' : '') + '</option>'; }).join('') +
             '</select>' +
           '</div>'
         : '') +
@@ -1898,7 +1899,7 @@ async function showUserModal(id, returnView) {
         '<div class="form-group"><label>' + (id ? 'New Password (leave blank to keep)' : 'Password (optional)') + '</label><input type="password" id="modal-password" placeholder="' + (id ? '' : 'Leave blank to email an invite') + '" />' + (id ? '' : '<div style="font-size:12px;color:var(--text-muted-color);margin-top:5px">An invite email is always sent. Leave blank and the user sets their own password via the link.</div>') + '</div>' +
         '<div class="form-row">' +
           '<div class="form-group"><label>Phone <span style="font-weight:400;font-size:0.8em;color:var(--text-muted)">Format: +13215550000</span></label><input type="tel" id="modal-phone" value="' + escHtml(user ? user.phone || '' : '') + '" placeholder="+13215550000" pattern="\\+1[0-9]{10}" title="Must be in format +1 followed by 10 digits (e.g. +13215550000)" /></div>' +
-          '<div class="form-group"><label>Role</label><select id="modal-role">' +'<option value="locksmith"' + (user&&user.role==='locksmith'?' selected':'') + '>Locksmith</option>' +'<option value="locksmith_coordinator"' + (user&&user.role==='locksmith_coordinator'?' selected':'') + '>Locksmith Coordinator</option>' +'<option value="roadside_technician"' + (user&&user.role==='roadside_technician'?' selected':'') + '>Roadside Technician</option>' +'<option value="manager"' + (user&&user.role==='manager'?' selected':'') + '>Manager</option>' +'<option value="admin"' + (user&&user.role==='admin'?' selected':'') + '>Admin</option>' +(((state.user&&state.user.isOwner)||!ownerExists||(user&&user.role==='owner')) ? '<option value="owner"' + (user&&user.role==='owner'?' selected':'') + '>Owner</option>' : '') +'</select></div>' +
+          '<div class="form-group"><label>Role</label><select id="modal-role">' +'<option value="locksmith"' + (user&&user.role==='locksmith'?' selected':'') + '>Locksmith</option>' +'<option value="locksmith_coordinator"' + (user&&user.role==='locksmith_coordinator'?' selected':'') + '>Locksmith Coordinator</option>' +'<option value="dispatcher"' + (user&&user.role==='dispatcher'?' selected':'') + '>Dispatcher</option>' +'<option value="roadside_technician"' + (user&&user.role==='roadside_technician'?' selected':'') + '>Roadside Technician</option>' +'<option value="manager"' + (user&&user.role==='manager'?' selected':'') + '>Manager</option>' +'<option value="admin"' + (user&&user.role==='admin'?' selected':'') + '>Admin</option>' +(((state.user&&state.user.isOwner)||!ownerExists||(user&&user.role==='owner')) ? '<option value="owner"' + (user&&user.role==='owner'?' selected':'') + '>Owner</option>' : '') +'</select></div>' +
           '</div>' +
           '<div class="form-group"><label>Title <span style="font-weight:400;font-size:0.8em;color:var(--text-muted-color)">shown on the org chart &amp; user lists in place of the role (optional)</span></label><input type="text" id="modal-title" value="' + escHtml(user ? user.title || '' : '') + '" placeholder="e.g. Field Operations Manager" /></div>' +
           '<div class="form-group"><label>Cities <span style="font-weight:400;font-size:0.8em;color:var(--text-muted-color)">(blank = all cities)</span></label><div style="display:flex;flex-wrap:wrap;gap:10px;margin-top:4px">' + (cities.length ? cities.map(function(c){ var cc=(c.code||'').trim(); var on=(user&&user.city_codes&&user.city_codes.indexOf(cc)!==-1); return '<label style="display:inline-flex;align-items:center;gap:5px;font-weight:400;font-size:13px"><input type="checkbox" class="modal-city" value="' + escHtml(cc) + '"' + (on?' checked':'') + ' style="width:auto"> ' + escHtml(c.name) + '</label>'; }).join('') : '<span style="color:var(--text-muted-color);font-size:13px">No cities yet</span>') + '</div></div>' +
@@ -2384,6 +2385,7 @@ async function renderRoles(el) {
   var cols = [
     { role:'locksmith', label:'Locksmith' },
     { role:'locksmith_coordinator', label:'Locksmith Coordinator' },
+    { role:'dispatcher', label:'Dispatcher' },
     { role:'roadside_technician', label:'Roadside Technician' },
     { role:'manager', label:'Manager' }
   ];
@@ -2404,7 +2406,7 @@ async function renderRoles(el) {
   }
 
   var rowsHtml = groups.map(function(g) {
-    var head = '<tr><td colspan="6" style="font-weight:800;background:var(--bg-elevated);font-size:12px;text-transform:uppercase;letter-spacing:0.08em;color:var(--primary);border-left:3px solid var(--primary);border-top:1px solid var(--border-color);padding:11px 10px 9px">' + g.group + '</td></tr>';
+    var head = '<tr><td colspan="7" style="font-weight:800;background:var(--bg-elevated);font-size:12px;text-transform:uppercase;letter-spacing:0.08em;color:var(--primary);border-left:3px solid var(--primary);border-top:1px solid var(--border-color);padding:11px 10px 9px">' + g.group + '</td></tr>';
     var prows = g.perms.map(function(p) {
       return '<tr><td>' + escHtml(p.l) + '</td>' + cols.map(function(c){ return cell(c.role, p.k, g.gate); }).join('') + cell('admin', p.k, g.gate) + '</tr>';
     }).join('');
@@ -2417,7 +2419,7 @@ async function renderRoles(el) {
     '<p class="text-muted" style="margin-bottom:16px;max-width:720px">Control what each role can do. These rules are enforced on the server for every action. <strong>Admin</strong> always has full access and cannot be restricted. Anything left unchecked falls back to that role&#39;s built-in default until you save.</p>' +
     '<div class="card"><div class="card-body">' +
       '<div style="overflow:auto;max-height:calc(100vh - 260px)">' +
-      '<table style="min-width:820px"><thead><tr><th style="position:sticky;top:0;z-index:6;background:var(--bg-elevated,#1f1f1f);text-align:left">Permission</th>' + cols.map(function(c){ return '<th style="position:sticky;top:0;z-index:6;background:var(--bg-elevated,#1f1f1f);text-align:center">' + escHtml(c.label) + '</th>'; }).join('') + '<th style="position:sticky;top:0;z-index:6;background:var(--bg-elevated,#1f1f1f);text-align:center">Admin</th></tr></thead>' +
+      '<table style="min-width:940px"><thead><tr><th style="position:sticky;top:0;z-index:6;background:var(--bg-elevated,#1f1f1f);text-align:left">Permission</th>' + cols.map(function(c){ return '<th style="position:sticky;top:0;z-index:6;background:var(--bg-elevated,#1f1f1f);text-align:center">' + escHtml(c.label) + '</th>'; }).join('') + '<th style="position:sticky;top:0;z-index:6;background:var(--bg-elevated,#1f1f1f);text-align:center">Admin</th></tr></thead>' +
       '<tbody>' + rowsHtml + '</tbody></table>' +
       '</div>' +
       '<div style="margin-top:16px"><button class="btn btn-primary" onclick="saveRoles()">Save Roles &amp; Access</button></div>' +
@@ -2436,7 +2438,7 @@ function toggleModuleAccess(cb) {
 }
 
 async function saveRoles() {
-  var editRoles = ['locksmith', 'locksmith_coordinator', 'roadside_technician', 'manager'];
+  var editRoles = ['locksmith', 'locksmith_coordinator', 'dispatcher', 'roadside_technician', 'manager'];
   var rules = {};
   editRoles.forEach(function(role) {
     var perms = [];
@@ -2948,7 +2950,7 @@ async function taskSave(id){
 
 // ── Scheduled Messages (admin) ───────────────────────────────────────────────
 var SM_DOW = ['Sunday','Monday','Tuesday','Wednesday','Thursday','Friday','Saturday'];
-var SM_ROLES = ['locksmith','locksmith_coordinator','roadside_technician','manager','admin'];
+var SM_ROLES = ['locksmith','locksmith_coordinator','dispatcher','roadside_technician','manager','admin'];
 
 function smTime12(t) {
   var p = String(t || '09:00').split(':');
@@ -10420,7 +10422,7 @@ function schedSetCity(c){ _schedCity=c||''; renderScheduleAdmin(document.getElem
 function schedSetRole(r){ _schedRole=r||''; renderScheduleAdmin(document.getElementById('content')); }
 function schedRoleOptions(){
   var byLabel={};
-  ['locksmith','locksmith_coordinator','roadside_technician','manager','admin'].forEach(function(rl){ var lbl=roleLabel(rl); if(!byLabel[lbl]) byLabel[lbl]=[]; if(byLabel[lbl].indexOf(rl)===-1) byLabel[lbl].push(rl); });
+  ['locksmith','locksmith_coordinator','dispatcher','roadside_technician','manager','admin'].forEach(function(rl){ var lbl=roleLabel(rl); if(!byLabel[lbl]) byLabel[lbl]=[]; if(byLabel[lbl].indexOf(rl)===-1) byLabel[lbl].push(rl); });
   _schedUsers.forEach(function(u){ var lbl=roleLabel(u.role); if(!byLabel[lbl]) byLabel[lbl]=[]; if(byLabel[lbl].indexOf(u.role)===-1) byLabel[lbl].push(u.role); });
   var labels=Object.keys(byLabel).sort();
   return '<option value="">All roles</option>'+labels.map(function(lbl){ var val=byLabel[lbl].join(','); return '<option value="'+escHtml(val)+'"'+(_schedRole===val?' selected':'')+'>'+escHtml(lbl)+'</option>'; }).join('');
@@ -12230,7 +12232,7 @@ function tcClock(ts){if(!ts)return '—';return new Date(ts).toLocaleTimeString(
 function tcDay(ts){if(!ts)return '';return new Date(ts).toLocaleDateString('en-US',{weekday:'short',month:'short',day:'numeric'});}
 function tcElapsed(ts){if(!ts)return '';var mins=Math.max(0,Math.floor((Date.now()-new Date(ts).getTime())/60000));return Math.floor(mins/60)+':'+String(mins%60).padStart(2,'0');}
 function tcInitials(name){name=(name||'').trim();var p=name.split(/\s+/);return (((p[0]||'')[0]||'')+((p[1]||'')[0]||'')).toUpperCase()||'?';}
-function tcRoleLabel(r){var m={locksmith:'Locksmith',roadside_technician:'Roadside',locksmith_coordinator:'Coordinator',manager:'Manager',admin:'Admin',owner:'Owner',counter:'Counter'};return m[r]||r||'';}
+function tcRoleLabel(r){var m={locksmith:'Locksmith',roadside_technician:'Roadside',locksmith_coordinator:'Coordinator',dispatcher:'Dispatcher',manager:'Manager',admin:'Admin',owner:'Owner',counter:'Counter'};return m[r]||r||'';}
 function tcAddDays(ds,n){var a=ds.split('-').map(Number);var d=new Date(Date.UTC(a[0],a[1]-1,a[2]));d.setUTCDate(d.getUTCDate()+n);return d.getUTCFullYear()+'-'+String(d.getUTCMonth()+1).padStart(2,'0')+'-'+String(d.getUTCDate()).padStart(2,'0');}
 var _tcTimer=null;
 function tcStopTimer(){if(_tcTimer){clearInterval(_tcTimer);_tcTimer=null;}}
@@ -12757,7 +12759,7 @@ function wireQuizAdmin() {
       dow: parseInt(document.getElementById('qsDow').value, 10),
       time: document.getElementById('qsTime').value,
       dueDays: parseInt(document.getElementById('qsDue').value, 10),
-      roles: ['locksmith', 'locksmith_coordinator', 'roadside_technician', 'manager'],
+      roles: ['locksmith', 'locksmith_coordinator', 'dispatcher', 'roadside_technician', 'manager'],
       passScore: 2
     };
     try { await api('PUT', '/quiz/settings', payload); document.getElementById('qsMsg').textContent = 'Saved';

@@ -11,7 +11,7 @@ const router = express.Router();
 // Roles that can be granted access via a "share with role". Only owners see
 // everything by default; admins must be granted access like anyone else, so the
 // admin role is offered as a share target (lets an owner grant the whole group).
-const SHAREABLE_ROLES = ['admin', 'manager', 'locksmith_coordinator', 'locksmith', 'roadside_technician'];
+const SHAREABLE_ROLES = ['admin', 'manager', 'locksmith_coordinator', 'dispatcher', 'locksmith', 'roadside_technician'];
 
 function sanitizeName(name) {
   return String(name || 'file').replace(/[^A-Za-z0-9._-]/g, '_').slice(0, 200) || 'file';
