@@ -26,6 +26,29 @@ async function loadAssignments(ids) {
   return map;
 }
 
+// Link text-only assignments (old free-text names or low-confidence guesses)
+// to real users whose full name, dispatch (pulsar) name, or nickname exactly
+// matches — first names only when exactly one user has that first name.
+// Idempotent; runs at boot (db.js) AND before every tally, so adding a
+// nickname takes effect on the next tally run without a redeploy.
+async function backfillAssignmentLinks() {
+  try {
+    await novaPool.query(
+      "UPDATE review_assignments ra SET user_id = u.id FROM users u WHERE ra.user_id IS NULL AND TRIM(ra.assignee) <> '' AND (" +
+      " LOWER(TRIM(ra.assignee)) = LOWER(TRIM(u.name))" +
+      " OR LOWER(TRIM(ra.assignee)) = LOWER(TRIM(COALESCE(u.pulsar_name, '')))" +
+      " OR LOWER(TRIM(ra.assignee)) IN (SELECT LOWER(TRIM(x)) FROM unnest(string_to_array(COALESCE(u.nickname, ''), ',')) AS x)" +
+      ")"
+    );
+    await novaPool.query(
+      "UPDATE review_assignments ra SET user_id = u.id FROM users u " +
+      "WHERE ra.user_id IS NULL AND TRIM(ra.assignee) <> '' " +
+      "AND LOWER(TRIM(ra.assignee)) = LOWER(split_part(TRIM(u.name), ' ', 1)) " +
+      "AND (SELECT COUNT(*) FROM users u2 WHERE LOWER(split_part(TRIM(u2.name), ' ', 1)) = LOWER(TRIM(ra.assignee))) = 1"
+    );
+  } catch (e) { console.error('assignment backfill failed:', e.message); }
+}
+
 // Read-only connection to the Google-review-bot's Postgres, which lives in a
 // SEPARATE Railway project. Cross-project means we reach it over its PUBLIC URL
 // (set REVIEWS_DATABASE_URL in Nova's Railway variables). Lazy pool so the app
@@ -288,6 +311,10 @@ router.post('/tech-tally', requireAuth, async (req, res) => {
     if (rows.length === 0) {
       return res.json({ technicians: [], unnamed: 0, total: 0, analyzed: 0, written: 0, linked: 0, capped: false });
     }
+
+    // Link any text-only names that now exactly match a user (for example a
+    // nickname that was just added) before deciding what still needs AI.
+    await backfillAssignmentLinks();
 
     // What is already credited (manual or a prior AI run)?
     const existing = await loadAssignments(rows.map(function (r) { return r.review_id; }));
