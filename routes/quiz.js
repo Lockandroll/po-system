@@ -9,6 +9,7 @@ const crypto = require('crypto');
 const { pool } = require('../db');
 const { requireAuth, requirePermission } = require('../middleware/auth');
 const { generateQuiz, weekMonday } = require('../utils/quizGen');
+const { sendSms } = require('../utils/sms');
 
 const router = express.Router();       // admin surface
 const pub = express.Router();          // public token surface
@@ -352,6 +353,40 @@ router.post('/mine', requireAuth, async function (req, res) {
     res.status(500).json({ error: 'Failed to submit.' });
   } finally {
     client.release();
+  }
+});
+
+// POST /api/quiz/:id/send-test -> create/reuse an assignment for the CURRENT
+// user (bypasses the role filter so an admin can try it), text the link if they
+// have a phone, and return the link so the dashboard can open it. Works even on
+// a 'draft' quiz — nothing is marked sent and the team is not messaged.
+router.post('/:id/send-test', requireAuth, requirePermission('manage_quiz'), async function (req, res) {
+  try {
+    var quizId = parseInt(req.params.id, 10);
+    var qz = await pool.query('SELECT id FROM quizzes WHERE id = $1', [quizId]);
+    if (!qz.rows.length) return res.status(404).json({ error: 'Quiz not found.' });
+    var u = await pool.query('SELECT phone FROM users WHERE id = $1', [req.user.id]);
+    var ex = await pool.query('SELECT token FROM quiz_assignments WHERE quiz_id = $1 AND user_id = $2', [quizId, req.user.id]);
+    var tok;
+    if (ex.rows.length) {
+      tok = ex.rows[0].token;
+    } else {
+      tok = token();
+      await pool.query(
+        "INSERT INTO quiz_assignments (quiz_id, user_id, token, status, sent_at) VALUES ($1,$2,$3,'pending',NOW())",
+        [quizId, req.user.id, tok]
+      );
+    }
+    var base = (process.env.APP_URL || 'https://www.popalockar.com').replace(/\/+$/, '');
+    var link = base + '/?quiz=' + tok;
+    var texted = false;
+    if (u.rows.length && u.rows[0].phone) {
+      try { await sendSms(u.rows[0].phone, 'SOP quiz test: ' + link); texted = true; } catch (e) { /* ignore */ }
+    }
+    res.json({ success: true, link: link, texted: texted });
+  } catch (e) {
+    console.error('quiz send-test:', e.message);
+    res.status(500).json({ error: e.message });
   }
 });
 

@@ -12685,7 +12685,7 @@ function quizCurrentHtml(cur) {
     });
     h += '</div>';
   });
-  if (can('manage_quiz')) h += '<button id="quizGenBtn" class="btn btn-secondary">Regenerate</button>';
+  if (can('manage_quiz')) h += '<div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:8px">' + '<button id="quizGenBtn" class="btn btn-secondary">Regenerate</button>' + '<button id="quizTestBtn" class="btn btn-secondary" data-qid="' + cur.quiz.id + '">Send test to me</button>' + '<button id="quizSendBtn" class="btn btn-primary" data-qid="' + cur.quiz.id + '">Send to everyone now</button></div>';
   return quizCard(h);
 }
 
@@ -12693,7 +12693,7 @@ function quizSettingsHtml(s) {
   var days = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
   var dayOpts = days.map(function (d, i) { return '<option value="' + i + '"' + (i === s.dow ? ' selected' : '') + '>' + d + '</option>'; }).join('');
   return quizCard('<div style="font-weight:700;margin-bottom:12px">Settings</div>'
-    + '<label style="display:block;margin-bottom:10px"><input type="checkbox" id="qsEnabled"' + (s.enabled ? ' checked' : '') + ' style="accent-color:var(--primary);margin-right:8px">Enabled (send automatically)</label>'
+    + '<label style="display:block;margin-bottom:10px"><input type="checkbox" id="qsEnabled"' + (s.enabled ? ' checked' : '') + ' style="width:auto;margin:0 8px 0 0;accent-color:var(--primary);vertical-align:middle">Enabled (send automatically)</label>'
     + '<div style="display:flex;gap:12px;flex-wrap:wrap;align-items:center;margin-bottom:10px">'
     + '<label>Send day <select id="qsDow" class="form-control" style="width:auto;display:inline-block">' + dayOpts + '</select></label>'
     + '<label>Time (ET) <input type="time" id="qsTime" value="' + escHtml(s.time) + '" class="form-control" style="width:auto;display:inline-block"></label></div>'
@@ -12720,6 +12720,25 @@ function wireQuizAdmin() {
     gen.disabled = true; gen.textContent = 'Generating…';
     try { await api('POST', '/quiz/generate'); renderQuizAdmin(document.getElementById('content')); }
     catch (e) { (window.novaAlert || window.alert)(e.message); gen.disabled = false; gen.textContent = 'Generate'; }
+  });
+  var testBtn = document.getElementById('quizTestBtn');
+  if (testBtn) testBtn.addEventListener('click', async function () {
+    testBtn.disabled = true;
+    try {
+      var r = await api('POST', '/quiz/' + testBtn.getAttribute('data-qid') + '/send-test');
+      window.open(r.link, '_blank');
+      (window.novaAlert || window.alert)(r.texted ? 'Texted you the link and opened it here.' : 'Opened the quiz here (no phone on file to text).');
+    } catch (e) { (window.novaAlert || window.alert)(e.message); } finally { testBtn.disabled = false; }
+  });
+  var sendBtn = document.getElementById('quizSendBtn');
+  if (sendBtn) sendBtn.addEventListener('click', async function () {
+    if (!confirm('Send this quiz by text to everyone now (all staff except admin/owner)? This also closes any earlier open quiz.')) return;
+    sendBtn.disabled = true; sendBtn.textContent = 'Sending…';
+    try {
+      var r = await api('POST', '/quiz/' + sendBtn.getAttribute('data-qid') + '/send');
+      (window.novaAlert || window.alert)('Sent to ' + r.sent + ' people.');
+      renderQuizAdmin(document.getElementById('content'));
+    } catch (e) { (window.novaAlert || window.alert)(e.message); sendBtn.disabled = false; sendBtn.textContent = 'Send to everyone now'; }
   });
   var save = document.getElementById('qsSave');
   if (save) save.addEventListener('click', async function () {
