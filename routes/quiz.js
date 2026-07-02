@@ -377,7 +377,8 @@ router.post('/:id/send-test', requireAuth, requirePermission('manage_quiz'), asy
         [quizId, req.user.id, tok]
       );
     }
-    var base = (process.env.APP_URL || 'https://www.popalockar.com').replace(/\/+$/, '');
+    var base = (process.env.APP_URL || '').replace(/\/$/, '');
+    if (!base) base = req.protocol + '://' + req.get('host'); // fall back to the portal the admin is on
     var link = base + '/?quiz=' + tok;
     var texted = false;
     if (u.rows.length && u.rows[0].phone) {

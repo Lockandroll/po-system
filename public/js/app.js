@@ -12612,12 +12612,12 @@ async function renderQuizTake(app, token) {
     if (!resp.ok) throw new Error(data.error || 'Could not load quiz');
   } catch (e) { body.innerHTML = '<div style="color:#f87171">' + escHtml(e.message) + '</div>'; return; }
   if (data.completed) { body.innerHTML = quizResultHtml(data.score, data.total); return; }
-  var html = '<div style="color:var(--text-muted-color);margin-bottom:16px">Topic: <strong>' + escHtml(data.sopTitle || 'SOP') + '</strong></div><form id="quizForm">';
+  var html = '<div style="color:var(--text-muted-color);margin-bottom:16px">Topic: <strong>' + escHtml(data.sopTitle || 'SOP') + '</strong></div><form id="quizForm" onchange="quizHighlight(this)">';
   data.questions.forEach(function (q, qi) {
     html += '<div style="margin-bottom:20px"><div style="font-weight:600;margin-bottom:8px">' + (qi + 1) + '. ' + escHtml(q.prompt) + '</div>';
     (q.options || []).forEach(function (opt, oi) {
-      html += '<label style="display:block;background:#1f1f1f;border:1px solid #333;border-radius:8px;padding:10px 12px;margin-bottom:8px;cursor:pointer">'
-        + '<input type="radio" name="q' + qi + '" value="' + oi + '" style="margin-right:8px;accent-color:var(--primary)">' + escHtml(opt) + '</label>';
+      html += '<label class="quiz-opt" style="display:block;background:#1f1f1f;border:1px solid #333;border-radius:8px;padding:12px 14px;margin-bottom:8px;cursor:pointer;transition:border-color .12s, background .12s">'
+        + '<input type="radio" name="q' + qi + '" value="' + oi + '" style="display:none">' + escHtml(opt) + '</label>';
     });
     html += '</div>';
   });
@@ -12786,12 +12786,12 @@ async function renderMyQuiz(content) {
   catch (e) { body.innerHTML = '<div style="color:#f87171">' + escHtml(e.message) + '</div>'; return; }
   if (!data || !data.quiz) { body.innerHTML = quizCard('<div style="text-align:center;color:var(--text-muted-color)">You&#39;re all caught up &mdash; no quiz right now.</div>'); return; }
   if (data.completed) { body.innerHTML = quizCard(quizResultHtml(data.score, data.total)); return; }
-  var html = '<div style="color:var(--text-muted-color);margin-bottom:16px">Topic: <strong>' + escHtml(data.quiz.sopTitle || 'SOP') + '</strong></div><form id="myQuizForm">';
+  var html = '<div style="color:var(--text-muted-color);margin-bottom:16px">Topic: <strong>' + escHtml(data.quiz.sopTitle || 'SOP') + '</strong></div><form id="myQuizForm" onchange="quizHighlight(this)">';
   data.questions.forEach(function (q, qi) {
     html += '<div style="margin-bottom:20px"><div style="font-weight:600;margin-bottom:8px">' + (qi + 1) + '. ' + escHtml(q.prompt) + '</div>';
     (q.options || []).forEach(function (opt, oi) {
-      html += '<label style="display:block;background:#1f1f1f;border:1px solid #333;border-radius:8px;padding:10px 12px;margin-bottom:8px;cursor:pointer">'
-        + '<input type="radio" name="mq' + qi + '" value="' + oi + '" style="margin-right:8px;accent-color:var(--primary)">' + escHtml(opt) + '</label>';
+      html += '<label class="quiz-opt" style="display:block;background:#1f1f1f;border:1px solid #333;border-radius:8px;padding:12px 14px;margin-bottom:8px;cursor:pointer;transition:border-color .12s, background .12s">'
+        + '<input type="radio" name="mq' + qi + '" value="' + oi + '" style="display:none">' + escHtml(opt) + '</label>';
     });
     html += '</div>';
   });
@@ -12820,4 +12820,14 @@ async function maybeQuizBanner(el) {
       + '<button class="btn btn-primary" onclick="navigate(\'my-quiz\')">Take it now</button>';
     el.insertBefore(banner, el.firstChild);
   } catch (e) { /* silent */ }
+}
+
+
+function quizHighlight(form) {
+  var labels = form.querySelectorAll('label.quiz-opt');
+  for (var i = 0; i < labels.length; i++) {
+    var r = labels[i].querySelector('input');
+    if (r && r.checked) { labels[i].style.borderColor = 'var(--primary)'; labels[i].style.background = 'rgba(249,115,22,0.18)'; }
+    else { labels[i].style.borderColor = '#333'; labels[i].style.background = '#1f1f1f'; }
+  }
 }
