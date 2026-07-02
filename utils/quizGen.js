@@ -154,6 +154,10 @@ async function generateQuiz(weekOf) {
     var quizId;
     if (existing.rows.length) {
       quizId = existing.rows[0].id;
+      // Clear prior assignments first — this cascades to quiz_answers (FK on
+      // assignment_id has ON DELETE CASCADE), so answers no longer reference the
+      // old questions and the question delete below won't violate the FK.
+      await client.query('DELETE FROM quiz_assignments WHERE quiz_id = $1', [quizId]);
       await client.query('DELETE FROM quiz_questions WHERE quiz_id = $1', [quizId]);
       await client.query(
         "UPDATE quizzes SET sop_id = $1, sop_title = $2, status = 'draft' WHERE id = $3",
