@@ -2,7 +2,7 @@
 // IMPORTANT: never use backticks/template literals in this file (Windows
 // corrupts backticks in .js files). Use string concatenation only.
 // Bump CACHE_VERSION whenever the shell or cached assets change.
-var CACHE_VERSION = 'nova-v102';
+var CACHE_VERSION = 'nova-v103';
 var SHELL_ASSETS = [
   '/',
   '/index.html',
@@ -10,11 +10,11 @@ var SHELL_ASSETS = [
   '/js/vault.js',
   '/js/pto.js',
   '/manifest.webmanifest',
-  '/icon-192.png',
-  '/icon-512.png',
-  '/icon-maskable-512.png',
-  '/apple-touch-icon-180.png',
-  '/favicon-32.png'
+  '/icon-192.png?v=2',
+  '/icon-512.png?v=2',
+  '/icon-maskable-512.png?v=2',
+  '/apple-touch-icon-180.png?v=2',
+  '/favicon-32.png?v=2'
 ];
 
 // Install: pre-cache the app shell.
