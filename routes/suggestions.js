@@ -32,7 +32,7 @@ router.post('/', requireAuth, async (req, res) => {
     const s = rows[0];
     // Notify admins and managers
     try {
-      const _sg = await notify.broadcastRecipients('suggestion_created', "role IN ('admin', 'manager', 'owner')");
+      const _sg = await notify.broadcastRecipients('suggestion_created', "role='owner'");
       await push.sendPushToUsers(_sg.userIds, { title: 'New suggestion', body: 'A new suggestion was submitted.', url: '/' });
       const emailUsers = _sg.emails;
       const smsUsers = _sg.phones;
