@@ -264,6 +264,7 @@ function getSidebarSection(view) {
   if (['ai-assistant','ai-conversations','ai-usage'].indexOf(view) !== -1) return 'ai';
   if (['company-info','ai-context','notifications','scheduled-messages','roles','settings','users','cities','audit'].indexOf(view) !== -1) return 'settings';
   if (['geico','reviews','feedback','feedback-detail'].indexOf(view) !== -1) return 'feedback';
+  if (['schedule','schedule-admin','timeclock','timeclock-manager','pto'].indexOf(view) !== -1) return 'attendance';
   return null;
 }
 function showToast(message, type) {
@@ -502,6 +503,9 @@ async function render() {
   var aiViews = ['ai-assistant','ai-conversations','ai-usage'];
   var invViews = ['invoices','new-invoice','edit-invoice','view-invoice','invoice-setup','invoice-parts'];
   var stViews = ['company-info','ai-context','notifications','scheduled-messages','roles','settings','users','cities','audit','parts-list'];
+  var taViews = ['schedule','schedule-admin','timeclock','timeclock-manager','pto'];
+  var taShow = can('view_schedule') || can('view_timeclock') || can('view_pto');
+  var taDefault = can('view_schedule') ? (can('manage_schedule') ? 'schedule-admin' : 'schedule') : (can('view_timeclock') ? 'timeclock' : 'pto');
   var navHtml =
     '<div class="nav-item' + (cv === 'home' ? ' active' : '') + '" onclick="navigate(\'home\')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 9l9-7 9 7v11a2 2 0 01-2 2H5a2 2 0 01-2-2z"/><polyline points="9 22 9 12 15 12 15 22"/></svg> Home</div>' +
     (can('view_ai_admin') ?
@@ -538,9 +542,13 @@ async function render() {
     (can('view_work_orders') ? '<div class="nav-item' + (['work-orders','view-work-order','new-work-order'].indexOf(cv) !== -1 ? ' active' : '') + '" onclick="navigate(\'work-orders\')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"/><polyline points="3.27 6.96 12 12.01 20.73 6.96"/><line x1="12" y1="22.08" x2="12" y2="12"/></svg> Work Orders</div>' : '') +
     (can('view_signoffs') ? '<div class="nav-item' + (['signoffs','new-signoff','edit-signoff','view-signoff','complete-signoff'].indexOf(cv) !== -1 ? ' active' : '') + '" onclick="navigate(\'signoffs\')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><path d="M9 15l2 2 4-4"/></svg> Sign-Off Sheets</div>' : '') +
     (can('view_tasks') ? '<div class="nav-item' + (['tasks','task-detail','new-task','edit-task'].indexOf(cv) !== -1 ? ' active' : '') + '" onclick="navigate(\'tasks\')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg> Tasks</div>' : '') +
-    (can('view_schedule') ? '<div class="nav-item' + (['schedule','schedule-admin'].indexOf(cv) !== -1 ? ' active' : '') + '" onclick="navigate(\'' + (can('manage_schedule') ? 'schedule-admin' : 'schedule') + '\')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="4" width="18" height="18" rx="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></svg> Schedule</div>' : '') +
-    (can('view_timeclock') ? '<div class="nav-item' + (['timeclock','timeclock-manager'].indexOf(cv) !== -1 ? ' active' : '') + '" onclick="navigate(\'timeclock\')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><polyline points="12 7 12 12 15 14"/></svg> Time Clock</div>' : '') +
-    (can('view_pto') ? '<div class="nav-item' + (cv === 'pto' ? ' active' : '') + '" onclick="navigate(\'pto\')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="4" width="18" height="18" rx="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/><path d="M9 16l2 2 4-4"/></svg> Time Off</div>' : '') +
+    (taShow ?
+      '<div class="nav-section-header' + (taViews.indexOf(cv) !== -1 ? ' section-active' : '') + (ss === 'attendance' ? ' open' : '') + '" onclick="toggleSection(\'attendance\',\'' + taDefault + '\')"><span class="s-label"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><polyline points="12 7 12 12 15 14"/></svg> Time and Attendance</span>' + chev + '</div>' +
+      (ss === 'attendance' ?
+        (can('view_schedule') ? '<div class="nav-sub' + (['schedule','schedule-admin'].indexOf(cv) !== -1 ? ' active' : '') + '" onclick="navigate(\'' + (can('manage_schedule') ? 'schedule-admin' : 'schedule') + '\')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="4" width="18" height="18" rx="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></svg> Schedule</div>' : '') +
+        (can('view_timeclock') ? '<div class="nav-sub' + (['timeclock','timeclock-manager'].indexOf(cv) !== -1 ? ' active' : '') + '" onclick="navigate(\'timeclock\')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><polyline points="12 7 12 12 15 14"/></svg> Time Clock</div>' : '') +
+        (can('view_pto') ? '<div class="nav-sub' + (cv === 'pto' ? ' active' : '') + '" onclick="navigate(\'pto\')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="4" width="18" height="18" rx="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/><path d="M9 16l2 2 4-4"/></svg> Time Off</div>' : '')
+      : '') : '') +
     '<div class="nav-item' + (cv === 'org-chart' ? ' active' : '') + '" onclick="navigate(\'org-chart\')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="7" y="3" width="10" height="5" rx="1"/><rect x="3" y="16" width="6" height="5" rx="1"/><rect x="15" y="16" width="6" height="5" rx="1"/><path d="M12 8v3M6 16v-2h12v2"/></svg> Org Chart</div>' +
     (can('view_vr') ?
     '<div class="nav-section-header' + (vrViews.indexOf(cv) !== -1 ? ' section-active' : '') + (ss === 'vr' ? ' open' : '') + '" onclick="toggleSection(\'vr\',\'vr-dashboard\')"><span class="s-label">' + icoTruck + ' Vehicle Maint/Repairs</span>' + chev + '</div>' +
