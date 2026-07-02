@@ -1,7 +1,7 @@
 // utils/quizGen.js
 // Weekly SOP quiz generation. Picks the least-recently-quizzed active SOP,
 // pulls its text, and asks Claude for exactly 2 multiple-choice questions
-// grounded in that SOP. Style matches routes/ai.js (raw https, no SDK, string
+// grounded in that SOP (Q1 safety, Q2 process). Style matches routes/ai.js (raw https, no SDK, string
 // concatenation instead of template literals to stay backtick-safe).
 
 const https = require('https');
@@ -85,6 +85,9 @@ var SYSTEM = [
   'You are writing a short workplace knowledge check for a locksmith / roadside company.',
   'You will be given the text of ONE Standard Operating Procedure (SOP).',
   'Write exactly TWO multiple-choice questions that test understanding of that SOP.',
+  'Question 1 must be a SAFETY question: test a hazard, precaution, protective equipment, safe handling, damage prevention, or stop-and-escalate point covered in the SOP.',
+  'Question 2 must be a PROCESS question: test the procedure itself - steps, their order, required tools or materials, approvals, or documentation covered in the SOP.',
+  'If the SOP contains no explicit safety content, base question 1 on the closest risk-avoidance or caution point in the SOP text.',
   'Rules:',
   '- Every question and every answer option must be grounded ONLY in the supplied SOP text. Do not invent facts.',
   '- Each question must have exactly 4 options with exactly one clearly correct answer.',
