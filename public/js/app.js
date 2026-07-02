@@ -558,6 +558,7 @@ async function render() {
       (ss === 'training' ?
         '<div class="nav-sub' + (cv === 'quiz' ? ' active' : '') + '" onclick="navigate(\'quiz\')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg> SOP Quiz</div>'
       : '') : '') +
+    (!can('view_quiz') ? '<div class="nav-item' + (cv === 'my-quiz' ? ' active' : '') + '" onclick="navigate(\'my-quiz\')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg> SOP Quiz</div>' : '') +
     (can('view_vr') ?
     '<div class="nav-section-header' + (vrViews.indexOf(cv) !== -1 ? ' section-active' : '') + (ss === 'vr' ? ' open' : '') + '" onclick="toggleSection(\'vr\',\'vr-dashboard\')"><span class="s-label">' + icoTruck + ' Vehicle Maint/Repairs</span>' + chev + '</div>' +
     (ss === 'vr' ?
@@ -648,7 +649,7 @@ async function render() {
   const content = document.getElementById('content');
   var _viewPerm = { dashboard:'view_pos', view:'view_pos', running:'view_pos', 'running-admin':'view_pos', new:'create_po', edit:'edit_po', quotes:'view_quotes', 'view-quote':'view_quotes', 'new-quote':'create_quote', 'edit-quote':'edit_quote', 'vr-dashboard':'view_vr', 'view-vr':'view_vr', 'new-vr':'create_vr', 'edit-vr':'edit_vr', deposits:'view_deposits', 'view-deposit':'view_deposits', signoffs:'view_signoffs', 'view-signoff':'view_signoffs', 'new-signoff':'create_signoff', 'edit-signoff':'edit_signoff', 'complete-signoff':'complete_signoff', tasks:'view_tasks', 'task-detail':'view_tasks', 'new-task':'view_tasks', 'edit-task':'view_tasks', 'work-orders':'view_work_orders', 'view-work-order':'view_work_orders', 'new-work-order':'manage_work_orders', schedule:'view_schedule', 'schedule-admin':'manage_schedule', 'schedule-nowork':'manage_schedule', invoices:'view_invoices', 'view-invoice':'view_invoices', 'new-invoice':'create_invoice', 'edit-invoice':'edit_invoice', 'invoice-parts':'view_invoices', 'invoice-setup':'manage_invoice_setup', feedback:'view_feedback', 'feedback-detail':'view_feedback', signatures:'view_signatures', 'new-signature':'manage_signatures', 'signature-editor':'manage_signatures', timeclock:'view_timeclock', 'timeclock-manager':'manage_timeclock', pto:'view_pto' };
   if (_viewPerm[state.currentView] && !can(_viewPerm[state.currentView])) { content.innerHTML = '<div class="alert alert-error">Access denied.</div>'; return; }
-  if (state.currentView === 'home') await renderHomeScreen(content);
+  if (state.currentView === 'home') { await renderHomeScreen(content); maybeQuizBanner(content); }
   else if (state.currentView === 'pto') await renderPto(content);
   else if (state.currentView === 'dashboard') await renderDashboard(content);
   else if (state.currentView === 'new') await renderEditPO(content, null);
@@ -721,7 +722,8 @@ async function render() {
   else if (state.currentView === 'invoice-parts') await renderInvoiceParts(content);
   else if (state.currentView === 'invoice-setup') await renderInvoiceSetup(content);
   else if (state.currentView === 'quiz') await renderQuizAdmin(content);
-  else { state.currentView = 'home'; await renderHomeScreen(content); }
+  else if (state.currentView === 'my-quiz') await renderMyQuiz(content);
+  else { state.currentView = 'home'; await renderHomeScreen(content); maybeQuizBanner(content); }
 }
 
 function renderLogin(app) {
@@ -12752,4 +12754,51 @@ async function showQuizResults(quizId) {
       + '<th style="padding:6px">Name</th><th style="padding:6px">Status</th><th style="padding:6px">Score</th>'
       + '<th style="padding:6px">Passed</th><th style="padding:6px">Reminders</th></tr>' + body + '</table>'));
   } catch (e) { (window.novaAlert || window.alert)(e.message); }
+}
+
+
+// ===== SOP QUIZ (employee-facing) ==========================================
+async function renderMyQuiz(content) {
+  content.innerHTML = '<div class="page-header"><div class="page-title"><h2>SOP Quiz</h2>'
+    + '<p>Your weekly 2-question knowledge check.</p></div></div><div id="myQuizBody">Loading&hellip;</div>';
+  var body = document.getElementById('myQuizBody');
+  var data;
+  try { data = await api('GET', '/quiz/mine'); }
+  catch (e) { body.innerHTML = '<div style="color:#f87171">' + escHtml(e.message) + '</div>'; return; }
+  if (!data || !data.quiz) { body.innerHTML = quizCard('<div style="text-align:center;color:var(--text-muted-color)">You&#39;re all caught up &mdash; no quiz right now.</div>'); return; }
+  if (data.completed) { body.innerHTML = quizCard(quizResultHtml(data.score, data.total)); return; }
+  var html = '<div style="color:var(--text-muted-color);margin-bottom:16px">Topic: <strong>' + escHtml(data.quiz.sopTitle || 'SOP') + '</strong></div><form id="myQuizForm">';
+  data.questions.forEach(function (q, qi) {
+    html += '<div style="margin-bottom:20px"><div style="font-weight:600;margin-bottom:8px">' + (qi + 1) + '. ' + escHtml(q.prompt) + '</div>';
+    (q.options || []).forEach(function (opt, oi) {
+      html += '<label style="display:block;background:#1f1f1f;border:1px solid #333;border-radius:8px;padding:10px 12px;margin-bottom:8px;cursor:pointer">'
+        + '<input type="radio" name="mq' + qi + '" value="' + oi + '" style="margin-right:8px;accent-color:var(--primary)">' + escHtml(opt) + '</label>';
+    });
+    html += '</div>';
+  });
+  html += '<button type="submit" class="btn btn-primary" style="width:100%">Submit</button></form>';
+  body.innerHTML = quizCard(html);
+  document.getElementById('myQuizForm').addEventListener('submit', async function (ev) {
+    ev.preventDefault();
+    var answers = [];
+    for (var i = 0; i < data.questions.length; i++) {
+      var s = document.querySelector('input[name="mq' + i + '"]:checked');
+      answers.push(s ? parseInt(s.value, 10) : -1);
+    }
+    if (answers.indexOf(-1) !== -1) { (window.novaAlert || window.alert)('Please answer both questions.'); return; }
+    try { var res = await api('POST', '/quiz/mine', { answers: answers }); body.innerHTML = quizCard(quizResultHtml(res.score, res.total)); }
+    catch (e) { (window.novaAlert || window.alert)(e.message); }
+  });
+}
+
+async function maybeQuizBanner(el) {
+  try {
+    var data = await api('GET', '/quiz/mine');
+    if (!data || !data.quiz || data.completed || !el) return;
+    var banner = document.createElement('div');
+    banner.style.cssText = 'background:var(--card-bg,#161616);border:1px solid var(--primary);border-left:4px solid var(--primary);border-radius:10px;padding:14px 16px;margin-bottom:16px;display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap';
+    banner.innerHTML = '<div><strong>Weekly SOP quiz due</strong><div style="color:var(--text-muted-color);font-size:14px">2 quick questions on ' + escHtml(data.quiz.sopTitle || 'your SOPs') + '.</div></div>'
+      + '<button class="btn btn-primary" onclick="navigate(\'my-quiz\')">Take it now</button>';
+    el.insertBefore(banner, el.firstChild);
+  } catch (e) { /* silent */ }
 }

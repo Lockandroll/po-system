@@ -281,6 +281,80 @@ router.post('/:id/send', requireAuth, requirePermission('manage_quiz'), async fu
   }
 });
 
+// GET /api/quiz/mine -> the logged-in user's current open quiz (no token needed)
+router.get('/mine', requireAuth, async function (req, res) {
+  try {
+    var a = await pool.query(
+      "SELECT qa.id, qa.status, qa.score, qa.quiz_id, q.sop_title " +
+      "FROM quiz_assignments qa JOIN quizzes q ON q.id = qa.quiz_id " +
+      "WHERE qa.user_id = $1 AND q.status = 'sent' ORDER BY q.week_of DESC LIMIT 1",
+      [req.user.id]
+    );
+    if (!a.rows.length) return res.json({ quiz: null });
+    var asg = a.rows[0];
+    var qs = await pool.query(
+      'SELECT id, position, prompt, options FROM quiz_questions WHERE quiz_id = $1 ORDER BY position ASC',
+      [asg.quiz_id]
+    );
+    res.json({
+      quiz: { sopTitle: asg.sop_title },
+      completed: asg.status === 'completed',
+      score: asg.score,
+      total: qs.rows.length,
+      questions: qs.rows.map(function (r) { return { id: r.id, position: r.position, prompt: r.prompt, options: r.options }; })
+    });
+  } catch (e) {
+    console.error('quiz mine get:', e.message);
+    res.status(500).json({ error: 'Failed to load your quiz.' });
+  }
+});
+
+// POST /api/quiz/mine -> submit answers for the logged-in user's open quiz
+router.post('/mine', requireAuth, async function (req, res) {
+  var client = await pool.connect();
+  try {
+    var answers = (req.body && req.body.answers) || [];
+    var a = await client.query(
+      "SELECT qa.id, qa.quiz_id, qa.status FROM quiz_assignments qa JOIN quizzes q ON q.id = qa.quiz_id " +
+      "WHERE qa.user_id = $1 AND q.status = 'sent' ORDER BY q.week_of DESC LIMIT 1",
+      [req.user.id]
+    );
+    if (!a.rows.length) return res.status(404).json({ error: 'No open quiz.' });
+    var asg = a.rows[0];
+    if (asg.status === 'completed') return res.status(409).json({ error: 'You already completed this quiz.' });
+    var qs = await client.query(
+      'SELECT id, position, correct_index FROM quiz_questions WHERE quiz_id = $1 ORDER BY position ASC',
+      [asg.quiz_id]
+    );
+    var settings = await getQuizSettings();
+    await client.query('BEGIN');
+    var score = 0;
+    for (var i = 0; i < qs.rows.length; i++) {
+      var q = qs.rows[i];
+      var sel = (typeof answers[i] === 'number') ? answers[i] : -1;
+      var correct = sel === q.correct_index;
+      if (correct) score++;
+      await client.query(
+        'INSERT INTO quiz_answers (assignment_id, question_id, selected_index, correct) VALUES ($1,$2,$3,$4)',
+        [asg.id, q.id, sel, correct]
+      );
+    }
+    var passed = score >= settings.passScore;
+    await client.query(
+      "UPDATE quiz_assignments SET status='completed', score=$1, passed=$2, completed_at=NOW() WHERE id=$3",
+      [score, passed, asg.id]
+    );
+    await client.query('COMMIT');
+    res.json({ score: score, total: qs.rows.length, passed: passed });
+  } catch (e) {
+    await client.query('ROLLBACK');
+    console.error('quiz mine post:', e.message);
+    res.status(500).json({ error: 'Failed to submit.' });
+  } finally {
+    client.release();
+  }
+});
+
 module.exports = router;
 module.exports.publicRouter = pub;
 module.exports.getQuizSettings = getQuizSettings;
