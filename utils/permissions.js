@@ -55,10 +55,11 @@ ALL_PERMS.push('view_timeclock', 'manage_timeclock');  // time clock module
 EMPLOYEE_PERMS.push('view_pto');                        // view + request own PTO
 ALL_PERMS.push('view_pto', 'manage_pto');               // time off module
 ALL_PERMS.push('view_quiz', 'manage_quiz');             // SOP quiz module
+ALL_PERMS.push('manage_onboarding');                    // new-hire onboarding module
 
 var DEFAULTS = {
   admin: '*',
-  manager: ['view_users', 'manage_cities', 'manage_geico', 'manage_running', 'manage_vehicles', 'manage_vendors', 'manage_addresses', 'approve_vr', 'manage_tasks', 'manage_work_orders', 'manage_schedule', 'manage_parts', 'manage_invoice_setup', 'assign_reviews', 'view_feedback', 'manage_feedback', 'manage_signatures', 'manage_timeclock', 'manage_pto', 'view_quiz', 'manage_quiz'].concat(EMPLOYEE_PERMS),
+  manager: ['view_users', 'manage_cities', 'manage_geico', 'manage_running', 'manage_vehicles', 'manage_vendors', 'manage_addresses', 'approve_vr', 'manage_tasks', 'manage_work_orders', 'manage_schedule', 'manage_parts', 'manage_invoice_setup', 'assign_reviews', 'view_feedback', 'manage_feedback', 'manage_signatures', 'manage_timeclock', 'manage_pto', 'view_quiz', 'manage_quiz', 'manage_onboarding'].concat(EMPLOYEE_PERMS),
   locksmith: EMPLOYEE_PERMS.slice(),
   locksmith_coordinator: EMPLOYEE_PERMS.concat(['manage_work_orders']),
   roadside_technician: EMPLOYEE_PERMS.slice()

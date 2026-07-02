@@ -113,10 +113,11 @@ router.post('/login', async (req, res) => {
       setDeviceCookie(req, res, deviceToken, newExpires);
       const tdClaims = { id: user.id, email: user.email, name: user.name, role: user.role };
       if (rememberMe) tdClaims.remember = true;
+      if (user.onboarding_status && user.onboarding_status !== 'complete') tdClaims.onb = true;
       const tdToken = jwt.sign(tdClaims, process.env.JWT_SECRET, { expiresIn: sessionTtl(rememberMe) });
       logAudit({ entity_type: 'auth', action: 'login', user_id: user.id, user_name: user.name, details: { method: 'trusted device', ip: clientIp(req) } });
       pool.query('UPDATE users SET last_login_at = NOW(), last_seen_at = NOW() WHERE id = $1', [user.id]).catch(function(){});
-      return res.json({ token: tdToken, user: { id: user.id, name: user.name, email: user.email, role: user.role } });
+      return res.json({ token: tdToken, user: { id: user.id, name: user.name, email: user.email, role: user.role, onboarding_status: user.onboarding_status || 'complete' } });
     }
   }
 
@@ -180,7 +181,7 @@ router.post('/verify-2fa', async (req, res) => {
   await pool.query('UPDATE two_factor_codes SET used=true WHERE user_id=$1', [userId]);
 
   const { rows: userRows } = await pool.query(
-    'SELECT id, name, email, role, active FROM users WHERE id=$1',
+    'SELECT id, name, email, role, active, onboarding_status FROM users WHERE id=$1',
     [userId]
   );
   const user = userRows[0];
@@ -191,6 +192,7 @@ router.post('/verify-2fa', async (req, res) => {
   const remember = !!(rememberMe || rememberDevice);
   const tokenClaims = { id: user.id, email: user.email, name: user.name, role: user.role };
   if (remember) tokenClaims.remember = true;
+  if (user.onboarding_status && user.onboarding_status !== 'complete') tokenClaims.onb = true;
   const token = jwt.sign(tokenClaims, process.env.JWT_SECRET, { expiresIn: sessionTtl(remember) });
 
   if (remember) {
@@ -207,7 +209,7 @@ router.post('/verify-2fa', async (req, res) => {
 
   logAudit({ entity_type: 'auth', action: 'login', user_id: user.id, user_name: user.name, details: { method: '2FA', ip: clientIp(req) } });
   pool.query('UPDATE users SET last_login_at = NOW(), last_seen_at = NOW() WHERE id = $1', [user.id]).catch(function(){});
-  res.json({ token, user: { id: user.id, name: user.name, email: user.email, role: user.role } });
+  res.json({ token, user: { id: user.id, name: user.name, email: user.email, role: user.role, onboarding_status: user.onboarding_status || 'complete' } });
 });
 
 // Forgot password — send reset email
@@ -258,7 +260,7 @@ router.post('/reset-password', async (req, res) => {
 
 // Get current user
 router.get('/me', requireAuth, async (req, res) => {
-  const { rows } = await pool.query('SELECT id, name, email, role, title, extra_perms, created_at FROM users WHERE id = $1', [req.user.id]);
+  const { rows } = await pool.query('SELECT id, name, email, role, title, extra_perms, onboarding_status, created_at FROM users WHERE id = $1', [req.user.id]);
   res.json(rows[0]);
 });
 

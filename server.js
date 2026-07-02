@@ -114,6 +114,7 @@ app.use('/api/vault', require('./routes/vault'));
 app.use('/api/signatures', require('./routes/signatures'));
 app.use('/api/sign', require('./routes/signatures').publicRouter);
 app.use('/api/pto', require('./routes/pto'));
+app.use('/api/onboarding', require('./routes/onboarding'));
 app.use('/api/quiz', require('./routes/quiz'));
 app.use('/api/quiz-take', require('./routes/quiz').publicRouter);
 

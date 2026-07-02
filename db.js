@@ -1479,6 +1479,52 @@ async function initDB() {
       await client.query("INSERT INTO settings (key, value) VALUES ('perm_timeclock_backfilled', '1') ON CONFLICT (key) DO NOTHING");
     }
 
+    // ---- Onboarding module (gated new-hire track) ----
+    await client.query("ALTER TABLE users ADD COLUMN IF NOT EXISTS onboarding_status VARCHAR(20) NOT NULL DEFAULT 'complete';");
+    await client.query("ALTER TABLE users ADD COLUMN IF NOT EXISTS onboarding_enrolled_at TIMESTAMPTZ;");
+    await client.query(
+      'CREATE TABLE IF NOT EXISTS onboarding_steps (' +
+      '  id SERIAL PRIMARY KEY,' +
+      '  position INTEGER NOT NULL DEFAULT 0,' +
+      "  type VARCHAR(20) NOT NULL," +
+      '  title VARCHAR(200) NOT NULL,' +
+      '  description TEXT,' +
+      '  sop_id INTEGER REFERENCES sop_documents(id) ON DELETE SET NULL,' +
+      '  video_key TEXT,' +
+      '  config JSONB,' +
+      '  active BOOLEAN NOT NULL DEFAULT true,' +
+      '  created_at TIMESTAMPTZ DEFAULT NOW(),' +
+      '  updated_at TIMESTAMPTZ DEFAULT NOW()' +
+      ');'
+    );
+    await client.query(
+      'CREATE TABLE IF NOT EXISTS onboarding_progress (' +
+      '  id SERIAL PRIMARY KEY,' +
+      '  user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,' +
+      '  step_id INTEGER NOT NULL REFERENCES onboarding_steps(id) ON DELETE CASCADE,' +
+      "  status VARCHAR(20) NOT NULL DEFAULT 'pending'," +
+      '  score INTEGER,' +
+      '  attempts INTEGER NOT NULL DEFAULT 0,' +
+      '  started_at TIMESTAMPTZ,' +
+      '  completed_at TIMESTAMPTZ,' +
+      '  UNIQUE (user_id, step_id)' +
+      ');'
+    );
+    await client.query(
+      'CREATE TABLE IF NOT EXISTS onboarding_quiz_attempts (' +
+      '  id SERIAL PRIMARY KEY,' +
+      '  user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,' +
+      '  step_id INTEGER NOT NULL REFERENCES onboarding_steps(id) ON DELETE CASCADE,' +
+      '  questions JSONB NOT NULL,' +
+      '  answers JSONB,' +
+      '  score INTEGER,' +
+      '  passed BOOLEAN,' +
+      '  created_at TIMESTAMPTZ DEFAULT NOW(),' +
+      '  submitted_at TIMESTAMPTZ' +
+      ');'
+    );
+    await client.query('CREATE INDEX IF NOT EXISTS idx_onboarding_progress_user ON onboarding_progress(user_id);');
+
     console.log('Database initialized');
   } finally {
     client.release();

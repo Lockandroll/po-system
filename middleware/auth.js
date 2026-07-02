@@ -19,14 +19,33 @@ async function requireAuth(req, res, next) {
   if (payload.addin && (req.originalUrl || req.url || '').indexOf('/api/addin') !== 0) {
     return res.status(403).json({ error: 'This token is limited to Outlook add-in actions.' });
   }
+  // Onboarding gate: a user still in onboarding may only reach a small whitelist
+  // (auth, the onboarding track itself, time clock — training is on the clock, push).
+  // The claim is re-checked against the DB so a supervisor sign-off unlocks instantly.
+  let onbActive = false;
+  if (payload.onb) {
+    try {
+      const _or = await pool.query('SELECT onboarding_status FROM users WHERE id = $1', [payload.id]);
+      const _st = _or.rows.length ? _or.rows[0].onboarding_status : 'complete';
+      onbActive = (_st && _st !== 'complete');
+    } catch (e) { onbActive = true; /* fail closed on DB errors */ }
+    if (onbActive) {
+      const _p = (req.originalUrl || req.url || '');
+      const _ok = _p.indexOf('/api/auth') === 0 || _p.indexOf('/api/onboarding') === 0 ||
+        _p.indexOf('/api/timeclock') === 0 || _p.indexOf('/api/push') === 0;
+      if (!_ok) return res.status(403).json({ error: 'Finish onboarding to unlock this part of Nova.', onboarding: true });
+    }
+  }
   // Issue a fresh 24h token on every request (rolling expiry) for the REAL user.
-  const { iat, exp, ...claims } = payload;
+  const { iat, exp, onb, ...claims } = payload;
+  if (onbActive) claims.onb = true;
   const sessTtl = claims.addin ? '90d' : (claims.remember ? '30d' : '24h');
   res.setHeader('X-New-Token', jwt.sign(claims, process.env.JWT_SECRET, { expiresIn: sessTtl }));
   // Track activity for the real user (throttled to at most once per minute).
   pool.query("UPDATE users SET last_seen_at = NOW() WHERE id = $1 AND (last_seen_at IS NULL OR last_seen_at < NOW() - INTERVAL '60 seconds')", [payload.id]).catch(function(){});
   // Real user; owner is coerced to admin-level for authorization.
   req.user = { id: payload.id, email: payload.email, name: payload.name, role: payload.role };
+  if (onbActive) req.user.onboarding = true;
   req.user.isOwner = (payload.role === 'owner');
   if (req.user.isOwner) req.user.role = 'admin';
   // View-As: a real admin/owner can preview another user's ACTUAL data (read-only).

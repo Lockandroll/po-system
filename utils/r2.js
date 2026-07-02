@@ -41,7 +41,7 @@ async function presignUpload(key, contentType) {
 
 // Presigned URL the browser GETs to download/preview the file. Valid 5 minutes.
 // filename drives the Save-As name; inline=true lets PDFs/images preview in-tab.
-async function presignDownload(key, filename, inline) {
+async function presignDownload(key, filename, inline, expiresIn) {
   const disp = (inline ? 'inline' : 'attachment') +
     (filename ? '; filename="' + filename.replace(/"/g, '') + '"' : '');
   const cmd = new GetObjectCommand({
@@ -49,7 +49,7 @@ async function presignDownload(key, filename, inline) {
     Key: key,
     ResponseContentDisposition: disp
   });
-  return getSignedUrl(client(), cmd, { expiresIn: 300 });
+  return getSignedUrl(client(), cmd, { expiresIn: expiresIn || 300 });
 }
 
 // Upload bytes straight from this server (used for AI-signature images and the
