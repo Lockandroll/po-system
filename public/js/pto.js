@@ -130,6 +130,10 @@
         '<div class="pto-warn" id="pto-req-err" style="display:none"></div>' +
         '<div style="margin-top:14px"><button class="pto-btn" id="pto-submit">Submit Request</button></div>' +
       '</div>' +
+      '<div class="pto-panel"><h3>PTO Projection</h3><div class="pto-desc">Estimate how much PTO you will have banked by a future date, based on your current balance and accrual rate. Approved time off is already reflected in your balance.</div>' +
+        '<div class="pto-row"><div><label class="pto-label">Project to date</label><input type="date" id="pto-proj-date" class="pto-input"></div></div>' +
+        '<div class="pto-routebox" id="pto-proj-out">Pick a date to see your projected balance.</div>' +
+      '</div>' +
       '<div class="pto-panel"><h3>My Requests</h3>' +
         '<table class="pto-table"><thead><tr><th>Dates</th><th>Days</th><th>Type</th><th>Pay</th><th>Status</th><th></th></tr></thead><tbody>' + (rows || '<tr><td colspan="6" class="pto-sub">No requests yet.</td></tr>') + '</tbody></table>' +
       '</div>';
@@ -147,6 +151,29 @@
     sd.onchange = ed.onchange = preview;
     document.getElementById('pto-paid').onchange = preview;
     document.getElementById('pto-submit').onclick = submitRequest;
+
+    // Projection: current balance + monthly accrual for each month-start between now and the target date.
+    var pd = document.getElementById('pto-proj-date');
+    function monthsUntil(target) {
+      var t = parseLocal(target); if (!t) return 0;
+      var today = new Date(); today = new Date(today.getFullYear(), today.getMonth(), today.getDate());
+      if (t <= today) return 0;
+      var n = 0, d = new Date(today.getFullYear(), today.getMonth() + 1, 1);
+      while (d <= t) { n++; d.setMonth(d.getMonth() + 1); }
+      return n;
+    }
+    function projPreview() {
+      var out = document.getElementById('pto-proj-out');
+      if (!pd.value) { out.textContent = 'Pick a date to see your projected balance.'; return; }
+      var t = parseLocal(pd.value), today = new Date(); today = new Date(today.getFullYear(), today.getMonth(), today.getDate());
+      if (t <= today) { out.innerHTML = 'Pick a date in the future.'; return; }
+      var months = monthsUntil(pd.value);
+      var added = months * accMonthlyHrs;
+      var projected = bal + added;
+      out.innerHTML = 'By <b>' + fmtDate(pd.value) + '</b> you will have about <b style="color:#22c55e">' + fmtAmt(projected, pt) + '</b>.' +
+        '<br><span class="pto-sub">Now <b>' + fmtAmt(bal, pt) + '</b> + ' + months + ' month' + (months === 1 ? '' : 's') + ' of accrual (<b>' + fmtAmt(added, pt) + '</b>). Estimate at your current rate; excludes any pending requests.</span>';
+    }
+    pd.onchange = projPreview;
   }
 
   async function submitRequest() {
@@ -215,12 +242,13 @@
   // ---- TEAM PTO ------------------------------------------------------------
   async function tabTeam(body) {
     var list = await api('GET', '/pto/team'); CACHE.team = list;
+    var isAdmin = state && state.user && (state.user.role === 'admin' || state.user.role === 'owner' || state.user.isOwner);
     var rows = (list || []).map(function (p) {
       var warn = p.hire_date ? '' : ' <span class="pto-flag">⚠ no hire date</span>';
       return '<tr><td><b>' + escHtml(p.name) + '</b>' + warn + '<br><span class="pto-sub">' + escHtml(p.title || '') + (p.exempt ? ' · exempt' : '') + '</span></td>' +
         '<td>' + escHtml(p.pay_type) + '</td><td><b>' + fmtAmt(Number(p.balance_hours), p.pay_type) + '</b></td>' +
         '<td>' + (p.pending ? fmtDate(p.pending) : '—') + '</td>' +
-        '<td style="white-space:nowrap"><button class="pto-btn ghost sm" onclick="ptoLedger(' + p.id + ',this)">View ledger</button> <button class="pto-btn sm" onclick="ptoOpenLog(' + p.id + ')">Log PTO</button></td></tr>' +
+        '<td style="white-space:nowrap"><button class="pto-btn ghost sm" onclick="ptoLedger(' + p.id + ',this)">View ledger</button> <button class="pto-btn sm" onclick="ptoOpenLog(' + p.id + ')">Log PTO</button>' + (isAdmin ? ' <button class="pto-btn ok sm" onclick="ptoOpenAward(' + p.id + ')">Award</button>' : '') + '</td></tr>' +
         '<tr id="pto-led-' + p.id + '" style="display:none"><td colspan="5"></td></tr>';
     }).join('');
     body.innerHTML = '<div class="pto-panel"><h3>Team PTO</h3><div class="pto-desc">Read-only. Everyone in your reporting line. Click a person to view their append-only ledger.</div>' +
@@ -269,6 +297,38 @@
       if (!payload.reason) { err.textContent = 'A reason is required.'; err.style.display = 'block'; return; }
       try { await api('POST', '/pto/log', payload); document.body.removeChild(m); showToast('PTO logged.', 'success'); reload(); }
       catch (ex) { err.textContent = ex.message || 'Could not log.'; err.style.display = 'block'; }
+    };
+  };
+
+  // ---- AWARD PTO (admin/owner) --------------------------------------------
+  window.ptoOpenAward = function (id) {
+    var person = null; (CACHE.team || []).forEach(function (p) { if (p.id === id) person = p; });
+    var pt = person ? person.pay_type : 'hourly';
+    var name = person ? person.name : 'this employee';
+    var m = document.createElement('div'); m.className = 'pto-mask';
+    m.innerHTML = '<div class="pto-dlg"><h3>Award PTO</h3><div class="pto-desc">Adds bonus time on top of ' + escHtml(name) + '&#39;s current balance. Writes an award entry to their ledger.</div>' +
+      '<label class="pto-label">Days to award</label><input type="number" min="0.5" step="0.5" id="pto-aw-days" class="pto-input" placeholder="e.g. 1">' +
+      '<label class="pto-label">Reason (required)</label><textarea id="pto-aw-reason" class="pto-textarea" rows="2" placeholder="e.g. Covered a holiday shift"></textarea>' +
+      '<div class="pto-sub" id="pto-aw-prev" style="margin-top:8px"></div>' +
+      '<div class="pto-warn" id="pto-aw-err" style="display:none"></div>' +
+      '<div style="margin-top:14px;display:flex;gap:10px;justify-content:flex-end"><button class="pto-btn ghost" id="pto-aw-cancel">Cancel</button><button class="pto-btn ok" id="pto-aw-ok">Award PTO</button></div></div>';
+    document.body.appendChild(m);
+    var dEl = m.querySelector('#pto-aw-days');
+    function prev() {
+      var days = Number(dEl.value);
+      if (!isFinite(days) || days <= 0) { m.querySelector('#pto-aw-prev').textContent = ''; return; }
+      var bal = person ? Number(person.balance_hours) : 0, after = bal + days * HRS_PER_DAY;
+      m.querySelector('#pto-aw-prev').innerHTML = 'Adds <b>' + fmtAmt(days * HRS_PER_DAY, pt) + '</b> → new balance <b style="color:#22c55e">' + fmtAmt(after, pt) + '</b>';
+    }
+    dEl.oninput = prev;
+    m.querySelector('#pto-aw-cancel').onclick = function () { document.body.removeChild(m); };
+    m.querySelector('#pto-aw-ok').onclick = async function () {
+      var err = m.querySelector('#pto-aw-err');
+      var payload = { user_id: id, days: Number(dEl.value), reason: m.querySelector('#pto-aw-reason').value.trim() };
+      if (!isFinite(payload.days) || payload.days <= 0) { err.textContent = 'Enter a positive number of days.'; err.style.display = 'block'; return; }
+      if (!payload.reason) { err.textContent = 'A reason is required.'; err.style.display = 'block'; return; }
+      try { await api('POST', '/pto/award', payload); document.body.removeChild(m); showToast('Awarded ' + payload.days + ' day' + (payload.days === 1 ? '' : 's') + ' to ' + name + '.', 'success'); reload(); }
+      catch (ex) { err.textContent = ex.message || 'Could not award.'; err.style.display = 'block'; }
     };
   };
 

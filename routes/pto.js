@@ -562,4 +562,38 @@ router.put('/user/:id', requireAuth, requirePermission('manage_pto'), async (req
   res.json({ success: true });
 });
 
+// ---- AWARD PTO (admin/owner only — additive bonus days) --------------------
+// Grants extra PTO on top of the current balance. Writes a single 'award' ledger
+// line (audited). Distinct from /user set_balance (which sets an exact amount).
+router.post('/award', requireAuth, async (req, res) => {
+  const isAdmin = req.user.role === 'admin' || req.user.isOwner || req.user.role === 'owner';
+  if (!isAdmin) return res.status(403).json({ error: 'Only an admin or owner can award PTO' });
+  const b = req.body || {};
+  const target = parseInt(b.user_id, 10) || 0;
+  if (!target) return res.status(400).json({ error: 'Employee is required' });
+  const days = Number(b.days);
+  if (!isFinite(days) || days <= 0) return res.status(400).json({ error: 'Enter a positive number of days to award' });
+  const reason = String(b.reason || '').trim();
+  if (!reason) return res.status(400).json({ error: 'A reason is required to award PTO' });
+  const hours = days * HRS_PER_DAY;
+  const ur = await pool.query('SELECT name FROM users WHERE id = $1', [target]);
+  if (!ur.rows.length) return res.status(404).json({ error: 'Employee not found' });
+
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    await postLedger(client, {
+      user_id: target, entry_date: ymd(new Date()), kind: 'award', amount_hours: hours,
+      description: 'Awarded ' + days + ' day' + (days === 1 ? '' : 's') + ' — ' + reason, created_by: req.user.id
+    });
+    await client.query('COMMIT');
+  } catch (e) {
+    await client.query('ROLLBACK');
+    return res.status(500).json({ error: 'Award failed: ' + e.message });
+  } finally { client.release(); }
+
+  await logAudit({ entity_type: 'pto_user', entity_id: target, action: 'awarded_pto', user_id: req.user.id, user_name: req.user.name, details: { target: target, days: days, reason: reason } });
+  res.json({ success: true, awarded_days: days });
+});
+
 module.exports = router;
