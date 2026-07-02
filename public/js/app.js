@@ -12827,7 +12827,16 @@ function quizHighlight(form) {
   var labels = form.querySelectorAll('label.quiz-opt');
   for (var i = 0; i < labels.length; i++) {
     var r = labels[i].querySelector('input');
-    if (r && r.checked) { labels[i].style.borderColor = 'var(--primary)'; labels[i].style.background = 'rgba(249,115,22,0.18)'; }
-    else { labels[i].style.borderColor = '#333'; labels[i].style.background = '#1f1f1f'; }
+    if (r && r.checked) {
+      labels[i].style.borderColor = 'var(--primary)';
+      labels[i].style.background = 'rgba(249,115,22,0.28)';
+      labels[i].style.boxShadow = '0 0 0 2px var(--primary)';
+      labels[i].style.color = '#fff';
+    } else {
+      labels[i].style.borderColor = '#333';
+      labels[i].style.background = '#1f1f1f';
+      labels[i].style.boxShadow = 'none';
+      labels[i].style.color = '';
+    }
   }
 }
