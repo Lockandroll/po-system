@@ -12661,7 +12661,9 @@ async function renderQuizAdmin(content) {
     var cur = await api('GET', '/quiz/current');
     var list = await api('GET', '/quiz');
     var s = can('manage_quiz') ? await api('GET', '/quiz/settings') : null;
-    box.innerHTML = quizCurrentHtml(cur) + (s ? quizSettingsHtml(s) : '') + quizListHtml(list);
+    var roster = await api('GET', '/quiz/roster');
+    var comp = await api('GET', '/quiz/compliance');
+    box.innerHTML = quizComplianceHtml(comp) + quizCurrentHtml(cur) + (s ? quizSettingsHtml(s) : '') + quizRosterHtml(roster) + quizListHtml(list);
     wireQuizAdmin();
   } catch (e) { box.innerHTML = '<div style="color:#f87171">' + escHtml(e.message) + '</div>'; }
 }
@@ -12696,7 +12698,7 @@ function quizSettingsHtml(s) {
     + '<label style="display:block;margin-bottom:10px"><input type="checkbox" id="qsEnabled"' + (s.enabled ? ' checked' : '') + ' style="width:auto;margin:0 8px 0 0;accent-color:var(--primary);vertical-align:middle">Enabled (send automatically)</label>'
     + '<div style="display:flex;gap:12px;flex-wrap:wrap;align-items:center;margin-bottom:10px">'
     + '<label>Send day <select id="qsDow" class="form-control" style="width:auto;display:inline-block">' + dayOpts + '</select></label>'
-    + '<label>Time (ET) <input type="time" id="qsTime" value="' + escHtml(s.time) + '" class="form-control" style="width:auto;display:inline-block"></label></div>'
+    + '<label>Time (ET) <input type="time" id="qsTime" value="' + escHtml(s.time) + '" class="form-control" style="width:auto;display:inline-block"></label>' + '<label>Due within <input type="number" min="1" max="30" id="qsDue" value="' + (s.dueDays || 3) + '" class="form-control" style="width:70px;display:inline-block"> days</label></div>'
     + '<div style="color:var(--text-muted-color);font-size:13px;margin-bottom:10px">Recipients: everyone except admin/owner. Pass = both correct. Reminders daily until answered.</div>'
     + '<button id="qsSave" class="btn btn-primary">Save settings</button> <span id="qsMsg" style="color:#22c55e;margin-left:8px"></span>');
 }
@@ -12746,6 +12748,7 @@ function wireQuizAdmin() {
       enabled: document.getElementById('qsEnabled').checked,
       dow: parseInt(document.getElementById('qsDow').value, 10),
       time: document.getElementById('qsTime').value,
+      dueDays: parseInt(document.getElementById('qsDue').value, 10),
       roles: ['locksmith', 'locksmith_coordinator', 'roadside_technician', 'manager'],
       passScore: 2
     };
@@ -12762,7 +12765,7 @@ async function showQuizResults(quizId) {
   try {
     var rows = await api('GET', '/quiz/' + quizId + '/results');
     var body = rows.map(function (r) {
-      return '<tr><td style="padding:6px">' + escHtml(r.name) + '</td><td style="padding:6px">' + escHtml(r.status) + '</td>'
+      return '<tr><td style="padding:6px">' + escHtml(r.name) + '</td><td style="padding:6px">' + (r.overdue ? '<span style="color:#f97316">overdue</span>' : escHtml(r.status)) + '</td>'
         + '<td style="padding:6px">' + (r.score == null ? '&ndash;' : r.score) + '</td>'
         + '<td style="padding:6px">' + (r.passed == null ? '&ndash;' : (r.passed ? 'Yes' : 'No')) + '</td>'
         + '<td style="padding:6px">' + (r.reminders_sent || 0) + '</td></tr>';
@@ -12839,4 +12842,49 @@ function quizHighlight(form) {
       labels[i].style.color = '';
     }
   }
+}
+
+
+function quizRosterHtml(roster) {
+  if (!roster || !roster.length) return '';
+  var rows = roster.map(function (r) {
+    var pct = r.possible ? Math.round(100 * r.correct / r.possible) : null;
+    var rate = r.assigned ? Math.round(100 * r.completed / r.assigned) : 0;
+    var behind = rate < 100;
+    var lowScore = (pct !== null && pct < 50);
+    var rateColor = behind ? '#f97316' : '#22c55e';
+    var pctColor = (pct === null) ? 'var(--text-muted-color)' : (lowScore ? '#f97316' : 'var(--text-muted-color)');
+    return '<tr>'
+      + '<td style="padding:8px">' + escHtml(r.name) + '</td>'
+      + '<td style="padding:8px;color:' + rateColor + '">' + r.completed + '/' + r.assigned + ' (' + rate + '%)</td>'
+      + '<td style="padding:8px;color:' + pctColor + '">' + (pct === null ? '&ndash;' : pct + '%') + '</td>'
+      + '<td style="padding:8px">' + r.passed + '</td>'
+      + '<td style="padding:8px;color:' + (r.trouble ? '#f97316' : 'var(--text-muted-color)') + '">' + (r.trouble ? escHtml(r.trouble) : '&ndash;') + '</td>'
+      + '<td style="padding:8px;color:var(--text-muted-color)">' + (r.last_completed ? escHtml(String(r.last_completed).slice(0, 10)) : '&ndash;') + '</td>'
+      + '</tr>';
+  }).join('');
+  return quizCard('<div style="font-weight:700;margin-bottom:4px">By Employee</div>'
+    + '<div style="color:var(--text-muted-color);font-size:13px;margin-bottom:12px">Orange = behind on completion or scoring under 50%.</div>'
+    + '<table style="width:100%;border-collapse:collapse;font-size:14px"><tr style="color:var(--text-muted-color);text-align:left">'
+    + '<th style="padding:8px">Name</th><th style="padding:8px">Completed</th><th style="padding:8px">Avg score</th>'
+    + '<th style="padding:8px">Passed</th><th style="padding:8px">Trouble topic</th><th style="padding:8px">Last done</th></tr>'
+    + rows + '</table>');
+}
+
+
+function quizComplianceHtml(c) {
+  if (!c) return '';
+  var tw = c.thisWeek;
+  var big = tw ? (tw.pct + '%') : '&mdash;';
+  var sub = tw ? (tw.completed + ' of ' + tw.assigned + ' completed this week' + (tw.overdue ? ' \u00b7 ' + tw.overdue + ' overdue' : '')) : 'No quiz sent yet this week.';
+  var h = '<div style="display:flex;align-items:center;gap:28px;flex-wrap:wrap">'
+    + '<div><div style="font-size:34px;font-weight:800;color:' + (tw && tw.pct >= 100 ? '#22c55e' : 'var(--primary)') + '">' + big + '</div>'
+    + '<div style="color:var(--text-muted-color);font-size:13px">This week completion</div></div>'
+    + '<div><div style="font-size:22px;font-weight:700">' + c.overallPct + '%</div>'
+    + '<div style="color:var(--text-muted-color);font-size:13px">All-time completion</div></div>'
+    + (tw && tw.overdue ? '<div><div style="font-size:22px;font-weight:700;color:#f97316">' + tw.overdue + '</div>'
+      + '<div style="color:var(--text-muted-color);font-size:13px">Overdue (past ' + c.dueDays + 'd)</div></div>' : '')
+    + '</div>'
+    + '<div style="color:var(--text-muted-color);font-size:13px;margin-top:8px">' + escHtml(sub) + '</div>';
+  return quizCard(h);
 }

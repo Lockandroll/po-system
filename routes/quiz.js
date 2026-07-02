@@ -67,14 +67,14 @@ async function ensureQuizTables() {
     "INSERT INTO settings (key, value) VALUES " +
     "('quiz_enabled','false'),('quiz_send_dow','1'),('quiz_send_time','09:00')," +
     "('quiz_roles','[\"locksmith\",\"locksmith_coordinator\",\"roadside_technician\",\"manager\"]')," +
-    "('quiz_pass_score','2') ON CONFLICT (key) DO NOTHING;"
+    "('quiz_pass_score','2'),('quiz_due_days','3') ON CONFLICT (key) DO NOTHING;"
   );
 }
 ensureQuizTables().catch(function (e) { console.error('[quiz] table init failed:', e.message); });
 
 // ---- settings helpers ------------------------------------------------------
 
-var SETTING_KEYS = ['quiz_enabled', 'quiz_send_dow', 'quiz_send_time', 'quiz_roles', 'quiz_pass_score'];
+var SETTING_KEYS = ['quiz_enabled', 'quiz_send_dow', 'quiz_send_time', 'quiz_roles', 'quiz_pass_score', 'quiz_due_days'];
 
 async function getQuizSettings() {
   var { rows } = await pool.query('SELECT key, value FROM settings WHERE key = ANY($1)', [SETTING_KEYS]);
@@ -88,7 +88,8 @@ async function getQuizSettings() {
     dow: map.quiz_send_dow !== undefined ? parseInt(map.quiz_send_dow, 10) : 1, // 1 = Monday
     time: map.quiz_send_time || '09:00',
     roles: roles,
-    passScore: map.quiz_pass_score !== undefined ? parseInt(map.quiz_pass_score, 10) : 2
+    passScore: map.quiz_pass_score !== undefined ? parseInt(map.quiz_pass_score, 10) : 2,
+    dueDays: map.quiz_due_days !== undefined ? parseInt(map.quiz_due_days, 10) : 3
   };
 }
 
@@ -213,14 +214,16 @@ router.get('/current', requireAuth, requirePermission('view_quiz'), async functi
   }
 });
 
-// GET /api/quiz/:id/results -> per-user completion + scores
+// GET /api/quiz/:id/results -> per-user completion + scores (+ overdue flag)
 router.get('/:id/results', requireAuth, requirePermission('view_quiz'), async function (req, res) {
   try {
+    var settings = await getQuizSettings();
     var { rows } = await pool.query(
-      'SELECT u.name, u.role, a.status, a.score, a.passed, a.sent_at, a.completed_at, a.reminders_sent ' +
+      'SELECT u.name, u.role, a.status, a.score, a.passed, a.sent_at, a.completed_at, a.reminders_sent, ' +
+      "  (a.status = 'pending' AND a.sent_at < NOW() - ($2 || ' days')::interval) AS overdue " +
       'FROM quiz_assignments a JOIN users u ON u.id = a.user_id ' +
       'WHERE a.quiz_id = $1 ORDER BY a.status ASC, u.name ASC',
-      [req.params.id]
+      [req.params.id, String(settings.dueDays)]
     );
     res.json(rows);
   } catch (e) {
@@ -243,7 +246,8 @@ router.put('/settings', requireAuth, requirePermission('manage_quiz'), async fun
       ['quiz_send_dow', String(parseInt(b.dow, 10) || 0)],
       ['quiz_send_time', String(b.time || '09:00')],
       ['quiz_roles', JSON.stringify(Array.isArray(b.roles) ? b.roles : [])],
-      ['quiz_pass_score', String(parseInt(b.passScore, 10) || 2)]
+      ['quiz_pass_score', String(parseInt(b.passScore, 10) || 2)],
+      ['quiz_due_days', String(parseInt(b.dueDays, 10) || 3)]
     ];
     for (var i = 0; i < pairs.length; i++) {
       await pool.query(
@@ -256,6 +260,85 @@ router.put('/settings', requireAuth, requirePermission('manage_quiz'), async fun
   } catch (e) {
     console.error('quiz settings put:', e.message);
     res.status(500).json({ error: 'Failed to save settings.' });
+  }
+});
+
+// GET /api/quiz/compliance -> headline numbers for the dashboard
+router.get('/compliance', requireAuth, requirePermission('view_quiz'), async function (req, res) {
+  try {
+    var settings = await getQuizSettings();
+    var cur = await pool.query("SELECT id, week_of FROM quizzes WHERE status = 'sent' ORDER BY week_of DESC LIMIT 1");
+    var thisWeek = null;
+    if (cur.rows.length) {
+      var q = cur.rows[0];
+      var c = await pool.query(
+        "SELECT COUNT(*)::int AS assigned, " +
+        "  COUNT(*) FILTER (WHERE status = 'completed')::int AS completed, " +
+        "  COUNT(*) FILTER (WHERE status = 'pending' AND sent_at < NOW() - ($2 || ' days')::interval)::int AS overdue " +
+        "FROM quiz_assignments WHERE quiz_id = $1",
+        [q.id, String(settings.dueDays)]
+      );
+      var r = c.rows[0];
+      thisWeek = {
+        week_of: q.week_of, assigned: r.assigned, completed: r.completed, overdue: r.overdue,
+        pct: r.assigned ? Math.round(100 * r.completed / r.assigned) : 0
+      };
+    }
+    var ov = await pool.query(
+      "SELECT COUNT(*)::int AS assigned, COUNT(*) FILTER (WHERE a.status = 'completed')::int AS completed " +
+      "FROM quiz_assignments a JOIN quizzes q ON q.id = a.quiz_id WHERE q.status IN ('sent','closed')"
+    );
+    var o = ov.rows[0];
+    res.json({
+      dueDays: settings.dueDays,
+      thisWeek: thisWeek,
+      overallPct: o.assigned ? Math.round(100 * o.completed / o.assigned) : 0,
+      overallCompleted: o.completed, overallAssigned: o.assigned
+    });
+  } catch (e) {
+    console.error('quiz compliance:', e.message);
+    res.status(500).json({ error: 'Failed to load compliance.' });
+  }
+});
+
+// GET /api/quiz/roster -> per-employee history rollup across all quizzes
+router.get('/roster', requireAuth, requirePermission('view_quiz'), async function (req, res) {
+  try {
+    var stats = await pool.query(
+      "SELECT u.id, u.name, u.role, " +
+      "  COUNT(a.id) AS assigned, " +
+      "  COUNT(a.id) FILTER (WHERE a.status='completed') AS completed, " +
+      "  COUNT(a.id) FILTER (WHERE a.passed) AS passed, " +
+      "  COALESCE(SUM(a.score) FILTER (WHERE a.status='completed'),0)::int AS correct, " +
+      "  COALESCE(SUM(CASE WHEN a.status='completed' THEN (SELECT COUNT(*) FROM quiz_questions qq WHERE qq.quiz_id = a.quiz_id) ELSE 0 END),0)::int AS possible, " +
+      "  MAX(a.completed_at) AS last_completed " +
+      "FROM quiz_assignments a JOIN users u ON u.id = a.user_id " +
+      "GROUP BY u.id, u.name, u.role ORDER BY u.name ASC"
+    );
+    // Trouble topic = the SOP where the user has the most wrong answers.
+    var wrong = await pool.query(
+      "SELECT a.user_id, qz.sop_title, COUNT(*) FILTER (WHERE ans.correct = false)::int AS wrong " +
+      "FROM quiz_answers ans " +
+      "JOIN quiz_assignments a ON a.id = ans.assignment_id " +
+      "JOIN quizzes qz ON qz.id = a.quiz_id " +
+      "GROUP BY a.user_id, qz.sop_title"
+    );
+    var trouble = {};
+    wrong.rows.forEach(function (r) {
+      if (!r.wrong) return;
+      if (!trouble[r.user_id] || r.wrong > trouble[r.user_id].wrong) trouble[r.user_id] = { topic: r.sop_title, wrong: r.wrong };
+    });
+    res.json(stats.rows.map(function (r) {
+      return {
+        id: r.id, name: r.name, role: r.role,
+        assigned: parseInt(r.assigned, 10), completed: parseInt(r.completed, 10), passed: parseInt(r.passed, 10),
+        correct: r.correct, possible: r.possible, last_completed: r.last_completed,
+        trouble: trouble[r.id] ? trouble[r.id].topic : null
+      };
+    }));
+  } catch (e) {
+    console.error('quiz roster:', e.message);
+    res.status(500).json({ error: 'Failed to load roster.' });
   }
 });
 
