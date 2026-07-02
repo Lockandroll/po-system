@@ -2368,7 +2368,7 @@ async function renderRoles(el) {
     { group:'Tasks', gate:'view_tasks', perms:[ {k:'view_tasks',l:'My Tasks - see & add your own personal tasks'}, {k:'manage_tasks',l:'Assign tasks to others & oversee them'} ] },
     { group:'Scheduling', gate:'view_schedule', perms:[ {k:'view_schedule',l:'View / access schedule'}, {k:'manage_schedule',l:'Build, publish & manage schedules'} ] },
     { group:'Time Off', gate:'view_pto', perms:[ {k:'view_pto',l:'View & request own PTO'}, {k:'manage_pto',l:'Approve, view team & manage PTO settings'} ] },
-    { group:'Time Clock', gate:'view_timeclock', perms:[ {k:'view_timeclock',l:'Clock in/out &amp; view own timesheet'}, {k:'manage_timeclock',l:'Manager: who&#39;s-in board, timesheets, corrections, approve &amp; submit payroll'} ] },
+    { group:'Time Clock', gate:'view_timeclock', perms:[ {k:'view_timeclock',l:'Clock in/out & view own timesheet'}, {k:'manage_timeclock',l:"Manager: who's-in board, timesheets, corrections, approve & submit payroll"} ] },
     { group:'Fleet &amp; Vehicles', perms:[ {k:'manage_vehicles',l:'Manage fleet registry'} ] },
     { group:'Vendors / Accounts', perms:[ {k:'manage_vendors',l:'Manage vendors and accounts'} ] },
     { group:'Shipping Addresses', perms:[ {k:'manage_addresses',l:'Manage shipping addresses'} ] },
