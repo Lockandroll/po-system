@@ -265,6 +265,7 @@ function getSidebarSection(view) {
   if (['company-info','ai-context','notifications','scheduled-messages','roles','settings','users','cities','audit'].indexOf(view) !== -1) return 'settings';
   if (['geico','reviews','feedback','feedback-detail'].indexOf(view) !== -1) return 'feedback';
   if (['schedule','schedule-admin','timeclock','timeclock-manager','pto'].indexOf(view) !== -1) return 'attendance';
+  if (view === 'quiz') return 'training';
   return null;
 }
 function showToast(message, type) {
@@ -461,6 +462,8 @@ async function render() {
   const app = document.getElementById('app');
   var _signTok = sigGetUrlToken();
   if (_signTok) { await renderSignPage(app, _signTok); return; }
+  var _quizTok = new URLSearchParams(window.location.search).get('quiz');
+  if (_quizTok) { await renderQuizTake(app, _quizTok); return; }
   if (!state.token || !state.user) {
     app.className = 'no-sidebar';
     var resetToken = new URLSearchParams(window.location.search).get('reset');
@@ -550,6 +553,11 @@ async function render() {
         (can('view_pto') ? '<div class="nav-sub' + (cv === 'pto' ? ' active' : '') + '" onclick="navigate(\'pto\')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="4" width="18" height="18" rx="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/><path d="M9 16l2 2 4-4"/></svg> Time Off</div>' : '')
       : '') : '') +
     '<div class="nav-item' + (cv === 'org-chart' ? ' active' : '') + '" onclick="navigate(\'org-chart\')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="7" y="3" width="10" height="5" rx="1"/><rect x="3" y="16" width="6" height="5" rx="1"/><rect x="15" y="16" width="6" height="5" rx="1"/><path d="M12 8v3M6 16v-2h12v2"/></svg> Org Chart</div>' +
+    (can('view_quiz') ?
+      '<div class="nav-section-header' + (cv === 'quiz' ? ' section-active' : '') + (ss === 'training' ? ' open' : '') + '" onclick="toggleSection(\'training\',\'quiz\')"><span class="s-label"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 10L12 5 2 10l10 5 10-5z"/><path d="M6 12v5c0 1 3 2 6 2s6-1 6-2v-5"/></svg> Training</span>' + chev + '</div>' +
+      (ss === 'training' ?
+        '<div class="nav-sub' + (cv === 'quiz' ? ' active' : '') + '" onclick="navigate(\'quiz\')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg> SOP Quiz</div>'
+      : '') : '') +
     (can('view_vr') ?
     '<div class="nav-section-header' + (vrViews.indexOf(cv) !== -1 ? ' section-active' : '') + (ss === 'vr' ? ' open' : '') + '" onclick="toggleSection(\'vr\',\'vr-dashboard\')"><span class="s-label">' + icoTruck + ' Vehicle Maint/Repairs</span>' + chev + '</div>' +
     (ss === 'vr' ?
@@ -712,6 +720,7 @@ async function render() {
   else if (state.currentView === 'view-invoice') await renderViewInvoice(content, state.currentParam);
   else if (state.currentView === 'invoice-parts') await renderInvoiceParts(content);
   else if (state.currentView === 'invoice-setup') await renderInvoiceSetup(content);
+  else if (state.currentView === 'quiz') await renderQuizAdmin(content);
   else { state.currentView = 'home'; await renderHomeScreen(content); }
 }
 
@@ -12582,4 +12591,165 @@ function tcOrgSnapX(id,x){
     for(var i=0;i<cands.length;i++){var dd=Math.abs(x-cands[i]);if(dd<bestD){bestD=dd;best=cands[i];}}
   }
   return best;
+}
+
+
+// ===== SOP QUIZ =============================================================
+
+// Public take page (works logged-out; reached via the SMS link /?quiz=TOKEN)
+async function renderQuizTake(app, token) {
+  app.className = 'no-sidebar';
+  app.innerHTML = '<div style="max-width:640px;margin:40px auto;padding:0 16px">'
+    + '<div style="text-align:center;color:var(--primary);font-weight:700;font-size:20px;margin-bottom:16px">Weekly SOP Check</div>'
+    + '<div id="quizBody" style="background:var(--card-bg,#161616);border:1px solid var(--border,#2a2a2a);border-radius:12px;padding:20px">Loading&hellip;</div></div>';
+  var body = document.getElementById('quizBody');
+  var data;
+  try {
+    var resp = await fetch('/api/quiz-take/' + encodeURIComponent(token));
+    data = await resp.json();
+    if (!resp.ok) throw new Error(data.error || 'Could not load quiz');
+  } catch (e) { body.innerHTML = '<div style="color:#f87171">' + escHtml(e.message) + '</div>'; return; }
+  if (data.completed) { body.innerHTML = quizResultHtml(data.score, data.total); return; }
+  var html = '<div style="color:var(--text-muted-color);margin-bottom:16px">Topic: <strong>' + escHtml(data.sopTitle || 'SOP') + '</strong></div><form id="quizForm">';
+  data.questions.forEach(function (q, qi) {
+    html += '<div style="margin-bottom:20px"><div style="font-weight:600;margin-bottom:8px">' + (qi + 1) + '. ' + escHtml(q.prompt) + '</div>';
+    (q.options || []).forEach(function (opt, oi) {
+      html += '<label style="display:block;background:#1f1f1f;border:1px solid #333;border-radius:8px;padding:10px 12px;margin-bottom:8px;cursor:pointer">'
+        + '<input type="radio" name="q' + qi + '" value="' + oi + '" style="margin-right:8px;accent-color:var(--primary)">' + escHtml(opt) + '</label>';
+    });
+    html += '</div>';
+  });
+  html += '<button type="submit" class="btn btn-primary" style="width:100%">Submit</button></form>';
+  body.innerHTML = html;
+  document.getElementById('quizForm').addEventListener('submit', async function (ev) {
+    ev.preventDefault();
+    var answers = [];
+    for (var i = 0; i < data.questions.length; i++) {
+      var s = document.querySelector('input[name="q' + i + '"]:checked');
+      answers.push(s ? parseInt(s.value, 10) : -1);
+    }
+    if (answers.indexOf(-1) !== -1) { (window.novaAlert || window.alert)('Please answer both questions.'); return; }
+    try {
+      var r = await fetch('/api/quiz-take/' + encodeURIComponent(token), {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ answers: answers })
+      });
+      var res = await r.json();
+      if (!r.ok) throw new Error(res.error || 'Submit failed');
+      body.innerHTML = quizResultHtml(res.score, res.total);
+    } catch (e) { (window.novaAlert || window.alert)(e.message); }
+  });
+}
+
+function quizResultHtml(score, total) {
+  var passed = score >= total;
+  return '<div style="text-align:center">'
+    + '<div style="font-size:40px;color:' + (passed ? '#22c55e' : 'var(--primary)') + '">' + (passed ? '&#10003;' : '&#8226;') + '</div>'
+    + '<div style="font-size:22px;font-weight:700;color:' + (passed ? '#22c55e' : 'var(--primary)') + '">You scored ' + score + '/' + total + '</div>'
+    + '<div style="color:var(--text-muted-color);margin-top:4px">' + (passed ? 'Nice work.' : 'Give the SOP another look.') + '</div>'
+    + '<div style="color:var(--text-muted-color);margin-top:16px">You can close this window.</div></div>';
+}
+
+// Admin dashboard
+async function renderQuizAdmin(content) {
+  content.innerHTML = '<div class="page-header"><div class="page-title"><h2>SOP Quiz</h2>'
+    + '<p>Weekly 2-question knowledge check, AI-generated from your SOP library.</p></div></div>'
+    + '<div id="quizAdmin">Loading&hellip;</div>';
+  var box = document.getElementById('quizAdmin');
+  try {
+    var cur = await api('GET', '/quiz/current');
+    var list = await api('GET', '/quiz');
+    var s = can('manage_quiz') ? await api('GET', '/quiz/settings') : null;
+    box.innerHTML = quizCurrentHtml(cur) + (s ? quizSettingsHtml(s) : '') + quizListHtml(list);
+    wireQuizAdmin();
+  } catch (e) { box.innerHTML = '<div style="color:#f87171">' + escHtml(e.message) + '</div>'; }
+}
+
+function quizCard(inner) {
+  return '<div style="background:var(--card-bg,#161616);border:1px solid var(--border,#2a2a2a);border-radius:12px;padding:16px;margin-bottom:16px">' + inner + '</div>';
+}
+
+function quizCurrentHtml(cur) {
+  if (!cur.quiz) {
+    var gen = can('manage_quiz') ? '<button id="quizGenBtn" class="btn btn-primary">Generate this week&#39;s quiz</button>' : '<span style="color:var(--text-muted-color)">No quiz generated for this week yet.</span>';
+    return quizCard('<div style="margin-bottom:12px;color:var(--text-muted-color)">No quiz for this week.</div>' + gen);
+  }
+  var h = '<div style="color:var(--text-muted-color)">This week &middot; ' + escHtml(cur.quiz.status) + '</div>'
+    + '<div style="font-weight:700;margin:4px 0 12px">Topic: ' + escHtml(cur.quiz.sop_title || '') + '</div>';
+  (cur.questions || []).forEach(function (q) {
+    h += '<div style="margin-bottom:12px"><div style="font-weight:600">' + q.position + '. ' + escHtml(q.prompt) + '</div>';
+    (q.options || []).forEach(function (opt, oi) {
+      var ok = oi === q.correct_index;
+      h += '<div style="padding:2px 0;color:' + (ok ? '#22c55e' : 'var(--text-muted-color)') + '">' + (ok ? '&#10003; ' : '&nbsp;&nbsp;&nbsp;') + escHtml(opt) + '</div>';
+    });
+    h += '</div>';
+  });
+  if (can('manage_quiz')) h += '<button id="quizGenBtn" class="btn btn-secondary">Regenerate</button>';
+  return quizCard(h);
+}
+
+function quizSettingsHtml(s) {
+  var days = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+  var dayOpts = days.map(function (d, i) { return '<option value="' + i + '"' + (i === s.dow ? ' selected' : '') + '>' + d + '</option>'; }).join('');
+  return quizCard('<div style="font-weight:700;margin-bottom:12px">Settings</div>'
+    + '<label style="display:block;margin-bottom:10px"><input type="checkbox" id="qsEnabled"' + (s.enabled ? ' checked' : '') + ' style="accent-color:var(--primary);margin-right:8px">Enabled (send automatically)</label>'
+    + '<div style="display:flex;gap:12px;flex-wrap:wrap;align-items:center;margin-bottom:10px">'
+    + '<label>Send day <select id="qsDow" class="form-control" style="width:auto;display:inline-block">' + dayOpts + '</select></label>'
+    + '<label>Time (ET) <input type="time" id="qsTime" value="' + escHtml(s.time) + '" class="form-control" style="width:auto;display:inline-block"></label></div>'
+    + '<div style="color:var(--text-muted-color);font-size:13px;margin-bottom:10px">Recipients: everyone except admin/owner. Pass = both correct. Reminders daily until answered.</div>'
+    + '<button id="qsSave" class="btn btn-primary">Save settings</button> <span id="qsMsg" style="color:#22c55e;margin-left:8px"></span>');
+}
+
+function quizListHtml(list) {
+  if (!list || !list.length) return '';
+  var rows = list.map(function (q) {
+    return '<tr><td style="padding:8px">' + escHtml(q.week_of) + '</td><td style="padding:8px">' + escHtml(q.sop_title || '') + '</td>'
+      + '<td style="padding:8px">' + escHtml(q.status) + '</td><td style="padding:8px">' + q.completed + '/' + q.assigned + '</td>'
+      + '<td style="padding:8px">' + q.passed + '</td><td style="padding:8px"><a href="#" data-qr="' + q.id + '" style="color:var(--primary)">Results</a></td></tr>';
+  }).join('');
+  return quizCard('<div style="font-weight:700;margin-bottom:12px">History</div>'
+    + '<table style="width:100%;border-collapse:collapse;font-size:14px"><tr style="color:var(--text-muted-color);text-align:left">'
+    + '<th style="padding:8px">Week</th><th style="padding:8px">Topic</th><th style="padding:8px">Status</th>'
+    + '<th style="padding:8px">Done</th><th style="padding:8px">Passed</th><th></th></tr>' + rows + '</table>');
+}
+
+function wireQuizAdmin() {
+  var gen = document.getElementById('quizGenBtn');
+  if (gen) gen.addEventListener('click', async function () {
+    gen.disabled = true; gen.textContent = 'Generating…';
+    try { await api('POST', '/quiz/generate'); renderQuizAdmin(document.getElementById('content')); }
+    catch (e) { (window.novaAlert || window.alert)(e.message); gen.disabled = false; gen.textContent = 'Generate'; }
+  });
+  var save = document.getElementById('qsSave');
+  if (save) save.addEventListener('click', async function () {
+    var payload = {
+      enabled: document.getElementById('qsEnabled').checked,
+      dow: parseInt(document.getElementById('qsDow').value, 10),
+      time: document.getElementById('qsTime').value,
+      roles: ['locksmith', 'locksmith_coordinator', 'roadside_technician', 'manager'],
+      passScore: 2
+    };
+    try { await api('PUT', '/quiz/settings', payload); document.getElementById('qsMsg').textContent = 'Saved';
+      setTimeout(function () { var m = document.getElementById('qsMsg'); if (m) m.textContent = ''; }, 2000);
+    } catch (e) { (window.novaAlert || window.alert)(e.message); }
+  });
+  document.querySelectorAll('[data-qr]').forEach(function (el) {
+    el.addEventListener('click', function (ev) { ev.preventDefault(); showQuizResults(el.getAttribute('data-qr')); });
+  });
+}
+
+async function showQuizResults(quizId) {
+  try {
+    var rows = await api('GET', '/quiz/' + quizId + '/results');
+    var body = rows.map(function (r) {
+      return '<tr><td style="padding:6px">' + escHtml(r.name) + '</td><td style="padding:6px">' + escHtml(r.status) + '</td>'
+        + '<td style="padding:6px">' + (r.score == null ? '&ndash;' : r.score) + '</td>'
+        + '<td style="padding:6px">' + (r.passed == null ? '&ndash;' : (r.passed ? 'Yes' : 'No')) + '</td>'
+        + '<td style="padding:6px">' + (r.reminders_sent || 0) + '</td></tr>';
+    }).join('');
+    var box = document.getElementById('quizAdmin');
+    box.insertAdjacentHTML('afterbegin', quizCard('<div style="font-weight:700;margin-bottom:8px">Results</div>'
+      + '<table style="width:100%;border-collapse:collapse;font-size:14px"><tr style="color:var(--text-muted-color);text-align:left">'
+      + '<th style="padding:6px">Name</th><th style="padding:6px">Status</th><th style="padding:6px">Score</th>'
+      + '<th style="padding:6px">Passed</th><th style="padding:6px">Reminders</th></tr>' + body + '</table>'));
+  } catch (e) { (window.novaAlert || window.alert)(e.message); }
 }
