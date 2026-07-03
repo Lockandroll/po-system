@@ -42,7 +42,11 @@
     '@keyframes onbFall{to{transform:translateY(110vh) rotate(720deg)}}' +
     '.onb-pill{display:inline-block;padding:2px 9px;border-radius:999px;font-size:11px;font-weight:700;letter-spacing:.4px}' +
     '.onb-pill.ready{background:#dcfce7;color:#15803d}' +
-    '.onb-pill.busy{background:#fff3e8;color:#c2520a}';
+    '.onb-pill.busy{background:#fff3e8;color:#c2520a}' +
+    '.onb-doc{border:1px solid var(--border,#2a2a2a);border-radius:10px;overflow:hidden;background:var(--bg,#0f0f0f);margin-bottom:14px;height:min(70vh,560px)}' +
+    '.onb-doc iframe{width:100%;height:100%;border:0;display:block;background:#fff}' +
+    '.onb-doc-fallback{display:flex;flex-direction:column;align-items:center;justify-content:center;text-align:center;height:auto;padding:34px 16px;gap:6px}' +
+    '.onb-fw{position:absolute;inset:0;width:100%;height:100%;display:block}';
 
   function injectCss() {
     if (document.getElementById('onb-css')) return;
@@ -57,7 +61,7 @@
     if (t === 'quiz') return '❓';
     return '📌';
   }
-  function clearPoll() { if (window._onbPoll) { clearInterval(window._onbPoll); window._onbPoll = null; } }
+  function clearPoll() { if (window._onbPoll) { clearInterval(window._onbPoll); window._onbPoll = null; } stopFireworks(); }
   function firstName(n) { return String(n || '').split(' ')[0]; }
 
   // ============================ NEW-HIRE TRACK =============================
@@ -134,9 +138,24 @@
         '<button class="onb-btn" id="onb-continue" disabled onclick="onbCompleteStep(' + cur.id + ')">Continue</button>' +
         '<div class="onb-note" id="onb-timer-note"></div>';
     } else if (cur.type === 'sop_read') {
-      inner = '<div class="onb-sop" id="onb-sop">' + escHtml(cur.sop_content || 'This SOP has no text.') + '</div>' +
+      var reader;
+      if (cur.sop_doc_url) {
+        var mime = cur.sop_doc_mime || '';
+        var docName = escHtml(cur.sop_doc_name || 'the document');
+        if (mime.indexOf('pdf') !== -1 || mime.indexOf('image/') === 0) {
+          reader = '<div class="onb-doc"><iframe src="' + escHtml(cur.sop_doc_url) + '" title="' + docName + '"></iframe></div>' +
+            '<div class="onb-note" style="margin-top:0"><a href="' + escHtml(cur.sop_doc_url) + '" target="_blank" rel="noopener" style="color:var(--primary,#f97316)">Open ' + docName + ' in a new tab &#8599;</a></div>';
+        } else {
+          reader = '<div class="onb-doc onb-doc-fallback"><div style="font-size:40px">&#128196;</div>' +
+            '<div style="font-weight:600">' + docName + '</div>' +
+            '<a class="onb-btn" href="' + escHtml(cur.sop_doc_url) + '" target="_blank" rel="noopener" style="margin-top:6px">Open the document &#8599;</a></div>';
+        }
+      } else {
+        reader = '<div class="onb-sop" id="onb-sop">' + escHtml(cur.sop_content || 'This SOP has no text.') + '</div>';
+      }
+      inner = reader +
         '<button class="onb-btn" id="onb-continue" disabled onclick="onbCompleteStep(' + cur.id + ')">Mark as read</button>' +
-        '<div class="onb-note" id="onb-timer-note">Read to the bottom to continue.</div>';
+        '<div class="onb-note" id="onb-timer-note">' + (cur.sop_doc_url ? '' : 'Read to the bottom to continue.') + '</div>';
     } else if (cur.type === 'quiz') {
       inner = '<div id="onb-quiz">' +
         '<div class="onb-note" style="margin-bottom:14px">Pass mark: <b>' + (cur.pass_score || 80) + '%</b>' + (cur.attempts ? ' · Attempts so far: ' + cur.attempts : '') + '. You can retry as many times as you need — the questions change every time.</div>' +
@@ -151,7 +170,7 @@
     var btn = document.getElementById('onb-continue');
     if (!btn) return;
     var waitLeft = cur.min_seconds || 0;
-    var scrolled = cur.type !== 'sop_read';
+    var scrolled = cur.type !== 'sop_read' || !!cur.sop_doc_url;
     var note = document.getElementById('onb-timer-note');
     var sop = document.getElementById('onb-sop');
     if (sop) {
@@ -243,6 +262,7 @@
     if (submitBtn) submitBtn.style.display = 'none';
     var note = document.getElementById('onb-quiz-note');
     if (r.passed) {
+      try { onbConfettiBurst(); } catch (e) {}
       if (note) note.innerHTML = '<b style="color:#16a34a">Passed with ' + r.score + '%!</b> Moving on…';
       setTimeout(function () { renderOnboardingMode(document.getElementById('app')); }, 1600);
     } else {
@@ -271,24 +291,97 @@
     }
   };
 
+  window.onbConfettiBurst = function () {
+    injectCss();
+    var colors = ['#f97316', '#fbbf24', '#22c55e', '#3b82f6', '#ec4899', '#a78bfa'];
+    var pieces = '';
+    for (var i = 0; i < 90; i++) {
+      pieces += '<div class="onb-conf" style="left:' + (Math.random() * 100) + 'vw;background:' + colors[i % colors.length] +
+        ';animation-duration:' + (1.8 + Math.random() * 1.8) + 's;animation-delay:' + (Math.random() * 0.4) + 's"></div>';
+    }
+    var wrap = document.createElement('div');
+    wrap.style.cssText = 'position:fixed;inset:0;pointer-events:none;z-index:1000;overflow:hidden';
+    wrap.innerHTML = pieces;
+    document.body.appendChild(wrap);
+    setTimeout(function () { if (wrap.parentNode) wrap.parentNode.removeChild(wrap); }, 4200);
+  };
+
+  function stopFireworks() {
+    window._onbFwStop = true;
+    if (window._onbFwRaf) { cancelAnimationFrame(window._onbFwRaf); window._onbFwRaf = null; }
+  }
+
+  window.onbFireworks = function (canvas) {
+    if (!canvas || !canvas.getContext) return;
+    var ctx = canvas.getContext('2d');
+    var W = 0, H = 0, dpr = window.devicePixelRatio || 1;
+    function resize() {
+      W = canvas.clientWidth || window.innerWidth;
+      H = canvas.clientHeight || window.innerHeight;
+      canvas.width = W * dpr; canvas.height = H * dpr;
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    }
+    resize();
+    window.addEventListener('resize', resize);
+    var colors = ['#f97316', '#fbbf24', '#22c55e', '#3b82f6', '#ec4899', '#a78bfa', '#ffffff'];
+    var rockets = [], sparks = [];
+    function launch() {
+      rockets.push({ x: W * (0.15 + Math.random() * 0.7), y: H, vy: -(6.5 + Math.random() * 2.5),
+        ty: H * (0.14 + Math.random() * 0.32), color: colors[(Math.random() * colors.length) | 0] });
+    }
+    function explode(x, y, color) {
+      var n = 34 + (Math.random() * 26 | 0);
+      for (var i = 0; i < n; i++) {
+        var a = (Math.PI * 2) * (i / n), sp = 1.4 + Math.random() * 3.2;
+        sparks.push({ x: x, y: y, vx: Math.cos(a) * sp, vy: Math.sin(a) * sp, life: 1, color: color });
+      }
+    }
+    window._onbFwStop = false;
+    function frame() {
+      if (window._onbFwStop) return;
+      ctx.globalCompositeOperation = 'source-over';
+      ctx.fillStyle = 'rgba(15,15,15,0.28)';
+      ctx.fillRect(0, 0, W, H);
+      ctx.globalCompositeOperation = 'lighter';
+      if (Math.random() < 0.06) launch();
+      for (var i = rockets.length - 1; i >= 0; i--) {
+        var r = rockets[i];
+        r.y += r.vy; r.vy += 0.06;
+        ctx.fillStyle = r.color;
+        ctx.beginPath(); ctx.arc(r.x, r.y, 2.2, 0, Math.PI * 2); ctx.fill();
+        if (r.y <= r.ty || r.vy >= 0) { explode(r.x, r.y, r.color); rockets.splice(i, 1); }
+      }
+      for (var j = sparks.length - 1; j >= 0; j--) {
+        var s = sparks[j];
+        s.x += s.vx; s.y += s.vy; s.vy += 0.04; s.vx *= 0.99; s.vy *= 0.99; s.life -= 0.012;
+        if (s.life <= 0) { sparks.splice(j, 1); continue; }
+        ctx.globalAlpha = Math.max(0, s.life);
+        ctx.fillStyle = s.color;
+        ctx.beginPath(); ctx.arc(s.x, s.y, 2.1, 0, Math.PI * 2); ctx.fill();
+      }
+      ctx.globalAlpha = 1;
+      window._onbFwRaf = requestAnimationFrame(frame);
+    }
+    launch(); launch();
+    window._onbFwRaf = requestAnimationFrame(frame);
+  };
+
   function renderOnbCelebration(app) {
     injectCss(); clearPoll();
     if (state && state.user) {
       state.user.onboarding_status = 'complete';
       try { localStorage.setItem('po_user', JSON.stringify(state.user)); } catch (e) {}
     }
-    var conf = '';
-    var colors = ['#f97316', '#fbbf24', '#22c55e', '#3b82f6', '#ec4899', '#a78bfa'];
-    for (var i = 0; i < 70; i++) {
-      conf += '<div class="onb-conf" style="left:' + (Math.random() * 100) + 'vw;background:' + colors[i % colors.length] +
-        ';animation-duration:' + (2.4 + Math.random() * 2.6) + 's;animation-delay:' + (Math.random() * 1.8) + 's"></div>';
-    }
-    app.innerHTML = '<div class="onb-cele">' + conf +
-      '<div style="font-size:64px">🎉</div>' +
-      '<h1>You&#39;re in!</h1>' +
-      '<div class="onb-sub" style="text-align:center;max-width:420px">Onboarding complete. Welcome to the Lock and Roll team — the full Nova app is now yours.</div>' +
-      '<button class="onb-btn" style="margin-top:18px;font-size:17px;padding:14px 34px" onclick="onbEnterNova()">Enter Nova →</button>' +
+    app.innerHTML = '<div class="onb-cele">' +
+      '<canvas class="onb-fw" id="onb-fw"></canvas>' +
+      '<div style="position:relative;z-index:2;display:flex;flex-direction:column;align-items:center">' +
+        '<div style="font-size:64px">🎉</div>' +
+        '<h1>You&#39;re in!</h1>' +
+        '<div class="onb-sub" style="text-align:center;max-width:420px">Onboarding complete. Welcome to the Lock and Roll team — the full Nova app is now yours.</div>' +
+        '<button class="onb-btn" style="margin-top:18px;font-size:17px;padding:14px 34px" onclick="onbEnterNova()">Enter Nova →</button>' +
+      '</div>' +
       '</div>';
+    try { onbFireworks(document.getElementById('onb-fw')); } catch (e) {}
   }
   window.onbEnterNova = function () {
     clearPoll();

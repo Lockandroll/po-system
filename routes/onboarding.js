@@ -237,6 +237,34 @@ async function sopFullText(sopId) {
   if (!r.rows.length) return null;
   return { title: r.rows[0].title, text: (r.rows[0].content || '').slice(0, 40000) };
 }
+// Find the matching pretty file in the "Standard Operating Procedures" vault
+// folder for a given SOP, and return a short-lived inline URL to display it.
+// Reading uses this file; quiz questions still come from sop_documents text.
+function normName(s) {
+  return String(s || '').toLowerCase().replace(/\.[a-z0-9]+$/, '').replace(/[^a-z0-9]+/g, ' ').trim();
+}
+async function sopVaultDoc(sopId) {
+  if (!r2.configured()) return null;
+  const sr = await pool.query('SELECT title, filename FROM sop_documents WHERE id = $1', [sopId]);
+  if (!sr.rows.length) return null;
+  const fr = await pool.query("SELECT id FROM document_folders WHERE lower(trim(name)) = 'standard operating procedures'");
+  if (!fr.rows.length) return null;
+  const folderIds = fr.rows.map(function (f) { return f.id; });
+  const dr = await pool.query("SELECT id, name, r2_key, mime_type FROM documents WHERE status = 'ready' AND folder_id = ANY($1::int[])", [folderIds]);
+  if (!dr.rows.length) return null;
+  const targets = [normName(sr.rows[0].title), normName(sr.rows[0].filename)].filter(Boolean);
+  let best = null;
+  for (let i = 0; i < dr.rows.length; i++) {
+    const dn = normName(dr.rows[i].name);
+    if (targets.indexOf(dn) !== -1) { best = dr.rows[i]; break; }
+    if (!best && targets.some(function (t) { return t && (dn.indexOf(t) === 0 || t.indexOf(dn) === 0); })) best = dr.rows[i];
+  }
+  if (!best) return null;
+  try {
+    const url = await r2.presignDownload(best.r2_key, best.name, true, 3600);
+    return { url: url, name: best.name, mime_type: best.mime_type };
+  } catch (e) { return null; }
+}
 async function generateQuestions(step, avoidPrompts) {
   if (!process.env.ANTHROPIC_API_KEY) throw new Error('AI is not configured (ANTHROPIC_API_KEY missing).');
   var n = questionCount(step);
@@ -349,6 +377,10 @@ router.get('/me', requireAuth, async (req, res) => {
     if (current.type === 'sop_read' && current.sop_id) {
       const sop = await sopFullText(current.sop_id);
       if (sop) { cur.sop_title = sop.title; cur.sop_content = sop.text; }
+      try {
+        const vdoc = await sopVaultDoc(current.sop_id);
+        if (vdoc) { cur.sop_doc_url = vdoc.url; cur.sop_doc_mime = vdoc.mime_type; cur.sop_doc_name = vdoc.name; }
+      } catch (e) {}
     }
     if (current.type === 'quiz') {
       cur.pass_score = passScore(current);
