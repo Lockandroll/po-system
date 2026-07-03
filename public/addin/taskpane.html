@@ -174,7 +174,10 @@
   }
 
   function attemptSso() {
-    if (!(window.Office && Office.auth && Office.auth.getAccessToken)) return; // password form already visible
+    if (!(window.Office && Office.auth && Office.auth.getAccessToken)) {
+      setMsg('Microsoft sign-in is not available in this Outlook - use your password.', 'err');
+      return;
+    }
     setMsg('Signing you in...', '');
     Office.auth.getAccessToken({ allowSignInPrompt: true, allowConsentPrompt: true })
       .then(function (ssoToken) { return ssoExchange(ssoToken); })
@@ -183,10 +186,13 @@
         else { setMsg('', ''); }
       })
       .catch(function (e) {
-        // Office SSO errors (13xxx) or no matching Nova account: fall back to the
-        // password form. Only surface a message for the account-mismatch case.
-        var msg = (e && /Nova account/.test(e.message || '')) ? e.message : '';
-        setMsg(msg, msg ? 'err' : '');
+        // Office SSO errors (13xxx) or no matching Nova account: fall back to
+        // the password form, and show WHY so sign-in problems are diagnosable
+        // (13001 not signed in, 13004 manifest/App-ID-URI mismatch, 13012 host unsupported).
+        var code = e && (e.code || e.errorCode);
+        var msg = (e && /Nova account/.test(e.message || '')) ? e.message
+          : 'Microsoft sign-in failed' + (code ? ' (error ' + code + ')' : '') + ' - use your password.';
+        setMsg(msg, 'err');
       });
   }
 

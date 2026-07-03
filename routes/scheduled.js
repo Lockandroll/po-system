@@ -65,7 +65,10 @@ router.post('/:id/test', requireAuth, requirePermission('manage_settings'), asyn
   const { rows } = await pool.query('SELECT * FROM scheduled_messages WHERE id=$1', [req.params.id]);
   if (!rows.length) return res.status(404).json({ error: 'Scheduled message not found' });
   try {
-    const sent = await runScheduledMessage(rows[0], { testUser: req.user });
+    // req.user (from the JWT) has no phone/opt-out fields, so SMS tests
+    // silently sent nothing. Load the full user row for the test delivery.
+    const ur = await pool.query('SELECT name, phone, email, receive_sms, receive_emails FROM users WHERE id=$1', [req.user.id]);
+    const sent = await runScheduledMessage(rows[0], { testUser: ur.rows[0] || req.user });
     res.json({ success: true, sent: sent });
   } catch (err) {
     res.status(500).json({ error: 'Test failed: ' + err.message });
