@@ -138,6 +138,9 @@ router.post('/token', requireAuth, requirePermission('view_ptt'), async (req, re
       room: dmRoom, roomJoin: true,
       canPublish: !listenOnly, canSubscribe: true, canPublishData: !listenOnly
     };
+    // Owners listen invisibly (LiveKit 'hidden' participants do not appear in
+    // anyone's participant list). Talking is always visible.
+    if (listenOnly && req.user.isOwner) dmGrant.hidden = true;
     const dmToken = jwt.sign(
       { video: dmGrant, name: req.user.name, metadata: JSON.stringify({ name: req.user.name, role: req.user.role }) },
       process.env.LIVEKIT_API_SECRET,
@@ -179,6 +182,10 @@ router.post('/token', requireAuth, requirePermission('view_ptt'), async (req, re
     canSubscribe: true,
     canPublishData: !listenOnly
   };
+  // Owners listen invisibly: hidden participants receive all audio but never
+  // appear in the channel's participant list or speaking indicators. An owner
+  // who goes LIVE (publishes) joins visibly like anyone else.
+  if (listenOnly && req.user.isOwner) grant.hidden = true;
   const token = jwt.sign(
     {
       video: grant,
