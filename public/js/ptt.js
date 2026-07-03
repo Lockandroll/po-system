@@ -100,7 +100,12 @@
       '#ptt-bar .ptt-bar-x:hover{color:#ef4444}',
       '#ptt-bar .ptt-bar-new{background:var(--primary,#f97316);color:#0f0f0f;font-size:10px;font-weight:800;border-radius:999px;padding:2px 7px;cursor:pointer}',
       '.ptt-rec.new{border-color:var(--primary,#f97316)}',
-      '.ptt-rec .newchip{background:var(--primary,#f97316);color:#0f0f0f;font-size:9px;font-weight:800;border-radius:999px;padding:2px 6px;letter-spacing:.5px}'
+      '.ptt-rec .newchip{background:var(--primary,#f97316);color:#0f0f0f;font-size:9px;font-weight:800;border-radius:999px;padding:2px 6px;letter-spacing:.5px}',
+      '.ptt-chan.echo{cursor:default}',
+      '.ptt-chan.echo:hover{border-color:#8b5cf6}',
+      '.ptt-echo-btn{touch-action:none;-webkit-user-select:none}',
+      '.ptt-echo-btn.rec{background:#ef4444;border-color:#ef4444;color:#fff;animation:ptt-blink 1s infinite}',
+      '.ptt-echo-btn.play{background:#8b5cf6;border-color:#8b5cf6;color:#fff}'
     ].join('\n');
     var el = document.createElement('style');
     el.id = 'ptt-styles';
@@ -490,6 +495,78 @@
     if (document.hidden && PTT.talking) setTalking(false);
   });
 
+  // ---- echo test (Zello's Echo channel: hold, speak, release, hear it back) ---
+  var ECHO = { mr: null, chunks: [], stream: null, playing: false };
+
+  function paintEcho(mode) {
+    var b = document.getElementById('ptt-echo-btn');
+    if (!b) return;
+    if (mode === 'rec') { b.className = 'ptt-mon-btn ptt-echo-btn rec'; b.textContent = 'Recording...'; }
+    else if (mode === 'play') { b.className = 'ptt-mon-btn ptt-echo-btn play'; b.textContent = 'Playing back...'; }
+    else { b.className = 'ptt-mon-btn ptt-echo-btn'; b.innerHTML = 'Hold &amp; speak'; }
+  }
+
+  async function echoStart() {
+    if (ECHO.mr || ECHO.playing) return;
+    if (!window.MediaRecorder || !navigator.mediaDevices) { showToast('This browser cannot record audio.', 'error'); return; }
+    try {
+      ECHO.stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true } });
+    } catch (e) {
+      showToast('Microphone unavailable: ' + (e && e.message ? e.message : e), 'error');
+      return;
+    }
+    var mime = pickMime();
+    ECHO.chunks = [];
+    try {
+      ECHO.mr = new MediaRecorder(ECHO.stream, mime ? { mimeType: mime } : undefined);
+    } catch (e) {
+      (ECHO.stream.getTracks() || []).forEach(function (t) { t.stop(); });
+      ECHO.stream = null;
+      showToast('Could not start the recorder.', 'error');
+      return;
+    }
+    ECHO.mr.ondataavailable = function (ev) { if (ev.data && ev.data.size) ECHO.chunks.push(ev.data); };
+    ECHO.mr.start();
+    paintEcho('rec');
+  }
+
+  function echoStop() {
+    var mr = ECHO.mr;
+    if (!mr) return;
+    ECHO.mr = null;
+    mr.onstop = function () {
+      ((ECHO.stream && ECHO.stream.getTracks()) || []).forEach(function (t) { t.stop(); });
+      ECHO.stream = null;
+      var blob = new Blob(ECHO.chunks, { type: mr.mimeType || 'audio/webm' });
+      ECHO.chunks = [];
+      if (blob.size < 1000) { paintEcho('idle'); return; }
+      var url = URL.createObjectURL(blob);
+      var a = new Audio(url);
+      ECHO.playing = true;
+      paintEcho('play');
+      var done = function () { ECHO.playing = false; URL.revokeObjectURL(url); paintEcho('idle'); refreshLive(); };
+      a.onended = done;
+      a.onerror = done;
+      a.play().catch(done);
+    };
+    try { mr.stop(); } catch (e) { paintEcho('idle'); }
+  }
+
+  function bindEcho(el) {
+    if (!el || el._pttEcho) return;
+    el._pttEcho = true;
+    el.addEventListener('pointerdown', function (e) {
+      e.preventDefault();
+      e.stopPropagation();
+      try { el.setPointerCapture(e.pointerId); } catch (x) {}
+      echoStart();
+    });
+    var up = function (e) { if (e) e.stopPropagation(); echoStop(); };
+    el.addEventListener('pointerup', up);
+    el.addEventListener('pointercancel', up);
+    el.addEventListener('contextmenu', function (e) { e.preventDefault(); });
+  }
+
   // ---- floating bar -----------------------------------------------------------
   function ensureBar() {
     var bar = document.getElementById('ptt-bar');
@@ -617,6 +694,8 @@
   function drawChannels() {
     var grid = document.getElementById('ptt-grid');
     if (!grid) return;
+    /* Do not rebuild the grid mid echo-test: it would replace the held button. */
+    if (ECHO.mr || ECHO.playing) return;
     var h = '';
     for (var i = 0; i < PTT.channels.length; i++) {
       var c = PTT.channels[i];
@@ -627,13 +706,20 @@
         '<span class="ptt-speak"></span>' +
         '<div class="ptt-chan-top"><span class="ptt-dot" style="background:' + escHtml(c.color || '#f97316') + '"></span>' +
         '<span class="ptt-chan-name">' + escHtml(c.name) + '</span>' +
-        (live ? '<span class="ptt-chip">LIVE</span>' : (mon ? '<span class="ptt-chip g">LISTENING</span>' : '')) +
+        (live ? '<span class="ptt-chip">LIVE</span>' : '') +
         '</div><div class="ptt-chan-code">' + escHtml(c.code) + (live ? ' &middot; click to leave' : ' &middot; click to go live') + '</div>' +
         (live ? '' : '<button class="ptt-mon-btn' + (mon ? ' on' : '') + '" onclick="event.stopPropagation();pttMonitor(\'' + escHtml(c.code) + '\')">' + (mon ? 'Listening' : 'Listen') + '</button>') +
         '</div>';
     }
-    if (!PTT.channels.length) h = '<div class="ptt-sub">No channels available for your account.</div>';
+    h += '<div class="ptt-chan echo">' +
+      '<div class="ptt-chan-top"><span class="ptt-dot" style="background:#8b5cf6"></span>' +
+      '<span class="ptt-chan-name">Echo Test</span></div>' +
+      '<div class="ptt-chan-code">Hold, speak, release &middot; hear yourself back</div>' +
+      '<button class="ptt-mon-btn ptt-echo-btn" id="ptt-echo-btn">Hold &amp; speak</button>' +
+      '</div>';
+    if (!PTT.channels.length) h = '<div class="ptt-sub">No channels available for your account.</div>' + h;
     grid.innerHTML = h;
+    bindEcho(document.getElementById('ptt-echo-btn'));
   }
 
   function participantHtml() {
