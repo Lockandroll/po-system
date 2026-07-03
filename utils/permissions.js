@@ -57,7 +57,8 @@ ALL_PERMS.push('view_pto', 'manage_pto');               // time off module
 ALL_PERMS.push('view_quiz', 'manage_quiz');             // SOP quiz module
 ALL_PERMS.push('manage_onboarding');                    // new-hire onboarding module
 EMPLOYEE_PERMS.push('view_ptt');                        // PTT radio: own city channels + All Hands
-ALL_PERMS.push('view_ptt', 'ptt_all_channels');         // ptt_all_channels = join every channel (dispatch)
+EMPLOYEE_PERMS.push('ptt_direct');                      // person-to-person direct talk
+ALL_PERMS.push('view_ptt', 'ptt_all_channels', 'ptt_direct');
 
 var DEFAULTS = {
   admin: '*',

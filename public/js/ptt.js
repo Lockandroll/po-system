@@ -38,7 +38,12 @@
     logChan: '',
     logDate: '',
     newCount: 0,
-    pollTimer: null
+    pollTimer: null,
+    inbox: null,           // listener on my own personal room (direct inbox)
+    dms: {},               // targetUserId -> connection into THEIR personal room
+    dmHold: 0,             // user id currently held down in the People list
+    people: [],
+    canDirect: false
   };
 
   // ---- styles --------------------------------------------------------------
@@ -91,7 +96,7 @@
       '.ptt-play.playing{background:var(--primary,#f97316);color:#0f0f0f}',
       '@keyframes ptt-pulse{0%{box-shadow:0 0 0 0 rgba(249,115,22,.45)}70%{box-shadow:0 0 0 18px rgba(249,115,22,0)}100%{box-shadow:0 0 0 0 rgba(249,115,22,0)}}',
       '@keyframes ptt-blink{50%{opacity:.35}}',
-      '#ptt-bar{position:fixed;bottom:18px;right:18px;z-index:9000;display:none;align-items:center;gap:10px;background:var(--bg-elevated,#171717);border:1px solid var(--border,#2a2a2a);border-radius:999px;padding:8px 10px 8px 14px;box-shadow:0 8px 30px rgba(0,0,0,.45)}',
+      '#ptt-bar{position:fixed;bottom:18px;right:80px;z-index:8400;display:none;align-items:center;gap:10px;background:var(--bg-elevated,#171717);border:1px solid var(--border,#2a2a2a);border-radius:999px;padding:8px 10px 8px 14px;box-shadow:0 8px 30px rgba(0,0,0,.45)}',
       '#ptt-bar .ptt-bar-name{font-size:12px;font-weight:700;cursor:pointer;max-width:150px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}',
       '#ptt-bar .ptt-bar-talk{width:42px;height:42px;border-radius:50%;border:2px solid var(--primary,#f97316);background:transparent;color:var(--primary,#f97316);cursor:pointer;user-select:none;-webkit-user-select:none;touch-action:none;display:flex;align-items:center;justify-content:center}',
       '#ptt-bar .ptt-bar-talk.onair{background:var(--primary,#f97316);color:#0f0f0f;animation:ptt-pulse 1.2s infinite}',
@@ -105,7 +110,16 @@
       '.ptt-chan.echo:hover{border-color:#8b5cf6}',
       '.ptt-echo-btn{touch-action:none;-webkit-user-select:none}',
       '.ptt-echo-btn.rec{background:#ef4444;border-color:#ef4444;color:#fff;animation:ptt-blink 1s infinite}',
-      '.ptt-echo-btn.play{background:#8b5cf6;border-color:#8b5cf6;color:#fff}'
+      '.ptt-echo-btn.play{background:#8b5cf6;border-color:#8b5cf6;color:#fff}',
+      '.ptt-ppl{margin-top:18px}',
+      '.ptt-ppl-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(195px,1fr));gap:8px}',
+      '.ptt-pcard{display:flex;align-items:center;gap:8px;background:var(--bg-elevated,#171717);border:1px solid var(--border,#2a2a2a);border-radius:10px;padding:8px 12px;font-size:13px}',
+      '.ptt-pdot{width:8px;height:8px;border-radius:50%;background:#3f3f46;flex:none}',
+      '.ptt-pcard.on .ptt-pdot{background:#22c55e;box-shadow:0 0 6px #22c55e}',
+      '.ptt-pname{flex:1;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}',
+      '.ptt-ptalk{background:none;border:1px solid var(--primary,#f97316);color:var(--primary,#f97316);border-radius:999px;font-size:11px;font-weight:700;padding:3px 10px;cursor:pointer;touch-action:none;-webkit-user-select:none;user-select:none}',
+      '.ptt-ptalk.connecting{border-color:#eab308;color:#eab308}',
+      '.ptt-ptalk.onair{background:var(--primary,#f97316);color:#0f0f0f;animation:ptt-pulse 1.2s infinite}'
     ].join('\n');
     var el = document.createElement('style');
     el.id = 'ptt-styles';
@@ -148,11 +162,14 @@
   function wireRoom(handle) {
     var RE = window.LivekitClient.RoomEvent;
     var room = handle.room;
-    room.on(RE.TrackSubscribed, function (track) {
+    room.on(RE.TrackSubscribed, function (track, publication, participant) {
       if (track.kind === 'audio') {
         var el = track.attach();
         handle.audioEls.push(el);
         audioSink().appendChild(el);
+        if (handle.kind === 'inbox' && participant) {
+          showToast('Direct transmission from ' + (participant.name || ('User ' + participant.identity)), 'success');
+        }
       }
       refreshLive();
     });
@@ -172,7 +189,15 @@
     if (RE.AudioPlaybackStatusChanged) room.on(RE.AudioPlaybackStatusChanged, refreshLive);
     room.on(RE.Disconnected, function () {
       if (handle.kind === 'talk') handleTalkDisconnect(handle);
-      else handleMonitorDisconnect(handle);
+      else if (handle.kind === 'monitor') handleMonitorDisconnect(handle);
+      else if (handle.kind === 'inbox') {
+        if (PTT.inbox === handle) PTT.inbox = null;
+        killAudio(handle);
+        if (!handle.stopped) setTimeout(function () { if (radioActive()) startInbox(); }, 5000);
+      } else if (handle.kind === 'dm') {
+        if (PTT.dms[handle.direct.id] === handle) delete PTT.dms[handle.direct.id];
+        killAudio(handle);
+      }
     });
   }
 
@@ -187,12 +212,12 @@
   // ---- TALK connection -------------------------------------------------------
   async function joinTalk(code) {
     if (PTT.connecting) return;
+    PTT.connecting = true; /* before teardown so a channel switch keeps the inbox */
     if (PTT.monitors[code]) stopMonitor(code, true); /* cannot hold both: same identity */
     var prevTalk = PTT.talk ? PTT.talk.channel.code : null;
     if (PTT.talk) await leaveTalk(true);
     clearTimeout(PTT.reconnectTimer);
     PTT.reconnectTimer = null;
-    PTT.connecting = true;
     PTT.wantDisconnect = false;
     refreshLive(); updateBar();
     try {
@@ -216,6 +241,8 @@
       PTT.connecting = false;
       PTT.reconnectAttempt = 0;
       ensurePoll();
+      startInbox();
+      sendHeartbeat(false);
       refreshLive(); updateBar();
       if (!PTT.reconnectWasAuto) showToast('Live on ' + data.channel.name, 'success');
       PTT.reconnectWasAuto = false;
@@ -246,6 +273,7 @@
       try { await handle.room.disconnect(); } catch (e) {}
       if (!silent) showToast('Left ' + handle.channel.name, 'success');
     }
+    syncRadio();
     refreshLive(); updateBar();
   }
 
@@ -287,6 +315,8 @@
       await room.connect(data.url, data.token);
       handle.attempt = 0;
       ensurePoll();
+      startInbox();
+      sendHeartbeat(false);
       refreshLive(); updateBar();
       if (!isRetry) showToast('Listening to ' + data.channel.name, 'success');
     } catch (e) {
@@ -305,6 +335,7 @@
     clearTimeout(handle.timer);
     killAudio(handle);
     try { handle.room.disconnect(); } catch (e) {}
+    syncRadio();
     refreshLive(); updateBar();
     if (!silent) showToast('Stopped listening to ' + handle.channel.name, 'success');
   }
@@ -351,7 +382,10 @@
   /* Zello-style missed-message check: while the radio is on, quietly poll the
      log once a minute and show an unheard count on the floating bar. */
   async function pollNew() {
-    if (!PTT.canRecord || (!PTT.talk && !monitorCount())) return;
+    if (!radioActive()) return;
+    sendHeartbeat(false);
+    if (window.state && state.currentView === 'ptt') loadPeople();
+    if (!PTT.canRecord) return;
     try {
       var data = await api('GET', '/ptt/recordings');
       var rows = (data && data.recordings) || [];
@@ -366,11 +400,187 @@
     PTT.pollTimer = setInterval(pollNew, 60000);
   }
 
+  function dmCount() {
+    var n = 0, k;
+    for (k in PTT.dms) if (PTT.dms.hasOwnProperty(k)) n++;
+    return n;
+  }
+  function radioActive() {
+    return !!(PTT.talk || PTT.connecting || PTT.reconnectTimer || monitorCount() || dmCount());
+  }
+  /* Keep the inbox/presence in step with whether the radio is on. */
+  function syncRadio() {
+    if (radioActive()) { startInbox(); }
+    else { stopInbox(); closeDms(); sendHeartbeat(true); }
+  }
+
+  // ---- direct inbox: always listening to YOUR personal room while radio is on
+  async function startInbox() {
+    if (PTT.inbox || PTT._inboxConnecting || !window.state || !state.user) return;
+    PTT._inboxConnecting = true;
+    try {
+      await loadSdk();
+      var data = await api('POST', '/ptt/token', { user: state.user.id, listen: true });
+      var LK = window.LivekitClient;
+      var room = new LK.Room({});
+      var handle = { kind: 'inbox', room: room, channel: { code: 'INBOX', name: 'Direct' }, audioEls: [] };
+      wireRoom(handle);
+      await room.connect(data.url, data.token);
+      PTT.inbox = handle;
+    } catch (e) { PTT.inbox = null; }
+    PTT._inboxConnecting = false;
+  }
+  function stopInbox() {
+    var h = PTT.inbox;
+    if (!h) return;
+    PTT.inbox = null;
+    h.stopped = true;
+    killAudio(h);
+    try { h.room.disconnect(); } catch (e) {}
+  }
+
+  // ---- direct talk: a connection into the TARGET's personal room ------------
+  function stopDm(id) {
+    var h = PTT.dms[id];
+    if (!h) return;
+    delete PTT.dms[id];
+    h.stopped = true;
+    clearTimeout(h.idleTimer);
+    killAudio(h);
+    try { h.room.disconnect(); } catch (e) {}
+  }
+  function closeDms() {
+    var k, ids = [];
+    for (k in PTT.dms) if (PTT.dms.hasOwnProperty(k)) ids.push(k);
+    ids.forEach(function (i) { stopDm(i); });
+  }
+  function touchDm(h) {
+    clearTimeout(h.idleTimer);
+    h.idleTimer = setTimeout(function () { stopDm(h.direct.id); syncRadio(); }, 5 * 60 * 1000);
+  }
+  async function ensureDm(id) {
+    var h = PTT.dms[id];
+    if (h && h.room.state === 'connected') { touchDm(h); return h; }
+    if (h) stopDm(id);
+    await loadSdk();
+    var data = await api('POST', '/ptt/token', { user: id });
+    var LK = window.LivekitClient;
+    var room = new LK.Room({
+      stopMicTrackOnMute: false,
+      audioCaptureDefaults: { echoCancellation: true, noiseSuppression: true, autoGainControl: true }
+    });
+    h = { kind: 'dm', room: room, direct: data.direct, channel: { code: 'DM', name: data.direct.name }, audioEls: [], idleTimer: null };
+    PTT.dms[id] = h;
+    wireRoom(h);
+    await room.connect(data.url, data.token);
+    try {
+      await room.localParticipant.setMicrophoneEnabled(true);
+      await room.localParticipant.setMicrophoneEnabled(false);
+    } catch (e) {}
+    touchDm(h);
+    return h;
+  }
+  function dmSetTalking(h, on) {
+    PTT.opChain = PTT.opChain.then(function () {
+      if (PTT.dms[h.direct.id] !== h) return;
+      return h.room.localParticipant.setMicrophoneEnabled(on).then(function () {
+        if (on) startRec(h, h.direct.id);
+        else stopRec();
+      }).catch(function (e) {
+        if (on) showToast('Mic error: ' + (e && e.message ? e.message : e), 'error');
+      });
+    });
+  }
+  function paintPerson(id, mode) {
+    var b = document.querySelector('.ptt-ptalk[data-pid="' + id + '"]');
+    if (!b) return;
+    b.className = 'ptt-ptalk' + (mode === 'connecting' ? ' connecting' : (mode === 'onair' ? ' onair' : ''));
+    b.textContent = mode === 'connecting' ? '...' : (mode === 'onair' ? 'ON AIR' : 'Talk');
+  }
+  async function personDown(id, name) {
+    if (PTT.talking || PTT.dmHold) return;
+    PTT.dmHold = id;
+    paintPerson(id, 'connecting');
+    var h;
+    try { h = await ensureDm(id); }
+    catch (e) {
+      if (PTT.dmHold === id) PTT.dmHold = 0;
+      paintPerson(id, 'idle');
+      showToast('Could not reach ' + name + ': ' + (e && e.message ? e.message : e), 'error');
+      return;
+    }
+    startInbox(); /* so their reply reaches you */
+    sendHeartbeat(false);
+    ensurePoll();
+    if (PTT.dmHold !== id) { paintPerson(id, 'idle'); return; } /* released early */
+    paintPerson(id, 'onair');
+    dmSetTalking(h, true);
+  }
+  function personUp(id) {
+    if (PTT.dmHold !== id) return;
+    PTT.dmHold = 0;
+    paintPerson(id, 'idle');
+    var h = PTT.dms[id];
+    if (h) { dmSetTalking(h, false); touchDm(h); }
+  }
+  function bindPerson(el) {
+    if (!el || el._pttP) return;
+    el._pttP = true;
+    var id = parseInt(el.getAttribute('data-pid'), 10);
+    var name = el.getAttribute('data-pname') || '';
+    el.addEventListener('pointerdown', function (e) {
+      e.preventDefault(); e.stopPropagation();
+      try { el.setPointerCapture(e.pointerId); } catch (x) {}
+      personDown(id, name);
+    });
+    var up = function (e) { if (e) e.stopPropagation(); personUp(id); };
+    el.addEventListener('pointerup', up);
+    el.addEventListener('pointercancel', up);
+    el.addEventListener('contextmenu', function (e) { e.preventDefault(); });
+  }
+
+  // ---- presence + people -----------------------------------------------------
+  function sendHeartbeat(off) {
+    api('POST', '/ptt/heartbeat', off ? { off: true } : {}).catch(function () {});
+  }
+  async function loadPeople() {
+    var grid = document.getElementById('ptt-ppl-grid');
+    if (!grid) return;
+    var data;
+    try { data = await api('GET', '/ptt/people'); } catch (e) { return; }
+    PTT.people = (data && data.people) || [];
+    PTT.canDirect = !!(data && data.canDirect);
+    drawPeople();
+  }
+  function drawPeople() {
+    var grid = document.getElementById('ptt-ppl-grid');
+    if (!grid) return;
+    var me = (window.state && state.user) ? state.user.id : 0;
+    var ppl = PTT.people.filter(function (p) { return p.id !== me; });
+    ppl.sort(function (a, b) { return (b.online === true) - (a.online === true) || String(a.name).localeCompare(String(b.name)); });
+    var h = '';
+    for (var i = 0; i < ppl.length; i++) {
+      var pp = ppl[i];
+      h += '<div class="ptt-pcard' + (pp.online ? ' on' : '') + '">' +
+        '<span class="ptt-pdot" title="' + (pp.online ? 'Radio on' : 'Radio off') + '"></span>' +
+        '<span class="ptt-pname">' + escHtml(pp.name) + '</span>' +
+        (PTT.canDirect ? '<button class="ptt-ptalk" data-pid="' + pp.id + '" data-pname="' + escHtml(pp.name) + '">Talk</button>' : '') +
+      '</div>';
+    }
+    if (!ppl.length) h = '<div class="ptt-hint">Nobody else here yet.</div>';
+    grid.innerHTML = h;
+    var btns = grid.querySelectorAll('.ptt-ptalk');
+    for (var j = 0; j < btns.length; j++) bindPerson(btns[j]);
+  }
+
   async function leaveAll(silent) {
     var k, codes = [];
     for (k in PTT.monitors) if (PTT.monitors.hasOwnProperty(k)) codes.push(k);
     codes.forEach(function (c) { stopMonitor(c, true); });
+    closeDms();
+    stopInbox();
     await leaveTalk(silent);
+    sendHeartbeat(true);
   }
 
   // ---- push-to-talk + recording ----------------------------------------------
@@ -382,7 +592,7 @@
     return null;
   }
 
-  function startRec(handle) {
+  function startRec(handle, dmTo) {
     if (!PTT.canRecord || !window.MediaRecorder) return;
     try {
       var LK = window.LivekitClient;
@@ -391,7 +601,7 @@
       if (!mst) return;
       var mime = pickMime();
       var mr = new MediaRecorder(new MediaStream([mst]), mime ? { mimeType: mime } : undefined);
-      var sess = { mr: mr, chunks: [], startedAt: new Date(), channel: handle.channel.code, mime: mr.mimeType || mime || 'audio/webm' };
+      var sess = { mr: mr, chunks: [], startedAt: new Date(), channel: handle.channel.code, dmTo: dmTo || 0, mime: mr.mimeType || mime || 'audio/webm' };
       mr.ondataavailable = function (ev) { if (ev.data && ev.data.size) sess.chunks.push(ev.data); };
       mr.start();
       PTT.rec = sess;
@@ -413,16 +623,19 @@
       sess.mr.stop();
     } catch (e) {}
     function uploadClip(blob, s) {
-      api('POST', '/ptt/recordings/presign', { channel: s.channel, mime: s.mime })
+      var presignBody = s.dmTo ? { user: s.dmTo, mime: s.mime } : { channel: s.channel, mime: s.mime };
+      api('POST', '/ptt/recordings/presign', presignBody)
         .then(function (p) {
           return fetch(p.url, { method: 'PUT', headers: { 'Content-Type': s.mime }, body: blob })
             .then(function (r) {
               if (!r.ok) throw new Error('upload failed ' + r.status);
-              return api('POST', '/ptt/recordings', {
-                key: p.key, channel: s.channel, mime: s.mime,
+              var confirmBody = {
+                key: p.key, mime: s.mime,
                 started_at: s.startedAt.toISOString(),
                 duration_ms: Date.now() - s.startedAt.getTime()
-              });
+              };
+              if (s.dmTo) confirmBody.user = s.dmTo; else confirmBody.channel = s.channel;
+              return api('POST', '/ptt/recordings', confirmBody);
             });
         })
         .then(function () { if (window.state && state.currentView === 'ptt') pttLoadLog(); })
@@ -432,7 +645,7 @@
 
   function setTalking(on) {
     if (!PTT.talk || PTT.talking === on) return;
-    if (on && PTT.connecting) return;
+    if (on && (PTT.connecting || PTT.dmHold)) return;
     PTT.talking = on;
     paintTalkState();
     var handle = PTT.talk;
@@ -654,6 +867,9 @@
     }
     h += '<div class="ptt-grid" id="ptt-grid"></div>' +
       '<div id="ptt-live"></div>';
+    h += '<div class="ptt-ppl"><div class="ptt-log-head"><h3>People</h3>' +
+      '<span class="ptt-hint">Hold Talk to speak to one person. Green dot = radio on; if off, they get it in their log.</span></div>' +
+      '<div class="ptt-ppl-grid" id="ptt-ppl-grid"><div class="ptt-hint">Loading...</div></div></div>';
     h += '<div class="ptt-log" id="ptt-log">' +
         '<div class="ptt-log-head"><h3>Radio Log</h3>' +
           '<select id="ptt-log-chan" onchange="pttLogFilter()"><option value="">All channels</option></select>' +
@@ -677,6 +893,7 @@
     drawChannels();
     refreshLive();
     updateBar();
+    loadPeople();
     pttLoadLog();
   };
 
@@ -803,11 +1020,15 @@
     for (var i = 0; i < rows.length; i++) {
       var r = rows[i];
       var isNew = isNewRow(r);
+      var isDm = r.channel_code === 'DIRECT';
+      var who = isDm
+        ? (r.user_name || ('User ' + r.user_id)) + ' \u2192 ' + (r.dm_to_name || ('User ' + r.dm_to))
+        : (r.user_name || ('User ' + r.user_id));
       h += '<div class="ptt-rec' + (isNew ? ' new' : '') + '" id="ptt-rec-' + r.id + '">' +
         '<button class="ptt-play" onclick="pttPlay(' + r.id + ')" title="Play">&#9654;</button>' +
         '<span class="t">' + escHtml(fmtTime(r.started_at)) + '</span>' +
-        '<span class="c">' + escHtml(r.channel_code) + '</span>' +
-        '<span class="n">' + escHtml(r.user_name || ('User ' + r.user_id)) + '</span>' +
+        '<span class="c">' + escHtml(isDm ? 'DM' : r.channel_code) + '</span>' +
+        '<span class="n">' + escHtml(who) + '</span>' +
         (isNew ? '<span class="newchip">NEW</span>' : '') +
         '<span class="d">' + escHtml(fmtDur(r.duration_ms)) + '</span>' +
       '</div>';
