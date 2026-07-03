@@ -8,6 +8,7 @@ const express = require('express');
 const crypto = require('crypto');
 const { pool } = require('../db');
 const { requireAuth, requirePermission } = require('../middleware/auth');
+const permissions = require('../utils/permissions');
 const { generateQuiz, weekMonday } = require('../utils/quizGen');
 const { sendSms } = require('../utils/sms');
 
@@ -471,6 +472,190 @@ router.post('/:id/send-test', requireAuth, requirePermission('manage_quiz'), asy
   } catch (e) {
     console.error('quiz send-test:', e.message);
     res.status(500).json({ error: e.message });
+  }
+});
+
+// ======================= TEAM (manager, downline-scoped) ===================
+// Managers see quiz history for their own downline only. Read-only: no
+// generate/send/settings surface. Gate lets the 'manager' role in out-of-the
+// -box, plus anyone granted the view_team_quiz permission (admin/owner too).
+
+async function downlineIds(managerId) {
+  var r = await pool.query(
+    'WITH RECURSIVE dl AS (' +
+    '  SELECT id FROM users WHERE supervisor_id = $1' +
+    '  UNION' +
+    '  SELECT u.id FROM users u JOIN dl ON u.supervisor_id = dl.id' +
+    ') SELECT id FROM dl',
+    [managerId]
+  );
+  return r.rows.map(function (x) { return x.id; });
+}
+
+async function requireTeamQuiz(req, res, next) {
+  try {
+    if (!req.user) return res.status(401).json({ error: 'Unauthorized' });
+    var role = req.user.role;
+    if (role === 'admin' || role === 'manager' || req.user.isOwner) return next();
+    if (await permissions.hasPermission(role, 'view_team_quiz')) return next();
+    var ep = await pool.query('SELECT extra_perms FROM users WHERE id = $1', [req.user.id]);
+    var arr = ep.rows.length ? ep.rows[0].extra_perms : null;
+    if (Array.isArray(arr) && arr.indexOf('view_team_quiz') !== -1) return next();
+    return res.status(403).json({ error: 'Forbidden' });
+  } catch (e) {
+    return res.status(403).json({ error: 'Forbidden' });
+  }
+}
+
+// GET /api/quiz/team/roster -> per-employee history rollup, downline only.
+router.get('/team/roster', requireAuth, requireTeamQuiz, async function (req, res) {
+  try {
+    var ids = await downlineIds(req.user.id);
+    if (!ids.length) return res.json([]);
+    var stats = await pool.query(
+      'SELECT u.id, u.name, u.role, ' +
+      '  COUNT(a.id) AS assigned, ' +
+      "  COUNT(a.id) FILTER (WHERE a.status='completed') AS completed, " +
+      '  COUNT(a.id) FILTER (WHERE a.passed) AS passed, ' +
+      "  COALESCE(SUM(a.score) FILTER (WHERE a.status='completed'),0)::int AS correct, " +
+      "  COALESCE(SUM(CASE WHEN a.status='completed' THEN (SELECT COUNT(*) FROM quiz_questions qq WHERE qq.quiz_id = a.quiz_id) ELSE 0 END),0)::int AS possible, " +
+      '  MAX(a.completed_at) AS last_completed ' +
+      'FROM users u LEFT JOIN quiz_assignments a ON a.user_id = u.id ' +
+      'WHERE u.id = ANY($1) ' +
+      'GROUP BY u.id, u.name, u.role ORDER BY u.name ASC',
+      [ids]
+    );
+    var wrong = await pool.query(
+      "SELECT a.user_id, qz.sop_title, COUNT(*) FILTER (WHERE ans.correct = false)::int AS wrong " +
+      'FROM quiz_answers ans JOIN quiz_assignments a ON a.id = ans.assignment_id ' +
+      'JOIN quizzes qz ON qz.id = a.quiz_id WHERE a.user_id = ANY($1) ' +
+      'GROUP BY a.user_id, qz.sop_title',
+      [ids]
+    );
+    var trouble = {};
+    wrong.rows.forEach(function (r) {
+      if (!r.wrong) return;
+      if (!trouble[r.user_id] || r.wrong > trouble[r.user_id].wrong) trouble[r.user_id] = { topic: r.sop_title, wrong: r.wrong };
+    });
+    res.json(stats.rows.map(function (r) {
+      return {
+        id: r.id, name: r.name, role: r.role,
+        assigned: parseInt(r.assigned, 10), completed: parseInt(r.completed, 10), passed: parseInt(r.passed, 10),
+        correct: r.correct, possible: r.possible, last_completed: r.last_completed,
+        trouble: trouble[r.id] ? trouble[r.id].topic : null
+      };
+    }));
+  } catch (e) {
+    console.error('quiz team roster:', e.message);
+    res.status(500).json({ error: 'Failed to load team roster.' });
+  }
+});
+
+// GET /api/quiz/team/compliance -> headline numbers, downline only.
+router.get('/team/compliance', requireAuth, requireTeamQuiz, async function (req, res) {
+  try {
+    var settings = await getQuizSettings();
+    var ids = await downlineIds(req.user.id);
+    if (!ids.length) return res.json({ dueDays: settings.dueDays, thisWeek: null, overallPct: 0, overallCompleted: 0, overallAssigned: 0 });
+    var cur = await pool.query("SELECT id, week_of FROM quizzes WHERE status = 'sent' ORDER BY week_of DESC LIMIT 1");
+    var thisWeek = null;
+    if (cur.rows.length) {
+      var q = cur.rows[0];
+      var c = await pool.query(
+        'SELECT COUNT(*)::int AS assigned, ' +
+        "  COUNT(*) FILTER (WHERE status = 'completed')::int AS completed, " +
+        "  COUNT(*) FILTER (WHERE status = 'pending' AND sent_at < NOW() - ($2 || ' days')::interval)::int AS overdue " +
+        'FROM quiz_assignments WHERE quiz_id = $1 AND user_id = ANY($3)',
+        [q.id, String(settings.dueDays), ids]
+      );
+      var r = c.rows[0];
+      thisWeek = { week_of: q.week_of, assigned: r.assigned, completed: r.completed, overdue: r.overdue, pct: r.assigned ? Math.round(100 * r.completed / r.assigned) : 0 };
+    }
+    var ov = await pool.query(
+      "SELECT COUNT(*)::int AS assigned, COUNT(*) FILTER (WHERE a.status = 'completed')::int AS completed " +
+      "FROM quiz_assignments a JOIN quizzes q ON q.id = a.quiz_id WHERE q.status IN ('sent','closed') AND a.user_id = ANY($1)",
+      [ids]
+    );
+    var o = ov.rows[0];
+    res.json({ dueDays: settings.dueDays, thisWeek: thisWeek, overallPct: o.assigned ? Math.round(100 * o.completed / o.assigned) : 0, overallCompleted: o.completed, overallAssigned: o.assigned });
+  } catch (e) {
+    console.error('quiz team compliance:', e.message);
+    res.status(500).json({ error: 'Failed to load team compliance.' });
+  }
+});
+
+// GET /api/quiz/team -> quizzes with completion counts, downline only.
+router.get('/team', requireAuth, requireTeamQuiz, async function (req, res) {
+  try {
+    var ids = await downlineIds(req.user.id);
+    if (!ids.length) return res.json([]);
+    var out = await pool.query(
+      'SELECT q.id, q.week_of, q.sop_title, q.status, q.sent_at, ' +
+      '  COUNT(a.*) AS assigned, ' +
+      "  COUNT(a.*) FILTER (WHERE a.status='completed') AS completed, " +
+      '  COUNT(a.*) FILTER (WHERE a.passed) AS passed ' +
+      'FROM quizzes q JOIN quiz_assignments a ON a.quiz_id = q.id AND a.user_id = ANY($1) ' +
+      'GROUP BY q.id ORDER BY q.week_of DESC LIMIT 52',
+      [ids]
+    );
+    res.json(out.rows);
+  } catch (e) {
+    console.error('quiz team list:', e.message);
+    res.status(500).json({ error: 'Failed to load team quizzes.' });
+  }
+});
+
+// GET /api/quiz/team/:id/results -> per-user completion + scores, downline only.
+router.get('/team/:id/results', requireAuth, requireTeamQuiz, async function (req, res) {
+  try {
+    var settings = await getQuizSettings();
+    var ids = await downlineIds(req.user.id);
+    if (!ids.length) return res.json([]);
+    var out = await pool.query(
+      'SELECT a.id AS assignment_id, u.name, u.role, a.status, a.score, a.passed, a.sent_at, a.completed_at, a.reminders_sent, ' +
+      "  (a.status = 'pending' AND a.sent_at < NOW() - ($2 || ' days')::interval) AS overdue " +
+      'FROM quiz_assignments a JOIN users u ON u.id = a.user_id ' +
+      'WHERE a.quiz_id = $1 AND a.user_id = ANY($3) ORDER BY a.status ASC, u.name ASC',
+      [req.params.id, String(settings.dueDays), ids]
+    );
+    res.json(out.rows);
+  } catch (e) {
+    console.error('quiz team results:', e.message);
+    res.status(500).json({ error: 'Failed to load team results.' });
+  }
+});
+
+// GET /api/quiz/assignment/:id/detail -> full drill-down of one person's answers.
+router.get('/assignment/:id/detail', requireAuth, requireTeamQuiz, async function (req, res) {
+  try {
+    var aq = await pool.query(
+      'SELECT a.id, a.user_id, a.quiz_id, a.status, a.score, a.passed, a.completed_at, u.name, q.sop_title, q.week_of ' +
+      'FROM quiz_assignments a JOIN users u ON u.id = a.user_id JOIN quizzes q ON q.id = a.quiz_id WHERE a.id = $1',
+      [req.params.id]
+    );
+    if (!aq.rows.length) return res.status(404).json({ error: 'Not found.' });
+    var asg = aq.rows[0];
+    if (!(req.user.role === 'admin' || req.user.isOwner)) {
+      var ids = await downlineIds(req.user.id);
+      if (ids.indexOf(asg.user_id) === -1) return res.status(403).json({ error: 'Forbidden' });
+    }
+    var qs = await pool.query(
+      'SELECT qq.id, qq.position, qq.prompt, qq.options, qq.correct_index, ans.selected_index, ans.correct ' +
+      'FROM quiz_questions qq ' +
+      'LEFT JOIN quiz_answers ans ON ans.question_id = qq.id AND ans.assignment_id = $1 ' +
+      'WHERE qq.quiz_id = $2 ORDER BY qq.position ASC',
+      [asg.id, asg.quiz_id]
+    );
+    res.json({
+      name: asg.name, sop_title: asg.sop_title, week_of: asg.week_of,
+      status: asg.status, score: asg.score, passed: asg.passed, completed_at: asg.completed_at,
+      questions: qs.rows.map(function (r) {
+        return { position: r.position, prompt: r.prompt, options: r.options, correct_index: r.correct_index, selected_index: r.selected_index, correct: r.correct };
+      })
+    });
+  } catch (e) {
+    console.error('quiz assignment detail:', e.message);
+    res.status(500).json({ error: 'Failed to load answers.' });
   }
 });
 

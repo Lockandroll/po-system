@@ -265,7 +265,7 @@ function getSidebarSection(view) {
   if (['company-info','ai-context','notifications','scheduled-messages','roles','settings','users','cities','audit'].indexOf(view) !== -1) return 'settings';
   if (['geico','reviews','feedback','feedback-detail'].indexOf(view) !== -1) return 'feedback';
   if (['schedule','schedule-admin','timeclock','timeclock-manager','pto'].indexOf(view) !== -1) return 'attendance';
-  if (view === 'quiz') return 'training';
+  if (view === 'quiz' || view === 'team-quiz') return 'training';
   return null;
 }
 function showToast(message, type) {
@@ -400,7 +400,7 @@ function badgeHtml(status) {
 
 var EMPLOYEE_PERMS = ['view_pos','create_po','edit_po','delete_po','submit_po','view_quotes','create_quote','edit_quote','delete_quote','push_quote_po','view_vr','create_vr','edit_vr','delete_vr','submit_vr','view_deposits','create_deposit','delete_deposit','export_deposits','view_signoffs','create_signoff','edit_signoff','complete_signoff','delete_signoff','view_tasks','view_work_orders','view_schedule','view_invoices','create_invoice','edit_invoice','delete_invoice','view_signatures','view_timeclock','view_pto','view_ptt','ptt_direct'];
 var PERM_DEFAULTS = {
-  manager: ['view_users','manage_cities','manage_geico','manage_running','manage_vehicles','manage_vendors','manage_addresses','approve_vr','manage_tasks','manage_work_orders','manage_schedule','manage_parts','manage_invoice_setup','assign_reviews','view_feedback','manage_feedback','manage_signatures','manage_timeclock','manage_pto','ptt_all_channels'].concat(EMPLOYEE_PERMS),
+  manager: ['view_users','manage_cities','manage_geico','manage_running','manage_vehicles','manage_vendors','manage_addresses','approve_vr','manage_tasks','manage_work_orders','manage_schedule','manage_parts','manage_invoice_setup','assign_reviews','view_feedback','manage_feedback','manage_signatures','manage_timeclock','manage_pto','ptt_all_channels','view_team_quiz'].concat(EMPLOYEE_PERMS),
   locksmith: EMPLOYEE_PERMS.slice(),
   locksmith_coordinator: EMPLOYEE_PERMS.concat(['manage_work_orders','ptt_all_channels']),
   dispatcher: EMPLOYEE_PERMS.concat(['manage_work_orders','ptt_all_channels']),
@@ -561,10 +561,11 @@ async function render() {
         (can('view_pto') ? '<div class="nav-sub' + (cv === 'pto' ? ' active' : '') + '" onclick="navigate(\'pto\')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="4" width="18" height="18" rx="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/><path d="M9 16l2 2 4-4"/></svg> Time Off</div>' : '')
       : '') : '') +
     '<div class="nav-item' + (cv === 'org-chart' ? ' active' : '') + '" onclick="navigate(\'org-chart\')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="7" y="3" width="10" height="5" rx="1"/><rect x="3" y="16" width="6" height="5" rx="1"/><rect x="15" y="16" width="6" height="5" rx="1"/><path d="M12 8v3M6 16v-2h12v2"/></svg> Org Chart</div>' +
-    (can('view_quiz') ?
-      '<div class="nav-section-header' + (cv === 'quiz' ? ' section-active' : '') + (ss === 'training' ? ' open' : '') + '" onclick="toggleSection(\'training\',\'quiz\')"><span class="s-label"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 10L12 5 2 10l10 5 10-5z"/><path d="M6 12v5c0 1 3 2 6 2s6-1 6-2v-5"/></svg> Training</span>' + chev + '</div>' +
+    ((can('view_quiz') || can('view_team_quiz') || (state.user && state.user.role === 'manager')) ?
+      '<div class="nav-section-header' + ((cv === 'quiz' || cv === 'team-quiz') ? ' section-active' : '') + (ss === 'training' ? ' open' : '') + '" onclick="toggleSection(\'training\',\'' + (can('view_quiz') ? 'quiz' : 'team-quiz') + '\')"><span class="s-label"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 10L12 5 2 10l10 5 10-5z"/><path d="M6 12v5c0 1 3 2 6 2s6-1 6-2v-5"/></svg> Training</span>' + chev + '</div>' +
       (ss === 'training' ?
-        '<div class="nav-sub' + (cv === 'quiz' ? ' active' : '') + '" onclick="navigate(\'quiz\')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg> SOP Quiz</div>'
+        (can('view_quiz') ? '<div class="nav-sub' + (cv === 'quiz' ? ' active' : '') + '" onclick="navigate(\'quiz\')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg> SOP Quiz</div>' : '') +
+        ((can('view_team_quiz') || (state.user && state.user.role === 'manager')) ? '<div class="nav-sub' + (cv === 'team-quiz' ? ' active' : '') + '" onclick="navigate(\'team-quiz\')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg> Team SOP Quiz</div>' : '')
       : '') : '') +
     (!can('view_quiz') ? '<div class="nav-item' + (cv === 'my-quiz' ? ' active' : '') + '" onclick="navigate(\'my-quiz\')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg> SOP Quiz</div>' : '') +
     (can('view_vr') ?
@@ -733,6 +734,7 @@ async function render() {
   else if (state.currentView === 'invoice-parts') await renderInvoiceParts(content);
   else if (state.currentView === 'invoice-setup') await renderInvoiceSetup(content);
   else if (state.currentView === 'quiz') await renderQuizAdmin(content);
+  else if (state.currentView === 'team-quiz') await renderQuizTeam(content);
   else if (state.currentView === 'my-quiz') await renderMyQuiz(content);
   else { state.currentView = 'home'; await renderHomeScreen(content); maybeQuizBanner(content); }
 }
@@ -12925,3 +12927,92 @@ function quizComplianceHtml(c) {
     + '<div style="color:var(--text-muted-color);font-size:13px;margin-top:8px">' + escHtml(sub) + '</div>';
   return quizCard(h);
 }
+
+
+// ===== TEAM SOP QUIZ (manager, downline-scoped, read-only) =================
+async function renderQuizTeam(content) {
+  content.innerHTML = '<div class="page-header"><div class="page-title"><h2>Team SOP Quiz</h2>'
+    + '<p>Weekly SOP knowledge checks for the people who report to you. View-only &mdash; completion, scores and answers.</p></div></div>'
+    + '<div id="quizTeam">Loading&hellip;</div>';
+  var box = document.getElementById('quizTeam');
+  try {
+    var comp = await api('GET', '/quiz/team/compliance');
+    var roster = await api('GET', '/quiz/team/roster');
+    var list = await api('GET', '/quiz/team');
+    var empty = (!roster || !roster.length);
+    box.innerHTML = quizComplianceHtml(comp)
+      + (empty ? quizCard('<div style="text-align:center;color:var(--text-muted-color)">No one reports to you yet, so there is nothing to show. Reporting lines are set on each user&#39;s profile (Supervisor).</div>') : '')
+      + quizRosterHtml(roster)
+      + quizTeamListHtml(list);
+    wireQuizTeam();
+  } catch (e) { box.innerHTML = '<div style="color:#f87171">' + escHtml(e.message) + '</div>'; }
+}
+
+function quizTeamListHtml(list) {
+  if (!list || !list.length) return '';
+  var rows = list.map(function (q) {
+    return '<tr><td style="padding:8px">' + escHtml(String(q.week_of).slice(0, 10)) + '</td><td style="padding:8px">' + escHtml(q.sop_title || '') + '</td>'
+      + '<td style="padding:8px">' + escHtml(q.status) + '</td><td style="padding:8px">' + q.completed + '/' + q.assigned + '</td>'
+      + '<td style="padding:8px">' + q.passed + '</td><td style="padding:8px"><a href="#" data-tqr="' + q.id + '" style="color:var(--primary)">Results</a></td></tr>';
+  }).join('');
+  return quizCard('<div style="font-weight:700;margin-bottom:12px">Quiz history (your team)</div>'
+    + '<table style="width:100%;border-collapse:collapse;font-size:14px"><tr style="color:var(--text-muted-color);text-align:left">'
+    + '<th style="padding:8px">Week</th><th style="padding:8px">Topic</th><th style="padding:8px">Status</th>'
+    + '<th style="padding:8px">Done</th><th style="padding:8px">Passed</th><th></th></tr>' + rows + '</table>');
+}
+
+function wireQuizTeam() {
+  document.querySelectorAll('[data-tqr]').forEach(function (el) {
+    el.addEventListener('click', function (ev) { ev.preventDefault(); showTeamQuizResults(el.getAttribute('data-tqr')); });
+  });
+}
+
+async function showTeamQuizResults(quizId) {
+  try {
+    var rows = await api('GET', '/quiz/team/' + quizId + '/results');
+    var body = rows.map(function (r) {
+      var drill = (r.status === 'completed')
+        ? '<a href="#" data-tad="' + r.assignment_id + '" style="color:var(--primary)">View answers</a>'
+        : '<span style="color:var(--text-muted-color)">&ndash;</span>';
+      return '<tr><td style="padding:6px">' + escHtml(r.name) + '</td><td style="padding:6px">' + (r.overdue ? '<span style="color:#f97316">overdue</span>' : escHtml(r.status)) + '</td>'
+        + '<td style="padding:6px">' + (r.score == null ? '&ndash;' : r.score) + '</td>'
+        + '<td style="padding:6px">' + (r.passed == null ? '&ndash;' : (r.passed ? 'Yes' : 'No')) + '</td>'
+        + '<td style="padding:6px">' + (r.reminders_sent || 0) + '</td>'
+        + '<td style="padding:6px">' + drill + '</td></tr>';
+    }).join('');
+    var box = document.getElementById('quizTeam');
+    box.insertAdjacentHTML('afterbegin', quizCard('<div style="font-weight:700;margin-bottom:8px">Results</div>'
+      + '<table style="width:100%;border-collapse:collapse;font-size:14px"><tr style="color:var(--text-muted-color);text-align:left">'
+      + '<th style="padding:6px">Name</th><th style="padding:6px">Status</th><th style="padding:6px">Score</th>'
+      + '<th style="padding:6px">Passed</th><th style="padding:6px">Reminders</th><th style="padding:6px">Answers</th></tr>' + body + '</table>'));
+    document.querySelectorAll('[data-tad]').forEach(function (el) {
+      el.addEventListener('click', function (ev) { ev.preventDefault(); showTeamAssignmentDetail(el.getAttribute('data-tad')); });
+    });
+    window.scrollTo(0, 0);
+  } catch (e) { (window.novaAlert || window.alert)(e.message); }
+}
+
+async function showTeamAssignmentDetail(assignmentId) {
+  try {
+    var d = await api('GET', '/quiz/assignment/' + assignmentId + '/detail');
+    var head = '<div style="font-weight:700;margin-bottom:2px">' + escHtml(d.name) + ' &middot; ' + escHtml(d.sop_title || 'SOP') + '</div>'
+      + '<div style="color:var(--text-muted-color);font-size:13px;margin-bottom:12px">Week of ' + escHtml(String(d.week_of).slice(0, 10))
+      + ' &middot; Score ' + (d.score == null ? '&ndash;' : d.score) + ' &middot; ' + (d.passed ? '<span style="color:#22c55e">Passed</span>' : '<span style="color:#f97316">Not passed</span>') + '</div>';
+    var qs = (d.questions || []).map(function (q) {
+      var opts = (q.options || []).map(function (opt, oi) {
+        var isCorrect = oi === q.correct_index;
+        var isPicked = oi === q.selected_index;
+        var color = isCorrect ? '#22c55e' : (isPicked ? '#f87171' : 'var(--text-muted-color)');
+        var mark = isCorrect ? '&#10003; ' : (isPicked ? '&#10007; ' : '&nbsp;&nbsp;&nbsp;');
+        var tag = (isPicked && !isCorrect) ? ' <span style="font-size:12px">(their answer)</span>' : (isPicked && isCorrect ? ' <span style="font-size:12px">(their answer)</span>' : '');
+        return '<div style="padding:2px 0;color:' + color + '">' + mark + escHtml(opt) + tag + '</div>';
+      }).join('');
+      var badge = q.correct ? '<span style="color:#22c55e">correct</span>' : '<span style="color:#f87171">wrong</span>';
+      return '<div style="margin-bottom:14px"><div style="font-weight:600">' + q.position + '. ' + escHtml(q.prompt) + ' &middot; ' + badge + '</div>' + opts + '</div>';
+    }).join('');
+    var box = document.getElementById('quizTeam');
+    box.insertAdjacentHTML('afterbegin', quizCard(head + qs));
+    window.scrollTo(0, 0);
+  } catch (e) { (window.novaAlert || window.alert)(e.message); }
+}
+
