@@ -552,6 +552,7 @@ async function render() {
     (can('view_work_orders') ? '<div class="nav-item' + (['work-orders','view-work-order','new-work-order'].indexOf(cv) !== -1 ? ' active' : '') + '" onclick="navigate(\'work-orders\')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"/><polyline points="3.27 6.96 12 12.01 20.73 6.96"/><line x1="12" y1="22.08" x2="12" y2="12"/></svg> Work Orders</div>' : '') +
     (can('view_signoffs') ? '<div class="nav-item' + (['signoffs','new-signoff','edit-signoff','view-signoff','complete-signoff'].indexOf(cv) !== -1 ? ' active' : '') + '" onclick="navigate(\'signoffs\')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><path d="M9 15l2 2 4-4"/></svg> Sign-Off Sheets</div>' : '') +
     (can('view_tasks') ? '<div class="nav-item' + (['tasks','task-detail','new-task','edit-task'].indexOf(cv) !== -1 ? ' active' : '') + '" onclick="navigate(\'tasks\')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg> Tasks</div>' : '') +
+    '<div class="nav-item' + (cv === 'ptt' ? ' active' : '') + '" onclick="navigate(\'ptt\')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><line x1="12" y1="19" x2="12" y2="23"/></svg> Radio</div>' +
     (taShow ?
       '<div class="nav-section-header' + (taViews.indexOf(cv) !== -1 ? ' section-active' : '') + (ss === 'attendance' ? ' open' : '') + '" onclick="toggleSection(\'attendance\',\'' + taDefault + '\')"><span class="s-label"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><polyline points="12 7 12 12 15 14"/></svg> Time and Attendance</span>' + chev + '</div>' +
       (ss === 'attendance' ?
@@ -711,6 +712,7 @@ async function render() {
   else if (state.currentView === 'new-signature') await renderNewSignature(content);
   else if (state.currentView === 'signature-editor') await renderSignatureEditor(content, state.currentParam);
   else if (state.currentView === 'vault') await renderVault(content);
+  else if (state.currentView === 'ptt') await renderPTT(content);
   else if (state.currentView === 'sop-library') await renderSOPLibrary(content);
   else if (state.currentView === 'view-deposit') await renderViewDeposit(content, state.currentParam);
   else if (state.currentView === 'running') await renderRunningList(content);
