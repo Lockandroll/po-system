@@ -1,7 +1,8 @@
 const express = require('express');
 const jwt = require('jsonwebtoken');
 const { pool } = require('../db');
-const { requireAuth } = require('../middleware/auth');
+const { requireAuth, requirePermission } = require('../middleware/auth');
+const permissions = require('../utils/permissions');
 const { logAudit } = require('../utils/audit');
 
 const router = express.Router();
@@ -17,9 +18,17 @@ const router = express.Router();
 // secret. Env vars required: LIVEKIT_URL, LIVEKIT_API_KEY, LIVEKIT_API_SECRET.
 // ---------------------------------------------------------------------------
 
-// Roles that may join every channel (the dispatch function). Owner is coerced
-// to 'admin' by requireAuth, so owners are covered by 'admin' here.
-const ALL_CHANNEL_ROLES = ['admin', 'manager', 'locksmith_coordinator'];
+// Who may join every channel (the dispatch function): anyone whose role has
+// the 'ptt_all_channels' permission (defaults: admin, manager, coordinator,
+// dispatcher - editable on the Roles page) or with a per-user extra_perms grant.
+async function hasAllChannels(user) {
+  if (await permissions.hasPermission(user.role, 'ptt_all_channels')) return true;
+  try {
+    const r = await pool.query('SELECT extra_perms FROM users WHERE id = $1', [user.id]);
+    const ep = r.rows.length ? r.rows[0].extra_perms : null;
+    return Array.isArray(ep) && ep.indexOf('ptt_all_channels') !== -1;
+  } catch (e) { return false; }
+}
 
 // Virtual all-hands channel. Always present, joinable by every active user,
 // independent of the cities table.
@@ -41,7 +50,7 @@ async function allowedChannels(user) {
     'SELECT name, code, color FROM cities WHERE active = true ORDER BY name ASC'
   )).rows;
   let list;
-  if (ALL_CHANNEL_ROLES.includes(user.role)) {
+  if (await hasAllChannels(user)) {
     list = cities;
   } else {
     const mine = (await pool.query(
@@ -59,7 +68,7 @@ async function allowedChannels(user) {
 }
 
 // GET /api/ptt/channels - channels the current user may join.
-router.get('/channels', requireAuth, async (req, res) => {
+router.get('/channels', requireAuth, requirePermission('view_ptt'), async (req, res) => {
   const channels = await allowedChannels(req.user);
   res.json({ configured: isConfigured(), channels: channels });
 });
@@ -67,7 +76,7 @@ router.get('/channels', requireAuth, async (req, res) => {
 // POST /api/ptt/token - mint a short-lived LiveKit token for ONE channel.
 // This is the security chokepoint: authorization happens here, never on the
 // client. The allowed set is recomputed server-side on every request.
-router.post('/token', requireAuth, async (req, res) => {
+router.post('/token', requireAuth, requirePermission('view_ptt'), async (req, res) => {
   if (!isConfigured()) {
     return res.status(503).json({ error: 'PTT is not configured yet (missing LIVEKIT_* environment variables).' });
   }
