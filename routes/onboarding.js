@@ -600,7 +600,7 @@ router.get('/me', requireAuth, async (req, res) => {
     if (current.type === 'video' && current.video_key && r2.configured()) {
       try { cur.video_url = await r2.presignDownload(current.video_key, 'welcome.mp4', true, 3600); } catch (e) { cur.video_error = 'Video is unavailable right now.'; }
     }
-    if (current.type === 'sop_read') {
+    if (current.type === 'sop_read' || current.type === 'acknowledge') {
       const docId = parseInt(cfg(current).document_id, 10) || 0;
       if (current.sop_id) {
         const sop = await sopFullText(current.sop_id);
@@ -659,6 +659,9 @@ router.post('/steps/:id/complete', requireAuth, async (req, res) => {
     [req.user.id, stepId, 'done']
   );
   await logAudit({ entity_type: 'onboarding', entity_id: stepId, action: 'step_completed', user_id: req.user.id, user_name: req.user.name, details: { step: current.title, type: current.type } });
+  if (current.type === 'acknowledge') {
+    await pool.query('INSERT INTO onboarding_events (user_id, event_type, step_id, document_id, actor_id, actor_name) VALUES ($1,$2,$3,$4,$1,$5)', [req.user.id, 'acknowledged', stepId, parseInt(cfg(current).document_id, 10) || null, req.user.name]);
+  }
   await maybeNotifyReady(req.user.id);
   res.json({ success: true });
 });
@@ -842,11 +845,11 @@ admin.get('/steps', async (req, res) => {
 admin.post('/steps', async (req, res) => {
   const b = req.body || {};
   const type = String(b.type || '');
-  if (['video', 'sop_read', 'quiz', 'document_upload'].indexOf(type) === -1) return res.status(400).json({ error: 'Invalid step type' });
+  if (['video', 'sop_read', 'quiz', 'document_upload', 'acknowledge'].indexOf(type) === -1) return res.status(400).json({ error: 'Invalid step type' });
   const title = String(b.title || '').trim();
   if (!title) return res.status(400).json({ error: 'Title is required' });
   if (type === 'quiz' && !parseInt(b.sop_id, 10)) return res.status(400).json({ error: 'Pick an SOP for the quiz' });
-  if (type === 'sop_read' && !parseInt(b.document_id, 10)) return res.status(400).json({ error: 'Pick a document from the vault' });
+  if ((type === 'sop_read' || type === 'acknowledge') && !parseInt(b.document_id, 10)) return res.status(400).json({ error: 'Pick a document from the vault' });
   if (type === 'video' && !String(b.video_key || '').trim()) return res.status(400).json({ error: 'Upload the video first' });
   const mx = await pool.query('SELECT COALESCE(MAX(position),0) AS p FROM onboarding_steps WHERE active = true');
   const config = {};

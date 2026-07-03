@@ -184,7 +184,7 @@
           : '<div class="onb-note">' + escHtml(cur.video_error || 'Video unavailable — tell your manager.') + '</div>') +
         '<button class="onb-btn" id="onb-continue" disabled onclick="onbCompleteStep(' + cur.id + ')">Continue</button>' +
         '<div class="onb-note" id="onb-timer-note"></div>';
-    } else if (cur.type === 'sop_read') {
+    } else if (cur.type === 'sop_read' || cur.type === 'acknowledge') {
       var reader;
       if (cur.sop_doc_url) {
         var mime = cur.sop_doc_mime || '';
@@ -201,7 +201,7 @@
         reader = '<div class="onb-sop" id="onb-sop">' + escHtml(cur.sop_content || 'This SOP has no text.') + '</div>';
       }
       inner = reader +
-        '<button class="onb-btn" id="onb-continue" disabled onclick="onbCompleteStep(' + cur.id + ')">Mark as read</button>' +
+        '<button class="onb-btn" id="onb-continue" disabled onclick="onbCompleteStep(' + cur.id + ')">' + (cur.type === 'acknowledge' ? 'Acknowledge and Continue' : 'Mark as read') + '</button>' +
         '<div class="onb-note" id="onb-timer-note">' + (cur.sop_doc_url ? '' : 'Read to the bottom to continue.') + '</div>';
     } else if (cur.type === 'quiz') {
       inner = '<div id="onb-quiz">' +
@@ -712,7 +712,7 @@
       '<div class="onb-card"><h2>Add a step</h2>' +
       '<div style="display:grid;gap:10px;grid-template-columns:1fr 1fr">' +
       '<select id="onb-new-type" onchange="onbTypeFields()" style="background:var(--bg-card);color:var(--text);border:1px solid var(--border);border-radius:8px;padding:10px">' +
-        '<option value="video">Video</option><option value="sop_read">Read an SOP</option><option value="quiz">Quiz on an SOP</option><option value="document_upload">Upload required documents</option></select>' +
+        '<option value="video">Video</option><option value="sop_read">Read an SOP</option><option value="quiz">Quiz on an SOP</option><option value="document_upload">Upload required documents</option><option value="acknowledge">Read &amp; acknowledge (no quiz)</option></select>' +
       '<input id="onb-new-title" placeholder="Step title" style="background:var(--bg-card);color:var(--text);border:1px solid var(--border);border-radius:8px;padding:10px">' +
       '<select id="onb-new-phase" style="background:var(--bg-card);color:var(--text);border:1px solid var(--border);border-radius:8px;padding:10px"><option value="1">Phase 1 &middot; Paperwork</option><option value="2">Phase 2 &middot; Training</option></select>' +
       '<input id="onb-new-desc" placeholder="Short description (optional)" style="grid-column:1/-1;background:var(--bg-card);color:var(--text);border:1px solid var(--border);border-radius:8px;padding:10px">' +
@@ -732,7 +732,7 @@
   window.onbTypeFields = function () {
     var t = (document.getElementById('onb-new-type') || {}).value;
     var f = function (id, show) { var el = document.getElementById(id); if (el) el.style.display = show ? 'block' : 'none'; };
-    f('onb-f-doc', t === 'sop_read');
+    f('onb-f-doc', t === 'sop_read' || t === 'acknowledge');
     f('onb-f-sop', t === 'quiz');
     f('onb-f-video', t === 'video');
     f('onb-f-quiz', t === 'quiz');
@@ -745,7 +745,7 @@
     var payload = { type: t, title: title, description: document.getElementById('onb-new-desc').value.trim(), min_seconds: parseInt(document.getElementById('onb-new-min').value, 10) || 0 };
     payload.phase = parseInt((document.getElementById('onb-new-phase') || {}).value, 10) === 2 ? 2 : 1;
     if (t === 'document_upload') payload.min_seconds = 0;
-    if (t === 'sop_read') {
+    if (t === 'sop_read' || t === 'acknowledge') {
       payload.document_id = parseInt((document.getElementById('onb-new-doc') || {}).value, 10);
       if (!payload.document_id) { showToast('Pick a document from the vault.', 'error'); return; }
     }
