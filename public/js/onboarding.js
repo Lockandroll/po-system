@@ -31,8 +31,9 @@
     '.onb-sop{max-height:420px;overflow:auto;white-space:pre-wrap;background:var(--bg,#0f0f0f);border:1px solid var(--border,#2a2a2a);border-radius:10px;padding:16px;font-size:14px;line-height:1.6;margin-bottom:14px}' +
     '.onb-q{border:1px solid var(--border,#2a2a2a);border-radius:10px;padding:14px;margin-bottom:12px}' +
     '.onb-q .p{font-weight:600;margin-bottom:10px}' +
-    '.onb-q label{display:block;padding:8px 10px;border-radius:8px;cursor:pointer;font-size:14px}' +
-    '.onb-q label:hover{background:var(--bg,#0f0f0f)}' +
+    '.onb-q label{display:block;background:#1f1f1f;border:1px solid #333;border-radius:8px;padding:12px 14px;margin-bottom:8px;cursor:pointer;font-size:14px;transition:border-color .12s, background .12s, box-shadow .12s}' +
+    '.onb-q label:hover{border-color:#555}' +
+    '.onb-q label input{display:none}' +
     '.onb-q.good{border-color:#16a34a}.onb-q.bad{border-color:#ef4444}' +
     '.onb-video{width:100%;border-radius:10px;background:#000;max-height:430px;margin-bottom:14px}' +
     '.onb-note{font-size:13px;color:var(--text-muted-color,#9ca3af);margin-top:10px}' +
@@ -215,12 +216,30 @@
     var html = qz.questions.map(function (q) {
       return '<div class="onb-q" id="onb-q-' + q.n + '"><div class="p">' + (q.n + 1) + '. ' + escHtml(q.prompt) + '</div>' +
         q.options.map(function (o, oi) {
-          return '<label><input type="radio" name="onbq' + q.n + '" value="' + oi + '" style="margin-right:8px">' + escHtml(o) + '</label>';
+          return '<label><input type="radio" name="onbq' + q.n + '" value="' + oi + '">' + escHtml(o) + '</label>';
         }).join('') + '</div>';
     }).join('');
-    if (box) box.innerHTML = html +
+    if (box) box.innerHTML = '<form id="onb-quiz-form" onchange="onbQuizHighlight(this)">' + html + '</form>' +
       '<button class="onb-btn" id="onb-quiz-submit" onclick="onbSubmitQuiz(' + qz.attempt_id + ',' + qz.questions.length + ',' + stepId + ')">Submit answers</button>' +
       '<div class="onb-note" id="onb-quiz-note"></div>';
+  };
+
+  window.onbQuizHighlight = function (form) {
+    var labels = form.querySelectorAll('label');
+    for (var i = 0; i < labels.length; i++) {
+      var r = labels[i].querySelector('input');
+      if (r && r.checked) {
+        labels[i].style.borderColor = 'var(--primary,#f97316)';
+        labels[i].style.background = 'rgba(249,115,22,0.28)';
+        labels[i].style.boxShadow = '0 0 0 2px var(--primary,#f97316)';
+        labels[i].style.color = '#fff';
+      } else {
+        labels[i].style.borderColor = '#333';
+        labels[i].style.background = '#1f1f1f';
+        labels[i].style.boxShadow = 'none';
+        labels[i].style.color = '';
+      }
+    }
   };
 
   window.onbSubmitQuiz = async function (attemptId, count, stepId) {
@@ -247,13 +266,18 @@
         var isPicked = (li === picked);
         if (isCorrect) {
           lab.style.background = 'rgba(34,197,94,.15)';
+          lab.style.borderColor = '#22c55e';
+          lab.style.boxShadow = '0 0 0 2px #16a34a';
           lab.style.color = '#22c55e';
           lab.insertAdjacentHTML('beforeend', ' <span style="font-size:12px;font-weight:700">&#10003; Correct answer</span>');
         } else if (isPicked) {
           lab.style.background = 'rgba(239,68,68,.13)';
+          lab.style.borderColor = '#ef4444';
+          lab.style.boxShadow = 'none';
           lab.style.color = '#f87171';
           lab.insertAdjacentHTML('beforeend', ' <span style="font-size:12px">&#10007; Your answer</span>');
         } else {
+          lab.style.boxShadow = 'none';
           lab.style.opacity = '.5';
         }
       }
