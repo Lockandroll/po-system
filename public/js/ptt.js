@@ -26,7 +26,8 @@
     rec: null, playingId: null,
     inbox: null, dms: {}, dmHold: 0, people: [], canDirect: false,
     logRows: [], newCount: 0, pollTimer: null,
-    tab: 'channels', sel: null // {type:'channel',code} | {type:'person',id,name,online}
+    tab: 'channels', sel: null, // {type:'channel',code} | {type:'person',id,name,online}
+    dragging: false
   };
 
   // ---- styles --------------------------------------------------------------
@@ -58,6 +59,9 @@
       '.ptt-pdot{width:9px;height:9px;border-radius:50%;background:#3f3f46;flex:none}',
       '.ptt-row.on .ptt-pdot{background:#22c55e;box-shadow:0 0 6px #22c55e}',
       '.ptt-chev{color:var(--text-dim,#9a9a9a);flex:none;font-size:16px}',
+      '.ptt-grab{color:var(--text-dim,#9a9a9a);cursor:grab;flex:none;font-size:14px;padding:0 2px;user-select:none}',
+      '.ptt-row.dragover{border-top:2px solid var(--primary,#f97316)}',
+      '.ptt-row.dragging{opacity:.45}',
       /* talk screen */
       '.ptt-talkhead{display:flex;align-items:center;gap:10px;margin-bottom:12px}',
       '.ptt-back{background:none;border:1px solid var(--border,#2a2a2a);border-radius:10px;color:var(--text,#ededed);width:34px;height:34px;cursor:pointer;font-size:16px;flex:none}',
@@ -885,7 +889,7 @@
     try {
       paintTalkState();
       if (typeof state === 'undefined' || state.currentView !== 'ptt') return;
-      if (PTT.talking || PTT.dmHold || ECHO.mr || ECHO.playing) return;
+      if (PTT.talking || PTT.dmHold || PTT.dragging || ECHO.mr || ECHO.playing) return;
       var body = document.getElementById('ptt-body');
       if (!body) return;
       paintTabs();
@@ -901,15 +905,85 @@
     }
   }
 
+  // ---- manual ordering (saved per device) ---------------------------------------------
+  function orderGet(key) {
+    try { return JSON.parse(localStorage.getItem(key) || '[]') || []; } catch (e) { return []; }
+  }
+  function orderSave(key, arr) {
+    try { localStorage.setItem(key, JSON.stringify(arr)); } catch (e) {}
+  }
+  /* Sort items by the saved order; anything new keeps its default position at the end. */
+  function applyOrder(items, key, idOf) {
+    var saved = orderGet(key);
+    if (!saved.length) return items.slice();
+    var pos = {};
+    for (var i = 0; i < saved.length; i++) pos[String(saved[i])] = i;
+    return items.slice().sort(function (a, b) {
+      var pa = pos.hasOwnProperty(String(idOf(a))) ? pos[String(idOf(a))] : 9999;
+      var pb = pos.hasOwnProperty(String(idOf(b))) ? pos[String(idOf(b))] : 9999;
+      return pa - pb;
+    });
+  }
+  var DRAG = { id: null, key: null };
+  function bindDrag(listEl, storeKey) {
+    if (!listEl || listEl._pttDrag) return;
+    listEl._pttDrag = true;
+    listEl.addEventListener('dragstart', function (e) {
+      var row = e.target.closest ? e.target.closest('.ptt-row[data-oid]') : null;
+      if (!row) return;
+      DRAG.id = row.getAttribute('data-oid');
+      DRAG.key = storeKey;
+      PTT.dragging = true;
+      row.classList.add('dragging');
+      try { e.dataTransfer.setData('text/plain', DRAG.id); e.dataTransfer.effectAllowed = 'move'; } catch (x) {}
+    });
+    listEl.addEventListener('dragover', function (e) {
+      if (!DRAG.id || DRAG.key !== storeKey) return;
+      e.preventDefault();
+      var row = e.target.closest ? e.target.closest('.ptt-row[data-oid]') : null;
+      var rows = listEl.querySelectorAll('.ptt-row');
+      for (var i = 0; i < rows.length; i++) rows[i].classList.remove('dragover');
+      if (row && row.getAttribute('data-oid') !== DRAG.id) row.classList.add('dragover');
+    });
+    listEl.addEventListener('drop', function (e) {
+      if (!DRAG.id || DRAG.key !== storeKey) return;
+      e.preventDefault();
+      var row = e.target.closest ? e.target.closest('.ptt-row[data-oid]') : null;
+      var rows = listEl.querySelectorAll('.ptt-row[data-oid]');
+      var order = [];
+      for (var i = 0; i < rows.length; i++) {
+        var oid = rows[i].getAttribute('data-oid');
+        if (oid !== DRAG.id) order.push(oid);
+      }
+      if (row && row.getAttribute('data-oid') !== DRAG.id) {
+        var idx = order.indexOf(row.getAttribute('data-oid'));
+        order.splice(idx, 0, DRAG.id);
+      } else {
+        order.push(DRAG.id);
+      }
+      orderSave(storeKey, order);
+      DRAG.id = null; DRAG.key = null;
+      PTT.dragging = false;
+      refreshUI();
+    });
+    listEl.addEventListener('dragend', function () {
+      DRAG.id = null; DRAG.key = null;
+      PTT.dragging = false;
+      refreshUI();
+    });
+  }
+
   // ---- lists ------------------------------------------------------------------------
   function drawChannelsList(body) {
-    var h = '<div class="ptt-list">';
-    for (var i = 0; i < PTT.channels.length; i++) {
-      var c = PTT.channels[i];
+    var chans = applyOrder(PTT.channels, 'ptt_order_channels', function (c) { return c.code; });
+    var h = '<div class="ptt-list" id="ptt-chan-list">';
+    for (var i = 0; i < chans.length; i++) {
+      var c = chans[i];
       var live = PTT.talk && PTT.talk.channel.code === c.code;
       var mon = !!PTT.monitors[c.code];
       var n = newCountFor(c.code, false);
-      h += '<div class="ptt-row' + (live ? ' live' : '') + (mon ? ' mon' : '') + (chanSpeaking(c.code) ? ' speaking' : '') + '" onclick="pttOpenChan(\'' + escHtml(c.code) + '\')">' +
+      h += '<div class="ptt-row' + (live ? ' live' : '') + (mon ? ' mon' : '') + (chanSpeaking(c.code) ? ' speaking' : '') + '" draggable="true" data-oid="' + escHtml(c.code) + '" onclick="pttOpenChan(\'' + escHtml(c.code) + '\')">' +
+        '<span class="ptt-grab" title="Drag to reorder">&#8942;&#8942;</span>' +
         '<span class="ptt-dot" style="background:' + escHtml(c.color || '#f97316') + '"></span>' +
         '<span class="nm">' + escHtml(c.name) + '</span>' +
         '<span class="spk"></span>' +
@@ -919,7 +993,7 @@
         '<span class="ptt-chev">&#8250;</span>' +
       '</div>';
     }
-    if (!PTT.channels.length) h += '<div class="ptt-hint">No channels available for your account.</div>';
+    if (!chans.length) h += '<div class="ptt-hint">No channels available for your account.</div>';
     h += '<div class="ptt-row" style="cursor:default">' +
       '<span class="ptt-dot" style="background:#8b5cf6"></span>' +
       '<span class="nm">Echo Test<span class="sub">Hold, speak, release &middot; hear yourself back</span></span>' +
@@ -928,17 +1002,20 @@
     h += '</div>';
     body.innerHTML = h;
     bindEcho(document.getElementById('ptt-echo-btn'));
+    bindDrag(document.getElementById('ptt-chan-list'), 'ptt_order_channels');
   }
 
   function drawPeopleList(body) {
     var me = (state.user) ? state.user.id : 0;
     var ppl = PTT.people.filter(function (p) { return p.id !== me; });
     ppl.sort(function (a, b) { return (b.online === true) - (a.online === true) || String(a.name).localeCompare(String(b.name)); });
-    var h = '<div class="ptt-list">';
+    ppl = applyOrder(ppl, 'ptt_order_people', function (p) { return p.id; });
+    var h = '<div class="ptt-list" id="ptt-ppl-list">';
     for (var i = 0; i < ppl.length; i++) {
       var pp = ppl[i];
       var n = newCountFor(pp.id, true);
-      h += '<div class="ptt-row' + (pp.online ? ' on' : '') + '" onclick="pttOpenPerson(' + pp.id + ')">' +
+      h += '<div class="ptt-row' + (pp.online ? ' on' : '') + '" draggable="true" data-oid="' + pp.id + '" onclick="pttOpenPerson(' + pp.id + ')">' +
+        '<span class="ptt-grab" title="Drag to reorder">&#8942;&#8942;</span>' +
         '<span class="ptt-pdot" title="' + (pp.online ? 'Radio on' : 'Radio off') + '"></span>' +
         '<span class="nm">' + escHtml(pp.name) + (pp.online ? '' : '<span class="sub">Radio off &middot; they get it in their log</span>') + '</span>' +
         (n ? '<span class="ptt-badge">' + n + '</span>' : '') +
@@ -948,6 +1025,7 @@
     if (!ppl.length) h += '<div class="ptt-hint">Nobody else here yet.</div>';
     h += '</div>';
     body.innerHTML = h;
+    bindDrag(document.getElementById('ptt-ppl-list'), 'ptt_order_people');
   }
 
   function fmtDur(ms) {
