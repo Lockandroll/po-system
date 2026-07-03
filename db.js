@@ -1553,6 +1553,82 @@ async function initDB() {
       ');'
     );
     await client.query('CREATE INDEX IF NOT EXISTS idx_onboarding_progress_user ON onboarding_progress(user_id);');
+    // ---- Onboarding v3: phases, encrypted docs, packet, event log ----
+    // Phase tag per step (1 = paperwork/no clock-in, 2 = training/clock-in).
+    await client.query("ALTER TABLE onboarding_steps ADD COLUMN IF NOT EXISTS phase INTEGER NOT NULL DEFAULT 1;");
+    // Which phase a new hire is currently in (drives the clock-in gate).
+    await client.query("ALTER TABLE users ADD COLUMN IF NOT EXISTS onboarding_phase INTEGER NOT NULL DEFAULT 1;");
+    // Reuse the quiz-attempt table for the cumulative final exam.
+    await client.query("ALTER TABLE onboarding_quiz_attempts ADD COLUMN IF NOT EXISTS is_final_exam BOOLEAN NOT NULL DEFAULT false;");
+    // Encrypted personnel-document store. Serves BOTH the Phase 1 required
+    // uploads and the living Employee File. Bytes in R2 under hr/ are AES-256-GCM
+    // ciphertext; only manage_hr_documents roles can decrypt. Categories:
+    // identity | license | insurance | registration | packet | acknowledgment |
+    // review | disciplinary | tax | certification | other.
+    await client.query(
+      'CREATE TABLE IF NOT EXISTS hr_documents (' +
+      '  id SERIAL PRIMARY KEY,' +
+      '  user_id INTEGER NOT NULL REFERENCES users(id),' +
+      '  category VARCHAR(40) NOT NULL,' +
+      '  slot_key VARCHAR(40),' +
+      '  r2_key VARCHAR(512) UNIQUE NOT NULL,' +
+      '  name VARCHAR(255),' +
+      '  mime_type VARCHAR(255),' +
+      '  size_bytes BIGINT DEFAULT 0,' +
+      '  expires_at DATE,' +
+      '  extracted JSONB,' +
+      "  verify_status VARCHAR(20) NOT NULL DEFAULT 'unverified'," +
+      '  verify_notes TEXT,' +
+      "  review_status VARCHAR(20) NOT NULL DEFAULT 'pending'," +
+      '  reject_reason TEXT,' +
+      "  source VARCHAR(20) NOT NULL DEFAULT 'onboarding'," +
+      '  uploaded_by INTEGER REFERENCES users(id),' +
+      '  uploaded_by_name VARCHAR(255),' +
+      '  created_at TIMESTAMPTZ DEFAULT NOW(),' +
+      '  updated_at TIMESTAMPTZ DEFAULT NOW()' +
+      ');'
+    );
+    await client.query('CREATE INDEX IF NOT EXISTS idx_hr_documents_user ON hr_documents(user_id);');
+    await client.query('CREATE INDEX IF NOT EXISTS idx_hr_documents_expires ON hr_documents(expires_at) WHERE expires_at IS NOT NULL;');
+    // New Hire Packet responses (native form). One row per hire; field data in
+    // JSONB so we need no column per packet field. field_flags holds any
+    // per-field reject reasons a reviewer set on reopen.
+    await client.query(
+      'CREATE TABLE IF NOT EXISTS onboarding_packet_responses (' +
+      '  id SERIAL PRIMARY KEY,' +
+      '  user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,' +
+      "  data JSONB NOT NULL DEFAULT '{}'," +
+      "  status VARCHAR(20) NOT NULL DEFAULT 'draft'," +
+      '  field_flags JSONB,' +
+      '  submitted_at TIMESTAMPTZ,' +
+      '  reviewed_by INTEGER REFERENCES users(id),' +
+      '  reviewed_by_name VARCHAR(255),' +
+      '  reviewed_at TIMESTAMPTZ,' +
+      '  created_at TIMESTAMPTZ DEFAULT NOW(),' +
+      '  updated_at TIMESTAMPTZ DEFAULT NOW(),' +
+      '  UNIQUE (user_id)' +
+      ');'
+    );
+    // Section 7 completion-event log: every event, dated, tied to the tech and
+    // (where relevant) the document version. Exportable. Not cascade-deleted so
+    // the training-evidence record survives.
+    await client.query(
+      'CREATE TABLE IF NOT EXISTS onboarding_events (' +
+      '  id SERIAL PRIMARY KEY,' +
+      '  user_id INTEGER NOT NULL REFERENCES users(id),' +
+      '  event_type VARCHAR(40) NOT NULL,' +
+      '  step_id INTEGER,' +
+      '  document_id INTEGER,' +
+      '  document_version VARCHAR(40),' +
+      '  score INTEGER,' +
+      '  passed BOOLEAN,' +
+      '  detail JSONB,' +
+      '  actor_id INTEGER REFERENCES users(id),' +
+      '  actor_name VARCHAR(255),' +
+      '  created_at TIMESTAMPTZ DEFAULT NOW()' +
+      ');'
+    );
+    await client.query('CREATE INDEX IF NOT EXISTS idx_onboarding_events_user ON onboarding_events(user_id);');
 
     // ---- Dispatcher role (mirror of Locksmith Coordinator) ----
     // Copy the coordinator's saved permission set to the new role, and include
