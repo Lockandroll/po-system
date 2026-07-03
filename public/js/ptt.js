@@ -36,7 +36,9 @@
     rec: null,             // in-flight MediaRecorder session
     playingId: null,
     logChan: '',
-    logDate: ''
+    logDate: '',
+    newCount: 0,
+    pollTimer: null
   };
 
   // ---- styles --------------------------------------------------------------
@@ -95,7 +97,10 @@
       '#ptt-bar .ptt-bar-talk.onair{background:var(--primary,#f97316);color:#0f0f0f;animation:ptt-pulse 1.2s infinite}',
       '#ptt-bar .ptt-bar-talk.off{border-color:var(--border,#2a2a2a);color:var(--border,#2a2a2a);cursor:default}',
       '#ptt-bar .ptt-bar-x{background:none;border:none;color:var(--text-dim,#9a9a9a);cursor:pointer;font-size:15px;padding:4px}',
-      '#ptt-bar .ptt-bar-x:hover{color:#ef4444}'
+      '#ptt-bar .ptt-bar-x:hover{color:#ef4444}',
+      '#ptt-bar .ptt-bar-new{background:var(--primary,#f97316);color:#0f0f0f;font-size:10px;font-weight:800;border-radius:999px;padding:2px 7px;cursor:pointer}',
+      '.ptt-rec.new{border-color:var(--primary,#f97316)}',
+      '.ptt-rec .newchip{background:var(--primary,#f97316);color:#0f0f0f;font-size:9px;font-weight:800;border-radius:999px;padding:2px 6px;letter-spacing:.5px}'
     ].join('\n');
     var el = document.createElement('style');
     el.id = 'ptt-styles';
@@ -205,6 +210,7 @@
       }
       PTT.connecting = false;
       PTT.reconnectAttempt = 0;
+      ensurePoll();
       refreshLive(); updateBar();
       if (!PTT.reconnectWasAuto) showToast('Live on ' + data.channel.name, 'success');
       PTT.reconnectWasAuto = false;
@@ -275,6 +281,7 @@
       wireRoom(handle);
       await room.connect(data.url, data.token);
       handle.attempt = 0;
+      ensurePoll();
       refreshLive(); updateBar();
       if (!isRetry) showToast('Listening to ' + data.channel.name, 'success');
     } catch (e) {
@@ -321,6 +328,37 @@
     var n = 0, k;
     for (k in PTT.monitors) if (PTT.monitors.hasOwnProperty(k)) n++;
     return n;
+  }
+
+  function lastSeen() {
+    try { return parseInt(localStorage.getItem('ptt_log_seen') || '0', 10) || 0; } catch (e) { return 0; }
+  }
+  function markSeen() {
+    try { localStorage.setItem('ptt_log_seen', String(Date.now())); } catch (e) {}
+    PTT.newCount = 0;
+    updateBar();
+  }
+  function isNewRow(r) {
+    if (!r || !r.started_at) return false;
+    if (window.state && state.user && r.user_id === state.user.id) return false;
+    return new Date(r.started_at).getTime() > lastSeen();
+  }
+  /* Zello-style missed-message check: while the radio is on, quietly poll the
+     log once a minute and show an unheard count on the floating bar. */
+  async function pollNew() {
+    if (!PTT.canRecord || (!PTT.talk && !monitorCount())) return;
+    try {
+      var data = await api('GET', '/ptt/recordings');
+      var rows = (data && data.recordings) || [];
+      var n = 0;
+      for (var i = 0; i < rows.length; i++) if (isNewRow(rows[i])) n++;
+      PTT.newCount = n;
+      updateBar();
+    } catch (e) {}
+  }
+  function ensurePoll() {
+    if (PTT.pollTimer) return;
+    PTT.pollTimer = setInterval(pollNew, 60000);
   }
 
   async function leaveAll(silent) {
@@ -461,12 +499,16 @@
     bar.innerHTML =
       '<span class="ptt-dot" style="background:#22c55e"></span>' +
       '<span class="ptt-bar-name" title="Open Radio"></span>' +
+      '<span class="ptt-bar-new" style="display:none" title="Unheard transmissions - open the Radio Log"></span>' +
       '<button class="ptt-bar-talk" title="Hold to talk">' +
         '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><line x1="12" y1="19" x2="12" y2="23"/></svg>' +
       '</button>' +
       '<button class="ptt-bar-x" title="Radio off (leave talk + monitors)">&#10005;</button>';
     document.body.appendChild(bar);
     bar.querySelector('.ptt-bar-name').addEventListener('click', function () {
+      if (typeof navigate === 'function') navigate('ptt');
+    });
+    bar.querySelector('.ptt-bar-new').addEventListener('click', function () {
       if (typeof navigate === 'function') navigate('ptt');
     });
     bar.querySelector('.ptt-bar-x').addEventListener('click', function () { leaveAll(false); });
@@ -489,6 +531,11 @@
     var mc = monitorCount();
     if (mc) label += ' +' + mc;
     name.textContent = label;
+    var nb = bar.querySelector('.ptt-bar-new');
+    if (nb) {
+      if (PTT.newCount > 0) { nb.style.display = 'inline-block'; nb.textContent = PTT.newCount + ' new'; }
+      else nb.style.display = 'none';
+    }
     paintTalkState();
   }
 
@@ -669,15 +716,20 @@
     var h = '';
     for (var i = 0; i < rows.length; i++) {
       var r = rows[i];
-      h += '<div class="ptt-rec" id="ptt-rec-' + r.id + '">' +
+      var isNew = isNewRow(r);
+      h += '<div class="ptt-rec' + (isNew ? ' new' : '') + '" id="ptt-rec-' + r.id + '">' +
         '<button class="ptt-play" onclick="pttPlay(' + r.id + ')" title="Play">&#9654;</button>' +
         '<span class="t">' + escHtml(fmtTime(r.started_at)) + '</span>' +
         '<span class="c">' + escHtml(r.channel_code) + '</span>' +
         '<span class="n">' + escHtml(r.user_name || ('User ' + r.user_id)) + '</span>' +
+        (isNew ? '<span class="newchip">NEW</span>' : '') +
         '<span class="d">' + escHtml(fmtDur(r.duration_ms)) + '</span>' +
       '</div>';
     }
     list.innerHTML = h;
+    /* You have now seen the log - clear the unheard counter (NEW chips stay
+       visible for this render so you can spot what you missed). */
+    markSeen();
   };
 
   window.pttLogFilter = function () {
