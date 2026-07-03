@@ -11,6 +11,7 @@
    client-side and uploaded to R2 for the log. */
 (function () {
   'use strict';
+  try {
 
   var SDK_URL = 'https://cdn.jsdelivr.net/npm/livekit-client@2.19.2/dist/livekit-client.umd.min.js';
   var TALK_RETRY = [2000, 4000, 8000, 15000, 30000, 30000];
@@ -881,16 +882,23 @@
   /* Re-render the page body. Never while a key/button is held - replacing the
      held element would eat the pointerup and stick the transmitter open. */
   function refreshUI() {
-    paintTalkState();
-    if (!window.state || state.currentView !== 'ptt') return;
-    if (PTT.talking || PTT.dmHold || ECHO.mr || ECHO.playing) return;
-    var body = document.getElementById('ptt-body');
-    if (!body) return;
-    paintTabs();
-    if (PTT.sel) drawTalk(body);
-    else if (PTT.tab === 'recents') drawRecents(body);
-    else if (PTT.tab === 'people') drawPeopleList(body);
-    else drawChannelsList(body);
+    try {
+      paintTalkState();
+      if (!window.state || state.currentView !== 'ptt') return;
+      if (PTT.talking || PTT.dmHold || ECHO.mr || ECHO.playing) return;
+      var body = document.getElementById('ptt-body');
+      if (!body) return;
+      paintTabs();
+      if (PTT.sel) drawTalk(body);
+      else if (PTT.tab === 'recents') drawRecents(body);
+      else if (PTT.tab === 'people') drawPeopleList(body);
+      else drawChannelsList(body);
+    } catch (err) {
+      /* Never blank the page silently - show what broke. */
+      try { console.error('PTT refreshUI failed:', err); } catch (x) {}
+      var b2 = document.getElementById('ptt-body');
+      if (b2) b2.innerHTML = '<div class="ptt-notice"><b>Radio UI error:</b> ' + escHtml((err && err.message) ? err.message : String(err)) + '</div>';
+    }
   }
 
   // ---- lists ------------------------------------------------------------------------
@@ -1138,4 +1146,10 @@
       showToast('Could not play recording: ' + (e && e.message ? e.message : e), 'error');
     }
   };
+  } catch (moduleErr) {
+    try { console.error('PTT module failed to load:', moduleErr); } catch (x) {}
+    window.renderPTT = window.renderPTT || function (content) {
+      content.innerHTML = '<div style="padding:20px"><h1>Radio</h1><div style="color:#ef4444">Radio failed to load: ' + String(moduleErr && moduleErr.message ? moduleErr.message : moduleErr) + '</div></div>';
+    };
+  }
 })();
