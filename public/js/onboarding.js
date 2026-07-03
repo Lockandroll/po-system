@@ -481,13 +481,17 @@
     var steps = [], sops = [];
     try { steps = await api('GET', '/onboarding/admin/steps'); } catch (e) { body.innerHTML = escHtml(e.message || 'Failed'); return; }
     try { sops = await api('GET', '/onboarding/admin/sops'); } catch (e) {}
+    var vdocs = [];
+    try { vdocs = await api('GET', '/onboarding/admin/vault-docs'); } catch (e) {}
     window._onbSteps = steps;
     var sopOpts = (sops || []).map(function (s) { return '<option value="' + s.id + '">' + escHtml(s.title) + '</option>'; }).join('');
+    var docOpts = (vdocs || []).map(function (d) { return '<option value="' + d.id + '">' + escHtml(d.name) + '</option>'; }).join('');
 
     var rows = steps.map(function (s, i) {
       var meta = [];
       if (s.type === 'quiz') { var c = s.config || {}; if (typeof c === 'string') { try { c = JSON.parse(c); } catch (e) { c = {}; } } meta.push((c.question_count || 3) + ' questions, pass ' + (c.pass_score || 80) + '%'); }
-      if (s.sop_title) meta.push('SOP: ' + s.sop_title);
+      if (s.type === 'sop_read' && s.doc_title) meta.push('Document: ' + s.doc_title);
+      else if (s.sop_title) meta.push('SOP: ' + s.sop_title);
       return '<div class="onb-step" style="opacity:1">' +
         '<div class="onb-dot">' + (i + 1) + '</div>' +
         '<div style="flex:1;min-width:0"><div style="font-weight:600">' + stepIcon(s.type) + ' ' + escHtml(s.title) + '</div>' +
@@ -507,7 +511,8 @@
         '<option value="video">Video</option><option value="sop_read">Read an SOP</option><option value="quiz">Quiz on an SOP</option></select>' +
       '<input id="onb-new-title" placeholder="Step title" style="background:var(--bg-card);color:var(--text);border:1px solid var(--border);border-radius:8px;padding:10px">' +
       '<input id="onb-new-desc" placeholder="Short description (optional)" style="grid-column:1/-1;background:var(--bg-card);color:var(--text);border:1px solid var(--border);border-radius:8px;padding:10px">' +
-      '<div id="onb-f-sop" style="display:none;grid-column:1/-1"><select id="onb-new-sop" style="width:100%;background:var(--bg-card);color:var(--text);border:1px solid var(--border);border-radius:8px;padding:10px">' + (sopOpts || '<option value="">No SOPs uploaded yet</option>') + '</select></div>' +
+      '<div id="onb-f-doc" style="display:none;grid-column:1/-1"><select id="onb-new-doc" style="width:100%;background:var(--bg-card);color:var(--text);border:1px solid var(--border);border-radius:8px;padding:10px">' + (docOpts || '<option value="">No files in the Standard Operating Procedures vault folder</option>') + '</select><div class="onb-note">The new hire reads this document. Pulled from Document Vault &rsaquo; Standard Operating Procedures.</div></div>' +
+      '<div id="onb-f-sop" style="display:none;grid-column:1/-1"><select id="onb-new-sop" style="width:100%;background:var(--bg-card);color:var(--text);border:1px solid var(--border);border-radius:8px;padding:10px">' + (sopOpts || '<option value="">No SOPs in the library yet</option>') + '</select><div class="onb-note">Quiz questions are generated from this SOP&#39;s text in the SOP library.</div></div>' +
       '<div id="onb-f-video" style="grid-column:1/-1"><input type="file" id="onb-new-video" accept="video/*" style="width:100%;color:var(--text)"><div class="onb-note" id="onb-vid-note"></div></div>' +
       '<div id="onb-f-quiz" style="display:none;grid-column:1/-1;display:none"><div style="display:flex;gap:10px;flex-wrap:wrap">' +
         '<label class="onb-note">Questions <input id="onb-new-qcount" type="number" min="1" max="10" value="3" style="width:70px;background:var(--bg-card);color:var(--text);border:1px solid var(--border);border-radius:6px;padding:6px"></label>' +
@@ -522,7 +527,8 @@
   window.onbTypeFields = function () {
     var t = (document.getElementById('onb-new-type') || {}).value;
     var f = function (id, show) { var el = document.getElementById(id); if (el) el.style.display = show ? 'block' : 'none'; };
-    f('onb-f-sop', t === 'sop_read' || t === 'quiz');
+    f('onb-f-doc', t === 'sop_read');
+    f('onb-f-sop', t === 'quiz');
     f('onb-f-video', t === 'video');
     f('onb-f-quiz', t === 'quiz');
   };
@@ -532,9 +538,13 @@
     var title = document.getElementById('onb-new-title').value.trim();
     if (!title) { showToast('Give the step a title.', 'error'); return; }
     var payload = { type: t, title: title, description: document.getElementById('onb-new-desc').value.trim(), min_seconds: parseInt(document.getElementById('onb-new-min').value, 10) || 0 };
-    if (t === 'sop_read' || t === 'quiz') {
+    if (t === 'sop_read') {
+      payload.document_id = parseInt((document.getElementById('onb-new-doc') || {}).value, 10);
+      if (!payload.document_id) { showToast('Pick a document from the vault.', 'error'); return; }
+    }
+    if (t === 'quiz') {
       payload.sop_id = parseInt((document.getElementById('onb-new-sop') || {}).value, 10);
-      if (!payload.sop_id) { showToast('Pick an SOP.', 'error'); return; }
+      if (!payload.sop_id) { showToast('Pick an SOP for the quiz.', 'error'); return; }
     }
     if (t === 'quiz') {
       payload.question_count = parseInt(document.getElementById('onb-new-qcount').value, 10) || 3;

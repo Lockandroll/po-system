@@ -265,6 +265,17 @@ async function sopVaultDoc(sopId) {
     return { url: url, name: best.name, mime_type: best.mime_type };
   } catch (e) { return null; }
 }
+// Presign one specific vault document (the file the admin picked for a read step).
+async function vaultDocById(documentId) {
+  if (!r2.configured() || !documentId) return null;
+  const dr = await pool.query("SELECT id, name, r2_key, mime_type FROM documents WHERE id = $1 AND status = 'ready'", [documentId]);
+  if (!dr.rows.length) return null;
+  const d = dr.rows[0];
+  try {
+    const url = await r2.presignDownload(d.r2_key, d.name, true, 3600);
+    return { url: url, name: d.name, mime_type: d.mime_type };
+  } catch (e) { return null; }
+}
 async function generateQuestions(step, avoidPrompts) {
   if (!process.env.ANTHROPIC_API_KEY) throw new Error('AI is not configured (ANTHROPIC_API_KEY missing).');
   var n = questionCount(step);
@@ -374,12 +385,18 @@ router.get('/me', requireAuth, async (req, res) => {
     if (current.type === 'video' && current.video_key && r2.configured()) {
       try { cur.video_url = await r2.presignDownload(current.video_key, 'welcome.mp4', true, 3600); } catch (e) { cur.video_error = 'Video is unavailable right now.'; }
     }
-    if (current.type === 'sop_read' && current.sop_id) {
-      const sop = await sopFullText(current.sop_id);
-      if (sop) { cur.sop_title = sop.title; cur.sop_content = sop.text; }
+    if (current.type === 'sop_read') {
+      const docId = parseInt(cfg(current).document_id, 10) || 0;
+      if (current.sop_id) {
+        const sop = await sopFullText(current.sop_id);
+        if (sop) { cur.sop_title = sop.title; cur.sop_content = sop.text; }
+      }
       try {
-        const vdoc = await sopVaultDoc(current.sop_id);
-        if (vdoc) { cur.sop_doc_url = vdoc.url; cur.sop_doc_mime = vdoc.mime_type; cur.sop_doc_name = vdoc.name; }
+        const vdoc = docId ? await vaultDocById(docId) : (current.sop_id ? await sopVaultDoc(current.sop_id) : null);
+        if (vdoc) {
+          cur.sop_doc_url = vdoc.url; cur.sop_doc_mime = vdoc.mime_type; cur.sop_doc_name = vdoc.name;
+          if (!cur.sop_title) cur.sop_title = vdoc.name;
+        }
       } catch (e) {}
     }
     if (current.type === 'quiz') {
@@ -508,7 +525,15 @@ admin.get('/steps', async (req, res) => {
   const r = await pool.query(
     'SELECT s.*, d.title AS sop_title FROM onboarding_steps s LEFT JOIN sop_documents d ON d.id = s.sop_id WHERE s.active = true ORDER BY s.position ASC, s.id ASC'
   );
-  res.json(r.rows);
+  const rows = r.rows;
+  const docIds = [];
+  rows.forEach(function (s) { const id = parseInt(cfg(s).document_id, 10) || 0; if (id) docIds.push(id); });
+  if (docIds.length) {
+    const dn = await pool.query('SELECT id, name FROM documents WHERE id = ANY($1::int[])', [docIds]);
+    const map = {}; dn.rows.forEach(function (d) { map[d.id] = d.name; });
+    rows.forEach(function (s) { const id = parseInt(cfg(s).document_id, 10) || 0; if (id) s.doc_title = map[id] || null; });
+  }
+  res.json(rows);
 });
 
 admin.post('/steps', async (req, res) => {
@@ -517,13 +542,15 @@ admin.post('/steps', async (req, res) => {
   if (['video', 'sop_read', 'quiz'].indexOf(type) === -1) return res.status(400).json({ error: 'Invalid step type' });
   const title = String(b.title || '').trim();
   if (!title) return res.status(400).json({ error: 'Title is required' });
-  if ((type === 'sop_read' || type === 'quiz') && !parseInt(b.sop_id, 10)) return res.status(400).json({ error: 'Pick an SOP for this step' });
+  if (type === 'quiz' && !parseInt(b.sop_id, 10)) return res.status(400).json({ error: 'Pick an SOP for the quiz' });
+  if (type === 'sop_read' && !parseInt(b.document_id, 10)) return res.status(400).json({ error: 'Pick a document from the vault' });
   if (type === 'video' && !String(b.video_key || '').trim()) return res.status(400).json({ error: 'Upload the video first' });
   const mx = await pool.query('SELECT COALESCE(MAX(position),0) AS p FROM onboarding_steps WHERE active = true');
   const config = {};
   if (b.pass_score !== undefined) config.pass_score = parseInt(b.pass_score, 10) || DEFAULT_PASS_SCORE;
   if (b.question_count !== undefined) config.question_count = parseInt(b.question_count, 10) || DEFAULT_QUESTION_COUNT;
   if (b.min_seconds !== undefined) config.min_seconds = parseInt(b.min_seconds, 10) || 0;
+  if (parseInt(b.document_id, 10)) config.document_id = parseInt(b.document_id, 10);
   const r = await pool.query(
     'INSERT INTO onboarding_steps (position, type, title, description, sop_id, video_key, config) VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING *',
     [mx.rows[0].p + 1, type, title.slice(0, 200), String(b.description || '').trim() || null, parseInt(b.sop_id, 10) || null, String(b.video_key || '').trim() || null, JSON.stringify(config)]
@@ -542,6 +569,7 @@ admin.put('/steps/:id', async (req, res) => {
   if (b.pass_score !== undefined) config.pass_score = parseInt(b.pass_score, 10) || DEFAULT_PASS_SCORE;
   if (b.question_count !== undefined) config.question_count = parseInt(b.question_count, 10) || DEFAULT_QUESTION_COUNT;
   if (b.min_seconds !== undefined) config.min_seconds = parseInt(b.min_seconds, 10) || 0;
+  if (b.document_id !== undefined) { const did = parseInt(b.document_id, 10); if (did) config.document_id = did; }
   const r = await pool.query(
     'UPDATE onboarding_steps SET title = COALESCE($1, title), description = $2, sop_id = COALESCE($3, sop_id), video_key = COALESCE($4, video_key), config = $5, updated_at = NOW() WHERE id = $6 RETURNING *',
     [b.title ? String(b.title).trim().slice(0, 200) : null, (b.description !== undefined ? (String(b.description).trim() || null) : s.description), parseInt(b.sop_id, 10) || null, (b.video_key ? String(b.video_key).trim() : null), JSON.stringify(config), id]
@@ -572,6 +600,16 @@ admin.post('/steps/reorder', async (req, res) => {
 admin.get('/sops', async (req, res) => {
   const r = await pool.query('SELECT id, title FROM sop_documents WHERE active = true ORDER BY title ASC');
   res.json(r.rows);
+});
+
+// Vault documents in the "Standard Operating Procedures" folder — the pool a
+// read step's document is chosen from.
+admin.get('/vault-docs', async (req, res) => {
+  const fr = await pool.query("SELECT id FROM document_folders WHERE lower(trim(name)) = 'standard operating procedures'");
+  if (!fr.rows.length) return res.json([]);
+  const folderIds = fr.rows.map(function (f) { return f.id; });
+  const dr = await pool.query("SELECT id, name, mime_type FROM documents WHERE status = 'ready' AND folder_id = ANY($1::int[]) ORDER BY name ASC", [folderIds]);
+  res.json(dr.rows);
 });
 
 // Video upload (R2 presigned PUT, same flow as quote photos / document vault)
