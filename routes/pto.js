@@ -36,6 +36,12 @@ function businessDays(a, b) {
   while (d <= e) { const w = d.getDay(); if (w !== 0 && w !== 6) n++; d.setDate(d.getDate() + 1); }
   return n;
 }
+// pg returns DATE columns as JS Date objects; String(date).slice(0,10) yields
+// junk like "Thu Jul 02" (no year) which Postgres rejects. Always use this.
+function ymdOf(v) {
+  if (v instanceof Date) return ymd(v);
+  return String(v || '').slice(0, 10);
+}
 async function getSetting(key, fallback) {
   const r = await pool.query('SELECT value FROM settings WHERE key = $1', [key]);
   if (!r.rows.length) return fallback;
@@ -114,7 +120,7 @@ function monthlyHoursFromBand(band) {
 }
 
 async function eligibleInfo(user, waitingDays) {
-  const hire = user.hire_date ? parseDate(String(user.hire_date).slice(0, 10)) : null;
+  const hire = user.hire_date ? parseDate(ymdOf(user.hire_date)) : null;
   if (!hire) return { eligible_date: null, eligible_now: true };
   const elig = new Date(hire); elig.setDate(elig.getDate() + (Number(waitingDays) || 0));
   return { eligible_date: ymd(elig), eligible_now: new Date() >= elig };
@@ -288,7 +294,7 @@ router.get('/approvals', requireAuth, async (req, res) => {
   for (let i = 0; i < pend.rows.length; i++) {
     const r = pend.rows[i];
     if (await canApprove(req.user, r.user_id)) {
-      const already = await coverageOverlapCount(String(r.start_date).slice(0, 10), String(r.end_date).slice(0, 10), r.user_id);
+      const already = await coverageOverlapCount(ymdOf(r.start_date), ymdOf(r.end_date), r.user_id);
       const cap = await coverageCap(null);
       r.coverage_used = already + 1;
       r.coverage_cap = cap;
@@ -309,7 +315,7 @@ router.post('/requests/:id/approve', requireAuth, async (req, res) => {
   if (!(await canApprove(req.user, r.user_id))) return res.status(403).json({ error: 'Not your request to approve' });
   if (r.status !== 'pending') return res.status(400).json({ error: 'Request is not pending' });
 
-  const from = String(r.start_date).slice(0, 10), to = String(r.end_date).slice(0, 10);
+  const from = ymdOf(r.start_date), to = ymdOf(r.end_date);
   const already = await coverageOverlapCount(from, to, r.user_id);
   const cap = await coverageCap(null);
   const over = cap !== null && (already + 1) > cap;
@@ -381,7 +387,7 @@ router.post('/requests/:id/deny', requireAuth, async (req, res) => {
     ['denied', req.user.id, reason || null, id]
   );
   await logAudit({ entity_type: 'pto_request', entity_id: id, action: 'denied', user_id: req.user.id, user_name: req.user.name, details: { reason: reason } });
-  await notifyRequester(r.user_id, 'denied', String(r.start_date).slice(0, 10), String(r.end_date).slice(0, 10), r.business_days, req.user.name, reason);
+  await notifyRequester(r.user_id, 'denied', ymdOf(r.start_date), ymdOf(r.end_date), r.business_days, req.user.name, reason);
   res.json({ success: true });
 });
 
@@ -408,7 +414,7 @@ router.post('/requests/:id/cancel', requireAuth, async (req, res) => {
       await pool.query('UPDATE pto_requests SET status = $1, updated_at = NOW() WHERE id = $2', ['cancel_requested', id]);
       return res.json({ success: true, status: 'cancel_requested' });
     }
-    const from = String(r.start_date).slice(0, 10), to = String(r.end_date).slice(0, 10);
+    const from = ymdOf(r.start_date), to = ymdOf(r.end_date);
     const client = await pool.connect();
     try {
       await client.query('BEGIN');
@@ -442,9 +448,9 @@ router.get('/team', requireAuth, requirePermission('manage_pto'), async (req, re
       out.push({
         id: u.id, name: u.name, title: u.title, pay_type: u.pay_type || 'hourly',
         balance_hours: Number(u.pto_balance_hours) || 0,
-        hire_date: u.hire_date ? String(u.hire_date).slice(0, 10) : null,
+        hire_date: u.hire_date ? ymdOf(u.hire_date) : null,
         exempt: u.pto_exempt === true,
-        pending: pend.rows.length ? (String(pend.rows[0].start_date).slice(0, 10)) : null
+        pending: pend.rows.length ? ymdOf(pend.rows[0].start_date) : null
       });
     }
   }
