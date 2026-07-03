@@ -20,19 +20,24 @@ async function requireAuth(req, res, next) {
     return res.status(403).json({ error: 'This token is limited to Outlook add-in actions.' });
   }
   // Onboarding gate: a user still in onboarding may only reach a small whitelist
-  // (auth, the onboarding track itself, time clock — training is on the clock, push).
-  // The claim is re-checked against the DB so a supervisor sign-off unlocks instantly.
+  // (auth, the onboarding track itself, push, and — in Phase 2 only — the time clock).
+  // Phase 1 is paperwork with NO clock-in; Phase 2 is paid training, so the clock
+  // opens only once the hire has advanced to Phase 2. Re-checked against the DB each
+  // request so a supervisor sign-off (or phase advance) takes effect instantly.
   let onbActive = false;
   if (payload.onb) {
+    let _phase = 1;
     try {
-      const _or = await pool.query('SELECT onboarding_status FROM users WHERE id = $1', [payload.id]);
+      const _or = await pool.query('SELECT onboarding_status, onboarding_phase FROM users WHERE id = $1', [payload.id]);
       const _st = _or.rows.length ? _or.rows[0].onboarding_status : 'complete';
+      _phase = _or.rows.length ? (_or.rows[0].onboarding_phase || 1) : 1;
       onbActive = (_st && _st !== 'complete');
     } catch (e) { onbActive = true; /* fail closed on DB errors */ }
     if (onbActive) {
       const _p = (req.originalUrl || req.url || '');
+      const _clockOk = _phase === 2 && _p.indexOf('/api/timeclock') === 0;
       const _ok = _p.indexOf('/api/auth') === 0 || _p.indexOf('/api/onboarding') === 0 ||
-        _p.indexOf('/api/timeclock') === 0 || _p.indexOf('/api/push') === 0;
+        _clockOk || _p.indexOf('/api/push') === 0;
       if (!_ok) return res.status(403).json({ error: 'Finish onboarding to unlock this part of Nova.', onboarding: true });
     }
   }

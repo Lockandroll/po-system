@@ -47,7 +47,15 @@
     '.onb-doc{border:1px solid var(--border,#2a2a2a);border-radius:10px;overflow:hidden;background:var(--bg,#0f0f0f);margin-bottom:14px;height:min(70vh,560px)}' +
     '.onb-doc iframe{width:100%;height:100%;border:0;display:block;background:#fff}' +
     '.onb-doc-fallback{display:flex;flex-direction:column;align-items:center;justify-content:center;text-align:center;height:auto;padding:34px 16px;gap:6px}' +
-    '.onb-fw{position:absolute;inset:0;width:100%;height:100%;display:block}';
+    '.onb-fw{position:absolute;inset:0;width:100%;height:100%;display:block}' +
+    '.onb-slot{display:flex;align-items:center;gap:12px;padding:11px 13px;border:1px solid var(--border,#2a2a2a);border-radius:10px;background:var(--bg,#0f0f0f);margin-bottom:9px}' +
+    '.onb-slot.filled{border-color:#16a34a55}' +
+    '.onb-slot.rejected{border-color:#ef444455}' +
+    '.onb-slot-ic{width:32px;height:32px;border-radius:8px;background:var(--bg-card2,#1c1c1c);display:flex;align-items:center;justify-content:center;font-size:15px;flex-shrink:0}' +
+    '.onb-slot.filled .onb-slot-ic{background:#16a34a22;color:#4ade80}' +
+    '.onb-slot-b{flex:1;min-width:0}.onb-slot-b b{font-size:14px}.onb-slot-b span{display:block;color:var(--text-muted-color,#9ca3af);font-size:12px;margin-top:1px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}' +
+    '.onb-slot-act{font-size:12.5px;font-weight:700;padding:6px 12px;border-radius:7px;border:1px solid var(--border,#2a2a2a);background:var(--bg-card,#161616);color:var(--text,#ededed);cursor:pointer;flex-shrink:0}' +
+    '.onb-slot-act.done{background:#16a34a22;color:#4ade80;border-color:#16a34a55}';
 
   function injectCss() {
     if (document.getElementById('onb-css')) return;
@@ -188,12 +196,31 @@
         '<div class="onb-note" style="margin-bottom:14px">Pass mark: <b>' + (cur.pass_score || 80) + '%</b>' + (cur.attempts ? ' · Attempts so far: ' + cur.attempts : '') + '. You can retry as many times as you need — the questions change every time.</div>' +
         '<button class="onb-btn" onclick="onbStartQuiz(' + cur.id + ')">' + (cur.attempts ? 'Try again with fresh questions' : 'Start the quiz') + '</button>' +
         '</div>';
+    } else if (cur.type === 'document_upload') {
+      var _up = cur.uploaded || {}; var _slots = cur.slots || [];
+      var _allFilled = _slots.length > 0 && _slots.every(function (s) { var f = _up[s.key]; return f && f.review_status !== 'rejected'; });
+      var _rows = _slots.map(function (s) {
+        var f = _up[s.key]; var filled = !!f; var rej = filled && f.review_status === 'rejected';
+        return '<div class="onb-slot' + (filled && !rej ? ' filled' : '') + (rej ? ' rejected' : '') + '">' +
+          '<div class="onb-slot-ic">' + (filled && !rej ? '&#10003;' : '&#128206;') + '</div>' +
+          '<div class="onb-slot-b"><b>' + escHtml(s.label) + '</b><span>' +
+            (rej ? ('Sent back: ' + escHtml(f.reject_reason || 'please re-upload')) : (filled ? escHtml(f.name || 'attached') : (s.key === 'identity' ? 'SSN card or birth certificate — either one' : 'Photo or PDF'))) +
+          '</span></div>' +
+          '<button class="onb-slot-act' + (filled && !rej ? ' done' : '') + '" onclick="onbPickSlot(' + cur.id + ',&#39;' + escHtml(s.key) + '&#39;)">' + (filled && !rej ? 'Replace' : 'Choose file') + '</button>' +
+        '</div>';
+      }).join('');
+      inner = '<div class="onb-desc">Add a clear photo or scan of each item. These are encrypted and seen only by management. You can&#39;t continue until all are attached.</div>' +
+        _rows +
+        '<input type="file" id="onb-slot-file" accept="image/*,application/pdf" style="display:none">' +
+        '<button class="onb-btn" id="onb-continue" ' + (_allFilled ? '' : 'disabled') + ' onclick="onbCompleteStep(' + cur.id + ')">Continue</button>' +
+        '<div class="onb-note" id="onb-up-note"></div>';
     }
     return '<div class="onb-card"><h2>' + stepIcon(cur.type) + ' ' + escHtml(cur.title) + '</h2>' +
       (cur.description ? '<div class="onb-desc">' + escHtml(cur.description) + '</div>' : '') + inner + '</div>';
   }
 
   function onbStartTimers(cur) {
+    if (cur.type === 'document_upload') return;
     var btn = document.getElementById('onb-continue');
     if (!btn) return;
     var waitLeft = cur.min_seconds || 0;
@@ -230,6 +257,39 @@
   window.onbCompleteStep = async function (id) {
     try { await api('POST', '/onboarding/steps/' + id + '/complete', {}); showToast('Step complete!', 'success'); renderOnboardingMode(document.getElementById('app')); }
     catch (e) { showToast(e.message || 'Could not complete step.', 'error'); }
+  };
+
+  function onbReadFileB64(file) {
+    return new Promise(function (resolve, reject) {
+      var fr = new FileReader();
+      fr.onload = function () { resolve(String(fr.result || '')); };
+      fr.onerror = function () { reject(new Error('Could not read the file.')); };
+      fr.readAsDataURL(file);
+    });
+  }
+  window.onbPickSlot = function (stepId, slotKey) {
+    var input = document.getElementById('onb-slot-file');
+    if (!input) return;
+    input.value = '';
+    input.onchange = function () {
+      var file = input.files && input.files[0];
+      if (file) window.onbUploadSlot(stepId, slotKey, file);
+    };
+    input.click();
+  };
+  window.onbUploadSlot = async function (stepId, slotKey, file) {
+    var note = document.getElementById('onb-up-note');
+    if (file.size > 15 * 1024 * 1024) { showToast('That file is too large (max 15 MB).', 'error'); return; }
+    if (note) note.textContent = 'Uploading ' + file.name + '...';
+    try {
+      var dataUrl = await onbReadFileB64(file);
+      await api('POST', '/onboarding/steps/' + stepId + '/upload', { slot_key: slotKey, filename: file.name, mime_type: file.type || 'application/octet-stream', data: dataUrl });
+      showToast('Uploaded.', 'success');
+      renderOnboardingMode(document.getElementById('app'));
+    } catch (e) {
+      if (note) note.textContent = '';
+      showToast(e.message || 'Upload failed.', 'error');
+    }
   };
 
   window.onbStartQuiz = async function (stepId) {
@@ -558,7 +618,7 @@
       '<div class="onb-card"><h2>Add a step</h2>' +
       '<div style="display:grid;gap:10px;grid-template-columns:1fr 1fr">' +
       '<select id="onb-new-type" onchange="onbTypeFields()" style="background:var(--bg-card);color:var(--text);border:1px solid var(--border);border-radius:8px;padding:10px">' +
-        '<option value="video">Video</option><option value="sop_read">Read an SOP</option><option value="quiz">Quiz on an SOP</option></select>' +
+        '<option value="video">Video</option><option value="sop_read">Read an SOP</option><option value="quiz">Quiz on an SOP</option><option value="document_upload">Upload required documents</option></select>' +
       '<input id="onb-new-title" placeholder="Step title" style="background:var(--bg-card);color:var(--text);border:1px solid var(--border);border-radius:8px;padding:10px">' +
       '<input id="onb-new-desc" placeholder="Short description (optional)" style="grid-column:1/-1;background:var(--bg-card);color:var(--text);border:1px solid var(--border);border-radius:8px;padding:10px">' +
       '<div id="onb-f-doc" style="display:none;grid-column:1/-1"><select id="onb-new-doc" style="width:100%;background:var(--bg-card);color:var(--text);border:1px solid var(--border);border-radius:8px;padding:10px">' + (docOpts || '<option value="">No files in the Standard Operating Procedures vault folder</option>') + '</select><div class="onb-note">The new hire reads this document. Pulled from Document Vault &rsaquo; Standard Operating Procedures.</div></div>' +
@@ -588,6 +648,7 @@
     var title = document.getElementById('onb-new-title').value.trim();
     if (!title) { showToast('Give the step a title.', 'error'); return; }
     var payload = { type: t, title: title, description: document.getElementById('onb-new-desc').value.trim(), min_seconds: parseInt(document.getElementById('onb-new-min').value, 10) || 0 };
+    if (t === 'document_upload') payload.min_seconds = 0;
     if (t === 'sop_read') {
       payload.document_id = parseInt((document.getElementById('onb-new-doc') || {}).value, 10);
       if (!payload.document_id) { showToast('Pick a document from the vault.', 'error'); return; }

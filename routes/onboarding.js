@@ -13,12 +13,42 @@ const r2 = require('../utils/r2');
 const { sendEmail, emailTemplate } = require('../utils/email');
 const { sendSms } = require('../utils/sms');
 const push = require('../utils/push');
+const hrCrypto = require('../utils/hrCrypto');
 
 const router = express.Router();
 
 const DEFAULT_PASS_SCORE = 80;
 const DEFAULT_QUESTION_COUNT = 3;
 const DEFAULT_MIN_SECONDS = 30;
+
+// Required-document upload slots (Phase 1). Slot 4 is satisfied by EITHER an SSN
+// card or a birth certificate. An admin may override via step config.slots.
+const DEFAULT_UPLOAD_SLOTS = [
+  { key: 'license', label: "Driver's License", category: 'license', expires: true },
+  { key: 'registration', label: 'Vehicle Registration', category: 'registration', expires: true },
+  { key: 'insurance', label: 'Proof of Auto Liability Insurance', category: 'insurance', expires: true },
+  { key: 'identity', label: 'Social Security Card or Birth Certificate', category: 'identity', expires: false }
+];
+const UPLOAD_MAX_BYTES = 15 * 1024 * 1024;
+const UPLOAD_OK_MIME = ['image/jpeg', 'image/png', 'image/webp', 'image/heic', 'image/heif', 'application/pdf'];
+
+function uploadSlots(step) {
+  var c = cfg(step);
+  if (Array.isArray(c.slots) && c.slots.length) return c.slots;
+  return DEFAULT_UPLOAD_SLOTS;
+}
+// Latest non-superseded file per slot for a hire's onboarding uploads.
+async function slotStatus(userId) {
+  const r = await pool.query(
+    'SELECT DISTINCT ON (slot_key) id, slot_key, name, mime_type, expires_at, review_status, reject_reason, verify_status ' +
+    "FROM hr_documents WHERE user_id = $1 AND source = 'onboarding' AND slot_key IS NOT NULL AND review_status <> 'superseded' " +
+    'ORDER BY slot_key, id DESC',
+    [userId]
+  );
+  var by = {};
+  r.rows.forEach(function (row) { by[row.slot_key] = row; });
+  return by;
+}
 
 function appUrl(path) { return (process.env.APP_URL || '').replace(/\/$/, '') + (path || ''); }
 
@@ -468,6 +498,10 @@ router.get('/me', requireAuth, async (req, res) => {
       const p = prog[current.id];
       cur.attempts = p ? p.attempts : 0;
     }
+    if (current.type === 'document_upload') {
+      cur.slots = uploadSlots(current);
+      cur.uploaded = await slotStatus(req.user.id);
+    }
     payload.current = cur;
   }
   res.json(payload);
@@ -481,6 +515,12 @@ router.post('/steps/:id/complete', requireAuth, async (req, res) => {
   const current = findCurrent(steps, prog);
   if (!current || current.id !== stepId) return res.status(400).json({ error: 'That is not your current step.' });
   if (current.type === 'quiz') return res.status(400).json({ error: 'Quizzes are completed by passing them.' });
+  if (current.type === 'document_upload') {
+    const _slots = uploadSlots(current);
+    const _have = await slotStatus(req.user.id);
+    const _missing = _slots.filter(function (s) { return !_have[s.key]; });
+    if (_missing.length) return res.status(400).json({ error: 'Upload all required documents before continuing.', missing: _missing.map(function (s) { return s.key; }) });
+  }
 
   // Server-side minimum time on step (started_at is set when the step is first served).
   const p = prog[stepId];
@@ -496,6 +536,73 @@ router.post('/steps/:id/complete', requireAuth, async (req, res) => {
   );
   await logAudit({ entity_type: 'onboarding', entity_id: stepId, action: 'step_completed', user_id: req.user.id, user_name: req.user.name, details: { step: current.title, type: current.type } });
   await maybeNotifyReady(req.user.id);
+  res.json({ success: true });
+});
+
+// POST /api/onboarding/steps/:id/upload — trainee uploads one required document.
+// Base64 in JSON; encrypted server-side (Tier-2) into R2 under hr/. Presence and
+// file type/size are the only gate here; a manager judges correctness in review.
+router.post('/steps/:id/upload', requireAuth, async (req, res) => {
+  const stepId = parseInt(req.params.id, 10) || 0;
+  const steps = await activeSteps();
+  const prog = await progressMap(req.user.id);
+  const current = findCurrent(steps, prog);
+  if (!current || current.id !== stepId) return res.status(400).json({ error: 'That is not your current step.' });
+  if (current.type !== 'document_upload') return res.status(400).json({ error: 'This step does not take uploads.' });
+  if (!hrCrypto.storageReady()) return res.status(503).json({ error: 'Secure document storage is not set up yet. Tell your manager.' });
+
+  const b = req.body || {};
+  const slot = uploadSlots(current).filter(function (s) { return s.key === String(b.slot_key || '').trim(); })[0];
+  if (!slot) return res.status(400).json({ error: 'Unknown upload slot.' });
+
+  const mime = String(b.mime_type || '').toLowerCase().split(';')[0].trim();
+  if (UPLOAD_OK_MIME.indexOf(mime) === -1) return res.status(400).json({ error: 'Upload a photo (JPG/PNG/HEIC) or a PDF.' });
+
+  var raw = String(b.data || '');
+  var comma = raw.indexOf(',');
+  if (raw.slice(0, 64).indexOf('base64') !== -1 && comma !== -1) raw = raw.slice(comma + 1);
+  var bytes = null;
+  try { bytes = Buffer.from(raw, 'base64'); } catch (e) { bytes = null; }
+  if (!bytes || !bytes.length) return res.status(400).json({ error: 'That file did not come through — try again.' });
+  if (bytes.length > UPLOAD_MAX_BYTES) return res.status(400).json({ error: 'That file is too large (max 15 MB).' });
+
+  const name = String(b.filename || (slot.key + (mime === 'application/pdf' ? '.pdf' : '.jpg'))).slice(0, 200);
+  const key = hrCrypto.hrKey(req.user.id, name);
+  try { await hrCrypto.putEncrypted(key, bytes); }
+  catch (e) { return res.status(502).json({ error: 'Could not store the file securely. Try again.' }); }
+
+  await pool.query(
+    "UPDATE hr_documents SET review_status = 'superseded', updated_at = NOW() " +
+    "WHERE user_id = $1 AND source = 'onboarding' AND slot_key = $2 AND review_status <> 'superseded'",
+    [req.user.id, slot.key]
+  );
+  const ins = await pool.query(
+    'INSERT INTO hr_documents (user_id, category, slot_key, r2_key, name, mime_type, size_bytes, source, uploaded_by, uploaded_by_name) ' +
+    "VALUES ($1,$2,$3,$4,$5,$6,$7,'onboarding',$1,$8) RETURNING id",
+    [req.user.id, slot.category, slot.key, key, name, mime, bytes.length, req.user.name]
+  );
+  await pool.query(
+    'INSERT INTO onboarding_events (user_id, event_type, step_id, detail, actor_id, actor_name) VALUES ($1,$2,$3,$4,$1,$5)',
+    [req.user.id, 'doc_uploaded', stepId, JSON.stringify({ slot: slot.key, name: name, size: bytes.length }), req.user.name]
+  );
+  await logAudit({ entity_type: 'hr_document', entity_id: ins.rows[0].id, action: 'uploaded', user_id: req.user.id, user_name: req.user.name, details: { slot: slot.key } });
+  res.json({ success: true, slot: slot.key });
+});
+
+// DELETE /api/onboarding/steps/:id/upload/:slot — remove a slot's pending file to redo it.
+router.delete('/steps/:id/upload/:slot', requireAuth, async (req, res) => {
+  const stepId = parseInt(req.params.id, 10) || 0;
+  const steps = await activeSteps();
+  const prog = await progressMap(req.user.id);
+  const current = findCurrent(steps, prog);
+  if (!current || current.id !== stepId) return res.status(400).json({ error: 'That is not your current step.' });
+  const r = await pool.query(
+    "SELECT id, r2_key FROM hr_documents WHERE user_id = $1 AND source = 'onboarding' AND slot_key = $2 AND review_status = 'pending' ORDER BY id DESC LIMIT 1",
+    [req.user.id, String(req.params.slot || '').trim()]
+  );
+  if (!r.rows.length) return res.json({ success: true });
+  try { await r2.deleteObject(r.rows[0].r2_key); } catch (e) {}
+  await pool.query('DELETE FROM hr_documents WHERE id = $1', [r.rows[0].id]);
   res.json({ success: true });
 });
 
@@ -602,7 +709,7 @@ admin.get('/steps', async (req, res) => {
 admin.post('/steps', async (req, res) => {
   const b = req.body || {};
   const type = String(b.type || '');
-  if (['video', 'sop_read', 'quiz'].indexOf(type) === -1) return res.status(400).json({ error: 'Invalid step type' });
+  if (['video', 'sop_read', 'quiz', 'document_upload'].indexOf(type) === -1) return res.status(400).json({ error: 'Invalid step type' });
   const title = String(b.title || '').trim();
   if (!title) return res.status(400).json({ error: 'Title is required' });
   if (type === 'quiz' && !parseInt(b.sop_id, 10)) return res.status(400).json({ error: 'Pick an SOP for the quiz' });
