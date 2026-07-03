@@ -3580,6 +3580,7 @@ async function geicoHandleCsv(text) {
 
 var _vendorsData = [];
 var _vendorCities = [];
+var _vendorUsers = [];
 
 // ── Google Reviews ─────────────────────────────────────────────────────────
 var _reviewsRows = [];
@@ -4208,6 +4209,7 @@ async function renderVendors(el) {
   var canManage = can('manage_vendors');
   try { _vendorsData = await api('GET', '/vendors'); } catch(e) { _vendorsData = []; }
   try { _vendorCities = await api('GET', '/cities'); } catch(e) { _vendorCities = []; }
+  if (canManage) { try { _vendorUsers = await api('GET', '/vendors/pickable-users'); } catch(e) { _vendorUsers = []; } } else { _vendorUsers = []; }
   el.innerHTML =
     '<div class="page-header"><div><div class="page-title">Accounts</div><div class="page-subtitle">Vendor account logins &amp; credentials</div></div>' +
     (canManage ? '<button class="btn btn-primary" onclick="showVendorModal()">+ Add Account</button>' : '') + '</div>' +
@@ -4241,7 +4243,7 @@ function vendorsRenderTable(search) {
             ? '<tr><td colspan="11" style="text-align:center;color:var(--text-muted-color);padding:32px">No accounts found.</td></tr>'
             : filtered.map(function(v) {
                 return '<tr>' +
-                  '<td style="font-weight:600;color:var(--text)">' + escHtml(v.name) + '</td>' +
+                  '<td style="font-weight:600;color:var(--text)">' + escHtml(v.name) + ((v.restricted_to && v.restricted_to.length) ? ' <span style="font-size:11px;font-weight:700;color:var(--primary);border:1px solid var(--primary);border-radius:4px;padding:1px 5px;vertical-align:middle">RESTRICTED</span>' : '') + '</td>' +
                   '<td>' + (v.website ? '<a href="#" onclick="vendorOpenSite(\'' + escHtml(v.website).replace(/'/g,"\\'") + '\',\'' + escHtml(v.password||'').replace(/'/g,"\\'") + '\');return false;" style="color:var(--primary)">' + escHtml(v.website) + '</a>' : '—') + '</td>' +
                   '<td>' + escHtml(v.account_number || '—') + '</td>' +
                   '<td>' + escHtml(vendorCityLabel(v.city_code)) + '</td>' +
@@ -4307,6 +4309,7 @@ function showVendorModal(id) {
   const isEdit = !!id;
   const _v = isEdit ? ((_vendorsData || []).find(function(x){ return x.id === id; }) || {}) : {};
   const name = _v.name || '', website = _v.website || '', account_number = _v.account_number || '', username = _v.username || '', password = _v.password || '', notes = _v.notes || '', rep_name = _v.rep_name || '', rep_email = _v.rep_email || '', rep_phone = _v.rep_phone || '', city_code = _v.city_code || '';
+  const isRestricted = Array.isArray(_v.restricted_to) && _v.restricted_to.length > 0, allow = Array.isArray(_v.restricted_to) ? _v.restricted_to : [];
   const overlay = document.createElement('div');
   overlay.className = 'modal-overlay';
   overlay.id = 'vendor-modal-overlay';
@@ -4335,6 +4338,15 @@ function showVendorModal(id) {
           '<div class="form-group"><label>Rep Email</label><input type="email" id="vm-rep-email" value="' + escHtml(rep_email||'') + '" placeholder="rep@vendor.com" /></div>' +
           '<div class="form-group"><label>Rep Phone</label><input type="text" id="vm-rep-phone" value="' + escHtml(rep_phone||'') + '" placeholder="555-123-4567" /></div>' +
         '</div>' +
+        '<div style="border-top:1px solid var(--border);margin:16px 0 12px;padding-top:12px;font-size:13px;font-weight:600;color:var(--text-muted-color);text-transform:uppercase;letter-spacing:0.05em">Restrict Visibility</div>' +
+        '<label style="display:flex;align-items:center;gap:8px;cursor:pointer;margin-bottom:8px"><input type="checkbox" id="vm-restrict" style="width:auto"' + (isRestricted ? ' checked' : '') + ' onchange="vendorToggleRestrict()" /> <span>Only specific people can see this account</span></label>' +
+        '<div id="vm-restrict-box" style="' + (isRestricted ? '' : 'display:none') + '">' +
+          '<input type="text" placeholder="Search people..." oninput="vendorFilterUsers(this.value)" style="width:100%;padding:7px 10px;margin-bottom:8px;background:var(--surface-color);border:1px solid var(--border);border-radius:6px;color:var(--text-color);font-size:13px" />' +
+          '<div style="max-height:180px;overflow-y:auto;border:1px solid var(--border);border-radius:6px;padding:6px">' +
+            ((_vendorUsers && _vendorUsers.length) ? _vendorUsers.map(function(u){ return '<label class="vm-user-row" data-name="' + escHtml((u.name||'').toLowerCase()) + '" style="display:flex;align-items:center;gap:8px;padding:5px 4px;cursor:pointer"><input type="checkbox" class="vm-user" value="' + u.id + '" style="width:auto"' + (allow.indexOf(u.id)!==-1 ? ' checked' : '') + ' /> <span>' + escHtml(u.name) + ' <span style="color:var(--text-muted-color);font-size:12px">' + escHtml(roleLabel(u.role)) + '</span></span></label>'; }).join('') : '<div style="color:var(--text-muted-color);font-size:13px;padding:6px">No users available.</div>') +
+          '</div>' +
+          '<div style="color:var(--text-muted-color);font-size:12px;margin-top:6px">Admins and owners can always see every account.</div>' +
+        '</div>' +
       '</div>' +
       '<div class="modal-footer">' +
         '<button class="btn btn-secondary" onclick="document.getElementById(\'vendor-modal-overlay\').remove()">Cancel</button>' +
@@ -4349,6 +4361,20 @@ function toggleVendorModalPw() {
   const btn = input.nextElementSibling;
   if (input.type === 'password') { input.type = 'text'; btn.textContent = 'Hide'; }
   else { input.type = 'password'; btn.textContent = 'Show'; }
+}
+
+function vendorToggleRestrict() {
+  var b = document.getElementById('vm-restrict-box');
+  var c = document.getElementById('vm-restrict');
+  if (b && c) b.style.display = c.checked ? '' : 'none';
+}
+function vendorFilterUsers(q) {
+  q = (q || '').toLowerCase();
+  var rows = document.querySelectorAll('.vm-user-row');
+  for (var i = 0; i < rows.length; i++) {
+    var n = rows[i].getAttribute('data-name') || '';
+    rows[i].style.display = (!q || n.indexOf(q) !== -1) ? 'flex' : 'none';
+  }
 }
 
 async function saveVendor(id) {
@@ -4366,6 +4392,10 @@ async function saveVendor(id) {
     rep_phone: (document.getElementById('vm-rep-phone')||{}).value.trim() || null,
     city_code: (document.getElementById('vm-city')||{}).value || null
   };
+  var _restrict = (document.getElementById('vm-restrict')||{}).checked;
+  var _rids = [];
+  if (_restrict) { var _cbs = document.querySelectorAll('.vm-user:checked'); for (var _i=0;_i<_cbs.length;_i++) _rids.push(parseInt(_cbs[_i].value,10)); }
+  payload.restricted_to = _restrict ? _rids : null;
   try {
     if (id) { await api('PUT', '/vendors/' + id, payload); }
     else { await api('POST', '/vendors', payload); }
