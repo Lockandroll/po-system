@@ -12267,10 +12267,11 @@ var _tcTimer=null;
 function tcStopTimer(){if(_tcTimer){clearInterval(_tcTimer);_tcTimer=null;}}
 var _tcTab='punch';
 var _tcWeek=null;
-function tcReload(){var c=document.getElementById('content');if(c)renderTimeClock(c);}
+function tcReload(){var c=window._tcHost;if(!c||!document.body.contains(c))c=document.getElementById('content');if(c)renderTimeClock(c);}
 function tcTab(t){_tcTab=t;if(t!=='mysheet')_tcWeek=null;tcReload();}
 
 async function renderTimeClock(content){
+  window._tcHost=content;
   tcInjectStyles();tcInjectMgrStyles();tcStopTimer();
   var isMgr=(typeof can==='function')&&can('manage_timeclock');
   if(!isMgr&&(_tcTab==='in'||_tcTab==='sheets'))_tcTab='punch';

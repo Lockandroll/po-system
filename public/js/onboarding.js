@@ -109,8 +109,7 @@
         '<div class="onb-title">Welcome, ' + escHtml(firstName(data.name)) + ' 👋</div>' +
         '<div class="onb-sub">Let&#39;s get you set up. Work through each step — Nova unlocks when you finish and ' + escHtml(data.supervisor_name || 'your supervisor') + ' signs off.</div>' +
         '<div class="onb-bar"><div style="width:' + pct + '%"></div></div>' +
-        '<div class="onb-note" style="margin:-14px 0 16px">' + done + ' of ' + total + ' steps complete</div>' +
-        '<div class="onb-steps">' + stepsHtml + '</div>' +
+        '<div class="onb-note" style="margin:-14px 0 16px">Step ' + Math.min(done + 1, total || 1) + ' of ' + (total || 1) + '</div>' +
         '<div id="onb-body">' + body + '</div>' +
       '</div>';
 
@@ -201,7 +200,7 @@
         }).join('') + '</div>';
     }).join('');
     if (box) box.innerHTML = html +
-      '<button class="onb-btn" onclick="onbSubmitQuiz(' + qz.attempt_id + ',' + qz.questions.length + ',' + stepId + ')">Submit answers</button>' +
+      '<button class="onb-btn" id="onb-quiz-submit" onclick="onbSubmitQuiz(' + qz.attempt_id + ',' + qz.questions.length + ',' + stepId + ')">Submit answers</button>' +
       '<div class="onb-note" id="onb-quiz-note"></div>';
   };
 
@@ -217,8 +216,31 @@
     catch (e) { showToast(e.message || 'Submit failed.', 'error'); return; }
     (r.results || []).forEach(function (res) {
       var el = document.getElementById('onb-q-' + res.n);
-      if (el) el.className = 'onb-q ' + (res.correct ? 'good' : 'bad');
+      if (!el) return;
+      el.className = 'onb-q ' + (res.correct ? 'good' : 'bad');
+      var picked = answers[res.n];
+      var labels = el.querySelectorAll('label');
+      for (var li = 0; li < labels.length; li++) {
+        var lab = labels[li];
+        var input = lab.querySelector('input');
+        if (input) input.disabled = true;
+        var isCorrect = (li === res.correct_index);
+        var isPicked = (li === picked);
+        if (isCorrect) {
+          lab.style.background = 'rgba(34,197,94,.15)';
+          lab.style.color = '#22c55e';
+          lab.insertAdjacentHTML('beforeend', ' <span style="font-size:12px;font-weight:700">&#10003; Correct answer</span>');
+        } else if (isPicked) {
+          lab.style.background = 'rgba(239,68,68,.13)';
+          lab.style.color = '#f87171';
+          lab.insertAdjacentHTML('beforeend', ' <span style="font-size:12px">&#10007; Your answer</span>');
+        } else {
+          lab.style.opacity = '.5';
+        }
+      }
     });
+    var submitBtn = document.getElementById('onb-quiz-submit');
+    if (submitBtn) submitBtn.style.display = 'none';
     var note = document.getElementById('onb-quiz-note');
     if (r.passed) {
       if (note) note.innerHTML = '<b style="color:#16a34a">Passed with ' + r.score + '%!</b> Moving on…';
