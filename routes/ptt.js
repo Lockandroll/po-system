@@ -47,24 +47,56 @@ function isConfigured() {
 // The channels this user may join. Mirrors the /api/cities/mine convention:
 // dispatch-tier roles get every city channel; a user with assigned cities gets
 // those; a user with no assignment gets every city. Everyone gets All Hands.
+// Roles that get the per-city locksmith chats (Tony's spec: manager,
+// locksmith, locksmith coordinator; admin/owner implicit).
+const LOCKSMITH_CHAT_ROLES = ['admin', 'manager', 'locksmith', 'locksmith_coordinator'];
+
 async function allowedChannels(user) {
   const cities = (await pool.query(
     'SELECT name, code, color FROM cities WHERE active = true ORDER BY name ASC'
   )).rows;
-  let list;
-  if (await hasAllChannels(user)) {
-    list = cities;
-  } else {
-    const mine = (await pool.query(
+  const all = await hasAllChannels(user);
+  let mine = null; // null = every city (all-channels perm, or no assignment)
+  if (!all) {
+    const rows = (await pool.query(
       'SELECT city_code FROM user_cities WHERE user_id = $1', [user.id]
     )).rows.map(function (r) { return (r.city_code || '').trim().toUpperCase(); });
-    list = mine.length
-      ? cities.filter(function (c) { return mine.indexOf((c.code || '').trim().toUpperCase()) !== -1; })
-      : cities;
+    if (rows.length) mine = rows;
   }
-  const channels = list.map(function (c) {
-    return { code: (c.code || '').trim().toUpperCase(), name: c.name, color: c.color || '#f97316' };
+  function cc(c) { return (c.code || '').trim().toUpperCase(); }
+  function visible(codes) {
+    if (!mine) return true;
+    return codes.some(function (m) { return mine.indexOf(m) !== -1; });
+  }
+  const channels = [];
+  cities.forEach(function (c) {
+    if (visible([cc(c)])) channels.push({ code: cc(c), name: c.name, color: c.color || '#f97316' });
   });
+  // Locksmith chats: one per city, restricted by role. Tampa + Clearwater are
+  // combined into a single Tampa Bay chat. The Dispatch pseudo-city gets none.
+  if (LOCKSMITH_CHAT_ROLES.includes(user.role)) {
+    const groups = {};
+    const order = [];
+    cities.forEach(function (c) {
+      const code = cc(c);
+      if (code === 'DIS') return;
+      const key = (code === 'TPA' || code === 'CSP') ? 'TPA' : code;
+      if (!groups[key]) {
+        groups[key] = {
+          code: key + '-LS',
+          name: (key === 'TPA' ? 'Tampa Bay' : c.name) + ' Locksmiths',
+          color: c.color || '#f97316',
+          members: []
+        };
+        order.push(key);
+      }
+      groups[key].members.push(code);
+    });
+    order.forEach(function (k) {
+      const g = groups[k];
+      if (visible(g.members)) channels.push({ code: g.code, name: g.name, color: g.color, locksmith: true });
+    });
+  }
   channels.push(ALL_HANDS);
   return channels;
 }

@@ -1,16 +1,14 @@
-/* Nova PTT (Radio) frontend module. Loaded after app.js; uses its globals:
-   api(), state, can(), escHtml(), showToast(), navigate(). View: 'ptt'.
-   Styles are namespaced with .ptt- so they cannot collide with the app.
-   No backticks in this file. Apostrophes in HTML strings use &#39;.
+/* Nova PTT (Radio) frontend module - Zello-style UI. Loaded after app.js;
+   uses its globals: api(), state, escHtml(), showToast(), navigate().
+   Styles namespaced .ptt-. No backticks. Apostrophes in HTML use &#39;.
 
-   Model: one TALK connection (publish + subscribe; PTT toggles the outbound
-   mic, which is published once at join then muted, so keying is an instant
-   unmute) plus any number of MONITOR connections (scan mode: listen-only
-   tokens minted by Nova with canPublish:false, audio mixes together).
-   While keyed up, the client records its own mic (MediaRecorder) and uploads
-   the clip to R2 via presigned URL for the Radio Log.
-   The floating bar lives on document.body, outside #app, so it survives
-   render() and keeps the radio usable anywhere in Nova. */
+   Layout mirrors Zello: three tabs (Recents / Channels / People) showing one
+   list at a time, and a focused Talk screen when you tap an item - big PTT
+   button, who is here, and that item's own history. Connections: one TALK
+   room (mic published once at join, muted; keying = instant unmute), any
+   number of LISTEN rooms (scan), a personal-inbox room while the radio is on,
+   and warm DM rooms into other people's inboxes. Keyed audio is recorded
+   client-side and uploaded to R2 for the log. */
 (function () {
   'use strict';
 
@@ -20,106 +18,94 @@
   var MIN_CLIP_MS = 400;
 
   var PTT = {
-    channels: [],
-    configured: true,
-    canRecord: false,
-    talk: null,            // {room, channel, audioEls}
-    monitors: {},          // code -> {room, channel, audioEls, attempt, timer}
-    connecting: false,
-    talking: false,
-    wantDisconnect: false,
-    reconnectAttempt: 0,
-    reconnectTimer: null,
-    reconnectWasAuto: false,
-    opChain: Promise.resolve(),
-    sdkPromise: null,
-    rec: null,             // in-flight MediaRecorder session
-    playingId: null,
-    logChan: '',
-    logDate: '',
-    newCount: 0,
-    pollTimer: null,
-    inbox: null,           // listener on my own personal room (direct inbox)
-    dms: {},               // targetUserId -> connection into THEIR personal room
-    dmHold: 0,             // user id currently held down in the People list
-    people: [],
-    canDirect: false
+    channels: [], configured: true, canRecord: false,
+    talk: null, monitors: {}, connecting: false, talking: false,
+    wantDisconnect: false, reconnectAttempt: 0, reconnectTimer: null, reconnectWasAuto: false,
+    opChain: Promise.resolve(), sdkPromise: null,
+    rec: null, playingId: null,
+    inbox: null, dms: {}, dmHold: 0, people: [], canDirect: false,
+    logRows: [], newCount: 0, pollTimer: null,
+    tab: 'channels', sel: null // {type:'channel',code} | {type:'person',id,name,online}
   };
 
   // ---- styles --------------------------------------------------------------
   function injectStyles() {
     if (document.getElementById('ptt-styles')) return;
     var css = [
-      '.ptt-wrap{max-width:960px}',
-      '.ptt-sub{color:var(--text-dim,#9a9a9a);font-size:13px;margin:2px 0 18px}',
-      '.ptt-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(215px,1fr));gap:12px;margin-bottom:18px}',
-      '.ptt-chan{position:relative;background:var(--bg-elevated,#171717);border:1px solid var(--border,#2a2a2a);border-radius:14px;padding:14px;cursor:pointer;user-select:none;transition:border-color .15s}',
-      '.ptt-chan:hover{border-color:var(--primary,#f97316)}',
-      '.ptt-chan.live{border-color:var(--primary,#f97316);box-shadow:0 0 0 1px var(--primary,#f97316)}',
-      '.ptt-chan.mon{border-color:#22c55e}',
-      '.ptt-chan-top{display:flex;align-items:center;gap:8px}',
+      '.ptt-wrap{max-width:560px}',
+      '.ptt-sub{color:var(--text-dim,#9a9a9a);font-size:13px;margin:2px 0 14px}',
+      '.ptt-tabs{display:flex;gap:6px;margin-bottom:12px}',
+      '.ptt-tab{flex:1;text-align:center;padding:9px 0;border-radius:999px;background:var(--bg-elevated,#171717);border:1px solid var(--border,#2a2a2a);color:var(--text-dim,#9a9a9a);cursor:pointer;font-weight:700;font-size:13px;user-select:none;position:relative}',
+      '.ptt-tab:hover{color:var(--text,#ededed)}',
+      '.ptt-tab.active{background:var(--primary,#f97316);color:#0f0f0f;border-color:var(--primary,#f97316)}',
+      '.ptt-badge{display:inline-block;min-width:17px;text-align:center;background:var(--primary,#f97316);color:#0f0f0f;font-size:10px;font-weight:800;border-radius:999px;padding:2px 5px;margin-left:6px;vertical-align:1px}',
+      '.ptt-tab.active .ptt-badge{background:#0f0f0f;color:var(--primary,#f97316)}',
+      '.ptt-list{display:flex;flex-direction:column;gap:6px}',
+      '.ptt-row{display:flex;align-items:center;gap:10px;background:var(--bg-elevated,#171717);border:1px solid var(--border,#2a2a2a);border-radius:12px;padding:11px 13px;cursor:pointer;user-select:none;font-size:14px;transition:border-color .12s}',
+      '.ptt-row:hover{border-color:var(--primary,#f97316)}',
+      '.ptt-row.live{border-color:var(--primary,#f97316);box-shadow:0 0 0 1px var(--primary,#f97316)}',
+      '.ptt-row.mon{border-color:#22c55e}',
       '.ptt-dot{width:10px;height:10px;border-radius:50%;flex:none}',
-      '.ptt-chan-name{font-weight:700;font-size:14px}',
-      '.ptt-chan-code{color:var(--text-dim,#9a9a9a);font-size:11px;letter-spacing:.6px;margin-top:3px}',
-      '.ptt-chip{display:inline-block;margin-left:auto;background:var(--primary,#f97316);color:#0f0f0f;font-size:10px;font-weight:800;border-radius:999px;padding:2px 8px;letter-spacing:.5px}',
-      '.ptt-chip.g{background:#22c55e}',
-      '.ptt-mon-btn{position:absolute;bottom:10px;right:10px;background:none;border:1px solid var(--border,#2a2a2a);border-radius:999px;color:var(--text-dim,#9a9a9a);font-size:11px;font-weight:700;padding:3px 10px;cursor:pointer}',
-      '.ptt-mon-btn:hover{border-color:#22c55e;color:#22c55e}',
-      '.ptt-mon-btn.on{background:#22c55e;border-color:#22c55e;color:#0f0f0f}',
-      '.ptt-speak{position:absolute;top:10px;right:10px;width:8px;height:8px;border-radius:50%;background:#22c55e;box-shadow:0 0 8px #22c55e;display:none}',
-      '.ptt-chan.speaking .ptt-speak{display:block}',
-      '.ptt-panel{background:var(--bg-elevated,#171717);border:1px solid var(--border,#2a2a2a);border-radius:14px;padding:18px;margin-top:4px}',
+      '.ptt-row .nm{flex:1;font-weight:700;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}',
+      '.ptt-row .sub{color:var(--text-dim,#9a9a9a);font-size:11px;font-weight:400;display:block;margin-top:1px}',
+      '.ptt-row .spk{width:8px;height:8px;border-radius:50%;background:#22c55e;box-shadow:0 0 8px #22c55e;flex:none;display:none}',
+      '.ptt-row.speaking .spk{display:block}',
+      '.ptt-chip{background:var(--primary,#f97316);color:#0f0f0f;font-size:10px;font-weight:800;border-radius:999px;padding:2px 8px;letter-spacing:.5px;flex:none}',
+      '.ptt-listen{background:none;border:1px solid var(--border,#2a2a2a);border-radius:999px;color:var(--text-dim,#9a9a9a);font-size:11px;font-weight:700;padding:4px 11px;cursor:pointer;flex:none}',
+      '.ptt-listen:hover{border-color:#22c55e;color:#22c55e}',
+      '.ptt-listen.on{background:#22c55e;border-color:#22c55e;color:#0f0f0f}',
+      '.ptt-pdot{width:9px;height:9px;border-radius:50%;background:#3f3f46;flex:none}',
+      '.ptt-row.on .ptt-pdot{background:#22c55e;box-shadow:0 0 6px #22c55e}',
+      '.ptt-chev{color:var(--text-dim,#9a9a9a);flex:none;font-size:16px}',
+      /* talk screen */
+      '.ptt-talkhead{display:flex;align-items:center;gap:10px;margin-bottom:12px}',
+      '.ptt-back{background:none;border:1px solid var(--border,#2a2a2a);border-radius:10px;color:var(--text,#ededed);width:34px;height:34px;cursor:pointer;font-size:16px;flex:none}',
+      '.ptt-back:hover{border-color:var(--primary,#f97316)}',
+      '.ptt-talkhead .tname{font-size:18px;font-weight:800;flex:1}',
       '.ptt-status{display:flex;align-items:center;gap:8px;font-size:13px;color:var(--text-dim,#9a9a9a);margin-bottom:12px}',
       '.ptt-status .ptt-dot.ok{background:#22c55e}',
       '.ptt-status .ptt-dot.warn{background:#eab308;animation:ptt-blink 1s infinite}',
-      '.ptt-people{display:flex;flex-wrap:wrap;gap:8px;margin:10px 0 18px}',
+      '.ptt-status .ptt-dot.off{background:#3f3f46}',
+      '.ptt-panel{background:var(--bg-elevated,#171717);border:1px solid var(--border,#2a2a2a);border-radius:14px;padding:18px}',
+      '.ptt-people{display:flex;flex-wrap:wrap;gap:8px;margin:2px 0 14px}',
       '.ptt-person{background:var(--bg,#0f0f0f);border:1px solid var(--border,#2a2a2a);border-radius:999px;padding:5px 12px;font-size:12px;font-weight:600}',
       '.ptt-person.speaking{border-color:#22c55e;color:#22c55e}',
-      '.ptt-talkrow{display:flex;flex-direction:column;align-items:center;gap:10px;padding:10px 0 4px}',
-      '.ptt-talk{width:130px;height:130px;border-radius:50%;border:2px solid var(--primary,#f97316);background:transparent;color:var(--primary,#f97316);font-weight:800;font-size:13px;letter-spacing:.5px;cursor:pointer;user-select:none;-webkit-user-select:none;touch-action:none;transition:transform .08s}',
+      '.ptt-talkrow{display:flex;flex-direction:column;align-items:center;gap:10px;padding:8px 0 4px}',
+      '.ptt-talk{width:150px;height:150px;border-radius:50%;border:2px solid var(--primary,#f97316);background:transparent;color:var(--primary,#f97316);font-weight:800;font-size:13px;letter-spacing:.5px;cursor:pointer;user-select:none;-webkit-user-select:none;touch-action:none;transition:transform .08s}',
       '.ptt-talk:active{transform:scale(.97)}',
       '.ptt-talk.onair{background:var(--primary,#f97316);color:#0f0f0f;animation:ptt-pulse 1.2s infinite}',
+      '.ptt-talk.connecting{border-color:#eab308;color:#eab308}',
       '.ptt-hint{color:var(--text-dim,#9a9a9a);font-size:12px}',
-      '.ptt-actions{display:flex;gap:8px;justify-content:center;margin-top:14px}',
-      '.ptt-notice{background:rgba(234,179,8,.08);border:1px solid rgba(234,179,8,.35);border-radius:12px;padding:12px 14px;font-size:13px;margin-bottom:16px}',
-      '.ptt-log{margin-top:18px}',
-      '.ptt-log-head{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:10px}',
-      '.ptt-log-head h3{margin:0;font-size:16px;flex:1}',
-      '.ptt-log-head select,.ptt-log-head input{width:auto;padding:6px 10px;font-size:13px;margin:0}',
+      '.ptt-actions{display:flex;gap:8px;justify-content:center;margin-top:12px}',
+      '.ptt-notice{background:rgba(234,179,8,.08);border:1px solid rgba(234,179,8,.35);border-radius:12px;padding:12px 14px;font-size:13px;margin-bottom:14px}',
+      '.ptt-hist{margin-top:16px}',
+      '.ptt-hist h4{margin:0 0 8px;font-size:12px;text-transform:uppercase;letter-spacing:.6px;color:var(--text-dim,#9a9a9a)}',
       '.ptt-log-list{display:flex;flex-direction:column;gap:6px}',
       '.ptt-rec{display:flex;align-items:center;gap:10px;background:var(--bg,#0f0f0f);border:1px solid var(--border,#2a2a2a);border-radius:10px;padding:8px 12px;font-size:13px}',
-      '.ptt-rec .t{color:var(--text-dim,#9a9a9a);font-size:12px;min-width:118px}',
-      '.ptt-rec .c{font-size:10px;font-weight:800;letter-spacing:.5px;border:1px solid var(--border,#2a2a2a);border-radius:999px;padding:2px 8px}',
-      '.ptt-rec .n{flex:1;font-weight:600}',
+      '.ptt-rec.new{border-color:var(--primary,#f97316)}',
+      '.ptt-rec .t{color:var(--text-dim,#9a9a9a);font-size:12px;min-width:112px}',
+      '.ptt-rec .c{font-size:10px;font-weight:800;letter-spacing:.5px;border:1px solid var(--border,#2a2a2a);border-radius:999px;padding:2px 8px;flex:none}',
+      '.ptt-rec .n{flex:1;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}',
       '.ptt-rec .d{color:var(--text-dim,#9a9a9a);font-size:12px}',
+      '.ptt-rec .newchip{background:var(--primary,#f97316);color:#0f0f0f;font-size:9px;font-weight:800;border-radius:999px;padding:2px 6px;letter-spacing:.5px}',
       '.ptt-play{background:none;border:1px solid var(--primary,#f97316);color:var(--primary,#f97316);border-radius:999px;width:30px;height:30px;cursor:pointer;font-size:12px;flex:none}',
       '.ptt-play.playing{background:var(--primary,#f97316);color:#0f0f0f}',
+      /* echo row */
+      '.ptt-echo-btn{background:none;border:1px solid var(--border,#2a2a2a);border-radius:999px;color:var(--text-dim,#9a9a9a);font-size:11px;font-weight:700;padding:4px 11px;cursor:pointer;flex:none;touch-action:none;-webkit-user-select:none;user-select:none}',
+      '.ptt-echo-btn:hover{border-color:#8b5cf6;color:#8b5cf6}',
+      '.ptt-echo-btn.rec{background:#ef4444;border-color:#ef4444;color:#fff;animation:ptt-blink 1s infinite}',
+      '.ptt-echo-btn.play{background:#8b5cf6;border-color:#8b5cf6;color:#fff}',
       '@keyframes ptt-pulse{0%{box-shadow:0 0 0 0 rgba(249,115,22,.45)}70%{box-shadow:0 0 0 18px rgba(249,115,22,0)}100%{box-shadow:0 0 0 0 rgba(249,115,22,0)}}',
       '@keyframes ptt-blink{50%{opacity:.35}}',
+      /* floating bar */
       '#ptt-bar{position:fixed;bottom:18px;right:80px;z-index:8400;display:none;align-items:center;gap:10px;background:var(--bg-elevated,#171717);border:1px solid var(--border,#2a2a2a);border-radius:999px;padding:8px 10px 8px 14px;box-shadow:0 8px 30px rgba(0,0,0,.45)}',
       '#ptt-bar .ptt-bar-name{font-size:12px;font-weight:700;cursor:pointer;max-width:150px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}',
+      '#ptt-bar .ptt-bar-new{background:var(--primary,#f97316);color:#0f0f0f;font-size:10px;font-weight:800;border-radius:999px;padding:2px 7px;cursor:pointer}',
       '#ptt-bar .ptt-bar-talk{width:42px;height:42px;border-radius:50%;border:2px solid var(--primary,#f97316);background:transparent;color:var(--primary,#f97316);cursor:pointer;user-select:none;-webkit-user-select:none;touch-action:none;display:flex;align-items:center;justify-content:center}',
       '#ptt-bar .ptt-bar-talk.onair{background:var(--primary,#f97316);color:#0f0f0f;animation:ptt-pulse 1.2s infinite}',
       '#ptt-bar .ptt-bar-talk.off{border-color:var(--border,#2a2a2a);color:var(--border,#2a2a2a);cursor:default}',
       '#ptt-bar .ptt-bar-x{background:none;border:none;color:var(--text-dim,#9a9a9a);cursor:pointer;font-size:15px;padding:4px}',
-      '#ptt-bar .ptt-bar-x:hover{color:#ef4444}',
-      '#ptt-bar .ptt-bar-new{background:var(--primary,#f97316);color:#0f0f0f;font-size:10px;font-weight:800;border-radius:999px;padding:2px 7px;cursor:pointer}',
-      '.ptt-rec.new{border-color:var(--primary,#f97316)}',
-      '.ptt-rec .newchip{background:var(--primary,#f97316);color:#0f0f0f;font-size:9px;font-weight:800;border-radius:999px;padding:2px 6px;letter-spacing:.5px}',
-      '.ptt-chan.echo{cursor:default}',
-      '.ptt-chan.echo:hover{border-color:#8b5cf6}',
-      '.ptt-echo-btn{touch-action:none;-webkit-user-select:none}',
-      '.ptt-echo-btn.rec{background:#ef4444;border-color:#ef4444;color:#fff;animation:ptt-blink 1s infinite}',
-      '.ptt-echo-btn.play{background:#8b5cf6;border-color:#8b5cf6;color:#fff}',
-      '.ptt-ppl{margin-top:18px}',
-      '.ptt-ppl-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(195px,1fr));gap:8px}',
-      '.ptt-pcard{display:flex;align-items:center;gap:8px;background:var(--bg-elevated,#171717);border:1px solid var(--border,#2a2a2a);border-radius:10px;padding:8px 12px;font-size:13px}',
-      '.ptt-pdot{width:8px;height:8px;border-radius:50%;background:#3f3f46;flex:none}',
-      '.ptt-pcard.on .ptt-pdot{background:#22c55e;box-shadow:0 0 6px #22c55e}',
-      '.ptt-pname{flex:1;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}',
-      '.ptt-ptalk{background:none;border:1px solid var(--primary,#f97316);color:var(--primary,#f97316);border-radius:999px;font-size:11px;font-weight:700;padding:3px 10px;cursor:pointer;touch-action:none;-webkit-user-select:none;user-select:none}',
-      '.ptt-ptalk.connecting{border-color:#eab308;color:#eab308}',
-      '.ptt-ptalk.onair{background:var(--primary,#f97316);color:#0f0f0f;animation:ptt-pulse 1.2s infinite}'
+      '#ptt-bar .ptt-bar-x:hover{color:#ef4444}'
     ].join('\n');
     var el = document.createElement('style');
     el.id = 'ptt-styles';
@@ -127,7 +113,7 @@
     document.head.appendChild(el);
   }
 
-  // ---- SDK / audio sink ----------------------------------------------------
+  // ---- SDK / audio sink ------------------------------------------------------
   function loadSdk() {
     if (window.LivekitClient) return Promise.resolve();
     if (PTT.sdkPromise) return PTT.sdkPromise;
@@ -158,7 +144,7 @@
     return d;
   }
 
-  // ---- shared room wiring ---------------------------------------------------
+  // ---- shared room wiring ------------------------------------------------------
   function wireRoom(handle) {
     var RE = window.LivekitClient.RoomEvent;
     var room = handle.room;
@@ -171,7 +157,7 @@
           showToast('Direct transmission from ' + (participant.name || ('User ' + participant.identity)), 'success');
         }
       }
-      refreshLive();
+      refreshUI();
     });
     room.on(RE.TrackUnsubscribed, function (track) {
       (track.detach() || []).forEach(function (el) {
@@ -179,14 +165,14 @@
         if (i !== -1) handle.audioEls.splice(i, 1);
         if (el.parentNode) el.parentNode.removeChild(el);
       });
-      refreshLive();
+      refreshUI();
     });
-    room.on(RE.ParticipantConnected, refreshLive);
-    room.on(RE.ParticipantDisconnected, refreshLive);
-    room.on(RE.ActiveSpeakersChanged, refreshLive);
-    room.on(RE.Reconnecting, refreshLive);
-    room.on(RE.Reconnected, refreshLive);
-    if (RE.AudioPlaybackStatusChanged) room.on(RE.AudioPlaybackStatusChanged, refreshLive);
+    room.on(RE.ParticipantConnected, refreshUI);
+    room.on(RE.ParticipantDisconnected, refreshUI);
+    room.on(RE.ActiveSpeakersChanged, refreshUI);
+    room.on(RE.Reconnecting, refreshUI);
+    room.on(RE.Reconnected, refreshUI);
+    if (RE.AudioPlaybackStatusChanged) room.on(RE.AudioPlaybackStatusChanged, refreshUI);
     room.on(RE.Disconnected, function () {
       if (handle.kind === 'talk') handleTalkDisconnect(handle);
       else if (handle.kind === 'monitor') handleMonitorDisconnect(handle);
@@ -209,17 +195,17 @@
     handle.audioEls = [];
   }
 
-  // ---- TALK connection -------------------------------------------------------
+  // ---- TALK connection ----------------------------------------------------------
   async function joinTalk(code) {
     if (PTT.connecting) return;
-    PTT.connecting = true; /* before teardown so a channel switch keeps the inbox */
-    if (PTT.monitors[code]) stopMonitor(code, true); /* cannot hold both: same identity */
+    PTT.connecting = true; /* before teardown so a switch keeps the inbox */
+    if (PTT.monitors[code]) stopMonitor(code, true); /* same identity cannot hold both */
     var prevTalk = PTT.talk ? PTT.talk.channel.code : null;
     if (PTT.talk) await leaveTalk(true);
     clearTimeout(PTT.reconnectTimer);
     PTT.reconnectTimer = null;
     PTT.wantDisconnect = false;
-    refreshLive(); updateBar();
+    refreshUI(); updateBar();
     try {
       await loadSdk();
       var data = await api('POST', '/ptt/token', { channel: code });
@@ -243,10 +229,10 @@
       ensurePoll();
       startInbox();
       sendHeartbeat(false);
-      refreshLive(); updateBar();
+      refreshUI(); updateBar();
       if (!PTT.reconnectWasAuto) showToast('Live on ' + data.channel.name, 'success');
       PTT.reconnectWasAuto = false;
-      /* Zello-style: keep hearing the channel you just switched away from. */
+      /* Zello-style: keep hearing the channel you switched away from. */
       if (prevTalk && prevTalk !== code && !PTT.monitors[prevTalk]) {
         startMonitor(prevTalk, true).catch(function () {});
       }
@@ -254,7 +240,7 @@
       PTT.connecting = false;
       if (PTT.talk) { killAudio(PTT.talk); try { PTT.talk.room.disconnect(); } catch (x) {} }
       PTT.talk = null;
-      refreshLive(); updateBar();
+      refreshUI(); updateBar();
       showToast('Could not join channel: ' + (e && e.message ? e.message : e), 'error');
       throw e;
     }
@@ -274,7 +260,7 @@
       if (!silent) showToast('Left ' + handle.channel.name, 'success');
     }
     syncRadio();
-    refreshLive(); updateBar();
+    refreshUI(); updateBar();
   }
 
   function handleTalkDisconnect(handle) {
@@ -283,9 +269,8 @@
     var ch = handle.channel;
     PTT.talk = null;
     PTT.talking = false;
-    refreshLive(); updateBar();
+    refreshUI(); updateBar();
     if (PTT.reconnectAttempt >= TALK_RETRY.length) {
-      refreshLive(); updateBar();
       showToast('Radio disconnected and could not reconnect. Rejoin the channel manually.', 'error');
       return;
     }
@@ -300,7 +285,7 @@
     }, delay);
   }
 
-  // ---- MONITOR connections (scan mode) ---------------------------------------
+  // ---- MONITOR (listen) connections ------------------------------------------------
   async function startMonitor(code, isRetry) {
     if (PTT.monitors[code]) return;
     if (PTT.talk && PTT.talk.channel.code === code) { showToast('You are already live on that channel.', 'error'); return; }
@@ -317,12 +302,12 @@
       ensurePoll();
       startInbox();
       sendHeartbeat(false);
-      refreshLive(); updateBar();
+      refreshUI(); updateBar();
       if (!isRetry) showToast('Listening to ' + data.channel.name, 'success');
     } catch (e) {
       delete PTT.monitors[code];
-      refreshLive(); updateBar();
-      if (!isRetry) showToast('Could not monitor channel: ' + (e && e.message ? e.message : e), 'error');
+      refreshUI(); updateBar();
+      if (!isRetry) showToast('Could not listen: ' + (e && e.message ? e.message : e), 'error');
       throw e;
     }
   }
@@ -336,7 +321,7 @@
     killAudio(handle);
     try { handle.room.disconnect(); } catch (e) {}
     syncRadio();
-    refreshLive(); updateBar();
+    refreshUI(); updateBar();
     if (!silent) showToast('Stopped listening to ' + handle.channel.name, 'success');
   }
 
@@ -344,7 +329,7 @@
     if (handle.stopped || PTT.monitors[handle.channel.code] !== handle) return;
     killAudio(handle);
     delete PTT.monitors[handle.channel.code];
-    refreshLive(); updateBar();
+    refreshUI(); updateBar();
     if (handle.attempt >= MON_RETRY.length) {
       showToast('Lost listener on ' + handle.channel.name + ' - gave up reconnecting.', 'error');
       return;
@@ -366,6 +351,7 @@
     return n;
   }
 
+  // ---- seen/unheard tracking --------------------------------------------------------
   function lastSeen() {
     try { return parseInt(localStorage.getItem('ptt_log_seen') || '0', 10) || 0; } catch (e) { return 0; }
   }
@@ -373,33 +359,49 @@
     try { localStorage.setItem('ptt_log_seen', String(Date.now())); } catch (e) {}
     PTT.newCount = 0;
     updateBar();
+    paintTabs();
   }
   function isNewRow(r) {
     if (!r || !r.started_at) return false;
     if (window.state && state.user && r.user_id === state.user.id) return false;
     return new Date(r.started_at).getTime() > lastSeen();
   }
-  /* Zello-style missed-message check: while the radio is on, quietly poll the
-     log once a minute and show an unheard count on the floating bar. */
-  async function pollNew() {
-    if (!radioActive()) return;
-    sendHeartbeat(false);
-    if (window.state && state.currentView === 'ptt') loadPeople();
+  function newCountFor(key, isPerson) {
+    var n = 0;
+    for (var i = 0; i < PTT.logRows.length; i++) {
+      var r = PTT.logRows[i];
+      if (!isNewRow(r)) continue;
+      if (isPerson) { if (r.channel_code === 'DIRECT' && r.dm_from === key) n++; }
+      else { if (r.channel_code === key) n++; }
+    }
+    return n;
+  }
+  async function fetchLog() {
     if (!PTT.canRecord) return;
     try {
       var data = await api('GET', '/ptt/recordings');
-      var rows = (data && data.recordings) || [];
+      PTT.logRows = (data && data.recordings) || [];
       var n = 0;
-      for (var i = 0; i < rows.length; i++) if (isNewRow(rows[i])) n++;
+      for (var i = 0; i < PTT.logRows.length; i++) if (isNewRow(PTT.logRows[i])) n++;
       PTT.newCount = n;
       updateBar();
     } catch (e) {}
   }
+  async function pollTick() {
+    if (!radioActive()) return;
+    sendHeartbeat(false);
+    await fetchLog();
+    if (window.state && state.currentView === 'ptt') {
+      await loadPeople();
+      refreshUI();
+    }
+  }
   function ensurePoll() {
     if (PTT.pollTimer) return;
-    PTT.pollTimer = setInterval(pollNew, 60000);
+    PTT.pollTimer = setInterval(pollTick, 60000);
   }
 
+  // ---- inbox / direct talk ---------------------------------------------------------
   function dmCount() {
     var n = 0, k;
     for (k in PTT.dms) if (PTT.dms.hasOwnProperty(k)) n++;
@@ -408,13 +410,11 @@
   function radioActive() {
     return !!(PTT.talk || PTT.connecting || PTT.reconnectTimer || monitorCount() || dmCount());
   }
-  /* Keep the inbox/presence in step with whether the radio is on. */
   function syncRadio() {
     if (radioActive()) { startInbox(); }
     else { stopInbox(); closeDms(); sendHeartbeat(true); }
   }
 
-  // ---- direct inbox: always listening to YOUR personal room while radio is on
   async function startInbox() {
     if (PTT.inbox || PTT._inboxConnecting || !window.state || !state.user) return;
     PTT._inboxConnecting = true;
@@ -439,7 +439,6 @@
     try { h.room.disconnect(); } catch (e) {}
   }
 
-  // ---- direct talk: a connection into the TARGET's personal room ------------
   function stopDm(id) {
     var h = PTT.dms[id];
     if (!h) return;
@@ -492,10 +491,14 @@
     });
   }
   function paintPerson(id, mode) {
-    var b = document.querySelector('.ptt-ptalk[data-pid="' + id + '"]');
-    if (!b) return;
-    b.className = 'ptt-ptalk' + (mode === 'connecting' ? ' connecting' : (mode === 'onair' ? ' onair' : ''));
-    b.textContent = mode === 'connecting' ? '...' : (mode === 'onair' ? 'ON AIR' : 'Talk');
+    var els = document.querySelectorAll('[data-pid="' + id + '"]');
+    for (var i = 0; i < els.length; i++) {
+      var b = els[i];
+      var big = b.classList.contains('ptt-talk') || b.id === 'ptt-talk-btn';
+      var base = big ? 'ptt-talk' : 'ptt-listen';
+      b.className = base + (mode === 'onair' ? ' onair' : (mode === 'connecting' ? ' connecting' : ''));
+      if (big) b.textContent = mode === 'onair' ? 'ON AIR' : (mode === 'connecting' ? 'CONNECTING...' : 'HOLD TO TALK');
+    }
   }
   async function personDown(id, name) {
     if (PTT.talking || PTT.dmHold) return;
@@ -509,10 +512,10 @@
       showToast('Could not reach ' + name + ': ' + (e && e.message ? e.message : e), 'error');
       return;
     }
-    startInbox(); /* so their reply reaches you */
+    startInbox();
     sendHeartbeat(false);
     ensurePoll();
-    if (PTT.dmHold !== id) { paintPerson(id, 'idle'); return; } /* released early */
+    if (PTT.dmHold !== id) { paintPerson(id, 'idle'); return; }
     paintPerson(id, 'onair');
     dmSetTalking(h, true);
   }
@@ -539,38 +542,14 @@
     el.addEventListener('contextmenu', function (e) { e.preventDefault(); });
   }
 
-  // ---- presence + people -----------------------------------------------------
   function sendHeartbeat(off) {
     api('POST', '/ptt/heartbeat', off ? { off: true } : {}).catch(function () {});
   }
   async function loadPeople() {
-    var grid = document.getElementById('ptt-ppl-grid');
-    if (!grid) return;
     var data;
     try { data = await api('GET', '/ptt/people'); } catch (e) { return; }
     PTT.people = (data && data.people) || [];
     PTT.canDirect = !!(data && data.canDirect);
-    drawPeople();
-  }
-  function drawPeople() {
-    var grid = document.getElementById('ptt-ppl-grid');
-    if (!grid) return;
-    var me = (window.state && state.user) ? state.user.id : 0;
-    var ppl = PTT.people.filter(function (p) { return p.id !== me; });
-    ppl.sort(function (a, b) { return (b.online === true) - (a.online === true) || String(a.name).localeCompare(String(b.name)); });
-    var h = '';
-    for (var i = 0; i < ppl.length; i++) {
-      var pp = ppl[i];
-      h += '<div class="ptt-pcard' + (pp.online ? ' on' : '') + '">' +
-        '<span class="ptt-pdot" title="' + (pp.online ? 'Radio on' : 'Radio off') + '"></span>' +
-        '<span class="ptt-pname">' + escHtml(pp.name) + '</span>' +
-        (PTT.canDirect ? '<button class="ptt-ptalk" data-pid="' + pp.id + '" data-pname="' + escHtml(pp.name) + '">Talk</button>' : '') +
-      '</div>';
-    }
-    if (!ppl.length) h = '<div class="ptt-hint">Nobody else here yet.</div>';
-    grid.innerHTML = h;
-    var btns = grid.querySelectorAll('.ptt-ptalk');
-    for (var j = 0; j < btns.length; j++) bindPerson(btns[j]);
   }
 
   async function leaveAll(silent) {
@@ -583,7 +562,7 @@
     sendHeartbeat(true);
   }
 
-  // ---- push-to-talk + recording ----------------------------------------------
+  // ---- recording (Radio Log) -----------------------------------------------------
   function pickMime() {
     if (!window.MediaRecorder) return null;
     if (MediaRecorder.isTypeSupported && MediaRecorder.isTypeSupported('audio/webm;codecs=opus')) return 'audio/webm;codecs=opus';
@@ -638,11 +617,12 @@
               return api('POST', '/ptt/recordings', confirmBody);
             });
         })
-        .then(function () { if (window.state && state.currentView === 'ptt') pttLoadLog(); })
+        .then(function () { fetchLog().then(function () { refreshUI(); }); })
         .catch(function (e) { try { console.warn('PTT clip upload failed:', e); } catch (x) {} });
     }
   }
 
+  // ---- channel push-to-talk ---------------------------------------------------------
   function setTalking(on) {
     if (!PTT.talk || PTT.talking === on) return;
     if (on && (PTT.connecting || PTT.dmHold)) return;
@@ -663,11 +643,12 @@
         }
       });
     });
+    if (!on) refreshUI(); /* safe to re-render once the key is released */
   }
 
   function paintTalkState() {
     var big = document.getElementById('ptt-talk-btn');
-    if (big) {
+    if (big && !big.getAttribute('data-pid')) {
       big.className = 'ptt-talk' + (PTT.talking ? ' onair' : '');
       big.textContent = PTT.talking ? 'ON AIR' : 'HOLD TO TALK';
     }
@@ -708,15 +689,15 @@
     if (document.hidden && PTT.talking) setTalking(false);
   });
 
-  // ---- echo test (Zello's Echo channel: hold, speak, release, hear it back) ---
+  // ---- echo test ----------------------------------------------------------------
   var ECHO = { mr: null, chunks: [], stream: null, playing: false };
 
   function paintEcho(mode) {
     var b = document.getElementById('ptt-echo-btn');
     if (!b) return;
-    if (mode === 'rec') { b.className = 'ptt-mon-btn ptt-echo-btn rec'; b.textContent = 'Recording...'; }
-    else if (mode === 'play') { b.className = 'ptt-mon-btn ptt-echo-btn play'; b.textContent = 'Playing back...'; }
-    else { b.className = 'ptt-mon-btn ptt-echo-btn'; b.innerHTML = 'Hold &amp; speak'; }
+    if (mode === 'rec') { b.className = 'ptt-echo-btn rec'; b.textContent = 'Recording...'; }
+    else if (mode === 'play') { b.className = 'ptt-echo-btn play'; b.textContent = 'Playing back...'; }
+    else { b.className = 'ptt-echo-btn'; b.innerHTML = 'Hold &amp; speak'; }
   }
 
   async function echoStart() {
@@ -757,7 +738,7 @@
       var a = new Audio(url);
       ECHO.playing = true;
       paintEcho('play');
-      var done = function () { ECHO.playing = false; URL.revokeObjectURL(url); paintEcho('idle'); refreshLive(); };
+      var done = function () { ECHO.playing = false; URL.revokeObjectURL(url); paintEcho('idle'); refreshUI(); };
       a.onended = done;
       a.onerror = done;
       a.play().catch(done);
@@ -769,8 +750,7 @@
     if (!el || el._pttEcho) return;
     el._pttEcho = true;
     el.addEventListener('pointerdown', function (e) {
-      e.preventDefault();
-      e.stopPropagation();
+      e.preventDefault(); e.stopPropagation();
       try { el.setPointerCapture(e.pointerId); } catch (x) {}
       echoStart();
     });
@@ -780,7 +760,7 @@
     el.addEventListener('contextmenu', function (e) { e.preventDefault(); });
   }
 
-  // ---- floating bar -----------------------------------------------------------
+  // ---- floating bar ---------------------------------------------------------------
   function ensureBar() {
     var bar = document.getElementById('ptt-bar');
     if (bar) return bar;
@@ -789,11 +769,11 @@
     bar.innerHTML =
       '<span class="ptt-dot" style="background:#22c55e"></span>' +
       '<span class="ptt-bar-name" title="Open Radio"></span>' +
-      '<span class="ptt-bar-new" style="display:none" title="Unheard transmissions - open the Radio Log"></span>' +
+      '<span class="ptt-bar-new" style="display:none" title="Unheard transmissions - open the Radio"></span>' +
       '<button class="ptt-bar-talk" title="Hold to talk">' +
         '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><line x1="12" y1="19" x2="12" y2="23"/></svg>' +
       '</button>' +
-      '<button class="ptt-bar-x" title="Radio off (leave talk + monitors)">&#10005;</button>';
+      '<button class="ptt-bar-x" title="Radio off">&#10005;</button>';
     document.body.appendChild(bar);
     bar.querySelector('.ptt-bar-name').addEventListener('click', function () {
       if (typeof navigate === 'function') navigate('ptt');
@@ -809,8 +789,8 @@
   function updateBar() {
     injectStyles();
     var bar = ensureBar();
-    if (window.state && !state.token && (PTT.talk || monitorCount())) { leaveAll(true); return; }
-    var active = PTT.talk || PTT.connecting || PTT.reconnectTimer || monitorCount() > 0;
+    if (window.state && !state.token && (PTT.talk || monitorCount() || dmCount())) { leaveAll(true); return; }
+    var active = radioActive();
     var onPttPage = window.state && state.currentView === 'ptt' && state.token;
     if (!active || onPttPage) { bar.style.display = 'none'; return; }
     bar.style.display = 'flex';
@@ -841,17 +821,17 @@
     window.navigate = wrapped;
   }
 
-  // ---- page --------------------------------------------------------------------
+  // ---- page: Zello-style tabs + talk screen ------------------------------------------
   window.renderPTT = async function (content) {
     injectStyles();
     wrapNavigate();
     ensureBar();
-    content.innerHTML = '<div class="ptt-wrap"><h1>Radio</h1><div class="ptt-sub">Loading channels...</div></div>';
+    content.innerHTML = '<div class="ptt-wrap"><h1>Radio</h1><div class="ptt-sub">Loading...</div></div>';
     var data;
     try {
       data = await api('GET', '/ptt/channels');
     } catch (e) {
-      content.innerHTML = '<div class="ptt-wrap"><h1>Radio</h1><div class="ptt-notice">Could not load channels: ' + escHtml((e && e.message) ? e.message : String(e)) + '</div></div>';
+      content.innerHTML = '<div class="ptt-wrap"><h1>Radio</h1><div class="ptt-notice">Could not load: ' + escHtml((e && e.message) ? e.message : String(e)) + '</div></div>';
       return;
     }
     PTT.channels = data.channels || [];
@@ -859,43 +839,33 @@
     PTT.canRecord = !!data.recording;
     if (state.currentView !== 'ptt') return;
 
-    var h = '<div class="ptt-wrap"><h1>Radio</h1>' +
-      '<div class="ptt-sub">Click a channel to make it your <b>talk</b> channel (hold the button or hold <b>Space</b> to transmit). Use <b>Listen</b> to hear other channels at the same time. Switching talk channels keeps the old one listening, Zello-style. The radio keeps running while you work elsewhere in Nova via the floating mic at the bottom right.' +
-      (PTT.canRecord ? ' Transmissions are recorded to the Radio Log below.' : '') + '</div>';
+    var h = '<div class="ptt-wrap"><h1>Radio</h1>';
     if (!PTT.configured) {
-      h += '<div class="ptt-notice"><b>Not configured yet.</b> Set LIVEKIT_URL, LIVEKIT_API_KEY and LIVEKIT_API_SECRET in Railway to turn the radio on. Channels are shown below for preview.</div>';
+      h += '<div class="ptt-notice"><b>Not configured yet.</b> Set LIVEKIT_URL, LIVEKIT_API_KEY and LIVEKIT_API_SECRET in Railway.</div>';
     }
-    h += '<div class="ptt-grid" id="ptt-grid"></div>' +
-      '<div id="ptt-live"></div>';
-    h += '<div class="ptt-ppl"><div class="ptt-log-head"><h3>People</h3>' +
-      '<span class="ptt-hint">Hold Talk to speak to one person. Green dot = radio on; if off, they get it in their log.</span></div>' +
-      '<div class="ptt-ppl-grid" id="ptt-ppl-grid"><div class="ptt-hint">Loading...</div></div></div>';
-    h += '<div class="ptt-log" id="ptt-log">' +
-        '<div class="ptt-log-head"><h3>Radio Log</h3>' +
-          '<select id="ptt-log-chan" onchange="pttLogFilter()"><option value="">All channels</option></select>' +
-          '<input type="date" id="ptt-log-date" onchange="pttLogFilter()" />' +
-          '<button class="btn" onclick="pttLoadLog()" style="padding:6px 12px;font-size:13px">Refresh</button>' +
-        '</div>' +
-        '<div class="ptt-log-list" id="ptt-log-list"><div class="ptt-hint">' +
-          (PTT.canRecord ? 'Loading...' : 'Recording is off - set the R2_* variables (already used by the Document Vault) to store transmissions.') +
-        '</div></div>' +
-      '</div>';
-    h += '</div>';
+    h += '<div class="ptt-tabs" id="ptt-tabs"></div><div id="ptt-body"></div></div>';
     content.innerHTML = h;
-    var sel = document.getElementById('ptt-log-chan');
-    PTT.channels.forEach(function (c) {
-      var o = document.createElement('option');
-      o.value = c.code; o.textContent = c.name;
-      if (PTT.logChan === c.code) o.selected = true;
-      sel.appendChild(o);
-    });
-    if (PTT.logDate) document.getElementById('ptt-log-date').value = PTT.logDate;
-    drawChannels();
-    refreshLive();
+    loadPeople().then(function () { refreshUI(); });
+    fetchLog().then(function () { refreshUI(); });
+    refreshUI();
     updateBar();
-    loadPeople();
-    pttLoadLog();
   };
+
+  function paintTabs() {
+    var el = document.getElementById('ptt-tabs');
+    if (!el) return;
+    if (PTT.sel) { el.style.display = 'none'; return; }
+    el.style.display = 'flex';
+    var recN = PTT.newCount;
+    var tabs = [
+      { id: 'recents', label: 'Recents' + (recN ? '<span class="ptt-badge">' + recN + '</span>' : '') },
+      { id: 'channels', label: 'Channels' },
+      { id: 'people', label: 'People' }
+    ];
+    el.innerHTML = tabs.map(function (t) {
+      return '<div class="ptt-tab' + (PTT.tab === t.id ? ' active' : '') + '" onclick="pttTab(\'' + t.id + '\')">' + t.label + '</div>';
+    }).join('');
+  }
 
   function chanSpeaking(code) {
     var h = (PTT.talk && PTT.talk.channel.code === code) ? PTT.talk : PTT.monitors[code];
@@ -908,35 +878,122 @@
     return s;
   }
 
-  function drawChannels() {
-    var grid = document.getElementById('ptt-grid');
-    if (!grid) return;
-    /* Do not rebuild the grid mid echo-test: it would replace the held button. */
-    if (ECHO.mr || ECHO.playing) return;
-    var h = '';
+  /* Re-render the page body. Never while a key/button is held - replacing the
+     held element would eat the pointerup and stick the transmitter open. */
+  function refreshUI() {
+    paintTalkState();
+    if (!window.state || state.currentView !== 'ptt') return;
+    if (PTT.talking || PTT.dmHold || ECHO.mr || ECHO.playing) return;
+    var body = document.getElementById('ptt-body');
+    if (!body) return;
+    paintTabs();
+    if (PTT.sel) drawTalk(body);
+    else if (PTT.tab === 'recents') drawRecents(body);
+    else if (PTT.tab === 'people') drawPeopleList(body);
+    else drawChannelsList(body);
+  }
+
+  // ---- lists ------------------------------------------------------------------------
+  function drawChannelsList(body) {
+    var h = '<div class="ptt-list">';
     for (var i = 0; i < PTT.channels.length; i++) {
       var c = PTT.channels[i];
       var live = PTT.talk && PTT.talk.channel.code === c.code;
       var mon = !!PTT.monitors[c.code];
-      var cls = 'ptt-chan' + (live ? ' live' : '') + (mon ? ' mon' : '') + (chanSpeaking(c.code) ? ' speaking' : '');
-      h += '<div class="' + cls + '" data-chan="' + escHtml(c.code) + '" onclick="' + (live ? 'pttLeave()' : 'pttJoin(\'' + escHtml(c.code) + '\')') + '">' +
-        '<span class="ptt-speak"></span>' +
-        '<div class="ptt-chan-top"><span class="ptt-dot" style="background:' + escHtml(c.color || '#f97316') + '"></span>' +
-        '<span class="ptt-chan-name">' + escHtml(c.name) + '</span>' +
-        (live ? '<span class="ptt-chip">LIVE</span>' : '') +
-        '</div><div class="ptt-chan-code">' + escHtml(c.code) + (live ? ' &middot; click to leave' : ' &middot; click to go live') + '</div>' +
-        (live ? '' : '<button class="ptt-mon-btn' + (mon ? ' on' : '') + '" onclick="event.stopPropagation();pttMonitor(\'' + escHtml(c.code) + '\')">' + (mon ? 'Listening' : 'Listen') + '</button>') +
-        '</div>';
-    }
-    h += '<div class="ptt-chan echo">' +
-      '<div class="ptt-chan-top"><span class="ptt-dot" style="background:#8b5cf6"></span>' +
-      '<span class="ptt-chan-name">Echo Test</span></div>' +
-      '<div class="ptt-chan-code">Hold, speak, release &middot; hear yourself back</div>' +
-      '<button class="ptt-mon-btn ptt-echo-btn" id="ptt-echo-btn">Hold &amp; speak</button>' +
+      var n = newCountFor(c.code, false);
+      h += '<div class="ptt-row' + (live ? ' live' : '') + (mon ? ' mon' : '') + (chanSpeaking(c.code) ? ' speaking' : '') + '" onclick="pttOpenChan(\'' + escHtml(c.code) + '\')">' +
+        '<span class="ptt-dot" style="background:' + escHtml(c.color || '#f97316') + '"></span>' +
+        '<span class="nm">' + escHtml(c.name) + '</span>' +
+        '<span class="spk"></span>' +
+        (n ? '<span class="ptt-badge">' + n + '</span>' : '') +
+        (live ? '<span class="ptt-chip">LIVE</span>' :
+          '<button class="ptt-listen' + (mon ? ' on' : '') + '" onclick="event.stopPropagation();pttListen(\'' + escHtml(c.code) + '\')">' + (mon ? 'Listening' : 'Listen') + '</button>') +
+        '<span class="ptt-chev">&#8250;</span>' +
       '</div>';
-    if (!PTT.channels.length) h = '<div class="ptt-sub">No channels available for your account.</div>' + h;
-    grid.innerHTML = h;
+    }
+    if (!PTT.channels.length) h += '<div class="ptt-hint">No channels available for your account.</div>';
+    h += '<div class="ptt-row" style="cursor:default">' +
+      '<span class="ptt-dot" style="background:#8b5cf6"></span>' +
+      '<span class="nm">Echo Test<span class="sub">Hold, speak, release &middot; hear yourself back</span></span>' +
+      '<button class="ptt-echo-btn" id="ptt-echo-btn">Hold &amp; speak</button>' +
+    '</div>';
+    h += '</div>';
+    body.innerHTML = h;
     bindEcho(document.getElementById('ptt-echo-btn'));
+  }
+
+  function drawPeopleList(body) {
+    var me = (window.state && state.user) ? state.user.id : 0;
+    var ppl = PTT.people.filter(function (p) { return p.id !== me; });
+    ppl.sort(function (a, b) { return (b.online === true) - (a.online === true) || String(a.name).localeCompare(String(b.name)); });
+    var h = '<div class="ptt-list">';
+    for (var i = 0; i < ppl.length; i++) {
+      var pp = ppl[i];
+      var n = newCountFor(pp.id, true);
+      h += '<div class="ptt-row' + (pp.online ? ' on' : '') + '" onclick="pttOpenPerson(' + pp.id + ')">' +
+        '<span class="ptt-pdot" title="' + (pp.online ? 'Radio on' : 'Radio off') + '"></span>' +
+        '<span class="nm">' + escHtml(pp.name) + (pp.online ? '' : '<span class="sub">Radio off &middot; they get it in their log</span>') + '</span>' +
+        (n ? '<span class="ptt-badge">' + n + '</span>' : '') +
+        '<span class="ptt-chev">&#8250;</span>' +
+      '</div>';
+    }
+    if (!ppl.length) h += '<div class="ptt-hint">Nobody else here yet.</div>';
+    h += '</div>';
+    body.innerHTML = h;
+  }
+
+  function fmtDur(ms) {
+    var s = Math.max(1, Math.round((ms || 0) / 1000));
+    var m = Math.floor(s / 60);
+    return m ? (m + 'm ' + (s % 60) + 's') : (s + 's');
+  }
+  function fmtTime(iso) {
+    try {
+      var d = new Date(iso);
+      return d.toLocaleDateString(undefined, { month: 'short', day: 'numeric' }) + ' ' +
+             d.toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' });
+    } catch (e) { return String(iso); }
+  }
+
+  function recRowHtml(r) {
+    var isNew = isNewRow(r);
+    var isDm = r.channel_code === 'DIRECT';
+    var who = isDm
+      ? (r.user_name || ('User ' + r.user_id)) + ' → ' + (r.dm_to_name || ('User ' + r.dm_to))
+      : (r.user_name || ('User ' + r.user_id));
+    return '<div class="ptt-rec' + (isNew ? ' new' : '') + '" id="ptt-rec-' + r.id + '">' +
+      '<button class="ptt-play" onclick="pttPlay(' + r.id + ')" title="Play">&#9654;</button>' +
+      '<span class="t">' + escHtml(fmtTime(r.started_at)) + '</span>' +
+      '<span class="c">' + escHtml(isDm ? 'DM' : r.channel_code) + '</span>' +
+      '<span class="n">' + escHtml(who) + '</span>' +
+      (isNew ? '<span class="newchip">NEW</span>' : '') +
+      '<span class="d">' + escHtml(fmtDur(r.duration_ms)) + '</span>' +
+    '</div>';
+  }
+
+  function drawRecents(body) {
+    var h = '<div class="ptt-log-list">';
+    if (!PTT.canRecord) {
+      h += '<div class="ptt-hint">Recording is off - set the R2_* variables (already used by the Document Vault) to store transmissions.</div>';
+    } else if (!PTT.logRows.length) {
+      h += '<div class="ptt-hint">No transmissions yet.</div>';
+    } else {
+      for (var i = 0; i < Math.min(PTT.logRows.length, 100); i++) h += recRowHtml(PTT.logRows[i]);
+    }
+    h += '</div>';
+    body.innerHTML = h;
+    markSeen(); /* you have looked at Recents; NEW chips stay for this render */
+  }
+
+  // ---- talk screen ---------------------------------------------------------------------
+  function historyFor(sel) {
+    var out = [];
+    for (var i = 0; i < PTT.logRows.length && out.length < 12; i++) {
+      var r = PTT.logRows[i];
+      if (sel.type === 'channel') { if (r.channel_code === sel.code) out.push(r); }
+      else { if (r.channel_code === 'DIRECT' && (r.dm_from === sel.id || r.dm_to === sel.id)) out.push(r); }
+    }
+    return out;
   }
 
   function participantHtml() {
@@ -953,98 +1010,105 @@
     for (var i = 0; i < items.length; i++) {
       h += '<span class="ptt-person' + (items[i].speaking ? ' speaking' : '') + '">' + escHtml(items[i].name) + '</span>';
     }
-    var alone = items.length === 1 ? '<div class="ptt-hint" style="margin-top:2px">Nobody else is on this channel right now.</div>' : '';
+    var alone = items.length === 1 ? '<div class="ptt-hint" style="margin:0 0 12px">Nobody else is on this channel right now.</div>' : '';
     return '<div class="ptt-people">' + h + '</div>' + alone;
   }
 
-  function refreshLive() {
-    paintTalkState();
-    var el = document.getElementById('ptt-live');
-    if (!el || !window.state || state.currentView !== 'ptt') return;
-    drawChannels();
-    if (!PTT.talk && !PTT.connecting && !PTT.reconnectTimer) { el.innerHTML = ''; return; }
-    if (PTT.connecting || !PTT.talk) {
-      el.innerHTML = '<div class="ptt-panel"><div class="ptt-status"><span class="ptt-dot warn"></span> ' +
-        (PTT.connecting ? 'Connecting...' : 'Reconnecting...') + '</div></div>';
-      return;
-    }
-    var room = PTT.talk.room;
-    var reconnState = (room.state === 'reconnecting');
-    var audioBlocked = (room.canPlaybackAudio === false);
-    el.innerHTML =
-      '<div class="ptt-panel">' +
-        '<div class="ptt-status"><span class="ptt-dot ' + (reconnState ? 'warn' : 'ok') + '"></span> ' +
-          (reconnState ? 'Reconnecting to ' : 'Live on ') + '<b>&nbsp;' + escHtml(PTT.talk.channel.name) + '</b></div>' +
-        participantHtml() +
+  function drawTalk(body) {
+    var sel = PTT.sel;
+    if (!sel) return;
+    var h = '<div class="ptt-talkhead"><button class="ptt-back" onclick="pttBack()">&#8249;</button>';
+    if (sel.type === 'channel') {
+      var live = PTT.talk && PTT.talk.channel.code === sel.code;
+      var reconn = live && PTT.talk.room.state === 'reconnecting';
+      var audioBlocked = live && (PTT.talk.room.canPlaybackAudio === false);
+      h += '<span class="tname">' + escHtml(sel.name) + '</span></div>';
+      h += '<div class="ptt-status"><span class="ptt-dot ' + (PTT.connecting ? 'warn' : (live ? (reconn ? 'warn' : 'ok') : 'off')) + '"></span> ' +
+        (PTT.connecting ? 'Connecting...' : (live ? (reconn ? 'Reconnecting...' : 'Live - hold to talk') : 'Not connected')) + '</div>';
+      h += '<div class="ptt-panel">' + (live ? participantHtml() : '') +
         '<div class="ptt-talkrow">' +
-          '<button id="ptt-talk-btn" class="ptt-talk">HOLD TO TALK</button>' +
-          '<div class="ptt-hint">Hold the button or hold Space. Release to listen.</div>' +
+          (live
+            ? '<button id="ptt-talk-btn" class="ptt-talk">HOLD TO TALK</button><div class="ptt-hint">Hold the button or hold Space. Release to listen.</div>'
+            : '<button class="btn btn-primary" onclick="pttGoLive(\'' + escHtml(sel.code) + '\')">' + (PTT.connecting ? 'Connecting...' : 'Go live on this channel') + '</button>') +
         '</div>' +
         (audioBlocked ? '<div class="ptt-actions"><button class="btn btn-primary" onclick="pttEnableAudio()">Enable incoming audio</button></div>' : '') +
-        '<div class="ptt-actions"><button class="btn" onclick="pttLeave()">Leave channel</button></div>' +
+        (live ? '<div class="ptt-actions"><button class="btn" onclick="pttLeave()">Leave channel</button></div>' : '') +
       '</div>';
-    bindHold(document.getElementById('ptt-talk-btn'));
+    } else {
+      var pp = null;
+      for (var i = 0; i < PTT.people.length; i++) if (PTT.people[i].id === sel.id) pp = PTT.people[i];
+      var online = pp ? !!pp.online : false;
+      h += '<span class="tname">' + escHtml(sel.name) + '</span></div>';
+      h += '<div class="ptt-status"><span class="ptt-dot ' + (online ? 'ok' : 'off') + '"></span> ' +
+        (online ? 'Radio on - hold to talk' : 'Radio off - your message lands in their log') + '</div>';
+      h += '<div class="ptt-panel"><div class="ptt-talkrow">' +
+        (PTT.canDirect
+          ? '<button id="ptt-talk-btn" class="ptt-talk" data-pid="' + sel.id + '" data-pname="' + escHtml(sel.name) + '">HOLD TO TALK</button><div class="ptt-hint">Hold to speak directly to ' + escHtml(sel.name) + '. Release to listen.</div>'
+          : '<div class="ptt-hint">You do not have permission for direct talk.</div>') +
+      '</div></div>';
+    }
+    var hist = historyFor(sel);
+    h += '<div class="ptt-hist"><h4>History</h4><div class="ptt-log-list">' +
+      (hist.length ? hist.map(recRowHtml).join('') : '<div class="ptt-hint">Nothing here yet.</div>') +
+      '</div></div>';
+    body.innerHTML = h;
+    if (sel.type === 'channel') {
+      var btn = document.getElementById('ptt-talk-btn');
+      if (btn) bindHold(btn);
+    } else {
+      var pbtn = document.getElementById('ptt-talk-btn');
+      if (pbtn) bindPerson(pbtn);
+    }
     paintTalkState();
   }
 
-  // ---- Radio Log -----------------------------------------------------------------
-  function fmtDur(ms) {
-    var s = Math.max(1, Math.round((ms || 0) / 1000));
-    var m = Math.floor(s / 60);
-    return m ? (m + 'm ' + (s % 60) + 's') : (s + 's');
-  }
-  function fmtTime(iso) {
-    try {
-      var d = new Date(iso);
-      return d.toLocaleDateString(undefined, { month: 'short', day: 'numeric' }) + ' ' +
-             d.toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit', second: '2-digit' });
-    } catch (e) { return String(iso); }
-  }
-
-  window.pttLoadLog = async function () {
-    var list = document.getElementById('ptt-log-list');
-    if (!list || !PTT.canRecord) return;
-    var q = [];
-    if (PTT.logChan) q.push('channel=' + encodeURIComponent(PTT.logChan));
-    if (PTT.logDate) q.push('date=' + encodeURIComponent(PTT.logDate));
-    var data;
-    try {
-      data = await api('GET', '/ptt/recordings' + (q.length ? '?' + q.join('&') : ''));
-    } catch (e) {
-      list.innerHTML = '<div class="ptt-hint">Could not load the log: ' + escHtml((e && e.message) ? e.message : String(e)) + '</div>';
-      return;
-    }
-    var rows = (data && data.recordings) || [];
-    if (!rows.length) { list.innerHTML = '<div class="ptt-hint">No transmissions logged' + (PTT.logDate ? ' for that day' : ' yet') + '.</div>'; return; }
-    var h = '';
-    for (var i = 0; i < rows.length; i++) {
-      var r = rows[i];
-      var isNew = isNewRow(r);
-      var isDm = r.channel_code === 'DIRECT';
-      var who = isDm
-        ? (r.user_name || ('User ' + r.user_id)) + ' \u2192 ' + (r.dm_to_name || ('User ' + r.dm_to))
-        : (r.user_name || ('User ' + r.user_id));
-      h += '<div class="ptt-rec' + (isNew ? ' new' : '') + '" id="ptt-rec-' + r.id + '">' +
-        '<button class="ptt-play" onclick="pttPlay(' + r.id + ')" title="Play">&#9654;</button>' +
-        '<span class="t">' + escHtml(fmtTime(r.started_at)) + '</span>' +
-        '<span class="c">' + escHtml(isDm ? 'DM' : r.channel_code) + '</span>' +
-        '<span class="n">' + escHtml(who) + '</span>' +
-        (isNew ? '<span class="newchip">NEW</span>' : '') +
-        '<span class="d">' + escHtml(fmtDur(r.duration_ms)) + '</span>' +
-      '</div>';
-    }
-    list.innerHTML = h;
-    /* You have now seen the log - clear the unheard counter (NEW chips stay
-       visible for this render so you can spot what you missed). */
-    markSeen();
+  // ---- inline handlers --------------------------------------------------------------
+  window.pttTab = function (t) {
+    PTT.tab = t;
+    PTT.sel = null;
+    refreshUI();
+    if (t === 'people') loadPeople().then(refreshUI);
+    if (t === 'recents') fetchLog().then(refreshUI);
   };
-
-  window.pttLogFilter = function () {
-    var sel = document.getElementById('ptt-log-chan');
-    var dt = document.getElementById('ptt-log-date');
-    PTT.logChan = sel ? sel.value : '';
-    PTT.logDate = dt ? dt.value : '';
-    pttLoadLog();
+  window.pttBack = function () {
+    PTT.sel = null;
+    refreshUI();
+  };
+  window.pttOpenChan = function (code) {
+    var c = null;
+    for (var i = 0; i < PTT.channels.length; i++) if (PTT.channels[i].code === code) c = PTT.channels[i];
+    if (!c) return;
+    PTT.sel = { type: 'channel', code: c.code, name: c.name, color: c.color };
+    refreshUI();
+    /* Zello: tapping a channel selects AND connects it. */
+    if (PTT.configured && (!PTT.talk || PTT.talk.channel.code !== code)) {
+      joinTalk(code).catch(function () {});
+    }
+  };
+  window.pttGoLive = function (code) {
+    joinTalk(code).catch(function () {});
+  };
+  window.pttOpenPerson = function (id) {
+    var pp = null;
+    for (var i = 0; i < PTT.people.length; i++) if (PTT.people[i].id === id) pp = PTT.people[i];
+    if (!pp) return;
+    PTT.sel = { type: 'person', id: pp.id, name: pp.name };
+    refreshUI();
+  };
+  window.pttListen = function (code) {
+    if (PTT.monitors[code]) stopMonitor(code, false);
+    else startMonitor(code, false).catch(function () {});
+  };
+  window.pttLeave = function () { leaveTalk(false); };
+  window.pttEnableAudio = function () {
+    if (PTT.talk && PTT.talk.room.startAudio) PTT.talk.room.startAudio().then(refreshUI).catch(function () {});
+    var k;
+    for (k in PTT.monitors) {
+      if (PTT.monitors.hasOwnProperty(k) && PTT.monitors[k].room.startAudio) {
+        PTT.monitors[k].room.startAudio().catch(function () {});
+      }
+    }
+    if (PTT.inbox && PTT.inbox.room.startAudio) PTT.inbox.room.startAudio().catch(function () {});
   };
 
   var _player = null;
@@ -1072,23 +1136,6 @@
     } catch (e) {
       mark(id, false); PTT.playingId = null;
       showToast('Could not play recording: ' + (e && e.message ? e.message : e), 'error');
-    }
-  };
-
-  // ---- inline handlers --------------------------------------------------------
-  window.pttJoin = function (code) { joinTalk(code).catch(function () {}); };
-  window.pttLeave = function () { leaveTalk(false); };
-  window.pttMonitor = function (code) {
-    if (PTT.monitors[code]) stopMonitor(code, false);
-    else startMonitor(code, false).catch(function () {});
-  };
-  window.pttEnableAudio = function () {
-    if (PTT.talk && PTT.talk.room.startAudio) PTT.talk.room.startAudio().then(refreshLive).catch(function () {});
-    var k;
-    for (k in PTT.monitors) {
-      if (PTT.monitors.hasOwnProperty(k) && PTT.monitors[k].room.startAudio) {
-        PTT.monitors[k].room.startAudio().catch(function () {});
-      }
     }
   };
 })();
