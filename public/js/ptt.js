@@ -178,6 +178,7 @@
   async function joinTalk(code) {
     if (PTT.connecting) return;
     if (PTT.monitors[code]) stopMonitor(code, true); /* cannot hold both: same identity */
+    var prevTalk = PTT.talk ? PTT.talk.channel.code : null;
     if (PTT.talk) await leaveTalk(true);
     clearTimeout(PTT.reconnectTimer);
     PTT.reconnectTimer = null;
@@ -207,6 +208,10 @@
       refreshLive(); updateBar();
       if (!PTT.reconnectWasAuto) showToast('Live on ' + data.channel.name, 'success');
       PTT.reconnectWasAuto = false;
+      /* Zello-style: keep hearing the channel you just switched away from. */
+      if (prevTalk && prevTalk !== code && !PTT.monitors[prevTalk]) {
+        startMonitor(prevTalk, true).catch(function () {});
+      }
     } catch (e) {
       PTT.connecting = false;
       if (PTT.talk) { killAudio(PTT.talk); try { PTT.talk.room.disconnect(); } catch (x) {} }
@@ -271,7 +276,7 @@
       await room.connect(data.url, data.token);
       handle.attempt = 0;
       refreshLive(); updateBar();
-      if (!isRetry) showToast('Monitoring ' + data.channel.name, 'success');
+      if (!isRetry) showToast('Listening to ' + data.channel.name, 'success');
     } catch (e) {
       delete PTT.monitors[code];
       refreshLive(); updateBar();
@@ -289,7 +294,7 @@
     killAudio(handle);
     try { handle.room.disconnect(); } catch (e) {}
     refreshLive(); updateBar();
-    if (!silent) showToast('Stopped monitoring ' + handle.channel.name, 'success');
+    if (!silent) showToast('Stopped listening to ' + handle.channel.name, 'success');
   }
 
   function handleMonitorDisconnect(handle) {
@@ -298,7 +303,7 @@
     delete PTT.monitors[handle.channel.code];
     refreshLive(); updateBar();
     if (handle.attempt >= MON_RETRY.length) {
-      showToast('Lost monitor on ' + handle.channel.name + ' - gave up reconnecting.', 'error');
+      showToast('Lost listener on ' + handle.channel.name + ' - gave up reconnecting.', 'error');
       return;
     }
     var delay = MON_RETRY[handle.attempt];
@@ -480,7 +485,7 @@
     var dot = bar.querySelector('.ptt-dot');
     dot.style.background = (PTT.talk || monitorCount()) ? '#22c55e' : '#eab308';
     var name = bar.querySelector('.ptt-bar-name');
-    var label = PTT.talk ? PTT.talk.channel.name : (PTT.connecting || PTT.reconnectTimer ? 'Connecting...' : 'Monitoring');
+    var label = PTT.talk ? PTT.talk.channel.name : (PTT.connecting || PTT.reconnectTimer ? 'Connecting...' : 'Listening');
     var mc = monitorCount();
     if (mc) label += ' +' + mc;
     name.textContent = label;
@@ -518,7 +523,7 @@
     if (state.currentView !== 'ptt') return;
 
     var h = '<div class="ptt-wrap"><h1>Radio</h1>' +
-      '<div class="ptt-sub">Click a channel to go <b>live</b> on it (hold the button or hold <b>Space</b> to transmit). Use <b>Monitor</b> to also listen to other channels at the same time - scan mode. The radio keeps running while you work elsewhere in Nova via the floating mic at the bottom right.' +
+      '<div class="ptt-sub">Click a channel to make it your <b>talk</b> channel (hold the button or hold <b>Space</b> to transmit). Use <b>Listen</b> to hear other channels at the same time. Switching talk channels keeps the old one listening, Zello-style. The radio keeps running while you work elsewhere in Nova via the floating mic at the bottom right.' +
       (PTT.canRecord ? ' Transmissions are recorded to the Radio Log below.' : '') + '</div>';
     if (!PTT.configured) {
       h += '<div class="ptt-notice"><b>Not configured yet.</b> Set LIVEKIT_URL, LIVEKIT_API_KEY and LIVEKIT_API_SECRET in Railway to turn the radio on. Channels are shown below for preview.</div>';
@@ -575,9 +580,9 @@
         '<span class="ptt-speak"></span>' +
         '<div class="ptt-chan-top"><span class="ptt-dot" style="background:' + escHtml(c.color || '#f97316') + '"></span>' +
         '<span class="ptt-chan-name">' + escHtml(c.name) + '</span>' +
-        (live ? '<span class="ptt-chip">LIVE</span>' : (mon ? '<span class="ptt-chip g">MON</span>' : '')) +
+        (live ? '<span class="ptt-chip">LIVE</span>' : (mon ? '<span class="ptt-chip g">LISTENING</span>' : '')) +
         '</div><div class="ptt-chan-code">' + escHtml(c.code) + (live ? ' &middot; click to leave' : ' &middot; click to go live') + '</div>' +
-        (live ? '' : '<button class="ptt-mon-btn' + (mon ? ' on' : '') + '" onclick="event.stopPropagation();pttMonitor(\'' + escHtml(c.code) + '\')">' + (mon ? 'Monitoring' : 'Monitor') + '</button>') +
+        (live ? '' : '<button class="ptt-mon-btn' + (mon ? ' on' : '') + '" onclick="event.stopPropagation();pttMonitor(\'' + escHtml(c.code) + '\')">' + (mon ? 'Listening' : 'Listen') + '</button>') +
         '</div>';
     }
     if (!PTT.channels.length) h = '<div class="ptt-sub">No channels available for your account.</div>';
