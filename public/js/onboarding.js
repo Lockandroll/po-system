@@ -55,7 +55,11 @@
     '.onb-slot.filled .onb-slot-ic{background:#16a34a22;color:#4ade80}' +
     '.onb-slot-b{flex:1;min-width:0}.onb-slot-b b{font-size:14px}.onb-slot-b span{display:block;color:var(--text-muted-color,#9ca3af);font-size:12px;margin-top:1px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}' +
     '.onb-slot-act{font-size:12.5px;font-weight:700;padding:6px 12px;border-radius:7px;border:1px solid var(--border,#2a2a2a);background:var(--bg-card,#161616);color:var(--text,#ededed);cursor:pointer;flex-shrink:0}' +
-    '.onb-slot-act.done{background:#16a34a22;color:#4ade80;border-color:#16a34a55}';
+    '.onb-slot-act.done{background:#16a34a22;color:#4ade80;border-color:#16a34a55}' +
+    '.onb-verify{border:1px solid var(--border,#2a2a2a);border-radius:10px;background:var(--bg,#0f0f0f);padding:12px 13px;margin:4px 0 12px}' +
+    '.onb-verify .v-h{font-size:12px;font-weight:700;color:#cfd3d7;margin-bottom:7px}' +
+    '.onb-verify .v-row{font-size:12.5px;padding:3px 0;color:var(--text-muted-color,#9ca3af)}' +
+    '.onb-verify .v-row.ok{color:#86efac}.onb-verify .v-row.warn{color:#fbbf24}';
 
   function injectCss() {
     if (document.getElementById('onb-css')) return;
@@ -120,7 +124,14 @@
     }).join('');
 
     var body;
-    if (data.all_steps_done) {
+    if (data.awaiting_review) {
+      body = '<div class="onb-card" style="text-align:center">' +
+        '<div style="font-size:42px;margin-bottom:8px">&#128203;</div>' +
+        '<h2>Paperwork submitted</h2>' +
+        '<div class="onb-desc">Your Phase 1 paperwork and documents are in. ' + escHtml(data.supervisor_name || 'Your manager') + ' has been notified to review them — training unlocks as soon as they approve.</div>' +
+        '<div class="onb-note">This screen checks automatically every 20 seconds.</div>' +
+        '</div>';
+    } else if (data.all_steps_done) {
       body = '<div class="onb-card" style="text-align:center">' +
         '<div style="font-size:42px;margin-bottom:8px">🕐</div>' +
         '<h2>All steps complete!</h2>' +
@@ -152,11 +163,12 @@
 
     onbShowVersion();
 
-    if (data.all_steps_done) {
+    if (data.all_steps_done || data.awaiting_review) {
       window._onbPoll = setInterval(async function () {
         try {
           var d = await api('GET', '/onboarding/me');
-          if (d.onboarding_status === 'complete') { clearPoll(); renderOnbCelebration(document.getElementById('app')); }
+          if (d.onboarding_status === 'complete') { clearPoll(); renderOnbCelebration(document.getElementById('app')); return; }
+          if (!!d.awaiting_review !== !!data.awaiting_review || !!d.current !== !!data.current || d.phase !== data.phase) { clearPoll(); renderOnboardingMode(document.getElementById('app')); }
         } catch (e) {}
       }, 20000);
     } else if (data.current) {
@@ -204,13 +216,20 @@
         return '<div class="onb-slot' + (filled && !rej ? ' filled' : '') + (rej ? ' rejected' : '') + '">' +
           '<div class="onb-slot-ic">' + (filled && !rej ? '&#10003;' : '&#128206;') + '</div>' +
           '<div class="onb-slot-b"><b>' + escHtml(s.label) + '</b><span>' +
-            (rej ? ('Sent back: ' + escHtml(f.reject_reason || 'please re-upload')) : (filled ? escHtml(f.name || 'attached') : (s.key === 'identity' ? 'SSN card or birth certificate — either one' : 'Photo or PDF'))) +
+            (rej ? ('Sent back: ' + escHtml(f.reject_reason || 'please re-upload')) : (filled ? (escHtml(f.name || 'attached') + (f.expires_at ? ' · exp ' + escHtml(String(f.expires_at).slice(0, 10)) : '')) : (s.key === 'identity' ? 'SSN card or birth certificate — either one' : 'Photo or PDF'))) +
           '</span></div>' +
           '<button class="onb-slot-act' + (filled && !rej ? ' done' : '') + '" onclick="onbPickSlot(' + cur.id + ',&#39;' + escHtml(s.key) + '&#39;)">' + (filled && !rej ? 'Replace' : 'Choose file') + '</button>' +
         '</div>';
       }).join('');
+      var _vhtml = '';
+      if (cur.verify && (((cur.verify.ok || []).length) || ((cur.verify.warn || []).length))) {
+        _vhtml = '<div class="onb-verify"><div class="v-h">Nova checked these automatically</div>' +
+          (cur.verify.ok || []).map(function (m) { return '<div class="v-row ok">&#10003; ' + escHtml(m) + '</div>'; }).join('') +
+          (cur.verify.warn || []).map(function (m) { return '<div class="v-row warn">&#9888; ' + escHtml(m) + '</div>'; }).join('') +
+          '</div>';
+      }
       inner = '<div class="onb-desc">Add a clear photo or scan of each item. These are encrypted and seen only by management. You can&#39;t continue until all are attached.</div>' +
-        _rows +
+        _rows + _vhtml +
         '<input type="file" id="onb-slot-file" accept="image/*,application/pdf" style="display:none">' +
         '<button class="onb-btn" id="onb-continue" ' + (_allFilled ? '' : 'disabled') + ' onclick="onbCompleteStep(' + cur.id + ')">Continue</button>' +
         '<div class="onb-note" id="onb-up-note"></div>';
@@ -506,16 +525,91 @@
     window._onbTab = window._onbTab || 'hires';
     var tabs = '<div style="display:flex;gap:8px;margin-bottom:18px">' +
       '<button class="onb-btn' + (window._onbTab === 'hires' ? '' : ' ghost') + '" onclick="onbTab(\'hires\')">New Hires</button>' +
+      '<button class="onb-btn' + (window._onbTab === 'reviews' ? '' : ' ghost') + '" onclick="onbTab(\'reviews\')">Phase 1 Reviews</button>' +
       '<button class="onb-btn' + (window._onbTab === 'path' ? '' : ' ghost') + '" onclick="onbTab(\'path\')">Onboarding Path</button>' +
       '<button class="onb-btn' + (window._onbTab === 'completion' ? '' : ' ghost') + '" onclick="onbTab(\'completion\')">Completion</button>' +
       '</div>';
     content.innerHTML = '<h1 style="margin-bottom:14px">Onboarding</h1>' + tabs + '<div id="onb-admin-body"><div class="loading">Loading…</div></div>';
     var body = document.getElementById('onb-admin-body');
     if (window._onbTab === 'hires') await onbAdminHires(body);
+    else if (window._onbTab === 'reviews') await onbAdminReviews(body);
     else if (window._onbTab === 'completion') await onbAdminCompletion(body);
     else await onbAdminPath(body);
   };
   window.onbTab = function (t) { window._onbTab = t; renderOnboardingAdmin(document.getElementById('content')); };
+
+  // ---- Phase 1 review (supervisor) ----
+  async function onbAdminReviews(body) {
+    var list;
+    try { list = await api('GET', '/onboarding/admin/reviews'); }
+    catch (e) { body.innerHTML = '<div class="onb-note">' + escHtml(e.message || 'Failed to load reviews.') + '</div>'; return; }
+    if (!list.length) { body.innerHTML = '<div class="onb-card"><div class="onb-desc">No Phase 1 paperwork is waiting on you right now.</div></div>'; return; }
+    body.innerHTML = list.map(function (u) {
+      return '<div class="onb-step" style="justify-content:space-between">' +
+        '<div style="flex:1;min-width:0"><div style="font-weight:700">' + escHtml(u.name) + '</div><div class="onb-note">Submitted Phase 1 paperwork &amp; documents</div></div>' +
+        '<button class="onb-btn" style="padding:8px 14px;font-size:13px" onclick="onbOpenReview(' + u.id + ')">Review</button>' +
+        '</div>';
+    }).join('');
+  }
+  window.onbOpenReview = async function (id) {
+    var body = document.getElementById('onb-admin-body');
+    if (body) body.innerHTML = '<div class="loading">Loading…</div>';
+    var d;
+    try { d = await api('GET', '/onboarding/admin/users/' + id + '/phase1'); }
+    catch (e) { if (body) body.innerHTML = '<div class="onb-note">' + escHtml(e.message || 'Failed.') + '</div>'; return; }
+    var docs = d.documents || [];
+    var v = d.verify || { ok: [], warn: [] };
+    var vpanel = '';
+    if ((v.ok || []).length || (v.warn || []).length) {
+      vpanel = '<div class="onb-verify"><div class="v-h">Nova checked these automatically</div>' +
+        (v.ok || []).map(function (m) { return '<div class="v-row ok">&#10003; ' + escHtml(m) + '</div>'; }).join('') +
+        (v.warn || []).map(function (m) { return '<div class="v-row warn">&#9888; ' + escHtml(m) + '</div>'; }).join('') + '</div>';
+    }
+    var docRows = docs.map(function (doc) {
+      var flagged = doc.verify_status === 'flagged' || doc.review_status === 'rejected';
+      return '<div class="onb-slot' + (flagged ? ' rejected' : ' filled') + '">' +
+        '<div class="onb-slot-ic">' + (flagged ? '&#9888;' : '&#10003;') + '</div>' +
+        '<div class="onb-slot-b"><b>' + escHtml(doc.slot_key || doc.category || 'document') + '</b><span>' + escHtml(doc.name || '') + (doc.expires_at ? ' &middot; exp ' + escHtml(String(doc.expires_at).slice(0, 10)) : '') + '</span></div>' +
+        '<button class="onb-slot-act" onclick="onbViewDoc(' + doc.id + ')">View</button>' +
+        '<label class="onb-note" style="margin-left:10px;white-space:nowrap"><input type="checkbox" class="onb-reopen-slot" value="' + escHtml(doc.slot_key || '') + '"> send back</label>' +
+        '</div>';
+    }).join('');
+    var packet = d.packet
+      ? '<div class="onb-card" style="margin-bottom:12px"><h2 style="font-size:16px">New Hire Packet</h2><pre style="white-space:pre-wrap;font-size:12.5px;color:var(--text-muted-color,#9ca3af);margin:0">' + escHtml(JSON.stringify((d.packet && d.packet.data) || {}, null, 2)) + '</pre></div>'
+      : '<div class="onb-card" style="margin-bottom:12px"><div class="onb-note">No packet on file yet (the native packet form is a later slice).</div></div>';
+    if (body) body.innerHTML =
+      '<button class="onb-btn ghost" style="margin-bottom:12px" onclick="onbTab(\'reviews\')">&#8592; Back to reviews</button>' +
+      packet +
+      '<div class="onb-card" style="margin-bottom:12px"><h2 style="font-size:16px">Uploaded documents</h2>' + vpanel + (docRows || '<div class="onb-note">No documents uploaded.</div>') + '</div>' +
+      '<div class="onb-card">' +
+        '<textarea id="onb-reopen-note" placeholder="Note to the new hire (why you are sending items back)" style="width:100%;min-height:64px;background:var(--bg,#0f0f0f);color:var(--text,#ededed);border:1px solid var(--border,#2a2a2a);border-radius:8px;padding:10px;margin-bottom:12px"></textarea>' +
+        '<div style="display:flex;gap:10px;flex-wrap:wrap">' +
+          '<button class="onb-btn" style="background:#16a34a;color:#fff" onclick="onbApprovePhase1(' + id + ')">&#10003; Approve Phase 1</button>' +
+          '<button class="onb-btn ghost" onclick="onbReopenPhase1(' + id + ')">Send flagged items back</button>' +
+        '</div>' +
+        '<div class="onb-note" style="margin-top:8px">Approving unlocks Phase 2 (training + clock-in). Sending back reopens only the items you check.</div>' +
+      '</div>';
+  };
+  window.onbViewDoc = async function (docId) {
+    try {
+      var res = await fetch('/api/onboarding/admin/hr-doc/' + docId, { headers: { Authorization: 'Bearer ' + (state && state.token ? state.token : '') } });
+      if (!res.ok) throw new Error('Could not open the document.');
+      var blob = await res.blob();
+      window.open(URL.createObjectURL(blob), '_blank');
+    } catch (e) { showToast(e.message || 'Could not open the document.', 'error'); }
+  };
+  window.onbApprovePhase1 = async function (id) {
+    try { await api('POST', '/onboarding/admin/users/' + id + '/phase1/approve', {}); showToast('Phase 1 approved — training unlocked for them.', 'success'); window._onbTab = 'reviews'; renderOnboardingAdmin(document.getElementById('content')); }
+    catch (e) { showToast(e.message || 'Could not approve.', 'error'); }
+  };
+  window.onbReopenPhase1 = async function (id) {
+    var slots = Array.prototype.slice.call(document.querySelectorAll('.onb-reopen-slot:checked')).map(function (c) { return c.value; }).filter(Boolean);
+    var note = (document.getElementById('onb-reopen-note') || {}).value || '';
+    if (!slots.length) { showToast('Check the items you want to send back.', 'error'); return; }
+    try { await api('POST', '/onboarding/admin/users/' + id + '/phase1/reopen', { slots: slots, note: note }); showToast('Sent back to the new hire.', 'info'); window._onbTab = 'reviews'; renderOnboardingAdmin(document.getElementById('content')); }
+    catch (e) { showToast(e.message || 'Could not send back.', 'error'); }
+  };
+
 
   async function onbAdminHires(body) {
     var data, users = [];
@@ -598,7 +692,7 @@
     var docOpts = (vdocs || []).map(function (d) { return '<option value="' + d.id + '">' + escHtml(d.name) + '</option>'; }).join('');
 
     var rows = steps.map(function (s, i) {
-      var meta = [];
+      var meta = ['Phase ' + ((parseInt(s.phase, 10) === 2) ? 2 : 1)];
       if (s.type === 'quiz') { var c = s.config || {}; if (typeof c === 'string') { try { c = JSON.parse(c); } catch (e) { c = {}; } } meta.push((c.question_count || 3) + ' questions, pass ' + (c.pass_score || 80) + '%'); }
       if (s.type === 'sop_read' && s.doc_title) meta.push('Document: ' + s.doc_title);
       else if (s.sop_title) meta.push('SOP: ' + s.sop_title);
@@ -620,6 +714,7 @@
       '<select id="onb-new-type" onchange="onbTypeFields()" style="background:var(--bg-card);color:var(--text);border:1px solid var(--border);border-radius:8px;padding:10px">' +
         '<option value="video">Video</option><option value="sop_read">Read an SOP</option><option value="quiz">Quiz on an SOP</option><option value="document_upload">Upload required documents</option></select>' +
       '<input id="onb-new-title" placeholder="Step title" style="background:var(--bg-card);color:var(--text);border:1px solid var(--border);border-radius:8px;padding:10px">' +
+      '<select id="onb-new-phase" style="background:var(--bg-card);color:var(--text);border:1px solid var(--border);border-radius:8px;padding:10px"><option value="1">Phase 1 &middot; Paperwork</option><option value="2">Phase 2 &middot; Training</option></select>' +
       '<input id="onb-new-desc" placeholder="Short description (optional)" style="grid-column:1/-1;background:var(--bg-card);color:var(--text);border:1px solid var(--border);border-radius:8px;padding:10px">' +
       '<div id="onb-f-doc" style="display:none;grid-column:1/-1"><select id="onb-new-doc" style="width:100%;background:var(--bg-card);color:var(--text);border:1px solid var(--border);border-radius:8px;padding:10px">' + (docOpts || '<option value="">No files in the Standard Operating Procedures vault folder</option>') + '</select><div class="onb-note">The new hire reads this document. Pulled from Document Vault &rsaquo; Standard Operating Procedures.</div></div>' +
       '<div id="onb-f-sop" style="display:none;grid-column:1/-1"><select id="onb-new-sop" style="width:100%;background:var(--bg-card);color:var(--text);border:1px solid var(--border);border-radius:8px;padding:10px">' + (sopOpts || '<option value="">No SOPs in the library yet</option>') + '</select><div class="onb-note">Quiz questions are generated from this SOP&#39;s text in the SOP library.</div></div>' +
@@ -648,6 +743,7 @@
     var title = document.getElementById('onb-new-title').value.trim();
     if (!title) { showToast('Give the step a title.', 'error'); return; }
     var payload = { type: t, title: title, description: document.getElementById('onb-new-desc').value.trim(), min_seconds: parseInt(document.getElementById('onb-new-min').value, 10) || 0 };
+    payload.phase = parseInt((document.getElementById('onb-new-phase') || {}).value, 10) === 2 ? 2 : 1;
     if (t === 'document_upload') payload.min_seconds = 0;
     if (t === 'sop_read') {
       payload.document_id = parseInt((document.getElementById('onb-new-doc') || {}).value, 10);

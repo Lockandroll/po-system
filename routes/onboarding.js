@@ -40,7 +40,7 @@ function uploadSlots(step) {
 // Latest non-superseded file per slot for a hire's onboarding uploads.
 async function slotStatus(userId) {
   const r = await pool.query(
-    'SELECT DISTINCT ON (slot_key) id, slot_key, name, mime_type, expires_at, review_status, reject_reason, verify_status ' +
+    'SELECT DISTINCT ON (slot_key) id, slot_key, name, mime_type, expires_at, review_status, reject_reason, verify_status, extracted ' +
     "FROM hr_documents WHERE user_id = $1 AND source = 'onboarding' AND slot_key IS NOT NULL AND review_status <> 'superseded' " +
     'ORDER BY slot_key, id DESC',
     [userId]
@@ -275,6 +275,122 @@ async function canSignOff(user, newHireId) {
   return chain.indexOf(user.id) !== -1;
 }
 
+// ---- AI document verification (reads uploaded IDs / insurance / registration) ----
+// Vision call mirrors routes/vr.js. Resolves the raw Anthropic reply object.
+function callClaudeVision(bytes, mime, prompt) {
+  return new Promise(function (resolve, reject) {
+    var isPdf = String(mime || '').toLowerCase() === 'application/pdf';
+    var blk = isPdf
+      ? { type: 'document', source: { type: 'base64', media_type: 'application/pdf', data: bytes.toString('base64') } }
+      : { type: 'image', source: { type: 'base64', media_type: mime || 'image/jpeg', data: bytes.toString('base64') } };
+    var body = JSON.stringify({ model: 'claude-opus-4-8', max_tokens: 700, messages: [{ role: 'user', content: [blk, { type: 'text', text: prompt }] }] });
+    var headers = { 'Content-Type': 'application/json', 'x-api-key': process.env.ANTHROPIC_API_KEY, 'anthropic-version': '2023-06-01', 'Content-Length': Buffer.byteLength(body) };
+    if (isPdf) headers['anthropic-beta'] = 'pdfs-2024-09-25';
+    var rq = https.request({ hostname: 'api.anthropic.com', path: '/v1/messages', method: 'POST', headers: headers }, function (resp) {
+      var data = '';
+      resp.on('data', function (c) { data += c; });
+      resp.on('end', function () { try { resolve(JSON.parse(data)); } catch (e) { reject(e); } });
+    });
+    rq.on('error', reject);
+    rq.setTimeout(30000, function () { rq.destroy(new Error('AI vision timed out.')); });
+    rq.write(body); rq.end();
+  });
+}
+function extractPrompt(category) {
+  var common = " Read the document. Return ONLY valid JSON, no markdown, no prose.";
+  if (category === 'license') return "This is a driver's license." + common + ' Shape: {"name":"full name or null","expiration":"YYYY-MM-DD or null"}';
+  if (category === 'insurance') return "This is a proof of auto liability insurance." + common + ' Shape: {"names":["every insured / listed-driver name shown"],"vin":"full VIN or null","expiration":"policy end date YYYY-MM-DD or null"}';
+  if (category === 'registration') return "This is a vehicle registration." + common + ' Shape: {"name":"registered owner or null","vin":"full VIN or null","expiration":"registration expiration YYYY-MM-DD or null"}';
+  return "This is a Social Security card or birth certificate." + common + ' Shape: {"name":"full name shown or null"}';
+}
+async function extractDocFields(category, bytes, mime) {
+  if (!process.env.ANTHROPIC_API_KEY) return null;
+  var reply = await callClaudeVision(bytes, mime, extractPrompt(category));
+  if (reply && reply.error) throw new Error((reply.error && reply.error.message) || 'AI error');
+  var text = (reply && reply.content && reply.content[0] && reply.content[0].text) || '';
+  return extractJson(text);
+}
+function normNameLoose(s) { return String(s || '').toLowerCase().replace(/[^a-z ]/g, ' ').replace(/\s+/g, ' ').trim(); }
+function nameMatches(a, bList) {
+  var an = normNameLoose(a); if (!an) return false;
+  var parts = an.split(' ').filter(function (w) { return w.length > 1; });
+  return (bList || []).some(function (b) {
+    var bn = normNameLoose(b); if (!bn) return false;
+    if (bn.indexOf(an) !== -1 || an.indexOf(bn) !== -1) return true;
+    if (parts.length >= 2) return bn.indexOf(parts[0]) !== -1 && bn.indexOf(parts[parts.length - 1]) !== -1;
+    return false;
+  });
+}
+function vinNorm(v) { return String(v || '').toUpperCase().replace(/[^A-Z0-9]/g, ''); }
+function expiredOn(dateStr) {
+  if (!dateStr) return null;
+  var d = new Date(String(dateStr) + 'T00:00:00'); if (isNaN(d.getTime())) return null;
+  return d.getTime() < Date.now();
+}
+// Cross-check the current uploaded set. Assistive only; never blocks the tech.
+async function verifySet(userId) {
+  var r = await pool.query(
+    "SELECT DISTINCT ON (slot_key) slot_key, extracted FROM hr_documents " +
+    "WHERE user_id = $1 AND source = 'onboarding' AND slot_key IS NOT NULL AND review_status <> 'superseded' " +
+    "ORDER BY slot_key, id DESC", [userId]);
+  var ex = {};
+  r.rows.forEach(function (row) { var e = row.extracted; if (typeof e === 'string') { try { e = JSON.parse(e); } catch (x) { e = null; } } ex[row.slot_key] = e || {}; });
+  var lic = ex.license || {}, ins = ex.insurance || {}, reg = ex.registration || {};
+  var insNames = ins.names || (ins.name ? [ins.name] : []);
+  var ok = [], warn = [];
+  if (lic.name && insNames.length) {
+    if (nameMatches(lic.name, insNames)) ok.push('Name matches — license and insurance both list ' + lic.name + '.');
+    else warn.push('Insurance does not clearly list ' + lic.name + ' — please check.');
+  }
+  if (ins.vin && reg.vin) {
+    if (vinNorm(ins.vin) === vinNorm(reg.vin)) ok.push('VIN matches — insurance and registration are the same vehicle.');
+    else warn.push('VIN on insurance and registration do not match.');
+  }
+  [['Driver license', lic.expiration], ['Insurance', ins.expiration], ['Registration', reg.expiration]].forEach(function (t) {
+    var e = expiredOn(t[1]);
+    if (e === true) warn.push(t[0] + ' appears expired (' + t[1] + ').');
+    else if (e === false) ok.push(t[0] + ' is current (through ' + t[1] + ').');
+  });
+  return { ok: ok, warn: warn };
+}
+
+// ---- Phase model helpers (v3) -----------------------------------------------
+function phaseOf(step) { return (parseInt(step.phase, 10) === 2) ? 2 : 1; }
+async function getUserPhase(userId) {
+  const r = await pool.query('SELECT onboarding_phase FROM users WHERE id = $1', [userId]);
+  return (r.rows.length && parseInt(r.rows[0].onboarding_phase, 10) === 2) ? 2 : 1;
+}
+// Record an event only if one of this type does not already exist for the user.
+// Returns true if it was newly inserted (used to fire a notification exactly once).
+async function recordEventOnce(userId, type) {
+  const e = await pool.query('SELECT 1 FROM onboarding_events WHERE user_id = $1 AND event_type = $2 LIMIT 1', [userId, type]);
+  if (e.rows.length) return false;
+  await pool.query('INSERT INTO onboarding_events (user_id, event_type) VALUES ($1,$2)', [userId, type]);
+  return true;
+}
+// Tell the direct supervisor a hire has submitted Phase 1 for review.
+async function notifyPhase1Ready(hire) {
+  try {
+    if (!hire.supervisor_id) return;
+    const sr = await pool.query('SELECT id, name, email, phone, receive_emails, receive_sms FROM users WHERE id = $1', [hire.supervisor_id]);
+    if (!sr.rows.length) return;
+    const s = sr.rows[0];
+    await push.sendPushToUsers([s.id], { title: 'Phase 1 ready for review', body: hire.name + ' submitted their paperwork.', url: appUrl('/?view=onboarding-admin') });
+    if (s.receive_emails !== false && s.email) {
+      const html = emailTemplate({
+        badge: 'Phase 1 review', badgeColor: 'orange',
+        title: hire.name + ' submitted Phase 1',
+        body: '<strong>' + hire.name + '</strong> finished their Phase 1 paperwork and uploads. Review and approve — or send it back — in Nova.',
+        details: [{ label: 'New hire', value: hire.name }],
+        buttonText: 'Review now', buttonUrl: appUrl('/?view=onboarding-admin')
+      });
+      await sendEmail(s.email, hire.name + ' submitted Phase 1 for review', html);
+    }
+    if (s.receive_sms && s.phone) await sendSms(s.phone, 'Lock & Roll: ' + hire.name + ' submitted Phase 1 onboarding for your review.');
+  } catch (e) { console.error('[onboarding] phase1 ready notify failed:', e.message); }
+}
+
+
 // ---- AI quiz generation (fresh questions on every attempt) ------------------
 
 function callClaude(system, userText) {
@@ -445,7 +561,7 @@ async function maybeNotifyReady(userId) {
 
 // GET /api/onboarding/me — my track: every step + status, and the current step's payload
 router.get('/me', requireAuth, async (req, res) => {
-  const ur = await pool.query('SELECT id, name, onboarding_status, onboarding_enrolled_at, supervisor_id FROM users WHERE id = $1', [req.user.id]);
+  const ur = await pool.query('SELECT id, name, onboarding_status, onboarding_enrolled_at, supervisor_id, onboarding_phase FROM users WHERE id = $1', [req.user.id]);
   if (!ur.rows.length) return res.status(404).json({ error: 'User not found' });
   const me = ur.rows[0];
   const status = me.onboarding_status || 'complete';
@@ -453,7 +569,13 @@ router.get('/me', requireAuth, async (req, res) => {
 
   const steps = await activeSteps();
   const prog = await progressMap(req.user.id);
-  const current = findCurrent(steps, prog);
+  let current = findCurrent(steps, prog);
+  const phase = (parseInt(me.onboarding_phase, 10) === 2) ? 2 : 1;
+  var awaitingReview = false;
+  if (current && phaseOf(current) > phase) {
+    awaitingReview = true; current = null;
+    if (await recordEventOnce(req.user.id, 'phase1_submitted')) { try { await notifyPhase1Ready(me); } catch (e) {} }
+  }
 
   var supName = null;
   if (me.supervisor_id) {
@@ -464,13 +586,13 @@ router.get('/me', requireAuth, async (req, res) => {
   const list = steps.map(function (s) {
     const p = prog[s.id];
     return {
-      id: s.id, type: s.type, title: s.title, description: s.description,
+      id: s.id, type: s.type, title: s.title, description: s.description, phase: phaseOf(s),
       status: (p && p.status === 'done') ? 'done' : (current && current.id === s.id ? 'current' : 'locked'),
       score: p ? p.score : null, attempts: p ? p.attempts : 0
     };
   });
 
-  var payload = { onboarding_status: status, name: me.name, supervisor_name: supName, steps: list, all_steps_done: !current, current: null };
+  var payload = { onboarding_status: status, name: me.name, supervisor_name: supName, steps: list, all_steps_done: (!current && !awaitingReview), awaiting_review: awaitingReview, phase: phase, current: null };
 
   if (current) {
     await ensureStarted(req.user.id, current.id);
@@ -501,6 +623,7 @@ router.get('/me', requireAuth, async (req, res) => {
     if (current.type === 'document_upload') {
       cur.slots = uploadSlots(current);
       cur.uploaded = await slotStatus(req.user.id);
+      try { cur.verify = await verifySet(req.user.id); } catch (e) {}
     }
     payload.current = cur;
   }
@@ -514,6 +637,7 @@ router.post('/steps/:id/complete', requireAuth, async (req, res) => {
   const prog = await progressMap(req.user.id);
   const current = findCurrent(steps, prog);
   if (!current || current.id !== stepId) return res.status(400).json({ error: 'That is not your current step.' });
+  if (phaseOf(current) > (await getUserPhase(req.user.id))) return res.status(400).json({ error: 'Your paperwork is with your manager for review.' });
   if (current.type === 'quiz') return res.status(400).json({ error: 'Quizzes are completed by passing them.' });
   if (current.type === 'document_upload') {
     const _slots = uploadSlots(current);
@@ -587,6 +711,14 @@ router.post('/steps/:id/upload', requireAuth, async (req, res) => {
   );
   await logAudit({ entity_type: 'hr_document', entity_id: ins.rows[0].id, action: 'uploaded', user_id: req.user.id, user_name: req.user.name, details: { slot: slot.key } });
   res.json({ success: true, slot: slot.key });
+  // AI reads the document in the background (assistive; a failure just leaves it
+  // for manual review). Uses the plaintext bytes still in memory.
+  extractDocFields(slot.category, bytes, mime).then(function (fields) {
+    if (!fields) return;
+    var expiry = (fields.expiration && /^\d{4}-\d{2}-\d{2}$/.test(String(fields.expiration))) ? String(fields.expiration) : null;
+    var expired = expiry ? (new Date(expiry + 'T00:00:00').getTime() < Date.now()) : false;
+    return pool.query('UPDATE hr_documents SET extracted = $1, expires_at = $2, verify_status = $3, updated_at = NOW() WHERE id = $4', [JSON.stringify(fields), expiry, (expired ? 'flagged' : 'verified'), ins.rows[0].id]);
+  }).catch(function () {});
 });
 
 // DELETE /api/onboarding/steps/:id/upload/:slot — remove a slot's pending file to redo it.
@@ -613,6 +745,7 @@ router.post('/steps/:id/quiz/start', requireAuth, async (req, res) => {
   const prog = await progressMap(req.user.id);
   const current = findCurrent(steps, prog);
   if (!current || current.id !== stepId) return res.status(400).json({ error: 'That is not your current step.' });
+  if (phaseOf(current) > (await getUserPhase(req.user.id))) return res.status(400).json({ error: 'Your paperwork is with your manager for review.' });
   if (current.type !== 'quiz') return res.status(400).json({ error: 'This step is not a quiz.' });
 
   // Fresh questions every attempt; tell the model what was already asked.
@@ -721,9 +854,10 @@ admin.post('/steps', async (req, res) => {
   if (b.question_count !== undefined) config.question_count = parseInt(b.question_count, 10) || DEFAULT_QUESTION_COUNT;
   if (b.min_seconds !== undefined) config.min_seconds = parseInt(b.min_seconds, 10) || 0;
   if (parseInt(b.document_id, 10)) config.document_id = parseInt(b.document_id, 10);
+  const stepPhase = (parseInt(b.phase, 10) === 2) ? 2 : 1;
   const r = await pool.query(
-    'INSERT INTO onboarding_steps (position, type, title, description, sop_id, video_key, config) VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING *',
-    [mx.rows[0].p + 1, type, title.slice(0, 200), String(b.description || '').trim() || null, parseInt(b.sop_id, 10) || null, String(b.video_key || '').trim() || null, JSON.stringify(config)]
+    'INSERT INTO onboarding_steps (position, type, title, description, sop_id, video_key, config, phase) VALUES ($1,$2,$3,$4,$5,$6,$7,$8) RETURNING *',
+    [mx.rows[0].p + 1, type, title.slice(0, 200), String(b.description || '').trim() || null, parseInt(b.sop_id, 10) || null, String(b.video_key || '').trim() || null, JSON.stringify(config), stepPhase]
   );
   await logAudit({ entity_type: 'onboarding', entity_id: r.rows[0].id, action: 'step_created', user_id: req.user.id, user_name: req.user.name, details: { title: title, type: type } });
   res.status(201).json(r.rows[0]);
@@ -740,9 +874,10 @@ admin.put('/steps/:id', async (req, res) => {
   if (b.question_count !== undefined) config.question_count = parseInt(b.question_count, 10) || DEFAULT_QUESTION_COUNT;
   if (b.min_seconds !== undefined) config.min_seconds = parseInt(b.min_seconds, 10) || 0;
   if (b.document_id !== undefined) { const did = parseInt(b.document_id, 10); if (did) config.document_id = did; }
+  const putPhase = (b.phase !== undefined) ? ((parseInt(b.phase, 10) === 2) ? 2 : 1) : null;
   const r = await pool.query(
-    'UPDATE onboarding_steps SET title = COALESCE($1, title), description = $2, sop_id = COALESCE($3, sop_id), video_key = COALESCE($4, video_key), config = $5, updated_at = NOW() WHERE id = $6 RETURNING *',
-    [b.title ? String(b.title).trim().slice(0, 200) : null, (b.description !== undefined ? (String(b.description).trim() || null) : s.description), parseInt(b.sop_id, 10) || null, (b.video_key ? String(b.video_key).trim() : null), JSON.stringify(config), id]
+    'UPDATE onboarding_steps SET title = COALESCE($1, title), description = $2, sop_id = COALESCE($3, sop_id), video_key = COALESCE($4, video_key), config = $5, phase = COALESCE($7, phase), updated_at = NOW() WHERE id = $6 RETURNING *',
+    [b.title ? String(b.title).trim().slice(0, 200) : null, (b.description !== undefined ? (String(b.description).trim() || null) : s.description), parseInt(b.sop_id, 10) || null, (b.video_key ? String(b.video_key).trim() : null), JSON.stringify(config), id, putPhase]
   );
   res.json(r.rows[0]);
 });
@@ -888,6 +1023,121 @@ admin.post('/users/:id/remove', async (req, res) => {
   await logAudit({ entity_type: 'onboarding', entity_id: target, action: 'removed', user_id: req.user.id, user_name: req.user.name, details: { user: ur.rows[0].name } });
   res.json({ success: true });
 });
+
+// ---- Phase 1 review (direct supervisor / owner / admin) ---------------------
+
+// Hires whose Phase 1 is complete and awaiting the caller's review.
+admin.get('/reviews', async (req, res) => {
+  const ur = await pool.query("SELECT id, name, role, supervisor_id, onboarding_enrolled_at FROM users WHERE onboarding_status IS NOT NULL AND onboarding_status <> 'complete' AND (onboarding_phase IS NULL OR onboarding_phase = 1)");
+  const steps = await activeSteps();
+  const p1 = steps.filter(function (s) { return phaseOf(s) === 1; });
+  const out = [];
+  for (const u of ur.rows) {
+    if (!p1.length) continue;
+    const prog = await progressMap(u.id);
+    const done = p1.every(function (s) { var pr = prog[s.id]; return pr && pr.status === 'done'; });
+    if (!done) continue;
+    if (!(await canSignOff(req.user, u.id))) continue;
+    out.push({ id: u.id, name: u.name, role: u.role, enrolled_at: u.onboarding_enrolled_at });
+  }
+  res.json(out);
+});
+
+// Full Phase 1 detail for the reviewer: packet + uploaded docs + AI checks.
+admin.get('/users/:id/phase1', async (req, res) => {
+  const target = parseInt(req.params.id, 10) || 0;
+  if (!(await canSignOff(req.user, target))) return res.status(403).json({ error: 'Not your review to make.' });
+  const pk = await pool.query('SELECT data, status, field_flags FROM onboarding_packet_responses WHERE user_id = $1', [target]);
+  const docs = await pool.query("SELECT id, slot_key, category, name, mime_type, expires_at, extracted, verify_status, review_status, reject_reason FROM hr_documents WHERE user_id = $1 AND source = 'onboarding' AND review_status <> 'superseded' ORDER BY slot_key, id DESC", [target]);
+  const verify = await verifySet(target);
+  res.json({ packet: pk.rows[0] || null, documents: docs.rows, verify: verify });
+});
+
+// Stream a decrypted HR document inline for review (access-checked + audited).
+admin.get('/hr-doc/:docId', async (req, res) => {
+  const docId = parseInt(req.params.docId, 10) || 0;
+  const dr = await pool.query('SELECT user_id, r2_key, mime_type, name FROM hr_documents WHERE id = $1', [docId]);
+  if (!dr.rows.length) return res.status(404).json({ error: 'Not found' });
+  if (!(await canSignOff(req.user, dr.rows[0].user_id))) return res.status(403).json({ error: 'Not permitted.' });
+  try {
+    const bytes = await hrCrypto.getDecrypted(dr.rows[0].r2_key);
+    res.setHeader('Content-Type', dr.rows[0].mime_type || 'application/octet-stream');
+    res.setHeader('Content-Disposition', 'inline; filename="' + String(dr.rows[0].name || 'document').replace(/"/g, '') + '"');
+    await logAudit({ entity_type: 'hr_document', entity_id: docId, action: 'viewed', user_id: req.user.id, user_name: req.user.name, details: {} });
+    res.send(bytes);
+  } catch (e) { res.status(502).json({ error: 'Could not open the document.' }); }
+});
+
+// Approve Phase 1 -> advance the hire to Phase 2 (unlocks clock-in + training).
+admin.post('/users/:id/phase1/approve', async (req, res) => {
+  const target = parseInt(req.params.id, 10) || 0;
+  const ur = await pool.query('SELECT id, name, email, phone, receive_emails, receive_sms, onboarding_status FROM users WHERE id = $1', [target]);
+  if (!ur.rows.length) return res.status(404).json({ error: 'User not found' });
+  const u = ur.rows[0];
+  if (!u.onboarding_status || u.onboarding_status === 'complete') return res.status(400).json({ error: 'Not in onboarding' });
+  if (!(await canSignOff(req.user, target))) return res.status(403).json({ error: 'Only their supervisor (or an admin) can approve' });
+  const steps = await activeSteps();
+  const prog = await progressMap(target);
+  const p1 = steps.filter(function (s) { return phaseOf(s) === 1; });
+  if (!p1.every(function (s) { var pr = prog[s.id]; return pr && pr.status === 'done'; })) return res.status(400).json({ error: 'They have not finished Phase 1 yet.' });
+
+  await pool.query("UPDATE users SET onboarding_phase = 2 WHERE id = $1", [target]);
+  await pool.query("UPDATE hr_documents SET review_status = 'accepted', updated_at = NOW() WHERE user_id = $1 AND source = 'onboarding' AND review_status = 'pending'", [target]);
+  await pool.query("UPDATE onboarding_packet_responses SET status = 'approved', reviewed_by = $2, reviewed_by_name = $3, reviewed_at = NOW() WHERE user_id = $1", [target, req.user.id, req.user.name]);
+  await pool.query('INSERT INTO onboarding_events (user_id, event_type, actor_id, actor_name) VALUES ($1,$2,$3,$4)', [target, 'phase1_approved', req.user.id, req.user.name]);
+  await logAudit({ entity_type: 'onboarding', entity_id: target, action: 'phase1_approved', user_id: req.user.id, user_name: req.user.name, details: { user: u.name } });
+  try {
+    await push.sendPushToUsers([target], { title: 'Phase 1 approved', body: 'Your paperwork is approved — training is unlocked.', url: '/' });
+    if (u.receive_emails !== false && u.email) {
+      const html = emailTemplate({ badge: 'Phase 1 approved', badgeColor: 'green', title: 'Your paperwork is approved', body: 'Nice work, ' + u.name + '. <strong>' + req.user.name + '</strong> approved your Phase 1 paperwork. When you are ready, continue your training with your manager.', details: [{ label: 'Approved by', value: req.user.name }], buttonText: 'Continue onboarding', buttonUrl: appUrl('/') });
+      await sendEmail(u.email, 'Your Phase 1 paperwork is approved', html);
+    }
+    if (u.receive_sms && u.phone) await sendSms(u.phone, 'Lock & Roll: your Phase 1 paperwork is approved. Continue training with your manager.');
+  } catch (e) { console.error('[onboarding] phase1 approve notify failed:', e.message); }
+  res.json({ success: true });
+});
+
+// Reopen Phase 1 back to the hire, flagging specific upload slots and/or packet fields.
+admin.post('/users/:id/phase1/reopen', async (req, res) => {
+  const target = parseInt(req.params.id, 10) || 0;
+  const ur = await pool.query('SELECT id, name, email, phone, receive_emails, receive_sms, onboarding_status FROM users WHERE id = $1', [target]);
+  if (!ur.rows.length) return res.status(404).json({ error: 'User not found' });
+  const u = ur.rows[0];
+  if (!u.onboarding_status || u.onboarding_status === 'complete') return res.status(400).json({ error: 'Not in onboarding' });
+  if (!(await canSignOff(req.user, target))) return res.status(403).json({ error: 'Only their supervisor (or an admin) can reopen' });
+  const b = req.body || {};
+  const slots = Array.isArray(b.slots) ? b.slots : [];
+  const fields = Array.isArray(b.fields) ? b.fields : [];
+  const note = String(b.note || '').slice(0, 500);
+  if (!slots.length && !fields.length) return res.status(400).json({ error: 'Flag at least one item to send back.' });
+  const steps = await activeSteps();
+  if (slots.length) {
+    for (const sk of slots) {
+      await pool.query("UPDATE hr_documents SET review_status = 'rejected', reject_reason = $3, updated_at = NOW() WHERE user_id = $1 AND source = 'onboarding' AND slot_key = $2 AND review_status <> 'superseded'", [target, String(sk), note || 'Please re-upload']);
+    }
+    const upStep = steps.filter(function (s) { return s.type === 'document_upload'; })[0];
+    if (upStep) await pool.query("UPDATE onboarding_progress SET status = 'pending', completed_at = NULL WHERE user_id = $1 AND step_id = $2", [target, upStep.id]);
+  }
+  if (fields.length) {
+    var flags = {}; fields.forEach(function (f) { flags[String(f)] = note || 'Please correct'; });
+    await pool.query("UPDATE onboarding_packet_responses SET status = 'reopened', field_flags = $2, reviewed_by = $3, reviewed_by_name = $4, reviewed_at = NOW() WHERE user_id = $1", [target, JSON.stringify(flags), req.user.id, req.user.name]);
+    const pkStep = steps.filter(function (s) { return s.type === 'form'; })[0];
+    if (pkStep) await pool.query("UPDATE onboarding_progress SET status = 'pending', completed_at = NULL WHERE user_id = $1 AND step_id = $2", [target, pkStep.id]);
+  }
+  await pool.query('INSERT INTO onboarding_events (user_id, event_type, detail, actor_id, actor_name) VALUES ($1,$2,$3,$4,$5)', [target, 'phase1_reopened', JSON.stringify({ slots: slots, fields: fields, note: note }), req.user.id, req.user.name]);
+  await pool.query("DELETE FROM onboarding_events WHERE user_id = $1 AND event_type = 'phase1_submitted'", [target]);
+  await logAudit({ entity_type: 'onboarding', entity_id: target, action: 'phase1_reopened', user_id: req.user.id, user_name: req.user.name, details: { slots: slots, fields: fields } });
+  try {
+    await push.sendPushToUsers([target], { title: 'Onboarding needs your attention', body: 'Your manager sent something back to fix.', url: '/' });
+    if (u.receive_emails !== false && u.email) {
+      const html = emailTemplate({ badge: 'Action needed', badgeColor: 'orange', title: 'A couple things to fix', body: 'Hi ' + u.name + ', <strong>' + req.user.name + '</strong> sent part of your paperwork back to fix.' + (note ? '<br><br>Note: ' + note : '') + '<br><br>Open Nova to fix the flagged items and resubmit.', details: [], buttonText: 'Open Nova', buttonUrl: appUrl('/') });
+      await sendEmail(u.email, 'Onboarding — a couple things to fix', html);
+    }
+    if (u.receive_sms && u.phone) await sendSms(u.phone, 'Lock & Roll: your manager sent part of your onboarding back to fix. Open Nova to resubmit.');
+  } catch (e) { console.error('[onboarding] reopen notify failed:', e.message); }
+  res.json({ success: true });
+});
+
 
 // Per-user step detail for the dashboard drill-down
 admin.get('/users/:id/detail', async (req, res) => {
