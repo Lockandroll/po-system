@@ -4,6 +4,7 @@ const crypto = require('crypto');
 const { pool } = require('../db');
 const { requireAuth, requireRole, requirePermission } = require('../middleware/auth');
 const { sendEmail, emailTemplate } = require('../utils/email');
+const { logAudit } = require('../utils/audit');
 
 const router = express.Router();
 
@@ -304,6 +305,24 @@ router.post('/import', requireAuth, requirePermission('manage_users'), async (re
     }
   }
   res.json({ created: created, updated: updated, errors: errors });
+});
+
+// Resend the invite email (set-password link) to a user who has not finished setup.
+router.post('/:id/invite', requireAuth, requirePermission('manage_users'), async (req, res) => {
+  const { id } = req.params;
+  const { rows } = await pool.query('SELECT id, name, email, role, active, last_login_at FROM users WHERE id=$1', [id]);
+  const user = rows[0];
+  if (!user) return res.status(404).json({ error: 'User not found' });
+  if (user.active === false) return res.status(400).json({ error: 'User is deactivated. Reactivate the account before sending an invite.' });
+  if (user.last_login_at) return res.status(400).json({ error: 'This user has already set up their account and logged in. Use password reset instead.' });
+  try {
+    await sendInvite(user, req.user && req.user.name);
+  } catch (e) {
+    console.error('Resend invite failed:', e);
+    return res.status(502).json({ error: 'Could not send the invite email. Please try again.' });
+  }
+  await logAudit({ entity_type: 'user', entity_id: user.id, action: 'invite_resent', user_id: req.user.id, user_name: req.user.name, details: { email: user.email } });
+  res.json({ success: true });
 });
 
 module.exports = router;

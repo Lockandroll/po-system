@@ -1848,6 +1848,7 @@ function usersRenderTable() {
             ((state.realUser || state.user).role === 'admin' && u.id !== state.user.id ? '<button class="btn btn-secondary btn-sm" onclick="viewAsUser(' + u.id + ')">View as</button>' : '') +
             (u.id !== state.user.id && !isInactive ? '<button class="btn btn-danger btn-sm" onclick="deactivateUser(' + u.id + ')">Deactivate</button>' : '') +
             (u.id !== state.user.id && isInactive ? '<button class="btn btn-success btn-sm" onclick="reactivateUser(' + u.id + ')">Reactivate</button>' : '') +
+            (!isInactive && !u.last_login_at ? '<button class="btn btn-secondary btn-sm" onclick="resendInvite(' + u.id + ')">Resend invite</button>' : '') +
           '</td>' : '') +
         '</tr>';
       }).join('') : '<tr><td colspan="' + (can('manage_users') ? 7 : 6) + '" style="text-align:center;color:var(--text-muted-color);padding:24px">No users found</td></tr>') +
@@ -1965,6 +1966,15 @@ async function saveUser(id, btn) {
     document.getElementById('modal-error').innerHTML = '<div class="alert alert-error">' + escHtml(err.message) + '</div>';
     btn.disabled = false;
   }
+}
+
+async function resendInvite(id) {
+  if (!await novaConfirm('Resend the Nova invite email to this user? It sends a fresh set-password link and expires the old one.')) return;
+  try {
+    await api('POST', '/users/' + id + '/invite');
+    showToast('Invite email sent.', 'success');
+  }
+  catch(err) { document.getElementById('users-error').innerHTML = '<div class="alert alert-error">' + escHtml(err.message) + '</div>'; }
 }
 
 async function deactivateUser(id) {
