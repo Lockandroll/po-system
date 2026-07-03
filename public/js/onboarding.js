@@ -173,6 +173,7 @@
       }, 20000);
     } else if (data.current) {
       onbStartTimers(data.current);
+      if (data.current.type === 'quiz' && data.current.must_reread) onbShowReread(data.current.id, data.current);
     }
   };
 
@@ -204,10 +205,14 @@
         '<button class="onb-btn" id="onb-continue" disabled onclick="onbCompleteStep(' + cur.id + ')">' + (cur.type === 'acknowledge' ? 'Acknowledge and Continue' : 'Mark as read') + '</button>' +
         '<div class="onb-note" id="onb-timer-note">' + (cur.sop_doc_url ? '' : 'Read to the bottom to continue.') + '</div>';
     } else if (cur.type === 'quiz') {
-      inner = '<div id="onb-quiz">' +
-        '<div class="onb-note" style="margin-bottom:14px">Pass mark: <b>' + (cur.pass_score || 80) + '%</b>' + (cur.attempts ? ' · Attempts so far: ' + cur.attempts : '') + '. You can retry as many times as you need — the questions change every time.</div>' +
-        '<button class="onb-btn" onclick="onbStartQuiz(' + cur.id + ')">' + (cur.attempts ? 'Try again with fresh questions' : 'Start the quiz') + '</button>' +
-        '</div>';
+      if (cur.must_reread) {
+        inner = '<div id="onb-quiz"></div>';
+      } else {
+        inner = '<div id="onb-quiz">' +
+          '<div class="onb-note" style="margin-bottom:14px">' + (cur.question_count || 5) + ' questions &middot; pass ' + (cur.pass_score || 80) + '%. Two tries, then you re-read the material before a fresh set.</div>' +
+          '<button class="onb-btn" onclick="onbStartQuiz(' + cur.id + ')">' + (cur.attempts ? 'Try again with fresh questions' : 'Start the quiz') + '</button>' +
+          '</div>';
+      }
     } else if (cur.type === 'document_upload') {
       var _up = cur.uploaded || {}; var _slots = cur.slots || [];
       var _allFilled = _slots.length > 0 && _slots.every(function (s) { var f = _up[s.key]; return f && f.review_status !== 'rejected'; });
@@ -311,6 +316,37 @@
     }
   };
 
+
+  function onbReaderHtml(d) {
+    if (d.sop_doc_url) {
+      var mime = d.sop_doc_mime || ''; var nm = escHtml(d.sop_doc_name || 'the document');
+      if (mime.indexOf('pdf') !== -1 || mime.indexOf('image/') === 0)
+        return '<div class="onb-doc"><iframe src="' + escHtml(d.sop_doc_url) + '" title="' + nm + '"></iframe></div>';
+      return '<div class="onb-doc onb-doc-fallback"><div style="font-size:40px">&#128196;</div><div style="font-weight:600">' + nm + '</div><a class="onb-btn" href="' + escHtml(d.sop_doc_url) + '" target="_blank" rel="noopener" style="margin-top:6px">Open the document &#8599;</a></div>';
+    }
+    return '<div class="onb-sop" id="onb-sop">' + escHtml(d.sop_content || 'Review the material with your manager.') + '</div>';
+  }
+  function onbRereadTimer(secs) {
+    var btn = document.getElementById('onb-reread-btn'); var note = document.getElementById('onb-reread-note');
+    var left = secs;
+    function tick() { if (left <= 0) { if (btn) btn.disabled = false; if (note) note.textContent = ''; return; } if (note) note.textContent = 'New questions unlock in ' + left + 's'; }
+    tick();
+    var iv = setInterval(function () { left--; if (left <= 0) clearInterval(iv); tick(); }, 1000);
+  }
+  window.onbShowReread = function (stepId, d) {
+    var box = document.getElementById('onb-quiz');
+    if (!box) return;
+    box.innerHTML = '<div class="onb-note" style="margin-bottom:10px;color:#fbbf24">You&#39;ve used both tries — re-read the material, then get a fresh set of questions.</div>' +
+      onbReaderHtml(d || {}) +
+      '<button class="onb-btn" id="onb-reread-btn" disabled onclick="onbQuizReread(' + stepId + ')">I&#39;ve re-read it — new questions</button>' +
+      '<div class="onb-note" id="onb-reread-note"></div>';
+    onbRereadTimer(30);
+  };
+  window.onbQuizReread = async function (stepId) {
+    try { await api('POST', '/onboarding/steps/' + stepId + '/quiz/reread', {}); onbStartQuiz(stepId); }
+    catch (e) { showToast(e.message || 'Could not continue.', 'error'); }
+  };
+
   window.onbStartQuiz = async function (stepId) {
     var box = document.getElementById('onb-quiz');
     if (box) box.innerHTML = '<div class="onb-note">Writing your questions…</div>';
@@ -394,8 +430,11 @@
       try { onbConfettiBurst(); } catch (e) {}
       if (note) note.innerHTML = '<b style="color:#16a34a">Passed with ' + r.score + '%!</b> Moving on…';
       setTimeout(function () { renderOnboardingMode(document.getElementById('app')); }, 1600);
+    } else if (r.revert_to_read) {
+      if (note) note.innerHTML = '<b style="color:#ef4444">' + r.score + '%</b> — that is two misses. Re-read the material, then you will get a fresh set.';
+      setTimeout(function () { onbShowReread(stepId, r.reading || {}); }, 2200);
     } else {
-      if (note) note.innerHTML = '<b style="color:#ef4444">' + r.score + '%</b> — you need ' + r.need + '%. No sweat: retry with a fresh set of questions.';
+      if (note) note.innerHTML = '<b style="color:#ef4444">' + r.score + '%</b> — you need ' + r.need + '%. One more try with a fresh set of questions.';
       var box = document.getElementById('onb-quiz');
       if (box) {
         var btn = document.createElement('button');

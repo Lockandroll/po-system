@@ -18,7 +18,7 @@ const hrCrypto = require('../utils/hrCrypto');
 const router = express.Router();
 
 const DEFAULT_PASS_SCORE = 80;
-const DEFAULT_QUESTION_COUNT = 3;
+const DEFAULT_QUESTION_COUNT = 5;
 const DEFAULT_MIN_SECONDS = 30;
 
 // Required-document upload slots (Phase 1). Slot 4 is satisfied by EITHER an SSN
@@ -619,6 +619,8 @@ router.get('/me', requireAuth, async (req, res) => {
       cur.question_count = questionCount(current);
       const p = prog[current.id];
       cur.attempts = p ? p.attempts : 0;
+      cur.must_reread = (await quizBatchFails(req.user.id, current.id)) >= 2;
+      if (cur.must_reread) { var _rd = await stepReading(current); cur.sop_content = _rd.sop_content; cur.sop_doc_url = _rd.sop_doc_url; cur.sop_doc_mime = _rd.sop_doc_mime; cur.sop_doc_name = _rd.sop_doc_name; }
     }
     if (current.type === 'document_upload') {
       cur.slots = uploadSlots(current);
@@ -741,6 +743,25 @@ router.delete('/steps/:id/upload/:slot', requireAuth, async (req, res) => {
   res.json({ success: true });
 });
 
+// Failed quiz attempts since the last forced re-read (the 2-tries batch).
+async function quizBatchFails(userId, stepId) {
+  const rr = await pool.query("SELECT created_at FROM onboarding_events WHERE user_id = $1 AND step_id = $2 AND event_type = 'quiz_reread' ORDER BY id DESC LIMIT 1", [userId, stepId]);
+  const since = rr.rows.length ? rr.rows[0].created_at : new Date(0);
+  const fr = await pool.query("SELECT COUNT(*)::int AS c FROM onboarding_quiz_attempts WHERE user_id = $1 AND step_id = $2 AND passed = false AND submitted_at IS NOT NULL AND submitted_at > $3", [userId, stepId, since]);
+  return fr.rows[0].c;
+}
+// Resolve a step's reading material (SOP text and/or vault doc) for re-read.
+async function stepReading(step) {
+  var out = {};
+  const docId = parseInt(cfg(step).document_id, 10) || 0;
+  if (step.sop_id) { const sop = await sopFullText(step.sop_id); if (sop) { out.sop_title = sop.title; out.sop_content = sop.text; } }
+  try {
+    const vdoc = docId ? await vaultDocById(docId) : (step.sop_id ? await sopVaultDoc(step.sop_id) : null);
+    if (vdoc) { out.sop_doc_url = vdoc.url; out.sop_doc_mime = vdoc.mime_type; out.sop_doc_name = vdoc.name; if (!out.sop_title) out.sop_title = vdoc.name; }
+  } catch (e) {}
+  return out;
+}
+
 // POST /api/onboarding/steps/:id/quiz/start — generate a fresh attempt
 router.post('/steps/:id/quiz/start', requireAuth, async (req, res) => {
   const stepId = parseInt(req.params.id, 10) || 0;
@@ -750,6 +771,7 @@ router.post('/steps/:id/quiz/start', requireAuth, async (req, res) => {
   if (!current || current.id !== stepId) return res.status(400).json({ error: 'That is not your current step.' });
   if (phaseOf(current) > (await getUserPhase(req.user.id))) return res.status(400).json({ error: 'Your paperwork is with your manager for review.' });
   if (current.type !== 'quiz') return res.status(400).json({ error: 'This step is not a quiz.' });
+  if ((await quizBatchFails(req.user.id, stepId)) >= 2) return res.status(400).json({ error: 'Re-read the material before your next attempt.', must_reread: true });
 
   // Fresh questions every attempt; tell the model what was already asked.
   var avoid = [];
@@ -813,8 +835,22 @@ router.post('/quiz-attempts/:id/submit', requireAuth, async (req, res) => {
     [req.user.id, attempt.step_id, passed ? 'done' : 'pending', score]
   );
   await logAudit({ entity_type: 'onboarding', entity_id: attempt.step_id, action: passed ? 'quiz_passed' : 'quiz_failed', user_id: req.user.id, user_name: req.user.name, details: { step: step ? step.title : null, score: score, need: need } });
+  await pool.query('INSERT INTO onboarding_events (user_id, event_type, step_id, score, passed, actor_id, actor_name) VALUES ($1,$2,$3,$4,$5,$1,$6)', [req.user.id, 'quiz_attempt', attempt.step_id, score, passed, req.user.name]);
+  var revert = false, reading = null;
+  if (!passed && step && (await quizBatchFails(req.user.id, attempt.step_id)) >= 2) { revert = true; reading = await stepReading(step); }
   if (passed) await maybeNotifyReady(req.user.id);
-  res.json({ score: score, passed: passed, need: need, results: results });
+  res.json({ score: score, passed: passed, need: need, results: results, revert_to_read: revert, reading: reading });
+});
+
+// POST /api/onboarding/steps/:id/quiz/reread — record the forced re-read, resetting the 2-try batch.
+router.post('/steps/:id/quiz/reread', requireAuth, async (req, res) => {
+  const stepId = parseInt(req.params.id, 10) || 0;
+  const steps = await activeSteps();
+  const prog = await progressMap(req.user.id);
+  const current = findCurrent(steps, prog);
+  if (!current || current.id !== stepId || current.type !== 'quiz') return res.status(400).json({ error: 'Not your current quiz.' });
+  await pool.query('INSERT INTO onboarding_events (user_id, event_type, step_id, actor_id, actor_name) VALUES ($1,$2,$3,$1,$4)', [req.user.id, 'quiz_reread', stepId, req.user.name]);
+  res.json({ success: true });
 });
 
 // ============================ ADMIN ENDPOINTS =================================
