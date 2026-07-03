@@ -177,7 +177,10 @@
     room.on(RE.ActiveSpeakersChanged, refreshUI);
     room.on(RE.Reconnecting, refreshUI);
     room.on(RE.Reconnected, refreshUI);
-    if (RE.AudioPlaybackStatusChanged) room.on(RE.AudioPlaybackStatusChanged, refreshUI);
+    if (RE.AudioPlaybackStatusChanged) room.on(RE.AudioPlaybackStatusChanged, function () {
+      if (room.canPlaybackAudio === false) PTT.audioBlocked = true;
+      refreshUI();
+    });
     room.on(RE.Disconnected, function () {
       if (handle.kind === 'talk') handleTalkDisconnect(handle);
       else if (handle.kind === 'monitor') handleMonitorDisconnect(handle);
@@ -237,6 +240,7 @@
       refreshUI(); updateBar();
       if (!PTT.reconnectWasAuto) showToast('Live on ' + data.channel.name, 'success');
       PTT.reconnectWasAuto = false;
+      saveAuto();
       /* Zello-style: keep hearing the channel you switched away from. */
       if (prevTalk && prevTalk !== code && !PTT.monitors[prevTalk]) {
         startMonitor(prevTalk, true).catch(function () {});
@@ -264,6 +268,7 @@
       try { await handle.room.disconnect(); } catch (e) {}
       if (!silent) showToast('Left ' + handle.channel.name, 'success');
     }
+    if (!silent) saveAuto();
     syncRadio();
     refreshUI(); updateBar();
   }
@@ -309,6 +314,7 @@
       sendHeartbeat(false);
       refreshUI(); updateBar();
       if (!isRetry) showToast('Listening to ' + data.channel.name, 'success');
+      saveAuto();
     } catch (e) {
       delete PTT.monitors[code];
       refreshUI(); updateBar();
@@ -325,6 +331,7 @@
     clearTimeout(handle.timer);
     killAudio(handle);
     try { handle.room.disconnect(); } catch (e) {}
+    if (!silent) saveAuto();
     syncRadio();
     refreshUI(); updateBar();
     if (!silent) showToast('Stopped listening to ' + handle.channel.name, 'success');
@@ -407,6 +414,37 @@
   }
 
   // ---- inbox / direct talk ---------------------------------------------------------
+  /* Zello-style persistence: remember what the radio was doing and restore it
+     after a reload/deploy, so the radio feels always-on. Per device. */
+  function saveAuto() {
+    try {
+      localStorage.setItem('ptt_auto', JSON.stringify({
+        talk: PTT.talk ? PTT.talk.channel.code : null,
+        listens: Object.keys(PTT.monitors)
+      }));
+    } catch (e) {}
+  }
+  var _restored = false;
+  function autoRestore(attempt) {
+    if (_restored) return;
+    if (typeof state === 'undefined' || !state.token || !state.user) {
+      if ((attempt || 0) < 15) setTimeout(function () { autoRestore((attempt || 0) + 1); }, 2000);
+      return;
+    }
+    _restored = true;
+    var saved = null;
+    try { saved = JSON.parse(localStorage.getItem('ptt_auto') || 'null'); } catch (e) {}
+    if (!saved || (!saved.talk && !(saved.listens || []).length)) return;
+    injectStyles();
+    ensureBar();
+    (saved.listens || []).forEach(function (c) { startMonitor(c, true).catch(function () {}); });
+    if (saved.talk) {
+      PTT.reconnectWasAuto = true;
+      joinTalk(saved.talk).catch(function () {});
+    }
+  }
+  setTimeout(function () { autoRestore(0); }, 1500);
+
   function dmCount() {
     var n = 0, k;
     for (k in PTT.dms) if (PTT.dms.hasOwnProperty(k)) n++;
@@ -564,6 +602,7 @@
     closeDms();
     stopInbox();
     await leaveTalk(silent);
+    try { localStorage.setItem('ptt_auto', 'null'); } catch (e) {}
     sendHeartbeat(true);
   }
 
@@ -689,6 +728,18 @@
   document.addEventListener('keyup', function (e) {
     if (e.code === 'Space' && PTT.talking) setTalking(false);
   });
+  /* Autoplay guard: after an automatic reconnect the browser may hold incoming
+     audio until a user gesture - the first click anywhere unlocks every room. */
+  document.addEventListener('pointerdown', function () {
+    if (!PTT.audioBlocked) return;
+    PTT.audioBlocked = false;
+    try {
+      if (PTT.talk && PTT.talk.room.startAudio) PTT.talk.room.startAudio().catch(function () {});
+      var k;
+      for (k in PTT.monitors) if (PTT.monitors.hasOwnProperty(k) && PTT.monitors[k].room.startAudio) PTT.monitors[k].room.startAudio().catch(function () {});
+      if (PTT.inbox && PTT.inbox.room.startAudio) PTT.inbox.room.startAudio().catch(function () {});
+    } catch (e) {}
+  }, true);
   window.addEventListener('blur', function () { if (PTT.talking) setTalking(false); });
   document.addEventListener('visibilitychange', function () {
     if (document.hidden && PTT.talking) setTalking(false);
