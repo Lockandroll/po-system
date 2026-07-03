@@ -576,7 +576,7 @@ async function render() {
       (can('manage_vehicles') ? '<div class="nav-sub' + (['fleet-registry','new-vehicle','edit-vehicle','vehicle-history'].indexOf(cv) !== -1 ? ' active' : '') + '" onclick="navigate(\'fleet-registry\')">' + icoDB + ' Fleet Registry</div>' : '')
     : '') : '') +
     (can('view_deposits') ? '<div class="nav-item' + (cv === 'deposits' || cv === 'view-deposit' ? ' active' : '') + '" onclick="navigate(\'deposits\')">' + icoDeposit + ' Cash Deposits</div>' : '') +
-    (can('manage_vendors') ? '<div class="nav-item' + (cv === 'vendors' ? ' active' : '') + '" onclick="navigate(\'vendors\')">' + icoAccounts + ' Accounts</div>' : '') +
+    ((can('view_vendors') || can('manage_vendors')) ? '<div class="nav-item' + (cv === 'vendors' ? ' active' : '') + '" onclick="navigate(\'vendors\')">' + icoAccounts + ' Accounts</div>' : '') +
     ('<div class="nav-section-header' + (['geico','reviews','feedback','feedback-detail'].indexOf(cv) !== -1 ? ' section-active' : '') + (ss === 'feedback' ? ' open' : '') + '" onclick="toggleSection(\'feedback\',\'reviews\')"><span class="s-label"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg> Reviews &amp; Feedback</span>' + chev + '</div>' +
       (ss === 'feedback' ?
         (can('manage_geico') ? '<div class="nav-sub' + (cv === 'geico' ? ' active' : '') + '" onclick="navigate(\'geico\')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 01-2 2H5a2 2 0 01-2-2V5a2 2 0 012-2h11"/></svg> Geico Surveys</div>' : '') +
@@ -2370,6 +2370,11 @@ async function renderRoles(el) {
   try { settings = await api('GET', '/settings'); } catch(e) {}
   var rules = {};
   try { rules = JSON.parse(settings.role_permissions || '{}') || {}; } catch(e) { rules = {}; }
+  // Any role that can manage accounts implicitly gets the new view/access gate
+  // so its manage row stays enabled after the gate was introduced.
+  ['locksmith','locksmith_coordinator','dispatcher','roadside_technician','manager'].forEach(function(_r){
+    if (rules[_r] && rules[_r].indexOf('manage_vendors') !== -1 && rules[_r].indexOf('view_vendors') === -1) rules[_r].push('view_vendors');
+  });
 
   var groups = [
     { group:'Purchase Orders', gate:'view_pos', perms:[ {k:'view_pos',l:'View / access module'}, {k:'create_po',l:'Create POs'}, {k:'edit_po',l:'Edit POs'}, {k:'delete_po',l:'Delete POs'}, {k:'submit_po',l:'Submit for approval'}, {k:'approve_po',l:'Approve / reject POs'}, {k:'cancel_po',l:'Cancel POs'} ] },
@@ -2385,7 +2390,7 @@ async function renderRoles(el) {
     { group:'Time Off', gate:'view_pto', perms:[ {k:'view_pto',l:'View & request own PTO'}, {k:'manage_pto',l:'Approve, view team & manage PTO settings'} ] },
     { group:'Time Clock', gate:'view_timeclock', perms:[ {k:'view_timeclock',l:'Clock in/out & view own timesheet'}, {k:'manage_timeclock',l:"Manager: who's-in board, timesheets, corrections, approve & submit payroll"} ] },
     { group:'Fleet &amp; Vehicles', perms:[ {k:'manage_vehicles',l:'Manage fleet registry'} ] },
-    { group:'Vendors / Accounts', perms:[ {k:'manage_vendors',l:'Manage vendors and accounts'} ] },
+    { group:'Vendors / Accounts', gate:'view_vendors', perms:[ {k:'view_vendors',l:'View / access module'}, {k:'manage_vendors',l:'Manage vendors and accounts'} ] },
     { group:'Shipping Addresses', perms:[ {k:'manage_addresses',l:'Manage shipping addresses'} ] },
     { group:'Cities', perms:[ {k:'manage_cities',l:'Manage cities'} ] },
     { group:'Monthly Requisition', perms:[ {k:'manage_running',l:'Manage monthly requisition (admin list)'} ] },
@@ -4199,12 +4204,13 @@ function reviewsRenderTable(rows) {
 }
 
 async function renderVendors(el) {
-  if (!can('manage_vendors')) { el.innerHTML = '<div class="alert alert-error">Access denied.</div>'; return; }
+  if (!can('view_vendors') && !can('manage_vendors')) { el.innerHTML = '<div class="alert alert-error">Access denied.</div>'; return; }
+  var canManage = can('manage_vendors');
   try { _vendorsData = await api('GET', '/vendors'); } catch(e) { _vendorsData = []; }
   try { _vendorCities = await api('GET', '/cities'); } catch(e) { _vendorCities = []; }
   el.innerHTML =
     '<div class="page-header"><div><div class="page-title">Accounts</div><div class="page-subtitle">Vendor account logins &amp; credentials</div></div>' +
-    '<button class="btn btn-primary" onclick="showVendorModal()">+ Add Account</button></div>' +
+    (canManage ? '<button class="btn btn-primary" onclick="showVendorModal()">+ Add Account</button>' : '') + '</div>' +
     '<div id="vendor-msg"></div>' +
     '<div style="margin-bottom:16px"><input type="text" id="vendors-search" placeholder="Search by name, website, or username..." style="width:100%;max-width:400px;padding:8px 12px;background:var(--surface-color);border:1px solid rgba(249,115,22,0.35);border-radius:6px;color:var(--text-color);font-size:14px;outline:none;box-shadow:0 0 0 1px rgba(249,115,22,0.15)" oninput="vendorsFilter(this.value)" /></div>' +
     '<div id="vendors-table-wrap"></div>';
@@ -4216,6 +4222,7 @@ function vendorsFilter(val) {
 }
 
 function vendorsRenderTable(search) {
+  var canManage = can('manage_vendors');
   var filtered = _vendorsData.filter(function(v) {
     if (!search) return true;
     return (v.name || '').toLowerCase().includes(search) ||
@@ -4251,10 +4258,10 @@ function vendorsRenderTable(search) {
                   '<td>' + escHtml(v.rep_name || '—') + '</td>' +
                   '<td>' + (v.rep_email ? '<a href="mailto:' + escHtml(v.rep_email) + '" style="color:var(--primary)">' + escHtml(v.rep_email) + '</a>' : '—') + '</td>' +
                   '<td>' + escHtml(v.rep_phone || '—') + '</td>' +
-                  '<td style="white-space:nowrap">' +
+                  (canManage ? '<td style="white-space:nowrap">' +
                     '<button class="btn btn-secondary btn-sm" onclick="showVendorModal(' + v.id + ',\'' + escHtml(v.name).replace(/'/g,"\\'") + '\',\'' + escHtml(v.website||'').replace(/'/g,"\\'") + '\',\'' + escHtml(v.account_number||'').replace(/'/g,"\\'") + '\',\'' + escHtml(v.username||'').replace(/'/g,"\\'") + '\',\'' + escHtml(v.password||'').replace(/'/g,"\\'") + '\',\'' + escHtml(v.notes||'').replace(/'/g,"\\'") + '\',\'' + escHtml(v.rep_name||'').replace(/'/g,"\\'") + '\',\'' + escHtml(v.rep_email||'').replace(/'/g,"\\'") + '\',\'' + escHtml(v.rep_phone||'').replace(/'/g,"\\'") + '\')">Edit</button> ' +
                     '<button class="btn btn-danger btn-sm" onclick="deleteVendor(' + v.id + ')">' + icons.trash + ' Delete</button>' +
-                  '</td>' +
+                  '</td>' : '<td></td>') +
                 '</tr>';
               }).join('')) +
         '</tbody>' +
@@ -10872,7 +10879,7 @@ function mySchedMonthHtml(){
       { label: 'New Vehicle Repair', view: 'new-vr', kw: 'create vr new vehicle repair maintenance add make', show: function () { return can('create_vr'); } },
       { label: 'Fleet Registry', view: 'fleet-registry', kw: 'fleet vehicle registry truck van car', show: function () { return can('manage_vehicles'); } },
       { label: 'Cash Deposits', view: 'deposits', kw: 'cash deposit money bank', show: function () { return can('view_deposits'); } },
-      { label: 'Accounts', view: 'vendors', kw: 'vendor account supplier accounts', show: function () { return can('manage_vendors'); } },
+      { label: 'Accounts', view: 'vendors', kw: 'vendor account supplier accounts', show: function () { return can('view_vendors') || can('manage_vendors'); } },
       { label: 'Geico Surveys', view: 'geico', kw: 'geico survey insurance', show: function () { return can('manage_geico'); } },
       { label: 'Customer Feedback', view: 'feedback', kw: 'feedback complaint pulsar customer tech conduct', show: function () { return can('view_feedback'); } },
       { label: 'Suggestions', view: 'suggestions', kw: 'suggestion idea feedback box', show: T },

@@ -64,6 +64,30 @@
   }
   function clearPoll() { if (window._onbPoll) { clearInterval(window._onbPoll); window._onbPoll = null; } stopFireworks(); }
   function firstName(n) { return String(n || '').split(' ')[0]; }
+  // Show the app version on the onboarding screen (trainees never see the
+  // sidebar badge). Flags when the browser is running a stale cached build.
+  function onbShowVersion() {
+    var el = document.getElementById('onb-version');
+    if (!el) return;
+    var pServer = fetch('/api/version', { cache: 'no-store' })
+      .then(function (r) { return r.ok ? r.json() : null; })
+      .then(function (d) { return d && d.version; })
+      .catch(function () { return null; });
+    var pRun = (typeof getServiceWorkerVersion === 'function')
+      ? getServiceWorkerVersion().catch(function () { return null; })
+      : Promise.resolve(null);
+    Promise.all([pRun, pServer]).then(function (arr) {
+      var running = arr[0], server = arr[1];
+      if (!running && !server) { el.textContent = ''; return; }
+      if (running && server && String(running) !== String(server)) {
+        el.textContent = 'v' + running + ' \u00b7 server v' + server + ' — hard-refresh';
+        el.style.color = '#f59e0b';
+        el.title = 'This browser is running a cached older version. Hard-refresh (Ctrl+Shift+R) to load server v' + server + '.';
+      } else {
+        el.textContent = 'v' + (running || server);
+      }
+    });
+  }
 
   // ============================ NEW-HIRE TRACK =============================
 
@@ -104,7 +128,7 @@
     app.innerHTML =
       '<div class="onb-wrap">' +
         '<div class="onb-head">' +
-          '<span class="onb-logo">Nova</span>' +
+          '<span style="display:flex;align-items:baseline;gap:8px"><span class="onb-logo">Nova</span><span id="onb-version" style="font-size:11px;color:var(--text-muted-color,#9ca3af);opacity:.75"></span></span>' +
           '<span style="display:flex;gap:8px">' +
             '<button class="onb-btn ghost" onclick="onbToggleClock()">🕐 Time Clock</button>' +
             '<button class="onb-btn ghost" onclick="logout()">Sign out</button>' +
@@ -117,6 +141,8 @@
         '<div class="onb-note" style="margin:-14px 0 16px">Step ' + Math.min(done + 1, total || 1) + ' of ' + (total || 1) + '</div>' +
         '<div id="onb-body">' + body + '</div>' +
       '</div>';
+
+    onbShowVersion();
 
     if (data.all_steps_done) {
       window._onbPoll = setInterval(async function () {

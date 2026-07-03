@@ -47,6 +47,7 @@ ALL_PERMS.push('manage_parts');
 EMPLOYEE_PERMS.push('view_invoices', 'create_invoice', 'edit_invoice', 'delete_invoice');
 ALL_PERMS.push('view_invoices', 'create_invoice', 'edit_invoice', 'delete_invoice', 'manage_invoice_setup');
 ALL_PERMS.push('assign_reviews');  // credit Google reviews to a technician
+ALL_PERMS.push('view_vendors');  // accounts: read-only access (credentials hidden)
 ALL_PERMS.push('view_feedback', 'manage_feedback');  // customer feedback module
 ALL_PERMS.push('view_signatures', 'manage_signatures');  // e-signature module
 EMPLOYEE_PERMS.push('view_signatures');
@@ -63,7 +64,7 @@ ALL_PERMS.push('view_ptt', 'ptt_all_channels', 'ptt_direct');
 
 var DEFAULTS = {
   admin: '*',
-  manager: ['view_users', 'manage_cities', 'manage_geico', 'manage_running', 'manage_vehicles', 'manage_vendors', 'manage_addresses', 'approve_vr', 'manage_tasks', 'manage_work_orders', 'manage_schedule', 'manage_parts', 'manage_invoice_setup', 'assign_reviews', 'view_feedback', 'manage_feedback', 'manage_signatures', 'manage_timeclock', 'manage_pto', 'view_quiz', 'manage_quiz', 'view_team_quiz', 'manage_onboarding', 'ptt_all_channels'].concat(EMPLOYEE_PERMS),
+  manager: ['view_users', 'manage_cities', 'manage_geico', 'manage_running', 'manage_vehicles', 'manage_vendors', 'view_vendors', 'manage_addresses', 'approve_vr', 'manage_tasks', 'manage_work_orders', 'manage_schedule', 'manage_parts', 'manage_invoice_setup', 'assign_reviews', 'view_feedback', 'manage_feedback', 'manage_signatures', 'manage_timeclock', 'manage_pto', 'view_quiz', 'manage_quiz', 'view_team_quiz', 'manage_onboarding', 'ptt_all_channels'].concat(EMPLOYEE_PERMS),
   locksmith: EMPLOYEE_PERMS.slice(),
   locksmith_coordinator: EMPLOYEE_PERMS.concat(['manage_work_orders', 'ptt_all_channels']),
   dispatcher: EMPLOYEE_PERMS.concat(['manage_work_orders', 'ptt_all_channels']),
