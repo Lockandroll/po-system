@@ -364,7 +364,7 @@
   }
   function isNewRow(r) {
     if (!r || !r.started_at) return false;
-    if (window.state && state.user && r.user_id === state.user.id) return false;
+    if (state.user && r.user_id === state.user.id) return false;
     return new Date(r.started_at).getTime() > lastSeen();
   }
   function newCountFor(key, isPerson) {
@@ -392,7 +392,7 @@
     if (!radioActive()) return;
     sendHeartbeat(false);
     await fetchLog();
-    if (window.state && state.currentView === 'ptt') {
+    if (state.currentView === 'ptt') {
       await loadPeople();
       refreshUI();
     }
@@ -417,7 +417,7 @@
   }
 
   async function startInbox() {
-    if (PTT.inbox || PTT._inboxConnecting || !window.state || !state.user) return;
+    if (PTT.inbox || PTT._inboxConnecting || typeof state === 'undefined' || !state.user) return;
     PTT._inboxConnecting = true;
     try {
       await loadSdk();
@@ -676,7 +676,7 @@
 
   document.addEventListener('keydown', function (e) {
     if (e.code !== 'Space' || e.repeat) return;
-    if (!PTT.talk || !window.state || state.currentView !== 'ptt') return;
+    if (!PTT.talk || typeof state === 'undefined' || state.currentView !== 'ptt') return;
     var t = e.target;
     if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.tagName === 'SELECT' || t.isContentEditable)) return;
     e.preventDefault();
@@ -790,9 +790,9 @@
   function updateBar() {
     injectStyles();
     var bar = ensureBar();
-    if (window.state && !state.token && (PTT.talk || monitorCount() || dmCount())) { leaveAll(true); return; }
+    if (!state.token && (PTT.talk || monitorCount() || dmCount())) { leaveAll(true); return; }
     var active = radioActive();
-    var onPttPage = window.state && state.currentView === 'ptt' && state.token;
+    var onPttPage = state.currentView === 'ptt' && state.token;
     if (!active || onPttPage) { bar.style.display = 'none'; return; }
     bar.style.display = 'flex';
     var dot = bar.querySelector('.ptt-dot');
@@ -884,7 +884,7 @@
   function refreshUI() {
     try {
       paintTalkState();
-      if (!window.state || state.currentView !== 'ptt') return;
+      if (typeof state === 'undefined' || state.currentView !== 'ptt') return;
       if (PTT.talking || PTT.dmHold || ECHO.mr || ECHO.playing) return;
       var body = document.getElementById('ptt-body');
       if (!body) return;
@@ -931,7 +931,7 @@
   }
 
   function drawPeopleList(body) {
-    var me = (window.state && state.user) ? state.user.id : 0;
+    var me = (state.user) ? state.user.id : 0;
     var ppl = PTT.people.filter(function (p) { return p.id !== me; });
     ppl.sort(function (a, b) { return (b.online === true) - (a.online === true) || String(a.name).localeCompare(String(b.name)); });
     var h = '<div class="ptt-list">';
@@ -1010,7 +1010,7 @@
     var room = handle.room;
     var items = [];
     var lp = room.localParticipant;
-    items.push({ name: (lp.name || (window.state && state.user ? state.user.name : 'Me')) + ' (you)', speaking: !!lp.isSpeaking });
+    items.push({ name: (lp.name || (state.user ? state.user.name : 'Me')) + ' (you)', speaking: !!lp.isSpeaking });
     room.remoteParticipants.forEach(function (p) {
       items.push({ name: p.name || ('User ' + p.identity), speaking: !!p.isSpeaking });
     });
