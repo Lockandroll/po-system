@@ -152,26 +152,38 @@
     document.getElementById('pto-paid').onchange = preview;
     document.getElementById('pto-submit').onclick = submitRequest;
 
-    // Projection: current balance + monthly accrual for each month-start between now and the target date.
+    // Projection: the server runs the accurate forward simulation (accrual band
+    // step-ups at anniversaries, balance cap, and Jan 1 carryover) so this matches
+    // exactly what the real accrual job will do to the balance.
     var pd = document.getElementById('pto-proj-date');
-    function monthsUntil(target) {
-      var t = parseLocal(target); if (!t) return 0;
-      var today = new Date(); today = new Date(today.getFullYear(), today.getMonth(), today.getDate());
-      if (t <= today) return 0;
-      var n = 0, d = new Date(today.getFullYear(), today.getMonth() + 1, 1);
-      while (d <= t) { n++; d.setMonth(d.getMonth() + 1); }
-      return n;
-    }
-    function projPreview() {
+    var projBusy = false;
+    async function projPreview() {
       var out = document.getElementById('pto-proj-out');
       if (!pd.value) { out.textContent = 'Pick a date to see your projected balance.'; return; }
       var t = parseLocal(pd.value), today = new Date(); today = new Date(today.getFullYear(), today.getMonth(), today.getDate());
       if (t <= today) { out.innerHTML = 'Pick a date in the future.'; return; }
-      var months = monthsUntil(pd.value);
-      var added = months * accMonthlyHrs;
-      var projected = bal + added;
-      out.innerHTML = 'By <b>' + fmtDate(pd.value) + '</b> you will have about <b style="color:#22c55e">' + fmtAmt(projected, pt) + '</b>.' +
-        '<br><span class="pto-sub">Now <b>' + fmtAmt(bal, pt) + '</b> + ' + months + ' month' + (months === 1 ? '' : 's') + ' of accrual (<b>' + fmtAmt(added, pt) + '</b>). Estimate at your current rate; excludes any pending requests.</span>';
+      if (projBusy) return;
+      projBusy = true;
+      out.textContent = 'Calculating\u2026';
+      try {
+        var r = await api('GET', '/pto/project?date=' + encodeURIComponent(pd.value));
+        var start = Number(r.start_balance_hours) || 0;
+        var projected = Number(r.projected_hours) || 0;
+        var added = Number(r.accrued_hours) || 0;
+        var forfeited = Number(r.forfeited_hours) || 0;
+        var html = 'By <b>' + fmtDate(pd.value) + '</b> you will have about <b style="color:#22c55e">' + fmtAmt(projected, pt) + '</b>.' +
+          '<br><span class="pto-sub">Now <b>' + fmtAmt(start, pt) + '</b> + ' + r.months + ' month' + (r.months === 1 ? '' : 's') + ' of accrual (<b>' + fmtAmt(added, pt) + '</b>)';
+        if (forfeited > 0) html += ' \u2212 <b>' + fmtAmt(forfeited, pt) + '</b> forfeited at year-end carryover';
+        html += '. ';
+        if (!r.accrues) html += (r.exempt ? 'Your role does not accrue PTO. ' : 'No hire date on file, so no accrual is projected. ');
+        else if (r.hit_cap) html += 'Reaches the balance cap \u2014 accrual stops there. ';
+        html += 'Excludes any pending requests.</span>';
+        out.innerHTML = html;
+      } catch (e) {
+        out.innerHTML = '<span style="color:#ef4444">Could not calculate projection. Please try again.</span>';
+      } finally {
+        projBusy = false;
+      }
     }
     pd.onchange = projPreview;
   }

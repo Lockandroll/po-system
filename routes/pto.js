@@ -97,6 +97,17 @@ function tenureYears(hireDate) {
   if (now < anniv) y -= 1;
   return Math.max(0, y);
 }
+// Whole years of service as of an arbitrary date (anniversary-based). Used by the
+// forward projection so accrual bands step up as the person crosses anniversaries.
+function tenureAt(hireDate, at) {
+  if (!hireDate) return 0;
+  const h = hireDate instanceof Date ? hireDate : parseDate(String(hireDate).slice(0, 10));
+  if (!h) return 0;
+  let y = at.getFullYear() - h.getFullYear();
+  const anniv = new Date(at.getFullYear(), h.getMonth(), h.getDate());
+  if (at < anniv) y -= 1;
+  return Math.max(0, y);
+}
 // Default accrual bands (days/year) if none configured in settings.
 const DEFAULT_BANDS = [
   { from: 0, to: 1, days_per_year: 10 },
@@ -242,6 +253,79 @@ router.get('/me', requireAuth, async (req, res) => {
     eligible_now: elig.eligible_now,
     ledger: ledger.rows,
     requests: reqs.rows
+  });
+});
+
+// GET /pto/project?date=YYYY-MM-DD
+// Accurate forward projection of banked PTO. Mirrors jobs/ptoAccrual.js exactly so
+// the estimate matches what the balance will actually do:
+//   - one monthly accrual at each upcoming month start (the current month already
+//     accrued, so we start from next month);
+//   - accrual bands step up as the person crosses service anniversaries;
+//   - the balance cap fills partially and never accrues past itself;
+//   - Jan 1 carryover forfeiture is applied BEFORE that day's accrual (cron order);
+//   - exempt staff and staff with no hire date do not accrue.
+// Approved time off is already reflected in the balance; pending requests are excluded.
+router.get('/project', requireAuth, async (req, res) => {
+  const uid = req.user.id;
+  const target = String(req.query.date || '').slice(0, 10);
+  if (!RE_DATE.test(target)) return res.status(400).json({ error: 'A valid date (YYYY-MM-DD) is required.' });
+
+  const ur = await pool.query('SELECT pay_type, hire_date, COALESCE(pto_balance_hours,0) AS bal, pto_exempt FROM users WHERE id = $1', [uid]);
+  if (!ur.rows.length) return res.status(404).json({ error: 'User not found' });
+  const u = ur.rows[0];
+
+  const bands = await getJsonSetting('pto_accrual_bands', DEFAULT_BANDS);
+  const capRaw = await getSetting('pto_balance_cap_days', null);
+  const carryRaw = await getSetting('pto_carryover_days', null);
+  const capHours = (capRaw === null || capRaw === undefined || capRaw === '') ? null : Number(capRaw) * HRS_PER_DAY;
+  const carryHours = (carryRaw === null || carryRaw === undefined || carryRaw === '') ? null : Number(carryRaw) * HRS_PER_DAY;
+  const exempt = u.pto_exempt === true;
+  const accrues = !exempt && !!u.hire_date;
+
+  const startBal = Number(u.bal) || 0;
+  const t = parseDate(target);
+  const now = new Date();
+  const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+
+  let bal = startBal, accrued = 0, forfeited = 0, months = 0, hitCap = false;
+  if (t && t > today) {
+    let d = new Date(today.getFullYear(), today.getMonth() + 1, 1); // first upcoming month start
+    let guard = 0;
+    while (d <= t && guard++ < 600) {
+      // Jan 1 carryover forfeiture runs before that day's accrual, matching the cron.
+      if (d.getMonth() === 0 && d.getDate() === 1 && carryHours !== null && bal > carryHours) {
+        forfeited += bal - carryHours;
+        bal = carryHours;
+      }
+      if (accrues) {
+        let amt = monthlyHoursFromBand(resolveBand(bands, tenureAt(u.hire_date, d)));
+        if (amt > 0 && capHours !== null) {
+          const room = capHours - bal;
+          amt = room <= 0 ? 0 : Math.min(amt, room);
+        }
+        amt = Math.round(amt * 100) / 100;
+        if (amt > 0) { bal += amt; accrued += amt; }
+      }
+      months++;
+      d = new Date(d.getFullYear(), d.getMonth() + 1, 1);
+    }
+    if (capHours !== null && bal >= capHours - 0.001) hitCap = true;
+  }
+
+  res.json({
+    pay_type: u.pay_type || 'hourly',
+    exempt: exempt,
+    accrues: accrues,
+    target_date: target,
+    start_balance_hours: Math.round(startBal * 100) / 100,
+    projected_hours: Math.round(bal * 100) / 100,
+    accrued_hours: Math.round(accrued * 100) / 100,
+    forfeited_hours: Math.round(forfeited * 100) / 100,
+    months: months,
+    cap_hours: capHours,
+    carryover_hours: carryHours,
+    hit_cap: hitCap
   });
 });
 
