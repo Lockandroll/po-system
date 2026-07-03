@@ -689,7 +689,11 @@
     try { vdocs = await api('GET', '/onboarding/admin/vault-docs'); } catch (e) {}
     window._onbSteps = steps;
     var sopOpts = (sops || []).map(function (s) { return '<option value="' + s.id + '">' + escHtml(s.title) + '</option>'; }).join('');
-    var docOpts = (vdocs || []).map(function (d) { return '<option value="' + d.id + '">' + escHtml(d.name) + '</option>'; }).join('');
+    var _docByFolder = {};
+    (vdocs || []).forEach(function (d) { var g = d.folder || 'Other'; (_docByFolder[g] = _docByFolder[g] || []).push(d); });
+    var docOpts = Object.keys(_docByFolder).map(function (g) {
+      return '<optgroup label="' + escHtml(g) + '">' + _docByFolder[g].map(function (d) { return '<option value="' + d.id + '">' + escHtml(d.name) + '</option>'; }).join('') + '</optgroup>';
+    }).join('');
 
     var rows = steps.map(function (s, i) {
       var meta = ['Phase ' + ((parseInt(s.phase, 10) === 2) ? 2 : 1)];
@@ -716,7 +720,7 @@
       '<input id="onb-new-title" placeholder="Step title" style="background:var(--bg-card);color:var(--text);border:1px solid var(--border);border-radius:8px;padding:10px">' +
       '<select id="onb-new-phase" style="background:var(--bg-card);color:var(--text);border:1px solid var(--border);border-radius:8px;padding:10px"><option value="1">Phase 1 &middot; Paperwork</option><option value="2">Phase 2 &middot; Training</option></select>' +
       '<input id="onb-new-desc" placeholder="Short description (optional)" style="grid-column:1/-1;background:var(--bg-card);color:var(--text);border:1px solid var(--border);border-radius:8px;padding:10px">' +
-      '<div id="onb-f-doc" style="display:none;grid-column:1/-1"><select id="onb-new-doc" style="width:100%;background:var(--bg-card);color:var(--text);border:1px solid var(--border);border-radius:8px;padding:10px">' + (docOpts || '<option value="">No files in the Standard Operating Procedures vault folder</option>') + '</select><div class="onb-note">The new hire reads this document. Pulled from Document Vault &rsaquo; Standard Operating Procedures.</div></div>' +
+      '<div id="onb-f-doc" style="display:none;grid-column:1/-1"><select id="onb-new-doc" style="width:100%;background:var(--bg-card);color:var(--text);border:1px solid var(--border);border-radius:8px;padding:10px">' + (docOpts || '<option value="">No files in the Standard Operating Procedures vault folder</option>') + '</select><div class="onb-note">The new hire reads this document. Choose from any Document Vault folder.</div></div>' +
       '<div id="onb-f-sop" style="display:none;grid-column:1/-1"><select id="onb-new-sop" style="width:100%;background:var(--bg-card);color:var(--text);border:1px solid var(--border);border-radius:8px;padding:10px">' + (sopOpts || '<option value="">No SOPs in the library yet</option>') + '</select><div class="onb-note">Quiz questions are generated from this SOP&#39;s text in the SOP library.</div></div>' +
       '<div id="onb-f-video" style="grid-column:1/-1"><input type="file" id="onb-new-video" accept="video/*" style="width:100%;color:var(--text)"><div class="onb-note" id="onb-vid-note"></div></div>' +
       '<div id="onb-f-quiz" style="display:none;grid-column:1/-1;display:none"><div style="display:flex;gap:10px;flex-wrap:wrap">' +

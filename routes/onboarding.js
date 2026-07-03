@@ -913,10 +913,11 @@ admin.get('/sops', async (req, res) => {
 // Vault documents in the "Standard Operating Procedures" folder — the pool a
 // read step's document is chosen from.
 admin.get('/vault-docs', async (req, res) => {
-  const fr = await pool.query("SELECT id FROM document_folders WHERE lower(trim(name)) = 'standard operating procedures'");
-  if (!fr.rows.length) return res.json([]);
-  const folderIds = fr.rows.map(function (f) { return f.id; });
-  const dr = await pool.query("SELECT id, name, mime_type FROM documents WHERE status = 'ready' AND folder_id = ANY($1::int[]) ORDER BY name ASC", [folderIds]);
+  const dr = await pool.query(
+    "SELECT d.id, d.name, d.mime_type, COALESCE(f.name, 'Root') AS folder FROM documents d " +
+    "LEFT JOIN document_folders f ON f.id = d.folder_id WHERE d.status = 'ready' " +
+    "ORDER BY folder ASC, d.name ASC"
+  );
   res.json(dr.rows);
 });
 
