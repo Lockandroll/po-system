@@ -31,18 +31,20 @@ function passScore(step) { var v = parseInt(cfg(step).pass_score, 10); return (v
 function questionCount(step) { var v = parseInt(cfg(step).question_count, 10); return (v >= 1 && v <= 10) ? v : DEFAULT_QUESTION_COUNT; }
 function minSeconds(step) { var v = parseInt(cfg(step).min_seconds, 10); return (v >= 0 && v <= 7200) ? v : DEFAULT_MIN_SECONDS; }
 
-// ---- completion action (notify a chosen person + create a task on finish) ---
-// Global default lives in settings key 'onboarding_completion'. A per-hire
-// override on users.onboarding_completion_override (JSONB) is merged on top.
-var DEFAULT_COMPLETION = {
-  enabled: false,
-  recipient_id: null,
-  notify: true,
-  create_task: true,
-  task_title: 'Onboarding wrap-up for {{name}}',
-  task_description: '{{name}} ({{role}}) finished onboarding on {{date}}, signed off by {{signer}}. Handle any remaining first-week items: equipment, accounts, keys, and schedule.',
-  task_priority: 'medium',
-  task_due_days: 3
+// ---- completion action (create one or more tasks + notify on finish) --------
+// Global default lives in settings key 'onboarding_completion'.
+//   { enabled, tasks: [ { recipient, title, description, priority, due_days, notify } ] }
+// recipient is a numeric user-id string, or a dynamic token:
+//   'supervisor' = the new hire's supervisor, 'signer' = whoever signs off.
+// A per-hire override on users.onboarding_completion_override (JSONB) replaces
+// the task list for that hire when it supplies its own tasks[].
+var DEFAULT_TASK = {
+  recipient: 'supervisor',
+  title: 'Onboarding wrap-up for {{name}}',
+  description: '{{name}} ({{role}}) finished onboarding on {{date}}, signed off by {{signer}}. Handle any remaining first-week items: equipment, accounts, keys, and schedule.',
+  priority: 'medium',
+  due_days: 3,
+  notify: true
 };
 
 function roleLabelSafe(role) {
@@ -56,40 +58,103 @@ function parseJsonMaybe(v) {
   if (v && typeof v === 'string') { try { return JSON.parse(v); } catch (e) { return null; } }
   return (v && typeof v === 'object') ? v : null;
 }
+function normalizeRecipient(r) {
+  if (r === 'supervisor' || r === 'signer') return r;
+  var n = parseInt(r, 10);
+  return n ? String(n) : null;
+}
+function cleanTask(t) {
+  if (!t) return null;
+  var rec = normalizeRecipient(t.recipient != null ? t.recipient : t.recipient_id);
+  if (!rec) return null;
+  var days = parseInt(t.due_days != null ? t.due_days : t.task_due_days, 10);
+  return {
+    recipient: rec,
+    title: String(t.title != null ? t.title : (t.task_title || '')).slice(0, 300),
+    description: String(t.description != null ? t.description : (t.task_description || '')).slice(0, 4000),
+    priority: (['low', 'medium', 'high'].indexOf(t.priority != null ? t.priority : t.task_priority) >= 0) ? (t.priority != null ? t.priority : t.task_priority) : 'medium',
+    due_days: (days >= 0 && days <= 60) ? days : 3,
+    notify: (t.notify !== false)
+  };
+}
+// Normalize a stored/POSTed config into { enabled, tasks: [...] }, migrating the
+// old single-task shape (recipient_id, task_title, ...) into a one-element list.
+function normalizeConfig(v) {
+  var out = { enabled: false, tasks: [] };
+  if (!v) return out;
+  out.enabled = v.enabled === true;
+  if (Array.isArray(v.tasks)) {
+    out.tasks = v.tasks.map(cleanTask).filter(Boolean);
+  } else if (v.recipient_id != null || v.task_title != null || v.task_description != null) {
+    var t = cleanTask({
+      recipient: v.recipient_id != null ? String(v.recipient_id) : null,
+      title: v.task_title, description: v.task_description,
+      priority: v.task_priority, due_days: v.task_due_days, notify: v.notify
+    });
+    if (t) out.tasks = [t];
+  }
+  return out;
+}
 async function getCompletionConfig() {
-  var out = {}; Object.keys(DEFAULT_COMPLETION).forEach(function (k) { out[k] = DEFAULT_COMPLETION[k]; });
   try {
     var r = await pool.query("SELECT value FROM settings WHERE key = 'onboarding_completion'");
     var v = r.rows.length ? parseJsonMaybe(r.rows[0].value) : null;
-    if (v) Object.keys(v).forEach(function (k) { if (v[k] !== undefined && v[k] !== null) out[k] = v[k]; });
-  } catch (e) { console.error('[onboarding] completion config read failed:', e.message); }
-  return out;
+    return normalizeConfig(v);
+  } catch (e) { console.error('[onboarding] completion config read failed:', e.message); return { enabled: false, tasks: [] }; }
 }
-function mergeOverride(base, override) {
-  var out = {}; Object.keys(base).forEach(function (k) { out[k] = base[k]; });
+// Merge a per-hire override on top of the normalized base config. An override may
+// flip 'enabled' and/or supply its own tasks[] (which replaces the default list).
+function applyOverride(base, override) {
   var ov = parseJsonMaybe(override);
-  if (ov) Object.keys(ov).forEach(function (k) { if (ov[k] !== undefined && ov[k] !== null && ov[k] !== '') out[k] = ov[k]; });
+  var out = { enabled: base.enabled, tasks: base.tasks };
+  if (!ov) return out;
+  if (typeof ov.enabled === 'boolean') out.enabled = ov.enabled;
+  if (Array.isArray(ov.tasks)) {
+    out.tasks = ov.tasks.map(cleanTask).filter(Boolean);
+  } else if (ov.recipient_id != null || ov.task_title != null || ov.task_description != null || ov.task_priority != null || ov.task_due_days != null) {
+    var d = base.tasks[0] || DEFAULT_TASK;
+    var t = cleanTask({
+      recipient: ov.recipient_id != null ? String(ov.recipient_id) : d.recipient,
+      title: (ov.task_title != null && String(ov.task_title).trim() !== '') ? ov.task_title : d.title,
+      description: (ov.task_description != null && String(ov.task_description).trim() !== '') ? ov.task_description : d.description,
+      priority: ov.task_priority != null ? ov.task_priority : d.priority,
+      due_days: ov.task_due_days != null && ov.task_due_days !== '' ? ov.task_due_days : d.due_days,
+      notify: ov.notify
+    });
+    if (t) out.tasks = [t];
+  }
   return out;
 }
 function cleanCompletion(b) {
   b = b || {};
-  var days = parseInt(b.task_due_days, 10);
-  return {
-    enabled: b.enabled === true,
-    recipient_id: parseInt(b.recipient_id, 10) || null,
-    notify: b.notify !== false,
-    create_task: b.create_task !== false,
-    task_title: String(b.task_title || '').slice(0, 300),
-    task_description: String(b.task_description || '').slice(0, 4000),
-    task_priority: (['low', 'medium', 'high'].indexOf(b.task_priority) >= 0) ? b.task_priority : 'medium',
-    task_due_days: (days >= 0 && days <= 60) ? days : 3
-  };
+  var tasks = Array.isArray(b.tasks) ? b.tasks.map(cleanTask).filter(Boolean) : [];
+  return { enabled: b.enabled === true, tasks: tasks };
 }
-// newHire: { id, name, role, onboarding_completion_override }; signer: req.user
+// Resolve a task recipient (id string or dynamic token) to a concrete user id.
+async function resolveRecipientId(rec, newHire, signer) {
+  if (rec === 'signer') return (signer && signer.id) ? parseInt(signer.id, 10) : null;
+  if (rec === 'supervisor') {
+    var sid = newHire ? newHire.supervisor_id : null;
+    if (sid == null && newHire && newHire.id) {
+      try { var r = await pool.query('SELECT supervisor_id FROM users WHERE id = $1', [newHire.id]); if (r.rows.length) sid = r.rows[0].supervisor_id; } catch (e) {}
+    }
+    return sid ? parseInt(sid, 10) : null;
+  }
+  var n = parseInt(rec, 10);
+  return n || null;
+}
+// newHire: { id, name, role, supervisor_id, onboarding_completion_override }; signer: req.user
 async function runCompletionAction(newHire, signer) {
-  var conf = mergeOverride(await getCompletionConfig(), newHire.onboarding_completion_override);
+  var conf = applyOverride(await getCompletionConfig(), newHire.onboarding_completion_override);
   if (!conf.enabled) return;
-  var recipientId = parseInt(conf.recipient_id, 10) || 0;
+  var tasks = Array.isArray(conf.tasks) ? conf.tasks : [];
+  for (var i = 0; i < tasks.length; i++) {
+    try { await runOneCompletionTask(tasks[i], newHire, signer); }
+    catch (e) { console.error('[onboarding] completion task ' + i + ' failed:', e.message); }
+  }
+}
+async function runOneCompletionTask(t, newHire, signer) {
+  var recipientId = await resolveRecipientId(t.recipient, newHire, signer);
   if (!recipientId) return;
   var rr = await pool.query('SELECT id, name, email, phone, receive_emails, receive_sms FROM users WHERE id = $1 AND active = true', [recipientId]);
   if (!rr.rows.length) return;
@@ -98,38 +163,36 @@ async function runCompletionAction(newHire, signer) {
     name: newHire.name, role: roleLabelSafe(newHire.role),
     date: new Date().toLocaleDateString('en-US'), signer: signer.name, recipient: rec.name
   };
-  var title = fillTemplate(conf.task_title, vars).trim() || ('Onboarding wrap-up for ' + newHire.name);
-  var desc = fillTemplate(conf.task_description, vars);
+  var title = fillTemplate(t.title, vars).trim() || ('Onboarding wrap-up for ' + newHire.name);
+  var desc = fillTemplate(t.description, vars);
 
-  if (conf.create_task !== false) {
-    try {
-      var due = null; var days = parseInt(conf.task_due_days, 10);
-      if (days >= 0) { var d = new Date(); d.setDate(d.getDate() + days); due = d.toISOString().slice(0, 10); }
-      var pr = (['low', 'medium', 'high'].indexOf(conf.task_priority) >= 0) ? conf.task_priority : 'medium';
-      var tr = await pool.query(
-        "INSERT INTO tasks (title, description, status, priority, assigned_to, created_by, due_date, source) VALUES ($1,$2,'todo',$3,$4,$5,$6,'onboarding') RETURNING id",
-        [title, desc, pr, recipientId, signer.id, due]
-      );
-      var taskId = tr.rows[0].id;
-      try { await pool.query("INSERT INTO task_activity (task_id, user_id, user_name, type, body) VALUES ($1,$2,$3,'event',$4)", [taskId, signer.id, signer.name, 'created this task — ' + newHire.name + ' finished onboarding']); } catch (e) {}
-    } catch (e) { console.error('[onboarding] completion task failed:', e.message); }
-  }
+  try {
+    var due = null; var days = parseInt(t.due_days, 10);
+    if (days >= 0) { var d = new Date(); d.setDate(d.getDate() + days); due = d.toISOString().slice(0, 10); }
+    var pr = (['low', 'medium', 'high'].indexOf(t.priority) >= 0) ? t.priority : 'medium';
+    var tr = await pool.query(
+      "INSERT INTO tasks (title, description, status, priority, assigned_to, created_by, due_date, source) VALUES ($1,$2,'todo',$3,$4,$5,$6,'onboarding') RETURNING id",
+      [title, desc, pr, recipientId, signer.id, due]
+    );
+    var taskId = tr.rows[0].id;
+    try { await pool.query("INSERT INTO task_activity (task_id, user_id, user_name, type, body) VALUES ($1,$2,$3,'event',$4)", [taskId, signer.id, signer.name, 'created this task — ' + newHire.name + ' finished onboarding']); } catch (e) {}
+  } catch (e) { console.error('[onboarding] completion task insert failed:', e.message); }
 
-  if (conf.notify !== false) {
+  if (t.notify !== false) {
     try {
       await push.sendPushToUsers([recipientId], { title: 'Onboarding complete', body: newHire.name + ' finished onboarding.', url: appUrl('/?view=tasks') });
       if (rec.receive_emails !== false && rec.email) {
         var html = emailTemplate({
           badge: 'Onboarding complete', badgeColor: 'green',
           title: newHire.name + ' finished onboarding',
-          body: '<strong>' + newHire.name + '</strong> (' + vars.role + ') completed onboarding and was signed off by <strong>' + signer.name + '</strong>.' + (conf.create_task !== false ? ' A task has been created and assigned to you.' : ''),
-          details: [{ label: 'New hire', value: newHire.name }, { label: 'Role', value: vars.role }, { label: 'Signed off by', value: signer.name }],
+          body: '<strong>' + newHire.name + '</strong> (' + vars.role + ') completed onboarding and was signed off by <strong>' + signer.name + '</strong>. A task has been created and assigned to you.',
+          details: [{ label: 'New hire', value: newHire.name }, { label: 'Role', value: vars.role }, { label: 'Task', value: title }, { label: 'Signed off by', value: signer.name }],
           buttonText: 'Open tasks', buttonUrl: appUrl('/?view=tasks')
         });
         await sendEmail(rec.email, newHire.name + ' finished onboarding', html);
       }
       if (rec.receive_sms && rec.phone) {
-        await sendSms(rec.phone, 'Lock & Roll: ' + newHire.name + ' finished onboarding' + (conf.create_task !== false ? ' — a task was assigned to you.' : '.'));
+        await sendSms(rec.phone, 'Lock & Roll: ' + newHire.name + ' finished onboarding — a task was assigned to you.');
       }
     } catch (e) { console.error('[onboarding] completion notify failed:', e.message); }
   }
@@ -670,7 +733,7 @@ admin.post('/enroll', async (req, res) => {
 // Supervisor sign-off — the final gate. Requires every step done.
 admin.post('/users/:id/signoff', async (req, res) => {
   const target = parseInt(req.params.id, 10) || 0;
-  const ur = await pool.query('SELECT id, name, email, phone, receive_emails, receive_sms, onboarding_status, role, onboarding_completion_override FROM users WHERE id = $1', [target]);
+  const ur = await pool.query('SELECT id, name, email, phone, receive_emails, receive_sms, onboarding_status, role, supervisor_id, onboarding_completion_override FROM users WHERE id = $1', [target]);
   if (!ur.rows.length) return res.status(404).json({ error: 'User not found' });
   const u = ur.rows[0];
   if (!u.onboarding_status || u.onboarding_status === 'complete') return res.status(400).json({ error: 'This user is not in onboarding' });
@@ -752,7 +815,7 @@ admin.put('/completion', async (req, res) => {
     "INSERT INTO settings (key, value, updated_at) VALUES ('onboarding_completion', $1, NOW()) ON CONFLICT (key) DO UPDATE SET value = $1, updated_at = NOW()",
     [JSON.stringify(conf)]
   );
-  await logAudit({ entity_type: 'onboarding', entity_id: 0, action: 'completion_config_updated', user_id: req.user.id, user_name: req.user.name, details: { enabled: conf.enabled, recipient_id: conf.recipient_id } });
+  await logAudit({ entity_type: 'onboarding', entity_id: 0, action: 'completion_config_updated', user_id: req.user.id, user_name: req.user.name, details: { enabled: conf.enabled, task_count: (conf.tasks || []).length } });
   res.json({ success: true, config: conf });
 });
 
@@ -766,14 +829,20 @@ admin.put('/users/:id/completion-override', async (req, res) => {
   var clean = null;
   if (raw && typeof raw === 'object') {
     clean = {};
-    if (raw.enabled != null) clean.enabled = raw.enabled === true;
-    if (raw.notify != null) clean.notify = raw.notify === true;
-    if (raw.create_task != null) clean.create_task = raw.create_task === true;
-    var rid = parseInt(raw.recipient_id, 10); if (rid) clean.recipient_id = rid;
-    if (raw.task_title != null && String(raw.task_title).trim() !== '') clean.task_title = String(raw.task_title).slice(0, 300);
-    if (raw.task_description != null && String(raw.task_description).trim() !== '') clean.task_description = String(raw.task_description).slice(0, 4000);
-    if (['low', 'medium', 'high'].indexOf(raw.task_priority) >= 0) clean.task_priority = raw.task_priority;
-    if (raw.task_due_days != null && raw.task_due_days !== '') { var dd = parseInt(raw.task_due_days, 10); if (dd >= 0 && dd <= 60) clean.task_due_days = dd; }
+    if (typeof raw.enabled === 'boolean') clean.enabled = raw.enabled;
+    if (Array.isArray(raw.tasks)) {
+      var ts = raw.tasks.map(cleanTask).filter(Boolean);
+      if (ts.length) clean.tasks = ts;
+    } else {
+      // legacy single-field override (kept for back-compat)
+      if (raw.notify != null) clean.notify = raw.notify === true;
+      if (raw.create_task != null) clean.create_task = raw.create_task === true;
+      var rid = parseInt(raw.recipient_id, 10); if (rid) clean.recipient_id = rid;
+      if (raw.task_title != null && String(raw.task_title).trim() !== '') clean.task_title = String(raw.task_title).slice(0, 300);
+      if (raw.task_description != null && String(raw.task_description).trim() !== '') clean.task_description = String(raw.task_description).slice(0, 4000);
+      if (['low', 'medium', 'high'].indexOf(raw.task_priority) >= 0) clean.task_priority = raw.task_priority;
+      if (raw.task_due_days != null && raw.task_due_days !== '') { var dd = parseInt(raw.task_due_days, 10); if (dd >= 0 && dd <= 60) clean.task_due_days = dd; }
+    }
     if (!Object.keys(clean).length) clean = null;
   }
   await pool.query('UPDATE users SET onboarding_completion_override = $1 WHERE id = $2', [clean ? JSON.stringify(clean) : null, target]);
