@@ -1019,4 +1019,62 @@
     try { await api('PUT', '/onboarding/admin/users/' + id + '/completion-override', { override: null }); showToast('Override cleared.', 'info'); renderOnboardingAdmin(document.getElementById('content')); }
     catch (e) { showToast(e.message || 'Failed.', 'error'); }
   };
+
+  // ================= EMPLOYEE FILES (management view) =================
+  window.renderEmployeeFiles = async function (content) {
+    injectCss(); clearPoll();
+    content.innerHTML = '<h1 style="margin-bottom:6px">Employee Files</h1><div class="onb-note" style="margin-bottom:16px">Encrypted personnel documents. You see the people who report up to you; owners and admins see everyone.</div><div id="onb-ef-body"><div class="loading">Loading…</div></div>';
+    var body = document.getElementById('onb-ef-body');
+    var list;
+    try { list = await api('GET', '/onboarding/admin/employees'); }
+    catch (e) { body.innerHTML = '<div class="onb-note">' + escHtml(e.message || 'Failed to load.') + '</div>'; return; }
+    body.innerHTML = list.map(function (u) {
+      return '<div class="onb-step" style="justify-content:space-between"><div style="flex:1;min-width:0"><div style="font-weight:700">' + escHtml(u.name) + '</div><div class="onb-note">' + (u.doc_count || 0) + ' document' + (u.doc_count === 1 ? '' : 's') + ' on file</div></div>' +
+        '<button class="onb-btn" style="padding:8px 14px;font-size:13px" onclick="onbOpenFile(' + u.id + ')">Open file</button></div>';
+    }).join('') || '<div class="onb-card"><div class="onb-desc">No employees you can view.</div></div>';
+  };
+  window.onbOpenFile = async function (id) {
+    var body = document.getElementById('onb-ef-body');
+    if (body) body.innerHTML = '<div class="loading">Loading…</div>';
+    var d;
+    try { d = await api('GET', '/onboarding/admin/employees/' + id + '/file'); }
+    catch (e) { if (body) body.innerHTML = '<div class="onb-note">' + escHtml(e.message || 'Failed.') + '</div>'; return; }
+    var cats = ['identity', 'license', 'insurance', 'registration', 'packet', 'acknowledgment', 'review', 'disciplinary', 'tax', 'certification', 'other'];
+    var byCat = {}; (d.documents || []).forEach(function (doc) { (byCat[doc.category] = byCat[doc.category] || []).push(doc); });
+    var sections = cats.filter(function (c) { return byCat[c]; }).map(function (c) {
+      return '<div class="onb-card" style="margin-bottom:10px"><h2 style="font-size:15px;text-transform:capitalize">' + escHtml(c) + '</h2>' +
+        byCat[c].map(function (doc) {
+          return '<div class="onb-slot filled"><div class="onb-slot-ic">&#128196;</div><div class="onb-slot-b"><b>' + escHtml(doc.name || 'document') + '</b><span>' + escHtml(doc.source || '') + (doc.expires_at ? ' &middot; exp ' + escHtml(String(doc.expires_at).slice(0, 10)) : '') + '</span></div>' +
+            '<button class="onb-slot-act" onclick="onbViewDoc(' + doc.id + ')">View</button>' +
+            '<button class="onb-slot-act" style="margin-left:8px;color:#f87171;border-color:#ef444455" onclick="onbDeleteFileDoc(' + doc.id + ',' + id + ')">Delete</button></div>';
+        }).join('') + '</div>';
+    }).join('');
+    var catOpts = cats.map(function (c) { return '<option value="' + c + '">' + c.charAt(0).toUpperCase() + c.slice(1) + '</option>'; }).join('');
+    var uploadForm = '<div class="onb-card"><h2 style="font-size:15px">Add a document</h2>' +
+      '<div style="display:flex;gap:10px;flex-wrap:wrap;align-items:center;margin-bottom:10px">' +
+        '<select id="onb-ef-cat" style="background:var(--bg-card);color:var(--text);border:1px solid var(--border);border-radius:8px;padding:9px">' + catOpts + '</select>' +
+        '<label class="onb-note">Expiration (optional) <input type="date" id="onb-ef-exp" style="background:var(--bg-card);color:var(--text);border:1px solid var(--border);border-radius:8px;padding:8px"></label>' +
+      '</div>' +
+      '<input type="file" id="onb-ef-file" accept="image/*,application/pdf" style="display:block;color:var(--text);margin-bottom:10px">' +
+      '<button class="onb-btn" onclick="onbUploadFileDoc(' + id + ')">Upload</button><div class="onb-note" id="onb-ef-note"></div></div>';
+    if (body) body.innerHTML = '<button class="onb-btn ghost" style="margin-bottom:12px" onclick="renderEmployeeFiles(document.getElementById(\'content\'))">&#8592; All employees</button>' +
+      '<h2 style="margin:0 0 12px">' + escHtml(d.user.name) + '</h2>' + (sections || '<div class="onb-note" style="margin-bottom:12px">No documents on file yet.</div>') + uploadForm;
+  };
+  window.onbUploadFileDoc = async function (id) {
+    var fi = document.getElementById('onb-ef-file'); var note = document.getElementById('onb-ef-note');
+    if (!fi || !fi.files || !fi.files.length) { showToast('Choose a file first.', 'error'); return; }
+    var file = fi.files[0];
+    if (file.size > 20 * 1024 * 1024) { showToast('That file is too large (max 20 MB).', 'error'); return; }
+    if (note) note.textContent = 'Uploading ' + file.name + '...';
+    try {
+      var dataUrl = await onbReadFileB64(file);
+      await api('POST', '/onboarding/admin/employees/' + id + '/upload', { category: (document.getElementById('onb-ef-cat') || {}).value, expires_at: (document.getElementById('onb-ef-exp') || {}).value, filename: file.name, mime_type: file.type || 'application/octet-stream', data: dataUrl });
+      showToast('Uploaded.', 'success'); onbOpenFile(id);
+    } catch (e) { if (note) note.textContent = ''; showToast(e.message || 'Upload failed.', 'error'); }
+  };
+  window.onbDeleteFileDoc = async function (docId, userId) {
+    try { await api('DELETE', '/onboarding/admin/employees/hr-doc/' + docId, {}); showToast('Deleted.', 'info'); onbOpenFile(userId); }
+    catch (e) { showToast(e.message || 'Could not delete.', 'error'); }
+  };
+
 })();

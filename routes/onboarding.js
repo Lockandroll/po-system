@@ -1283,6 +1283,68 @@ admin.get('/users/:id/record.csv', async (req, res) => {
   res.send(csv);
 });
 
+// ================= EMPLOYEE FILES (living personnel file) =====================
+// Access mirrors onboarding review: Owner/Admin company-wide, Manager downline
+// (canSignOff = admin/owner OR in the target's supervisor chain).
+
+admin.get('/employees', async (req, res) => {
+  var rows;
+  if (req.user.role === 'admin' || req.user.isOwner) {
+    rows = (await pool.query('SELECT id, name, role FROM users ORDER BY name ASC')).rows;
+  } else {
+    rows = (await pool.query(
+      'WITH RECURSIVE dl AS (SELECT id, name, role FROM users WHERE supervisor_id = $1 ' +
+      'UNION SELECT u.id, u.name, u.role FROM users u JOIN dl ON u.supervisor_id = dl.id) ' +
+      'SELECT id, name, role FROM dl ORDER BY name ASC', [req.user.id])).rows;
+  }
+  const counts = await pool.query("SELECT user_id, COUNT(*)::int AS n FROM hr_documents WHERE review_status <> 'superseded' GROUP BY user_id");
+  const cmap = {}; counts.rows.forEach(function (c) { cmap[c.user_id] = c.n; });
+  res.json(rows.map(function (u) { return { id: u.id, name: u.name, role: u.role, doc_count: cmap[u.id] || 0 }; }));
+});
+
+admin.get('/employees/:id/file', async (req, res) => {
+  const target = parseInt(req.params.id, 10) || 0;
+  if (!(await canSignOff(req.user, target))) return res.status(403).json({ error: 'Not permitted.' });
+  const ur = await pool.query('SELECT id, name, role FROM users WHERE id = $1', [target]);
+  if (!ur.rows.length) return res.status(404).json({ error: 'Not found' });
+  const docs = await pool.query("SELECT id, category, slot_key, name, mime_type, expires_at, verify_status, review_status, source, uploaded_by_name, created_at FROM hr_documents WHERE user_id = $1 AND review_status <> 'superseded' ORDER BY category ASC, id DESC", [target]);
+  res.json({ user: ur.rows[0], documents: docs.rows });
+});
+
+admin.post('/employees/:id/upload', async (req, res) => {
+  const target = parseInt(req.params.id, 10) || 0;
+  if (!(await canSignOff(req.user, target))) return res.status(403).json({ error: 'Not permitted.' });
+  if (!hrCrypto.storageReady()) return res.status(503).json({ error: 'Secure storage is not configured.' });
+  const b = req.body || {};
+  const category = String(b.category || 'other').slice(0, 40);
+  const mime = String(b.mime_type || '').toLowerCase().split(';')[0].trim();
+  if (['image/jpeg', 'image/png', 'image/webp', 'image/heic', 'image/heif', 'application/pdf'].indexOf(mime) === -1) return res.status(400).json({ error: 'Upload a photo or PDF.' });
+  var raw = String(b.data || ''); var comma = raw.indexOf(',');
+  if (raw.slice(0, 64).indexOf('base64') !== -1 && comma !== -1) raw = raw.slice(comma + 1);
+  var bytes = null; try { bytes = Buffer.from(raw, 'base64'); } catch (e) { bytes = null; }
+  if (!bytes || !bytes.length) return res.status(400).json({ error: 'That file did not come through.' });
+  if (bytes.length > 20 * 1024 * 1024) return res.status(400).json({ error: 'That file is too large (max 20 MB).' });
+  const name = String(b.filename || 'document').slice(0, 200);
+  const key = hrCrypto.hrKey(target, name);
+  try { await hrCrypto.putEncrypted(key, bytes); } catch (e) { return res.status(502).json({ error: 'Could not store the file.' }); }
+  const expires = (b.expires_at && /^\d{4}-\d{2}-\d{2}$/.test(String(b.expires_at))) ? String(b.expires_at) : null;
+  const ins = await pool.query("INSERT INTO hr_documents (user_id, category, r2_key, name, mime_type, size_bytes, expires_at, source, review_status, uploaded_by, uploaded_by_name) VALUES ($1,$2,$3,$4,$5,$6,$7,'manual','accepted',$8,$9) RETURNING id", [target, category, key, name, mime, bytes.length, expires, req.user.id, req.user.name]);
+  await logAudit({ entity_type: 'hr_document', entity_id: ins.rows[0].id, action: 'uploaded_manual', user_id: req.user.id, user_name: req.user.name, details: { category: category } });
+  res.json({ success: true });
+});
+
+admin.delete('/employees/hr-doc/:docId', async (req, res) => {
+  const docId = parseInt(req.params.docId, 10) || 0;
+  const dr = await pool.query('SELECT user_id, r2_key FROM hr_documents WHERE id = $1', [docId]);
+  if (!dr.rows.length) return res.json({ success: true });
+  if (!(await canSignOff(req.user, dr.rows[0].user_id))) return res.status(403).json({ error: 'Not permitted.' });
+  try { await r2.deleteObject(dr.rows[0].r2_key); } catch (e) {}
+  await pool.query('DELETE FROM hr_documents WHERE id = $1', [docId]);
+  await logAudit({ entity_type: 'hr_document', entity_id: docId, action: 'deleted', user_id: req.user.id, user_name: req.user.name, details: {} });
+  res.json({ success: true });
+});
+
+
 
 // ---- completion-action config (global default) ------------------------------
 admin.get('/completion', async (req, res) => {
