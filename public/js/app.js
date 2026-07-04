@@ -8943,7 +8943,6 @@ async function printInvoice(id) {
     var lines = (inv.line_items||[]).map(function(it){
       return '<tr>' +
         '<td style="padding:5px 6px;border-bottom:1px solid #eee">' + esc(it.description) + '<div style="font-size:10px;color:#999">' + (it.line_type === 'labor' ? 'Labor' : 'Part') + '</div></td>' +
-        '<td style="padding:5px 6px;border-bottom:1px solid #eee">' + esc(it.item_number || '') + '</td>' +
         '<td style="padding:5px 6px;border-bottom:1px solid #eee;text-align:right">' + invMoney(it.unit_price) + '</td>' +
         '<td style="padding:5px 6px;border-bottom:1px solid #eee;text-align:center">' + (parseFloat(it.quantity)||0) + '</td>' +
         '<td style="padding:5px 6px;border-bottom:1px solid #eee;text-align:center">' + (it.taxable ? 'Y' : 'N') + '</td>' +
@@ -8994,7 +8993,7 @@ async function printInvoice(id) {
       '</div>' +
       vehRow +
       '<table style="width:100%;border-collapse:collapse;margin-top:14px;font-size:12px">' +
-        '<thead><tr style="background:#111;color:#fff"><th style="padding:6px;text-align:left">Labor / Parts Description</th><th style="padding:6px;text-align:left">Item #</th><th style="padding:6px;text-align:right">Unit Price</th><th style="padding:6px;text-align:center">Qty</th><th style="padding:6px;text-align:center">TX</th><th style="padding:6px;text-align:right">Extension</th></tr></thead>' +
+        '<thead><tr style="background:#111;color:#fff"><th style="padding:6px;text-align:left">Labor / Parts Description</th><th style="padding:6px;text-align:right">Unit Price</th><th style="padding:6px;text-align:center">Qty</th><th style="padding:6px;text-align:center">TX</th><th style="padding:6px;text-align:right">Extension</th></tr></thead>' +
         '<tbody>' + lines + '</tbody>' +
       '</table>' +
       '<div class="avoid-break" style="display:flex;justify-content:flex-end;margin-top:12px"><table style="font-size:12px">' +
