@@ -8974,20 +8974,27 @@ async function printInvoice(id) {
     var html =
       '<html><head><title>Invoice ' + esc(inv.invoice_number) + '</title><meta charset="utf-8" />' +
       '<style>' +
-        '@page{margin:12mm}' +
+        '@page{margin:0}' +                 // remove browser print header/footer (date, title, URL, page #)
+        'html,body{margin:0;padding:0}' +
         '*{-webkit-print-color-adjust:exact;print-color-adjust:exact}' +
         'table{page-break-inside:auto}' +
-        'thead{display:table-header-group}' +
+        'thead{display:table-header-group}' +   // spacer/header repeats top space on every page
+        'tfoot{display:table-footer-group}' +   // spacer repeats bottom space on every page
         'tr{page-break-inside:avoid;break-inside:avoid}' +
+        '.pagewrap>tbody>tr{page-break-inside:auto;break-inside:auto}' +  // let the outer wrapper flow across pages
         '.avoid-break{page-break-inside:avoid;break-inside:avoid}' +
         '.agreement p{page-break-inside:avoid;break-inside:avoid}' +
       '</style>' +
       '</head>' +
-      '<body style="font-family:Arial,Helvetica,sans-serif;margin:0;padding:24px;color:#111">' +
+      '<body style="font-family:Arial,Helvetica,sans-serif;margin:0;padding:0;color:#111">' +
+      '<table class="pagewrap" style="width:100%;border-collapse:collapse">' +
+        '<thead><tr><td style="height:64px"></td></tr></thead>' +
+        '<tfoot><tr><td style="height:44px"></td></tr></tfoot>' +
+        '<tbody><tr><td style="padding:0 24px">' +
       '<div style="max-width:760px;margin:0 auto">' +
       '<div style="display:flex;justify-content:space-between;align-items:flex-start;border-bottom:3px solid #f97316;padding-bottom:12px">' +
         '<div>' + logo + (compAddr ? '<div style="margin-top:8px;font-size:11px;color:#555;line-height:1.5">' + compAddr + '</div>' : '') + '</div>' +
-        '<div style="text-align:right"><div style="border:1px solid #111;padding:6px 14px;display:inline-block"><div style="font-size:13px;font-weight:700;letter-spacing:.1em">INVOICE</div><div style="font-size:18px;font-weight:700;color:#f97316">' + esc(inv.invoice_number) + '</div></div>' +
+        '<div style="text-align:right"><div style="display:inline-block"><div style="font-size:13px;font-weight:700;letter-spacing:.1em">INVOICE</div><div style="font-size:18px;font-weight:700;color:#f97316">' + esc(inv.invoice_number) + '</div></div>' +
           '<div style="margin-top:8px;font-size:12px">Locksmith: <strong>' + esc(inv.locksmith_name || inv.locksmith_name_join || '') + '</strong></div>' +
           '<div style="font-size:12px">Date: <strong>' + esc(formatDate(inv.invoice_date || inv.created_at)) + '</strong></div>' +
         '</div>' +
@@ -9024,7 +9031,7 @@ async function printInvoice(id) {
       '<div class="avoid-break" style="margin-top:16px"><div style="font-size:10px;color:#888;text-transform:uppercase">Signature</div>' + sigHtml +
         '<div style="margin-top:4px;font-size:11px">' + esc(inv.signed_name || inv.customer_name || '') + (inv.signed_at ? '  •  ' + esc(formatDateTime(inv.signed_at)) : '') + '</div>' +
       '</div>' +
-      '</div></body></html>';
+      '</div></td></tr></tbody></table></body></html>';
     var w = window.open('', '_blank');
     if (!w) { novaAlert('Pop-up blocked. Allow pop-ups to print.'); return; }
     w.document.write(html); w.document.close();
