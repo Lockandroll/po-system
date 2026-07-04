@@ -1079,6 +1079,7 @@ admin.post('/users/:id/signoff', async (req, res) => {
   if (findCurrent(steps, prog) && !force) return res.status(400).json({ error: 'They still have steps to finish', incomplete: true });
 
   await pool.query("UPDATE users SET onboarding_status = 'complete' WHERE id = $1", [target]);
+  await pool.query('INSERT INTO onboarding_events (user_id, event_type, actor_id, actor_name) VALUES ($1,$2,$3,$4)', [target, 'signoff', req.user.id, req.user.name]);
   await logAudit({ entity_type: 'onboarding', entity_id: target, action: force ? 'signed_off_forced' : 'signed_off', user_id: req.user.id, user_name: req.user.name, details: { user: u.name } });
 
   // Tell the new hire they are in.
@@ -1253,6 +1254,35 @@ admin.get('/users/:id/detail', async (req, res) => {
     };
   }));
 });
+
+// Full onboarding event record for a hire (Section 7 evidence).
+admin.get('/users/:id/events', async (req, res) => {
+  const target = parseInt(req.params.id, 10) || 0;
+  if (!(await canSignOff(req.user, target))) return res.status(403).json({ error: 'Not permitted.' });
+  const r = await pool.query('SELECT id, event_type, step_id, document_id, document_version, score, passed, detail, actor_name, created_at FROM onboarding_events WHERE user_id = $1 ORDER BY id ASC', [target]);
+  res.json(r.rows);
+});
+
+// Downloadable CSV of the hire's complete onboarding record.
+admin.get('/users/:id/record.csv', async (req, res) => {
+  const target = parseInt(req.params.id, 10) || 0;
+  if (!(await canSignOff(req.user, target))) return res.status(403).json({ error: 'Not permitted.' });
+  const ur = await pool.query('SELECT name FROM users WHERE id = $1', [target]);
+  const name = ur.rows.length ? ur.rows[0].name : ('user ' + target);
+  const r = await pool.query('SELECT event_type, step_id, document_id, document_version, score, passed, detail, actor_name, created_at FROM onboarding_events WHERE user_id = $1 ORDER BY id ASC', [target]);
+  const esc = function (v) { var s = (v == null ? '' : String(v)); return '"' + s.replace(/"/g, '""') + '"'; };
+  var lines = ['Date,Event,Step ID,Document ID,Doc Version,Score,Passed,Actor,Detail'];
+  r.rows.forEach(function (e) {
+    var det = e.detail; if (det && typeof det === 'object') det = JSON.stringify(det);
+    lines.push([esc(e.created_at ? new Date(e.created_at).toISOString() : ''), esc(e.event_type), esc(e.step_id), esc(e.document_id), esc(e.document_version), esc(e.score), esc(e.passed), esc(e.actor_name), esc(det)].join(','));
+  });
+  const csv = lines.join('\r\n');
+  res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+  res.setHeader('Content-Disposition', 'attachment; filename="onboarding-record-' + String(name).replace(/[^a-zA-Z0-9]+/g, '_') + '.csv"');
+  await logAudit({ entity_type: 'onboarding', entity_id: target, action: 'record_exported', user_id: req.user.id, user_name: req.user.name, details: {} });
+  res.send(csv);
+});
+
 
 // ---- completion-action config (global default) ------------------------------
 admin.get('/completion', async (req, res) => {

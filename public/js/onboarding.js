@@ -642,6 +642,18 @@
       window.open(URL.createObjectURL(blob), '_blank');
     } catch (e) { showToast(e.message || 'Could not open the document.', 'error'); }
   };
+  window.onbDownloadRecord = async function (id) {
+    try {
+      var res = await fetch('/api/onboarding/admin/users/' + id + '/record.csv', { headers: { Authorization: 'Bearer ' + (state && state.token ? state.token : '') } });
+      if (!res.ok) throw new Error('Could not export the record.');
+      var blob = await res.blob();
+      var a = document.createElement('a');
+      a.href = URL.createObjectURL(blob);
+      a.download = 'onboarding-record-' + id + '.csv';
+      document.body.appendChild(a); a.click(); a.remove();
+    } catch (e) { showToast(e.message || 'Export failed.', 'error'); }
+  };
+
   window.onbApprovePhase1 = async function (id) {
     try { await api('POST', '/onboarding/admin/users/' + id + '/phase1/approve', {}); showToast('Phase 1 approved — training unlocked for them.', 'success'); window._onbTab = 'reviews'; renderOnboardingAdmin(document.getElementById('content')); }
     catch (e) { showToast(e.message || 'Could not approve.', 'error'); }
@@ -676,6 +688,7 @@
           (u.ready_for_signoff && u.can_sign_off ? '<button class="onb-btn" style="padding:8px 14px;font-size:13px" onclick="onbSignOff(' + u.id + ',\'' + escHtml(u.name).replace(/'/g, '') + '\')">Sign off &amp; unlock</button> ' : '') +
           '<button class="onb-btn ghost" style="padding:8px 12px;font-size:13px" onclick="onbDetail(' + u.id + ')">Details</button> ' +
           '<button class="onb-btn ghost" style="padding:8px 12px;font-size:13px" onclick="onbOverride(' + u.id + ')">Completion' + (u.completion_override ? ' •' : '') + '</button> ' +
+          '<button class="onb-btn ghost" style="padding:8px 12px;font-size:13px" onclick="onbDownloadRecord(' + u.id + ')">Record</button> ' +
           '<button class="onb-btn ghost" style="padding:8px 12px;font-size:13px" onclick="onbRemove(' + u.id + ')">Remove</button>' +
         '</td></tr>' +
         '<tr id="onb-detail-' + u.id + '" style="display:none"><td colspan="4"></td></tr>' +
