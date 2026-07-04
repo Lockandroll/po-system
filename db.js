@@ -1061,7 +1061,8 @@ async function initDB() {
     // Invoice: approval code + tax-exempt columns
     await client.query(
       'ALTER TABLE invoices ADD COLUMN IF NOT EXISTS approval_code VARCHAR(50);' +
-      'ALTER TABLE invoices ADD COLUMN IF NOT EXISTS tax_exempt BOOLEAN DEFAULT false;'
+      'ALTER TABLE invoices ADD COLUMN IF NOT EXISTS tax_exempt BOOLEAN DEFAULT false;' +
+      'ALTER TABLE invoices ADD COLUMN IF NOT EXISTS signature_required BOOLEAN DEFAULT false;'
     );
     // Editable pay-type list for invoices
     const _invPay = await client.query("SELECT value FROM settings WHERE key = 'invoice_pay_types'");

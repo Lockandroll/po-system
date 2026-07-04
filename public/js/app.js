@@ -366,7 +366,12 @@ function copyToClipboard(text, btn) {
 
 function formatDate(d) {
   if (!d) return '—';
-  return new Date(d).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+  // Date-only values (Postgres DATE columns) arrive as 'YYYY-MM-DD' or midnight-UTC
+  // ('YYYY-MM-DDT00:00:00.000Z'). Building a local Date from those shifts the calendar
+  // day back one in negative-UTC timezones, so render such values from their parts.
+  var m = (typeof d === 'string') && d.match(/^(\d{4})-(\d{2})-(\d{2})(?:T00:00:00(?:\.000)?Z)?$/);
+  var dt = m ? new Date(parseInt(m[1], 10), parseInt(m[2], 10) - 1, parseInt(m[3], 10)) : new Date(d);
+  return dt.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
 }
 function formatDateTime(d) {
   if (!d) return '—';
@@ -8488,6 +8493,7 @@ async function renderEditInvoice(el, id) {
 
     '<div class="card mb-4"><div class="card-header"><span class="card-title">Authorization &amp; Signature</span></div><div class="card-body">' +
       '<div class="form-group"><label>Agreement Text (printed above the signature; {customer} is replaced with the customer name)</label><textarea id="inv-agreement" style="min-height:140px">' + escHtml(agreementVal) + '</textarea></div>' +
+      '<label style="display:flex;align-items:center;gap:8px;margin:0 0 12px;cursor:pointer"><input type="checkbox" id="inv-sig-required" style="width:auto"' + (v.signature_required ? ' checked' : '') + ' /> Signature required <span style="font-size:11px;color:var(--text-muted-color)">(must be signed before this invoice can be marked Completed or Paid)</span></label>' +
       '<label style="display:block;margin-bottom:4px">Signature</label>' +
       (_invoiceExistingSig ? '<div id="inv-existing-sig" style="margin-bottom:8px;background:#fff;border:1px solid var(--border);border-radius:8px;padding:8px;display:inline-block"><img src="' + _invoiceExistingSig + '" style="max-width:320px;max-height:120px;display:block" /><div style="font-size:11px;color:#666;margin-top:4px">Current signature — draw below to replace</div></div>' : '') +
       '<div style="background:#fff;border:1px solid var(--border);border-radius:8px;display:inline-block"><canvas id="inv-sigpad" width="600" height="180" style="touch-action:none;width:100%;max-width:600px;display:block"></canvas></div>' +
@@ -8790,9 +8796,17 @@ async function saveInvoice(id) {
   var accountName = accountSel && accountSel.options[accountSel.selectedIndex] && accountId ? accountSel.options[accountSel.selectedIndex].text : null;
   var signature = _invoiceExistingSig || null;
   if (_invoiceSigPad && _invoiceSigPad.hasInk()) signature = _invoiceSigPad.canvas.toDataURL('image/png');
+  var sigRequired = chk('inv-sig-required');
+  var invStatus = val('inv-status') || 'draft';
+  if (sigRequired && invStatus !== 'draft' && !signature) {
+    if (errEl) errEl.innerHTML = '<div class="alert alert-error">A signature is required before this invoice can be marked ' + escHtml(invStatus) + '. Save it as a draft, or capture a signature first.</div>';
+    window.scrollTo(0,0);
+    return;
+  }
   var payload = {
     invoice_date: val('inv-date'),
-    status: val('inv-status') || 'draft',
+    status: invStatus,
+    signature_required: sigRequired,
     account_id: accountId,
     account_name: accountName,
     customer_po_wo: val('inv-po').trim(),
