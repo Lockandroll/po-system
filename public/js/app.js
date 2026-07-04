@@ -4885,6 +4885,7 @@ async function renderViewQuote(el, id) {
           '<button class="btn btn-secondary" style="white-space:nowrap" onclick="printQuote(' + q.id + ')">' + icons.print + ' Print Quote</button>' +
           '<button class="btn btn-secondary" id="ai-review-btn" onclick="reviewQuoteWithAI()" style="color:var(--primary);border-color:var(--primary);">&#10024; AI Review</button>' +
           (can('push_quote_po') ? '<button class="btn btn-primary" onclick="pushQuoteToPO(' + q.id + ')" style="white-space:nowrap">&#10142; Push to PO</button>' : '') +
+          (can('create_invoice') ? '<button class="btn btn-primary" onclick="pushQuoteToInvoice(' + q.id + ')" style="white-space:nowrap">&#10142; Push to Invoice</button>' : '') +
           (canEdit ? '<button class="btn btn-secondary" onclick="navigate(\'edit-quote\',' + q.id + ')">' + icons.edit + ' Edit</button>' : '') +
           (canDelete ? '<button class="btn btn-danger" title="Delete quote" onclick="deleteQuote(' + q.id + ')"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14H6L5 6"/><path d="M10 11v6"/><path d="M14 11v6"/><path d="M9 6V4h6v2"/></svg> Delete</button>' : '') +
         '</div>' +
@@ -5116,6 +5117,41 @@ async function pushQuoteToPO(id) {
   }
 }
 
+
+// Build a draft invoice from a quote and open it in the editor. Uses the quote's
+// LIST price (what the customer pays) as the invoice unit price, carries tax rate,
+// customer, and line items. Purely reuses the existing invoice-create API.
+async function pushQuoteToInvoice(id) {
+  if (!await novaConfirm('Create a draft invoice from this quote? Line items use the quote’s customer (list) price. You can adjust everything before finalizing.')) return;
+  var errEl = document.getElementById('view-quote-error');
+  try {
+    var q = await api('GET', '/quotes/' + id);
+    var lines = (q.line_items || []).map(function(it){
+      var price = (it.list_price != null && it.list_price !== '') ? parseFloat(it.list_price) : (parseFloat(it.unit_price) || 0);
+      return {
+        line_type: 'part',
+        item_number: it.item_number || '',
+        description: it.description || '',
+        quantity: parseFloat(it.quantity) || 1,
+        unit_price: isNaN(price) ? 0 : price,
+        taxable: it.taxable === true
+      };
+    }).filter(function(li){ return (li.description || '').trim(); });
+    if (!lines.length) { throw new Error('This quote has no line items to bring over.'); }
+    var payload = {
+      status: 'draft',
+      customer_name: q.customer_name || '',
+      tax_rate: parseFloat(q.tax_rate) || 0,
+      notes: 'From quote ' + q.quote_number + (q.notes ? ('\n' + q.notes) : ''),
+      line_items: lines
+    };
+    var created = await api('POST', '/invoices', payload);
+    navigate('edit-invoice', created.id);
+  } catch (err) {
+    if (errEl) errEl.innerHTML = '<div class="alert alert-error">' + escHtml(err.message) + '</div>';
+    else novaAlert(err.message);
+  }
+}
 
 async function reviewQuoteFormWithAI() {
   // Read data from the live edit form
