@@ -1064,6 +1064,25 @@ async function initDB() {
       'ALTER TABLE invoices ADD COLUMN IF NOT EXISTS tax_exempt BOOLEAN DEFAULT false;' +
       'ALTER TABLE invoices ADD COLUMN IF NOT EXISTS signature_required BOOLEAN DEFAULT false;'
     );
+    // Invoice photos (stored in Cloudflare R2, like the document vault). show_in_print
+    // controls whether a photo appears on the printed / emailed PDF version.
+    await client.query(
+      'CREATE TABLE IF NOT EXISTS invoice_photos (' +
+      '  id SERIAL PRIMARY KEY,' +
+      '  invoice_id INTEGER NOT NULL REFERENCES invoices(id) ON DELETE CASCADE,' +
+      '  r2_key TEXT NOT NULL,' +
+      '  filename TEXT,' +
+      '  mime_type TEXT,' +
+      '  caption TEXT,' +
+      '  show_in_print BOOLEAN DEFAULT true,' +
+      '  position INTEGER DEFAULT 0,' +
+      '  size_bytes BIGINT DEFAULT 0,' +
+      '  status VARCHAR(20) DEFAULT \'pending\',' +
+      '  uploaded_by INTEGER,' +
+      '  created_at TIMESTAMPTZ DEFAULT NOW()' +
+      ');' +
+      'CREATE INDEX IF NOT EXISTS idx_invoice_photos_invoice ON invoice_photos(invoice_id);'
+    );
     // Editable pay-type list for invoices
     const _invPay = await client.query("SELECT value FROM settings WHERE key = 'invoice_pay_types'");
     if (!_invPay.rows.length) {

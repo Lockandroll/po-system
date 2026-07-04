@@ -8500,6 +8500,16 @@ async function renderEditInvoice(el, id) {
       '<div style="margin-top:6px;display:flex;gap:8px;flex-wrap:wrap"><button class="btn btn-secondary btn-sm" onclick="openInvoiceSignatureFullscreen()">' + (icons.edit || '') + ' Tap to sign full screen</button><button class="btn btn-ghost btn-sm" onclick="clearInvoiceSignature()">Clear signature</button></div>' +
     '</div></div>' +
 
+    '<div class="card mb-4"><div class="card-header"><span class="card-title">Photos</span></div><div class="card-body">' +
+      (id
+        ? '<p style="font-size:12px;color:var(--text-muted-color);margin:0 0 10px">Attach job photos. Uncheck &quot;Show on printout&quot; to keep a photo out of the printed and emailed PDF.</p>' +
+          '<input type="file" id="inv-photo-file" accept="image/*" multiple style="display:none" onchange="invUploadPhotos(this)" />' +
+          '<button type="button" class="btn btn-secondary btn-sm" onclick="document.getElementById(\'inv-photo-file\').click()">' + (icons.plus || '') + ' Add photos</button>' +
+          '<span id="inv-photo-status" style="font-size:12px;color:var(--text-muted-color);margin-left:10px"></span>' +
+          '<div id="inv-photo-list" style="display:flex;flex-wrap:wrap;gap:12px;margin-top:12px"></div>'
+        : '<p style="font-size:13px;color:var(--text-muted-color);margin:0">Save the invoice first, then reopen it to attach photos.</p>') +
+    '</div></div>' +
+
     '<div class="flex-gap" style="margin-bottom:40px">' +
       '<button class="btn btn-primary" id="inv-save-btn" onclick="saveInvoice(' + (id||'null') + ')">Save Invoice</button>' +
     '</div>';
@@ -8508,6 +8518,7 @@ async function renderEditInvoice(el, id) {
   buildInvoiceLineItemRows();
   setupInvoiceSignaturePad();
   if (v.account_id) { var sel = document.getElementById('inv-account'); if (sel) invAccountChange(true); }
+  if (id) invLoadPhotos(id);
 }
 
 function invAccountChange(skipAutoItems) {
@@ -8887,6 +8898,7 @@ async function renderViewInvoice(el, id) {
         '<div class="flex-gap">' +
           '<button class="btn btn-secondary" onclick="navigate(\'invoices\')">&larr; Back</button>' +
           '<button class="btn btn-secondary" style="white-space:nowrap" onclick="printInvoice(' + inv.id + ')">' + icons.print + ' Print</button>' +
+          '<button class="btn btn-secondary" style="white-space:nowrap" onclick="invEmail(' + inv.id + ')">' + (icons.mail || icons.send || '') + ' Email</button>' +
           (canEdit ? '<button class="btn btn-secondary" onclick="navigate(\'edit-invoice\',' + inv.id + ')">' + icons.edit + ' Edit</button>' : '') +
           (canDel ? '<button class="btn btn-danger" title="Delete invoice" onclick="deleteInvoice(' + inv.id + ')"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14H6L5 6"/><path d="M10 11v6"/><path d="M14 11v6"/><path d="M9 6V4h6v2"/></svg> Delete</button>' : '') +
         '</div>' +
@@ -8925,6 +8937,16 @@ async function renderViewInvoice(el, id) {
         (inv.signature_image
           ? '<div style="margin-top:14px"><div style="font-size:12px;color:var(--text-muted-color);margin-bottom:4px">Signed by ' + escHtml(inv.signed_name || inv.customer_name || '') + (inv.signed_at ? ' on ' + formatDateTime(inv.signed_at) : '') + '</div><div style="background:#fff;border:1px solid var(--border);border-radius:8px;padding:8px;display:inline-block"><img src="' + inv.signature_image + '" style="max-width:340px;max-height:140px;display:block" /></div></div>'
           : '<div style="margin-top:14px;font-size:13px;color:var(--text-muted-color)">No signature captured.</div>') +
+      '</div></div>' +
+      '<div class="card mb-4"><div class="card-header"><span class="card-title">Photos</span>' +
+        (canEdit ? '<button class="btn btn-secondary btn-sm" onclick="navigate(\'edit-invoice\',' + inv.id + ')">' + (icons.edit || '') + ' Add / manage</button>' : '') +
+      '</div><div class="card-body">' +
+        ((inv.photos && inv.photos.length)
+          ? '<div style="display:flex;flex-wrap:wrap;gap:12px">' + inv.photos.map(function(p){
+              return '<div style="width:170px"><a href="' + escHtml(p.url || '#') + '" target="_blank" rel="noopener"><img src="' + escHtml(p.url || '') + '" style="width:170px;height:130px;object-fit:cover;border:1px solid var(--border);border-radius:8px;display:block" /></a>' +
+                '<div style="font-size:11px;color:var(--text-muted-color);margin-top:4px">' + escHtml(p.caption || '') + (p.show_in_print ? '' : ' <span style="color:#f97316">(hidden from print)</span>') + '</div></div>';
+            }).join('') + '</div>'
+          : '<div style="font-size:13px;color:var(--text-muted-color)">No photos attached.</div>') +
       '</div></div>';
   } catch(err) {
     el.innerHTML = '<div class="alert alert-error">' + escHtml(err.message) + '</div>';
@@ -8936,6 +8958,129 @@ async function deleteInvoice(id) {
   try { await api('DELETE', '/invoices/' + id); navigate('invoices'); }
   catch(err) { var e = document.getElementById('view-invoice-error'); if (e) e.innerHTML = '<div class="alert alert-error">' + escHtml(err.message) + '</div>'; else novaAlert(err.message); }
 }
+
+// ---------- Photos ----------
+var _invoicePhotos = [];
+var _invoicePhotoInvId = null;
+
+async function invLoadPhotos(id) {
+  _invoicePhotoInvId = id;
+  try { var inv = await api('GET', '/invoices/' + id); _invoicePhotos = inv.photos || []; }
+  catch (e) { _invoicePhotos = []; }
+  invRenderPhotoList();
+}
+
+function invRenderPhotoList() {
+  var box = document.getElementById('inv-photo-list');
+  if (!box) return;
+  if (!_invoicePhotos.length) { box.innerHTML = '<div style="font-size:13px;color:var(--text-muted-color)">No photos yet.</div>'; return; }
+  box.innerHTML = _invoicePhotos.map(function(p){
+    return '<div style="width:180px;border:1px solid var(--border);border-radius:8px;padding:8px">' +
+      '<img src="' + escHtml(p.url || '') + '" style="width:100%;height:120px;object-fit:cover;border-radius:6px;display:block" />' +
+      '<input type="text" value="' + escHtml(p.caption || '') + '" placeholder="Caption" onchange="invSetCaption(' + p.id + ',this.value)" style="width:100%;margin-top:6px;font-size:12px" />' +
+      '<label style="display:flex;align-items:center;gap:6px;margin:6px 0 0;font-size:12px;cursor:pointer"><input type="checkbox"' + (p.show_in_print ? ' checked' : '') + ' onchange="invTogglePrint(' + p.id + ',this.checked)" style="width:auto" /> Show on printout</label>' +
+      '<button type="button" class="btn btn-ghost btn-sm" style="margin-top:6px" onclick="invRemovePhoto(' + p.id + ')">Remove</button>' +
+    '</div>';
+  }).join('');
+}
+
+function invCompressToBlob(file, maxDim, quality) {
+  return new Promise(function(resolve, reject){
+    var url = URL.createObjectURL(file);
+    var img = new Image();
+    img.onload = function(){
+      var scale = Math.min(1, maxDim / Math.max(img.width, img.height));
+      var cw = Math.max(1, Math.round(img.width * scale)), ch = Math.max(1, Math.round(img.height * scale));
+      var c = document.createElement('canvas'); c.width = cw; c.height = ch;
+      c.getContext('2d').drawImage(img, 0, 0, cw, ch);
+      URL.revokeObjectURL(url);
+      c.toBlob(function(b){ b ? resolve(b) : reject(new Error('Could not process image')); }, 'image/jpeg', quality || 0.82);
+    };
+    img.onerror = function(){ URL.revokeObjectURL(url); reject(new Error('Could not read image')); };
+    img.src = url;
+  });
+}
+
+async function invUploadPhotos(input) {
+  var files = input.files ? Array.prototype.slice.call(input.files) : [];
+  input.value = '';
+  if (!files.length || !_invoicePhotoInvId) return;
+  var status = document.getElementById('inv-photo-status');
+  var done = 0;
+  for (var i = 0; i < files.length; i++) {
+    if (!/^image\//.test(files[i].type)) continue;
+    if (status) status.textContent = 'Uploading ' + (i + 1) + ' of ' + files.length + '…';
+    try {
+      var blob = await invCompressToBlob(files[i], 1600, 0.82);
+      var nm = (files[i].name || 'photo').replace(/\.[^.]+$/, '') + '.jpg';
+      var pre = await api('POST', '/invoices/' + _invoicePhotoInvId + '/photos/upload-url', { name: nm, mime_type: 'image/jpeg' });
+      var put = await fetch(pre.uploadUrl, { method: 'PUT', body: blob, headers: { 'Content-Type': 'image/jpeg' } });
+      if (!put.ok) throw new Error('Upload failed (' + put.status + ')');
+      await api('POST', '/invoices/' + _invoicePhotoInvId + '/photos/' + pre.id + '/confirm', { size_bytes: blob.size, caption: '' });
+      done++;
+    } catch (e) { if (status) status.textContent = e.message; }
+  }
+  if (status) status.textContent = done ? (done + ' photo' + (done > 1 ? 's' : '') + ' added.') : status.textContent;
+  await invLoadPhotos(_invoicePhotoInvId);
+}
+
+async function invSetCaption(photoId, val) {
+  try { await api('PATCH', '/invoices/' + _invoicePhotoInvId + '/photos/' + photoId, { caption: val }); }
+  catch (e) { novaAlert(e.message); }
+}
+async function invTogglePrint(photoId, checked) {
+  try { await api('PATCH', '/invoices/' + _invoicePhotoInvId + '/photos/' + photoId, { show_in_print: checked }); }
+  catch (e) { novaAlert(e.message); }
+}
+async function invRemovePhoto(photoId) {
+  if (!await novaConfirm('Remove this photo?')) return;
+  try { await api('DELETE', '/invoices/' + _invoicePhotoInvId + '/photos/' + photoId); await invLoadPhotos(_invoicePhotoInvId); }
+  catch (e) { novaAlert(e.message); }
+}
+
+// ---------- Email invoice ----------
+function invEmail(id) {
+  var inv = _currentInvoice || {};
+  var myEmail = (state.user && state.user.email) ? state.user.email : 'you';
+  var overlay = document.createElement('div');
+  overlay.className = 'modal-overlay';
+  overlay.id = 'inv-email-modal';
+  overlay.innerHTML =
+    '<div class="modal">' +
+    '<div class="modal-header"><span class="modal-title">Email Invoice #' + escHtml(String(inv.invoice_number || id)) + '</span>' +
+    '<button class="btn btn-ghost btn-sm" onclick="invCloseEmail()">&#x2715;</button></div>' +
+    '<div class="modal-body">' +
+    '<div id="inv-email-err"></div>' +
+    '<p style="font-size:13px;color:var(--text-muted-color);margin:0 0 14px">The invoice PDF (including any photos set to show on the printout) is attached and sent from your company no-reply address. A copy goes to you (' + escHtml(myEmail) + ').</p>' +
+    '<div class="form-group"><label>Recipient email</label><input type="email" id="inv-email-to" value="' + escHtml(inv.email || '') + '" placeholder="name@example.com" /></div>' +
+    '<div class="form-group"><label>Recipient name (optional)</label><input type="text" id="inv-email-name" value="' + escHtml(inv.customer_name || '') + '" /></div>' +
+    '<div class="form-group"><label>Message (optional)</label><textarea id="inv-email-msg" rows="3"></textarea></div>' +
+    '</div>' +
+    '<div class="modal-footer">' +
+    '<button class="btn btn-ghost btn-sm" onclick="invCloseEmail()">Cancel</button>' +
+    '<button class="btn btn-primary btn-sm" id="inv-email-send" onclick="invSendEmail(' + id + ')">Send</button>' +
+    '</div></div>';
+  document.body.appendChild(overlay);
+}
+
+async function invSendEmail(id) {
+  var to = (document.getElementById('inv-email-to').value || '').trim();
+  var errBox = document.getElementById('inv-email-err');
+  if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(to)) { errBox.innerHTML = '<div class="alert alert-error">Enter a valid recipient email address.</div>'; return; }
+  var name = (document.getElementById('inv-email-name').value || '').trim();
+  var msg = (document.getElementById('inv-email-msg').value || '').trim();
+  var btn = document.getElementById('inv-email-send');
+  btn.disabled = true; btn.textContent = 'Sending…';
+  try {
+    await api('POST', '/invoices/' + id + '/email', { to: to, to_name: name, message: msg });
+    invCloseEmail();
+    novaAlert('Invoice sent to ' + to + '.');
+  } catch (e) {
+    errBox.innerHTML = '<div class="alert alert-error">' + escHtml(e.message) + '</div>';
+    btn.disabled = false; btn.textContent = 'Send';
+  }
+}
+function invCloseEmail() { var m = document.getElementById('inv-email-modal'); if (m) m.remove(); }
 
 // ---------- Print ----------
 async function printInvoice(id) {
@@ -8968,6 +9113,12 @@ async function printInvoice(id) {
     var sigHtml = inv.signature_image
       ? '<img src="' + inv.signature_image + '" style="max-height:60px;max-width:300px;display:block" />'
       : '<div style="height:50px;border-bottom:1px solid #333;width:300px"></div>';
+    var _printPhotos = (inv.photos || []).filter(function(p){ return p.show_in_print && p.url; });
+    var photosHtml = _printPhotos.length
+      ? '<div class="avoid-break" style="margin-top:18px"><div style="font-size:10px;color:#888;text-transform:uppercase;margin-bottom:8px">Photos</div><div style="display:flex;flex-wrap:wrap;gap:12px">' +
+        _printPhotos.map(function(p){ return '<div style="width:240px"><img src="' + p.url + '" style="width:240px;max-height:210px;object-fit:contain;border:1px solid #ddd" /><div style="font-size:10px;color:#555;margin-top:2px">' + esc(p.caption || '') + '</div></div>'; }).join('') +
+        '</div></div>'
+      : '';
     var _vehInner = _vehCells.map(function(c){ return cell(c[0], c[1]); }).join('') + cell('Status', invStatusLabel(inv.status));
     var _vehCols = _vehCells.length + 1;
     var vehRow = '<div style="display:grid;grid-template-columns:repeat(' + _vehCols + ',1fr);gap:10px;margin-top:10px;border-top:1px solid #ddd;padding-top:8px">' + _vehInner + '</div>';
@@ -9031,6 +9182,7 @@ async function printInvoice(id) {
       '<div class="avoid-break" style="margin-top:16px"><div style="font-size:10px;color:#888;text-transform:uppercase">Signature</div>' + sigHtml +
         '<div style="margin-top:4px;font-size:11px">' + esc(inv.signed_name || inv.customer_name || '') + (inv.signed_at ? '  •  ' + esc(formatDateTime(inv.signed_at)) : '') + '</div>' +
       '</div>' +
+      photosHtml +
       '</div></td></tr></tbody></table></body></html>';
     var w = window.open('', '_blank');
     if (!w) { novaAlert('Pop-up blocked. Allow pop-ups to print.'); return; }

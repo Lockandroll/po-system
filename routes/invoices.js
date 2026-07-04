@@ -1,5 +1,6 @@
 const express = require('express');
 const https = require('https');
+const crypto = require('crypto');
 const { pool } = require('../db');
 const { requireAuth, requirePermission } = require('../middleware/auth');
 const { logAudit } = require('../utils/audit');
@@ -7,8 +8,14 @@ const { sendEmail, emailTemplate } = require('../utils/email');
 const { sendSms } = require('../utils/sms');
 const notify = require('../utils/notify');
 const push = require('../utils/push');
+const r2 = require('../utils/r2');
+const { buildInvoicePdf } = require('../utils/invoicePdf');
 
 const router = express.Router();
+
+function sanitizeName(n) {
+  return String(n || 'photo').replace(/[^A-Za-z0-9._-]+/g, '_').slice(0, 120) || 'photo';
+}
 
 // ---- helpers ---------------------------------------------------------------
 
@@ -315,10 +322,177 @@ router.get('/:id', requireAuth, requirePermission('view_invoices'), async (req, 
     }
     const items = await pool.query('SELECT * FROM invoice_line_items WHERE invoice_id = $1 ORDER BY position, id', [req.params.id]);
     invoice.line_items = items.rows;
+    // Attach photos with short-lived presigned view URLs (if R2 is configured).
+    invoice.photos = [];
+    try {
+      const ph = await pool.query("SELECT id, filename, mime_type, caption, show_in_print, position, r2_key FROM invoice_photos WHERE invoice_id = $1 AND status = 'ready' ORDER BY position, id", [req.params.id]);
+      for (const p of ph.rows) {
+        let url = null;
+        if (r2.configured()) { try { url = await r2.presignDownload(p.r2_key, p.filename || 'photo', true); } catch (e) {} }
+        invoice.photos.push({ id: p.id, filename: p.filename, mime_type: p.mime_type, caption: p.caption, show_in_print: p.show_in_print, position: p.position, url: url });
+      }
+    } catch (e) { /* table may not exist yet on first deploy */ }
     res.json(invoice);
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: 'Failed to fetch invoice' });
+  }
+});
+
+// ---- Invoice photos (Cloudflare R2) ---------------------------------------
+// Confirm the caller may modify this invoice (owner or a see-all role).
+async function loadInvoiceForWrite(id, user) {
+  const r = await pool.query('SELECT id, locksmith_id FROM invoices WHERE id = $1', [id]);
+  if (!r.rows.length) return { error: 404 };
+  if (!canSeeAll(user.role) && r.rows[0].locksmith_id !== user.id) return { error: 403 };
+  return { invoice: r.rows[0] };
+}
+
+// Step 1: reserve a photo row + presigned PUT URL. Browser uploads bytes to R2 directly.
+router.post('/:id/photos/upload-url', requireAuth, requirePermission('create_invoice'), async (req, res) => {
+  try {
+    if (!r2.configured()) return res.status(503).json({ error: 'Photo storage is not configured yet. Add the R2_* environment variables in Railway.' });
+    const id = parseInt(req.params.id, 10);
+    const chk = await loadInvoiceForWrite(id, req.user);
+    if (chk.error === 404) return res.status(404).json({ error: 'Invoice not found' });
+    if (chk.error === 403) return res.status(403).json({ error: 'Access denied' });
+    const name = sanitizeName(req.body.name);
+    const mime = (req.body.mime_type || 'image/jpeg').slice(0, 255);
+    if (!/^image\//.test(mime)) return res.status(400).json({ error: 'Only image files can be attached as photos.' });
+    const posRow = await pool.query('SELECT COALESCE(MAX(position), -1) + 1 AS next FROM invoice_photos WHERE invoice_id = $1', [id]);
+    const key = 'invoices/' + id + '/' + crypto.randomUUID() + '/' + name;
+    const { rows } = await pool.query(
+      "INSERT INTO invoice_photos (invoice_id, r2_key, filename, mime_type, position, status, uploaded_by) VALUES ($1,$2,$3,$4,$5,'pending',$6) RETURNING id",
+      [id, key, name, mime, posRow.rows[0].next, req.user.id]
+    );
+    const uploadUrl = await r2.presignUpload(key, mime);
+    res.json({ id: rows[0].id, uploadUrl: uploadUrl });
+  } catch (err) {
+    console.error('Invoice photo upload-url error:', err);
+    res.status(500).json({ error: 'Failed to start photo upload' });
+  }
+});
+
+// Step 2: confirm the upload finished; mark ready + record size.
+router.post('/:id/photos/:photoId/confirm', requireAuth, requirePermission('create_invoice'), async (req, res) => {
+  try {
+    const id = parseInt(req.params.id, 10);
+    const photoId = parseInt(req.params.photoId, 10);
+    const chk = await loadInvoiceForWrite(id, req.user);
+    if (chk.error) return res.status(chk.error).json({ error: chk.error === 404 ? 'Invoice not found' : 'Access denied' });
+    const size = Math.max(0, parseInt(req.body.size_bytes, 10) || 0);
+    const caption = (req.body.caption || '').toString().slice(0, 300);
+    const r = await pool.query("UPDATE invoice_photos SET status = 'ready', size_bytes = $1, caption = $2 WHERE id = $3 AND invoice_id = $4 RETURNING id", [size, caption, photoId, id]);
+    if (!r.rows.length) return res.status(404).json({ error: 'Photo not found' });
+    res.json({ success: true });
+  } catch (err) {
+    console.error('Invoice photo confirm error:', err);
+    res.status(500).json({ error: 'Failed to confirm photo' });
+  }
+});
+
+// Update caption / show_in_print.
+router.patch('/:id/photos/:photoId', requireAuth, requirePermission('create_invoice'), async (req, res) => {
+  try {
+    const id = parseInt(req.params.id, 10);
+    const photoId = parseInt(req.params.photoId, 10);
+    const chk = await loadInvoiceForWrite(id, req.user);
+    if (chk.error) return res.status(chk.error).json({ error: chk.error === 404 ? 'Invoice not found' : 'Access denied' });
+    const sets = [], params = [];
+    if (req.body.caption !== undefined) { params.push(String(req.body.caption).slice(0, 300)); sets.push('caption = $' + params.length); }
+    if (req.body.show_in_print !== undefined) { params.push(req.body.show_in_print === true); sets.push('show_in_print = $' + params.length); }
+    if (!sets.length) return res.json({ success: true });
+    params.push(photoId); params.push(id);
+    const r = await pool.query('UPDATE invoice_photos SET ' + sets.join(', ') + ' WHERE id = $' + (params.length - 1) + ' AND invoice_id = $' + params.length + ' RETURNING id', params);
+    if (!r.rows.length) return res.status(404).json({ error: 'Photo not found' });
+    res.json({ success: true });
+  } catch (err) {
+    console.error('Invoice photo patch error:', err);
+    res.status(500).json({ error: 'Failed to update photo' });
+  }
+});
+
+// Delete a photo (R2 object + row).
+router.delete('/:id/photos/:photoId', requireAuth, requirePermission('create_invoice'), async (req, res) => {
+  try {
+    const id = parseInt(req.params.id, 10);
+    const photoId = parseInt(req.params.photoId, 10);
+    const chk = await loadInvoiceForWrite(id, req.user);
+    if (chk.error) return res.status(chk.error).json({ error: chk.error === 404 ? 'Invoice not found' : 'Access denied' });
+    const r = await pool.query('SELECT r2_key FROM invoice_photos WHERE id = $1 AND invoice_id = $2', [photoId, id]);
+    if (!r.rows.length) return res.status(404).json({ error: 'Photo not found' });
+    try { await r2.deleteObject(r.rows[0].r2_key); } catch (e) { console.error('R2 delete failed:', e.message); }
+    await pool.query('DELETE FROM invoice_photos WHERE id = $1 AND invoice_id = $2', [photoId, id]);
+    res.json({ success: true });
+  } catch (err) {
+    console.error('Invoice photo delete error:', err);
+    res.status(500).json({ error: 'Failed to delete photo' });
+  }
+});
+
+// ---- Email the whole invoice as a PDF attachment (mirrors the document vault) ----
+function escEmail(x) { return String(x == null ? '' : x).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;'); }
+router.post('/:id/email', requireAuth, requirePermission('view_invoices'), async (req, res) => {
+  try {
+    const id = parseInt(req.params.id, 10);
+    const ir = await pool.query('SELECT i.*, u.name AS locksmith_name_join FROM invoices i LEFT JOIN users u ON i.locksmith_id = u.id WHERE i.id = $1', [id]);
+    if (!ir.rows.length) return res.status(404).json({ error: 'Invoice not found' });
+    const inv = ir.rows[0];
+    if (!canSeeAll(req.user.role) && inv.locksmith_id !== req.user.id) return res.status(403).json({ error: 'Access denied' });
+
+    const to = (req.body.to || '').trim();
+    if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(to)) return res.status(400).json({ error: 'Enter a valid recipient email address' });
+    const toName = (req.body.to_name || '').toString().slice(0, 120);
+    const message = (req.body.message || '').toString().slice(0, 2000);
+
+    const items = (await pool.query('SELECT * FROM invoice_line_items WHERE invoice_id = $1 ORDER BY position, id', [id])).rows;
+
+    // Print-flagged photos → buffers from R2.
+    const photos = [];
+    try {
+      const ph = (await pool.query("SELECT r2_key, caption FROM invoice_photos WHERE invoice_id = $1 AND show_in_print = true AND status = 'ready' ORDER BY position, id", [id])).rows;
+      if (ph.length && r2.configured()) {
+        for (const p of ph) {
+          try { photos.push({ buffer: await r2.getObjectBuffer(p.r2_key), caption: p.caption }); } catch (e) { console.error('R2 photo fetch failed:', e.message); }
+        }
+      }
+    } catch (e) { /* table may be absent on first deploy */ }
+
+    const company = {
+      name: await getSetting('company_name', 'Pop-A-Lock'),
+      address: await getSetting('company_address', ''),
+      csz: await getSetting('company_city_state_zip', ''),
+      phone: await getSetting('company_phone', ''),
+      logo: await getSetting('logo', '')
+    };
+
+    let pdfBuf;
+    try { pdfBuf = await buildInvoicePdf(inv, items, photos, { company: company }); }
+    catch (e) { console.error('Invoice PDF build failed:', e); return res.status(500).json({ error: 'Could not build the invoice PDF.' }); }
+    if (pdfBuf.length > 20 * 1024 * 1024) return res.status(413).json({ error: 'The invoice PDF is over 20 MB and is too large to email. Remove some photos from the printed version and try again.' });
+
+    const safeMsg = message ? escEmail(message).replace(/\n/g, '<br>') : '';
+    const fileName = 'Invoice-' + (inv.invoice_number || id) + '.pdf';
+    const html = '<div style="font-family:Arial,Helvetica,sans-serif;font-size:14px;color:#222;line-height:1.6">' +
+      '<p>' + (toName ? ('Hi ' + escEmail(toName) + ',') : 'Hello,') + '</p>' +
+      '<p>Please find attached invoice <strong>#' + escEmail(String(inv.invoice_number || id)) + '</strong>' + (inv.grand_total != null ? (' for a total of <strong>$' + Number(inv.grand_total).toFixed(2) + '</strong>') : '') + '.</p>' +
+      (safeMsg ? ('<p>' + safeMsg + '</p>') : '') +
+      '<p>Sent by ' + escEmail(req.user.name) + ' on behalf of Lock and Roll LLC.</p>' +
+      '<p style="color:#888;font-size:12px;border-top:1px solid #eee;padding-top:10px;margin-top:18px">This message was sent from an unmonitored address. Please contact Lock and Roll LLC directly with any questions.</p>' +
+      '</div>';
+
+    await sendEmail(
+      to,
+      'Invoice #' + (inv.invoice_number || id) + ' from Lock and Roll LLC',
+      html,
+      req.user.email || null,
+      [{ filename: fileName, content: pdfBuf.toString('base64'), content_type: 'application/pdf' }]
+    );
+    try { await logAudit({ entity_type: 'invoice', entity_id: id, entity_number: String(inv.invoice_number || ''), action: 'email', user_id: req.user.id, user_name: req.user.name, details: { to: to } }); } catch (e) {}
+    res.json({ success: true });
+  } catch (err) {
+    console.error('Invoice email error:', err);
+    res.status(500).json({ error: 'Failed to send the invoice' });
   }
 });
 
