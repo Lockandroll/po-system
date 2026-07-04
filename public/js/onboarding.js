@@ -213,6 +213,11 @@
           '<button class="onb-btn" onclick="onbStartQuiz(' + cur.id + ')">' + (cur.attempts ? 'Try again with fresh questions' : 'Start the quiz') + '</button>' +
           '</div>';
       }
+    } else if (cur.type === 'final_exam') {
+      inner = '<div id="onb-quiz">' +
+        '<div class="onb-note" style="margin-bottom:14px">Final exam &middot; ' + (cur.question_count || 20) + ' questions &middot; pass ' + (cur.pass_score || 80) + '%. Cumulative over everything you have read. Retake as many times as you need — fresh questions each time.</div>' +
+        '<button class="onb-btn" onclick="onbStartQuiz(' + cur.id + ')">' + (cur.attempts ? 'Retake the exam' : 'Start the final exam') + '</button>' +
+        '</div>';
     } else if (cur.type === 'document_upload') {
       var _up = cur.uploaded || {}; var _slots = cur.slots || [];
       var _allFilled = _slots.length > 0 && _slots.every(function (s) { var f = _up[s.key]; return f && f.review_status !== 'rejected'; });
@@ -755,7 +760,7 @@
       '<div class="onb-card"><h2>Add a step</h2>' +
       '<div style="display:grid;gap:10px;grid-template-columns:1fr 1fr">' +
       '<select id="onb-new-type" onchange="onbTypeFields()" style="background:var(--bg-card);color:var(--text);border:1px solid var(--border);border-radius:8px;padding:10px">' +
-        '<option value="video">Video</option><option value="sop_read">Read an SOP</option><option value="quiz">Quiz on an SOP</option><option value="document_upload">Upload required documents</option><option value="acknowledge">Read &amp; acknowledge (no quiz)</option></select>' +
+        '<option value="video">Video</option><option value="sop_read">Read an SOP</option><option value="quiz">Quiz on an SOP</option><option value="document_upload">Upload required documents</option><option value="acknowledge">Read &amp; acknowledge (no quiz)</option><option value="final_exam">Final exam</option></select>' +
       '<input id="onb-new-title" placeholder="Step title" style="background:var(--bg-card);color:var(--text);border:1px solid var(--border);border-radius:8px;padding:10px">' +
       '<select id="onb-new-phase" style="background:var(--bg-card);color:var(--text);border:1px solid var(--border);border-radius:8px;padding:10px"><option value="1">Phase 1 &middot; Paperwork</option><option value="2">Phase 2 &middot; Training</option></select>' +
       '<input id="onb-new-desc" placeholder="Short description (optional)" style="grid-column:1/-1;background:var(--bg-card);color:var(--text);border:1px solid var(--border);border-radius:8px;padding:10px">' +
@@ -763,7 +768,7 @@
       '<div id="onb-f-sop" style="display:none;grid-column:1/-1"><select id="onb-new-sop" style="width:100%;background:var(--bg-card);color:var(--text);border:1px solid var(--border);border-radius:8px;padding:10px">' + (sopOpts || '<option value="">No SOPs in the library yet</option>') + '</select><div class="onb-note">Quiz questions are generated from this SOP&#39;s text in the SOP library.</div></div>' +
       '<div id="onb-f-video" style="grid-column:1/-1"><input type="file" id="onb-new-video" accept="video/*" style="width:100%;color:var(--text)"><div class="onb-note" id="onb-vid-note"></div></div>' +
       '<div id="onb-f-quiz" style="display:none;grid-column:1/-1;display:none"><div style="display:flex;gap:10px;flex-wrap:wrap">' +
-        '<label class="onb-note">Questions <input id="onb-new-qcount" type="number" min="1" max="10" value="3" style="width:70px;background:var(--bg-card);color:var(--text);border:1px solid var(--border);border-radius:6px;padding:6px"></label>' +
+        '<label class="onb-note">Questions <input id="onb-new-qcount" type="number" min="1" max="50" value="3" style="width:70px;background:var(--bg-card);color:var(--text);border:1px solid var(--border);border-radius:6px;padding:6px"></label>' +
         '<label class="onb-note">Pass % <input id="onb-new-pass" type="number" min="1" max="100" value="80" style="width:70px;background:var(--bg-card);color:var(--text);border:1px solid var(--border);border-radius:6px;padding:6px"></label>' +
       '</div></div>' +
       '<label class="onb-note" style="grid-column:1/-1">Minimum seconds before Continue unlocks <input id="onb-new-min" type="number" min="0" max="7200" value="30" style="width:90px;background:var(--bg-card);color:var(--text);border:1px solid var(--border);border-radius:6px;padding:6px"></label>' +
@@ -778,7 +783,7 @@
     f('onb-f-doc', t === 'sop_read' || t === 'acknowledge');
     f('onb-f-sop', t === 'quiz');
     f('onb-f-video', t === 'video');
-    f('onb-f-quiz', t === 'quiz');
+    f('onb-f-quiz', t === 'quiz' || t === 'final_exam');
   };
 
   window.onbAddStep = async function () {
@@ -796,8 +801,8 @@
       payload.sop_id = parseInt((document.getElementById('onb-new-sop') || {}).value, 10);
       if (!payload.sop_id) { showToast('Pick an SOP for the quiz.', 'error'); return; }
     }
-    if (t === 'quiz') {
-      payload.question_count = parseInt(document.getElementById('onb-new-qcount').value, 10) || 3;
+    if (t === 'quiz' || t === 'final_exam') {
+      payload.question_count = parseInt(document.getElementById('onb-new-qcount').value, 10) || (t === 'final_exam' ? 20 : 5);
       payload.pass_score = parseInt(document.getElementById('onb-new-pass').value, 10) || 80;
     }
     var btn = document.getElementById('onb-add-btn');

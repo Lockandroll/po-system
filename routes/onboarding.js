@@ -515,6 +515,51 @@ async function generateQuestions(step, avoidPrompts) {
   return out.questions;
 }
 
+// Distinct SOPs that have a quiz step in the track — the ONLY source for the
+// final exam (acknowledge-only docs have no quiz, so they are excluded).
+async function examSopIds() {
+  const r = await pool.query("SELECT DISTINCT sop_id FROM onboarding_steps WHERE active = true AND type = 'quiz' AND sop_id IS NOT NULL");
+  return r.rows.map(function (x) { return x.sop_id; }).filter(Boolean);
+}
+function examCount(step) { var v = parseInt(cfg(step).question_count, 10); return (v >= 5 && v <= 50) ? v : 20; }
+async function generateExamQuestions(step, avoidPrompts) {
+  if (!process.env.ANTHROPIC_API_KEY) throw new Error('AI is not configured (ANTHROPIC_API_KEY missing).');
+  var n = examCount(step);
+  var ids = await examSopIds();
+  if (!ids.length) throw new Error('There are no quizzed documents to build the final exam from.');
+  var parts = [];
+  for (var i = 0; i < ids.length; i++) {
+    var sop = await sopFullText(ids[i]);
+    if (sop && sop.text && sop.text.length > 40) parts.push('=== ' + sop.title + ' ===\n' + sop.text.slice(0, 7000));
+  }
+  if (!parts.length) throw new Error('No readable material found for the final exam.');
+  var corpus = parts.join('\n\n').slice(0, 60000);
+  var system = [
+    'You are writing the FINAL cumulative exam for a new hire at a locksmith / roadside company.',
+    'You will be given the text of SEVERAL Standard Operating Procedures the hire has studied.',
+    'Write exactly ' + n + ' multiple-choice questions that test understanding ACROSS all of the supplied SOPs, spread reasonably across the different documents.',
+    'Rules:',
+    '- Every question and option must be grounded ONLY in the supplied text. Do not invent facts.',
+    '- Each question must have exactly 4 options with exactly one clearly correct answer.',
+    '- Make wrong options plausible but clearly incorrect to someone who studied the material.',
+    '- Keep each question and option to one sentence.',
+    (avoidPrompts && avoidPrompts.length ? '- Do NOT reuse or lightly rephrase these earlier questions: ' + avoidPrompts.join(' | ') : ''),
+    'Respond with ONLY a JSON object, no prose, exactly:',
+    '{"questions":[{"prompt":"...","options":["...","...","...","..."],"correct_index":0}]}'
+  ].join('\n');
+  var out = null;
+  for (var attempt = 0; attempt < 2 && !out; attempt++) {
+    var reply = await callClaude(system, 'STUDY MATERIAL:\n' + corpus);
+    if (reply && reply.error) throw new Error('AI error: ' + (reply.error.message || 'unknown'));
+    var text = (reply && reply.content && reply.content[0] && reply.content[0].text) || '';
+    var parsed = extractJson(text);
+    if (validQuestions(parsed, n)) out = parsed;
+  }
+  if (!out) throw new Error('The AI did not return a valid exam. Try again.');
+  return out.questions;
+}
+
+
 // ---- notifications -----------------------------------------------------------
 
 async function notifyReadyForSignoff(newHire) {
@@ -621,6 +666,13 @@ router.get('/me', requireAuth, async (req, res) => {
       cur.attempts = p ? p.attempts : 0;
       cur.must_reread = (await quizBatchFails(req.user.id, current.id)) >= 2;
       if (cur.must_reread) { var _rd = await stepReading(current); cur.sop_content = _rd.sop_content; cur.sop_doc_url = _rd.sop_doc_url; cur.sop_doc_mime = _rd.sop_doc_mime; cur.sop_doc_name = _rd.sop_doc_name; }
+    }
+    if (current.type === 'final_exam') {
+      cur.pass_score = passScore(current);
+      cur.question_count = examCount(current);
+      const p = prog[current.id];
+      cur.attempts = p ? p.attempts : 0;
+      cur.is_final_exam = true;
     }
     if (current.type === 'document_upload') {
       cur.slots = uploadSlots(current);
@@ -770,8 +822,8 @@ router.post('/steps/:id/quiz/start', requireAuth, async (req, res) => {
   const current = findCurrent(steps, prog);
   if (!current || current.id !== stepId) return res.status(400).json({ error: 'That is not your current step.' });
   if (phaseOf(current) > (await getUserPhase(req.user.id))) return res.status(400).json({ error: 'Your paperwork is with your manager for review.' });
-  if (current.type !== 'quiz') return res.status(400).json({ error: 'This step is not a quiz.' });
-  if ((await quizBatchFails(req.user.id, stepId)) >= 2) return res.status(400).json({ error: 'Re-read the material before your next attempt.', must_reread: true });
+  if (current.type !== 'quiz' && current.type !== 'final_exam') return res.status(400).json({ error: 'This step is not a quiz.' });
+  if (current.type === 'quiz' && (await quizBatchFails(req.user.id, stepId)) >= 2) return res.status(400).json({ error: 'Re-read the material before your next attempt.', must_reread: true });
 
   // Fresh questions every attempt; tell the model what was already asked.
   var avoid = [];
@@ -784,12 +836,12 @@ router.post('/steps/:id/quiz/start', requireAuth, async (req, res) => {
   } catch (e) { /* non-fatal */ }
 
   let questions;
-  try { questions = await generateQuestions(current, avoid); }
+  try { questions = current.type === 'final_exam' ? await generateExamQuestions(current, avoid) : await generateQuestions(current, avoid); }
   catch (e) { return res.status(502).json({ error: e.message }); }
 
   const ins = await pool.query(
-    'INSERT INTO onboarding_quiz_attempts (user_id, step_id, questions) VALUES ($1,$2,$3) RETURNING id',
-    [req.user.id, stepId, JSON.stringify(questions)]
+    'INSERT INTO onboarding_quiz_attempts (user_id, step_id, questions, is_final_exam) VALUES ($1,$2,$3,$4) RETURNING id',
+    [req.user.id, stepId, JSON.stringify(questions), current.type === 'final_exam']
   );
   await ensureStarted(req.user.id, stepId);
   // Never send correct_index to the browser.
@@ -835,9 +887,9 @@ router.post('/quiz-attempts/:id/submit', requireAuth, async (req, res) => {
     [req.user.id, attempt.step_id, passed ? 'done' : 'pending', score]
   );
   await logAudit({ entity_type: 'onboarding', entity_id: attempt.step_id, action: passed ? 'quiz_passed' : 'quiz_failed', user_id: req.user.id, user_name: req.user.name, details: { step: step ? step.title : null, score: score, need: need } });
-  await pool.query('INSERT INTO onboarding_events (user_id, event_type, step_id, score, passed, actor_id, actor_name) VALUES ($1,$2,$3,$4,$5,$1,$6)', [req.user.id, 'quiz_attempt', attempt.step_id, score, passed, req.user.name]);
+  await pool.query('INSERT INTO onboarding_events (user_id, event_type, step_id, score, passed, actor_id, actor_name) VALUES ($1,$2,$3,$4,$5,$1,$6)', [req.user.id, (attempt.is_final_exam ? 'exam_attempt' : 'quiz_attempt'), attempt.step_id, score, passed, req.user.name]);
   var revert = false, reading = null;
-  if (!passed && step && (await quizBatchFails(req.user.id, attempt.step_id)) >= 2) { revert = true; reading = await stepReading(step); }
+  if (!passed && step && step.type === 'quiz' && (await quizBatchFails(req.user.id, attempt.step_id)) >= 2) { revert = true; reading = await stepReading(step); }
   if (passed) await maybeNotifyReady(req.user.id);
   res.json({ score: score, passed: passed, need: need, results: results, revert_to_read: revert, reading: reading });
 });
@@ -881,7 +933,7 @@ admin.get('/steps', async (req, res) => {
 admin.post('/steps', async (req, res) => {
   const b = req.body || {};
   const type = String(b.type || '');
-  if (['video', 'sop_read', 'quiz', 'document_upload', 'acknowledge'].indexOf(type) === -1) return res.status(400).json({ error: 'Invalid step type' });
+  if (['video', 'sop_read', 'quiz', 'document_upload', 'acknowledge', 'final_exam'].indexOf(type) === -1) return res.status(400).json({ error: 'Invalid step type' });
   const title = String(b.title || '').trim();
   if (!title) return res.status(400).json({ error: 'Title is required' });
   if (type === 'quiz' && !parseInt(b.sop_id, 10)) return res.status(400).json({ error: 'Pick an SOP for the quiz' });
