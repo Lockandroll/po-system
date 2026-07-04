@@ -8491,7 +8491,7 @@ async function renderEditInvoice(el, id) {
       '<label style="display:block;margin-bottom:4px">Signature</label>' +
       (_invoiceExistingSig ? '<div id="inv-existing-sig" style="margin-bottom:8px;background:#fff;border:1px solid var(--border);border-radius:8px;padding:8px;display:inline-block"><img src="' + _invoiceExistingSig + '" style="max-width:320px;max-height:120px;display:block" /><div style="font-size:11px;color:#666;margin-top:4px">Current signature — draw below to replace</div></div>' : '') +
       '<div style="background:#fff;border:1px solid var(--border);border-radius:8px;display:inline-block"><canvas id="inv-sigpad" width="600" height="180" style="touch-action:none;width:100%;max-width:600px;display:block"></canvas></div>' +
-      '<div style="margin-top:6px"><button class="btn btn-ghost btn-sm" onclick="clearInvoiceSignature()">Clear signature</button></div>' +
+      '<div style="margin-top:6px;display:flex;gap:8px;flex-wrap:wrap"><button class="btn btn-secondary btn-sm" onclick="openInvoiceSignatureFullscreen()">' + (icons.edit || '') + ' Tap to sign full screen</button><button class="btn btn-ghost btn-sm" onclick="clearInvoiceSignature()">Clear signature</button></div>' +
     '</div></div>' +
 
     '<div class="flex-gap" style="margin-bottom:40px">' +
@@ -8600,9 +8600,69 @@ function setupInvoiceSignaturePad() {
   canvas.addEventListener('touchstart', start, { passive: false });
   canvas.addEventListener('touchmove', move, { passive: false });
   canvas.addEventListener('touchend', end);
-  _invoiceSigPad = { canvas: canvas, hasInk: function(){ return hasInk; }, clear: function(){ ctx.clearRect(0,0,canvas.width,canvas.height); hasInk = false; } };
+  _invoiceSigPad = {
+    canvas: canvas,
+    hasInk: function(){ return hasInk; },
+    clear: function(){ ctx.clearRect(0,0,canvas.width,canvas.height); hasInk = false; },
+    // Copy a signature drawn on another (e.g. full-screen) canvas onto this pad, scaled to fit.
+    fromCanvas: function(src){
+      ctx.clearRect(0,0,canvas.width,canvas.height);
+      var sr = src.width / src.height, dr = canvas.width / canvas.height, dw, dh;
+      if (sr > dr) { dw = canvas.width; dh = dw / sr; } else { dh = canvas.height; dw = dh * sr; }
+      ctx.drawImage(src, (canvas.width - dw) / 2, (canvas.height - dh) / 2, dw, dh);
+      hasInk = true;
+    }
+  };
 }
 function clearInvoiceSignature() { if (_invoiceSigPad) _invoiceSigPad.clear(); }
+
+// Full-screen signature capture — tap-to-sign on phones, then copies back to the inline pad.
+function openInvoiceSignatureFullscreen() {
+  var old = document.getElementById('inv-sig-fs');
+  if (old) old.remove();
+  var ov = document.createElement('div');
+  ov.id = 'inv-sig-fs';
+  ov.style.cssText = 'position:fixed;inset:0;z-index:100000;background:#fff;display:flex;flex-direction:column';
+  ov.innerHTML =
+    '<div style="display:flex;justify-content:space-between;align-items:center;padding:12px 16px;border-bottom:1px solid #e5e5e5;flex:0 0 auto">' +
+      '<button id="inv-sig-fs-cancel" style="background:none;border:none;font-size:16px;color:#666;padding:6px 4px">Cancel</button>' +
+      '<span style="font-size:14px;font-weight:600;color:#111">Sign below</span>' +
+      '<button id="inv-sig-fs-done" style="background:#f97316;color:#fff;border:none;border-radius:8px;padding:8px 20px;font-size:15px;font-weight:600">Done</button>' +
+    '</div>' +
+    '<div style="flex:1 1 auto;position:relative;overflow:hidden">' +
+      '<canvas id="inv-sig-fs-canvas" style="position:absolute;inset:0;width:100%;height:100%;touch-action:none"></canvas>' +
+      '<div style="position:absolute;left:6%;right:6%;bottom:26%;border-bottom:2px dashed #ccc;pointer-events:none"></div>' +
+      '<div style="position:absolute;left:6%;bottom:calc(26% + 6px);font-size:11px;color:#bbb;pointer-events:none">Sign above the line</div>' +
+    '</div>' +
+    '<div style="padding:10px 16px;flex:0 0 auto;border-top:1px solid #e5e5e5"><button id="inv-sig-fs-clear" style="background:none;border:1px solid #ddd;border-radius:8px;padding:8px 18px;font-size:14px;color:#333">Clear</button></div>';
+  document.body.appendChild(ov);
+  var canvas = document.getElementById('inv-sig-fs-canvas');
+  var rect = canvas.getBoundingClientRect();
+  var dpr = window.devicePixelRatio || 1;
+  canvas.width = Math.round(rect.width * dpr);
+  canvas.height = Math.round(rect.height * dpr);
+  var ctx = canvas.getContext('2d');
+  ctx.scale(dpr, dpr);
+  ctx.lineWidth = 2.5; ctx.lineCap = 'round'; ctx.lineJoin = 'round'; ctx.strokeStyle = '#111111';
+  var drawing = false, last = null, hasInk = false;
+  function pos(e){ var r = canvas.getBoundingClientRect(); var t = (e.touches && e.touches[0]) ? e.touches[0] : e; return { x: t.clientX - r.left, y: t.clientY - r.top }; }
+  function start(e){ e.preventDefault(); drawing = true; last = pos(e); }
+  function move(e){ if (!drawing) return; e.preventDefault(); var p = pos(e); ctx.beginPath(); ctx.moveTo(last.x, last.y); ctx.lineTo(p.x, p.y); ctx.stroke(); last = p; hasInk = true; }
+  function end(){ drawing = false; }
+  canvas.addEventListener('mousedown', start);
+  canvas.addEventListener('mousemove', move);
+  window.addEventListener('mouseup', end);
+  canvas.addEventListener('touchstart', start, { passive: false });
+  canvas.addEventListener('touchmove', move, { passive: false });
+  canvas.addEventListener('touchend', end);
+  function close(){ window.removeEventListener('mouseup', end); ov.remove(); }
+  document.getElementById('inv-sig-fs-clear').onclick = function(){ ctx.clearRect(0,0,canvas.width,canvas.height); hasInk = false; };
+  document.getElementById('inv-sig-fs-cancel').onclick = close;
+  document.getElementById('inv-sig-fs-done').onclick = function(){
+    if (hasInk && _invoiceSigPad && _invoiceSigPad.fromCanvas) _invoiceSigPad.fromCanvas(canvas);
+    close();
+  };
+}
 
 // ---------- VIN + ID smart inputs ----------
 async function invDecodeVin() {
@@ -8872,7 +8932,13 @@ async function printInvoice(id) {
     var logo = s.logo ? '<img src="' + s.logo + '" style="height:54px;max-width:200px;object-fit:contain" />' : '<div style="font-size:22px;font-weight:700;color:#f97316">' + esc(s.company_name || 'Pop-A-Lock') + '</div>';
     var compAddr = [s.company_address, s.company_city_state_zip, s.company_phone].filter(Boolean).map(esc).join('<br>');
     var veh = [inv.vehicle_year, inv.vehicle_make, inv.vehicle_model].filter(Boolean).join(' ');
-    var ent = []; if (inv.ent_registration) ent.push('Registration'); if (inv.ent_insurance) ent.push('Insurance'); if (inv.ent_title) ent.push('Title'); if (inv.ent_rental) ent.push('Rental Agreement');
+    var ent = [];
+    // Vehicle section — omit any field with no value; drop the whole vehicle block if there is no vehicle info at all.
+    var _vehCells = [];
+    if (veh) _vehCells.push(['Year/Make/Model', veh]);
+    if (inv.license_tag) _vehCells.push(['License #', inv.license_tag + (inv.tag_state ? ' (' + inv.tag_state + ')' : '')]);
+    if (inv.vin) _vehCells.push(['VIN', inv.vin]);
+    if (inv.mileage) _vehCells.push(['Mileage', inv.mileage]); if (inv.ent_registration) ent.push('Registration'); if (inv.ent_insurance) ent.push('Insurance'); if (inv.ent_title) ent.push('Title'); if (inv.ent_rental) ent.push('Rental Agreement');
     function cell(lbl, val){ return '<div style="padding:4px 0"><div style="font-size:9px;text-transform:uppercase;letter-spacing:.04em;color:#888">' + lbl + '</div><div style="font-size:12px;color:#111">' + esc(val || '') + '</div></div>'; }
     var lines = (inv.line_items||[]).map(function(it){
       return '<tr>' +
@@ -8889,6 +8955,9 @@ async function printInvoice(id) {
     var sigHtml = inv.signature_image
       ? '<img src="' + inv.signature_image + '" style="max-height:60px;max-width:300px;display:block" />'
       : '<div style="height:50px;border-bottom:1px solid #333;width:300px"></div>';
+    var _vehInner = _vehCells.map(function(c){ return cell(c[0], c[1]); }).join('') + cell('Status', invStatusLabel(inv.status));
+    var _vehCols = _vehCells.length + 1;
+    var vehRow = '<div style="display:grid;grid-template-columns:repeat(' + _vehCols + ',1fr);gap:10px;margin-top:10px;border-top:1px solid #ddd;padding-top:8px">' + _vehInner + '</div>';
     var html =
       '<html><head><title>Invoice ' + esc(inv.invoice_number) + '</title><meta charset="utf-8" /></head>' +
       '<body style="font-family:Arial,Helvetica,sans-serif;margin:0;padding:24px;color:#111">' +
@@ -8913,9 +8982,7 @@ async function printInvoice(id) {
           cell('Entitlement', ent.join(', ')) +
         '</div>' +
       '</div>' +
-      '<div style="display:grid;grid-template-columns:repeat(5,1fr);gap:10px;margin-top:10px;border-top:1px solid #ddd;padding-top:8px">' +
-        cell('Year/Make/Model', veh) + cell('License #', (inv.license_tag||'') + (inv.tag_state ? ' (' + inv.tag_state + ')' : '')) + cell('VIN', inv.vin) + cell('Mileage', inv.mileage) + cell('Status', invStatusLabel(inv.status)) +
-      '</div>' +
+      vehRow +
       '<table style="width:100%;border-collapse:collapse;margin-top:14px;font-size:12px">' +
         '<thead><tr style="background:#111;color:#fff"><th style="padding:6px;text-align:left">Labor / Parts Description</th><th style="padding:6px;text-align:left">Item #</th><th style="padding:6px;text-align:right">Unit Price</th><th style="padding:6px;text-align:center">Qty</th><th style="padding:6px;text-align:center">TX</th><th style="padding:6px;text-align:right">Extension</th></tr></thead>' +
         '<tbody>' + lines + '</tbody>' +
