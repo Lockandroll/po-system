@@ -905,6 +905,26 @@ router.post('/steps/:id/quiz/reread', requireAuth, async (req, res) => {
   res.json({ success: true });
 });
 
+
+// ---- Employee self-view: read-only access to one's OWN encrypted documents ----
+router.get('/me/file', requireAuth, async (req, res) => {
+  const docs = await pool.query("SELECT id, category, name, mime_type, expires_at, source, created_at FROM hr_documents WHERE user_id = $1 AND review_status <> 'superseded' ORDER BY category ASC, id DESC", [req.user.id]);
+  res.json({ documents: docs.rows });
+});
+router.get('/me/hr-doc/:docId', requireAuth, async (req, res) => {
+  if (req.headers['x-view-as']) return res.status(403).json({ error: 'Not available in preview mode.' });
+  const docId = parseInt(req.params.docId, 10) || 0;
+  const dr = await pool.query('SELECT user_id, r2_key, mime_type, name FROM hr_documents WHERE id = $1', [docId]);
+  if (!dr.rows.length || dr.rows[0].user_id !== req.user.id) return res.status(403).json({ error: 'Not permitted.' });
+  try {
+    const bytes = await hrCrypto.getDecrypted(dr.rows[0].r2_key);
+    res.setHeader('Content-Type', dr.rows[0].mime_type || 'application/octet-stream');
+    res.setHeader('Content-Disposition', 'inline; filename="' + String(dr.rows[0].name || 'document').replace(/"/g, '') + '"');
+    await logAudit({ entity_type: 'hr_document', entity_id: docId, action: 'viewed_self', user_id: req.user.id, user_name: req.user.name, details: {} });
+    res.send(bytes);
+  } catch (e) { res.status(502).json({ error: 'Could not open the document.' }); }
+});
+
 // ============================ ADMIN ENDPOINTS =================================
 
 const admin = express.Router();

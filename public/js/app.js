@@ -592,6 +592,7 @@ async function render() {
     (isAdmin ? '<div class="nav-item' + (cv === 'sop-library' ? ' active' : '') + '" onclick="navigate(\'sop-library\')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 19.5A2.5 2.5 0 016.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 014 19.5v-15A2.5 2.5 0 016.5 2z"/></svg> SOP Library</div>' : '') +
     (can('manage_onboarding') ? '<div class="nav-item' + (cv === 'onboarding-admin' ? ' active' : '') + '" onclick="navigate(\'onboarding-admin\')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M16 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="8.5" cy="7" r="4"/><polyline points="17 11 19 13 23 9"/></svg> Onboarding</div>' : '') +
     (can('manage_onboarding') ? '<div class="nav-item' + (cv === 'employee-files' ? ' active' : '') + '" onclick="navigate(\'employee-files\')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg> Employee Files</div>' : '') +
+    '<div class="nav-item' + (cv === 'my-documents' ? ' active' : '') + '" onclick="navigate(\'my-documents\')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg> My Documents</div>' +
     ((can('view_users') || can('manage_cities') || can('view_audit') || can('manage_settings') || can('manage_parts')) ?
       '<div class="nav-section-header' + (stViews.indexOf(cv) !== -1 ? ' section-active' : '') + (ss === 'settings' ? ' open' : '') + '" onclick="toggleSection(\'settings\',\'company-info\')"><span class="s-label">' + icons.settings + ' Settings</span>' + chev + '</div>' +
       (ss === 'settings' ?
@@ -664,6 +665,7 @@ async function render() {
   else if (state.currentView === 'pto') await renderPto(content);
   else if (state.currentView === 'onboarding-admin') await renderOnboardingAdmin(content);
   else if (state.currentView === 'employee-files') await renderEmployeeFiles(content);
+  else if (state.currentView === 'my-documents') await renderMyFile(content);
   else if (state.currentView === 'dashboard') await renderDashboard(content);
   else if (state.currentView === 'new') await renderEditPO(content, null);
   else if (state.currentView === 'edit') await renderEditPO(content, state.currentParam);

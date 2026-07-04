@@ -1077,4 +1077,33 @@
     catch (e) { showToast(e.message || 'Could not delete.', 'error'); }
   };
 
+
+  // ================= MY DOCUMENTS (employee self-view, read-only) =================
+  window.renderMyFile = async function (content) {
+    injectCss(); clearPoll();
+    content.innerHTML = '<h1 style="margin-bottom:6px">My Documents</h1><div class="onb-note" style="margin-bottom:16px">Your personal documents on file. These are encrypted and visible only to you and management.</div><div id="onb-mine"><div class="loading">Loading…</div></div>';
+    var body = document.getElementById('onb-mine');
+    var d;
+    try { d = await api('GET', '/onboarding/me/file'); }
+    catch (e) { body.innerHTML = '<div class="onb-note">' + escHtml(e.message || 'Failed to load.') + '</div>'; return; }
+    var docs = d.documents || [];
+    if (!docs.length) { body.innerHTML = '<div class="onb-card"><div class="onb-desc">You have no documents on file yet.</div></div>'; return; }
+    var cats = ['identity', 'license', 'insurance', 'registration', 'packet', 'acknowledgment', 'review', 'disciplinary', 'tax', 'certification', 'other'];
+    var byCat = {}; docs.forEach(function (doc) { (byCat[doc.category] = byCat[doc.category] || []).push(doc); });
+    body.innerHTML = cats.filter(function (c) { return byCat[c]; }).map(function (c) {
+      return '<div class="onb-card" style="margin-bottom:10px"><h2 style="font-size:15px;text-transform:capitalize">' + escHtml(c) + '</h2>' +
+        byCat[c].map(function (doc) {
+          return '<div class="onb-slot filled"><div class="onb-slot-ic">&#128196;</div><div class="onb-slot-b"><b>' + escHtml(doc.name || 'document') + '</b><span>' + (doc.expires_at ? 'exp ' + escHtml(String(doc.expires_at).slice(0, 10)) : escHtml(doc.source || '')) + '</span></div><button class="onb-slot-act" onclick="onbViewMyDoc(' + doc.id + ')">View</button></div>';
+        }).join('') + '</div>';
+    }).join('');
+  };
+  window.onbViewMyDoc = async function (docId) {
+    try {
+      var res = await fetch('/api/onboarding/me/hr-doc/' + docId, { headers: { Authorization: 'Bearer ' + (state && state.token ? state.token : '') } });
+      if (!res.ok) throw new Error('Could not open the document.');
+      var blob = await res.blob();
+      window.open(URL.createObjectURL(blob), '_blank');
+    } catch (e) { showToast(e.message || 'Could not open the document.', 'error'); }
+  };
+
 })();
