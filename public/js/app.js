@@ -8959,7 +8959,17 @@ async function printInvoice(id) {
     var _vehCols = _vehCells.length + 1;
     var vehRow = '<div style="display:grid;grid-template-columns:repeat(' + _vehCols + ',1fr);gap:10px;margin-top:10px;border-top:1px solid #ddd;padding-top:8px">' + _vehInner + '</div>';
     var html =
-      '<html><head><title>Invoice ' + esc(inv.invoice_number) + '</title><meta charset="utf-8" /></head>' +
+      '<html><head><title>Invoice ' + esc(inv.invoice_number) + '</title><meta charset="utf-8" />' +
+      '<style>' +
+        '@page{margin:12mm}' +
+        '*{-webkit-print-color-adjust:exact;print-color-adjust:exact}' +
+        'table{page-break-inside:auto}' +
+        'thead{display:table-header-group}' +
+        'tr{page-break-inside:avoid;break-inside:avoid}' +
+        '.avoid-break{page-break-inside:avoid;break-inside:avoid}' +
+        '.agreement p{page-break-inside:avoid;break-inside:avoid}' +
+      '</style>' +
+      '</head>' +
       '<body style="font-family:Arial,Helvetica,sans-serif;margin:0;padding:24px;color:#111">' +
       '<div style="max-width:760px;margin:0 auto">' +
       '<div style="display:flex;justify-content:space-between;align-items:flex-start;border-bottom:3px solid #f97316;padding-bottom:12px">' +
@@ -8987,7 +8997,7 @@ async function printInvoice(id) {
         '<thead><tr style="background:#111;color:#fff"><th style="padding:6px;text-align:left">Labor / Parts Description</th><th style="padding:6px;text-align:left">Item #</th><th style="padding:6px;text-align:right">Unit Price</th><th style="padding:6px;text-align:center">Qty</th><th style="padding:6px;text-align:center">TX</th><th style="padding:6px;text-align:right">Extension</th></tr></thead>' +
         '<tbody>' + lines + '</tbody>' +
       '</table>' +
-      '<div style="display:flex;justify-content:flex-end;margin-top:12px"><table style="font-size:12px">' +
+      '<div class="avoid-break" style="display:flex;justify-content:flex-end;margin-top:12px"><table style="font-size:12px">' +
         '<tr><td style="padding:3px 10px;text-align:right;color:#555">Labor Amount</td><td style="padding:3px 10px;text-align:right">' + invMoney(inv.labor_amount) + '</td></tr>' +
         '<tr><td style="padding:3px 10px;text-align:right;color:#555">Parts Amount</td><td style="padding:3px 10px;text-align:right">' + invMoney(inv.parts_amount) + '</td></tr>' +
         '<tr><td style="padding:3px 10px;text-align:right;color:#555">Sub-Total</td><td style="padding:3px 10px;text-align:right">' + invMoney(inv.subtotal) + '</td></tr>' +
@@ -8997,8 +9007,8 @@ async function printInvoice(id) {
       '</table></div>' +
       (inv.payments_note ? '<div style="margin-top:8px;font-size:11px"><strong>Payments:</strong> ' + esc(inv.payments_note) + '</div>' : '') +
       (inv.notes ? '<div style="margin-top:4px;font-size:11px"><strong>Notes:</strong> ' + esc(inv.notes) + '</div>' : '') +
-      '<div style="margin-top:18px;border-top:1px solid #ddd;padding-top:10px;font-size:11px;color:#333;line-height:1.5">' + agreementHtml + '</div>' +
-      '<div style="margin-top:16px"><div style="font-size:10px;color:#888;text-transform:uppercase">Signature</div>' + sigHtml +
+      '<div class="agreement" style="margin-top:18px;border-top:1px solid #ddd;padding-top:10px;font-size:11px;color:#333;line-height:1.5">' + agreementHtml + '</div>' +
+      '<div class="avoid-break" style="margin-top:16px"><div style="font-size:10px;color:#888;text-transform:uppercase">Signature</div>' + sigHtml +
         '<div style="margin-top:4px;font-size:11px">' + esc(inv.signed_name || inv.customer_name || '') + (inv.signed_at ? '  •  ' + esc(formatDateTime(inv.signed_at)) : '') + '</div>' +
       '</div>' +
       '</div></body></html>';
