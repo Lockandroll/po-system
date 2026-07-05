@@ -1281,11 +1281,4 @@
       content.innerHTML = '<div style="padding:20px"><h1>Radio</h1><div style="color:#ef4444">Radio failed to load: ' + String(moduleErr && moduleErr.message ? moduleErr.message : moduleErr) + '</div></div>';
     };
   }
-
-  // ---- Nova Voice bridge: let nova-voice.js broadcast TTS on the live channel.
-  window.NovaRadio = {
-    isLive: function () { try { return !!(PTT.talk && PTT.talk.room); } catch (e) { return false; } },
-    talkRoom: function () { try { return PTT.talk ? PTT.talk.room : null; } catch (e) { return null; } },
-    currentChannel: function () { try { return PTT.talk ? PTT.talk.channel : null; } catch (e) { return null; } }
-  };
 })();
