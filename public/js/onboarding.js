@@ -671,12 +671,42 @@
         '<div class="onb-note" style="margin-top:8px">Approving unlocks Phase 2 (training + clock-in). Sending back reopens only the items you check.</div>' +
       '</div>';
   };
+  // In-app document viewer: renders an already-fetched blob (PDF/image) inside Nova
+  // instead of opening an external browser tab. Keeps onboarding docs in-app and loads instantly.
+  window.onbShowDocBlob = function (blob, name) {
+    var url = URL.createObjectURL(blob);
+    var type = (blob && blob.type) || '';
+    var isImg = type.indexOf('image/') === 0;
+    var isPdf = type.indexOf('pdf') !== -1;
+    var title = escHtml(name || 'Document');
+    var body = isImg
+      ? '<div style="flex:1;overflow:auto;display:flex;align-items:center;justify-content:center;padding:12px"><img src="' + url + '" alt="' + title + '" style="max-width:100%;max-height:100%;object-fit:contain" /></div>'
+      : isPdf
+        ? '<iframe src="' + url + '" title="' + title + '" style="flex:1;width:100%;border:0;background:#fff"></iframe>'
+        : '<div style="flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:12px;color:#ededed"><div style="font-size:40px">&#128196;</div><div>' + title + '</div><a href="' + url + '" download style="color:var(--primary,#f97316)">Download the file &#8595;</a></div>';
+    var ov = document.createElement('div');
+    ov.className = 'onb-doc-modal';
+    ov.style.cssText = 'position:fixed;inset:0;z-index:10000;background:rgba(0,0,0,0.88);display:flex;flex-direction:column;padding-top:env(safe-area-inset-top)';
+    ov.innerHTML =
+      '<div style="display:flex;align-items:center;gap:12px;padding:12px 16px;background:#141414;border-bottom:1px solid #2a2a2a;color:#ededed">' +
+        '<b style="flex:1;font-size:15px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">' + title + '</b>' +
+        '<a href="' + url + '" target="_blank" rel="noopener" style="color:#9ca3af;font-size:13px;text-decoration:none">Open in tab &#8599;</a>' +
+        '<button type="button" aria-label="Close" style="background:#2a2a2a;color:#fff;border:0;border-radius:8px;min-width:40px;min-height:40px;font-size:20px;cursor:pointer">&times;</button>' +
+      '</div>' + body;
+    var close = function () { try { URL.revokeObjectURL(url); } catch (e) {} if (ov.parentNode) ov.parentNode.removeChild(ov); document.removeEventListener('keydown', onKey); };
+    function onKey(e) { if (e.key === 'Escape') close(); }
+    ov.querySelector('button').onclick = close;
+    ov.addEventListener('click', function (e) { if (e.target === ov) close(); });
+    document.addEventListener('keydown', onKey);
+    document.body.appendChild(ov);
+  };
+
   window.onbViewDoc = async function (docId) {
     try {
       var res = await fetch('/api/onboarding/admin/hr-doc/' + docId, { headers: { Authorization: 'Bearer ' + (state && state.token ? state.token : '') } });
       if (!res.ok) throw new Error('Could not open the document.');
       var blob = await res.blob();
-      window.open(URL.createObjectURL(blob), '_blank');
+      window.onbShowDocBlob(blob);
     } catch (e) { showToast(e.message || 'Could not open the document.', 'error'); }
   };
   window.onbDownloadRecord = async function (id) {
@@ -1173,7 +1203,7 @@
       var res = await fetch('/api/onboarding/me/hr-doc/' + docId, { headers: { Authorization: 'Bearer ' + (state && state.token ? state.token : '') } });
       if (!res.ok) throw new Error('Could not open the document.');
       var blob = await res.blob();
-      window.open(URL.createObjectURL(blob), '_blank');
+      window.onbShowDocBlob(blob);
     } catch (e) { showToast(e.message || 'Could not open the document.', 'error'); }
   };
 
