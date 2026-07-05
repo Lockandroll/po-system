@@ -12554,8 +12554,13 @@ window.addEventListener('popstate', function (e) {
   render();
 });
 try { history.replaceState({ navView: (state.currentView || 'home'), navParam: (state.currentParam != null ? state.currentParam : null) }, ''); } catch (e) {}
-render();
-initAiDots();
+// Boot render must wait until the sibling scripts (onboarding.js, pto.js, ptt.js, vault.js) have
+// parsed. Otherwise a hard refresh runs render() before renderOnboardingMode exists, the onboarding
+// gate is skipped, and an onboarding user is dropped onto the dashboard ("failed to load").
+// DOMContentLoaded fires only after all synchronous <script> tags have executed.
+function novaBoot() { render(); initAiDots(); }
+if (document.readyState === 'loading') { document.addEventListener('DOMContentLoaded', novaBoot); }
+else { novaBoot(); }
 window.addEventListener('resize', function() { initAiDots(); });
 
 
