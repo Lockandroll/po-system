@@ -4,7 +4,7 @@
    Pipeline:
      1) Web Speech API listens continuously for the wake phrase "Hey Nova".
      2) On wake, record the command with MediaRecorder + silence detection.
-     3) POST the audio to /api/voice/transcribe (OpenAI Whisper) -> text.
+     3) POST the audio to /api/voice/transcribe (ElevenLabs Scribe) -> text.
      4) If the text is a navigation command, jump screens instantly.
         Otherwise send it to /api/ai/agent (the same Nova AI brain, tools).
      5) POST the reply to /api/voice/speak (ElevenLabs) -> mp3, then play it
@@ -158,7 +158,7 @@
 
   function enable() {
     if (!NV.ready) {
-      toast('Nova Voice is not configured yet. An admin needs to add the OpenAI and ElevenLabs keys.', 'error');
+      toast('Nova Voice is not configured yet. An admin needs to add the ElevenLabs key.', 'error');
       return;
     }
     NV.wantListen = true;
@@ -305,7 +305,7 @@
     setState('thinking', 'Thinking…');
     postBytes('/voice/transcribe', blob, NV.recMime).then(function (r) {
       var text = (r && r.text ? r.text.trim() : '');
-      // strip an accidental leading wake word Whisper may have caught
+      // strip an accidental leading wake word Scribe may have caught
       text = text.replace(/^\s*(hey|hi|hello|ok|okay)?\s*,?\s*nova[\s,.:!-]*/i, '').trim();
       if (!text) { return speakThen("I did not catch that.", null); }
       routeCommand(text);

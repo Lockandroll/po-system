@@ -4,7 +4,7 @@ Hands-free voice for Nova AI, living inside the Radio (Zello) app. Say **"Hey No
 speak a command, and Nova either jumps you to a screen or answers out loud on the channel -
 using the exact same brain (and tools) as Nova AI in the app.
 
-**Pipeline:** wake word (browser) -> record -> **OpenAI Whisper** (STT) -> navigate *or* **Nova AI agent** -> **ElevenLabs** (TTS) -> played locally + broadcast to your live channel.
+**Pipeline:** wake word (browser) -> record -> **ElevenLabs Scribe** (STT) -> navigate *or* **Nova AI agent** -> **ElevenLabs** (TTS) -> played locally + broadcast to your live channel. One vendor for both ears and voice.
 
 ---
 
@@ -12,7 +12,7 @@ using the exact same brain (and tools) as Nova AI in the app.
 
 | File | Change |
 |---|---|
-| `routes/voice.js` | **NEW** - `POST /api/voice/transcribe` (Whisper) + `POST /api/voice/speak` (ElevenLabs). No new npm deps. |
+| `routes/voice.js` | **NEW** - `POST /api/voice/transcribe` (ElevenLabs Scribe) + `POST /api/voice/speak` (ElevenLabs TTS). No new npm deps. |
 | `public/js/nova-voice.js` | **NEW** - wake-word listener, command capture, nav parser, agent call, broadcast playback, floating mic button. |
 | `public/js/ptt.js` | **EDITED** - added `window.NovaRadio` bridge so voice can broadcast on the live channel. (Backup: `ptt.js.bak-novavoice`.) |
 | `.env.example` | **EDITED** - documents the new keys. |
@@ -31,17 +31,15 @@ the `sw.js` cache bump) are already made and committed-ready. Skip straight to t
 
 ---
 
-## Step 2 - Get the two API keys
+## Step 2 - Get one API key (ElevenLabs)
 
-**OpenAI (Whisper / speech-to-text)**
-1. Go to https://platform.openai.com/api-keys
-2. Create a secret key, copy it (starts with `sk-`).
-3. Make sure the account has a little billing credit - Whisper is ~$0.006 per minute of audio.
+Everything runs on ElevenLabs now - Scribe for the ears, TTS for the voice. No OpenAI needed.
 
-**ElevenLabs (voice / text-to-speech)** - you are already in here.
-1. Profile -> **API Keys** -> copy your key.
+1. In ElevenLabs: Profile -> **API Keys** -> copy your key.
 2. Voices -> pick the voice you want Nova to speak in -> copy its **Voice ID**.
    (If you skip this, Nova uses the "Rachel" preset.)
+
+Cost is tiny for short commands: Scribe is ~$0.004/min in, TTS is per-character out.
 
 ---
 
@@ -49,14 +47,13 @@ the `sw.js` cache bump) are already made and committed-ready. Skip straight to t
 
 In Railway -> your service -> **Variables**, add:
 
-    OPENAI_API_KEY        = sk-...            (required)
-    ELEVENLABS_API_KEY    = your-key          (required)
+    ELEVENLABS_API_KEY    = your-key          (required - powers STT + TTS)
     ELEVENLABS_VOICE_ID   = your-voice-id     (optional; defaults to Rachel)
 
 Optional tuning (leave off unless you want to change them):
 
-    ELEVENLABS_MODEL      = eleven_turbo_v2_5   (low-latency default)
-    OPENAI_STT_MODEL      = whisper-1
+    ELEVENLABS_MODEL      = eleven_turbo_v2_5   (TTS voice model, low latency)
+    ELEVENLABS_STT_MODEL  = scribe_v2           (STT model)
 
 ---
 
@@ -94,7 +91,7 @@ questions and take actions exactly like the assistant in the app.
 
 ## Notes & limits
 
-- **Wake word** uses the browser speech engine - works in **Chrome / Edge / Android Chrome**. On Safari/iOS there is no wake word, but the **tap-the-mic** path still works (Whisper does the transcription either way).
+- **Wake word** uses the browser speech engine - works in **Chrome / Edge / Android Chrome**. On Safari/iOS there is no wake word, but the **tap-the-mic** path still works (Scribe does the transcription either way).
 - **Broadcast** requires you to be **live on a channel**. If you are not, Nova just plays the reply on your own device.
 - Voice requests that hit the AI agent **count against the daily/monthly AI limits** (same as text chat).
 - Nova pauses its own ears while it is talking, so it will not trigger itself.

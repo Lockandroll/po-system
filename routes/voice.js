@@ -1,8 +1,8 @@
 // routes/voice.js
-// Nova Voice - the ears and mouth for Nova AI on the radio.
-// Two thin, stateless proxies (no new npm deps; native fetch/FormData/Blob):
-//   POST /api/voice/transcribe  audio bytes  -> OpenAI Whisper -> { text }
-//   POST /api/voice/speak       { text }     -> ElevenLabs TTS -> audio/mpeg
+// Nova Voice - the ears and mouth for Nova AI on the radio. One vendor:
+// both proxies use ElevenLabs (no new npm deps; native fetch/FormData/Blob):
+//   POST /api/voice/transcribe  audio bytes  -> ElevenLabs Scribe -> { text }
+//   POST /api/voice/speak       { text }     -> ElevenLabs TTS   -> audio/mpeg
 // The "brain" is unchanged: the client sends the transcript to the existing
 // /api/ai/agent endpoint, then sends the reply here to be spoken. No backticks.
 
@@ -12,12 +12,12 @@ var { requireAuth } = require('../middleware/auth');
 var router = express.Router();
 
 // --- config --------------------------------------------------------------
-var OPENAI_KEY = function () { return process.env.OPENAI_API_KEY; };
 var ELEVEN_KEY = function () { return process.env.ELEVENLABS_API_KEY; };
 // Default voice = ElevenLabs "Rachel" (public preset). Override in Railway.
 var VOICE_ID = function () { return process.env.ELEVENLABS_VOICE_ID || '21m00Tcm4TlvDq8ikWAM'; };
 var TTS_MODEL = function () { return process.env.ELEVENLABS_MODEL || 'eleven_turbo_v2_5'; };
-var STT_MODEL = function () { return process.env.OPENAI_STT_MODEL || 'whisper-1'; };
+// Scribe (speech-to-text). scribe_v2 is the current model; scribe_v1 also valid.
+var STT_MODEL = function () { return process.env.ELEVENLABS_STT_MODEL || 'scribe_v2'; };
 
 function mimeToExt(mime) {
   if (!mime) return 'webm';
@@ -30,20 +30,21 @@ function mimeToExt(mime) {
 }
 
 // GET /api/voice/config - lets the client know voice is wired up.
+// One vendor now: a single ElevenLabs key powers both STT and TTS.
 router.get('/config', requireAuth, function (req, res) {
   res.json({
-    stt: !!OPENAI_KEY(),
+    stt: !!ELEVEN_KEY(),
     tts: !!ELEVEN_KEY(),
-    ready: !!(OPENAI_KEY() && ELEVEN_KEY())
+    ready: !!ELEVEN_KEY()
   });
 });
 
 // POST /api/voice/transcribe
 // Body: raw audio bytes (Content-Type is the recorder mime, e.g. audio/webm).
-// Returns: { text }
+// Returns: { text }  (via ElevenLabs Scribe)
 router.post('/transcribe', requireAuth, express.raw({ type: '*/*', limit: '25mb' }), async function (req, res) {
-  if (!OPENAI_KEY()) {
-    return res.status(503).json({ error: 'Speech-to-text is not configured. Add OPENAI_API_KEY in Railway Variables.' });
+  if (!ELEVEN_KEY()) {
+    return res.status(503).json({ error: 'Speech-to-text is not configured. Add ELEVENLABS_API_KEY in Railway Variables.' });
   }
   var audio = req.body;
   if (!audio || !audio.length) {
@@ -54,19 +55,20 @@ router.post('/transcribe', requireAuth, express.raw({ type: '*/*', limit: '25mb'
     var ext = mimeToExt(mime);
     var form = new FormData();
     form.append('file', new Blob([audio], { type: mime }), 'command.' + ext);
-    form.append('model', STT_MODEL());
-    form.append('language', 'en');
-    // Bias Whisper toward our vocabulary so it hears the wake word + app terms.
-    form.append('prompt', 'Hey Nova. Lock and Roll locksmith dispatch. Nova, purchase order, quote, vehicle repair, running list, schedule, timeclock, task.');
+    form.append('model_id', STT_MODEL());
+    form.append('language_code', 'en');       // single-speaker English commands
+    form.append('num_speakers', '1');
+    form.append('diarize', 'false');
+    form.append('tag_audio_events', 'false');  // do not annotate (laughter) etc.
 
-    var r = await fetch('https://api.openai.com/v1/audio/transcriptions', {
+    var r = await fetch('https://api.elevenlabs.io/v1/speech-to-text', {
       method: 'POST',
-      headers: { 'Authorization': 'Bearer ' + OPENAI_KEY() },
+      headers: { 'xi-api-key': ELEVEN_KEY() },  // FormData sets its own Content-Type
       body: form
     });
     if (!r.ok) {
       var errTxt = await r.text();
-      console.error('Whisper error', r.status, errTxt);
+      console.error('Scribe error', r.status, errTxt);
       return res.status(502).json({ error: 'Transcription failed (' + r.status + ').' });
     }
     var data = await r.json();
