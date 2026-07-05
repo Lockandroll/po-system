@@ -9590,4 +9590,1077 @@ async function renderViewWorkOrder(el, id) {
   var docData = null;
   if (docAtt) { try { docData = await api('GET', '/work-orders/' + id + '/attachments/' + docAtt.id); } catch (e) {} }
 
-  var actions
+  var actions = '';
+  if (manage) {
+    if (w.status === 'received' || w.status === 'error' || w.status === 'rejected') {
+      actions += '<button class="btn btn-primary" onclick="woSetStatus(' + id + ',\'in_process\')">&#10003; Approve &rarr; In Process</button>';
+      if (w.status !== 'rejected') actions += '<button class="btn btn-secondary" onclick="woSetStatus(' + id + ',\'rejected\')">Reject</button>';
+    } else if (w.status === 'in_process') {
+      actions += '<button class="btn btn-primary" onclick="woSetStatus(' + id + ',\'job_completed\')">Mark Job Completed</button>';
+    } else if (w.status === 'job_completed') {
+      actions += '<button class="btn btn-primary" onclick="woSetStatus(' + id + ',\'paperwork_sent\')">Mark Paperwork Sent</button>';
+    }
+    if (w.signoff_id && w.signoff) {
+      actions += '<button class="btn btn-secondary" onclick="navigate(\'' + (w.signoff.status === 'completed' ? 'view-signoff' : 'complete-signoff') + '\',' + w.signoff_id + ')">Open Sign-Off (' + escHtml(w.signoff.form_number || '') + ')</button>';
+    }
+    if (w.source === 'email') actions += '<button class="btn btn-secondary" onclick="woReparse(' + id + ')">Re-parse with AI</button>';
+    actions += '<button class="btn btn-ghost" style="color:#b91c1c" onclick="woDelete(' + id + ')">Delete</button>';
+  }
+
+  // Left side: the original document (PDF/image), falling back to the email body.
+  var docInner;
+  if (docData && docAtt && _isPdfAtt(docAtt)) {
+    docInner = '<iframe src="data:application/pdf;base64,' + docData.image_data + '" style="width:100%;height:640px;border:0;border-radius:6px;background:#fff"></iframe>';
+  } else if (docData) {
+    docInner = '<img src="data:' + (docData.mime_type || 'image/jpeg') + ';base64,' + docData.image_data + '" style="max-width:100%;border:1px solid var(--border-color);border-radius:6px" />';
+  } else if (w.email_body) {
+    docInner = '<pre style="white-space:pre-wrap;word-break:break-word;max-height:640px;overflow:auto;background:var(--bg-elevated);padding:12px;border-radius:6px;font-size:13px;font-family:inherit">' + escHtml(w.email_body) + '</pre>';
+  } else {
+    docInner = '<div style="color:var(--text-muted-color);font-size:13px">No document or email body.</div>';
+  }
+  var srcMeta = w.source === 'email'
+    ? '<div style="font-size:12px;color:var(--text-muted-color);margin-bottom:8px">From: ' + escHtml(w.email_from || '—') + ' &middot; ' + escHtml(w.email_subject || '') + (w.email_received_at ? ' &middot; ' + formatDate(w.email_received_at) : '') + '</div>'
+    : '';
+  var attLinks = (w.attachments && w.attachments.length)
+    ? '<div style="margin-top:8px;font-size:12px"><strong>Files:</strong> ' + w.attachments.map(function (a) { return '<a href="#" onclick="event.preventDefault();woViewAttachment(' + id + ',' + a.id + ')" style="color:var(--primary)">' + escHtml(a.filename || ('file ' + a.id)) + '</a>'; }).join(', ') + '</div>'
+    : '';
+  var leftCard = '<div class="card" style="margin:0"><div class="card-header"><span class="card-title">Original Document</span></div><div class="card-body">' +
+    srcMeta + docInner + attLinks +
+    (w.parse_error ? '<div class="alert alert-error" style="margin-top:10px">Parse error: ' + escHtml(w.parse_error) + '</div>' : '') +
+    '</div></div>';
+
+  // Right side: the parsed fields (editable for managers until paperwork is sent).
+  var fieldsEditable = manage && w.status !== 'paperwork_sent';
+  function fld(label, fid, val, ph) {
+    if (!fieldsEditable) return '<div style="margin-bottom:12px"><div style="font-size:11px;font-weight:600;color:var(--text-muted-color);text-transform:uppercase;letter-spacing:0.04em;margin-bottom:3px">' + label + '</div><div style="font-size:14px">' + escHtml(val || '—') + '</div></div>';
+    return '<div class="form-group"><label>' + label + '</label><input type="text" id="' + fid + '" value="' + escHtml(val || '') + '" placeholder="' + (ph || '') + '" /></div>';
+  }
+  var fieldsInner = fieldsEditable
+    ? '<div class="form-row">' + fld('Account', 'wo-account_name', w.account_name) + fld('Account #', 'wo-account_number', w.account_number) + '</div>' +
+      fld('PO / WO #', 'wo-po_number', w.po_number) +
+      '<div class="form-row">' + fld('Store Name', 'wo-store_name', w.store_name) + fld('Store #', 'wo-store_number', w.store_number) + '</div>' +
+      fld('Address', 'wo-address', w.address) +
+      fld('City / State / Zip', 'wo-city_state_zip', w.city_state_zip) +
+      '<div class="form-group"><label>Service Requested</label><textarea id="wo-service_requested">' + escHtml(w.service_requested || '') + '</textarea></div>' +
+      fld('Service Requested By', 'wo-service_requested_by', w.service_requested_by) +
+      '<div class="form-group"><label>Needed By (date)</label><input type="date" id="wo-needed_by" value="' + escHtml(w.needed_by ? String(w.needed_by).slice(0, 10) : '') + '" /></div>' +
+      '<div class="form-row">' + fld('Contact Name', 'wo-contact_name', w.contact_name) + fld('Contact Phone', 'wo-contact_phone', w.contact_phone) + '</div>' +
+      '<div class="form-group"><label>Priority</label><select id="wo-priority">' + ['low', 'normal', 'high', 'urgent'].map(function (p) { return '<option value="' + p + '"' + (w.priority === p ? ' selected' : '') + '>' + p + '</option>'; }).join('') + '</select></div>' +
+      '<div class="form-group"><label>Notes</label><textarea id="wo-notes">' + escHtml(w.notes || '') + '</textarea></div>' +
+      '<button class="btn btn-secondary" onclick="woSaveEdit(' + id + ')">Save changes</button>'
+    : fld('Account', '', w.account_name) + fld('Account #', '', w.account_number) + fld('PO / WO #', '', w.po_number) +
+      fld('Store', '', (w.store_name || '') + (w.store_number ? ' (#' + w.store_number + ')' : '')) + fld('Address', '', w.address) + fld('City / State / Zip', '', w.city_state_zip) +
+      fld('Service', '', w.service_requested) + fld('Requested By', '', w.service_requested_by) + fld('Needed By', '', w.needed_by ? formatDate(w.needed_by) : '') +
+      fld('Contact', '', w.contact_name) + fld('Phone', '', w.contact_phone) + fld('Priority', '', w.priority) +
+      (w.notes ? '<div style="margin-top:12px;padding:10px 12px;background:var(--bg-elevated);border-radius:6px;font-size:13px"><strong>Notes:</strong> ' + escHtml(w.notes) + '</div>' : '');
+  var rightCard = '<div class="card" style="margin:0"><div class="card-header"><span class="card-title">' + (fieldsEditable ? 'Parsed Details (check &amp; correct)' : 'Details') + '</span></div><div class="card-body">' + fieldsInner + '</div></div>';
+
+  el.innerHTML =
+    '<div class="page-header">' +
+      '<div><div class="page-title">' + escHtml(w.wo_ref || ('Work Order #' + id)) + ' ' + woBadge(w.status) + ' ' + woConfBadge(w.confidence) + '</div>' +
+        '<div class="page-subtitle">' + escHtml(w.account_name || '—') + (w.store_name ? ' &middot; ' + escHtml(w.store_name) : '') + '</div></div>' +
+      '<button class="btn btn-secondary" onclick="navigate(\'work-orders\')">&larr; Back</button>' +
+    '</div>' +
+    '<div id="wo-detail-error"></div>' +
+    assignCard +
+    (actions ? '<div class="card mb-4"><div class="card-body"><div class="flex-gap" style="flex-wrap:wrap">' + actions + '</div></div></div>' : '') +
+    '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(380px,1fr));gap:16px;align-items:start" class="mb-4">' + leftCard + rightCard + '</div>' +
+    '<div class="card"><div class="card-header"><span class="card-title">Activity</span></div><div class="card-body">' +
+      ((w.activity && w.activity.length)
+        ? w.activity.map(function (a) { return '<div style="font-size:13px;padding:6px 0;border-bottom:1px solid var(--border-color)"><span style="color:var(--text-muted-color)">' + formatDate(a.created_at) + ' &middot; ' + escHtml(a.user_name || 'System') + '</span> — ' + escHtml(a.body || '') + '</div>'; }).join('')
+        : '<div style="color:var(--text-muted-color);font-size:13px">No activity yet.</div>') +
+    '</div></div>';
+}
+
+function woGet(fid) { var e = document.getElementById(fid); return e ? e.value.trim() : undefined; }
+async function woSaveEdit(id) {
+  var body = {
+    account_name: woGet('wo-account_name'), account_number: woGet('wo-account_number'), po_number: woGet('wo-po_number'),
+    store_name: woGet('wo-store_name'), store_number: woGet('wo-store_number'), address: woGet('wo-address'), city_state_zip: woGet('wo-city_state_zip'),
+    service_requested: woGet('wo-service_requested'), service_requested_by: woGet('wo-service_requested_by'), needed_by: woGet('wo-needed_by'),
+    contact_name: woGet('wo-contact_name'), contact_phone: woGet('wo-contact_phone'), priority: woGet('wo-priority'), notes: woGet('wo-notes')
+  };
+  try { await api('PUT', '/work-orders/' + id, body); navigate('view-work-order', id); }
+  catch (e) { var er = document.getElementById('wo-detail-error'); if (er) er.innerHTML = '<div class="alert alert-error">' + escHtml(e.message) + '</div>'; }
+}
+async function woSetStatus(id, status) {
+  if (status === 'rejected' && !await novaConfirm('Reject this work order?')) return;
+  var ae = document.getElementById('wo-assignee');
+  var body = { status: status };
+  if (ae) body.assigned_to = ae.value || null;
+  try { await api('PATCH', '/work-orders/' + id + '/status', body); navigate('view-work-order', id); }
+  catch (e) { var er = document.getElementById('wo-detail-error'); if (er) er.innerHTML = '<div class="alert alert-error">' + escHtml(e.message) + '</div>'; }
+}
+async function woAssign(id) {
+  var ae = document.getElementById('wo-assignee');
+  try { await api('PUT', '/work-orders/' + id, { assigned_to: ae && ae.value ? ae.value : null }); navigate('view-work-order', id); }
+  catch (e) { var er = document.getElementById('wo-detail-error'); if (er) er.innerHTML = '<div class="alert alert-error">' + escHtml(e.message) + '</div>'; }
+}
+async function woReparse(id) {
+  var er = document.getElementById('wo-detail-error');
+  if (er) er.innerHTML = '<div class="alert">Re-parsing with AI…</div>';
+  try { await api('POST', '/work-orders/' + id + '/reparse', {}); navigate('view-work-order', id); }
+  catch (e) { if (er) er.innerHTML = '<div class="alert alert-error">' + escHtml(e.message) + '</div>'; }
+}
+async function woDelete(id) {
+  if (!await novaConfirm('Delete this work order? This cannot be undone.')) return;
+  try { await api('DELETE', '/work-orders/' + id); navigate('work-orders'); }
+  catch (e) { var er = document.getElementById('wo-detail-error'); if (er) er.innerHTML = '<div class="alert alert-error">' + escHtml(e.message) + '</div>'; }
+}
+async function woViewAttachment(id, aid) {
+  try {
+    var r = await api('GET', '/work-orders/' + id + '/attachments/' + aid);
+    var w = window.open();
+    if (w) {
+      if ((r.mime_type || '').indexOf('pdf') !== -1) w.document.write('<iframe src="data:application/pdf;base64,' + r.image_data + '" style="border:0;width:100%;height:100%"></iframe>');
+      else w.document.write('<img src="data:' + (r.mime_type || 'image/jpeg') + ';base64,' + r.image_data + '" style="max-width:100%" />');
+    }
+  } catch (e) { novaAlert('Could not load attachment: ' + e.message); }
+}
+
+async function renderWorkOrderForm(el) {
+  var assignees = [];
+  try { assignees = await api('GET', '/work-orders/assignees'); } catch (e) {}
+  var assignOpts = '<option value="">— Unassigned —</option>' + assignees.map(function (u) {
+    return '<option value="' + u.id + '">' + escHtml(u.name) + '</option>';
+  }).join('');
+  el.innerHTML =
+    '<div class="page-header">' +
+      '<div><div class="page-title">New Work Order</div><div class="page-subtitle">Enter a phone-in or walk-in job by hand.</div></div>' +
+      '<button class="btn btn-secondary" onclick="navigate(\'work-orders\')">Cancel</button>' +
+    '</div>' +
+    '<div id="wo-form-error"></div>' +
+    '<div class="card mb-4"><div class="card-body">' +
+      '<div class="form-row">' + woRowField('Account', 'wof-account_name', '', 'e.g. Ferrandino &amp; Son') + woRowField('Account #', 'wof-account_number', '', '') + '</div>' +
+      woRowField('PO / WO #', 'wof-po_number', '', '') +
+      '<div class="form-row">' + woRowField('Store Name', 'wof-store_name', '', '') + woRowField('Store #', 'wof-store_number', '', '') + '</div>' +
+      woRowField('Address', 'wof-address', '', 'Street address') +
+      woRowField('City / State / Zip', 'wof-city_state_zip', '', '') +
+      '<div class="form-group"><label>Service Requested</label><textarea id="wof-service_requested" placeholder="What needs to be done"></textarea></div>' +
+      '<div class="form-row">' + woRowField('Service Requested By', 'wof-service_requested_by', '', 'e.g. 6/22/26 by 5 PM') + '<div class="form-group"><label>Needed By (date)</label><input type="date" id="wof-needed_by" /></div></div>' +
+      '<div class="form-row">' + woRowField('Contact Name', 'wof-contact_name', '', '') + woRowField('Contact Phone', 'wof-contact_phone', '', '') + '</div>' +
+      '<div class="form-group"><label>Assign To (Locksmith)</label><select id="wof-assigned">' + assignOpts + '</select></div>' +
+      '<div class="form-group"><label>Notes</label><textarea id="wof-notes"></textarea></div>' +
+    '</div></div>' +
+    '<div class="flex-gap"><button class="btn btn-primary" onclick="woCreate()">Create Work Order</button></div>';
+}
+async function woCreate() {
+  function v(k) { var e = document.getElementById('wof-' + k); return e ? e.value.trim() : ''; }
+  var body = {
+    account_name: v('account_name'), account_number: v('account_number'), po_number: v('po_number'),
+    store_name: v('store_name'), store_number: v('store_number'), address: v('address'), city_state_zip: v('city_state_zip'),
+    service_requested: v('service_requested'), service_requested_by: v('service_requested_by'), needed_by: v('needed_by'),
+    contact_name: v('contact_name'), contact_phone: v('contact_phone'), notes: v('notes'),
+    assigned_to: (function () { var e = document.getElementById('wof-assigned'); return e && e.value ? e.value : null; })()
+  };
+  try { var wo = await api('POST', '/work-orders', body); navigate('view-work-order', wo.id); }
+  catch (e) { var er = document.getElementById('wo-form-error'); if (er) er.innerHTML = '<div class="alert alert-error">' + escHtml(e.message) + '</div>'; }
+}
+// ===== end Work Orders module =================================================
+
+
+async function renderSignoffs(el) {
+  try {
+    const forms = await api('GET', '/signoffs');
+    window._signoffData = forms;
+    _signoffPage = 1;
+    const pending = forms.filter(function(f){ return f.status === 'pending'; }).length;
+    el.innerHTML =
+      '<div class="page-header">' +
+        '<div><div class="page-title">Sign-Off Sheets</div><div class="page-subtitle">' + pending + ' awaiting completion</div></div>' +
+        (can('create_signoff') ? '<button class="btn btn-primary" onclick="navigate(\'new-signoff\')" style="white-space:nowrap">' + icons.plus + ' New Sign-Off Sheet</button>' : '') +
+      '</div>' +
+      '<div id="signoff-error"></div>' +
+      '<div class="card">' +
+        '<div class="card-header" style="display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap">' +
+          '<span class="card-title">Work Order Sign-Offs</span>' +
+          '<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">' +
+            '<select id="signoff-status-filter" onchange="filterSignoffs(true)" style="width:auto"><option value="">All statuses</option><option value="pending">Awaiting completion</option><option value="completed">Completed</option></select>' +
+            '<input type="text" id="signoff-search" placeholder="Search form #, store, PO #, account..." style="width:260px" oninput="filterSignoffs(true)" />' +
+          '</div>' +
+        '</div>' +
+        (forms.length === 0
+          ? '<div class="empty-state"><h3>No sign-off sheets yet</h3><p>Create one to set up a work order, then complete it on site.</p></div>'
+          : '<div id="signoff-table-wrap"></div>') +
+      '</div>';
+    if (forms.length) filterSignoffs();
+  } catch (err) {
+    el.innerHTML = '<div class="alert alert-error">' + escHtml(err.message) + '</div>';
+  }
+}
+
+function signoffPaginate(p) { _signoffPage = p; filterSignoffs(); }
+function signoffPageSize(v) { SIGNOFF_PAGE_SIZE = parsePageSize(v); _signoffPage = 1; filterSignoffs(); }
+
+function filterSignoffs(resetPage) {
+  if (resetPage) _signoffPage = 1;
+  const wrap = document.getElementById('signoff-table-wrap');
+  if (!wrap || !window._signoffData) return;
+  const q = ((document.getElementById('signoff-search') || {}).value || '').toLowerCase();
+  const st = (document.getElementById('signoff-status-filter') || {}).value || '';
+  const filtered = window._signoffData.filter(function(f) {
+    if (st && f.status !== st) return false;
+    if (!q) return true;
+    return [f.form_number, f.store_name, f.store_number, f.wo_number, f.po_number, f.account, f.city_state_zip, f.created_by_name, f.assigned_to_name].some(function(v) {
+      return (v || '').toString().toLowerCase().indexOf(q) !== -1;
+    });
+  });
+  if (!filtered.length) {
+    wrap.innerHTML = '<div class="empty-state"><h3>No matching sheets</h3><p>Try a different search or filter.</p></div>';
+    return;
+  }
+  const totalPages = Math.ceil(filtered.length / SIGNOFF_PAGE_SIZE);
+  if (_signoffPage > totalPages) _signoffPage = totalPages;
+  const start = (_signoffPage - 1) * SIGNOFF_PAGE_SIZE;
+  const page = filtered.slice(start, start + SIGNOFF_PAGE_SIZE);
+  wrap.innerHTML =
+    '<div class="table-wrap"><table>' +
+    '<thead><tr><th>Form #</th><th>Store</th><th>PO #</th><th>Account</th>' + (signoffSeeAll() ? '<th>Assigned To</th>' : '') + '<th>Status</th><th>Created</th><th></th></tr></thead>' +
+    '<tbody>' + page.map(renderSignoffRow).join('') + '</tbody>' +
+    '</table></div>' +
+    renderPagination(_signoffPage, totalPages, filtered.length, 'signoffPaginate', SIGNOFF_PAGE_SIZE, 'signoffPageSize');
+}
+
+function signoffSeeAll() { return ['admin','manager'].includes(state.user.role); }
+
+function renderSignoffRow(f) {
+  const pend = f.status === 'pending';
+  const badge = pend
+    ? '<span class="badge" style="background:#fff3e8;color:#c2520a">Awaiting completion</span>'
+    : '<span class="badge" style="background:#dcfce7;color:#15803d">Completed</span>';
+  const action = pend
+    ? '<button class="btn btn-primary btn-sm" onclick="event.stopPropagation();navigate(\'complete-signoff\',' + f.id + ')" style="white-space:nowrap">&#9998; Complete</button>'
+    : '<button class="btn btn-secondary btn-sm" onclick="event.stopPropagation();navigate(\'view-signoff\',' + f.id + ')">View</button>';
+  var canDel = state.user.role === 'admin' || (can('delete_signoff') && f.created_by === state.user.id);
+  var editBtn = (pend && can('edit_signoff')) ? '<button class="btn btn-secondary btn-sm" title="Edit setup / reassign" onclick="event.stopPropagation();navigate(\'edit-signoff\',' + f.id + ')" style="margin-right:6px;white-space:nowrap"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg> Edit / Reassign</button>' : '';
+  var delBtn = canDel ? '<button class="btn btn-danger btn-sm" title="Delete sign-off sheet" onclick="event.stopPropagation();deleteSignoff(' + f.id + ')" style="margin-left:6px"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14H6L5 6"/><path d="M10 11v6"/><path d="M14 11v6"/><path d="M9 6V4h6v2"/></svg> Delete</button>' : '';
+  return '<tr style="cursor:pointer" onclick="navigate(\'' + (pend ? 'complete-signoff' : 'view-signoff') + '\',' + f.id + ')">' +
+    '<td><strong>' + escHtml(f.form_number) + '</strong></td>' +
+    '<td>' + escHtml(f.store_name || '—') + (f.store_number ? ' <span style="color:var(--text-muted-color)">#' + escHtml(f.store_number) + '</span>' : '') + '</td>' +
+    '<td>' + escHtml(f.po_number || '—') + '</td>' +
+    '<td>' + escHtml(f.account || '—') + '</td>' +
+    (signoffSeeAll() ? '<td>' + (f.assigned_to_name ? escHtml(f.assigned_to_name) : '<span style="color:var(--text-muted-color)">Unassigned</span>') + '</td>' : '') +
+    '<td>' + badge + '</td>' +
+    '<td>' + formatDate(f.created_at) + '</td>' +
+    '<td style="text-align:right;white-space:nowrap">' + editBtn + action + delBtn + '</td>' +
+  '</tr>';
+}
+
+async function renderEditSignoff(el, id) {
+  let form = null;
+  if (id) {
+    try { form = await api('GET', '/signoffs/' + id); } catch(e) { el.innerHTML = '<div class="alert alert-error">' + escHtml(e.message) + '</div>'; return; }
+    if (form.status === 'completed') { el.innerHTML = '<div class="alert alert-error">This sheet is completed and can no longer be edited.</div>'; return; }
+  }
+  let assignees = [];
+  try { assignees = await api('GET', '/signoffs/assignees'); } catch(e) {}
+  const assignSel = form ? form.assigned_to : state.user.id;
+  const assignOpts = '<option value="">— Unassigned —</option>' + assignees.map(function(u) {
+    return '<option value="' + u.id + '"' + (String(assignSel) === String(u.id) ? ' selected' : '') + '>' + escHtml(u.name) + '</option>';
+  }).join('');
+  function v(k) { return form ? escHtml(form[k] || '') : ''; }
+  el.innerHTML =
+    '<div class="page-header">' +
+      '<div><div class="page-title">' + (id ? 'Edit Sign-Off Setup' : 'New Sign-Off Sheet') + '</div><div class="page-subtitle">Set up the work order, then it joins the queue for a tech to complete on site.</div></div>' +
+      '<button class="btn btn-secondary" onclick="navigate(\'' + (id ? 'view-signoff' : 'signoffs') + '\',' + (id || 'null') + ')">Cancel</button>' +
+    '</div>' +
+    '<div id="signoff-edit-error"></div>' +
+    '<div class="card mb-4"><div class="card-header"><span class="card-title">Work Order Details</span></div><div class="card-body">' +
+      '<div class="form-group"><label>PO Number</label><input type="text" id="so-po" value="' + v('po_number') + '" placeholder="PO number" /></div>' +
+      '<div class="form-group"><label>Account</label><input type="text" id="so-account" value="' + v('account') + '" placeholder="e.g. Ferrandino &amp; Son Inc. Contractors" /></div>' +
+      '<div class="form-row">' +
+        '<div class="form-group"><label>Store Name</label><input type="text" id="so-store-name" value="' + v('store_name') + '" placeholder="e.g. Camelot" /></div>' +
+        '<div class="form-group"><label>Store Number</label><input type="text" id="so-store-number" value="' + v('store_number') + '" placeholder="e.g. 1260" /></div>' +
+      '</div>' +
+      '<div class="form-group"><label>Address</label><input type="text" id="so-address" value="' + v('address') + '" placeholder="Street address" /></div>' +
+      '<div class="form-group"><label>City / State / Zip</label><input type="text" id="so-csz" value="' + v('city_state_zip') + '" placeholder="e.g. Birmingham, AL 35242" /></div>' +
+      '<div class="form-group"><label>Date &amp; Time Service Requested By</label><input type="text" id="so-requested-by" value="' + v('service_requested_by') + '" placeholder="e.g. 6/19/26 by 5:00 PM" /></div>' +
+      '<div class="form-group"><label>Assign To</label><select id="so-assigned">' + assignOpts + '</select><div style="font-size:12px;color:var(--text-muted-color);margin-top:4px">Only this person (plus admins and managers) will see this sheet.</div></div>' +
+      '<div class="form-group"><label>Setup Notes</label><textarea id="so-notes" placeholder="Anything the tech should know before arriving...">' + v('notes') + '</textarea></div>' +
+    '</div></div>' +
+    '<div class="flex-gap"><button class="btn btn-primary" id="btn-save-signoff" onclick="saveSignoff(' + (id || 'null') + ')">' + (id ? 'Save Changes' : 'Create &amp; Add to Queue') + '</button></div>';
+}
+
+async function saveSignoff(id) {
+  function val(idn) { var e = document.getElementById(idn); return e ? e.value.trim() : ''; }
+  const body = {
+    po_number: val('so-po'),
+    account: val('so-account'), store_name: val('so-store-name'), store_number: val('so-store-number'),
+    address: val('so-address'), city_state_zip: val('so-csz'), service_requested_by: val('so-requested-by'),
+    notes: val('so-notes'),
+    assigned_to: (function() { var e = document.getElementById('so-assigned'); return e && e.value ? e.value : null; })()
+  };
+  if (!body.po_number && !body.store_name) {
+    document.getElementById('signoff-edit-error').innerHTML = '<div class="alert alert-error">Enter at least a PO number or store name.</div>';
+    return;
+  }
+  const btn = document.getElementById('btn-save-signoff');
+  if (btn) btn.disabled = true;
+  try {
+    if (id) { await api('PUT', '/signoffs/' + id, body); navigate('view-signoff', id); }
+    else { await api('POST', '/signoffs', body); navigate('signoffs'); }
+  } catch(err) {
+    document.getElementById('signoff-edit-error').innerHTML = '<div class="alert alert-error">' + escHtml(err.message) + '</div>';
+    if (btn) btn.disabled = false;
+  }
+}
+
+function signoffSummaryHtml(f) {
+  function row(label, val) { return '<div><div style="font-size:11px;font-weight:600;color:var(--text-muted-color);text-transform:uppercase;letter-spacing:0.04em;margin-bottom:3px">' + label + '</div><div style="font-size:14px">' + escHtml(val || '—') + '</div></div>'; }
+  return '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:16px">' +
+    row('Form #', f.form_number) + row('PO #', f.po_number) + row('Invoice #', f.invoice_number) +
+    row('Account', f.account) + row('Store', (f.store_name || '') + (f.store_number ? ' (#' + f.store_number + ')' : '')) +
+    row('Address', f.address) + row('City / State / Zip', f.city_state_zip) + row('Service Requested By', f.service_requested_by) +
+  '</div>' + (f.notes ? '<div style="margin-top:14px;padding:10px 12px;background:var(--bg-elevated);border-radius:6px;font-size:13px"><strong>Setup notes:</strong> ' + escHtml(f.notes) + '</div>' : '');
+}
+
+async function renderCompleteSignoff(el, id) {
+  signoffPhotos = [];
+  _signoffSigPad = null;
+  _signoffSignatureData = null;
+  _signoffGps = null;
+  _signoffSignedAt = null;
+  let form;
+  try { form = await api('GET', '/signoffs/' + id); } catch(e) { el.innerHTML = '<div class="alert alert-error">' + escHtml(e.message) + '</div>'; return; }
+  if (form.status === 'completed') { navigate('view-signoff', id); return; }
+  el.innerHTML =
+    '<div class="page-header">' +
+      '<div><div class="page-title">Complete ' + escHtml(form.form_number) + '</div><div class="page-subtitle">Fill in on-site details, capture photos, and have the manager sign.</div></div>' +
+      '<button class="btn btn-secondary" onclick="navigate(\'signoffs\')">Cancel</button>' +
+    '</div>' +
+    '<div id="signoff-complete-error"></div>' +
+    '<div class="card mb-4"><div class="card-header"><span class="card-title">Work Order</span></div><div class="card-body">' + signoffSummaryHtml(form) + '</div></div>' +
+    '<div class="card mb-4"><div class="card-header"><span class="card-title">On-Site Details</span></div><div class="card-body">' +
+      '<div class="form-row">' +
+        '<div class="form-group"><label>Start Time &amp; Date *</label><input type="text" id="so-start" placeholder="e.g. 6/19/26 1:30 PM" /></div>' +
+        '<div class="form-group"><label>End Time &amp; Date *</label><input type="text" id="so-end" placeholder="e.g. 6/19/26 3:00 PM" /></div>' +
+      '</div>' +
+      '<div class="form-row">' +
+        '<div class="form-group"><label>Is this work 100% complete? *</label><select id="so-complete"><option value="">— Select —</option><option value="yes">Yes</option><option value="no">No</option></select></div>' +
+        '<div class="form-group"><label>Number of Technicians *</label><input type="number" id="so-numtech" min="0" step="1" placeholder="e.g. 2" /></div>' +
+        '<div class="form-group"><label>Invoice Number *</label><input type="text" id="so-invoice-complete" placeholder="Invoice number" /></div>' +
+      '</div>' +
+      '<div class="form-group"><label>Technician Name(s) *</label><input type="text" id="so-techs" placeholder="Names of techs on site" /></div>' +
+      '<div class="form-group"><label>Description of Work Done / Cause of Damage *</label><textarea id="so-workdesc" style="min-height:120px" placeholder="Describe the work performed and/or cause of damage..."></textarea></div>' +
+    '</div></div>' +
+    '<div class="card mb-4"><div class="card-header"><span class="card-title">Photos <span style="font-weight:500;color:var(--text-muted-color);font-size:13px">(Must have before and after photos)</span></span></div><div class="card-body">' +
+      '<p class="text-muted" style="font-size:13px;margin-bottom:10px">Add at least two photos (before and after) and label each one. They are compressed automatically before upload.</p>' +
+      '<div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:12px">' +
+        '<label class="btn btn-primary" style="cursor:pointer;margin:0">&#128247; Take Photo<input type="file" accept="image/*" capture="environment" onchange="handleSignoffPhotos(this)" style="display:none" /></label>' +
+        '<label class="btn btn-secondary" style="cursor:pointer;margin:0">Choose Photos<input type="file" id="so-photo-input" accept="image/*" multiple onchange="handleSignoffPhotos(this)" style="display:none" /></label>' +
+      '</div>' +
+      '<div id="so-photo-grid" style="display:flex;flex-wrap:wrap;gap:10px"></div>' +
+    '</div></div>' +
+    '<div class="card mb-4"><div class="card-header"><span class="card-title">Manager Sign-Off</span></div><div class="card-body">' +
+      '<div class="form-group"><label>Manager Name (Printed) *</label><input type="text" id="so-manager" placeholder="Manager name" /></div>' +
+      '<label style="display:block;margin-bottom:6px;font-size:13px;color:var(--text-dim)">Manager Signature *</label>' +
+      '<div id="so-sig-preview" style="display:none;margin-bottom:6px"></div>' +
+      '<div id="so-sig-prompt" style="border:1px dashed var(--border);border-radius:8px;padding:18px;text-align:center;background:var(--bg-elevated);max-width:480px">' +
+        '<div style="font-size:13px;color:var(--text-dim);margin-bottom:10px">Capture the manager signature with on-site GPS location and a time stamp.</div>' +
+        '<button class="btn btn-primary" type="button" id="so-collect-sig" onclick="collectSignoffSignature()">&#9999;&#65039; Collect Signature</button>' +
+        '<div id="so-gps-status" style="font-size:12px;color:var(--text-muted-color);margin-top:8px"></div>' +
+      '</div>' +
+    '</div></div>' +
+    '<div class="flex-gap"><button class="btn btn-primary" id="btn-complete-signoff" onclick="submitSignoffCompletion(' + form.id + ')">&#10003; Submit &amp; Email Admins</button></div>';
+  renderSignoffSigPreview();
+  renderSignoffPhotoGrid();
+}
+
+function setupSignaturePad() {
+  const canvas = document.getElementById('so-sigpad');
+  if (!canvas) return;
+  const ctx = canvas.getContext('2d');
+  ctx.lineWidth = 2.5; ctx.lineCap = 'round'; ctx.lineJoin = 'round'; ctx.strokeStyle = '#111111';
+  let drawing = false, last = null, hasInk = false;
+  function pos(e) {
+    const r = canvas.getBoundingClientRect();
+    const t = (e.touches && e.touches[0]) ? e.touches[0] : e;
+    return { x: (t.clientX - r.left) * (canvas.width / r.width), y: (t.clientY - r.top) * (canvas.height / r.height) };
+  }
+  function start(e) { e.preventDefault(); drawing = true; last = pos(e); }
+  function move(e) { if (!drawing) return; e.preventDefault(); const p = pos(e); ctx.beginPath(); ctx.moveTo(last.x, last.y); ctx.lineTo(p.x, p.y); ctx.stroke(); last = p; hasInk = true; }
+  function end() { drawing = false; }
+  canvas.addEventListener('mousedown', start);
+  canvas.addEventListener('mousemove', move);
+  window.addEventListener('mouseup', end);
+  canvas.addEventListener('touchstart', start, { passive: false });
+  canvas.addEventListener('touchmove', move, { passive: false });
+  canvas.addEventListener('touchend', end);
+  _signoffSigPad = {
+    canvas: canvas,
+    hasInk: function() { return hasInk; },
+    setInk: function(v) { hasInk = v; },
+    clear: function() { ctx.clearRect(0, 0, canvas.width, canvas.height); hasInk = false; }
+  };
+}
+
+function clearSignoffSignature() { if (_signoffSigPad) _signoffSigPad.clear(); }
+
+// Capture GPS for the on-site signer, then open the full-screen signing pad.
+function collectSignoffSignature() {
+  var btn = document.getElementById('so-collect-sig');
+  var status = document.getElementById('so-gps-status');
+  if (btn) btn.disabled = true;
+  if (status) status.textContent = 'Getting your location\u2026';
+  function proceed(gps) {
+    _signoffGps = gps;
+    if (status) {
+      if (gps && gps.lat != null) status.innerHTML = '\uD83D\uDCCD Location captured (\u00b1' + Math.round(gps.accuracy || 0) + ' m)';
+      else status.innerHTML = '\u26A0\uFE0F Location unavailable \u2014 the signature will be flagged.';
+    }
+    if (btn) btn.disabled = false;
+    openSignoffFullscreen();
+  }
+  if (navigator.geolocation && navigator.geolocation.getCurrentPosition) {
+    navigator.geolocation.getCurrentPosition(
+      function(p) { proceed({ lat: p.coords.latitude, lon: p.coords.longitude, accuracy: p.coords.accuracy, error: null }); },
+      function(err) { proceed({ lat: null, lon: null, accuracy: null, error: (err && err.message) ? err.message : 'Location permission denied.' }); },
+      { enableHighAccuracy: true, timeout: 12000, maximumAge: 0 }
+    );
+  } else {
+    proceed({ lat: null, lon: null, accuracy: null, error: 'Geolocation is not supported on this device.' });
+  }
+}
+
+// Builds the on-site stamp block (time + GPS) shown in the preview, completed view.
+function signoffStampHtml(o) {
+  o = o || {};
+  var when = o.signed_at ? new Date(o.signed_at).toLocaleString('en-US') : '\u2014';
+  var hasGps = o.gps_lat != null && o.gps_lat !== '' && o.gps_lon != null && o.gps_lon !== '';
+  var loc = hasGps
+    ? Number(o.gps_lat).toFixed(6) + ', ' + Number(o.gps_lon).toFixed(6) + (o.gps_accuracy != null && o.gps_accuracy !== '' ? ' (\u00b1' + Math.round(o.gps_accuracy) + ' m)' : '')
+    : 'Location unavailable';
+  var mapLink = hasGps ? ' \u00b7 <a href="https://www.google.com/maps?q=' + encodeURIComponent(o.gps_lat + ',' + o.gps_lon) + '" target="_blank" rel="noopener" style="color:var(--primary)">Map</a>' : '';
+  return '<div style="margin-top:10px;border:1px solid ' + (hasGps ? 'var(--border)' : '#b45309') + ';border-left:3px solid ' + (hasGps ? 'var(--primary)' : '#f59e0b') + ';border-radius:6px;padding:9px 12px;background:var(--bg-elevated);font-size:12.5px;line-height:1.7;max-width:480px">' +
+    '<div style="font-weight:600;text-transform:uppercase;letter-spacing:0.04em;font-size:10.5px;color:var(--text-muted-color);margin-bottom:3px">On-Site Signature Stamp</div>' +
+    '<div>\uD83D\uDD52 ' + escHtml(when) + '</div>' +
+    '<div>\uD83D\uDCCD ' + escHtml(loc) + mapLink + '</div>' +
+    (o.manager ? '<div>\uD83D\uDC64 ' + escHtml(o.manager) + '</div>' : '') +
+    (!hasGps && o.gps_error ? '<div style="color:#f59e0b;margin-top:3px">' + escHtml(o.gps_error) + '</div>' : '') +
+  '</div>';
+}
+
+// Show the captured signature + stamp in the complete form, hide the prompt.
+function renderSignoffSigPreview() {
+  var prev = document.getElementById('so-sig-preview');
+  var prompt = document.getElementById('so-sig-prompt');
+  if (!prev) return;
+  if (!_signoffSignatureData) { prev.style.display = 'none'; if (prompt) prompt.style.display = ''; return; }
+  var g = _signoffGps || {};
+  var mgr = ((document.getElementById('so-manager') || {}).value || '').trim();
+  prev.style.display = 'block';
+  prev.innerHTML =
+    '<div style="background:#fff;border:1px solid var(--border);border-radius:8px;padding:8px;display:inline-block;max-width:100%"><img src="' + _signoffSignatureData + '" style="max-width:100%;width:480px;display:block" /></div>' +
+    signoffStampHtml({ signed_at: _signoffSignedAt, gps_lat: g.lat, gps_lon: g.lon, gps_accuracy: g.accuracy, gps_error: g.error, manager: mgr }) +
+    '<div style="margin-top:8px"><button class="btn btn-secondary btn-sm" type="button" onclick="collectSignoffSignature()">Re-sign</button></div>';
+  if (prompt) prompt.style.display = 'none';
+}
+
+// Full-screen landscape signing — lets the tech turn the phone sideways for a big signing area.
+function openSignoffFullscreen() {
+  if (document.getElementById('so-sig-fs')) return;
+  var portrait = window.innerHeight > window.innerWidth;
+  var ov = document.createElement('div');
+  ov.id = 'so-sig-fs';
+  ov.style.cssText = 'position:fixed;inset:0;z-index:99999;background:#ffffff;display:flex;flex-direction:column';
+  var bar = document.createElement('div');
+  bar.style.cssText = 'flex:0 0 auto;display:flex;justify-content:space-between;align-items:center;padding:10px 14px;background:#0f0f0f;color:#fff;gap:10px';
+  bar.innerHTML = '<span style="font-size:14px;font-weight:600">Manager Signature</span>' +
+    '<span style="display:flex;gap:8px">' +
+      '<button type="button" id="so-fs-clear" style="background:#333;color:#fff;border:none;border-radius:6px;padding:9px 14px;font-size:14px">Clear</button>' +
+      '<button type="button" id="so-fs-cancel" style="background:#333;color:#fff;border:none;border-radius:6px;padding:9px 14px;font-size:14px">Cancel</button>' +
+      '<button type="button" id="so-fs-done" style="background:#f97316;color:#fff;border:none;border-radius:6px;padding:9px 18px;font-size:14px;font-weight:600">Done</button>' +
+    '</span>';
+  var wrap = document.createElement('div');
+  wrap.style.cssText = 'flex:1 1 auto;position:relative';
+  var c = document.createElement('canvas');
+  c.width = 1600; c.height = 700;
+  c.style.cssText = 'position:absolute;inset:0;width:100%;height:100%;touch-action:none;background:#ffffff';
+  wrap.appendChild(c);
+  var hint = document.createElement('div');
+  hint.style.cssText = 'position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);color:#bbb;font-size:16px;text-align:center;pointer-events:none;padding:0 20px';
+  hint.textContent = portrait ? 'Turn your phone sideways, then sign here' : 'Sign here';
+  wrap.appendChild(hint);
+  ov.appendChild(bar); ov.appendChild(wrap);
+  document.body.appendChild(ov);
+  // Best effort: go fullscreen and lock landscape (Android Chrome honors this; iOS Safari ignores it).
+  try {
+    if (ov.requestFullscreen) {
+      ov.requestFullscreen().then(function() {
+        try { if (screen.orientation && screen.orientation.lock) screen.orientation.lock('landscape'); } catch(e) {}
+      }).catch(function() {});
+    }
+  } catch(e) {}
+  var ctx = c.getContext('2d');
+  ctx.lineWidth = 4; ctx.lineCap = 'round'; ctx.lineJoin = 'round'; ctx.strokeStyle = '#111111';
+  var drawing = false, last = null, hasInk = false;
+  function pos(e) {
+    var r = c.getBoundingClientRect();
+    var t = (e.touches && e.touches[0]) ? e.touches[0] : e;
+    return { x: (t.clientX - r.left) * (c.width / r.width), y: (t.clientY - r.top) * (c.height / r.height) };
+  }
+  function start(e) { e.preventDefault(); drawing = true; last = pos(e); hint.style.display = 'none'; }
+  function move(e) { if (!drawing) return; e.preventDefault(); var p = pos(e); ctx.beginPath(); ctx.moveTo(last.x, last.y); ctx.lineTo(p.x, p.y); ctx.stroke(); last = p; hasInk = true; }
+  function end() { drawing = false; }
+  c.addEventListener('mousedown', start);
+  c.addEventListener('mousemove', move);
+  window.addEventListener('mouseup', end);
+  c.addEventListener('touchstart', start, { passive: false });
+  c.addEventListener('touchmove', move, { passive: false });
+  c.addEventListener('touchend', end);
+  function cleanup() {
+    try { if (screen.orientation && screen.orientation.unlock) screen.orientation.unlock(); } catch(e) {}
+    try { if (document.fullscreenElement) document.exitFullscreen(); } catch(e) {}
+    window.removeEventListener('mouseup', end);
+    if (ov.parentNode) ov.parentNode.removeChild(ov);
+  }
+  document.getElementById('so-fs-clear').onclick = function() { ctx.clearRect(0, 0, c.width, c.height); hasInk = false; hint.style.display = ''; };
+  document.getElementById('so-fs-cancel').onclick = function() { cleanup(); };
+  document.getElementById('so-fs-done').onclick = function() {
+    if (hasInk) {
+      _signoffSignedAt = new Date();
+      _signoffSignatureData = c.toDataURL('image/png');
+      renderSignoffSigPreview();
+    }
+    cleanup();
+  };
+}
+
+function handleSignoffPhotos(input) {
+  const files = Array.prototype.slice.call(input.files || []);
+  files.forEach(function(file) {
+    if (!file.type || file.type.indexOf('image/') !== 0) return;
+    const reader = new FileReader();
+    reader.onload = function(ev) {
+      const img = new Image();
+      img.onload = function() {
+        const maxDim = 1280;
+        let w = img.width, h = img.height;
+        if (w > h && w > maxDim) { h = Math.round(h * maxDim / w); w = maxDim; }
+        else if (h >= w && h > maxDim) { w = Math.round(w * maxDim / h); h = maxDim; }
+        const c = document.createElement('canvas');
+        c.width = w; c.height = h;
+        c.getContext('2d').drawImage(img, 0, 0, w, h);
+        signoffPhotos.push({ image_data: c.toDataURL('image/jpeg', 0.7), caption: '' });
+        renderSignoffPhotoGrid();
+      };
+      img.src = ev.target.result;
+    };
+    reader.readAsDataURL(file);
+  });
+  input.value = '';
+}
+
+function renderSignoffPhotoGrid() {
+  const grid = document.getElementById('so-photo-grid');
+  if (!grid) return;
+  if (!signoffPhotos.length) { grid.innerHTML = '<div style="color:var(--text-muted-color);font-size:13px">No photos added yet. Add a before and an after photo.</div>'; return; }
+  grid.innerHTML = signoffPhotos.map(function(p, i) {
+    return '<div style="width:140px">' +
+      '<div style="position:relative;width:140px;height:130px;border-radius:8px;overflow:hidden;border:1px solid var(--border)">' +
+        '<img src="' + p.image_data + '" style="width:100%;height:100%;object-fit:cover" />' +
+        '<button type="button" onclick="removeSignoffPhoto(' + i + ')" title="Remove" style="position:absolute;top:3px;right:3px;background:rgba(0,0,0,0.6);color:#fff;border:none;border-radius:50%;width:22px;height:22px;cursor:pointer;font-size:14px;line-height:1">&times;</button>' +
+      '</div>' +
+      '<input type="text" value="' + escHtml(p.caption || '') + '" onchange="updateSignoffPhotoCaption(' + i + ', this.value)" placeholder="Label (e.g. Before / After)" style="width:140px;margin-top:5px;font-size:12px;padding:5px 7px" />' +
+    '</div>';
+  }).join('');
+}
+
+function updateSignoffPhotoCaption(i, val) { if (signoffPhotos[i]) signoffPhotos[i].caption = val; }
+
+function removeSignoffPhoto(i) { signoffPhotos.splice(i, 1); renderSignoffPhotoGrid(); }
+
+async function submitSignoffCompletion(id) {
+  function val(idn) { var e = document.getElementById(idn); return e ? e.value.trim() : ''; }
+  const errEl = document.getElementById('signoff-complete-error');
+  function fail(msg) { errEl.innerHTML = '<div class="alert alert-error">' + msg + '</div>'; window.scrollTo(0, 0); }
+  const start_time = val('so-start');
+  const end_time = val('so-end');
+  const invoice_number = val('so-invoice-complete');
+  const completeSel = val('so-complete');
+  const num_technicians = val('so-numtech');
+  const technician_names = val('so-techs');
+  const work_description = val('so-workdesc');
+  const manager = val('so-manager');
+  if (!start_time) return fail('Start time &amp; date is required.');
+  if (!end_time) return fail('End time &amp; date is required.');
+  if (!invoice_number) return fail('Invoice number is required.');
+  if (!completeSel) return fail('Please select whether the work is 100% complete.');
+  if (!num_technicians) return fail('Number of technicians is required.');
+  if (!technician_names) return fail('Technician name(s) are required.');
+  if (!work_description) return fail('Description of work done / cause of damage is required.');
+  if (signoffPhotos.length < 2) return fail('At least two photos are required (a before and an after).');
+  for (var pi = 0; pi < signoffPhotos.length; pi++) {
+    if (!signoffPhotos[pi].caption || !signoffPhotos[pi].caption.trim()) return fail('Every photo must be labeled (e.g. Before / After). Photo ' + (pi + 1) + ' is missing a label.');
+  }
+  if (!manager) return fail('Manager name is required.');
+  if (!_signoffSignatureData) return fail('A manager signature is required. Tap &quot;Collect Signature&quot; to capture it.');
+  const body = {
+    start_time: start_time,
+    end_time: end_time,
+    invoice_number: invoice_number,
+    work_complete: completeSel === 'yes' ? true : false,
+    num_technicians: num_technicians,
+    manager_name: manager,
+    technician_names: technician_names,
+    work_description: work_description,
+    signature_data: _signoffSignatureData,
+    gps_lat: _signoffGps ? _signoffGps.lat : null,
+    gps_lon: _signoffGps ? _signoffGps.lon : null,
+    gps_accuracy: _signoffGps ? _signoffGps.accuracy : null,
+    gps_error: _signoffGps ? _signoffGps.error : null,
+    signed_at: _signoffSignedAt ? _signoffSignedAt.toISOString() : null,
+    photos: signoffPhotos
+  };
+  const btn = document.getElementById('btn-complete-signoff');
+  if (btn) { btn.disabled = true; btn.textContent = 'Submitting...'; }
+  try {
+    await api('POST', '/signoffs/' + id + '/complete', body);
+    navigate('view-signoff', id);
+  } catch(err) {
+    errEl.innerHTML = '<div class="alert alert-error">' + escHtml(err.message) + '</div>';
+    window.scrollTo(0, 0);
+    if (btn) { btn.disabled = false; btn.innerHTML = '&#10003; Submit &amp; Email Admins'; }
+  }
+}
+
+async function renderViewSignoff(el, id) {
+  el.innerHTML = '<div class="loading">Loading…</div>';
+  try {
+    const f = await api('GET', '/signoffs/' + id);
+    const pend = f.status === 'pending';
+    const canDelete = state.user.role === 'admin' || (can('delete_signoff') && f.created_by === state.user.id);
+    const completedBlock = pend
+      ? '<div class="card mb-4"><div class="card-body"><div class="empty-state" style="padding:24px"><h3>Awaiting completion</h3><p>This sheet is in the queue. Open it on site to fill in details and capture the signature.</p>' + (can('complete_signoff') ? '<button class="btn btn-primary" onclick="navigate(\'complete-signoff\',' + f.id + ')" style="margin-top:8px">&#9998; Complete this sheet</button>' : '') + '</div></div></div>'
+      : signoffCompletedHtml(f);
+    el.innerHTML =
+      '<div class="page-header">' +
+        '<div><div class="page-title">' + escHtml(f.form_number) + '</div><div class="page-subtitle">Work Order Sign-Off' + (pend ? ' · Awaiting completion' : ' · Completed') + '</div></div>' +
+        '<div class="flex-gap">' +
+          '<button class="btn btn-secondary" onclick="navigate(\'signoffs\')">&larr; Back</button>' +
+          (!pend ? '<button class="btn btn-secondary" style="white-space:nowrap" onclick="printSignoff(' + f.id + ')">' + icons.print + ' Print</button>' : '') +
+          (!pend && (f.photos || []).length ? '<button class="btn btn-secondary" style="white-space:nowrap" onclick="downloadSignoffPhotos(' + f.id + ')">&#11015; Download Photos</button>' : '') +
+          (pend && can('edit_signoff') ? '<button class="btn btn-secondary" onclick="navigate(\'edit-signoff\',' + f.id + ')">' + icons.edit + ' Edit Setup</button>' : '') +
+          (pend && can('complete_signoff') ? '<button class="btn btn-primary" onclick="navigate(\'complete-signoff\',' + f.id + ')" style="white-space:nowrap">&#9998; Complete</button>' : '') +
+          (canDelete ? '<button class="btn btn-danger" title="Delete sign-off sheet" onclick="deleteSignoff(' + f.id + ')"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14H6L5 6"/><path d="M10 11v6"/><path d="M14 11v6"/><path d="M9 6V4h6v2"/></svg> Delete</button>' : '') +
+        '</div>' +
+      '</div>' +
+      '<div class="card mb-4"><div class="card-header"><span class="card-title">Work Order</span></div><div class="card-body">' + signoffSummaryHtml(f) + '</div></div>' +
+      completedBlock;
+  } catch(err) {
+    el.innerHTML = '<div class="alert alert-error">' + escHtml(err.message) + '</div>';
+  }
+}
+
+function signoffCompletedHtml(f) {
+  function row(label, val) { return '<div><div style="font-size:11px;font-weight:600;color:var(--text-muted-color);text-transform:uppercase;letter-spacing:0.04em;margin-bottom:3px">' + label + '</div><div style="font-size:14px">' + escHtml(val || '—') + '</div></div>'; }
+  const wc = f.work_complete === true ? 'Yes' : (f.work_complete === false ? 'No' : '—');
+  const photos = (f.photos || []).map(function(p) {
+    return '<div style="width:130px"><a href="' + p.image_data + '" target="_blank" rel="noopener" style="display:block;width:130px;height:130px;border-radius:8px;overflow:hidden;border:1px solid var(--border)"><img src="' + p.image_data + '" style="width:100%;height:100%;object-fit:cover" /></a>' +
+      (p.caption ? '<div style="font-size:12px;color:var(--text-dim);margin-top:4px;text-align:center">' + escHtml(p.caption) + '</div>' : '') + '</div>';
+  }).join('');
+  const sig = f.signature_data
+    ? '<div style="background:#ffffff;border:1px solid var(--border);border-radius:8px;padding:8px;display:inline-block"><img src="' + f.signature_data + '" style="max-width:360px;max-height:160px;display:block" /></div>' + signoffStampHtml({ signed_at: f.signed_at || f.completed_at, gps_lat: f.gps_lat, gps_lon: f.gps_lon, gps_accuracy: f.gps_accuracy, gps_error: f.gps_error, manager: f.manager_name })
+    : '<div style="color:var(--text-muted-color)">No signature on file.</div>';
+  return '<div class="card mb-4"><div class="card-header"><span class="card-title">Completion Details</span></div><div class="card-body">' +
+    '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:16px">' +
+      row('Start', f.start_time) + row('End', f.end_time) + row('Work 100% Complete', wc) + row('# Technicians', f.num_technicians != null ? String(f.num_technicians) : '') +
+      row('Technician(s)', f.technician_names) + row('Completed By', f.completed_by_name) + row('Completed At', f.completed_at ? formatDate(f.completed_at) : '') +
+    '</div>' +
+    (f.work_description ? '<div style="margin-top:16px"><div style="font-size:11px;font-weight:600;color:var(--text-muted-color);text-transform:uppercase;letter-spacing:0.04em;margin-bottom:4px">Description of Work / Cause of Damage</div><div style="font-size:14px;white-space:pre-wrap;line-height:1.6">' + escHtml(f.work_description) + '</div></div>' : '') +
+  '</div></div>' +
+  '<div class="card mb-4"><div class="card-header"><span class="card-title">Photos</span></div><div class="card-body">' + (photos ? '<div style="display:flex;flex-wrap:wrap;gap:10px">' + photos + '</div>' : '<div style="color:var(--text-muted-color)">No photos attached.</div>') + '</div></div>' +
+  '<div class="card mb-4"><div class="card-header"><span class="card-title">Manager Sign-Off</span></div><div class="card-body">' +
+    '<div style="margin-bottom:12px">' + row('Manager (Printed)', f.manager_name) + '</div>' + sig +
+  '</div></div>';
+}
+
+async function downloadSignoffPhotos(id) {
+  try {
+    const f = await api('GET', '/signoffs/' + id);
+    const photos = f.photos || [];
+    if (!photos.length) { novaAlert('No photos are attached to this sheet.'); return; }
+    const base = f.po_number ? ('PO ' + f.po_number) : (f.form_number || 'signoff');
+    photos.forEach(function(p, i) {
+      setTimeout(function() {
+        const cap = (p.caption || ('Photo ' + (i + 1))).replace(/[/:*?"<>|]+/g, '').trim();
+        const a = document.createElement('a');
+        a.href = p.image_data;
+        a.download = base + ' ' + (cap || ('Photo ' + (i + 1))) + '.jpg';
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+      }, i * 400);
+    });
+  } catch (err) {
+    novaAlert('Could not download photos: ' + err.message);
+  }
+}
+
+async function deleteSignoff(id) {
+  if (!await novaConfirm('Delete this sign-off sheet? This cannot be undone.')) return;
+  try { await api('DELETE', '/signoffs/' + id); navigate('signoffs'); }
+  catch(err) { novaAlert(err.message); }
+}
+
+async function printSignoff(id) {
+  try {
+    const results = await Promise.all([ api('GET', '/signoffs/' + id), api('GET', '/settings').catch(function() { return {}; }) ]);
+    const f = results[0];
+    const settings = results[1];
+    function esc(s) { return String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;'); }
+
+    const compName = esc(settings.company_name || 'Lock And Roll, LLC');
+    const addr1 = esc(settings.company_address || '589 Dorset Court');
+    const addr2 = esc(settings.company_city_state_zip || 'Mount Dora, FL 32757');
+    const phone = esc(settings.company_phone || '337-873-2983');
+    const logoUrl = settings.logo || 'https://www.popalock.com/wp-content/uploads/2020/11/pal-logo-highres.png';
+
+    function cellLbl(w, text, last) {
+      return '<div style="flex:0 0 ' + w + '%;max-width:' + w + '%;padding:8px 6px;' + (last ? '' : 'border-right:1px solid #000;') + 'display:flex;align-items:center;justify-content:center;text-align:center;font-size:12.5px;line-height:1.25">' + esc(text) + '</div>';
+    }
+    function cellVal(w, html, last) {
+      const ws = w ? 'flex:0 0 ' + w + '%;max-width:' + w + '%;' : 'flex:1 1 0;';
+      return '<div style="' + ws + 'padding:8px 8px;' + (last ? '' : 'border-right:1px solid #000;') + 'display:flex;align-items:center;font-size:13px;min-width:0;word-break:break-word">' + (html || '') + '</div>';
+    }
+    function box(on) {
+      return '<span style="display:inline-flex;align-items:center;justify-content:center;width:15px;height:15px;border:1.5px solid #000;margin-right:5px;font-size:12px;line-height:1">' + (on ? '&#10003;' : '') + '</span>';
+    }
+    const yesNo = '<div style="display:flex;align-items:center;gap:22px;width:100%;justify-content:center">' +
+      '<span style="display:flex;align-items:center">' + box(f.work_complete === true) + 'Yes</span>' +
+      '<span style="display:flex;align-items:center">' + box(f.work_complete === false) + 'No</span>' +
+    '</div>';
+    const sigImg = f.signature_data ? '<img src="' + f.signature_data + '" style="max-height:46px;max-width:100%;display:block" />' : '';
+
+    const ROW = 'display:flex;border-bottom:1px solid #000;min-height:34px';
+    const grid = '<div style="border:2px solid #000;margin-top:16px">' +
+      '<div style="' + ROW + '">' + cellLbl(15, 'Account:') + cellVal(0, esc(f.account), true) + '</div>' +
+      '<div style="' + ROW + '">' + cellLbl(15, 'Store Name:') + cellVal(45, esc(f.store_name)) + cellLbl(15, 'Store Number:') + cellVal(0, esc(f.store_number), true) + '</div>' +
+      '<div style="' + ROW + '">' + cellLbl(15, 'Address:') + cellVal(0, esc(f.address), true) + '</div>' +
+      '<div style="' + ROW + '">' + cellLbl(15, 'City/State/Zip:') + cellVal(0, esc(f.city_state_zip), true) + '</div>' +
+      '<div style="' + ROW + '">' + cellLbl(33, 'Date and Time Service Requested By:') + cellVal(0, esc(f.service_requested_by), true) + '</div>' +
+      '<div style="' + ROW + '">' + cellLbl(19.5, 'Start Time and Date:') + cellVal(26, esc(f.start_time)) + cellLbl(18, 'End Time and Date:') + cellVal(0, esc(f.end_time), true) + '</div>' +
+      '<div style="' + ROW + '">' + cellLbl(25, 'Is This Work 100% Complete?') + cellVal(24, yesNo) + cellLbl(20, 'Number of Technicians') + cellVal(0, (f.num_technicians != null ? esc(String(f.num_technicians)) : ''), true) + '</div>' +
+      '<div style="' + ROW + '">' + cellLbl(25, 'Manager Name (Printed):') + cellVal(0, esc(f.manager_name), true) + '</div>' +
+      '<div style="display:flex;border-bottom:1px solid #000;min-height:54px">' + cellLbl(25, 'Manager Signature:') + cellVal(0, sigImg, true) + '</div>' +
+      '<div style="' + ROW + '">' + cellLbl(25, 'Technician Name(s):') + cellVal(0, esc(f.technician_names), true) + '</div>' +
+      '<div style="padding:8px 8px;min-height:150px;font-size:13px"><div style="margin-bottom:8px">Description of Work Done / Cause of Damage:</div><div style="white-space:pre-wrap;line-height:1.6">' + esc(f.work_description) + '</div></div>' +
+    '</div>';
+
+    const photosHtml = (f.photos || []).map(function(p) {
+      return '<div style="width:31%;margin:1%;display:inline-block;vertical-align:top"><img src="' + p.image_data + '" style="width:100%;border:1px solid #ccc;border-radius:4px;object-fit:cover;max-height:220px" />' +
+        (p.caption ? '<div style="font-size:11px;color:#374151;margin-top:3px;text-align:center">' + esc(p.caption) + '</div>' : '') + '</div>';
+    }).join('');
+
+    const html = '<!DOCTYPE html><html><head><meta charset="UTF-8"><title>' + (f.po_number ? 'PO ' + esc(f.po_number) + ' Sign Off Sheet' : esc(f.form_number) + ' Sign Off Sheet') + '</title>' +
+      '<style>' +
+      '* { margin:0; padding:0; box-sizing:border-box; }' +
+      'body { font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Arial,sans-serif; background:#f3f4f6; color:#000; }' +
+      '.no-print { background:#fff; padding:12px 24px; border-bottom:1px solid #e5e7eb; display:flex; gap:8px; align-items:center; position:sticky; top:0; z-index:10; }' +
+      '.btn-print { background:#f97316; color:#fff; border:none; padding:9px 18px; border-radius:6px; font-size:14px; font-weight:500; cursor:pointer; }' +
+      '.btn-close { background:transparent; color:#6b7280; border:1px solid #d1d5db; padding:9px 18px; border-radius:6px; font-size:14px; cursor:pointer; }' +
+      '.page { max-width:800px; margin:24px auto 48px; background:#fff; padding:30px 34px; box-shadow:0 1px 4px rgba(0,0,0,0.12); }' +
+      '@media print { .no-print { display:none !important; } body { background:#fff; } .page { margin:0; box-shadow:none; max-width:100%; padding:18px 24px; } * { -webkit-print-color-adjust:exact !important; print-color-adjust:exact !important; } }' +
+      '</style></head><body>' +
+      '<div class="no-print">' +
+        '<button class="btn-print" onclick="window.print()">&#128438;&nbsp; Print / Save as PDF</button>' +
+        '<button class="btn-close" onclick="window.close()">Close</button>' +
+        '<span style="font-size:12px;color:#9ca3af;margin-left:4px">Tip: choose &ldquo;Save as PDF&rdquo; in the print dialog</span>' +
+      '</div>' +
+      '<div class="page">' +
+        '<div style="background:#000;color:#fff;text-align:center;font-size:15px;font-weight:600;padding:7px 0;letter-spacing:0.3px">Work Order Sign Off Sheet</div>' +
+        '<div style="display:flex;align-items:flex-start;padding:18px 4px 8px;gap:10px">' +
+          '<div style="flex:0 0 26%;display:flex;align-items:center;justify-content:center"><img src="' + logoUrl + '" style="max-width:150px;max-height:72px;object-fit:contain" /></div>' +
+          '<div style="flex:0 0 40%;text-align:center;font-size:13px;line-height:1.55">Corporate Office:<br><strong>' + compName + '</strong><br>' + addr1 + '<br>' + addr2 + '<br>' + phone + '</div>' +
+          '<div style="flex:1 1 0;font-size:13px;padding-top:6px">' +
+            '<div style="margin-bottom:30px">PO Number: <span style="display:inline-block;min-width:120px;border-bottom:1px solid #000;text-align:center;padding:0 4px">' + esc(f.po_number || '') + '</span></div>' +
+            '<div>Invoice Number: <span style="display:inline-block;min-width:110px;border-bottom:1px solid #000;text-align:center;padding:0 4px">' + esc(f.invoice_number || '') + '</span></div>' +
+          '</div>' +
+        '</div>' +
+        grid +
+        '<div style="margin-top:16px;font-size:10.5px;color:#999;text-align:right">' + esc(f.form_number) + (f.completed_at ? ' &middot; Completed ' + esc(new Date(f.completed_at).toLocaleString('en-US')) : '') + (f.completed_by_name ? ' by ' + esc(f.completed_by_name) : '') + '</div>' +
+      '</div>' +
+      '</body></html>';
+    const w = window.open('', '_blank');
+    if (w) { w.document.write(html); w.document.close(); }
+  } catch(err) {
+    novaAlert('Could not open print view: ' + err.message);
+  }
+}
+
+// ===== Scheduling (Sling-style) ============================================
+var _schedMonday = null, _schedCity = '', _schedRole = '', _schedCities = [], _schedUsers = [], _schedPositions = [], _schedShifts = [], _schedEditId = null, _schedEmpCities = {}, _schedScope = null, _schedMode = 'week', _schedMonthAnchor = null;
+var _schedSelMode = false, _schedSel = {};
+
+function schedYmd(d){ return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0'); }
+function schedAddDays(ds,n){ var a=ds.split('-').map(Number); var d=new Date(a[0],a[1]-1,a[2]); d.setDate(d.getDate()+n); return schedYmd(d); }
+function schedMondayOf(ds){ var a=ds.split('-').map(Number); var d=new Date(a[0],a[1]-1,a[2]); var day=d.getDay(); var back=day===0?6:day-1; return schedAddDays(ds,-back); }
+function schedToday(){ return schedYmd(new Date()); }
+function schedTimeMin(t){ var m=String(t||'').match(/^(\d{1,2}):(\d{2})/); return m?(parseInt(m[1],10)*60+parseInt(m[2],10)):0; }
+function schedTimeFmt(t){ var mm=schedTimeMin(t); var h=Math.floor(mm/60), mn=mm%60; var ap=h>=12?'PM':'AM'; h=h%12; if(h===0) h=12; return h+':'+String(mn).padStart(2,'0')+' '+ap; }
+function schedShiftHrs(s){ var st=schedTimeMin(s.start_time), en=schedTimeMin(s.end_time); if(en<=st) en+=1440; var m=en-st-(parseInt(s.break_minutes,10)||0); return m>0?m/60:0; }
+function schedDateLabel(ds){ var a=ds.split('-').map(Number); var d=new Date(a[0],a[1]-1,a[2]); return d.toLocaleDateString('en-US',{weekday:'short',month:'short',day:'numeric'}); }
+function schedShiftDate(s){ return String(s.shift_date).slice(0,10); }
+
+async function schedLoadAdmin(){
+  var from, to;
+  if(_schedMode==='month'){ if(!_schedMonthAnchor) _schedMonthAnchor=schedMonthFirst(schedToday()); from=schedMondayOf(_schedMonthAnchor); var _ld=schedAddDays(schedAddMonths(_schedMonthAnchor,1),-1); to=schedAddDays(schedMondayOf(_ld),6); }
+  else { from=_schedMonday; to=schedAddDays(_schedMonday,6); }
+  var q='?from='+from+'&to='+to+(_schedCity?'&city='+encodeURIComponent(_schedCity):'');
+  var r=await Promise.all([
+    api('GET','/schedule/positions').catch(function(){return [];}),
+    api('GET','/cities').catch(function(){return [];}),
+    api('GET','/users').catch(function(){return [];}),
+    api('GET','/schedule/shifts'+q).catch(function(){return [];}),
+    api('GET','/schedule/my-scope').catch(function(){return {cities:null};}),
+    api('GET','/schedule/user-cities').catch(function(){return [];})
+  ]);
+  _schedPositions=r[0]||[]; _schedCities=(r[1]||[]).filter(function(c){return c.active!==false;}); _schedUsers=(r[2]||[]).filter(function(u){return u.active!==false && u.hide_from_schedule!==true;}); _schedShifts=r[3]||[];
+  _schedScope=(r[4]&&typeof r[4].cities!=='undefined')?r[4].cities:null;
+  _schedEmpCities={}; (r[5]||[]).forEach(function(m){ _schedEmpCities[m.user_id]=m.city_codes||[]; });
+}
+
+async function renderScheduleAdmin(el){
+  if(!can('manage_schedule')){ el.innerHTML='<div class="alert alert-error">Access denied.</div>'; return; }
+  if(!_schedMonday) _schedMonday=schedMondayOf(schedToday());
+  el.innerHTML='<div class="loading">Loading…</div>';
+  try{ await schedLoadAdmin(); }catch(e){ el.innerHTML='<div class="alert alert-error">'+escHtml(e.message)+'</div>'; return; }
+  var cityOpts='<option value="">All cities</option>'+schedScopedCities().map(function(c){ return '<option value="'+escHtml((c.code||'').trim())+'"'+(_schedCity===(c.code||'').trim()?' selected':'')+'>'+escHtml(c.name)+'</option>'; }).join('');
+  var isMonth=_schedMode==='month';
+  var nav;
+  if(isMonth){
+    nav='<button class="btn btn-ghost btn-sm" onclick="schedChangeMonth(-1)">&lsaquo; Prev</button>'+
+        '<span style="font-weight:600;min-width:150px;text-align:center">'+escHtml(schedMonthLabel(_schedMonthAnchor))+'</span>'+
+        '<button class="btn btn-ghost btn-sm" onclick="schedChangeMonth(1)">Next &rsaquo;</button>'+
+        '<button class="btn btn-ghost btn-sm" onclick="schedGoToday()">Today</button>';
+  } else {
+    var weekEnd=schedAddDays(_schedMonday,6);
+    nav='<button class="btn btn-ghost btn-sm" onclick="schedChangeWeek(-1)">&lsaquo; Prev</button>'+
+        '<span style="font-weight:600;min-width:170px;text-align:center">'+escHtml(schedDateLabel(_schedMonday))+' – '+escHtml(schedDateLabel(weekEnd))+'</span>'+
+        '<button class="btn btn-ghost btn-sm" onclick="schedChangeWeek(1)">Next &rsaquo;</button>'+
+        '<button class="btn btn-ghost btn-sm" onclick="schedGoToday()">Today</button>';
+  }
+  el.innerHTML=
+    '<div class="page-header" style="flex-wrap:wrap;gap:10px"><div class="page-title">Schedule</div>'+
+      '<div style="display:flex;gap:8px;flex-wrap:wrap">'+
+        '<button class="btn btn-secondary btn-sm" onclick="schedSetMode(\''+(isMonth?'week':'month')+'\')">'+(isMonth?'Week view':'Month view')+'</button>'+
+        (isMonth?'':'<button class="btn btn-secondary btn-sm" onclick="schedSwitchType(\'single\')">Add Shift</button>')+
+        (isMonth?'':'<button class="btn btn-secondary btn-sm" onclick="schedBulkForm()">Bulk edit</button>')+
+        (isMonth?'':'<button class="btn '+(_schedSelMode?'btn-primary':'btn-secondary')+' btn-sm" onclick="schedToggleSelectMode()">'+(_schedSelMode?'Exit select':'Select')+'</button>')+
+        '<button class="btn btn-secondary btn-sm" onclick="schedManagePositions()">Positions</button>'+
+        '<button class="btn btn-secondary btn-sm" onclick="navigate(\'schedule-nowork\')">No-Work Report</button>'+
+        (isMonth?'':'<button class="btn btn-primary btn-sm" onclick="schedPublishWeek()">Publish Week</button>')+
+      '</div>'+
+    '</div>'+
+    '<div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-bottom:14px">'+
+      '<div style="display:flex;align-items:center;gap:6px">'+nav+'</div>'+
+      '<select onchange="schedSetCity(this.value)" style="background:var(--card-bg,#1a1a1a);color:var(--text-color,#fff);border:1px solid var(--border,#333);border-radius:6px;padding:7px 10px;font-size:13px">'+cityOpts+'</select>'+
+      '<select onchange="schedSetRole(this.value)" style="background:var(--card-bg,#1a1a1a);color:var(--text-color,#fff);border:1px solid var(--border,#333);border-radius:6px;padding:7px 10px;font-size:13px">'+schedRoleOptions()+'</select>'+
+    '</div>'+
+    '<div id="sched-selbar" style="position:sticky;top:0;z-index:60"></div>'+
+    '<div class="card"><div class="card-body" style="overflow-x:auto;padding:0"><div id="sched-grid-wrap"></div></div></div>'+
+    '<p class="text-muted" style="font-size:12.5px;margin-top:10px">'+(isMonth?'Click a shift to edit, or a day to jump to that week.':'Click any cell to add a shift; click a shift to edit. Dashed = draft (not yet visible to staff); solid = published.')+'</p>'+
+    '<div id="sched-modal"></div>';
+  if(isMonth) schedRenderMonth(); else schedRenderGrid();
+  schedUpdateSelBar();
+}
+function schedSetMode(m){ _schedMode=m; if(m==='month' && !_schedMonthAnchor) _schedMonthAnchor=schedMonthFirst(_schedMonday||schedToday()); renderScheduleAdmin(document.getElementById('content')); }
+function schedChangeMonth(n){ _schedMonthAnchor=schedAddMonths(_schedMonthAnchor||schedMonthFirst(schedToday()), n); renderScheduleAdmin(document.getElementById('content')); }
+function schedGoToday(){ if(_schedMode==='month'){ _schedMonthAnchor=schedMonthFirst(schedToday()); } else { _schedMonday=schedMondayOf(schedToday()); } renderScheduleAdmin(document.getElementById('content')); }
+function schedJumpWeek(day){ _schedMonday=schedMondayOf(day); _schedMode='week'; renderScheduleAdmin(document.getElementById('content')); }
+function schedMonthFirst(ds){ return ds.slice(0,7)+'-01'; }
+function schedAddMonths(ds,n){ var a=ds.split('-').map(Number); var y=a[0], m=a[1]-1+n; y+=Math.floor(m/12); m=((m%12)+12)%12; return y+'-'+String(m+1).padStart(2,'0')+'-01'; }
+function schedMonthLabel(ds){ var a=ds.split('-').map(Number); var d=new Date(a[0],a[1]-1,1); return d.toLocaleDateString('en-US',{month:'long',year:'numeric'}); }
+function schedRenderMonth(){
+  var wrap=document.getElementById('sched-grid-wrap'); if(!wrap) return;
+  var first=_schedMonthAnchor||schedMonthFirst(schedToday());
+  var gridStart=schedMondayOf(first);
+  var lastDay=schedAddDays(schedAddMonths(first,1),-1);
+  var gridEnd=schedAddDays(schedMondayOf(lastDay),6);
+  var monthNum=parseInt(first.slice(5,7),10);
+  var vis={}; schedVisibleUsers().forEach(function(u){ vis[u.id]=1; });
+  var byDate={};
+  _schedShifts.forEach(function(s){ if(!vis[s.user_id]) return; var dd=schedShiftDate(s); (byDate[dd]=byDate[dd]||[]).push(s); });
+  var today=schedToday();
+  var dayNames=['Mon','Tue','Wed','Thu','Fri','Sat','Sun'];
+  var head='<tr>'+dayNames.map(function(dn){return '<th style="padding:6px;text-align:center;font-size:11px;color:var(--text-muted-color,#999)">'+dn+'</th>';}).join('')+'</tr>';
+  var rowsHtml='';
+  var d=gridStart;
+  while(d<=gridEnd){
+    var cells='';
+    for(var i=0;i<7;i++){
+      var day=schedAddDays(d,i);
+      var inMonth=parseInt(day.slice(5,7),10)===monthNum;
+      var list=(byDate[day]||[]).sort(function(a,b){return schedTimeMin(a.start_time)-schedTimeMin(b.start_time);});
+      var dim=inMonth?'':'opacity:0.35;';
+      var isT=day===today;
+      var items=list.slice(0,4).map(function(s){
+        var col=s.city_color||'#f97316';
+        return '<div onclick="event.stopPropagation();schedOpenShift('+s.id+')" title="'+escHtml((s.user_name||'')+' '+schedTimeFmt(s.start_time)+'-'+schedTimeFmt(s.end_time))+'" style="cursor:pointer;border-left:3px solid '+col+';background:'+col+'22;border-radius:3px;padding:1px 4px;margin:2px 0;font-size:10.5px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">'+escHtml(schedTimeFmt(s.start_time))+' '+escHtml((s.user_name||'').split(' ')[0])+'</div>';
+      }).join('');
+      var more=list.length>4?('<div style="font-size:10px;color:var(--text-muted-color,#999)">+'+(list.length-4)+' more</div>'):'';
+      cells+='<td onclick="schedJumpWeek(\''+day+'\')" style="vertical-align:top;border:1px solid var(--border,#2a2a2a);height:96px;width:14.28%;cursor:pointer;padding:3px;'+dim+'">'+
+        '<div style="font-size:11px;font-weight:600;text-align:right;'+(isT?'color:var(--primary,#f97316)':'')+'">'+parseInt(day.slice(8,10),10)+'</div>'+items+more+'</td>';
+    }
+    rowsHtml+='<tr>'+cells+'</tr>';
+    d=schedAddDays(d,7);
+  }
+  wrap.innerHTML='<table style="border-collapse:collapse;width:100%;table-layout:fixed;min-width:760px"><thead>'+head+'</thead><tbody>'+rowsHtml+'</tbody></table>';
+}
+function schedRecurringForm(){
+  var userOpts=schedVisibleUsers().map(function(u){ return '<option value="'+u.id+'">'+escHtml(u.name)+'</option>'; }).join('');
+  var posOpts='<option value="">No position</option>'+_schedPositions.filter(function(p){return p.active!==false;}).map(function(p){ return '<option value="'+p.id+'">'+escHtml(p.name)+'</option>'; }).join('');
+  var cityOpts='<option value="">— city —</option>'+_schedCities.map(function(c){ var cc=(c.code||'').trim(); return '<option value="'+escHtml(cc)+'"'+(_schedCity===cc?' selected':'')+'>'+escHtml(c.name)+'</option>'; }).join('');
+  var inp='background:var(--bg-elevated,#1f1f1f);color:var(--text-color,#fff);border:1px solid var(--border,#333);border-radius:6px;padding:8px;width:100%;font-size:14px';
+  var days=[['1','Mon',true],['2','Tue',true],['3','Wed',true],['4','Thu',true],['5','Fri',true],['6','Sat',false],['0','Sun',false]];
+  var dayChecks=days.map(function(dd){ return '<label style="display:inline-flex;align-items:center;gap:4px;margin:0 8px 6px 0;font-size:13px"><input type="checkbox" class="rc-dow" value="'+dd[0]+'"'+(dd[2]?' checked':'')+' style="width:auto"> '+dd[1]+'</label>'; }).join('');
+  schedModal(
+    '<h3 style="margin:0 0 14px">Recurring Shift</h3>'+schedTypeToggle('recurring')+
+    '<div id="rc-err"></div>'+
+    '<div class="form-group"><label>Employee</label><select id="rc-user" style="'+inp+'">'+userOpts+'</select></div>'+
+    '<div class="form-group"><label>Days of week</label><div>'+dayChecks+'</div></div>'+
+    '<div style="display:flex;gap:10px"><div class="form-group" style="flex:1"><label>Start</label><input type="time" id="rc-start" value="09:00" style="'+inp+'"></div>'+
+    '<div class="form-group" style="flex:1"><label>End</label><input type="time" id="rc-end" value="17:00" style="'+inp+'"></div></div>'+
+    '<div style="display:flex;gap:10px"><div class="form-group" style="flex:1"><label>Position</label><select id="rc-pos" style="'+inp+'">'+posOpts+'</select></div>'+
+    '<div class="form-group" style="flex:1"><label>City</label><select id="rc-city" style="'+inp+'">'+cityOpts+'</select></div></div>'+
+    '<div style="display:flex;gap:10px"><div class="form-group" style="flex:1"><label>Start date</label><input type="date" id="rc-startdate" value="'+(_schedMonday||schedMondayOf(schedToday()))+'" style="'+inp+'"></div>'+
+    '<div class="form-group" style="flex:1"><label>Repeat for (weeks)</label><input type="number" id="rc-weeks" min="1" max="53" value="52" style="'+inp+'"></div></div>'+
+    '<div class="form-group"><label>Unpaid break (min)</label><input type="number" id="rc-break" min="0" value="0" style="'+inp+'"></div>'+
+    '<div class="form-group" style="display:flex;align-items:center;gap:8px"><input type="checkbox" id="rc-publish" style="width:auto"><label for="rc-publish" style="margin:0;cursor:pointer">Publish now (visible to staff)</label></div>'+
+    '<div style="display:flex;justify-content:flex-end;gap:8px;margin-top:8px"><button class="btn btn-ghost btn-sm" onclick="schedCloseModal()">Cancel</button><button class="btn btn-primary btn-sm" onclick="schedSaveRecurring()">Create shifts</button></div>'
+  );
+}
+async function schedSaveRecurring(){
+  var dows=[]; document.querySelectorAll('.rc-dow:checked').forEach(function(c){ dows.push(c.value); });
+  var body={ user_id:document.getElementById('rc-user').value, weekdays:dows, start_time:document.getElementById('rc-start').value, end_time:document.getElementById('rc-end').value, position_id:document.getElementById('rc-pos').value||null, city_code:document.getElementById('rc-city').value||null, start_date:document.getElementById('rc-startdate').value, weeks:document.getElementById('rc-weeks').value||1, break_minutes:document.getElementById('rc-break').value||0, publish:document.getElementById('rc-publish').checked };
+  if(!body.user_id||!dows.length||!body.start_date||!body.start_time||!body.end_time){ document.getElementById('rc-err').innerHTML='<div class="alert alert-error">Employee, at least one day, date, and times are required.</div>'; return; }
+  try{ var r=await api('POST','/schedule/recurring',body); schedCloseModal(); await schedLoadAdmin(); if(_schedMode==='month') schedRenderMonth(); else schedRenderGrid(); schedToast('Created '+r.created+' shift(s) as drafts.','ok'); }
+  catch(e){ document.getElementById('rc-err').innerHTML='<div class="alert alert-error">'+escHtml(e.message)+'</div>'; }
+}
+function schedTypeToggle(active){
+  function b(label,mode,on){ return '<button class="btn '+(on?'btn-primary':'btn-secondary')+' btn-sm" onclick="schedSwitchType(\''+mode+'\')">'+label+'</button>'; }
+  return '<div style="display:flex;gap:6px;margin-bottom:12px">'+b('Single','single',active==='single')+b('Recurring','recurring',active==='recurring')+'</div>';
+}
+function schedSwitchType(mode){ if(mode==='recurring') schedRecurringForm(); else schedShiftForm({ _date:(_schedMonday||schedToday()), shift_date:(_schedMonday||schedToday()) }); }
+function schedBulkForm(){
+  var userOpts=schedVisibleUsers().map(function(u){ return '<option value="'+u.id+'">'+escHtml(u.name)+'</option>'; }).join('');
+  var posOpts='<option value="">— leave unchanged —</option>'+_schedPositions.filter(function(p){return p.active!==false;}).map(function(p){ return '<option value="'+p.id+'">'+escHtml(p.name)+'</option>'; }).join('');
+  var cityOpts='<option value="">All cities</option>'+_schedCities.map(function(c){ var cc=(c.code||'').trim(); return '<option value="'+escHtml(cc)+'"'+(_schedCity===cc?' selected':'')+'>'+escHtml(c.name)+'</option>'; }).join('');
+  var inp='background:var(--bg-elevated,#1f1f1f);color:var(--text-color,#fff);border:1px solid var(--border,#333);border-radius:6px;padding:8px;width:100%;font-size:14px';
+  schedModal(
+    '<h3 style="margin:0 0 14px">Bulk edit shifts</h3>'+
+    '<div id="bk-err"></div>'+
+    '<div class="form-group"><label>Employee</label><select id="bk-user" style="'+inp+'">'+userOpts+'</select></div>'+
+    '<div style="display:flex;gap:10px"><div class="form-group" style="flex:1"><label>From</label><input type="date" id="bk-from" value="'+(_schedMonday||schedToday())+'" style="'+inp+'"></div>'+
+    '<div class="form-group" style="flex:1"><label>To</label><input type="date" id="bk-to" value="'+schedAddDays(_schedMonday||schedToday(),6)+'" style="'+inp+'"></div></div>'+
+    '<div class="form-group"><label>City</label><select id="bk-city" style="'+inp+'">'+cityOpts+'</select></div>'+
+    '<div class="form-group"><label>Action</label><select id="bk-action" onchange="schedBulkActionChange()" style="'+inp+'"><option value="delete">Remove shifts (e.g. vacation)</option><option value="update">Change shifts</option></select></div>'+
+    '<div id="bk-change" style="display:none">'+
+      '<div style="display:flex;gap:10px"><div class="form-group" style="flex:1"><label>New start</label><input type="time" id="bk-start" style="'+inp+'"></div>'+
+      '<div class="form-group" style="flex:1"><label>New end</label><input type="time" id="bk-end" style="'+inp+'"></div></div>'+
+      '<div style="display:flex;gap:10px"><div class="form-group" style="flex:1"><label>Position</label><select id="bk-pos" style="'+inp+'">'+posOpts+'</select></div>'+
+      '<div class="form-group" style="flex:1"><label>Break (min)</label><input type="number" id="bk-break" min="0" placeholder="unchanged" style="'+inp+'"></div></div>'+
+      '<p class="text-muted" style="font-size:12px;margin:0 0 8px">Leave a field blank to keep it as-is.</p>'+
+    '</div>'+
+    '<div style="display:flex;justify-content:flex-end;gap:8px;margin-top:8px"><button class="btn btn-ghost btn-sm" onclick="schedCloseModal()">Cancel</button><button class="btn btn-primary btn-sm" onclick="schedSaveBulk()">Apply</button></div>'
+  );
+}
+function schedBulkActionChange(){ var c=document.getElementById('bk-change'); var a=document.getElementById('bk-action').value; if(c) c.style.display=(a==='update')?'':'none'; }
+async function schedSaveBulk(){
+  var action=document.getElementById('bk-action').value;
+  var body={ user_id:document.getElementById('bk-user').value, from:document.getElementById('bk-from').value, to:document.getElementById('bk-to').value, city:document.getElementById('bk-city').value||null, action:action };
+  if(!body.user_id||!body.from||!body.to){ document.getElementById('bk-err').innerHTML='<div class="alert alert-error">Employee and date range are required.</div>'; return; }
+  if(action==='update'){ var st=document.getElementById('bk-start').value; if(st) body.start_time=st; var en=document.getElementById('bk-end').value; if(en) body.end_time=en; var po=document.getElementById('bk-pos').value; if(po) body.position_id=po; var bm=document.getElementById('bk-break').value; if(bm!=='') body.break_minutes=bm; }
+  if(action==='delete' && !await novaConfirm('Remove all of this person’s shifts in that date range?')) return;
+  try{ var r=await api('POST','/schedule/bulk',body); schedCloseModal(); await schedLoadAdmin(); if(_schedMode==='month') schedRenderMonth(); else schedRenderGrid(); schedToast((action==='delete'?'Removed ':'Updated ')+r.affected+' shift(s).','ok'); }
+  catch(e){ document.getElementById('bk-err').innerHTML='<div class="alert alert-error">'+escHtml(e.message)+'</div>'; }
+}
+
+function schedRenderGrid(){
+  var wrap=document.getElementById('sched-grid-wrap'); if(!wrap) return;
+  var days=[]; for(var i=0;i<7;i++) days.push(schedAddDays(_schedMonday,i));
+  var byCell={};
+  _schedShifts.forEach(function(s){ var k=s.user_id+'|'+schedShiftDate(s); (byCell[k]=byCell[k]||[]).push(s); });
+  var today=schedToday();
+  var head='<tr><th style="position:sticky;left:0;background:var(--bg-elevated,#1a1a1a);min-width:140px;text-align:left;padding:10px 12px;z-index:2">Employee</th>'+
+    days.map(function(d){ var isT=d===today; return '<th style="min-width:128px;text-align:center;padding:8px 6px'+(isT?';color:var(--primary,#f97316)':'')+'">'+escHtml(schedDateLabel(d))+'</th>'; }).join('')+'</tr>';
+  var _vis=schedVisibleUsers(); var rows=_vis.map(function(u){
+    var cells=days.map(function(d){
+      var list=byCell[u.id+'|'+d]||[];
+      var blocks=list.sort(function(a,b){return schedTimeMin(a.start_time)-schedTimeMin(b.start_time);}).map(function(s){
+        var col=s.city_color||'#f97316';
+        var pub=s.status==='published';
+        var border=pub?('1px solid '+col):('1px dashed '+col);
+        var bg=pub?(col+'22'):'transparent';
+        return '<div class="sched-shift'+(_schedSel[s.id]?' sel':'')+'" data-shift-id="'+s.id+'" draggable="'+(_schedSelMode?'false':'true')+'" ondragstart="schedDragStart(event,'+s.id+')" ondragend="schedDragEnd(event)" ontouchstart="schedTouchStart(event,'+s.id+')" ontouchmove="schedTouchMove(event)" ontouchend="schedTouchEnd(event)" onclick="event.stopPropagation();schedShiftClick('+s.id+')" title="'+escHtml((s.position_name||'')+(s.notes?(' — '+s.notes):''))+'" style="cursor:'+(_schedSelMode?'pointer':'grab')+';-webkit-user-select:none;user-select:none;-webkit-touch-callout:none;border:'+border+';background:'+bg+';border-left:4px solid '+col+';border-radius:5px;padding:3px 6px;margin:3px 4px;font-size:11.5px;line-height:1.35">'+
+          '<div style="font-weight:600">'+escHtml(schedTimeFmt(s.start_time))+'–'+escHtml(schedTimeFmt(s.end_time))+'</div>'+
+          (s.position_name?'<div style="color:var(--text-muted-color,#999)">'+escHtml(s.position_name)+'</div>':'')+'</div>';
+      }).join('');
+      return '<td data-sched-uid="'+u.id+'" data-sched-date="'+d+'" onclick="schedNewShift('+u.id+",'"+d+"')\" ondragover=\"schedDragOver(event)\" ondragenter=\"schedDragEnter(event)\" ondragleave=\"schedDragLeave(event)\" ondrop=\"schedDrop(event,"+u.id+",'"+d+"')\" style=\"vertical-align:top;border:1px solid var(--border,#2a2a2a);min-height:54px;cursor:pointer;padding:0 0 4px\">"+blocks+'</td>';
+    }).join('');
+    var hrs=days.reduce(function(t,d){ return t+(byCell[u.id+'|'+d]||[]).reduce(function(x,s){return x+schedShiftHrs(s);},0); },0);
+    var _city=schedUserPrimaryCity(u);
+    var label=escHtml(u.name)+' <span style="color:var(--text-muted-color,#999);font-weight:400;font-size:11px">'+(hrs?hrs.toFixed(1)+'h':'')+'</span>'+
+      (_city?'<div style="color:var(--text-muted-color,#999);font-weight:400;font-size:10.5px;margin-top:1px">'+escHtml(_city)+'</div>':'');
+    return '<tr><td style="position:sticky;left:0;background:var(--card-bg,#161616);padding:8px 12px;font-weight:600;font-size:13px;border:1px solid var(--border,#2a2a2a);z-index:1">'+label+'</td>'+cells+'</tr>';
+  }).join('');
+  if(!_vis.length) rows='<tr><td colspan="8" style="padding:20px;text-align:center;color:var(--text-muted-color,#999)">No active employees.</td></tr>';
+  wrap.innerHTML='<table style="border-collapse:collapse;width:100%;min-width:980px"><thead>'+head+'</thead><tbody>'+rows+'</tbody></table>';
+  schedInjectSelCss(); wrap.className=_schedSelMode?'sched-grid-selecting':'';
+}
+
+// --- Bulk multi-select on the week grid ---
+function schedToggleSelectMode(){ _schedSelMode=!_schedSelMode; if(!_schedSelMode) _schedSel={}; renderScheduleAdmin(document.getElementById('content')); }
+function schedShiftClick(id){ if(_schedSelMode) schedToggleSel(id); else schedOpenShift(id); }
+function schedSelIds(){ return Object.keys(_schedSel).map(Number); }
+function schedSelCount(){ return Object.keys(_schedSel).length; }
+function schedStyleShiftSel(el,on){ if(!el) return; el.classList.toggle('sel', !!on); }
+function schedInjectSelCss(){ if(document.getElementById('sched-sel-css')) return; var st=document.createElement('style'); st.id='sched-sel-css'; st.textContent=".sched-shift.sel{outline:3px solid #f97316 !important;outline-offset:0 !important;box-shadow:0 0 0 3px rgba(249,115,22,.55),0 4px 14px rgba(0,0,0,.55) !important;position:relative !important;z-index:5}.sched-shift.sel::after{content:'\\2713';position:absolute;top:-8px;right:-8px;width:18px;height:18px;line-height:18px;text-align:center;background:#f97316;color:#fff;font-size:12px;font-weight:700;border-radius:50%;box-shadow:0 1px 4px rgba(0,0,0,.6);pointer-events:none}.sched-grid-selecting .sched-shift:not(.sel){opacity:.32}"; document.head.appendChild(st); }
+function schedToggleSel(id){ if(_schedSel[id]) delete _schedSel[id]; else _schedSel[id]=1; var el=document.querySelector('[data-shift-id="'+id+'"]'); schedStyleShiftSel(el,!!_schedSel[id]); schedUpdateSelBar(); }
+function schedClearSel(){ _schedSel={}; var els=document.querySelectorAll('[data-shift-id]'); for(var i=0;i<els.length;i++) schedStyleShiftSel(els[i],false); schedUpdateSelBar(); }
+function schedSelectAllVisible(){ var els=document.querySelectorAll('[data-shift-id]'); for(var i=0;i<els.length;i++){ var id=parseInt(els[i].getAttribute('data-shift-id'),10); _schedSel[id]=1; schedStyleShiftSel(els[i],true); } schedUpdateSelBar(); }
+function schedAfterBulk(){ if(_schedMode==='month') schedRenderMonth(); else schedRenderGrid(); schedUpdateSelBar(); }
+function schedUpdateSelBar(){
+  var bar=document.getElementById('sched-selbar'); if(!bar) return;
+  if(!_schedSelMode){ bar.innerHTML=''; return; }
+  var n=schedSelCount();
+  bar.innerHTML='<div style="background:var(--card-bg,#161616);border:1px solid var(--border,#2a2a2a);border-radius:10px;box-shadow:0 6px 20px rgba(0,0,0,.4);padding:9px 12px;display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:10px">'+
+    '<span style="font-weight:600;font-size:13px;margin-right:2px">'+n+' selected</span>'+
+    '<button class="btn btn-secondary btn-sm" onclick="schedSelectAllVisible()">Select all</button>'+
+    (n?'<button class="btn btn-secondary btn-sm" onclick="schedBulkIdsPublish(true)">Publish</button>':'')+
+    (n?'<button class="btn btn-secondary btn-sm" onclick="schedBulkIdsPublish(false)">Unpublish</button>':'')+
+    (n?'<button class="btn btn-secondary btn-sm" onclick="schedBulkIdsEditForm()">Edit times/position</button>':'')+
+    (n?'<button class="btn btn-secondary btn-sm" onclick="schedBulkIdsReassignForm()">Reassign</button>':'')+
+    (n?'<button class="btn btn-danger btn-sm" onclick="schedBulkIdsDelete()">Delete</button>':'')+
+    (n?'<button class="btn btn-ghost btn-sm" onclick="schedClearSel()">Clear</button>':'')+
+    '<button class="btn btn-ghost btn-sm" style="margin-left:auto" onclick="schedToggleSelectMode()">Done</button>'+
+  '</div>';
+}
+async function schedBulkIdsDelete(){
+  var ids=schedSelIds(); if(!ids.length) return;
+  if(!await novaConfirm('Delete '+ids.length+' selected shift(s)? This cannot be undone.')) return;
+  try{ var r=await api('POST','/schedule/bulk-ids',{action:'delete',ids:ids}); _schedSel={}; await schedLoadAdmin(); schedAfterBulk(); schedToast('Deleted '+r.affected+' shift(s).','ok'); }
+  catch(e){ schedToast(e.message||'Delete failed','err'); }
+}
+async function schedBulkIdsPublish(pub){
+  var ids=schedSelIds(); if(!ids.length) return;
+  try{ var r=await api('POST','/schedule/bulk-ids',{action:pub?'publish':'unpublish',ids:ids}); _schedSel={}; await schedLoadAdmin(); schedAfterBulk(); schedToast((pub?'Published ':'Unpublished ')+r.affected+' shift(s).','ok'); }
+  catch(e){ schedToast(e.message||'Failed','err'); }
+}
+function schedBulkIdsEditForm(){
+  var ids=schedSelIds(); if(!ids.length) return;
+  var inp='background:var(--bg-elevated,#1f1f1f);color:var(--text-color,#fff);border:1px solid var(--border,#333);border-radius:6px;padding:8px;width:100%;font-size:14px;box-sizing:border-box';
+  var posOpts='<option value="">— leave unchanged —</option>'+_schedPositions.filter(function(pp){return pp.active!==false;}).map(function(pp){ return '<option value="'+pp.id+'">'+escHtml(pp.name)+'</option>'; }).join('');
+  schedModal(
+    '<h3 style="margin:0 0 4px">Edit '+ids.length+' shift(s)</h3>'+
+    '<p class="text-muted" style="font-size:12.5px;margin:0 0 12px">Leave a field blank to keep it unchanged on each shift.</p>'+
+    '<div id="bki-err"></div>'+
+    '<div style="display:flex;gap:10px;flex-wrap:wrap">'+
+      '<div style="flex:1;min-width:120px"><div style="font-size:12px;color:var(--text-muted-color);margin-bottom:4px">Start</div><input type="time" id="bki-start" style="'+inp+'"></div>'+
+      '<div style="flex:1;min-width:120px"><div style="font-size:12px;color:var(--text-muted-color);margin-bottom:4px">End</div><input type="time" id="bki-end" style="'+inp+'"></div>'+
+    '</div>'+
+    '<div style="display:flex;gap:10px;flex-wrap:wrap;margin-top:10px">'+
+      '<div style="flex:1;min-width:120px"><div style="font-size:12px;color:var(--text-muted-color);margin-bottom:4px">Position</div><select id="bki-pos" style="'+inp+'">'+posOpts+'</select></div>'+
+      '<div style="flex:1;min-width:120px"><div style="font-size:12px;color:var(--text-muted-color);margin-bottom:4px">Break (min)</div><input type="number" min="0" id="bki-break" placeholder="unchanged" style="'+inp+'"></div>'+
+    '</div>'+
+    '<div style="display:flex;justify-content:flex-end;gap:8px;margin-top:14px"><button class="btn btn-ghost btn-sm" onclick="schedCloseModal()">Cancel</button><button class="btn btn
