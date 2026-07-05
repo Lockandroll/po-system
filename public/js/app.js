@@ -2,7 +2,7 @@
 // public/sw.js (the only thing bumped each deploy) — the badge asks the active
 // service worker for it at runtime. This value is just the fallback shown when no
 // service worker is available (e.g. very first visit before it installs).
-var APP_VERSION = 'v75';
+var APP_VERSION = 'v76';
 var _resolvedAppVersion = null;
 
 // Ask the active service worker for its CACHE_VERSION (without the 'nova-' prefix).
@@ -292,13 +292,11 @@ function showToast(message, type) {
 function toggleSection(section, defaultView) {
   // A header tap expands/collapses the section in place and never navigates
   // (same on desktop and mobile); the user then taps a sub-item to change pages.
+  // Refresh ONLY the sidebar nav so the main content is left untouched (no reload).
   state.sidebarSection = (state.sidebarSection === section) ? null : section;
-  render();
-  // Keep the mobile drawer open across the re-render.
-  if (isMobileNav()) {
-    var sb = document.getElementById('sidebar'); if (sb) sb.classList.add('open');
-    var ov = document.getElementById('sidebar-overlay'); if (ov) ov.classList.add('open');
-  }
+  var nav = document.querySelector('.sidebar-nav');
+  if (nav) { nav.innerHTML = buildNavHtml(); }
+  else { render(); }
 }
 function navigate(view, param) {
   closeSidebar();
@@ -478,37 +476,7 @@ async function pushToggle(){
     pushRefreshBtn();
   }catch(e){ novaAlert('Could not enable notifications: '+(e&&e.message?e.message:e)); }
 }
-async function render() {
-  const app = document.getElementById('app');
-  var _signTok = sigGetUrlToken();
-  if (_signTok) { await renderSignPage(app, _signTok); return; }
-  var _quizTok = new URLSearchParams(window.location.search).get('quiz');
-  if (_quizTok) { await renderQuizTake(app, _quizTok); return; }
-  if (!state.token || !state.user) {
-    app.className = 'no-sidebar';
-    var resetToken = new URLSearchParams(window.location.search).get('reset');
-    if (resetToken) { renderResetPassword(app, resetToken); return; }
-    if (state.pendingUserId) { renderTwoFactor(app); return; }
-    try {
-      const { needed } = await api('GET', '/auth/setup-needed');
-      if (needed) { renderSetup(app); return; }
-    } catch(e) {}
-    renderLogin(app);
-    return;
-  }
-  app.className = '';
-  // Onboarding gate: users still onboarding only ever see the onboarding track.
-  if (state.user.onboarding_status && state.user.onboarding_status !== 'complete' && typeof renderOnboardingMode === 'function') {
-    app.className = 'no-sidebar';
-    await renderOnboardingMode(app);
-    return;
-  }
-  if (!state._permsLoaded) {
-    try { var _ps = await api('GET', '/settings'); var _rp = null; try { _rp = JSON.parse(_ps.role_permissions || 'null'); } catch(e) {} state.permissions = _rp; } catch(e) {}
-    try { var _me = await api('GET', '/auth/me'); if (_me) { state.user.extra_perms = _me.extra_perms || []; try { localStorage.setItem('po_user', JSON.stringify(state.user)); } catch(e) {} } } catch(e) {}
-    state._permsLoaded = true;
-  }
-  const initials = state.user.name.split(' ').map(function(w){ return w[0]; }).join('').toUpperCase().slice(0,2);
+function buildNavHtml() {
   var cv = state.currentView;
   var ss = isMobileNav() ? state.sidebarSection : (state.sidebarSection || getSidebarSection(cv));
   var isAdmin = state.user.role === 'admin';
@@ -626,6 +594,42 @@ async function render() {
         (can('manage_settings') ? '<div class="nav-sub' + (cv === 'roles' ? ' active' : '') + '" onclick="navigate(\'roles\')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg> Roles &amp; Access</div>' : '')
       : '')
     : '');
+  return navHtml;
+}
+
+async function render() {
+  const app = document.getElementById('app');
+  var _signTok = sigGetUrlToken();
+  if (_signTok) { await renderSignPage(app, _signTok); return; }
+  var _quizTok = new URLSearchParams(window.location.search).get('quiz');
+  if (_quizTok) { await renderQuizTake(app, _quizTok); return; }
+  if (!state.token || !state.user) {
+    app.className = 'no-sidebar';
+    var resetToken = new URLSearchParams(window.location.search).get('reset');
+    if (resetToken) { renderResetPassword(app, resetToken); return; }
+    if (state.pendingUserId) { renderTwoFactor(app); return; }
+    try {
+      const { needed } = await api('GET', '/auth/setup-needed');
+      if (needed) { renderSetup(app); return; }
+    } catch(e) {}
+    renderLogin(app);
+    return;
+  }
+  app.className = '';
+  // Onboarding gate: users still onboarding only ever see the onboarding track.
+  if (state.user.onboarding_status && state.user.onboarding_status !== 'complete' && typeof renderOnboardingMode === 'function') {
+    app.className = 'no-sidebar';
+    await renderOnboardingMode(app);
+    return;
+  }
+  if (!state._permsLoaded) {
+    try { var _ps = await api('GET', '/settings'); var _rp = null; try { _rp = JSON.parse(_ps.role_permissions || 'null'); } catch(e) {} state.permissions = _rp; } catch(e) {}
+    try { var _me = await api('GET', '/auth/me'); if (_me) { state.user.extra_perms = _me.extra_perms || []; try { localStorage.setItem('po_user', JSON.stringify(state.user)); } catch(e) {} } } catch(e) {}
+    state._permsLoaded = true;
+  }
+  const initials = state.user.name.split(' ').map(function(w){ return w[0]; }).join('').toUpperCase().slice(0,2);
+  var isRealAdmin = (state.realUser || state.user).role === 'admin';
+  var navHtml = buildNavHtml();
   app.innerHTML =
     '<div id="sidebar">' +
       '<div class="sidebar-logo"><h1>Nova</h1><span id="app-version" style="display:block;font-size:10px;font-weight:600;letter-spacing:0.06em;color:var(--text-muted-color);margin-top:-2px">' + APP_VERSION + '</span></div>' +
