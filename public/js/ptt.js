@@ -671,6 +671,9 @@
     if (!PTT.talk || PTT.talking === on) return;
     if (on && (PTT.connecting || PTT.dmHold)) return;
     PTT.talking = on;
+    // Nova Voice hook: let nova-voice.js capture this transmission so it can answer
+    // if you address it by name ("Nova, ..."). No effect if nova-voice isn't loaded.
+    try { document.dispatchEvent(new CustomEvent('nova-ptt-talk', { detail: { on: on, channel: (PTT.talk && PTT.talk.channel) || null } })); } catch (e) {}
     paintTalkState();
     var handle = PTT.talk;
     PTT.opChain = PTT.opChain.then(function () {

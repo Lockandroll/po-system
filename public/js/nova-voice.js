@@ -1,12 +1,11 @@
-/* Nova Voice - PUSH-TO-TALK to Nova AI on the radio.
-   No wake word, no always-on listening. Nova only listens while you HOLD the
-   Nova button (or the Nova PTT key) - and only when you are live on a channel.
-   Release to send: the clip goes to ElevenLabs Scribe, then the Nova AI agent,
-   and the spoken reply is broadcast on the channel so everyone hears it.
-   Loaded after app.js and ptt.js. No backticks (Windows-safe). Vanilla JS.
+/* Nova Voice - lives INSIDE the Zello channels. No button, no wake word, no
+   always-on listening. When you transmit on a channel (hold the normal talk
+   button / Space) and start with "Nova, ...", Nova hears that transmission,
+   transcribes it with ElevenLabs Scribe, runs the Nova AI agent, and broadcasts
+   the spoken reply on the channel. Transmissions that don't start with "Nova"
+   are ignored. Loaded after app.js and ptt.js. No backticks. Vanilla JS.
 
-   Depends on globals from app.js (state, navigate, showToast, api) and the
-   window.NovaRadio bridge from ptt.js (isLive / talkRoom). */
+   Trigger: the 'nova-ptt-talk' DOM event dispatched by ptt.js setTalking(). */
 (function () {
   'use strict';
 
@@ -18,12 +17,14 @@
   var NV = {
     ready: false, checked: false,
     mic: null, rec: null, chunks: [], recMime: 'audio/webm',
-    talking: false, busy: false, speaking: false,
+    capturing: false, busy: false, speaking: false,
     audioCtx: null, stopSpeak: null, capTimer: null,
-    history: [], watch: null,
-    key: (localStorage.getItem('nova_ptt_key') || 'Backquote'),
-    learning: false
+    history: []
   };
+
+  // Address regex: transmission must START by naming Nova. Scribe is accurate,
+  // so "nova" comes through clean; we still allow a couple of near-cousins.
+  var ADDR_RE = /^\s*(?:hey|hay|hi|hello|ok|okay|yo)?[\s,]*(?:nova|novah|no ?va|cordova)\b[\s,.:!?-]*/i;
 
   // ---- navigation vocabulary: spoken phrase -> app view -----------------------
   var NAV = [
@@ -94,57 +95,54 @@
     for (var i = 0; i < opts.length; i++) { try { if (window.MediaRecorder && MediaRecorder.isTypeSupported(opts[i])) return opts[i]; } catch (e) {} }
     return '';
   }
-  function beep(freq, ms) {
-    var ctx = ensureAudioCtx(); if (!ctx) return;
-    try { var o = ctx.createOscillator(), g = ctx.createGain(); o.type = 'sine'; o.frequency.value = freq; g.gain.value = 0.05; o.connect(g); g.connect(ctx.destination); o.start(); setTimeout(function () { try { o.stop(); } catch (e) {} }, ms || 90); } catch (e) {}
-  }
 
-  // ---- push-to-talk -----------------------------------------------------------
-  function liveOnChannel() { try { return !!(window.NovaRadio && window.NovaRadio.isLive && window.NovaRadio.isLive()); } catch (e) { return false; } }
-
-  function startTalk() {
-    if (NV.talking || NV.busy) return;
-    if (!NV.ready) { toast('Nova voice is not configured (needs ELEVENLABS_API_KEY).', 'error'); return; }
-    // If Nova is mid-reply, holding the button interrupts it so you can talk.
+  // ---- capture the channel transmission (driven by ptt.js talk events) --------
+  function startCapture() {
+    if (!NV.ready || NV.capturing || NV.busy) return;
+    // If Nova is mid-reply and you key up again, stop Nova so you are heard.
     if (NV.speaking && NV.stopSpeak) { var f = NV.stopSpeak; NV.stopSpeak = null; f(); }
     ensureAudioCtx();
     ensureMic().then(function (stream) {
       var mime = pickMime(); NV.recMime = mime || 'audio/webm';
-      var mr; try { mr = mime ? new MediaRecorder(stream, { mimeType: mime }) : new MediaRecorder(stream); } catch (e) { toast('Cannot record on this device.', 'error'); return; }
+      var mr; try { mr = mime ? new MediaRecorder(stream, { mimeType: mime }) : new MediaRecorder(stream); } catch (e) { return; }
       NV.chunks = [];
       mr.ondataavailable = function (e) { if (e.data && e.data.size) NV.chunks.push(e.data); };
-      mr.onstop = function () { handleCommandAudio(new Blob(NV.chunks, { type: NV.recMime })); };
-      NV.rec = mr; NV.talking = true;
+      mr.onstop = function () { handleClip(new Blob(NV.chunks, { type: NV.recMime })); };
+      NV.rec = mr; NV.capturing = true;
       mr.start();
-      beep(720, 70); setBtn('talk');
-      LOG('talking (holding)...');
-      NV.capTimer = setTimeout(function () { stopTalk(); }, 30000); // 30s safety cap
-    }).catch(function (e) { LOG('mic failed:', e && e.message); toast('Microphone permission is needed for Nova.', 'error'); });
+      NV.capTimer = setTimeout(function () { stopCapture(); }, 30000);
+    }).catch(function (e) { LOG('mic unavailable:', e && e.message); });
   }
-
-  function stopTalk() {
-    if (!NV.talking) return;
-    NV.talking = false;
+  function stopCapture() {
+    if (!NV.capturing) return;
+    NV.capturing = false;
     if (NV.capTimer) { clearTimeout(NV.capTimer); NV.capTimer = null; }
     if (NV.rec && NV.rec.state !== 'inactive') { try { NV.rec.stop(); } catch (e) {} }
     NV.rec = null;
-    setBtn('thinking'); LOG('released - transcribing');
   }
 
-  function handleCommandAudio(blob) {
-    if (!blob || blob.size < 1200) { setBtn('idle'); return; } // too short = accidental tap
-    NV.busy = true;
+  document.addEventListener('nova-ptt-talk', function (e) {
+    var on = e && e.detail && e.detail.on;
+    if (on) startCapture(); else stopCapture();
+  });
+
+  function handleClip(blob) {
+    if (!blob || blob.size < 1400) return; // too short = keyed by accident
     postBytes('/voice/transcribe', blob, NV.recMime).then(function (r) {
       var text = (r && r.text ? r.text.trim() : '');
-      LOG('transcript:', text);
-      if (!text) { NV.busy = false; setBtn('idle'); return; }
-      routeCommand(text);
-    }).catch(function (e) { LOG('transcribe failed:', e && e.message); NV.busy = false; setBtn('idle'); toast('Could not transcribe that.', 'error'); });
+      if (!text) return;
+      var m = text.match(ADDR_RE);
+      if (!m) { LOG('transmission (not for Nova):', text); return; }
+      var command = text.slice(m[0].length).trim();
+      LOG('addressed to Nova:', command || '(nothing)');
+      if (!command) return; // just said "Nova" with no request
+      NV.busy = true;
+      routeCommand(command);
+    }).catch(function (e) { LOG('transcribe failed:', e && e.message); });
   }
 
+  // ---- navigate locally, or ask the Nova AI agent -----------------------------
   function routeCommand(text) {
-    // Only treat as pure navigation for short "go to X" phrases; real requests
-    // ("put me on the schedule 8 to 8") go to Nova's brain so it can act.
     var wordCount = text.trim().split(/\s+/).length;
     var navVerb = /^\s*(open|go to|goto|show|show me|pull up|take me to|navigate to|jump to|bring up|switch to)\b/i.test(text);
     if (navVerb || wordCount <= 3) {
@@ -153,7 +151,6 @@
     }
     NV.history.push({ role: 'user', content: text });
     if (NV.history.length > 8) NV.history = NV.history.slice(-8);
-    setBtn('thinking');
     api('POST', '/ai/agent', { messages: NV.history.slice() }).then(function (data) {
       var reply = (data && data.reply ? String(data.reply).trim() : '') || 'Done.';
       NV.history.push({ role: 'assistant', content: reply });
@@ -167,11 +164,11 @@
   // ---- speak (ElevenLabs) + broadcast on the channel --------------------------
   function speakThen(text) {
     LOG('Nova says:', text);
-    NV.busy = false; NV.speaking = true; setBtn('speaking');
+    NV.busy = false; NV.speaking = true;
     postSpeak(text).then(function (mp3) { playAndBroadcast(mp3, finishSpeaking); })
       .catch(function () { toast('Nova: ' + text, 'info'); finishSpeaking(); });
   }
-  function finishSpeaking() { NV.speaking = false; setBtn('idle'); }
+  function finishSpeaking() { NV.speaking = false; }
 
   function playAndBroadcast(mp3Blob, onEnd) {
     var url = URL.createObjectURL(mp3Blob);
@@ -186,7 +183,7 @@
       try { URL.revokeObjectURL(url); } catch (e) {}
       if (onEnd) onEnd();
     }
-    NV.stopSpeak = done; // holding the button while Nova talks stops it cleanly
+    NV.stopSpeak = done;
     var room = null;
     try { room = window.NovaRadio && window.NovaRadio.talkRoom ? window.NovaRadio.talkRoom() : null; } catch (e) {}
     var LK = window.LivekitClient;
@@ -202,92 +199,22 @@
         room.localParticipant.publishTrack(lkTrack).then(function () { audio.onended = done; audio.play().catch(function () { done(); }); },
           function () { audio.onended = done; audio.play().catch(function () { done(); }); });
         return;
-      } catch (e) { /* fall through to local playback */ }
+      } catch (e) { /* fall through */ }
     }
     audio.onended = done; audio.play().catch(function () { done(); });
   }
 
-  // ---- the button -------------------------------------------------------------
-  function injectStyles() {
-    if (document.getElementById('nova-voice-css')) return;
-    var css = [
-      '#nova-ptt{position:fixed;left:50%;bottom:26px;transform:translateX(-50%);z-index:99999;display:flex;flex-direction:column;align-items:center;gap:6px;font-family:inherit;user-select:none;-webkit-user-select:none;touch-action:none}',
-      '#nova-ptt .nptt-btn{min-width:230px;padding:14px 26px;border-radius:30px;border:2px solid #f97316;background:#1a1207;color:#f97316;font-weight:700;font-size:15px;letter-spacing:.3px;cursor:pointer;box-shadow:0 6px 18px rgba(0,0,0,.5);text-align:center;transition:all .12s}',
-      '#nova-ptt .nptt-btn:active{transform:scale(.98)}',
-      '#nova-ptt.talk .nptt-btn{background:#3a0d0d;border-color:#ef4444;color:#fca5a5}',
-      '#nova-ptt.thinking .nptt-btn{border-color:#eab308;color:#eab308}',
-      '#nova-ptt.speaking .nptt-btn{border-color:#22c55e;color:#86efac}',
-      '#nova-ptt .nptt-hint{font-size:11px;color:#9ca3af;background:rgba(0,0,0,.35);padding:3px 8px;border-radius:8px}'
-    ].join('');
-    var s = document.createElement('style'); s.id = 'nova-voice-css'; s.textContent = css; document.head.appendChild(s);
-  }
-  function ensureButton() {
-    if (document.getElementById('nova-ptt')) return;
-    injectStyles();
-    var wrap = document.createElement('div'); wrap.id = 'nova-ptt';
-    wrap.innerHTML = '<div class="nptt-btn">HOLD TO TALK TO NOVA</div><div class="nptt-hint">Hold the button (or your Nova key). Release to send.</div>';
-    document.body.appendChild(wrap);
-    var btn = wrap.querySelector('.nptt-btn');
-    btn.addEventListener('pointerdown', function (e) { e.preventDefault(); try { btn.setPointerCapture(e.pointerId); } catch (x) {} startTalk(); });
-    var up = function (e) { if (e) e.preventDefault(); stopTalk(); };
-    btn.addEventListener('pointerup', up);
-    btn.addEventListener('pointercancel', up);
-    btn.addEventListener('contextmenu', function (e) { e.preventDefault(); });
-    setBtn(NV.speaking ? 'speaking' : (NV.busy ? 'thinking' : 'idle'));
-  }
-  function removeButton() {
-    var el = document.getElementById('nova-ptt'); if (el) el.parentNode.removeChild(el);
-  }
-  function setBtn(mode) {
-    var wrap = document.getElementById('nova-ptt'); if (!wrap) return;
-    wrap.className = (mode === 'idle') ? '' : mode;
-    var btn = wrap.querySelector('.nptt-btn');
-    btn.textContent = mode === 'talk' ? 'LISTENING… (release to send)'
-      : mode === 'thinking' ? 'THINKING…'
-      : mode === 'speaking' ? 'NOVA IS ANSWERING…'
-      : 'HOLD TO TALK TO NOVA';
-  }
-
-  // ---- hardware key (a physical PTT button usually emits a key) ---------------
-  function typingInField(e) {
-    var t = e.target; if (!t) return false;
-    var tag = (t.tagName || '').toUpperCase();
-    return tag === 'INPUT' || tag === 'TEXTAREA' || t.isContentEditable;
-  }
-  document.addEventListener('keydown', function (e) {
-    if (NV.learning) { e.preventDefault(); NV.key = e.code; localStorage.setItem('nova_ptt_key', e.code); NV.learning = false; LOG('Nova key set to', e.code); toast('Nova button set to: ' + e.code, 'success'); return; }
-    if (e.code !== NV.key || e.repeat || typingInField(e)) return;
-    if (!liveOnChannel()) return;
-    e.preventDefault(); startTalk();
-  });
-  document.addEventListener('keyup', function (e) {
-    if (e.code === NV.key && NV.talking) { e.preventDefault(); stopTalk(); }
-  });
-  // Unlock audio playback on any interaction.
+  // ---- boot -------------------------------------------------------------------
   document.addEventListener('pointerdown', function () { if (NV.audioCtx && NV.audioCtx.state === 'suspended') { try { NV.audioCtx.resume(); } catch (e) {} } }, true);
 
-  // ---- boot: show the button only while live on a channel ---------------------
-  function startWatch() {
-    if (NV.watch) return;
-    NV.watch = setInterval(function () {
-      if (!NV.ready) { removeButton(); return; }
-      if (liveOnChannel()) ensureButton();
-      else { if (NV.talking) stopTalk(); removeButton(); }
-    }, 1200);
-  }
   function checkConfig() {
     if (typeof state === 'undefined' || !state.token || !state.user) return;
     if (NV.checked) return;
     NV.checked = true;
-    api('GET', '/voice/config').then(function (c) { NV.ready = !!(c && c.ready); LOG('config ready =', NV.ready); startWatch(); })
+    api('GET', '/voice/config').then(function (c) { NV.ready = !!(c && c.ready); LOG('Nova Voice ready =', NV.ready, '- address the channel with "Nova, ..."'); })
       .catch(function (e) { NV.ready = false; LOG('config check failed:', e && e.message); });
   }
   var boot = setInterval(function () { if (typeof state !== 'undefined' && state.token && state.user) { clearInterval(boot); checkConfig(); } }, 800);
 
-  window.NovaVoice = {
-    start: startTalk, stop: stopTalk,
-    setKey: function (code) { NV.key = String(code); localStorage.setItem('nova_ptt_key', NV.key); LOG('Nova key =', NV.key); return NV.key; },
-    learnKey: function () { NV.learning = true; toast('Press your Nova button now to bind it...', 'info'); LOG('learning next key press...'); },
-    getKey: function () { return NV.key; }
-  };
+  window.NovaVoice = { ready: function () { return NV.ready; } };
 })();
