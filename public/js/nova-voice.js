@@ -69,10 +69,10 @@
   }
 
   // ---- auth helpers (mirror app.js api() rolling-token behavior) ---------------
-  function tok() { return (window.state && state.token) || localStorage.getItem('po_token'); }
+  function tok() { return (typeof state !== 'undefined' && state.token) || localStorage.getItem('po_token'); }
   function pickToken(res) {
     var t = res.headers.get('X-New-Token');
-    if (t) { if (window.state) state.token = t; localStorage.setItem('po_token', t); }
+    if (t) { if (typeof state !== 'undefined') state.token = t; localStorage.setItem('po_token', t); }
   }
   function safeJson(res) { return res.json().then(function (j) { return j; }, function () { return null; }); }
 
@@ -103,7 +103,7 @@
   function injectStyles() {
     if (document.getElementById('nova-voice-css')) return;
     var css = [
-      '#nova-voice{position:fixed;left:14px;bottom:88px;z-index:9998;display:flex;align-items:center;gap:8px;font-family:inherit}',
+      '#nova-voice{position:fixed;right:20px;bottom:96px;z-index:99999;display:flex;flex-direction:row-reverse;align-items:center;gap:8px;font-family:inherit}',
       '#nova-voice .nv-btn{width:52px;height:52px;border-radius:50%;border:2px solid #3a3a3a;background:#161616;color:#9ca3af;display:flex;align-items:center;justify-content:center;cursor:pointer;box-shadow:0 4px 14px rgba(0,0,0,.5);transition:all .15s;font-size:22px;user-select:none}',
       '#nova-voice .nv-btn:hover{transform:translateY(-1px)}',
       '#nova-voice.on .nv-btn{border-color:#22c55e;color:#22c55e}',
@@ -425,19 +425,19 @@
 
   // ---- boot -------------------------------------------------------------------
   function checkConfig() {
-    if (!window.state || !state.token || !state.user) return;
+    if (typeof state === 'undefined' || !state.token || !state.user) return;
     if (NV.checked) return;
     NV.checked = true;
+    ensureUI();               // always show the button once logged in
+    setState('idle', '');
     api('GET', '/voice/config').then(function (c) {
       NV.ready = !!(c && c.ready);
-      ensureUI();
-      if (!NV.ready) setState('idle', '');
-    }).catch(function () { /* voice route not deployed yet; stay silent */ });
+    }).catch(function () { NV.ready = false; /* keys/route missing; click shows a hint */ });
   }
 
   // The app renders after login; poll briefly until we have a session.
   var boot = setInterval(function () {
-    if (window.state && state.token && state.user) { clearInterval(boot); checkConfig(); }
+    if (typeof state !== 'undefined' && state.token && state.user) { clearInterval(boot); checkConfig(); }
   }, 800);
 
   window.NovaVoice = { enable: enable, disable: disable, trigger: function () { onWake(true); } };
