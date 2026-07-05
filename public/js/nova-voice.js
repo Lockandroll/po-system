@@ -99,87 +99,41 @@
     });
   }
 
-  // ---- tiny UI ----------------------------------------------------------------
-  function injectStyles() {
-    if (document.getElementById('nova-voice-css')) return;
-    var css = [
-      '#nova-voice{position:fixed;right:20px;bottom:96px;z-index:99999;display:flex;flex-direction:row-reverse;align-items:center;gap:8px;font-family:inherit}',
-      '#nova-voice .nv-btn{width:52px;height:52px;border-radius:50%;border:2px solid #3a3a3a;background:#161616;color:#9ca3af;display:flex;align-items:center;justify-content:center;cursor:pointer;box-shadow:0 4px 14px rgba(0,0,0,.5);transition:all .15s;font-size:22px;user-select:none}',
-      '#nova-voice .nv-btn:hover{transform:translateY(-1px)}',
-      '#nova-voice.on .nv-btn{border-color:#22c55e;color:#22c55e}',
-      '#nova-voice.hearing .nv-btn{border-color:#3b82f6;color:#3b82f6;animation:nvpulse 1s infinite}',
-      '#nova-voice.thinking .nv-btn{border-color:#eab308;color:#eab308;animation:nvpulse .8s infinite}',
-      '#nova-voice.speaking .nv-btn{border-color:#f97316;color:#f97316;animation:nvpulse .7s infinite}',
-      '#nova-voice .nv-status{background:#161616;border:1px solid #2a2a2a;color:#d1d5db;font-size:12px;padding:6px 10px;border-radius:14px;max-width:240px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;box-shadow:0 4px 14px rgba(0,0,0,.4)}',
-      '#nova-voice .nv-off{width:22px;height:22px;border-radius:50%;border:1px solid #3a3a3a;background:#161616;color:#9ca3af;display:none;align-items:center;justify-content:center;cursor:pointer;font-size:12px}',
-      '#nova-voice.on .nv-off,#nova-voice.hearing .nv-off,#nova-voice.thinking .nv-off,#nova-voice.speaking .nv-off{display:flex}',
-      '@keyframes nvpulse{0%{box-shadow:0 0 0 0 rgba(59,130,246,.5)}70%{box-shadow:0 0 0 12px rgba(59,130,246,0)}100%{box-shadow:0 0 0 0 rgba(59,130,246,0)}}'
-    ].join('');
-    var s = document.createElement('style');
-    s.id = 'nova-voice-css'; s.textContent = css;
-    document.head.appendChild(s);
-  }
-
-  function ensureUI() {
-    if (document.getElementById('nova-voice')) return;
-    injectStyles();
-    var wrap = document.createElement('div');
-    wrap.id = 'nova-voice';
-    wrap.innerHTML =
-      '<div class="nv-btn" title="Hey Nova voice">●</div>' +
-      '<div class="nv-status" style="display:none"></div>' +
-      '<div class="nv-off" title="Turn voice off">✕</div>';
-    document.body.appendChild(wrap);
-    wrap.querySelector('.nv-btn').addEventListener('click', onBtn);
-    wrap.querySelector('.nv-off').addEventListener('click', function (e) { e.stopPropagation(); disable(); });
-    setState('idle', '');
-  }
-
-  function setState(mode, msg) {
-    var wrap = document.getElementById('nova-voice');
-    if (!wrap) return;
-    wrap.className = (mode === 'idle' && !NV.wantListen) ? '' :
-      (mode === 'listening' || mode === 'idle') ? 'on' : mode;
-    var btn = wrap.querySelector('.nv-btn');
-    btn.textContent = NV.wantListen ? (NV.speaking ? '▶' : (NV.busy ? '…' : '🎙')) : '●';
-    var st = wrap.querySelector('.nv-status');
-    if (msg) { st.style.display = 'block'; st.textContent = msg; }
-    else if (NV.wantListen) { st.style.display = 'block'; st.textContent = 'Listening for "Hey Nova"'; }
-    else { st.style.display = 'none'; }
-  }
+  // ---- feedback (NO floating button; feedback is a beep + app toasts) ---------
+  function setState(mode, msg) { NV.mode = mode; /* state only; audio + toasts give feedback */ }
 
   function toast(m, t) { try { if (window.showToast) showToast(m, t || 'info'); } catch (e) {} }
 
-  // ---- master on/off ----------------------------------------------------------
-  function onBtn() {
-    if (!NV.wantListen) { enable(); }
-    else if (!NV.busy && !NV.speaking) { onWake(true); } // manual trigger if wake missed
+  function currentChannelName() {
+    try {
+      var c = window.NovaRadio && window.NovaRadio.currentChannel ? window.NovaRadio.currentChannel() : null;
+      return c && c.name ? c.name : null;
+    } catch (e) { return null; }
   }
 
+  // ---- listening lifecycle (auto: ON whenever you are live on a channel) ------
+  // No button. Going live on a radio channel starts wake-word listening; Nova's
+  // spoken reply is broadcast on that channel so everyone hears it.
   function enable() {
-    if (!NV.ready) {
-      toast('Nova Voice is not configured yet. An admin needs to add the ElevenLabs key.', 'error');
-      return;
-    }
+    if (!NV.ready || NV.wantListen) return;
     NV.wantListen = true;
     ensureAudioCtx();
     ensureMic().then(function () {
       startSR();
-      setState('listening', '');
-      toast('Nova Voice on — say "Hey Nova"', 'success');
+      var ch = currentChannelName();
+      toast(ch ? ('Nova is listening on ' + ch + ' — say "Hey Nova"') : 'Nova is listening — say "Hey Nova"', 'success');
     }).catch(function () {
       NV.wantListen = false;
-      setState('idle', '');
-      toast('Microphone permission is needed for Nova Voice.', 'error');
+      toast('Microphone permission is needed for Nova voice.', 'error');
     });
   }
 
   function disable() {
+    if (!NV.wantListen) return;
     NV.wantListen = false;
     stopSR();
     stopCommand(true);
-    if (NV.mic) { try { NV.mic.getTracks().forEach(function (t) { t.stop(); }); } catch (e) {} NV.mic = null; }
-    setState('idle', '');
+    // keep the mic warm for a fast re-enable; the radio owns its own mic track
   }
 
   // ---- microphone + audio context --------------------------------------------
@@ -270,7 +224,7 @@
     var startedAt = Date.now();
     var spokeAt = 0;
     var lastLoud = 0;
-    var THRESH = 0.018, SILENCE_MS = 1100, NO_SPEECH_MS = 3800;
+    var THRESH = 0.018, SILENCE_MS = 800, NO_SPEECH_MS = 2600;
     function tick() {
       if (!NV.rec || NV.rec.state === 'inactive') { try { src.disconnect(); } catch (e) {} return; }
       an.getByteTimeDomainData(buf);
@@ -428,12 +382,28 @@
     if (typeof state === 'undefined' || !state.token || !state.user) return;
     if (NV.checked) return;
     NV.checked = true;
-    ensureUI();               // always show the button once logged in
-    setState('idle', '');
     api('GET', '/voice/config').then(function (c) {
       NV.ready = !!(c && c.ready);
-    }).catch(function () { NV.ready = false; /* keys/route missing; click shows a hint */ });
+      startRadioWatch();
+    }).catch(function () { NV.ready = false; });
   }
+
+  // Auto-listen whenever you are live on a radio channel; stop when you leave.
+  function startRadioWatch() {
+    if (NV.radioWatch) return;
+    NV.radioWatch = setInterval(function () {
+      if (!NV.ready) return;
+      var live = false;
+      try { live = !!(window.NovaRadio && window.NovaRadio.isLive && window.NovaRadio.isLive()); } catch (e) {}
+      if (live && !NV.wantListen) enable();
+      else if (!live && NV.wantListen) disable();
+    }, 1500);
+  }
+
+  // Unlock audio playback on any interaction (needed for beep + channel broadcast).
+  document.addEventListener('pointerdown', function () {
+    if (NV.audioCtx && NV.audioCtx.state === 'suspended') { try { NV.audioCtx.resume(); } catch (e) {} }
+  }, true);
 
   // The app renders after login; poll briefly until we have a session.
   var boot = setInterval(function () {
