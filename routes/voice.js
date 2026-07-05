@@ -14,7 +14,7 @@ var router = express.Router();
 // --- config --------------------------------------------------------------
 var ELEVEN_KEY = function () { return process.env.ELEVENLABS_API_KEY; };
 // Default voice = ElevenLabs "Rachel" (public preset). Override in Railway.
-var VOICE_ID = function () { return process.env.ELEVENLABS_VOICE_ID || '21m00Tcm4TlvDq8ikWAM'; };
+var VOICE_ID = function () { return String(process.env.ELEVENLABS_VOICE_ID || '21m00Tcm4TlvDq8ikWAM').trim(); };
 var TTS_MODEL = function () { return process.env.ELEVENLABS_MODEL || 'eleven_turbo_v2_5'; };
 // Scribe (speech-to-text). scribe_v2 is the current model; scribe_v1 also valid.
 var STT_MODEL = function () { return process.env.ELEVENLABS_STT_MODEL || 'scribe_v2'; };
@@ -91,7 +91,7 @@ router.post('/speak', requireAuth, express.json({ limit: '256kb' }), async funct
   }
   // Keep replies short enough for radio + cost control.
   text = String(text).trim().slice(0, 900);
-  var voiceId = (req.body && req.body.voiceId) || VOICE_ID();
+  var voiceId = String((req.body && req.body.voiceId) || VOICE_ID()).trim();
   try {
     var payload = JSON.stringify({
       text: text,
@@ -109,8 +109,8 @@ router.post('/speak', requireAuth, express.json({ limit: '256kb' }), async funct
     });
     if (!r.ok) {
       var errTxt2 = await r.text();
-      console.error('ElevenLabs error', r.status, errTxt2);
-      return res.status(502).json({ error: 'Text-to-speech failed (' + r.status + ').' });
+      console.error('ElevenLabs TTS error', r.status, 'voiceId=' + voiceId, errTxt2);
+      return res.status(502).json({ error: 'Text-to-speech failed (' + r.status + '). Check the ELEVENLABS_VOICE_ID.' });
     }
     var buf = Buffer.from(await r.arrayBuffer());
     res.set('Content-Type', 'audio/mpeg');

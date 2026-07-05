@@ -15,6 +15,12 @@
 (function () {
   'use strict';
 
+  // Debug logging -> browser DevTools console. Silence with window.NOVA_VOICE_DEBUG=false.
+  function LOG() {
+    if (window.NOVA_VOICE_DEBUG === false) return;
+    try { console.log.apply(console, ['[NovaVoice]'].concat([].slice.call(arguments))); } catch (e) {}
+  }
+
   var NV = {
     ready: false, checked: false,
     wantListen: false,   // user has voice mode ON
@@ -121,9 +127,11 @@
     ensureMic().then(function () {
       startSR();
       var ch = currentChannelName();
+      LOG('enabled - listening on', ch || '(no channel)');
       toast(ch ? ('Nova is listening on ' + ch + ' — say "Hey Nova"') : 'Nova is listening — say "Hey Nova"', 'success');
-    }).catch(function () {
+    }).catch(function (e) {
       NV.wantListen = false;
+      LOG('mic permission failed:', e && e.message);
       toast('Microphone permission is needed for Nova voice.', 'error');
     });
   }
@@ -158,18 +166,20 @@
     stopSR();
     var sr = new SRC();
     sr.continuous = true; sr.interimResults = true; sr.lang = 'en-US';
+    sr.onstart = function () { LOG('speech recognition started - say "Hey Nova"'); };
     sr.onresult = function (ev) {
       if (NV.busy || NV.speaking || !NV.wantListen) return;
       var txt = '';
       for (var i = ev.resultIndex; i < ev.results.length; i++) txt += ev.results[i][0].transcript + ' ';
-      if (WAKE_RE.test(txt)) { onWake(false); }
+      if (ev.results[ev.results.length - 1].isFinal) LOG('heard:', txt.trim());
+      if (WAKE_RE.test(txt)) { LOG('WAKE WORD matched'); onWake(false); }
     };
-    sr.onerror = function () { /* handled by onend restart */ };
+    sr.onerror = function (e) { LOG('speech recognition error:', e && e.error); };
     sr.onend = function () {
       if (NV.wantListen && !NV.busy && !NV.speaking) { try { sr.start(); } catch (e) {} }
     };
     NV.sr = sr;
-    try { sr.start(); } catch (e) {}
+    try { sr.start(); } catch (e) { LOG('sr.start threw:', e && e.message); }
   }
   function stopSR() {
     if (NV.sr) { try { NV.sr.onend = null; NV.sr.stop(); } catch (e) {} NV.sr = null; }
@@ -178,6 +188,7 @@
   // ---- wake -> record command -------------------------------------------------
   function onWake(manual) {
     if (NV.busy || NV.speaking) return;
+    LOG('wake -> recording command', manual ? '(manual)' : '');
     NV.busy = true;
     stopSR(); // free the recognizer while we record + answer
     beep(880, 90);
@@ -261,9 +272,11 @@
       var text = (r && r.text ? r.text.trim() : '');
       // strip an accidental leading wake word Scribe may have caught
       text = text.replace(/^\s*(hey|hi|hello|ok|okay)?\s*,?\s*nova[\s,.:!-]*/i, '').trim();
+      LOG('transcript:', text);
       if (!text) { return speakThen("I did not catch that.", null); }
       routeCommand(text);
     }).catch(function (e) {
+      LOG('transcribe failed:', e && e.message);
       resetIdle('Could not hear you (' + (e.message || 'error') + ').');
     });
   }
@@ -294,6 +307,7 @@
 
   // ---- speak (ElevenLabs) + broadcast to the live channel ---------------------
   function speakThen(text, _cb) {
+    LOG('Nova says:', text);
     setState('speaking', text.length > 60 ? text.slice(0, 57) + '…' : text);
     NV.speaking = true;
     postSpeak(text).then(function (mp3) {
@@ -327,6 +341,7 @@
     try { room = window.NovaRadio && window.NovaRadio.talkRoom ? window.NovaRadio.talkRoom() : null; } catch (e) {}
     var LK = window.LivekitClient;
     var ctx = ensureAudioCtx();
+    LOG('speaking reply -', (room && LK && ctx) ? 'broadcasting to channel' : 'local playback only');
 
     if (room && LK && ctx) {
       // Route the mp3 through WebAudio: local monitor + a MediaStream we publish.
@@ -384,8 +399,9 @@
     NV.checked = true;
     api('GET', '/voice/config').then(function (c) {
       NV.ready = !!(c && c.ready);
+      LOG('config ready =', NV.ready, '(needs ELEVENLABS_API_KEY)');
       startRadioWatch();
-    }).catch(function () { NV.ready = false; });
+    }).catch(function (e) { NV.ready = false; LOG('config check failed:', e && e.message); });
   }
 
   // Auto-listen whenever you are live on a radio channel; stop when you leave.
