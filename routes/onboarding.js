@@ -31,6 +31,51 @@ const DEFAULT_UPLOAD_SLOTS = [
 ];
 const UPLOAD_MAX_BYTES = 15 * 1024 * 1024;
 const UPLOAD_OK_MIME = ['image/jpeg', 'image/png', 'image/webp', 'image/heic', 'image/heif', 'application/pdf'];
+// New Hire Packet fields (native form). DEFAULT set — override per step via
+// config.fields. Swap these for the exact packet PDF fields when available.
+const DEFAULT_PACKET_FIELDS = [
+  { key: 'sec_employee', type: 'section', label: 'Employee Information' },
+  { key: 'legal_first', label: 'Legal first name', type: 'text', required: true },
+  { key: 'middle', label: 'Middle name', type: 'text' },
+  { key: 'legal_last', label: 'Legal last name', type: 'text', required: true },
+  { key: 'preferred_name', label: 'Preferred name (optional)', type: 'text' },
+  { key: 'personal_email', label: 'Personal email', type: 'email' },
+  { key: 'address', label: 'Home mailing address', type: 'text', required: true },
+  { key: 'city', label: 'City', type: 'text', required: true },
+  { key: 'state', label: 'State', type: 'text', required: true },
+  { key: 'zip', label: 'ZIP code', type: 'text', required: true },
+  { key: 'mobile_phone', label: 'Mobile phone', type: 'tel', required: true },
+  { key: 'position_role', label: 'Position / role', type: 'text' },
+  { key: 'employment_type', label: 'Employment type', type: 'select', options: ['Full-time', 'Part-time'] },
+  { key: 'start_date', label: 'Anticipated start date', type: 'date' },
+  { key: 'work_location', label: 'Work location / market', type: 'text' },
+  { key: 'job_title', label: 'Job title', type: 'text' },
+  { key: 'sec_ec', type: 'section', label: 'Emergency Contacts' },
+  { key: 'ec1_name', label: 'Primary contact — full name', type: 'text', required: true },
+  { key: 'ec1_rel', label: 'Primary contact — relationship', type: 'text' },
+  { key: 'ec1_phone', label: 'Primary contact — phone', type: 'tel', required: true },
+  { key: 'ec1_alt', label: 'Primary contact — alternate phone', type: 'tel' },
+  { key: 'ec2_name', label: 'Secondary contact — full name', type: 'text' },
+  { key: 'ec2_rel', label: 'Secondary contact — relationship', type: 'text' },
+  { key: 'ec2_phone', label: 'Secondary contact — phone', type: 'tel' },
+  { key: 'ec2_alt', label: 'Secondary contact — alternate phone', type: 'tel' },
+  { key: 'sec_driving', type: 'section', label: 'Driving & Vehicle', note: 'Complete only if your position requires driving for Lock and Roll. If you do not drive for work, leave this blank.' },
+  { key: 'dl_state', label: "Driver's license — state", type: 'text' },
+  { key: 'dl_number', label: "Driver's license — number", type: 'text' },
+  { key: 'dl_exp', label: "Driver's license — expiration date", type: 'date' },
+  { key: 'veh_year', label: 'Vehicle year', type: 'text' },
+  { key: 'veh_make', label: 'Vehicle make', type: 'text' },
+  { key: 'veh_model', label: 'Vehicle model', type: 'text' },
+  { key: 'veh_color', label: 'Vehicle color', type: 'text' },
+  { key: 'plate', label: 'License plate', type: 'text' },
+  { key: 'plate_state', label: 'Plate state', type: 'text' },
+  { key: 'sec_ack', type: 'section', label: 'Acknowledgment & Signature', note: 'Your submission is your electronic signature, with the same legal force as a handwritten one. Direct deposit is set up separately in Paychex.' },
+  { key: 'ack', type: 'ack', required: true, label: 'By submitting, I acknowledge that: I have received and reviewed the Lock and Roll Employee Handbook and agree to follow its policies (including at-will employment, drug and alcohol, and confidentiality); the information in this packet is true, accurate, and complete to the best of my knowledge; where it applies to my position I acknowledge the Lock and Roll Motor Vehicle Policy and will keep a valid license, current registration, and auto liability insurance; and I agree to sign this packet electronically.' }
+];
+function packetFields(step) {
+  var c = cfg(step);
+  return (Array.isArray(c.fields) && c.fields.length) ? c.fields : DEFAULT_PACKET_FIELDS;
+}
 
 function uploadSlots(step) {
   var c = cfg(step);
@@ -674,6 +719,11 @@ router.get('/me', requireAuth, async (req, res) => {
       cur.attempts = p ? p.attempts : 0;
       cur.is_final_exam = true;
     }
+    if (current.type === 'form') {
+      cur.fields = packetFields(current);
+      const _pr = await pool.query('SELECT data, field_flags, status FROM onboarding_packet_responses WHERE user_id = $1', [req.user.id]);
+      cur.packet = _pr.rows.length ? { data: _pr.rows[0].data, field_flags: _pr.rows[0].field_flags, status: _pr.rows[0].status } : { data: {}, field_flags: null };
+    }
     if (current.type === 'document_upload') {
       cur.slots = uploadSlots(current);
       cur.uploaded = await slotStatus(req.user.id);
@@ -925,6 +975,38 @@ router.get('/me/hr-doc/:docId', requireAuth, async (req, res) => {
   } catch (e) { res.status(502).json({ error: 'Could not open the document.' }); }
 });
 
+// POST /api/onboarding/steps/:id/packet — save + submit the native New Hire Packet.
+router.post('/steps/:id/packet', requireAuth, async (req, res) => {
+  const stepId = parseInt(req.params.id, 10) || 0;
+  const steps = await activeSteps();
+  const prog = await progressMap(req.user.id);
+  const current = findCurrent(steps, prog);
+  if (!current || current.id !== stepId) return res.status(400).json({ error: 'That is not your current step.' });
+  if (current.type !== 'form') return res.status(400).json({ error: 'This step is not a form.' });
+  const fields = packetFields(current);
+  const data = (req.body && req.body.data && typeof req.body.data === 'object') ? req.body.data : {};
+  for (var i = 0; i < fields.length; i++) {
+    var f = fields[i];
+    if (!f.required) continue;
+    var v = data[f.key];
+    if (f.type === 'ack') { if (v !== true && v !== 'true') return res.status(400).json({ error: 'Please read and check the acknowledgment.' }); }
+    else if (v == null || String(v).trim() === '') return res.status(400).json({ error: 'Please complete: ' + f.label });
+  }
+  await pool.query(
+    "INSERT INTO onboarding_packet_responses (user_id, data, status, field_flags, submitted_at) VALUES ($1,$2,'submitted','{}'::jsonb,NOW()) " +
+    "ON CONFLICT (user_id) DO UPDATE SET data = $2, status = 'submitted', field_flags = '{}'::jsonb, submitted_at = NOW(), updated_at = NOW()",
+    [req.user.id, JSON.stringify(data)]
+  );
+  await pool.query(
+    "INSERT INTO onboarding_progress (user_id, step_id, status, started_at, completed_at) VALUES ($1,$2,'done',NOW(),NOW()) " +
+    "ON CONFLICT (user_id, step_id) DO UPDATE SET status = 'done', completed_at = NOW()",
+    [req.user.id, stepId]
+  );
+  await pool.query('INSERT INTO onboarding_events (user_id, event_type, step_id, actor_id, actor_name) VALUES ($1,$2,$3,$1,$4)', [req.user.id, 'packet_submitted', stepId, req.user.name]);
+  await logAudit({ entity_type: 'onboarding', entity_id: stepId, action: 'packet_submitted', user_id: req.user.id, user_name: req.user.name, details: {} });
+  res.json({ success: true });
+});
+
 // ============================ ADMIN ENDPOINTS =================================
 
 const admin = express.Router();
@@ -953,7 +1035,7 @@ admin.get('/steps', async (req, res) => {
 admin.post('/steps', async (req, res) => {
   const b = req.body || {};
   const type = String(b.type || '');
-  if (['video', 'sop_read', 'quiz', 'document_upload', 'acknowledge', 'final_exam'].indexOf(type) === -1) return res.status(400).json({ error: 'Invalid step type' });
+  if (['video', 'sop_read', 'quiz', 'document_upload', 'acknowledge', 'final_exam', 'form'].indexOf(type) === -1) return res.status(400).json({ error: 'Invalid step type' });
   const title = String(b.title || '').trim();
   if (!title) return res.status(400).json({ error: 'Title is required' });
   if (type === 'quiz' && !parseInt(b.sop_id, 10)) return res.status(400).json({ error: 'Pick an SOP for the quiz' });

@@ -218,6 +218,28 @@
         '<div class="onb-note" style="margin-bottom:14px">Final exam &middot; ' + (cur.question_count || 20) + ' questions &middot; pass ' + (cur.pass_score || 80) + '%. Cumulative over everything you have read. Retake as many times as you need — fresh questions each time.</div>' +
         '<button class="onb-btn" onclick="onbStartQuiz(' + cur.id + ')">' + (cur.attempts ? 'Retake the exam' : 'Start the final exam') + '</button>' +
         '</div>';
+    } else if (cur.type === 'form') {
+      var _pdata = (cur.packet && cur.packet.data) || {};
+      var _flags = (cur.packet && cur.packet.field_flags) || {};
+      inner = (cur.fields || []).map(function (f) {
+        var val = _pdata[f.key];
+        var flg = _flags && _flags[f.key];
+        var flagNote = flg ? '<div class="onb-note" style="color:#fbbf24">Sent back: ' + escHtml(String(flg)) + '</div>' : '';
+        if (f.type === 'section') { return '<h3 style="font-size:15px;font-weight:700;margin:18px 0 4px;color:var(--primary,#f97316)">' + escHtml(f.label) + '</h3>' + (f.note ? '<div class="onb-note" style="margin-bottom:8px">' + escHtml(f.note) + '</div>' : ''); }
+        if (f.type === 'ack') {
+          return '<label class="onb-check" style="display:flex;align-items:flex-start;gap:10px;margin:8px 0 14px;font-size:13px"><input type="checkbox" id="pf_' + escHtml(f.key) + '"' + (val === true || val === 'true' ? ' checked' : '') + '><span>' + escHtml(f.label) + '</span></label>' + flagNote;
+        }
+        var input;
+        if (f.type === 'select') {
+          input = '<select id="pf_' + escHtml(f.key) + '" class="onb-pf" style="width:100%;background:var(--bg,#0f0f0f);color:var(--text,#ededed);border:1px solid var(--border,#2a2a2a);border-radius:8px;padding:10px">' + (f.options || []).map(function (o) { return '<option' + (String(val) === String(o) ? ' selected' : '') + '>' + escHtml(o) + '</option>'; }).join('') + '</select>';
+        } else if (f.type === 'textarea') {
+          input = '<textarea id="pf_' + escHtml(f.key) + '" class="onb-pf" style="width:100%;min-height:70px;background:var(--bg,#0f0f0f);color:var(--text,#ededed);border:1px solid var(--border,#2a2a2a);border-radius:8px;padding:10px">' + escHtml(val || '') + '</textarea>';
+        } else {
+          input = '<input id="pf_' + escHtml(f.key) + '" class="onb-pf" type="' + escHtml(f.type || 'text') + '" value="' + escHtml(val || '') + '" style="width:100%;background:var(--bg,#0f0f0f);color:var(--text,#ededed);border:1px solid var(--border,#2a2a2a);border-radius:8px;padding:10px">';
+        }
+        return '<div style="margin-bottom:12px"><label style="display:block;font-size:12.5px;color:var(--text-muted-color,#9ca3af);margin-bottom:5px;font-weight:600">' + escHtml(f.label) + (f.required ? ' *' : '') + '</label>' + input + flagNote + '</div>';
+      }).join('') +
+        '<button class="onb-btn" id="onb-continue" onclick="onbSubmitPacket(' + cur.id + ')">Submit</button><div class="onb-note" id="onb-pf-note"></div>';
     } else if (cur.type === 'document_upload') {
       var _up = cur.uploaded || {}; var _slots = cur.slots || [];
       var _allFilled = _slots.length > 0 && _slots.every(function (s) { var f = _up[s.key]; return f && f.review_status !== 'rejected'; });
@@ -249,7 +271,7 @@
   }
 
   function onbStartTimers(cur) {
-    if (cur.type === 'document_upload') return;
+    if (cur.type === 'document_upload' || cur.type === 'form') return;
     var btn = document.getElementById('onb-continue');
     if (!btn) return;
     var waitLeft = cur.min_seconds || 0;
@@ -773,7 +795,7 @@
       '<div class="onb-card"><h2>Add a step</h2>' +
       '<div style="display:grid;gap:10px;grid-template-columns:1fr 1fr">' +
       '<select id="onb-new-type" onchange="onbTypeFields()" style="background:var(--bg-card);color:var(--text);border:1px solid var(--border);border-radius:8px;padding:10px">' +
-        '<option value="video">Video</option><option value="sop_read">Read an SOP</option><option value="quiz">Quiz on an SOP</option><option value="document_upload">Upload required documents</option><option value="acknowledge">Read &amp; acknowledge (no quiz)</option><option value="final_exam">Final exam</option></select>' +
+        '<option value="video">Video</option><option value="sop_read">Read an SOP</option><option value="quiz">Quiz on an SOP</option><option value="document_upload">Upload required documents</option><option value="acknowledge">Read &amp; acknowledge (no quiz)</option><option value="final_exam">Final exam</option><option value="form">Complete a form / packet</option></select>' +
       '<input id="onb-new-title" placeholder="Step title" style="background:var(--bg-card);color:var(--text);border:1px solid var(--border);border-radius:8px;padding:10px">' +
       '<select id="onb-new-phase" style="background:var(--bg-card);color:var(--text);border:1px solid var(--border);border-radius:8px;padding:10px"><option value="1">Phase 1 &middot; Paperwork</option><option value="2">Phase 2 &middot; Training</option></select>' +
       '<input id="onb-new-desc" placeholder="Short description (optional)" style="grid-column:1/-1;background:var(--bg-card);color:var(--text);border:1px solid var(--border);border-radius:8px;padding:10px">' +
@@ -805,7 +827,7 @@
     if (!title) { showToast('Give the step a title.', 'error'); return; }
     var payload = { type: t, title: title, description: document.getElementById('onb-new-desc').value.trim(), min_seconds: parseInt(document.getElementById('onb-new-min').value, 10) || 0 };
     payload.phase = parseInt((document.getElementById('onb-new-phase') || {}).value, 10) === 2 ? 2 : 1;
-    if (t === 'document_upload') payload.min_seconds = 0;
+    if (t === 'document_upload' || t === 'form') payload.min_seconds = 0;
     if (t === 'sop_read' || t === 'acknowledge') {
       payload.document_id = parseInt((document.getElementById('onb-new-doc') || {}).value, 10);
       if (!payload.document_id) { showToast('Pick a document from the vault.', 'error'); return; }
@@ -1104,6 +1126,15 @@
       var blob = await res.blob();
       window.open(URL.createObjectURL(blob), '_blank');
     } catch (e) { showToast(e.message || 'Could not open the document.', 'error'); }
+  };
+
+
+  window.onbSubmitPacket = async function (stepId) {
+    var data = {};
+    document.querySelectorAll('.onb-pf').forEach(function (el) { data[el.id.slice(3)] = el.value; });
+    document.querySelectorAll('input[type="checkbox"][id^="pf_"]').forEach(function (el) { data[el.id.slice(3)] = el.checked; });
+    try { await api('POST', '/onboarding/steps/' + stepId + '/packet', { data: data }); showToast('Packet submitted.', 'success'); renderOnboardingMode(document.getElementById('app')); }
+    catch (e) { showToast(e.message || 'Could not submit.', 'error'); }
   };
 
 })();
