@@ -7,7 +7,7 @@
   'use strict';
 
   var CSS = '' +
-    '.onb-wrap{max-width:780px;margin:0 auto;padding:28px 16px 60px}' +
+    '.onb-wrap{max-width:780px;margin:0 auto;padding:calc(28px + env(safe-area-inset-top)) calc(16px + env(safe-area-inset-right)) 60px calc(16px + env(safe-area-inset-left))}' +
     '.onb-head{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:8px;flex-wrap:wrap}' +
     '.onb-logo{font-size:22px;font-weight:800;color:var(--primary,#f97316);letter-spacing:0.5px}' +
     '.onb-title{font-size:26px;font-weight:800;margin:18px 0 4px}' +
@@ -61,7 +61,8 @@
     '.onb-verify .v-row{font-size:12.5px;padding:3px 0;color:var(--text-muted-color,#9ca3af)}' +
     '.onb-verify .v-row.ok{color:#86efac}.onb-verify .v-row.warn{color:#fbbf24}' +
     '.onb-grip{color:var(--text-muted-color,#9ca3af);font-size:15px;cursor:grab;padding:0 6px 0 0;user-select:none;flex-shrink:0}' +
-    '.onb-drag{cursor:grab}';
+    '.onb-drag{cursor:grab}' +
+    '.onb-pdfpg{display:block;width:100%;height:auto;margin:0 auto 8px;box-shadow:0 1px 4px rgba(0,0,0,.4)}';
 
   function injectCss() {
     if (document.getElementById('onb-css')) return;
@@ -101,6 +102,56 @@
         el.textContent = 'v' + (running || server);
       }
     });
+  }
+
+  // ---- PDF viewer (renders every page; iOS will not paginate a PDF in an iframe) ----
+  var PDFJS_SRC = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js';
+  var PDFJS_WORKER = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
+  function loadPdfJs() {
+    if (window.pdfjsLib) return Promise.resolve(window.pdfjsLib);
+    if (window._pdfjsLoading) return window._pdfjsLoading;
+    window._pdfjsLoading = new Promise(function (resolve, reject) {
+      var sc = document.createElement('script');
+      sc.src = PDFJS_SRC;
+      sc.onload = function () { try { window.pdfjsLib.GlobalWorkerOptions.workerSrc = PDFJS_WORKER; } catch (e) {} resolve(window.pdfjsLib); };
+      sc.onerror = function () { window._pdfjsLoading = null; reject(new Error('PDF viewer failed to load.')); };
+      document.head.appendChild(sc);
+    });
+    return window._pdfjsLoading;
+  }
+  // Render every page of a PDF into container. src is { url, headers } or { data: ArrayBuffer }.
+  async function onbRenderPdf(container, src, fallbackUrl) {
+    if (!container) return;
+    try {
+      var lib = await loadPdfJs();
+      var params = src.data ? { data: src.data } : { url: src.url, httpHeaders: src.headers || {} };
+      var pdf = await lib.getDocument(params).promise;
+      container.innerHTML = '';
+      var wide = container.clientWidth || 700;
+      for (var pnum = 1; pnum <= pdf.numPages; pnum++) {
+        var page = await pdf.getPage(pnum);
+        var base = page.getViewport({ scale: 1 });
+        var scale = Math.max(0.2, (wide - 4) / base.width) * Math.min(2, (window.devicePixelRatio || 1));
+        var vp = page.getViewport({ scale: scale });
+        var canvas = document.createElement('canvas');
+        canvas.className = 'onb-pdfpg';
+        canvas.width = vp.width; canvas.height = vp.height;
+        container.appendChild(canvas);
+        await page.render({ canvasContext: canvas.getContext('2d'), viewport: vp }).promise;
+      }
+    } catch (e) {
+      container.innerHTML = '<div class="onb-doc-fallback" style="height:100%;color:#ccc"><div style="font-size:40px">&#128196;</div>' +
+        '<div class="onb-note">Could not display the PDF here.</div>' +
+        (fallbackUrl ? '<a class="onb-btn" href="' + fallbackUrl + '" target="_blank" rel="noopener" style="margin-top:6px">Open it in a new tab &#8599;</a>' : '') + '</div>';
+    }
+  }
+  // Hydrate the reading-doc PDF placeholder once it is in the DOM.
+  function onbHydratePdf() {
+    var el = document.getElementById('onb-pdf-reader');
+    if (!el || el.getAttribute('data-hydrated')) return;
+    el.setAttribute('data-hydrated', '1');
+    var token = (window.state && state.token) ? state.token : '';
+    onbRenderPdf(el, { url: '/api/onboarding/reading-doc', headers: { Authorization: 'Bearer ' + token } }, el.getAttribute('data-fallback') || '');
   }
 
   // ============================ NEW-HIRE TRACK =============================
@@ -175,6 +226,7 @@
       }, 20000);
     } else if (data.current) {
       onbStartTimers(data.current);
+      onbHydratePdf();
       if (data.current.type === 'quiz' && data.current.must_reread) onbShowReread(data.current.id, data.current);
     }
   };
@@ -195,8 +247,11 @@
         var _dn = String(cur.sop_doc_name || '').toLowerCase();
         var _isPdf = mime.indexOf('pdf') !== -1 || _dn.slice(-4) === '.pdf';
         var _isImg = mime.indexOf('image/') === 0 || ['.png', '.jpg', '.jpeg', '.gif', '.webp', '.heic', '.heif'].some(function (x) { return _dn.slice(-x.length) === x; });
-        if (_isPdf || _isImg) {
-          reader = '<div class="onb-doc"><iframe src="' + escHtml(cur.sop_doc_url) + '" title="' + docName + '"></iframe></div>' +
+        if (_isPdf) {
+          reader = '<div class="onb-doc" style="overflow:auto"><div id="onb-pdf-reader" data-pdf="1" data-fallback="' + escHtml(cur.sop_doc_url) + '"><div class="onb-note" style="padding:16px">Loading document\u2026</div></div></div>' +
+            '<div class="onb-note" style="margin-top:0"><a href="' + escHtml(cur.sop_doc_url) + '" target="_blank" rel="noopener" style="color:var(--primary,#f97316)">Open ' + docName + ' in a new tab &#8599;</a></div>';
+        } else if (_isImg) {
+          reader = '<div class="onb-doc" style="overflow:auto;display:block"><img src="' + escHtml(cur.sop_doc_url) + '" alt="' + docName + '" style="width:100%;height:auto;display:block"></div>' +
             '<div class="onb-note" style="margin-top:0"><a href="' + escHtml(cur.sop_doc_url) + '" target="_blank" rel="noopener" style="color:var(--primary,#f97316)">Open ' + docName + ' in a new tab &#8599;</a></div>';
         } else {
           reader = '<div class="onb-doc onb-doc-fallback"><div style="font-size:40px">&#128196;</div>' +
@@ -334,13 +389,53 @@
     };
     input.click();
   };
+  // Re-encode any image (incl. iPhone HEIC) to JPEG in the browser. HEIC/HEIF are
+  // rejected by the vision API and were silently failing, so uploaded IDs never
+  // auto-filled the packet. PDFs pass through untouched.
+  function onbNormalizeUpload(file) {
+    return new Promise(function (resolve) {
+      var type = String(file.type || '').toLowerCase();
+      if (type === 'application/pdf') { resolve({ blob: file, name: file.name || 'document.pdf', type: 'application/pdf' }); return; }
+      var url = URL.createObjectURL(file);
+      var img = new Image();
+      img.onload = function () {
+        try {
+          var w = img.naturalWidth || img.width, h = img.naturalHeight || img.height;
+          var scale = Math.min(1, 2200 / Math.max(w, h || 1));
+          var cw = Math.max(1, Math.round(w * scale)), ch = Math.max(1, Math.round(h * scale));
+          var canvas = document.createElement('canvas');
+          canvas.width = cw; canvas.height = ch;
+          var ctx = canvas.getContext('2d');
+          ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, cw, ch);
+          ctx.drawImage(img, 0, 0, cw, ch);
+          try { URL.revokeObjectURL(url); } catch (x) {}
+          canvas.toBlob(function (blob) {
+            if (blob && blob.size) resolve({ blob: blob, name: String(file.name || 'photo').replace(/\.[^.]+$/, '') + '.jpg', type: 'image/jpeg' });
+            else resolve({ blob: file, name: file.name || 'upload', type: file.type || 'application/octet-stream' });
+          }, 'image/jpeg', 0.9);
+        } catch (e) { try { URL.revokeObjectURL(url); } catch (x) {} resolve({ blob: file, name: file.name || 'upload', type: file.type || 'application/octet-stream' }); }
+      };
+      img.onerror = function () { try { URL.revokeObjectURL(url); } catch (x) {} resolve({ blob: file, name: file.name || 'upload', type: file.type || 'application/octet-stream' }); };
+      img.src = url;
+    });
+  }
+  function onbBlobToDataUrl(blob) {
+    return new Promise(function (resolve, reject) {
+      var fr = new FileReader();
+      fr.onload = function () { resolve(String(fr.result || '')); };
+      fr.onerror = function () { reject(new Error('Could not read the file.')); };
+      fr.readAsDataURL(blob);
+    });
+  }
   window.onbUploadSlot = async function (stepId, slotKey, file) {
     var note = document.getElementById('onb-up-note');
-    if (file.size > 15 * 1024 * 1024) { showToast('That file is too large (max 15 MB).', 'error'); return; }
-    if (note) note.textContent = 'Uploading ' + file.name + '...';
+    if (note) note.textContent = 'Preparing ' + (file.name || 'file') + '…';
     try {
-      var dataUrl = await onbReadFileB64(file);
-      await api('POST', '/onboarding/steps/' + stepId + '/upload', { slot_key: slotKey, filename: file.name, mime_type: file.type || 'application/octet-stream', data: dataUrl });
+      var norm = await onbNormalizeUpload(file);
+      if (norm.blob.size > 15 * 1024 * 1024) { if (note) note.textContent = ''; showToast('That file is too large (max 15 MB).', 'error'); return; }
+      if (note) note.textContent = 'Uploading ' + norm.name + '…';
+      var dataUrl = await onbBlobToDataUrl(norm.blob);
+      await api('POST', '/onboarding/steps/' + stepId + '/upload', { slot_key: slotKey, filename: norm.name, mime_type: norm.type, data: dataUrl });
       showToast('Uploaded.', 'success');
       renderOnboardingMode(document.getElementById('app'));
     } catch (e) {
@@ -353,8 +448,10 @@
   function onbReaderHtml(d) {
     if (d.sop_doc_url) {
       var mime = d.sop_doc_mime || ''; var nm = escHtml(d.sop_doc_name || 'the document');
-      if (mime.indexOf('pdf') !== -1 || mime.indexOf('image/') === 0)
-        return '<div class="onb-doc"><iframe src="' + escHtml(d.sop_doc_url) + '" title="' + nm + '"></iframe></div>';
+      if (mime.indexOf('pdf') !== -1)
+        return '<div class="onb-doc" style="overflow:auto"><div id="onb-pdf-reader" data-pdf="1" data-fallback="' + escHtml(d.sop_doc_url) + '"><div class="onb-note" style="padding:16px">Loading document\u2026</div></div></div>';
+      if (mime.indexOf('image/') === 0)
+        return '<div class="onb-doc" style="overflow:auto;display:block"><img src="' + escHtml(d.sop_doc_url) + '" alt="' + nm + '" style="width:100%;height:auto;display:block"></div>';
       return '<div class="onb-doc onb-doc-fallback"><div style="font-size:40px">&#128196;</div><div style="font-weight:600">' + nm + '</div><a class="onb-btn" href="' + escHtml(d.sop_doc_url) + '" target="_blank" rel="noopener" style="margin-top:6px">Open the document &#8599;</a></div>';
     }
     return '<div class="onb-sop" id="onb-sop">' + escHtml(d.sop_content || 'Review the material with your manager.') + '</div>';
@@ -373,6 +470,7 @@
       onbReaderHtml(d || {}) +
       '<button class="onb-btn" id="onb-reread-btn" disabled onclick="onbQuizReread(' + stepId + ')">I&#39;ve re-read it — new questions</button>' +
       '<div class="onb-note" id="onb-reread-note"></div>';
+    onbHydratePdf();
     onbRereadTimer(30);
   };
   window.onbQuizReread = async function (stepId) {
@@ -461,8 +559,17 @@
     var note = document.getElementById('onb-quiz-note');
     if (r.passed) {
       try { onbConfettiBurst(); } catch (e) {}
-      if (note) note.innerHTML = '<b style="color:#16a34a">Passed with ' + r.score + '%!</b> Moving on…';
-      setTimeout(function () { renderOnboardingMode(document.getElementById('app')); }, 1600);
+      if (note) note.innerHTML = '<b style="color:#16a34a">Passed with ' + r.score + '%!</b> Review the answers below, then continue.';
+      var passBox = document.getElementById('onb-quiz');
+      if (passBox) {
+        var contBtn = document.createElement('button');
+        contBtn.className = 'onb-btn';
+        contBtn.style.marginTop = '14px';
+        contBtn.textContent = 'Continue';
+        contBtn.onclick = function () { renderOnboardingMode(document.getElementById('app')); };
+        passBox.appendChild(contBtn);
+        try { contBtn.scrollIntoView({ behavior: 'smooth', block: 'center' }); } catch (e) {}
+      }
     } else if (r.revert_to_read) {
       if (note) note.innerHTML = '<b style="color:#ef4444">' + r.score + '%</b> — that is two misses. Re-read the material, then you will get a fresh set.';
       setTimeout(function () { onbShowReread(stepId, r.reading || {}); }, 2200);
@@ -600,12 +707,14 @@
       '<button class="onb-btn' + (window._onbTab === 'reviews' ? '' : ' ghost') + '" onclick="onbTab(\'reviews\')">Phase 1 Reviews</button>' +
       '<button class="onb-btn' + (window._onbTab === 'path' ? '' : ' ghost') + '" onclick="onbTab(\'path\')">Onboarding Path</button>' +
       '<button class="onb-btn' + (window._onbTab === 'completion' ? '' : ' ghost') + '" onclick="onbTab(\'completion\')">Completion</button>' +
+      '<button class="onb-btn' + (window._onbTab === 'history' ? '' : ' ghost') + '" onclick="onbTab(\'history\')">History</button>' +
       '</div>';
     content.innerHTML = '<h1 style="margin-bottom:14px">Onboarding</h1>' + tabs + '<div id="onb-admin-body"><div class="loading">Loading…</div></div>';
     var body = document.getElementById('onb-admin-body');
     if (window._onbTab === 'hires') await onbAdminHires(body);
     else if (window._onbTab === 'reviews') await onbAdminReviews(body);
     else if (window._onbTab === 'completion') await onbAdminCompletion(body);
+    else if (window._onbTab === 'history') await onbAdminHistory(body);
     else await onbAdminPath(body);
   };
   window.onbTab = function (t) { window._onbTab = t; renderOnboardingAdmin(document.getElementById('content')); };
@@ -685,7 +794,7 @@
     var body = isImg
       ? '<div style="flex:1;overflow:auto;display:flex;align-items:center;justify-content:center;padding:12px"><img src="' + url + '" alt="' + title + '" style="max-width:100%;max-height:100%;object-fit:contain" /></div>'
       : isPdf
-        ? '<iframe src="' + url + '" title="' + title + '" style="flex:1;width:100%;border:0;background:#fff"></iframe>'
+        ? '<div id="onb-modal-pdf" style="flex:1;overflow:auto;background:#fff"><div class="onb-note" style="padding:16px;color:#333">Loading document\u2026</div></div>'
         : '<div style="flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:12px;color:#ededed"><div style="font-size:40px">&#128196;</div><div>' + title + '</div><a href="' + url + '" download style="color:var(--primary,#f97316)">Download the file &#8595;</a></div>';
     var ov = document.createElement('div');
     ov.className = 'onb-doc-modal';
@@ -702,6 +811,10 @@
     ov.addEventListener('click', function (e) { if (e.target === ov) close(); });
     document.addEventListener('keydown', onKey);
     document.body.appendChild(ov);
+    if (isPdf) {
+      var pc = ov.querySelector('#onb-modal-pdf');
+      try { blob.arrayBuffer().then(function (buf) { onbRenderPdf(pc, { data: buf }, url); }).catch(function () {}); } catch (e) {}
+    }
   };
 
   window.onbViewDoc = async function (docId) {
@@ -736,6 +849,27 @@
     catch (e) { showToast(e.message || 'Could not send back.', 'error'); }
   };
 
+
+  async function onbAdminHistory(body) {
+    var list;
+    try { list = await api('GET', '/onboarding/admin/completed'); }
+    catch (e) { body.innerHTML = '<div class="onb-note">' + escHtml(e.message || 'Failed to load history.') + '</div>'; return; }
+    if (!list.length) { body.innerHTML = '<div class="onb-card"><div class="onb-desc">No one has completed onboarding yet.</div></div>'; return; }
+    var rows = list.map(function (u) {
+      var when = u.completed_at ? String(u.completed_at).slice(0, 10) : '';
+      var rl = (typeof roleLabel === 'function') ? roleLabel(u.role) : (u.role || '');
+      return '<tr>' +
+        '<td style="padding:11px 14px"><b>' + escHtml(u.name) + '</b><br><span class="onb-note">' + escHtml(rl) + '</span></td>' +
+        '<td style="padding:11px 14px" class="onb-note">' + escHtml(when) + '</td>' +
+        '<td style="padding:11px 14px" class="onb-note">' + escHtml(u.signed_off_by || '') + '</td>' +
+        '<td style="padding:11px 14px;white-space:nowrap"><button class="onb-btn ghost" style="padding:8px 12px;font-size:13px" onclick="onbDownloadRecord(' + u.id + ')">Record</button></td>' +
+        '</tr>';
+    }).join('');
+    body.innerHTML = '<div class="onb-note" style="margin-bottom:12px">' + list.length + ' completed ' + (list.length === 1 ? 'hire' : 'hires') + '.</div>' +
+      '<div class="onb-card" style="padding:0;overflow-x:auto"><table style="width:100%;border-collapse:collapse" class="onb-table">' +
+      '<thead><tr><th style="text-align:left;padding:12px 14px">Name</th><th style="text-align:left;padding:12px 14px">Completed</th><th style="text-align:left;padding:12px 14px">Signed off by</th><th style="text-align:left;padding:12px 14px">Record</th></tr></thead>' +
+      '<tbody>' + rows + '</tbody></table></div>';
+  }
 
   async function onbAdminHires(body) {
     var data, users = [];

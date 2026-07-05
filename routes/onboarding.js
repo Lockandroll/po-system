@@ -538,7 +538,7 @@ async function sopVaultDoc(sopId) {
   try {
     const _ct = best.mime_type || (String(best.name || '').toLowerCase().slice(-4) === '.pdf' ? 'application/pdf' : null);
     const url = await r2.presignDownload(best.r2_key, best.name, true, 3600, _ct);
-    return { url: url, name: best.name, mime_type: best.mime_type };
+    return { url: url, name: best.name, mime_type: best.mime_type, r2_key: best.r2_key };
   } catch (e) { return null; }
 }
 // Presign one specific vault document (the file the admin picked for a read step).
@@ -550,7 +550,7 @@ async function vaultDocById(documentId) {
   try {
     const _ct = d.mime_type || (String(d.name || '').toLowerCase().slice(-4) === '.pdf' ? 'application/pdf' : null);
     const url = await r2.presignDownload(d.r2_key, d.name, true, 3600, _ct);
-    return { url: url, name: d.name, mime_type: d.mime_type };
+    return { url: url, name: d.name, mime_type: d.mime_type, r2_key: d.r2_key };
   } catch (e) { return null; }
 }
 async function generateQuestions(step, avoidPrompts) {
@@ -581,6 +581,110 @@ async function generateQuestions(step, avoidPrompts) {
   }
   if (!out) throw new Error('The AI did not return a valid quiz. Try again.');
   return out.questions;
+}
+
+
+// ---- Cached question bank (v4) ---------------------------------------------
+// Questions are generated once per SOP and cached; each quiz attempt serves a
+// random subset (with shuffled options) instead of a live AI call. The bank is
+// rebuilt automatically when the SOP text changes (source_hash mismatch).
+var BANK_POOL_SIZE = 20;
+var _bankTableReady = false;
+async function ensureBankTable() {
+  if (_bankTableReady) return;
+  await pool.query('CREATE TABLE IF NOT EXISTS onboarding_question_bank (id SERIAL PRIMARY KEY, sop_id INTEGER NOT NULL, source_hash TEXT, questions JSONB NOT NULL, created_at TIMESTAMPTZ DEFAULT NOW())');
+  await pool.query('CREATE INDEX IF NOT EXISTS idx_onb_qbank_sop ON onboarding_question_bank(sop_id)');
+  _bankTableReady = true;
+}
+function textHash(str) {
+  str = String(str || '');
+  var h = 5381;
+  for (var i = 0; i < str.length; i++) { h = ((h << 5) + h + str.charCodeAt(i)) | 0; }
+  return (h >>> 0).toString(36) + ':' + str.length;
+}
+function shuffleArr(a) {
+  a = a.slice();
+  for (var i = a.length - 1; i > 0; i--) { var j = Math.floor(Math.random() * (i + 1)); var t = a[i]; a[i] = a[j]; a[j] = t; }
+  return a;
+}
+function shuffleOptions(q) {
+  if (!q || !Array.isArray(q.options)) return q;
+  var order = shuffleArr(q.options.map(function (_o, i) { return i; }));
+  return { prompt: q.prompt, options: order.map(function (i) { return q.options[i]; }), correct_index: order.indexOf(q.correct_index) };
+}
+function cleanQuestions(arr) {
+  return (arr || []).filter(function (q) {
+    return q && q.prompt && Array.isArray(q.options) && q.options.length === 4 && typeof q.correct_index === 'number' && q.correct_index >= 0 && q.correct_index < 4;
+  });
+}
+// One AI call: write up to n grounded questions from a single SOP.
+async function writeQuestionsForSop(sop, n) {
+  var system = [
+    'You are writing an onboarding knowledge check for a new hire at a locksmith / roadside company.',
+    'You will be given the text of ONE Standard Operating Procedure (SOP).',
+    'Write as many distinct, high-quality multiple-choice questions as the SOP supports, up to ' + n + '.',
+    'Rules:',
+    '- Every question and every option must be grounded ONLY in the supplied SOP text. Do not invent facts.',
+    '- Each question must have exactly 4 options with exactly one clearly correct answer.',
+    '- Make wrong options plausible but clearly incorrect to someone who read the SOP.',
+    '- Do not repeat or lightly rephrase the same question.',
+    '- Keep each question and option to one sentence.',
+    'Respond with ONLY a JSON object, no prose, exactly:',
+    '{"questions":[{"prompt":"...","options":["...","...","...","..."],"correct_index":0}]}'
+  ].join('\n');
+  var out = null;
+  for (var attempt = 0; attempt < 2 && !out; attempt++) {
+    var reply = await callClaude(system, 'SOP TITLE: ' + sop.title + '\n\nSOP TEXT:\n' + sop.text);
+    if (reply && reply.error) throw new Error('AI error: ' + (reply.error.message || 'unknown'));
+    var text = (reply && reply.content && reply.content[0] && reply.content[0].text) || '';
+    var parsed = extractJson(text);
+    var qs = cleanQuestions(parsed && parsed.questions);
+    if (qs.length) out = qs;
+  }
+  if (!out) throw new Error('The AI did not return a valid quiz. Try again.');
+  return out;
+}
+async function buildBank(sopId) {
+  var sop = await sopFullText(sopId);
+  if (!sop || !sop.text || sop.text.length < 50) throw new Error('This step has no SOP text to quiz on. Ask an admin to check the step.');
+  var qs = await writeQuestionsForSop(sop, BANK_POOL_SIZE);
+  await ensureBankTable();
+  await pool.query('DELETE FROM onboarding_question_bank WHERE sop_id = $1', [sopId]);
+  await pool.query('INSERT INTO onboarding_question_bank (sop_id, source_hash, questions) VALUES ($1,$2,$3)', [sopId, textHash(sop.text), JSON.stringify(qs)]);
+  return qs;
+}
+async function getBank(sopId) {
+  await ensureBankTable();
+  var sop = await sopFullText(sopId);
+  if (!sop || !sop.text || sop.text.length < 50) throw new Error('This step has no SOP text to quiz on. Ask an admin to check the step.');
+  var h = textHash(sop.text);
+  var r = await pool.query('SELECT questions, source_hash FROM onboarding_question_bank WHERE sop_id = $1 ORDER BY id DESC LIMIT 1', [sopId]);
+  if (r.rows.length && r.rows[0].source_hash === h) {
+    var qs = r.rows[0].questions; if (typeof qs === 'string') { try { qs = JSON.parse(qs); } catch (e) { qs = []; } }
+    qs = cleanQuestions(qs);
+    if (qs.length) return qs;
+  }
+  return await buildBank(sopId);
+}
+// Serve one quiz attempt from the bank (avoiding the user's most recent prompts).
+async function stepBankQuestions(step, avoidPrompts) {
+  var n = questionCount(step);
+  var bank = await getBank(step.sop_id);
+  var avoid = {}; (avoidPrompts || []).forEach(function (pr) { avoid[String(pr).trim()] = true; });
+  var fresh = bank.filter(function (q) { return !avoid[String(q.prompt).trim()]; });
+  var poolQs = (fresh.length >= n) ? fresh : bank;
+  return shuffleArr(poolQs).slice(0, Math.min(n, poolQs.length)).map(shuffleOptions);
+}
+// Final exam: sample from every quizzed SOP's bank.
+async function examBankQuestions(step) {
+  var n = examCount(step);
+  var ids = await examSopIds();
+  if (!ids.length) throw new Error('There are no quizzed documents to build the final exam from.');
+  var all = [];
+  for (var i = 0; i < ids.length; i++) { try { all = all.concat(await getBank(ids[i])); } catch (e) {} }
+  all = cleanQuestions(all);
+  if (!all.length) throw new Error('The AI did not return a valid exam. Try again.');
+  return shuffleArr(all).slice(0, Math.min(n, all.length)).map(shuffleOptions);
 }
 
 // Distinct SOPs that have a quiz step in the track — the ONLY source for the
@@ -762,6 +866,29 @@ router.get('/me', requireAuth, async (req, res) => {
   res.json(payload);
 });
 
+// GET /api/onboarding/reading-doc — stream the current step's reading document
+// (SOP / vault PDF or image) from R2 through the app, same-origin, so the
+// frontend PDF viewer can render every page (iOS will not paginate a PDF in an
+// iframe). Auth-gated to the caller's own current step.
+router.get('/reading-doc', requireAuth, async (req, res) => {
+  const steps = await activeSteps();
+  const prog = await progressMap(req.user.id);
+  const current = findCurrent(steps, prog);
+  if (!current) return res.status(404).json({ error: 'No current step.' });
+  let vdoc = null;
+  try {
+    const docId = parseInt(cfg(current).document_id, 10) || 0;
+    vdoc = docId ? await vaultDocById(docId) : (current.sop_id ? await sopVaultDoc(current.sop_id) : null);
+  } catch (e) {}
+  if (!vdoc || !vdoc.r2_key) return res.status(404).json({ error: 'No document for this step.' });
+  try {
+    const bytes = await r2.getObjectBuffer(vdoc.r2_key);
+    res.setHeader('Content-Type', vdoc.mime_type || 'application/pdf');
+    res.setHeader('Content-Disposition', 'inline; filename="' + String(vdoc.name || 'document').replace(/"/g, '') + '"');
+    res.send(bytes);
+  } catch (e) { res.status(502).json({ error: 'Could not open the document.' }); }
+});
+
 // POST /api/onboarding/steps/:id/complete — finish a video or sop_read step
 router.post('/steps/:id/complete', requireAuth, async (req, res) => {
   const stepId = parseInt(req.params.id, 10) || 0;
@@ -914,7 +1041,7 @@ router.post('/steps/:id/quiz/start', requireAuth, async (req, res) => {
   } catch (e) { /* non-fatal */ }
 
   let questions;
-  try { questions = current.type === 'final_exam' ? await generateExamQuestions(current, avoid) : await generateQuestions(current, avoid); }
+  try { questions = current.type === 'final_exam' ? await examBankQuestions(current) : await stepBankQuestions(current, avoid); }
   catch (e) { return res.status(502).json({ error: e.message }); }
 
   const ins = await pool.query(
@@ -1192,6 +1319,16 @@ admin.post('/enroll', async (req, res) => {
   await pool.query("UPDATE users SET onboarding_status = 'required', onboarding_enrolled_at = NOW() WHERE id = $1", [target]);
   await logAudit({ entity_type: 'onboarding', entity_id: target, action: 'enrolled', user_id: req.user.id, user_name: req.user.name, details: { user: ur.rows[0].name } });
   res.json({ success: true });
+});
+
+// Completed onboarding history — everyone signed off, most recent first.
+admin.get('/completed', async (req, res) => {
+  const r = await pool.query(
+    "SELECT u.id, u.name, u.role, u.onboarding_enrolled_at AS enrolled_at, e.created_at AS completed_at, e.actor_name AS signed_off_by " +
+    "FROM onboarding_events e JOIN users u ON u.id = e.user_id " +
+    "WHERE e.event_type = 'signoff' ORDER BY e.created_at DESC"
+  );
+  res.json(r.rows);
 });
 
 // Supervisor sign-off — the final gate. Requires every step done.
