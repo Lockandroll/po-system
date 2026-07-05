@@ -32,8 +32,14 @@
     capTimer: null, silenceRAF: null,
     audioCtx: null,
     history: [],         // short rolling conversation for the agent
-    lastActivity: 0
+    lastActivity: 0,
+    // Interrupt sensitivity 0-100: 0 = only the wake word cuts Nova off (best on
+    // a loudspeaker); higher = talk-over-to-interrupt (best on a headset). Tune
+    // with NovaVoice.setInterrupt(n) in the console; persists in localStorage.
+    interruptSensitivity: 0,
+    bargeRAF: null, bargeStop: null, stopSpeak: null, followup: false
   };
+  (function () { var v = parseInt(localStorage.getItem('nova_interrupt'), 10); if (!isNaN(v)) NV.interruptSensitivity = Math.max(0, Math.min(100, v)); })();
 
   // Chrome's speech engine mishears the uncommon word "Nova" badly (Cordova,
   // Douglas, Innova, no-va...). Match a broad set of phonetic cousins, and don't
@@ -363,6 +369,40 @@
     if (NV.stopSpeak) { var f = NV.stopSpeak; NV.stopSpeak = null; f(); }
   }
 
+  // Talk-over barge-in: while Nova speaks, watch the echo-cancelled mic; if YOUR
+  // voice rises above the sensitivity threshold, cut Nova off. Sensitivity 0
+  // disables this (saying the wake word "Nova" still interrupts).
+  function startBargeMonitor() {
+    if (NV.bargeStop) { NV.bargeStop(); }
+    if (NV.interruptSensitivity <= 0) return;
+    var ctx = ensureAudioCtx();
+    if (!ctx || !NV.mic) return;
+    try {
+      var src = ctx.createMediaStreamSource(NV.mic);
+      var an = ctx.createAnalyser(); an.fftSize = 512;
+      src.connect(an);
+      var buf = new Uint8Array(an.fftSize);
+      var thr = 0.16 - (NV.interruptSensitivity / 100) * 0.14; // sens 100 -> ~0.02, sens 20 -> ~0.13
+      var startAt = Date.now() + 400; // ignore the tail of your own command
+      var loudSince = 0;
+      NV.bargeStop = function () { try { src.disconnect(); } catch (e) {} if (NV.bargeRAF) cancelAnimationFrame(NV.bargeRAF); NV.bargeRAF = null; NV.bargeStop = null; };
+      function tick() {
+        if (!NV.speaking) { if (NV.bargeStop) NV.bargeStop(); return; }
+        if (Date.now() < startAt) { NV.bargeRAF = requestAnimationFrame(tick); return; }
+        an.getByteTimeDomainData(buf);
+        var sum = 0; for (var i = 0; i < buf.length; i++) { var v = (buf[i] - 128) / 128; sum += v * v; }
+        var rms = Math.sqrt(sum / buf.length);
+        var now = Date.now();
+        if (rms > thr) {
+          if (!loudSince) loudSince = now;
+          else if (now - loudSince > 250) { LOG('barge-in (talked over Nova)'); if (NV.bargeStop) NV.bargeStop(); interruptSpeaking(); return; }
+        } else { loudSince = 0; }
+        NV.bargeRAF = requestAnimationFrame(tick);
+      }
+      NV.bargeRAF = requestAnimationFrame(tick);
+    } catch (e) {}
+  }
+
   function playAndBroadcast(mp3Blob, onEnd) {
     var url = URL.createObjectURL(mp3Blob);
     var audio = new Audio();
@@ -371,6 +411,7 @@
     function done() {
       if (ended) return; ended = true;
       NV.stopSpeak = null;
+      if (NV.bargeStop) NV.bargeStop();
       if (lkTrack && lkRoom) { try { lkRoom.localParticipant.unpublishTrack(lkTrack); } catch (e) {} }
       if (lkTrack) { try { lkTrack.stop(); } catch (e) {} }
       try { audio.pause(); } catch (e) {}
@@ -378,6 +419,7 @@
       if (onEnd) onEnd();
     }
     NV.stopSpeak = done; // lets barge-in stop playback + broadcast cleanly
+    startBargeMonitor();  // talk-over interrupt (sensitivity-gated)
     var room = null;
     try { room = window.NovaRadio && window.NovaRadio.talkRoom ? window.NovaRadio.talkRoom() : null; } catch (e) {}
     var LK = window.LivekitClient;
@@ -461,5 +503,15 @@
     if (typeof state !== 'undefined' && state.token && state.user) { clearInterval(boot); checkConfig(); }
   }, 800);
 
-  window.NovaVoice = { enable: enable, disable: disable, trigger: function () { onWake(true); } };
+  window.NovaVoice = {
+    enable: enable, disable: disable,
+    trigger: function () { onWake(true); },
+    setInterrupt: function (n) {
+      n = Math.max(0, Math.min(100, parseInt(n, 10) || 0));
+      NV.interruptSensitivity = n;
+      try { localStorage.setItem('nova_interrupt', String(n)); } catch (e) {}
+      LOG('interrupt sensitivity =', n);
+      return n;
+    }
+  };
 })();
