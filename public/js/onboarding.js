@@ -714,6 +714,10 @@
     (data.users || []).forEach(function (u) { inOnb[u.id] = true; });
     var opts = (users || []).filter(function (u) { return u.active !== false && !inOnb[u.id] && u.role !== 'owner'; })
       .map(function (u) { return '<option value="' + u.id + '">' + escHtml(u.name) + '</option>'; }).join('');
+    var NHI = 'background:var(--bg-card);color:var(--text);border:1px solid var(--border);border-radius:8px;padding:10px';
+    var NH_ROLES = [['locksmith', 'Locksmith'], ['locksmith_coordinator', 'Locksmith Coordinator'], ['dispatcher', 'Dispatcher'], ['roadside_technician', 'Roadside Technician'], ['manager', 'Manager'], ['admin', 'Admin']];
+    var nhRoleOpts = NH_ROLES.map(function (r) { return '<option value="' + r[0] + '">' + r[1] + '</option>'; }).join('');
+    var nhSupOpts = (users || []).filter(function (u) { return u.active !== false; }).map(function (u) { return '<option value="' + u.id + '">' + escHtml(u.name) + '</option>'; }).join('');
 
     var rows = (data.users || []).map(function (u) {
       var pct = u.steps_total ? Math.round((u.steps_done / u.steps_total) * 100) : 0;
@@ -733,11 +737,20 @@
     }).join('');
 
     body.innerHTML =
-      '<div class="onb-card" style="margin-bottom:18px"><h2>Enroll someone</h2>' +
-      '<div class="onb-desc">Enrolling locks their account to the onboarding track until every step is done and a supervisor signs off. They keep time clock access.</div>' +
+      '<div class="onb-card" style="margin-bottom:14px"><h2>Add a new hire</h2>' +
+      '<div class="onb-desc">Creates their Nova account, emails them an invite to set a password, and enrolls them in onboarding — all in one step. No need to add them under Users first.</div>' +
+      '<div style="display:grid;gap:10px;grid-template-columns:1fr 1fr">' +
+        '<input id="nh-name" placeholder="Full name" style="' + NHI + '">' +
+        '<input id="nh-email" type="email" placeholder="Email" style="' + NHI + '">' +
+        '<input id="nh-phone" type="tel" placeholder="Mobile phone (for 2FA texts)" style="' + NHI + '">' +
+        '<select id="nh-role" style="' + NHI + '">' + nhRoleOpts + '</select>' +
+        '<select id="nh-supervisor" style="grid-column:1/-1;' + NHI + '"><option value="">Supervisor — reviews their onboarding</option>' + nhSupOpts + '</select>' +
+      '</div>' +
+      '<button class="onb-btn" style="margin-top:12px" onclick="onbAddHire()">Add &amp; enroll</button></div>' +
+      '<div class="onb-card" style="margin-bottom:18px"><h2 style="font-size:15px">Already in Nova? Enroll an existing user</h2>' +
       '<div style="display:flex;gap:10px;flex-wrap:wrap">' +
-      '<select id="onb-enroll-user" style="flex:1;min-width:200px;background:var(--bg-card);color:var(--text);border:1px solid var(--border);border-radius:8px;padding:10px">' + (opts || '<option value="">No one available</option>') + '</select>' +
-      '<button class="onb-btn" onclick="onbEnroll()">Enroll</button></div></div>' +
+      '<select id="onb-enroll-user" style="flex:1;min-width:200px;' + NHI + '">' + (opts || '<option value="">No one available</option>') + '</select>' +
+      '<button class="onb-btn ghost" onclick="onbEnroll()">Enroll</button></div></div>' +
       ((data.users || []).length
         ? '<div class="onb-card" style="padding:0;overflow-x:auto"><table style="width:100%;border-collapse:collapse" class="onb-table"><thead><tr><th style="text-align:left;padding:12px 14px">New hire</th><th style="text-align:left;padding:12px 14px">Progress</th><th style="text-align:left;padding:12px 14px">Status</th><th style="text-align:left;padding:12px 14px">Actions</th></tr></thead><tbody>' + rows + '</tbody></table></div>'
         : '<div class="onb-card"><div class="onb-desc" style="margin:0">Nobody is in onboarding right now.</div></div>');
@@ -749,6 +762,19 @@
     if (!window.confirm('Enroll this person? Their Nova access is locked to the onboarding track until sign-off.')) return;
     try { await api('POST', '/onboarding/admin/enroll', { user_id: parseInt(sel.value, 10) }); showToast('Enrolled.', 'success'); renderOnboardingAdmin(document.getElementById('content')); }
     catch (e) { showToast(e.message || 'Enroll failed.', 'error'); }
+  };
+  window.onbAddHire = async function () {
+    var name = ((document.getElementById('nh-name') || {}).value || '').trim();
+    var email = ((document.getElementById('nh-email') || {}).value || '').trim();
+    var phone = ((document.getElementById('nh-phone') || {}).value || '').trim();
+    var role = (document.getElementById('nh-role') || {}).value;
+    var supervisor_id = parseInt((document.getElementById('nh-supervisor') || {}).value, 10) || null;
+    if (!name || !email || !role) { showToast('Name, email, and role are required.', 'error'); return; }
+    try {
+      await api('POST', '/users/new-hire', { name: name, email: email, phone: phone || null, role: role, supervisor_id: supervisor_id });
+      showToast(name + ' added and enrolled.', 'success');
+      renderOnboardingAdmin(document.getElementById('content'));
+    } catch (e) { showToast(e.message || 'Could not add the new hire.', 'error'); }
   };
   window.onbSignOff = async function (id, name) {
     if (!window.confirm('Sign off ' + name + '? This unlocks full Nova access for them immediately.')) return;

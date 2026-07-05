@@ -2,7 +2,7 @@
 // public/sw.js (the only thing bumped each deploy) — the badge asks the active
 // service worker for it at runtime. This value is just the fallback shown when no
 // service worker is available (e.g. very first visit before it installs).
-var APP_VERSION = 'v74';
+var APP_VERSION = 'v75';
 var _resolvedAppVersion = null;
 
 // Ask the active service worker for its CACHE_VERSION (without the 'nova-' prefix).
@@ -290,20 +290,15 @@ function showToast(message, type) {
 }
 
 function toggleSection(section, defaultView) {
-  // On mobile a header tap just expands/collapses the section in place; the user
-  // then taps a sub-item. Keeps the drawer open so nothing auto-navigates.
-  if (isMobileNav()) {
-    state.sidebarSection = (state.sidebarSection === section) ? null : section;
-    render();
-    var sb = document.getElementById('sidebar'); if (sb) sb.classList.add('open');
-    var ov = document.getElementById('sidebar-overlay'); if (ov) ov.classList.add('open');
-    return;
-  }
-  // Desktop: clicking a section header jumps to its first page (e.g. Purchase Orders
-  // -> PO Dashboard) and expands the section (navigate() opens the right section).
-  if (defaultView) { navigate(defaultView); return; }
+  // A header tap expands/collapses the section in place and never navigates
+  // (same on desktop and mobile); the user then taps a sub-item to change pages.
   state.sidebarSection = (state.sidebarSection === section) ? null : section;
   render();
+  // Keep the mobile drawer open across the re-render.
+  if (isMobileNav()) {
+    var sb = document.getElementById('sidebar'); if (sb) sb.classList.add('open');
+    var ov = document.getElementById('sidebar-overlay'); if (ov) ov.classList.add('open');
+  }
 }
 function navigate(view, param) {
   closeSidebar();

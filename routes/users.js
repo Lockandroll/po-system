@@ -114,6 +114,32 @@ router.post('/', requireAuth, requirePermission('manage_users'), async (req, res
   }
 });
 
+// Create a brand-new hire AND enroll them in onboarding in one step.
+router.post('/new-hire', requireAuth, requirePermission('manage_onboarding'), async (req, res) => {
+  const { name, email, role, phone } = req.body;
+  const supervisor_id = parseInt(req.body && req.body.supervisor_id, 10) || null;
+  if (!name || !email || !role) return res.status(400).json({ error: 'Name, email, and role are required' });
+  if (!VALID_ROLES.includes(role)) return res.status(400).json({ error: 'Invalid role.' });
+  if (role === 'owner') return res.status(400).json({ error: 'Owners are not onboarded.' });
+  const rawPassword = crypto.randomBytes(24).toString('hex');
+  const password_hash = await bcrypt.hash(rawPassword, 12);
+  try {
+    const { rows } = await pool.query(
+      "INSERT INTO users (name, email, password_hash, role, phone, receive_emails, receive_sms, supervisor_id, onboarding_status, onboarding_enrolled_at) " +
+      "VALUES ($1,$2,$3,$4,$5,true,$6,$7,'required',NOW()) RETURNING id, name, email, role, phone, supervisor_id",
+      [name, email, password_hash, role, phone || null, !!phone, supervisor_id]
+    );
+    const newUser = rows[0];
+    try { await sendInvite(newUser, req.user && req.user.name); } catch (e) { console.error('Invite email failed:', e); }
+    await logAudit({ entity_type: 'onboarding', entity_id: newUser.id, action: 'new_hire_created', user_id: req.user.id, user_name: req.user.name, details: { name: name, role: role } });
+    res.status(201).json(newUser);
+  } catch (err) {
+    if (err.code === '23505') return res.status(400).json({ error: 'That email is already in use.' });
+    console.error('new-hire create failed:', err.message);
+    res.status(500).json({ error: 'Could not create the new hire.' });
+  }
+});
+
 // Update user (admin only)
 router.put('/:id', requireAuth, requirePermission('manage_users'), async (req, res) => {
   const { name, email, role, password, phone, receive_emails, receive_sms, pulsar_name, nickname, hide_from_schedule, pay_type, supervisor_id, title, org_level, hide_from_org, hire_date } = req.body;
