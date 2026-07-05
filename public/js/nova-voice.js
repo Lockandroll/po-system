@@ -35,7 +35,11 @@
     lastActivity: 0
   };
 
-  var WAKE_RE = /\b(hey|hay|hi|hello|okay|ok|yo|a)\s*,?\s*(nova|novah|nova|neva|no va|nolva)\b/i;
+  // Chrome's speech engine mishears the uncommon word "Nova" badly (Cordova,
+  // Douglas, Innova, no-va...). Match a broad set of phonetic cousins, and don't
+  // require the "hey" prefix - saying "Nova ..." is enough. Scribe still does the
+  // accurate transcription of the actual command after the wake.
+  var WAKE_RE = /\b(nova|novah|no ?va|neva|nolva|innova|cordova|nova'?s|nobla|nofa|nova,?)\b/i;
 
   // ---- navigation vocabulary: spoken phrase -> app view -----------------------
   var NAV = [
@@ -284,10 +288,18 @@
   // ---- decide: navigate locally, or ask the Nova AI agent ---------------------
   function routeCommand(text) {
     setState('thinking', text);
-    var nav = matchNav(text);
-    if (nav) {
-      try { if (window.navigate) navigate(nav.view, nav.param || null); } catch (e) {}
-      return speakThen('Opening ' + nav.label + '.', null);
+    // Only treat as pure navigation when it is clearly a "go to X" command:
+    // a short phrase, or one that starts with an explicit navigation verb.
+    // Anything longer ("put me on the schedule from 8 to 8") is a real request
+    // and must go to Nova's brain so it can take the action.
+    var wordCount = text.trim().split(/\s+/).length;
+    var navVerb = /^\s*(open|go to|goto|show|show me|pull up|take me to|navigate to|jump to|bring up|switch to)\b/i.test(text);
+    if (navVerb || wordCount <= 3) {
+      var nav = matchNav(text);
+      if (nav) {
+        try { if (window.navigate) navigate(nav.view, nav.param || null); } catch (e) {}
+        return speakThen('Opening ' + nav.label + '.', null);
+      }
     }
     // conversational / action request -> Nova AI agent (same brain, tools)
     NV.history.push({ role: 'user', content: text });
