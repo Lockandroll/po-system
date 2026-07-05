@@ -10663,4 +10663,2702 @@ function schedBulkIdsEditForm(){
       '<div style="flex:1;min-width:120px"><div style="font-size:12px;color:var(--text-muted-color);margin-bottom:4px">Position</div><select id="bki-pos" style="'+inp+'">'+posOpts+'</select></div>'+
       '<div style="flex:1;min-width:120px"><div style="font-size:12px;color:var(--text-muted-color);margin-bottom:4px">Break (min)</div><input type="number" min="0" id="bki-break" placeholder="unchanged" style="'+inp+'"></div>'+
     '</div>'+
-    '<div style="display:flex;justify-content:flex-end;gap:8px;margin-top:14px"><button class="btn btn-ghost btn-sm" onclick="schedCloseModal()">Cancel</button><button class="btn btn
+    '<div style="display:flex;justify-content:flex-end;gap:8px;margin-top:14px"><button class="btn btn-ghost btn-sm" onclick="schedCloseModal()">Cancel</button><button class="btn btn-primary btn-sm" onclick="schedBulkIdsEditSave()">Apply</button></div>'
+  );
+}
+async function schedBulkIdsEditSave(){
+  var ids=schedSelIds(); if(!ids.length){ schedCloseModal(); return; }
+  var body={action:'update',ids:ids};
+  var st=(document.getElementById('bki-start')||{}).value; if(st) body.start_time=st;
+  var en=(document.getElementById('bki-end')||{}).value; if(en) body.end_time=en;
+  var po=(document.getElementById('bki-pos')||{}).value; if(po) body.position_id=po;
+  var bm=(document.getElementById('bki-break')||{}).value; if(bm!==''&&bm!==undefined) body.break_minutes=bm;
+  if(!body.start_time && !body.end_time && !body.position_id && body.break_minutes===undefined){ document.getElementById('bki-err').innerHTML='<div class="alert alert-error">Enter at least one change.</div>'; return; }
+  try{ var r=await api('POST','/schedule/bulk-ids',body); _schedSel={}; schedCloseModal(); await schedLoadAdmin(); schedAfterBulk(); schedToast('Updated '+r.affected+' shift(s).','ok'); }
+  catch(e){ document.getElementById('bki-err').innerHTML='<div class="alert alert-error">'+escHtml(e.message)+'</div>'; }
+}
+function schedBulkIdsReassignForm(){
+  var ids=schedSelIds(); if(!ids.length) return;
+  var inp='background:var(--bg-elevated,#1f1f1f);color:var(--text-color,#fff);border:1px solid var(--border,#333);border-radius:6px;padding:8px;width:100%;font-size:14px;box-sizing:border-box';
+  var userOpts='<option value="">— pick employee —</option>'+schedVisibleUsers().map(function(u){ return '<option value="'+u.id+'">'+escHtml(u.name)+'</option>'; }).join('');
+  schedModal(
+    '<h3 style="margin:0 0 4px">Reassign '+ids.length+' shift(s)</h3>'+
+    '<p class="text-muted" style="font-size:12.5px;margin:0 0 12px">Move every selected shift to this employee.</p>'+
+    '<div id="bki-err"></div>'+
+    '<div style="font-size:12px;color:var(--text-muted-color);margin-bottom:4px">Employee</div><select id="bki-user" style="'+inp+'">'+userOpts+'</select>'+
+    '<div style="display:flex;justify-content:flex-end;gap:8px;margin-top:14px"><button class="btn btn-ghost btn-sm" onclick="schedCloseModal()">Cancel</button><button class="btn btn-primary btn-sm" onclick="schedBulkIdsReassignSave()">Reassign</button></div>'
+  );
+}
+async function schedBulkIdsReassignSave(){
+  var ids=schedSelIds(); if(!ids.length){ schedCloseModal(); return; }
+  var uid=(document.getElementById('bki-user')||{}).value;
+  if(!uid){ document.getElementById('bki-err').innerHTML='<div class="alert alert-error">Pick an employee.</div>'; return; }
+  try{ var r=await api('POST','/schedule/bulk-ids',{action:'reassign',ids:ids,user_id:uid}); _schedSel={}; schedCloseModal(); await schedLoadAdmin(); schedAfterBulk(); schedToast('Reassigned '+r.affected+' shift(s).','ok'); }
+  catch(e){ document.getElementById('bki-err').innerHTML='<div class="alert alert-error">'+escHtml(e.message)+'</div>'; }
+}
+
+// --- Drag-and-drop: move a shift to another day/employee by dragging it ---
+var _schedDragShiftId=null;
+function schedDragStart(e,id){
+  if(_schedSelMode){ e.preventDefault(); return; }
+  _schedDragShiftId=id;
+  if(e.dataTransfer){ e.dataTransfer.effectAllowed='move'; try{ e.dataTransfer.setData('text/plain',String(id)); }catch(_e){} }
+  var el=e.currentTarget; if(el) setTimeout(function(){ if(el) el.style.opacity='0.4'; },0);
+}
+function schedDragEnd(e){
+  var el=e.currentTarget; if(el) el.style.opacity='';
+  _schedDragShiftId=null;
+  var hot=document.querySelectorAll('.sched-drop-hot'); for(var i=0;i<hot.length;i++) hot[i].classList.remove('sched-drop-hot');
+}
+function schedDragOver(e){ e.preventDefault(); if(e.dataTransfer) e.dataTransfer.dropEffect='move'; }
+function schedDragEnter(e){ var td=e.currentTarget; if(td) td.classList.add('sched-drop-hot'); }
+function schedDragLeave(e){ var td=e.currentTarget; if(td) td.classList.remove('sched-drop-hot'); }
+async function schedDrop(e,userId,date){
+  e.preventDefault(); e.stopPropagation();
+  var td=e.currentTarget; if(td) td.classList.remove('sched-drop-hot');
+  var id=_schedDragShiftId; _schedDragShiftId=null;
+  await schedMoveShift(id,userId,date);
+}
+
+async function schedMoveShift(id,userId,date){
+  if(!id) return;
+  var s=_schedShifts.filter(function(x){return x.id===id;})[0];
+  if(!s) return;
+  if(String(s.user_id)===String(userId) && schedShiftDate(s)===date) return;
+  var body={ user_id:userId, shift_date:date, start_time:String(s.start_time).slice(0,5), end_time:String(s.end_time).slice(0,5), position_id:s.position_id||null, city_code:s.city_code||null, break_minutes:(parseInt(s.break_minutes,10)||0), notes:s.notes||'' };
+  try{
+    var res=await api('PUT','/schedule/shifts/'+id,body);
+    await schedLoadAdmin(); schedRenderGrid();
+    if(res&&res.conflicts&&res.conflicts.length) schedToast('Moved with warnings: '+res.conflicts.join(' '),'warn');
+    else schedToast('Shift moved.','ok');
+  }catch(err){ schedToast(err.message||'Move failed','err'); schedRenderGrid(); }
+}
+
+// Touch drag (mobile): long-press a shift to pick it up, drag onto a cell, release.
+var _schedTouch=null;
+function schedTouchStart(e,id){
+  if(e.touches && e.touches.length>1) return;
+  var t=e.touches[0];
+  var srcEl=e.currentTarget;
+  _schedTouch={ id:id, startX:t.clientX, startY:t.clientY, offX:0, offY:0, dragging:false, clone:null, srcEl:srcEl, lastCell:null, timer:null };
+  _schedTouch.timer=setTimeout(function(){
+    if(!_schedTouch) return;
+    _schedTouch.dragging=true;
+    if(navigator.vibrate){ try{ navigator.vibrate(15); }catch(_e){} }
+    var rect=srcEl.getBoundingClientRect();
+    var c=srcEl.cloneNode(true);
+    c.style.position='fixed'; c.style.left=rect.left+'px'; c.style.top=rect.top+'px';
+    c.style.width=rect.width+'px'; c.style.margin='0'; c.style.pointerEvents='none';
+    c.style.opacity='0.9'; c.style.zIndex='400'; c.style.boxShadow='0 6px 20px rgba(0,0,0,0.5)'; c.style.transform='scale(1.03)';
+    document.body.appendChild(c);
+    _schedTouch.clone=c;
+    _schedTouch.offX=_schedTouch.startX-rect.left;
+    _schedTouch.offY=_schedTouch.startY-rect.top;
+    srcEl.style.opacity='0.35';
+  },280);
+}
+function schedTouchMove(e){
+  if(!_schedTouch) return;
+  var t=e.touches[0];
+  if(!_schedTouch.dragging){
+    var dx=Math.abs(t.clientX-_schedTouch.startX), dy=Math.abs(t.clientY-_schedTouch.startY);
+    if(dx>8||dy>8){ clearTimeout(_schedTouch.timer); _schedTouch=null; }
+    return;
+  }
+  e.preventDefault();
+  var c=_schedTouch.clone;
+  if(c){ c.style.left=(t.clientX-_schedTouch.offX)+'px'; c.style.top=(t.clientY-_schedTouch.offY)+'px'; }
+  var el=document.elementFromPoint(t.clientX,t.clientY);
+  var td=el?(el.closest?el.closest('td[data-sched-uid]'):null):null;
+  if(_schedTouch.lastCell && _schedTouch.lastCell!==td) _schedTouch.lastCell.classList.remove('sched-drop-hot');
+  if(td) td.classList.add('sched-drop-hot');
+  _schedTouch.lastCell=td;
+}
+function schedTouchEnd(e){
+  if(!_schedTouch) return;
+  clearTimeout(_schedTouch.timer);
+  var st=_schedTouch; _schedTouch=null;
+  if(st.srcEl) st.srcEl.style.opacity='';
+  if(st.clone) st.clone.remove();
+  if(st.lastCell) st.lastCell.classList.remove('sched-drop-hot');
+  if(!st.dragging) return;
+  if(e.cancelable) e.preventDefault();
+  if(st.lastCell){
+    var uid=st.lastCell.getAttribute('data-sched-uid');
+    var date=st.lastCell.getAttribute('data-sched-date');
+    if(uid&&date) schedMoveShift(st.id,uid,date);
+  }
+}
+
+function schedChangeWeek(n){ _schedMonday=schedAddDays(_schedMonday,n*7); renderScheduleAdmin(document.getElementById('content')); }
+function schedThisWeek(){ _schedMonday=schedMondayOf(schedToday()); renderScheduleAdmin(document.getElementById('content')); }
+function schedSetCity(c){ _schedCity=c||''; renderScheduleAdmin(document.getElementById('content')); }
+function schedSetRole(r){ _schedRole=r||''; renderScheduleAdmin(document.getElementById('content')); }
+function schedRoleOptions(){
+  var byLabel={};
+  ['locksmith','locksmith_coordinator','dispatcher','roadside_technician','manager','admin'].forEach(function(rl){ var lbl=roleLabel(rl); if(!byLabel[lbl]) byLabel[lbl]=[]; if(byLabel[lbl].indexOf(rl)===-1) byLabel[lbl].push(rl); });
+  _schedUsers.forEach(function(u){ var lbl=roleLabel(u.role); if(!byLabel[lbl]) byLabel[lbl]=[]; if(byLabel[lbl].indexOf(u.role)===-1) byLabel[lbl].push(u.role); });
+  var labels=Object.keys(byLabel).sort();
+  return '<option value="">All roles</option>'+labels.map(function(lbl){ var val=byLabel[lbl].join(','); return '<option value="'+escHtml(val)+'"'+(_schedRole===val?' selected':'')+'>'+escHtml(lbl)+'</option>'; }).join('');
+}
+
+function schedModal(html){ var m=document.getElementById('sched-modal'); if(!m) return; m.innerHTML='<div style="position:fixed;inset:0;background:rgba(0,0,0,0.6);z-index:200;display:flex;align-items:flex-start;justify-content:center;overflow:auto;padding:40px 14px" onclick="if(event.target===this)schedCloseModal()"><div style="background:var(--card-bg,#161616);border:1px solid var(--border,#333);border-radius:12px;max-width:460px;width:100%;padding:20px">'+html+'</div></div>'; }
+function schedCloseModal(){ var m=document.getElementById('sched-modal'); if(m) m.innerHTML=''; }
+
+function schedShiftForm(s){
+  _schedEditId=s&&s.id?s.id:null;
+  var _ulist=schedVisibleUsers(); if(s&&s.user_id&&!_ulist.some(function(u){return u.id==s.user_id;})){ var _su=_schedUsers.filter(function(u){return u.id==s.user_id;})[0]; if(_su) _ulist=[_su].concat(_ulist); }
+  var userOpts=_ulist.map(function(u){ return '<option value="'+u.id+'"'+(s&&s.user_id==u.id?' selected':'')+'>'+escHtml(u.name)+'</option>'; }).join('');
+  var posOpts='<option value="">No position</option>'+_schedPositions.filter(function(p){return p.active!==false;}).map(function(p){ return '<option value="'+p.id+'"'+(s&&s.position_id==p.id?' selected':'')+'>'+escHtml(p.name)+'</option>'; }).join('');
+  var cityOpts='<option value="">— city —</option>'+_schedCities.map(function(c){ var cc=(c.code||'').trim(); return '<option value="'+escHtml(cc)+'"'+(s&&(String(s.city_code||'').trim()===cc)?' selected':(!s&&_schedCity===cc?' selected':''))+'>'+escHtml(c.name)+'</option>'; }).join('');
+  var inp='background:var(--bg-elevated,#1f1f1f);color:var(--text-color,#fff);border:1px solid var(--border,#333);border-radius:6px;padding:8px;width:100%;font-size:14px';
+  schedModal(
+    '<h3 style="margin:0 0 14px">'+(_schedEditId?'Edit Shift':'New Shift')+'</h3>'+(_schedEditId?'':schedTypeToggle('single'))+
+    '<div id="sched-form-err"></div>'+
+    '<div class="form-group"><label>Employee</label><select id="sf-user" style="'+inp+'">'+userOpts+'</select></div>'+
+    '<div class="form-group"><label>Date</label><input type="date" id="sf-date" value="'+escHtml(s&&s.shift_date?schedShiftDate(s):(s&&s._date?s._date:''))+'" style="'+inp+'"></div>'+
+    '<div style="display:flex;gap:10px"><div class="form-group" style="flex:1"><label>Start</label><input type="time" id="sf-start" value="'+escHtml(s&&s.start_time?String(s.start_time).slice(0,5):'09:00')+'" style="'+inp+'"></div>'+
+    '<div class="form-group" style="flex:1"><label>End</label><input type="time" id="sf-end" value="'+escHtml(s&&s.end_time?String(s.end_time).slice(0,5):'17:00')+'" style="'+inp+'"></div></div>'+
+    '<div style="display:flex;gap:10px"><div class="form-group" style="flex:1"><label>Position</label><select id="sf-pos" style="'+inp+'">'+posOpts+'</select></div>'+
+    '<div class="form-group" style="flex:1"><label>City</label><select id="sf-city" style="'+inp+'">'+cityOpts+'</select></div></div>'+
+    '<div class="form-group"><label>Unpaid break (min)</label><input type="number" id="sf-break" min="0" value="'+(s&&s.break_minutes?parseInt(s.break_minutes,10):0)+'" style="'+inp+'"></div>'+
+    '<div class="form-group"><label>Notes</label><input type="text" id="sf-notes" value="'+escHtml(s&&s.notes?s.notes:'')+'" style="'+inp+'"></div>'+
+    '<div class="form-group" style="display:flex;align-items:center;gap:8px"><input type="checkbox" id="sf-publish"'+((s&&s.status==='published')?' checked':'')+' style="width:auto"><label for="sf-publish" style="margin:0;cursor:pointer">Publish now (visible to staff)</label></div>'+
+    '<div style="display:flex;justify-content:space-between;gap:8px;margin-top:8px">'+
+      (_schedEditId?'<button class="btn btn-danger btn-sm" onclick="schedDeleteShift()">Delete</button>':'<span></span>')+
+      '<div style="display:flex;gap:8px"><button class="btn btn-ghost btn-sm" onclick="schedCloseModal()">Cancel</button><button class="btn btn-primary btn-sm" onclick="schedSaveShift()">Save</button></div>'+
+    '</div>'
+  );
+}
+function schedNewShift(userId,date){ if(_schedSelMode) return; schedShiftForm({ user_id:userId, _date:date, shift_date:date }); }
+function schedOpenShift(id){ var s=_schedShifts.filter(function(x){return x.id===id;})[0]; if(s) schedShiftForm(s); }
+
+async function schedSaveShift(){
+  var body={ user_id:document.getElementById('sf-user').value, shift_date:document.getElementById('sf-date').value, start_time:document.getElementById('sf-start').value, end_time:document.getElementById('sf-end').value, position_id:document.getElementById('sf-pos').value||null, city_code:document.getElementById('sf-city').value||null, break_minutes:document.getElementById('sf-break').value||0, notes:document.getElementById('sf-notes').value, publish:document.getElementById('sf-publish').checked };
+  if(!body.shift_date||!body.start_time||!body.end_time){ document.getElementById('sched-form-err').innerHTML='<div class="alert alert-error">Date, start and end are required.</div>'; return; }
+  try{
+    var res=_schedEditId?await api('PUT','/schedule/shifts/'+_schedEditId,body):await api('POST','/schedule/shifts',body);
+    schedCloseModal();
+    await schedLoadAdmin(); schedRenderGrid();
+    if(res&&res.conflicts&&res.conflicts.length) schedToast('Saved with warnings: '+res.conflicts.join(' '),'warn');
+  }catch(e){ document.getElementById('sched-form-err').innerHTML='<div class="alert alert-error">'+escHtml(e.message)+'</div>'; }
+}
+async function schedDeleteShift(){
+  if(!_schedEditId) return; if(!await novaConfirm('Delete this shift?')) return;
+  try{ await api('DELETE','/schedule/shifts/'+_schedEditId); schedCloseModal(); await schedLoadAdmin(); schedRenderGrid(); }catch(e){ novaAlert(e.message); }
+}
+
+async function schedPublishWeek(){
+  var from=_schedMonday, to=schedAddDays(_schedMonday,6);
+  if(!await novaConfirm('Publish all draft shifts for this week'+(_schedCity?' in the selected city':'')+'? Affected staff will be notified.')) return;
+  try{ var r=await api('POST','/schedule/publish',{from:from,to:to,city:_schedCity||null}); schedToast('Published '+r.published+' shift(s).','ok'); await schedLoadAdmin(); schedRenderGrid(); }catch(e){ novaAlert(e.message); }
+}
+async function schedCopyLastWeek(){
+  var src=schedAddDays(_schedMonday,-7);
+  if(!await novaConfirm('Copy last week’s shifts into this week as drafts?')) return;
+  try{ var r=await api('POST','/schedule/copy-week',{source_monday:src,target_monday:_schedMonday,city:_schedCity||null}); schedToast('Copied '+r.copied+' shift(s) as drafts.','ok'); await schedLoadAdmin(); schedRenderGrid(); }catch(e){ novaAlert(e.message); }
+}
+
+function schedToast(msg,kind){
+  var c=kind==='ok'?'rgba(34,197,94,0.15)':kind==='warn'?'rgba(245,158,11,0.15)':'rgba(239,68,68,0.15)';
+  var bd=kind==='ok'?'#22c55e':kind==='warn'?'#f59e0b':'#ef4444';
+  var t=document.createElement('div'); t.style.cssText='position:fixed;bottom:20px;left:50%;transform:translateX(-50%);background:'+c+';border:1px solid '+bd+';color:var(--text-color,#fff);padding:11px 18px;border-radius:8px;z-index:300;font-size:13.5px;max-width:90%;box-shadow:0 6px 24px rgba(0,0,0,0.4)';
+  t.textContent=msg; document.body.appendChild(t); setTimeout(function(){ t.remove(); },5000);
+}
+
+async function schedManagePositions(){
+  var list=_schedPositions.map(function(p){
+    return '<div style="display:flex;align-items:center;gap:8px;margin-bottom:8px"><input type="text" value="'+escHtml(p.name)+'" onchange="schedSavePosition('+p.id+',null,this.value)" style="flex:1;background:var(--bg-elevated,#1f1f1f);color:var(--text-color,#fff);border:1px solid var(--border,#333);border-radius:6px;padding:7px"><button class="btn btn-danger btn-sm" onclick="schedDeletePosition('+p.id+')">&times;</button></div>';
+  }).join('');
+  schedModal('<h3 style="margin:0 0 14px">Positions</h3>'+(list||'<p class="text-muted">No positions yet.</p>')+
+    '<div style="display:flex;gap:8px;margin-top:12px"><input type="text" id="sp-new" placeholder="New position name" style="flex:1;background:var(--bg-elevated,#1f1f1f);color:var(--text-color,#fff);border:1px solid var(--border,#333);border-radius:6px;padding:8px"><button class="btn btn-primary btn-sm" onclick="schedAddPosition()">Add</button></div>'+
+    '<div style="text-align:right;margin-top:14px"><button class="btn btn-ghost btn-sm" onclick="schedCloseModal()">Done</button></div>');
+}
+async function schedAddPosition(){ var n=(document.getElementById('sp-new').value||'').trim(); if(!n) return; try{ await api('POST','/schedule/positions',{name:n,color:'#f97316'}); _schedPositions=await api('GET','/schedule/positions'); schedManagePositions(); }catch(e){ novaAlert(e.message); } }
+async function schedSavePosition(id,color,name){ var p=_schedPositions.filter(function(x){return x.id===id;})[0]; if(!p) return; try{ await api('PUT','/schedule/positions/'+id,{name:name!=null?name:p.name,color:color!=null?color:p.color,active:p.active!==false}); _schedPositions=await api('GET','/schedule/positions'); }catch(e){ novaAlert(e.message); } }
+async function schedDeletePosition(id){ if(!await novaConfirm('Delete this position?')) return; try{ await api('DELETE','/schedule/positions/'+id); _schedPositions=await api('GET','/schedule/positions'); schedManagePositions(); }catch(e){ novaAlert(e.message); } }
+
+function schedCityName(code){ var cc=String(code||'').trim(); for(var i=0;i<_schedCities.length;i++){ if((_schedCities[i].code||'').trim()===cc) return _schedCities[i].name||cc; } return cc; }
+function schedUserPrimaryCity(u){ var codes=(_schedEmpCities[u.id]||[]).slice(); if(!codes.length) return ''; var names=codes.map(function(c){return schedCityName(c);}); names.sort(function(a,b){return a.toLowerCase().localeCompare(b.toLowerCase());}); return names[0]; }
+function schedVisibleUsers(){
+  return _schedUsers.filter(function(u){
+    if(_schedRole){ if(_schedRole.split(',').indexOf(u.role)===-1) return false; }
+    var codes=_schedEmpCities[u.id]||[];
+    var unassigned=codes.length===0;
+    if(_schedCity){ return unassigned || codes.indexOf(_schedCity)!==-1; }
+    if(_schedScope===null) return true;
+    if(unassigned) return true;
+    return codes.some(function(c){ return _schedScope.indexOf(c)!==-1; });
+  }).sort(function(a,b){
+    var ca=schedUserPrimaryCity(a), cb=schedUserPrimaryCity(b);
+    if(!ca&&cb) return 1; if(ca&&!cb) return -1;
+    var d=ca.toLowerCase().localeCompare(cb.toLowerCase());
+    if(d!==0) return d;
+    return String(a.name||'').toLowerCase().localeCompare(String(b.name||'').toLowerCase());
+  });
+}
+function schedScopedCities(){
+  if(_schedScope===null) return _schedCities;
+  return _schedCities.filter(function(c){ return _schedScope.indexOf((c.code||'').trim())!==-1; });
+}
+function nwKey(name){
+  name=(name||'').trim().toLowerCase().replace(/\./g,'');
+  if(!name) return '';
+  var suf={'jr':1,'sr':1,'ii':1,'iii':1,'iv':1,'v':1};
+  var first='', last='';
+  if(name.indexOf(',')!==-1){
+    var parts=name.split(',');
+    var lp=parts[0].trim().split(/\s+/).filter(function(t){return !suf[t];});
+    last=lp[0]||'';
+    var fp=(parts[1]||'').trim().split(/\s+/);
+    first=fp[0]||'';
+  } else {
+    var toks=name.split(/\s+/).filter(function(t){return !suf[t];});
+    first=toks[0]||''; last=toks[toks.length-1]||'';
+  }
+  return first+'|'+last;
+}
+function nwParseCSV(text){
+  var rows=[], row=[], field='', inQ=false, i=0;
+  for(; i<text.length; i++){
+    var c=text[i];
+    if(inQ){ if(c==='"'){ if(text[i+1]==='"'){field+='"';i++;} else inQ=false; } else field+=c; continue; }
+    if(c==='"'){ inQ=true; continue; }
+    if(c===','){ row.push(field); field=''; continue; }
+    if(c==='\r'){ continue; }
+    if(c==='\n'){ row.push(field); rows.push(row); row=[]; field=''; continue; }
+    field+=c;
+  }
+  if(field.length||row.length){ row.push(field); rows.push(row); }
+  return rows;
+}
+function nwDateToYmd(s){
+  var m=String(s||'').trim().match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})/);
+  if(!m) return '';
+  return m[3]+'-'+String(m[1]).padStart(2,'0')+'-'+String(m[2]).padStart(2,'0');
+}
+async function renderNoWorkReport(el){
+  if(!can('manage_schedule')){ el.innerHTML='<div class="alert alert-error">Access denied.</div>'; return; }
+  var mon=schedMondayOf(schedToday()), sun=schedAddDays(mon,6);
+  var cities=[]; try{ cities=(await api('GET','/cities')).filter(function(c){return c.active!==false;}); }catch(e){}
+  var cityOpts='<option value="">All cities</option>'+cities.map(function(c){var cc=(c.code||'').trim();return '<option value="'+escHtml(cc)+'">'+escHtml(c.name)+'</option>';}).join('');
+  var inp='background:var(--bg-elevated,#1f1f1f);color:var(--text-color,#fff);border:1px solid var(--border,#333);border-radius:6px;padding:8px;width:100%';
+  el.innerHTML=
+    '<div class="page-header"><div class="page-title"><h2>No-Work Report</h2><p>Upload a call report and compare it day-by-day to the schedule to see who was scheduled but pulled no calls that day.</p></div>'+
+      '<button class="btn btn-secondary" onclick="navigate(\'schedule-admin\')">&larr; Back to schedule</button></div>'+
+    '<div class="card" style="max-width:720px"><div class="card-body">'+
+      '<div style="display:flex;gap:12px;flex-wrap:wrap">'+
+        '<div class="form-group" style="flex:1;min-width:150px"><label>From</label><input type="date" id="nw-from" value="'+mon+'" style="'+inp+'"></div>'+
+        '<div class="form-group" style="flex:1;min-width:150px"><label>To</label><input type="date" id="nw-to" value="'+sun+'" style="'+inp+'"></div>'+
+        '<div class="form-group" style="flex:1;min-width:150px"><label>City</label><select id="nw-city" style="'+inp+'">'+cityOpts+'</select></div>'+
+      '</div>'+
+      '<div class="form-group"><label>Call report CSV</label><input type="file" id="nw-file" accept=".csv" style="'+inp+'"></div>'+
+      '<button class="btn btn-primary" onclick="nwRun()">Run report</button>'+
+    '</div></div>'+
+    '<div id="nw-results" style="margin-top:16px"></div>';
+}
+function nwNorm(s){ return (s||'').trim().toLowerCase().replace(/\s+/g,' '); }
+async function nwRun(){
+  var res=document.getElementById('nw-results');
+  var fileEl=document.getElementById('nw-file');
+  if(!fileEl.files||!fileEl.files[0]){ res.innerHTML='<div class="alert alert-error">Please choose a CSV file.</div>'; return; }
+  var from=document.getElementById('nw-from').value, to=document.getElementById('nw-to').value;
+  if(!from||!to){ res.innerHTML='<div class="alert alert-error">Please choose a date range.</div>'; return; }
+  if(from>to){ var t=from; from=to; to=t; }
+  var city=document.getElementById('nw-city').value;
+  res.innerHTML='<div class="loading">Reading…</div>';
+  var text; try{ text=await fileEl.files[0].text(); }catch(e){ res.innerHTML='<div class="alert alert-error">Could not read file.</div>'; return; }
+  var rows=nwParseCSV(text);
+  if(!rows.length){ res.innerHTML='<div class="alert alert-error">Empty file.</div>'; return; }
+  var header=rows[0].map(function(h){return (h||'').trim();});
+  var techIdx=header.indexOf('Dispatch Closed'), dateIdx=header.indexOf('Date Disp');
+  if(techIdx===-1){ res.innerHTML='<div class="alert alert-error">Could not find a "Dispatch Closed" column.</div>'; return; }
+  if(dateIdx===-1){ res.innerHTML='<div class="alert alert-error">Could not find a "Date Disp" column (needed for the per-day comparison).</div>'; return; }
+  var keyByDate={}, normByDate={}, allWorked={};
+  for(var i=1;i<rows.length;i++){
+    var r=rows[i]; if(!r||techIdx>=r.length) continue;
+    var d=nwDateToYmd(r[dateIdx]); if(!d||d<from||d>to) continue;
+    var nm=(r[techIdx]||'').trim(); if(!nm) continue;
+    var k=nwKey(nm), nrm=nwNorm(nm);
+    (keyByDate[d]=keyByDate[d]||{})[k]=1;
+    (normByDate[d]=normByDate[d]||{})[nrm]=1;
+    if(!allWorked[k]) allWorked[k]={name:nm,norm:nrm};
+  }
+  var scheduled=[];
+  try{ scheduled=await api('GET','/schedule/scheduled-users?from='+from+'&to='+to+(city?'&city='+encodeURIComponent(city):'')); }catch(e){ res.innerHTML='<div class="alert alert-error">'+escHtml(e.message)+'</div>'; return; }
+  var noWorkByUser={}, schedKeySet={}, schedNormSet={}, slots=0, workedSlots=0, noWorkSlots=0;
+  scheduled.forEach(function(row){
+    slots++;
+    schedKeySet[nwKey(row.name)]=1;
+    var pn = row.pulsar_name ? nwNorm(row.pulsar_name) : '';
+    if(pn) schedNormSet[pn]=1;
+    var did = pn ? (normByDate[row.shift_date] && normByDate[row.shift_date][pn]) : (keyByDate[row.shift_date] && keyByDate[row.shift_date][nwKey(row.name)]);
+    if(did){ workedSlots++; }
+    else { noWorkSlots++; (noWorkByUser[row.user_id]=noWorkByUser[row.user_id]||{name:row.name,days:[]}).days.push(row.shift_date); }
+  });
+  var extra=[]; Object.keys(allWorked).forEach(function(k){ var w=allWorked[k]; if(!schedKeySet[k] && !schedNormSet[w.norm]) extra.push(w.name); }); extra.sort();
+  var userList=Object.keys(noWorkByUser).map(function(id){return noWorkByUser[id];}).sort(function(a,b){return (a.name||'').localeCompare(b.name||'');});
+  var html='<div class="card"><div class="card-body">'+
+    '<div style="display:flex;gap:18px;flex-wrap:wrap;margin-bottom:14px;font-size:14px">'+
+      '<div><strong style="font-size:20px">'+slots+'</strong><div class="text-muted" style="font-size:12px">Scheduled shifts</div></div>'+
+      '<div><strong style="font-size:20px;color:#22c55e">'+workedSlots+'</strong><div class="text-muted" style="font-size:12px">Worked</div></div>'+
+      '<div><strong style="font-size:20px;color:#ef4444">'+noWorkSlots+'</strong><div class="text-muted" style="font-size:12px">No work</div></div>'+
+    '</div>'+
+    '<div style="font-weight:700;margin-bottom:8px;color:#ef4444">Scheduled but pulled no calls ('+escHtml(from)+' to '+escHtml(to)+')</div>'+
+    (slots===0 ? '<p class="text-muted">No shifts were scheduled in this date range. Check that the dates match the week people are actually scheduled.</p>' : (userList.length? userList.map(function(u){ return '<div style="padding:6px 0;border-bottom:0.5px solid var(--border,#2a2a2a)"><strong>'+escHtml(u.name)+'</strong><div style="font-size:12.5px;color:var(--text-muted-color,#999)">'+u.days.sort().map(function(d){return escHtml(schedDateLabel(d));}).join(' · ')+'</div></div>'; }).join('') : '<p class="text-muted">Everyone pulled at least one call on every day they were scheduled.</p>'))+
+    (extra.length? '<div style="font-weight:700;margin:16px 0 6px">Pulled calls but not on the schedule</div><div class="text-muted" style="font-size:13px">'+extra.map(escHtml).join(', ')+'</div>' : '')+
+  '</div></div>';
+  res.innerHTML=html;
+}
+
+// ----- employee view -------------------------------------------------------
+var _mySchedMode='week', _mySchedScope='mine', _mySchedMonday=null, _mySchedMonthAnchor=null, _mySchedCity='', _mySchedCities=[], _mySchedShifts=[];
+
+async function renderSchedule(el){
+  if(!can('view_schedule')){ el.innerHTML='<div class="alert alert-error">Access denied.</div>'; return; }
+  if(!_mySchedMonday) _mySchedMonday=schedMondayOf(schedToday());
+  if(_mySchedMode==='month' && !_mySchedMonthAnchor) _mySchedMonthAnchor=schedMonthFirst(schedToday());
+  el.innerHTML='<div class="loading">Loading…</div>';
+  var from, to;
+  if(_mySchedMode==='month'){ from=schedMondayOf(_mySchedMonthAnchor); var _ld=schedAddDays(schedAddMonths(_mySchedMonthAnchor,1),-1); to=schedAddDays(schedMondayOf(_ld),6); }
+  else { from=_mySchedMonday; to=schedAddDays(_mySchedMonday,6); }
+  try{
+    if(_mySchedScope==='city'){
+      var q='?from='+from+'&to='+to+(_mySchedCity?'&city='+encodeURIComponent(_mySchedCity):'');
+      var r=await api('GET','/schedule/city'+q);
+      _mySchedCities=r.cities||[]; _mySchedShifts=r.shifts||[];
+    } else {
+      _mySchedShifts=await api('GET','/schedule/me?from='+from+'&to='+to);
+    }
+  }catch(e){ el.innerHTML='<div class="alert alert-error">'+escHtml(e.message)+'</div>'; return; }
+
+  var isMonth=_mySchedMode==='month';
+  var nav;
+  if(isMonth){
+    nav='<button class="btn btn-ghost btn-sm" onclick="mySchedNav(-1)">&lsaquo; Prev</button>'+
+        '<span style="font-weight:600;min-width:150px;text-align:center">'+escHtml(schedMonthLabel(_mySchedMonthAnchor))+'</span>'+
+        '<button class="btn btn-ghost btn-sm" onclick="mySchedNav(1)">Next &rsaquo;</button>'+
+        '<button class="btn btn-ghost btn-sm" onclick="mySchedToday()">Today</button>';
+  } else {
+    var we=schedAddDays(_mySchedMonday,6);
+    nav='<button class="btn btn-ghost btn-sm" onclick="mySchedNav(-1)">&lsaquo; Prev</button>'+
+        '<span style="font-weight:600;min-width:170px;text-align:center">'+escHtml(schedDateLabel(_mySchedMonday))+' – '+escHtml(schedDateLabel(we))+'</span>'+
+        '<button class="btn btn-ghost btn-sm" onclick="mySchedNav(1)">Next &rsaquo;</button>'+
+        '<button class="btn btn-ghost btn-sm" onclick="mySchedToday()">Today</button>';
+  }
+  function segBtn(active,onclick,label){ return '<button class="btn btn-sm" style="border-radius:0;border:none;'+(active?'background:var(--primary,#f97316);color:#fff':'background:transparent;color:var(--text-color,#ccc)')+'" onclick="'+onclick+'">'+label+'</button>'; }
+  var scopeBtns='<div style="display:flex;border:1px solid var(--border,#333);border-radius:6px;overflow:hidden">'+
+    segBtn(_mySchedScope==='mine',"mySchedSetScope('mine')",'My shifts')+
+    segBtn(_mySchedScope==='city',"mySchedSetScope('city')",'City schedule')+'</div>';
+  var modeBtns='<div style="display:flex;border:1px solid var(--border,#333);border-radius:6px;overflow:hidden">'+
+    segBtn(!isMonth,"mySchedSetMode('week')",'Week')+
+    segBtn(isMonth,"mySchedSetMode('month')",'Month')+'</div>';
+  var citySel='';
+  if(_mySchedScope==='city'){
+    var co='<option value="">All my cities</option>'+_mySchedCities.map(function(c){ var cc=(c.code||'').trim(); return '<option value="'+escHtml(cc)+'"'+(_mySchedCity===cc?' selected':'')+'>'+escHtml(c.name)+'</option>'; }).join('');
+    citySel='<select onchange="mySchedSetCity(this.value)" style="background:var(--card-bg,#1a1a1a);color:var(--text-color,#fff);border:1px solid var(--border,#333);border-radius:6px;padding:7px 10px;font-size:13px">'+co+'</select>';
+  }
+  var grid=isMonth?mySchedMonthHtml():mySchedWeekHtml(from);
+  el.innerHTML=
+    '<div class="page-header" style="flex-wrap:wrap;gap:10px"><div class="page-title">My Schedule</div>'+
+      '<div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">'+scopeBtns+modeBtns+'</div>'+
+    '</div>'+
+    '<div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-bottom:14px">'+
+      '<div style="display:flex;align-items:center;gap:6px">'+nav+'</div>'+citySel+
+    '</div>'+
+    '<div class="card"><div class="card-body" style="overflow-x:auto'+(isMonth?';padding:0':'')+'">'+grid+'</div></div>'+
+    '<p class="text-muted" style="font-size:12.5px;margin-top:10px">'+(_mySchedScope==='city'?'Published shifts for your city.':'Your published shifts.')+(isMonth?' Click a day to open that week.':'')+'</p>';
+}
+
+function mySchedSetScope(s){ _mySchedScope=s; renderSchedule(document.getElementById('content')); }
+function mySchedSetMode(m){ _mySchedMode=m; if(m==='month' && !_mySchedMonthAnchor) _mySchedMonthAnchor=schedMonthFirst(_mySchedMonday||schedToday()); renderSchedule(document.getElementById('content')); }
+function mySchedSetCity(c){ _mySchedCity=c; renderSchedule(document.getElementById('content')); }
+function mySchedNav(n){ if(_mySchedMode==='month'){ _mySchedMonthAnchor=schedAddMonths(_mySchedMonthAnchor||schedMonthFirst(schedToday()),n); } else { _mySchedMonday=schedAddDays(_mySchedMonday||schedMondayOf(schedToday()),7*n); } renderSchedule(document.getElementById('content')); }
+function mySchedToday(){ if(_mySchedMode==='month'){ _mySchedMonthAnchor=schedMonthFirst(schedToday()); } else { _mySchedMonday=schedMondayOf(schedToday()); } renderSchedule(document.getElementById('content')); }
+function mySchedJumpWeek(day){ _mySchedMonday=schedMondayOf(day); _mySchedMode='week'; renderSchedule(document.getElementById('content')); }
+
+function mySchedWeekHtml(from){
+  var showName=_mySchedScope==='city';
+  var byDay={}; _mySchedShifts.forEach(function(s){ (byDay[schedShiftDate(s)]=byDay[schedShiftDate(s)]||[]).push(s); });
+  var today=schedToday();
+  var cols='';
+  for(var i=0;i<7;i++){
+    var d=schedAddDays(from,i);
+    var list=(byDay[d]||[]).sort(function(a,b){return schedTimeMin(a.start_time)-schedTimeMin(b.start_time);});
+    var isT=d===today;
+    var items=list.map(function(s){
+      var col=s.city_color||'#f97316';
+      var who=showName?('<div style="font-weight:600;font-size:12px">'+escHtml((s.user_name||'').trim())+'</div>'):'';
+      var meta=[]; if(s.position_name) meta.push(escHtml(s.position_name)); if(s.city_name) meta.push(escHtml(s.city_name)); if(s.notes) meta.push(escHtml(s.notes));
+      return '<div style="background:'+col+'14;border:1px solid var(--border,#2a2a2a);border-left:3px solid '+col+';border-radius:6px;padding:6px 8px;margin-bottom:6px">'+who+'<div style="font-weight:600;font-size:12.5px">'+escHtml(schedTimeFmt(s.start_time))+' – '+escHtml(schedTimeFmt(s.end_time))+'</div>'+(meta.length?'<div style="color:var(--text-muted-color,#999);font-size:11.5px">'+meta.join(' · ')+'</div>':'')+'</div>';
+    }).join('') || '<div style="color:var(--text-muted-color,#777);font-size:11.5px;padding:4px 2px">—</div>';
+    cols+='<div style="flex:1 1 150px;min-width:150px"><div style="font-weight:700;font-size:12px;margin-bottom:7px;padding-bottom:5px;border-bottom:1px solid var(--border,#2a2a2a)'+(isT?';color:var(--primary,#f97316)':'')+'">'+escHtml(schedDateLabel(d))+(isT?' · Today':'')+'</div>'+items+'</div>';
+  }
+  return '<div style="display:flex;gap:10px;flex-wrap:wrap">'+cols+'</div>';
+}
+
+function mySchedMonthHtml(){
+  var first=_mySchedMonthAnchor||schedMonthFirst(schedToday());
+  var gridStart=schedMondayOf(first);
+  var lastDay=schedAddDays(schedAddMonths(first,1),-1);
+  var gridEnd=schedAddDays(schedMondayOf(lastDay),6);
+  var monthNum=parseInt(first.slice(5,7),10);
+  var showName=_mySchedScope==='city';
+  var byDate={}; _mySchedShifts.forEach(function(s){ var dd=schedShiftDate(s); (byDate[dd]=byDate[dd]||[]).push(s); });
+  var today=schedToday();
+  var dayNames=['Mon','Tue','Wed','Thu','Fri','Sat','Sun'];
+  var head='<tr>'+dayNames.map(function(dn){return '<th style="padding:6px;text-align:center;font-size:11px;color:var(--text-muted-color,#999)">'+dn+'</th>';}).join('')+'</tr>';
+  var rowsHtml=''; var d=gridStart;
+  while(d<=gridEnd){
+    var cells='';
+    for(var i=0;i<7;i++){
+      var day=schedAddDays(d,i);
+      var inMonth=parseInt(day.slice(5,7),10)===monthNum;
+      var list=(byDate[day]||[]).sort(function(a,b){return schedTimeMin(a.start_time)-schedTimeMin(b.start_time);});
+      var dim=inMonth?'':'opacity:0.35;';
+      var isT=day===today;
+      var items=list.slice(0,4).map(function(s){
+        var col=s.city_color||'#f97316';
+        var extra=showName?(' '+escHtml((s.user_name||'').split(' ')[0])):'';
+        return '<div title="'+escHtml((s.user_name||'')+' '+schedTimeFmt(s.start_time)+'-'+schedTimeFmt(s.end_time))+'" style="border-left:3px solid '+col+';background:'+col+'22;border-radius:3px;padding:1px 4px;margin:2px 0;font-size:10.5px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">'+escHtml(schedTimeFmt(s.start_time))+extra+'</div>';
+      }).join('');
+      var more=list.length>4?('<div style="font-size:10px;color:var(--text-muted-color,#999)">+'+(list.length-4)+' more</div>'):'';
+      cells+='<td onclick="mySchedJumpWeek(\''+day+'\')" style="vertical-align:top;border:1px solid var(--border,#2a2a2a);height:92px;width:14.28%;cursor:pointer;padding:3px;'+dim+'"><div style="font-size:11px;font-weight:600;text-align:right;'+(isT?'color:var(--primary,#f97316)':'')+'">'+parseInt(day.slice(8,10),10)+'</div>'+items+more+'</td>';
+    }
+    rowsHtml+='<tr>'+cells+'</tr>'; d=schedAddDays(d,7);
+  }
+  return '<table style="border-collapse:collapse;width:100%;table-layout:fixed;min-width:760px"><thead>'+head+'</thead><tbody>'+rowsHtml+'</tbody></table>';
+}
+
+/* ===================== Nova QOL helpers (command palette, offline banner, nav help) ===================== */
+/* Added: Ctrl+K command palette, offline status banner, and a floating navigation help chatbot. */
+(function () {
+  if (window.__novaHelpersLoaded) return;
+  window.__novaHelpersLoaded = true;
+
+  // ---------- styles ----------
+  var css = [
+    '#nova-offline-banner{position:fixed;left:0;right:0;bottom:0;z-index:9000;background:#7f1d1d;color:#fff;font-size:13px;padding:9px 14px;text-align:center;display:none;box-shadow:0 -2px 10px rgba(0,0,0,.35)}',
+    '#nova-offline-banner.show{display:block}',
+    '#nova-cp-overlay{position:fixed;inset:0;z-index:9500;background:rgba(0,0,0,.55);display:none;align-items:flex-start;justify-content:center;padding-top:12vh}',
+    '#nova-cp-overlay.show{display:flex}',
+    '#nova-cp{width:92%;max-width:560px;background:var(--card-bg,#161616);border:1px solid var(--border,#2a2a2a);border-radius:12px;box-shadow:0 20px 60px rgba(0,0,0,.55);overflow:hidden}',
+    '#nova-cp-input{width:100%;box-sizing:border-box;border:none;outline:none;background:transparent;color:var(--text-color,#fff);font-size:16px;padding:16px 18px;border-bottom:1px solid var(--border,#2a2a2a)}',
+    '#nova-cp-list{max-height:50vh;overflow-y:auto;padding:6px}',
+    '.nova-cp-item{display:flex;align-items:center;gap:10px;padding:10px 12px;border-radius:8px;cursor:pointer;color:var(--text-color,#eee);font-size:14px}',
+    '.nova-cp-item .nova-cp-sub{color:var(--text-muted-color,#888);font-size:12px;margin-left:auto}',
+    '.nova-cp-item.active,.nova-cp-item:hover{background:var(--primary,#f97316);color:#fff}',
+    '.nova-cp-item.active .nova-cp-sub,.nova-cp-item:hover .nova-cp-sub{color:rgba(255,255,255,.85)}',
+    '.nova-cp-empty{padding:18px;color:var(--text-muted-color,#888);font-size:14px;text-align:center}',
+    '.nova-cp-hint{padding:8px 14px;font-size:11px;color:var(--text-muted-color,#777);border-top:1px solid var(--border,#2a2a2a);display:flex;gap:16px;justify-content:center;flex-wrap:wrap}',
+    '#nova-help-fab{position:fixed;right:18px;bottom:18px;z-index:8500;width:52px;height:52px;border-radius:50%;background:var(--primary,#f97316);color:#fff;border:none;cursor:pointer;box-shadow:0 6px 20px rgba(0,0,0,.35);display:none;align-items:center;justify-content:center}',
+    '#nova-help-fab.show{display:flex}',
+    '#nova-help-fab svg{width:24px;height:24px}',
+    '#nova-help-panel{position:fixed;right:18px;bottom:80px;z-index:8600;width:340px;max-width:calc(100vw - 24px);height:460px;max-height:calc(100vh - 120px);background:var(--card-bg,#161616);border:1px solid var(--border,#2a2a2a);border-radius:14px;box-shadow:0 18px 50px rgba(0,0,0,.55);display:none;flex-direction:column;overflow:hidden}',
+    '#nova-help-panel.show{display:flex}',
+    '#nova-help-head{display:flex;align-items:center;gap:8px;padding:12px 14px;background:#0f0f0f;color:#fff;border-bottom:1px solid var(--border,#2a2a2a)}',
+    '#nova-help-head .t{font-weight:700;font-size:14px}',
+    '#nova-help-head .x{margin-left:auto;background:none;border:none;color:#aaa;font-size:22px;cursor:pointer;line-height:1;padding:0 2px}',
+    '#nova-help-body{flex:1;overflow-y:auto;padding:12px;display:flex;flex-direction:column;gap:10px}',
+    '.nova-help-msg{max-width:90%;padding:9px 12px;border-radius:12px;font-size:13.5px;line-height:1.45;overflow-wrap:anywhere}',
+    '.nova-help-bot{align-self:flex-start;background:var(--bg-elevated,#222);border:1px solid var(--border,#2a2a2a);color:var(--text-color,#eee);border-bottom-left-radius:4px}',
+    '.nova-help-typing{opacity:.9}',
+    '.nova-help-dots{display:inline-flex;gap:4px;align-items:center}',
+    '.nova-help-dots i{width:6px;height:6px;border-radius:50%;background:var(--text-muted-color,#888);display:inline-block;animation:novaBlink 1.2s infinite}',
+    '.nova-help-dots i:nth-child(2){animation-delay:.2s}',
+    '.nova-help-dots i:nth-child(3){animation-delay:.4s}',
+    '@keyframes novaBlink{0%,80%,100%{opacity:.2}40%{opacity:1}}',
+    '.nova-help-user{align-self:flex-end;background:var(--primary,#f97316);color:#fff;border-bottom-right-radius:4px}',
+    '.nova-help-go{display:inline-block;margin-top:8px;background:#0f0f0f;color:#fff;border:1px solid var(--primary,#f97316);border-radius:7px;padding:6px 11px;font-size:12px;cursor:pointer}',
+    '.nova-help-chips{display:flex;flex-wrap:wrap;gap:6px;margin-top:2px}',
+    '.nova-help-chip{background:var(--bg-elevated,#222);border:1px solid var(--border,#2a2a2a);color:var(--text-color,#ddd);border-radius:14px;padding:6px 11px;font-size:12px;cursor:pointer}',
+    '#nova-help-foot{display:flex;gap:6px;padding:10px;border-top:1px solid var(--border,#2a2a2a)}',
+    '#nova-help-input{flex:1;resize:none;border:1px solid var(--border,#2a2a2a);background:var(--surface-color,#1a1a1a);color:var(--text-color,#fff);border-radius:8px;padding:8px 10px;font-size:13px;font-family:inherit;line-height:1.4}',
+    '#nova-help-send{background:var(--primary,#f97316);color:#fff;border:none;border-radius:8px;padding:0 13px;font-size:13px;font-weight:600;cursor:pointer}',
+    '@media(max-width:600px){#nova-help-fab{width:46px;height:46px;right:12px;bottom:12px}#nova-help-panel{right:8px;left:8px;width:auto;bottom:66px;height:64vh}}'
+  ].join('');
+  var st = document.createElement('style'); st.textContent = css; document.head.appendChild(st);
+
+  // ---------- DOM ----------
+  var wrap = document.createElement('div');
+  wrap.innerHTML =
+    '<div id="nova-offline-banner">You are offline &mdash; you can keep viewing, but changes will not save until you reconnect.</div>' +
+    '<div id="nova-cp-overlay"><div id="nova-cp">' +
+      '<input id="nova-cp-input" type="text" placeholder="Jump to a page or action&hellip;" autocomplete="off" spellcheck="false" />' +
+      '<div id="nova-cp-list"></div>' +
+      '<div class="nova-cp-hint"><span>&uarr;&darr; to move</span><span>&crarr; to open</span><span>Esc to close</span></div>' +
+    '</div></div>' +
+    '<button id="nova-help-fab" title="Help" aria-label="Help"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg></button>' +
+    '<div id="nova-help-panel">' +
+      '<div id="nova-help-head"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#f97316" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg><span class="t">Nova Help</span><button class="x" id="nova-help-close" aria-label="Close">&times;</button></div>' +
+      '<div id="nova-help-body"></div>' +
+      '<div id="nova-help-foot"><textarea id="nova-help-input" rows="1" placeholder="Ask how to find or do something&hellip;"></textarea><button id="nova-help-send">Send</button></div>' +
+    '</div>';
+  while (wrap.firstChild) document.body.appendChild(wrap.firstChild);
+
+  // ---------- destinations (mirror the sidebar's permission gates) ----------
+  function dests() {
+    var roleMgr = function () { return state.user && (['admin', 'manager'].indexOf(state.user.role) !== -1); };
+    var isAdmin = state.user && state.user.role === 'admin';
+    var T = function () { return true; };
+    var all = [
+      { label: 'Home', view: 'home', kw: 'home dashboard start main', show: T },
+      { label: 'Nova AI Assistant', view: 'ai-assistant', kw: 'ai neurolock assistant chat ask question locksmith', show: T },
+      { label: 'PO Dashboard', view: 'dashboard', kw: 'purchase order po list', show: function () { return can('view_pos'); } },
+      { label: 'New Purchase Order', view: 'new', kw: 'create po new purchase order add make', show: function () { return can('create_po'); } },
+      { label: 'Monthly Req', view: (typeof can === 'function' && can('manage_running')) ? 'running-admin' : 'running', kw: 'monthly req running requisition', show: function () { return can('view_pos') && state.user.role !== 'approver'; } },
+      { label: 'Quote Dashboard', view: 'quotes', kw: 'quote estimate list', show: function () { return can('view_quotes'); } },
+      { label: 'New Quote', view: 'new-quote', kw: 'create quote new estimate add make', show: function () { return can('create_quote'); } },
+      { label: 'Work Orders', view: 'work-orders', kw: 'work order job ticket', show: function () { return can('view_work_orders'); } },
+      { label: 'Sign-Off Sheets', view: 'signoffs', kw: 'sign off signoff sheet', show: function () { return can('view_signoffs'); } },
+      { label: 'Tasks', view: 'tasks', kw: 'task todo to-do checklist', show: function () { return can('view_tasks'); } },
+      { label: 'Schedule', view: (typeof can === 'function' && can('manage_schedule')) ? 'schedule-admin' : 'schedule', kw: 'schedule shift calendar roster', show: function () { return can('view_schedule'); } },
+      { label: 'VR Dashboard', view: 'vr-dashboard', kw: 'vehicle repair maintenance vr fleet truck', show: function () { return can('view_vr'); } },
+      { label: 'New Vehicle Repair', view: 'new-vr', kw: 'create vr new vehicle repair maintenance add make', show: function () { return can('create_vr'); } },
+      { label: 'Fleet Registry', view: 'fleet-registry', kw: 'fleet vehicle registry truck van car', show: function () { return can('manage_vehicles'); } },
+      { label: 'Cash Deposits', view: 'deposits', kw: 'cash deposit money bank', show: function () { return can('view_deposits'); } },
+      { label: 'Accounts', view: 'vendors', kw: 'vendor account supplier accounts', show: function () { return can('view_vendors') || can('manage_vendors'); } },
+      { label: 'Geico Surveys', view: 'geico', kw: 'geico survey insurance', show: function () { return can('manage_geico'); } },
+      { label: 'Customer Feedback', view: 'feedback', kw: 'feedback complaint pulsar customer tech conduct', show: function () { return can('view_feedback'); } },
+      { label: 'Suggestions', view: 'suggestions', kw: 'suggestion idea feedback box', show: T },
+      { label: 'Document Vault', view: 'documents', kw: 'document vault file folder storage', show: T },
+      { label: 'SOP Library', view: 'sop-library', kw: 'sop standard operating procedure library', show: function () { return isAdmin; } },
+      { label: 'Company Information', view: 'company-info', kw: 'company info settings business', show: roleMgr },
+      { label: 'AI Context', view: 'ai-context', kw: 'ai context neurolock settings prompt', show: function () { return can('manage_settings'); } },
+      { label: 'Parts List', view: 'parts-list', kw: 'parts catalog part inventory', show: function () { return can('manage_parts'); } },
+      { label: 'Notifications', view: 'notifications', kw: 'notification email settings alerts', show: function () { return can('manage_settings'); } },
+      { label: 'Scheduled Messages', view: 'scheduled-messages', kw: 'scheduled message reminder', show: function () { return can('manage_settings'); } },
+      { label: 'Users', view: 'users', kw: 'user employee staff people account team', show: function () { return can('view_users'); } },
+      { label: 'Cities', view: 'cities', kw: 'city location branch', show: function () { return can('manage_cities'); } },
+      { label: 'Audit Log', view: 'audit', kw: 'audit log history activity', show: function () { return can('view_audit'); } },
+      { label: 'Roles & Access', view: 'roles', kw: 'role access permission security', show: function () { return can('manage_settings'); } },
+      { label: 'Trusted Devices', view: 'security', kw: 'security trusted device password 2fa sign out', show: T }
+    ];
+    return all.filter(function (d) { try { return d.show(); } catch (e) { return false; } });
+  }
+
+  // ---------- command palette ----------
+  var cpOverlay = document.getElementById('nova-cp-overlay');
+  var cpInput = document.getElementById('nova-cp-input');
+  var cpList = document.getElementById('nova-cp-list');
+  var cpResults = [];
+  var cpActive = 0;
+
+  function cpFilter(q) {
+    var items = dests();
+    q = (q || '').trim().toLowerCase();
+    if (!q) return items;
+    var words = q.split(/\s+/);
+    return items.filter(function (d) {
+      var hay = (d.label + ' ' + d.kw).toLowerCase();
+      return words.every(function (w) { return hay.indexOf(w) !== -1; });
+    });
+  }
+  function cpRender() {
+    cpResults = cpFilter(cpInput.value);
+    if (cpActive >= cpResults.length) cpActive = 0;
+    if (!cpResults.length) { cpList.innerHTML = '<div class="nova-cp-empty">No matches.</div>'; return; }
+    cpList.innerHTML = cpResults.map(function (d, i) {
+      return '<div class="nova-cp-item' + (i === cpActive ? ' active' : '') + '" data-i="' + i + '">' +
+        '<span>' + escHtml(d.label) + '</span><span class="nova-cp-sub">' + escHtml(d.view) + '</span></div>';
+    }).join('');
+    Array.prototype.forEach.call(cpList.querySelectorAll('.nova-cp-item'), function (el) {
+      el.addEventListener('click', function () { cpGo(parseInt(el.getAttribute('data-i'), 10)); });
+    });
+  }
+  function cpGo(i) {
+    var d = cpResults[i];
+    if (!d) return;
+    cpClose();
+    navigate(d.view);
+  }
+  function cpEnter() { cpGo(cpActive); }
+  function cpMove(delta) {
+    if (!cpResults.length) return;
+    cpActive = (cpActive + delta + cpResults.length) % cpResults.length;
+    cpRender();
+    var act = cpList.querySelector('.nova-cp-item.active');
+    if (act && act.scrollIntoView) act.scrollIntoView({ block: 'nearest' });
+  }
+  function cpOpen() {
+    if (!(state.token && state.user)) return;
+    cpActive = 0;
+    cpInput.value = '';
+    cpOverlay.classList.add('show');
+    cpRender();
+    setTimeout(function () { cpInput.focus(); }, 30);
+  }
+  function cpClose() { cpOverlay.classList.remove('show'); }
+  function cpToggle() { if (cpOverlay.classList.contains('show')) cpClose(); else cpOpen(); }
+  cpInput.addEventListener('input', function () { cpActive = 0; cpRender(); });
+  cpOverlay.addEventListener('mousedown', function (e) { if (e.target === cpOverlay) cpClose(); });
+  window.novaCommandPalette = cpToggle;
+
+  // ---------- navigation help chatbot ----------
+  var fab = document.getElementById('nova-help-fab');
+  var panel = document.getElementById('nova-help-panel');
+  var hbody = document.getElementById('nova-help-body');
+  var hinput = document.getElementById('nova-help-input');
+  var hsend = document.getElementById('nova-help-send');
+  var greeted = false;
+  var _helpHistory = [];
+
+  function helpBubble(role, text, target) {
+    var div = document.createElement('div');
+    div.className = 'nova-help-msg ' + (role === 'user' ? 'nova-help-user' : 'nova-help-bot');
+    div.innerHTML = escHtml(text).replace(/\n/g, '<br>');
+    if (target) {
+      var btn = document.createElement('button');
+      btn.className = 'nova-help-go';
+      btn.textContent = 'Open ' + target.label;
+      btn.addEventListener('click', function () { navigate(target.view); helpClose(); });
+      div.appendChild(document.createElement('br'));
+      div.appendChild(btn);
+    }
+    hbody.appendChild(div);
+    hbody.scrollTop = hbody.scrollHeight;
+    return div;
+  }
+  function helpChips() {
+    var quick = [
+      { t: 'Create a quote', q: 'create a quote' },
+      { t: 'Create a PO', q: 'create a purchase order' },
+      { t: 'Log a vehicle repair', q: 'new vehicle repair' },
+      { t: 'My tasks', q: 'tasks' },
+      { t: 'My schedule', q: 'schedule' }
+    ];
+    var wrapc = document.createElement('div');
+    wrapc.className = 'nova-help-msg nova-help-bot';
+    wrapc.innerHTML = 'Quick links:';
+    var chips = document.createElement('div');
+    chips.className = 'nova-help-chips';
+    quick.forEach(function (c) {
+      var b = document.createElement('button');
+      b.className = 'nova-help-chip';
+      b.textContent = c.t;
+      b.addEventListener('click', function () { helpAsk(c.q); });
+      chips.appendChild(b);
+    });
+    wrapc.appendChild(chips);
+    hbody.appendChild(wrapc);
+    hbody.scrollTop = hbody.scrollHeight;
+  }
+  function helpGreet() {
+    if (greeted) return;
+    greeted = true;
+    var name = (state.user && state.user.name) ? state.user.name.split(' ')[0] : 'there';
+    helpBubble('bot', 'Hi ' + name + '! I am your Nova guide. Ask me how to do something, where to find it, or any question about the app and I will walk you through it. I can also jump you straight to the right screen.');
+    helpChips();
+  }
+  // Map common words/phrases to a destination. Phrase + whole-word matching
+  // avoids false hits like "do" inside "Document". Longest match wins.
+  // Each intent carries phrases, where it lives, what it IS (info), and how to
+  // create one (how). The bot explains, then offers a link to go there.
+  // Each intent carries phrases, where it lives, what it IS (info), and how to
+  // create one (how). The bot explains, then offers a link to go there.
+  function helpIntents() {
+    var schedV = (typeof can === 'function' && can('manage_schedule')) ? 'schedule-admin' : 'schedule';
+    var runV = (typeof can === 'function' && can('manage_running')) ? 'running-admin' : 'running';
+    return [
+      { ph: ['purchase order', 'purchase orders', 'po', 'pos'], dash: 'dashboard', create: 'new', obj: 'Purchase Orders',
+        info: 'Purchase Orders track parts and supplies you buy from vendors. Each PO has line items, a vendor, and a city, and runs through an approval workflow before it is ordered.',
+        how: 'To create one: open New Purchase Order, pick the vendor and city, add your line items (description, quantity, price), then submit it for approval.' },
+      { ph: ['quote', 'quotes', 'estimate', 'estimates'], dash: 'quotes', create: 'new-quote', obj: 'Quotes',
+        info: 'Quotes are customer estimates. Each line item has a cost and a list price, and Nova works out the margin and tax for you. You can print a quote or run an AI review before sending it.',
+        how: 'To create one: open New Quote, add the customer, then add line items with their cost and list price. The totals and margin fill in automatically, and you can print or AI-review it.' },
+      { ph: ['vehicle repair', 'vehicle repairs', 'vehicle maintenance', 'vr', 'repair', 'maintenance'], dash: 'vr-dashboard', create: 'new-vr', obj: 'Vehicle Repairs',
+        info: 'Vehicle Repairs (VRs) log maintenance and repair work on your fleet, with line items and an approval step. You can even upload a photo of a shop estimate and let AI fill in the details.',
+        how: 'To create one: open New Vehicle Repair, choose the vehicle, add the work as line items, and submit. You can attach a photo of a shop estimate to auto-fill it.' },
+      { ph: ['monthly req', 'requisition', 'running list'], dash: runV, obj: 'Monthly Req',
+        info: 'Monthly Req is the running list of items your team needs through the month. It can be rolled up into a purchase order when you are ready to order.' },
+      { ph: ['fleet', 'vehicle', 'vehicles', 'truck', 'trucks', 'van', 'vans'], dash: 'fleet-registry', create: 'new-vehicle', obj: 'Fleet Registry',
+        info: 'The Fleet Registry is your list of company vehicles and their repair and maintenance history.',
+        how: 'To add a vehicle: open Fleet Registry and use New Vehicle, then fill in its details.' },
+      { ph: ['work order', 'work orders'], dash: 'work-orders', obj: 'Work Orders',
+        info: 'Work Orders track jobs and tickets for work to be done.' },
+      { ph: ['sign off', 'sign-off', 'signoff', 'sign off sheet', 'sign-off sheet'], dash: 'signoffs', obj: 'Sign-Off Sheets',
+        info: 'Sign-Off Sheets are checklists you complete and sign off on for a job.' },
+      { ph: ['task', 'tasks', 'to do', 'to-do', 'todo'], dash: 'tasks', obj: 'Tasks',
+        info: 'Tasks is your team to-do list, with subtasks, comments, attachments, and recurring tasks.',
+        how: 'To add one: open Tasks and use New Task, then give it a title, owner, and due date.' },
+      { ph: ['schedule', 'shift', 'shifts', 'roster'], dash: schedV, obj: 'Schedule',
+        info: 'Schedule shows shifts by week, organized per city. Managers build and publish the schedule, and everyone else sees their published shifts.' },
+      { ph: ['deposit', 'deposits', 'cash deposit', 'cash deposits'], dash: 'deposits', obj: 'Cash Deposits',
+        info: 'Cash Deposits track cash drop-offs to the bank.' },
+      { ph: ['vendor', 'vendors', 'account', 'accounts', 'supplier', 'suppliers'], dash: 'vendors', obj: 'Accounts',
+        info: 'Accounts is where you manage vendors and supplier accounts that get used on purchase orders.' },
+      { ph: ['part', 'parts', 'parts list', 'catalog'], dash: 'parts-list', obj: 'Parts List',
+        info: 'The Parts List is your master parts catalog. It lets you quickly add known parts to POs and the Monthly Req instead of retyping them.' },
+      { ph: ['document', 'documents', 'vault', 'document vault'], dash: 'documents', obj: 'Document Vault',
+        info: 'The Document Vault is Drive-style file storage with folders and per-person sharing.' },
+      { ph: ['suggestion', 'suggestions', 'idea', 'ideas', 'feedback'], dash: 'suggestions', obj: 'Suggestions',
+        info: 'Suggestions is the employee suggestion box. Drop ideas or feedback for the team here.' },
+      { ph: ['user', 'users', 'employee', 'employees', 'staff'], dash: 'users', obj: 'Users',
+        info: 'Users is where admins manage employee accounts, their role, contact info, and access.' },
+      { ph: ['city', 'cities'], dash: 'cities', obj: 'Cities',
+        info: 'Cities manages your service-area locations and branches, which POs, quotes, and schedules are tied to.' },
+      { ph: ['audit', 'audit log'], dash: 'audit', obj: 'Audit Log',
+        info: 'The Audit Log records who did what across Nova, which is useful for tracking changes.' },
+      { ph: ['geico', 'geico survey', 'geico surveys'], dash: 'geico', obj: 'Geico Surveys',
+        info: 'Geico Surveys tracks Geico-related survey work.' },
+      { ph: ['sop', 'sops', 'standard operating procedure', 'standard operating procedures'], dash: 'sop-library', obj: 'SOP Library',
+        info: 'The SOP Library holds your standard operating procedures, which Nova AI can also pull from when answering questions.' },
+      { ph: ['notification', 'notifications'], dash: 'notifications', obj: 'Notifications',
+        info: 'Notifications is where you control which email and SMS alerts go out and to whom.' },
+      { ph: ['role', 'roles', 'permission', 'permissions', 'access'], dash: 'roles', obj: 'Roles & Access',
+        info: 'Roles & Access controls what each role is allowed to see and do in Nova.' },
+      { ph: ['password', 'trusted device', 'trusted devices', '2fa', 'two factor', 'security'], dash: 'security', obj: 'Trusted Devices',
+        info: 'Security is where you manage your password, two-factor login, and trusted devices, so you can skip 2FA on devices you trust for 30 days.' },
+      { ph: ['company info', 'company information', 'company settings'], dash: 'company-info', obj: 'Company Information',
+        info: 'Company Information holds your business details and company-wide settings.' },
+      { ph: ['neurolock', 'ai assistant', 'ask ai'], dash: 'ai-assistant', obj: 'Nova AI Assistant',
+        info: 'Nova AI (Neurolock) is your locksmith assistant. Ask it about locks, keys, hardware, pricing, or scoping a job. It can also read a photo of an estimate.' }
+    ];
+  }
+  // Compact glossary so the AI fallback can explain the app accurately.
+  var HELP_AI_PROMPT = 'You are the in-app help assistant for Nova, an operations app for a locksmith company. Explain things clearly and briefly (a few sentences). Nova modules: Purchase Orders (buy parts from vendors, approval workflow); Quotes (customer estimates with cost and list price, margin, tax, print, AI review); Vehicle Repairs (fleet maintenance with approval and photo-to-form AI); Fleet Registry (company vehicles and history); Monthly Req (running needs list that rolls into a PO); Work Orders; Sign-Off Sheets; Tasks (to-dos, subtasks, recurring); Schedule (weekly shifts per city); Cash Deposits; Accounts (vendors); Parts List (master parts catalog); Document Vault (file storage); Suggestions (idea box); Users, Cities, Roles, Audit Log (admin). If the question is about navigating, say which module to use.';
+  function helpHasPhrase(q, phrase) {
+    var esc = phrase.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    return new RegExp('(^|[^a-z0-9])' + esc + '([^a-z0-9]|$)').test(q);
+  }
+  function helpFindDest(view) {
+    var list = dests();
+    for (var i = 0; i < list.length; i++) { if (list[i].view === view) return list[i]; }
+    return null;
+  }
+  function helpMatch(q) {
+    var ints = helpIntents();
+    var match = null, matchLen = 0;
+    ints.forEach(function (it) {
+      it.ph.forEach(function (p) {
+        if (p.length > matchLen && helpHasPhrase(q, p)) { match = it; matchLen = p.length; }
+      });
+    });
+    if (!match) return null;
+    var wantsAction = /(^|[^a-z])(create|creating|make|making|add|adding|new|start|starting|log|logging|file|filing|enter|submit|raise)([^a-z]|$)/.test(q);
+    return { intent: match, wantsAction: wantsAction };
+  }
+  async function helpAsk(text) {
+    text = (text || '').trim();
+    if (!text) return;
+    helpBubble('user', text);
+    _helpHistory.push({ role: 'user', content: text });
+    var ql = ' ' + text.toLowerCase().replace(/[^a-z0-9 ]+/g, ' ') + ' ';
+    var m = helpMatch(ql);
+    // Fast path: a pure "take me there" command navigates instantly, no AI call.
+    var navCmd = /(^|\s)(go to|goto|open|take me to|navigate to|jump to|bring me to|show me the)(\s|$)/.test(ql);
+    if (navCmd && m) {
+      var itc = m.intent;
+      var dc = helpFindDest((m.wantsAction && itc.create) ? itc.create : itc.dash) || helpFindDest(itc.dash);
+      if (dc) {
+        helpBubble('bot', 'Sure, opening ' + dc.label + ' for you.', dc);
+        _helpHistory.push({ role: 'assistant', content: 'Opened ' + dc.label + '.' });
+        return;
+      }
+    }
+    // Otherwise let Nova AI actually help, with the user's context and recent history.
+    var typing = helpBubble('bot', '');
+    typing.classList.add('nova-help-typing');
+    typing.innerHTML = '<span class="nova-help-dots"><i></i><i></i><i></i></span>';
+    hbody.scrollTop = hbody.scrollHeight;
+    try {
+      var ctx = { name: (state.user && state.user.name) || '', role: (state.user && state.user.role) || '', view: state.currentView || '' };
+      var msgs = _helpHistory.slice(-8);
+      while (msgs.length && msgs[0].role === 'assistant') msgs = msgs.slice(1);
+      var data = await api('POST', '/ai/chat', { mode: 'help', context: ctx, messages: msgs });
+      var reply = data.reply || 'Sorry, I could not get an answer.';
+      _helpHistory.push({ role: 'assistant', content: reply });
+      typing.classList.remove('nova-help-typing');
+      typing.innerHTML = (typeof aiMarkdown === 'function') ? aiMarkdown(reply) : escHtml(reply).replace(/\n/g, '<br>');
+      if (m) {
+        var itb = m.intent;
+        var db = helpFindDest((m.wantsAction && itb.create) ? itb.create : itb.dash) || helpFindDest(itb.dash);
+        if (db) {
+          var go = document.createElement('button');
+          go.className = 'nova-help-go';
+          go.textContent = 'Open ' + db.label;
+          go.addEventListener('click', function () { navigate(db.view); helpClose(); });
+          typing.appendChild(document.createElement('br'));
+          typing.appendChild(go);
+        }
+      }
+    } catch (err) {
+      typing.classList.remove('nova-help-typing');
+      var em = (err && err.message) ? err.message : 'error';
+      typing.innerHTML = escHtml('Sorry, I could not reach Nova AI right now (' + em + '). You can still use the menu, or press Ctrl+K to jump to any page.');
+    }
+    hbody.scrollTop = hbody.scrollHeight;
+  }
+  function helpOpen() { panel.classList.add('show'); helpGreet(); setTimeout(function () { hinput.focus(); }, 30); }
+  function helpClose() { panel.classList.remove('show'); }
+  function helpToggle() { if (panel.classList.contains('show')) helpClose(); else helpOpen(); }
+  fab.addEventListener('click', helpToggle);
+  document.getElementById('nova-help-close').addEventListener('click', helpClose);
+  hsend.addEventListener('click', function () { var v = hinput.value; hinput.value = ''; helpAsk(v); });
+  hinput.addEventListener('keydown', function (e) { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); var v = hinput.value; hinput.value = ''; helpAsk(v); } });
+
+  // ---------- offline banner ----------
+  function offlineSync() {
+    var b = document.getElementById('nova-offline-banner');
+    if (b) b.classList.toggle('show', !navigator.onLine);
+  }
+  window.addEventListener('online', offlineSync);
+  window.addEventListener('offline', offlineSync);
+
+  // ---------- show/hide helpers based on auth ----------
+  function helpersSync() {
+    var authed = !!(state.token && state.user);
+    fab.classList.toggle('show', authed);
+    if (!authed) { helpClose(); cpClose(); }
+  }
+  window.novaHelpersSync = helpersSync;
+
+  // ---------- global keyboard ----------
+  document.addEventListener('keydown', function (e) {
+    if ((e.ctrlKey || e.metaKey) && (e.key === 'k' || e.key === 'K')) {
+      if (state.token && state.user) { e.preventDefault(); cpToggle(); }
+      return;
+    }
+    if (e.key === 'Escape' && cpOverlay.classList.contains('show')) { cpClose(); return; }
+    if (cpOverlay.classList.contains('show')) {
+      if (e.key === 'ArrowDown') { e.preventDefault(); cpMove(1); }
+      else if (e.key === 'ArrowUp') { e.preventDefault(); cpMove(-1); }
+      else if (e.key === 'Enter') { e.preventDefault(); cpEnter(); }
+    }
+  });
+
+  // ---------- wrap navigate/render so helpers stay in sync without editing those functions ----------
+  try {
+    if (typeof navigate === 'function') {
+      var _navOrig = navigate;
+      navigate = function (v, p) { var r = _navOrig(v, p); cpClose(); helpersSync(); return r; };
+      window.navigate = navigate;
+    }
+  } catch (e) {}
+  try {
+    if (typeof render === 'function') {
+      var _renderOrig = render;
+      render = function () {
+        var r = _renderOrig.apply(this, arguments);
+        if (r && typeof r.then === 'function') r.then(helpersSync, helpersSync); else helpersSync();
+        return r;
+      };
+      window.render = render;
+    }
+  } catch (e) {}
+
+  // ---------- idle auto-logout (60 min of inactivity) ----------
+  var NOVA_IDLE_MS = 60 * 60 * 1000;
+  var novaIdleLast = Date.now();
+  var novaIdleThrottle = 0;
+  function novaIdleBump() { var now = Date.now(); if (now - novaIdleThrottle > 5000) { novaIdleThrottle = now; novaIdleLast = now; } }
+  ['mousedown', 'mousemove', 'keydown', 'touchstart', 'scroll', 'click'].forEach(function (ev) { document.addEventListener(ev, novaIdleBump, { passive: true }); });
+  function novaIdleCheck() {
+    if (state.token && state.user && (Date.now() - novaIdleLast) >= NOVA_IDLE_MS) {
+      try { if (typeof logout === 'function') logout(); } catch (e) {}
+      var n = document.createElement('div');
+      n.textContent = 'You were signed out after 1 hour of inactivity.';
+      n.style.cssText = 'position:fixed;left:50%;bottom:24px;transform:translateX(-50%);z-index:9999;background:#0f0f0f;color:#fff;border:1px solid var(--primary,#f97316);border-radius:10px;padding:12px 18px;font-size:14px;box-shadow:0 8px 30px rgba(0,0,0,.5)';
+      document.body.appendChild(n);
+      setTimeout(function () { if (n.parentNode) n.parentNode.removeChild(n); }, 8000);
+    }
+  }
+  setInterval(novaIdleCheck, 30000);
+
+  // ---------- init ----------
+  offlineSync();
+  helpersSync();
+})();
+/* =================== end Nova QOL helpers =================== */
+
+/* ===================== Signatures module (Phase 4) ===================== */
+var sigEd = null;  // active editor state
+var SIG_COLORS = ['#f97316', '#3b82f6', '#10b981', '#a855f7', '#ec4899', '#eab308', '#06b6d4', '#ef4444'];
+var SIG_FIELD_LABELS = { signature: 'Signature', initials: 'Initials', date: 'Date', name: 'Name', text: 'Text', checkbox: 'Check' };
+var SIG_FIELD_ORDER = ['signature', 'initials', 'date', 'name', 'text', 'checkbox'];
+var SIG_DEFAULT_SIZE = {
+  signature: { w: 0.26, h: 0.06 }, initials: { w: 0.09, h: 0.05 }, date: { w: 0.16, h: 0.035 },
+  name: { w: 0.24, h: 0.04 }, text: { w: 0.26, h: 0.04 }, checkbox: { w: 0.03, h: 0.03 }
+};
+
+function sigHexA(hex, a) {
+  var h = (hex || '#888').replace('#', '');
+  if (h.length === 3) h = h[0] + h[0] + h[1] + h[1] + h[2] + h[2];
+  var n = parseInt(h, 16);
+  return 'rgba(' + ((n >> 16) & 255) + ',' + ((n >> 8) & 255) + ',' + (n & 255) + ',' + a + ')';
+}
+
+function sigStatusBadge(status) {
+  var map = {
+    draft: ['#9ca3af', 'Draft'], sent: ['#3b82f6', 'Sent'], partially_signed: ['#eab308', 'Partially signed'],
+    completed: ['#10b981', 'Completed'], declined: ['#ef4444', 'Declined'], expired: ['#6b7280', 'Expired'], voided: ['#6b7280', 'Voided']
+  };
+  var m = map[status] || ['#9ca3af', status || 'Draft'];
+  return '<span style="display:inline-block;padding:2px 9px;border-radius:999px;font-size:11px;font-weight:600;color:' + m[0] + ';background:' + sigHexA(m[0], 0.15) + '">' + escHtml(m[1]) + '</span>';
+}
+
+function sigEnsureStyles() {
+  if (document.getElementById('sig-styles')) return;
+  var st = document.createElement('style');
+  st.id = 'sig-styles';
+  st.textContent =
+    '.sig-page{position:relative;margin:0 auto 18px;box-shadow:0 2px 14px rgba(0,0,0,.35);background:#fff}' +
+    '.sig-page canvas{display:block;width:100%;height:auto}' +
+    '.sig-overlay{position:absolute;inset:0;cursor:crosshair}' +
+    '.sig-field{position:absolute;border:2px solid #f97316;border-radius:3px;box-sizing:border-box;cursor:move;touch-action:none;min-width:14px;min-height:12px}' +
+    '.sig-field.sel{box-shadow:0 0 0 2px #fff,0 0 0 4px #f97316}' +
+    '.sig-field-tag{position:absolute;top:-9px;left:-2px;font-size:9px;font-weight:700;line-height:1;padding:2px 4px;border-radius:3px;background:#111;color:#fff;white-space:nowrap;pointer-events:none;letter-spacing:.02em}' +
+    '.sig-field-del{position:absolute;top:-9px;right:-9px;width:17px;height:17px;border:none;border-radius:50%;background:#ef4444;color:#fff;font-size:13px;line-height:15px;cursor:pointer;padding:0}' +
+    '.sig-resize{position:absolute;right:-5px;bottom:-5px;width:12px;height:12px;background:#f97316;border:2px solid #fff;border-radius:50%;cursor:nwse-resize;touch-action:none}' +
+    '.sig-tool{display:inline-flex;align-items:center;gap:5px;padding:7px 11px;border:1px solid var(--border);border-radius:8px;background:var(--bg-card);color:var(--text);cursor:pointer;font-size:13px;font-weight:500}' +
+    '.sig-tool.on{border-color:var(--primary);background:rgba(249,115,22,.14);color:var(--primary)}' +
+    '.sig-signer-row{display:flex;flex-wrap:wrap;gap:6px;align-items:center;padding:8px;border:1px solid var(--border);border-radius:8px;margin-bottom:8px}' +
+    '.sig-signer-row.active{border-color:var(--primary)}' +
+    '.sig-swatch{width:14px;height:14px;border-radius:4px;flex-shrink:0}' +
+    '.sig-ed-grid{display:flex;gap:18px;align-items:flex-start;flex-wrap:wrap}' +
+    '.sig-ed-main{flex:1;min-width:300px}' +
+    '.sig-ed-side{width:300px;max-width:100%;position:sticky;top:14px}' +
+    '@media(max-width:820px){.sig-ed-side{width:100%;position:static}}';
+  document.head.appendChild(st);
+}
+
+// ----- Dashboard -----
+async function renderSignatures(el) {
+  el.innerHTML = '<div class="loading">Loading...</div>';
+  var filter = sigEd && sigEd._listFilter ? sigEd._listFilter : '';
+  var rows;
+  try { rows = await api('GET', '/signatures' + (filter ? ('?status=' + filter) : '')); }
+  catch (e) { el.innerHTML = '<div class="alert alert-error">' + escHtml(e.message) + '</div>'; return; }
+
+  var chips = ['', 'draft', 'sent', 'partially_signed', 'completed', 'declined'].map(function (s) {
+    var lbl = s === '' ? 'All' : (sigStatusBadge(s).replace(/<[^>]+>/g, ''));
+    var on = (filter === s);
+    return '<button class="btn btn-sm ' + (on ? 'btn-primary' : 'btn-ghost') + '" onclick="sigSetListFilter(\'' + s + '\')">' + escHtml(lbl) + '</button>';
+  }).join(' ');
+
+  var body = '';
+  if (!rows.length) {
+    body = '<div style="padding:44px;text-align:center;color:var(--text-muted-color)">No signature requests yet.</div>';
+  } else {
+    rows.forEach(function (r) {
+      var signed = parseInt(r.signed_count || 0, 10), total = parseInt(r.signer_count || 0, 10);
+      var canManage = can('manage_signatures');
+      body += '<div style="display:flex;align-items:center;gap:12px;padding:12px 14px;border-bottom:1px solid var(--border)">' +
+        '<div style="flex:1;min-width:0;cursor:pointer" onclick="navigate(\'signature-editor\',' + r.id + ')">' +
+          '<div style="font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + escHtml(r.title || '(untitled)') + '</div>' +
+          '<div style="font-size:12px;color:var(--text-muted-color)">' + escHtml(r.request_number) + ' &middot; ' + escHtml(r.created_by_name || '') + ' &middot; ' + (total ? (signed + '/' + total + ' signed') : 'no signers yet') + '</div>' +
+        '</div>' +
+        '<div class="doc-hide-sm">' + sigStatusBadge(r.status) + '</div>' +
+        '<div style="white-space:nowrap;text-align:right">' +
+          '<button class="btn btn-ghost btn-sm" title="Open" onclick="navigate(\'signature-editor\',' + r.id + ')">Open</button>' +
+          (canManage ? '<button class="btn btn-ghost btn-sm" title="Delete" onclick="sigDeleteRequest(' + r.id + ')">&#128465;</button>' : '') +
+        '</div>' +
+      '</div>';
+    });
+  }
+
+  el.innerHTML =
+    '<div class="page-title"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="margin-right:8px;vertical-align:-4px"><path d="M3 17v4h4l11-11-4-4L3 17z"/><path d="M14 6l4 4"/></svg>Signatures</div>' +
+    '<div class="page-subtitle">Drop in a PDF, let AI find the fields, then send it out for signature.</div>' +
+    '<div style="display:flex;justify-content:space-between;align-items:center;gap:12px;margin:14px 0;flex-wrap:wrap">' +
+      '<div style="display:flex;gap:6px;flex-wrap:wrap">' + chips + '</div>' +
+      (can('manage_signatures') ? '<button class="btn btn-secondary btn-sm" onclick="sigShowTemplates()">Templates</button> ' : '') +
+      (can('manage_signatures') ? '<button class="btn btn-primary btn-sm" onclick="navigate(\'new-signature\')"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="vertical-align:-3px"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg> New Request</button>' : '') +
+    '</div>' +
+    '<div class="card"><div class="card-body" style="padding:0">' + body + '</div></div>';
+}
+
+function sigSetListFilter(s) { sigEd = sigEd || {}; sigEd._listFilter = s; renderSignatures(document.getElementById('content')); }
+
+async function sigDeleteRequest(id) {
+  var ok = await novaConfirm('Delete this signature request and its document? This cannot be undone.');
+  if (!ok) return;
+  try { await api('DELETE', '/signatures/' + id); showToast('Deleted', 'success'); renderSignatures(document.getElementById('content')); }
+  catch (e) { novaAlert(e.message); }
+}
+
+// ----- Templates -----
+async function sigSaveAsTemplate(id) {
+  var saved = await sigSaveLayout(false); if (saved === null) return;
+  var name = await novaPrompt('Template name:', (sigEd && sigEd.request && sigEd.request.title) || '');
+  if (!name || !name.trim()) return;
+  try { await api('POST', '/signatures/templates/from-request/' + id, { name: name.trim() }); showToast('Saved as template', 'success'); }
+  catch (e) { novaAlert(e.message); }
+}
+async function sigShowTemplates() {
+  var list;
+  try { list = await api('GET', '/signatures/templates'); } catch (e) { novaAlert(e.message); return; }
+  var rows = list.length ? list.map(function (t) {
+    return '<div style="display:flex;align-items:center;gap:10px;padding:10px 0;border-bottom:1px solid var(--border)">' +
+      '<div style="flex:1;min-width:0"><div style="font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + escHtml(t.name) + '</div>' +
+      '<div style="font-size:12px;color:var(--text-muted-color)">' + (t.page_count || 0) + ' page(s) &middot; ' + escHtml(t.created_by_name || '') + '</div></div>' +
+      '<button class="btn btn-primary btn-sm" onclick="sigUseTemplate(' + t.id + ')">Use</button>' +
+      '<button class="btn btn-ghost btn-sm" onclick="sigDeleteTemplate(' + t.id + ')">&#128465;</button>' +
+      '</div>';
+  }).join('') : '<div style="padding:24px;text-align:center;color:var(--text-muted-color)">No templates yet. Open a draft request, set up its fields, then click &ldquo;Save as template&rdquo;.</div>';
+  var ov = document.createElement('div'); ov.id = 'sig-tmpl-ov';
+  ov.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.6);z-index:9999;display:flex;align-items:center;justify-content:center;padding:16px';
+  ov.innerHTML = '<div style="background:var(--bg-card);border-radius:12px;padding:18px;max-width:520px;width:100%;max-height:80vh;overflow:auto">' +
+    '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px"><div style="font-weight:600;font-size:16px">Templates</div>' +
+    '<button class="btn btn-ghost btn-sm" onclick="sigTmplClose()">Close</button></div>' + rows + '</div>';
+  document.body.appendChild(ov);
+}
+function sigTmplClose() { var ov = document.getElementById('sig-tmpl-ov'); if (ov) ov.remove(); }
+async function sigUseTemplate(tid) {
+  var title = await novaPrompt('Title for the new request:', '');
+  if (title === null) return;
+  try { var r = await api('POST', '/signatures/templates/' + tid + '/use', { title: title || '' }); sigTmplClose(); showToast('Created from template', 'success'); navigate('signature-editor', r.id); }
+  catch (e) { novaAlert(e.message); }
+}
+async function sigDeleteTemplate(tid) {
+  var ok = await novaConfirm('Delete this template? This cannot be undone.'); if (!ok) return;
+  try { await api('DELETE', '/signatures/templates/' + tid); showToast('Template deleted', 'success'); sigTmplClose(); sigShowTemplates(); }
+  catch (e) { novaAlert(e.message); }
+}
+
+// ----- New request (upload) -----
+async function renderNewSignature(el) {
+  sigEnsureStyles();
+  el.innerHTML =
+    '<div class="page-title">New Signature Request</div>' +
+    '<div class="page-subtitle">Upload a PDF. Next you will place the fields and add signers.</div>' +
+    '<div class="card" style="max-width:560px"><div class="card-body">' +
+      '<label style="font-size:13px;font-weight:600;display:block;margin-bottom:5px">Document title</label>' +
+      '<input id="sig-new-title" class="input" placeholder="e.g. Vendor agreement &ndash; ABC Supply" style="width:100%;margin-bottom:14px" />' +
+      '<label style="font-size:13px;font-weight:600;display:block;margin-bottom:5px">PDF file</label>' +
+      '<input id="sig-new-file" type="file" accept="application/pdf" style="width:100%;margin-bottom:16px" />' +
+      '<div id="sig-new-msg" style="margin-bottom:12px"></div>' +
+      '<button class="btn btn-primary" id="sig-new-btn" onclick="sigCreateUpload()">Upload &amp; continue</button> ' +
+      '<button class="btn btn-ghost" onclick="navigate(\'signatures\')">Cancel</button>' +
+    '</div></div>';
+}
+
+async function sigCreateUpload() {
+  var titleEl = document.getElementById('sig-new-title');
+  var fileEl = document.getElementById('sig-new-file');
+  var msg = document.getElementById('sig-new-msg');
+  var btn = document.getElementById('sig-new-btn');
+  var title = (titleEl.value || '').trim();
+  var file = fileEl.files && fileEl.files[0];
+  if (!title) { msg.innerHTML = '<div class="alert alert-error">Please enter a title.</div>'; return; }
+  if (!file) { msg.innerHTML = '<div class="alert alert-error">Please choose a PDF.</div>'; return; }
+  if (file.type !== 'application/pdf') { msg.innerHTML = '<div class="alert alert-error">That file is not a PDF.</div>'; return; }
+  btn.disabled = true;
+  try {
+    msg.innerHTML = '<div class="loading">Uploading...</div>';
+    var reserve = await api('POST', '/signatures/upload-url', { title: title, file_name: file.name, mime_type: 'application/pdf' });
+    var put = await fetch(reserve.uploadUrl, { method: 'PUT', body: file, headers: { 'Content-Type': 'application/pdf' } });
+    if (!put.ok) throw new Error('Upload to storage failed.');
+    msg.innerHTML = '<div class="loading">Reading the document...</div>';
+    await api('POST', '/signatures/' + reserve.id + '/confirm', {});
+    navigate('signature-editor', reserve.id);
+  } catch (e) {
+    msg.innerHTML = '<div class="alert alert-error">' + escHtml(e.message) + '</div>';
+    btn.disabled = false;
+  }
+}
+
+// ----- Editor -----
+function sigEditorLoad(data) {
+  sigEd.signers = (data.signers || []).map(function (s, i) {
+    return { id: s.id, name: s.name || '', email: s.email || '', phone: s.phone || '', role_label: s.role_label || '', _status: s.status || null, _color: SIG_COLORS[i % SIG_COLORS.length] };
+  });
+  var idToIdx = {};
+  sigEd.signers.forEach(function (s, i) { if (s.id != null) idToIdx[s.id] = i; });
+  sigEd.fields = (data.fields || []).map(function (f) {
+    return {
+      id: f.id, signerIdx: (f.signer_id != null && idToIdx[f.signer_id] != null) ? idToIdx[f.signer_id] : null,
+      field_type: f.field_type, page: f.page, x: +f.x, y: +f.y, w: +f.w, h: +f.h,
+      required: f.required !== false, label: f.label || null, ai_detected: !!f.ai_detected, value: (f.value != null ? f.value : ''), locked: !!f.locked
+    };
+  });
+}
+
+async function renderSignatureEditor(el, id) {
+  sigEnsureStyles();
+  sigBindKeys();
+  el.innerHTML = '<div class="loading">Loading...</div>';
+  var data;
+  try { data = await api('GET', '/signatures/' + id); }
+  catch (e) { el.innerHTML = '<div class="alert alert-error">' + escHtml(e.message) + '</div>'; return; }
+  sigEd = { id: id, request: data.request, status: data.request.status, readOnly: (data.request.status !== 'draft'),
+    tool: null, selected: null, activeSigner: null, pdfDoc: null, pagePx: [], signers: [], fields: [], zoom: 1, snap: true, _listFilter: (sigEd && sigEd._listFilter) || '' };
+  sigEditorLoad(data);
+  if (sigEd.signers.length) sigEd.activeSigner = 0;
+
+  el.innerHTML =
+    '<div style="display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap;margin-bottom:6px">' +
+      '<div class="page-title" style="margin:0">' + escHtml(data.request.title || 'Untitled') + ' ' + sigStatusBadge(data.request.status) + '</div>' +
+      '<div style="white-space:nowrap">' +
+        '<button class="btn btn-ghost btn-sm" onclick="navigate(\'signatures\')">&larr; Back</button> ' +
+        (sigEd.readOnly ?
+          ((['sent','partially_signed'].indexOf(sigEd.status) !== -1) ?
+            '<button class="btn btn-secondary btn-sm" onclick="sigRemind(' + id + ')">Send reminder</button> ' +
+            '<button class="btn btn-ghost btn-sm" onclick="sigVoidRequest(' + id + ')">Void</button>' : '')
+          :
+          '<button class="btn btn-secondary btn-sm" id="sig-detect-btn" onclick="sigRunDetect()">&#10024; Auto-detect fields</button> ' +
+          '<button class="btn btn-primary btn-sm" id="sig-save-btn" onclick="sigSaveLayout(true)">Save</button> ' +
+          '<button class="btn btn-ghost btn-sm" onclick="sigSaveAsTemplate(' + id + ')">Save as template</button> ' +
+          '<button class="btn btn-primary btn-sm" onclick="sigSendRequest(' + id + ')">Send</button>') +
+      '</div>' +
+    '</div>' +
+    '<div class="page-subtitle">' + escHtml(data.request.request_number) +
+      (sigEd.readOnly ? ' &middot; this request has been sent and is read-only.' : ' &middot; pick a field type, then click on the document to place it. Drag to move, corner to resize, arrow keys to nudge (Shift for bigger steps), Delete to remove.') + '</div>' +
+    '<div class="sig-ed-grid">' +
+      '<div class="sig-ed-main">' +
+        '<div style="display:flex;align-items:center;gap:6px;margin-bottom:8px">' +
+          '<button class="btn btn-ghost btn-sm" title="Zoom out" onclick="sigZoom(-0.25)">&minus;</button>' +
+          '<span id="sig-zoom-label" style="font-size:13px;min-width:46px;text-align:center">100%</span>' +
+          '<button class="btn btn-ghost btn-sm" title="Zoom in" onclick="sigZoom(0.25)">+</button>' +
+          '<button class="btn btn-ghost btn-sm" title="Fit to width" onclick="sigZoomFit()">Fit</button>' +
+        '</div>' +
+        '<div id="sig-pages" style="overflow-x:auto"><div class="loading">Rendering...</div></div>' +
+      '</div>' +
+      '<div class="sig-ed-side">' +
+        '<div class="card" style="margin-bottom:14px"><div class="card-body">' +
+          '<div id="sig-recipient" style="margin-bottom:10px"></div>' +
+          '<div style="font-weight:600;margin-bottom:8px">Field types</div>' +
+          '<div id="sig-toolbar" style="display:flex;flex-wrap:wrap;gap:6px"></div>' +
+        '</div></div>' +
+        '<div class="card" style="margin-bottom:14px"><div class="card-body">' +
+          '<div style="font-weight:600;margin-bottom:8px">Signers</div>' +
+          '<div id="sig-signers"></div>' +
+        '</div></div>' +
+        '<div class="card"><div class="card-body">' +
+          '<div style="font-weight:600;margin-bottom:8px">Selected field</div>' +
+          '<div id="sig-inspector"></div>' +
+        '</div></div>' +
+      '</div>' +
+    '</div>';
+
+  sigRenderToolbar();
+  sigRenderSigners();
+  sigRenderInspector();
+  sigRenderPages();
+}
+
+function sigRenderToolbar() {
+  var host = document.getElementById('sig-toolbar'); if (!host) return;
+  if (sigEd.readOnly) { host.innerHTML = '<span style="font-size:13px;color:var(--text-muted-color)">Read-only</span>'; return; }
+  host.innerHTML = SIG_FIELD_ORDER.map(function (t) {
+    return '<button class="sig-tool' + (sigEd.tool === t ? ' on' : '') + '" onclick="sigSelectTool(\'' + t + '\')">' + SIG_FIELD_LABELS[t] + '</button>';
+  }).join('') +
+    '<div style="width:100%;height:1px;background:var(--border);margin:8px 0"></div>' +
+    '<button class="sig-tool' + (sigEd.snap ? ' on' : '') + '" style="width:100%;justify-content:center" onclick="sigToggleSnap()">' + (sigEd.snap ? '\u2317 Snap &amp; align: On' : 'Snap off \u2014 free pull') + '</button>';
+}
+function sigToggleSnap() { if (sigEd) { sigEd.snap = !sigEd.snap; sigRenderToolbar(); showToast(sigEd.snap ? 'Snapping on' : 'Free pull (no snap)', ''); } }
+// Snap helpers: align a moving box's edges (left/right/center) to other boxes on the
+// same page, falling back to a fine grid. Resizing also snaps to matching sizes.
+function sigSnapAxis(pos, sz, guides) {
+  var thr = 6, delta = null, bd = thr;
+  [pos, pos + sz, pos + sz / 2].forEach(function (e) { guides.forEach(function (g) { var d = g - e; if (Math.abs(d) < bd) { bd = Math.abs(d); delta = d; } }); });
+  if (delta != null) return pos + delta;
+  var grid = 5; return Math.round(pos / grid) * grid;
+}
+function sigSnapMove(leftPx, topPx, w, h, idx, page, pg) {
+  if (!sigEd.snap) return { x: leftPx, y: topPx };
+  var vx = [], vy = [];
+  sigEd.fields.forEach(function (o, k) { if (k === idx || o.page !== page) return; vx.push(o.x * pg.w, (o.x + o.w) * pg.w, (o.x + o.w / 2) * pg.w); vy.push(o.y * pg.h, (o.y + o.h) * pg.h, (o.y + o.h / 2) * pg.h); });
+  return { x: sigSnapAxis(leftPx, w, vx), y: sigSnapAxis(topPx, h, vy) };
+}
+function sigSnapDim(start, sz, edgeGuides, sizeGuides) {
+  var thr = 6, bd = thr, best = null;
+  sizeGuides.forEach(function (d) { if (Math.abs(sz - d) < bd) { bd = Math.abs(sz - d); best = d; } });
+  edgeGuides.forEach(function (g) { var cand = g - start; if (cand > 8 && Math.abs(sz - cand) < bd) { bd = Math.abs(sz - cand); best = cand; } });
+  if (best != null) return best;
+  var grid = 5; return Math.max(grid, Math.round(sz / grid) * grid);
+}
+function sigSnapResize(leftPx, topPx, w, h, idx, page, pg) {
+  if (!sigEd.snap) return { w: w, h: h };
+  var vx = [], vy = [], ws = [], hs = [];
+  sigEd.fields.forEach(function (o, k) { if (k === idx || o.page !== page) return; vx.push(o.x * pg.w, (o.x + o.w) * pg.w); vy.push(o.y * pg.h, (o.y + o.h) * pg.h); ws.push(o.w * pg.w); hs.push(o.h * pg.h); });
+  return { w: sigSnapDim(leftPx, w, vx, ws), h: sigSnapDim(topPx, h, vy, hs) };
+}
+
+function sigSelectTool(t) { sigEd.tool = (sigEd.tool === t) ? null : t; sigRenderToolbar(); }
+
+function sigRenderSigners() {
+  var host = document.getElementById('sig-signers'); if (!host) return;
+  var ro = sigEd.readOnly;
+  var html = '';
+  sigEd.signers.forEach(function (s, i) {
+    html += '<div class="sig-signer-row' + (sigEd.activeSigner === i ? ' active' : '') + '">' +
+      '<span class="sig-swatch" style="background:' + s._color + '"></span>' +
+      (ro ?
+        '<div style="flex:1"><div style="font-weight:600">' + escHtml(s.name) + '</div><div style="font-size:12px;color:var(--text-muted-color)">' + escHtml(s.email || '') + (s.role_label ? (' &middot; ' + escHtml(s.role_label)) : '') + (s._status ? (' &middot; ' + escHtml(s._status)) : '') + '</div></div>'
+        :
+        '<div style="flex:1;min-width:150px;display:flex;flex-direction:column;gap:4px">' +
+          '<input class="input" style="width:100%" placeholder="Name" value="' + escHtml(s.name) + '" oninput="sigUpdateSigner(' + i + ',\'name\',this.value)" />' +
+          '<input class="input" style="width:100%" placeholder="Email" value="' + escHtml(s.email) + '" oninput="sigUpdateSigner(' + i + ',\'email\',this.value)" />' +
+          '<input class="input" style="width:100%" placeholder="Role (optional)" value="' + escHtml(s.role_label) + '" oninput="sigUpdateSigner(' + i + ',\'role_label\',this.value)" />' +
+        '</div>') +
+      (ro ? '' :
+        '<div style="display:flex;flex-direction:column;gap:4px">' +
+          '<button class="btn btn-ghost btn-sm" title="Assign EVERY field to this signer" onclick="sigAssignAllFields(' + i + ')">all fields</button>' +
+          '<button class="btn btn-ghost btn-sm" title="Place new fields for this signer" onclick="sigSetActiveSigner(' + i + ')">' + (sigEd.activeSigner === i ? '&#10003; active' : 'use') + '</button>' +
+          '<button class="btn btn-ghost btn-sm" title="Remove signer" onclick="sigRemoveSigner(' + i + ')">&times;</button>' +
+        '</div>') +
+    '</div>';
+  });
+  if (!sigEd.signers.length) html += '<div style="font-size:13px;color:var(--text-muted-color);margin-bottom:8px">No signers yet.</div>';
+  if (!ro) html += '<button class="btn btn-secondary btn-sm" onclick="sigAddSigner()">+ Add signer</button>';
+  host.innerHTML = html;
+  sigRenderRecipient();
+}
+
+function sigRenderRecipient() {
+  var host = document.getElementById('sig-recipient'); if (!host) return;
+  if (sigEd.readOnly || !sigEd.signers.length) { host.innerHTML = ''; return; }
+  var opts = sigEd.signers.map(function (s, i) { return '<option value="' + i + '"' + (sigEd.activeSigner === i ? ' selected' : '') + '>' + escHtml(s.name || ('Signer ' + (i + 1))) + '</option>'; }).join('');
+  host.innerHTML = '<label style="font-size:12px;font-weight:600;display:block;margin:0 0 4px">New fields go to</label>' +
+    '<select class="input" style="width:100%" onchange="sigSetActiveSigner(parseInt(this.value,10))">' + opts + '</select>';
+}
+
+function sigUpdateSigner(i, field, val) { if (sigEd.signers[i]) sigEd.signers[i][field] = val; }
+function sigSetActiveSigner(i) { sigEd.activeSigner = i; sigRenderSigners(); }
+function sigAddSigner() {
+  var i = sigEd.signers.length;
+  sigEd.signers.push({ id: null, name: '', email: '', phone: '', role_label: '', _color: SIG_COLORS[i % SIG_COLORS.length] });
+  sigEd.activeSigner = i;
+  sigRenderSigners();
+}
+function sigRemoveSigner(i) {
+  sigEd.signers.splice(i, 1);
+  sigEd.fields.forEach(function (f) {
+    if (f.signerIdx === i) f.signerIdx = null;
+    else if (f.signerIdx != null && f.signerIdx > i) f.signerIdx -= 1;
+  });
+  if (sigEd.activeSigner === i) sigEd.activeSigner = sigEd.signers.length ? 0 : null;
+  else if (sigEd.activeSigner != null && sigEd.activeSigner > i) sigEd.activeSigner -= 1;
+  sigRenderSigners(); sigPaintFields(); sigRenderInspector();
+}
+
+function sigRenderInspector() {
+  var host = document.getElementById('sig-inspector'); if (!host) return;
+  if (sigEd.selected == null || !sigEd.fields[sigEd.selected]) {
+    host.innerHTML = '<div style="font-size:13px;color:var(--text-muted-color)">Click a field on the document to edit it.</div>';
+    return;
+  }
+  var f = sigEd.fields[sigEd.selected];
+  var opts = '<option value="">Unassigned</option>' + sigEd.signers.map(function (s, i) {
+    return '<option value="' + i + '"' + (f.signerIdx === i ? ' selected' : '') + '>' + escHtml(s.name || ('Signer ' + (i + 1))) + '</option>';
+  }).join('');
+  var sel = sigEd.selected;
+  var pre = '';
+  if (['text', 'date', 'name'].indexOf(f.field_type) !== -1) {
+    pre = '<label style="font-size:12px;font-weight:600;display:block;margin:0 0 4px">Pre-filled value (optional)</label>' +
+      '<input type="text" style="width:100%;margin-bottom:12px" placeholder="Leave blank for the signer" value="' + escHtml(f.value || '') + '" oninput="sigSetFieldValue(' + sel + ',this.value)" />';
+  } else if (f.field_type === 'checkbox') {
+    pre = '<div style="display:flex;align-items:center;gap:8px;margin-bottom:12px"><input type="checkbox"' + (f.value === 'true' ? ' checked' : '') + ' onchange="sigSetFieldCheck(' + sel + ',this.checked)" style="width:16px;height:16px;flex:0 0 auto;margin:0" /><span style="font-size:13px">Pre-checked</span></div>';
+  }
+  var lock = '';
+  if (f.field_type !== 'signature' && f.field_type !== 'initials') {
+    lock = '<div style="display:flex;align-items:center;gap:8px;margin-bottom:12px"><input type="checkbox"' + (f.locked ? ' checked' : '') + ' onchange="sigToggleLocked(' + sel + ',this.checked)" style="width:16px;height:16px;flex:0 0 auto;margin:0" /><span style="font-size:13px">Locked &ndash; signer can&#39;t edit</span></div>';
+  }
+  host.innerHTML =
+    '<div style="font-size:13px;margin-bottom:10px"><strong>' + SIG_FIELD_LABELS[f.field_type] + '</strong> on page ' + (f.page + 1) + (f.ai_detected ? ' <span style="color:var(--text-muted-color)">(AI)</span>' : '') + '</div>' +
+    (sigEd.readOnly ? '' :
+      '<label style="font-size:12px;font-weight:600;display:block;margin:0 0 4px">Assigned signer</label>' +
+      '<select class="input" style="width:100%;margin-bottom:12px" onchange="sigAssignField(' + sel + ',this.value)">' + opts + '</select>' +
+      pre +
+      lock +
+      '<div style="display:flex;align-items:center;gap:8px;margin-bottom:14px"><input type="checkbox"' + (f.required ? ' checked' : '') + ' onchange="sigToggleRequired(' + sel + ',this.checked)" style="width:16px;height:16px;flex:0 0 auto;margin:0" /><span style="font-size:13px">Required</span></div>' +
+      '<button class="btn btn-ghost btn-sm" style="color:#ef4444" onclick="sigDeleteField(' + sel + ')">Delete field</button>');
+}
+
+function sigSetFieldValue(idx, val) { if (sigEd.fields[idx]) { sigEd.fields[idx].value = val; sigPaintFields(); } }
+function sigSetFieldCheck(idx, b) { if (sigEd.fields[idx]) { sigEd.fields[idx].value = b ? 'true' : ''; sigPaintFields(); } }
+function sigAssignAllFields(i) {
+  if (!sigEd.fields.length) { showToast('No fields to assign yet', ''); return; }
+  sigEd.fields.forEach(function (f) { f.signerIdx = i; });
+  sigPaintFields(); sigRenderInspector();
+  showToast('All ' + sigEd.fields.length + ' field(s) assigned to ' + (sigEd.signers[i] ? (sigEd.signers[i].name || ('Signer ' + (i + 1))) : ''), 'success');
+}
+
+// Arrow keys nudge the selected field (Shift = bigger step); Delete removes it.
+var _sigKeysBound = false;
+function sigBindKeys() { if (_sigKeysBound) return; _sigKeysBound = true; document.addEventListener('keydown', sigOnKeydown); }
+function sigOnKeydown(e) {
+  if (!sigEd || sigEd.readOnly) return;
+  if (state.currentView !== 'signature-editor') return;
+  var t = e.target;
+  if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.tagName === 'SELECT' || t.isContentEditable)) return;
+  if (sigEd.selected == null || !sigEd.fields[sigEd.selected]) return;
+  var f = sigEd.fields[sigEd.selected];
+  var pg = sigEd.pagePx[f.page]; if (!pg) return;
+  if (e.key === 'Delete') { e.preventDefault(); sigDeleteField(sigEd.selected); return; }
+  if (e.key >= '1' && e.key <= '9') {
+    var si = parseInt(e.key, 10) - 1;
+    if (sigEd.signers[si]) { e.preventDefault(); sigEd.fields[sigEd.selected].signerIdx = si; sigPaintFields(); sigRenderInspector(); showToast('Assigned to ' + (sigEd.signers[si].name || ('Signer ' + (si + 1))), 'success'); }
+    return;
+  }
+  if (e.key !== 'ArrowUp' && e.key !== 'ArrowDown' && e.key !== 'ArrowLeft' && e.key !== 'ArrowRight') return;
+  e.preventDefault();
+  var step = e.shiftKey ? 10 : 1;
+  var dx = (e.key === 'ArrowLeft') ? -step : (e.key === 'ArrowRight') ? step : 0;
+  var dy = (e.key === 'ArrowUp') ? -step : (e.key === 'ArrowDown') ? step : 0;
+  f.x = Math.max(0, Math.min(1 - f.w, f.x + dx / pg.w));
+  f.y = Math.max(0, Math.min(1 - f.h, f.y + dy / pg.h));
+  sigPaintFields();
+}
+
+function sigUpdateZoomLabel() { var el = document.getElementById('sig-zoom-label'); if (el) el.textContent = Math.round((sigEd.zoom || 1) * 100) + '%'; }
+function sigZoom(d) { if (!sigEd) return; sigEd.zoom = Math.max(0.5, Math.min(3, (sigEd.zoom || 1) + d)); sigUpdateZoomLabel(); sigRenderPages(); }
+function sigZoomFit() { if (!sigEd) return; sigEd.zoom = 1; sigUpdateZoomLabel(); sigRenderPages(); }
+
+function sigAssignField(idx, val) { if (sigEd.fields[idx]) { sigEd.fields[idx].signerIdx = (val === '') ? null : parseInt(val, 10); sigPaintFields(); } }
+function sigToggleRequired(idx, v) { if (sigEd.fields[idx]) sigEd.fields[idx].required = !!v; }
+function sigToggleLocked(idx, v) { if (sigEd.fields[idx]) { sigEd.fields[idx].locked = !!v; sigPaintFields(); } }
+function sigSelectField(idx) { sigEd.selected = idx; sigPaintFields(); sigRenderInspector(); }
+function sigDeleteField(idx) {
+  sigEd.fields.splice(idx, 1);
+  if (sigEd.selected === idx) sigEd.selected = null;
+  else if (sigEd.selected != null && sigEd.selected > idx) sigEd.selected -= 1;
+  sigPaintFields(); sigRenderInspector();
+}
+
+async function sigLoadPdf() {
+  if (sigEd.pdfDoc) return sigEd.pdfDoc;
+  await loadPdfJs();
+  var dl = await api('GET', '/signatures/' + sigEd.id + '/download?inline=1');
+  var resp = await fetch(dl.url);
+  if (!resp.ok) throw new Error('Could not load the document.');
+  var buf = await resp.arrayBuffer();
+  sigEd.pdfDoc = await window.pdfjsLib.getDocument({ data: new Uint8Array(buf) }).promise;
+  return sigEd.pdfDoc;
+}
+
+async function sigRenderPages() {
+  var host = document.getElementById('sig-pages'); if (!host) return;
+  host.innerHTML = '<div class="loading">Rendering document...</div>';
+  try { await sigLoadPdf(); } catch (e) { host.innerHTML = '<div class="alert alert-error">' + escHtml(e.message) + '</div>'; return; }
+  var pdf = sigEd.pdfDoc;
+  host.innerHTML = '';
+  sigEd.pagePx = [];
+  var maxW = Math.min(host.clientWidth || 760, 820) * (sigEd.zoom || 1);
+  for (var i = 1; i <= pdf.numPages; i++) {
+    var page = await pdf.getPage(i);
+    var base = page.getViewport({ scale: 1 });
+    var scale = maxW / base.width;
+    var vp = page.getViewport({ scale: scale });
+    var wrap = document.createElement('div'); wrap.className = 'sig-page';
+    wrap.style.width = vp.width + 'px'; wrap.style.height = vp.height + 'px';
+    var canvas = document.createElement('canvas'); canvas.width = vp.width; canvas.height = vp.height;
+    wrap.appendChild(canvas);
+    var overlay = document.createElement('div'); overlay.className = 'sig-overlay'; overlay.setAttribute('data-page', (i - 1));
+    overlay.onpointerdown = (function (idx) { return function (ev) { sigBeginDraw(ev, idx); }; })(i - 1);
+    wrap.appendChild(overlay);
+    host.appendChild(wrap);
+    sigEd.pagePx[i - 1] = { w: vp.width, h: vp.height };
+    await page.render({ canvasContext: canvas.getContext('2d'), viewport: vp }).promise;
+  }
+  sigPaintFields();
+}
+
+function sigPaintFields() {
+  if (!sigEd) return;
+  var overlays = document.querySelectorAll('#sig-pages .sig-overlay');
+  for (var k = 0; k < overlays.length; k++) overlays[k].innerHTML = '';
+  sigEd.fields.forEach(function (f, idx) {
+    var pg = sigEd.pagePx[f.page]; if (!pg) return;
+    var o = document.querySelector('#sig-pages .sig-overlay[data-page="' + f.page + '"]'); if (!o) return;
+    var color = (f.signerIdx != null && sigEd.signers[f.signerIdx]) ? sigEd.signers[f.signerIdx]._color : '#9ca3af';
+    var d = document.createElement('div');
+    d.className = 'sig-field' + (sigEd.selected === idx ? ' sel' : '');
+    d.setAttribute('data-idx', idx);
+    d.style.left = (f.x * pg.w) + 'px'; d.style.top = (f.y * pg.h) + 'px';
+    d.style.width = (f.w * pg.w) + 'px'; d.style.height = (f.h * pg.h) + 'px';
+    d.style.borderColor = color; d.style.background = sigHexA(color, 0.16);
+    d.innerHTML = '<span class="sig-field-tag" style="background:' + color + '">' + SIG_FIELD_LABELS[f.field_type] + (f.signerIdx == null ? ' ?' : '') + '</span>' +
+      (((f.field_type !== 'signature' && f.field_type !== 'initials') && f.value) ? '<span style="position:absolute;left:3px;right:3px;top:50%;transform:translateY(-50%);font-size:10px;color:#111;pointer-events:none;overflow:hidden;white-space:nowrap;text-overflow:ellipsis">' + escHtml(f.field_type === 'checkbox' ? (f.value === 'true' ? '\u2713' : '') : f.value) + '</span>' : '') +
+      (sigEd.readOnly ? '' : '<button class="sig-field-del">&times;</button><span class="sig-resize"></span>');
+    if (!sigEd.readOnly) {
+      d.onpointerdown = (function (ix) {
+        return function (ev) {
+          if (ev.target.classList.contains('sig-resize')) sigStartResize(ev, ix);
+          else if (ev.target.classList.contains('sig-field-del')) { /* delete handled on click */ }
+          else sigStartMove(ev, ix);
+        };
+      })(idx);
+      var del = d.querySelector('.sig-field-del');
+      if (del) del.onclick = (function (ix) { return function (ev) { ev.stopPropagation(); sigDeleteField(ix); }; })(idx);
+    } else {
+      d.style.cursor = 'default';
+    }
+    o.appendChild(d);
+  });
+}
+
+// Click-and-drag on empty page space to draw a box (preview follows the cursor);
+// a plain click without dragging drops a default-sized box at that point.
+function sigBeginDraw(ev, page) {
+  if (!sigEd || sigEd.readOnly) return;
+  if (!ev.target.classList.contains('sig-overlay')) return; // ignore presses on existing boxes
+  if (!sigEd.tool) { showToast('Pick a field type first', ''); return; }
+  var overlay = ev.currentTarget;
+  var pg = sigEd.pagePx[page]; if (!pg) return;
+  ev.preventDefault();
+  var rect = overlay.getBoundingClientRect();
+  var sx = ev.clientX - rect.left, sy = ev.clientY - rect.top;
+  var prev = document.createElement('div');
+  prev.style.cssText = 'position:absolute;border:2px dashed #f97316;background:rgba(249,115,22,.15);pointer-events:none;left:' + sx + 'px;top:' + sy + 'px;width:0;height:0';
+  overlay.appendChild(prev);
+  var moved = false;
+  function mv(e) {
+    var cx = e.clientX - rect.left, cy = e.clientY - rect.top;
+    var x = Math.min(sx, cx), y = Math.min(sy, cy), w = Math.abs(cx - sx), h = Math.abs(cy - sy);
+    if (w > 3 || h > 3) moved = true;
+    prev.style.left = x + 'px'; prev.style.top = y + 'px'; prev.style.width = w + 'px'; prev.style.height = h + 'px';
+  }
+  function up(e) {
+    document.removeEventListener('pointermove', mv); document.removeEventListener('pointerup', up);
+    if (prev.parentNode) prev.parentNode.removeChild(prev);
+    var cx = e.clientX - rect.left, cy = e.clientY - rect.top;
+    var x, y, w, h;
+    if (moved) { x = Math.min(sx, cx); y = Math.min(sy, cy); w = Math.abs(cx - sx); h = Math.abs(cy - sy); }
+    else { var sz = SIG_DEFAULT_SIZE[sigEd.tool] || { w: 0.2, h: 0.04 }; w = sz.w * pg.w; h = sz.h * pg.h; x = sx - w / 2; y = sy - h / 2; }
+    w = Math.max(w, 12); h = Math.max(h, 10);
+    x = Math.max(0, Math.min(pg.w - w, x)); y = Math.max(0, Math.min(pg.h - h, y));
+    sigEd.fields.push({ id: null, signerIdx: sigEd.activeSigner, field_type: sigEd.tool, page: page, x: x / pg.w, y: y / pg.h, w: w / pg.w, h: h / pg.h, required: true, label: null, ai_detected: false, value: '', locked: false });
+    sigEd.selected = sigEd.fields.length - 1;
+    sigPaintFields(); sigRenderInspector();
+  }
+  document.addEventListener('pointermove', mv); document.addEventListener('pointerup', up);
+}
+
+function sigStartMove(ev, idx) {
+  if (sigEd.readOnly) return;
+  ev.preventDefault();
+  var f = sigEd.fields[idx]; var pg = sigEd.pagePx[f.page]; if (!pg) return;
+  var box = document.querySelector('#sig-pages .sig-field[data-idx="' + idx + '"]');
+  var startX = ev.clientX, startY = ev.clientY;
+  var origL = f.x * pg.w, origT = f.y * pg.h;
+  var bw = f.w * pg.w, bh = f.h * pg.h;
+  sigSelectField(idx);
+  box = document.querySelector('#sig-pages .sig-field[data-idx="' + idx + '"]');
+  function mv(e) {
+    var rl = origL + (e.clientX - startX), rt = origT + (e.clientY - startY);
+    var sn = sigSnapMove(rl, rt, bw, bh, idx, f.page, pg);
+    var nl = Math.max(0, Math.min(pg.w - bw, sn.x));
+    var nt = Math.max(0, Math.min(pg.h - bh, sn.y));
+    f.x = nl / pg.w; f.y = nt / pg.h;
+    if (box) { box.style.left = nl + 'px'; box.style.top = nt + 'px'; }
+  }
+  function up() { document.removeEventListener('pointermove', mv); document.removeEventListener('pointerup', up); }
+  document.addEventListener('pointermove', mv); document.addEventListener('pointerup', up);
+}
+
+function sigStartResize(ev, idx) {
+  if (sigEd.readOnly) return;
+  ev.preventDefault(); ev.stopPropagation();
+  var f = sigEd.fields[idx]; var pg = sigEd.pagePx[f.page]; if (!pg) return;
+  var box = document.querySelector('#sig-pages .sig-field[data-idx="' + idx + '"]');
+  var startX = ev.clientX, startY = ev.clientY;
+  var origW = f.w * pg.w, origH = f.h * pg.h;
+  var minW = 14, minH = 12;
+  function mv(e) {
+    var rw = origW + (e.clientX - startX), rh = origH + (e.clientY - startY);
+    var sn = sigSnapResize(f.x * pg.w, f.y * pg.h, rw, rh, idx, f.page, pg);
+    var nw = Math.max(minW, Math.min(pg.w - f.x * pg.w, sn.w));
+    var nh = Math.max(minH, Math.min(pg.h - f.y * pg.h, sn.h));
+    f.w = nw / pg.w; f.h = nh / pg.h;
+    if (box) { box.style.width = nw + 'px'; box.style.height = nh + 'px'; }
+  }
+  function up() { document.removeEventListener('pointermove', mv); document.removeEventListener('pointerup', up); }
+  document.addEventListener('pointermove', mv); document.addEventListener('pointerup', up);
+}
+
+function sigLayoutBody() {
+  return {
+    signers: sigEd.signers.map(function (s) { return { name: s.name, email: s.email, phone: s.phone, role_label: s.role_label }; }),
+    fields: sigEd.fields.map(function (f) { return { signer: f.signerIdx, field_type: f.field_type, page: f.page, x: f.x, y: f.y, w: f.w, h: f.h, required: f.required, label: f.label, value: f.value, locked: f.locked }; })
+  };
+}
+
+async function sigSaveLayout(notify) {
+  if (sigEd.readOnly) return null;
+  var btn = document.getElementById('sig-save-btn'); if (btn) btn.disabled = true;
+  try {
+    var resp = await api('PUT', '/signatures/' + sigEd.id + '/layout', sigLayoutBody());
+    var sel = sigEd.selected, active = sigEd.activeSigner;
+    sigEditorLoad(resp);
+    sigEd.selected = (sel != null && sigEd.fields[sel]) ? sel : null;
+    sigEd.activeSigner = (active != null && sigEd.signers[active]) ? active : (sigEd.signers.length ? 0 : null);
+    sigRenderSigners(); sigPaintFields(); sigRenderInspector();
+    if (notify) showToast('Saved', 'success');
+    return resp;
+  } catch (e) { novaAlert(e.message); return null; }
+  finally { if (btn) btn.disabled = false; }
+}
+
+async function sigRunDetect() {
+  if (sigEd.readOnly) return;
+  var btn = document.getElementById('sig-detect-btn'); if (btn) { btn.disabled = true; btn.textContent = 'Working...'; }
+  try {
+    // Persist current work first so human fields survive the detect replace.
+    var saved = await sigSaveLayout(false);
+    if (saved === null) return;
+    await sigLoadPdf();
+    var pdf = sigEd.pdfDoc;
+    var pages = [];
+    var n = Math.min(pdf.numPages, 15);
+    for (var i = 1; i <= n; i++) {
+      var page = await pdf.getPage(i);
+      var base = page.getViewport({ scale: 1 });
+      var scale = Math.min(1400 / base.width, 2);
+      var vp = page.getViewport({ scale: scale });
+      var c = document.createElement('canvas'); c.width = vp.width; c.height = vp.height;
+      await page.render({ canvasContext: c.getContext('2d'), viewport: vp }).promise;
+      pages.push({ page: i - 1, image: c.toDataURL('image/png') });
+    }
+    var resp = await api('POST', '/signatures/' + sigEd.id + '/detect', { pages: pages });
+    // Reload full field set; detected fields come back unassigned.
+    var full = await api('GET', '/signatures/' + sigEd.id);
+    sigEditorLoad(full);
+    sigEd.selected = null;
+    sigPaintFields(); sigRenderSigners(); sigRenderInspector();
+    showToast((resp.detected || 0) + ' field(s) detected. Assign them to signers.', 'success');
+  } catch (e) { novaAlert(e.message); }
+  finally { if (btn) { btn.disabled = false; btn.innerHTML = '&#10024; Auto-detect fields'; } }
+}
+/* =================== end Signatures module =================== */
+
+/* ===================== Signatures: send actions + public signing ===================== */
+async function sigSendRequest(id) {
+  if (!sigEd) return;
+  var saved = await sigSaveLayout(false);
+  if (saved === null) return;
+  if (!sigEd.signers.length) { novaAlert('Add at least one signer first.'); return; }
+  if (!sigEd.fields.length) { novaAlert('Add at least one field first.'); return; }
+  var ok = await novaConfirm('Send this document to the signers now? Once sent it can no longer be edited.');
+  if (!ok) return;
+  try { await api('POST', '/signatures/' + id + '/send', {}); showToast('Sent to signers', 'success'); navigate('signatures'); }
+  catch (e) { novaAlert(e.message); }
+}
+async function sigRemind(id) {
+  try { var r = await api('POST', '/signatures/' + id + '/remind', {}); showToast('Reminded ' + (r.reminded || 0) + ' signer(s)', 'success'); }
+  catch (e) { novaAlert(e.message); }
+}
+async function sigVoidRequest(id) {
+  var ok = await novaConfirm('Void this request? Signers will no longer be able to sign.');
+  if (!ok) return;
+  try { await api('POST', '/signatures/' + id + '/void', {}); showToast('Voided', 'success'); navigate('signatures'); }
+  catch (e) { novaAlert(e.message); }
+}
+
+// ----- Public signing page (no login) -----
+var sigSign = null;
+var _sigPad = null;
+
+function sigGetUrlToken() {
+  try {
+    var m = (location.pathname || '').match(/^\/sign\/([A-Za-z0-9]+)/);
+    if (m) return m[1];
+    return new URLSearchParams(location.search).get('sign') || null;
+  } catch (e) { return null; }
+}
+
+function sigSignDoneHtml(msg) {
+  return '<div style="max-width:560px;margin:60px auto;padding:0 16px;text-align:center">' +
+    '<div class="card"><div class="card-body">' +
+    '<div style="font-size:42px;line-height:1;margin-bottom:12px;color:var(--primary)">&#10003;</div>' +
+    '<div style="font-size:16px">' + escHtml(msg) + '</div>' +
+    '</div></div></div>';
+}
+
+async function renderSignPage(app, token) {
+  sigEnsureStyles();
+  app.className = 'no-sidebar';
+  app.innerHTML = '<div class="loading" style="padding:48px">Loading document...</div>';
+  var data;
+  try {
+    var r = await fetch('/api/sign/' + encodeURIComponent(token));
+    data = await r.json();
+    if (!r.ok) throw new Error(data.error || 'This signing link is not valid.');
+  } catch (e) {
+    app.innerHTML = '<div style="max-width:560px;margin:60px auto;padding:0 16px"><div class="alert alert-error">' + escHtml(e.message) + '</div></div>';
+    return;
+  }
+  if (data.signer.status === 'signed') { app.innerHTML = sigSignDoneHtml('You have already signed this document. Thank you!'); return; }
+  if (data.signer.status === 'declined') { app.innerHTML = sigSignDoneHtml('You previously declined to sign this document.'); return; }
+  sigSign = {
+    token: token, request: data.request, signer: data.signer, pdfUrl: data.pdfUrl, pdfDoc: null, pagePx: [],
+    consent: !!data.signer.consent_accepted,
+    fields: (data.fields || []).map(function (f) {
+      return { id: f.id, field_type: f.field_type, page: f.page, x: +f.x, y: +f.y, w: +f.w, h: +f.h, required: f.required, label: f.label, value: f.value || '', image: null, locked: !!f.locked };
+    })
+  };
+  app.innerHTML = sigSignShellHtml();
+  sigSignRenderPages();
+}
+
+function sigSignShellHtml() {
+  var r = sigSign.request, s = sigSign.signer;
+  return '<div style="max-width:920px;margin:0 auto;padding:16px">' +
+    '<div style="display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap;margin-bottom:10px">' +
+      '<div><div style="font-size:18px;font-weight:700">' + escHtml(r.title || 'Document') + '</div>' +
+      '<div style="font-size:13px;color:var(--text-muted-color)">' + escHtml(r.request_number) + ' &middot; Signing as ' + escHtml(s.name || s.email || '') + '</div></div>' +
+      '<div style="font-size:13px;color:var(--text-muted-color)">Powered by Nova</div>' +
+    '</div>' +
+    (r.message ? ('<div class="card" style="margin-bottom:12px"><div class="card-body" style="font-size:14px">' + escHtml(r.message) + '</div></div>') : '') +
+    '<label style="display:flex;align-items:flex-start;gap:8px;font-size:13px;background:var(--bg-card);border:1px solid var(--border);border-radius:8px;padding:11px 13px;margin-bottom:14px">' +
+      '<input type="checkbox" id="sig-consent"' + (sigSign.consent ? ' checked' : '') + ' onchange="sigSign.consent=this.checked" style="width:16px;height:16px;flex:0 0 auto;margin-top:2px" />' +
+      '<span>I agree to sign this document electronically, and that my electronic signature is legally binding.</span></label>' +
+    '<div id="sig-sign-pages"><div class="loading">Rendering document...</div></div>' +
+    '<div style="position:sticky;bottom:0;background:var(--bg);border-top:1px solid var(--border);padding:12px 0;margin-top:14px;display:flex;gap:8px;justify-content:flex-end">' +
+      '<button class="btn btn-ghost" onclick="sigSignDelegate()">Forward to someone else</button>' +
+      '<button class="btn btn-ghost" onclick="sigSignDecline()">Decline</button>' +
+      '<button class="btn btn-primary" id="sig-sign-submit" onclick="sigSignSubmit()">Finish &amp; submit</button>' +
+    '</div></div>';
+}
+
+async function sigSignRenderPages() {
+  var host = document.getElementById('sig-sign-pages'); if (!host) return;
+  try {
+    await loadPdfJs();
+    var resp = await fetch(sigSign.pdfUrl);
+    var buf = await resp.arrayBuffer();
+    sigSign.pdfDoc = await window.pdfjsLib.getDocument({ data: new Uint8Array(buf) }).promise;
+  } catch (e) { host.innerHTML = '<div class="alert alert-error">Could not load the document.</div>'; return; }
+  var pdf = sigSign.pdfDoc; host.innerHTML = ''; sigSign.pagePx = [];
+  var maxW = Math.min(host.clientWidth || 880, 900);
+  for (var i = 1; i <= pdf.numPages; i++) {
+    var page = await pdf.getPage(i);
+    var base = page.getViewport({ scale: 1 });
+    var vp = page.getViewport({ scale: maxW / base.width });
+    var wrap = document.createElement('div'); wrap.className = 'sig-page'; wrap.style.width = vp.width + 'px'; wrap.style.height = vp.height + 'px';
+    var canvas = document.createElement('canvas'); canvas.width = vp.width; canvas.height = vp.height; wrap.appendChild(canvas);
+    var overlay = document.createElement('div'); overlay.className = 'sig-overlay'; overlay.style.cursor = 'default'; overlay.setAttribute('data-page', (i - 1)); wrap.appendChild(overlay);
+    host.appendChild(wrap); sigSign.pagePx[i - 1] = { w: vp.width, h: vp.height };
+    await page.render({ canvasContext: canvas.getContext('2d'), viewport: vp }).promise;
+  }
+  sigSignPaintFields();
+}
+
+function sigSignPaintFields() {
+  var overlays = document.querySelectorAll('#sig-sign-pages .sig-overlay');
+  for (var k = 0; k < overlays.length; k++) overlays[k].innerHTML = '';
+  sigSign.fields.forEach(function (f, idx) {
+    var pg = sigSign.pagePx[f.page]; if (!pg) return;
+    var o = document.querySelector('#sig-sign-pages .sig-overlay[data-page="' + f.page + '"]'); if (!o) return;
+    var d = document.createElement('div');
+    d.style.position = 'absolute'; d.style.boxSizing = 'border-box';
+    d.style.left = (f.x * pg.w) + 'px'; d.style.top = (f.y * pg.h) + 'px';
+    d.style.width = (f.w * pg.w) + 'px'; d.style.height = (f.h * pg.h) + 'px';
+    if (f.locked) {
+      d.style.display = 'flex'; d.style.alignItems = 'center'; d.style.padding = '0 4px'; d.style.border = '1px solid var(--border)'; d.style.background = 'rgba(255,255,255,.04)';
+      d.innerHTML = '<span style="font-size:12px;color:#111;overflow:hidden;white-space:nowrap;text-overflow:ellipsis">' + escHtml(f.field_type === 'checkbox' ? (f.value === 'true' ? '\u2713' : '') : (f.value || '')) + '</span>';
+      o.appendChild(d); return;
+    }
+    if (f.field_type === 'signature' || f.field_type === 'initials') {
+      d.style.cursor = 'pointer'; d.style.border = '2px dashed #f97316'; d.style.background = 'rgba(249,115,22,.12)';
+      d.style.display = 'flex'; d.style.alignItems = 'center'; d.style.justifyContent = 'center';
+      if (f.image) { var im = document.createElement('img'); im.src = f.image; im.style.maxWidth = '100%'; im.style.maxHeight = '100%'; d.appendChild(im); }
+      else { d.innerHTML = '<span style="font-size:11px;color:#c2520a;font-weight:700">' + (f.field_type === 'initials' ? 'Initial' : 'Sign') + '</span>'; }
+      d.onclick = (function (ix) { return function () { sigSignPad(ix); }; })(idx);
+    } else if (f.field_type === 'checkbox') {
+      d.style.display = 'flex'; d.style.alignItems = 'center'; d.style.justifyContent = 'center';
+      var cb = document.createElement('input'); cb.type = 'checkbox'; cb.checked = (f.value === 'true'); cb.style.cssText = 'width:20px;height:20px;cursor:pointer;flex:0 0 auto';
+      cb.onchange = (function (ix) { return function (e) { sigSign.fields[ix].value = e.target.checked ? 'true' : 'false'; }; })(idx);
+      d.appendChild(cb);
+    } else {
+      var inp = document.createElement('input'); inp.type = 'text'; inp.value = f.value || '';
+      inp.placeholder = f.label || (f.field_type === 'date' ? 'Date' : (f.field_type === 'name' ? 'Name' : 'Text'));
+      inp.style.cssText = 'width:100%;height:100%;border:2px solid #3b82f6;border-radius:3px;padding:2px 5px;font:inherit;font-size:13px;color:#111;background:rgba(255,255,255,.92);box-sizing:border-box';
+      inp.oninput = (function (ix) { return function (e) { sigSign.fields[ix].value = e.target.value; }; })(idx);
+      d.appendChild(inp);
+    }
+    o.appendChild(d);
+  });
+}
+
+var SIG_TYPE_FONTS = [
+  { l: 'Script', f: '"Segoe Script","Snell Roundhand","Brush Script MT",cursive' },
+  { l: 'Brush', f: '"Brush Script MT","Bradley Hand","Snell Roundhand",cursive' },
+  { l: 'Casual', f: '"Bradley Hand","Segoe Print","Comic Sans MS",cursive' }
+];
+var _sigPadMode = 'draw';
+var _sigTypeFont = SIG_TYPE_FONTS[0].f;
+function sigSignPad(idx) {
+  var f = sigSign.fields[idx];
+  var isInit = (f.field_type === 'initials');
+  _sigPadMode = 'draw'; _sigTypeFont = SIG_TYPE_FONTS[0].f;
+  var ov = document.createElement('div'); ov.id = 'sig-pad-ov';
+  ov.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.6);z-index:9999;display:flex;align-items:center;justify-content:center;padding:16px';
+  var fontBtns = SIG_TYPE_FONTS.map(function (ft, i) {
+    return '<button class="btn btn-sm ' + (i === 0 ? 'btn-primary' : 'btn-ghost') + '" data-sigfont="' + i + '" onclick="sigTypeFont(' + i + ')" style="font-family:' + ft.f + ';font-size:18px">' + (isInit ? 'Ab' : 'Abc') + '</button>';
+  }).join('');
+  ov.innerHTML = '<div style="background:var(--bg-card);border-radius:12px;padding:16px;max-width:480px;width:100%">' +
+    '<div style="font-weight:600;margin-bottom:10px">' + (isInit ? 'Add your initials' : 'Add your signature') + '</div>' +
+    '<div style="display:flex;gap:6px;margin-bottom:12px">' +
+      '<button class="btn btn-sm btn-primary" id="sig-pad-tab-draw" onclick="sigPadMode(\'draw\')">Draw</button>' +
+      '<button class="btn btn-sm btn-ghost" id="sig-pad-tab-type" onclick="sigPadMode(\'type\')">Type</button>' +
+    '</div>' +
+    '<div id="sig-pad-draw">' +
+      '<canvas id="sig-pad-canvas" width="440" height="180" style="width:100%;height:180px;background:#fff;border:1px solid var(--border);border-radius:8px;touch-action:none;cursor:crosshair"></canvas>' +
+    '</div>' +
+    '<div id="sig-pad-type" style="display:none">' +
+      '<input id="sig-type-text" class="input" style="width:100%;margin-bottom:10px;color:#fff" placeholder="' + (isInit ? 'Your initials' : 'Type your name') + '" oninput="sigTypePreview()" />' +
+      '<div style="display:flex;gap:6px;margin-bottom:10px;flex-wrap:wrap">' + fontBtns + '</div>' +
+      '<div id="sig-type-preview" style="height:90px;display:flex;align-items:center;justify-content:center;background:#fff;border:1px solid var(--border);border-radius:8px;color:#111;font-size:46px;overflow:hidden;white-space:nowrap;font-family:' + _sigTypeFont + '"></div>' +
+    '</div>' +
+    '<div style="display:flex;gap:8px;justify-content:flex-end;margin-top:12px">' +
+      '<button class="btn btn-ghost btn-sm" onclick="sigPadClear()">Clear</button>' +
+      '<button class="btn btn-ghost btn-sm" onclick="sigPadClose()">Cancel</button>' +
+      '<button class="btn btn-primary btn-sm" onclick="sigPadApply(' + idx + ')">Apply</button>' +
+    '</div></div>';
+  document.body.appendChild(ov);
+  sigPadInit();
+  var ti = document.getElementById('sig-type-text');
+  if (ti && !isInit && sigSign.signer && sigSign.signer.name) ti.value = sigSign.signer.name;
+}
+function sigPadMode(mode) {
+  _sigPadMode = mode;
+  var dr = document.getElementById('sig-pad-draw'), ty = document.getElementById('sig-pad-type');
+  var tdr = document.getElementById('sig-pad-tab-draw'), tty = document.getElementById('sig-pad-tab-type');
+  if (dr) dr.style.display = (mode === 'draw') ? '' : 'none';
+  if (ty) ty.style.display = (mode === 'type') ? '' : 'none';
+  if (tdr) tdr.className = 'btn btn-sm ' + (mode === 'draw' ? 'btn-primary' : 'btn-ghost');
+  if (tty) tty.className = 'btn btn-sm ' + (mode === 'type' ? 'btn-primary' : 'btn-ghost');
+  if (mode === 'type') sigTypePreview();
+}
+function sigTypeFont(i) {
+  _sigTypeFont = SIG_TYPE_FONTS[i] ? SIG_TYPE_FONTS[i].f : SIG_TYPE_FONTS[0].f;
+  var btns = document.querySelectorAll('[data-sigfont]');
+  for (var k = 0; k < btns.length; k++) { btns[k].className = 'btn btn-sm ' + (parseInt(btns[k].getAttribute('data-sigfont'), 10) === i ? 'btn-primary' : 'btn-ghost'); }
+  sigTypePreview();
+}
+function sigTypePreview() {
+  var pv = document.getElementById('sig-type-preview'); var ti = document.getElementById('sig-type-text');
+  if (!pv) return; pv.style.fontFamily = _sigTypeFont; pv.textContent = (ti && ti.value) ? ti.value : '';
+}
+function sigPadInit() {
+  var c = document.getElementById('sig-pad-canvas'); if (!c) return;
+  var ctx = c.getContext('2d'); ctx.lineWidth = 2.5; ctx.lineCap = 'round'; ctx.lineJoin = 'round'; ctx.strokeStyle = '#111';
+  _sigPad = { c: c, ctx: ctx, drawing: false, ink: false, last: null };
+  function pos(e) {
+    var r = c.getBoundingClientRect();
+    var cx = (e.touches ? e.touches[0].clientX : e.clientX) - r.left;
+    var cy = (e.touches ? e.touches[0].clientY : e.clientY) - r.top;
+    return { x: cx * (c.width / r.width), y: cy * (c.height / r.height) };
+  }
+  c.onpointerdown = function (e) { e.preventDefault(); _sigPad.drawing = true; _sigPad.last = pos(e); };
+  c.onpointermove = function (e) { if (!_sigPad.drawing) return; e.preventDefault(); var p = pos(e); ctx.beginPath(); ctx.moveTo(_sigPad.last.x, _sigPad.last.y); ctx.lineTo(p.x, p.y); ctx.stroke(); _sigPad.last = p; _sigPad.ink = true; };
+  c.onpointerup = function () { _sigPad.drawing = false; };
+  c.onpointerleave = function () { _sigPad.drawing = false; };
+}
+function sigPadClear() {
+  if (_sigPadMode === 'type') { var ti = document.getElementById('sig-type-text'); if (ti) ti.value = ''; sigTypePreview(); return; }
+  if (_sigPad) { _sigPad.ctx.clearRect(0, 0, _sigPad.c.width, _sigPad.c.height); _sigPad.ink = false; }
+}
+function sigPadClose() { var ov = document.getElementById('sig-pad-ov'); if (ov) ov.remove(); _sigPad = null; }
+function sigPadApply(idx) {
+  if (_sigPadMode === 'type') {
+    var ti = document.getElementById('sig-type-text');
+    var txt = ((ti && ti.value) || '').trim();
+    if (!txt) { showToast('Type your name first', ''); return; }
+    var c = document.createElement('canvas'); c.width = 600; c.height = 200;
+    var ctx = c.getContext('2d');
+    ctx.fillStyle = '#111'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+    var size = 120; ctx.font = size + 'px ' + _sigTypeFont;
+    while (size > 24 && ctx.measureText(txt).width > c.width - 40) { size -= 6; ctx.font = size + 'px ' + _sigTypeFont; }
+    ctx.fillText(txt, c.width / 2, c.height / 2);
+    sigSign.fields[idx].image = c.toDataURL('image/png');
+    sigPadClose(); sigSignPaintFields(); return;
+  }
+  if (!_sigPad || !_sigPad.ink) { showToast('Please draw your signature first', ''); return; }
+  sigSign.fields[idx].image = _sigPad.c.toDataURL('image/png');
+  sigPadClose(); sigSignPaintFields();
+}
+
+async function sigSignSubmit() {
+  if (!sigSign.consent) { novaAlert('Please check the box agreeing to sign electronically first.'); return; }
+  for (var i = 0; i < sigSign.fields.length; i++) {
+    var f = sigSign.fields[i]; if (!f.required || f.locked) continue;
+    var has = (f.field_type === 'signature' || f.field_type === 'initials') ? !!f.image
+      : (f.field_type === 'checkbox') ? true : (f.value && String(f.value).trim() !== '');
+    if (!has) { novaAlert('Please complete all required fields before submitting.'); return; }
+  }
+  var values = {};
+  sigSign.fields.forEach(function (f) {
+    values[f.id] = (f.field_type === 'signature' || f.field_type === 'initials') ? { image: f.image } : { value: f.value };
+  });
+  var btn = document.getElementById('sig-sign-submit'); if (btn) btn.disabled = true;
+  try {
+    var r = await fetch('/api/sign/' + encodeURIComponent(sigSign.token) + '/submit', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ consent: true, values: values }) });
+    var d = await r.json(); if (!r.ok) throw new Error(d.error || 'Submit failed.');
+    document.getElementById('app').innerHTML = sigSignDoneHtml('Thank you! Your signature has been recorded.');
+  } catch (e) { novaAlert(e.message); if (btn) btn.disabled = false; }
+}
+
+async function sigSignDecline() {
+  var ok = await novaConfirm('Decline to sign this document? The sender will be notified.');
+  if (!ok) return;
+  var reason = await novaPrompt('Optionally, add a reason (or leave blank):', '');
+  try {
+    var r = await fetch('/api/sign/' + encodeURIComponent(sigSign.token) + '/decline', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ reason: reason || '' }) });
+    var d = await r.json(); if (!r.ok) throw new Error(d.error || 'Failed.');
+    document.getElementById('app').innerHTML = sigSignDoneHtml('You have declined to sign. The sender has been notified.');
+  } catch (e) { novaAlert(e.message); }
+}
+
+function sigSignDelegate() {
+  var ov = document.createElement('div'); ov.id = 'sig-deleg-ov';
+  ov.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.6);z-index:9999;display:flex;align-items:center;justify-content:center;padding:16px';
+  ov.innerHTML = '<div style="background:var(--bg-card);border-radius:12px;padding:18px;max-width:420px;width:100%">' +
+    '<div style="font-weight:600;font-size:16px;margin-bottom:4px">Forward to someone else</div>' +
+    '<div style="font-size:13px;color:var(--text-muted-color);margin-bottom:12px">They will get the signing link and your fields. Your link will stop working.</div>' +
+    '<label style="font-size:12px;font-weight:600;display:block;margin:0 0 4px">Their name</label>' +
+    '<input id="sig-deleg-name" class="input" style="width:100%;margin-bottom:10px" />' +
+    '<label style="font-size:12px;font-weight:600;display:block;margin:0 0 4px">Their email</label>' +
+    '<input id="sig-deleg-email" type="email" class="input" style="width:100%;margin-bottom:10px" />' +
+    '<label style="font-size:12px;font-weight:600;display:block;margin:0 0 4px">Note (optional)</label>' +
+    '<input id="sig-deleg-note" class="input" style="width:100%;margin-bottom:14px" placeholder="Why you are forwarding" />' +
+    '<div id="sig-deleg-msg" style="margin-bottom:10px"></div>' +
+    '<div style="display:flex;gap:8px;justify-content:flex-end">' +
+      '<button class="btn btn-ghost btn-sm" onclick="sigDelegClose()">Cancel</button>' +
+      '<button class="btn btn-primary btn-sm" id="sig-deleg-send" onclick="sigDelegSend()">Forward</button>' +
+    '</div></div>';
+  document.body.appendChild(ov);
+}
+function sigDelegClose() { var ov = document.getElementById('sig-deleg-ov'); if (ov) ov.remove(); }
+async function sigDelegSend() {
+  var name = (document.getElementById('sig-deleg-name').value || '').trim();
+  var email = (document.getElementById('sig-deleg-email').value || '').trim();
+  var note = (document.getElementById('sig-deleg-note').value || '').trim();
+  var msg = document.getElementById('sig-deleg-msg');
+  if (!name || !email || email.indexOf('@') === -1) { msg.innerHTML = '<div class="alert alert-error">Enter a name and a valid email.</div>'; return; }
+  var btn = document.getElementById('sig-deleg-send'); if (btn) btn.disabled = true;
+  try {
+    var r = await fetch('/api/sign/' + encodeURIComponent(sigSign.token) + '/delegate', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name: name, email: email, reason: note }) });
+    var d = await r.json(); if (!r.ok) throw new Error(d.error || 'Failed to forward.');
+    sigDelegClose();
+    document.getElementById('app').innerHTML = sigSignDoneHtml('Forwarded to ' + name + '. They will receive a signing link by email.');
+  } catch (e) { msg.innerHTML = '<div class="alert alert-error">' + escHtml(e.message) + '</div>'; if (btn) btn.disabled = false; }
+}
+/* =================== end Signatures public signing =================== */
+
+// Browser back/forward support: navigate() pushes history; restore here on pop.
+window.addEventListener('popstate', function (e) {
+  closeSidebar();
+  var st = e.state;
+  if (st && st.navView) {
+    state.currentView = st.navView;
+    state.currentParam = (st.navParam != null ? st.navParam : null);
+  } else if (!state.currentView) {
+    state.currentView = 'home';
+  }
+  var sec = getSidebarSection(state.currentView);
+  state.sidebarSection = sec || null;
+  render();
+});
+try { history.replaceState({ navView: (state.currentView || 'home'), navParam: (state.currentParam != null ? state.currentParam : null) }, ''); } catch (e) {}
+render();
+initAiDots();
+window.addEventListener('resize', function() { initAiDots(); });
+
+
+/* ===================== Time Clock (frontend) ===================== */
+function tcInjectStyles(){
+  if(document.getElementById('tc-styles'))return;
+  var el=document.createElement('style');el.id='tc-styles';
+  el.textContent=
+    '.tc-wrap{max-width:640px;margin:0 auto}'+
+    '.tc-card{background:var(--card-bg,#181818);border:1px solid var(--border,#2c2c2c);border-radius:14px;padding:20px;margin-bottom:16px}'+
+    '.tc-h{font-size:12px;text-transform:uppercase;letter-spacing:.8px;color:var(--text-muted-color,#a1a1aa);font-weight:700;margin-bottom:12px}'+
+    '.tc-pill{display:inline-block;padding:5px 14px;border-radius:999px;font-size:12px;font-weight:700;letter-spacing:.5px;text-transform:uppercase;margin-bottom:12px}'+
+    '.tc-timer{font-size:52px;font-weight:800;font-variant-numeric:tabular-nums;text-align:center}'+
+    '.tc-lbl{color:var(--text-muted-color,#71717a);font-size:11px;text-transform:uppercase;letter-spacing:1px;text-align:center;margin-top:2px}'+
+    '.tc-big{width:100%;max-width:340px;margin:18px auto 6px;display:block;border:none;border-radius:16px;padding:20px;font-size:19px;font-weight:800;letter-spacing:.5px;cursor:pointer;color:#111}'+
+    '.tc-subs{display:flex;gap:10px;justify-content:center;flex-wrap:wrap;margin-top:8px}'+
+    '.tc-sbtn{border:1px solid var(--border,#2c2c2c);background:var(--card-bg,#202020);color:var(--text-color,#f4f4f5);padding:11px 16px;border-radius:12px;font-weight:700;font-size:14px;cursor:pointer}'+
+    '.tc-row{display:flex;justify-content:space-between;padding:9px 0;border-bottom:1px solid var(--border,#2c2c2c)}'+
+    '.tc-row:last-child{border-bottom:none}'+
+    '.tc-tag{font-size:11px;font-weight:700;padding:2px 8px;border-radius:6px;text-transform:uppercase}'+
+    '.tc-muted{color:var(--text-muted-color,#a1a1aa)}.tc-dim{color:var(--text-muted-color,#71717a)}'+
+    '.tc-table{width:100%;border-collapse:collapse;font-size:14px}'+
+    '.tc-table th{text-align:left;color:var(--text-muted-color,#71717a);font-size:11px;text-transform:uppercase;padding:7px 8px;border-bottom:1px solid var(--border,#2c2c2c)}'+
+    '.tc-table td{padding:8px;border-bottom:1px solid var(--border,#2c2c2c)}'+
+    '.tc-live{display:inline-block;width:8px;height:8px;border-radius:50%;background:#22c55e;margin-right:6px}';
+  document.head.appendChild(el);
+}
+function tcInjectMgrStyles(){
+  if(document.getElementById('tc-mgr-styles'))return;
+  var el=document.createElement('style');el.id='tc-mgr-styles';
+  el.textContent=
+    '.tc-wide{max-width:720px}'+
+    '.tc-tabs{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:16px}'+
+    '.tc-tab{background:var(--card-bg,#181818);border:1px solid var(--border,#2c2c2c);color:var(--text-muted-color,#a1a1aa);padding:8px 14px;border-radius:8px;cursor:pointer;font-size:13px;font-weight:700}'+
+    '.tc-tab.active{background:#f97316;color:#111;border-color:#f97316}'+
+    '.tc-grid{display:grid;grid-template-columns:1fr 1fr;gap:12px}'+
+    '@media(max-width:640px){.tc-grid{grid-template-columns:1fr}}'+
+    '.tc-person{background:var(--card-bg-2,#202020);border:1px solid var(--border,#2c2c2c);border-radius:12px;padding:14px;display:flex;justify-content:space-between;align-items:center;gap:10px}'+
+    '.tc-person.tc-flag{border-left:3px solid #ef4444}'+
+    '.tc-pl{display:flex;align-items:center;gap:10px;min-width:0}'+
+    '.tc-av{width:34px;height:34px;border-radius:50%;background:#c2560f;color:#fff;display:inline-flex;align-items:center;justify-content:center;font-weight:700;font-size:13px;flex:0 0 auto}'+
+    '.tc-nm{font-weight:700}'+
+    '.tc-mt{font-size:12px;color:var(--text-muted-color,#71717a);margin-top:2px}'+
+    '.tc-live.brk{background:#eab308}';
+  document.head.appendChild(el);
+}
+function tcHM(m){m=Math.max(0,Math.round(m||0));return Math.floor(m/60)+':'+String(m%60).padStart(2,'0');}
+function tcClock(ts){if(!ts)return '—';return new Date(ts).toLocaleTimeString('en-US',{hour:'numeric',minute:'2-digit'});}
+function tcDay(ts){if(!ts)return '';return new Date(ts).toLocaleDateString('en-US',{weekday:'short',month:'short',day:'numeric'});}
+function tcElapsed(ts){if(!ts)return '';var mins=Math.max(0,Math.floor((Date.now()-new Date(ts).getTime())/60000));return Math.floor(mins/60)+':'+String(mins%60).padStart(2,'0');}
+function tcInitials(name){name=(name||'').trim();var p=name.split(/\s+/);return (((p[0]||'')[0]||'')+((p[1]||'')[0]||'')).toUpperCase()||'?';}
+function tcRoleLabel(r){var m={locksmith:'Locksmith',roadside_technician:'Roadside',locksmith_coordinator:'Coordinator',dispatcher:'Dispatcher',manager:'Manager',admin:'Admin',owner:'Owner',counter:'Counter'};return m[r]||r||'';}
+function tcAddDays(ds,n){var a=ds.split('-').map(Number);var d=new Date(Date.UTC(a[0],a[1]-1,a[2]));d.setUTCDate(d.getUTCDate()+n);return d.getUTCFullYear()+'-'+String(d.getUTCMonth()+1).padStart(2,'0')+'-'+String(d.getUTCDate()).padStart(2,'0');}
+var _tcTimer=null;
+function tcStopTimer(){if(_tcTimer){clearInterval(_tcTimer);_tcTimer=null;}}
+var _tcTab='punch';
+var _tcWeek=null;
+function tcReload(){var c=window._tcHost;if(!c||!document.body.contains(c))c=document.getElementById('content');if(c)renderTimeClock(c);}
+function tcTab(t){_tcTab=t;if(t!=='mysheet')_tcWeek=null;tcReload();}
+
+async function renderTimeClock(content){
+  window._tcHost=content;
+  tcInjectStyles();tcInjectMgrStyles();tcStopTimer();
+  var isMgr=(typeof can==='function')&&can('manage_timeclock');
+  if(!isMgr&&(_tcTab==='in'||_tcTab==='sheets'))_tcTab='punch';
+  var tabs=[{k:'punch',l:'Employee Punch'},{k:'mysheet',l:'My Timesheet'}];
+  if(isMgr){tabs.push({k:'in',l:"Who's In"});tabs.push({k:'sheets',l:'Timesheets & Approval'});}
+  var bar='<div class="tc-tabs">'+tabs.map(function(t){return '<button class="tc-tab'+(_tcTab===t.k?' active':'')+'" onclick="tcTab(\''+t.k+'\')">'+t.l+'</button>';}).join('')+'</div>';
+  content.innerHTML='<div class="tc-wrap tc-wide">'+bar+'<div id="tc-body"><div class="tc-dim" style="padding:14px">Loading…</div></div></div>';
+  var body=document.getElementById('tc-body');
+  if(_tcTab==='mysheet')return tcRenderMySheet(body);
+  if(_tcTab==='in')return tcRenderWhosIn(body);
+  if(_tcTab==='sheets')return tcRenderSheets(body);
+  return tcRenderPunch(body);
+}
+async function renderTimeClockManager(content){_tcTab='in';return renderTimeClock(content);}
+
+async function tcRenderPunch(body){
+  var st;
+  try{st=await api('GET','/timeclock/status');}
+  catch(e){body.innerHTML='<div class="tc-card">Could not load time clock.</div>';return;}
+  var cfg={out:{pill:'Clocked Out',pc:'rgba(239,68,68,.13)',ptc:'#f87171',btn:'CLOCK IN',bg:'#22c55e'},
+           in:{pill:'On the Clock',pc:'rgba(34,197,94,.15)',ptc:'#22c55e',btn:'CLOCK OUT',bg:'#ef4444'},
+           brk:{pill:'On Break',pc:'rgba(234,179,8,.15)',ptc:'#facc15',btn:'END BREAK',bg:'#eab308'}}[st.state==='break'?'brk':st.state];
+  var subs='';
+  if(st.state==='in'){
+    subs='<button class="tc-sbtn" style="border-color:#5b4a12;color:#facc15" onclick="tcBreak(\'unpaid\')">Start Lunch (unpaid)</button>'+
+         '<button class="tc-sbtn" style="border-color:#14432a;color:#22c55e" onclick="tcBreak(\'paid\')">Start Break (paid)</button>';
+  }
+  var punches=(st.today||[]).map(function(e){
+    return '<div class="tc-row"><span><span class="tc-tag" style="background:rgba(34,197,94,.15);color:#22c55e">IN '+tcClock(e.clock_in_at)+'</span>'+
+      (e.clock_out_at?' <span class="tc-tag" style="background:rgba(239,68,68,.13);color:#f87171">OUT '+tcClock(e.clock_out_at)+'</span>':'')+
+      '</span><span class="tc-muted">'+(e.worked_minutes!=null?tcHM(e.worked_minutes):'open')+'</span></div>';
+  }).join('')||'<div class="tc-row"><span class="tc-dim">No punches yet today.</span></div>';
+  var ot=40*60;
+  var otChip=st.weekMinutes>ot?' <span class="tc-tag" style="background:rgba(234,179,8,.15);color:#facc15">OT '+tcHM(st.weekMinutes-ot)+'</span>':'';
+  body.innerHTML=
+      '<div class="tc-card" style="text-align:center">'+
+        '<div class="tc-pill" style="background:'+cfg.pc+';color:'+cfg.ptc+'">'+cfg.pill+'</div>'+
+        '<div class="tc-timer" id="tc-timer">0:00:00</div>'+
+        '<div class="tc-lbl">'+(st.state==='break'?'On '+(st.breakType||'')+' break':'Worked today')+'</div>'+
+        '<button class="tc-big" style="background:'+cfg.bg+'" onclick="tcPunch()">'+cfg.btn+'</button>'+
+        '<div class="tc-subs">'+subs+'</div>'+
+      '</div>'+
+      '<div class="tc-card"><div class="tc-h">Today</div>'+punches+'</div>'+
+      '<div class="tc-card"><div class="tc-h">This week (Mon-Sun)</div>'+
+        '<div style="font-size:26px;font-weight:800">'+tcHM(st.weekMinutes)+otChip+'</div>'+
+        '<div class="tc-dim" style="font-size:12px;margin-top:4px">Use the My Timesheet tab to review &amp; approve past weeks.</div></div>';
+  var baseWorked=(st.today||[]).reduce(function(a,e){return a+(e.clock_out_at?(e.worked_minutes||0):0);},0)*60;
+  var entryStart=st.openEntry?new Date(st.openEntry.clock_in_at).getTime():null;
+  var breakStart=st.openBreak?new Date(st.openBreak.break_start_at).getTime():null;
+  function tick(){
+    var el=document.getElementById('tc-timer');if(!el){tcStopTimer();return;}
+    var secs;
+    if(st.state==='break'){secs=(Date.now()-breakStart)/1000;}
+    else if(st.state==='in'){secs=baseWorked+(Date.now()-entryStart)/1000;}
+    else{secs=baseWorked;}
+    secs=Math.max(0,Math.floor(secs));
+    var h=Math.floor(secs/3600),m=Math.floor(secs%3600/60),ss=secs%60;
+    el.textContent=h+':'+String(m).padStart(2,'0')+':'+String(ss).padStart(2,'0');
+  }
+  tick();_tcTimer=setInterval(tick,500);
+}
+async function tcPunch(){
+  var st;try{st=await api('GET','/timeclock/status');}catch(e){alert(e.message);return;}
+  try{
+    if(st.state==='out')await api('POST','/timeclock/clock-in');
+    else if(st.state==='in')await api('POST','/timeclock/clock-out');
+    else if(st.state==='break')await api('POST','/timeclock/break/end');
+  }catch(e){alert(e.message);}
+  tcReload();
+}
+async function tcBreak(type){
+  try{await api('POST','/timeclock/break/start',{type:type});}catch(e){alert(e.message);}
+  tcReload();
+}
+
+async function tcRenderMySheet(body){
+  var q=_tcWeek?('?from='+_tcWeek+'&to='+tcAddDays(_tcWeek,6)):'';
+  var data;
+  try{data=await api('GET','/timeclock/timesheet'+q);}
+  catch(e){body.innerHTML='<div class="tc-card">Could not load timesheet.</div>';return;}
+  _tcWeek=data.from;
+  var ap=data.approval||{};
+  var rows=(data.entries||[]).map(function(e){
+    var unpaid=0;(e.breaks||[]).forEach(function(b){if(b.type==='unpaid'&&b.break_end_at)unpaid+=Math.round((new Date(b.break_end_at)-new Date(b.break_start_at))/60000);});
+    return '<tr><td>'+tcDay(e.clock_in_at)+'</td><td>'+tcClock(e.clock_in_at)+'</td><td>'+tcClock(e.clock_out_at)+'</td><td>'+(unpaid?unpaid+'m':'')+'</td><td style="text-align:right">'+(e.worked_minutes!=null?tcHM(e.worked_minutes):'open')+'</td></tr>';
+  }).join('')||'<tr><td colspan="5" class="tc-dim">No punches this week.</td></tr>';
+  var total=(data.entries||[]).reduce(function(s,e){return s+(e.worked_minutes||0);},0);
+  var st=ap.status||'open';
+  var locked=(st!=='open'&&st!=='reopened');
+  var right=locked?('<span class="tc-tag" style="background:rgba(34,197,94,.15);color:#22c55e">'+escHtml(st)+'</span>')
+                  :('<button class="tc-sbtn" onclick="tcApproveWeek(\''+data.from+'\')">Approve this week</button>');
+  body.innerHTML=
+    '<div class="tc-card">'+
+      '<div style="display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:12px">'+
+        '<div style="display:flex;gap:6px;align-items:center">'+
+          '<button class="tc-sbtn" onclick="tcWeekNav(-7)">&#8249; Prev</button>'+
+          '<span class="tc-h" style="margin:0">Week of '+escHtml(data.from)+'</span>'+
+          '<button class="tc-sbtn" onclick="tcWeekNav(7)">Next &#8250;</button>'+
+        '</div>'+
+        '<div style="font-size:22px;font-weight:800">'+tcHM(total)+'</div>'+
+      '</div>'+
+      '<table class="tc-table"><thead><tr><th>Day</th><th>In</th><th>Out</th><th>Unpaid</th><th style="text-align:right">Worked</th></tr></thead><tbody>'+rows+'</tbody></table>'+
+      '<div style="margin-top:14px;text-align:right">'+right+'</div>'+
+    '</div>';
+}
+function tcWeekNav(n){_tcWeek=tcAddDays(_tcWeek,n);var b=document.getElementById('tc-body');if(b)tcRenderMySheet(b);}
+async function tcApproveWeek(ws){
+  if(!confirm('Approve your hours for the week of '+ws+'? Your manager reviews next.'))return;
+  try{await api('POST','/timeclock/week/approve',{weekStart:ws});}catch(e){alert(e.message);return;}
+  var b=document.getElementById('tc-body');if(b)tcRenderMySheet(b);
+}
+
+function tcWhosInHtml(board){
+  var open=(board.open||[]).map(function(e){
+    var brk=e.on_break_type;
+    var when=brk?((brk==='unpaid'?'lunch ':'break ')+tcElapsed(e.on_break_since)):('in '+tcElapsed(e.clock_in_at));
+    var meta=(e.city_code?escHtml(e.city_code)+' · ':'')+when+(e.user_role?' · '+tcRoleLabel(e.user_role):'');
+    var tag=brk?('<span class="tc-tag" style="background:rgba(234,179,8,.15);color:#facc15">'+(brk==='unpaid'?'Lunch':'Break')+'</span>')
+               :'<span class="tc-tag" style="background:rgba(34,197,94,.15);color:#22c55e">On clock</span>';
+    return '<div class="tc-person"><div class="tc-pl"><span class="tc-av">'+tcInitials(e.user_name)+'</span>'+
+      '<div style="min-width:0"><div class="tc-nm">'+escHtml(e.user_name||'')+'</div>'+
+      '<div class="tc-mt"><span class="tc-live'+(brk?' brk':'')+'"></span>'+meta+'</div></div></div>'+tag+'</div>';
+  }).join('')||'<div class="tc-dim" style="padding:4px 2px">Nobody is clocked in.</div>';
+  var flags=(board.flags||[]).map(function(e){
+    var why=e.status==='auto_closed'?'Auto-closed at cap — forgot clock-out':'Flagged for review';
+    return '<div class="tc-person tc-flag"><div class="tc-pl"><span class="tc-av">'+tcInitials(e.user_name)+'</span>'+
+      '<div style="min-width:0"><div class="tc-nm">'+escHtml(e.user_name||'')+'</div>'+
+      '<div class="tc-mt">'+why+' · '+tcClock(e.clock_in_at)+'</div></div></div>'+
+      '<button class="tc-sbtn" onclick="tcReviewFlag('+e.id+')">Review</button></div>';
+  }).join('')||'<div class="tc-dim" style="padding:4px 2px">No flags.</div>';
+  return '<div class="tc-card"><div class="tc-h">Clocked in right now · '+(board.open||[]).length+'</div><div class="tc-grid">'+open+'</div></div>'+
+         '<div class="tc-card"><div class="tc-h">Needs review · '+(board.flags||[]).length+'</div><div class="tc-grid">'+flags+'</div></div>';
+}
+async function tcRenderWhosIn(body){
+  var board;
+  try{board=await api('GET','/timeclock/board');}
+  catch(e){body.innerHTML='<div class="tc-card">Could not load board.</div>';return;}
+  body.innerHTML=tcWhosInHtml(board);
+}
+async function tcReviewFlag(id){
+  if(!confirm('Mark this entry reviewed? Keeps the current times and clears the flag. Correct times from the person\'s timesheet.'))return;
+  try{await api('PATCH','/timeclock/entry/'+id,{reason:'Reviewed by manager'});}catch(e){alert(e.message);}
+  tcReload();
+}
+
+function tcSheetsHtml(sheet){
+  var rows=(sheet.users||[]).map(function(u){
+    var ap=u.approval||{};var action;
+    if(ap.status==='emp_approved')action=u.canApprove?'<button class="tc-sbtn" onclick="tcMgrApprove('+u.user.id+',\''+sheet.weekStart+'\')">Approve</button>':'<span class="tc-dim">awaiting their manager</span>';
+    else if(ap.status==='mgr_approved')action=u.canApprove?'<button class="tc-sbtn" onclick="tcSubmit('+u.user.id+',\''+sheet.weekStart+'\')">Submit to Excel</button>':'<span class="tc-tag" style="background:rgba(34,197,94,.15);color:#22c55e">approved</span>';
+    else if(ap.status==='submitted')action='<span class="tc-tag" style="background:rgba(34,197,94,.15);color:#22c55e">submitted</span>';
+    else action='<span class="tc-dim">awaiting employee</span>';
+    return '<tr><td>'+escHtml(u.user.name)+'</td><td>'+tcHM(u.minutes)+'</td><td>'+escHtml(ap.status||'open')+'</td><td style="text-align:right">'+action+'</td></tr>';
+  }).join('')||'<tr><td colspan="4" class="tc-dim">No punches recorded this week.</td></tr>';
+  return '<div class="tc-card"><div class="tc-h">Timesheets — week of '+escHtml(sheet.weekStart)+'</div>'+
+    '<table class="tc-table"><thead><tr><th>Employee</th><th>Worked</th><th>Status</th><th></th></tr></thead><tbody>'+rows+'</tbody></table></div>';
+}
+async function tcRenderSheets(body){
+  var sheet;
+  try{sheet=await api('GET','/timeclock/admin');}
+  catch(e){body.innerHTML='<div class="tc-card">Could not load timesheets.</div>';return;}
+  body.innerHTML=tcSheetsHtml(sheet);
+}
+async function tcMgrApprove(id,ws){
+  try{await api('POST','/timeclock/week/mgr-approve',{user_id:id,weekStart:ws});}catch(e){alert(e.message);}
+  tcReload();
+}
+async function tcSubmit(id,ws){
+  if(!confirm('Submit this week and email the Excel sheet to payroll?'))return;
+  try{await api('POST','/timeclock/week/submit',{user_id:id,weekStart:ws});alert('Submitted - Excel emailed to payroll.');}catch(e){alert(e.message);}
+  tcReload();
+}
+
+
+/* ===================== Org Chart ===================== */
+function tcInjectOrgStyles(){
+  if(document.getElementById('tc-org-styles'))return;
+  var el=document.createElement('style');el.id='tc-org-styles';
+  el.textContent=
+    '.org-viewport{position:relative;overflow:hidden;height:72vh;min-height:420px;border:1px solid var(--border,#2c2c2c);border-radius:12px;background:rgba(0,0,0,.18);cursor:grab;touch-action:none}'+
+    '.org-viewport.grabbing{cursor:grabbing}'+
+    '.org-pan{position:absolute;top:0;left:0;transform-origin:0 0;will-change:transform}'+
+    '.org-canvas{position:relative}'+
+    '.org-canvas svg{position:absolute;inset:0;z-index:0}'+
+    '.org-ctrls{display:inline-flex;gap:6px}'+
+    '.org-ctrls button{background:var(--card-bg-2,#202020);border:1px solid var(--border,#2c2c2c);color:var(--text-color,#f4f4f5);height:28px;min-width:30px;padding:0 9px;border-radius:8px;font-weight:700;cursor:pointer;font-size:14px}'+
+    '.org-ctrls button:hover{border-color:#f97316}'+
+    '.org-box{position:absolute;width:152px;display:flex;flex-direction:column;align-items:center;gap:3px;background:var(--card-bg-2,#202020);border:1px solid var(--border,#2c2c2c);border-radius:12px;padding:11px 12px;z-index:1}'+
+    '.org-box.root{border-color:#f97316}'+
+    '.org-chip{position:absolute;top:7px;right:8px;font-size:9.5px;font-weight:800;color:var(--text-muted-color,#71717a);background:rgba(0,0,0,.28);border:1px solid var(--border,#2c2c2c);border-radius:6px;padding:1px 5px}'+
+    '.org-av{width:38px;height:38px;border-radius:50%;background:#c2560f;color:#fff;display:inline-flex;align-items:center;justify-content:center;font-weight:700;font-size:14px}'+
+    '.org-nm{font-weight:700;font-size:13px;text-align:center;line-height:1.15;white-space:nowrap}'+
+    '.org-tl{font-size:11px;color:#fdba74;font-weight:600;text-align:center;white-space:nowrap}'+
+    '.org-rl{font-size:10.5px;color:var(--text-muted-color,#71717a);white-space:nowrap}'+'.org-box[draggable="true"]{cursor:grab}'+'.org-box.org-drop{outline:2px solid #f97316;outline-offset:2px}';
+  document.head.appendChild(el);
+}
+function tcApplyOrgTransform(){
+  var pan=document.getElementById('org-pan');if(!pan||!window._orgView)return;
+  var v=window._orgView;
+  pan.style.transform='translate('+v.x+'px,'+v.y+'px) scale('+v.scale+')';
+}
+function tcOrgFit(){
+  var d=window._orgDim,vp=document.getElementById('org-viewport');if(!d||!vp)return;
+  var r=vp.getBoundingClientRect();
+  var s=Math.min(1,(r.width-40)/d.W,(r.height-40)/d.H);s=Math.max(0.3,s);
+  window._orgView={scale:s,x:(r.width-d.W*s)/2,y:24};
+  tcApplyOrgTransform();
+}
+function tcOrgZoom(dir){
+  var vp=document.getElementById('org-viewport');if(!vp||!window._orgView)return;
+  var r=vp.getBoundingClientRect(),cx=r.width/2,cy=r.height/2,v=window._orgView;
+  var ns=Math.min(2.5,Math.max(0.3,v.scale*(dir>0?1.2:1/1.2)));
+  v.x=cx-(cx-v.x)*(ns/v.scale);v.y=cy-(cy-v.y)*(ns/v.scale);v.scale=ns;
+  tcApplyOrgTransform();
+}
+function tcOrgBindPanZoom(W,H){
+  window._orgDim={W:W,H:H};
+  var vp=document.getElementById('org-viewport');if(!vp)return;
+  if(!window._orgView){tcOrgFit();}else{tcApplyOrgTransform();}
+  var st=window._orgDrag=(window._orgDrag||{});
+  vp.onmousedown=function(e){st.active=true;st.sx=e.clientX;st.sy=e.clientY;st.ox=window._orgView.x;st.oy=window._orgView.y;vp.classList.add('grabbing');e.preventDefault();};
+  vp.onwheel=function(e){
+    e.preventDefault();
+    var r=vp.getBoundingClientRect(),v=window._orgView;
+    var mx=e.clientX-r.left,my=e.clientY-r.top;
+    var ns=Math.min(2.5,Math.max(0.3,v.scale*(e.deltaY<0?1.12:1/1.12)));
+    v.x=mx-(mx-v.x)*(ns/v.scale);v.y=my-(my-v.y)*(ns/v.scale);v.scale=ns;
+    tcApplyOrgTransform();
+  };
+  vp.ontouchstart=function(e){if(e.touches.length===1){st.active=true;st.sx=e.touches[0].clientX;st.sy=e.touches[0].clientY;st.ox=window._orgView.x;st.oy=window._orgView.y;}};
+  vp.ontouchmove=function(e){if(st.active&&e.touches.length===1){window._orgView.x=st.ox+(e.touches[0].clientX-st.sx);window._orgView.y=st.oy+(e.touches[0].clientY-st.sy);tcApplyOrgTransform();e.preventDefault();}};
+  vp.ontouchend=function(){st.active=false;};
+  if(!window._orgPanBound){
+    window._orgPanBound=true;
+    window.addEventListener('mousemove',function(e){var st=window._orgDrag;if(!st||!st.active||!window._orgView)return;window._orgView.x=st.ox+(e.clientX-st.sx);window._orgView.y=st.oy+(e.clientY-st.sy);tcApplyOrgTransform();});
+    window.addEventListener('mouseup',function(){var st=window._orgDrag;if(st&&st.active){st.active=false;var vp=document.getElementById('org-viewport');if(vp)vp.classList.remove('grabbing');}});
+  }
+}
+async function renderOrgChart(content){
+  tcInjectStyles();tcInjectOrgStyles();
+  content.innerHTML='<div class="tc-wrap" style="max-width:100%"><div class="tc-card"><div class="tc-dim">Loading…</div></div></div>';
+  var users;
+  try{users=await api('GET','/users');}catch(e){content.innerHTML='<div class="tc-wrap"><div class="tc-card">Could not load org chart.</div></div>';return;}
+  users=(users||[]).filter(function(u){return u.active!==false && u.hide_from_org!==true;});
+  if(!users.length){content.innerHTML='<div class="tc-wrap"><div class="tc-card"><div class="tc-h">Organization Chart</div><div class="tc-dim">No users.</div></div></div>';return;}
+  var byId={};users.forEach(function(u){byId[u.id]=u;u._kids=[];});window._orgById=byId;
+  var roots=[];
+  users.forEach(function(u){var pid=u.supervisor_id;if(pid&&byId[pid]&&pid!==u.id){byId[pid]._kids.push(u);}else{roots.push(u);}});
+  function lvlOf(u,guard){
+    if(u._lv)return u._lv;guard=guard||0;var v;
+    if(u.org_level&&u.org_level>0)v=u.org_level;
+    else{var s=u.supervisor_id&&byId[u.supervisor_id];v=(s&&guard<50)?lvlOf(s,guard+1)+1:1;}
+    u._lv=v;return v;
+  }
+  users.forEach(function(u){lvlOf(u);});
+  function byRank(a,b){return (a._lv-b._lv)||((a.org_level||999)-(b.org_level||999))||(a.name||'').localeCompare(b.name||'');}
+  var ord=0;
+  function dfs(u){u._ord=ord++;u._kids.slice().sort(byRank).forEach(dfs);}
+  roots.slice().sort(function(a,b){return (a.name||'').localeCompare(b.name||'');}).forEach(dfs);
+  var bands={};users.forEach(function(u){(bands[u._lv]=bands[u._lv]||[]).push(u);});
+  var levels=Object.keys(bands).map(Number).sort(function(a,b){return a-b;});
+  levels.forEach(function(L){bands[L].sort(function(a,b){return a._ord-b._ord;});});
+  var slotW=180,boxW=152,bandH=128,boxH=86,padTop=14;
+  var bandIndex={};levels.forEach(function(L,i){bandIndex[L]=i;});
+  // Tidy layout: each parent is centered over its children so reports cluster under the right manager.
+  var nextX=0;
+  function assignX(u){var k=u._kids.slice().sort(byRank);if(!k.length){u._xi=nextX;nextX++;}else{k.forEach(assignX);u._xi=(k[0]._xi+k[k.length-1]._xi)/2;}}
+  roots.slice().sort(function(a,b){return byRank(a,b)||(a.name||'').localeCompare(b.name||'');}).forEach(function(r){assignX(r);nextX+=1;});
+  var W=Math.max(nextX*slotW,340),H=levels.length*bandH+padTop;
+  var pos={};
+  users.forEach(function(u){pos[u.id]={cx:(u.org_x!=null?u.org_x:((u._xi||0)*slotW+slotW/2)),yTop:bandIndex[u._lv]*bandH+padTop};});window._orgPos=pos;window._orgBoxW=boxW;window._orgBoxH=boxH;
+  var paths='';
+  users.forEach(function(u){var s=u.supervisor_id&&byId[u.supervisor_id];if(!s||!pos[s.id]||!pos[u.id])return;var p=pos[s.id],c=pos[u.id];var pby=p.yTop+boxH;if(c.yTop<=pby)return;var midY=pby+24;paths+='<path id="edge-'+u.id+'" d="M'+p.cx+' '+pby+' V'+midY+' H'+c.cx+' V'+c.yTop+'" fill="none" stroke="#3a3a3a" stroke-width="2"/>';});
+  var editable=(typeof can==='function')&&can('manage_users');
+  var boxes='';
+  users.forEach(function(u){var pp=pos[u.id];var dragAttr=editable?(' id="orgbox-'+u.id+'" data-id="'+u.id+'"'):'';var isRoot=!(u.supervisor_id&&byId[u.supervisor_id]);var sub=u.title?('<div class="org-tl">'+escHtml(u.title)+'</div>'):('<div class="org-rl">'+escHtml(tcRoleLabel(u.role))+'</div>');boxes+='<div class="org-box'+(isRoot?' root':'')+'"'+dragAttr+' style="left:'+(pp.cx-boxW/2)+'px;top:'+pp.yTop+'px"><span class="org-chip">L'+u._lv+'</span><span class="org-av">'+tcInitials(u.name)+'</span><div class="org-nm">'+escHtml(u.name||'')+'</div>'+sub+'</div>';});
+  var svg='<svg width="'+W+'" height="'+H+'" viewBox="0 0 '+W+' '+H+'">'+paths+'</svg>';
+  var note=(typeof can==='function'&&can('manage_users'))?'<div class="tc-dim" style="font-size:12px;margin-top:10px">Drag a box onto a manager to re-assign who they report to; drop in open space to nudge them left/right. Double-click a person to edit them. Pan with the background, scroll to zoom.</div>':'<div class="tc-dim" style="font-size:12px;margin-top:10px">Drag to pan, scroll to zoom.</div>';
+  content.innerHTML='<div class="tc-wrap" style="max-width:100%"><div class="tc-card">'+
+    '<div class="tc-h" style="display:flex;justify-content:space-between;align-items:center">Organization Chart'+
+      '<span class="org-ctrls"><button title="Zoom out" onclick="tcOrgZoom(-1)">−</button><button title="Zoom in" onclick="tcOrgZoom(1)">+</button><button title="Fit to view" onclick="tcOrgFit()">Fit</button></span></div>'+
+    '<div class="org-viewport" id="org-viewport"><div class="org-pan" id="org-pan"><div class="org-canvas" id="org-canvas" style="width:'+W+'px;height:'+H+'px">'+svg+boxes+'</div></div></div>'+
+    note+'</div></div>';
+  tcOrgBindPanZoom(W,H);
+  tcOrgBindDrag(editable);
+}
+
+function tcOrgClearHi(){var cv=document.getElementById('org-canvas');if(!cv)return;var n=cv.querySelectorAll('.org-drop');for(var i=0;i<n.length;i++)n[i].classList.remove('org-drop');}
+function tcOrgEdgePath(childId){
+  var byId=window._orgById,pos=window._orgPos,c=byId&&byId[childId];if(!c)return '';
+  var s=c.supervisor_id&&byId[c.supervisor_id];if(!s)return '';
+  var pp=pos[s.id],cc=pos[childId];if(!pp||!cc)return '';
+  var pby=pp.yTop+window._orgBoxH;if(cc.yTop<=pby)return '';
+  var midY=pby+24;
+  return 'M'+pp.cx+' '+pby+' V'+midY+' H'+cc.cx+' V'+cc.yTop;
+}
+function tcOrgSetEdge(childId){var p=document.getElementById('edge-'+childId);if(p)p.setAttribute('d',tcOrgEdgePath(childId));}
+function tcOrgRedrawEdges(id){var byId=window._orgById;if(!byId)return;tcOrgSetEdge(id);var n=byId[id];if(n&&n._kids)n._kids.forEach(function(k){tcOrgSetEdge(k.id);});}
+function tcOrgBindDrag(editable){
+  var cv=document.getElementById('org-canvas');if(!cv||!editable)return;
+  cv.addEventListener('mousedown',function(e){
+    var b=e.target.closest&&e.target.closest('.org-box');if(!b)return;
+    e.preventDefault();e.stopPropagation();
+    var id=parseInt(b.getAttribute('data-id'),10);
+    if(!window._orgPos||!window._orgPos[id])return;
+    window._orgBoxDrag={id:id,el:b,sx:e.clientX,sy:e.clientY,cx0:window._orgPos[id].cx,moved:false,target:null};
+    b.style.pointerEvents='none';b.style.zIndex='5';document.body.style.userSelect='none';
+  });
+  if(!window._orgBoxBound){
+    window._orgBoxBound=true;
+    window.addEventListener('mousemove',function(e){
+      var d=window._orgBoxDrag;if(!d)return;
+      var v=window._orgView||{scale:1};
+      if(Math.abs(e.clientX-d.sx)+Math.abs(e.clientY-d.sy)>3)d.moved=true;
+      var ncx=d.cx0+(e.clientX-d.sx)/v.scale;
+      ncx=tcOrgSnapX(d.id,ncx);
+      window._orgPos[d.id].cx=ncx;
+      d.el.style.left=(ncx-window._orgBoxW/2)+'px';
+      tcOrgRedrawEdges(d.id);
+      tcOrgClearHi();
+      var t=document.elementFromPoint(e.clientX,e.clientY);
+      var tb=t&&t.closest&&t.closest('.org-box');
+      d.target=(tb&&parseInt(tb.getAttribute('data-id'),10))||null;
+      if(d.target&&d.target!==d.id){tb.classList.add('org-drop');}else{d.target=null;}
+    });
+    window.addEventListener('mouseup',function(e){
+      var d=window._orgBoxDrag;if(!d)return;window._orgBoxDrag=null;
+      d.el.style.pointerEvents='';d.el.style.zIndex='';document.body.style.userSelect='';
+      tcOrgClearHi();
+      if(!d.moved){var now=Date.now();if(window._orgLastClick&&window._orgLastClick.id===d.id&&(now-window._orgLastClick.t)<350){window._orgLastClick=null;if(typeof showUserModal==='function')showUserModal(d.id,'org-chart');}else{window._orgLastClick={id:d.id,t:now};}return;}
+      if(d.target&&d.target!==d.id){tcOrgReparent(d.id,d.target);return;}
+      tcOrgReposition(d.id,window._orgPos[d.id].cx);
+    });
+  }
+}
+async function tcOrgReparent(childId,targetId){
+  if(!childId||!targetId||childId===targetId)return;
+  var byId=window._orgById||{};
+  var cur=byId[targetId],g=0;
+  while(cur&&g<100){if(cur.supervisor_id===childId){alert('That would create a loop in the chart.');return;}cur=byId[cur.supervisor_id];g++;}
+  var mgr=byId[targetId];var newLevel=((mgr&&mgr._lv)?mgr._lv:1)+1;
+  try{await api('PATCH','/users/'+childId+'/org',{supervisor_id:targetId,org_level:newLevel,org_x:null});}
+  catch(e){alert(e.message||'Could not update.');return;}
+  var c=document.getElementById('content');if(c)renderOrgChart(c);
+}
+async function tcOrgReposition(id,cx){
+  if(!id)return;
+  try{await api('PATCH','/users/'+id+'/org',{org_x:Math.round(cx)});}
+  catch(e){alert(e.message||'Could not move.');return;}
+  var c=document.getElementById('content');if(c)renderOrgChart(c);
+}
+function tcOrgSnapX(id,x){
+  var pos=window._orgPos;if(!pos)return x;
+  var boxW=window._orgBoxW||152,GAP=20,SNAP=12;
+  var myY=pos[id]?pos[id].yTop:null;
+  var best=x,bestD=SNAP;
+  for(var k in pos){ if(+k===id)continue; var oc=pos[k].cx; var cands=[oc];
+    if(myY!=null&&pos[k].yTop===myY){cands.push(oc+(boxW+GAP));cands.push(oc-(boxW+GAP));}
+    for(var i=0;i<cands.length;i++){var dd=Math.abs(x-cands[i]);if(dd<bestD){bestD=dd;best=cands[i];}}
+  }
+  return best;
+}
+
+
+// ===== SOP QUIZ =============================================================
+
+// Public take page (works logged-out; reached via the SMS link /?quiz=TOKEN)
+async function renderQuizTake(app, token) {
+  app.className = 'no-sidebar';
+  app.innerHTML = '<div style="max-width:640px;margin:40px auto;padding:0 16px">'
+    + '<div style="text-align:center;color:var(--primary);font-weight:700;font-size:20px;margin-bottom:16px">Weekly SOP Check</div>'
+    + '<div id="quizBody" style="background:var(--card-bg,#161616);border:1px solid var(--border,#2a2a2a);border-radius:12px;padding:20px">Loading&hellip;</div></div>';
+  var body = document.getElementById('quizBody');
+  var data;
+  try {
+    var resp = await fetch('/api/quiz-take/' + encodeURIComponent(token));
+    data = await resp.json();
+    if (!resp.ok) throw new Error(data.error || 'Could not load quiz');
+  } catch (e) { body.innerHTML = '<div style="color:#f87171">' + escHtml(e.message) + '</div>'; return; }
+  if (data.completed) { body.innerHTML = quizResultHtml(data.score, data.total); return; }
+  var html = '<div style="color:var(--text-muted-color);margin-bottom:16px">Topic: <strong>' + escHtml(data.sopTitle || 'SOP') + '</strong></div><form id="quizForm" onchange="quizHighlight(this)">';
+  data.questions.forEach(function (q, qi) {
+    html += '<div style="margin-bottom:20px"><div style="font-weight:600;margin-bottom:8px">' + (qi + 1) + '. ' + escHtml(q.prompt) + '</div>';
+    (q.options || []).forEach(function (opt, oi) {
+      html += '<label class="quiz-opt" style="display:block;background:#1f1f1f;border:1px solid #333;border-radius:8px;padding:12px 14px;margin-bottom:8px;cursor:pointer;transition:border-color .12s, background .12s">'
+        + '<input type="radio" name="q' + qi + '" value="' + oi + '" style="display:none">' + escHtml(opt) + '</label>';
+    });
+    html += '</div>';
+  });
+  html += '<button type="submit" class="btn btn-primary" style="width:100%">Submit</button></form>';
+  body.innerHTML = html;
+  document.getElementById('quizForm').addEventListener('submit', async function (ev) {
+    ev.preventDefault();
+    var answers = [];
+    for (var i = 0; i < data.questions.length; i++) {
+      var s = document.querySelector('input[name="q' + i + '"]:checked');
+      answers.push(s ? parseInt(s.value, 10) : -1);
+    }
+    if (answers.indexOf(-1) !== -1) { (window.novaAlert || window.alert)('Please answer both questions.'); return; }
+    try {
+      var r = await fetch('/api/quiz-take/' + encodeURIComponent(token), {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ answers: answers })
+      });
+      var res = await r.json();
+      if (!r.ok) throw new Error(res.error || 'Submit failed');
+      body.innerHTML = quizResultHtml(res.score, res.total);
+    } catch (e) { (window.novaAlert || window.alert)(e.message); }
+  });
+}
+
+function quizResultHtml(score, total) {
+  var passed = score >= total;
+  return '<div style="text-align:center">'
+    + '<div style="font-size:40px;color:' + (passed ? '#22c55e' : 'var(--primary)') + '">' + (passed ? '&#10003;' : '&#8226;') + '</div>'
+    + '<div style="font-size:22px;font-weight:700;color:' + (passed ? '#22c55e' : 'var(--primary)') + '">You scored ' + score + '/' + total + '</div>'
+    + '<div style="color:var(--text-muted-color);margin-top:4px">' + (passed ? 'Nice work.' : 'Give the SOP another look.') + '</div>'
+    + '<div style="color:var(--text-muted-color);margin-top:16px">You can close this window.</div></div>';
+}
+
+// Admin dashboard
+async function renderQuizAdmin(content) {
+  content.innerHTML = '<div class="page-header"><div class="page-title"><h2>SOP Quiz</h2>'
+    + '<p>Weekly 2-question knowledge check, AI-generated from your SOP library.</p></div></div>'
+    + '<div id="quizAdmin">Loading&hellip;</div>';
+  var box = document.getElementById('quizAdmin');
+  try {
+    var cur = await api('GET', '/quiz/current');
+    var list = await api('GET', '/quiz');
+    var s = can('manage_quiz') ? await api('GET', '/quiz/settings') : null;
+    var roster = await api('GET', '/quiz/roster');
+    var comp = await api('GET', '/quiz/compliance');
+    box.innerHTML = quizComplianceHtml(comp) + quizCurrentHtml(cur) + (s ? quizSettingsHtml(s) : '') + quizRosterHtml(roster) + quizListHtml(list);
+    wireQuizAdmin();
+  } catch (e) { box.innerHTML = '<div style="color:#f87171">' + escHtml(e.message) + '</div>'; }
+}
+
+function quizCard(inner) {
+  return '<div style="background:var(--card-bg,#161616);border:1px solid var(--border,#2a2a2a);border-radius:12px;padding:16px;margin-bottom:16px">' + inner + '</div>';
+}
+
+function quizCurrentHtml(cur) {
+  if (!cur.quiz) {
+    var gen = can('manage_quiz') ? '<button id="quizGenBtn" class="btn btn-primary">Generate this week&#39;s quiz</button>' : '<span style="color:var(--text-muted-color)">No quiz generated for this week yet.</span>';
+    return quizCard('<div style="margin-bottom:12px;color:var(--text-muted-color)">No quiz for this week.</div>' + gen);
+  }
+  var h = '<div style="color:var(--text-muted-color)">This week &middot; ' + escHtml(cur.quiz.status) + '</div>'
+    + '<div style="font-weight:700;margin:4px 0 12px">Topic: ' + escHtml(cur.quiz.sop_title || '') + '</div>';
+  (cur.questions || []).forEach(function (q) {
+    h += '<div style="margin-bottom:12px"><div style="font-weight:600">' + q.position + '. ' + escHtml(q.prompt) + '</div>';
+    (q.options || []).forEach(function (opt, oi) {
+      var ok = oi === q.correct_index;
+      h += '<div style="padding:2px 0;color:' + (ok ? '#22c55e' : 'var(--text-muted-color)') + '">' + (ok ? '&#10003; ' : '&nbsp;&nbsp;&nbsp;') + escHtml(opt) + '</div>';
+    });
+    h += '</div>';
+  });
+  if (can('manage_quiz')) h += '<div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:8px">' + '<button id="quizGenBtn" class="btn btn-secondary">Regenerate</button>' + '<button id="quizTestBtn" class="btn btn-secondary" data-qid="' + cur.quiz.id + '">Send test to me</button>' + '<button id="quizSendBtn" class="btn btn-primary" data-qid="' + cur.quiz.id + '">Send to everyone now</button></div>';
+  return quizCard(h);
+}
+
+function quizSettingsHtml(s) {
+  var days = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+  var dayOpts = days.map(function (d, i) { return '<option value="' + i + '"' + (i === s.dow ? ' selected' : '') + '>' + d + '</option>'; }).join('');
+  return quizCard('<div style="font-weight:700;margin-bottom:12px">Settings</div>'
+    + '<label style="display:block;margin-bottom:10px"><input type="checkbox" id="qsEnabled"' + (s.enabled ? ' checked' : '') + ' style="width:auto;margin:0 8px 0 0;accent-color:var(--primary);vertical-align:middle">Enabled (send automatically)</label>'
+    + '<div style="display:flex;gap:12px;flex-wrap:wrap;align-items:center;margin-bottom:10px">'
+    + '<label>Send day <select id="qsDow" class="form-control" style="width:auto;display:inline-block">' + dayOpts + '</select></label>'
+    + '<label>Time (ET) <input type="time" id="qsTime" value="' + escHtml(s.time) + '" class="form-control" style="width:auto;display:inline-block"></label>' + '<label>Due within <input type="number" min="1" max="30" id="qsDue" value="' + (s.dueDays || 3) + '" class="form-control" style="width:70px;display:inline-block"> days</label></div>'
+    + '<div style="color:var(--text-muted-color);font-size:13px;margin-bottom:10px">Recipients: everyone except admin/owner. Pass = both correct. Reminders daily until answered.</div>'
+    + '<button id="qsSave" class="btn btn-primary">Save settings</button> <span id="qsMsg" style="color:#22c55e;margin-left:8px"></span>');
+}
+
+function quizListHtml(list) {
+  if (!list || !list.length) return '';
+  var rows = list.map(function (q) {
+    return '<tr><td style="padding:8px">' + escHtml(q.week_of) + '</td><td style="padding:8px">' + escHtml(q.sop_title || '') + '</td>'
+      + '<td style="padding:8px">' + escHtml(q.status) + '</td><td style="padding:8px">' + q.completed + '/' + q.assigned + '</td>'
+      + '<td style="padding:8px">' + q.passed + '</td><td style="padding:8px"><a href="#" data-qr="' + q.id + '" style="color:var(--primary)">Results</a></td></tr>';
+  }).join('');
+  return quizCard('<div style="font-weight:700;margin-bottom:12px">History</div>'
+    + '<table style="width:100%;border-collapse:collapse;font-size:14px"><tr style="color:var(--text-muted-color);text-align:left">'
+    + '<th style="padding:8px">Week</th><th style="padding:8px">Topic</th><th style="padding:8px">Status</th>'
+    + '<th style="padding:8px">Done</th><th style="padding:8px">Passed</th><th></th></tr>' + rows + '</table>');
+}
+
+function wireQuizAdmin() {
+  var gen = document.getElementById('quizGenBtn');
+  if (gen) gen.addEventListener('click', async function () {
+    gen.disabled = true; gen.textContent = 'Generating…';
+    try { await api('POST', '/quiz/generate'); renderQuizAdmin(document.getElementById('content')); }
+    catch (e) { (window.novaAlert || window.alert)(e.message); gen.disabled = false; gen.textContent = 'Generate'; }
+  });
+  var testBtn = document.getElementById('quizTestBtn');
+  if (testBtn) testBtn.addEventListener('click', async function () {
+    testBtn.disabled = true;
+    try {
+      var r = await api('POST', '/quiz/' + testBtn.getAttribute('data-qid') + '/send-test');
+      window.open(r.link, '_blank');
+      (window.novaAlert || window.alert)(r.texted ? 'Texted you the link and opened it here.' : 'Opened the quiz here (no phone on file to text).');
+    } catch (e) { (window.novaAlert || window.alert)(e.message); } finally { testBtn.disabled = false; }
+  });
+  var sendBtn = document.getElementById('quizSendBtn');
+  if (sendBtn) sendBtn.addEventListener('click', async function () {
+    if (!confirm('Send this quiz by text to everyone now (all staff except admin/owner)? This also closes any earlier open quiz.')) return;
+    sendBtn.disabled = true; sendBtn.textContent = 'Sending…';
+    try {
+      var r = await api('POST', '/quiz/' + sendBtn.getAttribute('data-qid') + '/send');
+      (window.novaAlert || window.alert)('Sent to ' + r.sent + ' people.');
+      renderQuizAdmin(document.getElementById('content'));
+    } catch (e) { (window.novaAlert || window.alert)(e.message); sendBtn.disabled = false; sendBtn.textContent = 'Send to everyone now'; }
+  });
+  var save = document.getElementById('qsSave');
+  if (save) save.addEventListener('click', async function () {
+    var payload = {
+      enabled: document.getElementById('qsEnabled').checked,
+      dow: parseInt(document.getElementById('qsDow').value, 10),
+      time: document.getElementById('qsTime').value,
+      dueDays: parseInt(document.getElementById('qsDue').value, 10),
+      roles: ['locksmith', 'locksmith_coordinator', 'dispatcher', 'roadside_technician', 'manager'],
+      passScore: 2
+    };
+    try { await api('PUT', '/quiz/settings', payload); document.getElementById('qsMsg').textContent = 'Saved';
+      setTimeout(function () { var m = document.getElementById('qsMsg'); if (m) m.textContent = ''; }, 2000);
+    } catch (e) { (window.novaAlert || window.alert)(e.message); }
+  });
+  document.querySelectorAll('[data-qr]').forEach(function (el) {
+    el.addEventListener('click', function (ev) { ev.preventDefault(); showQuizResults(el.getAttribute('data-qr')); });
+  });
+}
+
+async function showQuizResults(quizId) {
+  try {
+    var rows = await api('GET', '/quiz/' + quizId + '/results');
+    var body = rows.map(function (r) {
+      return '<tr><td style="padding:6px">' + escHtml(r.name) + '</td><td style="padding:6px">' + (r.overdue ? '<span style="color:#f97316">overdue</span>' : escHtml(r.status)) + '</td>'
+        + '<td style="padding:6px">' + (r.score == null ? '&ndash;' : r.score) + '</td>'
+        + '<td style="padding:6px">' + (r.passed == null ? '&ndash;' : (r.passed ? 'Yes' : 'No')) + '</td>'
+        + '<td style="padding:6px">' + (r.reminders_sent || 0) + '</td></tr>';
+    }).join('');
+    var box = document.getElementById('quizAdmin');
+    box.insertAdjacentHTML('afterbegin', quizCard('<div style="font-weight:700;margin-bottom:8px">Results</div>'
+      + '<table style="width:100%;border-collapse:collapse;font-size:14px"><tr style="color:var(--text-muted-color);text-align:left">'
+      + '<th style="padding:6px">Name</th><th style="padding:6px">Status</th><th style="padding:6px">Score</th>'
+      + '<th style="padding:6px">Passed</th><th style="padding:6px">Reminders</th></tr>' + body + '</table>'));
+  } catch (e) { (window.novaAlert || window.alert)(e.message); }
+}
+
+
+// ===== SOP QUIZ (employee-facing) ==========================================
+async function renderMyQuiz(content) {
+  content.innerHTML = '<div class="page-header"><div class="page-title"><h2>SOP Quiz</h2>'
+    + '<p>Your weekly 2-question knowledge check.</p></div></div><div id="myQuizBody">Loading&hellip;</div>';
+  var body = document.getElementById('myQuizBody');
+  var data;
+  try { data = await api('GET', '/quiz/mine'); }
+  catch (e) { body.innerHTML = '<div style="color:#f87171">' + escHtml(e.message) + '</div>'; return; }
+  if (!data || !data.quiz) { body.innerHTML = quizCard('<div style="text-align:center;color:var(--text-muted-color)">You&#39;re all caught up &mdash; no quiz right now.</div>'); return; }
+  if (data.completed) { body.innerHTML = quizCard(quizResultHtml(data.score, data.total)); return; }
+  var html = '<div style="color:var(--text-muted-color);margin-bottom:16px">Topic: <strong>' + escHtml(data.quiz.sopTitle || 'SOP') + '</strong></div><form id="myQuizForm" onchange="quizHighlight(this)">';
+  data.questions.forEach(function (q, qi) {
+    html += '<div style="margin-bottom:20px"><div style="font-weight:600;margin-bottom:8px">' + (qi + 1) + '. ' + escHtml(q.prompt) + '</div>';
+    (q.options || []).forEach(function (opt, oi) {
+      html += '<label class="quiz-opt" style="display:block;background:#1f1f1f;border:1px solid #333;border-radius:8px;padding:12px 14px;margin-bottom:8px;cursor:pointer;transition:border-color .12s, background .12s">'
+        + '<input type="radio" name="mq' + qi + '" value="' + oi + '" style="display:none">' + escHtml(opt) + '</label>';
+    });
+    html += '</div>';
+  });
+  html += '<button type="submit" class="btn btn-primary" style="width:100%">Submit</button></form>';
+  body.innerHTML = quizCard(html);
+  document.getElementById('myQuizForm').addEventListener('submit', async function (ev) {
+    ev.preventDefault();
+    var answers = [];
+    for (var i = 0; i < data.questions.length; i++) {
+      var s = document.querySelector('input[name="mq' + i + '"]:checked');
+      answers.push(s ? parseInt(s.value, 10) : -1);
+    }
+    if (answers.indexOf(-1) !== -1) { (window.novaAlert || window.alert)('Please answer both questions.'); return; }
+    try { var res = await api('POST', '/quiz/mine', { answers: answers }); body.innerHTML = quizCard(quizResultHtml(res.score, res.total)); }
+    catch (e) { (window.novaAlert || window.alert)(e.message); }
+  });
+}
+
+async function maybeQuizBanner(el) {
+  try {
+    var data = await api('GET', '/quiz/mine');
+    if (!data || !data.quiz || data.completed || !el) return;
+    var banner = document.createElement('div');
+    banner.style.cssText = 'background:var(--card-bg,#161616);border:1px solid var(--primary);border-left:4px solid var(--primary);border-radius:10px;padding:14px 16px;margin-bottom:16px;display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap';
+    banner.innerHTML = '<div><strong>Weekly SOP quiz due</strong><div style="color:var(--text-muted-color);font-size:14px">2 quick questions on ' + escHtml(data.quiz.sopTitle || 'your SOPs') + '.</div></div>'
+      + '<button class="btn btn-primary" onclick="navigate(\'my-quiz\')">Take it now</button>';
+    el.insertBefore(banner, el.firstChild);
+  } catch (e) { /* silent */ }
+}
+
+
+function quizHighlight(form) {
+  var labels = form.querySelectorAll('label.quiz-opt');
+  for (var i = 0; i < labels.length; i++) {
+    var r = labels[i].querySelector('input');
+    if (r && r.checked) {
+      labels[i].style.borderColor = 'var(--primary)';
+      labels[i].style.background = 'rgba(249,115,22,0.28)';
+      labels[i].style.boxShadow = '0 0 0 2px var(--primary)';
+      labels[i].style.color = '#fff';
+    } else {
+      labels[i].style.borderColor = '#333';
+      labels[i].style.background = '#1f1f1f';
+      labels[i].style.boxShadow = 'none';
+      labels[i].style.color = '';
+    }
+  }
+}
+
+
+function quizRosterHtml(roster) {
+  if (!roster || !roster.length) return '';
+  var rows = roster.map(function (r) {
+    var pct = r.possible ? Math.round(100 * r.correct / r.possible) : null;
+    var rate = r.assigned ? Math.round(100 * r.completed / r.assigned) : 0;
+    var behind = rate < 100;
+    var lowScore = (pct !== null && pct < 50);
+    var rateColor = behind ? '#f97316' : '#22c55e';
+    var pctColor = (pct === null) ? 'var(--text-muted-color)' : (lowScore ? '#f97316' : 'var(--text-muted-color)');
+    return '<tr>'
+      + '<td style="padding:8px">' + escHtml(r.name) + '</td>'
+      + '<td style="padding:8px;color:' + rateColor + '">' + r.completed + '/' + r.assigned + ' (' + rate + '%)</td>'
+      + '<td style="padding:8px;color:' + pctColor + '">' + (pct === null ? '&ndash;' : pct + '%') + '</td>'
+      + '<td style="padding:8px">' + r.passed + '</td>'
+      + '<td style="padding:8px;color:' + (r.trouble ? '#f97316' : 'var(--text-muted-color)') + '">' + (r.trouble ? escHtml(r.trouble) : '&ndash;') + '</td>'
+      + '<td style="padding:8px;color:var(--text-muted-color)">' + (r.last_completed ? escHtml(String(r.last_completed).slice(0, 10)) : '&ndash;') + '</td>'
+      + '</tr>';
+  }).join('');
+  return quizCard('<div style="font-weight:700;margin-bottom:4px">By Employee</div>'
+    + '<div style="color:var(--text-muted-color);font-size:13px;margin-bottom:12px">Orange = behind on completion or scoring under 50%.</div>'
+    + '<table style="width:100%;border-collapse:collapse;font-size:14px"><tr style="color:var(--text-muted-color);text-align:left">'
+    + '<th style="padding:8px">Name</th><th style="padding:8px">Completed</th><th style="padding:8px">Avg score</th>'
+    + '<th style="padding:8px">Passed</th><th style="padding:8px">Trouble topic</th><th style="padding:8px">Last done</th></tr>'
+    + rows + '</table>');
+}
+
+
+function quizComplianceHtml(c) {
+  if (!c) return '';
+  var tw = c.thisWeek;
+  var big = tw ? (tw.pct + '%') : '&mdash;';
+  var sub = tw ? (tw.completed + ' of ' + tw.assigned + ' completed this week' + (tw.overdue ? ' \u00b7 ' + tw.overdue + ' overdue' : '')) : 'No quiz sent yet this week.';
+  var h = '<div style="display:flex;align-items:center;gap:28px;flex-wrap:wrap">'
+    + '<div><div style="font-size:34px;font-weight:800;color:' + (tw && tw.pct >= 100 ? '#22c55e' : 'var(--primary)') + '">' + big + '</div>'
+    + '<div style="color:var(--text-muted-color);font-size:13px">This week completion</div></div>'
+    + '<div><div style="font-size:22px;font-weight:700">' + c.overallPct + '%</div>'
+    + '<div style="color:var(--text-muted-color);font-size:13px">All-time completion</div></div>'
+    + (tw && tw.overdue ? '<div><div style="font-size:22px;font-weight:700;color:#f97316">' + tw.overdue + '</div>'
+      + '<div style="color:var(--text-muted-color);font-size:13px">Overdue (past ' + c.dueDays + 'd)</div></div>' : '')
+    + '</div>'
+    + '<div style="color:var(--text-muted-color);font-size:13px;margin-top:8px">' + escHtml(sub) + '</div>';
+  return quizCard(h);
+}
+
+
+// ===== TEAM SOP QUIZ (manager, downline-scoped, read-only) =================
+async function renderQuizTeam(content) {
+  content.innerHTML = '<div class="page-header"><div class="page-title"><h2>Team SOP Quiz</h2>'
+    + '<p>Weekly SOP knowledge checks for the people who report to you. View-only &mdash; completion, scores and answers.</p></div></div>'
+    + '<div id="quizTeam">Loading&hellip;</div>';
+  var box = document.getElementById('quizTeam');
+  try {
+    var comp = await api('GET', '/quiz/team/compliance');
+    var roster = await api('GET', '/quiz/team/roster');
+    var list = await api('GET', '/quiz/team');
+    var empty = (!roster || !roster.length);
+    box.innerHTML = quizComplianceHtml(comp)
+      + (empty ? quizCard('<div style="text-align:center;color:var(--text-muted-color)">No one reports to you yet, so there is nothing to show. Reporting lines are set on each user&#39;s profile (Supervisor).</div>') : '')
+      + quizRosterHtml(roster)
+      + quizTeamListHtml(list);
+    wireQuizTeam();
+  } catch (e) { box.innerHTML = '<div style="color:#f87171">' + escHtml(e.message) + '</div>'; }
+}
+
+function quizTeamListHtml(list) {
+  if (!list || !list.length) return '';
+  var rows = list.map(function (q) {
+    return '<tr><td style="padding:8px">' + escHtml(String(q.week_of).slice(0, 10)) + '</td><td style="padding:8px">' + escHtml(q.sop_title || '') + '</td>'
+      + '<td style="padding:8px">' + escHtml(q.status) + '</td><td style="padding:8px">' + q.completed + '/' + q.assigned + '</td>'
+      + '<td style="padding:8px">' + q.passed + '</td><td style="padding:8px"><a href="#" data-tqr="' + q.id + '" style="color:var(--primary)">Results</a></td></tr>';
+  }).join('');
+  return quizCard('<div style="font-weight:700;margin-bottom:12px">Quiz history (your team)</div>'
+    + '<table style="width:100%;border-collapse:collapse;font-size:14px"><tr style="color:var(--text-muted-color);text-align:left">'
+    + '<th style="padding:8px">Week</th><th style="padding:8px">Topic</th><th style="padding:8px">Status</th>'
+    + '<th style="padding:8px">Done</th><th style="padding:8px">Passed</th><th></th></tr>' + rows + '</table>');
+}
+
+function wireQuizTeam() {
+  document.querySelectorAll('[data-tqr]').forEach(function (el) {
+    el.addEventListener('click', function (ev) { ev.preventDefault(); showTeamQuizResults(el.getAttribute('data-tqr')); });
+  });
+}
+
+async function showTeamQuizResults(quizId) {
+  try {
+    var rows = await api('GET', '/quiz/team/' + quizId + '/results');
+    var body = rows.map(function (r) {
+      var drill = (r.status === 'completed')
+        ? '<a href="#" data-tad="' + r.assignment_id + '" style="color:var(--primary)">View answers</a>'
+        : '<span style="color:var(--text-muted-color)">&ndash;</span>';
+      return '<tr><td style="padding:6px">' + escHtml(r.name) + '</td><td style="padding:6px">' + (r.overdue ? '<span style="color:#f97316">overdue</span>' : escHtml(r.status)) + '</td>'
+        + '<td style="padding:6px">' + (r.score == null ? '&ndash;' : r.score) + '</td>'
+        + '<td style="padding:6px">' + (r.passed == null ? '&ndash;' : (r.passed ? 'Yes' : 'No')) + '</td>'
+        + '<td style="padding:6px">' + (r.reminders_sent || 0) + '</td>'
+        + '<td style="padding:6px">' + drill + '</td></tr>';
+    }).join('');
+    var box = document.getElementById('quizTeam');
+    box.insertAdjacentHTML('afterbegin', quizCard('<div style="font-weight:700;margin-bottom:8px">Results</div>'
+      + '<table style="width:100%;border-collapse:collapse;font-size:14px"><tr style="color:var(--text-muted-color);text-align:left">'
+      + '<th style="padding:6px">Name</th><th style="padding:6px">Status</th><th style="padding:6px">Score</th>'
+      + '<th style="padding:6px">Passed</th><th style="padding:6px">Reminders</th><th style="padding:6px">Answers</th></tr>' + body + '</table>'));
+    document.querySelectorAll('[data-tad]').forEach(function (el) {
+      el.addEventListener('click', function (ev) { ev.preventDefault(); showTeamAssignmentDetail(el.getAttribute('data-tad')); });
+    });
+    window.scrollTo(0, 0);
+  } catch (e) { (window.novaAlert || window.alert)(e.message); }
+}
+
+async function showTeamAssignmentDetail(assignmentId) {
+  try {
+    var d = await api('GET', '/quiz/assignment/' + assignmentId + '/detail');
+    var head = '<div style="font-weight:700;margin-bottom:2px">' + escHtml(d.name) + ' &middot; ' + escHtml(d.sop_title || 'SOP') + '</div>'
+      + '<div style="color:var(--text-muted-color);font-size:13px;margin-bottom:12px">Week of ' + escHtml(String(d.week_of).slice(0, 10))
+      + ' &middot; Score ' + (d.score == null ? '&ndash;' : d.score) + ' &middot; ' + (d.passed ? '<span style="color:#22c55e">Passed</span>' : '<span style="color:#f97316">Not passed</span>') + '</div>';
+    var qs = (d.questions || []).map(function (q) {
+      var opts = (q.options || []).map(function (opt, oi) {
+        var isCorrect = oi === q.correct_index;
+        var isPicked = oi === q.selected_index;
+        var color = isCorrect ? '#22c55e' : (isPicked ? '#f87171' : 'var(--text-muted-color)');
+        var mark = isCorrect ? '&#10003; ' : (isPicked ? '&#10007; ' : '&nbsp;&nbsp;&nbsp;');
+        var tag = (isPicked && !isCorrect) ? ' <span style="font-size:12px">(their answer)</span>' : (isPicked && isCorrect ? ' <span style="font-size:12px">(their answer)</span>' : '');
+        return '<div style="padding:2px 0;color:' + color + '">' + mark + escHtml(opt) + tag + '</div>';
+      }).join('');
+      var badge = q.correct ? '<span style="color:#22c55e">correct</span>' : '<span style="color:#f87171">wrong</span>';
+      return '<div style="margin-bottom:14px"><div style="font-weight:600">' + q.position + '. ' + escHtml(q.prompt) + ' &middot; ' + badge + '</div>' + opts + '</div>';
+    }).join('');
+    var box = document.getElementById('quizTeam');
+    box.insertAdjacentHTML('afterbegin', quizCard(head + qs));
+    window.scrollTo(0, 0);
+  } catch (e) { (window.novaAlert || window.alert)(e.message); }
+}
+
