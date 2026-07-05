@@ -96,7 +96,7 @@ router.post('/speak', requireAuth, express.json({ limit: '256kb' }), async funct
     var payload = JSON.stringify({
       text: text,
       model_id: TTS_MODEL(),
-      voice_settings: { stability: 0.4, similarity_boost: 0.8, style: 0.0, use_speaker_boost: true }
+      voice_settings: { stability: 0.56, similarity_boost: 0.75, style: 0.5, use_speaker_boost: true, speed: 1.05 }
     });
     var r = await fetch('https://api.elevenlabs.io/v1/text-to-speech/' + encodeURIComponent(voiceId) + '?optimize_streaming_latency=2', {
       method: 'POST',

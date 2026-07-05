@@ -172,15 +172,22 @@
     sr.continuous = true; sr.interimResults = true; sr.lang = 'en-US';
     sr.onstart = function () { LOG('speech recognition started - say "Hey Nova"'); };
     sr.onresult = function (ev) {
-      if (NV.busy || NV.speaking || !NV.wantListen) return;
+      if (!NV.wantListen) return;
       var txt = '';
       for (var i = ev.resultIndex; i < ev.results.length; i++) txt += ev.results[i][0].transcript + ' ';
+      if (NV.speaking) { // barge-in: say "Nova" to cut Nova off mid-reply
+        if (WAKE_RE.test(txt)) { LOG('barge-in - interrupting Nova'); interruptSpeaking(); }
+        return;
+      }
+      if (NV.busy) return;
       if (ev.results[ev.results.length - 1].isFinal) LOG('heard:', txt.trim());
       if (WAKE_RE.test(txt)) { LOG('WAKE WORD matched'); onWake(false); }
     };
     sr.onerror = function (e) { LOG('speech recognition error:', e && e.error); };
     sr.onend = function () {
-      if (NV.wantListen && !NV.busy && !NV.speaking) { try { sr.start(); } catch (e) {} }
+      // keep listening while idle AND while Nova speaks (for barge-in); pause
+      // only while we are actively recording/transcribing a command (NV.busy).
+      if (NV.wantListen && !NV.busy) { try { sr.start(); } catch (e) {} }
     };
     NV.sr = sr;
     try { sr.start(); } catch (e) { LOG('sr.start threw:', e && e.message); }
@@ -239,7 +246,7 @@
     var startedAt = Date.now();
     var spokeAt = 0;
     var lastLoud = 0;
-    var THRESH = 0.018, SILENCE_MS = 800, NO_SPEECH_MS = 2600;
+    var THRESH = 0.018, SILENCE_MS = 800, NO_SPEECH_MS = NV.followup ? 6000 : 2600;
     function tick() {
       if (!NV.rec || NV.rec.state === 'inactive') { try { src.disconnect(); } catch (e) {} return; }
       an.getByteTimeDomainData(buf);
@@ -261,15 +268,16 @@
     if (NV.rec && NV.rec.state !== 'inactive') { try { NV.rec.stop(); } catch (e) {} }
     NV.rec = null;
     if (abort === true) {
-      // nothing was said; silently resume listening
+      // nothing was said; drop follow-up mode and resume wake-word listening
       NV.chunks = [];
-      NV.busy = false; NV.speaking = false;
+      NV.busy = false; NV.speaking = false; NV.followup = false;
       if (NV.wantListen) startSR();
       setState('listening', '');
     }
   }
 
   function handleCommandAudio(blob) {
+    NV.followup = false;
     if (!blob || blob.size < 1400) { return resetIdle(''); }
     setState('thinking', 'Thinking…');
     postBytes('/voice/transcribe', blob, NV.recMime).then(function (r) {
@@ -321,7 +329,8 @@
   function speakThen(text, _cb) {
     LOG('Nova says:', text);
     setState('speaking', text.length > 60 ? text.slice(0, 57) + '…' : text);
-    NV.speaking = true;
+    NV.busy = false; NV.speaking = true;
+    startSR(); // keep listening so you can say "Nova ..." to interrupt (barge-in)
     postSpeak(text).then(function (mp3) {
       playAndBroadcast(mp3, finishSpeaking);
     }).catch(function () {
@@ -335,20 +344,40 @@
     NV.speaking = false;
     NV.busy = false;
     NV.lastActivity = Date.now();
-    if (NV.wantListen) { startSR(); setState('listening', ''); }
+    if (NV.wantListen) startFollowUp();
     else setState('idle', '');
+  }
+
+  // After Nova speaks, listen for an immediate reply WITHOUT the wake word so you
+  // can just talk back. A few seconds of silence returns to wake-word listening.
+  function startFollowUp() {
+    NV.busy = true; NV.followup = true;
+    stopSR();
+    LOG('follow-up open - reply without saying the wake word');
+    setState('hearing', '');
+    recordCommand();
+  }
+
+  // Barge-in: stop Nova mid-reply so you can talk.
+  function interruptSpeaking() {
+    if (NV.stopSpeak) { var f = NV.stopSpeak; NV.stopSpeak = null; f(); }
   }
 
   function playAndBroadcast(mp3Blob, onEnd) {
     var url = URL.createObjectURL(mp3Blob);
     var audio = new Audio();
     audio.src = url;
-    var ended = false;
+    var ended = false, lkTrack = null, lkRoom = null;
     function done() {
       if (ended) return; ended = true;
+      NV.stopSpeak = null;
+      if (lkTrack && lkRoom) { try { lkRoom.localParticipant.unpublishTrack(lkTrack); } catch (e) {} }
+      if (lkTrack) { try { lkTrack.stop(); } catch (e) {} }
+      try { audio.pause(); } catch (e) {}
       try { URL.revokeObjectURL(url); } catch (e) {}
       if (onEnd) onEnd();
     }
+    NV.stopSpeak = done; // lets barge-in stop playback + broadcast cleanly
     var room = null;
     try { room = window.NovaRadio && window.NovaRadio.talkRoom ? window.NovaRadio.talkRoom() : null; } catch (e) {}
     var LK = window.LivekitClient;
@@ -363,17 +392,11 @@
         srcNode.connect(dest);
         srcNode.connect(ctx.destination); // asker hears it locally too
         var msTrack = dest.stream.getAudioTracks()[0];
-        var lkTrack = new LK.LocalAudioTrack(msTrack);
+        lkTrack = new LK.LocalAudioTrack(msTrack); lkRoom = room;
         room.localParticipant.publishTrack(lkTrack).then(function () {
-          audio.onended = function () {
-            try { room.localParticipant.unpublishTrack(lkTrack); } catch (e) {}
-            try { lkTrack.stop(); } catch (e) {}
-            done();
-          };
+          audio.onended = done;
           audio.play().catch(function () { done(); });
         }, function () {
-          // publish failed -> just play locally
-          srcNode.connect(ctx.destination);
           audio.onended = done; audio.play().catch(function () { done(); });
         });
         return;
