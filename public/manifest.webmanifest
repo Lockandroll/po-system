@@ -1,7 +1,7 @@
 {
   "name": "Nova — Lock and Roll Operations",
   "short_name": "Nova",
-  "description": "Internal operations platform for Lock and Roll LLC: purchase orders, quotes, vehicle repairs, fleet, and the Neurolock AI assistant.",
+  "description": "Internal operations platform for Lock and Roll LLC: purchase orders, quotes, vehicle repairs, fleet, and the Nova AI assistant.",
   "start_url": "/?source=pwa",
   "scope": "/",
   "display": "standalone",

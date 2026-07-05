@@ -2208,8 +2208,8 @@ async function renderAIContext(el) {
     '<div class="page-header"><div class="page-title">AI Context</div></div>' +
     '<div id="settings-error"></div>' +
     '<div id="settings-success"></div>' +
-    '<div class="card"><div class="card-header"><span class="card-title"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="margin-right:6px;vertical-align:-3px"><rect x="3" y="6" width="18" height="13" rx="2"/><path d="M8 6V4a1 1 0 011-1h6a1 1 0 011 1v2"/><circle cx="9" cy="12" r="1" fill="currentColor"/><circle cx="15" cy="12" r="1" fill="currentColor"/><path d="M9.5 16h5"/></svg>Neurolock AI Context</span></div><div class="card-body">' +
-      '<p class="text-muted mb-4" style="margin-bottom:16px">Add company-specific context that Neurolock will always know — your service area, specialties, preferred brands, rate sheet, or anything else relevant to your team.</p>' +
+    '<div class="card"><div class="card-header"><span class="card-title"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="margin-right:6px;vertical-align:-3px"><rect x="3" y="6" width="18" height="13" rx="2"/><path d="M8 6V4a1 1 0 011-1h6a1 1 0 011 1v2"/><circle cx="9" cy="12" r="1" fill="currentColor"/><circle cx="15" cy="12" r="1" fill="currentColor"/><path d="M9.5 16h5"/></svg>Nova AI Context</span></div><div class="card-body">' +
+      '<p class="text-muted mb-4" style="margin-bottom:16px">Add company-specific context that Nova AI will always know — your service area, specialties, preferred brands, rate sheet, or anything else relevant to your team.</p>' +
       '<div class="form-group"><label>Company Context</label><textarea id="ai-context-input" rows="10" placeholder="e.g. Lock and Roll LLC serves the Lafayette, LA metro area. Our standard rates: lockout $85, rekey $25/lock, deadbolt install $120. We specialize in Schlage and Medeco hardware. We also handle automotive lockouts and transponder key programming." style="width:100%;resize:vertical">' + escHtml(settings.ai_context || '') + '</textarea></div>' +
       '<button class="btn btn-primary" onclick="saveAIContext()">Save AI Context</button>' +
     '</div></div>';
@@ -3275,7 +3275,7 @@ async function saveAIContext() {
     } else {
       await api('DELETE', '/settings/ai_context').catch(function(){});
     }
-    document.getElementById('settings-success').innerHTML = '<div class="alert alert-success">Neurolock context saved.</div>';
+    document.getElementById('settings-success').innerHTML = '<div class="alert alert-success">Nova AI context saved.</div>';
     setTimeout(function() { const el = document.getElementById('settings-success'); if (el) el.innerHTML = ''; }, 4000);
   } catch(err) {
     document.getElementById('settings-error').innerHTML = '<div class="alert alert-error">' + escHtml(err.message) + '</div>';
@@ -5671,7 +5671,7 @@ async function renderAIConversations(el) {
   el.innerHTML =
     '<div class="page-header"><div>' +
       '<div class="page-title">AI Conversations</div>' +
-      '<div class="page-subtitle">All Neurolock questions from your team</div>' +
+      '<div class="page-subtitle">All Nova AI questions from your team</div>' +
     '</div></div>' +
     '<div style="margin-bottom:16px"><input id="ai-conv-search" type="text" placeholder="Search questions, answers, or user..." style="width:100%;max-width:480px;padding:8px 12px;background:var(--surface-color);border:1px solid rgba(249,115,22,0.35);border-radius:6px;color:var(--text-color);font-size:14px;outline:none;box-shadow:0 0 0 1px rgba(249,115,22,0.15)" oninput="aiConvFilter()" /></div>' +
     '<div id="ai-conv-list"></div>' +
@@ -6343,7 +6343,7 @@ async function renderAIAssistant(el) {
   }
   el.innerHTML =
     '<div class="page-header"><div>' +
-      '<div class="page-title"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="margin-right:8px;vertical-align:-4px"><rect x="3" y="6" width="18" height="13" rx="2"/><path d="M8 6V4a1 1 0 011-1h6a1 1 0 011 1v2"/><circle cx="9" cy="12" r="1" fill="currentColor"/><circle cx="15" cy="12" r="1" fill="currentColor"/><path d="M9.5 16h5"/></svg>Neurolock Locksmith AI Assistant</div>' +
+      '<div class="page-title"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="margin-right:8px;vertical-align:-4px"><rect x="3" y="6" width="18" height="13" rx="2"/><path d="M8 6V4a1 1 0 011-1h6a1 1 0 011 1v2"/><circle cx="9" cy="12" r="1" fill="currentColor"/><circle cx="15" cy="12" r="1" fill="currentColor"/><path d="M9.5 16h5"/></svg>Nova AI Locksmith Assistant</div>' +
       '<div class="page-subtitle">Locksmith-specific questions, product info, pricing guidance, and more</div>' +
     '</div>' +
     '<div id="ai-usage-badge" style="font-size:12px;color:var(--text-muted-color);align-self:center">' + _aiUsage.daily + ' / ' + _aiUsage.dailyLimit + ' messages today</div>' +
@@ -6352,7 +6352,7 @@ async function renderAIAssistant(el) {
       '<div id="ai-thread" style="flex:1;overflow-y:auto;padding:16px;display:flex;flex-direction:column;gap:12px">' +
         '<div class="ai-msg ai-msg-bot">' +
           '<div class="ai-msg-bubble">' +
-            '<strong>Neurolock</strong><br>Hi ' + escHtml(state.user.name.split(' ')[0]) + '! I\'m your locksmith assistant. Ask me anything about locks, keys, security hardware, pricing, or job scoping. What do you need help with?' +
+            '<strong>Nova AI</strong><br>Hi ' + escHtml(state.user.name.split(' ')[0]) + '! I\'m your locksmith assistant. Ask me anything about locks, keys, security hardware, pricing, or job scoping. What do you need help with?' +
           '</div>' +
         '</div>' +
       '</div>' +
@@ -6364,7 +6364,7 @@ async function renderAIAssistant(el) {
         '<div style="display:flex;gap:8px;align-items:flex-end">' +
           '<input type="file" id="ai-image-input" accept="image/*" style="display:none" onchange="aiPreviewImage(this)" />' +
           '<button title="Attach image" onclick="document.getElementById(\'ai-image-input\').click()" style="height:60px;width:44px;padding:0;background:var(--surface-color);border:1px solid var(--border-color);border-radius:8px;color:var(--text-muted-color);cursor:pointer;flex-shrink:0;display:flex;align-items:center;justify-content:center"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><polyline points="21 15 16 10 5 21"/></svg></button>' +
-          '<textarea id="ai-input" rows="2" placeholder="Ask Neurolock a question..." style="flex:1;resize:none;padding:10px 12px;background:var(--surface-color);border:1px solid var(--border-color);border-radius:8px;color:var(--text-color);font-size:14px;font-family:inherit;line-height:1.5" onkeydown="aiHandleKey(event)"></textarea>' +
+          '<textarea id="ai-input" rows="2" placeholder="Ask Nova AI a question..." style="flex:1;resize:none;padding:10px 12px;background:var(--surface-color);border:1px solid var(--border-color);border-radius:8px;color:var(--text-color);font-size:14px;font-family:inherit;line-height:1.5" onkeydown="aiHandleKey(event)"></textarea>' +
           '<button id="ai-send-btn" class="btn btn-primary" onclick="aiSend()" style="height:60px;padding:0 20px;white-space:nowrap">' +
             '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg>' +
           '</button>' +
@@ -6479,7 +6479,7 @@ function aiRenderThread() {
     var div = document.createElement('div');
     div.className = 'ai-msg ' + (m.role === 'user' ? 'ai-msg-user' : 'ai-msg-bot');
     var bubbleContent = '';
-    if (m.role === 'assistant') bubbleContent += '<strong>Neurolock</strong><br>';
+    if (m.role === 'assistant') bubbleContent += '<strong>Nova AI</strong><br>';
     if (m._imageDataUrl) {
       bubbleContent += '<img src="' + m._imageDataUrl + '" style="max-width:200px;max-height:150px;border-radius:6px;display:block;margin-bottom:6px" />';
     }
@@ -6613,7 +6613,7 @@ async function renderEditVR(el, id) {
     '<div class="page-header"><div class="page-title">' + (id ? 'Edit Vehicle Maintenance/Repair' : 'New Vehicle Maintenance/Repair') + '</div></div>' +
     '<div id="vr-edit-error"></div>' +
     '<div class="card" style="margin-bottom:20px"><div class="card-header"><span class="card-title">AI Quote Extract</span>' +
-      '<span style="font-size:12px;color:var(--text-muted-color);margin-left:8px">Upload a shop estimate — Neurolock fills the form automatically</span></div>' +
+      '<span style="font-size:12px;color:var(--text-muted-color);margin-left:8px">Upload a shop estimate — Nova AI fills the form automatically</span></div>' +
     '<div class="card-body"><div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">' +
       '<input type="file" id="vr-ai-file" accept="image/*,application/pdf" style="display:none" onchange="vrAIExtract(this)" />' +
       '<button class="btn btn-secondary" onclick="document.getElementById(\'vr-ai-file\').click()"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="margin-right:6px;vertical-align:-2px"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><polyline points="21 15 16 10 5 21"/></svg>Upload Estimate</button>' +
@@ -6694,7 +6694,7 @@ async function vrAIExtract(input) {
     try {
       var base64 = e.target.result.split(',')[1];
       var mediaType = file.type || 'image/jpeg';
-      status.textContent = 'Neurolock is extracting data…';
+      status.textContent = 'Nova AI is extracting data…';
       var data = await api('POST', '/vr/ai-extract', { imageData: base64, mediaType: mediaType });
       if (data.vehicle) { var v = document.getElementById('vr-vehicle'); if (v) v.value = data.vehicle; }
       if (data.vin_last6) { var vin = document.getElementById('vr-vin'); if (vin) vin.value = data.vin_last6.toUpperCase(); }
@@ -7319,7 +7319,7 @@ async function renderHomeScreen(el) {
           '<span style="font-size:12px">New VR</span></button>' : '') +
         '<button class="btn btn-secondary" onclick="navigate(\'ai-assistant\')" style="padding:14px;display:flex;flex-direction:column;align-items:center;gap:6px;height:auto">' +
           '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="6" width="18" height="13" rx="2"/><path d="M8 6V4a1 1 0 011-1h6a1 1 0 011 1v2"/><circle cx="9" cy="12" r="1" fill="currentColor"/><circle cx="15" cy="12" r="1" fill="currentColor"/><path d="M9.5 16h5"/></svg>' +
-          '<span style="font-size:12px">Ask Neurolock</span></button>' +
+          '<span style="font-size:12px">Ask Nova AI</span></button>' +
       '</div>';
   } catch(err) {
     el.innerHTML =
@@ -11411,7 +11411,7 @@ function mySchedMonthHtml(){
       { ph: ['company info', 'company information', 'company settings'], dash: 'company-info', obj: 'Company Information',
         info: 'Company Information holds your business details and company-wide settings.' },
       { ph: ['neurolock', 'ai assistant', 'ask ai'], dash: 'ai-assistant', obj: 'Nova AI Assistant',
-        info: 'Nova AI (Neurolock) is your locksmith assistant. Ask it about locks, keys, hardware, pricing, or scoping a job. It can also read a photo of an estimate.' }
+        info: 'Nova AI is your locksmith assistant. Ask it about locks, keys, hardware, pricing, or scoping a job. It can also read a photo of an estimate.' }
     ];
   }
   // Compact glossary so the AI fallback can explain the app accurately.
