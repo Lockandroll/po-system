@@ -536,7 +536,8 @@ async function sopVaultDoc(sopId) {
   }
   if (!best) return null;
   try {
-    const url = await r2.presignDownload(best.r2_key, best.name, true, 3600);
+    const _ct = best.mime_type || (String(best.name || '').toLowerCase().slice(-4) === '.pdf' ? 'application/pdf' : null);
+    const url = await r2.presignDownload(best.r2_key, best.name, true, 3600, _ct);
     return { url: url, name: best.name, mime_type: best.mime_type };
   } catch (e) { return null; }
 }
@@ -547,7 +548,8 @@ async function vaultDocById(documentId) {
   if (!dr.rows.length) return null;
   const d = dr.rows[0];
   try {
-    const url = await r2.presignDownload(d.r2_key, d.name, true, 3600);
+    const _ct = d.mime_type || (String(d.name || '').toLowerCase().slice(-4) === '.pdf' ? 'application/pdf' : null);
+    const url = await r2.presignDownload(d.r2_key, d.name, true, 3600, _ct);
     return { url: url, name: d.name, mime_type: d.mime_type };
   } catch (e) { return null; }
 }

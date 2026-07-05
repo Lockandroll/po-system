@@ -192,7 +192,10 @@
       if (cur.sop_doc_url) {
         var mime = cur.sop_doc_mime || '';
         var docName = escHtml(cur.sop_doc_name || 'the document');
-        if (mime.indexOf('pdf') !== -1 || mime.indexOf('image/') === 0) {
+        var _dn = String(cur.sop_doc_name || '').toLowerCase();
+        var _isPdf = mime.indexOf('pdf') !== -1 || _dn.slice(-4) === '.pdf';
+        var _isImg = mime.indexOf('image/') === 0 || ['.png', '.jpg', '.jpeg', '.gif', '.webp', '.heic', '.heif'].some(function (x) { return _dn.slice(-x.length) === x; });
+        if (_isPdf || _isImg) {
           reader = '<div class="onb-doc"><iframe src="' + escHtml(cur.sop_doc_url) + '" title="' + docName + '"></iframe></div>' +
             '<div class="onb-note" style="margin-top:0"><a href="' + escHtml(cur.sop_doc_url) + '" target="_blank" rel="noopener" style="color:var(--primary,#f97316)">Open ' + docName + ' in a new tab &#8599;</a></div>';
         } else {
