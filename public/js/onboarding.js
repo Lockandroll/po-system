@@ -223,7 +223,8 @@
     } else if (cur.type === 'form') {
       var _pdata = (cur.packet && cur.packet.data) || {};
       var _flags = (cur.packet && cur.packet.field_flags) || {};
-      inner = (cur.fields || []).map(function (f) {
+      inner = (cur.prefilled ? '<div class="onb-note" style="background:#f9731618;border:1px solid #f9731655;border-radius:8px;padding:10px 12px;margin-bottom:14px;color:#fbbf24">We filled in what we could read from your uploaded documents — please review each field and correct anything that is off.</div>' : '') +
+        (cur.fields || []).map(function (f) {
         var val = _pdata[f.key];
         var flg = _flags && _flags[f.key];
         var flagNote = flg ? '<div class="onb-note" style="color:#fbbf24">Sent back: ' + escHtml(String(flg)) + '</div>' : '';
@@ -644,10 +645,22 @@
     }).join('');
     var packet = d.packet
       ? '<div class="onb-card" style="margin-bottom:12px"><h2 style="font-size:16px">New Hire Packet</h2><pre style="white-space:pre-wrap;font-size:12.5px;color:var(--text-muted-color,#9ca3af);margin:0">' + escHtml(JSON.stringify((d.packet && d.packet.data) || {}, null, 2)) + '</pre></div>'
-      : '<div class="onb-card" style="margin-bottom:12px"><div class="onb-note">No packet on file yet (the native packet form is a later slice).</div></div>';
+      : '<div class="onb-card" style="margin-bottom:12px"><div class="onb-note">No packet on file yet.</div></div>';
+    var _mf = d.manager_fields || [];
+    var _mdata = (d.packet && d.packet.data) || {};
+    var managerCard = _mf.length ? ('<div class="onb-card" style="margin-bottom:12px"><h2 style="font-size:16px">Employment details</h2>' +
+      '<div class="onb-note" style="margin-bottom:10px">You fill these in — the new hire never sees or edits them.</div>' +
+      _mf.map(function (mfl) {
+        var v = _mdata[mfl.key];
+        var input;
+        if (mfl.type === 'select') input = '<select id="mf_' + escHtml(mfl.key) + '" class="onb-mf" style="width:100%;background:var(--bg,#0f0f0f);color:var(--text,#ededed);border:1px solid var(--border,#2a2a2a);border-radius:8px;padding:10px">' + (mfl.options || []).map(function (o) { return '<option' + (String(v) === String(o) ? ' selected' : '') + '>' + escHtml(o) + '</option>'; }).join('') + '</select>';
+        else input = '<input id="mf_' + escHtml(mfl.key) + '" class="onb-mf" type="' + escHtml(mfl.type || 'text') + '" value="' + escHtml(v || '') + '" style="width:100%;background:var(--bg,#0f0f0f);color:var(--text,#ededed);border:1px solid var(--border,#2a2a2a);border-radius:8px;padding:10px">';
+        return '<div style="margin-bottom:10px"><label style="display:block;font-size:12.5px;color:var(--text-muted-color,#9ca3af);margin-bottom:5px;font-weight:600">' + escHtml(mfl.label) + '</label>' + input + '</div>';
+      }).join('') +
+      '<button class="onb-btn" onclick="onbSavePacketDetails(' + id + ')">Save employment details</button></div>') : '';
     if (body) body.innerHTML =
       '<button class="onb-btn ghost" style="margin-bottom:12px" onclick="onbTab(\'reviews\')">&#8592; Back to reviews</button>' +
-      packet +
+      packet + managerCard +
       '<div class="onb-card" style="margin-bottom:12px"><h2 style="font-size:16px">Uploaded documents</h2>' + vpanel + (docRows || '<div class="onb-note">No documents uploaded.</div>') + '</div>' +
       '<div class="onb-card">' +
         '<textarea id="onb-reopen-note" placeholder="Note to the new hire (why you are sending items back)" style="width:100%;min-height:64px;background:var(--bg,#0f0f0f);color:var(--text,#ededed);border:1px solid var(--border,#2a2a2a);border-radius:8px;padding:10px;margin-bottom:12px"></textarea>' +
@@ -1204,5 +1217,13 @@
     var card = addBtn && addBtn.closest ? addBtn.closest('.onb-card') : null; if (card && card.scrollIntoView) card.scrollIntoView({ behavior: 'smooth', block: 'center' });
   };
   window.onbCancelEdit = function () { window._onbEditId = null; renderOnboardingAdmin(document.getElementById('content')); };
+
+
+  window.onbSavePacketDetails = async function (id) {
+    var data = {};
+    document.querySelectorAll('.onb-mf').forEach(function (el) { data[el.id.slice(3)] = el.value; });
+    try { await api('POST', '/onboarding/admin/users/' + id + '/packet-details', { data: data }); showToast('Employment details saved.', 'success'); }
+    catch (e) { showToast(e.message || 'Could not save.', 'error'); }
+  };
 
 })();

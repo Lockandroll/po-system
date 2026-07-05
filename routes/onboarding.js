@@ -45,11 +45,11 @@ const DEFAULT_PACKET_FIELDS = [
   { key: 'state', label: 'State', type: 'text', required: true },
   { key: 'zip', label: 'ZIP code', type: 'text', required: true },
   { key: 'mobile_phone', label: 'Mobile phone', type: 'tel', required: true },
-  { key: 'position_role', label: 'Position / role', type: 'text' },
-  { key: 'employment_type', label: 'Employment type', type: 'select', options: ['Full-time', 'Part-time'] },
-  { key: 'start_date', label: 'Anticipated start date', type: 'date' },
-  { key: 'work_location', label: 'Work location / market', type: 'text' },
-  { key: 'job_title', label: 'Job title', type: 'text' },
+  { key: 'position_role', label: 'Position / role', type: 'text', who: 'manager' },
+  { key: 'employment_type', label: 'Employment type', type: 'select', options: ['Full-time', 'Part-time'], who: 'manager' },
+  { key: 'start_date', label: 'Anticipated start date', type: 'date', who: 'manager' },
+  { key: 'work_location', label: 'Work location / market', type: 'text', who: 'manager' },
+  { key: 'job_title', label: 'Job title', type: 'text', who: 'manager' },
   { key: 'sec_ec', type: 'section', label: 'Emergency Contacts' },
   { key: 'ec1_name', label: 'Primary contact — full name', type: 'text', required: true },
   { key: 'ec1_rel', label: 'Primary contact — relationship', type: 'text' },
@@ -342,11 +342,11 @@ function callClaudeVision(bytes, mime, prompt) {
   });
 }
 function extractPrompt(category) {
-  var common = " Read the document. Return ONLY valid JSON, no markdown, no prose.";
-  if (category === 'license') return "This is a driver's license." + common + ' Shape: {"name":"full name or null","expiration":"YYYY-MM-DD or null"}';
-  if (category === 'insurance') return "This is a proof of auto liability insurance." + common + ' Shape: {"names":["every insured / listed-driver name shown"],"vin":"full VIN or null","expiration":"policy end date YYYY-MM-DD or null"}';
-  if (category === 'registration') return "This is a vehicle registration." + common + ' Shape: {"name":"registered owner or null","vin":"full VIN or null","expiration":"registration expiration YYYY-MM-DD or null"}';
-  return "This is a Social Security card or birth certificate." + common + ' Shape: {"name":"full name shown or null"}';
+  var common = " Read the document. Return ONLY valid JSON, no markdown, no prose. Use null for anything not clearly shown.";
+  if (category === 'license') return "This is a driver's license." + common + ' Shape: {"name":"full name","first":"first name","middle":"middle name or initial","last":"last name","address":"street address line","city":"","state":"2-letter state","zip":"","dl_state":"issuing state 2-letter","dl_number":"license number","expiration":"YYYY-MM-DD"}';
+  if (category === 'insurance') return "This is a proof of auto liability insurance." + common + ' Shape: {"names":["every insured / listed-driver name shown"],"vin":"full VIN","expiration":"policy end date YYYY-MM-DD"}';
+  if (category === 'registration') return "This is a vehicle registration." + common + ' Shape: {"name":"registered owner","vin":"full VIN","expiration":"registration expiration YYYY-MM-DD","veh_year":"","veh_make":"","veh_model":"","veh_color":"","plate":"license plate number","plate_state":"2-letter state"}';
+  return "This is a Social Security card or birth certificate." + common + ' Shape: {"name":"full name shown"}';
 }
 async function extractDocFields(category, bytes, mime) {
   if (!process.env.ANTHROPIC_API_KEY) return null;
@@ -397,6 +397,27 @@ async function verifySet(userId) {
     else if (e === false) ok.push(t[0] + ' is current (through ' + t[1] + ').');
   });
   return { ok: ok, warn: warn };
+}
+
+// Build a packet pre-fill from what AI read off the license + registration.
+async function packetPrefill(userId) {
+  const r = await pool.query(
+    "SELECT DISTINCT ON (slot_key) slot_key, extracted FROM hr_documents " +
+    "WHERE user_id = $1 AND source = 'onboarding' AND slot_key IS NOT NULL AND review_status <> 'superseded' " +
+    "ORDER BY slot_key, id DESC", [userId]);
+  var ex = {};
+  r.rows.forEach(function (row) { var e = row.extracted; if (typeof e === 'string') { try { e = JSON.parse(e); } catch (x) { e = null; } } ex[row.slot_key] = e || {}; });
+  var lic = ex.license || {}, reg = ex.registration || {};
+  var out = {};
+  function put(k, v) { if (v != null && String(v).trim() !== '' && String(v).toLowerCase() !== 'null') out[k] = v; }
+  var f = lic.first, m = lic.middle, l = lic.last;
+  if ((!f || !l) && lic.name) { var parts = String(lic.name).trim().split(/\s+/); if (!f) f = parts[0]; if (!l && parts.length > 1) l = parts[parts.length - 1]; if (!m && parts.length > 2) m = parts.slice(1, -1).join(' '); }
+  put('legal_first', f); put('middle', m); put('legal_last', l);
+  put('address', lic.address); put('city', lic.city); put('state', lic.state); put('zip', lic.zip);
+  put('dl_state', lic.dl_state || lic.state); put('dl_number', lic.dl_number); put('dl_exp', lic.expiration);
+  put('veh_year', reg.veh_year); put('veh_make', reg.veh_make); put('veh_model', reg.veh_model); put('veh_color', reg.veh_color);
+  put('plate', reg.plate); put('plate_state', reg.plate_state);
+  return out;
 }
 
 // ---- Phase model helpers (v3) -----------------------------------------------
@@ -720,9 +741,14 @@ router.get('/me', requireAuth, async (req, res) => {
       cur.is_final_exam = true;
     }
     if (current.type === 'form') {
-      cur.fields = packetFields(current);
+      cur.fields = packetFields(current).filter(function (f) { return f.who !== 'manager'; });
       const _pr = await pool.query('SELECT data, field_flags, status FROM onboarding_packet_responses WHERE user_id = $1', [req.user.id]);
-      cur.packet = _pr.rows.length ? { data: _pr.rows[0].data, field_flags: _pr.rows[0].field_flags, status: _pr.rows[0].status } : { data: {}, field_flags: null };
+      var _existing = (_pr.rows.length && _pr.rows[0].data) ? _pr.rows[0].data : {};
+      var _pre = await packetPrefill(req.user.id);
+      var _merged = {}, _k; for (_k in _pre) _merged[_k] = _pre[_k]; for (_k in _existing) _merged[_k] = _existing[_k];
+      var _newlyFilled = 0; for (_k in _pre) { if (_existing[_k] == null) _newlyFilled++; }
+      cur.packet = { data: _merged, field_flags: (_pr.rows.length ? _pr.rows[0].field_flags : null), status: (_pr.rows.length ? _pr.rows[0].status : 'draft') };
+      cur.prefilled = _newlyFilled > 0 && (!_pr.rows.length || _pr.rows[0].status !== 'submitted');
     }
     if (current.type === 'document_upload') {
       cur.slots = uploadSlots(current);
@@ -987,14 +1013,14 @@ router.post('/steps/:id/packet', requireAuth, async (req, res) => {
   const data = (req.body && req.body.data && typeof req.body.data === 'object') ? req.body.data : {};
   for (var i = 0; i < fields.length; i++) {
     var f = fields[i];
-    if (!f.required) continue;
+    if (f.who === 'manager' || !f.required) continue;
     var v = data[f.key];
     if (f.type === 'ack') { if (v !== true && v !== 'true') return res.status(400).json({ error: 'Please read and check the acknowledgment.' }); }
     else if (v == null || String(v).trim() === '') return res.status(400).json({ error: 'Please complete: ' + f.label });
   }
   await pool.query(
-    "INSERT INTO onboarding_packet_responses (user_id, data, status, field_flags, submitted_at) VALUES ($1,$2,'submitted','{}'::jsonb,NOW()) " +
-    "ON CONFLICT (user_id) DO UPDATE SET data = $2, status = 'submitted', field_flags = '{}'::jsonb, submitted_at = NOW(), updated_at = NOW()",
+    "INSERT INTO onboarding_packet_responses (user_id, data, status, field_flags, submitted_at) VALUES ($1,$2::jsonb,'submitted','{}'::jsonb,NOW()) " +
+    "ON CONFLICT (user_id) DO UPDATE SET data = COALESCE(onboarding_packet_responses.data,'{}'::jsonb) || $2::jsonb, status = 'submitted', field_flags = '{}'::jsonb, submitted_at = NOW(), updated_at = NOW()",
     [req.user.id, JSON.stringify(data)]
   );
   await pool.query(
@@ -1245,7 +1271,23 @@ admin.get('/users/:id/phase1', async (req, res) => {
   const pk = await pool.query('SELECT data, status, field_flags FROM onboarding_packet_responses WHERE user_id = $1', [target]);
   const docs = await pool.query("SELECT id, slot_key, category, name, mime_type, expires_at, extracted, verify_status, review_status, reject_reason FROM hr_documents WHERE user_id = $1 AND source = 'onboarding' AND review_status <> 'superseded' ORDER BY slot_key, id DESC", [target]);
   const verify = await verifySet(target);
-  res.json({ packet: pk.rows[0] || null, documents: docs.rows, verify: verify });
+  const _fs = await pool.query("SELECT * FROM onboarding_steps WHERE active = true AND type = 'form' ORDER BY position ASC LIMIT 1");
+  var managerFields = _fs.rows.length ? packetFields(_fs.rows[0]).filter(function (f) { return f.who === 'manager'; }) : [];
+  res.json({ packet: pk.rows[0] || null, documents: docs.rows, verify: verify, manager_fields: managerFields });
+});
+
+// Manager fills the employment / HR fields on the packet (employee never sees these).
+admin.post('/users/:id/packet-details', async (req, res) => {
+  const target = parseInt(req.params.id, 10) || 0;
+  if (!(await canSignOff(req.user, target))) return res.status(403).json({ error: 'Not permitted.' });
+  const data = (req.body && req.body.data && typeof req.body.data === 'object') ? req.body.data : {};
+  await pool.query(
+    "INSERT INTO onboarding_packet_responses (user_id, data, status) VALUES ($1,$2::jsonb,'draft') " +
+    "ON CONFLICT (user_id) DO UPDATE SET data = COALESCE(onboarding_packet_responses.data,'{}'::jsonb) || $2::jsonb, updated_at = NOW()",
+    [target, JSON.stringify(data)]
+  );
+  await logAudit({ entity_type: 'onboarding', entity_id: target, action: 'packet_details_saved', user_id: req.user.id, user_name: req.user.name, details: {} });
+  res.json({ success: true });
 });
 
 // Stream a decrypted HR document inline for review (access-checked + audited).
