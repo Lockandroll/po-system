@@ -59,7 +59,9 @@
     '.onb-verify{border:1px solid var(--border,#2a2a2a);border-radius:10px;background:var(--bg,#0f0f0f);padding:12px 13px;margin:4px 0 12px}' +
     '.onb-verify .v-h{font-size:12px;font-weight:700;color:#cfd3d7;margin-bottom:7px}' +
     '.onb-verify .v-row{font-size:12.5px;padding:3px 0;color:var(--text-muted-color,#9ca3af)}' +
-    '.onb-verify .v-row.ok{color:#86efac}.onb-verify .v-row.warn{color:#fbbf24}';
+    '.onb-verify .v-row.ok{color:#86efac}.onb-verify .v-row.warn{color:#fbbf24}' +
+    '.onb-grip{color:var(--text-muted-color,#9ca3af);font-size:15px;cursor:grab;padding:0 6px 0 0;user-select:none;flex-shrink:0}' +
+    '.onb-drag{cursor:grab}';
 
   function injectCss() {
     if (document.getElementById('onb-css')) return;
@@ -766,6 +768,7 @@
     try { sops = await api('GET', '/onboarding/admin/sops'); } catch (e) {}
     var vdocs = [];
     try { vdocs = await api('GET', '/onboarding/admin/vault-docs'); } catch (e) {}
+    window._onbEditId = null;
     window._onbSteps = steps;
     var sopOpts = (sops || []).map(function (s) { return '<option value="' + s.id + '">' + escHtml(s.title) + '</option>'; }).join('');
     var _docByFolder = {};
@@ -779,12 +782,12 @@
       if (s.type === 'quiz') { var c = s.config || {}; if (typeof c === 'string') { try { c = JSON.parse(c); } catch (e) { c = {}; } } meta.push((c.question_count || 3) + ' questions, pass ' + (c.pass_score || 80) + '%'); }
       if (s.type === 'sop_read' && s.doc_title) meta.push('Document: ' + s.doc_title);
       else if (s.sop_title) meta.push('SOP: ' + s.sop_title);
-      return '<div class="onb-step" style="opacity:1">' +
+      return '<div class="onb-step onb-drag" draggable="true" ondragstart="onbDragStart(event,' + s.id + ')" ondragover="onbDragOver(event)" ondragleave="onbDragLeave(event)" ondrop="onbDrop(event,' + s.id + ')" ondragend="onbDragEnd(event)" style="opacity:1">' +
+        '<span class="onb-grip" title="Drag to reorder">&#9776;</span>' +
         '<div class="onb-dot">' + (i + 1) + '</div>' +
         '<div style="flex:1;min-width:0"><div style="font-weight:600">' + stepIcon(s.type) + ' ' + escHtml(s.title) + '</div>' +
         (meta.length ? '<div class="onb-note">' + escHtml(meta.join(' · ')) + '</div>' : '') + '</div>' +
-        '<button class="onb-btn ghost" style="padding:6px 10px" ' + (i === 0 ? 'disabled' : '') + ' onclick="onbMove(' + s.id + ',-1)">↑</button>' +
-        '<button class="onb-btn ghost" style="padding:6px 10px" ' + (i === steps.length - 1 ? 'disabled' : '') + ' onclick="onbMove(' + s.id + ',1)">↓</button>' +
+        '<button class="onb-btn ghost" style="padding:6px 10px" onclick="onbEditStep(' + s.id + ')">Edit</button>' +
         '<button class="onb-btn ghost" style="padding:6px 10px" onclick="onbDeleteStep(' + s.id + ')">✕</button>' +
         '</div>';
     }).join('');
@@ -803,7 +806,7 @@
       '<div id="onb-f-sop" style="display:none;grid-column:1/-1"><select id="onb-new-sop" style="width:100%;background:var(--bg-card);color:var(--text);border:1px solid var(--border);border-radius:8px;padding:10px">' + (sopOpts || '<option value="">No SOPs in the library yet</option>') + '</select><div class="onb-note">Quiz questions are generated from this SOP&#39;s text in the SOP library.</div></div>' +
       '<div id="onb-f-video" style="grid-column:1/-1"><input type="file" id="onb-new-video" accept="video/*" style="width:100%;color:var(--text)"><div class="onb-note" id="onb-vid-note"></div></div>' +
       '<div id="onb-f-quiz" style="display:none;grid-column:1/-1;display:none"><div style="display:flex;gap:10px;flex-wrap:wrap">' +
-        '<label class="onb-note">Questions <input id="onb-new-qcount" type="number" min="1" max="50" value="3" style="width:70px;background:var(--bg-card);color:var(--text);border:1px solid var(--border);border-radius:6px;padding:6px"></label>' +
+        '<label class="onb-note">Questions <input id="onb-new-qcount" type="number" min="1" max="50" value="5" style="width:70px;background:var(--bg-card);color:var(--text);border:1px solid var(--border);border-radius:6px;padding:6px"></label>' +
         '<label class="onb-note">Pass % <input id="onb-new-pass" type="number" min="1" max="100" value="80" style="width:70px;background:var(--bg-card);color:var(--text);border:1px solid var(--border);border-radius:6px;padding:6px"></label>' +
       '</div></div>' +
       '<label class="onb-note" style="grid-column:1/-1">Minimum seconds before Continue unlocks <input id="onb-new-min" type="number" min="0" max="7200" value="30" style="width:90px;background:var(--bg-card);color:var(--text);border:1px solid var(--border);border-radius:6px;padding:6px"></label>' +
@@ -843,7 +846,8 @@
     var btn = document.getElementById('onb-add-btn');
     if (t === 'video') {
       var fi = document.getElementById('onb-new-video');
-      if (!fi || !fi.files || !fi.files.length) { showToast('Choose a video file.', 'error'); return; }
+      if ((!fi || !fi.files || !fi.files.length) && !window._onbEditId) { showToast('Choose a video file.', 'error'); return; }
+      if (fi && fi.files && fi.files.length) {
       var file = fi.files[0];
       var note = document.getElementById('onb-vid-note');
       try {
@@ -856,9 +860,15 @@
         payload.video_key = up.key;
         if (note) note.textContent = 'Uploaded ✓';
       } catch (e) { btn.disabled = false; if (note) note.textContent = ''; showToast(e.message || 'Video upload failed.', 'error'); return; }
+      }
     }
-    try { await api('POST', '/onboarding/admin/steps', payload); showToast('Step added.', 'success'); renderOnboardingAdmin(document.getElementById('content')); }
-    catch (e) { showToast(e.message || 'Failed to add step.', 'error'); }
+    try {
+      if (window._onbEditId) { await api('PUT', '/onboarding/admin/steps/' + window._onbEditId, payload); showToast('Step updated.', 'success'); }
+      else { await api('POST', '/onboarding/admin/steps', payload); showToast('Step added.', 'success'); }
+      window._onbEditId = null;
+      renderOnboardingAdmin(document.getElementById('content'));
+    }
+    catch (e) { showToast(e.message || 'Failed to save step.', 'error'); }
     finally { if (btn) btn.disabled = false; }
   };
 
@@ -1136,5 +1146,63 @@
     try { await api('POST', '/onboarding/steps/' + stepId + '/packet', { data: data }); showToast('Packet submitted.', 'success'); renderOnboardingMode(document.getElementById('app')); }
     catch (e) { showToast(e.message || 'Could not submit.', 'error'); }
   };
+
+
+  // ---- drag-and-drop reorder of onboarding steps ----
+  window.onbDragStart = function (e, id) {
+    window._onbDragId = id;
+    if (e.dataTransfer) { e.dataTransfer.effectAllowed = 'move'; try { e.dataTransfer.setData('text/plain', String(id)); } catch (x) {} }
+    var el = e.currentTarget; if (el) el.style.opacity = '.45';
+  };
+  window.onbDragOver = function (e) {
+    e.preventDefault(); if (e.dataTransfer) e.dataTransfer.dropEffect = 'move';
+    var el = e.currentTarget; if (el) el.style.boxShadow = 'inset 0 2px 0 var(--primary,#f97316)';
+  };
+  window.onbDragLeave = function (e) { var el = e.currentTarget; if (el) el.style.boxShadow = ''; };
+  window.onbDragEnd = function () {
+    document.querySelectorAll('.onb-drag').forEach(function (el) { el.style.opacity = '1'; el.style.boxShadow = ''; });
+  };
+  window.onbDrop = async function (e, targetId) {
+    e.preventDefault();
+    var dragId = window._onbDragId; window._onbDragId = null;
+    document.querySelectorAll('.onb-drag').forEach(function (el) { el.style.opacity = '1'; el.style.boxShadow = ''; });
+    if (!dragId || dragId === targetId) return;
+    var ids = (window._onbSteps || []).map(function (s) { return s.id; });
+    var from = ids.indexOf(dragId); if (from === -1) return;
+    ids.splice(from, 1);
+    var t2 = ids.indexOf(targetId); if (t2 === -1) t2 = ids.length;
+    ids.splice(t2, 0, dragId);
+    try { await api('POST', '/onboarding/admin/steps/reorder', { ids: ids }); renderOnboardingAdmin(document.getElementById('content')); }
+    catch (err) { showToast(err.message || 'Reorder failed.', 'error'); }
+  };
+
+  // ---- edit an existing step (reuses the Add-a-step form) ----
+  window.onbEditStep = function (id) {
+    var steps = window._onbSteps || [];
+    var s = null; for (var i = 0; i < steps.length; i++) { if (steps[i].id === id) { s = steps[i]; break; } }
+    if (!s) return;
+    window._onbEditId = id;
+    var c = s.config; if (typeof c === 'string') { try { c = JSON.parse(c); } catch (e) { c = {}; } } c = c || {};
+    var g = function (idd) { return document.getElementById(idd); };
+    var typeSel = g('onb-new-type'); if (typeSel) { typeSel.value = s.type; typeSel.disabled = true; }
+    if (g('onb-new-title')) g('onb-new-title').value = s.title || '';
+    if (g('onb-new-desc')) g('onb-new-desc').value = s.description || '';
+    if (g('onb-new-phase')) g('onb-new-phase').value = String((parseInt(s.phase, 10) === 2) ? 2 : 1);
+    if (g('onb-new-min')) g('onb-new-min').value = (c.min_seconds != null ? c.min_seconds : 30);
+    onbTypeFields();
+    if (s.type === 'quiz' || s.type === 'final_exam') {
+      if (g('onb-new-qcount')) g('onb-new-qcount').value = c.question_count || (s.type === 'final_exam' ? 20 : 5);
+      if (g('onb-new-pass')) g('onb-new-pass').value = c.pass_score || 80;
+    }
+    if (s.type === 'quiz' && g('onb-new-sop') && s.sop_id) g('onb-new-sop').value = s.sop_id;
+    if ((s.type === 'sop_read' || s.type === 'acknowledge') && g('onb-new-doc') && c.document_id) g('onb-new-doc').value = c.document_id;
+    var addBtn = g('onb-add-btn'); if (addBtn) addBtn.textContent = 'Save changes';
+    if (addBtn && !g('onb-cancel-edit')) {
+      var cb = document.createElement('button'); cb.id = 'onb-cancel-edit'; cb.className = 'onb-btn ghost'; cb.style.marginLeft = '8px'; cb.textContent = 'Cancel'; cb.onclick = function () { onbCancelEdit(); };
+      addBtn.parentNode.insertBefore(cb, addBtn.nextSibling);
+    }
+    var card = addBtn && addBtn.closest ? addBtn.closest('.onb-card') : null; if (card && card.scrollIntoView) card.scrollIntoView({ behavior: 'smooth', block: 'center' });
+  };
+  window.onbCancelEdit = function () { window._onbEditId = null; renderOnboardingAdmin(document.getElementById('content')); };
 
 })();
