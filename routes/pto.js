@@ -220,6 +220,64 @@ async function notifyRequester(userId, decision, from, to, days, approverName, r
   } catch (e) { console.error('[pto] requester notify failed:', e.message); }
 }
 
+// Reverse an approved PTO: restore paid hours and clear the vacation shifts.
+// Must be called inside a transaction (pass the connected client).
+async function reverseAndClear(client, r, actorId) {
+  const from = ymdOf(r.start_date), to = ymdOf(r.end_date);
+  if (r.paid) {
+    await postLedger(client, { user_id: r.user_id, entry_date: from, kind: 'reversal', amount_hours: Number(r.hours), description: 'PTO cancelled ' + from, request_id: r.id, created_by: actorId });
+  }
+  await client.query('UPDATE pto_requests SET status = $1, updated_at = NOW() WHERE id = $2', ['cancelled', r.id]);
+  await client.query('UPDATE shifts SET position_id = NULL, updated_at = NOW() WHERE user_id = $1 AND shift_date BETWEEN $2 AND $3 AND position_id = ANY($4::int[])', [r.user_id, from, to, [APPROVED_VACATION_POSITION_ID, UNPAID_VACATION_POSITION_ID]]);
+}
+
+// Notify the employee that their manager wants to cancel an approved PTO.
+async function notifyCancelOffer(userId, from, to, memo, managerName) {
+  if (!userId) return;
+  try {
+    var rec = notify ? await notify.broadcastRecipients('pto_decided', 'id = ' + userId) : { emails: [], phones: [] };
+    var dates = from + (to !== from ? ' to ' + to : '');
+    if (rec.emails && rec.emails.length && sendEmail && emailTemplate) {
+      var html = emailTemplate({
+        badge: 'Action Needed', badgeColor: 'orange', title: 'A cancellation of your approved PTO needs your OK',
+        body: (managerName || 'Your manager') + ' has asked to cancel your approved time off. It stays approved until you accept. Open Nova to accept or decline.',
+        details: [
+          { label: 'Dates', value: dates },
+          { label: 'Requested by', value: managerName || 'your manager' },
+          { label: 'Reason', value: memo || '(none given)' }
+        ],
+        buttonText: 'Review in Nova', buttonUrl: appUrl('/'), footerNote: 'Open Nova, then Time Off, then My PTO.'
+      });
+      await sendEmail(rec.emails, 'Please review: cancellation of your PTO ' + dates, html);
+    }
+    if (rec.phones && rec.phones.length && sendSms) {
+      await sendSms(rec.phones, 'Lock & Roll: ' + (managerName || 'Your manager') + ' asked to cancel your approved PTO ' + dates + '. It stays approved until you accept in Nova: ' + appUrl('/'));
+    }
+  } catch (e) { console.error('[pto] cancel-offer notify failed:', e.message); }
+}
+
+// Notify the initiating manager of the employee decision.
+async function notifyCancelResult(managerId, accepted, employeeName, from, to) {
+  if (!managerId) return;
+  try {
+    var rec = notify ? await notify.broadcastRecipients('pto_decided', 'id = ' + managerId) : { emails: [], phones: [] };
+    var dates = from + (to !== from ? ' to ' + to : '');
+    if (rec.emails && rec.emails.length && sendEmail && emailTemplate) {
+      var html = emailTemplate({
+        badge: accepted ? 'Cancellation Accepted' : 'Cancellation Declined', badgeColor: accepted ? 'green' : 'red',
+        title: (employeeName || 'The employee') + (accepted ? ' accepted the cancellation' : ' declined the cancellation'),
+        body: accepted ? 'The PTO has been cancelled and any hours restored.' : 'The PTO stays approved. You can propose a cancellation again if needed.',
+        details: [ { label: 'Employee', value: employeeName || '' }, { label: 'Dates', value: dates } ],
+        buttonText: 'View in Nova', buttonUrl: appUrl('/')
+      });
+      await sendEmail(rec.emails, (accepted ? 'PTO cancellation accepted: ' : 'PTO cancellation declined: ') + dates, html);
+    }
+    if (rec.phones && rec.phones.length && sendSms) {
+      await sendSms(rec.phones, 'Lock & Roll: ' + (employeeName || 'Employee') + (accepted ? ' accepted' : ' declined') + ' the cancellation of PTO ' + dates + '. ' + appUrl('/'));
+    }
+  } catch (e) { console.error('[pto] cancel-result notify failed:', e.message); }
+}
+
 // ---- MY PTO ----------------------------------------------------------------
 
 router.get('/me', requireAuth, async (req, res) => {
@@ -238,8 +296,8 @@ router.get('/me', requireAuth, async (req, res) => {
     [uid]
   );
   const reqs = await pool.query(
-    'SELECT id, start_date, end_date, business_days, hours, type, paid, status, required_level, override_reason, created_at ' +
-    'FROM pto_requests WHERE user_id = $1 ORDER BY created_at DESC LIMIT 100',
+    'SELECT r.id, r.start_date, r.end_date, r.business_days, r.hours, r.type, r.paid, r.status, r.required_level, r.override_reason, r.created_at, r.cancel_memo, ci.name AS cancel_by_name ' +
+    'FROM pto_requests r LEFT JOIN users ci ON ci.id = r.cancel_initiated_by WHERE r.user_id = $1 ORDER BY r.created_at DESC LIMIT 100',
     [uid]
   );
   res.json({
@@ -540,6 +598,80 @@ router.post('/requests/:id/cancel', requireAuth, async (req, res) => {
     return res.json({ success: true, status: 'cancelled' });
   }
   return res.status(400).json({ error: 'Nothing to cancel' });
+});
+
+// Manager/approver proposes cancelling an already-approved PTO. The employee must
+// accept before anything is reversed. Admins/owner may force it through immediately.
+// Body: { memo (required), force (optional; admin/owner only) }.
+router.post('/requests/:id/mgr-cancel', requireAuth, async (req, res) => {
+  const id = parseInt(req.params.id, 10) || 0;
+  const memo = String((req.body && req.body.memo) || '').trim();
+  const force = (req.body && req.body.force) === true;
+  const rr = await pool.query('SELECT * FROM pto_requests WHERE id = $1', [id]);
+  if (!rr.rows.length) return res.status(404).json({ error: 'Request not found' });
+  const r = rr.rows[0];
+  if (r.user_id === req.user.id) return res.status(400).json({ error: 'Use the normal cancel on your own request' });
+  if (!(await canApprove(req.user, r.user_id))) return res.status(403).json({ error: 'Not in this employee approval line' });
+  if (r.status !== 'approved') return res.status(400).json({ error: 'Only an approved request can be cancelled here' });
+  if (!memo) return res.status(400).json({ error: 'A reason memo is required' });
+
+  const isAdmin = req.user.role === 'admin' || req.user.isOwner;
+  const from = ymdOf(r.start_date), to = ymdOf(r.end_date);
+
+  // Admin/owner force: reverse immediately, no employee approval, memo logged.
+  if (force && isAdmin) {
+    const client = await pool.connect();
+    try {
+      await client.query('BEGIN');
+      await client.query('UPDATE pto_requests SET cancel_memo = $1, cancel_initiated_by = $2, cancel_initiated_at = NOW() WHERE id = $3', [memo, req.user.id, id]);
+      await reverseAndClear(client, r, req.user.id);
+      await client.query('COMMIT');
+    } catch (e) {
+      await client.query('ROLLBACK');
+      return res.status(500).json({ error: 'Force cancel failed: ' + e.message });
+    } finally { client.release(); }
+    await logAudit({ entity_type: 'pto_request', entity_id: id, action: 'cancelled_forced', user_id: req.user.id, user_name: req.user.name, details: { dates: from + ' to ' + to, memo: memo } });
+    await notifyRequester(r.user_id, 'not', from, to, r.business_days, req.user.name, 'Cancelled by ' + req.user.name + ': ' + memo);
+    return res.json({ success: true, status: 'cancelled' });
+  }
+
+  // Standard path: offer the cancellation to the employee for approval.
+  await pool.query('UPDATE pto_requests SET status = $1, cancel_memo = $2, cancel_initiated_by = $3, cancel_initiated_at = NOW(), updated_at = NOW() WHERE id = $4', ['cancel_offered', memo, req.user.id, id]);
+  await logAudit({ entity_type: 'pto_request', entity_id: id, action: 'cancel_offered', user_id: req.user.id, user_name: req.user.name, details: { dates: from + ' to ' + to, memo: memo } });
+  await notifyCancelOffer(r.user_id, from, to, memo, req.user.name);
+  return res.json({ success: true, status: 'cancel_offered' });
+});
+
+// Employee responds to a manager-proposed cancellation. Body: { accept: bool }.
+router.post('/requests/:id/cancel-respond', requireAuth, async (req, res) => {
+  const id = parseInt(req.params.id, 10) || 0;
+  const accept = (req.body && req.body.accept) === true;
+  const rr = await pool.query('SELECT * FROM pto_requests WHERE id = $1', [id]);
+  if (!rr.rows.length) return res.status(404).json({ error: 'Request not found' });
+  const r = rr.rows[0];
+  if (r.user_id !== req.user.id) return res.status(403).json({ error: 'Only the employee can respond to this' });
+  if (r.status !== 'cancel_offered') return res.status(400).json({ error: 'No cancellation is awaiting your response' });
+  const from = ymdOf(r.start_date), to = ymdOf(r.end_date);
+
+  if (!accept) {
+    await pool.query('UPDATE pto_requests SET status = $1, updated_at = NOW() WHERE id = $2', ['approved', id]);
+    await logAudit({ entity_type: 'pto_request', entity_id: id, action: 'cancel_declined', user_id: req.user.id, user_name: req.user.name, details: { dates: from + ' to ' + to } });
+    await notifyCancelResult(r.cancel_initiated_by, false, req.user.name, from, to);
+    return res.json({ success: true, status: 'approved' });
+  }
+
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    await reverseAndClear(client, r, req.user.id);
+    await client.query('COMMIT');
+  } catch (e) {
+    await client.query('ROLLBACK');
+    return res.status(500).json({ error: 'Cancel failed: ' + e.message });
+  } finally { client.release(); }
+  await logAudit({ entity_type: 'pto_request', entity_id: id, action: 'cancel_accepted', user_id: req.user.id, user_name: req.user.name, details: { dates: from + ' to ' + to } });
+  await notifyCancelResult(r.cancel_initiated_by, true, req.user.name, from, to);
+  return res.json({ success: true, status: 'cancelled' });
 });
 
 // ---- TEAM (read-only, downline) -------------------------------------------

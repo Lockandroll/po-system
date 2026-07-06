@@ -733,6 +733,10 @@ async function initDB() {
     );
     await client.query('CREATE INDEX IF NOT EXISTS idx_pto_ledger_user ON pto_ledger(user_id);');
     await client.query("CREATE UNIQUE INDEX IF NOT EXISTS uq_pto_accrual_month ON pto_ledger(user_id, accrual_period) WHERE kind = 'accrual';");
+    // ---- PTO manager-initiated cancellation (employee must approve) ----
+    await client.query("ALTER TABLE pto_requests ADD COLUMN IF NOT EXISTS cancel_memo TEXT;");
+    await client.query("ALTER TABLE pto_requests ADD COLUMN IF NOT EXISTS cancel_initiated_by INTEGER REFERENCES users(id);");
+    await client.query("ALTER TABLE pto_requests ADD COLUMN IF NOT EXISTS cancel_initiated_at TIMESTAMP;");
     await client.query("ALTER TABLE users ADD COLUMN IF NOT EXISTS extra_perms TEXT[] NOT NULL DEFAULT '{}';");
     await client.query("ALTER TABLE users ADD COLUMN IF NOT EXISTS last_login_at TIMESTAMPTZ;");
     await client.query("ALTER TABLE users ADD COLUMN IF NOT EXISTS last_seen_at TIMESTAMPTZ;");

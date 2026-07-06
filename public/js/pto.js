@@ -43,6 +43,7 @@
       '.pto-pill.approved{background:rgba(34,197,94,.15);color:#22c55e}',
       '.pto-pill.denied,.pto-pill.cancelled{background:rgba(239,68,68,.15);color:#ef4444}',
       '.pto-pill.locked{background:rgba(59,130,246,.15);color:#3b82f6}',
+      '.pto-pill.cancel_offered,.pto-pill.cancel_requested{background:rgba(168,85,247,.15);color:#a855f7}',
       '.pto-table{width:100%;border-collapse:collapse;margin-top:6px}',
       '.pto-table th,.pto-table td{text-align:left;padding:9px 8px;border-bottom:1px solid var(--border,#2a2a2a);font-size:13px;vertical-align:middle}',
       '.pto-table th{color:var(--text-dim,#9a9a9a);font-size:11px;text-transform:uppercase;letter-spacing:.5px}',
@@ -70,6 +71,11 @@
   function toUnit(hours, pt) { return isCommission(pt) ? (hours / HRS_PER_DAY) : hours; }
   function fmtAmt(hours, pt) { return toUnit(hours, pt).toFixed(1) + ' ' + unitLabel(pt); }
   function tierLabel(days) { if (days > 10) return 'CEO approval'; if (days > 5) return 'Supervisor + COO'; return 'Direct supervisor'; }
+  function statusText(s) {
+    if (s === 'cancel_offered') return 'cancel \u2014 needs your OK';
+    if (s === 'cancel_requested') return 'cancel requested';
+    return s;
+  }
 
   // ---- shell + tab routing -------------------------------------------------
   window.renderPto = async function (content) {
@@ -105,11 +111,17 @@
     var elig = me.eligible_now ? 'Cleared' : (me.eligible_date || '—');
     var rows = (me.requests || []).map(function (r) {
       var d = fmtDate(r.start_date) + (String(r.end_date).slice(0, 10) !== String(r.start_date).slice(0, 10) ? ' – ' + fmtDate(r.end_date) : '');
-      var canCancel = (r.status === 'pending' || r.status === 'approved');
-      return '<tr><td>' + d + '</td><td>' + r.business_days + '</td><td>' + escHtml(r.type || '') + '</td>' +
+      var act = '';
+      if (r.status === 'cancel_offered') {
+        act = '<button class="pto-btn ok sm" onclick="ptoCancelAccept(' + r.id + ')">Accept cancel</button> <button class="pto-btn no sm" onclick="ptoCancelDecline(' + r.id + ')">Keep my PTO</button>';
+      } else if (r.status === 'pending' || r.status === 'approved') {
+        act = '<button class="pto-btn ghost sm" onclick="ptoCancel(' + r.id + ')">' + (r.status === 'approved' ? 'Request change' : 'Withdraw') + '</button>';
+      }
+      var memo = (r.status === 'cancel_offered' && r.cancel_memo) ? '<br><span class="pto-sub">' + escHtml(r.cancel_by_name || 'Manager') + ' wants to cancel: ' + escHtml(r.cancel_memo) + '</span>' : '';
+      return '<tr><td>' + d + memo + '</td><td>' + r.business_days + '</td><td>' + escHtml(r.type || '') + '</td>' +
         '<td>' + (r.paid ? 'Paid' : 'Unpaid') + '</td>' +
-        '<td><span class="pto-pill ' + escHtml(r.status) + '">' + escHtml(r.status) + '</span></td>' +
-        '<td>' + (canCancel ? '<button class="pto-btn ghost sm" onclick="ptoCancel(' + r.id + ')">' + (r.status === 'approved' ? 'Request change' : 'Withdraw') + '</button>' : '') + '</td></tr>';
+        '<td><span class="pto-pill ' + escHtml(r.status) + '">' + escHtml(statusText(r.status)) + '</span></td>' +
+        '<td>' + act + '</td></tr>';
     }).join('');
 
     body.innerHTML =
@@ -206,6 +218,15 @@
     try { var r = await api('POST', '/pto/requests/' + id + '/cancel', {}); showToast(r.status === 'cancel_requested' ? 'Change request sent to your approver.' : 'Request cancelled.', 'info'); reload(); }
     catch (e) { showToast(e.message || 'Could not cancel.', 'error'); }
   };
+  window.ptoCancelAccept = async function (id) {
+    if (!window.confirm('Accept this cancellation? Your time off will be removed and any hours restored to your balance.')) return;
+    try { await api('POST', '/pto/requests/' + id + '/cancel-respond', { accept: true }); showToast('Cancellation accepted — hours restored.', 'success'); reload(); }
+    catch (e) { showToast(e.message || 'Failed.', 'error'); }
+  };
+  window.ptoCancelDecline = async function (id) {
+    try { await api('POST', '/pto/requests/' + id + '/cancel-respond', { accept: false }); showToast('Declined — your PTO stays approved.', 'info'); reload(); }
+    catch (e) { showToast(e.message || 'Failed.', 'error'); }
+  };
 
   // ---- APPROVALS -----------------------------------------------------------
   async function tabApprovals(body) {
@@ -248,10 +269,11 @@
           '<td>' + d + '</td><td>' + r.business_days + '</td><td>' + fmtAmt(Number(r.hours), r.pay_type) + '</td>' +
           '<td>' + (r.paid ? 'Paid' : 'Unpaid') + ' ' + escHtml(r.type || '') + '</td>' +
           '<td>' + escHtml(r.approver_name || '—') + '</td>' +
-          '<td>' + (r.decided_at ? fmtDate(r.decided_at) : '—') + '</td></tr>';
+          '<td>' + (r.decided_at ? fmtDate(r.decided_at) : '—') + '</td>' +
+          '<td style="white-space:nowrap"><button class="pto-btn no sm" onclick="ptoMgrCancel(' + r.id + ')">Cancel</button></td></tr>';
       }).join('');
-      var table = '<table class="pto-table"><thead><tr><th>Employee</th><th>Dates</th><th>Days</th><th>Amount</th><th>Type</th><th>Approved by</th><th>Decided</th></tr></thead><tbody>' +
-        (rows || '<tr><td colspan="7" class="pto-sub">Nothing approved yet.</td></tr>') + '</tbody></table>';
+      var table = '<table class="pto-table"><thead><tr><th>Employee</th><th>Dates</th><th>Days</th><th>Amount</th><th>Type</th><th>Approved by</th><th>Decided</th><th></th></tr></thead><tbody>' +
+        (rows || '<tr><td colspan="8" class="pto-sub">Nothing approved yet.</td></tr>') + '</tbody></table>';
       var pages = (data && data.pages) || 1, cur = (data && data.page) || 1, total = (data && data.total) || 0;
       var pager = '';
       if (pages > 1) {
@@ -290,6 +312,30 @@
     var reason = window.prompt('Reason for keeping the PTO approved (optional):', '') || '';
     try { await api('POST', '/pto/requests/' + id + '/deny', { reason: reason }); showToast('Cancellation declined — PTO stays approved.', 'info'); reload(); }
     catch (e) { showToast(e.message || 'Failed.', 'error'); }
+  };
+  window.ptoMgrCancel = function (id) {
+    var isAdmin = !!(window.state && state.user && (state.user.role === 'admin' || state.user.isOwner));
+    var forceRow = isAdmin ? '<label style="display:flex;gap:8px;align-items:center;margin-top:10px;font-size:13px;color:var(--text-dim,#9a9a9a)"><input type="checkbox" id="pto-mc-force"> Cancel immediately without employee approval (admin)</label>' : '';
+    var m = document.createElement('div'); m.className = 'pto-mask';
+    m.innerHTML = '<div class="pto-dlg"><h3>Cancel approved PTO</h3><div class="pto-desc">The employee must accept before anything is reversed. A reason memo is required and is logged to the audit trail.</div>' +
+      '<textarea id="pto-mc-memo" class="pto-textarea" rows="3" placeholder="Reason for cancelling (required)"></textarea>' +
+      '<div class="pto-warn" id="pto-mc-err" style="display:none">A reason is required.</div>' + forceRow +
+      '<div style="margin-top:14px;display:flex;gap:10px;justify-content:flex-end"><button class="pto-btn ghost" id="pto-mc-cancel">Never mind</button><button class="pto-btn no" id="pto-mc-ok">Send to employee</button></div></div>';
+    document.body.appendChild(m);
+    document.getElementById('pto-mc-cancel').onclick = function () { document.body.removeChild(m); };
+    document.getElementById('pto-mc-ok').onclick = async function () {
+      var memo = document.getElementById('pto-mc-memo').value.trim();
+      var err = document.getElementById('pto-mc-err');
+      if (!memo) { err.textContent = 'A reason is required.'; err.style.display = 'block'; return; }
+      var fc = document.getElementById('pto-mc-force');
+      var force = !!(isAdmin && fc && fc.checked);
+      try {
+        var r = await api('POST', '/pto/requests/' + id + '/mgr-cancel', { memo: memo, force: force });
+        document.body.removeChild(m);
+        showToast(r.status === 'cancelled' ? 'PTO cancelled.' : 'Sent to the employee for approval.', 'success');
+        reload();
+      } catch (e) { err.textContent = e.message || 'Failed.'; err.style.display = 'block'; }
+    };
   };
   function openOverride(id) {
     var m = document.createElement('div'); m.className = 'pto-mask';
