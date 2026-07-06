@@ -1378,7 +1378,7 @@ async function renderRunningList(el){
       '</div>' +
       '<div class="table-wrap"><table class="line-items-table" style="table-layout:fixed">' +
         '<colgroup><col style="width:6%"><col style="width:24%"><col style="width:8%"><col style="width:12%"><col style="width:22%"><col style="width:14%"><col style="width:14%"></colgroup>' +
-        '<thead><tr><th></th><th>Item Description</th><th>Qty</th><th>Est. Cost</th><th>Vendor</th><th>Part Description</th><th>Link</th></tr></thead>' +
+        '<thead><tr><th></th><th>Item Description</th><th>Qty</th><th>Est. Cost</th><th>Vendor</th><th>Part #</th><th>Link</th></tr></thead>' +
         '<tbody id="running-body"></tbody>' +
         '<tfoot><tr class="total-row"><td colspan="3" class="text-right" style="padding:10px">Est. Total</td><td id="running-total" style="padding:10px">$0.00</td><td colspan="3"></td></tr></tfoot>' +
       '</table></div>' +
@@ -1406,7 +1406,7 @@ function runningBuildRows(){
       '<td><input type="number" value="' + escHtml(it.quantity||'') + '" min="0" step="1" style="width:100%;box-sizing:border-box" data-f="quantity" onchange="runningField(' + i + ',this)" /></td>' +
       '<td><input type="number" value="' + escHtml(it.unit_price||'') + '" min="0" step="0.01" placeholder="0.00" style="width:100%;box-sizing:border-box" data-f="unit_price" onchange="runningField(' + i + ',this)" /></td>' +
       '<td><input type="text" value="' + escHtml(it.vendor_name||'') + '" placeholder="Vendor" style="width:100%;box-sizing:border-box" data-f="vendor_name" onchange="runningField(' + i + ',this)" /></td>' +
-      '<td><input type="text" value="' + escHtml(it.part_number||'') + '" placeholder="Part description" style="width:100%;box-sizing:border-box" data-f="part_number" onchange="runningField(' + i + ',this)" /></td>' +
+      '<td><input type="text" value="' + escHtml(it.part_number||'') + '" placeholder="Part #" style="width:100%;box-sizing:border-box" data-f="part_number" onchange="runningField(' + i + ',this)" /></td>' +
       '<td><input type="text" value="' + escHtml(it.link||'') + '" placeholder="URL" style="width:100%;box-sizing:border-box" data-f="link" onchange="runningField(' + i + ',this)" /></td>' +
     '</tr>';
   }).join('');
@@ -1501,7 +1501,7 @@ function adminRunRenderShell(el, cities){
       '</div>' +
       '<div class="table-wrap"><table class="line-items-table" style="table-layout:fixed">' +
         '<colgroup><col style="width:5%"><col style="width:21%"><col style="width:11%"><col style="width:11%"><col style="width:7%"><col style="width:11%"><col style="width:18%"><col style="width:16%"></colgroup>' +
-        '<thead><tr><th></th><th>Item</th><th>Requester</th><th>City</th><th>Qty</th><th>Est. Cost</th><th>Vendor</th><th>Part Description</th></tr></thead>' +
+        '<thead><tr><th></th><th>Item</th><th>Requester</th><th>City</th><th>Qty</th><th>Est. Cost</th><th>Vendor</th><th>Part #</th></tr></thead>' +
         '<tbody id="admin-run-body"></tbody>' +
         '<tfoot><tr class="total-row"><td colspan="5" class="text-right" style="padding:10px">Est. Total</td><td id="admin-run-total" style="padding:10px">$0.00</td><td colspan="2"></td></tr></tfoot>' +
       '</table></div>' +
@@ -1533,7 +1533,7 @@ function adminRunBuildRows(){
       '<td><input type="number" value="' + escHtml(it.quantity||'') + '" min="0" step="1" style="width:100%;box-sizing:border-box" data-f="quantity" onchange="adminRunField(' + id + ',this)" /></td>' +
       '<td><input type="number" value="' + escHtml(it.unit_price||'') + '" min="0" step="0.01" placeholder="0.00" style="width:100%;box-sizing:border-box" data-f="unit_price" onchange="adminRunField(' + id + ',this)" /></td>' +
       '<td><input type="text" value="' + escHtml(it.vendor_name||'') + '" placeholder="Vendor" style="width:100%;box-sizing:border-box" data-f="vendor_name" onchange="adminRunField(' + id + ',this)" /></td>' +
-      '<td><input type="text" value="' + escHtml(it.part_number||'') + '" placeholder="Part description" style="width:100%;box-sizing:border-box" data-f="part_number" onchange="adminRunField(' + id + ',this)" /></td>' +
+      '<td><input type="text" value="' + escHtml(it.part_number||'') + '" placeholder="Part #" style="width:100%;box-sizing:border-box" data-f="part_number" onchange="adminRunField(' + id + ',this)" /></td>' +
     '</tr>';
   }).join('');
   adminRunUpdateTotal();
