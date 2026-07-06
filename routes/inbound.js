@@ -248,13 +248,10 @@ router.post('/sms', async function (req, res) {
     }
 
     if (!feedbackId || !user) {
-      console.log('[feedback-sms] unmatched reply from ' + from + ' - logging needs_review');
-      try {
-        await pool.query(
-          "INSERT INTO customer_feedback (source, raw_email, incident_text, status, needs_review) VALUES ('sms_unmatched', $1, $2, 'new', true)",
-          [from + ': ' + body, body]
-        );
-      } catch (e) { console.error('[feedback-sms] log unmatched:', e.message); }
+      // Unmatched inbound SMS (e.g. a reply to a quiz reminder, 2FA, or followup
+      // text) must NOT create a feedback record. Customer feedback only originates
+      // from the Pulsar email intake (/api/inbound/feedback). Just ignore it.
+      console.log('[feedback-sms] unmatched reply from ' + from + ' - ignored (not creating feedback)');
       return;
     }
 
