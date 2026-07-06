@@ -737,6 +737,8 @@ async function initDB() {
     await client.query("ALTER TABLE pto_requests ADD COLUMN IF NOT EXISTS cancel_memo TEXT;");
     await client.query("ALTER TABLE pto_requests ADD COLUMN IF NOT EXISTS cancel_initiated_by INTEGER REFERENCES users(id);");
     await client.query("ALTER TABLE pto_requests ADD COLUMN IF NOT EXISTS cancel_initiated_at TIMESTAMP;");
+    // Remember a shift's position before PTO overwrote it, so cancel can restore it exactly.
+    await client.query("ALTER TABLE shifts ADD COLUMN IF NOT EXISTS prev_position_id INTEGER;");
     await client.query("ALTER TABLE users ADD COLUMN IF NOT EXISTS extra_perms TEXT[] NOT NULL DEFAULT '{}';");
     await client.query("ALTER TABLE users ADD COLUMN IF NOT EXISTS last_login_at TIMESTAMPTZ;");
     await client.query("ALTER TABLE users ADD COLUMN IF NOT EXISTS last_seen_at TIMESTAMPTZ;");

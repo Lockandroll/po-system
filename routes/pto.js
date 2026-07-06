@@ -228,7 +228,7 @@ async function reverseAndClear(client, r, actorId) {
     await postLedger(client, { user_id: r.user_id, entry_date: from, kind: 'reversal', amount_hours: Number(r.hours), description: 'PTO cancelled ' + from, request_id: r.id, created_by: actorId });
   }
   await client.query('UPDATE pto_requests SET status = $1, updated_at = NOW() WHERE id = $2', ['cancelled', r.id]);
-  await client.query('UPDATE shifts SET position_id = NULL, updated_at = NOW() WHERE user_id = $1 AND shift_date BETWEEN $2 AND $3 AND position_id = ANY($4::int[])', [r.user_id, from, to, [APPROVED_VACATION_POSITION_ID, UNPAID_VACATION_POSITION_ID]]);
+  await client.query('UPDATE shifts SET position_id = prev_position_id, prev_position_id = NULL, updated_at = NOW() WHERE user_id = $1 AND shift_date BETWEEN $2 AND $3 AND position_id = ANY($4::int[])', [r.user_id, from, to, [APPROVED_VACATION_POSITION_ID, UNPAID_VACATION_POSITION_ID]]);
 }
 
 // Notify the employee that their manager wants to cancel an approved PTO.
@@ -512,8 +512,8 @@ router.post('/requests/:id/approve', requireAuth, async (req, res) => {
     // Flip the scheduled shifts to Approved / Unpaid Vacation Day (kept visible, not deleted).
     const posId = r.paid ? APPROVED_VACATION_POSITION_ID : UNPAID_VACATION_POSITION_ID;
     await client.query(
-      'UPDATE shifts SET position_id = $1, updated_at = NOW() WHERE user_id = $2 AND shift_date BETWEEN $3 AND $4',
-      [posId, r.user_id, from, to]
+      'UPDATE shifts SET prev_position_id = CASE WHEN position_id = ANY($5::int[]) THEN prev_position_id ELSE position_id END, position_id = $1, updated_at = NOW() WHERE user_id = $2 AND shift_date BETWEEN $3 AND $4',
+      [posId, r.user_id, from, to, [APPROVED_VACATION_POSITION_ID, UNPAID_VACATION_POSITION_ID]]
     );
     await client.query('COMMIT');
   } catch (e) {
@@ -588,7 +588,7 @@ router.post('/requests/:id/cancel', requireAuth, async (req, res) => {
         await postLedger(client, { user_id: r.user_id, entry_date: from, kind: 'reversal', amount_hours: Number(r.hours), description: 'PTO cancelled ' + from, request_id: id, created_by: req.user.id });
       }
       await client.query('UPDATE pto_requests SET status = $1, updated_at = NOW() WHERE id = $2', ['cancelled', id]);
-      await client.query('UPDATE shifts SET position_id = NULL, updated_at = NOW() WHERE user_id = $1 AND shift_date BETWEEN $2 AND $3 AND position_id = ANY($4::int[])', [r.user_id, from, to, [APPROVED_VACATION_POSITION_ID, UNPAID_VACATION_POSITION_ID]]);
+      await client.query('UPDATE shifts SET position_id = prev_position_id, prev_position_id = NULL, updated_at = NOW() WHERE user_id = $1 AND shift_date BETWEEN $2 AND $3 AND position_id = ANY($4::int[])', [r.user_id, from, to, [APPROVED_VACATION_POSITION_ID, UNPAID_VACATION_POSITION_ID]]);
       await client.query('COMMIT');
     } catch (e) {
       await client.query('ROLLBACK');
@@ -740,7 +740,7 @@ router.post('/log', requireAuth, requirePermission('manage_pto'), async (req, re
       await postLedger(client, { user_id: target, entry_date: from, kind: 'usage', amount_hours: -hours, description: 'Logged after the fact — ' + from + ' (' + reason + ')', request_id: reqId, created_by: req.user.id });
     }
     const posId = paid ? APPROVED_VACATION_POSITION_ID : UNPAID_VACATION_POSITION_ID;
-    await client.query('UPDATE shifts SET position_id = $1, updated_at = NOW() WHERE user_id = $2 AND shift_date BETWEEN $3 AND $4', [posId, target, from, to]);
+    await client.query('UPDATE shifts SET prev_position_id = CASE WHEN position_id = ANY($5::int[]) THEN prev_position_id ELSE position_id END, position_id = $1, updated_at = NOW() WHERE user_id = $2 AND shift_date BETWEEN $3 AND $4', [posId, target, from, to, [APPROVED_VACATION_POSITION_ID, UNPAID_VACATION_POSITION_ID]]);
     await client.query('COMMIT');
   } catch (e) {
     await client.query('ROLLBACK');
