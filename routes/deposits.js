@@ -99,20 +99,43 @@ router.post('/', requireAuth, requirePermission('create_deposit'), async functio
       return res.status(400).json({ error: 'Deposit date is required' });
     }
     const owed = (pulsar_owed === '' || pulsar_owed == null || isNaN(parseFloat(pulsar_owed))) ? null : parseFloat(pulsar_owed);
+    // Duplicate-submission guards.
+    const idem = (req.body.idempotency_key == null ? '' : String(req.body.idempotency_key)).slice(0, 64) || null;
+    const confirmDuplicate = req.body.confirm_duplicate === true || req.body.confirm_duplicate === 'true';
+    const RETURN_COLS = 'id, deposit_number, user_id, user_name, city_code, amount, deposit_date, period_start, period_end, notes, pulsar_owed, created_at';
+    // Hard guard: identical idempotency key means the client already submitted this exact request — return the saved row instead of inserting again.
+    if (idem) {
+      const prior = await pool.query('SELECT ' + RETURN_COLS + ' FROM deposits WHERE idempotency_key = $1', [idem]);
+      if (prior.rows.length) { client.release(); return res.status(200).json(prior.rows[0]); }
+    }
+    // Soft guard: same person, date, amount and pay period already on file — ask the client to confirm before creating a second one.
+    if (!confirmDuplicate) {
+      const dupq = await pool.query(
+        'SELECT id, deposit_number FROM deposits WHERE user_id = $1 AND deposit_date = $2 AND amount = $3 ' +
+        'AND period_start IS NOT DISTINCT FROM $4::date AND city_code IS NOT DISTINCT FROM $5 ' +
+        'ORDER BY created_at DESC LIMIT 1',
+        [req.user.id, deposit_date, amt, period_start || null, city_code || null]
+      );
+      if (dupq.rows.length) {
+        client.release();
+        return res.status(200).json({ duplicate: true, existing_id: dupq.rows[0].id, existing_number: dupq.rows[0].deposit_number });
+      }
+    }
     // Receipts: prefer the receipts[] array; fall back to the legacy single image.
     let receipts = Array.isArray(req.body.receipts) ? req.body.receipts : [];
     if (!receipts.length && receipt_image) receipts = [{ image: receipt_image, filename: receipt_filename || null }];
     const expenses = Array.isArray(req.body.expenses) ? req.body.expenses : [];
     let dep = null;
     let expenseTotal = 0;
+    var replayed = false;
     for (var attempt = 0; attempt < 10; attempt++) {
     expenseTotal = 0;
     const deposit_number = await generateDepositNumber();
     try {
     await client.query('BEGIN');
     const { rows } = await client.query(
-      'INSERT INTO deposits (deposit_number, user_id, user_name, city_code, amount, deposit_date, period_start, period_end, notes, pulsar_owed) ' +
-      'VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) RETURNING id, deposit_number, user_id, user_name, city_code, amount, deposit_date, period_start, period_end, notes, pulsar_owed, created_at',
+      'INSERT INTO deposits (deposit_number, user_id, user_name, city_code, amount, deposit_date, period_start, period_end, notes, pulsar_owed, idempotency_key) ' +
+      'VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) RETURNING ' + RETURN_COLS,
       [
         deposit_number,
         req.user.id,
@@ -123,7 +146,8 @@ router.post('/', requireAuth, requirePermission('create_deposit'), async functio
         period_start || null,
         period_end || null,
         notes || null,
-        owed
+        owed,
+        idem
       ]
     );
     dep = rows[0];
@@ -153,20 +177,27 @@ router.post('/', requireAuth, requirePermission('create_deposit'), async functio
     break;
     } catch (err) {
       try { await client.query('ROLLBACK'); } catch (e) {}
+      var isIdemHit = err.code === '23505' && ((err.constraint && err.constraint.indexOf('idempotency') !== -1) || (err.detail && err.detail.indexOf('idempotency_key') !== -1));
+      if (isIdemHit && idem) {
+        const prior = await pool.query('SELECT ' + RETURN_COLS + ' FROM deposits WHERE idempotency_key = $1', [idem]);
+        if (prior.rows.length) { dep = prior.rows[0]; replayed = true; break; }
+      }
       if (err.code === '23505' && attempt < 9) continue;
       throw err;
     }
     }
-    await logAudit({
-      entity_type: 'deposit',
-      entity_id: dep.id,
-      entity_number: dep.deposit_number,
-      action: 'created',
-      user_id: req.user.id,
-      user_name: req.user.name,
-      details: { amount: amt, pulsar_owed: owed, expense_total: expenseTotal, city_code: city_code || null }
-    });
-    res.status(201).json(dep);
+    if (!replayed) {
+      await logAudit({
+        entity_type: 'deposit',
+        entity_id: dep.id,
+        entity_number: dep.deposit_number,
+        action: 'created',
+        user_id: req.user.id,
+        user_name: req.user.name,
+        details: { amount: amt, pulsar_owed: owed, expense_total: expenseTotal, city_code: city_code || null }
+      });
+    }
+    res.status(replayed ? 200 : 201).json(dep);
   } catch (err) {
     try { await client.query('ROLLBACK'); } catch (e) {}
     console.error(err);

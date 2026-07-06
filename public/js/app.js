@@ -1934,7 +1934,8 @@ async function showUserModal(id, returnView) {
           '<div class="form-group"><label>Role</label><select id="modal-role">' +'<option value="locksmith"' + (user&&user.role==='locksmith'?' selected':'') + '>Locksmith</option>' +'<option value="locksmith_coordinator"' + (user&&user.role==='locksmith_coordinator'?' selected':'') + '>Locksmith Coordinator</option>' +'<option value="dispatcher"' + (user&&user.role==='dispatcher'?' selected':'') + '>Dispatcher</option>' +'<option value="roadside_technician"' + (user&&user.role==='roadside_technician'?' selected':'') + '>Roadside Technician</option>' +'<option value="manager"' + (user&&user.role==='manager'?' selected':'') + '>Manager</option>' +'<option value="admin"' + (user&&user.role==='admin'?' selected':'') + '>Admin</option>' +(((state.user&&state.user.isOwner)||!ownerExists||(user&&user.role==='owner')) ? '<option value="owner"' + (user&&user.role==='owner'?' selected':'') + '>Owner</option>' : '') +'</select></div>' +
           '</div>' +
           '<div class="form-group"><label>Title <span style="font-weight:400;font-size:0.8em;color:var(--text-muted-color)">shown on the org chart &amp; user lists in place of the role (optional)</span></label><input type="text" id="modal-title" value="' + escHtml(user ? user.title || '' : '') + '" placeholder="e.g. Field Operations Manager" /></div>' +
-          '<div class="form-group"><label>Cities <span style="font-weight:400;font-size:0.8em;color:var(--text-muted-color)">(blank = all cities)</span></label><div style="display:flex;flex-wrap:wrap;gap:10px;margin-top:4px">' + (cities.length ? cities.map(function(c){ var cc=(c.code||'').trim(); var on=(user&&user.city_codes&&user.city_codes.indexOf(cc)!==-1); return '<label style="display:inline-flex;align-items:center;gap:5px;font-weight:400;font-size:13px"><input type="checkbox" class="modal-city" value="' + escHtml(cc) + '"' + (on?' checked':'') + ' style="width:auto"> ' + escHtml(c.name) + '</label>'; }).join('') : '<span style="color:var(--text-muted-color);font-size:13px">No cities yet</span>') + '</div></div>' +
+          '<div class="form-group"><label>Cities they can view &amp; manage <span style="font-weight:400;font-size:0.8em;color:var(--text-muted-color)">(permissions &mdash; blank = all cities)</span></label><div style="display:flex;flex-wrap:wrap;gap:10px;margin-top:4px">' + (cities.length ? cities.map(function(c){ var cc=(c.code||'').trim(); var on=(user&&user.city_codes&&user.city_codes.indexOf(cc)!==-1); return '<label style="display:inline-flex;align-items:center;gap:5px;font-weight:400;font-size:13px"><input type="checkbox" class="modal-city" value="' + escHtml(cc) + '"' + (on?' checked':'') + ' style="width:auto"> ' + escHtml(c.name) + '</label>'; }).join('') : '<span style="color:var(--text-muted-color);font-size:13px">No cities yet</span>') + '</div></div>' +
+        '<div class="form-group"><label>Home City <span style="font-weight:400;font-size:0.8em;color:var(--text-muted-color)">their base city &mdash; the default when a shift is created for them</span></label><select id="modal-home-city"><option value="">&mdash; None &mdash;</option>' + cities.map(function(c){ var cc=(c.code||'').trim(); return '<option value="' + escHtml(cc) + '"' + ((user&&(String(user.home_city||'').trim()===cc))?' selected':'') + '>' + escHtml(c.name) + '</option>'; }).join('') + '</select></div>' +
         '<div class="form-group"><label>Pay Structure</label><select id="modal-pay-type">' + '<option value="hourly"' + ((user&&user.pay_type==='hourly')||!user?' selected':'') + '>Hourly</option>' + '<option value="salary"' + (user&&user.pay_type==='salary'?' selected':'') + '>Salary</option>' + '<option value="commission"' + (user&&user.pay_type==='commission'?' selected':'') + '>Commission</option>' + '</select><div style="font-size:0.8em;color:var(--text-muted-color);margin-top:4px">Only Hourly employees are time-tracked and receive late clock-in texts.</div></div>' + '<div class="form-group"><label>Pulsar Name <span style="font-weight:400;font-size:0.8em;color:var(--text-muted-color)">name as it appears in the call report</span></label><input type="text" id="modal-pulsar" value="' + escHtml(user ? user.pulsar_name || '' : '') + '" placeholder="e.g. Albright, Benjamin" /></div>' + '<div class="form-group"><label>Nickname(s) <span style="font-weight:400;font-size:0.8em;color:var(--text-muted-color)">what customers call them in reviews — comma-separate multiples</span></label><input type="text" id="modal-nickname" value="' + escHtml(user ? user.nickname || '' : '') + '" placeholder="e.g. Scooter" /></div>' + '<div class="form-group"><label>Reports To <span style="font-weight:400;font-size:0.8em;color:var(--text-muted-color)">who manages this person (drives late-clock-in texts &amp; the org chart)</span></label><select id="modal-reports-to">' + reportsOpts + '</select></div>' + '<div class="form-group"><label>Org Level <span style="font-weight:400;font-size:0.8em;color:var(--text-muted-color)">1 = top; sets the row on the org chart (blank = auto by depth)</span></label><input type="number" min="1" id="modal-org-level" value="' + escHtml(user && user.org_level ? String(user.org_level) : '') + '" placeholder="e.g. 2" /></div>' + '<div class="form-group"><label>Hire Date <span style="font-weight:400;font-size:0.8em;color:var(--text-muted-color)">drives PTO eligibility &amp; accrual tenure</span></label><input type="date" id="modal-hire-date" value="' + escHtml(user && user.hire_date ? String(user.hire_date).slice(0,10) : '') + '" /></div>' +
         '<div class="form-group" style="display:flex;align-items:center;gap:10px">' +
           '<input type="checkbox" id="modal-receive-emails" style="width:auto"' + (user && user.receive_emails === false ? '' : ' checked') + ' />' +
@@ -1981,13 +1982,14 @@ async function saveUser(id, btn) {
   var title=(document.getElementById('modal-title')||{}).value; if(title) title=title.trim();
   var org_level=(document.getElementById('modal-org-level')||{}).value; org_level = org_level ? parseInt(org_level,10) : null;
   var hire_date=(document.getElementById('modal-hire-date')||{}).value || null;
+  var home_city=(document.getElementById('modal-home-city')||{}).value || null;
   if (phone && !/^\+1[0-9]{10}$/.test(phone)) {
     document.getElementById('modal-error').innerHTML = '<div class="alert alert-error">Phone must be in format +13215550000 (+1 followed by 10 digits)</div>';
     return;
   }
   try {
     btn.disabled = true;
-    var _uPayload = { name, email, password: password || undefined, role, phone: phone || undefined, receive_emails, receive_sms, city_codes, pulsar_name, nickname, hide_from_schedule, pay_type, supervisor_id, extra_perms, title, org_level, hide_from_org, hire_date };
+    var _uPayload = { name, email, password: password || undefined, role, phone: phone || undefined, receive_emails, receive_sms, city_codes, pulsar_name, nickname, hide_from_schedule, pay_type, supervisor_id, extra_perms, title, org_level, hide_from_org, hire_date, home_city };
     var _savedUser = id ? await api('PUT', '/users/' + id, _uPayload) : await api('POST', '/users', _uPayload);
     document.querySelector('.modal-overlay').remove();
     var _rv=window._userModalReturn;window._userModalReturn=null;navigate(_rv||'users');
@@ -7337,6 +7339,11 @@ async function renderHomeScreen(el) {
 var depositReceipts = [];   // [{ data, name }] for the deposit slip / cash-count photos
 var depositExpenses = [];   // [{ description, amount, data, name }] cash paid out
 var depExtractTried = false;
+var depIdemKey = null;      // idempotency key for the in-progress deposit form; regenerated per fresh form and after each successful submit
+function depNewIdemKey() {
+  try { if (window.crypto && crypto.randomUUID) return crypto.randomUUID(); } catch (e) {}
+  return 'dep-' + Date.now() + '-' + Math.random().toString(16).slice(2) + Math.random().toString(16).slice(2);
+}
 
 // Deposit pay-period helpers — weeks run Monday to Sunday.
 function depMonday(d) { var x = new Date(d.getFullYear(), d.getMonth(), d.getDate()); var day = x.getDay(); x.setDate(x.getDate() + (day === 0 ? -6 : 1 - day)); return x; }
@@ -7364,6 +7371,7 @@ async function renderDeposits(el) {
   depositReceipts = [];
   depositExpenses = [];
   depExtractTried = false;
+  depIdemKey = depNewIdemKey();
   var cities = [];
   try { cities = await api('GET', '/cities'); } catch(e) {}
   var cityOptions = '<option value="">Select city…</option>' + cities.map(function(c) {
@@ -7402,7 +7410,7 @@ async function renderDeposits(el) {
         '</div>' +
         '<div class="form-group"><label>Notes</label><textarea id="dep-notes" rows="2" placeholder="Optional notes…"></textarea></div>' +
         '<div id="dep-overshort" style="margin:4px 0 16px;padding:12px;border-radius:8px;background:var(--bg-color);border:1px solid var(--border-color);font-size:14px"></div>' +
-        '<button class="btn btn-primary" onclick="submitDeposit()">Submit Deposit</button>' +
+        '<button id="dep-submit-btn" class="btn btn-primary" onclick="submitDeposit()">Submit Deposit</button>' +
       '</div></div>';
   }
   html +=
@@ -7561,6 +7569,7 @@ function recalcOverShort() {
 
 async function submitDeposit() {
   var fb = document.getElementById('dep-feedback');
+  var btn = document.getElementById('dep-submit-btn');
   var amount = document.getElementById('dep-amount').value;
   var pulsar_owed = document.getElementById('dep-pulsar').value;
   var deposit_date = document.getElementById('dep-date').value;
@@ -7581,8 +7590,19 @@ async function submitDeposit() {
   }).map(function(ex) {
     return { description: ex.description || '', amount: parseFloat(ex.amount) || 0, image: ex.data || null, filename: ex.name || null };
   });
+  if (!depIdemKey) depIdemKey = depNewIdemKey();
+  function resetBtn() { if (btn) { btn.disabled = false; btn.textContent = 'Submit Deposit'; } }
+  if (btn) { btn.disabled = true; btn.textContent = 'Submitting…'; }
+  function send(confirmDuplicate) {
+    return api('POST', '/deposits', { amount: amount, pulsar_owed: pulsar_owed || null, deposit_date: deposit_date, period_start: period_start, period_end: period_end, city_code: city_code, notes: notes, receipts: receipts, expenses: expenses, idempotency_key: depIdemKey, confirm_duplicate: !!confirmDuplicate });
+  }
   try {
-    await api('POST', '/deposits', { amount: amount, pulsar_owed: pulsar_owed || null, deposit_date: deposit_date, period_start: period_start, period_end: period_end, city_code: city_code, notes: notes, receipts: receipts, expenses: expenses });
+    var res = await send(false);
+    if (res && res.duplicate) {
+      var msg = 'A deposit for this date and amount already exists (' + (res.existing_number || 'existing') + '). Submit this one anyway?';
+      if (!confirm(msg)) { fb.innerHTML = '<div class="alert alert-error">Cancelled — no duplicate created.</div>'; resetBtn(); return; }
+      res = await send(true);
+    }
     fb.innerHTML = '<div class="alert alert-success">Deposit submitted — thank you!</div>';
     document.getElementById('dep-amount').value = '';
     document.getElementById('dep-pulsar').value = '';
@@ -7591,12 +7611,15 @@ async function submitDeposit() {
     depositReceipts = [];
     depositExpenses = [];
     depExtractTried = false;
+    depIdemKey = depNewIdemKey();
     renderDepositReceipts();
     renderDepositExpenses();
     recalcOverShort();
     await loadDepositsTable();
+    resetBtn();
   } catch(e) {
     fb.innerHTML = '<div class="alert alert-error">' + escHtml(e.message) + '</div>';
+    resetBtn();
   }
 }
 
@@ -10494,7 +10517,7 @@ function schedRenderMonth(){
       var dim=inMonth?'':'opacity:0.35;';
       var isT=day===today;
       var items=list.slice(0,4).map(function(s){
-        var col=s.city_color||'#f97316';
+        var col=schedShiftColor(s);
         return '<div onclick="event.stopPropagation();schedOpenShift('+s.id+')" title="'+escHtml((s.user_name||'')+' '+schedTimeFmt(s.start_time)+'-'+schedTimeFmt(s.end_time))+'" style="cursor:pointer;border-left:3px solid '+col+';background:'+col+'22;border-radius:3px;padding:1px 4px;margin:2px 0;font-size:10.5px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">'+escHtml(schedTimeFmt(s.start_time))+' '+escHtml((s.user_name||'').split(' ')[0])+'</div>';
       }).join('');
       var more=list.length>4?('<div style="font-size:10px;color:var(--text-muted-color,#999)">+'+(list.length-4)+' more</div>'):'';
@@ -10509,7 +10532,7 @@ function schedRenderMonth(){
 function schedRecurringForm(){
   var userOpts=schedVisibleUsers().map(function(u){ return '<option value="'+u.id+'">'+escHtml(u.name)+'</option>'; }).join('');
   var posOpts='<option value="">No position</option>'+_schedPositions.filter(function(p){return p.active!==false;}).map(function(p){ return '<option value="'+p.id+'">'+escHtml(p.name)+'</option>'; }).join('');
-  var cityOpts='<option value="">— city —</option>'+_schedCities.map(function(c){ var cc=(c.code||'').trim(); return '<option value="'+escHtml(cc)+'"'+(_schedCity===cc?' selected':'')+'>'+escHtml(c.name)+'</option>'; }).join('');
+  var cityOpts='<option value="">— city —</option>'+_schedCities.map(function(c){ var cc=(c.code||'').trim(); return '<option value="'+escHtml(cc)+'"'+(_selCity===cc?' selected':'')+'>'+escHtml(c.name)+'</option>'; }).join('');
   var inp='background:var(--bg-elevated,#1f1f1f);color:var(--text-color,#fff);border:1px solid var(--border,#333);border-radius:6px;padding:8px;width:100%;font-size:14px';
   var days=[['1','Mon',true],['2','Tue',true],['3','Wed',true],['4','Thu',true],['5','Fri',true],['6','Sat',false],['0','Sun',false]];
   var dayChecks=days.map(function(dd){ return '<label style="display:inline-flex;align-items:center;gap:4px;margin:0 8px 6px 0;font-size:13px"><input type="checkbox" class="rc-dow" value="'+dd[0]+'"'+(dd[2]?' checked':'')+' style="width:auto"> '+dd[1]+'</label>'; }).join('');
@@ -10587,7 +10610,7 @@ function schedRenderGrid(){
     var cells=days.map(function(d){
       var list=byCell[u.id+'|'+d]||[];
       var blocks=list.sort(function(a,b){return schedTimeMin(a.start_time)-schedTimeMin(b.start_time);}).map(function(s){
-        var col=s.city_color||'#f97316';
+        var col=schedShiftColor(s);
         var pub=s.status==='published';
         var border=pub?('1px solid '+col):('1px dashed '+col);
         var bg=pub?(col+'22'):'transparent';
@@ -10806,9 +10829,13 @@ function schedCloseModal(){ var m=document.getElementById('sched-modal'); if(m) 
 
 function schedShiftForm(s){
   _schedEditId=s&&s.id?s.id:null;
+  var _isNew=!(s&&s.id);
+  var _defPosId=null; if(_isNew){ var _oc=_schedPositions.filter(function(p){return p.active!==false && String(p.name||'').trim().toLowerCase()==='on call';})[0]; if(_oc) _defPosId=_oc.id; }
+  var _homeCity=''; if(_isNew){ var _uu=(s&&s.user_id)?_schedUsers.filter(function(u){return u.id==s.user_id;})[0]:null; _homeCity=(_uu&&_uu.home_city)?String(_uu.home_city).trim():''; if(!_homeCity) _homeCity=_schedCity||''; }
+  var _selCity=_isNew?_homeCity:String((s&&s.city_code)||'').trim();
   var _ulist=schedVisibleUsers(); if(s&&s.user_id&&!_ulist.some(function(u){return u.id==s.user_id;})){ var _su=_schedUsers.filter(function(u){return u.id==s.user_id;})[0]; if(_su) _ulist=[_su].concat(_ulist); }
   var userOpts=_ulist.map(function(u){ return '<option value="'+u.id+'"'+(s&&s.user_id==u.id?' selected':'')+'>'+escHtml(u.name)+'</option>'; }).join('');
-  var posOpts='<option value="">No position</option>'+_schedPositions.filter(function(p){return p.active!==false;}).map(function(p){ return '<option value="'+p.id+'"'+(s&&s.position_id==p.id?' selected':'')+'>'+escHtml(p.name)+'</option>'; }).join('');
+  var posOpts='<option value="">No position</option>'+_schedPositions.filter(function(p){return p.active!==false;}).map(function(p){ var _sel=(_isNew?(_defPosId===p.id):(s&&s.position_id==p.id)); return '<option value="'+p.id+'"'+(_sel?' selected':'')+'>'+escHtml(p.name)+'</option>'; }).join('');
   var cityOpts='<option value="">— city —</option>'+_schedCities.map(function(c){ var cc=(c.code||'').trim(); return '<option value="'+escHtml(cc)+'"'+(s&&(String(s.city_code||'').trim()===cc)?' selected':(!s&&_schedCity===cc?' selected':''))+'>'+escHtml(c.name)+'</option>'; }).join('');
   var inp='background:var(--bg-elevated,#1f1f1f);color:var(--text-color,#fff);border:1px solid var(--border,#333);border-radius:6px;padding:8px;width:100%;font-size:14px';
   schedModal(
@@ -10877,6 +10904,7 @@ async function schedAddPosition(){ var n=(document.getElementById('sp-new').valu
 async function schedSavePosition(id,color,name){ var p=_schedPositions.filter(function(x){return x.id===id;})[0]; if(!p) return; try{ await api('PUT','/schedule/positions/'+id,{name:name!=null?name:p.name,color:color!=null?color:p.color,active:p.active!==false}); _schedPositions=await api('GET','/schedule/positions'); }catch(e){ novaAlert(e.message); } }
 async function schedDeletePosition(id){ if(!await novaConfirm('Delete this position?')) return; try{ await api('DELETE','/schedule/positions/'+id); _schedPositions=await api('GET','/schedule/positions'); schedManagePositions(); }catch(e){ novaAlert(e.message); } }
 
+function schedShiftColor(s){ var pn=String((s&&s.position_name)||'').trim().toLowerCase(); if(pn && pn!=='on call') return '#a855f7'; return (s&&s.city_color)||'#f97316'; }
 function schedCityName(code){ var cc=String(code||'').trim(); for(var i=0;i<_schedCities.length;i++){ if((_schedCities[i].code||'').trim()===cc) return _schedCities[i].name||cc; } return cc; }
 function schedUserPrimaryCity(u){ var codes=(_schedEmpCities[u.id]||[]).slice(); if(!codes.length) return ''; var names=codes.map(function(c){return schedCityName(c);}); names.sort(function(a,b){return a.toLowerCase().localeCompare(b.toLowerCase());}); return names[0]; }
 function schedVisibleUsers(){
@@ -11086,7 +11114,7 @@ function mySchedWeekHtml(from){
     var list=(byDay[d]||[]).sort(function(a,b){return schedTimeMin(a.start_time)-schedTimeMin(b.start_time);});
     var isT=d===today;
     var items=list.map(function(s){
-      var col=s.city_color||'#f97316';
+      var col=schedShiftColor(s);
       var who=showName?('<div style="font-weight:600;font-size:12px">'+escHtml((s.user_name||'').trim())+'</div>'):'';
       var meta=[]; if(s.position_name) meta.push(escHtml(s.position_name)); if(s.city_name) meta.push(escHtml(s.city_name)); if(s.notes) meta.push(escHtml(s.notes));
       return '<div style="background:'+col+'14;border:1px solid var(--border,#2a2a2a);border-left:3px solid '+col+';border-radius:6px;padding:6px 8px;margin-bottom:6px">'+who+'<div style="font-weight:600;font-size:12.5px">'+escHtml(schedTimeFmt(s.start_time))+' – '+escHtml(schedTimeFmt(s.end_time))+'</div>'+(meta.length?'<div style="color:var(--text-muted-color,#999);font-size:11.5px">'+meta.join(' · ')+'</div>':'')+'</div>';
@@ -11117,7 +11145,7 @@ function mySchedMonthHtml(){
       var dim=inMonth?'':'opacity:0.35;';
       var isT=day===today;
       var items=list.slice(0,4).map(function(s){
-        var col=s.city_color||'#f97316';
+        var col=schedShiftColor(s);
         var extra=showName?(' '+escHtml((s.user_name||'').split(' ')[0])):'';
         return '<div title="'+escHtml((s.user_name||'')+' '+schedTimeFmt(s.start_time)+'-'+schedTimeFmt(s.end_time))+'" style="border-left:3px solid '+col+';background:'+col+'22;border-radius:3px;padding:1px 4px;margin:2px 0;font-size:10.5px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">'+escHtml(schedTimeFmt(s.start_time))+extra+'</div>';
       }).join('');

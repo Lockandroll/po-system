@@ -689,6 +689,8 @@ async function initDB() {
     await client.query("ALTER TABLE users ADD COLUMN IF NOT EXISTS hide_from_schedule BOOLEAN NOT NULL DEFAULT false;");
     await client.query("ALTER TABLE users ADD COLUMN IF NOT EXISTS hide_from_org BOOLEAN NOT NULL DEFAULT false;");
     await client.query("ALTER TABLE users ADD COLUMN IF NOT EXISTS org_x INTEGER;");
+    // Home city — the employee's base city; used as the default city when creating a shift (separate from user_cities, which are the cities they can view/manage).
+    await client.query("ALTER TABLE users ADD COLUMN IF NOT EXISTS home_city CHAR(3);");
     // ---- PTO module ----
     await client.query("ALTER TABLE users ADD COLUMN IF NOT EXISTS hire_date DATE;");
     await client.query("ALTER TABLE users ADD COLUMN IF NOT EXISTS pto_balance_hours NUMERIC(8,2) NOT NULL DEFAULT 0;");
@@ -790,6 +792,16 @@ async function initDB() {
     // Cash deposit reconciliation: Pulsar-owed figure + multiple receipts + expense lines
     await client.query(
       'ALTER TABLE deposits ADD COLUMN IF NOT EXISTS pulsar_owed DECIMAL(10,2);'
+    );
+    // Duplicate-submission guards: idempotency key (hard block on resubmits) + content index (soft warn)
+    await client.query(
+      'ALTER TABLE deposits ADD COLUMN IF NOT EXISTS idempotency_key VARCHAR(64);'
+    );
+    await client.query(
+      'CREATE UNIQUE INDEX IF NOT EXISTS idx_deposits_idempotency ON deposits(idempotency_key) WHERE idempotency_key IS NOT NULL;'
+    );
+    await client.query(
+      'CREATE INDEX IF NOT EXISTS idx_deposits_dupcheck ON deposits(user_id, deposit_date, amount);'
     );
     await client.query(
       'CREATE TABLE IF NOT EXISTS deposit_receipts (' +
