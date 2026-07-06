@@ -432,8 +432,6 @@ function userTitle(u){ if (u && u.title && String(u.title).trim()) return String
 // Owner is treated as admin everywhere in the UI; isOwner is kept for labels.
 function normalizeUserRole(u){ if (u && u.role === 'owner') { u.isOwner = true; u.role = 'admin'; } return u; }
 function can(perm) {
-  // Time Clock hidden until launch — remove this line to re-enable the module everywhere.
-  if (perm === 'view_timeclock' || perm === 'manage_timeclock') return false;
   if (!state.user) return false;
   if (state.user.role === 'admin') return true;
   if (state.user.extra_perms && state.user.extra_perms.indexOf(perm) !== -1) return true;
@@ -13367,4 +13365,3 @@ async function showTeamAssignmentDetail(assignmentId) {
     window.scrollTo(0, 0);
   } catch (e) { (window.novaAlert || window.alert)(e.message); }
 }
-
