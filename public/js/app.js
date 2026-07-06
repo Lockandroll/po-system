@@ -12602,7 +12602,20 @@ function tcInjectMgrStyles(){
     '.tc-av{width:34px;height:34px;border-radius:50%;background:#c2560f;color:#fff;display:inline-flex;align-items:center;justify-content:center;font-weight:700;font-size:13px;flex:0 0 auto}'+
     '.tc-nm{font-weight:700}'+
     '.tc-mt{font-size:12px;color:var(--text-muted-color,#71717a);margin-top:2px}'+
-    '.tc-live.brk{background:#eab308}';
+    '.tc-live.brk{background:#eab308}'+
+    '.tc-inp{background:#141414;border:1px solid var(--border,#2c2c2c);color:var(--text-color,#f4f4f5);border-radius:8px;padding:8px 10px;font-size:13px;font-family:inherit;color-scheme:dark;outline:none}'+
+    '.tc-inp:focus{border-color:#f97316}'+
+    '.tc-dt{width:190px;max-width:100%}'+
+    '.tc-savebtn{border:1px solid #f97316;background:transparent;color:#f97316;padding:7px 16px;border-radius:8px;font-weight:700;font-size:13px;cursor:pointer;white-space:nowrap}'+
+    '.tc-savebtn:hover{background:#f97316;color:#111}'+
+    '.tc-linkbtn{background:none;border:none;color:#f97316;font-weight:700;cursor:pointer;padding:0;font-size:14px;text-align:left}'+
+    '.tc-linkbtn:hover{text-decoration:underline}'+
+    '.tc-table td{vertical-align:middle}'+
+    '.tc-mgr-head{display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap;margin-bottom:16px;padding-bottom:14px;border-bottom:1px solid var(--border,#2c2c2c)}'+
+    '.tc-nav{display:flex;gap:8px;align-items:center}'+
+    '.tc-fld{display:flex;flex-direction:column;gap:5px}'+
+    '.tc-fld>span{font-size:11px;color:var(--text-muted-color,#71717a);text-transform:uppercase;letter-spacing:.5px;font-weight:700}'+
+    '.tc-addrow{display:flex;gap:14px;flex-wrap:wrap;align-items:flex-end}';
   document.head.appendChild(el);
 }
 function tcHM(m){m=Math.max(0,Math.round(m||0));return Math.floor(m/60)+':'+String(m%60).padStart(2,'0');}
@@ -12782,7 +12795,7 @@ function tcSheetsHtml(sheet){
     else if(ap.status==='submitted')action='<span class="tc-tag" style="background:rgba(34,197,94,.15);color:#22c55e">submitted</span>';
     else action='<span class="tc-dim">awaiting employee</span>';
     return '<tr>'+
-      '<td><button onclick="tcMgrOpenUser('+u.user.id+')" style="background:none;border:none;color:#f97316;font-weight:600;cursor:pointer;padding:0;font-size:13px;text-align:left">'+escHtml(u.user.name)+'</button></td>'+
+      '<td><button class="tc-linkbtn" onclick="tcMgrOpenUser('+u.user.id+')">'+escHtml(u.user.name)+'</button></td>'+
       '<td>'+tcHM(u.minutes)+'</td>'+
       '<td>'+escHtml(ap.status||'open')+'</td>'+
       '<td style="text-align:right"><button class="tc-sbtn" onclick="tcMgrOpenUser('+u.user.id+')">View / edit</button></td>'+
@@ -12802,53 +12815,54 @@ function tcSheetsHtml(sheet){
 }
 
 function tcMgrDetailHtml(u,ws){
-  var ap=u.approval||{};var status=ap.status||'open';var locked=(status==='submitted');var css=_tcInpCss;
+  var ap=u.approval||{};var status=ap.status||'open';var locked=(status==='submitted');
   var rows=(u.entries||[]).map(function(e){
     var unpaid=tcEntryUnpaid(e);
     var flag=(e.status==='auto_closed'||e.status==='flagged')?' <span class="tc-tag" style="background:rgba(234,179,8,.15);color:#facc15">'+(e.status==='auto_closed'?'auto-closed':'flagged')+'</span>':'';
+    var worked=(e.worked_minutes!=null?tcHM(e.worked_minutes):'<span class="tc-dim">open</span>');
     if(locked){
-      return '<tr><td>'+tcDay(e.clock_in_at)+flag+'</td><td>'+tcClock(e.clock_in_at)+'</td><td>'+tcClock(e.clock_out_at)+'</td><td>'+(unpaid?unpaid+'m':'')+'</td><td style="text-align:right">'+(e.worked_minutes!=null?tcHM(e.worked_minutes):'open')+'</td><td></td></tr>';
+      return '<tr><td>'+tcDay(e.clock_in_at)+flag+'</td><td>'+tcClock(e.clock_in_at)+'</td><td>'+tcClock(e.clock_out_at)+'</td><td>'+(unpaid?unpaid+'m':'&mdash;')+'</td><td style="text-align:right">'+worked+'</td><td></td></tr>';
     }
     return '<tr>'+
-      '<td>'+tcDay(e.clock_in_at)+flag+'</td>'+
-      '<td><input type="datetime-local" id="tcin-'+e.id+'" value="'+tcInputVal(e.clock_in_at)+'" style="'+css+'"></td>'+
-      '<td><input type="datetime-local" id="tcout-'+e.id+'" value="'+tcInputVal(e.clock_out_at)+'" style="'+css+'"></td>'+
-      '<td>'+(unpaid?unpaid+'m':'')+'</td>'+
-      '<td style="text-align:right">'+(e.worked_minutes!=null?tcHM(e.worked_minutes):'open')+'</td>'+
-      '<td style="white-space:nowrap"><input id="tcrsn-'+e.id+'" placeholder="reason" style="'+css+';width:110px;margin-right:6px"><button class="tc-sbtn" onclick="tcSaveEntry('+e.id+')">Save</button></td>'+
+      '<td style="white-space:nowrap">'+tcDay(e.clock_in_at)+flag+'</td>'+
+      '<td><input type="datetime-local" id="tcin-'+e.id+'" value="'+tcInputVal(e.clock_in_at)+'" class="tc-inp tc-dt"></td>'+
+      '<td><input type="datetime-local" id="tcout-'+e.id+'" value="'+tcInputVal(e.clock_out_at)+'" class="tc-inp tc-dt"></td>'+
+      '<td>'+(unpaid?unpaid+'m':'&mdash;')+'</td>'+
+      '<td style="text-align:right;font-weight:700">'+worked+'</td>'+
+      '<td style="text-align:right"><button class="tc-savebtn" onclick="tcSaveEntry('+e.id+')">Save</button></td>'+
       '</tr>';
-  }).join('')||'<tr><td colspan="6" class="tc-dim">No punches this week. Use &ldquo;Add a missing punch&rdquo; below.</td></tr>';
+  }).join('')||'<tr><td colspan="6" class="tc-dim" style="padding:16px 8px">No punches this week &mdash; use &ldquo;Add a missing punch&rdquo; below.</td></tr>';
   var act='';
-  if(status==='emp_approved')act=u.canApprove?'<button class="tc-sbtn" onclick="tcMgrApprove('+u.user.id+',\''+ws+'\')">Approve week</button>':'<span class="tc-dim">awaiting their manager</span>';
-  else if(status==='mgr_approved')act=u.canApprove?'<button class="tc-sbtn" onclick="tcSubmit('+u.user.id+',\''+ws+'\')">Submit to Excel</button>':'<span class="tc-tag" style="background:rgba(34,197,94,.15);color:#22c55e">approved</span>';
+  if(status==='emp_approved')act=u.canApprove?'<button class="tc-savebtn" onclick="tcMgrApprove('+u.user.id+',\''+ws+'\')">Approve week</button>':'<span class="tc-dim">awaiting their manager</span>';
+  else if(status==='mgr_approved')act=u.canApprove?'<button class="tc-savebtn" onclick="tcSubmit('+u.user.id+',\''+ws+'\')">Submit to Excel</button>':'<span class="tc-tag" style="background:rgba(34,197,94,.15);color:#22c55e">approved</span>';
   else if(status==='submitted')act=u.canApprove?'<button class="tc-sbtn" onclick="tcReopenWeek('+u.user.id+',\''+ws+'\')">Reopen week to edit</button>':'<span class="tc-tag" style="background:rgba(34,197,94,.15);color:#22c55e">submitted</span>';
   else act='<span class="tc-dim">awaiting employee approval</span>';
   var total=(u.entries||[]).reduce(function(s,e){return s+(e.worked_minutes||0);},0);
-  var lockBanner=locked?'<div class="tc-card" style="border-color:#5b4a12"><div style="color:#facc15;font-size:13px">This week is submitted to payroll and locked. Reopen it to make corrections.</div></div>':'';
+  var lockBanner=locked?'<div class="tc-card" style="border-color:#5b4a12;background:rgba(234,179,8,.06)"><div style="color:#facc15;font-size:13px">This week is submitted to payroll and locked. Reopen it to make corrections.</div></div>':'';
   var addCard=locked?'':(
     '<div class="tc-card"><div class="tc-h">Add a missing punch</div>'+
-    '<div style="display:flex;gap:8px;flex-wrap:wrap;align-items:flex-end">'+
-      '<div><div class="tc-dim" style="font-size:11px;margin-bottom:3px">Clock in</div><input type="datetime-local" id="tcadd-in" style="'+css+'"></div>'+
-      '<div><div class="tc-dim" style="font-size:11px;margin-bottom:3px">Clock out (optional)</div><input type="datetime-local" id="tcadd-out" style="'+css+'"></div>'+
-      '<div style="flex:1;min-width:150px"><div class="tc-dim" style="font-size:11px;margin-bottom:3px">Reason</div><input id="tcadd-rsn" placeholder="e.g. forgot to clock in" style="'+css+';width:100%"></div>'+
-      '<button class="tc-sbtn" onclick="tcAddEntry('+u.user.id+')">Add punch</button>'+
+    '<div class="tc-addrow">'+
+      '<label class="tc-fld"><span>Clock in</span><input type="datetime-local" id="tcadd-in" class="tc-inp tc-dt"></label>'+
+      '<label class="tc-fld"><span>Clock out (optional)</span><input type="datetime-local" id="tcadd-out" class="tc-inp tc-dt"></label>'+
+      '<label class="tc-fld" style="flex:1;min-width:160px"><span>Reason</span><input id="tcadd-rsn" placeholder="e.g. forgot to clock in" class="tc-inp" style="width:100%"></label>'+
+      '<button class="tc-savebtn" onclick="tcAddEntry('+u.user.id+')">Add punch</button>'+
     '</div></div>');
   return '<div class="tc-card">'+
-      '<div style="display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:12px">'+
-        '<div style="display:flex;gap:8px;align-items:center">'+
+      '<div class="tc-mgr-head">'+
+        '<div style="display:flex;gap:10px;align-items:center">'+
           '<button class="tc-sbtn" onclick="tcMgrBack()">&#8249; Back</button>'+
-          '<span class="tc-h" style="margin:0">'+escHtml(u.user.name)+'</span>'+
+          '<span style="font-size:17px;font-weight:800">'+escHtml(u.user.name)+'</span>'+
           '<span class="tc-tag" style="background:rgba(148,163,184,.15);color:#94a3b8">'+escHtml(status)+'</span>'+
         '</div>'+
-        '<div style="display:flex;gap:6px;align-items:center">'+
-          '<button class="tc-sbtn" onclick="tcAdminWeekNav(-7)">&#8249; Prev</button>'+
-          '<span class="tc-dim">Week of '+escHtml(ws)+'</span>'+
-          '<button class="tc-sbtn" onclick="tcAdminWeekNav(7)">Next &#8250;</button>'+
-          '<span style="font-size:18px;font-weight:800;margin-left:8px">'+tcHM(total)+'</span>'+
+        '<div class="tc-nav">'+
+          '<button class="tc-sbtn" onclick="tcAdminWeekNav(-7)">&#8249;</button>'+
+          '<span class="tc-dim" style="min-width:118px;text-align:center">Week of '+escHtml(ws)+'</span>'+
+          '<button class="tc-sbtn" onclick="tcAdminWeekNav(7)">&#8250;</button>'+
+          '<span style="font-size:20px;font-weight:800;margin-left:10px">'+tcHM(total)+'</span>'+
         '</div>'+
       '</div>'+
       '<table class="tc-table"><thead><tr><th>Day</th><th>In</th><th>Out</th><th>Unpaid</th><th style="text-align:right">Worked</th><th></th></tr></thead><tbody>'+rows+'</tbody></table>'+
-      '<div style="margin-top:14px;text-align:right">'+act+'</div>'+
+      '<div style="margin-top:16px;text-align:right">'+act+'</div>'+
     '</div>'+lockBanner+addCard;
 }
 
@@ -12872,33 +12886,35 @@ function tcMgrOpenUser(id){_tcMgrUser=id;if(_tcAdminData)(_tcAdminData.users||[]
 function tcMgrBack(){_tcMgrUser=null;_tcMgrName=null;tcSheetsReload();}
 
 async function tcSaveEntry(id){
-  var inEl=document.getElementById('tcin-'+id),outEl=document.getElementById('tcout-'+id),rsnEl=document.getElementById('tcrsn-'+id);
+  var inEl=document.getElementById('tcin-'+id),outEl=document.getElementById('tcout-'+id);
   if(!inEl)return;
-  var reason=(rsnEl&&rsnEl.value||'').trim();
-  if(!reason){alert('Enter a reason for the change.');if(rsnEl)rsnEl.focus();return;}
   var cin=tcInputToIso(inEl.value);
-  if(!cin){alert('A valid clock-in time is required.');return;}
+  if(!cin){await novaAlert('A valid clock-in time is required.');return;}
   var cout=outEl&&outEl.value?tcInputToIso(outEl.value):null;
-  if(cout&&new Date(cout)<=new Date(cin)){alert('Clock-out must be after clock-in.');return;}
+  if(cout&&new Date(cout)<=new Date(cin)){await novaAlert('Clock-out must be after clock-in.');return;}
+  var reason=await novaPrompt('Reason for this correction (required):','',{title:'Edit punch',okText:'Save change'});
+  if(reason===null)return;
+  reason=String(reason).trim();
+  if(!reason){await novaAlert('A reason is required to correct a punch.');return;}
   try{await api('PATCH','/timeclock/entry/'+id,{clock_in_at:cin,clock_out_at:cout,reason:reason});}
-  catch(e){alert(e.message);return;}
+  catch(e){await novaAlert(e.message);return;}
   tcSheetsReload();
 }
 async function tcAddEntry(uid){
   var inEl=document.getElementById('tcadd-in'),outEl=document.getElementById('tcadd-out'),rsnEl=document.getElementById('tcadd-rsn');
   var cin=tcInputToIso(inEl&&inEl.value);
-  if(!cin){alert('Enter a clock-in time.');return;}
+  if(!cin){await novaAlert('Enter a clock-in time.');return;}
   var cout=outEl&&outEl.value?tcInputToIso(outEl.value):null;
-  if(cout&&new Date(cout)<=new Date(cin)){alert('Clock-out must be after clock-in.');return;}
+  if(cout&&new Date(cout)<=new Date(cin)){await novaAlert('Clock-out must be after clock-in.');return;}
   var reason=(rsnEl&&rsnEl.value||'').trim()||'Manual entry';
   try{await api('POST','/timeclock/entry',{user_id:uid,clock_in_at:cin,clock_out_at:cout,reason:reason});}
-  catch(e){alert(e.message);return;}
+  catch(e){await novaAlert(e.message);return;}
   tcSheetsReload();
 }
 async function tcReopenWeek(uid,ws){
-  if(!confirm('Reopen this submitted week for corrections? It will need to be approved and submitted to payroll again.'))return;
+  if(!(await novaConfirm('Reopen this submitted week for corrections? It will need to be approved and submitted to payroll again.')))return;
   try{await api('POST','/timeclock/week/reopen',{user_id:uid,weekStart:ws});}
-  catch(e){alert(e.message);return;}
+  catch(e){await novaAlert(e.message);return;}
   tcSheetsReload();
 }
 async function tcMgrAddPicker(){
