@@ -556,7 +556,7 @@ function buildNavHtml() {
       : '') : '') +
     (!can('view_quiz') ? '<div class="nav-item' + (cv === 'my-quiz' ? ' active' : '') + '" onclick="navigate(\'my-quiz\')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg> SOP Quiz</div>' : '') +
     (can('view_vr') ?
-    '<div class="nav-section-header' + (vrViews.indexOf(cv) !== -1 ? ' section-active' : '') + (ss === 'vr' ? ' open' : '') + '" onclick="toggleSection(\'vr\',\'vr-dashboard\')"><span class="s-label">' + icoTruck + ' Vehicle Maint/Repairs</span>' + chev + '</div>' +
+    '<div class="nav-section-header' + (vrViews.indexOf(cv) !== -1 ? ' section-active' : '') + (ss === 'vr' ? ' open' : '') + '" onclick="toggleSection(\'vr\',\'vr-dashboard\')"><span class="s-label">' + icoTruck + ' Fleet Management</span>' + chev + '</div>' +
     (ss === 'vr' ?
       '<div class="nav-sub' + (cv === 'vr-dashboard' ? ' active' : '') + '" onclick="navigate(\'vr-dashboard\')">' + icons.dashboard + ' VR Dashboard</div>' +
       (can('create_vr') ? '<div class="nav-sub' + (cv === 'new-vr' ? ' active' : '') + '" onclick="navigate(\'new-vr\')">' + icons.plus + ' New VR</div>' : '') +
@@ -7189,16 +7189,32 @@ var _inspCompliance = null;
 var _inspCities = null;
 var _inspPhotos = [];   // staged photos for the entry form: [{ file, item_key, url }]
 
+// Option color palette. Color drives the rolled-up result: red = Fail,
+// yellow/orange = Attention, green = Pass, gray/blue = neutral (no effect).
+var INSP_COLORS = { green: '#22c55e', yellow: '#eab308', orange: '#f97316', red: '#ef4444', gray: '#6b7280', blue: '#3b82f6' };
+var INSP_COLOR_ORDER = ['green', 'yellow', 'orange', 'red', 'gray', 'blue'];
+function inspColorHex(c) { return INSP_COLORS[(c || '').toLowerCase()] || 'var(--text-muted-color)'; }
+function inspDefaultColors(n) {
+  if (n <= 1) return ['green'];
+  if (n === 2) return ['green', 'red'];
+  if (n === 3) return ['green', 'yellow', 'red'];
+  if (n === 4) return ['green', 'yellow', 'orange', 'red'];
+  if (n === 5) return ['green', 'yellow', 'orange', 'red', 'gray'];
+  var arr = ['green', 'yellow', 'orange', 'red']; while (arr.length < n) arr.push('gray'); return arr;
+}
+function inspItemOptions(it) {
+  if (it && Array.isArray(it.options) && it.options.length) return it.options;
+  return [{ label: 'OK', color: 'green' }, { label: 'Needs attention', color: 'yellow' }, { label: 'Fail', color: 'red' }, { label: 'N/A', color: 'gray' }];
+}
+
 function inspResultBadge(result) {
   var map = { pass: ['#22c55e', 'Pass'], attention: ['#f59e0b', 'Attention'], fail: ['#ef4444', 'Fail'] };
   var m = map[result] || ['var(--text-muted-color)', result || '—'];
   return '<span style="font-weight:700;color:' + m[0] + '">' + m[1] + '</span>';
 }
-function inspAnswerBadge(answer) {
-  var map = { ok: ['#22c55e', 'OK'], needs_attention: ['#f59e0b', 'Needs attention'], fail: ['#ef4444', 'Fail'], na: ['var(--text-muted-color)', 'N/A'] };
-  var m = map[(answer || '').toLowerCase()];
-  if (!m) return escHtml(answer || '—');
-  return '<span style="font-weight:600;color:' + m[0] + '">' + m[1] + '</span>';
+function inspAnswerBadge(answer, color) {
+  if (!answer) return '<span style="color:var(--text-muted-color)">—</span>';
+  return '<span style="font-weight:600;color:' + inspColorHex(color) + '">' + escHtml(answer) + '</span>';
 }
 function inspComplianceStatusKey(v, meta) {
   if (v.inspection_exempt) return 'exempt';
@@ -7238,7 +7254,6 @@ function inspRenderCompliance(el) {
   var meta = { month: d.month, current_month: d.current_month, cutoff_day: d.cutoff_day };
   var counts = { done: 0, due: 0, overdue: 0, exempt: 0 };
   d.vehicles.forEach(function (v) { counts[inspComplianceStatusKey(v, meta)]++; });
-  var due = counts.due + counts.overdue;
   var cityOpts = '<option value="">All cities</option>' + ((_inspCities || []).map(function (c) {
     return '<option value="' + escHtml(c.code) + '"' + (d._city === c.code ? ' selected' : '') + '>' + escHtml(c.name) + ' (' + escHtml(c.code) + ')</option>';
   }).join(''));
@@ -7289,15 +7304,20 @@ function inspComplianceReload() {
   renderInspectionCompliance(document.getElementById('content') || document.getElementById('app'));
 }
 
+function _inspCurrentMonth() {
+  var s = new Date().toLocaleString('en-CA', { timeZone: 'America/New_York' });
+  return s.slice(0, 7);
+}
+
 async function renderInspectionForm(el, vehicleId) {
   el.innerHTML = '<div class="loading">Loading…</div>';
   _inspPhotos = [];
+  window._inspOptMap = {};
   try {
     var vehicle = await api('GET', '/vehicles/' + vehicleId);
     var priv = ['admin', 'manager'].includes(state.user.role);
     if (!priv && vehicle.assigned_user_id !== state.user.id) { el.innerHTML = '<div class="alert alert-error">You can only inspect a vehicle assigned to you.</div>'; return; }
     var checklist = await api('GET', '/inspections/checklist');
-    // Already inspected this month? Load it for editing.
     var existing = await api('GET', '/inspections?vehicle_id=' + vehicleId);
     var curMonthRow = (existing || []).filter(function (i) { return i.period_month === _inspCurrentMonth(); })[0];
     var editing = null;
@@ -7306,20 +7326,23 @@ async function renderInspectionForm(el, vehicleId) {
     if (editing) { (editing.items || []).forEach(function (it) { ansOf[it.item_key] = it.answer; cmtOf[it.item_key] = it.comment || ''; }); }
 
     var itemsHtml = checklist.map(function (it) {
-      var a = ansOf[it.item_key] || (it.type === 'text' ? '' : 'ok');
       var c = cmtOf[it.item_key] || '';
       if (it.type === 'text') {
+        var av = ansOf[it.item_key] || '';
         return '<div class="card" style="margin-bottom:10px"><div class="card-body">' +
           '<label style="font-weight:600;display:block;margin-bottom:6px">' + escHtml(it.label) + '</label>' +
-          '<textarea id="insp-ans-' + escHtml(it.item_key) + '" rows="2" style="width:100%" placeholder="Enter details…">' + escHtml(a) + '</textarea>' +
+          '<textarea id="insp-ans-' + escHtml(it.item_key) + '" rows="2" style="width:100%" placeholder="Enter details…">' + escHtml(av) + '</textarea>' +
         '</div></div>';
       }
-      var opts = [['ok', 'OK'], ['needs_attention', 'Needs attention'], ['fail', 'Fail'], ['na', 'N/A']];
-      var sel = opts.map(function (o) { return '<option value="' + o[0] + '"' + (a === o[0] ? ' selected' : '') + '>' + o[1] + '</option>'; }).join('');
+      var options = inspItemOptions(it);
+      var map = {}; options.forEach(function (o) { map[o.label] = o.color; });
+      window._inspOptMap[it.item_key] = map;
+      var chosen = ansOf[it.item_key] || (options[0] ? options[0].label : '');
+      var sel = options.map(function (o) { return '<option value="' + escHtml(o.label) + '"' + (chosen === o.label ? ' selected' : '') + '>' + escHtml(o.label) + '</option>'; }).join('');
       return '<div class="card" style="margin-bottom:10px"><div class="card-body">' +
         '<div style="display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap">' +
           '<label style="font-weight:600">' + escHtml(it.label) + (it.requires_photo ? ' <span style="color:var(--primary);font-size:11px">· photo</span>' : '') + '</label>' +
-          '<select id="insp-ans-' + escHtml(it.item_key) + '" style="min-width:150px">' + sel + '</select>' +
+          '<select id="insp-ans-' + escHtml(it.item_key) + '" onchange="inspTintSelect(this,\'' + escHtml(it.item_key) + '\')" style="min-width:160px;font-weight:600;color:' + inspColorHex(map[chosen]) + '">' + sel + '</select>' +
         '</div>' +
         '<input type="text" id="insp-cmt-' + escHtml(it.item_key) + '" value="' + escHtml(c) + '" placeholder="Comment (optional)" style="width:100%;margin-top:8px" />' +
         (it.requires_photo ? '<input type="file" accept="image/*" capture="environment" onchange="inspStagePhoto(this,\'' + escHtml(it.item_key) + '\')" style="margin-top:8px" />' : '') +
@@ -7353,9 +7376,9 @@ async function renderInspectionForm(el, vehicleId) {
     window._inspChecklist = checklist;
   } catch (err) { el.innerHTML = '<div class="alert alert-error">' + escHtml(err.message) + '</div>'; }
 }
-function _inspCurrentMonth() {
-  var s = new Date().toLocaleString('en-CA', { timeZone: 'America/New_York' });
-  return s.slice(0, 7);
+function inspTintSelect(sel, key) {
+  var map = (window._inspOptMap || {})[key] || {};
+  sel.style.color = inspColorHex(map[sel.value]);
 }
 function inspStagePhoto(input, itemKey) {
   var files = input.files;
@@ -7391,11 +7414,13 @@ async function inspUploadStagedPhotos(inspId) {
 }
 async function submitInspection(vehicleId, editId, btn) {
   var checklist = window._inspChecklist || [];
+  var optMap = window._inspOptMap || {};
   var items = checklist.map(function (it) {
-    var el = document.getElementById('insp-ans-' + it.item_key);
-    var ans = el ? el.value : '';
+    var elx = document.getElementById('insp-ans-' + it.item_key);
+    var ans = elx ? elx.value : '';
     var cmtEl = document.getElementById('insp-cmt-' + it.item_key);
-    return { item_key: it.item_key, label: it.label, answer: ans, comment: cmtEl ? cmtEl.value : null };
+    var color = (it.type === 'text') ? null : ((optMap[it.item_key] || {})[ans] || null);
+    return { item_key: it.item_key, label: it.label, answer: ans, color: color, comment: cmtEl ? cmtEl.value : null };
   });
   var mileage = ((document.getElementById('insp-mileage') || {}).value || '').trim();
   var notes = ((document.getElementById('insp-notes') || {}).value || '').trim();
@@ -7430,7 +7455,7 @@ async function renderViewInspection(el, id) {
       '</a>';
     }).join('');
     var itemsHtml = (insp.items || []).map(function (it) {
-      return '<tr><td>' + escHtml(it.label || it.item_key) + '</td><td>' + inspAnswerBadge(it.answer) + '</td><td>' + escHtml(it.comment || '—') + '</td></tr>';
+      return '<tr><td>' + escHtml(it.label || it.item_key) + '</td><td>' + inspAnswerBadge(it.answer, it.color) + '</td><td>' + escHtml(it.comment || '—') + '</td></tr>';
     }).join('');
     el.innerHTML =
       '<div class="page-header">' +
@@ -7483,24 +7508,56 @@ async function renderInspectionChecklistAdmin(el) {
   el.innerHTML = '<div class="loading">Loading…</div>';
   try {
     var items = await api('GET', '/inspections/checklist?all=1');
-    window._inspClEdit = items.map(function (it) { return { item_key: it.item_key, label: it.label, type: it.type, requires_photo: !!it.requires_photo }; });
+    window._inspClEdit = items.map(function (it) {
+      var type = (it.type === 'text') ? 'text' : 'dropdown';
+      return { item_key: it.item_key, label: it.label, type: type, requires_photo: !!it.requires_photo, options: (Array.isArray(it.options) && it.options.length) ? it.options.map(function (o) { return { label: o.label, color: o.color }; }) : inspItemOptions({}).slice() };
+    });
     inspClRender(el);
   } catch (err) { el.innerHTML = '<div class="alert alert-error">' + escHtml(err.message) + '</div>'; }
 }
+function inspClColorSelect(i, j, color) {
+  return '<select onchange="window._inspClEdit[' + i + '].options[' + j + '].color=this.value;inspClTintColor(this)" style="color:' + inspColorHex(color) + ';font-weight:600">' +
+    INSP_COLOR_ORDER.map(function (c) { return '<option value="' + c + '"' + (color === c ? ' selected' : '') + '>' + c.charAt(0).toUpperCase() + c.slice(1) + '</option>'; }).join('') +
+  '</select>';
+}
+function inspClTintColor(sel) { sel.style.color = inspColorHex(sel.value); }
 function inspClRender(el) {
   var list = window._inspClEdit || [];
-  var rows = list.map(function (it, idx) {
-    return '<div class="card" style="margin-bottom:8px"><div class="card-body" style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">' +
-      '<input type="text" value="' + escHtml(it.label) + '" oninput="window._inspClEdit[' + idx + '].label=this.value" placeholder="Item label" style="flex:2;min-width:180px" />' +
-      '<select onchange="window._inspClEdit[' + idx + '].type=this.value" style="min-width:120px"><option value="status"' + (it.type !== 'text' ? ' selected' : '') + '>Status</option><option value="text"' + (it.type === 'text' ? ' selected' : '') + '>Text</option></select>' +
-      '<label style="font-size:13px;display:flex;align-items:center;gap:5px"><input type="checkbox"' + (it.requires_photo ? ' checked' : '') + ' onchange="window._inspClEdit[' + idx + '].requires_photo=this.checked" /> Photo</label>' +
-      '<button class="btn btn-ghost btn-sm" style="color:var(--danger-color,#ef4444)" onclick="inspClRemove(' + idx + ')">Remove</button>' +
+  var rows = list.map(function (it, i) {
+    var optsEditor = '';
+    if (it.type !== 'text') {
+      var opts = (it.options || []).map(function (o, j) {
+        return '<div style="display:flex;gap:6px;align-items:center;margin-bottom:5px">' +
+          '<span style="width:10px;height:10px;border-radius:50%;background:' + inspColorHex(o.color) + ';display:inline-block;flex:none"></span>' +
+          '<input type="text" value="' + escHtml(o.label || '') + '" oninput="window._inspClEdit[' + i + '].options[' + j + '].label=this.value" placeholder="Option label" style="flex:1;min-width:120px" />' +
+          inspClColorSelect(i, j, o.color) +
+          '<button class="btn btn-ghost btn-sm" style="color:var(--danger-color,#ef4444)" onclick="inspClRemoveOpt(' + i + ',' + j + ')">✕</button>' +
+        '</div>';
+      }).join('');
+      optsEditor = '<div style="margin-top:8px;padding-left:6px;border-left:2px solid var(--border-color)">' + opts +
+        '<button class="btn btn-ghost btn-sm" onclick="inspClAddOpt(' + i + ')" style="color:var(--primary)">' + icons.plus + ' Add option</button></div>';
+    }
+    return '<div class="card" style="margin-bottom:8px"><div class="card-body">' +
+      '<div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">' +
+        '<input type="text" value="' + escHtml(it.label) + '" oninput="window._inspClEdit[' + i + '].label=this.value" placeholder="Item label" style="flex:2;min-width:180px" />' +
+        '<select onchange="window._inspClEdit[' + i + '].type=this.value;inspClRerender()" style="min-width:120px"><option value="dropdown"' + (it.type !== 'text' ? ' selected' : '') + '>Dropdown</option><option value="text"' + (it.type === 'text' ? ' selected' : '') + '>Text</option></select>' +
+        '<label style="font-size:13px;display:flex;align-items:center;gap:5px"><input type="checkbox"' + (it.requires_photo ? ' checked' : '') + ' onchange="window._inspClEdit[' + i + '].requires_photo=this.checked" /> Photo</label>' +
+        '<button class="btn btn-ghost btn-sm" style="color:var(--danger-color,#ef4444)" onclick="inspClRemove(' + i + ')">Remove item</button>' +
+      '</div>' + optsEditor +
     '</div></div>';
   }).join('');
   el.innerHTML =
     '<div class="page-header">' +
       '<div><div class="page-title">Inspection Checklist</div><div class="page-subtitle" style="color:var(--text-muted-color)">Questions asked on every monthly inspection</div></div>' +
       '<button class="btn btn-secondary" onclick="navigate(\'inspections\')">← Back</button>' +
+    '</div>' +
+    '<div class="alert" style="background:#0f1720;border:1px solid var(--border-color);color:var(--text-muted-color);padding:12px 16px;border-radius:6px;margin-bottom:14px;font-size:13px">' +
+      '<strong>Dropdown</strong> shows a menu of options you define. Each option&#39;s color sets the result: ' +
+      '<span style="color:' + INSP_COLORS.green + ';font-weight:600">green = Pass</span>, ' +
+      '<span style="color:' + INSP_COLORS.yellow + ';font-weight:600">yellow</span>/<span style="color:' + INSP_COLORS.orange + ';font-weight:600">orange = Attention</span>, ' +
+      '<span style="color:' + INSP_COLORS.red + ';font-weight:600">red = Fail</span>, ' +
+      '<span style="color:' + INSP_COLORS.gray + ';font-weight:600">gray</span>/<span style="color:' + INSP_COLORS.blue + ';font-weight:600">blue = no effect</span>. ' +
+      '<strong>Text</strong> is a free write-in and never affects the result.' +
     '</div>' +
     '<div id="insp-cl-msg"></div>' +
     (rows || '<div style="color:var(--text-muted-color);margin-bottom:12px">No items yet.</div>') +
@@ -7510,11 +7567,22 @@ function inspClRender(el) {
       '<button class="btn btn-primary" id="insp-cl-save" onclick="inspClSave(this)">Save Checklist</button>' +
     '</div>';
 }
-function inspClAdd() { window._inspClEdit.push({ item_key: '', label: '', type: 'status', requires_photo: false }); inspClRender(document.getElementById('content') || document.getElementById('app')); }
-function inspClRemove(idx) { window._inspClEdit.splice(idx, 1); inspClRender(document.getElementById('content') || document.getElementById('app')); }
+function inspClRerender() { inspClRender(document.getElementById('content') || document.getElementById('app')); }
+function inspClAdd() { window._inspClEdit.push({ item_key: '', label: '', type: 'dropdown', requires_photo: false, options: inspItemOptions({}).slice() }); inspClRerender(); }
+function inspClRemove(i) { window._inspClEdit.splice(i, 1); inspClRerender(); }
+function inspClAddOpt(i) {
+  var it = window._inspClEdit[i]; if (!it.options) it.options = [];
+  var n = it.options.length + 1;
+  it.options.push({ label: '', color: inspDefaultColors(n)[n - 1] });
+  inspClRerender();
+}
+function inspClRemoveOpt(i, j) { window._inspClEdit[i].options.splice(j, 1); inspClRerender(); }
 async function inspClSave(btn) {
   var list = (window._inspClEdit || []).filter(function (it) { return (it.label || '').trim(); });
-  list.forEach(function (it) { if (!it.item_key) it.item_key = (it.label || '').trim().toLowerCase().replace(/[^a-z0-9]+/g, '_').slice(0, 60); });
+  list.forEach(function (it) {
+    if (!it.item_key) it.item_key = (it.label || '').trim().toLowerCase().replace(/[^a-z0-9]+/g, '_').slice(0, 60);
+    if (it.type !== 'text') it.options = (it.options || []).filter(function (o) { return (o.label || '').trim(); });
+  });
   try {
     if (btn) { btn.disabled = true; btn.textContent = 'Saving…'; }
     await api('PUT', '/inspections/checklist', { items: list });

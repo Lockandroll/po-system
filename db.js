@@ -240,7 +240,8 @@ async function initDB() {
       '  inspection_id INTEGER REFERENCES vehicle_inspections(id) ON DELETE CASCADE,' +
       '  item_key VARCHAR(60),' +
       '  label VARCHAR(255),' +
-      '  answer VARCHAR(40),' +
+      '  answer VARCHAR(60),' +
+      '  color VARCHAR(20),' +
       '  comment TEXT' +
       ');' +
       'CREATE TABLE IF NOT EXISTS inspection_photos (' +
@@ -261,13 +262,17 @@ async function initDB() {
       '  id SERIAL PRIMARY KEY,' +
       '  item_key VARCHAR(60) UNIQUE NOT NULL,' +
       '  label VARCHAR(255) NOT NULL,' +
-      "  type VARCHAR(20) NOT NULL DEFAULT 'status'," +
+      "  type VARCHAR(20) NOT NULL DEFAULT 'dropdown'," +
       '  sort_order INTEGER DEFAULT 0,' +
       '  requires_photo BOOLEAN NOT NULL DEFAULT false,' +
+      '  options JSONB,' +
       '  active BOOLEAN NOT NULL DEFAULT true' +
       ');' +
       'ALTER TABLE vehicles ADD COLUMN IF NOT EXISTS inspection_exempt BOOLEAN NOT NULL DEFAULT false;' +
       'ALTER TABLE vehicles ADD COLUMN IF NOT EXISTS inspection_exempt_reason VARCHAR(255);' +
+      'ALTER TABLE inspection_checklist ADD COLUMN IF NOT EXISTS options JSONB;' +
+      'ALTER TABLE inspection_items ADD COLUMN IF NOT EXISTS color VARCHAR(20);' +
+      'ALTER TABLE inspection_items ALTER COLUMN answer TYPE VARCHAR(60);' +
       'CREATE UNIQUE INDEX IF NOT EXISTS idx_insp_vehicle_month ON vehicle_inspections(vehicle_id, period_month);' +
       'CREATE INDEX IF NOT EXISTS idx_insp_period ON vehicle_inspections(period_month);' +
       'CREATE INDEX IF NOT EXISTS idx_insp_items_insp ON inspection_items(inspection_id);' +
@@ -275,21 +280,21 @@ async function initDB() {
     );
     // Seed the default monthly inspection checklist once (only when empty).
     await client.query(
-      'INSERT INTO inspection_checklist (item_key, label, type, sort_order, requires_photo, active) ' +
-      'SELECT s.item_key, s.label, s.type, s.sort_order, s.requires_photo, s.active FROM (VALUES ' +
-      "  ('exterior','Exterior / body condition (dents, damage)','status',10,true,true)," +
-      "  ('tires','Tires & tread depth','status',20,true,true)," +
-      "  ('lights','Lights & turn signals','status',30,false,true)," +
-      "  ('brakes','Brakes','status',40,false,true)," +
-      "  ('fluids','Fluid levels (oil, coolant, washer)','status',50,false,true)," +
-      "  ('wipers','Wipers & windshield','status',60,false,true)," +
-      "  ('horn_mirrors','Horn & mirrors','status',70,false,true)," +
-      "  ('seatbelts','Seatbelts','status',80,false,true)," +
-      "  ('registration','Registration & insurance in vehicle','status',90,false,true)," +
-      "  ('cleanliness','Interior / exterior cleanliness','status',100,false,true)," +
-      "  ('odometer','Odometer reading photo','status',110,true,true)," +
-      "  ('concerns','Other concerns / notes','text',120,false,true) " +
-      ') AS s(item_key,label,type,sort_order,requires_photo,active) ' +
+      'INSERT INTO inspection_checklist (item_key, label, type, sort_order, requires_photo, active, options) ' +
+      'SELECT s.item_key, s.label, s.type, s.sort_order, s.requires_photo, s.active, s.options::jsonb FROM (VALUES ' +
+      "  ('exterior','Exterior / body condition (dents, damage)','dropdown',10,true,true,'[{\"label\":\"OK\",\"color\":\"green\"},{\"label\":\"Needs attention\",\"color\":\"yellow\"},{\"label\":\"Fail\",\"color\":\"red\"},{\"label\":\"N/A\",\"color\":\"gray\"}]')," +
+      "  ('tires','Tires & tread depth','dropdown',20,true,true,'[{\"label\":\"OK\",\"color\":\"green\"},{\"label\":\"Needs attention\",\"color\":\"yellow\"},{\"label\":\"Fail\",\"color\":\"red\"},{\"label\":\"N/A\",\"color\":\"gray\"}]')," +
+      "  ('lights','Lights & turn signals','dropdown',30,false,true,'[{\"label\":\"OK\",\"color\":\"green\"},{\"label\":\"Needs attention\",\"color\":\"yellow\"},{\"label\":\"Fail\",\"color\":\"red\"},{\"label\":\"N/A\",\"color\":\"gray\"}]')," +
+      "  ('brakes','Brakes','dropdown',40,false,true,'[{\"label\":\"OK\",\"color\":\"green\"},{\"label\":\"Needs attention\",\"color\":\"yellow\"},{\"label\":\"Fail\",\"color\":\"red\"},{\"label\":\"N/A\",\"color\":\"gray\"}]')," +
+      "  ('fluids','Fluid levels (oil, coolant, washer)','dropdown',50,false,true,'[{\"label\":\"OK\",\"color\":\"green\"},{\"label\":\"Needs attention\",\"color\":\"yellow\"},{\"label\":\"Fail\",\"color\":\"red\"},{\"label\":\"N/A\",\"color\":\"gray\"}]')," +
+      "  ('wipers','Wipers & windshield','dropdown',60,false,true,'[{\"label\":\"OK\",\"color\":\"green\"},{\"label\":\"Needs attention\",\"color\":\"yellow\"},{\"label\":\"Fail\",\"color\":\"red\"},{\"label\":\"N/A\",\"color\":\"gray\"}]')," +
+      "  ('horn_mirrors','Horn & mirrors','dropdown',70,false,true,'[{\"label\":\"OK\",\"color\":\"green\"},{\"label\":\"Needs attention\",\"color\":\"yellow\"},{\"label\":\"Fail\",\"color\":\"red\"},{\"label\":\"N/A\",\"color\":\"gray\"}]')," +
+      "  ('seatbelts','Seatbelts','dropdown',80,false,true,'[{\"label\":\"OK\",\"color\":\"green\"},{\"label\":\"Needs attention\",\"color\":\"yellow\"},{\"label\":\"Fail\",\"color\":\"red\"},{\"label\":\"N/A\",\"color\":\"gray\"}]')," +
+      "  ('registration','Registration & insurance in vehicle','dropdown',90,false,true,'[{\"label\":\"OK\",\"color\":\"green\"},{\"label\":\"Needs attention\",\"color\":\"yellow\"},{\"label\":\"Fail\",\"color\":\"red\"},{\"label\":\"N/A\",\"color\":\"gray\"}]')," +
+      "  ('cleanliness','Interior / exterior cleanliness','dropdown',100,false,true,'[{\"label\":\"OK\",\"color\":\"green\"},{\"label\":\"Needs attention\",\"color\":\"yellow\"},{\"label\":\"Fail\",\"color\":\"red\"},{\"label\":\"N/A\",\"color\":\"gray\"}]')," +
+      "  ('odometer','Odometer reading photo','dropdown',110,true,true,'[{\"label\":\"OK\",\"color\":\"green\"},{\"label\":\"Needs attention\",\"color\":\"yellow\"},{\"label\":\"Fail\",\"color\":\"red\"},{\"label\":\"N/A\",\"color\":\"gray\"}]')," +
+      "  ('concerns','Other concerns / notes','text',120,false,true,NULL) " +
+      ') AS s(item_key,label,type,sort_order,requires_photo,active,options) ' +
       'WHERE NOT EXISTS (SELECT 1 FROM inspection_checklist);'
     );
     await client.query(

@@ -25,13 +25,20 @@ async function getCutoffDay() {
   return 25;
 }
 
-// pass < attention < fail
+// Option colors drive the rolled-up result: red = fail, yellow/orange = attention,
+// green = pass, gray/blue = neutral (no effect). Text items carry no color.
+function colorSeverity(color) {
+  var c = (color || '').toLowerCase();
+  if (c === 'red') return 'fail';
+  if (c === 'yellow' || c === 'orange') return 'attention';
+  return 'ok';
+}
 function deriveResult(items) {
   var worst = 'pass';
   (items || []).forEach(function (it) {
-    var a = (it.answer || '').toLowerCase();
-    if (a === 'fail') worst = 'fail';
-    else if (a === 'needs_attention' && worst !== 'fail') worst = 'attention';
+    var s = colorSeverity(it.color);
+    if (s === 'fail') worst = 'fail';
+    else if (s === 'attention' && worst !== 'fail') worst = 'attention';
   });
   return worst;
 }
@@ -59,7 +66,7 @@ router.get('/checklist', requireAuth, requirePermission('view_inspections'), asy
   try {
     var all = req.query.all === '1' && isPrivileged(req.user);
     const { rows } = await pool.query(
-      'SELECT id, item_key, label, type, sort_order, requires_photo, active FROM inspection_checklist' +
+      'SELECT id, item_key, label, type, sort_order, requires_photo, options, active FROM inspection_checklist' +
       (all ? '' : ' WHERE active = true') +
       ' ORDER BY sort_order, id'
     );
@@ -84,12 +91,17 @@ router.put('/checklist', requireAuth, requirePermission('manage_inspections'), a
       var key = (it.item_key || '').trim().toLowerCase().replace(/[^a-z0-9_]/g, '_').slice(0, 60);
       var label = (it.label || '').trim().slice(0, 255);
       if (!key || !label) continue;
-      var type = (it.type === 'text') ? 'text' : 'status';
+      var type = (it.type === 'text') ? 'text' : 'dropdown';
+      var opts = null;
+      if (type === 'dropdown' && Array.isArray(it.options)) {
+        var clean = it.options.map(function (o) { return { label: String((o && o.label) || '').slice(0, 60), color: String((o && o.color) || '').toLowerCase().slice(0, 20) }; }).filter(function (o) { return o.label; });
+        opts = JSON.stringify(clean);
+      }
       var reqPhoto = !!it.requires_photo;
       await client.query(
-        'INSERT INTO inspection_checklist (item_key, label, type, sort_order, requires_photo, active) VALUES ($1,$2,$3,$4,$5,true) ' +
-        'ON CONFLICT (item_key) DO UPDATE SET label = EXCLUDED.label, type = EXCLUDED.type, sort_order = EXCLUDED.sort_order, requires_photo = EXCLUDED.requires_photo, active = true',
-        [key, label, type, i, reqPhoto]
+        'INSERT INTO inspection_checklist (item_key, label, type, sort_order, requires_photo, options, active) VALUES ($1,$2,$3,$4,$5,$6,true) ' +
+        'ON CONFLICT (item_key) DO UPDATE SET label = EXCLUDED.label, type = EXCLUDED.type, sort_order = EXCLUDED.sort_order, requires_photo = EXCLUDED.requires_photo, options = EXCLUDED.options, active = true',
+        [key, label, type, i, reqPhoto, opts]
       );
     }
     await client.query('COMMIT');
@@ -226,8 +238,8 @@ router.post('/', requireAuth, requirePermission('view_inspections'), async funct
         for (const it of (items || [])) {
           if (!it || !it.item_key) continue;
           await client.query(
-            'INSERT INTO inspection_items (inspection_id, item_key, label, answer, comment) VALUES ($1,$2,$3,$4,$5)',
-            [insp.id, String(it.item_key).slice(0, 60), (it.label || '').slice(0, 255), (it.answer || '').slice(0, 40), it.comment || null]
+            'INSERT INTO inspection_items (inspection_id, item_key, label, answer, color, comment) VALUES ($1,$2,$3,$4,$5,$6)',
+            [insp.id, String(it.item_key).slice(0, 60), (it.label || '').slice(0, 255), (it.answer || '').slice(0, 60), (it.color || '').toLowerCase().slice(0, 20) || null, it.comment || null]
           );
         }
         if (mileage && parseInt(mileage, 10) > 0) {
@@ -279,8 +291,8 @@ router.put('/:id', requireAuth, requirePermission('view_inspections'), async fun
       for (const it of (items || [])) {
         if (!it || !it.item_key) continue;
         await client.query(
-          'INSERT INTO inspection_items (inspection_id, item_key, label, answer, comment) VALUES ($1,$2,$3,$4,$5)',
-          [req.params.id, String(it.item_key).slice(0, 60), (it.label || '').slice(0, 255), (it.answer || '').slice(0, 40), it.comment || null]
+          'INSERT INTO inspection_items (inspection_id, item_key, label, answer, color, comment) VALUES ($1,$2,$3,$4,$5,$6)',
+          [req.params.id, String(it.item_key).slice(0, 60), (it.label || '').slice(0, 255), (it.answer || '').slice(0, 60), (it.color || '').toLowerCase().slice(0, 20) || null, it.comment || null]
         );
       }
       await client.query('COMMIT');
