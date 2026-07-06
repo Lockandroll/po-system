@@ -270,7 +270,7 @@ function getSidebarSection(view) {
   if (['dashboard','new','edit','view','running','running-admin'].indexOf(view) !== -1) return 'po';
   if (['quotes','new-quote','edit-quote','view-quote'].indexOf(view) !== -1) return 'quotes';
   if (['invoices','new-invoice','edit-invoice','view-invoice','invoice-setup','invoice-parts'].indexOf(view) !== -1) return 'invoices';
-  if (['vr-dashboard','new-vr','edit-vr','view-vr','fleet-registry','new-vehicle','edit-vehicle','vehicle-history'].indexOf(view) !== -1) return 'vr';
+  if (['vr-dashboard','new-vr','edit-vr','view-vr','fleet-registry','new-vehicle','edit-vehicle','vehicle-history','inspections','inspection-form','view-inspection','inspection-checklist'].indexOf(view) !== -1) return 'vr';
   if (['ai-assistant','ai-conversations','ai-usage'].indexOf(view) !== -1) return 'ai';
   if (['company-info','ai-context','notifications','scheduled-messages','roles','settings','users','cities','audit'].indexOf(view) !== -1) return 'settings';
   if (['geico','reviews','feedback','feedback-detail'].indexOf(view) !== -1) return 'feedback';
@@ -496,7 +496,7 @@ function buildNavHtml() {
   var icoReceipt = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 2v20l2-1 2 1 2-1 2 1 2-1 2 1 2-1 2 1V2l-2 1-2-1-2 1-2-1-2 1-2-1-2 1z"/><path d="M8 7h8M8 11h8M8 15h5"/></svg>';
   var poViews = ['dashboard','new','edit','view','running','running-admin'];
   var quViews = ['quotes','new-quote','edit-quote','view-quote'];
-  var vrViews = ['vr-dashboard','new-vr','edit-vr','view-vr','fleet-registry','new-vehicle','edit-vehicle','vehicle-history'];
+  var vrViews = ['vr-dashboard','new-vr','edit-vr','view-vr','fleet-registry','new-vehicle','edit-vehicle','vehicle-history','inspections','inspection-form','view-inspection','inspection-checklist'];
   var aiViews = ['ai-assistant','ai-conversations','ai-usage'];
   var invViews = ['invoices','new-invoice','edit-invoice','view-invoice','invoice-setup','invoice-parts'];
   var stViews = ['company-info','ai-context','notifications','scheduled-messages','roles','settings','users','cities','audit','parts-list'];
@@ -560,7 +560,7 @@ function buildNavHtml() {
     (ss === 'vr' ?
       '<div class="nav-sub' + (cv === 'vr-dashboard' ? ' active' : '') + '" onclick="navigate(\'vr-dashboard\')">' + icons.dashboard + ' VR Dashboard</div>' +
       (can('create_vr') ? '<div class="nav-sub' + (cv === 'new-vr' ? ' active' : '') + '" onclick="navigate(\'new-vr\')">' + icons.plus + ' New VR</div>' : '') +
-      (can('manage_vehicles') ? '<div class="nav-sub' + (['fleet-registry','new-vehicle','edit-vehicle','vehicle-history'].indexOf(cv) !== -1 ? ' active' : '') + '" onclick="navigate(\'fleet-registry\')">' + icoDB + ' Fleet Registry</div>' : '')
+      (can('manage_vehicles') ? '<div class="nav-sub' + (['fleet-registry','new-vehicle','edit-vehicle','vehicle-history'].indexOf(cv) !== -1 ? ' active' : '') + '" onclick="navigate(\'fleet-registry\')">' + icoDB + ' Fleet Registry</div>' : '') + (can('view_inspections') ? '<div class="nav-sub' + (['inspections','inspection-form','view-inspection'].indexOf(cv) !== -1 ? ' active' : '') + '" onclick="navigate(\'inspections\')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg> Inspections</div>' : '') + (can('manage_inspections') ? '<div class="nav-sub' + (cv === 'inspection-checklist' ? ' active' : '') + '" onclick="navigate(\'inspection-checklist\')">' + icons.settings + ' Insp. Checklist</div>' : '')
     : '') : '') +
     (can('view_deposits') ? '<div class="nav-item' + (cv === 'deposits' || cv === 'view-deposit' ? ' active' : '') + '" onclick="navigate(\'deposits\')">' + icoDeposit + ' Cash Deposits</div>' : '') +
     ((can('view_vendors') || can('manage_vendors')) ? '<div class="nav-item' + (cv === 'vendors' ? ' active' : '') + '" onclick="navigate(\'vendors\')">' + icoAccounts + ' Accounts</div>' : '') +
@@ -682,7 +682,7 @@ async function render() {
     if (_ovOpen) _ovOpen.classList.add('open');
   }
   const content = document.getElementById('content');
-  var _viewPerm = { dashboard:'view_pos', view:'view_pos', running:'view_pos', 'running-admin':'view_pos', new:'create_po', edit:'edit_po', quotes:'view_quotes', 'view-quote':'view_quotes', 'new-quote':'create_quote', 'edit-quote':'edit_quote', 'vr-dashboard':'view_vr', 'view-vr':'view_vr', 'new-vr':'create_vr', 'edit-vr':'edit_vr', deposits:'view_deposits', 'view-deposit':'view_deposits', signoffs:'view_signoffs', 'view-signoff':'view_signoffs', 'new-signoff':'create_signoff', 'edit-signoff':'edit_signoff', 'complete-signoff':'complete_signoff', tasks:'view_tasks', 'task-detail':'view_tasks', 'new-task':'view_tasks', 'edit-task':'view_tasks', 'work-orders':'view_work_orders', 'view-work-order':'view_work_orders', 'new-work-order':'manage_work_orders', schedule:'view_schedule', 'schedule-admin':'manage_schedule', 'schedule-nowork':'manage_schedule', invoices:'view_invoices', 'view-invoice':'view_invoices', 'new-invoice':'create_invoice', 'edit-invoice':'edit_invoice', 'invoice-parts':'view_invoices', 'invoice-setup':'manage_invoice_setup', feedback:'view_feedback', 'feedback-detail':'view_feedback', signatures:'view_signatures', 'new-signature':'manage_signatures', 'signature-editor':'manage_signatures', timeclock:'view_timeclock', 'timeclock-manager':'manage_timeclock', pto:'view_pto', 'onboarding-admin':'manage_onboarding', 'employee-files':'manage_onboarding', ptt:'view_ptt' };
+  var _viewPerm = { dashboard:'view_pos', view:'view_pos', running:'view_pos', 'running-admin':'view_pos', new:'create_po', edit:'edit_po', quotes:'view_quotes', 'view-quote':'view_quotes', 'new-quote':'create_quote', 'edit-quote':'edit_quote', 'vr-dashboard':'view_vr', 'view-vr':'view_vr', 'new-vr':'create_vr', 'edit-vr':'edit_vr', deposits:'view_deposits', 'view-deposit':'view_deposits', signoffs:'view_signoffs', 'view-signoff':'view_signoffs', 'new-signoff':'create_signoff', 'edit-signoff':'edit_signoff', 'complete-signoff':'complete_signoff', tasks:'view_tasks', 'task-detail':'view_tasks', 'new-task':'view_tasks', 'edit-task':'view_tasks', 'work-orders':'view_work_orders', 'view-work-order':'view_work_orders', 'new-work-order':'manage_work_orders', schedule:'view_schedule', 'schedule-admin':'manage_schedule', 'schedule-nowork':'manage_schedule', invoices:'view_invoices', 'view-invoice':'view_invoices', 'new-invoice':'create_invoice', 'edit-invoice':'edit_invoice', 'invoice-parts':'view_invoices', 'invoice-setup':'manage_invoice_setup', feedback:'view_feedback', 'feedback-detail':'view_feedback', signatures:'view_signatures', 'new-signature':'manage_signatures', 'signature-editor':'manage_signatures', timeclock:'view_timeclock', 'timeclock-manager':'manage_timeclock', pto:'view_pto', 'onboarding-admin':'manage_onboarding', 'employee-files':'manage_onboarding', ptt:'view_ptt', inspections:'view_inspections', 'view-inspection':'view_inspections', 'inspection-form':'view_inspections', 'inspection-checklist':'manage_inspections' };
   if (_viewPerm[state.currentView] && !can(_viewPerm[state.currentView])) { content.innerHTML = '<div class="alert alert-error">Access denied.</div>'; return; }
   if (state.currentView === 'home') { await renderHomeScreen(content); maybeQuizBanner(content); }
   else if (state.currentView === 'pto') await renderPto(content);
@@ -712,6 +712,10 @@ async function render() {
   else if (state.currentView === 'new-vehicle') await renderEditVehicle(content, null);
   else if (state.currentView === 'edit-vehicle') await renderEditVehicle(content, state.currentParam);
   else if (state.currentView === 'vehicle-history') await renderVehicleHistory(content, state.currentParam);
+  else if (state.currentView === 'inspections') await renderInspectionCompliance(content);
+  else if (state.currentView === 'inspection-form') await renderInspectionForm(content, state.currentParam);
+  else if (state.currentView === 'view-inspection') await renderViewInspection(content, state.currentParam);
+  else if (state.currentView === 'inspection-checklist') await renderInspectionChecklistAdmin(content);
   else if (state.currentView === 'ai-usage') await renderAIUsage(content);
   else if (state.currentView === 'company-info') await renderCompanyInfo(content);
   else if (state.currentView === 'ai-context') await renderAIContext(content);
@@ -6998,6 +7002,10 @@ async function renderEditVehicle(el, id) {
       '<div class="form-row">' +
         '<div class="form-group"><label>Notes</label><input type="text" id="ve-notes" value="' + escHtml(vehicle ? vehicle.notes||'' : '') + '" placeholder="Any additional notes" /></div>' +
       '</div>' +
+      '<div class="form-row">' +
+        '<div class="form-group"><label style="display:flex;align-items:center;gap:8px;cursor:pointer"><input type="checkbox" id="ve-insp-exempt"' + (vehicle && vehicle.inspection_exempt ? ' checked' : '') + ' onchange="document.getElementById(\'ve-insp-reason-wrap\').style.display=this.checked?\'block\':\'none\'" style="width:auto"/> Exempt from monthly inspections</label></div>' +
+        '<div class="form-group" id="ve-insp-reason-wrap" style="display:' + (vehicle && vehicle.inspection_exempt ? 'block' : 'none') + '"><label>Exemption reason</label><input type="text" id="ve-insp-reason" value="' + escHtml(vehicle ? vehicle.inspection_exempt_reason||'' : '') + '" placeholder="e.g. Manager vehicle" /></div>' +
+      '</div>' +
     '</div></div>' +
     '<div style="display:flex;gap:10px;margin-top:20px;justify-content:flex-end">' +
       '<button class="btn btn-secondary" onclick="navigate(\'fleet-registry\')">Cancel</button>' +
@@ -7057,7 +7065,9 @@ async function saveVehicle(id, btn) {
     city_code: ((document.getElementById('ve-city')||{}).value)||null,
     date_of_assignment: ((document.getElementById('ve-date')||{}).value)||null,
     license_plate: ((document.getElementById('ve-plate')||{}).value||'').trim() || null,
-    notes: ((document.getElementById('ve-notes')||{}).value||'').trim() || null
+    notes: ((document.getElementById('ve-notes')||{}).value||'').trim() || null,
+    inspection_exempt: !!(document.getElementById('ve-insp-exempt') && document.getElementById('ve-insp-exempt').checked),
+    inspection_exempt_reason: ((document.getElementById('ve-insp-reason')||{}).value||'').trim() || null
   };
   try {
     btn.disabled = true;
@@ -7124,6 +7134,8 @@ async function renderVehicleHistory(el, vehicleId) {
       '</table></div></div></div>';
     window._vhRender = vhRender;
     vhRender('', '');
+    el.insertAdjacentHTML('beforeend', '<div id="vh-insp" style="margin-top:20px"></div>');
+    loadVehicleInspections(vehicleId);
   } catch(err) { el.innerHTML = '<div class="alert alert-error">' + escHtml(err.message) + '</div>'; }
 }
 function vhFilter() {
@@ -7171,6 +7183,370 @@ async function confirmSellVehicle() {
     errEl.innerHTML = '<div class="alert alert-error" style="margin-bottom:12px">' + escHtml(err.message) + '</div>';
     btn.disabled = false;
   }
+}
+// ── Vehicle Inspections ─────────────────────────────────────────────────────────
+var _inspCompliance = null;
+var _inspCities = null;
+var _inspPhotos = [];   // staged photos for the entry form: [{ file, item_key, url }]
+
+function inspResultBadge(result) {
+  var map = { pass: ['#22c55e', 'Pass'], attention: ['#f59e0b', 'Attention'], fail: ['#ef4444', 'Fail'] };
+  var m = map[result] || ['var(--text-muted-color)', result || '—'];
+  return '<span style="font-weight:700;color:' + m[0] + '">' + m[1] + '</span>';
+}
+function inspAnswerBadge(answer) {
+  var map = { ok: ['#22c55e', 'OK'], needs_attention: ['#f59e0b', 'Needs attention'], fail: ['#ef4444', 'Fail'], na: ['var(--text-muted-color)', 'N/A'] };
+  var m = map[(answer || '').toLowerCase()];
+  if (!m) return escHtml(answer || '—');
+  return '<span style="font-weight:600;color:' + m[0] + '">' + m[1] + '</span>';
+}
+function inspComplianceStatusKey(v, meta) {
+  if (v.inspection_exempt) return 'exempt';
+  if (v.inspection_id) return 'done';
+  if (meta.month < meta.current_month) return 'overdue';
+  if (meta.month === meta.current_month) { return (new Date().getDate() > meta.cutoff_day) ? 'overdue' : 'due'; }
+  return 'due';
+}
+function inspStatusChip(key) {
+  var map = {
+    done: ['#052e16', '#4ade80', 'Done'],
+    due: ['#1e293b', '#fbbf24', 'Due'],
+    overdue: ['#2a0f0f', '#f87171', 'Overdue'],
+    exempt: ['#1a1a1a', 'var(--text-muted-color)', 'Exempt']
+  };
+  var m = map[key] || map.due;
+  return '<span style="background:' + m[0] + ';color:' + m[1] + ';font-size:11px;font-weight:700;padding:3px 9px;border-radius:10px;white-space:nowrap">' + m[2] + '</span>';
+}
+
+async function renderInspectionCompliance(el) {
+  el.innerHTML = '<div class="loading">Loading…</div>';
+  var priv = ['admin', 'manager'].includes(state.user.role);
+  try {
+    if (priv && !_inspCities) { try { _inspCities = await api('GET', '/cities'); } catch (e) { _inspCities = []; } }
+    var month = (_inspCompliance && _inspCompliance.month) || '';
+    var city = (_inspCompliance && _inspCompliance._city) || '';
+    var data = await api('GET', '/inspections/compliance' + (month ? '?month=' + encodeURIComponent(month) : '') + (city ? (month ? '&' : '?') + 'city_code=' + encodeURIComponent(city) : ''));
+    data._city = city;
+    _inspCompliance = data;
+    inspRenderCompliance(el);
+  } catch (err) { el.innerHTML = '<div class="alert alert-error">' + escHtml(err.message) + '</div>'; }
+}
+
+function inspRenderCompliance(el) {
+  var d = _inspCompliance; if (!d) return;
+  var priv = ['admin', 'manager'].includes(state.user.role);
+  var meta = { month: d.month, current_month: d.current_month, cutoff_day: d.cutoff_day };
+  var counts = { done: 0, due: 0, overdue: 0, exempt: 0 };
+  d.vehicles.forEach(function (v) { counts[inspComplianceStatusKey(v, meta)]++; });
+  var due = counts.due + counts.overdue;
+  var cityOpts = '<option value="">All cities</option>' + ((_inspCities || []).map(function (c) {
+    return '<option value="' + escHtml(c.code) + '"' + (d._city === c.code ? ' selected' : '') + '>' + escHtml(c.name) + ' (' + escHtml(c.code) + ')</option>';
+  }).join(''));
+  var rows = d.vehicles.map(function (v) {
+    var key = inspComplianceStatusKey(v, meta);
+    var canStart = !v.inspection_exempt && (priv || v.assigned_user_id === state.user.id);
+    var action = v.inspection_id
+      ? '<button class="btn btn-secondary btn-sm" onclick="navigate(\'view-inspection\',' + v.inspection_id + ')">View</button>'
+      : (canStart ? '<button class="btn btn-primary btn-sm" onclick="navigate(\'inspection-form\',' + v.vehicle_id + ')">Start</button>' : '<span style="color:var(--text-muted-color);font-size:12px">—</span>');
+    return '<tr style="' + (v.inspection_exempt ? 'opacity:0.55' : '') + '">' +
+      '<td><strong>' + v.year + ' ' + escHtml(v.make_model || '') + '</strong>' + (v.license_plate ? '<div style="font-size:11px;color:var(--text-muted-color)">' + escHtml(v.license_plate) + '</div>' : '') + '</td>' +
+      '<td>' + escHtml(v.city_code || '—') + '</td>' +
+      '<td>' + escHtml(v.driver_name || 'Unassigned') + '</td>' +
+      '<td>' + inspStatusChip(key) + (v.inspection_exempt && v.inspection_exempt_reason ? '<div style="font-size:11px;color:var(--text-muted-color);margin-top:2px">' + escHtml(v.inspection_exempt_reason) + '</div>' : '') + '</td>' +
+      '<td>' + (v.inspection_id ? inspResultBadge(v.overall_result) : '—') + '</td>' +
+      '<td style="font-size:12px">' + (v.inspected_at ? formatDate(v.inspected_at) + (v.submitted_by_name ? '<div style="color:var(--text-muted-color)">' + escHtml(v.submitted_by_name) + '</div>' : '') : '—') + '</td>' +
+      '<td style="text-align:center">' + (parseInt(v.photo_count, 10) || 0) + '</td>' +
+      '<td style="white-space:nowrap">' + action + '</td>' +
+    '</tr>';
+  }).join('');
+  el.innerHTML =
+    '<div class="page-header">' +
+      '<div><div class="page-title"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="margin-right:8px;vertical-align:-4px"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg>Vehicle Inspections</div>' +
+        '<div class="page-subtitle" style="color:var(--text-muted-color)">Monthly compliance · cutoff day ' + d.cutoff_day + '</div></div>' +
+      (can('manage_inspections') ? '<button class="btn btn-secondary" onclick="navigate(\'inspection-checklist\')" style="white-space:nowrap">' + icons.settings + ' Checklist</button>' : '') +
+    '</div>' +
+    '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:12px;margin-bottom:16px">' +
+      '<div class="card"><div class="card-body" style="text-align:center;padding:14px"><div style="font-size:26px;font-weight:700;color:#22c55e">' + counts.done + '</div><div style="font-size:12px;color:var(--text-muted-color)">Done</div></div></div>' +
+      '<div class="card"><div class="card-body" style="text-align:center;padding:14px"><div style="font-size:26px;font-weight:700;color:#fbbf24">' + counts.due + '</div><div style="font-size:12px;color:var(--text-muted-color)">Due</div></div></div>' +
+      '<div class="card"><div class="card-body" style="text-align:center;padding:14px"><div style="font-size:26px;font-weight:700;color:#f87171">' + counts.overdue + '</div><div style="font-size:12px;color:var(--text-muted-color)">Overdue</div></div></div>' +
+      '<div class="card"><div class="card-body" style="text-align:center;padding:14px"><div style="font-size:26px;font-weight:700;color:var(--text-muted-color)">' + counts.exempt + '</div><div style="font-size:12px;color:var(--text-muted-color)">Exempt</div></div></div>' +
+    '</div>' +
+    '<div style="display:flex;gap:10px;margin-bottom:16px;flex-wrap:wrap;align-items:center">' +
+      '<label style="font-size:13px;color:var(--text-muted-color)">Month <input type="month" id="insp-month" value="' + escHtml(d.month) + '" onchange="inspComplianceReload()" style="margin-left:6px" /></label>' +
+      (priv ? '<select id="insp-city" onchange="inspComplianceReload()" style="min-width:160px">' + cityOpts + '</select>' : '') +
+      '<div style="flex:1"></div>' +
+      '<div style="font-size:13px;color:var(--text-muted-color)">' + counts.done + ' of ' + (d.vehicles.length - counts.exempt) + ' required done</div>' +
+    '</div>' +
+    '<div class="card"><div class="card-body" style="padding:0"><div class="table-wrap"><table>' +
+      '<thead><tr><th>Vehicle</th><th>City</th><th>Responsible</th><th>Status</th><th>Result</th><th>Inspected</th><th>Photos</th><th></th></tr></thead>' +
+      '<tbody>' + (rows || '<tr><td colspan="8" style="text-align:center;padding:32px;color:var(--text-muted-color)">No vehicles.</td></tr>') + '</tbody>' +
+    '</table></div></div></div>';
+}
+function inspComplianceReload() {
+  var m = (document.getElementById('insp-month') || {}).value || '';
+  var c = (document.getElementById('insp-city') || {}).value || '';
+  _inspCompliance = { month: m, _city: c };
+  renderInspectionCompliance(document.getElementById('content') || document.getElementById('app'));
+}
+
+async function renderInspectionForm(el, vehicleId) {
+  el.innerHTML = '<div class="loading">Loading…</div>';
+  _inspPhotos = [];
+  try {
+    var vehicle = await api('GET', '/vehicles/' + vehicleId);
+    var priv = ['admin', 'manager'].includes(state.user.role);
+    if (!priv && vehicle.assigned_user_id !== state.user.id) { el.innerHTML = '<div class="alert alert-error">You can only inspect a vehicle assigned to you.</div>'; return; }
+    var checklist = await api('GET', '/inspections/checklist');
+    // Already inspected this month? Load it for editing.
+    var existing = await api('GET', '/inspections?vehicle_id=' + vehicleId);
+    var curMonthRow = (existing || []).filter(function (i) { return i.period_month === _inspCurrentMonth(); })[0];
+    var editing = null;
+    if (curMonthRow) { editing = await api('GET', '/inspections/' + curMonthRow.id); }
+    var ansOf = {}, cmtOf = {};
+    if (editing) { (editing.items || []).forEach(function (it) { ansOf[it.item_key] = it.answer; cmtOf[it.item_key] = it.comment || ''; }); }
+
+    var itemsHtml = checklist.map(function (it) {
+      var a = ansOf[it.item_key] || (it.type === 'text' ? '' : 'ok');
+      var c = cmtOf[it.item_key] || '';
+      if (it.type === 'text') {
+        return '<div class="card" style="margin-bottom:10px"><div class="card-body">' +
+          '<label style="font-weight:600;display:block;margin-bottom:6px">' + escHtml(it.label) + '</label>' +
+          '<textarea id="insp-ans-' + escHtml(it.item_key) + '" rows="2" style="width:100%" placeholder="Enter details…">' + escHtml(a) + '</textarea>' +
+        '</div></div>';
+      }
+      var opts = [['ok', 'OK'], ['needs_attention', 'Needs attention'], ['fail', 'Fail'], ['na', 'N/A']];
+      var sel = opts.map(function (o) { return '<option value="' + o[0] + '"' + (a === o[0] ? ' selected' : '') + '>' + o[1] + '</option>'; }).join('');
+      return '<div class="card" style="margin-bottom:10px"><div class="card-body">' +
+        '<div style="display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap">' +
+          '<label style="font-weight:600">' + escHtml(it.label) + (it.requires_photo ? ' <span style="color:var(--primary);font-size:11px">· photo</span>' : '') + '</label>' +
+          '<select id="insp-ans-' + escHtml(it.item_key) + '" style="min-width:150px">' + sel + '</select>' +
+        '</div>' +
+        '<input type="text" id="insp-cmt-' + escHtml(it.item_key) + '" value="' + escHtml(c) + '" placeholder="Comment (optional)" style="width:100%;margin-top:8px" />' +
+        (it.requires_photo ? '<input type="file" accept="image/*" capture="environment" onchange="inspStagePhoto(this,\'' + escHtml(it.item_key) + '\')" style="margin-top:8px" />' : '') +
+      '</div></div>';
+    }).join('');
+
+    el.innerHTML =
+      '<div class="page-header">' +
+        '<div><div class="page-title">' + (editing ? 'Edit' : 'Monthly') + ' Inspection</div>' +
+          '<div class="page-subtitle" style="color:var(--text-muted-color)">' + vehicle.year + ' ' + escHtml(vehicle.make_model || '') + (vehicle.license_plate ? ' · ' + escHtml(vehicle.license_plate) : '') + ' · ' + _inspCurrentMonth() + '</div></div>' +
+        '<button class="btn btn-secondary" onclick="navigate(\'inspections\')" style="white-space:nowrap">← Back</button>' +
+      '</div>' +
+      '<div id="insp-form-msg"></div>' +
+      '<div class="card" style="margin-bottom:10px"><div class="card-body">' +
+        '<div class="form-row"><div class="form-group"><label>Odometer / Mileage</label><input type="number" id="insp-mileage" value="' + (editing && editing.mileage ? editing.mileage : (vehicle.mileage || '')) + '" placeholder="Current mileage" /></div></div>' +
+      '</div></div>' +
+      itemsHtml +
+      '<div class="card" style="margin-bottom:10px"><div class="card-body">' +
+        '<label style="font-weight:600;display:block;margin-bottom:6px">Additional photos</label>' +
+        '<input type="file" accept="image/*" capture="environment" multiple onchange="inspStagePhoto(this,null)" />' +
+        '<div id="insp-photo-strip" style="display:flex;flex-wrap:wrap;gap:8px;margin-top:10px"></div>' +
+      '</div></div>' +
+      '<div class="card" style="margin-bottom:10px"><div class="card-body">' +
+        '<label style="font-weight:600;display:block;margin-bottom:6px">Overall notes</label>' +
+        '<textarea id="insp-notes" rows="2" style="width:100%" placeholder="Anything else to flag…">' + escHtml(editing ? (editing.notes || '') : '') + '</textarea>' +
+      '</div></div>' +
+      '<div style="display:flex;gap:10px;justify-content:flex-end;margin-bottom:40px">' +
+        '<button class="btn btn-secondary" onclick="navigate(\'inspections\')">Cancel</button>' +
+        '<button class="btn btn-primary" id="insp-submit-btn" onclick="submitInspection(' + vehicleId + ',' + (editing ? editing.id : 'null') + ',this)">' + (editing ? 'Save Inspection' : 'Submit Inspection') + '</button>' +
+      '</div>';
+    window._inspChecklist = checklist;
+  } catch (err) { el.innerHTML = '<div class="alert alert-error">' + escHtml(err.message) + '</div>'; }
+}
+function _inspCurrentMonth() {
+  var s = new Date().toLocaleString('en-CA', { timeZone: 'America/New_York' });
+  return s.slice(0, 7);
+}
+function inspStagePhoto(input, itemKey) {
+  var files = input.files;
+  for (var i = 0; i < files.length; i++) {
+    var f = files[i];
+    _inspPhotos.push({ file: f, item_key: itemKey || null, url: URL.createObjectURL(f) });
+  }
+  input.value = '';
+  inspRenderPhotoStrip();
+}
+function inspRenderPhotoStrip() {
+  var strip = document.getElementById('insp-photo-strip');
+  if (!strip) return;
+  strip.innerHTML = _inspPhotos.map(function (p, idx) {
+    return '<div style="position:relative;width:72px;height:72px;border-radius:6px;overflow:hidden;border:1px solid var(--border-color)">' +
+      '<img src="' + p.url + '" style="width:100%;height:100%;object-fit:cover" />' +
+      '<button onclick="inspRemovePhoto(' + idx + ')" style="position:absolute;top:2px;right:2px;background:rgba(0,0,0,0.7);color:#fff;border:none;border-radius:50%;width:18px;height:18px;font-size:11px;cursor:pointer;line-height:1">×</button>' +
+      (p.item_key ? '<div style="position:absolute;bottom:0;left:0;right:0;background:rgba(0,0,0,0.6);color:#fff;font-size:9px;text-align:center;padding:1px">' + escHtml(p.item_key) + '</div>' : '') +
+    '</div>';
+  }).join('');
+}
+function inspRemovePhoto(idx) { _inspPhotos.splice(idx, 1); inspRenderPhotoStrip(); }
+
+async function inspUploadStagedPhotos(inspId) {
+  for (var i = 0; i < _inspPhotos.length; i++) {
+    var p = _inspPhotos[i];
+    try {
+      var reserve = await api('POST', '/inspections/' + inspId + '/photos/upload-url', { name: (p.file.name || 'photo.jpg'), mime_type: p.file.type || 'image/jpeg', item_key: p.item_key });
+      await fetch(reserve.uploadUrl, { method: 'PUT', body: p.file, headers: { 'Content-Type': p.file.type || 'image/jpeg' } });
+      await api('POST', '/inspections/photos/' + reserve.id + '/confirm', { size_bytes: p.file.size });
+    } catch (e) { /* keep going; a failed photo should not lose the inspection */ }
+  }
+}
+async function submitInspection(vehicleId, editId, btn) {
+  var checklist = window._inspChecklist || [];
+  var items = checklist.map(function (it) {
+    var el = document.getElementById('insp-ans-' + it.item_key);
+    var ans = el ? el.value : '';
+    var cmtEl = document.getElementById('insp-cmt-' + it.item_key);
+    return { item_key: it.item_key, label: it.label, answer: ans, comment: cmtEl ? cmtEl.value : null };
+  });
+  var mileage = ((document.getElementById('insp-mileage') || {}).value || '').trim();
+  var notes = ((document.getElementById('insp-notes') || {}).value || '').trim();
+  var msg = document.getElementById('insp-form-msg');
+  try {
+    if (btn) { btn.disabled = true; btn.textContent = 'Saving…'; }
+    var result;
+    if (editId) {
+      await api('PUT', '/inspections/' + editId, { mileage: mileage || null, notes: notes || null, items: items });
+      result = { id: editId };
+    } else {
+      result = await api('POST', '/inspections', { vehicle_id: vehicleId, mileage: mileage || null, notes: notes || null, items: items });
+    }
+    if (_inspPhotos.length) { await inspUploadStagedPhotos(result.id); }
+    _inspPhotos = [];
+    navigate('view-inspection', result.id);
+  } catch (err) {
+    if (btn) { btn.disabled = false; btn.textContent = editId ? 'Save Inspection' : 'Submit Inspection'; }
+    if (msg) msg.innerHTML = '<div class="alert alert-error">' + escHtml(err.message) + '</div>';
+  }
+}
+
+async function renderViewInspection(el, id) {
+  el.innerHTML = '<div class="loading">Loading…</div>';
+  try {
+    var insp = await api('GET', '/inspections/' + id);
+    var canReview = can('manage_inspections') && insp.status !== 'reviewed';
+    var canEdit = (insp.submitted_by === state.user.id || can('manage_inspections')) && insp.status !== 'reviewed';
+    var photos = (insp.photos || []).map(function (p) {
+      return '<a href="' + (p.url || '#') + '" target="_blank" rel="noopener" style="display:block;width:120px;height:120px;border-radius:6px;overflow:hidden;border:1px solid var(--border-color)">' +
+        (p.url ? '<img src="' + p.url + '" style="width:100%;height:100%;object-fit:cover" />' : '<div style="width:100%;height:100%;display:flex;align-items:center;justify-content:center;color:var(--text-muted-color);font-size:11px">no preview</div>') +
+      '</a>';
+    }).join('');
+    var itemsHtml = (insp.items || []).map(function (it) {
+      return '<tr><td>' + escHtml(it.label || it.item_key) + '</td><td>' + inspAnswerBadge(it.answer) + '</td><td>' + escHtml(it.comment || '—') + '</td></tr>';
+    }).join('');
+    el.innerHTML =
+      '<div class="page-header">' +
+        '<div><div class="page-title">' + escHtml(insp.inspection_number) + '</div>' +
+          '<div class="page-subtitle" style="color:var(--text-muted-color)">' + (insp.year || '') + ' ' + escHtml(insp.make_model || '') + ' · ' + escHtml(insp.period_month) + ' · ' + inspResultBadge(insp.overall_result) + (insp.status === 'reviewed' ? ' · <span style="color:#22c55e">Reviewed</span>' : '') + '</div></div>' +
+        '<div class="flex-gap">' +
+          (canEdit ? '<button class="btn btn-secondary" onclick="navigate(\'inspection-form\',' + insp.vehicle_id + ')">Edit</button>' : '') +
+          (canReview ? '<button class="btn btn-primary" style="background:#22c55e;border-color:#22c55e" onclick="reviewInspection(' + insp.id + ')">Mark Reviewed</button>' : '') +
+          (can('manage_inspections') ? '<button class="btn btn-danger btn-sm" onclick="deleteInspection(' + insp.id + ')">' + icons.trash + ' Delete</button>' : '') +
+          '<button class="btn btn-secondary" onclick="navigate(\'inspections\')">← Back</button>' +
+        '</div>' +
+      '</div>' +
+      '<div id="insp-view-msg"></div>' +
+      '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:16px;margin-bottom:16px">' +
+        '<div class="card"><div class="card-body">' +
+          '<div class="detail-field"><label>Submitted By</label><p>' + escHtml(insp.submitted_by_name || '—') + '</p></div>' +
+          '<div class="detail-field"><label>Date</label><p>' + formatDate(insp.created_at) + '</p></div>' +
+        '</div></div>' +
+        '<div class="card"><div class="card-body">' +
+          '<div class="detail-field"><label>Mileage</label><p>' + (insp.mileage != null ? insp.mileage : '—') + '</p></div>' +
+          '<div class="detail-field"><label>City</label><p>' + escHtml(insp.city_code || insp.vehicle_city || '—') + '</p></div>' +
+        '</div></div>' +
+        '<div class="card"><div class="card-body">' +
+          '<div class="detail-field"><label>Reviewer</label><p>' + escHtml(insp.reviewer_name || '—') + '</p></div>' +
+          '<div class="detail-field"><label>Notes</label><p style="white-space:pre-wrap">' + escHtml(insp.notes || '—') + '</p></div>' +
+        '</div></div>' +
+      '</div>' +
+      '<div class="card"><div class="card-header"><span class="card-title">Checklist</span></div>' +
+      '<div class="card-body" style="padding:0"><div class="table-wrap"><table>' +
+        '<thead><tr><th>Item</th><th>Result</th><th>Comment</th></tr></thead>' +
+        '<tbody>' + (itemsHtml || '<tr><td colspan="3" style="text-align:center;padding:20px;color:var(--text-muted-color)">No items</td></tr>') + '</tbody>' +
+      '</table></div></div></div>' +
+      (photos ? '<div class="card" style="margin-top:16px"><div class="card-header"><span class="card-title">Photos</span></div><div class="card-body"><div style="display:flex;flex-wrap:wrap;gap:10px">' + photos + '</div></div></div>' : '');
+  } catch (err) { el.innerHTML = '<div class="alert alert-error">' + escHtml(err.message) + '</div>'; }
+}
+async function reviewInspection(id) {
+  var note = await novaPrompt('Reviewer note (optional):');
+  if (note === null) return;
+  try { await api('POST', '/inspections/' + id + '/review', { note: note }); navigate('view-inspection', id); }
+  catch (err) { var m = document.getElementById('insp-view-msg'); if (m) m.innerHTML = '<div class="alert alert-error">' + escHtml(err.message) + '</div>'; }
+}
+async function deleteInspection(id) {
+  if (!await novaConfirm('Permanently delete this inspection and its photos? This cannot be undone.')) return;
+  try { await api('DELETE', '/inspections/' + id); navigate('inspections'); }
+  catch (err) { (window.showToast || window.novaAlert || window.alert)(err.message); }
+}
+
+async function renderInspectionChecklistAdmin(el) {
+  if (!can('manage_inspections')) { el.innerHTML = '<div class="alert alert-error">Access denied.</div>'; return; }
+  el.innerHTML = '<div class="loading">Loading…</div>';
+  try {
+    var items = await api('GET', '/inspections/checklist?all=1');
+    window._inspClEdit = items.map(function (it) { return { item_key: it.item_key, label: it.label, type: it.type, requires_photo: !!it.requires_photo }; });
+    inspClRender(el);
+  } catch (err) { el.innerHTML = '<div class="alert alert-error">' + escHtml(err.message) + '</div>'; }
+}
+function inspClRender(el) {
+  var list = window._inspClEdit || [];
+  var rows = list.map(function (it, idx) {
+    return '<div class="card" style="margin-bottom:8px"><div class="card-body" style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">' +
+      '<input type="text" value="' + escHtml(it.label) + '" oninput="window._inspClEdit[' + idx + '].label=this.value" placeholder="Item label" style="flex:2;min-width:180px" />' +
+      '<select onchange="window._inspClEdit[' + idx + '].type=this.value" style="min-width:120px"><option value="status"' + (it.type !== 'text' ? ' selected' : '') + '>Status</option><option value="text"' + (it.type === 'text' ? ' selected' : '') + '>Text</option></select>' +
+      '<label style="font-size:13px;display:flex;align-items:center;gap:5px"><input type="checkbox"' + (it.requires_photo ? ' checked' : '') + ' onchange="window._inspClEdit[' + idx + '].requires_photo=this.checked" /> Photo</label>' +
+      '<button class="btn btn-ghost btn-sm" style="color:var(--danger-color,#ef4444)" onclick="inspClRemove(' + idx + ')">Remove</button>' +
+    '</div></div>';
+  }).join('');
+  el.innerHTML =
+    '<div class="page-header">' +
+      '<div><div class="page-title">Inspection Checklist</div><div class="page-subtitle" style="color:var(--text-muted-color)">Questions asked on every monthly inspection</div></div>' +
+      '<button class="btn btn-secondary" onclick="navigate(\'inspections\')">← Back</button>' +
+    '</div>' +
+    '<div id="insp-cl-msg"></div>' +
+    (rows || '<div style="color:var(--text-muted-color);margin-bottom:12px">No items yet.</div>') +
+    '<div style="display:flex;gap:10px;margin-top:12px">' +
+      '<button class="btn btn-secondary" onclick="inspClAdd()">' + icons.plus + ' Add item</button>' +
+      '<div style="flex:1"></div>' +
+      '<button class="btn btn-primary" id="insp-cl-save" onclick="inspClSave(this)">Save Checklist</button>' +
+    '</div>';
+}
+function inspClAdd() { window._inspClEdit.push({ item_key: '', label: '', type: 'status', requires_photo: false }); inspClRender(document.getElementById('content') || document.getElementById('app')); }
+function inspClRemove(idx) { window._inspClEdit.splice(idx, 1); inspClRender(document.getElementById('content') || document.getElementById('app')); }
+async function inspClSave(btn) {
+  var list = (window._inspClEdit || []).filter(function (it) { return (it.label || '').trim(); });
+  list.forEach(function (it) { if (!it.item_key) it.item_key = (it.label || '').trim().toLowerCase().replace(/[^a-z0-9]+/g, '_').slice(0, 60); });
+  try {
+    if (btn) { btn.disabled = true; btn.textContent = 'Saving…'; }
+    await api('PUT', '/inspections/checklist', { items: list });
+    navigate('inspections');
+  } catch (err) {
+    if (btn) { btn.disabled = false; btn.textContent = 'Save Checklist'; }
+    var m = document.getElementById('insp-cl-msg'); if (m) m.innerHTML = '<div class="alert alert-error">' + escHtml(err.message) + '</div>';
+  }
+}
+
+async function loadVehicleInspections(vehicleId) {
+  var box = document.getElementById('vh-insp');
+  if (!box) return;
+  try {
+    var rows = await api('GET', '/inspections?vehicle_id=' + vehicleId);
+    var priv = ['admin', 'manager'].includes(state.user.role);
+    var body = rows.length ? '<div class="table-wrap"><table><thead><tr><th>Number</th><th>Month</th><th>Result</th><th>Mileage</th><th>By</th><th>Photos</th><th>Date</th></tr></thead><tbody>' +
+      rows.map(function (i) {
+        return '<tr style="cursor:pointer" onclick="navigate(\'view-inspection\',' + i.id + ')">' +
+          '<td><strong style="color:var(--primary)">' + escHtml(i.inspection_number) + '</strong></td>' +
+          '<td>' + escHtml(i.period_month) + '</td>' +
+          '<td>' + inspResultBadge(i.overall_result) + (i.status === 'reviewed' ? ' <span style="font-size:10px;color:#22c55e">✓</span>' : '') + '</td>' +
+          '<td>' + (i.mileage != null ? i.mileage : '—') + '</td>' +
+          '<td>' + escHtml(i.submitted_by_name || '—') + '</td>' +
+          '<td style="text-align:center">' + (parseInt(i.photo_count, 10) || 0) + '</td>' +
+          '<td style="font-size:12px">' + formatDate(i.created_at) + '</td>' +
+        '</tr>';
+      }).join('') + '</tbody></table></div>' : '<div style="padding:16px;color:var(--text-muted-color);font-size:13px">No inspections recorded yet.</div>';
+    box.innerHTML = '<div class="card"><div class="card-header"><span class="card-title">Monthly Inspections</span>' +
+      (priv ? '<button class="btn btn-primary btn-sm" onclick="navigate(\'inspection-form\',' + vehicleId + ')">' + icons.plus + ' New Inspection</button>' : '') +
+      '</div><div class="card-body" style="padding:0">' + body + '</div></div>';
+  } catch (e) { box.innerHTML = ''; }
 }
 // ── Home Dashboard ─────────────────────────────────────────────────────────────
 // Deep link support: ?view=view-vr&id=123 from email buttons
@@ -7297,6 +7673,9 @@ async function renderHomeScreen(el) {
         (['admin','manager'].includes(state.user.role) ? '<div class="card" style="cursor:pointer" onclick="navigate(\'fleet-registry\')"><div class="card-body" style="text-align:center;padding:16px">' +
           '<div style="font-size:28px;font-weight:700;color:#22c55e">' + s.fleet_count + '</div>' +
           '<div style="font-size:12px;color:var(--text-muted-color);margin-top:4px">Fleet Vehicles</div></div></div>' : '') +
+        (can('view_inspections') && s.inspections_due != null ? '<div class="card" style="cursor:pointer" onclick="navigate(\'inspections\')"><div class="card-body" style="text-align:center;padding:16px">' +
+          '<div style="font-size:28px;font-weight:700;color:' + (s.inspections_due > 0 ? '#f59e0b' : '#22c55e') + '">' + s.inspections_due + '</div>' +
+          '<div style="font-size:12px;color:var(--text-muted-color);margin-top:4px">Inspections Due</div></div></div>' : '') +
       '</div>' +
 
       '<div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-bottom:24px">' +

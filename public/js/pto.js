@@ -82,7 +82,7 @@
     injectStyles();
     var manage = window.can && can('manage_pto');
     var tabs = [['me', 'My PTO']];
-    if (manage) { tabs.push(['approvals', 'Approvals'], ['team', 'Team PTO'], ['settings', 'Settings']); }
+    if (manage) { tabs.push(['approvals', 'Approvals'], ['cancellations', 'Cancellations'], ['team', 'Team PTO'], ['settings', 'Settings']); }
     if (!manage && TAB !== 'me') TAB = 'me';
     var bar = '<div class="pto-tabs">' + tabs.map(function (t) {
       return '<div class="pto-tab' + (TAB === t[0] ? ' active' : '') + '" onclick="ptoGo(\'' + t[0] + '\')">' + t[1] + '</div>';
@@ -92,6 +92,7 @@
     try {
       if (TAB === 'me') await tabMe(body);
       else if (TAB === 'approvals') await tabApprovals(body);
+      else if (TAB === 'cancellations') await tabCancellations(body);
       else if (TAB === 'team') await tabTeam(body);
       else if (TAB === 'settings') await tabSettings(body);
     } catch (e) {
@@ -290,6 +291,54 @@
     }
   }
   window.ptoApprPage = function (p) { loadApproved(p); };
+
+  // ---- CANCELLATIONS LOG (manager view, 10 per page) -----------------------
+  function cancelSourceLabel(x) {
+    if (x === 'manager_forced') return 'Admin forced';
+    if (x === 'manager_offer_accepted') return 'Mgr proposed, employee OK';
+    if (x === 'employee_requested') return 'Employee requested';
+    if (x === 'manager_direct') return 'Manager direct';
+    return x || '\u2014';
+  }
+  async function tabCancellations(body) {
+    body.innerHTML = '<div class="pto-panel"><h3>Cancellations</h3><div class="pto-desc">Every cancelled PTO from your reporting line, newest first.</div><div id="pto-canc-list"><div class="loading">Loading\u2026</div></div></div>';
+    loadCancellations(1);
+  }
+  async function loadCancellations(page) {
+    var host = document.getElementById('pto-canc-list');
+    if (!host) return;
+    host.innerHTML = '<div class="loading">Loading\u2026</div>';
+    try {
+      var data = await api('GET', '/pto/cancellations?page=' + page + '&page_size=10');
+      var list = (data && data.rows) || [];
+      var rows = list.map(function (r) {
+        var d = fmtDate(r.start_date) + (String(r.end_date).slice(0, 10) !== String(r.start_date).slice(0, 10) ? ' \u2013 ' + fmtDate(r.end_date) : '');
+        return '<tr><td><b>' + escHtml(r.user_name || '') + '</b><br><span class="pto-sub">' + escHtml(r.pay_type || '') + '</span></td>' +
+          '<td>' + d + '</td><td>' + r.business_days + '</td><td>' + fmtAmt(Number(r.hours), r.pay_type) + '</td>' +
+          '<td>' + (r.paid ? 'Paid' : 'Unpaid') + ' ' + escHtml(r.type || '') + '</td>' +
+          '<td><span class="pto-sub">' + escHtml(cancelSourceLabel(r.source)) + '</span></td>' +
+          '<td>' + (r.memo ? escHtml(r.memo) : '<span class="pto-sub">\u2014</span>') + '</td>' +
+          '<td>' + escHtml(r.decided_by_name || r.initiated_by_name || '\u2014') + '</td>' +
+          '<td>' + (r.created_at ? fmtDate(r.created_at) : '\u2014') + '</td></tr>';
+      }).join('');
+      var table = '<table class="pto-table"><thead><tr><th>Employee</th><th>Dates</th><th>Days</th><th>Amount</th><th>Type</th><th>How</th><th>Reason</th><th>By</th><th>When</th></tr></thead><tbody>' +
+        (rows || '<tr><td colspan="9" class="pto-sub">No cancellations yet.</td></tr>') + '</tbody></table>';
+      var pages = (data && data.pages) || 1, cur = (data && data.page) || 1, total = (data && data.total) || 0;
+      var pager = '';
+      if (pages > 1) {
+        pager = '<div style="display:flex;align-items:center;justify-content:space-between;gap:10px;margin-top:12px">' +
+          '<span class="pto-sub">' + total + ' total \u00b7 page ' + cur + ' of ' + pages + '</span>' +
+          '<span style="display:flex;gap:8px">' +
+            '<button class="pto-btn ghost sm" ' + (cur <= 1 ? 'disabled' : '') + ' onclick="ptoCancPage(' + (cur - 1) + ')">Prev</button>' +
+            '<button class="pto-btn ghost sm" ' + (cur >= pages ? 'disabled' : '') + ' onclick="ptoCancPage(' + (cur + 1) + ')">Next</button>' +
+          '</span></div>';
+      }
+      host.innerHTML = table + pager;
+    } catch (e) {
+      host.innerHTML = '<div class="alert alert-error">Could not load cancellations (' + escHtml(e.message || 'error') + ').</div>';
+    }
+  }
+  window.ptoCancPage = function (p) { loadCancellations(p); };
   window.ptoApprove = function (id, over) {
     if (over) return openOverride(id);
     doApprove(id, '');

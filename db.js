@@ -219,6 +219,80 @@ async function initDB() {
       'ALTER TABLE users ADD COLUMN IF NOT EXISTS receive_sms BOOLEAN NOT NULL DEFAULT false;'
     );
     await client.query(
+      'CREATE TABLE IF NOT EXISTS vehicle_inspections (' +
+      '  id SERIAL PRIMARY KEY,' +
+      '  inspection_number VARCHAR(50) UNIQUE NOT NULL,' +
+      '  vehicle_id INTEGER REFERENCES vehicles(id),' +
+      '  period_month CHAR(7) NOT NULL,' +
+      '  submitted_by INTEGER REFERENCES users(id),' +
+      '  city_code CHAR(3),' +
+      '  mileage INTEGER,' +
+      "  status VARCHAR(30) NOT NULL DEFAULT 'submitted'," +
+      "  overall_result VARCHAR(20) DEFAULT 'pass'," +
+      '  reviewer_id INTEGER REFERENCES users(id),' +
+      '  reviewed_at TIMESTAMP,' +
+      '  notes TEXT,' +
+      '  created_at TIMESTAMP DEFAULT NOW(),' +
+      '  updated_at TIMESTAMP DEFAULT NOW()' +
+      ');' +
+      'CREATE TABLE IF NOT EXISTS inspection_items (' +
+      '  id SERIAL PRIMARY KEY,' +
+      '  inspection_id INTEGER REFERENCES vehicle_inspections(id) ON DELETE CASCADE,' +
+      '  item_key VARCHAR(60),' +
+      '  label VARCHAR(255),' +
+      '  answer VARCHAR(40),' +
+      '  comment TEXT' +
+      ');' +
+      'CREATE TABLE IF NOT EXISTS inspection_photos (' +
+      '  id SERIAL PRIMARY KEY,' +
+      '  inspection_id INTEGER REFERENCES vehicle_inspections(id) ON DELETE CASCADE,' +
+      '  item_key VARCHAR(60),' +
+      '  name VARCHAR(255),' +
+      '  r2_key VARCHAR(500),' +
+      '  mime_type VARCHAR(255),' +
+      '  size_bytes BIGINT DEFAULT 0,' +
+      '  caption VARCHAR(255),' +
+      '  uploaded_by INTEGER REFERENCES users(id),' +
+      '  uploaded_by_name VARCHAR(255),' +
+      "  status VARCHAR(20) DEFAULT 'pending'," +
+      '  created_at TIMESTAMP DEFAULT NOW()' +
+      ');' +
+      'CREATE TABLE IF NOT EXISTS inspection_checklist (' +
+      '  id SERIAL PRIMARY KEY,' +
+      '  item_key VARCHAR(60) UNIQUE NOT NULL,' +
+      '  label VARCHAR(255) NOT NULL,' +
+      "  type VARCHAR(20) NOT NULL DEFAULT 'status'," +
+      '  sort_order INTEGER DEFAULT 0,' +
+      '  requires_photo BOOLEAN NOT NULL DEFAULT false,' +
+      '  active BOOLEAN NOT NULL DEFAULT true' +
+      ');' +
+      'ALTER TABLE vehicles ADD COLUMN IF NOT EXISTS inspection_exempt BOOLEAN NOT NULL DEFAULT false;' +
+      'ALTER TABLE vehicles ADD COLUMN IF NOT EXISTS inspection_exempt_reason VARCHAR(255);' +
+      'CREATE UNIQUE INDEX IF NOT EXISTS idx_insp_vehicle_month ON vehicle_inspections(vehicle_id, period_month);' +
+      'CREATE INDEX IF NOT EXISTS idx_insp_period ON vehicle_inspections(period_month);' +
+      'CREATE INDEX IF NOT EXISTS idx_insp_items_insp ON inspection_items(inspection_id);' +
+      'CREATE INDEX IF NOT EXISTS idx_insp_photos_insp ON inspection_photos(inspection_id);'
+    );
+    // Seed the default monthly inspection checklist once (only when empty).
+    await client.query(
+      'INSERT INTO inspection_checklist (item_key, label, type, sort_order, requires_photo, active) ' +
+      'SELECT s.item_key, s.label, s.type, s.sort_order, s.requires_photo, s.active FROM (VALUES ' +
+      "  ('exterior','Exterior / body condition (dents, damage)','status',10,true,true)," +
+      "  ('tires','Tires & tread depth','status',20,true,true)," +
+      "  ('lights','Lights & turn signals','status',30,false,true)," +
+      "  ('brakes','Brakes','status',40,false,true)," +
+      "  ('fluids','Fluid levels (oil, coolant, washer)','status',50,false,true)," +
+      "  ('wipers','Wipers & windshield','status',60,false,true)," +
+      "  ('horn_mirrors','Horn & mirrors','status',70,false,true)," +
+      "  ('seatbelts','Seatbelts','status',80,false,true)," +
+      "  ('registration','Registration & insurance in vehicle','status',90,false,true)," +
+      "  ('cleanliness','Interior / exterior cleanliness','status',100,false,true)," +
+      "  ('odometer','Odometer reading photo','status',110,true,true)," +
+      "  ('concerns','Other concerns / notes','text',120,false,true) " +
+      ') AS s(item_key,label,type,sort_order,requires_photo,active) ' +
+      'WHERE NOT EXISTS (SELECT 1 FROM inspection_checklist);'
+    );
+    await client.query(
       'CREATE TABLE IF NOT EXISTS suggestions (' +
       '  id SERIAL PRIMARY KEY,' +
       '  category VARCHAR(100) NOT NULL,' +
@@ -739,6 +813,25 @@ async function initDB() {
     await client.query("ALTER TABLE pto_requests ADD COLUMN IF NOT EXISTS cancel_initiated_at TIMESTAMP;");
     // Remember a shift's position before PTO overwrote it, so cancel can restore it exactly.
     await client.query("ALTER TABLE shifts ADD COLUMN IF NOT EXISTS prev_position_id INTEGER;");
+    await client.query(
+      'CREATE TABLE IF NOT EXISTS pto_cancellations (' +
+      '  id SERIAL PRIMARY KEY,' +
+      '  request_id INTEGER REFERENCES pto_requests(id) ON DELETE SET NULL,' +
+      '  user_id INTEGER REFERENCES users(id),' +
+      '  start_date DATE NOT NULL,' +
+      '  end_date DATE NOT NULL,' +
+      '  business_days INTEGER NOT NULL DEFAULT 0,' +
+      '  hours NUMERIC(8,2) NOT NULL DEFAULT 0,' +
+      '  paid BOOLEAN NOT NULL DEFAULT true,' +
+      '  type VARCHAR(40),' +
+      '  source VARCHAR(40),' +
+      '  memo TEXT,' +
+      '  initiated_by INTEGER REFERENCES users(id),' +
+      '  decided_by INTEGER REFERENCES users(id),' +
+      '  created_at TIMESTAMP DEFAULT NOW()' +
+      ');'
+    );
+    await client.query('CREATE INDEX IF NOT EXISTS idx_pto_cancellations_user ON pto_cancellations(user_id);');
     await client.query("ALTER TABLE users ADD COLUMN IF NOT EXISTS extra_perms TEXT[] NOT NULL DEFAULT '{}';");
     await client.query("ALTER TABLE users ADD COLUMN IF NOT EXISTS last_login_at TIMESTAMPTZ;");
     await client.query("ALTER TABLE users ADD COLUMN IF NOT EXISTS last_seen_at TIMESTAMPTZ;");

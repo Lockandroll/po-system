@@ -222,13 +222,26 @@ async function notifyRequester(userId, decision, from, to, days, approverName, r
 
 // Reverse an approved PTO: restore paid hours and clear the vacation shifts.
 // Must be called inside a transaction (pass the connected client).
-async function reverseAndClear(client, r, actorId) {
+// Insert one row into the cancellation log. Call inside the same transaction.
+async function recordCancellation(client, r, meta) {
+  meta = meta || {};
+  await client.query(
+    'INSERT INTO pto_cancellations (request_id, user_id, start_date, end_date, business_days, hours, paid, type, source, memo, initiated_by, decided_by) ' +
+    'VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)',
+    [r.id, r.user_id, ymdOf(r.start_date), ymdOf(r.end_date), r.business_days || 0, Number(r.hours) || 0, r.paid, r.type || null, meta.source || null, meta.memo || null, meta.initiated_by || null, meta.decided_by || null]
+  );
+}
+
+// Reverse an approved PTO: restore paid hours, restore the shift positions, and
+// log the cancellation. Must be called inside a transaction (pass the client).
+async function reverseAndClear(client, r, actorId, meta) {
   const from = ymdOf(r.start_date), to = ymdOf(r.end_date);
   if (r.paid) {
     await postLedger(client, { user_id: r.user_id, entry_date: from, kind: 'reversal', amount_hours: Number(r.hours), description: 'PTO cancelled ' + from, request_id: r.id, created_by: actorId });
   }
   await client.query('UPDATE pto_requests SET status = $1, updated_at = NOW() WHERE id = $2', ['cancelled', r.id]);
   await client.query('UPDATE shifts SET position_id = prev_position_id, prev_position_id = NULL, updated_at = NOW() WHERE user_id = $1 AND shift_date BETWEEN $2 AND $3 AND position_id = ANY($4::int[])', [r.user_id, from, to, [APPROVED_VACATION_POSITION_ID, UNPAID_VACATION_POSITION_ID]]);
+  await recordCancellation(client, r, meta);
 }
 
 // Notify the employee that their manager wants to cancel an approved PTO.
@@ -471,6 +484,29 @@ router.get('/approved', requireAuth, async (req, res) => {
   res.json({ rows: rows, total: total, page: page, page_size: pageSize, pages: pages });
 });
 
+// ---- CANCELLATIONS LOG (paginated, reporting-line scope) -------------------
+router.get('/cancellations', requireAuth, async (req, res) => {
+  const pageSize = Math.min(Math.max(parseInt(req.query.page_size, 10) || 10, 1), 50);
+  const page = Math.max(parseInt(req.query.page, 10) || 1, 1);
+  const all = await pool.query(
+    'SELECT c.*, u.name AS user_name, u.pay_type, ib.name AS initiated_by_name, db2.name AS decided_by_name ' +
+    'FROM pto_cancellations c JOIN users u ON u.id = c.user_id ' +
+    'LEFT JOIN users ib ON ib.id = c.initiated_by ' +
+    'LEFT JOIN users db2 ON db2.id = c.decided_by ' +
+    'ORDER BY c.created_at DESC, c.id DESC'
+  );
+  const mine = [];
+  for (let i = 0; i < all.rows.length; i++) {
+    const r = all.rows[i];
+    if (await canApprove(req.user, r.user_id)) mine.push(r);
+  }
+  const total = mine.length;
+  const pages = Math.max(Math.ceil(total / pageSize), 1);
+  const start = (page - 1) * pageSize;
+  const rows = mine.slice(start, start + pageSize);
+  res.json({ rows: rows, total: total, page: page, page_size: pageSize, pages: pages });
+});
+
 // ---- APPROVE ---------------------------------------------------------------
 
 router.post('/requests/:id/approve', requireAuth, async (req, res) => {
@@ -589,6 +625,7 @@ router.post('/requests/:id/cancel', requireAuth, async (req, res) => {
       }
       await client.query('UPDATE pto_requests SET status = $1, updated_at = NOW() WHERE id = $2', ['cancelled', id]);
       await client.query('UPDATE shifts SET position_id = prev_position_id, prev_position_id = NULL, updated_at = NOW() WHERE user_id = $1 AND shift_date BETWEEN $2 AND $3 AND position_id = ANY($4::int[])', [r.user_id, from, to, [APPROVED_VACATION_POSITION_ID, UNPAID_VACATION_POSITION_ID]]);
+      await recordCancellation(client, r, { source: (r.status === 'cancel_requested' ? 'employee_requested' : 'manager_direct'), memo: null, initiated_by: (r.status === 'cancel_requested' ? r.user_id : req.user.id), decided_by: req.user.id });
       await client.query('COMMIT');
     } catch (e) {
       await client.query('ROLLBACK');
@@ -624,7 +661,7 @@ router.post('/requests/:id/mgr-cancel', requireAuth, async (req, res) => {
     try {
       await client.query('BEGIN');
       await client.query('UPDATE pto_requests SET cancel_memo = $1, cancel_initiated_by = $2, cancel_initiated_at = NOW() WHERE id = $3', [memo, req.user.id, id]);
-      await reverseAndClear(client, r, req.user.id);
+      await reverseAndClear(client, r, req.user.id, { source: 'manager_forced', memo: memo, initiated_by: req.user.id, decided_by: req.user.id });
       await client.query('COMMIT');
     } catch (e) {
       await client.query('ROLLBACK');
@@ -663,7 +700,7 @@ router.post('/requests/:id/cancel-respond', requireAuth, async (req, res) => {
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
-    await reverseAndClear(client, r, req.user.id);
+    await reverseAndClear(client, r, req.user.id, { source: 'manager_offer_accepted', memo: r.cancel_memo, initiated_by: r.cancel_initiated_by, decided_by: req.user.id });
     await client.query('COMMIT');
   } catch (e) {
     await client.query('ROLLBACK');

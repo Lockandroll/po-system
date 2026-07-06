@@ -53,12 +53,12 @@ router.get('/:id', requireAuth, async function(req, res) {
 
 // POST create vehicle — admin/manager only
 router.post('/', requireAuth, requirePermission('manage_vehicles'), async function(req, res) {
-  const { year, make_model, vin, key_codes, assigned_user_id, city_code, date_of_assignment, license_plate, mileage, notes } = req.body;
+  const { year, make_model, vin, key_codes, assigned_user_id, city_code, date_of_assignment, license_plate, mileage, notes, inspection_exempt, inspection_exempt_reason } = req.body;
   if (!year || !make_model) return res.status(400).json({ error: 'Year and Make/Model are required' });
   try {
     const { rows } = await pool.query(
-      'INSERT INTO vehicles (year, make_model, vin, key_codes, assigned_user_id, city_code, date_of_assignment, license_plate, mileage, notes) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) RETURNING *',
-      [parseInt(year), make_model, vin || null, key_codes || null, assigned_user_id || null, city_code || null, date_of_assignment || null, license_plate || null, mileage ? parseInt(mileage) : null, notes || null]
+      'INSERT INTO vehicles (year, make_model, vin, key_codes, assigned_user_id, city_code, date_of_assignment, license_plate, mileage, notes, inspection_exempt, inspection_exempt_reason) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12) RETURNING *',
+      [parseInt(year), make_model, vin || null, key_codes || null, assigned_user_id || null, city_code || null, date_of_assignment || null, license_plate || null, mileage ? parseInt(mileage) : null, notes || null, inspection_exempt === true, inspection_exempt ? (inspection_exempt_reason || null) : null]
     );
     res.status(201).json(rows[0]);
   } catch(err) {
@@ -69,12 +69,12 @@ router.post('/', requireAuth, requirePermission('manage_vehicles'), async functi
 
 // PUT update vehicle — admin/manager only
 router.put('/:id', requireAuth, requirePermission('manage_vehicles'), async function(req, res) {
-  const { year, make_model, vin, key_codes, assigned_user_id, city_code, date_of_assignment, license_plate, mileage, notes } = req.body;
+  const { year, make_model, vin, key_codes, assigned_user_id, city_code, date_of_assignment, license_plate, mileage, notes, inspection_exempt, inspection_exempt_reason } = req.body;
   if (!year || !make_model) return res.status(400).json({ error: 'Year and Make/Model are required' });
   try {
     const { rows } = await pool.query(
-      'UPDATE vehicles SET year=$1, make_model=$2, vin=$3, key_codes=$4, assigned_user_id=$5, city_code=$6, date_of_assignment=$7, license_plate=$8, mileage=$9, notes=$10, updated_at=NOW() WHERE id=$11 RETURNING *',
-      [parseInt(year), make_model, vin || null, key_codes || null, assigned_user_id || null, city_code || null, date_of_assignment || null, license_plate || null, mileage ? parseInt(mileage) : null, notes || null, req.params.id]
+      'UPDATE vehicles SET year=$1, make_model=$2, vin=$3, key_codes=$4, assigned_user_id=$5, city_code=$6, date_of_assignment=$7, license_plate=$8, mileage=$9, notes=$10, inspection_exempt=$11, inspection_exempt_reason=$12, updated_at=NOW() WHERE id=$13 RETURNING *',
+      [parseInt(year), make_model, vin || null, key_codes || null, assigned_user_id || null, city_code || null, date_of_assignment || null, license_plate || null, mileage ? parseInt(mileage) : null, notes || null, inspection_exempt === true, inspection_exempt ? (inspection_exempt_reason || null) : null, req.params.id]
     );
     if (!rows.length) return res.status(404).json({ error: 'Vehicle not found' });
     res.json(rows[0]);

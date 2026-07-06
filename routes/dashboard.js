@@ -53,9 +53,12 @@ router.get('/', requireAuth, async function(req, res) {
     const activityQ = pool.query(
       'SELECT entity_type, entity_number, action, user_name, created_at FROM audit_logs ORDER BY created_at DESC LIMIT 8'
     );
+    const inspDueQ = isPrivileged
+      ? pool.query("SELECT COUNT(*) AS c FROM vehicles v WHERE v.active = true AND v.inspection_exempt = false AND NOT EXISTS (SELECT 1 FROM vehicle_inspections i WHERE i.vehicle_id = v.id AND i.period_month = to_char(NOW() AT TIME ZONE 'America/New_York','YYYY-MM'))").catch(function(){ return { rows: [{ c: 0 }] }; })
+      : pool.query("SELECT COUNT(*) AS c FROM vehicles v WHERE v.active = true AND v.inspection_exempt = false AND v.assigned_user_id = $1 AND NOT EXISTS (SELECT 1 FROM vehicle_inspections i WHERE i.vehicle_id = v.id AND i.period_month = to_char(NOW() AT TIME ZONE 'America/New_York','YYYY-MM'))", [userId]).catch(function(){ return { rows: [{ c: 0 }] }; });
 
     const results = await Promise.all([
-      pendingVRsQ, pendingPOsQ, vrStatsQ, poStatsQ, quoteStatsQ, fleetStatsQ, myTasksQ, activityQ
+      pendingVRsQ, pendingPOsQ, vrStatsQ, poStatsQ, quoteStatsQ, fleetStatsQ, myTasksQ, activityQ, inspDueQ
     ]);
     const pendingVRs = results[0].rows;
     const pendingPOs = results[1].rows;
@@ -65,6 +68,7 @@ router.get('/', requireAuth, async function(req, res) {
     const fleetStats = results[5].rows;
     const myTasks = results[6].rows;
     const activity = results[7].rows;
+    const inspDue = results[8].rows;
 
     res.json({
       pendingVRs,
@@ -76,7 +80,8 @@ router.get('/', requireAuth, async function(req, res) {
         open_po_total: parseFloat(poStats[0].open_po_total) || 0,
         active_quotes: parseInt(quoteStats[0].active_quotes) || 0,
         quote_total: parseFloat(quoteStats[0].quote_total) || 0,
-        fleet_count: parseInt(fleetStats[0].fleet_count) || 0
+        fleet_count: parseInt(fleetStats[0].fleet_count) || 0,
+        inspections_due: parseInt(inspDue[0].c) || 0
       },
       activity
     });
