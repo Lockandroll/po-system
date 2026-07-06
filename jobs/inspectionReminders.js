@@ -40,9 +40,11 @@ async function getCutoffDay() {
 async function missingForMonth(month) {
   const { rows } = await pool.query(
     'SELECT v.id, v.year, v.make_model, v.license_plate, v.city_code, v.assigned_user_id, ' +
-    'u.name as driver_name, u.email as driver_email, u.phone as driver_phone, ' +
-    'u.receive_emails as driver_receive_emails, u.receive_sms as driver_receive_sms ' +
+    'u.name as driver_name, u.supervisor_id as manager_id, ' +
+    'mgr.name as manager_name, mgr.email as manager_email, mgr.phone as manager_phone, ' +
+    'mgr.receive_emails as manager_receive_emails, mgr.receive_sms as manager_receive_sms ' +
     'FROM vehicles v LEFT JOIN users u ON v.assigned_user_id = u.id ' +
+    'LEFT JOIN users mgr ON u.supervisor_id = mgr.id ' +
     'WHERE v.active = true AND v.inspection_exempt = false ' +
     'AND NOT EXISTS (SELECT 1 FROM vehicle_inspections i WHERE i.vehicle_id = v.id AND i.period_month = $1)',
     [month]
@@ -50,31 +52,48 @@ async function missingForMonth(month) {
   return rows;
 }
 
-// Nudge each assigned driver whose vehicle is still uninspected this month.
-async function nudgeDrivers() {
+// Nudge each MANAGER (the assigned driver's supervisor) about their team's
+// vehicles that are still uninspected this month. One grouped message per manager.
+async function nudgeManagers() {
   var p = etParts();
   var missing = await missingForMonth(p.month);
-  for (const v of missing) {
-    if (!v.assigned_user_id) continue;
-    var label = v.year + ' ' + (v.make_model || 'vehicle') + (v.license_plate ? ' (' + v.license_plate + ')' : '');
-    try { await push.sendPushToUsers([v.assigned_user_id], { title: 'Monthly vehicle inspection due', body: 'Please complete the inspection for ' + label + '.', url: '/' }); } catch (e) {}
-    if (v.driver_receive_emails !== false && v.driver_email) {
+  var byMgr = {};
+  missing.forEach(function (v) {
+    if (!v.manager_id) return; // no manager on file -> covered by month-end escalation to admins
+    (byMgr[v.manager_id] = byMgr[v.manager_id] || { mgr: v, vehicles: [] }).vehicles.push(v);
+  });
+  var mgrIds = Object.keys(byMgr);
+  for (var m = 0; m < mgrIds.length; m++) {
+    var grp = byMgr[mgrIds[m]];
+    var mgr = grp.mgr;
+    var vs = grp.vehicles;
+    var count = vs.length;
+    try { await push.sendPushToUsers([mgr.manager_id], { title: 'Vehicle inspections due', body: count + ' of your team\'s vehicle' + (count === 1 ? '' : 's') + ' need inspecting this month.', url: '/' }); } catch (e) {}
+    var listRows = vs.map(function (v) {
+      var label = v.year + ' ' + (v.make_model || 'vehicle') + (v.license_plate ? ' (' + v.license_plate + ')' : '');
+      return '<tr>' +
+        '<td style="padding:8px 12px;border-bottom:1px solid #eee;font-size:13px">' + label + '</td>' +
+        '<td style="padding:8px 12px;border-bottom:1px solid #eee;font-size:13px">' + (v.driver_name || 'Unassigned') + '</td>' +
+        '<td style="padding:8px 12px;border-bottom:1px solid #eee;font-size:13px">' + (v.city_code || '—') + '</td>' +
+      '</tr>';
+    }).join('');
+    if (mgr.manager_receive_emails !== false && mgr.manager_email) {
       var html = emailTemplate({
         badge: 'Reminder',
-        title: 'Monthly vehicle inspection due',
-        body: 'Your assigned vehicle still needs its monthly inspection. Please complete it before the end of the month.',
-        details: [
-          { label: 'Vehicle', value: label },
-          { label: 'City', value: v.city_code || '—' },
-          { label: 'Month', value: p.month }
-        ],
-        buttonText: 'Start inspection',
-        buttonUrl: appUrl('?view=inspection-form&id=' + v.id)
+        title: count + ' vehicle inspection' + (count === 1 ? '' : 's') + ' due for your team',
+        body: 'These vehicles assigned to your team still need their ' + p.month + ' inspection. As the drivers\' manager, please complete them before month end.' +
+          '<table style="width:100%;border-collapse:collapse;margin-top:12px"><thead><tr>' +
+          '<th style="text-align:left;padding:8px 12px;font-size:12px;color:#888">Vehicle</th>' +
+          '<th style="text-align:left;padding:8px 12px;font-size:12px;color:#888">Driver</th>' +
+          '<th style="text-align:left;padding:8px 12px;font-size:12px;color:#888">City</th>' +
+          '</tr></thead><tbody>' + listRows + '</tbody></table>',
+        buttonText: 'Open inspections',
+        buttonUrl: appUrl('?view=inspections')
       });
-      try { await sendEmail(v.driver_email, 'Reminder: monthly inspection due for ' + label, html); } catch (e) { console.error('inspection nudge email failed:', e.message); }
+      try { await sendEmail(mgr.manager_email, count + ' vehicle inspection' + (count === 1 ? '' : 's') + ' due for your team', html); } catch (e) { console.error('inspection nudge email failed:', e.message); }
     }
-    if (v.driver_receive_sms && v.driver_phone) {
-      try { await sendSms(v.driver_phone, 'Lock & Roll: Monthly inspection due for ' + label + '. Complete it here: ' + appUrl('?view=inspection-form&id=' + v.id)); } catch (e) {}
+    if (mgr.manager_receive_sms && mgr.manager_phone) {
+      try { await sendSms(mgr.manager_phone, 'Lock & Roll: ' + count + ' of your team\'s vehicles need their ' + p.month + ' inspection. ' + appUrl('?view=inspections')); } catch (e) {}
     }
   }
   return missing.length;
@@ -127,7 +146,7 @@ async function runDaily() {
     if (p.day === 1) { await escalateOverdue(); }
     // Nudge drivers on the cutoff day, then every 2 days until month end.
     if (p.day >= cutoff && ((p.day - cutoff) % 2 === 0 || p.day === p.lastDay)) {
-      await nudgeDrivers();
+      await nudgeManagers();
     }
   } catch (err) {
     console.error('inspection reminder run failed:', err.message);
@@ -140,4 +159,4 @@ function startInspectionReminders() {
   }, { timezone: 'America/New_York' });
 }
 
-module.exports = { startInspectionReminders, runDaily, nudgeDrivers, escalateOverdue };
+module.exports = { startInspectionReminders, runDaily, nudgeManagers, escalateOverdue };

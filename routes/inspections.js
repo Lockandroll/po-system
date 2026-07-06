@@ -58,7 +58,12 @@ function sanitizePhotoName(name) {
   return String(name || 'photo').replace(/[^a-zA-Z0-9._-]/g, '_').slice(0, 120) || 'photo';
 }
 
-function isPrivileged(user) { return ['admin', 'manager'].includes(user.role); }
+function isPrivileged(user) { return ['admin', 'owner', 'manager'].includes(user.role); }
+// Who may COMPLETE an inspection: admins/managers, or the assigned driver's direct manager (supervisor).
+function canSubmit(user, driverSupervisorId) {
+  if (['admin', 'owner', 'manager'].includes(user.role)) return true;
+  return !!(driverSupervisorId && user.id === driverSupervisorId);
+}
 
 // ===== Checklist =====
 // Active checklist (for the entry form). Admins/managers get all + inactive via ?all=1.
@@ -125,8 +130,9 @@ router.get('/compliance', requireAuth, requirePermission('view_inspections'), as
     var params = [month];
     var where = 'v.active = true';
     if (!isPrivileged(req.user)) {
+      // Non-privileged users see the vehicles of the drivers who report to them.
       params.push(req.user.id);
-      where += ' AND v.assigned_user_id = $' + params.length;
+      where += ' AND u.supervisor_id = $' + params.length;
     } else if (cityCode) {
       params.push(cityCode);
       where += ' AND v.city_code = $' + params.length;
@@ -134,11 +140,13 @@ router.get('/compliance', requireAuth, requirePermission('view_inspections'), as
     const { rows } = await pool.query(
       'SELECT v.id as vehicle_id, v.year, v.make_model, v.license_plate, v.city_code, v.assigned_user_id, ' +
       '       v.inspection_exempt, v.inspection_exempt_reason, u.name as driver_name, ' +
+      '       u.supervisor_id as driver_supervisor_id, mgr.name as manager_name, ' +
       '       i.id as inspection_id, i.inspection_number, i.status, i.overall_result, i.mileage, ' +
       '       i.submitted_by, su.name as submitted_by_name, i.created_at as inspected_at, ' +
       '       (SELECT COUNT(*) FROM inspection_photos p WHERE p.inspection_id = i.id AND p.status = $' + (params.length + 1) + ') as photo_count ' +
       'FROM vehicles v ' +
       'LEFT JOIN users u ON v.assigned_user_id = u.id ' +
+      'LEFT JOIN users mgr ON u.supervisor_id = mgr.id ' +
       'LEFT JOIN vehicle_inspections i ON i.vehicle_id = v.id AND i.period_month = $1 ' +
       'LEFT JOIN users su ON i.submitted_by = su.id ' +
       'WHERE ' + where + ' ' +
@@ -217,11 +225,11 @@ router.post('/', requireAuth, requirePermission('view_inspections'), async funct
   if (!vehicle_id) return res.status(400).json({ error: 'Vehicle is required' });
   var month = validMonth(period_month) ? period_month : etMonth();
   try {
-    const vr = await pool.query('SELECT id, city_code, assigned_user_id, inspection_exempt FROM vehicles WHERE id = $1', [vehicle_id]);
+    const vr = await pool.query('SELECT v.id, v.city_code, v.assigned_user_id, v.inspection_exempt, du.supervisor_id AS driver_supervisor_id FROM vehicles v LEFT JOIN users du ON v.assigned_user_id = du.id WHERE v.id = $1', [vehicle_id]);
     if (!vr.rows.length) return res.status(404).json({ error: 'Vehicle not found' });
     const veh = vr.rows[0];
-    if (!isPrivileged(req.user) && veh.assigned_user_id !== req.user.id) {
-      return res.status(403).json({ error: 'You can only inspect a vehicle assigned to you' });
+    if (!canSubmit(req.user, veh.driver_supervisor_id)) {
+      return res.status(403).json({ error: 'Only the driver\'s manager (or an admin) can complete this inspection.' });
     }
     const result = deriveResult(items);
     for (var attempt = 0; attempt < 10; attempt++) {

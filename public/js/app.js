@@ -7236,7 +7236,7 @@ function inspStatusChip(key) {
 
 async function renderInspectionCompliance(el) {
   el.innerHTML = '<div class="loading">Loading…</div>';
-  var priv = ['admin', 'manager'].includes(state.user.role);
+  var priv = ['admin', 'owner', 'manager'].includes(state.user.role);
   try {
     if (priv && !_inspCities) { try { _inspCities = await api('GET', '/cities'); } catch (e) { _inspCities = []; } }
     var month = (_inspCompliance && _inspCompliance.month) || '';
@@ -7250,7 +7250,7 @@ async function renderInspectionCompliance(el) {
 
 function inspRenderCompliance(el) {
   var d = _inspCompliance; if (!d) return;
-  var priv = ['admin', 'manager'].includes(state.user.role);
+  var priv = ['admin', 'owner', 'manager'].includes(state.user.role);
   var meta = { month: d.month, current_month: d.current_month, cutoff_day: d.cutoff_day };
   var counts = { done: 0, due: 0, overdue: 0, exempt: 0 };
   d.vehicles.forEach(function (v) { counts[inspComplianceStatusKey(v, meta)]++; });
@@ -7259,14 +7259,14 @@ function inspRenderCompliance(el) {
   }).join(''));
   var rows = d.vehicles.map(function (v) {
     var key = inspComplianceStatusKey(v, meta);
-    var canStart = !v.inspection_exempt && (priv || v.assigned_user_id === state.user.id);
+    var canStart = !v.inspection_exempt && (priv || (v.driver_supervisor_id && v.driver_supervisor_id === state.user.id));
     var action = v.inspection_id
       ? '<button class="btn btn-secondary btn-sm" onclick="navigate(\'view-inspection\',' + v.inspection_id + ')">View</button>'
       : (canStart ? '<button class="btn btn-primary btn-sm" onclick="navigate(\'inspection-form\',' + v.vehicle_id + ')">Start</button>' : '<span style="color:var(--text-muted-color);font-size:12px">—</span>');
     return '<tr style="' + (v.inspection_exempt ? 'opacity:0.55' : '') + '">' +
       '<td><strong>' + v.year + ' ' + escHtml(v.make_model || '') + '</strong>' + (v.license_plate ? '<div style="font-size:11px;color:var(--text-muted-color)">' + escHtml(v.license_plate) + '</div>' : '') + '</td>' +
       '<td>' + escHtml(v.city_code || '—') + '</td>' +
-      '<td>' + escHtml(v.driver_name || 'Unassigned') + '</td>' +
+      '<td>' + escHtml(v.driver_name || 'Unassigned') + (v.manager_name ? '<div style="font-size:11px;color:var(--text-muted-color)">Inspector: ' + escHtml(v.manager_name) + '</div>' : '') + '</td>' +
       '<td>' + inspStatusChip(key) + (v.inspection_exempt && v.inspection_exempt_reason ? '<div style="font-size:11px;color:var(--text-muted-color);margin-top:2px">' + escHtml(v.inspection_exempt_reason) + '</div>' : '') + '</td>' +
       '<td>' + (v.inspection_id ? inspResultBadge(v.overall_result) : '—') + '</td>' +
       '<td style="font-size:12px">' + (v.inspected_at ? formatDate(v.inspected_at) + (v.submitted_by_name ? '<div style="color:var(--text-muted-color)">' + escHtml(v.submitted_by_name) + '</div>' : '') : '—') + '</td>' +
@@ -7315,8 +7315,6 @@ async function renderInspectionForm(el, vehicleId) {
   window._inspOptMap = {};
   try {
     var vehicle = await api('GET', '/vehicles/' + vehicleId);
-    var priv = ['admin', 'manager'].includes(state.user.role);
-    if (!priv && vehicle.assigned_user_id !== state.user.id) { el.innerHTML = '<div class="alert alert-error">You can only inspect a vehicle assigned to you.</div>'; return; }
     var checklist = await api('GET', '/inspections/checklist');
     var existing = await api('GET', '/inspections?vehicle_id=' + vehicleId);
     var curMonthRow = (existing || []).filter(function (i) { return i.period_month === _inspCurrentMonth(); })[0];
@@ -7515,23 +7513,25 @@ async function renderInspectionChecklistAdmin(el) {
     inspClRender(el);
   } catch (err) { el.innerHTML = '<div class="alert alert-error">' + escHtml(err.message) + '</div>'; }
 }
-function inspClColorSelect(i, j, color) {
-  return '<select onchange="window._inspClEdit[' + i + '].options[' + j + '].color=this.value;inspClTintColor(this)" style="color:' + inspColorHex(color) + ';font-weight:600">' +
-    INSP_COLOR_ORDER.map(function (c) { return '<option value="' + c + '"' + (color === c ? ' selected' : '') + '>' + c.charAt(0).toUpperCase() + c.slice(1) + '</option>'; }).join('') +
-  '</select>';
+function inspClColorSwatches(i, j, color) {
+  return '<div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap">' +
+    INSP_COLOR_ORDER.map(function (c) {
+      var seld = (color === c);
+      return '<span onclick="inspClSetOpt(' + i + ',' + j + ',\'' + c + '\')" title="' + c.charAt(0).toUpperCase() + c.slice(1) + '" style="width:24px;height:24px;border-radius:50%;background:' + INSP_COLORS[c] + ';cursor:pointer;display:inline-block;box-sizing:border-box;border:2px solid ' + (seld ? '#fff' : 'transparent') + ';box-shadow:' + (seld ? '0 0 0 2px ' + INSP_COLORS[c] : 'inset 0 0 0 1px rgba(255,255,255,0.25)') + '"></span>';
+    }).join('') +
+  '</div>';
 }
-function inspClTintColor(sel) { sel.style.color = inspColorHex(sel.value); }
+function inspClSetOpt(i, j, color) { window._inspClEdit[i].options[j].color = color; inspClRerender(); }
 function inspClRender(el) {
   var list = window._inspClEdit || [];
   var rows = list.map(function (it, i) {
     var optsEditor = '';
     if (it.type !== 'text') {
       var opts = (it.options || []).map(function (o, j) {
-        return '<div style="display:flex;gap:6px;align-items:center;margin-bottom:5px">' +
-          '<span style="width:10px;height:10px;border-radius:50%;background:' + inspColorHex(o.color) + ';display:inline-block;flex:none"></span>' +
-          '<input type="text" value="' + escHtml(o.label || '') + '" oninput="window._inspClEdit[' + i + '].options[' + j + '].label=this.value" placeholder="Option label" style="flex:1;min-width:120px" />' +
-          inspClColorSelect(i, j, o.color) +
-          '<button class="btn btn-ghost btn-sm" style="color:var(--danger-color,#ef4444)" onclick="inspClRemoveOpt(' + i + ',' + j + ')">✕</button>' +
+        return '<div style="display:flex;gap:10px;align-items:center;margin-bottom:7px;flex-wrap:wrap">' +
+          '<input type="text" value="' + escHtml(o.label || '') + '" oninput="window._inspClEdit[' + i + '].options[' + j + '].label=this.value" placeholder="Option label" style="flex:1;min-width:140px" />' +
+          inspClColorSwatches(i, j, o.color) +
+          '<button class="btn btn-ghost btn-sm" style="color:var(--danger-color,#ef4444)" onclick="inspClRemoveOpt(' + i + ',' + j + ')" title="Remove option">✕</button>' +
         '</div>';
       }).join('');
       optsEditor = '<div style="margin-top:8px;padding-left:6px;border-left:2px solid var(--border-color)">' + opts +
@@ -7598,7 +7598,7 @@ async function loadVehicleInspections(vehicleId) {
   if (!box) return;
   try {
     var rows = await api('GET', '/inspections?vehicle_id=' + vehicleId);
-    var priv = ['admin', 'manager'].includes(state.user.role);
+    var priv = ['admin', 'owner', 'manager'].includes(state.user.role);
     var body = rows.length ? '<div class="table-wrap"><table><thead><tr><th>Number</th><th>Month</th><th>Result</th><th>Mileage</th><th>By</th><th>Photos</th><th>Date</th></tr></thead><tbody>' +
       rows.map(function (i) {
         return '<tr style="cursor:pointer" onclick="navigate(\'view-inspection\',' + i.id + ')">' +

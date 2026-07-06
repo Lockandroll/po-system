@@ -55,7 +55,7 @@ router.get('/', requireAuth, async function(req, res) {
     );
     const inspDueQ = isPrivileged
       ? pool.query("SELECT COUNT(*) AS c FROM vehicles v WHERE v.active = true AND v.inspection_exempt = false AND NOT EXISTS (SELECT 1 FROM vehicle_inspections i WHERE i.vehicle_id = v.id AND i.period_month = to_char(NOW() AT TIME ZONE 'America/New_York','YYYY-MM'))").catch(function(){ return { rows: [{ c: 0 }] }; })
-      : pool.query("SELECT COUNT(*) AS c FROM vehicles v WHERE v.active = true AND v.inspection_exempt = false AND v.assigned_user_id = $1 AND NOT EXISTS (SELECT 1 FROM vehicle_inspections i WHERE i.vehicle_id = v.id AND i.period_month = to_char(NOW() AT TIME ZONE 'America/New_York','YYYY-MM'))", [userId]).catch(function(){ return { rows: [{ c: 0 }] }; });
+      : pool.query("SELECT COUNT(*) AS c FROM vehicles v JOIN users du ON v.assigned_user_id = du.id WHERE v.active = true AND v.inspection_exempt = false AND du.supervisor_id = $1 AND NOT EXISTS (SELECT 1 FROM vehicle_inspections i WHERE i.vehicle_id = v.id AND i.period_month = to_char(NOW() AT TIME ZONE 'America/New_York','YYYY-MM'))", [userId]).catch(function(){ return { rows: [{ c: 0 }] }; });
 
     const results = await Promise.all([
       pendingVRsQ, pendingPOsQ, vrStatsQ, poStatsQ, quoteStatsQ, fleetStatsQ, myTasksQ, activityQ, inspDueQ
