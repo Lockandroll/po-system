@@ -225,8 +225,49 @@
     }).join('');
     body.innerHTML = '<div class="pto-panel"><h3>Pending Approvals</h3><div class="pto-desc">Requests from your reporting line. Approving over the coverage cap requires a reason (logged to audit).</div>' +
       '<table class="pto-table"><thead><tr><th>Employee</th><th>Dates</th><th>Days</th><th>Amount</th><th>Coverage</th><th>Actions</th></tr></thead><tbody>' +
-      (rows || '<tr><td colspan="6" class="pto-sub">Nothing pending. 🎉</td></tr>') + '</tbody></table></div>';
+      (rows || '<tr><td colspan="6" class="pto-sub">Nothing pending. 🎉</td></tr>') + '</tbody></table></div>' +
+      '<div class="pto-panel"><h3>Approved</h3><div class="pto-desc">Time off you have approved, newest first.</div>' +
+      '<div id="pto-appr-list"><div class="loading">Loading…</div></div></div>';
+    loadApproved(1);
   }
+
+  // ---- APPROVED HISTORY (paginated, 10 per page) ---------------------------
+  var APPR_PAGE = 1;
+  async function loadApproved(page) {
+    var host = document.getElementById('pto-appr-list');
+    if (!host) return;
+    APPR_PAGE = page;
+    host.innerHTML = '<div class="loading">Loading…</div>';
+    try {
+      var data = await api('GET', '/pto/approved?page=' + page + '&page_size=10');
+      var list = (data && data.rows) || [];
+      var rows = list.map(function (r) {
+        var d = fmtDate(r.start_date) + (String(r.end_date).slice(0, 10) !== String(r.start_date).slice(0, 10) ? ' – ' + fmtDate(r.end_date) : '');
+        var tag = r.retroactive ? ' <span class="pto-pill locked">logged</span>' : '';
+        return '<tr><td><b>' + escHtml(r.user_name || '') + '</b>' + tag + '<br><span class="pto-sub">' + escHtml(r.pay_type || '') + '</span></td>' +
+          '<td>' + d + '</td><td>' + r.business_days + '</td><td>' + fmtAmt(Number(r.hours), r.pay_type) + '</td>' +
+          '<td>' + (r.paid ? 'Paid' : 'Unpaid') + ' ' + escHtml(r.type || '') + '</td>' +
+          '<td>' + escHtml(r.approver_name || '—') + '</td>' +
+          '<td>' + (r.decided_at ? fmtDate(r.decided_at) : '—') + '</td></tr>';
+      }).join('');
+      var table = '<table class="pto-table"><thead><tr><th>Employee</th><th>Dates</th><th>Days</th><th>Amount</th><th>Type</th><th>Approved by</th><th>Decided</th></tr></thead><tbody>' +
+        (rows || '<tr><td colspan="7" class="pto-sub">Nothing approved yet.</td></tr>') + '</tbody></table>';
+      var pages = (data && data.pages) || 1, cur = (data && data.page) || 1, total = (data && data.total) || 0;
+      var pager = '';
+      if (pages > 1) {
+        pager = '<div style="display:flex;align-items:center;justify-content:space-between;gap:10px;margin-top:12px">' +
+          '<span class="pto-sub">' + total + ' total · page ' + cur + ' of ' + pages + '</span>' +
+          '<span style="display:flex;gap:8px">' +
+            '<button class="pto-btn ghost sm" ' + (cur <= 1 ? 'disabled' : '') + ' onclick="ptoApprPage(' + (cur - 1) + ')">Prev</button>' +
+            '<button class="pto-btn ghost sm" ' + (cur >= pages ? 'disabled' : '') + ' onclick="ptoApprPage(' + (cur + 1) + ')">Next</button>' +
+          '</span></div>';
+      }
+      host.innerHTML = table + pager;
+    } catch (e) {
+      host.innerHTML = '<div class="alert alert-error">Could not load approved list (' + escHtml(e.message || 'error') + ').</div>';
+    }
+  }
+  window.ptoApprPage = function (p) { loadApproved(p); };
   window.ptoApprove = function (id, over) {
     if (over) return openOverride(id);
     doApprove(id, '');

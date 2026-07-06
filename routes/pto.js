@@ -389,6 +389,30 @@ router.get('/approvals', requireAuth, async (req, res) => {
   res.json(out);
 });
 
+// ---- APPROVED HISTORY (requests I can act on, already decided-approved) -----
+// Paginated. Same reporting-line scope as the pending queue. Newest first.
+router.get('/approved', requireAuth, async (req, res) => {
+  const pageSize = Math.min(Math.max(parseInt(req.query.page_size, 10) || 10, 1), 50);
+  const page = Math.max(parseInt(req.query.page, 10) || 1, 1);
+  const appr = await pool.query(
+    'SELECT r.*, u.name AS user_name, u.pay_type, a.name AS approver_name ' +
+    'FROM pto_requests r JOIN users u ON u.id = r.user_id ' +
+    'LEFT JOIN users a ON a.id = r.approver_id ' +
+    "WHERE r.status = 'approved' ORDER BY COALESCE(r.decided_at, r.updated_at) DESC, r.id DESC"
+  );
+  // Filter to the reporting line (admins/owner see all) — mirrors /approvals.
+  const mine = [];
+  for (let i = 0; i < appr.rows.length; i++) {
+    const r = appr.rows[i];
+    if (await canApprove(req.user, r.user_id)) mine.push(r);
+  }
+  const total = mine.length;
+  const pages = Math.max(Math.ceil(total / pageSize), 1);
+  const start = (page - 1) * pageSize;
+  const rows = mine.slice(start, start + pageSize);
+  res.json({ rows: rows, total: total, page: page, page_size: pageSize, pages: pages });
+});
+
 // ---- APPROVE ---------------------------------------------------------------
 
 router.post('/requests/:id/approve', requireAuth, async (req, res) => {
