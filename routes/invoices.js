@@ -26,7 +26,23 @@ async function getSetting(key, fallback) {
   } catch (e) { return fallback; }
 }
 
-async function generateInvoiceNumber() {
+async function generateInvoiceNumber(cityCode) {
+  // Per-city leading number: each city has an invoice_prefix (e.g. 1 -> 1xxxxx).
+  let prefix = null;
+  if (cityCode) {
+    try {
+      const cr = await pool.query('SELECT invoice_prefix FROM cities WHERE code = $1', [String(cityCode).trim().toUpperCase()]);
+      if (cr.rows[0] && cr.rows[0].invoice_prefix != null) prefix = parseInt(cr.rows[0].invoice_prefix, 10);
+    } catch (e) {}
+  }
+  if (prefix != null && prefix > 0) {
+    const lo = prefix * 100000;      // e.g. prefix 1 -> 100000
+    const hi = lo + 99999;           // 199999
+    const { rows } = await pool.query('SELECT MAX(invoice_number) AS maxn FROM invoices WHERE invoice_number >= $1 AND invoice_number <= $2', [lo, hi]);
+    const maxn = rows[0] && rows[0].maxn != null ? parseInt(rows[0].maxn, 10) : null;
+    return maxn != null ? (maxn + 1) : (lo + 1);   // first invoice for the city = prefix00001
+  }
+  // Fallback (no city / no prefix set): legacy global sequence.
   const startRaw = await getSetting('invoice_start_number', '100001');
   const start = parseInt(startRaw, 10) || 100001;
   const { rows } = await pool.query('SELECT MAX(invoice_number) AS maxn FROM invoices');
@@ -126,7 +142,8 @@ router.get('/config', requireAuth, requirePermission('view_invoices'), async (re
     let pay_types = [];
     try { pay_types = JSON.parse(await getSetting('invoice_pay_types', '[]')); } catch (e) { pay_types = []; }
     if (!Array.isArray(pay_types) || !pay_types.length) pay_types = ['Cash', 'Check', 'Visa', 'Mastercard', 'Amex', 'Discover', 'Debit', 'Motor Club', 'Account / Invoice', 'Other'];
-    res.json({ default_agreement: agreement, pay_types: pay_types });
+    const hc = await pool.query('SELECT home_city FROM users WHERE id = $1', [req.user.id]);
+    res.json({ default_agreement: agreement, pay_types: pay_types, home_city: (hc.rows[0] && hc.rows[0].home_city) || null });
   } catch (err) {
     res.status(500).json({ error: 'Failed to fetch invoice config' });
   }
@@ -295,10 +312,10 @@ router.get('/', requireAuth, requirePermission('view_invoices'), async (req, res
   try {
     let query, params;
     if (canSeeAll(req.user.role)) {
-      query = 'SELECT i.*, u.name AS locksmith_name_join, COALESCE(v.city_code, u.home_city) AS city_code FROM invoices i LEFT JOIN users u ON i.locksmith_id = u.id LEFT JOIN vendors v ON i.account_id = v.id ORDER BY i.created_at DESC';
+      query = 'SELECT i.*, u.name AS locksmith_name_join, COALESCE(i.city_code, v.city_code, u.home_city) AS city_code FROM invoices i LEFT JOIN users u ON i.locksmith_id = u.id LEFT JOIN vendors v ON i.account_id = v.id ORDER BY i.created_at DESC';
       params = [];
     } else {
-      query = 'SELECT i.*, u.name AS locksmith_name_join, COALESCE(v.city_code, u.home_city) AS city_code FROM invoices i LEFT JOIN users u ON i.locksmith_id = u.id LEFT JOIN vendors v ON i.account_id = v.id WHERE i.locksmith_id = $1 ORDER BY i.created_at DESC';
+      query = 'SELECT i.*, u.name AS locksmith_name_join, COALESCE(i.city_code, v.city_code, u.home_city) AS city_code FROM invoices i LEFT JOIN users u ON i.locksmith_id = u.id LEFT JOIN vendors v ON i.account_id = v.id WHERE i.locksmith_id = $1 ORDER BY i.created_at DESC';
       params = [req.user.id];
     }
     const { rows } = await pool.query(query, params);
@@ -533,7 +550,8 @@ function pickInvoiceFields(b) {
     signed_name: b.signed_name || b.customer_name || null,
     approval_code: b.approval_code || null,
     tax_exempt: b.tax_exempt === true,
-    signature_required: b.signature_required === true
+    signature_required: b.signature_required === true,
+    city_code: (b.city_code ? String(b.city_code).trim().toUpperCase().slice(0, 3) : null)
   };
 }
 
@@ -561,14 +579,14 @@ router.post('/', requireAuth, requirePermission('create_invoice'), async (req, r
   const signedAt = f.signature_image ? new Date() : null;
 
   for (let attempt = 0; attempt < 10; attempt++) {
-    const invoice_number = await generateInvoiceNumber();
+    const invoice_number = await generateInvoiceNumber(f.city_code);
     const client = await pool.connect();
     try {
       await client.query('BEGIN');
       const ins = await client.query(
-        'INSERT INTO invoices (invoice_number, locksmith_id, locksmith_name, invoice_date, status, account_id, account_name, customer_po_wo, pay_type, card_last4, cc_online, time_in, time_out, customer_name, dl_number, dl_state, street_address, city, state, zip, phone, email, vehicle_year, vehicle_make, vehicle_model, license_tag, tag_state, vin, mileage, ent_registration, ent_insurance, ent_title, ent_rental, tax_rate, labor_amount, parts_amount, subtotal, tax_amount, tip_amount, grand_total, notes, payments_note, agreement_text, signature_image, signed_name, signed_at, approval_code, tax_exempt, signature_required) ' +
-        'VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31,$32,$33,$34,$35,$36,$37,$38,$39,$40,$41,$42,$43,$44,$45,$46,$47,$48,$49) RETURNING *',
-        [invoice_number, req.user.id, req.user.name, invoice_date, status, f.account_id, f.account_name, f.customer_po_wo, f.pay_type, f.card_last4, f.cc_online, f.time_in, f.time_out, f.customer_name, f.dl_number, f.dl_state, f.street_address, f.city, f.state, f.zip, f.phone, f.email, f.vehicle_year, f.vehicle_make, f.vehicle_model, f.license_tag, f.tag_state, f.vin, f.mileage, f.ent_registration, f.ent_insurance, f.ent_title, f.ent_rental, tax_rate, t.labor, t.parts, t.subtotal, t.tax_amount, t.tip, t.grand_total, f.notes, f.payments_note, f.agreement_text, f.signature_image, f.signed_name, signedAt, f.approval_code, f.tax_exempt, f.signature_required]
+        'INSERT INTO invoices (invoice_number, locksmith_id, locksmith_name, invoice_date, status, account_id, account_name, customer_po_wo, pay_type, card_last4, cc_online, time_in, time_out, customer_name, dl_number, dl_state, street_address, city, state, zip, phone, email, vehicle_year, vehicle_make, vehicle_model, license_tag, tag_state, vin, mileage, ent_registration, ent_insurance, ent_title, ent_rental, tax_rate, labor_amount, parts_amount, subtotal, tax_amount, tip_amount, grand_total, notes, payments_note, agreement_text, signature_image, signed_name, signed_at, approval_code, tax_exempt, signature_required, city_code) ' +
+        'VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31,$32,$33,$34,$35,$36,$37,$38,$39,$40,$41,$42,$43,$44,$45,$46,$47,$48,$49,$50) RETURNING *',
+        [invoice_number, req.user.id, req.user.name, invoice_date, status, f.account_id, f.account_name, f.customer_po_wo, f.pay_type, f.card_last4, f.cc_online, f.time_in, f.time_out, f.customer_name, f.dl_number, f.dl_state, f.street_address, f.city, f.state, f.zip, f.phone, f.email, f.vehicle_year, f.vehicle_make, f.vehicle_model, f.license_tag, f.tag_state, f.vin, f.mileage, f.ent_registration, f.ent_insurance, f.ent_title, f.ent_rental, tax_rate, t.labor, t.parts, t.subtotal, t.tax_amount, t.tip, t.grand_total, f.notes, f.payments_note, f.agreement_text, f.signature_image, f.signed_name, signedAt, f.approval_code, f.tax_exempt, f.signature_required, f.city_code]
       );
       const invoice = ins.rows[0];
       await insertLineItems(client, invoice.id, b.line_items);
@@ -631,8 +649,8 @@ router.put('/:id', requireAuth, requirePermission('edit_invoice'), async (req, r
     try {
       await client.query('BEGIN');
       await client.query(
-        'UPDATE invoices SET account_id=$1, account_name=$2, customer_po_wo=$3, pay_type=$4, card_last4=$5, cc_online=$6, time_in=$7, time_out=$8, customer_name=$9, dl_number=$10, dl_state=$11, street_address=$12, city=$13, state=$14, zip=$15, phone=$16, email=$17, vehicle_year=$18, vehicle_make=$19, vehicle_model=$20, license_tag=$21, tag_state=$22, vin=$23, mileage=$24, ent_registration=$25, ent_insurance=$26, ent_title=$27, ent_rental=$28, tax_rate=$29, labor_amount=$30, parts_amount=$31, subtotal=$32, tax_amount=$33, tip_amount=$34, grand_total=$35, notes=$36, payments_note=$37, agreement_text=$38, signature_image=$39, signed_name=$40, signed_at=$41, status=$42, invoice_date=$43, approval_code=$44, tax_exempt=$45, signature_required=$46, updated_at=NOW() WHERE id=$47',
-        [f.account_id, f.account_name, f.customer_po_wo, f.pay_type, f.card_last4, f.cc_online, f.time_in, f.time_out, f.customer_name, f.dl_number, f.dl_state, f.street_address, f.city, f.state, f.zip, f.phone, f.email, f.vehicle_year, f.vehicle_make, f.vehicle_model, f.license_tag, f.tag_state, f.vin, f.mileage, f.ent_registration, f.ent_insurance, f.ent_title, f.ent_rental, tax_rate, t.labor, t.parts, t.subtotal, t.tax_amount, t.tip, t.grand_total, f.notes, f.payments_note, f.agreement_text, f.signature_image, f.signed_name, signedAt, status, invoice_date, f.approval_code, f.tax_exempt, f.signature_required, req.params.id]
+        'UPDATE invoices SET account_id=$1, account_name=$2, customer_po_wo=$3, pay_type=$4, card_last4=$5, cc_online=$6, time_in=$7, time_out=$8, customer_name=$9, dl_number=$10, dl_state=$11, street_address=$12, city=$13, state=$14, zip=$15, phone=$16, email=$17, vehicle_year=$18, vehicle_make=$19, vehicle_model=$20, license_tag=$21, tag_state=$22, vin=$23, mileage=$24, ent_registration=$25, ent_insurance=$26, ent_title=$27, ent_rental=$28, tax_rate=$29, labor_amount=$30, parts_amount=$31, subtotal=$32, tax_amount=$33, tip_amount=$34, grand_total=$35, notes=$36, payments_note=$37, agreement_text=$38, signature_image=$39, signed_name=$40, signed_at=$41, status=$42, invoice_date=$43, approval_code=$44, tax_exempt=$45, signature_required=$46, city_code=$47, updated_at=NOW() WHERE id=$48',
+        [f.account_id, f.account_name, f.customer_po_wo, f.pay_type, f.card_last4, f.cc_online, f.time_in, f.time_out, f.customer_name, f.dl_number, f.dl_state, f.street_address, f.city, f.state, f.zip, f.phone, f.email, f.vehicle_year, f.vehicle_make, f.vehicle_model, f.license_tag, f.tag_state, f.vin, f.mileage, f.ent_registration, f.ent_insurance, f.ent_title, f.ent_rental, tax_rate, t.labor, t.parts, t.subtotal, t.tax_amount, t.tip, t.grand_total, f.notes, f.payments_note, f.agreement_text, f.signature_image, f.signed_name, signedAt, status, invoice_date, f.approval_code, f.tax_exempt, f.signature_required, f.city_code, req.params.id]
       );
       await client.query('DELETE FROM invoice_line_items WHERE invoice_id = $1', [req.params.id]);
       await insertLineItems(client, parseInt(req.params.id, 10), b.line_items);

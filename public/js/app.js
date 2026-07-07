@@ -4460,11 +4460,12 @@ async function renderCities(el) {
       '<div class="page-header"><div><div class="page-title">Cities</div><div class="page-subtitle">Manage city codes used in PO numbers</div></div><button class="btn btn-primary" onclick="showCityModal(null)" style="white-space:nowrap">' + icons.plus + ' Add City</button></div>' +
       '<div id="cities-error"></div>' +
       '<div class="card"><div class="card-body" style="padding:0"><div class="table-wrap"><table>' +
-        '<thead><tr><th>Code</th><th>Name</th><th>Color</th><th>Status</th><th></th></tr></thead>' +
+        '<thead><tr><th>Code</th><th>Inv #</th><th>Name</th><th>Color</th><th>Status</th><th></th></tr></thead>' +
         '<tbody>' + cities.map(function(c) {
           const isInactive = c.active === false;
           return '<tr class="' + (isInactive ? 'user-row-inactive' : '') + '">' +
             '<td><strong style="font-family:monospace;color:var(--primary)">' + escHtml(c.code) + '</strong></td>' +
+            '<td>' + (c.invoice_prefix != null ? escHtml(String(c.invoice_prefix)) : '<span class="text-muted">&mdash;</span>') + '</td>' +
             '<td>' + escHtml(c.name) + '</td>' +
             '<td><span style="display:inline-block;width:18px;height:18px;border-radius:4px;border:1px solid var(--border,#2a2a2a);vertical-align:middle;background:' + escHtml(c.color || '#f97316') + '"></span></td>' +
             '<td>' + (isInactive ? '<span class="badge badge-inactive">Inactive</span>' : '<span style="color:var(--success);font-size:13px">&#10003; Active</span>') + '</td>' +
@@ -4499,6 +4500,7 @@ async function showCityModal(id) {
         '<div id="modal-error"></div>' +
         '<div class="form-group"><label>City Name</label><input type="text" id="modal-city-name" value="' + escHtml(city ? city.name : '') + '" placeholder="e.g. Chicago" /></div>' +
         '<div class="form-group"><label>3-Letter Code</label><input type="text" id="modal-city-code" value="' + escHtml(city ? city.code : '') + '" placeholder="e.g. CHI" maxlength="3" style="text-transform:uppercase" /></div>' +
+        '<div class="form-group mt-2"><label>Invoice # Prefix</label><input type="number" id="modal-city-prefix" value="' + escHtml(city && city.invoice_prefix != null ? String(city.invoice_prefix) : '') + '" placeholder="e.g. 1" min="1" step="1" /><div class="text-muted mt-1" style="font-size:12px">Leading number for this city&#39;s invoices, e.g. <strong>1</strong> &rarr; 100001. Leave blank if this city doesn&#39;t invoice.</div></div>' +
         '<div class="text-muted mt-2">The code appears at the start of PO numbers, e.g. <strong>CHI</strong>-2026-0001-TM</div>' +
         '<div class="form-group mt-2"><label>Schedule Color</label><div style="display:flex;align-items:center;gap:10px"><input type="color" id="modal-city-color" value="' + escHtml(city && city.color ? city.color : '#f97316') + '" style="width:54px;height:36px;padding:2px;cursor:pointer;background:transparent;border:1px solid var(--border,#2a2a2a);border-radius:6px" /><span class="text-muted">Colors this city&#39;s shifts on the schedule.</span></div></div>' +
       '</div>' +
@@ -4511,12 +4513,14 @@ async function saveCity(id, btn) {
   const name = document.getElementById('modal-city-name').value.trim();
   const code = document.getElementById('modal-city-code').value.trim().toUpperCase();
   const color = document.getElementById('modal-city-color').value || '#f97316';
+  var prefixEl = document.getElementById('modal-city-prefix');
+  var invoice_prefix = prefixEl && prefixEl.value.trim() !== '' ? parseInt(prefixEl.value, 10) : null;
   if (!name || !code) { document.getElementById('modal-error').innerHTML = '<div class="alert alert-error">Name and code are required.</div>'; return; }
   if (code.length !== 3) { document.getElementById('modal-error').innerHTML = '<div class="alert alert-error">Code must be exactly 3 characters.</div>'; return; }
   try {
     btn.disabled = true;
-    if (id) { await api('PUT', '/cities/' + id, { name, code, color }); }
-    else { await api('POST', '/cities', { name, code, color }); }
+    if (id) { await api('PUT', '/cities/' + id, { name, code, color, invoice_prefix }); }
+    else { await api('POST', '/cities', { name, code, color, invoice_prefix }); }
     document.querySelector('.modal-overlay').remove();
     navigate('cities');
   } catch(err) {
@@ -8934,11 +8938,15 @@ function filterInvoices() {
 async function renderEditInvoice(el, id) {
   el.innerHTML = '<div class="loading">Loading…</div>';
   var invoice = null;
+  var invCities = [];
+  var invHomeCity = '';
   try {
     var cfg = await api('GET', '/invoices/config').catch(function(){ return {}; });
     _invoiceDefaultAgreement = (cfg && cfg.default_agreement) || '';
     _invoicePayTypes = (cfg && Array.isArray(cfg.pay_types) && cfg.pay_types.length) ? cfg.pay_types : INV_PAY_TYPES;
+    invHomeCity = (cfg && cfg.home_city) || '';
     _invoiceAccounts = await api('GET', '/invoices/accounts').catch(function(){ return []; });
+    invCities = await api('GET', '/cities').catch(function(){ return []; });
   } catch(e) { _invoiceAccounts = []; }
   if (id) {
     try { invoice = await api('GET', '/invoices/' + id); }
@@ -8968,6 +8976,10 @@ async function renderEditInvoice(el, id) {
   var statusOptions = INV_STATUSES.map(function(s){
     return '<option value="' + s + '"' + ((v.status||'draft') === s ? ' selected' : '') + '>' + invStatusLabel(s) + '</option>';
   }).join('');
+  var invCityDefault = (id && v.city_code) ? v.city_code : (invHomeCity || '');
+  var cityOptions = '<option value="">— Select city —</option>' + (invCities||[]).map(function(c){
+    return '<option value="' + escHtml(c.code) + '"' + (invCityDefault === c.code ? ' selected' : '') + '>' + escHtml(c.name) + ' (' + escHtml(c.code) + ')</option>';
+  }).join('');
 
   el.innerHTML =
     '<div class="page-header">' +
@@ -8980,6 +8992,7 @@ async function renderEditInvoice(el, id) {
     '<div class="card mb-4"><div class="card-header"><span class="card-title">Account &amp; Payment</span></div><div class="card-body">' +
       '<div class="form-row">' +
         '<div class="form-group"><label>Account</label><select id="inv-account" onchange="invAccountChange()">' + acctOptions + '</select></div>' +
+        '<div class="form-group"><label>City (tax)</label><select id="inv-city-code">' + cityOptions + '</select></div>' +
         '<div class="form-group"><label>Date</label><input type="date" id="inv-date" value="' + escHtml(dateVal) + '" /></div>' +
         '<div class="form-group"><label>Status</label><select id="inv-status">' + statusOptions + '</select></div>' +
       '</div>' +
@@ -9393,6 +9406,7 @@ async function saveInvoice(id) {
     signature_required: sigRequired,
     account_id: accountId,
     account_name: accountName,
+    city_code: val('inv-city-code') || null,
     customer_po_wo: val('inv-po').trim(),
     pay_type: val('inv-pay'),
     card_last4: val('inv-last4').trim(),

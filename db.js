@@ -85,6 +85,7 @@ async function initDB() {
       'ALTER TABLE purchase_orders ADD COLUMN IF NOT EXISTS customer_name VARCHAR(255);' +
       'ALTER TABLE purchase_orders ADD COLUMN IF NOT EXISTS city_code CHAR(3);' +
       "ALTER TABLE cities ADD COLUMN IF NOT EXISTS color VARCHAR(20) DEFAULT '#f97316';" +
+      'ALTER TABLE cities ADD COLUMN IF NOT EXISTS invoice_prefix INTEGER;' +
       'ALTER TABLE po_line_items ADD COLUMN IF NOT EXISTS item_number VARCHAR(100);' +
       'ALTER TABLE po_line_items ADD COLUMN IF NOT EXISTS manufacturer VARCHAR(255);' +
       'ALTER TABLE po_line_items ADD COLUMN IF NOT EXISTS tracking_number VARCHAR(255);' +
@@ -1178,7 +1179,8 @@ async function initDB() {
     await client.query(
       'ALTER TABLE invoices ADD COLUMN IF NOT EXISTS approval_code VARCHAR(50);' +
       'ALTER TABLE invoices ADD COLUMN IF NOT EXISTS tax_exempt BOOLEAN DEFAULT false;' +
-      'ALTER TABLE invoices ADD COLUMN IF NOT EXISTS signature_required BOOLEAN DEFAULT false;'
+      'ALTER TABLE invoices ADD COLUMN IF NOT EXISTS signature_required BOOLEAN DEFAULT false;' +
+      'ALTER TABLE invoices ADD COLUMN IF NOT EXISTS city_code CHAR(3);'
     );
     // Invoice photos (stored in Cloudflare R2, like the document vault). show_in_print
     // controls whether a photo appears on the printed / emailed PDF version.

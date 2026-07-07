@@ -6,7 +6,7 @@ const router = express.Router();
 
 // List active cities (all authenticated users — for dropdown)
 router.get('/', requireAuth, async (req, res) => {
-  const { rows } = await pool.query('SELECT id, name, code, color FROM cities WHERE active=true ORDER BY name ASC');
+  const { rows } = await pool.query('SELECT id, name, code, color, invoice_prefix FROM cities WHERE active=true ORDER BY name ASC');
   res.json(rows);
 });
 
@@ -29,13 +29,13 @@ router.get('/all', requireAuth, requirePermission('manage_cities'), async (req, 
 
 // Create city (admin only)
 router.post('/', requireAuth, requirePermission('manage_cities'), async (req, res) => {
-  const { name, code, color } = req.body;
+  const { name, code, color, invoice_prefix } = req.body;
   if (!name || !code) return res.status(400).json({ error: 'Name and code are required' });
   if (code.length !== 3) return res.status(400).json({ error: 'Code must be exactly 3 characters' });
   try {
     const { rows } = await pool.query(
-      'INSERT INTO cities (name, code, color) VALUES ($1, $2, $3) RETURNING *',
-      [name, code.toUpperCase(), color || '#f97316']
+      'INSERT INTO cities (name, code, color, invoice_prefix) VALUES ($1, $2, $3, $4) RETURNING *',
+      [name, code.toUpperCase(), color || '#f97316', (invoice_prefix != null && invoice_prefix !== '' ? parseInt(invoice_prefix, 10) : null)]
     );
     res.status(201).json(rows[0]);
   } catch(err) {
@@ -46,13 +46,13 @@ router.post('/', requireAuth, requirePermission('manage_cities'), async (req, re
 
 // Update city (admin only)
 router.put('/:id', requireAuth, requirePermission('manage_cities'), async (req, res) => {
-  const { name, code, color } = req.body;
+  const { name, code, color, invoice_prefix } = req.body;
   if (!name || !code) return res.status(400).json({ error: 'Name and code are required' });
   if (code.length !== 3) return res.status(400).json({ error: 'Code must be exactly 3 characters' });
   try {
     const { rows } = await pool.query(
-      'UPDATE cities SET name=$1, code=$2, color=$3 WHERE id=$4 RETURNING *',
-      [name, code.toUpperCase(), color || '#f97316', req.params.id]
+      'UPDATE cities SET name=$1, code=$2, color=$3, invoice_prefix=$4 WHERE id=$5 RETURNING *',
+      [name, code.toUpperCase(), color || '#f97316', (invoice_prefix != null && invoice_prefix !== '' ? parseInt(invoice_prefix, 10) : null), req.params.id]
     );
     if (!rows[0]) return res.status(404).json({ error: 'City not found' });
     res.json(rows[0]);
