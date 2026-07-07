@@ -291,7 +291,7 @@ router.patch('/entry/:id', requireAuth, requirePermission('manage_timeclock'), a
   const newIn = req.body.clock_in_at || cur.clock_in_at;
   const newOut = req.body.clock_out_at !== undefined ? req.body.clock_out_at : cur.clock_out_at;
   await pool.query(
-    "UPDATE time_entries SET clock_in_at = $1, clock_out_at = $2, edited_by = $3, edited_at = NOW(), edit_reason = $4, status = CASE WHEN $2 IS NULL THEN 'open' ELSE 'closed' END, updated_at = NOW() WHERE id = $5",
+    "UPDATE time_entries SET clock_in_at = $1, clock_out_at = $2, edited_by = $3, edited_at = NOW(), edit_reason = $4, status = CASE WHEN $2::timestamptz IS NULL THEN 'open' ELSE 'closed' END, updated_at = NOW() WHERE id = $5",
     [newIn, newOut, req.user.id, reason, id]
   );
   const fresh = (await pool.query('SELECT * FROM time_entries WHERE id = $1', [id])).rows[0];
