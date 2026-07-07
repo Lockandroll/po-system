@@ -98,12 +98,23 @@ function novaBtnReset(btn) {
 function novaEvtBtn() { var e = window.event; var t = e && e.target; return (t && t.closest) ? t.closest('.btn') : null; }
 function _novaDialog(o){
   return new Promise(function(resolve){
-    var isPrompt = o.type === 'prompt', isAlert = o.type === 'alert';
+    var isPrompt = o.type === 'prompt', isAlert = o.type === 'alert', isSelect = o.type === 'select';
     var ov = document.createElement('div');
     ov.className = 'nova-dialog-overlay';
     var defv = (o.def != null ? String(o.def) : '').replace(/"/g, '&quot;');
     var msg = o.message ? '<div class="nova-dlg-msg">' + escHtml(o.message).replace(/\n/g, '<br>') + '</div>' : '';
-    var inp = isPrompt ? '<input id="nova-dlg-input" type="text" value="' + defv + '" class="nova-dlg-input">' : '';
+    var inp = '';
+    if (isPrompt) {
+      inp = '<input id="nova-dlg-input" type="text" value="' + defv + '" class="nova-dlg-input">';
+    } else if (isSelect) {
+      var optsHtml = (o.options || []).map(function(op){
+        var v = (op.value != null ? String(op.value) : '').replace(/"/g, '&quot;');
+        var sel = (o.def != null && String(o.def) === String(op.value)) ? ' selected' : '';
+        return '<option value="' + v + '"' + sel + '>' + escHtml(op.label != null ? op.label : op.value) + '</option>';
+      }).join('');
+      inp = '<select id="nova-dlg-select" class="nova-dlg-input">' +
+        (o.placeholder ? '<option value="">' + escHtml(o.placeholder) + '</option>' : '') + optsHtml + '</select>';
+    }
     var cancel = isAlert ? '' : '<button class="btn btn-secondary" id="nova-dlg-cancel">' + escHtml(o.cancelText || 'Never mind') + '</button>';
     ov.innerHTML = '<div class="nova-dlg" role="dialog" aria-modal="true">' +
       '<div class="nova-dlg-title">' + escHtml(o.title || '') + '</div>' + msg + inp +
@@ -112,12 +123,13 @@ function _novaDialog(o){
       '</div></div>';
     document.body.appendChild(ov);
     var input = ov.querySelector('#nova-dlg-input');
+    var selectEl = ov.querySelector('#nova-dlg-select');
     var okBtn = ov.querySelector('#nova-dlg-ok');
     var cancelBtn = ov.querySelector('#nova-dlg-cancel');
-    if (input) { input.focus(); input.select(); } else if (okBtn) { okBtn.focus(); }
+    if (input) { input.focus(); input.select(); } else if (selectEl) { selectEl.focus(); } else if (okBtn) { okBtn.focus(); }
     function close(val){ ov.classList.add('closing'); document.removeEventListener('keydown', onKey); setTimeout(function(){ if (ov.parentNode) ov.parentNode.removeChild(ov); }, 140); resolve(val); }
-    function ok(){ close(isPrompt ? (input ? input.value : '') : true); }
-    function cancelFn(){ close(isPrompt ? null : false); }
+    function ok(){ close(isPrompt ? (input ? input.value : '') : (isSelect ? (selectEl ? selectEl.value : '') : true)); }
+    function cancelFn(){ close((isPrompt || isSelect) ? null : false); }
     okBtn.addEventListener('click', ok);
     if (cancelBtn) cancelBtn.addEventListener('click', cancelFn);
     ov.addEventListener('mousedown', function(e){ if (e.target === ov) cancelFn(); });
@@ -128,6 +140,7 @@ function _novaDialog(o){
 function novaConfirm(message, o){ o = o || {}; return _novaDialog({ type:'confirm', message:message, title:o.title||'Quick check', okText:o.okText||'Yep, go ahead', cancelText:o.cancelText||'Never mind' }); }
 function novaPrompt(message, def, o){ o = o || {}; return _novaDialog({ type:'prompt', message:message, def:def, title:o.title||'Quick one', okText:o.okText||'Save it', cancelText:o.cancelText||'Never mind' }); }
 function novaAlert(message, o){ o = o || {}; return _novaDialog({ type:'alert', message:message, title:o.title||'Heads up', okText:o.okText||'Got it' }); }
+function novaSelect(message, options, o){ o = o || {}; return _novaDialog({ type:'select', message:message, options:options, placeholder:o.placeholder, def:o.def, title:o.title||'Choose one', okText:o.okText||'Save it', cancelText:o.cancelText||'Never mind' }); }
 // ---- App-level GET cache (stale-while-revalidate) ---------------------------
 // Navigation used to re-fetch every list from Railway on each click, so revisits
 // felt slow. We now serve the last response instantly from memory and quietly
@@ -13495,11 +13508,12 @@ async function tcMgrAddPicker(){
   var users=_tcUsers;
   if(!users){try{users=await api('GET','/users');_tcUsers=users;}catch(e){alert('Could not load employees.');return;}}
   var active=(users||[]).filter(function(u){return u.active;}).sort(function(a,b){return (a.name||'').localeCompare(b.name||'');});
-  var name=await novaPrompt('Type the employee name to open their timesheet, then use Add a missing punch.','',{title:'Add entry for an employee'});
-  if(name===null)return;
-  var q=String(name).trim().toLowerCase();
-  var match=active.filter(function(u){return (u.name||'').toLowerCase().indexOf(q)!==-1;});
-  if(!q||!match.length){alert('No active employee matched that name.');return;}
+  if(!active.length){await novaAlert('No active employees found.');return;}
+  var options=active.map(function(u){return {value:String(u.id),label:u.name||('User '+u.id)};});
+  var id=await novaSelect('Choose an employee to open their timesheet, then use Add a missing punch.',options,{title:'Add entry for an employee',placeholder:'Select an employee…'});
+  if(id===null||id==='')return;
+  var match=active.filter(function(u){return String(u.id)===String(id);});
+  if(!match.length)return;
   _tcMgrName=match[0].name;tcMgrOpenUser(match[0].id);
 }
 async function tcMgrApprove(id,ws){
