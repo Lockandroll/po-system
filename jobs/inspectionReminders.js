@@ -46,6 +46,7 @@ async function missingForMonth(month) {
     'FROM vehicles v LEFT JOIN users u ON v.assigned_user_id = u.id ' +
     'LEFT JOIN users mgr ON u.supervisor_id = mgr.id ' +
     'WHERE v.active = true AND v.inspection_exempt = false ' +
+    "AND (u.role IS NULL OR u.role NOT IN ('admin','owner')) " +
     'AND NOT EXISTS (SELECT 1 FROM vehicle_inspections i WHERE i.vehicle_id = v.id AND i.period_month = $1)',
     [month]
   );

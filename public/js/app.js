@@ -7240,8 +7240,13 @@ function inspAnswerBadge(answer, color) {
   if (!answer) return '<span style="color:var(--text-muted-color)">—</span>';
   return '<span style="font-weight:600;color:' + inspColorHex(color) + '">' + escHtml(answer) + '</span>';
 }
+function inspIsExempt(v) {
+  if (v.inspection_exempt) return true;
+  var r = (v.driver_role || '').toLowerCase();
+  return r === 'admin' || r === 'owner';
+}
 function inspComplianceStatusKey(v, meta) {
-  if (v.inspection_exempt) return 'exempt';
+  if (inspIsExempt(v)) return 'exempt';
   if (v.inspection_id) return 'done';
   if (meta.month < meta.current_month) return 'overdue';
   if (meta.month === meta.current_month) { return (new Date().getDate() > meta.cutoff_day) ? 'overdue' : 'due'; }
@@ -7283,15 +7288,16 @@ function inspRenderCompliance(el) {
   }).join(''));
   var rows = d.vehicles.map(function (v) {
     var key = inspComplianceStatusKey(v, meta);
-    var canStart = !v.inspection_exempt && (priv || (v.driver_supervisor_id && v.driver_supervisor_id === state.user.id));
+    var canStart = !inspIsExempt(v) && (priv || (v.driver_supervisor_id && v.driver_supervisor_id === state.user.id));
+    var exReason = v.inspection_exempt ? (v.inspection_exempt_reason || 'Exempt') : (inspIsExempt(v) ? 'Assigned to admin' : '');
     var action = v.inspection_id
       ? '<button class="btn btn-secondary btn-sm" onclick="navigate(\'view-inspection\',' + v.inspection_id + ')">View</button>'
       : (canStart ? '<button class="btn btn-primary btn-sm" onclick="navigate(\'inspection-form\',' + v.vehicle_id + ')">Start</button>' : '<span style="color:var(--text-muted-color);font-size:12px">—</span>');
-    return '<tr style="' + (v.inspection_exempt ? 'opacity:0.55' : '') + '">' +
+    return '<tr style="' + (inspIsExempt(v) ? 'opacity:0.55' : '') + '">' +
       '<td><strong>' + v.year + ' ' + escHtml(v.make_model || '') + '</strong>' + (v.license_plate ? '<div style="font-size:11px;color:var(--text-muted-color)">' + escHtml(v.license_plate) + '</div>' : '') + '</td>' +
       '<td>' + escHtml(v.city_code || '—') + '</td>' +
-      '<td>' + escHtml(v.driver_name || 'Unassigned') + (v.manager_name ? '<div style="font-size:11px;color:var(--text-muted-color)">Inspector: ' + escHtml(v.manager_name) + '</div>' : '') + '</td>' +
-      '<td>' + inspStatusChip(key) + (v.inspection_exempt && v.inspection_exempt_reason ? '<div style="font-size:11px;color:var(--text-muted-color);margin-top:2px">' + escHtml(v.inspection_exempt_reason) + '</div>' : '') + '</td>' +
+      '<td>' + escHtml(v.driver_name || 'Unassigned') + (!inspIsExempt(v) && v.manager_name ? '<div style="font-size:11px;color:var(--text-muted-color)">Inspector: ' + escHtml(v.manager_name) + '</div>' : '') + '</td>' +
+      '<td>' + inspStatusChip(key) + (key === 'exempt' && exReason ? '<div style="font-size:11px;color:var(--text-muted-color);margin-top:2px">' + escHtml(exReason) + '</div>' : '') + '</td>' +
       '<td>' + (v.inspection_id ? inspResultBadge(v.overall_result) : '—') + '</td>' +
       '<td style="font-size:12px">' + (v.inspected_at ? formatDate(v.inspected_at) + (v.submitted_by_name ? '<div style="color:var(--text-muted-color)">' + escHtml(v.submitted_by_name) + '</div>' : '') : '—') + '</td>' +
       '<td style="text-align:center">' + (parseInt(v.photo_count, 10) || 0) + '</td>' +

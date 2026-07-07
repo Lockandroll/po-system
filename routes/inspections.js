@@ -159,7 +159,7 @@ router.get('/compliance', requireAuth, requirePermission('view_inspections'), as
     const { rows } = await pool.query(
       'SELECT v.id as vehicle_id, v.year, v.make_model, v.license_plate, v.city_code, v.assigned_user_id, ' +
       '       v.inspection_exempt, v.inspection_exempt_reason, u.name as driver_name, ' +
-      '       u.supervisor_id as driver_supervisor_id, mgr.name as manager_name, ' +
+      '       u.supervisor_id as driver_supervisor_id, u.role as driver_role, mgr.name as manager_name, ' +
       '       i.id as inspection_id, i.inspection_number, i.status, i.overall_result, i.mileage, ' +
       '       i.submitted_by, su.name as submitted_by_name, i.created_at as inspected_at, ' +
       '       (SELECT COUNT(*) FROM inspection_photos p WHERE p.inspection_id = i.id AND p.status = $' + (params.length + 1) + ') as photo_count ' +
