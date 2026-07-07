@@ -104,23 +104,33 @@ function token() {
 pub.get('/:token', async function (req, res) {
   try {
     var a = await pool.query(
-      'SELECT qa.id, qa.status, qa.score, qa.quiz_id, q.sop_title, q.status AS quiz_status ' +
+      'SELECT qa.id, qa.status, qa.score, qa.passed, qa.quiz_id, q.sop_title, q.status AS quiz_status ' +
       'FROM quiz_assignments qa JOIN quizzes q ON q.id = qa.quiz_id WHERE qa.token = $1',
       [req.params.token]
     );
     if (!a.rows.length) return res.status(404).json({ error: 'Quiz not found or link expired.' });
     var asg = a.rows[0];
     var qs = await pool.query(
-      'SELECT id, position, prompt, options FROM quiz_questions WHERE quiz_id = $1 ORDER BY position ASC',
+      'SELECT id, position, prompt, options, correct_index FROM quiz_questions WHERE quiz_id = $1 ORDER BY position ASC',
       [asg.quiz_id]
     );
+    var completed = asg.status === 'completed';
+    // Only reveal the answer key AFTER the quiz is completed, never before.
+    var selMap = {};
+    if (completed) {
+      var ans = await pool.query('SELECT question_id, selected_index FROM quiz_answers WHERE assignment_id = $1', [asg.id]);
+      ans.rows.forEach(function (r) { selMap[r.question_id] = r.selected_index; });
+    }
     res.json({
       sopTitle: asg.sop_title,
-      completed: asg.status === 'completed',
+      completed: completed,
       score: asg.score,
+      passed: asg.passed,
       total: qs.rows.length,
       questions: qs.rows.map(function (r) {
-        return { id: r.id, position: r.position, prompt: r.prompt, options: r.options };
+        var o = { id: r.id, position: r.position, prompt: r.prompt, options: r.options };
+        if (completed) { o.correct_index = r.correct_index; o.selected_index = (r.id in selMap) ? selMap[r.id] : -1; }
+        return o;
       })
     });
   } catch (e) {
@@ -370,7 +380,7 @@ router.post('/:id/send', requireAuth, requirePermission('manage_quiz'), async fu
 router.get('/mine', requireAuth, async function (req, res) {
   try {
     var a = await pool.query(
-      "SELECT qa.id, qa.status, qa.score, qa.quiz_id, q.sop_title " +
+      "SELECT qa.id, qa.status, qa.score, qa.passed, qa.quiz_id, q.sop_title " +
       "FROM quiz_assignments qa JOIN quizzes q ON q.id = qa.quiz_id " +
       "WHERE qa.user_id = $1 AND q.status = 'sent' ORDER BY q.week_of DESC LIMIT 1",
       [req.user.id]
@@ -378,15 +388,27 @@ router.get('/mine', requireAuth, async function (req, res) {
     if (!a.rows.length) return res.json({ quiz: null });
     var asg = a.rows[0];
     var qs = await pool.query(
-      'SELECT id, position, prompt, options FROM quiz_questions WHERE quiz_id = $1 ORDER BY position ASC',
+      'SELECT id, position, prompt, options, correct_index FROM quiz_questions WHERE quiz_id = $1 ORDER BY position ASC',
       [asg.quiz_id]
     );
+    var completed = asg.status === 'completed';
+    // Only reveal the answer key AFTER the quiz is completed, never before.
+    var selMap = {};
+    if (completed) {
+      var ans = await pool.query('SELECT question_id, selected_index FROM quiz_answers WHERE assignment_id = $1', [asg.id]);
+      ans.rows.forEach(function (r) { selMap[r.question_id] = r.selected_index; });
+    }
     res.json({
       quiz: { sopTitle: asg.sop_title },
-      completed: asg.status === 'completed',
+      completed: completed,
       score: asg.score,
+      passed: asg.passed,
       total: qs.rows.length,
-      questions: qs.rows.map(function (r) { return { id: r.id, position: r.position, prompt: r.prompt, options: r.options }; })
+      questions: qs.rows.map(function (r) {
+        var o = { id: r.id, position: r.position, prompt: r.prompt, options: r.options };
+        if (completed) { o.correct_index = r.correct_index; o.selected_index = (r.id in selMap) ? selMap[r.id] : -1; }
+        return o;
+      })
     });
   } catch (e) {
     console.error('quiz mine get:', e.message);
@@ -414,6 +436,7 @@ router.post('/mine', requireAuth, async function (req, res) {
     var settings = await getQuizSettings();
     await client.query('BEGIN');
     var score = 0;
+    var results = [];
     for (var i = 0; i < qs.rows.length; i++) {
       var q = qs.rows[i];
       var sel = (typeof answers[i] === 'number') ? answers[i] : -1;
@@ -423,6 +446,7 @@ router.post('/mine', requireAuth, async function (req, res) {
         'INSERT INTO quiz_answers (assignment_id, question_id, selected_index, correct) VALUES ($1,$2,$3,$4)',
         [asg.id, q.id, sel, correct]
       );
+      results.push({ position: q.position, selected: sel, correct_index: q.correct_index, correct: correct });
     }
     var passed = score >= settings.passScore;
     await client.query(
@@ -430,7 +454,7 @@ router.post('/mine', requireAuth, async function (req, res) {
       [score, passed, asg.id]
     );
     await client.query('COMMIT');
-    res.json({ score: score, total: qs.rows.length, passed: passed });
+    res.json({ score: score, total: qs.rows.length, passed: passed, results: results });
   } catch (e) {
     await client.query('ROLLBACK');
     console.error('quiz mine post:', e.message);
@@ -622,6 +646,47 @@ router.get('/team/:id/results', requireAuth, requireTeamQuiz, async function (re
   } catch (e) {
     console.error('quiz team results:', e.message);
     res.status(500).json({ error: 'Failed to load team results.' });
+  }
+});
+
+// GET /api/quiz/team/:id/breakdown -> per-question answer distribution across the
+// manager's downline for one quiz. Powers the training view: which questions the
+// team missed most, and how they split across the options.
+router.get('/team/:id/breakdown', requireAuth, requireTeamQuiz, async function (req, res) {
+  try {
+    var ids = await downlineIds(req.user.id);
+    if (!ids.length) return res.json({ questions: [] });
+    var qs = await pool.query(
+      'SELECT id, position, prompt, options, correct_index FROM quiz_questions WHERE quiz_id = $1 ORDER BY position ASC',
+      [req.params.id]
+    );
+    var dist = await pool.query(
+      'SELECT ans.question_id, ans.selected_index, COUNT(*)::int AS n ' +
+      'FROM quiz_answers ans ' +
+      'WHERE ans.assignment_id IN (SELECT id FROM quiz_assignments WHERE quiz_id = $1 AND user_id = ANY($2)) ' +
+      'GROUP BY ans.question_id, ans.selected_index',
+      [req.params.id, ids]
+    );
+    var byq = {};
+    dist.rows.forEach(function (r) {
+      if (!byq[r.question_id]) byq[r.question_id] = {};
+      byq[r.question_id][r.selected_index] = r.n;
+    });
+    res.json({
+      questions: qs.rows.map(function (q) {
+        var counts = byq[q.id] || {};
+        var answered = 0;
+        Object.keys(counts).forEach(function (k) { answered += counts[k]; });
+        return {
+          position: q.position, prompt: q.prompt, options: q.options, correct_index: q.correct_index,
+          answered: answered, correct_count: counts[q.correct_index] || 0,
+          counts: (q.options || []).map(function (_, oi) { return counts[oi] || 0; })
+        };
+      })
+    });
+  } catch (e) {
+    console.error('quiz team breakdown:', e.message);
+    res.status(500).json({ error: 'Failed to load breakdown.' });
   }
 });
 

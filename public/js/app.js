@@ -13666,7 +13666,12 @@ async function renderQuizTake(app, token) {
     data = await resp.json();
     if (!resp.ok) throw new Error(data.error || 'Could not load quiz');
   } catch (e) { body.innerHTML = '<div style="color:#f87171">' + escHtml(e.message) + '</div>'; return; }
-  if (data.completed) { body.innerHTML = quizResultHtml(data.score, data.total); return; }
+  if (data.completed) {
+    var rSel = data.questions.map(function (q) { return q.selected_index; });
+    var rCor = data.questions.map(function (q) { return q.correct_index; });
+    body.innerHTML = quizResultHtml(data.score, data.total, data.passed, quizReviewHtml(data.questions, rSel, rCor));
+    return;
+  }
   var html = '<div style="color:var(--text-muted-color);margin-bottom:16px">Topic: <strong>' + escHtml(data.sopTitle || 'SOP') + '</strong></div><form id="quizForm" onchange="quizHighlight(this)">';
   data.questions.forEach(function (q, qi) {
     html += '<div style="margin-bottom:20px"><div style="font-weight:600;margin-bottom:8px">' + (qi + 1) + '. ' + escHtml(q.prompt) + '</div>';
@@ -13692,18 +13697,46 @@ async function renderQuizTake(app, token) {
       });
       var res = await r.json();
       if (!r.ok) throw new Error(res.error || 'Submit failed');
-      body.innerHTML = quizResultHtml(res.score, res.total);
+      var rr = res.results || [];
+      body.innerHTML = quizResultHtml(res.score, res.total, res.passed,
+        quizReviewHtml(data.questions, rr.map(function (x) { return x.selected; }), rr.map(function (x) { return x.correct_index; })));
     } catch (e) { (window.novaAlert || window.alert)(e.message); }
   });
 }
 
-function quizResultHtml(score, total) {
-  var passed = score >= total;
-  return '<div style="text-align:center">'
+function quizResultHtml(score, total, passed, reviewHtml) {
+  if (typeof passed !== 'boolean') passed = score >= total;
+  var head = '<div style="text-align:center">'
     + '<div style="font-size:40px;color:' + (passed ? '#22c55e' : 'var(--primary)') + '">' + (passed ? '&#10003;' : '&#8226;') + '</div>'
     + '<div style="font-size:22px;font-weight:700;color:' + (passed ? '#22c55e' : 'var(--primary)') + '">You scored ' + score + '/' + total + '</div>'
-    + '<div style="color:var(--text-muted-color);margin-top:4px">' + (passed ? 'Nice work.' : 'Give the SOP another look.') + '</div>'
-    + '<div style="color:var(--text-muted-color);margin-top:16px">You can close this window.</div></div>';
+    + '<div style="color:var(--text-muted-color);margin-top:4px">' + (passed ? 'Nice work.' : 'Give the SOP another look.') + '</div></div>';
+  return head + (reviewHtml || '')
+    + '<div style="color:var(--text-muted-color);margin-top:16px;text-align:center">You can close this window.</div>';
+}
+
+// Per-question answer review shown once the quiz is completed. questions is the
+// array of {prompt, options}; sel/cor are the chosen and correct option indexes
+// keyed by question order. Never call this before completion.
+function quizReviewHtml(questions, sel, cor) {
+  if (!questions || !questions.length) return '';
+  var h = '<div style="text-align:left;margin-top:20px;border-top:1px solid var(--border,#2a2a2a);padding-top:16px">'
+    + '<div style="font-weight:700;margin-bottom:12px">Your answers</div>';
+  questions.forEach(function (q, i) {
+    var s = (typeof sel[i] === 'number') ? sel[i] : -1;
+    var c = cor[i];
+    h += '<div style="margin-bottom:16px"><div style="font-weight:600;margin-bottom:8px">' + (i + 1) + '. ' + escHtml(q.prompt) + '</div>';
+    (q.options || []).forEach(function (opt, oi) {
+      var isCorrect = oi === c, isChosen = oi === s;
+      var bg = '#1f1f1f', bd = '#333', tag = '';
+      if (isCorrect && isChosen) { bg = 'rgba(34,197,94,0.12)'; bd = '#22c55e'; tag = ' <span style="color:#22c55e;font-weight:600">&#10003; Your answer &middot; correct</span>'; }
+      else if (isCorrect) { bg = 'rgba(34,197,94,0.12)'; bd = '#22c55e'; tag = ' <span style="color:#22c55e;font-weight:600">&#10003; Correct answer</span>'; }
+      else if (isChosen) { bg = 'rgba(248,113,113,0.12)'; bd = '#f87171'; tag = ' <span style="color:#f87171;font-weight:600">&#10007; Your answer</span>'; }
+      h += '<div style="background:' + bg + ';border:1px solid ' + bd + ';border-radius:8px;padding:10px 12px;margin-bottom:6px">' + escHtml(opt) + tag + '</div>';
+    });
+    h += '</div>';
+  });
+  h += '</div>';
+  return h;
 }
 
 // Admin dashboard
@@ -13843,7 +13876,12 @@ async function renderMyQuiz(content) {
   try { data = await api('GET', '/quiz/mine'); }
   catch (e) { body.innerHTML = '<div style="color:#f87171">' + escHtml(e.message) + '</div>'; return; }
   if (!data || !data.quiz) { body.innerHTML = quizCard('<div style="text-align:center;color:var(--text-muted-color)">You&#39;re all caught up &mdash; no quiz right now.</div>'); return; }
-  if (data.completed) { body.innerHTML = quizCard(quizResultHtml(data.score, data.total)); return; }
+  if (data.completed) {
+    var mSel = data.questions.map(function (q) { return q.selected_index; });
+    var mCor = data.questions.map(function (q) { return q.correct_index; });
+    body.innerHTML = quizCard(quizResultHtml(data.score, data.total, data.passed, quizReviewHtml(data.questions, mSel, mCor)));
+    return;
+  }
   var html = '<div style="color:var(--text-muted-color);margin-bottom:16px">Topic: <strong>' + escHtml(data.quiz.sopTitle || 'SOP') + '</strong></div><form id="myQuizForm" onchange="quizHighlight(this)">';
   data.questions.forEach(function (q, qi) {
     html += '<div style="margin-bottom:20px"><div style="font-weight:600;margin-bottom:8px">' + (qi + 1) + '. ' + escHtml(q.prompt) + '</div>';
@@ -13863,8 +13901,12 @@ async function renderMyQuiz(content) {
       answers.push(s ? parseInt(s.value, 10) : -1);
     }
     if (answers.indexOf(-1) !== -1) { (window.novaAlert || window.alert)('Please answer both questions.'); return; }
-    try { var res = await api('POST', '/quiz/mine', { answers: answers }); body.innerHTML = quizCard(quizResultHtml(res.score, res.total)); }
-    catch (e) { (window.novaAlert || window.alert)(e.message); }
+    try {
+      var res = await api('POST', '/quiz/mine', { answers: answers });
+      var rr = res.results || [];
+      body.innerHTML = quizCard(quizResultHtml(res.score, res.total, res.passed,
+        quizReviewHtml(data.questions, rr.map(function (x) { return x.selected; }), rr.map(function (x) { return x.correct_index; }))));
+    } catch (e) { (window.novaAlert || window.alert)(e.message); }
   });
 }
 
@@ -13997,13 +14039,45 @@ async function showTeamQuizResults(quizId) {
         + '<td style="padding:6px">' + drill + '</td></tr>';
     }).join('');
     var box = document.getElementById('quizTeam');
-    box.insertAdjacentHTML('afterbegin', quizCard('<div style="font-weight:700;margin-bottom:8px">Results</div>'
+    box.insertAdjacentHTML('afterbegin', quizCard('<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px"><div style="font-weight:700">Results</div>'
+      + '<button class="btn btn-secondary" data-tbd="' + quizId + '" style="padding:4px 10px;font-size:13px">Team question breakdown</button></div>'
       + '<table style="width:100%;border-collapse:collapse;font-size:14px"><tr style="color:var(--text-muted-color);text-align:left">'
       + '<th style="padding:6px">Name</th><th style="padding:6px">Status</th><th style="padding:6px">Score</th>'
       + '<th style="padding:6px">Passed</th><th style="padding:6px">Reminders</th><th style="padding:6px">Answers</th></tr>' + body + '</table>'));
     document.querySelectorAll('[data-tad]').forEach(function (el) {
       el.addEventListener('click', function (ev) { ev.preventDefault(); showTeamAssignmentDetail(el.getAttribute('data-tad')); });
     });
+    document.querySelectorAll('[data-tbd]').forEach(function (el) {
+      el.addEventListener('click', function (ev) { ev.preventDefault(); showTeamQuizBreakdown(el.getAttribute('data-tbd')); });
+    });
+    window.scrollTo(0, 0);
+  } catch (e) { (window.novaAlert || window.alert)(e.message); }
+}
+
+// Aggregate answer distribution for one quiz across the manager's team, for training.
+async function showTeamQuizBreakdown(quizId) {
+  try {
+    var d = await api('GET', '/quiz/team/' + quizId + '/breakdown');
+    var qs = (d.questions || []).map(function (q) {
+      var total = q.answered || 0;
+      var pct = total ? Math.round(100 * q.correct_count / total) : 0;
+      var pctColor = pct >= 80 ? '#22c55e' : (pct >= 50 ? '#f59e0b' : '#f87171');
+      var opts = (q.options || []).map(function (opt, oi) {
+        var n = (q.counts && q.counts[oi]) || 0;
+        var isCorrect = oi === q.correct_index;
+        var oc = total ? Math.round(100 * n / total) : 0;
+        return '<div style="display:flex;justify-content:space-between;gap:12px;padding:3px 0;color:' + (isCorrect ? '#22c55e' : 'var(--text-color)') + '">'
+          + '<span>' + (isCorrect ? '&#10003; ' : '') + escHtml(opt) + '</span>'
+          + '<span style="color:var(--text-muted-color);white-space:nowrap">' + n + ' &middot; ' + oc + '%</span></div>';
+      }).join('');
+      return '<div style="margin-bottom:16px"><div style="font-weight:600;margin-bottom:2px">' + q.position + '. ' + escHtml(q.prompt) + '</div>'
+        + '<div style="color:' + pctColor + ';font-size:13px;margin-bottom:6px">' + q.correct_count + ' of ' + total + ' correct (' + pct + '%)</div>'
+        + opts + '</div>';
+    }).join('');
+    if (!qs) qs = '<div style="color:var(--text-muted-color)">No completed responses from your team yet.</div>';
+    var box = document.getElementById('quizTeam');
+    box.insertAdjacentHTML('afterbegin', quizCard('<div style="font-weight:700;margin-bottom:4px">Team question breakdown</div>'
+      + '<div style="color:var(--text-muted-color);font-size:13px;margin-bottom:12px">How your team answered &mdash; the lowest-scoring questions are your best training targets.</div>' + qs));
     window.scrollTo(0, 0);
   } catch (e) { (window.novaAlert || window.alert)(e.message); }
 }
