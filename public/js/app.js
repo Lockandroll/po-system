@@ -8906,18 +8906,20 @@ function filterInvoices() {
     return String(r.invoice_number||'').toLowerCase().indexOf(q) !== -1 ||
            (r.customer_name||'').toLowerCase().indexOf(q) !== -1 ||
            (r.account_name||'').toLowerCase().indexOf(q) !== -1 ||
+           (r.city_code||'').toLowerCase().indexOf(q) !== -1 ||
            (veh).toLowerCase().indexOf(q) !== -1 ||
            (r.locksmith_name||r.locksmith_name_join||'').toLowerCase().indexOf(q) !== -1;
   });
   if (!rows.length) { wrap.innerHTML = '<div class="empty-state"><h3>No matching invoices</h3><p>Try a different search.</p></div>'; return; }
   wrap.innerHTML =
     '<div class="table-wrap"><table>' +
-    '<thead><tr><th>Invoice #</th><th>Customer</th><th>Account</th><th>Vehicle</th>' + (seeAll ? '<th>Locksmith</th>' : '') + '<th>Status</th><th class="text-right">Total</th><th>Date</th></tr></thead>' +
+    '<thead><tr><th>Invoice #</th><th>Customer</th><th>City</th><th>Account</th><th>Vehicle</th>' + (seeAll ? '<th>Locksmith</th>' : '') + '<th>Status</th><th class="text-right">Total</th><th>Date</th></tr></thead>' +
     '<tbody>' + rows.map(function(r){
       var veh = [r.vehicle_year, r.vehicle_make, r.vehicle_model].filter(Boolean).join(' ') || '—';
       return '<tr style="cursor:pointer" onclick="navigate(\'view-invoice\',' + r.id + ')">' +
         '<td style="font-weight:600">#' + escHtml(r.invoice_number) + '</td>' +
         '<td>' + escHtml(r.customer_name || '—') + '</td>' +
+        '<td>' + escHtml(r.city_code || '—') + '</td>' +
         '<td>' + escHtml(r.account_name || '—') + '</td>' +
         '<td>' + escHtml(veh) + '</td>' +
         (seeAll ? '<td>' + escHtml(r.locksmith_name || r.locksmith_name_join || '—') + '</td>' : '') +

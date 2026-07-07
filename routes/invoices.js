@@ -295,10 +295,10 @@ router.get('/', requireAuth, requirePermission('view_invoices'), async (req, res
   try {
     let query, params;
     if (canSeeAll(req.user.role)) {
-      query = 'SELECT i.*, u.name AS locksmith_name_join FROM invoices i LEFT JOIN users u ON i.locksmith_id = u.id ORDER BY i.created_at DESC';
+      query = 'SELECT i.*, u.name AS locksmith_name_join, COALESCE(v.city_code, u.home_city) AS city_code FROM invoices i LEFT JOIN users u ON i.locksmith_id = u.id LEFT JOIN vendors v ON i.account_id = v.id ORDER BY i.created_at DESC';
       params = [];
     } else {
-      query = 'SELECT i.*, u.name AS locksmith_name_join FROM invoices i LEFT JOIN users u ON i.locksmith_id = u.id WHERE i.locksmith_id = $1 ORDER BY i.created_at DESC';
+      query = 'SELECT i.*, u.name AS locksmith_name_join, COALESCE(v.city_code, u.home_city) AS city_code FROM invoices i LEFT JOIN users u ON i.locksmith_id = u.id LEFT JOIN vendors v ON i.account_id = v.id WHERE i.locksmith_id = $1 ORDER BY i.created_at DESC';
       params = [req.user.id];
     }
     const { rows } = await pool.query(query, params);
