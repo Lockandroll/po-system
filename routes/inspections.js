@@ -27,10 +27,29 @@ async function getCutoffDay() {
 
 // Option colors drive the rolled-up result: red = fail, yellow/orange = attention,
 // green = pass, gray/blue = neutral (no effect). Text items carry no color.
+function hexHsl(hex) {
+  var m = /^#?([0-9a-f]{6})$/i.exec(hex || '');
+  if (!m) return null;
+  var n = parseInt(m[1], 16), r = ((n >> 16) & 255) / 255, g = ((n >> 8) & 255) / 255, b = (n & 255) / 255;
+  var mx = Math.max(r, g, b), mn = Math.min(r, g, b), d = mx - mn, h = 0;
+  if (d) { if (mx === r) h = ((g - b) / d) % 6; else if (mx === g) h = (b - r) / d + 2; else h = (r - g) / d + 4; h *= 60; if (h < 0) h += 360; }
+  var l = (mx + mn) / 2, s = d ? d / (1 - Math.abs(2 * l - 1)) : 0;
+  return { h: h, s: s, l: l };
+}
+// Map a color (named or any #hex) to a result severity. Named legacy values map
+// directly; arbitrary hex is classified by hue: red = fail, yellow/orange = attention,
+// green = pass, everything muted/blue/purple = neutral. 'ok' covers pass + neutral.
 function colorSeverity(color) {
-  var c = (color || '').toLowerCase();
-  if (c === 'red') return 'fail';
-  if (c === 'yellow' || c === 'orange') return 'attention';
+  var c = (color || '').toLowerCase().trim();
+  if (!c) return 'ok';
+  var named = { green: 'ok', yellow: 'attention', orange: 'attention', red: 'fail', gray: 'ok', blue: 'ok' };
+  if (named[c] != null) return named[c];
+  var hsl = hexHsl(c);
+  if (!hsl) return 'ok';
+  if (hsl.s < 0.15 || hsl.l < 0.12 || hsl.l > 0.92) return 'ok';
+  var h = hsl.h;
+  if (h < 20 || h >= 345) return 'fail';
+  if (h < 65) return 'attention';
   return 'ok';
 }
 function deriveResult(items) {

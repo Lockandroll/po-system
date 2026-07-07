@@ -7193,7 +7193,31 @@ var _inspPhotos = [];   // staged photos for the entry form: [{ file, item_key, 
 // yellow/orange = Attention, green = Pass, gray/blue = neutral (no effect).
 var INSP_COLORS = { green: '#22c55e', yellow: '#eab308', orange: '#f97316', red: '#ef4444', gray: '#6b7280', blue: '#3b82f6' };
 var INSP_COLOR_ORDER = ['green', 'yellow', 'orange', 'red', 'gray', 'blue'];
-function inspColorHex(c) { return INSP_COLORS[(c || '').toLowerCase()] || 'var(--text-muted-color)'; }
+function inspColorHex(c) { c = (c || '').toString(); if (c.charAt(0) === '#') return c; return INSP_COLORS[c.toLowerCase()] || 'var(--text-muted-color)'; }
+function inspHexFor(c) { var h = inspColorHex(c); return (h && h.charAt(0) === '#') ? h : '#6b7280'; }
+function inspHsl(hex) {
+  var m = /^#?([0-9a-fA-F]{6})$/.exec(hex || ''); if (!m) return null;
+  var n = parseInt(m[1], 16), r = ((n >> 16) & 255) / 255, g = ((n >> 8) & 255) / 255, b = (n & 255) / 255;
+  var mx = Math.max(r, g, b), mn = Math.min(r, g, b), d = mx - mn, h = 0;
+  if (d) { if (mx === r) h = ((g - b) / d) % 6; else if (mx === g) h = (b - r) / d + 2; else h = (r - g) / d + 4; h *= 60; if (h < 0) h += 360; }
+  var l = (mx + mn) / 2, s = d ? d / (1 - Math.abs(2 * l - 1)) : 0; return { h: h, s: s, l: l };
+}
+// Classify any color (named or #hex) for display: pass / attention / fail / neutral.
+function inspColorSeverity(color) {
+  var c = (color || '').toString().toLowerCase().trim(); if (!c) return 'neutral';
+  var named = { green: 'pass', yellow: 'attention', orange: 'attention', red: 'fail', gray: 'neutral', blue: 'neutral' };
+  if (named[c]) return named[c];
+  var hsl = inspHsl(inspHexFor(c)); if (!hsl) return 'neutral';
+  if (hsl.s < 0.15 || hsl.l < 0.12 || hsl.l > 0.92) return 'neutral';
+  var h = hsl.h;
+  if (h < 20 || h >= 345) return 'fail';
+  if (h < 65) return 'attention';
+  if (h < 170) return 'pass';
+  return 'neutral';
+}
+function inspSevLabel(s) { return s === 'pass' ? 'Pass' : s === 'attention' ? 'Attention' : s === 'fail' ? 'Fail' : 'No effect'; }
+function inspSevColor(s) { return s === 'pass' ? '#22c55e' : s === 'attention' ? '#f59e0b' : s === 'fail' ? '#ef4444' : 'var(--text-muted-color)'; }
+var INSP_DROPPER_SVG = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m2 22 1-1h3l9-9"/><path d="M3 21v-3l9-9"/><path d="m15 6 3.4-3.4a2.1 2.1 0 1 1 3 3L18 9l.4.4a2.1 2.1 0 1 1-3 3l-3.8-3.8a2.1 2.1 0 1 1 3-3l.4.4Z"/></svg>';
 function inspDefaultColors(n) {
   if (n <= 1) return ['green'];
   if (n === 2) return ['green', 'red'];
@@ -7513,15 +7537,32 @@ async function renderInspectionChecklistAdmin(el) {
     inspClRender(el);
   } catch (err) { el.innerHTML = '<div class="alert alert-error">' + escHtml(err.message) + '</div>'; }
 }
-function inspClColorSwatches(i, j, color) {
-  return '<div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap">' +
-    INSP_COLOR_ORDER.map(function (c) {
-      var seld = (color === c);
-      return '<span onclick="inspClSetOpt(' + i + ',' + j + ',\'' + c + '\')" title="' + c.charAt(0).toUpperCase() + c.slice(1) + '" style="width:24px;height:24px;border-radius:50%;background:' + INSP_COLORS[c] + ';cursor:pointer;display:inline-block;box-sizing:border-box;border:2px solid ' + (seld ? '#fff' : 'transparent') + ';box-shadow:' + (seld ? '0 0 0 2px ' + INSP_COLORS[c] : 'inset 0 0 0 1px rgba(255,255,255,0.25)') + '"></span>';
-    }).join('') +
+function inspClColorPicker(i, j, color) {
+  var sev = inspColorSeverity(color);
+  return '<div style="display:flex;gap:8px;align-items:center">' +
+    '<input type="color" id="insp-color-' + i + '-' + j + '" value="' + inspHexFor(color) + '" oninput="inspClSetColor(' + i + ',' + j + ',this.value)" title="Pick any color" style="width:36px;height:30px;padding:0;border:1px solid var(--border-color);border-radius:6px;background:none;cursor:pointer" />' +
+    '<button type="button" class="btn btn-ghost btn-sm" title="Eyedropper — sample any color on screen" onclick="inspClEyedrop(' + i + ',' + j + ')" style="padding:4px 7px">' + INSP_DROPPER_SVG + '</button>' +
+    '<span id="insp-sev-' + i + '-' + j + '" style="font-size:11px;font-weight:600;min-width:62px;color:' + inspSevColor(sev) + '">' + inspSevLabel(sev) + '</span>' +
   '</div>';
 }
-function inspClSetOpt(i, j, color) { window._inspClEdit[i].options[j].color = color; inspClRerender(); }
+function inspClUpdateSev(i, j) {
+  var sev = inspColorSeverity(window._inspClEdit[i].options[j].color);
+  var chip = document.getElementById('insp-sev-' + i + '-' + j);
+  if (chip) { chip.textContent = inspSevLabel(sev); chip.style.color = inspSevColor(sev); }
+}
+function inspClSetColor(i, j, hex) { window._inspClEdit[i].options[j].color = hex; inspClUpdateSev(i, j); }
+function inspClEyedrop(i, j) {
+  if (typeof window.EyeDropper !== 'function') { (window.novaAlert || window.alert)('Click the color box to pick a color. The standalone eyedropper needs Chrome or Edge on desktop.'); return; }
+  try {
+    var ed = new window.EyeDropper();
+    ed.open().then(function (res) {
+      var hex = res.sRGBHex;
+      window._inspClEdit[i].options[j].color = hex;
+      var inp = document.getElementById('insp-color-' + i + '-' + j); if (inp) inp.value = hex;
+      inspClUpdateSev(i, j);
+    }).catch(function () {});
+  } catch (e) {}
+}
 function inspClRender(el) {
   var list = window._inspClEdit || [];
   var rows = list.map(function (it, i) {
@@ -7530,7 +7571,7 @@ function inspClRender(el) {
       var opts = (it.options || []).map(function (o, j) {
         return '<div style="display:flex;gap:10px;align-items:center;margin-bottom:7px;flex-wrap:wrap">' +
           '<input type="text" value="' + escHtml(o.label || '') + '" oninput="window._inspClEdit[' + i + '].options[' + j + '].label=this.value" placeholder="Option label" style="flex:1;min-width:140px" />' +
-          inspClColorSwatches(i, j, o.color) +
+          inspClColorPicker(i, j, o.color) +
           '<button class="btn btn-ghost btn-sm" style="color:var(--danger-color,#ef4444)" onclick="inspClRemoveOpt(' + i + ',' + j + ')" title="Remove option">✕</button>' +
         '</div>';
       }).join('');
@@ -7552,11 +7593,11 @@ function inspClRender(el) {
       '<button class="btn btn-secondary" onclick="navigate(\'inspections\')">← Back</button>' +
     '</div>' +
     '<div class="alert" style="background:#0f1720;border:1px solid var(--border-color);color:var(--text-muted-color);padding:12px 16px;border-radius:6px;margin-bottom:14px;font-size:13px">' +
-      '<strong>Dropdown</strong> shows a menu of options you define. Each option&#39;s color sets the result: ' +
-      '<span style="color:' + INSP_COLORS.green + ';font-weight:600">green = Pass</span>, ' +
-      '<span style="color:' + INSP_COLORS.yellow + ';font-weight:600">yellow</span>/<span style="color:' + INSP_COLORS.orange + ';font-weight:600">orange = Attention</span>, ' +
-      '<span style="color:' + INSP_COLORS.red + ';font-weight:600">red = Fail</span>, ' +
-      '<span style="color:' + INSP_COLORS.gray + ';font-weight:600">gray</span>/<span style="color:' + INSP_COLORS.blue + ';font-weight:600">blue = no effect</span>. ' +
+      '<strong>Dropdown</strong> shows a menu of options you define. Pick <strong>any</strong> color per option (or use the eyedropper to match an exact shade). The color is auto-classified &mdash; ' +
+      '<span style="color:' + INSP_COLORS.green + ';font-weight:600">greens = Pass</span>, ' +
+      '<span style="color:' + INSP_COLORS.orange + ';font-weight:600">yellows/oranges = Attention</span>, ' +
+      '<span style="color:' + INSP_COLORS.red + ';font-weight:600">reds = Fail</span>, ' +
+      'blues/grays = No effect &mdash; shown next to each option. ' +
       '<strong>Text</strong> is a free write-in and never affects the result.' +
     '</div>' +
     '<div id="insp-cl-msg"></div>' +
