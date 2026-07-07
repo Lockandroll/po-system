@@ -7887,14 +7887,14 @@ async function renderDeposits(el) {
         '<div id="dep-feedback"></div>' +
         '<div style="display:flex;gap:12px;flex-wrap:wrap">' +
           '<div class="form-group" style="flex:1;min-width:160px"><label>Deposit Amount ($)</label><input type="number" id="dep-amount" step="0.01" min="0" placeholder="0.00" oninput="recalcOverShort()" /></div>' +
-          '<div class="form-group" style="flex:1;min-width:160px"><label>Pulsar Shows Owed ($)</label><input type="number" id="dep-pulsar" step="0.01" min="0" placeholder="0.00" oninput="recalcOverShort()" /></div>' +
+          '<div class="form-group" style="flex:1;min-width:160px"><label>Pulsar Shows Owed ($) <span style="color:#e24b4a">*</span></label><input type="number" id="dep-pulsar" step="0.01" min="0" placeholder="0.00" oninput="recalcOverShort()" /></div>' +
         '</div>' +
         '<div style="display:flex;gap:12px;flex-wrap:wrap">' +
           '<div class="form-group" style="flex:1;min-width:160px"><label>Deposit Date</label><input type="date" id="dep-date" value="' + today + '" /></div>' +
           '<div class="form-group" style="flex:1;min-width:200px"><label>Pay Period (Week)</label><select id="dep-period">' + depBuildPeriodOptions() + '</select></div>' +
         '</div>' +
         '<div style="display:flex;gap:12px;flex-wrap:wrap">' +
-          '<div class="form-group" style="flex:1;min-width:160px"><label>City</label><select id="dep-city">' + cityOptions + '</select></div>' +
+          '<div class="form-group" style="flex:1;min-width:160px"><label>City <span style="color:#e24b4a">*</span></label><select id="dep-city">' + cityOptions + '</select></div>' +
         '</div>' +
         '<div class="form-group"><label>Receipt Photos</label>' +
           '<input type="file" id="dep-receipt" accept="image/*" multiple onchange="addDepositReceipts(this)" />' +
@@ -8077,8 +8077,10 @@ async function submitDeposit() {
   var city_code = document.getElementById('dep-city').value;
   var notes = document.getElementById('dep-notes').value.trim();
   if (!amount || parseFloat(amount) <= 0) { fb.innerHTML = '<div class="alert alert-error">Please enter a valid amount.</div>'; return; }
+  if (pulsar_owed === '' || pulsar_owed == null || isNaN(parseFloat(pulsar_owed))) { fb.innerHTML = '<div class="alert alert-error">Please enter the Pulsar shows owed amount.</div>'; return; }
   if (!deposit_date) { fb.innerHTML = '<div class="alert alert-error">Please choose a deposit date.</div>'; return; }
   if (!periodMon) { fb.innerHTML = '<div class="alert alert-error">Please select a pay period.</div>'; return; }
+  if (!city_code) { fb.innerHTML = '<div class="alert alert-error">Please select a city.</div>'; return; }
   if (!depositReceipts.length) { fb.innerHTML = '<div class="alert alert-error">Please attach at least one receipt photo.</div>'; return; }
   var receipts = depositReceipts.map(function(r) { return { image: r.data, filename: r.name }; });
   var expenses = depositExpenses.filter(function(ex) {
@@ -8092,7 +8094,7 @@ async function submitDeposit() {
   function resetBtn() { if (btn) { btn.disabled = false; btn.textContent = 'Submit Deposit'; } }
   if (btn) { btn.disabled = true; btn.textContent = 'Submitting…'; }
   function send(confirmDuplicate) {
-    return api('POST', '/deposits', { amount: amount, pulsar_owed: pulsar_owed || null, deposit_date: deposit_date, period_start: period_start, period_end: period_end, city_code: city_code, notes: notes, receipts: receipts, expenses: expenses, idempotency_key: depIdemKey, confirm_duplicate: !!confirmDuplicate });
+    return api('POST', '/deposits', { amount: amount, pulsar_owed: pulsar_owed, deposit_date: deposit_date, period_start: period_start, period_end: period_end, city_code: city_code, notes: notes, receipts: receipts, expenses: expenses, idempotency_key: depIdemKey, confirm_duplicate: !!confirmDuplicate });
   }
   try {
     var res = await send(false);
@@ -8121,48 +8123,82 @@ async function submitDeposit() {
   }
 }
 
+var depHistoryRows = [];   // cached full deposit list for the history table (filtered client-side by pay period)
+
 async function loadDepositsTable() {
   var area = document.getElementById('dep-table-area');
   if (!area) return;
-  var canManage = ['admin','manager'].includes(state.user.role);
-  var canSeeAll = ['admin','manager','approver'].includes(state.user.role);
   try {
-    var data = await api('GET', '/deposits');
-    if (!data.length) { area.innerHTML = '<p style="color:var(--text-muted-color)">No deposits yet.</p>'; return; }
-    var rows = data.map(function(d) {
-      var receipt = d.has_receipt ? '<a href="#" onclick="event.preventDefault();event.stopPropagation();navigate(\'view-deposit\',' + d.id + ')" style="color:#f97316">View</a>' : '<span style="color:var(--text-muted-color)">—</span>';
-      var depAmt = parseFloat(d.amount) || 0;
-      var exp = parseFloat(d.total_expenses) || 0;
-      var owed = (d.pulsar_owed == null) ? null : parseFloat(d.pulsar_owed);
-      var osCell;
-      if (owed == null) { osCell = '<span style="color:var(--text-muted-color)">—</span>'; }
-      else {
-        var os = owed - depAmt - exp;
-        var c, t;
-        if (Math.abs(os) < 0.005) { c = '#22c55e'; t = 'Even'; }
-        else if (os > 0) { c = '#ef4444'; t = 'Short $' + os.toFixed(2); }
-        else { c = '#f59e0b'; t = 'Over $' + Math.abs(os).toFixed(2); }
-        osCell = '<span style="font-weight:600;color:' + c + '">' + t + '</span>';
-      }
-      return '<tr style="cursor:pointer" onclick="navigate(\'view-deposit\',' + d.id + ')">' +
-        '<td style="white-space:nowrap">' + formatDate(d.deposit_date) + '</td>' +
-        '<td style="white-space:nowrap">' + ((d.period_start && d.period_end) ? (formatDate(d.period_start) + ' – ' + formatDate(d.period_end)) : '—') + '</td>' +
-        '<td style="white-space:nowrap;color:var(--text-muted-color);font-size:13px">' + escHtml(d.deposit_number || '—') + '</td>' +
-        '<td style="white-space:nowrap;font-weight:600">$' + depAmt.toFixed(2) + '</td>' +
-        '<td style="white-space:nowrap">' + (owed == null ? '—' : '$' + owed.toFixed(2)) + '</td>' +
-        '<td style="white-space:nowrap">' + (exp > 0 ? '$' + exp.toFixed(2) : '—') + '</td>' +
-        '<td style="white-space:nowrap">' + osCell + '</td>' +
-        '<td>' + escHtml(d.city_code || '—') + '</td>' +
-        (canSeeAll ? '<td>' + escHtml(d.user_name || '—') + '</td>' : '') +
-        '<td>' + receipt + '</td>' +
-        (can('delete_deposit') ? '<td><button class="btn btn-ghost btn-sm" onclick="event.stopPropagation();deleteDeposit(' + d.id + ')" style="color:#ef4444">Delete</button></td>' : '') +
-      '</tr>';
+    depHistoryRows = await api('GET', '/deposits');
+    if (!depHistoryRows.length) { area.innerHTML = '<p style="color:var(--text-muted-color)">No deposits yet.</p>'; return; }
+    // Distinct pay periods that actually have a deposit, keyed by period_start.
+    var seen = {};
+    var periods = [];
+    depHistoryRows.forEach(function(d) {
+      var key = (d.period_start && d.period_end) ? String(d.period_start).slice(0,10) : '';
+      if (!(key in seen)) { seen[key] = true; periods.push({ key: key, start: d.period_start, end: d.period_end }); }
+    });
+    periods.sort(function(a, b) {
+      if (!a.key) return 1;
+      if (!b.key) return -1;
+      return a.key < b.key ? 1 : (a.key > b.key ? -1 : 0);
+    });
+    var opts = '<option value="">Select a pay period…</option>' + periods.map(function(p) {
+      var label = p.key ? (formatDate(p.start) + ' – ' + formatDate(p.end)) : 'No pay period';
+      return '<option value="' + escHtml(p.key) + '">' + escHtml(label) + '</option>';
     }).join('');
-    var head = '<th>Date</th><th>Pay Period</th><th>Deposit #</th><th>Amount</th><th>Pulsar Owed</th><th>Expenses</th><th>Over/Short</th><th>City</th>' + (canSeeAll ? '<th>Submitted By</th>' : '') + '<th>Receipt</th>' + (can('delete_deposit') ? '<th></th>' : '');
-    area.innerHTML = '<div class="table-wrap"><table class="table"><thead><tr>' + head + '</tr></thead><tbody>' + rows + '</tbody></table></div>';
+    area.innerHTML =
+      '<div class="form-group" style="max-width:320px;margin-bottom:16px"><label>Pay Period</label>' +
+        '<select id="dep-hist-period" onchange="renderDepositsHistory()">' + opts + '</select></div>' +
+      '<div id="dep-hist-rows"><p style="color:var(--text-muted-color)">Select a pay period to view its deposits.</p></div>';
   } catch(e) {
     area.innerHTML = '<div class="alert alert-error">Failed to load deposits</div>';
   }
+}
+
+function renderDepositsHistory() {
+  var wrap = document.getElementById('dep-hist-rows');
+  if (!wrap) return;
+  var sel = document.getElementById('dep-hist-period');
+  var key = sel ? sel.value : '';
+  if (!key) { wrap.innerHTML = '<p style="color:var(--text-muted-color)">Select a pay period to view its deposits.</p>'; return; }
+  var canSeeAll = ['admin','manager','approver'].includes(state.user.role);
+  var list = depHistoryRows.filter(function(d) {
+    var k = (d.period_start && d.period_end) ? String(d.period_start).slice(0,10) : '';
+    return k === key;
+  });
+  if (!list.length) { wrap.innerHTML = '<p style="color:var(--text-muted-color)">No deposits for this pay period.</p>'; return; }
+  var rows = list.map(function(d) {
+    var receipt = d.has_receipt ? '<a href="#" onclick="event.preventDefault();event.stopPropagation();navigate(\'view-deposit\',' + d.id + ')" style="color:#f97316">View</a>' : '<span style="color:var(--text-muted-color)">—</span>';
+    var depAmt = parseFloat(d.amount) || 0;
+    var exp = parseFloat(d.total_expenses) || 0;
+    var owed = (d.pulsar_owed == null) ? null : parseFloat(d.pulsar_owed);
+    var osCell;
+    if (owed == null) { osCell = '<span style="color:var(--text-muted-color)">—</span>'; }
+    else {
+      var os = owed - depAmt - exp;
+      var c, t;
+      if (Math.abs(os) < 0.005) { c = '#22c55e'; t = 'Even'; }
+      else if (os > 0) { c = '#ef4444'; t = 'Short $' + os.toFixed(2); }
+      else { c = '#f59e0b'; t = 'Over $' + Math.abs(os).toFixed(2); }
+      osCell = '<span style="font-weight:600;color:' + c + '">' + t + '</span>';
+    }
+    return '<tr style="cursor:pointer" onclick="navigate(\'view-deposit\',' + d.id + ')">' +
+      '<td style="white-space:nowrap">' + formatDate(d.deposit_date) + '</td>' +
+      '<td style="white-space:nowrap">' + ((d.period_start && d.period_end) ? (formatDate(d.period_start) + ' – ' + formatDate(d.period_end)) : '—') + '</td>' +
+      '<td style="white-space:nowrap;color:var(--text-muted-color);font-size:13px">' + escHtml(d.deposit_number || '—') + '</td>' +
+      '<td style="white-space:nowrap;font-weight:600">$' + depAmt.toFixed(2) + '</td>' +
+      '<td style="white-space:nowrap">' + (owed == null ? '—' : '$' + owed.toFixed(2)) + '</td>' +
+      '<td style="white-space:nowrap">' + (exp > 0 ? '$' + exp.toFixed(2) : '—') + '</td>' +
+      '<td style="white-space:nowrap">' + osCell + '</td>' +
+      '<td>' + escHtml(d.city_code || '—') + '</td>' +
+      (canSeeAll ? '<td>' + escHtml(d.user_name || '—') + '</td>' : '') +
+      '<td>' + receipt + '</td>' +
+      (can('delete_deposit') ? '<td><button class="btn btn-ghost btn-sm" onclick="event.stopPropagation();deleteDeposit(' + d.id + ')" style="color:#ef4444">Delete</button></td>' : '') +
+    '</tr>';
+  }).join('');
+  var head = '<th>Date</th><th>Pay Period</th><th>Deposit #</th><th>Amount</th><th>Pulsar Owed</th><th>Expenses</th><th>Over/Short</th><th>City</th>' + (canSeeAll ? '<th>Submitted By</th>' : '') + '<th>Receipt</th>' + (can('delete_deposit') ? '<th></th>' : '');
+  wrap.innerHTML = '<div class="table-wrap"><table class="table"><thead><tr>' + head + '</tr></thead><tbody>' + rows + '</tbody></table></div>';
 }
 
 async function exportDepositsCSV() {

@@ -98,7 +98,15 @@ router.post('/', requireAuth, requirePermission('create_deposit'), async functio
       client.release();
       return res.status(400).json({ error: 'Deposit date is required' });
     }
-    const owed = (pulsar_owed === '' || pulsar_owed == null || isNaN(parseFloat(pulsar_owed))) ? null : parseFloat(pulsar_owed);
+    if (pulsar_owed === '' || pulsar_owed == null || isNaN(parseFloat(pulsar_owed))) {
+      client.release();
+      return res.status(400).json({ error: 'Pulsar shows owed amount is required' });
+    }
+    if (!city_code) {
+      client.release();
+      return res.status(400).json({ error: 'City is required' });
+    }
+    const owed = parseFloat(pulsar_owed);
     // Duplicate-submission guards.
     const idem = (req.body.idempotency_key == null ? '' : String(req.body.idempotency_key)).slice(0, 64) || null;
     const confirmDuplicate = req.body.confirm_duplicate === true || req.body.confirm_duplicate === 'true';
