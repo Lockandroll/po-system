@@ -1626,6 +1626,36 @@ async function initDB() {
       "('timeclock_payroll_email','') " +
       "ON CONFLICT (key) DO NOTHING;"
     );
+    // Holidays list (editable) — hours WORKED on these dates are categorized as holiday hours on the timesheet.
+    await client.query(
+      'CREATE TABLE IF NOT EXISTS holidays (' +
+      '  id SERIAL PRIMARY KEY,' +
+      '  holiday_date DATE NOT NULL UNIQUE,' +
+      '  name VARCHAR(120) NOT NULL,' +
+      '  created_at TIMESTAMPTZ DEFAULT NOW()' +
+      ');'
+    );
+    // Seed the 2026 U.S. federal holidays once. Admins can add/edit/remove afterward;
+    // the fire-once flag means deletions are never re-added on the next restart.
+    const _holSeed = await client.query("SELECT value FROM settings WHERE key = 'holidays_seeded_2026'");
+    if (!_holSeed.rows.length) {
+      await client.query(
+        "INSERT INTO holidays (holiday_date, name) VALUES " +
+        "('2026-01-01','New Year''s Day')," +
+        "('2026-01-19','Martin Luther King Jr. Day')," +
+        "('2026-02-16','Presidents'' Day')," +
+        "('2026-05-25','Memorial Day')," +
+        "('2026-06-19','Juneteenth')," +
+        "('2026-07-04','Independence Day')," +
+        "('2026-09-07','Labor Day')," +
+        "('2026-10-12','Columbus Day')," +
+        "('2026-11-11','Veterans Day')," +
+        "('2026-11-26','Thanksgiving Day')," +
+        "('2026-12-25','Christmas Day') " +
+        "ON CONFLICT (holiday_date) DO NOTHING;"
+      );
+      await client.query("INSERT INTO settings (key, value) VALUES ('holidays_seeded_2026','1') ON CONFLICT (key) DO NOTHING;");
+    }
     // Grant the new permissions to existing saved role matrices (fire once).
     const _tcPerm = await client.query("SELECT value FROM settings WHERE key = 'perm_timeclock_backfilled'");
     if (!_tcPerm.rows.length) {

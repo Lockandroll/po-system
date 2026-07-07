@@ -212,7 +212,11 @@ router.get('/timesheet', requireAuth, async function (req, res) {
   const to = /^\d{4}-\d{2}-\d{2}$/.test(req.query.to || '') ? req.query.to : addDays(from, 6);
   const rows = await timesheetRows(uid, from, to);
   const wk = await weekApproval(uid, mondayOf(from));
-  res.json({ from: from, to: to, entries: rows, approval: wk });
+  const hset = await holidaySet(from, to);
+  const otMin = (parseFloat(await setting('timeclock_overtime_threshold', 40)) || 40) * 60;
+  const cat = categorizeWorked(rows, hset, otMin);
+  const vacation = await vacationMinutes(uid, from, to);
+  res.json({ from: from, to: to, entries: rows, approval: wk, holidays: Object.keys(hset), breakdown: { regular: cat.regular, overtime: cat.overtime, holiday: cat.holiday, vacation: vacation } });
 });
 
 async function timesheetRows(uid, from, to) {
@@ -226,6 +230,67 @@ async function timesheetRows(uid, from, to) {
     out.push(e);
   }
   return out;
+}
+
+// ---- Hour categorization: regular / overtime / holiday / vacation ----------
+// A DATE column from pg comes back as a JS Date at UTC midnight — normalize to YYYY-MM-DD.
+function ymdOf(d) {
+  if (d instanceof Date) return d.getUTCFullYear() + '-' + String(d.getUTCMonth() + 1).padStart(2, '0') + '-' + String(d.getUTCDate()).padStart(2, '0');
+  return String(d).slice(0, 10);
+}
+// Map of 'YYYY-MM-DD' -> true for every holiday inside the range.
+async function holidaySet(from, to) {
+  const r = await pool.query(
+    "SELECT to_char(holiday_date,'YYYY-MM-DD') AS d FROM holidays WHERE holiday_date BETWEEN $1 AND $2",
+    [from, to]
+  );
+  const s = {};
+  r.rows.forEach(function (x) { s[x.d] = true; });
+  return s;
+}
+// Split worked minutes into holiday (worked ON a holiday) vs regular/overtime.
+// Overtime = non-holiday worked minutes over the weekly threshold. Holiday hours
+// are their own bucket and are NOT counted toward the overtime threshold.
+function categorizeWorked(rows, hset, otThresholdMin) {
+  let holiday = 0, nonHoliday = 0;
+  rows.forEach(function (e) {
+    const w = e.worked_minutes || 0;
+    const dstr = nyDateStr(new Date(e.clock_in_at));
+    if (hset[dstr]) holiday += w; else nonHoliday += w;
+  });
+  const regular = Math.min(nonHoliday, otThresholdMin);
+  const overtime = Math.max(0, nonHoliday - otThresholdMin);
+  return { regular: regular, overtime: overtime, holiday: holiday };
+}
+// Paid, approved time-off hours (8h/business day) that fall inside [from,to].
+async function vacationMinutes(uid, from, to) {
+  let r;
+  try {
+    r = await pool.query(
+      "SELECT start_date, end_date FROM pto_requests " +
+      "WHERE user_id = $1 AND status = 'approved' AND paid = true AND NOT (end_date < $2 OR start_date > $3)",
+      [uid, from, to]
+    );
+  } catch (e) { return 0; } // PTO module not present / query issue — never break the timesheet.
+  const ranges = r.rows.map(function (x) { return [ymdOf(x.start_date), ymdOf(x.end_date)]; });
+  let mins = 0, d = from;
+  while (d <= to) {
+    const dow = new Date(d + 'T00:00:00Z').getUTCDay();
+    if (dow !== 0 && dow !== 6) {
+      for (let i = 0; i < ranges.length; i++) { if (d >= ranges[i][0] && d <= ranges[i][1]) { mins += 8 * 60; break; } }
+    }
+    d = addDays(d, 1);
+  }
+  return mins;
+}
+// Full breakdown for one user over a week window.
+async function weekBreakdown(uid, from, to, hset, otMin) {
+  const rows = await timesheetRows(uid, from, to);
+  if (!hset) hset = await holidaySet(from, to);
+  if (otMin == null) otMin = (parseFloat(await setting('timeclock_overtime_threshold', 40)) || 40) * 60;
+  const cat = categorizeWorked(rows, hset, otMin);
+  const vacation = await vacationMinutes(uid, from, to);
+  return { regular: cat.regular, overtime: cat.overtime, holiday: cat.holiday, vacation: vacation, worked: cat.regular + cat.overtime + cat.holiday, rows: rows };
 }
 
 // Employee approves their own week.
@@ -269,13 +334,43 @@ router.get('/admin', requireAuth, requirePermission('manage_timeclock'), async f
     "WHERE u.active = true ORDER BY u.name",
     [TZ, from, to]
   )).rows;
+  const hset = await holidaySet(from, to);
+  const otMin = (parseFloat(await setting('timeclock_overtime_threshold', 40)) || 40) * 60;
   const out = [];
   for (const u of users) {
     const rows = await timesheetRows(u.id, from, to);
-    const mins = rows.reduce(function (s, e) { return s + (e.worked_minutes || 0); }, 0);
-    out.push({ user: u, minutes: mins, approval: await weekApproval(u.id, wkStart), canApprove: await canApprove(req.user, u.id), entries: rows });
+    const cat = categorizeWorked(rows, hset, otMin);
+    const vacation = await vacationMinutes(u.id, from, to);
+    const mins = cat.regular + cat.overtime + cat.holiday;
+    out.push({ user: u, minutes: mins, breakdown: { regular: cat.regular, overtime: cat.overtime, holiday: cat.holiday, vacation: vacation }, approval: await weekApproval(u.id, wkStart), canApprove: await canApprove(req.user, u.id), entries: rows });
   }
-  res.json({ from: from, to: to, weekStart: wkStart, users: out });
+  res.json({ from: from, to: to, weekStart: wkStart, holidays: Object.keys(hset), users: out });
+});
+
+// ---- Holidays (editable list) ---------------------------------------------
+// Anyone signed in can read the list (the timesheet flags holiday days); only
+// managers/admins can add, rename, or remove holidays.
+router.get('/holidays', requireAuth, async function (req, res) {
+  const r = await pool.query("SELECT id, to_char(holiday_date,'YYYY-MM-DD') AS date, name FROM holidays ORDER BY holiday_date");
+  res.json(r.rows);
+});
+router.post('/holidays', requireAuth, requirePermission('manage_timeclock'), async function (req, res) {
+  const date = String((req.body && req.body.date) || '').trim();
+  const name = String((req.body && req.body.name) || '').trim();
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) return res.status(400).json({ error: 'A valid date (YYYY-MM-DD) is required.' });
+  if (!name) return res.status(400).json({ error: 'A holiday name is required.' });
+  const r = await pool.query(
+    "INSERT INTO holidays (holiday_date, name) VALUES ($1,$2) ON CONFLICT (holiday_date) DO UPDATE SET name = EXCLUDED.name RETURNING id, to_char(holiday_date,'YYYY-MM-DD') AS date, name",
+    [date, name]
+  );
+  await logAudit({ entity_type: 'holiday', entity_id: r.rows[0].id, action: 'upsert', user_id: req.user.id, user_name: req.user.name, details: { date: date, name: name } });
+  res.json(r.rows[0]);
+});
+router.delete('/holidays/:id', requireAuth, requirePermission('manage_timeclock'), async function (req, res) {
+  const id = parseInt(req.params.id, 10);
+  await pool.query('DELETE FROM holidays WHERE id = $1', [id]);
+  await logAudit({ entity_type: 'holiday', entity_id: id, action: 'delete', user_id: req.user.id, user_name: req.user.name, details: {} });
+  res.json({ ok: true });
 });
 
 // Correct an entry (times/break). Requires a reason. Audited; original kept in details.
@@ -345,10 +440,13 @@ router.post('/week/submit', requireAuth, requirePermission('manage_timeclock'), 
   const wk = await ensureWeek(uid, wkStart);
   if (wk.status !== 'mgr_approved') return res.status(409).json({ error: 'Both employee and manager must approve before submitting.' });
   const u = (await pool.query('SELECT name FROM users WHERE id = $1', [uid])).rows[0];
-  const rows = await timesheetRows(uid, wkStart, addDays(wkStart, 6));
-  const xml = buildTimesheetXls(u ? u.name : ('User ' + uid), wkStart, rows);
+  const wkEnd = addDays(wkStart, 6);
+  const hset = await holidaySet(wkStart, wkEnd);
+  const bd = await weekBreakdown(uid, wkStart, wkEnd, hset);
+  const rows = bd.rows;
+  const xml = buildTimesheetXls(u ? u.name : ('User ' + uid), wkStart, rows, hset, bd);
   const payrollTo = await setting('timeclock_payroll_email', process.env.PAYROLL_EMAIL || process.env.FROM_EMAIL);
-  const total = rows.reduce(function (s, e) { return s + (e.worked_minutes || 0); }, 0);
+  const total = bd.regular + bd.overtime + bd.holiday + bd.vacation;
   const html = emailTemplate({
     badge: 'PAYROLL', badgeColor: '#f97316',
     title: 'Timesheet — ' + (u ? u.name : uid),
@@ -423,7 +521,8 @@ function fmtClock(ts) {
 function fmtDay(ts) {
   return new Intl.DateTimeFormat('en-US', { timeZone: TZ, weekday: 'short', month: 'short', day: 'numeric' }).format(new Date(ts));
 }
-function buildTimesheetXls(name, wkStart, rows) {
+function buildTimesheetXls(name, wkStart, rows, hset, bd) {
+  hset = hset || {};
   let body = '';
   let total = 0;
   rows.forEach(function (e) {
@@ -434,6 +533,7 @@ function buildTimesheetXls(name, wkStart, rows) {
     });
     const worked = e.worked_minutes || 0;
     total += worked;
+    const isHol = !!hset[nyDateStr(new Date(e.clock_in_at))];
     body += '<Row>' +
       cellStr(fmtDay(e.clock_in_at)) +
       cellStr(fmtClock(e.clock_in_at)) +
@@ -441,18 +541,33 @@ function buildTimesheetXls(name, wkStart, rows) {
       cellNum(unpaid) +
       cellNum(paid) +
       cellNum((worked / 60).toFixed(2)) +
+      cellStr(isHol ? 'Holiday' : 'Worked') +
       cellStr(e.status) +
       '</Row>';
   });
-  const header = '<Row>' + ['Day', 'Clock In', 'Clock Out', 'Unpaid min', 'Paid break min', 'Worked hrs', 'Status']
+  const header = '<Row>' + ['Day', 'Clock In', 'Clock Out', 'Unpaid min', 'Paid break min', 'Worked hrs', 'Category', 'Status']
     .map(function (h) { return '<Cell><Data ss:Type="String">' + h + '</Data></Cell>'; }).join('') + '</Row>';
-  const totalRow = '<Row>' + cellStr('WEEK TOTAL') + cellStr('') + cellStr('') + cellStr('') + cellStr('') + cellNum((total / 60).toFixed(2)) + cellStr('') + '</Row>';
+  const totalRow = '<Row>' + cellStr('WEEK TOTAL') + cellStr('') + cellStr('') + cellStr('') + cellStr('') + cellNum((total / 60).toFixed(2)) + cellStr('') + cellStr('') + '</Row>';
+  // Pay-category summary block (this is what payroll keys off of).
+  const b = bd || { regular: total, overtime: 0, holiday: 0, vacation: 0 };
+  const hrs = function (m) { return (m / 60).toFixed(2); };
+  const paidTotal = (b.regular || 0) + (b.overtime || 0) + (b.holiday || 0) + (b.vacation || 0);
+  function sumRow(label, mins) {
+    return '<Row>' + cellStr(label) + cellStr('') + cellStr('') + cellStr('') + cellStr('') + cellStr('') + cellStr('') + cellNum(hrs(mins)) + '</Row>';
+  }
+  const sumHeader = '<Row></Row><Row>' + cellStr('PAY SUMMARY (hrs)') + cellStr('') + cellStr('') + cellStr('') + cellStr('') + cellStr('') + cellStr('') + cellStr('') + '</Row>';
+  const summary = sumHeader +
+    sumRow('Regular', b.regular || 0) +
+    sumRow('Overtime', b.overtime || 0) +
+    sumRow('Holiday', b.holiday || 0) +
+    sumRow('Vacation', b.vacation || 0) +
+    sumRow('TOTAL PAID', paidTotal);
   return '<?xml version="1.0"?>' +
     '<?mso-application progid="Excel.Sheet"?>' +
     '<Workbook xmlns="urn:schemas-microsoft-com:office:spreadsheet" xmlns:ss="urn:schemas-microsoft-com:office:spreadsheet">' +
     '<Worksheet ss:Name="' + xesc(name).slice(0, 28) + '"><Table>' +
     '<Row><Cell><Data ss:Type="String">Timesheet: ' + xesc(name) + ' — week of ' + xesc(wkStart) + '</Data></Cell></Row><Row></Row>' +
-    header + body + totalRow +
+    header + body + totalRow + summary +
     '</Table></Worksheet></Workbook>';
 }
 

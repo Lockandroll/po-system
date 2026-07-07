@@ -13227,14 +13227,50 @@ async function renderTimeClock(content){
   var isMgr=(typeof can==='function')&&can('manage_timeclock');
   if(!isMgr&&(_tcTab==='in'||_tcTab==='sheets'))_tcTab='punch';
   var tabs=[{k:'punch',l:'Employee Punch'},{k:'mysheet',l:'My Timesheet'}];
-  if(isMgr){tabs.push({k:'in',l:"Who's In"});tabs.push({k:'sheets',l:'Timesheets & Approval'});}
+  if(isMgr){tabs.push({k:'in',l:"Who's In"});tabs.push({k:'sheets',l:'Timesheets & Approval'});tabs.push({k:'holidays',l:'Holidays'});}
   var bar='<div class="tc-tabs">'+tabs.map(function(t){return '<button class="tc-tab'+(_tcTab===t.k?' active':'')+'" onclick="tcTab(\''+t.k+'\')">'+t.l+'</button>';}).join('')+'</div>';
   content.innerHTML='<div class="tc-wrap tc-wide">'+bar+'<div id="tc-body"><div class="tc-dim" style="padding:14px">Loading…</div></div></div>';
   var body=document.getElementById('tc-body');
   if(_tcTab==='mysheet')return tcRenderMySheet(body);
   if(_tcTab==='in')return tcRenderWhosIn(body);
   if(_tcTab==='sheets')return tcRenderSheets(body);
+  if(_tcTab==='holidays')return tcRenderHolidays(body);
   return tcRenderPunch(body);
+}
+// ---- Holidays editor (managers) — worked hours on these dates count as holiday hours ----
+async function tcRenderHolidays(body){
+  var list;
+  try{list=await api('GET','/timeclock/holidays');}
+  catch(e){body.innerHTML='<div class="tc-card">Could not load holidays.</div>';return;}
+  var rows=(list||[]).map(function(h){
+    return '<tr><td style="white-space:nowrap">'+escHtml(tcHolFmt(h.date))+'</td><td>'+escHtml(h.name)+'</td>'+
+      '<td style="text-align:right"><button class="tc-sbtn" onclick="tcHolDelete('+h.id+')">Remove</button></td></tr>';
+  }).join('')||'<tr><td colspan="3" class="tc-dim" style="padding:14px 8px">No holidays yet — add one below.</td></tr>';
+  body.innerHTML='<div class="tc-card">'+
+      '<div class="tc-h">Company holidays</div>'+
+      '<div class="tc-dim" style="font-size:13px;margin-bottom:12px">Hours an hourly employee clocks on any date below are tracked as <b>Holiday hours</b> on their timesheet. Editing this list only affects future timesheet calculations.</div>'+
+      '<table class="tc-table"><thead><tr><th>Date</th><th>Holiday</th><th></th></tr></thead><tbody>'+rows+'</tbody></table>'+
+    '</div>'+
+    '<div class="tc-card"><div class="tc-h">Add a holiday</div>'+
+      '<div class="tc-addrow">'+
+        '<label class="tc-fld"><span>Date</span><input type="date" id="tchol-date" class="tc-inp tc-dt"></label>'+
+        '<label class="tc-fld" style="flex:1;min-width:180px"><span>Name</span><input id="tchol-name" placeholder="e.g. Christmas Day" class="tc-inp" style="width:100%"></label>'+
+        '<button class="tc-savebtn" onclick="tcHolAdd()">Add holiday</button>'+
+      '</div></div>';
+}
+function tcHolFmt(d){var p=String(d).slice(0,10).split('-');if(p.length!==3)return d;var dt=new Date(Date.UTC(+p[0],+p[1]-1,+p[2]));return new Intl.DateTimeFormat('en-US',{timeZone:'UTC',weekday:'short',year:'numeric',month:'short',day:'numeric'}).format(dt);}
+async function tcHolAdd(){
+  var dEl=document.getElementById('tchol-date'),nEl=document.getElementById('tchol-name');
+  var date=dEl&&dEl.value,name=(nEl&&nEl.value||'').trim();
+  if(!date){await novaAlert('Pick a date.');return;}
+  if(!name){await novaAlert('Enter a holiday name.');return;}
+  try{await api('POST','/timeclock/holidays',{date:date,name:name});}catch(e){await novaAlert(e.message);return;}
+  tcReload();
+}
+async function tcHolDelete(id){
+  if(!(await novaConfirm('Remove this holiday? Timesheets will stop counting that date as holiday hours.')))return;
+  try{await api('DELETE','/timeclock/holidays/'+id);}catch(e){await novaAlert(e.message);return;}
+  tcReload();
 }
 async function renderTimeClockManager(content){_tcTab='in';return renderTimeClock(content);}
 
@@ -13298,6 +13334,17 @@ async function tcBreak(type){
   tcReload();
 }
 
+// Regular / Overtime / Holiday / Vacation summary chips (minutes in, H:MM out).
+function tcBreakdownHtml(bd){
+  if(!bd)return '';
+  var items=[['Regular',bd.regular,'#22c55e'],['Overtime',bd.overtime,'#f59e0b'],['Holiday',bd.holiday,'#a855f7'],['Vacation',bd.vacation,'#38bdf8']];
+  var chips=items.map(function(it){
+    return '<div style="flex:1;min-width:92px;background:var(--card-bg-2,#202020);border:1px solid var(--border,#2c2c2c);border-radius:10px;padding:8px 10px">'+
+      '<div style="font-size:10px;text-transform:uppercase;letter-spacing:.04em;color:var(--text-muted-color,#71717a)">'+it[0]+'</div>'+
+      '<div style="font-size:17px;font-weight:800;color:'+it[2]+'">'+tcHM(it[1]||0)+'</div></div>';
+  }).join('');
+  return '<div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:12px">'+chips+'</div>';
+}
 async function tcRenderMySheet(body){
   var q=_tcWeek?('?from='+_tcWeek+'&to='+tcAddDays(_tcWeek,6)):'';
   var data;
@@ -13325,6 +13372,7 @@ async function tcRenderMySheet(body){
         '<div style="font-size:22px;font-weight:800">'+tcHM(total)+'</div>'+
       '</div>'+
       '<table class="tc-table"><thead><tr><th>Day</th><th>In</th><th>Out</th><th>Unpaid</th><th style="text-align:right">Worked</th></tr></thead><tbody>'+rows+'</tbody></table>'+
+      tcBreakdownHtml(data.breakdown)+
       '<div style="margin-top:14px;text-align:right">'+right+'</div>'+
     '</div>';
 }
@@ -13449,6 +13497,7 @@ function tcMgrDetailHtml(u,ws){
         '</div>'+
       '</div>'+
       '<table class="tc-table"><thead><tr><th>Day</th><th>In</th><th>Out</th><th>Unpaid</th><th style="text-align:right">Worked</th><th></th></tr></thead><tbody>'+rows+'</tbody></table>'+
+      tcBreakdownHtml(u.breakdown)+
       '<div style="margin-top:16px;text-align:right">'+act+'</div>'+
     '</div>'+lockBanner+addCard;
 }
