@@ -366,6 +366,21 @@ router.post('/week/submit', requireAuth, requirePermission('manage_timeclock'), 
   res.json(await weekApproval(uid, wkStart));
 });
 
+// Manager/admin override: stamp employee approval on their behalf (employee is out, etc.). Audited.
+router.post('/week/emp-approve-override', requireAuth, requirePermission('manage_timeclock'), async function (req, res) {
+  const uid = parseInt(req.body.user_id, 10);
+  if (!(await canApprove(req.user, uid))) return res.status(403).json({ error: 'Only this person\'s manager or an admin can override approval.' });
+  const wkStart = mondayOf(req.body.weekStart || nyDateStr(new Date()));
+  const wk = await ensureWeek(uid, wkStart);
+  if (wk.status === 'submitted') return res.status(423).json({ error: 'That week is already submitted. Reopen it first.' });
+  await pool.query(
+    "UPDATE time_week_approvals SET employee_approved_at = NOW(), status = 'emp_approved' WHERE user_id = $1 AND week_start = $2",
+    [uid, wkStart]
+  );
+  await logAudit({ entity_type: 'time_week', entity_id: uid, action: 'emp_approve_override', user_id: req.user.id, user_name: req.user.name, details: { weekStart: wkStart, note: 'Employee approval overridden by manager' } });
+  res.json(await weekApproval(uid, wkStart));
+});
+
 // Reopen a submitted/approved week for correction.
 router.post('/week/reopen', requireAuth, requirePermission('manage_timeclock'), async function (req, res) {
   const uid = parseInt(req.body.user_id, 10);

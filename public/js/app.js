@@ -13380,7 +13380,7 @@ function tcSheetsHtml(sheet){
     if(ap.status==='emp_approved')action=u.canApprove?'<button class="tc-sbtn" onclick="tcMgrApprove('+u.user.id+',\''+ws+'\')">Approve</button>':'<span class="tc-dim">awaiting their manager</span>';
     else if(ap.status==='mgr_approved')action=u.canApprove?'<button class="tc-sbtn" onclick="tcSubmit('+u.user.id+',\''+ws+'\')">Submit to Excel</button>':'<span class="tc-tag" style="background:rgba(34,197,94,.15);color:#22c55e">approved</span>';
     else if(ap.status==='submitted')action='<span class="tc-tag" style="background:rgba(34,197,94,.15);color:#22c55e">submitted</span>';
-    else action='<span class="tc-dim">awaiting employee</span>';
+    else action=u.canApprove?'<button class="tc-sbtn" onclick="tcMgrOverride('+u.user.id+',\''+ws+'\')">Approve for employee</button>':'<span class="tc-dim">awaiting employee</span>';
     return '<tr>'+
       '<td><button class="tc-linkbtn" onclick="tcMgrOpenUser('+u.user.id+')">'+escHtml(u.user.name)+'</button></td>'+
       '<td>'+tcHM(u.minutes)+'</td>'+
@@ -13423,7 +13423,7 @@ function tcMgrDetailHtml(u,ws){
   if(status==='emp_approved')act=u.canApprove?'<button class="tc-savebtn" onclick="tcMgrApprove('+u.user.id+',\''+ws+'\')">Approve week</button>':'<span class="tc-dim">awaiting their manager</span>';
   else if(status==='mgr_approved')act=u.canApprove?'<button class="tc-savebtn" onclick="tcSubmit('+u.user.id+',\''+ws+'\')">Submit to Excel</button>':'<span class="tc-tag" style="background:rgba(34,197,94,.15);color:#22c55e">approved</span>';
   else if(status==='submitted')act=u.canApprove?'<button class="tc-sbtn" onclick="tcReopenWeek('+u.user.id+',\''+ws+'\')">Reopen week to edit</button>':'<span class="tc-tag" style="background:rgba(34,197,94,.15);color:#22c55e">submitted</span>';
-  else act='<span class="tc-dim">awaiting employee approval</span>';
+  else act=u.canApprove?'<button class="tc-savebtn" onclick="tcMgrOverride('+u.user.id+',\''+ws+'\')">Approve for employee</button>':'<span class="tc-dim">awaiting employee approval</span>';
   var total=(u.entries||[]).reduce(function(s,e){return s+(e.worked_minutes||0);},0);
   var lockBanner=locked?'<div class="tc-card" style="border-color:#5b4a12;background:rgba(234,179,8,.06)"><div style="color:#facc15;font-size:13px">This week is submitted to payroll and locked. Reopen it to make corrections.</div></div>':'';
   var addCard=locked?'':(
@@ -13523,6 +13523,11 @@ async function tcMgrApprove(id,ws){
 async function tcSubmit(id,ws){
   if(!confirm('Submit this week and email the Excel sheet to payroll?'))return;
   try{await api('POST','/timeclock/week/submit',{user_id:id,weekStart:ws});alert('Submitted - Excel emailed to payroll.');}catch(e){alert(e.message);}
+  tcSheetsReload();
+}
+async function tcMgrOverride(id,ws){
+  if(!confirm('Approve this week on the employee\'s behalf? Use this only when they can\'t approve it themselves — it is recorded in the audit log. You will still approve as manager and submit.'))return;
+  try{await api('POST','/timeclock/week/emp-approve-override',{user_id:id,weekStart:ws});}catch(e){alert(e.message);}
   tcSheetsReload();
 }
 
