@@ -283,4 +283,23 @@ function startTaskReminders() {
   console.log('[tasks] Task reminder job scheduled (08:00 ' + TZ + ')');
 }
 
-module.exports = { startTaskReminders, runTaskReminders, notifyTaskAssigned, notifyTaskCc, notifyTaskCcInfo, startRecurringSpawner, runRecurringSpawner, spawnFromTemplate, recurNextStart, recurDueFromStart, recurAdvanceStart, recurYmd, recurFromYmd };
+async function runCompletedCleanup() {
+  try {
+    const r = await pool.query(
+      "DELETE FROM tasks WHERE status = 'done' AND completed_at IS NOT NULL AND completed_at < NOW() - INTERVAL '14 days'"
+    );
+    if (r.rowCount) console.log('[tasks] Completed-task cleanup removed ' + r.rowCount + ' task(s) older than 14 days');
+  } catch (err) {
+    console.error('[tasks] completed cleanup failed:', err.message);
+  }
+}
+
+function startCompletedCleanup() {
+  cron.schedule('0 3 * * *', function () {
+    console.log('[tasks] Running completed-task cleanup\u2026');
+    runCompletedCleanup();
+  }, { timezone: TZ });
+  console.log('[tasks] Completed-task cleanup scheduled (03:00 ' + TZ + ', deletes done tasks >14 days old)');
+}
+
+module.exports = { startTaskReminders, startCompletedCleanup, runCompletedCleanup, runTaskReminders, notifyTaskAssigned, notifyTaskCc, notifyTaskCcInfo, startRecurringSpawner, runRecurringSpawner, spawnFromTemplate, recurNextStart, recurDueFromStart, recurAdvanceStart, recurYmd, recurFromYmd };
