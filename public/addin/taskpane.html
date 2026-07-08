@@ -148,12 +148,18 @@
         if (TOKEN) { showForm(); }
         else { attemptSso(); }  // no stored token -> passwordless sign-in, then password fallback
       };
-      if (item && item.body) {
-        item.body.getAsync('text', function (r) {
-          emailCtx.body = (r && r.status === 'succeeded') ? (r.value || '') : '';
-          ready();
-        });
-      } else { ready(); }
+      // Reading the body needs ReadItem permission. If the manifest hasn't
+      // granted it, getAsync THROWS synchronously - which used to brick the
+      // whole pane (sign-in logic never ran, so it always fell to the login
+      // form). Guard it so a missing/blocked body can't stop auto sign-in.
+      try {
+        if (item && item.body && typeof item.body.getAsync === 'function') {
+          item.body.getAsync('text', function (r) {
+            emailCtx.body = (r && r.status === 'succeeded') ? (r.value || '') : '';
+            ready();
+          });
+        } else { ready(); }
+      } catch (e) { ready(); }
     });
   });
 
