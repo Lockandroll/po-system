@@ -3640,7 +3640,7 @@ function geicoRenderEmployeeTable(s) {
       '<td>' + escHtml(e.k) + '</td>' +
       '<td style="text-align:right">' + e.n + '</td>' +
       '<td style="text-align:right;color:' + geicoPctColor(e._excPct) + '">' + e._excPct + '% <span style="color:var(--text-muted-color)">(' + e.excellent + '/' + e.rated + ')</span></td>' +
-            '<td style="text-align:right;font-weight:700;color:' + geicoPctColor(score) + '">' + score + '</td>' +
+      '<td style="text-align:right;font-weight:700;color:' + geicoPctColor(score) + '">' + score + '</td>' +
     '</tr>';
   }).join('');
   var sizeCtl = pageSizeControl(GEICO_EMP_PAGE_SIZE, 'geicoEmpPageSize');
@@ -14451,4 +14451,26 @@ async function showTeamQuizBreakdown(quizId) {
   } catch (e) { (window.novaAlert || window.alert)(e.message); }
 }
 
-async function showTeamAssignmentDetail(ass
+async function showTeamAssignmentDetail(assignmentId) {
+  try {
+    var d = await api('GET', '/quiz/assignment/' + assignmentId + '/detail');
+    var head = '<div style="font-weight:700;margin-bottom:2px">' + escHtml(d.name) + ' &middot; ' + escHtml(d.sop_title || 'SOP') + '</div>'
+      + '<div style="color:var(--text-muted-color);font-size:13px;margin-bottom:12px">Week of ' + escHtml(String(d.week_of).slice(0, 10))
+      + ' &middot; Score ' + (d.score == null ? '&ndash;' : d.score) + ' &middot; ' + (d.passed ? '<span style="color:#22c55e">Passed</span>' : '<span style="color:#f97316">Not passed</span>') + '</div>';
+    var qs = (d.questions || []).map(function (q) {
+      var opts = (q.options || []).map(function (opt, oi) {
+        var isCorrect = oi === q.correct_index;
+        var isPicked = oi === q.selected_index;
+        var color = isCorrect ? '#22c55e' : (isPicked ? '#f87171' : 'var(--text-muted-color)');
+        var mark = isCorrect ? '&#10003; ' : (isPicked ? '&#10007; ' : '&nbsp;&nbsp;&nbsp;');
+        var tag = (isPicked && !isCorrect) ? ' <span style="font-size:12px">(their answer)</span>' : (isPicked && isCorrect ? ' <span style="font-size:12px">(their answer)</span>' : '');
+        return '<div style="padding:2px 0;color:' + color + '">' + mark + escHtml(opt) + tag + '</div>';
+      }).join('');
+      var badge = q.correct ? '<span style="color:#22c55e">correct</span>' : '<span style="color:#f87171">wrong</span>';
+      return '<div style="margin-bottom:14px"><div style="font-weight:600">' + q.position + '. ' + escHtml(q.prompt) + ' &middot; ' + badge + '</div>' + opts + '</div>';
+    }).join('');
+    var box = document.getElementById('quizTeam');
+    box.insertAdjacentHTML('afterbegin', quizCard(head + qs));
+    window.scrollTo(0, 0);
+  } catch (e) { (window.novaAlert || window.alert)(e.message); }
+}
