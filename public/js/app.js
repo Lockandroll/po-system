@@ -2443,6 +2443,7 @@ async function renderRoles(el) {
     { group:'Time Clock', gate:'view_timeclock', perms:[ {k:'view_timeclock',l:'Clock in/out & view own timesheet'}, {k:'manage_timeclock',l:"Manager: who's-in board, timesheets, corrections, approve & submit payroll"} ] },
     { group:'Fleet &amp; Vehicles', perms:[ {k:'manage_vehicles',l:'Manage fleet registry'} ] },
     { group:'Vendors / Accounts', gate:'view_vendors', perms:[ {k:'view_vendors',l:'View / access module'}, {k:'manage_vendors',l:'Manage vendors and accounts'} ] },
+    { group:'Vehicle Inspections', gate:'view_inspections', perms:[ {k:'view_inspections',l:'View / access module (own vehicle inspections)'}, {k:'manage_inspections',l:'Manage checklist, review, edit &amp; delete inspections'} ] },
     { group:'Shipping Addresses', perms:[ {k:'manage_addresses',l:'Manage shipping addresses'} ] },
     { group:'Cities', perms:[ {k:'manage_cities',l:'Manage cities'} ] },
     { group:'Monthly Requisition', perms:[ {k:'manage_running',l:'Manage monthly requisition (admin list)'} ] },
@@ -7455,15 +7456,26 @@ function inspRenderCompliance(el) {
   }).join(''));
   var rows = d.vehicles.map(function (v) {
     var key = inspComplianceStatusKey(v, meta);
-    var canStart = !inspIsExempt(v) && (priv || (v.driver_supervisor_id && v.driver_supervisor_id === state.user.id));
+    var canStart = !inspIsExempt(v) && (priv || (v.driver_supervisor_id && v.driver_supervisor_id === state.user.id) || (v.inspector_id && v.inspector_id === state.user.id));
     var exReason = v.inspection_exempt ? (v.inspection_exempt_reason || 'Exempt') : (inspIsExempt(v) ? 'Assigned to admin' : '');
+    var inspName = v.inspector_name || v.manager_name;
+    var respCell;
+    if (d.can_assign_inspector && !inspIsExempt(v)) {
+      var inspOpts = '<option value="">— Unassigned —</option>' + (d.inspectors || []).map(function (ins) {
+        return '<option value="' + ins.id + '"' + (v.inspector_id === ins.id ? ' selected' : '') + '>' + escHtml(ins.name) + '</option>';
+      }).join('');
+      respCell = escHtml(v.driver_name || 'Unassigned') +
+        '<div style="margin-top:4px"><select data-prev="' + (v.inspector_id || '') + '" onchange="inspSetInspector(this,' + v.vehicle_id + ')" style="font-size:11px;padding:2px 4px;max-width:150px;color:var(--text-muted-color)" title="Assign inspector">' + inspOpts + '</select></div>';
+    } else {
+      respCell = escHtml(v.driver_name || 'Unassigned') + (!inspIsExempt(v) && inspName ? '<div style="font-size:11px;color:var(--text-muted-color)">Inspector: ' + escHtml(inspName) + '</div>' : '');
+    }
     var action = v.inspection_id
       ? '<button class="btn btn-secondary btn-sm" onclick="navigate(\'view-inspection\',' + v.inspection_id + ')">View</button>'
       : (canStart ? '<button class="btn btn-primary btn-sm" onclick="navigate(\'inspection-form\',' + v.vehicle_id + ')">Start</button>' : '<span style="color:var(--text-muted-color);font-size:12px">—</span>');
     return '<tr style="' + (inspIsExempt(v) ? 'opacity:0.55' : '') + '">' +
       '<td><strong>' + v.year + ' ' + escHtml(v.make_model || '') + '</strong>' + (v.license_plate ? '<div style="font-size:11px;color:var(--text-muted-color)">' + escHtml(v.license_plate) + '</div>' : '') + '</td>' +
       '<td>' + escHtml(v.city_code || '—') + '</td>' +
-      '<td>' + escHtml(v.driver_name || 'Unassigned') + (!inspIsExempt(v) && v.manager_name ? '<div style="font-size:11px;color:var(--text-muted-color)">Inspector: ' + escHtml(v.manager_name) + '</div>' : '') + '</td>' +
+      '<td>' + respCell + '</td>' +
       '<td>' + inspStatusChip(key) + (key === 'exempt' && exReason ? '<div style="font-size:11px;color:var(--text-muted-color);margin-top:2px">' + escHtml(exReason) + '</div>' : '') + '</td>' +
       '<td>' + (v.inspection_id ? inspResultBadge(v.overall_result) : '—') + '</td>' +
       '<td style="font-size:12px">' + (v.inspected_at ? formatDate(v.inspected_at) + (v.submitted_by_name ? '<div style="color:var(--text-muted-color)">' + escHtml(v.submitted_by_name) + '</div>' : '') : '—') + '</td>' +
@@ -7499,6 +7511,23 @@ function inspComplianceReload() {
   var c = (document.getElementById('insp-city') || {}).value || '';
   _inspCompliance = { month: m, _city: c };
   renderInspectionCompliance(document.getElementById('content') || document.getElementById('app'));
+}
+
+async function inspSetInspector(sel, vehicleId) {
+  var val = sel.value;
+  var prev = sel.getAttribute('data-prev') || '';
+  sel.disabled = true;
+  try {
+    await api('PUT', '/inspections/vehicle/' + vehicleId + '/inspector', { inspector_id: val || null });
+    sel.setAttribute('data-prev', val);
+    if (_inspCompliance && _inspCompliance.vehicles) {
+      var row = _inspCompliance.vehicles.filter(function (x) { return x.vehicle_id === vehicleId; })[0];
+      if (row) { row.inspector_id = val ? parseInt(val, 10) : null; row.inspector_name = val ? (sel.options[sel.selectedIndex] || {}).text : null; }
+    }
+  } catch (e) {
+    (window.novaAlert || window.alert)(e.message);
+    sel.value = prev;
+  } finally { sel.disabled = false; }
 }
 
 function _inspCurrentMonth() {

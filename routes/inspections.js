@@ -108,9 +108,11 @@ function sanitizePhotoName(name) {
 }
 
 function isPrivileged(user) { return ['admin', 'owner', 'manager'].includes(user.role); }
-// Who may COMPLETE an inspection: admins/managers, or the assigned driver's direct manager (supervisor).
-function canSubmit(user, driverSupervisorId) {
+// Who may COMPLETE an inspection: admins/managers, the assigned driver's direct
+// manager (supervisor), or the inspector explicitly assigned to the vehicle.
+function canSubmit(user, driverSupervisorId, inspectorId) {
   if (['admin', 'owner', 'manager'].includes(user.role)) return true;
+  if (inspectorId && user.id === inspectorId) return true;
   return !!(driverSupervisorId && user.id === driverSupervisorId);
 }
 
@@ -190,12 +192,14 @@ router.get('/compliance', requireAuth, requirePermission('view_inspections'), as
       'SELECT v.id as vehicle_id, v.year, v.make_model, v.license_plate, v.city_code, v.assigned_user_id, ' +
       '       v.inspection_exempt, v.inspection_exempt_reason, u.name as driver_name, ' +
       '       u.supervisor_id as driver_supervisor_id, u.role as driver_role, mgr.name as manager_name, ' +
+      '       v.inspector_id, iu.name as inspector_name, ' +
       '       i.id as inspection_id, i.inspection_number, i.status, i.overall_result, i.mileage, ' +
       '       i.submitted_by, su.name as submitted_by_name, i.created_at as inspected_at, ' +
       '       (SELECT COUNT(*) FROM inspection_photos p WHERE p.inspection_id = i.id AND p.status = $' + (params.length + 1) + ') as photo_count ' +
       'FROM vehicles v ' +
       'LEFT JOIN users u ON v.assigned_user_id = u.id ' +
       'LEFT JOIN users mgr ON u.supervisor_id = mgr.id ' +
+      'LEFT JOIN users iu ON v.inspector_id = iu.id ' +
       'LEFT JOIN vehicle_inspections i ON i.vehicle_id = v.id AND i.period_month = $1 ' +
       'LEFT JOIN users su ON i.submitted_by = su.id ' +
       'WHERE ' + where + ' ' +
@@ -203,10 +207,42 @@ router.get('/compliance', requireAuth, requirePermission('view_inspections'), as
       params.concat(['ready'])
     );
     var cutoff = await getCutoffDay();
-    res.json({ month: month, cutoff_day: cutoff, current_month: etMonth(), vehicles: rows });
+    // Candidate inspectors (admins / owners) + whether this viewer may reassign.
+    var canAssign = ['admin', 'owner'].includes(req.user.role);
+    var inspectors = [];
+    if (canAssign) {
+      const ir = await pool.query("SELECT id, name FROM users WHERE active = true AND role IN ('admin', 'owner') ORDER BY name");
+      inspectors = ir.rows;
+    }
+    res.json({ month: month, cutoff_day: cutoff, current_month: etMonth(), vehicles: rows, inspectors: inspectors, can_assign_inspector: canAssign });
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: 'Failed to load compliance grid' });
+  }
+});
+
+// ===== Assign the inspector responsible for a vehicle (admin / owner only) =====
+router.put('/vehicle/:id/inspector', requireAuth, requirePermission('view_inspections'), async function (req, res) {
+  if (!['admin', 'owner'].includes(req.user.role)) {
+    return res.status(403).json({ error: 'Only an admin or owner can assign inspectors.' });
+  }
+  try {
+    var vehicleId = parseInt(req.params.id, 10);
+    if (!vehicleId) return res.status(400).json({ error: 'Vehicle is required' });
+    var inspectorId = req.body.inspector_id ? parseInt(req.body.inspector_id, 10) : null;
+    var inspectorName = null;
+    if (inspectorId) {
+      const ur = await pool.query("SELECT id, name FROM users WHERE id = $1 AND active = true AND role IN ('admin', 'owner')", [inspectorId]);
+      if (!ur.rows.length) return res.status(400).json({ error: 'Selected user is not a valid inspector.' });
+      inspectorName = ur.rows[0].name;
+    }
+    const vr = await pool.query('UPDATE vehicles SET inspector_id = $1 WHERE id = $2 RETURNING id', [inspectorId, vehicleId]);
+    if (!vr.rows.length) return res.status(404).json({ error: 'Vehicle not found' });
+    try { await logAudit({ entity_type: 'vehicle', entity_id: vehicleId, action: 'edited', user_id: req.user.id, user_name: req.user.name, details: { inspector_id: inspectorId, inspector_name: inspectorName } }); } catch (e) {}
+    res.json({ ok: true, inspector_id: inspectorId, inspector_name: inspectorName });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Failed to assign inspector' });
   }
 });
 
@@ -276,11 +312,11 @@ router.post('/', requireAuth, requirePermission('view_inspections'), async funct
   if (!vehicle_id) return res.status(400).json({ error: 'Vehicle is required' });
   var month = validMonth(period_month) ? period_month : etMonth();
   try {
-    const vr = await pool.query('SELECT v.id, v.city_code, v.assigned_user_id, v.inspection_exempt, du.supervisor_id AS driver_supervisor_id FROM vehicles v LEFT JOIN users du ON v.assigned_user_id = du.id WHERE v.id = $1', [vehicle_id]);
+    const vr = await pool.query('SELECT v.id, v.city_code, v.assigned_user_id, v.inspection_exempt, v.inspector_id, du.supervisor_id AS driver_supervisor_id FROM vehicles v LEFT JOIN users du ON v.assigned_user_id = du.id WHERE v.id = $1', [vehicle_id]);
     if (!vr.rows.length) return res.status(404).json({ error: 'Vehicle not found' });
     const veh = vr.rows[0];
-    if (!canSubmit(req.user, veh.driver_supervisor_id)) {
-      return res.status(403).json({ error: 'Only the driver\'s manager (or an admin) can complete this inspection.' });
+    if (!canSubmit(req.user, veh.driver_supervisor_id, veh.inspector_id)) {
+      return res.status(403).json({ error: 'Only the assigned inspector, the driver\'s manager, or an admin can complete this inspection.' });
     }
     const result = deriveResult(items);
     for (var attempt = 0; attempt < 10; attempt++) {
@@ -398,9 +434,9 @@ router.post('/:id/followup-task', requireAuth, requirePermission('view_inspectio
     const ir = await pool.query('SELECT * FROM vehicle_inspections WHERE id = $1', [req.params.id]);
     if (!ir.rows.length) return res.status(404).json({ error: 'Inspection not found' });
     const insp = ir.rows[0];
-    const vr = await pool.query('SELECT v.id, v.assigned_user_id, v.year, v.make_model, v.license_plate, du.supervisor_id AS driver_supervisor_id FROM vehicles v LEFT JOIN users du ON v.assigned_user_id = du.id WHERE v.id = $1', [insp.vehicle_id]);
+    const vr = await pool.query('SELECT v.id, v.assigned_user_id, v.year, v.make_model, v.license_plate, v.inspector_id, du.supervisor_id AS driver_supervisor_id FROM vehicles v LEFT JOIN users du ON v.assigned_user_id = du.id WHERE v.id = $1', [insp.vehicle_id]);
     const veh = vr.rows[0] || {};
-    if (!canSubmit(req.user, veh.driver_supervisor_id)) return res.status(403).json({ error: 'Only the driver\'s manager (or an admin) can create this task.' });
+    if (!canSubmit(req.user, veh.driver_supervisor_id, veh.inspector_id)) return res.status(403).json({ error: 'Only the assigned inspector, the driver\'s manager, or an admin can create this task.' });
     if (insp.followup_task_id) return res.status(409).json({ error: 'A follow-up task already exists for this inspection.', task_id: insp.followup_task_id });
 
     const { rows: items } = await pool.query('SELECT * FROM inspection_items WHERE inspection_id = $1 ORDER BY id', [req.params.id]);

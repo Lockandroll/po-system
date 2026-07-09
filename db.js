@@ -271,6 +271,7 @@ async function initDB() {
       ');' +
       'ALTER TABLE vehicles ADD COLUMN IF NOT EXISTS inspection_exempt BOOLEAN NOT NULL DEFAULT false;' +
       'ALTER TABLE vehicles ADD COLUMN IF NOT EXISTS inspection_exempt_reason VARCHAR(255);' +
+      'ALTER TABLE vehicles ADD COLUMN IF NOT EXISTS inspector_id INTEGER REFERENCES users(id);' +
       'ALTER TABLE inspection_checklist ADD COLUMN IF NOT EXISTS options JSONB;' +
       'ALTER TABLE inspection_items ADD COLUMN IF NOT EXISTS color VARCHAR(20);' +
       'ALTER TABLE inspection_items ALTER COLUMN answer TYPE VARCHAR(60);' +
