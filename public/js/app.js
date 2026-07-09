@@ -7835,7 +7835,7 @@ function inspClRender(el) {
     '</div>' +
     '<div class="alert" style="background:#0f1720;border:1px solid var(--border-color);color:var(--text-muted-color);padding:12px 16px;border-radius:6px;margin-bottom:14px;font-size:13px;line-height:1.6">' +
       '<div style="color:var(--text-color);font-weight:600;margin-bottom:6px">How the inspection checklist works</div>' +
-      'These are the questions every driver answers on their vehicle&#39;s monthly inspection. Add, rename, or remove items below &mdash; changes apply to all future inspections. Each item is one of two types:' +
+      'These are the questions every inspector answers on their vehicle&#39;s monthly inspection. Add, rename, or remove items below &mdash; changes apply to all future inspections. Each item is one of two types:' +
       '<div style="margin-top:8px"><strong>Dropdown</strong> &mdash; a menu of answers you define. Pick <strong>any</strong> color per answer (or use the eyedropper to match an exact shade). The color is auto-classified &mdash; ' +
         '<span style="color:' + INSP_COLORS.green + ';font-weight:600">greens = Pass</span>, ' +
         '<span style="color:' + INSP_COLORS.orange + ';font-weight:600">yellows/oranges = Attention</span>, ' +
