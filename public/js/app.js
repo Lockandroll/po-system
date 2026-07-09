@@ -7833,13 +7833,16 @@ function inspClRender(el) {
       '<div><div class="page-title">Inspection Checklist</div><div class="page-subtitle" style="color:var(--text-muted-color)">Questions asked on every monthly inspection</div></div>' +
       '<button class="btn btn-secondary" onclick="navigate(\'inspections\')">← Back</button>' +
     '</div>' +
-    '<div class="alert" style="background:#0f1720;border:1px solid var(--border-color);color:var(--text-muted-color);padding:12px 16px;border-radius:6px;margin-bottom:14px;font-size:13px">' +
-      '<strong>Dropdown</strong> shows a menu of options you define. Pick <strong>any</strong> color per option (or use the eyedropper to match an exact shade). The color is auto-classified &mdash; ' +
-      '<span style="color:' + INSP_COLORS.green + ';font-weight:600">greens = Pass</span>, ' +
-      '<span style="color:' + INSP_COLORS.orange + ';font-weight:600">yellows/oranges = Attention</span>, ' +
-      '<span style="color:' + INSP_COLORS.red + ';font-weight:600">reds = Fail</span>, ' +
-      'blues/grays = No effect &mdash; shown next to each option. ' +
-      '<strong>Text</strong> is a free write-in and never affects the result. Tick <strong>Follow-up</strong> on any option to auto-open a task (driver assigned) when that answer is picked.' +
+    '<div class="alert" style="background:#0f1720;border:1px solid var(--border-color);color:var(--text-muted-color);padding:12px 16px;border-radius:6px;margin-bottom:14px;font-size:13px;line-height:1.6">' +
+      '<div style="color:var(--text-color);font-weight:600;margin-bottom:6px">How the inspection checklist works</div>' +
+      'These are the questions every driver answers on their vehicle&#39;s monthly inspection. Add, rename, or remove items below &mdash; changes apply to all future inspections. Each item is one of two types:' +
+      '<div style="margin-top:8px"><strong>Dropdown</strong> &mdash; a menu of answers you define. Pick <strong>any</strong> color per answer (or use the eyedropper to match an exact shade). The color is auto-classified &mdash; ' +
+        '<span style="color:' + INSP_COLORS.green + ';font-weight:600">greens = Pass</span>, ' +
+        '<span style="color:' + INSP_COLORS.orange + ';font-weight:600">yellows/oranges = Attention</span>, ' +
+        '<span style="color:' + INSP_COLORS.red + ';font-weight:600">reds = Fail</span>, ' +
+        'blues/grays = No effect &mdash; shown next to each answer. The worst answer selected sets the inspection&#39;s overall result.</div>' +
+      '<div style="margin-top:6px"><strong>Text</strong> &mdash; a free write-in (mileage, notes, and the like) that never affects the result.</div>' +
+      '<div style="margin-top:6px">Tick <strong>Photo</strong> to require a photo for that item. Tick <strong>Follow-up</strong> on any answer to auto-open a task (assigned to the driver) whenever that answer is picked.</div>' +
     '</div>' +
     '<div id="insp-cl-msg"></div>' +
     (rows || '<div style="color:var(--text-muted-color);margin-bottom:12px">No items yet.</div>') +
