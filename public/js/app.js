@@ -2665,6 +2665,22 @@ function taskTableHtml(manage){
   return '<div class="card"><div class="card-body"><div class="table-wrap"><table class="table"><thead><tr><th>Task</th><th>Assignee</th><th>Priority</th><th>Due</th><th>Status</th></tr></thead><tbody>'+rows+'</tbody></table></div></div></div>';
 }
 
+async function taskEditSecondary(id){
+  var blk=document.getElementById('tk-sec-block'); if(!blk) return;
+  blk.innerHTML='<div style="font-size:11px;color:var(--text-muted-color);text-transform:uppercase">Secondary</div><div style="font-size:13px;color:var(--text-muted-color)">Loading…</div>';
+  var users=[]; try{ users=(await api('GET','/users')).filter(function(u){return u.active;}); }catch(e){}
+  var t=window._taskCurrent||{};
+  var opts='<option value="">None</option>'+users.map(function(u){ return '<option value="'+u.id+'"'+(t.secondary_assignee_id==u.id?' selected':'')+'>'+escHtml(u.name)+'</option>'; }).join('');
+  blk.innerHTML='<div style="font-size:11px;color:var(--text-muted-color);text-transform:uppercase">Secondary</div>'+
+    '<div style="display:flex;gap:6px;align-items:center;margin-top:2px;flex-wrap:wrap"><select id="tk-sec-select" style="min-width:150px">'+opts+'</select>'+
+    '<button class="btn btn-primary btn-sm" onclick="taskSaveSecondary('+id+')">Save</button>'+
+    '<button class="btn btn-secondary btn-sm" onclick="navigate(\'task-detail\','+id+')">Cancel</button></div>';
+}
+async function taskSaveSecondary(id){
+  var sel=document.getElementById('tk-sec-select'); if(!sel) return;
+  try{ await api('PATCH','/tasks/'+id+'/secondary',{ secondary_assignee_id: sel.value||null }); navigate('task-detail',id); }
+  catch(e){ (window.novaAlert||window.alert)(e.message); }
+}
 async function renderTaskDetail(el, id){
   el.innerHTML='<div class="loading">Loading…</div>';
   var t;
@@ -2672,6 +2688,7 @@ async function renderTaskDetail(el, id){
   window._taskCurrent = t;
   var manage = can('manage_tasks');
   var canEdit = manage || (t.created_by===state.user.id);
+  var canSetSecondary = canEdit || (t.assigned_to===state.user.id);
   var p = TASK_PRIO[t.priority] || TASK_PRIO.medium;
   var od = taskIsOverdue(t);
   var statusBtns = t.is_template ? '' : TASK_STATUSES.map(function(st){ var active=t.status===st[0]; return '<button class="btn '+(active?'btn-primary':'btn-secondary')+' btn-sm" onclick="taskSetStatus('+t.id+',\''+st[0]+'\')">'+st[1]+'</button>'; }).join(' ');
@@ -2703,7 +2720,7 @@ async function renderTaskDetail(el, id){
         '<div class="card" style="margin-bottom:16px"><div class="card-body">' +
           '<div style="display:flex;gap:18px;flex-wrap:wrap;margin-bottom:12px">' +
             '<div><div style="font-size:11px;color:var(--text-muted-color);text-transform:uppercase">Assignee</div><div style="font-weight:600">'+escHtml(t.assignee_name||'Unassigned')+'</div></div>' +
-            (t.secondary_name?'<div><div style="font-size:11px;color:var(--text-muted-color);text-transform:uppercase">Secondary</div><div style="font-weight:600">'+escHtml(t.secondary_name)+'</div></div>':'') +
+            ((t.secondary_name||canSetSecondary)?('<div id="tk-sec-block"><div style="font-size:11px;color:var(--text-muted-color);text-transform:uppercase">Secondary</div><div style="font-weight:600">'+escHtml(t.secondary_name||'None')+(canSetSecondary?' <button class="btn btn-ghost btn-sm" style="padding:0 6px;font-weight:400" onclick="taskEditSecondary('+t.id+')">'+(t.secondary_name?'Change':'Add')+'</button>':'')+'</div></div>'):'') +
             '<div><div style="font-size:11px;color:var(--text-muted-color);text-transform:uppercase">Priority</div><div style="font-weight:600;color:'+p.c+'">'+p.l+'</div></div>' +
             '<div><div style="font-size:11px;color:var(--text-muted-color);text-transform:uppercase">'+(t.is_template?'Next send':'Due')+'</div><div style="font-weight:600;color:'+(od?'#ef4444':'inherit')+'">'+(t.is_template?(t.next_run_on?formatDate(t.next_run_on):'—'):(t.due_date?((od?'Overdue · ':'')+formatDate(t.due_date)):'—'))+'</div></div>' +
           '</div>' +

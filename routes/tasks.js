@@ -491,6 +491,28 @@ router.patch('/:id/status', requireAuth, requirePermission('view_tasks'), async 
   } catch (err) { console.error(err); res.status(500).json({ error: 'Failed to update status' }); }
 });
 
+// SET secondary assignee — narrow endpoint so the assignee (or creator/manager) can add a
+// co-owner without opening the manager-only edit form. Primary stays responsible.
+router.patch('/:id/secondary', requireAuth, requirePermission('view_tasks'), async (req, res) => {
+  try {
+    const ex = (await pool.query('SELECT * FROM tasks WHERE id = $1', [req.params.id])).rows[0];
+    if (!ex) return res.status(404).json({ error: 'Task not found' });
+    const allowed = (ex.assigned_to === req.user.id) || (await canEdit(req, ex));
+    if (!allowed) return res.status(403).json({ error: 'Forbidden' });
+    let sid = req.body && req.body.secondary_assignee_id;
+    sid = sid ? parseInt(sid, 10) : null;
+    if (sid && isNaN(sid)) sid = null;
+    if (sid) {
+      const u = (await pool.query('SELECT id FROM users WHERE id = $1', [sid])).rows[0];
+      if (!u) return res.status(400).json({ error: 'Unknown user' });
+    }
+    const changed = (sid || null) !== (ex.secondary_assignee_id || null);
+    await pool.query('UPDATE tasks SET secondary_assignee_id = $1, updated_at = NOW() WHERE id = $2', [sid, req.params.id]);
+    if (changed) await addActivity(req.params.id, req.user, 'event', sid ? ('set ' + (await nameOf(sid)) + ' as secondary') : 'removed the secondary');
+    res.json(await loadTask(req.params.id));
+  } catch (err) { console.error(err); res.status(500).json({ error: 'Failed to set secondary' }); }
+});
+
 function nextRecurDue(task) {
   const base = task.due_date ? new Date(task.due_date) : new Date();
   if (task.recurrence === 'weekly') {
