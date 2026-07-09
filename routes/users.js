@@ -59,7 +59,7 @@ async function sendInvite(user, invitedByName) {
 // List all users (admin only)
 router.get('/', requireAuth, requirePermission('view_users'), async (req, res) => {
   const { rows } = await pool.query(
-    'SELECT id, name, email, phone, role, title, active, receive_emails, receive_sms, pulsar_name, nickname, hide_from_schedule, hide_from_org, pay_type, supervisor_id, org_level, hire_date, home_city, pto_balance_hours, org_x, extra_perms, created_at, last_login_at, last_seen_at FROM users ORDER BY active DESC, name ASC'
+    'SELECT id, name, email, phone, role, title, active, receive_emails, receive_sms, pulsar_name, nickname, hide_from_schedule, hide_from_org, pay_type, supervisor_id, org_level, hire_date, home_city, default_backup_id, pto_balance_hours, org_x, extra_perms, created_at, last_login_at, last_seen_at FROM users ORDER BY active DESC, name ASC'
   );
   const mc = await pool.query('SELECT user_id, city_code FROM user_cities');
   const byU = {};
@@ -80,7 +80,7 @@ function cleanExtraPerms(v) {
 
 // Create user (admin only)
 router.post('/', requireAuth, requirePermission('manage_users'), async (req, res) => {
-  const { name, email, password, role, phone, receive_emails, receive_sms, pulsar_name, nickname, hide_from_schedule, pay_type, supervisor_id, title, org_level, hide_from_org, hire_date, home_city } = req.body;
+  const { name, email, password, role, phone, receive_emails, receive_sms, pulsar_name, nickname, hide_from_schedule, pay_type, supervisor_id, title, org_level, hide_from_org, hire_date, home_city, default_backup_id } = req.body;
   if (!name || !email || !role) {
     return res.status(400).json({ error: 'Name, email, and role are required' });
   }
@@ -97,8 +97,8 @@ router.post('/', requireAuth, requirePermission('manage_users'), async (req, res
   const password_hash = await bcrypt.hash(rawPassword, 12);
   try {
     const { rows } = await pool.query(
-      'INSERT INTO users (name, email, password_hash, role, phone, receive_emails, receive_sms, pulsar_name, nickname, hide_from_schedule, extra_perms, pay_type, supervisor_id, title, org_level, hide_from_org, hire_date, home_city) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18) RETURNING id, name, email, phone, role, title, active, receive_emails, receive_sms, pulsar_name, nickname, hide_from_schedule, hide_from_org, extra_perms, pay_type, supervisor_id, org_level, home_city',
-      [name, email, password_hash, role, phone || null, receive_emails !== false, receive_sms === true, pulsar_name || null, nickname || null, hide_from_schedule === true, cleanExtraPerms(req.body.extra_perms) || [], (pay_type || 'hourly'), (supervisor_id || null), (title || null), (org_level || null), (hide_from_org === true), (hire_date || null), (home_city || null)]
+      'INSERT INTO users (name, email, password_hash, role, phone, receive_emails, receive_sms, pulsar_name, nickname, hide_from_schedule, extra_perms, pay_type, supervisor_id, title, org_level, hide_from_org, hire_date, home_city, default_backup_id) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19) RETURNING id, name, email, phone, role, title, active, receive_emails, receive_sms, pulsar_name, nickname, hide_from_schedule, hide_from_org, extra_perms, pay_type, supervisor_id, org_level, home_city',
+      [name, email, password_hash, role, phone || null, receive_emails !== false, receive_sms === true, pulsar_name || null, nickname || null, hide_from_schedule === true, cleanExtraPerms(req.body.extra_perms) || [], (pay_type || 'hourly'), (supervisor_id || null), (title || null), (org_level || null), (hide_from_org === true), (hire_date || null), (home_city || null), (default_backup_id || null)]
     );
     const newUser = rows[0];
     newUser.city_codes = (await setUserCities(newUser.id, req.body.city_codes)) || [];
@@ -142,7 +142,7 @@ router.post('/new-hire', requireAuth, requirePermission('manage_onboarding'), as
 
 // Update user (admin only)
 router.put('/:id', requireAuth, requirePermission('manage_users'), async (req, res) => {
-  const { name, email, role, password, phone, receive_emails, receive_sms, pulsar_name, nickname, hide_from_schedule, pay_type, supervisor_id, title, org_level, hide_from_org, hire_date, home_city } = req.body;
+  const { name, email, role, password, phone, receive_emails, receive_sms, pulsar_name, nickname, hide_from_schedule, pay_type, supervisor_id, title, org_level, hide_from_org, hire_date, home_city, default_backup_id } = req.body;
   const { id } = req.params;
   if (role && !VALID_ROLES.includes(role)) {
     return res.status(400).json({ error: 'Invalid role. Must be one of: ' + VALID_ROLES.join(', ') + '.' });
@@ -158,11 +158,11 @@ router.put('/:id', requireAuth, requirePermission('manage_users'), async (req, r
   let query, params;
   if (password) {
     const password_hash = await bcrypt.hash(password, 12);
-    query = 'UPDATE users SET name=$1, email=$2, role=$3, password_hash=$4, phone=$5, receive_emails=$6, receive_sms=$7, pulsar_name=$8, nickname=$9, hide_from_schedule=$10, extra_perms=COALESCE($11, extra_perms), pay_type=COALESCE($12, pay_type), supervisor_id=$13, title=$14, org_level=$15, hide_from_org=$16, hire_date=$17, home_city=$18 WHERE id=$19 RETURNING id, name, email, phone, role, title, active, receive_emails, receive_sms, pulsar_name, nickname, hide_from_schedule, hide_from_org, extra_perms, pay_type, supervisor_id, org_level, home_city';
-    params = [name, email, role, password_hash, phone || null, receive_emails !== false, receive_sms === true, pulsar_name || null, nickname || null, hide_from_schedule === true, cleanExtraPerms(req.body.extra_perms), (pay_type || null), (supervisor_id || null), (title || null), (org_level || null), (hide_from_org === true), (hire_date || null), (home_city || null), id];
+    query = 'UPDATE users SET name=$1, email=$2, role=$3, password_hash=$4, phone=$5, receive_emails=$6, receive_sms=$7, pulsar_name=$8, nickname=$9, hide_from_schedule=$10, extra_perms=COALESCE($11, extra_perms), pay_type=COALESCE($12, pay_type), supervisor_id=$13, title=$14, org_level=$15, hide_from_org=$16, hire_date=$17, home_city=$18, default_backup_id=$19 WHERE id=$20 RETURNING id, name, email, phone, role, title, active, receive_emails, receive_sms, pulsar_name, nickname, hide_from_schedule, hide_from_org, extra_perms, pay_type, supervisor_id, org_level, home_city';
+    params = [name, email, role, password_hash, phone || null, receive_emails !== false, receive_sms === true, pulsar_name || null, nickname || null, hide_from_schedule === true, cleanExtraPerms(req.body.extra_perms), (pay_type || null), (supervisor_id || null), (title || null), (org_level || null), (hide_from_org === true), (hire_date || null), (home_city || null), (default_backup_id || null), id];
   } else {
-    query = 'UPDATE users SET name=$1, email=$2, role=$3, phone=$4, receive_emails=$5, receive_sms=$6, pulsar_name=$7, nickname=$8, hide_from_schedule=$9, extra_perms=COALESCE($10, extra_perms), pay_type=COALESCE($11, pay_type), supervisor_id=$12, title=$13, org_level=$14, hide_from_org=$15, hire_date=$16, home_city=$17 WHERE id=$18 RETURNING id, name, email, phone, role, title, active, receive_emails, receive_sms, pulsar_name, nickname, hide_from_schedule, hide_from_org, extra_perms, pay_type, supervisor_id, org_level, home_city';
-    params = [name, email, role, phone || null, receive_emails !== false, receive_sms === true, pulsar_name || null, nickname || null, hide_from_schedule === true, cleanExtraPerms(req.body.extra_perms), (pay_type || null), (supervisor_id || null), (title || null), (org_level || null), (hide_from_org === true), (hire_date || null), (home_city || null), id];
+    query = 'UPDATE users SET name=$1, email=$2, role=$3, phone=$4, receive_emails=$5, receive_sms=$6, pulsar_name=$7, nickname=$8, hide_from_schedule=$9, extra_perms=COALESCE($10, extra_perms), pay_type=COALESCE($11, pay_type), supervisor_id=$12, title=$13, org_level=$14, hide_from_org=$15, hire_date=$16, home_city=$17, default_backup_id=$18 WHERE id=$19 RETURNING id, name, email, phone, role, title, active, receive_emails, receive_sms, pulsar_name, nickname, hide_from_schedule, hide_from_org, extra_perms, pay_type, supervisor_id, org_level, home_city';
+    params = [name, email, role, phone || null, receive_emails !== false, receive_sms === true, pulsar_name || null, nickname || null, hide_from_schedule === true, cleanExtraPerms(req.body.extra_perms), (pay_type || null), (supervisor_id || null), (title || null), (org_level || null), (hide_from_org === true), (hire_date || null), (home_city || null), (default_backup_id || null), id];
   }
   try {
     const { rows } = await pool.query(query, params);

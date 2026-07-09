@@ -18,10 +18,13 @@ function etTodayStr() { return new Intl.DateTimeFormat('en-CA', { timeZone: 'Ame
 async function createRecurringTemplate(b, o, user) {
   const startDay = (o.recStartDay != null) ? o.recStartDay : o.recDay;
   const nextStr = recurYmd(recurNextStart(o.recurrence, startDay, recurFromYmd(etTodayStr())));
+  const rtSecondary = b.secondary_assignee_id ? parseInt(b.secondary_assignee_id, 10) : null;
+  const rtAssignedBy = o.assigned_to ? o.created_by : null;
+  const rtDueLocked = (o.assigned_to && o.assigned_to !== o.created_by) ? await computeDueLock(o.created_by, o.assigned_to) : false;
   const { rows } = await pool.query(
-    'INSERT INTO tasks (title, description, status, priority, assigned_to, created_by, due_date, recurrence, recurrence_day, recurrence_start_day, is_template, next_run_on) ' +
-    "VALUES ($1,$2,'todo',$3,$4,$5,NULL,$6,$7,$8,true,$9) RETURNING *",
-    [o.title, o.description, o.priority, o.assigned_to, o.created_by, o.recurrence, o.recDay, startDay, nextStr]
+    'INSERT INTO tasks (title, description, status, priority, assigned_to, created_by, due_date, recurrence, recurrence_day, recurrence_start_day, is_template, next_run_on, secondary_assignee_id, assigned_by, due_locked) ' +
+    "VALUES ($1,$2,'todo',$3,$4,$5,NULL,$6,$7,$8,true,$9,$10,$11,$12) RETURNING *",
+    [o.title, o.description, o.priority, o.assigned_to, o.created_by, o.recurrence, o.recDay, startDay, nextStr, rtSecondary, rtAssignedBy, rtDueLocked]
   );
   const tpl = rows[0];
   if (Array.isArray(b.subtasks)) {
@@ -41,6 +44,42 @@ async function nameOf(id) {
   if (!id) return 'someone';
   const { rows } = await pool.query('SELECT name FROM users WHERE id = $1', [id]);
   return rows.length ? rows[0].name : 'someone';
+}
+// True if managerId sits anywhere up employeeId's supervisor_id chain.
+async function isUpline(managerId, employeeId) {
+  if (!managerId || !employeeId || managerId === employeeId) return false;
+  let cur = employeeId, guard = 0;
+  while (cur && guard++ < 20) {
+    const r = await pool.query('SELECT supervisor_id FROM users WHERE id = $1', [cur]);
+    const sup = r.rows.length ? r.rows[0].supervisor_id : null;
+    if (!sup) return false;
+    if (sup === managerId) return true;
+    cur = sup;
+  }
+  return false;
+}
+// Lock the due date when the assigner is up the assignee's reporting line.
+async function computeDueLock(assignerId, assigneeId) {
+  if (!assigneeId || !assignerId || assignerId === assigneeId) return false;
+  return await isUpline(assignerId, assigneeId);
+}
+// Admins/owner, the assigner, and anyone upline of the assignee may move a locked due date.
+async function canEditDue(req, task) {
+  if (!task.due_locked) return true;
+  if (req.user.role === 'admin' || req.user.role === 'owner') return true;
+  if (task.assigned_by && task.assigned_by === req.user.id) return true;
+  if (task.assigned_to && await isUpline(req.user.id, task.assigned_to)) return true;
+  return false;
+}
+// True if viewerId is assigneeId's default backup AND assigneeId is on approved PTO today (ET).
+async function isActiveBackupFor(viewerId, assigneeId) {
+  if (!viewerId || !assigneeId) return false;
+  const r = await pool.query(
+    "SELECT 1 FROM users u JOIN pto_requests p ON p.user_id = u.id " +
+    "WHERE u.id = $2 AND u.default_backup_id = $1 AND p.status = 'approved' " +
+    "AND $3::date BETWEEN p.start_date AND p.end_date LIMIT 1",
+    [viewerId, assigneeId, etTodayStr()]);
+  return r.rows.length > 0;
 }
 async function addActivity(taskId, user, type, body) {
   await pool.query(
@@ -75,8 +114,9 @@ async function saveCc(taskId, ids, replace) {
 }
 async function loadTask(id) {
   const { rows } = await pool.query(
-    'SELECT t.*, a.name AS assignee_name, c.name AS creator_name ' +
-    'FROM tasks t LEFT JOIN users a ON t.assigned_to = a.id LEFT JOIN users c ON t.created_by = c.id WHERE t.id = $1',
+    'SELECT t.*, a.name AS assignee_name, c.name AS creator_name, sec.name AS secondary_name, ab.name AS assigned_by_name ' +
+    'FROM tasks t LEFT JOIN users a ON t.assigned_to = a.id LEFT JOIN users c ON t.created_by = c.id ' +
+    'LEFT JOIN users sec ON t.secondary_assignee_id = sec.id LEFT JOIN users ab ON t.assigned_by = ab.id WHERE t.id = $1',
     [id]
   );
   if (!rows.length) return null;
@@ -123,6 +163,8 @@ async function canEdit(req, task) {
 // Status/checklist: the assignee, or anyone who can edit.
 async function canChangeStatus(req, task) {
   if (task.assigned_to === req.user.id) return true;
+  if (task.secondary_assignee_id === req.user.id) return true;
+  if (await isActiveBackupFor(req.user.id, task.assigned_to)) return true;
   return canEdit(req, task);
 }
 
@@ -147,13 +189,18 @@ router.get('/', requireAuth, requirePermission('view_tasks'), async (req, res) =
         params.push(req.user.id); where = 'WHERE NOT t.is_template AND t.created_by = $1 AND (t.assigned_to IS NULL OR t.assigned_to <> $1)';
       }
     } else {
-      where = 'WHERE t.assigned_to = $1 AND NOT t.is_template'; params.push(req.user.id);
+      where = 'WHERE NOT t.is_template AND ( t.assigned_to = $1 OR t.secondary_assignee_id = $1 ' +
+        "OR EXISTS (SELECT 1 FROM users u JOIN pto_requests p ON p.user_id = u.id " +
+        "WHERE u.id = t.assigned_to AND u.default_backup_id = $1 AND p.status = 'approved' " +
+        "AND $2::date BETWEEN p.start_date AND p.end_date) )";
+      params.push(req.user.id); params.push(etTodayStr());
     }
     const { rows } = await pool.query(
-      'SELECT t.*, a.name AS assignee_name, c.name AS creator_name, ' +
+      'SELECT t.*, a.name AS assignee_name, c.name AS creator_name, sec.name AS secondary_name, ' +
       '(SELECT COUNT(*) FROM task_subtasks s WHERE s.task_id = t.id) AS subtask_total, ' +
       '(SELECT COUNT(*) FROM task_subtasks s WHERE s.task_id = t.id AND s.done) AS subtask_done ' +
       'FROM tasks t LEFT JOIN users a ON t.assigned_to = a.id LEFT JOIN users c ON t.created_by = c.id ' +
+      'LEFT JOIN users sec ON t.secondary_assignee_id = sec.id ' +
       where + " ORDER BY (t.status = 'done'), " +
       "CASE t.priority WHEN 'urgent' THEN 0 WHEN 'high' THEN 1 WHEN 'medium' THEN 2 ELSE 3 END, " +
       't.due_date NULLS LAST, t.position, t.id',
@@ -173,7 +220,10 @@ router.get('/counts', requireAuth, requirePermission('view_tasks'), async (req, 
     const mine = await pool.query(
       "SELECT COUNT(*) FILTER (WHERE status <> 'done') AS open, " +
       "COUNT(*) FILTER (WHERE status <> 'done' AND due_date IS NOT NULL AND due_date < CURRENT_DATE) AS overdue " +
-      "FROM tasks WHERE assigned_to = $1 AND NOT is_template", [uid]);
+      "FROM tasks WHERE NOT is_template AND ( assigned_to = $1 OR secondary_assignee_id = $1 " +
+      "OR EXISTS (SELECT 1 FROM users u JOIN pto_requests p ON p.user_id = u.id " +
+      "WHERE u.id = tasks.assigned_to AND u.default_backup_id = $1 AND p.status = 'approved' " +
+      "AND $2::date BETWEEN p.start_date AND p.end_date) )", [uid, etTodayStr()]);
     let assigned_open = 0, assigned_overdue = 0;
     if (manage) {
       let where = '', params = [];
@@ -215,10 +265,13 @@ router.post('/', requireAuth, requirePermission('view_tasks'), async (req, res) 
     const due_date = b.due_date || null;
     const rTitle = resolveDateTokens(title);
     const rDesc = b.description ? resolveDateTokens(b.description) : null;
+    const secondary_assignee_id = b.secondary_assignee_id ? parseInt(b.secondary_assignee_id, 10) : null;
+    const assigned_by = assigned_to ? req.user.id : null;
+    const due_locked = (assigned_to && assigned_to !== req.user.id) ? await computeDueLock(req.user.id, assigned_to) : false;
     const { rows } = await pool.query(
-      'INSERT INTO tasks (title, description, status, priority, assigned_to, created_by, due_date, recurrence, recurrence_day) ' +
-      'VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING *',
-      [rTitle, rDesc, status, priority, assigned_to, req.user.id, due_date, recurrence, recDay]
+      'INSERT INTO tasks (title, description, status, priority, assigned_to, created_by, due_date, recurrence, recurrence_day, secondary_assignee_id, assigned_by, due_locked) ' +
+      'VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12) RETURNING *',
+      [rTitle, rDesc, status, priority, assigned_to, req.user.id, due_date, recurrence, recDay, secondary_assignee_id, assigned_by, due_locked]
     );
     const task = rows[0];
     if (Array.isArray(b.subtasks)) {
@@ -230,6 +283,7 @@ router.post('/', requireAuth, requirePermission('view_tasks'), async (req, res) 
     }
     await addActivity(task.id, req.user, 'event', 'created this task');
     if (assigned_to) await addActivity(task.id, req.user, 'event', 'assigned it to ' + (await nameOf(assigned_to)));
+    if (secondary_assignee_id) await addActivity(task.id, req.user, 'event', 'added ' + (await nameOf(secondary_assignee_id)) + ' as secondary');
     try { await logAudit({ entity_type: 'task', entity_id: task.id, entity_number: '#' + task.id, action: 'created', user_id: req.user.id, user_name: req.user.name, details: { title: title } }); } catch (e) {}
     await saveCc(task.id, b.cc, false);
     await saveAttachments(task.id, b.attachments, req.user);
@@ -266,10 +320,13 @@ router.post('/bulk', requireAuth, requirePermission('manage_tasks'), async (req,
         if (aid) assigneeNames.push(await nameOf(aid));
         continue;
       }
+      const bSecondary = b.secondary_assignee_id ? parseInt(b.secondary_assignee_id, 10) : null;
+      const bAssignedBy = aid ? req.user.id : null;
+      const bDueLocked = (aid && aid !== req.user.id) ? await computeDueLock(req.user.id, aid) : false;
       const { rows } = await pool.query(
-        'INSERT INTO tasks (title, description, status, priority, assigned_to, created_by, due_date, recurrence, recurrence_day) ' +
-        "VALUES ($1,$2,'todo',$3,$4,$5,$6,$7,$8) RETURNING id",
-        [rTitle, rDesc, priority, aid, req.user.id, due_date, recurrence, recDay]
+        'INSERT INTO tasks (title, description, status, priority, assigned_to, created_by, due_date, recurrence, recurrence_day, secondary_assignee_id, assigned_by, due_locked) ' +
+        "VALUES ($1,$2,'todo',$3,$4,$5,$6,$7,$8,$9,$10,$11) RETURNING id",
+        [rTitle, rDesc, priority, aid, req.user.id, due_date, recurrence, recDay, bSecondary, bAssignedBy, bDueLocked]
       );
       const id = rows[0].id;
       ids.push(id);
@@ -369,15 +426,19 @@ router.put('/:id', requireAuth, requirePermission('manage_tasks'), async (req, r
     const assigned_to = b.assigned_to !== undefined ? (b.assigned_to ? parseInt(b.assigned_to, 10) : null) : ex.assigned_to;
     const due_date = b.due_date !== undefined ? (b.due_date || null) : ex.due_date;
     const description = b.description !== undefined ? b.description : ex.description;
+    const secondary_assignee_id = b.secondary_assignee_id !== undefined ? (b.secondary_assignee_id ? parseInt(b.secondary_assignee_id, 10) : null) : ex.secondary_assignee_id;
+    const assigneeChgd = (assigned_to || null) !== (ex.assigned_to || null);
+    const newAssignedBy = assigneeChgd ? (assigned_to ? req.user.id : null) : ex.assigned_by;
+    const newDueLocked = assigneeChgd ? ((assigned_to && assigned_to !== req.user.id) ? await computeDueLock(req.user.id, assigned_to) : false) : ex.due_locked;
     if (ex.is_template) {
       const startDay = (recStartDay != null) ? recStartDay : recDay;
       if (recurrence) {
         const nextStr = recurYmd(recurNextStart(recurrence, startDay, recurFromYmd(etTodayStr())));
-        await pool.query('UPDATE tasks SET title=$1, description=$2, priority=$3, assigned_to=$4, recurrence=$5, recurrence_day=$6, recurrence_start_day=$7, next_run_on=$8, updated_at=NOW() WHERE id=$9',
-          [title, description, priority, assigned_to, recurrence, recDay, startDay, nextStr, req.params.id]);
+        await pool.query('UPDATE tasks SET title=$1, description=$2, priority=$3, assigned_to=$4, recurrence=$5, recurrence_day=$6, recurrence_start_day=$7, next_run_on=$8, secondary_assignee_id=$9, assigned_by=$10, due_locked=$11, updated_at=NOW() WHERE id=$12',
+          [title, description, priority, assigned_to, recurrence, recDay, startDay, nextStr, secondary_assignee_id, newAssignedBy, newDueLocked, req.params.id]);
       } else {
-        await pool.query('UPDATE tasks SET title=$1, description=$2, priority=$3, assigned_to=$4, recurrence=NULL, recurrence_day=NULL, recurrence_start_day=NULL, next_run_on=NULL, is_template=false, due_date=$5, updated_at=NOW() WHERE id=$6',
-          [title, description, priority, assigned_to, due_date, req.params.id]);
+        await pool.query('UPDATE tasks SET title=$1, description=$2, priority=$3, assigned_to=$4, recurrence=NULL, recurrence_day=NULL, recurrence_start_day=NULL, next_run_on=NULL, is_template=false, due_date=$5, secondary_assignee_id=$6, assigned_by=$7, due_locked=$8, updated_at=NOW() WHERE id=$9',
+          [title, description, priority, assigned_to, due_date, secondary_assignee_id, newAssignedBy, newDueLocked, req.params.id]);
       }
       if (b.cc !== undefined) await saveCc(req.params.id, b.cc, true);
       try { await logAudit({ entity_type: 'task', entity_id: parseInt(req.params.id), entity_number: '#' + req.params.id, action: 'edited', user_id: req.user.id, user_name: req.user.name, details: {} }); } catch (e) {}
@@ -385,13 +446,18 @@ router.put('/:id', requireAuth, requirePermission('manage_tasks'), async (req, r
     }
     const dueChanged = String(due_date) !== String(ex.due_date);
     const assigneeChanged = (assigned_to || null) !== (ex.assigned_to || null);
+    if (dueChanged && !(await canEditDue(req, ex))) {
+      return res.status(403).json({ error: 'This due date was set by a higher-level assigner and is locked.' });
+    }
+    const secondaryChanged = (secondary_assignee_id || null) !== (ex.secondary_assignee_id || null);
     await pool.query(
-      'UPDATE tasks SET title=$1, description=$2, status=$3, priority=$4, assigned_to=$5, due_date=$6, recurrence=$7, recurrence_day=$8, ' +
+      'UPDATE tasks SET title=$1, description=$2, status=$3, priority=$4, assigned_to=$5, due_date=$6, recurrence=$7, recurrence_day=$8, secondary_assignee_id=$9, assigned_by=$10, due_locked=$11, ' +
       (dueChanged ? 'reminded_day_before=false, reminded_due=false, last_overdue_on=NULL, ' : '') +
-      'updated_at=NOW() WHERE id=$9',
-      [title, description, status, priority, assigned_to, due_date, recurrence, recDay, req.params.id]
+      'updated_at=NOW() WHERE id=$12',
+      [title, description, status, priority, assigned_to, due_date, recurrence, recDay, secondary_assignee_id, newAssignedBy, newDueLocked, req.params.id]
     );
     if (assigneeChanged) await addActivity(req.params.id, req.user, 'event', assigned_to ? ('reassigned it to ' + (await nameOf(assigned_to))) : 'unassigned it');
+    if (secondaryChanged) await addActivity(req.params.id, req.user, 'event', secondary_assignee_id ? ('set ' + (await nameOf(secondary_assignee_id)) + ' as secondary') : 'removed the secondary');
     try { await logAudit({ entity_type: 'task', entity_id: parseInt(req.params.id), entity_number: '#' + req.params.id, action: 'edited', user_id: req.user.id, user_name: req.user.name, details: {} }); } catch (e) {}
     if (b.cc !== undefined) await saveCc(req.params.id, b.cc, true);
     if (assigneeChanged && assigned_to) { try { await notifyTaskAssigned(req.params.id); } catch (e) {} }
@@ -439,9 +505,9 @@ function nextRecurDue(task) {
 async function spawnRecurrence(task, user) {
   const ndStr = nextRecurDue(task).toISOString().slice(0, 10);
   const { rows } = await pool.query(
-    'INSERT INTO tasks (title, description, status, priority, assigned_to, created_by, due_date, recurrence, recurrence_day) ' +
-    "VALUES ($1,$2,'todo',$3,$4,$5,$6,$7,$8) RETURNING id",
-    [task.title, task.description, task.priority, task.assigned_to, task.created_by, ndStr, task.recurrence, task.recurrence_day]
+    'INSERT INTO tasks (title, description, status, priority, assigned_to, created_by, due_date, recurrence, recurrence_day, secondary_assignee_id, assigned_by, due_locked) ' +
+    "VALUES ($1,$2,'todo',$3,$4,$5,$6,$7,$8,$9,$10,$11) RETURNING id",
+    [task.title, task.description, task.priority, task.assigned_to, task.created_by, ndStr, task.recurrence, task.recurrence_day, task.secondary_assignee_id, task.assigned_by, task.due_locked]
   );
   const newId = rows[0].id;
   const { rows: subs } = await pool.query('SELECT title, position FROM task_subtasks WHERE task_id = $1 ORDER BY position, id', [task.id]);

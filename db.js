@@ -583,6 +583,9 @@ async function initDB() {
       "ALTER TABLE tasks ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ DEFAULT NOW();" +
       "ALTER TABLE tasks ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ DEFAULT NOW();" +
       "ALTER TABLE tasks ADD COLUMN IF NOT EXISTS source VARCHAR(20);" +
+      "ALTER TABLE tasks ADD COLUMN IF NOT EXISTS secondary_assignee_id INTEGER;" +
+      "ALTER TABLE tasks ADD COLUMN IF NOT EXISTS assigned_by INTEGER;" +
+      "ALTER TABLE tasks ADD COLUMN IF NOT EXISTS due_locked BOOLEAN NOT NULL DEFAULT false;" +
       "ALTER TABLE task_subtasks ADD COLUMN IF NOT EXISTS done BOOLEAN NOT NULL DEFAULT false;" +
       "ALTER TABLE task_subtasks ADD COLUMN IF NOT EXISTS position INTEGER DEFAULT 0;" +
       "ALTER TABLE task_subtasks ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ DEFAULT NOW();" +
@@ -1605,7 +1608,8 @@ async function initDB() {
     await client.query(
       "ALTER TABLE users ADD COLUMN IF NOT EXISTS pay_type VARCHAR(12) NOT NULL DEFAULT 'hourly';" +   // hourly | salary | commission
       'ALTER TABLE users ADD COLUMN IF NOT EXISTS supervisor_id INTEGER;' +
-      'ALTER TABLE users ADD COLUMN IF NOT EXISTS org_level INTEGER;'
+      'ALTER TABLE users ADD COLUMN IF NOT EXISTS org_level INTEGER;' +
+      'ALTER TABLE users ADD COLUMN IF NOT EXISTS default_backup_id INTEGER;'
     );
     // Late-alert fire-once flag on the matched shift.
     await client.query('ALTER TABLE shifts ADD COLUMN IF NOT EXISTS late_alerted_at TIMESTAMPTZ;');
