@@ -14,6 +14,17 @@ const PRIORITIES = ['low', 'medium', 'high', 'urgent'];
 const RECUR = ['', 'daily', 'weekly', 'monthly'];
 const STATUS_LABEL = { todo: 'To Do', in_progress: 'In Progress', done: 'Done' };
 function etTodayStr() { return new Intl.DateTimeFormat('en-CA', { timeZone: 'America/New_York', year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date()); }
+// Insert one subtask from either a string or a {title, assigned_to} object. assigned_to only honored when manage=true.
+async function insertSubtask(taskId, st, position, manage) {
+  const title = (typeof st === 'string' ? st : (st && st.title) || '').trim();
+  if (!title) return;
+  let aid = null;
+  if (manage && st && typeof st === 'object' && st.assigned_to != null && st.assigned_to !== '') {
+    aid = parseInt(st.assigned_to, 10);
+    if (isNaN(aid)) aid = null;
+  }
+  await pool.query('INSERT INTO task_subtasks (task_id, title, position, assigned_to) VALUES ($1,$2,$3,$4)', [taskId, title.slice(0, 500), position, aid]);
+}
 // Create a recurring schedule (hidden template). The daily spawner sends a real task on each send day.
 async function createRecurringTemplate(b, o, user) {
   const startDay = (o.recStartDay != null) ? o.recStartDay : o.recDay;
@@ -28,11 +39,7 @@ async function createRecurringTemplate(b, o, user) {
   );
   const tpl = rows[0];
   if (Array.isArray(b.subtasks)) {
-    for (let i = 0; i < b.subtasks.length; i++) {
-      const st = b.subtasks[i];
-      const tt = (typeof st === 'string' ? st : (st && st.title) || '').trim();
-      if (tt) await pool.query('INSERT INTO task_subtasks (task_id, title, position) VALUES ($1,$2,$3)', [tpl.id, tt, i]);
-    }
+    for (let i = 0; i < b.subtasks.length; i++) await insertSubtask(tpl.id, b.subtasks[i], i, !!o.manage);
   }
   await saveCc(tpl.id, b.cc, false);
   await saveAttachments(tpl.id, b.attachments, user);
@@ -121,7 +128,7 @@ async function loadTask(id) {
   );
   if (!rows.length) return null;
   const task = rows[0];
-  const { rows: subs } = await pool.query('SELECT * FROM task_subtasks WHERE task_id = $1 ORDER BY position, id', [id]);
+  const { rows: subs } = await pool.query('SELECT s.*, u.name AS assignee_name FROM task_subtasks s LEFT JOIN users u ON s.assigned_to = u.id WHERE s.task_id = $1 ORDER BY s.position, s.id', [id]);
   const { rows: acts } = await pool.query('SELECT * FROM task_activity WHERE task_id = $1 ORDER BY created_at ASC, id ASC', [id]);
   task.subtasks = subs;
   task.activity = acts;
@@ -257,7 +264,7 @@ router.post('/', requireAuth, requirePermission('view_tasks'), async (req, res) 
       assigned_to = req.user.id;
     }
     if (recurrence) {
-      const tpl = await createRecurringTemplate(b, { title: title, description: b.description || null, priority: priority, assigned_to: assigned_to, created_by: req.user.id, recurrence: recurrence, recDay: recDay, recStartDay: recStartDay }, req.user);
+      const tpl = await createRecurringTemplate(b, { title: title, description: b.description || null, priority: priority, assigned_to: assigned_to, created_by: req.user.id, recurrence: recurrence, recDay: recDay, recStartDay: recStartDay, manage: manage }, req.user);
       await addActivity(tpl.id, req.user, 'event', 'created this recurring schedule');
       try { await logAudit({ entity_type: 'task', entity_id: tpl.id, entity_number: '#' + tpl.id, action: 'created', user_id: req.user.id, user_name: req.user.name, details: { title: title, recurring: true } }); } catch (e) {}
       return res.status(201).json(await loadTask(tpl.id));
@@ -275,11 +282,7 @@ router.post('/', requireAuth, requirePermission('view_tasks'), async (req, res) 
     );
     const task = rows[0];
     if (Array.isArray(b.subtasks)) {
-      for (let i = 0; i < b.subtasks.length; i++) {
-        const st = b.subtasks[i];
-        const tt = (typeof st === 'string' ? st : (st && st.title) || '').trim();
-        if (tt) await pool.query('INSERT INTO task_subtasks (task_id, title, position) VALUES ($1,$2,$3)', [task.id, tt, i]);
-      }
+      for (let i = 0; i < b.subtasks.length; i++) await insertSubtask(task.id, b.subtasks[i], i, manage);
     }
     await addActivity(task.id, req.user, 'event', 'created this task');
     if (assigned_to) await addActivity(task.id, req.user, 'event', 'assigned it to ' + (await nameOf(assigned_to)));
@@ -314,7 +317,7 @@ router.post('/bulk', requireAuth, requirePermission('manage_tasks'), async (req,
     for (let a = 0; a < assignees.length; a++) {
       const aid = assignees[a];
       if (recurrence) {
-        const tpl = await createRecurringTemplate(b, { title: title, description: b.description || null, priority: priority, assigned_to: aid, created_by: req.user.id, recurrence: recurrence, recDay: recDay, recStartDay: recStartDay }, req.user);
+        const tpl = await createRecurringTemplate(b, { title: title, description: b.description || null, priority: priority, assigned_to: aid, created_by: req.user.id, recurrence: recurrence, recDay: recDay, recStartDay: recStartDay, manage: true }, req.user);
         ids.push(tpl.id);
         await addActivity(tpl.id, req.user, 'event', 'created this recurring schedule');
         if (aid) assigneeNames.push(await nameOf(aid));
@@ -330,11 +333,7 @@ router.post('/bulk', requireAuth, requirePermission('manage_tasks'), async (req,
       );
       const id = rows[0].id;
       ids.push(id);
-      for (let i = 0; i < subs.length; i++) {
-        const st = subs[i];
-        const tt = (typeof st === 'string' ? st : (st && st.title) || '').trim();
-        if (tt) await pool.query('INSERT INTO task_subtasks (task_id, title, position) VALUES ($1,$2,$3)', [id, tt, i]);
-      }
+      for (let i = 0; i < subs.length; i++) await insertSubtask(id, subs[i], i, true);
       await saveCc(id, b.cc, false);
       await saveAttachments(id, b.attachments, req.user);
       await addActivity(id, req.user, 'event', 'created this task');
@@ -352,9 +351,10 @@ router.post('/bulk', requireAuth, requirePermission('manage_tasks'), async (req,
 // SUBTASK toggle (assignee or manager) — declared before /:id routes
 router.patch('/subtasks/:sid', requireAuth, requirePermission('view_tasks'), async (req, res) => {
   try {
-    const { rows } = await pool.query('SELECT s.*, t.assigned_to, t.created_by FROM task_subtasks s JOIN tasks t ON s.task_id = t.id WHERE s.id = $1', [req.params.sid]);
+    const { rows } = await pool.query('SELECT s.assigned_to AS sub_assignee, t.assigned_to, t.created_by FROM task_subtasks s JOIN tasks t ON s.task_id = t.id WHERE s.id = $1', [req.params.sid]);
     if (!rows.length) return res.status(404).json({ error: 'Subtask not found' });
-    if (!(await canChangeStatus(req, rows[0]))) return res.status(403).json({ error: 'Forbidden' });
+    const subOwn = rows[0].sub_assignee && rows[0].sub_assignee === req.user.id;
+    if (!subOwn && !(await canChangeStatus(req, rows[0]))) return res.status(403).json({ error: 'Forbidden' });
     await pool.query('UPDATE task_subtasks SET done = $1 WHERE id = $2', [!!(req.body && req.body.done), req.params.sid]);
     res.json({ success: true });
   } catch (err) { console.error(err); res.status(500).json({ error: 'Failed to update subtask' }); }
@@ -362,6 +362,19 @@ router.patch('/subtasks/:sid', requireAuth, requirePermission('view_tasks'), asy
 router.delete('/subtasks/:sid', requireAuth, requirePermission('manage_tasks'), async (req, res) => {
   await pool.query('DELETE FROM task_subtasks WHERE id = $1', [req.params.sid]);
   res.json({ success: true });
+});
+// Assign a subtask to a person (task manager or task creator)
+router.patch('/subtasks/:sid/assignee', requireAuth, requirePermission('view_tasks'), async (req, res) => {
+  try {
+    const { rows } = await pool.query('SELECT s.id, t.created_by FROM task_subtasks s JOIN tasks t ON s.task_id = t.id WHERE s.id = $1', [req.params.sid]);
+    if (!rows.length) return res.status(404).json({ error: 'Subtask not found' });
+    const manage = await perms.hasPermission(req.user.role, 'manage_tasks');
+    if (!manage && rows[0].created_by !== req.user.id) return res.status(403).json({ error: 'Forbidden' });
+    let aid = (req.body && req.body.assigned_to != null && req.body.assigned_to !== '') ? parseInt(req.body.assigned_to, 10) : null;
+    if (isNaN(aid)) aid = null;
+    await pool.query('UPDATE task_subtasks SET assigned_to = $1 WHERE id = $2', [aid, req.params.sid]);
+    res.json({ success: true });
+  } catch (err) { console.error(err); res.status(500).json({ error: 'Failed to update subtask' }); }
 });
 
 // GET raw attachment data (anyone who can see the task)
@@ -538,8 +551,8 @@ async function spawnRecurrence(task, user) {
     [task.title, task.description, task.priority, task.assigned_to, task.created_by, ndStr, task.recurrence, task.recurrence_day, task.secondary_assignee_id, task.assigned_by, task.due_locked]
   );
   const newId = rows[0].id;
-  const { rows: subs } = await pool.query('SELECT title, position FROM task_subtasks WHERE task_id = $1 ORDER BY position, id', [task.id]);
-  for (let i = 0; i < subs.length; i++) await pool.query('INSERT INTO task_subtasks (task_id, title, position) VALUES ($1,$2,$3)', [newId, subs[i].title, subs[i].position]);
+  const { rows: subs } = await pool.query('SELECT title, position, assigned_to FROM task_subtasks WHERE task_id = $1 ORDER BY position, id', [task.id]);
+  for (let i = 0; i < subs.length; i++) await pool.query('INSERT INTO task_subtasks (task_id, title, position, assigned_to) VALUES ($1,$2,$3,$4)', [newId, subs[i].title, subs[i].position, subs[i].assigned_to]);
   await addActivity(newId, user, 'event', 'auto-created from recurring task #' + task.id);
 }
 
@@ -548,7 +561,9 @@ router.post('/:id/subtasks', requireAuth, requirePermission('manage_tasks'), asy
   const title = ((req.body && req.body.title) || '').trim();
   if (!title) return res.status(400).json({ error: 'Subtask title required' });
   const { rows: mx } = await pool.query('SELECT COALESCE(MAX(position),-1)+1 AS p FROM task_subtasks WHERE task_id = $1', [req.params.id]);
-  const { rows } = await pool.query('INSERT INTO task_subtasks (task_id, title, position) VALUES ($1,$2,$3) RETURNING *', [req.params.id, title, mx[0].p]);
+  let aid = (req.body && req.body.assigned_to != null && req.body.assigned_to !== '') ? parseInt(req.body.assigned_to, 10) : null;
+  if (isNaN(aid)) aid = null;
+  const { rows } = await pool.query('INSERT INTO task_subtasks (task_id, title, position, assigned_to) VALUES ($1,$2,$3,$4) RETURNING *', [req.params.id, title, mx[0].p, aid]);
   res.status(201).json(rows[0]);
 });
 

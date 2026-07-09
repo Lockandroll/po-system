@@ -234,8 +234,8 @@ async function spawnFromTemplate(templateId) {
     [resolveDateTokens(tpl.title, recurYmd(start)), resolveDateTokens(tpl.description, recurYmd(start)), tpl.priority, tpl.assigned_to, tpl.created_by, dueStr, tpl.id, tpl.secondary_assignee_id, tpl.assigned_by, tpl.due_locked]
   );
   const newId = ins.rows[0].id;
-  const subs = (await pool.query('SELECT title, position FROM task_subtasks WHERE task_id = $1 ORDER BY position, id', [tpl.id])).rows;
-  for (let i = 0; i < subs.length; i++) await pool.query('INSERT INTO task_subtasks (task_id, title, position) VALUES ($1,$2,$3)', [newId, subs[i].title, subs[i].position]);
+  const subs = (await pool.query('SELECT title, position, assigned_to FROM task_subtasks WHERE task_id = $1 ORDER BY position, id', [tpl.id])).rows;
+  for (let i = 0; i < subs.length; i++) await pool.query('INSERT INTO task_subtasks (task_id, title, position, assigned_to) VALUES ($1,$2,$3,$4)', [newId, subs[i].title, subs[i].position, subs[i].assigned_to]);
   const ccs = (await pool.query('SELECT user_id FROM task_cc WHERE task_id = $1', [tpl.id])).rows;
   for (const c of ccs) await pool.query('INSERT INTO task_cc (task_id, user_id) VALUES ($1,$2) ON CONFLICT (task_id, user_id) DO NOTHING', [newId, c.user_id]);
   const atts = (await pool.query('SELECT filename, mime_type, image_data, size_bytes, uploaded_by, uploaded_by_name FROM task_attachments WHERE task_id = $1', [tpl.id])).rows;

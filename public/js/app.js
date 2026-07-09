@@ -551,7 +551,7 @@ function buildNavHtml() {
     : '') : '') +
     (can('view_work_orders') ? '<div class="nav-item' + (['work-orders','view-work-order','new-work-order'].indexOf(cv) !== -1 ? ' active' : '') + '" onclick="navigate(\'work-orders\')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"/><polyline points="3.27 6.96 12 12.01 20.73 6.96"/><line x1="12" y1="22.08" x2="12" y2="12"/></svg> Work Orders</div>' : '') +
     (can('view_signoffs') ? '<div class="nav-item' + (['signoffs','new-signoff','edit-signoff','view-signoff','complete-signoff'].indexOf(cv) !== -1 ? ' active' : '') + '" onclick="navigate(\'signoffs\')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><path d="M9 15l2 2 4-4"/></svg> Sign-Off Sheets</div>' : '') +
-    (can('view_tasks') ? '<div class="nav-item' + (['tasks','task-detail','new-task','edit-task'].indexOf(cv) !== -1 ? ' active' : '') + '" onclick="navigate(\'tasks\')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg> Tasks</div>' : '') +
+    (can('view_tasks') ? '<div class="nav-item' + (['tasks','task-detail','new-task','edit-task','task-templates','new-task-template','edit-task-template'].indexOf(cv) !== -1 ? ' active' : '') + '" onclick="navigate(\'tasks\')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg> Tasks</div>' : '') +
     (can('view_ptt') ? '<div class="nav-item' + (cv === 'ptt' ? ' active' : '') + '" onclick="navigate(\'ptt\')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><line x1="12" y1="19" x2="12" y2="23"/></svg> Radio</div>' : '') +
     (taShow ?
       '<div class="nav-section-header' + (taViews.indexOf(cv) !== -1 ? ' section-active' : '') + (ss === 'attendance' ? ' open' : '') + '" onclick="toggleSection(\'attendance\',\'' + taDefault + '\')"><span class="s-label"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><polyline points="12 7 12 12 15 14"/></svg> Time and Attendance</span>' + chev + '</div>' +
@@ -695,7 +695,7 @@ async function render() {
     if (_ovOpen) _ovOpen.classList.add('open');
   }
   const content = document.getElementById('content');
-  var _viewPerm = { dashboard:'view_pos', view:'view_pos', running:'view_pos', 'running-admin':'view_pos', new:'create_po', edit:'edit_po', quotes:'view_quotes', 'view-quote':'view_quotes', 'new-quote':'create_quote', 'edit-quote':'edit_quote', 'vr-dashboard':'view_vr', 'view-vr':'view_vr', 'new-vr':'create_vr', 'edit-vr':'edit_vr', deposits:'view_deposits', 'view-deposit':'view_deposits', signoffs:'view_signoffs', 'view-signoff':'view_signoffs', 'new-signoff':'create_signoff', 'edit-signoff':'edit_signoff', 'complete-signoff':'complete_signoff', tasks:'view_tasks', 'task-detail':'view_tasks', 'new-task':'view_tasks', 'edit-task':'view_tasks', 'work-orders':'view_work_orders', 'view-work-order':'view_work_orders', 'new-work-order':'manage_work_orders', schedule:'view_schedule', 'schedule-admin':'manage_schedule', 'schedule-nowork':'manage_schedule', invoices:'view_invoices', 'view-invoice':'view_invoices', 'new-invoice':'create_invoice', 'edit-invoice':'edit_invoice', 'invoice-parts':'view_invoices', 'invoice-setup':'manage_invoice_setup', feedback:'view_feedback', 'feedback-detail':'view_feedback', signatures:'view_signatures', 'new-signature':'manage_signatures', 'signature-editor':'manage_signatures', timeclock:'view_timeclock', 'timeclock-manager':'manage_timeclock', pto:'view_pto', 'onboarding-admin':'manage_onboarding', 'employee-files':'manage_onboarding', ptt:'view_ptt', inspections:'view_inspections', 'view-inspection':'view_inspections', 'inspection-form':'view_inspections', 'inspection-checklist':'manage_inspections' };
+  var _viewPerm = { dashboard:'view_pos', view:'view_pos', running:'view_pos', 'running-admin':'view_pos', new:'create_po', edit:'edit_po', quotes:'view_quotes', 'view-quote':'view_quotes', 'new-quote':'create_quote', 'edit-quote':'edit_quote', 'vr-dashboard':'view_vr', 'view-vr':'view_vr', 'new-vr':'create_vr', 'edit-vr':'edit_vr', deposits:'view_deposits', 'view-deposit':'view_deposits', signoffs:'view_signoffs', 'view-signoff':'view_signoffs', 'new-signoff':'create_signoff', 'edit-signoff':'edit_signoff', 'complete-signoff':'complete_signoff', tasks:'view_tasks', 'task-detail':'view_tasks', 'new-task':'view_tasks', 'edit-task':'view_tasks', 'task-templates':'manage_tasks', 'new-task-template':'manage_tasks', 'edit-task-template':'manage_tasks', 'work-orders':'view_work_orders', 'view-work-order':'view_work_orders', 'new-work-order':'manage_work_orders', schedule:'view_schedule', 'schedule-admin':'manage_schedule', 'schedule-nowork':'manage_schedule', invoices:'view_invoices', 'view-invoice':'view_invoices', 'new-invoice':'create_invoice', 'edit-invoice':'edit_invoice', 'invoice-parts':'view_invoices', 'invoice-setup':'manage_invoice_setup', feedback:'view_feedback', 'feedback-detail':'view_feedback', signatures:'view_signatures', 'new-signature':'manage_signatures', 'signature-editor':'manage_signatures', timeclock:'view_timeclock', 'timeclock-manager':'manage_timeclock', pto:'view_pto', 'onboarding-admin':'manage_onboarding', 'employee-files':'manage_onboarding', ptt:'view_ptt', inspections:'view_inspections', 'view-inspection':'view_inspections', 'inspection-form':'view_inspections', 'inspection-checklist':'manage_inspections' };
   if (_viewPerm[state.currentView] && !can(_viewPerm[state.currentView])) { content.innerHTML = '<div class="alert alert-error">Access denied.</div>'; return; }
   if (state.currentView === 'home') { await renderHomeScreen(content); maybeQuizBanner(content); }
   else if (state.currentView === 'pto') await renderPto(content);
@@ -743,6 +743,9 @@ async function render() {
   else if (state.currentView === 'task-detail') await renderTaskDetail(content, state.currentParam);
   else if (state.currentView === 'new-task') await renderTaskForm(content, null);
   else if (state.currentView === 'edit-task') await renderTaskForm(content, state.currentParam);
+  else if (state.currentView === 'task-templates') await renderTaskTemplates(content);
+  else if (state.currentView === 'new-task-template') await renderTaskTemplateForm(content, null);
+  else if (state.currentView === 'edit-task-template') await renderTaskTemplateForm(content, state.currentParam);
   else if (state.currentView === 'work-orders') await renderWorkOrders(content);
   else if (state.currentView === 'view-work-order') await renderViewWorkOrder(content, state.currentParam);
   else if (state.currentView === 'new-work-order') await renderWorkOrderForm(content);
@@ -2534,6 +2537,10 @@ var _taskView = 'board';
 var _taskTab = 'mine';
 var _taskForceSelf = false;
 var _taskPendingFiles = [];
+var _taskSubRows = [];
+var _taskFormUsers = [];
+var _taskFormTemplates = [];
+var _taskDetailUsers = [];
 var _taskDragId = null;
 var _taskDragGhost = null;
 function taskDragStart(e, id){
@@ -2599,6 +2606,7 @@ async function renderTasks(el){
     '<div style="display:flex;gap:8px">' +
       '<button class="btn btn-secondary" onclick="taskToggleView()">'+(_taskView==='board'?'Table view':'Board view')+'</button>' +
       (manage ? '<button class="btn btn-secondary" onclick="taskAddToMine()" title="Add a task to your own list">+ My list</button>' : '') +
+      (manage ? '<button class="btn btn-secondary" onclick="navigate(\'task-templates\')" title="Manage reusable checklists">Templates</button>' : '') +
       '<button class="btn btn-primary" onclick="taskNew()">+ New Task</button>' +
     '</div></div>';
   var tabs = manage ? ('<div style="display:flex;gap:6px;margin-bottom:14px">' +
@@ -2688,6 +2696,7 @@ async function renderTaskDetail(el, id){
   window._taskCurrent = t;
   var manage = can('manage_tasks');
   var canEdit = manage || (t.created_by===state.user.id);
+  _taskDetailUsers=[]; if(canEdit){ try{ _taskDetailUsers=(await api('GET','/users')).filter(function(u){return u.active;}); }catch(e){} }
   var canSetSecondary = canEdit || (t.assigned_to===state.user.id);
   var p = TASK_PRIO[t.priority] || TASK_PRIO.medium;
   var od = taskIsOverdue(t);
@@ -2695,8 +2704,11 @@ async function renderTaskDetail(el, id){
   var subHtml = (t.subtasks||[]).length ? (t.subtasks).map(function(s){
     return '<div style="display:flex;align-items:center;gap:8px;padding:5px 0">' +
       '<input type="checkbox" '+(s.done?'checked':'')+' onchange="taskToggleSub('+s.id+',this.checked)" style="width:auto" />' +
-      '<span style="font-size:14px;'+(s.done?'text-decoration:line-through;color:var(--text-muted-color)':'')+'">'+escHtml(s.title)+'</span>' +
-      (canEdit?'<button class="btn btn-ghost btn-sm" style="margin-left:auto;color:#ef4444" onclick="taskDelSub('+s.id+')">&times;</button>':'') +
+      '<span style="font-size:14px;flex:1;'+(s.done?'text-decoration:line-through;color:var(--text-muted-color)':'')+'">'+escHtml(s.title)+'</span>' +
+      (canEdit
+        ? '<select onchange="taskSetSubAssignee('+s.id+',this.value)" style="width:auto;font-size:12px;max-width:150px">'+subAssignOpts(s.assigned_to)+'</select>'
+        : (s.assignee_name?'<span style="font-size:11px;color:var(--text-muted-color)">'+escHtml(s.assignee_name)+'</span>':'')) +
+      (canEdit?'<button class="btn btn-ghost btn-sm" style="color:#ef4444" onclick="taskDelSub('+s.id+')">&times;</button>':'') +
     '</div>';
   }).join('') : '<div style="color:var(--text-muted-color);font-size:13px">No subtasks.</div>';
   var ccNames = (t.cc||[]).map(function(c){ return c.name || ('User '+c.user_id); });
@@ -2934,17 +2946,123 @@ function varLegendHtml(note, idsCsv){
     '<div style="font-size:12px;color:var(--text-muted-color);margin-bottom:8px">'+(note||'Type any of these in the text. Nova fills in the real dates each time it is sent.')+hint+'</div>'+
     items+'</div>';
 }
+var _tplSteps = [];
+var _tplUsers = [];
+async function renderTaskTemplates(el){
+  if(!can('manage_tasks')){ el.innerHTML='<div class="alert alert-error">Access denied.</div>'; return; }
+  el.innerHTML='<div class="loading">Loading…</div>';
+  var list=[];
+  try{ list=await api('GET','/task-templates?all=1'); }catch(e){ el.innerHTML='<div class="alert alert-error">'+escHtml(e.message)+'</div>'; return; }
+  var rows=list.length?list.map(function(tp){
+    return '<div class="card" style="margin-bottom:8px"><div class="card-body" style="padding:12px 14px;display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap">'+
+      '<div style="cursor:pointer;flex:1" onclick="navigate(\'edit-task-template\','+tp.id+')">'+
+        '<div style="font-weight:600;font-size:14px">'+escHtml(tp.name)+(tp.active?'':' <span style="font-size:11px;color:var(--text-muted-color)">(inactive)</span>')+'</div>'+
+        '<div style="font-size:12px;color:var(--text-muted-color);margin-top:2px">'+(tp.category?escHtml(tp.category)+' · ':'')+tp.step_count+' steps · '+(TASK_PRIO[tp.priority]||TASK_PRIO.medium).l+' priority</div>'+
+      '</div>'+
+      '<div style="display:flex;gap:6px"><button class="btn btn-secondary btn-sm" onclick="navigate(\'edit-task-template\','+tp.id+')">Edit</button>'+
+        '<button class="btn btn-ghost btn-sm" style="color:#ef4444" onclick="tplDelete('+tp.id+')">Delete</button></div>'+
+    '</div></div>';
+  }).join(''):'<div class="card"><div class="card-body"><p style="color:var(--text-muted-color)">No templates yet. Create one to get started.</p></div></div>';
+  el.innerHTML='<div class="page-header"><div class="page-title"><h2>Task Templates</h2><p>Reusable checklists (onboarding, offboarding, and more) that prefill a task and its subtasks.</p></div>'+
+    '<div style="display:flex;gap:8px"><button class="btn btn-secondary" onclick="navigate(\'tasks\')">&larr; Tasks</button><button class="btn btn-primary" onclick="navigate(\'new-task-template\')">+ New Template</button></div></div>'+
+    '<div id="tasks-feedback"></div>'+rows;
+}
+async function tplDelete(id){ if(!await novaConfirm('Delete this template? Tasks already created from it are not affected.')) return; try{ await api('DELETE','/task-templates/'+id); navigate('task-templates'); }catch(e){ taskFeedback(e.message,true); } }
+async function renderTaskTemplateForm(el, id){
+  if(!can('manage_tasks')){ el.innerHTML='<div class="alert alert-error">Access denied.</div>'; return; }
+  el.innerHTML='<div class="loading">Loading…</div>';
+  var tpl={}, users=[];
+  try{
+    var r=await Promise.all([ id?api('GET','/task-templates/'+id):Promise.resolve({}), api('GET','/users').catch(function(){return [];}) ]);
+    tpl=r[0]||{}; users=(r[1]||[]).filter(function(u){return u.active;});
+  }catch(e){ el.innerHTML='<div class="alert alert-error">'+escHtml(e.message)+'</div>'; return; }
+  _tplUsers=users;
+  _tplSteps=(tpl.steps||[]).map(function(s){ return {title:s.title, default_assignee_id: s.default_assignee_id?String(s.default_assignee_id):''}; });
+  var prioOpts=['low','medium','high','urgent'].map(function(pp){ return '<option value="'+pp+'"'+((tpl.priority||'high')===pp?' selected':'')+'>'+TASK_PRIO[pp].l+'</option>'; }).join('');
+  el.innerHTML='<div class="page-header"><div class="page-title"><h2>'+(id?'Edit':'New')+' Template</h2></div>'+
+    '<button class="btn btn-secondary" onclick="navigate(\'task-templates\')">Cancel</button></div>'+
+    '<div id="tasks-feedback"></div>'+
+    '<div class="card" style="max-width:680px"><div class="card-body">'+
+      '<div class="form-group"><label>Name</label><input type="text" id="tpl-name" value="'+escHtml(tpl.name||'')+'" placeholder="e.g. Onboarding" /></div>'+
+      '<div style="display:flex;gap:12px;flex-wrap:wrap">'+
+        '<div class="form-group" style="flex:1;min-width:140px"><label>Category <span style="color:var(--text-muted-color);font-weight:400">(optional)</span></label><input type="text" id="tpl-category" value="'+escHtml(tpl.category||'')+'" placeholder="e.g. hr" /></div>'+
+        '<div class="form-group" style="flex:1;min-width:140px"><label>Priority</label><select id="tpl-priority">'+prioOpts+'</select></div>'+
+      '</div>'+
+      '<div class="form-group"><label>Description <span style="color:var(--text-muted-color);font-weight:400">(prefilled into the task)</span></label><textarea id="tpl-desc" rows="2">'+escHtml(tpl.description||'')+'</textarea></div>'+
+      '<div class="form-group"><label><input type="checkbox" id="tpl-active" '+(tpl.active===false?'':'checked')+' style="width:auto" /> Active <span style="color:var(--text-muted-color);font-weight:400">(available when creating tasks)</span></label></div>'+
+      '<div class="form-group"><label>Steps <span style="color:var(--text-muted-color);font-weight:400">(each becomes a subtask; default assignee optional)</span></label><div id="tpl-steps-host"></div>'+
+        '<button type="button" class="btn btn-secondary btn-sm" style="margin-top:4px" onclick="tplAddStep()">+ Add step</button></div>'+
+      '<div style="display:flex;gap:8px;margin-top:8px"><button class="btn btn-primary" onclick="tplSave('+(id||'null')+')">'+(id?'Save Changes':'Create Template')+'</button></div>'+
+    '</div></div>';
+  tplRenderSteps();
+}
+function tplAddStep(){ _tplSteps.push({title:'',default_assignee_id:''}); tplRenderSteps(); }
+function tplRemoveStep(i){ _tplSteps.splice(i,1); tplRenderSteps(); }
+function tplRenderSteps(){
+  var host=document.getElementById('tpl-steps-host'); if(!host) return;
+  if(!_tplSteps.length){ host.innerHTML='<div style="color:var(--text-muted-color);font-size:13px;padding:4px 0">No steps yet.</div>'; return; }
+  var opts='<option value="">Unassigned</option>'+(_tplUsers||[]).map(function(u){ return '<option value="'+u.id+'">'+escHtml(u.name)+'</option>'; }).join('');
+  host.innerHTML=_tplSteps.map(function(r,i){
+    return '<div style="display:flex;gap:6px;margin-bottom:6px;align-items:center">'+
+      '<span style="color:var(--text-muted-color);font-size:12px;width:18px;text-align:right">'+(i+1)+'</span>'+
+      '<input type="text" value="'+escHtml(r.title||'')+'" oninput="_tplSteps['+i+'].title=this.value" placeholder="Step" style="flex:2;min-width:120px" />'+
+      '<select onchange="_tplSteps['+i+'].default_assignee_id=this.value" style="width:auto;min-width:120px;flex:1">'+opts+'</select>'+
+      '<button type="button" class="btn btn-ghost btn-sm" style="color:#ef4444" onclick="tplRemoveStep('+i+')">&times;</button>'+
+    '</div>';
+  }).join('');
+  var sels=host.querySelectorAll('select'); _tplSteps.forEach(function(r,i){ if(sels[i]) sels[i].value=r.default_assignee_id||''; });
+}
+async function tplSave(id){
+  var name=(document.getElementById('tpl-name').value||'').trim();
+  if(!name){ taskFeedback('Name is required.',true); return; }
+  var payload={ name:name, category:(document.getElementById('tpl-category').value||'').trim()||null, priority:document.getElementById('tpl-priority').value, description:(document.getElementById('tpl-desc').value||'').trim()||null, active:document.getElementById('tpl-active').checked, steps:(_tplSteps||[]).map(function(r){ return { title:(r.title||'').trim(), default_assignee_id:r.default_assignee_id||null }; }).filter(function(r){ return r.title; }) };
+  try{ if(id) await api('PUT','/task-templates/'+id,payload); else await api('POST','/task-templates',payload); navigate('task-templates'); }catch(e){ taskFeedback(e.message,true); }
+}
+function subAssignOpts(sel){
+  return '<option value="">Unassigned</option>'+(_taskDetailUsers||[]).map(function(u){ return '<option value="'+u.id+'"'+((sel!=null&&String(sel)===String(u.id))?' selected':'')+'>'+escHtml(u.name)+'</option>'; }).join('');
+}
+async function taskSetSubAssignee(sid, val){ try{ await api('PATCH','/tasks/subtasks/'+sid+'/assignee',{assigned_to: val||null}); var t=window._taskCurrent; if(t) navigate('task-detail',t.id); }catch(e){ taskFeedback(e.message,true); } }
+function taskAddSubRow(){ _taskSubRows.push({title:'',assigned_to:''}); taskRenderSubRows(); }
+function taskRemoveSubRow(i){ _taskSubRows.splice(i,1); taskRenderSubRows(); }
+function taskRenderSubRows(){
+  var host=document.getElementById('tk-subs-host'); if(!host) return;
+  var manage=can('manage_tasks');
+  if(!_taskSubRows.length){ host.innerHTML='<div style="color:var(--text-muted-color);font-size:13px;padding:4px 0">No subtasks yet. Add items or load a template.</div>'; return; }
+  var opts='<option value="">Unassigned</option>'+(_taskFormUsers||[]).map(function(u){ return '<option value="'+u.id+'">'+escHtml(u.name)+'</option>'; }).join('');
+  host.innerHTML=_taskSubRows.map(function(r,i){
+    return '<div style="display:flex;gap:6px;margin-bottom:6px;align-items:center">'+
+      '<input type="text" value="'+escHtml(r.title||'')+'" oninput="_taskSubRows['+i+'].title=this.value" placeholder="Subtask" style="flex:2;min-width:120px" />'+
+      (manage?('<select onchange="_taskSubRows['+i+'].assigned_to=this.value" style="width:auto;min-width:120px;flex:1">'+opts+'</select>'):'')+
+      '<button type="button" class="btn btn-ghost btn-sm" style="color:#ef4444" onclick="taskRemoveSubRow('+i+')">&times;</button>'+
+    '</div>';
+  }).join('');
+  if(manage){ var sels=host.querySelectorAll('select'); _taskSubRows.forEach(function(r,i){ if(sels[i]) sels[i].value=r.assigned_to||''; }); }
+}
+async function taskApplyTemplate(){
+  var sel=document.getElementById('tk-tpl-select'); if(!sel||!sel.value){ taskFeedback('Pick a template first.',true); return; }
+  try{
+    var tpl=await api('GET','/task-templates/'+sel.value);
+    var manage=can('manage_tasks');
+    var titleEl=document.getElementById('tk-title'); if(titleEl && !titleEl.value.trim()) titleEl.value=tpl.name;
+    var descEl=document.getElementById('tk-desc'); if(descEl && tpl.description && !descEl.value.trim()) descEl.value=tpl.description;
+    var prEl=document.getElementById('tk-priority'); if(prEl && tpl.priority) prEl.value=tpl.priority;
+    _taskSubRows=(tpl.steps||[]).map(function(s){ return {title:s.title, assigned_to:(manage && s.default_assignee_id)?String(s.default_assignee_id):''}; });
+    taskRenderSubRows();
+    taskFeedback('Loaded "'+tpl.name+'" ('+((tpl.steps||[]).length)+' steps). Edit before creating.',false);
+  }catch(e){ taskFeedback(e.message,true); }
+}
 async function renderTaskForm(el, id){
   if (!can('view_tasks')){ el.innerHTML='<div class="alert alert-error">Access denied.</div>'; return; }
   _taskPendingFiles = [];
+  _taskSubRows = [];
   var manage = can('manage_tasks');
   var personal = !id && _taskForceSelf;
   var showAssignee = manage && !personal;
   el.innerHTML='<div class="loading">Loading…</div>';
   var t={}, users=[];
   try {
-    var r = await Promise.all([ id?api('GET','/tasks/'+id):Promise.resolve({}), api('GET','/users').catch(function(){return [];}) ]);
-    t=r[0]||{}; users=(r[1]||[]).filter(function(u){return u.active;});
+    var r = await Promise.all([ id?api('GET','/tasks/'+id):Promise.resolve({}), api('GET','/users').catch(function(){return [];}), api('GET','/task-templates').catch(function(){return [];}) ]);
+    t=r[0]||{}; users=(r[1]||[]).filter(function(u){return u.active;}); _taskFormUsers=users; _taskFormTemplates=r[2]||[];
   } catch(e){ el.innerHTML='<div class="alert alert-error">'+escHtml(e.message)+'</div>'; return; }
   var userOpts='<option value="">Unassigned</option>'+users.map(function(u){ return '<option value="'+u.id+'"'+(t.assigned_to==u.id?' selected':'')+'>'+escHtml(u.name)+' ('+escHtml(userTitle(u))+')</option>'; }).join('');
   var secOpts='<option value="">None</option>'+users.map(function(u){ return '<option value="'+u.id+'"'+(t.secondary_assignee_id==u.id?' selected':'')+'>'+escHtml(u.name)+' ('+escHtml(userTitle(u))+')</option>'; }).join('');
@@ -2967,6 +3085,11 @@ async function renderTaskForm(el, id){
   var prioOpts=['low','medium','high','urgent'].map(function(pp){ return '<option value="'+pp+'"'+((t.priority||'medium')===pp?' selected':'')+'>'+TASK_PRIO[pp].l+'</option>'; }).join('');
   var recOpts=[['','Does not repeat'],['daily','Daily'],['weekly','Weekly'],['monthly','Monthly']].map(function(rr){ return '<option value="'+rr[0]+'"'+((t.recurrence||'')===rr[0]?' selected':'')+'>'+rr[1]+'</option>'; }).join('');
   var dueVal = t.due_date ? String(t.due_date).slice(0,10) : '';
+  var tplOpts = '<option value="">Choose a template…</option>'+(_taskFormTemplates||[]).map(function(tp){ return '<option value="'+tp.id+'">'+escHtml(tp.name)+' ('+tp.step_count+' steps)</option>'; }).join('');
+  var subtaskEditorHtml = '<div class="form-group"><label>Subtasks <span style="color:var(--text-muted-color);font-weight:400">('+(manage?'checklist — each can be assigned to a person':'checklist for this task')+')</span></label>' +
+    ((_taskFormTemplates&&_taskFormTemplates.length)?('<div style="display:flex;gap:8px;margin-bottom:8px;align-items:center;flex-wrap:wrap"><select id="tk-tpl-select" style="flex:1;min-width:180px">'+tplOpts+'</select><button type="button" class="btn btn-secondary btn-sm" onclick="taskApplyTemplate()">Load template</button></div>'):'') +
+    '<div id="tk-subs-host"></div>' +
+    '<button type="button" class="btn btn-secondary btn-sm" style="margin-top:4px" onclick="taskAddSubRow()">+ Add subtask</button></div>';
   el.innerHTML =
     '<div class="page-header"><div class="page-title"><h2>'+(id?'Edit':(personal?'New Personal':'New'))+' Task</h2></div>' +
       '<button class="btn btn-secondary" onclick="navigate(\''+(id?'task-detail':'tasks')+'\''+(id?(','+id):'')+')">Cancel</button></div>' +
@@ -2988,10 +3111,11 @@ async function renderTaskForm(el, id){
       '</div>' +
       '<div id="tk-recur-day-wrap" class="form-group" style="display:none"><label id="tk-recur-day-label" style="display:block;margin-bottom:6px">Schedule</label><div style="display:flex;gap:12px;flex-wrap:wrap"><div style="flex:1;min-width:150px"><div style="font-size:12px;color:var(--text-muted-color);margin-bottom:4px">Send on</div><select id="tk-recur-start" onchange="updateRecurHint()"></select></div><div style="flex:1;min-width:150px"><div style="font-size:12px;color:var(--text-muted-color);margin-bottom:4px">Due on</div><select id="tk-recur-due" onchange="updateRecurHint()"></select></div></div><div id="tk-recur-hint" style="font-size:12px;color:var(--text-muted-color);margin-top:6px"></div>' + varLegendHtml('Type these in the Title or Description above. Nova fills in the real dates each time it sends this task.', 'tk-title,tk-desc') + '</div>' +
       attachHtml +
-      (id?'':'<div class="form-group"><label>Subtasks <span style="color:var(--text-muted-color);font-weight:400">(one per line)</span></label><textarea id="tk-subs" rows="3" placeholder="Optional checklist, one item per line"></textarea></div>') +
+      (id?'':subtaskEditorHtml) +
       '<div style="display:flex;gap:8px;margin-top:8px"><button class="btn btn-primary" onclick="taskSave('+(id||'null')+')">'+(id?'Save Changes':'Create Task')+'</button></div>' +
     '</div></div>';
   taskRecurChanged(t.recurrence_start_day, t.recurrence_day);
+  if(!id) taskRenderSubRows();
 }
 
 async function taskSave(id){
@@ -3013,8 +3137,7 @@ async function taskSave(id){
   var _sec=document.getElementById('tk-secondary'); if (_sec) payload.secondary_assignee_id = _sec.value||null;
   var _due=document.getElementById('tk-due'); if (_due && _due.disabled) delete payload.due_date;
   if (!id && _taskForceSelf) payload.assigned_to = state.user.id;
-  var subsEl=document.getElementById('tk-subs');
-  if (subsEl){ payload.subtasks = subsEl.value.split('\n').map(function(x){return x.trim();}).filter(Boolean); }
+  if (document.getElementById('tk-subs-host')){ payload.subtasks = (_taskSubRows||[]).map(function(r){ return { title:(r.title||'').trim(), assigned_to: r.assigned_to||null }; }).filter(function(r){ return r.title; }); }
   if (document.getElementById('tk-cc-list')){
     var ccIds=[]; document.querySelectorAll('.tk-cc:checked').forEach(function(c){ ccIds.push(parseInt(c.value,10)); });
     payload.cc = ccIds;

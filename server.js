@@ -102,6 +102,7 @@ app.use('/api/deposits', require('./routes/deposits'));
 app.use('/api/signoffs', require('./routes/signoffs'));
 app.use('/api/scheduled', require('./routes/scheduled'));
 app.use('/api/tasks', require('./routes/tasks'));
+app.use('/api/task-templates', require('./routes/taskTemplates'));
 app.use('/api/work-orders', require('./routes/workOrders'));
 app.use('/api/schedule', require('./routes/schedule'));
 app.use('/api/timeclock', require('./routes/timeclock'));

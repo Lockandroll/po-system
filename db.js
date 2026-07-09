@@ -632,6 +632,78 @@ async function initDB() {
       'CREATE INDEX IF NOT EXISTS idx_task_att ON task_attachments(task_id);' +
       'CREATE INDEX IF NOT EXISTS idx_task_cc ON task_cc(task_id);'
     );
+
+    // Task Templates — reusable workflows (onboarding/offboarding) that prefill a task + assignable subtasks
+    await client.query(
+      "ALTER TABLE task_subtasks ADD COLUMN IF NOT EXISTS assigned_to INTEGER;"
+    );
+    await client.query(
+      'CREATE TABLE IF NOT EXISTS task_templates (' +
+      '  id SERIAL PRIMARY KEY,' +
+      '  name VARCHAR(255) NOT NULL,' +
+      '  description TEXT,' +
+      "  priority VARCHAR(10) NOT NULL DEFAULT 'medium'," +
+      '  category VARCHAR(50),' +
+      '  active BOOLEAN NOT NULL DEFAULT true,' +
+      '  created_by INTEGER,' +
+      '  created_at TIMESTAMPTZ DEFAULT NOW(),' +
+      '  updated_at TIMESTAMPTZ DEFAULT NOW()' +
+      ');'
+    );
+    await client.query(
+      'CREATE TABLE IF NOT EXISTS task_template_steps (' +
+      '  id SERIAL PRIMARY KEY,' +
+      '  template_id INTEGER REFERENCES task_templates(id) ON DELETE CASCADE,' +
+      '  title VARCHAR(500) NOT NULL,' +
+      '  position INTEGER DEFAULT 0,' +
+      '  default_assignee_id INTEGER,' +
+      '  created_at TIMESTAMPTZ DEFAULT NOW()' +
+      ');'
+    );
+    await client.query('CREATE INDEX IF NOT EXISTS idx_tts_tpl ON task_template_steps(template_id);');
+    // Seed default Onboarding / Offboarding templates once (idempotent via settings flag)
+    {
+      const _tplSeeded = await client.query("SELECT value FROM settings WHERE key = 'task_templates_seed_v1'");
+      if (!_tplSeeded.rows.length) {
+        const _seedTpl = async function (name, category, steps) {
+          const r = await client.query(
+            "INSERT INTO task_templates (name, description, priority, category) VALUES ($1,$2,'high',$3) RETURNING id",
+            [name, 'Standard ' + name.toLowerCase() + ' checklist. Edit steps and default assignees to fit your team.', category]
+          );
+          const tid = r.rows[0].id;
+          for (let i = 0; i < steps.length; i++) {
+            await client.query('INSERT INTO task_template_steps (template_id, title, position) VALUES ($1,$2,$3)', [tid, steps[i], i]);
+          }
+        };
+        await _seedTpl('Onboarding', 'onboarding', [
+          'Collect signed offer letter and I-9 / W-4 paperwork',
+          'Run background check and MVR (driving record)',
+          'Create Nova user account and assign role',
+          'Set up company email and phone extension',
+          'Order uniforms and name badge',
+          'Issue keys, fobs, and building access',
+          'Assign vehicle (if applicable) and add to fleet insurance',
+          'Add to payroll and enroll in benefits',
+          'Schedule first-week training / ride-along',
+          'Complete required SOP sign-offs and safety training',
+          'Add to schedule and introduce to the team'
+        ]);
+        await _seedTpl('Offboarding', 'offboarding', [
+          'Confirm last day and reason (resignation / termination)',
+          'Disable Nova account and rotate shared Vault passwords',
+          'Revoke email, phone, and building access',
+          'Collect keys, fobs, uniforms, and equipment',
+          'Recover company vehicle and remove from insurance',
+          'Process final paycheck and unused PTO payout',
+          'Remove from payroll and benefits',
+          'Remove from schedule and reassign open tasks',
+          'Conduct exit interview',
+          'Complete company-property return inventory',
+          'Update org chart and notify the team'
+        ]);
+        await client.query("INSERT INTO settings (key, value, updated_at) VALUES ('task_templates_seed_v1', 'done', NOW()) ON CONFLICT (key) DO NOTHING");
+      }
+    }
     // Work Orders — inbound work-order intake (email + manual). Own module, separate from Tasks.
     await client.query(
       'CREATE TABLE IF NOT EXISTS work_orders (' +
