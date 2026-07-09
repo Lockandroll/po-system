@@ -211,13 +211,15 @@ router.post('/:id/complete', requireAuth, requirePermission('complete_signoff'),
         });
         // Company header for the PDF (falls back to the app defaults).
         var company = { name: 'Lock And Roll, LLC', address: '589 Dorset Court', csz: 'Mount Dora, FL 32757', phone: '337-873-2983' };
+        var logoUrl = null;
         try {
-          const cs = await pool.query("SELECT key, value FROM settings WHERE key IN ('company_name','company_address','company_city_state_zip','company_phone')");
+          const cs = await pool.query("SELECT key, value FROM settings WHERE key IN ('company_name','company_address','company_city_state_zip','company_phone','logo')");
           const cmap = {}; cs.rows.forEach(function (r) { cmap[r.key] = r.value; });
           if (cmap.company_name) company.name = cmap.company_name;
           if (cmap.company_address) company.address = cmap.company_address;
           if (cmap.company_city_state_zip) company.csz = cmap.company_city_state_zip;
           if (cmap.company_phone) company.phone = cmap.company_phone;
+          if (cmap.logo) logoUrl = cmap.logo;
         } catch (e) {}
 
         function fileSafe(x) { return String(x == null ? '' : x).replace(/[\/\\:*?"<>|]+/g, ' ').replace(/\s+/g, ' ').trim(); }
@@ -226,7 +228,7 @@ router.post('/:id/complete', requireAuth, requirePermission('complete_signoff'),
         const attachments = [];
         // PDF of the full sign-off sheet, named "PO xxxx Sign Off.pdf".
         try {
-          const pdfBuf = await buildSignoffPdf(form, photos, { company: company, completedBy: req.user.name });
+          const pdfBuf = await buildSignoffPdf(form, photos, { company: company, completedBy: req.user.name, logo: logoUrl });
           if (pdfBuf && pdfBuf.length) attachments.push({ filename: fileSafe(poLabel + ' Sign Off') + '.pdf', content: pdfBuf.toString('base64') });
         } catch (e) { console.error('Sign-off PDF build failed:', e && e.message); }
         // Photos named "PO xxxx <label>.jpg".
