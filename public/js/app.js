@@ -3640,8 +3640,7 @@ function geicoRenderEmployeeTable(s) {
       '<td>' + escHtml(e.k) + '</td>' +
       '<td style="text-align:right">' + e.n + '</td>' +
       '<td style="text-align:right;color:' + geicoPctColor(e._excPct) + '">' + e._excPct + '% <span style="color:var(--text-muted-color)">(' + e.excellent + '/' + e.rated + ')</span></td>' +
-      '<td style="text-align:right;color:' + geicoPctColor(e._otPct) + '">' + e._otPct + '% <span style="color:var(--text-muted-color)">(' + e.on_time + '/' + e.answered + ')</span></td>' +
-      '<td style="text-align:right;font-weight:700;color:' + geicoPctColor(score) + '">' + score + '</td>' +
+            '<td style="text-align:right;font-weight:700;color:' + geicoPctColor(score) + '">' + score + '</td>' +
     '</tr>';
   }).join('');
   var sizeCtl = pageSizeControl(GEICO_EMP_PAGE_SIZE, 'geicoEmpPageSize');
@@ -3653,7 +3652,7 @@ function geicoRenderEmployeeTable(s) {
   var showing = (start+1) + '-' + Math.min(start+GEICO_EMP_PAGE_SIZE, total);
   el.innerHTML = '<div class="card" style="padding:16px">' + head +
     '<div style="font-size:12px;color:var(--text-muted-color);margin-bottom:8px">Ranked by survey-weighted score<span class="nova-info" onclick="this.classList.toggle(\'open\');event.stopPropagation()"><i class="ni-ico">i</i><span class="ni-pop"><strong>How the Score works</strong>It is a survey-weighted Excellent rate. Each person starts with 5 baseline surveys at the team average, then their real surveys are added on top. Someone with only 1-2 surveys stays near the team average instead of topping the list on a tiny sample; as more surveys come in, the Score moves to their true Excellent %. This keeps proven, high-volume performers ranked fairly against small samples.</span></span> &middot; showing ' + showing + ' of ' + total + '</div>' +
-    '<div class="table-wrap"><table><thead><tr><th style="text-align:right">#</th><th>Employee</th><th style="text-align:right">Surveys</th><th style="text-align:right">% Excellent</th><th style="text-align:right">On-Time</th><th style="text-align:right" title="Survey-weighted Excellent rate: small samples are pulled toward the team average so high-volume performers rank fairly">Score</th></tr></thead><tbody>' + body + '</tbody></table></div>' +
+    '<div class="table-wrap"><table><thead><tr><th style="text-align:right">#</th><th>Employee</th><th style="text-align:right">Surveys</th><th style="text-align:right">% Excellent</th><th style="text-align:right" title="Survey-weighted Excellent rate: small samples are pulled toward the team average so high-volume performers rank fairly">Score</th></tr></thead><tbody>' + body + '</tbody></table></div>' +
     '<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:12px">' + sizeCtl + ' ' + btns + '</div></div>';
 }
 
@@ -14452,26 +14451,4 @@ async function showTeamQuizBreakdown(quizId) {
   } catch (e) { (window.novaAlert || window.alert)(e.message); }
 }
 
-async function showTeamAssignmentDetail(assignmentId) {
-  try {
-    var d = await api('GET', '/quiz/assignment/' + assignmentId + '/detail');
-    var head = '<div style="font-weight:700;margin-bottom:2px">' + escHtml(d.name) + ' &middot; ' + escHtml(d.sop_title || 'SOP') + '</div>'
-      + '<div style="color:var(--text-muted-color);font-size:13px;margin-bottom:12px">Week of ' + escHtml(String(d.week_of).slice(0, 10))
-      + ' &middot; Score ' + (d.score == null ? '&ndash;' : d.score) + ' &middot; ' + (d.passed ? '<span style="color:#22c55e">Passed</span>' : '<span style="color:#f97316">Not passed</span>') + '</div>';
-    var qs = (d.questions || []).map(function (q) {
-      var opts = (q.options || []).map(function (opt, oi) {
-        var isCorrect = oi === q.correct_index;
-        var isPicked = oi === q.selected_index;
-        var color = isCorrect ? '#22c55e' : (isPicked ? '#f87171' : 'var(--text-muted-color)');
-        var mark = isCorrect ? '&#10003; ' : (isPicked ? '&#10007; ' : '&nbsp;&nbsp;&nbsp;');
-        var tag = (isPicked && !isCorrect) ? ' <span style="font-size:12px">(their answer)</span>' : (isPicked && isCorrect ? ' <span style="font-size:12px">(their answer)</span>' : '');
-        return '<div style="padding:2px 0;color:' + color + '">' + mark + escHtml(opt) + tag + '</div>';
-      }).join('');
-      var badge = q.correct ? '<span style="color:#22c55e">correct</span>' : '<span style="color:#f87171">wrong</span>';
-      return '<div style="margin-bottom:14px"><div style="font-weight:600">' + q.position + '. ' + escHtml(q.prompt) + ' &middot; ' + badge + '</div>' + opts + '</div>';
-    }).join('');
-    var box = document.getElementById('quizTeam');
-    box.insertAdjacentHTML('afterbegin', quizCard(head + qs));
-    window.scrollTo(0, 0);
-  } catch (e) { (window.novaAlert || window.alert)(e.message); }
-}
+async function showTeamAssignmentDetail(ass
