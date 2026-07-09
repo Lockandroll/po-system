@@ -1,7 +1,13 @@
 // PTO accrual + carryover cron. Runs daily at 1am America/New_York.
-// - Monthly accrual is idempotent: it posts the current month's accrual line only
-//   if one does not already exist (unique partial index uq_pto_accrual_month), so a
-//   missed 1st self-heals on the next daily run and a restart never double-credits.
+// - Accrual is anniversary-based: each employee accrues on their hire day-of-month
+//   (e.g. hired the 20th -> accrues on the 20th of every month). For hire days that
+//   don't exist in a short month (29/30/31), it accrues on that month's last day.
+//   The first accrual lands one month after the hire month; the hire month itself
+//   does not accrue.
+// - Monthly accrual is idempotent: it posts one line per calendar month only if one
+//   does not already exist (ON CONFLICT user_id+accrual_period), so a missed
+//   anniversary day self-heals on the next daily run and a restart never double-credits.
+// - Only active, full-time, non-exempt staff with a hire date accrue.
 // - Carryover runs once a year on Jan 1: anything over the cap is forfeited.
 // Everything is stored in HOURS (8 hrs = 1 day). No backticks in this file.
 const cron = require('node-cron');
@@ -19,6 +25,16 @@ const DEFAULT_BANDS = [
 
 // Today's calendar date in the cron timezone, as YYYY-MM-DD.
 function todayET() { return new Date().toLocaleString('en-CA', { timeZone: TZ }).slice(0, 10); }
+// Normalize a hire_date (pg returns DATE as a JS Date) to a YYYY-MM-DD string.
+function ymdOf(v) {
+  if (v instanceof Date) {
+    const y = v.getFullYear(), m = String(v.getMonth() + 1).padStart(2, '0'), d = String(v.getDate()).padStart(2, '0');
+    return y + '-' + m + '-' + d;
+  }
+  return String(v || '').slice(0, 10);
+}
+// Number of days in the given 1-based month.
+function daysInMonth(year, month1) { return new Date(year, month1, 0).getDate(); }
 
 async function getSetting(key, fallback) {
   const r = await pool.query('SELECT value FROM settings WHERE key = $1', [key]);
@@ -61,12 +77,23 @@ async function runAccrual(todayStr) {
 
   const users = await pool.query(
     'SELECT id, hire_date, COALESCE(pto_balance_hours,0) AS bal FROM users ' +
-    'WHERE active IS NOT FALSE AND pto_exempt IS NOT TRUE AND hire_date IS NOT NULL'
+    'WHERE active IS NOT FALSE AND pto_exempt IS NOT TRUE AND hire_date IS NOT NULL ' +
+    "AND COALESCE(employment_type,'full_time') = 'full_time'"
   );
+  const todayDay = +today.slice(8, 10);
+  const dim = daysInMonth(+today.slice(0, 4), +today.slice(5, 7));
   let posted = 0;
   for (let i = 0; i < users.rows.length; i++) {
     const u = users.rows[i];
-    const years = tenureYears(u.hire_date, today);
+    const hireYmd = ymdOf(u.hire_date);
+    if (hireYmd.length < 10) continue;
+    // First accrual lands one month after the hire month; skip the hire month (and earlier).
+    if (period <= hireYmd.slice(0, 7)) continue;
+    // Accrual day is the hire day-of-month, clamped to this month's length (e.g. 31 -> Feb 28).
+    const accDay = Math.min(+hireYmd.slice(8, 10), dim);
+    // Not this person's accrual day yet this month. On/after it, a missed day self-heals.
+    if (todayDay < accDay) continue;
+    const years = tenureYears(hireYmd, today);
     if (years === null) continue;
     let amt = monthlyHours(resolveBand(bands, years));
     if (amt <= 0) continue;

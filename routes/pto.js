@@ -295,14 +295,18 @@ async function notifyCancelResult(managerId, accepted, employeeName, from, to) {
 
 router.get('/me', requireAuth, async (req, res) => {
   const uid = req.user.id;
-  const ur = await pool.query('SELECT id, name, pay_type, hire_date, pto_balance_hours, pto_exempt, org_level FROM users WHERE id = $1', [uid]);
+  const ur = await pool.query('SELECT id, name, pay_type, hire_date, pto_balance_hours, pto_exempt, employment_type, org_level FROM users WHERE id = $1', [uid]);
   if (!ur.rows.length) return res.status(404).json({ error: 'User not found' });
   const u = ur.rows[0];
   const bands = await getJsonSetting('pto_accrual_bands', DEFAULT_BANDS);
   const waiting = Number(await getSetting('pto_waiting_days', 90)) || 90;
   const years = tenureYears(u.hire_date);
   const band = resolveBand(bands, years);
-  const monthlyHours = monthlyHoursFromBand(band);
+  const exemptMe = u.pto_exempt === true;
+  const fullTimeMe = (u.employment_type || 'full_time') === 'full_time';
+  const accruesMe = !exemptMe && fullTimeMe && !!u.hire_date;
+  // Part-time, contractor, and exempt staff do not accrue, so show a 0 rate.
+  const monthlyHours = accruesMe ? monthlyHoursFromBand(band) : 0;
   const elig = await eligibleInfo(u, waiting);
   const ledger = await pool.query(
     'SELECT id, entry_date, kind, amount_hours, description, created_at FROM pto_ledger WHERE user_id = $1 ORDER BY entry_date DESC, id DESC LIMIT 100',
@@ -317,9 +321,11 @@ router.get('/me', requireAuth, async (req, res) => {
     pay_type: u.pay_type || 'hourly',
     balance_hours: Number(u.pto_balance_hours) || 0,
     accrual_monthly_hours: monthlyHours,
-    accrual_days_per_year: Number(band && band.days_per_year) || 0,
+    accrual_days_per_year: accruesMe ? (Number(band && band.days_per_year) || 0) : 0,
     tenure_years: years,
-    exempt: u.pto_exempt === true,
+    exempt: exemptMe,
+    accrues: accruesMe,
+    employment_type: u.employment_type || 'full_time',
     eligible_date: elig.eligible_date,
     eligible_now: elig.eligible_now,
     ledger: ledger.rows,
@@ -330,8 +336,8 @@ router.get('/me', requireAuth, async (req, res) => {
 // GET /pto/project?date=YYYY-MM-DD
 // Accurate forward projection of banked PTO. Mirrors jobs/ptoAccrual.js exactly so
 // the estimate matches what the balance will actually do:
-//   - one monthly accrual at each upcoming month start (the current month already
-//     accrued, so we start from next month);
+//   - one monthly accrual on each employee's hire day-of-month (clamped to the last
+//     day in short months), starting one month after the hire month;
 //   - accrual bands step up as the person crosses service anniversaries;
 //   - the balance cap fills partially and never accrues past itself;
 //   - Jan 1 carryover forfeiture is applied BEFORE that day's accrual (cron order);
@@ -342,7 +348,7 @@ router.get('/project', requireAuth, async (req, res) => {
   const target = String(req.query.date || '').slice(0, 10);
   if (!RE_DATE.test(target)) return res.status(400).json({ error: 'A valid date (YYYY-MM-DD) is required.' });
 
-  const ur = await pool.query('SELECT pay_type, hire_date, COALESCE(pto_balance_hours,0) AS bal, pto_exempt FROM users WHERE id = $1', [uid]);
+  const ur = await pool.query('SELECT pay_type, hire_date, COALESCE(pto_balance_hours,0) AS bal, pto_exempt, employment_type FROM users WHERE id = $1', [uid]);
   if (!ur.rows.length) return res.status(404).json({ error: 'User not found' });
   const u = ur.rows[0];
 
@@ -352,34 +358,50 @@ router.get('/project', requireAuth, async (req, res) => {
   const capHours = (capRaw === null || capRaw === undefined || capRaw === '') ? null : Number(capRaw) * HRS_PER_DAY;
   const carryHours = (carryRaw === null || carryRaw === undefined || carryRaw === '') ? null : Number(carryRaw) * HRS_PER_DAY;
   const exempt = u.pto_exempt === true;
-  const accrues = !exempt && !!u.hire_date;
+  const fullTime = (u.employment_type || 'full_time') === 'full_time';
+  const accrues = !exempt && fullTime && !!u.hire_date;
 
   const startBal = Number(u.bal) || 0;
   const t = parseDate(target);
   const now = new Date();
   const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
 
+  // Anniversary accrual date for a given calendar month: hire day-of-month, clamped
+  // to that month's length. Mirrors jobs/ptoAccrual.js exactly.
+  const hire = u.hire_date ? (u.hire_date instanceof Date ? u.hire_date : parseDate(String(u.hire_date).slice(0, 10))) : null;
+  const hireDay = hire ? hire.getDate() : 1;
+  const hirePeriodKey = hire ? (hire.getFullYear() * 12 + hire.getMonth()) : -1;
+
   let bal = startBal, accrued = 0, forfeited = 0, months = 0, hitCap = false;
   if (t && t > today) {
-    let d = new Date(today.getFullYear(), today.getMonth() + 1, 1); // first upcoming month start
+    let y = today.getFullYear(), m = today.getMonth(); // 0-based, current month
     let guard = 0;
-    while (d <= t && guard++ < 600) {
+    while (guard++ < 600) {
+      if (new Date(y, m, 1) > t) break; // whole month is past the target
       // Jan 1 carryover forfeiture runs before that day's accrual, matching the cron.
-      if (d.getMonth() === 0 && d.getDate() === 1 && carryHours !== null && bal > carryHours) {
-        forfeited += bal - carryHours;
-        bal = carryHours;
-      }
-      if (accrues) {
-        let amt = monthlyHoursFromBand(resolveBand(bands, tenureAt(u.hire_date, d)));
-        if (amt > 0 && capHours !== null) {
-          const room = capHours - bal;
-          amt = room <= 0 ? 0 : Math.min(amt, room);
+      if (m === 0) {
+        const jan1 = new Date(y, 0, 1);
+        if (jan1 > today && jan1 <= t && carryHours !== null && bal > carryHours) {
+          forfeited += bal - carryHours;
+          bal = carryHours;
         }
-        amt = Math.round(amt * 100) / 100;
-        if (amt > 0) { bal += amt; accrued += amt; }
       }
-      months++;
-      d = new Date(d.getFullYear(), d.getMonth() + 1, 1);
+      // Accrual on the hire day-of-month; first accrual is one month after the hire month.
+      if (accrues && (y * 12 + m) > hirePeriodKey) {
+        const accDay = Math.min(hireDay, new Date(y, m + 1, 0).getDate());
+        const accDate = new Date(y, m, accDay);
+        if (accDate > today && accDate <= t) {
+          months++;
+          let amt = monthlyHoursFromBand(resolveBand(bands, tenureAt(u.hire_date, accDate)));
+          if (amt > 0 && capHours !== null) {
+            const room = capHours - bal;
+            amt = room <= 0 ? 0 : Math.min(amt, room);
+          }
+          amt = Math.round(amt * 100) / 100;
+          if (amt > 0) { bal += amt; accrued += amt; }
+        }
+      }
+      m++; if (m > 11) { m = 0; y++; }
     }
     if (capHours !== null && bal >= capHours - 0.001) hitCap = true;
   }

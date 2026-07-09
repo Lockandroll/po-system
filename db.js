@@ -854,6 +854,8 @@ async function initDB() {
     await client.query("ALTER TABLE users ADD COLUMN IF NOT EXISTS hire_date DATE;");
     await client.query("ALTER TABLE users ADD COLUMN IF NOT EXISTS pto_balance_hours NUMERIC(8,2) NOT NULL DEFAULT 0;");
     await client.query("ALTER TABLE users ADD COLUMN IF NOT EXISTS pto_exempt BOOLEAN NOT NULL DEFAULT false;");
+    // Employment status: full_time | part_time | contractor. Only full_time accrues PTO.
+    await client.query("ALTER TABLE users ADD COLUMN IF NOT EXISTS employment_type TEXT NOT NULL DEFAULT 'full_time';");
     await client.query(
       'CREATE TABLE IF NOT EXISTS pto_requests (' +
       '  id SERIAL PRIMARY KEY,' +
