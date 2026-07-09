@@ -449,6 +449,9 @@ router.put('/:id', requireAuth, requirePermission('manage_tasks'), async (req, r
     if (dueChanged && !(await canEditDue(req, ex))) {
       return res.status(403).json({ error: 'This due date was set by a higher-level assigner and is locked.' });
     }
+    if (status === 'done' && ex.status !== 'done' && ex.require_due_to_close && !due_date) {
+      return res.status(400).json({ error: 'Set a due date before closing this task.' });
+    }
     const secondaryChanged = (secondary_assignee_id || null) !== (ex.secondary_assignee_id || null);
     await pool.query(
       'UPDATE tasks SET title=$1, description=$2, status=$3, priority=$4, assigned_to=$5, due_date=$6, recurrence=$7, recurrence_day=$8, secondary_assignee_id=$9, assigned_by=$10, due_locked=$11, ' +
@@ -473,6 +476,9 @@ router.patch('/:id/status', requireAuth, requirePermission('view_tasks'), async 
     const ex = (await pool.query('SELECT * FROM tasks WHERE id = $1', [req.params.id])).rows[0];
     if (!ex) return res.status(404).json({ error: 'Task not found' });
     if (!(await canChangeStatus(req, ex))) return res.status(403).json({ error: 'Forbidden' });
+    if (status === 'done' && ex.status !== 'done' && ex.require_due_to_close && !ex.due_date) {
+      return res.status(400).json({ error: 'Set a due date before closing this task.' });
+    }
     if (status === 'done' && ex.status !== 'done') {
       await pool.query("UPDATE tasks SET status='done', completed_at=NOW(), completed_by=$1, updated_at=NOW() WHERE id=$2", [req.user.id, req.params.id]);
       await addActivity(req.params.id, req.user, 'event', 'marked it done');

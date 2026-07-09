@@ -73,6 +73,36 @@ async function generateInspectionNumber() {
   return 'INS-' + year + '-' + seq;
 }
 
+// Which submitted/stored items are flagged for follow-up, based on the active
+// checklist option the driver selected (option.followup === true). Text items
+// have no options and never trigger.
+async function followupItemsFor(items) {
+  if (!Array.isArray(items) || !items.length) return [];
+  const { rows } = await pool.query('SELECT item_key, options FROM inspection_checklist WHERE active = true');
+  const flag = {};
+  rows.forEach(function (r) {
+    var opts = r.options;
+    if (typeof opts === 'string') { try { opts = JSON.parse(opts); } catch (e) { opts = null; } }
+    if (!Array.isArray(opts)) return;
+    var m = {};
+    opts.forEach(function (o) { if (o && o.followup) m[String((o.label || '')).toLowerCase()] = true; });
+    if (Object.keys(m).length) flag[r.item_key] = m;
+  });
+  return items.filter(function (it) {
+    var m = (it && it.item_key) ? flag[it.item_key] : null;
+    return !!(m && m[String((it.answer || '')).toLowerCase()]);
+  }).map(function (it) {
+    return { item_key: it.item_key, label: it.label || '', answer: it.answer || '', comment: it.comment || null };
+  });
+}
+
+// The vehicle's assigned driver (default follow-up assignee), or null.
+async function driverOf(vehicleId) {
+  const { rows } = await pool.query('SELECT u.id, u.name FROM vehicles v LEFT JOIN users u ON v.assigned_user_id = u.id WHERE v.id = $1', [vehicleId]);
+  if (!rows.length || !rows[0].id) return null;
+  return { id: rows[0].id, name: rows[0].name };
+}
+
 function sanitizePhotoName(name) {
   return String(name || 'photo').replace(/[^a-zA-Z0-9._-]/g, '_').slice(0, 120) || 'photo';
 }
@@ -118,7 +148,7 @@ router.put('/checklist', requireAuth, requirePermission('manage_inspections'), a
       var type = (it.type === 'text') ? 'text' : 'dropdown';
       var opts = null;
       if (type === 'dropdown' && Array.isArray(it.options)) {
-        var clean = it.options.map(function (o) { return { label: String((o && o.label) || '').slice(0, 60), color: String((o && o.color) || '').toLowerCase().slice(0, 20) }; }).filter(function (o) { return o.label; });
+        var clean = it.options.map(function (o) { return { label: String((o && o.label) || '').slice(0, 60), color: String((o && o.color) || '').toLowerCase().slice(0, 20), followup: !!(o && o.followup) }; }).filter(function (o) { return o.label; });
         opts = JSON.stringify(clean);
       }
       var reqPhoto = !!it.requires_photo;
@@ -231,6 +261,8 @@ router.get('/:id', requireAuth, requirePermission('view_inspections'), async fun
     }
     insp.items = items;
     insp.photos = photos;
+    try { insp.followup_items = await followupItemsFor(items); } catch (e) { insp.followup_items = []; }
+    insp.driver = await driverOf(insp.vehicle_id);
     res.json(insp);
   } catch (err) {
     console.error(err);
@@ -275,6 +307,8 @@ router.post('/', requireAuth, requirePermission('view_inspections'), async funct
         await client.query('COMMIT');
         client.release();
         await logAudit({ entity_type: 'inspection', entity_id: insp.id, entity_number: number, action: 'submitted', user_id: req.user.id, user_name: req.user.name, details: { vehicle_id: vehicle_id, month: month, result: result } });
+        try { insp.followup_items = await followupItemsFor(items); } catch (e) { insp.followup_items = []; }
+        insp.driver = await driverOf(vehicle_id);
         return res.status(201).json(insp);
       } catch (err) {
         await client.query('ROLLBACK').catch(function () {});
@@ -324,7 +358,9 @@ router.put('/:id', requireAuth, requirePermission('view_inspections'), async fun
       }
       await client.query('COMMIT');
       await logAudit({ entity_type: 'inspection', entity_id: parseInt(req.params.id, 10), entity_number: insp.inspection_number, action: 'edited', user_id: req.user.id, user_name: req.user.name });
-      res.json({ success: true, id: parseInt(req.params.id, 10) });
+      var _fu = [];
+      try { _fu = await followupItemsFor(items); } catch (e) {}
+      res.json({ success: true, id: parseInt(req.params.id, 10), followup_items: _fu, driver: await driverOf(insp.vehicle_id), followup_task_id: insp.followup_task_id });
     } catch (err) {
       await client.query('ROLLBACK').catch(function () {});
       throw err;
@@ -353,6 +389,53 @@ router.post('/:id/review', requireAuth, requirePermission('manage_inspections'),
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: 'Failed to review' });
+  }
+});
+
+// ===== Create the follow-up task from flagged inspection items =====
+router.post('/:id/followup-task', requireAuth, requirePermission('view_inspections'), async function (req, res) {
+  try {
+    const ir = await pool.query('SELECT * FROM vehicle_inspections WHERE id = $1', [req.params.id]);
+    if (!ir.rows.length) return res.status(404).json({ error: 'Inspection not found' });
+    const insp = ir.rows[0];
+    const vr = await pool.query('SELECT v.id, v.assigned_user_id, v.year, v.make_model, v.license_plate, du.supervisor_id AS driver_supervisor_id FROM vehicles v LEFT JOIN users du ON v.assigned_user_id = du.id WHERE v.id = $1', [insp.vehicle_id]);
+    const veh = vr.rows[0] || {};
+    if (!canSubmit(req.user, veh.driver_supervisor_id)) return res.status(403).json({ error: 'Only the driver\'s manager (or an admin) can create this task.' });
+    if (insp.followup_task_id) return res.status(409).json({ error: 'A follow-up task already exists for this inspection.', task_id: insp.followup_task_id });
+
+    const { rows: items } = await pool.query('SELECT * FROM inspection_items WHERE inspection_id = $1 ORDER BY id', [req.params.id]);
+    const issues = await followupItemsFor(items);
+    if (!issues.length) return res.status(400).json({ error: 'No items on this inspection are flagged for follow-up.' });
+
+    var assigned_to = req.body.assigned_to ? parseInt(req.body.assigned_to, 10) : (veh.assigned_user_id || req.user.id);
+    if (!assigned_to) assigned_to = req.user.id;
+    const priorities = ['low', 'medium', 'high', 'urgent'];
+    var priority = priorities.indexOf(req.body.priority) !== -1 ? req.body.priority : 'high';
+    var due_date = req.body.due_date || null;
+    var vehLabel = ((veh.year ? veh.year + ' ' : '') + (veh.make_model || 'Vehicle') + (veh.license_plate ? ' (' + veh.license_plate + ')' : '')).trim();
+    var title = (req.body.title && String(req.body.title).trim()) || ('Inspection follow-up \u2014 ' + vehLabel + ' (' + insp.period_month + ')');
+    title = title.slice(0, 255);
+    var description = req.body.description ? String(req.body.description) : ('Auto-created from inspection ' + insp.inspection_number + '. Items needing attention:\n' + issues.map(function (it) { return '- ' + it.label + (it.answer ? ': ' + it.answer : '') + (it.comment ? ' \u2014 ' + it.comment : ''); }).join('\n'));
+
+    const tr = await pool.query(
+      'INSERT INTO tasks (title, description, status, priority, assigned_to, created_by, due_date, assigned_by, require_due_to_close, source, source_id) ' +
+      "VALUES ($1,$2,'todo',$3,$4,$5,$6,$7,true,'inspection',$8) RETURNING *",
+      [title, description, priority, assigned_to, req.user.id, due_date, req.user.id, insp.id]
+    );
+    const task = tr.rows[0];
+    for (var i = 0; i < issues.length; i++) {
+      var it = issues[i];
+      var stitle = (it.label + (it.answer ? ' \u2014 ' + it.answer : '') + (it.comment ? ' (' + it.comment + ')' : '')).slice(0, 500);
+      await pool.query('INSERT INTO task_subtasks (task_id, title, position) VALUES ($1,$2,$3)', [task.id, stitle, i]);
+    }
+    await pool.query('INSERT INTO task_activity (task_id, user_id, user_name, type, body) VALUES ($1,$2,$3,$4,$5)', [task.id, req.user.id, req.user.name, 'event', 'created this task from inspection ' + insp.inspection_number]);
+    await pool.query('UPDATE vehicle_inspections SET followup_task_id = $1, updated_at = NOW() WHERE id = $2', [task.id, insp.id]);
+    try { await logAudit({ entity_type: 'task', entity_id: task.id, entity_number: '#' + task.id, action: 'created', user_id: req.user.id, user_name: req.user.name, details: { source: 'inspection', inspection: insp.inspection_number } }); } catch (e) {}
+    try { const { notifyTaskAssigned } = require('../jobs/taskReminders'); await notifyTaskAssigned(task.id); } catch (e) {}
+    res.status(201).json({ success: true, task_id: task.id, inspection_id: insp.id });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Failed to create follow-up task' });
   }
 });
 

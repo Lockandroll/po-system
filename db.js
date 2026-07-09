@@ -274,6 +274,7 @@ async function initDB() {
       'ALTER TABLE inspection_checklist ADD COLUMN IF NOT EXISTS options JSONB;' +
       'ALTER TABLE inspection_items ADD COLUMN IF NOT EXISTS color VARCHAR(20);' +
       'ALTER TABLE inspection_items ALTER COLUMN answer TYPE VARCHAR(60);' +
+      'ALTER TABLE vehicle_inspections ADD COLUMN IF NOT EXISTS followup_task_id INTEGER;' +
       'CREATE UNIQUE INDEX IF NOT EXISTS idx_insp_vehicle_month ON vehicle_inspections(vehicle_id, period_month);' +
       'CREATE INDEX IF NOT EXISTS idx_insp_period ON vehicle_inspections(period_month);' +
       'CREATE INDEX IF NOT EXISTS idx_insp_items_insp ON inspection_items(inspection_id);' +
@@ -586,6 +587,8 @@ async function initDB() {
       "ALTER TABLE tasks ADD COLUMN IF NOT EXISTS secondary_assignee_id INTEGER;" +
       "ALTER TABLE tasks ADD COLUMN IF NOT EXISTS assigned_by INTEGER;" +
       "ALTER TABLE tasks ADD COLUMN IF NOT EXISTS due_locked BOOLEAN NOT NULL DEFAULT false;" +
+      "ALTER TABLE tasks ADD COLUMN IF NOT EXISTS require_due_to_close BOOLEAN NOT NULL DEFAULT false;" +
+      "ALTER TABLE tasks ADD COLUMN IF NOT EXISTS source_id INTEGER;" +
       "ALTER TABLE task_subtasks ADD COLUMN IF NOT EXISTS done BOOLEAN NOT NULL DEFAULT false;" +
       "ALTER TABLE task_subtasks ADD COLUMN IF NOT EXISTS position INTEGER DEFAULT 0;" +
       "ALTER TABLE task_subtasks ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ DEFAULT NOW();" +

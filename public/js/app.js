@@ -2709,6 +2709,8 @@ async function renderTaskDetail(el, id){
           '</div>' +
           (t.description?'<div style="font-size:14px;white-space:pre-wrap;line-height:1.6">'+escHtml(t.description)+'</div>':'<div style="color:var(--text-muted-color);font-size:13px">No description.</div>') +
           ccLine +
+          (t.source==='inspection' && t.source_id ? '<div style="margin-top:12px;font-size:12px"><a href="#" onclick="navigate(\'view-inspection\','+t.source_id+');return false" style="color:var(--primary,#f97316)">View source inspection &rarr;</a></div>' : '') +
+          (t.require_due_to_close && !t.due_date && !t.is_template ? '<div class="alert" style="background:#2a1f0f;border:1px solid #6b4e12;color:#f0c674;padding:8px 12px;border-radius:6px;font-size:12px;margin-top:12px">Set a due date before this task can be marked Done.</div>' : '') +
           '<div style="margin-top:14px;display:flex;gap:6px;flex-wrap:wrap">'+statusBtns+'</div>' +
         '</div></div>' +
         '<div class="card"><div class="card-body">' +
@@ -7482,20 +7484,80 @@ async function submitInspection(vehicleId, editId, btn) {
     if (btn) { btn.disabled = true; btn.textContent = 'Saving…'; }
     var result;
     if (editId) {
-      await api('PUT', '/inspections/' + editId, { mileage: mileage || null, notes: notes || null, items: items });
-      result = { id: editId };
+      var _pr = await api('PUT', '/inspections/' + editId, { mileage: mileage || null, notes: notes || null, items: items });
+      result = { id: editId, followup_items: (_pr && _pr.followup_items) || [], driver: (_pr && _pr.driver) || null, followup_task_id: (_pr && _pr.followup_task_id) || null };
     } else {
       result = await api('POST', '/inspections', { vehicle_id: vehicleId, mileage: mileage || null, notes: notes || null, items: items });
     }
     if (_inspPhotos.length) { await inspUploadStagedPhotos(result.id); }
     _inspPhotos = [];
-    navigate('view-inspection', result.id);
+    if (result.followup_items && result.followup_items.length && !result.followup_task_id) {
+      openInspFollowupPanel(result.id, result.followup_items, result.driver);
+    } else {
+      navigate('view-inspection', result.id);
+    }
   } catch (err) {
     if (btn) { btn.disabled = false; btn.textContent = editId ? 'Save Inspection' : 'Submit Inspection'; }
     if (msg) msg.innerHTML = '<div class="alert alert-error">' + escHtml(err.message) + '</div>';
   }
 }
 
+async function openInspFollowupPanel(inspId, items, driver) {
+  var el = document.getElementById('content') || document.getElementById('app');
+  el.innerHTML = '<div class="loading">Loading…</div>';
+  var users = [];
+  try { users = await api('GET', '/users'); } catch (e) {}
+  users = (users || []).filter(function (u) { return u.active !== false; }).sort(function (a, b) { return (a.name || '').localeCompare(b.name || ''); });
+  var defId = (driver && driver.id) ? String(driver.id) : '';
+  var userOpts = '<option value="">Unassigned</option>' + users.map(function (u) {
+    return '<option value="' + u.id + '"' + (String(u.id) === defId ? ' selected' : '') + '>' + escHtml(u.name) + '</option>';
+  }).join('');
+  var prios = [['low', 'Low'], ['medium', 'Medium'], ['high', 'High'], ['urgent', 'Urgent']];
+  var prioOpts = prios.map(function (p) { return '<option value="' + p[0] + '"' + (p[0] === 'high' ? ' selected' : '') + '>' + p[1] + '</option>'; }).join('');
+  var subList = (items || []).map(function (it) {
+    return '<div style="display:flex;align-items:center;gap:8px;padding:5px 0"><span style="color:#f0c674">&#9873;</span><span style="font-size:14px">' + escHtml(it.label + (it.answer ? ' \u2014 ' + it.answer : '') + (it.comment ? ' (' + it.comment + ')' : '')) + '</span></div>';
+  }).join('');
+  window._inspFuData = { inspId: inspId };
+  el.innerHTML =
+    '<div class="page-header"><div><div class="page-title">Inspection Follow-Up</div>' +
+      '<div class="page-subtitle" style="color:var(--text-muted-color)">' + ((items || []).length) + ' item(s) need attention. Assign a task to get them fixed.</div></div>' +
+      '<button class="btn btn-secondary" onclick="navigate(\'view-inspection\',' + inspId + ')">Skip</button>' +
+    '</div>' +
+    '<div id="insp-fu-msg"></div>' +
+    '<div class="card" style="max-width:640px"><div class="card-body">' +
+      '<div class="form-group"><label>Title</label><input type="text" id="insp-fu-title" placeholder="Auto-generated from vehicle &amp; month if left blank" /></div>' +
+      '<div style="display:flex;gap:14px;flex-wrap:wrap">' +
+        '<div class="form-group" style="flex:1;min-width:200px"><label>Assign to</label><select id="insp-fu-assignee">' + userOpts + '</select></div>' +
+        '<div class="form-group" style="flex:1;min-width:140px"><label>Priority</label><select id="insp-fu-priority">' + prioOpts + '</select></div>' +
+      '</div>' +
+      '<div class="form-group"><label>Due date <span style="color:#f0c674;font-size:12px">(required before the task can be closed)</span></label><input type="date" id="insp-fu-due" /></div>' +
+      '<div class="form-group"><label>Description</label><textarea id="insp-fu-desc" rows="2" placeholder="Optional \u2014 auto-filled with the flagged items if left blank"></textarea></div>' +
+      '<div style="font-weight:700;margin:8px 0 4px">Subtasks (from flagged items)</div>' + (subList || '<div style="color:var(--text-muted-color);font-size:13px">None</div>') +
+      '<div style="display:flex;gap:10px;margin-top:16px">' +
+        '<button class="btn btn-primary" id="insp-fu-save" onclick="submitInspFollowup(this)">Create Task</button>' +
+        '<button class="btn btn-secondary" onclick="navigate(\'view-inspection\',' + inspId + ')">Skip</button>' +
+      '</div>' +
+    '</div></div>';
+  window.scrollTo(0, 0);
+}
+async function submitInspFollowup(btn) {
+  var d = window._inspFuData || {};
+  var payload = {
+    assigned_to: (document.getElementById('insp-fu-assignee') || {}).value || null,
+    priority: (document.getElementById('insp-fu-priority') || {}).value || 'high',
+    due_date: (document.getElementById('insp-fu-due') || {}).value || null,
+    title: ((document.getElementById('insp-fu-title') || {}).value || '').trim() || null,
+    description: ((document.getElementById('insp-fu-desc') || {}).value || '').trim() || null
+  };
+  try {
+    if (btn) { btn.disabled = true; btn.textContent = 'Creating…'; }
+    var res = await api('POST', '/inspections/' + d.inspId + '/followup-task', payload);
+    navigate('task-detail', res.task_id);
+  } catch (err) {
+    if (btn) { btn.disabled = false; btn.textContent = 'Create Task'; }
+    var m = document.getElementById('insp-fu-msg'); if (m) m.innerHTML = '<div class="alert alert-error">' + escHtml(err.message) + '</div>';
+  }
+}
 async function renderViewInspection(el, id) {
   el.innerHTML = '<div class="loading">Loading…</div>';
   try {
@@ -7510,6 +7572,8 @@ async function renderViewInspection(el, id) {
     var itemsHtml = (insp.items || []).map(function (it) {
       return '<tr><td>' + escHtml(it.label || it.item_key) + '</td><td>' + inspAnswerBadge(it.answer, it.color) + '</td><td>' + escHtml(it.comment || '—') + '</td></tr>';
     }).join('');
+    window._inspViewFu = insp.followup_items || [];
+    window._inspViewDriver = insp.driver || null;
     el.innerHTML =
       '<div class="page-header">' +
         '<div><div class="page-title">' + escHtml(insp.inspection_number) + '</div>' +
@@ -7522,6 +7586,11 @@ async function renderViewInspection(el, id) {
         '</div>' +
       '</div>' +
       '<div id="insp-view-msg"></div>' +
+      (insp.followup_task_id
+        ? '<div class="alert" style="background:#0f1720;border:1px solid var(--border-color);padding:10px 14px;border-radius:6px;margin-bottom:14px;font-size:13px">Follow-up task created. <a href="#" onclick="navigate(\'task-detail\',' + insp.followup_task_id + ');return false" style="color:var(--primary,#f97316);font-weight:600">Open task &rarr;</a></div>'
+        : (((insp.followup_items || []).length && (insp.submitted_by === state.user.id || can('manage_inspections')))
+            ? '<div class="alert" style="background:#2a1f0f;border:1px solid #6b4e12;color:#f0c674;padding:10px 14px;border-radius:6px;margin-bottom:14px;font-size:13px;display:flex;align-items:center;gap:12px;flex-wrap:wrap"><span>' + (insp.followup_items.length) + ' item(s) flagged for follow-up.</span><button class="btn btn-primary btn-sm" onclick="openInspFollowupPanel(' + insp.id + ', window._inspViewFu, window._inspViewDriver)">Create follow-up task</button></div>'
+            : '')) +
       '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:16px;margin-bottom:16px">' +
         '<div class="card"><div class="card-body">' +
           '<div class="detail-field"><label>Submitted By</label><p>' + escHtml(insp.submitted_by_name || '—') + '</p></div>' +
@@ -7563,7 +7632,7 @@ async function renderInspectionChecklistAdmin(el) {
     var items = await api('GET', '/inspections/checklist?all=1');
     window._inspClEdit = items.map(function (it) {
       var type = (it.type === 'text') ? 'text' : 'dropdown';
-      return { item_key: it.item_key, label: it.label, type: type, requires_photo: !!it.requires_photo, options: (Array.isArray(it.options) && it.options.length) ? it.options.map(function (o) { return { label: o.label, color: o.color }; }) : inspItemOptions({}).slice() };
+      return { item_key: it.item_key, label: it.label, type: type, requires_photo: !!it.requires_photo, options: (Array.isArray(it.options) && it.options.length) ? it.options.map(function (o) { return { label: o.label, color: o.color, followup: !!o.followup }; }) : inspItemOptions({}).slice() };
     });
     inspClRender(el);
   } catch (err) { el.innerHTML = '<div class="alert alert-error">' + escHtml(err.message) + '</div>'; }
@@ -7603,6 +7672,7 @@ function inspClRender(el) {
         return '<div style="display:flex;gap:10px;align-items:center;margin-bottom:7px;flex-wrap:wrap">' +
           '<input type="text" value="' + escHtml(o.label || '') + '" oninput="window._inspClEdit[' + i + '].options[' + j + '].label=this.value" placeholder="Option label" style="flex:1;min-width:140px" />' +
           inspClColorPicker(i, j, o.color) +
+          '<label style="font-size:12px;display:flex;align-items:center;gap:4px;white-space:nowrap" title="If a driver picks this answer, a follow-up task opens at the end of the inspection"><input type="checkbox"' + (o.followup ? ' checked' : '') + ' onchange="window._inspClEdit[' + i + '].options[' + j + '].followup=this.checked" /> Follow-up</label>' +
           '<button class="btn btn-ghost btn-sm" style="color:var(--danger-color,#ef4444)" onclick="inspClRemoveOpt(' + i + ',' + j + ')" title="Remove option">✕</button>' +
         '</div>';
       }).join('');
@@ -7629,7 +7699,7 @@ function inspClRender(el) {
       '<span style="color:' + INSP_COLORS.orange + ';font-weight:600">yellows/oranges = Attention</span>, ' +
       '<span style="color:' + INSP_COLORS.red + ';font-weight:600">reds = Fail</span>, ' +
       'blues/grays = No effect &mdash; shown next to each option. ' +
-      '<strong>Text</strong> is a free write-in and never affects the result.' +
+      '<strong>Text</strong> is a free write-in and never affects the result. Tick <strong>Follow-up</strong> on any option to auto-open a task (driver assigned) when that answer is picked.' +
     '</div>' +
     '<div id="insp-cl-msg"></div>' +
     (rows || '<div style="color:var(--text-muted-color);margin-bottom:12px">No items yet.</div>') +
