@@ -339,8 +339,8 @@ router.get('/me', requireAuth, async (req, res) => {
 //   - one monthly accrual on each employee's hire day-of-month (clamped to the last
 //     day in short months), starting one month after the hire month;
 //   - accrual bands step up as the person crosses service anniversaries;
-//   - the balance cap fills partially and never accrues past itself;
-//   - Jan 1 carryover forfeiture is applied BEFORE that day's accrual (cron order);
+//   - the tiered accrual cap fills partially and never accrues past itself;
+//   - anniversary rollover forfeiture is applied BEFORE that day's accrual (cron order);
 //   - exempt staff and staff with no hire date do not accrue.
 // Approved time off is already reflected in the balance; pending requests are excluded.
 router.get('/project', requireAuth, async (req, res) => {
@@ -353,10 +353,19 @@ router.get('/project', requireAuth, async (req, res) => {
   const u = ur.rows[0];
 
   const bands = await getJsonSetting('pto_accrual_bands', DEFAULT_BANDS);
-  const capRaw = await getSetting('pto_balance_cap_days', null);
-  const carryRaw = await getSetting('pto_carryover_days', null);
-  const capHours = (capRaw === null || capRaw === undefined || capRaw === '') ? null : Number(capRaw) * HRS_PER_DAY;
-  const carryHours = (carryRaw === null || carryRaw === undefined || carryRaw === '') ? null : Number(carryRaw) * HRS_PER_DAY;
+  const multRaw = await getSetting('pto_cap_multiplier', null);
+  const capMultiplier = (multRaw === null || multRaw === undefined || multRaw === '') ? 1.5 : (Number(multRaw) || 0);
+  const absCapRaw = await getSetting('pto_balance_cap_days', null);
+  const absCapHours = (absCapRaw === null || absCapRaw === undefined || absCapRaw === '') ? null : Number(absCapRaw) * HRS_PER_DAY;
+  const rollRaw = await getSetting('pto_rollover_days', 5);
+  const rolloverHours = (rollRaw === null || rollRaw === undefined || rollRaw === '') ? null : Number(rollRaw) * HRS_PER_DAY;
+  function capHoursForBand(band) {
+    let cap = null;
+    const dpy = Number(band && band.days_per_year) || 0;
+    if (capMultiplier > 0 && dpy > 0) cap = Math.floor(dpy * capMultiplier) * HRS_PER_DAY;
+    if (absCapHours !== null) cap = (cap === null) ? absCapHours : Math.min(cap, absCapHours);
+    return cap;
+  }
   const exempt = u.pto_exempt === true;
   const fullTime = (u.employment_type || 'full_time') === 'full_time';
   const accrues = !exempt && fullTime && !!u.hire_date;
@@ -378,12 +387,13 @@ router.get('/project', requireAuth, async (req, res) => {
     let guard = 0;
     while (guard++ < 600) {
       if (new Date(y, m, 1) > t) break; // whole month is past the target
-      // Jan 1 carryover forfeiture runs before that day's accrual, matching the cron.
-      if (m === 0) {
-        const jan1 = new Date(y, 0, 1);
-        if (jan1 > today && jan1 <= t && carryHours !== null && bal > carryHours) {
-          forfeited += bal - carryHours;
-          bal = carryHours;
+      // Anniversary rollover forfeiture runs before that day's accrual, matching the cron.
+      if (hire && rolloverHours !== null && hire.getMonth() === m && (y * 12 + m) > hirePeriodKey) {
+        const annivDay = Math.min(hireDay, new Date(y, m + 1, 0).getDate());
+        const annivDate = new Date(y, m, annivDay);
+        if (annivDate > today && annivDate <= t && bal > rolloverHours) {
+          forfeited += bal - rolloverHours;
+          bal = rolloverHours;
         }
       }
       // Accrual on the hire day-of-month; first accrual is one month after the hire month.
@@ -392,7 +402,9 @@ router.get('/project', requireAuth, async (req, res) => {
         const accDate = new Date(y, m, accDay);
         if (accDate > today && accDate <= t) {
           months++;
-          let amt = monthlyHoursFromBand(resolveBand(bands, tenureAt(u.hire_date, accDate)));
+          const band = resolveBand(bands, tenureAt(u.hire_date, accDate));
+          let amt = monthlyHoursFromBand(band);
+          const capHours = capHoursForBand(band);
           if (amt > 0 && capHours !== null) {
             const room = capHours - bal;
             amt = room <= 0 ? 0 : Math.min(amt, room);
@@ -403,7 +415,8 @@ router.get('/project', requireAuth, async (req, res) => {
       }
       m++; if (m > 11) { m = 0; y++; }
     }
-    if (capHours !== null && bal >= capHours - 0.001) hitCap = true;
+    const targetCap = capHoursForBand(resolveBand(bands, tenureAt(u.hire_date, t)));
+    if (targetCap !== null && bal >= targetCap - 0.001) hitCap = true;
   }
 
   res.json({
@@ -416,8 +429,8 @@ router.get('/project', requireAuth, async (req, res) => {
     accrued_hours: Math.round(accrued * 100) / 100,
     forfeited_hours: Math.round(forfeited * 100) / 100,
     months: months,
-    cap_hours: capHours,
-    carryover_hours: carryHours,
+    cap_hours: capHoursForBand(resolveBand(bands, tenureAt(u.hire_date, t))),
+    rollover_hours: rolloverHours,
     hit_cap: hitCap
   });
 });
@@ -818,6 +831,8 @@ router.get('/settings', requireAuth, requirePermission('manage_pto'), async (req
     waiting_days: Number(await getSetting('pto_waiting_days', 90)) || 90,
     carryover_days: await getSetting('pto_carryover_days', null),
     balance_cap_days: await getSetting('pto_balance_cap_days', null),
+    rollover_days: await getSetting('pto_rollover_days', 5),
+    cap_multiplier: await getSetting('pto_cap_multiplier', 1.5),
     coverage_caps: await getJsonSetting('pto_coverage_caps', {}),
     coverage_default: await getSetting('pto_coverage_default', null)
   });
@@ -827,6 +842,7 @@ router.put('/settings', requireAuth, requirePermission('manage_pto'), async (req
   const b = req.body || {};
   async function put(key, val) {
     if (val === undefined) return;
+    if (val === null) { await pool.query('DELETE FROM settings WHERE key = $1', [key]); return; }
     const v = (typeof val === 'object') ? JSON.stringify(val) : String(val);
     await pool.query('INSERT INTO settings (key, value, updated_at) VALUES ($1,$2,NOW()) ON CONFLICT (key) DO UPDATE SET value=$2, updated_at=NOW()', [key, v]);
   }
@@ -834,6 +850,8 @@ router.put('/settings', requireAuth, requirePermission('manage_pto'), async (req
   await put('pto_waiting_days', b.waiting_days);
   await put('pto_carryover_days', b.carryover_days);
   await put('pto_balance_cap_days', b.balance_cap_days);
+  await put('pto_rollover_days', b.rollover_days);
+  await put('pto_cap_multiplier', b.cap_multiplier);
   await put('pto_coverage_caps', b.coverage_caps);
   await put('pto_coverage_default', b.coverage_default);
   await logAudit({ entity_type: 'pto_settings', action: 'updated', user_id: req.user.id, user_name: req.user.name, details: {} });

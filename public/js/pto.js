@@ -166,8 +166,8 @@
     document.getElementById('pto-submit').onclick = submitRequest;
 
     // Projection: the server runs the accurate forward simulation (accrual band
-    // step-ups at anniversaries, balance cap, and Jan 1 carryover) so this matches
-    // exactly what the real accrual job will do to the balance.
+    // step-ups at anniversaries, the tiered accrual cap, and anniversary rollover)
+    // so this matches exactly what the real accrual job will do to the balance.
     var pd = document.getElementById('pto-proj-date');
     var projBusy = false;
     async function projPreview() {
@@ -186,10 +186,10 @@
         var forfeited = Number(r.forfeited_hours) || 0;
         var html = 'By <b>' + fmtDate(pd.value) + '</b> you will have about <b style="color:#22c55e">' + fmtAmt(projected, pt) + '</b>.' +
           '<br><span class="pto-sub">Now <b>' + fmtAmt(start, pt) + '</b> + ' + r.months + ' month' + (r.months === 1 ? '' : 's') + ' of accrual (<b>' + fmtAmt(added, pt) + '</b>)';
-        if (forfeited > 0) html += ' \u2212 <b>' + fmtAmt(forfeited, pt) + '</b> forfeited at year-end carryover';
+        if (forfeited > 0) html += ' \u2212 <b>' + fmtAmt(forfeited, pt) + '</b> forfeited at anniversary rollover';
         html += '. ';
         if (!r.accrues) html += (r.exempt ? 'Your role does not accrue PTO. ' : 'No hire date on file, so no accrual is projected. ');
-        else if (r.hit_cap) html += 'Reaches the balance cap \u2014 accrual stops there. ';
+        else if (r.hit_cap) html += 'Reaches the accrual cap \u2014 accrual stops there. ';
         html += 'Excludes any pending requests.</span>';
         out.innerHTML = html;
       } catch (e) {
@@ -505,10 +505,11 @@
     body.innerHTML = '<div class="pto-panel"><h3>PTO Accrual Policy</h3><div class="pto-desc">Company-wide. Each person\'s rate is picked from their time since hire date. Accrual posts monthly. 1 day = 8 hours.</div>' +
       '<table class="pto-table" id="pto-bands"><thead><tr><th style="width:100px">From (yrs)</th><th style="width:100px">To (yrs)</th><th>Days / year</th><th>Days / mo</th><th>Hrs / mo</th><th style="width:40px"></th></tr></thead><tbody></tbody></table>' +
       '<div style="margin-top:10px"><button class="pto-btn ghost sm" id="pto-band-add">+ Add band</button></div></div>' +
-      '<div class="pto-panel"><h3>Eligibility &amp; Carryover</h3>' +
+      '<div class="pto-panel"><h3>Eligibility, Cap &amp; Rollover</h3>' +
         '<div class="pto-row"><div><label class="pto-label">Waiting period (days)</label><input type="number" min="0" id="pto-wait" class="pto-input" value="' + (Number(s.waiting_days) || 90) + '"></div>' +
-        '<div><label class="pto-label">Max carryover / year (days)</label><input type="number" min="0" step="0.5" id="pto-carry" class="pto-input" value="' + (s.carryover_days === null || s.carryover_days === undefined ? '' : escHtml(String(s.carryover_days))) + '" placeholder="blank = unlimited"></div>' +
-        '<div><label class="pto-label">Balance cap (days)</label><input type="number" min="0" step="0.5" id="pto-cap" class="pto-input" value="' + (s.balance_cap_days === null || s.balance_cap_days === undefined ? '' : escHtml(String(s.balance_cap_days))) + '" placeholder="blank = none"></div></div></div>' +
+        '<div><label class="pto-label">Rollover at anniversary (days)</label><input type="number" min="0" step="0.5" id="pto-roll" class="pto-input" value="' + (s.rollover_days === null || s.rollover_days === undefined ? '' : escHtml(String(s.rollover_days))) + '" placeholder="blank = unlimited"></div>' +
+        '<div><label class="pto-label">Cap multiplier (\u00d7 annual entitlement)</label><input type="number" min="0" step="0.1" id="pto-capmult" class="pto-input" value="' + (s.cap_multiplier === null || s.cap_multiplier === undefined ? '' : escHtml(String(s.cap_multiplier))) + '" placeholder="1.5"></div></div>' +
+        '<div class="pto-flag">Cap = multiplier \u00d7 each tier\u2019s annual days (e.g. 1.5 \u2192 10/15/20-day tiers cap at 15/22/30 days). Rollover forfeits anything above the limit on each hire anniversary.</div></div>' +
       '<div class="pto-panel"><h3>Coverage Guardrails</h3><div class="pto-desc">Soft cap — approver can override with a reason. Max people on PTO per day.</div>' +
         '<div class="pto-row"><div><label class="pto-label">Default max on PTO / day</label><input type="number" min="0" id="pto-cov-def" class="pto-input" value="' + (s.coverage_default === null || s.coverage_default === undefined ? '' : escHtml(String(s.coverage_default))) + '" placeholder="blank = no cap"></div></div>' +
         '<div class="pto-flag">Per-market caps (by city code) are stored in pto_coverage_caps; the default applies when a market has none.</div></div>' +
@@ -539,12 +540,14 @@
     tb.querySelectorAll('[data-del]').forEach(function (bt) { bt.onclick = function () { BANDS.splice(+bt.dataset.del, 1); renderBands(); }; });
   }
   async function saveSettings() {
-    var carry = document.getElementById('pto-carry').value, cap = document.getElementById('pto-cap').value, covd = document.getElementById('pto-cov-def').value;
+    var roll = document.getElementById('pto-roll').value, capm = document.getElementById('pto-capmult').value, covd = document.getElementById('pto-cov-def').value;
     var payload = {
       accrual_bands: BANDS.map(function (b) { return { from: Number(b.from) || 0, to: (b.to === '' || b.to === null || b.to === undefined) ? null : Number(b.to), days_per_year: Number(b.days_per_year) || 0 }; }),
       waiting_days: Number(document.getElementById('pto-wait').value) || 0,
-      carryover_days: carry === '' ? null : Number(carry),
-      balance_cap_days: cap === '' ? null : Number(cap),
+      rollover_days: roll === '' ? null : Number(roll),
+      cap_multiplier: capm === '' ? null : Number(capm),
+      balance_cap_days: null,
+      carryover_days: null,
       coverage_default: covd === '' ? null : Number(covd)
     };
     try { await api('PUT', '/pto/settings', payload); showToast('PTO settings saved.', 'success'); }
