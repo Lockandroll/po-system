@@ -4003,10 +4003,12 @@ async function renderFeedbackDetail(el, id){
     var ch = a.channel === 'sms' ? ' <span style="color:var(--text-muted-color)">&middot; via SMS</span>' : '';
     var when = timeAgo(a.created_at) || formatDateTime(a.created_at);
     var who = a.user_name ? escHtml(a.user_name) : 'System';
-    var bodyTxt = a.type === 'event' ? (who + ' ' + escHtml(a.body || '')) : (who + ': ' + escHtml(a.body || ''));
-    return '<div style="display:flex;gap:10px;margin-bottom:12px">' +
-      '<div style="width:8px;height:8px;border-radius:50%;background:' + (a.type === 'note' ? 'var(--primary)' : 'var(--text-muted-color)') + ';margin-top:6px;flex-shrink:0"></div>' +
-      '<div><div style="font-size:13px;line-height:1.5">' + bodyTxt + '</div><div style="font-size:11px;color:var(--text-muted-color);margin-top:2px">' + escHtml(when) + ch + '</div></div>' +
+    var isView = a.type === 'view';
+    var bodyTxt = (a.type === 'event' || isView) ? (who + ' ' + escHtml(a.body || '')) : (who + ': ' + escHtml(a.body || ''));
+    var dot = a.type === 'note' ? 'background:var(--primary)' : (isView ? 'background:transparent;border:1px solid var(--text-muted-color)' : 'background:var(--text-muted-color)');
+    return '<div style="display:flex;gap:10px;margin-bottom:12px' + (isView ? ';opacity:.65' : '') + '">' +
+      '<div style="width:8px;height:8px;border-radius:50%;' + dot + ';margin-top:6px;flex-shrink:0;box-sizing:border-box"></div>' +
+      '<div><div style="font-size:13px;line-height:1.5' + (isView ? ';color:var(--text-muted-color)' : '') + '">' + bodyTxt + '</div><div style="font-size:11px;color:var(--text-muted-color);margin-top:2px">' + escHtml(when) + ch + '</div></div>' +
     '</div>';
   }).join('') || '<div style="color:var(--text-muted-color);font-size:13px">No activity yet.</div>';
 
