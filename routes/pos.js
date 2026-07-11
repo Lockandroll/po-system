@@ -154,7 +154,7 @@ router.post('/', requireAuth, requirePermission('create_po'), async (req, res) =
 });
 
 // Update PO
-router.put('/:id', requireAuth, requirePermission('edit_po'), async (req, res) => {
+router.put('/:id', requireAuth, async (req, res) => {
   const vendor_name = req.body.vendor_name;
   const customer_name = req.body.customer_name;
   const city_code = req.body.city_code;
@@ -168,7 +168,7 @@ router.put('/:id', requireAuth, requirePermission('edit_po'), async (req, res) =
     return res.status(403).json({ error: 'Forbidden' });
   }
   if (po.status !== 'draft' && po.status !== 'rejected' && req.user.role !== 'admin') {
-    return res.status(400).json({ error: 'Only draft or rejected POs can be edited' });
+    return res.status(400).json({ error: 'Only draft or rejected POs can be edited. Once approved, a PO is locked.' });
   }
 
   const total_amount = line_items ? computeTotal(line_items) : po.total_amount;
