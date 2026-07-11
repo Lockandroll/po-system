@@ -66,7 +66,7 @@ router.get('/', requireAuth, requirePermission('view_feedback'), async function 
       'LEFT JOIN users u ON u.id = f.assigned_to ' +
       'LEFT JOIN users t ON t.id = f.tech_user_id ' +
       'LEFT JOIN cities c ON c.code = f.city_code ' +
-      whereSql + ' ORDER BY f.last_interaction_at DESC NULLS LAST LIMIT ' + limit + ' OFFSET ' + offset,
+      whereSql + " ORDER BY (CASE WHEN f.status IN ('resolved','closed') THEN 1 ELSE 0 END) ASC, f.last_interaction_at DESC NULLS LAST LIMIT " + limit + ' OFFSET ' + offset,
       params
     );
     res.json({ feedback: listRes.rows, total: parseInt(countRes.rows[0].count, 10) });
