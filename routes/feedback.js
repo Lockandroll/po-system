@@ -19,19 +19,12 @@ async function cityScope(user) {
   } catch (e) { return []; }
 }
 
-// Record that someone opened a complaint. Owners are invisible (never logged).
-// Deduped per user per record within VIEW_DEDUPE_MIN minutes so refreshes don't
-// spam the timeline. Deliberately does NOT touch last_interaction_at - a view is
-// not an interaction with the customer.
-const VIEW_DEDUPE_MIN = 30;
+// Record that someone opened a complaint. Every open is logged - no dedupe.
+// Owners are invisible (never logged). Deliberately does NOT touch
+// last_interaction_at - a view is not an interaction with the customer.
 async function logView(feedbackId, user) {
   try {
     if (!user || user.isOwner || user.role === 'owner') return;
-    const recent = await pool.query(
-      "SELECT 1 FROM customer_feedback_activity WHERE feedback_id = $1 AND user_id = $2 AND type = 'view' AND created_at > NOW() - INTERVAL '" + VIEW_DEDUPE_MIN + " minutes' LIMIT 1",
-      [feedbackId, user.id]
-    );
-    if (recent.rows.length) return;
     await pool.query(
       "INSERT INTO customer_feedback_activity (feedback_id, user_id, user_name, type, body) VALUES ($1,$2,$3,'view','viewed this complaint.')",
       [feedbackId, user.id, user.name]
@@ -102,7 +95,15 @@ router.get('/:id', requireAuth, requirePermission('view_feedback'), async functi
     }
     // Don't log views made while an admin is previewing as another user.
     if (!req.viewingAs) await logView(id, req.user);
-    const acts = await pool.query('SELECT * FROM customer_feedback_activity WHERE feedback_id = $1 ORDER BY created_at DESC', [id]);
+    // View rows are admin/owner-only. Managers and below never see who opened a record
+    // (they can't tell views are being tracked at all). Owner is coerced to 'admin' upstream.
+    const seesViews = req.user.role === 'admin';
+    const acts = await pool.query(
+      'SELECT * FROM customer_feedback_activity WHERE feedback_id = $1' +
+      (seesViews ? '' : " AND type <> 'view'") +
+      ' ORDER BY created_at DESC',
+      [id]
+    );
     const atts = await pool.query("SELECT id, file_name, mime_type, size_bytes, uploaded_by_name, created_at FROM customer_feedback_attachments WHERE feedback_id = $1 AND status = 'ready' ORDER BY created_at DESC", [id]);
     res.json({ feedback: r.rows[0], activity: acts.rows, attachments: atts.rows, storageReady: r2.configured() });
   } catch (e) {
@@ -194,7 +195,12 @@ router.post('/:id/notes', requireAuth, requirePermission('manage_feedback'), asy
     const exists = await pool.query('SELECT id FROM customer_feedback WHERE id = $1', [id]);
     if (!exists.rows.length) return res.status(404).json({ error: 'Not found' });
     await logActivity(id, { id: req.user.id, name: req.user.name }, 'note', body, 'app');
-    const acts = await pool.query('SELECT * FROM customer_feedback_activity WHERE feedback_id = $1 ORDER BY created_at DESC', [id]);
+    const acts = await pool.query(
+      'SELECT * FROM customer_feedback_activity WHERE feedback_id = $1' +
+      (req.user.role === 'admin' ? '' : " AND type <> 'view'") +
+      ' ORDER BY created_at DESC',
+      [id]
+    );
     res.json({ activity: acts.rows });
   } catch (e) {
     console.error('POST /feedback/:id/notes:', e.message);

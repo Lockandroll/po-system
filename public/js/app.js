@@ -4006,14 +4006,16 @@ async function renderFeedbackDetail(el, id){
     var isView = a.type === 'view';
     var bodyTxt = (a.type === 'event' || isView) ? (who + ' ' + escHtml(a.body || '')) : (who + ': ' + escHtml(a.body || ''));
     var dot = a.type === 'note' ? 'background:var(--primary)' : (isView ? 'background:transparent;border:1px solid var(--text-muted-color)' : 'background:var(--text-muted-color)');
-    return '<div style="display:flex;gap:10px;margin-bottom:12px' + (isView ? ';opacity:.65' : '') + '">' +
+    return '<div' + (isView ? ' class="fb-view-row"' : '') + ' style="display:flex;gap:10px;margin-bottom:12px' + (isView ? ';opacity:.65' : '') + '">' +
       '<div style="width:8px;height:8px;border-radius:50%;' + dot + ';margin-top:6px;flex-shrink:0;box-sizing:border-box"></div>' +
       '<div><div style="font-size:13px;line-height:1.5' + (isView ? ';color:var(--text-muted-color)' : '') + '">' + bodyTxt + '</div><div style="font-size:11px;color:var(--text-muted-color);margin-top:2px">' + escHtml(when) + ch + '</div></div>' +
     '</div>';
   }).join('') || '<div style="color:var(--text-muted-color);font-size:13px">No activity yet.</div>';
 
   var noteBox = canEdit ? '<div style="display:flex;gap:8px;margin-top:10px"><input type="text" id="fb-d-note" placeholder="Add a note&hellip;" style="' + iS + '" onkeydown="if(event.key===&quot;Enter&quot;)feedbackAddNote(' + f.id + ')" /><button class="btn btn-secondary btn-sm" onclick="feedbackAddNote(' + f.id + ')">Add</button></div>' : '';
-  var actCard = '<div style="' + cardS + '"><div style="font-size:12px;color:var(--text-muted-color);margin-bottom:12px">Activity</div>' + actItems + noteBox + '</div>';
+  var viewCount = acts.filter(function(a){ return a.type === 'view'; }).length;
+  var viewToggle = viewCount ? '<label style="font-size:11px;color:var(--text-muted-color);display:flex;align-items:center;gap:5px;cursor:pointer"><input type="checkbox" checked onchange="feedbackToggleViews(this.checked)" /> Views (' + viewCount + ')</label>' : '';
+  var actCard = '<div style="' + cardS + '"><div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px"><div style="font-size:12px;color:var(--text-muted-color)">Activity</div>' + viewToggle + '</div>' + actItems + noteBox + '</div>';
 
   el.innerHTML =
     '<div style="margin-bottom:12px"><button class="btn btn-ghost btn-sm" onclick="navigate(\'feedback\')">&larr; Back to feedback</button></div>' +
@@ -4057,6 +4059,11 @@ async function feedbackReopen(id){
   try { await api('PATCH', '/feedback/' + id, { is_resolved: false, status: 'in_progress' }); showToast('Reopened', 'success'); navigate('feedback-detail', id); }
   catch (e) { showToast(e.message, 'error'); }
 }
+function feedbackToggleViews(show){
+  var rows = document.querySelectorAll('.fb-view-row');
+  for (var i = 0; i < rows.length; i++) rows[i].style.display = show ? 'flex' : 'none';
+}
+
 async function feedbackAddNote(id){
   var e = document.getElementById('fb-d-note'); if (!e) return;
   var body = (e.value || '').trim(); if (!body) return;
