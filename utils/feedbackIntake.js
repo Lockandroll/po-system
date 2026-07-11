@@ -34,24 +34,51 @@ async function resolveCityCode(locationRaw) {
   return null;
 }
 
-// Managers assigned to the city. Falls back to all admins/owners if the city has
-// none (or is unknown). Returns an array of { id, name, email, phone }.
+// Who owns this city's feedback. Three tiers, in order:
+//   1. cities.manager_user_id — the designated primary manager. Deterministic.
+//   2. Any active manager assigned to the city (the old behavior). Non-deterministic
+//      when a city has several managers, so this flags noPrimary -> needs_review.
+//   3. All admins/owners, when the city is unknown or has no managers at all.
+// recipients[0] becomes the assignee, so ordering here is the assignment decision.
+// Returns { recipients: [{ id, name, email, phone }], fellBack, noPrimary }.
 async function resolveRecipients(cityCode) {
-  try {
-    if (cityCode) {
+  if (cityCode) {
+    // 1. Designated primary manager for the city.
+    try {
+      var p = await pool.query(
+        'SELECT u.id, u.name, u.email, u.phone FROM cities c ' +
+        'JOIN users u ON u.id = c.manager_user_id ' +
+        'WHERE c.code = $1 AND u.active = true LIMIT 1',
+        [cityCode]
+      );
+      if (p.rows.length) return { recipients: p.rows, fellBack: false, noPrimary: false };
+    } catch (e) { console.error('[feedback] resolveRecipients primary:', e.message); }
+
+    // 2. No primary set (or they are inactive) — fall back to any manager on the
+    //    city, but flag it so the record surfaces as Needs review.
+    try {
       var r = await pool.query(
         'SELECT u.id, u.name, u.email, u.phone FROM users u ' +
         'JOIN user_cities uc ON uc.user_id = u.id ' +
-        "WHERE uc.city_code = $1 AND u.role = 'manager' AND u.active = true",
+        "WHERE uc.city_code = $1 AND u.role = 'manager' AND u.active = true " +
+        'ORDER BY u.id ASC',
         [cityCode]
       );
-      if (r.rows.length) return { recipients: r.rows, fellBack: false };
-    }
-  } catch (e) { console.error('[feedback] resolveRecipients:', e.message); }
+      if (r.rows.length) {
+        console.warn('[feedback] city ' + cityCode + ' has no primary manager; falling back to ' + r.rows[0].name);
+        return { recipients: r.rows, fellBack: false, noPrimary: true };
+      }
+    } catch (e) { console.error('[feedback] resolveRecipients:', e.message); }
+  }
+
+  // 3. Unknown city, or a city with no managers at all.
   try {
     var a = await pool.query("SELECT id, name, email, phone FROM users WHERE role IN ('admin','owner') AND active = true");
-    return { recipients: a.rows, fellBack: true };
-  } catch (e) { console.error('[feedback] resolveRecipients fallback:', e.message); return { recipients: [], fellBack: true }; }
+    return { recipients: a.rows, fellBack: true, noPrimary: true };
+  } catch (e) {
+    console.error('[feedback] resolveRecipients fallback:', e.message);
+    return { recipients: [], fellBack: true, noPrimary: true };
+  }
 }
 
 async function resolveTechUserId(techNameRaw) {
@@ -115,7 +142,9 @@ async function intakeFeedback(parsed, meta) {
   var sentiment = (ai && ai.sentiment) || null;
   var aiSummary = (ai && ai.summary) || null;
   var aiProcessed = !!ai;
-  var needsReview = (!cityCode) || (!techId) || recRes.fellBack || !ai;
+  // recRes.noPrimary: the city has no designated manager, so the assignee above is a
+  // guess. Flag for review rather than assigning silently.
+  var needsReview = (!cityCode) || (!techId) || recRes.fellBack || recRes.noPrimary || !ai;
 
   var ins = await pool.query(
     'INSERT INTO customer_feedback (source, external_ref, received_at, raw_email, raw_subject, ' +
@@ -157,6 +186,10 @@ async function intakeFeedback(parsed, meta) {
       task = t.rows[0];
       await pool.query('UPDATE customer_feedback SET task_id = $1 WHERE id = $2', [task.id, fb.id]);
       await logActivity(fb.id, null, 'event', 'Assigned to ' + assignee.name + ' (task #' + task.id + ').', null);
+      if (recRes.noPrimary) {
+        await logActivity(fb.id, null, 'event',
+          'No primary manager is set for ' + (cityCode || 'this city') + ' - assignee was guessed. Flagged for review.', null);
+      }
       try { await notifyTaskAssigned(task.id); } catch (e) { console.error('[feedback] notifyTaskAssigned:', e.message); }
     } catch (e) { console.error('[feedback] create task:', e.message); }
   }

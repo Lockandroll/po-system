@@ -21,21 +21,33 @@ router.get('/mine', requireAuth, async (req, res) => {
   res.json(all.filter(function (c) { return mine.indexOf((c.code || '').trim().toUpperCase()) !== -1; }));
 });
 
-// List all cities including inactive (admin only)
+// List all cities including inactive (admin only). Includes the primary manager's
+// name so the Cities table can show who owns each city.
 router.get('/all', requireAuth, requirePermission('manage_cities'), async (req, res) => {
-  const { rows } = await pool.query('SELECT * FROM cities ORDER BY active DESC, name ASC');
+  const { rows } = await pool.query(
+    'SELECT c.*, u.name AS manager_name FROM cities c ' +
+    'LEFT JOIN users u ON u.id = c.manager_user_id ' +
+    'ORDER BY c.active DESC, c.name ASC'
+  );
   res.json(rows);
 });
 
+// '' / undefined -> null; otherwise an int. Used for manager_user_id + invoice_prefix.
+function intOrNull(v) {
+  if (v === null || v === undefined || v === '') return null;
+  const n = parseInt(v, 10);
+  return isNaN(n) ? null : n;
+}
+
 // Create city (admin only)
 router.post('/', requireAuth, requirePermission('manage_cities'), async (req, res) => {
-  const { name, code, color, invoice_prefix } = req.body;
+  const { name, code, color, invoice_prefix, manager_user_id } = req.body;
   if (!name || !code) return res.status(400).json({ error: 'Name and code are required' });
   if (code.length !== 3) return res.status(400).json({ error: 'Code must be exactly 3 characters' });
   try {
     const { rows } = await pool.query(
-      'INSERT INTO cities (name, code, color, invoice_prefix) VALUES ($1, $2, $3, $4) RETURNING *',
-      [name, code.toUpperCase(), color || '#f97316', (invoice_prefix != null && invoice_prefix !== '' ? parseInt(invoice_prefix, 10) : null)]
+      'INSERT INTO cities (name, code, color, invoice_prefix, manager_user_id) VALUES ($1, $2, $3, $4, $5) RETURNING *',
+      [name, code.toUpperCase(), color || '#f97316', intOrNull(invoice_prefix), intOrNull(manager_user_id)]
     );
     res.status(201).json(rows[0]);
   } catch(err) {
@@ -46,13 +58,13 @@ router.post('/', requireAuth, requirePermission('manage_cities'), async (req, re
 
 // Update city (admin only)
 router.put('/:id', requireAuth, requirePermission('manage_cities'), async (req, res) => {
-  const { name, code, color, invoice_prefix } = req.body;
+  const { name, code, color, invoice_prefix, manager_user_id } = req.body;
   if (!name || !code) return res.status(400).json({ error: 'Name and code are required' });
   if (code.length !== 3) return res.status(400).json({ error: 'Code must be exactly 3 characters' });
   try {
     const { rows } = await pool.query(
-      'UPDATE cities SET name=$1, code=$2, color=$3, invoice_prefix=$4 WHERE id=$5 RETURNING *',
-      [name, code.toUpperCase(), color || '#f97316', (invoice_prefix != null && invoice_prefix !== '' ? parseInt(invoice_prefix, 10) : null), req.params.id]
+      'UPDATE cities SET name=$1, code=$2, color=$3, invoice_prefix=$4, manager_user_id=$5 WHERE id=$6 RETURNING *',
+      [name, code.toUpperCase(), color || '#f97316', intOrNull(invoice_prefix), intOrNull(manager_user_id), req.params.id]
     );
     if (!rows[0]) return res.status(404).json({ error: 'City not found' });
     res.json(rows[0]);

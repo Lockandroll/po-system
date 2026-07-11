@@ -4634,13 +4634,14 @@ async function renderCities(el) {
       '<div class="page-header"><div><div class="page-title">Cities</div><div class="page-subtitle">Manage city codes used in PO numbers</div></div><button class="btn btn-primary" onclick="showCityModal(null)" style="white-space:nowrap">' + icons.plus + ' Add City</button></div>' +
       '<div id="cities-error"></div>' +
       '<div class="card"><div class="card-body" style="padding:0"><div class="table-wrap"><table>' +
-        '<thead><tr><th>Code</th><th>Inv #</th><th>Name</th><th>Color</th><th>Status</th><th></th></tr></thead>' +
+        '<thead><tr><th>Code</th><th>Inv #</th><th>Name</th><th>Manager</th><th>Color</th><th>Status</th><th></th></tr></thead>' +
         '<tbody>' + cities.map(function(c) {
           const isInactive = c.active === false;
           return '<tr class="' + (isInactive ? 'user-row-inactive' : '') + '">' +
             '<td><strong style="font-family:monospace;color:var(--primary)">' + escHtml(c.code) + '</strong></td>' +
             '<td>' + (c.invoice_prefix != null ? escHtml(String(c.invoice_prefix)) : '<span class="text-muted">&mdash;</span>') + '</td>' +
             '<td>' + escHtml(c.name) + '</td>' +
+            '<td>' + (c.manager_name ? escHtml(c.manager_name) : '<span style="color:var(--danger,#ef4444);font-size:12px">Not set</span>') + '</td>' +
             '<td><span style="display:inline-block;width:18px;height:18px;border-radius:4px;border:1px solid var(--border,#2a2a2a);vertical-align:middle;background:' + escHtml(c.color || '#f97316') + '"></span></td>' +
             '<td>' + (isInactive ? '<span class="badge badge-inactive">Inactive</span>' : '<span style="color:var(--success);font-size:13px">&#10003; Active</span>') + '</td>' +
             '<td class="flex-gap">' +
@@ -4665,6 +4666,19 @@ async function showCityModal(id) {
       city = all.find(function(c){ return c.id === id; });
     } catch(e) {}
   }
+  // Managers + admins are eligible to own a city's customer feedback.
+  let mgrs = [];
+  try {
+    const users = await api('GET', '/users') || [];
+    mgrs = users.filter(function(u){ return u.active !== false && ['manager','admin','owner'].indexOf(u.role) !== -1; })
+                .sort(function(a,b){ return (a.name || '').localeCompare(b.name || ''); });
+  } catch(e) {}
+  const curMgr = city && city.manager_user_id != null ? city.manager_user_id : '';
+  const mgrOpts = '<option value="">Not set &mdash; assignment will be guessed</option>' +
+    mgrs.map(function(u){
+      return '<option value="' + u.id + '"' + (u.id === curMgr ? ' selected' : '') + '>' + escHtml(u.name) + ' (' + escHtml(roleLabel(u.role)) + ')</option>';
+    }).join('');
+
   const overlay = document.createElement('div');
   overlay.className = 'modal-overlay';
   overlay.innerHTML =
@@ -4676,6 +4690,7 @@ async function showCityModal(id) {
         '<div class="form-group"><label>3-Letter Code</label><input type="text" id="modal-city-code" value="' + escHtml(city ? city.code : '') + '" placeholder="e.g. CHI" maxlength="3" style="text-transform:uppercase" /></div>' +
         '<div class="form-group mt-2"><label>Invoice # Prefix</label><input type="number" id="modal-city-prefix" value="' + escHtml(city && city.invoice_prefix != null ? String(city.invoice_prefix) : '') + '" placeholder="e.g. 1" min="1" step="1" /><div class="text-muted mt-1" style="font-size:12px">Leading number for this city&#39;s invoices, e.g. <strong>1</strong> &rarr; 100001. Leave blank if this city doesn&#39;t invoice.</div></div>' +
         '<div class="text-muted mt-2">The code appears at the start of PO numbers, e.g. <strong>CHI</strong>-2026-0001-TM</div>' +
+        '<div class="form-group mt-2"><label>Primary Manager</label><select id="modal-city-manager">' + mgrOpts + '</select><div class="text-muted mt-1" style="font-size:12px">Customer feedback for this city is assigned to this person. If left unset, Nova falls back to any manager on the city and flags the record <strong>Needs review</strong>.</div></div>' +
         '<div class="form-group mt-2"><label>Schedule Color</label><div style="display:flex;align-items:center;gap:10px"><input type="color" id="modal-city-color" value="' + escHtml(city && city.color ? city.color : '#f97316') + '" style="width:54px;height:36px;padding:2px;cursor:pointer;background:transparent;border:1px solid var(--border,#2a2a2a);border-radius:6px" /><span class="text-muted">Colors this city&#39;s shifts on the schedule.</span></div></div>' +
       '</div>' +
       '<div class="modal-footer"><button class="btn btn-secondary" onclick="this.closest(\'.modal-overlay\').remove()">Cancel</button><button class="btn btn-primary" onclick="saveCity(' + (id||'null') + ', this)">Save</button></div>' +
@@ -4689,12 +4704,14 @@ async function saveCity(id, btn) {
   const color = document.getElementById('modal-city-color').value || '#f97316';
   var prefixEl = document.getElementById('modal-city-prefix');
   var invoice_prefix = prefixEl && prefixEl.value.trim() !== '' ? parseInt(prefixEl.value, 10) : null;
+  var mgrEl = document.getElementById('modal-city-manager');
+  var manager_user_id = mgrEl && mgrEl.value !== '' ? parseInt(mgrEl.value, 10) : null;
   if (!name || !code) { document.getElementById('modal-error').innerHTML = '<div class="alert alert-error">Name and code are required.</div>'; return; }
   if (code.length !== 3) { document.getElementById('modal-error').innerHTML = '<div class="alert alert-error">Code must be exactly 3 characters.</div>'; return; }
   try {
     btn.disabled = true;
-    if (id) { await api('PUT', '/cities/' + id, { name, code, color, invoice_prefix }); }
-    else { await api('POST', '/cities', { name, code, color, invoice_prefix }); }
+    if (id) { await api('PUT', '/cities/' + id, { name, code, color, invoice_prefix, manager_user_id }); }
+    else { await api('POST', '/cities', { name, code, color, invoice_prefix, manager_user_id }); }
     document.querySelector('.modal-overlay').remove();
     navigate('cities');
   } catch(err) {

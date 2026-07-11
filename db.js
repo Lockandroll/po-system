@@ -86,6 +86,9 @@ async function initDB() {
       'ALTER TABLE purchase_orders ADD COLUMN IF NOT EXISTS city_code CHAR(3);' +
       "ALTER TABLE cities ADD COLUMN IF NOT EXISTS color VARCHAR(20) DEFAULT '#f97316';" +
       'ALTER TABLE cities ADD COLUMN IF NOT EXISTS invoice_prefix INTEGER;' +
+      // Primary manager for the city. Customer feedback is assigned here first;
+      // without it, intake guesses a manager and flags the record needs_review.
+      'ALTER TABLE cities ADD COLUMN IF NOT EXISTS manager_user_id INTEGER REFERENCES users(id) ON DELETE SET NULL;' +
       'ALTER TABLE po_line_items ADD COLUMN IF NOT EXISTS item_number VARCHAR(100);' +
       'ALTER TABLE po_line_items ADD COLUMN IF NOT EXISTS manufacturer VARCHAR(255);' +
       'ALTER TABLE po_line_items ADD COLUMN IF NOT EXISTS tracking_number VARCHAR(255);' +
