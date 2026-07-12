@@ -1016,6 +1016,18 @@ async function initDB() {
       'CREATE INDEX IF NOT EXISTS idx_deposit_receipts_dep ON deposit_receipts(deposit_id);' +
       'CREATE INDEX IF NOT EXISTS idx_deposit_expenses_dep ON deposit_expenses(deposit_id);'
     );
+    // Cash-deposit receipt policy: every expense line needs a photo, or an explicit
+    // "no receipt" override with a written reason.  Also track what the AI read off the
+    // deposit slip so the reviewer can see if the tech changed the amount/date afterwards.
+    await client.query(
+      'ALTER TABLE deposit_expenses ADD COLUMN IF NOT EXISTS no_receipt BOOLEAN DEFAULT FALSE;' +
+      'ALTER TABLE deposit_expenses ADD COLUMN IF NOT EXISTS no_receipt_reason TEXT;'
+    );
+    await client.query(
+      'ALTER TABLE deposits ADD COLUMN IF NOT EXISTS ai_amount DECIMAL(10,2);' +
+      'ALTER TABLE deposits ADD COLUMN IF NOT EXISTS ai_deposit_date DATE;' +
+      'ALTER TABLE deposits ADD COLUMN IF NOT EXISTS ai_edited BOOLEAN DEFAULT FALSE;'
+    );
     // Indexes on frequently-filtered columns for the main list views
     await client.query(
       'CREATE INDEX IF NOT EXISTS idx_po_requester ON purchase_orders(requester_id);' +

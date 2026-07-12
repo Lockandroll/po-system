@@ -107,10 +107,39 @@ router.post('/', requireAuth, requirePermission('create_deposit'), async functio
       return res.status(400).json({ error: 'City is required' });
     }
     const owed = parseFloat(pulsar_owed);
+    // Receipt policy: every expense line must carry a photo, or an explicit "no receipt"
+    // override with a written reason.  Enforced here so it cannot be bypassed client-side.
+    const rawExpenses = Array.isArray(req.body.expenses) ? req.body.expenses : [];
+    for (let k = 0; k < rawExpenses.length; k++) {
+      const ex = rawExpenses[k];
+      if (!ex) continue;
+      const exAmtChk = parseFloat(ex.amount);
+      const descChk = (ex.description == null ? '' : String(ex.description)).trim();
+      if (!descChk && isNaN(exAmtChk)) continue;
+      const hasPhoto = !!ex.image;
+      const override = ex.no_receipt === true || ex.no_receipt === 'true';
+      const reason = (ex.no_receipt_reason == null ? '' : String(ex.no_receipt_reason)).trim();
+      const label = descChk || ('expense ' + (k + 1));
+      if (!hasPhoto && !override) {
+        client.release();
+        return res.status(400).json({ error: 'A receipt photo is required for "' + label + '". If you do not have one, check "No receipt" and explain why.' });
+      }
+      if (!hasPhoto && override && !reason) {
+        client.release();
+        return res.status(400).json({ error: 'Please explain why there is no receipt for "' + label + '".' });
+      }
+    }
+    // What the AI read off the deposit slip, and whether the tech changed it before submitting.
+    const aiAmountRaw = parseFloat(req.body.ai_amount);
+    const aiAmount = isNaN(aiAmountRaw) ? null : aiAmountRaw;
+    const aiDate = (req.body.ai_deposit_date && /^\d{4}-\d{2}-\d{2}$/.test(String(req.body.ai_deposit_date))) ? String(req.body.ai_deposit_date) : null;
+    const amountEdited = aiAmount != null && Math.abs(aiAmount - amt) >= 0.005;
+    const dateEdited = aiDate != null && aiDate !== String(deposit_date).slice(0, 10);
+    const aiEdited = amountEdited || dateEdited;
     // Duplicate-submission guards.
     const idem = (req.body.idempotency_key == null ? '' : String(req.body.idempotency_key)).slice(0, 64) || null;
     const confirmDuplicate = req.body.confirm_duplicate === true || req.body.confirm_duplicate === 'true';
-    const RETURN_COLS = 'id, deposit_number, user_id, user_name, city_code, amount, deposit_date, period_start, period_end, notes, pulsar_owed, created_at';
+    const RETURN_COLS = 'id, deposit_number, user_id, user_name, city_code, amount, deposit_date, period_start, period_end, notes, pulsar_owed, ai_amount, ai_deposit_date, ai_edited, created_at';
     // Hard guard: identical idempotency key means the client already submitted this exact request — return the saved row instead of inserting again.
     if (idem) {
       const prior = await pool.query('SELECT ' + RETURN_COLS + ' FROM deposits WHERE idempotency_key = $1', [idem]);
@@ -132,7 +161,7 @@ router.post('/', requireAuth, requirePermission('create_deposit'), async functio
     // Receipts: prefer the receipts[] array; fall back to the legacy single image.
     let receipts = Array.isArray(req.body.receipts) ? req.body.receipts : [];
     if (!receipts.length && receipt_image) receipts = [{ image: receipt_image, filename: receipt_filename || null }];
-    const expenses = Array.isArray(req.body.expenses) ? req.body.expenses : [];
+    const expenses = rawExpenses;
     let dep = null;
     let expenseTotal = 0;
     var replayed = false;
@@ -142,8 +171,8 @@ router.post('/', requireAuth, requirePermission('create_deposit'), async functio
     try {
     await client.query('BEGIN');
     const { rows } = await client.query(
-      'INSERT INTO deposits (deposit_number, user_id, user_name, city_code, amount, deposit_date, period_start, period_end, notes, pulsar_owed, idempotency_key) ' +
-      'VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) RETURNING ' + RETURN_COLS,
+      'INSERT INTO deposits (deposit_number, user_id, user_name, city_code, amount, deposit_date, period_start, period_end, notes, pulsar_owed, idempotency_key, ai_amount, ai_deposit_date, ai_edited) ' +
+      'VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14) RETURNING ' + RETURN_COLS,
       [
         deposit_number,
         req.user.id,
@@ -155,7 +184,10 @@ router.post('/', requireAuth, requirePermission('create_deposit'), async functio
         period_end || null,
         notes || null,
         owed,
-        idem
+        idem,
+        aiAmount,
+        aiDate,
+        aiEdited
       ]
     );
     dep = rows[0];
@@ -176,9 +208,11 @@ router.post('/', requireAuth, requirePermission('create_deposit'), async functio
       if (!desc && isNaN(exAmt)) continue;
       const safeAmt = isNaN(exAmt) ? 0 : exAmt;
       expenseTotal += safeAmt;
+      const noRc = !ex.image && (ex.no_receipt === true || ex.no_receipt === 'true');
+      const noRcReason = noRc ? (ex.no_receipt_reason == null ? '' : String(ex.no_receipt_reason)).trim().slice(0, 1000) : null;
       await client.query(
-        'INSERT INTO deposit_expenses (deposit_id, description, amount, receipt_image, receipt_filename) VALUES ($1,$2,$3,$4,$5)',
-        [dep.id, desc || null, safeAmt, ex.image || null, ex.filename || null]
+        'INSERT INTO deposit_expenses (deposit_id, description, amount, receipt_image, receipt_filename, no_receipt, no_receipt_reason) VALUES ($1,$2,$3,$4,$5,$6,$7)',
+        [dep.id, desc || null, safeAmt, ex.image || null, ex.filename || null, noRc, noRcReason || null]
       );
     }
     await client.query('COMMIT');
@@ -202,7 +236,7 @@ router.post('/', requireAuth, requirePermission('create_deposit'), async functio
         action: 'created',
         user_id: req.user.id,
         user_name: req.user.name,
-        details: { amount: amt, pulsar_owed: owed, expense_total: expenseTotal, city_code: city_code || null }
+        details: { amount: amt, pulsar_owed: owed, expense_total: expenseTotal, city_code: city_code || null, ai_amount: aiAmount, ai_deposit_date: aiDate, ai_edited: aiEdited }
       });
     }
     res.status(replayed ? 200 : 201).json(dep);
@@ -221,8 +255,10 @@ router.post('/', requireAuth, requirePermission('create_deposit'), async functio
 router.get('/', requireAuth, requirePermission('view_deposits'), async function(req, res) {
   try {
     const cols = 'd.id, d.deposit_number, d.user_id, COALESCE(u.name, d.user_name) AS user_name, d.city_code, d.amount, d.pulsar_owed, d.deposit_date, d.period_start, d.period_end, d.notes, d.receipt_filename, ' +
+      'd.ai_amount, d.ai_deposit_date, COALESCE(d.ai_edited, FALSE) AS ai_edited, ' +
       '(d.receipt_image IS NOT NULL OR EXISTS(SELECT 1 FROM deposit_receipts r WHERE r.deposit_id = d.id)) AS has_receipt, ' +
       'COALESCE((SELECT SUM(e.amount) FROM deposit_expenses e WHERE e.deposit_id = d.id), 0) AS total_expenses, ' +
+      'EXISTS(SELECT 1 FROM deposit_expenses e2 WHERE e2.deposit_id = d.id AND e2.no_receipt = TRUE) AS has_missing_expense_receipt, ' +
       'd.created_at';
     let query, params;
     if (SEE_ALL.includes(req.user.role)) {
@@ -248,6 +284,8 @@ router.get('/export', requireAuth, requirePermission('export_deposits'), async f
   try {
     const { rows } = await pool.query(
       'SELECT d.deposit_number, COALESCE(u.name, d.user_name) AS user_name, d.city_code, d.amount, d.pulsar_owed, d.deposit_date, d.period_start, d.period_end, d.notes, d.receipt_filename, ' +
+      'd.ai_amount, d.ai_deposit_date, COALESCE(d.ai_edited, FALSE) AS ai_edited, ' +
+      'EXISTS(SELECT 1 FROM deposit_expenses e2 WHERE e2.deposit_id = d.id AND e2.no_receipt = TRUE) AS has_missing_expense_receipt, ' +
       '(d.receipt_image IS NOT NULL OR EXISTS(SELECT 1 FROM deposit_receipts r WHERE r.deposit_id = d.id)) AS has_receipt, ' +
       'COALESCE((SELECT SUM(e.amount) FROM deposit_expenses e WHERE e.deposit_id = d.id), 0) AS total_expenses, ' +
       'd.created_at FROM deposits d LEFT JOIN users u ON u.id = d.user_id ORDER BY d.deposit_date DESC, d.created_at DESC'
@@ -276,7 +314,7 @@ router.get('/:id', requireAuth, requirePermission('view_deposits'), async functi
     if (!dep.receipts.length && dep.receipt_image) {
       dep.receipts = [{ id: null, image: dep.receipt_image, filename: dep.receipt_filename || null }];
     }
-    const ex = await pool.query('SELECT id, description, amount, receipt_image, receipt_filename FROM deposit_expenses WHERE deposit_id = $1 ORDER BY id', [dep.id]);
+    const ex = await pool.query('SELECT id, description, amount, receipt_image, receipt_filename, COALESCE(no_receipt, FALSE) AS no_receipt, no_receipt_reason FROM deposit_expenses WHERE deposit_id = $1 ORDER BY id', [dep.id]);
     dep.expenses = ex.rows;
     res.json(dep);
   } catch (err) {
