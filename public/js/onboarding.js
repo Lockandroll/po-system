@@ -184,11 +184,31 @@
     }).join('');
 
     var body;
-    if (data.awaiting_review) {
+    if (data.phase2_pending) {
+      // Phase 1 is APPROVED. Training is deliberately not self-serve — the manager
+      // opens it when they sit down together. Say exactly that, so the hire is not
+      // left wondering whether Nova is stuck.
+      var _mgr = escHtml(data.supervisor_name || 'your manager');
+      body = '<div class="onb-card" style="text-align:center">' +
+        '<div style="font-size:42px;margin-bottom:8px">&#9989;</div>' +
+        '<h2>Phase 1 complete</h2>' +
+        '<div class="onb-desc">Your paperwork and documents are approved' +
+          (data.phase1_approved_by ? ' by ' + escHtml(data.phase1_approved_by) : '') +
+          '. Nice work — that part is done.</div>' +
+        '<div class="onb-verify" style="text-align:left;margin:16px 0">' +
+          '<div class="v-h">What happens next</div>' +
+          '<div class="v-row ok">&#10003; Phase 2 is your training, and it starts <b>with ' + _mgr + '</b> — not on your own.</div>' +
+          '<div class="v-row ok">&#10003; ' + _mgr + ' will open Phase 2 when the two of you are ready to begin.</div>' +
+          '<div class="v-row ok">&#10003; Your training steps and the time clock unlock the moment they do.</div>' +
+        '</div>' +
+        '<div class="onb-desc" style="margin-bottom:0"><b>Nothing to do right now.</b> Reach out to ' + _mgr + ' to schedule your start if you have not already.</div>' +
+        '<div class="onb-note">This screen unlocks itself as soon as they start you — it checks every 20 seconds.</div>' +
+        '</div>';
+    } else if (data.awaiting_review) {
       body = '<div class="onb-card" style="text-align:center">' +
         '<div style="font-size:42px;margin-bottom:8px">&#128203;</div>' +
         '<h2>Paperwork submitted</h2>' +
-        '<div class="onb-desc">Your Phase 1 paperwork and documents are in. ' + escHtml(data.supervisor_name || 'Your manager') + ' has been notified to review them — training unlocks as soon as they approve.</div>' +
+        '<div class="onb-desc">Your Phase 1 paperwork and documents are in. ' + escHtml(data.supervisor_name || 'Your manager') + ' has been notified to review them — they will approve it, then start Phase 2 training with you.</div>' +
         '<div class="onb-note">This screen checks automatically every 20 seconds.</div>' +
         '</div>';
     } else if (data.all_steps_done) {
@@ -223,12 +243,12 @@
 
     onbShowVersion();
 
-    if (data.all_steps_done || data.awaiting_review) {
+    if (data.all_steps_done || data.awaiting_review || data.phase2_pending) {
       window._onbPoll = setInterval(async function () {
         try {
           var d = await api('GET', '/onboarding/me');
           if (d.onboarding_status === 'complete') { clearPoll(); renderOnbCelebration(document.getElementById('app')); return; }
-          if (!!d.awaiting_review !== !!data.awaiting_review || !!d.current !== !!data.current || d.phase !== data.phase) { clearPoll(); renderOnboardingMode(document.getElementById('app')); }
+          if (!!d.awaiting_review !== !!data.awaiting_review || !!d.phase2_pending !== !!data.phase2_pending || !!d.current !== !!data.current || d.phase !== data.phase) { clearPoll(); renderOnboardingMode(document.getElementById('app')); }
         } catch (e) {}
       }, 20000);
     } else if (data.current) {
@@ -802,7 +822,7 @@
           '<button class="onb-btn" style="background:#16a34a;color:#fff" onclick="onbApprovePhase1(' + id + ')">&#10003; Approve Phase 1</button>' +
           '<button class="onb-btn ghost" onclick="onbReopenPhase1(' + id + ')">Send flagged items back</button>' +
         '</div>' +
-        '<div class="onb-note" style="margin-top:8px">Approving unlocks Phase 2 (training + clock-in). Sending back reopens only the items you check.</div>' +
+        '<div class="onb-note" style="margin-top:8px">Approving clears their paperwork — it does <b>not</b> start training. Phase 2 opens when you press <b>Start Phase 2</b> on the New hires list, so you begin it together. Sending back reopens only the items you check.</div>' +
       '</div>';
   };
   // In-app document viewer: renders an already-fetched blob (PDF/image) inside Nova
@@ -870,7 +890,7 @@
   };
 
   window.onbApprovePhase1 = async function (id) {
-    try { await api('POST', '/onboarding/admin/users/' + id + '/phase1/approve', {}); showToast('Phase 1 approved — training unlocked for them.', 'success'); window._onbTab = 'reviews'; renderOnboardingAdmin(document.getElementById('content')); }
+    try { await api('POST', '/onboarding/admin/users/' + id + '/phase1/approve', {}); showToast('Phase 1 approved. Press "Start Phase 2" on the New hires list when you are ready to begin training with them.', 'success'); window._onbTab = 'path'; renderOnboardingAdmin(document.getElementById('content')); }
     catch (e) { showToast(e.message || 'Could not approve.', 'error'); }
   };
   window.onbReopenPhase1 = async function (id) {
@@ -923,9 +943,14 @@
       return '<tr>' +
         '<td><b>' + escHtml(u.name) + '</b><br><span class="onb-note">' + escHtml(u.supervisor_name ? 'Reports to ' + u.supervisor_name : 'No supervisor set') + '</span></td>' +
         '<td style="min-width:140px"><div class="onb-bar" style="margin:0 0 4px"><div style="width:' + pct + '%"></div></div><span class="onb-note">' + u.steps_done + ' / ' + u.steps_total + '</span></td>' +
-        '<td>' + (u.ready_for_signoff ? '<span class="onb-pill ready">READY FOR SIGN-OFF</span>' : '<span class="onb-pill busy">' + escHtml(u.current_step || 'Not started') + '</span>') + '</td>' +
+        '<td>' + (u.ready_for_signoff
+            ? '<span class="onb-pill ready">READY FOR SIGN-OFF</span>'
+            : (u.awaiting_phase2_start
+                ? '<span class="onb-pill ready">PHASE 1 APPROVED &middot; START PHASE 2</span>'
+                : '<span class="onb-pill busy">' + escHtml(u.current_step || 'Not started') + '</span>')) + '</td>' +
         '<td style="white-space:nowrap">' +
           (u.ready_for_signoff && u.can_sign_off ? '<button class="onb-btn" style="padding:8px 14px;font-size:13px" onclick="onbSignOff(' + u.id + ',\'' + escHtml(u.name).replace(/'/g, '') + '\')">Sign off &amp; unlock</button> ' : '') +
+          (u.awaiting_phase2_start && u.can_sign_off ? '<button class="onb-btn" style="padding:8px 14px;font-size:13px" onclick="onbStartPhase2(' + u.id + ',\'' + escHtml(u.name).replace(/'/g, '') + '\')">&#9654; Start Phase 2</button> ' : '') +
           '<button class="onb-btn ghost" style="padding:8px 12px;font-size:13px" onclick="onbDetail(' + u.id + ')">Details</button> ' +
           '<button class="onb-btn ghost" style="padding:8px 12px;font-size:13px" onclick="onbOpenReview(' + u.id + ')">Docs</button> ' +
           '<button class="onb-btn ghost" style="padding:8px 12px;font-size:13px" onclick="onbOverride(' + u.id + ')">Completion' + (u.completion_override ? ' •' : '') + '</button> ' +
@@ -980,6 +1005,11 @@
     if (!window.confirm('Sign off ' + name + '? This unlocks full Nova access for them immediately.')) return;
     try { await api('POST', '/onboarding/admin/users/' + id + '/signoff', {}); showToast(name + ' is unlocked. 🎉', 'success'); renderOnboardingAdmin(document.getElementById('content')); }
     catch (e) { showToast(e.message || 'Sign-off failed.', 'error'); }
+  };
+  window.onbStartPhase2 = async function (id, name) {
+    if (!window.confirm('Start Phase 2 for ' + name + '? This unlocks their training steps and the time clock. Do this when you are ready to begin training with them.')) return;
+    try { await api('POST', '/onboarding/admin/users/' + id + '/phase2/start', {}); showToast('Phase 2 started for ' + name + '.', 'success'); renderOnboardingAdmin(document.getElementById('content')); }
+    catch (e) { showToast(e.message || 'Could not start Phase 2.', 'error'); }
   };
   window.onbRemove = async function (id) {
     if (!window.confirm('Remove them from onboarding? Their full access unlocks WITHOUT sign-off.')) return;

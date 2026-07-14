@@ -1823,6 +1823,15 @@ async function initDB() {
     await client.query("ALTER TABLE onboarding_steps ADD COLUMN IF NOT EXISTS phase INTEGER NOT NULL DEFAULT 1;");
     // Which phase a new hire is currently in (drives the clock-in gate).
     await client.query("ALTER TABLE users ADD COLUMN IF NOT EXISTS onboarding_phase INTEGER NOT NULL DEFAULT 1;");
+    // Approving Phase 1 and opening Phase 2 are two deliberate manager actions.
+    // Approval clears the paperwork; the hire still waits until the manager sits
+    // down with them and starts training.
+    await client.query('ALTER TABLE users ADD COLUMN IF NOT EXISTS onboarding_phase1_approved_at TIMESTAMPTZ;');
+    await client.query('ALTER TABLE users ADD COLUMN IF NOT EXISTS onboarding_phase1_approved_by INTEGER REFERENCES users(id);');
+    await client.query('ALTER TABLE users ADD COLUMN IF NOT EXISTS onboarding_phase1_approved_name VARCHAR(255);');
+    await client.query('ALTER TABLE users ADD COLUMN IF NOT EXISTS onboarding_phase2_started_at TIMESTAMPTZ;');
+    // Anyone already sitting in Phase 2 was approved under the old one-step flow.
+    await client.query('UPDATE users SET onboarding_phase1_approved_at = NOW(), onboarding_phase2_started_at = NOW() WHERE onboarding_phase = 2 AND onboarding_phase1_approved_at IS NULL;');
     // Reuse the quiz-attempt table for the cumulative final exam.
     await client.query("ALTER TABLE onboarding_quiz_attempts ADD COLUMN IF NOT EXISTS is_final_exam BOOLEAN NOT NULL DEFAULT false;");
     // Encrypted personnel-document store. Serves BOTH the Phase 1 required

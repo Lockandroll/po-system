@@ -838,7 +838,7 @@ async function maybeNotifyReady(userId) {
 
 // GET /api/onboarding/me — my track: every step + status, and the current step's payload
 router.get('/me', requireAuth, async (req, res) => {
-  const ur = await pool.query('SELECT id, name, onboarding_status, onboarding_enrolled_at, supervisor_id, onboarding_phase FROM users WHERE id = $1', [req.user.id]);
+  const ur = await pool.query('SELECT id, name, onboarding_status, onboarding_enrolled_at, supervisor_id, onboarding_phase, onboarding_phase1_approved_at, onboarding_phase1_approved_name FROM users WHERE id = $1', [req.user.id]);
   if (!ur.rows.length) return res.status(404).json({ error: 'User not found' });
   const me = ur.rows[0];
   const status = me.onboarding_status || 'complete';
@@ -848,10 +848,19 @@ router.get('/me', requireAuth, async (req, res) => {
   const prog = await progressMap(req.user.id);
   let current = findCurrent(steps, prog);
   const phase = (parseInt(me.onboarding_phase, 10) === 2) ? 2 : 1;
-  var awaitingReview = false;
+  const p1Approved = !!me.onboarding_phase1_approved_at;
+  // Two distinct waits, and the hire should never confuse them:
+  //   awaiting_review  — paperwork is sitting with the manager
+  //   phase2_pending   — paperwork is APPROVED; training starts when the manager
+  //                      opens it, which is a deliberate second action on their side
+  var awaitingReview = false, phase2Pending = false;
   if (current && phaseOf(current) > phase) {
-    awaitingReview = true; current = null;
-    if (await recordEventOnce(req.user.id, 'phase1_submitted')) { try { await notifyPhase1Ready(me); } catch (e) {} }
+    if (p1Approved) phase2Pending = true;
+    else {
+      awaitingReview = true;
+      if (await recordEventOnce(req.user.id, 'phase1_submitted')) { try { await notifyPhase1Ready(me); } catch (e) {} }
+    }
+    current = null;
   }
 
   var supName = null;
@@ -869,7 +878,14 @@ router.get('/me', requireAuth, async (req, res) => {
     };
   });
 
-  var payload = { onboarding_status: status, name: me.name, supervisor_name: supName, steps: list, all_steps_done: (!current && !awaitingReview), awaiting_review: awaitingReview, phase: phase, current: null };
+  var payload = {
+    onboarding_status: status, name: me.name, supervisor_name: supName, steps: list,
+    all_steps_done: (!current && !awaitingReview && !phase2Pending),
+    awaiting_review: awaitingReview,
+    phase2_pending: phase2Pending,
+    phase1_approved_by: me.onboarding_phase1_approved_name || null,
+    phase: phase, current: null
+  };
 
   if (current) {
     await ensureStarted(req.user.id, current.id);
@@ -1390,7 +1406,8 @@ admin.get('/progress', async (req, res) => {
   const steps = await activeSteps();
   const total = steps.length;
   const ur = await pool.query(
-    "SELECT u.id, u.name, u.title, u.role, u.onboarding_enrolled_at, u.supervisor_id, u.onboarding_completion_override, s.name AS supervisor_name " +
+    "SELECT u.id, u.name, u.title, u.role, u.onboarding_enrolled_at, u.supervisor_id, u.onboarding_completion_override, " +
+    "u.onboarding_phase, u.onboarding_phase1_approved_at, s.name AS supervisor_name " +
     "FROM users u LEFT JOIN users s ON s.id = u.supervisor_id " +
     "WHERE u.active = true AND u.onboarding_status IS NOT NULL AND u.onboarding_status <> 'complete' ORDER BY u.onboarding_enrolled_at ASC NULLS LAST, u.name ASC"
   );
@@ -1408,6 +1425,10 @@ admin.get('/progress', async (req, res) => {
       steps_done: done, steps_total: total,
       current_step: current ? current.title : null,
       ready_for_signoff: !current && total > 0,
+      phase: (parseInt(u.onboarding_phase, 10) === 2) ? 2 : 1,
+      phase1_approved: !!u.onboarding_phase1_approved_at,
+      // Approved, but the manager has not opened training yet — their move.
+      awaiting_phase2_start: !!u.onboarding_phase1_approved_at && parseInt(u.onboarding_phase, 10) !== 2,
       can_sign_off: await canSignOff(req.user, u.id),
       completion_override: parseJsonMaybe(u.onboarding_completion_override)
     });
@@ -1497,7 +1518,9 @@ admin.post('/users/:id/remove', async (req, res) => {
 
 // Hires whose Phase 1 is complete and awaiting the caller's review.
 admin.get('/reviews', async (req, res) => {
-  const ur = await pool.query("SELECT id, name, role, supervisor_id, onboarding_enrolled_at FROM users WHERE onboarding_status IS NOT NULL AND onboarding_status <> 'complete' AND (onboarding_phase IS NULL OR onboarding_phase = 1)");
+  // Already-approved hires drop out of the review queue even though they are still
+  // in Phase 1 — they are waiting on "Start Phase 2", not on another review.
+  const ur = await pool.query("SELECT id, name, role, supervisor_id, onboarding_enrolled_at FROM users WHERE onboarding_status IS NOT NULL AND onboarding_status <> 'complete' AND (onboarding_phase IS NULL OR onboarding_phase = 1) AND onboarding_phase1_approved_at IS NULL");
   const steps = await activeSteps();
   const p1 = steps.filter(function (s) { return phaseOf(s) === 1; });
   const out = [];
@@ -1589,19 +1612,46 @@ admin.post('/users/:id/phase1/approve', async (req, res) => {
   const p1 = steps.filter(function (s) { return phaseOf(s) === 1; });
   if (!p1.every(function (s) { var pr = prog[s.id]; return pr && pr.status === 'done'; })) return res.status(400).json({ error: 'They have not finished Phase 1 yet.' });
 
-  await pool.query("UPDATE users SET onboarding_phase = 2 WHERE id = $1", [target]);
+  // Approval clears the paperwork — it does NOT open Phase 2. Training starts when
+  // the manager sits down with the hire and presses "Start Phase 2".
+  await pool.query('UPDATE users SET onboarding_phase1_approved_at = NOW(), onboarding_phase1_approved_by = $2, onboarding_phase1_approved_name = $3 WHERE id = $1', [target, req.user.id, req.user.name]);
   await pool.query("UPDATE hr_documents SET review_status = 'accepted', updated_at = NOW() WHERE user_id = $1 AND source = 'onboarding' AND review_status = 'pending'", [target]);
   await pool.query("UPDATE onboarding_packet_responses SET status = 'approved', reviewed_by = $2, reviewed_by_name = $3, reviewed_at = NOW() WHERE user_id = $1", [target, req.user.id, req.user.name]);
   await pool.query('INSERT INTO onboarding_events (user_id, event_type, actor_id, actor_name) VALUES ($1,$2,$3,$4)', [target, 'phase1_approved', req.user.id, req.user.name]);
   await logAudit({ entity_type: 'onboarding', entity_id: target, action: 'phase1_approved', user_id: req.user.id, user_name: req.user.name, details: { user: u.name } });
   try {
-    await push.sendPushToUsers([target], { title: 'Phase 1 approved', body: 'Your paperwork is approved — training is unlocked.', url: '/' });
+    await push.sendPushToUsers([target], { title: 'Phase 1 approved', body: 'Your paperwork is approved. Your manager will start Phase 2 with you.', url: '/' });
     if (u.receive_emails !== false && u.email) {
-      const html = emailTemplate({ badge: 'Phase 1 approved', badgeColor: 'green', title: 'Your paperwork is approved', body: 'Nice work, ' + u.name + '. <strong>' + req.user.name + '</strong> approved your Phase 1 paperwork. When you are ready, continue your training with your manager.', details: [{ label: 'Approved by', value: req.user.name }], buttonText: 'Continue onboarding', buttonUrl: appUrl('/') });
+      const html = emailTemplate({ badge: 'Phase 1 approved', badgeColor: 'green', title: 'Your paperwork is approved', body: 'Nice work, ' + u.name + '. <strong>' + req.user.name + '</strong> approved your Phase 1 paperwork.<br><br>Phase 2 is training, and it starts <strong>with your manager</strong> — they will open it when the two of you are ready to begin. Nothing to do until then.', details: [{ label: 'Approved by', value: req.user.name }], buttonText: 'Open Nova', buttonUrl: appUrl('/') });
       await sendEmail(u.email, 'Your Phase 1 paperwork is approved', html);
     }
-    if (u.receive_sms && u.phone) await sendSms(u.phone, 'Lock & Roll: your Phase 1 paperwork is approved. Continue training with your manager.');
+    if (u.receive_sms && u.phone) await sendSms(u.phone, 'Lock & Roll: your Phase 1 paperwork is approved. Your manager will start Phase 2 training with you.');
   } catch (e) { console.error('[onboarding] phase1 approve notify failed:', e.message); }
+  res.json({ success: true });
+});
+
+// Second manager action: actually open Phase 2 (training + clock-in) for the hire.
+admin.post('/users/:id/phase2/start', async (req, res) => {
+  const target = parseInt(req.params.id, 10) || 0;
+  const ur = await pool.query('SELECT id, name, email, phone, receive_emails, receive_sms, onboarding_status, onboarding_phase, onboarding_phase1_approved_at FROM users WHERE id = $1', [target]);
+  if (!ur.rows.length) return res.status(404).json({ error: 'User not found' });
+  const u = ur.rows[0];
+  if (!u.onboarding_status || u.onboarding_status === 'complete') return res.status(400).json({ error: 'Not in onboarding' });
+  if (!(await canSignOff(req.user, target))) return res.status(403).json({ error: 'Only their supervisor (or an admin) can start Phase 2' });
+  if (!u.onboarding_phase1_approved_at) return res.status(400).json({ error: 'Approve their Phase 1 paperwork first.' });
+  if (parseInt(u.onboarding_phase, 10) === 2) return res.status(400).json({ error: 'Phase 2 is already open for them.' });
+
+  await pool.query('UPDATE users SET onboarding_phase = 2, onboarding_phase2_started_at = NOW() WHERE id = $1', [target]);
+  await pool.query('INSERT INTO onboarding_events (user_id, event_type, actor_id, actor_name) VALUES ($1,$2,$3,$4)', [target, 'phase2_started', req.user.id, req.user.name]);
+  await logAudit({ entity_type: 'onboarding', entity_id: target, action: 'phase2_started', user_id: req.user.id, user_name: req.user.name, details: { user: u.name } });
+  try {
+    await push.sendPushToUsers([target], { title: 'Phase 2 is open', body: 'Training is unlocked — you can start your next steps.', url: '/' });
+    if (u.receive_emails !== false && u.email) {
+      const html = emailTemplate({ badge: 'Phase 2 open', badgeColor: 'green', title: 'Training is unlocked', body: 'Hi ' + u.name + ', <strong>' + req.user.name + '</strong> just started Phase 2 with you. Your training steps and the time clock are open in Nova now.', details: [{ label: 'Started by', value: req.user.name }], buttonText: 'Start training', buttonUrl: appUrl('/') });
+      await sendEmail(u.email, 'Phase 2 is open — training unlocked', html);
+    }
+    if (u.receive_sms && u.phone) await sendSms(u.phone, 'Lock & Roll: Phase 2 is open. Your training steps are unlocked in Nova.');
+  } catch (e) { console.error('[onboarding] phase2 start notify failed:', e.message); }
   res.json({ success: true });
 });
 
