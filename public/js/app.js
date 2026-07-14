@@ -10591,7 +10591,10 @@ var WO_STATUS_META = {
   job_completed:  { label: 'Job Completed',  bg: '#dcfce7', fg: '#15803d' },
   paperwork_sent: { label: 'Paperwork Sent', bg: '#ede9fe', fg: '#6d28d9' },
   rejected:       { label: 'Rejected',       bg: '#fee2e2', fg: '#b91c1c' },
-  error:          { label: 'Parse Error',    bg: '#fee2e2', fg: '#b91c1c' }
+  error:          { label: 'Parse Error',    bg: '#fee2e2', fg: '#b91c1c' },
+  // A revision email already folded into its original work order. Never listed; only
+  // reachable by opening the stub directly from an activity trail.
+  superseded:     { label: 'Superseded',     bg: '#e5e7eb', fg: '#4b5563' }
 };
 var WO_FLOW = ['received', 'in_process', 'job_completed', 'paperwork_sent'];
 var _woState = { status: 'received', q: '', page: 1, limit: 25, total: 0, counts: {} };
@@ -10617,6 +10620,163 @@ function woTabsHtml() {
       escHtml(label) + (n ? ' (' + n + ')' : '') + '</button>';
   }).join('');
 }
+// ---- NTE (not-to-exceed) ----------------------------------------------------
+// The NTE is the ceiling the dispatcher authorized. Going over it without a written
+// increase means we eat the difference, so it renders as a hard number, not a footnote.
+// A dispatcher raises it by re-sending the SAME work order — the ingest folds that
+// revision into this record and stacks the change in woNteHistory.
+function woMoney(n) {
+  if (n === null || n === undefined || n === '') return null;
+  var v = parseFloat(n);
+  if (!isFinite(v)) return null;
+  return '$' + v.toFixed(2).replace(/\B(?=(\d{3})+(?!\d))/g, ',');
+}
+
+// At-a-glance strip. The detail page used to bury the facts a dispatcher asks for on
+// the phone — "what's your WO number, what's the PO, what's the NTE, when is it due" —
+// inside an editable form halfway down the page. This puts every one of them at the top.
+function woFact(label, value, opts) {
+  opts = opts || {};
+  var v = (value === null || value === undefined || String(value).trim() === '') ? '—' : String(value);
+  var missing = (v === '—');
+  var color = missing ? 'var(--text-muted-color)' : (opts.color || 'var(--text-color)');
+  var mono = opts.mono ? ';font-family:ui-monospace,Menlo,Consolas,monospace;letter-spacing:0.04em' : '';
+  var copyBtn = (opts.copy && !missing)
+    ? ' <button class="btn btn-secondary btn-sm" style="padding:1px 7px;font-size:11px" onclick="copyToClipboard(\'' + escHtml(v) + '\', this)">Copy</button>'
+    : '';
+  return '<div>' +
+    '<div style="font-size:10.5px;font-weight:600;color:var(--text-muted-color);text-transform:uppercase;letter-spacing:0.05em;margin-bottom:2px">' + escHtml(label) + '</div>' +
+    '<div style="font-size:14px;font-weight:' + (opts.strong ? '700' : '600') + ';color:' + color + mono + '">' + escHtml(v) + copyBtn + '</div>' +
+  '</div>';
+}
+
+function woSummaryCard(w) {
+  var isVeh = woIsVehicle(w);
+  var nte = woMoney(w.nte_amount);
+  var revs = parseInt(w.revision_count, 10) || 0;
+  var overdue = w.needed_by && !isNaN(new Date(w.needed_by).getTime()) &&
+    new Date(w.needed_by) < new Date(new Date().toDateString()) &&
+    ['job_completed', 'paperwork_sent', 'rejected'].indexOf(w.status) === -1;
+
+  var facts = [
+    woFact('Work Order #', w.wo_number, { mono: true, copy: true, strong: true }),
+    woFact('PO #', w.po_number, { mono: true, copy: true }),
+    woFact('NTE', nte, { strong: true, color: nte ? '#fdba74' : undefined }),
+    woFact('Needed By', w.needed_by ? formatDate(w.needed_by) : '', { color: overdue ? '#fca5a5' : undefined }),
+    woFact('Priority', w.priority ? (w.priority.charAt(0).toUpperCase() + w.priority.slice(1)) : '',
+      { color: (w.priority === 'urgent' || w.priority === 'high') ? '#fca5a5' : undefined }),
+    woFact('Job Type', isVeh ? 'Vehicle' : 'Site'),
+    woFact('City', w.city_code),
+    woFact('Account', w.account_name),
+    woFact(isVeh ? 'Yard / Terminal' : 'Store', isVeh ? w.yard_name : ((w.store_name || '') + (w.store_number ? ' (#' + w.store_number + ')' : ''))),
+    woFact('Assigned', w.assignee_name),
+    woFact('Contact', (w.contact_name || '') + (w.contact_phone ? ' · ' + w.contact_phone : '')),
+    woFact('Revisions', revs ? String(revs) : '')
+  ].join('');
+
+  var warn = [];
+  if (!nte) warn.push('No NTE on file — do not quote or authorize spend until the limit is confirmed.');
+  if (!w.wo_number) warn.push('No work order number was read from this form — a revised WO (an NTE increase) will NOT be matched back to this job without it.');
+  if (isVeh && !w.vin) warn.push('No VIN — open the attached form and enter it.');
+  if (overdue) warn.push('Past its needed-by date and still open.');
+  var warnHtml = warn.length
+    ? '<div style="margin-top:14px;background:rgba(239,68,68,0.08);border:1px solid rgba(239,68,68,0.35);border-left:3px solid #ef4444;border-radius:8px;padding:10px 13px">' +
+      '<div style="font-size:11px;font-weight:700;color:#fca5a5;text-transform:uppercase;letter-spacing:0.05em;margin-bottom:6px">&#9888; Needs attention</div>' +
+      '<ul style="margin:0;padding-left:17px">' + warn.map(function (x) { return '<li style="font-size:13px;color:#fecaca;margin-bottom:3px">' + escHtml(x) + '</li>'; }).join('') + '</ul></div>'
+    : '';
+
+  return '<div class="card mb-4"><div class="card-body">' +
+    '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:14px 18px">' + facts + '</div>' +
+    warnHtml +
+  '</div></div>';
+}
+
+// A superseded row IS a revision email — say so, and hand the user the original.
+function woSupersededBanner(w) {
+  if (w.status !== 'superseded' || !w.revision_of_id) return '';
+  return '<div class="card mb-4" style="border-color:rgba(249,115,22,0.4)"><div class="card-body" style="display:flex;align-items:center;gap:12px;flex-wrap:wrap">' +
+    '<span style="font-size:13px">This is a <strong>revised work order email</strong>. It was folded into the original work order — the NTE and the new form live there.</span>' +
+    '<button class="btn btn-primary btn-sm" onclick="navigate(\'view-work-order\',' + w.revision_of_id + ')">Open the original work order</button>' +
+  '</div></div>';
+}
+
+function woNteCard(w, id, manage) {
+  var cur = woMoney(w.nte_amount);
+  var revs = parseInt(w.revision_count, 10) || 0;
+  var hist = w.nte_history || [];
+  var editable = manage && w.status !== 'paperwork_sent';
+
+  var valueInner = cur
+    ? '<span style="font-size:22px;font-weight:700;letter-spacing:0.01em">' + escHtml(cur) + '</span>'
+    : '<span style="color:#fca5a5;font-weight:600;font-size:14px">No NTE on file — check the form before quoting</span>';
+
+  var editInner = editable
+    ? '<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">' +
+        '<span style="color:var(--text-muted-color);font-size:14px">$</span>' +
+        '<input type="number" step="0.01" min="0" id="wo-nte_amount" value="' + escHtml(w.nte_amount != null ? String(w.nte_amount) : '') + '" placeholder="0.00" style="width:130px" />' +
+        '<button class="btn btn-secondary btn-sm" onclick="woSaveNte(' + id + ')">Save NTE</button>' +
+      '</div>'
+    : '';
+
+  var revBadge = revs
+    ? '<span style="display:inline-block;background:rgba(249,115,22,0.14);border:1px solid rgba(249,115,22,0.4);color:#fdba74;' +
+      'border-radius:999px;padding:2px 9px;font-size:11.5px;font-weight:700;margin-left:8px">' +
+      revs + ' revision' + (revs === 1 ? '' : 's') + '</span>'
+    : '';
+
+  var histInner = hist.length
+    ? '<div style="margin-top:12px;border-top:1px solid var(--border-color);padding-top:10px">' +
+        '<div style="font-size:11px;font-weight:600;color:var(--text-muted-color);text-transform:uppercase;letter-spacing:0.04em;margin-bottom:6px">NTE History</div>' +
+        hist.map(function (h) {
+          var from = woMoney(h.old_amount) || 'none';
+          var to = woMoney(h.new_amount) || 'none';
+          var who = h.changed_by_user || h.changed_by_name || 'System';
+          var src = h.source === 'manual' ? 'set by hand' : 'revised work order';
+          return '<div style="font-size:13px;padding:5px 0;display:flex;gap:8px;flex-wrap:wrap;align-items:baseline">' +
+            '<span style="font-weight:600">' + escHtml(from) + ' &rarr; ' + escHtml(to) + '</span>' +
+            '<span style="color:var(--text-muted-color)">' + escHtml(src) + ' &middot; ' + escHtml(who) + ' &middot; ' + formatDate(h.created_at) + '</span>' +
+          '</div>';
+        }).join('') +
+      '</div>'
+    : '';
+
+  // The revision emails themselves, so nobody has to take the history on faith.
+  var revList = (w.revisions && w.revisions.length)
+    ? '<div style="margin-top:12px;border-top:1px solid var(--border-color);padding-top:10px">' +
+        '<div style="font-size:11px;font-weight:600;color:var(--text-muted-color);text-transform:uppercase;letter-spacing:0.04em;margin-bottom:6px">Revision Emails Received</div>' +
+        w.revisions.map(function (r) {
+          return '<div style="font-size:13px;padding:4px 0;display:flex;gap:8px;flex-wrap:wrap;align-items:baseline">' +
+            '<a href="#" onclick="event.preventDefault();navigate(\'view-work-order\',' + r.id + ')" style="color:var(--primary)">' + escHtml(r.email_subject || ('Revision #' + r.id)) + '</a>' +
+            '<span style="color:var(--text-muted-color)">' + escHtml(r.email_from || '') + (r.email_received_at ? ' · ' + formatDate(r.email_received_at) : '') + '</span>' +
+          '</div>';
+        }).join('') +
+      '</div>'
+    : '';
+
+  var note = '<div style="margin-top:10px;font-size:12px;color:var(--text-muted-color)">' +
+    'An NTE increase arrives as a revised work order carrying the same WO number. Nova updates <strong>this</strong> work order — it never opens a second one.' +
+    '</div>';
+
+  return '<div class="card mb-4" style="border-color:' + (cur ? 'rgba(249,115,22,0.35)' : 'rgba(239,68,68,0.4)') + '">' +
+    '<div class="card-header" style="background:rgba(249,115,22,0.06)">' +
+      '<span class="card-title">Not-To-Exceed' + revBadge + '</span>' +
+    '</div>' +
+    '<div class="card-body">' +
+      '<div style="display:flex;align-items:center;justify-content:space-between;gap:14px;flex-wrap:wrap">' +
+        '<div>' + valueInner +
+          (w.last_revision_at ? '<div style="font-size:12px;color:var(--text-muted-color);margin-top:3px">Last revised ' + formatDate(w.last_revision_at) + '</div>' : '') +
+        '</div>' + editInner +
+      '</div>' + histInner + revList + note +
+    '</div></div>';
+}
+
+async function woSaveNte(id) {
+  var e = document.getElementById('wo-nte_amount');
+  var v = e ? e.value.trim() : '';
+  try { await api('PUT', '/work-orders/' + id, { nte_amount: v === '' ? null : v }); navigate('view-work-order', id); }
+  catch (err) { var er = document.getElementById('wo-detail-error'); if (er) er.innerHTML = '<div class="alert alert-error">' + escHtml(err.message) + '</div>'; }
+}
+
 async function renderWorkOrders(el) {
   try { _woState.counts = await api('GET', '/work-orders/counts'); } catch (e) { _woState.counts = {}; }
   el.innerHTML =
@@ -10680,7 +10840,7 @@ async function woLoad() {
     '<div class="table-wrap"><table>' +
     '<thead><tr>' +
       (manage ? '<th style="width:28px"></th>' : '') +
-      '<th>Ref</th><th>Account</th><th>Store</th><th>Service</th><th>Needed</th><th>Status</th><th>Assignee</th><th></th>' +
+      '<th>Ref</th><th>WO #</th><th>Account</th><th>Store</th><th>Service</th><th>NTE</th><th>Needed</th><th>Status</th><th>Assignee</th><th></th>' +
     '</tr></thead><tbody>' +
     items.map(function (w) { return woRow(w, manage); }).join('') +
     '</tbody></table></div>' +
@@ -10691,10 +10851,14 @@ function woRow(w, manage) {
   var svc = w.service_requested ? (w.service_requested.length > 60 ? w.service_requested.slice(0, 60) + '…' : w.service_requested) : '—';
   return '<tr style="cursor:pointer" onclick="navigate(\'view-work-order\',' + w.id + ')">' +
     (manage ? '<td onclick="event.stopPropagation()"><input type="checkbox" class="wo-check" value="' + w.id + '" /></td>' : '') +
-    '<td><strong>' + escHtml(w.wo_ref || ('#' + w.id)) + '</strong>' + (w.confidence ? ' ' + woConfBadge(w.confidence) : '') + '</td>' +
-    '<td>' + escHtml(w.account_name || '—') + '</td>' +
+    '<td><strong>' + escHtml(w.wo_ref || ('#' + w.id)) + '</strong>' + (w.confidence ? ' ' + woConfBadge(w.confidence) : '') +
+      ((w.priority === 'urgent' || w.priority === 'high') ? ' <span title="' + escHtml(w.priority) + ' priority" style="color:#fca5a5;font-weight:700">!</span>' : '') + '</td>' +
+    '<td style="font-family:ui-monospace,Menlo,Consolas,monospace;font-size:12.5px">' + escHtml(w.wo_number || '—') + '</td>' +
+    '<td>' + escHtml(w.account_name || '—') + (w.city_code ? ' <span style="color:var(--text-muted-color)">· ' + escHtml(w.city_code) + '</span>' : '') + '</td>' +
     '<td>' + escHtml(w.store_name || '—') + (w.store_number ? ' <span style="color:var(--text-muted-color)">#' + escHtml(w.store_number) + '</span>' : '') + '</td>' +
     '<td>' + escHtml(svc) + '</td>' +
+    '<td>' + (woMoney(w.nte_amount) ? escHtml(woMoney(w.nte_amount)) : '<span style="color:var(--text-muted-color)">—</span>') +
+      ((parseInt(w.revision_count, 10) || 0) ? ' <span title="NTE revised" style="color:#fdba74;font-weight:700">&#8593;</span>' : '') + '</td>' +
     '<td>' + (w.needed_by ? formatDate(w.needed_by) : '—') + '</td>' +
     '<td>' + woBadge(w.status) + '</td>' +
     '<td>' + escHtml(w.assignee_name || '—') + '</td>' +
@@ -10793,6 +10957,9 @@ async function renderViewWorkOrder(el, id) {
   var fieldsInner = fieldsEditable
     ? '<div class="form-row">' + fld('Account', 'wo-account_name', w.account_name) + fld('Account #', 'wo-account_number', w.account_number) + '</div>' +
       '<div class="form-row">' + fld('Work Order #', 'wo-wo_number', w.wo_number) + fld('PO #', 'wo-po_number', w.po_number) + '</div>' +
+      // The WO # is the key an NTE-increase email is matched on, and the city drives sales-tax
+      // reporting — both are worth a manager being able to fix by hand.
+      '<div class="form-row">' + fld('Claim / Ref ID', 'wo-claim_id', w.claim_id) + fld('City Code', 'wo-city_code', w.city_code, 'e.g. JAX') + '</div>' +
       (isVeh
         ? '<div class="form-row">' + fld('Yard / Terminal', 'wo-yard_name', w.yard_name) + fld('Bay', 'wo-bay_location', w.bay_location) + '</div>'
         : '<div class="form-row">' + fld('Store Name', 'wo-store_name', w.store_name) + fld('Store #', 'wo-store_number', w.store_number) + '</div>') +
@@ -10810,6 +10977,7 @@ async function renderViewWorkOrder(el, id) {
       (isVeh
         ? fld('Yard / Terminal', '', (w.yard_name || '') + (w.bay_location ? ' (Bay ' + w.bay_location + ')' : ''))
         : fld('Store', '', (w.store_name || '') + (w.store_number ? ' (#' + w.store_number + ')' : ''))) +
+      fld('Claim / Ref ID', '', w.claim_id) + fld('City Code', '', w.city_code) +
       fld('Address', '', w.address) + fld('City / State / Zip', '', w.city_state_zip) +
       fld('Service', '', w.service_requested) + fld('Requested By', '', w.service_requested_by) + fld('Needed By', '', w.needed_by ? formatDate(w.needed_by) : '') +
       fld('Contact', '', w.contact_name) + fld('Phone', '', w.contact_phone) + fld('Priority', '', w.priority) +
@@ -10823,8 +10991,11 @@ async function renderViewWorkOrder(el, id) {
       '<button class="btn btn-secondary" onclick="navigate(\'work-orders\')">&larr; Back</button>' +
     '</div>' +
     '<div id="wo-detail-error"></div>' +
+    woSupersededBanner(w) +
+    woSummaryCard(w) +
     assignCard +
     (actions ? '<div class="card mb-4"><div class="card-body"><div class="flex-gap" style="flex-wrap:wrap">' + actions + '</div></div></div>' : '') +
+    woNteCard(w, id, manage) +
     woVehicleCard(w, id, manage) +
     (!isVeh && manage
       ? '<div class="card mb-4"><div class="card-body" style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">' +
@@ -10934,6 +11105,7 @@ async function woSaveEdit(id) {
   var body = {
     account_name: woGet('wo-account_name'), account_number: woGet('wo-account_number'),
     wo_number: woGet('wo-wo_number'), po_number: woGet('wo-po_number'),
+    claim_id: woGet('wo-claim_id'), city_code: woGet('wo-city_code'),
     store_name: woGet('wo-store_name'), store_number: woGet('wo-store_number'),
     yard_name: woGet('wo-yard_name'), bay_location: woGet('wo-bay_location'),
     address: woGet('wo-address'), city_state_zip: woGet('wo-city_state_zip'),
@@ -10995,7 +11167,11 @@ async function renderWorkOrderForm(el) {
     '<div id="wo-form-error"></div>' +
     '<div class="card mb-4"><div class="card-body">' +
       '<div class="form-row">' + woRowField('Account', 'wof-account_name', '', 'e.g. Ferrandino &amp; Son') + woRowField('Account #', 'wof-account_number', '', '') + '</div>' +
-      woRowField('PO / WO #', 'wof-po_number', '', '') +
+      '<div class="form-row">' + woRowField('Work Order #', 'wof-wo_number', '', "the dispatcher's number, e.g. W4274808") + woRowField('PO #', 'wof-po_number', '', '') + '</div>' +
+      '<div class="form-row">' +
+        '<div class="form-group"><label>NTE (not-to-exceed)</label><input type="number" step="0.01" min="0" id="wof-nte_amount" placeholder="e.g. 200.00" /></div>' +
+        '<div class="form-group"><label>Priority</label><select id="wof-priority">' + ['low','normal','high','urgent'].map(function (p) { return '<option value="' + p + '"' + (p === 'normal' ? ' selected' : '') + '>' + p.charAt(0).toUpperCase() + p.slice(1) + '</option>'; }).join('') + '</select></div>' +
+      '</div>' +
       '<div class="form-row">' + woRowField('Store Name', 'wof-store_name', '', '') + woRowField('Store #', 'wof-store_number', '', '') + '</div>' +
       woRowField('Address', 'wof-address', '', 'Street address') +
       woRowField('City / State / Zip', 'wof-city_state_zip', '', '') +
@@ -11010,10 +11186,12 @@ async function renderWorkOrderForm(el) {
 async function woCreate() {
   function v(k) { var e = document.getElementById('wof-' + k); return e ? e.value.trim() : ''; }
   var body = {
-    account_name: v('account_name'), account_number: v('account_number'), po_number: v('po_number'),
+    account_name: v('account_name'), account_number: v('account_number'),
+    wo_number: v('wo_number'), po_number: v('po_number'), priority: v('priority') || 'normal',
     store_name: v('store_name'), store_number: v('store_number'), address: v('address'), city_state_zip: v('city_state_zip'),
     service_requested: v('service_requested'), service_requested_by: v('service_requested_by'), needed_by: v('needed_by'),
     contact_name: v('contact_name'), contact_phone: v('contact_phone'), notes: v('notes'),
+    nte_amount: v('nte_amount') || null,
     assigned_to: (function () { var e = document.getElementById('wof-assigned'); return e && e.value ? e.value : null; })()
   };
   try { var wo = await api('POST', '/work-orders', body); navigate('view-work-order', wo.id); }
@@ -11771,6 +11949,7 @@ function schedRenderMonth(){
   wrap.innerHTML='<table style="border-collapse:collapse;width:100%;table-layout:fixed;min-width:760px"><thead>'+head+'</thead><tbody>'+rowsHtml+'</tbody></table>';
 }
 function schedRecurringForm(){
+  var _selCity=String(_schedCity||'').trim();
   var userOpts=schedVisibleUsers().map(function(u){ return '<option value="'+u.id+'">'+escHtml(u.name)+'</option>'; }).join('');
   var posOpts='<option value="">No position</option>'+_schedPositions.filter(function(p){return p.active!==false;}).map(function(p){ return '<option value="'+p.id+'">'+escHtml(p.name)+'</option>'; }).join('');
   var cityOpts='<option value="">— city —</option>'+_schedCities.map(function(c){ var cc=(c.code||'').trim(); return '<option value="'+escHtml(cc)+'"'+(_selCity===cc?' selected':'')+'>'+escHtml(c.name)+'</option>'; }).join('');

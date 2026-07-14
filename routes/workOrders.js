@@ -22,6 +22,10 @@ function dateOrNull(v) {
   if (!s) return null;
   return /^\d{4}-\d{2}-\d{2}$/.test(s) ? s : null;
 }
+function moneyOrNull(v) {
+  if (v === undefined || v === null || String(v).trim() === '') return null;
+  return woJob.moneyOrNull(v);
+}
 async function canManage(req) { return perms.hasPermission(req.user.role, 'manage_work_orders'); }
 // Only 'vehicle' or 'site' are ever stored. Anything else falls back to 'site'.
 function jobTypeIn(b) {
@@ -55,7 +59,10 @@ router.get('/counts', requireAuth, requirePermission('view_work_orders'), async 
     const manage = await canManage(req);
     const params = [];
     let where = '';
-    if (!manage) { where = 'WHERE assigned_to = $1'; params.push(req.user.id); }
+    // Superseded stubs are revision emails already folded into their original work
+    // order — they are bookkeeping, never a queue item.
+    where = "WHERE status <> 'superseded'";
+    if (!manage) { where += ' AND assigned_to = $1'; params.push(req.user.id); }
     const { rows } = await pool.query('SELECT status, COUNT(*)::int AS n FROM work_orders ' + where + ' GROUP BY status', params);
     const counts = {};
     rows.forEach(function (r) { counts[r.status] = r.n; });
@@ -71,6 +78,7 @@ router.get('/', requireAuth, requirePermission('view_work_orders'), async (req, 
     const params = [];
     function add(cond, val) { params.push(val); where.push(cond.replace('$$', '$' + params.length)); }
 
+    where.push("status <> 'superseded'");   // revision stubs live on their original WO
     if (!manage) add('assigned_to = $$', req.user.id);
     if (req.query.status && STATUSES.indexOf(req.query.status) !== -1) add('status = $$', req.query.status);
     if (req.query.account_id) add('account_id = $$', parseInt(req.query.account_id, 10));
@@ -98,8 +106,10 @@ router.get('/', requireAuth, requirePermission('view_work_orders'), async (req, 
 
     const listSql =
       'SELECT w.id, w.wo_ref, w.source, w.status, w.priority, w.account_name, w.store_name, w.store_number, ' +
+      '       w.wo_number, w.po_number, w.city_code, ' +
       '       w.job_type, w.vin, w.vehicle_year, w.vehicle_make, w.vehicle_model, w.yard_name, w.bay_location, ' +
       '       w.service_requested, w.needed_by, w.confidence, w.assigned_to, a.name AS assignee_name, ' +
+      '       w.nte_amount, w.revision_count, w.last_revision_at, ' +
       '       w.signoff_id, w.email_received_at, w.created_at, ' +
       "       (SELECT COUNT(*) FROM work_order_attachments x WHERE x.work_order_id = w.id)::int AS attachment_count " +
       'FROM work_orders w LEFT JOIN users a ON w.assigned_to = a.id ' +
@@ -125,6 +135,19 @@ async function loadWorkOrder(id) {
   const act = await pool.query('SELECT * FROM work_order_activity WHERE work_order_id = $1 ORDER BY created_at ASC, id ASC', [id]);
   wo.attachments = att.rows;
   wo.activity = act.rows;
+  const nte = await pool.query(
+    'SELECT h.*, u.name AS changed_by_user FROM work_order_nte_history h LEFT JOIN users u ON h.changed_by = u.id ' +
+    'WHERE h.work_order_id = $1 ORDER BY h.created_at DESC, h.id DESC',
+    [id]
+  );
+  wo.nte_history = nte.rows;
+  // The revision emails that were folded into this work order (kept as superseded stubs).
+  const revs = await pool.query(
+    'SELECT id, wo_ref, email_from, email_subject, email_received_at, nte_amount FROM work_orders ' +
+    'WHERE revision_of_id = $1 ORDER BY id ASC',
+    [id]
+  );
+  wo.revisions = revs.rows;
   if (wo.signoff_id) {
     const so = await pool.query('SELECT id, form_number, status FROM signoff_forms WHERE id = $1', [wo.signoff_id]);
     wo.signoff = so.rows[0] || null;
@@ -170,15 +193,15 @@ router.post('/', requireAuth, requirePermission('manage_work_orders'), async (re
     const { rows } = await pool.query(
       'INSERT INTO work_orders (wo_ref, source, status, priority, account_id, account_name, account_number, city_code, po_number, wo_number, ' +
       'store_name, store_number, address, city_state_zip, service_requested, service_requested_by, contact_name, contact_phone, needed_by, notes, created_by, assigned_to, ' +
-      'job_type, claim_id, vin, vehicle_year, vehicle_make, vehicle_model, vehicle_mileage, repair_code, yard_name, bay_location, special_instructions) ' +
-      "VALUES ($1,'manual','received',$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31) RETURNING id",
+      'job_type, claim_id, vin, vehicle_year, vehicle_make, vehicle_model, vehicle_mileage, repair_code, yard_name, bay_location, special_instructions, nte_amount) ' +
+      "VALUES ($1,'manual','received',$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31,$32) RETURNING id",
       [woRef, PRIORITIES.indexOf(b.priority) !== -1 ? b.priority : 'normal', acct.account_id, strOrNull(b.account_name), strOrNull(b.account_number), acct.city_code,
        strOrNull(b.po_number), strOrNull(b.wo_number), strOrNull(b.store_name), strOrNull(b.store_number), strOrNull(b.address), strOrNull(b.city_state_zip),
        strOrNull(b.service_requested), strOrNull(b.service_requested_by), strOrNull(b.contact_name), strOrNull(b.contact_phone), dateOrNull(b.needed_by), strOrNull(b.notes), req.user.id,
        (b.assigned_to ? parseInt(b.assigned_to, 10) : null),
        jobTypeIn(b), strOrNull(b.claim_id), woJob.normalizeVin(b.vin), strOrNull(b.vehicle_year), strOrNull(b.vehicle_make),
        strOrNull(b.vehicle_model), strOrNull(b.vehicle_mileage), strOrNull(b.repair_code), strOrNull(b.yard_name),
-       strOrNull(b.bay_location), strOrNull(b.special_instructions)]
+       strOrNull(b.bay_location), strOrNull(b.special_instructions), moneyOrNull(b.nte_amount)]
     );
     const id = rows[0].id;
     await woJob.addActivity(id, req.user, 'event', 'created this work order manually');
@@ -215,13 +238,18 @@ router.put('/:id', requireAuth, requirePermission('manage_work_orders'), async (
     // service address (Fenkell is a Michigan dispatcher sending jobs nationwide).
     const cityCode = (b.city_code !== undefined) ? strOrNull(b.city_code) : (ex.city_code || acct.city_code);
     const newJobType = (b.job_type !== undefined) ? jobTypeIn(b) : (ex.job_type || 'site');
+    // NTE: a manager can set or correct the limit by hand. Every move is written to
+    // work_order_nte_history so "who raised it, and to what" is never a guess.
+    const oldNte = (ex.nte_amount === null || ex.nte_amount === undefined) ? null : parseFloat(ex.nte_amount);
+    const newNte = (b.nte_amount !== undefined) ? moneyOrNull(b.nte_amount) : oldNte;
+    const nteChanged = (b.nte_amount !== undefined) && (newNte !== oldNte);
 
     await pool.query(
       'UPDATE work_orders SET account_id=$1, account_name=$2, account_number=$3, city_code=$4, po_number=$5, wo_number=$6, store_name=$7, store_number=$8, ' +
       'address=$9, city_state_zip=$10, service_requested=$11, service_requested_by=$12, contact_name=$13, contact_phone=$14, needed_by=$15, notes=$16, ' +
       'priority=$17, assigned_to=$18, ' +
       'job_type=$19, claim_id=$20, vin=$21, vehicle_year=$22, vehicle_make=$23, vehicle_model=$24, vehicle_mileage=$25, ' +
-      'repair_code=$26, yard_name=$27, bay_location=$28, special_instructions=$29, updated_at=NOW() WHERE id=$30',
+      'repair_code=$26, yard_name=$27, bay_location=$28, special_instructions=$29, nte_amount=$30, updated_at=NOW() WHERE id=$31',
       [acct.account_id, pick('account_name', ex.account_name), pick('account_number', ex.account_number), cityCode,
        pick('po_number', ex.po_number), pick('wo_number', ex.wo_number), pick('store_name', ex.store_name), pick('store_number', ex.store_number),
        pick('address', ex.address), pick('city_state_zip', ex.city_state_zip), pick('service_requested', ex.service_requested), pick('service_requested_by', ex.service_requested_by),
@@ -232,8 +260,17 @@ router.put('/:id', requireAuth, requirePermission('manage_work_orders'), async (
        b.vin !== undefined ? woJob.normalizeVin(b.vin) : ex.vin,
        pick('vehicle_year', ex.vehicle_year), pick('vehicle_make', ex.vehicle_make), pick('vehicle_model', ex.vehicle_model),
        pick('vehicle_mileage', ex.vehicle_mileage), pick('repair_code', ex.repair_code), pick('yard_name', ex.yard_name),
-       pick('bay_location', ex.bay_location), pick('special_instructions', ex.special_instructions), req.params.id]
+       pick('bay_location', ex.bay_location), pick('special_instructions', ex.special_instructions), newNte, req.params.id]
     );
+    if (nteChanged) {
+      await pool.query(
+        "INSERT INTO work_order_nte_history (work_order_id, old_amount, new_amount, source, changed_by, changed_by_name, note) VALUES ($1,$2,$3,'manual',$4,$5,$6)",
+        [req.params.id, oldNte, newNte, req.user.id, req.user.name, 'Set by hand in Nova']
+      );
+      await woJob.addActivity(req.params.id, req.user, 'event',
+        'set the NTE to ' + woJob.money(newNte) + (oldNte !== null ? ' (was ' + woJob.money(oldNte) + ')' : ''));
+      try { await logAudit({ entity_type: 'work_order', entity_id: parseInt(req.params.id), entity_number: ex.wo_ref, action: 'nte_changed', user_id: req.user.id, user_name: req.user.name, details: { old_nte: oldNte, new_nte: newNte } }); } catch (e) {}
+    }
     if (b.job_type !== undefined && newJobType !== (ex.job_type || 'site')) {
       await woJob.addActivity(req.params.id, req.user, 'event', 'changed the job type from ' + (ex.job_type || 'site') + ' to ' + newJobType);
     }
@@ -320,7 +357,7 @@ router.post('/:id/reparse', requireAuth, requirePermission('manage_work_orders')
       'address=$9, city_state_zip=$10, service_requested=$11, service_requested_by=$12, contact_name=$13, contact_phone=$14, needed_by=$15, notes=$16, ' +
       'parsed=$17, confidence=$18, ' +
       'job_type=$19, claim_id=$20, vin=$21, vehicle_year=$22, vehicle_make=$23, vehicle_model=$24, vehicle_mileage=$25, ' +
-      'repair_code=$26, yard_name=$27, bay_location=$28, special_instructions=$29, updated_at=NOW() WHERE id=$30',
+      'repair_code=$26, yard_name=$27, bay_location=$28, special_instructions=$29, nte_amount=$30, updated_at=NOW() WHERE id=$31',
       [acct.account_id, strOrNull(parsed.account_name), strOrNull(parsed.account_number), cityCode, strOrNull(parsed.po_number), strOrNull(parsed.wo_number),
        strOrNull(parsed.store_name), strOrNull(parsed.store_number), strOrNull(parsed.address), strOrNull(parsed.city_state_zip), strOrNull(parsed.service_requested),
        strOrNull(parsed.service_requested_by), strOrNull(parsed.contact_name), strOrNull(parsed.contact_phone), dateOrNull(parsed.needed_by), strOrNull(parsed.notes),
@@ -328,7 +365,11 @@ router.post('/:id/reparse', requireAuth, requirePermission('manage_work_orders')
        jobType, strOrNull(parsed.claim_id), woJob.normalizeVin(parsed.vin), strOrNull(parsed.vehicle_year),
        strOrNull(parsed.vehicle_make), strOrNull(parsed.vehicle_model), strOrNull(parsed.vehicle_mileage),
        strOrNull(parsed.repair_code), strOrNull(parsed.yard_name), strOrNull(parsed.bay_location),
-       strOrNull(parsed.special_instructions), req.params.id]
+       strOrNull(parsed.special_instructions),
+       // A re-parse re-reads the SAME form, so it may only fill an empty NTE — it must never
+       // stomp a limit a manager set by hand or one a later revision raised.
+       (ex.nte_amount !== null && ex.nte_amount !== undefined) ? ex.nte_amount : woJob.moneyOrNull(parsed.nte_amount),
+       req.params.id]
     );
     await woJob.addActivity(req.params.id, req.user, 'event', 're-parsed with AI as a ' + jobType + ' job');
     if (jobType === 'vehicle' && !woJob.normalizeVin(parsed.vin)) {

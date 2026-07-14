@@ -801,6 +801,37 @@ async function initDB() {
       'CREATE INDEX IF NOT EXISTS idx_wo_vin ON work_orders(vin);' +
       'CREATE INDEX IF NOT EXISTS idx_wo_job_type ON work_orders(job_type);'
     );
+    // Work Orders — NTE (not-to-exceed) + revisions. A dispatcher raises the NTE by
+    // sending a REVISED work order carrying the SAME wo_number. That email used to land
+    // as a brand-new work order (dedup is on email_message_id, which is unique per
+    // email), so the raised limit sat in a second row nobody linked to the job. Now the
+    // ingest matches on wo_number + account and UPDATES the original: nte_amount moves,
+    // the new PDF is attached to the original, and every change is kept in
+    // work_order_nte_history. The revision email itself is kept as a 'superseded' stub
+    // row — it still owns the email_message_id, which is what keeps re-polling idempotent.
+    await client.query(
+      'ALTER TABLE work_orders ADD COLUMN IF NOT EXISTS nte_amount NUMERIC(12,2);' +
+      'ALTER TABLE work_orders ADD COLUMN IF NOT EXISTS revision_count INTEGER NOT NULL DEFAULT 0;' +
+      'ALTER TABLE work_orders ADD COLUMN IF NOT EXISTS last_revision_at TIMESTAMPTZ;' +
+      'ALTER TABLE work_orders ADD COLUMN IF NOT EXISTS revision_of_id INTEGER REFERENCES work_orders(id) ON DELETE SET NULL;' +
+      'CREATE INDEX IF NOT EXISTS idx_wo_wo_number ON work_orders(UPPER(wo_number));' +
+      'CREATE INDEX IF NOT EXISTS idx_wo_revision_of ON work_orders(revision_of_id);'
+    );
+    await client.query(
+      'CREATE TABLE IF NOT EXISTS work_order_nte_history (' +
+      '  id SERIAL PRIMARY KEY,' +
+      '  work_order_id INTEGER REFERENCES work_orders(id) ON DELETE CASCADE,' +
+      '  old_amount NUMERIC(12,2),' +
+      '  new_amount NUMERIC(12,2),' +
+      "  source VARCHAR(20) NOT NULL DEFAULT 'email'," +
+      '  revision_wo_id INTEGER REFERENCES work_orders(id) ON DELETE SET NULL,' +
+      '  changed_by INTEGER REFERENCES users(id) ON DELETE SET NULL,' +
+      '  changed_by_name VARCHAR(255),' +
+      '  note TEXT,' +
+      '  created_at TIMESTAMPTZ DEFAULT NOW()' +
+      ');' +
+      'CREATE INDEX IF NOT EXISTS idx_wo_nte_hist ON work_order_nte_history(work_order_id);'
+    );
     // Scheduling — manager-built weekly shift schedule (Sling-style). Wall-clock
     // times (shift_date + start/end time) keep the grid DST-proof for the local day.
     await client.query(

@@ -44,6 +44,8 @@ var SCHEMA_PROMPT =
   '  "wo_number": "the work order / service request number, e.g. W4274808. This is the dispatcher reference for the JOB, or unknown",\n' +
   '  "po_number": "a PURCHASE ORDER number only. If no true PO number is present, return unknown. Do NOT put a work order number, service request number, or claim ID here",\n' +
   '  "claim_id": "a claim, reference, or ticket ID if present and distinct from the work order number, or unknown",\n' +
+  '  "nte_amount": "the NOT-TO-EXCEED dollar limit for this job, as a plain number with no dollar sign and no commas, e.g. 450.00. It is usually labelled NTE, N.T.E., Not To Exceed, Do Not Exceed, Authorization Limit, Approved Amount, or Not to exceed $___. Or unknown",\n' +
+  '  "is_revision": "true if this document says it is a REVISED, UPDATED, AMENDED, or CORRECTED work order, or that the NTE was increased/raised/approved for a higher amount. Otherwise false",\n' +
   '  "store_name": "SITE JOBS ONLY - the store/site/location where the work is performed (e.g. the retail store), or unknown",\n' +
   '  "store_number": "SITE JOBS ONLY - store/site number, or unknown",\n' +
   '  "yard_name": "VEHICLE JOBS ONLY - the railyard, port, terminal, or lot the vehicle is sitting in, e.g. F3TA - JACKSONVILLE, FL (AMPORTS - BLOUNT ISLAND), or unknown",\n' +
@@ -67,6 +69,10 @@ var SCHEMA_PROMPT =
   '  "confidence": "high | medium | low"\n' +
   '}\n' +
   'Rules: Use the string "unknown" for any field not present. Do NOT invent values. ' +
+  'A dispatcher raises the NTE by re-sending the SAME work order with a higher limit, so the wo_number on a ' +
+  'revised form is the SAME number as the original - never change or invent a work order number to make it look new. ' +
+  'nte_amount is a spend LIMIT, not a price or an estimate: if the form only shows a quoted price, a labor rate, or ' +
+  'an invoice total and no explicit not-to-exceed limit, return unknown for nte_amount. ' +
   'Leave the VEHICLE JOBS ONLY fields unknown on a site job, and the SITE JOBS ONLY fields ' +
   'unknown on a vehicle job - never put a railyard in store_name. ' +
   'Set is_work_order to false if this email is not actually a work order (e.g. a reply, ' +
