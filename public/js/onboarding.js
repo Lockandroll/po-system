@@ -48,12 +48,15 @@
     '.onb-doc iframe{width:100%;height:100%;border:0;display:block;background:#fff}' +
     '.onb-doc-fallback{display:flex;flex-direction:column;align-items:center;justify-content:center;text-align:center;height:auto;padding:34px 16px;gap:6px}' +
     '.onb-fw{position:absolute;inset:0;width:100%;height:100%;display:block}' +
-    '.onb-slot{display:flex;align-items:center;gap:12px;padding:11px 13px;border:1px solid var(--border,#2a2a2a);border-radius:10px;background:var(--bg,#0f0f0f);margin-bottom:9px}' +
+    '.onb-slot{display:flex;align-items:center;gap:12px;flex-wrap:wrap;padding:11px 13px;border:1px solid var(--border,#2a2a2a);border-radius:10px;background:var(--bg,#0f0f0f);margin-bottom:9px}' +
     '.onb-slot.filled{border-color:#16a34a55}' +
     '.onb-slot.rejected{border-color:#ef444455}' +
     '.onb-slot-ic{width:32px;height:32px;border-radius:8px;background:var(--bg-card2,#1c1c1c);display:flex;align-items:center;justify-content:center;font-size:15px;flex-shrink:0}' +
     '.onb-slot.filled .onb-slot-ic{background:#16a34a22;color:#4ade80}' +
-    '.onb-slot-b{flex:1;min-width:0}.onb-slot-b b{font-size:14px}.onb-slot-b span{display:block;color:var(--text-muted-color,#9ca3af);font-size:12px;margin-top:1px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}' +
+    '.onb-slot-b{flex:1 1 160px;min-width:0}.onb-slot-b b{font-size:14px}.onb-slot-b span{display:block;color:var(--text-muted-color,#9ca3af);font-size:12px;margin-top:1px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}' +
+    '.onb-slot-send{display:inline-flex;align-items:center;gap:6px;flex:0 0 auto;white-space:nowrap;font-size:12px;color:var(--text-muted-color,#9ca3af);cursor:pointer;user-select:none}' +
+    '.onb-slot-send input{margin:0;flex-shrink:0}' +
+    '@media(max-width:640px){.onb-slot-send{flex:1 0 100%;margin-left:44px}}' +
     '.onb-slot-act{font-size:12.5px;font-weight:700;padding:6px 12px;border-radius:7px;border:1px solid var(--border,#2a2a2a);background:var(--bg-card,#161616);color:var(--text,#ededed);cursor:pointer;flex-shrink:0}' +
     '.onb-slot-act.done{background:#16a34a22;color:#4ade80;border-color:#16a34a55}' +
     '.onb-verify{border:1px solid var(--border,#2a2a2a);border-radius:10px;background:var(--bg,#0f0f0f);padding:12px 13px;margin:4px 0 12px}' +
@@ -752,7 +755,7 @@
         '<div class="onb-slot-ic">' + (flagged ? '&#9888;' : '&#10003;') + '</div>' +
         '<div class="onb-slot-b"><b>' + escHtml(doc.slot_key || doc.category || 'document') + '</b><span>' + escHtml(doc.name || '') + (doc.expires_at ? ' &middot; exp ' + escHtml(String(doc.expires_at).slice(0, 10)) : '') + '</span></div>' +
         '<button class="onb-slot-act" onclick="onbViewDoc(' + doc.id + ')">View</button>' +
-        '<label class="onb-note" style="margin-left:10px;white-space:nowrap"><input type="checkbox" class="onb-reopen-slot" value="' + escHtml(doc.slot_key || '') + '"> send back</label>' +
+        '<label class="onb-slot-send"><input type="checkbox" class="onb-reopen-slot" value="' + escHtml(doc.slot_key || '') + '"><span>Send back</span></label>' +
         '</div>';
     }).join('');
     var packet = d.packet
