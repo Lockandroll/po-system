@@ -1121,7 +1121,7 @@
         var sk = stepSlotKeys(s);
         meta.push(sk.length
           ? 'Collects: ' + sk.map(slotLabel).join(', ')
-          : 'Collects: ALL documents — pick one, or this step asks for everything');
+          : 'Collects: every document (nothing ticked)');
       }
       return '<div class="onb-step onb-drag" draggable="true" ondragstart="onbDragStart(event,' + s.id + ')" ondragover="onbDragOver(event)" ondragleave="onbDragLeave(event)" ondrop="onbDrop(event,' + s.id + ')" ondragend="onbDragEnd(event)" style="opacity:1">' +
         '<span class="onb-grip" title="Drag to reorder">&#9776;</span>' +
@@ -1134,9 +1134,11 @@
     }).join('');
 
     var slotWarn = '';
-    if (legacy.length && steps.filter(function (s) { return s.type === 'document_upload'; }).length > 1) {
+    if (steps.filter(function (s) { return s.type === 'document_upload'; }).length > 1) {
+      // Several upload steps is almost always a mistake: one step already shows the
+      // hire a box per document on a single screen.
       slotWarn = '<div class="onb-verify" style="margin-bottom:14px"><div class="v-row warn">&#9888; ' +
-        escHtml(legacy.length + ' upload step' + (legacy.length === 1 ? '' : 's') + ' collect EVERY document, so your separate upload steps all ask for the same four files. Edit each one and pick the document it should collect.') +
+        escHtml('You have ' + steps.filter(function (s) { return s.type === 'document_upload'; }).length + ' separate upload steps. You usually want just one — a single upload step already shows the new hire a box for each document on the same screen. Keep one step, tick every document it should collect, and delete the rest.') +
         '</div></div>';
     } else if (unclaimed.length && !legacy.length) {
       slotWarn = '<div class="onb-verify" style="margin-bottom:14px"><div class="v-row warn">&#9888; ' +
@@ -1160,7 +1162,7 @@
       '<div id="onb-f-slots" style="display:none;grid-column:1/-1">' +
         '<div class="onb-note" style="margin-bottom:6px;font-weight:600">Which document(s) does this step collect?</div>' +
         '<div class="onb-slotpicks">' + (slotBoxes || '<span class="onb-note">No document types defined.</span>') + '</div>' +
-        '<div class="onb-note">Pick one per step if you want a separate step for each document. Leave a document unpicked and no step will ever ask for it.</div>' +
+        '<div class="onb-note">Normally: one upload step with all of these ticked. The new hire gets a box for each on one screen and uploads them together. Anything left unticked is never asked for.</div>' +
       '</div>' +
       '<div id="onb-f-quiz" style="display:none;grid-column:1/-1;display:none"><div style="display:flex;gap:10px;flex-wrap:wrap">' +
         '<label class="onb-note">Questions <input id="onb-new-qcount" type="number" min="1" max="50" value="5" style="width:70px;background:var(--bg-card);color:var(--text);border:1px solid var(--border);border-radius:6px;padding:6px"></label>' +
