@@ -186,6 +186,33 @@ router.patch('/:id', requireAuth, requirePermission('manage_feedback'), async fu
   }
 });
 
+// POST /api/feedback/:id/calls - someone clicked the customer's phone number.
+// Same permission as opening the record (view_feedback): calling the customer is
+// not a manage action. Owners are invisible and admin preview-as never logs,
+// exactly like logView above. Unlike a view, a call IS an interaction with the
+// customer, so it bumps last_interaction_at and is visible to everyone.
+router.post('/:id/calls', requireAuth, requirePermission('view_feedback'), async function (req, res) {
+  try {
+    const id = parseInt(req.params.id, 10);
+    const cur = await pool.query('SELECT id, city_code, customer_phone FROM customer_feedback WHERE id = $1', [id]);
+    if (!cur.rows.length) return res.status(404).json({ error: 'Not found' });
+    const scope = await cityScope(req.user);
+    if (scope !== null && scope.indexOf(cur.rows[0].city_code) === -1) {
+      return res.status(403).json({ error: 'Not in your cities' });
+    }
+    if (req.viewingAs) return res.json({ success: true, logged: false });
+    if (req.user.isOwner || req.user.role === 'owner') return res.json({ success: true, logged: false });
+    const phone = cur.rows[0].customer_phone || '';
+    await logActivity(id, { id: req.user.id, name: req.user.name }, 'call',
+      'called the customer' + (phone ? ' at ' + phone : '') + '.', 'phone');
+    await pool.query('UPDATE customer_feedback SET last_interaction_at = NOW() WHERE id = $1', [id]);
+    res.json({ success: true, logged: true });
+  } catch (e) {
+    console.error('POST /feedback/:id/calls:', e.message);
+    res.status(500).json({ error: 'Failed to log call' });
+  }
+});
+
 // POST /api/feedback/:id/notes - add a manual note to the timeline.
 router.post('/:id/notes', requireAuth, requirePermission('manage_feedback'), async function (req, res) {
   try {

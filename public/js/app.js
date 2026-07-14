@@ -3947,10 +3947,15 @@ async function renderFeedbackDetail(el, id){
   var catChip = f.category ? '<span style="background:rgba(249,115,22,0.15);color:var(--primary);padding:2px 8px;border-radius:6px;font-size:12px">' + escHtml(f.category.replace(/_/g, ' ')) + '</span>' : '';
   var reviewFlag = f.needs_review ? '<span style="background:#7f1d1d;color:#fecaca;padding:2px 8px;border-radius:6px;font-size:12px">Needs review</span>' : '';
 
+  var phoneRaw = (f.customer_phone || '').trim();
+  var phoneDigits = phoneRaw.replace(/[^0-9+]/g, '');
+  var phoneCell = phoneRaw
+    ? '<a href="tel:' + escHtml(phoneDigits) + '" onclick="feedbackLogCall(' + f.id + ')" title="Call customer &mdash; logged to activity" style="color:var(--primary);text-decoration:none;font-weight:600">&#128222; ' + escHtml(phoneRaw) + '</a>'
+    : '<span style="color:var(--text-muted-color)">&mdash;</span>';
   var custCard = '<div style="' + cardS + '">' +
     '<div style="font-size:12px;color:var(--text-muted-color);margin-bottom:10px">Customer &amp; vehicle</div>' +
     '<table style="width:100%;font-size:13px">' +
-      '<tr><td style="color:var(--text-muted-color);padding:4px 0">Phone</td><td style="text-align:right;color:var(--primary)">' + escHtml(f.customer_phone || '—') + '</td></tr>' +
+      '<tr><td style="color:var(--text-muted-color);padding:4px 0">Phone</td><td style="text-align:right">' + phoneCell + '</td></tr>' +
       '<tr><td style="color:var(--text-muted-color);padding:4px 0">Email</td><td style="text-align:right">' + escHtml(f.customer_email || '—') + '</td></tr>' +
       '<tr><td style="color:var(--text-muted-color);padding:4px 0">City</td><td style="text-align:right">' + escHtml(f.city_name || f.city_code || '—') + '</td></tr>' +
       '<tr><td style="color:var(--text-muted-color);padding:4px 0">Vehicle</td><td style="text-align:right">' + escHtml(vehicle) + '</td></tr>' +
@@ -4004,8 +4009,9 @@ async function renderFeedbackDetail(el, id){
     var when = timeAgo(a.created_at) || formatDateTime(a.created_at);
     var who = a.user_name ? escHtml(a.user_name) : 'System';
     var isView = a.type === 'view';
-    var bodyTxt = (a.type === 'event' || isView) ? (who + ' ' + escHtml(a.body || '')) : (who + ': ' + escHtml(a.body || ''));
-    var dot = a.type === 'note' ? 'background:var(--primary)' : (isView ? 'background:transparent;border:1px solid var(--text-muted-color)' : 'background:var(--text-muted-color)');
+    var isCall = a.type === 'call';
+    var bodyTxt = (a.type === 'event' || isView || isCall) ? (who + ' ' + escHtml(a.body || '')) : (who + ': ' + escHtml(a.body || ''));
+    var dot = a.type === 'note' ? 'background:var(--primary)' : (isCall ? 'background:#22c55e' : (isView ? 'background:transparent;border:1px solid var(--text-muted-color)' : 'background:var(--text-muted-color)'));
     return '<div' + (isView ? ' class="fb-view-row"' : '') + ' style="display:flex;gap:10px;margin-bottom:12px' + (isView ? ';opacity:.65' : '') + '">' +
       '<div style="width:8px;height:8px;border-radius:50%;' + dot + ';margin-top:6px;flex-shrink:0;box-sizing:border-box"></div>' +
       '<div><div style="font-size:13px;line-height:1.5' + (isView ? ';color:var(--text-muted-color)' : '') + '">' + bodyTxt + '</div><div style="font-size:11px;color:var(--text-muted-color);margin-top:2px">' + escHtml(when) + ch + '</div></div>' +
@@ -4018,7 +4024,7 @@ async function renderFeedbackDetail(el, id){
   var actCard = '<div style="' + cardS + '"><div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px"><div style="font-size:12px;color:var(--text-muted-color)">Activity</div>' + viewToggle + '</div>' + actItems + noteBox + '</div>';
 
   el.innerHTML =
-    '<div style="margin-bottom:12px"><button class="btn btn-ghost btn-sm" onclick="navigate(\'feedback\')">&larr; Back to feedback</button></div>' +
+    '<div style="margin-bottom:12px"><button class="btn btn-primary btn-sm" onclick="navigate(\'feedback\')">&larr; Back to feedback</button></div>' +
     '<div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:14px"><div class="page-title" style="margin:0">' + escHtml(f.customer_name || 'Unknown') + '</div>' + catChip + sevChip + reviewFlag + '</div>' +
     '<div style="display:flex;gap:16px;flex-wrap:wrap;align-items:flex-start">' +
       '<div style="flex:2;min-width:340px">' + custCard + incCard + attCard + handleCard + '</div>' +
@@ -4062,6 +4068,13 @@ async function feedbackReopen(id){
 function feedbackToggleViews(show){
   var rows = document.querySelectorAll('.fb-view-row');
   for (var i = 0; i < rows.length; i++) rows[i].style.display = show ? 'flex' : 'none';
+}
+
+// Click-to-call from the detail page. Logs the call attempt to the timeline;
+// fire-and-forget so the tel: link always opens even if the log call fails.
+function feedbackLogCall(id){
+  try { api('POST', '/feedback/' + id + '/calls', {}).catch(function(){}); } catch (e) {}
+  return true;
 }
 
 async function feedbackAddNote(id){
