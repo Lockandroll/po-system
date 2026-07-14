@@ -58,6 +58,8 @@
     '.onb-slot-send{display:inline-flex;align-items:center;gap:6px;flex:0 0 auto;white-space:nowrap;font-size:12px;color:var(--text-muted-color,#9ca3af);cursor:pointer;user-select:none}' +
     '.onb-slot-send input{margin:0;flex-shrink:0}' +
     '@media(max-width:640px){.onb-slot-acts{flex:1 0 100%;justify-content:flex-start;margin-left:44px}}' +
+    '.onb-card,.onb-step,.onb-slot{max-width:100%;box-sizing:border-box}' +
+    '.onb-card input,.onb-card select,.onb-card textarea{max-width:100%;box-sizing:border-box}' +
     '.onb-pk{display:flex;flex-direction:column;gap:1px}' +
     '.onb-pk-sec{font-size:12px;font-weight:700;letter-spacing:.6px;text-transform:uppercase;color:var(--primary,#f97316);margin:14px 0 6px;padding-bottom:5px;border-bottom:1px solid var(--border,#2a2a2a)}' +
     '.onb-pk-sec:first-child{margin-top:0}' +
@@ -67,9 +69,11 @@
     '.onb-pk-v.empty{font-weight:400;color:var(--text-muted-color,#6b7280)}' +
     '.onb-pk-flag{flex:1 0 100%;font-size:12px;color:#fbbf24}' +
     '@media(max-width:640px){.onb-pk-k{flex:1 0 100%}}' +
-    '.onb-slotpicks{display:flex;flex-wrap:wrap;gap:8px;margin:0 0 8px}' +
-    '.onb-slotpick{display:inline-flex;align-items:center;gap:7px;padding:9px 13px;border:1px solid var(--border,#2a2a2a);border-radius:9px;background:var(--bg,#0f0f0f);font-size:13px;cursor:pointer;user-select:none}' +
-    '.onb-slotpick input{margin:0;flex-shrink:0}' +
+    '.onb-slotpicks{display:grid;grid-template-columns:repeat(auto-fit,minmax(210px,1fr));gap:8px;margin:0 0 8px}' +
+    '.onb-slotpick{display:flex;align-items:center;gap:9px;min-width:0;padding:11px 13px;border:1px solid var(--border,#2a2a2a);border-radius:9px;background:var(--bg,#0f0f0f);font-size:13px;line-height:1.35;cursor:pointer;user-select:none}' +
+    '.onb-slotpick input{margin:0;flex:0 0 auto}' +
+    '.onb-slotpick span{flex:1 1 auto;min-width:0;white-space:normal;overflow-wrap:anywhere}' +
+    '.onb-slotpick:hover{border-color:var(--primary,#f97316)}' +
     '.onb-slot-act{font-size:12.5px;font-weight:700;padding:6px 12px;border-radius:7px;border:1px solid var(--border,#2a2a2a);background:var(--bg-card,#161616);color:var(--text,#ededed);cursor:pointer;flex-shrink:0}' +
     '.onb-slot-act.done{background:#16a34a22;color:#4ade80;border-color:#16a34a55}' +
     '.onb-verify{border:1px solid var(--border,#2a2a2a);border-radius:10px;background:var(--bg,#0f0f0f);padding:12px 13px;margin:4px 0 12px}' +
@@ -1010,7 +1014,7 @@
     body.innerHTML =
       '<div class="onb-card" style="margin-bottom:14px"><h2>Add a new hire</h2>' +
       '<div class="onb-desc">Creates their Nova account, emails them an invite to set a password, and enrolls them in onboarding — all in one step. No need to add them under Users first.</div>' +
-      '<div style="display:grid;gap:10px;grid-template-columns:1fr 1fr">' +
+      '<div style="display:grid;gap:10px;grid-template-columns:repeat(auto-fit,minmax(min(240px,100%),1fr))">' +
         '<input id="nh-name" placeholder="Full name" style="' + NHI + '">' +
         '<input id="nh-email" type="email" placeholder="Email" style="' + NHI + '">' +
         '<input id="nh-phone" type="tel" placeholder="Mobile phone (for 2FA texts)" style="' + NHI + '">' +
@@ -1150,7 +1154,7 @@
       '<div class="onb-steps">' + (rows || '<div class="onb-note">No steps yet — add the first one below.</div>') + '</div>' +
       '<div class="onb-note" style="margin:-8px 0 18px">The supervisor sign-off gate is automatic and always comes last — you do not add it as a step.</div>' +
       '<div class="onb-card"><h2>Add a step</h2>' +
-      '<div style="display:grid;gap:10px;grid-template-columns:1fr 1fr">' +
+      '<div style="display:grid;gap:10px;grid-template-columns:repeat(auto-fit,minmax(min(260px,100%),1fr))">' +
       '<select id="onb-new-type" onchange="onbTypeFields()" style="background:var(--bg-card);color:var(--text);border:1px solid var(--border);border-radius:8px;padding:10px">' +
         '<option value="video">Video</option><option value="sop_read">Read an SOP</option><option value="quiz">Quiz on an SOP</option><option value="document_upload">Upload required documents</option><option value="acknowledge">Read &amp; acknowledge (no quiz)</option><option value="final_exam">Final exam</option><option value="form">Complete a form / packet</option></select>' +
       '<input id="onb-new-title" placeholder="Step title" style="background:var(--bg-card);color:var(--text);border:1px solid var(--border);border-radius:8px;padding:10px">' +
