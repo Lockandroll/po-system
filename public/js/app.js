@@ -1834,7 +1834,12 @@ async function renderViewPO(el, id) {
           '<div class="form-group"><label>Person Responsible for Ordering *</label>' +
             '<select id="orderer-id" required>' +
               '<option value="">Select user...</option>' +
-              usersForApproval.filter(function(u){ return u.active !== false; }).map(function(u){ return '<option value="' + u.id + '">' + escHtml(u.name) + '</option>'; }).join('') +
+              (po.requester_id ? '<optgroup label="Submitted by">' +
+                '<option value="' + po.requester_id + '">' + escHtml(po.requester_name || '—') + '</option>' +
+              '</optgroup>' : '') +
+              '<optgroup label="All employees">' +
+                usersForApproval.filter(function(u){ return u.active !== false && u.id !== po.requester_id; }).map(function(u){ return '<option value="' + u.id + '">' + escHtml(u.name) + '</option>'; }).join('') +
+              '</optgroup>' +
             '</select>' +
           '</div>' +
           '<div class="form-group"><label>Rejection Reason (required if rejecting)</label><textarea id="reject-reason" placeholder="Explain why this PO is being rejected..."></textarea></div>' +
