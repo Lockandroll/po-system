@@ -57,6 +57,8 @@ const state = {
   pendingUserId: null,
   pendingRemember: false,
   pendingVia: null,
+  permsRev: null,               // last X-Perms-Rev seen; a change means our perms are stale
+  _permsRerenderPending: false, // perms changed while on a form; re-render on next navigate
   realUser: null,
   viewAs: null,
   permissions: null,
@@ -167,6 +169,96 @@ function apiBustCache(pattern) {
   Object.keys(_apiCache).forEach(function (k) { if (k.indexOf(pattern) !== -1) delete _apiCache[k]; });
 }
 
+// ---------------------------------------------------------------------------
+// Live permission refresh
+//
+// The server stamps every authenticated response with X-Perms-Rev, a fingerprint of
+// this user's role + extra_perms + active flag + the global role_permissions matrix.
+// We hold the last one we saw. When it changes, our cached permissions are stale —
+// an admin has changed something — so we refetch them and re-render.
+//
+// Without this, state.user (and therefore can(), and therefore which screens the
+// sidebar routes to) is frozen at whatever it was when the user LOGGED IN, because
+// the /auth/me refresh in render() is guarded by state._permsLoaded and runs once
+// per page load. On a PWA left open for weeks, that is effectively forever.
+// ---------------------------------------------------------------------------
+var _permsRefreshing = false;
+
+// Re-rendering blows away the DOM. That is fine on a list, and destructive on a form
+// someone is halfway through filling in. On a form view we still update the in-memory
+// permissions (so can() is immediately correct), but we defer the visual re-render
+// until the user navigates away of their own accord.
+function _permsRenderIsRisky() {
+  var v = state.currentView || '';
+  if (/^(new|edit)/.test(v)) return true;
+  if (v.indexOf('-editor') !== -1 || v.indexOf('-form') !== -1) return true;
+  var ae = document.activeElement;
+  if (ae && /^(INPUT|TEXTAREA|SELECT)$/.test(ae.tagName || '')) return true;
+  return false;
+}
+
+async function refreshPermsAndRerender() {
+  if (_permsRefreshing) return;
+  _permsRefreshing = true;
+  try {
+    // Use _apiFetch, not api() — a cached GET would defeat the whole point.
+    try {
+      var ps = await _apiFetch('GET', '/settings', null, true);
+      var rp = null;
+      try { rp = JSON.parse(ps.role_permissions || 'null'); } catch (e) {}
+      state.permissions = rp;
+    } catch (e) {}
+    var me = await _apiFetch('GET', '/auth/me', null, true);
+    if (me && state.user) {
+      if (me.role) state.user.role = me.role;
+      state.user.extra_perms = me.extra_perms || [];
+      state.user = normalizeUserRole(state.user);
+      try { localStorage.setItem('po_user', JSON.stringify(state.user)); } catch (e) {}
+    }
+    apiBustCache();
+    if (_permsRenderIsRisky()) {
+      // Apply on the next navigation instead of yanking the form out from under them.
+      state._permsRerenderPending = true;
+    } else {
+      showToast('Your access was updated.', 'info');
+      render();
+    }
+  } catch (e) {
+    // Never let a failed refresh break the request the user actually made.
+  } finally {
+    _permsRefreshing = false;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Force reload (breaking deploys)
+//
+// Clears the service worker + every cache and reloads. Deliberately does NOT touch
+// po_token / po_user — this flushes stale CODE, it is not a logout.
+// ---------------------------------------------------------------------------
+var _hardResetting = false;
+function _numericVersion(v) {
+  var n = parseInt(String(v == null ? '' : v).replace(/[^0-9]/g, ''), 10);
+  return isNaN(n) ? null : n;
+}
+async function hardResetClient() {
+  if (_hardResetting) return;
+  _hardResetting = true;
+  try {
+    if ('serviceWorker' in navigator) {
+      var regs = await navigator.serviceWorker.getRegistrations();
+      await Promise.all(regs.map(function (r) { return r.unregister(); }));
+    }
+  } catch (e) {}
+  try {
+    if (window.caches) {
+      var keys = await caches.keys();
+      await Promise.all(keys.map(function (k) { return caches.delete(k); }));
+    }
+  } catch (e) {}
+  location.reload();
+}
+
 async function api(method, path, body) {
   var isGet = String(method).toUpperCase() === 'GET';
   if (isGet && !_apiNoCache(path)) {
@@ -216,10 +308,35 @@ async function _apiFetch(method, path, body, silent) {
     state.token = newToken;
     localStorage.setItem('po_token', newToken);
   }
+  // Permission revision: if it moved, an admin changed our role / extra perms / the
+  // role matrix. Refetch and re-render so it takes effect NOW, not on next reload.
+  // Skipped while previewing as another user (View-As has its own identity).
+  const permsRev = res.headers.get('X-Perms-Rev');
+  if (permsRev && !state.viewAsId) {
+    if (!state.permsRev) {
+      state.permsRev = permsRev;
+    } else if (permsRev !== state.permsRev) {
+      state.permsRev = permsRev;
+      refreshPermsAndRerender(); // fire-and-forget; must not block this request
+    }
+  }
+  // Minimum client version: this build is too old to talk to the current API.
+  // Flush caches and reload (the user stays signed in).
+  const minVer = res.headers.get('X-Min-Version');
+  if (minVer) {
+    var _minN = _numericVersion(minVer);
+    var _curN = _numericVersion(_resolvedAppVersion);
+    // If we cannot tell what version we are, do nothing. Never reload on a guess.
+    if (_minN !== null && _curN !== null && _curN < _minN) {
+      hardResetClient();
+    }
+  }
   // Expired/invalid session: clear creds and bounce to login instead of getting stuck
   if (res.status === 401 && state.token) {
     state.token = null;
     state.user = null;
+    state.permsRev = null;
+    state._permsLoaded = false;
     localStorage.removeItem('po_token');
     localStorage.removeItem('po_user');
     _apiCache = {};
@@ -313,6 +430,12 @@ function toggleSection(section, defaultView) {
 }
 function navigate(view, param) {
   closeSidebar();
+  // A permission change landed while the user was mid-form, so we held the re-render
+  // back. They have now navigated away on their own — the render() below applies it.
+  if (state._permsRerenderPending) {
+    state._permsRerenderPending = false;
+    showToast('Your access was updated.', 'info');
+  }
   state.currentView = view;
   state.currentParam = param || null;
   try { localStorage.setItem('po_view', view); if (param != null && param !== '') localStorage.setItem('po_param', String(param)); else localStorage.removeItem('po_param'); } catch(e) {}
@@ -997,6 +1120,9 @@ async function doSetup() {
 function logout() {
   state.token = null;
   state.user = null;
+  state.permsRev = null;              // next user's first response reseeds it
+  state._permsRerenderPending = false;
+  state._permsLoaded = false;
   localStorage.removeItem('po_token');
   localStorage.removeItem('po_user');
   localStorage.removeItem('po_view');
@@ -2224,7 +2350,44 @@ async function renderCompanyInfo(el) {
       '<p class="text-muted mb-4" style="margin-bottom:16px">Approved time sheets are emailed here as an Excel attachment when a manager submits a week. Leave blank to fall back to the system sender address.</p>' +
       '<div class="form-group"><label>Payroll Email</label><input type="email" id="payroll-email" value="' + escHtml(settings.timeclock_payroll_email || '') + '" placeholder="e.g. payroll@popalockar.com" /></div>' +
       '<button class="btn btn-primary" onclick="savePayrollEmail()">Save Payroll Email</button>' +
-    '</div></div>';
+    '</div></div>' +
+    (can('manage_settings') ?
+    '<div class="card mt-4" style="margin-top:20px"><div class="card-header"><span class="card-title">App Updates</span></div><div class="card-body">' +
+      '<p class="text-muted mb-4" style="margin-bottom:16px">When a new version ships, anyone with Nova open is offered a &quot;Reload&quot; prompt automatically. Use the field below only when an old version is actually <strong>broken</strong> against the current server &mdash; any client below this number will clear its cache and reload itself on its next action. Users stay signed in.</p>' +
+      '<div class="alert alert-warning" style="margin-bottom:16px">This reloads <strong>every open Nova screen in the company</strong>, including anyone in the middle of a form. Leave it blank unless you need it.</div>' +
+      '<div class="form-group" style="max-width:280px"><label>Minimum Client Version</label>' +
+        '<input type="text" id="client-min-version" inputmode="numeric" value="' + escHtml(settings.client_min_version || '') + '" placeholder="blank = not enforced" />' +
+        '<div class="text-muted" style="font-size:12.5px;margin-top:6px">Current deployed version: <strong id="cmv-current">…</strong></div>' +
+      '</div>' +
+      '<button class="btn btn-primary" onclick="saveClientMinVersion()">Save Minimum Version</button>' +
+    '</div></div>' : '');
+  if (can('manage_settings')) {
+    fetch('/api/version', { cache: 'no-store' })
+      .then(function (r) { return r.ok ? r.json() : null; })
+      .then(function (d) {
+        var e = document.getElementById('cmv-current');
+        if (e && d && d.version) e.textContent = d.version;
+      }).catch(function () {});
+  }
+}
+
+async function saveClientMinVersion() {
+  var raw = ((document.getElementById('client-min-version') || {}).value || '').trim();
+  var digits = raw.replace(/[^0-9]/g, '');
+  if (raw && !digits) {
+    document.getElementById('settings-error').innerHTML = '<div class="alert alert-error">Enter a plain version number, e.g. 162.</div>';
+    return;
+  }
+  if (digits && !await novaConfirm('Force every open Nova session below version ' + digits + ' to reload? Anyone mid-form will lose unsaved work.')) return;
+  try {
+    if (digits) await api('PUT', '/settings/client_min_version', { value: digits });
+    else await api('DELETE', '/settings/client_min_version').catch(function(){});
+    document.getElementById('settings-success').innerHTML = '<div class="alert alert-success">' +
+      (digits ? 'Minimum version set to ' + escHtml(digits) + '. Older sessions will reload on their next action.' : 'Minimum version cleared.') + '</div>';
+    setTimeout(function () { var e = document.getElementById('settings-success'); if (e) e.innerHTML = ''; }, 5000);
+  } catch (err) {
+    document.getElementById('settings-error').innerHTML = '<div class="alert alert-error">' + escHtml(err.message) + '</div>';
+  }
 }
 
 async function renderAIContext(el) {
@@ -5207,10 +5370,9 @@ function quoteRenderPhotos(id, photos, canEdit) {
     if (canEdit) {
       var del = document.createElement('button');
       del.type = 'button';
-      del.className = 'btn btn-danger btn-sm';
+      del.className = 'btn btn-danger photo-del';
       del.innerHTML = '&times;';
       del.title = 'Delete photo';
-      del.style.cssText = 'position:absolute;top:4px;right:4px;padding:0;width:22px;height:22px;line-height:1;border-radius:50%';
       del.onclick = function() { deleteQuotePhoto(p.id, id, canEdit); };
       cell.appendChild(del);
     }
@@ -5294,10 +5456,9 @@ function renderPendingQuotePhotos() {
     cell.appendChild(img);
     var del = document.createElement('button');
     del.type = 'button';
-    del.className = 'btn btn-danger btn-sm';
+    del.className = 'btn btn-danger photo-del';
     del.innerHTML = '&times;';
     del.title = 'Remove photo';
-    del.style.cssText = 'position:absolute;top:4px;right:4px;padding:0;width:22px;height:22px;line-height:1;border-radius:50%';
     del.onclick = function() { removePendingQuotePhoto(i); };
     cell.appendChild(del);
     grid.appendChild(cell);
@@ -10624,14 +10785,17 @@ async function renderViewWorkOrder(el, id) {
 
   // Right side: the parsed fields (editable for managers until paperwork is sent).
   var fieldsEditable = manage && w.status !== 'paperwork_sent';
+  var isVeh = woIsVehicle(w);
   function fld(label, fid, val, ph) {
     if (!fieldsEditable) return '<div style="margin-bottom:12px"><div style="font-size:11px;font-weight:600;color:var(--text-muted-color);text-transform:uppercase;letter-spacing:0.04em;margin-bottom:3px">' + label + '</div><div style="font-size:14px">' + escHtml(val || '—') + '</div></div>';
     return '<div class="form-group"><label>' + label + '</label><input type="text" id="' + fid + '" value="' + escHtml(val || '') + '" placeholder="' + (ph || '') + '" /></div>';
   }
   var fieldsInner = fieldsEditable
     ? '<div class="form-row">' + fld('Account', 'wo-account_name', w.account_name) + fld('Account #', 'wo-account_number', w.account_number) + '</div>' +
-      fld('PO / WO #', 'wo-po_number', w.po_number) +
-      '<div class="form-row">' + fld('Store Name', 'wo-store_name', w.store_name) + fld('Store #', 'wo-store_number', w.store_number) + '</div>' +
+      '<div class="form-row">' + fld('Work Order #', 'wo-wo_number', w.wo_number) + fld('PO #', 'wo-po_number', w.po_number) + '</div>' +
+      (isVeh
+        ? '<div class="form-row">' + fld('Yard / Terminal', 'wo-yard_name', w.yard_name) + fld('Bay', 'wo-bay_location', w.bay_location) + '</div>'
+        : '<div class="form-row">' + fld('Store Name', 'wo-store_name', w.store_name) + fld('Store #', 'wo-store_number', w.store_number) + '</div>') +
       fld('Address', 'wo-address', w.address) +
       fld('City / State / Zip', 'wo-city_state_zip', w.city_state_zip) +
       '<div class="form-group"><label>Service Requested</label><textarea id="wo-service_requested">' + escHtml(w.service_requested || '') + '</textarea></div>' +
@@ -10641,8 +10805,12 @@ async function renderViewWorkOrder(el, id) {
       '<div class="form-group"><label>Priority</label><select id="wo-priority">' + ['low', 'normal', 'high', 'urgent'].map(function (p) { return '<option value="' + p + '"' + (w.priority === p ? ' selected' : '') + '>' + p + '</option>'; }).join('') + '</select></div>' +
       '<div class="form-group"><label>Notes</label><textarea id="wo-notes">' + escHtml(w.notes || '') + '</textarea></div>' +
       '<button class="btn btn-secondary" onclick="woSaveEdit(' + id + ')">Save changes</button>'
-    : fld('Account', '', w.account_name) + fld('Account #', '', w.account_number) + fld('PO / WO #', '', w.po_number) +
-      fld('Store', '', (w.store_name || '') + (w.store_number ? ' (#' + w.store_number + ')' : '')) + fld('Address', '', w.address) + fld('City / State / Zip', '', w.city_state_zip) +
+    : fld('Account', '', w.account_name) + fld('Account #', '', w.account_number) +
+      fld('Work Order #', '', w.wo_number) + fld('PO #', '', w.po_number) +
+      (isVeh
+        ? fld('Yard / Terminal', '', (w.yard_name || '') + (w.bay_location ? ' (Bay ' + w.bay_location + ')' : ''))
+        : fld('Store', '', (w.store_name || '') + (w.store_number ? ' (#' + w.store_number + ')' : ''))) +
+      fld('Address', '', w.address) + fld('City / State / Zip', '', w.city_state_zip) +
       fld('Service', '', w.service_requested) + fld('Requested By', '', w.service_requested_by) + fld('Needed By', '', w.needed_by ? formatDate(w.needed_by) : '') +
       fld('Contact', '', w.contact_name) + fld('Phone', '', w.contact_phone) + fld('Priority', '', w.priority) +
       (w.notes ? '<div style="margin-top:12px;padding:10px 12px;background:var(--bg-elevated);border-radius:6px;font-size:13px"><strong>Notes:</strong> ' + escHtml(w.notes) + '</div>' : '');
@@ -10657,6 +10825,13 @@ async function renderViewWorkOrder(el, id) {
     '<div id="wo-detail-error"></div>' +
     assignCard +
     (actions ? '<div class="card mb-4"><div class="card-body"><div class="flex-gap" style="flex-wrap:wrap">' + actions + '</div></div></div>' : '') +
+    woVehicleCard(w, id, manage) +
+    (!isVeh && manage
+      ? '<div class="card mb-4"><div class="card-body" style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">' +
+          '<span style="font-size:13px;color:var(--text-muted-color)">Filed as a site job. Is this work on a specific vehicle?</span>' +
+          '<button class="btn btn-secondary btn-sm" onclick="woSetJobType(' + id + ',\'vehicle\')">Mark as vehicle job</button>' +
+        '</div></div>'
+      : '') +
     '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(380px,1fr));gap:16px;align-items:start" class="mb-4">' + leftCard + rightCard + '</div>' +
     '<div class="card"><div class="card-header"><span class="card-title">Activity</span></div><div class="card-body">' +
       ((w.activity && w.activity.length)
@@ -10665,14 +10840,109 @@ async function renderViewWorkOrder(el, id) {
     '</div></div>';
 }
 
+// ---- Vehicle jobs (Fenkell / VEHI-TRAC port work) ---------------------------
+// The Vehicle card renders ONLY on vehicle jobs — a store rekey never sees it.
+// But inside the card every field always renders, blanks showing as an em-dash:
+// on a vehicle job a missing VIN is a SIGNAL that the parse failed, not a field to
+// hide. Hiding empties would make "no VIN on this job" look identical to "the AI
+// could not read the VIN", which is the exact failure we need to surface.
+function woIsVehicle(w) { return String(w && w.job_type || '').toLowerCase() === 'vehicle'; }
+
+function woVehField(label, val, extraStyle) {
+  var v = (val === null || val === undefined || String(val).trim() === '') ? '—' : String(val);
+  var muted = (v === '—') ? ';color:var(--text-muted-color)' : '';
+  return '<div style="margin-bottom:12px">' +
+    '<div style="font-size:11px;font-weight:600;color:var(--text-muted-color);text-transform:uppercase;letter-spacing:0.04em;margin-bottom:3px">' + escHtml(label) + '</div>' +
+    '<div style="font-size:14px' + muted + (extraStyle || '') + '">' + escHtml(v) + '</div></div>';
+}
+
+// Split the AI's special_instructions blob into bullets the tech can actually scan.
+function woInstructionLines(s) {
+  if (!s) return [];
+  // Lookahead only, no lookbehind — lookbehind is unsupported on older iOS Safari
+  // and this app is installed as a PWA on techs' phones.
+  return String(s)
+    .replace(/([.;])\s+(?=[A-Z*])/g, '$1\n')
+    .split(/\r?\n/)
+    .map(function (x) { return x.trim().replace(/^[-*\u2022]\s*/, ''); })
+    .filter(function (x) { return x.length > 1; });
+}
+
+function woVehicleCard(w, id, manage) {
+  if (!woIsVehicle(w)) return '';
+
+  var vin = w.vin || '';
+  var vinInner = vin
+    ? '<span style="font-family:ui-monospace,Menlo,Consolas,monospace;font-size:16px;font-weight:700;letter-spacing:0.09em">' + escHtml(vin) + '</span>' +
+      '<button class="btn btn-secondary btn-sm" style="flex-shrink:0" onclick="copyToClipboard(\'' + escHtml(vin) + '\', this)">Copy</button>'
+    : '<span style="color:#fca5a5;font-weight:600">No VIN could be read — open the form and enter it</span>';
+  var vinBox = '<div style="margin-bottom:12px">' +
+    '<div style="font-size:11px;font-weight:600;color:var(--text-muted-color);text-transform:uppercase;letter-spacing:0.04em;margin-bottom:3px">VIN</div>' +
+    '<div style="display:flex;align-items:center;justify-content:space-between;gap:10px;background:var(--bg-elevated);' +
+    'border:1px solid ' + (vin ? 'var(--border-color)' : 'rgba(239,68,68,0.45)') + ';border-radius:6px;padding:9px 12px">' + vinInner + '</div></div>';
+
+  var repair = w.repair_code
+    ? '<span style="display:inline-block;background:rgba(239,68,68,0.13);border:1px solid rgba(239,68,68,0.35);color:#fca5a5;' +
+      'border-radius:6px;padding:4px 10px;font-weight:700;font-size:12.5px;letter-spacing:0.03em">' + escHtml(w.repair_code) + '</span>'
+    : '<span style="color:var(--text-muted-color)">—</span>';
+  var repairFld = '<div style="margin-bottom:12px">' +
+    '<div style="font-size:11px;font-weight:600;color:var(--text-muted-color);text-transform:uppercase;letter-spacing:0.04em;margin-bottom:3px">Repair Code</div>' +
+    '<div style="font-size:14px">' + repair + '</div></div>';
+
+  var lines = woInstructionLines(w.special_instructions);
+  var callout = lines.length
+    ? '<div style="background:rgba(245,158,11,0.08);border:1px solid rgba(245,158,11,0.4);border-left:3px solid #f59e0b;' +
+      'border-radius:8px;padding:12px 14px;margin-top:4px">' +
+      '<div style="font-size:11px;font-weight:700;color:#fcd34d;text-transform:uppercase;letter-spacing:0.05em;margin-bottom:7px">' +
+      '&#9888; Special Instructions — read before dispatch</div>' +
+      '<ul style="margin:0;padding-left:17px">' +
+      lines.map(function (x) { return '<li style="margin-bottom:4px;font-size:13px;color:#fde68a">' + escHtml(x) + '</li>'; }).join('') +
+      '</ul></div>'
+    : '';
+
+  var gridStyle = 'display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:14px';
+  return '<div class="card mb-4" style="border-color:rgba(249,115,22,0.35)">' +
+    '<div class="card-header" style="background:rgba(249,115,22,0.06)">' +
+      '<span class="card-title">Vehicle</span>' +
+      (manage ? '<button class="btn btn-secondary btn-sm" onclick="woSetJobType(' + id + ',\'site\')">Not a vehicle job</button>' : '') +
+    '</div>' +
+    '<div class="card-body">' +
+      vinBox +
+      '<div style="' + gridStyle + '">' +
+        woVehField('Year', w.vehicle_year) +
+        woVehField('Make', w.vehicle_make) +
+        woVehField('Model', w.vehicle_model) +
+      '</div>' +
+      '<div style="' + gridStyle + '">' +
+        woVehField('Mileage', w.vehicle_mileage) +
+        repairFld +
+        woVehField('Claim ID', w.claim_id) +
+      '</div>' +
+      (callout ? '<hr style="border:0;border-top:1px solid var(--border-color);margin:14px 0" />' + callout : '') +
+    '</div></div>';
+}
+
+// Manager override. The AI decides job type at parse time; this is the escape hatch
+// when it guesses wrong. The change is logged to the work order activity by the API.
+async function woSetJobType(id, jobType) {
+  try { await api('PUT', '/work-orders/' + id, { job_type: jobType }); navigate('view-work-order', id); }
+  catch (e) { var er = document.getElementById('wo-detail-error'); if (er) er.innerHTML = '<div class="alert alert-error">' + escHtml(e.message) + '</div>'; }
+}
+
 function woGet(fid) { var e = document.getElementById(fid); return e ? e.value.trim() : undefined; }
 async function woSaveEdit(id) {
   var body = {
-    account_name: woGet('wo-account_name'), account_number: woGet('wo-account_number'), po_number: woGet('wo-po_number'),
-    store_name: woGet('wo-store_name'), store_number: woGet('wo-store_number'), address: woGet('wo-address'), city_state_zip: woGet('wo-city_state_zip'),
+    account_name: woGet('wo-account_name'), account_number: woGet('wo-account_number'),
+    wo_number: woGet('wo-wo_number'), po_number: woGet('wo-po_number'),
+    store_name: woGet('wo-store_name'), store_number: woGet('wo-store_number'),
+    yard_name: woGet('wo-yard_name'), bay_location: woGet('wo-bay_location'),
+    address: woGet('wo-address'), city_state_zip: woGet('wo-city_state_zip'),
     service_requested: woGet('wo-service_requested'), service_requested_by: woGet('wo-service_requested_by'), needed_by: woGet('wo-needed_by'),
     contact_name: woGet('wo-contact_name'), contact_phone: woGet('wo-contact_phone'), priority: woGet('wo-priority'), notes: woGet('wo-notes')
   };
+  // Only send keys the form actually rendered — a vehicle job has no store inputs and
+  // a site job has no yard inputs, and undefined means "leave it alone" on the API.
+  Object.keys(body).forEach(function (k) { if (body[k] === undefined) delete body[k]; });
   try { await api('PUT', '/work-orders/' + id, body); navigate('view-work-order', id); }
   catch (e) { var er = document.getElementById('wo-detail-error'); if (er) er.innerHTML = '<div class="alert alert-error">' + escHtml(e.message) + '</div>'; }
 }

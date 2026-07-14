@@ -42,6 +42,21 @@ function dateOrNull(v) {
   if (!s) return null;
   return /^\d{4}-\d{2}-\d{2}$/.test(s) ? s : null;
 }
+// VINs are printed one character per box on these forms, so the AI can hand back
+// "5 L M P J 8 K A 3 T J 0 6 2 3 3 7". Strip everything that is not a VIN character.
+function normalizeVin(v) {
+  const s = strOrNull(v);
+  if (!s) return null;
+  const clean = s.toUpperCase().replace(/[^A-HJ-NPR-Z0-9]/g, '');
+  return clean.length >= 11 ? clean.slice(0, 17) : null;
+}
+// Trust the AI's call, but a VIN or a vehicle repair code is decisive on its own.
+function jobTypeOf(parsed) {
+  const t = String((parsed && parsed.job_type) || '').toLowerCase();
+  if (t === 'vehicle') return 'vehicle';
+  if (t === 'site') return 'site';
+  return normalizeVin(parsed && parsed.vin) ? 'vehicle' : 'site';
+}
 
 async function genWoRef() {
   const year = new Date().getFullYear();
@@ -102,17 +117,52 @@ async function resolveAccount(parsed) {
   return { account_id: null, city_code: null };
 }
 
+// Derive the city from the SERVICE address rather than the account.
+// A dispatcher like Fenkell is a Michigan company that sends jobs to whichever city
+// the vehicle happens to be sitting in, so inheriting city_code from the vendor row
+// files a Jacksonville job under Michigan. For vehicle jobs (and any account with no
+// city of its own) we match the service location against the cities table instead.
+// Returns null when nothing matches, which leaves the work order flagged for review.
+async function deriveCityCode(parsed, acct) {
+  const isVehicle = parsed && String(parsed.job_type || '').toLowerCase() === 'vehicle';
+  if (acct && acct.city_code && !isVehicle) return acct.city_code;
+
+  const hay = [
+    strOrNull(parsed && parsed.city_state_zip),
+    strOrNull(parsed && parsed.yard_name),
+    strOrNull(parsed && parsed.address)
+  ].filter(Boolean).join(' ').toUpperCase();
+  if (!hay) return acct ? (acct.city_code || null) : null;
+
+  try {
+    const { rows } = await pool.query("SELECT code, name FROM cities WHERE active = true AND name IS NOT NULL AND TRIM(name) <> ''");
+    // Longest city name first so "West Palm Beach" beats "Palm Beach".
+    rows.sort(function (a, b) { return String(b.name).length - String(a.name).length; });
+    for (let i = 0; i < rows.length; i++) {
+      if (hay.indexOf(String(rows[i].name).toUpperCase()) !== -1) return rows[i].code;
+    }
+    // Fall back to a bare 3-letter code appearing in the yard string (e.g. "JAX").
+    for (let i = 0; i < rows.length; i++) {
+      const re = new RegExp('\\b' + String(rows[i].code).toUpperCase() + '\\b');
+      if (re.test(hay)) return rows[i].code;
+    }
+  } catch (e) { console.error('[work-orders] deriveCityCode failed:', e.message); }
+  return acct ? (acct.city_code || null) : null;
+}
+
 // Create a pending sign-off sheet from a work order row. Returns signoff id.
 async function createSignoffForWO(wo, systemUserId, assignedTo) {
   const formNumber = await genSignoffNumber();
   const notesParts = [];
   if (wo.service_requested) notesParts.push(wo.service_requested);
+  if (wo.special_instructions) notesParts.push(wo.special_instructions);
   if (wo.notes) notesParts.push(wo.notes);
   const { rows } = await pool.query(
     'INSERT INTO signoff_forms (form_number, status, wo_number, po_number, account, store_name, store_number, address, city_state_zip, service_requested_by, notes, created_by, assigned_to) ' +
     "VALUES ($1,'pending',$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12) RETURNING id",
-    [formNumber, wo.po_number || null, wo.po_number || null, wo.account_name || null, wo.store_name || null,
-     wo.store_number || null, wo.address || null, wo.city_state_zip || null, wo.service_requested_by || null,
+    [formNumber, wo.wo_number || wo.po_number || null, wo.po_number || null, wo.account_name || null,
+     wo.store_name || wo.yard_name || null,
+     wo.store_number || wo.bay_location || null, wo.address || null, wo.city_state_zip || null, wo.service_requested_by || null,
      notesParts.join(' — ') || null, systemUserId,
      ((assignedTo !== undefined && assignedTo !== null) ? assignedTo : (wo.assigned_to || null))]
   );
@@ -151,20 +201,17 @@ async function processMessage(msg, conf, mailbox, knownAccounts) {
   const dup = await pool.query('SELECT id FROM work_orders WHERE email_message_id = $1', [msg.internetMessageId]);
   if (dup.rows.length) return 'duplicate';
 
-  // Keyword gate — skip obvious non-work-orders entirely
-  if (!looksLikeWorkOrder(msg.subject, msg.bodyText)) return 'ignored';
+  // Gate. The keyword list reads only the SUBJECT and BODY, but a dispatcher like
+  // Fenkell puts the whole work order inside an attached form and sends a one-line
+  // cover note — that used to be silently dropped here, before the PDF was ever
+  // opened. So: if the message carries no document at all AND trips no keyword, it
+  // is not a work order and we stop. If it has a document, we always read it and let
+  // the AI's is_work_order flag be the real filter.
+  const mightHaveDoc = !!(msg.hasAttachments || (msg.attachments || []).length);
+  if (!mightHaveDoc && !looksLikeWorkOrder(msg.subject, msg.bodyText, false)) return 'ignored';
 
-  const woRef = await genWoRef();
-  // Insert the base row first so we always capture the email even if parsing fails.
-  const ins = await pool.query(
-    'INSERT INTO work_orders (wo_ref, source, status, email_message_id, email_from, email_subject, email_received_at, email_body) ' +
-    "VALUES ($1,'email','received',$2,$3,$4,$5,$6) RETURNING id",
-    [woRef, msg.internetMessageId, msg.fromAddress || null, msg.subject || null, msg.receivedDateTime || null, msg.bodyText || null]
-  );
-  const woId = ins.rows[0].id;
-
-  // Fetch + store attachments (images/pdf, under cap). Only happens here, after
-  // dedup + keyword gate, so attachments are downloaded once per NEW message.
+  // Fetch attachments BEFORE creating the row, so a message that turns out to carry
+  // nothing usable (e.g. only an inline signature logo) can still be dropped cleanly.
   let rawAtts = msg.attachments || [];
   if (!rawAtts.length && msg.hasAttachments && mailbox) {
     try { rawAtts = await getMessageAttachments(mailbox, msg.id); }
@@ -182,6 +229,19 @@ async function processMessage(msg, conf, mailbox, knownAccounts) {
     if (!isPdf && !isImg) return;      // only docs/images go to storage + AI
     usable.push({ filename: a.filename || null, mime: isPdf ? 'application/pdf' : (mime || 'image/jpeg'), contentBytes: a.contentBytes, size: a.size || null });
   });
+
+  // Now the real gate, with the document in hand.
+  if (!looksLikeWorkOrder(msg.subject, msg.bodyText, usable.length > 0)) return 'ignored';
+
+  const woRef = await genWoRef();
+  // Insert the base row so we always capture the email even if parsing fails.
+  const ins = await pool.query(
+    'INSERT INTO work_orders (wo_ref, source, status, email_message_id, email_from, email_subject, email_received_at, email_body) ' +
+    "VALUES ($1,'email','received',$2,$3,$4,$5,$6) RETURNING id",
+    [woRef, msg.internetMessageId, msg.fromAddress || null, msg.subject || null, msg.receivedDateTime || null, msg.bodyText || null]
+  );
+  const woId = ins.rows[0].id;
+
   for (let i = 0; i < usable.length; i++) {
     const a = usable[i];
     await pool.query(
@@ -211,6 +271,7 @@ async function processMessage(msg, conf, mailbox, knownAccounts) {
   }
 
   const acct = await resolveAccount(parsed);
+  const cityCode = await deriveCityCode(parsed, acct);
   const needed = dateOrNull(parsed.needed_by);
   let priority = 'normal';
   if (needed) {
@@ -218,18 +279,30 @@ async function processMessage(msg, conf, mailbox, knownAccounts) {
     if (days <= 1) priority = 'urgent';
     else if (days <= 3) priority = 'high';
   }
+  const jobType = jobTypeOf(parsed);
 
   await pool.query(
     'UPDATE work_orders SET account_id=$1, account_name=$2, account_number=$3, city_code=$4, po_number=$5, wo_number=$6, ' +
     'store_name=$7, store_number=$8, address=$9, city_state_zip=$10, service_requested=$11, service_requested_by=$12, ' +
-    'contact_name=$13, contact_phone=$14, needed_by=$15, notes=$16, parsed=$17, confidence=$18, priority=$19, updated_at=NOW() WHERE id=$20',
-    [acct.account_id, strOrNull(parsed.account_name), strOrNull(parsed.account_number), acct.city_code,
+    'contact_name=$13, contact_phone=$14, needed_by=$15, notes=$16, parsed=$17, confidence=$18, priority=$19, ' +
+    'job_type=$20, claim_id=$21, vin=$22, vehicle_year=$23, vehicle_make=$24, vehicle_model=$25, vehicle_mileage=$26, ' +
+    'repair_code=$27, yard_name=$28, bay_location=$29, special_instructions=$30, updated_at=NOW() WHERE id=$31',
+    [acct.account_id, strOrNull(parsed.account_name), strOrNull(parsed.account_number), cityCode,
      strOrNull(parsed.po_number), strOrNull(parsed.wo_number), strOrNull(parsed.store_name), strOrNull(parsed.store_number),
      strOrNull(parsed.address), strOrNull(parsed.city_state_zip), strOrNull(parsed.service_requested), strOrNull(parsed.service_requested_by),
      strOrNull(parsed.contact_name), strOrNull(parsed.contact_phone), needed, strOrNull(parsed.notes),
-     JSON.stringify(parsed), strOrNull(parsed.confidence), priority, woId]
+     JSON.stringify(parsed), strOrNull(parsed.confidence), priority,
+     jobType, strOrNull(parsed.claim_id), normalizeVin(parsed.vin), strOrNull(parsed.vehicle_year),
+     strOrNull(parsed.vehicle_make), strOrNull(parsed.vehicle_model), strOrNull(parsed.vehicle_mileage),
+     strOrNull(parsed.repair_code), strOrNull(parsed.yard_name), strOrNull(parsed.bay_location),
+     strOrNull(parsed.special_instructions), woId]
   );
-  await addActivity(woId, null, 'event', 'received by email and parsed (confidence: ' + (strOrNull(parsed.confidence) || 'n/a') + ')');
+  await addActivity(woId, null, 'event', 'received by email and parsed as a ' + jobType + ' job (confidence: ' + (strOrNull(parsed.confidence) || 'n/a') + ')');
+  // A vehicle job with no VIN is the one failure worth shouting about — the VIN IS
+  // the job. Leave a breadcrumb so whoever reviews it knows to open the PDF.
+  if (jobType === 'vehicle' && !normalizeVin(parsed.vin)) {
+    await addActivity(woId, null, 'event', 'no VIN could be read from this work order — check the attached form');
+  }
 
   // Optionally create the pending sign-off now
   if (conf.signoffOn !== 'accept') {
@@ -291,6 +364,9 @@ function startWorkOrders() {
 }
 
 module.exports = {
+  deriveCityCode: deriveCityCode,
+  normalizeVin: normalizeVin,
+  jobTypeOf: jobTypeOf,
   runIngest: runIngest,
   processMessage: processMessage,
   createSignoffForWO: createSignoffForWO,

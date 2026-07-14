@@ -71,7 +71,11 @@ try {
   var vMatch = swSrc.match(/CACHE_VERSION\s*=\s*['"]nova-([^'"]+)['"]/);
   if (vMatch) APP_VERSION = vMatch[1];
 } catch (e) { console.error('Could not read app version from sw.js:', e.message); }
-app.get('/api/version', function (req, res) { res.json({ version: APP_VERSION }); });
+app.get('/api/version', async function (req, res) {
+  var minVersion = '';
+  try { minVersion = await require('./utils/clientVersion').minVersion(); } catch (e) { minVersion = ''; }
+  res.json({ version: APP_VERSION, minVersion: minVersion });
+});
 
 app.use('/api/', generalLimiter);
 app.use('/api/auth/login', loginLimiter);

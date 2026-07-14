@@ -23,6 +23,11 @@ function dateOrNull(v) {
   return /^\d{4}-\d{2}-\d{2}$/.test(s) ? s : null;
 }
 async function canManage(req) { return perms.hasPermission(req.user.role, 'manage_work_orders'); }
+// Only 'vehicle' or 'site' are ever stored. Anything else falls back to 'site'.
+function jobTypeIn(b) {
+  const v = String((b && b.job_type) || '').toLowerCase();
+  return v === 'vehicle' ? 'vehicle' : 'site';
+}
 
 // Shared-secret guard for the cron/manual ingest endpoint (matches geico pattern)
 function keyAuth(req, res, next) {
@@ -74,11 +79,15 @@ router.get('/', requireAuth, requirePermission('view_work_orders'), async (req, 
     if (req.query.from) add('created_at >= $$', req.query.from);
     if (req.query.to) add('created_at < $$', req.query.to);
     if (req.query.q) {
-      const like = '%' + req.query.q + '%';
+      // A tech pastes a VIN off the form, sometimes with the spaces still in it.
+      const rawQ = String(req.query.q).trim();
+      const vinish = /^[A-Za-z0-9 \-]{11,25}$/.test(rawQ) ? rawQ.replace(/[ \-]/g, '') : rawQ;
+      const like = '%' + vinish + '%';
       params.push(like);
       const p = '$' + params.length;
       where.push('(account_name ILIKE ' + p + ' OR store_name ILIKE ' + p + ' OR store_number ILIKE ' + p +
-        ' OR service_requested ILIKE ' + p + ' OR po_number ILIKE ' + p + ' OR wo_number ILIKE ' + p + ' OR wo_ref ILIKE ' + p + ')');
+        ' OR service_requested ILIKE ' + p + ' OR po_number ILIKE ' + p + ' OR wo_number ILIKE ' + p + ' OR wo_ref ILIKE ' + p +
+        ' OR vin ILIKE ' + p + ' OR claim_id ILIKE ' + p + ' OR yard_name ILIKE ' + p + ' OR bay_location ILIKE ' + p + ')');
     }
     const whereSql = where.length ? ('WHERE ' + where.join(' AND ')) : '';
     const limit = Math.min(parseInt(req.query.limit, 10) || 25, 200);
@@ -89,6 +98,7 @@ router.get('/', requireAuth, requirePermission('view_work_orders'), async (req, 
 
     const listSql =
       'SELECT w.id, w.wo_ref, w.source, w.status, w.priority, w.account_name, w.store_name, w.store_number, ' +
+      '       w.job_type, w.vin, w.vehicle_year, w.vehicle_make, w.vehicle_model, w.yard_name, w.bay_location, ' +
       '       w.service_requested, w.needed_by, w.confidence, w.assigned_to, a.name AS assignee_name, ' +
       '       w.signoff_id, w.email_received_at, w.created_at, ' +
       "       (SELECT COUNT(*) FROM work_order_attachments x WHERE x.work_order_id = w.id)::int AS attachment_count " +
@@ -159,12 +169,16 @@ router.post('/', requireAuth, requirePermission('manage_work_orders'), async (re
     const acct = await resolveAccountId(b.account_number, b.account_name);
     const { rows } = await pool.query(
       'INSERT INTO work_orders (wo_ref, source, status, priority, account_id, account_name, account_number, city_code, po_number, wo_number, ' +
-      'store_name, store_number, address, city_state_zip, service_requested, service_requested_by, contact_name, contact_phone, needed_by, notes, created_by, assigned_to) ' +
-      "VALUES ($1,'manual','received',$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20) RETURNING id",
+      'store_name, store_number, address, city_state_zip, service_requested, service_requested_by, contact_name, contact_phone, needed_by, notes, created_by, assigned_to, ' +
+      'job_type, claim_id, vin, vehicle_year, vehicle_make, vehicle_model, vehicle_mileage, repair_code, yard_name, bay_location, special_instructions) ' +
+      "VALUES ($1,'manual','received',$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31) RETURNING id",
       [woRef, PRIORITIES.indexOf(b.priority) !== -1 ? b.priority : 'normal', acct.account_id, strOrNull(b.account_name), strOrNull(b.account_number), acct.city_code,
        strOrNull(b.po_number), strOrNull(b.wo_number), strOrNull(b.store_name), strOrNull(b.store_number), strOrNull(b.address), strOrNull(b.city_state_zip),
        strOrNull(b.service_requested), strOrNull(b.service_requested_by), strOrNull(b.contact_name), strOrNull(b.contact_phone), dateOrNull(b.needed_by), strOrNull(b.notes), req.user.id,
-       (b.assigned_to ? parseInt(b.assigned_to, 10) : null)]
+       (b.assigned_to ? parseInt(b.assigned_to, 10) : null),
+       jobTypeIn(b), strOrNull(b.claim_id), woJob.normalizeVin(b.vin), strOrNull(b.vehicle_year), strOrNull(b.vehicle_make),
+       strOrNull(b.vehicle_model), strOrNull(b.vehicle_mileage), strOrNull(b.repair_code), strOrNull(b.yard_name),
+       strOrNull(b.bay_location), strOrNull(b.special_instructions)]
     );
     const id = rows[0].id;
     await woJob.addActivity(id, req.user, 'event', 'created this work order manually');
@@ -196,17 +210,33 @@ router.put('/:id', requireAuth, requirePermission('manage_work_orders'), async (
     const b = req.body || {};
     function pick(k, cur) { return b[k] !== undefined ? strOrNull(b[k]) : cur; }
     const acct = await resolveAccountId(b.account_number !== undefined ? b.account_number : ex.account_number, b.account_name !== undefined ? b.account_name : ex.account_name);
+    // City: a manual edit to the city wins. Otherwise keep what is already there —
+    // never let re-resolving the vendor stomp a city that was derived from the
+    // service address (Fenkell is a Michigan dispatcher sending jobs nationwide).
+    const cityCode = (b.city_code !== undefined) ? strOrNull(b.city_code) : (ex.city_code || acct.city_code);
+    const newJobType = (b.job_type !== undefined) ? jobTypeIn(b) : (ex.job_type || 'site');
+
     await pool.query(
       'UPDATE work_orders SET account_id=$1, account_name=$2, account_number=$3, city_code=$4, po_number=$5, wo_number=$6, store_name=$7, store_number=$8, ' +
       'address=$9, city_state_zip=$10, service_requested=$11, service_requested_by=$12, contact_name=$13, contact_phone=$14, needed_by=$15, notes=$16, ' +
-      'priority=$17, assigned_to=$18, updated_at=NOW() WHERE id=$19',
-      [acct.account_id, pick('account_name', ex.account_name), pick('account_number', ex.account_number), acct.city_code,
+      'priority=$17, assigned_to=$18, ' +
+      'job_type=$19, claim_id=$20, vin=$21, vehicle_year=$22, vehicle_make=$23, vehicle_model=$24, vehicle_mileage=$25, ' +
+      'repair_code=$26, yard_name=$27, bay_location=$28, special_instructions=$29, updated_at=NOW() WHERE id=$30',
+      [acct.account_id, pick('account_name', ex.account_name), pick('account_number', ex.account_number), cityCode,
        pick('po_number', ex.po_number), pick('wo_number', ex.wo_number), pick('store_name', ex.store_name), pick('store_number', ex.store_number),
        pick('address', ex.address), pick('city_state_zip', ex.city_state_zip), pick('service_requested', ex.service_requested), pick('service_requested_by', ex.service_requested_by),
        pick('contact_name', ex.contact_name), pick('contact_phone', ex.contact_phone), b.needed_by !== undefined ? dateOrNull(b.needed_by) : ex.needed_by, pick('notes', ex.notes),
        (b.priority !== undefined && PRIORITIES.indexOf(b.priority) !== -1) ? b.priority : ex.priority,
-       b.assigned_to !== undefined ? (b.assigned_to ? parseInt(b.assigned_to, 10) : null) : ex.assigned_to, req.params.id]
+       b.assigned_to !== undefined ? (b.assigned_to ? parseInt(b.assigned_to, 10) : null) : ex.assigned_to,
+       newJobType, pick('claim_id', ex.claim_id),
+       b.vin !== undefined ? woJob.normalizeVin(b.vin) : ex.vin,
+       pick('vehicle_year', ex.vehicle_year), pick('vehicle_make', ex.vehicle_make), pick('vehicle_model', ex.vehicle_model),
+       pick('vehicle_mileage', ex.vehicle_mileage), pick('repair_code', ex.repair_code), pick('yard_name', ex.yard_name),
+       pick('bay_location', ex.bay_location), pick('special_instructions', ex.special_instructions), req.params.id]
     );
+    if (b.job_type !== undefined && newJobType !== (ex.job_type || 'site')) {
+      await woJob.addActivity(req.params.id, req.user, 'event', 'changed the job type from ' + (ex.job_type || 'site') + ' to ' + newJobType);
+    }
     await woJob.addActivity(req.params.id, req.user, 'event', 'edited the work order');
     try { await logAudit({ entity_type: 'work_order', entity_id: parseInt(req.params.id), entity_number: ex.wo_ref, action: 'edited', user_id: req.user.id, user_name: req.user.name }); } catch (e) {}
     res.json(await loadWorkOrder(req.params.id));
@@ -283,16 +313,27 @@ router.post('/:id/reparse', requireAuth, requirePermission('manage_work_orders')
     try { parsed = await parseWorkOrderEmail(ex.email_body || '', attachments, knownAccounts); }
     catch (e) { return res.status(502).json({ error: 'AI parse failed: ' + e.message }); }
     const acct = await resolveAccountId(parsed.account_number, parsed.account_name);
+    const cityCode = await woJob.deriveCityCode(parsed, acct);
+    const jobType = woJob.jobTypeOf(parsed);
     await pool.query(
       'UPDATE work_orders SET account_id=$1, account_name=$2, account_number=$3, city_code=$4, po_number=$5, wo_number=$6, store_name=$7, store_number=$8, ' +
       'address=$9, city_state_zip=$10, service_requested=$11, service_requested_by=$12, contact_name=$13, contact_phone=$14, needed_by=$15, notes=$16, ' +
-      'parsed=$17, confidence=$18, updated_at=NOW() WHERE id=$19',
-      [acct.account_id, strOrNull(parsed.account_name), strOrNull(parsed.account_number), acct.city_code, strOrNull(parsed.po_number), strOrNull(parsed.wo_number),
+      'parsed=$17, confidence=$18, ' +
+      'job_type=$19, claim_id=$20, vin=$21, vehicle_year=$22, vehicle_make=$23, vehicle_model=$24, vehicle_mileage=$25, ' +
+      'repair_code=$26, yard_name=$27, bay_location=$28, special_instructions=$29, updated_at=NOW() WHERE id=$30',
+      [acct.account_id, strOrNull(parsed.account_name), strOrNull(parsed.account_number), cityCode, strOrNull(parsed.po_number), strOrNull(parsed.wo_number),
        strOrNull(parsed.store_name), strOrNull(parsed.store_number), strOrNull(parsed.address), strOrNull(parsed.city_state_zip), strOrNull(parsed.service_requested),
        strOrNull(parsed.service_requested_by), strOrNull(parsed.contact_name), strOrNull(parsed.contact_phone), dateOrNull(parsed.needed_by), strOrNull(parsed.notes),
-       JSON.stringify(parsed), strOrNull(parsed.confidence), req.params.id]
+       JSON.stringify(parsed), strOrNull(parsed.confidence),
+       jobType, strOrNull(parsed.claim_id), woJob.normalizeVin(parsed.vin), strOrNull(parsed.vehicle_year),
+       strOrNull(parsed.vehicle_make), strOrNull(parsed.vehicle_model), strOrNull(parsed.vehicle_mileage),
+       strOrNull(parsed.repair_code), strOrNull(parsed.yard_name), strOrNull(parsed.bay_location),
+       strOrNull(parsed.special_instructions), req.params.id]
     );
-    await woJob.addActivity(req.params.id, req.user, 'event', 're-parsed with AI');
+    await woJob.addActivity(req.params.id, req.user, 'event', 're-parsed with AI as a ' + jobType + ' job');
+    if (jobType === 'vehicle' && !woJob.normalizeVin(parsed.vin)) {
+      await woJob.addActivity(req.params.id, req.user, 'event', 'no VIN could be read from this work order — check the attached form');
+    }
     res.json(await loadWorkOrder(req.params.id));
   } catch (err) { console.error(err); res.status(500).json({ error: 'Failed to reparse' }); }
 });

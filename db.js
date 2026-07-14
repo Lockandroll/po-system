@@ -780,6 +780,27 @@ async function initDB() {
       'CREATE INDEX IF NOT EXISTS idx_wo_att ON work_order_attachments(work_order_id);' +
       'CREATE INDEX IF NOT EXISTS idx_wo_act ON work_order_activity(work_order_id);'
     );
+    // Work Orders — vehicle jobs (Fenkell / VEHI-TRAC port work). The module was
+    // originally shaped for SITE jobs (rekey a retail store: account + store # +
+    // address) and had nowhere to put a VIN, so vehicle details were being dropped
+    // and the railyard was landing in store_name. These are additive + nullable;
+    // existing site work orders are unaffected. NOTE: CREATE TABLE IF NOT EXISTS
+    // above will NOT add these to the existing prod table — they need explicit ALTERs.
+    await client.query(
+      "ALTER TABLE work_orders ADD COLUMN IF NOT EXISTS job_type VARCHAR(10) NOT NULL DEFAULT 'site';" +
+      'ALTER TABLE work_orders ADD COLUMN IF NOT EXISTS claim_id VARCHAR(100);' +
+      'ALTER TABLE work_orders ADD COLUMN IF NOT EXISTS vin VARCHAR(20);' +
+      'ALTER TABLE work_orders ADD COLUMN IF NOT EXISTS vehicle_year VARCHAR(10);' +
+      'ALTER TABLE work_orders ADD COLUMN IF NOT EXISTS vehicle_make VARCHAR(60);' +
+      'ALTER TABLE work_orders ADD COLUMN IF NOT EXISTS vehicle_model VARCHAR(60);' +
+      'ALTER TABLE work_orders ADD COLUMN IF NOT EXISTS vehicle_mileage VARCHAR(20);' +
+      'ALTER TABLE work_orders ADD COLUMN IF NOT EXISTS repair_code VARCHAR(80);' +
+      'ALTER TABLE work_orders ADD COLUMN IF NOT EXISTS yard_name VARCHAR(255);' +
+      'ALTER TABLE work_orders ADD COLUMN IF NOT EXISTS bay_location VARCHAR(100);' +
+      'ALTER TABLE work_orders ADD COLUMN IF NOT EXISTS special_instructions TEXT;' +
+      'CREATE INDEX IF NOT EXISTS idx_wo_vin ON work_orders(vin);' +
+      'CREATE INDEX IF NOT EXISTS idx_wo_job_type ON work_orders(job_type);'
+    );
     // Scheduling — manager-built weekly shift schedule (Sling-style). Wall-clock
     // times (shift_date + start/end time) keep the grid DST-proof for the local day.
     await client.query(

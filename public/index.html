@@ -131,6 +131,7 @@
     .btn-secondary { background: var(--bg-elevated); color: var(--text-dim); border: 1px solid var(--border); }
     .btn-secondary:hover { background: #2a2a2a; color: var(--text); }
     .btn-sm { padding: 5px 10px; font-size: 13px; }
+    .photo-del { position: absolute; top: 4px; right: 4px; display: flex; align-items: center; justify-content: center; width: 22px; height: 22px; min-height: 22px; padding: 0; border-radius: 50%; font-size: 14px; line-height: 1; font-weight: 700; }
     .btn svg { width: 15px; height: 15px; flex-shrink: 0; }
     .nova-info { position: relative; display: inline-flex; align-items: center; cursor: pointer; margin: 0 2px 0 5px; vertical-align: middle; }
     .nova-info .ni-ico { width: 14px; height: 14px; border-radius: 50%; border: 1px solid var(--text-muted-color); color: var(--text-muted-color); font-size: 10px; font-weight: 700; font-style: normal; display: inline-flex; align-items: center; justify-content: center; line-height: 1; font-family: Georgia, serif; }
@@ -376,10 +377,70 @@
 <script>
 if ('serviceWorker' in navigator) {
   window.addEventListener('load', function () {
-    navigator.serviceWorker.register('/sw.js').catch(function (err) {
+    navigator.serviceWorker.register('/sw.js').then(function (reg) {
+      if (!reg) return;
+
+      // The service worker serves cached assets stale-while-revalidate, so a new
+      // deploy would otherwise only land on the NEXT full page load. On an installed
+      // PWA that may never happen — people leave Nova open for weeks. So: poll for a
+      // new worker, and when one is ready, offer a reload.
+      function checkForUpdate() { try { reg.update(); } catch (e) {} }
+      setInterval(checkForUpdate, 15 * 60 * 1000);
+      document.addEventListener('visibilitychange', function () {
+        if (document.visibilityState === 'visible') checkForUpdate();
+      });
+
+      reg.addEventListener('updatefound', function () {
+        var nw = reg.installing;
+        if (!nw) return;
+        nw.addEventListener('statechange', function () {
+          // controller check: on a FIRST install there is nothing to update from,
+          // and we must not nag a brand-new visitor.
+          if (nw.state === 'installed' && navigator.serviceWorker.controller) {
+            showUpdateBar(function () { nw.postMessage('SKIP_WAITING'); });
+          }
+        });
+      });
+    }).catch(function (err) {
       console.warn('SW registration failed:', err);
     });
   });
+
+  // The new worker took over (either via the bar below, or via a force reset).
+  // Reload once so the page is running the code the worker is now serving.
+  var _swReloading = false;
+  navigator.serviceWorker.addEventListener('controllerchange', function () {
+    if (_swReloading) return;
+    _swReloading = true;
+    location.reload();
+  });
+}
+
+// A quiet bar rather than an automatic reload — someone is always mid-form.
+function showUpdateBar(onReload) {
+  if (document.getElementById('nova-update-bar')) return;
+  var bar = document.createElement('div');
+  bar.id = 'nova-update-bar';
+  bar.style.cssText = 'position:fixed;left:50%;transform:translateX(-50%);bottom:20px;z-index:99999;' +
+    'display:flex;align-items:center;gap:14px;padding:11px 14px 11px 16px;border-radius:10px;' +
+    'background:#1a1a1a;border:1px solid #333;box-shadow:0 8px 24px rgba(0,0,0,.45);' +
+    'font-size:13.5px;color:#eee;max-width:calc(100vw - 32px);' +
+    'padding-bottom:calc(11px + env(safe-area-inset-bottom))';
+  var msg = document.createElement('span');
+  msg.textContent = 'A new version of Nova is available.';
+  var btn = document.createElement('button');
+  btn.textContent = 'Reload';
+  btn.style.cssText = 'background:#f97316;color:#fff;border:none;border-radius:6px;' +
+    'padding:6px 13px;font-size:13px;font-weight:600;cursor:pointer;flex:0 0 auto';
+  btn.onclick = function () { btn.disabled = true; btn.textContent = 'Reloading…'; onReload(); };
+  var dismiss = document.createElement('button');
+  dismiss.textContent = '×';
+  dismiss.setAttribute('aria-label', 'Dismiss');
+  dismiss.style.cssText = 'background:none;border:none;color:#888;font-size:19px;line-height:1;' +
+    'cursor:pointer;padding:0 2px;flex:0 0 auto';
+  dismiss.onclick = function () { if (bar.parentNode) bar.parentNode.removeChild(bar); };
+  bar.appendChild(msg); bar.appendChild(btn); bar.appendChild(dismiss);
+  document.body.appendChild(bar);
 }
 
 // ---- Install ('Add to app') prompt -------------------------------------

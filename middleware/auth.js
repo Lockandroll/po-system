@@ -1,5 +1,6 @@
 const jwt = require('jsonwebtoken');
 const permissions = require('../utils/permissions');
+const clientVersion = require('../utils/clientVersion');
 const { pool } = require('../db');
 
 async function requireAuth(req, res, next) {
@@ -19,6 +20,28 @@ async function requireAuth(req, res, next) {
   if (payload.addin && (req.originalUrl || req.url || '').indexOf('/api/addin') !== 0) {
     return res.status(403).json({ error: 'This token is limited to Outlook add-in actions.' });
   }
+  // ONE user read per request, shared by everything below (the onboarding gate, the
+  // deactivation check, the permission revision, and requirePermission's extra_perms
+  // lookup). Previously the onboarding gate and requirePermission each ran their own
+  // query; this consolidates them rather than adding a new one.
+  let urow = null;
+  let userDbErr = false;
+  try {
+    const _ur = await pool.query(
+      'SELECT id, role, active, extra_perms, onboarding_status, onboarding_phase FROM users WHERE id = $1',
+      [payload.id]
+    );
+    urow = _ur.rows.length ? _ur.rows[0] : null;
+  } catch (e) { userDbErr = true; }
+  req._userRow = urow;
+
+  // A deactivated account loses access on its very next request, even though its
+  // JWT is still technically valid. Add-in tokens are exempt (they are service-ish
+  // and are already scoped to /api/addin).
+  if (urow && urow.active === false && !payload.addin) {
+    return res.status(401).json({ error: 'Your account has been deactivated.', deactivated: true });
+  }
+
   // Onboarding gate: a user still in onboarding may only reach a small whitelist
   // (auth, the onboarding track itself, push, and — in Phase 2 only — the time clock).
   // Phase 1 is paperwork with NO clock-in; Phase 2 is paid training, so the clock
@@ -26,14 +49,14 @@ async function requireAuth(req, res, next) {
   // request so a supervisor sign-off (or phase advance) takes effect instantly.
   let onbActive = false;
   if (payload.onb) {
-    let _phase = 1;
-    try {
-      const _or = await pool.query('SELECT onboarding_status, onboarding_phase FROM users WHERE id = $1', [payload.id]);
-      const _st = _or.rows.length ? _or.rows[0].onboarding_status : 'complete';
-      _phase = _or.rows.length ? (_or.rows[0].onboarding_phase || 1) : 1;
-      onbActive = (_st && _st !== 'complete');
-    } catch (e) { onbActive = true; /* fail closed on DB errors */ }
+    if (userDbErr) {
+      onbActive = true; /* fail closed on DB errors */
+    } else {
+      const _st = urow ? urow.onboarding_status : 'complete';
+      onbActive = !!(_st && _st !== 'complete');
+    }
     if (onbActive) {
+      const _phase = (urow && urow.onboarding_phase) || 1;
       const _p = (req.originalUrl || req.url || '');
       const _clockOk = _phase === 2 && _p.indexOf('/api/timeclock') === 0;
       const _ok = _p.indexOf('/api/auth') === 0 || _p.indexOf('/api/onboarding') === 0 ||
@@ -46,6 +69,23 @@ async function requireAuth(req, res, next) {
   if (onbActive) claims.onb = true;
   const sessTtl = claims.addin ? '90d' : (claims.remember ? '30d' : '24h');
   res.setHeader('X-New-Token', jwt.sign(claims, process.env.JWT_SECRET, { expiresIn: sessTtl }));
+
+  // Permission revision. A short fingerprint of everything the client's can() depends
+  // on: the user's role, their extra_perms, whether they are active, and the global
+  // role_permissions matrix. The client compares it to the one it holds and, on a
+  // mismatch, refetches its permissions and re-renders — so an admin's change takes
+  // effect on the user's next click instead of on their next full page load.
+  try {
+    const _rev = await permissions.permsRev(urow || { role: payload.role, extra_perms: [], active: true });
+    if (_rev) res.setHeader('X-Perms-Rev', _rev);
+  } catch (e) { /* header is an optimization; never fail the request over it */ }
+
+  // Minimum client version. When a deploy is backward-incompatible, an admin raises
+  // client_min_version and any older client hard-resets its caches and reloads.
+  try {
+    const _mv = await clientVersion.minVersion();
+    if (_mv) res.setHeader('X-Min-Version', _mv);
+  } catch (e) { /* same */ }
   // Track activity for the real user (throttled to at most once per minute).
   pool.query("UPDATE users SET last_seen_at = NOW() WHERE id = $1 AND (last_seen_at IS NULL OR last_seen_at < NOW() - INTERVAL '60 seconds')", [payload.id]).catch(function(){});
   // Real user; owner is coerced to admin-level for authorization.
@@ -88,7 +128,15 @@ function requireRole(...roles) {
 // Per-user permission grants live in users.extra_perms (TEXT[]). These let an
 // admin give an individual a capability (e.g. manage_schedule) without changing
 // their role. Only checked when the role itself lacks the permission.
-async function userHasExtraPerm(userId, perm) {
+async function userHasExtraPerm(req, userId, perm) {
+  // requireAuth already loaded the real user's row. Reuse it instead of re-querying —
+  // but only when it belongs to the user we are actually checking. Under View-As,
+  // req.user is the impersonated user while req._userRow is still the real admin, so
+  // fall through to a fresh query in that case.
+  const cached = req && req._userRow;
+  if (cached && cached.id === userId) {
+    return Array.isArray(cached.extra_perms) && cached.extra_perms.indexOf(perm) !== -1;
+  }
   try {
     const r = await pool.query('SELECT extra_perms FROM users WHERE id = $1', [userId]);
     const ep = r.rows.length ? r.rows[0].extra_perms : null;
@@ -102,11 +150,11 @@ function requirePermission(perm) {
       if (!req.user) return res.status(401).json({ error: 'Unauthorized' });
       const ok = await permissions.hasPermission(req.user.role, perm);
       if (ok) return next();
-      if (req.user.id && await userHasExtraPerm(req.user.id, perm)) return next();
+      if (req.user.id && await userHasExtraPerm(req, req.user.id, perm)) return next();
       return res.status(403).json({ error: 'Forbidden' });
     } catch (e) {
       try { if (req.user && permissions.defaultHas(req.user.role, perm)) return next(); } catch (_) {}
-      try { if (req.user && req.user.id && await userHasExtraPerm(req.user.id, perm)) return next(); } catch (_) {}
+      try { if (req.user && req.user.id && await userHasExtraPerm(req, req.user.id, perm)) return next(); } catch (_) {}
       return res.status(403).json({ error: 'Forbidden' });
     }
   };

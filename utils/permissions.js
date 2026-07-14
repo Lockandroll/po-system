@@ -1,3 +1,4 @@
+const crypto = require('crypto');
 const { pool } = require('../db');
 
 // Central role-based access control.
@@ -77,6 +78,13 @@ var cache = null;
 var cacheValid = false;
 var cacheAt = 0;
 var TTL_MS = 15000;
+// Fingerprint of the currently cached role_permissions matrix. Recomputed only when
+// the cache is refreshed (at most once per TTL), not on every permission check.
+var cfgRev = '0';
+
+function shortHash(s) {
+  return crypto.createHash('sha1').update(String(s)).digest('hex').slice(0, 10);
+}
 
 async function getRolePerms() {
   if (cacheValid && (Date.now() - cacheAt) < TTL_MS) return cache;
@@ -88,6 +96,7 @@ async function getRolePerms() {
         cache = parsed;
         cacheAt = Date.now();
         cacheValid = true;
+        cfgRev = shortHash(rows[0].value);
         return parsed;
       }
     }
@@ -95,11 +104,25 @@ async function getRolePerms() {
     cache = null;
     cacheAt = Date.now();
     cacheValid = true;
+    cfgRev = '0';
     return null;
   } catch (e) {
     console.error('Failed to load role_permissions:', e.message);
     return null;
   }
+}
+
+// A short fingerprint of everything the CLIENT's can() depends on for this user:
+// their role, their per-user extra_perms, whether they are still active, and the
+// global role_permissions matrix. Sent to the browser as X-Perms-Rev on every
+// authenticated response. When it changes, the client knows its cached permissions
+// are stale and refetches them — no logout or page reload required.
+async function permsRev(user) {
+  await getRolePerms(); // ensures cfgRev reflects the current matrix
+  const role = (user && user.role) || '';
+  const ep = (user && Array.isArray(user.extra_perms)) ? user.extra_perms.slice().sort().join('|') : '';
+  const active = (user && user.active === false) ? '0' : '1';
+  return shortHash(role + '~' + ep + '~' + active + '~' + cfgRev);
 }
 
 // Synchronous default check (used as a safe fallback).
@@ -123,5 +146,6 @@ module.exports = {
   DEFAULTS: DEFAULTS,
   getRolePerms: getRolePerms,
   defaultHas: defaultHas,
-  hasPermission: hasPermission
+  hasPermission: hasPermission,
+  permsRev: permsRev
 };
