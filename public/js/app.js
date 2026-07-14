@@ -3950,7 +3950,7 @@ async function renderFeedbackDetail(el, id){
   var phoneRaw = (f.customer_phone || '').trim();
   var phoneDigits = phoneRaw.replace(/[^0-9+]/g, '');
   var phoneCell = phoneRaw
-    ? '<span style="color:var(--text-muted-color);font-size:11px;margin-right:8px">Click to call</span>' +
+    ? '<span style="color:var(--text-muted-color);font-size:11px;margin-right:8px">Click Phone Number to Call &rarr;</span>' +
       '<a href="tel:' + escHtml(phoneDigits) + '" onclick="feedbackLogCall(' + f.id + ')" title="Call customer &mdash; logged to activity" style="color:var(--primary);text-decoration:none;font-weight:600">&#128222; ' + escHtml(phoneRaw) + '</a>'
     : '<span style="color:var(--text-muted-color)">&mdash;</span>';
   var custCard = '<div style="' + cardS + '">' +
