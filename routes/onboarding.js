@@ -77,10 +77,24 @@ function packetFields(step) {
   return (Array.isArray(c.fields) && c.fields.length) ? c.fields : DEFAULT_PACKET_FIELDS;
 }
 
+function slotByKey(k) {
+  var m = DEFAULT_UPLOAD_SLOTS.filter(function (s) { return s.key === String(k); });
+  return m.length ? m[0] : null;
+}
+// Which documents THIS step collects. config.slots is a list of slot keys chosen
+// in the step builder, so a path can carry one step per document. A step that
+// names no slots collects all of them — that is the legacy shape (one combined
+// "upload your documents" step) and it still works.
 function uploadSlots(step) {
   var c = cfg(step);
-  if (Array.isArray(c.slots) && c.slots.length) return c.slots;
-  return DEFAULT_UPLOAD_SLOTS;
+  if (!Array.isArray(c.slots) || !c.slots.length) return DEFAULT_UPLOAD_SLOTS;
+  var out = [];
+  c.slots.forEach(function (s) {
+    if (s && typeof s === 'object' && s.key) { out.push(s); return; }
+    var m = slotByKey(s);
+    if (m) out.push(m);
+  });
+  return out.length ? out : DEFAULT_UPLOAD_SLOTS;
 }
 // Latest non-superseded file per slot for a hire's onboarding uploads.
 async function slotStatus(userId) {
@@ -1244,6 +1258,34 @@ admin.get('/steps', async (req, res) => {
   res.json(rows);
 });
 
+// Slot keys the step builder is allowed to assign, de-duped, catalog-checked.
+function cleanSlotKeys(v) {
+  if (!Array.isArray(v)) return [];
+  var seen = {}, out = [];
+  v.forEach(function (k) {
+    var key = String(k || '').trim();
+    if (!key || seen[key] || !slotByKey(key)) return;
+    seen[key] = true; out.push(key);
+  });
+  return out;
+}
+// The document catalog the builder offers, plus which step (if any) already
+// collects each one — so an admin can see at a glance what is unclaimed.
+admin.get('/slot-catalog', async (req, res) => {
+  const steps = await activeSteps();
+  const claimed = {};
+  steps.filter(function (s) { return s.type === 'document_upload'; }).forEach(function (s) {
+    var c = cfg(s);
+    if (!Array.isArray(c.slots) || !c.slots.length) return; // legacy step: collects everything
+    c.slots.forEach(function (k) { if (!claimed[k]) claimed[k] = { step_id: s.id, title: s.title }; });
+  });
+  res.json({
+    slots: DEFAULT_UPLOAD_SLOTS.map(function (s) {
+      return { key: s.key, label: s.label, claimed_by: claimed[s.key] || null };
+    })
+  });
+});
+
 admin.post('/steps', async (req, res) => {
   const b = req.body || {};
   const type = String(b.type || '');
@@ -1259,6 +1301,11 @@ admin.post('/steps', async (req, res) => {
   if (b.question_count !== undefined) config.question_count = parseInt(b.question_count, 10) || DEFAULT_QUESTION_COUNT;
   if (b.min_seconds !== undefined) config.min_seconds = parseInt(b.min_seconds, 10) || 0;
   if (parseInt(b.document_id, 10)) config.document_id = parseInt(b.document_id, 10);
+  if (type === 'document_upload') {
+    const picked = cleanSlotKeys(b.slots);
+    if (!picked.length) return res.status(400).json({ error: 'Pick at least one document for this step to collect.' });
+    config.slots = picked;
+  }
   const stepPhase = (parseInt(b.phase, 10) === 2) ? 2 : 1;
   const r = await pool.query(
     'INSERT INTO onboarding_steps (position, type, title, description, sop_id, video_key, config, phase) VALUES ($1,$2,$3,$4,$5,$6,$7,$8) RETURNING *',
@@ -1279,6 +1326,11 @@ admin.put('/steps/:id', async (req, res) => {
   if (b.question_count !== undefined) config.question_count = parseInt(b.question_count, 10) || DEFAULT_QUESTION_COUNT;
   if (b.min_seconds !== undefined) config.min_seconds = parseInt(b.min_seconds, 10) || 0;
   if (b.document_id !== undefined) { const did = parseInt(b.document_id, 10); if (did) config.document_id = did; }
+  if (s.type === 'document_upload' && b.slots !== undefined) {
+    const picked = cleanSlotKeys(b.slots);
+    if (!picked.length) return res.status(400).json({ error: 'Pick at least one document for this step to collect.' });
+    config.slots = picked;
+  }
   const putPhase = (b.phase !== undefined) ? ((parseInt(b.phase, 10) === 2) ? 2 : 1) : null;
   const r = await pool.query(
     'UPDATE onboarding_steps SET title = COALESCE($1, title), description = $2, sop_id = COALESCE($3, sop_id), video_key = COALESCE($4, video_key), config = $5, phase = COALESCE($7, phase), updated_at = NOW() WHERE id = $6 RETURNING *',

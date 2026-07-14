@@ -54,9 +54,13 @@
     '.onb-slot-ic{width:32px;height:32px;border-radius:8px;background:var(--bg-card2,#1c1c1c);display:flex;align-items:center;justify-content:center;font-size:15px;flex-shrink:0}' +
     '.onb-slot.filled .onb-slot-ic{background:#16a34a22;color:#4ade80}' +
     '.onb-slot-b{flex:1 1 160px;min-width:0}.onb-slot-b b{font-size:14px}.onb-slot-b span{display:block;color:var(--text-muted-color,#9ca3af);font-size:12px;margin-top:1px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}' +
+    '.onb-slot-acts{display:flex;align-items:center;justify-content:flex-end;gap:8px;flex:0 0 auto;flex-wrap:wrap}' +
     '.onb-slot-send{display:inline-flex;align-items:center;gap:6px;flex:0 0 auto;white-space:nowrap;font-size:12px;color:var(--text-muted-color,#9ca3af);cursor:pointer;user-select:none}' +
     '.onb-slot-send input{margin:0;flex-shrink:0}' +
-    '@media(max-width:640px){.onb-slot-send{flex:1 0 100%;margin-left:44px}}' +
+    '@media(max-width:640px){.onb-slot-acts{flex:1 0 100%;justify-content:flex-start;margin-left:44px}}' +
+    '.onb-slotpicks{display:flex;flex-wrap:wrap;gap:8px;margin:0 0 8px}' +
+    '.onb-slotpick{display:inline-flex;align-items:center;gap:7px;padding:9px 13px;border:1px solid var(--border,#2a2a2a);border-radius:9px;background:var(--bg,#0f0f0f);font-size:13px;cursor:pointer;user-select:none}' +
+    '.onb-slotpick input{margin:0;flex-shrink:0}' +
     '.onb-slot-act{font-size:12.5px;font-weight:700;padding:6px 12px;border-radius:7px;border:1px solid var(--border,#2a2a2a);background:var(--bg-card,#161616);color:var(--text,#ededed);cursor:pointer;flex-shrink:0}' +
     '.onb-slot-act.done{background:#16a34a22;color:#4ade80;border-color:#16a34a55}' +
     '.onb-verify{border:1px solid var(--border,#2a2a2a);border-radius:10px;background:var(--bg,#0f0f0f);padding:12px 13px;margin:4px 0 12px}' +
@@ -761,12 +765,16 @@
       var acceptBtn = doc.expired
         ? '<button class="onb-slot-act" style="border-color:#f9731655;color:#fb923c" onclick="onbAcceptExpiry(' + doc.id + ')">Accept anyway</button>'
         : '';
-      return '<div class="onb-slot' + (flagged ? ' rejected' : ' filled') + '">' +
+      // Inline flex here as well as in the stylesheet: the actions group must never
+      // shrink and the row must be free to wrap, whatever else is on the page.
+      return '<div class="onb-slot' + (flagged ? ' rejected' : ' filled') + '" style="flex-wrap:wrap">' +
         '<div class="onb-slot-ic">' + (flagged ? '&#9888;' : '&#10003;') + '</div>' +
-        '<div class="onb-slot-b"><b>' + escHtml(doc.slot_key || doc.category || 'document') + '</b><span>' + meta + '</span></div>' +
-        acceptBtn +
-        '<button class="onb-slot-act" onclick="onbViewDoc(' + doc.id + ')">View</button>' +
-        '<label class="onb-slot-send"><input type="checkbox" class="onb-reopen-slot" value="' + escHtml(doc.slot_key || '') + '"><span>Send back</span></label>' +
+        '<div class="onb-slot-b" style="flex:1 1 160px;min-width:0"><b>' + escHtml(doc.slot_key || doc.category || 'document') + '</b><span>' + meta + '</span></div>' +
+        '<div class="onb-slot-acts" style="display:flex;align-items:center;justify-content:flex-end;gap:8px;flex:0 0 auto;flex-wrap:wrap">' +
+          acceptBtn +
+          '<button class="onb-slot-act" onclick="onbViewDoc(' + doc.id + ')">View</button>' +
+          '<label class="onb-slot-send" style="display:inline-flex;align-items:center;gap:6px;flex:0 0 auto;white-space:nowrap;font-size:12px;cursor:pointer"><input type="checkbox" class="onb-reopen-slot" value="' + escHtml(doc.slot_key || '') + '"><span>Send back</span></label>' +
+        '</div>' +
         '</div>';
     }).join('');
     var packet = d.packet
@@ -993,14 +1001,34 @@
     } catch (e) { row.firstChild.innerHTML = '<div class="onb-note" style="padding:10px 14px">' + escHtml(e.message || 'Failed') + '</div>'; }
   };
 
+  // Which required document(s) an upload step collects. Empty config.slots means
+  // the legacy shape: one step that collects every document.
+  function stepSlotKeys(s) {
+    var c = s && s.config; if (typeof c === 'string') { try { c = JSON.parse(c); } catch (e) { c = null; } }
+    var v = (c && c.slots) || [];
+    return Array.isArray(v) ? v.map(function (x) { return (x && x.key) ? x.key : String(x); }) : [];
+  }
+  function slotLabel(key) {
+    var cat = window._onbSlotCatalog || [];
+    for (var i = 0; i < cat.length; i++) if (cat[i].key === key) return cat[i].label;
+    return key;
+  }
+
   async function onbAdminPath(body) {
     var steps = [], sops = [];
     try { steps = await api('GET', '/onboarding/admin/steps'); } catch (e) { body.innerHTML = escHtml(e.message || 'Failed'); return; }
     try { sops = await api('GET', '/onboarding/admin/sops'); } catch (e) {}
     var vdocs = [];
     try { vdocs = await api('GET', '/onboarding/admin/vault-docs'); } catch (e) {}
+    try { var _cat = await api('GET', '/onboarding/admin/slot-catalog'); window._onbSlotCatalog = _cat.slots || []; } catch (e) { window._onbSlotCatalog = []; }
     window._onbEditId = null;
     window._onbSteps = steps;
+    var slotBoxes = (window._onbSlotCatalog || []).map(function (s) {
+      return '<label class="onb-slotpick"><input type="checkbox" class="onb-new-slot" value="' + escHtml(s.key) + '"><span>' + escHtml(s.label) + '</span></label>';
+    }).join('');
+    // Any document no step claims would never be collected — say so plainly.
+    var unclaimed = (window._onbSlotCatalog || []).filter(function (s) { return !s.claimed_by; });
+    var legacy = steps.filter(function (s) { return s.type === 'document_upload' && !stepSlotKeys(s).length; });
     var sopOpts = (sops || []).map(function (s) { return '<option value="' + s.id + '">' + escHtml(s.title) + '</option>'; }).join('');
     var _docByFolder = {};
     (vdocs || []).forEach(function (d) { var g = d.folder || 'Other'; (_docByFolder[g] = _docByFolder[g] || []).push(d); });
@@ -1013,6 +1041,12 @@
       if (s.type === 'quiz') { var c = s.config || {}; if (typeof c === 'string') { try { c = JSON.parse(c); } catch (e) { c = {}; } } meta.push((c.question_count || 3) + ' questions, pass ' + (c.pass_score || 80) + '%'); }
       if (s.type === 'sop_read' && s.doc_title) meta.push('Document: ' + s.doc_title);
       else if (s.sop_title) meta.push('SOP: ' + s.sop_title);
+      if (s.type === 'document_upload') {
+        var sk = stepSlotKeys(s);
+        meta.push(sk.length
+          ? 'Collects: ' + sk.map(slotLabel).join(', ')
+          : 'Collects: ALL documents — pick one, or this step asks for everything');
+      }
       return '<div class="onb-step onb-drag" draggable="true" ondragstart="onbDragStart(event,' + s.id + ')" ondragover="onbDragOver(event)" ondragleave="onbDragLeave(event)" ondrop="onbDrop(event,' + s.id + ')" ondragend="onbDragEnd(event)" style="opacity:1">' +
         '<span class="onb-grip" title="Drag to reorder">&#9776;</span>' +
         '<div class="onb-dot">' + (i + 1) + '</div>' +
@@ -1023,7 +1057,18 @@
         '</div>';
     }).join('');
 
+    var slotWarn = '';
+    if (legacy.length && steps.filter(function (s) { return s.type === 'document_upload'; }).length > 1) {
+      slotWarn = '<div class="onb-verify" style="margin-bottom:14px"><div class="v-row warn">&#9888; ' +
+        escHtml(legacy.length + ' upload step' + (legacy.length === 1 ? '' : 's') + ' collect EVERY document, so your separate upload steps all ask for the same four files. Edit each one and pick the document it should collect.') +
+        '</div></div>';
+    } else if (unclaimed.length && !legacy.length) {
+      slotWarn = '<div class="onb-verify" style="margin-bottom:14px"><div class="v-row warn">&#9888; ' +
+        escHtml('No step collects: ' + unclaimed.map(function (s) { return s.label; }).join(', ') + '.') +
+        '</div></div>';
+    }
     body.innerHTML =
+      slotWarn +
       '<div class="onb-steps">' + (rows || '<div class="onb-note">No steps yet — add the first one below.</div>') + '</div>' +
       '<div class="onb-note" style="margin:-8px 0 18px">The supervisor sign-off gate is automatic and always comes last — you do not add it as a step.</div>' +
       '<div class="onb-card"><h2>Add a step</h2>' +
@@ -1036,6 +1081,11 @@
       '<div id="onb-f-doc" style="display:none;grid-column:1/-1"><select id="onb-new-doc" style="width:100%;background:var(--bg-card);color:var(--text);border:1px solid var(--border);border-radius:8px;padding:10px">' + (docOpts || '<option value="">No files in the Standard Operating Procedures vault folder</option>') + '</select><div class="onb-note">The new hire reads this document. Choose from any Document Vault folder.</div></div>' +
       '<div id="onb-f-sop" style="display:none;grid-column:1/-1"><select id="onb-new-sop" style="width:100%;background:var(--bg-card);color:var(--text);border:1px solid var(--border);border-radius:8px;padding:10px">' + (sopOpts || '<option value="">No SOPs in the library yet</option>') + '</select><div class="onb-note">Quiz questions are generated from this SOP&#39;s text in the SOP library.</div></div>' +
       '<div id="onb-f-video" style="grid-column:1/-1"><input type="file" id="onb-new-video" accept="video/*" style="width:100%;color:var(--text)"><div class="onb-note" id="onb-vid-note"></div></div>' +
+      '<div id="onb-f-slots" style="display:none;grid-column:1/-1">' +
+        '<div class="onb-note" style="margin-bottom:6px;font-weight:600">Which document(s) does this step collect?</div>' +
+        '<div class="onb-slotpicks">' + (slotBoxes || '<span class="onb-note">No document types defined.</span>') + '</div>' +
+        '<div class="onb-note">Pick one per step if you want a separate step for each document. Leave a document unpicked and no step will ever ask for it.</div>' +
+      '</div>' +
       '<div id="onb-f-quiz" style="display:none;grid-column:1/-1;display:none"><div style="display:flex;gap:10px;flex-wrap:wrap">' +
         '<label class="onb-note">Questions <input id="onb-new-qcount" type="number" min="1" max="50" value="5" style="width:70px;background:var(--bg-card);color:var(--text);border:1px solid var(--border);border-radius:6px;padding:6px"></label>' +
         '<label class="onb-note">Pass % <input id="onb-new-pass" type="number" min="1" max="100" value="80" style="width:70px;background:var(--bg-card);color:var(--text);border:1px solid var(--border);border-radius:6px;padding:6px"></label>' +
@@ -1053,6 +1103,7 @@
     f('onb-f-sop', t === 'quiz');
     f('onb-f-video', t === 'video');
     f('onb-f-quiz', t === 'quiz' || t === 'final_exam');
+    f('onb-f-slots', t === 'document_upload');
   };
 
   window.onbAddStep = async function () {
@@ -1062,6 +1113,10 @@
     var payload = { type: t, title: title, description: document.getElementById('onb-new-desc').value.trim(), min_seconds: parseInt(document.getElementById('onb-new-min').value, 10) || 0 };
     payload.phase = parseInt((document.getElementById('onb-new-phase') || {}).value, 10) === 2 ? 2 : 1;
     if (t === 'document_upload' || t === 'form') payload.min_seconds = 0;
+    if (t === 'document_upload') {
+      payload.slots = Array.prototype.slice.call(document.querySelectorAll('.onb-new-slot:checked')).map(function (c) { return c.value; });
+      if (!payload.slots.length) { showToast('Pick at least one document for this step to collect.', 'error'); return; }
+    }
     if (t === 'sop_read' || t === 'acknowledge') {
       payload.document_id = parseInt((document.getElementById('onb-new-doc') || {}).value, 10);
       if (!payload.document_id) { showToast('Pick a document from the vault.', 'error'); return; }
@@ -1427,6 +1482,12 @@
     }
     if (s.type === 'quiz' && g('onb-new-sop') && s.sop_id) g('onb-new-sop').value = s.sop_id;
     if ((s.type === 'sop_read' || s.type === 'acknowledge') && g('onb-new-doc') && c.document_id) g('onb-new-doc').value = c.document_id;
+    if (s.type === 'document_upload') {
+      var picked = stepSlotKeys(s);
+      Array.prototype.slice.call(document.querySelectorAll('.onb-new-slot')).forEach(function (cb2) {
+        cb2.checked = picked.indexOf(cb2.value) !== -1;
+      });
+    }
     var addBtn = g('onb-add-btn'); if (addBtn) addBtn.textContent = 'Save changes';
     if (addBtn && !g('onb-cancel-edit')) {
       var cb = document.createElement('button'); cb.id = 'onb-cancel-edit'; cb.className = 'onb-btn ghost'; cb.style.marginLeft = '8px'; cb.textContent = 'Cancel'; cb.onclick = function () { onbCancelEdit(); };
