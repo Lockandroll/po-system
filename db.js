@@ -1855,6 +1855,13 @@ async function initDB() {
     );
     await client.query('CREATE INDEX IF NOT EXISTS idx_hr_documents_user ON hr_documents(user_id);');
     await client.query('CREATE INDEX IF NOT EXISTS idx_hr_documents_expires ON hr_documents(expires_at) WHERE expires_at IS NOT NULL;');
+    // An expired document blocks the hire from moving past its upload step. A
+    // manager can override that (Nova misread the date, a renewal is in hand,
+    // etc.) — expiry_override records who accepted it and when.
+    await client.query('ALTER TABLE hr_documents ADD COLUMN IF NOT EXISTS expiry_override BOOLEAN NOT NULL DEFAULT false;');
+    await client.query('ALTER TABLE hr_documents ADD COLUMN IF NOT EXISTS expiry_override_by INTEGER REFERENCES users(id);');
+    await client.query('ALTER TABLE hr_documents ADD COLUMN IF NOT EXISTS expiry_override_name VARCHAR(255);');
+    await client.query('ALTER TABLE hr_documents ADD COLUMN IF NOT EXISTS expiry_override_at TIMESTAMPTZ;');
     // New Hire Packet responses (native form). One row per hire; field data in
     // JSONB so we need no column per packet field. field_flags holds any
     // per-field reject reasons a reviewer set on reopen.

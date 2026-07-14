@@ -85,7 +85,8 @@ function uploadSlots(step) {
 // Latest non-superseded file per slot for a hire's onboarding uploads.
 async function slotStatus(userId) {
   const r = await pool.query(
-    'SELECT DISTINCT ON (slot_key) id, slot_key, name, mime_type, expires_at, review_status, reject_reason, verify_status, extracted ' +
+    'SELECT DISTINCT ON (slot_key) id, slot_key, name, mime_type, expires_at, review_status, reject_reason, verify_status, extracted, ' +
+    'expiry_override, expiry_override_name ' +
     "FROM hr_documents WHERE user_id = $1 AND source = 'onboarding' AND slot_key IS NOT NULL AND review_status <> 'superseded' " +
     'ORDER BY slot_key, id DESC',
     [userId]
@@ -93,6 +94,22 @@ async function slotStatus(userId) {
   var by = {};
   r.rows.forEach(function (row) { by[row.slot_key] = row; });
   return by;
+}
+// pg hands DATE columns back as JS Date objects — String(d).slice(0,10) would
+// silently give "Thu Jul 02". Normalise before comparing.
+function ymd(v) {
+  if (!v) return null;
+  if (v instanceof Date) return v.toISOString().slice(0, 10);
+  return String(v).slice(0, 10);
+}
+// Nova read an expiration date off this document and it has already passed —
+// unless a manager accepted it anyway.
+function docExpired(d) {
+  if (!d || !d.expires_at || d.expiry_override) return false;
+  var s = ymd(d.expires_at);
+  if (!s) return false;
+  var t = new Date(s + 'T23:59:59').getTime();
+  return !isNaN(t) && t < Date.now();
 }
 
 function appUrl(path) { return (process.env.APP_URL || '').replace(/\/$/, '') + (path || ''); }
@@ -279,11 +296,40 @@ async function activeSteps() {
   const r = await pool.query('SELECT * FROM onboarding_steps WHERE active = true ORDER BY position ASC, id ASC');
   return r.rows;
 }
+// A document_upload step is only "done" while every slot it owns still holds a
+// usable file. Reject a document in review and the step that owns it reopens by
+// itself — the progress row is derived from document state, so the two cannot
+// drift apart. (The old code always reopened the FIRST upload step in the path,
+// which sent the wrong document back whenever a path had one step per document.)
+// Demote only: an upload never auto-completes a step — the hire still submits it.
+async function reconcileUploadSteps(userId, steps, prog) {
+  const stale = steps.filter(function (s) {
+    var p = prog[s.id];
+    return s.type === 'document_upload' && p && p.status === 'done';
+  });
+  if (!stale.length) return prog;
+  const have = await slotStatus(userId);
+  const reopen = stale.filter(function (s) {
+    return !uploadSlots(s).every(function (sl) {
+      var d = have[sl.key];
+      return d && d.review_status !== 'rejected';
+    });
+  });
+  if (!reopen.length) return prog;
+  const ids = reopen.map(function (s) { return s.id; });
+  await pool.query(
+    "UPDATE onboarding_progress SET status = 'pending', completed_at = NULL WHERE user_id = $1 AND step_id = ANY($2::int[])",
+    [userId, ids]
+  );
+  ids.forEach(function (id) { if (prog[id]) { prog[id].status = 'pending'; prog[id].completed_at = null; } });
+  return prog;
+}
 async function progressMap(userId) {
   const r = await pool.query('SELECT * FROM onboarding_progress WHERE user_id = $1', [userId]);
   const map = {};
   r.rows.forEach(function (p) { map[p.step_id] = p; });
-  return map;
+  const steps = await activeSteps();
+  return await reconcileUploadSteps(userId, steps, map);
 }
 // The first active step the user has not completed, or null when all are done.
 function findCurrent(steps, prog) {
@@ -903,6 +949,17 @@ router.post('/steps/:id/complete', requireAuth, async (req, res) => {
     const _have = await slotStatus(req.user.id);
     const _missing = _slots.filter(function (s) { return !_have[s.key]; });
     if (_missing.length) return res.status(400).json({ error: 'Upload all required documents before continuing.', missing: _missing.map(function (s) { return s.key; }) });
+    // Expired paperwork does not move forward. Nova reads the expiration date off
+    // the document itself; if it misread, a manager can accept it as-is from the
+    // review screen and the hire can continue.
+    const _expired = _slots.filter(function (s) { return docExpired(_have[s.key]); });
+    if (_expired.length) {
+      const _lbl = _expired.map(function (s) { return (s.label || s.key) + ' (expired ' + ymd(_have[s.key].expires_at) + ')'; }).join(', ');
+      return res.status(400).json({
+        error: 'This looks expired: ' + _lbl + '. Upload a current copy — or ask your manager to accept it as-is.',
+        expired: _expired.map(function (s) { return s.key; })
+      });
+    }
   }
 
   // Server-side minimum time on step (started_at is set when the step is first served).
@@ -1408,11 +1465,34 @@ admin.get('/users/:id/phase1', async (req, res) => {
   const target = parseInt(req.params.id, 10) || 0;
   if (!(await canSignOff(req.user, target))) return res.status(403).json({ error: 'Not your review to make.' });
   const pk = await pool.query('SELECT data, status, field_flags FROM onboarding_packet_responses WHERE user_id = $1', [target]);
-  const docs = await pool.query("SELECT id, slot_key, category, name, mime_type, expires_at, extracted, verify_status, review_status, reject_reason FROM hr_documents WHERE user_id = $1 AND source = 'onboarding' AND review_status <> 'superseded' ORDER BY slot_key, id DESC", [target]);
+  const docs = await pool.query("SELECT id, slot_key, category, name, mime_type, expires_at, extracted, verify_status, review_status, reject_reason, expiry_override, expiry_override_name FROM hr_documents WHERE user_id = $1 AND source = 'onboarding' AND review_status <> 'superseded' ORDER BY slot_key, id DESC", [target]);
+  docs.rows.forEach(function (d) { d.expired = docExpired(d); });
   const verify = await verifySet(target);
   const _fs = await pool.query("SELECT * FROM onboarding_steps WHERE active = true AND type = 'form' ORDER BY position ASC LIMIT 1");
   var managerFields = _fs.rows.length ? packetFields(_fs.rows[0]).filter(function (f) { return f.who === 'manager'; }) : [];
   res.json({ packet: pk.rows[0] || null, documents: docs.rows, verify: verify, manager_fields: managerFields });
+});
+
+// Manager override: accept a document Nova flagged as expired (it misread the
+// date, a renewal is in hand, etc.). Clears the block that stops the hire from
+// moving past the upload step. The flag itself stays on the record — this is an
+// override, not an erasure, and it is stamped with who did it.
+admin.post('/documents/:id/accept-expiry', async (req, res) => {
+  const docId = parseInt(req.params.id, 10) || 0;
+  const dr = await pool.query("SELECT id, user_id, slot_key, name FROM hr_documents WHERE id = $1 AND source = 'onboarding'", [docId]);
+  if (!dr.rows.length) return res.status(404).json({ error: 'Document not found.' });
+  const d = dr.rows[0];
+  if (!(await canSignOff(req.user, d.user_id))) return res.status(403).json({ error: 'Only their supervisor (or an admin) can accept this.' });
+  await pool.query(
+    'UPDATE hr_documents SET expiry_override = true, expiry_override_by = $2, expiry_override_name = $3, expiry_override_at = NOW(), updated_at = NOW() WHERE id = $1',
+    [docId, req.user.id, req.user.name]
+  );
+  await pool.query(
+    'INSERT INTO onboarding_events (user_id, event_type, detail, actor_id, actor_name) VALUES ($1,$2,$3,$4,$5)',
+    [d.user_id, 'doc_expiry_override', JSON.stringify({ document_id: docId, slot: d.slot_key, name: d.name }), req.user.id, req.user.name]
+  );
+  await logAudit({ entity_type: 'hr_document', entity_id: docId, action: 'expiry_override', user_id: req.user.id, user_name: req.user.name, details: { slot: d.slot_key, user_id: d.user_id } });
+  res.json({ success: true });
 });
 
 // Manager fills the employment / HR fields on the packet (employee never sees these).
@@ -1487,18 +1567,30 @@ admin.post('/users/:id/phase1/reopen', async (req, res) => {
   const note = String(b.note || '').slice(0, 500);
   if (!slots.length && !fields.length) return res.status(400).json({ error: 'Flag at least one item to send back.' });
   const steps = await activeSteps();
+  // Reopen the step that actually OWNS each flagged item — a path may carry one
+  // upload step per document, so "the first upload step" is not good enough.
+  async function reopenStep(stepId) {
+    await pool.query("UPDATE onboarding_progress SET status = 'pending', completed_at = NULL WHERE user_id = $1 AND step_id = $2", [target, stepId]);
+  }
   if (slots.length) {
     for (const sk of slots) {
       await pool.query("UPDATE hr_documents SET review_status = 'rejected', reject_reason = $3, updated_at = NOW() WHERE user_id = $1 AND source = 'onboarding' AND slot_key = $2 AND review_status <> 'superseded'", [target, String(sk), note || 'Please re-upload']);
     }
-    const upStep = steps.filter(function (s) { return s.type === 'document_upload'; })[0];
-    if (upStep) await pool.query("UPDATE onboarding_progress SET status = 'pending', completed_at = NULL WHERE user_id = $1 AND step_id = $2", [target, upStep.id]);
+    const upSteps = steps.filter(function (s) {
+      return s.type === 'document_upload' && uploadSlots(s).some(function (sl) { return slots.indexOf(sl.key) !== -1; });
+    });
+    // Fall back to the first upload step only if no step claims the slot at all.
+    const upTargets = upSteps.length ? upSteps : steps.filter(function (s) { return s.type === 'document_upload'; }).slice(0, 1);
+    for (const s of upTargets) await reopenStep(s.id);
   }
   if (fields.length) {
     var flags = {}; fields.forEach(function (f) { flags[String(f)] = note || 'Please correct'; });
     await pool.query("UPDATE onboarding_packet_responses SET status = 'reopened', field_flags = $2, reviewed_by = $3, reviewed_by_name = $4, reviewed_at = NOW() WHERE user_id = $1", [target, JSON.stringify(flags), req.user.id, req.user.name]);
-    const pkStep = steps.filter(function (s) { return s.type === 'form'; })[0];
-    if (pkStep) await pool.query("UPDATE onboarding_progress SET status = 'pending', completed_at = NULL WHERE user_id = $1 AND step_id = $2", [target, pkStep.id]);
+    const pkSteps = steps.filter(function (s) {
+      return s.type === 'form' && packetFields(s).some(function (f) { return fields.indexOf(f.key) !== -1; });
+    });
+    const pkTargets = pkSteps.length ? pkSteps : steps.filter(function (s) { return s.type === 'form'; }).slice(0, 1);
+    for (const s of pkTargets) await reopenStep(s.id);
   }
   await pool.query('INSERT INTO onboarding_events (user_id, event_type, detail, actor_id, actor_name) VALUES ($1,$2,$3,$4,$5)', [target, 'phase1_reopened', JSON.stringify({ slots: slots, fields: fields, note: note }), req.user.id, req.user.name]);
   await pool.query("DELETE FROM onboarding_events WHERE user_id = $1 AND event_type = 'phase1_submitted'", [target]);

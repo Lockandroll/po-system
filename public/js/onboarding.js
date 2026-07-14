@@ -736,6 +736,8 @@
     }).join('');
   }
   window.onbOpenReview = async function (id) {
+    window._onbReviewUser = id;
+    window._onbReviewFrom = (window._onbTab === 'path' || window._onbTab === 'reviews') ? window._onbTab : 'reviews';
     var body = document.getElementById('onb-admin-body');
     if (body) body.innerHTML = '<div class="loading">Loading…</div>';
     var d;
@@ -751,9 +753,18 @@
     }
     var docRows = docs.map(function (doc) {
       var flagged = doc.verify_status === 'flagged' || doc.review_status === 'rejected';
+      var meta = escHtml(doc.name || '') +
+        (doc.expires_at ? ' &middot; exp ' + escHtml(String(doc.expires_at).slice(0, 10)) : '') +
+        (doc.expiry_override ? ' &middot; expiry accepted by ' + escHtml(doc.expiry_override_name || 'a manager') : '');
+      // An expired document blocks the hire at that upload step until they replace
+      // it — or until a manager accepts it here.
+      var acceptBtn = doc.expired
+        ? '<button class="onb-slot-act" style="border-color:#f9731655;color:#fb923c" onclick="onbAcceptExpiry(' + doc.id + ')">Accept anyway</button>'
+        : '';
       return '<div class="onb-slot' + (flagged ? ' rejected' : ' filled') + '">' +
         '<div class="onb-slot-ic">' + (flagged ? '&#9888;' : '&#10003;') + '</div>' +
-        '<div class="onb-slot-b"><b>' + escHtml(doc.slot_key || doc.category || 'document') + '</b><span>' + escHtml(doc.name || '') + (doc.expires_at ? ' &middot; exp ' + escHtml(String(doc.expires_at).slice(0, 10)) : '') + '</span></div>' +
+        '<div class="onb-slot-b"><b>' + escHtml(doc.slot_key || doc.category || 'document') + '</b><span>' + meta + '</span></div>' +
+        acceptBtn +
         '<button class="onb-slot-act" onclick="onbViewDoc(' + doc.id + ')">View</button>' +
         '<label class="onb-slot-send"><input type="checkbox" class="onb-reopen-slot" value="' + escHtml(doc.slot_key || '') + '"><span>Send back</span></label>' +
         '</div>';
@@ -774,7 +785,7 @@
       }).join('') +
       '<button class="onb-btn" onclick="onbSavePacketDetails(' + id + ')">Save employment details</button></div>') : '';
     if (body) body.innerHTML =
-      '<button class="onb-btn ghost" style="margin-bottom:12px" onclick="onbTab(\'reviews\')">&#8592; Back to reviews</button>' +
+      '<button class="onb-btn ghost" style="margin-bottom:12px" onclick="onbTab(\'' + (window._onbReviewFrom || 'reviews') + '\')">&#8592; Back</button>' +
       packet + managerCard +
       '<div class="onb-card" style="margin-bottom:12px"><h2 style="font-size:16px">Uploaded documents</h2>' + vpanel + (docRows || '<div class="onb-note">No documents uploaded.</div>') + '</div>' +
       '<div class="onb-card">' +
@@ -840,6 +851,16 @@
     } catch (e) { showToast(e.message || 'Export failed.', 'error'); }
   };
 
+  window.onbAcceptExpiry = async function (docId) {
+    if (!window.confirm('Accept this document even though it looks expired? They will be able to continue past that upload step. Your name is recorded on the override.')) return;
+    var uid = window._onbReviewUser;
+    try {
+      await api('POST', '/onboarding/admin/documents/' + docId + '/accept-expiry', {});
+      showToast('Accepted — they can continue.', 'success');
+      if (uid) window.onbOpenReview(uid);
+    } catch (e) { showToast(e.message || 'Could not accept the document.', 'error'); }
+  };
+
   window.onbApprovePhase1 = async function (id) {
     try { await api('POST', '/onboarding/admin/users/' + id + '/phase1/approve', {}); showToast('Phase 1 approved — training unlocked for them.', 'success'); window._onbTab = 'reviews'; renderOnboardingAdmin(document.getElementById('content')); }
     catch (e) { showToast(e.message || 'Could not approve.', 'error'); }
@@ -898,6 +919,7 @@
         '<td style="white-space:nowrap">' +
           (u.ready_for_signoff && u.can_sign_off ? '<button class="onb-btn" style="padding:8px 14px;font-size:13px" onclick="onbSignOff(' + u.id + ',\'' + escHtml(u.name).replace(/'/g, '') + '\')">Sign off &amp; unlock</button> ' : '') +
           '<button class="onb-btn ghost" style="padding:8px 12px;font-size:13px" onclick="onbDetail(' + u.id + ')">Details</button> ' +
+          '<button class="onb-btn ghost" style="padding:8px 12px;font-size:13px" onclick="onbOpenReview(' + u.id + ')">Docs</button> ' +
           '<button class="onb-btn ghost" style="padding:8px 12px;font-size:13px" onclick="onbOverride(' + u.id + ')">Completion' + (u.completion_override ? ' •' : '') + '</button> ' +
           '<button class="onb-btn ghost" style="padding:8px 12px;font-size:13px" onclick="onbDownloadRecord(' + u.id + ')">Record</button> ' +
           '<button class="onb-btn ghost" style="padding:8px 12px;font-size:13px" onclick="onbRemove(' + u.id + ')">Remove</button>' +
