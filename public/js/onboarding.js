@@ -58,6 +58,15 @@
     '.onb-slot-send{display:inline-flex;align-items:center;gap:6px;flex:0 0 auto;white-space:nowrap;font-size:12px;color:var(--text-muted-color,#9ca3af);cursor:pointer;user-select:none}' +
     '.onb-slot-send input{margin:0;flex-shrink:0}' +
     '@media(max-width:640px){.onb-slot-acts{flex:1 0 100%;justify-content:flex-start;margin-left:44px}}' +
+    '.onb-pk{display:flex;flex-direction:column;gap:1px}' +
+    '.onb-pk-sec{font-size:12px;font-weight:700;letter-spacing:.6px;text-transform:uppercase;color:var(--primary,#f97316);margin:14px 0 6px;padding-bottom:5px;border-bottom:1px solid var(--border,#2a2a2a)}' +
+    '.onb-pk-sec:first-child{margin-top:0}' +
+    '.onb-pk-row{display:flex;flex-wrap:wrap;align-items:baseline;gap:6px 14px;padding:7px 0;border-bottom:1px solid rgba(255,255,255,.04)}' +
+    '.onb-pk-k{flex:0 0 210px;max-width:100%;font-size:12.5px;color:var(--text-muted-color,#9ca3af)}' +
+    '.onb-pk-v{flex:1 1 160px;min-width:0;font-size:13.5px;font-weight:600;word-break:break-word}' +
+    '.onb-pk-v.empty{font-weight:400;color:var(--text-muted-color,#6b7280)}' +
+    '.onb-pk-flag{flex:1 0 100%;font-size:12px;color:#fbbf24}' +
+    '@media(max-width:640px){.onb-pk-k{flex:1 0 100%}}' +
     '.onb-slotpicks{display:flex;flex-wrap:wrap;gap:8px;margin:0 0 8px}' +
     '.onb-slotpick{display:inline-flex;align-items:center;gap:7px;padding:9px 13px;border:1px solid var(--border,#2a2a2a);border-radius:9px;background:var(--bg,#0f0f0f);font-size:13px;cursor:pointer;user-select:none}' +
     '.onb-slotpick input{margin:0;flex-shrink:0}' +
@@ -797,9 +806,46 @@
         '</div>' +
         '</div>';
     }).join('');
-    var packet = d.packet
-      ? '<div class="onb-card" style="margin-bottom:12px"><h2 style="font-size:16px">New Hire Packet</h2><pre style="white-space:pre-wrap;font-size:12.5px;color:var(--text-muted-color,#9ca3af);margin:0">' + escHtml(JSON.stringify((d.packet && d.packet.data) || {}, null, 2)) + '</pre></div>'
-      : '<div class="onb-card" style="margin-bottom:12px"><div class="onb-note">No packet on file yet.</div></div>';
+    // Render the packet as the form the hire actually filled in — labelled, in the
+    // original section order. (It used to dump raw JSON.) Manager-only fields are
+    // skipped here; they live in the editable Employment details card below.
+    var _pdata = (d.packet && d.packet.data) || {};
+    var _pf = (d.packet_fields || []).filter(function (f) { return f.who !== 'manager'; });
+    var packet;
+    if (!d.packet) {
+      packet = '<div class="onb-card" style="margin-bottom:12px"><div class="onb-note">No packet on file yet.</div></div>';
+    } else if (!_pf.length) {
+      packet = '<div class="onb-card" style="margin-bottom:12px"><h2 style="font-size:16px">New Hire Packet</h2><div class="onb-note">Submitted, but the packet form has no fields defined.</div></div>';
+    } else {
+      var _flags = (d.packet && d.packet.field_flags) || {};
+      if (typeof _flags === 'string') { try { _flags = JSON.parse(_flags); } catch (e) { _flags = {}; } }
+      var _rowsHtml = '';
+      _pf.forEach(function (f) {
+        if (f.type === 'section') {
+          _rowsHtml += '<div class="onb-pk-sec">' + escHtml(f.label || '') + '</div>';
+          return;
+        }
+        if (f.type === 'ack') {
+          var acked = _pdata[f.key] === true || _pdata[f.key] === 'true';
+          _rowsHtml += '<div class="onb-pk-row"><span class="onb-pk-k">Acknowledgment</span>' +
+            '<span class="onb-pk-v">' + (acked
+              ? '<span style="color:#4ade80">&#10003; Signed electronically</span>'
+              : '<span style="color:#fbbf24">Not acknowledged</span>') + '</span></div>';
+          return;
+        }
+        var v = _pdata[f.key];
+        var blank = (v === undefined || v === null || String(v).trim() === '');
+        var flag = _flags[f.key];
+        _rowsHtml += '<div class="onb-pk-row">' +
+          '<span class="onb-pk-k">' + escHtml(f.label || f.key) + '</span>' +
+          '<span class="onb-pk-v' + (blank ? ' empty' : '') + '">' + (blank ? '—' : escHtml(String(v))) + '</span>' +
+          (flag ? '<span class="onb-pk-flag">&#9888; ' + escHtml(String(flag)) + '</span>' : '') +
+          '</div>';
+      });
+      packet = '<div class="onb-card" style="margin-bottom:12px"><h2 style="font-size:16px">New Hire Packet</h2>' +
+        '<div class="onb-note" style="margin-bottom:10px">Submitted by the new hire. A blank line means they left it empty.</div>' +
+        '<div class="onb-pk">' + _rowsHtml + '</div></div>';
+    }
     var _mf = d.manager_fields || [];
     var _mdata = (d.packet && d.packet.data) || {};
     var managerCard = _mf.length ? ('<div class="onb-card" style="margin-bottom:12px"><h2 style="font-size:16px">Employment details</h2>' +

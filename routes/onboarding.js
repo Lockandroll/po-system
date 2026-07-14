@@ -1544,8 +1544,11 @@ admin.get('/users/:id/phase1', async (req, res) => {
   docs.rows.forEach(function (d) { d.expired = docExpired(d); });
   const verify = await verifySet(target);
   const _fs = await pool.query("SELECT * FROM onboarding_steps WHERE active = true AND type = 'form' ORDER BY position ASC LIMIT 1");
-  var managerFields = _fs.rows.length ? packetFields(_fs.rows[0]).filter(function (f) { return f.who === 'manager'; }) : [];
-  res.json({ packet: pk.rows[0] || null, documents: docs.rows, verify: verify, manager_fields: managerFields });
+  var allFields = _fs.rows.length ? packetFields(_fs.rows[0]) : [];
+  var managerFields = allFields.filter(function (f) { return f.who === 'manager'; });
+  // The full field list (labels + section order) so the reviewer sees the packet
+  // as a form, not as a raw JSON blob.
+  res.json({ packet: pk.rows[0] || null, documents: docs.rows, verify: verify, manager_fields: managerFields, packet_fields: allFields });
 });
 
 // Manager override: accept a document Nova flagged as expired (it misread the
