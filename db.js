@@ -905,6 +905,11 @@ async function initDB() {
     await client.query("ALTER TABLE users ADD COLUMN IF NOT EXISTS org_x INTEGER;");
     // Home city — the employee's base city; used as the default city when creating a shift (separate from user_cities, which are the cities they can view/manage).
     await client.query("ALTER TABLE users ADD COLUMN IF NOT EXISTS home_city CHAR(3);");
+    // Onboarding approvers — who clears each phase for a hire. Named per hire so
+    // the person who reviews the paperwork does not have to be the person who
+    // runs training. NULL falls back to the supervisor chain (the old behavior).
+    await client.query("ALTER TABLE users ADD COLUMN IF NOT EXISTS onboarding_phase1_approver_id INTEGER REFERENCES users(id) ON DELETE SET NULL;");
+    await client.query("ALTER TABLE users ADD COLUMN IF NOT EXISTS onboarding_phase2_approver_id INTEGER REFERENCES users(id) ON DELETE SET NULL;");
     // ---- PTO module ----
     await client.query("ALTER TABLE users ADD COLUMN IF NOT EXISTS hire_date DATE;");
     await client.query("ALTER TABLE users ADD COLUMN IF NOT EXISTS pto_balance_hours NUMERIC(8,2) NOT NULL DEFAULT 0;");

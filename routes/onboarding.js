@@ -30,6 +30,26 @@ const DEFAULT_UPLOAD_SLOTS = [
   { key: 'identity', label: 'Social Security Card or Birth Certificate', category: 'identity', expires: false }
 ];
 const UPLOAD_MAX_BYTES = 15 * 1024 * 1024;
+// The Nova roles a new hire can be given. Mirrors VALID_ROLES in routes/users.js
+// minus owner (owners are not onboarded). Drives the packet's Position / role
+// dropdown; approving Phase 1 writes the pick onto their Nova account.
+const HIRE_ROLES = [
+  { value: 'locksmith', label: 'Locksmith' },
+  { value: 'locksmith_coordinator', label: 'Locksmith Coordinator' },
+  { value: 'dispatcher', label: 'Dispatcher' },
+  { value: 'roadside_technician', label: 'Roadside Technician' },
+  { value: 'manager', label: 'Manager' },
+  { value: 'admin', label: 'Admin' }
+];
+const HIRE_ROLE_LABELS = HIRE_ROLES.map(function (r) { return r.label; });
+function roleValueFromLabel(v) {
+  var t = String(v == null ? '' : v).trim().toLowerCase();
+  if (!t) return null;
+  for (var i = 0; i < HIRE_ROLES.length; i++) {
+    if (HIRE_ROLES[i].label.toLowerCase() === t || HIRE_ROLES[i].value === t) return HIRE_ROLES[i].value;
+  }
+  return null;
+}
 const UPLOAD_OK_MIME = ['image/jpeg', 'image/png', 'image/webp', 'image/heic', 'image/heif', 'application/pdf'];
 // New Hire Packet fields (native form). DEFAULT set — override per step via
 // config.fields. Swap these for the exact packet PDF fields when available.
@@ -45,7 +65,7 @@ const DEFAULT_PACKET_FIELDS = [
   { key: 'state', label: 'State', type: 'text', required: true },
   { key: 'zip', label: 'ZIP code', type: 'text', required: true },
   { key: 'mobile_phone', label: 'Mobile phone', type: 'tel', required: true },
-  { key: 'position_role', label: 'Position / role', type: 'text', who: 'manager' },
+  { key: 'position_role', label: 'Position / role', type: 'select', options: HIRE_ROLE_LABELS, who: 'manager' },
   { key: 'employment_type', label: 'Employment type', type: 'select', options: ['Full-time', 'Part-time'], who: 'manager' },
   { key: 'start_date', label: 'Anticipated start date', type: 'date', who: 'manager' },
   { key: 'work_location', label: 'Work location / market', type: 'text', who: 'manager' },
@@ -373,11 +393,43 @@ async function chainIds(userId) {
   }
   return ids;
 }
-async function canSignOff(user, newHireId) {
+// The person named as approver for a phase on this hire, or null if none was
+// picked. Phase 1 = paperwork review. Phase 2 = start training + final sign-off.
+async function approverIdFor(newHireId, phase) {
+  const col = (parseInt(phase, 10) === 2) ? 'onboarding_phase2_approver_id' : 'onboarding_phase1_approver_id';
+  const r = await pool.query('SELECT ' + col + ' AS aid FROM users WHERE id = $1', [newHireId]);
+  return (r.rows.length && r.rows[0].aid) ? r.rows[0].aid : null;
+}
+// Who may act on a phase: the approver named for that phase, anyone up the
+// supervisor chain, or an admin/owner. The named approver is who gets NOTIFIED
+// and shown the button — the chain stays open so nothing stalls when they are
+// out. Passing no phase means "either phase", which is what the read-only
+// review, document and record routes want: both approvers need to open them.
+async function canSignOff(user, newHireId, phase) {
   if (user.role === 'admin' || user.isOwner) return true;
   if (user.id === newHireId) return false;
+  const phases = (phase == null) ? [1, 2] : [phase];
+  for (var i = 0; i < phases.length; i++) {
+    const aid = await approverIdFor(newHireId, phases[i]);
+    if (aid && aid === user.id) return true;
+  }
   const chain = await chainIds(newHireId);
   return chain.indexOf(user.id) !== -1;
+}
+// Who to notify for a phase: the named approver, else the direct supervisor.
+// Returns a full user row, or null.
+async function notifyTargetFor(newHireId, phase) {
+  const sel = 'SELECT id, name, email, phone, receive_emails, receive_sms FROM users WHERE id = $1 AND active = true';
+  const aid = await approverIdFor(newHireId, phase);
+  if (aid) {
+    const ar = await pool.query(sel, [aid]);
+    if (ar.rows.length) return ar.rows[0];
+  }
+  const sr = await pool.query('SELECT supervisor_id FROM users WHERE id = $1', [newHireId]);
+  const sid = sr.rows.length ? sr.rows[0].supervisor_id : null;
+  if (!sid) return null;
+  const ur = await pool.query(sel, [sid]);
+  return ur.rows.length ? ur.rows[0] : null;
 }
 
 // ---- AI document verification (reads uploaded IDs / insurance / registration) ----
@@ -494,13 +546,12 @@ async function recordEventOnce(userId, type) {
   await pool.query('INSERT INTO onboarding_events (user_id, event_type) VALUES ($1,$2)', [userId, type]);
   return true;
 }
-// Tell the direct supervisor a hire has submitted Phase 1 for review.
+// Tell the Phase 1 approver — or, if none was named, the direct supervisor —
+// that a hire has submitted Phase 1 for review.
 async function notifyPhase1Ready(hire) {
   try {
-    if (!hire.supervisor_id) return;
-    const sr = await pool.query('SELECT id, name, email, phone, receive_emails, receive_sms FROM users WHERE id = $1', [hire.supervisor_id]);
-    if (!sr.rows.length) return;
-    const s = sr.rows[0];
+    const s = await notifyTargetFor(hire.id, 1);
+    if (!s) return;
     await push.sendPushToUsers([s.id], { title: 'Phase 1 ready for review', body: hire.name + ' submitted their paperwork.', url: appUrl('/?view=onboarding-admin') });
     if (s.receive_emails !== false && s.email) {
       const html = emailTemplate({
@@ -797,11 +848,9 @@ async function generateExamQuestions(step, avoidPrompts) {
 async function notifyReadyForSignoff(newHire) {
   try {
     var recipients = [];
-    var sup = null;
-    if (newHire.supervisor_id) {
-      var sr = await pool.query('SELECT id, name, email, phone, receive_emails, receive_sms FROM users WHERE id = $1 AND active = true', [newHire.supervisor_id]);
-      if (sr.rows.length) { sup = sr.rows[0]; recipients.push(sup); }
-    }
+    // Phase 2 approver first; notifyTargetFor falls back to their supervisor.
+    var sup = await notifyTargetFor(newHire.id, 2);
+    if (sup) recipients.push(sup);
     if (!recipients.length) {
       var ar = await pool.query("SELECT id, name, email, phone, receive_emails, receive_sms FROM users WHERE active = true AND role IN ('admin','owner')");
       recipients = ar.rows;
@@ -1407,8 +1456,12 @@ admin.get('/progress', async (req, res) => {
   const total = steps.length;
   const ur = await pool.query(
     "SELECT u.id, u.name, u.title, u.role, u.onboarding_enrolled_at, u.supervisor_id, u.onboarding_completion_override, " +
-    "u.onboarding_phase, u.onboarding_phase1_approved_at, s.name AS supervisor_name " +
+    "u.onboarding_phase, u.onboarding_phase1_approved_at, s.name AS supervisor_name, " +
+    "u.onboarding_phase1_approver_id, u.onboarding_phase2_approver_id, " +
+    "a1.name AS phase1_approver_name, a2.name AS phase2_approver_name " +
     "FROM users u LEFT JOIN users s ON s.id = u.supervisor_id " +
+    "LEFT JOIN users a1 ON a1.id = u.onboarding_phase1_approver_id " +
+    "LEFT JOIN users a2 ON a2.id = u.onboarding_phase2_approver_id " +
     "WHERE u.active = true AND u.onboarding_status IS NOT NULL AND u.onboarding_status <> 'complete' ORDER BY u.onboarding_enrolled_at ASC NULLS LAST, u.name ASC"
   );
   const out = [];
@@ -1421,6 +1474,8 @@ admin.get('/progress', async (req, res) => {
     out.push({
       id: u.id, name: u.name, title: u.title, role: u.role,
       supervisor_id: u.supervisor_id, supervisor_name: u.supervisor_name,
+      phase1_approver_id: u.onboarding_phase1_approver_id, phase1_approver_name: u.phase1_approver_name,
+      phase2_approver_id: u.onboarding_phase2_approver_id, phase2_approver_name: u.phase2_approver_name,
       enrolled_at: u.onboarding_enrolled_at,
       steps_done: done, steps_total: total,
       current_step: current ? current.title : null,
@@ -1429,7 +1484,10 @@ admin.get('/progress', async (req, res) => {
       phase1_approved: !!u.onboarding_phase1_approved_at,
       // Approved, but the manager has not opened training yet — their move.
       awaiting_phase2_start: !!u.onboarding_phase1_approved_at && parseInt(u.onboarding_phase, 10) !== 2,
-      can_sign_off: await canSignOff(req.user, u.id),
+      // Split by phase: the Phase 1 approver reviews paperwork, the Phase 2
+      // approver starts training and signs off. Either can be the same person.
+      can_approve_phase1: await canSignOff(req.user, u.id, 1),
+      can_sign_off: await canSignOff(req.user, u.id, 2),
       completion_override: parseJsonMaybe(u.onboarding_completion_override)
     });
   }
@@ -1468,7 +1526,7 @@ admin.post('/users/:id/signoff', async (req, res) => {
   if (!ur.rows.length) return res.status(404).json({ error: 'User not found' });
   const u = ur.rows[0];
   if (!u.onboarding_status || u.onboarding_status === 'complete') return res.status(400).json({ error: 'This user is not in onboarding' });
-  if (!(await canSignOff(req.user, target))) return res.status(403).json({ error: 'Only their supervisor (or an admin) can sign off' });
+  if (!(await canSignOff(req.user, target, 2))) return res.status(403).json({ error: 'Only their Phase 2 approver, their supervisor, or an admin can sign off' });
 
   const steps = await activeSteps();
   const prog = await progressMap(target);
@@ -1529,7 +1587,7 @@ admin.get('/reviews', async (req, res) => {
     const prog = await progressMap(u.id);
     const done = p1.every(function (s) { var pr = prog[s.id]; return pr && pr.status === 'done'; });
     if (!done) continue;
-    if (!(await canSignOff(req.user, u.id))) continue;
+    if (!(await canSignOff(req.user, u.id, 1))) continue;
     out.push({ id: u.id, name: u.name, role: u.role, enrolled_at: u.onboarding_enrolled_at });
   }
   res.json(out);
@@ -1560,7 +1618,7 @@ admin.post('/documents/:id/accept-expiry', async (req, res) => {
   const dr = await pool.query("SELECT id, user_id, slot_key, name FROM hr_documents WHERE id = $1 AND source = 'onboarding'", [docId]);
   if (!dr.rows.length) return res.status(404).json({ error: 'Document not found.' });
   const d = dr.rows[0];
-  if (!(await canSignOff(req.user, d.user_id))) return res.status(403).json({ error: 'Only their supervisor (or an admin) can accept this.' });
+  if (!(await canSignOff(req.user, d.user_id, 1))) return res.status(403).json({ error: 'Only their Phase 1 approver, their supervisor, or an admin can accept this.' });
   await pool.query(
     'UPDATE hr_documents SET expiry_override = true, expiry_override_by = $2, expiry_override_name = $3, expiry_override_at = NOW(), updated_at = NOW() WHERE id = $1',
     [docId, req.user.id, req.user.name]
@@ -1605,11 +1663,11 @@ admin.get('/hr-doc/:docId', async (req, res) => {
 // Approve Phase 1 -> advance the hire to Phase 2 (unlocks clock-in + training).
 admin.post('/users/:id/phase1/approve', async (req, res) => {
   const target = parseInt(req.params.id, 10) || 0;
-  const ur = await pool.query('SELECT id, name, email, phone, receive_emails, receive_sms, onboarding_status FROM users WHERE id = $1', [target]);
+  const ur = await pool.query('SELECT id, name, email, phone, receive_emails, receive_sms, onboarding_status, role FROM users WHERE id = $1', [target]);
   if (!ur.rows.length) return res.status(404).json({ error: 'User not found' });
   const u = ur.rows[0];
   if (!u.onboarding_status || u.onboarding_status === 'complete') return res.status(400).json({ error: 'Not in onboarding' });
-  if (!(await canSignOff(req.user, target))) return res.status(403).json({ error: 'Only their supervisor (or an admin) can approve' });
+  if (!(await canSignOff(req.user, target, 1))) return res.status(403).json({ error: 'Only their Phase 1 approver, their supervisor, or an admin can approve' });
   const steps = await activeSteps();
   const prog = await progressMap(target);
   const p1 = steps.filter(function (s) { return phaseOf(s) === 1; });
@@ -1620,6 +1678,19 @@ admin.post('/users/:id/phase1/approve', async (req, res) => {
   await pool.query('UPDATE users SET onboarding_phase1_approved_at = NOW(), onboarding_phase1_approved_by = $2, onboarding_phase1_approved_name = $3 WHERE id = $1', [target, req.user.id, req.user.name]);
   await pool.query("UPDATE hr_documents SET review_status = 'accepted', updated_at = NOW() WHERE user_id = $1 AND source = 'onboarding' AND review_status = 'pending'", [target]);
   await pool.query("UPDATE onboarding_packet_responses SET status = 'approved', reviewed_by = $2, reviewed_by_name = $3, reviewed_at = NOW() WHERE user_id = $1", [target, req.user.id, req.user.name]);
+  // The manager's Position / role pick on the packet is the decision of record —
+  // approving it writes that role onto their Nova account. Owner is never a
+  // packet option, and an owner's role is never touched here.
+  try {
+    const _pkr = await pool.query('SELECT data FROM onboarding_packet_responses WHERE user_id = $1', [target]);
+    const _pdata = _pkr.rows.length ? (parseJsonMaybe(_pkr.rows[0].data) || {}) : {};
+    const _newRole = roleValueFromLabel(_pdata.position_role);
+    if (_newRole && _newRole !== u.role && u.role !== 'owner') {
+      await pool.query('UPDATE users SET role = $2 WHERE id = $1 AND role <> $3', [target, _newRole, 'owner']);
+      await pool.query('INSERT INTO onboarding_events (user_id, event_type, actor_id, actor_name) VALUES ($1,$2,$3,$4)', [target, 'role_set_from_packet', req.user.id, req.user.name]);
+      await logAudit({ entity_type: 'user', entity_id: target, action: 'role_changed', user_id: req.user.id, user_name: req.user.name, details: { user: u.name, from: u.role, to: _newRole, source: 'onboarding packet' } });
+    }
+  } catch (e) { console.error('[onboarding] role-from-packet failed:', e.message); }
   await pool.query('INSERT INTO onboarding_events (user_id, event_type, actor_id, actor_name) VALUES ($1,$2,$3,$4)', [target, 'phase1_approved', req.user.id, req.user.name]);
   await logAudit({ entity_type: 'onboarding', entity_id: target, action: 'phase1_approved', user_id: req.user.id, user_name: req.user.name, details: { user: u.name } });
   try {
@@ -1640,7 +1711,7 @@ admin.post('/users/:id/phase2/start', async (req, res) => {
   if (!ur.rows.length) return res.status(404).json({ error: 'User not found' });
   const u = ur.rows[0];
   if (!u.onboarding_status || u.onboarding_status === 'complete') return res.status(400).json({ error: 'Not in onboarding' });
-  if (!(await canSignOff(req.user, target))) return res.status(403).json({ error: 'Only their supervisor (or an admin) can start Phase 2' });
+  if (!(await canSignOff(req.user, target, 2))) return res.status(403).json({ error: 'Only their Phase 2 approver, their supervisor, or an admin can start Phase 2' });
   if (!u.onboarding_phase1_approved_at) return res.status(400).json({ error: 'Approve their Phase 1 paperwork first.' });
   if (parseInt(u.onboarding_phase, 10) === 2) return res.status(400).json({ error: 'Phase 2 is already open for them.' });
 
@@ -1665,7 +1736,7 @@ admin.post('/users/:id/phase1/reopen', async (req, res) => {
   if (!ur.rows.length) return res.status(404).json({ error: 'User not found' });
   const u = ur.rows[0];
   if (!u.onboarding_status || u.onboarding_status === 'complete') return res.status(400).json({ error: 'Not in onboarding' });
-  if (!(await canSignOff(req.user, target))) return res.status(403).json({ error: 'Only their supervisor (or an admin) can reopen' });
+  if (!(await canSignOff(req.user, target, 1))) return res.status(403).json({ error: 'Only their Phase 1 approver, their supervisor, or an admin can reopen' });
   const b = req.body || {};
   const slots = Array.isArray(b.slots) ? b.slots : [];
   const fields = Array.isArray(b.fields) ? b.fields : [];

@@ -122,6 +122,9 @@ router.post('/', requireAuth, requirePermission('manage_users'), async (req, res
 router.post('/new-hire', requireAuth, requirePermission('manage_onboarding'), async (req, res) => {
   const { name, email, role, phone } = req.body;
   const supervisor_id = parseInt(req.body && req.body.supervisor_id, 10) || null;
+  // Who clears each onboarding phase. Blank = fall back to the supervisor chain.
+  const phase1_approver_id = parseInt(req.body && req.body.phase1_approver_id, 10) || null;
+  const phase2_approver_id = parseInt(req.body && req.body.phase2_approver_id, 10) || null;
   if (!name || !email || !role) return res.status(400).json({ error: 'Name, email, and role are required' });
   if (!VALID_ROLES.includes(role)) return res.status(400).json({ error: 'Invalid role.' });
   if (role === 'owner') return res.status(400).json({ error: 'Owners are not onboarded.' });
@@ -129,9 +132,9 @@ router.post('/new-hire', requireAuth, requirePermission('manage_onboarding'), as
   const password_hash = await bcrypt.hash(rawPassword, 12);
   try {
     const { rows } = await pool.query(
-      "INSERT INTO users (name, email, password_hash, role, phone, receive_emails, receive_sms, supervisor_id, onboarding_status, onboarding_enrolled_at) " +
-      "VALUES ($1,$2,$3,$4,$5,true,$6,$7,'required',NOW()) RETURNING id, name, email, role, phone, supervisor_id",
-      [name, email, password_hash, role, phone || null, !!phone, supervisor_id]
+      "INSERT INTO users (name, email, password_hash, role, phone, receive_emails, receive_sms, supervisor_id, onboarding_phase1_approver_id, onboarding_phase2_approver_id, onboarding_status, onboarding_enrolled_at) " +
+      "VALUES ($1,$2,$3,$4,$5,true,$6,$7,$8,$9,'required',NOW()) RETURNING id, name, email, role, phone, supervisor_id, onboarding_phase1_approver_id, onboarding_phase2_approver_id",
+      [name, email, password_hash, role, phone || null, !!phone, supervisor_id, phase1_approver_id, phase2_approver_id]
     );
     const newUser = rows[0];
     try { await sendInvite(newUser, req.user && req.user.name); } catch (e) { console.error('Invite email failed:', e); }

@@ -991,7 +991,8 @@
     var rows = (data.users || []).map(function (u) {
       var pct = u.steps_total ? Math.round((u.steps_done / u.steps_total) * 100) : 0;
       return '<tr>' +
-        '<td><b>' + escHtml(u.name) + '</b><br><span class="onb-note">' + escHtml(u.supervisor_name ? 'Reports to ' + u.supervisor_name : 'No supervisor set') + '</span></td>' +
+        '<td><b>' + escHtml(u.name) + '</b><br><span class="onb-note">' + escHtml(u.supervisor_name ? 'Reports to ' + u.supervisor_name : 'No supervisor set') + '</span>' +
+          '<br><span class="onb-note">' + escHtml('P1: ' + (u.phase1_approver_name || u.supervisor_name || 'admin') + ' \u00b7 P2: ' + (u.phase2_approver_name || u.supervisor_name || 'admin')) + '</span></td>' +
         '<td style="min-width:140px"><div class="onb-bar" style="margin:0 0 4px"><div style="width:' + pct + '%"></div></div><span class="onb-note">' + u.steps_done + ' / ' + u.steps_total + '</span></td>' +
         '<td>' + (u.ready_for_signoff
             ? '<span class="onb-pill ready">READY FOR SIGN-OFF</span>'
@@ -1019,8 +1020,11 @@
         '<input id="nh-email" type="email" placeholder="Email" style="' + NHI + '">' +
         '<input id="nh-phone" type="tel" placeholder="Mobile phone (for 2FA texts)" style="' + NHI + '">' +
         '<select id="nh-role" style="' + NHI + '">' + nhRoleOpts + '</select>' +
-        '<select id="nh-supervisor" style="grid-column:1/-1;' + NHI + '"><option value="">Supervisor — reviews their onboarding</option>' + nhSupOpts + '</select>' +
+        '<select id="nh-supervisor" style="' + NHI + '"><option value="">Supervisor — who they report to</option>' + nhSupOpts + '</select>' +
+        '<select id="nh-appr1" style="' + NHI + '"><option value="">Phase 1 approver — reviews their paperwork</option>' + nhSupOpts + '</select>' +
+        '<select id="nh-appr2" style="' + NHI + '"><option value="">Phase 2 approver — starts training &amp; signs off</option>' + nhSupOpts + '</select>' +
       '</div>' +
+      '<div class="onb-note" style="margin-top:8px">Leave an approver blank to fall back to their supervisor. The named approver is who gets the email — their supervisor and any admin can still step in.</div>' +
       '<button class="onb-btn" style="margin-top:12px" onclick="onbAddHire()">Add &amp; enroll</button></div>' +
       '<div class="onb-card" style="margin-bottom:18px"><h2 style="font-size:15px">Already in Nova? Enroll an existing user</h2>' +
       '<div style="display:flex;gap:10px;flex-wrap:wrap">' +
@@ -1044,9 +1048,11 @@
     var phone = ((document.getElementById('nh-phone') || {}).value || '').trim();
     var role = (document.getElementById('nh-role') || {}).value;
     var supervisor_id = parseInt((document.getElementById('nh-supervisor') || {}).value, 10) || null;
+    var phase1_approver_id = parseInt((document.getElementById('nh-appr1') || {}).value, 10) || null;
+    var phase2_approver_id = parseInt((document.getElementById('nh-appr2') || {}).value, 10) || null;
     if (!name || !email || !role) { showToast('Name, email, and role are required.', 'error'); return; }
     try {
-      await api('POST', '/users/new-hire', { name: name, email: email, phone: phone || null, role: role, supervisor_id: supervisor_id });
+      await api('POST', '/users/new-hire', { name: name, email: email, phone: phone || null, role: role, supervisor_id: supervisor_id, phase1_approver_id: phase1_approver_id, phase2_approver_id: phase2_approver_id });
       showToast(name + ' added and enrolled.', 'success');
       renderOnboardingAdmin(document.getElementById('content'));
     } catch (e) { showToast(e.message || 'Could not add the new hire.', 'error'); }
