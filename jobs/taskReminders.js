@@ -78,6 +78,7 @@ async function notifyTaskCc(taskId) {
   const emails = await ccEmails(ids);
   if (!emails.length) return;
   const attCount = (await pool.query('SELECT COUNT(*)::int AS n FROM task_attachments WHERE task_id = $1', [taskId])).rows[0].n;
+  if (!(await getChannels('task_cc_created')).email) return;
   const line = 'You have been copied on this task' + (t.assignee_name ? ' (assigned to ' + t.assignee_name + ')' : '') + ' so you are aware. No action is needed unless asked.';
   try { await sendEmail(emails, 'FYI \u2014 task: ' + t.title, taskEmail(t, line, attCount)); } catch (e) { console.error('[tasks] cc email failed:', e.message); }
 }
@@ -85,10 +86,31 @@ async function notifyTaskCc(taskId) {
 async function notifyTaskCcInfo(ccUserIds, info) {
   const emails = await ccEmails(ccUserIds);
   if (!emails.length) return;
+  if (!(await getChannels('task_cc_created')).email) return;
   const who = (info.assignees && info.assignees.length) ? info.assignees.join(', ') : 'the team';
   const t = { title: info.title, description: info.description, priority: info.priority, due_date: info.due_date };
   const line = 'You have been copied on a task assigned to ' + who + ' so you are aware. No action is needed unless asked.';
   try { await sendEmail(emails, 'FYI \u2014 task: ' + info.title, taskEmail(t, line, info.attCount || 0)); } catch (e) { console.error('[tasks] cc email failed:', e.message); }
+}
+// FYI email to the copied people when the task is closed out (moved to Done).
+async function notifyTaskCcDone(taskId, closerName) {
+  const t = (await pool.query('SELECT t.*, a.name AS assignee_name FROM tasks t LEFT JOIN users a ON t.assigned_to = a.id WHERE t.id = $1', [taskId])).rows[0];
+  if (!t) return;
+  const ids = (await pool.query('SELECT user_id FROM task_cc WHERE task_id = $1', [taskId])).rows.map(function (r) { return r.user_id; });
+  const emails = await ccEmails(ids);
+  if (!emails.length) return;
+  if (!(await getChannels('task_cc_done')).email) return;
+  const who = closerName || t.assignee_name || 'someone';
+  const line = 'This task you were copied on has been marked Done by ' + who + '. No action is needed.';
+  const html = emailTemplate({
+    badge: 'Task completed', badgeColor: 'green',
+    title: t.title,
+    body: line + '<br><br>' + (t.description ? t.description + '<br><br>' : '') +
+      'Completed by: ' + who + '<br>Completed: ' + fmtDate(new Date()) + (t.due_date ? '<br>Was due: ' + fmtDate(t.due_date) : ''),
+    buttonText: 'View Task', buttonUrl: APP + '/?view=tasks',
+    footerNote: 'Automated task notification from Nova.'
+  });
+  try { await sendEmail(emails, 'Done \u2014 task: ' + t.title, html); } catch (e) { console.error('[tasks] cc done email failed:', e.message); }
 }
 
 // Small helpers for the daily digest.
@@ -302,4 +324,4 @@ function startCompletedCleanup() {
   console.log('[tasks] Completed-task cleanup scheduled (03:00 ' + TZ + ', deletes done tasks >14 days old)');
 }
 
-module.exports = { startTaskReminders, startCompletedCleanup, runCompletedCleanup, runTaskReminders, notifyTaskAssigned, notifyTaskCc, notifyTaskCcInfo, startRecurringSpawner, runRecurringSpawner, spawnFromTemplate, recurNextStart, recurDueFromStart, recurAdvanceStart, recurYmd, recurFromYmd };
+module.exports = { startTaskReminders, startCompletedCleanup, runCompletedCleanup, runTaskReminders, notifyTaskAssigned, notifyTaskCc, notifyTaskCcInfo, notifyTaskCcDone, startRecurringSpawner, runRecurringSpawner, spawnFromTemplate, recurNextStart, recurDueFromStart, recurAdvanceStart, recurYmd, recurFromYmd };

@@ -3,7 +3,7 @@ const { pool } = require('../db');
 const { requireAuth, requirePermission } = require('../middleware/auth');
 const perms = require('../utils/permissions');
 const { logAudit } = require('../utils/audit');
-const { notifyTaskAssigned, notifyTaskCc, notifyTaskCcInfo } = require('../jobs/taskReminders');
+const { notifyTaskAssigned, notifyTaskCc, notifyTaskCcInfo, notifyTaskCcDone } = require('../jobs/taskReminders');
 const { spawnFromTemplate, recurNextStart, recurYmd, recurFromYmd } = require('../jobs/taskReminders');
 const { resolveDateTokens } = require('../utils/messageTokens');
 
@@ -477,6 +477,7 @@ router.put('/:id', requireAuth, requirePermission('manage_tasks'), async (req, r
     try { await logAudit({ entity_type: 'task', entity_id: parseInt(req.params.id), entity_number: '#' + req.params.id, action: 'edited', user_id: req.user.id, user_name: req.user.name, details: {} }); } catch (e) {}
     if (b.cc !== undefined) await saveCc(req.params.id, b.cc, true);
     if (assigneeChanged && assigned_to) { try { await notifyTaskAssigned(req.params.id); } catch (e) {} }
+    if (status === 'done' && ex.status !== 'done') { try { await notifyTaskCcDone(req.params.id, req.user.name); } catch (e) {} }
     res.json(await loadTask(req.params.id));
   } catch (err) { console.error(err); res.status(500).json({ error: 'Failed to update task' }); }
 });
@@ -495,6 +496,7 @@ router.patch('/:id/status', requireAuth, requirePermission('view_tasks'), async 
     if (status === 'done' && ex.status !== 'done') {
       await pool.query("UPDATE tasks SET status='done', completed_at=NOW(), completed_by=$1, updated_at=NOW() WHERE id=$2", [req.user.id, req.params.id]);
       await addActivity(req.params.id, req.user, 'event', 'marked it done');
+      try { await notifyTaskCcDone(req.params.id, req.user.name); } catch (e) {}
       if (ex.recurrence && !ex.is_template) await spawnRecurrence(ex, req.user);
     } else {
       await pool.query('UPDATE tasks SET status=$1, completed_at=NULL, completed_by=NULL, updated_at=NOW() WHERE id=$2', [status, req.params.id]);

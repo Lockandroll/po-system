@@ -2496,7 +2496,9 @@ async function renderNotifications(el) {
 
   var taskAlerts = [
     { key:'task_assigned', label:'Task assigned to someone', desc:'Notifies the person a task was assigned to.' },
-    { key:'task_due', label:'Task due / overdue reminders', desc:'Reminds the assignee when a task is due or already overdue.' }
+    { key:'task_due', label:'Task due / overdue reminders', desc:'Reminds the assignee when a task is due or already overdue.' },
+    { key:'task_cc_created', label:'Copied (FYI) on a new task', desc:'Emails the people copied on a task when it is created, so they are aware.', emailOnly:true },
+    { key:'task_cc_done', label:'Copied (FYI) task completed', desc:'Emails the people copied on a task when it is moved to Done.', emailOnly:true }
   ];
   var tHtml = taskAlerts.map(function(ev) {
     var rule = rules[ev.key];
@@ -2506,7 +2508,9 @@ async function renderNotifications(el) {
       '<div style="flex:1;min-width:200px"><div>' + escHtml(ev.label) + '</div>' + (ev.desc ? '<div style="color:var(--text-muted-color);font-size:12px;margin-top:2px">' + escHtml(ev.desc) + '</div>' : '') + '</div>' +
       '<div style="display:flex;gap:18px">' +
         '<label style="display:flex;align-items:center;gap:6px;cursor:pointer">' + chk('nt-email-' + ev.key, emailOn) + ' Email</label>' +
-        '<label style="display:flex;align-items:center;gap:6px;cursor:pointer">' + chk('nt-sms-' + ev.key, smsOn) + ' SMS</label>' +
+        (ev.emailOnly
+          ? '<span style="color:var(--text-muted-color);font-size:12px;white-space:nowrap;align-self:center">Email only</span>'
+          : '<label style="display:flex;align-items:center;gap:6px;cursor:pointer">' + chk('nt-sms-' + ev.key, smsOn) + ' SMS</label>') +
       '</div>' +
     '</div>';
   }).join('');
@@ -2523,7 +2527,7 @@ async function renderNotifications(el) {
       rHtml +
     '</div></div>' +
     '<div class="card mb-4"><div class="card-header"><span class="card-title">Task alerts</span></div><div class="card-body">' +
-      '<p class="text-muted" style="margin-bottom:6px;font-size:13px">These go to the person a task is assigned to. Toggle the channel on or off. Reminders fire when assigned, the day before, the morning it is due, and daily while overdue.</p>' +
+      '<p class="text-muted" style="margin-bottom:6px;font-size:13px">The first two go to the person a task is assigned to &mdash; reminders fire when assigned, the day before, the morning it is due, and daily while overdue. The copied (FYI) alerts go to anyone listed under &ldquo;Copy (FYI)&rdquo; on a task and are always email only, never SMS.</p>' +
       tHtml +
     '</div></div>' +
     '<button class="btn btn-primary" onclick="saveNotifications()">Save Notification Settings</button>';
@@ -2575,6 +2579,11 @@ async function saveNotifications() {
     var emailEl = document.getElementById('nt-email-' + key);
     var smsEl = document.getElementById('nt-sms-' + key);
     rules[key] = { email: emailEl ? emailEl.checked : true, sms: smsEl ? smsEl.checked : true };
+  });
+  // FYI/copied alerts are awareness-only: email channel, never SMS.
+  ['task_cc_created','task_cc_done'].forEach(function(key) {
+    var emailEl = document.getElementById('nt-email-' + key);
+    rules[key] = { email: emailEl ? emailEl.checked : true, sms: false };
   });
   try {
     await api('PUT', '/settings/notification_rules', { value: JSON.stringify(rules) });
