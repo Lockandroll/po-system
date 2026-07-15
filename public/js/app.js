@@ -9071,6 +9071,9 @@ let _signoffSigPad = null;
 let _signoffSignatureData = null;
 let _signoffGps = null;
 let _signoffSignedAt = null;
+// Set when a tech submits a sheet with "work 100% complete = No" — makes the view page offer
+// the next trip immediately. One-shot: cleared as soon as it is read.
+let _signoffOfferTrip = false;
 
 // ===== Work Orders module =====================================================
 // ===== Parts List (master catalog) ==========================================
@@ -10933,7 +10936,11 @@ async function renderViewWorkOrder(el, id) {
       actions += '<button class="btn btn-primary" onclick="woSetStatus(' + id + ',\'paperwork_sent\')">Mark Paperwork Sent</button>';
     }
     if (w.signoff_id && w.signoff) {
-      actions += '<button class="btn btn-secondary" onclick="navigate(\'' + (w.signoff.status === 'completed' ? 'view-signoff' : 'complete-signoff') + '\',' + w.signoff_id + ')">Open Sign-Off (' + escHtml(w.signoff.form_number || '') + ')</button>';
+      // w.signoff is the live trip (the latest one on the job). Use its own id rather than
+      // w.signoff_id so the button always opens the current sheet.
+      var _soTrips = w.signoffs || [w.signoff];
+      var _soLabel = (_soTrips.length > 1) ? ' — Trip ' + (w.signoff.trip_number || _soTrips.length) : '';
+      actions += '<button class="btn btn-secondary" onclick="navigate(\'' + (w.signoff.status === 'completed' ? 'view-signoff' : 'complete-signoff') + '\',' + w.signoff.id + ')">Open Sign-Off (' + escHtml(w.signoff.form_number || '') + _soLabel + ')</button>';
     }
     if (w.source === 'email') actions += '<button class="btn btn-secondary" onclick="woReparse(' + id + ')">Re-parse with AI</button>';
     actions += '<button class="btn btn-ghost" style="color:#b91c1c" onclick="woDelete(' + id + ')">Delete</button>';
@@ -11010,6 +11017,7 @@ async function renderViewWorkOrder(el, id) {
     assignCard +
     (actions ? '<div class="card mb-4"><div class="card-body"><div class="flex-gap" style="flex-wrap:wrap">' + actions + '</div></div></div>' : '') +
     woNteCard(w, id, manage) +
+    woSignoffTripsCard(w) +
     woVehicleCard(w, id, manage) +
     (!isVeh && manage
       ? '<div class="card mb-4"><div class="card-body" style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">' +
@@ -11023,6 +11031,36 @@ async function renderViewWorkOrder(el, id) {
         ? w.activity.map(function (a) { return '<div style="font-size:13px;padding:6px 0;border-bottom:1px solid var(--border-color)"><span style="color:var(--text-muted-color)">' + formatDate(a.created_at) + ' &middot; ' + escHtml(a.user_name || 'System') + '</span> — ' + escHtml(a.body || '') + '</div>'; }).join('')
         : '<div style="color:var(--text-muted-color);font-size:13px">No activity yet.</div>') +
     '</div></div>';
+}
+
+// Sign-off trips on a work order. Renders only when the job actually took more than one visit —
+// a single-visit job keeps the plain "Open Sign-Off" button and nothing else.
+function woSignoffTripsCard(w) {
+  var trips = w.signoffs || [];
+  if (trips.length <= 1) return '';
+  var cards = trips.map(function (t) {
+    var done = t.status === 'completed';
+    var meta = done
+      ? ('Completed ' + (t.completed_at ? formatDate(t.completed_at) : '') + (t.work_complete === false ? ' · work not finished' : ''))
+      : 'Awaiting completion';
+    return '<div onclick="navigate(\'' + (done ? 'view-signoff' : 'complete-signoff') + '\',' + t.id + ')" ' +
+      'style="flex:1;min-width:170px;display:flex;flex-direction:column;gap:6px;padding:12px 14px;border-radius:var(--radius);' +
+      'background:var(--bg-elevated);border:1px solid var(--border);cursor:pointer">' +
+      '<div style="display:flex;align-items:center;justify-content:space-between;gap:8px">' +
+        '<span style="font-size:13px;font-weight:600;color:var(--text)">Trip ' + (t.trip_number || 1) + '</span>' +
+        '<span style="width:8px;height:8px;border-radius:50%;flex-shrink:0;background:' + (done ? 'var(--success)' : 'var(--warning)') + '"></span>' +
+      '</div>' +
+      '<div style="font-family:ui-monospace,Menlo,Consolas,monospace;font-size:11px;color:var(--text-muted-color)">' + escHtml(t.form_number || '') + '</div>' +
+      '<div style="font-size:12px;color:var(--text-muted-color)">' + escHtml(meta) + '</div>' +
+    '</div>';
+  }).join('');
+  var openTrip = trips.filter(function (t) { return t.status !== 'completed'; }).length > 0;
+  var note = openTrip
+    ? '<div class="alert alert-info" style="margin:14px 0 0">This job stays open until the latest trip is signed off as 100% complete.</div>'
+    : '';
+  return '<div class="card mb-4"><div class="card-header"><span class="card-title">Sign-Off Sheets</span>' +
+    '<span style="font-size:12px;color:var(--text-muted-color)">' + trips.length + ' visits</span></div>' +
+    '<div class="card-body"><div style="display:flex;align-items:stretch;gap:8px;flex-wrap:wrap">' + cards + '</div>' + note + '</div></div>';
 }
 
 // ---- Vehicle jobs (Fenkell / VEHI-TRAC port work) ---------------------------
@@ -11270,13 +11308,26 @@ function filterSignoffs(resetPage) {
   const page = filtered.slice(start, start + SIGNOFF_PAGE_SIZE);
   wrap.innerHTML =
     '<div class="table-wrap"><table>' +
-    '<thead><tr><th>Form #</th><th>Store</th><th>PO #</th><th>Account</th>' + (signoffSeeAll() ? '<th>Assigned To</th>' : '') + '<th>Status</th><th>Created</th><th></th></tr></thead>' +
+    '<thead><tr><th>Form #</th><th>Store</th><th>PO #</th><th>Account</th><th>Trip</th>' + (signoffSeeAll() ? '<th>Assigned To</th>' : '') + '<th>Status</th><th>Created</th><th></th></tr></thead>' +
     '<tbody>' + page.map(renderSignoffRow).join('') + '</tbody>' +
     '</table></div>' +
     renderPagination(_signoffPage, totalPages, filtered.length, 'signoffPaginate', SIGNOFF_PAGE_SIZE, 'signoffPageSize');
 }
 
 function signoffSeeAll() { return ['admin','manager'].includes(state.user.role); }
+
+// Trip cell for the list. Blank on ordinary single-visit jobs so nothing changes for them.
+function signoffRowTripHtml(f) {
+  const c = f.trip_count || 1;
+  if (c <= 1) return '';
+  const n = f.trip_number || 1;
+  const isLatest = n === c;
+  const bg = isLatest ? 'rgba(249,115,22,0.12)' : 'var(--bg-elevated)';
+  const fg = isLatest ? 'var(--primary)' : 'var(--text-muted-color)';
+  const bd = isLatest ? 'rgba(249,115,22,0.3)' : 'var(--border)';
+  return '<span style="display:inline-flex;align-items:center;padding:2px 9px;border-radius:20px;font-size:12px;font-weight:600;' +
+    'background:' + bg + ';color:' + fg + ';border:1px solid ' + bd + '">Trip ' + n + ' of ' + c + '</span>';
+}
 
 function renderSignoffRow(f) {
   const pend = f.status === 'pending';
@@ -11294,6 +11345,7 @@ function renderSignoffRow(f) {
     '<td>' + escHtml(f.store_name || '—') + (f.store_number ? ' <span style="color:var(--text-muted-color)">#' + escHtml(f.store_number) + '</span>' : '') + '</td>' +
     '<td>' + escHtml(f.po_number || '—') + '</td>' +
     '<td>' + escHtml(f.account || '—') + '</td>' +
+    '<td>' + signoffRowTripHtml(f) + '</td>' +
     (signoffSeeAll() ? '<td>' + (f.assigned_to_name ? escHtml(f.assigned_to_name) : '<span style="color:var(--text-muted-color)">Unassigned</span>') + '</td>' : '') +
     '<td>' + badge + '</td>' +
     '<td>' + formatDate(f.created_at) + '</td>' +
@@ -11360,13 +11412,135 @@ async function saveSignoff(id) {
   }
 }
 
+// ---- Sign-off trip series ------------------------------------------------
+// A job that needs more than one visit gets one sheet per trip. The strip below shows every
+// visit on the job; the sheet itself is unchanged. Single-visit jobs render no strip at all.
+
+function signoffTripStripHtml(f, opts) {
+  opts = opts || {};
+  const trips = f.trips || [];
+  const canAdd = f.can_add_trip && can('create_signoff');
+  // Nothing to show on an ordinary one-visit job that cannot spawn a trip yet.
+  if (trips.length <= 1 && !canAdd) return '';
+  const cards = trips.map(function(t) {
+    const isCurrent = t.id === f.id;
+    const done = t.status === 'completed';
+    const dot = '<span style="width:8px;height:8px;border-radius:50%;flex-shrink:0;background:' + (done ? 'var(--success)' : 'var(--warning)') + '"></span>';
+    let meta;
+    if (done) {
+      meta = 'Completed ' + (t.completed_at ? formatDate(t.completed_at) : '') + (t.completed_by_name ? ' · ' + escHtml(t.completed_by_name) : '');
+      if (t.work_complete === false) meta += ' · work not finished';
+    } else {
+      meta = 'Awaiting completion';
+    }
+    const clickable = t.can_open && !isCurrent;
+    const style = 'flex:1;min-width:170px;display:flex;flex-direction:column;gap:6px;padding:12px 14px;border-radius:var(--radius);' +
+      'background:' + (isCurrent ? 'rgba(249,115,22,0.08)' : 'var(--bg-elevated)') + ';' +
+      'border:1px solid ' + (isCurrent ? 'var(--primary)' : 'var(--border)') + ';' +
+      (clickable ? 'cursor:pointer;' : '') + (t.can_open ? '' : 'opacity:0.55;');
+    const onclick = clickable
+      ? ' onclick="navigate(\'' + (t.status === 'completed' ? 'view-signoff' : 'complete-signoff') + '\',' + t.id + ')"'
+      : '';
+    const title = t.can_open ? '' : ' title="This trip is assigned to someone else."';
+    return '<div style="' + style + '"' + onclick + title + '>' +
+      '<div style="display:flex;align-items:center;justify-content:space-between;gap:8px">' +
+        '<span style="font-size:13px;font-weight:600;color:' + (isCurrent ? 'var(--primary)' : 'var(--text)') + '">Trip ' + (t.trip_number || 1) + '</span>' + dot +
+      '</div>' +
+      '<div style="font-family:\'Fira Code\',monospace;font-size:11px;color:var(--text-muted-color)">' + escHtml(t.form_number || '') + '</div>' +
+      '<div style="font-size:12px;color:var(--text-muted-color)">' + meta + '</div>' +
+    '</div>';
+  }).join('');
+  const addBtn = canAdd
+    ? '<div onclick="openAddTripModal(' + f.id + ',' + (trips.length + 1) + ')" style="display:flex;align-items:center;justify-content:center;min-width:120px;padding:12px 14px;border-radius:var(--radius);border:1px dashed var(--border);color:var(--text-muted-color);font-size:13px;font-weight:500;cursor:pointer;gap:6px">+ Add Trip</div>'
+    : '';
+  const pendingNote = (!canAdd && trips.some(function(t) { return t.status === 'pending'; }) && trips.length > 1)
+    ? '<div class="alert alert-info" style="margin:14px 0 0">Add Trip is available once the open trip is completed — one live sheet per job.</div>'
+    : '';
+  return '<div class="card mb-4"><div class="card-header"><span class="card-title">Trips on this job</span>' +
+    (trips.length > 1 ? '<span style="font-size:12px;color:var(--text-muted-color)">' + trips.length + ' visits</span>' : '') +
+    '</div><div class="card-body">' +
+    '<div style="display:flex;align-items:stretch;gap:8px;flex-wrap:wrap">' + cards + addBtn + '</div>' +
+    pendingNote +
+  '</div></div>';
+}
+
+function signoffTripChip(f) {
+  const n = f.trip_number || 1;
+  const c = f.trip_count || (f.trips ? f.trips.length : 1);
+  if (c <= 1) return '';
+  return '<span style="display:inline-flex;align-items:center;padding:2px 9px;border-radius:20px;font-size:12px;font-weight:600;' +
+    'background:rgba(249,115,22,0.12);color:var(--primary);border:1px solid rgba(249,115,22,0.3);vertical-align:middle;margin-left:8px">Trip ' + n + ' of ' + c + '</span>';
+}
+
+// Add Trip modal — assignee + reason, then POST /signoffs/:id/trip.
+async function openAddTripModal(id, nextTrip) {
+  let assignees = [];
+  try { assignees = await api('GET', '/signoffs/assignees'); } catch(e) {}
+  let src = null;
+  try { src = await api('GET', '/signoffs/' + id); } catch(e) {}
+  const carry = src
+    ? [ (src.po_number ? 'PO ' + src.po_number : null), src.account,
+        (src.store_name ? src.store_name + (src.store_number ? ' #' + src.store_number : '') : null),
+        src.address, src.city_state_zip ].filter(Boolean).map(escHtml).join(' · ')
+    : '';
+  const ov = document.createElement('div');
+  ov.className = 'nova-dialog-overlay';
+  ov.innerHTML = '<div class="nova-dlg" role="dialog" aria-modal="true" style="max-width:460px;text-align:left">' +
+    '<div class="nova-dlg-title">Add Trip ' + nextTrip + '</div>' +
+    (carry ? '<div style="font-size:12px;color:var(--text-muted-color);background:var(--bg-elevated);border:1px solid var(--border);border-radius:var(--radius);padding:10px 12px;line-height:1.7;margin-bottom:16px">' +
+      '<span style="color:var(--text-dim)">Carries over:</span> ' + carry + '<br />' +
+      '<span style="color:var(--text-dim)">Starts empty:</span> times, technicians, signature, photos, invoice #</div>' : '') +
+    '<div class="form-group"><label>Assign to</label><select id="trip-assignee">' +
+      '<option value="">Unassigned</option>' +
+      assignees.map(function(u) {
+        const sel = (src && src.assigned_to === u.id) ? ' selected' : '';
+        return '<option value="' + u.id + '"' + sel + '>' + escHtml(u.name) + '</option>';
+      }).join('') +
+    '</select></div>' +
+    '<div class="form-group" style="margin-bottom:0"><label>Reason for the return trip</label>' +
+      '<textarea id="trip-reason" rows="3" placeholder="e.g. Mortise cylinder on order — return to install rear panic bar" style="resize:vertical"></textarea></div>' +
+    '<div id="trip-modal-error"></div>' +
+    '<div class="nova-dlg-actions">' +
+      '<button class="btn btn-secondary" id="trip-cancel">Never mind</button>' +
+      '<button class="btn btn-primary" id="trip-ok">Create Trip ' + nextTrip + '</button>' +
+    '</div></div>';
+  document.body.appendChild(ov);
+  function close() {
+    ov.classList.add('closing');
+    document.removeEventListener('keydown', onKey);
+    setTimeout(function() { if (ov.parentNode) ov.parentNode.removeChild(ov); }, 140);
+  }
+  function onKey(e) { if (e.key === 'Escape') { e.preventDefault(); close(); } }
+  document.addEventListener('keydown', onKey);
+  ov.addEventListener('mousedown', function(e) { if (e.target === ov) close(); });
+  ov.querySelector('#trip-cancel').addEventListener('click', close);
+  ov.querySelector('#trip-ok').addEventListener('click', async function() {
+    const btn = this;
+    btn.disabled = true; btn.textContent = 'Creating...';
+    try {
+      const trip = await api('POST', '/signoffs/' + id + '/trip', {
+        assigned_to: (ov.querySelector('#trip-assignee') || {}).value || null,
+        trip_reason: ((ov.querySelector('#trip-reason') || {}).value || '').trim() || null
+      });
+      close();
+      navigate('view-signoff', trip.id);
+    } catch (err) {
+      const e = ov.querySelector('#trip-modal-error');
+      if (e) e.innerHTML = '<div class="alert alert-error" style="margin:14px 0 0">' + escHtml(err.message) + '</div>';
+      btn.disabled = false; btn.textContent = 'Create Trip ' + nextTrip;
+    }
+  });
+}
+
 function signoffSummaryHtml(f) {
   function row(label, val) { return '<div><div style="font-size:11px;font-weight:600;color:var(--text-muted-color);text-transform:uppercase;letter-spacing:0.04em;margin-bottom:3px">' + label + '</div><div style="font-size:14px">' + escHtml(val || '—') + '</div></div>'; }
   return '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:16px">' +
     row('Form #', f.form_number) + row('PO #', f.po_number) + row('Invoice #', f.invoice_number) +
     row('Account', f.account) + row('Store', (f.store_name || '') + (f.store_number ? ' (#' + f.store_number + ')' : '')) +
     row('Address', f.address) + row('City / State / Zip', f.city_state_zip) + row('Service Requested By', f.service_requested_by) +
-  '</div>' + (f.notes ? '<div style="margin-top:14px;padding:10px 12px;background:var(--bg-elevated);border-radius:6px;font-size:13px"><strong>Setup notes:</strong> ' + escHtml(f.notes) + '</div>' : '');
+  '</div>' +
+  (f.trip_reason ? '<div style="margin-top:14px;padding:10px 12px;background:var(--bg-elevated);border-radius:6px;font-size:13px"><strong>Reason for this trip:</strong> ' + escHtml(f.trip_reason) + '</div>' : '') +
+  (f.notes ? '<div style="margin-top:14px;padding:10px 12px;background:var(--bg-elevated);border-radius:6px;font-size:13px"><strong>Setup notes:</strong> ' + escHtml(f.notes) + '</div>' : '');
 }
 
 async function renderCompleteSignoff(el, id) {
@@ -11391,7 +11565,11 @@ async function renderCompleteSignoff(el, id) {
         '<div class="form-group"><label>End Time &amp; Date *</label><input type="text" id="so-end" placeholder="e.g. 6/19/26 3:00 PM" /></div>' +
       '</div>' +
       '<div class="form-row">' +
-        '<div class="form-group"><label>Is this work 100% complete? *</label><select id="so-complete"><option value="">— Select —</option><option value="yes">Yes</option><option value="no">No</option></select></div>' +
+        '<div class="form-group"><label>Is this work 100% complete? *</label><select id="so-complete" onchange="toggleTripNudge(this.value)"><option value="">— Select —</option><option value="yes">Yes</option><option value="no">No</option></select>' +
+          '<div id="so-trip-nudge" style="display:none;align-items:center;gap:8px;padding:12px 14px;border-radius:var(--radius);background:#2d2100;border:1px solid #4a3500;color:#fbbf24;font-size:13px;line-height:1.5;margin-top:10px">' +
+            '<span>Return trip needed? The job will stay open. After you submit this sheet, Nova will offer to set up <strong style="color:#fcd34d">Trip ' + ((form.trip_number || 1) + 1) + '</strong> with the store and PO already filled in.</span>' +
+          '</div>' +
+        '</div>' +
         '<div class="form-group"><label>Number of Technicians *</label><input type="number" id="so-numtech" min="0" step="1" placeholder="e.g. 2" /></div>' +
         '<div class="form-group"><label>Invoice Number *</label><input type="text" id="so-invoice-complete" placeholder="Invoice number" /></div>' +
       '</div>' +
@@ -11621,6 +11799,12 @@ function renderSignoffPhotoGrid() {
   }).join('');
 }
 
+// Show the return-trip hint the moment the tech says the work is not finished.
+function toggleTripNudge(val) {
+  const n = document.getElementById('so-trip-nudge');
+  if (n) n.style.display = (val === 'no') ? 'flex' : 'none';
+}
+
 function updateSignoffPhotoCaption(i, val) { if (signoffPhotos[i]) signoffPhotos[i].caption = val; }
 
 function removeSignoffPhoto(i) { signoffPhotos.splice(i, 1); renderSignoffPhotoGrid(); }
@@ -11671,6 +11855,9 @@ async function submitSignoffCompletion(id) {
   if (btn) { btn.disabled = true; btn.textContent = 'Submitting...'; }
   try {
     await api('POST', '/signoffs/' + id + '/complete', body);
+    // Work not finished = a return trip is coming. Offer to set it up straight away rather than
+    // making the tech find it later; renderViewSignoff picks this flag up.
+    _signoffOfferTrip = (completeSel === 'no');
     navigate('view-signoff', id);
   } catch(err) {
     errEl.innerHTML = '<div class="alert alert-error">' + escHtml(err.message) + '</div>';
@@ -11690,7 +11877,7 @@ async function renderViewSignoff(el, id) {
       : signoffCompletedHtml(f);
     el.innerHTML =
       '<div class="page-header">' +
-        '<div><div class="page-title">' + escHtml(f.form_number) + '</div><div class="page-subtitle">Work Order Sign-Off' + (pend ? ' · Awaiting completion' : ' · Completed') + '</div></div>' +
+        '<div><div class="page-title">' + escHtml(f.form_number) + signoffTripChip(f) + '</div><div class="page-subtitle">Work Order Sign-Off' + (pend ? ' · Awaiting completion' : ' · Completed') + '</div></div>' +
         '<div class="flex-gap">' +
           '<button class="btn btn-secondary" onclick="navigate(\'signoffs\')">&larr; Back</button>' +
           (!pend ? '<button class="btn btn-secondary" style="white-space:nowrap" onclick="printSignoff(' + f.id + ')">' + icons.print + ' Print</button>' : '') +
@@ -11700,8 +11887,16 @@ async function renderViewSignoff(el, id) {
           (canDelete ? '<button class="btn btn-danger" title="Delete sign-off sheet" onclick="deleteSignoff(' + f.id + ')"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14H6L5 6"/><path d="M10 11v6"/><path d="M14 11v6"/><path d="M9 6V4h6v2"/></svg> Delete</button>' : '') +
         '</div>' +
       '</div>' +
+      signoffTripStripHtml(f) +
       '<div class="card mb-4"><div class="card-header"><span class="card-title">Work Order</span></div><div class="card-body">' + signoffSummaryHtml(f) + '</div></div>' +
       completedBlock;
+    // Just submitted as "work not complete" — offer the return trip while the tech is still on site.
+    if (_signoffOfferTrip) {
+      _signoffOfferTrip = false;
+      if (f.can_add_trip && can('create_signoff')) {
+        openAddTripModal(f.id, (f.trips || []).length + 1);
+      }
+    }
   } catch(err) {
     el.innerHTML = '<div class="alert alert-error">' + escHtml(err.message) + '</div>';
   }

@@ -52,7 +52,8 @@ function normText(s) {
 }
 
 // form: signoff_forms row (plus completed_by_name). photos: [{image_data, caption}].
-// opts: { company:{name,address,csz,phone}, completedBy, logo }
+// opts: { company:{name,address,csz,phone}, completedBy, logo, tripLabel }
+// tripLabel is e.g. "Trip 2 of 3"; omit/empty for a single-visit job.
 function buildSignoffPdf(form, photos, opts) {
   form = form || {};
   photos = photos || [];
@@ -80,6 +81,13 @@ function buildSignoffPdf(form, photos, opts) {
         doc.save().rect(left, y, pageW, 26).fill(BLACK).restore();
         doc.fillColor('#ffffff').font('Helvetica-Bold').fontSize(14)
            .text('Work Order Sign Off Sheet', left, y + 7, { width: pageW, align: 'center' });
+        // Trip label (e.g. "Trip 2 of 3") for jobs that took more than one visit. Blank for
+        // ordinary single-visit jobs, so those sheets look exactly as they always have.
+        var tripText = opts.tripLabel || '';
+        if (tripText) {
+          doc.font('Helvetica-Bold').fontSize(10)
+             .text(tripText, left, y + 9, { width: pageW - 8, align: 'right' });
+        }
         doc.fillColor(BLACK);
         y += 26;
 

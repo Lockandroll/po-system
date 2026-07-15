@@ -149,8 +149,17 @@ async function loadWorkOrder(id) {
   );
   wo.revisions = revs.rows;
   if (wo.signoff_id) {
-    const so = await pool.query('SELECT id, form_number, status FROM signoff_forms WHERE id = $1', [wo.signoff_id]);
-    wo.signoff = so.rows[0] || null;
+    // The WO points at the live sheet; load the whole trip series so the detail page can show
+    // every visit on the job. wo.signoff stays the latest trip for backward compatibility.
+    const so = await pool.query(
+      'SELECT s.id, s.form_number, s.status, s.trip_number, s.work_complete, s.completed_at, s.trip_reason, u.name AS completed_by_name ' +
+      'FROM signoff_forms s LEFT JOIN users u ON s.completed_by = u.id ' +
+      'WHERE s.trip_group_id = (SELECT COALESCE(trip_group_id, id) FROM signoff_forms WHERE id = $1) ' +
+      'ORDER BY s.trip_number ASC',
+      [wo.signoff_id]
+    );
+    wo.signoffs = so.rows;
+    wo.signoff = so.rows.length ? so.rows[so.rows.length - 1] : null;
   }
   return wo;
 }

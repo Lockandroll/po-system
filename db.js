@@ -477,6 +477,20 @@ async function initDB() {
       'ALTER TABLE signoff_forms ADD COLUMN IF NOT EXISTS signed_at TIMESTAMPTZ;' +
       'ALTER TABLE signoff_forms ADD COLUMN IF NOT EXISTS assigned_to INTEGER REFERENCES users(id) ON DELETE SET NULL;'
     );
+    // Trip series: one job can need several visits, each with its own sheet + signature.
+    // trip_group_id is the id of the first sheet in the series (self-referencing on trip 1).
+    // Intentionally NOT a foreign key — an FK would drag the whole series when trip 1 is deleted.
+    // trip_base_number is trip 1's form_number, stored so -T2/-T3 suffixes survive a year rollover.
+    await client.query(
+      'ALTER TABLE signoff_forms ADD COLUMN IF NOT EXISTS trip_group_id INTEGER;' +
+      'ALTER TABLE signoff_forms ADD COLUMN IF NOT EXISTS trip_number INTEGER NOT NULL DEFAULT 1;' +
+      'ALTER TABLE signoff_forms ADD COLUMN IF NOT EXISTS trip_base_number VARCHAR(50);' +
+      'ALTER TABLE signoff_forms ADD COLUMN IF NOT EXISTS trip_reason TEXT;' +
+      'CREATE INDEX IF NOT EXISTS idx_signoff_trip_group ON signoff_forms(trip_group_id);'
+    );
+    // Backfill: every existing sheet becomes a one-trip series. Safe to re-run.
+    await client.query('UPDATE signoff_forms SET trip_group_id = id WHERE trip_group_id IS NULL;');
+    await client.query('UPDATE signoff_forms SET trip_base_number = form_number WHERE trip_base_number IS NULL AND trip_number = 1;');
     await client.query(
       'ALTER TABLE deposits ADD COLUMN IF NOT EXISTS period_start DATE;' +
       'ALTER TABLE deposits ADD COLUMN IF NOT EXISTS period_end DATE;'
