@@ -11543,18 +11543,192 @@ function signoffSummaryHtml(f) {
   (f.notes ? '<div style="margin-top:14px;padding:10px 12px;background:var(--bg-elevated);border-radius:6px;font-size:13px"><strong>Setup notes:</strong> ' + escHtml(f.notes) + '</div>' : '');
 }
 
+// ---------------------------------------------------------------------------
+// Draft store (IndexedDB)
+//
+// Field forms hold everything in memory until submit, so a backgrounded PWA, a
+// service worker update or a tab crash loses the whole sheet — photos included.
+// localStorage is not an option here: photos are base64 JPEG dataURLs and a
+// handful of them blows past the ~5MB quota and throws. IndexedDB has no
+// practical cap and stores structured values, so the photo array goes in as-is.
+//
+// Everything is best-effort: a draft failing to save must never break the form
+// the tech is standing in a parking lot trying to submit. All calls swallow.
+// ---------------------------------------------------------------------------
+var NOVA_DRAFT_DB = 'nova-drafts';
+var NOVA_DRAFT_STORE = 'drafts';
+var _novaDraftDb = null;
+
+function novaDraftOpen() {
+  if (_novaDraftDb) return Promise.resolve(_novaDraftDb);
+  return new Promise(function(resolve, reject) {
+    if (!window.indexedDB) return reject(new Error('no indexedDB'));
+    var req = indexedDB.open(NOVA_DRAFT_DB, 1);
+    req.onupgradeneeded = function() {
+      var db = req.result;
+      if (!db.objectStoreNames.contains(NOVA_DRAFT_STORE)) db.createObjectStore(NOVA_DRAFT_STORE);
+    };
+    req.onsuccess = function() { _novaDraftDb = req.result; resolve(_novaDraftDb); };
+    req.onerror = function() { reject(req.error || new Error('indexedDB open failed')); };
+  });
+}
+
+function novaDraftTx(mode, fn) {
+  return novaDraftOpen().then(function(db) {
+    return new Promise(function(resolve, reject) {
+      var tx = db.transaction(NOVA_DRAFT_STORE, mode);
+      var req = fn(tx.objectStore(NOVA_DRAFT_STORE));
+      req.onsuccess = function() { resolve(req.result); };
+      req.onerror = function() { reject(req.error); };
+    });
+  });
+}
+
+function novaDraftPut(key, val) {
+  return novaDraftTx('readwrite', function(s) { return s.put(val, key); }).catch(function() { return null; });
+}
+function novaDraftGet(key) {
+  return novaDraftTx('readonly', function(s) { return s.get(key); }).catch(function() { return null; });
+}
+function novaDraftDel(key) {
+  return novaDraftTx('readwrite', function(s) { return s.delete(key); }).catch(function() { return null; });
+}
+
+// Drafts are per sheet AND per user — a shared tablet must never show one tech's
+// half-finished sheet to the next one who logs in.
+function signoffDraftKey(id) {
+  return 'signoff:' + id + ':' + ((state.user && state.user.id) || 0);
+}
+
+var _signoffDraftTimer = null;
+var _signoffDraftId = null;
+var _signoffDraftPending = null;
+
+function signoffDraftSnapshot() {
+  function val(idn) { var e = document.getElementById(idn); return e ? e.value : ''; }
+  return {
+    v: 1,
+    saved_at: Date.now(),
+    fields: {
+      'so-start': val('so-start'),
+      'so-end': val('so-end'),
+      'so-complete': val('so-complete'),
+      'so-numtech': val('so-numtech'),
+      'so-invoice-complete': val('so-invoice-complete'),
+      'so-techs': val('so-techs'),
+      'so-workdesc': val('so-workdesc'),
+      'so-manager': val('so-manager')
+    },
+    // The signature is deliberately NOT saved. signed_at and the GPS fix are
+    // captured at the moment of signing and are the evidentiary point of the
+    // stamp — restoring one from a draft would attach a real customer's name to
+    // a time and place that never happened. Text and photos restore; the
+    // signature is re-collected. That is ten seconds and it keeps the record honest.
+    photos: signoffPhotos.map(function(p) { return { image_data: p.image_data, caption: p.caption || '' }; })
+  };
+}
+
+// The snapshot is taken eagerly on every call and only the IndexedDB write is
+// debounced. Reading eight inputs is cheap, and doing it now means a pending
+// save can always be flushed later even if the DOM has already been torn down —
+// otherwise navigating away mid-keystroke silently drops the last 500ms.
+function signoffDraftSave(immediate) {
+  if (_signoffDraftId == null) return;
+  var id = _signoffDraftId;
+  _signoffDraftPending = { id: id, snap: signoffDraftSnapshot() };
+  if (_signoffDraftTimer) clearTimeout(_signoffDraftTimer);
+  if (immediate) return signoffDraftCommit();
+  _signoffDraftTimer = setTimeout(signoffDraftCommit, 500);
+}
+
+function signoffDraftCommit() {
+  if (_signoffDraftTimer) { clearTimeout(_signoffDraftTimer); _signoffDraftTimer = null; }
+  var p = _signoffDraftPending;
+  if (!p) return Promise.resolve();
+  _signoffDraftPending = null;
+  return novaDraftPut(signoffDraftKey(p.id), p.snap).then(function() {
+    signoffDraftFlag('saved');
+  });
+}
+
+// Half the value of an autosave is the tech trusting that it happened.
+function signoffDraftFlag(kind, when) {
+  var el = document.getElementById('so-draft-status');
+  if (!el) return;
+  if (kind === 'saved') {
+    el.innerHTML = '<span style="color:#22c55e">&#10003;</span> Draft saved';
+    el.style.opacity = '1';
+  } else if (kind === 'restored') {
+    el.innerHTML = '<span style="color:#22c55e">&#10003;</span> Unsaved work restored' + (when ? ' from ' + escHtml(when) : '');
+    el.style.opacity = '1';
+  }
+}
+
+function signoffDraftAttach() {
+  var ids = ['so-start','so-end','so-complete','so-numtech','so-invoice-complete','so-techs','so-workdesc','so-manager'];
+  ids.forEach(function(idn) {
+    var e = document.getElementById(idn);
+    if (!e) return;
+    e.addEventListener('input', function() { signoffDraftSave(); });
+    e.addEventListener('change', function() { signoffDraftSave(); });
+  });
+  // iOS kills backgrounded PWAs without warning and does not reliably fire
+  // unload — visibilitychange is the last dependable moment to flush.
+  document.addEventListener('visibilitychange', _signoffDraftFlush);
+  window.addEventListener('pagehide', _signoffDraftFlush);
+}
+
+function _signoffDraftFlush() {
+  if (_signoffDraftId != null && document.getElementById('so-workdesc')) signoffDraftSave(true);
+}
+
+// Commit anything still in flight rather than dropping it — the pending snapshot
+// was captured at input time, so it is valid even now the form is gone.
+function signoffDraftDetach() {
+  document.removeEventListener('visibilitychange', _signoffDraftFlush);
+  window.removeEventListener('pagehide', _signoffDraftFlush);
+  signoffDraftCommit();
+  _signoffDraftId = null;
+}
+
+async function signoffDraftRestore(id) {
+  var d = await novaDraftGet(signoffDraftKey(id));
+  if (!d || d.v !== 1) return;
+  var touched = false;
+  Object.keys(d.fields || {}).forEach(function(idn) {
+    var e = document.getElementById(idn);
+    if (e && d.fields[idn]) { e.value = d.fields[idn]; touched = true; }
+  });
+  if (d.photos && d.photos.length) {
+    signoffPhotos = d.photos.slice();
+    renderSignoffPhotoGrid();
+    touched = true;
+  }
+  // The nudge is driven by so-complete, which we just set behind its onchange.
+  if (d.fields && d.fields['so-complete']) toggleTripNudge(d.fields['so-complete']);
+  if (touched) {
+    var when = '';
+    try { when = new Date(d.saved_at).toLocaleString(); } catch(e) {}
+    signoffDraftFlag('restored', when);
+  }
+}
+
 async function renderCompleteSignoff(el, id) {
   signoffPhotos = [];
   _signoffSigPad = null;
   _signoffSignatureData = null;
   _signoffGps = null;
   _signoffSignedAt = null;
+  signoffDraftDetach();
   let form;
   try { form = await api('GET', '/signoffs/' + id); } catch(e) { el.innerHTML = '<div class="alert alert-error">' + escHtml(e.message) + '</div>'; return; }
-  if (form.status === 'completed') { navigate('view-signoff', id); return; }
+  // Already done elsewhere (another device, or a trip closed out) — bin any
+  // stale draft so it can't resurface against a finished sheet.
+  if (form.status === 'completed') { novaDraftDel(signoffDraftKey(id)); navigate('view-signoff', id); return; }
   el.innerHTML =
     '<div class="page-header">' +
-      '<div><div class="page-title">Complete ' + escHtml(form.form_number) + '</div><div class="page-subtitle">Fill in on-site details, capture photos, and have the manager sign.</div></div>' +
+      '<div><div class="page-title">Complete ' + escHtml(form.form_number) + '</div><div class="page-subtitle">Fill in on-site details, capture photos, and have the manager sign.</div>' +
+        '<div id="so-draft-status" style="font-size:12px;color:var(--text-muted-color);margin-top:6px;opacity:0;transition:opacity .2s">Draft saved</div></div>' +
       '<button class="btn btn-secondary" onclick="navigate(\'signoffs\')">Cancel</button>' +
     '</div>' +
     '<div id="signoff-complete-error"></div>' +
@@ -11597,6 +11771,9 @@ async function renderCompleteSignoff(el, id) {
     '<div class="flex-gap"><button class="btn btn-primary" id="btn-complete-signoff" onclick="submitSignoffCompletion(' + form.id + ')">&#10003; Submit &amp; Email Admins</button></div>';
   renderSignoffSigPreview();
   renderSignoffPhotoGrid();
+  _signoffDraftId = form.id;
+  signoffDraftAttach();
+  await signoffDraftRestore(form.id);
 }
 
 function setupSignaturePad() {
@@ -11776,6 +11953,9 @@ function handleSignoffPhotos(input) {
         c.getContext('2d').drawImage(img, 0, 0, w, h);
         signoffPhotos.push({ image_data: c.toDataURL('image/jpeg', 0.7), caption: '' });
         renderSignoffPhotoGrid();
+        // Flush straight away rather than debouncing: a photo is the most
+        // expensive thing to lose (it means walking back to the vehicle).
+        signoffDraftSave(true);
       };
       img.src = ev.target.result;
     };
@@ -11805,9 +11985,9 @@ function toggleTripNudge(val) {
   if (n) n.style.display = (val === 'no') ? 'flex' : 'none';
 }
 
-function updateSignoffPhotoCaption(i, val) { if (signoffPhotos[i]) signoffPhotos[i].caption = val; }
+function updateSignoffPhotoCaption(i, val) { if (signoffPhotos[i]) { signoffPhotos[i].caption = val; signoffDraftSave(); } }
 
-function removeSignoffPhoto(i) { signoffPhotos.splice(i, 1); renderSignoffPhotoGrid(); }
+function removeSignoffPhoto(i) { signoffPhotos.splice(i, 1); renderSignoffPhotoGrid(); signoffDraftSave(true); }
 
 async function submitSignoffCompletion(id) {
   function val(idn) { var e = document.getElementById(idn); return e ? e.value.trim() : ''; }
@@ -11855,6 +12035,13 @@ async function submitSignoffCompletion(id) {
   if (btn) { btn.disabled = true; btn.textContent = 'Submitting...'; }
   try {
     await api('POST', '/signoffs/' + id + '/complete', body);
+    // Only drop the draft once the server has it. If the POST throws we fall to
+    // the catch below and the draft stays put — which is the whole point.
+    // Discard any pending snapshot BEFORE detaching, or detach's flush would
+    // helpfully write the draft back a moment after we deleted it.
+    _signoffDraftPending = null;
+    signoffDraftDetach();
+    await novaDraftDel(signoffDraftKey(id));
     // Work not finished = a return trip is coming. Offer to set it up straight away rather than
     // making the tech find it later; renderViewSignoff picks this flag up.
     _signoffOfferTrip = (completeSel === 'no');
