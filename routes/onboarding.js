@@ -1432,10 +1432,25 @@ admin.get('/sops', async (req, res) => {
 // Vault documents in the "Standard Operating Procedures" folder — the pool a
 // read step's document is chosen from.
 admin.get('/vault-docs', async (req, res) => {
+  // Scoped to the "Standard Operating Procedures" folder and its subfolders.
+  // Without this the picker listed the WHOLE vault (Asset Purchase Agreement,
+  // Company Info, Forms, ...), so an admin could attach a legal document to a
+  // training step. Same folder the sopVaultDoc fallback resolves against.
+  const fr = await pool.query(
+    "WITH RECURSIVE sopf AS (" +
+    "  SELECT id FROM document_folders WHERE lower(trim(name)) = 'standard operating procedures' " +
+    "  UNION ALL " +
+    "  SELECT c.id FROM document_folders c JOIN sopf p ON c.parent_id = p.id" +
+    ") SELECT id FROM sopf"
+  );
+  if (!fr.rows.length) return res.json([]);
+  const folderIds = fr.rows.map(function (f) { return f.id; });
   const dr = await pool.query(
     "SELECT d.id, d.name, d.mime_type, COALESCE(f.name, 'Root') AS folder FROM documents d " +
-    "LEFT JOIN document_folders f ON f.id = d.folder_id WHERE d.status = 'ready' " +
-    "ORDER BY folder ASC, d.name ASC"
+    "LEFT JOIN document_folders f ON f.id = d.folder_id " +
+    "WHERE d.status = 'ready' AND d.folder_id = ANY($1::int[]) " +
+    "ORDER BY folder ASC, d.name ASC",
+    [folderIds]
   );
   res.json(dr.rows);
 });
