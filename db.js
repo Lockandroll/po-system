@@ -404,6 +404,13 @@ async function initDB() {
       '  updated_at TIMESTAMP DEFAULT NOW()' +
       ');'
     );
+    // Widen the part-number fields to 255. A running-list Part # rolls into
+    // po_line_items.item_number when pushed to a PO; if either column is shorter
+    // than the pasted value, the push aborts with a raw "value too long" 500.
+    await client.query(
+      'ALTER TABLE po_line_items ALTER COLUMN item_number TYPE VARCHAR(255);' +
+      'ALTER TABLE running_list_items ALTER COLUMN part_number TYPE VARCHAR(255);'
+    );
     // Geico ERS survey history + city attribution
     await client.query(
       'ALTER TABLE vendors ADD COLUMN IF NOT EXISTS city_code CHAR(3);'

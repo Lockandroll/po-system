@@ -7,6 +7,13 @@ const router = express.Router();
 
 const ADMIN = ['admin', 'manager'];
 
+// A running-list Part # rolls into po_line_items.item_number when the list is
+// pushed to a PO. Both columns are VARCHAR(255); guard the length here so an
+// over-long value returns a clear, fixable message instead of a raw database
+// "value too long" 500 (which surfaces to the user as "Internal server error").
+const MAX_PART_NUMBER = 255;
+function partNumberTooLong(p) { return (p || '').length > MAX_PART_NUMBER; }
+
 // Returns the uppercased city codes a user may use, or null for no restriction
 // (admins/managers, and users with no assigned cities, are unrestricted).
 async function allowedCityCodes(user) {
@@ -60,6 +67,9 @@ router.post('/', requireAuth, async (req, res) => {
   const city_code = req.body.city_code ? req.body.city_code.toUpperCase() : null;
   if (!description) return res.status(400).json({ error: 'Description is required' });
   if (!city_code) return res.status(400).json({ error: 'City is required' });
+  if (partNumberTooLong(req.body.part_number)) {
+    return res.status(400).json({ error: 'Part # is too long (' + req.body.part_number.length + ' characters). The maximum is ' + MAX_PART_NUMBER + ' — please shorten it.' });
+  }
   const allowed = await allowedCityCodes(req.user);
   if (allowed && allowed.indexOf(city_code) === -1) {
     return res.status(403).json({ error: 'You can only add items for your assigned cities.' });
@@ -81,6 +91,9 @@ router.put('/:id', requireAuth, async (req, res) => {
     return res.status(403).json({ error: 'Forbidden' });
   }
   const b = req.body;
+  if (b.part_number !== undefined && partNumberTooLong(b.part_number)) {
+    return res.status(400).json({ error: 'Part # is too long (' + b.part_number.length + ' characters). The maximum is ' + MAX_PART_NUMBER + ' — please shorten it.' });
+  }
   if (b.city_code) {
     const allowedMove = await allowedCityCodes(req.user);
     if (allowedMove && allowedMove.indexOf(b.city_code.toUpperCase()) === -1) {
@@ -133,6 +146,14 @@ router.post('/create-po', requireAuth, requirePermission('manage_running'), asyn
   itemsQuery += ' ORDER BY created_at ASC';
   const { rows: items } = await pool.query(itemsQuery, params);
   if (!items.length) return res.status(400).json({ error: 'No items to push for this city' });
+
+  // Catch over-long part numbers up front so one bad item gives a clear, fixable
+  // message naming the culprit(s) instead of aborting the transaction with a 500.
+  const overLong = items.filter(function(i){ return partNumberTooLong(i.part_number); });
+  if (overLong.length) {
+    const names = overLong.map(function(i){ return '"' + i.description + '" (' + i.part_number.length + ' chars)'; }).join(', ');
+    return res.status(400).json({ error: 'These items have a Part # longer than ' + MAX_PART_NUMBER + ' characters. Shorten them in the running list, then push again: ' + names });
+  }
 
   // One combined PO for the whole city, including items from every vendor.
   // The running list stores a vendor per item, but a PO has a single vendor field,
