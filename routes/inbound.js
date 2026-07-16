@@ -19,12 +19,20 @@ router.use(express.raw({ type: '*/*', limit: '80mb' }));
 
 // Verify a Resend (Svix) webhook signature against the raw request body.
 function verifySignature(rawBuf, headers, secret) {
-  if (!secret) return true; // not configured (dev) -> accept
+  if (!secret) {
+    // Fail CLOSED in production: an unconfigured secret must not accept-all.
+    // Keep the dev convenience only outside production.
+    return process.env.NODE_ENV === 'production' ? false : true;
+  }
   try {
     const id = headers['svix-id'];
     const ts = headers['svix-timestamp'];
     const sigHeader = headers['svix-signature'];
     if (!id || !ts || !sigHeader) return false;
+    // Replay guard: reject if the signed timestamp is more than ~5 minutes old
+    // (or that far in the future). svix-timestamp is unix seconds.
+    const tsNum = parseInt(ts, 10);
+    if (!Number.isFinite(tsNum) || Math.abs(Date.now() / 1000 - tsNum) > 300) return false;
     const secretBytes = Buffer.from(secret.replace(/^whsec_/, ''), 'base64');
     const signedContent = id + '.' + ts + '.' + rawBuf.toString('utf8');
     const expected = crypto.createHmac('sha256', secretBytes).update(signedContent).digest('base64');
@@ -213,16 +221,61 @@ function phoneKey(p) {
   return digits.length > 10 ? digits.slice(-10) : digits;
 }
 
+// Validate a Twilio inbound webhook request signature (X-Twilio-Signature).
+// Twilio's scheme: start from the full request URL, append each POST param as
+// key immediately followed by value, in key-sorted order; HMAC-SHA1 that string
+// with the account auth token; base64; and compare to the header. Implemented
+// with Node crypto so no new dependency (twilio) is needed.
+function validateTwilioSignature(url, params, header, authToken) {
+  try {
+    if (!header || !authToken) return false;
+    var data = url;
+    var keys = Object.keys(params).sort();
+    for (var i = 0; i < keys.length; i++) {
+      var v = params[keys[i]];
+      data += keys[i] + (Array.isArray(v) ? v.join('') : (v == null ? '' : v));
+    }
+    var expected = crypto.createHmac('sha1', authToken).update(Buffer.from(data, 'utf8')).digest('base64');
+    var a = Buffer.from(String(header));
+    var b = Buffer.from(expected);
+    if (a.length !== b.length) return false;
+    return crypto.timingSafeEqual(a, b);
+  } catch (e) { return false; }
+}
+
 // POST /api/inbound/sms - Twilio inbound webhook. A manager texting back a reply
 // (to a followup/escalation that carried an [FB-1234] tag) lands as a note on that
 // feedback record. Body is application/x-www-form-urlencoded captured as raw above.
 router.post('/sms', async function (req, res) {
+  // Verify the Twilio request signature BEFORE doing anything else. This handler
+  // resolves the sender by phone and runs the AI agent on their behalf, so an
+  // unsigned/forged request must never reach it. Fail CLOSED: if the auth token
+  // is unset in production, reject.
+  const raw = Buffer.isBuffer(req.body) ? req.body : Buffer.from(req.body || '');
+  const params = querystring.parse(raw.toString('utf8'));
+  const authToken = process.env.TWILIO_AUTH_TOKEN;
+  if (!authToken) {
+    if (process.env.NODE_ENV === 'production') {
+      console.warn('[feedback-sms] rejecting SMS: TWILIO_AUTH_TOKEN unset in production');
+      return res.status(403).json({ error: 'Signature validation not configured' });
+    }
+    // Non-production dev convenience: no token configured -> skip validation.
+  } else {
+    // Twilio signs the exact URL it requested: APP base + the original path
+    // (+ any query string). This router is mounted at /api/inbound, so
+    // req.originalUrl is /api/inbound/sms.
+    const url = APP + req.originalUrl;
+    const sig = req.headers['x-twilio-signature'];
+    if (!validateTwilioSignature(url, params, sig, authToken)) {
+      console.warn('[feedback-sms] rejecting SMS: invalid Twilio signature');
+      return res.status(403).json({ error: 'Invalid signature' });
+    }
+  }
+
   res.set('Content-Type', 'text/xml');
   res.status(200).send('<?xml version="1.0" encoding="UTF-8"?><Response></Response>');
 
   try {
-    const raw = Buffer.isBuffer(req.body) ? req.body : Buffer.from(req.body || '');
-    const params = querystring.parse(raw.toString('utf8'));
     const from = params.From || '';
     const body = (params.Body || '').trim();
     if (!from || !body) return;

@@ -28,18 +28,30 @@ async function requireAuth(req, res, next) {
   let userDbErr = false;
   try {
     const _ur = await pool.query(
-      'SELECT id, role, active, extra_perms, onboarding_status, onboarding_phase FROM users WHERE id = $1',
+      'SELECT id, role, active, extra_perms, onboarding_status, onboarding_phase, session_epoch FROM users WHERE id = $1',
       [payload.id]
     );
     urow = _ur.rows.length ? _ur.rows[0] : null;
   } catch (e) { userDbErr = true; }
   req._userRow = urow;
 
+  // Fail CLOSED on a DB read error: if the user lookup threw we cannot confirm the
+  // account is still active, so deny rather than trust a stale JWT. Add-in tokens are
+  // exempt on a transient error, mirroring the deactivation exemption below.
+  if (userDbErr && !payload.addin) {
+    return res.status(503).json({ error: 'Temporarily unavailable' });
+  }
   // A deactivated account loses access on its very next request, even though its
   // JWT is still technically valid. Add-in tokens are exempt (they are service-ish
   // and are already scoped to /api/addin).
   if (urow && urow.active === false && !payload.addin) {
     return res.status(401).json({ error: 'Your account has been deactivated.', deactivated: true });
+  }
+  // Session revocation: a session_epoch bump (password reset, forced sign-out) makes
+  // every token minted before the bump stale. The rolling re-sign spreads ...claims so
+  // a still-valid session's `se` carries forward untouched.
+  if (payload.se !== undefined && urow && Number(urow.session_epoch || 0) !== Number(payload.se)) {
+    return res.status(401).json({ error: 'Session expired, please sign in again.', sessionExpired: true });
   }
 
   // Onboarding gate: a user still in onboarding may only reach a small whitelist
@@ -64,9 +76,13 @@ async function requireAuth(req, res, next) {
       if (!_ok) return res.status(403).json({ error: 'Finish onboarding to unlock this part of Nova.', onboarding: true });
     }
   }
+  // Authorization role comes from the DB row (source of truth), never a possibly-stale
+  // JWT claim. Falls back to the token's role only if the row could not be read.
+  const effRole = (urow && urow.role) ? urow.role : payload.role;
   // Issue a fresh 24h token on every request (rolling expiry) for the REAL user.
   const { iat, exp, onb, ...claims } = payload;
   if (onbActive) claims.onb = true;
+  claims.role = effRole;
   const sessTtl = claims.addin ? '90d' : (claims.remember ? '30d' : '24h');
   res.setHeader('X-New-Token', jwt.sign(claims, process.env.JWT_SECRET, { expiresIn: sessTtl }));
 
@@ -89,9 +105,9 @@ async function requireAuth(req, res, next) {
   // Track activity for the real user (throttled to at most once per minute).
   pool.query("UPDATE users SET last_seen_at = NOW() WHERE id = $1 AND (last_seen_at IS NULL OR last_seen_at < NOW() - INTERVAL '60 seconds')", [payload.id]).catch(function(){});
   // Real user; owner is coerced to admin-level for authorization.
-  req.user = { id: payload.id, email: payload.email, name: payload.name, role: payload.role };
+  req.user = { id: payload.id, email: payload.email, name: payload.name, role: effRole };
   if (onbActive) req.user.onboarding = true;
-  req.user.isOwner = (payload.role === 'owner');
+  req.user.isOwner = (effRole === 'owner');
   if (req.user.isOwner) req.user.role = 'admin';
   // View-As: a real admin/owner can preview another user's ACTUAL data (read-only).
   // Writes are blocked while previewing; an admin may not impersonate an owner.

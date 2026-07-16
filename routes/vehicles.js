@@ -44,7 +44,18 @@ router.get('/:id', requireAuth, async function(req, res) {
       [req.params.id]
     );
     if (!rows.length) return res.status(404).json({ error: 'Vehicle not found' });
-    res.json(rows[0]);
+    // Mirror the list route's privilege model. Non-privileged users may only see a vehicle in
+    // their own city, and never the sensitive key_codes. (No user->city binding exists server-side,
+    // so we scope by the requester-supplied city_code the same way GET / does.)
+    var isPrivileged = ['admin', 'manager'].includes(req.user.role);
+    var vehicle = rows[0];
+    if (!isPrivileged) {
+      var scopeCity = req.query.city_code || req.user.city_code || null;
+      if (!scopeCity || vehicle.city_code !== scopeCity) return res.status(403).json({ error: 'Forbidden' });
+      vehicle = Object.assign({}, vehicle);
+      delete vehicle.key_codes;
+    }
+    res.json(vehicle);
   } catch(err) {
     console.error(err);
     res.status(500).json({ error: 'Failed to fetch vehicle' });
@@ -73,7 +84,7 @@ router.put('/:id', requireAuth, requirePermission('manage_vehicles'), async func
   if (!year || !make_model) return res.status(400).json({ error: 'Year and Make/Model are required' });
   try {
     const { rows } = await pool.query(
-      'UPDATE vehicles SET year=$1, make_model=$2, vin=$3, key_codes=$4, assigned_user_id=$5, city_code=$6, date_of_assignment=$7, license_plate=$8, mileage=$9, notes=$10, inspection_exempt=$11, inspection_exempt_reason=$12, updated_at=NOW() WHERE id=$13 RETURNING *',
+      'UPDATE vehicles SET year=$1, make_model=$2, vin=$3, key_codes=$4, assigned_user_id=$5, city_code=$6, date_of_assignment=$7, license_plate=$8, mileage = COALESCE($9, mileage), notes=$10, inspection_exempt=$11, inspection_exempt_reason=$12, updated_at=NOW() WHERE id=$13 RETURNING *',
       [parseInt(year), make_model, vin || null, key_codes || null, assigned_user_id || null, city_code || null, date_of_assignment || null, license_plate || null, mileage ? parseInt(mileage) : null, notes || null, inspection_exempt === true, inspection_exempt ? (inspection_exempt_reason || null) : null, req.params.id]
     );
     if (!rows.length) return res.status(404).json({ error: 'Vehicle not found' });

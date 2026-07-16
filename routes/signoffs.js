@@ -271,9 +271,15 @@ router.post('/:id/complete', requireAuth, requirePermission('complete_signoff'),
     const { rows } = await client.query('SELECT * FROM signoff_forms WHERE id = $1', [req.params.id]);
     if (!rows.length) { client.release(); return res.status(404).json({ error: 'Sign-off sheet not found' }); }
     const existing = rows[0];
+    // Only a pending sheet can be completed. Once completed it stays locked (no reopen mechanism
+    // exists) so a re-submit can't silently overwrite an already-signed sheet.
+    if (existing.status !== 'pending') {
+      client.release();
+      return res.status(409).json({ error: 'This sign-off is already completed. Ask a manager to reopen it to make changes.' });
+    }
     await client.query('BEGIN');
     const { rows: upd } = await client.query(
-      'UPDATE signoff_forms SET start_time=$1, end_time=$2, invoice_number=$3, work_complete=$4, num_technicians=$5, manager_name=$6, technician_names=$7, work_description=$8, signature_data=$9, notes=COALESCE($10, notes), gps_lat=$11, gps_lon=$12, gps_accuracy=$13, gps_error=$14, signed_at=$15, status=$16, completed_by=$17, completed_at=NOW(), updated_at=NOW() WHERE id=$18 RETURNING *',
+      'UPDATE signoff_forms SET start_time=$1, end_time=$2, invoice_number=$3, work_complete=$4, num_technicians=$5, manager_name=$6, technician_names=$7, work_description=$8, signature_data = COALESCE($9, signature_data), notes=COALESCE($10, notes), gps_lat = COALESCE($11, gps_lat), gps_lon = COALESCE($12, gps_lon), gps_accuracy = COALESCE($13, gps_accuracy), gps_error=$14, signed_at = COALESCE($15, signed_at), status=$16, completed_by=$17, completed_at=NOW(), updated_at=NOW() WHERE id=$18 RETURNING *',
       [b.start_time || null, b.end_time || null, b.invoice_number || null, (b.work_complete === true || b.work_complete === false) ? b.work_complete : null, b.num_technicians ? parseInt(b.num_technicians) : null, b.manager_name || null, b.technician_names || null, b.work_description || null, b.signature_data || null, b.notes || null, (b.gps_lat != null && b.gps_lat !== '') ? b.gps_lat : null, (b.gps_lon != null && b.gps_lon !== '') ? b.gps_lon : null, (b.gps_accuracy != null && b.gps_accuracy !== '') ? b.gps_accuracy : null, b.gps_error || null, b.signed_at || null, 'completed', req.user.id, req.params.id]
     );
     const photos = Array.isArray(b.photos) ? b.photos : [];
@@ -295,12 +301,20 @@ router.post('/:id/complete', requireAuth, requirePermission('complete_signoff'),
     // so the job stays open. Matches the WO against any sheet in the trip group.
     try {
       if (form.work_complete === true) {
-        await pool.query(
-          "UPDATE work_orders SET status='job_completed', updated_at=NOW() " +
-          "WHERE signoff_id IN (SELECT id FROM signoff_forms WHERE trip_group_id = $1) " +
-          "AND status NOT IN ('paperwork_sent','job_completed')",
-          [groupIdOf(form)]
+        // Only the latest trip in the group may close the job. If a later trip exists (higher
+        // trip_number) an earlier trip completing late must not close a job that continued on.
+        const later = await pool.query(
+          'SELECT 1 FROM signoff_forms WHERE trip_group_id = $1 AND trip_number > $2 LIMIT 1',
+          [groupIdOf(form), form.trip_number || 1]
         );
+        if (!later.rows.length) {
+          await pool.query(
+            "UPDATE work_orders SET status='job_completed', updated_at=NOW() " +
+            "WHERE signoff_id IN (SELECT id FROM signoff_forms WHERE trip_group_id = $1) " +
+            "AND status NOT IN ('paperwork_sent','job_completed')",
+            [groupIdOf(form)]
+          );
+        }
       }
     } catch (e) { console.error('Work order auto-complete failed:', e && e.message); }
 

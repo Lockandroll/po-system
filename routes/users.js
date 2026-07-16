@@ -8,6 +8,10 @@ const { logAudit } = require('../utils/audit');
 
 const router = express.Router();
 
+// Same sha256 helper used in routes/auth.js — invite/reset tokens are stored HASHED
+// at rest; only the raw token is emailed to the user.
+function hashToken(t) { return crypto.createHash('sha256').update(String(t)).digest('hex'); }
+
 const VALID_ROLES = ['locksmith', 'locksmith_coordinator', 'dispatcher', 'roadside_technician', 'manager', 'admin', 'owner'];
 
 const ROLE_LABELS = {
@@ -34,7 +38,7 @@ async function sendInvite(user, invitedByName) {
   const expires = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000); // 7 days
   await pool.query(
     'INSERT INTO password_resets (user_id, token, expires_at) VALUES ($1, $2, $3) ON CONFLICT (user_id) DO UPDATE SET token=$2, expires_at=$3, used=false',
-    [user.id, token, expires]
+    [user.id, hashToken(token), expires]
   );
   const appUrl = (process.env.APP_URL || '').replace(/\/$/, '');
   const inviteUrl = appUrl + '/?reset=' + token;
@@ -165,10 +169,10 @@ router.put('/:id', requireAuth, requirePermission('manage_users'), async (req, r
   let query, params;
   if (password) {
     const password_hash = await bcrypt.hash(password, 12);
-    query = 'UPDATE users SET name=$1, email=$2, role=$3, password_hash=$4, phone=$5, receive_emails=$6, receive_sms=$7, pulsar_name=$8, nickname=$9, hide_from_schedule=$10, extra_perms=COALESCE($11, extra_perms), pay_type=COALESCE($12, pay_type), supervisor_id=$13, title=$14, org_level=$15, hide_from_org=$16, hire_date=$17, home_city=$18, default_backup_id=$19, employment_type=COALESCE($20, employment_type) WHERE id=$21 RETURNING id, name, email, phone, role, title, active, receive_emails, receive_sms, pulsar_name, nickname, hide_from_schedule, hide_from_org, extra_perms, pay_type, employment_type, supervisor_id, org_level, home_city';
+    query = 'UPDATE users SET name=COALESCE($1, name), email=COALESCE($2, email), role=COALESCE($3, role), password_hash=$4, phone=$5, receive_emails=$6, receive_sms=$7, pulsar_name=$8, nickname=$9, hide_from_schedule=$10, extra_perms=COALESCE($11, extra_perms), pay_type=COALESCE($12, pay_type), supervisor_id=$13, title=$14, org_level=$15, hide_from_org=$16, hire_date=$17, home_city=$18, default_backup_id=$19, employment_type=COALESCE($20, employment_type) WHERE id=$21 RETURNING id, name, email, phone, role, title, active, receive_emails, receive_sms, pulsar_name, nickname, hide_from_schedule, hide_from_org, extra_perms, pay_type, employment_type, supervisor_id, org_level, home_city';
     params = [name, email, role, password_hash, phone || null, receive_emails !== false, receive_sms === true, pulsar_name || null, nickname || null, hide_from_schedule === true, cleanExtraPerms(req.body.extra_perms), (pay_type || null), (supervisor_id || null), (title || null), (org_level || null), (hide_from_org === true), (hire_date || null), (home_city || null), (default_backup_id || null), normEmployment(employment_type), id];
   } else {
-    query = 'UPDATE users SET name=$1, email=$2, role=$3, phone=$4, receive_emails=$5, receive_sms=$6, pulsar_name=$7, nickname=$8, hide_from_schedule=$9, extra_perms=COALESCE($10, extra_perms), pay_type=COALESCE($11, pay_type), supervisor_id=$12, title=$13, org_level=$14, hide_from_org=$15, hire_date=$16, home_city=$17, default_backup_id=$18, employment_type=COALESCE($19, employment_type) WHERE id=$20 RETURNING id, name, email, phone, role, title, active, receive_emails, receive_sms, pulsar_name, nickname, hide_from_schedule, hide_from_org, extra_perms, pay_type, employment_type, supervisor_id, org_level, home_city';
+    query = 'UPDATE users SET name=COALESCE($1, name), email=COALESCE($2, email), role=COALESCE($3, role), phone=$4, receive_emails=$5, receive_sms=$6, pulsar_name=$7, nickname=$8, hide_from_schedule=$9, extra_perms=COALESCE($10, extra_perms), pay_type=COALESCE($11, pay_type), supervisor_id=$12, title=$13, org_level=$14, hide_from_org=$15, hire_date=$16, home_city=$17, default_backup_id=$18, employment_type=COALESCE($19, employment_type) WHERE id=$20 RETURNING id, name, email, phone, role, title, active, receive_emails, receive_sms, pulsar_name, nickname, hide_from_schedule, hide_from_org, extra_perms, pay_type, employment_type, supervisor_id, org_level, home_city';
     params = [name, email, role, phone || null, receive_emails !== false, receive_sms === true, pulsar_name || null, nickname || null, hide_from_schedule === true, cleanExtraPerms(req.body.extra_perms), (pay_type || null), (supervisor_id || null), (title || null), (org_level || null), (hide_from_org === true), (hire_date || null), (home_city || null), (default_backup_id || null), normEmployment(employment_type), id];
   }
   try {

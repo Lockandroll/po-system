@@ -94,6 +94,8 @@ async function initDB() {
       'ALTER TABLE po_line_items ADD COLUMN IF NOT EXISTS tracking_number VARCHAR(255);' +
       'ALTER TABLE users ADD COLUMN IF NOT EXISTS active BOOLEAN NOT NULL DEFAULT true;' +
       'ALTER TABLE users ADD COLUMN IF NOT EXISTS phone VARCHAR(50);' +
+      // Bumped on password reset to invalidate all previously-issued sessions.
+      'ALTER TABLE users ADD COLUMN IF NOT EXISTS session_epoch INTEGER DEFAULT 0;' +
       'ALTER TABLE quotes ADD COLUMN IF NOT EXISTS important_info TEXT;' +
       'ALTER TABLE quotes ADD COLUMN IF NOT EXISTS tax_rate DECIMAL(5,2) DEFAULT 0;' +
       'ALTER TABLE quotes ADD COLUMN IF NOT EXISTS tax_amount DECIMAL(10,2) DEFAULT 0;' +
@@ -211,6 +213,12 @@ async function initDB() {
       '  quantity DECIMAL(10,2) NOT NULL DEFAULT 1,' +
       '  unit_price DECIMAL(10,2) NOT NULL DEFAULT 0' +
       ');'
+    );
+    // Indexes on the hot child FKs (line items are always fetched by parent id).
+    await client.query(
+      'CREATE INDEX IF NOT EXISTS idx_po_items_po ON po_line_items(po_id);' +
+      'CREATE INDEX IF NOT EXISTS idx_quote_items_quote ON quote_line_items(quote_id);' +
+      'CREATE INDEX IF NOT EXISTS idx_vr_items_vr ON vr_line_items(vr_id);'
     );
     await client.query(
       'ALTER TABLE vehicle_repairs ADD COLUMN IF NOT EXISTS vehicle_id INTEGER REFERENCES vehicles(id);' +
@@ -491,10 +499,9 @@ async function initDB() {
     // Backfill: every existing sheet becomes a one-trip series. Safe to re-run.
     await client.query('UPDATE signoff_forms SET trip_group_id = id WHERE trip_group_id IS NULL;');
     await client.query('UPDATE signoff_forms SET trip_base_number = form_number WHERE trip_base_number IS NULL AND trip_number = 1;');
-    await client.query(
-      'ALTER TABLE deposits ADD COLUMN IF NOT EXISTS period_start DATE;' +
-      'ALTER TABLE deposits ADD COLUMN IF NOT EXISTS period_end DATE;'
-    );
+    // NOTE: the deposits period_start/period_end ALTERs were moved to run AFTER
+    // the deposits table is created (see the deposits block below) — on a fresh
+    // DB they used to run here before the table existed and aborted migrations.
     await client.query(
       'CREATE TABLE IF NOT EXISTS scheduled_messages (' +
       '  id SERIAL PRIMARY KEY,' +
@@ -1044,6 +1051,12 @@ async function initDB() {
       '  updated_at TIMESTAMPTZ DEFAULT NOW()' +
       ');'
     );
+    // Moved here from the signoff_forms migration above: these depend on the
+    // deposits table existing, so on a fresh DB they must run AFTER it is created.
+    await client.query(
+      'ALTER TABLE deposits ADD COLUMN IF NOT EXISTS period_start DATE;' +
+      'ALTER TABLE deposits ADD COLUMN IF NOT EXISTS period_end DATE;'
+    );
     await client.query(
       'CREATE INDEX IF NOT EXISTS idx_deposits_user ON deposits(user_id);' +
       'CREATE INDEX IF NOT EXISTS idx_deposits_date ON deposits(deposit_date);' +
@@ -1438,22 +1451,29 @@ async function initDB() {
     // first name shares the SAME full name (i.e. duplicate accounts of one
     // person) — the active account wins. Two genuinely different people with
     // the same first name stay unlinked. Idempotent — only touches rows that
-    // are not linked yet.
-    await client.query(
-      "UPDATE review_assignments ra SET user_id = u.id FROM users u WHERE ra.user_id IS NULL AND TRIM(ra.assignee) <> '' AND (" +
-      " LOWER(TRIM(ra.assignee)) = LOWER(TRIM(u.name))" +
-      " OR LOWER(TRIM(ra.assignee)) = LOWER(TRIM(COALESCE(u.pulsar_name, '')))" +
-      " OR LOWER(TRIM(ra.assignee)) IN (SELECT LOWER(TRIM(x)) FROM unnest(string_to_array(COALESCE(u.nickname, ''), ',')) AS x)" +
-      ")"
-    );
-    await client.query(
-      "UPDATE review_assignments ra SET user_id = (" +
-      "SELECT u.id FROM users u WHERE LOWER(split_part(TRIM(u.name), ' ', 1)) = LOWER(TRIM(ra.assignee)) " +
-      "ORDER BY u.active DESC, u.id DESC LIMIT 1) " +
-      "WHERE ra.user_id IS NULL AND TRIM(ra.assignee) <> '' " +
-      "AND (SELECT COUNT(DISTINCT LOWER(TRIM(u2.name))) FROM users u2 " +
-      "WHERE LOWER(split_part(TRIM(u2.name), ' ', 1)) = LOWER(TRIM(ra.assignee))) = 1"
-    );
+    // are not linked yet. Guarded by a fire-once settings flag so it does not
+    // re-run this scan on every boot; routes/reviews.js re-runs the same
+    // name-match (backfillAssignmentLinks) before each tally to pick up newly
+    // added nicknames, so nothing is lost by only doing it once here.
+    const _raBackfill = await client.query("SELECT value FROM settings WHERE key = 'review_assignments_namematch_backfilled'");
+    if (!_raBackfill.rows.length) {
+      await client.query(
+        "UPDATE review_assignments ra SET user_id = u.id FROM users u WHERE ra.user_id IS NULL AND TRIM(ra.assignee) <> '' AND (" +
+        " LOWER(TRIM(ra.assignee)) = LOWER(TRIM(u.name))" +
+        " OR LOWER(TRIM(ra.assignee)) = LOWER(TRIM(COALESCE(u.pulsar_name, '')))" +
+        " OR LOWER(TRIM(ra.assignee)) IN (SELECT LOWER(TRIM(x)) FROM unnest(string_to_array(COALESCE(u.nickname, ''), ',')) AS x)" +
+        ")"
+      );
+      await client.query(
+        "UPDATE review_assignments ra SET user_id = (" +
+        "SELECT u.id FROM users u WHERE LOWER(split_part(TRIM(u.name), ' ', 1)) = LOWER(TRIM(ra.assignee)) " +
+        "ORDER BY u.active DESC, u.id DESC LIMIT 1) " +
+        "WHERE ra.user_id IS NULL AND TRIM(ra.assignee) <> '' " +
+        "AND (SELECT COUNT(DISTINCT LOWER(TRIM(u2.name))) FROM users u2 " +
+        "WHERE LOWER(split_part(TRIM(u2.name), ' ', 1)) = LOWER(TRIM(ra.assignee))) = 1"
+      );
+      await client.query("INSERT INTO settings (key, value) VALUES ('review_assignments_namematch_backfilled', '1') ON CONFLICT (key) DO NOTHING");
+    }
     await client.query(
       'CREATE TABLE IF NOT EXISTS oauth_clients (' +
       '  client_id TEXT PRIMARY KEY,' +
@@ -1777,9 +1797,24 @@ async function initDB() {
     );
     // Late-alert fire-once flag on the matched shift.
     await client.query('ALTER TABLE shifts ADD COLUMN IF NOT EXISTS late_alerted_at TIMESTAMPTZ;');
+    // De-dupe before adding the partial UNIQUE index below: if any user already has
+    // more than one OPEN entry (the very race the index prevents), the CREATE UNIQUE
+    // would throw and abort the rest of initDB. Keep each user's newest open entry and
+    // auto-close the older ones (zero duration) so the unique index can be built safely.
+    await client.query(
+      "UPDATE time_entries t SET status = 'auto_closed', " +
+      "  clock_out_at = COALESCE(t.clock_out_at, t.clock_in_at), " +
+      "  worked_minutes = COALESCE(t.worked_minutes, 0), updated_at = NOW() " +
+      "WHERE t.status = 'open' AND t.id NOT IN (" +
+      "  SELECT DISTINCT ON (user_id) id FROM time_entries WHERE status = 'open' " +
+      "  ORDER BY user_id, clock_in_at DESC, id DESC" +
+      ");"
+    );
     // Indexes
     await client.query(
       "CREATE INDEX IF NOT EXISTS idx_time_entries_user_open ON time_entries(user_id) WHERE status = 'open';" +
+      // At most one OPEN time entry per user (prevents double clock-in races).
+      "CREATE UNIQUE INDEX IF NOT EXISTS uniq_open_time_entry ON time_entries(user_id) WHERE status = 'open';" +
       'CREATE INDEX IF NOT EXISTS idx_time_entries_user_date ON time_entries(user_id, clock_in_at);' +
       'CREATE INDEX IF NOT EXISTS idx_time_breaks_entry ON time_breaks(entry_id);' +
       'CREATE INDEX IF NOT EXISTS idx_time_week_appr ON time_week_approvals(user_id, week_start);'

@@ -140,7 +140,6 @@ router.get('/status', requireAuth, async function (req, res) {
 
 router.post('/clock-in', requireAuth, async function (req, res) {
   const uid = req.user.id;
-  if (await openEntryFor(uid)) return res.status(409).json({ error: 'You are already clocked in.' });
   const city = await primaryCity(uid);
   // Match a published shift for today to enable lateness + late alerts.
   const today = nyDateStr(new Date());
@@ -153,11 +152,39 @@ router.post('/clock-in', requireAuth, async function (req, res) {
     shiftId = sh.rows[0].id;
     lateMin = nyMinutes(new Date()) - shiftStartMin(sh.rows[0].start_time);
   }
-  const r = await pool.query(
-    "INSERT INTO time_entries (user_id, user_name, city_code, shift_id, clock_in_at, status, late_minutes, source) VALUES ($1,$2,$3,$4,NOW(),'open',$5,'pwa') RETURNING *",
-    [uid, req.user.name, city, shiftId, lateMin]
-  );
-  res.json(r.rows[0]);
+  // A naive read-then-insert lets two concurrent requests both see "not clocked in"
+  // and each open an entry. Lock the user's open rows and re-check under the lock,
+  // then insert inside the same transaction.
+  // relies on partial unique index uniq_open_time_entry (db.js)
+  // If two requests still race past the FOR UPDATE re-check, that index makes the
+  // loser fail with 23505 — swallow it and return the existing open entry.
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const existing = await client.query(
+      "SELECT * FROM time_entries WHERE user_id = $1 AND status = 'open' ORDER BY clock_in_at DESC LIMIT 1 FOR UPDATE",
+      [uid]
+    );
+    if (existing.rows.length) {
+      await client.query('ROLLBACK');
+      return res.status(409).json({ error: 'You are already clocked in.', openEntry: existing.rows[0] });
+    }
+    const r = await client.query(
+      "INSERT INTO time_entries (user_id, user_name, city_code, shift_id, clock_in_at, status, late_minutes, source) VALUES ($1,$2,$3,$4,NOW(),'open',$5,'pwa') RETURNING *",
+      [uid, req.user.name, city, shiftId, lateMin]
+    );
+    await client.query('COMMIT');
+    return res.json(r.rows[0]);
+  } catch (e) {
+    try { await client.query('ROLLBACK'); } catch (e2) {}
+    if (e && e.code === '23505') {
+      const open = await openEntryFor(uid);
+      return res.status(409).json({ error: 'You are already clocked in.', openEntry: open || null });
+    }
+    return res.status(500).json({ error: 'Could not clock in. Try again.' });
+  } finally {
+    client.release();
+  }
 });
 
 router.post('/clock-out', requireAuth, async function (req, res) {
@@ -214,7 +241,7 @@ router.get('/timesheet', requireAuth, async function (req, res) {
   const wk = await weekApproval(uid, mondayOf(from));
   const hset = await holidaySet(from, to);
   const otMin = (parseFloat(await setting('timeclock_overtime_threshold', 40)) || 40) * 60;
-  const cat = categorizeWorked(rows, hset, otMin);
+  const cat = categorizeWorkedByWeek(rows, hset, otMin);
   const vacation = await vacationMinutes(uid, from, to);
   res.json({ from: from, to: to, entries: rows, approval: wk, holidays: Object.keys(hset), breakdown: { regular: cat.regular, overtime: cat.overtime, holiday: cat.holiday, vacation: vacation } });
 });
@@ -260,6 +287,24 @@ function categorizeWorked(rows, hset, otThresholdMin) {
   });
   const regular = Math.min(nonHoliday, otThresholdMin);
   const overtime = Math.max(0, nonHoliday - otThresholdMin);
+  return { regular: regular, overtime: overtime, holiday: holiday };
+}
+// Same split as categorizeWorked, but the overtime threshold is applied PER WEEK
+// rather than across the whole requested range. Over a multi-week timesheet the
+// flat version under-counts overtime (e.g. two 30h weeks look like 60h with 20h OT
+// instead of 0). Rows are bucketed by their week's Monday, matching how the rest of
+// the module defines a week, then each week is categorized and summed.
+function categorizeWorkedByWeek(rows, hset, otThresholdMin) {
+  const byWeek = {};
+  rows.forEach(function (e) {
+    const wk = mondayOf(nyDateStr(new Date(e.clock_in_at)));
+    (byWeek[wk] || (byWeek[wk] = [])).push(e);
+  });
+  let regular = 0, overtime = 0, holiday = 0;
+  Object.keys(byWeek).forEach(function (wk) {
+    const c = categorizeWorked(byWeek[wk], hset, otThresholdMin);
+    regular += c.regular; overtime += c.overtime; holiday += c.holiday;
+  });
   return { regular: regular, overtime: overtime, holiday: holiday };
 }
 // Paid, approved time-off hours (8h/business day) that fall inside [from,to].
@@ -339,7 +384,7 @@ router.get('/admin', requireAuth, requirePermission('manage_timeclock'), async f
   const out = [];
   for (const u of users) {
     const rows = await timesheetRows(u.id, from, to);
-    const cat = categorizeWorked(rows, hset, otMin);
+    const cat = categorizeWorkedByWeek(rows, hset, otMin);
     const vacation = await vacationMinutes(u.id, from, to);
     const mins = cat.regular + cat.overtime + cat.holiday;
     out.push({ user: u, minutes: mins, breakdown: { regular: cat.regular, overtime: cat.overtime, holiday: cat.holiday, vacation: vacation }, approval: await weekApproval(u.id, wkStart), canApprove: await canApprove(req.user, u.id), entries: rows });

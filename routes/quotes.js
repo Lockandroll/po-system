@@ -73,6 +73,11 @@ router.get('/:id', requireAuth, requirePermission('view_quotes'), async (req, re
 router.post('/', requireAuth, requirePermission('create_quote'), async (req, res) => {
   const { customer_name, city_code, notes, important_info, tax_rate, line_items } = req.body;
   if (!customer_name) return res.status(400).json({ error: 'Customer name is required' });
+  for (const item of (line_items || [])) {
+    if (!(parseFloat(item.quantity) > 0)) return res.status(400).json({ error: 'Line item quantity must be greater than 0' });
+    if (item.unit_price != null && item.unit_price !== '' && !(parseFloat(item.unit_price) >= 0)) return res.status(400).json({ error: 'Line item unit price must be 0 or greater' });
+    if (item.list_price != null && item.list_price !== '' && !(parseFloat(item.list_price) >= 0)) return res.status(400).json({ error: 'Line item list price must be 0 or greater' });
+  }
   const initials = getInitials(req.user.name);
   const taxRateVal = parseFloat(tax_rate) || 0;
   const subtotal = (line_items || []).reduce(function(sum, item) {
@@ -153,6 +158,11 @@ router.put('/:id', requireAuth, requirePermission('edit_quote'), async (req, res
     }
     const { customer_name, city_code, notes, important_info, tax_rate, line_items } = req.body;
     if (!customer_name) return res.status(400).json({ error: 'Customer name is required' });
+    for (const item of (line_items || [])) {
+      if (!(parseFloat(item.quantity) > 0)) return res.status(400).json({ error: 'Line item quantity must be greater than 0' });
+      if (item.unit_price != null && item.unit_price !== '' && !(parseFloat(item.unit_price) >= 0)) return res.status(400).json({ error: 'Line item unit price must be 0 or greater' });
+      if (item.list_price != null && item.list_price !== '' && !(parseFloat(item.list_price) >= 0)) return res.status(400).json({ error: 'Line item list price must be 0 or greater' });
+    }
     const taxRateVal = parseFloat(tax_rate) || 0;
     const subtotal = (line_items || []).reduce(function(sum, item) {
       return sum + ((parseFloat(item.quantity) || 0) * (parseFloat(item.list_price) || 0));

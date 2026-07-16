@@ -91,19 +91,15 @@ router.post('/', requireAuth, requirePermission('create_deposit'), async functio
     const { amount, deposit_date, period_start, period_end, city_code, notes, pulsar_owed, receipt_image, receipt_filename } = req.body;
     const amt = parseFloat(amount);
     if (isNaN(amt) || amt <= 0) {
-      client.release();
       return res.status(400).json({ error: 'A valid deposit amount is required' });
     }
     if (!deposit_date) {
-      client.release();
       return res.status(400).json({ error: 'Deposit date is required' });
     }
     if (pulsar_owed === '' || pulsar_owed == null || isNaN(parseFloat(pulsar_owed))) {
-      client.release();
       return res.status(400).json({ error: 'Pulsar shows owed amount is required' });
     }
     if (!city_code) {
-      client.release();
       return res.status(400).json({ error: 'City is required' });
     }
     const owed = parseFloat(pulsar_owed);
@@ -116,16 +112,17 @@ router.post('/', requireAuth, requirePermission('create_deposit'), async functio
       const exAmtChk = parseFloat(ex.amount);
       const descChk = (ex.description == null ? '' : String(ex.description)).trim();
       if (!descChk && isNaN(exAmtChk)) continue;
+      if (!isNaN(exAmtChk) && exAmtChk < 0) {
+        return res.status(400).json({ error: 'Expense amount cannot be negative for "' + (descChk || ('expense ' + (k + 1))) + '".' });
+      }
       const hasPhoto = !!ex.image;
       const override = ex.no_receipt === true || ex.no_receipt === 'true';
       const reason = (ex.no_receipt_reason == null ? '' : String(ex.no_receipt_reason)).trim();
       const label = descChk || ('expense ' + (k + 1));
       if (!hasPhoto && !override) {
-        client.release();
         return res.status(400).json({ error: 'A receipt photo is required for "' + label + '". If you do not have one, check "No receipt" and explain why.' });
       }
       if (!hasPhoto && override && !reason) {
-        client.release();
         return res.status(400).json({ error: 'Please explain why there is no receipt for "' + label + '".' });
       }
     }
@@ -143,7 +140,7 @@ router.post('/', requireAuth, requirePermission('create_deposit'), async functio
     // Hard guard: identical idempotency key means the client already submitted this exact request — return the saved row instead of inserting again.
     if (idem) {
       const prior = await pool.query('SELECT ' + RETURN_COLS + ' FROM deposits WHERE idempotency_key = $1', [idem]);
-      if (prior.rows.length) { client.release(); return res.status(200).json(prior.rows[0]); }
+      if (prior.rows.length) { return res.status(200).json(prior.rows[0]); }
     }
     // Soft guard: same person, date, amount and pay period already on file — ask the client to confirm before creating a second one.
     if (!confirmDuplicate) {
@@ -154,7 +151,6 @@ router.post('/', requireAuth, requirePermission('create_deposit'), async functio
         [req.user.id, deposit_date, amt, period_start || null, city_code || null]
       );
       if (dupq.rows.length) {
-        client.release();
         return res.status(200).json({ duplicate: true, existing_id: dupq.rows[0].id, existing_number: dupq.rows[0].deposit_number });
       }
     }

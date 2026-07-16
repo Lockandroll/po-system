@@ -141,9 +141,10 @@ router.post('/create-po', requireAuth, requirePermission('manage_running'), asyn
   const distinctVendors = [...new Set(items.map(function(i){ return (i.vendor_name || '').trim(); }).filter(Boolean))];
   const vendor_name = requested_vendor || (distinctVendors.length ? distinctVendors.join(', ') : 'Various Vendors');
 
-  const po_number = await generatePONumber(city_code, getInitials(req.user.name));
   const total_amount = computeTotal(items);
 
+  for (var attempt = 0; attempt < 10; attempt++) {
+  const po_number = await generatePONumber(city_code, getInitials(req.user.name));
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
@@ -165,13 +166,15 @@ router.post('/create-po', requireAuth, requirePermission('manage_running'), asyn
       );
     }
     await client.query('COMMIT');
-    await logAudit({ entity_type: 'po', entity_id: po.id, entity_number: po_number, action: 'created', user_id: req.user.id, user_name: req.user.name, details: { source: 'running_list', city: city_code, items: items.length, total: total_amount } });
-    res.status(201).json(po);
-  } catch (err) {
-    await client.query('ROLLBACK');
-    throw err;
-  } finally {
     client.release();
+    await logAudit({ entity_type: 'po', entity_id: po.id, entity_number: po_number, action: 'created', user_id: req.user.id, user_name: req.user.name, details: { source: 'running_list', city: city_code, items: items.length, total: total_amount } });
+    return res.status(201).json(po);
+  } catch (err) {
+    await client.query('ROLLBACK').catch(function () {});
+    client.release();
+    if (err.code === '23505' && attempt < 9) continue;
+    throw err;
+  }
   }
 });
 

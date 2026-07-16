@@ -182,6 +182,9 @@ async function createSignoffForWO(wo, systemUserId, assignedTo) {
      notesParts.join(' — ') || null, systemUserId,
      ((assignedTo !== undefined && assignedTo !== null) ? assignedTo : (wo.assigned_to || null))]
   );
+  // Seed the trip series so the auto-close (which keys off trip_group_id) can match this sheet.
+  // Mirrors the manual-create path in routes/signoffs.js.
+  await pool.query('UPDATE signoff_forms SET trip_group_id = id, trip_base_number = form_number WHERE id = $1', [rows[0].id]);
   return rows[0].id;
 }
 
@@ -233,8 +236,9 @@ async function findRevisionTarget(parsed, excludeId) {
     if (!rows.length) return null;
     const acct = await resolveAccount(parsed);
     const match = rows.filter(function (r) {
-      if (!acct.account_id || !r.account_id) return true;   // one side unknown — don't block
-      return r.account_id === acct.account_id;
+      // An unknown account on EITHER side must not authorize a merge — require both present and
+      // equal. Ambiguous cases fall through as a new WO rather than risking a bad merge.
+      return acct.account_id && r.account_id && r.account_id === acct.account_id;
     });
     // Oldest open match is the original job; anything newer with the same number is noise.
     return match.length ? match[0] : null;

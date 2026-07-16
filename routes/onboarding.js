@@ -1028,6 +1028,13 @@ router.post('/steps/:id/complete', requireAuth, async (req, res) => {
     const _have = await slotStatus(req.user.id);
     const _missing = _slots.filter(function (s) { return !_have[s.key]; });
     if (_missing.length) return res.status(400).json({ error: 'Upload all required documents before continuing.', missing: _missing.map(function (s) { return s.key; }) });
+    // The expiry gate below reads expires_at, which /upload writes asynchronously
+    // AFTER it responds (Nova reads the doc in the background). Completing right
+    // after upload would sail past docExpired() while expires_at is still null.
+    // For slots that can expire, hold the step until extraction has finished
+    // (verify_status is set to 'verified'/'flagged' when it does).
+    const _pending = _slots.filter(function (s) { var d = _have[s.key]; return s.expires && d && !d.verify_status; });
+    if (_pending.length) return res.status(400).json({ error: 'Still checking your document, give it a few seconds and try again.' });
     // Expired paperwork does not move forward. Nova reads the expiration date off
     // the document itself; if it misread, a manager can accept it as-is from the
     // review screen and the hire can continue.
@@ -1276,17 +1283,23 @@ router.post('/steps/:id/packet', requireAuth, async (req, res) => {
   if (current.type !== 'form') return res.status(400).json({ error: 'This step is not a form.' });
   const fields = packetFields(current);
   const data = (req.body && req.body.data && typeof req.body.data === 'object') ? req.body.data : {};
+  // The employee must never be able to write manager-only fields (e.g. position_role)
+  // by stuffing them into the submitted data blob. Keep only the keys the employee owns.
+  const allowedKeys = {};
+  fields.forEach(function (f) { if (f && f.who !== 'manager') allowedKeys[f.key] = true; });
+  const filtered = {};
+  Object.keys(data).forEach(function (k) { if (allowedKeys[k]) filtered[k] = data[k]; });
   for (var i = 0; i < fields.length; i++) {
     var f = fields[i];
     if (f.who === 'manager' || !f.required) continue;
-    var v = data[f.key];
+    var v = filtered[f.key];
     if (f.type === 'ack') { if (v !== true && v !== 'true') return res.status(400).json({ error: 'Please read and check the acknowledgment.' }); }
     else if (v == null || String(v).trim() === '') return res.status(400).json({ error: 'Please complete: ' + f.label });
   }
   await pool.query(
     "INSERT INTO onboarding_packet_responses (user_id, data, status, field_flags, submitted_at) VALUES ($1,$2::jsonb,'submitted','{}'::jsonb,NOW()) " +
     "ON CONFLICT (user_id) DO UPDATE SET data = COALESCE(onboarding_packet_responses.data,'{}'::jsonb) || $2::jsonb, status = 'submitted', field_flags = '{}'::jsonb, submitted_at = NOW(), updated_at = NOW()",
-    [req.user.id, JSON.stringify(data)]
+    [req.user.id, JSON.stringify(filtered)]
   );
   await pool.query(
     "INSERT INTO onboarding_progress (user_id, step_id, status, started_at, completed_at) VALUES ($1,$2,'done',NOW(),NOW()) " +
@@ -1801,6 +1814,7 @@ admin.post('/users/:id/phase1/reopen', async (req, res) => {
 // Per-user step detail for the dashboard drill-down
 admin.get('/users/:id/detail', async (req, res) => {
   const target = parseInt(req.params.id, 10) || 0;
+  if (!(await canSignOff(req.user, target))) return res.status(403).json({ error: 'Not permitted.' });
   const steps = await activeSteps();
   const prog = await progressMap(target);
   const attempts = await pool.query(

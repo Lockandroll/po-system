@@ -287,6 +287,7 @@ router.post('/recordings', requireAuth, requirePermission('view_ptt'), async (re
   const mime = String(b.mime || 'audio/webm').slice(0, 100);
   if (b.user) {
     const targetId = parseInt(b.user, 10) || 0;
+    if (!(await userHasPerm(req.user, 'ptt_direct'))) return res.status(403).json({ error: 'Not permitted.' });
     const pair = Math.min(req.user.id, targetId) + '-' + Math.max(req.user.id, targetId);
     if (key.indexOf('ptt/dm/' + pair + '/') !== 0 || key.indexOf('..') !== -1) {
       return res.status(400).json({ error: 'Invalid key' });

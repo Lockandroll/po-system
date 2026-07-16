@@ -184,6 +184,10 @@ router.get('/:id', requireAuth, requirePermission('view_work_orders'), async (re
 // GET /api/work-orders/:id/attachments/:aid — raw image data for the detail viewer
 router.get('/:id/attachments/:aid', requireAuth, requirePermission('view_work_orders'), async (req, res) => {
   try {
+    // Apply the same ownership check GET /:id enforces before handing back raw image data.
+    const woRows = await pool.query('SELECT assigned_to FROM work_orders WHERE id = $1', [req.params.id]);
+    if (!woRows.rows.length) return res.status(404).json({ error: 'Work order not found' });
+    if (!(await canManage(req)) && woRows.rows[0].assigned_to !== req.user.id) return res.status(403).json({ error: 'Forbidden' });
     const { rows } = await pool.query('SELECT image_data, mime_type FROM work_order_attachments WHERE id = $1 AND work_order_id = $2', [req.params.aid, req.params.id]);
     if (!rows.length) return res.status(404).json({ error: 'Attachment not found' });
     res.json({ image_data: rows[0].image_data, mime_type: rows[0].mime_type });

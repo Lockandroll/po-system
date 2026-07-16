@@ -65,9 +65,26 @@ function getReviewsPool() {
   if (reviewsPool && reviewsPoolUrl === url) return reviewsPool;
   if (reviewsPool) { try { reviewsPool.end(); } catch (e) {} }
   reviewsPoolUrl = url;
+  // SECURITY: this reaches the review-bot Postgres over its PUBLIC URL, so TLS
+  // is doing real work here. Ideally we verify the server cert against a proper
+  // CA and set rejectUnauthorized:true. If REVIEWS_DB_CA_CERT (a PEM string) is
+  // provided we do exactly that; otherwise we fall back to an unverified TLS
+  // session (rejectUnauthorized:false) because Railway's managed Postgres serves
+  // a cert that does not chain to the public CA bundle. Internal (.railway.internal)
+  // traffic stays on the private network and needs no TLS.
+  var reviewsSsl;
+  if (url.includes('railway.internal')) {
+    reviewsSsl = false;
+  } else if (process.env.REVIEWS_DB_CA_CERT) {
+    reviewsSsl = { ca: process.env.REVIEWS_DB_CA_CERT, rejectUnauthorized: true };
+  } else {
+    // TODO: supply REVIEWS_DB_CA_CERT and drop this branch to get real cert
+    // verification instead of encryption-only TLS.
+    reviewsSsl = { rejectUnauthorized: false };
+  }
   reviewsPool = new Pool({
     connectionString: url,
-    ssl: url.includes('railway.internal') ? false : { rejectUnauthorized: false },
+    ssl: reviewsSsl,
     max: 4,
     idleTimeoutMillis: 30000,
     connectionTimeoutMillis: 10000
@@ -295,7 +312,7 @@ router.put('/assign', requireAuth, requirePermission('assign_reviews'), async (r
 // A match at MATCH_MIN%+ confidence is hard-linked (user_id + canonical name);
 // anything weaker is stored as an unmatched guess (user_id NULL) that the UI
 // shows as an estimate but never offers as a selectable choice.
-router.post('/tech-tally', requireAuth, async (req, res) => {
+router.post('/tech-tally', requireAuth, requirePermission('assign_reviews'), async (req, res) => {
   const rpool = getReviewsPool();
   if (!rpool) return notConfigured(res);
   if (!process.env.ANTHROPIC_API_KEY) {

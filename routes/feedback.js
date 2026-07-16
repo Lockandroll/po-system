@@ -119,6 +119,10 @@ router.patch('/:id', requireAuth, requirePermission('manage_feedback'), async fu
     const cur = await pool.query('SELECT * FROM customer_feedback WHERE id = $1', [id]);
     if (!cur.rows.length) return res.status(404).json({ error: 'Not found' });
     const f = cur.rows[0];
+    const scope = await cityScope(req.user);
+    if (scope !== null && scope.indexOf(f.city_code) === -1) {
+      return res.status(403).json({ error: 'Not in your cities' });
+    }
     const b = req.body || {};
 
     // Resolve the post-update values to validate the closing gate.
@@ -219,8 +223,12 @@ router.post('/:id/notes', requireAuth, requirePermission('manage_feedback'), asy
     const id = parseInt(req.params.id, 10);
     const body = (req.body && req.body.body || '').trim();
     if (!body) return res.status(400).json({ error: 'Note is empty' });
-    const exists = await pool.query('SELECT id FROM customer_feedback WHERE id = $1', [id]);
+    const exists = await pool.query('SELECT id, city_code FROM customer_feedback WHERE id = $1', [id]);
     if (!exists.rows.length) return res.status(404).json({ error: 'Not found' });
+    const scope = await cityScope(req.user);
+    if (scope !== null && scope.indexOf(exists.rows[0].city_code) === -1) {
+      return res.status(403).json({ error: 'Not in your cities' });
+    }
     await logActivity(id, { id: req.user.id, name: req.user.name }, 'note', body, 'app');
     const acts = await pool.query(
       'SELECT * FROM customer_feedback_activity WHERE feedback_id = $1' +
@@ -246,8 +254,12 @@ router.post('/:id/attachments/upload-url', requireAuth, requirePermission('manag
   try {
     if (!r2.configured()) return res.status(503).json({ error: 'File storage is not configured. Add the R2_* environment variables in Railway.' });
     const id = parseInt(req.params.id, 10);
-    const exists = await pool.query('SELECT id FROM customer_feedback WHERE id = $1', [id]);
+    const exists = await pool.query('SELECT id, city_code FROM customer_feedback WHERE id = $1', [id]);
     if (!exists.rows.length) return res.status(404).json({ error: 'Not found' });
+    const scope = await cityScope(req.user);
+    if (scope !== null && scope.indexOf(exists.rows[0].city_code) === -1) {
+      return res.status(403).json({ error: 'Not in your cities' });
+    }
     const fileName = (req.body && req.body.file_name || '').trim();
     if (!fileName) return res.status(400).json({ error: 'File name is required' });
     const mime = (req.body && req.body.mime_type || 'application/octet-stream').slice(0, 255);
@@ -266,6 +278,12 @@ router.post('/:id/attachments/:attId/confirm', requireAuth, requirePermission('m
   try {
     const id = parseInt(req.params.id, 10);
     const attId = parseInt(req.params.attId, 10);
+    const fb = await pool.query('SELECT city_code FROM customer_feedback WHERE id = $1', [id]);
+    if (!fb.rows.length) return res.status(404).json({ error: 'Not found' });
+    const scope = await cityScope(req.user);
+    if (scope !== null && scope.indexOf(fb.rows[0].city_code) === -1) {
+      return res.status(403).json({ error: 'Not in your cities' });
+    }
     const ar = await pool.query('SELECT id, file_name FROM customer_feedback_attachments WHERE id = $1 AND feedback_id = $2', [attId, id]);
     if (!ar.rows.length) return res.status(404).json({ error: 'Attachment not found' });
     const size = Math.max(0, parseInt(req.body && req.body.size_bytes, 10) || 0);
@@ -281,6 +299,12 @@ router.get('/:id/attachments/:attId/url', requireAuth, requirePermission('view_f
     if (!r2.configured()) return res.status(503).json({ error: 'File storage is not configured.' });
     const id = parseInt(req.params.id, 10);
     const attId = parseInt(req.params.attId, 10);
+    const fb = await pool.query('SELECT city_code FROM customer_feedback WHERE id = $1', [id]);
+    if (!fb.rows.length) return res.status(404).json({ error: 'Not found' });
+    const scope = await cityScope(req.user);
+    if (scope !== null && scope.indexOf(fb.rows[0].city_code) === -1) {
+      return res.status(403).json({ error: 'Not in your cities' });
+    }
     const ar = await pool.query("SELECT r2_key, file_name FROM customer_feedback_attachments WHERE id = $1 AND feedback_id = $2 AND status = 'ready'", [attId, id]);
     if (!ar.rows.length) return res.status(404).json({ error: 'Attachment not found' });
     const url = await r2.presignDownload(ar.rows[0].r2_key, ar.rows[0].file_name, req.query.inline === '1');
@@ -293,6 +317,12 @@ router.delete('/:id/attachments/:attId', requireAuth, requirePermission('manage_
   try {
     const id = parseInt(req.params.id, 10);
     const attId = parseInt(req.params.attId, 10);
+    const fb = await pool.query('SELECT city_code FROM customer_feedback WHERE id = $1', [id]);
+    if (!fb.rows.length) return res.status(404).json({ error: 'Not found' });
+    const scope = await cityScope(req.user);
+    if (scope !== null && scope.indexOf(fb.rows[0].city_code) === -1) {
+      return res.status(403).json({ error: 'Not in your cities' });
+    }
     const ar = await pool.query('SELECT r2_key, file_name FROM customer_feedback_attachments WHERE id = $1 AND feedback_id = $2', [attId, id]);
     if (!ar.rows.length) return res.status(404).json({ error: 'Attachment not found' });
     try { await r2.deleteObject(ar.rows[0].r2_key); } catch (e) { console.error('R2 delete failed:', e.message); }

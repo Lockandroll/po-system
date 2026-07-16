@@ -5719,7 +5719,7 @@ async function printQuote(id) {
         '</div>'
       : '';
 
-    const locksmiths = '<div style="padding:20px 32px;border-bottom:1px solid #e5e7eb;background:#fafafa">' +
+    const locksmiths = '<div class="avoid-break" style="padding:20px 32px;border-bottom:1px solid #e5e7eb;background:#fafafa">' +
       '<div style="font-size:11px;font-weight:600;color:#6b7280;text-transform:uppercase;letter-spacing:0.05em;margin-bottom:10px">Your Locksmith</div>' +
       '<div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px">' +
         '<div><div style="font-size:11px;font-weight:600;color:#9ca3af;text-transform:uppercase;letter-spacing:0.05em;margin-bottom:3px">Name</div><div style="font-size:13px;color:#111">' + esc(q.requester_name || '—') + '</div></div>' +
@@ -5769,14 +5769,14 @@ async function printQuote(id) {
       : '';
 
     const notesHtml = q.notes
-      ? '<div style="padding:20px 32px;border-bottom:1px solid #e5e7eb">' +
+      ? '<div class="avoid-break" style="padding:20px 32px;border-bottom:1px solid #e5e7eb">' +
           '<div style="font-size:11px;font-weight:600;color:#6b7280;text-transform:uppercase;letter-spacing:0.05em;margin-bottom:6px">Notes</div>' +
           '<div style="font-size:13px;color:#6b7280">' + esc(q.notes) + '</div>' +
         '</div>'
       : '';
 
     const importantHtml = q.important_info
-      ? '<div style="padding:20px 32px;border-bottom:1px solid #e5e7eb">' +
+      ? '<div class="avoid-break" style="padding:20px 32px;border-bottom:1px solid #e5e7eb">' +
           '<div style="font-size:11px;font-weight:600;color:#6b7280;text-transform:uppercase;letter-spacing:0.05em;margin-bottom:6px">Important Information</div>' +
           '<div style="font-size:12px;color:#6b7280;white-space:pre-wrap;line-height:1.6">' + esc(resolveTokens(q.important_info)) + '</div>' +
         '</div>'
@@ -5793,11 +5793,21 @@ async function printQuote(id) {
       '.btn-print:hover { background:#ea6a00; }' +
       '.btn-close { background:transparent; color:#6b7280; border:1px solid #d1d5db; padding:9px 18px; border-radius:6px; font-size:14px; cursor:pointer; }' +
       '.hint { font-size:12px; color:#9ca3af; margin-left:4px; }' +
+      'table.pagewrap { width:100%; border-collapse:collapse; }' +
       '.page { max-width:800px; margin:24px auto 48px; background:white; border-radius:8px; overflow:hidden; box-shadow:0 1px 4px rgba(0,0,0,0.12); }' +
+      '@page { margin:0; }' +
       '@media print {' +
       '  .no-print { display:none !important; }' +
-      '  body { background:white; }' +
-      '  .page { margin:0; box-shadow:none; border-radius:0; max-width:100%; }' +
+      '  html, body { background:white; margin:0; padding:0; }' +
+      '  .page { margin:0; box-shadow:none; border-radius:0; max-width:100%; overflow:visible; }' +
+      '  .pagewrap > tbody > tr { page-break-inside:auto; break-inside:auto; }' +
+      '  .pw-body { padding:0 24px; }' +
+      '  .pw-head td { height:48px; }' +
+      '  .pw-foot td { height:36px; }' +
+      '  .avoid-break { page-break-inside:avoid; break-inside:avoid; }' +
+      '  table.items tbody tr { page-break-inside:avoid; break-inside:avoid; }' +
+      '  table.items tfoot { display:table-row-group; }' +
+      '  table.items tfoot tr { page-break-inside:avoid; break-inside:avoid; }' +
       '  * { -webkit-print-color-adjust:exact !important; print-color-adjust:exact !important; }' +
       '}' +
       '</style></head><body>' +
@@ -5806,6 +5816,10 @@ async function printQuote(id) {
         '<button class="btn-close" onclick="window.close()">Close</button>' +
         '<span class="hint">Tip: select &ldquo;Save as PDF&rdquo; in the print dialog</span>' +
       '</div>' +
+      '<table class="pagewrap">' +
+      '<thead class="pw-head"><tr><td></td></tr></thead>' +
+      '<tfoot class="pw-foot"><tr><td></td></tr></tfoot>' +
+      '<tbody><tr><td class="pw-body">' +
       '<div class="page">' +
         '<div style="background:#0f0f0f;padding:24px 32px;display:flex;justify-content:space-between;align-items:flex-start">' +
           '<div>' + logoHtml + companyAddrHtml + '</div>' +
@@ -5815,12 +5829,12 @@ async function printQuote(id) {
           '</div>' +
         '</div>' +
         locksmiths +
-        '<div style="padding:24px 32px;border-bottom:1px solid #e5e7eb">' +
+        '<div class="avoid-break" style="padding:24px 32px;border-bottom:1px solid #e5e7eb">' +
           '<div style="display:grid;grid-template-columns:1fr 1fr 1fr 1fr;gap:20px">' + detailGrid + '</div>' +
         '</div>' +
         '<div style="padding:24px 32px;border-bottom:1px solid #e5e7eb">' +
           '<div style="font-size:11px;font-weight:600;color:#6b7280;text-transform:uppercase;letter-spacing:0.05em;margin-bottom:12px">Line items</div>' +
-          '<table style="width:100%;border-collapse:collapse;font-size:13px">' +
+          '<table class="items" style="width:100%;border-collapse:collapse;font-size:13px">' +
             '<thead><tr style="border-bottom:2px solid #e5e7eb">' +
               '<th style="text-align:left;padding:8px;font-size:11px;font-weight:600;color:#6b7280;text-transform:uppercase;letter-spacing:0.05em">Description</th>' +
               '<th style="text-align:right;padding:8px;font-size:11px;font-weight:600;color:#6b7280;text-transform:uppercase;letter-spacing:0.05em">Qty</th>' +
@@ -5844,6 +5858,7 @@ async function printQuote(id) {
           '<span>Generated ' + today + '</span>' +
         '</div>' +
       '</div>' +
+      '</td></tr></tbody></table>' +
       '</body></html>';
 
     const win = window.open('', '_blank', 'width=900,height=700');

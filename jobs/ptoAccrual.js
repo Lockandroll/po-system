@@ -125,19 +125,27 @@ async function runAccrual(todayStr) {
       if (amt > room) amt = room;
     }
     amt = Math.round(amt * 100) / 100;
+    // Ledger line + balance bump must land together — a crash between them would
+    // leave the balance out of sync with the ledger. One transaction, one client.
+    const client = await pool.connect();
     try {
-      const ins = await pool.query(
+      await client.query('BEGIN');
+      const ins = await client.query(
         'INSERT INTO pto_ledger (user_id, entry_date, kind, amount_hours, description, accrual_period) ' +
         "VALUES ($1, $2, 'accrual', $3, $4, $5) " +
         "ON CONFLICT (user_id, accrual_period) WHERE kind = 'accrual' DO NOTHING RETURNING id",
         [u.id, today, amt, 'Monthly accrual (' + period + ')', period]
       );
       if (ins.rows.length) {
-        await pool.query('UPDATE users SET pto_balance_hours = COALESCE(pto_balance_hours,0) + $1 WHERE id = $2', [amt, u.id]);
+        await client.query('UPDATE users SET pto_balance_hours = COALESCE(pto_balance_hours,0) + $1 WHERE id = $2', [amt, u.id]);
         posted++;
       }
+      await client.query('COMMIT');
     } catch (e) {
+      try { await client.query('ROLLBACK'); } catch (e2) {}
       console.error('[ptoAccrual] accrual failed for user', u.id, e.message);
+    } finally {
+      client.release();
     }
   }
   if (posted) console.log('[ptoAccrual] posted ' + posted + ' accrual line(s) for ' + period);
@@ -172,16 +180,23 @@ async function runCarryover(todayStr) {
     // idempotency: at most one rollover forfeiture per anniversary date.
     const dup = await pool.query("SELECT 1 FROM pto_ledger WHERE user_id = $1 AND kind = 'carryover' AND entry_date = $2 LIMIT 1", [u.id, today]);
     if (dup.rows.length) continue;
+    // Forfeiture ledger line + balance reset must land together, or neither.
+    const client = await pool.connect();
     try {
-      await pool.query(
+      await client.query('BEGIN');
+      await client.query(
         'INSERT INTO pto_ledger (user_id, entry_date, kind, amount_hours, description) ' +
         "VALUES ($1, $2, 'carryover', $3, $4)",
         [u.id, today, -over, 'Anniversary rollover: forfeited hours above ' + (Number(rolloverRaw)) + '-day carryover limit']
       );
-      await pool.query('UPDATE users SET pto_balance_hours = $1 WHERE id = $2', [rolloverHours, u.id]);
+      await client.query('UPDATE users SET pto_balance_hours = $1 WHERE id = $2', [rolloverHours, u.id]);
+      await client.query('COMMIT');
       cut++;
     } catch (e) {
+      try { await client.query('ROLLBACK'); } catch (e2) {}
       console.error('[ptoAccrual] rollover failed for user', u.id, e.message);
+    } finally {
+      client.release();
     }
   }
   if (cut) console.log('[ptoAccrual] anniversary rollover applied to ' + cut + ' user(s)');

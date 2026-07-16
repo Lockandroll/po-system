@@ -19,7 +19,7 @@ function etTodayStr() { return new Intl.DateTimeFormat('en-CA', { timeZone: 'Ame
 
 // Helper: compute total from line items
 function computeTotal(items) {
-  return items.reduce(function(sum, i) { return sum + parseFloat(i.quantity) * parseFloat(i.unit_price); }, 0);
+  return items.reduce(function(sum, i) { return sum + (parseFloat(i.quantity) || 0) * (parseFloat(i.unit_price) || 0); }, 0);
 }
 
 // Helper: get user initials from name
@@ -119,6 +119,10 @@ router.post('/', requireAuth, requirePermission('create_po'), async (req, res) =
   if (!vendor_name) return res.status(400).json({ error: 'Vendor name is required' });
   if (!city_code) return res.status(400).json({ error: 'City is required' });
   if (!line_items || line_items.length === 0) return res.status(400).json({ error: 'At least one line item is required' });
+  for (let i = 0; i < line_items.length; i++) {
+    if (!(parseFloat(line_items[i].quantity) > 0)) return res.status(400).json({ error: 'Line item quantity must be greater than 0' });
+    if (!(parseFloat(line_items[i].unit_price) >= 0)) return res.status(400).json({ error: 'Line item unit price must be 0 or greater' });
+  }
 
   const userInitials = getInitials(req.user.name);
   const total_amount = computeTotal(line_items);
@@ -169,6 +173,12 @@ router.put('/:id', requireAuth, async (req, res) => {
   }
   if (po.status !== 'draft' && po.status !== 'rejected' && req.user.role !== 'admin') {
     return res.status(400).json({ error: 'Only draft or rejected POs can be edited. Once approved, a PO is locked.' });
+  }
+  if (line_items) {
+    for (let i = 0; i < line_items.length; i++) {
+      if (!(parseFloat(line_items[i].quantity) > 0)) return res.status(400).json({ error: 'Line item quantity must be greater than 0' });
+      if (!(parseFloat(line_items[i].unit_price) >= 0)) return res.status(400).json({ error: 'Line item unit price must be 0 or greater' });
+    }
   }
 
   const total_amount = line_items ? computeTotal(line_items) : po.total_amount;
@@ -282,10 +292,11 @@ router.post('/:id/approve', requireAuth, requirePermission('approve_po'), async 
   if (!ordererRows.length) return res.status(400).json({ error: 'Selected orderer not found' });
   const orderer = ordererRows[0];
 
-  await pool.query(
-    'UPDATE purchase_orders SET status=$1, approver_id=$2, orderer_id=$3, approved_at=NOW(), updated_at=NOW() WHERE id=$4',
-    ['approved', req.user.id, orderer_id, req.params.id]
+  const { rowCount: approveCount } = await pool.query(
+    'UPDATE purchase_orders SET status=$1, approver_id=$2, orderer_id=$3, approved_at=NOW(), updated_at=NOW() WHERE id=$4 AND status = $5',
+    ['approved', req.user.id, orderer_id, req.params.id, 'submitted']
   );
+  if (approveCount === 0) return res.status(409).json({ error: 'That purchase order was already updated by someone else.' });
 
   const ccEmails = [];
   const { rows: approverRows } = await pool.query('SELECT receive_emails FROM users WHERE id = $1', [req.user.id]);
@@ -355,10 +366,11 @@ router.post('/:id/reject', requireAuth, requirePermission('approve_po'), async (
   if (!po) return res.status(404).json({ error: 'PO not found' });
   if (po.status !== 'submitted') return res.status(400).json({ error: 'PO is not pending approval' });
 
-  await pool.query(
-    'UPDATE purchase_orders SET status=$1, approver_id=$2, rejection_reason=$3, updated_at=NOW() WHERE id=$4',
-    ['rejected', req.user.id, reason || null, req.params.id]
+  const { rowCount: rejectCount } = await pool.query(
+    'UPDATE purchase_orders SET status=$1, approver_id=$2, rejection_reason=$3, updated_at=NOW() WHERE id=$4 AND status = $5',
+    ['rejected', req.user.id, reason || null, req.params.id, 'submitted']
   );
+  if (rejectCount === 0) return res.status(409).json({ error: 'That purchase order was already updated by someone else.' });
 
   await logAudit({ entity_type: 'po', entity_id: po.id, entity_number: po.po_number, action: 'rejected', user_id: req.user.id, user_name: req.user.name, details: { reason } });
 
@@ -400,10 +412,11 @@ router.post('/:id/cancel', requireAuth, requirePermission('cancel_po'), async (r
   if (po.status === 'draft') return res.status(400).json({ error: 'Use delete for draft POs' });
   if (po.status === 'cancelled') return res.status(400).json({ error: 'PO is already cancelled' });
 
-  await pool.query(
-    'UPDATE purchase_orders SET status=$1, updated_at=NOW() WHERE id=$2',
+  const { rowCount: cancelCount } = await pool.query(
+    "UPDATE purchase_orders SET status=$1, updated_at=NOW() WHERE id=$2 AND status <> 'cancelled' AND status <> 'draft'",
     ['cancelled', req.params.id]
   );
+  if (cancelCount === 0) return res.status(409).json({ error: 'That purchase order was already updated by someone else.' });
 
   // Close any open 'place order' task tied to a cancelled PO
   if (po.order_task_id) {
@@ -459,10 +472,11 @@ router.post('/:id/order', requireAuth, async (req, res) => {
     return res.status(403).json({ error: 'Only the assigned orderer or an admin can mark this as ordered' });
   }
 
-  await pool.query(
-    "UPDATE purchase_orders SET status='order placed', updated_at=NOW() WHERE id=$1",
+  const { rowCount: orderCount } = await pool.query(
+    "UPDATE purchase_orders SET status='order placed', updated_at=NOW() WHERE id=$1 AND status = 'approved'",
     [req.params.id]
   );
+  if (orderCount === 0) return res.status(409).json({ error: 'That purchase order was already updated by someone else.' });
 
   // Auto-complete the linked 'place order' task so it leaves the orderer's list
   if (po.order_task_id) {

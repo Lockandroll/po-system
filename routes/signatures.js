@@ -809,6 +809,8 @@ async function loadSignerByToken(token) {
 
 function tokenError(signer, request) {
   if (request.status === 'voided') return { code: 410, msg: 'This request has been canceled.' };
+  if (request.status === 'declined') return { code: 410, msg: 'This request has been declined.' };
+  if (request.status === 'expired') return { code: 410, msg: 'This request has expired.' };
   if (signer.token_expires_at && new Date(signer.token_expires_at) < new Date()) return { code: 410, msg: 'This signing link has expired.' };
   return null;
 }
@@ -892,7 +894,7 @@ pub.post('/:token/submit', async (req, res) => {
     await pool.query("UPDATE signature_signers SET status = 'signed', signed_at = NOW(), consent_accepted = true, token = NULL WHERE id = $1", [signer.id]);
     await logEvent(request.id, signer.id, 'signed', signer.name, req, {});
 
-    var remaining = (await pool.query("SELECT COUNT(*)::int AS n FROM signature_signers WHERE request_id = $1 AND status <> 'signed'", [request.id])).rows[0].n;
+    var remaining = (await pool.query("SELECT COUNT(*)::int AS n FROM signature_signers WHERE request_id = $1 AND status NOT IN ('signed','declined')", [request.id])).rows[0].n;
     if (remaining === 0) {
       try { await flattenAndComplete(request.id); }
       catch (e) { console.error('Flatten failed, marking completed anyway:', e.message); await pool.query("UPDATE signature_requests SET status = 'completed', completed_at = NOW() WHERE id = $1", [request.id]); }
@@ -958,6 +960,9 @@ pub.post('/:token/decline', async (req, res) => {
     if (te) return res.status(te.code).json({ error: te.msg });
     var reason = (req.body.reason || '').toString().slice(0, 500);
     await pool.query("UPDATE signature_signers SET status = 'declined', declined_reason = $1, token = NULL WHERE id = $2", [reason || null, signer.id]);
+    // A decline kills the whole request — null every signer's token (like the void path) so no
+    // remaining signer can flip it back to partially_signed by signing after the decline.
+    await pool.query("UPDATE signature_signers SET token = NULL WHERE request_id = $1", [request.id]);
     await pool.query("UPDATE signature_requests SET status = 'declined', updated_at = NOW() WHERE id = $1", [request.id]);
     await logEvent(request.id, signer.id, 'declined', signer.name, req, { reason: reason });
     // Notify the creator.

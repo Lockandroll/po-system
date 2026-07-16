@@ -478,6 +478,9 @@ router.put('/:id', requireAuth, requirePermission('manage_tasks'), async (req, r
     if (b.cc !== undefined) await saveCc(req.params.id, b.cc, true);
     if (assigneeChanged && assigned_to) { try { await notifyTaskAssigned(req.params.id); } catch (e) {} }
     if (status === 'done' && ex.status !== 'done') { try { await notifyTaskCcDone(req.params.id, req.user.name); } catch (e) {} }
+    // A recurring task completed through the full edit form must re-spawn just like
+    // it does via PATCH /:id/status (templates never spawn).
+    if (status === 'done' && ex.status !== 'done' && ex.recurrence && !ex.is_template) await spawnRecurrence(ex, req.user);
     res.json(await loadTask(req.params.id));
   } catch (err) { console.error(err); res.status(500).json({ error: 'Failed to update task' }); }
 });

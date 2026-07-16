@@ -111,7 +111,7 @@ router.post('/login', async (req, res) => {
       const newExpires = new Date(Date.now() + TRUST_DAYS * 24 * 60 * 60 * 1000);
       await pool.query('UPDATE trusted_devices SET last_used_at=NOW(), expires_at=$1, ip=$2 WHERE id=$3', [newExpires, clientIp(req), td.rows[0].id]);
       setDeviceCookie(req, res, deviceToken, newExpires);
-      const tdClaims = { id: user.id, email: user.email, name: user.name, role: user.role };
+      const tdClaims = { id: user.id, email: user.email, name: user.name, role: user.role, se: (user.session_epoch || 0) };
       if (rememberMe) tdClaims.remember = true;
       if (user.onboarding_status && user.onboarding_status !== 'complete') tdClaims.onb = true;
       const tdToken = jwt.sign(tdClaims, process.env.JWT_SECRET, { expiresIn: sessionTtl(rememberMe) });
@@ -121,13 +121,14 @@ router.post('/login', async (req, res) => {
     }
   }
 
-  // Generate and send 2FA code
-  const code = String(Math.floor(100000 + Math.random() * 900000));
+  // Generate and send 2FA code. Only the HASH is stored at rest; the raw code is
+  // delivered to the user by SMS/email and never persisted.
+  const code = String(crypto.randomInt(100000, 1000000));
   const codeExpires = new Date(Date.now() + 10 * 60 * 1000); // 10 minutes
   await pool.query(
     'INSERT INTO two_factor_codes (user_id, code, expires_at) VALUES ($1, $2, $3) ' +
     'ON CONFLICT (user_id) DO UPDATE SET code=$2, expires_at=$3, used=false, attempts=0',
-    [user.id, code, codeExpires]
+    [user.id, hashToken(code), codeExpires]
   );
 
   const hasSms = !!(user.phone && user.receive_sms);
@@ -158,6 +159,7 @@ router.post('/login', async (req, res) => {
 });
 
 // Verify 2FA code and return JWT
+// TODO(server.js): add loginLimiter to /verify-2fa and /forgot-password
 router.post('/verify-2fa', async (req, res) => {
   const { userId, code, rememberDevice, rememberMe } = req.body;
   if (!userId || !code) return res.status(400).json({ error: 'User ID and code required' });
@@ -173,7 +175,15 @@ router.post('/verify-2fa', async (req, res) => {
     await pool.query('UPDATE two_factor_codes SET used=true WHERE user_id=$1', [userId]);
     return res.status(429).json({ error: 'Too many incorrect codes. Please log in again to get a new code.' });
   }
-  if (rows[0].code !== String(code)) {
+  // Codes are stored hashed; compare the hash of the submitted code in constant time.
+  const providedHash = hashToken(String(code));
+  const storedHash = String(rows[0].code || '');
+  let codeOk = false;
+  try {
+    codeOk = providedHash.length === storedHash.length &&
+      crypto.timingSafeEqual(Buffer.from(providedHash), Buffer.from(storedHash));
+  } catch (e) { codeOk = false; }
+  if (!codeOk) {
     await pool.query('UPDATE two_factor_codes SET attempts = attempts + 1 WHERE user_id=$1', [userId]);
     return res.status(401).json({ error: 'Invalid or expired code. Please try logging in again.' });
   }
@@ -181,7 +191,7 @@ router.post('/verify-2fa', async (req, res) => {
   await pool.query('UPDATE two_factor_codes SET used=true WHERE user_id=$1', [userId]);
 
   const { rows: userRows } = await pool.query(
-    'SELECT id, name, email, role, active, onboarding_status FROM users WHERE id=$1',
+    'SELECT id, name, email, role, active, onboarding_status, session_epoch FROM users WHERE id=$1',
     [userId]
   );
   const user = userRows[0];
@@ -190,7 +200,7 @@ router.post('/verify-2fa', async (req, res) => {
   }
 
   const remember = !!(rememberMe || rememberDevice);
-  const tokenClaims = { id: user.id, email: user.email, name: user.name, role: user.role };
+  const tokenClaims = { id: user.id, email: user.email, name: user.name, role: user.role, se: (user.session_epoch || 0) };
   if (remember) tokenClaims.remember = true;
   if (user.onboarding_status && user.onboarding_status !== 'complete') tokenClaims.onb = true;
   const token = jwt.sign(tokenClaims, process.env.JWT_SECRET, { expiresIn: sessionTtl(remember) });
@@ -213,6 +223,7 @@ router.post('/verify-2fa', async (req, res) => {
 });
 
 // Forgot password — send reset email
+// TODO(server.js): add loginLimiter to /verify-2fa and /forgot-password
 router.post('/forgot-password', async (req, res) => {
   const { email } = req.body;
   if (!email) return res.status(400).json({ error: 'Email is required' });
@@ -222,9 +233,10 @@ router.post('/forgot-password', async (req, res) => {
   const user = rows[0];
   const token = crypto.randomBytes(32).toString('hex');
   const expires = new Date(Date.now() + 60 * 60 * 1000); // 1 hour
+  // Store only the hash at rest; the raw token goes out in the email link below.
   await pool.query(
     'INSERT INTO password_resets (user_id, token, expires_at) VALUES ($1, $2, $3) ON CONFLICT (user_id) DO UPDATE SET token=$2, expires_at=$3, used=false',
-    [user.id, token, expires]
+    [user.id, hashToken(token), expires]
   );
   const appUrl = (process.env.APP_URL || '').replace(/\/$/, '');
   const resetUrl = appUrl + '/?reset=' + token;
@@ -247,15 +259,26 @@ router.post('/forgot-password', async (req, res) => {
 router.post('/reset-password', async (req, res) => {
   const { token, password } = req.body;
   if (!token || !password) return res.status(400).json({ error: 'Token and password are required' });
+  // Reset tokens are stored hashed; look up by the hash of the raw token from the link.
+  const tokenHash = hashToken(token);
   const { rows } = await pool.query(
-    'SELECT pr.user_id FROM password_resets pr WHERE pr.token=$1 AND pr.expires_at > NOW() AND pr.used=false',
-    [token]
+    'SELECT pr.user_id, u.email, u.name, u.role, u.onboarding_status, u.session_epoch FROM password_resets pr ' +
+    'JOIN users u ON u.id = pr.user_id ' +
+    'WHERE pr.token=$1 AND pr.expires_at > NOW() AND pr.used=false AND u.active IS NOT FALSE',
+    [tokenHash]
   );
   if (!rows[0]) return res.status(400).json({ error: 'Invalid or expired reset link' });
+  const u = rows[0];
   const password_hash = await bcrypt.hash(password, 12);
-  await pool.query('UPDATE users SET password_hash=$1, failed_attempts=0, lockout_until=NULL WHERE id=$2', [password_hash, rows[0].user_id]);
-  await pool.query('UPDATE password_resets SET used=true WHERE token=$1', [token]);
-  res.json({ success: true });
+  // Bump the session epoch so every session minted before this reset is invalidated,
+  // then hand back a fresh token carrying the new epoch so this response stays signed in.
+  await pool.query('UPDATE users SET password_hash=$1, failed_attempts=0, lockout_until=NULL, session_epoch = COALESCE(session_epoch,0) + 1 WHERE id=$2', [password_hash, u.user_id]);
+  await pool.query('UPDATE password_resets SET used=true WHERE token=$1', [tokenHash]);
+  const newEpoch = Number(u.session_epoch || 0) + 1;
+  const tokenClaims = { id: u.user_id, email: u.email, name: u.name, role: u.role, se: newEpoch };
+  if (u.onboarding_status && u.onboarding_status !== 'complete') tokenClaims.onb = true;
+  const authToken = jwt.sign(tokenClaims, process.env.JWT_SECRET, { expiresIn: sessionTtl(false) });
+  res.json({ success: true, token: authToken, user: { id: u.user_id, name: u.name, email: u.email, role: u.role, onboarding_status: u.onboarding_status || 'complete' } });
 });
 
 // Get current user

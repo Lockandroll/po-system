@@ -651,6 +651,14 @@ router.post('/requests/:id/cancel', requireAuth, async (req, res) => {
       await pool.query('UPDATE pto_requests SET status = $1, updated_at = NOW() WHERE id = $2', ['cancel_requested', id]);
       return res.json({ success: true, status: 'cancel_requested' });
     }
+    // Approver path. Immediate reverse (no employee consent) is only legitimate when
+    // the employee already asked for it (cancel_requested), or the caller is an
+    // admin/owner (who may force it, optionally with a force flag). A plain approved
+    // request must otherwise go through the propose/consent flow (mgr-cancel).
+    const isAdmin = req.user.role === 'admin' || req.user.isOwner;
+    if (r.status === 'approved' && !isAdmin) {
+      return res.status(400).json({ error: 'Use manager-cancel to propose cancelling an approved request; the employee must confirm.' });
+    }
     const from = ymdOf(r.start_date), to = ymdOf(r.end_date);
     const client = await pool.connect();
     try {

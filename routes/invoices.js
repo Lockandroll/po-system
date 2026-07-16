@@ -42,10 +42,17 @@ async function generateInvoiceNumber(cityCode) {
     const maxn = rows[0] && rows[0].maxn != null ? parseInt(rows[0].maxn, 10) : null;
     return maxn != null ? (maxn + 1) : (lo + 1);   // first invoice for the city = prefix00001
   }
-  // Fallback (no city / no prefix set): legacy global sequence.
+  // Fallback (no prefix set): number within the city's own band so a prefix-less
+  // city doesn't collide with other cities' sequences. Only a truly city-less
+  // invoice falls back to the legacy global sequence.
   const startRaw = await getSetting('invoice_start_number', '100001');
   const start = parseInt(startRaw, 10) || 100001;
-  const { rows } = await pool.query('SELECT MAX(invoice_number) AS maxn FROM invoices');
+  let rows;
+  if (cityCode) {
+    ({ rows } = await pool.query('SELECT MAX(invoice_number) AS maxn FROM invoices WHERE city_code = $1', [String(cityCode).trim().toUpperCase()]));
+  } else {
+    ({ rows } = await pool.query('SELECT MAX(invoice_number) AS maxn FROM invoices'));
+  }
   const maxn = rows[0] && rows[0].maxn != null ? parseInt(rows[0].maxn, 10) : null;
   return maxn != null ? (maxn + 1) : start;
 }
@@ -573,6 +580,11 @@ router.post('/', requireAuth, requirePermission('create_invoice'), async (req, r
   if (f.signature_required && status !== 'draft' && !f.signature_image) {
     return res.status(400).json({ error: 'A signature is required before this invoice can be marked ' + status + '. Save as draft, or capture a signature.' });
   }
+  for (const it of (b.line_items || [])) {
+    if (!it || !it.description) continue;
+    if (it.quantity != null && it.quantity !== '' && !(parseFloat(it.quantity) > 0)) return res.status(400).json({ error: 'Line item quantity must be greater than 0' });
+    if (it.unit_price != null && it.unit_price !== '' && !(parseFloat(it.unit_price) >= 0)) return res.status(400).json({ error: 'Line item unit price must be 0 or greater' });
+  }
   const tax_rate = parseFloat(b.tax_rate) || 0;
   const t = computeTotals(b.line_items, tax_rate, b.tip_amount, b.tax_exempt === true);
   const invoice_date = b.invoice_date || new Date().toISOString().split('T')[0];
@@ -637,6 +649,11 @@ router.put('/:id', requireAuth, requirePermission('edit_invoice'), async (req, r
     const status = ['draft', 'completed', 'paid'].indexOf(b.status) !== -1 ? b.status : existing.status;
     if (f.signature_required && status !== 'draft' && !f.signature_image) {
       return res.status(400).json({ error: 'A signature is required before this invoice can be marked ' + status + '. Save as draft, or capture a signature.' });
+    }
+    for (const it of (b.line_items || [])) {
+      if (!it || !it.description) continue;
+      if (it.quantity != null && it.quantity !== '' && !(parseFloat(it.quantity) > 0)) return res.status(400).json({ error: 'Line item quantity must be greater than 0' });
+      if (it.unit_price != null && it.unit_price !== '' && !(parseFloat(it.unit_price) >= 0)) return res.status(400).json({ error: 'Line item unit price must be 0 or greater' });
     }
     const tax_rate = parseFloat(b.tax_rate) || 0;
     const t = computeTotals(b.line_items, tax_rate, b.tip_amount, b.tax_exempt === true);

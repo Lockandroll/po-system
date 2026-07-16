@@ -64,21 +64,18 @@ function authServerMeta(req, res) {
     response_types_supported: ['code'],
     grant_types_supported: ['authorization_code', 'refresh_token'],
     code_challenge_methods_supported: ['S256'],
-    token_endpoint_auth_methods_supported: ['none', 'client_secret_post'],
+    // Only 'none' (public client + PKCE) is advertised: the token endpoint does
+    // not verify client secrets, so advertising client_secret_post would be a
+    // false promise. Clients authenticate the auth code via PKCE (S256).
+    token_endpoint_auth_methods_supported: ['none'],
     scopes_supported: [SCOPE]
   });
 }
 router.get('/.well-known/oauth-authorization-server', authServerMeta);
 router.get('/.well-known/oauth-authorization-server/*', authServerMeta);
 
-// TEMP diagnostic (no secrets) - remove after debugging
-router.get('/oauth/debug', async function (req, res) {
-  try {
-    var a = await pool.query('SELECT COUNT(*)::int AS n, MAX(created_at) AS last FROM oauth_clients');
-    var b = await pool.query('SELECT COUNT(*)::int AS n FROM oauth_codes');
-    res.json({ clients: a.rows[0].n, lastClientAt: a.rows[0].last, codes: b.rows[0].n, events: diag.getEvents() });
-  } catch (e) { res.status(500).json({ error: e.message }); }
-});
+// NOTE: the unauthenticated GET /oauth/debug diagnostic route was removed — it
+// leaked client counts, timestamps, and internal diag events to anyone.
 
 // ---- Dynamic Client Registration (RFC 7591) ----
 router.post('/oauth/register', async function (req, res) {
@@ -281,14 +278,16 @@ router.post('/oauth/token', urlenc, async function (req, res) {
     var grant = b.grant_type;
     diag.log('token POST grant=' + grant + ' client_id=' + b.client_id);
     if (grant === 'authorization_code') {
-      var cr = await pool.query('SELECT * FROM oauth_codes WHERE code=$1', [b.code]);
+      // Atomically claim the code to prevent replay: flip used=false -> true in a
+      // single statement and treat 0 rows returned as an already-used/unknown code.
+      // (A failed PKCE/mismatch below still consumes the code, which is safe.)
+      var cr = await pool.query('UPDATE oauth_codes SET used = true WHERE code = $1 AND used = false RETURNING *', [b.code]);
       var row = cr.rows[0];
-      if (!row || row.used || new Date(row.expires_at) < new Date()) return res.status(400).json({ error: 'invalid_grant' });
+      if (!row || new Date(row.expires_at) < new Date()) return res.status(400).json({ error: 'invalid_grant' });
       if (row.client_id !== b.client_id) return res.status(400).json({ error: 'invalid_grant', error_description: 'client mismatch' });
       if (row.redirect_uri !== b.redirect_uri) return res.status(400).json({ error: 'invalid_grant', error_description: 'redirect mismatch' });
       var challenge = b64url(sha256(b.code_verifier || ''));
       if (challenge !== row.code_challenge) return res.status(400).json({ error: 'invalid_grant', error_description: 'PKCE verification failed' });
-      await pool.query('UPDATE oauth_codes SET used=true WHERE code=$1', [b.code]);
       return issueTokens(req, res, row.user_id, row.client_id, row.scope);
     }
     if (grant === 'refresh_token') {

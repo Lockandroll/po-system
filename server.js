@@ -79,6 +79,9 @@ app.get('/api/version', async function (req, res) {
 
 app.use('/api/', generalLimiter);
 app.use('/api/auth/login', loginLimiter);
+// Throttle 2FA verification and password-reset requests (brute force / inbox spam).
+app.use('/api/auth/verify-2fa', loginLimiter);
+app.use('/api/auth/forgot-password', loginLimiter);
 app.use('/api/vault/challenge', vaultGateLimiter);
 app.use('/api/vault/verify-gate', vaultGateLimiter);
 
