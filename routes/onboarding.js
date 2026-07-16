@@ -1835,6 +1835,50 @@ admin.get('/users/:id/detail', async (req, res) => {
   }));
 });
 
+// Full question-and-answer drill-down for every graded quiz / final-exam attempt.
+// Powers the "View questions & answers" panel on the progress dashboard, so a
+// reviewer can see exactly what was asked and what the hire picked — not just the
+// score. Same access gate as the rest of the drill-down (canSignOff).
+admin.get('/users/:id/attempts', async (req, res) => {
+  const target = parseInt(req.params.id, 10) || 0;
+  if (!(await canSignOff(req.user, target))) return res.status(403).json({ error: 'Not permitted.' });
+  const r = await pool.query(
+    'SELECT a.id, a.step_id, a.questions, a.answers, a.score, a.passed, a.submitted_at, a.is_final_exam, ' +
+    '       s.title AS step_title, s.type AS step_type ' +
+    'FROM onboarding_quiz_attempts a LEFT JOIN onboarding_steps s ON s.id = a.step_id ' +
+    'WHERE a.user_id = $1 AND a.submitted_at IS NOT NULL ' +
+    'ORDER BY a.step_id ASC, a.id ASC',
+    [target]
+  );
+  const out = r.rows.map(function (a) {
+    var qs = a.questions; if (typeof qs === 'string') { try { qs = JSON.parse(qs); } catch (e) { qs = []; } }
+    var ans = a.answers; if (typeof ans === 'string') { try { ans = JSON.parse(ans); } catch (e) { ans = []; } }
+    if (!Array.isArray(qs)) qs = [];
+    if (!Array.isArray(ans)) ans = [];
+    return {
+      attempt_id: a.id,
+      step_id: a.step_id,
+      step_title: a.step_title || (a.is_final_exam ? 'Final exam' : 'Quiz'),
+      is_final_exam: a.is_final_exam,
+      score: a.score,
+      passed: a.passed,
+      submitted_at: a.submitted_at,
+      questions: qs.map(function (q, i) {
+        var sel = (typeof ans[i] === 'number') ? ans[i] : parseInt(ans[i], 10);
+        if (isNaN(sel)) sel = -1;
+        return {
+          prompt: q.prompt,
+          options: Array.isArray(q.options) ? q.options : [],
+          correct_index: q.correct_index,
+          selected_index: sel,
+          correct: sel === q.correct_index
+        };
+      })
+    };
+  });
+  res.json(out);
+});
+
 // Full onboarding event record for a hire (Section 7 evidence).
 admin.get('/users/:id/events', async (req, res) => {
   const target = parseInt(req.params.id, 10) || 0;

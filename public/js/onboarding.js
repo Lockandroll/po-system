@@ -1072,6 +1072,42 @@
     try { await api('POST', '/onboarding/admin/users/' + id + '/remove', {}); showToast('Removed from onboarding.', 'info'); renderOnboardingAdmin(document.getElementById('content')); }
     catch (e) { showToast(e.message || 'Failed.', 'error'); }
   };
+  // Render every graded attempt for one quiz/exam step: each question with its
+  // options, the correct answer (green ✓), and what the hire actually picked
+  // (their pick tagged; a wrong pick shown red ✗). Newest attempt first.
+  function onbRenderAttempts(list) {
+    var ordered = (list || []).slice().sort(function (a, b) { return (b.attempt_id || 0) - (a.attempt_id || 0); });
+    var total = ordered.length;
+    if (!total) return '';
+    return ordered.map(function (a, idx) {
+      var when = '';
+      if (a.submitted_at) { try { when = new Date(a.submitted_at).toLocaleString(); } catch (e) { when = ''; } }
+      var head = '<div style="font-weight:600;font-size:13px;margin:8px 0 4px">Attempt ' + (total - idx) +
+        ' — <span style="color:' + (a.passed ? '#16a34a' : '#dc2626') + '">' + (a.score == null ? '—' : a.score + '%') + ' ' + (a.passed ? 'Passed' : 'Failed') + '</span>' +
+        (when ? ' <span style="color:#888;font-weight:400">&middot; ' + escHtml(when) + '</span>' : '') + '</div>';
+      var qhtml = (a.questions || []).map(function (q, qi) {
+        var opts = (q.options || []).map(function (opt, oi) {
+          var isCorrect = oi === q.correct_index;
+          var isChosen = oi === q.selected_index;
+          var mark = isCorrect ? '&#10003;' : (isChosen ? '&#10007;' : '&nbsp;&nbsp;');
+          var color = isCorrect ? '#16a34a' : (isChosen ? '#dc2626' : '#555');
+          var weight = (isCorrect || isChosen) ? '600' : '400';
+          var tag = isChosen ? ' <span style="color:#888;font-weight:400">(their answer)</span>' : '';
+          return '<div style="padding:1px 0;color:' + color + ';font-weight:' + weight + '">' + mark + ' ' + escHtml(opt) + tag + '</div>';
+        }).join('');
+        var missed = (q.selected_index !== q.correct_index) ? ' <span style="color:#dc2626;font-weight:600">(missed)</span>' : '';
+        return '<div style="margin:6px 0 8px"><div style="font-weight:600;font-size:13px">' + (qi + 1) + '. ' + escHtml(q.prompt) + missed + '</div>' + opts + '</div>';
+      }).join('');
+      return '<div style="border-left:2px solid #e5e7eb;padding-left:10px;margin:0 0 8px">' + head + qhtml + '</div>';
+    }).join('');
+  }
+  window.onbToggleQA = function (uid, stepId) {
+    var el = document.getElementById('onb-qa-' + uid + '-' + stepId);
+    if (!el) return;
+    var lnk = document.getElementById('onb-qa-lnk-' + uid + '-' + stepId);
+    if (el.style.display === 'none') { el.style.display = ''; if (lnk) lnk.textContent = 'Hide questions & answers'; }
+    else { el.style.display = 'none'; if (lnk) lnk.textContent = 'View questions & answers'; }
+  };
   window.onbDetail = async function (id) {
     var row = document.getElementById('onb-detail-' + id);
     if (!row) return;
@@ -1080,9 +1116,19 @@
     row.firstChild.innerHTML = '<div class="onb-note" style="padding:10px 14px">Loading…</div>';
     try {
       var steps = await api('GET', '/onboarding/admin/users/' + id + '/detail');
+      var attempts = [];
+      try { attempts = await api('GET', '/onboarding/admin/users/' + id + '/attempts'); } catch (e) { attempts = []; }
+      var byStep = {};
+      (attempts || []).forEach(function (a) { (byStep[a.step_id] = byStep[a.step_id] || []).push(a); });
       row.firstChild.innerHTML = '<div style="padding:8px 14px 14px">' + steps.map(function (s) {
-        return '<div class="onb-note" style="padding:3px 0">' + (s.status === 'done' ? '✅' : '⬜') + ' ' + stepIcon(s.type) + ' ' + escHtml(s.title) +
-          (s.score != null ? ' — best ' + s.score + '%' : '') + (s.attempts ? ' (' + s.attempts + ' attempt' + (s.attempts === 1 ? '' : 's') + ')' : '') + '</div>';
+        var head = '<div class="onb-note" style="padding:3px 0">' + (s.status === 'done' ? '✅' : '⬜') + ' ' + stepIcon(s.type) + ' ' + escHtml(s.title) +
+          (s.score != null ? ' — best ' + s.score + '%' : '') + (s.attempts ? ' (' + s.attempts + ' attempt' + (s.attempts === 1 ? '' : 's') + ')' : '');
+        var att = byStep[s.id];
+        if ((s.type === 'quiz' || s.type === 'final_exam') && att && att.length) {
+          return head + ' &nbsp;<a href="#" id="onb-qa-lnk-' + id + '-' + s.id + '" onclick="onbToggleQA(' + id + ',' + s.id + ');return false;" style="color:#2563eb;text-decoration:underline">View questions &amp; answers</a></div>' +
+            '<div id="onb-qa-' + id + '-' + s.id + '" style="display:none;margin:2px 0 12px 22px;padding:6px 0">' + onbRenderAttempts(att) + '</div>';
+        }
+        return head + '</div>';
       }).join('') + '</div>';
     } catch (e) { row.firstChild.innerHTML = '<div class="onb-note" style="padding:10px 14px">' + escHtml(e.message || 'Failed') + '</div>'; }
   };
