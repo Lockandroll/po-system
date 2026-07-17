@@ -438,25 +438,50 @@
     m.innerHTML = '<div class="pto-dlg"><h3>Log PTO (after the fact)</h3><div class="pto-desc">For a call-out converted to PTO after the day passed. Records who logged it and why.</div>' +
       '<div class="pto-row"><div><label class="pto-label">Start (past)</label><input type="date" id="pto-log-s" class="pto-input"></div><div><label class="pto-label">End</label><input type="date" id="pto-log-e" class="pto-input"></div></div>' +
       '<label class="pto-label">Type</label><select id="pto-log-paid" class="pto-select"><option value="paid">Approved Vacation Day (paid)</option><option value="unpaid">Unpaid Vacation Day</option></select>' +
+      '<label class="pto-label">' + (isCommission(pt) ? 'Days to deduct' : 'Hours to deduct') + ' <span style="font-weight:400;color:var(--text-dim,#9a9a9a)">(optional — blank = full day)</span></label><input type="number" min="0" step="' + (isCommission(pt) ? '0.5' : '0.25') + '" id="pto-log-hours" class="pto-input" placeholder="' + (isCommission(pt) ? 'e.g. 0.5 for half a day' : 'e.g. 2 for a couple of hours') + '">' +
       '<label class="pto-label">Reason (required)</label><textarea id="pto-log-reason" class="pto-textarea" rows="2" placeholder="e.g. Called out sick, converting to PTO"></textarea>' +
       '<div class="pto-sub" id="pto-log-prev" style="margin-top:8px"></div>' +
       '<div class="pto-warn" id="pto-log-err" style="display:none"></div>' +
       '<div style="margin-top:14px;display:flex;gap:10px;justify-content:flex-end"><button class="pto-btn ghost" id="pto-log-cancel">Cancel</button><button class="pto-btn ok" id="pto-log-ok">Log PTO</button></div></div>';
     document.body.appendChild(m);
-    var s = m.querySelector('#pto-log-s'), e = m.querySelector('#pto-log-e');
-    function prev() {
-      var days = bizDays(s.value, e.value || s.value); if (!days) { m.querySelector('#pto-log-prev').textContent = ''; return; }
-      var paid = m.querySelector('#pto-log-paid').value === 'paid';
-      var bal = person ? Number(person.balance_hours) : 0, after = bal - (paid ? days * HRS_PER_DAY : 0);
-      m.querySelector('#pto-log-prev').innerHTML = 'Deducts <b>' + (paid ? fmtAmt(days * HRS_PER_DAY, pt) : '0 ' + unitLabel(pt)) + '</b> (' + days + ' business days) → after <b style="color:' + (after < 0 ? '#ef4444' : '#22c55e') + '">' + fmtAmt(after, pt) + '</b>';
+    var s = m.querySelector('#pto-log-s'), e = m.querySelector('#pto-log-e'), hrsEl = m.querySelector('#pto-log-hours');
+    // Explicit amount typed in the field, converted to HOURS (commission staff type days).
+    function enteredHours() {
+      var v = hrsEl.value;
+      if (v === '' || v === null) return null;
+      var n = Number(v);
+      if (!isFinite(n) || n <= 0) return null;
+      return isCommission(pt) ? n * HRS_PER_DAY : n;
     }
-    s.onchange = e.onchange = prev; m.querySelector('#pto-log-paid').onchange = prev;
+    function calDays(a, b) {
+      var cs = parseLocal(a), ce = parseLocal(b || a); if (!cs || !ce || ce < cs) return 0;
+      return Math.round((ce - cs) / 86400000) + 1;
+    }
+    function prev() {
+      if (!s.value) { m.querySelector('#pto-log-prev').textContent = ''; return; }
+      var biz = bizDays(s.value, e.value || s.value);
+      var cal = calDays(s.value, e.value || s.value);
+      if (!cal) { m.querySelector('#pto-log-prev').textContent = ''; return; }
+      var baseDays = biz || cal;
+      var paid = m.querySelector('#pto-log-paid').value === 'paid';
+      var eh = enteredHours();
+      var deduct = eh !== null ? eh : baseDays * HRS_PER_DAY;
+      var bal = person ? Number(person.balance_hours) : 0, after = bal - (paid ? deduct : 0);
+      var span = eh !== null ? 'you entered' : (baseDays + (biz ? ' business day' : ' day') + (baseDays > 1 ? 's' : ''));
+      m.querySelector('#pto-log-prev').innerHTML = 'Deducts <b>' + (paid ? fmtAmt(deduct, pt) : '0 ' + unitLabel(pt)) + '</b> (' + span + ') → after <b style="color:' + (after < 0 ? '#ef4444' : '#22c55e') + '">' + fmtAmt(after, pt) + '</b>';
+    }
+    s.onchange = e.onchange = prev; hrsEl.oninput = prev; m.querySelector('#pto-log-paid').onchange = prev;
     m.querySelector('#pto-log-cancel').onclick = function () { document.body.removeChild(m); };
     m.querySelector('#pto-log-ok').onclick = async function () {
       var err = m.querySelector('#pto-log-err');
       var payload = { user_id: id, start_date: s.value, end_date: e.value || s.value, paid: m.querySelector('#pto-log-paid').value === 'paid', reason: m.querySelector('#pto-log-reason').value.trim() };
       if (!payload.start_date) { err.textContent = 'Pick the dates.'; err.style.display = 'block'; return; }
       if (!payload.reason) { err.textContent = 'A reason is required.'; err.style.display = 'block'; return; }
+      if (hrsEl.value !== '' && hrsEl.value !== null) {
+        var eh = enteredHours();
+        if (eh === null) { err.textContent = (isCommission(pt) ? 'Days' : 'Hours') + ' must be a positive number, or blank for a full day.'; err.style.display = 'block'; return; }
+        payload.hours = eh;
+      }
       try { await api('POST', '/pto/log', payload); document.body.removeChild(m); showToast('PTO logged.', 'success'); reload(); }
       catch (ex) { err.textContent = ex.message || 'Could not log.'; err.style.display = 'block'; }
     };

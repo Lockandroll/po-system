@@ -208,9 +208,11 @@ router.get('/', requireAuth, requirePermission('view_tasks'), async (req, res) =
       '(SELECT COUNT(*) FROM task_subtasks s WHERE s.task_id = t.id AND s.done) AS subtask_done ' +
       'FROM tasks t LEFT JOIN users a ON t.assigned_to = a.id LEFT JOIN users c ON t.created_by = c.id ' +
       'LEFT JOIN users sec ON t.secondary_assignee_id = sec.id ' +
-      where + " ORDER BY (t.status = 'done'), " +
+      // position is the PRIMARY sort key so a manual drag order wins; when positions tie
+      // (all 0 = the "auto-sort" state) it falls back to the smart priority/due-date order.
+      where + " ORDER BY (t.status = 'done'), t.position, " +
       "CASE t.priority WHEN 'urgent' THEN 0 WHEN 'high' THEN 1 WHEN 'medium' THEN 2 ELSE 3 END, " +
-      't.due_date NULLS LAST, t.position, t.id',
+      't.due_date NULLS LAST, t.id',
       params
     );
     rows.forEach(function (r) { r.subtask_total = parseInt(r.subtask_total) || 0; r.subtask_done = parseInt(r.subtask_done) || 0; });
@@ -275,10 +277,12 @@ router.post('/', requireAuth, requirePermission('view_tasks'), async (req, res) 
     const secondary_assignee_id = b.secondary_assignee_id ? parseInt(b.secondary_assignee_id, 10) : null;
     const assigned_by = assigned_to ? req.user.id : null;
     const due_locked = (assigned_to && assigned_to !== req.user.id) ? await computeDueLock(req.user.id, assigned_to) : false;
+    // Land new tasks at the TOP of their status column (one below the current min position).
+    const topPos = (await pool.query("SELECT COALESCE(MIN(position),0)-1 AS p FROM tasks WHERE status=$1 AND NOT is_template", [status])).rows[0].p;
     const { rows } = await pool.query(
-      'INSERT INTO tasks (title, description, status, priority, assigned_to, created_by, due_date, recurrence, recurrence_day, secondary_assignee_id, assigned_by, due_locked) ' +
-      'VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12) RETURNING *',
-      [rTitle, rDesc, status, priority, assigned_to, req.user.id, due_date, recurrence, recDay, secondary_assignee_id, assigned_by, due_locked]
+      'INSERT INTO tasks (title, description, status, priority, assigned_to, created_by, due_date, recurrence, recurrence_day, secondary_assignee_id, assigned_by, due_locked, position) ' +
+      'VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13) RETURNING *',
+      [rTitle, rDesc, status, priority, assigned_to, req.user.id, due_date, recurrence, recDay, secondary_assignee_id, assigned_by, due_locked, topPos]
     );
     const task = rows[0];
     if (Array.isArray(b.subtasks)) {
@@ -314,6 +318,8 @@ router.post('/bulk', requireAuth, requirePermission('manage_tasks'), async (req,
     if (!assignees.length) assignees = [null];
     const ids = [];
     const assigneeNames = [];
+    // New tasks land at the top of the To Do column; stack multi-assignee tasks above the current min.
+    const bulkTop = (await pool.query("SELECT COALESCE(MIN(position),0)-1 AS p FROM tasks WHERE status='todo' AND NOT is_template")).rows[0].p;
     for (let a = 0; a < assignees.length; a++) {
       const aid = assignees[a];
       if (recurrence) {
@@ -327,9 +333,9 @@ router.post('/bulk', requireAuth, requirePermission('manage_tasks'), async (req,
       const bAssignedBy = aid ? req.user.id : null;
       const bDueLocked = (aid && aid !== req.user.id) ? await computeDueLock(req.user.id, aid) : false;
       const { rows } = await pool.query(
-        'INSERT INTO tasks (title, description, status, priority, assigned_to, created_by, due_date, recurrence, recurrence_day, secondary_assignee_id, assigned_by, due_locked) ' +
-        "VALUES ($1,$2,'todo',$3,$4,$5,$6,$7,$8,$9,$10,$11) RETURNING id",
-        [rTitle, rDesc, priority, aid, req.user.id, due_date, recurrence, recDay, bSecondary, bAssignedBy, bDueLocked]
+        'INSERT INTO tasks (title, description, status, priority, assigned_to, created_by, due_date, recurrence, recurrence_day, secondary_assignee_id, assigned_by, due_locked, position) ' +
+        "VALUES ($1,$2,'todo',$3,$4,$5,$6,$7,$8,$9,$10,$11,$12) RETURNING id",
+        [rTitle, rDesc, priority, aid, req.user.id, due_date, recurrence, recDay, bSecondary, bAssignedBy, bDueLocked, bulkTop - a]
       );
       const id = rows[0].id;
       ids.push(id);
@@ -346,6 +352,45 @@ router.post('/bulk', requireAuth, requirePermission('manage_tasks'), async (req,
     try { await logAudit({ entity_type: 'task', entity_id: ids[0], entity_number: '#' + ids[0], action: 'created', user_id: req.user.id, user_name: req.user.name, details: { title: title, count: ids.length } }); } catch (e) {}
     res.status(201).json({ count: ids.length, ids: ids });
   } catch (err) { console.error(err); res.status(500).json({ error: 'Failed to create tasks' }); }
+});
+
+// REORDER — persist a manual drag order for one status column. ids is that column's task
+// ids in their new top-to-bottom order; each row's position is set to its index so the board's
+// position-primary sort reproduces exactly this order. Guarded so you can only move cards you
+// can see (yours, or — for managers — ones you assigned; admins/owner may reorder any).
+router.post('/reorder', requireAuth, requirePermission('view_tasks'), async (req, res) => {
+  try {
+    const raw = (req.body && req.body.ids) || [];
+    const ids = (Array.isArray(raw) ? raw : []).map(function (x) { return parseInt(x, 10); }).filter(function (x) { return !isNaN(x); });
+    if (!ids.length) return res.json({ ok: true, updated: 0 });
+    const elevated = req.user.role === 'admin' || req.user.role === 'owner';
+    const r = await pool.query(
+      'UPDATE tasks t SET position = o.ord - 1 ' +
+      'FROM unnest($1::int[]) WITH ORDINALITY AS o(id, ord) ' +
+      'WHERE t.id = o.id AND NOT t.is_template ' +
+      'AND ($2 OR t.assigned_to = $3 OR t.secondary_assignee_id = $3 OR t.created_by = $3)',
+      [ids, elevated, req.user.id]
+    );
+    res.json({ ok: true, updated: r.rowCount });
+  } catch (err) { console.error(err); res.status(500).json({ error: 'Failed to save order' }); }
+});
+
+// AUTO-SORT — clear the manual order by resetting positions to 0 for the given ids, so the smart
+// comparator (priority, then due date) takes over again. ids is every card currently on the board.
+router.post('/autosort', requireAuth, requirePermission('view_tasks'), async (req, res) => {
+  try {
+    const raw = (req.body && req.body.ids) || [];
+    const ids = (Array.isArray(raw) ? raw : []).map(function (x) { return parseInt(x, 10); }).filter(function (x) { return !isNaN(x); });
+    if (!ids.length) return res.json({ ok: true, updated: 0 });
+    const elevated = req.user.role === 'admin' || req.user.role === 'owner';
+    const r = await pool.query(
+      'UPDATE tasks t SET position = 0 ' +
+      'WHERE t.id = ANY($1::int[]) AND NOT t.is_template ' +
+      'AND ($2 OR t.assigned_to = $3 OR t.secondary_assignee_id = $3 OR t.created_by = $3)',
+      [ids, elevated, req.user.id]
+    );
+    res.json({ ok: true, updated: r.rowCount });
+  } catch (err) { console.error(err); res.status(500).json({ error: 'Failed to auto-sort' }); }
 });
 
 // SUBTASK toggle (assignee or manager) — declared before /:id routes

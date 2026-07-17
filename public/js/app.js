@@ -2723,6 +2723,7 @@ var _taskFormTemplates = [];
 var _taskDetailUsers = [];
 var _taskDragId = null;
 var _taskDragGhost = null;
+var _taskDropPh = null;
 function taskDragStart(e, id){
   _taskDragId = id;
   var card = e.currentTarget;
@@ -2743,24 +2744,73 @@ function taskDragEnd(e){
   var card = e.currentTarget; if (card) card.classList.remove('task-dragging');
   if (_taskDragGhost && _taskDragGhost.parentNode) _taskDragGhost.parentNode.removeChild(_taskDragGhost);
   _taskDragGhost = null;
+  taskPhRemove();
 }
-function taskDragOver(e){ e.preventDefault(); if (e.dataTransfer) e.dataTransfer.dropEffect='move'; }
+// Thin insertion line showing where a dragged card will land within a column.
+function taskPhEl(){
+  if (!_taskDropPh){
+    _taskDropPh = document.createElement('div');
+    _taskDropPh.className = 'task-drop-ph';
+    _taskDropPh.style.cssText = 'height:0;margin:4px 2px;border-top:2px solid var(--primary);border-radius:2px;pointer-events:none';
+  }
+  return _taskDropPh;
+}
+function taskPhRemove(){ if (_taskDropPh && _taskDropPh.parentNode) _taskDropPh.parentNode.removeChild(_taskDropPh); }
 function taskColEl(sn){ return document.getElementById('task-col-'+sn); }
+function taskDragOver(e, status){
+  e.preventDefault();
+  if (e.dataTransfer) e.dataTransfer.dropEffect='move';
+  var col = taskColEl(status); if (!col) return;
+  var ph = taskPhEl();
+  var cards = col.querySelectorAll('.card[data-tid]');
+  var before = null;
+  for (var i=0;i<cards.length;i++){
+    var c = cards[i];
+    if (parseInt(c.getAttribute('data-tid'),10) === _taskDragId) continue;
+    var r = c.getBoundingClientRect();
+    if (e.clientY < r.top + r.height/2){ before = c; break; }
+  }
+  if (before){ if (before.previousSibling !== ph) col.insertBefore(ph, before); }
+  else { if (col.lastChild !== ph) col.appendChild(ph); }
+}
 function taskDragEnter(e, sn){ var c=taskColEl(sn); if (c) c.style.outline='2px dashed var(--primary)'; }
-function taskDragLeave(e, sn){ var c=taskColEl(sn); if (c && !c.contains(e.relatedTarget)) c.style.outline=''; }
+function taskDragLeave(e, sn){ var c=taskColEl(sn); if (c && !c.contains(e.relatedTarget)){ c.style.outline=''; taskPhRemove(); } }
 function rerenderTaskBoard(){ var host=document.getElementById('tasks-board-host'); if (host) host.innerHTML=taskBoardHtml(); }
+// Count of non-dragged cards above the pointer = insertion index within the destination column.
+function taskDropIndex(status, y, draggedId){
+  var col = taskColEl(status); if (!col) return 0;
+  var cards = col.querySelectorAll('.card[data-tid]');
+  var k = 0;
+  for (var i=0;i<cards.length;i++){
+    var c = cards[i];
+    if (parseInt(c.getAttribute('data-tid'),10) === draggedId) continue;
+    var r = c.getBoundingClientRect();
+    if (y > r.top + r.height/2) k++; else break;
+  }
+  return k;
+}
 async function taskDrop(e, status){
   e.preventDefault();
   var id=_taskDragId || (e.dataTransfer ? parseInt(e.dataTransfer.getData('text/plain'),10) : null);
+  var index = taskDropIndex(status, e.clientY, id);
   _taskDragId=null;
+  taskPhRemove();
   ['todo','in_progress','done'].forEach(function(sn){ var c=taskColEl(sn); if (c) c.style.outline=''; });
   if (!id) return;
   var t=_tasksData.filter(function(x){ return x.id===id; })[0];
-  if (!t || t.status===status) return;
+  if (!t) return;
+  var fromStatus=t.status;
+  var others=_tasksData.filter(function(x){ return x.status!==status && x.id!==id; });
+  var dest=_tasksData.filter(function(x){ return x.status===status && x.id!==id; });
+  if (index<0) index=0; if (index>dest.length) index=dest.length;
   t.status=status;
+  dest.splice(index,0,t);
+  _tasksData=others.concat(dest);
   rerenderTaskBoard();
   try {
-    await api('PATCH','/tasks/'+id+'/status',{status:status});
+    if (fromStatus!==status){ await api('PATCH','/tasks/'+id+'/status',{status:status}); }
+    var destIds=_tasksData.filter(function(x){ return x.status===status; }).map(function(x){ return x.id; });
+    await api('POST','/tasks/reorder',{ ids: destIds });
     if (status==='done'){ var r=await api('GET','/tasks?view='+_taskTab); _tasksData=r||[]; rerenderTaskBoard(); }
   } catch(err){ taskFeedback(err.message,true); navigate('tasks'); }
 }
@@ -2785,6 +2835,7 @@ async function renderTasks(el){
   var header = '<div class="page-header"><div class="page-title"><h2>Tasks'+_od+'</h2><p>'+desc+'</p></div>' +
     '<div style="display:flex;gap:8px">' +
       '<button class="btn btn-secondary" onclick="taskToggleView()">'+(_taskView==='board'?'Table view':'Board view')+'</button>' +
+      ((_taskView==='board' && _taskTab!=='recurring') ? '<button class="btn btn-secondary" onclick="taskAutoSort()" title="Re-sort this board by due date and priority (clears your manual order)">&#8597; Auto-sort</button>' : '') +
       (manage ? '<button class="btn btn-secondary" onclick="taskAddToMine()" title="Add a task to your own list">+ My list</button>' : '') +
       (manage ? '<button class="btn btn-secondary" onclick="navigate(\'task-templates\')" title="Manage reusable checklists">Templates</button>' : '') +
       '<button class="btn btn-primary" onclick="taskNew()">+ New Task</button>' +
@@ -2802,6 +2853,24 @@ function taskToggleView(){ _taskView = (_taskView==='board') ? 'table' : 'board'
 function taskSetTab(t){ _taskTab=t; navigate('tasks'); }
 function taskNew(){ _taskForceSelf=false; navigate('new-task'); }
 function taskAddToMine(){ _taskForceSelf=true; navigate('new-task'); }
+// Auto-sort: clear the manual drag order (positions -> 0 on the server) and re-sort by the
+// smart comparator, matching the board's fallback order (priority, then due date, nulls last).
+function taskAutoCmp(a,b){
+  var ad=(a.status==='done')?1:0, bd=(b.status==='done')?1:0; if (ad!==bd) return ad-bd;
+  var pr={urgent:0,high:1,medium:2,low:3};
+  var ap=(pr[a.priority]!=null?pr[a.priority]:2), bp=(pr[b.priority]!=null?pr[b.priority]:2); if (ap!==bp) return ap-bp;
+  var au=a.due_date?new Date(a.due_date).getTime():Infinity, bu=b.due_date?new Date(b.due_date).getTime():Infinity; if (au!==bu) return au-bu;
+  return a.id-b.id;
+}
+async function taskAutoSort(){
+  if (!_tasksData.length){ taskFeedback('Nothing to sort yet.', false); return; }
+  var ids=_tasksData.map(function(x){ return x.id; });
+  try { await api('POST','/tasks/autosort',{ ids: ids }); }
+  catch(err){ taskFeedback(err.message,true); return; }
+  _tasksData.sort(taskAutoCmp);
+  rerenderTaskBoard();
+  taskFeedback('Board auto-sorted by due date and priority.', false);
+}
 
 function taskScheduleListHtml(){
   if(!_tasksData.length) return '<div class="card"><div class="card-body"><p style="color:var(--text-muted-color)">No recurring schedules yet. Create a task and pick a Repeat option (weekly or monthly) to set one up.</p></div></div>';
@@ -2818,7 +2887,7 @@ function taskBoardHtml(){
   var cols = TASK_STATUSES.map(function(st){
     var items = _tasksData.filter(function(t){ return t.status===st[0]; });
     var cards = items.length ? items.map(taskCardHtml).join('') : '<div style="color:var(--text-muted-color);font-size:12px;padding:6px 0">Nothing here.</div>';
-    return '<div id="task-col-'+st[0]+'" ondragover="taskDragOver(event)" ondrop="taskDrop(event,\''+st[0]+'\')" ondragenter="taskDragEnter(event,\''+st[0]+'\')" ondragleave="taskDragLeave(event,\''+st[0]+'\')" style="flex:1;min-width:240px;background:var(--bg-elevated);border-radius:10px;padding:10px;transition:outline 0.1s">' +
+    return '<div id="task-col-'+st[0]+'" ondragover="taskDragOver(event,\''+st[0]+'\')" ondrop="taskDrop(event,\''+st[0]+'\')" ondragenter="taskDragEnter(event,\''+st[0]+'\')" ondragleave="taskDragLeave(event,\''+st[0]+'\')" style="flex:1;min-width:240px;background:var(--bg-elevated);border-radius:10px;padding:10px;transition:outline 0.1s">' +
       '<div style="font-size:12px;font-weight:700;text-transform:uppercase;letter-spacing:0.04em;color:var(--text-muted-color);margin-bottom:8px">'+st[1]+' ('+items.length+')</div>' +
       cards + '</div>';
   }).join('');
@@ -2830,7 +2899,7 @@ function taskCardHtml(t){
   var od = taskIsOverdue(t);
   var sub = (t.subtask_total>0) ? '<span style="font-size:11px;color:var(--text-muted-color)">'+t.subtask_done+'/'+t.subtask_total+' done</span>' : '';
   var due = t.due_date ? '<span style="font-size:11px;font-weight:600;color:'+(od?'#ef4444':'var(--text-muted-color)')+'">'+(od?'Overdue · ':'')+formatDate(t.due_date)+'</span>' : '';
-  return '<div class="card" draggable="true" ondragstart="taskDragStart(event,'+t.id+')" ondragend="taskDragEnd(event)" style="margin-bottom:8px;cursor:grab" onclick="navigate(\'task-detail\','+t.id+')"><div class="card-body" style="padding:10px 12px">' +
+  return '<div class="card" data-tid="'+t.id+'" draggable="true" ondragstart="taskDragStart(event,'+t.id+')" ondragend="taskDragEnd(event)" style="margin-bottom:8px;cursor:grab" onclick="navigate(\'task-detail\','+t.id+')"><div class="card-body" style="padding:10px 12px">' +
     '<div style="display:flex;align-items:center;gap:7px;margin-bottom:5px"><span style="width:8px;height:8px;border-radius:50%;background:'+p.c+';flex-shrink:0"></span><span style="font-weight:600;font-size:14px">'+escHtml(t.title)+'</span></div>' +
     '<div style="display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap">' +
       '<span style="font-size:11px;color:var(--text-muted-color)">'+escHtml(t.assignee_name||'Unassigned')+'</span>'+due +

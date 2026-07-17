@@ -36,6 +36,13 @@ function businessDays(a, b) {
   while (d <= e) { const w = d.getDay(); if (w !== 0 && w !== 6) n++; d.setDate(d.getDate() + 1); }
   return n;
 }
+// Every calendar day in the range (weekends included). Used by the retroactive log so
+// an absence that fell on a weekend is still countable for this weekend-working crew.
+function calendarDays(a, b) {
+  const s = parseDate(a), e = parseDate(b);
+  if (!s || !e || e < s) return 0;
+  return Math.round((e - s) / 86400000) + 1;
+}
 // pg returns DATE columns as JS Date objects; String(date).slice(0,10) yields
 // junk like "Thu Jul 02" (no year) which Postgres rejects. Always use this.
 function ymdOf(v) {
@@ -795,12 +802,27 @@ router.post('/log', requireAuth, requirePermission('manage_pto'), async (req, re
   if (!isAdmin && !(await inDownline(req.user.id, target))) return res.status(403).json({ error: 'Not in your team' });
   if (!RE_DATE.test(b.start_date)) return res.status(400).json({ error: 'Start date is required' });
   const from = b.start_date, to = RE_DATE.test(b.end_date) ? b.end_date : b.start_date;
-  const days = businessDays(from, to);
-  if (!days) return res.status(400).json({ error: 'Select at least one business day' });
+  if (parseDate(to) < parseDate(from)) return res.status(400).json({ error: 'End date is before start date' });
+  // After-the-fact logging: the real absence can fall on a weekend (this crew works
+  // weekends), so we do NOT require a business day here — a valid date range is enough.
+  const calDays = calendarDays(from, to);
+  if (!calDays) return res.status(400).json({ error: 'Select at least one day' });
+  const bizDays = businessDays(from, to);
+  // business_days is stored for reporting; never store 0 for a genuine weekend log.
+  const days = bizDays || calDays;
   const paid = b.paid !== false;
   const reason = String(b.reason || '').trim();
   if (!reason) return res.status(400).json({ error: 'A reason is required to log PTO after the fact' });
-  const hours = days * HRS_PER_DAY;
+  // Hours: an explicit amount wins (partial days, or shifts that are not 8h). Otherwise
+  // default to 8h per counted day. Lets a manager log "a couple of hours" for hourly staff.
+  let hours;
+  if (b.hours !== undefined && b.hours !== null && String(b.hours) !== '') {
+    hours = Number(b.hours);
+    if (!isFinite(hours) || hours <= 0) return res.status(400).json({ error: 'Hours must be a positive number' });
+    hours = Math.round(hours * 100) / 100;
+  } else {
+    hours = days * HRS_PER_DAY;
+  }
 
   const ur = await pool.query('SELECT name, COALESCE(pto_balance_hours,0) AS bal FROM users WHERE id = $1', [target]);
   if (!ur.rows.length) return res.status(404).json({ error: 'Employee not found' });
