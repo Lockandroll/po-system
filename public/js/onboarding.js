@@ -1158,6 +1158,11 @@
     var slotBoxes = (window._onbSlotCatalog || []).map(function (s) {
       return '<label class="onb-slotpick"><input type="checkbox" class="onb-new-slot" value="' + escHtml(s.key) + '"><span>' + escHtml(s.label) + '</span></label>';
     }).join('');
+    var ONB_STEP_ROLES = ['locksmith', 'locksmith_coordinator', 'dispatcher', 'roadside_technician', 'manager', 'admin'];
+    var roleBoxes = ONB_STEP_ROLES.map(function (r) {
+      var lbl = (typeof roleLabel === 'function') ? roleLabel(r) : r;
+      return '<label class="onb-slotpick"><input type="checkbox" class="onb-new-role" value="' + escHtml(r) + '"><span>' + escHtml(lbl) + '</span></label>';
+    }).join('');
     // Any document no step claims would never be collected — say so plainly.
     var unclaimed = (window._onbSlotCatalog || []).filter(function (s) { return !s.claimed_by; });
     var legacy = steps.filter(function (s) { return s.type === 'document_upload' && !stepSlotKeys(s).length; });
@@ -1170,6 +1175,7 @@
 
     var rows = steps.map(function (s, i) {
       var meta = ['Phase ' + ((parseInt(s.phase, 10) === 2) ? 2 : 1)];
+      if (Array.isArray(s.roles) && s.roles.length) meta.push('Roles: ' + s.roles.map(function (r) { return (typeof roleLabel === 'function') ? roleLabel(r) : r; }).join(', '));
       if (s.type === 'quiz') { var c = s.config || {}; if (typeof c === 'string') { try { c = JSON.parse(c); } catch (e) { c = {}; } } meta.push((c.question_count || 3) + ' questions, pass ' + (c.pass_score || 80) + '%'); }
       if (s.type === 'sop_read' && s.doc_title) meta.push('Document: ' + s.doc_title);
       else if (s.sop_title) meta.push('SOP: ' + s.sop_title);
@@ -1212,6 +1218,11 @@
       '<input id="onb-new-title" placeholder="Step title" style="background:var(--bg-card);color:var(--text);border:1px solid var(--border);border-radius:8px;padding:10px">' +
       '<select id="onb-new-phase" style="background:var(--bg-card);color:var(--text);border:1px solid var(--border);border-radius:8px;padding:10px"><option value="1">Phase 1 &middot; Paperwork</option><option value="2">Phase 2 &middot; Training</option></select>' +
       '<input id="onb-new-desc" placeholder="Short description (optional)" style="grid-column:1/-1;background:var(--bg-card);color:var(--text);border:1px solid var(--border);border-radius:8px;padding:10px">' +
+      '<div id="onb-f-roles" style="grid-column:1/-1">' +
+        '<div class="onb-note" style="margin-bottom:6px;font-weight:600">Who does this step apply to?</div>' +
+        '<div class="onb-slotpicks">' + roleBoxes + '</div>' +
+        '<div class="onb-note">Leave every role unticked and all new hires get this step. Tick one or more roles to show it only to hires with those roles.</div>' +
+      '</div>' +
       '<div id="onb-f-doc" style="display:none;grid-column:1/-1"><select id="onb-new-doc" style="width:100%;background:var(--bg-card);color:var(--text);border:1px solid var(--border);border-radius:8px;padding:10px">' + (docOpts || '<option value="">No files in the Standard Operating Procedures vault folder</option>') + '</select><div class="onb-note">The new hire reads this document. Choose from any Document Vault folder.</div></div>' +
       '<div id="onb-f-sop" style="display:none;grid-column:1/-1"><select id="onb-new-sop" style="width:100%;background:var(--bg-card);color:var(--text);border:1px solid var(--border);border-radius:8px;padding:10px">' + (sopOpts || '<option value="">No SOPs in the library yet</option>') + '</select><div class="onb-note">Quiz questions are generated from this SOP&#39;s text in the SOP library.</div></div>' +
       '<div id="onb-f-video" style="grid-column:1/-1"><input type="file" id="onb-new-video" accept="video/*" style="width:100%;color:var(--text)"><div class="onb-note" id="onb-vid-note"></div></div>' +
@@ -1246,6 +1257,7 @@
     if (!title) { showToast('Give the step a title.', 'error'); return; }
     var payload = { type: t, title: title, description: document.getElementById('onb-new-desc').value.trim(), min_seconds: parseInt(document.getElementById('onb-new-min').value, 10) || 0 };
     payload.phase = parseInt((document.getElementById('onb-new-phase') || {}).value, 10) === 2 ? 2 : 1;
+    payload.roles = Array.prototype.slice.call(document.querySelectorAll('.onb-new-role:checked')).map(function (c) { return c.value; });
     if (t === 'document_upload' || t === 'form') payload.min_seconds = 0;
     if (t === 'document_upload') {
       payload.slots = Array.prototype.slice.call(document.querySelectorAll('.onb-new-slot:checked')).map(function (c) { return c.value; });
@@ -1608,6 +1620,8 @@
     if (g('onb-new-title')) g('onb-new-title').value = s.title || '';
     if (g('onb-new-desc')) g('onb-new-desc').value = s.description || '';
     if (g('onb-new-phase')) g('onb-new-phase').value = String((parseInt(s.phase, 10) === 2) ? 2 : 1);
+    var _sr = Array.isArray(s.roles) ? s.roles : [];
+    Array.prototype.slice.call(document.querySelectorAll('.onb-new-role')).forEach(function (cb3) { cb3.checked = _sr.indexOf(cb3.value) !== -1; });
     if (g('onb-new-min')) g('onb-new-min').value = (c.min_seconds != null ? c.min_seconds : 30);
     onbTypeFields();
     if (s.type === 'quiz' || s.type === 'final_exam') {

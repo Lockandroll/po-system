@@ -1424,6 +1424,22 @@ async function initDB() {
       }
       await client.query("INSERT INTO settings (key, value) VALUES ('perm_matrix_v5_backfilled', '1') ON CONFLICT (key) DO NOTHING");
     }
+    // Onboarding is now an editable row in the Roles & Access matrix. Make sure
+    // manager keeps manage_onboarding in any saved config (run once).
+    const _onbPerm = await client.query("SELECT value FROM settings WHERE key = 'perm_onboarding_matrix_backfilled'");
+    if (!_onbPerm.rows.length) {
+      const _rpOnb = await client.query("SELECT value FROM settings WHERE key = 'role_permissions'");
+      if (_rpOnb.rows.length && _rpOnb.rows[0].value) {
+        try {
+          const obj = JSON.parse(_rpOnb.rows[0].value);
+          if (obj && typeof obj === 'object' && Array.isArray(obj.manager) && obj.manager.indexOf('manage_onboarding') === -1) {
+            obj.manager.push('manage_onboarding');
+            await client.query("INSERT INTO settings (key, value, updated_at) VALUES ('role_permissions', $1, NOW()) ON CONFLICT (key) DO UPDATE SET value = $1, updated_at = NOW()", [JSON.stringify(obj)]);
+          }
+        } catch (e) { console.error('perm onboarding backfill failed:', e.message); }
+      }
+      await client.query("INSERT INTO settings (key, value) VALUES ('perm_onboarding_matrix_backfilled', '1') ON CONFLICT (key) DO NOTHING");
+    }
     await client.query(
       'CREATE TABLE IF NOT EXISTS review_rating_snapshots (' +
       '  location_name TEXT PRIMARY KEY,' +
@@ -1934,6 +1950,10 @@ async function initDB() {
     // ---- Onboarding v3: phases, encrypted docs, packet, event log ----
     // Phase tag per step (1 = paperwork/no clock-in, 2 = training/clock-in).
     await client.query("ALTER TABLE onboarding_steps ADD COLUMN IF NOT EXISTS phase INTEGER NOT NULL DEFAULT 1;");
+    // Role-based onboarding paths: a step may be scoped to one or more Nova
+    // roles. NULL / empty means every hire gets it. A hire only ever sees the
+    // steps whose roles match the role they were assigned.
+    await client.query("ALTER TABLE onboarding_steps ADD COLUMN IF NOT EXISTS roles TEXT[];");
     // Which phase a new hire is currently in (drives the clock-in gate).
     await client.query("ALTER TABLE users ADD COLUMN IF NOT EXISTS onboarding_phase INTEGER NOT NULL DEFAULT 1;");
     // Approving Phase 1 and opening Phase 2 are two deliberate manager actions.

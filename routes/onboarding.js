@@ -50,6 +50,20 @@ function roleValueFromLabel(v) {
   }
   return null;
 }
+// The Nova roles an onboarding step can be scoped to (same universe as a hire's
+// assignable role). An empty / missing selection means the step applies to
+// everyone and is stored as NULL.
+const STEP_ROLE_VALUES = HIRE_ROLES.map(function (r) { return r.value; });
+function cleanStepRoles(v) {
+  if (!Array.isArray(v)) return null;
+  var seen = {}, out = [];
+  v.forEach(function (x) {
+    var k = String(x == null ? '' : x).trim();
+    if (!k || seen[k] || STEP_ROLE_VALUES.indexOf(k) === -1) return;
+    seen[k] = true; out.push(k);
+  });
+  return out.length ? out : null;
+}
 const UPLOAD_OK_MIME = ['image/jpeg', 'image/png', 'image/webp', 'image/heic', 'image/heif', 'application/pdf'];
 // New Hire Packet fields (native form). DEFAULT set — override per step via
 // config.fields. Swap these for the exact packet PDF fields when available.
@@ -326,9 +340,29 @@ async function runOneCompletionTask(t, newHire, signer) {
 
 // ---- shared queries ---------------------------------------------------------
 
-async function activeSteps() {
-  const r = await pool.query('SELECT * FROM onboarding_steps WHERE active = true ORDER BY position ASC, id ASC');
+// Steps in the path. Pass a role to get only the steps that apply to a hire with
+// that role (a step with no roles set applies to everyone). Pass nothing to get
+// every active step — the admin builder and slot catalog want the full list.
+async function activeSteps(role) {
+  if (role === undefined || role === null) {
+    const r = await pool.query('SELECT * FROM onboarding_steps WHERE active = true ORDER BY position ASC, id ASC');
+    return r.rows;
+  }
+  const r = await pool.query(
+    'SELECT * FROM onboarding_steps WHERE active = true AND (roles IS NULL OR cardinality(roles) = 0 OR $1 = ANY(roles)) ORDER BY position ASC, id ASC',
+    [role]
+  );
   return r.rows;
+}
+// The role a user currently holds (a new hire is assigned their real role up
+// front, even though it stays dormant until they finish onboarding).
+async function roleOfUser(userId) {
+  const r = await pool.query('SELECT role FROM users WHERE id = $1', [userId]);
+  return r.rows.length ? r.rows[0].role : null;
+}
+// The path a specific hire should walk: their role's steps only.
+async function stepsForUser(userId) {
+  return activeSteps(await roleOfUser(userId));
 }
 // A document_upload step is only "done" while every slot it owns still holds a
 // usable file. Reject a document in review and the step that owns it reopens by
@@ -362,7 +396,7 @@ async function progressMap(userId) {
   const r = await pool.query('SELECT * FROM onboarding_progress WHERE user_id = $1', [userId]);
   const map = {};
   r.rows.forEach(function (p) { map[p.step_id] = p; });
-  const steps = await activeSteps();
+  const steps = await stepsForUser(userId);
   return await reconcileUploadSteps(userId, steps, map);
 }
 // The first active step the user has not completed, or null when all are done.
@@ -787,9 +821,9 @@ async function stepBankQuestions(step, avoidPrompts) {
   return shuffleArr(poolQs).slice(0, Math.min(n, poolQs.length)).map(shuffleOptions);
 }
 // Final exam: sample from every quizzed SOP's bank.
-async function examBankQuestions(step) {
+async function examBankQuestions(step, role) {
   var n = examCount(step);
-  var ids = await examSopIds();
+  var ids = await examSopIds(role);
   if (!ids.length) throw new Error('There are no quizzed documents to build the final exam from.');
   var all = [];
   for (var i = 0; i < ids.length; i++) { try { all = all.concat(await getBank(ids[i])); } catch (e) {} }
@@ -800,15 +834,18 @@ async function examBankQuestions(step) {
 
 // Distinct SOPs that have a quiz step in the track — the ONLY source for the
 // final exam (acknowledge-only docs have no quiz, so they are excluded).
-async function examSopIds() {
-  const r = await pool.query("SELECT DISTINCT sop_id FROM onboarding_steps WHERE active = true AND type = 'quiz' AND sop_id IS NOT NULL");
+async function examSopIds(role) {
+  const base = "SELECT DISTINCT sop_id FROM onboarding_steps WHERE active = true AND type = 'quiz' AND sop_id IS NOT NULL";
+  const r = (role == null)
+    ? await pool.query(base)
+    : await pool.query(base + ' AND (roles IS NULL OR cardinality(roles) = 0 OR $1 = ANY(roles))', [role]);
   return r.rows.map(function (x) { return x.sop_id; }).filter(Boolean);
 }
 function examCount(step) { var v = parseInt(cfg(step).question_count, 10); return (v >= 5 && v <= 50) ? v : 20; }
-async function generateExamQuestions(step, avoidPrompts) {
+async function generateExamQuestions(step, avoidPrompts, role) {
   if (!process.env.ANTHROPIC_API_KEY) throw new Error('AI is not configured (ANTHROPIC_API_KEY missing).');
   var n = examCount(step);
-  var ids = await examSopIds();
+  var ids = await examSopIds(role);
   if (!ids.length) throw new Error('There are no quizzed documents to build the final exam from.');
   var parts = [];
   for (var i = 0; i < ids.length; i++) {
@@ -875,7 +912,7 @@ async function notifyReadyForSignoff(newHire) {
 }
 
 async function maybeNotifyReady(userId) {
-  const steps = await activeSteps();
+  const steps = await stepsForUser(userId);
   if (!steps.length) return;
   const prog = await progressMap(userId);
   if (findCurrent(steps, prog)) return; // still has steps left
@@ -893,7 +930,7 @@ router.get('/me', requireAuth, async (req, res) => {
   const status = me.onboarding_status || 'complete';
   if (status === 'complete') return res.json({ onboarding_status: 'complete' });
 
-  const steps = await activeSteps();
+  const steps = await stepsForUser(req.user.id);
   const prog = await progressMap(req.user.id);
   let current = findCurrent(steps, prog);
   const phase = (parseInt(me.onboarding_phase, 10) === 2) ? 2 : 1;
@@ -996,7 +1033,7 @@ router.get('/me', requireAuth, async (req, res) => {
 // frontend PDF viewer can render every page (iOS will not paginate a PDF in an
 // iframe). Auth-gated to the caller's own current step.
 router.get('/reading-doc', requireAuth, async (req, res) => {
-  const steps = await activeSteps();
+  const steps = await stepsForUser(req.user.id);
   const prog = await progressMap(req.user.id);
   const current = findCurrent(steps, prog);
   if (!current) return res.status(404).json({ error: 'No current step.' });
@@ -1017,7 +1054,7 @@ router.get('/reading-doc', requireAuth, async (req, res) => {
 // POST /api/onboarding/steps/:id/complete — finish a video or sop_read step
 router.post('/steps/:id/complete', requireAuth, async (req, res) => {
   const stepId = parseInt(req.params.id, 10) || 0;
-  const steps = await activeSteps();
+  const steps = await stepsForUser(req.user.id);
   const prog = await progressMap(req.user.id);
   const current = findCurrent(steps, prog);
   if (!current || current.id !== stepId) return res.status(400).json({ error: 'That is not your current step.' });
@@ -1073,7 +1110,7 @@ router.post('/steps/:id/complete', requireAuth, async (req, res) => {
 // file type/size are the only gate here; a manager judges correctness in review.
 router.post('/steps/:id/upload', requireAuth, async (req, res) => {
   const stepId = parseInt(req.params.id, 10) || 0;
-  const steps = await activeSteps();
+  const steps = await stepsForUser(req.user.id);
   const prog = await progressMap(req.user.id);
   const current = findCurrent(steps, prog);
   if (!current || current.id !== stepId) return res.status(400).json({ error: 'That is not your current step.' });
@@ -1129,7 +1166,7 @@ router.post('/steps/:id/upload', requireAuth, async (req, res) => {
 // DELETE /api/onboarding/steps/:id/upload/:slot — remove a slot's pending file to redo it.
 router.delete('/steps/:id/upload/:slot', requireAuth, async (req, res) => {
   const stepId = parseInt(req.params.id, 10) || 0;
-  const steps = await activeSteps();
+  const steps = await stepsForUser(req.user.id);
   const prog = await progressMap(req.user.id);
   const current = findCurrent(steps, prog);
   if (!current || current.id !== stepId) return res.status(400).json({ error: 'That is not your current step.' });
@@ -1165,7 +1202,7 @@ async function stepReading(step) {
 // POST /api/onboarding/steps/:id/quiz/start — generate a fresh attempt
 router.post('/steps/:id/quiz/start', requireAuth, async (req, res) => {
   const stepId = parseInt(req.params.id, 10) || 0;
-  const steps = await activeSteps();
+  const steps = await stepsForUser(req.user.id);
   const prog = await progressMap(req.user.id);
   const current = findCurrent(steps, prog);
   if (!current || current.id !== stepId) return res.status(400).json({ error: 'That is not your current step.' });
@@ -1184,7 +1221,7 @@ router.post('/steps/:id/quiz/start', requireAuth, async (req, res) => {
   } catch (e) { /* non-fatal */ }
 
   let questions;
-  try { questions = current.type === 'final_exam' ? await examBankQuestions(current) : await stepBankQuestions(current, avoid); }
+  try { questions = current.type === 'final_exam' ? await examBankQuestions(current, req.user.role) : await stepBankQuestions(current, avoid); }
   catch (e) { return res.status(502).json({ error: e.message }); }
 
   const ins = await pool.query(
@@ -1245,7 +1282,7 @@ router.post('/quiz-attempts/:id/submit', requireAuth, async (req, res) => {
 // POST /api/onboarding/steps/:id/quiz/reread — record the forced re-read, resetting the 2-try batch.
 router.post('/steps/:id/quiz/reread', requireAuth, async (req, res) => {
   const stepId = parseInt(req.params.id, 10) || 0;
-  const steps = await activeSteps();
+  const steps = await stepsForUser(req.user.id);
   const prog = await progressMap(req.user.id);
   const current = findCurrent(steps, prog);
   if (!current || current.id !== stepId || current.type !== 'quiz') return res.status(400).json({ error: 'Not your current quiz.' });
@@ -1276,7 +1313,7 @@ router.get('/me/hr-doc/:docId', requireAuth, async (req, res) => {
 // POST /api/onboarding/steps/:id/packet — save + submit the native New Hire Packet.
 router.post('/steps/:id/packet', requireAuth, async (req, res) => {
   const stepId = parseInt(req.params.id, 10) || 0;
-  const steps = await activeSteps();
+  const steps = await stepsForUser(req.user.id);
   const prog = await progressMap(req.user.id);
   const current = findCurrent(steps, prog);
   if (!current || current.id !== stepId) return res.status(400).json({ error: 'That is not your current step.' });
@@ -1385,9 +1422,10 @@ admin.post('/steps', async (req, res) => {
     config.slots = picked;
   }
   const stepPhase = (parseInt(b.phase, 10) === 2) ? 2 : 1;
+  const stepRoles = cleanStepRoles(b.roles);
   const r = await pool.query(
-    'INSERT INTO onboarding_steps (position, type, title, description, sop_id, video_key, config, phase) VALUES ($1,$2,$3,$4,$5,$6,$7,$8) RETURNING *',
-    [mx.rows[0].p + 1, type, title.slice(0, 200), String(b.description || '').trim() || null, parseInt(b.sop_id, 10) || null, String(b.video_key || '').trim() || null, JSON.stringify(config), stepPhase]
+    'INSERT INTO onboarding_steps (position, type, title, description, sop_id, video_key, config, phase, roles) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING *',
+    [mx.rows[0].p + 1, type, title.slice(0, 200), String(b.description || '').trim() || null, parseInt(b.sop_id, 10) || null, String(b.video_key || '').trim() || null, JSON.stringify(config), stepPhase, stepRoles]
   );
   await logAudit({ entity_type: 'onboarding', entity_id: r.rows[0].id, action: 'step_created', user_id: req.user.id, user_name: req.user.name, details: { title: title, type: type } });
   res.status(201).json(r.rows[0]);
@@ -1410,9 +1448,11 @@ admin.put('/steps/:id', async (req, res) => {
     config.slots = picked;
   }
   const putPhase = (b.phase !== undefined) ? ((parseInt(b.phase, 10) === 2) ? 2 : 1) : null;
+  const rolesProvided = (b.roles !== undefined);
+  const putRoles = rolesProvided ? cleanStepRoles(b.roles) : null;
   const r = await pool.query(
-    'UPDATE onboarding_steps SET title = COALESCE($1, title), description = $2, sop_id = COALESCE($3, sop_id), video_key = COALESCE($4, video_key), config = $5, phase = COALESCE($7, phase), updated_at = NOW() WHERE id = $6 RETURNING *',
-    [b.title ? String(b.title).trim().slice(0, 200) : null, (b.description !== undefined ? (String(b.description).trim() || null) : s.description), parseInt(b.sop_id, 10) || null, (b.video_key ? String(b.video_key).trim() : null), JSON.stringify(config), id, putPhase]
+    'UPDATE onboarding_steps SET title = COALESCE($1, title), description = $2, sop_id = COALESCE($3, sop_id), video_key = COALESCE($4, video_key), config = $5, phase = COALESCE($7, phase), roles = CASE WHEN $8 THEN $9::text[] ELSE roles END, updated_at = NOW() WHERE id = $6 RETURNING *',
+    [b.title ? String(b.title).trim().slice(0, 200) : null, (b.description !== undefined ? (String(b.description).trim() || null) : s.description), parseInt(b.sop_id, 10) || null, (b.video_key ? String(b.video_key).trim() : null), JSON.stringify(config), id, putPhase, rolesProvided, putRoles]
   );
   res.json(r.rows[0]);
 });
@@ -1480,8 +1520,8 @@ admin.post('/video-upload-url', async (req, res) => {
 
 // Enrollment + progress dashboard ----------------------------------------------
 admin.get('/progress', async (req, res) => {
-  const steps = await activeSteps();
-  const total = steps.length;
+  const allSteps = await activeSteps();
+  const total = allSteps.length;
   const ur = await pool.query(
     "SELECT u.id, u.name, u.title, u.role, u.onboarding_enrolled_at, u.supervisor_id, u.onboarding_completion_override, " +
     "u.onboarding_phase, u.onboarding_phase1_approved_at, s.name AS supervisor_name, " +
@@ -1495,6 +1535,8 @@ admin.get('/progress', async (req, res) => {
   const out = [];
   for (var i = 0; i < ur.rows.length; i++) {
     const u = ur.rows[i];
+    const steps = await stepsForUser(u.id);
+    const uTotal = steps.length;
     const prog = await progressMap(u.id);
     var done = 0;
     steps.forEach(function (s) { if (prog[s.id] && prog[s.id].status === 'done') done++; });
@@ -1505,9 +1547,9 @@ admin.get('/progress', async (req, res) => {
       phase1_approver_id: u.onboarding_phase1_approver_id, phase1_approver_name: u.phase1_approver_name,
       phase2_approver_id: u.onboarding_phase2_approver_id, phase2_approver_name: u.phase2_approver_name,
       enrolled_at: u.onboarding_enrolled_at,
-      steps_done: done, steps_total: total,
+      steps_done: done, steps_total: uTotal,
       current_step: current ? current.title : null,
-      ready_for_signoff: !current && total > 0,
+      ready_for_signoff: !current && uTotal > 0,
       phase: (parseInt(u.onboarding_phase, 10) === 2) ? 2 : 1,
       phase1_approved: !!u.onboarding_phase1_approved_at,
       // Approved, but the manager has not opened training yet — their move.
@@ -1556,7 +1598,7 @@ admin.post('/users/:id/signoff', async (req, res) => {
   if (!u.onboarding_status || u.onboarding_status === 'complete') return res.status(400).json({ error: 'This user is not in onboarding' });
   if (!(await canSignOff(req.user, target, 2))) return res.status(403).json({ error: 'Only their Phase 2 approver, their supervisor, or an admin can sign off' });
 
-  const steps = await activeSteps();
+  const steps = await stepsForUser(target);
   const prog = await progressMap(target);
   const force = req.body && req.body.force === true;
   if (findCurrent(steps, prog) && !force) return res.status(400).json({ error: 'They still have steps to finish', incomplete: true });
@@ -1607,10 +1649,10 @@ admin.get('/reviews', async (req, res) => {
   // Already-approved hires drop out of the review queue even though they are still
   // in Phase 1 — they are waiting on "Start Phase 2", not on another review.
   const ur = await pool.query("SELECT id, name, role, supervisor_id, onboarding_enrolled_at FROM users WHERE onboarding_status IS NOT NULL AND onboarding_status <> 'complete' AND (onboarding_phase IS NULL OR onboarding_phase = 1) AND onboarding_phase1_approved_at IS NULL");
-  const steps = await activeSteps();
-  const p1 = steps.filter(function (s) { return phaseOf(s) === 1; });
   const out = [];
   for (const u of ur.rows) {
+    const steps = await stepsForUser(u.id);
+    const p1 = steps.filter(function (s) { return phaseOf(s) === 1; });
     if (!p1.length) continue;
     const prog = await progressMap(u.id);
     const done = p1.every(function (s) { var pr = prog[s.id]; return pr && pr.status === 'done'; });
@@ -1696,7 +1738,7 @@ admin.post('/users/:id/phase1/approve', async (req, res) => {
   const u = ur.rows[0];
   if (!u.onboarding_status || u.onboarding_status === 'complete') return res.status(400).json({ error: 'Not in onboarding' });
   if (!(await canSignOff(req.user, target, 1))) return res.status(403).json({ error: 'Only their Phase 1 approver, their supervisor, or an admin can approve' });
-  const steps = await activeSteps();
+  const steps = await stepsForUser(target);
   const prog = await progressMap(target);
   const p1 = steps.filter(function (s) { return phaseOf(s) === 1; });
   if (!p1.every(function (s) { var pr = prog[s.id]; return pr && pr.status === 'done'; })) return res.status(400).json({ error: 'They have not finished Phase 1 yet.' });
@@ -1770,7 +1812,7 @@ admin.post('/users/:id/phase1/reopen', async (req, res) => {
   const fields = Array.isArray(b.fields) ? b.fields : [];
   const note = String(b.note || '').slice(0, 500);
   if (!slots.length && !fields.length) return res.status(400).json({ error: 'Flag at least one item to send back.' });
-  const steps = await activeSteps();
+  const steps = await stepsForUser(target);
   // Reopen the step that actually OWNS each flagged item — a path may carry one
   // upload step per document, so "the first upload step" is not good enough.
   async function reopenStep(stepId) {
@@ -1815,7 +1857,7 @@ admin.post('/users/:id/phase1/reopen', async (req, res) => {
 admin.get('/users/:id/detail', async (req, res) => {
   const target = parseInt(req.params.id, 10) || 0;
   if (!(await canSignOff(req.user, target))) return res.status(403).json({ error: 'Not permitted.' });
-  const steps = await activeSteps();
+  const steps = await stepsForUser(target);
   const prog = await progressMap(target);
   const attempts = await pool.query(
     'SELECT step_id, COUNT(*)::int AS n, MAX(score) AS best FROM onboarding_quiz_attempts WHERE user_id = $1 AND submitted_at IS NOT NULL GROUP BY step_id',

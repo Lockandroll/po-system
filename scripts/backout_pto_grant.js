@@ -41,22 +41,56 @@ const TAG = 'Back-out of uniform PTO grant ' + GRANT_DATE;
 function fmt(h) { var n = Number(h) || 0; return n.toFixed(2) + 'h (' + (n / 8).toFixed(2) + 'd)'; }
 
 async function main() {
-  if (!url) { console.error('DATABASE_URL is not set. Run this inside Railway (railway run ... or the service shell).'); process.exit(1); }
+  if (!url) { console.error('DATABASE_URL is not set. Set it first, then run this again.'); process.exit(1); }
+
+  // --scan: read-only. Prints every (date, type, amount) and how many people got it,
+  // so a uniform grant stands out as one row that lots of people share. Changes nothing.
+  if (process.argv.indexOf('--scan') !== -1) {
+    const scan = await pool.query(
+      "SELECT to_char(entry_date,'YYYY-MM-DD') AS d, kind, amount_hours, COUNT(*)::int AS people " +
+      'FROM pto_ledger GROUP BY d, kind, amount_hours ORDER BY people DESC, d LIMIT 40'
+    );
+    console.log('=== Ledger scan: (date, type, amount) and how many people got it ===');
+    console.log('The uniform grant is the row where LOTS of people got the exact same amount.');
+    console.log('');
+    scan.rows.forEach(function (r) {
+      console.log('  ' + r.d + '   ' + String(r.kind).padEnd(11) + fmt(r.amount_hours).padEnd(20) + r.people + ' people');
+    });
+    await pool.end();
+    return;
+  }
+
+  const ALL_DATES = (!GRANT_DATE || String(GRANT_DATE).toLowerCase() === 'all');
+
   console.log('Mode: ' + (COMMIT ? 'COMMIT (will write changes)' : 'DRY RUN (no changes)'));
-  console.log('Grant date: ' + GRANT_DATE + '   kinds: ' + MATCH_KINDS.join(', ') + (MATCH_AMOUNT !== null ? ('   amount filter: ' + MATCH_AMOUNT + 'h') : '') + (FLOOR_AT_ZERO ? '   floor-at-zero: ON' : ''));
+  console.log('Target: ' + (ALL_DATES ? 'ALL dates' : ('date ' + GRANT_DATE)) + '   kinds: ' + MATCH_KINDS.join(', ') + (MATCH_AMOUNT !== null ? ('   amount filter: ' + MATCH_AMOUNT + 'h') : '') + (FLOOR_AT_ZERO ? '   floor-at-zero: ON' : ''));
   console.log('');
 
-  // 1) Show EVERYTHING posted on that date, so you can confirm the culprit before committing.
-  const summary = await pool.query(
-    'SELECT kind, amount_hours, description, COUNT(*)::int AS n FROM pto_ledger WHERE entry_date = $1 ' +
-    'GROUP BY kind, amount_hours, description ORDER BY n DESC, kind',
-    [GRANT_DATE]
-  );
-  console.log('=== All pto_ledger lines dated ' + GRANT_DATE + ' ===');
-  if (!summary.rows.length) console.log('  (none found on this date)');
-  summary.rows.forEach(function (r) {
-    console.log('  ' + String(r.n).padStart(3) + ' x  kind=' + r.kind + '  ' + fmt(r.amount_hours) + '  "' + (r.description || '') + '"');
-  });
+  // 1) Show the lines we are about to target, so you can confirm before committing.
+  let summary;
+  if (ALL_DATES) {
+    summary = await pool.query(
+      "SELECT to_char(entry_date,'YYYY-MM-DD') AS d, kind, amount_hours, COUNT(*)::int AS n FROM pto_ledger " +
+      'WHERE kind = ANY($1::text[]) GROUP BY d, kind, amount_hours ORDER BY n DESC, d',
+      [MATCH_KINDS]
+    );
+    console.log('=== ' + MATCH_KINDS.join('/') + ' lines across ALL dates (these are the target) ===');
+    if (!summary.rows.length) console.log('  (none found)');
+    summary.rows.forEach(function (r) {
+      console.log('  ' + String(r.n).padStart(3) + ' x  ' + r.d + '  kind=' + r.kind + '  ' + fmt(r.amount_hours));
+    });
+  } else {
+    summary = await pool.query(
+      'SELECT kind, amount_hours, description, COUNT(*)::int AS n FROM pto_ledger WHERE entry_date = $1 ' +
+      'GROUP BY kind, amount_hours, description ORDER BY n DESC, kind',
+      [GRANT_DATE]
+    );
+    console.log('=== All pto_ledger lines dated ' + GRANT_DATE + ' ===');
+    if (!summary.rows.length) console.log('  (none found on this date)');
+    summary.rows.forEach(function (r) {
+      console.log('  ' + String(r.n).padStart(3) + ' x  kind=' + r.kind + '  ' + fmt(r.amount_hours) + '  "' + (r.description || '') + '"');
+    });
+  }
   console.log('');
 
   // 1b) Consistency check. If the grant was applied as a raw balance UPDATE (no ledger
@@ -76,11 +110,12 @@ async function main() {
   console.log('');
 
   // 2) Select the rows we would reverse.
-  const params = [GRANT_DATE, MATCH_KINDS];
-  let where = 'l.entry_date = $1 AND l.kind = ANY($2::text[])';
+  const params = [MATCH_KINDS];
+  let where = 'l.kind = ANY($1::text[])';
+  if (!ALL_DATES) { params.push(GRANT_DATE); where += ' AND l.entry_date = $' + params.length; }
   if (MATCH_AMOUNT !== null) { params.push(MATCH_AMOUNT); where += ' AND l.amount_hours = $' + params.length; }
   const rows = (await pool.query(
-    'SELECT l.id, l.user_id, l.amount_hours, l.kind, l.description, u.name, COALESCE(u.pto_balance_hours,0) AS bal ' +
+    "SELECT l.id, l.user_id, l.amount_hours, l.kind, l.description, to_char(l.entry_date,'YYYY-MM-DD') AS entry_ymd, u.name, COALESCE(u.pto_balance_hours,0) AS bal " +
     'FROM pto_ledger l JOIN users u ON u.id = l.user_id WHERE ' + where + ' ORDER BY u.name, l.id',
     params
   )).rows;
@@ -91,8 +126,8 @@ async function main() {
   for (var i = 0; i < rows.length; i++) {
     var r = rows[i];
     var already = await pool.query(
-      "SELECT 1 FROM pto_ledger WHERE user_id = $1 AND kind = 'reversal' AND description = $2 LIMIT 1",
-      [r.user_id, TAG + ' (ledger #' + r.id + ')']
+      "SELECT 1 FROM pto_ledger WHERE user_id = $1 AND kind = 'reversal' AND description LIKE $2 LIMIT 1",
+      [r.user_id, '%(ledger #' + r.id + ')']
     );
     if (already.rows.length) { console.log('  SKIP already-backed-out  ' + r.name + '  (source #' + r.id + ')'); continue; }
     var grant = Number(r.amount_hours) || 0;
@@ -125,7 +160,7 @@ async function main() {
       await client.query('BEGIN');
       await client.query(
         "INSERT INTO pto_ledger (user_id, entry_date, kind, amount_hours, description) VALUES ($1, $2, 'reversal', $3, $4)",
-        [row.user_id, GRANT_DATE, -removeHrs, TAG + ' (ledger #' + row.id + ')']
+        [row.user_id, row.entry_ymd, -removeHrs, TAG + ' (ledger #' + row.id + ')']
       );
       await client.query('UPDATE users SET pto_balance_hours = COALESCE(pto_balance_hours,0) - $1 WHERE id = $2', [removeHrs, row.user_id]);
       await client.query('COMMIT');
