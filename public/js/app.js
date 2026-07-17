@@ -2899,11 +2899,21 @@ function taskCardHtml(t){
   var od = taskIsOverdue(t);
   var sub = (t.subtask_total>0) ? '<span style="font-size:11px;color:var(--text-muted-color)">'+t.subtask_done+'/'+t.subtask_total+' done</span>' : '';
   var due = t.due_date ? '<span style="font-size:11px;font-weight:600;color:'+(od?'#ef4444':'var(--text-muted-color)')+'">'+(od?'Overdue · ':'')+formatDate(t.due_date)+'</span>' : '';
+  // Drag-handle: three stacked lines on the left rail, a visual cue that cards move up/down.
+  var grip = '<div class="task-grip" title="Drag to reorder" style="display:flex;flex-direction:column;justify-content:center;gap:3px;flex-shrink:0;align-self:stretch;opacity:0.4;color:var(--text-muted-color)">' +
+      '<span style="display:block;width:13px;height:2px;background:currentColor;border-radius:1px"></span>' +
+      '<span style="display:block;width:13px;height:2px;background:currentColor;border-radius:1px"></span>' +
+      '<span style="display:block;width:13px;height:2px;background:currentColor;border-radius:1px"></span>' +
+    '</div>';
   return '<div class="card" data-tid="'+t.id+'" draggable="true" ondragstart="taskDragStart(event,'+t.id+')" ondragend="taskDragEnd(event)" style="margin-bottom:8px;cursor:grab" onclick="navigate(\'task-detail\','+t.id+')"><div class="card-body" style="padding:10px 12px">' +
-    '<div style="display:flex;align-items:center;gap:7px;margin-bottom:5px"><span style="width:8px;height:8px;border-radius:50%;background:'+p.c+';flex-shrink:0"></span><span style="font-weight:600;font-size:14px">'+escHtml(t.title)+'</span></div>' +
-    '<div style="display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap">' +
-      '<span style="font-size:11px;color:var(--text-muted-color)">'+escHtml(t.assignee_name||'Unassigned')+'</span>'+due +
-    '</div>' + (sub?'<div style="margin-top:4px">'+sub+'</div>':'') +
+    '<div style="display:flex;align-items:stretch;gap:9px">' + grip +
+      '<div style="flex:1;min-width:0">' +
+        '<div style="display:flex;align-items:center;gap:7px;margin-bottom:5px"><span style="width:8px;height:8px;border-radius:50%;background:'+p.c+';flex-shrink:0"></span><span style="font-weight:600;font-size:14px">'+escHtml(t.title)+'</span></div>' +
+        '<div style="display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap">' +
+          '<span style="font-size:11px;color:var(--text-muted-color)">'+escHtml(t.assignee_name||'Unassigned')+'</span>'+due +
+        '</div>' + (sub?'<div style="margin-top:4px">'+sub+'</div>':'') +
+      '</div>' +
+    '</div>' +
   '</div></div>';
 }
 
