@@ -14554,16 +14554,60 @@ function tcInjectMgrStyles(){
     '.tc-nav{display:flex;gap:8px;align-items:center}'+
     '.tc-fld{display:flex;flex-direction:column;gap:5px}'+
     '.tc-fld>span{font-size:11px;color:var(--text-muted-color,#71717a);text-transform:uppercase;letter-spacing:.5px;font-weight:700}'+
-    '.tc-addrow{display:flex;gap:14px;flex-wrap:wrap;align-items:flex-end}';
+    '.tc-addrow{display:flex;gap:14px;flex-wrap:wrap;align-items:flex-end}'+
+    '.tc-livedot{display:inline-block;width:7px;height:7px;border-radius:50%;background:#22c55e;margin-right:7px;vertical-align:middle;animation:tcPulse 1.4s ease-in-out infinite}'+
+    '.tc-livework{font-variant-numeric:tabular-nums;font-weight:700;color:#22c55e;white-space:nowrap}'+
+    '@keyframes tcPulse{0%,100%{opacity:1}50%{opacity:.45}}';
   document.head.appendChild(el);
 }
 function tcHM(m){m=Math.max(0,Math.round(m||0));return Math.floor(m/60)+':'+String(m%60).padStart(2,'0');}
+// Payroll rounding to the nearest quarter hour (7-minute rule): 0-7 min past the
+// quarter round DOWN, 8-14 round UP. Applied PER entry so it matches the server.
+function tcRoundQ(m){m=Math.max(0,Math.round(m||0));var q=m%15;return q<=7?m-q:m-q+15;}
 function tcClock(ts){if(!ts)return '—';return new Date(ts).toLocaleTimeString('en-US',{hour:'numeric',minute:'2-digit'});}
 function tcDay(ts){if(!ts)return '';return new Date(ts).toLocaleDateString('en-US',{weekday:'short',month:'short',day:'numeric'});}
 function tcElapsed(ts){if(!ts)return '';var mins=Math.max(0,Math.floor((Date.now()-new Date(ts).getTime())/60000));return Math.floor(mins/60)+':'+String(mins%60).padStart(2,'0');}
 function tcInitials(name){name=(name||'').trim();var p=name.split(/\s+/);return (((p[0]||'')[0]||'')+((p[1]||'')[0]||'')).toUpperCase()||'?';}
 function tcRoleLabel(r){var m={locksmith:'Locksmith',roadside_technician:'Roadside',locksmith_coordinator:'Coordinator',dispatcher:'Dispatcher',manager:'Manager',admin:'Admin',owner:'Owner',counter:'Counter'};return m[r]||r||'';}
 function tcAddDays(ds,n){var a=ds.split('-').map(Number);var d=new Date(Date.UTC(a[0],a[1]-1,a[2]));d.setUTCDate(d.getUTCDate()+n);return d.getUTCFullYear()+'-'+String(d.getUTCMonth()+1).padStart(2,'0')+'-'+String(d.getUTCDate()).padStart(2,'0');}
+// ---- Live "worked" ticker for the Timesheets & Approval list ---------------
+// Server-side worked minutes only count CLOSED sessions, so a person who is
+// currently on the clock has an in-progress session that isn't in u.minutes yet.
+// We add that live session on the client and tick it every second. Paid breaks
+// keep counting; unpaid breaks (finished or currently open) are subtracted —
+// exactly matching workedMinutes() on the server (utils in routes/timeclock.js).
+function tcHMS(sec){sec=Math.max(0,Math.floor(sec||0));var h=Math.floor(sec/3600),m=Math.floor((sec%3600)/60),s=sec%60;return h+':'+String(m).padStart(2,'0')+':'+String(s).padStart(2,'0');}
+function tcOpenEntry(u){var es=(u&&u.entries)||[];for(var i=0;i<es.length;i++){if(es[i].status==='open'&&!es[i].clock_out_at)return es[i];}return null;}
+function tcLiveWorkedSec(u,nowMs){
+  var oe=tcOpenEntry(u);if(!oe)return null;
+  var start=new Date(oe.clock_in_at).getTime();if(isNaN(start))return null;
+  var sec=(nowMs-start)/1000;
+  var brks=oe.breaks||[];
+  for(var i=0;i<brks.length;i++){
+    var b=brks[i];if(b.type!=='unpaid')continue;
+    var bs=new Date(b.break_start_at).getTime();if(isNaN(bs))continue;
+    var be=b.break_end_at?new Date(b.break_end_at).getTime():nowMs;
+    sec-=Math.max(0,(be-bs)/1000);
+  }
+  var base=Math.max(0,Math.round(u.minutes||0))*60;
+  return Math.max(0,base+sec);
+}
+var _tcLiveIv=null;
+function tcStopLiveTick(){if(_tcLiveIv){clearInterval(_tcLiveIv);_tcLiveIv=null;}}
+function tcTickLive(){
+  var host=document.getElementById('tc-body');
+  if(!host||!document.body.contains(host)||!_tcAdminData){tcStopLiveTick();return;}
+  var els=host.querySelectorAll('.tc-livework');
+  if(!els.length){tcStopLiveTick();return;}
+  var byId={};(_tcAdminData.users||[]).forEach(function(x){byId[x.user.id]=x;});
+  var now=Date.now();
+  for(var i=0;i<els.length;i++){
+    var u=byId[+els[i].getAttribute('data-uid')];if(!u)continue;
+    var sec=tcLiveWorkedSec(u,now);
+    els[i].textContent=(sec==null?tcHM(u.minutes):tcHMS(sec));
+  }
+}
+function tcStartLiveTick(){tcStopLiveTick();tcTickLive();_tcLiveIv=setInterval(tcTickLive,1000);}
 var _tcTimer=null;
 function tcStopTimer(){if(_tcTimer){clearInterval(_tcTimer);_tcTimer=null;}}
 var _tcTab='punch';
@@ -14575,7 +14619,7 @@ function tcTab(t){_tcTab=t;if(t!=='mysheet')_tcWeek=null;tcReload();}
 
 async function renderTimeClock(content){
   window._tcHost=content;
-  tcInjectStyles();tcInjectMgrStyles();tcStopTimer();
+  tcInjectStyles();tcInjectMgrStyles();tcStopTimer();tcStopLiveTick();
   var isMgr=(typeof can==='function')&&can('manage_timeclock');
   if(!isMgr&&(_tcTab==='in'||_tcTab==='sheets'))_tcTab='punch';
   var tabs=[{k:'punch',l:'Employee Punch'},{k:'mysheet',l:'My Timesheet'}];
@@ -14641,7 +14685,7 @@ async function tcRenderPunch(body){
   var punches=(st.today||[]).map(function(e){
     return '<div class="tc-row"><span><span class="tc-tag" style="background:rgba(34,197,94,.15);color:#22c55e">IN '+tcClock(e.clock_in_at)+'</span>'+
       (e.clock_out_at?' <span class="tc-tag" style="background:rgba(239,68,68,.13);color:#f87171">OUT '+tcClock(e.clock_out_at)+'</span>':'')+
-      '</span><span class="tc-muted">'+(e.worked_minutes!=null?tcHM(e.worked_minutes):'open')+'</span></div>';
+      '</span><span class="tc-muted">'+(e.worked_minutes!=null?tcHM(tcRoundQ(e.worked_minutes)):'open')+'</span></div>';
   }).join('')||'<div class="tc-row"><span class="tc-dim">No punches yet today.</span></div>';
   var ot=40*60;
   var otChip=st.weekMinutes>ot?' <span class="tc-tag" style="background:rgba(234,179,8,.15);color:#facc15">OT '+tcHM(st.weekMinutes-ot)+'</span>':'';
@@ -14706,9 +14750,9 @@ async function tcRenderMySheet(body){
   var ap=data.approval||{};
   var rows=(data.entries||[]).map(function(e){
     var unpaid=0;(e.breaks||[]).forEach(function(b){if(b.type==='unpaid'&&b.break_end_at)unpaid+=Math.round((new Date(b.break_end_at)-new Date(b.break_start_at))/60000);});
-    return '<tr><td>'+tcDay(e.clock_in_at)+'</td><td>'+tcClock(e.clock_in_at)+'</td><td>'+tcClock(e.clock_out_at)+'</td><td>'+(unpaid?unpaid+'m':'')+'</td><td style="text-align:right">'+(e.worked_minutes!=null?tcHM(e.worked_minutes):'open')+'</td></tr>';
+    return '<tr><td>'+tcDay(e.clock_in_at)+'</td><td>'+tcClock(e.clock_in_at)+'</td><td>'+tcClock(e.clock_out_at)+'</td><td>'+(unpaid?unpaid+'m':'')+'</td><td style="text-align:right">'+(e.worked_minutes!=null?tcHM(tcRoundQ(e.worked_minutes)):'open')+'</td></tr>';
   }).join('')||'<tr><td colspan="5" class="tc-dim">No punches this week.</td></tr>';
-  var total=(data.entries||[]).reduce(function(s,e){return s+(e.worked_minutes||0);},0);
+  var total=(data.entries||[]).reduce(function(s,e){return s+tcRoundQ(e.worked_minutes||0);},0);
   var st=ap.status||'open';
   var locked=(st!=='open'&&st!=='reopened');
   var right=locked?('<span class="tc-tag" style="background:rgba(34,197,94,.15);color:#22c55e">'+escHtml(st)+'</span>')
@@ -14781,9 +14825,12 @@ function tcSheetsHtml(sheet){
     else if(ap.status==='mgr_approved')action=u.canApprove?'<button class="tc-sbtn" onclick="tcSubmit('+u.user.id+',\''+ws+'\')">Submit to Excel</button>':'<span class="tc-tag" style="background:rgba(34,197,94,.15);color:#22c55e">approved</span>';
     else if(ap.status==='submitted')action='<span class="tc-tag" style="background:rgba(34,197,94,.15);color:#22c55e">submitted</span>';
     else action=u.canApprove?'<button class="tc-sbtn" onclick="tcMgrOverride('+u.user.id+',\''+ws+'\')">Approve for employee</button>':'<span class="tc-dim">awaiting employee</span>';
+    var workedCell=tcOpenEntry(u)
+      ? '<td title="On the clock — counting live"><span class="tc-livedot"></span><span class="tc-livework" data-uid="'+u.user.id+'">'+tcHMS(tcLiveWorkedSec(u,Date.now()))+'</span></td>'
+      : '<td>'+tcHM(u.minutes)+'</td>';
     return '<tr>'+
       '<td><button class="tc-linkbtn" onclick="tcMgrOpenUser('+u.user.id+')">'+escHtml(u.user.name)+'</button></td>'+
-      '<td>'+tcHM(u.minutes)+'</td>'+
+      workedCell+
       '<td>'+escHtml(ap.status||'open')+'</td>'+
       '<td style="text-align:right"><button class="tc-sbtn" onclick="tcMgrOpenUser('+u.user.id+')">View / edit</button></td>'+
       '<td style="text-align:right">'+action+'</td></tr>';
@@ -14806,7 +14853,7 @@ function tcMgrDetailHtml(u,ws){
   var rows=(u.entries||[]).map(function(e){
     var unpaid=tcEntryUnpaid(e);
     var flag=(e.status==='auto_closed'||e.status==='flagged')?' <span class="tc-tag" style="background:rgba(234,179,8,.15);color:#facc15">'+(e.status==='auto_closed'?'auto-closed':'flagged')+'</span>':'';
-    var worked=(e.worked_minutes!=null?tcHM(e.worked_minutes):'<span class="tc-dim">open</span>');
+    var worked=(e.worked_minutes!=null?tcHM(tcRoundQ(e.worked_minutes)):'<span class="tc-dim">open</span>');
     if(locked){
       return '<tr><td>'+tcDay(e.clock_in_at)+flag+'</td><td>'+tcClock(e.clock_in_at)+'</td><td>'+tcClock(e.clock_out_at)+'</td><td>'+(unpaid?unpaid+'m':'&mdash;')+'</td><td style="text-align:right">'+worked+'</td><td></td></tr>';
     }
@@ -14824,7 +14871,7 @@ function tcMgrDetailHtml(u,ws){
   else if(status==='mgr_approved')act=u.canApprove?'<button class="tc-savebtn" onclick="tcSubmit('+u.user.id+',\''+ws+'\')">Submit to Excel</button>':'<span class="tc-tag" style="background:rgba(34,197,94,.15);color:#22c55e">approved</span>';
   else if(status==='submitted')act=u.canApprove?'<button class="tc-sbtn" onclick="tcReopenWeek('+u.user.id+',\''+ws+'\')">Reopen week to edit</button>':'<span class="tc-tag" style="background:rgba(34,197,94,.15);color:#22c55e">submitted</span>';
   else act=u.canApprove?'<button class="tc-savebtn" onclick="tcMgrOverride('+u.user.id+',\''+ws+'\')">Approve for employee</button>':'<span class="tc-dim">awaiting employee approval</span>';
-  var total=(u.entries||[]).reduce(function(s,e){return s+(e.worked_minutes||0);},0);
+  var total=(u.entries||[]).reduce(function(s,e){return s+tcRoundQ(e.worked_minutes||0);},0);
   var lockBanner=locked?'<div class="tc-card" style="border-color:#5b4a12;background:rgba(234,179,8,.06)"><div style="color:#facc15;font-size:13px">This week is submitted to payroll and locked. Reopen it to make corrections.</div></div>':'';
   var addCard=locked?'':(
     '<div class="tc-card"><div class="tc-h">Add a missing punch</div>'+
@@ -14845,7 +14892,9 @@ function tcMgrDetailHtml(u,ws){
           '<button class="tc-sbtn" onclick="tcAdminWeekNav(-7)">&#8249;</button>'+
           '<span class="tc-dim" style="min-width:118px;text-align:center">Week of '+escHtml(ws)+'</span>'+
           '<button class="tc-sbtn" onclick="tcAdminWeekNav(7)">&#8250;</button>'+
-          '<span style="font-size:20px;font-weight:800;margin-left:10px">'+tcHM(total)+'</span>'+
+          (tcOpenEntry(u)
+            ? '<span class="tc-livedot"></span><span class="tc-livework" data-uid="'+u.user.id+'" style="font-size:20px;margin-left:2px">'+tcHMS(tcLiveWorkedSec(u,Date.now()))+'</span>'
+            : '<span style="font-size:20px;font-weight:800;margin-left:10px">'+tcHM(total)+'</span>')+
         '</div>'+
       '</div>'+
       '<table class="tc-table"><thead><tr><th>Day</th><th>In</th><th>Out</th><th>Unpaid</th><th style="text-align:right">Worked</th><th></th></tr></thead><tbody>'+rows+'</tbody></table>'+
@@ -14864,9 +14913,11 @@ async function tcRenderSheets(body){
     var u=null;(sheet.users||[]).forEach(function(x){if(x.user.id===_tcMgrUser)u=x;});
     if(!u)u={user:{id:_tcMgrUser,name:_tcMgrName||('Employee #'+_tcMgrUser)},entries:[],approval:{status:'open'},canApprove:true};
     body.innerHTML=tcMgrDetailHtml(u,sheet.weekStart);
+    tcStartLiveTick();
     return;
   }
   body.innerHTML=tcSheetsHtml(sheet);
+  tcStartLiveTick();
 }
 function tcSheetsReload(){var b=document.getElementById('tc-body');if(b)tcRenderSheets(b);}
 function tcAdminWeekNav(n){_tcAdminWeek=tcAddDays(_tcAdminWeek,n);tcSheetsReload();}

@@ -47,6 +47,13 @@ function hhmm(mins) {
   mins = Math.max(0, Math.round(mins));
   return Math.floor(mins / 60) + ':' + String(mins % 60).padStart(2, '0');
 }
+// Payroll rounding to the nearest quarter hour, applied PER punch/entry.
+// Standard 7-minute rule: minutes past the quarter of 0-7 round DOWN, 8-14 round UP.
+function roundQuarter(mins) {
+  mins = Math.max(0, Math.round(mins || 0));
+  var q = mins % 15;
+  return q <= 7 ? mins - q : mins - q + 15;
+}
 
 // Worked minutes for a closed entry = gross - unpaid breaks (paid breaks count).
 function workedMinutes(entry, breaks) {
@@ -124,9 +131,10 @@ router.get('/status', requireAuth, async function (req, res) {
   const wkStart = mondayOf(today);
   const wkEnd = addDays(wkStart, 6);
   const wk = await pool.query(
-    "SELECT COALESCE(SUM(worked_minutes),0) AS mins FROM time_entries WHERE user_id = $1 AND status IN ('closed','auto_closed','flagged') AND (clock_in_at AT TIME ZONE $2)::date BETWEEN $3 AND $4",
+    "SELECT worked_minutes FROM time_entries WHERE user_id = $1 AND status IN ('closed','auto_closed','flagged') AND (clock_in_at AT TIME ZONE $2)::date BETWEEN $3 AND $4",
     [uid, TZ, wkStart, wkEnd]
   );
+  const weekMinutes = wk.rows.reduce(function (s, r) { return s + roundQuarter(r.worked_minutes || 0); }, 0);
   res.json({
     state: state,
     openEntry: open,
@@ -134,7 +142,7 @@ router.get('/status', requireAuth, async function (req, res) {
     breakType: brk ? brk.type : null,
     today: todays.rows,
     weekStart: wkStart,
-    weekMinutes: parseInt(wk.rows[0].mins, 10) || 0
+    weekMinutes: weekMinutes
   });
 });
 
@@ -281,7 +289,7 @@ async function holidaySet(from, to) {
 function categorizeWorked(rows, hset, otThresholdMin) {
   let holiday = 0, nonHoliday = 0;
   rows.forEach(function (e) {
-    const w = e.worked_minutes || 0;
+    const w = roundQuarter(e.worked_minutes || 0);
     const dstr = nyDateStr(new Date(e.clock_in_at));
     if (hset[dstr]) holiday += w; else nonHoliday += w;
   });
@@ -576,7 +584,7 @@ function buildTimesheetXls(name, wkStart, rows, hset, bd) {
       const mins = b.break_end_at ? minsBetween(b.break_start_at, b.break_end_at) : 0;
       if (b.type === 'unpaid') unpaid += mins; else paid += mins;
     });
-    const worked = e.worked_minutes || 0;
+    const worked = roundQuarter(e.worked_minutes || 0);
     total += worked;
     const isHol = !!hset[nyDateStr(new Date(e.clock_in_at))];
     body += '<Row>' +
