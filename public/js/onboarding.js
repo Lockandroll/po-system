@@ -70,9 +70,9 @@
     '.onb-pk-flag{flex:1 0 100%;font-size:12px;color:#fbbf24}' +
     '@media(max-width:640px){.onb-pk-k{flex:1 0 100%}}' +
     '.onb-slotpicks{display:grid;grid-template-columns:repeat(auto-fit,minmax(210px,1fr));gap:8px;margin:0 0 8px}' +
-    '.onb-slotpick{display:flex;align-items:center;gap:9px;min-width:0;padding:11px 13px;border:1px solid var(--border,#2a2a2a);border-radius:9px;background:var(--bg,#0f0f0f);font-size:13px;line-height:1.35;cursor:pointer;user-select:none}' +
-    '.onb-slotpick input{margin:0;flex:0 0 auto}' +
-    '.onb-slotpick span{flex:1 1 auto;min-width:0;white-space:normal;overflow-wrap:anywhere}' +
+    '.onb-slotpick{display:flex;flex-direction:row;flex-wrap:nowrap;align-items:center;gap:9px;min-width:0;padding:11px 13px;border:1px solid var(--border,#2a2a2a);border-radius:9px;background:var(--bg,#0f0f0f);font-size:13px;line-height:1.35;cursor:pointer;user-select:none}' +
+    '.onb-slotpick input{margin:0;flex:0 0 auto;width:16px;height:16px}' +
+    '.onb-slotpick span{flex:1 1 auto;min-width:0;white-space:normal;overflow-wrap:break-word;word-break:normal}' +
     '.onb-slotpick:hover{border-color:var(--primary,#f97316)}' +
     '.onb-slot-act{font-size:12.5px;font-weight:700;padding:6px 12px;border-radius:7px;border:1px solid var(--border,#2a2a2a);background:var(--bg-card,#161616);color:var(--text,#ededed);cursor:pointer;flex-shrink:0}' +
     '.onb-slot-act.done{background:#16a34a22;color:#4ade80;border-color:#16a34a55}' +
