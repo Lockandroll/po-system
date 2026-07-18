@@ -577,6 +577,16 @@ function can(perm) {
   return (PERM_DEFAULTS[role] || []).indexOf(perm) !== -1;
 }
 
+// Royalty access is OWNER-gated + an explicit per-person allowlist (users.extra_perms),
+// deliberately NOT role-based — so admins are excluded unless an owner adds them.
+function canRoyalty(level) {
+  if (!state.user) return false;
+  if (state.user.isOwner) return true;
+  var ep = state.user.extra_perms || [];
+  if (level === 'manage') return ep.indexOf('manage_royalty') !== -1;
+  return ep.indexOf('view_royalty') !== -1 || ep.indexOf('manage_royalty') !== -1;
+}
+
 function urlB64ToUint8Array(base64String){
   var padding='='.repeat((4 - base64String.length % 4) % 4);
   var base64=(base64String + padding).replace(/-/g,'+').replace(/_/g,'/');
@@ -699,6 +709,7 @@ function buildNavHtml() {
       (can('manage_vehicles') ? '<div class="nav-sub' + (['fleet-registry','new-vehicle','edit-vehicle','vehicle-history'].indexOf(cv) !== -1 ? ' active' : '') + '" onclick="navigate(\'fleet-registry\')">' + icoDB + ' Fleet Registry</div>' : '') + (can('view_inspections') ? '<div class="nav-sub' + (['inspections','inspection-form','view-inspection'].indexOf(cv) !== -1 ? ' active' : '') + '" onclick="navigate(\'inspections\')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg> Inspections</div>' : '') + (can('manage_inspections') ? '<div class="nav-sub' + (cv === 'inspection-checklist' ? ' active' : '') + '" onclick="navigate(\'inspection-checklist\')">' + icons.settings + ' Insp. Checklist</div>' : '')
     : '') : '') +
     (can('view_deposits') ? '<div class="nav-item' + (cv === 'deposits' || cv === 'view-deposit' ? ' active' : '') + '" onclick="navigate(\'deposits\')">' + icoDeposit + ' Cash Deposits</div>' : '') +
+    (canRoyalty('view') ? '<div class="nav-item' + (cv === 'royalty' ? ' active' : '') + '" onclick="navigate(\'royalty\')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="15.5" y1="12" x2="9.5" y2="18"/><circle cx="10" cy="12.5" r="1"/><circle cx="15" cy="17.5" r="1"/></svg> Royalty</div>' : '') +
     ((can('view_vendors') || can('manage_vendors')) ? '<div class="nav-item' + (cv === 'vendors' ? ' active' : '') + '" onclick="navigate(\'vendors\')">' + icoAccounts + ' Accounts</div>' : '') +
     ('<div class="nav-section-header' + (['geico','reviews','feedback','feedback-detail'].indexOf(cv) !== -1 ? ' section-active' : '') + (ss === 'feedback' ? ' open' : '') + '" onclick="toggleSection(\'feedback\',\'reviews\')"><span class="s-label"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg> Reviews &amp; Feedback</span>' + chev + '</div>' +
       (ss === 'feedback' ?
@@ -862,6 +873,7 @@ async function render() {
   else if (state.currentView === 'parts-list') await renderPartsList(content);
   else if (state.currentView === 'suggestions') await renderSuggestions(content);
   else if (state.currentView === 'deposits') await renderDeposits(content);
+  else if (state.currentView === 'royalty') await renderRoyalty(content);
   else if (state.currentView === 'tasks') await renderTasks(content);
   else if (state.currentView === 'task-detail') await renderTaskDetail(content, state.currentParam);
   else if (state.currentView === 'new-task') await renderTaskForm(content, null);
@@ -2149,6 +2161,7 @@ async function showUserModal(id, returnView) {
           '<input type="checkbox" id="modal-edit-schedule" style="width:auto"' + (user && user.extra_perms && user.extra_perms.indexOf('manage_schedule') !== -1 ? ' checked' : '') + ' />' +
           '<label for="modal-edit-schedule" style="margin:0;cursor:pointer">Can build &amp; edit the schedule <span style="font-weight:400;font-size:0.8em;color:var(--text-muted-color)">(gives this non-manager the full schedule builder for their assigned cities)</span></label>' +
         '</div>' +
+        '<input type="hidden" id="modal-extra-perms" value="' + escHtml(JSON.stringify((user && user.extra_perms) || [])) + '" />' +
       '</div>' +
       '<div class="modal-footer"><button class="btn btn-secondary" onclick="this.closest(\'.modal-overlay\').remove()">Cancel</button><button class="btn btn-primary" onclick="saveUser(' + (id||'null') + ', this)">Save</button></div>' +
     '</div>';
@@ -2165,7 +2178,11 @@ async function saveUser(id, btn) {
   const receive_sms = document.getElementById('modal-receive-sms').checked;
   const hide_from_schedule = (document.getElementById('modal-hide-schedule')||{}).checked === true;
   const hide_from_org = (document.getElementById('modal-hide-org')||{}).checked === true;
-  var extra_perms = []; if ((document.getElementById('modal-edit-schedule')||{}).checked === true) extra_perms.push('manage_schedule');
+  var _existingEp = []; try { _existingEp = JSON.parse((document.getElementById('modal-extra-perms')||{}).value || '[]'); } catch(e) { _existingEp = []; }
+  // Preserve grants this form does not manage (e.g. Royalty access lives in extra_perms too);
+  // only toggle manage_schedule here so saving a user never silently revokes Royalty access.
+  var extra_perms = (Array.isArray(_existingEp) ? _existingEp : []).filter(function(p){ return p !== 'manage_schedule'; });
+  if ((document.getElementById('modal-edit-schedule')||{}).checked === true) extra_perms.push('manage_schedule');
   var _cityNodes = document.querySelectorAll('.modal-city'); var city_codes = []; for (var _i=0;_i<_cityNodes.length;_i++){ if(_cityNodes[_i].checked) city_codes.push(_cityNodes[_i].value); }
   var pulsar_name=(document.getElementById('modal-pulsar')||{}).value; if(pulsar_name) pulsar_name=pulsar_name.trim();
   var nickname=(document.getElementById('modal-nickname')||{}).value; if(nickname) nickname=nickname.trim();
@@ -8479,6 +8496,276 @@ function depBuildPeriodOptions() {
   return out;
 }
 
+/* ===================== Royalty Statements module ===================== */
+var _royCfg = null, _royCsvText = '', _royCsvName = '', _royCombined = null, _royAssign = {}, _royHistory = [];
+
+function royMoney(n){ var v=Number(n); if(isNaN(v)) v=0; return '$'+v.toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2}); }
+function royNum(n){ var v=Number(n)||0; return v.toLocaleString('en-US'); }
+function royPct(dec){ var v=Number(dec)||0; return String(Math.round(v*1000000)/10000); }
+function royKpi(label,val,color){ return '<div style="flex:1;min-width:150px;background:var(--bg-color);border:1px solid var(--border-color);border-radius:10px;padding:12px 14px"><div style="font-size:12px;color:var(--text-muted-color)">'+escHtml(label)+'</div><div style="font-size:20px;font-weight:700;color:'+color+';margin-top:2px">'+val+'</div></div>'; }
+
+async function renderRoyalty(el){
+  var canManage = canRoyalty('manage');
+  _royCsvText=''; _royCsvName=''; _royCombined=null; _royAssign={};
+  try { _royCfg = await api('GET','/royalty/config'); }
+  catch(e){ _royCfg = { rates:{default:{royaltyRate:0.05,adRate:0.01,partsCostPct:0.75},byCity:{}}, locationMap:{}, motorClubs:[], cities:[] }; }
+  var now=new Date(), y=now.getFullYear(), mo=now.getMonth(); if(mo===0){ mo=12; y--; }
+  var defPeriod=y+'-'+String(mo).padStart(2,'0');
+  var html='<div class="page-header"><div class="page-title"><h2>Royalty Statements</h2><p>Drop one Pulsar Call Search export covering every city — Nova splits it by Location and builds each city&#39;s royalty &amp; advertising statement using that city&#39;s saved rates.</p></div></div>';
+  if(canManage){
+    html +=
+    '<div class="card" style="max-width:1000px;margin-bottom:22px"><div class="card-body">' +
+      '<h3 style="margin-top:0;margin-bottom:16px">Import a month</h3>' +
+      '<div style="display:flex;gap:12px;flex-wrap:wrap;align-items:flex-end">' +
+        '<div class="form-group" style="min-width:180px"><label>Statement Period <span style="color:#e24b4a">*</span></label><input type="month" id="roy-period" value="'+defPeriod+'" onchange="royPreviewCombined()" /></div>' +
+        '<div class="form-group" style="flex:1;min-width:240px"><label>Pulsar &ldquo;Call Search&rdquo; CSV — all cities <span style="color:#e24b4a">*</span></label><input type="file" id="roy-file" accept=".csv,text/csv" onchange="royOnFile(this)" /></div>' +
+      '</div>' +
+      '<div style="font-size:12px;color:var(--text-muted-color);margin:-2px 0 8px">One combined export is enough. Nova groups the calls by the Location column and matches each to a city; anything it can&#39;t match, you assign below and it remembers for next month.</div>' +
+      '<div id="roy-preview"></div>' +
+      '<button id="roy-save-btn" class="btn btn-primary" onclick="royImportCombined()" style="display:none">Save all statements</button>' +
+    '</div></div>';
+    html +=
+    '<div class="card" style="max-width:1000px;margin-bottom:22px"><div class="card-body">' +
+      '<details><summary style="cursor:pointer;font-weight:700;font-size:15px">Royalty rates &amp; settings</summary>' +
+      '<div style="font-size:12.5px;color:var(--text-muted-color);margin:10px 0 12px">Set each city&#39;s rates once — imports use these automatically, so nobody has to remember a rate. The Default row covers any city without its own rates.</div>' +
+      '<div id="roy-rates"></div>' +
+      '<div class="form-group" style="margin-top:14px"><label>Motor-club payers (comma-separated)</label><input type="text" id="roy-clubs" value="'+escHtml((_royCfg.motorClubs||[]).join(', '))+'" /><div style="font-size:12px;color:var(--text-muted-color);margin-top:4px">Blank Account = Core market · these payers = Motor Club · any other Account = National.</div></div>' +
+      '<button class="btn btn-primary" onclick="roySaveRates()">Save rates &amp; settings</button>' +
+      '</details>' +
+    '</div></div>';
+  }
+  if (state.user.isOwner) {
+    html +=
+    '<div class="card" style="max-width:1000px;margin-bottom:22px"><div class="card-body">' +
+      '<details><summary style="cursor:pointer;font-weight:700;font-size:15px">Who can access Royalty <span style="font-weight:400;color:var(--text-muted-color)">(owners only)</span></summary>' +
+      '<div style="font-size:12.5px;color:var(--text-muted-color);margin:10px 0 12px">Only owners see Royalty by default. Add specific people here — admins are NOT included automatically. <strong>View &amp; export</strong> lets someone open and download statements; <strong>Full</strong> also lets them import, replace and delete.</div>' +
+      '<div id="roy-access"><div class="loading">Loading…</div></div>' +
+      '</details>' +
+    '</div></div>';
+  }
+  html +=
+    '<div class="card"><div class="card-body">' +
+      '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;gap:12px;flex-wrap:wrap">' +
+        '<h3 style="margin:0">Statement history</h3>' +
+        '<input type="text" id="roy-search" placeholder="Filter by city or period…" oninput="royRenderHistory()" style="max-width:260px" />' +
+      '</div><div id="roy-history"><div class="loading">Loading…</div></div>' +
+    '</div></div>';
+  el.innerHTML = html;
+  if(canManage) royRenderRatesTable();
+  if(state.user.isOwner) royLoadAccess();
+  await royLoadHistory();
+}
+
+function royRenderRatesTable(){
+  var box=document.getElementById('roy-rates'); if(!box||!_royCfg) return;
+  var d=_royCfg.rates.default||{royaltyRate:0.05,adRate:0.01,partsCostPct:0.75};
+  function rrow(label,key,rt,isDef){
+    rt=rt||{};
+    var r=(rt.royaltyRate!=null)?royPct(rt.royaltyRate):'', a=(rt.adRate!=null)?royPct(rt.adRate):'', p=(rt.partsCostPct!=null)?royPct(rt.partsCostPct):'';
+    return '<tr data-city="'+key+'">'+
+      '<td>'+escHtml(label)+'</td>'+
+      '<td style="text-align:right"><input type="number" step="0.1" class="roy-rr" style="width:80px;text-align:right" value="'+r+'" /></td>'+
+      '<td style="text-align:right"><input type="number" step="0.1" class="roy-ar" style="width:80px;text-align:right" value="'+a+'" /></td>'+
+      '<td style="text-align:right"><input type="number" step="1" class="roy-pr" style="width:80px;text-align:right" value="'+p+'" /></td>'+
+    '</tr>';
+  }
+  var rows=rrow('Default (all other cities)','default',d,true);
+  (_royCfg.cities||[]).forEach(function(c){ rows += rrow(c.name+' ('+c.code+')', String(c.id), _royCfg.rates.byCity[String(c.id)]||d, false); });
+  box.innerHTML='<div class="table-wrap"><table class="table" style="font-size:13px"><thead><tr><th>City</th><th style="text-align:right">Royalty %</th><th style="text-align:right">Advertising %</th><th style="text-align:right">Parts cost %</th></tr></thead><tbody>'+rows+'</tbody></table></div>';
+}
+
+async function roySaveRates(){
+  var box=document.getElementById('roy-rates'); if(!box) return;
+  function pct(v,dv){ var n=parseFloat(v); return isNaN(n)?dv:n/100; }
+  var d=_royCfg.rates.default||{royaltyRate:0.05,adRate:0.01,partsCostPct:0.75};
+  var rates={ default:{royaltyRate:0.05,adRate:0.01,partsCostPct:0.75}, byCity:{} };
+  var trs=box.querySelectorAll('tr[data-city]');
+  Array.prototype.forEach.call(trs, function(tr){
+    var key=tr.getAttribute('data-city');
+    var rr=tr.querySelector('.roy-rr').value, ar=tr.querySelector('.roy-ar').value, pr=tr.querySelector('.roy-pr').value;
+    var obj={ royaltyRate:pct(rr,d.royaltyRate), adRate:pct(ar,d.adRate), partsCostPct:pct(pr,d.partsCostPct) };
+    if(key==='default') rates.default=obj;
+    else if(rr!==''||ar!==''||pr!=='') rates.byCity[key]=obj;
+  });
+  var clubs=((document.getElementById('roy-clubs')||{}).value||'').split(',').map(function(s){return s.trim();}).filter(Boolean);
+  try {
+    await api('PUT','/royalty/config', { rates:rates, motorClubs:clubs });
+    _royCfg.rates=rates; _royCfg.motorClubs=clubs;
+    showToast('Rates & settings saved.','success');
+    if(_royCsvText) royPreviewCombined();
+  } catch(err){ novaAlert(err.message||'Could not save.'); }
+}
+
+function royOnFile(input){
+  var f=input.files&&input.files[0];
+  var save=document.getElementById('roy-save-btn'); if(save) save.style.display='none';
+  var prev=document.getElementById('roy-preview'); _royAssign={};
+  if(!f){ _royCsvText=''; _royCsvName=''; if(prev) prev.innerHTML=''; return; }
+  _royCsvName=f.name;
+  var reader=new FileReader();
+  reader.onload=function(e){ _royCsvText=String(e.target.result||''); royPreviewCombined(); };
+  reader.onerror=function(){ if(prev) prev.innerHTML='<div class="alert alert-error">Could not read that file.</div>'; };
+  reader.readAsText(f);
+}
+
+async function royPreviewCombined(){
+  var prev=document.getElementById('roy-preview'); if(!prev) return;
+  if(!_royCsvText.trim()){ prev.innerHTML=''; return; }
+  var period=(document.getElementById('roy-period')||{}).value||'';
+  prev.innerHTML='<div class="loading">Splitting by city…</div>';
+  try {
+    var r=await api('POST','/royalty/preview-combined', { csv:_royCsvText, period:period, assignments:_royAssign });
+    _royCombined=r;
+    prev.innerHTML=royCombinedHtml(r);
+    var save=document.getElementById('roy-save-btn'); if(save) save.style.display=(r.groups&&r.groups.length)?'inline-block':'none';
+  } catch(err){
+    _royCombined=null;
+    prev.innerHTML='<div class="alert alert-error">'+escHtml(err.message||'Could not read the file.')+'</div>';
+    var s2=document.getElementById('roy-save-btn'); if(s2) s2.style.display='none';
+  }
+}
+
+function royAssign(encLoc, cityId){ var loc=decodeURIComponent(encLoc); if(cityId) _royAssign[loc]=cityId; else delete _royAssign[loc]; royPreviewCombined(); }
+
+function royCombinedHtml(r){
+  var groups=r.groups||[];
+  function cityOpts(sel){ var o='<option value="">— skip —</option>'; (r.cities||[]).forEach(function(c){ o+='<option value="'+c.id+'"'+(String(sel)===String(c.id)?' selected':'')+'>'+escHtml(c.name)+' ('+escHtml(c.code)+')</option>'; }); return o; }
+  var totRoy=0,totGross=0,totAd=0,matched=0;
+  var rows=groups.map(function(g){
+    if(g.city_id){ matched++; totRoy+=g.totals.royalty_fee; totGross+=g.totals.gross_sales; totAd+=g.totals.ad_fee; }
+    var un=g.unmapped&&g.unmapped.length? ' <span title="'+escHtml(g.unmapped.map(function(u){return u.task+' ('+u.count+')';}).join(', '))+'" style="color:#c47f17">&#9888; '+g.unmapped.reduce(function(a,b){return a+(b.count||0);},0)+'</span>':'';
+    var rateTxt=g.city_id? (royPct(g.rates.royaltyRate)+'% / '+royPct(g.rates.adRate)+'% / '+royPct(g.rates.partsCostPct)+'%') : '<span style="color:var(--text-muted-color)">—</span>';
+    var trStyle=g.city_id?'':' style="background:#fff7e6"';
+    return '<tr'+trStyle+'>'+
+      '<td>'+escHtml(g.location)+' <span style="color:var(--text-muted-color)">('+royNum(g.rowCount)+' rows)</span></td>'+
+      '<td><select onchange="royAssign(\''+encodeURIComponent(g.rawLocation)+'\', this.value)" style="min-width:150px">'+cityOpts(g.city_id)+'</select></td>'+
+      '<td style="text-align:right;font-size:12px">'+rateTxt+'</td>'+
+      '<td style="text-align:right">'+royNum(g.completed)+un+'</td>'+
+      '<td style="text-align:right">'+royMoney(g.totals.gross_sales)+'</td>'+
+      '<td style="text-align:right"><strong>'+royMoney(g.totals.royalty_fee)+'</strong></td>'+
+      '<td style="text-align:right">'+royMoney(g.totals.ad_fee)+'</td>'+
+    '</tr>';
+  }).join('');
+  var kpis='<div style="display:flex;gap:12px;flex-wrap:wrap;margin:4px 0 12px">'+
+    royKpi('Cities matched', matched+' / '+groups.length, '#1F3864')+
+    royKpi('Total Royalty (matched)', royMoney(totRoy), '#0f7b3f')+
+    royKpi('Total Gross (matched)', royMoney(totGross), '#1F3864')+
+    royKpi('Total Advertising (matched)', royMoney(totAd), '#0f7b3f')+'</div>';
+  var warn=(r.unmatched? '<div class="alert alert-warning" style="margin-bottom:10px">'+r.unmatched+' location(s) aren&#39;t matched to a city yet — pick a city in the dropdown (or leave as &ldquo;skip&rdquo;). Your picks are remembered for next month.</div>':'');
+  return warn+kpis+'<div class="table-wrap"><table class="table" style="font-size:13px"><thead><tr><th>Location (from file)</th><th>City</th><th style="text-align:right">Rates R/A/P</th><th style="text-align:right">Completed</th><th style="text-align:right">Gross</th><th style="text-align:right">Royalty</th><th style="text-align:right">Ad Fee</th></tr></thead><tbody>'+rows+'</tbody></table></div>'+
+    '<div style="font-size:12px;color:var(--text-muted-color);margin-top:8px">Rates shown are Royalty / Advertising / Parts-cost from each city&#39;s saved settings. Adjust them under &ldquo;Royalty rates &amp; settings&rdquo; above.</div>';
+}
+
+async function royImportCombined(){
+  if(!_royCsvText.trim()){ novaAlert('Choose a Pulsar CSV first.'); return; }
+  var period=(document.getElementById('roy-period')||{}).value||'';
+  if(!period){ novaAlert('Pick a statement period.'); return; }
+  var groups=(_royCombined&&_royCombined.groups)||[];
+  var matched=groups.filter(function(g){ return g.city_id||_royAssign[g.rawLocation]; }).length;
+  if(!matched){ novaAlert('No locations are matched to a city yet.'); return; }
+  var ok=await novaConfirm('Save '+matched+' statement(s) for '+((_royCombined&&_royCombined.period_label)||period)+'? Re-importing a city + month replaces the earlier one.', {title:'Save statements', okText:'Save all', cancelText:'Back'});
+  if(!ok) return;
+  var btn=document.getElementById('roy-save-btn'); if(btn){ btn.disabled=true; btn.textContent='Saving…'; }
+  try {
+    var r=await api('POST','/royalty/import-combined', { csv:_royCsvText, period:period, assignments:_royAssign, filename:_royCsvName, rememberMap:true });
+    var msg=((r.saved&&r.saved.length)||0)+' statement(s) saved for '+r.period_label+((r.skipped&&r.skipped.length)?(' · '+r.skipped.length+' location(s) skipped'):'');
+    showToast(msg,'success');
+    _royCsvText=''; _royCsvName=''; _royCombined=null; _royAssign={};
+    var fileEl=document.getElementById('roy-file'); if(fileEl) fileEl.value='';
+    var prev=document.getElementById('roy-preview'); if(prev) prev.innerHTML='';
+    if(btn) btn.style.display='none';
+    try { _royCfg = await api('GET','/royalty/config'); } catch(e){}
+    await royLoadHistory();
+  } catch(err){ novaAlert(err.message||'Could not save.'); }
+  finally { if(btn){ btn.disabled=false; btn.textContent='Save all statements'; } }
+}
+
+async function royLoadHistory(){
+  try { _royHistory=await api('GET','/royalty'); } catch(e){ _royHistory=[]; }
+  royRenderHistory();
+}
+
+function royRenderHistory(){
+  var box=document.getElementById('roy-history'); if(!box) return;
+  var q=((document.getElementById('roy-search')||{}).value||'').trim().toLowerCase();
+  var list=_royHistory.filter(function(s){ if(!q) return true; return (s.city_name+' '+s.city_code+' '+s.period+' '+s.period_label+' '+(s.owner_name||'')).toLowerCase().indexOf(q)!==-1; });
+  if(!list.length){ box.innerHTML='<div style="color:var(--text-muted-color);padding:12px 0">'+(_royHistory.length?'No statements match that filter.':'No statements yet. Import a Pulsar CSV above to create your first set.')+'</div>'; return; }
+  var canManage=canRoyalty('manage');
+  var rows=list.map(function(s){
+    var un=s.unmapped_count?' <span title="Unmapped calls left off the statement" style="color:#c47f17">&#9888; '+s.unmapped_count+'</span>':'';
+    return '<tr>'+
+      '<td><strong>'+escHtml(s.period_label)+'</strong></td>'+
+      '<td>'+escHtml(s.city_name)+' <span style="color:var(--text-muted-color)">('+escHtml(s.city_code)+')</span></td>'+
+      '<td>'+escHtml(s.owner_name||'—')+'</td>'+
+      '<td style="text-align:right">'+royMoney(s.gross_sales)+'</td>'+
+      '<td style="text-align:right"><strong>'+royMoney(s.royalty_fee)+'</strong></td>'+
+      '<td style="text-align:right">'+royMoney(s.ad_fee)+'</td>'+
+      '<td style="text-align:right">'+royNum(s.completed_count)+un+'</td>'+
+      '<td style="text-align:right;white-space:nowrap">'+
+        '<button class="btn btn-secondary btn-sm" onclick="royExport('+s.id+')" title="Download the formatted Excel statement">Excel</button> '+
+        '<button class="btn btn-secondary btn-sm" onclick="roySource('+s.id+')" title="Re-download this city&#39;s Pulsar CSV">CSV</button>'+
+        (canManage?' <button class="btn btn-secondary btn-sm" onclick="royDelete('+s.id+',\''+escHtml(s.period_label)+' '+escHtml(s.city_code)+'\')" title="Delete statement">&times;</button>':'')+
+      '</td></tr>';
+  }).join('');
+  box.innerHTML='<div class="table-wrap"><table class="table" style="font-size:13px"><thead><tr>'+
+    '<th>Period</th><th>City</th><th>Owner</th><th style="text-align:right">Gross Sales</th><th style="text-align:right">Royalty Fee</th><th style="text-align:right">Ad Fee</th><th style="text-align:right">Completed</th><th></th></tr></thead><tbody>'+rows+'</tbody></table></div>';
+}
+
+function royExport(id){ royDownload('/royalty/'+id+'/export.xlsx','royalty_statement.xlsx'); }
+function roySource(id){ royDownload('/royalty/'+id+'/source.csv','call_search.csv'); }
+
+async function royDelete(id,label){
+  var ok=await novaConfirm('Delete the '+label+' statement? The stored Pulsar data will be removed too.',{title:'Delete statement',okText:'Delete',cancelText:'Keep'});
+  if(!ok) return;
+  try { await api('DELETE','/royalty/'+id); showToast('Statement deleted.','success'); await royLoadHistory(); }
+  catch(err){ novaAlert(err.message||'Could not delete.'); }
+}
+
+async function royDownload(path,fallbackName){
+  try {
+    var res=await fetch('/api'+path,{ headers: state.token?{ 'Authorization':'Bearer '+state.token }:{} });
+    if(!res.ok){ var er={}; try{ er=await res.json(); }catch(e){} throw new Error(er.error||('Download failed ('+res.status+')')); }
+    var blob=await res.blob();
+    var cd=res.headers.get('Content-Disposition')||'', m=/filename="?([^"]+)"?/.exec(cd), name=m?m[1]:fallbackName;
+    var url=URL.createObjectURL(blob), a=document.createElement('a'); a.href=url; a.download=name; document.body.appendChild(a); a.click(); a.remove(); setTimeout(function(){ URL.revokeObjectURL(url); },1500);
+  } catch(err){ novaAlert(err.message||'Download failed.'); }
+}
+var _royAccess = [];
+async function royLoadAccess(){
+  var box=document.getElementById('roy-access'); if(!box) return;
+  try { _royAccess = await api('GET','/royalty/access'); }
+  catch(e){ box.innerHTML='<div class="alert alert-error">'+escHtml((e&&e.message)||'Could not load the access list.')+'</div>'; return; }
+  royRenderAccess();
+}
+function royRenderAccess(){
+  var box=document.getElementById('roy-access'); if(!box) return;
+  var rows=_royAccess.map(function(u){
+    var who='<strong>'+escHtml(u.name)+'</strong>'+(u.title?(' <span style="color:var(--text-muted-color)">'+escHtml(u.title)+'</span>'):'')+
+      '<div style="font-size:12px;color:var(--text-muted-color)">'+escHtml(u.email||'')+(u.role?(' · '+escHtml(u.role)):'')+'</div>';
+    var ctrl;
+    if(u.isOwner){ ctrl='<span style="display:inline-block;background:#e6f4ea;color:#0f7b3f;border:1px solid #b9e0c5;border-radius:6px;padding:2px 9px;font-size:12px">Owner — always full</span>'; }
+    else {
+      ctrl='<select onchange="roySetAccess('+u.id+', this.value)" style="min-width:170px">'+
+        '<option value="none"'+(u.level==='none'?' selected':'')+'>No access</option>'+
+        '<option value="view"'+(u.level==='view'?' selected':'')+'>View &amp; export only</option>'+
+        '<option value="manage"'+(u.level==='manage'?' selected':'')+'>Full (import / delete)</option>'+
+      '</select>';
+    }
+    return '<tr><td>'+who+'</td><td style="text-align:right">'+ctrl+'</td></tr>';
+  }).join('');
+  box.innerHTML='<div class="table-wrap"><table class="table" style="font-size:13px"><thead><tr><th>Person</th><th style="text-align:right">Royalty access</th></tr></thead><tbody>'+rows+'</tbody></table></div>'+
+    '<div style="font-size:12px;color:var(--text-muted-color);margin-top:8px">Changes take effect on that person’s next click — no sign-out needed.</div>';
+}
+async function roySetAccess(userId, level){
+  try {
+    await api('PUT','/royalty/access', { user_id:userId, level:level });
+    for(var i=0;i<_royAccess.length;i++){ if(_royAccess[i].id===userId){ _royAccess[i].level=level; break; } }
+    var u=_royAccess.filter(function(x){return x.id===userId;})[0];
+    showToast((level==='none'?'Removed Royalty access for ':'Updated Royalty access for ')+((u&&u.name)||'user'),'success');
+  } catch(err){ novaAlert((err&&err.message)||'Could not update access.'); royLoadAccess(); }
+}
+/* =================== end Royalty Statements module =================== */
+
 async function renderDeposits(el) {
   var canManage = ['admin','manager'].includes(state.user.role);
   var canSeeAll = ['admin','manager','approver'].includes(state.user.role);
@@ -13198,6 +13485,7 @@ function mySchedMonthHtml(){
       { label: 'New Vehicle Repair', view: 'new-vr', kw: 'create vr new vehicle repair maintenance add make', show: function () { return can('create_vr'); } },
       { label: 'Fleet Registry', view: 'fleet-registry', kw: 'fleet vehicle registry truck van car', show: function () { return can('manage_vehicles'); } },
       { label: 'Cash Deposits', view: 'deposits', kw: 'cash deposit money bank', show: function () { return can('view_deposits'); } },
+      { label: 'Royalty Statements', view: 'royalty', kw: 'royalty advertising fund franchise statement pulsar systemforward', show: function () { return canRoyalty('view'); } },
       { label: 'Accounts', view: 'vendors', kw: 'vendor account supplier accounts', show: function () { return can('view_vendors') || can('manage_vendors'); } },
       { label: 'Geico Surveys', view: 'geico', kw: 'geico survey insurance', show: function () { return can('manage_geico'); } },
       { label: 'Customer Feedback', view: 'feedback', kw: 'feedback complaint pulsar customer tech conduct', show: function () { return can('view_feedback'); } },

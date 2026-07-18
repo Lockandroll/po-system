@@ -64,6 +64,7 @@ ALL_PERMS.push('view_inspections', 'manage_inspections'); // vehicle inspections
 EMPLOYEE_PERMS.push('view_ptt');                        // PTT radio: own city channels + All Hands
 EMPLOYEE_PERMS.push('ptt_direct');                      // person-to-person direct talk
 ALL_PERMS.push('view_ptt', 'ptt_all_channels', 'ptt_direct');
+ALL_PERMS.push('view_royalty', 'manage_royalty');       // royalty statements module
 
 var DEFAULTS = {
   admin: '*',

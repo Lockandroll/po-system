@@ -2135,6 +2135,38 @@ async function initDB() {
       await client.query("INSERT INTO settings (key, value) VALUES ('dispatcher_role_backfilled', '1') ON CONFLICT (key) DO NOTHING");
     }
 
+    // ---- Royalty statements (Pop-A-Lock monthly royalty & advertising fund) ----
+    // One stored statement per city per month. Holds the raw Pulsar CSV (re-download),
+    // the computed statement cells, the rate/motor-club settings snapshot, and the
+    // headline totals for the history list. UNIQUE(city_id, period) => re-import replaces.
+    await client.query(
+      'CREATE TABLE IF NOT EXISTS royalty_statements (' +
+      '  id SERIAL PRIMARY KEY,' +
+      '  city_id INTEGER REFERENCES cities(id),' +
+      '  city_code VARCHAR(8),' +
+      '  city_name VARCHAR(255),' +
+      '  owner_name VARCHAR(255),' +
+      '  period VARCHAR(7) NOT NULL,' +
+      '  csv_data TEXT,' +
+      '  csv_filename VARCHAR(255),' +
+      '  cells JSONB,' +
+      '  settings JSONB,' +
+      '  royalty_fee NUMERIC(14,2) DEFAULT 0,' +
+      '  ad_fee NUMERIC(14,2) DEFAULT 0,' +
+      '  gross_sales NUMERIC(14,2) DEFAULT 0,' +
+      '  row_count INTEGER DEFAULT 0,' +
+      '  completed_count INTEGER DEFAULT 0,' +
+      '  unmapped JSONB,' +
+      '  created_by INTEGER REFERENCES users(id),' +
+      '  created_by_name VARCHAR(255),' +
+      '  created_at TIMESTAMPTZ DEFAULT NOW(),' +
+      '  updated_at TIMESTAMPTZ DEFAULT NOW(),' +
+      '  UNIQUE (city_id, period)' +
+      ');'
+    );
+    await client.query('CREATE INDEX IF NOT EXISTS idx_royalty_period ON royalty_statements(period);');
+    await client.query('CREATE INDEX IF NOT EXISTS idx_royalty_city ON royalty_statements(city_id);');
+
     console.log('Database initialized');
   } finally {
     client.release();

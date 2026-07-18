@@ -104,6 +104,7 @@ app.use('/api/vehicles', require('./routes/vehicles'));
 app.use('/api/vr', require('./routes/vr'));
 app.use('/api/suggestions', require('./routes/suggestions'));
 app.use('/api/running', require('./routes/running'));
+app.use('/api/royalty', require('./routes/royalty'));
 app.use('/api/geico', require('./routes/geico'));
 app.use('/api/deposits', require('./routes/deposits'));
 app.use('/api/signoffs', require('./routes/signoffs'));
