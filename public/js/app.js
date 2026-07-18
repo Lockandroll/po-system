@@ -1286,15 +1286,15 @@ async function exportCSV() {
   try {
     const { pos, itemsByPO } = await api('GET', '/pos/export');
     const rows = [];
-    rows.push(['PO Number','Status','City','Vendor','Customer Name','Requested By','Date','PO Total','Item #','Manufacturer','Description','Quantity','Unit Price','Tracking #','Line Total'].join(','));
+    rows.push(['PO Number','Status','City','Vendor','Customer Name','PO Requested By','Date','PO Total','Item #','Manufacturer','Description','Item Requested By','Quantity','Unit Price','Tracking #','Line Total'].join(','));
     pos.forEach(function(po) {
       const items = itemsByPO[po.po_number] || [];
       if (items.length === 0) {
-        rows.push([po.po_number, po.status, po.city_code||'', po.vendor_name, po.customer_name||'', po.requester_name||'', formatDate(po.created_at), parseFloat(po.total_amount).toFixed(2), '', '', '', '', '', ''].map(csvCell).join(','));
+        rows.push([po.po_number, po.status, po.city_code||'', po.vendor_name, po.customer_name||'', po.requester_name||'', formatDate(po.created_at), parseFloat(po.total_amount).toFixed(2), '', '', '', '', '', '', '', ''].map(csvCell).join(','));
       } else {
         items.forEach(function(item) {
           const lineTotal = (parseFloat(item.quantity) * parseFloat(item.unit_price)).toFixed(2);
-          rows.push([po.po_number, po.status, po.city_code||'', po.vendor_name, po.customer_name||'', po.requester_name||'', formatDate(po.created_at), parseFloat(po.total_amount).toFixed(2), item.item_number||'', item.manufacturer||'', item.description, item.quantity, parseFloat(item.unit_price).toFixed(2), item.tracking_number||'', lineTotal].map(csvCell).join(','));
+          rows.push([po.po_number, po.status, po.city_code||'', po.vendor_name, po.customer_name||'', po.requester_name||'', formatDate(po.created_at), parseFloat(po.total_amount).toFixed(2), item.item_number||'', item.manufacturer||'', item.description, item.requested_by_name||'', item.quantity, parseFloat(item.unit_price).toFixed(2), item.tracking_number||'', lineTotal].map(csvCell).join(','));
         });
       }
     });
@@ -1314,6 +1314,42 @@ function csvCell(val) {
   const s = String(val == null ? '' : val);
   if (s.includes(',') || s.includes('"') || s.includes('\n')) return '"' + s.replace(/"/g, '""') + '"';
   return s;
+}
+
+// Export a single PO's line items to a CSV (opens in Excel): just the column
+// headers and the item records below — no PO letterhead or totals.
+async function exportPOExcel(id) {
+  try {
+    const po = await api('GET', '/pos/' + id);
+    const items = po.line_items || [];
+    const rows = [];
+    rows.push(['Item #','Manufacturer','Description','Requested By','Quantity','Unit Price','Tracking #','Line Total'].join(','));
+    items.forEach(function(item) {
+      const qty = parseFloat(item.quantity);
+      const price = parseFloat(item.unit_price);
+      const lineTotal = (qty * price).toFixed(2);
+      rows.push([
+        item.item_number || '',
+        item.manufacturer || '',
+        item.description || '',
+        item.requested_by_name || '',
+        item.quantity,
+        isNaN(price) ? '' : price.toFixed(2),
+        item.tracking_number || '',
+        isNaN(qty * price) ? '' : lineTotal
+      ].map(csvCell).join(','));
+    });
+    const blob = new Blob([rows.join('\n')], { type: 'text/csv' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    const safeName = String(po.po_number || 'purchase-order').replace(/[^a-zA-Z0-9._-]+/g, '-');
+    a.href = url;
+    a.download = safeName + '.csv';
+    a.click();
+    URL.revokeObjectURL(url);
+  } catch(err) {
+    novaAlert('Export failed: ' + err.message);
+  }
 }
 
 let lineItems = [];
@@ -1788,6 +1824,7 @@ async function renderViewPO(el, id) {
         '<div class="flex-gap">' +
           '<button class="btn btn-secondary" onclick="navigate(\'dashboard\')">&larr; Back</button>' +
           '<button class="btn btn-secondary" style="white-space:nowrap" onclick="printPO(' + po.id + ')">' + icons.print + ' Print PO</button>' +
+          '<button class="btn btn-secondary" style="white-space:nowrap" onclick="exportPOExcel(' + po.id + ')">&#8595; Export Excel</button>' +
           (canEdit ? '<button class="btn btn-secondary" onclick="navigate(\'edit\',' + po.id + ')">' + icons.edit + ' Edit</button>' : '') +
           (canSubmit ? '<button class="btn btn-primary" onclick="submitPO(' + po.id + ')">' + (po.status === 'rejected' ? 'Resubmit for Approval' : 'Submit for Approval') + '</button>' : '') +
           (canDelete ? '<button class="btn btn-danger btn-sm" style="white-space:nowrap" onclick="deletePO(' + po.id + ')">' + icons.trash + ' Delete PO</button>' : '') +
@@ -1814,19 +1851,20 @@ async function renderViewPO(el, id) {
       '</div></div>' +
       '<div class="card mb-4"><div class="card-header"><span class="card-title">Line Items</span></div><div class="card-body">' +
         '<div class="table-wrap"><table class="line-items-table">' +
-          '<thead><tr><th>Item #</th><th>Manufacturer</th><th>Description</th><th>Qty</th><th>Unit Price</th><th>Tracking #</th><th class="text-right">Total</th></tr></thead>' +
+          '<thead><tr><th>Item #</th><th>Manufacturer</th><th>Description</th><th>Requested By</th><th>Qty</th><th>Unit Price</th><th>Tracking #</th><th class="text-right">Total</th></tr></thead>' +
           '<tbody>' + po.line_items.map(function(item) {
             return '<tr>' +
               '<td>' + escHtml(item.item_number || '—') + '</td>' +
               '<td>' + escHtml(item.manufacturer || '—') + '</td>' +
               '<td>' + escHtml(item.description) + '</td>' +
+              '<td>' + escHtml(item.requested_by_name || '—') + '</td>' +
               '<td>' + item.quantity + '</td>' +
               '<td>$' + parseFloat(item.unit_price).toFixed(2) + '</td>' +
               '<td>' + escHtml(item.tracking_number || '\u2014') + '</td>' +
               '<td class="text-right">$' + (parseFloat(item.quantity) * parseFloat(item.unit_price)).toFixed(2) + '</td>' +
             '</tr>';
           }).join('') + '</tbody>' +
-          '<tfoot><tr class="total-row"><td colspan="6" class="text-right">Grand Total</td><td class="text-right">$' + parseFloat(po.total_amount).toFixed(2) + '</td></tr></tfoot>' +
+          '<tfoot><tr class="total-row"><td colspan="7" class="text-right">Grand Total</td><td class="text-right">$' + parseFloat(po.total_amount).toFixed(2) + '</td></tr></tfoot>' +
         '</table></div>' +
       '</div></div>' +
       (canApprove ?
@@ -2221,6 +2259,7 @@ async function printPO(id) {
         '<td style="padding:10px 8px;color:#6b7280;border-bottom:1px solid #f3f4f6;white-space:nowrap">' + esc(item.item_number || '—') + '</td>' +
         '<td style="padding:10px 8px;color:#6b7280;border-bottom:1px solid #f3f4f6;white-space:nowrap">' + esc(item.manufacturer || '—') + '</td>' +
         '<td style="padding:10px 8px;border-bottom:1px solid #f3f4f6;word-break:break-word">' + esc(item.description) + '</td>' +
+        '<td style="padding:10px 8px;color:#6b7280;border-bottom:1px solid #f3f4f6;white-space:nowrap">' + esc(item.requested_by_name || '—') + '</td>' +
         '<td style="padding:10px 8px;text-align:right;border-bottom:1px solid #f3f4f6;white-space:nowrap">' + esc(item.quantity) + '</td>' +
         '<td style="padding:10px 8px;text-align:right;border-bottom:1px solid #f3f4f6;white-space:nowrap">$' + parseFloat(item.unit_price).toFixed(2) + '</td>' +
         '<td style="padding:10px 8px;color:#6b7280;border-bottom:1px solid #f3f4f6;white-space:nowrap">' + esc(item.tracking_number || '\u2014') + '</td>' +
@@ -2284,6 +2323,7 @@ async function printPO(id) {
               '<th style="text-align:left;padding:8px;font-size:11px;font-weight:600;color:#6b7280;text-transform:uppercase;letter-spacing:0.05em">Item #</th>' +
               '<th style="text-align:left;padding:8px;font-size:11px;font-weight:600;color:#6b7280;text-transform:uppercase;letter-spacing:0.05em">Manufacturer</th>' +
               '<th style="text-align:left;padding:8px;font-size:11px;font-weight:600;color:#6b7280;text-transform:uppercase;letter-spacing:0.05em">Description</th>' +
+              '<th style="text-align:left;padding:8px;font-size:11px;font-weight:600;color:#6b7280;text-transform:uppercase;letter-spacing:0.05em">Requested by</th>' +
               '<th style="text-align:right;padding:8px;font-size:11px;font-weight:600;color:#6b7280;text-transform:uppercase;letter-spacing:0.05em">Qty</th>' +
               '<th style="text-align:right;padding:8px;font-size:11px;font-weight:600;color:#6b7280;text-transform:uppercase;letter-spacing:0.05em">Unit price</th>' +
               '<th style="text-align:left;padding:8px;font-size:11px;font-weight:600;color:#6b7280;text-transform:uppercase;letter-spacing:0.05em">Tracking #</th>' +
@@ -2291,7 +2331,7 @@ async function printPO(id) {
             '</tr></thead>' +
             '<tbody>' + itemRows + '</tbody>' +
             '<tfoot><tr style="border-top:2px solid #e5e7eb">' +
-              '<td colspan="6" style="padding:12px 8px;text-align:right;font-weight:600;font-size:13px;color:#6b7280">Grand total</td>' +
+              '<td colspan="7" style="padding:12px 8px;text-align:right;font-weight:600;font-size:13px;color:#6b7280">Grand total</td>' +
               '<td style="padding:12px 8px;text-align:right;font-size:17px;font-weight:700;color:#f97316">$' + parseFloat(po.total_amount).toFixed(2) + '</td>' +
             '</tr></tfoot>' +
           '</table>' +
@@ -2498,7 +2538,8 @@ async function renderNotifications(el) {
     { key:'task_assigned', label:'Task assigned to someone', desc:'Notifies the person a task was assigned to.' },
     { key:'task_due', label:'Task due / overdue reminders', desc:'Reminds the assignee when a task is due or already overdue.' },
     { key:'task_cc_created', label:'Copied (FYI) on a new task', desc:'Emails the people copied on a task when it is created, so they are aware.', emailOnly:true },
-    { key:'task_cc_done', label:'Copied (FYI) task completed', desc:'Emails the people copied on a task when it is moved to Done.', emailOnly:true }
+    { key:'task_cc_done', label:'Copied (FYI) task completed', desc:'Emails the people copied on a task when it is moved to Done.', emailOnly:true },
+    { key:'task_cc_overdue', label:'Copied (FYI) task overdue', desc:'Emails the people copied on a task the first day it becomes overdue.', emailOnly:true }
   ];
   var tHtml = taskAlerts.map(function(ev) {
     var rule = rules[ev.key];
@@ -2581,7 +2622,7 @@ async function saveNotifications() {
     rules[key] = { email: emailEl ? emailEl.checked : true, sms: smsEl ? smsEl.checked : true };
   });
   // FYI/copied alerts are awareness-only: email channel, never SMS.
-  ['task_cc_created','task_cc_done'].forEach(function(key) {
+  ['task_cc_created','task_cc_done','task_cc_overdue'].forEach(function(key) {
     var emailEl = document.getElementById('nt-email-' + key);
     rules[key] = { email: emailEl ? emailEl.checked : true, sms: false };
   });

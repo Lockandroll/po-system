@@ -513,7 +513,7 @@ router.put('/:id', requireAuth, requirePermission('manage_tasks'), async (req, r
     const secondaryChanged = (secondary_assignee_id || null) !== (ex.secondary_assignee_id || null);
     await pool.query(
       'UPDATE tasks SET title=$1, description=$2, status=$3, priority=$4, assigned_to=$5, due_date=$6, recurrence=$7, recurrence_day=$8, secondary_assignee_id=$9, assigned_by=$10, due_locked=$11, ' +
-      (dueChanged ? 'reminded_day_before=false, reminded_due=false, last_overdue_on=NULL, ' : '') +
+      (dueChanged ? 'reminded_day_before=false, reminded_due=false, last_overdue_on=NULL, cc_overdue_notified=false, ' : '') +
       'updated_at=NOW() WHERE id=$12',
       [title, description, status, priority, assigned_to, due_date, recurrence, recDay, secondary_assignee_id, newAssignedBy, newDueLocked, req.params.id]
     );

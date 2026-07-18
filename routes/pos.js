@@ -60,7 +60,9 @@ router.get('/export', requireAuth, requirePermission('view_pos'), async (req, re
   const { rows: pos } = await pool.query(poQuery, poParams);
 
   const { rows: items } = await pool.query(
-    'SELECT li.*, po.po_number FROM po_line_items li JOIN purchase_orders po ON li.po_id = po.id' +
+    'SELECT li.*, po.po_number, u.name AS requested_by_name FROM po_line_items li ' +
+    'JOIN purchase_orders po ON li.po_id = po.id ' +
+    'LEFT JOIN users u ON li.requested_by = u.id' +
     (isApproverOrAdmin ? '' : ' WHERE po.requester_id = $1') +
     ' ORDER BY li.po_id, li.id',
     isApproverOrAdmin ? [] : [req.user.id]
@@ -101,7 +103,8 @@ router.get('/:id', requireAuth, requirePermission('view_pos'), async (req, res) 
   }
 
   const { rows: items } = await pool.query(
-    'SELECT * FROM po_line_items WHERE po_id = $1 ORDER BY id',
+    'SELECT li.*, u.name AS requested_by_name FROM po_line_items li ' +
+    'LEFT JOIN users u ON li.requested_by = u.id WHERE li.po_id = $1 ORDER BY li.id',
     [req.params.id]
   );
 
@@ -140,8 +143,8 @@ router.post('/', requireAuth, requirePermission('create_po'), async (req, res) =
     for (let i = 0; i < line_items.length; i++) {
       const item = line_items[i];
       await client.query(
-        'INSERT INTO po_line_items (po_id, item_number, manufacturer, description, quantity, unit_price, tracking_number) VALUES ($1, $2, $3, $4, $5, $6, $7)',
-        [po.id, item.item_number || null, item.manufacturer || null, item.description, item.quantity, item.unit_price, item.tracking_number || null]
+        'INSERT INTO po_line_items (po_id, item_number, manufacturer, description, quantity, unit_price, tracking_number, requested_by) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)',
+        [po.id, item.item_number || null, item.manufacturer || null, item.description, item.quantity, item.unit_price, item.tracking_number || null, item.requested_by || req.user.id]
       );
     }
     await client.query('COMMIT');
@@ -195,8 +198,8 @@ router.put('/:id', requireAuth, async (req, res) => {
       for (let i = 0; i < line_items.length; i++) {
         const item = line_items[i];
         await client.query(
-          'INSERT INTO po_line_items (po_id, item_number, manufacturer, description, quantity, unit_price, tracking_number) VALUES ($1, $2, $3, $4, $5, $6, $7)',
-          [req.params.id, item.item_number || null, item.manufacturer || null, item.description, item.quantity, item.unit_price, item.tracking_number || null]
+          'INSERT INTO po_line_items (po_id, item_number, manufacturer, description, quantity, unit_price, tracking_number, requested_by) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)',
+          [req.params.id, item.item_number || null, item.manufacturer || null, item.description, item.quantity, item.unit_price, item.tracking_number || null, item.requested_by || null]
         );
       }
     }

@@ -112,6 +112,48 @@ async function notifyTaskCcDone(taskId, closerName) {
   });
   try { await sendEmail(emails, 'Done \u2014 task: ' + t.title, html); } catch (e) { console.error('[tasks] cc done email failed:', e.message); }
 }
+// FYI email to the copied people the first day a task they were copied on goes overdue.
+async function notifyTaskCcOverdue(taskId) {
+  const t = (await pool.query('SELECT t.*, a.name AS assignee_name FROM tasks t LEFT JOIN users a ON t.assigned_to = a.id WHERE t.id = $1', [taskId])).rows[0];
+  if (!t) return;
+  const ids = (await pool.query('SELECT user_id FROM task_cc WHERE task_id = $1', [taskId])).rows.map(function (r) { return r.user_id; });
+  const emails = await ccEmails(ids);
+  if (!emails.length) return;
+  if (!(await getChannels('task_cc_overdue')).email) return;
+  const who = t.assignee_name || 'someone';
+  const line = 'This task you were copied on is past its due date and has not been marked Done' + (t.assignee_name ? ' (assigned to ' + t.assignee_name + ')' : '') + '. No action is needed unless asked.';
+  const html = emailTemplate({
+    badge: 'Task overdue', badgeColor: 'red',
+    title: t.title,
+    body: line + '<br><br>' + (t.description ? t.description + '<br><br>' : '') +
+      'Priority: ' + t.priority + '<br>Assigned to: ' + who + (t.due_date ? '<br>Was due: ' + fmtDate(t.due_date) : ''),
+    buttonText: 'View Task', buttonUrl: APP + '/?view=tasks',
+    footerNote: 'Automated task notification from Nova.'
+  });
+  try { await sendEmail(emails, 'Overdue \u2014 task: ' + t.title, html); } catch (e) { console.error('[tasks] cc overdue email failed:', e.message); }
+}
+// Daily-sweep companion: the first day an open task with FYI recipients is overdue,
+// email them once (email-only, matching the FYI awareness rule) then flag it so it
+// never repeats. Runs its own query so it also covers unassigned/orphaned tasks that
+// the assignee digest (INNER JOIN on users) skips.
+async function runCcOverdueNotices(todayStr) {
+  try {
+    const { rows } = await pool.query(
+      "SELECT t.id FROM tasks t " +
+      "WHERE t.status <> 'done' AND t.is_template = false AND t.due_date IS NOT NULL " +
+      "AND t.due_date < $1::date AND t.cc_overdue_notified = false " +
+      "AND EXISTS (SELECT 1 FROM task_cc c WHERE c.task_id = t.id)",
+      [todayStr]
+    );
+    for (const r of rows) {
+      try { await notifyTaskCcOverdue(r.id); } catch (e) { console.error('[tasks] cc overdue notify failed for', r.id, e.message); }
+      await pool.query('UPDATE tasks SET cc_overdue_notified = true WHERE id = $1', [r.id]);
+    }
+    if (rows.length) console.log('[tasks] cc overdue notices sent for', rows.length, 'task(s)');
+  } catch (err) {
+    console.error('[tasks] cc overdue sweep failed:', err.message);
+  }
+}
 
 // Small helpers for the daily digest.
 function esc(s) {
@@ -197,6 +239,9 @@ async function runTaskReminders() {
       for (let k = 0; k < g.today.length; k++) await pool.query('UPDATE tasks SET reminded_due = true WHERE id = $1', [g.today[k].id]);
       for (let k = 0; k < g.overdue.length; k++) await pool.query('UPDATE tasks SET last_overdue_on = $1 WHERE id = $2', [todayStr, g.overdue[k].id]);
     }
+
+    // FYI recipients: email them once the first day their task goes overdue.
+    await runCcOverdueNotices(todayStr);
   } catch (err) {
     console.error('[tasks] reminder sweep failed:', err.message);
   }
@@ -324,4 +369,4 @@ function startCompletedCleanup() {
   console.log('[tasks] Completed-task cleanup scheduled (03:00 ' + TZ + ', deletes done tasks >14 days old)');
 }
 
-module.exports = { startTaskReminders, startCompletedCleanup, runCompletedCleanup, runTaskReminders, notifyTaskAssigned, notifyTaskCc, notifyTaskCcInfo, notifyTaskCcDone, startRecurringSpawner, runRecurringSpawner, spawnFromTemplate, recurNextStart, recurDueFromStart, recurAdvanceStart, recurYmd, recurFromYmd };
+module.exports = { startTaskReminders, startCompletedCleanup, runCompletedCleanup, runTaskReminders, notifyTaskAssigned, notifyTaskCc, notifyTaskCcInfo, notifyTaskCcDone, notifyTaskCcOverdue, runCcOverdueNotices, startRecurringSpawner, runRecurringSpawner, spawnFromTemplate, recurNextStart, recurDueFromStart, recurAdvanceStart, recurYmd, recurFromYmd };

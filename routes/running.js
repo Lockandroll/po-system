@@ -178,8 +178,8 @@ router.post('/create-po', requireAuth, requirePermission('manage_running'), asyn
     for (let i = 0; i < items.length; i++) {
       const it = items[i];
       await client.query(
-        'INSERT INTO po_line_items (po_id, item_number, manufacturer, description, quantity, unit_price) VALUES ($1,$2,$3,$4,$5,$6)',
-        [po.id, it.part_number || null, null, it.description, it.quantity || 1, it.unit_price || 0]
+        'INSERT INTO po_line_items (po_id, item_number, manufacturer, description, quantity, unit_price, requested_by) VALUES ($1,$2,$3,$4,$5,$6,$7)',
+        [po.id, it.part_number || null, null, it.description, it.quantity || 1, it.unit_price || 0, it.requester_id || null]
       );
       await client.query(
         "UPDATE running_list_items SET status='consumed', po_id=$1, updated_at=NOW() WHERE id=$2",

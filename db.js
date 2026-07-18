@@ -92,6 +92,10 @@ async function initDB() {
       'ALTER TABLE po_line_items ADD COLUMN IF NOT EXISTS item_number VARCHAR(100);' +
       'ALTER TABLE po_line_items ADD COLUMN IF NOT EXISTS manufacturer VARCHAR(255);' +
       'ALTER TABLE po_line_items ADD COLUMN IF NOT EXISTS tracking_number VARCHAR(255);' +
+      // Per-line "requested by" so multi-locksmith cities can sort parts by tech when a
+      // shipment lands. Carried from running_list_items.requester_id when a running list
+      // is pushed to a PO (see routes/running.js) and preserved through PO edits.
+      'ALTER TABLE po_line_items ADD COLUMN IF NOT EXISTS requested_by INTEGER REFERENCES users(id) ON DELETE SET NULL;' +
       'ALTER TABLE users ADD COLUMN IF NOT EXISTS active BOOLEAN NOT NULL DEFAULT true;' +
       'ALTER TABLE users ADD COLUMN IF NOT EXISTS phone VARCHAR(50);' +
       // Bumped on password reset to invalidate all previously-issued sessions.
@@ -411,6 +415,28 @@ async function initDB() {
       'ALTER TABLE po_line_items ALTER COLUMN item_number TYPE VARCHAR(255);' +
       'ALTER TABLE running_list_items ALTER COLUMN part_number TYPE VARCHAR(255);'
     );
+    // One-time backfill of po_line_items.requested_by for POs built before the push
+    // started carrying it. The consumed running_list_items still point at their po_id,
+    // so recover the tech by matching each PO line back to its running-list source on
+    // po_id + description + part # + qty + price. Only fill where the match is
+    // unambiguous (a single tech for that group) so attribution is never guessed wrong;
+    // guarded by requested_by IS NULL so it is idempotent and never overwrites a value.
+    await client.query(
+      'UPDATE po_line_items li SET requested_by = sub.requester_id FROM (' +
+        'SELECT r.po_id, r.description, r.part_number, r.quantity, r.unit_price, ' +
+               'MAX(r.requester_id) AS requester_id, COUNT(DISTINCT r.requester_id) AS tech_count ' +
+        'FROM running_list_items r ' +
+        'WHERE r.po_id IS NOT NULL AND r.requester_id IS NOT NULL ' +
+        'GROUP BY r.po_id, r.description, r.part_number, r.quantity, r.unit_price' +
+      ') sub ' +
+      'WHERE li.requested_by IS NULL ' +
+        'AND li.po_id = sub.po_id ' +
+        'AND li.description = sub.description ' +
+        'AND li.item_number IS NOT DISTINCT FROM sub.part_number ' +
+        'AND li.quantity = COALESCE(sub.quantity, 1) ' +
+        'AND li.unit_price = COALESCE(sub.unit_price, 0) ' +
+        'AND sub.tech_count = 1'
+    );
     // Geico ERS survey history + city attribution
     await client.query(
       'ALTER TABLE vendors ADD COLUMN IF NOT EXISTS city_code CHAR(3);'
@@ -564,6 +590,7 @@ async function initDB() {
       '  reminded_day_before BOOLEAN NOT NULL DEFAULT false,' +
       '  reminded_due BOOLEAN NOT NULL DEFAULT false,' +
       '  last_overdue_on DATE,' +
+      '  cc_overdue_notified BOOLEAN NOT NULL DEFAULT false,' +
       '  created_at TIMESTAMPTZ DEFAULT NOW(),' +
       '  updated_at TIMESTAMPTZ DEFAULT NOW()' +
       ');'
@@ -629,6 +656,18 @@ async function initDB() {
       "ALTER TABLE task_activity ADD COLUMN IF NOT EXISTS type VARCHAR(20) NOT NULL DEFAULT 'event';" +
       "ALTER TABLE task_activity ADD COLUMN IF NOT EXISTS body TEXT;" +
       "ALTER TABLE task_activity ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ DEFAULT NOW();"
+    );
+    // FYI-overdue flag: add the column and, in the SAME one-time step, mark every
+    // task that is ALREADY overdue as notified - so turning this feature on does not
+    // fire a retroactive burst of "task overdue" emails to copied (FYI) people.
+    // Guarded on the column not existing yet, so it runs exactly once; tasks that go
+    // overdue AFTER deploy are left false and handled by the daily sweep.
+    await client.query(
+      "DO $do$ BEGIN " +
+      "IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'tasks' AND column_name = 'cc_overdue_notified') THEN " +
+      "ALTER TABLE tasks ADD COLUMN cc_overdue_notified BOOLEAN NOT NULL DEFAULT false; " +
+      "UPDATE tasks SET cc_overdue_notified = true WHERE due_date IS NOT NULL AND due_date < CURRENT_DATE AND status <> 'done'; " +
+      "END IF; END $do$;"
     );
     await client.query(
       'CREATE INDEX IF NOT EXISTS idx_tasks_assignee ON tasks(assigned_to);' +
