@@ -239,6 +239,119 @@ async function recordCancellation(client, r, meta) {
   );
 }
 
+// ---- schedule reflection for PTO -------------------------------------------
+// PTO marks the schedule with three positions: paid -> Approved Vacation Day,
+// unpaid -> Unpaid Vacation Day, off -> Scheduled Off (a neutral, no-charge day).
+// The first two are hardcoded (created in prod); the neutral one is resolved by
+// name so we never depend on its serial id.
+let _offPosCache; // undefined = not looked up yet; number | null afterwards
+async function scheduledOffPosId() {
+  if (_offPosCache !== undefined) return _offPosCache;
+  try {
+    const r = await pool.query("SELECT id FROM shift_positions WHERE name = 'Scheduled Off' ORDER BY id ASC LIMIT 1");
+    _offPosCache = r.rows.length ? r.rows[0].id : null;
+  } catch (e) { _offPosCache = null; }
+  return _offPosCache;
+}
+async function posForKind(kind) {
+  if (kind === 'unpaid') return UNPAID_VACATION_POSITION_ID;
+  if (kind === 'off') return await scheduledOffPosId();
+  return APPROVED_VACATION_POSITION_ID; // paid (default)
+}
+// Every position PTO uses to mark the schedule (for clearing / flip-guarding).
+async function ptoMarkerPositions() {
+  const off = await scheduledOffPosId();
+  const arr = [APPROVED_VACATION_POSITION_ID, UNPAID_VACATION_POSITION_ID];
+  if (off) arr.push(off);
+  return arr;
+}
+// Every calendar date string in [a,b] inclusive (weekends included — 24/7 crew).
+function eachDate(a, b) {
+  const s = parseDate(a), e = parseDate(b), out = [];
+  if (!s || !e || e < s) return out;
+  const d = new Date(s);
+  while (d <= e) { out.push(ymd(d)); d.setDate(d.getDate() + 1); }
+  return out;
+}
+
+// Apply a set of tagged days to the schedule. For each day we flip an existing shift
+// to that day's marker (remembering the original in prev_position_id, and publishing
+// it so approved time off shows even on a draft week) or, if there is no shift that
+// day, insert a published marker. This is what makes an approval always appear on the
+// grid, even for someone who was not already scheduled. Call inside a tx.
+// days = [{ date: 'YYYY-MM-DD', kind: 'paid'|'unpaid'|'off' }, ...]
+async function applyDaysToSchedule(client, userId, days, actorId) {
+  if (!days || !days.length) return;
+  const uq = await client.query('SELECT name, home_city FROM users WHERE id = $1', [userId]);
+  const uname = uq.rows.length ? uq.rows[0].name : null;
+  let city = uq.rows.length ? (uq.rows[0].home_city || null) : null;
+  if (!city) {
+    const cq = await client.query('SELECT city_code FROM user_cities WHERE user_id = $1 ORDER BY id ASC LIMIT 1', [userId]);
+    city = cq.rows.length ? cq.rows[0].city_code : null;
+  }
+  const markers = await ptoMarkerPositions();
+  for (let i = 0; i < days.length; i++) {
+    const day = days[i].date;
+    const posId = await posForKind(days[i].kind);
+    if (!posId) continue; // e.g. Scheduled Off position missing -> skip the marker
+    const upd = await client.query(
+      'UPDATE shifts SET prev_position_id = CASE WHEN position_id = ANY($4::int[]) THEN prev_position_id ELSE position_id END, ' +
+      "position_id = $1, status = 'published', published_at = COALESCE(published_at, NOW()), updated_at = NOW() " +
+      'WHERE user_id = $2 AND shift_date = $3',
+      [posId, userId, day, markers]
+    );
+    if (upd.rowCount === 0) {
+      await client.query(
+        'INSERT INTO shifts (user_id, user_name, city_code, position_id, shift_date, start_time, end_time, break_minutes, notes, status, published_at, created_by, pto_generated) ' +
+        "VALUES ($1, $2, $3, $4, $5, '09:00', '17:00', 0, NULL, 'published', NOW(), $6, true)",
+        [userId, uname, city, posId, day, actorId || null]
+      );
+    }
+  }
+}
+
+// Undo applyDaysToSchedule over a set of dates: delete the markers we auto-created
+// (pto_generated) and restore any shift we flipped back to its original position.
+async function clearDatesFromSchedule(client, userId, dates) {
+  if (!dates || !dates.length) return;
+  const markers = await ptoMarkerPositions();
+  await client.query(
+    'DELETE FROM shifts WHERE user_id = $1 AND shift_date = ANY($2::date[]) AND pto_generated = true AND position_id = ANY($3::int[])',
+    [userId, dates, markers]
+  );
+  await client.query(
+    'UPDATE shifts SET position_id = prev_position_id, prev_position_id = NULL, updated_at = NOW() ' +
+    'WHERE user_id = $1 AND shift_date = ANY($2::date[]) AND COALESCE(pto_generated, false) = false AND position_id = ANY($3::int[])',
+    [userId, dates, markers]
+  );
+}
+// Clear the schedule for a whole request: its exact tagged days if present, else the
+// legacy [start,end] range (for requests created before the per-day model).
+async function clearRequestFromSchedule(client, r) {
+  const dr = await client.query('SELECT day_date FROM pto_request_days WHERE request_id = $1', [r.id]);
+  if (dr.rows.length) {
+    await clearDatesFromSchedule(client, r.user_id, dr.rows.map(function (x) { return ymdOf(x.day_date); }));
+    return;
+  }
+  const from = ymdOf(r.start_date), to = ymdOf(r.end_date);
+  const markers = await ptoMarkerPositions();
+  await client.query('DELETE FROM shifts WHERE user_id = $1 AND shift_date BETWEEN $2 AND $3 AND pto_generated = true AND position_id = ANY($4::int[])', [r.user_id, from, to, markers]);
+  await client.query('UPDATE shifts SET position_id = prev_position_id, prev_position_id = NULL, updated_at = NOW() WHERE user_id = $1 AND shift_date BETWEEN $2 AND $3 AND COALESCE(pto_generated, false) = false AND position_id = ANY($4::int[])', [r.user_id, from, to, markers]);
+}
+// Insert the per-day tag rows for a request and return {paid,unpaid,off} counts.
+async function writeRequestDays(client, requestId, days) {
+  let paid = 0, unpaid = 0, off = 0;
+  for (let i = 0; i < days.length; i++) {
+    const k = days[i].kind === 'unpaid' ? 'unpaid' : (days[i].kind === 'off' ? 'off' : 'paid');
+    if (k === 'paid') paid++; else if (k === 'unpaid') unpaid++; else off++;
+    await client.query(
+      'INSERT INTO pto_request_days (request_id, day_date, kind) VALUES ($1,$2,$3) ON CONFLICT (request_id, day_date) DO UPDATE SET kind = EXCLUDED.kind',
+      [requestId, days[i].date, k]
+    );
+  }
+  return { paid: paid, unpaid: unpaid, off: off };
+}
+
 // Reverse an approved PTO: restore paid hours, restore the shift positions, and
 // log the cancellation. Must be called inside a transaction (pass the client).
 async function reverseAndClear(client, r, actorId, meta) {
@@ -247,7 +360,7 @@ async function reverseAndClear(client, r, actorId, meta) {
     await postLedger(client, { user_id: r.user_id, entry_date: from, kind: 'reversal', amount_hours: Number(r.hours), description: 'PTO cancelled ' + from, request_id: r.id, created_by: actorId });
   }
   await client.query('UPDATE pto_requests SET status = $1, updated_at = NOW() WHERE id = $2', ['cancelled', r.id]);
-  await client.query('UPDATE shifts SET position_id = prev_position_id, prev_position_id = NULL, updated_at = NOW() WHERE user_id = $1 AND shift_date BETWEEN $2 AND $3 AND position_id = ANY($4::int[])', [r.user_id, from, to, [APPROVED_VACATION_POSITION_ID, UNPAID_VACATION_POSITION_ID]]);
+  await clearRequestFromSchedule(client, r);
   await recordCancellation(client, r, meta);
 }
 
@@ -320,7 +433,7 @@ router.get('/me', requireAuth, async (req, res) => {
     [uid]
   );
   const reqs = await pool.query(
-    'SELECT r.id, r.start_date, r.end_date, r.business_days, r.hours, r.type, r.paid, r.status, r.required_level, r.override_reason, r.created_at, r.cancel_memo, ci.name AS cancel_by_name ' +
+    'SELECT r.id, r.start_date, r.end_date, r.business_days, r.hours, r.type, r.paid, r.status, r.required_level, r.override_reason, r.created_at, r.cancel_memo, r.paid_days, r.unpaid_days, r.off_days, ci.name AS cancel_by_name ' +
     'FROM pto_requests r LEFT JOIN users ci ON ci.id = r.cancel_initiated_by WHERE r.user_id = $1 ORDER BY r.created_at DESC LIMIT 100',
     [uid]
   );
@@ -444,16 +557,41 @@ router.get('/project', requireAuth, async (req, res) => {
 
 // ---- CREATE A REQUEST ------------------------------------------------------
 
+// Normalize a posted day-tag list into sorted, de-duped [{date, kind}] entries.
+// kind is one of paid | unpaid | off (anything else becomes paid).
+function normalizeDayTags(input) {
+  if (!Array.isArray(input)) return [];
+  const map = {};
+  for (let i = 0; i < input.length; i++) {
+    const it = input[i] || {};
+    const d = String(it.date || '').slice(0, 10);
+    if (!RE_DATE.test(d)) continue;
+    let k = String(it.kind || 'paid').toLowerCase();
+    if (k !== 'unpaid' && k !== 'off') k = 'paid';
+    map[d] = k; // last wins -> de-dupes a date
+  }
+  return Object.keys(map).sort().map(function (d) { return { date: d, kind: map[d] }; });
+}
+
 router.post('/requests', requireAuth, async (req, res) => {
   const b = req.body || {};
   const uid = req.user.id;
-  if (!RE_DATE.test(b.start_date)) return res.status(400).json({ error: 'Start date is required' });
-  const start = b.start_date;
-  const end = RE_DATE.test(b.end_date) ? b.end_date : b.start_date;
-  if (parseDate(end) < parseDate(start)) return res.status(400).json({ error: 'End date is before start date' });
-  const days = businessDays(start, end);
-  if (!days) return res.status(400).json({ error: 'Select at least one business day' });
-  const hours = days * HRS_PER_DAY;
+  // New model: an array of tagged days. Fall back to a start/end range (all one
+  // kind) if an older client posts that, so nothing breaks mid-deploy.
+  let days = normalizeDayTags(b.days);
+  if (!days.length && RE_DATE.test(b.start_date)) {
+    const end0 = RE_DATE.test(b.end_date) ? b.end_date : b.start_date;
+    if (parseDate(end0) < parseDate(b.start_date)) return res.status(400).json({ error: 'End date is before start date' });
+    const k0 = b.paid === false ? 'unpaid' : 'paid';
+    days = eachDate(b.start_date, end0).map(function (d) { return { date: d, kind: k0 }; });
+  }
+  if (!days.length) return res.status(400).json({ error: 'Select at least one day' });
+  const start = days[0].date, end = days[days.length - 1].date;
+  const paidDays = days.filter(function (d) { return d.kind === 'paid'; }).length;
+  const unpaidDays = days.filter(function (d) { return d.kind === 'unpaid'; }).length;
+  const offDays = days.filter(function (d) { return d.kind === 'off'; }).length;
+  const awayDays = paidDays + unpaidDays; // paid + unpaid drive approval + coverage
+  const hours = paidDays * HRS_PER_DAY;   // only paid days cost PTO (8h per day)
 
   const ur = await pool.query('SELECT id, name, hire_date, pto_balance_hours, supervisor_id FROM users WHERE id = $1', [uid]);
   const u = ur.rows[0];
@@ -462,21 +600,31 @@ router.post('/requests', requireAuth, async (req, res) => {
   if (!elig.eligible_now) return res.status(400).json({ error: 'You are inside your first ' + waiting + ' days. Eligible ' + elig.eligible_date + '.' });
 
   const balance = Number(u.pto_balance_hours) || 0;
-  const paid = b.paid !== false;
-  // The no-negative-balance wall applies only to paid time.
-  if (paid && balance - hours < 0) {
+  // The no-negative-balance wall applies only to paid days.
+  if (hours > 0 && balance - hours < 0) {
     return res.status(400).json({ error: 'This exceeds your balance. No negative balances.' });
   }
-  const tier = requiredTier(days);
-  const ins = await pool.query(
-    'INSERT INTO pto_requests (user_id, start_date, end_date, business_days, hours, type, paid, status, required_level, created_at, updated_at) ' +
-    'VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,NOW(),NOW()) RETURNING *',
-    [uid, start, end, days, hours, (b.type || 'Vacation'), paid, 'pending', tier.level]
-  );
-  const reqRow = ins.rows[0];
-  await logAudit({ entity_type: 'pto_request', entity_id: reqRow.id, action: 'submitted', user_id: uid, user_name: u.name, details: { start, end, days, tier: tier.label } });
+  const tier = requiredTier(awayDays);
+  const paid = paidDays > 0;
+  const client = await pool.connect();
+  let reqRow;
+  try {
+    await client.query('BEGIN');
+    const ins = await client.query(
+      'INSERT INTO pto_requests (user_id, start_date, end_date, business_days, hours, type, paid, status, required_level, paid_days, unpaid_days, off_days, created_at, updated_at) ' +
+      'VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,NOW(),NOW()) RETURNING *',
+      [uid, start, end, awayDays, hours, (b.type || 'Vacation'), paid, 'pending', tier.level, paidDays, unpaidDays, offDays]
+    );
+    reqRow = ins.rows[0];
+    await writeRequestDays(client, reqRow.id, days);
+    await client.query('COMMIT');
+  } catch (e) {
+    await client.query('ROLLBACK');
+    return res.status(500).json({ error: 'Could not submit: ' + e.message });
+  } finally { client.release(); }
+  await logAudit({ entity_type: 'pto_request', entity_id: reqRow.id, action: 'submitted', user_id: uid, user_name: u.name, details: { start: start, end: end, paid_days: paidDays, unpaid_days: unpaidDays, off_days: offDays, tier: tier.label } });
   // Notify the approver line (supervisor) by email + SMS.
-  await notifyApprover(parseInt(u.supervisor_id, 10) || 0, u.name, start, end, days, paid, (b.type || 'Vacation'), tier.label);
+  await notifyApprover(parseInt(u.supervisor_id, 10) || 0, u.name, start, end, awayDays, paid, (b.type || 'Vacation'), tier.label);
   res.json(reqRow);
 });
 
@@ -587,12 +735,14 @@ router.post('/requests/:id/approve', requireAuth, async (req, res) => {
         description: 'PTO ' + from + (to !== from ? ' to ' + to : ''), request_id: id, created_by: req.user.id
       });
     }
-    // Flip the scheduled shifts to Approved / Unpaid Vacation Day (kept visible, not deleted).
-    const posId = r.paid ? APPROVED_VACATION_POSITION_ID : UNPAID_VACATION_POSITION_ID;
-    await client.query(
-      'UPDATE shifts SET prev_position_id = CASE WHEN position_id = ANY($5::int[]) THEN prev_position_id ELSE position_id END, position_id = $1, updated_at = NOW() WHERE user_id = $2 AND shift_date BETWEEN $3 AND $4',
-      [posId, r.user_id, from, to, [APPROVED_VACATION_POSITION_ID, UNPAID_VACATION_POSITION_ID]]
-    );
+    // Reflect on the schedule per tagged day: paid -> Paid Vacation, unpaid -> Unpaid
+    // Vacation, off -> Scheduled Off. Flip an existing shift or add a published marker,
+    // so an approval always shows on the grid. Only paid days were deducted above.
+    const drows = await client.query('SELECT day_date, kind FROM pto_request_days WHERE request_id = $1 ORDER BY day_date ASC', [id]);
+    const applyDays = drows.rows.length
+      ? drows.rows.map(function (x) { return { date: ymdOf(x.day_date), kind: x.kind }; })
+      : eachDate(from, to).map(function (d) { return { date: d, kind: r.paid ? 'paid' : 'unpaid' }; });
+    await applyDaysToSchedule(client, r.user_id, applyDays, req.user.id);
     await client.query('COMMIT');
   } catch (e) {
     await client.query('ROLLBACK');
@@ -674,7 +824,7 @@ router.post('/requests/:id/cancel', requireAuth, async (req, res) => {
         await postLedger(client, { user_id: r.user_id, entry_date: from, kind: 'reversal', amount_hours: Number(r.hours), description: 'PTO cancelled ' + from, request_id: id, created_by: req.user.id });
       }
       await client.query('UPDATE pto_requests SET status = $1, updated_at = NOW() WHERE id = $2', ['cancelled', id]);
-      await client.query('UPDATE shifts SET position_id = prev_position_id, prev_position_id = NULL, updated_at = NOW() WHERE user_id = $1 AND shift_date BETWEEN $2 AND $3 AND position_id = ANY($4::int[])', [r.user_id, from, to, [APPROVED_VACATION_POSITION_ID, UNPAID_VACATION_POSITION_ID]]);
+      await clearRequestFromSchedule(client, r);
       await recordCancellation(client, r, { source: (r.status === 'cancel_requested' ? 'employee_requested' : 'manager_direct'), memo: null, initiated_by: (r.status === 'cancel_requested' ? r.user_id : req.user.id), decided_by: req.user.id });
       await client.query('COMMIT');
     } catch (e) {
@@ -810,19 +960,29 @@ router.post('/log', requireAuth, requirePermission('manage_pto'), async (req, re
   const bizDays = businessDays(from, to);
   // business_days is stored for reporting; never store 0 for a genuine weekend log.
   const days = bizDays || calDays;
-  const paid = b.paid !== false;
+  // Type: paid (deducts) | unpaid | off (regular scheduled day off; no charge).
+  let kind = String(b.kind || '').toLowerCase();
+  if (kind !== 'paid' && kind !== 'unpaid' && kind !== 'off') kind = (b.paid === false ? 'unpaid' : 'paid');
+  const paid = kind === 'paid';
   const reason = String(b.reason || '').trim();
   if (!reason) return res.status(400).json({ error: 'A reason is required to log PTO after the fact' });
-  // Hours: an explicit amount wins (partial days, or shifts that are not 8h). Otherwise
-  // default to 8h per counted day. Lets a manager log "a couple of hours" for hourly staff.
-  let hours;
-  if (b.hours !== undefined && b.hours !== null && String(b.hours) !== '') {
-    hours = Number(b.hours);
-    if (!isFinite(hours) || hours <= 0) return res.status(400).json({ error: 'Hours must be a positive number' });
-    hours = Math.round(hours * 100) / 100;
-  } else {
-    hours = days * HRS_PER_DAY;
+  // Paid hours: an explicit amount wins (partial days, or shifts that are not 8h),
+  // else 8h per counted day. Unpaid and scheduled-off never touch the balance.
+  let hours = 0;
+  if (paid) {
+    if (b.hours !== undefined && b.hours !== null && String(b.hours) !== '') {
+      hours = Number(b.hours);
+      if (!isFinite(hours) || hours <= 0) return res.status(400).json({ error: 'Hours must be a positive number' });
+      hours = Math.round(hours * 100) / 100;
+    } else {
+      hours = calDays * HRS_PER_DAY;
+    }
   }
+  const paidDays = kind === 'paid' ? calDays : 0;
+  const unpaidDays = kind === 'unpaid' ? calDays : 0;
+  const offDays = kind === 'off' ? calDays : 0;
+  const awayDays = paidDays + unpaidDays;
+  const dayTags = eachDate(from, to).map(function (d) { return { date: d, kind: kind }; });
 
   const ur = await pool.query('SELECT name, COALESCE(pto_balance_hours,0) AS bal FROM users WHERE id = $1', [target]);
   if (!ur.rows.length) return res.status(404).json({ error: 'Employee not found' });
@@ -833,16 +993,16 @@ router.post('/log', requireAuth, requirePermission('manage_pto'), async (req, re
   try {
     await client.query('BEGIN');
     const ins = await client.query(
-      'INSERT INTO pto_requests (user_id, start_date, end_date, business_days, hours, type, paid, status, required_level, approver_id, decided_at, retroactive, decision_reason, created_at, updated_at) ' +
-      'VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,NOW(),TRUE,$11,NOW(),NOW()) RETURNING id',
-      [target, from, to, days, hours, (b.type || 'Vacation'), paid, 'approved', 4, req.user.id, reason]
+      'INSERT INTO pto_requests (user_id, start_date, end_date, business_days, hours, type, paid, status, required_level, paid_days, unpaid_days, off_days, approver_id, decided_at, retroactive, decision_reason, created_at, updated_at) ' +
+      'VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,NOW(),TRUE,$14,NOW(),NOW()) RETURNING id',
+      [target, from, to, awayDays, hours, (b.type || 'Vacation'), paid, 'approved', 4, paidDays, unpaidDays, offDays, req.user.id, reason]
     );
     reqId = ins.rows[0].id;
+    await writeRequestDays(client, reqId, dayTags);
     if (paid) {
       await postLedger(client, { user_id: target, entry_date: from, kind: 'usage', amount_hours: -hours, description: 'Logged after the fact — ' + from + ' (' + reason + ')', request_id: reqId, created_by: req.user.id });
     }
-    const posId = paid ? APPROVED_VACATION_POSITION_ID : UNPAID_VACATION_POSITION_ID;
-    await client.query('UPDATE shifts SET prev_position_id = CASE WHEN position_id = ANY($5::int[]) THEN prev_position_id ELSE position_id END, position_id = $1, updated_at = NOW() WHERE user_id = $2 AND shift_date BETWEEN $3 AND $4', [posId, target, from, to, [APPROVED_VACATION_POSITION_ID, UNPAID_VACATION_POSITION_ID]]);
+    await applyDaysToSchedule(client, target, dayTags, req.user.id);
     await client.query('COMMIT');
   } catch (e) {
     await client.query('ROLLBACK');

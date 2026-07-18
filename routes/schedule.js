@@ -214,6 +214,7 @@ router.post('/shifts', requireAuth, requirePermission('manage_schedule'), async 
   if (!c.user_id || !c.shift_date || !c.start_time || !c.end_time) {
     return res.status(400).json({ error: 'Employee, date, start and end time are required' });
   }
+  if (!c.position_id) return res.status(400).json({ error: 'A position is required' });
   const scope = await allowedCities(req.user);
   if (!cityOk(scope, c.city_code)) return res.status(403).json({ error: 'You are not assigned to that city' });
   const u = await pool.query('SELECT name FROM users WHERE id=$1', [c.user_id]);
@@ -233,6 +234,7 @@ router.put('/shifts/:id', requireAuth, requirePermission('manage_schedule'), asy
   if (!c.user_id || !c.shift_date || !c.start_time || !c.end_time) {
     return res.status(400).json({ error: 'Employee, date, start and end time are required' });
   }
+  if (!c.position_id) return res.status(400).json({ error: 'A position is required' });
   const scope = await allowedCities(req.user);
   if (!cityOk(scope, c.city_code)) return res.status(403).json({ error: 'You are not assigned to that city' });
   const u = await pool.query('SELECT name FROM users WHERE id=$1', [c.user_id]);
@@ -395,6 +397,7 @@ router.post('/recurring', requireAuth, requirePermission('manage_schedule'), asy
     return res.status(400).json({ error: 'Employee, start date, times, and at least one weekday are required' });
   }
   const position_id = b.position_id ? (parseInt(b.position_id, 10) || null) : null;
+  if (!position_id) return res.status(400).json({ error: 'A position is required' });
   const city_code = b.city_code ? String(b.city_code).trim().slice(0, 3) : null;
   const break_minutes = Math.max(0, parseInt(b.break_minutes, 10) || 0);
   const notes = (b.notes || '').toString().trim() || null;

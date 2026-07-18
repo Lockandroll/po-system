@@ -1027,6 +1027,9 @@ async function initDB() {
     await client.query("ALTER TABLE pto_requests ADD COLUMN IF NOT EXISTS cancel_initiated_at TIMESTAMP;");
     // Remember a shift's position before PTO overwrote it, so cancel can restore it exactly.
     await client.query("ALTER TABLE shifts ADD COLUMN IF NOT EXISTS prev_position_id INTEGER;");
+    // Marks a shift that PTO approval auto-created solely to show time off on the grid,
+    // so cancelling the PTO deletes it (whereas flipped real shifts are restored).
+    await client.query("ALTER TABLE shifts ADD COLUMN IF NOT EXISTS pto_generated BOOLEAN NOT NULL DEFAULT false;");
     await client.query(
       'CREATE TABLE IF NOT EXISTS pto_cancellations (' +
       '  id SERIAL PRIMARY KEY,' +
@@ -1046,6 +1049,27 @@ async function initDB() {
       ');'
     );
     await client.query('CREATE INDEX IF NOT EXISTS idx_pto_cancellations_user ON pto_cancellations(user_id);');
+    // ---- PTO per-day designation (paid / unpaid / regular scheduled day off) ----
+    // A request is now a SET of tagged days, not one paid/unpaid flag for a range.
+    // Balance impact (hours) = paid days x 8. Unpaid and scheduled-off never touch it.
+    await client.query("ALTER TABLE pto_requests ADD COLUMN IF NOT EXISTS paid_days INTEGER NOT NULL DEFAULT 0;");
+    await client.query("ALTER TABLE pto_requests ADD COLUMN IF NOT EXISTS unpaid_days INTEGER NOT NULL DEFAULT 0;");
+    await client.query("ALTER TABLE pto_requests ADD COLUMN IF NOT EXISTS off_days INTEGER NOT NULL DEFAULT 0;");
+    // kind is one of: 'paid' | 'unpaid' | 'off'
+    await client.query(
+      'CREATE TABLE IF NOT EXISTS pto_request_days (' +
+      '  id SERIAL PRIMARY KEY,' +
+      '  request_id INTEGER NOT NULL REFERENCES pto_requests(id) ON DELETE CASCADE,' +
+      '  day_date DATE NOT NULL,' +
+      "  kind VARCHAR(12) NOT NULL DEFAULT 'paid'," +
+      '  UNIQUE(request_id, day_date)' +
+      ');'
+    );
+    await client.query('CREATE INDEX IF NOT EXISTS idx_pto_request_days_request ON pto_request_days(request_id);');
+    await client.query('CREATE INDEX IF NOT EXISTS idx_pto_request_days_date ON pto_request_days(day_date);');
+    // Neutral schedule marker for a regular scheduled day off (NOT PTO). Ensured by
+    // name so we never depend on a hardcoded id; pto.js resolves the id by name.
+    await client.query("INSERT INTO shift_positions (name, color) SELECT 'Scheduled Off', '#6b7280' WHERE NOT EXISTS (SELECT 1 FROM shift_positions WHERE name = 'Scheduled Off');");
     await client.query("ALTER TABLE users ADD COLUMN IF NOT EXISTS extra_perms TEXT[] NOT NULL DEFAULT '{}';");
     await client.query("ALTER TABLE users ADD COLUMN IF NOT EXISTS last_login_at TIMESTAMPTZ;");
     await client.query("ALTER TABLE users ADD COLUMN IF NOT EXISTS last_seen_at TIMESTAMPTZ;");

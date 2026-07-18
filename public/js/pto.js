@@ -52,7 +52,13 @@
       '.pto-mask{position:fixed;inset:0;background:rgba(0,0,0,.65);display:flex;align-items:center;justify-content:center;z-index:300;padding:16px}',
       '.pto-dlg{background:var(--bg-elevated,#171717);border:1px solid var(--border,#2a2a2a);border-radius:14px;padding:20px;max-width:460px;width:100%}',
       '.pto-dlg h3{margin:0 0 4px;font-size:17px}',
-      '.pto-flag{color:#eab308;font-size:11px;margin-top:8px}'
+      '.pto-flag{color:#eab308;font-size:11px;margin-top:8px}',
+      '.pto-daylist{display:flex;flex-direction:column;gap:6px;max-height:340px;overflow:auto;margin:4px 0;padding:2px}',
+      '.pto-daytag{display:flex;align-items:center;justify-content:space-between;gap:10px;background:var(--bg,#1f1f1f);border:1px solid var(--border,#2a2a2a);border-radius:9px;padding:7px 10px}',
+      '.pto-dayname{font-size:13px;font-weight:600}',
+      '.pto-daysel{max-width:172px}',
+      '.pto-daysel.k-off{color:#9ca3af}',
+      '.pto-daysel.k-unpaid{color:#eab308}'
     ].join('');
     var s = document.createElement('style');
     s.id = 'pto-styles'; s.textContent = css;
@@ -71,6 +77,30 @@
   function toUnit(hours, pt) { return isCommission(pt) ? (hours / HRS_PER_DAY) : hours; }
   function fmtAmt(hours, pt) { return toUnit(hours, pt).toFixed(1) + ' ' + unitLabel(pt); }
   function tierLabel(days) { if (days > 10) return 'CEO approval'; if (days > 5) return 'Supervisor + COO'; return 'Direct supervisor'; }
+  function pad2(n) { n = String(n); return n.length < 2 ? '0' + n : n; }
+  function ymdLocal(d) { return d.getFullYear() + '-' + pad2(d.getMonth() + 1) + '-' + pad2(d.getDate()); }
+  // Every calendar date string in [a,b] inclusive (weekends included — 24/7 crew).
+  function eachDayList(a, b) {
+    var s = parseLocal(a), e = parseLocal(b || a), out = [];
+    if (!s || !e || e < s) return out;
+    var d = new Date(s); while (d <= e) { out.push(ymdLocal(d)); d.setDate(d.getDate() + 1); } return out;
+  }
+  // Read the per-day tag selects out of the request form as [{date, kind}].
+  function collectDaysFromDom() {
+    var out = [], sels = document.querySelectorAll('#pto-daygrid .pto-daysel');
+    for (var i = 0; i < sels.length; i++) out.push({ date: sels[i].getAttribute('data-date'), kind: sels[i].value });
+    return out;
+  }
+  // Human summary of a request's day mix, with a fallback for legacy rows.
+  function dayBreakdown(r) {
+    var p = Number(r.paid_days) || 0, u = Number(r.unpaid_days) || 0, o = Number(r.off_days) || 0;
+    if (!p && !u && !o) { var bd = Number(r.business_days) || 0; return bd + (r.paid ? ' paid' : ' unpaid'); }
+    var parts = [];
+    if (p) parts.push(p + ' paid');
+    if (u) parts.push(u + ' unpaid');
+    if (o) parts.push(o + ' off');
+    return parts.join(' · ') || '0';
+  }
   function statusText(s) {
     if (s === 'cancel_offered') return 'cancel \u2014 needs your OK';
     if (s === 'cancel_requested') return 'cancel requested';
@@ -119,8 +149,9 @@
         act = '<button class="pto-btn ghost sm" onclick="ptoCancel(' + r.id + ')">' + (r.status === 'approved' ? 'Request change' : 'Withdraw') + '</button>';
       }
       var memo = (r.status === 'cancel_offered' && r.cancel_memo) ? '<br><span class="pto-sub">' + escHtml(r.cancel_by_name || 'Manager') + ' wants to cancel: ' + escHtml(r.cancel_memo) + '</span>' : '';
-      return '<tr><td>' + d + memo + '</td><td>' + r.business_days + '</td><td>' + escHtml(r.type || '') + '</td>' +
-        '<td>' + (r.paid ? 'Paid' : 'Unpaid') + '</td>' +
+      var usesTxt = Number(r.hours) > 0 ? fmtAmt(Number(r.hours), pt) : '<span class="pto-sub">—</span>';
+      return '<tr><td>' + d + memo + '</td><td>' + dayBreakdown(r) + '</td><td>' + escHtml(r.type || '') + '</td>' +
+        '<td>' + usesTxt + '</td>' +
         '<td><span class="pto-pill ' + escHtml(r.status) + '">' + escHtml(statusText(r.status)) + '</span></td>' +
         '<td>' + act + '</td></tr>';
     }).join('');
@@ -132,13 +163,13 @@
         '<div class="pto-card"><h4>Eligible To Use</h4><div class="pto-stat sm">' + escHtml(elig) + '</div><div class="pto-sub">' + (me.eligible_now ? 'past waiting period' : 'inside first 90 days') + '</div></div>' +
       '</div>' +
       '<div class="pto-panel">' +
-        '<h3>Request Time Off</h3><div class="pto-desc">Pick your dates. You will see your balance after the request and who it routes to before you submit.</div>' +
+        '<h3>Request Time Off</h3><div class="pto-desc">Pick your dates, then mark each day Paid, Unpaid, or a regular scheduled day off. Only paid days use your balance.</div>' +
         '<div class="pto-row">' +
           '<div><label class="pto-label">Start date</label><input type="date" id="pto-start" class="pto-input"></div>' +
           '<div><label class="pto-label">End date</label><input type="date" id="pto-end" class="pto-input"></div>' +
           '<div><label class="pto-label">Type</label><select id="pto-type" class="pto-select"><option>Vacation</option><option>Personal</option><option>Sick</option></select></div>' +
-          '<div><label class="pto-label">Paid?</label><select id="pto-paid" class="pto-select"><option value="paid">Paid (uses balance)</option><option value="unpaid">Unpaid</option></select></div>' +
         '</div>' +
+        '<div id="pto-daygrid"></div>' +
         '<div class="pto-routebox" id="pto-preview">Select dates to see the summary.</div>' +
         '<div class="pto-warn" id="pto-req-err" style="display:none"></div>' +
         '<div style="margin-top:14px"><button class="pto-btn" id="pto-submit">Submit Request</button></div>' +
@@ -148,21 +179,51 @@
         '<div class="pto-routebox" id="pto-proj-out">Pick a date to see your projected balance.</div>' +
       '</div>' +
       '<div class="pto-panel"><h3>My Requests</h3>' +
-        '<table class="pto-table"><thead><tr><th>Dates</th><th>Days</th><th>Type</th><th>Pay</th><th>Status</th><th></th></tr></thead><tbody>' + (rows || '<tr><td colspan="6" class="pto-sub">No requests yet.</td></tr>') + '</tbody></table>' +
+        '<table class="pto-table"><thead><tr><th>Dates</th><th>Days</th><th>Type</th><th>Uses</th><th>Status</th><th></th></tr></thead><tbody>' + (rows || '<tr><td colspan="6" class="pto-sub">No requests yet.</td></tr>') + '</tbody></table>' +
       '</div>';
 
     var sd = document.getElementById('pto-start'), ed = document.getElementById('pto-end');
-    function preview() {
-      var days = bizDays(sd.value, ed.value || sd.value);
-      var paid = document.getElementById('pto-paid').value === 'paid';
-      var pv = document.getElementById('pto-preview');
-      if (!days) { pv.textContent = 'Select dates to see the summary.'; return; }
-      var amt = days * HRS_PER_DAY;
-      var after = bal - (paid ? amt : 0);
-      pv.innerHTML = '<b>' + days + '</b> business day' + (days > 1 ? 's' : '') + ' · deducts <b>' + (paid ? fmtAmt(amt, pt) : '0 ' + unitLabel(pt)) + '</b> · balance after <b style="color:' + (after < 0 ? '#ef4444' : '#22c55e') + '">' + fmtAmt(after, pt) + '</b><br>Routes to: <b>' + escHtml(tierLabel(days)) + '</b>';
+    var dayKinds = {}; // date -> kind, remembered across grid rebuilds
+    function selClass(k) { return 'pto-select pto-daysel' + (k === 'off' ? ' k-off' : (k === 'unpaid' ? ' k-unpaid' : '')); }
+    function buildGrid() {
+      var grid = document.getElementById('pto-daygrid');
+      var list = sd.value ? eachDayList(sd.value, ed.value || sd.value) : [];
+      if (!list.length) { grid.innerHTML = ''; preview(); return; }
+      if (list.length > 62) { grid.innerHTML = '<div class="pto-warn" style="display:block">That is a long stretch — please request up to about two months at a time.</div>'; preview(); return; }
+      var rowsHtml = list.map(function (dt) {
+        var k = dayKinds[dt] || 'paid';
+        var dow = parseLocal(dt).toLocaleDateString('en-US', { weekday: 'short' });
+        return '<div class="pto-daytag"><span class="pto-dayname">' + dow + ' ' + fmtDate(dt) + '</span>' +
+          '<select class="' + selClass(k) + '" data-date="' + dt + '">' +
+          '<option value="paid"' + (k === 'paid' ? ' selected' : '') + '>Paid</option>' +
+          '<option value="unpaid"' + (k === 'unpaid' ? ' selected' : '') + '>Unpaid</option>' +
+          '<option value="off"' + (k === 'off' ? ' selected' : '') + '>Scheduled off</option>' +
+          '</select></div>';
+      }).join('');
+      grid.innerHTML = '<div style="display:flex;align-items:center;justify-content:space-between;margin-top:12px"><label class="pto-label" style="margin:0">Mark each day</label>' +
+        '<span style="display:flex;gap:6px"><button type="button" class="pto-btn ghost sm" id="pto-all-paid">All paid</button><button type="button" class="pto-btn ghost sm" id="pto-all-off">All off</button></span></div>' +
+        '<div class="pto-daylist">' + rowsHtml + '</div>';
+      var sels = grid.querySelectorAll('.pto-daysel');
+      for (var i = 0; i < sels.length; i++) {
+        sels[i].onchange = function () { dayKinds[this.getAttribute('data-date')] = this.value; this.className = selClass(this.value); preview(); };
+      }
+      var ap = document.getElementById('pto-all-paid'); if (ap) ap.onclick = function () { list.forEach(function (dt) { dayKinds[dt] = 'paid'; }); buildGrid(); };
+      var ao = document.getElementById('pto-all-off'); if (ao) ao.onclick = function () { list.forEach(function (dt) { dayKinds[dt] = 'off'; }); buildGrid(); };
+      preview();
     }
-    sd.onchange = ed.onchange = preview;
-    document.getElementById('pto-paid').onchange = preview;
+    function preview() {
+      var pv = document.getElementById('pto-preview');
+      var days = collectDaysFromDom();
+      if (!days.length) { pv.textContent = 'Select dates to see the summary.'; return; }
+      var paidN = 0, unpaidN = 0, offN = 0;
+      days.forEach(function (x) { if (x.kind === 'unpaid') unpaidN++; else if (x.kind === 'off') offN++; else paidN++; });
+      var amt = paidN * HRS_PER_DAY, after = bal - amt, away = paidN + unpaidN;
+      var parts = ['<b>' + paidN + '</b> paid'];
+      if (unpaidN) parts.push('<b>' + unpaidN + '</b> unpaid');
+      if (offN) parts.push('<b>' + offN + '</b> scheduled off');
+      pv.innerHTML = parts.join(' · ') + ' · uses <b>' + fmtAmt(amt, pt) + '</b> · balance after <b style="color:' + (after < 0 ? '#ef4444' : '#22c55e') + '">' + fmtAmt(after, pt) + '</b><br>Routes to: <b>' + escHtml(tierLabel(away)) + '</b>';
+    }
+    sd.onchange = ed.onchange = buildGrid;
     document.getElementById('pto-submit').onclick = submitRequest;
 
     // Projection: the server runs the accurate forward simulation (accrual band
@@ -204,9 +265,10 @@
   async function submitRequest() {
     var err = document.getElementById('pto-req-err');
     var start = document.getElementById('pto-start').value;
-    var end = document.getElementById('pto-end').value || start;
     if (!start) { err.textContent = 'Pick a start date.'; err.style.display = 'block'; return; }
-    var body = { start_date: start, end_date: end, type: document.getElementById('pto-type').value, paid: document.getElementById('pto-paid').value === 'paid' };
+    var days = collectDaysFromDom();
+    if (!days.length) { err.textContent = 'Pick your dates.'; err.style.display = 'block'; return; }
+    var body = { type: document.getElementById('pto-type').value, days: days, start_date: days[0].date, end_date: days[days.length - 1].date };
     try {
       await api('POST', '/pto/requests', body);
       showToast('Request submitted — pending approval.', 'success');
@@ -241,7 +303,7 @@
         ? '<button class="pto-btn ok sm" onclick="ptoCancelConfirm(' + r.id + ')">Approve cancellation</button> <button class="pto-btn no sm" onclick="ptoCancelKeep(' + r.id + ')">Keep approved</button>'
         : '<button class="pto-btn ok sm" onclick="ptoApprove(' + r.id + ',' + (r.coverage_over ? 'true' : 'false') + ')">Approve</button> <button class="pto-btn no sm" onclick="ptoDeny(' + r.id + ')">Deny</button>';
       return '<tr><td><b>' + escHtml(r.user_name || '') + '</b>' + (isCancel ? ' <span class="pto-pill denied">CANCELLATION</span>' : '') + '<br><span class="pto-sub">' + escHtml(r.pay_type || '') + '</span></td>' +
-        '<td>' + d + '</td><td>' + r.business_days + '</td><td>' + fmtAmt(Number(r.hours), r.pay_type) + '</td>' +
+        '<td>' + d + '</td><td>' + dayBreakdown(r) + '</td><td>' + fmtAmt(Number(r.hours), r.pay_type) + '</td>' +
         '<td>' + cov + '</td>' +
         '<td style="white-space:nowrap">' + acts + '</td></tr>';
     }).join('');
@@ -267,8 +329,8 @@
         var d = fmtDate(r.start_date) + (String(r.end_date).slice(0, 10) !== String(r.start_date).slice(0, 10) ? ' – ' + fmtDate(r.end_date) : '');
         var tag = r.retroactive ? ' <span class="pto-pill locked">logged</span>' : '';
         return '<tr><td><b>' + escHtml(r.user_name || '') + '</b>' + tag + '<br><span class="pto-sub">' + escHtml(r.pay_type || '') + '</span></td>' +
-          '<td>' + d + '</td><td>' + r.business_days + '</td><td>' + fmtAmt(Number(r.hours), r.pay_type) + '</td>' +
-          '<td>' + (r.paid ? 'Paid' : 'Unpaid') + ' ' + escHtml(r.type || '') + '</td>' +
+          '<td>' + d + '</td><td>' + dayBreakdown(r) + '</td><td>' + fmtAmt(Number(r.hours), r.pay_type) + '</td>' +
+          '<td>' + escHtml(r.type || '') + '</td>' +
           '<td>' + escHtml(r.approver_name || '—') + '</td>' +
           '<td>' + (r.decided_at ? fmtDate(r.decided_at) : '—') + '</td>' +
           '<td style="white-space:nowrap"><button class="pto-btn no sm" onclick="ptoMgrCancel(' + r.id + ')">Cancel</button></td></tr>';
@@ -437,7 +499,7 @@
     var m = document.createElement('div'); m.className = 'pto-mask';
     m.innerHTML = '<div class="pto-dlg"><h3>Log PTO (after the fact)</h3><div class="pto-desc">For a call-out converted to PTO after the day passed. Records who logged it and why.</div>' +
       '<div class="pto-row"><div><label class="pto-label">Start (past)</label><input type="date" id="pto-log-s" class="pto-input"></div><div><label class="pto-label">End</label><input type="date" id="pto-log-e" class="pto-input"></div></div>' +
-      '<label class="pto-label">Type</label><select id="pto-log-paid" class="pto-select"><option value="paid">Approved Vacation Day (paid)</option><option value="unpaid">Unpaid Vacation Day</option></select>' +
+      '<label class="pto-label">Type</label><select id="pto-log-paid" class="pto-select"><option value="paid">Approved Vacation Day (paid)</option><option value="unpaid">Unpaid Vacation Day</option><option value="off">Scheduled off (no charge)</option></select>' +
       '<label class="pto-label">' + (isCommission(pt) ? 'Days to deduct' : 'Hours to deduct') + ' <span style="font-weight:400;color:var(--text-dim,#9a9a9a)">(optional — blank = full day)</span></label><input type="number" min="0" step="' + (isCommission(pt) ? '0.5' : '0.25') + '" id="pto-log-hours" class="pto-input" placeholder="' + (isCommission(pt) ? 'e.g. 0.5 for half a day' : 'e.g. 2 for a couple of hours') + '">' +
       '<label class="pto-label">Reason (required)</label><textarea id="pto-log-reason" class="pto-textarea" rows="2" placeholder="e.g. Called out sick, converting to PTO"></textarea>' +
       '<div class="pto-sub" id="pto-log-prev" style="margin-top:8px"></div>' +
@@ -474,7 +536,7 @@
     m.querySelector('#pto-log-cancel').onclick = function () { document.body.removeChild(m); };
     m.querySelector('#pto-log-ok').onclick = async function () {
       var err = m.querySelector('#pto-log-err');
-      var payload = { user_id: id, start_date: s.value, end_date: e.value || s.value, paid: m.querySelector('#pto-log-paid').value === 'paid', reason: m.querySelector('#pto-log-reason').value.trim() };
+      var payload = { user_id: id, start_date: s.value, end_date: e.value || s.value, kind: m.querySelector('#pto-log-paid').value, paid: m.querySelector('#pto-log-paid').value === 'paid', reason: m.querySelector('#pto-log-reason').value.trim() };
       if (!payload.start_date) { err.textContent = 'Pick the dates.'; err.style.display = 'block'; return; }
       if (!payload.reason) { err.textContent = 'A reason is required.'; err.style.display = 'block'; return; }
       if (hrsEl.value !== '' && hrsEl.value !== null) {
