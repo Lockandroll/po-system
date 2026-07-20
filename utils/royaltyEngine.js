@@ -66,10 +66,10 @@ function classifyService(task) {
   var t = String(task).trim().toUpperCase();
   if (t === '') return '';
   if (t.indexOf('EDU') >= 0 && t.indexOf('CDU') >= 0) return 'EmergencyCDU';
-  if (/\.LS$/.test(t) || t === 'LS' || t === 'PICK') return 'Locksmith';
+  if (/\.LS$/.test(t) || t === 'LS' || t.indexOf('PICK') >= 0) return 'Locksmith';
   if (t.indexOf('CDU') >= 0) return 'CarDoorUnlock';
   if (t.indexOf('TRUNK') >= 0) return 'TrunkOpening';
-  if (t.indexOf('TIRE') >= 0) return 'TireChange';
+  if (t.indexOf('TIRE') >= 0 || /\.AIR$/.test(t) || t === 'AIR') return 'TireChange';
   if (t.indexOf('JUMP') >= 0 || /\.JS$/.test(t) || t === 'JS') return 'JumpStart';
   if (t.indexOf('GAS') >= 0) return 'FuelDelivery';
   if (/\.BAT$/.test(t) || t === 'BAT') return 'OtherBattery';
