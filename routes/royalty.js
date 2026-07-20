@@ -62,12 +62,18 @@ async function getConfig() {
   var out = {
     rates: { default: { royaltyRate: 0.05, adRate: 0.01, partsCostPct: 0.75 }, byCity: {} },
     locationMap: {},
-    motorClubs: eng.MOTOR_CLUB.slice()
+    motorClubs: eng.MOTOR_CLUB.slice(),
+    owner: 'Benjamin Landers'
   };
   try {
     var r = await pool.query('SELECT key, value FROM settings WHERE key = ANY($1)',
-      [['royalty_rates', 'royalty_location_map', 'royalty_motor_clubs']]);
+      [['royalty_rates', 'royalty_location_map', 'royalty_motor_clubs', 'royalty_owner']]);
     r.rows.forEach(function (row) {
+      if (row.key === 'royalty_owner') {
+        var ov = row.value; try { var pj = JSON.parse(row.value); if (typeof pj === 'string') ov = pj; } catch (e) {}
+        if (String(ov == null ? '' : ov).trim()) out.owner = String(ov).trim();
+        return;
+      }
       var v; try { v = JSON.parse(row.value); } catch (e) { return; }
       if (row.key === 'royalty_rates' && v && typeof v === 'object') {
         if (v.default) out.rates.default = normRate(v.default);
@@ -298,7 +304,7 @@ router.post('/', requireAuth, royaltyGate('manage'), async function (req, res) {
     royaltyRate: rates.royaltyRate, adRate: rates.adRate, partsCostPct: rates.partsCostPct,
     fractionAdj: num(b.fractionAdj, 0), roadClubAdj: num(b.roadClubAdj, 0), motorClub: cfg.motorClubs
   });
-  var owner = (b.owner != null && String(b.owner).trim()) ? String(b.owner).trim() : (city.manager_name || '');
+  var owner = (b.owner != null && String(b.owner).trim()) ? String(b.owner).trim() : (cfg.owner || '');
   var saved = await saveStatement({
     city: city, owner: owner, period: b.period, csvData: String(b.csv), filename: b.filename,
     cells: r.cells, rates: rates, fractionAdj: num(b.fractionAdj, 0), roadClubAdj: num(b.roadClubAdj, 0),
@@ -333,7 +339,7 @@ router.post('/preview-combined', requireAuth, royaltyGate('manage'), async funct
     return {
       location: loc || '(no location)', rawLocation: loc, rowCount: grp.length, completed: r.meta.completed,
       city_id: city ? city.id : null, city_name: city ? city.name : null, city_code: city ? city.code : null,
-      owner: city ? (city.manager_name || '') : null, matched: !!city, rates: rates,
+      owner: city ? (cfg.owner || '') : null, matched: !!city, rates: rates,
       totals: { royalty_fee: round2(r.cells.I45), ad_fee: round2(r.cells.I49), gross_sales: round2(r.cells.I47) },
       unmapped: r.meta.unmapped
     };
@@ -367,7 +373,7 @@ router.post('/import-combined', requireAuth, royaltyGate('manage'), async functi
     var rates = ratesForCity(cfg, city.id);
     var r = eng.computeStatement(grp, { royaltyRate: rates.royaltyRate, adRate: rates.adRate, partsCostPct: rates.partsCostPct, motorClub: cfg.motorClubs });
     var row = await saveStatement({
-      city: city, owner: city.manager_name || '', period: b.period, csvData: rowsToCsv(keys, grp),
+      city: city, owner: cfg.owner || '', period: b.period, csvData: rowsToCsv(keys, grp),
       filename: (b.filename || null), cells: r.cells, rates: rates, motorClubs: cfg.motorClubs,
       rowCount: grp.length, completed: r.meta.completed, unmapped: r.meta.unmapped, userId: req.user.id, userName: req.user.name
     });
