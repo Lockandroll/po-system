@@ -70,9 +70,9 @@ function classifyService(task) {
   if (t.indexOf('CDU') >= 0) return 'CarDoorUnlock';
   if (t.indexOf('TRUNK') >= 0) return 'TrunkOpening';
   if (t.indexOf('TIRE') >= 0) return 'TireChange';
-  if (t.indexOf('JUMP') >= 0) return 'JumpStart';
+  if (t.indexOf('JUMP') >= 0 || /\.JS$/.test(t) || t === 'JS') return 'JumpStart';
   if (t.indexOf('GAS') >= 0) return 'FuelDelivery';
-  if (t === 'BAT') return 'OtherBattery';
+  if (/\.BAT$/.test(t) || t === 'BAT') return 'OtherBattery';
   return 'OTHER';
 }
 
@@ -111,6 +111,7 @@ function computeStatement(rows, opts) {
     .forEach(function (s) { cnt[s] = z(); sal[s] = z(); });
   var openTax = z(), roadTax = z(), goaN = z(), goaS = z();
   var lock = { n: 0, sales: 0, tax: 0, parts: 0 };
+  var allParts = 0;   // parts cost is deducted across ALL completed services (Tony 2026-07-20), carried on the Locksmith line
   var unmapped = {};   // Task label -> count of completed calls that did not map to a service line
   var location = '';
 
@@ -125,6 +126,7 @@ function computeStatement(rows, opts) {
     var sec = sectionOf(svc);
     if (st === 'GOA') { if (sales > 0) { goaN[mk] += 1; goaS[mk] += sales; } return; }
     if (st !== 'Completed') return;
+    allParts += parts;
     if (svc === 'Locksmith') { lock.n += 1; lock.sales += sales; lock.tax += tax; lock.parts += parts; return; }
     if (cnt[svc]) { cnt[svc][mk] += 1; sal[svc][mk] += sales; }
     else if (svc === 'OTHER') {
@@ -146,7 +148,7 @@ function computeStatement(rows, opts) {
     roadSub[m] = sal.TireChange[m] + sal.JumpStart[m] + sal.FuelDelivery[m] + sal.OtherBattery[m] - roadTax[m];
     roadRoy[m] = roadSub[m] * rRate;
   });
-  var lpc = lock.parts * pPct, lsub = lock.sales - lock.tax - lpc, lroy = lsub * rRate;
+  var lpc = allParts * pPct, lsub = lock.sales - lock.tax - lpc, lroy = lsub * rRate;
   var oT = openRoy.Core + openRoy.MotorClub + openRoy.Natl;
   var rT = roadRoy.Core + roadRoy.MotorClub + roadRoy.Natl;
   var gross = openSub.Core + openSub.MotorClub + openSub.Natl + roadSub.Core + roadSub.MotorClub + roadSub.Natl + lsub;
