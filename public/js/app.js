@@ -1827,6 +1827,8 @@ async function renderViewPO(el, id) {
     const canApprove = can('approve_po') && po.status === 'submitted';
     const canOrder = po.status === 'approved' && (state.user.role === 'admin' || po.orderer_id === state.user.id);
     const canCancel = can('cancel_po') && po.status !== 'draft' && po.status !== 'cancelled';
+    const canTrack = (po.status === 'approved' || po.status === 'order placed') && (state.user.role === 'admin' || state.user.role === 'manager' || po.orderer_id === state.user.id);
+    _trackPO = po; _trackEditing = false;
     let usersForApproval = [];
     if (canApprove) { try { usersForApproval = await api('GET', '/users'); } catch(e) {} }
 
@@ -1861,21 +1863,14 @@ async function renderViewPO(el, id) {
           (po.rejection_reason ? '<div class="detail-field" style="grid-column:1/-1"><label>Rejection Reason</label><p style="color:var(--danger)">' + escHtml(po.rejection_reason) + '</p></div>' : '') +
         '</div>' +
       '</div></div>' +
-      '<div class="card mb-4"><div class="card-header"><span class="card-title">Line Items</span></div><div class="card-body">' +
+      '<div class="card mb-4"><div class="card-header" style="display:flex;justify-content:space-between;align-items:center;gap:8px">' +
+        '<span class="card-title">Line Items</span>' +
+        (canTrack ? '<span id="track-actions"><button class="btn btn-secondary btn-sm" id="track-edit-btn" onclick="toggleTrackingEdit(' + po.id + ')" style="white-space:nowrap">&#128230; Add / Edit Tracking</button></span>' : '') +
+      '</div><div class="card-body">' +
+        (canTrack ? '<div style="font-size:12px;color:#6b7280;margin-bottom:10px">Add the carrier tracking number for each item so anyone can track this order. Saved numbers become clickable.</div>' : '') +
         '<div class="table-wrap"><table class="line-items-table">' +
           '<thead><tr><th>Item #</th><th>Manufacturer</th><th>Description</th><th>Requested By</th><th>Qty</th><th>Unit Price</th><th>Tracking #</th><th class="text-right">Total</th></tr></thead>' +
-          '<tbody>' + po.line_items.map(function(item) {
-            return '<tr>' +
-              '<td>' + escHtml(item.item_number || '—') + '</td>' +
-              '<td>' + escHtml(item.manufacturer || '—') + '</td>' +
-              '<td>' + escHtml(item.description) + '</td>' +
-              '<td>' + escHtml(item.requested_by_name || '—') + '</td>' +
-              '<td>' + item.quantity + '</td>' +
-              '<td>$' + parseFloat(item.unit_price).toFixed(2) + '</td>' +
-              '<td>' + escHtml(item.tracking_number || '\u2014') + '</td>' +
-              '<td class="text-right">$' + (parseFloat(item.quantity) * parseFloat(item.unit_price)).toFixed(2) + '</td>' +
-            '</tr>';
-          }).join('') + '</tbody>' +
+          '<tbody id="po-items-body">' + renderPOItemsBody(po, false) + '</tbody>' +
           '<tfoot><tr class="total-row"><td colspan="7" class="text-right">Grand Total</td><td class="text-right">$' + parseFloat(po.total_amount).toFixed(2) + '</td></tr></tfoot>' +
         '</table></div>' +
       '</div></div>' +
@@ -1897,6 +1892,78 @@ async function renderViewPO(el, id) {
         '</div></div>' : '');
   } catch(err) {
     el.innerHTML = '<div class="alert alert-error">' + escHtml(err.message) + '</div>';
+  }
+}
+
+// ---- Post-order tracking editing (per line item) ----
+var _trackPO = null;
+var _trackEditing = false;
+
+function trackingUrl(tn) {
+  var s = String(tn == null ? '' : tn).replace(/\s+/g, '').toUpperCase();
+  if (!s) return '';
+  if (/^1Z[0-9A-Z]{16}$/.test(s)) return 'https://www.ups.com/track?loc=en_US&tracknum=' + encodeURIComponent(s);
+  if (/^(\d{12}|\d{15})$/.test(s)) return 'https://www.fedex.com/fedextrack/?trknbr=' + encodeURIComponent(s);
+  if (/^\d{20,22}$/.test(s)) return 'https://tools.usps.com/go/TrackConfirmAction?tLabels=' + encodeURIComponent(s);
+  return 'https://www.google.com/search?q=' + encodeURIComponent('track package ' + s);
+}
+
+function trackingCellHtml(tn) {
+  if (!tn) return '\u2014';
+  return '<a href="' + escHtml(trackingUrl(tn)) + '" target="_blank" rel="noopener" style="color:#7c3aed;text-decoration:underline">' + escHtml(tn) + '</a>';
+}
+
+function renderPOItemsBody(po, editing) {
+  return po.line_items.map(function(item) {
+    var trackCell = editing
+      ? '<input type="text" class="po-track-input" data-li="' + item.id + '" value="' + escHtml(item.tracking_number || '') + '" placeholder="Tracking #" style="width:150px" />'
+      : trackingCellHtml(item.tracking_number);
+    return '<tr>' +
+      '<td>' + escHtml(item.item_number || '\u2014') + '</td>' +
+      '<td>' + escHtml(item.manufacturer || '\u2014') + '</td>' +
+      '<td>' + escHtml(item.description) + '</td>' +
+      '<td>' + escHtml(item.requested_by_name || '\u2014') + '</td>' +
+      '<td>' + item.quantity + '</td>' +
+      '<td>$' + parseFloat(item.unit_price).toFixed(2) + '</td>' +
+      '<td class="po-track-cell">' + trackCell + '</td>' +
+      '<td class="text-right">$' + (parseFloat(item.quantity) * parseFloat(item.unit_price)).toFixed(2) + '</td>' +
+    '</tr>';
+  }).join('');
+}
+
+function toggleTrackingEdit(id) {
+  _trackEditing = !_trackEditing;
+  var body = document.getElementById('po-items-body');
+  if (body && _trackPO) body.innerHTML = renderPOItemsBody(_trackPO, _trackEditing);
+  var actions = document.getElementById('track-actions');
+  if (actions) {
+    actions.innerHTML = _trackEditing
+      ? '<button class="btn btn-primary btn-sm" onclick="saveTracking(' + id + ')" style="white-space:nowrap">Save Tracking</button> ' +
+        '<button class="btn btn-secondary btn-sm" onclick="toggleTrackingEdit(' + id + ')" style="white-space:nowrap">Cancel</button>'
+      : '<button class="btn btn-secondary btn-sm" id="track-edit-btn" onclick="toggleTrackingEdit(' + id + ')" style="white-space:nowrap">&#128230; Add / Edit Tracking</button>';
+  }
+  if (_trackEditing) {
+    var first = document.querySelector('#po-items-body .po-track-input');
+    if (first) first.focus();
+  }
+}
+
+async function saveTracking(id) {
+  var inputs = document.querySelectorAll('#po-items-body .po-track-input');
+  var line_items = [];
+  for (var i = 0; i < inputs.length; i++) {
+    line_items.push({ id: parseInt(inputs[i].getAttribute('data-li'), 10), tracking_number: inputs[i].value });
+  }
+  var _b = novaEvtBtn();
+  try {
+    novaBtnBusy(_b, 'Saving\u2026');
+    await api('POST', '/pos/' + id + '/tracking', { line_items: line_items });
+    navigate('view', id);
+  } catch(err) {
+    novaBtnReset(_b);
+    var errEl = document.getElementById('view-error');
+    if (errEl) errEl.innerHTML = '<div class="alert alert-error">' + escHtml(err.message) + '</div>';
+    else novaAlert(err.message);
   }
 }
 
@@ -2690,6 +2757,7 @@ async function renderRoles(el) {
     { group:'Customer Feedback', gate:'view_feedback', perms:[ {k:'view_feedback',l:'View / access module'}, {k:'manage_feedback',l:'Manage feedback (resolve, reassign, add notes)'} ] },
     { group:'Radio (PTT)', gate:'view_ptt', perms:[ {k:'view_ptt',l:'View / access Radio (own city channels + All Hands)'}, {k:'ptt_all_channels',l:'Join every channel (dispatch function)'}, {k:'ptt_direct',l:'Direct person-to-person talk'} ] },
     { group:'Onboarding', perms:[ {k:'manage_onboarding',l:'Manage onboarding paths, new-hire progress &amp; employee files'} ] },
+    { group:'Offboarding', gate:'view_offboarding', perms:[ {k:'view_offboarding',l:'View / access module (people in your team)'}, {k:'manage_offboarding',l:'Manage the offboarding lifecycle, steps &amp; templates'}, {k:'send_exit_form',l:'Send exit interview forms'}, {k:'view_exit_interviews',l:'View exit interview responses &amp; insights'} ] },
     { group:'Users', perms:[ {k:'view_users',l:'View users'}, {k:'manage_users',l:'Add / edit / remove users'} ] },
     { group:'Administration', perms:[ {k:'manage_settings',l:'Company info, AI context, notifications, roles'}, {k:'view_audit',l:'View audit log'}, {k:'view_ai_admin',l:'View AI history / usage'} ] }
   ];

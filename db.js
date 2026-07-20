@@ -2167,6 +2167,227 @@ async function initDB() {
     await client.query('CREATE INDEX IF NOT EXISTS idx_royalty_period ON royalty_statements(period);');
     await client.query('CREATE INDEX IF NOT EXISTS idx_royalty_city ON royalty_statements(city_id);');
 
+    // ---- Offboarding module (P1-P5) ----
+    // User separation tracking columns
+    await client.query(
+      'ALTER TABLE users ADD COLUMN IF NOT EXISTS separation_date DATE;' +
+      'ALTER TABLE users ADD COLUMN IF NOT EXISTS eligible_for_rehire BOOLEAN;' +
+      // Offboarding limited-access flag: true = keep only time clock + PTO
+      // (see the offboarding gate in middleware/auth.js). Full lockout is active=false.
+      'ALTER TABLE users ADD COLUMN IF NOT EXISTS offboarding_restricted BOOLEAN NOT NULL DEFAULT false;'
+    );
+
+    // Main offboarding record: one per departure
+    await client.query(
+      'CREATE TABLE IF NOT EXISTS offboardings (' +
+      '  id SERIAL PRIMARY KEY,' +
+      '  user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,' +
+      '  type VARCHAR(20) NOT NULL,' +
+      '  status VARCHAR(20) NOT NULL DEFAULT ' + "'draft'" + ',' +
+      '  notice_date DATE,' +
+      '  last_day DATE NOT NULL,' +
+      '  deactivate_mode VARCHAR(20) NOT NULL DEFAULT ' + "'end_of_last_day'" + ',' +
+      '  reason_category VARCHAR(40),' +
+      '  reason_notes TEXT,' +
+      '  eligible_for_rehire BOOLEAN,' +
+      '  rehire_notes TEXT,' +
+      '  pto_balance_snapshot NUMERIC(8,2),' +
+      '  template_id INTEGER,' +
+      '  initiated_by INTEGER REFERENCES users(id) ON DELETE SET NULL,' +
+      '  finalized_by INTEGER REFERENCES users(id) ON DELETE SET NULL,' +
+      '  finalized_at TIMESTAMPTZ,' +
+      '  cancelled_reason TEXT,' +
+      '  created_at TIMESTAMPTZ DEFAULT NOW()' +
+      ');'
+    );
+    await client.query('CREATE UNIQUE INDEX IF NOT EXISTS uq_offboarding_open ON offboardings(user_id) WHERE status IN (' + "'draft'" + ', ' + "'active'" + ', ' + "'pending_finalize'" + ');');
+    await client.query('ALTER TABLE offboardings ADD COLUMN IF NOT EXISTS archived BOOLEAN NOT NULL DEFAULT false;');
+
+    // Offboarding templates: Core + role add-ons, role-scoped like P5 onboarding_steps
+    await client.query(
+      'CREATE TABLE IF NOT EXISTS offboarding_templates (' +
+      '  id SERIAL PRIMARY KEY,' +
+      '  name VARCHAR(120) NOT NULL,' +
+      '  roles TEXT[],' +
+      '  employment_types TEXT[],' +
+      '  active BOOLEAN NOT NULL DEFAULT true,' +
+      '  position INTEGER NOT NULL DEFAULT 0' +
+      ');'
+    );
+
+    // Template steps: frozen blueprint for composing a user&rsquo;s checklist
+    await client.query(
+      'CREATE TABLE IF NOT EXISTS offboarding_template_steps (' +
+      '  id SERIAL PRIMARY KEY,' +
+      '  template_id INTEGER NOT NULL REFERENCES offboarding_templates(id) ON DELETE CASCADE,' +
+      '  title VARCHAR(500) NOT NULL,' +
+      '  description TEXT,' +
+      '  category VARCHAR(20) NOT NULL DEFAULT ' + "'access'" + ',' +
+      '  assignee_kind VARCHAR(20) NOT NULL DEFAULT ' + "'manager'" + ',' +
+      '  default_assignee_id INTEGER,' +
+      '  due_offset_days INTEGER NOT NULL DEFAULT 0,' +
+      '  required BOOLEAN NOT NULL DEFAULT false,' +
+      '  wants_evidence BOOLEAN NOT NULL DEFAULT false,' +
+      '  auto_key VARCHAR(40),' +
+      '  applies_to TEXT[],' +
+      '  position INTEGER NOT NULL DEFAULT 0' +
+      ');'
+    );
+
+    // Instantiated steps: frozen copy at offboarding start (template edits never mutate live offboardings)
+    await client.query(
+      'CREATE TABLE IF NOT EXISTS offboarding_steps (' +
+      '  id SERIAL PRIMARY KEY,' +
+      '  offboarding_id INTEGER NOT NULL REFERENCES offboardings(id) ON DELETE CASCADE,' +
+      '  template_step_id INTEGER,' +
+      '  title VARCHAR(500) NOT NULL,' +
+      '  description TEXT,' +
+      '  category VARCHAR(20) NOT NULL,' +
+      '  assigned_to INTEGER REFERENCES users(id) ON DELETE SET NULL,' +
+      '  due_date DATE,' +
+      '  required BOOLEAN NOT NULL DEFAULT false,' +
+      '  wants_evidence BOOLEAN NOT NULL DEFAULT false,' +
+      '  auto_key VARCHAR(40),' +
+      '  status VARCHAR(20) NOT NULL DEFAULT ' + "'pending'" + ',' +
+      '  skip_reason TEXT,' +
+      '  evidence JSONB,' +
+      '  completed_by INTEGER REFERENCES users(id) ON DELETE SET NULL,' +
+      '  completed_at TIMESTAMPTZ,' +
+      '  position INTEGER NOT NULL DEFAULT 0' +
+      ');'
+    );
+    await client.query('CREATE INDEX IF NOT EXISTS idx_offb_steps ON offboarding_steps(offboarding_id);');
+
+    // Exit interview questions: global question bank (editable by admin)
+    await client.query(
+      'CREATE TABLE IF NOT EXISTS exit_interview_questions (' +
+      '  id SERIAL PRIMARY KEY,' +
+      '  prompt TEXT NOT NULL,' +
+      '  qtype VARCHAR(12) NOT NULL,' +
+      '  options JSONB,' +
+      '  applies_to TEXT[],' +
+      '  active BOOLEAN NOT NULL DEFAULT true,' +
+      '  position INTEGER NOT NULL DEFAULT 0' +
+      ');'
+    );
+
+    // Exit interviews: one per offboarding
+    await client.query(
+      'CREATE TABLE IF NOT EXISTS exit_interviews (' +
+      '  id SERIAL PRIMARY KEY,' +
+      '  offboarding_id INTEGER NOT NULL UNIQUE REFERENCES offboardings(id) ON DELETE CASCADE,' +
+      '  user_id INTEGER NOT NULL,' +
+      '  mode VARCHAR(15) NOT NULL DEFAULT ' + "'self_serve'" + ',' +
+      '  status VARCHAR(15) NOT NULL DEFAULT ' + "'draft'" + ',' +
+      '  token VARCHAR(64) UNIQUE,' +
+      '  token_expires_at TIMESTAMPTZ,' +
+      '  waive_reason TEXT,' +
+      '  would_return VARCHAR(8),' +
+      '  sent_at TIMESTAMPTZ,' +
+      '  submitted_at TIMESTAMPTZ' +
+      ');'
+    );
+
+    // Exit interview answers: per question per interview
+    await client.query(
+      'CREATE TABLE IF NOT EXISTS exit_interview_answers (' +
+      '  id SERIAL PRIMARY KEY,' +
+      '  interview_id INTEGER NOT NULL REFERENCES exit_interviews(id) ON DELETE CASCADE,' +
+      '  question_id INTEGER,' +
+      '  question_snapshot JSONB NOT NULL,' +
+      '  value_num INTEGER,' +
+      '  value_text TEXT,' +
+      '  answered_at TIMESTAMPTZ DEFAULT NOW()' +
+      ');'
+    );
+
+    // Offboarding event log: mirrors onboarding_events
+    await client.query(
+      'CREATE TABLE IF NOT EXISTS offboarding_events (' +
+      '  id SERIAL PRIMARY KEY,' +
+      '  offboarding_id INTEGER NOT NULL REFERENCES offboardings(id) ON DELETE CASCADE,' +
+      '  actor_id INTEGER REFERENCES users(id) ON DELETE SET NULL,' +
+      '  kind VARCHAR(40) NOT NULL,' +
+      '  detail JSONB,' +
+      '  created_at TIMESTAMPTZ DEFAULT NOW()' +
+      ');'
+    );
+    await client.query('CREATE INDEX IF NOT EXISTS idx_offboarding_events_ob ON offboarding_events(offboarding_id);');
+
+    // Seed default templates/steps/questions ONCE (only when the tables are empty),
+    // so a server restart never duplicates them. After the first run, admins manage
+    // these in Settings → Offboarding and their edits are preserved.
+    const _obTplCount = await client.query('SELECT COUNT(*)::int AS n FROM offboarding_templates');
+    if (_obTplCount.rows[0].n === 0) {
+      await client.query(`
+        INSERT INTO offboarding_templates (name, roles, employment_types, active, position)
+        VALUES
+          ('Core', NULL, NULL, true, 0),
+          ('Field Tech Add-on', ARRAY['roadside_technician'], NULL, true, 10),
+          ('Coordinator Add-on', ARRAY['locksmith_coordinator'], NULL, true, 20),
+          ('Manager Add-on', ARRAY['manager'], NULL, true, 30),
+          ('Admin Add-on', ARRAY['admin'], NULL, true, 40);
+      `);
+
+    // Seed core template steps (21 steps across 8 categories)
+    const coreTemplate = await client.query('SELECT id FROM offboarding_templates WHERE name = $1', ['Core']);
+    const templateId = coreTemplate.rows[0]?.id;
+    if (templateId) {
+      const coreSteps = [
+        // Access (4 steps)
+        { title: 'Revoke system logins', category: 'access', assignee_kind: 'manager', required: true, auto_key: null, position: 0 },
+        { title: 'Disable VPN & email', category: 'access', assignee_kind: 'manager', required: true, auto_key: null, position: 1 },
+        { title: 'Retrieve laptop & mobile', category: 'access', assignee_kind: 'manager', required: true, wants_evidence: true, position: 2 },
+        { title: 'Deactivate access badges', category: 'access', assignee_kind: 'manager', required: true, auto_key: null, position: 3 },
+        // Property (3 steps)
+        { title: 'Collect company credit cards', category: 'property', assignee_kind: 'manager', required: true, wants_evidence: true, position: 4 },
+        { title: 'Inventory assigned tools', category: 'property', assignee_kind: 'manager', required: true, wants_evidence: true, position: 5 },
+        { title: 'Vehicle handoff (if assigned)', category: 'property', assignee_kind: 'manager', required: false, wants_evidence: true, position: 6 },
+        // Payroll (3 steps)
+        { title: 'Process final paycheck', category: 'payroll', assignee_kind: 'manager', required: true, auto_key: null, position: 7 },
+        { title: 'Calculate PTO payout', category: 'payroll', assignee_kind: 'manager', required: true, auto_key: 'pto_payout_note', position: 8 },
+        { title: 'Cancel future pay schedules', category: 'payroll', assignee_kind: 'manager', required: true, auto_key: 'clear_future_shifts', position: 9 },
+        // Knowledge (3 steps)
+        { title: 'Document knowledge transfer', category: 'knowledge', assignee_kind: 'manager', required: true, wants_evidence: true, position: 10 },
+        { title: 'Collect project handover', category: 'knowledge', assignee_kind: 'manager', required: false, wants_evidence: true, position: 11 },
+        { title: 'Review open tasks reassignment', category: 'knowledge', assignee_kind: 'manager', required: true, auto_key: 'reassign_open_tasks', position: 12 },
+        // Interview (2 steps)
+        { title: 'Send exit interview form', category: 'interview', assignee_kind: 'manager', required: true, auto_key: null, position: 13 },
+        { title: 'Schedule exit interview (optional)', category: 'interview', assignee_kind: 'manager', required: false, position: 14 },
+        // Communications (2 steps)
+        { title: 'Notify team of departure', category: 'comms', assignee_kind: 'manager', required: true, auto_key: null, position: 15 },
+        { title: 'Update directory & org chart', category: 'comms', assignee_kind: 'manager', required: true, auto_key: null, position: 16 },
+        // HR (2 steps)
+        { title: 'Collect signed exit documentation', category: 'hr', assignee_kind: 'manager', required: true, wants_evidence: true, position: 17 },
+        { title: 'File final records', category: 'hr', assignee_kind: 'manager', required: true, auto_key: null, position: 18 },
+        // Final (2 steps)
+        { title: 'Vault security sweep', category: 'final', assignee_kind: 'admin', required: true, auto_key: 'vault_sweep', position: 19 },
+        { title: 'Generate completion packet', category: 'final', assignee_kind: 'admin', required: true, auto_key: null, position: 20 }
+      ];
+
+      for (const step of coreSteps) {
+        await client.query(
+          'INSERT INTO offboarding_template_steps (template_id, title, category, assignee_kind, required, wants_evidence, auto_key, position) VALUES ($1, $2, $3, $4, $5, $6, $7, $8) ON CONFLICT DO NOTHING',
+          [templateId, step.title, step.category, step.assignee_kind, step.required, step.wants_evidence || false, step.auto_key, step.position]
+        );
+      }
+    }
+    }
+
+    // Seed exit interview questions ONCE (only when empty), same idempotency rule.
+    const _obQCount = await client.query('SELECT COUNT(*)::int AS n FROM exit_interview_questions');
+    if (_obQCount.rows[0].n === 0) {
+      await client.query(`
+        INSERT INTO exit_interview_questions (prompt, qtype, options, active, position)
+        VALUES
+          ('Would you consider working for us again in the future?', 'radio', '{"options": ["Yes, definitely", "Maybe", "Probably not", "No"]}', true, 0),
+          ('What was the primary reason for your departure?', 'select', '{"options": ["Pay/compensation", "Schedule/hours", "Management/leadership", "Better opportunity", "Personal/family", "Other"]}', true, 1),
+          ('How would you rate your overall experience working here?', 'radio', '{"options": ["Excellent", "Good", "Fair", "Poor"]}', true, 2),
+          ('What could we have done better?', 'text', NULL, true, 3),
+          ('Any additional feedback for leadership?', 'text', NULL, true, 4);
+      `);
+    }
+
     console.log('Database initialized');
   } finally {
     client.release();

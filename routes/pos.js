@@ -523,4 +523,53 @@ router.post('/:id/order', requireAuth, async (req, res) => {
   res.json({ success: true });
 });
 
+// Add or update tracking numbers after a PO is approved/ordered
+// (assigned orderer, manager, or admin). Narrow endpoint on purpose: the PO
+// stays locked for everything else — only po_line_items.tracking_number changes.
+router.post('/:id/tracking', requireAuth, async (req, res) => {
+  const line_items = req.body.line_items;
+  if (!Array.isArray(line_items)) return res.status(400).json({ error: 'line_items array is required' });
+
+  const { rows } = await pool.query('SELECT * FROM purchase_orders WHERE id = $1', [req.params.id]);
+  const po = rows[0];
+  if (!po) return res.status(404).json({ error: 'PO not found' });
+  if (po.status !== 'approved' && po.status !== 'order placed') {
+    return res.status(400).json({ error: 'Tracking can only be added after a PO is approved or ordered' });
+  }
+  const isManagerOrAdmin = req.user.role === 'admin' || req.user.role === 'manager';
+  if (!isManagerOrAdmin && po.orderer_id !== req.user.id) {
+    return res.status(403).json({ error: 'Only the assigned orderer, a manager, or an admin can update tracking' });
+  }
+
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    for (let i = 0; i < line_items.length; i++) {
+      const li = line_items[i];
+      if (!li || li.id == null) continue;
+      const raw = li.tracking_number == null ? '' : String(li.tracking_number).trim();
+      const tn = raw === '' ? null : raw.slice(0, 255);
+      await client.query(
+        'UPDATE po_line_items SET tracking_number = $1 WHERE id = $2 AND po_id = $3',
+        [tn, li.id, req.params.id]
+      );
+    }
+    await client.query('COMMIT');
+  } catch (err) {
+    await client.query('ROLLBACK').catch(function () {});
+    client.release();
+    throw err;
+  }
+  client.release();
+
+  await logAudit({ entity_type: 'po', entity_id: po.id, entity_number: po.po_number, action: 'tracking updated', user_id: req.user.id, user_name: req.user.name });
+
+  const { rows: items } = await pool.query(
+    'SELECT li.*, u.name AS requested_by_name FROM po_line_items li ' +
+    'LEFT JOIN users u ON li.requested_by = u.id WHERE li.po_id = $1 ORDER BY li.id',
+    [req.params.id]
+  );
+  res.json(Object.assign({}, po, { line_items: items }));
+});
+
 module.exports = router;

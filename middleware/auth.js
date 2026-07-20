@@ -28,7 +28,7 @@ async function requireAuth(req, res, next) {
   let userDbErr = false;
   try {
     const _ur = await pool.query(
-      'SELECT id, role, active, extra_perms, onboarding_status, onboarding_phase, session_epoch FROM users WHERE id = $1',
+      'SELECT id, role, active, extra_perms, onboarding_status, onboarding_phase, offboarding_restricted, session_epoch FROM users WHERE id = $1',
       [payload.id]
     );
     urow = _ur.rows.length ? _ur.rows[0] : null;
@@ -74,6 +74,24 @@ async function requireAuth(req, res, next) {
       const _ok = _p.indexOf('/api/auth') === 0 || _p.indexOf('/api/onboarding') === 0 ||
         _clockOk || _p.indexOf('/api/push') === 0;
       if (!_ok) return res.status(403).json({ error: 'Finish onboarding to unlock this part of Nova.', onboarding: true });
+    }
+  }
+
+  // Offboarding gate: once offboarding STARTS, the person keeps only a narrow slice
+  // of Nova — the time clock and PTO (so they can still punch and their PTO keeps
+  // tracking through their last day) plus auth/push. Everything else is closed off.
+  // Full deactivation (active=false, handled above) is the FINAL step on the last
+  // day. Re-checked against the DB each request, so access closes the instant
+  // offboarding begins and reopens the instant it is cancelled. Add-in tokens exempt.
+  if (urow && urow.offboarding_restricted === true && urow.active !== false && !payload.addin) {
+    const _op = (req.originalUrl || req.url || '');
+    const _offbOk =
+      _op.indexOf('/api/auth') === 0 ||
+      _op.indexOf('/api/timeclock') === 0 ||
+      _op.indexOf('/api/pto') === 0 ||
+      _op.indexOf('/api/push') === 0;
+    if (!_offbOk) {
+      return res.status(403).json({ error: 'Your Nova access is limited while offboarding is in progress. You can still use the time clock and view your PTO.', offboarding: true });
     }
   }
   // Authorization role comes from the DB row (source of truth), never a possibly-stale

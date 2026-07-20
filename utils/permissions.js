@@ -65,10 +65,14 @@ EMPLOYEE_PERMS.push('view_ptt');                        // PTT radio: own city c
 EMPLOYEE_PERMS.push('ptt_direct');                      // person-to-person direct talk
 ALL_PERMS.push('view_ptt', 'ptt_all_channels', 'ptt_direct');
 ALL_PERMS.push('view_royalty', 'manage_royalty');       // royalty statements module
+// Offboarding module: admins manage the whole lifecycle; managers get read-only
+// visibility by default. send_exit_form / view_exit_interviews stay admin-only
+// (admin is '*') and can be granted to individuals via users.extra_perms.
+ALL_PERMS.push('view_offboarding', 'manage_offboarding', 'send_exit_form', 'view_exit_interviews');
 
 var DEFAULTS = {
   admin: '*',
-  manager: ['view_users', 'manage_cities', 'manage_geico', 'manage_running', 'manage_vehicles', 'manage_vendors', 'view_vendors', 'manage_addresses', 'approve_vr', 'manage_tasks', 'manage_work_orders', 'manage_schedule', 'manage_parts', 'manage_invoice_setup', 'assign_reviews', 'view_feedback', 'manage_feedback', 'manage_signatures', 'manage_timeclock', 'manage_pto', 'view_quiz', 'manage_quiz', 'view_team_quiz', 'manage_onboarding', 'manage_inspections', 'ptt_all_channels'].concat(EMPLOYEE_PERMS),
+  manager: ['view_users', 'manage_cities', 'manage_geico', 'manage_running', 'manage_vehicles', 'manage_vendors', 'view_vendors', 'manage_addresses', 'approve_vr', 'manage_tasks', 'manage_work_orders', 'manage_schedule', 'manage_parts', 'manage_invoice_setup', 'assign_reviews', 'view_feedback', 'manage_feedback', 'manage_signatures', 'manage_timeclock', 'manage_pto', 'view_quiz', 'manage_quiz', 'view_team_quiz', 'manage_onboarding', 'manage_inspections', 'ptt_all_channels', 'view_offboarding'].concat(EMPLOYEE_PERMS),
   locksmith: EMPLOYEE_PERMS.slice(),
   locksmith_coordinator: EMPLOYEE_PERMS.concat(['manage_work_orders', 'ptt_all_channels']),
   dispatcher: EMPLOYEE_PERMS.concat(['manage_work_orders', 'ptt_all_channels']),

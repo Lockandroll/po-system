@@ -20,6 +20,7 @@ const { startTimeClock } = require('./jobs/timeclock');
 const { startPtoAccrual } = require('./jobs/ptoAccrual');
 const { startQuiz } = require('./jobs/quiz');
 const { startInspectionReminders } = require('./jobs/inspectionReminders');
+const { startAutoDeactivation, startQuarterlyDrill, startOffboardingCleanup } = require('./jobs/offboarding');
 
 const app = express();
 
@@ -126,6 +127,9 @@ app.use('/api/signatures', require('./routes/signatures'));
 app.use('/api/sign', require('./routes/signatures').publicRouter);
 app.use('/api/pto', require('./routes/pto'));
 app.use('/api/onboarding', require('./routes/onboarding'));
+const offboardingRoutes = require('./routes/offboarding');
+app.use('/api/offboarding', offboardingRoutes);
+app.use('/api/exit-interviews', offboardingRoutes.exitInterviewRouter);
 app.use('/api/quiz', require('./routes/quiz'));
 app.use('/api/quiz-take', require('./routes/quiz').publicRouter);
 app.use('/api/ptt', require('./routes/ptt'));
@@ -173,5 +177,8 @@ initDB()
     startGeicoReport();
     startQuiz();
     startInspectionReminders();
+    startAutoDeactivation();
+    startQuarterlyDrill();
+    startOffboardingCleanup();
   })
   .catch(err => console.error('DB init error (non-fatal):', err));
