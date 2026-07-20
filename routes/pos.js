@@ -524,9 +524,9 @@ router.post('/:id/order', requireAuth, async (req, res) => {
 });
 
 // Add or update tracking numbers after a PO is approved/ordered
-// (assigned orderer, manager, or admin). Narrow endpoint on purpose: the PO
+// (anyone who can view the PO, locksmiths included). Narrow endpoint on purpose: the PO
 // stays locked for everything else — only po_line_items.tracking_number changes.
-router.post('/:id/tracking', requireAuth, async (req, res) => {
+router.post('/:id/tracking', requireAuth, requirePermission('view_pos'), async (req, res) => {
   const line_items = req.body.line_items;
   if (!Array.isArray(line_items)) return res.status(400).json({ error: 'line_items array is required' });
 
@@ -536,9 +536,12 @@ router.post('/:id/tracking', requireAuth, async (req, res) => {
   if (po.status !== 'approved' && po.status !== 'order placed') {
     return res.status(400).json({ error: 'Tracking can only be added after a PO is approved or ordered' });
   }
-  const isManagerOrAdmin = req.user.role === 'admin' || req.user.role === 'manager';
-  if (!isManagerOrAdmin && po.orderer_id !== req.user.id) {
-    return res.status(403).json({ error: 'Only the assigned orderer, a manager, or an admin can update tracking' });
+  // Anyone who can see this PO on the dashboard can add/edit its tracking.
+  // Mirrors GET /:id: admins/managers see all; everyone else (locksmiths, etc.)
+  // only their own POs or ones they were assigned to order.
+  const canViewPO = ['admin', 'manager'].includes(req.user.role) || po.requester_id === req.user.id || po.orderer_id === req.user.id;
+  if (!canViewPO) {
+    return res.status(403).json({ error: 'You do not have access to this PO' });
   }
 
   const client = await pool.connect();

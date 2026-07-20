@@ -1827,7 +1827,7 @@ async function renderViewPO(el, id) {
     const canApprove = can('approve_po') && po.status === 'submitted';
     const canOrder = po.status === 'approved' && (state.user.role === 'admin' || po.orderer_id === state.user.id);
     const canCancel = can('cancel_po') && po.status !== 'draft' && po.status !== 'cancelled';
-    const canTrack = (po.status === 'approved' || po.status === 'order placed') && (state.user.role === 'admin' || state.user.role === 'manager' || po.orderer_id === state.user.id);
+    const canTrack = (po.status === 'approved' || po.status === 'order placed') && (state.user.role === 'admin' || state.user.role === 'manager' || po.requester_id === state.user.id || po.orderer_id === state.user.id);
     _trackPO = po; _trackEditing = false;
     let usersForApproval = [];
     if (canApprove) { try { usersForApproval = await api('GET', '/users'); } catch(e) {} }
