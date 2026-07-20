@@ -346,7 +346,7 @@ async function initDB() {
     await client.query(
       'CREATE TABLE IF NOT EXISTS two_factor_codes (' +
       '  user_id INTEGER PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,' +
-      '  code VARCHAR(6) NOT NULL,' +
+      '  code VARCHAR(64) NOT NULL,' +
       '  expires_at TIMESTAMPTZ NOT NULL,' +
       '  used BOOLEAN NOT NULL DEFAULT false,' +
       '  created_at TIMESTAMPTZ DEFAULT NOW()' +
@@ -354,6 +354,9 @@ async function initDB() {
     );
     await client.query(
       'ALTER TABLE two_factor_codes ADD COLUMN IF NOT EXISTS attempts INTEGER NOT NULL DEFAULT 0;'
+    );
+    await client.query(
+      'ALTER TABLE two_factor_codes ALTER COLUMN code TYPE VARCHAR(64);'
     );
     // Trusted devices — remembered-device tokens ("don't challenge for 30 days")
     await client.query(
