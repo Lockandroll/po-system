@@ -8584,7 +8584,8 @@ async function renderRoyalty(el){
   var html='<div class="page-header"><div class="page-title"><h2>Royalty Statements</h2><p>Drop one Pulsar Call Search export covering every city — Nova splits it by Location and builds each city&#39;s royalty &amp; advertising statement using that city&#39;s saved rates.</p></div></div>';
   if(canManage){
     html +=
-    '<div class="card" style="max-width:1000px;margin-bottom:22px"><div class="card-body">' +
+    '<div style="display:flex;gap:22px;flex-wrap:wrap;align-items:flex-start;margin-bottom:22px">' +
+    '<div class="card" style="flex:1 1 540px;max-width:1000px;margin:0"><div class="card-body">' +
       '<h3 style="margin-top:0;margin-bottom:16px">Import a month</h3>' +
       '<div style="display:flex;gap:12px;flex-wrap:wrap;align-items:flex-end">' +
         '<div class="form-group" style="min-width:180px"><label>Statement Period <span style="color:#e24b4a">*</span></label><input type="month" id="roy-period" value="'+defPeriod+'" onchange="royPreviewCombined()" /></div>' +
@@ -8593,7 +8594,20 @@ async function renderRoyalty(el){
       '<div style="font-size:12px;color:var(--text-muted-color);margin:-2px 0 8px">One combined export is enough. Nova groups the calls by the Location column and matches each to a city; anything it can&#39;t match, you assign below and it remembers for next month.</div>' +
       '<div id="roy-preview"></div>' +
       '<button id="roy-save-btn" class="btn btn-primary" onclick="royImportCombined()" style="display:none">Save all statements</button>' +
-    '</div></div>';
+    '</div></div>' +
+    '<div class="card" style="flex:1 1 300px;max-width:400px;margin:0"><div class="card-body">' +
+      '<h3 style="margin-top:0;margin-bottom:6px;font-size:15px">Pulsar export &mdash; quick setup</h3>' +
+      '<div style="font-size:12px;color:var(--text-muted-color);margin-bottom:12px">In Pulsar, open <strong>Call Search</strong> and set these before you export:</div>' +
+      '<div style="font-size:12.5px;line-height:1.5">' +
+        '<div style="margin-bottom:9px"><strong>Date range</strong><br>The whole statement month &mdash; the 1st through the last day. Match it to the Statement Period on the left.</div>' +
+        '<div style="margin-bottom:9px"><strong>Location</strong><br>All cities / leave it unfiltered. One export covers everyone and Nova splits it by city.</div>' +
+        '<div style="margin-bottom:9px"><strong>Status</strong><br>Include every status &mdash; both <em>Completed</em> and <em>GOA</em> are needed. Do not filter to Completed only.</div>' +
+        '<div style="margin-bottom:9px"><strong>Columns to include</strong><br>Location, Status, Task, Account; the money columns Collected Cash, Collected Check, Collected CC, Collected Account and Collected Tax; plus Charged Parts and Charged Parts Non Tax.</div>' +
+        '<div style="margin-bottom:9px"><strong>Format</strong><br>Export / download as a <strong>CSV</strong>, then drop it in the box on the left.</div>' +
+        '<div style="font-size:11.5px;color:var(--text-muted-color);border-top:1px solid rgba(128,128,128,0.25);padding-top:9px">Tip: if one of those columns is missing from the file, Nova reads it as $0 &mdash; so keep them all in the export.</div>' +
+      '</div>' +
+    '</div></div>' +
+    '</div>';
     html +=
     '<div class="card" style="max-width:1000px;margin-bottom:22px"><div class="card-body">' +
       '<details><summary style="cursor:pointer;font-weight:700;font-size:15px">Royalty rates &amp; settings</summary>' +
