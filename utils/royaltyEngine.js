@@ -17,7 +17,17 @@
  * used anywhere in this file (Windows-safe per the Nova editing rules).
  */
 
-var MOTOR_CLUB = ['Agero-Swoop', 'GEICO', 'ALLSTATE', 'Allied Dispatch', 'Roadside Protect'];
+var MOTOR_CLUB = ['AAA Motor Club', 'Agero-Swoop', 'Allied Dispatch', 'ALLSTATE', 'AMF- BowlMOR',
+  'Chicagone.com', 'Commercial Asset Preservation', 'Emcor - Viox Services', 'GEICO',
+  'Nation Safe Drivers', 'NATIONAL AUTO CLUB', 'PINNACLE-COACH NET', 'Roadside Protect',
+  'Safe Travels Motor Club', 'Schneider National', 'Storage Treasures'];
+
+// National-account payers (Pulsar Account Type = "National Account"). Anything that is not a
+// motor club, not a national account, and not blank/cash falls through to Core (= local accounts).
+var NATIONAL_ACCOUNTS = ['23rd Group', 'BASS SECURITY SYSTEM', 'Branded Group', 'Broadway National',
+  'Chain Store Maintenance', 'DHPACE', 'Hobby Lobby', 'Housemaster', 'KeyMe-Booked', 'Lanier Parking',
+  'Liberty Property Trust', 'MInute Key - Prepaid', 'Minute Key Kiosk', 'Minute Key', 'My EZ Car Care',
+  'National Maintenance and Construction', 'PharMerica'];
 
 // RFC-4180-ish CSV parser. Handles quoted fields, escaped quotes, CRLF, and a
 // leading UTF-8 BOM. Returns an array of row objects keyed by the header row.
@@ -83,10 +93,14 @@ function sectionOf(s) {
   return 'Other';
 }
 
-function classifyMarket(acct, set) {
+function classifyMarket(acct, motorSet, natlSet) {
   var a = acct == null ? '' : String(acct).trim();
   if (a === '') return 'Core';
-  return set[a] ? 'MotorClub' : 'Natl';
+  if (!motorSet) { motorSet = {}; MOTOR_CLUB.forEach(function (m) { motorSet[String(m).trim()] = true; }); }
+  if (!natlSet) { natlSet = {}; NATIONAL_ACCOUNTS.forEach(function (n) { natlSet[String(n).trim()] = true; }); }
+  if (motorSet[a]) return 'MotorClub';
+  if (natlSet[a]) return 'Natl';
+  return 'Core';   // Local Account + unknown + cash -> Core Market
 }
 
 // Compute the full statement. Returns { cells, meta }.
@@ -103,6 +117,8 @@ function computeStatement(rows, opts) {
   var rclub = opts.roadClubAdj || 0;
   var set = {};
   (opts.motorClub || MOTOR_CLUB).forEach(function (m) { set[String(m).trim()] = true; });
+  var natlSet = {};
+  (opts.nationalAccounts || NATIONAL_ACCOUNTS).forEach(function (n) { natlSet[String(n).trim()] = true; });
 
   var MK = ['Core', 'MotorClub', 'Natl'];
   function z() { return { Core: 0, MotorClub: 0, Natl: 0 }; }
@@ -119,7 +135,7 @@ function computeStatement(rows, opts) {
     if (!location && row['Location'] != null && String(row['Location']).trim() !== '') location = String(row['Location']).trim();
     var st = String(row['Status'] || '').trim();
     var svc = classifyService(row['Task']);
-    var mk = classifyMarket(row['Account'], set);
+    var mk = classifyMarket(row['Account'], set, natlSet);
     var sales = money(row['Collected Cash']) + money(row['Collected Check']) + money(row['Collected CC']) + money(row['Collected Account']);
     var tax = money(row['Collected Tax']);
     var parts = money(row['Charged Parts']) + money(row['Charged Parts  Non Tax']);
@@ -193,6 +209,7 @@ function computeStatement(rows, opts) {
 
 module.exports = {
   MOTOR_CLUB: MOTOR_CLUB,
+  NATIONAL_ACCOUNTS: NATIONAL_ACCOUNTS,
   parseCSV: parseCSV,
   money: money,
   classifyService: classifyService,

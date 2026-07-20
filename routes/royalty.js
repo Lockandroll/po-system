@@ -63,11 +63,12 @@ async function getConfig() {
     rates: { default: { royaltyRate: 0.05, adRate: 0.01, partsCostPct: 0.75 }, byCity: {} },
     locationMap: {},
     motorClubs: eng.MOTOR_CLUB.slice(),
+    nationalAccounts: eng.NATIONAL_ACCOUNTS.slice(),
     owner: 'Benjamin Landers'
   };
   try {
     var r = await pool.query('SELECT key, value FROM settings WHERE key = ANY($1)',
-      [['royalty_rates', 'royalty_location_map', 'royalty_motor_clubs', 'royalty_owner']]);
+      [['royalty_rates', 'royalty_location_map', 'royalty_motor_clubs', 'royalty_national_accounts', 'royalty_owner']]);
     r.rows.forEach(function (row) {
       if (row.key === 'royalty_owner') {
         var ov = row.value; try { var pj = JSON.parse(row.value); if (typeof pj === 'string') ov = pj; } catch (e) {}
@@ -84,6 +85,8 @@ async function getConfig() {
         Object.keys(v).forEach(function (k) { out.locationMap[String(k).toLowerCase()] = parseInt(v[k], 10); });
       } else if (row.key === 'royalty_motor_clubs' && Array.isArray(v) && v.length) {
         out.motorClubs = v.map(function (x) { return String(x).trim(); }).filter(Boolean);
+      } else if (row.key === 'royalty_national_accounts' && Array.isArray(v) && v.length) {
+        out.nationalAccounts = v.map(function (x) { return String(x).trim(); }).filter(Boolean);
       }
     });
   } catch (e) { /* fall through to defaults */ }
@@ -279,7 +282,7 @@ router.post('/preview', requireAuth, royaltyGate('manage'), async function (req,
   if (!rows.length) return res.status(400).json({ error: 'The CSV had a header but no data rows.' });
   var r = eng.computeStatement(rows, {
     royaltyRate: rates.royaltyRate, adRate: rates.adRate, partsCostPct: rates.partsCostPct,
-    fractionAdj: num(b.fractionAdj, 0), roadClubAdj: num(b.roadClubAdj, 0), motorClub: cfg.motorClubs
+    fractionAdj: num(b.fractionAdj, 0), roadClubAdj: num(b.roadClubAdj, 0), motorClub: cfg.motorClubs, nationalAccounts: cfg.nationalAccounts
   });
   res.json({ cells: r.cells, meta: r.meta, rates: rates, motorClub: cfg.motorClubs,
     totals: { royalty_fee: round2(r.cells.I45), ad_fee: round2(r.cells.I49), gross_sales: round2(r.cells.I47) } });
@@ -302,7 +305,7 @@ router.post('/', requireAuth, royaltyGate('manage'), async function (req, res) {
   if (!rows.length) return res.status(400).json({ error: 'The CSV had a header but no data rows.' });
   var r = eng.computeStatement(rows, {
     royaltyRate: rates.royaltyRate, adRate: rates.adRate, partsCostPct: rates.partsCostPct,
-    fractionAdj: num(b.fractionAdj, 0), roadClubAdj: num(b.roadClubAdj, 0), motorClub: cfg.motorClubs
+    fractionAdj: num(b.fractionAdj, 0), roadClubAdj: num(b.roadClubAdj, 0), motorClub: cfg.motorClubs, nationalAccounts: cfg.nationalAccounts
   });
   var owner = (b.owner != null && String(b.owner).trim()) ? String(b.owner).trim() : (cfg.owner || '');
   var saved = await saveStatement({
@@ -335,7 +338,7 @@ router.post('/preview-combined', requireAuth, royaltyGate('manage'), async funct
     var grp = g.groups[loc];
     var city = resolveCity(cfg, cities, loc, assignments);
     var rates = city ? ratesForCity(cfg, city.id) : cfg.rates.default;
-    var r = eng.computeStatement(grp, { royaltyRate: rates.royaltyRate, adRate: rates.adRate, partsCostPct: rates.partsCostPct, motorClub: cfg.motorClubs });
+    var r = eng.computeStatement(grp, { royaltyRate: rates.royaltyRate, adRate: rates.adRate, partsCostPct: rates.partsCostPct, motorClub: cfg.motorClubs, nationalAccounts: cfg.nationalAccounts });
     return {
       location: loc || '(no location)', rawLocation: loc, rowCount: grp.length, completed: r.meta.completed,
       city_id: city ? city.id : null, city_name: city ? city.name : null, city_code: city ? city.code : null,
@@ -371,7 +374,7 @@ router.post('/import-combined', requireAuth, royaltyGate('manage'), async functi
     var city = resolveCity(cfg, cities, loc, assignments);
     if (!city) { skipped.push({ location: loc || '(no location)', rows: grp.length }); continue; }
     var rates = ratesForCity(cfg, city.id);
-    var r = eng.computeStatement(grp, { royaltyRate: rates.royaltyRate, adRate: rates.adRate, partsCostPct: rates.partsCostPct, motorClub: cfg.motorClubs });
+    var r = eng.computeStatement(grp, { royaltyRate: rates.royaltyRate, adRate: rates.adRate, partsCostPct: rates.partsCostPct, motorClub: cfg.motorClubs, nationalAccounts: cfg.nationalAccounts });
     var row = await saveStatement({
       city: city, owner: cfg.owner || '', period: b.period, csvData: rowsToCsv(keys, grp),
       filename: (b.filename || null), cells: r.cells, rates: rates, motorClubs: cfg.motorClubs,
