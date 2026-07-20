@@ -2377,10 +2377,12 @@ async function printPO(id) {
       '.btn-close { background:transparent; color:#6b7280; border:1px solid #d1d5db; padding:9px 18px; border-radius:6px; font-size:14px; cursor:pointer; }' +
       '.hint { font-size:12px; color:#9ca3af; margin-left:4px; }' +
       '.page { max-width:800px; margin:24px auto 48px; background:white; border-radius:8px; overflow:hidden; box-shadow:0 1px 4px rgba(0,0,0,0.12); }' +
+      '@page { margin:0; }' +
       '@media print {' +
       '  .no-print { display:none !important; }' +
-      '  body { background:white; }' +
-      '  .page { margin:0; box-shadow:none; border-radius:0; max-width:100%; }' +
+      '  html, body { background:white; margin:0; padding:0; }' +
+      '  .page { margin:0; box-shadow:none; border-radius:0; max-width:100%; overflow:visible; }' +
+      '  table tbody tr { page-break-inside:avoid; break-inside:avoid; }' +
       '  * { -webkit-print-color-adjust:exact !important; print-color-adjust:exact !important; }' +
       '}' +
       '</style></head><body>' +
