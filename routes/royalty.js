@@ -211,7 +211,7 @@ router.get('/', requireAuth, royaltyGate('view'), async function (req, res) {
 router.get('/config', requireAuth, royaltyGate('view'), async function (req, res) {
   var cfg = await getConfig();
   var cities = await citiesList();
-  res.json({ rates: cfg.rates, locationMap: cfg.locationMap, motorClubs: cfg.motorClubs, cities: cities });
+  res.json({ rates: cfg.rates, locationMap: cfg.locationMap, motorClubs: cfg.motorClubs, nationalAccounts: cfg.nationalAccounts, cities: cities });
 });
 
 router.put('/config', requireAuth, royaltyGate('manage'), async function (req, res) {
@@ -235,6 +235,9 @@ router.put('/config', requireAuth, royaltyGate('manage'), async function (req, r
   }
   if (Array.isArray(b.motorClubs)) {
     await put('royalty_motor_clubs', b.motorClubs.map(function (x) { return String(x).trim(); }).filter(Boolean));
+  }
+  if (Array.isArray(b.nationalAccounts)) {
+    await put('royalty_national_accounts', b.nationalAccounts.map(function (x) { return String(x).trim(); }).filter(Boolean));
   }
   res.json({ success: true });
 });

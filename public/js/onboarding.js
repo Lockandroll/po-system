@@ -56,7 +56,8 @@
     '.onb-slot-b{flex:1 1 160px;min-width:0}.onb-slot-b b{font-size:14px}.onb-slot-b span{display:block;color:var(--text-muted-color,#9ca3af);font-size:12px;margin-top:1px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}' +
     '.onb-slot-acts{display:flex;align-items:center;justify-content:flex-end;gap:8px;flex:0 0 auto;flex-wrap:wrap}' +
     '.onb-slot-send{display:inline-flex;align-items:center;gap:6px;flex:0 0 auto;white-space:nowrap;font-size:12px;color:var(--text-muted-color,#9ca3af);cursor:pointer;user-select:none}' +
-    '.onb-slot-send input{margin:0;flex-shrink:0}' +
+    '.onb-slot-send input{margin:0;flex:0 0 auto;width:16px;height:16px;padding:0}' +
+    '.onb-check input{margin:0;flex:0 0 auto;width:16px;height:16px;padding:0}' +
     '@media(max-width:640px){.onb-slot-acts{flex:1 0 100%;justify-content:flex-start;margin-left:44px}}' +
     '.onb-card,.onb-step,.onb-slot{max-width:100%;box-sizing:border-box}' +
     '.onb-card input,.onb-card select,.onb-card textarea{max-width:100%;box-sizing:border-box}' +
@@ -71,7 +72,7 @@
     '@media(max-width:640px){.onb-pk-k{flex:1 0 100%}}' +
     '.onb-slotpicks{display:grid;grid-template-columns:repeat(auto-fit,minmax(210px,1fr));gap:8px;margin:0 0 8px}' +
     '.onb-slotpick{display:flex;flex-direction:row;flex-wrap:nowrap;align-items:center;gap:9px;min-width:0;padding:11px 13px;border:1px solid var(--border,#2a2a2a);border-radius:9px;background:var(--bg,#0f0f0f);font-size:13px;line-height:1.35;cursor:pointer;user-select:none}' +
-    '.onb-slotpick input{margin:0;flex:0 0 auto;width:16px;height:16px}' +
+    '.onb-slotpick input{margin:0;flex:0 0 auto;width:16px;height:16px;padding:0}' +
     '.onb-slotpick span{flex:1 1 auto;min-width:0;white-space:normal;overflow-wrap:break-word;word-break:normal}' +
     '.onb-slotpick:hover{border-color:var(--primary,#f97316)}' +
     '.onb-slot-act{font-size:12.5px;font-weight:700;padding:6px 12px;border-radius:7px;border:1px solid var(--border,#2a2a2a);background:var(--bg-card,#161616);color:var(--text,#ededed);cursor:pointer;flex-shrink:0}' +
@@ -857,9 +858,24 @@
       _mf.map(function (mfl) {
         var v = _mdata[mfl.key];
         var input;
-        if (mfl.type === 'select') input = '<select id="mf_' + escHtml(mfl.key) + '" class="onb-mf" style="width:100%;background:var(--bg,#0f0f0f);color:var(--text,#ededed);border:1px solid var(--border,#2a2a2a);border-radius:8px;padding:10px">' + (mfl.options || []).map(function (o) { return '<option' + (String(v) === String(o) ? ' selected' : '') + '>' + escHtml(o) + '</option>'; }).join('') + '</select>';
-        else input = '<input id="mf_' + escHtml(mfl.key) + '" class="onb-mf" type="' + escHtml(mfl.type || 'text') + '" value="' + escHtml(v || '') + '" style="width:100%;background:var(--bg,#0f0f0f);color:var(--text,#ededed);border:1px solid var(--border,#2a2a2a);border-radius:8px;padding:10px">';
-        return '<div style="margin-bottom:10px"><label style="display:block;font-size:12.5px;color:var(--text-muted-color,#9ca3af);margin-bottom:5px;font-weight:600">' + escHtml(mfl.label) + '</label>' + input + '</div>';
+        if (mfl.type === 'select') {
+          input = '<select id="mf_' + escHtml(mfl.key) + '" class="onb-mf" style="width:100%;background:var(--bg,#0f0f0f);color:var(--text,#ededed);border:1px solid var(--border,#2a2a2a);border-radius:8px;padding:10px">' +
+            (mfl.placeholder ? '<option value=""' + ((v == null || v === '') ? ' selected' : '') + '>' + escHtml(mfl.placeholder) + '</option>' : '') +
+            (mfl.options || []).map(function (o) { return '<option' + (String(v) === String(o) ? ' selected' : '') + '>' + escHtml(o) + '</option>'; }).join('') +
+            '</select>';
+        } else if (mfl.type === 'multiselect') {
+          var _sel = Array.isArray(v) ? v.map(function (x) { return String(x); }) : [];
+          input = '<div class="onb-slotpicks" data-mf-multi="' + escHtml(mfl.key) + '" style="margin:0">' +
+            ((mfl.options || []).length
+              ? (mfl.options || []).map(function (o) { return '<label class="onb-slotpick"><input type="checkbox" class="onb-mf-ck" value="' + escHtml(o) + '"' + (_sel.indexOf(String(o)) !== -1 ? ' checked' : '') + '><span>' + escHtml(o) + '</span></label>'; }).join('')
+              : '<div class="onb-note" style="margin:0">No active cities yet — add cities first.</div>') +
+            '</div>';
+        } else {
+          var _dv = (v != null && v !== '') ? v : (mfl.default != null ? mfl.default : '');
+          input = '<input id="mf_' + escHtml(mfl.key) + '" class="onb-mf" type="' + escHtml(mfl.type || 'text') + '" value="' + escHtml(String(_dv)) + '" style="width:100%;background:var(--bg,#0f0f0f);color:var(--text,#ededed);border:1px solid var(--border,#2a2a2a);border-radius:8px;padding:10px">';
+        }
+        var _note = mfl.note ? '<div class="onb-note" style="margin:5px 0 0">' + escHtml(mfl.note) + '</div>' : '';
+        return '<div style="margin-bottom:10px"><label style="display:block;font-size:12.5px;color:var(--text-muted-color,#9ca3af);margin-bottom:5px;font-weight:600">' + escHtml(mfl.label) + '</label>' + input + _note + '</div>';
       }).join('') +
       '<button class="onb-btn" onclick="onbSavePacketDetails(' + id + ')">Save employment details</button></div>') : '';
     if (body) body.innerHTML =
@@ -1649,6 +1665,9 @@
   window.onbSavePacketDetails = async function (id) {
     var data = {};
     document.querySelectorAll('.onb-mf').forEach(function (el) { data[el.id.slice(3)] = el.value; });
+    document.querySelectorAll('[data-mf-multi]').forEach(function (box) {
+      data[box.getAttribute('data-mf-multi')] = Array.prototype.slice.call(box.querySelectorAll('.onb-mf-ck:checked')).map(function (c) { return c.value; });
+    });
     try { await api('POST', '/onboarding/admin/users/' + id + '/packet-details', { data: data }); showToast('Employment details saved.', 'success'); }
     catch (e) { showToast(e.message || 'Could not save.', 'error'); }
   };

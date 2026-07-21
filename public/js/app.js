@@ -2844,6 +2844,7 @@ var TASK_PRIO = { urgent:{l:'Urgent',c:'#ef4444'}, high:{l:'High',c:'#f59e0b'}, 
 var _tasksData = [];
 var _taskView = 'board';
 var _taskTab = 'mine';
+var _taskAssignQ = ''; // Assigned-tab filter: match this against assignee names
 var _taskForceSelf = false;
 var _taskPendingFiles = [];
 var _taskSubRows = [];
@@ -2974,8 +2975,9 @@ async function renderTasks(el){
       '<button class="btn '+(_taskTab==='assigned'?'btn-primary':'btn-secondary')+' btn-sm" onclick="taskSetTab(\'assigned\')">Assigned'+(_counts.assigned_open?' <span style="display:inline-block;min-width:18px;padding:0 6px;border-radius:9px;background:#555;color:#fff;font-size:11px;font-weight:700;line-height:18px;text-align:center;vertical-align:middle">'+_counts.assigned_open+'</span>':'')+(_counts.assigned_overdue?' <span title="Past due" style="display:inline-block;min-width:18px;padding:0 6px;border-radius:9px;background:#ef4444;color:#fff;font-size:11px;font-weight:700;line-height:18px;text-align:center;vertical-align:middle">'+_counts.assigned_overdue+'</span>':'')+'</button>' +
       '<button class="btn '+(_taskTab==='recurring'?'btn-primary':'btn-secondary')+' btn-sm" onclick="taskSetTab(\'recurring\')">Recurring</button>' +
     '</div>') : '';
+  var searchBar = (_taskTab==='assigned') ? taskAssignSearchHtml() : '';
   var body = (_taskTab==='recurring') ? taskScheduleListHtml() : ((_taskView==='board') ? ('<div id="tasks-board-host">'+taskBoardHtml()+'</div>') : taskTableHtml(manage));
-  el.innerHTML = header + tabs + '<div id="tasks-feedback"></div>' + body;
+  el.innerHTML = header + tabs + searchBar + '<div id="tasks-feedback"></div>' + '<div id="tasks-body-host">'+body+'</div>';
 }
 
 function taskToggleView(){ _taskView = (_taskView==='board') ? 'table' : 'board'; navigate('tasks'); }
@@ -3012,9 +3014,58 @@ function taskScheduleListHtml(){
     '</div></div>';
   }).join('')+'</div>';
 }
+// --- Assigned tab: search/filter the board & table by assignee name ----------
+// Tony asked to look up one person's tasks on the Assigned tab. The search box
+// is rendered once (above the body), so only the body re-renders as you type and
+// the input keeps focus. The filter applies on the 'assigned' tab only.
+function taskVisibleData(){
+  if (_taskTab!=='assigned' || !_taskAssignQ) return _tasksData;
+  var q = _taskAssignQ.toLowerCase();
+  return _tasksData.filter(function(t){ return (t.assignee_name||'').toLowerCase().indexOf(q) !== -1; });
+}
+function taskAssignNames(){
+  var seen = {}, out = [];
+  _tasksData.forEach(function(t){ var n = (t.assignee_name||'').trim(); if (n && !seen[n]){ seen[n]=1; out.push(n); } });
+  out.sort(function(a,b){ return a.toLowerCase() < b.toLowerCase() ? -1 : 1; });
+  return out;
+}
+function taskAssignCountText(){
+  if (!_taskAssignQ) return '';
+  return 'Showing ' + taskVisibleData().length + ' of ' + _tasksData.length;
+}
+function taskAssignSearchHtml(){
+  var opts = taskAssignNames().map(function(n){ return '<option value="'+escHtml(n)+'"></option>'; }).join('');
+  var q = _taskAssignQ || '';
+  return '<div style="display:flex;align-items:center;gap:10px;margin-bottom:14px;flex-wrap:wrap">' +
+    '<div style="position:relative;flex:1;min-width:220px;max-width:340px">' +
+      '<input type="text" id="tk-assign-search" list="tk-assign-names" value="'+escHtml(q)+'" oninput="taskAssignFilter(this.value)" placeholder="Search by name…" autocomplete="off" style="width:100%;padding-right:26px" />' +
+      '<button type="button" id="tk-assign-clear" title="Clear" onclick="taskAssignClear()" style="display:'+(q?'inline-block':'none')+';position:absolute;right:6px;top:50%;transform:translateY(-50%);background:none;border:none;color:var(--text-muted-color);cursor:pointer;font-size:17px;line-height:1;padding:0">&times;</button>' +
+    '</div>' +
+    '<datalist id="tk-assign-names">'+opts+'</datalist>' +
+    '<span id="tk-assign-count" style="font-size:12px;color:var(--text-muted-color)">'+taskAssignCountText()+'</span>' +
+  '</div>';
+}
+function taskRerenderTaskBody(){
+  var host = document.getElementById('tasks-body-host'); if (!host) return;
+  host.innerHTML = (_taskView==='board') ? ('<div id="tasks-board-host">'+taskBoardHtml()+'</div>') : taskTableHtml(can('manage_tasks'));
+}
+function taskAssignFilter(v){
+  _taskAssignQ = v || '';
+  taskRerenderTaskBody();
+  var c = document.getElementById('tk-assign-count'); if (c) c.textContent = taskAssignCountText();
+  var cl = document.getElementById('tk-assign-clear'); if (cl) cl.style.display = _taskAssignQ ? 'inline-block' : 'none';
+}
+function taskAssignClear(){
+  _taskAssignQ = '';
+  var inp = document.getElementById('tk-assign-search'); if (inp){ inp.value = ''; inp.focus(); }
+  taskRerenderTaskBody();
+  var c = document.getElementById('tk-assign-count'); if (c) c.textContent = '';
+  var cl = document.getElementById('tk-assign-clear'); if (cl) cl.style.display = 'none';
+}
 function taskBoardHtml(){
+  var _data = taskVisibleData();
   var cols = TASK_STATUSES.map(function(st){
-    var items = _tasksData.filter(function(t){ return t.status===st[0]; });
+    var items = _data.filter(function(t){ return t.status===st[0]; });
     var cards = items.length ? items.map(taskCardHtml).join('') : '<div style="color:var(--text-muted-color);font-size:12px;padding:6px 0">Nothing here.</div>';
     return '<div id="task-col-'+st[0]+'" ondragover="taskDragOver(event,\''+st[0]+'\')" ondrop="taskDrop(event,\''+st[0]+'\')" ondragenter="taskDragEnter(event,\''+st[0]+'\')" ondragleave="taskDragLeave(event,\''+st[0]+'\')" style="flex:1;min-width:240px;background:var(--bg-elevated);border-radius:10px;padding:10px;transition:outline 0.1s">' +
       '<div style="font-size:12px;font-weight:700;text-transform:uppercase;letter-spacing:0.04em;color:var(--text-muted-color);margin-bottom:8px">'+st[1]+' ('+items.length+')</div>' +
@@ -3047,8 +3098,12 @@ function taskCardHtml(t){
 }
 
 function taskTableHtml(manage){
-  if (!_tasksData.length) return '<div class="card"><div class="card-body"><p style="color:var(--text-muted-color)">No tasks'+(manage?'':' assigned to you')+' yet.</p></div></div>';
-  var rows = _tasksData.map(function(t){
+  var _data = taskVisibleData();
+  if (!_data.length){
+    var _msg = (_taskTab==='assigned' && _taskAssignQ) ? ('No assigned tasks match &quot;'+escHtml(_taskAssignQ)+'&quot;.') : ('No tasks'+(manage?'':' assigned to you')+' yet.');
+    return '<div class="card"><div class="card-body"><p style="color:var(--text-muted-color)">'+_msg+'</p></div></div>';
+  }
+  var rows = _data.map(function(t){
     var p = TASK_PRIO[t.priority] || TASK_PRIO.medium; var od = taskIsOverdue(t);
     return '<tr style="cursor:pointer" onclick="navigate(\'task-detail\','+t.id+')">' +
       '<td><span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:'+p.c+';margin-right:7px"></span>'+escHtml(t.title)+'</td>' +
@@ -8613,7 +8668,8 @@ async function renderRoyalty(el){
       '<details><summary style="cursor:pointer;font-weight:700;font-size:15px">Royalty rates &amp; settings</summary>' +
       '<div style="font-size:12.5px;color:var(--text-muted-color);margin:10px 0 12px">Set each city&#39;s rates once — imports use these automatically, so nobody has to remember a rate. The Default row covers any city without its own rates.</div>' +
       '<div id="roy-rates"></div>' +
-      '<div class="form-group" style="margin-top:14px"><label>Motor-club payers (comma-separated)</label><input type="text" id="roy-clubs" value="'+escHtml((_royCfg.motorClubs||[]).join(', '))+'" /><div style="font-size:12px;color:var(--text-muted-color);margin-top:4px">Blank Account = Core market · these payers = Motor Club · any other Account = National.</div></div>' +
+      '<div class="form-group" style="margin-top:14px"><label>Motor-club payers (comma-separated)</label><input type="text" id="roy-clubs" value="'+escHtml((_royCfg.motorClubs||[]).join(', '))+'" /></div>' +
+      '<div class="form-group" style="margin-top:10px"><label>National-account payers (comma-separated)</label><input type="text" id="roy-natl" value="'+escHtml((_royCfg.nationalAccounts||[]).join(', '))+'" /><div style="font-size:12px;color:var(--text-muted-color);margin-top:4px">Blank Account = Core market · Motor-club payers = Motor Club · National-account payers = Nat&#39;l Accounts · every other Account = Core (local).</div></div>' +
       '<button class="btn btn-primary" onclick="roySaveRates()">Save rates &amp; settings</button>' +
       '</details>' +
     '</div></div>';
@@ -8672,9 +8728,10 @@ async function roySaveRates(){
     else if(rr!==''||ar!==''||pr!=='') rates.byCity[key]=obj;
   });
   var clubs=((document.getElementById('roy-clubs')||{}).value||'').split(',').map(function(s){return s.trim();}).filter(Boolean);
+  var natls=((document.getElementById('roy-natl')||{}).value||'').split(',').map(function(s){return s.trim();}).filter(Boolean);
   try {
-    await api('PUT','/royalty/config', { rates:rates, motorClubs:clubs });
-    _royCfg.rates=rates; _royCfg.motorClubs=clubs;
+    await api('PUT','/royalty/config', { rates:rates, motorClubs:clubs, nationalAccounts:natls });
+    _royCfg.rates=rates; _royCfg.motorClubs=clubs; _royCfg.nationalAccounts=natls;
     showToast('Rates & settings saved.','success');
     if(_royCsvText) royPreviewCombined();
   } catch(err){ novaAlert(err.message||'Could not save.'); }

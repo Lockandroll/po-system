@@ -80,10 +80,15 @@ const DEFAULT_PACKET_FIELDS = [
   { key: 'zip', label: 'ZIP code', type: 'text', required: true },
   { key: 'mobile_phone', label: 'Mobile phone', type: 'tel', required: true },
   { key: 'position_role', label: 'Position / role', type: 'select', options: HIRE_ROLE_LABELS, who: 'manager' },
-  { key: 'employment_type', label: 'Employment type', type: 'select', options: ['Full-time', 'Part-time'], who: 'manager' },
-  { key: 'start_date', label: 'Anticipated start date', type: 'date', who: 'manager' },
-  { key: 'work_location', label: 'Work location / market', type: 'text', who: 'manager' },
   { key: 'job_title', label: 'Job title', type: 'text', who: 'manager' },
+  { key: 'employment_type', label: 'Employment status', type: 'select', options: ['Full-time', 'Part-time', 'Contractor'], who: 'manager' },
+  { key: 'pay_structure', label: 'Pay structure', type: 'select', options: ['Hourly', 'Salary', 'Commission'], who: 'manager' },
+  { key: 'start_date', label: 'Anticipated start date', type: 'date', who: 'manager' },
+  { key: 'home_city', label: 'Home city', type: 'select', options: [], who: 'manager', dynamic: 'cities', placeholder: '— Select a city —' },
+  { key: 'cities_visible', label: 'Cities they can see', type: 'multiselect', options: [], who: 'manager', dynamic: 'cities' },
+  { key: 'org_level', label: 'Org level', type: 'number', who: 'manager', default: 6, note: 'Default is 6 — lower numbers are higher up the org chart.' },
+  { key: 'pulsar_name', label: 'Pulsar name', type: 'text', who: 'manager' },
+  { key: 'nickname', label: 'Nickname (optional)', type: 'text', who: 'manager' },
   { key: 'sec_ec', type: 'section', label: 'Emergency Contacts' },
   { key: 'ec1_name', label: 'Primary contact — full name', type: 'text', required: true },
   { key: 'ec1_rel', label: 'Primary contact — relationship', type: 'text' },
@@ -1674,6 +1679,13 @@ admin.get('/users/:id/phase1', async (req, res) => {
   const _fs = await pool.query("SELECT * FROM onboarding_steps WHERE active = true AND type = 'form' ORDER BY position ASC LIMIT 1");
   var allFields = _fs.rows.length ? packetFields(_fs.rows[0]) : [];
   var managerFields = allFields.filter(function (f) { return f.who === 'manager'; });
+  // Fill city-backed manager dropdowns (Home city, Cities they can see) with the
+  // live active-city list so the reviewer picks real cities, not free text.
+  var _cityRows = await pool.query('SELECT name FROM cities WHERE active = true ORDER BY name ASC');
+  var _cityNames = _cityRows.rows.map(function (c) { return c.name; });
+  managerFields = managerFields.map(function (f) {
+    return f.dynamic === 'cities' ? Object.assign({}, f, { options: _cityNames }) : f;
+  });
   // The full field list (labels + section order) so the reviewer sees the packet
   // as a form, not as a raw JSON blob.
   res.json({ packet: pk.rows[0] || null, documents: docs.rows, verify: verify, manager_fields: managerFields, packet_fields: allFields });
@@ -1760,7 +1772,41 @@ admin.post('/users/:id/phase1/approve', async (req, res) => {
       await pool.query('INSERT INTO onboarding_events (user_id, event_type, actor_id, actor_name) VALUES ($1,$2,$3,$4)', [target, 'role_set_from_packet', req.user.id, req.user.name]);
       await logAudit({ entity_type: 'user', entity_id: target, action: 'role_changed', user_id: req.user.id, user_name: req.user.name, details: { user: u.name, from: u.role, to: _newRole, source: 'onboarding packet' } });
     }
-  } catch (e) { console.error('[onboarding] role-from-packet failed:', e.message); }
+    // The rest of the Employment details card flows onto the account too, so the
+    // manager fills the packet once instead of re-keying it in the user editor.
+    // Blank fields are left alone (COALESCE) so approval never wipes existing data.
+    const _clean = function (v) { var s = (v == null ? '' : String(v)).trim(); return s === '' ? null : s; };
+    const _empMap = { 'full-time': 'full_time', 'part-time': 'part_time', 'contractor': 'contractor' };
+    const _empVal = _empMap[String(_pdata.employment_type == null ? '' : _pdata.employment_type).trim().toLowerCase()] || null;
+    const _payRaw = String(_pdata.pay_structure == null ? '' : _pdata.pay_structure).trim().toLowerCase();
+    const _payVal = ['hourly', 'salary', 'commission'].indexOf(_payRaw) !== -1 ? _payRaw : null;
+    const _title = _clean(_pdata.job_title);
+    const _pulsar = _clean(_pdata.pulsar_name);
+    const _nick = _clean(_pdata.nickname);
+    const _hire = (/^\d{4}-\d{2}-\d{2}$/.test(String(_pdata.start_date == null ? '' : _pdata.start_date).trim())) ? String(_pdata.start_date).trim() : null;
+    var _orgLevel = parseInt(_pdata.org_level, 10); if (isNaN(_orgLevel)) _orgLevel = 6; // packet default is 6
+    // Cities: map the picked names (or codes) to their 3-letter city codes.
+    const _cityLk = await pool.query('SELECT code, name FROM cities');
+    const _byName = {}; _cityLk.rows.forEach(function (c) { _byName[String(c.name).trim().toLowerCase()] = c.code; _byName[String(c.code).trim().toLowerCase()] = c.code; });
+    const _toCode = function (v) { return _byName[String(v == null ? '' : v).trim().toLowerCase()] || null; };
+    const _homeCity = _toCode(_pdata.home_city);
+    await pool.query(
+      'UPDATE users SET title = COALESCE($2, title), employment_type = COALESCE($3, employment_type), pay_type = COALESCE($4, pay_type), home_city = COALESCE($5, home_city), pulsar_name = COALESCE($6, pulsar_name), nickname = COALESCE($7, nickname), hire_date = COALESCE($8, hire_date), org_level = $9 WHERE id = $1',
+      [target, _title, _empVal, _payVal, _homeCity, _pulsar, _nick, _hire, _orgLevel]
+    );
+    // Cities they can see -> user_cities (only when the manager picked at least one,
+    // so we never clear an existing access list by approving a blank field).
+    if (Array.isArray(_pdata.cities_visible) && _pdata.cities_visible.length) {
+      const _codes = _pdata.cities_visible.map(_toCode).filter(Boolean);
+      if (_codes.length) {
+        await pool.query('DELETE FROM user_cities WHERE user_id = $1', [target]);
+        for (var _ci = 0; _ci < _codes.length; _ci++) {
+          await pool.query('INSERT INTO user_cities (user_id, city_code) VALUES ($1,$2) ON CONFLICT (user_id, city_code) DO NOTHING', [target, _codes[_ci]]);
+        }
+      }
+    }
+    await logAudit({ entity_type: 'user', entity_id: target, action: 'employment_details_applied', user_id: req.user.id, user_name: req.user.name, details: { source: 'onboarding packet' } });
+  } catch (e) { console.error('[onboarding] employment-details-from-packet failed:', e.message); }
   await pool.query('INSERT INTO onboarding_events (user_id, event_type, actor_id, actor_name) VALUES ($1,$2,$3,$4)', [target, 'phase1_approved', req.user.id, req.user.name]);
   await logAudit({ entity_type: 'onboarding', entity_id: target, action: 'phase1_approved', user_id: req.user.id, user_name: req.user.name, details: { user: u.name } });
   try {
