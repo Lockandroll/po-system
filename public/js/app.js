@@ -12909,17 +12909,23 @@ function schedRenderMonth(){
   wrap.innerHTML='<table style="border-collapse:collapse;width:100%;table-layout:fixed;min-width:760px"><thead>'+head+'</thead><tbody>'+rowsHtml+'</tbody></table>';
 }
 function schedRecurringForm(){
-  var _selCity=String(_schedCity||'').trim();
-  var userOpts=schedVisibleUsers().map(function(u){ return '<option value="'+u.id+'">'+escHtml(u.name)+'</option>'; }).join('');
-  var posOpts='<option value="">— Select position —</option>'+_schedPositions.filter(function(p){return p.active!==false;}).map(function(p){ return '<option value="'+p.id+'">'+escHtml(p.name)+'</option>'; }).join('');
-  var cityOpts='<option value="">— city —</option>'+_schedCities.map(function(c){ var cc=(c.code||'').trim(); return '<option value="'+escHtml(cc)+'"'+(_selCity===cc?' selected':'')+'>'+escHtml(c.name)+'</option>'; }).join('');
+  var _vis=schedVisibleUsers();
+  var _firstUser=_vis[0]||null;
+  // Default city to the (initially selected) employee's home city; fall back to the current city filter.
+  var _homeCity=(_firstUser&&_firstUser.home_city)?String(_firstUser.home_city).trim():'';
+  if(!_homeCity) _homeCity=String(_schedCity||'').trim();
+  // Default position to "On Call" (matches the single-shift form).
+  var _defPosId=null; var _oc=_schedPositions.filter(function(p){return p.active!==false && String(p.name||'').trim().toLowerCase()==='on call';})[0]; if(_oc) _defPosId=_oc.id;
+  var userOpts=_vis.map(function(u){ return '<option value="'+u.id+'">'+escHtml(u.name)+'</option>'; }).join('');
+  var posOpts='<option value="">— Select position —</option>'+_schedPositions.filter(function(p){return p.active!==false;}).map(function(p){ return '<option value="'+p.id+'"'+(_defPosId===p.id?' selected':'')+'>'+escHtml(p.name)+'</option>'; }).join('');
+  var cityOpts='<option value="">— city —</option>'+_schedCities.map(function(c){ var cc=(c.code||'').trim(); return '<option value="'+escHtml(cc)+'"'+(_homeCity===cc?' selected':'')+'>'+escHtml(c.name)+'</option>'; }).join('');
   var inp='background:var(--bg-elevated,#1f1f1f);color:var(--text-color,#fff);border:1px solid var(--border,#333);border-radius:6px;padding:8px;width:100%;font-size:14px';
   var days=[['1','Mon',true],['2','Tue',true],['3','Wed',true],['4','Thu',true],['5','Fri',true],['6','Sat',false],['0','Sun',false]];
   var dayChecks=days.map(function(dd){ return '<label style="display:inline-flex;align-items:center;gap:4px;margin:0 8px 6px 0;font-size:13px"><input type="checkbox" class="rc-dow" value="'+dd[0]+'"'+(dd[2]?' checked':'')+' style="width:auto"> '+dd[1]+'</label>'; }).join('');
   schedModal(
     '<h3 style="margin:0 0 14px">Recurring Shift</h3>'+schedTypeToggle('recurring')+
     '<div id="rc-err"></div>'+
-    '<div class="form-group"><label>Employee</label><select id="rc-user" style="'+inp+'">'+userOpts+'</select></div>'+
+    '<div class="form-group"><label>Employee</label><select id="rc-user" onchange="schedRecurUserChanged()" style="'+inp+'">'+userOpts+'</select></div>'+
     '<div class="form-group"><label>Pattern</label><select id="rc-mode" onchange="schedRecurModeChanged()" style="'+inp+'"><option value="weekly">Days of week</option><option value="rotation">Rotation (days on / off)</option></select></div>'+
     '<div class="form-group" id="rc-dow-block"><label>Days of week</label><div>'+dayChecks+'</div></div>'+
     '<div class="form-group" id="rc-rot-block" style="display:none"><label>Rotation cycle</label>'+
@@ -12956,6 +12962,14 @@ function schedRecurModeChanged(){
   var dow=document.getElementById('rc-dow-block'); var rot=document.getElementById('rc-rot-block');
   if(dow) dow.style.display=(m==='rotation')?'none':'';
   if(rot) rot.style.display=(m==='rotation')?'':'none';
+}
+function schedRecurUserChanged(){
+  var sel=document.getElementById('rc-user'); var city=document.getElementById('rc-city');
+  if(!sel||!city) return;
+  var u=_schedUsers.filter(function(x){return x.id==sel.value;})[0];
+  var hc=(u&&u.home_city)?String(u.home_city).trim():'';
+  if(!hc) hc=String(_schedCity||'').trim();
+  city.value=hc||'';
 }
 function schedTypeToggle(active){
   function b(label,mode,on){ return '<button class="btn '+(on?'btn-primary':'btn-secondary')+' btn-sm" onclick="schedSwitchType(\''+mode+'\')">'+label+'</button>'; }
