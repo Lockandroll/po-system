@@ -1629,6 +1629,7 @@ async function initDB() {
       '  assigned_to INTEGER REFERENCES users(id),' +
       '  task_id INTEGER,' +
       '  tech_at_fault BOOLEAN,' +
+      '  no_tech BOOLEAN NOT NULL DEFAULT false,' +
       '  total_damages DECIMAL(10,2) DEFAULT 0,' +
       '  refunded BOOLEAN DEFAULT false,' +
       '  refunded_amount DECIMAL(10,2) DEFAULT 0,' +
@@ -1655,6 +1656,8 @@ async function initDB() {
       '  created_at TIMESTAMPTZ DEFAULT NOW()' +
       ');'
     );
+    // no_tech: explicit "no tech to assign" so a complaint can be resolved without pinning a tech.
+    await client.query("ALTER TABLE customer_feedback ADD COLUMN IF NOT EXISTS no_tech BOOLEAN NOT NULL DEFAULT false;");
     await client.query(
       'CREATE UNIQUE INDEX IF NOT EXISTS idx_feedback_dedupe ON customer_feedback(source, external_ref) WHERE external_ref IS NOT NULL;' +
       'CREATE INDEX IF NOT EXISTS idx_feedback_city ON customer_feedback(city_code);' +

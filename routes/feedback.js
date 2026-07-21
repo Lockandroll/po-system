@@ -124,10 +124,13 @@ router.patch('/:id', requireAuth, requirePermission('manage_feedback'), async fu
       return res.status(403).json({ error: 'Not in your cities' });
     }
     const b = req.body || {};
+    // "No tech to assign" clears any tech + fault; the record can then close without one.
+    if (b.no_tech === true) { b.tech_user_id = null; b.tech_at_fault = null; }
 
     // Resolve the post-update values to validate the closing gate.
     const next = {
       status: b.status !== undefined ? b.status : f.status,
+      no_tech: b.no_tech !== undefined ? b.no_tech : f.no_tech,
       tech_user_id: b.tech_user_id !== undefined ? b.tech_user_id : f.tech_user_id,
       tech_at_fault: b.tech_at_fault !== undefined ? b.tech_at_fault : f.tech_at_fault,
       total_damages: b.total_damages !== undefined ? b.total_damages : f.total_damages,
@@ -137,8 +140,10 @@ router.patch('/:id', requireAuth, requirePermission('manage_feedback'), async fu
     const closing = (b.is_resolved === true) || CLOSED_STATES.indexOf(next.status) !== -1;
     if (closing) {
       const missing = [];
-      if (!next.tech_user_id) missing.push('tech');
-      if (next.tech_at_fault === null || next.tech_at_fault === undefined) missing.push('tech at fault (yes/no)');
+      if (!next.no_tech) {
+        if (!next.tech_user_id) missing.push('tech');
+        if (next.tech_at_fault === null || next.tech_at_fault === undefined) missing.push('tech at fault (yes/no)');
+      }
       if (next.total_damages === null || next.total_damages === undefined) missing.push('total damages');
       if (next.refunded === null || next.refunded === undefined) missing.push('refunded');
       if (missing.length) {
@@ -155,6 +160,9 @@ router.patch('/:id', requireAuth, requirePermission('manage_feedback'), async fu
       setField('status', b.status); events.push('changed status to ' + b.status.replace(/_/g, ' '));
     }
     if (b.status_notes !== undefined) setField('status_notes', b.status_notes);
+    if (b.no_tech !== undefined && b.no_tech !== f.no_tech) {
+      setField('no_tech', b.no_tech); events.push(b.no_tech ? 'marked no tech to assign' : 'cleared no tech to assign');
+    }
     if (b.tech_user_id !== undefined && b.tech_user_id !== f.tech_user_id) {
       setField('tech_user_id', b.tech_user_id || null); events.push('updated the assigned tech');
     }

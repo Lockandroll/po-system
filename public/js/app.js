@@ -4374,7 +4374,10 @@ async function renderFeedbackDetail(el, id){
   var cardS = 'background:var(--surface-color);border:1px solid var(--border);border-radius:10px;padding:16px;margin-bottom:14px';
   var dis = canEdit ? '' : ' disabled';
 
-  var techOpts = '<option value="">Select tech&hellip;</option>' + users.map(function(u){ return '<option value="' + u.id + '"' + (u.id === f.tech_user_id ? ' selected' : '') + '>' + escHtml(u.name) + '</option>'; }).join('');
+  var _noTech = f.no_tech === true;
+  var techOpts = '<option value="none"' + (_noTech ? ' selected' : '') + '>No tech to assign</option>' +
+    '<option value=""' + (!_noTech && !f.tech_user_id ? ' selected' : '') + '>Select tech&hellip;</option>' +
+    users.map(function(u){ return '<option value="' + u.id + '"' + (!_noTech && u.id === f.tech_user_id ? ' selected' : '') + '>' + escHtml(u.name) + '</option>'; }).join('');
   var asgOpts = '<option value="">Unassigned</option>' + users.map(function(u){ return '<option value="' + u.id + '"' + (u.id === f.assigned_to ? ' selected' : '') + '>' + escHtml(u.name) + '</option>'; }).join('');
   var statusOpts = Object.keys(FB_STATUS).map(function(k){ return '<option value="' + k + '"' + (f.status === k ? ' selected' : '') + '>' + FB_STATUS[k] + '</option>'; }).join('');
   var faultCur = f.tech_at_fault === true ? 'yes' : f.tech_at_fault === false ? 'no' : 'tbd';
@@ -4426,7 +4429,7 @@ async function renderFeedbackDetail(el, id){
   var handleCard = '<div style="' + cardS + '">' +
     '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px"><div style="font-size:12px;color:var(--text-muted-color)">Handling</div>' + taskLink + '</div>' +
     '<div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">' +
-      '<div><label style="' + lbl + '">Tech <span style="color:#e24b4a">*</span></label><select id="fb-d-tech" style="' + iS + '"' + dis + '>' + techOpts + '</select>' + (f.tech_name_raw ? '<div style="font-size:11px;color:var(--text-muted-color);margin-top:3px">Pulsar said: ' + escHtml(f.tech_name_raw) + '</div>' : '') + '</div>' +
+      '<div><label style="' + lbl + '">Tech <span style="color:#e24b4a">*</span></label><select id="fb-d-tech" onchange="fbTechChanged()" style="' + iS + '"' + dis + '>' + techOpts + '</select>' + (f.tech_name_raw ? '<div style="font-size:11px;color:var(--text-muted-color);margin-top:3px">Pulsar said: ' + escHtml(f.tech_name_raw) + '</div>' : '') + '</div>' +
       '<div><label style="' + lbl + '">Status</label><select id="fb-d-status" style="' + iS + '"' + dis + '>' + statusOpts + '</select></div>' +
       '<div><label style="' + lbl + '">Tech at fault <span style="color:#e24b4a">*</span></label><select id="fb-d-fault" style="' + iS + '"' + dis + '>' + faultOpts + '</select></div>' +
       '<div><label style="' + lbl + '">Total damages <span style="color:#e24b4a">*</span></label><input type="number" step="0.01" id="fb-d-damages" value="' + (f.total_damages != null ? f.total_damages : 0) + '" style="' + iS + '"' + dis + ' /></div>' +
@@ -4442,7 +4445,7 @@ async function renderFeedbackDetail(el, id){
       '<button class="btn btn-secondary btn-sm" onclick="feedbackSave(' + f.id + ')">Save changes</button>' +
       (f.is_resolved ? '<button class="btn btn-secondary btn-sm" onclick="feedbackReopen(' + f.id + ')">Reopen</button>' : '<button class="btn btn-primary btn-sm" onclick="feedbackResolve(' + f.id + ')">Resolve &amp; close</button>') +
     '</div>' +
-    '<div style="font-size:11px;color:var(--text-muted-color);margin-top:6px">To close: assign a tech and set tech at fault to Yes or No. Damages and refund are recorded.</div>' : '') +
+    '<div style="font-size:11px;color:var(--text-muted-color);margin-top:6px">To close: assign a tech and set tech at fault to Yes or No &mdash; or pick &quot;No tech to assign.&quot; Damages and refund are recorded.</div>' : '') +
     '</div>';
 
   var actItems = acts.map(function(a){
@@ -4471,6 +4474,7 @@ async function renderFeedbackDetail(el, id){
       '<div style="flex:2;min-width:340px">' + custCard + incCard + attCard + handleCard + '</div>' +
       '<div style="flex:1;min-width:260px">' + actCard + '</div>' +
     '</div>';
+  fbTechChanged();
 }
 
 function _fbCollect(){
@@ -4481,7 +4485,8 @@ function _fbCollect(){
   return {
     status: v('fb-d-status'),
     status_notes: v('fb-d-statusnotes'),
-    tech_user_id: v('fb-d-tech') ? parseInt(v('fb-d-tech'), 10) : null,
+    tech_user_id: (v('fb-d-tech') && v('fb-d-tech') !== 'none') ? parseInt(v('fb-d-tech'), 10) : null,
+    no_tech: v('fb-d-tech') === 'none',
     assigned_to: v('fb-d-assigned') ? parseInt(v('fb-d-assigned'), 10) : null,
     tech_at_fault: faultV === 'yes' ? true : faultV === 'no' ? false : null,
     total_damages: (dmg !== '' && dmg != null) ? parseFloat(dmg) : 0,
@@ -4496,6 +4501,15 @@ function _fbCollect(){
 async function feedbackSave(id){
   try { await api('PATCH', '/feedback/' + id, _fbCollect()); showToast('Saved', 'success'); navigate('feedback-detail', id); }
   catch (e) { showToast(e.message, 'error'); }
+}
+function fbTechChanged(){
+  var t = document.getElementById('fb-d-tech'); var fault = document.getElementById('fb-d-fault');
+  if (!t || !fault) return;
+  if (t.disabled) return; // view-only: leave fields as rendered
+  var none = (t.value === 'none');
+  fault.disabled = none;
+  fault.style.opacity = none ? '0.5' : '';
+  if (none) fault.value = 'tbd';
 }
 async function feedbackResolve(id){
   var body = _fbCollect(); body.status = 'resolved'; body.is_resolved = true;
