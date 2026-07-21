@@ -12920,7 +12920,14 @@ function schedRecurringForm(){
     '<h3 style="margin:0 0 14px">Recurring Shift</h3>'+schedTypeToggle('recurring')+
     '<div id="rc-err"></div>'+
     '<div class="form-group"><label>Employee</label><select id="rc-user" style="'+inp+'">'+userOpts+'</select></div>'+
-    '<div class="form-group"><label>Days of week</label><div>'+dayChecks+'</div></div>'+
+    '<div class="form-group"><label>Pattern</label><select id="rc-mode" onchange="schedRecurModeChanged()" style="'+inp+'"><option value="weekly">Days of week</option><option value="rotation">Rotation (days on / off)</option></select></div>'+
+    '<div class="form-group" id="rc-dow-block"><label>Days of week</label><div>'+dayChecks+'</div></div>'+
+    '<div class="form-group" id="rc-rot-block" style="display:none"><label>Rotation cycle</label>'+
+      '<div style="display:flex;gap:10px">'+
+        '<div style="flex:1"><label style="font-size:12px;color:var(--text-muted-color,#9ca3af)">Days on</label><input type="number" id="rc-days-on" min="1" max="31" value="4" style="'+inp+'"></div>'+
+        '<div style="flex:1"><label style="font-size:12px;color:var(--text-muted-color,#9ca3af)">Days off</label><input type="number" id="rc-days-off" min="0" max="31" value="2" style="'+inp+'"></div>'+
+      '</div>'+
+      '<div style="font-size:12px;color:var(--text-muted-color,#9ca3af);margin-top:6px">The <b>Start date</b> below is the first working day. The on/off cycle then rolls across the whole span, drifting through the week.</div></div>'+
     '<div style="display:flex;gap:10px"><div class="form-group" style="flex:1"><label>Start</label><input type="time" id="rc-start" value="09:00" style="'+inp+'"></div>'+
     '<div class="form-group" style="flex:1"><label>End</label><input type="time" id="rc-end" value="17:00" style="'+inp+'"></div></div>'+
     '<div style="display:flex;gap:10px"><div class="form-group" style="flex:1"><label>Position *</label><select id="rc-pos" style="'+inp+'">'+posOpts+'</select></div>'+
@@ -12933,12 +12940,22 @@ function schedRecurringForm(){
   );
 }
 async function schedSaveRecurring(){
+  var mode=(document.getElementById('rc-mode')||{}).value||'weekly';
   var dows=[]; document.querySelectorAll('.rc-dow:checked').forEach(function(c){ dows.push(c.value); });
-  var body={ user_id:document.getElementById('rc-user').value, weekdays:dows, start_time:document.getElementById('rc-start').value, end_time:document.getElementById('rc-end').value, position_id:document.getElementById('rc-pos').value||null, city_code:document.getElementById('rc-city').value||null, start_date:document.getElementById('rc-startdate').value, weeks:document.getElementById('rc-weeks').value||1, break_minutes:document.getElementById('rc-break').value||0, publish:document.getElementById('rc-publish').checked };
-  if(!body.user_id||!dows.length||!body.start_date||!body.start_time||!body.end_time){ document.getElementById('rc-err').innerHTML='<div class="alert alert-error">Employee, at least one day, date, and times are required.</div>'; return; }
+  var body={ user_id:document.getElementById('rc-user').value, mode:mode, start_time:document.getElementById('rc-start').value, end_time:document.getElementById('rc-end').value, position_id:document.getElementById('rc-pos').value||null, city_code:document.getElementById('rc-city').value||null, start_date:document.getElementById('rc-startdate').value, weeks:document.getElementById('rc-weeks').value||1, break_minutes:document.getElementById('rc-break').value||0, publish:document.getElementById('rc-publish').checked };
+  if(mode==='rotation'){ body.days_on=document.getElementById('rc-days-on').value; body.days_off=document.getElementById('rc-days-off').value; } else { body.weekdays=dows; }
+  if(!body.user_id||!body.start_date||!body.start_time||!body.end_time){ document.getElementById('rc-err').innerHTML='<div class="alert alert-error">Employee, date, and times are required.</div>'; return; }
+  if(mode==='rotation'){ if(!(parseInt(body.days_on,10)>=1)){ document.getElementById('rc-err').innerHTML='<div class="alert alert-error">Enter at least 1 day on.</div>'; return; } }
+  else if(!dows.length){ document.getElementById('rc-err').innerHTML='<div class="alert alert-error">Pick at least one day of the week.</div>'; return; }
   if(!body.position_id){ document.getElementById('rc-err').innerHTML='<div class="alert alert-error">Please select a position.</div>'; return; }
   try{ var r=await api('POST','/schedule/recurring',body); schedCloseModal(); await schedLoadAdmin(); if(_schedMode==='month') schedRenderMonth(); else schedRenderGrid(); schedToast('Created '+r.created+' shift(s) as drafts.','ok'); }
   catch(e){ document.getElementById('rc-err').innerHTML='<div class="alert alert-error">'+escHtml(e.message)+'</div>'; }
+}
+function schedRecurModeChanged(){
+  var m=(document.getElementById('rc-mode')||{}).value;
+  var dow=document.getElementById('rc-dow-block'); var rot=document.getElementById('rc-rot-block');
+  if(dow) dow.style.display=(m==='rotation')?'none':'';
+  if(rot) rot.style.display=(m==='rotation')?'':'none';
 }
 function schedTypeToggle(active){
   function b(label,mode,on){ return '<button class="btn '+(on?'btn-primary':'btn-secondary')+' btn-sm" onclick="schedSwitchType(\''+mode+'\')">'+label+'</button>'; }

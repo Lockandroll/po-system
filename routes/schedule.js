@@ -383,7 +383,8 @@ router.get('/user-cities', requireAuth, requirePermission('manage_schedule'), as
   res.json(users.rows.map(function (u) { return { user_id: u.id, name: u.name, role: u.role, city_codes: byUser[u.id] || [] }; }));
 });
 
-// Bulk recurring shifts: generate a draft shift on each selected weekday for N weeks.
+// Bulk recurring shifts: generate draft shifts across N weeks — either on selected
+// weekdays (weekly) or on a rolling X-on / Y-off rotation (e.g. 4 on, 2 off).
 router.post('/recurring', requireAuth, requirePermission('manage_schedule'), async (req, res) => {
   const b = req.body || {};
   const user_id = parseInt(b.user_id, 10) || null;
@@ -391,9 +392,19 @@ router.post('/recurring', requireAuth, requirePermission('manage_schedule'), asy
   const start_time = RE_TIME.test(b.start_time) ? b.start_time : null;
   const end_time = RE_TIME.test(b.end_time) ? b.end_time : null;
   let weeks = parseInt(b.weeks, 10); if (isNaN(weeks) || weeks < 1) weeks = 1; if (weeks > 53) weeks = 53;
+  // Two patterns: 'weekly' repeats on fixed weekdays; 'rotation' rolls an X-on / Y-off
+  // cycle from start_date (day 0 = first working day), which drifts across the week.
+  const mode = (b.mode === 'rotation') ? 'rotation' : 'weekly';
   let dows = Array.isArray(b.weekdays) ? b.weekdays.map(function (x) { return parseInt(x, 10); }).filter(function (x) { return x >= 0 && x <= 6; }) : [];
   dows = Array.from(new Set(dows));
-  if (!user_id || !start_date || !start_time || !end_time || !dows.length) {
+  let daysOn = parseInt(b.days_on, 10); if (isNaN(daysOn) || daysOn < 1) daysOn = 0;
+  let daysOff = parseInt(b.days_off, 10); if (isNaN(daysOff) || daysOff < 0) daysOff = 0;
+  const cycleLen = daysOn + daysOff;
+  if (mode === 'rotation') {
+    if (!user_id || !start_date || !start_time || !end_time || daysOn < 1 || cycleLen < 1) {
+      return res.status(400).json({ error: 'Employee, start date, times, and a valid days-on / days-off rotation are required' });
+    }
+  } else if (!user_id || !start_date || !start_time || !end_time || !dows.length) {
     return res.status(400).json({ error: 'Employee, start date, times, and at least one weekday are required' });
   }
   const position_id = b.position_id ? (parseInt(b.position_id, 10) || null) : null;
@@ -410,7 +421,11 @@ router.post('/recurring', requireAuth, requirePermission('manage_schedule'), asy
   const total = weeks * 7;
   for (let i = 0; i < total; i++) {
     const d = addDays(start_date, i);
-    if (dows.indexOf(dowOf(d)) === -1) continue;
+    if (mode === 'rotation') {
+      if ((i % cycleLen) >= daysOn) continue; // in the "off" stretch of the cycle
+    } else if (dows.indexOf(dowOf(d)) === -1) {
+      continue;
+    }
     await pool.query(
       'INSERT INTO shifts (user_id, user_name, city_code, position_id, shift_date, start_time, end_time, break_minutes, notes, status, published_at, created_by) ' +
       'VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)',
