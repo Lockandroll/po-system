@@ -1546,6 +1546,12 @@ admin.get('/progress', async (req, res) => {
     var done = 0;
     steps.forEach(function (s) { if (prog[s.id] && prog[s.id].status === 'done') done++; });
     const current = findCurrent(steps, prog);
+    // Phase 1 finished but not yet approved — the hire is sitting in the Phase 1
+    // review queue. Mirrors admin.get('/reviews') so the New Hires badge and the
+    // Phase 1 Reviews tab always agree on who is waiting on approval.
+    const p1Steps = steps.filter(function (s) { return phaseOf(s) === 1; });
+    const p1AllDone = p1Steps.length > 0 && p1Steps.every(function (s) { var pr = prog[s.id]; return pr && pr.status === 'done'; });
+    const awaitingPhase1Review = p1AllDone && parseInt(u.onboarding_phase, 10) !== 2 && !u.onboarding_phase1_approved_at;
     out.push({
       id: u.id, name: u.name, title: u.title, role: u.role,
       supervisor_id: u.supervisor_id, supervisor_name: u.supervisor_name,
@@ -1559,6 +1565,8 @@ admin.get('/progress', async (req, res) => {
       phase1_approved: !!u.onboarding_phase1_approved_at,
       // Approved, but the manager has not opened training yet — their move.
       awaiting_phase2_start: !!u.onboarding_phase1_approved_at && parseInt(u.onboarding_phase, 10) !== 2,
+      // Phase 1 done, not yet approved — still waiting in the Phase 1 review queue.
+      awaiting_phase1_review: awaitingPhase1Review,
       // Split by phase: the Phase 1 approver reviews paperwork, the Phase 2
       // approver starts training and signs off. Either can be the same person.
       can_approve_phase1: await canSignOff(req.user, u.id, 1),

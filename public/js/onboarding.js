@@ -44,6 +44,7 @@
     '.onb-pill{display:inline-block;padding:2px 9px;border-radius:999px;font-size:11px;font-weight:700;letter-spacing:.4px}' +
     '.onb-pill.ready{background:#dcfce7;color:#15803d}' +
     '.onb-pill.busy{background:#fff3e8;color:#c2520a}' +
+    '.onb-pill.review{background:#e0e7ff;color:#4338ca}' +
     '.onb-doc{border:1px solid var(--border,#2a2a2a);border-radius:10px;overflow:hidden;background:var(--bg,#0f0f0f);margin-bottom:14px;height:min(70vh,560px)}' +
     '.onb-doc iframe{width:100%;height:100%;border:0;display:block;background:#fff}' +
     '.onb-doc-fallback{display:flex;flex-direction:column;align-items:center;justify-content:center;text-align:center;height:auto;padding:34px 16px;gap:6px}' +
@@ -1014,7 +1015,9 @@
             ? '<span class="onb-pill ready">READY FOR SIGN-OFF</span>'
             : (u.awaiting_phase2_start
                 ? '<span class="onb-pill ready">PHASE 1 APPROVED &middot; START PHASE 2</span>'
-                : '<span class="onb-pill busy">' + escHtml(u.current_step || 'Not started') + '</span>')) + '</td>' +
+                : (u.awaiting_phase1_review
+                    ? '<span class="onb-pill review">READY FOR PHASE 1 APPROVAL</span>'
+                    : '<span class="onb-pill busy">' + escHtml(u.current_step || 'Not started') + '</span>'))) + '</td>' +
         '<td style="white-space:nowrap">' +
           (u.ready_for_signoff && u.can_sign_off ? '<button class="onb-btn" style="padding:8px 14px;font-size:13px" onclick="onbSignOff(' + u.id + ',\'' + escHtml(u.name).replace(/'/g, '') + '\')">Sign off &amp; unlock</button> ' : '') +
           (u.awaiting_phase2_start && u.can_sign_off ? '<button class="onb-btn" style="padding:8px 14px;font-size:13px" onclick="onbStartPhase2(' + u.id + ',\'' + escHtml(u.name).replace(/'/g, '') + '\')">&#9654; Start Phase 2</button> ' : '') +
