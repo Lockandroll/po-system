@@ -4253,6 +4253,11 @@ function fbLastCell(row){
   if (stale) return '<span style="color:#e24b4a;white-space:nowrap">&#9888; ' + escHtml(ago) + '</span>';
   return '<span style="color:var(--text-muted-color);white-space:nowrap">' + escHtml(ago) + '</span>';
 }
+function fbPostedCell(row){
+  var d = row.received_at || row.created_at;
+  if (!d) return '<span style="color:var(--text-muted-color)">&mdash;</span>';
+  return '<span style="color:var(--text-muted-color);white-space:nowrap">' + escHtml(formatDate(d)) + '</span>';
+}
 function fbLocalDt(d){
   if (!d) return '';
   var t = new Date(d); if (isNaN(t.getTime())) return '';
@@ -4347,13 +4352,14 @@ function feedbackRenderTable(){
       '<td style="' + cs + '">' + cat + '</td>' +
       '<td style="' + cs + '">' + fbSevBadge(f.severity) + '</td>' +
       '<td style="' + cs + ';color:var(--text-muted-color)">' + escHtml(FB_STATUS[f.status] || f.status || '—') + review + '</td>' +
+      '<td style="' + cs + ';color:var(--text-muted-color)">' + fbPostedCell(f) + '</td>' +
       '<td style="' + cs + '">' + fbLastCell(f) + '</td>' +
       '<td style="' + cs + ';color:var(--text-muted-color)">' + escHtml(f.assigned_name || '—') + '</td>' +
     '</tr>';
   }).join('');
-  wrap.innerHTML = '<div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse;font-size:13px;min-width:760px">' +
+  wrap.innerHTML = '<div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse;font-size:13px;min-width:860px">' +
     '<thead><tr style="text-align:left;color:var(--text-muted-color);border-bottom:1px solid var(--border)">' +
-    ['Customer','City','Tech','Category','Severity','Status','Last Interaction','Assigned'].map(function(h){ return '<th style="padding:8px 10px;font-weight:600;white-space:nowrap">' + h + '</th>'; }).join('') +
+    ['Customer','City','Tech','Category','Severity','Status','Date Posted','Last Interaction','Assigned'].map(function(h){ return '<th style="padding:8px 10px;font-weight:600;white-space:nowrap">' + h + '</th>'; }).join('') +
     '</tr></thead><tbody>' + rows + '</tbody></table></div>';
 }
 
