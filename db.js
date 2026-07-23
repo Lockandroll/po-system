@@ -108,7 +108,15 @@ async function initDB() {
       'ALTER TABLE purchase_orders ADD COLUMN IF NOT EXISTS orderer_id INTEGER REFERENCES users(id);' +
       'ALTER TABLE users ADD COLUMN IF NOT EXISTS receive_emails BOOLEAN NOT NULL DEFAULT true;' +
       'ALTER TABLE purchase_orders ADD COLUMN IF NOT EXISTS shipping_address_id INTEGER;' +
-      'ALTER TABLE quote_line_items ADD COLUMN IF NOT EXISTS url TEXT;'
+      'ALTER TABLE quote_line_items ADD COLUMN IF NOT EXISTS url TEXT;' +
+      // Customer contact details captured on the quote so they carry over when a
+      // quote is pushed to an invoice (map to invoices.street_address/city/state/zip/phone/email).
+      'ALTER TABLE quotes ADD COLUMN IF NOT EXISTS customer_street VARCHAR(255);' +
+      'ALTER TABLE quotes ADD COLUMN IF NOT EXISTS customer_city VARCHAR(120);' +
+      'ALTER TABLE quotes ADD COLUMN IF NOT EXISTS customer_state VARCHAR(4);' +
+      'ALTER TABLE quotes ADD COLUMN IF NOT EXISTS customer_zip VARCHAR(12);' +
+      'ALTER TABLE quotes ADD COLUMN IF NOT EXISTS customer_phone VARCHAR(50);' +
+      'ALTER TABLE quotes ADD COLUMN IF NOT EXISTS customer_email VARCHAR(255);'
     );
     await client.query(
       'CREATE TABLE IF NOT EXISTS shipping_addresses (' +

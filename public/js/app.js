@@ -5418,6 +5418,17 @@ async function renderEditQuote(el, id) {
         '<div class="form-group"><label>Customer Name *</label><input type="text" id="qt-customer" value="' + escHtml(quote ? quote.customer_name : '') + '" placeholder="Customer name" /></div>' +
         '<div class="form-group"><label>City *</label><select id="qt-city">' + cityOptions + '</select></div>' +
       '</div>' +
+      '<div style="font-size:11px;font-weight:600;color:var(--text-muted-color);text-transform:uppercase;letter-spacing:0.05em;margin:14px 0 8px">Customer Contact</div>' +
+      '<div class="form-row">' +
+        '<div class="form-group" style="flex:2"><label>Street Address</label><input type="text" id="qt-cust-street" value="' + escHtml(quote ? (quote.customer_street || '') : '') + '" placeholder="Street address" /></div>' +
+        '<div class="form-group"><label>City</label><input type="text" id="qt-cust-city" value="' + escHtml(quote ? (quote.customer_city || '') : '') + '" placeholder="City" /></div>' +
+        '<div class="form-group" style="max-width:90px"><label>State</label><input type="text" id="qt-cust-state" maxlength="2" value="' + escHtml(quote ? (quote.customer_state || '') : '') + '" style="text-transform:uppercase" /></div>' +
+        '<div class="form-group" style="max-width:110px"><label>Zip</label><input type="text" id="qt-cust-zip" value="' + escHtml(quote ? (quote.customer_zip || '') : '') + '" /></div>' +
+      '</div>' +
+      '<div class="form-row">' +
+        '<div class="form-group"><label>Phone</label><input type="tel" id="qt-cust-phone" value="' + escHtml(quote ? (quote.customer_phone || '') : '') + '" placeholder="(555) 555-5555" /></div>' +
+        '<div class="form-group" style="flex:2"><label>Email</label><input type="email" id="qt-cust-email" value="' + escHtml(quote ? (quote.customer_email || '') : '') + '" placeholder="name@example.com" /></div>' +
+      '</div>' +
       '<div class="form-group"><label>Notes</label><textarea id="qt-notes" placeholder="Optional notes...">' + escHtml(quote ? quote.notes || '' : '') + '</textarea></div>' +
     '</div></div>' +
     '<div class="card mb-4"><div class="card-header"><span class="card-title">Line Items</span></div><div class="card-body">' +
@@ -5523,6 +5534,13 @@ async function saveQuote(id) {
   const taxRateRaw = document.getElementById('qt-tax-rate').value;
   const tax_rate = parseFloat(taxRateRaw);
   const important_info = document.getElementById('qt-important-info').value.trim();
+  const _qv = function(elId){ const e = document.getElementById(elId); return e ? e.value.trim() : ''; };
+  const customer_street = _qv('qt-cust-street');
+  const customer_city = _qv('qt-cust-city');
+  const customer_state = _qv('qt-cust-state');
+  const customer_zip = _qv('qt-cust-zip');
+  const customer_phone = _qv('qt-cust-phone');
+  const customer_email = _qv('qt-cust-email');
   if (!customer_name) { document.getElementById('quote-edit-error').innerHTML = '<div class="alert alert-error">Customer name is required.</div>'; return; }
   if (!city_code) { document.getElementById('quote-edit-error').innerHTML = '<div class="alert alert-error">Please select a city.</div>'; return; }
   if (taxRateRaw === '' || isNaN(tax_rate)) { document.getElementById('quote-edit-error').innerHTML = '<div class="alert alert-error">Tax % is required. Enter 0 if no tax applies.</div>'; return; }
@@ -5545,10 +5563,10 @@ async function saveQuote(id) {
     novaBtnBusy(btn, 'Saving\u2026');
     let newId;
     if (id) {
-      await api('PUT', '/quotes/' + id, { customer_name, city_code: city_code || null, notes, important_info, tax_rate, line_items: validItems });
+      await api('PUT', '/quotes/' + id, { customer_name, city_code: city_code || null, notes, important_info, tax_rate, line_items: validItems, customer_street, customer_city, customer_state, customer_zip, customer_phone, customer_email });
       newId = id;
     } else {
-      const q = await api('POST', '/quotes', { customer_name, city_code: city_code || null, notes, important_info, tax_rate, line_items: validItems });
+      const q = await api('POST', '/quotes', { customer_name, city_code: city_code || null, notes, important_info, tax_rate, line_items: validItems, customer_street, customer_city, customer_state, customer_zip, customer_phone, customer_email });
       newId = q.id;
     }
     if (quotePendingPhotos.length) {
@@ -5568,6 +5586,9 @@ async function renderViewQuote(el, id) {
   try {
     const q = await api('GET', '/quotes/' + id);
     _currentQuote = q;
+    const _custCityState = [q.customer_city, q.customer_state].filter(Boolean).join(', ');
+    const _custLoc = [_custCityState, q.customer_zip].filter(Boolean).join(' ');
+    const custAddr = [q.customer_street, _custLoc].filter(Boolean).join(', ');
     const canEdit = state.user.role === 'admin' || (can('edit_quote') && q.requester_id === state.user.id);
     const canDelete = state.user.role === 'admin' || (can('delete_quote') && q.requester_id === state.user.id);
     el.innerHTML =
@@ -5591,6 +5612,9 @@ async function renderViewQuote(el, id) {
           (q.city_code ? '<div class="detail-field"><label>City</label><p>' + escHtml(q.city_code) + '</p></div>' : '') +
           '<div class="detail-field"><label>Prepared By</label><p>' + escHtml(q.requester_name || '—') + '</p></div>' +
           '<div class="detail-field"><label>Date</label><p>' + formatDate(q.created_at) + '</p></div>' +
+          (q.customer_phone ? '<div class="detail-field"><label>Customer Phone</label><p>' + escHtml(q.customer_phone) + '</p></div>' : '') +
+          (q.customer_email ? '<div class="detail-field"><label>Customer Email</label><p>' + escHtml(q.customer_email) + '</p></div>' : '') +
+          (custAddr ? '<div class="detail-field" style="grid-column:1/-1"><label>Customer Address</label><p>' + escHtml(custAddr) + '</p></div>' : '') +
           (q.notes ? '<div class="detail-field" style="grid-column:1/-1"><label>Notes</label><p>' + escHtml(q.notes) + '</p></div>' : '') +
         '</div>' +
       '</div></div>' +
@@ -5832,6 +5856,12 @@ async function pushQuoteToInvoice(id) {
     var payload = {
       status: 'draft',
       customer_name: q.customer_name || '',
+      street_address: q.customer_street || '',
+      city: q.customer_city || '',
+      state: q.customer_state || '',
+      zip: q.customer_zip || '',
+      phone: q.customer_phone || '',
+      email: q.customer_email || '',
       tax_rate: parseFloat(q.tax_rate) || 0,
       notes: 'From quote ' + q.quote_number + (q.notes ? ('\n' + q.notes) : ''),
       line_items: lines
@@ -6011,8 +6041,26 @@ async function printQuote(id) {
       '</div>' +
     '</div>';
 
+    // Customer contact block (mirrors the "Your Locksmith" block above).
+    const _pCityState = [q.customer_city, q.customer_state].filter(Boolean).join(', ');
+    const _pLoc = [_pCityState, q.customer_zip].filter(Boolean).join(' ');
+    const _custAddrParts = [];
+    if (q.customer_street) _custAddrParts.push(esc(q.customer_street));
+    if (_pLoc) _custAddrParts.push(esc(_pLoc));
+    const _custAddrHtml = _custAddrParts.join('<br>');
+    const _cLbl = 'font-size:11px;font-weight:600;color:#9ca3af;text-transform:uppercase;letter-spacing:0.05em;margin-bottom:3px';
+    const _cVal = 'font-size:13px;color:#111';
+    const customerBlock = '<div class="avoid-break" style="padding:20px 32px;border-bottom:1px solid #e5e7eb">' +
+      '<div style="font-size:11px;font-weight:600;color:#6b7280;text-transform:uppercase;letter-spacing:0.05em;margin-bottom:10px">Customer</div>' +
+      '<div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px">' +
+        '<div><div style="' + _cLbl + '">Name</div><div style="' + _cVal + '">' + esc(q.customer_name || '—') + '</div></div>' +
+        '<div><div style="' + _cLbl + '">Phone</div><div style="' + _cVal + '">' + esc(q.customer_phone || '—') + '</div></div>' +
+        '<div><div style="' + _cLbl + '">Email</div><div style="' + _cVal + '">' + esc(q.customer_email || '—') + '</div></div>' +
+      '</div>' +
+      (_custAddrHtml ? '<div style="margin-top:12px"><div style="' + _cLbl + '">Address</div><div style="' + _cVal + '">' + _custAddrHtml + '</div></div>' : '') +
+    '</div>';
+
     const detailFields = [
-      { label: 'Customer Name', value: q.customer_name },
       { label: 'City', value: q.city_code || '—' },
       { label: 'Quote Date', value: formatDate(q.created_at) },
       { label: 'Quote Number', value: q.quote_number }
@@ -6112,8 +6160,9 @@ async function printQuote(id) {
           '</div>' +
         '</div>' +
         locksmiths +
+        customerBlock +
         '<div class="avoid-break" style="padding:24px 32px;border-bottom:1px solid #e5e7eb">' +
-          '<div style="display:grid;grid-template-columns:1fr 1fr 1fr 1fr;gap:20px">' + detailGrid + '</div>' +
+          '<div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:20px">' + detailGrid + '</div>' +
         '</div>' +
         '<div style="padding:24px 32px;border-bottom:1px solid #e5e7eb">' +
           '<div style="font-size:11px;font-weight:600;color:#6b7280;text-transform:uppercase;letter-spacing:0.05em;margin-bottom:12px">Line items</div>' +

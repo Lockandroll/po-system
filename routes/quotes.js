@@ -26,6 +26,20 @@ async function generateQuoteNumber(userInitials) {
   return 'QT-' + year + '-' + seq + '-' + userInitials;
 }
 
+// Normalize the optional customer-contact fields captured on a quote. These
+// carry over to the invoice on push-to-invoice, so we keep the same shape and
+// length limits as the matching invoices table columns.
+function pickCustomerContact(b) {
+  return {
+    customer_street: b.customer_street ? String(b.customer_street).trim().slice(0, 255) : null,
+    customer_city: b.customer_city ? String(b.customer_city).trim().slice(0, 120) : null,
+    customer_state: b.customer_state ? String(b.customer_state).trim().toUpperCase().slice(0, 4) : null,
+    customer_zip: b.customer_zip ? String(b.customer_zip).trim().slice(0, 12) : null,
+    customer_phone: b.customer_phone ? String(b.customer_phone).trim().slice(0, 50) : null,
+    customer_email: b.customer_email ? String(b.customer_email).trim().slice(0, 255) : null
+  };
+}
+
 // GET all quotes (own only, unless admin)
 router.get('/', requireAuth, requirePermission('view_quotes'), async (req, res) => {
   try {
@@ -72,6 +86,7 @@ router.get('/:id', requireAuth, requirePermission('view_quotes'), async (req, re
 // POST create quote
 router.post('/', requireAuth, requirePermission('create_quote'), async (req, res) => {
   const { customer_name, city_code, notes, important_info, tax_rate, line_items } = req.body;
+  const cc = pickCustomerContact(req.body);
   if (!customer_name) return res.status(400).json({ error: 'Customer name is required' });
   for (const item of (line_items || [])) {
     if (!(parseFloat(item.quantity) > 0)) return res.status(400).json({ error: 'Line item quantity must be greater than 0' });
@@ -95,8 +110,8 @@ router.post('/', requireAuth, requirePermission('create_quote'), async (req, res
     try {
       await client.query('BEGIN');
       const { rows } = await client.query(
-        'INSERT INTO quotes (quote_number, requester_id, customer_name, city_code, notes, important_info, tax_rate, tax_amount, total_amount) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING *',
-        [quote_number, req.user.id, customer_name, city_code || null, notes || null, important_info || null, taxRateVal, tax_amount, total]
+        'INSERT INTO quotes (quote_number, requester_id, customer_name, city_code, notes, important_info, tax_rate, tax_amount, total_amount, customer_street, customer_city, customer_state, customer_zip, customer_phone, customer_email) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15) RETURNING *',
+        [quote_number, req.user.id, customer_name, city_code || null, notes || null, important_info || null, taxRateVal, tax_amount, total, cc.customer_street, cc.customer_city, cc.customer_state, cc.customer_zip, cc.customer_phone, cc.customer_email]
       );
       const quote = rows[0];
       for (const item of (line_items || [])) {
@@ -157,6 +172,7 @@ router.put('/:id', requireAuth, requirePermission('edit_quote'), async (req, res
       return res.status(403).json({ error: 'Access denied' });
     }
     const { customer_name, city_code, notes, important_info, tax_rate, line_items } = req.body;
+    const cc = pickCustomerContact(req.body);
     if (!customer_name) return res.status(400).json({ error: 'Customer name is required' });
     for (const item of (line_items || [])) {
       if (!(parseFloat(item.quantity) > 0)) return res.status(400).json({ error: 'Line item quantity must be greater than 0' });
@@ -176,8 +192,8 @@ router.put('/:id', requireAuth, requirePermission('edit_quote'), async (req, res
     try {
       await client.query('BEGIN');
       await client.query(
-        'UPDATE quotes SET customer_name=$1, city_code=$2, notes=$3, important_info=$4, tax_rate=$5, tax_amount=$6, total_amount=$7, updated_at=NOW() WHERE id=$8',
-        [customer_name, city_code || null, notes || null, important_info || null, taxRateVal, tax_amount, total, req.params.id]
+        'UPDATE quotes SET customer_name=$1, city_code=$2, notes=$3, important_info=$4, tax_rate=$5, tax_amount=$6, total_amount=$7, customer_street=$8, customer_city=$9, customer_state=$10, customer_zip=$11, customer_phone=$12, customer_email=$13, updated_at=NOW() WHERE id=$14',
+        [customer_name, city_code || null, notes || null, important_info || null, taxRateVal, tax_amount, total, cc.customer_street, cc.customer_city, cc.customer_state, cc.customer_zip, cc.customer_phone, cc.customer_email, req.params.id]
       );
       await client.query('DELETE FROM quote_line_items WHERE quote_id = $1', [req.params.id]);
       for (const item of (line_items || [])) {
