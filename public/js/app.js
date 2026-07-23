@@ -9712,14 +9712,41 @@ let _signoffOfferTrip = false;
 // ===== Parts List (master catalog) ==========================================
 var _partsData = [];
 var _partsSearchTimer = null;
+var _partsMarkup = null; // cached default retail markup multiplier
+
+// Fetch the default markup once (used to fill retail when a part has none).
+async function ensurePartsMarkup() {
+  if (_partsMarkup != null) return _partsMarkup;
+  try { var r = await api('GET', '/parts/markup'); _partsMarkup = (r && parseFloat(r.markup) > 0) ? parseFloat(r.markup) : 2.3; }
+  catch (e) { _partsMarkup = 2.3; }
+  return _partsMarkup;
+}
+
+// Round money to 2 decimals, matching Postgres ROUND(numeric,2): collapse float
+// error with toFixed(8) first, then round half-up on the cent so a value like
+// 229.95 x 2.3 = 528.885 becomes 528.89, exactly like the server/DB.
+function money2(x) {
+  var n = parseFloat(x);
+  if (!isFinite(n)) return null;
+  return Math.round(Number(n.toFixed(8)) * 100) / 100;
+}
+
+// Effective retail for a part: its stored retail, or cost x markup as a fallback.
+function partRetail(pt) {
+  if (pt && pt.retail_price != null && pt.retail_price !== '') return Number(pt.retail_price);
+  if (pt && pt.price != null && pt.price !== '') return money2(Number(pt.price) * (_partsMarkup || 2.3));
+  return null;
+}
 
 async function renderPartsList(el) {
   if (!can('manage_parts')) { el.innerHTML = '<div class="alert alert-error">Access denied.</div>'; return; }
+  await ensurePartsMarkup();
   el.innerHTML =
     '<div class="page-header"><div><div class="page-title">Parts List</div><div class="page-subtitle">Master catalog of parts used on POs and the Monthly Requisition</div></div>' +
       '<div class="row-actions">' +
         '<button class="btn btn-secondary btn-sm" onclick="downloadPartsSample()">Download sample CSV</button>' +
         '<button class="btn btn-secondary btn-sm" onclick="document.getElementById(\'parts-csv-input\').click()">Import CSV</button>' +
+        '<button class="btn btn-secondary btn-sm" onclick="openMarkupTool()">Set retail by markup</button>' +
         '<button class="btn btn-primary btn-sm" onclick="openPartEditor(null)">' + icons.plus + ' Add Part</button>' +
       '</div></div>' +
     '<input type="file" id="parts-csv-input" accept=".csv,text/csv" style="display:none" onchange="onPartsCsvChosen(this)" />' +
@@ -9756,12 +9783,13 @@ async function loadPartsTable(q) {
       '<td style="max-width:360px;word-break:break-word">' + escHtml(pt.description || '') + '</td>' +
       '<td>' + escHtml(pt.preferred_vendor || '-') + '</td>' +
       '<td style="white-space:nowrap">' + (pt.price != null ? ('$' + Number(pt.price).toFixed(2)) : '-') + '</td>' +
+      '<td style="white-space:nowrap">' + (pt.retail_price != null ? ('$' + Number(pt.retail_price).toFixed(2)) : '-') + '</td>' +
       '<td style="white-space:nowrap"><button class="btn btn-ghost btn-sm" onclick="openPartEditor(' + pt.id + ')">Edit</button>' +
         '<button class="btn btn-ghost btn-sm" style="color:var(--danger)" onclick="deletePart(' + pt.id + ')">' + icons.trash + '</button></td>' +
     '</tr>';
   }).join('');
   area.innerHTML = '<div id="parts-bulk-bar" style="margin-bottom:10px;display:none;align-items:center;gap:10px"></div>' +
-    '<div class="table-wrap"><table class="table"><thead><tr><th style="width:28px;text-align:center"><input type="checkbox" id="parts-check-all" onclick="partsToggleAll(this)" /></th><th>Item #</th><th>Alias</th><th>Description</th><th>Preferred Vendor</th><th>Price</th><th></th></tr></thead><tbody>' + rows + '</tbody></table></div>';
+    '<div class="table-wrap"><table class="table"><thead><tr><th style="width:28px;text-align:center"><input type="checkbox" id="parts-check-all" onclick="partsToggleAll(this)" /></th><th>Item #</th><th>Alias</th><th>Description</th><th>Preferred Vendor</th><th>Our Cost</th><th>Retail</th><th></th></tr></thead><tbody>' + rows + '</tbody></table></div>';
   partsUpdateSelection();
 }
 
@@ -9778,9 +9806,11 @@ function openPartEditor(id) {
         '<div class="form-group"><label>Alias <span style="font-weight:400;font-size:0.8em;color:var(--text-muted-color)">e.g. H94, HON-484</span></label><input type="text" id="part-alias" value="' + escHtml(pt ? pt.alias || '' : '') + '" /></div>' +
         '<div class="form-group"><label>Description *</label><input type="text" id="part-desc" value="' + escHtml(pt ? pt.description || '' : '') + '" /></div>' +
         '<div class="form-row">' +
-          '<div class="form-group"><label>Price</label><input type="number" id="part-price" min="0" step="0.01" value="' + escHtml(pt && pt.price != null ? pt.price : '') + '" /></div>' +
-          '<div class="form-group"><label>Preferred Vendor <span style="font-weight:400;font-size:0.8em;color:var(--text-muted-color)">optional</span></label><input type="text" id="part-vendor" value="' + escHtml(pt ? pt.preferred_vendor || '' : '') + '" /></div>' +
+          '<div class="form-group"><label>Our Cost <span style="font-weight:400;font-size:0.8em;color:var(--text-muted-color)">wholesale</span></label><input type="number" id="part-price" min="0" step="0.01" value="' + escHtml(pt && pt.price != null ? pt.price : '') + '" oninput="partEditorCostInput()" /></div>' +
+          '<div class="form-group"><label>Retail <span style="font-weight:400;font-size:0.8em;color:var(--text-muted-color)">customer price</span></label><input type="number" id="part-retail" min="0" step="0.01" value="' + escHtml(pt && pt.retail_price != null ? pt.retail_price : '') + '" /></div>' +
         '</div>' +
+        '<div class="form-group"><label>Preferred Vendor <span style="font-weight:400;font-size:0.8em;color:var(--text-muted-color)">optional</span></label><input type="text" id="part-vendor" value="' + escHtml(pt ? pt.preferred_vendor || '' : '') + '" /></div>' +
+        '<div style="font-size:12px;color:var(--text-muted-color);margin-top:-2px">Leave Retail blank and it auto-fills at ' + (_partsMarkup || 2.3) + '× Our Cost when you save.</div>' +
       '</div>' +
       '<div class="modal-footer"><button class="btn btn-secondary" onclick="this.closest(\'.modal-overlay\').remove()">Cancel</button><button class="btn btn-primary" onclick="savePart(' + (id || 'null') + ', this)">Save</button></div>' +
     '</div>';
@@ -9793,6 +9823,7 @@ async function savePart(id, btn) {
     alias: (document.getElementById('part-alias').value || '').trim(),
     description: (document.getElementById('part-desc').value || '').trim(),
     price: (document.getElementById('part-price').value || '').trim(),
+    retail_price: (document.getElementById('part-retail').value || '').trim(),
     preferred_vendor: (document.getElementById('part-vendor').value || '').trim()
   };
   if (!body.description) { document.getElementById('part-modal-error').innerHTML = '<div class="alert alert-error">Description is required.</div>'; return; }
@@ -9806,6 +9837,17 @@ async function savePart(id, btn) {
     document.getElementById('part-modal-error').innerHTML = '<div class="alert alert-error">' + escHtml(e.message) + '</div>';
     btn.disabled = false;
   }
+}
+
+// In the part editor, auto-fill Retail from Our Cost x markup, but only while
+// Retail is still blank so a typed retail is never overwritten.
+function partEditorCostInput() {
+  var costEl = document.getElementById('part-price');
+  var retailEl = document.getElementById('part-retail');
+  if (!costEl || !retailEl) return;
+  if ((retailEl.value || '').trim() !== '') return;
+  var c = parseFloat(costEl.value);
+  if (isFinite(c) && c > 0) retailEl.value = money2(c * (_partsMarkup || 2.3)).toFixed(2);
 }
 
 async function deletePart(id) {
@@ -9856,11 +9898,55 @@ async function deleteSelectedParts() {
   }
 }
 
+// ---- Bulk "set retail by markup" tool --------------------------------------
+function openMarkupTool() {
+  var cur = (_partsMarkup || 2.3);
+  var overlay = document.createElement('div');
+  overlay.className = 'modal-overlay';
+  overlay.innerHTML =
+    '<div class="modal">' +
+      '<div class="modal-header"><span class="modal-title">Set Retail by Markup</span><button class="btn btn-ghost btn-sm" onclick="this.closest(\'.modal-overlay\').remove()">&#x2715;</button></div>' +
+      '<div class="modal-body">' +
+        '<div id="markup-error"></div>' +
+        '<p style="font-size:13px;color:var(--text-muted-color);margin-top:0">Set each part&#39;s Retail = Our Cost &times; this multiplier. Parts with no cost are skipped.</p>' +
+        '<div class="form-group"><label>Markup multiplier</label><input type="number" id="markup-mult" min="0" step="0.05" value="' + cur + '" /></div>' +
+        '<div class="form-group"><label>Apply to</label>' +
+          '<label style="display:flex;align-items:center;gap:8px;font-weight:400"><input type="radio" name="markup-scope" value="blank" checked style="width:16px;height:16px;padding:0" /> Only parts without a retail price yet</label>' +
+          '<label style="display:flex;align-items:center;gap:8px;font-weight:400;margin-top:6px"><input type="radio" name="markup-scope" value="all" style="width:16px;height:16px;padding:0" /> All parts (overwrite existing retail)</label>' +
+        '</div>' +
+        '<label style="display:flex;align-items:center;gap:8px;font-weight:400;font-size:13px"><input type="checkbox" id="markup-save-default" checked style="width:16px;height:16px;padding:0" /> Save this as the default markup for new parts</label>' +
+      '</div>' +
+      '<div class="modal-footer"><button class="btn btn-secondary" onclick="this.closest(\'.modal-overlay\').remove()">Cancel</button><button class="btn btn-primary" onclick="applyMarkupTool(this)">Apply</button></div>' +
+    '</div>';
+  document.body.appendChild(overlay);
+}
+
+async function applyMarkupTool(btn) {
+  var mult = parseFloat((document.getElementById('markup-mult') || {}).value);
+  var scopeEl = document.querySelector('input[name="markup-scope"]:checked');
+  var scope = scopeEl ? scopeEl.value : 'blank';
+  var saveDefault = !!(document.getElementById('markup-save-default') || {}).checked;
+  if (!isFinite(mult) || mult <= 0) { document.getElementById('markup-error').innerHTML = '<div class="alert alert-error">Enter a markup greater than 0.</div>'; return; }
+  try {
+    btn.disabled = true;
+    var resp = await api('POST', '/parts/apply-markup', { multiplier: mult, scope: scope, save_default: saveDefault });
+    if (saveDefault) _partsMarkup = mult;
+    var ov = btn.closest('.modal-overlay'); if (ov) ov.remove();
+    var msg = document.getElementById('parts-msg');
+    if (msg) { msg.innerHTML = '<div class="alert alert-success">Updated retail on ' + resp.updated + ' part' + (resp.updated === 1 ? '' : 's') + ' at ' + mult + '× cost.</div>'; setTimeout(function(){ if (msg) msg.innerHTML = ''; }, 5000); }
+    var q = (document.getElementById('parts-search') || {}).value || '';
+    await loadPartsTable(q.trim());
+  } catch (e) {
+    document.getElementById('markup-error').innerHTML = '<div class="alert alert-error">' + escHtml(e.message) + '</div>';
+    btn.disabled = false;
+  }
+}
+
 function downloadPartsSample() {
-  var csv = 'item_number,alias,description,price,preferred_vendor\r\n' +
-    'HON-484,H94,"Honda HON66 transponder key blank",12.50,Acme Locksmith Supply\r\n' +
-    'KW1,,"Kwikset KW1 key blank",0.85,Keyline\r\n' +
-    'SC1,,"Schlage SC1 key blank",0.90,Keyline\r\n';
+  var csv = 'item_number,alias,description,our_cost,retail_price,preferred_vendor\r\n' +
+    'HON-484,H94,"Honda HON66 transponder key blank",12.50,28.75,Acme Locksmith Supply\r\n' +
+    'KW1,,"Kwikset KW1 key blank",0.85,1.96,Keyline\r\n' +
+    'SC1,,"Schlage SC1 key blank",0.90,2.07,Keyline\r\n';
   var blob = new Blob([csv], { type: 'text/csv' });
   var a = document.createElement('a');
   a.href = URL.createObjectURL(blob);
@@ -9911,7 +9997,8 @@ async function handlePartsCsv(text) {
     item_number: colIdx(['item_number', 'item', 'item_no', 'item#', 'part_number', 'part_no', 'sku']),
     alias: colIdx(['alias', 'aliases', 'alt', 'alternate']),
     description: colIdx(['description', 'desc', 'name']),
-    price: colIdx(['price', 'cost', 'unit_price']),
+    price: colIdx(['our_cost', 'cost', 'price', 'unit_price', 'wholesale']),
+    retail_price: colIdx(['retail_price', 'retail', 'list_price', 'list', 'msrp', 'sell_price']),
     preferred_vendor: colIdx(['preferred_vendor', 'vendor', 'supplier'])
   };
   if (ci.description === -1) { novaAlert('Your CSV needs a "description" column. Download the sample CSV for the right format.'); return; }
@@ -9924,6 +10011,7 @@ async function handlePartsCsv(text) {
       alias: cell(ci.alias),
       description: cell(ci.description),
       price: cell(ci.price).replace(/[$,]/g, ''),
+      retail_price: cell(ci.retail_price).replace(/[$,]/g, ''),
       preferred_vendor: cell(ci.preferred_vendor)
     };
     if (obj.description) _importRows.push(obj);
@@ -9971,7 +10059,7 @@ function renderImportReview(aiUsed) {
     var control = isDup
       ? '<select class="import-dec" data-i="' + i + '" style="font-size:13px;padding:4px 8px;border-radius:6px"><option value="skip" selected>Skip</option><option value="add">Add anyway</option></select>'
       : '<label style="display:flex;align-items:center;gap:6px;font-size:13px"><input type="checkbox" class="import-inc" data-i="' + i + '" checked style="width:auto" /> Include</label>';
-    var meta = [row.item_number && ('Item ' + row.item_number), row.alias && ('Alias ' + row.alias), row.preferred_vendor, (row.price !== '' && row.price != null) && ('$' + row.price)].filter(Boolean).join('  &middot;  ');
+    var meta = [row.item_number && ('Item ' + row.item_number), row.alias && ('Alias ' + row.alias), row.preferred_vendor, (row.price !== '' && row.price != null) && ('Cost $' + row.price), (row.retail_price !== '' && row.retail_price != null) && ('Retail $' + row.retail_price)].filter(Boolean).join('  &middot;  ');
     return '<div style="padding:10px;border-top:1px solid var(--border);' + (isDup ? 'background:rgba(245,158,11,0.06)' : '') + '">' +
       '<div style="display:flex;justify-content:space-between;gap:12px;align-items:flex-start">' +
         '<div style="font-size:13px"><strong>' + escHtml(row.description || '(no description)') + '</strong>' +
@@ -10027,6 +10115,7 @@ async function openPartsPicker(context) {
       '<div class="modal-footer"><button class="btn btn-secondary" onclick="this.closest(\'.modal-overlay\').remove()">Cancel</button><button class="btn btn-primary" onclick="pickerAddSelected()">Add Selected</button></div>' +
     '</div>';
   document.body.appendChild(overlay);
+  await ensurePartsMarkup();
   await pickerLoad('');
 }
 
@@ -10054,17 +10143,27 @@ function pickerRender() {
     box.innerHTML = '<div style="padding:14px;color:var(--text-muted-color)">No parts found. Add parts under Settings &rarr; Parts List.</div>';
     return;
   }
-  var gridCols = 'grid-template-columns:28px 1.1fr 0.7fr 2fr 64px 96px';
+  // Which price columns to show depends on where the picker was opened from:
+  // POs & the Monthly Req buy at our cost; invoices charge retail; quotes show both.
+  var ctx = _pickerContext;
+  var showCost = (ctx === 'po' || ctx === 'running' || ctx === 'quote');
+  var showRetail = (ctx === 'invoice' || ctx === 'quote');
+  var priceCols = (showCost ? ' 92px' : '') + (showRetail ? ' 92px' : '');
+  var gridCols = 'grid-template-columns:28px 1.1fr 0.7fr 2fr 60px' + priceCols;
+  var priceHead = (showCost ? '<div>Cost</div>' : '') + (showRetail ? '<div>Retail</div>' : '');
   var head = '<div style="display:grid;' + gridCols + ';gap:8px;padding:8px 10px;font-size:11px;text-transform:uppercase;letter-spacing:0.04em;color:var(--text-muted-color);position:sticky;top:0;background:var(--bg-elevated,#1f1f1f);z-index:2">' +
-    '<div></div><div>Item #</div><div>Alias</div><div>Description</div><div>Qty</div><div>Price</div></div>';
+    '<div></div><div>Item #</div><div>Alias</div><div>Description</div><div>Qty</div>' + priceHead + '</div>';
   var rows = _pickerParts.map(function(pt, i) {
+    var costCell = showCost ? ('<div><input type="number" class="picker-cost" data-i="' + i + '" value="' + escHtml(pt.price != null ? pt.price : '') + '" min="0" step="0.01" placeholder="0.00" style="width:100%;box-sizing:border-box;font-size:13px" /></div>') : '';
+    var rv = partRetail(pt);
+    var retailCell = showRetail ? ('<div><input type="number" class="picker-retail" data-i="' + i + '" value="' + escHtml(rv != null ? rv : '') + '" min="0" step="0.01" placeholder="0.00" style="width:100%;box-sizing:border-box;font-size:13px" /></div>') : '';
     return '<div style="display:grid;' + gridCols + ';gap:8px;padding:8px 10px;align-items:center;border-top:1px solid var(--border)">' +
       '<div><input type="checkbox" class="picker-cb" data-i="' + i + '" style="width:auto" /></div>' +
       '<div style="font-size:13px">' + escHtml(pt.item_number || '-') + (pt.preferred_vendor ? ('<div style="font-size:11px;color:var(--text-muted-color)">' + escHtml(pt.preferred_vendor) + '</div>') : '') + '</div>' +
       '<div style="font-size:13px">' + escHtml(pt.alias || '-') + '</div>' +
       '<div><input type="text" class="picker-desc" data-i="' + i + '" value="' + escHtml(pt.description || '') + '" style="width:100%;box-sizing:border-box;font-size:13px" /></div>' +
       '<div><input type="number" class="picker-qty" data-i="' + i + '" value="1" min="0" step="1" style="width:100%;box-sizing:border-box;font-size:13px" /></div>' +
-      '<div><input type="number" class="picker-price" data-i="' + i + '" value="' + escHtml(pt.price != null ? pt.price : '') + '" min="0" step="0.01" placeholder="0.00" style="width:100%;box-sizing:border-box;font-size:13px" /></div>' +
+      costCell + retailCell +
     '</div>';
   }).join('');
   box.innerHTML = head + rows;
@@ -10080,8 +10179,11 @@ function pickerAddSelected() {
     if (!pt) return;
     var desc = (document.querySelector('.picker-desc[data-i="' + i + '"]') || {}).value;
     var qty = (document.querySelector('.picker-qty[data-i="' + i + '"]') || {}).value;
-    var price = (document.querySelector('.picker-price[data-i="' + i + '"]') || {}).value;
-    chosen.push({ part: pt, description: (desc != null && desc !== '') ? desc : (pt.description || ''), quantity: (qty === '' || qty == null) ? 1 : qty, price: price });
+    var costEl = document.querySelector('.picker-cost[data-i="' + i + '"]');
+    var retailEl = document.querySelector('.picker-retail[data-i="' + i + '"]');
+    var cost = costEl ? costEl.value : (pt.price != null ? pt.price : '');
+    var retail = retailEl ? retailEl.value : '';
+    chosen.push({ part: pt, description: (desc != null && desc !== '') ? desc : (pt.description || ''), quantity: (qty === '' || qty == null) ? 1 : qty, cost: cost, retail: retail });
   });
   if (!chosen.length) { novaAlert('Select at least one part first.'); return; }
   if (_pickerContext === 'po') {
@@ -10090,13 +10192,13 @@ function pickerAddSelected() {
       if (!(f.item_number || '').toString().trim() && !(f.description || '').toString().trim() && !(f.unit_price || '').toString().trim()) lineItems = [];
     }
     chosen.forEach(function(c) {
-      lineItems.push({ item_number: c.part.item_number || '', manufacturer: '', description: c.description, quantity: c.quantity || 1, unit_price: (c.price === '' || c.price == null) ? '' : c.price });
+      lineItems.push({ item_number: c.part.item_number || '', manufacturer: '', description: c.description, quantity: c.quantity || 1, unit_price: (c.cost === '' || c.cost == null) ? '' : c.cost });
     });
     buildLineItemRows();
   } else if (_pickerContext === 'running') {
     var startLen = runningItems.length;
     chosen.forEach(function(c) {
-      runningItems.push({ description: c.description, quantity: c.quantity || 1, unit_price: (c.price === '' || c.price == null) ? '' : c.price, vendor_name: c.part.preferred_vendor || '', part_number: c.part.item_number || '', link: '' });
+      runningItems.push({ description: c.description, quantity: c.quantity || 1, unit_price: (c.cost === '' || c.cost == null) ? '' : c.cost, vendor_name: c.part.preferred_vendor || '', part_number: c.part.item_number || '', link: '' });
     });
     runningBuildRows();
     for (var k = startLen; k < runningItems.length; k++) { runningPersist(k); }
@@ -10106,8 +10208,9 @@ function pickerAddSelected() {
       if (!(fq.item_number || '').toString().trim() && !(fq.description || '').toString().trim() && !(fq.list_price || '').toString().trim() && !(fq.unit_price || '').toString().trim()) quoteLineItems = [];
     }
     chosen.forEach(function(c) {
-      var pv = (c.price === '' || c.price == null) ? '' : c.price;
-      quoteLineItems.push({ item_number: c.part.item_number || '', manufacturer: '', description: c.description, quantity: c.quantity || 1, unit_price: pv, list_price: pv, taxable: false, url: '' });
+      var costv = (c.cost === '' || c.cost == null) ? '' : c.cost;      // our cost -> unit_price
+      var retailv = (c.retail === '' || c.retail == null) ? '' : c.retail; // retail -> customer list price
+      quoteLineItems.push({ item_number: c.part.item_number || '', manufacturer: '', description: c.description, quantity: c.quantity || 1, unit_price: costv, list_price: retailv, taxable: false, url: '' });
     });
     buildQuoteLineItemRows();
   } else if (_pickerContext === 'invoice') {
@@ -10116,8 +10219,8 @@ function pickerAddSelected() {
       if (!(fi.item_number || '').toString().trim() && !(fi.description || '').toString().trim() && !(fi.unit_price || '').toString().trim()) invoiceLineItems = [];
     }
     chosen.forEach(function(c) {
-      var pvi = (c.price === '' || c.price == null) ? '' : c.price;
-      invoiceLineItems.push({ line_type: 'part', part_id: c.part.id || null, item_number: c.part.item_number || '', description: c.description, quantity: c.quantity || 1, unit_price: pvi, taxable: false });
+      var retailvi = (c.retail === '' || c.retail == null) ? '' : c.retail; // charge the customer retail
+      invoiceLineItems.push({ line_type: 'part', part_id: c.part.id || null, item_number: c.part.item_number || '', description: c.description, quantity: c.quantity || 1, unit_price: retailvi, taxable: false });
     });
     buildInvoiceLineItemRows();
   }

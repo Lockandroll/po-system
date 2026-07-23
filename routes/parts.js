@@ -9,17 +9,31 @@ function norm(v) {
   return String(v == null ? '' : v).toUpperCase().replace(/[^A-Z0-9]/g, '');
 }
 
+function parseMoney(v) {
+  return (v === '' || v == null || isNaN(parseFloat(v))) ? null : parseFloat(v);
+}
+
 function cleanRow(r) {
   r = r || {};
-  var price = r.price;
-  var parsed = (price === '' || price == null || isNaN(parseFloat(price))) ? null : parseFloat(price);
   return {
     item_number: (r.item_number == null ? '' : String(r.item_number)).trim().slice(0, 150),
     alias: (r.alias == null ? '' : String(r.alias)).trim().slice(0, 150),
     description: (r.description == null ? '' : String(r.description)).trim().slice(0, 500),
-    price: parsed,
+    price: parseMoney(r.price),                 // our (wholesale) cost
+    retail_price: parseMoney(r.retail_price),   // customer-facing marked-up price
     preferred_vendor: (r.preferred_vendor == null ? '' : String(r.preferred_vendor)).trim().slice(0, 255)
   };
+}
+
+// The default retail markup multiplier (editable via Parts List). Falls back to
+// 2.3x if the setting is missing or invalid.
+async function getMarkup() {
+  try {
+    const { rows } = await pool.query("SELECT value FROM settings WHERE key = 'parts_default_markup'");
+    var m = rows.length ? parseFloat(rows[0].value) : NaN;
+    if (!isFinite(m) || m <= 0) return 2.3;
+    return m;
+  } catch (e) { return 2.3; }
 }
 
 // GET /api/parts  — list or search (any authenticated user can search to build a PO/REQ)
@@ -37,13 +51,23 @@ router.get('/', requireAuth, async (req, res) => {
   res.json(rows);
 });
 
+// GET /api/parts/markup — current default retail markup (any authed user; the
+// parts picker uses it to fill retail for parts that don't have one stored yet).
+router.get('/markup', requireAuth, async (req, res) => {
+  res.json({ markup: await getMarkup() });
+});
+
 // POST /api/parts — create one part
 router.post('/', requireAuth, requirePermission('manage_parts'), async (req, res) => {
   const r = cleanRow(req.body);
   if (!r.description) return res.status(400).json({ error: 'Description is required' });
+  const markup = await getMarkup();
+  // Default retail = round(cost x markup) computed in SQL, so a blank retail
+  // matches the DB seed and the Set-retail-by-markup tool exactly (Postgres
+  // numeric math, no JS float drift). A supplied retail is kept as-is.
   const { rows } = await pool.query(
-    'INSERT INTO parts (item_number, alias, description, price, preferred_vendor) VALUES ($1,$2,$3,$4,$5) RETURNING *',
-    [r.item_number || null, r.alias || null, r.description, r.price, r.preferred_vendor || null]
+    'INSERT INTO parts (item_number, alias, description, price, retail_price, preferred_vendor) VALUES ($1,$2,$3,$4, COALESCE($5, ROUND($4::numeric * $6::numeric, 2)), $7) RETURNING *',
+    [r.item_number || null, r.alias || null, r.description, r.price, r.retail_price, markup, r.preferred_vendor || null]
   );
   res.status(201).json(rows[0]);
 });
@@ -52,12 +76,35 @@ router.post('/', requireAuth, requirePermission('manage_parts'), async (req, res
 router.put('/:id', requireAuth, requirePermission('manage_parts'), async (req, res) => {
   const r = cleanRow(req.body);
   if (!r.description) return res.status(400).json({ error: 'Description is required' });
+  const markup = await getMarkup();
   const { rows } = await pool.query(
-    'UPDATE parts SET item_number=$1, alias=$2, description=$3, price=$4, preferred_vendor=$5, updated_at=NOW() WHERE id=$6 RETURNING *',
-    [r.item_number || null, r.alias || null, r.description, r.price, r.preferred_vendor || null, req.params.id]
+    'UPDATE parts SET item_number=$1, alias=$2, description=$3, price=$4, retail_price=COALESCE($5, ROUND($4::numeric * $6::numeric, 2)), preferred_vendor=$7, updated_at=NOW() WHERE id=$8 RETURNING *',
+    [r.item_number || null, r.alias || null, r.description, r.price, r.retail_price, markup, r.preferred_vendor || null, req.params.id]
   );
   if (!rows[0]) return res.status(404).json({ error: 'Part not found' });
   res.json(rows[0]);
+});
+
+// POST /api/parts/apply-markup — bulk-set retail = round(cost x multiplier).
+// Body: { multiplier, scope: 'blank'|'all', save_default }. Optionally saves the
+// multiplier as the new default markup.
+router.post('/apply-markup', requireAuth, requirePermission('manage_parts'), async (req, res) => {
+  var mult = parseFloat(req.body.multiplier);
+  if (!isFinite(mult) || mult <= 0) return res.status(400).json({ error: 'Enter a markup greater than 0 (for example 2.3).' });
+  if (mult > 1000) return res.status(400).json({ error: 'That markup looks too large. Enter a smaller multiplier.' });
+  var scope = req.body.scope === 'all' ? 'all' : 'blank';
+  var sql = 'UPDATE parts SET retail_price = ROUND(price * $1::numeric, 2), updated_at = NOW() WHERE price IS NOT NULL' +
+    (scope === 'blank' ? ' AND retail_price IS NULL' : '');
+  try {
+    const r = await pool.query(sql, [mult]);
+    if (req.body.save_default !== false) {
+      await pool.query("INSERT INTO settings (key, value, updated_at) VALUES ('parts_default_markup', $1, NOW()) ON CONFLICT (key) DO UPDATE SET value = $1, updated_at = NOW()", [String(mult)]);
+    }
+    res.json({ ok: true, updated: r.rowCount, multiplier: mult, scope: scope });
+  } catch (err) {
+    console.error('Apply markup failed:', err.message);
+    res.status(500).json({ error: 'Failed to apply markup.' });
+  }
 });
 
 // DELETE /api/parts/:id
@@ -205,14 +252,15 @@ router.post('/check-duplicates', requireAuth, requirePermission('manage_parts'),
 router.post('/bulk', requireAuth, requirePermission('manage_parts'), async (req, res) => {
   const rows = Array.isArray(req.body.rows) ? req.body.rows.map(cleanRow).filter(function(r){ return r.description; }) : [];
   if (!rows.length) return res.status(400).json({ error: 'No valid rows to import (each row needs a description)' });
+  const markup = await getMarkup();
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
     for (var i = 0; i < rows.length; i++) {
       var r = rows[i];
       await client.query(
-        'INSERT INTO parts (item_number, alias, description, price, preferred_vendor) VALUES ($1,$2,$3,$4,$5)',
-        [r.item_number || null, r.alias || null, r.description, r.price, r.preferred_vendor || null]
+        'INSERT INTO parts (item_number, alias, description, price, retail_price, preferred_vendor) VALUES ($1,$2,$3,$4, COALESCE($5, ROUND($4::numeric * $6::numeric, 2)), $7)',
+        [r.item_number || null, r.alias || null, r.description, r.price, r.retail_price, markup, r.preferred_vendor || null]
       );
     }
     await client.query('COMMIT');

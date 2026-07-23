@@ -208,6 +208,11 @@
     .auth-logo p { color: var(--text-muted-color); font-size: 14px; }
     .row-actions { display: flex; gap: 8px; flex-wrap: nowrap; align-items: center; }
     .row-actions .btn { white-space: nowrap; flex-shrink: 0; }
+    /* Keep paired action buttons (e.g. "Add item" + "Add from Parts List") vertically aligned:
+       .add-item-btn's standalone top margin was offsetting it inside the centered flex row.
+       Put the gap below the table on the row container instead. */
+    .row-actions .add-item-btn { margin-top: 0; }
+    .table-wrap + .row-actions { margin-top: 8px; }
     @media (max-width: 560px) { .row-actions { flex-wrap: wrap; } }
     /* Mobile: relax hardcoded multi-column inline grids so cards stop crowding on phones. */
     /* These grids are set via inline styles, so the override needs the attribute selector + !important. */

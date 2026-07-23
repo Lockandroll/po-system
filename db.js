@@ -400,6 +400,14 @@ async function initDB() {
       'CREATE INDEX IF NOT EXISTS idx_parts_item_number ON parts(item_number);' +
       'CREATE INDEX IF NOT EXISTS idx_parts_alias ON parts(alias);'
     );
+    // Two-price model: price stays as our (wholesale) cost; retail_price is the
+    // customer-facing, marked-up price that flows onto invoices and quote list prices.
+    // The default markup multiplier lives in settings and is editable in the UI.
+    await client.query('ALTER TABLE parts ADD COLUMN IF NOT EXISTS retail_price DECIMAL(10,2);');
+    await client.query("INSERT INTO settings (key, value) VALUES ('parts_default_markup', '2.3') ON CONFLICT (key) DO NOTHING;");
+    // One-time backfill: seed retail from the 2.3x default so existing parts aren't
+    // blank. Only touches rows with no retail yet, so it never clobbers manual edits.
+    await client.query('UPDATE parts SET retail_price = ROUND(price * 2.3, 2) WHERE retail_price IS NULL AND price IS NOT NULL;');
     // Running list (monthly accumulating items that get rolled into a PO per city)
     await client.query(
       'CREATE TABLE IF NOT EXISTS running_list_items (' +
@@ -1424,7 +1432,8 @@ async function initDB() {
       'ALTER TABLE vendors ADD COLUMN IF NOT EXISTS show_in_invoice BOOLEAN NOT NULL DEFAULT false;' +
       'ALTER TABLE vendors ADD COLUMN IF NOT EXISTS invoice_notes TEXT;' +
       'ALTER TABLE vendors ADD COLUMN IF NOT EXISTS auto_line_items JSONB;' +
-      'ALTER TABLE vendors ADD COLUMN IF NOT EXISTS agreement_text TEXT;'
+      'ALTER TABLE vendors ADD COLUMN IF NOT EXISTS agreement_text TEXT;' +
+      'ALTER TABLE vendors ADD COLUMN IF NOT EXISTS restricted_to INTEGER[];'
     );
     // Default authorization/agreement text (used when an account has none)
     const _invAgr = await client.query("SELECT value FROM settings WHERE key = 'invoice_default_agreement'");
