@@ -2,7 +2,7 @@ const express = require('express');
 const https = require('https');
 const { Pool } = require('pg');
 const { pool: novaPool } = require('../db');
-const { requireAuth, requirePermission } = require('../middleware/auth');
+const { requireAuth, requireRole, requirePermission } = require('../middleware/auth');
 
 const router = express.Router();
 
@@ -312,7 +312,7 @@ router.put('/assign', requireAuth, requirePermission('assign_reviews'), async (r
 // A match at MATCH_MIN%+ confidence is hard-linked (user_id + canonical name);
 // anything weaker is stored as an unmatched guess (user_id NULL) that the UI
 // shows as an estimate but never offers as a selectable choice.
-router.post('/tech-tally', requireAuth, requirePermission('assign_reviews'), async (req, res) => {
+router.post('/tech-tally', requireAuth, requireRole('admin'), async (req, res) => {
   const rpool = getReviewsPool();
   if (!rpool) return notConfigured(res);
   if (!process.env.ANTHROPIC_API_KEY) {

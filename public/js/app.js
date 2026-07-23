@@ -9744,7 +9744,8 @@ async function renderPartsList(el) {
   el.innerHTML =
     '<div class="page-header"><div><div class="page-title">Parts List</div><div class="page-subtitle">Master catalog of parts used on POs and the Monthly Requisition</div></div>' +
       '<div class="row-actions">' +
-        '<button class="btn btn-secondary btn-sm" onclick="downloadPartsSample()">Download sample CSV</button>' +
+        '<button class="btn btn-secondary btn-sm" onclick="downloadPartsSample()">Download import sample CSV</button>' +
+        '<button class="btn btn-secondary btn-sm" onclick="exportPartsCsv()">Export CSV</button>' +
         '<button class="btn btn-secondary btn-sm" onclick="document.getElementById(\'parts-csv-input\').click()">Import CSV</button>' +
         '<button class="btn btn-secondary btn-sm" onclick="openMarkupTool()">Set retail by markup</button>' +
         '<button class="btn btn-primary btn-sm" onclick="openPartEditor(null)">' + icons.plus + ' Add Part</button>' +
@@ -9955,6 +9956,41 @@ function downloadPartsSample() {
   a.click();
   document.body.removeChild(a);
   URL.revokeObjectURL(a.href);
+}
+
+// Export the FULL parts catalog to a CSV whose columns match the importer, so a
+// manager can pull everything, edit in bulk, and re-import. Uses /parts/export
+// (no row cap) instead of the on-screen list, which the search endpoint limits.
+async function exportPartsCsv() {
+  var msg = document.getElementById('parts-msg');
+  try {
+    var parts = await api('GET', '/parts/export');
+    if (!parts || !parts.length) { novaAlert('There are no parts to export yet.'); return; }
+    function esc(v) {
+      var s = (v == null ? '' : String(v));
+      return /[",\r\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s;
+    }
+    function money(v) { return (v == null || v === '') ? '' : Number(v).toFixed(2); }
+    var lines = ['item_number,alias,description,our_cost,retail_price,preferred_vendor'];
+    parts.forEach(function (p) {
+      lines.push([esc(p.item_number), esc(p.alias), esc(p.description), money(p.price), money(p.retail_price), esc(p.preferred_vendor)].join(','));
+    });
+    var csv = lines.join('\r\n') + '\r\n';
+    var blob = new Blob([csv], { type: 'text/csv' });
+    var a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    var d = new Date();
+    var stamp = d.getFullYear() + '-' + ('0' + (d.getMonth() + 1)).slice(-2) + '-' + ('0' + d.getDate()).slice(-2);
+    a.download = 'parts-export-' + stamp + '.csv';
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(a.href);
+    if (msg) { msg.innerHTML = '<div class="alert alert-success">Exported ' + parts.length + ' part' + (parts.length === 1 ? '' : 's') + ' to CSV.</div>'; setTimeout(function () { if (msg) msg.innerHTML = ''; }, 5000); }
+  } catch (e) {
+    if (msg) { msg.innerHTML = '<div class="alert alert-error">' + escHtml(e.message) + '</div>'; }
+    else { novaAlert(e.message); }
+  }
 }
 
 function parsePartsCSV(text) {

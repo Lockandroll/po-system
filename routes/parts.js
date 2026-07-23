@@ -57,6 +57,14 @@ router.get('/markup', requireAuth, async (req, res) => {
   res.json({ markup: await getMarkup() });
 });
 
+// GET /api/parts/export — the FULL catalog for the client-side CSV export.
+// Manager-only, and deliberately NOT row-capped (the search endpoint limits to
+// 2000/500) so a bulk export never silently drops parts.
+router.get('/export', requireAuth, requirePermission('manage_parts'), async (req, res) => {
+  const { rows } = await pool.query('SELECT item_number, alias, description, price, retail_price, preferred_vendor FROM parts ORDER BY description ASC');
+  res.json(rows);
+});
+
 // POST /api/parts — create one part
 router.post('/', requireAuth, requirePermission('manage_parts'), async (req, res) => {
   const r = cleanRow(req.body);
