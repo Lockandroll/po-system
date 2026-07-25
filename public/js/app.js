@@ -157,7 +157,8 @@ function _apiNoCache(path) {
   // Endpoints that must always be live (session/auth, AI, exports, time clock, notifications).
   return /^\/auth(\/|$)/.test(path) || /^\/ai(\/|$)/.test(path) || /export/.test(path) ||
          /setup-needed/.test(path) || /verify/.test(path) || /usage/.test(path) ||
-         /token/.test(path) || /^\/timeclock/.test(path) || /notif/.test(path);
+         /token/.test(path) || /^\/timeclock/.test(path) || /notif/.test(path) ||
+         /\/id-image/.test(path) || /\/dispute-packet/.test(path);
 }
 function _apiCacheKey(path) { return (state.viewAsId ? 'v' + state.viewAsId + ' ' : '') + path; }
 function _apiClone(d) { try { return JSON.parse(JSON.stringify(d)); } catch (e) { return d; } }
@@ -10270,6 +10271,7 @@ var invoiceLineItems = [];
 var _invoiceAccounts = [];
 var _invoiceDefaultAgreement = '';
 var _currentInvoice = null;
+var _invPendingIdImage = null; // a freshly scanned ID photo, held until the invoice is saved
 var _invoiceSigPad = null;
 var _invoiceExistingSig = null;
 var _invoiceAutoAppliedFor = null;
@@ -10373,6 +10375,7 @@ async function renderEditInvoice(el, id) {
     _invoiceAutoAppliedFor = null;
   }
   _currentInvoice = invoice;
+  _invPendingIdImage = null; // start each form with no pending scan
   var v = invoice || {};
   var today = new Date().toISOString().split('T')[0];
   var dateVal = v.invoice_date ? String(v.invoice_date).split('T')[0] : today;
@@ -10436,6 +10439,7 @@ async function renderEditInvoice(el, id) {
         '<div class="form-group" style="flex:2"><label>Email</label><input type="email" id="inv-email" value="' + escHtml(v.email||'') + '" /></div>' +
       '</div>' +
       '<div id="inv-scan-status" style="font-size:12px;color:var(--text-muted-color)"></div>' +
+      '<div id="inv-id-image-state"></div>' +
     '</div></div>' +
 
     '<div class="card mb-4"><div class="card-header"><span class="card-title">Vehicle</span></div><div class="card-body">' +
@@ -10514,6 +10518,7 @@ async function renderEditInvoice(el, id) {
   if (invoiceLineItems.length === 0) { invoiceLineItems.push({ line_type: 'labor', item_number: '', description: '', quantity: 1, unit_price: '', taxable: false }); }
   buildInvoiceLineItemRows();
   setupInvoiceSignaturePad();
+  invRenderIdImageState();
   if (v.account_id) { var sel = document.getElementById('inv-account'); if (sel) invAccountChange(true); }
   if (id) invLoadPhotos(id);
 }
@@ -10702,6 +10707,8 @@ async function invHandleIdFile(input) {
   if (status) { status.style.color = 'var(--primary)'; status.innerHTML = '<span class="spinner"></span> Photo accepted — AI is reading the ID…'; }
   try {
     var dataUrl = await invFileToCompressedDataUrl(file, 1600);
+    _invPendingIdImage = dataUrl; // keep the photo to save with the invoice (dispute evidence), even if AI can't read it
+    invRenderIdImageState();
     var d = await api('POST', '/invoices/scan-id', { image: dataUrl });
     function setIf(id, val){ if (val) { var e = document.getElementById(id); if (e && !e.value) e.value = val; else if (e) e.value = val; } }
     setIf('inv-customer', d.customer_name);
@@ -10712,8 +10719,8 @@ async function invHandleIdFile(input) {
     setIf('inv-state', d.state);
     setIf('inv-zip', d.zip);
     var filled = [d.customer_name, d.dl_number, d.dl_state, d.street_address, d.city, d.state, d.zip].some(function(x){ return x && String(x).trim(); });
-    if (status) { status.style.color = filled ? 'var(--success)' : 'var(--danger, #ef4444)'; status.textContent = filled ? 'ID read — please verify the fields above.' : 'Could not read details. Use a clear, well-lit photo of the FRONT of the license, or type the info in manually.'; }
-  } catch(e) { if (status) { status.style.color = 'var(--danger, #ef4444)'; status.textContent = e.message; } }
+    if (status) { status.style.color = filled ? 'var(--success)' : 'var(--danger, #ef4444)'; status.textContent = filled ? 'ID read — please verify the fields above. The photo will be saved with the invoice.' : 'Photo saved for the invoice, but the details could not be auto-read — type them in. Use a clear, well-lit photo of the FRONT for auto-read.'; }
+  } catch(e) { if (status) { status.style.color = 'var(--danger, #ef4444)'; status.textContent = (_invPendingIdImage ? 'Photo saved for the invoice, but auto-read failed: ' : '') + e.message; } }
   input.value = '';
 }
 function invFileToCompressedDataUrl(file, maxDim) {
@@ -10850,16 +10857,91 @@ async function saveInvoice(id) {
     signature_image: signature,
     line_items: items
   };
+  if (_invPendingIdImage) payload.id_image = _invPendingIdImage; // send a freshly scanned ID to be stored
   var btn = document.getElementById('inv-save-btn');
   if (btn) btn.disabled = true;
   try {
-    if (id) { await api('PUT', '/invoices/' + id, payload); navigate('view-invoice', id); }
-    else { var created = await api('POST', '/invoices', payload); navigate('view-invoice', created.id); }
+    if (id) {
+      var _pr = await api('PUT', '/invoices/' + id, payload);
+      _invPendingIdImage = null;
+      if (payload.id_image && _pr && _pr.id_image_saved === false) showToast('Invoice saved, but the ID photo could not be stored.', 'error');
+      navigate('view-invoice', id);
+    } else {
+      var created = await api('POST', '/invoices', payload);
+      _invPendingIdImage = null;
+      if (payload.id_image && created && created.id_image_saved === false) showToast('Invoice saved, but the ID photo could not be stored.', 'error');
+      navigate('view-invoice', created.id);
+    }
   } catch(err) {
     if (errEl) errEl.innerHTML = '<div class="alert alert-error">' + escHtml(err.message) + '</div>';
     if (btn) btn.disabled = false;
     window.scrollTo(0,0);
   }
+}
+
+// ----- Scanned ID photo (dispute evidence) -----
+// Shows the state of the license photo under the Scan ID button on the form.
+function invRenderIdImageState() {
+  var box = document.getElementById('inv-id-image-state');
+  if (!box) return;
+  if (_invPendingIdImage) {
+    box.innerHTML = '<div style="margin-top:8px;display:flex;align-items:center;gap:10px;flex-wrap:wrap;font-size:12px">' +
+      '<span style="color:var(--success);font-weight:600">New ID photo attached</span>' +
+      '<span style="color:var(--text-muted-color)">— it will be saved with this invoice.</span>' +
+      '<button type="button" class="btn btn-secondary btn-sm" onclick="invRemovePendingIdImage()">Remove</button>' +
+    '</div>';
+    return;
+  }
+  if (_currentInvoice && _currentInvoice.has_id_image) {
+    var when = _currentInvoice.id_image_uploaded_at ? (' (' + formatDate(_currentInvoice.id_image_uploaded_at) + ')') : '';
+    box.innerHTML = '<div style="margin-top:8px;font-size:12px;color:var(--text-muted-color)">ID scan on file' + when + '. Use <strong>Scan ID</strong> to replace it.</div>';
+    return;
+  }
+  box.innerHTML = '<div style="margin-top:8px;font-size:12px;color:var(--text-muted-color)"><strong>Scan ID</strong> also saves the license photo as chargeback-dispute evidence.</div>';
+}
+function invRemovePendingIdImage() { _invPendingIdImage = null; invRenderIdImageState(); }
+
+// Managers only: fetch the stored ID photo and show it in a lightbox (base64, no
+// public URL). Backend enforces the manager/admin gate and audit-logs the view.
+async function invViewIdImage(id) {
+  try {
+    var d = await api('GET', '/invoices/' + id + '/id-image');
+    invShowImageModal('data:' + (d.mime || 'image/jpeg') + ';base64,' + d.data, 'ID on file — Invoice #' + id);
+  } catch (e) { showToast(e.message || 'Could not load the ID image.', 'error'); }
+}
+function invShowImageModal(src, title) {
+  var ov = document.createElement('div');
+  ov.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.82);z-index:9999;display:flex;flex-direction:column;align-items:center;justify-content:center;padding:24px';
+  ov.onclick = function(){ ov.remove(); };
+  var cap = document.createElement('div');
+  cap.style.cssText = 'color:#fff;font-size:14px;font-weight:600;margin-bottom:10px;text-align:center';
+  cap.textContent = title || '';
+  var img = document.createElement('img');
+  img.src = src;
+  img.style.cssText = 'max-width:94vw;max-height:78vh;border-radius:8px;box-shadow:0 8px 40px rgba(0,0,0,0.5);background:#fff';
+  img.onclick = function(e){ e.stopPropagation(); };
+  var hint = document.createElement('div');
+  hint.style.cssText = 'color:#bbb;font-size:12px;margin-top:10px';
+  hint.textContent = 'Click anywhere to close';
+  ov.appendChild(cap); ov.appendChild(img); ov.appendChild(hint);
+  document.body.appendChild(ov);
+}
+
+// Managers only: build and download the Square dispute evidence packet PDF.
+async function invDownloadDisputePacket(id) {
+  try {
+    showToast('Building dispute evidence packet…', 'info');
+    var d = await api('GET', '/invoices/' + id + '/dispute-packet');
+    invDownloadBase64(d.data, d.mime || 'application/pdf', d.filename || ('Dispute-Evidence-Invoice-' + id + '.pdf'));
+  } catch (e) { showToast(e.message || 'Could not build the dispute packet.', 'error'); }
+}
+function invDownloadBase64(b64, mime, filename) {
+  var bin = atob(b64); var len = bin.length; var bytes = new Uint8Array(len);
+  for (var i = 0; i < len; i++) bytes[i] = bin.charCodeAt(i);
+  var blob = new Blob([bytes], { type: mime });
+  var url = URL.createObjectURL(blob);
+  var a = document.createElement('a'); a.href = url; a.download = filename; document.body.appendChild(a); a.click();
+  setTimeout(function(){ URL.revokeObjectURL(url); if (a.parentNode) a.parentNode.removeChild(a); }, 1500);
 }
 
 // ---------- View ----------
@@ -10897,6 +10979,7 @@ async function renderViewInvoice(el, id) {
           '<button class="btn btn-secondary" onclick="navigate(\'invoices\')">&larr; Back</button>' +
           '<button class="btn btn-secondary" style="white-space:nowrap" onclick="printInvoice(' + inv.id + ')">' + icons.print + ' Print</button>' +
           '<button class="btn btn-secondary" style="white-space:nowrap" onclick="invEmail(' + inv.id + ')">' + (icons.mail || icons.send || '') + ' Email</button>' +
+          (seeAll ? '<button class="btn btn-secondary" style="white-space:nowrap" title="Build a Square-ready chargeback evidence PDF for this invoice" onclick="invDownloadDisputePacket(' + inv.id + ')"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="vertical-align:-2px"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg> Dispute Packet</button>' : '') +
           (canEdit ? '<button class="btn btn-secondary" onclick="navigate(\'edit-invoice\',' + inv.id + ')">' + icons.edit + ' Edit</button>' : '') +
           (canDel ? '<button class="btn btn-danger" title="Delete invoice" onclick="deleteInvoice(' + inv.id + ')"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14H6L5 6"/><path d="M10 11v6"/><path d="M14 11v6"/><path d="M9 6V4h6v2"/></svg> Delete</button>' : '') +
         '</div>' +
@@ -10906,6 +10989,14 @@ async function renderViewInvoice(el, id) {
         field('Customer', inv.customer_name) + field('Phone', inv.phone) + field('Email', inv.email) +
         field('Address', [inv.street_address, inv.city, inv.state, inv.zip].filter(Boolean).join(', ')) +
         field('Driver License', inv.dl_number ? (inv.dl_number + (inv.dl_state ? ' (' + inv.dl_state + ')' : '')) : '') +
+        (inv.has_id_image
+          ? ('<div class="detail-field"><label>ID on File</label><p>' +
+              (seeAll
+                ? '<a href="#" onclick="invViewIdImage(' + inv.id + ');return false;">View scanned ID</a>'
+                : '<span style="color:var(--success)">On file</span>') +
+              (inv.id_image_uploaded_at ? ' <span style="color:var(--text-muted-color);font-size:11px">(' + formatDate(inv.id_image_uploaded_at) + ')</span>' : '') +
+            '</p></div>')
+          : '') +
         field('Account', inv.account_name) + field('Customer PO / WO', inv.customer_po_wo) +
         field('Pay Type', inv.pay_type ? (inv.pay_type + (inv.card_last4 ? ' ****' + inv.card_last4 : '')) : '') +
         (inv.approval_code ? '<div class="detail-field"><label>Approval #</label><p>' + escHtml(inv.approval_code) + '</p></div>' : '') +

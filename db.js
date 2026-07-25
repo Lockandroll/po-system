@@ -1452,6 +1452,15 @@ async function initDB() {
       'ALTER TABLE invoices ADD COLUMN IF NOT EXISTS signature_required BOOLEAN DEFAULT false;' +
       'ALTER TABLE invoices ADD COLUMN IF NOT EXISTS city_code CHAR(3);'
     );
+    // Invoice: scanned driver-license / ID image. Stored privately in R2 (key only
+    // in the DB) and kept OFF the customer copy. Retained as identity evidence for
+    // chargeback disputes; only managers/admins can retrieve it. One image per invoice.
+    await client.query(
+      'ALTER TABLE invoices ADD COLUMN IF NOT EXISTS id_image_r2_key TEXT;' +
+      'ALTER TABLE invoices ADD COLUMN IF NOT EXISTS id_image_mime TEXT;' +
+      'ALTER TABLE invoices ADD COLUMN IF NOT EXISTS id_image_uploaded_at TIMESTAMPTZ;' +
+      'ALTER TABLE invoices ADD COLUMN IF NOT EXISTS id_image_uploaded_by INTEGER;'
+    );
     // Invoice photos (stored in Cloudflare R2, like the document vault). show_in_print
     // controls whether a photo appears on the printed / emailed PDF version.
     await client.query(

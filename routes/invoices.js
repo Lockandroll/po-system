@@ -10,11 +10,47 @@ const notify = require('../utils/notify');
 const push = require('../utils/push');
 const r2 = require('../utils/r2');
 const { buildInvoicePdf } = require('../utils/invoicePdf');
+const { buildDisputePdf } = require('../utils/disputePdf');
 
 const router = express.Router();
 
 function sanitizeName(n) {
   return String(n || 'photo').replace(/[^A-Za-z0-9._-]+/g, '_').slice(0, 120) || 'photo';
+}
+
+// Persist a scanned driver-license/ID photo to private R2 storage and record it on
+// the invoice. Deliberately kept OUT of invoice_photos so it never lands on the
+// customer copy; only managers can retrieve it (chargeback disputes). Replaces any
+// prior image for the invoice. Never throws for expected conditions — returns
+// { saved, reason } so a bad/oversized image can't fail the whole invoice save.
+async function storeIdImage(invoiceId, dataUrl, userId) {
+  if (!dataUrl) return { saved: false, reason: 'no_image' };
+  if (!r2.configured()) return { saved: false, reason: 'storage_unconfigured' };
+  const m = /^data:([^;]+);base64,(.*)$/i.exec(String(dataUrl));
+  if (!m) return { saved: false, reason: 'bad_format' };
+  const mime = m[1];
+  if (!/^image\//i.test(mime)) return { saved: false, reason: 'not_image' };
+  let buf;
+  try { buf = Buffer.from(m[2], 'base64'); } catch (e) { return { saved: false, reason: 'decode_failed' }; }
+  if (!buf || !buf.length) return { saved: false, reason: 'empty' };
+  if (buf.length > 12 * 1024 * 1024) return { saved: false, reason: 'too_large' };
+  const ext = mime === 'image/png' ? 'png' : (mime === 'image/webp' ? 'webp' : 'jpg');
+  const key = 'invoices/' + invoiceId + '/id/' + Date.now() + '-' + crypto.randomBytes(4).toString('hex') + '.' + ext;
+  let oldKey = null;
+  try {
+    const prev = await pool.query('SELECT id_image_r2_key FROM invoices WHERE id = $1', [invoiceId]);
+    oldKey = prev.rows[0] && prev.rows[0].id_image_r2_key;
+    await r2.putObject(key, buf, mime);
+    await pool.query(
+      'UPDATE invoices SET id_image_r2_key=$1, id_image_mime=$2, id_image_uploaded_at=NOW(), id_image_uploaded_by=$3 WHERE id=$4',
+      [key, mime, userId || null, invoiceId]
+    );
+  } catch (e) {
+    console.error('storeIdImage failed:', e.message);
+    return { saved: false, reason: 'storage_error' };
+  }
+  if (oldKey && oldKey !== key) { try { await r2.deleteObject(oldKey); } catch (e) {} }
+  return { saved: true };
 }
 
 // ---- helpers ---------------------------------------------------------------
@@ -356,10 +392,88 @@ router.get('/:id', requireAuth, requirePermission('view_invoices'), async (req, 
         invoice.photos.push({ id: p.id, filename: p.filename, mime_type: p.mime_type, caption: p.caption, show_in_print: p.show_in_print, position: p.position, url: url });
       }
     } catch (e) { /* table may not exist yet on first deploy */ }
+    // Flag whether a scanned ID is on file (managers view it via /:id/id-image).
+    // Never leak the R2 key or the other internal ID-image columns to the client.
+    invoice.has_id_image = !!invoice.id_image_r2_key;
+    delete invoice.id_image_r2_key;
+    delete invoice.id_image_mime;
+    delete invoice.id_image_uploaded_by;
     res.json(invoice);
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: 'Failed to fetch invoice' });
+  }
+});
+
+// ---- Scanned ID image (managers only) -------------------------------------
+// The customer's driver-license photo, returned as base64 so the browser can show
+// it from a local blob (no public/presigned URL floating around). Gated to
+// managers/admins and audit-logged, since this is sensitive identity evidence.
+router.get('/:id/id-image', requireAuth, requirePermission('view_invoices'), async (req, res) => {
+  try {
+    if (!canSeeAll(req.user.role)) return res.status(403).json({ error: 'Only managers can view the ID on file.' });
+    const id = parseInt(req.params.id, 10);
+    const r = await pool.query('SELECT id_image_r2_key, id_image_mime, id_image_uploaded_at FROM invoices WHERE id = $1', [id]);
+    if (!r.rows.length || !r.rows[0].id_image_r2_key) return res.status(404).json({ error: 'No ID image on file for this invoice.' });
+    if (!r2.configured()) return res.status(503).json({ error: 'Image storage is not configured.' });
+    let buf;
+    try { buf = await r2.getObjectBuffer(r.rows[0].id_image_r2_key); }
+    catch (e) { console.error('ID image fetch failed:', e.message); return res.status(502).json({ error: 'Could not load the ID image from storage.' }); }
+    try { await logAudit({ entity_type: 'invoice', entity_id: id, action: 'view_id_image', user_id: req.user.id, user_name: req.user.name }); } catch (e) {}
+    res.json({ mime: r.rows[0].id_image_mime || 'image/jpeg', data: buf.toString('base64'), uploaded_at: r.rows[0].id_image_uploaded_at });
+  } catch (err) {
+    console.error('id-image error:', err);
+    res.status(500).json({ error: 'Failed to load ID image' });
+  }
+});
+
+// ---- Square dispute evidence packet (managers only) -----------------------
+// Assembles everything Square accepts as chargeback evidence for one invoice into a
+// single PDF: cardholder identity (+ the government-ID photo), the signed
+// authorization (agreement + signature + timestamp), timestamped proof of service
+// (date, times, line items, work photos) and the payment reference (approval code +
+// card last 4 only). Nova never stores full card numbers or CVV, so the packet is
+// compliant with Square's upload rules by construction. Returned as base64 for a
+// clean client-side download.
+router.get('/:id/dispute-packet', requireAuth, requirePermission('view_invoices'), async (req, res) => {
+  try {
+    if (!canSeeAll(req.user.role)) return res.status(403).json({ error: 'Only managers can generate the dispute evidence packet.' });
+    const id = parseInt(req.params.id, 10);
+    const ir = await pool.query('SELECT i.*, u.name AS locksmith_name_join, u.phone AS locksmith_phone, u.email AS locksmith_email FROM invoices i LEFT JOIN users u ON i.locksmith_id = u.id WHERE i.id = $1', [id]);
+    if (!ir.rows.length) return res.status(404).json({ error: 'Invoice not found' });
+    const inv = ir.rows[0];
+    const items = (await pool.query('SELECT * FROM invoice_line_items WHERE invoice_id = $1 ORDER BY position, id', [id])).rows;
+    // Every ready work photo is timestamped proof of service (not just print-flagged).
+    const photos = [];
+    try {
+      const ph = (await pool.query("SELECT r2_key, caption, created_at FROM invoice_photos WHERE invoice_id = $1 AND status = 'ready' ORDER BY position, id", [id])).rows;
+      if (ph.length && r2.configured()) {
+        for (const p of ph) {
+          try { photos.push({ buffer: await r2.getObjectBuffer(p.r2_key), caption: p.caption, created_at: p.created_at }); } catch (e) { console.error('R2 photo fetch failed:', e.message); }
+        }
+      }
+    } catch (e) { /* table may be absent on first deploy */ }
+    // The government-ID photo (identity evidence).
+    let idImage = null;
+    if (inv.id_image_r2_key && r2.configured()) {
+      try { idImage = await r2.getObjectBuffer(inv.id_image_r2_key); } catch (e) { console.error('R2 ID image fetch failed:', e.message); }
+    }
+    const company = {
+      name: await getSetting('company_name', 'Pop-A-Lock'),
+      address: await getSetting('company_address', ''),
+      csz: await getSetting('company_city_state_zip', ''),
+      phone: await getSetting('company_phone', '')
+    };
+    let pdfBuf;
+    try {
+      pdfBuf = await buildDisputePdf(inv, items, { idImage: idImage, idMime: inv.id_image_mime, idUploadedAt: inv.id_image_uploaded_at, photos: photos }, { company: company });
+    } catch (e) { console.error('Dispute packet build failed:', e); return res.status(500).json({ error: 'Could not build the dispute packet.' }); }
+    if (pdfBuf.length > 40 * 1024 * 1024) return res.status(413).json({ error: 'The packet is over 40 MB. Remove some photos and try again.' });
+    try { await logAudit({ entity_type: 'invoice', entity_id: id, entity_number: String(inv.invoice_number || ''), action: 'dispute_packet', user_id: req.user.id, user_name: req.user.name }); } catch (e) {}
+    res.json({ filename: 'Dispute-Evidence-Invoice-' + (inv.invoice_number || id) + '.pdf', mime: 'application/pdf', data: pdfBuf.toString('base64') });
+  } catch (err) {
+    console.error('Dispute packet error:', err);
+    res.status(500).json({ error: 'Failed to build the dispute packet' });
   }
 });
 
@@ -625,6 +739,18 @@ router.post('/', requireAuth, requirePermission('create_invoice'), async (req, r
           await sendEmail(_q.emails, 'New Invoice #' + invoice_number, html);
         }
       } catch (e) { console.error('Invoice notify failed:', e); }
+      // Persist the scanned ID photo (if the tech captured one) as dispute evidence.
+      // Runs after commit; a storage hiccup must not undo the saved invoice.
+      if (b.id_image) {
+        try {
+          const _idr = await storeIdImage(invoice.id, b.id_image, req.user.id);
+          invoice.id_image_saved = _idr.saved;
+          if (_idr.saved) invoice.has_id_image = true;
+        } catch (e) { console.error('ID image save (create) failed:', e); invoice.id_image_saved = false; }
+      }
+      delete invoice.id_image_r2_key;
+      delete invoice.id_image_mime;
+      delete invoice.id_image_uploaded_by;
       return res.status(201).json(invoice);
     } catch (err) {
       await client.query('ROLLBACK').catch(function () {});
@@ -679,7 +805,13 @@ router.put('/:id', requireAuth, requirePermission('edit_invoice'), async (req, r
     }
     client.release();
     try { await logAudit({ entity_type: 'invoice', entity_id: parseInt(req.params.id, 10), entity_number: String(existing.invoice_number), action: 'edited', user_id: req.user.id, user_name: req.user.name }); } catch (e) {}
-    res.json({ success: true, id: parseInt(req.params.id, 10) });
+    // Replace/store the scanned ID photo if a new one was captured this edit.
+    let idImageSaved = null;
+    if (b.id_image) {
+      try { const _idr = await storeIdImage(parseInt(req.params.id, 10), b.id_image, req.user.id); idImageSaved = _idr.saved; }
+      catch (e) { console.error('ID image save (update) failed:', e); idImageSaved = false; }
+    }
+    res.json({ success: true, id: parseInt(req.params.id, 10), id_image_saved: idImageSaved });
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: 'Failed to update invoice' });
@@ -694,6 +826,8 @@ router.delete('/:id', requireAuth, requirePermission('delete_invoice'), async (r
     if (!canSeeAll(req.user.role) && existing.locksmith_id !== req.user.id) {
       return res.status(403).json({ error: 'Access denied' });
     }
+    // Remove the private ID image from R2 too (the DB row is cascade-deleted).
+    if (existing.id_image_r2_key && r2.configured()) { try { await r2.deleteObject(existing.id_image_r2_key); } catch (e) {} }
     await pool.query('DELETE FROM invoices WHERE id = $1', [req.params.id]);
     try { await logAudit({ entity_type: 'invoice', entity_id: existing.id, entity_number: String(existing.invoice_number), action: 'deleted', user_id: req.user.id, user_name: req.user.name }); } catch (e) {}
     res.json({ success: true });
