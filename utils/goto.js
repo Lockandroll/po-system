@@ -703,15 +703,17 @@ async function setupWebhook(publicBaseUrl) {
   // 2. the subscription (undocumented for recordings - try the plausible forms)
   const attempts = [];
   let subscriptionId = null;
+  // The event name is RECORDING_UPLOADED. Probed against the live account
+  // 2026-07-28: every other spelling ('recording.UPLOADED', 'UPLOADED',
+  // 'recording') was rejected as BAD_REQUEST, while RECORDING_UPLOADED passed
+  // validation and reached a uniqueness check (409). Nothing documents this.
   const bodies = [
-    { channelId: channelId, entityType: 'account', entityId: acct, eventTypes: ['recording.UPLOADED'] },
-    { channelId: channelId, accountKeys: [acct], eventTypes: ['recording.UPLOADED'] },
-    { channelId: channelId, accountKey: acct, eventTypes: ['recording.UPLOADED'] },
-    { channelId: channelId, accountKeys: [acct] }
+    { channelId: channelId, accountKeys: [acct], eventTypes: ['RECORDING_UPLOADED'] },
+    { channelId: channelId, accountKey: acct, eventTypes: ['RECORDING_UPLOADED'] },
+    { channelId: channelId, entityType: 'account', entityId: acct, eventTypes: ['RECORDING_UPLOADED'] }
   ];
   const targets = [
     API_BASE + '/recording/v1/subscriptions',
-    API_BASE + '/recording/v1/notifications/subscriptions',
     API_BASE + '/call-events-report/v1/subscriptions'
   ];
   for (let t = 0; t < targets.length && !subscriptionId; t++) {
@@ -726,7 +728,15 @@ async function setupWebhook(publicBaseUrl) {
         subscriptionId = (resp && (resp.subscriptionId || resp.id)) || 'created';
         attempts.push('ACCEPTED: ' + targets[t].replace(API_BASE, '') + ' with {' + Object.keys(bodies[b]).join(', ') + '}');
       } catch (e) {
-        attempts.push(targets[t].replace(API_BASE, '') + '[body' + b + ']: ' + String(e.message).slice(0, 90));
+        // 409 CONFLICT means the subscription is already in place. That is the
+        // state we wanted, so treat it as success rather than trying the next
+        // spelling and reporting failure.
+        if (/CONFLICT|already exist/i.test(e.message)) {
+          subscriptionId = 'existing';
+          attempts.push('ALREADY EXISTS: ' + targets[t].replace(API_BASE, '') + ' with {' + Object.keys(bodies[b]).join(', ') + '}');
+        } else {
+          attempts.push(targets[t].replace(API_BASE, '') + '[body' + b + ']: ' + String(e.message).slice(0, 90));
+        }
       }
     }
   }
@@ -818,6 +828,34 @@ async function probeSubscription(channelId) {
   return { accepted: null, attempts: out };
 }
 
+
+// What subscriptions does GoTo think we have? A 409 on create told us one
+// already exists but not what it is subscribed to, and that distinction decides
+// whether the problem is the subscription or the extractor.
+async function listSubscriptions() {
+  const out = [];
+  const targets = [
+    API_BASE + '/recording/v1/subscriptions',
+    API_BASE + '/call-events-report/v1/subscriptions'
+  ];
+  const token = await getAccessToken();
+  for (let i = 0; i < targets.length; i++) {
+    const entry = { url: targets[i].replace(API_BASE, '') };
+    try {
+      const resp = await fetch(targets[i], { headers: { Authorization: 'Bearer ' + token, Accept: 'application/json' } });
+      entry.status = resp.status;
+      let text = '';
+      try { text = await resp.text(); } catch (e) { text = ''; }
+      entry.response = String(text).slice(0, 900);
+    } catch (e) {
+      entry.status = 0;
+      entry.response = 'threw: ' + e.message;
+    }
+    out.push(entry);
+  }
+  return out;
+}
+
 // Pull a recording id and a media URL out of whatever shape the notification
 // arrives in. Written permissively on purpose: the payload is undocumented, so
 // finding the two fields we need anywhere in the object beats assuming a path.
@@ -892,7 +930,7 @@ async function ingestRecordingEvent(payload) {
   // Store WHAT WE EXTRACTED alongside the shape. 44 notifications arrived and none
   // matched, and without this the panel could not say whether the id was missing,
   // the url was missing, or both were present but the id did not match a call.
-  const record = {
+  const entry = {
     _found: {
       recordingId: found.recordingId ? ('yes (' + String(found.recordingId).slice(0, 8) + '...)') : 'NO',
       mediaUrl: found.mediaUrl ? 'yes' : 'NO',
@@ -902,6 +940,17 @@ async function ingestRecordingEvent(payload) {
     },
     _payload: shape
   };
+  // Keep the most recent payload OF EACH SOURCE. Storing only the latest meant a
+  // steady stream of call-events notifications hid whether any recording
+  // notifications were arriving at all.
+  let bySource = {};
+  try {
+    const prev = await pool.query('SELECT last_payload_shape FROM goto_webhook WHERE id = 1');
+    const p0 = prev.rows.length ? prev.rows[0].last_payload_shape : null;
+    if (p0 && p0.bySource) bySource = p0.bySource;
+  } catch (e) { bySource = {}; }
+  bySource[found.source || 'unknown'] = entry;
+  const record = { bySource: bySource, _found: entry._found, _payload: entry._payload };
   await pool.query(
     'INSERT INTO goto_webhook (id, last_event_at, event_count, matched_count, last_payload_shape)' +
     ' VALUES (1, NOW(), 1, $2, $1)' +
@@ -1998,6 +2047,7 @@ module.exports = {
   webhookState: webhookState,
   setupWebhook: setupWebhook,
   probeSubscription: probeSubscription,
+  listSubscriptions: listSubscriptions,
   extractRecordingMedia: extractRecordingMedia,
   ingestRecordingEvent: ingestRecordingEvent,
   drainPendingMedia: drainPendingMedia,

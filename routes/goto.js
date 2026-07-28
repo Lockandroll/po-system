@@ -220,6 +220,11 @@ router.get('/webhook', requireAuth, requireRole('admin'), async function (req, r
 // Diagnostic: what does /recording/v1/subscriptions actually want? It answers
 // BAD_REQUEST rather than 404, so the endpoint is real and the body is wrong.
 // GoTo's 400s name the offending field, so this keeps the whole response.
+router.get('/webhook/subscriptions', requireAuth, requireRole('admin'), async function (req, res) {
+  try { res.json({ subscriptions: await goto.listSubscriptions() }); }
+  catch (e) { res.status(500).json({ error: e.message }); }
+});
+
 router.get('/webhook/probe', requireAuth, requireRole('admin'), async function (req, res) {
   try { res.json(await goto.probeSubscription()); }
   catch (e) { res.status(500).json({ error: e.message }); }

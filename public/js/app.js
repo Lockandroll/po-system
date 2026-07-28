@@ -16776,9 +16776,9 @@ function gotoHookSection(s, hook) {
         ? '<div class="alert alert-error" style="margin:8px 0">Notifications are arriving but none are matching a call, so no audio is being captured. The last payload is below.</div>'
         : '') +
       (hook.lastPayloadShape
-        ? '<details style="margin-top:6px"><summary style="cursor:pointer;font-size:12px;color:var(--primary)">Last notification (structure only)</summary>' +
-          '<pre style="margin-top:6px;padding:10px;background:var(--bg, #0f0f0f);border:1px solid var(--border);border-radius:6px;font-size:11px;overflow:auto;max-height:320px;white-space:pre-wrap;word-break:break-all">' +
-          escHtml(JSON.stringify(hook.lastPayloadShape, null, 2)) + '</pre></details>'
+        ? '<details style="margin-top:6px"><summary style="cursor:pointer;font-size:12px;color:var(--primary)">Last notification of each kind (structure only)</summary>' +
+          '<pre style="margin-top:6px;padding:10px;background:var(--bg, #0f0f0f);border:1px solid var(--border);border-radius:6px;font-size:11px;overflow:auto;max-height:360px;white-space:pre-wrap;word-break:break-all">' +
+          escHtml(JSON.stringify(hook.lastPayloadShape.bySource || hook.lastPayloadShape, null, 2)) + '</pre></details>'
         : '');
   }
   return '<div style="margin-top:14px;border-top:1px solid var(--border);padding-top:12px">' +
@@ -16787,6 +16787,7 @@ function gotoHookSection(s, hook) {
     '<div style="display:flex;flex-wrap:wrap;gap:8px;align-items:center">' +
       '<button class="btn ' + (on ? 'btn-secondary' : 'btn-primary') + ' btn-sm" id="goto-hook-btn" onclick="gotoSetupHook()">' + (on ? 'Reconnect notifications' : 'Connect notifications') + '</button>' +
       (on ? '<button class="btn btn-secondary btn-sm" onclick="gotoProbeSub()">Find the recording subscription</button>' : '') +
+      (on ? '<button class="btn btn-secondary btn-sm" onclick="gotoListSubs()">List subscriptions</button>' : '') +
     '</div>' +
     '<pre id="goto-sub-probe" style="display:none;margin-top:10px;padding:10px;background:var(--bg, #0f0f0f);border:1px solid var(--border);border-radius:6px;font-size:11px;overflow:auto;max-height:360px;white-space:pre-wrap;word-break:break-all"></pre>' +
     '</div>';
@@ -16796,6 +16797,22 @@ function gotoHookSection(s, hook) {
 // answers BAD_REQUEST rather than 404 - so it exists and we are asking wrongly.
 // This puts the question to GoTo and keeps its full complaint, which names the
 // field it did not like.
+// A 409 said a subscription already exists but not what it covers. This asks.
+async function gotoListSubs() {
+  var host = document.getElementById('goto-sub-probe');
+  if (!host) return;
+  host.style.display = 'block';
+  host.textContent = 'Asking GoTo…';
+  try {
+    var r = await api('GET', '/goto/webhook/subscriptions');
+    host.textContent = (r.subscriptions || []).map(function (x) {
+      return x.status + '  ' + x.url + '\n      ' + (x.response || '');
+    }).join('\n\n');
+  } catch (e) {
+    host.textContent = 'Failed: ' + e.message;
+  }
+}
+
 async function gotoProbeSub() {
   var host = document.getElementById('goto-sub-probe');
   if (!host) return;
