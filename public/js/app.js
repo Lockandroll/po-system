@@ -16464,6 +16464,7 @@ async function renderIntegrations(el) {
   var s = null, loadErr = '';
   try { s = await api('GET', '/goto/status'); }
   catch (e) { loadErr = e.message; }
+  if (!loadErr && (!s || typeof s !== 'object')) loadErr = 'The server returned an empty status.';
 
   if (loadErr) {
     el.innerHTML = '<div class="page-header"><h1>Integrations</h1></div>' +
@@ -16471,9 +16472,30 @@ async function renderIntegrations(el) {
     return;
   }
 
-  var cardS = 'background:var(--surface-color);border:1px solid var(--border);border-radius:10px;padding:18px;margin-bottom:14px';
-  var lblS = 'color:var(--text-muted-color);padding:5px 0;white-space:nowrap';
-  var valS = 'text-align:right;word-break:break-all';
+  var cardS = 'background:var(--surface-color, var(--bg-card));border:1px solid var(--border);border-radius:10px;padding:18px;margin-bottom:14px';
+
+  // A scoped stylesheet rather than inline styles, because this table needs a
+  // media query. The label column used to be white-space:nowrap, which forced
+  // the table wider than its own card on a phone and pushed the redirect URI
+  // and the values outside the border. Below 560px the rows stack instead.
+  var gotoCss = '<style>' +
+    '.goto-rows{width:100%;table-layout:fixed;border-collapse:collapse;font-size:13px}' +
+    '.goto-rows td{padding:7px 0;border-bottom:1px solid var(--border);vertical-align:top;white-space:normal}' +
+    '.goto-rows tr:last-child td{border-bottom:none}' +
+    '.goto-rows td.k{color:var(--text-muted-color);width:40%;padding-right:14px}' +
+    '.goto-rows td.v{text-align:right;overflow-wrap:anywhere;word-break:break-word}' +
+    '.goto-mono{font-family:monospace;font-size:11px;overflow-wrap:anywhere;word-break:break-word}' +
+    '.goto-chip{white-space:nowrap;display:inline-block;background:rgba(249,115,22,0.12);color:var(--primary);padding:2px 7px;border-radius:5px;font-size:11px;margin:2px 0 2px 4px}' +
+    '.goto-foot-note{display:block;font-size:11px;color:var(--text-muted-color);margin-top:8px}' +
+    '@media (max-width:560px){' +
+      '.goto-rows td{display:block;width:auto;text-align:left;border-bottom:none;padding:1px 0}' +
+      '.goto-rows tr{display:block;padding:9px 0;border-bottom:1px solid var(--border)}' +
+      '.goto-rows tr:last-child{border-bottom:none}' +
+      '.goto-rows td.k{font-size:11px;text-transform:uppercase;letter-spacing:.04em;padding-right:0}' +
+      '.goto-rows td.v{text-align:left;margin-top:2px}' +
+      '.goto-chip{margin:2px 4px 2px 0}' +
+    '}' +
+    '</style>';
 
   // Anything the admin needs to act on goes at the top, not buried in the table.
   var warn = '';
@@ -16490,25 +16512,25 @@ async function renderIntegrations(el) {
   var scopeChips = '&mdash;';
   if (s.scope) {
     scopeChips = String(s.scope).split(/\s+/).filter(Boolean).map(function (sc) {
-      return '<span style="display:inline-block;background:rgba(249,115,22,0.12);color:var(--primary);padding:2px 7px;border-radius:5px;font-size:11px;margin:2px 0 2px 4px">' + escHtml(sc) + '</span>';
-    }).join('');
+      return '<span class="goto-chip">' + escHtml(sc) + '</span>';
+    }).join(' ');
   }
 
   // Account key: needed for every call lookup, so a missing one is called out
   // rather than shown as an empty cell.
   var keyRow;
   if (s.accountKey) {
-    keyRow = '<span style="font-family:monospace">' + escHtml(s.accountKey) + '</span>' +
-      '<span style="color:var(--text-muted-color);font-size:11px;margin-left:6px">(' + escHtml(s.accountKeySource || 'set') + ')</span>' +
-      '<button class="btn btn-ghost btn-sm" style="margin-left:8px" onclick="gotoToggleKeyEdit()">Change</button>';
+    keyRow = '<span class="goto-mono" style="font-size:13px">' + escHtml(s.accountKey) + '</span>' +
+      ' <span style="color:var(--text-muted-color);font-size:11px">(' + escHtml(s.accountKeySource || 'set') + ')</span> ' +
+      '<button class="btn btn-ghost btn-sm" onclick="gotoToggleKeyEdit()">Change</button>';
   } else {
-    keyRow = '<span style="color:#e24b4a">Not set &mdash; call lookups will not work</span>' +
-      '<button class="btn btn-ghost btn-sm" style="margin-left:8px" onclick="gotoToggleKeyEdit()">Set it</button>';
+    keyRow = '<span style="color:#e24b4a">Not set &mdash; call lookups will not work</span> ' +
+      '<button class="btn btn-ghost btn-sm" onclick="gotoToggleKeyEdit()">Set it</button>';
   }
 
   var keyEditor = '<div id="goto-key-edit" style="display:none;margin-top:10px;padding:12px;border:1px solid var(--border);border-radius:8px">' +
     '<label style="display:block;font-size:11px;color:var(--text-muted-color);margin-bottom:4px">GoTo account key</label>' +
-    '<input type="text" id="goto-key-input" value="' + escHtml(s.accountKey || '') + '" placeholder="e.g. 1842200297248054807" style="padding:8px 10px;background:var(--surface-color);border:1px solid var(--border);border-radius:6px;color:var(--text-color);font-size:13px;width:100%;box-sizing:border-box;font-family:monospace" />' +
+    '<input type="text" id="goto-key-input" value="' + escHtml(s.accountKey || '') + '" placeholder="e.g. 1842200297248054807" style="padding:8px 10px;background:var(--surface-color, var(--bg-card));border:1px solid var(--border);border-radius:6px;color:var(--text-color, var(--text));font-size:13px;width:100%;box-sizing:border-box;font-family:monospace" />' +
     '<div style="font-size:11px;color:var(--text-muted-color);margin-top:6px">Nova finds this automatically when you connect. Set it by hand only if that failed. Run diagnostics below to look it up.</div>' +
     '<div style="margin-top:10px"><button class="btn btn-primary btn-sm" onclick="gotoSaveAccountKey()">Save key</button> ' +
     '<button class="btn btn-ghost btn-sm" onclick="gotoToggleKeyEdit()">Cancel</button></div>' +
@@ -16527,6 +16549,7 @@ async function renderIntegrations(el) {
   }
 
   el.innerHTML =
+    gotoCss +
     '<div class="page-header"><h1>Integrations</h1></div>' +
     '<div id="settings-error"></div><div id="settings-success"></div>' +
     '<div style="' + cardS + '">' +
@@ -16535,20 +16558,20 @@ async function renderIntegrations(el) {
       '</div>' +
       '<div style="font-size:12px;color:var(--text-muted-color);margin-bottom:14px">Pulls call recordings onto customer complaints, matched by the customer&#39;s phone number.</div>' +
       warn +
-      '<table style="width:100%;font-size:13px">' +
-        '<tr><td style="' + lblS + '">Account</td><td style="' + valS + '">' + keyRow + '</td></tr>' +
-        '<tr><td style="' + lblS + '">Connected</td><td style="' + valS + '">' + gotoWhen(s.connectedAt) + '</td></tr>' +
-        '<tr><td style="' + lblS + '">Token last refreshed</td><td style="' + valS + '">' + gotoWhen(s.lastRefreshAt) + '</td></tr>' +
-        '<tr><td style="' + lblS + '">Access token expires</td><td style="' + valS + '">' + gotoWhen(s.accessExpiresAt) + (s.connected && !s.accessValid ? ' <span style="color:var(--text-muted-color)">(will refresh on next use)</span>' : '') + '</td></tr>' +
-        '<tr><td style="' + lblS + '">Redirect URI</td><td style="' + valS + '"><span style="font-size:11px;font-family:monospace">' + escHtml(s.redirectUri || '—') + '</span></td></tr>' +
-        '<tr><td style="' + lblS + ';vertical-align:top">Permissions granted</td><td style="' + valS + '">' + scopeChips + '</td></tr>' +
+      '<table class="goto-rows">' +
+        '<tr><td class="k">Account</td><td class="v">' + keyRow + '</td></tr>' +
+        '<tr><td class="k">Connected</td><td class="v">' + gotoWhen(s.connectedAt) + '</td></tr>' +
+        '<tr><td class="k">Token last refreshed</td><td class="v">' + gotoWhen(s.lastRefreshAt) + '</td></tr>' +
+        '<tr><td class="k">Access token expires</td><td class="v">' + gotoWhen(s.accessExpiresAt) + (s.connected && !s.accessValid ? ' <span style="color:var(--text-muted-color)">(will refresh on next use)</span>' : '') + '</td></tr>' +
+        '<tr><td class="k">Redirect URI</td><td class="v"><span class="goto-mono">' + escHtml(s.redirectUri || '—') + '</span></td></tr>' +
+        '<tr><td class="k">Permissions granted</td><td class="v">' + scopeChips + '</td></tr>' +
       '</table>' +
       keyEditor +
-      (buttons ? '<div style="margin-top:16px">' + buttons + '</div>' : '') +
+      (buttons ? '<div style="margin-top:16px;display:flex;flex-wrap:wrap;gap:8px">' + buttons + '</div>' : '') +
       '<div style="margin-top:14px;border-top:1px solid var(--border);padding-top:12px">' +
-        '<button class="btn btn-ghost btn-sm" onclick="gotoRunDiagnose()">Run diagnostics</button>' +
-        '<span style="font-size:11px;color:var(--text-muted-color);margin-left:8px">Asks GoTo who we are and reports exactly what it says. Use this if the account key is missing.</span>' +
-        '<pre id="goto-diag" style="display:none;margin-top:10px;padding:10px;background:var(--bg-color,#111);border:1px solid var(--border);border-radius:6px;font-size:11px;overflow:auto;max-height:340px;white-space:pre-wrap;word-break:break-all"></pre>' +
+        '<button class="btn btn-secondary btn-sm" onclick="gotoRunDiagnose()">Run diagnostics</button>' +
+        '<span class="goto-foot-note">Asks GoTo who we are and reports exactly what it says. Use this if the account key is missing.</span>' +
+        '<pre id="goto-diag" style="display:none;margin-top:10px;padding:10px;background:var(--bg, #0f0f0f);border:1px solid var(--border);border-radius:6px;font-size:11px;overflow:auto;max-height:340px;white-space:pre-wrap;word-break:break-all"></pre>' +
       '</div>' +
     '</div>';
 }
