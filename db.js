@@ -1711,6 +1711,95 @@ async function initDB() {
       'CREATE INDEX IF NOT EXISTS idx_feedback_att_fid ON customer_feedback_attachments(feedback_id);'
     );
 
+    // ===== GoTo Connect integration =====
+    // Single-row OAuth token store. GoTo has NO client_credentials grant, so an
+    // admin consents once in a browser and Nova keeps the refresh token alive.
+    // Tokens are AES-256-GCM encrypted by utils/goto.js before they land here -
+    // a leaked GoTo refresh token reads EVERY call recording in the company,
+    // because GoTo has no per-department scoping on recordings.
+    await client.query(
+      'CREATE TABLE IF NOT EXISTS goto_oauth (' +
+      '  id INTEGER PRIMARY KEY DEFAULT 1 CHECK (id = 1),' +
+      '  access_token TEXT,' +
+      '  refresh_token TEXT,' +
+      '  expires_at TIMESTAMPTZ,' +
+      '  scope TEXT,' +
+      '  account_key VARCHAR(64),' +
+      '  connected_by INTEGER REFERENCES users(id),' +
+      '  connected_at TIMESTAMPTZ,' +
+      '  last_refresh_at TIMESTAMPTZ,' +
+      '  last_error TEXT' +
+      ');'
+    );
+
+    // The call index: one row per completed GoTo conversation. This exists
+    // because GoTo has no "recordings for a phone number" endpoint - the join
+    // from a number to a recording id is ours to own and persist.
+    // raw_report keeps the untouched payload: several GoTo field names are
+    // undocumented, so this lets us re-derive without re-fetching.
+    await client.query(
+      'CREATE TABLE IF NOT EXISTS goto_calls (' +
+      '  id SERIAL PRIMARY KEY,' +
+      '  conversation_space_id VARCHAR(64) UNIQUE NOT NULL,' +
+      '  account_key VARCHAR(64),' +
+      '  direction VARCHAR(16),' +
+      '  call_started_at TIMESTAMPTZ,' +
+      '  call_ended_at TIMESTAMPTZ,' +
+      '  duration_sec INTEGER,' +
+      '  external_number VARCHAR(32),' +
+      '  external_digits VARCHAR(20),' +
+      '  internal_number VARCHAR(32),' +
+      '  agent_name VARCHAR(255),' +
+      '  agent_user_key VARCHAR(64),' +
+      '  recording_id VARCHAR(128),' +
+      '  transcript_id VARCHAR(128),' +
+      '  has_recording BOOLEAN NOT NULL DEFAULT false,' +
+      '  r2_key VARCHAR(512),' +
+      '  r2_bytes BIGINT DEFAULT 0,' +
+      '  r2_mime VARCHAR(64),' +
+      '  archived_at TIMESTAMPTZ,' +
+      '  raw_report JSONB,' +
+      '  last_seen_revision TIMESTAMPTZ,' +
+      '  created_at TIMESTAMPTZ DEFAULT NOW()' +
+      ');'
+    );
+
+    // Complaint <-> call join. A repeat customer can legitimately have one call
+    // relevant to two complaints, so this is many-to-many rather than a column
+    // on customer_feedback.
+    //   is_primary - THE complaint call, the one a dispute packet should cite
+    //   hidden     - dismissed as not relevant (shared office numbers, wrong
+    //                customer) without deleting it from the index
+    await client.query(
+      'CREATE TABLE IF NOT EXISTS feedback_call_recordings (' +
+      '  id SERIAL PRIMARY KEY,' +
+      '  feedback_id INTEGER NOT NULL REFERENCES customer_feedback(id) ON DELETE CASCADE,' +
+      '  call_id INTEGER NOT NULL REFERENCES goto_calls(id) ON DELETE CASCADE,' +
+      "  link_type VARCHAR(16) NOT NULL DEFAULT 'auto'," +
+      '  linked_by INTEGER REFERENCES users(id),' +
+      '  linked_by_name VARCHAR(255),' +
+      '  is_primary BOOLEAN NOT NULL DEFAULT false,' +
+      '  hidden BOOLEAN NOT NULL DEFAULT false,' +
+      '  note VARCHAR(255),' +
+      '  created_at TIMESTAMPTZ DEFAULT NOW(),' +
+      '  UNIQUE (feedback_id, call_id)' +
+      ');'
+    );
+
+    await client.query(
+      // external_digits is the match key (last 10 digits). Plain equality on an
+      // indexed column, never a LIKE scan.
+      'CREATE INDEX IF NOT EXISTS idx_goto_calls_digits ON goto_calls(external_digits);' +
+      'CREATE INDEX IF NOT EXISTS idx_goto_calls_started ON goto_calls(call_started_at DESC);' +
+      'CREATE INDEX IF NOT EXISTS idx_goto_calls_recording ON goto_calls(recording_id);' +
+      // Work queue for the archiver job: recorded but not yet copied into R2.
+      'CREATE INDEX IF NOT EXISTS idx_goto_calls_unarchived ON goto_calls(id) WHERE has_recording = true AND r2_key IS NULL;' +
+      'CREATE INDEX IF NOT EXISTS idx_fbcall_fid ON feedback_call_recordings(feedback_id);' +
+      'CREATE INDEX IF NOT EXISTS idx_fbcall_cid ON feedback_call_recordings(call_id);' +
+      // At most one primary call per complaint.
+      'CREATE UNIQUE INDEX IF NOT EXISTS idx_fbcall_primary ON feedback_call_recordings(feedback_id) WHERE is_primary = true;'
+    );
+
     // ===== Signatures module (Adobe Sign style) =====
     // E-signature requests. Source + flattened PDFs and signature images live in
     // Cloudflare R2; only metadata + R2 keys are stored here. page_dimensions holds

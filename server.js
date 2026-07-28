@@ -120,6 +120,7 @@ app.use('/api/documents', require('./routes/documents'));
 app.use('/api/invoices', require('./routes/invoices'));
 app.use('/api/reviews', require('./routes/reviews'));
 app.use('/api/feedback', require('./routes/feedback'));
+app.use('/api/goto', require('./routes/goto'));
 app.use('/api/mcp', require('./routes/mcp'));
 app.use('/api/addin', require('./routes/addin'));
 app.use('/api/vault', require('./routes/vault'));

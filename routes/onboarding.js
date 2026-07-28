@@ -495,7 +495,7 @@ function callClaudeVision(bytes, mime, prompt) {
 function extractPrompt(category) {
   var common = " Read the document. Return ONLY valid JSON, no markdown, no prose. Use null for anything not clearly shown.";
   if (category === 'license') return "This is a driver's license." + common + ' Shape: {"name":"full name","first":"first name","middle":"middle name or initial","last":"last name","address":"street address line","city":"","state":"2-letter state","zip":"","dl_state":"issuing state 2-letter","dl_number":"license number","expiration":"YYYY-MM-DD"}';
-  if (category === 'insurance') return "This is a proof of auto liability insurance." + common + ' Shape: {"names":["every insured / listed-driver name shown"],"vin":"full VIN","expiration":"policy end date YYYY-MM-DD"}';
+  if (category === 'insurance') return "This is a proof of auto liability insurance. One card or policy often covers MORE THAN ONE vehicle — list every vehicle shown, not just the first, and copy each VIN exactly as printed even if it is shortened or masked." + common + ' Shape: {"names":["every insured / listed-driver name shown"],"vins":["VIN of every vehicle listed, as printed"],"vin":"VIN of the first vehicle listed","expiration":"policy end date YYYY-MM-DD"}';
   if (category === 'registration') return "This is a vehicle registration." + common + ' Shape: {"name":"registered owner","vin":"full VIN","expiration":"registration expiration YYYY-MM-DD","veh_year":"","veh_make":"","veh_model":"","veh_color":"","plate":"license plate number","plate_state":"2-letter state"}';
   return "This is a Social Security card or birth certificate." + common + ' Shape: {"name":"full name shown"}';
 }
@@ -518,6 +518,29 @@ function nameMatches(a, bList) {
   });
 }
 function vinNorm(v) { return String(v || '').toUpperCase().replace(/[^A-Z0-9]/g, ''); }
+// Two VINs count as the same vehicle when they are identical, or when the
+// shorter one is the tail of the longer one — some carriers print only the last
+// several characters of the VIN on the insurance card.
+function vinLike(a, b) {
+  var x = vinNorm(a), y = vinNorm(b);
+  if (!x || !y) return false;
+  if (x === y) return true;
+  var shortV = x.length <= y.length ? x : y;
+  var longV = x.length <= y.length ? y : x;
+  return shortV.length >= 6 && longV.slice(-shortV.length) === shortV;
+}
+// Every vehicle the insurance covers. A policy commonly lists two or more, so
+// this returns a list even when the AI only read one VIN off the card.
+function insuredVins(ins) {
+  var list = Array.isArray(ins.vins) ? ins.vins.slice() : (ins.vins ? [ins.vins] : []);
+  if (ins.vin) list.push(ins.vin);
+  var out = [];
+  list.forEach(function (v) {
+    var n = vinNorm(v);
+    if (n.length >= 6 && out.indexOf(n) === -1) out.push(n);
+  });
+  return out;
+}
 function expiredOn(dateStr) {
   if (!dateStr) return null;
   var d = new Date(String(dateStr) + 'T00:00:00'); if (isNaN(d.getTime())) return null;
@@ -538,9 +561,22 @@ async function verifySet(userId) {
     if (nameMatches(lic.name, insNames)) ok.push('Name matches — license and insurance both list ' + lic.name + '.');
     else warn.push('Insurance does not clearly list ' + lic.name + ' — please check.');
   }
-  if (ins.vin && reg.vin) {
-    if (vinNorm(ins.vin) === vinNorm(reg.vin)) ok.push('VIN matches — insurance and registration are the same vehicle.');
-    else warn.push('VIN on insurance and registration do not match.');
+  // The registration is one vehicle; the insurance may cover several. It is a
+  // match when the registered VIN is any one of the insured vehicles.
+  var insVins = insuredVins(ins);
+  if (insVins.length && reg.vin) {
+    var matched = insVins.some(function (v) { return vinLike(v, reg.vin); });
+    if (matched) {
+      ok.push(insVins.length > 1
+        ? 'VIN matches — the registered vehicle is one of the ' + insVins.length + ' vehicles on this policy.'
+        : 'VIN matches — insurance and registration are the same vehicle.');
+    } else if (!Array.isArray(ins.vins)) {
+      // Read before Nova started pulling every vehicle off the card, so the one
+      // VIN on file may simply be the first of several. Not a mismatch.
+      warn.push('Could not confirm the VIN — this insurance was read before Nova listed every vehicle on a policy, and the card may cover more than one. Check it by eye.');
+    } else {
+      warn.push('The registered VIN (…' + vinNorm(reg.vin).slice(-6) + ') is not among the ' + insVins.length + ' vehicle' + (insVins.length === 1 ? '' : 's') + ' on the insurance.');
+    }
   }
   [['Driver license', lic.expiration], ['Insurance', ins.expiration], ['Registration', reg.expiration]].forEach(function (t) {
     var e = expiredOn(t[1]);
