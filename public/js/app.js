@@ -156,6 +156,7 @@ var API_CACHE_SWR = 6000;  // if the cached copy is older than this, refresh in 
 function _apiNoCache(path) {
   // Endpoints that must always be live (session/auth, AI, exports, time clock, notifications).
   return /^\/auth(\/|$)/.test(path) || /^\/ai(\/|$)/.test(path) || /export/.test(path) ||
+         /^\/goto(\/|$)/.test(path) ||
          /setup-needed/.test(path) || /verify/.test(path) || /usage/.test(path) ||
          /token/.test(path) || /^\/timeclock/.test(path) || /notif/.test(path) ||
          /\/id-image/.test(path) || /\/dispute-packet/.test(path);
@@ -646,7 +647,7 @@ function buildNavHtml() {
   var vrViews = ['vr-dashboard','new-vr','edit-vr','view-vr','fleet-registry','new-vehicle','edit-vehicle','vehicle-history','inspections','inspection-form','view-inspection','inspection-checklist'];
   var aiViews = ['ai-assistant','ai-conversations','ai-usage'];
   var invViews = ['invoices','new-invoice','edit-invoice','view-invoice','invoice-setup','invoice-parts'];
-  var stViews = ['company-info','ai-context','notifications','scheduled-messages','roles','settings','users','cities','audit','parts-list'];
+  var stViews = ['company-info','ai-context','notifications','scheduled-messages','roles','settings','users','cities','audit','parts-list','integrations'];
   var taViews = ['schedule','schedule-admin','timeclock','timeclock-manager','pto'];
   var taShow = can('view_schedule') || can('view_timeclock') || can('view_pto');
   var taDefault = can('view_schedule') ? (can('manage_schedule') ? 'schedule-admin' : 'schedule') : (can('view_timeclock') ? 'timeclock' : 'pto');
@@ -739,7 +740,8 @@ function buildNavHtml() {
         (can('view_users') ? '<div class="nav-sub' + (cv === 'users' ? ' active' : '') + '" onclick="navigate(\'users\')">' + icons.users + ' Users</div>' : '') + 
         (can('manage_cities') ? '<div class="nav-sub' + (cv === 'cities' ? ' active' : '') + '" onclick="navigate(\'cities\')">' + icons.map + ' Cities</div>' : '') +
         (can('view_audit') ? '<div class="nav-sub' + (cv === 'audit' ? ' active' : '') + '" onclick="navigate(\'audit\')">' + icoAudit + ' Audit Log</div>' : '') +
-        (can('manage_settings') ? '<div class="nav-sub' + (cv === 'roles' ? ' active' : '') + '" onclick="navigate(\'roles\')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg> Roles &amp; Access</div>' : '')
+        (can('manage_settings') ? '<div class="nav-sub' + (cv === 'roles' ? ' active' : '') + '" onclick="navigate(\'roles\')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg> Roles &amp; Access</div>' : '') +
+        (state.user.role === 'admin' ? '<div class="nav-sub' + (cv === 'integrations' ? ' active' : '') + '" onclick="navigate(\'integrations\')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="7" width="20" height="14" rx="2"/><path d="M16 21V5a2 2 0 0 0-2-2h-4a2 2 0 0 0-2 2v16"/></svg> Integrations</div>' : '')
       : '')
     : '');
   return navHtml;
@@ -868,6 +870,7 @@ async function render() {
   else if (state.currentView === 'company-info') await renderCompanyInfo(content);
   else if (state.currentView === 'ai-context') await renderAIContext(content);
   else if (state.currentView === 'notifications') await renderNotifications(content);
+  else if (state.currentView === 'integrations') await renderIntegrations(content);
   else if (state.currentView === 'security') await renderSecurity(content);
   else if (state.currentView === 'scheduled-messages') await renderScheduledMessages(content);
   else if (state.currentView === 'roles') await renderRoles(content);
@@ -16429,4 +16432,212 @@ async function showTeamAssignmentDetail(assignmentId) {
     box.insertAdjacentHTML('afterbegin', quizCard(head + qs));
     window.scrollTo(0, 0);
   } catch (e) { (window.novaAlert || window.alert)(e.message); }
+}
+
+// ===== Integrations (Settings > Integrations) =====
+// GoTo Connect lives here. Until this page existed the only way to connect it
+// was a devtools console call, which meant a dropped connection could only be
+// fixed by a developer. GoTo refresh tokens die after 30 days unused, so that
+// was an operational risk rather than a cosmetic gap.
+function gotoPill(s) {
+  var label, bg, fg;
+  if (!s || !s.configured) { label = 'Not configured'; bg = 'rgba(234,179,8,0.15)'; fg = '#eab308'; }
+  else if (s.undecryptable) { label = 'Needs reconnecting'; bg = 'rgba(226,75,74,0.15)'; fg = '#e24b4a'; }
+  else if (!s.connected) { label = 'Not connected'; bg = 'rgba(226,75,74,0.15)'; fg = '#e24b4a'; }
+  // Connected but drifting toward the 30-day refresh-token cliff. A green pill
+  // over a red warning reads as "fine", which is the wrong signal at a glance.
+  else if (s.expiringSoon) { label = 'Expiring soon'; bg = 'rgba(234,179,8,0.15)'; fg = '#eab308'; }
+  else if (s.lastError) { label = 'Connected, with errors'; bg = 'rgba(234,179,8,0.15)'; fg = '#eab308'; }
+  else { label = 'Connected'; bg = 'rgba(34,197,94,0.15)'; fg = '#22c55e'; }
+  return '<span style="background:' + bg + ';color:' + fg + ';padding:3px 10px;border-radius:20px;font-size:12px;font-weight:600">' + label + '</span>';
+}
+
+function gotoWhen(iso) {
+  if (!iso) return '&mdash;';
+  try { return escHtml(formatDateTime(iso)); } catch (e) { return escHtml(String(iso)); }
+}
+
+async function renderIntegrations(el) {
+  if (state.user.role !== 'admin') { el.innerHTML = '<div class="alert alert-error">Access denied.</div>'; return; }
+  el.innerHTML = '<div class="loading">Loading&hellip;</div>';
+
+  var s = null, loadErr = '';
+  try { s = await api('GET', '/goto/status'); }
+  catch (e) { loadErr = e.message; }
+
+  if (loadErr) {
+    el.innerHTML = '<div class="page-header"><h1>Integrations</h1></div>' +
+      '<div class="alert alert-error">Could not read integration status: ' + escHtml(loadErr) + '</div>';
+    return;
+  }
+
+  var cardS = 'background:var(--surface-color);border:1px solid var(--border);border-radius:10px;padding:18px;margin-bottom:14px';
+  var lblS = 'color:var(--text-muted-color);padding:5px 0;white-space:nowrap';
+  var valS = 'text-align:right;word-break:break-all';
+
+  // Anything the admin needs to act on goes at the top, not buried in the table.
+  var warn = '';
+  if (!s.configured) {
+    warn = '<div class="alert alert-error" style="margin-bottom:14px">GoTo is not configured. Add <strong>GOTO_CLIENT_ID</strong>, <strong>GOTO_CLIENT_SECRET</strong> and <strong>GOTO_REDIRECT_URI</strong> in Railway, then redeploy.</div>';
+  } else if (s.undecryptable) {
+    warn = '<div class="alert alert-error" style="margin-bottom:14px">The stored GoTo tokens can no longer be read. This happens when JWT_SECRET is rotated. Click Reconnect to fix it &mdash; nothing else is lost.</div>';
+  } else if (s.connected && s.expiringSoon) {
+    warn = '<div class="alert alert-error" style="margin-bottom:14px">This connection has not refreshed in ' + escHtml(String(s.staleDays)) + ' days. GoTo refresh tokens expire after 30 days unused. Click <strong>Refresh now</strong>, or reconnect if that fails.</div>';
+  } else if (s.lastError) {
+    warn = '<div class="alert alert-error" style="margin-bottom:14px">Last error from GoTo: ' + escHtml(s.lastError) + '</div>';
+  }
+
+  var scopeChips = '&mdash;';
+  if (s.scope) {
+    scopeChips = String(s.scope).split(/\s+/).filter(Boolean).map(function (sc) {
+      return '<span style="display:inline-block;background:rgba(249,115,22,0.12);color:var(--primary);padding:2px 7px;border-radius:5px;font-size:11px;margin:2px 0 2px 4px">' + escHtml(sc) + '</span>';
+    }).join('');
+  }
+
+  // Account key: needed for every call lookup, so a missing one is called out
+  // rather than shown as an empty cell.
+  var keyRow;
+  if (s.accountKey) {
+    keyRow = '<span style="font-family:monospace">' + escHtml(s.accountKey) + '</span>' +
+      '<span style="color:var(--text-muted-color);font-size:11px;margin-left:6px">(' + escHtml(s.accountKeySource || 'set') + ')</span>' +
+      '<button class="btn btn-ghost btn-sm" style="margin-left:8px" onclick="gotoToggleKeyEdit()">Change</button>';
+  } else {
+    keyRow = '<span style="color:#e24b4a">Not set &mdash; call lookups will not work</span>' +
+      '<button class="btn btn-ghost btn-sm" style="margin-left:8px" onclick="gotoToggleKeyEdit()">Set it</button>';
+  }
+
+  var keyEditor = '<div id="goto-key-edit" style="display:none;margin-top:10px;padding:12px;border:1px solid var(--border);border-radius:8px">' +
+    '<label style="display:block;font-size:11px;color:var(--text-muted-color);margin-bottom:4px">GoTo account key</label>' +
+    '<input type="text" id="goto-key-input" value="' + escHtml(s.accountKey || '') + '" placeholder="e.g. 1842200297248054807" style="padding:8px 10px;background:var(--surface-color);border:1px solid var(--border);border-radius:6px;color:var(--text-color);font-size:13px;width:100%;box-sizing:border-box;font-family:monospace" />' +
+    '<div style="font-size:11px;color:var(--text-muted-color);margin-top:6px">Nova finds this automatically when you connect. Set it by hand only if that failed. Run diagnostics below to look it up.</div>' +
+    '<div style="margin-top:10px"><button class="btn btn-primary btn-sm" onclick="gotoSaveAccountKey()">Save key</button> ' +
+    '<button class="btn btn-ghost btn-sm" onclick="gotoToggleKeyEdit()">Cancel</button></div>' +
+    '</div>';
+
+  var buttons;
+  if (!s.configured) {
+    buttons = '';
+  } else if (s.connected && !s.undecryptable) {
+    buttons =
+      '<button class="btn btn-secondary" onclick="gotoRefreshNow()">Refresh now</button> ' +
+      '<button class="btn btn-secondary" onclick="gotoConnectNow()">Reconnect</button> ' +
+      '<button class="btn btn-danger" onclick="gotoDisconnectNow()">Disconnect</button>';
+  } else {
+    buttons = '<button class="btn btn-primary" onclick="gotoConnectNow()">Connect GoTo</button>';
+  }
+
+  el.innerHTML =
+    '<div class="page-header"><h1>Integrations</h1></div>' +
+    '<div id="settings-error"></div><div id="settings-success"></div>' +
+    '<div style="' + cardS + '">' +
+      '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px">' +
+        '<h2 style="margin:0;font-size:17px">GoTo Connect</h2>' + gotoPill(s) +
+      '</div>' +
+      '<div style="font-size:12px;color:var(--text-muted-color);margin-bottom:14px">Pulls call recordings onto customer complaints, matched by the customer&#39;s phone number.</div>' +
+      warn +
+      '<table style="width:100%;font-size:13px">' +
+        '<tr><td style="' + lblS + '">Account</td><td style="' + valS + '">' + keyRow + '</td></tr>' +
+        '<tr><td style="' + lblS + '">Connected</td><td style="' + valS + '">' + gotoWhen(s.connectedAt) + '</td></tr>' +
+        '<tr><td style="' + lblS + '">Token last refreshed</td><td style="' + valS + '">' + gotoWhen(s.lastRefreshAt) + '</td></tr>' +
+        '<tr><td style="' + lblS + '">Access token expires</td><td style="' + valS + '">' + gotoWhen(s.accessExpiresAt) + (s.connected && !s.accessValid ? ' <span style="color:var(--text-muted-color)">(will refresh on next use)</span>' : '') + '</td></tr>' +
+        '<tr><td style="' + lblS + '">Redirect URI</td><td style="' + valS + '"><span style="font-size:11px;font-family:monospace">' + escHtml(s.redirectUri || '—') + '</span></td></tr>' +
+        '<tr><td style="' + lblS + ';vertical-align:top">Permissions granted</td><td style="' + valS + '">' + scopeChips + '</td></tr>' +
+      '</table>' +
+      keyEditor +
+      (buttons ? '<div style="margin-top:16px">' + buttons + '</div>' : '') +
+      '<div style="margin-top:14px;border-top:1px solid var(--border);padding-top:12px">' +
+        '<button class="btn btn-ghost btn-sm" onclick="gotoRunDiagnose()">Run diagnostics</button>' +
+        '<span style="font-size:11px;color:var(--text-muted-color);margin-left:8px">Asks GoTo who we are and reports exactly what it says. Use this if the account key is missing.</span>' +
+        '<pre id="goto-diag" style="display:none;margin-top:10px;padding:10px;background:var(--bg-color,#111);border:1px solid var(--border);border-radius:6px;font-size:11px;overflow:auto;max-height:340px;white-space:pre-wrap;word-break:break-all"></pre>' +
+      '</div>' +
+    '</div>';
+}
+
+function gotoToggleKeyEdit() {
+  var d = document.getElementById('goto-key-edit');
+  if (!d) return;
+  d.style.display = d.style.display === 'none' ? 'block' : 'none';
+  if (d.style.display === 'block') { var i = document.getElementById('goto-key-input'); if (i) i.focus(); }
+}
+
+function gotoMsg(text, isError) {
+  var okEl = document.getElementById('settings-success');
+  var errEl = document.getElementById('settings-error');
+  if (okEl) okEl.innerHTML = '';
+  if (errEl) errEl.innerHTML = '';
+  var target = isError ? errEl : okEl;
+  if (!target) { showToast(text, isError ? 'error' : 'success'); return; }
+  target.innerHTML = '<div class="alert alert-' + (isError ? 'error' : 'success') + '">' + escHtml(text) + '</div>';
+  if (!isError) setTimeout(function () { var e = document.getElementById('settings-success'); if (e) e.innerHTML = ''; }, 5000);
+}
+
+// Send the admin to GoTo's consent screen. The signed state in the URL is only
+// valid for 15 minutes, so it is fetched at click time rather than at render.
+async function gotoConnectNow() {
+  try {
+    var r = await api('GET', '/goto/connect');
+    if (!r || !r.url) throw new Error('No consent URL returned');
+    window.location.href = r.url;
+  } catch (e) {
+    gotoMsg(e.message, true);
+  }
+}
+
+async function gotoRefreshNow() {
+  try {
+    await api('POST', '/goto/refresh', {});
+    gotoMsg('Token refreshed.', false);
+    navigate('integrations');
+  } catch (e) {
+    gotoMsg('Refresh failed: ' + e.message, true);
+  }
+}
+
+async function gotoDisconnectNow() {
+  var ok = await novaConfirm('Disconnect GoTo? Call recordings already saved in Nova stay put, but no new ones can be pulled until an admin reconnects.', { title: 'Disconnect GoTo', okText: 'Disconnect' });
+  if (!ok) return;
+  try {
+    await api('POST', '/goto/disconnect', {});
+    gotoMsg('GoTo disconnected.', false);
+    navigate('integrations');
+  } catch (e) {
+    gotoMsg(e.message, true);
+  }
+}
+
+async function gotoSaveAccountKey() {
+  var i = document.getElementById('goto-key-input');
+  var val = i ? i.value.trim() : '';
+  if (!val) { gotoMsg('Enter an account key first.', true); return; }
+  try {
+    await api('POST', '/goto/account', { account_key: val });
+    gotoMsg('Account key saved.', false);
+    navigate('integrations');
+  } catch (e) {
+    gotoMsg(e.message, true);
+  }
+}
+
+async function gotoRunDiagnose() {
+  var out = document.getElementById('goto-diag');
+  if (!out) return;
+  out.style.display = 'block';
+  out.textContent = 'Asking GoTo…';
+  try {
+    var r = await api('GET', '/goto/account/diagnose');
+    var probes = (r && r.probes) || [];
+    var found = probes.filter(function (p) { return p.accountKey; });
+    var lines = probes.map(function (p) {
+      return (p.ok ? 'OK  ' : 'ERR ') + String(p.status) + '  ' + p.url +
+        (p.accountKey ? '\n      account key found: ' + p.accountKey : '') +
+        (p.note ? '\n      ' + p.note : '') +
+        (p.body ? '\n      ' + String(p.body).slice(0, 600) : '');
+    });
+    var header = found.length
+      ? 'Found account key ' + found[0].accountKey + '. Click "Set it" above and paste it in.\n\n'
+      : 'No account key found in any response.\n\n';
+    out.textContent = header + lines.join('\n\n');
+  } catch (e) {
+    out.textContent = 'Diagnostics failed: ' + e.message;
+  }
 }
