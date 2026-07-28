@@ -16749,31 +16749,37 @@ async function gotoPollBackfill() {
 }
 
 
-// The recording notification hook. This is not an optimisation: GoTo discloses a
-// recording's media location ONLY in the notification it sends when the call is
-// recorded, and never afterwards through the API. Without this, no audio.
+// The recording notification hook.
+//
+// This was built on the belief that GoTo discloses a recording's media location
+// only in the notification. That turned out to be wrong: the notification's
+// payload was inspected on 2026-07-28 and carries nothing but
+// content.recording_id. It is a READINESS PING - it says the audio has finished
+// processing - and it is not the source of the audio. The wording here used to
+// claim otherwise and was scaring an admin about a problem that does not exist.
 function gotoHookSection(s, hook) {
   if (!s || !s.connected || !s.accountKey) return '';
   var on = hook && hook.configured;
   var body;
   if (!on) {
-    body = '<div class="alert alert-error" style="margin-bottom:10px">Call audio cannot be retrieved until this is connected. GoTo only reveals where a recording lives in the notification it sends at the time of the call, so recordings made before this is switched on stay unavailable.</div>';
+    body = '<div class="goto-foot-note" style="margin-bottom:10px">Optional. GoTo sends a notification when a recording has finished processing, which lets Nova mark audio as ready sooner. Playback does not depend on it.</div>';
   } else {
     body = '<table class="goto-rows" style="margin-bottom:8px">' +
       '<tr><td class="k">Connected</td><td class="v">' + gotoWhen(hook.createdAt) + '</td></tr>' +
       '<tr><td class="k">Notifications received</td><td class="v">' + escHtml(String(hook.eventCount || 0)) + '</td></tr>' +
-      '<tr><td class="k">Matched to a call</td><td class="v">' + escHtml(String(hook.matchedCount || 0)) + '</td></tr>' +
+      '<tr><td class="k">Tied to an indexed call</td><td class="v">' + escHtml(String(hook.matchedCount || 0)) + '</td></tr>' +
       '<tr><td class="k">Last notification</td><td class="v">' + gotoWhen(hook.lastEventAt) + '</td></tr>' +
       '</table>' +
       (!hook.subscriptionId
         ? '<div class="alert alert-error" style="margin-bottom:8px">The channel exists but GoTo did not accept a subscription. Nothing will arrive until that is resolved. Details: ' + escHtml(String(hook.subscribeNote || '').slice(0, 300)) + '</div>'
         : '') +
       (hook.eventCount ? '' : '<div class="goto-foot-note" style="margin-top:0">Nothing has arrived yet. Notifications only fire when a new call is recorded, so this stays at zero until the next recorded call.</div>') +
-      // Notifications arriving but never matching means the payload does not look
-      // how the extractor expects. Show the last one's shape rather than leaving
-      // an admin with two numbers and no way to see why.
+      // Not matching is worth showing, but it is not an emergency: playback reads
+      // the recording id from the call index, not from these notifications. The
+      // old wording here said no audio was being captured, which was never what
+      // this counter meant.
       (hook.eventCount && !hook.matchedCount
-        ? '<div class="alert alert-error" style="margin:8px 0">Notifications are arriving but none are matching a call, so no audio is being captured. The last payload is below.</div>'
+        ? '<div class="goto-foot-note" style="margin:8px 0">Notifications are arriving but none have lined up with an indexed call yet. Playback does not depend on this. The structure of the last one of each kind is below.</div>'
         : '') +
       (hook.lastPayloadShape
         ? '<details style="margin-top:6px"><summary style="cursor:pointer;font-size:12px;color:var(--primary)">Last notification of each kind (structure only)</summary>' +
@@ -16840,7 +16846,7 @@ async function gotoSetupHook() {
     if (!res.subscriptionId) {
       gotoMsg('Channel created, but GoTo rejected every subscription attempt. Details are on the page.', true);
     } else {
-      gotoMsg('Recording notifications connected. New recorded calls will now have playable audio.', false);
+      gotoMsg('Recording notifications connected. Nova will be told as soon as each new recording has finished processing.', false);
     }
     navigate('integrations');
   } catch (e) {
