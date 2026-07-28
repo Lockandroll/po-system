@@ -1800,6 +1800,40 @@ async function initDB() {
       'CREATE UNIQUE INDEX IF NOT EXISTS idx_fbcall_primary ON feedback_call_recordings(feedback_id) WHERE is_primary = true;'
     );
 
+    // GoTo recording webhooks. The media URL for a recording arrives in the
+    // recording.UPLOADED notification payload and is NOT available from any API
+    // endpoint (confirmed by exhaustive probing 2026-07-28), so it has to be
+    // captured when the event fires and kept.
+    await client.query("ALTER TABLE goto_calls ADD COLUMN IF NOT EXISTS media_url TEXT;");
+    await client.query("ALTER TABLE goto_calls ADD COLUMN IF NOT EXISTS media_url_at TIMESTAMPTZ;");
+    await client.query(
+      'CREATE TABLE IF NOT EXISTS goto_webhook (' +
+      '  id INTEGER PRIMARY KEY DEFAULT 1 CHECK (id = 1),' +
+      '  channel_id VARCHAR(255),' +
+      '  channel_nickname VARCHAR(120),' +
+      '  subscription_id VARCHAR(255),' +
+      '  subscribe_note TEXT,' +
+      '  created_at TIMESTAMPTZ,' +
+      '  last_event_at TIMESTAMPTZ,' +
+      '  event_count INTEGER NOT NULL DEFAULT 0,' +
+      '  matched_count INTEGER NOT NULL DEFAULT 0,' +
+      '  last_payload_shape JSONB,' +
+      '  last_error TEXT' +
+      ');'
+    );
+    // Recordings we were told about but could not match to an indexed call yet
+    // (the notification can beat the call report). Replayed by the sync job.
+    await client.query(
+      'CREATE TABLE IF NOT EXISTS goto_pending_media (' +
+      '  id SERIAL PRIMARY KEY,' +
+      '  recording_id VARCHAR(128) UNIQUE NOT NULL,' +
+      '  media_url TEXT NOT NULL,' +
+      '  received_at TIMESTAMPTZ DEFAULT NOW(),' +
+      '  attempts INTEGER NOT NULL DEFAULT 0' +
+      ');' +
+      'CREATE INDEX IF NOT EXISTS idx_goto_calls_media ON goto_calls(id) WHERE media_url IS NOT NULL AND r2_key IS NULL;'
+    );
+
     // ===== Signatures module (Adobe Sign style) =====
     // E-signature requests. Source + flattened PDFs and signature images live in
     // Cloudflare R2; only metadata + R2 keys are stored here. page_dimensions holds

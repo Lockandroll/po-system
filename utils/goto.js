@@ -637,6 +637,214 @@ async function gotoFetch(path, opts) {
 
 
 
+
+// ---- Recording webhooks ----------------------------------------------------
+// The media URL for a recording is delivered in the recording notification
+// payload and appears NOWHERE in the API. Every endpoint on api.goto.com was
+// probed on 2026-07-28: /content returns only a download token plus a status,
+// /recordings/{id} returns only a status, and /media, /download and /audio do
+// not exist. So the webhook is not an optimisation here, it is the only route
+// to the audio.
+
+const NOTIFICATION_BASE = 'https://api.goto.com/notification-channel/v1';
+
+// The receiving URL carries a secret path segment. GoTo does not sign these
+// callbacks, so an unguessable path is the practical protection - the same
+// approach Nova already uses for its inbound mail hook.
+function webhookSecret() {
+  const raw = process.env.GOTO_WEBHOOK_SECRET || process.env.JWT_SECRET || 'nova-goto-hook';
+  return crypto.createHash('sha256').update('goto-webhook-v1:' + raw).digest('hex').slice(0, 32);
+}
+function webhookPath() { return '/api/goto/events/' + webhookSecret(); }
+
+async function webhookState() {
+  try {
+    const r = await pool.query('SELECT * FROM goto_webhook WHERE id = 1');
+    const row = r.rows.length ? r.rows[0] : null;
+    return {
+      configured: !!(row && row.channel_id),
+      channelId: row ? row.channel_id : null,
+      subscriptionId: row ? row.subscription_id : null,
+      subscribeNote: row ? row.subscribe_note : null,
+      createdAt: row ? row.created_at : null,
+      lastEventAt: row ? row.last_event_at : null,
+      eventCount: row ? row.event_count : 0,
+      matchedCount: row ? row.matched_count : 0,
+      lastPayloadShape: row ? row.last_payload_shape : null,
+      lastError: row ? row.last_error : null,
+      path: webhookPath()
+    };
+  } catch (e) {
+    return { configured: false, error: e.message, path: webhookPath() };
+  }
+}
+
+// Create the notification channel, then attach a subscription. The channel call
+// is documented; the recording subscription endpoint is not, so several
+// spellings are tried and whichever is accepted is recorded.
+async function setupWebhook(publicBaseUrl) {
+  const base = String(publicBaseUrl || '').replace(/\/+$/, '');
+  if (!/^https:\/\//.test(base)) throw new Error('A public https base URL is required to receive webhooks');
+  const acct = await resolveAccountKey();
+  if (!acct) throw new Error('No GoTo account key. Set it in Settings > Integrations first.');
+
+  const nickname = 'nova-recordings';
+  const url = base + webhookPath();
+
+  // 1. the channel (documented)
+  const channel = await gotoFetch(NOTIFICATION_BASE + '/channels/' + encodeURIComponent(nickname), {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ channelType: 'Webhook', webhookChannelData: { webhook: { url: url } } })
+  });
+  const channelId = channel && (channel.channelId || channel.id);
+  if (!channelId) throw new Error('GoTo did not return a channel id: ' + JSON.stringify(channel).slice(0, 200));
+
+  // 2. the subscription (undocumented for recordings - try the plausible forms)
+  const attempts = [];
+  let subscriptionId = null;
+  const bodies = [
+    { channelId: channelId, entityType: 'account', entityId: acct, eventTypes: ['recording.UPLOADED'] },
+    { channelId: channelId, accountKeys: [acct], eventTypes: ['recording.UPLOADED'] },
+    { channelId: channelId, accountKey: acct, eventTypes: ['recording.UPLOADED'] },
+    { channelId: channelId, accountKeys: [acct] }
+  ];
+  const targets = [
+    API_BASE + '/recording/v1/subscriptions',
+    API_BASE + '/recording/v1/notifications/subscriptions',
+    API_BASE + '/call-events-report/v1/subscriptions'
+  ];
+  for (let t = 0; t < targets.length && !subscriptionId; t++) {
+    for (let b = 0; b < bodies.length && !subscriptionId; b++) {
+      try {
+        const resp = await gotoFetch(targets[t], {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(bodies[b]),
+          retries: 0
+        });
+        subscriptionId = (resp && (resp.subscriptionId || resp.id)) || 'created';
+        attempts.push(targets[t].replace(API_BASE, '') + '[body' + b + ']: accepted');
+      } catch (e) {
+        attempts.push(targets[t].replace(API_BASE, '') + '[body' + b + ']: ' + String(e.message).slice(0, 90));
+      }
+    }
+  }
+
+  await pool.query(
+    'INSERT INTO goto_webhook (id, channel_id, channel_nickname, subscription_id, subscribe_note, created_at, last_error)' +
+    ' VALUES (1,$1,$2,$3,$4,NOW(),NULL)' +
+    ' ON CONFLICT (id) DO UPDATE SET channel_id=$1, channel_nickname=$2, subscription_id=$3, subscribe_note=$4, created_at=NOW(), last_error=NULL',
+    [String(channelId), nickname, subscriptionId, attempts.join(' | ').slice(0, 4000)]
+  );
+  return { channelId: channelId, subscriptionId: subscriptionId, url: url, attempts: attempts };
+}
+
+// Pull a recording id and a media URL out of whatever shape the notification
+// arrives in. Written permissively on purpose: the payload is undocumented, so
+// finding the two fields we need anywhere in the object beats assuming a path.
+function extractRecordingMedia(payload) {
+  const out = { recordingId: null, mediaUrl: null, status: null };
+  (function walk(node, depth) {
+    if (!node || typeof node !== 'object' || depth > 7) return;
+    Object.keys(node).forEach(function (k) {
+      const v = node[k];
+      if (typeof v === 'string') {
+        if (!out.mediaUrl && /^https?:\/\//.test(v) && /(record|media|audio|\.wav|\.mp3|storage|blob)/i.test(k + ' ' + v)) out.mediaUrl = v;
+        if (!out.recordingId && /^recordingid$/i.test(k)) out.recordingId = v;
+        if (!out.recordingId && /^id$/i.test(k) && /^[0-9a-f]{8}-[0-9a-f]{4}-/i.test(v)) out.recordingId = v;
+        if (!out.status && /^(status|state|eventtype|type)$/i.test(k)) out.status = v;
+      } else if (v && typeof v === 'object') {
+        walk(v, depth + 1);
+      }
+    });
+  })(payload, 0);
+  // Fall back to any URL at all if nothing name-matched.
+  if (!out.mediaUrl) {
+    (function walk2(node, depth) {
+      if (!node || typeof node !== 'object' || depth > 7 || out.mediaUrl) return;
+      Object.keys(node).forEach(function (k) {
+        const v = node[k];
+        if (!out.mediaUrl && typeof v === 'string' && /^https?:\/\//.test(v)) out.mediaUrl = v;
+        else if (v && typeof v === 'object') walk2(v, depth + 1);
+      });
+    })(payload, 0);
+  }
+  return out;
+}
+
+// Record what a notification told us. Returns what happened, for the log.
+async function ingestRecordingEvent(payload) {
+  const found = extractRecordingMedia(payload);
+  // envelopeShape keeps a URL prefix, which is useful when diagnosing an API
+  // response but wrong for something we persist: these can be signed URLs. The
+  // real one is stored on the call row where it is actually needed.
+  const shape = (function redactUrls(n, d) {
+    if (!n || typeof n !== 'object' || d > 6) {
+      return (typeof n === 'string' && /^url</.test(n)) ? 'url<redacted>' : n;
+    }
+    if (Array.isArray(n)) return n.map(function (x) { return redactUrls(x, d + 1); });
+    const out = {};
+    Object.keys(n).forEach(function (k) { out[k] = redactUrls(n[k], d + 1); });
+    return out;
+  })(envelopeShape(payload), 0);
+  let matched = 0;
+
+  if (found.recordingId && found.mediaUrl) {
+    const upd = await pool.query(
+      'UPDATE goto_calls SET media_url = $1, media_url_at = NOW(), has_recording = true WHERE recording_id = $2 AND (media_url IS NULL OR media_url <> $1)',
+      [found.mediaUrl, found.recordingId]
+    );
+    matched = upd.rowCount || 0;
+    if (!matched) {
+      // The notification can arrive before the call report is indexed. Park it
+      // and let the sync job attach it once the call appears.
+      await pool.query(
+        'INSERT INTO goto_pending_media (recording_id, media_url) VALUES ($1,$2)' +
+        ' ON CONFLICT (recording_id) DO UPDATE SET media_url = $2, received_at = NOW()',
+        [found.recordingId, found.mediaUrl]
+      );
+    }
+  }
+
+  await pool.query(
+    'INSERT INTO goto_webhook (id, last_event_at, event_count, matched_count, last_payload_shape)' +
+    ' VALUES (1, NOW(), 1, $2, $1)' +
+    ' ON CONFLICT (id) DO UPDATE SET last_event_at = NOW(),' +
+    '   event_count = goto_webhook.event_count + 1,' +
+    '   matched_count = goto_webhook.matched_count + $2,' +
+    '   last_payload_shape = $1',
+    [JSON.stringify(shape), matched]
+  );
+  return { recordingId: found.recordingId, hadUrl: !!found.mediaUrl, matched: matched, status: found.status };
+}
+
+// Attach any parked media URLs whose call has since been indexed.
+async function drainPendingMedia() {
+  try {
+    const r = await pool.query('SELECT recording_id, media_url FROM goto_pending_media ORDER BY received_at LIMIT 500');
+    let attached = 0;
+    for (let i = 0; i < r.rows.length; i++) {
+      const p = r.rows[i];
+      const upd = await pool.query(
+        'UPDATE goto_calls SET media_url = $1, media_url_at = NOW(), has_recording = true WHERE recording_id = $2 AND media_url IS NULL',
+        [p.media_url, p.recording_id]
+      );
+      if (upd.rowCount) {
+        attached++;
+        await pool.query('DELETE FROM goto_pending_media WHERE recording_id = $1', [p.recording_id]);
+        await pool.query('UPDATE goto_webhook SET matched_count = matched_count + 1 WHERE id = 1');
+      } else {
+        await pool.query('UPDATE goto_pending_media SET attempts = attempts + 1 WHERE recording_id = $1', [p.recording_id]);
+      }
+    }
+    return { attached: attached, remaining: r.rows.length - attached };
+  } catch (e) {
+    console.error('[goto] drainPendingMedia:', e.message);
+    return { attached: 0, remaining: 0, error: e.message };
+  }
+}
+
 // ---- Recording audio -------------------------------------------------------
 // GET /recording/v1/recordings/{id}/content does NOT return audio. It returns a
 // JSON envelope carrying a short-lived "recording-access" token:
@@ -712,6 +920,34 @@ function envelopeShape(node, depth) {
 // The recording-access token is "recording-access:<base64 json>". Its claims are
 // the best clue to where it is meant to be spent, since GoTo documents none of
 // this. Returns { keys, urls, claims } with long values elided.
+// Diagnostic of last resort: base64-decode the token one layer and show its
+// SHAPE - the scheme prefix, then a character-class sketch of the rest. Two
+// attempts at parsing this returned empty claims, so stop guessing at the format
+// and just look at it. Never reveals enough to reuse the credential, and it is
+// short-lived anyway.
+function previewToken(token) {
+  try {
+    const raw = String(token || '');
+    let decoded = '';
+    try { decoded = Buffer.from(raw, 'base64').toString('utf8'); } catch (e) { decoded = ''; }
+    const usable = /[\x20-\x7e]{8,}/.test(decoded) ? decoded : raw;
+    const colon = usable.indexOf(':');
+    const scheme = (colon > 0 && colon < 40) ? usable.slice(0, colon) : '(no scheme)';
+    const rest = (colon > 0 && colon < 40) ? usable.slice(colon + 1) : usable;
+    let restDecoded = '';
+    try { restDecoded = Buffer.from(rest, 'base64').toString('utf8'); } catch (e) { restDecoded = ''; }
+    return {
+      scheme: scheme,
+      restLength: rest.length,
+      restDots: (rest.match(/\./g) || []).length,
+      // The first 90 characters of the inner value, which is where a URL or a
+      // field name would show up. Truncated hard.
+      restDecodedHead: /[\x20-\x7e]{6,}/.test(restDecoded) ? restDecoded.slice(0, 90) : '(not printable)',
+      looksJson: restDecoded.trim().charAt(0) === '{'
+    };
+  } catch (e) { return { error: e.message }; }
+}
+
 function decodeAccessToken(token) {
   const out = { keys: [], urls: [], claims: {}, error: null, layers: 0 };
   try {
@@ -726,9 +962,14 @@ function decodeAccessToken(token) {
       const body = (colon > 0 && colon < 40 && /^[a-zA-Z-]+$/.test(cur.slice(0, colon))) ? cur.slice(colon + 1) : cur;
 
       // A JWT-shaped value: decode the payload segment.
+      // Try every dot-separated segment, not just the JWT payload position - a
+      // two-part "payload.signature" token keeps its payload at index 0, which
+      // an earlier version skipped entirely.
       const parts = body.split('.');
-      const candidates = parts.length >= 2 ? [parts[1], body] : [body];
+      const candidates = parts.length >= 2 ? parts.concat([body]) : [body];
 
+      // Pass 1: does any segment decode to JSON? Take the first that does.
+      let advanceTo = null;
       for (let k = 0; k < candidates.length; k++) {
         let txt = '';
         try { txt = Buffer.from(candidates[k], 'base64').toString('utf8'); } catch (e) { continue; }
@@ -744,10 +985,15 @@ function decodeAccessToken(token) {
           });
           return out;
         }
-        // Not JSON yet, but if it decoded to something printable, go round again.
-        if (k === 0 && /[\x20-\x7e]/.test(txt.slice(0, 20))) { cur = txt; break; }
+        // Remember the first printable decode as the next layer to peel, but do
+        // NOT jump to it until every segment has had a chance to be JSON.
+        if (advanceTo === null && /[\x20-\x7e]{6,}/.test(txt.slice(0, 20))) advanceTo = txt;
       }
-      if (cur === token && layer > 0) break;
+
+      // Pass 2: nothing was JSON at this layer, so peel one more.
+      if (advanceTo === null) break;
+      if (advanceTo === cur) break;
+      cur = advanceTo;
     }
     out.error = 'could not decode to JSON';
   } catch (e) { out.error = e.message; }
@@ -782,10 +1028,38 @@ function isAudio(mime, buf) {
   return false;
 }
 
-async function fetchRecordingBytes(recordingId) {
+async function fetchRecordingBytes(recordingId, knownMediaUrl) {
   if (!recordingId) throw new Error('No recording id');
   const contentUrl = API_BASE + '/recording/v1/recordings/' + encodeURIComponent(recordingId) + '/content';
   const bearer = 'Bearer ' + (await getAccessToken());
+
+  // The happy path: a media URL captured from the recording notification. GoTo
+  // serves the audio from there once presented with a download token from
+  // /content. This is the only route that works - the API never exposes a URL.
+  if (knownMediaUrl) {
+    let token = null;
+    try {
+      const env0 = await httpGetBinary(contentUrl, { Authorization: bearer });
+      if (env0.ok) {
+        try { token = findAccessToken(JSON.parse(env0.buffer.toString('utf8'))); } catch (e) { token = null; }
+      }
+    } catch (e) { token = null; }
+
+    const tries = [];
+    if (token) {
+      tries.push({ Authorization: 'Bearer ' + token });
+      tries.push({ Authorization: token });
+    }
+    tries.push({});
+    tries.push({ Authorization: bearer });
+    for (let i = 0; i < tries.length; i++) {
+      const r = await httpGetBinary(knownMediaUrl, tries[i]);
+      if (r.ok && isAudio(r.mime, r.buffer) && r.buffer.length > 512) {
+        return { buffer: r.buffer, mime: r.mime || 'audio/wav' };
+      }
+    }
+    // Fall through to the probing path below, which reports what it tried.
+  }
 
   // --- step 1: ask for the recording ---
   let first = await httpGetBinary(contentUrl, { Authorization: bearer });
@@ -903,6 +1177,7 @@ async function fetchRecordingBytes(recordingId) {
     'GoTo returned a recording-access envelope rather than audio, and none of the follow-up requests produced a media file. ' +
     (status ? ('Recording status: ' + status + '. ') : '') +
     'Token claims: ' + JSON.stringify(claims.claims) + (claims.urls.length ? (' Token URLs: ' + claims.urls.join(', ')) : '') + '. ' +
+    'Token preview: ' + JSON.stringify(previewToken(accessToken)) + '. ' +
     'Tried: ' + (attempts.join(', ') || 'nothing (no url or token found)') + '. ' +
     'Envelope shape: ' + JSON.stringify(envelopeShape(env)) + '. ' +
     'Recording metadata shape: ' + JSON.stringify(metaShape) +
@@ -930,7 +1205,7 @@ function extForMime(mime) {
 // which is the whole reason we copy rather than stream.
 async function archiveCall(callId) {
   const r2 = require('./r2');
-  const cur = await pool.query('SELECT id, recording_id, r2_key, r2_mime, r2_bytes FROM goto_calls WHERE id = $1', [callId]);
+  const cur = await pool.query('SELECT id, recording_id, media_url, r2_key, r2_mime, r2_bytes FROM goto_calls WHERE id = $1', [callId]);
   if (!cur.rows.length) throw new Error('Call not found');
   const row = cur.rows[0];
   // A previously archived file that is not actually audio (an error page stored
@@ -947,9 +1222,19 @@ async function archiveCall(callId) {
     console.warn('[goto] re-archiving call ' + row.id + ': stored file was ' + row.r2_mime + ', ' + row.r2_bytes + ' bytes');
   }
   if (!row.recording_id) throw new Error('This call has no recording');
+  if (!row.media_url) {
+    // Before the webhook was switched on there was no way to learn the media
+    // URL, and GoTo does not expose it retrospectively. Say so plainly instead
+    // of failing with an API error the reader cannot act on.
+    const known = await pool.query('SELECT created_at FROM goto_webhook WHERE id = 1');
+    const since = known.rows.length && known.rows[0].created_at ? new Date(known.rows[0].created_at) : null;
+    if (since) {
+      throw new Error('This recording predates the GoTo notification hook (connected ' + since.toISOString().slice(0, 10) + '), so its audio cannot be retrieved. GoTo only provides the media location in the notification sent when a call is recorded.');
+    }
+  }
   if (!r2.configured()) throw new Error('File storage is not configured (R2_* environment variables).');
 
-  const got = await fetchRecordingBytes(row.recording_id);
+  const got = await fetchRecordingBytes(row.recording_id, row.media_url || null);
   // If GoTo hands back something that is not audio - an error page, a JSON body,
   // an HTML redirect stub - storing it produces a player that silently refuses to
   // play with no clue why. Refuse it here, where the message can be useful.
@@ -1335,7 +1620,7 @@ async function callsForNumber(phone, limit) {
   const r = await pool.query(
     'SELECT id, conversation_space_id, direction, call_started_at, call_ended_at, duration_sec,' +
     ' external_number, internal_number, agent_name, recording_id, transcript_id, has_recording,' +
-    ' r2_key, archived_at' +
+    ' media_url, r2_key, archived_at' +
     ' FROM goto_calls WHERE external_digits = $1 ORDER BY call_started_at DESC NULLS LAST LIMIT ' + n,
     [digits]
   );
@@ -1613,12 +1898,20 @@ module.exports = {
   startBackfill: startBackfill,
   backfillState: backfillState,
   callsForNumber: callsForNumber,
+  webhookPath: webhookPath,
+  webhookSecret: webhookSecret,
+  webhookState: webhookState,
+  setupWebhook: setupWebhook,
+  extractRecordingMedia: extractRecordingMedia,
+  ingestRecordingEvent: ingestRecordingEvent,
+  drainPendingMedia: drainPendingMedia,
   fetchRecordingBytes: fetchRecordingBytes,
   envelopeShape: envelopeShape,
   findMediaUrl: findMediaUrl,
   findAccessToken: findAccessToken,
   isAudio: isAudio,
   decodeAccessToken: decodeAccessToken,
+  previewToken: previewToken,
   archiveCall: archiveCall,
   playbackUrl: playbackUrl,
   extForMime: extForMime,

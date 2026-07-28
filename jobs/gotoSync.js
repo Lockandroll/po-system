@@ -38,6 +38,10 @@ function startGotoIndex() {
       var s = await goto.status();
       if (!s.connected || !s.accountKey) return;
       var stats = await goto.syncDays(1, { maxPages: 60 });
+      // A recording notification can arrive before its call is indexed; attach
+      // any that were parked waiting for the call to show up.
+      var drained = await goto.drainPendingMedia();
+      if (drained.attached) console.log('[gotoSync] attached ' + drained.attached + ' parked recording URL(s)');
       if (stats.inserted || stats.updated) {
         console.log('[gotoSync] indexed ' + stats.inserted + ' new / ' + stats.updated + ' updated over ' + stats.pages + ' page(s)');
       }

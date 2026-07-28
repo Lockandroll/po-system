@@ -185,6 +185,50 @@ router.get('/calls/probe', requireAuth, requireRole('admin'), async function (re
   }
 });
 
+// ---- Recording webhooks ----------------------------------------------------
+// The media URL for a recording only ever arrives in a notification; it is not
+// available from any API endpoint. This receiver is therefore the only source of
+// playable audio.
+
+// PUBLIC. GoTo does not sign these callbacks, so the secret is in the path.
+// Always answers 200 quickly: GoTo drops a channel that returns 404 or 410 for
+// seven days, so a processing error must never become a failure response.
+router.post('/events/:secret', express.json({ limit: '2mb' }), function (req, res) {
+  if (req.params.secret !== goto.webhookSecret()) return res.status(404).json({ error: 'Not found' });
+  res.status(200).json({ ok: true });
+  setImmediate(async function () {
+    try {
+      const r = await goto.ingestRecordingEvent(req.body || {});
+      console.log('[goto] recording event: id=' + r.recordingId + ' url=' + r.hadUrl + ' matched=' + r.matched);
+    } catch (e) {
+      console.error('[goto] recording event failed:', e.message);
+    }
+  });
+});
+
+// Some providers verify a webhook with a GET first.
+router.get('/events/:secret', function (req, res) {
+  if (req.params.secret !== goto.webhookSecret()) return res.status(404).json({ error: 'Not found' });
+  res.status(200).json({ ok: true });
+});
+
+router.get('/webhook', requireAuth, requireRole('admin'), async function (req, res) {
+  try { res.json(await goto.webhookState()); }
+  catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+router.post('/webhook/setup', requireAuth, requireRole('admin'), async function (req, res) {
+  try {
+    const proto = (req.headers['x-forwarded-proto'] || 'https').split(',')[0].trim();
+    const host = req.headers['x-forwarded-host'] || req.headers.host;
+    const out = await goto.setupWebhook(proto + '://' + host);
+    res.json({ success: true, result: out });
+  } catch (e) {
+    console.error('POST /goto/webhook/setup:', e.message);
+    res.status(500).json({ error: e.message });
+  }
+});
+
 // ---- Call index ------------------------------------------------------------
 
 // How healthy is the index? Feeds the Settings panel.

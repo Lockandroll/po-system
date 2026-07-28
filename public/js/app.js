@@ -16473,6 +16473,8 @@ async function renderIntegrations(el) {
   if (!loadErr) { try { idx = await api('GET', '/goto/index/stats'); } catch (e) { idx = null; } }
   var running = null;
   if (!loadErr) { try { running = await api('GET', '/goto/index/backfill/status'); } catch (e) { running = null; } }
+  var hook = null;
+  if (!loadErr) { try { hook = await api('GET', '/goto/webhook'); } catch (e) { hook = null; } }
   if (!loadErr && (!s || typeof s !== 'object')) loadErr = 'The server returned an empty status.';
 
   if (loadErr) {
@@ -16578,6 +16580,7 @@ async function renderIntegrations(el) {
       keyEditor +
       (buttons ? '<div style="margin-top:16px;display:flex;flex-wrap:wrap;gap:8px">' + buttons + '</div>' : '') +
       gotoIndexSection(Object.assign({}, s, { backfill: running || {} }), idx) +
+      gotoHookSection(s, hook) +
       '<div style="margin-top:14px;border-top:1px solid var(--border);padding-top:12px">' +
         '<button class="btn btn-secondary btn-sm" onclick="gotoRunDiagnose()">Run diagnostics</button>' +
         '<span class="goto-foot-note">Asks GoTo who we are and reports exactly what it says. Use this if the account key is missing.</span>' +
@@ -16745,6 +16748,55 @@ async function gotoPollBackfill() {
   _gotoPoll = setInterval(tick, 3000);
 }
 
+
+// The recording notification hook. This is not an optimisation: GoTo discloses a
+// recording's media location ONLY in the notification it sends when the call is
+// recorded, and never afterwards through the API. Without this, no audio.
+function gotoHookSection(s, hook) {
+  if (!s || !s.connected || !s.accountKey) return '';
+  var on = hook && hook.configured;
+  var body;
+  if (!on) {
+    body = '<div class="alert alert-error" style="margin-bottom:10px">Call audio cannot be retrieved until this is connected. GoTo only reveals where a recording lives in the notification it sends at the time of the call, so recordings made before this is switched on stay unavailable.</div>';
+  } else {
+    body = '<table class="goto-rows" style="margin-bottom:8px">' +
+      '<tr><td class="k">Connected</td><td class="v">' + gotoWhen(hook.createdAt) + '</td></tr>' +
+      '<tr><td class="k">Notifications received</td><td class="v">' + escHtml(String(hook.eventCount || 0)) + '</td></tr>' +
+      '<tr><td class="k">Matched to a call</td><td class="v">' + escHtml(String(hook.matchedCount || 0)) + '</td></tr>' +
+      '<tr><td class="k">Last notification</td><td class="v">' + gotoWhen(hook.lastEventAt) + '</td></tr>' +
+      '</table>' +
+      (!hook.subscriptionId
+        ? '<div class="alert alert-error" style="margin-bottom:8px">The channel exists but GoTo did not accept a subscription. Nothing will arrive until that is resolved. Details: ' + escHtml(String(hook.subscribeNote || '').slice(0, 300)) + '</div>'
+        : '') +
+      (hook.eventCount ? '' : '<div class="goto-foot-note" style="margin-top:0">Nothing has arrived yet. Notifications only fire when a new call is recorded, so this stays at zero until the next recorded call.</div>');
+  }
+  return '<div style="margin-top:14px;border-top:1px solid var(--border);padding-top:12px">' +
+    '<div style="font-size:12px;color:var(--text-muted-color);margin-bottom:8px">Recording notifications</div>' +
+    body +
+    '<div style="display:flex;flex-wrap:wrap;gap:8px;align-items:center">' +
+      '<button class="btn ' + (on ? 'btn-secondary' : 'btn-primary') + ' btn-sm" id="goto-hook-btn" onclick="gotoSetupHook()">' + (on ? 'Reconnect notifications' : 'Connect notifications') + '</button>' +
+    '</div>' +
+    '</div>';
+}
+
+async function gotoSetupHook() {
+  var btn = document.getElementById('goto-hook-btn');
+  if (btn) { btn.disabled = true; btn.textContent = 'Connecting…'; }
+  try {
+    var r = await api('POST', '/goto/webhook/setup', {});
+    var res = (r && r.result) || {};
+    if (!res.subscriptionId) {
+      gotoMsg('Channel created, but GoTo rejected every subscription attempt. Details are on the page.', true);
+    } else {
+      gotoMsg('Recording notifications connected. New recorded calls will now have playable audio.', false);
+    }
+    navigate('integrations');
+  } catch (e) {
+    if (btn) { btn.disabled = false; btn.textContent = 'Connect notifications'; }
+    gotoMsg('Could not connect notifications: ' + e.message, true);
+  }
+}
+
 // One click from "diagnostics found a key" to "the key is stored".
 async function gotoUseFoundKey(key) {
   try {
@@ -16852,6 +16904,12 @@ function fbRecordingsHtml(feedbackId, d) {
     var playBtn;
     if (!c.has_recording) {
       playBtn = '<span style="font-size:11px;color:var(--text-muted-color)">No recording</span>';
+    } else if (!c.retrievable && !c.archived) {
+      // GoTo only discloses a recording's location in the notification sent when
+      // the call is recorded, and never retrospectively. A Play button here would
+      // always fail, so say why instead of inviting the click.
+      playBtn = '<span style="font-size:11px;color:var(--text-muted-color)" ' +
+        'title="GoTo only provides the audio location in the notification sent when a call is recorded. This call predates that being switched on.">Audio not retrievable</span>';
     } else if (!d.canPlay) {
       playBtn = '<span style="font-size:11px;color:var(--text-muted-color)" title="You do not have permission to play recordings">Locked</span>';
     } else {
@@ -16876,6 +16934,9 @@ function fbRecordingsHtml(feedbackId, d) {
     visible.length + ' call' + (visible.length === 1 ? '' : 's') + ' for this number, newest first' +
     (hiddenCount ? ' &middot; ' + hiddenCount + ' hidden' : '') +
     (visible.length > 8 ? ' &middot; a lot of calls here may mean a shared or business number' : '') +
+    (visible.filter(function (c) { return c.has_recording && !c.retrievable && !c.archived; }).length
+      ? '<br>Recordings from before the GoTo notification hook was connected cannot be retrieved. New calls are captured automatically.'
+      : '') +
     '</div>';
 
   var unhide = (hiddenCount && canEdit)
