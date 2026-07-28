@@ -160,6 +160,16 @@ router.post('/account', requireAuth, requireRole('admin'), async function (req, 
   }
 });
 
+// Diagnostic: what does GoTo actually say when we ask who we are? Admin only.
+router.get('/account/diagnose', requireAuth, requireRole('admin'), async function (req, res) {
+  try {
+    const probes = await goto.probeMe();
+    res.json({ probes: probes });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
 // ---- Manual refresh (admin, for diagnosing a stuck connection) -------------
 
 router.post('/refresh', requireAuth, requireRole('admin'), async function (req, res) {

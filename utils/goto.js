@@ -342,11 +342,63 @@ async function exchangeCode(code, userId) {
 // The Admin "me" endpoint moved hosts over time and is not consistently
 // documented, so try the known spellings in order and use whichever answers.
 // Returns [{ key, name }], possibly empty. Never throws.
+// api.getgo.com/admin/rest/v1/me is the URL GoTo's own Admin reference documents,
+// with accountKey at the response root. The OAuth endpoints on that host were
+// decommissioned in 2025 though, so the admin surface may have moved with them -
+// hence the alternates.
 const ME_ENDPOINTS = [
   'https://api.getgo.com/admin/rest/v1/me',
   'https://api.goto.com/admin/rest/v1/me',
-  'https://api.goto.com/identity/v1/Users/me'
+  'https://api.goto.com/admin/v1/me',
+  'https://api.getgo.com/identity/v1/Users/me',
+  'https://api.goto.com/identity/v1/Users/me',
+  'https://api.goto.com/scim/v2/Me',
+  'https://api.goto.com/users/v1/users/me'
 ];
+
+// Probe every candidate and report exactly what came back. This exists because
+// discovery failed silently in production and no amount of reading GoTo's docs
+// explained why - a 401 (scope), a 403 (permission), a 404 (moved host) and a
+// redirect all need different fixes, and they are indistinguishable from a
+// swallowed exception. Admin-only, and it truncates bodies so a response cannot
+// dump anything large into a log.
+async function probeMe() {
+  const results = [];
+  let token = null;
+  try {
+    token = await getAccessToken();
+  } catch (e) {
+    return [{ url: '(token)', ok: false, status: 0, note: e.message }];
+  }
+  for (let i = 0; i < ME_ENDPOINTS.length; i++) {
+    const url = ME_ENDPOINTS[i];
+    const entry = { url: url, ok: false, status: 0, note: '', body: '' };
+    try {
+      const resp = await fetch(url, {
+        headers: { Authorization: 'Bearer ' + token, Accept: 'application/json' },
+        redirect: 'manual'
+      });
+      entry.status = resp.status;
+      entry.ok = resp.ok;
+      const loc = resp.headers.get('location');
+      if (loc) entry.note = 'redirects to ' + loc;
+      let text = '';
+      try { text = await resp.text(); } catch (e2) { text = ''; }
+      entry.body = String(text).slice(0, 400);
+      // Surface the account key immediately if this response carries one.
+      try {
+        const j = JSON.parse(text);
+        const k = j.accountKey || j.account_key ||
+          (Array.isArray(j.accounts) && j.accounts.length && (j.accounts[0].key || j.accounts[0].accountKey));
+        if (k) entry.accountKey = String(k);
+      } catch (e3) {}
+    } catch (e) {
+      entry.note = 'threw: ' + e.message;
+    }
+    results.push(entry);
+  }
+  return results;
+}
 
 async function discoverAccounts() {
   const out = [];
@@ -564,6 +616,7 @@ module.exports = {
   readState: readState,
   exchangeCode: exchangeCode,
   discoverAccounts: discoverAccounts,
+  probeMe: probeMe,
   resolveAccountKey: resolveAccountKey,
   setAccountKey: setAccountKey,
   refresh: refresh,
