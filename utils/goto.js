@@ -724,11 +724,24 @@ async function setupWebhook(publicBaseUrl) {
           retries: 0
         });
         subscriptionId = (resp && (resp.subscriptionId || resp.id)) || 'created';
-        attempts.push(targets[t].replace(API_BASE, '') + '[body' + b + ']: accepted');
+        attempts.push('ACCEPTED: ' + targets[t].replace(API_BASE, '') + ' with {' + Object.keys(bodies[b]).join(', ') + '}');
       } catch (e) {
         attempts.push(targets[t].replace(API_BASE, '') + '[body' + b + ']: ' + String(e.message).slice(0, 90));
       }
     }
+  }
+
+  // Never overwrite a working subscription with a failed retry. Clicking
+  // Reconnect once wiped a live configuration and made the panel report "no
+  // subscription" while notifications were still arriving from the old one.
+  const existing = await pool.query('SELECT subscription_id FROM goto_webhook WHERE id = 1');
+  const hadWorking = existing.rows.length && existing.rows[0].subscription_id;
+  if (!subscriptionId && hadWorking) {
+    await pool.query(
+      'UPDATE goto_webhook SET subscribe_note = $1, last_error = $2 WHERE id = 1',
+      [attempts.join(' | ').slice(0, 4000), 'A reconnect could not create a new subscription. The previous one is still in place.']
+    );
+    return { channelId: channelId, subscriptionId: existing.rows[0].subscription_id, url: url, attempts: attempts, keptExisting: true };
   }
 
   await pool.query(
@@ -740,11 +753,76 @@ async function setupWebhook(publicBaseUrl) {
   return { channelId: channelId, subscriptionId: subscriptionId, url: url, attempts: attempts };
 }
 
+
+// Subscribing to RECORDING notifications is the missing piece. The call-events
+// subscription was accepted and delivers call reports, which carry a recording
+// id but no media URL - so it cannot produce audio. /recording/v1/subscriptions
+// answers BAD_REQUEST rather than 404, meaning the endpoint is real and the body
+// is wrong. GoTo's 400s name the offending field, so keep the WHOLE response.
+async function probeSubscription(channelId) {
+  const acct = await resolveAccountKey();
+  if (!acct) throw new Error('No GoTo account key.');
+  const chan = channelId || (await (async function () {
+    const r = await pool.query('SELECT channel_id FROM goto_webhook WHERE id = 1');
+    return r.rows.length ? r.rows[0].channel_id : null;
+  })());
+  if (!chan) throw new Error('No notification channel yet. Connect notifications first.');
+
+  const bodies = [
+    { channelId: chan, accountKeys: [acct], eventTypes: ['recording.UPLOADED'] },
+    { channelId: chan, accountKey: acct, eventTypes: ['recording.UPLOADED'] },
+    { channelId: chan, entityType: 'account', entityId: acct, eventTypes: ['recording.UPLOADED'] },
+    { channelId: chan, accountKeys: [acct] },
+    { channelId: chan, accountKeys: [acct], eventTypes: ['UPLOADED'] },
+    { channelId: chan, accountKeys: [acct], eventTypes: ['recording'] },
+    { channelId: chan, accountKeys: [acct], eventTypes: ['RECORDING_UPLOADED'] },
+    { channelId: chan, accountKeys: [acct], types: ['recording.UPLOADED'] },
+    { channelId: chan, accountKeys: [acct], eventTypes: ['recording.UPLOADED'], usage: 'recording' },
+    { channelId: chan, accountKeys: [acct], eventTypes: ['recording.UPLOADED'], source: 'recording' }
+  ];
+  const targets = [
+    API_BASE + '/recording/v1/subscriptions',
+    API_BASE + '/recording/v1/notification-subscriptions'
+  ];
+
+  const out = [];
+  const token = await getAccessToken();
+  for (let t = 0; t < targets.length; t++) {
+    for (let b = 0; b < bodies.length; b++) {
+      const entry = { url: targets[t].replace(API_BASE, ''), body: Object.keys(bodies[b]).join('+') };
+      try {
+        const resp = await fetch(targets[t], {
+          method: 'POST',
+          headers: { Authorization: 'Bearer ' + token, 'Content-Type': 'application/json', Accept: 'application/json' },
+          body: JSON.stringify(bodies[b])
+        });
+        entry.status = resp.status;
+        let text = '';
+        try { text = await resp.text(); } catch (e) { text = ''; }
+        // The WHOLE body - this is the point of the exercise.
+        entry.response = String(text).slice(0, 700);
+        entry.ok = resp.ok;
+        if (resp.ok) {
+          entry.accepted = true;
+          out.push(entry);
+          return { accepted: entry, attempts: out };
+        }
+      } catch (e) {
+        entry.status = 0;
+        entry.response = 'threw: ' + e.message;
+      }
+      out.push(entry);
+      await sleep(120);
+    }
+  }
+  return { accepted: null, attempts: out };
+}
+
 // Pull a recording id and a media URL out of whatever shape the notification
 // arrives in. Written permissively on purpose: the payload is undocumented, so
 // finding the two fields we need anywhere in the object beats assuming a path.
 function extractRecordingMedia(payload) {
-  const out = { recordingId: null, mediaUrl: null, status: null };
+  const out = { recordingId: null, mediaUrl: null, status: null, source: null };
   (function walk(node, depth) {
     if (!node || typeof node !== 'object' || depth > 7) return;
     Object.keys(node).forEach(function (k) {
@@ -753,7 +831,11 @@ function extractRecordingMedia(payload) {
         if (!out.mediaUrl && /^https?:\/\//.test(v) && /(record|media|audio|\.wav|\.mp3|storage|blob)/i.test(k + ' ' + v)) out.mediaUrl = v;
         if (!out.recordingId && /^recordingid$/i.test(k)) out.recordingId = v;
         if (!out.recordingId && /^id$/i.test(k) && /^[0-9a-f]{8}-[0-9a-f]{4}-/i.test(v)) out.recordingId = v;
-        if (!out.status && /^(status|state|eventtype|type)$/i.test(k)) out.status = v;
+        // 'source' and 'type' are routing metadata, not the recording's status.
+        // Treating them as status made a call-events notification look like a
+        // recording one in the diagnostics.
+        if (!out.status && /^(status|state|eventtype)$/i.test(k)) out.status = v;
+        if (!out.source && /^(source|usage)$/i.test(k)) out.source = v;
       } else if (v && typeof v === 'object') {
         walk(v, depth + 1);
       }
@@ -815,6 +897,7 @@ async function ingestRecordingEvent(payload) {
       recordingId: found.recordingId ? ('yes (' + String(found.recordingId).slice(0, 8) + '...)') : 'NO',
       mediaUrl: found.mediaUrl ? 'yes' : 'NO',
       status: found.status || null,
+      source: found.source || null,
       matchedCall: matched > 0
     },
     _payload: shape
@@ -1914,6 +1997,7 @@ module.exports = {
   webhookSecret: webhookSecret,
   webhookState: webhookState,
   setupWebhook: setupWebhook,
+  probeSubscription: probeSubscription,
   extractRecordingMedia: extractRecordingMedia,
   ingestRecordingEvent: ingestRecordingEvent,
   drainPendingMedia: drainPendingMedia,

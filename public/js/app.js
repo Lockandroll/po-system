@@ -16786,8 +16786,32 @@ function gotoHookSection(s, hook) {
     body +
     '<div style="display:flex;flex-wrap:wrap;gap:8px;align-items:center">' +
       '<button class="btn ' + (on ? 'btn-secondary' : 'btn-primary') + ' btn-sm" id="goto-hook-btn" onclick="gotoSetupHook()">' + (on ? 'Reconnect notifications' : 'Connect notifications') + '</button>' +
+      (on ? '<button class="btn btn-secondary btn-sm" onclick="gotoProbeSub()">Find the recording subscription</button>' : '') +
     '</div>' +
+    '<pre id="goto-sub-probe" style="display:none;margin-top:10px;padding:10px;background:var(--bg, #0f0f0f);border:1px solid var(--border);border-radius:6px;font-size:11px;overflow:auto;max-height:360px;white-space:pre-wrap;word-break:break-all"></pre>' +
     '</div>';
+}
+
+// The recording-subscription request body is undocumented, and the endpoint
+// answers BAD_REQUEST rather than 404 - so it exists and we are asking wrongly.
+// This puts the question to GoTo and keeps its full complaint, which names the
+// field it did not like.
+async function gotoProbeSub() {
+  var host = document.getElementById('goto-sub-probe');
+  if (!host) return;
+  host.style.display = 'block';
+  host.textContent = 'Asking GoTo…';
+  try {
+    var r = await api('GET', '/goto/webhook/probe');
+    var lines = (r.attempts || []).map(function (a) {
+      return (a.ok ? 'ACCEPTED ' : 'ERR ') + a.status + '  ' + a.url + '  {' + a.body + '}\n      ' + (a.response || '');
+    });
+    host.textContent = (r.accepted
+      ? 'ACCEPTED: ' + r.accepted.url + ' with {' + r.accepted.body + '}\n\n'
+      : 'None accepted.\n\n') + lines.join('\n\n');
+  } catch (e) {
+    host.textContent = 'Probe failed: ' + e.message;
+  }
 }
 
 async function gotoSetupHook() {
