@@ -635,6 +635,256 @@ async function gotoFetch(path, opts) {
 }
 
 
+
+// ---- Call indexing ---------------------------------------------------------
+// GoTo has NO server-side phone filter on report-summaries. All eleven plausible
+// parameter names were probed against the live account on 2026-07-28 and every
+// one was accepted and silently ignored (200, unfiltered result). So a lookup
+// cannot be done on demand - finding one customer would mean paging the whole
+// window at 100 calls per page against a 10 req/sec limit.
+//
+// Instead Nova indexes calls on a schedule and answers complaint lookups from
+// its own table. The summary already carries the customer's number, the
+// recording id and the transcript id, so a single pass captures everything with
+// no second request per call.
+//
+// WHAT IS STORED: number and metadata only. Tony's call, 2026-07-28. The
+// customer's NAME is deliberately dropped, including from the raw payload we
+// keep for debugging. Staff names are kept - they are our own people.
+
+const SUMMARY_PAGE_SIZE = 100;
+
+// Which side of the call is the customer? Confirmed from the live API:
+//   external customer -> type.value === 'PHONE_NUMBER', callProvider 'PSTN',
+//                        a full +1XXXXXXXXXX number
+//   our own staff     -> type.value === 'LINE', a 4-digit extension, a userKey
+// This is a reliable discriminator, so we never have to guess by position.
+function partyType(p) {
+  return (p && p.type && p.type.value) || '';
+}
+function isExternalParty(p) {
+  const t = partyType(p);
+  return t === 'PHONE_NUMBER' || t === 'EXTERNAL_USER' || t === 'PSTN';
+}
+function isInternalParty(p) {
+  const t = partyType(p);
+  return t === 'LINE' || t === 'EXTENSION' || t === 'USER';
+}
+
+// All parties on a summary item, caller first.
+function allParties(item) {
+  const out = [];
+  if (item && item.caller) out.push(item.caller);
+  if (item && Array.isArray(item.participants)) item.participants.forEach(function (p) { if (p) out.push(p); });
+  return out;
+}
+
+// Strip anything that identifies the customer, then keep the rest for debugging.
+// Field names drift and are undocumented; holding the shape is worth a lot when
+// something stops parsing. Holding customer names is not.
+function redactRaw(node, depth) {
+  depth = depth || 0;
+  if (!node || typeof node !== 'object' || depth > 8) return node;
+  if (Array.isArray(node)) return node.map(function (x) { return redactRaw(x, depth + 1); });
+  const out = {};
+  Object.keys(node).forEach(function (k) {
+    // Redact the NAME fields only. An earlier version blanked the whole 'caller'
+    // object, which threw away the phone number and the recording id with it -
+    // the two things the index exists to hold. Recursing instead means a nested
+    // caller keeps its number and loses only its name.
+    if (k === 'name' || k === 'displayName' || k === 'firstName' || k === 'lastName') {
+      // A LINE party's name is our own employee, so keep it.
+      if (isInternalParty(node)) { out[k] = node[k]; return; }
+      out[k] = '[redacted]';
+      return;
+    }
+    out[k] = redactRaw(node[k], depth + 1);
+  });
+  return out;
+}
+
+function secondsBetween(a, b) {
+  if (!a || !b) return null;
+  const s = Date.parse(a), e = Date.parse(b);
+  if (isNaN(s) || isNaN(e) || e < s) return null;
+  return Math.round((e - s) / 1000);
+}
+
+// Turn one report-summaries item into a goto_calls row. Returns null when there
+// is no external party, which means it was an internal extension-to-extension
+// call and is of no use to a customer complaint.
+function mapSummaryItem(item) {
+  if (!item || !item.conversationSpaceId) return null;
+  const parties = allParties(item);
+  const ext = parties.filter(isExternalParty)[0] || null;
+  const intl = parties.filter(isInternalParty)[0] || null;
+  if (!ext) return null;
+
+  const extNumber = ext.number || (ext.type && ext.type.number) || null;
+  const digits = normalizeDigits(extNumber);
+  if (!digits) return null;
+
+  // Either leg can carry the recording; prefer the external leg, fall back to
+  // whichever party has one.
+  const withRec = [ext, intl].concat(parties).filter(function (p) { return p && p.recordingId; })[0] || null;
+  const withTrans = [ext, intl].concat(parties).filter(function (p) { return p && p.liveTranscriptId; })[0] || null;
+
+  return {
+    conversation_space_id: String(item.conversationSpaceId),
+    account_key: item.accountKey ? String(item.accountKey) : null,
+    direction: item.direction ? String(item.direction).slice(0, 16) : null,
+    call_started_at: item.callCreated || null,
+    call_ended_at: item.callEnded || null,
+    duration_sec: secondsBetween(item.callAnswered || item.callCreated, item.callEnded),
+    external_number: extNumber ? String(extNumber).slice(0, 32) : null,
+    external_digits: digits,
+    internal_number: intl && intl.number ? String(intl.number).slice(0, 32) : null,
+    // Our own employee, not the customer.
+    agent_name: intl && intl.name ? String(intl.name).slice(0, 255) : null,
+    agent_user_key: intl && intl.type && intl.type.userKey ? String(intl.type.userKey).slice(0, 64) : null,
+    recording_id: withRec ? String(withRec.recordingId).slice(0, 128) : null,
+    transcript_id: withTrans ? String(withTrans.liveTranscriptId).slice(0, 128) : null,
+    has_recording: !!withRec,
+    raw_report: redactRaw(item)
+  };
+}
+
+// Upsert a batch. Returns { inserted, updated }. Keyed on conversationSpaceId,
+// so re-running a window is safe and cheap - which matters because the reconcile
+// job deliberately re-reads recent days to catch late-attaching recordings.
+async function upsertCalls(rows) {
+  let inserted = 0, updated = 0;
+  for (let i = 0; i < rows.length; i++) {
+    const r = rows[i];
+    try {
+      const res = await pool.query(
+        'INSERT INTO goto_calls (conversation_space_id, account_key, direction, call_started_at, call_ended_at,' +
+        ' duration_sec, external_number, external_digits, internal_number, agent_name, agent_user_key,' +
+        ' recording_id, transcript_id, has_recording, raw_report, last_seen_revision)' +
+        ' VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,NOW())' +
+        ' ON CONFLICT (conversation_space_id) DO UPDATE SET' +
+        // COALESCE so a later pass can only ADD a recording id, never erase one
+        // that was present before (recordings attach minutes after a call ends).
+        '   recording_id = COALESCE(EXCLUDED.recording_id, goto_calls.recording_id),' +
+        '   transcript_id = COALESCE(EXCLUDED.transcript_id, goto_calls.transcript_id),' +
+        '   has_recording = (goto_calls.has_recording OR EXCLUDED.has_recording),' +
+        '   call_ended_at = COALESCE(EXCLUDED.call_ended_at, goto_calls.call_ended_at),' +
+        '   duration_sec = COALESCE(EXCLUDED.duration_sec, goto_calls.duration_sec),' +
+        '   raw_report = EXCLUDED.raw_report,' +
+        '   last_seen_revision = NOW()' +
+        ' RETURNING (xmax = 0) AS was_insert',
+        [r.conversation_space_id, r.account_key, r.direction, r.call_started_at, r.call_ended_at,
+         r.duration_sec, r.external_number, r.external_digits, r.internal_number, r.agent_name,
+         r.agent_user_key, r.recording_id, r.transcript_id, r.has_recording, JSON.stringify(r.raw_report)]
+      );
+      if (res.rows.length && res.rows[0].was_insert) inserted++; else updated++;
+    } catch (e) {
+      console.error('[goto] upsert ' + r.conversation_space_id + ':', e.message);
+    }
+  }
+  return { inserted: inserted, updated: updated };
+}
+
+// One page of summaries. marker is the nextPageMarker from the previous page.
+async function fetchSummaryPage(startIso, endIso, marker) {
+  const acct = await resolveAccountKey();
+  if (!acct) throw new Error('No GoTo account key. Set it in Settings > Integrations.');
+  const p = new URLSearchParams();
+  p.set('accountKey', acct);
+  p.set('startTime', startIso);
+  p.set('endTime', endIso);
+  p.set('pageSize', String(SUMMARY_PAGE_SIZE));
+  if (marker) p.set('pageMarker', marker);
+  const data = await gotoFetch('/call-events-report/v1/report-summaries?' + p.toString());
+  return {
+    items: Array.isArray(data.items) ? data.items : [],
+    marker: data.nextPageMarker || data.nextPageToken || null
+  };
+}
+
+// Page a time window into goto_calls.
+//   opts: { startIso, endIso, maxPages, onPage }
+// maxPages is a hard stop so a bad marker cannot spin forever.
+async function syncWindow(opts) {
+  opts = opts || {};
+  const endIso = opts.endIso || new Date().toISOString();
+  const startIso = opts.startIso;
+  if (!startIso) throw new Error('syncWindow needs a startIso');
+  const maxPages = Math.min(Math.max(parseInt(opts.maxPages, 10) || 200, 1), 2000);
+
+  const stats = { pages: 0, seen: 0, indexed: 0, skipped: 0, inserted: 0, updated: 0, truncated: false };
+  let marker = null;
+  const seenMarkers = {};
+
+  for (let page = 0; page < maxPages; page++) {
+    const res = await fetchSummaryPage(startIso, endIso, marker);
+    stats.pages++;
+    stats.seen += res.items.length;
+
+    const rows = [];
+    res.items.forEach(function (it) {
+      const row = mapSummaryItem(it);
+      if (row) rows.push(row); else stats.skipped++;
+    });
+    stats.indexed += rows.length;
+    const up = await upsertCalls(rows);
+    stats.inserted += up.inserted;
+    stats.updated += up.updated;
+    if (typeof opts.onPage === 'function') { try { opts.onPage(stats); } catch (e) {} }
+
+    if (!res.marker) break;
+    // A repeated marker means the API is looping us; stop rather than spin.
+    if (seenMarkers[res.marker]) { stats.truncated = true; break; }
+    seenMarkers[res.marker] = 1;
+    marker = res.marker;
+    if (page === maxPages - 1) stats.truncated = true;
+    // Stay comfortably inside 10 requests/second.
+    await sleep(120);
+  }
+  return stats;
+}
+
+// Convenience: index the last N days.
+async function syncDays(days, opts) {
+  const d = Math.min(Math.max(parseInt(days, 10) || 1, 1), 400);
+  const end = new Date();
+  const start = new Date(end.getTime() - d * 86400000);
+  return syncWindow(Object.assign({ startIso: start.toISOString(), endIso: end.toISOString() }, opts || {}));
+}
+
+// Complaint lookup: every indexed call for a phone number, newest first.
+// This is the whole point of the index - a plain equality hit on external_digits
+// instead of paging the GoTo API.
+async function callsForNumber(phone, limit) {
+  const digits = normalizeDigits(phone);
+  if (!digits) return [];
+  const n = Math.min(Math.max(parseInt(limit, 10) || 200, 1), 500);
+  const r = await pool.query(
+    'SELECT id, conversation_space_id, direction, call_started_at, call_ended_at, duration_sec,' +
+    ' external_number, internal_number, agent_name, recording_id, transcript_id, has_recording,' +
+    ' r2_key, archived_at' +
+    ' FROM goto_calls WHERE external_digits = $1 ORDER BY call_started_at DESC NULLS LAST LIMIT ' + n,
+    [digits]
+  );
+  return r.rows;
+}
+
+// How healthy is the index? Drives the Settings panel.
+async function indexStats() {
+  try {
+    const r = await pool.query(
+      'SELECT COUNT(*)::int AS total,' +
+      ' COUNT(*) FILTER (WHERE has_recording)::int AS with_recording,' +
+      ' COUNT(*) FILTER (WHERE r2_key IS NOT NULL)::int AS archived,' +
+      ' MIN(call_started_at) AS oldest, MAX(call_started_at) AS newest,' +
+      ' MAX(last_seen_revision) AS last_sync FROM goto_calls'
+    );
+    return r.rows[0];
+  } catch (e) {
+    return { total: 0, with_recording: 0, archived: 0, oldest: null, newest: null, last_sync: null, error: e.message };
+  }
+}
+
 // ---- Call-search probe -----------------------------------------------------
 // Four things about the Call Events Report API are undocumented and its OpenAPI
 // reference is a JavaScript app we cannot read: the phone-number filter's
@@ -878,6 +1128,14 @@ module.exports = {
   discoverAccounts: discoverAccounts,
   probeMe: probeMe,
   probeCallSearch: probeCallSearch,
+  mapSummaryItem: mapSummaryItem,
+  redactRaw: redactRaw,
+  upsertCalls: upsertCalls,
+  fetchSummaryPage: fetchSummaryPage,
+  syncWindow: syncWindow,
+  syncDays: syncDays,
+  callsForNumber: callsForNumber,
+  indexStats: indexStats,
   shapeOf: shapeOf,
   findAccountKey: findAccountKey,
   resolveAccountKey: resolveAccountKey,

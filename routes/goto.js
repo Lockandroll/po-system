@@ -19,7 +19,7 @@
 'use strict';
 
 const express = require('express');
-const { requireAuth, requireRole } = require('../middleware/auth');
+const { requireAuth, requireRole, requirePermission } = require('../middleware/auth');
 const goto = require('../utils/goto');
 const { logAudit } = require('../utils/audit');
 
@@ -181,6 +181,38 @@ router.get('/calls/probe', requireAuth, requireRole('admin'), async function (re
     res.json(out);
   } catch (e) {
     console.error('GET /goto/calls/probe:', e.message);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// ---- Call index ------------------------------------------------------------
+
+// How healthy is the index? Feeds the Settings panel.
+router.get('/index/stats', requireAuth, requireRole('admin'), async function (req, res) {
+  try { res.json(await goto.indexStats()); }
+  catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// Backfill. Runs inline and can take a while on a wide window, so it is capped
+// and reports what it did. 90 days is the agreed default.
+router.post('/index/backfill', requireAuth, requireRole('admin'), async function (req, res) {
+  try {
+    var days = parseInt(req.body && req.body.days, 10) || 90;
+    var stats = await goto.syncDays(days, { maxPages: 600 });
+    res.json({ success: true, days: days, stats: stats });
+  } catch (e) {
+    console.error('POST /goto/index/backfill:', e.message);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// Every indexed call for a phone number, newest first. Managers can read this;
+// it is metadata only and carries no audio and no customer name.
+router.get('/calls', requireAuth, requirePermission('view_feedback'), async function (req, res) {
+  try {
+    var rows = await goto.callsForNumber(req.query.phone, req.query.limit);
+    res.json({ calls: rows });
+  } catch (e) {
     res.status(500).json({ error: e.message });
   }
 });

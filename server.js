@@ -21,6 +21,7 @@ const { startPtoAccrual } = require('./jobs/ptoAccrual');
 const { startQuiz } = require('./jobs/quiz');
 const { startInspectionReminders } = require('./jobs/inspectionReminders');
 const { startAutoDeactivation, startQuarterlyDrill, startOffboardingCleanup } = require('./jobs/offboarding');
+const { startGotoTokenRefresh, startGotoIndex, startGotoReconcile } = require('./jobs/gotoSync');
 
 const app = express();
 
@@ -181,5 +182,8 @@ initDB()
     startAutoDeactivation();
     startQuarterlyDrill();
     startOffboardingCleanup();
+    startGotoTokenRefresh();
+    startGotoIndex();
+    startGotoReconcile();
   })
   .catch(err => console.error('DB init error (non-fatal):', err));

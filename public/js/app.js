@@ -16461,9 +16461,10 @@ async function renderIntegrations(el) {
   if (state.user.role !== 'admin') { el.innerHTML = '<div class="alert alert-error">Access denied.</div>'; return; }
   el.innerHTML = '<div class="loading">Loading&hellip;</div>';
 
-  var s = null, loadErr = '';
+  var s = null, loadErr = '', idx = null;
   try { s = await api('GET', '/goto/status'); }
   catch (e) { loadErr = e.message; }
+  if (!loadErr) { try { idx = await api('GET', '/goto/index/stats'); } catch (e) { idx = null; } }
   if (!loadErr && (!s || typeof s !== 'object')) loadErr = 'The server returned an empty status.';
 
   if (loadErr) {
@@ -16568,6 +16569,7 @@ async function renderIntegrations(el) {
       '</table>' +
       keyEditor +
       (buttons ? '<div style="margin-top:16px;display:flex;flex-wrap:wrap;gap:8px">' + buttons + '</div>' : '') +
+      gotoIndexSection(s, idx) +
       '<div style="margin-top:14px;border-top:1px solid var(--border);padding-top:12px">' +
         '<button class="btn btn-secondary btn-sm" onclick="gotoRunDiagnose()">Run diagnostics</button>' +
         '<span class="goto-foot-note">Asks GoTo who we are and reports exactly what it says. Use this if the account key is missing.</span>' +
@@ -16639,6 +16641,58 @@ async function gotoSaveAccountKey() {
     navigate('integrations');
   } catch (e) {
     gotoMsg(e.message, true);
+  }
+}
+
+
+// The call index. GoTo has no server-side phone filter, so Nova keeps its own
+// index of calls and answers complaint lookups from that. This section shows
+// whether the index is actually populated, because an empty one means every
+// complaint will show "no recordings found" and look broken rather than empty.
+function gotoIndexSection(s, idx) {
+  if (!s || !s.connected || !s.accountKey) return '';
+  var n = idx && typeof idx.total === 'number' ? idx.total : null;
+  var body;
+  if (n === null) {
+    body = '<div style="font-size:13px;color:var(--text-muted-color)">Could not read the index.</div>';
+  } else if (n === 0) {
+    body = '<div style="font-size:13px;margin-bottom:10px">No calls indexed yet. Run a backfill so complaints can find recordings that already happened.</div>';
+  } else {
+    body = '<table class="goto-rows" style="margin-bottom:8px">' +
+      '<tr><td class="k">Calls indexed</td><td class="v">' + escHtml(String(n)) + '</td></tr>' +
+      '<tr><td class="k">With a recording</td><td class="v">' + escHtml(String(idx.with_recording || 0)) + '</td></tr>' +
+      '<tr><td class="k">Oldest call</td><td class="v">' + gotoWhen(idx.oldest) + '</td></tr>' +
+      '<tr><td class="k">Newest call</td><td class="v">' + gotoWhen(idx.newest) + '</td></tr>' +
+      '<tr><td class="k">Last indexed</td><td class="v">' + gotoWhen(idx.last_sync) + '</td></tr>' +
+      '</table>';
+  }
+  return '<div style="margin-top:14px;border-top:1px solid var(--border);padding-top:12px">' +
+    '<div style="font-size:12px;color:var(--text-muted-color);margin-bottom:8px">Call index</div>' +
+    body +
+    '<div style="display:flex;flex-wrap:wrap;gap:8px;align-items:center">' +
+      '<button class="btn ' + (n ? 'btn-secondary' : 'btn-primary') + ' btn-sm" id="goto-backfill-btn" onclick="gotoBackfill(90)">' + (n ? 'Backfill again (90 days)' : 'Backfill 90 days') + '</button>' +
+      '<span id="goto-backfill-note" class="goto-foot-note" style="margin-top:0"></span>' +
+    '</div>' +
+    '<span class="goto-foot-note">Nova indexes new calls every 10 minutes on its own. A backfill is only needed once, to pull in history from before it was connected.</span>' +
+    '</div>';
+}
+
+// Backfill runs inline on the server and can take a minute on a wide window, so
+// the button disables itself and says so rather than looking hung.
+async function gotoBackfill(days) {
+  var btn = document.getElementById('goto-backfill-btn');
+  var note = document.getElementById('goto-backfill-note');
+  if (btn) { btn.disabled = true; btn.textContent = 'Indexing…'; }
+  if (note) note.textContent = 'This can take a minute. Leave the page open.';
+  try {
+    var r = await api('POST', '/goto/index/backfill', { days: days });
+    var st = (r && r.stats) || {};
+    gotoMsg('Indexed ' + (st.inserted || 0) + ' new calls and updated ' + (st.updated || 0) + ', over ' + (st.pages || 0) + ' page(s)' + (st.truncated ? '. Stopped at the page limit, run it again to continue.' : '.'), false);
+    navigate('integrations');
+  } catch (e) {
+    if (btn) { btn.disabled = false; btn.textContent = 'Backfill 90 days'; }
+    if (note) note.textContent = '';
+    gotoMsg('Backfill failed: ' + e.message, true);
   }
 }
 
