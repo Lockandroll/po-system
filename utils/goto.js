@@ -693,11 +693,34 @@ async function archiveCall(callId) {
   const cur = await pool.query('SELECT id, recording_id, r2_key, r2_mime, r2_bytes FROM goto_calls WHERE id = $1', [callId]);
   if (!cur.rows.length) throw new Error('Call not found');
   const row = cur.rows[0];
-  if (row.r2_key) return { key: row.r2_key, mime: row.r2_mime, bytes: row.r2_bytes, cached: true };
+  // A previously archived file that is not actually audio (an error page stored
+  // before the guard below existed) would otherwise be served forever. Treat it
+  // as unarchived so the next play re-fetches it.
+  const storedLooksWrong = row.r2_key && (
+    (row.r2_mime && String(row.r2_mime).indexOf('audio') !== 0 && String(row.r2_mime).indexOf('octet-stream') === -1) ||
+    (row.r2_bytes !== null && Number(row.r2_bytes) < 512)
+  );
+  if (row.r2_key && !storedLooksWrong) {
+    return { key: row.r2_key, mime: row.r2_mime, bytes: row.r2_bytes, cached: true };
+  }
+  if (storedLooksWrong) {
+    console.warn('[goto] re-archiving call ' + row.id + ': stored file was ' + row.r2_mime + ', ' + row.r2_bytes + ' bytes');
+  }
   if (!row.recording_id) throw new Error('This call has no recording');
   if (!r2.configured()) throw new Error('File storage is not configured (R2_* environment variables).');
 
   const got = await fetchRecordingBytes(row.recording_id);
+  // If GoTo hands back something that is not audio - an error page, a JSON body,
+  // an HTML redirect stub - storing it produces a player that silently refuses to
+  // play with no clue why. Refuse it here, where the message can be useful.
+  if (got.mime.indexOf('audio') !== 0 && got.mime.indexOf('octet-stream') === -1) {
+    let peek = '';
+    try { peek = got.buffer.slice(0, 120).toString('utf8').replace(/\s+/g, ' ').trim(); } catch (e) {}
+    throw new Error('GoTo returned ' + got.mime + ' instead of audio for this recording' + (peek ? (': ' + peek) : '.'));
+  }
+  if (got.buffer.length < 512) {
+    throw new Error('GoTo returned only ' + got.buffer.length + ' bytes for this recording, which is not a playable file.');
+  }
   const key = 'call-recordings/' + row.id + '/' + row.recording_id + '.' + extForMime(got.mime);
   await r2.putObject(key, got.buffer, got.mime);
   await pool.query(

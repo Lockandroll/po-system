@@ -16885,20 +16885,68 @@ function fbRecordingsHtml(feedbackId, d) {
   return rows + foot + unhide;
 }
 
+function fbRecBytes(n) {
+  var b = parseInt(n, 10);
+  if (!b) return 'unknown size';
+  if (b < 1024) return b + ' B';
+  if (b < 1048576) return Math.round(b / 1024) + ' KB';
+  return (b / 1048576).toFixed(1) + ' MB';
+}
+
 // Play in place. The URL is minted per click and lives 120 seconds, so it is
 // fetched at click time and never rendered into the page ahead of time.
+//
+// The element is built in JS rather than as an HTML string so an error handler
+// can be attached. An <audio> tag that cannot decode its source fails SILENTLY,
+// showing 0:00 / 0:00 and nothing else, which is indistinguishable from "still
+// loading" and was exactly the dead end this hit on first use.
 async function fbRecPlay(feedbackId, callId) {
   var slot = document.getElementById('fb-rec-player-' + callId);
   if (!slot) return;
   if (slot.getAttribute('data-open') === '1') { slot.innerHTML = ''; slot.removeAttribute('data-open'); return; }
   slot.innerHTML = '<div style="font-size:12px;color:var(--text-muted-color);padding:6px 0">Loading audio&hellip;</div>';
+
+  var r;
   try {
-    var r = await api('GET', '/feedback/' + feedbackId + '/recordings/' + callId + '/play');
-    slot.setAttribute('data-open', '1');
-    slot.innerHTML = '<audio controls autoplay preload="none" style="width:100%;margin-top:8px" src="' + escHtml(r.url) + '"></audio>';
+    r = await api('GET', '/feedback/' + feedbackId + '/recordings/' + callId + '/play');
   } catch (e) {
     slot.innerHTML = '<div style="font-size:12px;color:#e24b4a;padding:6px 0">' + escHtml(e.message) + '</div>';
+    return;
   }
+
+  slot.setAttribute('data-open', '1');
+  slot.innerHTML = '';
+
+  var audio = document.createElement('audio');
+  audio.controls = true;
+  // preload="none" meant the browser fetched nothing until play was pressed, and
+  // if autoplay was blocked it fetched nothing at all - hence 0:00 / 0:00 forever.
+  audio.preload = 'metadata';
+  audio.style.width = '100%';
+  audio.style.marginTop = '8px';
+  audio.src = r.url;
+
+  var meta = document.createElement('div');
+  meta.style.cssText = 'font-size:11px;color:var(--text-muted-color);margin-top:4px';
+  meta.innerHTML = escHtml(fbRecBytes(r.bytes)) + ' &middot; ' + escHtml(r.mime || 'unknown type') +
+    ' &middot; <a href="' + escHtml(r.url) + '" target="_blank" rel="noopener" style="color:var(--primary)">open directly</a>';
+
+  // Surface a decode/network failure instead of leaving a silent dead player.
+  audio.addEventListener('error', function () {
+    var why = 'The browser could not play this file.';
+    if (r.mime && r.mime.indexOf('audio') !== 0) {
+      why = 'GoTo returned this as ' + r.mime + ', which is not audio. The recording may not have been ready.';
+    }
+    meta.innerHTML = '<span style="color:#e24b4a">' + escHtml(why) + '</span> ' +
+      '<a href="' + escHtml(r.url) + '" target="_blank" rel="noopener" style="color:var(--primary)">Download it</a> ' +
+      '<span>(' + escHtml(fbRecBytes(r.bytes)) + ', ' + escHtml(r.mime || 'unknown type') + ')</span>';
+  });
+
+  slot.appendChild(audio);
+  slot.appendChild(meta);
+  // Try to start, but never depend on it - autoplay is blocked in some setups.
+  var p = audio.play();
+  if (p && typeof p.catch === 'function') { p.catch(function () {}); }
 }
 
 async function fbRecSetPrimary(feedbackId, callId) {
