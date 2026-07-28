@@ -160,6 +160,22 @@ router.post('/account', requireAuth, requireRole('admin'), async function (req, 
   }
 });
 
+// The organisation id used for recording audio. Separate from the account key:
+// audio lives on contact-center-reports/v1, which is keyed by organisation.
+router.post('/org', requireAuth, requireRole('admin'), async function (req, res) {
+  try {
+    const id = await goto.setOrgId(req.body && req.body.org_id);
+    res.json({ success: true, org_id: id });
+  } catch (e) {
+    res.status(400).json({ error: e.message });
+  }
+});
+
+router.get('/org/discover', requireAuth, requireRole('admin'), async function (req, res) {
+  try { res.json({ found: await goto.discoverOrgIds(), current: await goto.resolveOrgId() }); }
+  catch (e) { res.status(500).json({ error: e.message }); }
+});
+
 // Diagnostic: what does GoTo actually say when we ask who we are? Admin only.
 router.get('/account/diagnose', requireAuth, requireRole('admin'), async function (req, res) {
   try {
@@ -284,7 +300,8 @@ router.get('/calls', requireAuth, requirePermission('view_feedback'), async func
 
 router.post('/refresh', requireAuth, requireRole('admin'), async function (req, res) {
   try {
-    await goto.refresh();
+    // Explicit admin action: always go to the wire, even if the token looks fine.
+    await goto.refresh(true);
     const s = await goto.status();
     res.json({ success: true, status: s });
   } catch (e) {

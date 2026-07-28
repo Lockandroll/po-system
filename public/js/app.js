@@ -16547,6 +16547,28 @@ async function renderIntegrations(el) {
     '<button class="btn btn-ghost btn-sm" onclick="gotoToggleKeyEdit()">Cancel</button></div>' +
     '</div>';
 
+  // The organisation id is what recording AUDIO is keyed by, and it is a
+  // different value from the account key. It was invisible until now, which made
+  // a failed play impossible to diagnose from the UI.
+  var orgRow;
+  if (s.orgId) {
+    orgRow = '<span class="goto-mono" style="font-size:13px">' + escHtml(s.orgId) + '</span>' +
+      ' <span style="color:var(--text-muted-color);font-size:11px">(' + escHtml(s.orgIdSource || 'set') + ')</span> ' +
+      '<button class="btn btn-ghost btn-sm" onclick="gotoToggleOrgEdit()">Change</button>';
+  } else {
+    orgRow = '<span style="color:var(--text-muted-color)">Not set yet &mdash; found on first playback</span> ' +
+      '<button class="btn btn-ghost btn-sm" onclick="gotoToggleOrgEdit()">Set it</button>';
+  }
+
+  var orgEditor = '<div id="goto-org-edit" style="display:none;margin-top:10px;padding:12px;border:1px solid var(--border);border-radius:8px">' +
+    '<label style="display:block;font-size:11px;color:var(--text-muted-color);margin-bottom:4px">GoTo organisation id (recording audio)</label>' +
+    '<input type="text" id="goto-org-input" value="' + escHtml(s.orgId || '') + '" placeholder="e.g. 420eff26-12ae-41bb-8997-578ebabcbc2d" style="padding:8px 10px;background:var(--surface-color, var(--bg-card));border:1px solid var(--border);border-radius:6px;color:var(--text-color, var(--text));font-size:13px;width:100%;box-sizing:border-box;font-family:monospace" />' +
+    '<div style="font-size:11px;color:var(--text-muted-color);margin-top:6px">Recording audio is fetched per organisation, not per account, so this is a different value from the account key above. Nova fills it in automatically.</div>' +
+    '<div style="margin-top:10px"><button class="btn btn-primary btn-sm" onclick="gotoSaveOrgId()">Save</button> ' +
+    '<button class="btn btn-ghost btn-sm" onclick="gotoDiscoverOrg()">Look it up</button> ' +
+    '<button class="btn btn-ghost btn-sm" onclick="gotoToggleOrgEdit()">Cancel</button></div>' +
+    '</div>';
+
   var buttons;
   if (!s.configured) {
     buttons = '';
@@ -16571,6 +16593,7 @@ async function renderIntegrations(el) {
       warn +
       '<table class="goto-rows">' +
         '<tr><td class="k">Account</td><td class="v">' + keyRow + '</td></tr>' +
+        '<tr><td class="k">Organisation (audio)</td><td class="v">' + orgRow + '</td></tr>' +
         '<tr><td class="k">Connected</td><td class="v">' + gotoWhen(s.connectedAt) + '</td></tr>' +
         '<tr><td class="k">Token last refreshed</td><td class="v">' + gotoWhen(s.lastRefreshAt) + '</td></tr>' +
         '<tr><td class="k">Access token expires</td><td class="v">' + gotoWhen(s.accessExpiresAt) + (s.connected && !s.accessValid ? ' <span style="color:var(--text-muted-color)">(will refresh on next use)</span>' : '') + '</td></tr>' +
@@ -16578,6 +16601,7 @@ async function renderIntegrations(el) {
         '<tr><td class="k">Permissions granted</td><td class="v">' + scopeChips + '</td></tr>' +
       '</table>' +
       keyEditor +
+      orgEditor +
       (buttons ? '<div style="margin-top:16px;display:flex;flex-wrap:wrap;gap:8px">' + buttons + '</div>' : '') +
       gotoIndexSection(Object.assign({}, s, { backfill: running || {} }), idx) +
       gotoHookSection(s, hook) +
@@ -16644,6 +16668,36 @@ async function gotoDisconnectNow() {
   } catch (e) {
     gotoMsg(e.message, true);
   }
+}
+
+function gotoToggleOrgEdit() {
+  var d = document.getElementById('goto-org-edit');
+  if (d) d.style.display = d.style.display === 'none' ? 'block' : 'none';
+}
+
+async function gotoSaveOrgId() {
+  var v = (document.getElementById('goto-org-input') || {}).value || '';
+  try {
+    await api('POST', '/goto/org', { org_id: v.trim() });
+    gotoMsg('Organisation id saved.', false);
+    await renderIntegrations(document.getElementById('content'));
+  } catch (e) { gotoMsg(e.message, true); }
+}
+
+// Ask GoTo rather than making an admin hunt for it. None of these endpoints are
+// documented, so this reports what it found instead of silently doing nothing.
+async function gotoDiscoverOrg() {
+  var inp = document.getElementById('goto-org-input');
+  try {
+    var d = await api('GET', '/goto/org/discover');
+    if (d.found && d.found.length) {
+      if (inp) inp.value = d.found[0];
+      gotoMsg('Found ' + d.found.length + ' organisation id' + (d.found.length === 1 ? '' : 's') + '. Press Save to use it.', false);
+    } else {
+      if (inp && d.current) inp.value = d.current;
+      gotoMsg('GoTo did not return an organisation id. The value in use is shown; press Save to keep it.', false);
+    }
+  } catch (e) { gotoMsg(e.message, true); }
 }
 
 async function gotoSaveAccountKey() {

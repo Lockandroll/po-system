@@ -1800,12 +1800,15 @@ async function initDB() {
       'CREATE UNIQUE INDEX IF NOT EXISTS idx_fbcall_primary ON feedback_call_recordings(feedback_id) WHERE is_primary = true;'
     );
 
-    // GoTo recording webhooks. The media URL for a recording arrives in the
-    // recording.UPLOADED notification payload and is NOT available from any API
-    // endpoint (confirmed by exhaustive probing 2026-07-28), so it has to be
-    // captured when the event fires and kept.
+    // GoTo recording audio. NOTE: an earlier comment here said the media URL
+    // arrives only in the recording.UPLOADED notification. That was wrong - the
+    // notification carries nothing but content.recording_id. The audio comes
+    // from the contact-center-reports API on api.jive.com, which needs an
+    // ORGANISATION id that is not the account key and is not returned by any
+    // documented endpoint. Observed in GoTo's own web portal 2026-07-28.
     await client.query("ALTER TABLE goto_calls ADD COLUMN IF NOT EXISTS media_url TEXT;");
     await client.query("ALTER TABLE goto_calls ADD COLUMN IF NOT EXISTS media_url_at TIMESTAMPTZ;");
+    await client.query("ALTER TABLE goto_oauth ADD COLUMN IF NOT EXISTS org_id VARCHAR(64);");
     await client.query(
       'CREATE TABLE IF NOT EXISTS goto_webhook (' +
       '  id INTEGER PRIMARY KEY DEFAULT 1 CHECK (id = 1),' +

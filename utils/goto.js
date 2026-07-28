@@ -210,6 +210,11 @@ async function status() {
     undecryptable: undecryptable,
     accountKey: (row && row.account_key) || accountKey() || null,
     accountKeySource: (row && row.account_key) ? 'discovered' : (accountKey() ? 'env' : null),
+    // The organisation id is what recording audio is keyed by, and it is NOT the
+    // account key. Surfaced so an admin can see it and correct it if GoTo ever
+    // moves the account, rather than discovering the problem as a failed play.
+    orgId: (row && row.org_id) || orgIdEnv() || null,
+    orgIdSource: (row && row.org_id) ? 'stored' : (orgIdEnv() ? 'env' : null),
     scope: (row && row.scope) || null,
     connectedAt: (row && row.connected_at) || null,
     lastRefreshAt: (row && row.last_refresh_at) || null,
@@ -517,14 +522,109 @@ async function setAccountKey(key) {
   return clean;
 }
 
+// ---- Organisation id (contact-center-reports) -------------------------------
+// Recording audio does NOT come from the recording/v1 API. It comes from
+// contact-center-reports/v1 on api.jive.com, which is keyed by an ORGANISATION
+// id - a uuid that is NOT the account key and is not returned by any documented
+// endpoint. This was established by reading the network traffic of GoTo's own
+// web portal while it played a recording (2026-07-28).
+const CCR_BASE = 'https://api.jive.com';
+
+// Pop A Lock's organisation id, read from GoTo's portal. Discovery below is
+// tried first, so if GoTo ever exposes this properly the stored value wins and
+// this constant stops mattering. It is here so the feature works without an
+// admin having to transcribe a uuid by hand.
+const KNOWN_ORG_ID = '420eff26-12ae-41bb-8997-578ebabcbc2d';
+
+function orgIdEnv() {
+  return (process.env.GOTO_ORG_ID || '').trim() || null;
+}
+
+function looksLikeUuid(v) {
+  return typeof v === 'string' && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(v);
+}
+
+// Ask GoTo for the organisation. None of these are documented; they are tried
+// in order and the first uuid wins. Returns a list so an admin can see what was
+// found and where, rather than a bare value with no provenance.
+async function discoverOrgIds() {
+  const found = [];
+  const probes = [
+    { label: 'ccr/organizations', url: CCR_BASE + '/contact-center-reports/v1/organizations' },
+    { label: 'ccr/me', url: CCR_BASE + '/contact-center-reports/v1/me' },
+    { label: 'identity/me', url: API_BASE + '/identity/v1/Users/me' }
+  ];
+  for (let i = 0; i < probes.length; i++) {
+    let data = null;
+    // gotoFetch takes an absolute URL as-is, which is what we want here: two of
+    // these live on the legacy host, not API_BASE.
+    try { data = await gotoFetch(probes[i].url); }
+    catch (e) { continue; }
+    (function walk(n, d) {
+      if (!n || typeof n !== 'object' || d > 6) return;
+      if (Array.isArray(n)) { n.forEach(function (x) { walk(x, d + 1); }); return; }
+      Object.keys(n).forEach(function (k) {
+        const v = n[k];
+        if (looksLikeUuid(v) && /org/i.test(k)) {
+          if (found.indexOf(v) === -1) found.push(v);
+        } else if (v && typeof v === 'object') walk(v, d + 1);
+      });
+    })(data, 0);
+    if (found.length) break;
+  }
+  return found;
+}
+
+// Stored wins, then env, then discovery, then the known value for this account.
+// Whatever is settled on gets PERSISTED, including the fallback: without that,
+// three discovery probes fire on every single playback and always come back
+// empty, which is a wasted round trip per click forever.
+async function resolveOrgId() {
+  const row = await loadRow();
+  if (row && row.org_id) return row.org_id;
+  const env = orgIdEnv();
+  if (env) return env;
+  try {
+    const found = await discoverOrgIds();
+    if (found.length) { await setOrgId(found[0]); return found[0]; }
+  } catch (e) {}
+  try { await setOrgId(KNOWN_ORG_ID); } catch (e) {}
+  return KNOWN_ORG_ID;
+}
+
+async function setOrgId(id) {
+  const clean = String(id || '').trim().toLowerCase();
+  if (!looksLikeUuid(clean)) throw new Error('Organisation id must be a uuid');
+  await pool.query(
+    'INSERT INTO goto_oauth (id, org_id) VALUES (1, $1) ON CONFLICT (id) DO UPDATE SET org_id = $1',
+    [clean]
+  );
+  return clean;
+}
+
 // Single-flight guard: several callers hitting an expired token at once should
 // produce ONE refresh, not a thundering herd against a 10 req/sec limit.
 let _refreshing = null;
 
-async function refresh() {
+// force=true is an explicit admin action ("Refresh now") and always goes to the
+// wire. Everything else is opportunistic and stands down if another caller has
+// already refreshed - see the re-read below.
+async function refresh(force) {
   if (_refreshing) return _refreshing;
   _refreshing = (async function () {
     const row = await loadRow();
+
+    // The single-flight guard alone is not enough. Four callers each read the
+    // row, see it expired, and queue; the first refreshes and clears the guard
+    // before the last one arrives, so the last one refreshes a token that is
+    // already fresh. Re-reading here closes that window: by this point the row
+    // reflects any refresh that just landed.
+    if (!force) {
+      const tok = decField(row && row.access_token);
+      const exp = row && row.expires_at ? new Date(row.expires_at).getTime() : 0;
+      if (tok && exp && Date.now() < exp - 3600 * 1000 * (1 - REFRESH_AT_FRACTION)) return tok;
+    }
+
     const current = row ? decField(row.refresh_token) : null;
     if (!current) {
       const msg = row && row.refresh_token
@@ -639,12 +739,11 @@ async function gotoFetch(path, opts) {
 
 
 // ---- Recording webhooks ----------------------------------------------------
-// The media URL for a recording is delivered in the recording notification
-// payload and appears NOWHERE in the API. Every endpoint on api.goto.com was
-// probed on 2026-07-28: /content returns only a download token plus a status,
-// /recordings/{id} returns only a status, and /media, /download and /audio do
-// not exist. So the webhook is not an optimisation here, it is the only route
-// to the audio.
+// These are a readiness signal, nothing more. The notification payload carries
+// only content.recording_id - no media URL, despite what an earlier version of
+// this comment claimed. The audio comes from the contact-center-reports API
+// (see fetchViaContactCenter), so the hook is an optimisation and playback does
+// not depend on it.
 
 const NOTIFICATION_BASE = 'https://api.goto.com/notification-channel/v1';
 
@@ -1252,11 +1351,77 @@ function isAudio(mime, buf) {
   return false;
 }
 
-async function fetchRecordingBytes(recordingId, knownMediaUrl) {
+// THE working route, established by watching GoTo's own web portal play a
+// recording (2026-07-28). Two steps, and neither is on the recording/v1 API:
+//
+//   1. GET {CCR_BASE}/contact-center-reports/v1/organizations/{org}
+//          /recordings/{recordingId}/content?conversationSpaceId={csid}
+//      with the ordinary Bearer token, which returns
+//      {"status":"UPLOADED","token":{"token":"<blob>","expires":"..."}}
+//
+//   2. GET the same path with /content/{blob} appended and NO Authorization
+//      header at all. That 302s to a signed CloudFront URL holding the mp3.
+//
+// The token is a PATH SEGMENT. Every earlier attempt put it in a header or a
+// query parameter, which is why all fifty of them returned 401. It decodes to
+// "<recordingId>;<expiryMillis>;<signature>" - it authenticates the URL, so
+// sending credentials alongside it is not just unnecessary, it is wrong.
+// The token is base64 and GoTo's own portal sends it verbatim, padding and all,
+// so encodeURIComponent is wrong here: it would escape '=' and '+' into
+// something the server never sees from its own client. Only escape the few
+// characters that would genuinely break a path segment. Standard base64 can
+// contain '/', which is the one that matters.
+function encodePathToken(t) {
+  return String(t).replace(/[/?#%]/g, function (ch) {
+    return '%' + ch.charCodeAt(0).toString(16).toUpperCase();
+  });
+}
+
+async function fetchViaContactCenter(recordingId, conversationSpaceId, attempts) {
+  if (!conversationSpaceId) { attempts.push('ccr:skipped(no conversationSpaceId)'); return null; }
+  const org = await resolveOrgId();
+  if (!org) { attempts.push('ccr:skipped(no org id)'); return null; }
+
+  const base = CCR_BASE + '/contact-center-reports/v1/organizations/' + encodeURIComponent(org) +
+    '/recordings/' + encodeURIComponent(recordingId) + '/content';
+
+  let env = null;
+  try {
+    env = await gotoFetch(base + '?conversationSpaceId=' + encodeURIComponent(conversationSpaceId));
+  } catch (e) {
+    attempts.push('ccr/token:' + String(e.message).slice(0, 80));
+    return null;
+  }
+
+  const pathToken = env && env.token && env.token.token ? String(env.token.token) : null;
+  if (!pathToken) {
+    attempts.push('ccr/token:no token in ' + JSON.stringify(envelopeShape(env)).slice(0, 80));
+    return null;
+  }
+
+  // No Authorization header. The token in the path IS the authorisation, and
+  // GoTo rejects the request when both are presented.
+  const mediaUrl = base + '/' + encodePathToken(pathToken);
+  const r = await httpGetBinary(mediaUrl, { Accept: 'audio/*' });
+  attempts.push('ccr/media:' + r.firstStatus +
+    (r.hops ? ('>' + (r.redirectHost || '?') + ':' + r.status) : '') + ':' + (r.mime || '?'));
+  if (r.ok && isAudio(r.mime, r.buffer) && r.buffer.length > 512) {
+    return { buffer: r.buffer, mime: r.mime || 'audio/mpeg' };
+  }
+  return null;
+}
+
+async function fetchRecordingBytes(recordingId, knownMediaUrl, conversationSpaceId) {
   if (!recordingId) throw new Error('No recording id');
   const contentUrl = API_BASE + '/recording/v1/recordings/' + encodeURIComponent(recordingId) + '/content';
   const bearer = 'Bearer ' + (await getAccessToken());
   const attempts = [];
+
+  // The route that actually works goes first. Everything below it is the older
+  // probing path, kept because it reports what it tried when this one cannot
+  // run - most likely because the call has no conversationSpaceId indexed.
+  const viaCcr = await fetchViaContactCenter(recordingId, conversationSpaceId, attempts);
+  if (viaCcr) return viaCcr;
 
   // Step 0: the legacy hosts, which redirect to the audio rather than handing
   // back a token to spend. Tried first because it is two requests and, if it
@@ -1467,7 +1632,7 @@ function extForMime(mime) {
 // which is the whole reason we copy rather than stream.
 async function archiveCall(callId) {
   const r2 = require('./r2');
-  const cur = await pool.query('SELECT id, recording_id, media_url, r2_key, r2_mime, r2_bytes FROM goto_calls WHERE id = $1', [callId]);
+  const cur = await pool.query('SELECT id, recording_id, conversation_space_id, media_url, r2_key, r2_mime, r2_bytes FROM goto_calls WHERE id = $1', [callId]);
   if (!cur.rows.length) throw new Error('Call not found');
   const row = cur.rows[0];
   // A previously archived file that is not actually audio (an error page stored
@@ -1491,7 +1656,7 @@ async function archiveCall(callId) {
 
   if (!r2.configured()) throw new Error('File storage is not configured (R2_* environment variables).');
 
-  const got = await fetchRecordingBytes(row.recording_id, row.media_url || null);
+  const got = await fetchRecordingBytes(row.recording_id, row.media_url || null, row.conversation_space_id || null);
   // If GoTo hands back something that is not audio - an error page, a JSON body,
   // an HTML redirect stub - storing it produces a player that silently refuses to
   // play with no clue why. Refuse it here, where the message can be useful.
@@ -2172,6 +2337,10 @@ module.exports = {
   decodeAccessToken: decodeAccessToken,
   previewToken: previewToken,
   innerCredential: innerCredential,
+  resolveOrgId: resolveOrgId,
+  setOrgId: setOrgId,
+  discoverOrgIds: discoverOrgIds,
+  fetchViaContactCenter: fetchViaContactCenter,
   innerCredentialShape: innerCredentialShape,
   archiveCall: archiveCall,
   playbackUrl: playbackUrl,
