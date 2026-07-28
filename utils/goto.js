@@ -1196,15 +1196,46 @@ function decodeAccessToken(token) {
 async function httpGetBinary(url, headers) {
   let resp = await fetch(url, { headers: headers || {}, redirect: 'manual' });
   let hops = 0;
+  // The redirect is not incidental. On the legacy host /content answers 302 and
+  // the audio lives at the Location, so the hop count is worth reporting: a 302
+  // that was followed and a 200 that was served directly look identical here
+  // otherwise, and they mean very different things.
+  const firstStatus = resp.status;
+  let firstLocationHost = null;
   while (resp.status >= 300 && resp.status < 400 && hops < 3) {
     const loc = resp.headers.get('location');
     if (!loc) break;
+    if (!firstLocationHost) {
+      try { firstLocationHost = new URL(loc, url).host; } catch (e) { firstLocationHost = 'unparseable'; }
+    }
     resp = await fetch(loc);
     hops++;
   }
   const mime = (resp.headers.get('content-type') || '').split(';')[0].trim();
   const buf = Buffer.from(await resp.arrayBuffer());
-  return { ok: resp.ok, status: resp.status, mime: mime, buffer: buf };
+  return {
+    ok: resp.ok, status: resp.status, mime: mime, buffer: buf,
+    hops: hops, firstStatus: firstStatus, redirectHost: firstLocationHost
+  };
+}
+
+// api.goto.com is the current host, but the recording service predates the
+// rebrand and the legacy hosts were never retired. On api.getgo.com the same
+// /content path answers 302 with the audio at the Location, instead of the JSON
+// envelope api.goto.com returns. That is a different service behind the same
+// path, not a different spelling of the same one.
+const LEGACY_BASES = ['https://api.getgo.com', 'https://api.jive.com'];
+
+// Keep the attempt log readable: strip whichever host it was, but keep a marker
+// when it was not the primary one, because that is the whole point of trying.
+function shortTarget(url) {
+  if (url.indexOf(API_BASE) === 0) return url.slice(API_BASE.length);
+  for (let i = 0; i < LEGACY_BASES.length; i++) {
+    if (url.indexOf(LEGACY_BASES[i]) === 0) {
+      return '(' + LEGACY_BASES[i].replace('https://', '') + ')' + url.slice(LEGACY_BASES[i].length);
+    }
+  }
+  return url;
 }
 
 function isAudio(mime, buf) {
@@ -1225,6 +1256,26 @@ async function fetchRecordingBytes(recordingId, knownMediaUrl) {
   if (!recordingId) throw new Error('No recording id');
   const contentUrl = API_BASE + '/recording/v1/recordings/' + encodeURIComponent(recordingId) + '/content';
   const bearer = 'Bearer ' + (await getAccessToken());
+  const attempts = [];
+
+  // Step 0: the legacy hosts, which redirect to the audio rather than handing
+  // back a token to spend. Tried first because it is two requests and, if it
+  // works, everything below is dead weight.
+  for (let i = 0; i < LEGACY_BASES.length; i++) {
+    const legacyUrl = LEGACY_BASES[i] + '/recording/v1/recordings/' + encodeURIComponent(recordingId) + '/content';
+    let r;
+    try {
+      r = await httpGetBinary(legacyUrl, { Authorization: bearer, Accept: 'audio/*' });
+    } catch (e) {
+      attempts.push(LEGACY_BASES[i].replace('https://', '') + ':threw:' + e.message.slice(0, 40));
+      continue;
+    }
+    attempts.push(LEGACY_BASES[i].replace('https://', '') + ':' + r.firstStatus +
+      (r.hops ? ('>' + (r.redirectHost || '?') + ':' + r.status) : '') + ':' + (r.mime || '?'));
+    if (r.ok && isAudio(r.mime, r.buffer) && r.buffer.length > 512) {
+      return { buffer: r.buffer, mime: r.mime || 'audio/wav' };
+    }
+  }
 
   // The happy path: a media URL captured from the recording notification. GoTo
   // serves the audio from there once presented with a download token from
@@ -1281,7 +1332,6 @@ async function fetchRecordingBytes(recordingId, knownMediaUrl) {
   // The envelope may not carry a URL, but the token's own claims might.
   const claimUrls = decodeAccessToken(accessToken).urls;
   const mediaUrl = findMediaUrl(env) || (claimUrls.length ? claimUrls[0] : null);
-  const attempts = [];
 
   // 2a: a media URL in the envelope, unauthenticated (it is usually pre-signed)
   if (mediaUrl) {
@@ -1304,6 +1354,12 @@ async function fetchRecordingBytes(recordingId, knownMediaUrl) {
   if (accessToken) {
     const base = API_BASE + '/recording/v1/recordings/' + encodeURIComponent(recordingId);
     const targets = [contentUrl, base + '/media', base + '/download', base + '/audio', base];
+    // The legacy hosts get the token too. Step 0 only tried them with the app
+    // bearer; if they want the recording-access token instead, that is a
+    // different answer and worth separating from "the host is wrong".
+    LEGACY_BASES.forEach(function (b) {
+      targets.push(b + '/recording/v1/recordings/' + encodeURIComponent(recordingId) + '/content');
+    });
     // The token base64-decodes to exactly "recording-access:<credential>", which
     // is the shape of an HTTP Basic credential - user "recording-access", the
     // credential as the password. That makes "Basic <token verbatim>" the single
@@ -1324,7 +1380,7 @@ async function fetchRecordingBytes(recordingId, knownMediaUrl) {
     for (let t = 0; t < targets.length; t++) {
       for (let a = 0; a < authStyles.length; a++) {
         const r = await httpGetBinary(targets[t], authStyles[a].headers);
-        attempts.push(targets[t].replace(API_BASE, '') + '[' + authStyles[a].name + ']:' + r.status + ':' + (r.mime || '?'));
+        attempts.push(shortTarget(targets[t]) + '[' + authStyles[a].name + ']:' + r.status + ':' + (r.mime || '?'));
         if (r.ok && isAudio(r.mime, r.buffer)) return { buffer: r.buffer, mime: r.mime || 'audio/wav' };
       }
     }
@@ -1334,7 +1390,7 @@ async function fetchRecordingBytes(recordingId, knownMediaUrl) {
       for (let pIdx = 0; pIdx < paramNames.length; pIdx++) {
         const url = targets[t] + (targets[t].indexOf('?') === -1 ? '?' : '&') + paramNames[pIdx] + '=' + encodeURIComponent(accessToken);
         const r = await httpGetBinary(url, { Accept: 'audio/*' });
-        attempts.push(targets[t].replace(API_BASE, '') + '?' + paramNames[pIdx] + ':' + r.status + ':' + (r.mime || '?'));
+        attempts.push(shortTarget(targets[t]) + '?' + paramNames[pIdx] + ':' + r.status + ':' + (r.mime || '?'));
         if (r.ok && isAudio(r.mime, r.buffer)) return { buffer: r.buffer, mime: r.mime || 'audio/wav' };
       }
     }
