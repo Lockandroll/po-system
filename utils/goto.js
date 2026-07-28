@@ -867,8 +867,11 @@ function extractRecordingMedia(payload) {
       const v = node[k];
       if (typeof v === 'string') {
         if (!out.mediaUrl && /^https?:\/\//.test(v) && /(record|media|audio|\.wav|\.mp3|storage|blob)/i.test(k + ' ' + v)) out.mediaUrl = v;
-        if (!out.recordingId && /^recordingid$/i.test(k)) out.recordingId = v;
-        if (!out.recordingId && /^id$/i.test(k) && /^[0-9a-f]{8}-[0-9a-f]{4}-/i.test(v)) out.recordingId = v;
+        // recording_id (snake_case) is what the recording-service notification
+        // actually uses. Without this the generic /^id$/ fallback below matched
+        // the NOTIFICATION's own id and recorded the wrong uuid entirely.
+        if (/^recording_?id$/i.test(k)) out.recordingId = v;
+        if (!out.recordingId && /^id$/i.test(k) && /^[0-9a-f]{8}-[0-9a-f]{4}-/i.test(v) && depth > 0) out.recordingId = v;
         // 'source' and 'type' are routing metadata, not the recording's status.
         // Treating them as status made a call-events notification look like a
         // recording one in the diagnostics.
@@ -909,6 +912,19 @@ async function ingestRecordingEvent(payload) {
     return out;
   })(envelopeShape(payload), 0);
   let matched = 0;
+
+  // The recording-service notification carries ONLY content.recording_id - it is
+  // a readiness ping, not a delivery. Record that the audio has finished
+  // processing even though no URL came with it.
+  if (found.recordingId && !found.mediaUrl) {
+    try {
+      const r = await pool.query(
+        'UPDATE goto_calls SET has_recording = true, media_url_at = COALESCE(media_url_at, NOW()) WHERE recording_id = $1',
+        [found.recordingId]
+      );
+      matched = r.rowCount || 0;
+    } catch (e) { console.error('[goto] ready-ping:', e.message); }
+  }
 
   if (found.recordingId && found.mediaUrl) {
     const upd = await pool.query(
@@ -1069,6 +1085,39 @@ function envelopeShape(node, depth) {
 // attempts at parsing this returned empty claims, so stop guessing at the format
 // and just look at it. Never reveals enough to reuse the credential, and it is
 // short-lived anyway.
+// The recording-access token base64-decodes to "recording-access:<credential>".
+// This returns just the credential half, or null when the token is not in that
+// form. Used to test the reading where the outer blob is a Basic-style wrapper
+// and the real bearer credential is what follows the colon.
+function innerCredential(token) {
+  try {
+    const raw = String(token || '');
+    if (!raw) return null;
+    let decoded = '';
+    try { decoded = Buffer.from(raw, 'base64').toString('utf8'); } catch (e) { return null; }
+    if (!/^[\x20-\x7e]+$/.test(decoded)) return null;
+    const colon = decoded.indexOf(':');
+    if (colon <= 0 || colon > 40) return null;
+    if (!/^[a-zA-Z-]+$/.test(decoded.slice(0, colon))) return null;
+    const rest = decoded.slice(colon + 1);
+    return rest.length > 8 ? rest : null;
+  } catch (e) { return null; }
+}
+
+// Describe the inner credential without ever printing enough of it to reuse.
+function innerCredentialShape(token) {
+  const inner = innerCredential(token);
+  if (!inner) return null;
+  let head = '';
+  try { head = Buffer.from(inner.split('.')[0], 'base64').toString('utf8').slice(0, 60); } catch (e) { head = ''; }
+  return {
+    length: inner.length,
+    dots: (inner.match(/\./g) || []).length,
+    jwtLike: inner.split('.').length === 3,
+    firstSegmentDecodedHead: /[\x20-\x7e]{4,}/.test(head) ? head : '(not printable)'
+  };
+}
+
 function previewToken(token) {
   try {
     const raw = String(token || '');
@@ -1255,11 +1304,23 @@ async function fetchRecordingBytes(recordingId, knownMediaUrl) {
   if (accessToken) {
     const base = API_BASE + '/recording/v1/recordings/' + encodeURIComponent(recordingId);
     const targets = [contentUrl, base + '/media', base + '/download', base + '/audio', base];
+    // The token base64-decodes to exactly "recording-access:<credential>", which
+    // is the shape of an HTTP Basic credential - user "recording-access", the
+    // credential as the password. That makes "Basic <token verbatim>" the single
+    // most likely header, and it had never been tried: every earlier attempt sent
+    // the blob raw or as a Bearer. The inner credential on its own is the other
+    // untried reading, so both go in.
+    const innerCred = innerCredential(accessToken);
     const authStyles = [
       { name: 'raw', headers: { Authorization: accessToken, Accept: 'audio/*' } },
       { name: 'bearer', headers: { Authorization: 'Bearer ' + accessToken, Accept: 'audio/*' } },
+      { name: 'basic', headers: { Authorization: 'Basic ' + accessToken, Accept: 'audio/*' } },
       { name: 'apptoken', headers: { Authorization: bearer, Accept: 'audio/*' } }
     ];
+    if (innerCred) {
+      authStyles.push({ name: 'inner-bearer', headers: { Authorization: 'Bearer ' + innerCred, Accept: 'audio/*' } });
+      authStyles.push({ name: 'inner-raw', headers: { Authorization: innerCred, Accept: 'audio/*' } });
+    }
     for (let t = 0; t < targets.length; t++) {
       for (let a = 0; a < authStyles.length; a++) {
         const r = await httpGetBinary(targets[t], authStyles[a].headers);
@@ -1322,6 +1383,7 @@ async function fetchRecordingBytes(recordingId, knownMediaUrl) {
     (status ? ('Recording status: ' + status + '. ') : '') +
     'Token claims: ' + JSON.stringify(claims.claims) + (claims.urls.length ? (' Token URLs: ' + claims.urls.join(', ')) : '') + '. ' +
     'Token preview: ' + JSON.stringify(previewToken(accessToken)) + '. ' +
+    'Inner credential: ' + JSON.stringify(innerCredentialShape(accessToken)) + '. ' +
     'Tried: ' + (attempts.join(', ') || 'nothing (no url or token found)') + '. ' +
     'Envelope shape: ' + JSON.stringify(envelopeShape(env)) + '. ' +
     'Recording metadata shape: ' + JSON.stringify(metaShape) +
@@ -1366,16 +1428,11 @@ async function archiveCall(callId) {
     console.warn('[goto] re-archiving call ' + row.id + ': stored file was ' + row.r2_mime + ', ' + row.r2_bytes + ' bytes');
   }
   if (!row.recording_id) throw new Error('This call has no recording');
-  if (!row.media_url) {
-    // Before the webhook was switched on there was no way to learn the media
-    // URL, and GoTo does not expose it retrospectively. Say so plainly instead
-    // of failing with an API error the reader cannot act on.
-    const known = await pool.query('SELECT created_at FROM goto_webhook WHERE id = 1');
-    const since = known.rows.length && known.rows[0].created_at ? new Date(known.rows[0].created_at) : null;
-    if (since) {
-      throw new Error('This recording predates the GoTo notification hook (connected ' + since.toISOString().slice(0, 10) + '), so its audio cannot be retrieved. GoTo only provides the media location in the notification sent when a call is recorded.');
-    }
-  }
+  // NOTE: an earlier version refused here when media_url was unset, on the
+  // theory that the URL arrives in the recording notification. It does not - the
+  // notification carries only content.recording_id. That gate disabled playback
+  // for every call, so it is gone; the token exchange is attempted regardless.
+
   if (!r2.configured()) throw new Error('File storage is not configured (R2_* environment variables).');
 
   const got = await fetchRecordingBytes(row.recording_id, row.media_url || null);
@@ -2058,6 +2115,8 @@ module.exports = {
   isAudio: isAudio,
   decodeAccessToken: decodeAccessToken,
   previewToken: previewToken,
+  innerCredential: innerCredential,
+  innerCredentialShape: innerCredentialShape,
   archiveCall: archiveCall,
   playbackUrl: playbackUrl,
   extForMime: extForMime,

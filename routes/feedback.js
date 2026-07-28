@@ -360,10 +360,9 @@ function callRow(r) {
     extension: r.internal_number,
     agent_name: r.agent_name,
     has_recording: r.has_recording,
-    // GoTo only reveals a recording's media location in the notification sent
-    // when the call is recorded, so anything from before the hook was connected
-    // has no retrievable audio. Say so rather than offering a Play that fails.
-    retrievable: !!r.media_url,
+    // Was gated on media_url, which never arrives - the recording notification
+    // carries only an id. Anything with a recording id is worth attempting.
+    retrievable: !!r.recording_id,
     has_transcript: !!r.transcript_id,
     archived: !!r.r2_key,
     is_primary: r.is_primary === true,

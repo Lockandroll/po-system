@@ -16956,12 +16956,6 @@ function fbRecordingsHtml(feedbackId, d) {
     var playBtn;
     if (!c.has_recording) {
       playBtn = '<span style="font-size:11px;color:var(--text-muted-color)">No recording</span>';
-    } else if (!c.retrievable && !c.archived) {
-      // GoTo only discloses a recording's location in the notification sent when
-      // the call is recorded, and never retrospectively. A Play button here would
-      // always fail, so say why instead of inviting the click.
-      playBtn = '<span style="font-size:11px;color:var(--text-muted-color)" ' +
-        'title="GoTo only provides the audio location in the notification sent when a call is recorded. This call predates that being switched on.">Audio not retrievable</span>';
     } else if (!d.canPlay) {
       playBtn = '<span style="font-size:11px;color:var(--text-muted-color)" title="You do not have permission to play recordings">Locked</span>';
     } else {
@@ -16986,9 +16980,7 @@ function fbRecordingsHtml(feedbackId, d) {
     visible.length + ' call' + (visible.length === 1 ? '' : 's') + ' for this number, newest first' +
     (hiddenCount ? ' &middot; ' + hiddenCount + ' hidden' : '') +
     (visible.length > 8 ? ' &middot; a lot of calls here may mean a shared or business number' : '') +
-    (visible.filter(function (c) { return c.has_recording && !c.retrievable && !c.archived; }).length
-      ? '<br>Recordings from before the GoTo notification hook was connected cannot be retrieved. New calls are captured automatically.'
-      : '') +
+
     '</div>';
 
   var unhide = (hiddenCount && canEdit)
