@@ -346,15 +346,62 @@ async function exchangeCode(code, userId) {
 // with accountKey at the response root. The OAuth endpoints on that host were
 // decommissioned in 2025 though, so the admin surface may have moved with them -
 // hence the alternates.
+// Probed against the live account 2026-07-28. Results:
+//   identity/v1/Users/me  -> 200 on BOTH hosts (a SCIM record, with getgo and
+//                            jive schema extensions). Listed first because it
+//                            is the only thing that answers.
+//   admin/rest/v1/me      -> 401 not.authenticated on api.getgo.com. That is the
+//                            Admin Center surface and our token is not valid for
+//                            it. GoTo's Voice Admin guide points here, but that
+//                            guide is out of date.
+//   admin/rest/v1/me      -> 404 on api.goto.com (never moved there)
+//   scim/v2/Me, users/v1  -> 404
 const ME_ENDPOINTS = [
-  'https://api.getgo.com/admin/rest/v1/me',
-  'https://api.goto.com/admin/rest/v1/me',
-  'https://api.goto.com/admin/v1/me',
-  'https://api.getgo.com/identity/v1/Users/me',
   'https://api.goto.com/identity/v1/Users/me',
-  'https://api.goto.com/scim/v2/Me',
-  'https://api.goto.com/users/v1/users/me'
+  'https://api.getgo.com/identity/v1/Users/me',
+  'https://api.getgo.com/admin/rest/v1/me',
+  'https://api.goto.com/admin/v1/me',
+  'https://api.goto.com/admin/rest/v1/me'
 ];
+
+// Walk an arbitrary object looking for an account key. Written as a search
+// rather than a fixed path because GoTo returns at least three different
+// shapes for "who am I", and the SCIM response buries things inside
+// namespaced extension objects such as
+// "urn:scim:schemas:extension:jive:1.0". Guessing the path wastes a deploy
+// each time; searching does not.
+//
+// Only accepts a plausible key: 6+ digits. A user id, a locale or a boolean
+// sitting under a similarly-named field must not be mistaken for one.
+function findAccountKey(node, depth) {
+  depth = depth || 0;
+  if (!node || typeof node !== 'object' || depth > 6) return null;
+
+  const keys = Object.keys(node);
+  // Exact-ish field names first, at this level, before recursing.
+  for (let i = 0; i < keys.length; i++) {
+    const name = keys[i];
+    if (/^(account_?key|account_?id|accountnumber)$/i.test(name)) {
+      const v = node[name];
+      if ((typeof v === 'string' || typeof v === 'number') && /^[0-9]{6,}$/.test(String(v))) {
+        return String(v);
+      }
+    }
+  }
+  for (let i = 0; i < keys.length; i++) {
+    const v = node[keys[i]];
+    if (Array.isArray(v)) {
+      for (let j = 0; j < v.length; j++) {
+        const hit = findAccountKey(v[j], depth + 1);
+        if (hit) return hit;
+      }
+    } else if (v && typeof v === 'object') {
+      const hit = findAccountKey(v, depth + 1);
+      if (hit) return hit;
+    }
+  }
+  return null;
+}
 
 // Probe every candidate and report exactly what came back. This exists because
 // discovery failed silently in production and no amount of reading GoTo's docs
@@ -384,12 +431,13 @@ async function probeMe() {
       if (loc) entry.note = 'redirects to ' + loc;
       let text = '';
       try { text = await resp.text(); } catch (e2) { text = ''; }
-      entry.body = String(text).slice(0, 400);
+      entry.body = String(text).slice(0, 2500);
       // Surface the account key immediately if this response carries one.
       try {
         const j = JSON.parse(text);
-        const k = j.accountKey || j.account_key ||
-          (Array.isArray(j.accounts) && j.accounts.length && (j.accounts[0].key || j.accounts[0].accountKey));
+        const k = findAccountKey(j) ||
+          (Array.isArray(j.accounts) && j.accounts.length &&
+           String(j.accounts[0].key || j.accounts[0].accountKey || '')) || null;
         if (k) entry.accountKey = String(k);
       } catch (e3) {}
     } catch (e) {
@@ -419,9 +467,13 @@ async function discoverAccounts() {
         if (k && !seen[k]) { seen[k] = true; out.push({ key: String(k), name: (a && (a.name || a.accountName)) || null }); }
       });
     }
-    // Shape B: { accountKey: "..." } on the object itself
-    const direct = data.accountKey || data.account_key;
-    if (direct && !seen[direct]) { seen[direct] = true; out.push({ key: String(direct), name: data.name || null }); }
+    // Shape B/C: the key sits somewhere else in the payload, possibly inside a
+    // namespaced SCIM extension. Search rather than guess the path.
+    const direct = findAccountKey(data);
+    if (direct && !seen[direct]) {
+      seen[direct] = true;
+      out.push({ key: String(direct), name: data.displayName || data.name || null });
+    }
 
     if (out.length) return out;
   }
@@ -617,6 +669,7 @@ module.exports = {
   exchangeCode: exchangeCode,
   discoverAccounts: discoverAccounts,
   probeMe: probeMe,
+  findAccountKey: findAccountKey,
   resolveAccountKey: resolveAccountKey,
   setAccountKey: setAccountKey,
   refresh: refresh,
