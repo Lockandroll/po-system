@@ -713,28 +713,43 @@ function envelopeShape(node, depth) {
 // the best clue to where it is meant to be spent, since GoTo documents none of
 // this. Returns { keys, urls, claims } with long values elided.
 function decodeAccessToken(token) {
-  const out = { keys: [], urls: [], claims: {}, error: null };
+  const out = { keys: [], urls: [], claims: {}, error: null, layers: 0 };
   try {
-    const raw = String(token || '');
-    const body = raw.indexOf(':') !== -1 ? raw.slice(raw.indexOf(':') + 1) : raw;
-    // It may be a JWT (three dot-separated parts) or a single base64 blob.
-    const parts = body.split('.');
-    const candidates = parts.length >= 2 ? [parts[1], parts[0], body] : [body];
-    for (let i = 0; i < candidates.length; i++) {
-      let txt = '';
-      try { txt = Buffer.from(candidates[i], 'base64').toString('utf8'); } catch (e) { continue; }
-      let j = null;
-      try { j = JSON.parse(txt); } catch (e) { continue; }
-      if (!j || typeof j !== 'object') continue;
-      out.keys = Object.keys(j);
-      Object.keys(j).forEach(function (k) {
-        const v = j[k];
-        if (typeof v === 'string' && /^https?:\/\//.test(v)) out.urls.push(v);
-        out.claims[k] = (typeof v === 'string' && v.length > 80) ? ('string<len=' + v.length + '>') : v;
-      });
-      return out;
+    let cur = String(token || '');
+    // The token is DOUBLE encoded: the JSON field holds base64 of
+    // "recording-access:<base64 json>". The first attempt at this only peeled
+    // one layer, so the claims came back empty. Peel until JSON appears.
+    for (let layer = 0; layer < 4; layer++) {
+      out.layers = layer;
+      // Strip a "scheme:" prefix if this layer has one.
+      const colon = cur.indexOf(':');
+      const body = (colon > 0 && colon < 40 && /^[a-zA-Z-]+$/.test(cur.slice(0, colon))) ? cur.slice(colon + 1) : cur;
+
+      // A JWT-shaped value: decode the payload segment.
+      const parts = body.split('.');
+      const candidates = parts.length >= 2 ? [parts[1], body] : [body];
+
+      for (let k = 0; k < candidates.length; k++) {
+        let txt = '';
+        try { txt = Buffer.from(candidates[k], 'base64').toString('utf8'); } catch (e) { continue; }
+        if (!txt) continue;
+        let parsed = null;
+        try { parsed = JSON.parse(txt); } catch (e) { parsed = null; }
+        if (parsed && typeof parsed === 'object') {
+          out.keys = Object.keys(parsed);
+          Object.keys(parsed).forEach(function (kk) {
+            const v = parsed[kk];
+            if (typeof v === 'string' && /^https?:\/\//.test(v)) out.urls.push(v);
+            out.claims[kk] = (typeof v === 'string' && v.length > 80) ? ('string<len=' + v.length + '>') : v;
+          });
+          return out;
+        }
+        // Not JSON yet, but if it decoded to something printable, go round again.
+        if (k === 0 && /[\x20-\x7e]/.test(txt.slice(0, 20))) { cur = txt; break; }
+      }
+      if (cur === token && layer > 0) break;
     }
-    out.error = 'could not decode';
+    out.error = 'could not decode to JSON';
   } catch (e) { out.error = e.message; }
   return out;
 }
@@ -848,6 +863,39 @@ async function fetchRecordingBytes(recordingId) {
 
   // Nothing worked. Report the shape so the next step is informed, not guessed.
   const claims = decodeAccessToken(accessToken);
+
+  // /recordings/{id} answered 200 with JSON and we never inspected it. It is the
+  // most likely place a media URL or a hint about the token's destination lives.
+  let metaShape = null;
+  let metaUrls = [];
+  try {
+    const metaResp = await httpGetBinary(API_BASE + '/recording/v1/recordings/' + encodeURIComponent(recordingId), { Authorization: bearer });
+    if (metaResp.ok) {
+      const metaJson = JSON.parse(metaResp.buffer.toString('utf8'));
+      metaShape = envelopeShape(metaJson);
+      (function walk(n, d) {
+        if (!n || typeof n !== 'object' || d > 5) return;
+        Object.keys(n).forEach(function (k) {
+          const v = n[k];
+          if (looksLikeUrl(v)) metaUrls.push(k + '=' + v);
+          else if (v && typeof v === 'object') walk(v, d + 1);
+        });
+      })(metaJson, 0);
+      // If it does carry a URL, use it rather than reporting failure.
+      const direct = findMediaUrl(metaJson);
+      if (direct) {
+        let r = await httpGetBinary(direct, {});
+        if (!(r.ok && isAudio(r.mime, r.buffer)) && accessToken) {
+          r = await httpGetBinary(direct, { Authorization: accessToken });
+        }
+        if (!(r.ok && isAudio(r.mime, r.buffer))) {
+          r = await httpGetBinary(direct, { Authorization: bearer });
+        }
+        attempts.push('meta.url:' + r.status + ':' + (r.mime || '?'));
+        if (r.ok && isAudio(r.mime, r.buffer)) return { buffer: r.buffer, mime: r.mime || 'audio/wav' };
+      }
+    }
+  } catch (e) { metaShape = 'error: ' + e.message; }
   // status is an enum (COMPLETE / PENDING / ...), not sensitive, and if it is not
   // COMPLETE then no endpoint was ever going to return audio.
   const status = (env && typeof env.status === 'string') ? env.status : null;
@@ -856,7 +904,9 @@ async function fetchRecordingBytes(recordingId) {
     (status ? ('Recording status: ' + status + '. ') : '') +
     'Token claims: ' + JSON.stringify(claims.claims) + (claims.urls.length ? (' Token URLs: ' + claims.urls.join(', ')) : '') + '. ' +
     'Tried: ' + (attempts.join(', ') || 'nothing (no url or token found)') + '. ' +
-    'Envelope shape: ' + JSON.stringify(envelopeShape(env))
+    'Envelope shape: ' + JSON.stringify(envelopeShape(env)) + '. ' +
+    'Recording metadata shape: ' + JSON.stringify(metaShape) +
+    (metaUrls.length ? (' Metadata URLs: ' + metaUrls.join(' | ')) : ' (no URLs in metadata)')
   );
   err.envelope = envelopeShape(env);
   err.attempts = attempts;
