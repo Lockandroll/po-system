@@ -638,23 +638,78 @@ async function gotoFetch(path, opts) {
 
 
 // ---- Recording audio -------------------------------------------------------
-// GET /recording/v1/recordings/{id}/content. GoTo does not document whether this
-// returns bytes directly or redirects to a signed URL, so handle both. When it
-// redirects, the follow-up request must NOT carry our bearer token - a signed
-// URL already carries its own auth and some object stores reject a second one.
-async function fetchRecordingBytes(recordingId) {
-  if (!recordingId) throw new Error('No recording id');
-  const url = API_BASE + '/recording/v1/recordings/' + encodeURIComponent(recordingId) + '/content';
-  let resp = await fetch(url, {
-    headers: { Authorization: 'Bearer ' + (await getAccessToken()) },
-    redirect: 'manual'
-  });
+// GET /recording/v1/recordings/{id}/content does NOT return audio. It returns a
+// JSON envelope carrying a short-lived "recording-access" token:
+//
+//   {"token":{"token":"recording-access:<base64>", ...}, ...}
+//
+// Confirmed against the live account 2026-07-28; none of this is documented.
+// So fetching a recording is two steps, and the second step has to be inferred:
+// either the envelope carries a media URL, or the same endpoint returns audio
+// once presented with the recording-access token.
+//
+// Anything unrecognised throws with the envelope's SHAPE attached (token values
+// redacted), so a wrong guess reports what GoTo actually sent rather than
+// failing blind.
 
-  if (resp.status === 401) {
-    await refresh();
-    resp = await fetch(url, { headers: { Authorization: 'Bearer ' + (await getAccessToken()) }, redirect: 'manual' });
+function looksLikeUrl(v) {
+  return typeof v === 'string' && /^https?:\/\//.test(v);
+}
+
+// Find a media URL anywhere in the envelope, preferring obviously-named fields.
+function findMediaUrl(node, depth) {
+  depth = depth || 0;
+  if (!node || typeof node !== 'object' || depth > 6) return null;
+  const preferred = ['mediaUrl', 'contentUrl', 'downloadUrl', 'url', 'href', 'location', 'link'];
+  for (let i = 0; i < preferred.length; i++) {
+    if (looksLikeUrl(node[preferred[i]])) return node[preferred[i]];
   }
+  const keys = Object.keys(node);
+  for (let i = 0; i < keys.length; i++) {
+    const v = node[keys[i]];
+    if (looksLikeUrl(v)) return v;
+    if (Array.isArray(v)) {
+      for (let j = 0; j < v.length; j++) { const hit = findMediaUrl(v[j], depth + 1); if (hit) return hit; }
+    } else if (v && typeof v === 'object') {
+      const hit = findMediaUrl(v, depth + 1);
+      if (hit) return hit;
+    }
+  }
+  return null;
+}
 
+// Pull the access token out, wherever GoTo has put it.
+function findAccessToken(node, depth) {
+  depth = depth || 0;
+  if (!node || typeof node !== 'object' || depth > 6) return null;
+  if (typeof node.token === 'string') return node.token;
+  const keys = Object.keys(node);
+  for (let i = 0; i < keys.length; i++) {
+    const v = node[keys[i]];
+    if (typeof v === 'string' && /^recording-access:/.test(v)) return v;
+    if (v && typeof v === 'object') { const hit = findAccessToken(v, depth + 1); if (hit) return hit; }
+  }
+  return null;
+}
+
+// The envelope's structure with every long/secret string replaced. Safe to log
+// and safe to show an admin.
+function envelopeShape(node, depth) {
+  depth = depth || 0;
+  if (node === null) return 'null';
+  if (typeof node !== 'object') {
+    if (typeof node === 'string') return looksLikeUrl(node) ? ('url<' + node.slice(0, 60) + '...>') : ('string<len=' + node.length + '>');
+    return typeof node + ':' + node;
+  }
+  if (depth > 5) return 'object';
+  if (Array.isArray(node)) return node.length ? [envelopeShape(node[0], depth + 1)] : [];
+  const out = {};
+  Object.keys(node).forEach(function (k) { out[k] = envelopeShape(node[k], depth + 1); });
+  return out;
+}
+
+async function httpGetBinary(url, headers) {
+  let resp = await fetch(url, { headers: headers || {}, redirect: 'manual' });
   let hops = 0;
   while (resp.status >= 300 && resp.status < 400 && hops < 3) {
     const loc = resp.headers.get('location');
@@ -662,17 +717,92 @@ async function fetchRecordingBytes(recordingId) {
     resp = await fetch(loc);
     hops++;
   }
+  const mime = (resp.headers.get('content-type') || '').split(';')[0].trim();
+  const buf = Buffer.from(await resp.arrayBuffer());
+  return { ok: resp.ok, status: resp.status, mime: mime, buffer: buf };
+}
 
-  if (!resp.ok) {
-    let detail = '';
-    try { detail = (await resp.text()).slice(0, 200); } catch (e) {}
-    throw new Error('GoTo recording fetch failed (' + resp.status + ')' + (detail ? ': ' + detail : ''));
+function isAudio(mime, buf) {
+  if (mime && mime.indexOf('audio') === 0) return true;
+  if (mime && mime.indexOf('octet-stream') !== -1 && buf && buf.length > 512) return true;
+  // Sniff the container as a last resort: RIFF/WAVE, ID3, MPEG frame, ftyp.
+  if (!buf || buf.length < 12) return false;
+  const head = buf.slice(0, 12).toString('binary');
+  if (head.indexOf('RIFF') === 0) return true;
+  if (head.indexOf('ID3') === 0) return true;
+  if (head.indexOf('OggS') === 0) return true;
+  if (head.indexOf('ftyp') === 4) return true;
+  if ((buf[0] === 0xff) && ((buf[1] & 0xe0) === 0xe0)) return true;
+  return false;
+}
+
+async function fetchRecordingBytes(recordingId) {
+  if (!recordingId) throw new Error('No recording id');
+  const contentUrl = API_BASE + '/recording/v1/recordings/' + encodeURIComponent(recordingId) + '/content';
+  const bearer = 'Bearer ' + (await getAccessToken());
+
+  // --- step 1: ask for the recording ---
+  let first = await httpGetBinary(contentUrl, { Authorization: bearer });
+  if (first.status === 401) {
+    await refresh();
+    first = await httpGetBinary(contentUrl, { Authorization: 'Bearer ' + (await getAccessToken()) });
+  }
+  if (!first.ok) {
+    throw new Error('GoTo recording fetch failed (' + first.status + '): ' + first.buffer.slice(0, 200).toString('utf8'));
+  }
+  // Some accounts may return audio directly; take it if so.
+  if (isAudio(first.mime, first.buffer)) {
+    if (!first.buffer.length) throw new Error('GoTo returned an empty recording');
+    return { buffer: first.buffer, mime: first.mime || 'audio/wav' };
   }
 
-  const mime = (resp.headers.get('content-type') || 'audio/wav').split(';')[0].trim();
-  const buf = Buffer.from(await resp.arrayBuffer());
-  if (!buf.length) throw new Error('GoTo returned an empty recording');
-  return { buffer: buf, mime: mime };
+  // --- step 2: it is an envelope, not audio ---
+  let env = null;
+  try { env = JSON.parse(first.buffer.toString('utf8')); } catch (e) { env = null; }
+  if (!env) {
+    throw new Error('GoTo returned ' + (first.mime || 'an unknown type') + ' instead of audio: ' +
+      first.buffer.slice(0, 200).toString('utf8'));
+  }
+
+  const mediaUrl = findMediaUrl(env);
+  const accessToken = findAccessToken(env);
+  const attempts = [];
+
+  // 2a: a media URL in the envelope, unauthenticated (it is usually pre-signed)
+  if (mediaUrl) {
+    let r = await httpGetBinary(mediaUrl, {});
+    attempts.push('mediaUrl:' + r.status + ':' + (r.mime || '?'));
+    if (r.ok && isAudio(r.mime, r.buffer)) return { buffer: r.buffer, mime: r.mime || 'audio/wav' };
+    // 2b: same URL, presenting the recording-access token
+    if (accessToken) {
+      r = await httpGetBinary(mediaUrl, { Authorization: 'Bearer ' + accessToken });
+      attempts.push('mediaUrl+token:' + r.status + ':' + (r.mime || '?'));
+      if (r.ok && isAudio(r.mime, r.buffer)) return { buffer: r.buffer, mime: r.mime || 'audio/wav' };
+    }
+  }
+
+  // 2c: the original endpoint, presenting the recording-access token
+  if (accessToken) {
+    let r = await httpGetBinary(contentUrl, { Authorization: 'Bearer ' + accessToken, Accept: 'audio/*' });
+    attempts.push('content+token:' + r.status + ':' + (r.mime || '?'));
+    if (r.ok && isAudio(r.mime, r.buffer)) return { buffer: r.buffer, mime: r.mime || 'audio/wav' };
+
+    // 2d: as a query parameter, which some GoTo endpoints prefer
+    const sep = contentUrl.indexOf('?') === -1 ? '?' : '&';
+    r = await httpGetBinary(contentUrl + sep + 'token=' + encodeURIComponent(accessToken), { Accept: 'audio/*' });
+    attempts.push('content?token:' + r.status + ':' + (r.mime || '?'));
+    if (r.ok && isAudio(r.mime, r.buffer)) return { buffer: r.buffer, mime: r.mime || 'audio/wav' };
+  }
+
+  // Nothing worked. Report the shape so the next step is informed, not guessed.
+  const err = new Error(
+    'GoTo returned a recording-access envelope rather than audio, and none of the follow-up requests produced a media file. ' +
+    'Tried: ' + (attempts.join(', ') || 'nothing (no url or token found)') + '. ' +
+    'Envelope shape: ' + JSON.stringify(envelopeShape(env))
+  );
+  err.envelope = envelopeShape(env);
+  err.attempts = attempts;
+  throw err;
 }
 
 function extForMime(mime) {
@@ -1374,6 +1504,10 @@ module.exports = {
   backfillState: backfillState,
   callsForNumber: callsForNumber,
   fetchRecordingBytes: fetchRecordingBytes,
+  envelopeShape: envelopeShape,
+  findMediaUrl: findMediaUrl,
+  findAccessToken: findAccessToken,
+  isAudio: isAudio,
   archiveCall: archiveCall,
   playbackUrl: playbackUrl,
   extForMime: extForMime,
