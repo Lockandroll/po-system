@@ -2760,7 +2760,7 @@ async function renderRoles(el) {
     { group:'Parts Catalog', perms:[ {k:'manage_parts',l:'Manage parts catalog (add / edit / import). Everyone can still search parts.'} ] },
     { group:'GEICO', perms:[ {k:'manage_geico',l:'Manage GEICO surveys'} ] },
     { group:'Reviews', perms:[ {k:'assign_reviews',l:'Assign Google reviews to technicians'} ] },
-    { group:'Customer Feedback', gate:'view_feedback', perms:[ {k:'view_feedback',l:'View / access module'}, {k:'manage_feedback',l:'Manage feedback (resolve, reassign, add notes)'} ] },
+    { group:'Customer Feedback', gate:'view_feedback', perms:[ {k:'view_feedback',l:'View / access module'}, {k:'manage_feedback',l:'Manage feedback (resolve, reassign, add notes)'}, {k:'play_call_recordings',l:'Play customer call recordings (every play is logged)'} ] },
     { group:'Radio (PTT)', gate:'view_ptt', perms:[ {k:'view_ptt',l:'View / access Radio (own city channels + All Hands)'}, {k:'ptt_all_channels',l:'Join every channel (dispatch function)'}, {k:'ptt_direct',l:'Direct person-to-person talk'} ] },
     { group:'Onboarding', perms:[ {k:'manage_onboarding',l:'Manage onboarding paths, new-hire progress &amp; employee files'} ] },
     { group:'Offboarding', gate:'view_offboarding', perms:[ {k:'view_offboarding',l:'View / access module (people in your team)'}, {k:'manage_offboarding',l:'Manage the offboarding lifecycle, steps &amp; templates'}, {k:'send_exit_form',l:'Send exit interview forms'}, {k:'view_exit_interviews',l:'View exit interview responses &amp; insights'} ] },
