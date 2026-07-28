@@ -884,14 +884,20 @@ async function fetchSummaryPage(startIso, endIso, marker) {
   };
 }
 
-// Page a time window into goto_calls.
+// GoTo rejects any report-summaries request spanning more than 31 days:
+//   {"constraint":"InvalidRange","field":"maximum supported range is 31 days"}
+// Undocumented, and only discovered by attempting a 90-day backfill. Anything
+// longer has to be split. 30 rather than 31 to stay clear of boundary rounding.
+const MAX_WINDOW_DAYS = 30;
+
+// Page ONE window (must be <= 31 days) into goto_calls.
 //   opts: { startIso, endIso, maxPages, onPage }
 // maxPages is a hard stop so a bad marker cannot spin forever.
-async function syncWindow(opts) {
+async function syncOneWindow(opts) {
   opts = opts || {};
   const endIso = opts.endIso || new Date().toISOString();
   const startIso = opts.startIso;
-  if (!startIso) throw new Error('syncWindow needs a startIso');
+  if (!startIso) throw new Error('syncOneWindow needs a startIso');
   const maxPages = Math.min(Math.max(parseInt(opts.maxPages, 10) || 200, 1), 2000);
 
   const stats = { pages: 0, seen: 0, indexed: 0, skipped: 0, inserted: 0, updated: 0, truncated: false };
@@ -924,6 +930,42 @@ async function syncWindow(opts) {
     await sleep(120);
   }
   return stats;
+}
+
+// Page an arbitrary range, splitting it into GoTo-sized chunks. Walks newest
+// first so a long backfill makes the most useful history available soonest, and
+// so an interrupted run has still covered the recent past.
+async function syncWindow(opts) {
+  opts = opts || {};
+  const endIso = opts.endIso || new Date().toISOString();
+  if (!opts.startIso) throw new Error('syncWindow needs a startIso');
+  const start = Date.parse(opts.startIso);
+  const end = Date.parse(endIso);
+  if (isNaN(start) || isNaN(end) || end <= start) throw new Error('syncWindow needs a valid range');
+
+  const total = { pages: 0, seen: 0, indexed: 0, skipped: 0, inserted: 0, updated: 0, truncated: false, windows: 0 };
+  const chunkMs = MAX_WINDOW_DAYS * 86400000;
+  let chunkEnd = end;
+
+  while (chunkEnd > start) {
+    const chunkStart = Math.max(start, chunkEnd - chunkMs);
+    const st = await syncOneWindow({
+      startIso: new Date(chunkStart).toISOString(),
+      endIso: new Date(chunkEnd).toISOString(),
+      maxPages: opts.maxPages,
+      onPage: opts.onPage
+    });
+    total.pages += st.pages;
+    total.seen += st.seen;
+    total.indexed += st.indexed;
+    total.skipped += st.skipped;
+    total.inserted += st.inserted;
+    total.updated += st.updated;
+    if (st.truncated) total.truncated = true;
+    total.windows++;
+    chunkEnd = chunkStart;
+  }
+  return total;
 }
 
 // Convenience: index the last N days.
@@ -1052,7 +1094,8 @@ async function probeCallSearch(opts) {
     return result;
   }
 
-  const days = Math.min(Math.max(parseInt(opts.days, 10) || 7, 1), 90);
+  // Same 31-day ceiling as the indexer; a wider probe just gets a 400.
+  const days = Math.min(Math.max(parseInt(opts.days, 10) || 7, 1), MAX_WINDOW_DAYS);
   const end = new Date();
   const start = new Date(end.getTime() - days * 86400000);
   const baseParams = new URLSearchParams();
@@ -1215,6 +1258,8 @@ module.exports = {
   upsertCalls: upsertCalls,
   fetchSummaryPage: fetchSummaryPage,
   syncWindow: syncWindow,
+  syncOneWindow: syncOneWindow,
+  MAX_WINDOW_DAYS: MAX_WINDOW_DAYS,
   syncDays: syncDays,
   callsForNumber: callsForNumber,
   fetchRecordingBytes: fetchRecordingBytes,
