@@ -156,7 +156,7 @@ var API_CACHE_SWR = 6000;  // if the cached copy is older than this, refresh in 
 function _apiNoCache(path) {
   // Endpoints that must always be live (session/auth, AI, exports, time clock, notifications).
   return /^\/auth(\/|$)/.test(path) || /^\/ai(\/|$)/.test(path) || /export/.test(path) ||
-         /^\/goto(\/|$)/.test(path) ||
+         /^\/goto(\/|$)/.test(path) || /\/recordings(\/|$|\?)/.test(path) ||
          /setup-needed/.test(path) || /verify/.test(path) || /usage/.test(path) ||
          /token/.test(path) || /^\/timeclock/.test(path) || /notif/.test(path) ||
          /\/id-image/.test(path) || /\/dispute-packet/.test(path);
@@ -4477,14 +4477,22 @@ async function renderFeedbackDetail(el, id){
   var viewToggle = viewCount ? '<label style="font-size:11px;color:var(--text-muted-color);display:flex;align-items:center;gap:5px;cursor:pointer"><input type="checkbox" checked onchange="feedbackToggleViews(this.checked)" /> Views (' + viewCount + ')</label>' : '';
   var actCard = '<div style="' + cardS + '"><div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px"><div style="font-size:12px;color:var(--text-muted-color)">Activity</div>' + viewToggle + '</div>' + actItems + noteBox + '</div>';
 
+  // Call recordings load after the page paints. The complaint itself must not
+  // wait on the call index.
+  var recCard = '<div style="' + cardS + '">' +
+    '<div style="font-size:12px;color:var(--text-muted-color);margin-bottom:8px">Call recordings</div>' +
+    '<div id="fb-recordings"><div style="font-size:13px;color:var(--text-muted-color)">Loading&hellip;</div></div>' +
+    '</div>';
+
   el.innerHTML =
     '<div style="margin-bottom:12px"><button class="btn btn-primary btn-sm" onclick="navigate(\'feedback\')">&larr; Back to feedback</button></div>' +
     '<div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:14px"><div class="page-title" style="margin:0">' + escHtml(f.customer_name || 'Unknown') + '</div>' + catChip + sevChip + reviewFlag + '</div>' +
     '<div style="display:flex;gap:16px;flex-wrap:wrap;align-items:flex-start">' +
-      '<div style="flex:2;min-width:340px">' + custCard + incCard + attCard + handleCard + '</div>' +
+      '<div style="flex:2;min-width:340px">' + custCard + incCard + attCard + recCard + handleCard + '</div>' +
       '<div style="flex:1;min-width:260px">' + actCard + '</div>' +
     '</div>';
   fbTechChanged();
+  fbLoadRecordings(f.id);
 }
 
 function _fbCollect(){
@@ -16743,4 +16751,136 @@ async function gotoRunDiagnose() {
   } catch (e) {
     out.textContent = 'Diagnostics failed: ' + e.message;
   }
+}
+
+
+// ===== Call recordings on a complaint (GoTo Connect) =====
+// Loaded after the complaint renders rather than blocking it, so a slow index
+// query never delays the page a manager actually came to read.
+
+function fbRecFmtDur(sec) {
+  var n = parseInt(sec, 10);
+  if (!n || n < 0) return '';
+  var m = Math.floor(n / 60), s = n % 60;
+  return m + 'm ' + (s < 10 ? '0' : '') + s + 's';
+}
+
+function fbRecWhen(iso) {
+  if (!iso) return '&mdash;';
+  try { return escHtml(formatDateTime(iso)); } catch (e) { return escHtml(String(iso)); }
+}
+
+async function fbLoadRecordings(feedbackId) {
+  var host = document.getElementById('fb-recordings');
+  if (!host) return;
+  var d;
+  try { d = await api('GET', '/feedback/' + feedbackId + '/recordings'); }
+  catch (e) {
+    host.innerHTML = '<div style="font-size:13px;color:var(--text-muted-color)">Could not load call recordings: ' + escHtml(e.message) + '</div>';
+    return;
+  }
+  host.innerHTML = fbRecordingsHtml(feedbackId, d);
+}
+
+function fbRecordingsHtml(feedbackId, d) {
+  var calls = (d && d.calls) || [];
+  var canEdit = can('manage_feedback');
+
+  if (d && d.reason === 'no_phone') {
+    return '<div style="font-size:13px;color:var(--text-muted-color)">No phone number on this complaint, so there is nothing to match calls against.</div>';
+  }
+  if (!calls.length) {
+    // Distinguish "we looked and there are none" from "the index is empty", because
+    // those need completely different actions and look identical otherwise.
+    if (!d.indexed) {
+      return '<div style="font-size:13px;color:var(--text-muted-color)">No calls have been indexed yet. An admin can run a backfill in Settings &rsaquo; Integrations.</div>';
+    }
+    return '<div style="font-size:13px;color:var(--text-muted-color)">No calls found for this number in the last 90 days.</div>';
+  }
+
+  var visible = calls.filter(function (c) { return !c.hidden; });
+  var hiddenCount = calls.length - visible.length;
+
+  var rows = visible.map(function (c) {
+    var dirDot = c.direction === 'OUTBOUND' ? '&#8599;' : '&#8600;';
+    var dirLabel = c.direction === 'OUTBOUND' ? 'Outbound' : 'Inbound';
+    var star = c.is_primary
+      ? '<span title="This is the complaint call" style="color:var(--primary)">&#9733;</span>'
+      : (canEdit ? '<span title="Mark as the complaint call" style="cursor:pointer;color:var(--text-muted-color)" onclick="fbRecSetPrimary(' + feedbackId + ',' + c.call_id + ')">&#9734;</span>' : '');
+
+    var playBtn;
+    if (!c.has_recording) {
+      playBtn = '<span style="font-size:11px;color:var(--text-muted-color)">No recording</span>';
+    } else if (!d.canPlay) {
+      playBtn = '<span style="font-size:11px;color:var(--text-muted-color)" title="You do not have permission to play recordings">Locked</span>';
+    } else {
+      playBtn = '<button class="btn btn-secondary btn-sm" onclick="fbRecPlay(' + feedbackId + ',' + c.call_id + ')">&#9654; Play</button>';
+    }
+
+    return '<div style="padding:9px 0;border-bottom:1px solid var(--border)">' +
+      '<div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">' +
+        '<span style="font-size:13px;min-width:132px">' + dirDot + ' ' + dirLabel + '</span>' +
+        '<span style="font-size:13px;flex:1;min-width:150px">' + fbRecWhen(c.started_at) + '</span>' +
+        '<span style="font-size:12px;color:var(--text-muted-color);min-width:60px">' + escHtml(fbRecFmtDur(c.duration_sec)) + '</span>' +
+        '<span style="font-size:12px;color:var(--text-muted-color);min-width:90px">' + escHtml(c.agent_name || '') + '</span>' +
+        playBtn + star +
+        (canEdit ? '<span style="cursor:pointer;font-size:11px;color:var(--text-muted-color)" title="Not related to this complaint" onclick="fbRecHide(' + feedbackId + ',' + c.call_id + ')">Hide</span>' : '') +
+      '</div>' +
+      (c.is_primary ? '<div style="font-size:11px;color:var(--primary);margin-top:3px">Marked as the complaint call</div>' : '') +
+      '<div id="fb-rec-player-' + c.call_id + '"></div>' +
+      '</div>';
+  }).join('');
+
+  var foot = '<div style="font-size:11px;color:var(--text-muted-color);margin-top:8px">' +
+    visible.length + ' call' + (visible.length === 1 ? '' : 's') + ' for this number, newest first' +
+    (hiddenCount ? ' &middot; ' + hiddenCount + ' hidden' : '') +
+    (visible.length > 8 ? ' &middot; a lot of calls here may mean a shared or business number' : '') +
+    '</div>';
+
+  var unhide = (hiddenCount && canEdit)
+    ? '<div style="margin-top:6px"><span style="font-size:11px;color:var(--primary);cursor:pointer" onclick="fbRecUnhideAll(' + feedbackId + ')">Show hidden</span></div>'
+    : '';
+
+  return rows + foot + unhide;
+}
+
+// Play in place. The URL is minted per click and lives 120 seconds, so it is
+// fetched at click time and never rendered into the page ahead of time.
+async function fbRecPlay(feedbackId, callId) {
+  var slot = document.getElementById('fb-rec-player-' + callId);
+  if (!slot) return;
+  if (slot.getAttribute('data-open') === '1') { slot.innerHTML = ''; slot.removeAttribute('data-open'); return; }
+  slot.innerHTML = '<div style="font-size:12px;color:var(--text-muted-color);padding:6px 0">Loading audio&hellip;</div>';
+  try {
+    var r = await api('GET', '/feedback/' + feedbackId + '/recordings/' + callId + '/play');
+    slot.setAttribute('data-open', '1');
+    slot.innerHTML = '<audio controls autoplay preload="none" style="width:100%;margin-top:8px" src="' + escHtml(r.url) + '"></audio>';
+  } catch (e) {
+    slot.innerHTML = '<div style="font-size:12px;color:#e24b4a;padding:6px 0">' + escHtml(e.message) + '</div>';
+  }
+}
+
+async function fbRecSetPrimary(feedbackId, callId) {
+  try {
+    await api('PATCH', '/feedback/' + feedbackId + '/recordings/' + callId, { is_primary: true });
+    await fbLoadRecordings(feedbackId);
+  } catch (e) { showToast(e.message, 'error'); }
+}
+
+async function fbRecHide(feedbackId, callId) {
+  try {
+    await api('PATCH', '/feedback/' + feedbackId + '/recordings/' + callId, { hidden: true });
+    await fbLoadRecordings(feedbackId);
+  } catch (e) { showToast(e.message, 'error'); }
+}
+
+async function fbRecUnhideAll(feedbackId) {
+  try {
+    var d = await api('GET', '/feedback/' + feedbackId + '/recordings');
+    var hidden = (d.calls || []).filter(function (c) { return c.hidden; });
+    for (var i = 0; i < hidden.length; i++) {
+      await api('PATCH', '/feedback/' + feedbackId + '/recordings/' + hidden[i].call_id, { hidden: false });
+    }
+    await fbLoadRecordings(feedbackId);
+  } catch (e) { showToast(e.message, 'error'); }
 }

@@ -3,6 +3,8 @@ const { pool } = require('../db');
 const { requireAuth, requirePermission } = require('../middleware/auth');
 const { logActivity } = require('../utils/feedbackIntake');
 const r2 = require('../utils/r2');
+const goto = require('../utils/goto');
+const permissions = require('../utils/permissions');
 const crypto = require('crypto');
 
 const router = express.Router();
@@ -338,6 +340,159 @@ router.delete('/:id/attachments/:attId', requireAuth, requirePermission('manage_
     await logActivity(id, { id: req.user.id, name: req.user.name }, 'event', 'removed an attachment: ' + ar.rows[0].file_name + '.', null);
     res.json({ success: true });
   } catch (e) { console.error('feedback att delete:', e.message); res.status(500).json({ error: 'Failed to delete attachment' }); }
+});
+
+
+// ---- Call recordings (GoTo Connect) ----------------------------------------
+// The list is DERIVED from the call index by phone number rather than stored as
+// explicit links, so it is always current and needs no "refresh" step. The
+// feedback_call_recordings table holds only the human overrides on top: which
+// call is THE complaint call, and which are irrelevant.
+
+function callRow(r) {
+  return {
+    call_id: r.id,
+    direction: r.direction,
+    started_at: r.call_started_at,
+    ended_at: r.call_ended_at,
+    duration_sec: r.duration_sec,
+    number: r.external_number,
+    extension: r.internal_number,
+    agent_name: r.agent_name,
+    has_recording: r.has_recording,
+    has_transcript: !!r.transcript_id,
+    archived: !!r.r2_key,
+    is_primary: r.is_primary === true,
+    hidden: r.hidden === true,
+    note: r.note || null
+  };
+}
+
+// GET /api/feedback/:id/recordings
+// Metadata only. No URLs are issued here - playback is a separate, permissioned
+// call, so merely opening a complaint never mints a link to customer audio.
+router.get('/:id/recordings', requireAuth, requirePermission('view_feedback'), async function (req, res) {
+  try {
+    const id = parseInt(req.params.id, 10);
+    const fb = await pool.query('SELECT id, city_code, customer_phone FROM customer_feedback WHERE id = $1', [id]);
+    if (!fb.rows.length) return res.status(404).json({ error: 'Not found' });
+    const scope = await cityScope(req.user);
+    if (scope !== null && scope.indexOf(fb.rows[0].city_code) === -1) {
+      return res.status(403).json({ error: 'Not in your cities' });
+    }
+    const digits = goto.normalizeDigits(fb.rows[0].customer_phone);
+    if (!digits) {
+      return res.json({ calls: [], reason: 'no_phone', canPlay: false, indexed: 0 });
+    }
+    const rows = await pool.query(
+      'SELECT c.*, l.is_primary, l.hidden, l.note FROM goto_calls c' +
+      ' LEFT JOIN feedback_call_recordings l ON l.call_id = c.id AND l.feedback_id = $1' +
+      ' WHERE c.external_digits = $2 ORDER BY c.call_started_at DESC NULLS LAST LIMIT 200',
+      [id, digits]
+    );
+    let canPlay = false;
+    try { canPlay = await permissions.hasPermission(req.user.role, 'play_call_recordings'); } catch (e) { canPlay = false; }
+    if (!canPlay && req.user.id) {
+      const ur = req._userRow;
+      if (ur && Array.isArray(ur.extra_perms) && ur.extra_perms.indexOf('play_call_recordings') !== -1) canPlay = true;
+    }
+    const total = await pool.query('SELECT COUNT(*)::int AS n FROM goto_calls');
+    res.json({
+      calls: rows.rows.map(callRow),
+      canPlay: canPlay,
+      indexed: total.rows[0].n,
+      storageReady: r2.configured()
+    });
+  } catch (e) {
+    console.error('GET /feedback/:id/recordings:', e.message);
+    res.status(500).json({ error: 'Failed to load call recordings' });
+  }
+});
+
+// GET /api/feedback/:id/recordings/:callId/play
+// Archives the audio into R2 on first use, then issues a 120-second URL. Every
+// issue is written to the activity timeline, so there is a record of who
+// listened to which customer call and when.
+router.get('/:id/recordings/:callId/play', requireAuth, requirePermission('play_call_recordings'), async function (req, res) {
+  try {
+    const id = parseInt(req.params.id, 10);
+    const callId = parseInt(req.params.callId, 10);
+    const fb = await pool.query('SELECT id, city_code, customer_phone FROM customer_feedback WHERE id = $1', [id]);
+    if (!fb.rows.length) return res.status(404).json({ error: 'Not found' });
+    const scope = await cityScope(req.user);
+    if (scope !== null && scope.indexOf(fb.rows[0].city_code) === -1) {
+      return res.status(403).json({ error: 'Not in your cities' });
+    }
+    // The call must actually belong to this complaint's phone number. Without
+    // this check the endpoint would play ANY indexed recording to anyone who can
+    // open ANY complaint.
+    const digits = goto.normalizeDigits(fb.rows[0].customer_phone);
+    const call = await pool.query('SELECT id, external_digits, call_started_at FROM goto_calls WHERE id = $1', [callId]);
+    if (!call.rows.length) return res.status(404).json({ error: 'Call not found' });
+    if (!digits || call.rows[0].external_digits !== digits) {
+      return res.status(403).json({ error: 'That call is not on this complaint' });
+    }
+
+    const play = await goto.playbackUrl(callId);
+
+    if (!req.viewingAs && !(req.user.isOwner || req.user.role === 'owner')) {
+      const when = call.rows[0].call_started_at ? new Date(call.rows[0].call_started_at).toISOString().slice(0, 10) : 'an unknown date';
+      await logActivity(id, { id: req.user.id, name: req.user.name }, 'event',
+        'played a call recording from ' + when + '.', 'phone');
+    }
+    res.json({ url: play.url, mime: play.mime, bytes: play.bytes });
+  } catch (e) {
+    console.error('GET /feedback/:id/recordings/:callId/play:', e.message);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// PATCH /api/feedback/:id/recordings/:callId  { is_primary, hidden, note }
+// Stores the human judgement over the derived list.
+router.patch('/:id/recordings/:callId', requireAuth, requirePermission('manage_feedback'), async function (req, res) {
+  try {
+    const id = parseInt(req.params.id, 10);
+    const callId = parseInt(req.params.callId, 10);
+    const fb = await pool.query('SELECT id, city_code, customer_phone FROM customer_feedback WHERE id = $1', [id]);
+    if (!fb.rows.length) return res.status(404).json({ error: 'Not found' });
+    const scope = await cityScope(req.user);
+    if (scope !== null && scope.indexOf(fb.rows[0].city_code) === -1) {
+      return res.status(403).json({ error: 'Not in your cities' });
+    }
+    const digits = goto.normalizeDigits(fb.rows[0].customer_phone);
+    const call = await pool.query('SELECT id, external_digits, call_started_at FROM goto_calls WHERE id = $1', [callId]);
+    if (!call.rows.length) return res.status(404).json({ error: 'Call not found' });
+    if (!digits || call.rows[0].external_digits !== digits) {
+      return res.status(403).json({ error: 'That call is not on this complaint' });
+    }
+
+    const b = req.body || {};
+    // Only one primary per complaint; the partial unique index enforces it, so
+    // clear the old one first rather than letting the insert fail.
+    if (b.is_primary === true) {
+      await pool.query('UPDATE feedback_call_recordings SET is_primary = false WHERE feedback_id = $1', [id]);
+    }
+    await pool.query(
+      'INSERT INTO feedback_call_recordings (feedback_id, call_id, link_type, linked_by, linked_by_name, is_primary, hidden, note)' +
+      " VALUES ($1,$2,'manual',$3,$4,$5,$6,$7)" +
+      ' ON CONFLICT (feedback_id, call_id) DO UPDATE SET' +
+      '   is_primary = COALESCE($5, feedback_call_recordings.is_primary),' +
+      '   hidden = COALESCE($6, feedback_call_recordings.hidden),' +
+      '   note = COALESCE($7, feedback_call_recordings.note)',
+      [id, callId, req.user.id, req.user.name,
+       b.is_primary === undefined ? null : !!b.is_primary,
+       b.hidden === undefined ? null : !!b.hidden,
+       b.note === undefined ? null : String(b.note).slice(0, 255)]
+    );
+
+    if (b.is_primary === true) {
+      await logActivity(id, { id: req.user.id, name: req.user.name }, 'event', 'marked a call recording as the complaint call.', null);
+    }
+    res.json({ success: true });
+  } catch (e) {
+    console.error('PATCH /feedback/:id/recordings/:callId:', e.message);
+    res.status(500).json({ error: 'Failed to update the recording' });
+  }
 });
 
 module.exports = router;

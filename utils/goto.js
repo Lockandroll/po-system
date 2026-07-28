@@ -636,6 +636,88 @@ async function gotoFetch(path, opts) {
 
 
 
+
+// ---- Recording audio -------------------------------------------------------
+// GET /recording/v1/recordings/{id}/content. GoTo does not document whether this
+// returns bytes directly or redirects to a signed URL, so handle both. When it
+// redirects, the follow-up request must NOT carry our bearer token - a signed
+// URL already carries its own auth and some object stores reject a second one.
+async function fetchRecordingBytes(recordingId) {
+  if (!recordingId) throw new Error('No recording id');
+  const url = API_BASE + '/recording/v1/recordings/' + encodeURIComponent(recordingId) + '/content';
+  let resp = await fetch(url, {
+    headers: { Authorization: 'Bearer ' + (await getAccessToken()) },
+    redirect: 'manual'
+  });
+
+  if (resp.status === 401) {
+    await refresh();
+    resp = await fetch(url, { headers: { Authorization: 'Bearer ' + (await getAccessToken()) }, redirect: 'manual' });
+  }
+
+  let hops = 0;
+  while (resp.status >= 300 && resp.status < 400 && hops < 3) {
+    const loc = resp.headers.get('location');
+    if (!loc) break;
+    resp = await fetch(loc);
+    hops++;
+  }
+
+  if (!resp.ok) {
+    let detail = '';
+    try { detail = (await resp.text()).slice(0, 200); } catch (e) {}
+    throw new Error('GoTo recording fetch failed (' + resp.status + ')' + (detail ? ': ' + detail : ''));
+  }
+
+  const mime = (resp.headers.get('content-type') || 'audio/wav').split(';')[0].trim();
+  const buf = Buffer.from(await resp.arrayBuffer());
+  if (!buf.length) throw new Error('GoTo returned an empty recording');
+  return { buffer: buf, mime: mime };
+}
+
+function extForMime(mime) {
+  const m = String(mime || '').toLowerCase();
+  if (m.indexOf('mpeg') !== -1 || m.indexOf('mp3') !== -1) return 'mp3';
+  if (m.indexOf('ogg') !== -1) return 'ogg';
+  if (m.indexOf('mp4') !== -1 || m.indexOf('m4a') !== -1) return 'm4a';
+  return 'wav';
+}
+
+// Copy a call's audio into R2 once, and remember where it went. Idempotent: a
+// call already archived returns its existing key without touching GoTo.
+//
+// This is the step that makes the feature outlive GoTo's ~13 month retention,
+// which is the whole reason we copy rather than stream.
+async function archiveCall(callId) {
+  const r2 = require('./r2');
+  const cur = await pool.query('SELECT id, recording_id, r2_key, r2_mime, r2_bytes FROM goto_calls WHERE id = $1', [callId]);
+  if (!cur.rows.length) throw new Error('Call not found');
+  const row = cur.rows[0];
+  if (row.r2_key) return { key: row.r2_key, mime: row.r2_mime, bytes: row.r2_bytes, cached: true };
+  if (!row.recording_id) throw new Error('This call has no recording');
+  if (!r2.configured()) throw new Error('File storage is not configured (R2_* environment variables).');
+
+  const got = await fetchRecordingBytes(row.recording_id);
+  const key = 'call-recordings/' + row.id + '/' + row.recording_id + '.' + extForMime(got.mime);
+  await r2.putObject(key, got.buffer, got.mime);
+  await pool.query(
+    'UPDATE goto_calls SET r2_key = $1, r2_mime = $2, r2_bytes = $3, archived_at = NOW() WHERE id = $4',
+    [key, got.mime, got.buffer.length, row.id]
+  );
+  return { key: key, mime: got.mime, bytes: got.buffer.length, cached: false };
+}
+
+// A short-lived URL the browser can stream from. 120 seconds, not the 300s
+// default: long enough to start playing, short enough that a link copied off a
+// screen share is dead before anyone can reuse it.
+async function playbackUrl(callId) {
+  const r2 = require('./r2');
+  const info = await archiveCall(callId);
+  const name = 'call-' + callId + '.' + extForMime(info.mime);
+  const url = await r2.presignDownload(info.key, name, true, 120, info.mime);
+  return { url: url, mime: info.mime, bytes: info.bytes, cached: info.cached };
+}
+
 // ---- Call indexing ---------------------------------------------------------
 // GoTo has NO server-side phone filter on report-summaries. All eleven plausible
 // parameter names were probed against the live account on 2026-07-28 and every
@@ -1135,6 +1217,10 @@ module.exports = {
   syncWindow: syncWindow,
   syncDays: syncDays,
   callsForNumber: callsForNumber,
+  fetchRecordingBytes: fetchRecordingBytes,
+  archiveCall: archiveCall,
+  playbackUrl: playbackUrl,
+  extForMime: extForMime,
   indexStats: indexStats,
   shapeOf: shapeOf,
   findAccountKey: findAccountKey,
