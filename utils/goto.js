@@ -807,6 +807,18 @@ async function ingestRecordingEvent(payload) {
     }
   }
 
+  // Store WHAT WE EXTRACTED alongside the shape. 44 notifications arrived and none
+  // matched, and without this the panel could not say whether the id was missing,
+  // the url was missing, or both were present but the id did not match a call.
+  const record = {
+    _found: {
+      recordingId: found.recordingId ? ('yes (' + String(found.recordingId).slice(0, 8) + '...)') : 'NO',
+      mediaUrl: found.mediaUrl ? 'yes' : 'NO',
+      status: found.status || null,
+      matchedCall: matched > 0
+    },
+    _payload: shape
+  };
   await pool.query(
     'INSERT INTO goto_webhook (id, last_event_at, event_count, matched_count, last_payload_shape)' +
     ' VALUES (1, NOW(), 1, $2, $1)' +
@@ -814,7 +826,7 @@ async function ingestRecordingEvent(payload) {
     '   event_count = goto_webhook.event_count + 1,' +
     '   matched_count = goto_webhook.matched_count + $2,' +
     '   last_payload_shape = $1',
-    [JSON.stringify(shape), matched]
+    [JSON.stringify(record), matched]
   );
   return { recordingId: found.recordingId, hadUrl: !!found.mediaUrl, matched: matched, status: found.status };
 }

@@ -16768,7 +16768,18 @@ function gotoHookSection(s, hook) {
       (!hook.subscriptionId
         ? '<div class="alert alert-error" style="margin-bottom:8px">The channel exists but GoTo did not accept a subscription. Nothing will arrive until that is resolved. Details: ' + escHtml(String(hook.subscribeNote || '').slice(0, 300)) + '</div>'
         : '') +
-      (hook.eventCount ? '' : '<div class="goto-foot-note" style="margin-top:0">Nothing has arrived yet. Notifications only fire when a new call is recorded, so this stays at zero until the next recorded call.</div>');
+      (hook.eventCount ? '' : '<div class="goto-foot-note" style="margin-top:0">Nothing has arrived yet. Notifications only fire when a new call is recorded, so this stays at zero until the next recorded call.</div>') +
+      // Notifications arriving but never matching means the payload does not look
+      // how the extractor expects. Show the last one's shape rather than leaving
+      // an admin with two numbers and no way to see why.
+      (hook.eventCount && !hook.matchedCount
+        ? '<div class="alert alert-error" style="margin:8px 0">Notifications are arriving but none are matching a call, so no audio is being captured. The last payload is below.</div>'
+        : '') +
+      (hook.lastPayloadShape
+        ? '<details style="margin-top:6px"><summary style="cursor:pointer;font-size:12px;color:var(--primary)">Last notification (structure only)</summary>' +
+          '<pre style="margin-top:6px;padding:10px;background:var(--bg, #0f0f0f);border:1px solid var(--border);border-radius:6px;font-size:11px;overflow:auto;max-height:320px;white-space:pre-wrap;word-break:break-all">' +
+          escHtml(JSON.stringify(hook.lastPayloadShape, null, 2)) + '</pre></details>'
+        : '');
   }
   return '<div style="margin-top:14px;border-top:1px solid var(--border);padding-top:12px">' +
     '<div style="font-size:12px;color:var(--text-muted-color);margin-bottom:8px">Recording notifications</div>' +
