@@ -377,6 +377,22 @@ function findAccountKey(node, depth) {
   depth = depth || 0;
   if (!node || typeof node !== 'object' || depth > 6) return null;
 
+  // SCIM shape, which is what GoTo actually returns from identity/v1/Users/me:
+  //   "accounts":[{"value":"1842200297248054807","display":"Pop A Lock",
+  //                "entitlements":["acctadmin","gotoconnect","jive"]}]
+  // The key lives under "value", not "key" or "accountKey". Checked before the
+  // generic walk so it wins over anything similarly-named deeper in the tree.
+  if (Array.isArray(node.accounts)) {
+    for (let i = 0; i < node.accounts.length; i++) {
+      const a = node.accounts[i];
+      if (!a || typeof a !== 'object') continue;
+      const v = a.value !== undefined ? a.value : (a.key !== undefined ? a.key : a.accountKey);
+      if ((typeof v === 'string' || typeof v === 'number') && /^[0-9]{6,}$/.test(String(v))) {
+        return String(v);
+      }
+    }
+  }
+
   const keys = Object.keys(node);
   // Exact-ish field names first, at this level, before recursing.
   for (let i = 0; i < keys.length; i++) {
@@ -435,9 +451,7 @@ async function probeMe() {
       // Surface the account key immediately if this response carries one.
       try {
         const j = JSON.parse(text);
-        const k = findAccountKey(j) ||
-          (Array.isArray(j.accounts) && j.accounts.length &&
-           String(j.accounts[0].key || j.accounts[0].accountKey || '')) || null;
+        const k = findAccountKey(j);
         if (k) entry.accountKey = String(k);
       } catch (e3) {}
     } catch (e) {
@@ -460,11 +474,16 @@ async function discoverAccounts() {
     }
     if (!data || typeof data !== 'object') continue;
 
-    // Shape A: { accounts: [ { key, name } ] }
+    // Shape A: an accounts array. GoTo's SCIM record uses value/display; the
+    // Admin API uses key/name. Accept either.
     if (Array.isArray(data.accounts)) {
       data.accounts.forEach(function (a) {
-        const k = a && (a.key || a.accountKey);
-        if (k && !seen[k]) { seen[k] = true; out.push({ key: String(k), name: (a && (a.name || a.accountName)) || null }); }
+        if (!a || typeof a !== 'object') return;
+        const k = a.value !== undefined ? a.value : (a.key !== undefined ? a.key : a.accountKey);
+        if (k === undefined || k === null || !/^[0-9]{6,}$/.test(String(k))) return;
+        if (seen[k]) return;
+        seen[k] = true;
+        out.push({ key: String(k), name: a.display || a.name || a.accountName || null });
       });
     }
     // Shape B/C: the key sits somewhere else in the payload, possibly inside a
