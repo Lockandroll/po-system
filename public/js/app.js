@@ -16571,6 +16571,7 @@ async function renderIntegrations(el) {
       '<div style="margin-top:14px;border-top:1px solid var(--border);padding-top:12px">' +
         '<button class="btn btn-secondary btn-sm" onclick="gotoRunDiagnose()">Run diagnostics</button>' +
         '<span class="goto-foot-note">Asks GoTo who we are and reports exactly what it says. Use this if the account key is missing.</span>' +
+        '<div id="goto-diag-action" style="display:none"></div>' +
         '<pre id="goto-diag" style="display:none;margin-top:10px;padding:10px;background:var(--bg, #0f0f0f);border:1px solid var(--border);border-radius:6px;font-size:11px;overflow:auto;max-height:340px;white-space:pre-wrap;word-break:break-all"></pre>' +
       '</div>' +
     '</div>';
@@ -16641,11 +16642,24 @@ async function gotoSaveAccountKey() {
   }
 }
 
+// One click from "diagnostics found a key" to "the key is stored".
+async function gotoUseFoundKey(key) {
+  try {
+    await api('POST', '/goto/account', { account_key: key });
+    gotoMsg('Account key saved.', false);
+    navigate('integrations');
+  } catch (e) {
+    gotoMsg(e.message, true);
+  }
+}
+
 async function gotoRunDiagnose() {
   var out = document.getElementById('goto-diag');
   if (!out) return;
   out.style.display = 'block';
   out.textContent = 'Asking GoTo…';
+  var bar0 = document.getElementById('goto-diag-action');
+  if (bar0) { bar0.style.display = 'none'; bar0.innerHTML = ''; }
   try {
     var r = await api('GET', '/goto/account/diagnose');
     var probes = (r && r.probes) || [];
@@ -16656,10 +16670,22 @@ async function gotoRunDiagnose() {
         (p.note ? '\n      ' + p.note : '') +
         (p.body ? '\n      ' + String(p.body).slice(0, 600) : '');
     });
-    var header = found.length
-      ? 'Found account key ' + found[0].accountKey + '. Click "Set it" above and paste it in.\n\n'
-      : 'No account key found in any response.\n\n';
-    out.textContent = header + lines.join('\n\n');
+    out.textContent = (found.length ? '' : 'No account key found in any response.\n\n') + lines.join('\n\n');
+    // If a key turned up, offer to store it directly. Retyping a 19-digit number
+    // off a screen is exactly the kind of step that goes wrong.
+    var bar = document.getElementById('goto-diag-action');
+    if (bar) {
+      if (found.length) {
+        bar.style.display = 'block';
+        bar.innerHTML = '<div style="margin-top:10px;padding:10px;border:1px solid var(--border);border-radius:8px">' +
+          '<div style="font-size:13px;margin-bottom:8px">Found account key <span class="goto-mono" style="font-size:13px">' + escHtml(found[0].accountKey) + '</span></div>' +
+          '<button class="btn btn-primary btn-sm" onclick="gotoUseFoundKey(&#39;' + escHtml(found[0].accountKey) + '&#39;)">Use this key</button>' +
+          '</div>';
+      } else {
+        bar.style.display = 'none';
+        bar.innerHTML = '';
+      }
+    }
   } catch (e) {
     out.textContent = 'Diagnostics failed: ' + e.message;
   }

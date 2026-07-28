@@ -662,10 +662,20 @@ const SAFE_KEYS = {
   direction: 1, callCreated: 1, callEnded: 1, pageSize: 1, totalCount: 1,
   total: 1, count: 1, nextPageToken: 1, nextPage: 1, cursor: 1, offset: 1,
   hasMore: 1, type: 1, state: 1, status: 1, reason: 1, disposition: 1,
-  startTime: 1, endTime: 1, duration: 1, durationMs: 1, mimeType: 1, format: 1
+  startTime: 1, endTime: 1, duration: 1, durationMs: 1, mimeType: 1, format: 1,
+  // Enums, not identities. Knowing that a participant's type is LINE vs
+  // EXTERNAL_USER is exactly how we tell our own staff from the customer, and
+  // it says nothing about who the customer is.
+  callInitiator: 1, callerOutcome: 1, sentiment: 1, queueType: 1,
+  leftQueueReason: 1, callProvider: 1, callbackOffered: 1, transcriptEnabled: 1,
+  postCallTranscriptEnabled: 1, sequenceNumber: 1, callerWaitDuration: 1
 };
 
-function shapeOf(v, key, depth) {
+// "value" is an enum under type/status, but it is also where GoTo hides the
+// account key in a SCIM record. Only echo it when its parent makes it a type.
+const SAFE_VALUE_PARENTS = { type: 1, status: 1 };
+
+function shapeOf(v, key, depth, parentKey) {
   depth = depth || 0;
   if (v === null) return 'null';
   if (v === undefined) return 'undefined';
@@ -673,7 +683,8 @@ function shapeOf(v, key, depth) {
   if (t === 'boolean') return 'boolean:' + v;
   if (t === 'number') return 'number:' + v;
   if (t === 'string') {
-    if (SAFE_KEYS[key]) return 'string:' + v.slice(0, 40);
+    const safe = SAFE_KEYS[key] || (key === 'value' && SAFE_VALUE_PARENTS[parentKey]);
+    if (safe) return 'string:' + v.slice(0, 40);
     // Shape only. Note the pattern so we can tell a UUID from an E.164 number
     // from a name without ever revealing which customer it was.
     let pattern = 'text';
@@ -688,12 +699,12 @@ function shapeOf(v, key, depth) {
   if (Array.isArray(v)) {
     if (!v.length) return 'array[0]';
     if (depth > 5) return 'array[' + v.length + ']';
-    return { _array: v.length, _first: shapeOf(v[0], null, depth + 1) };
+    return { _array: v.length, _first: shapeOf(v[0], key, depth + 1, parentKey) };
   }
   if (t === 'object') {
     if (depth > 5) return 'object';
     const out = {};
-    Object.keys(v).slice(0, 40).forEach(function (k) { out[k] = shapeOf(v[k], k, depth + 1); });
+    Object.keys(v).slice(0, 40).forEach(function (k) { out[k] = shapeOf(v[k], k, depth + 1, key); });
     return out;
   }
   return t;
