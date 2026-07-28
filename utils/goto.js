@@ -634,6 +634,184 @@ async function gotoFetch(path, opts) {
   }
 }
 
+
+// ---- Call-search probe -----------------------------------------------------
+// Four things about the Call Events Report API are undocumented and its OpenAPI
+// reference is a JavaScript app we cannot read: the phone-number filter's
+// parameter name, the pagination model, the shape of the participant object,
+// and where the customer's number actually sits. Guessing costs a deploy each
+// time. This asks the live account instead.
+//
+// PRIVACY: this returns a SCHEMA, not data. Every string value is replaced by
+// its type and length before it leaves the server, because the caller is going
+// to paste the output into a chat window and these are real customer calls.
+// Only a short allow-list of structural, non-identifying fields keeps its value.
+
+const REPORT_BASE = 'https://api.goto.com/call-events-report/v1';
+
+// GoTo's guide says summaries "can be searched using either accounts, lines,
+// phone numbers or users" but never names the parameter. These are the plausible
+// spellings; the probe reports which are accepted and which change the result.
+const PHONE_PARAM_CANDIDATES = [
+  'phoneNumber', 'phoneNumbers', 'number', 'numbers', 'e164',
+  'participantNumber', 'externalNumber', 'phone', 'callerNumber', 'did', 'line'
+];
+
+// Safe to echo verbatim: structural or already known to us, never identifying.
+const SAFE_KEYS = {
+  direction: 1, callCreated: 1, callEnded: 1, pageSize: 1, totalCount: 1,
+  total: 1, count: 1, nextPageToken: 1, nextPage: 1, cursor: 1, offset: 1,
+  hasMore: 1, type: 1, state: 1, status: 1, reason: 1, disposition: 1,
+  startTime: 1, endTime: 1, duration: 1, durationMs: 1, mimeType: 1, format: 1
+};
+
+function shapeOf(v, key, depth) {
+  depth = depth || 0;
+  if (v === null) return 'null';
+  if (v === undefined) return 'undefined';
+  const t = typeof v;
+  if (t === 'boolean') return 'boolean:' + v;
+  if (t === 'number') return 'number:' + v;
+  if (t === 'string') {
+    if (SAFE_KEYS[key]) return 'string:' + v.slice(0, 40);
+    // Shape only. Note the pattern so we can tell a UUID from an E.164 number
+    // from a name without ever revealing which customer it was.
+    let pattern = 'text';
+    if (/^[0-9a-f]{8}-[0-9a-f]{4}-/i.test(v)) pattern = 'uuid';
+    else if (/^\+?[0-9]{7,15}$/.test(v)) pattern = 'phone-like';
+    else if (/^[0-9]{4,}$/.test(v)) pattern = 'digits';
+    else if (/^\d{4}-\d{2}-\d{2}T/.test(v)) pattern = 'iso-datetime';
+    else if (/@/.test(v)) pattern = 'email-like';
+    else if (/^https?:\/\//.test(v)) pattern = 'url';
+    return 'string<' + pattern + ',len=' + v.length + '>';
+  }
+  if (Array.isArray(v)) {
+    if (!v.length) return 'array[0]';
+    if (depth > 5) return 'array[' + v.length + ']';
+    return { _array: v.length, _first: shapeOf(v[0], null, depth + 1) };
+  }
+  if (t === 'object') {
+    if (depth > 5) return 'object';
+    const out = {};
+    Object.keys(v).slice(0, 40).forEach(function (k) { out[k] = shapeOf(v[k], k, depth + 1); });
+    return out;
+  }
+  return t;
+}
+
+// Probe the call search. opts: { days, digits }
+async function probeCallSearch(opts) {
+  opts = opts || {};
+  const acct = await resolveAccountKey();
+  const result = { accountKey: acct ? 'set' : 'MISSING', steps: [] };
+  if (!acct) {
+    result.steps.push({ step: 'accountKey', ok: false, note: 'No account key stored. Set it in Settings > Integrations first.' });
+    return result;
+  }
+
+  const days = Math.min(Math.max(parseInt(opts.days, 10) || 7, 1), 90);
+  const end = new Date();
+  const start = new Date(end.getTime() - days * 86400000);
+  const baseParams = new URLSearchParams();
+  baseParams.set('accountKey', acct);
+  baseParams.set('startTime', start.toISOString());
+  baseParams.set('endTime', end.toISOString());
+
+  // --- 1. does the endpoint work at all, and what does it return? -----------
+  const summaryUrl = REPORT_BASE + '/report-summaries?' + baseParams.toString();
+  let summary = null;
+  const s1 = { step: 'report-summaries', url: summaryUrl.replace(acct, '<accountKey>'), ok: false };
+  try {
+    const resp = await fetch(summaryUrl, { headers: { Authorization: 'Bearer ' + (await getAccessToken()), Accept: 'application/json' } });
+    s1.status = resp.status;
+    const text = await resp.text();
+    s1.ok = resp.ok;
+    if (resp.ok) {
+      try { summary = JSON.parse(text); } catch (e) { summary = null; }
+      s1.itemCount = summary && Array.isArray(summary.items) ? summary.items.length : null;
+      s1.responseShape = shapeOf(summary);
+      // Which top-level keys look like pagination?
+      s1.paginationKeys = summary ? Object.keys(summary).filter(function (k) {
+        return /page|cursor|offset|next|total|more/i.test(k);
+      }) : [];
+    } else {
+      s1.body = text.slice(0, 400);
+    }
+  } catch (e) { s1.note = 'threw: ' + e.message; }
+  result.steps.push(s1);
+  if (!s1.ok) return result;
+
+  // --- 2. which phone-filter parameter does it accept? ----------------------
+  const digits = normalizeDigits(opts.digits);
+  const s2 = { step: 'phone-filter', testedWith: digits ? 'a 10-digit number' : 'SKIPPED (no valid number supplied)', candidates: [] };
+  if (digits) {
+    const baseline = s1.itemCount;
+    for (let i = 0; i < PHONE_PARAM_CANDIDATES.length; i++) {
+      const name = PHONE_PARAM_CANDIDATES[i];
+      const p = new URLSearchParams(baseParams.toString());
+      p.set(name, digits);
+      const entry = { param: name };
+      try {
+        const resp = await fetch(REPORT_BASE + '/report-summaries?' + p.toString(), {
+          headers: { Authorization: 'Bearer ' + (await getAccessToken()), Accept: 'application/json' }
+        });
+        entry.status = resp.status;
+        const text = await resp.text();
+        if (resp.ok) {
+          let j = null;
+          try { j = JSON.parse(text); } catch (e) {}
+          entry.itemCount = j && Array.isArray(j.items) ? j.items.length : null;
+          // An unknown query param is usually IGNORED, so an unchanged count
+          // means "not a real filter". A changed count means it did something.
+          entry.filtered = (entry.itemCount !== null && baseline !== null && entry.itemCount !== baseline);
+          entry.verdict = entry.filtered ? 'FILTERS (count changed from ' + baseline + ' to ' + entry.itemCount + ')' : 'ignored (count unchanged)';
+        } else {
+          entry.verdict = 'rejected';
+          entry.body = text.slice(0, 200);
+        }
+      } catch (e) { entry.verdict = 'threw: ' + e.message; }
+      s2.candidates.push(entry);
+      await sleep(120); // stay well under 10 req/sec
+    }
+  }
+  result.steps.push(s2);
+
+  // --- 3. the full report: participants, and where the recording id lives ---
+  const s3 = { step: 'report-detail', ok: false };
+  const firstId = summary && Array.isArray(summary.items) && summary.items.length ? summary.items[0].conversationSpaceId : null;
+  if (!firstId) {
+    s3.note = 'No calls in the last ' + days + ' days to inspect. Try a longer window.';
+  } else {
+    try {
+      const resp = await fetch(REPORT_BASE + '/reports/' + encodeURIComponent(firstId), {
+        headers: { Authorization: 'Bearer ' + (await getAccessToken()), Accept: 'application/json' }
+      });
+      s3.status = resp.status;
+      const text = await resp.text();
+      s3.ok = resp.ok;
+      if (resp.ok) {
+        let j = null;
+        try { j = JSON.parse(text); } catch (e) {}
+        s3.reportShape = shapeOf(j);
+        // Where does anything recording-shaped appear?
+        const hits = [];
+        (function walk(node, path, depth) {
+          if (!node || typeof node !== 'object' || depth > 6) return;
+          Object.keys(node).forEach(function (k) {
+            if (/record|transcri/i.test(k)) hits.push(path + '.' + k);
+            walk(node[k], path + '.' + k, depth + 1);
+          });
+        })(j, '$', 0);
+        s3.recordingPaths = hits.slice(0, 20);
+      } else {
+        s3.body = text.slice(0, 400);
+      }
+    } catch (e) { s3.note = 'threw: ' + e.message; }
+  }
+  result.steps.push(s3);
+  return result;
+}
+
 // ---- Phone normalization ---------------------------------------------------
 // Match on the LAST 10 DIGITS. Pulsar, Twilio and GoTo all disagree about the
 // country code and punctuation, and the trailing 10 is the only part they agree
@@ -688,6 +866,8 @@ module.exports = {
   exchangeCode: exchangeCode,
   discoverAccounts: discoverAccounts,
   probeMe: probeMe,
+  probeCallSearch: probeCallSearch,
+  shapeOf: shapeOf,
   findAccountKey: findAccountKey,
   resolveAccountKey: resolveAccountKey,
   setAccountKey: setAccountKey,

@@ -170,6 +170,21 @@ router.get('/account/diagnose', requireAuth, requireRole('admin'), async functio
   }
 });
 
+// Diagnostic: probe the call-search API against the live account and report its
+// SHAPE. Answers the four things GoTo does not document. Returns types and field
+// names, never customer data - see utils/goto.js probeCallSearch.
+//   ?days=30           how far back to look (1-90, default 7)
+//   ?phone=7045550134  optional, tests which phone-filter parameter works
+router.get('/calls/probe', requireAuth, requireRole('admin'), async function (req, res) {
+  try {
+    const out = await goto.probeCallSearch({ days: req.query.days, digits: req.query.phone });
+    res.json(out);
+  } catch (e) {
+    console.error('GET /goto/calls/probe:', e.message);
+    res.status(500).json({ error: e.message });
+  }
+});
+
 // ---- Manual refresh (admin, for diagnosing a stuck connection) -------------
 
 router.post('/refresh', requireAuth, requireRole('admin'), async function (req, res) {
