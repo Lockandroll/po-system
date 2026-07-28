@@ -4477,8 +4477,6 @@ async function renderFeedbackDetail(el, id){
   var viewToggle = viewCount ? '<label style="font-size:11px;color:var(--text-muted-color);display:flex;align-items:center;gap:5px;cursor:pointer"><input type="checkbox" checked onchange="feedbackToggleViews(this.checked)" /> Views (' + viewCount + ')</label>' : '';
   var actCard = '<div style="' + cardS + '"><div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px"><div style="font-size:12px;color:var(--text-muted-color)">Activity</div>' + viewToggle + '</div>' + actItems + noteBox + '</div>';
 
-  // Call recordings load after the page paints. The complaint itself must not
-  // wait on the call index.
   var recCard = '<div style="' + cardS + '">' +
     '<div style="font-size:12px;color:var(--text-muted-color);margin-bottom:8px">Call recordings</div>' +
     '<div id="fb-recordings"><div style="font-size:13px;color:var(--text-muted-color)">Loading&hellip;</div></div>' +
@@ -16473,6 +16471,8 @@ async function renderIntegrations(el) {
   try { s = await api('GET', '/goto/status'); }
   catch (e) { loadErr = e.message; }
   if (!loadErr) { try { idx = await api('GET', '/goto/index/stats'); } catch (e) { idx = null; } }
+  var running = null;
+  if (!loadErr) { try { running = await api('GET', '/goto/index/backfill/status'); } catch (e) { running = null; } }
   if (!loadErr && (!s || typeof s !== 'object')) loadErr = 'The server returned an empty status.';
 
   if (loadErr) {
@@ -16577,7 +16577,7 @@ async function renderIntegrations(el) {
       '</table>' +
       keyEditor +
       (buttons ? '<div style="margin-top:16px;display:flex;flex-wrap:wrap;gap:8px">' + buttons + '</div>' : '') +
-      gotoIndexSection(s, idx) +
+      gotoIndexSection(Object.assign({}, s, { backfill: running || {} }), idx) +
       '<div style="margin-top:14px;border-top:1px solid var(--border);padding-top:12px">' +
         '<button class="btn btn-secondary btn-sm" onclick="gotoRunDiagnose()">Run diagnostics</button>' +
         '<span class="goto-foot-note">Asks GoTo who we are and reports exactly what it says. Use this if the account key is missing.</span>' +
@@ -16585,6 +16585,10 @@ async function renderIntegrations(el) {
         '<pre id="goto-diag" style="display:none;margin-top:10px;padding:10px;background:var(--bg, #0f0f0f);border:1px solid var(--border);border-radius:6px;font-size:11px;overflow:auto;max-height:340px;white-space:pre-wrap;word-break:break-all"></pre>' +
       '</div>' +
     '</div>';
+
+  // If a backfill is already running (started elsewhere, or before a reload),
+  // pick the progress readout back up rather than showing a stale button.
+  if (running && running.running) { try { gotoPollBackfill(); } catch (e) {} }
 }
 
 function gotoToggleKeyEdit() {
@@ -16679,29 +16683,66 @@ function gotoIndexSection(s, idx) {
     body +
     '<div style="display:flex;flex-wrap:wrap;gap:8px;align-items:center">' +
       '<button class="btn ' + (n ? 'btn-secondary' : 'btn-primary') + ' btn-sm" id="goto-backfill-btn" onclick="gotoBackfill(90)">' + (n ? 'Backfill again (90 days)' : 'Backfill 90 days') + '</button>' +
-      '<span id="goto-backfill-note" class="goto-foot-note" style="margin-top:0"></span>' +
+      '<span id="goto-backfill-note" class="goto-foot-note" style="margin-top:0">' + escHtml(gotoBackfillNote(s.backfill || {})) + '</span>' +
     '</div>' +
     '<span class="goto-foot-note">Nova indexes new calls every 10 minutes on its own. A backfill is only needed once, to pull in history from before it was connected.</span>' +
     '</div>';
 }
 
-// Backfill runs inline on the server and can take a minute on a wide window, so
-// the button disables itself and says so rather than looking hung.
+// The backfill runs in the BACKGROUND on the server - tens of thousands of calls
+// take minutes, far longer than an HTTP request should live. This starts it and
+// then polls, so closing the page costs nothing but the progress readout.
+var _gotoPoll = null;
+
 async function gotoBackfill(days) {
   var btn = document.getElementById('goto-backfill-btn');
-  var note = document.getElementById('goto-backfill-note');
-  if (btn) { btn.disabled = true; btn.textContent = 'Indexing…'; }
-  if (note) note.textContent = 'This can take a minute. Leave the page open.';
+  if (btn) { btn.disabled = true; btn.textContent = 'Starting…'; }
   try {
-    var r = await api('POST', '/goto/index/backfill', { days: days });
-    var st = (r && r.stats) || {};
-    gotoMsg('Indexed ' + (st.inserted || 0) + ' new calls and updated ' + (st.updated || 0) + ', over ' + (st.pages || 0) + ' page(s)' + (st.truncated ? '. Stopped at the page limit, run it again to continue.' : '.'), false);
-    navigate('integrations');
+    await api('POST', '/goto/index/backfill', { days: days });
+    gotoPollBackfill();
   } catch (e) {
     if (btn) { btn.disabled = false; btn.textContent = 'Backfill 90 days'; }
-    if (note) note.textContent = '';
+    // A 409 means one is already going; just start watching it.
+    if (/already running/i.test(e.message)) { gotoPollBackfill(); return; }
     gotoMsg('Backfill failed: ' + e.message, true);
   }
+}
+
+function gotoBackfillNote(st) {
+  var p = st.progress || {};
+  if (st.running) {
+    return 'Indexing… ' + (p.pages || 0) + ' page' + ((p.pages === 1) ? '' : 's') + ', ' +
+      (p.inserted || 0) + ' new call' + ((p.inserted === 1) ? '' : 's') + ' so far. Safe to leave this page.';
+  }
+  if (st.error) return 'Stopped: ' + st.error;
+  if (st.stats) {
+    return 'Done. ' + (st.stats.inserted || 0) + ' new, ' + (st.stats.updated || 0) + ' updated, ' +
+      (st.stats.pages || 0) + ' pages.' + (st.stats.truncated ? ' Hit the page limit - run it again to continue.' : '');
+  }
+  return '';
+}
+
+async function gotoPollBackfill() {
+  if (_gotoPoll) clearInterval(_gotoPoll);
+  var tick = async function () {
+    var note = document.getElementById('goto-backfill-note');
+    var btn = document.getElementById('goto-backfill-btn');
+    // The admin navigated away; stop polling rather than leaking a timer.
+    if (!note) { clearInterval(_gotoPoll); _gotoPoll = null; return; }
+    var st;
+    try { st = await api('GET', '/goto/index/backfill/status'); }
+    catch (e) { clearInterval(_gotoPoll); _gotoPoll = null; return; }
+    note.textContent = gotoBackfillNote(st);
+    if (btn) { btn.disabled = !!st.running; if (st.running) btn.textContent = 'Indexing…'; }
+    if (!st.running) {
+      clearInterval(_gotoPoll); _gotoPoll = null;
+      if (st.error) gotoMsg('Backfill stopped: ' + st.error, true);
+      else if (st.stats) gotoMsg('Backfill finished. ' + (st.stats.inserted || 0) + ' new calls indexed.', false);
+      navigate('integrations');
+    }
+  };
+  await tick();
+  _gotoPoll = setInterval(tick, 3000);
 }
 
 // One click from "diagnostics found a key" to "the key is stored".

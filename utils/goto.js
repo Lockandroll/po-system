@@ -827,44 +827,72 @@ function mapSummaryItem(item) {
     recording_id: withRec ? String(withRec.recordingId).slice(0, 128) : null,
     transcript_id: withTrans ? String(withTrans.liveTranscriptId).slice(0, 128) : null,
     has_recording: !!withRec,
-    raw_report: redactRaw(item)
+    // The raw payload is a debugging aid for undocumented field drift. Keeping
+    // it for every call costs real storage at ~59,000 calls per 90 days and
+    // grows forever, so keep it only where we might actually need to look: the
+    // calls that carry a recording. Set GOTO_KEEP_ALL_RAW=1 to keep everything.
+    raw_report: (withRec || process.env.GOTO_KEEP_ALL_RAW === '1') ? redactRaw(item) : null
   };
 }
 
-// Upsert a batch. Returns { inserted, updated }. Keyed on conversationSpaceId,
-// so re-running a window is safe and cheap - which matters because the reconcile
-// job deliberately re-reads recent days to catch late-attaching recordings.
+// Upsert a page in ONE statement. The first version issued a query per row,
+// which is fine for a 10-minute delta and hopeless for a backfill: Tony's
+// account has ~59,000 calls in 90 days, so that was 59,000 sequential round
+// trips. One multi-row INSERT per page is ~100x fewer.
+//
+// Returns { inserted, updated }.
 async function upsertCalls(rows) {
-  let inserted = 0, updated = 0;
-  for (let i = 0; i < rows.length; i++) {
-    const r = rows[i];
-    try {
-      const res = await pool.query(
-        'INSERT INTO goto_calls (conversation_space_id, account_key, direction, call_started_at, call_ended_at,' +
-        ' duration_sec, external_number, external_digits, internal_number, agent_name, agent_user_key,' +
-        ' recording_id, transcript_id, has_recording, raw_report, last_seen_revision)' +
-        ' VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,NOW())' +
-        ' ON CONFLICT (conversation_space_id) DO UPDATE SET' +
-        // COALESCE so a later pass can only ADD a recording id, never erase one
-        // that was present before (recordings attach minutes after a call ends).
-        '   recording_id = COALESCE(EXCLUDED.recording_id, goto_calls.recording_id),' +
-        '   transcript_id = COALESCE(EXCLUDED.transcript_id, goto_calls.transcript_id),' +
-        '   has_recording = (goto_calls.has_recording OR EXCLUDED.has_recording),' +
-        '   call_ended_at = COALESCE(EXCLUDED.call_ended_at, goto_calls.call_ended_at),' +
-        '   duration_sec = COALESCE(EXCLUDED.duration_sec, goto_calls.duration_sec),' +
-        '   raw_report = EXCLUDED.raw_report,' +
-        '   last_seen_revision = NOW()' +
-        ' RETURNING (xmax = 0) AS was_insert',
-        [r.conversation_space_id, r.account_key, r.direction, r.call_started_at, r.call_ended_at,
-         r.duration_sec, r.external_number, r.external_digits, r.internal_number, r.agent_name,
-         r.agent_user_key, r.recording_id, r.transcript_id, r.has_recording, JSON.stringify(r.raw_report)]
-      );
-      if (res.rows.length && res.rows[0].was_insert) inserted++; else updated++;
-    } catch (e) {
-      console.error('[goto] upsert ' + r.conversation_space_id + ':', e.message);
-    }
+  if (!rows.length) return { inserted: 0, updated: 0 };
+
+  // Postgres refuses to let ON CONFLICT DO UPDATE touch the same row twice in
+  // one statement, so a page containing the same call id twice would abort the
+  // whole batch. Keep the last occurrence of each.
+  const byId = {};
+  rows.forEach(function (r) { byId[r.conversation_space_id] = r; });
+  const uniq = Object.keys(byId).map(function (k) { return byId[k]; });
+
+  const COLS = 15;
+  const params = [];
+  const tuples = [];
+  uniq.forEach(function (r, i) {
+    const base = i * COLS;
+    const ph = [];
+    for (let c = 1; c <= COLS; c++) ph.push('$' + (base + c));
+    tuples.push('(' + ph.join(',') + ')');
+    params.push(
+      r.conversation_space_id, r.account_key, r.direction, r.call_started_at, r.call_ended_at,
+      r.duration_sec, r.external_number, r.external_digits, r.internal_number, r.agent_name,
+      r.agent_user_key, r.recording_id, r.transcript_id, r.has_recording,
+      r.raw_report === null ? null : JSON.stringify(r.raw_report)
+    );
+  });
+
+  try {
+    const res = await pool.query(
+      'INSERT INTO goto_calls (conversation_space_id, account_key, direction, call_started_at, call_ended_at,' +
+      ' duration_sec, external_number, external_digits, internal_number, agent_name, agent_user_key,' +
+      ' recording_id, transcript_id, has_recording, raw_report)' +
+      ' VALUES ' + tuples.join(',') +
+      ' ON CONFLICT (conversation_space_id) DO UPDATE SET' +
+      // COALESCE so a later pass can only ADD a recording id, never erase one
+      // that was present before (recordings attach after a call ends).
+      '   recording_id = COALESCE(EXCLUDED.recording_id, goto_calls.recording_id),' +
+      '   transcript_id = COALESCE(EXCLUDED.transcript_id, goto_calls.transcript_id),' +
+      '   has_recording = (goto_calls.has_recording OR EXCLUDED.has_recording),' +
+      '   call_ended_at = COALESCE(EXCLUDED.call_ended_at, goto_calls.call_ended_at),' +
+      '   duration_sec = COALESCE(EXCLUDED.duration_sec, goto_calls.duration_sec),' +
+      '   raw_report = COALESCE(EXCLUDED.raw_report, goto_calls.raw_report),' +
+      '   last_seen_revision = NOW()' +
+      ' RETURNING (xmax = 0) AS was_insert',
+      params
+    );
+    let inserted = 0, updated = 0;
+    res.rows.forEach(function (r) { if (r.was_insert) inserted++; else updated++; });
+    return { inserted: inserted, updated: updated };
+  } catch (e) {
+    console.error('[goto] batch upsert failed (' + uniq.length + ' rows):', e.message);
+    return { inserted: 0, updated: 0 };
   }
-  return { inserted: inserted, updated: updated };
 }
 
 // One page of summaries. marker is the nextPageMarker from the previous page.
@@ -939,6 +967,7 @@ async function syncWindow(opts) {
   opts = opts || {};
   const endIso = opts.endIso || new Date().toISOString();
   if (!opts.startIso) throw new Error('syncWindow needs a startIso');
+  const outerOnPage = opts.onPage;
   const start = Date.parse(opts.startIso);
   const end = Date.parse(endIso);
   if (isNaN(start) || isNaN(end) || end <= start) throw new Error('syncWindow needs a valid range');
@@ -953,7 +982,17 @@ async function syncWindow(opts) {
       startIso: new Date(chunkStart).toISOString(),
       endIso: new Date(chunkEnd).toISOString(),
       maxPages: opts.maxPages,
-      onPage: opts.onPage
+      onPage: function (st) {
+        if (typeof outerOnPage !== 'function') return;
+        try {
+          outerOnPage({
+            pages: total.pages + st.pages, seen: total.seen + st.seen,
+            indexed: total.indexed + st.indexed, skipped: total.skipped + st.skipped,
+            inserted: total.inserted + st.inserted, updated: total.updated + st.updated,
+            windows: total.windows, truncated: total.truncated
+          });
+        } catch (e) {}
+      }
     });
     total.pages += st.pages;
     total.seen += st.seen;
@@ -964,8 +1003,55 @@ async function syncWindow(opts) {
     if (st.truncated) total.truncated = true;
     total.windows++;
     chunkEnd = chunkStart;
+    // onPage reports per-window numbers; surface the running total instead so a
+    // multi-chunk backfill does not appear to start over at each boundary.
+    if (typeof opts.onPage === 'function') { try { opts.onPage(total); } catch (e) {} }
   }
   return total;
+}
+
+// A backfill of ~59,000 calls runs for minutes, which is longer than an HTTP
+// request should live. It runs in the background and reports progress here
+// instead, so the browser can poll and the connection dropping costs nothing.
+let _backfill = { running: false, days: 0, startedAt: null, finishedAt: null, error: null, stats: null, progress: null };
+
+function backfillState() {
+  return {
+    running: _backfill.running,
+    days: _backfill.days,
+    startedAt: _backfill.startedAt,
+    finishedAt: _backfill.finishedAt,
+    error: _backfill.error,
+    stats: _backfill.stats,
+    progress: _backfill.progress
+  };
+}
+
+// Returns immediately. Refuses to start a second run on top of a live one.
+function startBackfill(days) {
+  if (_backfill.running) return { started: false, reason: 'already_running', state: backfillState() };
+  const d = Math.min(Math.max(parseInt(days, 10) || 90, 1), 400);
+  _backfill = { running: true, days: d, startedAt: new Date().toISOString(), finishedAt: null, error: null, stats: null, progress: { pages: 0, seen: 0, inserted: 0, updated: 0 } };
+
+  // Deliberately not awaited.
+  syncDays(d, {
+    maxPages: 2000,
+    onPage: function (st) {
+      _backfill.progress = { pages: st.pages, seen: st.seen, inserted: st.inserted, updated: st.updated };
+    }
+  }).then(function (stats) {
+    _backfill.running = false;
+    _backfill.finishedAt = new Date().toISOString();
+    _backfill.stats = stats;
+    console.log('[goto] backfill finished: ' + stats.inserted + ' new, ' + stats.updated + ' updated, ' + stats.pages + ' pages over ' + stats.windows + ' window(s)');
+  }).catch(function (e) {
+    _backfill.running = false;
+    _backfill.finishedAt = new Date().toISOString();
+    _backfill.error = e.message;
+    console.error('[goto] backfill failed:', e.message);
+  });
+
+  return { started: true, state: backfillState() };
 }
 
 // Convenience: index the last N days.
@@ -1261,6 +1347,8 @@ module.exports = {
   syncOneWindow: syncOneWindow,
   MAX_WINDOW_DAYS: MAX_WINDOW_DAYS,
   syncDays: syncDays,
+  startBackfill: startBackfill,
+  backfillState: backfillState,
   callsForNumber: callsForNumber,
   fetchRecordingBytes: fetchRecordingBytes,
   archiveCall: archiveCall,

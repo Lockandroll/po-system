@@ -193,17 +193,23 @@ router.get('/index/stats', requireAuth, requireRole('admin'), async function (re
   catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-// Backfill. Runs inline and can take a while on a wide window, so it is capped
-// and reports what it did. 90 days is the agreed default.
+// Backfill. Starts a BACKGROUND run and returns immediately - a full 90 days is
+// tens of thousands of calls and runs far longer than an HTTP request should.
+// Poll /index/backfill/status for progress.
 router.post('/index/backfill', requireAuth, requireRole('admin'), async function (req, res) {
   try {
     var days = parseInt(req.body && req.body.days, 10) || 90;
-    var stats = await goto.syncDays(days, { maxPages: 600 });
-    res.json({ success: true, days: days, stats: stats });
+    var r = goto.startBackfill(days);
+    if (!r.started) return res.status(409).json({ error: 'A backfill is already running.', state: r.state });
+    res.json({ success: true, days: days, state: r.state });
   } catch (e) {
     console.error('POST /goto/index/backfill:', e.message);
     res.status(500).json({ error: e.message });
   }
+});
+
+router.get('/index/backfill/status', requireAuth, requireRole('admin'), function (req, res) {
+  res.json(goto.backfillState());
 });
 
 // Every indexed call for a phone number, newest first. Managers can read this;
