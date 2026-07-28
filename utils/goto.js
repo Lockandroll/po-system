@@ -708,6 +708,37 @@ function envelopeShape(node, depth) {
   return out;
 }
 
+
+// The recording-access token is "recording-access:<base64 json>". Its claims are
+// the best clue to where it is meant to be spent, since GoTo documents none of
+// this. Returns { keys, urls, claims } with long values elided.
+function decodeAccessToken(token) {
+  const out = { keys: [], urls: [], claims: {}, error: null };
+  try {
+    const raw = String(token || '');
+    const body = raw.indexOf(':') !== -1 ? raw.slice(raw.indexOf(':') + 1) : raw;
+    // It may be a JWT (three dot-separated parts) or a single base64 blob.
+    const parts = body.split('.');
+    const candidates = parts.length >= 2 ? [parts[1], parts[0], body] : [body];
+    for (let i = 0; i < candidates.length; i++) {
+      let txt = '';
+      try { txt = Buffer.from(candidates[i], 'base64').toString('utf8'); } catch (e) { continue; }
+      let j = null;
+      try { j = JSON.parse(txt); } catch (e) { continue; }
+      if (!j || typeof j !== 'object') continue;
+      out.keys = Object.keys(j);
+      Object.keys(j).forEach(function (k) {
+        const v = j[k];
+        if (typeof v === 'string' && /^https?:\/\//.test(v)) out.urls.push(v);
+        out.claims[k] = (typeof v === 'string' && v.length > 80) ? ('string<len=' + v.length + '>') : v;
+      });
+      return out;
+    }
+    out.error = 'could not decode';
+  } catch (e) { out.error = e.message; }
+  return out;
+}
+
 async function httpGetBinary(url, headers) {
   let resp = await fetch(url, { headers: headers || {}, redirect: 'manual' });
   let hops = 0;
@@ -764,8 +795,10 @@ async function fetchRecordingBytes(recordingId) {
       first.buffer.slice(0, 200).toString('utf8'));
   }
 
-  const mediaUrl = findMediaUrl(env);
   const accessToken = findAccessToken(env);
+  // The envelope may not carry a URL, but the token's own claims might.
+  const claimUrls = decodeAccessToken(accessToken).urls;
+  const mediaUrl = findMediaUrl(env) || (claimUrls.length ? claimUrls[0] : null);
   const attempts = [];
 
   // 2a: a media URL in the envelope, unauthenticated (it is usually pre-signed)
@@ -781,27 +814,54 @@ async function fetchRecordingBytes(recordingId) {
     }
   }
 
-  // 2c: the original endpoint, presenting the recording-access token
+  // 2c onwards: no media url in the envelope, so the token has to be spent
+  // somewhere. GoTo documents none of this, so try the plausible combinations of
+  // endpoint x auth-style. The token already looks like a scheme plus credential
+  // ("recording-access:..."), so an Authorization header WITHOUT a Bearer prefix
+  // is a serious candidate, not an afterthought.
   if (accessToken) {
-    let r = await httpGetBinary(contentUrl, { Authorization: 'Bearer ' + accessToken, Accept: 'audio/*' });
-    attempts.push('content+token:' + r.status + ':' + (r.mime || '?'));
-    if (r.ok && isAudio(r.mime, r.buffer)) return { buffer: r.buffer, mime: r.mime || 'audio/wav' };
-
-    // 2d: as a query parameter, which some GoTo endpoints prefer
-    const sep = contentUrl.indexOf('?') === -1 ? '?' : '&';
-    r = await httpGetBinary(contentUrl + sep + 'token=' + encodeURIComponent(accessToken), { Accept: 'audio/*' });
-    attempts.push('content?token:' + r.status + ':' + (r.mime || '?'));
-    if (r.ok && isAudio(r.mime, r.buffer)) return { buffer: r.buffer, mime: r.mime || 'audio/wav' };
+    const base = API_BASE + '/recording/v1/recordings/' + encodeURIComponent(recordingId);
+    const targets = [contentUrl, base + '/media', base + '/download', base + '/audio', base];
+    const authStyles = [
+      { name: 'raw', headers: { Authorization: accessToken, Accept: 'audio/*' } },
+      { name: 'bearer', headers: { Authorization: 'Bearer ' + accessToken, Accept: 'audio/*' } },
+      { name: 'apptoken', headers: { Authorization: bearer, Accept: 'audio/*' } }
+    ];
+    for (let t = 0; t < targets.length; t++) {
+      for (let a = 0; a < authStyles.length; a++) {
+        const r = await httpGetBinary(targets[t], authStyles[a].headers);
+        attempts.push(targets[t].replace(API_BASE, '') + '[' + authStyles[a].name + ']:' + r.status + ':' + (r.mime || '?'));
+        if (r.ok && isAudio(r.mime, r.buffer)) return { buffer: r.buffer, mime: r.mime || 'audio/wav' };
+      }
+    }
+    // Query-parameter styles.
+    const paramNames = ['token', 'access_token', 'accessToken', 'recordingToken'];
+    for (let t = 0; t < 2; t++) {
+      for (let pIdx = 0; pIdx < paramNames.length; pIdx++) {
+        const url = targets[t] + (targets[t].indexOf('?') === -1 ? '?' : '&') + paramNames[pIdx] + '=' + encodeURIComponent(accessToken);
+        const r = await httpGetBinary(url, { Accept: 'audio/*' });
+        attempts.push(targets[t].replace(API_BASE, '') + '?' + paramNames[pIdx] + ':' + r.status + ':' + (r.mime || '?'));
+        if (r.ok && isAudio(r.mime, r.buffer)) return { buffer: r.buffer, mime: r.mime || 'audio/wav' };
+      }
+    }
   }
 
   // Nothing worked. Report the shape so the next step is informed, not guessed.
+  const claims = decodeAccessToken(accessToken);
+  // status is an enum (COMPLETE / PENDING / ...), not sensitive, and if it is not
+  // COMPLETE then no endpoint was ever going to return audio.
+  const status = (env && typeof env.status === 'string') ? env.status : null;
   const err = new Error(
     'GoTo returned a recording-access envelope rather than audio, and none of the follow-up requests produced a media file. ' +
+    (status ? ('Recording status: ' + status + '. ') : '') +
+    'Token claims: ' + JSON.stringify(claims.claims) + (claims.urls.length ? (' Token URLs: ' + claims.urls.join(', ')) : '') + '. ' +
     'Tried: ' + (attempts.join(', ') || 'nothing (no url or token found)') + '. ' +
     'Envelope shape: ' + JSON.stringify(envelopeShape(env))
   );
   err.envelope = envelopeShape(env);
   err.attempts = attempts;
+  err.tokenClaims = claims;
+  err.recordingStatus = status;
   throw err;
 }
 
@@ -1508,6 +1568,7 @@ module.exports = {
   findMediaUrl: findMediaUrl,
   findAccessToken: findAccessToken,
   isAudio: isAudio,
+  decodeAccessToken: decodeAccessToken,
   archiveCall: archiveCall,
   playbackUrl: playbackUrl,
   extForMime: extForMime,
