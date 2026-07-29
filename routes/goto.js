@@ -309,4 +309,97 @@ router.post('/refresh', requireAuth, requireRole('admin'), async function (req, 
   }
 });
 
+// ---- Call Lookup (search any phone number) ---------------------------------
+//
+// The complaint recordings card answers "which calls belong to THIS complaint".
+// This pair answers "which calls exist for THIS number", with no complaint in
+// the picture at all.
+//
+// Both endpoints are gated on play_call_recordings rather than view_feedback.
+// On a complaint there are two things standing between a user and customer
+// audio: the city scope on the complaint, and the check that the call actually
+// belongs to that complaint's number. A standalone lookup has neither, so the
+// permission IS the whole gate and it has to be the stronger one.
+
+function lookupRow(r) {
+  return {
+    call_id: r.id,
+    direction: r.direction,
+    started_at: r.call_started_at,
+    ended_at: r.call_ended_at,
+    duration_sec: r.duration_sec,
+    number: r.external_number,
+    extension: r.internal_number,
+    agent_name: r.agent_name,
+    has_recording: r.has_recording,
+    // Deliberately mirrors routes/feedback.js callRow: media_url never arrives
+    // (the recording notification carries only an id), so anything holding a
+    // recording id is worth attempting.
+    retrievable: !!r.recording_id,
+    has_transcript: !!r.transcript_id,
+    archived: !!r.r2_key
+  };
+}
+
+// GET /api/goto/lookup?phone=...
+// Metadata only. No audio URL is minted here, so running a search never itself
+// produces a link to a customer's recording.
+router.get('/lookup', requireAuth, requirePermission('play_call_recordings'), async function (req, res) {
+  try {
+    const digits = goto.normalizeDigits(req.query.phone);
+    // Guard against a short fragment matching half the county. Ten digits is a
+    // US number; anything shorter is almost certainly a mistyped search.
+    if (!digits || digits.length < 10) {
+      return res.json({ calls: [], digits: null, reason: 'bad_phone' });
+    }
+    const rows = await goto.callsForNumber(digits, req.query.limit);
+    let indexed = 0;
+    try {
+      const st = await goto.indexStats();
+      indexed = (st && st.total) || 0;
+    } catch (e) { indexed = 0; }
+    res.json({
+      calls: rows.map(lookupRow),
+      digits: digits,
+      formatted: goto.formatDigits(digits),
+      indexed: indexed
+    });
+  } catch (e) {
+    console.error('GET /goto/lookup:', e.message);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// GET /api/goto/lookup/:callId/play
+// Archives to R2 on first use then issues a short-lived URL, exactly as the
+// complaint route does.
+router.get('/lookup/:callId/play', requireAuth, requirePermission('play_call_recordings'), async function (req, res) {
+  try {
+    const callId = parseInt(req.params.callId, 10);
+    if (!callId) return res.status(400).json({ error: 'Bad call id' });
+
+    const play = await goto.playbackUrl(callId);
+
+    // There is no complaint timeline to write to here, so the audit log is the
+    // ONLY record that this play happened. It is not optional: the complaint
+    // route logs every play, and this route must not become the quiet way
+    // around that. Owners and View-As sessions are skipped to match.
+    if (!req.viewingAs && !(req.user.isOwner || req.user.role === 'owner')) {
+      await logAudit({
+        entity_type: 'goto_call',
+        entity_id: callId,
+        action: 'played call recording',
+        user_id: req.user.id,
+        user_name: req.user.name,
+        details: { via: 'call lookup' }
+      });
+    }
+
+    res.json({ url: play.url, mime: play.mime, bytes: play.bytes });
+  } catch (e) {
+    console.error('GET /goto/lookup/:callId/play:', e.message);
+    res.status(500).json({ error: e.message });
+  }
+});
+
 module.exports = router;

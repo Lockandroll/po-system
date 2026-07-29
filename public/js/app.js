@@ -405,7 +405,7 @@ function getSidebarSection(view) {
   if (['vr-dashboard','new-vr','edit-vr','view-vr','fleet-registry','new-vehicle','edit-vehicle','vehicle-history','inspections','inspection-form','view-inspection','inspection-checklist'].indexOf(view) !== -1) return 'vr';
   if (['ai-assistant','ai-conversations','ai-usage'].indexOf(view) !== -1) return 'ai';
   if (['company-info','ai-context','notifications','scheduled-messages','roles','settings','users','cities','audit'].indexOf(view) !== -1) return 'settings';
-  if (['geico','reviews','feedback','feedback-detail'].indexOf(view) !== -1) return 'feedback';
+  if (['geico','reviews','feedback','feedback-detail','call-lookup'].indexOf(view) !== -1) return 'feedback';
   if (['schedule','schedule-admin','timeclock','timeclock-manager','pto'].indexOf(view) !== -1) return 'attendance';
   if (view === 'quiz' || view === 'team-quiz') return 'training';
   return null;
@@ -717,7 +717,8 @@ function buildNavHtml() {
       (ss === 'feedback' ?
         (can('manage_geico') ? '<div class="nav-sub' + (cv === 'geico' ? ' active' : '') + '" onclick="navigate(\'geico\')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 01-2 2H5a2 2 0 01-2-2V5a2 2 0 012-2h11"/></svg> Geico Surveys</div>' : '') +
         '<div class="nav-sub' + (cv === 'reviews' ? ' active' : '') + '" onclick="navigate(\'reviews\')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/></svg> Google Reviews</div>' +
-        (can('view_feedback') ? '<div class="nav-sub' + (['feedback','feedback-detail'].indexOf(cv) !== -1 ? ' active' : '') + '" onclick="navigate(\'feedback\')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg> Customer Feedback</div>' : '')
+        (can('view_feedback') ? '<div class="nav-sub' + (['feedback','feedback-detail'].indexOf(cv) !== -1 ? ' active' : '') + '" onclick="navigate(\'feedback\')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg> Customer Feedback</div>' : '') +
+        (can('play_call_recordings') ? '<div class="nav-sub' + (cv === 'call-lookup' ? ' active' : '') + '" onclick="navigate(\'call-lookup\')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4.35-4.35"/></svg> Call Lookup</div>' : '')
       : '')) +
     '<div class="nav-item' + (cv === 'suggestions' ? ' active' : '') + '" onclick="navigate(\'suggestions\')">' + icoSuggestion + ' Suggestions</div>' +
     '<div class="nav-item" onclick="window.open(\'https://www.idssonline.com/pulsar.html\',\'_blank\',\'noopener\')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg> Pulsar Download</div>' +
@@ -832,7 +833,7 @@ async function render() {
     if (_ovOpen) _ovOpen.classList.add('open');
   }
   const content = document.getElementById('content');
-  var _viewPerm = { dashboard:'view_pos', view:'view_pos', running:'view_pos', 'running-admin':'view_pos', new:'create_po', edit:'view_pos', quotes:'view_quotes', 'view-quote':'view_quotes', 'new-quote':'create_quote', 'edit-quote':'edit_quote', 'vr-dashboard':'view_vr', 'view-vr':'view_vr', 'new-vr':'create_vr', 'edit-vr':'edit_vr', deposits:'view_deposits', 'view-deposit':'view_deposits', signoffs:'view_signoffs', 'view-signoff':'view_signoffs', 'new-signoff':'create_signoff', 'edit-signoff':'edit_signoff', 'complete-signoff':'complete_signoff', tasks:'view_tasks', 'task-detail':'view_tasks', 'new-task':'view_tasks', 'edit-task':'view_tasks', 'task-templates':'manage_tasks', 'new-task-template':'manage_tasks', 'edit-task-template':'manage_tasks', 'work-orders':'view_work_orders', 'view-work-order':'view_work_orders', 'new-work-order':'manage_work_orders', schedule:'view_schedule', 'schedule-admin':'manage_schedule', 'schedule-nowork':'manage_schedule', invoices:'view_invoices', 'view-invoice':'view_invoices', 'new-invoice':'create_invoice', 'edit-invoice':'edit_invoice', 'invoice-parts':'view_invoices', 'invoice-setup':'manage_invoice_setup', feedback:'view_feedback', 'feedback-detail':'view_feedback', signatures:'view_signatures', 'new-signature':'manage_signatures', 'signature-editor':'manage_signatures', timeclock:'view_timeclock', 'timeclock-manager':'manage_timeclock', pto:'view_pto', 'onboarding-admin':'manage_onboarding', 'employee-files':'manage_onboarding', ptt:'view_ptt', inspections:'view_inspections', 'view-inspection':'view_inspections', 'inspection-form':'view_inspections', 'inspection-checklist':'manage_inspections' };
+  var _viewPerm = { dashboard:'view_pos', view:'view_pos', running:'view_pos', 'running-admin':'view_pos', new:'create_po', edit:'view_pos', quotes:'view_quotes', 'view-quote':'view_quotes', 'new-quote':'create_quote', 'edit-quote':'edit_quote', 'vr-dashboard':'view_vr', 'view-vr':'view_vr', 'new-vr':'create_vr', 'edit-vr':'edit_vr', deposits:'view_deposits', 'view-deposit':'view_deposits', signoffs:'view_signoffs', 'view-signoff':'view_signoffs', 'new-signoff':'create_signoff', 'edit-signoff':'edit_signoff', 'complete-signoff':'complete_signoff', tasks:'view_tasks', 'task-detail':'view_tasks', 'new-task':'view_tasks', 'edit-task':'view_tasks', 'task-templates':'manage_tasks', 'new-task-template':'manage_tasks', 'edit-task-template':'manage_tasks', 'work-orders':'view_work_orders', 'view-work-order':'view_work_orders', 'new-work-order':'manage_work_orders', schedule:'view_schedule', 'schedule-admin':'manage_schedule', 'schedule-nowork':'manage_schedule', invoices:'view_invoices', 'view-invoice':'view_invoices', 'new-invoice':'create_invoice', 'edit-invoice':'edit_invoice', 'invoice-parts':'view_invoices', 'invoice-setup':'manage_invoice_setup', feedback:'view_feedback', 'feedback-detail':'view_feedback', 'call-lookup':'play_call_recordings', signatures:'view_signatures', 'new-signature':'manage_signatures', 'signature-editor':'manage_signatures', timeclock:'view_timeclock', 'timeclock-manager':'manage_timeclock', pto:'view_pto', 'onboarding-admin':'manage_onboarding', 'employee-files':'manage_onboarding', ptt:'view_ptt', inspections:'view_inspections', 'view-inspection':'view_inspections', 'inspection-form':'view_inspections', 'inspection-checklist':'manage_inspections' };
   if (_viewPerm[state.currentView] && !can(_viewPerm[state.currentView])) { content.innerHTML = '<div class="alert alert-error">Access denied.</div>'; return; }
   if (state.currentView === 'home') { await renderHomeScreen(content); maybeQuizBanner(content); }
   else if (state.currentView === 'pto') await renderPto(content);
@@ -908,6 +909,7 @@ async function render() {
   else if (state.currentView === 'reviews') await renderReviews(content);
   else if (state.currentView === 'feedback') await renderFeedback(content);
   else if (state.currentView === 'feedback-detail') await renderFeedbackDetail(content, state.currentParam);
+  else if (state.currentView === 'call-lookup') await renderCallLookup(content);
   else if (state.currentView === 'signoffs') await renderSignoffs(content);
   else if (state.currentView === 'new-signoff') await renderEditSignoff(content, null);
   else if (state.currentView === 'edit-signoff') await renderEditSignoff(content, state.currentParam);
@@ -13969,6 +13971,7 @@ function mySchedMonthHtml(){
       { label: 'Accounts', view: 'vendors', kw: 'vendor account supplier accounts', show: function () { return can('view_vendors') || can('manage_vendors'); } },
       { label: 'Geico Surveys', view: 'geico', kw: 'geico survey insurance', show: function () { return can('manage_geico'); } },
       { label: 'Customer Feedback', view: 'feedback', kw: 'feedback complaint pulsar customer tech conduct', show: function () { return can('view_feedback'); } },
+      { label: 'Call Lookup', view: 'call-lookup', kw: 'call lookup recording audio phone number goto listen', show: function () { return can('play_call_recordings'); } },
       { label: 'Suggestions', view: 'suggestions', kw: 'suggestion idea feedback box', show: T },
       { label: 'Document Vault', view: 'documents', kw: 'document vault file folder storage', show: T },
       { label: 'SOP Library', view: 'sop-library', kw: 'sop standard operating procedure library', show: function () { return isAdmin; } },
@@ -17137,4 +17140,186 @@ async function fbRecUnhideAll(feedbackId) {
     }
     await fbLoadRecordings(feedbackId);
   } catch (e) { showToast(e.message, 'error'); }
+}
+
+
+// ===== Call Lookup (search any number for its recorded calls) =====
+// Sibling of the complaint recordings card, and deliberately NOT sharing its
+// renderer: fbRecordingsHtml carries complaint-scoped state (primary, hidden,
+// note) that means nothing without a complaint, and folding both into one
+// function would mean threading a mode flag through every branch of it. The
+// small formatting helpers ARE shared - fbRecFmtDur, fbRecWhen, fbRecBytes.
+
+var _clState = { phone: '', data: null, searched: false };
+
+async function renderCallLookup(el) {
+  if (!can('play_call_recordings')) { el.innerHTML = '<div class="alert alert-error">Access denied.</div>'; return; }
+  // --surface-color and --text-color are undefined in the DEFAULT dark theme, so
+  // both need a fallback or the field renders transparent on some machines.
+  var iS = 'padding:8px 10px;background:var(--surface-color, var(--bg-card));border:1px solid rgba(249,115,22,0.35);border-radius:6px;color:var(--text-color, var(--text));font-size:13px;outline:none';
+  var lbl = 'display:block;font-size:11px;color:var(--text-muted-color);margin-bottom:4px';
+  el.innerHTML =
+    '<div class="page-header"><div><div class="page-title">Call Lookup</div><div class="page-subtitle">Find every recorded call for a phone number</div></div></div>' +
+    '<div style="display:flex;flex-wrap:wrap;gap:10px;align-items:end;margin-bottom:10px">' +
+      '<div style="flex:1;min-width:220px"><label style="' + lbl + '">Phone number</label>' +
+        '<input type="tel" id="cl-phone" placeholder="(205) 555-0134" value="' + escHtml(_clState.phone) + '" style="' + iS + ';width:100%;box-sizing:border-box" autocomplete="off" /></div>' +
+      '<button class="btn btn-primary" onclick="clSearch()">Search</button>' +
+      '<button class="btn btn-secondary btn-sm" onclick="clClear()">Clear</button>' +
+    '</div>' +
+    '<div style="font-size:11px;color:var(--text-muted-color);margin-bottom:14px">Any format works. Every recording you play is written to the audit log under your name.</div>' +
+    '<div id="cl-results"></div>';
+
+  var input = document.getElementById('cl-phone');
+  if (input) {
+    input.addEventListener('keydown', function (e) { if (e.key === 'Enter') { e.preventDefault(); clSearch(); } });
+    try { input.focus(); } catch (e) {}
+  }
+  clRenderResults();
+}
+
+function clClear() {
+  _clState = { phone: '', data: null, searched: false };
+  var i = document.getElementById('cl-phone');
+  if (i) { i.value = ''; try { i.focus(); } catch (e) {} }
+  clRenderResults();
+}
+
+async function clSearch() {
+  var input = document.getElementById('cl-phone');
+  var host = document.getElementById('cl-results');
+  if (!input || !host) return;
+  _clState.phone = input.value || '';
+
+  // Length guard only, to avoid a pointless round trip. The SERVER does the real
+  // normalisation, because stripping non-digits here would mangle an extension:
+  // "704.555.0134 x22" naively becomes a valid-looking key belonging to nobody.
+  var rough = String(_clState.phone).replace(/\D/g, '');
+  if (rough.length < 10) {
+    _clState.data = null;
+    _clState.searched = false;
+    host.innerHTML = '<div style="font-size:13px;color:var(--text-muted-color)">Enter a full 10-digit number. A partial one would pull up calls belonging to other people.</div>';
+    return;
+  }
+
+  host.innerHTML = '<div class="loading">Searching&hellip;</div>';
+  try {
+    _clState.data = await api('GET', '/goto/lookup?phone=' + encodeURIComponent(_clState.phone));
+    _clState.searched = true;
+  } catch (e) {
+    _clState.data = null;
+    _clState.searched = false;
+    host.innerHTML = '<div class="alert alert-error">' + escHtml(e.message) + '</div>';
+    return;
+  }
+  clRenderResults();
+}
+
+function clRenderResults() {
+  var host = document.getElementById('cl-results');
+  if (!host) return;
+  var d = _clState.data;
+
+  if (!_clState.searched || !d) {
+    host.innerHTML = '<div style="font-size:13px;color:var(--text-muted-color)">Enter a phone number above to see its calls.</div>';
+    return;
+  }
+  if (d.reason === 'bad_phone') {
+    host.innerHTML = '<div style="font-size:13px;color:var(--text-muted-color)">That does not look like a full phone number.</div>';
+    return;
+  }
+
+  var calls = d.calls || [];
+  var who = escHtml(d.formatted || d.digits || '');
+
+  if (!calls.length) {
+    // "we looked and found none" and "the index is empty" look identical but need
+    // completely different actions, so say which one it is.
+    if (!d.indexed) {
+      host.innerHTML = '<div style="font-size:13px;color:var(--text-muted-color)">No calls have been indexed yet. An admin can run a backfill in Settings &rsaquo; Integrations.</div>';
+      return;
+    }
+    host.innerHTML = '<div style="font-size:13px;color:var(--text-muted-color)">No calls found for ' + who + '. The index only reaches as far back as the last backfill.</div>';
+    return;
+  }
+
+  var withRec = calls.filter(function (c) { return c.has_recording; }).length;
+
+  var rows = calls.map(function (c) {
+    var dirDot = c.direction === 'OUTBOUND' ? '&#8599;' : '&#8600;';
+    var dirLabel = c.direction === 'OUTBOUND' ? 'Outbound' : 'Inbound';
+    var playBtn = c.has_recording
+      ? '<button class="btn btn-secondary btn-sm" onclick="clPlay(' + c.call_id + ')">&#9654; Play</button>'
+      : '<span style="font-size:11px;color:var(--text-muted-color)">No recording</span>';
+
+    return '<div style="padding:9px 0;border-bottom:1px solid var(--border)">' +
+      '<div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">' +
+        '<span style="font-size:13px;min-width:110px">' + dirDot + ' ' + dirLabel + '</span>' +
+        '<span style="font-size:13px;flex:1;min-width:150px">' + fbRecWhen(c.started_at) + '</span>' +
+        '<span style="font-size:12px;color:var(--text-muted-color);min-width:60px">' + escHtml(fbRecFmtDur(c.duration_sec)) + '</span>' +
+        '<span style="font-size:12px;color:var(--text-muted-color);min-width:90px">' + escHtml(c.agent_name || '') + '</span>' +
+        playBtn +
+      '</div>' +
+      '<div id="cl-player-' + c.call_id + '"></div>' +
+      '</div>';
+  }).join('');
+
+  var head = '<div style="font-size:12px;color:var(--text-muted-color);margin-bottom:6px">' +
+    calls.length + ' call' + (calls.length === 1 ? '' : 's') + ' for ' + who + ', newest first &middot; ' +
+    withRec + ' with audio' +
+    (calls.length > 20 ? ' &middot; this many calls on one number usually means a business or a shared line' : '') +
+    '</div>';
+
+  host.innerHTML = head + rows;
+}
+
+// Mints the URL at click time (it lives ~120 seconds), so no page ever holds a
+// playable link to customer audio ahead of an actual click.
+async function clPlay(callId) {
+  var slot = document.getElementById('cl-player-' + callId);
+  if (!slot) return;
+  if (slot.getAttribute('data-open') === '1') {
+    slot.innerHTML = '';
+    slot.removeAttribute('data-open');
+    return;
+  }
+  slot.innerHTML = '<div style="font-size:12px;color:var(--text-muted-color);padding:6px 0">Loading audio&hellip;</div>';
+
+  var r;
+  try {
+    r = await api('GET', '/goto/lookup/' + callId + '/play');
+  } catch (e) {
+    slot.innerHTML = '<div style="font-size:12px;color:#e24b4a;padding:6px 0">' + escHtml(e.message) + '</div>';
+    return;
+  }
+
+  slot.setAttribute('data-open', '1');
+  slot.innerHTML = '';
+
+  var audio = document.createElement('audio');
+  audio.controls = true;
+  // preload="metadata", never "none". With autoplay blocked a preload="none"
+  // player fetches nothing at all and sits at 0:00 / 0:00 showing no error.
+  audio.preload = 'metadata';
+  audio.style.width = '100%';
+  audio.style.marginTop = '8px';
+  audio.src = r.url;
+
+  var meta = document.createElement('div');
+  meta.style.cssText = 'font-size:11px;color:var(--text-muted-color);margin-top:4px';
+  meta.innerHTML = escHtml(fbRecBytes(r.bytes)) + ' &middot; ' + escHtml(r.mime || 'unknown type') +
+    ' &middot; <a href="' + escHtml(r.url) + '" target="_blank" rel="noopener" style="color:var(--primary)">open directly</a>';
+
+  // An <audio> that cannot decode its source fails SILENTLY. Say so out loud.
+  audio.addEventListener('error', function () {
+    var why = 'The browser could not play this file.';
+    if (r.mime && String(r.mime).indexOf('audio') !== 0) {
+      why = 'GoTo returned this as ' + r.mime + ', which is not audio. The recording may not have been ready.';
+    }
+    meta.innerHTML = '<span style="color:#e24b4a">' + escHtml(why) + '</span> ' +
+      '<a href="' + escHtml(r.url) + '" target="_blank" rel="noopener" style="color:var(--primary)">Download it</a> ' +
+      '<span>(' + escHtml(fbRecBytes(r.bytes)) + ')</span>';
+  });
+
+  slot.appendChild(audio);
+  slot.appendChild(meta);
 }
