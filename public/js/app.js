@@ -2,7 +2,7 @@
 // public/sw.js (the only thing bumped each deploy) — the badge asks the active
 // service worker for it at runtime. This value is just the fallback shown when no
 // service worker is available (e.g. very first visit before it installs).
-var APP_VERSION = 'v77';
+var APP_VERSION = 'v78';
 var _resolvedAppVersion = null;
 
 // Ask the active service worker for its CACHE_VERSION (without the 'nova-' prefix).
@@ -398,18 +398,7 @@ function closeSidebar() {
   if (ov) ov.classList.remove('open');
 }
 
-function getSidebarSection(view) {
-  if (['dashboard','new','edit','view','running','running-admin'].indexOf(view) !== -1) return 'po';
-  if (['quotes','new-quote','edit-quote','view-quote'].indexOf(view) !== -1) return 'quotes';
-  if (['invoices','new-invoice','edit-invoice','view-invoice','invoice-setup','invoice-parts'].indexOf(view) !== -1) return 'invoices';
-  if (['vr-dashboard','new-vr','edit-vr','view-vr','fleet-registry','new-vehicle','edit-vehicle','vehicle-history','inspections','inspection-form','view-inspection','inspection-checklist'].indexOf(view) !== -1) return 'vr';
-  if (['ai-assistant','ai-conversations','ai-usage'].indexOf(view) !== -1) return 'ai';
-  if (['company-info','ai-context','notifications','scheduled-messages','roles','settings','users','cities','audit'].indexOf(view) !== -1) return 'settings';
-  if (['geico','reviews','feedback','feedback-detail','call-lookup'].indexOf(view) !== -1) return 'feedback';
-  if (['schedule','schedule-admin','timeclock','timeclock-manager','pto'].indexOf(view) !== -1) return 'attendance';
-  if (view === 'quiz' || view === 'team-quiz') return 'training';
-  return null;
-}
+// getSidebarSection() now lives with the nav data model, further down this file.
 function showToast(message, type) {
   var host = document.getElementById('nova-toast-host');
   if (!host) { host = document.createElement('div'); host.id = 'nova-toast-host'; document.body.appendChild(host); }
@@ -624,128 +613,249 @@ async function pushToggle(){
     pushRefreshBtn();
   }catch(e){ novaAlert('Could not enable notifications: '+(e&&e.message?e.message:e)); }
 }
+// ---------------------------------------------------------------------------
+// Sidebar navigation
+//
+// The nav is DATA, not markup. To add a module, add one entry to navModel();
+// the renderer AND the view -> section lookup both derive from that same array,
+// so there is exactly one place to keep in sync.
+//
+// (Before this refactor the view lists were duplicated in buildNavHtml and in
+// getSidebarSection and had already drifted apart: 'parts-list' and
+// 'integrations' were missing from getSidebarSection's settings list, so
+// landing on either one silently collapsed the Settings section on desktop.)
+//
+// Node shapes:
+//   { type:'item',  view, label, icon, views:[..] }      a single row
+//   { type:'link',  href, label, icon }                  opens in a new tab
+//   { type:'group', id, label, icon, children:[item] }   collapsible section
+//   { type:'new',   id, label, children:[item] }         the + New quick-create
+//
+// 'views' is every view that should light this row up (detail/edit screens
+// included) so a section stays open and highlighted while you are inside it.
+// ---------------------------------------------------------------------------
+var NAVI = {
+  chevron: '<svg class="nav-chevron" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="9 18 15 12 9 6"/></svg>',
+  home: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 9l9-7 9 7v11a2 2 0 01-2 2H5a2 2 0 01-2-2z"/><polyline points="9 22 9 12 15 12 15 22"/></svg>',
+  ai: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="6" width="18" height="13" rx="2"/><path d="M8 6V4a1 1 0 011-1h6a1 1 0 011 1v2"/><circle cx="9" cy="12" r="1" fill="currentColor"/><circle cx="15" cy="12" r="1" fill="currentColor"/><path d="M9.5 16h5"/></svg>',
+  chat: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15a2 2 0 01-2 2H7l-4 4V5a2 2 0 012-2h14a2 2 0 012 2z"/></svg>',
+  bars: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/><line x1="6" y1="20" x2="6" y2="14"/></svg>',
+  audit: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/></svg>',
+  truck: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="1" y="3" width="15" height="13" rx="2"/><path d="M16 8h6l3 4v4h-9V8z"/><circle cx="5.5" cy="18.5" r="2.5"/><circle cx="18.5" cy="18.5" r="2.5"/></svg>',
+  db: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M21 12c0 1.66-4 3-9 3s-9-1.34-9-3"/><path d="M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5"/></svg>',
+  building: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="7" width="20" height="14" rx="2"/><path d="M16 21V5a2 2 0 00-2-2h-4a2 2 0 00-2 2v16"/></svg>',
+  accounts: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 9l9-7 9 7v11a2 2 0 01-2 2H5a2 2 0 01-2-2z"/><polyline points="9 22 9 12 15 12 15 22"/></svg>',
+  suggestion: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 21h6"/><path d="M12 3a6 6 0 016 6c0 2.22-1.21 4.16-3 5.2V17H9v-2.8C7.21 13.16 6 11.22 6 9a6 6 0 016-6z"/></svg>',
+  deposit: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="6" width="20" height="12" rx="2"/><circle cx="12" cy="12" r="2.5"/><path d="M6 9v6"/><path d="M18 9v6"/></svg>',
+  receipt: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 2v20l2-1 2 1 2-1 2 1 2-1 2 1 2-1 2 1V2l-2 1-2-1-2 1-2-1-2 1-2-1-2 1z"/><path d="M8 7h8M8 11h8M8 15h5"/></svg>',
+  box: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"/><polyline points="3.27 6.96 12 12.01 20.73 6.96"/><line x1="12" y1="22.08" x2="12" y2="12"/></svg>',
+  wrench: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14.7 6.3a4 4 0 01-5.3 5.3L4 17v3h3l5.4-5.4a4 4 0 015.3-5.3l-2.5 2.5-1.4-1.4z"/></svg>',
+  check: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg>',
+  signoff: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><path d="M9 15l2 2 4-4"/></svg>',
+  mic: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><line x1="12" y1="19" x2="12" y2="23"/></svg>',
+  clock: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><polyline points="12 7 12 12 15 14"/></svg>',
+  calendar: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="4" width="18" height="18" rx="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></svg>',
+  calendarCheck: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="4" width="18" height="18" rx="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/><path d="M9 16l2 2 4-4"/></svg>',
+  orgChart: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="7" y="3" width="10" height="5" rx="1"/><rect x="3" y="16" width="6" height="5" rx="1"/><rect x="15" y="16" width="6" height="5" rx="1"/><path d="M12 8v3M6 16v-2h12v2"/></svg>',
+  people: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>',
+  userCheck: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M16 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="8.5" cy="7" r="4"/><polyline points="17 11 19 13 23 9"/></svg>',
+  cap: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 10L12 5 2 10l10 5 10-5z"/><path d="M6 12v5c0 1 3 2 6 2s6-1 6-2v-5"/></svg>',
+  quiz: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>',
+  book: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 19.5A2.5 2.5 0 016.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 014 19.5v-15A2.5 2.5 0 016.5 2z"/></svg>',
+  folder: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>',
+  file: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>',
+  pen: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 17v4h4l11-11-4-4L3 17z"/><path d="M14 6l4 4"/></svg>',
+  lock: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>',
+  star: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/></svg>',
+  search: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4.35-4.35"/></svg>',
+  download: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>',
+  discord: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 11.5a8.38 8.38 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.38 8.38 0 0 1-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.38 8.38 0 0 1 3.8-.9h.5a8.48 8.48 0 0 1 8 8v.5z"/></svg>',
+  royalty: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="15.5" y1="12" x2="9.5" y2="18"/><circle cx="10" cy="12.5" r="1"/><circle cx="15" cy="17.5" r="1"/></svg>',
+  reqList: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="8" y1="6" x2="21" y2="6"/><line x1="8" y1="12" x2="21" y2="12"/><line x1="8" y1="18" x2="21" y2="18"/><line x1="3" y1="6" x2="3.01" y2="6"/><line x1="3" y1="12" x2="3.01" y2="12"/><line x1="3" y1="18" x2="3.01" y2="18"/></svg>',
+  bell: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 0 1-3.46 0"/></svg>',
+  shield: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>',
+  plug: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="7" width="20" height="14" rx="2"/><path d="M16 21V5a2 2 0 0 0-2-2h-4a2 2 0 0 0-2 2v16"/></svg>'
+};
+
+// A row. 'views' defaults to just the destination view.
+function navItem(view, label, icon, views) {
+  return { type: 'item', view: view, label: label, icon: icon, views: views || [view] };
+}
+// A collapsible section. Children are filtered first; an empty group is dropped
+// entirely by navModel, so permissions alone decide whether a header appears.
+function navGroup(id, label, icon, children) {
+  var kids = children.filter(Boolean);
+  return kids.length ? { type: 'group', id: id, label: label, icon: icon, children: kids } : null;
+}
+
+// The whole menu, in display order. Everything here is permission-gated exactly
+// as it was before the regroup; only the arrangement changed.
+function navModel() {
+  var u = state.user || {};
+  var role = u.role;
+  var isAdmin = role === 'admin';
+  var isAdminMgr = role === 'admin' || role === 'manager';
+
+  // + New is quick-create only. Its children carry no 'views' so they never
+  // steal the highlight from the real destination row (New PO lights up
+  // Purchasing > Purchase Orders, not this menu).
+  var quickNew = [
+    can('create_po') ? { type: 'item', view: 'new', label: 'New PO', icon: icons.plus, views: [] } : null,
+    can('create_quote') ? { type: 'item', view: 'new-quote', label: 'New Quote', icon: icons.plus, views: [] } : null,
+    can('create_invoice') ? { type: 'item', view: 'new-invoice', label: 'New Invoice', icon: icons.plus, views: [] } : null,
+    can('view_tasks') ? { type: 'item', view: 'new-task', label: 'New Task', icon: icons.plus, views: [] } : null,
+    can('manage_work_orders') ? { type: 'item', view: 'new-work-order', label: 'New Work Order', icon: icons.plus, views: [] } : null,
+    can('create_signoff') ? { type: 'item', view: 'new-signoff', label: 'New Sign-Off', icon: icons.plus, views: [] } : null,
+    can('create_vr') ? { type: 'item', view: 'new-vr', label: 'New VR', icon: icons.plus, views: [] } : null
+  ].filter(Boolean);
+
+  var model = [
+    navItem('home', 'Home', NAVI.home),
+
+    quickNew.length ? { type: 'new', id: 'new', label: 'Quick Create', children: quickNew } : null,
+
+    // Non-admins get one flat row straight into the assistant; there is nothing
+    // for them under History or Usage.
+    can('view_ai_admin')
+      ? navGroup('ai', 'Nova AI', NAVI.ai, [
+          navItem('ai-assistant', 'Conversations', NAVI.chat),
+          navItem('ai-conversations', 'History', NAVI.audit),
+          navItem('ai-usage', 'Usage', NAVI.bars)
+        ])
+      : navItem('ai-assistant', 'Nova AI', NAVI.ai),
+
+    navGroup('operations', 'Operations', NAVI.wrench, [
+      can('view_work_orders') ? navItem('work-orders', 'Work Orders', NAVI.box, ['work-orders', 'view-work-order', 'new-work-order']) : null,
+      can('view_tasks') ? navItem('tasks', 'Tasks', NAVI.check, ['tasks', 'task-detail', 'new-task', 'edit-task', 'task-templates', 'new-task-template', 'edit-task-template']) : null,
+      can('view_signoffs') ? navItem('signoffs', 'Sign-Off Sheets', NAVI.signoff, ['signoffs', 'new-signoff', 'edit-signoff', 'view-signoff', 'complete-signoff']) : null,
+      can('view_ptt') ? navItem('ptt', 'Radio', NAVI.mic) : null
+    ]),
+
+    navGroup('sales', 'Sales &amp; Billing', NAVI.receipt, [
+      can('view_quotes') ? navItem('quotes', 'Quotes', icons.quote, ['quotes', 'new-quote', 'edit-quote', 'view-quote']) : null,
+      can('view_invoices') ? navItem('invoices', 'Invoices', NAVI.receipt, ['invoices', 'new-invoice', 'edit-invoice', 'view-invoice']) : null,
+      can('view_invoices') ? navItem('invoice-parts', 'Parts Used', NAVI.box) : null,
+      can('view_deposits') ? navItem('deposits', 'Cash Deposits', NAVI.deposit, ['deposits', 'view-deposit']) : null,
+      canRoyalty('view') ? navItem('royalty', 'Royalty', NAVI.royalty) : null,
+      can('manage_invoice_setup') ? navItem('invoice-setup', 'Invoice Setup', icons.settings) : null
+    ]),
+
+    navGroup('purchasing', 'Purchasing', icons.dashboard, [
+      can('view_pos') ? navItem('dashboard', 'Purchase Orders', icons.dashboard, ['dashboard', 'new', 'edit', 'view']) : null,
+      (can('view_pos') && role !== 'approver') ? navItem(can('manage_running') ? 'running-admin' : 'running', 'Monthly Req', NAVI.reqList, ['running', 'running-admin']) : null,
+      (can('view_vendors') || can('manage_vendors')) ? navItem('vendors', 'Accounts', NAVI.accounts) : null,
+      can('manage_parts') ? navItem('parts-list', 'Parts List', NAVI.box) : null
+    ]),
+
+    navGroup('fleet', 'Fleet', NAVI.truck, [
+      can('view_vr') ? navItem('vr-dashboard', 'Vehicle Repairs', icons.dashboard, ['vr-dashboard', 'new-vr', 'edit-vr', 'view-vr']) : null,
+      (can('view_vr') && can('manage_vehicles')) ? navItem('fleet-registry', 'Fleet Registry', NAVI.db, ['fleet-registry', 'new-vehicle', 'edit-vehicle', 'vehicle-history']) : null,
+      (can('view_vr') && can('view_inspections')) ? navItem('inspections', 'Inspections', NAVI.check, ['inspections', 'inspection-form', 'view-inspection']) : null,
+      (can('view_vr') && can('manage_inspections')) ? navItem('inspection-checklist', 'Insp. Checklist', icons.settings) : null
+    ]),
+
+    navGroup('people', 'People', NAVI.people, [
+      can('view_schedule') ? navItem(can('manage_schedule') ? 'schedule-admin' : 'schedule', 'Schedule', NAVI.calendar, ['schedule', 'schedule-admin', 'schedule-nowork']) : null,
+      can('view_timeclock') ? navItem('timeclock', 'Time Clock', NAVI.clock, ['timeclock', 'timeclock-manager']) : null,
+      can('view_pto') ? navItem('pto', 'Time Off', NAVI.calendarCheck) : null,
+      navItem('org-chart', 'Org Chart', NAVI.orgChart),
+      can('manage_onboarding') ? navItem('onboarding-admin', 'Onboarding', NAVI.userCheck) : null,
+      can('manage_onboarding') ? navItem('employee-files', 'Employee Files', NAVI.folder) : null
+    ]),
+
+    navGroup('docs', 'Training &amp; Docs', NAVI.cap, [
+      // Users without view_quiz get the personal 'my-quiz' screen under the
+      // same label, which is what the old flat SOP Quiz row did.
+      navItem(can('view_quiz') ? 'quiz' : 'my-quiz', 'SOP Quiz', NAVI.quiz, ['quiz', 'my-quiz']),
+      (can('view_team_quiz') || role === 'manager') ? navItem('team-quiz', 'Team SOP Quiz', NAVI.people) : null,
+      isAdmin ? navItem('sop-library', 'SOP Library', NAVI.book) : null,
+      navItem('documents', 'Document Vault', NAVI.folder),
+      navItem('my-documents', 'My Documents', NAVI.file),
+      can('view_signatures') ? navItem('signatures', 'Signatures', NAVI.pen, ['signatures', 'new-signature', 'signature-editor']) : null,
+      (u.isOwner && !state.realUser) ? navItem('vault', 'Vault', NAVI.lock) : null
+    ]),
+
+    navGroup('customers', 'Customers', NAVI.chat, [
+      navItem('reviews', 'Google Reviews', NAVI.star),
+      can('manage_geico') ? navItem('geico', 'Geico Surveys', NAVI.check) : null,
+      can('view_feedback') ? navItem('feedback', 'Customer Feedback', NAVI.chat, ['feedback', 'feedback-detail']) : null,
+      can('play_call_recordings') ? navItem('call-lookup', 'Call Lookup', NAVI.search) : null
+    ]),
+
+    navItem('suggestions', 'Suggestions', NAVI.suggestion),
+    { type: 'link', href: 'https://www.idssonline.com/pulsar.html', label: 'Pulsar Download', icon: NAVI.download },
+    { type: 'link', href: 'https://discord.gg/cMbHbbz47', label: 'Discord Channel', icon: NAVI.discord },
+
+    navGroup('settings', 'Settings', icons.settings, [
+      isAdminMgr ? navItem('company-info', 'Company Information', NAVI.building, ['company-info', 'settings']) : null,
+      can('manage_settings') ? navItem('ai-context', 'AI Context', NAVI.ai) : null,
+      can('manage_parts') ? navItem('parts-list', 'Parts List', NAVI.box) : null,
+      can('manage_settings') ? navItem('notifications', 'Notifications', NAVI.bell) : null,
+      can('manage_settings') ? navItem('scheduled-messages', 'Scheduled Messages', NAVI.clock) : null,
+      can('view_users') ? navItem('users', 'Users', icons.users) : null,
+      can('manage_cities') ? navItem('cities', 'Cities', icons.map) : null,
+      can('view_audit') ? navItem('audit', 'Audit Log', NAVI.audit) : null,
+      can('manage_settings') ? navItem('roles', 'Roles &amp; Access', NAVI.shield) : null,
+      isAdmin ? navItem('integrations', 'Integrations', NAVI.plug) : null
+    ])
+  ];
+
+  return model.filter(Boolean);
+}
+
+// Which section owns a view, so the right group auto-opens on desktop. Derived
+// from navModel, so it can never drift from what is actually rendered.
+// 'new' (the quick-create menu) is skipped on purpose: creating a PO should
+// open Purchasing, not re-open the menu you just used.
+function getSidebarSection(view) {
+  if (!view || !state.user) return null;
+  var model = navModel();
+  for (var i = 0; i < model.length; i++) {
+    var n = model[i];
+    if (n.type !== 'group') continue;
+    for (var j = 0; j < n.children.length; j++) {
+      if (n.children[j].views.indexOf(view) !== -1) return n.id;
+    }
+  }
+  return null;
+}
+
 function buildNavHtml() {
   var cv = state.currentView;
+  // On mobile the drawer opens fully collapsed; on desktop the section holding
+  // the current view opens itself.
   var ss = isMobileNav() ? state.sidebarSection : (state.sidebarSection || getSidebarSection(cv));
-  var isAdmin = state.user.role === 'admin';
-  var isAdminMgr = ['admin','manager'].includes(state.user.role);
-  var isRealAdmin = (state.realUser || state.user).role === 'admin';
-  var chev = '<svg class="nav-chevron" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="9 18 15 12 9 6"/></svg>';
-  var icoTruck = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="1" y="3" width="15" height="13" rx="2"/><path d="M16 8h6l3 4v4h-9V8z"/><circle cx="5.5" cy="18.5" r="2.5"/><circle cx="18.5" cy="18.5" r="2.5"/></svg>';
-  var icoAI = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="6" width="18" height="13" rx="2"/><path d="M8 6V4a1 1 0 011-1h6a1 1 0 011 1v2"/><circle cx="9" cy="12" r="1" fill="currentColor"/><circle cx="15" cy="12" r="1" fill="currentColor"/><path d="M9.5 16h5"/></svg>';
-  var icoDB = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M21 12c0 1.66-4 3-9 3s-9-1.34-9-3"/><path d="M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5"/></svg>';
-  var icoBuilding = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="7" width="20" height="14" rx="2"/><path d="M16 21V5a2 2 0 00-2-2h-4a2 2 0 00-2 2v16"/></svg>';
-  var icoChat = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15a2 2 0 01-2 2H7l-4 4V5a2 2 0 012-2h14a2 2 0 012 2z"/></svg>';
-  var icoBars = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/><line x1="6" y1="20" x2="6" y2="14"/></svg>';
-  var icoAudit = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/></svg>';
-  var icoAccounts = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 9l9-7 9 7v11a2 2 0 01-2 2H5a2 2 0 01-2-2z"/><polyline points="9 22 9 12 15 12 15 22"/></svg>';
-  var icoSuggestion = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 21h6"/><path d="M12 3a6 6 0 016 6c0 2.22-1.21 4.16-3 5.2V17H9v-2.8C7.21 13.16 6 11.22 6 9a6 6 0 016-6z"/></svg>';
-  var icoDeposit = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="6" width="20" height="12" rx="2"/><circle cx="12" cy="12" r="2.5"/><path d="M6 9v6"/><path d="M18 9v6"/></svg>';
-  var icoReceipt = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 2v20l2-1 2 1 2-1 2 1 2-1 2 1 2-1 2 1V2l-2 1-2-1-2 1-2-1-2 1-2-1-2 1z"/><path d="M8 7h8M8 11h8M8 15h5"/></svg>';
-  var poViews = ['dashboard','new','edit','view','running','running-admin'];
-  var quViews = ['quotes','new-quote','edit-quote','view-quote'];
-  var vrViews = ['vr-dashboard','new-vr','edit-vr','view-vr','fleet-registry','new-vehicle','edit-vehicle','vehicle-history','inspections','inspection-form','view-inspection','inspection-checklist'];
-  var aiViews = ['ai-assistant','ai-conversations','ai-usage'];
-  var invViews = ['invoices','new-invoice','edit-invoice','view-invoice','invoice-setup','invoice-parts'];
-  var stViews = ['company-info','ai-context','notifications','scheduled-messages','roles','settings','users','cities','audit','parts-list','integrations'];
-  var taViews = ['schedule','schedule-admin','timeclock','timeclock-manager','pto'];
-  var taShow = can('view_schedule') || can('view_timeclock') || can('view_pto');
-  var taDefault = can('view_schedule') ? (can('manage_schedule') ? 'schedule-admin' : 'schedule') : (can('view_timeclock') ? 'timeclock' : 'pto');
-  var navHtml =
-    '<div class="nav-item' + (cv === 'home' ? ' active' : '') + '" onclick="navigate(\'home\')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 9l9-7 9 7v11a2 2 0 01-2 2H5a2 2 0 01-2-2z"/><polyline points="9 22 9 12 15 12 15 22"/></svg> Home</div>' +
-    (can('view_ai_admin') ?
-      '<div class="nav-section-header' + (aiViews.indexOf(cv) !== -1 ? ' section-active' : '') + (ss === 'ai' ? ' open' : '') + '" onclick="toggleSection(\'ai\',\'ai-assistant\')"><span class="s-label">' + icoAI + ' Nova AI</span>' + chev + '</div>' +
-      (ss === 'ai' ?
-        '<div class="nav-sub' + (cv === 'ai-assistant' ? ' active' : '') + '" onclick="navigate(\'ai-assistant\')">' + icoChat + ' Conversations</div>' +
-        '<div class="nav-sub' + (cv === 'ai-conversations' ? ' active' : '') + '" onclick="navigate(\'ai-conversations\')">' + icoAudit + ' History</div>' +
-        '<div class="nav-sub' + (cv === 'ai-usage' ? ' active' : '') + '" onclick="navigate(\'ai-usage\')">' + icoBars + ' Usage</div>'
-      : '')
-    :
-      '<div class="nav-item' + (cv === 'ai-assistant' ? ' active' : '') + '" onclick="navigate(\'ai-assistant\')">' + icoAI + ' Nova AI</div>'
-    ) +
-    (can('view_pos') ?
-    '<div class="nav-section-header' + (poViews.indexOf(cv) !== -1 ? ' section-active' : '') + (ss === 'po' ? ' open' : '') + '" onclick="toggleSection(\'po\',\'dashboard\')"><span class="s-label">' + icons.dashboard + ' Purchase Orders</span>' + chev + '</div>' +
-    (ss === 'po' ?
-      '<div class="nav-sub' + (cv === 'dashboard' ? ' active' : '') + '" onclick="navigate(\'dashboard\')">' + icons.dashboard + ' PO Dashboard</div>' +
-      (can('create_po') ? '<div class="nav-sub' + (cv === 'new' ? ' active' : '') + '" onclick="navigate(\'new\')">' + icons.plus + ' New PO</div>' : '') +
-      (state.user.role !== 'approver' ? '<div class="nav-sub' + (cv === 'running' || cv === 'running-admin' ? ' active' : '') + '" onclick="navigate(\'' + (can('manage_running') ? 'running-admin' : 'running') + '\')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="8" y1="6" x2="21" y2="6"/><line x1="8" y1="12" x2="21" y2="12"/><line x1="8" y1="18" x2="21" y2="18"/><line x1="3" y1="6" x2="3.01" y2="6"/><line x1="3" y1="12" x2="3.01" y2="12"/><line x1="3" y1="18" x2="3.01" y2="18"/></svg> Monthly Req</div>' : '')
-    : '') : '') +
-    (can('view_quotes') ?
-    '<div class="nav-section-header' + (quViews.indexOf(cv) !== -1 ? ' section-active' : '') + (ss === 'quotes' ? ' open' : '') + '" onclick="toggleSection(\'quotes\',\'quotes\')"><span class="s-label">' + icons.quote + ' Quotes</span>' + chev + '</div>' +
-    (ss === 'quotes' ?
-      '<div class="nav-sub' + (cv === 'quotes' ? ' active' : '') + '" onclick="navigate(\'quotes\')">' + icons.quote + ' Quote Dashboard</div>' +
-      (can('create_quote') ? '<div class="nav-sub' + (cv === 'new-quote' ? ' active' : '') + '" onclick="navigate(\'new-quote\')">' + icons.plus + ' New Quote</div>' : '')
-    : '') : '') +
-    (can('view_invoices') ?
-    '<div class="nav-section-header' + (invViews.indexOf(cv) !== -1 ? ' section-active' : '') + (ss === 'invoices' ? ' open' : '') + '" onclick="toggleSection(\'invoices\',\'invoices\')"><span class="s-label">' + icoReceipt + ' Invoices</span>' + chev + '</div>' +
-    (ss === 'invoices' ?
-      '<div class="nav-sub' + (cv === 'invoices' ? ' active' : '') + '" onclick="navigate(\'invoices\')">' + icoReceipt + ' Invoice Dashboard</div>' +
-      (can('create_invoice') ? '<div class="nav-sub' + (cv === 'new-invoice' ? ' active' : '') + '" onclick="navigate(\'new-invoice\')">' + icons.plus + ' New Invoice</div>' : '') +
-      '<div class="nav-sub' + (cv === 'invoice-parts' ? ' active' : '') + '" onclick="navigate(\'invoice-parts\')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"/></svg> Parts Used</div>' +
-      (can('manage_invoice_setup') ? '<div class="nav-sub' + (cv === 'invoice-setup' ? ' active' : '') + '" onclick="navigate(\'invoice-setup\')">' + icons.settings + ' Invoice Setup</div>' : '')
-    : '') : '') +
-    (can('view_work_orders') ? '<div class="nav-item' + (['work-orders','view-work-order','new-work-order'].indexOf(cv) !== -1 ? ' active' : '') + '" onclick="navigate(\'work-orders\')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"/><polyline points="3.27 6.96 12 12.01 20.73 6.96"/><line x1="12" y1="22.08" x2="12" y2="12"/></svg> Work Orders</div>' : '') +
-    (can('view_signoffs') ? '<div class="nav-item' + (['signoffs','new-signoff','edit-signoff','view-signoff','complete-signoff'].indexOf(cv) !== -1 ? ' active' : '') + '" onclick="navigate(\'signoffs\')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><path d="M9 15l2 2 4-4"/></svg> Sign-Off Sheets</div>' : '') +
-    (can('view_tasks') ? '<div class="nav-item' + (['tasks','task-detail','new-task','edit-task','task-templates','new-task-template','edit-task-template'].indexOf(cv) !== -1 ? ' active' : '') + '" onclick="navigate(\'tasks\')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg> Tasks</div>' : '') +
-    (can('view_ptt') ? '<div class="nav-item' + (cv === 'ptt' ? ' active' : '') + '" onclick="navigate(\'ptt\')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><line x1="12" y1="19" x2="12" y2="23"/></svg> Radio</div>' : '') +
-    (taShow ?
-      '<div class="nav-section-header' + (taViews.indexOf(cv) !== -1 ? ' section-active' : '') + (ss === 'attendance' ? ' open' : '') + '" onclick="toggleSection(\'attendance\',\'' + taDefault + '\')"><span class="s-label"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><polyline points="12 7 12 12 15 14"/></svg> Time and Attendance</span>' + chev + '</div>' +
-      (ss === 'attendance' ?
-        (can('view_schedule') ? '<div class="nav-sub' + (['schedule','schedule-admin'].indexOf(cv) !== -1 ? ' active' : '') + '" onclick="navigate(\'' + (can('manage_schedule') ? 'schedule-admin' : 'schedule') + '\')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="4" width="18" height="18" rx="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></svg> Schedule</div>' : '') +
-        (can('view_timeclock') ? '<div class="nav-sub' + (['timeclock','timeclock-manager'].indexOf(cv) !== -1 ? ' active' : '') + '" onclick="navigate(\'timeclock\')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><polyline points="12 7 12 12 15 14"/></svg> Time Clock</div>' : '') +
-        (can('view_pto') ? '<div class="nav-sub' + (cv === 'pto' ? ' active' : '') + '" onclick="navigate(\'pto\')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="4" width="18" height="18" rx="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/><path d="M9 16l2 2 4-4"/></svg> Time Off</div>' : '')
-      : '') : '') +
-    '<div class="nav-item' + (cv === 'org-chart' ? ' active' : '') + '" onclick="navigate(\'org-chart\')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="7" y="3" width="10" height="5" rx="1"/><rect x="3" y="16" width="6" height="5" rx="1"/><rect x="15" y="16" width="6" height="5" rx="1"/><path d="M12 8v3M6 16v-2h12v2"/></svg> Org Chart</div>' +
-    ((can('view_quiz') || can('view_team_quiz') || (state.user && state.user.role === 'manager')) ?
-      '<div class="nav-section-header' + ((cv === 'quiz' || cv === 'team-quiz') ? ' section-active' : '') + (ss === 'training' ? ' open' : '') + '" onclick="toggleSection(\'training\',\'' + (can('view_quiz') ? 'quiz' : 'team-quiz') + '\')"><span class="s-label"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 10L12 5 2 10l10 5 10-5z"/><path d="M6 12v5c0 1 3 2 6 2s6-1 6-2v-5"/></svg> Training</span>' + chev + '</div>' +
-      (ss === 'training' ?
-        (can('view_quiz') ? '<div class="nav-sub' + (cv === 'quiz' ? ' active' : '') + '" onclick="navigate(\'quiz\')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg> SOP Quiz</div>' : '') +
-        ((can('view_team_quiz') || (state.user && state.user.role === 'manager')) ? '<div class="nav-sub' + (cv === 'team-quiz' ? ' active' : '') + '" onclick="navigate(\'team-quiz\')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg> Team SOP Quiz</div>' : '')
-      : '') : '') +
-    (!can('view_quiz') ? '<div class="nav-item' + (cv === 'my-quiz' ? ' active' : '') + '" onclick="navigate(\'my-quiz\')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg> SOP Quiz</div>' : '') +
-    (can('view_vr') ?
-    '<div class="nav-section-header' + (vrViews.indexOf(cv) !== -1 ? ' section-active' : '') + (ss === 'vr' ? ' open' : '') + '" onclick="toggleSection(\'vr\',\'vr-dashboard\')"><span class="s-label">' + icoTruck + ' Fleet Management</span>' + chev + '</div>' +
-    (ss === 'vr' ?
-      '<div class="nav-sub' + (cv === 'vr-dashboard' ? ' active' : '') + '" onclick="navigate(\'vr-dashboard\')">' + icons.dashboard + ' VR Dashboard</div>' +
-      (can('create_vr') ? '<div class="nav-sub' + (cv === 'new-vr' ? ' active' : '') + '" onclick="navigate(\'new-vr\')">' + icons.plus + ' New VR</div>' : '') +
-      (can('manage_vehicles') ? '<div class="nav-sub' + (['fleet-registry','new-vehicle','edit-vehicle','vehicle-history'].indexOf(cv) !== -1 ? ' active' : '') + '" onclick="navigate(\'fleet-registry\')">' + icoDB + ' Fleet Registry</div>' : '') + (can('view_inspections') ? '<div class="nav-sub' + (['inspections','inspection-form','view-inspection'].indexOf(cv) !== -1 ? ' active' : '') + '" onclick="navigate(\'inspections\')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg> Inspections</div>' : '') + (can('manage_inspections') ? '<div class="nav-sub' + (cv === 'inspection-checklist' ? ' active' : '') + '" onclick="navigate(\'inspection-checklist\')">' + icons.settings + ' Insp. Checklist</div>' : '')
-    : '') : '') +
-    (can('view_deposits') ? '<div class="nav-item' + (cv === 'deposits' || cv === 'view-deposit' ? ' active' : '') + '" onclick="navigate(\'deposits\')">' + icoDeposit + ' Cash Deposits</div>' : '') +
-    (canRoyalty('view') ? '<div class="nav-item' + (cv === 'royalty' ? ' active' : '') + '" onclick="navigate(\'royalty\')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="15.5" y1="12" x2="9.5" y2="18"/><circle cx="10" cy="12.5" r="1"/><circle cx="15" cy="17.5" r="1"/></svg> Royalty</div>' : '') +
-    ((can('view_vendors') || can('manage_vendors')) ? '<div class="nav-item' + (cv === 'vendors' ? ' active' : '') + '" onclick="navigate(\'vendors\')">' + icoAccounts + ' Accounts</div>' : '') +
-    ('<div class="nav-section-header' + (['geico','reviews','feedback','feedback-detail'].indexOf(cv) !== -1 ? ' section-active' : '') + (ss === 'feedback' ? ' open' : '') + '" onclick="toggleSection(\'feedback\',\'reviews\')"><span class="s-label"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg> Reviews &amp; Feedback</span>' + chev + '</div>' +
-      (ss === 'feedback' ?
-        (can('manage_geico') ? '<div class="nav-sub' + (cv === 'geico' ? ' active' : '') + '" onclick="navigate(\'geico\')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 01-2 2H5a2 2 0 01-2-2V5a2 2 0 012-2h11"/></svg> Geico Surveys</div>' : '') +
-        '<div class="nav-sub' + (cv === 'reviews' ? ' active' : '') + '" onclick="navigate(\'reviews\')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/></svg> Google Reviews</div>' +
-        (can('view_feedback') ? '<div class="nav-sub' + (['feedback','feedback-detail'].indexOf(cv) !== -1 ? ' active' : '') + '" onclick="navigate(\'feedback\')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg> Customer Feedback</div>' : '') +
-        (can('play_call_recordings') ? '<div class="nav-sub' + (cv === 'call-lookup' ? ' active' : '') + '" onclick="navigate(\'call-lookup\')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4.35-4.35"/></svg> Call Lookup</div>' : '')
-      : '')) +
-    '<div class="nav-item' + (cv === 'suggestions' ? ' active' : '') + '" onclick="navigate(\'suggestions\')">' + icoSuggestion + ' Suggestions</div>' +
-    '<div class="nav-item" onclick="window.open(\'https://www.idssonline.com/pulsar.html\',\'_blank\',\'noopener\')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg> Pulsar Download</div>' +
-    '<div class="nav-item" onclick="window.open(\'https://discord.gg/cMbHbbz47\',\'_blank\',\'noopener\')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 11.5a8.38 8.38 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.38 8.38 0 0 1-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.38 8.38 0 0 1 3.8-.9h.5a8.48 8.48 0 0 1 8 8v.5z"/></svg> Discord Channel</div>' +
-    '<div class="nav-item' + (cv === 'documents' ? ' active' : '') + '" onclick="navigate(\'documents\')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg> Document Vault</div>' +
-    (can('view_signatures') ? '<div class="nav-item' + (['signatures','new-signature','signature-editor'].indexOf(cv) !== -1 ? ' active' : '') + '" onclick="navigate(\'signatures\')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 17v4h4l11-11-4-4L3 17z"/><path d="M14 6l4 4"/></svg> Signatures</div>' : '') +
-    ((state.user.isOwner && !state.realUser) ? '<div class="nav-item' + (cv === 'vault' ? ' active' : '') + '" onclick="navigate(\'vault\')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg> Vault</div>' : '') +
-    (isAdmin ? '<div class="nav-item' + (cv === 'sop-library' ? ' active' : '') + '" onclick="navigate(\'sop-library\')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 19.5A2.5 2.5 0 016.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 014 19.5v-15A2.5 2.5 0 016.5 2z"/></svg> SOP Library</div>' : '') +
-    (can('manage_onboarding') ? '<div class="nav-item' + (cv === 'onboarding-admin' ? ' active' : '') + '" onclick="navigate(\'onboarding-admin\')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M16 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="8.5" cy="7" r="4"/><polyline points="17 11 19 13 23 9"/></svg> Onboarding</div>' : '') +
-    (can('manage_onboarding') ? '<div class="nav-item' + (cv === 'employee-files' ? ' active' : '') + '" onclick="navigate(\'employee-files\')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg> Employee Files</div>' : '') +
-    '<div class="nav-item' + (cv === 'my-documents' ? ' active' : '') + '" onclick="navigate(\'my-documents\')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg> My Documents</div>' +
-    ((can('view_users') || can('manage_cities') || can('view_audit') || can('manage_settings') || can('manage_parts')) ?
-      '<div class="nav-section-header' + (stViews.indexOf(cv) !== -1 ? ' section-active' : '') + (ss === 'settings' ? ' open' : '') + '" onclick="toggleSection(\'settings\',\'company-info\')"><span class="s-label">' + icons.settings + ' Settings</span>' + chev + '</div>' +
-      (ss === 'settings' ?
-        (['admin','manager'].includes(state.user.role) ? '<div class="nav-sub' + (cv === 'company-info' || cv === 'settings' ? ' active' : '') + '" onclick="navigate(\'company-info\')">' + icoBuilding + ' Company Information</div>' : '') +
-        (can('manage_settings') ? '<div class="nav-sub' + (cv === 'ai-context' ? ' active' : '') + '" onclick="navigate(\'ai-context\')">' + icoAI + ' AI Context</div>' : '') +
-        (can('manage_parts') ? '<div class="nav-sub' + (cv === 'parts-list' ? ' active' : '') + '" onclick="navigate(\'parts-list\')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"/><polyline points="3.27 6.96 12 12.01 20.73 6.96"/><line x1="12" y1="22.08" x2="12" y2="12"/></svg> Parts List</div>' : '') +
-        (can('manage_settings') ? '<div class="nav-sub' + (cv === 'notifications' ? ' active' : '') + '" onclick="navigate(\'notifications\')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 0 1-3.46 0"/></svg> Notifications</div>' : '') +
-        (can('manage_settings') ? '<div class="nav-sub' + (cv === 'scheduled-messages' ? ' active' : '') + '" onclick="navigate(\'scheduled-messages\')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><polyline points="12 7 12 12 15 14"/></svg> Scheduled Messages</div>' : '') +
-        (can('view_users') ? '<div class="nav-sub' + (cv === 'users' ? ' active' : '') + '" onclick="navigate(\'users\')">' + icons.users + ' Users</div>' : '') + 
-        (can('manage_cities') ? '<div class="nav-sub' + (cv === 'cities' ? ' active' : '') + '" onclick="navigate(\'cities\')">' + icons.map + ' Cities</div>' : '') +
-        (can('view_audit') ? '<div class="nav-sub' + (cv === 'audit' ? ' active' : '') + '" onclick="navigate(\'audit\')">' + icoAudit + ' Audit Log</div>' : '') +
-        (can('manage_settings') ? '<div class="nav-sub' + (cv === 'roles' ? ' active' : '') + '" onclick="navigate(\'roles\')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg> Roles &amp; Access</div>' : '') +
-        (state.user.role === 'admin' ? '<div class="nav-sub' + (cv === 'integrations' ? ' active' : '') + '" onclick="navigate(\'integrations\')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="7" width="20" height="14" rx="2"/><path d="M16 21V5a2 2 0 0 0-2-2h-4a2 2 0 0 0-2 2v16"/></svg> Integrations</div>' : '')
-      : '')
-    : '');
-  return navHtml;
+  var model = navModel();
+  var html = '';
+
+  function subHtml(kids) {
+    return kids.map(function (c) {
+      var active = c.views.indexOf(cv) !== -1 ? ' active' : '';
+      return '<div class="nav-sub' + active + '" onclick="navigate(\'' + c.view + '\')">' + c.icon + ' ' + c.label + '</div>';
+    }).join('');
+  }
+
+  model.forEach(function (n) {
+    if (n.type === 'item') {
+      var act = n.views.indexOf(cv) !== -1 ? ' active' : '';
+      html += '<div class="nav-item' + act + '" onclick="navigate(\'' + n.view + '\')">' + n.icon + ' ' + n.label + '</div>';
+    } else if (n.type === 'link') {
+      html += '<div class="nav-item" onclick="window.open(\'' + n.href + '\',\'_blank\',\'noopener\')">' + n.icon + ' ' + n.label + '</div>';
+    } else if (n.type === 'new') {
+      html += '<div class="nav-new' + (ss === n.id ? ' open' : '') + '" onclick="toggleSection(\'' + n.id + '\')">' +
+                '<span class="s-label">' + icons.plus + ' ' + n.label + '</span>' + NAVI.chevron +
+              '</div>' +
+              (ss === n.id ? subHtml(n.children) : '');
+    } else if (n.type === 'group') {
+      var secActive = n.children.some(function (c) { return c.views.indexOf(cv) !== -1; });
+      html += '<div class="nav-section-header' + (secActive ? ' section-active' : '') + (ss === n.id ? ' open' : '') + '" onclick="toggleSection(\'' + n.id + '\')">' +
+                '<span class="s-label">' + n.icon + ' ' + n.label + '</span>' + NAVI.chevron +
+              '</div>' +
+              (ss === n.id ? subHtml(n.children) : '');
+    }
+  });
+
+  return html;
 }
 
 async function render() {
