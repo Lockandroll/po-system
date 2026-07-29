@@ -1389,7 +1389,10 @@ async function fetchViaContactCenter(recordingId, conversationSpaceId, attempts)
   try {
     env = await gotoFetch(base + '?conversationSpaceId=' + encodeURIComponent(conversationSpaceId));
   } catch (e) {
-    attempts.push('ccr/token:' + String(e.message).slice(0, 80));
+    // Do NOT truncate this. GoTo's 4xx bodies name the offending scope or field,
+    // and an 80-character slice cut the message off exactly before the part that
+    // said why - leaving a bare "403" that explained nothing.
+    attempts.push('ccr/token: ' + String(e.message));
     return null;
   }
 
