@@ -61,13 +61,24 @@ const API_BASE = 'https://api.goto.com';
 //
 // Override with GOTO_SCOPES if GoTo renames one, then reconnect. Changing scopes
 // requires re-consent - a refresh alone will not widen an existing grant.
+//
+// The two cc-/queue- analytics scopes are a LONG SHOT, added 2026-07-28. Recording
+// audio is served by contact-center-reports/v1, which answers AUTHN_INVALID_SCOPE
+// for every scope above. The full GoTo Connect scope list was read off the client
+// configuration screen and contains NO scope naming that API - the closest are
+// these two read-only analytics scopes. If GoTo happens to gate the reports API
+// behind the cc-analytics family they will unlock it; if not, no third-party OAuth
+// app can reach recording audio at all and only GoTo can change that.
+// Both are read-only and neither widens access to anything else.
 const DEFAULT_SCOPES = [
   'cr.v1.read',
   'recording.v1.read',
   'call-events.v1.events.read',
   'call-events.v1.notifications.manage',
   'recording.v1.notifications.manage',
-  'voice-admin.v1.read'
+  'voice-admin.v1.read',
+  'cc-analytics.v1.agent-status.read',
+  'queue-caller.v1.read'
 ].join(' ');
 function scopes() {
   return (process.env.GOTO_SCOPES || DEFAULT_SCOPES).trim();
