@@ -329,8 +329,12 @@ function lookupRow(r) {
     ended_at: r.call_ended_at,
     duration_sec: r.duration_sec,
     number: r.external_number,
-    extension: r.internal_number,
-    agent_name: r.agent_name,
+    // Which employee handled the call is deliberately NOT returned. Tony's
+    // call 2026-07-29: these recordings are for understanding what happened
+    // with a CUSTOMER, not for watching staff. 'extension' goes with it -
+    // internal_number identifies the handler just as directly as the name
+    // does (1000 is Tony, 1064 is Ben), so leaving it in the payload would
+    // have undone the change for anyone reading the network tab.
     has_recording: r.has_recording,
     // Deliberately mirrors routes/feedback.js callRow: media_url never arrives
     // (the recording notification carries only an id), so anything holding a

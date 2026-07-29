@@ -17154,7 +17154,6 @@ function fbRecordingsHtml(feedbackId, d) {
         '<span style="font-size:13px;min-width:132px">' + dirDot + ' ' + dirLabel + '</span>' +
         '<span style="font-size:13px;flex:1;min-width:150px">' + fbRecWhen(c.started_at) + '</span>' +
         '<span style="font-size:12px;color:var(--text-muted-color);min-width:60px">' + escHtml(fbRecFmtDur(c.duration_sec)) + '</span>' +
-        '<span style="font-size:12px;color:var(--text-muted-color);min-width:90px">' + escHtml(c.agent_name || '') + '</span>' +
         playBtn + star +
         (canEdit ? '<span style="cursor:pointer;font-size:11px;color:var(--text-muted-color)" title="Not related to this complaint" onclick="fbRecHide(' + feedbackId + ',' + c.call_id + ')">Hide</span>' : '') +
       '</div>' +
@@ -17380,7 +17379,6 @@ function clRenderResults() {
         '<span style="font-size:13px;min-width:110px">' + dirDot + ' ' + dirLabel + '</span>' +
         '<span style="font-size:13px;flex:1;min-width:150px">' + fbRecWhen(c.started_at) + '</span>' +
         '<span style="font-size:12px;color:var(--text-muted-color);min-width:60px">' + escHtml(fbRecFmtDur(c.duration_sec)) + '</span>' +
-        '<span style="font-size:12px;color:var(--text-muted-color);min-width:90px">' + escHtml(c.agent_name || '') + '</span>' +
         playBtn +
       '</div>' +
       '<div id="cl-player-' + c.call_id + '"></div>' +
