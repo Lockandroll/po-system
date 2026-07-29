@@ -2,7 +2,7 @@
 // public/sw.js (the only thing bumped each deploy) — the badge asks the active
 // service worker for it at runtime. This value is just the fallback shown when no
 // service worker is available (e.g. very first visit before it installs).
-var APP_VERSION = 'v78';
+var APP_VERSION = 'v79';
 var _resolvedAppVersion = null;
 
 // Ask the active service worker for its CACHE_VERSION (without the 'nova-' prefix).
@@ -549,9 +549,9 @@ function badgeHtml(status) {
   return '<span class="badge badge-' + escHtml(cls) + '">' + escHtml(status) + '</span>';
 }
 
-var EMPLOYEE_PERMS = ['view_pos','create_po','edit_po','delete_po','submit_po','view_quotes','create_quote','edit_quote','delete_quote','push_quote_po','view_vr','create_vr','edit_vr','delete_vr','submit_vr','view_deposits','create_deposit','delete_deposit','export_deposits','view_signoffs','create_signoff','edit_signoff','complete_signoff','delete_signoff','view_tasks','view_work_orders','view_schedule','view_invoices','create_invoice','edit_invoice','delete_invoice','view_signatures','view_timeclock','view_pto','view_ptt','ptt_direct'];
+var EMPLOYEE_PERMS = ['view_pos','create_po','edit_po','delete_po','submit_po','view_quotes','create_quote','edit_quote','delete_quote','push_quote_po','view_vr','create_vr','edit_vr','delete_vr','submit_vr','view_deposits','create_deposit','delete_deposit','export_deposits','view_signoffs','create_signoff','edit_signoff','complete_signoff','delete_signoff','view_tasks','view_work_orders','view_schedule','view_invoices','create_invoice','edit_invoice','delete_invoice','view_signatures','view_timeclock','view_pto','view_inspections','view_ptt','ptt_direct'];
 var PERM_DEFAULTS = {
-  manager: ['view_users','manage_cities','manage_geico','manage_running','manage_vehicles','manage_vendors','manage_addresses','approve_vr','manage_tasks','manage_work_orders','manage_schedule','manage_parts','manage_invoice_setup','assign_reviews','view_feedback','manage_feedback','manage_signatures','manage_timeclock','manage_pto','ptt_all_channels','view_team_quiz','manage_onboarding'].concat(EMPLOYEE_PERMS),
+  manager: ['view_users','manage_cities','manage_geico','manage_running','manage_vehicles','manage_vendors','manage_addresses','approve_vr','manage_tasks','manage_work_orders','manage_schedule','manage_parts','manage_invoice_setup','assign_reviews','view_feedback','manage_feedback','manage_signatures','manage_timeclock','manage_pto','ptt_all_channels','view_quiz','manage_quiz','view_team_quiz','manage_onboarding','view_vendors','manage_inspections','view_offboarding','play_call_recordings'].concat(EMPLOYEE_PERMS),
   locksmith: EMPLOYEE_PERMS.slice(),
   locksmith_coordinator: EMPLOYEE_PERMS.concat(['manage_work_orders','ptt_all_channels']),
   dispatcher: EMPLOYEE_PERMS.concat(['manage_work_orders','ptt_all_channels']),
@@ -779,7 +779,7 @@ function navModel() {
       // Users without view_quiz get the personal 'my-quiz' screen under the
       // same label, which is what the old flat SOP Quiz row did.
       navItem(can('view_quiz') ? 'quiz' : 'my-quiz', 'SOP Quiz', NAVI.quiz, ['quiz', 'my-quiz']),
-      (can('view_team_quiz') || role === 'manager') ? navItem('team-quiz', 'Team SOP Quiz', NAVI.people) : null,
+      can('view_team_quiz') ? navItem('team-quiz', 'Team SOP Quiz', NAVI.people) : null,
       isAdmin ? navItem('sop-library', 'SOP Library', NAVI.book) : null,
       navItem('documents', 'Document Vault', NAVI.folder),
       navItem('my-documents', 'My Documents', NAVI.file),
@@ -2851,6 +2851,11 @@ async function saveNotifications() {
   }
 }
 
+// What the Roles matrix actually renders, plus the config it was loaded from.
+// saveRoles() uses both to carry over permissions that have no row on the page.
+var _rolePermsRendered = [];
+var _rolePermsPrior = null;
+
 async function renderRoles(el) {
   if (!can('manage_settings')) { el.innerHTML = '<div class="alert alert-error">Access denied.</div>'; return; }
   el.innerHTML = '<div class="loading">Loading…</div>';
@@ -2888,11 +2893,18 @@ async function renderRoles(el) {
     { group:'Reviews', perms:[ {k:'assign_reviews',l:'Assign Google reviews to technicians'} ] },
     { group:'Customer Feedback', gate:'view_feedback', perms:[ {k:'view_feedback',l:'View / access module'}, {k:'manage_feedback',l:'Manage feedback (resolve, reassign, add notes)'}, {k:'play_call_recordings',l:'Play customer call recordings (every play is logged)'} ] },
     { group:'Radio (PTT)', gate:'view_ptt', perms:[ {k:'view_ptt',l:'View / access Radio (own city channels + All Hands)'}, {k:'ptt_all_channels',l:'Join every channel (dispatch function)'}, {k:'ptt_direct',l:'Direct person-to-person talk'} ] },
+    { group:'SOP Quiz', perms:[ {k:'view_quiz',l:'View the quiz admin screen (assignments, results, compliance)'}, {k:'manage_quiz',l:'Generate, send &amp; configure quizzes'}, {k:'view_team_quiz',l:'View team quiz results for your downline'} ] },
     { group:'Onboarding', perms:[ {k:'manage_onboarding',l:'Manage onboarding paths, new-hire progress &amp; employee files'} ] },
     { group:'Offboarding', gate:'view_offboarding', perms:[ {k:'view_offboarding',l:'View / access module (people in your team)'}, {k:'manage_offboarding',l:'Manage the offboarding lifecycle, steps &amp; templates'}, {k:'send_exit_form',l:'Send exit interview forms'}, {k:'view_exit_interviews',l:'View exit interview responses &amp; insights'} ] },
     { group:'Users', perms:[ {k:'view_users',l:'View users'}, {k:'manage_users',l:'Add / edit / remove users'} ] },
     { group:'Administration', perms:[ {k:'manage_settings',l:'Company info, AI context, notifications, roles'}, {k:'view_audit',l:'View audit log'}, {k:'view_ai_admin',l:'View AI history / usage'} ] }
   ];
+
+  _rolePermsRendered = [];
+  groups.forEach(function(g) {
+    g.perms.forEach(function(p) { if (_rolePermsRendered.indexOf(p.k) === -1) _rolePermsRendered.push(p.k); });
+  });
+  _rolePermsPrior = rules;
 
   var cols = [
     { role:'locksmith', label:'Locksmith' },
@@ -2956,6 +2968,15 @@ async function saveRoles() {
     var perms = [];
     var nodes = document.querySelectorAll('.rp-' + role);
     for (var i = 0; i < nodes.length; i++) { if (nodes[i].checked && !nodes[i].disabled) perms.push(nodes[i].value); }
+    // Carry over any permission that has no row on this page. Without this, saving
+    // rewrites the role from the visible checkboxes alone and silently revokes
+    // everything else the server knows about -- which is exactly how SOP Quiz
+    // access used to disappear the first time an admin pressed Save.
+    var _prior = (_rolePermsPrior && Object.prototype.toString.call(_rolePermsPrior[role]) === '[object Array]')
+      ? _rolePermsPrior[role] : (PERM_DEFAULTS[role] || []);
+    _prior.forEach(function(p) {
+      if (_rolePermsRendered.indexOf(p) === -1 && perms.indexOf(p) === -1) perms.push(p);
+    });
     rules[role] = perms;
   });
   try {

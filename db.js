@@ -2293,6 +2293,29 @@ async function initDB() {
       await client.query("INSERT INTO settings (key, value) VALUES ('dispatcher_role_backfilled', '1') ON CONFLICT (key) DO NOTHING");
     }
 
+    // ---- SOP Quiz permission backfill ----
+    // view_quiz / manage_quiz / view_team_quiz were enforced by the API but had no
+    // row on the Roles page, so any saved matrix is missing them (saveRoles rebuilt
+    // each role from the visible checkboxes only). Seed manager with what it has
+    // always had in practice, otherwise removing the hardcoded manager bypass in
+    // requireTeamQuiz would take SOP Quiz away from managers on deploy.
+    const _rpq = await client.query("SELECT value FROM settings WHERE key = 'perm_quiz_matrix_backfilled'");
+    if (!_rpq.rows.length) {
+      const _rpQ = await client.query("SELECT value FROM settings WHERE key = 'role_permissions'");
+      if (_rpQ.rows.length && _rpQ.rows[0].value) {
+        try {
+          const obj = JSON.parse(_rpQ.rows[0].value);
+          if (obj && typeof obj === 'object' && Array.isArray(obj.manager)) {
+            ['view_quiz', 'manage_quiz', 'view_team_quiz'].forEach(function (p) {
+              if (obj.manager.indexOf(p) === -1) obj.manager.push(p);
+            });
+            await client.query("INSERT INTO settings (key, value, updated_at) VALUES ('role_permissions', $1, NOW()) ON CONFLICT (key) DO UPDATE SET value = $1, updated_at = NOW()", [JSON.stringify(obj)]);
+          }
+        } catch (e) { console.error('quiz perm backfill failed:', e.message); }
+      }
+      await client.query("INSERT INTO settings (key, value) VALUES ('perm_quiz_matrix_backfilled', '1') ON CONFLICT (key) DO NOTHING");
+    }
+
     // ---- Royalty statements (Pop-A-Lock monthly royalty & advertising fund) ----
     // One stored statement per city per month. Holds the raw Pulsar CSV (re-download),
     // the computed statement cells, the rate/motor-club settings snapshot, and the

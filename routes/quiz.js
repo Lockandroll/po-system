@@ -520,7 +520,7 @@ async function requireTeamQuiz(req, res, next) {
   try {
     if (!req.user) return res.status(401).json({ error: 'Unauthorized' });
     var role = req.user.role;
-    if (role === 'admin' || role === 'manager' || req.user.isOwner) return next();
+    if (role === 'admin' || req.user.isOwner) return next();
     if (await permissions.hasPermission(role, 'view_team_quiz')) return next();
     var ep = await pool.query('SELECT extra_perms FROM users WHERE id = $1', [req.user.id]);
     var arr = ep.rows.length ? ep.rows[0].extra_perms : null;
