@@ -14,6 +14,11 @@ const { buildDisputePdf } = require('../utils/disputePdf');
 
 const router = express.Router();
 
+// Statuses in which the money is settled and the invoice is frozen. Changing
+// what a customer was charged after this point goes through routes/refunds.js
+// so there is a record, not through a silent edit.
+var LOCKED_STATUSES = ['paid', 'partially_refunded', 'refunded'];
+
 function sanitizeName(n) {
   return String(n || 'photo').replace(/[^A-Za-z0-9._-]+/g, '_').slice(0, 120) || 'photo';
 }
@@ -398,6 +403,28 @@ router.get('/:id', requireAuth, requirePermission('view_invoices'), async (req, 
     delete invoice.id_image_r2_key;
     delete invoice.id_image_mime;
     delete invoice.id_image_uploaded_by;
+    // Refund ledger for this invoice. The invoice's own figures are never touched
+    // by a refund, so the view layer needs both: the original totals and what has
+    // since come back off them.
+    invoice.refunds = [];
+    try {
+      const rf = await pool.query(
+        'SELECT r.*, req.name AS requested_by_name, app.name AS approved_by_name, proc.name AS processed_by_name ' +
+        'FROM invoice_refunds r ' +
+        'LEFT JOIN users req ON r.requested_by = req.id ' +
+        'LEFT JOIN users app ON r.approved_by = app.id ' +
+        'LEFT JOIN users proc ON r.processed_by = proc.id ' +
+        'WHERE r.invoice_id = $1 ORDER BY r.id',
+        [req.params.id]
+      );
+      invoice.refunds = rf.rows;
+    } catch (e) { /* table may not exist yet on first deploy */ }
+    invoice.refunded_total = parseFloat(invoice.refunded_total || 0) || 0;
+    invoice.net_total = Math.round(((parseFloat(invoice.grand_total) || 0) - invoice.refunded_total) * 100) / 100;
+    invoice.pending_refund_total = Math.round(invoice.refunds
+      .filter(function (r) { return r.status === 'requested'; })
+      .reduce(function (sum, r) { return sum + (parseFloat(r.amount) || 0); }, 0) * 100) / 100;
+    invoice.locked = LOCKED_STATUSES.indexOf(invoice.status) !== -1;
     res.json(invoice);
   } catch (err) {
     console.error(err);
@@ -466,7 +493,16 @@ router.get('/:id/dispute-packet', requireAuth, requirePermission('view_invoices'
     };
     let pdfBuf;
     try {
-      pdfBuf = await buildDisputePdf(inv, items, { idImage: idImage, idMime: inv.id_image_mime, idUploadedAt: inv.id_image_uploaded_at, photos: photos }, { company: company });
+      // Any refund already issued on this invoice is evidence in its own right.
+      let refundRows = [];
+      try {
+        refundRows = (await pool.query(
+          'SELECT r.*, app.name AS approved_by_name FROM invoice_refunds r LEFT JOIN users app ON r.approved_by = app.id ' +
+          "WHERE r.invoice_id = $1 AND r.status IN ('approved', 'processed') ORDER BY r.id",
+          [id]
+        )).rows;
+      } catch (e) { refundRows = []; }
+      pdfBuf = await buildDisputePdf(inv, items, { idImage: idImage, idMime: inv.id_image_mime, idUploadedAt: inv.id_image_uploaded_at, photos: photos, refunds: refundRows }, { company: company });
     } catch (e) { console.error('Dispute packet build failed:', e); return res.status(500).json({ error: 'Could not build the dispute packet.' }); }
     if (pdfBuf.length > 40 * 1024 * 1024) return res.status(413).json({ error: 'The packet is over 40 MB. Remove some photos and try again.' });
     try { await logAudit({ entity_type: 'invoice', entity_id: id, entity_number: String(inv.invoice_number || ''), action: 'dispute_packet', user_id: req.user.id, user_name: req.user.name }); } catch (e) {}
@@ -605,7 +641,15 @@ router.post('/:id/email', requireAuth, requirePermission('view_invoices'), async
     };
 
     let pdfBuf;
-    try { pdfBuf = await buildInvoicePdf(inv, items, photos, { company: company }); }
+    // The emailed copy shows the original total and anything refunded off it.
+    let invRefunds = [];
+    try {
+      invRefunds = (await pool.query(
+        "SELECT refund_number, amount, refund_date, status FROM invoice_refunds WHERE invoice_id = $1 AND status IN ('approved', 'processed') ORDER BY id",
+        [id]
+      )).rows;
+    } catch (e) { invRefunds = []; }
+    try { pdfBuf = await buildInvoicePdf(inv, items, photos, { company: company, refunds: invRefunds }); }
     catch (e) { console.error('Invoice PDF build failed:', e); return res.status(500).json({ error: 'Could not build the invoice PDF.' }); }
     if (pdfBuf.length > 20 * 1024 * 1024) return res.status(413).json({ error: 'The invoice PDF is over 20 MB and is too large to email. Remove some photos from the printed version and try again.' });
 
@@ -770,9 +814,24 @@ router.put('/:id', requireAuth, requirePermission('edit_invoice'), async (req, r
     if (!canSeeAll(req.user.role) && existing.locksmith_id !== req.user.id) {
       return res.status(403).json({ error: 'Access denied' });
     }
+    // A paid invoice is frozen. The customer signed a specific set of numbers and
+    // the Square dispute packet is built from them, so the way to change the money
+    // after the fact is a refund, not a quiet edit. Admins keep an override for
+    // genuine data fixes (typo in a phone number, wrong VIN) and every edit is
+    // still audited.
+    if (LOCKED_STATUSES.indexOf(existing.status) !== -1 && ['admin', 'owner'].indexOf(req.user.role) === -1) {
+      return res.status(403).json({
+        error: 'This invoice is ' + existing.status.split('_').join(' ') + ' and is locked. Use Issue Refund to change what the customer was charged, or ask an admin to correct a typo.'
+      });
+    }
     const b = req.body || {};
     const f = pickInvoiceFields(b);
-    const status = ['draft', 'completed', 'paid'].indexOf(b.status) !== -1 ? b.status : existing.status;
+    let status = ['draft', 'completed', 'paid'].indexOf(b.status) !== -1 ? b.status : existing.status;
+    // An admin correcting a refunded invoice must not knock the refund status off
+    // it: partially_refunded / refunded are derived from the ledger, not chosen in
+    // the form, so they are held here whatever the client sent.
+    const _refunded = parseFloat(existing.refunded_total) || 0;
+    if (_refunded > 0) status = existing.status;
     if (f.signature_required && status !== 'draft' && !f.signature_image) {
       return res.status(400).json({ error: 'A signature is required before this invoice can be marked ' + status + '. Save as draft, or capture a signature.' });
     }
@@ -783,6 +842,13 @@ router.put('/:id', requireAuth, requirePermission('edit_invoice'), async (req, r
     }
     const tax_rate = parseFloat(b.tax_rate) || 0;
     const t = computeTotals(b.line_items, tax_rate, b.tip_amount, b.tax_exempt === true);
+    // Never let an edit drop the invoice below what has already been given back,
+    // which would leave a refund larger than the sale it came from.
+    if (_refunded > 0 && t.grand_total < _refunded - 0.005) {
+      return res.status(400).json({
+        error: 'This invoice already has ' + _refunded.toFixed(2) + ' refunded against it, so it cannot be edited down to ' + t.grand_total.toFixed(2) + '. Void a refund first.'
+      });
+    }
     const invoice_date = b.invoice_date || existing.invoice_date;
     // Preserve original sign time; set it the first time a signature appears.
     let signedAt = existing.signed_at;
@@ -797,6 +863,13 @@ router.put('/:id', requireAuth, requirePermission('edit_invoice'), async (req, r
       );
       await client.query('DELETE FROM invoice_line_items WHERE invoice_id = $1', [req.params.id]);
       await insertLineItems(client, parseInt(req.params.id, 10), b.line_items);
+      // The new total may have turned a partial refund into a full one (or back).
+      if (_refunded > 0) {
+        await client.query(
+          "UPDATE invoices SET status = CASE WHEN $1 >= grand_total - 0.005 THEN 'refunded' ELSE 'partially_refunded' END WHERE id = $2",
+          [_refunded, req.params.id]
+        );
+      }
       await client.query('COMMIT');
     } catch (err) {
       await client.query('ROLLBACK');
@@ -825,6 +898,15 @@ router.delete('/:id', requireAuth, requirePermission('delete_invoice'), async (r
     const existing = cur.rows[0];
     if (!canSeeAll(req.user.role) && existing.locksmith_id !== req.user.id) {
       return res.status(403).json({ error: 'Access denied' });
+    }
+    // An invoice with live refunds against it is part of the money trail; deleting
+    // it would take the refund history with it (ON DELETE CASCADE).
+    const _refs = await pool.query(
+      "SELECT COUNT(*)::int AS n FROM invoice_refunds WHERE invoice_id = $1 AND status IN ('requested', 'approved', 'processed')",
+      [req.params.id]
+    );
+    if (_refs.rows[0].n > 0) {
+      return res.status(409).json({ error: 'This invoice has ' + _refs.rows[0].n + ' refund(s) on it. Void the refunds first if this invoice really needs to go.' });
     }
     // Remove the private ID image from R2 too (the DB row is cascade-deleted).
     if (existing.id_image_r2_key && r2.configured()) { try { await r2.deleteObject(existing.id_image_r2_key); } catch (e) {} }

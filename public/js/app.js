@@ -2,7 +2,7 @@
 // public/sw.js (the only thing bumped each deploy) — the badge asks the active
 // service worker for it at runtime. This value is just the fallback shown when no
 // service worker is available (e.g. very first visit before it installs).
-var APP_VERSION = 'v79';
+var APP_VERSION = 'v80';
 var _resolvedAppVersion = null;
 
 // Ask the active service worker for its CACHE_VERSION (without the 'nova-' prefix).
@@ -545,8 +545,11 @@ function userActivityCell(u) {
 }
 
 function badgeHtml(status) {
-  var cls = (status || '').replace(/\s+/g, '-');
-  return '<span class="badge badge-' + escHtml(cls) + '">' + escHtml(status) + '</span>';
+  // Underscores are treated like spaces so a DB status such as
+  // 'partially_refunded' reads as "Partially Refunded" and picks up the
+  // .badge-partially-refunded style, without every caller having to special-case it.
+  var cls = (status || '').replace(/[\s_]+/g, '-');
+  return '<span class="badge badge-' + escHtml(cls) + '">' + escHtml(String(status == null ? '' : status).split('_').join(' ')) + '</span>';
 }
 
 var EMPLOYEE_PERMS = ['view_pos','create_po','edit_po','delete_po','submit_po','view_quotes','create_quote','edit_quote','delete_quote','push_quote_po','view_vr','create_vr','edit_vr','delete_vr','submit_vr','view_deposits','create_deposit','delete_deposit','export_deposits','view_signoffs','create_signoff','edit_signoff','complete_signoff','delete_signoff','view_tasks','view_work_orders','view_schedule','view_invoices','create_invoice','edit_invoice','delete_invoice','view_signatures','view_timeclock','view_pto','view_inspections','view_ptt','ptt_direct'];
@@ -658,6 +661,7 @@ var NAVI = {
   accounts: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 9l9-7 9 7v11a2 2 0 01-2 2H5a2 2 0 01-2-2z"/><polyline points="9 22 9 12 15 12 15 22"/></svg>',
   suggestion: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 21h6"/><path d="M12 3a6 6 0 016 6c0 2.22-1.21 4.16-3 5.2V17H9v-2.8C7.21 13.16 6 11.22 6 9a6 6 0 016-6z"/></svg>',
   deposit: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="6" width="20" height="12" rx="2"/><circle cx="12" cy="12" r="2.5"/><path d="M6 9v6"/><path d="M18 9v6"/></svg>',
+  refund: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="1 4 1 10 7 10"/><path d="M3.51 15a9 9 0 102.13-9.36L1 10"/></svg>',
   receipt: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 2v20l2-1 2 1 2-1 2 1 2-1 2 1 2-1 2 1V2l-2 1-2-1-2 1-2-1-2 1-2-1-2 1z"/><path d="M8 7h8M8 11h8M8 15h5"/></svg>',
   box: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"/><polyline points="3.27 6.96 12 12.01 20.73 6.96"/><line x1="12" y1="22.08" x2="12" y2="12"/></svg>',
   wrench: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14.7 6.3a4 4 0 01-5.3 5.3L4 17v3h3l5.4-5.4a4 4 0 015.3-5.3l-2.5 2.5-1.4-1.4z"/></svg>',
@@ -746,6 +750,7 @@ function navModel() {
     navGroup('sales', 'Sales &amp; Billing', NAVI.receipt, [
       can('view_quotes') ? navItem('quotes', 'Quotes', icons.quote, ['quotes', 'new-quote', 'edit-quote', 'view-quote']) : null,
       can('view_invoices') ? navItem('invoices', 'Invoices', NAVI.receipt, ['invoices', 'new-invoice', 'edit-invoice', 'view-invoice']) : null,
+      can('view_invoices') ? navItem('refunds', 'Refunds', NAVI.refund) : null,
       can('view_invoices') ? navItem('invoice-parts', 'Parts Used', NAVI.box) : null,
       can('view_deposits') ? navItem('deposits', 'Cash Deposits', NAVI.deposit, ['deposits', 'view-deposit']) : null,
       canRoyalty('view') ? navItem('royalty', 'Royalty', NAVI.royalty) : null,
@@ -957,7 +962,7 @@ async function render() {
     if (_ovOpen) _ovOpen.classList.add('open');
   }
   const content = document.getElementById('content');
-  var _viewPerm = { dashboard:'view_pos', view:'view_pos', running:'view_pos', 'running-admin':'view_pos', new:'create_po', edit:'view_pos', quotes:'view_quotes', 'view-quote':'view_quotes', 'new-quote':'create_quote', 'edit-quote':'edit_quote', 'vr-dashboard':'view_vr', 'view-vr':'view_vr', 'new-vr':'create_vr', 'edit-vr':'edit_vr', deposits:'view_deposits', 'view-deposit':'view_deposits', signoffs:'view_signoffs', 'view-signoff':'view_signoffs', 'new-signoff':'create_signoff', 'edit-signoff':'edit_signoff', 'complete-signoff':'complete_signoff', tasks:'view_tasks', 'task-detail':'view_tasks', 'new-task':'view_tasks', 'edit-task':'view_tasks', 'task-templates':'manage_tasks', 'new-task-template':'manage_tasks', 'edit-task-template':'manage_tasks', 'work-orders':'view_work_orders', 'view-work-order':'view_work_orders', 'new-work-order':'manage_work_orders', schedule:'view_schedule', 'schedule-admin':'manage_schedule', 'schedule-nowork':'manage_schedule', invoices:'view_invoices', 'view-invoice':'view_invoices', 'new-invoice':'create_invoice', 'edit-invoice':'edit_invoice', 'invoice-parts':'view_invoices', 'invoice-setup':'manage_invoice_setup', feedback:'view_feedback', 'feedback-detail':'view_feedback', 'call-lookup':'play_call_recordings', signatures:'view_signatures', 'new-signature':'manage_signatures', 'signature-editor':'manage_signatures', timeclock:'view_timeclock', 'timeclock-manager':'manage_timeclock', pto:'view_pto', 'onboarding-admin':'manage_onboarding', 'employee-files':'manage_onboarding', ptt:'view_ptt', inspections:'view_inspections', 'view-inspection':'view_inspections', 'inspection-form':'view_inspections', 'inspection-checklist':'manage_inspections' };
+  var _viewPerm = { dashboard:'view_pos', view:'view_pos', running:'view_pos', 'running-admin':'view_pos', new:'create_po', edit:'view_pos', quotes:'view_quotes', 'view-quote':'view_quotes', 'new-quote':'create_quote', 'edit-quote':'edit_quote', 'vr-dashboard':'view_vr', 'view-vr':'view_vr', 'new-vr':'create_vr', 'edit-vr':'edit_vr', deposits:'view_deposits', 'view-deposit':'view_deposits', signoffs:'view_signoffs', 'view-signoff':'view_signoffs', 'new-signoff':'create_signoff', 'edit-signoff':'edit_signoff', 'complete-signoff':'complete_signoff', tasks:'view_tasks', 'task-detail':'view_tasks', 'new-task':'view_tasks', 'edit-task':'view_tasks', 'task-templates':'manage_tasks', 'new-task-template':'manage_tasks', 'edit-task-template':'manage_tasks', 'work-orders':'view_work_orders', 'view-work-order':'view_work_orders', 'new-work-order':'manage_work_orders', schedule:'view_schedule', 'schedule-admin':'manage_schedule', 'schedule-nowork':'manage_schedule', invoices:'view_invoices', 'view-invoice':'view_invoices', 'new-invoice':'create_invoice', 'edit-invoice':'edit_invoice', 'invoice-parts':'view_invoices', refunds:'view_invoices', 'invoice-setup':'manage_invoice_setup', feedback:'view_feedback', 'feedback-detail':'view_feedback', 'call-lookup':'play_call_recordings', signatures:'view_signatures', 'new-signature':'manage_signatures', 'signature-editor':'manage_signatures', timeclock:'view_timeclock', 'timeclock-manager':'manage_timeclock', pto:'view_pto', 'onboarding-admin':'manage_onboarding', 'employee-files':'manage_onboarding', ptt:'view_ptt', inspections:'view_inspections', 'view-inspection':'view_inspections', 'inspection-form':'view_inspections', 'inspection-checklist':'manage_inspections' };
   if (_viewPerm[state.currentView] && !can(_viewPerm[state.currentView])) { content.innerHTML = '<div class="alert alert-error">Access denied.</div>'; return; }
   if (state.currentView === 'home') { await renderHomeScreen(content); maybeQuizBanner(content); }
   else if (state.currentView === 'pto') await renderPto(content);
@@ -1043,6 +1048,7 @@ async function render() {
   else if (state.currentView === 'new-invoice') await renderEditInvoice(content, null);
   else if (state.currentView === 'edit-invoice') await renderEditInvoice(content, state.currentParam);
   else if (state.currentView === 'view-invoice') await renderViewInvoice(content, state.currentParam);
+  else if (state.currentView === 'refunds') await renderRefunds(content);
   else if (state.currentView === 'invoice-parts') await renderInvoiceParts(content);
   else if (state.currentView === 'invoice-setup') await renderInvoiceSetup(content);
   else if (state.currentView === 'quiz') await renderQuizAdmin(content);
@@ -2874,7 +2880,7 @@ async function renderRoles(el) {
     { group:'Quotes', gate:'view_quotes', perms:[ {k:'view_quotes',l:'View / access module'}, {k:'create_quote',l:'Create quotes'}, {k:'edit_quote',l:'Edit quotes'}, {k:'delete_quote',l:'Delete quotes'}, {k:'push_quote_po',l:'Push quote to PO'} ] },
     { group:'Vehicle Repairs', gate:'view_vr', perms:[ {k:'view_vr',l:'View / access module'}, {k:'create_vr',l:'Create VRs'}, {k:'edit_vr',l:'Edit VRs'}, {k:'delete_vr',l:'Delete VRs'}, {k:'submit_vr',l:'Submit for approval'}, {k:'approve_vr',l:'Approve / reject vehicle repairs'} ] },
     { group:'Cash Deposits', gate:'view_deposits', perms:[ {k:'view_deposits',l:'View / access module'}, {k:'create_deposit',l:'Create / upload deposit'}, {k:'delete_deposit',l:'Delete deposit'}, {k:'export_deposits',l:'Export deposits (CSV)'} ] },
-    { group:'Invoices', gate:'view_invoices', perms:[ {k:'view_invoices',l:'View / access module'}, {k:'create_invoice',l:'Create invoices'}, {k:'edit_invoice',l:'Edit invoices'}, {k:'delete_invoice',l:'Delete invoices'}, {k:'manage_invoice_setup',l:'Manage invoice setup (accounts, agreement, defaults)'} ] },
+    { group:'Invoices', gate:'view_invoices', perms:[ {k:'view_invoices',l:'View / access module'}, {k:'create_invoice',l:'Create invoices'}, {k:'edit_invoice',l:'Edit invoices'}, {k:'delete_invoice',l:'Delete invoices'}, {k:'request_refund',l:'Request a refund'}, {k:'approve_refund',l:'Approve / reject &amp; record refunds'}, {k:'manage_invoice_setup',l:'Manage invoice setup (accounts, agreement, defaults)'} ] },
     { group:'Signatures', gate:'view_signatures', perms:[ {k:'view_signatures',l:'View / access module'}, {k:'manage_signatures',l:'Create, send, edit & void signature requests'} ] },
     { group:'Work Orders', gate:'view_work_orders', perms:[ {k:'view_work_orders',l:'View / access module'}, {k:'manage_work_orders',l:'Create, edit, dispatch & delete work orders'} ] },
     { group:'Sign-Off Sheets', gate:'view_signoffs', perms:[ {k:'view_signoffs',l:'View / access module'}, {k:'create_signoff',l:'Create sign-off sheets'}, {k:'edit_signoff',l:'Edit setup'}, {k:'complete_signoff',l:'Complete on site'}, {k:'delete_signoff',l:'Delete sign-off sheets'} ] },
@@ -10497,7 +10503,10 @@ function filterInvoices() {
         '<td>' + escHtml(veh) + '</td>' +
         (seeAll ? '<td>' + escHtml(r.locksmith_name || r.locksmith_name_join || '—') + '</td>' : '') +
         '<td>' + badgeHtml(r.status) + '</td>' +
-        '<td class="text-right">' + invMoney(r.grand_total) + '</td>' +
+        '<td class="text-right">' + invMoney(r.grand_total) +
+          (parseFloat(r.refunded_total) > 0
+            ? '<div style="font-size:11px;color:var(--danger)">net ' + invMoney((parseFloat(r.grand_total)||0) - (parseFloat(r.refunded_total)||0)) + '</div>'
+            : '') + '</td>' +
         '<td>' + formatDate(r.invoice_date || r.created_at) + '</td>' +
       '</tr>';
     }).join('') + '</tbody></table></div>';
@@ -11107,8 +11116,15 @@ async function renderViewInvoice(el, id) {
     var inv = await api('GET', '/invoices/' + id);
     _currentInvoice = inv;
     var seeAll = ['admin','manager'].indexOf(state.user.role) !== -1;
-    var canEdit = seeAll || (can('edit_invoice') && inv.locksmith_id === state.user.id);
+    var invLocked = ['paid', 'partially_refunded', 'refunded'].indexOf(inv.status) !== -1;
+    var isAdminUser = ['admin', 'owner'].indexOf(state.user.role) !== -1;
+    // A paid invoice is frozen: the money changes through a refund, not an edit.
+    var canEdit = (seeAll || (can('edit_invoice') && inv.locksmith_id === state.user.id)) && (!invLocked || isAdminUser);
     var canDel = seeAll || (can('delete_invoice') && inv.locksmith_id === state.user.id);
+    // Anyone who could have written this invoice can ask for a refund on it.
+    var canRefund = can('request_refund') && inv.status !== 'draft' &&
+      (seeAll || inv.locksmith_id === state.user.id) &&
+      (parseFloat(inv.net_total || inv.grand_total) - parseFloat(inv.pending_refund_total || 0)) > 0.005;
     var veh = [inv.vehicle_year, inv.vehicle_make, inv.vehicle_model].filter(Boolean).join(' ') || '—';
     var ent = [];
     if (inv.ent_registration) ent.push('Registration');
@@ -11136,11 +11152,13 @@ async function renderViewInvoice(el, id) {
           '<button class="btn btn-secondary" style="white-space:nowrap" onclick="printInvoice(' + inv.id + ')">' + icons.print + ' Print</button>' +
           '<button class="btn btn-secondary" style="white-space:nowrap" onclick="invEmail(' + inv.id + ')">' + (icons.mail || icons.send || '') + ' Email</button>' +
           (seeAll ? '<button class="btn btn-secondary" style="white-space:nowrap" title="Build a Square-ready chargeback evidence PDF for this invoice" onclick="invDownloadDisputePacket(' + inv.id + ')"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="vertical-align:-2px"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg> Dispute Packet</button>' : '') +
+          (canRefund ? '<button class="btn btn-danger" style="white-space:nowrap" title="Refunds never change the signed invoice — they are recorded separately" onclick="openRefundRequest(' + inv.id + ')">' + NAVI.refund + (can('approve_refund') ? ' Issue Refund' : ' Request Refund') + '</button>' : '') +
           (canEdit ? '<button class="btn btn-secondary" onclick="navigate(\'edit-invoice\',' + inv.id + ')">' + icons.edit + ' Edit</button>' : '') +
           (canDel ? '<button class="btn btn-danger" title="Delete invoice" onclick="deleteInvoice(' + inv.id + ')"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14H6L5 6"/><path d="M10 11v6"/><path d="M14 11v6"/><path d="M9 6V4h6v2"/></svg> Delete</button>' : '') +
         '</div>' +
       '</div>' +
       '<div id="view-invoice-error"></div>' +
+      refundBannerHtml(inv) +
       '<div class="card mb-4"><div class="card-header"><span class="card-title">Customer &amp; Account</span></div><div class="card-body"><div class="detail-grid">' +
         field('Customer', inv.customer_name) + field('Phone', inv.phone) + field('Email', inv.email) +
         field('Address', [inv.street_address, inv.city, inv.state, inv.zip].filter(Boolean).join(', ')) +
@@ -11173,6 +11191,10 @@ async function renderViewInvoice(el, id) {
           '<div style="display:flex;justify-content:space-between;padding:3px 0;font-size:13px"><span>Sales Tax (' + (parseFloat(inv.tax_rate)||0).toFixed(2) + '%)</span><span>' + invMoney(inv.tax_amount) + '</span></div>' +
           (parseFloat(inv.tip_amount) ? '<div style="display:flex;justify-content:space-between;padding:3px 0;font-size:13px"><span>Tip</span><span>' + invMoney(inv.tip_amount) + '</span></div>' : '') +
           '<div style="display:flex;justify-content:space-between;padding:6px 0;font-size:16px;font-weight:700;border-top:2px solid var(--border)"><span>Grand Total</span><span>' + invMoney(inv.grand_total) + '</span></div>' +
+          (parseFloat(inv.refunded_total) > 0
+            ? '<div style="display:flex;justify-content:space-between;padding:3px 0;font-size:13px;color:var(--danger)"><span>Refunded</span><span>-' + invMoney(inv.refunded_total) + '</span></div>' +
+              '<div style="display:flex;justify-content:space-between;padding:6px 0;font-size:16px;font-weight:700;color:var(--primary);border-top:1px solid var(--border)"><span>Net Collected</span><span>' + invMoney(inv.net_total) + '</span></div>'
+            : '') +
         '</div></div>' +
         (inv.payments_note ? '<div style="margin-top:10px;font-size:13px"><strong>Payments:</strong> ' + escHtml(inv.payments_note) + '</div>' : '') +
         (inv.notes ? '<div style="margin-top:6px;font-size:13px"><strong>Notes:</strong> ' + escHtml(inv.notes) + '</div>' : '') +
@@ -11183,6 +11205,7 @@ async function renderViewInvoice(el, id) {
           ? '<div style="margin-top:14px"><div style="font-size:12px;color:var(--text-muted-color);margin-bottom:4px">Signed by ' + escHtml(inv.signed_name || inv.customer_name || '') + (inv.signed_at ? ' on ' + formatDateTime(inv.signed_at) : '') + '</div><div style="background:#fff;border:1px solid var(--border);border-radius:8px;padding:8px;display:inline-block"><img src="' + inv.signature_image + '" style="max-width:340px;max-height:140px;display:block" /></div></div>'
           : '<div style="margin-top:14px;font-size:13px;color:var(--text-muted-color)">No signature captured.</div>') +
       '</div></div>' +
+      refundHistoryHtml(inv) +
       '<div class="card mb-4"><div class="card-header"><span class="card-title">Photos</span>' +
         (canEdit ? '<button class="btn btn-secondary btn-sm" onclick="navigate(\'edit-invoice\',' + inv.id + ')">' + (icons.edit || '') + ' Add / manage</button>' : '') +
       '</div><div class="card-body">' +
@@ -11420,7 +11443,17 @@ async function printInvoice(id) {
         '<tr><td style="padding:3px 10px;text-align:right;color:#555">Sales Tax</td><td style="padding:3px 10px;text-align:right">' + invMoney(inv.tax_amount) + '</td></tr>' +
         (parseFloat(inv.tip_amount) ? '<tr><td style="padding:3px 10px;text-align:right;color:#555">Tip</td><td style="padding:3px 10px;text-align:right">' + invMoney(inv.tip_amount) + '</td></tr>' : '') +
         '<tr style="border-top:2px solid #111"><td style="padding:5px 10px;text-align:right;font-weight:700">Grand Total</td><td style="padding:5px 10px;text-align:right;font-weight:700">' + invMoney(inv.grand_total) + '</td></tr>' +
+        (parseFloat(inv.refunded_total) > 0
+          ? '<tr><td style="padding:3px 10px;text-align:right;color:#b91c1c">Refunded</td><td style="padding:3px 10px;text-align:right;color:#b91c1c">-' + invMoney(inv.refunded_total) + '</td></tr>' +
+            '<tr style="border-top:1px solid #111"><td style="padding:5px 10px;text-align:right;font-weight:700">Net Charged</td><td style="padding:5px 10px;text-align:right;font-weight:700">' + invMoney(inv.net_total) + '</td></tr>'
+          : '') +
       '</table></div>' +
+      ((inv.refunds || []).filter(function(r){ return ['approved','processed'].indexOf(r.status) !== -1; }).length
+        ? '<div class="avoid-break" style="margin-top:10px;font-size:11px"><strong>Refunds</strong><br>' +
+          (inv.refunds || []).filter(function(r){ return ['approved','processed'].indexOf(r.status) !== -1; }).map(function(r){
+            return esc(r.refund_number || 'Refund') + ' &nbsp; ' + esc(formatDate(r.refund_date || r.approved_at)) + ' &nbsp; -' + invMoney(r.amount) + (r.status === 'approved' ? ' (issued shortly)' : '');
+          }).join('<br>') + '</div>'
+        : '') +
       (inv.payments_note ? '<div style="margin-top:8px;font-size:11px"><strong>Payments:</strong> ' + esc(inv.payments_note) + '</div>' : '') +
       (inv.notes ? '<div style="margin-top:4px;font-size:11px"><strong>Notes:</strong> ' + esc(inv.notes) + '</div>' : '') +
       '<div class="agreement" style="margin-top:18px;border-top:1px solid #ddd;padding-top:10px;font-size:11px;color:#333;line-height:1.5">' + agreementHtml + '</div>' +
@@ -17465,4 +17498,560 @@ async function clPlay(callId) {
 
   slot.appendChild(audio);
   slot.appendChild(meta);
+}
+
+// ===========================================================================
+// Invoice refunds
+// ---------------------------------------------------------------------------
+// A refund never edits the invoice. The tech (or anyone who can write the
+// invoice) REQUESTS one, a manager approves it, and someone then issues it in
+// Square and pastes the reference back here. Everything below is the UI for
+// those three steps plus the queue that keeps an approved-but-unissued refund
+// from being forgotten. Backend: routes/refunds.js.
+// ===========================================================================
+
+var REFUND_REASONS = [
+  { k: 'warranty', l: 'Warranty / comeback' },
+  { k: 'overcharge', l: 'Overcharge / price adjustment' },
+  { k: 'service_not_completed', l: 'Service not completed' },
+  { k: 'duplicate_charge', l: 'Duplicate charge' },
+  { k: 'goodwill', l: 'Customer goodwill' },
+  { k: 'chargeback_settled', l: 'Chargeback settled' },
+  { k: 'tax_correction', l: 'Tax correction' }
+];
+
+var REFUND_METHODS = [
+  { k: 'card', l: 'Back to card' },
+  { k: 'cash', l: 'Cash' },
+  { k: 'check', l: 'Check' },
+  { k: 'other', l: 'Other' }
+];
+
+function refundReasonLabel(k) {
+  for (var i = 0; i < REFUND_REASONS.length; i++) { if (REFUND_REASONS[i].k === k) return REFUND_REASONS[i].l; }
+  return k || '—';
+}
+
+function refundMethodLabel(k) {
+  for (var i = 0; i < REFUND_METHODS.length; i++) { if (REFUND_METHODS[i].k === k) return REFUND_METHODS[i].l; }
+  return k || '—';
+}
+
+function refundStatusBadge(status) {
+  var map = {
+    requested: { cls: 'badge-submitted', label: 'Pending Approval' },
+    approved: { cls: 'badge-refund-awaiting', label: 'Awaiting Square' },
+    processed: { cls: 'badge-approved', label: 'Processed' },
+    rejected: { cls: 'badge-rejected', label: 'Rejected' },
+    voided: { cls: 'badge-cancelled', label: 'Voided' }
+  };
+  var m = map[status] || { cls: 'badge-draft', label: status || '' };
+  return '<span class="badge ' + m.cls + '">' + escHtml(m.label) + '</span>';
+}
+
+function refundNum(v) { return Math.round((parseFloat(v) || 0) * 100) / 100; }
+
+// Same proportional split the backend applies, mirrored here so the modal can
+// show the customer-visible effect before anything is submitted.
+function refundAutoSplit(inv, amount) {
+  var labor = refundNum(inv.labor_amount), parts = refundNum(inv.parts_amount);
+  var tax = refundNum(inv.tax_amount), tip = refundNum(inv.tip_amount);
+  var grand = labor + parts + tax + tip;
+  var amt = refundNum(amount);
+  if (grand <= 0) return { labor: amt, parts: 0, tax: 0, tip: 0 };
+  var share = amt / grand;
+  var a = { labor: refundNum(labor * share), parts: refundNum(parts * share), tax: refundNum(tax * share), tip: refundNum(tip * share) };
+  var diff = refundNum(amt - (a.labor + a.parts + a.tax + a.tip));
+  if (diff !== 0) {
+    var big = 'labor';
+    ['parts', 'tax', 'tip'].forEach(function (k) { if (a[k] > a[big]) big = k; });
+    a[big] = refundNum(a[big] + diff);
+  }
+  return a;
+}
+
+function refundAllocRows(prefix, alloc, inv) {
+  function row(key, label, val, show) {
+    if (!show) return '';
+    return '<div style="display:flex;justify-content:space-between;align-items:center;padding:5px 0;font-size:13px;color:var(--text-dim)">' +
+      '<span>' + label + '</span>' +
+      '<input type="number" step="0.01" id="' + prefix + '-alloc-' + key + '" value="' + val.toFixed(2) + '" ' +
+      'oninput="refundAllocTouched(\'' + prefix + '\')" style="width:110px;padding:5px 8px;font-size:13px;text-align:right" /></div>';
+  }
+  return '<div style="background:var(--bg-elevated);border:1px solid var(--border);border-radius:var(--radius);padding:12px 14px">' +
+    row('labor', 'Labor', alloc.labor, true) +
+    row('parts', 'Parts', alloc.parts, true) +
+    row('tax', 'Tax', alloc.tax, refundNum(inv.tax_amount) > 0) +
+    row('tip', 'Tip', alloc.tip, refundNum(inv.tip_amount) > 0) +
+    '<div style="display:flex;justify-content:space-between;margin-top:8px;padding-top:8px;border-top:1px solid var(--border);font-size:14px;font-weight:600;color:var(--primary)">' +
+      '<span>Net after refund</span><span id="' + prefix + '-net">' + invMoney(0) + '</span></div>' +
+  '</div>';
+}
+
+function refundAllocTouched(prefix) {
+  var f = document.getElementById(prefix + '-alloc-touched');
+  if (f) f.value = '1';
+  refundRecalc(prefix, true);
+}
+
+// Keeps the split and the "net after refund" figure honest as the amount is
+// typed. Once a bucket has been hand-edited we stop overwriting it.
+function refundRecalc(prefix, keepSplit) {
+  var inv = window._refundInvoice || {};
+  var amtEl = document.getElementById(prefix + '-amount');
+  var amount = refundNum(amtEl ? amtEl.value : 0);
+  var touched = (document.getElementById(prefix + '-alloc-touched') || {}).value === '1';
+  if (!touched && !keepSplit) {
+    var a = refundAutoSplit(inv, amount);
+    ['labor', 'parts', 'tax', 'tip'].forEach(function (k) {
+      var el = document.getElementById(prefix + '-alloc-' + k);
+      if (el) el.value = a[k].toFixed(2);
+    });
+  }
+  var already = refundNum(inv.refunded_total);
+  var net = refundNum(refundNum(inv.grand_total) - already - amount);
+  var netEl = document.getElementById(prefix + '-net');
+  if (netEl) {
+    netEl.textContent = invMoney(net);
+    netEl.style.color = net < 0 ? 'var(--danger)' : '';
+  }
+}
+
+function refundCollectAlloc(prefix) {
+  var out = {};
+  ['labor', 'parts', 'tax', 'tip'].forEach(function (k) {
+    var el = document.getElementById(prefix + '-alloc-' + k);
+    out[k + '_refunded'] = el ? refundNum(el.value) : 0;
+  });
+  return out;
+}
+
+// ---------- Request (invoice view) ----------
+
+function openRefundRequest(invoiceId) {
+  var inv = _currentInvoice;
+  if (!inv || inv.id !== invoiceId) { showToast('Reload the invoice and try again.', 'error'); return; }
+  window._refundInvoice = inv;
+  var already = refundNum(inv.refunded_total) + refundNum(inv.pending_refund_total);
+  var room = refundNum(refundNum(inv.grand_total) - already);
+  if (room <= 0) { showToast('This invoice is fully refunded or fully spoken for.', 'error'); return; }
+  var approver = can('approve_refund');
+  var alloc = refundAutoSplit(inv, room);
+
+  var overlay = document.createElement('div');
+  overlay.className = 'modal-overlay';
+  overlay.id = 'refund-modal-overlay';
+  overlay.innerHTML =
+    '<div class="modal" style="max-width:560px">' +
+      '<div class="modal-header"><span class="modal-title">Request Refund &middot; Invoice #' + escHtml(inv.invoice_number) + '</span>' +
+        '<button class="btn btn-ghost btn-sm" onclick="document.getElementById(\'refund-modal-overlay\').remove()">&#x2715;</button></div>' +
+      '<div class="modal-body">' +
+        '<div id="refund-modal-error"></div>' +
+        '<div class="alert alert-info" style="margin-bottom:16px">' +
+          (approver
+            ? 'You can approve refunds, so this one is submitted and approved in a single step.'
+            : 'A manager has to approve this before any money moves. Nothing is refunded until then.') +
+        '</div>' +
+        '<input type="hidden" id="rfreq-alloc-touched" value="" />' +
+        '<div class="form-row">' +
+          '<div class="form-group"><label>Refund Amount</label>' +
+            '<input type="number" step="0.01" min="0.01" id="rfreq-amount" value="' + room.toFixed(2) + '" oninput="refundRecalc(\'rfreq\')" />' +
+            '<div style="font-size:12px;color:var(--text-muted-color);margin-top:5px">Up to ' + invMoney(room) + ' &middot; ' +
+              '<a href="#" onclick="document.getElementById(\'rfreq-amount\').value=' + room.toFixed(2) + ';refundRecalc(\'rfreq\');return false;">refund the full ' + invMoney(room) + '</a></div>' +
+          '</div>' +
+          '<div class="form-group"><label>Refund Method</label><select id="rfreq-method">' +
+            REFUND_METHODS.map(function (m) {
+              return '<option value="' + m.k + '"' + (m.k === 'card' ? ' selected' : '') + '>' + escHtml(m.l + (m.k === 'card' && inv.card_last4 ? (' •••• ' + inv.card_last4) : '')) + '</option>';
+            }).join('') +
+          '</select><div style="font-size:12px;color:var(--text-muted-color);margin-top:5px">Issued by hand in Square, then recorded here.</div></div>' +
+        '</div>' +
+        '<div class="form-group"><label>Reason</label><select id="rfreq-reason">' +
+          REFUND_REASONS.map(function (r) { return '<option value="' + r.k + '">' + escHtml(r.l) + '</option>'; }).join('') +
+        '</select></div>' +
+        '<div class="form-group"><label>Notes ' + (approver ? '' : 'for the approver') + '</label>' +
+          '<textarea id="rfreq-notes" style="min-height:64px" placeholder="What happened? Required for a goodwill refund."></textarea></div>' +
+        (approver
+          ? '<div class="form-group"><label>Part returned to stock?</label>' +
+            '<select id="rfreq-part-returned"><option value="no">No &mdash; the part was consumed</option><option value="yes">Yes &mdash; back on the shelf</option></select>' +
+            '<div style="font-size:12px;color:var(--text-muted-color);margin-top:5px">Keeps the month-end reorder honest</div></div>'
+          : '') +
+        '<div style="font-size:12px;font-weight:600;color:var(--text-muted-color);text-transform:uppercase;letter-spacing:.05em;margin-bottom:8px">How it splits (edit any line)</div>' +
+        refundAllocRows('rfreq', alloc, inv) +
+        '<div style="font-size:12px;color:var(--text-muted-color);margin-top:6px">Split proportionally by default so sales tax comes back at the right rate.</div>' +
+      '</div>' +
+      '<div class="modal-footer">' +
+        '<button class="btn btn-secondary" onclick="document.getElementById(\'refund-modal-overlay\').remove()">Cancel</button>' +
+        '<button class="btn btn-primary" onclick="submitRefundRequest(' + inv.id + ', this)">' + (approver ? 'Submit &amp; Approve' : 'Send for Approval') + '</button>' +
+      '</div>' +
+    '</div>';
+  document.body.appendChild(overlay);
+  refundRecalc('rfreq');
+}
+
+async function submitRefundRequest(invoiceId, btn) {
+  var errEl = document.getElementById('refund-modal-error');
+  var amount = refundNum((document.getElementById('rfreq-amount') || {}).value);
+  var reason = (document.getElementById('rfreq-reason') || {}).value;
+  var notes = ((document.getElementById('rfreq-notes') || {}).value || '').trim();
+  if (!(amount > 0)) { errEl.innerHTML = '<div class="alert alert-error">Enter a refund amount greater than zero.</div>'; return; }
+  if (reason === 'goodwill' && !notes) { errEl.innerHTML = '<div class="alert alert-error">A goodwill refund needs a note explaining it.</div>'; return; }
+  var payload = Object.assign({
+    invoice_id: invoiceId,
+    amount: amount,
+    method: (document.getElementById('rfreq-method') || {}).value,
+    reason_code: reason,
+    reason_notes: notes
+  }, refundCollectAlloc('rfreq'));
+  var btnLabel = btn.innerHTML;
+  btn.disabled = true; btn.textContent = 'Saving…';
+  try {
+    var created = await api('POST', '/refunds', payload);
+    // An approver requesting a refund is really just issuing one — skip the
+    // pointless round trip of approving their own request.
+    if (can('approve_refund')) {
+      try {
+        await api('POST', '/refunds/' + created.id + '/approve', {
+          part_returned: (document.getElementById('rfreq-part-returned') || {}).value === 'yes'
+        });
+      } catch (e) { showToast('Saved, but the auto-approval failed: ' + e.message, 'error'); }
+    }
+    var ov = document.getElementById('refund-modal-overlay');
+    if (ov) ov.remove();
+    showToast('Refund ' + created.refund_number + ' ' + (can('approve_refund') ? 'approved. Issue it in Square, then record the reference.' : 'sent for approval.'), 'success');
+    navigate('view-invoice', invoiceId);
+  } catch (err) {
+    btn.disabled = false; btn.innerHTML = btnLabel;
+    errEl.innerHTML = '<div class="alert alert-error">' + escHtml(err.message) + '</div>';
+  }
+}
+
+// ---------- Review (approve / reject) ----------
+
+async function openRefundReview(refundId) {
+  var r;
+  try { r = await api('GET', '/refunds/' + refundId); }
+  catch (err) { showToast(err.message, 'error'); return; }
+  if (r.status !== 'requested') { showToast('That refund is already ' + r.status + '.', 'error'); return; }
+  window._refundInvoice = {
+    grand_total: r.grand_total, labor_amount: r.labor_amount, parts_amount: r.parts_amount,
+    tax_amount: r.tax_amount, tip_amount: r.tip_amount, refunded_total: r.refunded_total, card_last4: r.card_last4
+  };
+  var amount = refundNum(r.amount);
+  var pct = refundNum(r.grand_total) > 0 ? Math.round((amount / refundNum(r.grand_total)) * 100) : 0;
+  var alloc = { labor: refundNum(r.labor_refunded), parts: refundNum(r.parts_refunded), tax: refundNum(r.tax_refunded), tip: refundNum(r.tip_refunded) };
+
+  var overlay = document.createElement('div');
+  overlay.className = 'modal-overlay';
+  overlay.id = 'refund-review-overlay';
+  overlay.innerHTML =
+    '<div class="modal" style="max-width:620px">' +
+      '<div class="modal-header"><span class="modal-title">Review Refund ' + escHtml(r.refund_number) + '</span>' +
+        '<button class="btn btn-ghost btn-sm" onclick="document.getElementById(\'refund-review-overlay\').remove()">&#x2715;</button></div>' +
+      '<div class="modal-body">' +
+        '<div id="refund-review-error"></div>' +
+        (pct >= 50
+          ? '<div class="alert alert-error" style="margin-bottom:16px">This is <strong>' + pct + '%</strong> of the invoice. Your name goes on it in the audit log.</div>'
+          : '') +
+        '<input type="hidden" id="rfrev-alloc-touched" value="" />' +
+        '<div class="detail-grid" style="gap:14px;margin-bottom:16px">' +
+          '<div class="detail-field"><label>Invoice</label><p>#' + escHtml(r.invoice_number) + ' &middot; ' + invMoney(r.grand_total) + '</p></div>' +
+          '<div class="detail-field"><label>Customer</label><p>' + escHtml(r.customer_name || '—') + '</p></div>' +
+          '<div class="detail-field"><label>Requested by</label><p>' + escHtml(r.requested_by_name || '—') + ' &middot; ' + formatDateTime(r.requested_at) + '</p></div>' +
+          '<div class="detail-field"><label>Reason</label><p>' + escHtml(refundReasonLabel(r.reason_code)) + '</p></div>' +
+        '</div>' +
+        (r.reason_notes
+          ? '<div class="form-group"><label>Note from ' + escHtml((r.requested_by_name || 'the requester').split(' ')[0]) + '</label>' +
+            '<div style="background:var(--bg-elevated);border:1px solid var(--border);border-radius:var(--radius);padding:11px 13px;font-size:14px;color:var(--text-dim)">' + escHtml(r.reason_notes) + '</div></div>'
+          : '') +
+        '<div class="form-row">' +
+          '<div class="form-group"><label>Approved Amount</label>' +
+            '<input type="number" step="0.01" min="0.01" id="rfrev-amount" value="' + amount.toFixed(2) + '" oninput="refundRecalc(\'rfrev\')" />' +
+            '<div style="font-size:12px;color:var(--text-muted-color);margin-top:5px">Requested ' + invMoney(amount) + ' &middot; you can approve less, not more</div></div>' +
+          '<div class="form-group"><label>Part returned to stock?</label>' +
+            '<select id="rfrev-part-returned"><option value="no">No &mdash; the part was consumed</option><option value="yes">Yes &mdash; back on the shelf</option></select>' +
+            '<div style="font-size:12px;color:var(--text-muted-color);margin-top:5px">Keeps the month-end reorder honest</div></div>' +
+        '</div>' +
+        '<div style="font-size:12px;font-weight:600;color:var(--text-muted-color);text-transform:uppercase;letter-spacing:.05em;margin-bottom:8px">Allocation</div>' +
+        refundAllocRows('rfrev', alloc, window._refundInvoice) +
+        '<div class="form-group" style="margin-top:14px"><label>Note (optional)</label><input type="text" id="rfrev-note" placeholder="Anything the requester should know" /></div>' +
+      '</div>' +
+      '<div class="modal-footer">' +
+        '<button class="btn btn-secondary" onclick="openRefundReject(' + r.id + ')">Reject with reason</button>' +
+        '<button class="btn btn-success" onclick="submitRefundApproval(' + r.id + ', this)">Approve</button>' +
+      '</div>' +
+    '</div>';
+  document.body.appendChild(overlay);
+  refundRecalc('rfrev', true);
+}
+
+async function submitRefundApproval(id, btn) {
+  var errEl = document.getElementById('refund-review-error');
+  var amount = refundNum((document.getElementById('rfrev-amount') || {}).value);
+  if (!(amount > 0)) { errEl.innerHTML = '<div class="alert alert-error">Enter an approved amount greater than zero.</div>'; return; }
+  var payload = Object.assign({
+    amount: amount,
+    part_returned: (document.getElementById('rfrev-part-returned') || {}).value === 'yes',
+    approver_note: ((document.getElementById('rfrev-note') || {}).value || '').trim()
+  }, refundCollectAlloc('rfrev'));
+  btn.disabled = true; btn.textContent = 'Approving…';
+  try {
+    await api('POST', '/refunds/' + id + '/approve', payload);
+    var ov = document.getElementById('refund-review-overlay');
+    if (ov) ov.remove();
+    showToast('Approved. Issue it in Square, then record the reference here.', 'success');
+    render();
+  } catch (err) {
+    btn.disabled = false; btn.textContent = 'Approve';
+    errEl.innerHTML = '<div class="alert alert-error">' + escHtml(err.message) + '</div>';
+  }
+}
+
+function openRefundReject(id) {
+  var overlay = document.createElement('div');
+  overlay.className = 'modal-overlay';
+  overlay.id = 'refund-reject-overlay';
+  overlay.innerHTML =
+    '<div class="modal" style="max-width:460px">' +
+      '<div class="modal-header"><span class="modal-title">Reject Refund</span>' +
+        '<button class="btn btn-ghost btn-sm" onclick="document.getElementById(\'refund-reject-overlay\').remove()">&#x2715;</button></div>' +
+      '<div class="modal-body"><div id="refund-reject-error"></div>' +
+        '<div class="form-group"><label>Why not?</label>' +
+          '<textarea id="rfrej-reason" style="min-height:70px" placeholder="The requester sees this."></textarea></div></div>' +
+      '<div class="modal-footer">' +
+        '<button class="btn btn-secondary" onclick="document.getElementById(\'refund-reject-overlay\').remove()">Cancel</button>' +
+        '<button class="btn btn-danger" onclick="submitRefundRejection(' + id + ', this)">Reject Refund</button>' +
+      '</div>' +
+    '</div>';
+  document.body.appendChild(overlay);
+}
+
+async function submitRefundRejection(id, btn) {
+  var reason = ((document.getElementById('rfrej-reason') || {}).value || '').trim();
+  var errEl = document.getElementById('refund-reject-error');
+  if (!reason) { errEl.innerHTML = '<div class="alert alert-error">Give the requester a reason.</div>'; return; }
+  btn.disabled = true; btn.textContent = 'Rejecting…';
+  try {
+    await api('POST', '/refunds/' + id + '/reject', { reason: reason });
+    ['refund-reject-overlay', 'refund-review-overlay'].forEach(function (i) { var o = document.getElementById(i); if (o) o.remove(); });
+    showToast('Refund rejected. The requester has been told.', 'info');
+    render();
+  } catch (err) {
+    btn.disabled = false; btn.textContent = 'Reject Refund';
+    errEl.innerHTML = '<div class="alert alert-error">' + escHtml(err.message) + '</div>';
+  }
+}
+
+// ---------- Record the Square refund ----------
+
+async function openRefundProcessed(refundId) {
+  var r;
+  try { r = await api('GET', '/refunds/' + refundId); }
+  catch (err) { showToast(err.message, 'error'); return; }
+  if (r.status !== 'approved') { showToast('Only an approved refund can be marked as issued.', 'error'); return; }
+  var today = new Date();
+  var iso = today.getFullYear() + '-' + String(today.getMonth() + 1).padStart(2, '0') + '-' + String(today.getDate()).padStart(2, '0');
+  var overlay = document.createElement('div');
+  overlay.className = 'modal-overlay';
+  overlay.id = 'refund-proc-overlay';
+  overlay.innerHTML =
+    '<div class="modal" style="max-width:480px">' +
+      '<div class="modal-header"><span class="modal-title">Record the Refund</span>' +
+        '<button class="btn btn-ghost btn-sm" onclick="document.getElementById(\'refund-proc-overlay\').remove()">&#x2715;</button></div>' +
+      '<div class="modal-body"><div id="refund-proc-error"></div>' +
+        '<div class="alert alert-info" style="margin-bottom:16px">Refund <strong>' + escHtml(r.refund_number) + '</strong> for <strong>' + invMoney(r.amount) + '</strong> was approved by ' +
+          escHtml(r.approved_by_name || 'a manager') + '. Issue it in Square, then paste the reference here so the two systems agree.</div>' +
+        '<div class="form-group"><label>' + (r.method === 'check' ? 'Check Number' : r.method === 'cash' ? 'Reference / receipt #' : 'Square Refund ID') + '</label>' +
+          '<input type="text" id="rfproc-ref" placeholder="' + (r.method === 'card' ? 'rfnd_...' : 'reference') + '" /></div>' +
+        '<div class="form-group"><label>Date Issued</label><input type="date" id="rfproc-date" value="' + iso + '" /></div>' +
+        (r.customer_email
+          ? '<label style="display:flex;align-items:center;gap:9px;font-weight:400;color:var(--text-dim);font-size:13px">' +
+            '<input type="checkbox" id="rfproc-email" checked style="width:16px;height:16px;padding:0;flex-shrink:0" /> Email ' + escHtml(r.customer_email) + ' a refund receipt</label>'
+          : '<div style="font-size:12px;color:var(--text-muted-color)">No customer email on this invoice, so no receipt will be sent.</div>') +
+      '</div>' +
+      '<div class="modal-footer">' +
+        '<button class="btn btn-secondary" onclick="document.getElementById(\'refund-proc-overlay\').remove()">Cancel</button>' +
+        '<button class="btn btn-primary" onclick="submitRefundProcessed(' + r.id + ', this)">Mark as Issued</button>' +
+      '</div>' +
+    '</div>';
+  document.body.appendChild(overlay);
+}
+
+async function submitRefundProcessed(id, btn) {
+  var errEl = document.getElementById('refund-proc-error');
+  var ref = ((document.getElementById('rfproc-ref') || {}).value || '').trim();
+  if (!ref) { errEl.innerHTML = '<div class="alert alert-error">Paste the reference from Square (or the check number).</div>'; return; }
+  var emailEl = document.getElementById('rfproc-email');
+  btn.disabled = true; btn.textContent = 'Saving…';
+  try {
+    await api('POST', '/refunds/' + id + '/processed', {
+      external_ref: ref,
+      refund_date: (document.getElementById('rfproc-date') || {}).value || null,
+      email_receipt: !!(emailEl && emailEl.checked)
+    });
+    var ov = document.getElementById('refund-proc-overlay');
+    if (ov) ov.remove();
+    showToast('Recorded. Nova and Square now agree.', 'success');
+    render();
+  } catch (err) {
+    btn.disabled = false; btn.textContent = 'Mark as Issued';
+    errEl.innerHTML = '<div class="alert alert-error">' + escHtml(err.message) + '</div>';
+  }
+}
+
+async function voidRefund(id) {
+  var reason = prompt('Voiding puts this money back on the invoice and leaves the record in place. Why is it being voided?');
+  if (reason == null) return;
+  reason = String(reason).trim();
+  if (!reason) { showToast('A void needs a reason.', 'error'); return; }
+  try {
+    await api('POST', '/refunds/' + id + '/void', { reason: reason });
+    showToast('Refund voided.', 'info');
+    render();
+  } catch (err) { showToast(err.message, 'error'); }
+}
+
+// ---------- Refund history on the invoice view ----------
+
+function refundHistoryHtml(inv) {
+  var refunds = inv.refunds || [];
+  if (!refunds.length) return '';
+  var canApprove = can('approve_refund');
+  var isAdmin = ['admin', 'owner'].indexOf(state.user.role) !== -1;
+  var rows = refunds.map(function (r) {
+    var actions = '';
+    if (r.status === 'requested' && canApprove) actions += '<button class="btn btn-success btn-sm" onclick="openRefundReview(' + r.id + ')">Review</button>';
+    if (r.status === 'approved' && canApprove) actions += '<button class="btn btn-primary btn-sm" onclick="openRefundProcessed(' + r.id + ')">Record refund</button>';
+    if (['approved', 'processed'].indexOf(r.status) !== -1 && isAdmin) actions += ' <button class="btn btn-secondary btn-sm" onclick="voidRefund(' + r.id + ')">Void</button>';
+    return '<tr>' +
+      '<td style="white-space:nowrap">' + escHtml(r.refund_number || '') + '</td>' +
+      '<td style="white-space:nowrap">' + formatDate(r.refund_date || r.created_at) + '</td>' +
+      '<td style="white-space:nowrap;color:var(--danger)">' + invMoney(r.amount) + '</td>' +
+      '<td>' + escHtml(refundReasonLabel(r.reason_code)) + (r.reason_notes ? ('<div style="font-size:11px;color:var(--text-muted-color)">' + escHtml(r.reason_notes) + '</div>') : '') + '</td>' +
+      '<td style="white-space:nowrap">' + escHtml(r.requested_by_name || '—') + '</td>' +
+      '<td style="white-space:nowrap">' + escHtml(r.approved_by_name || '—') + '</td>' +
+      '<td style="white-space:nowrap;font-size:12px">' + escHtml(r.external_ref || '—') + '</td>' +
+      '<td style="white-space:nowrap">' + refundStatusBadge(r.status) + (r.rejection_reason ? ('<div style="font-size:11px;color:var(--text-muted-color)">' + escHtml(r.rejection_reason) + '</div>') : '') + '</td>' +
+      '<td style="white-space:nowrap;text-align:right">' + actions + '</td>' +
+    '</tr>';
+  }).join('');
+  return '<div class="card mb-4"><div class="card-header"><span class="card-title">Refund History</span>' +
+      '<span class="text-muted">' + refunds.length + (refunds.length === 1 ? ' entry' : ' entries') + '</span></div>' +
+    '<div class="table-wrap"><table>' +
+      '<thead><tr><th>Refund #</th><th>Date</th><th>Amount</th><th>Reason</th><th>Requested by</th><th>Approved by</th><th>Reference</th><th>Status</th><th></th></tr></thead>' +
+      '<tbody>' + rows + '</tbody></table></div>' +
+    '<div style="padding:10px 16px;font-size:12px;color:var(--text-muted-color)">The invoice above is never altered by a refund. These are separate records.</div>' +
+  '</div>';
+}
+
+function refundBannerHtml(inv) {
+  var refunded = refundNum(inv.refunded_total);
+  var pending = refundNum(inv.pending_refund_total);
+  if (!refunded && !pending) return '';
+  var net = refundNum(refundNum(inv.grand_total) - refunded);
+  var parts = [];
+  if (refunded) parts.push('<strong>' + invMoney(refunded) + ' of ' + invMoney(inv.grand_total) + ' refunded.</strong> Net collected is ' + invMoney(net) + '.');
+  if (pending) parts.push(invMoney(pending) + (refunded ? ' more is' : ' is') + ' waiting on manager approval.');
+  return '<div class="alert" style="background:#2d1a00;color:#fdba74;border:1px solid #4d2d00;display:flex;align-items:center;gap:12px">' +
+    '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="flex-shrink:0"><path d="M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z"/><path d="M12 9v4M12 17h.01"/></svg>' +
+    '<div>' + parts.join(' ') + '</div></div>';
+}
+
+// ---------- Refunds queue ----------
+
+async function renderRefunds(el) {
+  el.innerHTML = '<div class="loading">Loading…</div>';
+  try {
+    var refunds = await api('GET', '/refunds');
+    var summary = {};
+    try { summary = await api('GET', '/refunds/summary'); } catch (e) { summary = {}; }
+    var canApprove = can('approve_refund');
+    var isAdmin = ['admin', 'owner'].indexOf(state.user.role) !== -1;
+
+    function row(r, cols) { return '<tr>' + cols.join('') + '</tr>'; }
+    function cell(v, style) { return '<td' + (style ? (' style="' + style + '"') : '') + '>' + v + '</td>'; }
+    function age(ts) {
+      if (!ts) return '—';
+      var mins = Math.max(0, Math.round((Date.now() - new Date(ts).getTime()) / 60000));
+      if (mins < 60) return mins + 'm';
+      if (mins < 60 * 24) return Math.round(mins / 60) + 'h';
+      return Math.round(mins / (60 * 24)) + 'd';
+    }
+
+    var pending = refunds.filter(function (r) { return r.status === 'requested'; });
+    var awaiting = refunds.filter(function (r) { return r.status === 'approved'; });
+    var done = refunds.filter(function (r) { return ['processed', 'rejected', 'voided'].indexOf(r.status) !== -1; });
+
+    var pendingHtml = pending.length
+      ? '<div class="table-wrap"><table><thead><tr><th>Refund #</th><th>Invoice</th><th>Customer</th><th>Amount</th><th>Reason</th><th>Requested by</th><th>Age</th><th style="text-align:right">Action</th></tr></thead><tbody>' +
+        pending.map(function (r) {
+          return row(r, [
+            cell(escHtml(r.refund_number), 'white-space:nowrap'),
+            cell('<a href="#" onclick="navigate(\'view-invoice\',' + r.invoice_id + ');return false;">#' + escHtml(r.invoice_number) + '</a>', 'white-space:nowrap'),
+            cell(escHtml(r.customer_name || '—')),
+            cell(invMoney(r.amount), 'white-space:nowrap;color:var(--danger)'),
+            cell(escHtml(refundReasonLabel(r.reason_code))),
+            cell(escHtml(r.requested_by_name || '—'), 'white-space:nowrap'),
+            cell(age(r.requested_at), 'white-space:nowrap'),
+            cell(canApprove
+              ? '<button class="btn btn-success btn-sm" onclick="openRefundReview(' + r.id + ')">Review</button>'
+              : '<span class="text-muted">Waiting on a manager</span>', 'text-align:right')
+          ]);
+        }).join('') + '</tbody></table></div>'
+      : '<div class="empty-state"><h3>Nothing waiting</h3><p>No refunds need approval right now.</p></div>';
+
+    var awaitingHtml = awaiting.length
+      ? '<div class="table-wrap"><table><thead><tr><th>Refund #</th><th>Invoice</th><th>Amount</th><th>Approved by</th><th>Approved</th><th>Method</th><th style="text-align:right">Action</th></tr></thead><tbody>' +
+        awaiting.map(function (r) {
+          return row(r, [
+            cell(escHtml(r.refund_number), 'white-space:nowrap'),
+            cell('<a href="#" onclick="navigate(\'view-invoice\',' + r.invoice_id + ');return false;">#' + escHtml(r.invoice_number) + '</a>', 'white-space:nowrap'),
+            cell(invMoney(r.amount), 'white-space:nowrap;color:var(--danger)'),
+            cell(escHtml(r.approved_by_name || '—'), 'white-space:nowrap'),
+            cell(formatDate(r.approved_at), 'white-space:nowrap'),
+            cell(escHtml(refundMethodLabel(r.method) + (r.method === 'card' && r.card_last4 ? (' •••• ' + r.card_last4) : ''))),
+            cell(canApprove ? '<button class="btn btn-primary btn-sm" onclick="openRefundProcessed(' + r.id + ')">Record refund</button>' : '', 'text-align:right')
+          ]);
+        }).join('') + '</tbody></table></div>'
+      : '';
+
+    var doneHtml = done.length
+      ? '<div class="table-wrap"><table><thead><tr><th>Refund #</th><th>Invoice</th><th>Amount</th><th>Reason</th><th>Issued</th><th>Reference</th><th>Status</th><th style="text-align:right"></th></tr></thead><tbody>' +
+        done.map(function (r) {
+          return row(r, [
+            cell(escHtml(r.refund_number), 'white-space:nowrap'),
+            cell('<a href="#" onclick="navigate(\'view-invoice\',' + r.invoice_id + ');return false;">#' + escHtml(r.invoice_number) + '</a>', 'white-space:nowrap'),
+            cell(invMoney(r.amount), 'white-space:nowrap;color:' + (r.status === 'processed' ? 'var(--danger)' : 'var(--text-muted-color)')),
+            cell(escHtml(refundReasonLabel(r.reason_code))),
+            cell(formatDate(r.refund_date || r.processed_at || r.approved_at), 'white-space:nowrap'),
+            cell(escHtml(r.external_ref || '—'), 'white-space:nowrap;font-size:12px'),
+            cell(refundStatusBadge(r.status), 'white-space:nowrap'),
+            cell((r.status === 'processed' && isAdmin) ? '<button class="btn btn-secondary btn-sm" onclick="voidRefund(' + r.id + ')">Void</button>' : '', 'text-align:right')
+          ]);
+        }).join('') + '</tbody></table></div>'
+      : '';
+
+    el.innerHTML =
+      '<div class="page-header">' +
+        '<div><div class="page-title">Refunds</div>' +
+        '<div class="page-subtitle">' + (canApprove ? 'Approve requests, then record them once they are issued in Square' : 'Refunds you have requested') + '</div></div>' +
+      '</div>' +
+      (canApprove
+        ? '<div class="stats-grid">' +
+            '<div class="stat-card"><div class="stat-value">' + (summary.pending_count || 0) + '</div><div class="stat-label">Pending approval</div></div>' +
+            '<div class="stat-card"><div class="stat-value" style="color:#60a5fa">' + (summary.awaiting_count || 0) + '</div><div class="stat-label">Approved, not yet in Square</div></div>' +
+            '<div class="stat-card"><div class="stat-value" style="color:var(--danger)">' + invMoney(summary.month_amount) + '</div><div class="stat-label">Refunded this month</div></div>' +
+            '<div class="stat-card"><div class="stat-value">' + (summary.month_rate || 0) + '%</div><div class="stat-label">Of invoiced revenue</div></div>' +
+          '</div>'
+        : '') +
+      '<div class="card mb-4"><div class="card-header"><span class="card-title">Pending Approval</span>' +
+        (pending.length ? '<span class="badge badge-submitted">' + pending.length + ' waiting</span>' : '') +
+      '</div>' + pendingHtml + '</div>' +
+      (awaitingHtml
+        ? '<div class="card mb-4"><div class="card-header"><span class="card-title">Approved &mdash; waiting to be issued in Square</span>' +
+          '<span class="badge badge-refund-awaiting">' + awaiting.length + '</span></div>' + awaitingHtml + '</div>'
+        : '') +
+      (doneHtml ? '<div class="card"><div class="card-header"><span class="card-title">Completed</span></div>' + doneHtml + '</div>' : '');
+  } catch (err) {
+    el.innerHTML = '<div class="alert alert-error">' + escHtml(err.message) + '</div>';
+  }
 }

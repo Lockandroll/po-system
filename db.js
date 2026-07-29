@@ -1461,6 +1461,78 @@ async function initDB() {
       'ALTER TABLE invoices ADD COLUMN IF NOT EXISTS id_image_uploaded_at TIMESTAMPTZ;' +
       'ALTER TABLE invoices ADD COLUMN IF NOT EXISTS id_image_uploaded_by INTEGER;'
     );
+    // ---- Invoice refunds -----------------------------------------------------
+    // A refund is never an edit to the invoice: the signed original stays exactly
+    // as the customer agreed to it (which is what the Square dispute packet leans
+    // on) and every refund is an append-only row here. Rows are immutable once
+    // they land — a mistake is reversed with a void, never deleted.
+    // status: requested -> approved -> processed, plus rejected / voided.
+    await client.query(
+      'CREATE TABLE IF NOT EXISTS invoice_refunds (' +
+      '  id SERIAL PRIMARY KEY,' +
+      '  invoice_id INTEGER NOT NULL REFERENCES invoices(id) ON DELETE CASCADE,' +
+      '  refund_number VARCHAR(40),' +
+      '  amount DECIMAL(10,2) NOT NULL DEFAULT 0,' +
+      '  labor_refunded DECIMAL(10,2) DEFAULT 0,' +
+      '  parts_refunded DECIMAL(10,2) DEFAULT 0,' +
+      '  tax_refunded DECIMAL(10,2) DEFAULT 0,' +
+      '  tip_refunded DECIMAL(10,2) DEFAULT 0,' +
+      "  method VARCHAR(20) DEFAULT 'card'," +
+      '  reason_code VARCHAR(40),' +
+      '  reason_notes TEXT,' +
+      '  part_returned BOOLEAN DEFAULT false,' +
+      "  status VARCHAR(20) NOT NULL DEFAULT 'requested'," +
+      '  external_ref VARCHAR(120),' +
+      '  refund_date DATE DEFAULT CURRENT_DATE,' +
+      '  requested_by INTEGER REFERENCES users(id),' +
+      '  requested_at TIMESTAMPTZ DEFAULT NOW(),' +
+      '  approved_by INTEGER REFERENCES users(id),' +
+      '  approved_at TIMESTAMPTZ,' +
+      '  approver_note TEXT,' +
+      '  rejection_reason TEXT,' +
+      '  processed_by INTEGER REFERENCES users(id),' +
+      '  processed_at TIMESTAMPTZ,' +
+      '  voided_by INTEGER REFERENCES users(id),' +
+      '  voided_at TIMESTAMPTZ,' +
+      '  void_reason TEXT,' +
+      '  created_at TIMESTAMPTZ DEFAULT NOW(),' +
+      '  updated_at TIMESTAMPTZ DEFAULT NOW()' +
+      ');' +
+      'CREATE INDEX IF NOT EXISTS idx_invoice_refunds_invoice ON invoice_refunds(invoice_id);' +
+      'CREATE INDEX IF NOT EXISTS idx_invoice_refunds_status ON invoice_refunds(status);' +
+      'CREATE INDEX IF NOT EXISTS idx_invoice_refunds_date ON invoice_refunds(refund_date);'
+    );
+    // refunded_total is the running sum of approved + processed refunds; the
+    // customer-facing net is grand_total - refunded_total. status_before_refund
+    // remembers what the invoice was before its first refund so a void restores
+    // it exactly instead of guessing 'paid'.
+    await client.query(
+      'ALTER TABLE invoices ADD COLUMN IF NOT EXISTS refunded_total DECIMAL(10,2) DEFAULT 0;' +
+      'ALTER TABLE invoices ADD COLUMN IF NOT EXISTS status_before_refund VARCHAR(20);'
+    );
+    // Refund permissions: anyone who can create an invoice may REQUEST a refund
+    // (that is the tech who wrote it, standing in front of the customer); only a
+    // manager and up may approve one. Backfilled into any saved role matrix once,
+    // because DEFAULTS in permissions.js do nothing for a role that already has a
+    // saved entry.
+    const _rpRef = await client.query("SELECT value FROM settings WHERE key = 'perm_refund_matrix_backfilled'");
+    if (!_rpRef.rows.length) {
+      const _rpR = await client.query("SELECT value FROM settings WHERE key = 'role_permissions'");
+      if (_rpR.rows.length && _rpR.rows[0].value) {
+        try {
+          const obj = JSON.parse(_rpR.rows[0].value);
+          if (obj && typeof obj === 'object') {
+            Object.keys(obj).forEach(function (r) {
+              if (!Array.isArray(obj[r])) return;
+              if (obj[r].indexOf('create_invoice') !== -1 && obj[r].indexOf('request_refund') === -1) obj[r].push('request_refund');
+            });
+            if (Array.isArray(obj.manager) && obj.manager.indexOf('approve_refund') === -1) obj.manager.push('approve_refund');
+            await client.query("INSERT INTO settings (key, value, updated_at) VALUES ('role_permissions', $1, NOW()) ON CONFLICT (key) DO UPDATE SET value = $1, updated_at = NOW()", [JSON.stringify(obj)]);
+          }
+        } catch (e) { console.error('refund perm backfill failed:', e.message); }
+      }
+      await client.query("INSERT INTO settings (key, value) VALUES ('perm_refund_matrix_backfilled', '1') ON CONFLICT (key) DO NOTHING");
+    }
     // Invoice photos (stored in Cloudflare R2, like the document vault). show_in_print
     // controls whether a photo appears on the printed / emailed PDF version.
     await client.query(

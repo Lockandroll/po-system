@@ -284,6 +284,24 @@ function buildDisputePdf(inv, items, evidence, opts) {
       doc.text(money(inv.grand_total), cExt, totY, { width: 60, align: 'right' });
       doc.y = totY + 16;
 
+      // Refunds already issued. Square weighs a documented partial refund heavily:
+      // it shows the merchant tried to make the cardholder whole before the dispute.
+      var refunds = (evidence.refunds || []).filter(function (r) { return r && ['approved', 'processed'].indexOf(r.status) !== -1; });
+      if (refunds.length) {
+        sectionHeader('Refunds already issued');
+        para('These refunds were issued against this invoice before the dispute, and are recorded in Nova with who approved them and the payment processor reference.', '#555555', 9);
+        var refTotal = 0;
+        refunds.forEach(function (r) {
+          refTotal += (parseFloat(r.amount) || 0);
+          bullet(money(r.amount) + ' on ' + fmtDate(r.refund_date || r.processed_at || r.approved_at) +
+            ' — ' + (r.reason_label || String(r.reason_code || 'refund').split('_').join(' ')) +
+            (r.approved_by_name ? ('; approved by ' + r.approved_by_name) : '') +
+            (r.external_ref ? ('; reference ' + r.external_ref) : '; not yet issued'));
+        });
+        labelVal('Total refunded', money(refTotal));
+        labelVal('Net retained', money((parseFloat(inv.grand_total) || 0) - refTotal));
+      }
+
       // Work photos.
       if (photos.length) {
         sectionHeader('Work photos (' + photos.length + ')');

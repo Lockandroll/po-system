@@ -222,6 +222,32 @@ function buildInvoicePdf(inv, items, photos, opts) {
       if (parseFloat(inv.tip_amount)) totRow('Tip', money(inv.tip_amount));
       hr(doc.y + 1, '#111111'); doc.y += 4;
       totRow('Grand Total', money(inv.grand_total), true);
+      // Refunds never rewrite the invoice above, so the customer copy shows the
+      // original total and then what has come back off it.
+      var refundedTotal = parseFloat(inv.refunded_total) || 0;
+      if (refundedTotal > 0) {
+        totRow('Refunded', '-' + money(refundedTotal));
+        hr(doc.y + 1, '#111111'); doc.y += 4;
+        totRow('Net Charged', money((parseFloat(inv.grand_total) || 0) - refundedTotal), true);
+      }
+
+      // ---- Refund detail ----
+      var refundList = (opts.refunds || []).filter(function (r) { return r && ['approved', 'processed'].indexOf(r.status) !== -1; });
+      if (refundList.length) {
+        ensureRoom(40 + refundList.length * 14);
+        doc.moveDown(0.6);
+        doc.font('Helvetica-Bold').fontSize(10).fillColor('#111111').text('Refunds', left, doc.y);
+        doc.y += 4;
+        refundList.forEach(function (r) {
+          var when = r.refund_date ? new Date(r.refund_date) : null;
+          var whenStr = when && !isNaN(when.getTime()) ? when.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric', timeZone: 'UTC' }) : '';
+          var lineY = doc.y;
+          doc.font('Helvetica').fontSize(9).fillColor('#555555');
+          doc.text((r.refund_number || 'Refund') + (whenStr ? ('  ' + whenStr) : '') + (r.status === 'approved' ? '  (issued shortly)' : ''), left, lineY, { width: pageW - 90 });
+          doc.fillColor('#111111').text('-' + money(r.amount), left + pageW - 90, lineY, { width: 90, align: 'right' });
+          doc.y = lineY + 13;
+        });
+      }
 
       // ---- Notes / payments ----
       if (inv.payments_note) { doc.moveDown(0.4); doc.font('Helvetica-Bold').fontSize(9).fillColor('#111111').text('Payments: ', { continued: true }); doc.font('Helvetica').text(String(inv.payments_note)); }
