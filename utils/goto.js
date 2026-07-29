@@ -1525,6 +1525,69 @@ async function fetchRecordingBytes(recordingId, knownMediaUrl, conversationSpace
     }
   }
 
+  // 2b-bis: THE PATH-SEGMENT FORM. GoTo's own portal never sends this token in a
+  // header or a query string. It appends it to the content URL as a path segment
+  // and sends NO Authorization header at all - the token signs the URL by itself.
+  // Every earlier probe tried headers and query params, so this shape had never
+  // been exercised against the recording/v1-minted token. The contact-center
+  // content path is the interesting target: that exact URL is known to serve MP3,
+  // and because it carries no Authorization header it may never reach the scope
+  // check that 403s the token-minting call.
+  if (accessToken) {
+    const tokenForms = [];
+    const pushForm = function (name, value) {
+      if (value && tokenForms.every(function (f) { return f.value !== value; })) {
+        tokenForms.push({ name: name, value: value });
+      }
+    };
+    pushForm('verbatim', accessToken);
+    pushForm('noscheme', String(accessToken).replace(/^recording-access:/, ''));
+    pushForm('inner', innerCredential(accessToken));
+
+    const pathBases = [];
+    pathBases.push({
+      name: 'rec',
+      url: API_BASE + '/recording/v1/recordings/' + encodeURIComponent(recordingId) + '/content',
+      qs: ''
+    });
+    LEGACY_BASES.forEach(function (b, i) {
+      pathBases.push({
+        name: 'legacy' + i,
+        url: b + '/recording/v1/recordings/' + encodeURIComponent(recordingId) + '/content',
+        qs: ''
+      });
+    });
+    let orgForPath = null;
+    try { orgForPath = await resolveOrgId(); } catch (e) { orgForPath = null; }
+    if (orgForPath) {
+      pathBases.push({
+        name: 'ccr',
+        url: CCR_BASE + '/contact-center-reports/v1/organizations/' + encodeURIComponent(orgForPath) +
+          '/recordings/' + encodeURIComponent(recordingId) + '/content',
+        qs: conversationSpaceId ? ('?conversationSpaceId=' + encodeURIComponent(conversationSpaceId)) : ''
+      });
+    }
+
+    for (let b = 0; b < pathBases.length; b++) {
+      for (let f = 0; f < tokenForms.length; f++) {
+        const purl = pathBases[b].url + '/' + encodePathToken(tokenForms[f].value) + pathBases[b].qs;
+        const label = 'path/' + pathBases[b].name + '[' + tokenForms[f].name + ']';
+        let pr;
+        try {
+          pr = await httpGetBinary(purl, { Accept: 'audio/*' });
+        } catch (e) {
+          attempts.push(label + ':threw:' + String(e.message).slice(0, 40));
+          continue;
+        }
+        attempts.push(label + ':' + pr.firstStatus +
+          (pr.hops ? ('>' + (pr.redirectHost || '?') + ':' + pr.status) : '') + ':' + (pr.mime || '?'));
+        if (pr.ok && isAudio(pr.mime, pr.buffer) && pr.buffer.length > 512) {
+          return { buffer: pr.buffer, mime: pr.mime || 'audio/mpeg' };
+        }
+      }
+    }
+  }
+
   // 2c onwards: no media url in the envelope, so the token has to be spent
   // somewhere. GoTo documents none of this, so try the plausible combinations of
   // endpoint x auth-style. The token already looks like a scheme plus credential
