@@ -414,7 +414,14 @@ function toggleSection(section, defaultView) {
   // A header tap expands/collapses the section in place and never navigates
   // (same on desktop and mobile); the user then taps a sub-item to change pages.
   // Refresh ONLY the sidebar nav so the main content is left untouched (no reload).
-  state.sidebarSection = (state.sidebarSection === section) ? null : section;
+  //
+  // Collapsing sets '' (NAV_COLLAPSED), not null. The two mean different things:
+  // null = "nobody has chosen, derive the open section from the current view",
+  // ''   = "the user explicitly closed it, leave everything shut".
+  // With null, collapsing the section that owns the current view (e.g. closing
+  // Customers while sitting on Google Reviews) snapped straight back open,
+  // because buildNavHtml re-derived it from the view.
+  state.sidebarSection = (state.sidebarSection === section) ? NAV_COLLAPSED : section;
   var nav = document.querySelector('.sidebar-nav');
   if (nav) { nav.innerHTML = buildNavHtml(); }
   else { render(); }
@@ -634,6 +641,10 @@ async function pushToggle(){
 // 'views' is every view that should light this row up (detail/edit screens
 // included) so a section stays open and highlighted while you are inside it.
 // ---------------------------------------------------------------------------
+// state.sidebarSection sentinel: '' means the user explicitly collapsed every
+// section. Distinct from null, which means "derive it from the current view".
+var NAV_COLLAPSED = '';
+
 var NAVI = {
   chevron: '<svg class="nav-chevron" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="9 18 15 12 9 6"/></svg>',
   home: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 9l9-7 9 7v11a2 2 0 01-2 2H5a2 2 0 01-2-2z"/><polyline points="9 22 9 12 15 12 15 22"/></svg>',
@@ -824,8 +835,10 @@ function getSidebarSection(view) {
 function buildNavHtml() {
   var cv = state.currentView;
   // On mobile the drawer opens fully collapsed; on desktop the section holding
-  // the current view opens itself.
-  var ss = isMobileNav() ? state.sidebarSection : (state.sidebarSection || getSidebarSection(cv));
+  // the current view opens itself -- but only until the user makes a choice.
+  // == null catches null/undefined while preserving NAV_COLLAPSED ('').
+  var ss = isMobileNav() ? state.sidebarSection
+                         : (state.sidebarSection == null ? getSidebarSection(cv) : state.sidebarSection);
   var model = navModel();
   var html = '';
 
