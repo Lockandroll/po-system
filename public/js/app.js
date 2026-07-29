@@ -724,9 +724,10 @@ function navModel() {
         ])
       : navItem('ai-assistant', 'Nova AI', NAVI.ai),
 
+    can('view_tasks') ? navItem('tasks', 'Tasks', NAVI.check, ['tasks', 'task-detail', 'new-task', 'edit-task', 'task-templates', 'new-task-template', 'edit-task-template']) : null,
+
     navGroup('operations', 'Operations', NAVI.wrench, [
       can('view_work_orders') ? navItem('work-orders', 'Work Orders', NAVI.box, ['work-orders', 'view-work-order', 'new-work-order']) : null,
-      can('view_tasks') ? navItem('tasks', 'Tasks', NAVI.check, ['tasks', 'task-detail', 'new-task', 'edit-task', 'task-templates', 'new-task-template', 'edit-task-template']) : null,
       can('view_signoffs') ? navItem('signoffs', 'Sign-Off Sheets', NAVI.signoff, ['signoffs', 'new-signoff', 'edit-signoff', 'view-signoff', 'complete-signoff']) : null,
       can('view_ptt') ? navItem('ptt', 'Radio', NAVI.mic) : null
     ]),
