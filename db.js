@@ -1398,6 +1398,11 @@ async function initDB() {
       '  tax_amount DECIMAL(10,2) DEFAULT 0,' +
       '  tip_amount DECIMAL(10,2) DEFAULT 0,' +
       '  grand_total DECIMAL(10,2) DEFAULT 0,' +
+      // parts_cost_total is the COGS figure the tech reads off the close-out card
+      // and types into Pulsar. cogs_incomplete flags an invoice closed with at
+      // least one part line the tech marked "no cost available".
+      '  parts_cost_total DECIMAL(10,2) DEFAULT 0,' +
+      '  cogs_incomplete BOOLEAN DEFAULT false,' +
       '  notes TEXT,' +
       '  payments_note TEXT,' +
       '  agreement_text TEXT,' +
@@ -1416,6 +1421,15 @@ async function initDB() {
       '  description VARCHAR(500) NOT NULL,' +
       '  quantity DECIMAL(10,2) NOT NULL DEFAULT 1,' +
       '  unit_price DECIMAL(10,2) NOT NULL DEFAULT 0,' +
+      // unit_cost is OUR cost, snapshotted at the moment the part is added — not
+      // joined live to parts.price, because the catalog gets re-priced and a live
+      // join would silently rewrite the margin on every historical invoice.
+      '  unit_cost DECIMAL(10,2),' +
+      '  cost_unknown BOOLEAN DEFAULT false,' +
+      '  cost_unknown_reason VARCHAR(255),' +
+      // catalog | manual | backfill | none — lets a margin report tell a real
+      // captured cost apart from one estimated by the one-time backfill below.
+      '  cost_source VARCHAR(12),' +
       '  taxable BOOLEAN DEFAULT false,' +
       '  position INTEGER DEFAULT 0' +
       ');'
@@ -1427,6 +1441,53 @@ async function initDB() {
       'CREATE INDEX IF NOT EXISTS idx_invoice_items_invoice ON invoice_line_items(invoice_id);' +
       'CREATE INDEX IF NOT EXISTS idx_invoice_items_part ON invoice_line_items(part_id);'
     );
+    // COGS capture. CREATE TABLE IF NOT EXISTS never adds columns to a table that
+    // already exists in prod, so every column above also needs an explicit ALTER.
+    await client.query(
+      'ALTER TABLE invoice_line_items ADD COLUMN IF NOT EXISTS unit_cost DECIMAL(10,2);' +
+      'ALTER TABLE invoice_line_items ADD COLUMN IF NOT EXISTS cost_unknown BOOLEAN DEFAULT false;' +
+      'ALTER TABLE invoice_line_items ADD COLUMN IF NOT EXISTS cost_unknown_reason VARCHAR(255);' +
+      'ALTER TABLE invoice_line_items ADD COLUMN IF NOT EXISTS cost_source VARCHAR(12);' +
+      'ALTER TABLE invoices ADD COLUMN IF NOT EXISTS parts_cost_total DECIMAL(10,2) DEFAULT 0;' +
+      'ALTER TABLE invoices ADD COLUMN IF NOT EXISTS cogs_incomplete BOOLEAN DEFAULT false;'
+    );
+    // One-time backfill of historical invoices from the current catalog cost.
+    // This is an ESTIMATE — it uses today's parts.price, not the price in force
+    // on the day of sale — so every row it touches is tagged cost_source
+    // 'backfill' and a margin report can footnote or exclude those. Invoices
+    // written from here forward carry a real snapshot. Guarded by a settings
+    // flag so it runs exactly once, the same pattern as the perm matrix backfills.
+    const _cogsBf = await client.query("SELECT value FROM settings WHERE key = 'invoice_cogs_backfilled'");
+    if (!_cogsBf.rows.length) {
+      await client.query(
+        'UPDATE invoice_line_items li SET unit_cost = p.price, ' +
+        "       cost_source = CASE WHEN li.line_type = 'labor' THEN 'none' ELSE 'backfill' END " +
+        '  FROM parts p ' +
+        ' WHERE p.id = li.part_id AND li.unit_cost IS NULL AND p.price IS NOT NULL'
+      );
+      await client.query(
+        'UPDATE invoices i SET parts_cost_total = COALESCE(x.c, 0) FROM (' +
+        '  SELECT invoice_id, SUM(quantity * COALESCE(unit_cost, 0)) AS c ' +
+        '    FROM invoice_line_items ' +
+        "   WHERE line_type <> 'labor' AND cost_unknown IS NOT TRUE " +
+        '   GROUP BY invoice_id) x ' +
+        ' WHERE x.invoice_id = i.id'
+      );
+      // The backfill can only price lines that came from the catalog. A hand-typed
+      // line on an old invoice has no cost anywhere, and the rollup above silently
+      // counts it as zero — so mark those invoices incomplete. Without this an old
+      // invoice shows a low COGS under an "all costed" tick and the tech has no
+      // reason to doubt the number they are about to type into Pulsar.
+      const _flagged = await client.query(
+        'UPDATE invoices i SET cogs_incomplete = true ' +
+        ' WHERE EXISTS (SELECT 1 FROM invoice_line_items li ' +
+        "                WHERE li.invoice_id = i.id AND li.line_type <> 'labor' " +
+        '                  AND li.cost_unknown IS NOT TRUE AND li.unit_cost IS NULL)'
+      );
+      await client.query("INSERT INTO settings (key, value) VALUES ('invoice_cogs_backfilled', '1') ON CONFLICT (key) DO NOTHING");
+      console.log('Backfilled invoice COGS from the current parts catalog (estimated, tagged cost_source=backfill); ' +
+        (_flagged.rowCount || 0) + ' invoice(s) flagged cogs_incomplete because some part lines have no cost on record');
+    }
     // Per-account (vendor) config for the invoice account dropdown
     await client.query(
       'ALTER TABLE vendors ADD COLUMN IF NOT EXISTS show_in_invoice BOOLEAN NOT NULL DEFAULT false;' +

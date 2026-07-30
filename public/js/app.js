@@ -2,7 +2,7 @@
 // public/sw.js (the only thing bumped each deploy) — the badge asks the active
 // service worker for it at runtime. This value is just the fallback shown when no
 // service worker is available (e.g. very first visit before it installs).
-var APP_VERSION = 'v82';
+var APP_VERSION = 'v83';
 var _resolvedAppVersion = null;
 
 // Ask the active service worker for its CACHE_VERSION (without the 'nova-' prefix).
@@ -351,7 +351,16 @@ async function _apiFetch(method, path, body, silent) {
   } catch(e) {
     throw new Error('Server error (status ' + res.status + '). Try again or check Railway logs.');
   }
-  if (!res.ok) throw new Error(data.error || 'Request failed (status ' + res.status + ')');
+  if (!res.ok) {
+    // Carry the whole response body on the Error, not just the message. Some
+    // endpoints reject with structured detail the caller needs to act on (the
+    // invoice close-out gate returns cogs_missing[] so the form can put up a
+    // fix-it modal instead of a dead-end alert).
+    var _err = new Error(data.error || 'Request failed (status ' + res.status + ')');
+    _err.status = res.status;
+    _err.data = data;
+    throw _err;
+  }
   return data;
   } finally { if (!silent) novaProgressDone(); }
 }
@@ -6116,12 +6125,22 @@ async function pushQuoteToInvoice(id) {
     var q = await api('GET', '/quotes/' + id);
     var lines = (q.line_items || []).map(function(it){
       var price = (it.list_price != null && it.list_price !== '') ? parseFloat(it.list_price) : (parseFloat(it.unit_price) || 0);
+      // On a quote, unit_price IS our cost and list_price is what the customer is
+      // shown. Carry the cost across as the invoice's unit_cost — the quote
+      // already captured it, so making the tech re-enter it at close would be
+      // asking for a number we are holding.
+      var cost = (it.unit_price != null && it.unit_price !== '') ? parseFloat(it.unit_price) : NaN;
+      var hasCost = !isNaN(cost) && cost >= 0 && it.list_price != null && it.list_price !== '';
       return {
         line_type: 'part',
         item_number: it.item_number || '',
         description: it.description || '',
         quantity: parseFloat(it.quantity) || 1,
         unit_price: isNaN(price) ? 0 : price,
+        unit_cost: hasCost ? cost : '',
+        cost_source: hasCost ? 'catalog' : 'none',
+        cost_unknown: false,
+        cost_unknown_reason: '',
         taxable: it.taxable === true
       };
     }).filter(function(li){ return (li.description || '').trim(); });
@@ -10455,7 +10474,10 @@ function pickerRender() {
   // Which price columns to show depends on where the picker was opened from:
   // POs & the Monthly Req buy at our cost; invoices charge retail; quotes show both.
   var ctx = _pickerContext;
-  var showCost = (ctx === 'po' || ctx === 'running' || ctx === 'quote');
+  // Invoices charge retail, but they now also CAPTURE cost for the Pulsar
+  // close-out, so the cost has to be on screen at the moment the part is picked —
+  // otherwise the figure that ends up in Pulsar was never seen by anyone.
+  var showCost = (ctx === 'po' || ctx === 'running' || ctx === 'quote' || ctx === 'invoice');
   var showRetail = (ctx === 'invoice' || ctx === 'quote');
   var priceCols = (showCost ? ' 92px' : '') + (showRetail ? ' 92px' : '');
   var gridCols = 'grid-template-columns:28px 1.1fr 0.7fr 2fr 60px' + priceCols;
@@ -10529,7 +10551,12 @@ function pickerAddSelected() {
     }
     chosen.forEach(function(c) {
       var retailvi = (c.retail === '' || c.retail == null) ? '' : c.retail; // charge the customer retail
-      invoiceLineItems.push({ line_type: 'part', part_id: c.part.id || null, item_number: c.part.item_number || '', description: c.description, quantity: c.quantity || 1, unit_price: retailvi, taxable: false });
+      // Capture OUR cost at the moment the part is picked. The picker already has
+      // it in hand; this is what makes the Pulsar COGS figure real instead of a
+      // vendor-website lookup at the end of the job. Snapshot, never re-read —
+      // the catalog gets re-priced and this invoice must not move with it.
+      var costvi = (c.cost === '' || c.cost == null) ? '' : c.cost;
+      invoiceLineItems.push({ line_type: 'part', part_id: c.part.id || null, item_number: c.part.item_number || '', description: c.description, quantity: c.quantity || 1, unit_price: retailvi, unit_cost: costvi, cost_source: costvi === '' ? 'none' : 'catalog', cost_unknown: false, cost_unknown_reason: '', taxable: false });
     });
     buildInvoiceLineItemRows();
   }
@@ -10550,7 +10577,11 @@ var _invoiceAutoAppliedFor = null;
 var _invSetupVendors = [];
 var INV_PAY_TYPES = ['Cash','Check','Visa','Mastercard','Amex','Discover','Debit','Motor Club','Account / Invoice','Other'];
 var _invoicePayTypes = INV_PAY_TYPES.slice();
+// Nova pay type -> the label Pulsar wants (four card brands become one
+// "Credit Card"). Set under Invoice Setup; unmapped types copy their own name.
+var _invoicePulsarPayMap = {};
 var _invSetupPayTypes = [];
+var _invSetupPulsarMap = {};
 var INV_STATUSES = ['draft','completed','paid'];
 
 function invExt(it){ return (parseFloat(it.quantity)||0) * (parseFloat(it.unit_price)||0); }
@@ -10632,6 +10663,7 @@ async function renderEditInvoice(el, id) {
     var cfg = await api('GET', '/invoices/config').catch(function(){ return {}; });
     _invoiceDefaultAgreement = (cfg && cfg.default_agreement) || '';
     _invoicePayTypes = (cfg && Array.isArray(cfg.pay_types) && cfg.pay_types.length) ? cfg.pay_types : INV_PAY_TYPES;
+    _invoicePulsarPayMap = (cfg && cfg.pulsar_pay_map) || {};
     invHomeCity = (cfg && cfg.home_city) || '';
     _invoiceAccounts = await api('GET', '/invoices/accounts').catch(function(){ return []; });
     invCities = await api('GET', '/cities').catch(function(){ return []; });
@@ -10640,7 +10672,9 @@ async function renderEditInvoice(el, id) {
     try { invoice = await api('GET', '/invoices/' + id); }
     catch(e) { el.innerHTML = '<div class="alert alert-error">' + escHtml(e.message) + '</div>'; return; }
     invoiceLineItems = (invoice.line_items || []).map(function(li){
-      return { line_type: li.line_type || 'part', part_id: li.part_id || null, item_number: li.item_number || '', description: li.description || '', quantity: li.quantity, unit_price: li.unit_price, taxable: !!li.taxable };
+      // Carry the cost fields through the round trip. Dropping them here would
+      // silently wipe a captured cost the first time anyone edits the invoice.
+      return { line_type: li.line_type || 'part', part_id: li.part_id || null, item_number: li.item_number || '', description: li.description || '', quantity: li.quantity, unit_price: li.unit_price, unit_cost: (li.unit_cost == null ? '' : li.unit_cost), cost_unknown: !!li.cost_unknown, cost_unknown_reason: li.cost_unknown_reason || '', cost_source: li.cost_source || '', taxable: !!li.taxable };
     });
     _invoiceExistingSig = invoice.signature_image || null;
     _invoiceAutoAppliedFor = invoice.account_id || null;
@@ -10735,7 +10769,7 @@ async function renderEditInvoice(el, id) {
 
     '<div class="card mb-4"><div class="card-header"><span class="card-title">Labor / Parts</span></div><div class="card-body">' +
       '<div class="table-wrap"><table class="line-items-table">' +
-        '<thead><tr><th>Type</th><th>Item #</th><th>Description</th><th>Qty</th><th>Unit Price</th><th>Tax</th><th class="text-right">Extension</th><th></th></tr></thead>' +
+        '<thead><tr><th>Type</th><th>Item #</th><th>Description</th><th>Qty</th><th title="What the part cost us — feeds the COGS total Pulsar needs at close">Our Cost</th><th>Unit Price</th><th>Tax</th><th class="text-right">Extension</th><th></th></tr></thead>' +
         '<tbody id="inv-line-body"></tbody>' +
       '</table></div>' +
       '<div class="row-actions" style="margin-top:8px;flex-wrap:wrap">' +
@@ -10743,7 +10777,9 @@ async function renderEditInvoice(el, id) {
         '<button class="btn btn-secondary btn-sm" onclick="addInvoiceLine(\'part\')">' + icons.plus + ' Add Part</button>' +
         '<button class="btn btn-secondary btn-sm" style="white-space:nowrap" onclick="openPartsPicker(\'invoice\')"><svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" style="vertical-align:-2px"><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"/></svg> Add from Parts List</button>' +
       '</div>' +
-      '<div style="display:flex;justify-content:flex-end;margin-top:14px"><div style="min-width:280px">' +
+      '<div style="display:flex;justify-content:space-between;gap:24px;margin-top:16px;flex-wrap:wrap">' +
+      '<div id="inv-cogs-panel" style="min-width:330px;flex:1;max-width:440px"></div>' +
+      '<div style="min-width:280px">' +
         '<div style="display:flex;justify-content:space-between;padding:3px 0;font-size:13px"><span>Labor</span><span id="inv-labor">$0.00</span></div>' +
         '<div style="display:flex;justify-content:space-between;padding:3px 0;font-size:13px"><span>Parts</span><span id="inv-parts">$0.00</span></div>' +
         '<div style="display:flex;justify-content:space-between;padding:3px 0;font-size:13px;border-top:1px solid var(--border)"><span>Subtotal</span><span id="inv-subtotal">$0.00</span></div>' +
@@ -10826,6 +10862,27 @@ function invAccountChange(skipAutoItems) {
   }
 }
 
+// The Our Cost cell. Always editable, never locked: a catalog price can be stale,
+// and a figure nobody can correct is worse than no figure at all on a feature
+// whose whole point is cost accuracy. A cost that came from the parts list is
+// pre-filled and tagged so its origin is obvious; typing over it makes it manual.
+// Empty is amber, because that is the line the close-out gate stops on.
+function invCostCellHtml(it, i) {
+  if (it.line_type === 'labor') return '<span class="inv-cost-na">&mdash;</span>';
+  if (it.cost_unknown) {
+    return '<span class="inv-cost-unknown" title="' + escHtml(it.cost_unknown_reason || 'No cost available') + '">no cost' +
+      '<button class="btn btn-ghost btn-sm" style="padding:0 4px;min-height:0" title="Enter a cost instead" onclick="invClearCostUnknown(' + i + ')">&#x2715;</button></span>';
+  }
+  var blank = (it.unit_cost === '' || it.unit_cost == null);
+  var fromCatalog = (it.cost_source === 'catalog' && !blank);
+  return '<span class="inv-cost-edit">' +
+    '<input type="number" value="' + escHtml(it.unit_cost == null ? '' : it.unit_cost) + '" min="0" step="0.01" placeholder="cost *" ' +
+      'onchange="updateInvoiceItem(' + i + ',this)" data-field="unit_cost" style="width:82px"' +
+      (blank ? ' class="inv-cost-need"' : '') + ' title="What this part cost us — feeds the COGS total Pulsar needs" />' +
+    (fromCatalog ? '<span class="inv-cost-tag" title="Pre-filled from the parts list when this part was added. Type over it if the catalog price is stale.">catalog</span>' : '') +
+  '</span>';
+}
+
 function buildInvoiceLineItemRows() {
   var tbody = document.getElementById('inv-line-body');
   if (!tbody) return;
@@ -10838,6 +10895,7 @@ function buildInvoiceLineItemRows() {
       '<td><input type="text" value="' + escHtml(it.item_number||'') + '" placeholder="Item #" onchange="updateInvoiceItem(' + i + ',this)" data-field="item_number" style="width:100px" /></td>' +
       '<td><input type="text" value="' + escHtml(it.description||'') + '" placeholder="Description *" onchange="updateInvoiceItem(' + i + ',this)" data-field="description" /></td>' +
       '<td><input type="number" value="' + escHtml(it.quantity||'') + '" min="0" step="1" onchange="updateInvoiceItem(' + i + ',this)" data-field="quantity" style="width:64px" /></td>' +
+      '<td class="inv-cost-cell">' + invCostCellHtml(it, i) + '</td>' +
       '<td><input type="number" value="' + escHtml(it.unit_price||'') + '" min="0" step="0.01" placeholder="0.00" onchange="updateInvoiceItem(' + i + ',this)" data-field="unit_price" style="width:90px" /></td>' +
       '<td style="text-align:center"><input type="checkbox"' + (it.taxable ? ' checked' : '') + ' onchange="updateInvoiceItem(' + i + ',this)" data-field="taxable" style="width:auto" /></td>' +
       '<td class="text-right" id="inv-ext-' + i + '">' + invMoney(invExt(it)) + '</td>' +
@@ -10848,17 +10906,52 @@ function buildInvoiceLineItemRows() {
 }
 
 function updateInvoiceItem(i, input) {
-  invoiceLineItems[i][input.dataset.field] = input.type === 'checkbox' ? input.checked : input.value;
+  var field = input.dataset.field;
+  invoiceLineItems[i][field] = input.type === 'checkbox' ? input.checked : input.value;
+  // A cost typed by hand is a manual capture, and switching a line to labor drops
+  // it out of COGS entirely — keep the bookkeeping fields honest either way.
+  if (field === 'unit_cost') {
+    invoiceLineItems[i].cost_source = (input.value === '' ? 'none' : 'manual');
+    invoiceLineItems[i].cost_unknown = false;
+    invoiceLineItems[i].cost_unknown_reason = '';
+  }
+  if (field === 'line_type') { buildInvoiceLineItemRows(); return; }
   var cell = document.getElementById('inv-ext-' + i);
   if (cell) cell.textContent = invMoney(invExt(invoiceLineItems[i]));
   updateInvoiceTotals();
 }
 
+// Undo a "no cost available" override from the line-item table.
+function invClearCostUnknown(i) {
+  if (!invoiceLineItems[i]) return;
+  invoiceLineItems[i].cost_unknown = false;
+  invoiceLineItems[i].cost_unknown_reason = '';
+  invoiceLineItems[i].cost_source = 'none';
+  buildInvoiceLineItemRows();
+}
+
 function addInvoiceLine(type) {
-  invoiceLineItems.push({ line_type: type === 'part' ? 'part' : 'labor', item_number: '', description: '', quantity: 1, unit_price: '', taxable: type === 'part' });
+  invoiceLineItems.push({ line_type: type === 'part' ? 'part' : 'labor', item_number: '', description: '', quantity: 1, unit_price: '', unit_cost: '', cost_unknown: false, cost_unknown_reason: '', cost_source: 'none', taxable: type === 'part' });
   buildInvoiceLineItemRows();
 }
 function removeInvoiceItem(i) { invoiceLineItems.splice(i, 1); buildInvoiceLineItemRows(); }
+
+// COGS is parts only. Pulsar takes labor as its own separate field, so folding
+// labor in here would double-count it on their side.
+function invCogsSummary() {
+  var cost = 0, missing = 0, unknown = 0, partLines = 0, partsRetail = 0;
+  invoiceLineItems.forEach(function(it){
+    if (it.line_type === 'labor') return;
+    if (!(it.description || '').toString().trim()) return;
+    partLines++;
+    partsRetail += invExt(it);
+    if (it.cost_unknown) { unknown++; return; }
+    var c = parseFloat(it.unit_cost);
+    if (it.unit_cost === '' || it.unit_cost == null || isNaN(c)) { missing++; return; }
+    cost += (parseFloat(it.quantity) || 0) * c;
+  });
+  return { cost: cost, missing: missing, unknown: unknown, partLines: partLines, partsRetail: partsRetail };
+}
 
 function updateInvoiceTotals() {
   var labor = 0, parts = 0, taxable = 0;
@@ -10867,6 +10960,7 @@ function updateInvoiceTotals() {
     if (it.line_type === 'labor') labor += ext; else parts += ext;
     if (it.taxable) taxable += ext;
   });
+  invRenderCogsPanel();
   var subtotal = labor + parts;
   var rate = parseFloat((document.getElementById('inv-tax')||{}).value) || 0;
   var exempt = (document.getElementById('inv-tax-exempt')||{}).checked;
@@ -10875,6 +10969,41 @@ function updateInvoiceTotals() {
   var grand = subtotal + tax + tip;
   function set(id, val){ var e = document.getElementById(id); if (e) e.textContent = invMoney(val); }
   set('inv-labor', labor); set('inv-parts', parts); set('inv-subtotal', subtotal); set('inv-tax-amt', tax); set('inv-grand', grand);
+}
+
+// Live COGS panel on the edit form. Shows the tech the number Pulsar is going to
+// want while they can still do something about it, rather than springing the gate
+// on them at save.
+function invRenderCogsPanel() {
+  var box = document.getElementById('inv-cogs-panel');
+  if (!box) return;
+  var s = invCogsSummary();
+  var seeMargin = ['admin','manager'].indexOf(state.user.role) !== -1;
+  var gp = s.partsRetail - s.cost;
+  var gpPct = s.partsRetail > 0 ? (gp / s.partsRetail * 100) : 0;
+  var warn = '';
+  if (s.missing) {
+    warn = '<div class="inv-cogs-warn"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="flex:0 0 auto"><path d="M12 3l9 16H3z"/><line x1="12" y1="9" x2="12" y2="14"/><circle cx="12" cy="17" r=".8" fill="currentColor"/></svg>' +
+      '<span>' + s.missing + ' part line' + (s.missing === 1 ? ' has' : 's have') + ' no cost yet &mdash; fill in <strong>Our Cost</strong>, or mark it &#39;no cost available&#39;, before this can be saved as Completed.</span></div>';
+  } else if (s.unknown) {
+    warn = '<div class="inv-cogs-warn"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="flex:0 0 auto"><path d="M12 3l9 16H3z"/><line x1="12" y1="9" x2="12" y2="14"/><circle cx="12" cy="17" r=".8" fill="currentColor"/></svg>' +
+      '<span>' + s.unknown + ' line marked &#39;no cost available&#39; &mdash; this invoice will be flagged <strong>COGS incomplete</strong>.</span></div>';
+  }
+  box.innerHTML =
+    '<div class="inv-cogs-card">' +
+      '<div class="inv-cogs-label">Job Cost (COGS)</div>' +
+      '<div class="inv-cogs-big">' + invMoney(s.cost) + '</div>' +
+      '<div class="inv-cogs-sub">Parts cost only &mdash; labor is not COGS</div>' +
+      warn +
+      (seeMargin && s.partsRetail > 0
+        ? '<div class="inv-cogs-rows">' +
+            '<div class="inv-cogs-row"><span>Parts charged (retail)</span><span>' + invMoney(s.partsRetail) + '</span></div>' +
+            '<div class="inv-cogs-row"><span>Parts cost</span><span>&minus;' + invMoney(s.cost) + '</span></div>' +
+            '<div class="inv-cogs-row inv-cogs-row-total"><span>Parts gross margin</span><span class="inv-cogs-gp">' + invMoney(gp) + ' &nbsp;' + gpPct.toFixed(1) + '%</span></div>' +
+          '</div>' +
+          '<div class="inv-cogs-note">Margin is shown to managers and admins only.</div>'
+        : '') +
+    '</div>';
 }
 
 // ---------- Signature pad ----------
@@ -11066,16 +11195,19 @@ async function saveInvoice(id) {
   function val(idv){ var e = document.getElementById(idv); return e ? e.value : ''; }
   function chk(idv){ var e = document.getElementById(idv); return e ? e.checked : false; }
   // Sync line items from DOM (in case last edit not blurred)
+  // Read the row back by data-field, not by input position. The Our Cost cell is
+  // an input on a hand-typed part but plain text on a catalog part or a labor
+  // line, so positional indexing would shift and write the wrong values.
   var rows = document.querySelectorAll('#inv-line-body tr');
   rows.forEach(function(row, i){
+    if (!invoiceLineItems[i]) return;
     var typeSel = row.querySelector('select[data-field="line_type"]');
-    var inputs = row.querySelectorAll('input');
     if (typeSel) invoiceLineItems[i].line_type = typeSel.value;
-    if (inputs[0]) invoiceLineItems[i].item_number = inputs[0].value;
-    if (inputs[1]) invoiceLineItems[i].description = inputs[1].value;
-    if (inputs[2]) invoiceLineItems[i].quantity = inputs[2].value;
-    if (inputs[3]) invoiceLineItems[i].unit_price = inputs[3].value;
-    if (inputs[4]) invoiceLineItems[i].taxable = inputs[4].checked;
+    row.querySelectorAll('input[data-field]').forEach(function(inp){
+      var f = inp.dataset.field;
+      invoiceLineItems[i][f] = (inp.type === 'checkbox') ? inp.checked : inp.value;
+      if (f === 'unit_cost' && inp.value !== '' && !invoiceLineItems[i].cost_source) invoiceLineItems[i].cost_source = 'manual';
+    });
   });
   var customer = val('inv-customer').trim();
   if (!customer) { if (errEl) errEl.innerHTML = '<div class="alert alert-error">Customer name is required.</div>'; window.scrollTo(0,0); return; }
@@ -11092,6 +11224,18 @@ async function saveInvoice(id) {
     if (errEl) errEl.innerHTML = '<div class="alert alert-error">A signature is required before this invoice can be marked ' + escHtml(invStatus) + '. Save it as a draft, or capture a signature first.</div>';
     window.scrollTo(0,0);
     return;
+  }
+  // Close-out gate, client side. The server enforces the same rule, but catching
+  // it here means the tech gets the fix-it modal instantly instead of a round trip.
+  // Read the status the way the server will: a refunded invoice keeps its derived
+  // status (partially_refunded / refunded) no matter what the form says, and the
+  // form's dropdown has no option for those so it reads back as 'draft'. Without
+  // this, the client skips its gate and the server rejects the save instead.
+  var _effStatus = invStatus;
+  if (_currentInvoice && (parseFloat(_currentInvoice.refunded_total) || 0) > 0) _effStatus = _currentInvoice.status || invStatus;
+  if (_effStatus !== 'draft') {
+    var _gaps = invMissingCostLines(items);
+    if (_gaps.length) { invCogsGate(_gaps, id); return; }
   }
   var payload = {
     invoice_date: val('inv-date'),
@@ -11148,10 +11292,139 @@ async function saveInvoice(id) {
       navigate('view-invoice', created.id);
     }
   } catch(err) {
-    if (errEl) errEl.innerHTML = '<div class="alert alert-error">' + escHtml(err.message) + '</div>';
     if (btn) btn.disabled = false;
+    // The server rejected on the close-out gate. It hands back which lines are
+    // short, so show the same fix-it modal rather than a dead-end error.
+    if (err && err.data && err.data.cogs_missing && err.data.cogs_missing.length) {
+      // The server's index is into the array we SENT (items, blank descriptions
+      // already dropped), not into invoiceLineItems. Resolving it against the
+      // unfiltered array points the modal at the wrong row, so the tech costs a
+      // line that was never short and the save is rejected again forever.
+      invCogsGate(err.data.cogs_missing.map(function(m){ return items[m.index]; }).filter(Boolean), id);
+      return;
+    }
+    if (errEl) errEl.innerHTML = '<div class="alert alert-error">' + escHtml(err.message) + '</div>';
     window.scrollTo(0,0);
   }
+}
+
+// ----- Close-out gate -----
+// Which part lines cannot produce a COGS figure: no cost, and not explicitly
+// marked "no cost available". Mirrors missingCostLines() on the server.
+function invMissingCostLines(items) {
+  return (items || []).filter(function(it){
+    if (!it || !(it.description || '').toString().trim()) return false;
+    if (it.line_type === 'labor') return false;
+    if (it.cost_unknown) return false;
+    var c = parseFloat(it.unit_cost);
+    return (it.unit_cost === '' || it.unit_cost == null || isNaN(c));
+  });
+}
+
+// The modal that stands between a half-costed invoice and a closed Pulsar call.
+// Catalog parts arrive already costed, so in practice this only ever appears on
+// locally-sourced or off-catalog lines — the exact lines that get guessed today.
+function invCogsGate(missing, invoiceId) {
+  var existing = document.getElementById('inv-cogs-gate');
+  if (existing) existing.remove();
+  var idxs = missing.map(function(m){ return invoiceLineItems.indexOf(m); }).filter(function(x){ return x !== -1; });
+  if (!idxs.length) return;
+  var rowsHtml = idxs.map(function(i){
+    var it = invoiceLineItems[i];
+    var meta = [];
+    if (!it.part_id) meta.push('Not in the parts list');
+    meta.push('qty ' + (parseFloat(it.quantity) || 1));
+    meta.push('billed ' + invMoney(it.unit_price));
+    return '<div class="inv-gate-row">' +
+      '<div>' +
+        '<div class="inv-gate-desc">' + escHtml(it.description) + '</div>' +
+        '<div class="inv-gate-meta">' + escHtml(meta.join(' • ')) + '</div>' +
+        '<label class="inv-gate-check"><input type="checkbox" id="inv-gate-unk-' + i + '" onchange="invGateToggleUnknown(' + i + ')" /> No cost available</label>' +
+        '<input type="text" id="inv-gate-reason-' + i + '" class="inv-gate-reason" placeholder="Reason (required)" style="display:none" />' +
+      '</div>' +
+      '<div><input type="number" id="inv-gate-cost-' + i + '" min="0" step="0.01" placeholder="0.00" style="width:100%;box-sizing:border-box" /></div>' +
+    '</div>';
+  }).join('');
+  var overlay = document.createElement('div');
+  overlay.className = 'modal-overlay';
+  overlay.id = 'inv-cogs-gate';
+  overlay.innerHTML =
+    '<div class="modal" style="max-width:620px;width:100%">' +
+      '<div class="modal-header"><span class="modal-title">Cost missing on ' + idxs.length + ' part line' + (idxs.length === 1 ? '' : 's') + '</span>' +
+        '<button class="btn btn-ghost btn-sm" onclick="invCogsGateClose()">&#x2715;</button></div>' +
+      '<div class="modal-body">' +
+        '<div class="inv-cogs-warn" style="margin-bottom:14px">' +
+          '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="flex:0 0 auto"><path d="M12 3l9 16H3z"/><line x1="12" y1="9" x2="12" y2="14"/><circle cx="12" cy="17" r=".8" fill="currentColor"/></svg>' +
+          '<span>Pulsar needs a COGS figure for this call. Enter what the part actually cost us, or say why there isn&#39;t a cost.</span>' +
+        '</div>' +
+        '<div class="inv-gate-list">' +
+          '<div class="inv-gate-head"><div>Part line</div><div>Our cost</div></div>' + rowsHtml +
+        '</div>' +
+        '<div id="inv-gate-err"></div>' +
+      '</div>' +
+      '<div class="modal-footer">' +
+        '<button class="btn btn-secondary" onclick="invCogsGateClose()">Back to invoice</button>' +
+        '<button class="btn btn-primary" onclick="invCogsGateSave(' + (invoiceId || 'null') + ')">Save costs &amp; continue</button>' +
+      '</div>' +
+    '</div>';
+  document.body.appendChild(overlay);
+  var first = document.getElementById('inv-gate-cost-' + idxs[0]);
+  if (first) first.focus();
+}
+
+function invCogsGateClose() {
+  var m = document.getElementById('inv-cogs-gate');
+  if (m) m.remove();
+}
+
+function invGateToggleUnknown(i) {
+  var cb = document.getElementById('inv-gate-unk-' + i);
+  var reason = document.getElementById('inv-gate-reason-' + i);
+  var cost = document.getElementById('inv-gate-cost-' + i);
+  if (!cb) return;
+  if (reason) reason.style.display = cb.checked ? '' : 'none';
+  if (cost) { cost.disabled = cb.checked; cost.style.opacity = cb.checked ? '0.45' : ''; }
+}
+
+function invCogsGateSave(invoiceId) {
+  var err = document.getElementById('inv-gate-err');
+  if (err) err.innerHTML = '';
+  var pending = [];
+  for (var i = 0; i < invoiceLineItems.length; i++) {
+    var cb = document.getElementById('inv-gate-unk-' + i);
+    if (!cb) continue;
+    var costEl = document.getElementById('inv-gate-cost-' + i);
+    var reasonEl = document.getElementById('inv-gate-reason-' + i);
+    if (cb.checked) {
+      var reason = (reasonEl && reasonEl.value || '').trim();
+      if (!reason) {
+        if (err) err.innerHTML = '<div class="alert alert-error">Say why there is no cost on &quot;' + escHtml(invoiceLineItems[i].description) + '&quot;.</div>';
+        if (reasonEl) reasonEl.focus();
+        return;
+      }
+      pending.push({ i: i, unknown: true, reason: reason });
+    } else {
+      var v = (costEl && costEl.value || '').trim();
+      var n = parseFloat(v);
+      if (v === '' || isNaN(n) || n < 0) {
+        if (err) err.innerHTML = '<div class="alert alert-error">Enter a cost for &quot;' + escHtml(invoiceLineItems[i].description) + '&quot;, or tick &quot;No cost available&quot;.</div>';
+        if (costEl) costEl.focus();
+        return;
+      }
+      pending.push({ i: i, unknown: false, cost: v });
+    }
+  }
+  pending.forEach(function(p){
+    var it = invoiceLineItems[p.i];
+    if (p.unknown) {
+      it.cost_unknown = true; it.cost_unknown_reason = p.reason; it.unit_cost = ''; it.cost_source = 'none';
+    } else {
+      it.cost_unknown = false; it.cost_unknown_reason = ''; it.unit_cost = p.cost; it.cost_source = 'manual';
+    }
+  });
+  invCogsGateClose();
+  buildInvoiceLineItemRows();
+  saveInvoice(invoiceId);
 }
 
 // ----- Scanned ID photo (dispute evidence) -----
@@ -11220,11 +11493,152 @@ function invDownloadBase64(b64, mime, filename) {
 }
 
 // ---------- View ----------
+// ----- Close out in Pulsar -----
+// The six fields Pulsar asks for at close, in Pulsar's order. One function feeds
+// both the desktop and phone renderings so the two cannot drift apart.
+// display carries the $ and commas for reading; copyValue is the bare figure,
+// because Pulsar's fields are numeric and anything else has to be cleaned up by
+// hand at the exact moment the tech is trying to move on.
+function invPulsarFields(inv) {
+  function bare(n) { return (parseFloat(n) || 0).toFixed(2); }
+  var cogs = (inv.cogs && inv.cogs.total != null) ? inv.cogs.total : (parseFloat(inv.parts_cost_total) || 0);
+  var payLabel = inv.pay_type || '';
+  if (payLabel && _invoicePulsarPayMap && _invoicePulsarPayMap[payLabel]) payLabel = _invoicePulsarPayMap[payLabel];
+  return [
+    { label: 'Invoice #', display: String(inv.invoice_number), copyValue: String(inv.invoice_number) },
+    { label: 'Parts total', display: invMoney(inv.parts_amount), copyValue: bare(inv.parts_amount) },
+    { label: 'Labor total', display: invMoney(inv.labor_amount), copyValue: bare(inv.labor_amount) },
+    { label: 'COGS total', display: invMoney(cogs), copyValue: bare(cogs), accent: true },
+    { label: 'Payment type', display: (inv.pay_type ? (inv.pay_type + (inv.card_last4 ? ' ••••' + inv.card_last4 : '')) : '—'), copyValue: payLabel },
+    { label: 'Payment total', display: invMoney(inv.grand_total), copyValue: bare(inv.grand_total) }
+  ];
+}
+
+function invCloseoutHtml(inv, seeAll) {
+  var isDraft = (inv.status || 'draft') === 'draft';
+  var cg = inv.cogs || {};
+  var cogsVal = (cg.total != null) ? cg.total : (parseFloat(inv.parts_cost_total) || 0);
+  // A draft can still change. If Pulsar is closed off a draft and the invoice is
+  // edited afterwards the two systems disagree and nothing catches it, so the
+  // copy buttons stay locked until the invoice is Completed.
+  if (isDraft) {
+    return '<div class="card mb-4"><div class="card-header">' +
+        '<span class="card-title" style="color:var(--text-muted-color)">Close out in Pulsar</span>' +
+        '<span class="inv-closeout-priv">Internal only &mdash; never printed or emailed</span>' +
+      '</div><div class="card-body"><div class="inv-closeout-stub">' +
+        '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="flex:0 0 auto;margin-top:2px"><rect x="4" y="11" width="16" height="10" rx="2"/><path d="M8 11V8a4 4 0 0 1 8 0v3"/></svg>' +
+        '<div>' +
+          '<div class="inv-closeout-stub-title">Available once this invoice is Completed</div>' +
+          '<div class="inv-closeout-stub-body">A draft can still change. If Pulsar gets closed off a draft and the invoice is edited afterwards, the two systems disagree and nothing catches it. Finish the invoice, set it to Completed, then close the call.</div>' +
+          '<div class="inv-closeout-stub-facts">' +
+            '<span>Working COGS so far <strong>' + invMoney(cogsVal) + '</strong></span>' +
+            (cg.part_lines
+              ? '<span class="' + (cg.incomplete ? 'inv-cogs-warn-text' : 'inv-cogs-ok') + '">' + (cg.costed_lines || 0) + ' of ' + cg.part_lines + ' part lines costed</span>'
+              : '') +
+          '</div>' +
+        '</div>' +
+      '</div></div></div>';
+  }
+  var fields = invPulsarFields(inv);
+  var rows = fields.map(function(f, i){
+    return '<div class="inv-po-row">' +
+      '<div class="inv-po-n">' + (i + 1) + '</div>' +
+      '<div class="inv-po-label">' + escHtml(f.label) + '</div>' +
+      '<div class="inv-po-val' + (f.accent ? ' inv-po-accent' : '') + '">' + escHtml(f.display) + '</div>' +
+      '<div class="inv-po-copies">copies <span>' + escHtml(f.copyValue) + '</span></div>' +
+      // The value rides in a data- attribute, never inside the onclick. Building
+      // a JS string literal out of invoice data is an injection waiting to
+      // happen: pay_type is free text the client sends, and any value able to
+      // produce a quote would break out and execute in a manager's session.
+      '<div class="inv-po-btn"><button class="btn btn-secondary btn-sm" data-copy="' + escHtml(f.copyValue) + '" title="Copy ' + escHtml(f.copyValue) + '" onclick="invCopyField(this)">' +
+        '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="vertical-align:-2px"><rect x="9" y="9" width="12" height="12" rx="2"/><path d="M5 15V5a2 2 0 0 1 2-2h10"/></svg>' +
+      '</button></div>' +
+    '</div>';
+  }).join('');
+  var parts = parseFloat(inv.parts_amount) || 0, labor = parseFloat(inv.labor_amount) || 0;
+  var tax = parseFloat(inv.tax_amount) || 0, tip = parseFloat(inv.tip_amount) || 0;
+  // Parts + Labor is the subtotal; Payment total also carries tax and tip. Spell
+  // that out or someone decides a correct figure is wrong and "fixes" it.
+  var recon = 'Parts ' + parts.toFixed(2) + ' + Labor ' + labor.toFixed(2) +
+    ' + Tax ' + tax.toFixed(2) + (tip ? (' + Tip ' + tip.toFixed(2)) : '') +
+    ' = Payment total ' + (parseFloat(inv.grand_total) || 0).toFixed(2);
+  // Never claim "all costed" over a figure that is short. An older invoice whose
+  // hand-typed lines the backfill could not price is exactly the case where a
+  // confident tick mark would send a wrong number into Pulsar unquestioned.
+  var status = '';
+  if (cg.incomplete) {
+    var why = [];
+    if (cg.unknown_lines) why.push(cg.unknown_lines + ' closed with no cost available');
+    if (cg.uncosted_lines) why.push(cg.uncosted_lines + ' with no cost on record');
+    status = '<div class="inv-cogs-warn" style="margin-top:9px"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="flex:0 0 auto"><path d="M12 3l9 16H3z"/><line x1="12" y1="9" x2="12" y2="14"/><circle cx="12" cy="17" r=".8" fill="currentColor"/></svg>' +
+      '<span>COGS is incomplete &mdash; this total covers ' + (cg.costed_lines || 0) + ' of ' + (cg.part_lines || 0) + ' part lines' +
+      (why.length ? (' (' + escHtml(why.join(', ')) + ')') : '') + '. Open the invoice and fill in the missing costs before you trust it.</span></div>';
+  } else if (cg.costed_lines) {
+    status = '<div class="inv-cogs-ok" style="margin-top:8px">&#10003; All ' + cg.costed_lines + ' part line' + (cg.costed_lines === 1 ? ' has' : 's have') + ' a captured cost</div>';
+  }
+  var refunded = parseFloat(inv.refunded_total) || 0;
+  var refundNote = refunded > 0
+    ? '<div class="inv-closeout-note">Pulsar was closed at the amount that ran on the day, ' + invMoney(inv.grand_total) + '. Net after refunds is ' + invMoney(inv.net_total) + '.</div>'
+    : '';
+  var marginHtml = '';
+  if (seeAll) {
+    var gp = (cg.gross_profit != null) ? cg.gross_profit : ((parseFloat(inv.subtotal) || 0) - cogsVal);
+    var sub = parseFloat(inv.subtotal) || 0;
+    marginHtml = '<div class="inv-closeout-margin">' +
+      '<span>Gross profit (managers only)</span>' +
+      '<span class="inv-cogs-gp">' + invMoney(gp) + (sub > 0 ? (' &nbsp;' + (gp / sub * 100).toFixed(1) + '%') : '') + '</span>' +
+    '</div>';
+  }
+  return '<div class="card mb-4"><div class="card-header">' +
+      '<span class="card-title">Close out in Pulsar</span>' +
+      '<span class="inv-closeout-priv">Internal only &mdash; never printed or emailed</span>' +
+    '</div><div class="card-body">' +
+      '<div class="inv-po-list">' + rows + '</div>' +
+      '<div class="inv-closeout-recon">' + escHtml(recon) + '</div>' +
+      status + refundNote + marginHtml +
+      '<div class="inv-closeout-note">Copy puts the bare value on the clipboard &mdash; no label, no dollar sign, no commas.</div>' +
+    '</div></div>';
+}
+
+// Copy one value. Clipboard API needs a secure context and is missing on some of
+// the older truck phones, hence the textarea fallback.
+function invCopyField(btn, value) {
+  var text = String((value != null ? value : (btn && btn.getAttribute('data-copy'))) || '');
+  function done() {
+    if (!btn) return;
+    var old = btn.innerHTML;
+    btn.innerHTML = '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" style="vertical-align:-2px"><polyline points="20 6 9 17 4 12"/></svg>';
+    btn.classList.add('inv-po-copied');
+    setTimeout(function(){ btn.innerHTML = old; btn.classList.remove('inv-po-copied'); }, 1200);
+  }
+  function fallback() {
+    try {
+      var ta = document.createElement('textarea');
+      ta.value = text;
+      ta.setAttribute('readonly', '');
+      ta.style.position = 'fixed';
+      ta.style.opacity = '0';
+      document.body.appendChild(ta);
+      ta.select();
+      ta.setSelectionRange(0, text.length);
+      document.execCommand('copy');
+      document.body.removeChild(ta);
+      done();
+    } catch (e) { showToast('Could not copy — long-press the value to select it.', 'error'); }
+  }
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    navigator.clipboard.writeText(text).then(done, fallback);
+  } else { fallback(); }
+}
+
 async function renderViewInvoice(el, id) {
   el.innerHTML = '<div class="loading">Loading…</div>';
   try {
     var inv = await api('GET', '/invoices/' + id);
     _currentInvoice = inv;
+    // The close-out card copies the label Pulsar wants, not Nova's. Cached GET,
+    // so this costs nothing after the first view.
+    try { var _cfg = await api('GET', '/invoices/config'); _invoicePulsarPayMap = (_cfg && _cfg.pulsar_pay_map) || {}; } catch(e) {}
     var seeAll = ['admin','manager'].indexOf(state.user.role) !== -1;
     var invLocked = ['paid', 'partially_refunded', 'refunded'].indexOf(inv.status) !== -1;
     var isAdminUser = ['admin', 'owner'].indexOf(state.user.role) !== -1;
@@ -11243,12 +11657,18 @@ async function renderViewInvoice(el, id) {
     if (inv.ent_rental) ent.push('Rental Agreement');
     function field(label, value){ return '<div class="detail-field"><label>' + label + '</label><p>' + escHtml(value || '—') + '</p></div>'; }
     var itemsHtml = (inv.line_items||[]).map(function(it){
+      var costCell = '<span class="inv-cost-na">—</span>';
+      if (it.line_type !== 'labor') {
+        if (it.cost_unknown) costCell = '<span class="inv-cost-unknown" title="' + escHtml(it.cost_unknown_reason || '') + '">no cost</span>';
+        else if (it.unit_cost != null && it.unit_cost !== '') costCell = invMoney(it.unit_cost);
+      }
       return '<tr>' +
         '<td>' + (it.line_type === 'labor' ? 'Labor' : 'Part') + '</td>' +
         '<td>' + escHtml(it.item_number || '—') + '</td>' +
         '<td>' + escHtml(it.description) + '</td>' +
         '<td>' + invMoney(it.unit_price) + '</td>' +
         '<td>' + (parseFloat(it.quantity)||0) + '</td>' +
+        '<td class="costcell">' + costCell + '</td>' +
         '<td style="text-align:center">' + (it.taxable ? 'Y' : 'N') + '</td>' +
         '<td class="text-right">' + invMoney(invExt(it)) + '</td>' +
       '</tr>';
@@ -11290,9 +11710,10 @@ async function renderViewInvoice(el, id) {
       '<div class="card mb-4"><div class="card-header"><span class="card-title">Vehicle</span></div><div class="card-body"><div class="detail-grid">' +
         field('Vehicle', veh) + field('VIN', inv.vin) + field('License / Tag', inv.license_tag ? (inv.license_tag + (inv.tag_state ? ' (' + inv.tag_state + ')' : '')) : '') + field('Mileage', inv.mileage) +
       '</div></div></div>' +
+      invCloseoutHtml(inv, seeAll) +
       '<div class="card mb-4"><div class="card-header"><span class="card-title">Labor / Parts</span></div><div class="card-body">' +
         '<div class="table-wrap"><table class="line-items-table">' +
-        '<thead><tr><th>Type</th><th>Item #</th><th>Description</th><th>Unit Price</th><th>Qty</th><th>Tax</th><th class="text-right">Extension</th></tr></thead>' +
+        '<thead><tr><th>Type</th><th>Item #</th><th>Description</th><th>Unit Price</th><th>Qty</th><th title="What the part cost us">Our Cost</th><th>Tax</th><th class="text-right">Extension</th></tr></thead>' +
         '<tbody>' + itemsHtml + '</tbody></table></div>' +
         '<div style="display:flex;justify-content:flex-end;margin-top:12px"><div style="min-width:260px">' +
           '<div style="display:flex;justify-content:space-between;padding:3px 0;font-size:13px"><span>Labor</span><span>' + invMoney(inv.labor_amount) + '</span></div>' +
@@ -11643,6 +12064,7 @@ async function renderInvoiceSetup(el) {
   _invSetupVendors = vendors.map(function(v){ return v; });
   var defAgr = (cfg && cfg.default_agreement) || '';
   _invSetupPayTypes = (cfg && Array.isArray(cfg.pay_types)) ? cfg.pay_types.slice() : [];
+  _invSetupPulsarMap = (cfg && cfg.pulsar_pay_map) || {};
   el.innerHTML =
     '<div class="page-header"><div><div class="page-title">Invoice Setup</div><div class="page-subtitle">Choose which accounts appear on invoices, set their notes, auto line items, and agreement text</div></div></div>' +
     '<div id="inv-setup-msg"></div>' +
@@ -11658,9 +12080,47 @@ async function renderInvoiceSetup(el) {
       '<button class="btn btn-secondary btn-sm" style="margin-top:6px;white-space:nowrap" onclick="invSetupAddPayType()">' + '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" style="vertical-align:-2px;flex-shrink:0"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>' + ' Add pay type</button>' +
       '<div style="margin-top:10px"><button class="btn btn-primary" onclick="invSetupSavePayTypes()">Save Pay Types</button></div>' +
     '</div></div>' +
+    '<div class="card mb-4"><div class="card-header"><span class="card-title">Pulsar Payment Labels</span></div><div class="card-body">' +
+      '<p class="text-muted" style="font-size:13px;margin-bottom:10px">Pulsar&#39;s payment list is shorter than ours &mdash; the card brands usually collapse into one &quot;Credit Card&quot;. Set what each Nova pay type should copy as on the close-out card, so nobody has to translate it in their head. Leave one blank and it copies its own name.</p>' +
+      '<div id="inv-pulsarmap-list"></div>' +
+      '<div style="margin-top:10px"><button class="btn btn-primary" onclick="invSetupSavePulsarMap()">Save Pulsar Labels</button></div>' +
+    '</div></div>' +
     '<div class="card"><div class="card-header"><span class="card-title">Accounts</span></div><div class="card-body" id="inv-setup-accounts"></div></div>';
   renderInvSetupAccounts();
   renderInvSetupPayTypes();
+  renderInvSetupPulsarMap();
+}
+
+// Nova pay type -> Pulsar label. Rows follow the pay-type list, so adding a pay
+// type above automatically gets a mapping row here.
+function renderInvSetupPulsarMap() {
+  var box = document.getElementById('inv-pulsarmap-list');
+  if (!box) return;
+  var types = _invSetupPayTypes.map(function(p){ return (p||'').trim(); }).filter(Boolean);
+  if (!types.length) { box.innerHTML = '<div style="font-size:12px;color:var(--text-muted-color)">Add a pay type first.</div>'; return; }
+  box.innerHTML = types.map(function(t, i){
+    return '<div style="display:flex;gap:10px;align-items:center;margin-bottom:6px;flex-wrap:wrap">' +
+      '<span style="min-width:150px;font-size:13px">' + escHtml(t) + '</span>' +
+      '<span style="color:var(--text-muted-color)">&rarr;</span>' +
+      '<input type="text" value="' + escHtml(_invSetupPulsarMap[t] || '') + '" placeholder="' + escHtml(t) + '" onchange="invSetupPulsarMapEdit(' + i + ',this)" style="max-width:240px" />' +
+    '</div>';
+  }).join('');
+}
+function invSetupPulsarMapEdit(i, input) {
+  var types = _invSetupPayTypes.map(function(p){ return (p||'').trim(); }).filter(Boolean);
+  if (!types[i]) return;
+  _invSetupPulsarMap[types[i]] = input.value;
+}
+async function invSetupSavePulsarMap() {
+  var msg = document.getElementById('inv-setup-msg');
+  try {
+    var r = await api('POST', '/invoices/pulsar-pay-map', { map: _invSetupPulsarMap });
+    _invSetupPulsarMap = r.map || {};
+    _invoicePulsarPayMap = _invSetupPulsarMap;
+    apiBustCache('/invoices/config');
+    renderInvSetupPulsarMap();
+    if (msg) { msg.innerHTML = '<div class="alert alert-success">Pulsar labels saved.</div>'; setTimeout(function(){ if (msg) msg.innerHTML=''; }, 2500); }
+  } catch(err) { if (msg) msg.innerHTML = '<div class="alert alert-error">' + escHtml(err.message) + '</div>'; }
 }
 
 function renderInvSetupAccounts() {
@@ -11758,7 +12218,7 @@ function invSetupRemovePayType(i) { _invSetupPayTypes.splice(i, 1); renderInvSet
 async function invSetupSavePayTypes() {
   var clean = _invSetupPayTypes.map(function(p){ return (p||'').trim(); }).filter(Boolean);
   var msg = document.getElementById('inv-setup-msg');
-  try { var r = await api('POST', '/invoices/pay-types', { pay_types: clean }); _invSetupPayTypes = r.pay_types || clean; renderInvSetupPayTypes(); if (msg) { msg.innerHTML = '<div class="alert alert-success">Pay types saved.</div>'; setTimeout(function(){ if (msg) msg.innerHTML=''; }, 2500); } }
+  try { var r = await api('POST', '/invoices/pay-types', { pay_types: clean }); _invSetupPayTypes = r.pay_types || clean; apiBustCache('/invoices/config'); renderInvSetupPayTypes(); renderInvSetupPulsarMap(); if (msg) { msg.innerHTML = '<div class="alert alert-success">Pay types saved.</div>'; setTimeout(function(){ if (msg) msg.innerHTML=''; }, 2500); } }
   catch(err) { if (msg) msg.innerHTML = '<div class="alert alert-error">' + escHtml(err.message) + '</div>'; }
 }
 // ===================== END INVOICES MODULE =====================

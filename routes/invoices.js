@@ -100,17 +100,76 @@ async function generateInvoiceNumber(cityCode) {
 
 function computeTotals(line_items, tax_rate, tip_amount, tax_exempt) {
   const rate = parseFloat(tax_rate) || 0;
-  let labor = 0, parts = 0, taxable = 0;
+  let labor = 0, parts = 0, taxable = 0, parts_cost = 0, cogs_incomplete = false;
   (line_items || []).forEach(function (it) {
-    const ext = (parseFloat(it.quantity) || 0) * (parseFloat(it.unit_price) || 0);
+    // Skip exactly what insertLineItems skips. A row with no description is
+    // dropped on the way into the table, so counting it here would store totals
+    // the persisted line items cannot reproduce.
+    if (!it || !it.description) return;
+    const qty = parseFloat(it.quantity) || 0;
+    const ext = qty * (parseFloat(it.unit_price) || 0);
     if (it.line_type === 'labor') labor += ext; else parts += ext;
     if (it.taxable) taxable += ext;
+    // COGS is parts only — Pulsar takes labor as its own separate field, so
+    // rolling labor in here would double-count it on their side.
+    if (it.line_type !== 'labor') {
+      if (it.cost_unknown === true) cogs_incomplete = true;
+      else parts_cost += qty * (parseFloat(it.unit_cost) || 0);
+    }
   });
   const subtotal = labor + parts;
   const tax_amount = tax_exempt ? 0 : (taxable * rate / 100);
   const tip = parseFloat(tip_amount) || 0;
   const grand_total = subtotal + tax_amount + tip;
-  return { labor: labor, parts: parts, subtotal: subtotal, tax_amount: tax_amount, tip: tip, grand_total: grand_total };
+  return {
+    labor: labor, parts: parts, subtotal: subtotal, tax_amount: tax_amount, tip: tip, grand_total: grand_total,
+    parts_cost: parts_cost, cogs_incomplete: cogs_incomplete
+  };
+}
+
+// "No cost available" is the escape hatch on the close-out gate, so it is also
+// the way to defeat it. Every override is logged with its reason — a tech ticking
+// the box on every line shows up here as a pattern rather than disappearing.
+async function auditCostOverrides(line_items, invoiceId, invoiceNumber, user) {
+  const overrides = (line_items || []).filter(function (it) {
+    return it && it.description && it.line_type !== 'labor' && it.cost_unknown === true;
+  });
+  if (!overrides.length) return;
+  try {
+    await logAudit({
+      entity_type: 'invoice', entity_id: invoiceId, entity_number: String(invoiceNumber || ''),
+      action: 'cogs cost override', user_id: user.id, user_name: user.name,
+      details: {
+        count: overrides.length,
+        lines: overrides.map(function (it) {
+          return { description: String(it.description), reason: String(it.cost_unknown_reason || '').trim() || null };
+        })
+      }
+    });
+  } catch (e) {}
+}
+
+// Part lines that can't produce a COGS figure yet: no cost captured and not
+// explicitly marked "no cost available". Returned to the client so it can put up
+// the fix-it modal instead of a bare error string.
+function missingCostLines(line_items) {
+  const out = [];
+  (line_items || []).forEach(function (it, i) {
+    if (!it || !it.description) return;
+    if (it.line_type === 'labor') return;
+    if (it.cost_unknown === true) return;
+    const hasCost = it.unit_cost != null && it.unit_cost !== '' && !isNaN(parseFloat(it.unit_cost));
+    if (hasCost) return;
+    out.push({
+      index: i,
+      description: String(it.description),
+      item_number: it.item_number || null,
+      quantity: parseFloat(it.quantity) || 1,
+      unit_price: parseFloat(it.unit_price) || 0,
+      from_catalog: !!it.part_id
+    });
+  });
+  return out;
 }
 
 function httpsGetJson(url) {
@@ -190,8 +249,15 @@ router.get('/config', requireAuth, requirePermission('view_invoices'), async (re
     let pay_types = [];
     try { pay_types = JSON.parse(await getSetting('invoice_pay_types', '[]')); } catch (e) { pay_types = []; }
     if (!Array.isArray(pay_types) || !pay_types.length) pay_types = ['Cash', 'Check', 'Visa', 'Mastercard', 'Amex', 'Discover', 'Debit', 'Motor Club', 'Account / Invoice', 'Other'];
+    // Nova's pay types are finer-grained than Pulsar's (four card brands where
+    // Pulsar wants one "Credit Card"), so the close-out card copies the mapped
+    // label instead of making the tech translate in their head. Unmapped types
+    // fall through to their own name.
+    let pulsar_pay_map = {};
+    try { pulsar_pay_map = JSON.parse(await getSetting('pulsar_pay_type_map', '{}')) || {}; } catch (e) { pulsar_pay_map = {}; }
+    if (typeof pulsar_pay_map !== 'object' || Array.isArray(pulsar_pay_map)) pulsar_pay_map = {};
     const hc = await pool.query('SELECT home_city FROM users WHERE id = $1', [req.user.id]);
-    res.json({ default_agreement: agreement, pay_types: pay_types, home_city: (hc.rows[0] && hc.rows[0].home_city) || null });
+    res.json({ default_agreement: agreement, pay_types: pay_types, pulsar_pay_map: pulsar_pay_map, home_city: (hc.rows[0] && hc.rows[0].home_city) || null });
   } catch (err) {
     res.status(500).json({ error: 'Failed to fetch invoice config' });
   }
@@ -208,6 +274,23 @@ router.post('/pay-types', requireAuth, requirePermission('manage_invoice_setup')
     await pool.query("INSERT INTO settings (key, value, updated_at) VALUES ('invoice_pay_types', $1, NOW()) ON CONFLICT (key) DO UPDATE SET value = $1, updated_at = NOW()", [JSON.stringify(clean)]);
     res.json({ ok: true, pay_types: clean });
   } catch (err) { console.error(err); res.status(500).json({ error: 'Failed to save pay types' }); }
+});
+
+// Save the Nova pay type -> Pulsar label map (managers/admin). Blank values are
+// dropped so an unmapped type just copies its own name.
+router.post('/pulsar-pay-map', requireAuth, requirePermission('manage_invoice_setup'), async (req, res) => {
+  const map = req.body && req.body.map;
+  if (!map || typeof map !== 'object' || Array.isArray(map)) return res.status(400).json({ error: 'map must be an object' });
+  const clean = {};
+  Object.keys(map).forEach(function (k) {
+    const key = String(k == null ? '' : k).trim();
+    const val = String(map[k] == null ? '' : map[k]).trim();
+    if (key && val) clean[key] = val;
+  });
+  try {
+    await pool.query("INSERT INTO settings (key, value, updated_at) VALUES ('pulsar_pay_type_map', $1, NOW()) ON CONFLICT (key) DO UPDATE SET value = $1, updated_at = NOW()", [JSON.stringify(clean)]);
+    res.json({ ok: true, map: clean });
+  } catch (err) { console.error(err); res.status(500).json({ error: 'Failed to save the Pulsar pay type map' }); }
 });
 
 // Scan VIN from a photo: AI reads the 17-character VIN off the plate/sticker/barcode.
@@ -461,6 +544,51 @@ router.get('/:id', requireAuth, requirePermission('view_invoices'), async (req, 
       .filter(function (r) { return r.status === 'requested'; })
       .reduce(function (sum, r) { return sum + (parseFloat(r.amount) || 0); }, 0) * 100) / 100;
     invoice.locked = LOCKED_STATUSES.indexOf(invoice.status) !== -1;
+    // COGS for the Pulsar close-out card, computed from the stored per-line
+    // snapshots. A refunded part flagged restock went back on the shelf and must
+    // come OUT of cost of goods; a part refunded on a comeback (restock false)
+    // was still consumed and stays in. Same rule the month-end parts report uses.
+    try {
+      // The SUM is deliberately restricted to costed lines while the counts are
+      // not: an earlier cut put "count the unknown lines" inside a WHERE that
+      // excluded unknown lines, so the number a manager relies on to judge how
+      // much of the figure is guesswork was structurally always zero.
+      const cg = await pool.query(
+        'SELECT COALESCE(SUM(CASE WHEN li.cost_unknown IS NOT TRUE ' +
+        '                         THEN GREATEST(li.quantity - COALESCE(rs.restocked_qty, 0), 0) * COALESCE(li.unit_cost, 0) ' +
+        '                         ELSE 0 END), 0) AS cogs, ' +
+        '       COUNT(*) AS part_lines, ' +
+        '       COUNT(*) FILTER (WHERE li.cost_unknown IS TRUE) AS unknown_lines, ' +
+        '       COUNT(*) FILTER (WHERE li.cost_unknown IS NOT TRUE AND li.unit_cost IS NOT NULL) AS costed_lines, ' +
+        '       COUNT(*) FILTER (WHERE li.cost_unknown IS NOT TRUE AND li.unit_cost IS NULL) AS uncosted_lines ' +
+        '  FROM invoice_line_items li ' +
+        '  LEFT JOIN ( SELECT l.invoice_line_item_id, SUM(l.quantity) AS restocked_qty ' +
+        '                FROM invoice_refund_lines l JOIN invoice_refunds r ON r.id = l.refund_id ' +
+        "               WHERE l.restock = true AND r.status IN ('approved', 'processed') " +
+        '               GROUP BY l.invoice_line_item_id ) rs ON rs.invoice_line_item_id = li.id ' +
+        " WHERE li.invoice_id = $1 AND li.line_type <> 'labor'",
+        [req.params.id]
+      );
+      const row = cg.rows[0] || {};
+      const cogs = Math.round((parseFloat(row.cogs) || 0) * 100) / 100;
+      const unknown = parseInt(row.unknown_lines, 10) || 0;
+      const uncosted = parseInt(row.uncosted_lines, 10) || 0;
+      invoice.cogs = {
+        total: cogs,
+        // Incomplete covers BOTH ways the figure can be short: a line the tech
+        // explicitly marked "no cost available", and a legacy line the backfill
+        // could not price. Reporting "all costed" over a partial figure is worse
+        // than reporting no figure, because the tech has no reason to doubt it.
+        incomplete: invoice.cogs_incomplete === true || unknown > 0 || uncosted > 0,
+        unknown_lines: unknown,
+        uncosted_lines: uncosted,
+        costed_lines: parseInt(row.costed_lines, 10) || 0,
+        part_lines: parseInt(row.part_lines, 10) || 0,
+        gross_profit: Math.round((((parseFloat(invoice.subtotal) || 0) - cogs)) * 100) / 100
+      };
+    } catch (e) {
+      invoice.cogs = { total: parseFloat(invoice.parts_cost_total) || 0, incomplete: invoice.cogs_incomplete === true, unknown_lines: 0, uncosted_lines: 0, costed_lines: 0, part_lines: 0, gross_profit: 0 };
+    }
     res.json(invoice);
   } catch (err) {
     console.error(err);
@@ -766,9 +894,24 @@ async function insertLineItems(client, invoiceId, line_items) {
   let pos = 0;
   for (const it of (line_items || [])) {
     if (!it || !it.description) continue;
+    const isLabor = it.line_type === 'labor';
+    const costUnknown = !isLabor && it.cost_unknown === true;
+    const hasCost = !isLabor && !costUnknown && it.unit_cost != null && it.unit_cost !== '' && !isNaN(parseFloat(it.unit_cost));
+    let source = null;
+    if (isLabor) source = 'none';
+    else if (costUnknown) source = 'none';
+    else if (hasCost) source = (it.cost_source === 'catalog' || it.cost_source === 'backfill') ? it.cost_source : 'manual';
     await client.query(
-      'INSERT INTO invoice_line_items (invoice_id, line_type, part_id, item_number, description, quantity, unit_price, taxable, position) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)',
-      [invoiceId, it.line_type === 'labor' ? 'labor' : 'part', it.part_id || null, it.item_number || null, it.description, parseFloat(it.quantity) || 1, parseFloat(it.unit_price) || 0, it.taxable === true, pos++]
+      'INSERT INTO invoice_line_items (invoice_id, line_type, part_id, item_number, description, quantity, unit_price, unit_cost, cost_unknown, cost_unknown_reason, cost_source, taxable, position) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)',
+      [
+        invoiceId, isLabor ? 'labor' : 'part', it.part_id || null, it.item_number || null, it.description,
+        parseFloat(it.quantity) || 1, parseFloat(it.unit_price) || 0,
+        hasCost ? parseFloat(it.unit_cost) : null,
+        costUnknown,
+        costUnknown ? (String(it.cost_unknown_reason || '').trim().slice(0, 255) || null) : null,
+        source,
+        it.taxable === true, pos++
+      ]
     );
   }
 }
@@ -785,6 +928,15 @@ router.post('/', requireAuth, requirePermission('create_invoice'), async (req, r
     if (it.quantity != null && it.quantity !== '' && !(parseFloat(it.quantity) > 0)) return res.status(400).json({ error: 'Line item quantity must be greater than 0' });
     if (it.unit_price != null && it.unit_price !== '' && !(parseFloat(it.unit_price) >= 0)) return res.status(400).json({ error: 'Line item unit price must be 0 or greater' });
   }
+  // Close-out gate: Pulsar needs a COGS figure, so a non-draft invoice can't
+  // carry a part line with no cost and no "no cost available" reason.
+  const _missing = status !== 'draft' ? missingCostLines(b.line_items) : [];
+  if (_missing.length) {
+    return res.status(400).json({
+      error: 'Cost is missing on ' + _missing.length + ' part line' + (_missing.length === 1 ? '' : 's') + '.',
+      cogs_missing: _missing
+    });
+  }
   const tax_rate = parseFloat(b.tax_rate) || 0;
   const t = computeTotals(b.line_items, tax_rate, b.tip_amount, b.tax_exempt === true);
   const invoice_date = b.invoice_date || new Date().toISOString().split('T')[0];
@@ -796,15 +948,16 @@ router.post('/', requireAuth, requirePermission('create_invoice'), async (req, r
     try {
       await client.query('BEGIN');
       const ins = await client.query(
-        'INSERT INTO invoices (invoice_number, locksmith_id, locksmith_name, invoice_date, status, account_id, account_name, customer_po_wo, pay_type, card_last4, cc_online, time_in, time_out, customer_name, dl_number, dl_state, street_address, city, state, zip, phone, email, vehicle_year, vehicle_make, vehicle_model, license_tag, tag_state, vin, mileage, ent_registration, ent_insurance, ent_title, ent_rental, tax_rate, labor_amount, parts_amount, subtotal, tax_amount, tip_amount, grand_total, notes, payments_note, agreement_text, signature_image, signed_name, signed_at, approval_code, tax_exempt, signature_required, city_code) ' +
-        'VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31,$32,$33,$34,$35,$36,$37,$38,$39,$40,$41,$42,$43,$44,$45,$46,$47,$48,$49,$50) RETURNING *',
-        [invoice_number, req.user.id, req.user.name, invoice_date, status, f.account_id, f.account_name, f.customer_po_wo, f.pay_type, f.card_last4, f.cc_online, f.time_in, f.time_out, f.customer_name, f.dl_number, f.dl_state, f.street_address, f.city, f.state, f.zip, f.phone, f.email, f.vehicle_year, f.vehicle_make, f.vehicle_model, f.license_tag, f.tag_state, f.vin, f.mileage, f.ent_registration, f.ent_insurance, f.ent_title, f.ent_rental, tax_rate, t.labor, t.parts, t.subtotal, t.tax_amount, t.tip, t.grand_total, f.notes, f.payments_note, f.agreement_text, f.signature_image, f.signed_name, signedAt, f.approval_code, f.tax_exempt, f.signature_required, f.city_code]
+        'INSERT INTO invoices (invoice_number, locksmith_id, locksmith_name, invoice_date, status, account_id, account_name, customer_po_wo, pay_type, card_last4, cc_online, time_in, time_out, customer_name, dl_number, dl_state, street_address, city, state, zip, phone, email, vehicle_year, vehicle_make, vehicle_model, license_tag, tag_state, vin, mileage, ent_registration, ent_insurance, ent_title, ent_rental, tax_rate, labor_amount, parts_amount, subtotal, tax_amount, tip_amount, grand_total, notes, payments_note, agreement_text, signature_image, signed_name, signed_at, approval_code, tax_exempt, signature_required, city_code, parts_cost_total, cogs_incomplete) ' +
+        'VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31,$32,$33,$34,$35,$36,$37,$38,$39,$40,$41,$42,$43,$44,$45,$46,$47,$48,$49,$50,$51,$52) RETURNING *',
+        [invoice_number, req.user.id, req.user.name, invoice_date, status, f.account_id, f.account_name, f.customer_po_wo, f.pay_type, f.card_last4, f.cc_online, f.time_in, f.time_out, f.customer_name, f.dl_number, f.dl_state, f.street_address, f.city, f.state, f.zip, f.phone, f.email, f.vehicle_year, f.vehicle_make, f.vehicle_model, f.license_tag, f.tag_state, f.vin, f.mileage, f.ent_registration, f.ent_insurance, f.ent_title, f.ent_rental, tax_rate, t.labor, t.parts, t.subtotal, t.tax_amount, t.tip, t.grand_total, f.notes, f.payments_note, f.agreement_text, f.signature_image, f.signed_name, signedAt, f.approval_code, f.tax_exempt, f.signature_required, f.city_code, t.parts_cost, t.cogs_incomplete]
       );
       const invoice = ins.rows[0];
       await insertLineItems(client, invoice.id, b.line_items);
       await client.query('COMMIT');
       client.release();
       try { await logAudit({ entity_type: 'invoice', entity_id: invoice.id, entity_number: String(invoice_number), action: 'created', user_id: req.user.id, user_name: req.user.name, details: { customer: f.customer_name, total: t.grand_total } }); } catch (e) {}
+      await auditCostOverrides(b.line_items, invoice.id, invoice_number, req.user);
       try {
         const _q = await notify.broadcastRecipients('invoice_created', "role IN ('admin', 'owner')");
         await push.sendPushToUsers(_q.userIds, { title: 'New invoice', body: req.user.name + ' created invoice #' + invoice_number + '.', url: '/' });
@@ -882,6 +1035,14 @@ router.put('/:id', requireAuth, requirePermission('edit_invoice'), async (req, r
       if (it.quantity != null && it.quantity !== '' && !(parseFloat(it.quantity) > 0)) return res.status(400).json({ error: 'Line item quantity must be greater than 0' });
       if (it.unit_price != null && it.unit_price !== '' && !(parseFloat(it.unit_price) >= 0)) return res.status(400).json({ error: 'Line item unit price must be 0 or greater' });
     }
+    // Same close-out gate as create: no non-draft invoice without a COGS figure.
+    const _missing = status !== 'draft' ? missingCostLines(b.line_items) : [];
+    if (_missing.length) {
+      return res.status(400).json({
+        error: 'Cost is missing on ' + _missing.length + ' part line' + (_missing.length === 1 ? '' : 's') + '.',
+        cogs_missing: _missing
+      });
+    }
     const tax_rate = parseFloat(b.tax_rate) || 0;
     const t = computeTotals(b.line_items, tax_rate, b.tip_amount, b.tax_exempt === true);
     // Never let an edit drop the invoice below what has already been given back,
@@ -900,11 +1061,40 @@ router.put('/:id', requireAuth, requirePermission('edit_invoice'), async (req, r
     try {
       await client.query('BEGIN');
       await client.query(
-        'UPDATE invoices SET account_id=$1, account_name=$2, customer_po_wo=$3, pay_type=$4, card_last4=$5, cc_online=$6, time_in=$7, time_out=$8, customer_name=$9, dl_number=$10, dl_state=$11, street_address=$12, city=$13, state=$14, zip=$15, phone=$16, email=$17, vehicle_year=$18, vehicle_make=$19, vehicle_model=$20, license_tag=$21, tag_state=$22, vin=$23, mileage=$24, ent_registration=$25, ent_insurance=$26, ent_title=$27, ent_rental=$28, tax_rate=$29, labor_amount=$30, parts_amount=$31, subtotal=$32, tax_amount=$33, tip_amount=$34, grand_total=$35, notes=$36, payments_note=$37, agreement_text=$38, signature_image=$39, signed_name=$40, signed_at=$41, status=$42, invoice_date=$43, approval_code=$44, tax_exempt=$45, signature_required=$46, city_code=$47, updated_at=NOW() WHERE id=$48',
-        [f.account_id, f.account_name, f.customer_po_wo, f.pay_type, f.card_last4, f.cc_online, f.time_in, f.time_out, f.customer_name, f.dl_number, f.dl_state, f.street_address, f.city, f.state, f.zip, f.phone, f.email, f.vehicle_year, f.vehicle_make, f.vehicle_model, f.license_tag, f.tag_state, f.vin, f.mileage, f.ent_registration, f.ent_insurance, f.ent_title, f.ent_rental, tax_rate, t.labor, t.parts, t.subtotal, t.tax_amount, t.tip, t.grand_total, f.notes, f.payments_note, f.agreement_text, f.signature_image, f.signed_name, signedAt, status, invoice_date, f.approval_code, f.tax_exempt, f.signature_required, f.city_code, req.params.id]
+        'UPDATE invoices SET account_id=$1, account_name=$2, customer_po_wo=$3, pay_type=$4, card_last4=$5, cc_online=$6, time_in=$7, time_out=$8, customer_name=$9, dl_number=$10, dl_state=$11, street_address=$12, city=$13, state=$14, zip=$15, phone=$16, email=$17, vehicle_year=$18, vehicle_make=$19, vehicle_model=$20, license_tag=$21, tag_state=$22, vin=$23, mileage=$24, ent_registration=$25, ent_insurance=$26, ent_title=$27, ent_rental=$28, tax_rate=$29, labor_amount=$30, parts_amount=$31, subtotal=$32, tax_amount=$33, tip_amount=$34, grand_total=$35, notes=$36, payments_note=$37, agreement_text=$38, signature_image=$39, signed_name=$40, signed_at=$41, status=$42, invoice_date=$43, approval_code=$44, tax_exempt=$45, signature_required=$46, city_code=$47, parts_cost_total=$48, cogs_incomplete=$49, updated_at=NOW() WHERE id=$50',
+        [f.account_id, f.account_name, f.customer_po_wo, f.pay_type, f.card_last4, f.cc_online, f.time_in, f.time_out, f.customer_name, f.dl_number, f.dl_state, f.street_address, f.city, f.state, f.zip, f.phone, f.email, f.vehicle_year, f.vehicle_make, f.vehicle_model, f.license_tag, f.tag_state, f.vin, f.mileage, f.ent_registration, f.ent_insurance, f.ent_title, f.ent_rental, tax_rate, t.labor, t.parts, t.subtotal, t.tax_amount, t.tip, t.grand_total, f.notes, f.payments_note, f.agreement_text, f.signature_image, f.signed_name, signedAt, status, invoice_date, f.approval_code, f.tax_exempt, f.signature_required, f.city_code, t.parts_cost, t.cogs_incomplete, req.params.id]
       );
+      // An edit rewrites the line items wholesale: delete, then re-insert with
+      // fresh ids. invoice_refund_lines.invoice_line_item_id is ON DELETE SET
+      // NULL, so every refund silently loses its link to the line it came from —
+      // which, now that COGS subtracts restocked parts, means a restocked part
+      // quietly climbs back into cost of goods the first time anyone fixes a typo.
+      // Capture the links before the delete and re-point them afterwards.
+      let _refLinks = [];
+      try {
+        _refLinks = (await client.query(
+          'SELECT l.id AS refund_line_id, li.position, li.description ' +
+          '  FROM invoice_refund_lines l JOIN invoice_line_items li ON li.id = l.invoice_line_item_id ' +
+          ' WHERE li.invoice_id = $1',
+          [req.params.id]
+        )).rows;
+      } catch (e) { _refLinks = []; }
       await client.query('DELETE FROM invoice_line_items WHERE invoice_id = $1', [req.params.id]);
       await insertLineItems(client, parseInt(req.params.id, 10), b.line_items);
+      if (_refLinks.length) {
+        try {
+          const fresh = (await client.query('SELECT id, position, description FROM invoice_line_items WHERE invoice_id = $1', [req.params.id])).rows;
+          const byKey = {};
+          fresh.forEach(function (n) { byKey[n.position + ' ' + n.description] = n.id; });
+          for (const link of _refLinks) {
+            // Match on position AND description. If the tech reworded or removed
+            // the line, leave the refund unlinked rather than attach it to
+            // whatever now happens to sit in that slot.
+            const newId = byKey[link.position + ' ' + link.description];
+            if (newId) await client.query('UPDATE invoice_refund_lines SET invoice_line_item_id = $1 WHERE id = $2', [newId, link.refund_line_id]);
+          }
+        } catch (e) { console.error('Could not re-link refund lines after invoice edit:', e.message); }
+      }
       // The new total may have turned a partial refund into a full one (or back).
       if (_refunded > 0) {
         await client.query(
@@ -920,6 +1110,7 @@ router.put('/:id', requireAuth, requirePermission('edit_invoice'), async (req, r
     }
     client.release();
     try { await logAudit({ entity_type: 'invoice', entity_id: parseInt(req.params.id, 10), entity_number: String(existing.invoice_number), action: 'edited', user_id: req.user.id, user_name: req.user.name }); } catch (e) {}
+    await auditCostOverrides(b.line_items, parseInt(req.params.id, 10), existing.invoice_number, req.user);
     // Replace/store the scanned ID photo if a new one was captured this edit.
     let idImageSaved = null;
     if (b.id_image) {

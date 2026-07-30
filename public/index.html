@@ -385,6 +385,83 @@
     @media (prefers-reduced-motion: reduce) { .nova-dialog-overlay, .nova-dlg { animation:none; } }
     @media (prefers-reduced-motion: reduce) { .main-content,.modal-overlay,.modal,.alert{animation:none} .btn:hover,.btn:active{transform:none} }
     @media (prefers-reduced-motion: reduce) { .stats-grid .stat-card{opacity:1;animation:none} .stat-card:hover,.nova-tile:hover,.nav-item:hover,.nav-sub:hover{transform:none} .stat-card::before,.nova-tile::before,.nav-item::before,.nav-sub::before,.nav-section-header::before{display:none} }
+
+    /* ---- Invoice COGS capture + "Close out in Pulsar" ---------------------- */
+    /* Our Cost cell on the line-item tables. A catalog part is locked text (the
+       cost was captured when it was picked); a hand-typed part gets an input,
+       amber while empty because that is the line the close-out gate stops on. */
+    .costcell, .inv-cost-cell { font-family:'Fira Code', ui-monospace, monospace; font-size:12.5px; color:var(--text-dim); white-space:nowrap; }
+    .inv-cost-na { color:var(--text-muted-color); }
+    .inv-cost-locked, .inv-cost-edit { display:inline-flex; align-items:center; gap:6px; }
+    .inv-cost-tag { font-family:'Fira Sans', sans-serif; font-size:10.5px; color:var(--text-muted-color); border:1px solid var(--border); border-radius:3px; padding:0 4px; }
+    .inv-cost-unknown { display:inline-flex; align-items:center; gap:2px; color:var(--warning); font-size:12px; }
+    input.inv-cost-need { border-color:var(--warning) !important; background:rgba(245,158,11,0.10) !important; }
+
+    /* Live COGS panel on the invoice form */
+    .inv-cogs-card { border:1px solid var(--border); border-radius:10px; background:var(--bg-elevated); padding:14px 16px; }
+    .inv-cogs-label { font-size:12px; text-transform:uppercase; letter-spacing:0.06em; color:var(--text-muted-color); }
+    .inv-cogs-big { font-family:'Fira Code', ui-monospace, monospace; font-size:30px; font-weight:600; letter-spacing:-0.5px; line-height:1.15; color:var(--text); }
+    .inv-cogs-sub { font-size:11.5px; color:var(--text-muted-color); margin:2px 0 10px; }
+    .inv-cogs-warn { display:flex; align-items:flex-start; gap:7px; font-size:12px; color:#f59e0b; background:rgba(245,158,11,0.10); border:1px solid rgba(245,158,11,0.35); border-radius:6px; padding:7px 9px; line-height:1.55; }
+    .inv-cogs-ok { font-size:11.5px; color:var(--success); }
+    .inv-cogs-warn-text { font-size:11.5px; color:var(--warning); }
+    .inv-cogs-rows { border-top:1px solid var(--border); margin-top:10px; padding-top:8px; }
+    .inv-cogs-row { display:flex; justify-content:space-between; gap:12px; padding:3px 0; font-size:13px; color:var(--text-muted-color); }
+    .inv-cogs-row-total { font-weight:600; color:var(--text); }
+    .inv-cogs-gp { color:var(--success); }
+    .inv-cogs-note { font-size:11px; color:var(--text-muted-color); margin-top:8px; }
+
+    /* The six Pulsar fields. One row per field, one copy button each. */
+    .inv-po-list { border:1px solid var(--border); border-radius:9px; overflow:hidden; background:var(--bg-elevated); }
+    /* Fixed columns, because each row is its own grid — the widths are what keep
+       the six values aligned down the card. Payment type is text, not a number,
+       and "Account / Invoice" is long, so these two cells wrap instead of running
+       nowrap into each other. */
+    .inv-po-row { display:grid; grid-template-columns:22px minmax(0,1fr) 176px 150px 62px; gap:10px; align-items:center; padding:10px 13px; border-bottom:1px solid var(--border); }
+    .inv-po-row:last-child { border-bottom:none; }
+    .inv-po-n { font-family:'Fira Code', ui-monospace, monospace; font-size:11px; color:var(--text-muted-color); }
+    .inv-po-label { font-size:13px; overflow-wrap:anywhere; }
+    .inv-po-val { font-family:'Fira Code', ui-monospace, monospace; font-size:16px; font-weight:600; text-align:right; overflow-wrap:anywhere; }
+    .inv-po-accent { color:var(--primary); }
+    .inv-po-copies { font-family:'Fira Code', ui-monospace, monospace; font-size:11.5px; color:var(--text-muted-color); text-align:right; overflow-wrap:anywhere; line-height:1.45; }
+    .inv-po-copies span { color:var(--text-dim); }
+    .inv-po-btn { text-align:right; }
+    .btn.inv-po-copied { color:var(--success); border-color:var(--success); }
+    .inv-closeout-priv { font-size:11px; color:var(--text-muted-color); }
+    .inv-closeout-recon { margin-top:11px; font-size:11.5px; color:var(--text-muted-color); font-family:'Fira Code', ui-monospace, monospace; overflow-wrap:anywhere; }
+    .inv-closeout-note { font-size:11px; color:var(--text-muted-color); margin-top:9px; line-height:1.6; }
+    .inv-closeout-margin { display:flex; justify-content:space-between; gap:12px; font-size:13px; color:var(--text-muted-color); border-top:1px solid var(--border); margin-top:10px; padding-top:8px; }
+    /* Draft state: the fields exist but stay locked until the invoice is Completed. */
+    .inv-closeout-stub { display:flex; gap:13px; align-items:flex-start; padding:16px 18px; border:1px dashed var(--border); border-radius:9px; background:var(--bg-elevated); color:var(--text-muted-color); }
+    .inv-closeout-stub-title { font-size:13.5px; font-weight:600; color:var(--text); margin-bottom:3px; }
+    .inv-closeout-stub-body { font-size:12.5px; line-height:1.7; max-width:640px; }
+    .inv-closeout-stub-facts { margin-top:11px; display:flex; gap:20px; flex-wrap:wrap; font-size:12px; }
+    .inv-closeout-stub-facts strong { color:var(--text-dim); font-family:'Fira Code', ui-monospace, monospace; }
+
+    /* Close-out gate modal */
+    .inv-gate-list { border:1px solid var(--border); border-radius:8px; overflow:hidden; }
+    .inv-gate-head { display:grid; grid-template-columns:minmax(0,1fr) 100px; gap:10px; padding:10px 12px; font-size:11px; text-transform:uppercase; letter-spacing:0.04em; color:var(--text-muted-color); background:var(--bg-elevated); }
+    .inv-gate-row { display:grid; grid-template-columns:minmax(0,1fr) 100px; gap:10px; padding:11px 12px; align-items:start; border-top:1px solid var(--border); }
+    .inv-gate-desc { font-size:13px; overflow-wrap:anywhere; }
+    .inv-gate-meta { font-size:11px; color:var(--text-muted-color); }
+    /* The global input{width:100%} rule balloons a bare checkbox, so reset it. */
+    .inv-gate-check { display:flex; align-items:center; gap:6px; margin:7px 0 0; font-size:12px; cursor:pointer; }
+    .inv-gate-check input[type="checkbox"] { width:16px; height:16px; padding:0; flex:0 0 auto; }
+    .inv-gate-reason { margin-top:6px; font-size:12px; }
+
+    /* Phone: the five-column field row stacks, and the copy button stays a
+       44px-class tap target rather than shrinking with the layout. */
+    @media (max-width: 720px) {
+      .inv-po-row { grid-template-columns:18px minmax(0,1fr) auto 46px; row-gap:2px; }
+      .inv-po-n      { grid-column:1; grid-row:1; }
+      .inv-po-label  { grid-column:2; grid-row:1; }
+      .inv-po-val    { grid-column:3; grid-row:1; font-size:15px; }
+      .inv-po-btn    { grid-column:4; grid-row:1 / span 2; align-self:center; }
+      .inv-po-copies { grid-column:2 / 4; grid-row:2; text-align:left; font-size:10.5px; }
+      .inv-po-btn .btn { min-height:38px; }
+      .inv-cogs-big { font-size:26px; }
+      .inv-gate-head, .inv-gate-row { grid-template-columns:minmax(0,1fr) 84px; }
+    }
   </style>
   <script>(function(){try{if(localStorage.getItem("po_theme")==="light")document.documentElement.setAttribute("data-theme","light");}catch(e){}})();</script>
 </head>
