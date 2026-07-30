@@ -78,7 +78,8 @@ async function initDB() {
       '  manufacturer VARCHAR(255),' +
       '  description VARCHAR(500) NOT NULL,' +
       '  quantity DECIMAL(10,2) NOT NULL,' +
-      '  unit_price DECIMAL(10,2) NOT NULL' +
+      '  unit_price DECIMAL(10,2) NOT NULL,' +
+      "  line_type VARCHAR(10) NOT NULL DEFAULT 'part'" +
       ');'
     );
     await client.query(
@@ -105,6 +106,10 @@ async function initDB() {
       'ALTER TABLE quotes ADD COLUMN IF NOT EXISTS tax_amount DECIMAL(10,2) DEFAULT 0;' +
       'ALTER TABLE quote_line_items ADD COLUMN IF NOT EXISTS list_price DECIMAL(10,2);' +
       'ALTER TABLE quote_line_items ADD COLUMN IF NOT EXISTS taxable BOOLEAN DEFAULT false;' +
+      // A quote line is either work we perform (labor) or a thing we buy (part).
+      // Without this, push-to-invoice had to guess and always guessed 'part', which
+      // dropped the labor charge into parts COGS and wrecked the gross margin.
+      "ALTER TABLE quote_line_items ADD COLUMN IF NOT EXISTS line_type VARCHAR(10) NOT NULL DEFAULT 'part';" +
       'ALTER TABLE purchase_orders ADD COLUMN IF NOT EXISTS orderer_id INTEGER REFERENCES users(id);' +
       'ALTER TABLE users ADD COLUMN IF NOT EXISTS receive_emails BOOLEAN NOT NULL DEFAULT true;' +
       'ALTER TABLE purchase_orders ADD COLUMN IF NOT EXISTS shipping_address_id INTEGER;' +
@@ -1487,6 +1492,27 @@ async function initDB() {
       await client.query("INSERT INTO settings (key, value) VALUES ('invoice_cogs_backfilled', '1') ON CONFLICT (key) DO NOTHING");
       console.log('Backfilled invoice COGS from the current parts catalog (estimated, tagged cost_source=backfill); ' +
         (_flagged.rowCount || 0) + ' invoice(s) flagged cogs_incomplete because some part lines have no cost on record');
+    }
+    // One-time typing of historical quote lines. Every existing row defaulted to
+    // 'part' when line_type was added, which is wrong for the labor lines techs
+    // have always hand-typed — and being wrong here is what pushed a labor charge
+    // into parts COGS. Deliberately narrow: the row must read like labor AND have
+    // no supplier AND no part URL, because calling a real part 'labor' would erase
+    // its cost from the margin. \y is a word boundary, so 'elaborate' and
+    // 'collaboration' do not match. Anything it gets wrong is one dropdown away
+    // from being fixed on the quote, and the count is logged rather than assumed.
+    const _qltBf = await client.query("SELECT value FROM settings WHERE key = 'quote_line_type_backfilled'");
+    if (!_qltBf.rows.length) {
+      const _typed = await client.query(
+        "UPDATE quote_line_items SET line_type = 'labor' " +
+        " WHERE line_type = 'part' " +
+        "   AND COALESCE(TRIM(manufacturer), '') = '' " +
+        "   AND COALESCE(TRIM(url), '') = '' " +
+        "   AND (COALESCE(item_number, '') || ' ' || COALESCE(description, '')) " +
+        "       ~* '\\y(labor|labour|trip charge|trip fee|service call|service charge|diagnostic|diagnosis|dispatch|call ?out|after ?hours|overtime)\\y'"
+      );
+      await client.query("INSERT INTO settings (key, value) VALUES ('quote_line_type_backfilled', '1') ON CONFLICT (key) DO NOTHING");
+      console.log('Typed ' + (_typed.rowCount || 0) + ' historical quote line(s) as labor (no supplier, no URL, reads like labor); everything else stayed a part. Check the Type column on any quote that looks wrong.');
     }
     // Per-account (vendor) config for the invoice account dropdown
     await client.query(

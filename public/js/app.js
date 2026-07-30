@@ -2,7 +2,7 @@
 // public/sw.js (the only thing bumped each deploy) — the badge asks the active
 // service worker for it at runtime. This value is just the fallback shown when no
 // service worker is available (e.g. very first visit before it installs).
-var APP_VERSION = 'v83';
+var APP_VERSION = 'v84';
 var _resolvedAppVersion = null;
 
 // Ask the active service worker for its CACHE_VERSION (without the 'nova-' prefix).
@@ -5682,7 +5682,7 @@ async function renderEditQuote(el, id) {
     try { quote = await api('GET', '/quotes/' + id); } catch(e) { el.innerHTML = '<div class="alert alert-error">' + escHtml(e.message) + '</div>'; return; }
     quoteLineItems = quote.line_items || [];
   } else {
-    quoteLineItems = [{ item_number: '', manufacturer: '', description: '', quantity: 1, unit_price: '', list_price: '', taxable: false }];
+    quoteLineItems = [{ line_type: 'part', item_number: '', manufacturer: '', description: '', quantity: 1, unit_price: '', list_price: '', taxable: false }];
   }
   const cityOptions = '<option value="">— Select city —</option>' + cities.map(function(c) {
     return '<option value="' + escHtml(c.code) + '"' + (quote && quote.city_code === c.code ? ' selected' : '') + '>' + escHtml(c.name) + ' (' + escHtml(c.code) + ')</option>';
@@ -5715,17 +5715,18 @@ async function renderEditQuote(el, id) {
     '</div></div>' +
     '<div class="card mb-4"><div class="card-header"><span class="card-title">Line Items</span></div><div class="card-body">' +
       '<div class="table-wrap"><table class="line-items-table">' +
-        '<thead><tr><th>Item #</th><th>Supplier</th><th>Description</th><th>Qty</th><th>Unit Price (Our Cost)</th><th>List Price (Customer Cost)</th><th>Taxable</th><th>Part URL</th><th>Total</th><th></th></tr></thead>' +
+        '<thead><tr><th>Type</th><th>Item #</th><th>Supplier</th><th>Description</th><th>Qty</th><th>Unit Price (Our Cost)</th><th>List Price (Customer Cost)</th><th>Taxable</th><th>Part URL</th><th>Total</th><th></th></tr></thead>' +
         '<tbody id="quote-line-items-body"></tbody>' +
         '<tfoot>' +
-          '<tr><td colspan="8" class="text-right" style="padding:8px 10px;color:var(--text-muted-color)">Subtotal</td><td id="quote-subtotal" style="padding:8px 10px">$0.00</td><td></td></tr>' +
-          '<tr><td colspan="8" class="text-right" style="padding:8px 10px;color:var(--text-muted-color)">Tax</td><td id="quote-tax-display" style="padding:8px 10px">$0.00</td><td></td></tr>' +
-          '<tr class="total-row"><td colspan="8" class="text-right" style="padding:10px">Grand Total</td><td id="quote-grand-total" style="padding:10px">$0.00</td><td></td></tr>' +
+          '<tr><td colspan="9" class="text-right" style="padding:8px 10px;color:var(--text-muted-color)">Subtotal</td><td id="quote-subtotal" style="padding:8px 10px">$0.00</td><td></td></tr>' +
+          '<tr><td colspan="9" class="text-right" style="padding:8px 10px;color:var(--text-muted-color)">Tax</td><td id="quote-tax-display" style="padding:8px 10px">$0.00</td><td></td></tr>' +
+          '<tr class="total-row"><td colspan="9" class="text-right" style="padding:10px">Grand Total</td><td id="quote-grand-total" style="padding:10px">$0.00</td><td></td></tr>' +
         '</tfoot>' +
       '</table></div>' +
       '<div style="display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap;margin-top:8px">' +
         '<div class="row-actions">' +
-          '<button class="btn btn-secondary btn-sm" onclick="addQuoteLineItem()">' + icons.plus + ' Add Item</button>' +
+          '<button class="btn btn-secondary btn-sm" onclick="addQuoteLineItem(\'labor\')">' + icons.plus + ' Add Labor</button>' +
+          '<button class="btn btn-secondary btn-sm" onclick="addQuoteLineItem(\'part\')">' + icons.plus + ' Add Part</button>' +
           '<button class="btn btn-secondary btn-sm" style="white-space:nowrap" onclick="openPartsPicker(\'quote\')"><svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" style="vertical-align:-2px"><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"/></svg> Add from Parts List</button>' +
         '</div>' +
         '<div style="display:flex;align-items:center;gap:8px">' +
@@ -5758,12 +5759,22 @@ function buildQuoteLineItemRows() {
   if (!tbody) return;
   tbody.innerHTML = quoteLineItems.map(function(item, i) {
     const total = (parseFloat(item.quantity)||0) * (parseFloat(item.list_price)||0);
+    const isLabor = item.line_type === 'labor';
+    // Labor has no wholesale cost to us, so the field is not offered at all. If it
+    // were, whatever got typed there would ride into the invoice as parts COGS.
+    const costCell = isLabor
+      ? '<span class="inv-cost-na" title="Labor has no parts cost">&mdash;</span>'
+      : '<input type="number" value="' + escHtml(item.unit_price||'') + '" min="0" step="0.01" placeholder="0.00" onchange="updateQuoteItem(' + i + ',this)" data-field="unit_price" style="width:90px" />';
     return '<tr>' +
+      '<td><select onchange="updateQuoteItem(' + i + ',this)" data-field="line_type" style="width:88px">' +
+        '<option value="part"' + (isLabor ? '' : ' selected') + '>Part</option>' +
+        '<option value="labor"' + (isLabor ? ' selected' : '') + '>Labor</option>' +
+      '</select></td>' +
       '<td><input type="text" value="' + escHtml(item.item_number||'') + '" placeholder="Item #" onchange="updateQuoteItem(' + i + ',this)" data-field="item_number" /></td>' +
       '<td><input type="text" value="' + escHtml(item.manufacturer||'') + '" placeholder="Supplier" onchange="updateQuoteItem(' + i + ',this)" data-field="manufacturer" /></td>' +
       '<td><input type="text" value="' + escHtml(item.description||'') + '" placeholder="Description *" onchange="updateQuoteItem(' + i + ',this)" data-field="description" /></td>' +
       '<td><input type="number" value="' + escHtml(item.quantity||'') + '" min="0.01" step="0.01" onchange="updateQuoteItem(' + i + ',this)" data-field="quantity" style="width:70px" /></td>' +
-      '<td><input type="number" value="' + escHtml(item.unit_price||'') + '" min="0" step="0.01" placeholder="0.00" onchange="updateQuoteItem(' + i + ',this)" data-field="unit_price" style="width:90px" /></td>' +
+      '<td>' + costCell + '</td>' +
       '<td><input type="number" value="' + escHtml(item.list_price||'') + '" min="0" step="0.01" placeholder="0.00" onchange="updateQuoteItem(' + i + ',this)" data-field="list_price" style="width:90px" /></td>' +
       '<td style="text-align:center"><input type="checkbox"' + (item.taxable ? ' checked' : '') + ' onchange="updateQuoteItem(' + i + ',this)" data-field="taxable" /></td>' +
       '<td><input type="url" value="' + escHtml(item.url||'') + '" placeholder="https://..." onchange="updateQuoteItem(' + i + ',this)" data-field="url" style="width:120px;font-size:12px" /></td>' +
@@ -5776,6 +5787,14 @@ function buildQuoteLineItemRows() {
 
 function updateQuoteItem(i, input) {
   quoteLineItems[i][input.dataset.field] = input.type === 'checkbox' ? input.checked : input.value;
+  if (input.dataset.field === 'line_type') {
+    // Switching to labor drops any cost already typed. Leaving it in the model
+    // would save a cost the row no longer shows, which is how it would sneak
+    // into the invoice later.
+    if (quoteLineItems[i].line_type === 'labor') quoteLineItems[i].unit_price = '';
+    buildQuoteLineItemRows();
+    return;
+  }
   const qty = parseFloat(quoteLineItems[i].quantity) || 0;
   const price = parseFloat(quoteLineItems[i].list_price) || 0;
   const cell = document.getElementById('qt-row-total-' + i);
@@ -5799,8 +5818,8 @@ function updateQuoteTotals() {
 }
 function updateQuoteGrandTotal() { updateQuoteTotals(); }
 
-function addQuoteLineItem() {
-  quoteLineItems.push({ item_number: '', manufacturer: '', description: '', quantity: 1, unit_price: '', list_price: '', taxable: false });
+function addQuoteLineItem(type) {
+  quoteLineItems.push({ line_type: type === 'labor' ? 'labor' : 'part', item_number: '', manufacturer: '', description: '', quantity: 1, unit_price: '', list_price: '', taxable: false });
   buildQuoteLineItemRows();
 }
 
@@ -5828,15 +5847,13 @@ async function saveQuote(id) {
   if (taxRateRaw === '' || isNaN(tax_rate)) { document.getElementById('quote-edit-error').innerHTML = '<div class="alert alert-error">Tax % is required. Enter 0 if no tax applies.</div>'; return; }
   const rows = document.querySelectorAll('#quote-line-items-body tr');
   rows.forEach(function(row, i) {
-    const inputs = row.querySelectorAll('input');
-    if (inputs[0]) quoteLineItems[i].item_number = inputs[0].value;
-    if (inputs[1]) quoteLineItems[i].manufacturer = inputs[1].value;
-    if (inputs[2]) quoteLineItems[i].description = inputs[2].value;
-    if (inputs[3]) quoteLineItems[i].quantity = inputs[3].value;
-    if (inputs[4]) quoteLineItems[i].unit_price = inputs[4].value;
-    if (inputs[5]) quoteLineItems[i].list_price = inputs[5].value;
-    if (inputs[6]) quoteLineItems[i].taxable = inputs[6].checked;
-    if (inputs[7]) quoteLineItems[i].url = inputs[7].value;
+    // Read by field name, never by input position. A labor row renders no cost
+    // input, so positional indexes shift and silently write list price into cost.
+    if (!quoteLineItems[i]) return;
+    row.querySelectorAll('[data-field]').forEach(function(inp) {
+      quoteLineItems[i][inp.dataset.field] = inp.type === 'checkbox' ? inp.checked : inp.value;
+    });
+    if (quoteLineItems[i].line_type === 'labor') quoteLineItems[i].unit_price = '';
   });
   const validItems = quoteLineItems.filter(function(item){ return item.description && item.quantity && item.list_price; });
   if (validItems.length === 0) { document.getElementById('quote-edit-error').innerHTML = '<div class="alert alert-error">At least one complete line item is required.</div>'; return; }
@@ -5902,16 +5919,18 @@ async function renderViewQuote(el, id) {
       '</div></div>' +
       '<div class="card"><div class="card-header"><span class="card-title">Line Items</span></div><div class="card-body">' +
         '<div class="table-wrap"><table class="line-items-table">' +
-          '<thead><tr><th>Item #</th><th>Supplier</th><th>Description</th><th>Qty</th><th>Unit Price (Our Cost)</th><th>List Price (Customer Cost)</th><th>Taxable</th><th>URL</th><th class="text-right">Total</th></tr></thead>' +
+          '<thead><tr><th>Type</th><th>Item #</th><th>Supplier</th><th>Description</th><th>Qty</th><th>Unit Price (Our Cost)</th><th>List Price (Customer Cost)</th><th>Taxable</th><th>URL</th><th class="text-right">Total</th></tr></thead>' +
           '<tbody>' + q.line_items.map(function(item) {
             const listP = parseFloat(item.list_price || 0);
             const lineTotal = (parseFloat(item.quantity) * listP).toFixed(2);
+            const rowIsLabor = item.line_type === 'labor';
             return '<tr>' +
+              '<td>' + (rowIsLabor ? 'Labor' : 'Part') + '</td>' +
               '<td>' + escHtml(item.item_number || '—') + '</td>' +
               '<td>' + escHtml(item.manufacturer || '—') + '</td>' +
               '<td>' + escHtml(item.description) + '</td>' +
               '<td>' + item.quantity + '</td>' +
-              '<td>$' + parseFloat(item.unit_price || 0).toFixed(2) + '</td>' +
+              '<td>' + (rowIsLabor ? '<span class="inv-cost-na">&mdash;</span>' : '$' + parseFloat(item.unit_price || 0).toFixed(2)) + '</td>' +
               '<td>$' + listP.toFixed(2) + '</td>' +
               '<td style="text-align:center">' + (item.taxable ? '&#10003;' : '—') + '</td>' +
               '<td>' + (item.url ? '<a href="' + escHtml(/^https?:\/\//i.test(item.url) ? item.url : 'https://' + item.url) + '" target="_blank" rel="noopener noreferrer" style="color:var(--primary);font-size:12px">Link</a>' : '—') + '</td>' +
@@ -5919,9 +5938,9 @@ async function renderViewQuote(el, id) {
             '</tr>';
           }).join('') + '</tbody>' +
           '<tfoot>' +
-            '<tr><td colspan="7" class="text-right" style="padding:8px 10px;color:var(--text-muted-color)">Subtotal</td><td class="text-right" style="padding:8px 10px">$' + (parseFloat(q.total_amount) - parseFloat(q.tax_amount||0)).toFixed(2) + '</td></tr>' +
-            (parseFloat(q.tax_amount||0) > 0 ? '<tr><td colspan="7" class="text-right" style="padding:8px 10px;color:var(--text-muted-color)">Tax (' + parseFloat(q.tax_rate||0).toFixed(2) + '%)</td><td class="text-right" style="padding:8px 10px">$' + parseFloat(q.tax_amount).toFixed(2) + '</td></tr>' : '') +
-            '<tr class="total-row"><td colspan="7" class="text-right">Grand Total</td><td class="text-right">$' + parseFloat(q.total_amount).toFixed(2) + '</td></tr>' +
+            '<tr><td colspan="8" class="text-right" style="padding:8px 10px;color:var(--text-muted-color)">Subtotal</td><td class="text-right" style="padding:8px 10px">$' + (parseFloat(q.total_amount) - parseFloat(q.tax_amount||0)).toFixed(2) + '</td></tr>' +
+            (parseFloat(q.tax_amount||0) > 0 ? '<tr><td colspan="8" class="text-right" style="padding:8px 10px;color:var(--text-muted-color)">Tax (' + parseFloat(q.tax_rate||0).toFixed(2) + '%)</td><td class="text-right" style="padding:8px 10px">$' + parseFloat(q.tax_amount).toFixed(2) + '</td></tr>' : '') +
+            '<tr class="total-row"><td colspan="8" class="text-right">Grand Total</td><td class="text-right">$' + parseFloat(q.total_amount).toFixed(2) + '</td></tr>' +
           '</tfoot>' +
         '</table></div>' +
       '</div></div>' +
@@ -6100,7 +6119,7 @@ async function deleteQuote(id) {
 }
 
 async function pushQuoteToPO(id) {
-  if (!await novaConfirm('Create and submit purchase order(s) for approval from this quote? One PO is created per supplier, using your cost as the unit price.')) return;
+  if (!await novaConfirm('Create and submit purchase order(s) for approval from this quote? One PO is created per supplier, using your cost as the unit price. Labor lines are not ordered from anyone, so they are left off.')) return;
   try {
     var data = await api('POST', '/quotes/' + id + '/push-to-po');
     var pos = data.pos || [];
@@ -6118,21 +6137,43 @@ async function pushQuoteToPO(id) {
 // Build a draft invoice from a quote and open it in the editor. Uses the quote's
 // LIST price (what the customer pays) as the invoice unit price, carries tax rate,
 // customer, and line items. Purely reuses the existing invoice-create API.
+// A quote line carries its own type. Quotes written before quote lines had a type
+// carry nothing, so for those we read the row instead of assuming. The guess is
+// deliberately narrow — keyword AND no supplier AND no part URL — because calling a
+// real part "labor" would quietly delete its cost from the margin.
+var QUOTE_LABOR_HINT = /\b(labor|labour|trip charge|trip fee|service call|service charge|diagnostic|diagnosis|dispatch|call ?out|after ?hours|overtime)\b/i;
+function quoteLineIsLabor(it) {
+  var t = String((it && it.line_type) || '').trim().toLowerCase();
+  if (t === 'labor') return true;
+  if (t === 'part') return false;
+  if ((it && it.manufacturer ? String(it.manufacturer).trim() : '') !== '') return false;
+  if ((it && it.url ? String(it.url).trim() : '') !== '') return false;
+  return QUOTE_LABOR_HINT.test(((it && it.item_number) || '') + ' ' + ((it && it.description) || ''));
+}
+function quoteLineTypeWasGuessed(it) {
+  var t = String((it && it.line_type) || '').trim().toLowerCase();
+  return t !== 'labor' && t !== 'part' && quoteLineIsLabor(it);
+}
+
 async function pushQuoteToInvoice(id) {
   if (!await novaConfirm('Create a draft invoice from this quote? Line items use the quote’s customer (list) price. You can adjust everything before finalizing.')) return;
   var errEl = document.getElementById('view-quote-error');
   try {
     var q = await api('GET', '/quotes/' + id);
-    var lines = (q.line_items || []).map(function(it){
+    var guessed = [];
+    var lines = (q.line_items || []).map(function(it, idx){
       var price = (it.list_price != null && it.list_price !== '') ? parseFloat(it.list_price) : (parseFloat(it.unit_price) || 0);
+      var isLabor = quoteLineIsLabor(it);
+      if (quoteLineTypeWasGuessed(it)) guessed.push(it.description || it.item_number || 'line ' + (idx + 1));
       // On a quote, unit_price IS our cost and list_price is what the customer is
       // shown. Carry the cost across as the invoice's unit_cost — the quote
       // already captured it, so making the tech re-enter it at close would be
-      // asking for a number we are holding.
+      // asking for a number we are holding. Labor has no such cost: it is our own
+      // time, and booking the labor charge as a cost is what wrecks gross margin.
       var cost = (it.unit_price != null && it.unit_price !== '') ? parseFloat(it.unit_price) : NaN;
-      var hasCost = !isNaN(cost) && cost >= 0 && it.list_price != null && it.list_price !== '';
+      var hasCost = !isLabor && !isNaN(cost) && cost >= 0 && it.list_price != null && it.list_price !== '';
       return {
-        line_type: 'part',
+        line_type: isLabor ? 'labor' : 'part',
         item_number: it.item_number || '',
         description: it.description || '',
         quantity: parseFloat(it.quantity) || 1,
@@ -6159,6 +6200,11 @@ async function pushQuoteToInvoice(id) {
       line_items: lines
     };
     var created = await api('POST', '/invoices', payload);
+    // Never let a guess pass silently. If the quote predates line types, say which
+    // rows were read as labor so the type can be corrected before the margin is.
+    if (guessed.length) {
+      await novaAlert('This quote was written before quote lines had a Labor/Part type, so ' + guessed.length + ' line' + (guessed.length === 1 ? ' was' : 's were') + ' read as Labor: ' + guessed.join('; ') + '. Check the Type column on the draft before you finalize it.');
+    }
     navigate('edit-invoice', created.id);
   } catch (err) {
     if (errEl) errEl.innerHTML = '<div class="alert alert-error">' + escHtml(err.message) + '</div>';
@@ -6185,18 +6231,20 @@ async function reviewQuoteFormWithAI() {
     var desc = item.description || '—';
     var itemNum = item.item_number || '';
     var supplier = item.manufacturer || '';
+    var isLabor = item.line_type === 'labor';
     var qty = parseFloat(item.quantity) || 0;
     var cost = parseFloat(item.unit_price) || 0;
     var list = parseFloat(item.list_price) || 0;
     var taxable = !!item.taxable;
-    var margin = cost > 0 ? (((list - cost) / cost) * 100).toFixed(1) : 'N/A';
+    var margin = (!isLabor && cost > 0) ? (((list - cost) / cost) * 100).toFixed(1) : 'N/A';
     subtotal += qty * list;
     if (taxable) taxAmt += qty * list * taxRate / 100;
     itemLines.push((i+1) + '. ' + desc +
+      ' | Type: ' + (isLabor ? 'Labor' : 'Part') +
       (itemNum ? ' | Item#: ' + itemNum : '') +
       (supplier ? ' | Supplier: ' + supplier : '') +
       ' | Qty: ' + qty +
-      ' | Our Cost: $' + cost.toFixed(2) +
+      (isLabor ? '' : ' | Our Cost: $' + cost.toFixed(2)) +
       ' | List Price: $' + list.toFixed(2) +
       ' | Margin: ' + margin + '%' +
       (taxable ? ' | Taxable' : ''));
@@ -6265,12 +6313,14 @@ async function reviewQuoteWithAI() {
 
   // Build prompt
   var itemLines = q.line_items.map(function(item, i) {
+    var isLabor = item.line_type === 'labor';
     var cost = parseFloat(item.unit_price || 0);
     var list = parseFloat(item.list_price || 0);
-    var margin = cost > 0 ? (((list - cost) / cost) * 100).toFixed(1) : 'N/A';
+    var margin = (!isLabor && cost > 0) ? (((list - cost) / cost) * 100).toFixed(1) : 'N/A';
     return (i+1) + '. ' + (item.description || '—') +
+      ' | Type: ' + (isLabor ? 'Labor' : 'Part') +
       ' | Qty: ' + item.quantity +
-      ' | Our Cost: $' + cost.toFixed(2) +
+      (isLabor ? '' : ' | Our Cost: $' + cost.toFixed(2)) +
       ' | List Price: $' + list.toFixed(2) +
       ' | Margin: ' + margin + '%' +
       (item.taxable ? ' | Taxable' : '') +
@@ -10541,7 +10591,7 @@ function pickerAddSelected() {
     chosen.forEach(function(c) {
       var costv = (c.cost === '' || c.cost == null) ? '' : c.cost;      // our cost -> unit_price
       var retailv = (c.retail === '' || c.retail == null) ? '' : c.retail; // retail -> customer list price
-      quoteLineItems.push({ item_number: c.part.item_number || '', manufacturer: '', description: c.description, quantity: c.quantity || 1, unit_price: costv, list_price: retailv, taxable: false, url: '' });
+      quoteLineItems.push({ line_type: 'part', item_number: c.part.item_number || '', manufacturer: '', description: c.description, quantity: c.quantity || 1, unit_price: costv, list_price: retailv, taxable: false, url: '' });
     });
     buildQuoteLineItemRows();
   } else if (_pickerContext === 'invoice') {

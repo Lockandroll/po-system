@@ -1,6 +1,10 @@
 const express = require('express');
 const crypto = require('crypto');
 const { pool } = require('../db');
+
+// A quote line is either labor we perform or a part we buy. Anything unrecognised
+// is treated as a part, which is the conservative default everywhere downstream.
+function normLineType(v) { return String(v || '').trim().toLowerCase() === 'labor' ? 'labor' : 'part'; }
 const { requireAuth, requirePermission } = require('../middleware/auth');
 const { logAudit } = require('../utils/audit');
 const r2 = require('../utils/r2');
@@ -189,8 +193,8 @@ router.post('/', requireAuth, requirePermission('create_quote'), async (req, res
       const quote = rows[0];
       for (const item of (line_items || [])) {
         await client.query(
-          'INSERT INTO quote_line_items (quote_id, item_number, manufacturer, description, quantity, unit_price, list_price, taxable, url) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)',
-          [quote.id, item.item_number || null, item.manufacturer || null, item.description, item.quantity, item.unit_price || 0, item.list_price || 0, item.taxable || false, item.url || null]
+          'INSERT INTO quote_line_items (quote_id, item_number, manufacturer, description, quantity, unit_price, list_price, taxable, url, line_type) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)',
+          [quote.id, item.item_number || null, item.manufacturer || null, item.description, item.quantity, item.unit_price || 0, item.list_price || 0, item.taxable || false, item.url || null, normLineType(item.line_type)]
         );
       }
       await client.query('COMMIT');
@@ -271,8 +275,8 @@ router.put('/:id', requireAuth, requirePermission('edit_quote'), async (req, res
       await client.query('DELETE FROM quote_line_items WHERE quote_id = $1', [req.params.id]);
       for (const item of (line_items || [])) {
         await client.query(
-          'INSERT INTO quote_line_items (quote_id, item_number, manufacturer, description, quantity, unit_price, list_price, taxable, url) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)',
-          [req.params.id, item.item_number || null, item.manufacturer || null, item.description, item.quantity, item.unit_price || 0, item.list_price || 0, item.taxable || false, item.url || null]
+          'INSERT INTO quote_line_items (quote_id, item_number, manufacturer, description, quantity, unit_price, list_price, taxable, url, line_type) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)',
+          [req.params.id, item.item_number || null, item.manufacturer || null, item.description, item.quantity, item.unit_price || 0, item.list_price || 0, item.taxable || false, item.url || null, normLineType(item.line_type)]
         );
       }
       await client.query('COMMIT');
@@ -318,8 +322,12 @@ router.post('/:id/push-to-po', requireAuth, requirePermission('push_quote_po'), 
       return res.status(403).json({ error: 'Access denied' });
     }
     if (!quote.city_code) return res.status(400).json({ error: 'Set a city on the quote before pushing it to a PO.' });
-    const { rows: items } = await pool.query('SELECT * FROM quote_line_items WHERE quote_id = $1 ORDER BY id', [req.params.id]);
-    if (!items.length) return res.status(400).json({ error: 'This quote has no line items.' });
+    const { rows: allItems } = await pool.query('SELECT * FROM quote_line_items WHERE quote_id = $1 ORDER BY id', [req.params.id]);
+    if (!allItems.length) return res.status(400).json({ error: 'This quote has no line items.' });
+    // Labor is work we perform, not stock we order. Putting it on a PO invents a
+    // payable to a supplier that was never going to invoice us for it.
+    const items = allItems.filter(function (it) { return normLineType(it.line_type) !== 'labor'; });
+    if (!items.length) return res.status(400).json({ error: 'This quote is labor only, so there is nothing to purchase.' });
 
     const groups = {};
     const order = [];
