@@ -40,15 +40,37 @@ function pickCustomerContact(b) {
   };
 }
 
+// The list payload already carries notes / important_info / customer_* via q.*,
+// so the only thing the browser cannot see is the line items. Roll those up
+// into one column here so a dashboard search for a part number, manufacturer
+// or item description finds the quote.
+const ITEMS_JOIN =
+  " LEFT JOIN (SELECT quote_id," +
+  "   string_agg(COALESCE(item_number,'') || ' ' || COALESCE(manufacturer,'') || ' ' || COALESCE(description,''), ' ') AS items_text," +
+  "   COUNT(*) AS item_count" +
+  "  FROM quote_line_items GROUP BY quote_id) li ON li.quote_id = q.id";
+
+const LIST_SELECT =
+  "SELECT q.*, u.name as requester_name," +
+  " COALESCE(li.items_text, '') AS items_text," +
+  " COALESCE(li.item_count, 0)::int AS item_count" +
+  " FROM quotes q JOIN users u ON q.requester_id = u.id" + ITEMS_JOIN;
+
+// Escape LIKE wildcards so a customer name containing _ or % does not turn into
+// a wildcard match. Postgres LIKE/ILIKE uses backslash as the escape by default.
+function likeTerm(s) {
+  return '%' + String(s).replace(/([\\%_])/g, '\\$1') + '%';
+}
+
 // GET all quotes (own only, unless admin)
 router.get('/', requireAuth, requirePermission('view_quotes'), async (req, res) => {
   try {
     let query, params;
     if (['admin','manager'].includes(req.user.role)) {
-      query = 'SELECT q.*, u.name as requester_name FROM quotes q JOIN users u ON q.requester_id = u.id ORDER BY q.created_at DESC';
+      query = LIST_SELECT + ' ORDER BY q.created_at DESC';
       params = [];
     } else {
-      query = 'SELECT q.*, u.name as requester_name FROM quotes q JOIN users u ON q.requester_id = u.id WHERE q.requester_id = $1 ORDER BY q.created_at DESC';
+      query = LIST_SELECT + ' WHERE q.requester_id = $1 ORDER BY q.created_at DESC';
       params = [req.user.id];
     }
     const { rows } = await pool.query(query, params);
@@ -56,6 +78,57 @@ router.get('/', requireAuth, requirePermission('view_quotes'), async (req, res) 
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: 'Failed to fetch quotes' });
+  }
+});
+
+// GET /search?q=...&limit=20 - server-side search used by the global command
+// palette, and by anything else that needs to find a quote without loading the
+// whole dashboard. MUST stay registered above '/:id', otherwise Express reads
+// 'search' as a quote id.
+router.get('/search', requireAuth, requirePermission('view_quotes'), async (req, res) => {
+  try {
+    const term = String(req.query.q || '').trim();
+    if (term.length < 2) return res.json([]);
+    const limit = Math.min(Math.max(parseInt(req.query.limit, 10) || 20, 1), 50);
+    const params = [likeTerm(term)];
+
+    // Phone numbers are stored however the tech typed them, so once the term
+    // looks like a phone number compare on digits only.
+    const digits = term.replace(/[^0-9]/g, '');
+    let phoneClause = '';
+    if (digits.length >= 7) {
+      params.push('%' + digits + '%');
+      phoneClause = " OR regexp_replace(COALESCE(q.customer_phone,''), '[^0-9]', '', 'g') LIKE $" + params.length;
+    }
+
+    let scope = '';
+    if (!['admin','manager'].includes(req.user.role)) {
+      params.push(req.user.id);
+      scope = ' AND q.requester_id = $' + params.length;
+    }
+    params.push(limit);
+
+    const { rows } = await pool.query(
+      'SELECT q.id, q.quote_number, q.customer_name, q.city_code, q.total_amount, q.created_at,' +
+      ' u.name AS requester_name' +
+      ' FROM quotes q JOIN users u ON q.requester_id = u.id' +
+      ' WHERE (' +
+      '   q.quote_number ILIKE $1 OR q.customer_name ILIKE $1 OR q.city_code ILIKE $1' +
+      '   OR u.name ILIKE $1 OR q.notes ILIKE $1 OR q.important_info ILIKE $1' +
+      '   OR q.customer_phone ILIKE $1 OR q.customer_email ILIKE $1' +
+      '   OR q.customer_street ILIKE $1 OR q.customer_city ILIKE $1' +
+      '   OR q.customer_state ILIKE $1 OR q.customer_zip ILIKE $1' +
+      '   OR EXISTS (SELECT 1 FROM quote_line_items li WHERE li.quote_id = q.id' +
+      '     AND (li.item_number ILIKE $1 OR li.manufacturer ILIKE $1 OR li.description ILIKE $1))' +
+      phoneClause +
+      ' )' + scope +
+      ' ORDER BY q.created_at DESC LIMIT $' + params.length,
+      params
+    );
+    res.json(rows);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Quote search failed' });
   }
 });
 

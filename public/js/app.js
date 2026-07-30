@@ -2,7 +2,7 @@
 // public/sw.js (the only thing bumped each deploy) — the badge asks the active
 // service worker for it at runtime. This value is just the fallback shown when no
 // service worker is available (e.g. very first visit before it installs).
-var APP_VERSION = 'v81';
+var APP_VERSION = 'v82';
 var _resolvedAppVersion = null;
 
 // Ask the active service worker for its CACHE_VERSION (without the 'nova-' prefix).
@@ -5494,27 +5494,104 @@ function renderQuoteRows(quotes, isAdmin) {
 let _quotePage = 1;
 let QUOTE_PAGE_SIZE = 10;
 
+// Everything the quote search box is allowed to match, flattened to one lower-
+// case string and cached on the row. items_text comes from the server (rolled
+// up from quote_line_items) so a part number or manufacturer finds the quote.
+// Phone digits are appended separately so "5551234" matches "(555) 123-4xxx".
+function quoteHaystack(r) {
+  if (r._qhay != null) return r._qhay;
+  var hay = [
+    r.quote_number, r.customer_name, r.city_code, r.requester_name,
+    r.notes, r.important_info, r.items_text,
+    r.customer_street, r.customer_city, r.customer_state, r.customer_zip,
+    r.customer_phone, r.customer_email
+  ].filter(Boolean).join(' ').toLowerCase();
+  var digits = String(r.customer_phone || '').replace(/[^0-9]/g, '');
+  if (digits) hay += ' ' + digits;
+  r._qhay = hay;
+  return hay;
+}
+
+// created_at is a UTC timestamp but the date pickers are local, so compare on a
+// local YYYY-MM-DD key rather than slicing the ISO string (which would put a
+// late-evening quote on the wrong day).
+function quoteDateKey(r) {
+  if (r._qdate != null) return r._qdate;
+  var d = r.created_at ? new Date(r.created_at) : null;
+  if (!d || isNaN(d.getTime())) { r._qdate = ''; return ''; }
+  var p = function(n) { return (n < 10 ? '0' : '') + n; };
+  r._qdate = d.getFullYear() + '-' + p(d.getMonth() + 1) + '-' + p(d.getDate());
+  return r._qdate;
+}
+
+function quoteFilterValue(id) {
+  var e = document.getElementById(id);
+  return e ? String(e.value || '').trim() : '';
+}
+
+function clearQuoteFilters() {
+  ['quote-search', 'quote-filter-city', 'quote-filter-by', 'quote-filter-from', 'quote-filter-to', 'quote-filter-min', 'quote-filter-max']
+    .forEach(function(id) { var e = document.getElementById(id); if (e) e.value = ''; });
+  filterQuotes(true);
+}
+
 async function renderQuotes(el) {
   try {
     const quotes = await api('GET', '/quotes');
-    const isAdmin = state.user.role === 'admin';
+    const seeAll = ['admin', 'manager'].indexOf(state.user.role) !== -1;
     _quotePage = 1;
     window._quotesData = quotes;
-    window._quotesIsAdmin = isAdmin;
+    window._quotesIsAdmin = seeAll;
+
+    const cities = [];
+    const people = [];
+    const seenCity = {};
+    const seenPerson = {};
+    quotes.forEach(function(r) {
+      if (r.city_code && !seenCity[r.city_code]) { seenCity[r.city_code] = 1; cities.push(r.city_code); }
+      if (seeAll && r.requester_id && !seenPerson[r.requester_id]) {
+        seenPerson[r.requester_id] = 1;
+        people.push({ id: r.requester_id, name: r.requester_name || 'Unknown' });
+      }
+    });
+    cities.sort();
+    people.sort(function(a, b) { return a.name.localeCompare(b.name); });
+    const cityOptions = '<option value="">All Cities</option>' + cities.map(function(c) {
+      return '<option value="' + escHtml(c) + '">' + escHtml(c) + '</option>';
+    }).join('');
+    const byOptions = '<option value="">Anyone</option>' + people.map(function(p) {
+      return '<option value="' + p.id + '">' + escHtml(p.name) + '</option>';
+    }).join('');
+
+    const numStyle = 'flex:0 1 110px;min-width:100px';
+    const dateLabel = 'display:inline-flex;align-items:center;gap:6px;font-size:13px;color:var(--text-muted-color);flex:1;min-width:170px';
+
     el.innerHTML =
       '<div class="page-header">' +
-        '<div><div class="page-title">Quote Dashboard</div><div class="page-subtitle">' + (isAdmin ? 'All quotes' : 'Your quotes') + '</div></div>' +
+        '<div><div class="page-title">Quote Dashboard</div><div class="page-subtitle">' + (seeAll ? 'All quotes' : 'Your quotes') + '</div></div>' +
         (can('create_quote') ? '<button class="btn btn-primary" onclick="navigate(\'new-quote\')" style="white-space:nowrap">' + icons.plus + ' New Quote</button>' : '') +
       '</div>' +
       '<div id="quotes-error"></div>' +
       '<div class="card">' +
-        '<div class="card-header" style="display:flex;justify-content:space-between;align-items:center">' +
-          '<span class="card-title">Quote List</span>' +
-          '<input type="text" id="quote-search" placeholder="Search quote #, customer, city..." style="width:280px" oninput="filterQuotes(true)" />' +
-        '</div>' +
+        '<div class="card-header"><span class="card-title">Quote List</span></div>' +
         (quotes.length === 0
           ? '<div class="empty-state"><h3>No quotes yet</h3><p>Create your first quote to get started.</p></div>'
-          : '<div id="quotes-table-wrap"></div>') +
+          : '<div class="card-body" style="border-bottom:1px solid var(--border)">' +
+              '<div class="filter-bar">' +
+                '<input type="text" id="quote-search" placeholder="Search quote #, customer, city, item, note, phone, email..." oninput="filterQuotes(true)" />' +
+                '<select id="quote-filter-city" onchange="filterQuotes(true)">' + cityOptions + '</select>' +
+                (seeAll ? '<select id="quote-filter-by" onchange="filterQuotes(true)">' + byOptions + '</select>' : '') +
+              '</div>' +
+              '<div class="filter-bar" style="margin-bottom:0">' +
+                '<label style="' + dateLabel + '">From <input type="date" id="quote-filter-from" onchange="filterQuotes(true)" style="flex:1" /></label>' +
+                '<label style="' + dateLabel + '">To <input type="date" id="quote-filter-to" onchange="filterQuotes(true)" style="flex:1" /></label>' +
+                '<input type="number" step="0.01" id="quote-filter-min" placeholder="Min $" oninput="filterQuotes(true)" style="' + numStyle + '" />' +
+                '<input type="number" step="0.01" id="quote-filter-max" placeholder="Max $" oninput="filterQuotes(true)" style="' + numStyle + '" />' +
+                '<button class="btn btn-secondary" onclick="clearQuoteFilters()" style="white-space:nowrap">Clear</button>' +
+              '</div>' +
+              '<div id="quotes-count" style="font-size:13px;color:var(--text-muted-color);margin-top:10px"></div>' +
+            '</div>' +
+            '<div id="quotes-table-wrap"></div>') +
       '</div>';
     if (quotes.length > 0) filterQuotes();
   } catch(err) {
@@ -5524,20 +5601,53 @@ async function renderQuotes(el) {
 
 function filterQuotes(resetPage) {
   if (resetPage) _quotePage = 1;
-  const q = (document.getElementById('quote-search') || {}).value || '';
   const wrap = document.getElementById('quotes-table-wrap');
   if (!wrap || !window._quotesData) return;
   const isAdmin = window._quotesIsAdmin;
-  const filtered = q
-    ? window._quotesData.filter(function(r) {
-        return (r.quote_number||'').toLowerCase().includes(q.toLowerCase()) ||
-               (r.customer_name||'').toLowerCase().includes(q.toLowerCase()) ||
-               (r.city_code||'').toLowerCase().includes(q.toLowerCase()) ||
-               (r.requester_name||'').toLowerCase().includes(q.toLowerCase());
-      })
-    : window._quotesData;
+
+  // Space-separated terms are ANDed, so "camry ATL" narrows instead of widening.
+  const terms = quoteFilterValue('quote-search').toLowerCase().split(/\s+/).filter(Boolean);
+  const city = quoteFilterValue('quote-filter-city');
+  const by = quoteFilterValue('quote-filter-by');
+  const from = quoteFilterValue('quote-filter-from');
+  const to = quoteFilterValue('quote-filter-to');
+  const min = parseFloat(quoteFilterValue('quote-filter-min'));
+  const max = parseFloat(quoteFilterValue('quote-filter-max'));
+
+  const filtered = window._quotesData.filter(function(r) {
+    if (city && (r.city_code || '') !== city) return false;
+    if (by && String(r.requester_id) !== by) return false;
+    if (from || to) {
+      const d = quoteDateKey(r);
+      if (from && (!d || d < from)) return false;
+      if (to && (!d || d > to)) return false;
+    }
+    if (!isNaN(min) || !isNaN(max)) {
+      const amt = parseFloat(r.total_amount) || 0;
+      if (!isNaN(min) && amt < min) return false;
+      if (!isNaN(max) && amt > max) return false;
+    }
+    if (terms.length) {
+      const hay = quoteHaystack(r);
+      for (let i = 0; i < terms.length; i++) {
+        if (hay.indexOf(terms[i]) === -1) return false;
+      }
+    }
+    return true;
+  });
+
+  const countEl = document.getElementById('quotes-count');
+  if (countEl) {
+    const sum = filtered.reduce(function(a, r) { return a + (parseFloat(r.total_amount) || 0); }, 0);
+    const narrowed = filtered.length !== window._quotesData.length;
+    countEl.innerHTML = (narrowed
+      ? '<strong>' + filtered.length + '</strong> of ' + window._quotesData.length + ' quotes'
+      : '<strong>' + filtered.length + '</strong> quote' + (filtered.length === 1 ? '' : 's')) +
+      ' &bull; ' + sum.toLocaleString('en-US', { style: 'currency', currency: 'USD' }) + ' total';
+  }
+
   if (filtered.length === 0) {
-    wrap.innerHTML = '<div class="empty-state"><h3>No matching quotes</h3><p>Try a different search.</p></div>';
+    wrap.innerHTML = '<div class="empty-state"><h3>No matching quotes</h3><p>Try a different search or clear the filters.</p></div>';
     return;
   }
   const totalPages = Math.ceil(filtered.length / QUOTE_PAGE_SIZE);
@@ -14173,6 +14283,13 @@ function mySchedMonthHtml(){
   var cpList = document.getElementById('nova-cp-list');
   var cpResults = [];
   var cpActive = 0;
+  // Record hits (currently quotes) fetched from the server and shown under the
+  // page destinations, so a quote number or customer name typed anywhere in Nova
+  // jumps straight to the quote.
+  var cpRecords = [];
+  var cpRecSeq = 0;
+  var cpRecTimer = null;
+  var cpRecBusy = false;
 
   function cpFilter(q) {
     var items = dests();
@@ -14184,14 +14301,63 @@ function mySchedMonthHtml(){
       return words.every(function (w) { return hay.indexOf(w) !== -1; });
     });
   }
+
+  function cpRecordsReset() {
+    if (cpRecTimer) { clearTimeout(cpRecTimer); cpRecTimer = null; }
+    cpRecSeq++;
+    cpRecBusy = false;
+    var had = cpRecords.length > 0;
+    cpRecords = [];
+    return had;
+  }
+
+  // Debounced so typing a quote number does not fire a request per keystroke.
+  // A sequence number drops responses that land after a newer query.
+  function cpSearchRecords(raw) {
+    var q = (raw || '').trim();
+    if (cpRecTimer) { clearTimeout(cpRecTimer); cpRecTimer = null; }
+    if (q.length < 2 || typeof can !== 'function' || !can('view_quotes')) {
+      if (cpRecordsReset()) cpRender();
+      return;
+    }
+    var seq = ++cpRecSeq;
+    cpRecBusy = true;
+    cpRecTimer = setTimeout(function () {
+      api('GET', '/quotes/search?q=' + encodeURIComponent(q) + '&limit=8').then(function (rows) {
+        if (seq !== cpRecSeq) return;
+        cpRecBusy = false;
+        cpRecords = (rows || []).map(function (r) {
+          var bits = ['Quote'];
+          if (r.city_code) bits.push(r.city_code);
+          if (r.total_amount != null) bits.push('$' + (parseFloat(r.total_amount) || 0).toFixed(2));
+          return {
+            label: r.quote_number + '  ' + (r.customer_name || ''),
+            sub: bits.join(' • '),
+            view: 'view-quote',
+            id: r.id
+          };
+        });
+        cpRender();
+      }).catch(function () {
+        if (seq !== cpRecSeq) return;
+        cpRecBusy = false;
+        cpRecords = [];
+        cpRender();
+      });
+    }, 220);
+  }
+
   function cpRender() {
-    cpResults = cpFilter(cpInput.value);
+    cpResults = cpFilter(cpInput.value).concat(cpRecords);
     if (cpActive >= cpResults.length) cpActive = 0;
-    if (!cpResults.length) { cpList.innerHTML = '<div class="nova-cp-empty">No matches.</div>'; return; }
+    if (!cpResults.length) {
+      cpList.innerHTML = '<div class="nova-cp-empty">' + (cpRecBusy ? 'Searching&hellip;' : 'No matches.') + '</div>';
+      return;
+    }
     cpList.innerHTML = cpResults.map(function (d, i) {
       return '<div class="nova-cp-item' + (i === cpActive ? ' active' : '') + '" data-i="' + i + '">' +
-        '<span>' + escHtml(d.label) + '</span><span class="nova-cp-sub">' + escHtml(d.view) + '</span></div>';
-    }).join('');
+        '<span>' + escHtml(d.label) + '</span><span class="nova-cp-sub">' + escHtml(d.sub || d.view) + '</span></div>';
+    }).join('') + (cpRecBusy ? '<div class="nova-cp-empty">Searching quotes&hellip;</div>' : '');
     Array.prototype.forEach.call(cpList.querySelectorAll('.nova-cp-item'), function (el) {
       el.addEventListener('click', function () { cpGo(parseInt(el.getAttribute('data-i'), 10)); });
     });
@@ -14200,7 +14366,8 @@ function mySchedMonthHtml(){
     var d = cpResults[i];
     if (!d) return;
     cpClose();
-    navigate(d.view);
+    if (d.id != null) navigate(d.view, d.id);
+    else navigate(d.view);
   }
   function cpEnter() { cpGo(cpActive); }
   function cpMove(delta) {
@@ -14214,13 +14381,18 @@ function mySchedMonthHtml(){
     if (!(state.token && state.user)) return;
     cpActive = 0;
     cpInput.value = '';
+    cpRecordsReset();
     cpOverlay.classList.add('show');
     cpRender();
     setTimeout(function () { cpInput.focus(); }, 30);
   }
-  function cpClose() { cpOverlay.classList.remove('show'); }
+  function cpClose() { cpRecordsReset(); cpOverlay.classList.remove('show'); }
   function cpToggle() { if (cpOverlay.classList.contains('show')) cpClose(); else cpOpen(); }
-  cpInput.addEventListener('input', function () { cpActive = 0; cpRender(); });
+  cpInput.addEventListener('input', function () {
+    cpActive = 0;
+    cpSearchRecords(cpInput.value);
+    cpRender();
+  });
   cpOverlay.addEventListener('mousedown', function (e) { if (e.target === cpOverlay) cpClose(); });
   window.novaCommandPalette = cpToggle;
 
