@@ -11882,10 +11882,30 @@ async function invSendEmail(id) {
 function invCloseEmail() { var m = document.getElementById('inv-email-modal'); if (m) m.remove(); }
 
 // ---------- Print ----------
+// Strip the internal cost fields off an invoice before anything customer-facing
+// renders it. The print sheet is handed to the customer, so COGS must not be in
+// the data it is built from — not merely absent from the markup as written today.
+function invCustomerSafe(inv) {
+  var out = {};
+  Object.keys(inv || {}).forEach(function(k){
+    if (k === 'parts_cost_total' || k === 'cogs_incomplete' || k === 'cogs') return;
+    out[k] = inv[k];
+  });
+  out.line_items = (inv.line_items || []).map(function(it){
+    var li = {};
+    Object.keys(it || {}).forEach(function(k){
+      if (k === 'unit_cost' || k === 'cost_unknown' || k === 'cost_unknown_reason' || k === 'cost_source') return;
+      li[k] = it[k];
+    });
+    return li;
+  });
+  return out;
+}
+
 async function printInvoice(id) {
   try {
     var results = await Promise.all([ api('GET', '/invoices/' + id), api('GET', '/settings').catch(function(){ return {}; }) ]);
-    var inv = results[0]; var s = results[1];
+    var inv = invCustomerSafe(results[0]); var s = results[1];
     function esc(x){ return String(x == null ? '' : x).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
     var logo = s.logo ? '<img src="' + s.logo + '" style="height:54px;max-width:200px;object-fit:contain" />' : '<div style="font-size:22px;font-weight:700;color:#f97316">' + esc(s.company_name || 'Pop-A-Lock') + '</div>';
     var compAddr = [s.company_address, s.company_city_state_zip, s.company_phone].filter(Boolean).map(esc).join('<br>');

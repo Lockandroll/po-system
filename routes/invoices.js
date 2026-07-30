@@ -127,6 +127,32 @@ function computeTotals(line_items, tax_rate, tip_amount, tax_exempt) {
   };
 }
 
+// ---------------------------------------------------------------------------
+// Customer-facing boundary.
+//
+// COGS is internal. It must never reach the printed invoice, the emailed PDF, or
+// the Square dispute packet. Both PDF builders read only named fields today, so
+// nothing leaks — but "nothing renders it right now" is a property of code that
+// someone will edit later, not a guarantee. Strip the cost out of the data on the
+// way to any customer-facing renderer, so the guarantee holds even if a future
+// change starts iterating over whatever it is handed.
+const LINE_COST_FIELDS = ['unit_cost', 'cost_unknown', 'cost_unknown_reason', 'cost_source'];
+const INVOICE_COST_FIELDS = ['parts_cost_total', 'cogs_incomplete', 'cogs'];
+
+function customerSafeInvoice(inv) {
+  const out = Object.assign({}, inv || {});
+  INVOICE_COST_FIELDS.forEach(function (k) { delete out[k]; });
+  return out;
+}
+
+function customerSafeLines(items) {
+  return (items || []).map(function (it) {
+    const out = Object.assign({}, it || {});
+    LINE_COST_FIELDS.forEach(function (k) { delete out[k]; });
+    return out;
+  });
+}
+
 // "No cost available" is the escape hatch on the close-out gate, so it is also
 // the way to defeat it. Every override is logged with its reason — a tech ticking
 // the box on every line shows up here as a pattern rather than disappearing.
@@ -672,7 +698,7 @@ router.get('/:id/dispute-packet', requireAuth, requirePermission('view_invoices'
           });
         }
       } catch (e) { refundRows = []; }
-      pdfBuf = await buildDisputePdf(inv, items, { idImage: idImage, idMime: inv.id_image_mime, idUploadedAt: inv.id_image_uploaded_at, photos: photos, refunds: refundRows }, { company: company });
+      pdfBuf = await buildDisputePdf(customerSafeInvoice(inv), customerSafeLines(items), { idImage: idImage, idMime: inv.id_image_mime, idUploadedAt: inv.id_image_uploaded_at, photos: photos, refunds: refundRows }, { company: company });
     } catch (e) { console.error('Dispute packet build failed:', e); return res.status(500).json({ error: 'Could not build the dispute packet.' }); }
     if (pdfBuf.length > 40 * 1024 * 1024) return res.status(413).json({ error: 'The packet is over 40 MB. Remove some photos and try again.' });
     try { await logAudit({ entity_type: 'invoice', entity_id: id, entity_number: String(inv.invoice_number || ''), action: 'dispute_packet', user_id: req.user.id, user_name: req.user.name }); } catch (e) {}
@@ -819,7 +845,7 @@ router.post('/:id/email', requireAuth, requirePermission('view_invoices'), async
         [id]
       )).rows;
     } catch (e) { invRefunds = []; }
-    try { pdfBuf = await buildInvoicePdf(inv, items, photos, { company: company, refunds: invRefunds }); }
+    try { pdfBuf = await buildInvoicePdf(customerSafeInvoice(inv), customerSafeLines(items), photos, { company: company, refunds: invRefunds }); }
     catch (e) { console.error('Invoice PDF build failed:', e); return res.status(500).json({ error: 'Could not build the invoice PDF.' }); }
     if (pdfBuf.length > 20 * 1024 * 1024) return res.status(413).json({ error: 'The invoice PDF is over 20 MB and is too large to email. Remove some photos from the printed version and try again.' });
 
