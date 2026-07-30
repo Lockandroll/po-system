@@ -192,6 +192,46 @@
     .badge-partially-refunded { background: #2d1a00; color: #fb923c; border: 1px solid #4d2d00; }
     .badge-refunded { background: #2d0d0d; color: #f87171; border: 1px solid #4d1515; }
     .badge-refund-awaiting { background: #0d1e30; color: #60a5fa; border: 1px solid #1e3a5f; }
+
+    /* ---- Refund modal: mode switch, line picker, category cards, summary ---- */
+    .rf-seg { display:flex; background:var(--bg-elevated); border:1px solid var(--border); border-radius:var(--radius); padding:3px; gap:3px; margin-bottom:16px; }
+    .rf-seg button { flex:1; background:transparent; border:none; color:var(--text-muted-color); font-size:13px; font-weight:600; padding:8px 6px; border-radius:6px; cursor:pointer; font-family:inherit; min-height:0; }
+    .rf-seg button.on { background:var(--primary); color:#fff; }
+    .rf-seg button:not(.on):hover { color:var(--text); }
+    .rf-sec { font-size:12px; font-weight:600; color:var(--text-muted-color); text-transform:uppercase; letter-spacing:.05em; margin:2px 0 8px; }
+    .rf-mono { font-family:'Fira Code', ui-monospace, monospace; font-variant-numeric:tabular-nums; }
+    .rf-table { width:100%; border-collapse:collapse; }
+    .rf-table th { padding:7px 8px; background:var(--bg-elevated); font-size:11px; font-weight:600; color:var(--text-muted-color); text-transform:uppercase; letter-spacing:.04em; border-bottom:1px solid var(--border); text-align:left; white-space:nowrap; }
+    .rf-table td { padding:8px; font-size:13px; border-bottom:1px solid var(--border-light); color:var(--text-dim); vertical-align:middle; }
+    .rf-table tr.off td { opacity:.45; }
+    .rf-table tr.on td { background:rgba(249,115,22,0.05); }
+    .rf-table input[type="checkbox"] { width:16px; height:16px; padding:0; }
+    .rf-table input[type="number"] { width:88px; padding:5px 7px; font-size:13px; text-align:right; font-family:'Fira Code', monospace; }
+    .rf-table .rf-qty input { width:58px; text-align:center; }
+    .rf-tag { font-size:10px; font-weight:700; letter-spacing:.05em; text-transform:uppercase; border-radius:3px; padding:1px 5px; white-space:nowrap; }
+    .rf-tag.labor { background:rgba(96,165,250,0.14); color:#60a5fa; border:1px solid rgba(96,165,250,0.35); }
+    .rf-tag.part { background:rgba(167,139,250,0.14); color:#a78bfa; border:1px solid rgba(167,139,250,0.35); }
+    .rf-restock { font-size:11px; color:var(--text-muted-color); display:inline-flex; align-items:center; gap:5px; white-space:nowrap; font-weight:400; }
+    .rf-restock input { width:14px; height:14px; padding:0; }
+    .rf-cat { display:grid; grid-template-columns:1fr 1fr; gap:12px; }
+    .rf-cat-card { background:var(--bg-elevated); border:1px solid var(--border); border-radius:var(--radius); padding:14px; }
+    .rf-cat-card.on { border-color:rgba(249,115,22,0.55); background:rgba(249,115,22,0.06); }
+    .rf-cat-card .h { display:flex; align-items:center; justify-content:space-between; margin-bottom:10px; }
+    .rf-cat-card .h span:first-child { font-size:13px; font-weight:600; color:var(--text); }
+    .rf-cat-card .avail { font-size:11px; color:var(--text-muted-color); }
+    .rf-cat-card input[type="number"] { width:100%; text-align:right; font-family:'Fira Code', monospace; padding:7px 9px; font-size:14px; }
+    .rf-cat-card .quick { display:flex; gap:6px; margin-top:8px; }
+    .rf-cat-card .quick button { flex:1; background:transparent; border:1px solid var(--border); color:var(--text-muted-color); font-size:11px; font-weight:600; padding:5px 0; border-radius:5px; cursor:pointer; font-family:inherit; min-height:0; }
+    .rf-cat-card .quick button:hover { border-color:var(--primary); color:var(--primary); }
+    .rf-sum { background:var(--bg-elevated); border:1px solid var(--border); border-radius:var(--radius); padding:12px 14px; margin-top:16px; }
+    .rf-sum-row { display:flex; justify-content:space-between; align-items:center; font-size:13px; padding:4px 0; color:var(--text-dim); }
+    .rf-sum-row .rf-mono { color:var(--text); }
+    .rf-sum-row.tax { color:var(--text-muted-color); }
+    .rf-sum-total { display:flex; justify-content:space-between; margin-top:9px; padding-top:9px; border-top:1px solid var(--border); font-size:15px; font-weight:700; color:var(--primary); font-family:'Fira Code', ui-monospace, monospace; font-variant-numeric:tabular-nums; }
+    .rf-sum-net-row { display:flex; justify-content:space-between; font-size:12px; color:var(--text-muted-color); margin-top:5px; }
+    @media (max-width: 768px) { .rf-cat { grid-template-columns:1fr; } .rf-table th, .rf-table td { padding:6px 5px; } }
+    html[data-theme="light"] .rf-table tr.on td { background:rgba(249,115,22,0.07); }
+    html[data-theme="light"] .rf-cat-card.on { background:rgba(249,115,22,0.07); }
     .user-row-inactive td { opacity: 0.5; }
     .page-header { margin-bottom: 24px; display: flex; align-items: center; justify-content: space-between; }
     .page-title { font-size: 22px; font-weight: 700; }

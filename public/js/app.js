@@ -2,7 +2,7 @@
 // public/sw.js (the only thing bumped each deploy) — the badge asks the active
 // service worker for it at runtime. This value is just the fallback shown when no
 // service worker is available (e.g. very first visit before it installs).
-var APP_VERSION = 'v80';
+var APP_VERSION = 'v81';
 var _resolvedAppVersion = null;
 
 // Ask the active service worker for its CACHE_VERSION (without the 'nova-' prefix).
@@ -17628,183 +17628,7 @@ function refundCollectAlloc(prefix) {
 
 // ---------- Request (invoice view) ----------
 
-function openRefundRequest(invoiceId) {
-  var inv = _currentInvoice;
-  if (!inv || inv.id !== invoiceId) { showToast('Reload the invoice and try again.', 'error'); return; }
-  window._refundInvoice = inv;
-  var already = refundNum(inv.refunded_total) + refundNum(inv.pending_refund_total);
-  var room = refundNum(refundNum(inv.grand_total) - already);
-  if (room <= 0) { showToast('This invoice is fully refunded or fully spoken for.', 'error'); return; }
-  var approver = can('approve_refund');
-  var alloc = refundAutoSplit(inv, room);
-
-  var overlay = document.createElement('div');
-  overlay.className = 'modal-overlay';
-  overlay.id = 'refund-modal-overlay';
-  overlay.innerHTML =
-    '<div class="modal" style="max-width:560px">' +
-      '<div class="modal-header"><span class="modal-title">Request Refund &middot; Invoice #' + escHtml(inv.invoice_number) + '</span>' +
-        '<button class="btn btn-ghost btn-sm" onclick="document.getElementById(\'refund-modal-overlay\').remove()">&#x2715;</button></div>' +
-      '<div class="modal-body">' +
-        '<div id="refund-modal-error"></div>' +
-        '<div class="alert alert-info" style="margin-bottom:16px">' +
-          (approver
-            ? 'You can approve refunds, so this one is submitted and approved in a single step.'
-            : 'A manager has to approve this before any money moves. Nothing is refunded until then.') +
-        '</div>' +
-        '<input type="hidden" id="rfreq-alloc-touched" value="" />' +
-        '<div class="form-row">' +
-          '<div class="form-group"><label>Refund Amount</label>' +
-            '<input type="number" step="0.01" min="0.01" id="rfreq-amount" value="' + room.toFixed(2) + '" oninput="refundRecalc(\'rfreq\')" />' +
-            '<div style="font-size:12px;color:var(--text-muted-color);margin-top:5px">Up to ' + invMoney(room) + ' &middot; ' +
-              '<a href="#" onclick="document.getElementById(\'rfreq-amount\').value=' + room.toFixed(2) + ';refundRecalc(\'rfreq\');return false;">refund the full ' + invMoney(room) + '</a></div>' +
-          '</div>' +
-          '<div class="form-group"><label>Refund Method</label><select id="rfreq-method">' +
-            REFUND_METHODS.map(function (m) {
-              return '<option value="' + m.k + '"' + (m.k === 'card' ? ' selected' : '') + '>' + escHtml(m.l + (m.k === 'card' && inv.card_last4 ? (' •••• ' + inv.card_last4) : '')) + '</option>';
-            }).join('') +
-          '</select><div style="font-size:12px;color:var(--text-muted-color);margin-top:5px">Issued by hand in Square, then recorded here.</div></div>' +
-        '</div>' +
-        '<div class="form-group"><label>Reason</label><select id="rfreq-reason">' +
-          REFUND_REASONS.map(function (r) { return '<option value="' + r.k + '">' + escHtml(r.l) + '</option>'; }).join('') +
-        '</select></div>' +
-        '<div class="form-group"><label>Notes ' + (approver ? '' : 'for the approver') + '</label>' +
-          '<textarea id="rfreq-notes" style="min-height:64px" placeholder="What happened? Required for a goodwill refund."></textarea></div>' +
-        (approver
-          ? '<div class="form-group"><label>Part returned to stock?</label>' +
-            '<select id="rfreq-part-returned"><option value="no">No &mdash; the part was consumed</option><option value="yes">Yes &mdash; back on the shelf</option></select>' +
-            '<div style="font-size:12px;color:var(--text-muted-color);margin-top:5px">Keeps the month-end reorder honest</div></div>'
-          : '') +
-        '<div style="font-size:12px;font-weight:600;color:var(--text-muted-color);text-transform:uppercase;letter-spacing:.05em;margin-bottom:8px">How it splits (edit any line)</div>' +
-        refundAllocRows('rfreq', alloc, inv) +
-        '<div style="font-size:12px;color:var(--text-muted-color);margin-top:6px">Split proportionally by default so sales tax comes back at the right rate.</div>' +
-      '</div>' +
-      '<div class="modal-footer">' +
-        '<button class="btn btn-secondary" onclick="document.getElementById(\'refund-modal-overlay\').remove()">Cancel</button>' +
-        '<button class="btn btn-primary" onclick="submitRefundRequest(' + inv.id + ', this)">' + (approver ? 'Submit &amp; Approve' : 'Send for Approval') + '</button>' +
-      '</div>' +
-    '</div>';
-  document.body.appendChild(overlay);
-  refundRecalc('rfreq');
-}
-
-async function submitRefundRequest(invoiceId, btn) {
-  var errEl = document.getElementById('refund-modal-error');
-  var amount = refundNum((document.getElementById('rfreq-amount') || {}).value);
-  var reason = (document.getElementById('rfreq-reason') || {}).value;
-  var notes = ((document.getElementById('rfreq-notes') || {}).value || '').trim();
-  if (!(amount > 0)) { errEl.innerHTML = '<div class="alert alert-error">Enter a refund amount greater than zero.</div>'; return; }
-  if (reason === 'goodwill' && !notes) { errEl.innerHTML = '<div class="alert alert-error">A goodwill refund needs a note explaining it.</div>'; return; }
-  var payload = Object.assign({
-    invoice_id: invoiceId,
-    amount: amount,
-    method: (document.getElementById('rfreq-method') || {}).value,
-    reason_code: reason,
-    reason_notes: notes
-  }, refundCollectAlloc('rfreq'));
-  var btnLabel = btn.innerHTML;
-  btn.disabled = true; btn.textContent = 'Saving…';
-  try {
-    var created = await api('POST', '/refunds', payload);
-    // An approver requesting a refund is really just issuing one — skip the
-    // pointless round trip of approving their own request.
-    if (can('approve_refund')) {
-      try {
-        await api('POST', '/refunds/' + created.id + '/approve', {
-          part_returned: (document.getElementById('rfreq-part-returned') || {}).value === 'yes'
-        });
-      } catch (e) { showToast('Saved, but the auto-approval failed: ' + e.message, 'error'); }
-    }
-    var ov = document.getElementById('refund-modal-overlay');
-    if (ov) ov.remove();
-    showToast('Refund ' + created.refund_number + ' ' + (can('approve_refund') ? 'approved. Issue it in Square, then record the reference.' : 'sent for approval.'), 'success');
-    navigate('view-invoice', invoiceId);
-  } catch (err) {
-    btn.disabled = false; btn.innerHTML = btnLabel;
-    errEl.innerHTML = '<div class="alert alert-error">' + escHtml(err.message) + '</div>';
-  }
-}
-
 // ---------- Review (approve / reject) ----------
-
-async function openRefundReview(refundId) {
-  var r;
-  try { r = await api('GET', '/refunds/' + refundId); }
-  catch (err) { showToast(err.message, 'error'); return; }
-  if (r.status !== 'requested') { showToast('That refund is already ' + r.status + '.', 'error'); return; }
-  window._refundInvoice = {
-    grand_total: r.grand_total, labor_amount: r.labor_amount, parts_amount: r.parts_amount,
-    tax_amount: r.tax_amount, tip_amount: r.tip_amount, refunded_total: r.refunded_total, card_last4: r.card_last4
-  };
-  var amount = refundNum(r.amount);
-  var pct = refundNum(r.grand_total) > 0 ? Math.round((amount / refundNum(r.grand_total)) * 100) : 0;
-  var alloc = { labor: refundNum(r.labor_refunded), parts: refundNum(r.parts_refunded), tax: refundNum(r.tax_refunded), tip: refundNum(r.tip_refunded) };
-
-  var overlay = document.createElement('div');
-  overlay.className = 'modal-overlay';
-  overlay.id = 'refund-review-overlay';
-  overlay.innerHTML =
-    '<div class="modal" style="max-width:620px">' +
-      '<div class="modal-header"><span class="modal-title">Review Refund ' + escHtml(r.refund_number) + '</span>' +
-        '<button class="btn btn-ghost btn-sm" onclick="document.getElementById(\'refund-review-overlay\').remove()">&#x2715;</button></div>' +
-      '<div class="modal-body">' +
-        '<div id="refund-review-error"></div>' +
-        (pct >= 50
-          ? '<div class="alert alert-error" style="margin-bottom:16px">This is <strong>' + pct + '%</strong> of the invoice. Your name goes on it in the audit log.</div>'
-          : '') +
-        '<input type="hidden" id="rfrev-alloc-touched" value="" />' +
-        '<div class="detail-grid" style="gap:14px;margin-bottom:16px">' +
-          '<div class="detail-field"><label>Invoice</label><p>#' + escHtml(r.invoice_number) + ' &middot; ' + invMoney(r.grand_total) + '</p></div>' +
-          '<div class="detail-field"><label>Customer</label><p>' + escHtml(r.customer_name || '—') + '</p></div>' +
-          '<div class="detail-field"><label>Requested by</label><p>' + escHtml(r.requested_by_name || '—') + ' &middot; ' + formatDateTime(r.requested_at) + '</p></div>' +
-          '<div class="detail-field"><label>Reason</label><p>' + escHtml(refundReasonLabel(r.reason_code)) + '</p></div>' +
-        '</div>' +
-        (r.reason_notes
-          ? '<div class="form-group"><label>Note from ' + escHtml((r.requested_by_name || 'the requester').split(' ')[0]) + '</label>' +
-            '<div style="background:var(--bg-elevated);border:1px solid var(--border);border-radius:var(--radius);padding:11px 13px;font-size:14px;color:var(--text-dim)">' + escHtml(r.reason_notes) + '</div></div>'
-          : '') +
-        '<div class="form-row">' +
-          '<div class="form-group"><label>Approved Amount</label>' +
-            '<input type="number" step="0.01" min="0.01" id="rfrev-amount" value="' + amount.toFixed(2) + '" oninput="refundRecalc(\'rfrev\')" />' +
-            '<div style="font-size:12px;color:var(--text-muted-color);margin-top:5px">Requested ' + invMoney(amount) + ' &middot; you can approve less, not more</div></div>' +
-          '<div class="form-group"><label>Part returned to stock?</label>' +
-            '<select id="rfrev-part-returned"><option value="no">No &mdash; the part was consumed</option><option value="yes">Yes &mdash; back on the shelf</option></select>' +
-            '<div style="font-size:12px;color:var(--text-muted-color);margin-top:5px">Keeps the month-end reorder honest</div></div>' +
-        '</div>' +
-        '<div style="font-size:12px;font-weight:600;color:var(--text-muted-color);text-transform:uppercase;letter-spacing:.05em;margin-bottom:8px">Allocation</div>' +
-        refundAllocRows('rfrev', alloc, window._refundInvoice) +
-        '<div class="form-group" style="margin-top:14px"><label>Note (optional)</label><input type="text" id="rfrev-note" placeholder="Anything the requester should know" /></div>' +
-      '</div>' +
-      '<div class="modal-footer">' +
-        '<button class="btn btn-secondary" onclick="openRefundReject(' + r.id + ')">Reject with reason</button>' +
-        '<button class="btn btn-success" onclick="submitRefundApproval(' + r.id + ', this)">Approve</button>' +
-      '</div>' +
-    '</div>';
-  document.body.appendChild(overlay);
-  refundRecalc('rfrev', true);
-}
-
-async function submitRefundApproval(id, btn) {
-  var errEl = document.getElementById('refund-review-error');
-  var amount = refundNum((document.getElementById('rfrev-amount') || {}).value);
-  if (!(amount > 0)) { errEl.innerHTML = '<div class="alert alert-error">Enter an approved amount greater than zero.</div>'; return; }
-  var payload = Object.assign({
-    amount: amount,
-    part_returned: (document.getElementById('rfrev-part-returned') || {}).value === 'yes',
-    approver_note: ((document.getElementById('rfrev-note') || {}).value || '').trim()
-  }, refundCollectAlloc('rfrev'));
-  btn.disabled = true; btn.textContent = 'Approving…';
-  try {
-    await api('POST', '/refunds/' + id + '/approve', payload);
-    var ov = document.getElementById('refund-review-overlay');
-    if (ov) ov.remove();
-    showToast('Approved. Issue it in Square, then record the reference here.', 'success');
-    render();
-  } catch (err) {
-    btn.disabled = false; btn.textContent = 'Approve';
-    errEl.innerHTML = '<div class="alert alert-error">' + escHtml(err.message) + '</div>';
-  }
-}
 
 function openRefundReject(id) {
   var overlay = document.createElement('div');
@@ -17926,7 +17750,9 @@ function refundHistoryHtml(inv) {
       '<td style="white-space:nowrap">' + escHtml(r.refund_number || '') + '</td>' +
       '<td style="white-space:nowrap">' + formatDate(r.refund_date || r.created_at) + '</td>' +
       '<td style="white-space:nowrap;color:var(--danger)">' + invMoney(r.amount) + '</td>' +
-      '<td>' + escHtml(refundReasonLabel(r.reason_code)) + (r.reason_notes ? ('<div style="font-size:11px;color:var(--text-muted-color)">' + escHtml(r.reason_notes) + '</div>') : '') + '</td>' +
+      '<td>' + escHtml(refundReasonLabel(r.reason_code)) +
+        (refundLineSummary(r) ? ('<div style="font-size:11px;color:var(--text-dim)">' + escHtml(refundLineSummary(r)) + '</div>') : '') +
+        (r.reason_notes ? ('<div style="font-size:11px;color:var(--text-muted-color)">' + escHtml(r.reason_notes) + '</div>') : '') + '</td>' +
       '<td style="white-space:nowrap">' + escHtml(r.requested_by_name || '—') + '</td>' +
       '<td style="white-space:nowrap">' + escHtml(r.approved_by_name || '—') + '</td>' +
       '<td style="white-space:nowrap;font-size:12px">' + escHtml(r.external_ref || '—') + '</td>' +
@@ -17989,7 +17815,9 @@ async function renderRefunds(el) {
             cell('<a href="#" onclick="navigate(\'view-invoice\',' + r.invoice_id + ');return false;">#' + escHtml(r.invoice_number) + '</a>', 'white-space:nowrap'),
             cell(escHtml(r.customer_name || '—')),
             cell(invMoney(r.amount), 'white-space:nowrap;color:var(--danger)'),
-            cell(escHtml(refundReasonLabel(r.reason_code))),
+            cell(escHtml(refundReasonLabel(r.reason_code)) +
+              (r.line_count ? ('<div style="font-size:11px;color:var(--text-muted-color)">' + r.line_count + (r.line_count === 1 ? ' line' : ' lines') + '</div>')
+                : (r.mode === 'category' ? '<div style="font-size:11px;color:var(--text-muted-color)">labor / parts</div>' : ''))),
             cell(escHtml(r.requested_by_name || '—'), 'white-space:nowrap'),
             cell(age(r.requested_at), 'white-space:nowrap'),
             cell(canApprove
@@ -18054,4 +17882,578 @@ async function renderRefunds(el) {
   } catch (err) {
     el.innerHTML = '<div class="alert alert-error">' + escHtml(err.message) + '</div>';
   }
+}
+
+// ---------------------------------------------------------------------------
+// Refund modes: by line item / labor+parts / flat amount
+// ---------------------------------------------------------------------------
+// One modal, three ways to build the same refund record. Line mode recomputes
+// tax on the TAXABLE lines only (a fob is taxable, the labor to program it is
+// not), category mode taxes the taxable share of each bucket, flat mode splits
+// proportionally. All three post to the same endpoint; the server re-validates
+// everything against the invoice, so nothing here is trusted.
+
+function rfExt(li) { return refundNum((parseFloat(li.quantity) || 0) * (parseFloat(li.unit_price) || 0)); }
+function rfAvailQty(li) { return refundNum((parseFloat(li.quantity) || 0) - (parseFloat(li.refunded_qty) || 0)); }
+
+// Taxable share of each bucket, mirroring taxableShares() on the server.
+function rfTaxableShares(lines) {
+  var tot = { labor: 0, part: 0 }, taxed = { labor: 0, part: 0 };
+  (lines || []).forEach(function (li) {
+    var k = li.line_type === 'labor' ? 'labor' : 'part';
+    var ext = rfExt(li);
+    tot[k] += ext;
+    if (li.taxable) taxed[k] += ext;
+  });
+  return { labor: tot.labor > 0 ? taxed.labor / tot.labor : 0, parts: tot.part > 0 ? taxed.part / tot.part : 0 };
+}
+
+function rfRemaining(inv) {
+  var used = { labor: 0, parts: 0, tax: 0, tip: 0 };
+  (inv.refunds || []).forEach(function (r) {
+    if (['requested', 'approved', 'processed'].indexOf(r.status) === -1) return;
+    used.labor += parseFloat(r.labor_refunded) || 0;
+    used.parts += parseFloat(r.parts_refunded) || 0;
+    used.tax += parseFloat(r.tax_refunded) || 0;
+    used.tip += parseFloat(r.tip_refunded) || 0;
+  });
+  return {
+    labor: refundNum((parseFloat(inv.labor_amount) || 0) - used.labor),
+    parts: refundNum((parseFloat(inv.parts_amount) || 0) - used.parts),
+    tax: refundNum((parseFloat(inv.tax_amount) || 0) - used.tax),
+    tip: refundNum((parseFloat(inv.tip_amount) || 0) - used.tip)
+  };
+}
+
+function rfSetMode(mode) {
+  window._refundMode = mode;
+  ['line', 'category', 'flat'].forEach(function (m) {
+    var panel = document.getElementById('rf-panel-' + m);
+    var btn = document.getElementById('rf-seg-' + m);
+    if (panel) panel.style.display = (m === mode ? '' : 'none');
+    if (btn) btn.className = (m === mode ? 'on' : '');
+  });
+  rfRecalc();
+}
+
+function rfSegHtml(available) {
+  function b(m, label, on) {
+    return '<button type="button" id="rf-seg-' + m + '"' + (on ? ' class="on"' : '') +
+      ' onclick="rfSetMode(\'' + m + '\')">' + label + '</button>';
+  }
+  return '<div class="rf-seg">' +
+    (available.line ? b('line', 'By line item', true) : '') +
+    b('category', 'Labor / Parts', !available.line) +
+    b('flat', 'Flat amount', false) +
+  '</div>';
+}
+
+// ---------- line-item panel ----------
+
+function rfLinePanel(inv) {
+  var lines = (inv.line_items || []).filter(function (li) { return rfAvailQty(li) > 0.005; });
+  if (!lines.length) return '';
+  var rows = lines.map(function (li, i) {
+    var avail = rfAvailQty(li);
+    var isPart = li.line_type !== 'labor';
+    var already = (parseFloat(li.refunded_qty) || 0) > 0;
+    return '<tr id="rf-row-' + i + '" class="off">' +
+      '<td><input type="checkbox" id="rf-on-' + i + '" onchange="rfLineToggle(' + i + ')" /></td>' +
+      '<td><span class="rf-tag ' + (isPart ? 'part' : 'labor') + '">' + (isPart ? 'Part' : 'Labor') + '</span></td>' +
+      '<td>' + escHtml(li.description || '') +
+        (li.item_number ? '<div style="font-size:11px;color:var(--text-muted-color)">' + escHtml(li.item_number) + '</div>' : '') +
+        (already ? '<div style="font-size:11px;color:var(--warning)">' + refundNum(li.refunded_qty) + ' already refunded</div>' : '') +
+      '</td>' +
+      '<td class="rf-qty"><input type="number" step="0.01" min="0" id="rf-qty-' + i + '" value="' + avail + '" oninput="rfLineQty(' + i + ')" />' +
+        (avail !== (parseFloat(li.quantity) || 0) || avail > 1
+          ? '<div style="font-size:10px;color:var(--text-muted-color);text-align:center">of ' + avail + '</div>' : '') +
+      '</td>' +
+      '<td class="rf-mono">' + invMoney(li.unit_price) + '</td>' +
+      '<td style="text-align:center">' + (li.taxable ? 'Y' : 'N') + '</td>' +
+      '<td style="text-align:right"><span class="rf-mono" id="rf-amt-' + i + '">' + invMoney(0) + '</span></td>' +
+      '<td>' + (isPart
+        ? '<label class="rf-restock"><input type="checkbox" id="rf-restock-' + i + '" onchange="rfRecalc()" /> restock</label>'
+        : '') + '</td>' +
+    '</tr>';
+  }).join('');
+
+  return '<div id="rf-panel-line">' +
+    '<div class="alert alert-info" style="margin-bottom:14px">Tick what is coming back. Tax is recalculated on the taxable lines only, so the remittance stays right.</div>' +
+    '<div class="rf-sec">Lines still refundable on this invoice</div>' +
+    '<div class="table-wrap" style="border:1px solid var(--border);border-radius:var(--radius);overflow:hidden">' +
+      '<table class="rf-table"><thead><tr>' +
+        '<th></th><th>Type</th><th>Description</th><th style="text-align:center">Qty</th><th>Unit</th>' +
+        '<th style="text-align:center">Tax</th><th style="text-align:right">Refund</th><th></th>' +
+      '</tr></thead><tbody>' + rows + '</tbody></table></div>' +
+    '<div style="font-size:12px;color:var(--text-muted-color);margin-top:6px">Tick <strong>restock</strong> for a part that went back on the shelf; it then drops out of the month-end reorder. Leave it clear for a part consumed on a comeback.</div>' +
+  '</div>';
+}
+
+function rfLineToggle(i) {
+  var on = (document.getElementById('rf-on-' + i) || {}).checked;
+  var row = document.getElementById('rf-row-' + i);
+  if (row) row.className = on ? 'on' : 'off';
+  rfRecalc();
+}
+
+function rfLineQty(i) {
+  var el = document.getElementById('rf-qty-' + i);
+  var box = document.getElementById('rf-on-' + i);
+  if (el && box && refundNum(el.value) > 0 && !box.checked) { box.checked = true; rfLineToggle(i); return; }
+  rfRecalc();
+}
+
+// Which lines are ticked, capped at what is actually left on each line.
+function rfCollectLines() {
+  var inv = window._refundInvoice || {};
+  var lines = (inv.line_items || []).filter(function (li) { return rfAvailQty(li) > 0.005; });
+  var out = [];
+  lines.forEach(function (li, i) {
+    var box = document.getElementById('rf-on-' + i);
+    if (!box || !box.checked) return;
+    var qty = refundNum((document.getElementById('rf-qty-' + i) || {}).value);
+    var avail = rfAvailQty(li);
+    if (qty > avail) qty = avail;
+    if (qty <= 0) return;
+    out.push({
+      invoice_line_item_id: li.id,
+      quantity: qty,
+      restock: !!(document.getElementById('rf-restock-' + i) || {}).checked,
+      _line_type: li.line_type,
+      _unit: parseFloat(li.unit_price) || 0,
+      _taxable: li.taxable === true,
+      _index: i
+    });
+  });
+  return out;
+}
+
+// ---------- category panel ----------
+
+function rfCategoryPanel(inv) {
+  var rem = rfRemaining(inv);
+  function card(key, label, remaining) {
+    return '<div class="rf-cat-card" id="rf-cat-' + key + '">' +
+      '<div class="h"><span>' + label + '</span><span class="avail">' + invMoney(remaining) + ' refundable</span></div>' +
+      '<input type="number" step="0.01" min="0" id="rf-cat-' + key + '-amt" value="0.00" oninput="rfRecalc()" />' +
+      '<div class="quick">' +
+        '<button type="button" onclick="rfCatSet(\'' + key + '\',' + remaining + ')">All ' + invMoney(remaining) + '</button>' +
+        '<button type="button" onclick="rfCatSet(\'' + key + '\',' + refundNum(remaining / 2) + ')">Half</button>' +
+        '<button type="button" onclick="rfCatSet(\'' + key + '\',0)">None</button>' +
+      '</div>' +
+      (key === 'parts'
+        ? '<label class="rf-restock" style="margin-top:9px"><input type="checkbox" id="rf-cat-restock" onchange="rfRecalc()" /> parts came back to stock</label>'
+        : '') +
+    '</div>';
+  }
+  return '<div id="rf-panel-category" style="display:none">' +
+    '<div class="alert alert-info" style="margin-bottom:14px">Give back labor, parts, or both. Tax follows the taxable share of whatever you refund.</div>' +
+    '<div class="rf-cat">' + card('labor', 'Labor', rem.labor) + card('parts', 'Parts', rem.parts) + '</div>' +
+    (rem.tip > 0
+      ? '<div class="form-group" style="margin-top:12px"><label>Tip to refund</label>' +
+        '<input type="number" step="0.01" min="0" id="rf-cat-tip-amt" value="0.00" oninput="rfRecalc()" />' +
+        '<div style="font-size:12px;color:var(--text-muted-color);margin-top:5px">' + invMoney(rem.tip) + ' refundable</div></div>'
+      : '') +
+    '<div style="font-size:12px;color:var(--text-muted-color);margin-top:8px">Only the labor was wrong? Leave Parts at $0 and the parts usage is untouched.</div>' +
+  '</div>';
+}
+
+function rfCatSet(key, val) {
+  var el = document.getElementById('rf-cat-' + key + '-amt');
+  if (el) el.value = refundNum(val).toFixed(2);
+  rfRecalc();
+}
+
+// ---------- flat panel ----------
+
+function rfFlatPanel(inv, room) {
+  return '<div id="rf-panel-flat" style="display:none">' +
+    '<div class="alert alert-info" style="margin-bottom:14px">One figure, split across the invoice proportionally. Use this for goodwill and price adjustments that do not map to a line.</div>' +
+    '<input type="hidden" id="rf-flat-touched" value="" />' +
+    '<div class="form-group"><label>Refund Amount</label>' +
+      '<input type="number" step="0.01" min="0" id="rf-flat-amount" value="' + room.toFixed(2) + '" oninput="rfRecalc()" />' +
+      '<div style="font-size:12px;color:var(--text-muted-color);margin-top:5px">Up to ' + invMoney(room) + ' &middot; ' +
+        '<a href="#" onclick="document.getElementById(\'rf-flat-amount\').value=' + room.toFixed(2) + ';rfRecalc();return false;">refund the full ' + invMoney(room) + '</a></div>' +
+    '</div>' +
+    '<div class="rf-sec">How it splits (edit any line)</div>' +
+    '<div class="rf-sum" style="margin-top:0">' +
+      ['labor', 'parts', 'tax', 'tip'].map(function (k) {
+        return '<div class="rf-sum-row"><span>' + k.charAt(0).toUpperCase() + k.slice(1) + '</span>' +
+          '<input type="number" step="0.01" id="rf-flat-' + k + '" value="0.00" oninput="document.getElementById(\'rf-flat-touched\').value=\'1\';rfRecalc()" ' +
+          'style="width:110px;padding:5px 8px;font-size:13px;text-align:right;font-family:\'Fira Code\',monospace" /></div>';
+      }).join('') +
+    '</div>' +
+    '<div style="font-size:12px;color:var(--text-muted-color);margin-top:6px">Proportional by default so sales tax still comes back at the right rate.</div>' +
+  '</div>';
+}
+
+// ---------- shared summary ----------
+
+// Recompute whatever the active mode implies and paint the summary rail. This is
+// the same arithmetic the server does; the server still has the last word.
+function rfRecalc() {
+  var inv = window._refundInvoice || {};
+  var mode = window._refundMode || 'line';
+  var rate = parseFloat(inv.tax_rate) || 0;
+  var exempt = inv.tax_exempt === true;
+  var rem = rfRemaining(inv);
+  var labor = 0, parts = 0, tax = 0, tip = 0, detail = '';
+
+  if (mode === 'line') {
+    var picked = rfCollectLines();
+    var taxableBase = 0, nParts = 0, nLabor = 0;
+    (inv.line_items || []).filter(function (li) { return rfAvailQty(li) > 0.005; }).forEach(function (li, i) {
+      var amtEl = document.getElementById('rf-amt-' + i);
+      var hit = picked.filter(function (p) { return p._index === i; })[0];
+      var amt = hit ? refundNum(hit.quantity * hit._unit) : 0;
+      if (amtEl) amtEl.textContent = invMoney(amt);
+      if (!hit) return;
+      if (hit._line_type === 'labor') { labor += amt; nLabor++; } else { parts += amt; nParts++; }
+      if (hit._taxable) taxableBase += amt;
+    });
+    tax = exempt ? 0 : refundNum(taxableBase * (rate / 100));
+    if (tax > rem.tax) tax = rem.tax > 0 ? rem.tax : 0;
+    detail =
+      (nParts ? '<div class="rf-sum-row"><span>Parts (' + nParts + (nParts === 1 ? ' line' : ' lines') + ')</span><span class="rf-mono">' + invMoney(parts) + '</span></div>' : '') +
+      (nLabor ? '<div class="rf-sum-row"><span>Labor (' + nLabor + (nLabor === 1 ? ' line' : ' lines') + ')</span><span class="rf-mono">' + invMoney(labor) + '</span></div>' : '') +
+      '<div class="rf-sum-row tax"><span>Sales tax on the taxable lines (' + rate.toFixed(2) + '%)</span><span class="rf-mono">' + invMoney(tax) + '</span></div>';
+  } else if (mode === 'category') {
+    labor = refundNum((document.getElementById('rf-cat-labor-amt') || {}).value);
+    parts = refundNum((document.getElementById('rf-cat-parts-amt') || {}).value);
+    tip = refundNum((document.getElementById('rf-cat-tip-amt') || {}).value);
+    var share = rfTaxableShares(inv.line_items || []);
+    tax = exempt ? 0 : refundNum((labor * share.labor + parts * share.parts) * (rate / 100));
+    if (tax > rem.tax) tax = rem.tax > 0 ? rem.tax : 0;
+    ['labor', 'parts'].forEach(function (k) {
+      var card = document.getElementById('rf-cat-' + k);
+      var v = k === 'labor' ? labor : parts;
+      if (card) card.className = 'rf-cat-card' + (v > 0 ? ' on' : '');
+    });
+    detail =
+      '<div class="rf-sum-row"><span>Labor</span><span class="rf-mono">' + invMoney(labor) + '</span></div>' +
+      '<div class="rf-sum-row"><span>Parts</span><span class="rf-mono">' + invMoney(parts) + '</span></div>' +
+      '<div class="rf-sum-row tax"><span>Tax on the refunded portion (' + rate.toFixed(2) + '%)</span><span class="rf-mono">' + invMoney(tax) + '</span></div>' +
+      (tip > 0 ? '<div class="rf-sum-row tax"><span>Tip</span><span class="rf-mono">' + invMoney(tip) + '</span></div>' : '');
+  } else {
+    var amount = refundNum((document.getElementById('rf-flat-amount') || {}).value);
+    var touched = (document.getElementById('rf-flat-touched') || {}).value === '1';
+    if (!touched) {
+      var a = refundAutoSplit(inv, amount);
+      ['labor', 'parts', 'tax', 'tip'].forEach(function (k) {
+        var el = document.getElementById('rf-flat-' + k);
+        if (el) el.value = a[k].toFixed(2);
+      });
+    }
+    labor = refundNum((document.getElementById('rf-flat-labor') || {}).value);
+    parts = refundNum((document.getElementById('rf-flat-parts') || {}).value);
+    tax = refundNum((document.getElementById('rf-flat-tax') || {}).value);
+    tip = refundNum((document.getElementById('rf-flat-tip') || {}).value);
+    detail = '';
+  }
+
+  var total = refundNum(labor + parts + tax + tip);
+  var already = refundNum(inv.refunded_total) + refundNum(inv.pending_refund_total);
+  var net = refundNum(refundNum(inv.grand_total) - already - total);
+  var detailEl = document.getElementById('rf-sum-detail');
+  if (detailEl) detailEl.innerHTML = detail;
+  var totalEl = document.getElementById('rf-sum-total');
+  if (totalEl) totalEl.textContent = invMoney(total);
+  var netEl = document.getElementById('rf-sum-net');
+  if (netEl) {
+    netEl.textContent = invMoney(net) + ' of ' + invMoney(inv.grand_total);
+    netEl.style.color = net < -0.005 ? 'var(--danger)' : '';
+  }
+  window._refundTotal = total;
+}
+
+// ---------- the modal ----------
+
+function openRefundRequest(invoiceId) {
+  var inv = _currentInvoice;
+  if (!inv || inv.id !== invoiceId) { showToast('Reload the invoice and try again.', 'error'); return; }
+  window._refundInvoice = inv;
+  var already = refundNum(inv.refunded_total) + refundNum(inv.pending_refund_total);
+  var room = refundNum(refundNum(inv.grand_total) - already);
+  if (room <= 0) { showToast('This invoice is fully refunded or fully spoken for.', 'error'); return; }
+
+  var approver = can('approve_refund');
+  var linePanel = rfLinePanel(inv);
+  var available = { line: !!linePanel };
+  window._refundMode = available.line ? 'line' : 'category';
+
+  var overlay = document.createElement('div');
+  overlay.className = 'modal-overlay';
+  overlay.id = 'refund-modal-overlay';
+  overlay.innerHTML =
+    '<div class="modal" style="max-width:' + (available.line ? '820px' : '620px') + '">' +
+      '<div class="modal-header"><span class="modal-title">' + (approver ? 'Issue' : 'Request') + ' Refund &middot; Invoice #' + escHtml(inv.invoice_number) + '</span>' +
+        '<button class="btn btn-ghost btn-sm" onclick="document.getElementById(\'refund-modal-overlay\').remove()">&#x2715;</button></div>' +
+      '<div class="modal-body">' +
+        '<div id="refund-modal-error"></div>' +
+        rfSegHtml(available) +
+        linePanel +
+        rfCategoryPanel(inv) +
+        rfFlatPanel(inv, room) +
+        '<div class="rf-sum">' +
+          '<div id="rf-sum-detail"></div>' +
+          '<div class="rf-sum-total"><span>Refund total</span><span id="rf-sum-total">' + invMoney(0) + '</span></div>' +
+          '<div class="rf-sum-net-row"><span>Invoice net after this refund</span><span id="rf-sum-net">' + invMoney(room) + '</span></div>' +
+        '</div>' +
+        '<div class="form-row" style="margin-top:16px">' +
+          '<div class="form-group"><label>Reason</label><select id="rfreq-reason">' +
+            REFUND_REASONS.map(function (r) { return '<option value="' + r.k + '">' + escHtml(r.l) + '</option>'; }).join('') +
+          '</select></div>' +
+          '<div class="form-group"><label>Refund Method</label><select id="rfreq-method">' +
+            REFUND_METHODS.map(function (m) {
+              return '<option value="' + m.k + '"' + (m.k === 'card' ? ' selected' : '') + '>' +
+                escHtml(m.l + (m.k === 'card' && inv.card_last4 ? (' •••• ' + inv.card_last4) : '')) + '</option>';
+            }).join('') +
+          '</select></div>' +
+        '</div>' +
+        '<div class="form-group"><label>Notes ' + (approver ? '' : 'for the approver') + '</label>' +
+          '<textarea id="rfreq-notes" style="min-height:58px" placeholder="What happened? Required for a goodwill refund."></textarea></div>' +
+        (approver ? '' : '<div class="alert alert-info" style="margin-bottom:0">A manager has to approve this before any money moves.</div>') +
+      '</div>' +
+      '<div class="modal-footer">' +
+        '<button class="btn btn-secondary" onclick="document.getElementById(\'refund-modal-overlay\').remove()">Cancel</button>' +
+        '<button class="btn btn-primary" onclick="submitRefundRequest(' + inv.id + ', this)">' + (approver ? 'Approve Refund' : 'Send for Approval') + '</button>' +
+      '</div>' +
+    '</div>';
+  document.body.appendChild(overlay);
+  rfSetMode(window._refundMode);
+}
+
+async function submitRefundRequest(invoiceId, btn) {
+  var errEl = document.getElementById('refund-modal-error');
+  var mode = window._refundMode || 'flat';
+  var reason = (document.getElementById('rfreq-reason') || {}).value;
+  var notes = ((document.getElementById('rfreq-notes') || {}).value || '').trim();
+  if (reason === 'goodwill' && !notes) {
+    errEl.innerHTML = '<div class="alert alert-error">A goodwill refund needs a note explaining it.</div>';
+    return;
+  }
+
+  var payload = {
+    invoice_id: invoiceId,
+    mode: mode,
+    method: (document.getElementById('rfreq-method') || {}).value,
+    reason_code: reason,
+    reason_notes: notes
+  };
+
+  if (mode === 'line') {
+    var picked = rfCollectLines().map(function (l) {
+      return { invoice_line_item_id: l.invoice_line_item_id, quantity: l.quantity, restock: l.restock };
+    });
+    if (!picked.length) { errEl.innerHTML = '<div class="alert alert-error">Tick at least one line to refund.</div>'; return; }
+    payload.lines = picked;
+  } else if (mode === 'category') {
+    payload.labor_refunded = refundNum((document.getElementById('rf-cat-labor-amt') || {}).value);
+    payload.parts_refunded = refundNum((document.getElementById('rf-cat-parts-amt') || {}).value);
+    payload.tip_refunded = refundNum((document.getElementById('rf-cat-tip-amt') || {}).value);
+    payload.restock_parts = !!(document.getElementById('rf-cat-restock') || {}).checked;
+    if (payload.labor_refunded + payload.parts_refunded + payload.tip_refunded <= 0) {
+      errEl.innerHTML = '<div class="alert alert-error">Enter a labor amount, a parts amount, or both.</div>';
+      return;
+    }
+  } else {
+    payload.amount = refundNum((document.getElementById('rf-flat-amount') || {}).value);
+    if (!(payload.amount > 0)) { errEl.innerHTML = '<div class="alert alert-error">Enter a refund amount greater than zero.</div>'; return; }
+    ['labor', 'parts', 'tax', 'tip'].forEach(function (k) {
+      payload[k + '_refunded'] = refundNum((document.getElementById('rf-flat-' + k) || {}).value);
+    });
+  }
+
+  var btnLabel = btn.innerHTML;
+  btn.disabled = true; btn.textContent = 'Saving…';
+  try {
+    var created = await api('POST', '/refunds', payload);
+    // An approver building a refund is really issuing one, so it is approved in
+    // the same click rather than landing in their own queue.
+    if (can('approve_refund')) {
+      try { await api('POST', '/refunds/' + created.id + '/approve', {}); }
+      catch (e) { showToast('Saved, but the auto-approval failed: ' + e.message, 'error'); }
+    }
+    var ov = document.getElementById('refund-modal-overlay');
+    if (ov) ov.remove();
+    showToast('Refund ' + created.refund_number + ' for ' + invMoney(created.amount) + ' ' +
+      (can('approve_refund') ? 'approved. Issue it in Square, then record the reference.' : 'sent for approval.'), 'success');
+    navigate('view-invoice', invoiceId);
+  } catch (err) {
+    btn.disabled = false; btn.innerHTML = btnLabel;
+    errEl.innerHTML = '<div class="alert alert-error">' + escHtml(err.message) + '</div>';
+  }
+}
+
+// What the approver sees for a line or category refund: the detail, read-only,
+// because the amount is the arithmetic of the lines. If it is wrong, reject it.
+function rfReviewDetailHtml(r) {
+  if (r.mode === 'line' && (r.lines || []).length) {
+    return '<div class="rf-sec">Lines being refunded</div>' +
+      '<div class="table-wrap" style="border:1px solid var(--border);border-radius:var(--radius);overflow:hidden;margin-bottom:14px">' +
+      '<table class="rf-table"><thead><tr><th>Type</th><th>Description</th><th style="text-align:center">Qty</th>' +
+      '<th>Unit</th><th style="text-align:right">Amount</th><th>Stock</th></tr></thead><tbody>' +
+      r.lines.map(function (l) {
+        return '<tr class="on">' +
+          '<td><span class="rf-tag ' + (l.line_type === 'labor' ? 'labor' : 'part') + '">' + (l.line_type === 'labor' ? 'Labor' : 'Part') + '</span></td>' +
+          '<td>' + escHtml(l.description || '') + (l.item_number ? '<div style="font-size:11px;color:var(--text-muted-color)">' + escHtml(l.item_number) + '</div>' : '') + '</td>' +
+          '<td style="text-align:center">' + refundNum(l.quantity) + '</td>' +
+          '<td class="rf-mono">' + invMoney(l.unit_price) + '</td>' +
+          '<td style="text-align:right" class="rf-mono">' + invMoney(l.amount) + '</td>' +
+          '<td style="font-size:11px;color:' + (l.restock ? 'var(--success)' : 'var(--text-muted-color)') + '">' + (l.line_type === 'labor' ? '—' : (l.restock ? 'restocked' : 'consumed')) + '</td>' +
+        '</tr>';
+      }).join('') + '</tbody></table></div>' +
+      '<div class="rf-sum" style="margin-bottom:14px">' +
+        '<div class="rf-sum-row"><span>Labor</span><span class="rf-mono">' + invMoney(r.labor_refunded) + '</span></div>' +
+        '<div class="rf-sum-row"><span>Parts</span><span class="rf-mono">' + invMoney(r.parts_refunded) + '</span></div>' +
+        '<div class="rf-sum-row tax"><span>Sales tax on the taxable lines</span><span class="rf-mono">' + invMoney(r.tax_refunded) + '</span></div>' +
+        '<div class="rf-sum-total"><span>Refund total</span><span>' + invMoney(r.amount) + '</span></div>' +
+      '</div>' +
+      '<div style="font-size:12px;color:var(--text-muted-color);margin-bottom:14px">This total is the arithmetic of those lines, so it is not editable. If the wrong lines were picked, reject it and ask for a new request.</div>';
+  }
+  if (r.mode === 'category') {
+    return '<div class="rf-sec">Refund by category</div>' +
+      '<div class="rf-cat" style="margin-bottom:12px">' +
+        '<div class="rf-cat-card' + (refundNum(r.labor_refunded) > 0 ? ' on' : '') + '">' +
+          '<div class="h"><span>Labor</span></div>' +
+          '<input type="number" step="0.01" min="0" id="rfrev-cat-labor" value="' + refundNum(r.labor_refunded).toFixed(2) + '" oninput="rfReviewRecalc()" /></div>' +
+        '<div class="rf-cat-card' + (refundNum(r.parts_refunded) > 0 ? ' on' : '') + '">' +
+          '<div class="h"><span>Parts</span></div>' +
+          '<input type="number" step="0.01" min="0" id="rfrev-cat-parts" value="' + refundNum(r.parts_refunded).toFixed(2) + '" oninput="rfReviewRecalc()" />' +
+          '<label class="rf-restock" style="margin-top:9px"><input type="checkbox" id="rfrev-cat-restock"' + (r.part_returned ? ' checked' : '') + ' /> parts came back to stock</label></div>' +
+      '</div>' +
+      '<div class="rf-sum" style="margin-bottom:14px">' +
+        '<div class="rf-sum-row tax"><span>Tax follows the taxable share and is recomputed on save</span><span class="rf-mono" id="rfrev-cat-tax">' + invMoney(r.tax_refunded) + '</span></div>' +
+        '<div class="rf-sum-total"><span>Refund total</span><span id="rfrev-cat-total">' + invMoney(r.amount) + '</span></div>' +
+      '</div>';
+  }
+  return '';
+}
+
+function rfReviewRecalc() {
+  var r = window._refundReview || {};
+  var labor = refundNum((document.getElementById('rfrev-cat-labor') || {}).value);
+  var parts = refundNum((document.getElementById('rfrev-cat-parts') || {}).value);
+  var share = rfTaxableShares(r.invoice_lines || []);
+  var rate = parseFloat(r.tax_rate) || 0;
+  var tax = refundNum((labor * share.labor + parts * share.parts) * (rate / 100));
+  var maxTax = r.remaining ? refundNum(r.remaining.tax) : tax;
+  if (tax > maxTax) tax = maxTax > 0 ? maxTax : 0;
+  var taxEl = document.getElementById('rfrev-cat-tax');
+  if (taxEl) taxEl.textContent = invMoney(tax);
+  var totEl = document.getElementById('rfrev-cat-total');
+  if (totEl) totEl.textContent = invMoney(labor + parts + tax);
+}
+
+async function openRefundReview(refundId) {
+  var r;
+  try { r = await api('GET', '/refunds/' + refundId); }
+  catch (err) { showToast(err.message, 'error'); return; }
+  if (r.status !== 'requested') { showToast('That refund is already ' + r.status + '.', 'error'); return; }
+  window._refundReview = r;
+  window._refundInvoice = {
+    grand_total: r.grand_total, labor_amount: r.labor_amount, parts_amount: r.parts_amount,
+    tax_amount: r.tax_amount, tip_amount: r.tip_amount, refunded_total: r.refunded_total,
+    card_last4: r.card_last4, tax_rate: r.tax_rate
+  };
+  var mode = r.mode || 'flat';
+  var amount = refundNum(r.amount);
+  var pct = refundNum(r.grand_total) > 0 ? Math.round((amount / refundNum(r.grand_total)) * 100) : 0;
+  var alloc = { labor: refundNum(r.labor_refunded), parts: refundNum(r.parts_refunded), tax: refundNum(r.tax_refunded), tip: refundNum(r.tip_refunded) };
+  var modeLabel = mode === 'line' ? 'By line item' : mode === 'category' ? 'Labor / Parts' : 'Flat amount';
+
+  var overlay = document.createElement('div');
+  overlay.className = 'modal-overlay';
+  overlay.id = 'refund-review-overlay';
+  overlay.innerHTML =
+    '<div class="modal" style="max-width:' + (mode === 'line' ? '760px' : '620px') + '">' +
+      '<div class="modal-header"><span class="modal-title">Review Refund ' + escHtml(r.refund_number) + '</span>' +
+        '<button class="btn btn-ghost btn-sm" onclick="document.getElementById(\'refund-review-overlay\').remove()">&#x2715;</button></div>' +
+      '<div class="modal-body">' +
+        '<div id="refund-review-error"></div>' +
+        (pct >= 50
+          ? '<div class="alert alert-error" style="margin-bottom:14px">This is <strong>' + pct + '%</strong> of the invoice. Your name goes on it in the audit log.</div>'
+          : '') +
+        '<div class="detail-grid" style="gap:14px;margin-bottom:14px">' +
+          '<div class="detail-field"><label>Invoice</label><p>#' + escHtml(r.invoice_number) + ' &middot; ' + invMoney(r.grand_total) + '</p></div>' +
+          '<div class="detail-field"><label>Customer</label><p>' + escHtml(r.customer_name || '—') + '</p></div>' +
+          '<div class="detail-field"><label>Requested by</label><p>' + escHtml(r.requested_by_name || '—') + ' &middot; ' + formatDateTime(r.requested_at) + '</p></div>' +
+          '<div class="detail-field"><label>Reason</label><p>' + escHtml(refundReasonLabel(r.reason_code)) + ' <span style="color:var(--text-muted-color);font-size:12px">(' + modeLabel + ')</span></p></div>' +
+        '</div>' +
+        (r.reason_notes
+          ? '<div class="form-group"><label>Note from ' + escHtml((r.requested_by_name || 'the requester').split(' ')[0]) + '</label>' +
+            '<div style="background:var(--bg-elevated);border:1px solid var(--border);border-radius:var(--radius);padding:11px 13px;font-size:14px;color:var(--text-dim)">' + escHtml(r.reason_notes) + '</div></div>'
+          : '') +
+        rfReviewDetailHtml(r) +
+        (mode === 'flat'
+          ? '<input type="hidden" id="rfrev-alloc-touched" value="" />' +
+            '<div class="form-row">' +
+              '<div class="form-group"><label>Approved Amount</label>' +
+                '<input type="number" step="0.01" min="0.01" id="rfrev-amount" value="' + amount.toFixed(2) + '" oninput="refundRecalc(\'rfrev\')" />' +
+                '<div style="font-size:12px;color:var(--text-muted-color);margin-top:5px">Requested ' + invMoney(amount) + ' &middot; you can approve less, not more</div></div>' +
+              '<div class="form-group"><label>Part returned to stock?</label>' +
+                '<select id="rfrev-part-returned"><option value="no">No &mdash; the part was consumed</option><option value="yes"' + (r.part_returned ? ' selected' : '') + '>Yes &mdash; back on the shelf</option></select>' +
+                '<div style="font-size:12px;color:var(--text-muted-color);margin-top:5px">Keeps the month-end reorder honest</div></div>' +
+            '</div>' +
+            '<div class="rf-sec">Allocation</div>' +
+            refundAllocRows('rfrev', alloc, window._refundInvoice)
+          : '') +
+        '<div class="form-group" style="margin-top:14px"><label>Note (optional)</label><input type="text" id="rfrev-note" placeholder="Anything the requester should know" /></div>' +
+      '</div>' +
+      '<div class="modal-footer">' +
+        '<button class="btn btn-secondary" onclick="openRefundReject(' + r.id + ')">Reject with reason</button>' +
+        '<button class="btn btn-success" onclick="submitRefundApproval(' + r.id + ', this)">Approve ' + invMoney(amount) + '</button>' +
+      '</div>' +
+    '</div>';
+  document.body.appendChild(overlay);
+  if (mode === 'flat') refundRecalc('rfrev', true);
+}
+
+async function submitRefundApproval(id, btn) {
+  var errEl = document.getElementById('refund-review-error');
+  var r = window._refundReview || {};
+  var mode = r.mode || 'flat';
+  var payload = { approver_note: ((document.getElementById('rfrev-note') || {}).value || '').trim() };
+
+  if (mode === 'flat') {
+    var amount = refundNum((document.getElementById('rfrev-amount') || {}).value);
+    if (!(amount > 0)) { errEl.innerHTML = '<div class="alert alert-error">Enter an approved amount greater than zero.</div>'; return; }
+    payload.amount = amount;
+    payload.part_returned = (document.getElementById('rfrev-part-returned') || {}).value === 'yes';
+    Object.assign(payload, refundCollectAlloc('rfrev'));
+  } else if (mode === 'category') {
+    payload.labor_refunded = refundNum((document.getElementById('rfrev-cat-labor') || {}).value);
+    payload.parts_refunded = refundNum((document.getElementById('rfrev-cat-parts') || {}).value);
+    payload.restock_parts = !!(document.getElementById('rfrev-cat-restock') || {}).checked;
+  }
+  // Line mode approves exactly what was requested: the server keeps the stored
+  // lines and their validated total.
+
+  btn.disabled = true; btn.textContent = 'Approving…';
+  try {
+    await api('POST', '/refunds/' + id + '/approve', payload);
+    var ov = document.getElementById('refund-review-overlay');
+    if (ov) ov.remove();
+    showToast('Approved. Issue it in Square, then record the reference here.', 'success');
+    render();
+  } catch (err) {
+    btn.disabled = false; btn.textContent = 'Approve';
+    errEl.innerHTML = '<div class="alert alert-error">' + escHtml(err.message) + '</div>';
+  }
+}
+
+// A line refund reads much better in history as what came back, not a bare figure.
+function refundLineSummary(r) {
+  if (!r || !(r.lines || []).length) {
+    if (r && r.mode === 'category') {
+      var bits = [];
+      if (refundNum(r.labor_refunded) > 0) bits.push('labor ' + invMoney(r.labor_refunded));
+      if (refundNum(r.parts_refunded) > 0) bits.push('parts ' + invMoney(r.parts_refunded));
+      return bits.length ? bits.join(' + ') : '';
+    }
+    return '';
+  }
+  return r.lines.map(function (l) {
+    return refundNum(l.quantity) + ' x ' + (l.description || '') + (l.restock ? ' (restocked)' : '');
+  }).join(', ');
 }

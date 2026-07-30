@@ -319,13 +319,21 @@ router.get('/parts-report', requireAuth, requirePermission('view_invoices'), asy
     const { rows } = await pool.query(
       "SELECT COALESCE(NULLIF(li.item_number, ''), p.item_number) AS item_number, " +
       "       li.description, p.preferred_vendor, " +
-      "       SUM(li.quantity) AS total_qty, COUNT(DISTINCT inv.id) AS invoice_count, " +
+      "       SUM(li.quantity - COALESCE(rs.restocked_qty, 0)) AS total_qty, COUNT(DISTINCT inv.id) AS invoice_count, " +
       "       AVG(li.unit_price) AS avg_price " +
       "FROM invoice_line_items li " +
       "JOIN invoices inv ON inv.id = li.invoice_id " +
       "LEFT JOIN parts p ON p.id = li.part_id " +
+      // A refunded part flagged restock went back on the shelf, so it must not
+      // drive next month's order. A part refunded on a comeback (restock false)
+      // was still consumed and stays counted.
+      "LEFT JOIN ( SELECT l.invoice_line_item_id, SUM(l.quantity) AS restocked_qty " +
+      "            FROM invoice_refund_lines l JOIN invoice_refunds r ON r.id = l.refund_id " +
+      "            WHERE l.restock = true AND r.status IN ('approved', 'processed') " +
+      "            GROUP BY l.invoice_line_item_id ) rs ON rs.invoice_line_item_id = li.id " +
       "WHERE li.line_type = 'part' AND inv.invoice_date >= $1 AND inv.invoice_date < $2 " +
       "GROUP BY COALESCE(NULLIF(li.item_number, ''), p.item_number), li.description, p.preferred_vendor " +
+      "HAVING SUM(li.quantity - COALESCE(rs.restocked_qty, 0)) > 0 " +
       "ORDER BY total_qty DESC",
       [start, end]
     );
@@ -385,7 +393,23 @@ router.get('/:id', requireAuth, requirePermission('view_invoices'), async (req, 
     if (!canSeeAll(req.user.role) && invoice.locksmith_id !== req.user.id) {
       return res.status(403).json({ error: 'Access denied' });
     }
-    const items = await pool.query('SELECT * FROM invoice_line_items WHERE invoice_id = $1 ORDER BY position, id', [req.params.id]);
+    // Each line also reports how much of it is already refunded (or waiting on
+    // approval), so the refund picker can cap what is left and nothing gets
+    // given back twice.
+    let items;
+    try {
+      items = await pool.query(
+        'SELECT li.*, COALESCE(rl.refunded_qty, 0) AS refunded_qty FROM invoice_line_items li ' +
+        'LEFT JOIN ( SELECT l.invoice_line_item_id, SUM(l.quantity) AS refunded_qty ' +
+        '            FROM invoice_refund_lines l JOIN invoice_refunds r ON r.id = l.refund_id ' +
+        "            WHERE r.status IN ('requested', 'approved', 'processed') " +
+        '            GROUP BY l.invoice_line_item_id ) rl ON rl.invoice_line_item_id = li.id ' +
+        'WHERE li.invoice_id = $1 ORDER BY li.position, li.id',
+        [req.params.id]
+      );
+    } catch (e) {
+      items = await pool.query('SELECT * FROM invoice_line_items WHERE invoice_id = $1 ORDER BY position, id', [req.params.id]);
+    }
     invoice.line_items = items.rows;
     // Attach photos with short-lived presigned view URLs (if R2 is configured).
     invoice.photos = [];
@@ -418,6 +442,18 @@ router.get('/:id', requireAuth, requirePermission('view_invoices'), async (req, 
         [req.params.id]
       );
       invoice.refunds = rf.rows;
+      if (invoice.refunds.length) {
+        const rl = await pool.query(
+          'SELECT * FROM invoice_refund_lines WHERE refund_id = ANY($1::int[]) ORDER BY id',
+          [invoice.refunds.map(function (x) { return x.id; })]
+        );
+        const byRefund = {};
+        rl.rows.forEach(function (l) {
+          if (!byRefund[l.refund_id]) byRefund[l.refund_id] = [];
+          byRefund[l.refund_id].push(l);
+        });
+        invoice.refunds.forEach(function (x) { x.lines = byRefund[x.id] || []; });
+      }
     } catch (e) { /* table may not exist yet on first deploy */ }
     invoice.refunded_total = parseFloat(invoice.refunded_total || 0) || 0;
     invoice.net_total = Math.round(((parseFloat(invoice.grand_total) || 0) - invoice.refunded_total) * 100) / 100;
@@ -501,6 +537,12 @@ router.get('/:id/dispute-packet', requireAuth, requirePermission('view_invoices'
           "WHERE r.invoice_id = $1 AND r.status IN ('approved', 'processed') ORDER BY r.id",
           [id]
         )).rows;
+        if (refundRows.length) {
+          const _rl = await pool.query('SELECT * FROM invoice_refund_lines WHERE refund_id = ANY($1::int[]) ORDER BY id', [refundRows.map(function (x) { return x.id; })]);
+          refundRows.forEach(function (x) {
+            x.lines = _rl.rows.filter(function (l) { return l.refund_id === x.id; });
+          });
+        }
       } catch (e) { refundRows = []; }
       pdfBuf = await buildDisputePdf(inv, items, { idImage: idImage, idMime: inv.id_image_mime, idUploadedAt: inv.id_image_uploaded_at, photos: photos, refunds: refundRows }, { company: company });
     } catch (e) { console.error('Dispute packet build failed:', e); return res.status(500).json({ error: 'Could not build the dispute packet.' }); }

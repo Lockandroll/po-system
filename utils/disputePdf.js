@@ -297,6 +297,13 @@ function buildDisputePdf(inv, items, evidence, opts) {
             ' — ' + (r.reason_label || String(r.reason_code || 'refund').split('_').join(' ')) +
             (r.approved_by_name ? ('; approved by ' + r.approved_by_name) : '') +
             (r.external_ref ? ('; reference ' + r.external_ref) : '; not yet issued'));
+          // A line-by-line refund names exactly what was given back, which reads
+          // far better as evidence than a bare dollar figure.
+          (r.lines || []).forEach(function (l) {
+            para('        - ' + (parseFloat(l.quantity) || 0) + ' x ' + String(l.description || '') +
+              (l.item_number ? (' (#' + l.item_number + ')') : '') +
+              '  ' + money(l.amount) + (l.restock ? '  [returned to stock]' : ''), '#666666', 8);
+          });
         });
         labelVal('Total refunded', money(refTotal));
         labelVal('Net retained', money((parseFloat(inv.grand_total) || 0) - refTotal));

@@ -193,6 +193,196 @@ function pickAllocation(body, inv, amount) {
   };
 }
 
+
+var MODES = ['line', 'category', 'flat'];
+
+// ---------------------------------------------------------------------------
+// Line-item and category refunds
+// ---------------------------------------------------------------------------
+// Three ways to build a refund, one record at the end of it:
+//   line     -> tick actual invoice lines; tax is recomputed on the TAXABLE
+//               lines only, which is the whole point (a fob is taxable, the
+//               labor to program it is not, so a proportional guess is wrong).
+//   category -> give back labor, parts, or both as buckets. Tax follows the
+//               taxable share of whatever bucket is refunded.
+//   flat     -> one figure split proportionally, for goodwill and price
+//               adjustments that do not map to any line.
+// Whichever route is used, the stored allocation (labor/parts/tax/tip) has the
+// same shape, so the ledger, the queue and the PDFs never need to care.
+
+// Invoice lines plus how much of each has already been given back on a refund
+// that is still live (requested, approved or processed).
+async function invoiceLinesWithRefunded(client, invoiceId, excludeRefundId) {
+  var sql =
+    'SELECT li.*, COALESCE(rl.refunded_qty, 0) AS refunded_qty ' +
+    'FROM invoice_line_items li ' +
+    'LEFT JOIN ( ' +
+    '  SELECT l.invoice_line_item_id, SUM(l.quantity) AS refunded_qty ' +
+    '  FROM invoice_refund_lines l ' +
+    '  JOIN invoice_refunds r ON r.id = l.refund_id ' +
+    "  WHERE r.status IN ('requested', 'approved', 'processed')" +
+    (excludeRefundId ? ' AND r.id <> $2' : '') +
+    '  GROUP BY l.invoice_line_item_id ' +
+    ') rl ON rl.invoice_line_item_id = li.id ' +
+    'WHERE li.invoice_id = $1 ORDER BY li.position, li.id';
+  var params = excludeRefundId ? [invoiceId, excludeRefundId] : [invoiceId];
+  const r = await client.query(sql, params);
+  return r.rows;
+}
+
+// What is left in each bucket after every live refund on this invoice.
+async function remainingByBucket(client, inv, excludeRefundId) {
+  var sql =
+    'SELECT COALESCE(SUM(labor_refunded), 0) AS labor, COALESCE(SUM(parts_refunded), 0) AS parts, ' +
+    'COALESCE(SUM(tax_refunded), 0) AS tax, COALESCE(SUM(tip_refunded), 0) AS tip ' +
+    "FROM invoice_refunds WHERE invoice_id = $1 AND status IN ('requested', 'approved', 'processed')";
+  var params = [inv.id];
+  if (excludeRefundId) { sql += ' AND id <> $2'; params.push(excludeRefundId); }
+  const used = (await client.query(sql, params)).rows[0];
+  return {
+    labor: money(money(inv.labor_amount) - money(used.labor)),
+    parts: money(money(inv.parts_amount) - money(used.parts)),
+    tax: money(money(inv.tax_amount) - money(used.tax)),
+    tip: money(money(inv.tip_amount) - money(used.tip))
+  };
+}
+
+// Taxable share of each category, straight off the invoice lines. Used so a
+// category refund charges tax back only on the portion that was taxed.
+function taxableShares(lines) {
+  var tot = { labor: 0, part: 0 };
+  var taxed = { labor: 0, part: 0 };
+  (lines || []).forEach(function (li) {
+    var key = li.line_type === 'labor' ? 'labor' : 'part';
+    var ext = (parseFloat(li.quantity) || 0) * (parseFloat(li.unit_price) || 0);
+    tot[key] += ext;
+    if (li.taxable) taxed[key] += ext;
+  });
+  return {
+    labor: tot.labor > 0 ? (taxed.labor / tot.labor) : 0,
+    parts: tot.part > 0 ? (taxed.part / tot.part) : 0
+  };
+}
+
+// Validate a line-by-line refund against the invoice itself. Quantities and
+// prices come from the DB, never from the client, and a line cannot be given
+// back twice.
+async function buildLineRefund(client, inv, requested, excludeRefundId) {
+  const lines = await invoiceLinesWithRefunded(client, inv.id, excludeRefundId);
+  const byId = {};
+  lines.forEach(function (li) { byId[String(li.id)] = li; });
+  var out = [];
+  var labor = 0, parts = 0, taxableBase = 0;
+
+  for (var i = 0; i < (requested || []).length; i++) {
+    var req = requested[i] || {};
+    var li = byId[String(req.invoice_line_item_id)];
+    if (!li) return { error: 'One of those lines is not on this invoice any more. Reload the invoice and try again.' };
+    var qty = money(req.quantity === undefined || req.quantity === null || req.quantity === '' ? li.quantity : req.quantity);
+    if (qty <= 0) continue;
+    var available = money(money(li.quantity) - money(li.refunded_qty));
+    if (qty > available + 0.005) {
+      return {
+        error: (li.description || 'A line') + ': only ' + available + ' of ' + money(li.quantity) +
+               ' is left to refund' + (money(li.refunded_qty) > 0 ? ' (the rest is already refunded or waiting on approval).' : '.')
+      };
+    }
+    var unit = money(li.unit_price);
+    var amount = money(qty * unit);
+    if (li.line_type === 'labor') labor += amount; else parts += amount;
+    if (li.taxable) taxableBase += amount;
+    out.push({
+      invoice_line_item_id: li.id,
+      line_type: li.line_type === 'labor' ? 'labor' : 'part',
+      item_number: li.item_number || null,
+      description: li.description,
+      quantity: qty,
+      unit_price: unit,
+      amount: amount,
+      taxable: li.taxable === true,
+      restock: (li.line_type !== 'labor') && req.restock === true
+    });
+  }
+  if (!out.length) return { error: 'Pick at least one line to refund.' };
+
+  var rate = parseFloat(inv.tax_rate) || 0;
+  var tax = inv.tax_exempt === true ? 0 : money(taxableBase * (rate / 100));
+  // Never hand back more tax than was collected and not yet returned.
+  const room = await remainingByBucket(client, inv, excludeRefundId);
+  if (tax > room.tax) tax = room.tax < 0 ? 0 : room.tax;
+
+  return {
+    lines: out,
+    alloc: { labor: money(labor), parts: money(parts), tax: tax, tip: 0 },
+    amount: money(money(labor) + money(parts) + tax)
+  };
+}
+
+// Labor / parts buckets, with tax following the taxable share of each.
+async function buildCategoryRefund(client, inv, body, excludeRefundId) {
+  const room = await remainingByBucket(client, inv, excludeRefundId);
+  var labor = money(body.labor_refunded);
+  var parts = money(body.parts_refunded);
+  var tip = money(body.tip_refunded);
+  if (labor < 0 || parts < 0 || tip < 0) return { error: 'A refund amount cannot be negative.' };
+  if (labor + parts + tip <= 0) return { error: 'Enter a labor amount, a parts amount, or both.' };
+  if (labor > room.labor + 0.005) return { error: 'Only ' + fmt(room.labor) + ' of labor is left to refund on this invoice.' };
+  if (parts > room.parts + 0.005) return { error: 'Only ' + fmt(room.parts) + ' of parts is left to refund on this invoice.' };
+  if (tip > room.tip + 0.005) return { error: 'Only ' + fmt(room.tip) + ' of the tip is left to refund.' };
+
+  const lines = await invoiceLinesWithRefunded(client, inv.id, excludeRefundId);
+  const share = taxableShares(lines);
+  var rate = parseFloat(inv.tax_rate) || 0;
+  var tax = inv.tax_exempt === true ? 0 : money((labor * share.labor + parts * share.parts) * (rate / 100));
+  if (tax > room.tax) tax = room.tax < 0 ? 0 : room.tax;
+
+  return {
+    lines: [],
+    alloc: { labor: labor, parts: parts, tax: tax, tip: tip },
+    amount: money(labor + parts + tax + tip),
+    restock_parts: body.restock_parts === true
+  };
+}
+
+// One entry point: hand it the body, get back a validated amount + allocation
+// (+ line rows) whatever mode the user picked.
+async function buildRefund(client, inv, body, excludeRefundId) {
+  var mode = MODES.indexOf(body.mode) !== -1 ? body.mode : 'flat';
+  if (mode === 'line') {
+    var built = await buildLineRefund(client, inv, body.lines, excludeRefundId);
+    if (built.error) return built;
+    built.mode = 'line';
+    return built;
+  }
+  if (mode === 'category') {
+    var cat = await buildCategoryRefund(client, inv, body, excludeRefundId);
+    if (cat.error) return cat;
+    cat.mode = 'category';
+    return cat;
+  }
+  var amount = money(body.amount);
+  if (!(amount > 0)) return { error: 'Enter a refund amount greater than zero.' };
+  return { mode: 'flat', lines: [], alloc: pickAllocation(body, inv, amount), amount: amount };
+}
+
+async function insertRefundLines(client, refundId, lines) {
+  for (var i = 0; i < (lines || []).length; i++) {
+    var l = lines[i];
+    await client.query(
+      'INSERT INTO invoice_refund_lines (refund_id, invoice_line_item_id, line_type, item_number, description, quantity, unit_price, amount, taxable, restock) ' +
+      'VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)',
+      [refundId, l.invoice_line_item_id, l.line_type, l.item_number, l.description, l.quantity, l.unit_price, l.amount, l.taxable, l.restock]
+    );
+  }
+}
+
+async function loadRefundLines(runner, refundId) {
+  try {
+    const r = await runner.query('SELECT * FROM invoice_refund_lines WHERE refund_id = $1 ORDER BY id', [refundId]);
+    return r.rows;
+  } catch (e) { return []; }
+}
+
 // Refund numbers read as "the second refund on invoice 10432" at a glance.
 async function nextRefundNumber(client, invoiceId, invoiceNumber) {
   const r = await client.query('SELECT COUNT(*)::int AS n FROM invoice_refunds WHERE invoice_id = $1', [invoiceId]);
@@ -233,9 +423,15 @@ router.get('/', requireAuth, requirePermission('view_invoices'), async (req, res
     }
     const sql = REFUND_SELECT + (where.length ? ('WHERE ' + where.join(' AND ') + ' ') : '') + 'ORDER BY r.created_at DESC';
     const { rows } = await pool.query(sql, params);
+    const counts = {};
+    try {
+      const cr = await pool.query('SELECT refund_id, COUNT(*)::int AS n FROM invoice_refund_lines GROUP BY refund_id');
+      cr.rows.forEach(function (x) { counts[String(x.refund_id)] = x.n; });
+    } catch (e) { /* table may not exist yet on first deploy */ }
     res.json(rows.map(function (r) {
       r.reason_label = reasonLabel(r.reason_code);
       r.method_label = methodLabel(r.method);
+      r.line_count = counts[String(r.id)] || 0;
       return r;
     }));
   } catch (err) {
@@ -285,6 +481,19 @@ router.get('/:id', requireAuth, requirePermission('view_invoices'), async (req, 
     }
     r.reason_label = reasonLabel(r.reason_code);
     r.method_label = methodLabel(r.method);
+    r.lines = await loadRefundLines(pool, r.id);
+    // What is still refundable per line / per bucket, so the approver's screen
+    // can show the same limits the request screen had.
+    try {
+      const client2 = await pool.connect();
+      try {
+        const inv = (await client2.query('SELECT * FROM invoices WHERE id = $1', [r.invoice_id])).rows[0];
+        if (inv) {
+          r.invoice_lines = await invoiceLinesWithRefunded(client2, r.invoice_id, r.id);
+          r.remaining = await remainingByBucket(client2, inv, r.id);
+        }
+      } finally { client2.release(); }
+    } catch (e) { /* non-fatal: the modal falls back to the stored values */ }
     res.json(r);
   } catch (err) {
     console.error(err);
@@ -300,9 +509,6 @@ router.post('/', requireAuth, requirePermission('request_refund'), async (req, r
   const b = req.body || {};
   const invoiceId = parseInt(b.invoice_id, 10);
   if (!invoiceId) return res.status(400).json({ error: 'An invoice is required.' });
-
-  const amount = money(b.amount);
-  if (!(amount > 0)) return res.status(400).json({ error: 'Enter a refund amount greater than zero.' });
 
   const reason = REASONS.indexOf(b.reason_code) !== -1 ? b.reason_code : null;
   if (!reason) return res.status(400).json({ error: 'Choose a reason for this refund.' });
@@ -328,6 +534,13 @@ router.post('/', requireAuth, requirePermission('request_refund'), async (req, r
       return res.status(400).json({ error: 'A draft invoice has not been paid, so there is nothing to refund. Delete or edit it instead.' });
     }
 
+    // By line, by category, or one flat figure — all three come back as the same
+    // validated { amount, alloc, lines } shape.
+    const built = await buildRefund(client, inv, b);
+    if (built.error) { await client.query('ROLLBACK'); return res.status(400).json({ error: built.error }); }
+    const amount = built.amount;
+    const alloc = built.alloc;
+
     const reserved = await reservedTotal(client, invoiceId);
     const room = money(money(inv.grand_total) - reserved);
     if (amount > room + 0.005) {
@@ -338,16 +551,25 @@ router.post('/', requireAuth, requirePermission('request_refund'), async (req, r
       });
     }
 
-    const alloc = pickAllocation(b, inv, amount);
+    // A category refund carries one restock answer for all the parts in it; a
+    // line refund carries the answer per line (held on the line rows).
+    const partReturned = built.mode === 'category'
+      ? built.restock_parts === true
+      : (built.mode === 'line'
+          ? built.lines.some(function (l) { return l.restock === true; })
+          : b.part_returned === true);
+
     const refundNumber = await nextRefundNumber(client, invoiceId, inv.invoice_number);
     const ins = await client.query(
       'INSERT INTO invoice_refunds (invoice_id, refund_number, amount, labor_refunded, parts_refunded, tax_refunded, tip_refunded, ' +
-      'method, reason_code, reason_notes, status, requested_by, requested_at, refund_date) ' +
-      "VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,'requested',$11,NOW(),CURRENT_DATE) RETURNING *",
-      [invoiceId, refundNumber, amount, alloc.labor, alloc.parts, alloc.tax, alloc.tip, method, reason, notes || null, req.user.id]
+      'method, reason_code, reason_notes, mode, part_returned, status, requested_by, requested_at, refund_date) ' +
+      "VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,'requested',$13,NOW(),CURRENT_DATE) RETURNING *",
+      [invoiceId, refundNumber, amount, alloc.labor, alloc.parts, alloc.tax, alloc.tip, method, reason, notes || null, built.mode, partReturned, req.user.id]
     );
+    await insertRefundLines(client, ins.rows[0].id, built.lines);
     await client.query('COMMIT');
     const refund = ins.rows[0];
+    refund.lines = built.lines;
 
     try {
       await logAudit({
@@ -419,8 +641,39 @@ router.post('/:id/approve', requireAuth, requirePermission('approve_refund'), as
     const inv = (await client.query('SELECT * FROM invoices WHERE id = $1 FOR UPDATE', [r.invoice_id])).rows[0];
     if (!inv) { await client.query('ROLLBACK'); return res.status(404).json({ error: 'Invoice not found' }); }
 
+    // The approver works in whatever mode the refund was built in. Send nothing
+    // and the request is approved exactly as submitted; send the mode's own
+    // fields (lines, or labor/parts) and it is re-validated against the invoice.
+    var mode = MODES.indexOf(r.mode) !== -1 ? r.mode : 'flat';
+    var amount, alloc, newLines = null, partReturned = r.part_returned === true;
+
+    if (mode === 'line' && Array.isArray(b.lines)) {
+      var rebuilt = await buildLineRefund(client, inv, b.lines, r.id);
+      if (rebuilt.error) { await client.query('ROLLBACK'); return res.status(400).json({ error: rebuilt.error }); }
+      amount = rebuilt.amount; alloc = rebuilt.alloc; newLines = rebuilt.lines;
+      partReturned = rebuilt.lines.some(function (l) { return l.restock === true; });
+    } else if (mode === 'category' && (b.labor_refunded !== undefined || b.parts_refunded !== undefined)) {
+      var reCat = await buildCategoryRefund(client, inv, b, r.id);
+      if (reCat.error) { await client.query('ROLLBACK'); return res.status(400).json({ error: reCat.error }); }
+      amount = reCat.amount; alloc = reCat.alloc;
+      partReturned = b.restock_parts === true;
+    } else if (mode === 'flat') {
+      amount = (b.amount === undefined || b.amount === null || b.amount === '') ? money(r.amount) : money(b.amount);
+      alloc = pickAllocation(b, inv, amount);
+      // Amount changed but the approver did not re-split it — re-derive so the
+      // buckets keep adding up to the approved figure.
+      var allocSum = money(alloc.labor + alloc.parts + alloc.tax + alloc.tip);
+      if (Math.abs(allocSum - amount) > 0.005) alloc = autoAllocate(inv, amount);
+      if (b.part_returned !== undefined) partReturned = b.part_returned === true;
+    } else {
+      // Approved exactly as requested (a line or category refund the approver
+      // did not touch). The stored allocation is already validated.
+      amount = money(r.amount);
+      alloc = { labor: money(r.labor_refunded), parts: money(r.parts_refunded), tax: money(r.tax_refunded), tip: money(r.tip_refunded) };
+      if (mode === 'category' && b.restock_parts !== undefined) partReturned = b.restock_parts === true;
+    }
+
     // A manager may approve for LESS than was asked, never for more.
-    var amount = (b.amount === undefined || b.amount === null || b.amount === '') ? money(r.amount) : money(b.amount);
     if (!(amount > 0)) { await client.query('ROLLBACK'); return res.status(400).json({ error: 'Enter an approved amount greater than zero.' }); }
     if (amount > money(r.amount) + 0.005) {
       await client.query('ROLLBACK');
@@ -433,17 +686,16 @@ router.post('/:id/approve', requireAuth, requirePermission('approve_refund'), as
       return res.status(400).json({ error: 'Only ' + fmt(room) + ' is still refundable on this invoice.' });
     }
 
-    var alloc = pickAllocation(b, inv, amount);
-    // Amount changed but the approver did not re-split it — re-derive so the
-    // buckets keep adding up to the approved figure.
-    var allocSum = money(alloc.labor + alloc.parts + alloc.tax + alloc.tip);
-    if (Math.abs(allocSum - amount) > 0.005) alloc = autoAllocate(inv, amount);
+    if (newLines) {
+      await client.query('DELETE FROM invoice_refund_lines WHERE refund_id = $1', [r.id]);
+      await insertRefundLines(client, r.id, newLines);
+    }
 
     const upd = await client.query(
       "UPDATE invoice_refunds SET status = 'approved', amount = $1, labor_refunded = $2, parts_refunded = $3, tax_refunded = $4, " +
       'tip_refunded = $5, part_returned = $6, approver_note = $7, approved_by = $8, approved_at = NOW(), updated_at = NOW() ' +
       "WHERE id = $9 AND status = 'requested' RETURNING *",
-      [amount, alloc.labor, alloc.parts, alloc.tax, alloc.tip, b.part_returned === true, (b.approver_note || '').trim() || null, req.user.id, r.id]
+      [amount, alloc.labor, alloc.parts, alloc.tax, alloc.tip, partReturned, (b.approver_note || '').trim() || null, req.user.id, r.id]
     );
     if (!upd.rowCount) {
       await client.query('ROLLBACK');

@@ -1502,6 +1502,34 @@ async function initDB() {
       'CREATE INDEX IF NOT EXISTS idx_invoice_refunds_status ON invoice_refunds(status);' +
       'CREATE INDEX IF NOT EXISTS idx_invoice_refunds_date ON invoice_refunds(refund_date);'
     );
+    // Which lines a refund gave back, when the refund was built line by line.
+    // Holds a snapshot of the line as it was refunded (description, unit price,
+    // taxable flag) so history stays readable even if the invoice line is later
+    // corrected by an admin, plus restock: TRUE means the part went back on the
+    // shelf and should drop out of the month-end reorder.
+    await client.query(
+      'CREATE TABLE IF NOT EXISTS invoice_refund_lines (' +
+      '  id SERIAL PRIMARY KEY,' +
+      '  refund_id INTEGER NOT NULL REFERENCES invoice_refunds(id) ON DELETE CASCADE,' +
+      '  invoice_line_item_id INTEGER REFERENCES invoice_line_items(id) ON DELETE SET NULL,' +
+      "  line_type VARCHAR(10) DEFAULT 'part'," +
+      '  item_number VARCHAR(100),' +
+      '  description TEXT,' +
+      '  quantity DECIMAL(10,2) DEFAULT 0,' +
+      '  unit_price DECIMAL(10,2) DEFAULT 0,' +
+      '  amount DECIMAL(10,2) DEFAULT 0,' +
+      '  taxable BOOLEAN DEFAULT false,' +
+      '  restock BOOLEAN DEFAULT false,' +
+      '  created_at TIMESTAMPTZ DEFAULT NOW()' +
+      ');' +
+      'CREATE INDEX IF NOT EXISTS idx_invoice_refund_lines_refund ON invoice_refund_lines(refund_id);' +
+      'CREATE INDEX IF NOT EXISTS idx_invoice_refund_lines_item ON invoice_refund_lines(invoice_line_item_id);'
+    );
+    // How the refund was built: 'line' (specific invoice lines), 'category'
+    // (labor and/or parts as buckets) or 'flat' (one figure split proportionally).
+    await client.query(
+      "ALTER TABLE invoice_refunds ADD COLUMN IF NOT EXISTS mode VARCHAR(12) DEFAULT 'flat';"
+    );
     // refunded_total is the running sum of approved + processed refunds; the
     // customer-facing net is grand_total - refunded_total. status_before_refund
     // remembers what the invoice was before its first refund so a void restores
