@@ -2,7 +2,7 @@
 // public/sw.js (the only thing bumped each deploy) — the badge asks the active
 // service worker for it at runtime. This value is just the fallback shown when no
 // service worker is available (e.g. very first visit before it installs).
-var APP_VERSION = 'v92';
+var APP_VERSION = 'v91';
 var _resolvedAppVersion = null;
 
 // Ask the active service worker for its CACHE_VERSION (without the 'nova-' prefix).
@@ -10666,36 +10666,6 @@ var _invoicePayTypes = INV_PAY_TYPES.slice();
 var _invoicePulsarPayMap = {};
 var _invSetupPayTypes = [];
 var _invSetupPulsarMap = {};
-// Close-out policy, set under Invoice Setup and read-only everywhere else. The
-// tech does not get a checkbox for either of these: the job that most needs a
-// signature and a plate photo is exactly the job where a checkbox gets cleared.
-var INV_DEFAULT_PHOTO_REQS = [
-  { key: 'dl', label: "Driver's License", required: true },
-  { key: 'entitlement', label: 'Entitlement (Insurance / Registration / Rental Agreement)', required: true },
-  { key: 'plate', label: 'License Plate', required: true },
-  { key: 'after_service', label: 'After Service', required: true }
-];
-var _invoicePhotoCatalog = INV_DEFAULT_PHOTO_REQS.slice();
-var _invoiceSigRequiredDefault = true;
-var _invSetupPhotoReqs = [];
-var _invSetupSigDefault = true;
-
-// The slots THIS invoice must fill: the global required list, unless the chosen
-// account overrides it. An account override of [] is a real answer (requires
-// none) and must not be confused with "no override".
-function invRequiredPhotoKeys(accountId) {
-  var acct = accountId ? _invoiceAccounts.filter(function(a){ return a.id === accountId; })[0] : null;
-  if (acct && Array.isArray(acct.required_photos)) {
-    var valid = {};
-    _invoicePhotoCatalog.forEach(function(r){ valid[r.key] = true; });
-    return acct.required_photos.filter(function(k){ return valid[k]; });
-  }
-  return _invoicePhotoCatalog.filter(function(r){ return r.required; }).map(function(r){ return r.key; });
-}
-function invPhotoLabel(key) {
-  var hit = _invoicePhotoCatalog.filter(function(r){ return r.key === key; })[0];
-  return hit ? hit.label : key;
-}
 var INV_STATUSES = ['draft','completed','paid'];
 
 function invExt(it){ return (parseFloat(it.quantity)||0) * (parseFloat(it.unit_price)||0); }
@@ -10779,8 +10749,6 @@ async function renderEditInvoice(el, id) {
     _invoicePayTypes = (cfg && Array.isArray(cfg.pay_types) && cfg.pay_types.length) ? cfg.pay_types : INV_PAY_TYPES;
     _invoicePulsarPayMap = (cfg && cfg.pulsar_pay_map) || {};
     invHomeCity = (cfg && cfg.home_city) || '';
-    _invoicePhotoCatalog = (cfg && Array.isArray(cfg.photo_requirements)) ? cfg.photo_requirements : INV_DEFAULT_PHOTO_REQS.slice();
-    _invoiceSigRequiredDefault = (cfg && cfg.signature_required_default) !== false;
     _invoiceAccounts = await api('GET', '/invoices/accounts').catch(function(){ return []; });
     invCities = await api('GET', '/cities').catch(function(){ return []; });
   } catch(e) { _invoiceAccounts = []; }
@@ -10801,11 +10769,6 @@ async function renderEditInvoice(el, id) {
   }
   _currentInvoice = invoice;
   _invPendingIdImage = null; // start each form with no pending scan
-  // Clear the photo cache before anything renders the required-photo slots, or
-  // the previous invoice's photos briefly read as this one's.
-  _invoicePhotos = [];
-  _invoicePhotoInvId = id || null;
-  _invPendingPhotoType = '';
   var v = invoice || {};
   var today = new Date().toISOString().split('T')[0];
   var dateVal = v.invoice_date ? String(v.invoice_date).split('T')[0] : today;
@@ -10926,29 +10889,21 @@ async function renderEditInvoice(el, id) {
 
     '<div class="card mb-4"><div class="card-header"><span class="card-title">Authorization &amp; Signature</span></div><div class="card-body">' +
       '<div class="form-group"><label>Agreement Text (printed above the signature; {customer} is replaced with the customer name)</label><textarea id="inv-agreement" style="min-height:140px">' + escHtml(agreementVal) + '</textarea></div>' +
-      (_invoiceSigRequiredDefault
-        ? '<div style="display:flex;align-items:center;gap:8px;margin:0 0 12px;font-size:13px;font-weight:600;color:#b45309">' +
-            '<svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" style="flex-shrink:0"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>' +
-            'Signature required' +
-            '<span style="font-weight:400;font-size:11px;color:var(--text-muted-color)">&mdash; company policy, set under Invoice Setup. This invoice cannot be marked Completed or Paid unsigned.</span>' +
-          '</div>'
-        : '<div style="margin:0 0 12px;font-size:12px;color:var(--text-muted-color)">Signature is not required by company policy right now. Capture one anyway if the customer is in front of you.</div>') +
+      '<label style="display:flex;align-items:center;gap:8px;margin:0 0 12px;cursor:pointer"><input type="checkbox" id="inv-sig-required" style="width:auto"' + (v.signature_required ? ' checked' : '') + ' /> Signature required <span style="font-size:11px;color:var(--text-muted-color)">(must be signed before this invoice can be marked Completed or Paid)</span></label>' +
       '<label style="display:block;margin-bottom:4px">Signature</label>' +
       (_invoiceExistingSig ? '<div id="inv-existing-sig" style="margin-bottom:8px;background:#fff;border:1px solid var(--border);border-radius:8px;padding:8px;display:inline-block"><img src="' + _invoiceExistingSig + '" style="max-width:320px;max-height:120px;display:block" /><div style="font-size:11px;color:#666;margin-top:4px">Current signature — draw below to replace</div></div>' : '') +
       '<div style="background:#fff;border:1px solid var(--border);border-radius:8px;display:inline-block"><canvas id="inv-sigpad" width="600" height="180" style="touch-action:none;width:100%;max-width:600px;display:block"></canvas></div>' +
       '<div style="margin-top:6px;display:flex;gap:8px;flex-wrap:wrap"><button class="btn btn-secondary btn-sm" onclick="openInvoiceSignatureFullscreen()">' + (icons.edit || '') + ' Tap to sign full screen</button><button class="btn btn-ghost btn-sm" onclick="clearInvoiceSignature()">Clear signature</button></div>' +
     '</div></div>' +
 
-    '<div class="card mb-4"><div class="card-header"><span class="card-title">Photos</span><span id="inv-photo-req-badge"></span></div><div class="card-body">' +
+    '<div class="card mb-4"><div class="card-header"><span class="card-title">Photos</span></div><div class="card-body">' +
       (id
         ? '<p style="font-size:12px;color:var(--text-muted-color);margin:0 0 10px">Attach job photos. Uncheck &quot;Show on printout&quot; to keep a photo out of the printed and emailed PDF.</p>' +
-          '<div id="inv-photo-req-slots" style="margin-bottom:14px"></div>' +
           '<input type="file" id="inv-photo-file" accept="image/*" multiple style="display:none" onchange="invUploadPhotos(this)" />' +
-          '<button type="button" class="btn btn-secondary btn-sm" onclick="invPickPhotos(\'\')">' + (icons.plus || '') + ' Add other photos</button>' +
+          '<button type="button" class="btn btn-secondary btn-sm" onclick="document.getElementById(\'inv-photo-file\').click()">' + (icons.plus || '') + ' Add photos</button>' +
           '<span id="inv-photo-status" style="font-size:12px;color:var(--text-muted-color);margin-left:10px"></span>' +
           '<div id="inv-photo-list" style="display:flex;flex-wrap:wrap;gap:12px;margin-top:12px"></div>'
-        : '<p style="font-size:13px;color:var(--text-muted-color);margin:0">Save the invoice as a draft first, then reopen it to attach photos.' +
-          (invRequiredPhotoKeys(v.account_id || null).length ? ' Required photos have to be on the invoice before it can be marked Completed or Paid.' : '') + '</p>') +
+        : '<p style="font-size:13px;color:var(--text-muted-color);margin:0">Save the invoice first, then reopen it to attach photos.</p>') +
     '</div></div>' +
 
     '<div class="flex-gap" style="margin-bottom:40px">' +
@@ -10973,8 +10928,6 @@ function invAccountChange(skipAutoItems) {
     if (acct && acct.invoice_notes) { notesBox.style.display = 'block'; notesBox.textContent = acct.invoice_notes; }
     else { notesBox.style.display = 'none'; notesBox.textContent = ''; }
   }
-  // An account can require a different set of photos, so the slots follow it.
-  invRenderPhotoSlots();
   if (!skipAutoItems && acct && acct.agreement_text) {
     var agr = document.getElementById('inv-agreement');
     if (agr) agr.value = acct.agreement_text;
@@ -11450,29 +11403,12 @@ async function saveInvoice(id) {
   var accountName = accountSel && accountSel.options[accountSel.selectedIndex] && accountId ? accountSel.options[accountSel.selectedIndex].text : null;
   var signature = _invoiceExistingSig || null;
   if (_invoiceSigPad && _invoiceSigPad.hasInk()) signature = _invoiceSigPad.canvas.toDataURL('image/png');
-  // Company policy, not a per-invoice choice. The server resolves it the same way
-  // and ignores anything the client sends, so this is only here to give the tech
-  // the message before the round trip.
-  var sigRequired = _invoiceSigRequiredDefault;
+  var sigRequired = chk('inv-sig-required');
   var invStatus = val('inv-status') || 'draft';
   if (sigRequired && invStatus !== 'draft' && !signature) {
     if (errEl) errEl.innerHTML = '<div class="alert alert-error">A signature is required before this invoice can be marked ' + escHtml(invStatus) + '. Save it as a draft, or capture a signature first.</div>';
     window.scrollTo(0,0);
     return;
-  }
-  // Required photos, same gate. A brand new invoice has nowhere to put photos yet
-  // (they upload against a saved id), so it has to land as a draft first.
-  var _reqKeys = invRequiredPhotoKeys(accountId);
-  if (invStatus !== 'draft' && _reqKeys.length) {
-    var _photoMiss = id
-      ? _reqKeys.filter(function(k){ return !invHasPhotoOfType(k); })
-      : _reqKeys;
-    if (_photoMiss.length) {
-      if (errEl) errEl.innerHTML = '<div class="alert alert-error">Missing required photo' + (_photoMiss.length === 1 ? '' : 's') + ': ' +
-        escHtml(_photoMiss.map(invPhotoLabel).join(', ')) + '.<br />Save this as a draft, attach the photos in the Photos card' + (id ? '' : ' after it saves') + ', then set it to ' + escHtml(invStatusLabel(invStatus)) + '.</div>';
-      window.scrollTo(0,0);
-      return;
-    }
   }
   // Close-out gate, client side. The server enforces the same rule, but catching
   // it here means the tech gets the fix-it modal instantly instead of a round trip.
@@ -11489,6 +11425,7 @@ async function saveInvoice(id) {
   var payload = {
     invoice_date: val('inv-date'),
     status: invStatus,
+    signature_required: sigRequired,
     account_id: accountId,
     account_name: accountName,
     city_code: val('inv-city-code') || null,
@@ -11537,16 +11474,7 @@ async function saveInvoice(id) {
       var created = await api('POST', '/invoices', payload);
       _invPendingIdImage = null;
       if (payload.id_image && created && created.id_image_saved === false) showToast('Invoice saved, but the ID photo could not be stored.', 'error');
-      // A new invoice has nowhere to put photos until it exists, so a tech who
-      // needs them would otherwise land on the view screen and have to find their
-      // way back into the editor. Drop them straight back in with the required
-      // slots on screen instead.
-      if (_reqKeys.length && invStatus === 'draft') {
-        showToast('Saved as a draft. Add the required photos, then set it to Completed or Paid.', 'success');
-        navigate('edit-invoice', created.id);
-      } else {
-        navigate('view-invoice', created.id);
-      }
+      navigate('view-invoice', created.id);
     }
   } catch(err) {
     if (btn) btn.disabled = false;
@@ -12004,11 +11932,9 @@ async function renderViewInvoice(el, id) {
       '<div class="card mb-4"><div class="card-header"><span class="card-title">Photos</span>' +
         (canEdit ? '<button class="btn btn-secondary btn-sm" onclick="navigate(\'edit-invoice\',' + inv.id + ')">' + (icons.edit || '') + ' Add / manage</button>' : '') +
       '</div><div class="card-body">' +
-        invMissingPhotoBanner(inv) +
         ((inv.photos && inv.photos.length)
           ? '<div style="display:flex;flex-wrap:wrap;gap:12px">' + inv.photos.map(function(p){
               return '<div style="width:170px"><a href="' + escHtml(p.url || '#') + '" target="_blank" rel="noopener"><img src="' + escHtml(p.url || '') + '" style="width:170px;height:130px;object-fit:cover;border:1px solid var(--border);border-radius:8px;display:block" /></a>' +
-                (p.photo_type ? '<div style="font-size:11px;font-weight:600;margin-top:4px">' + escHtml(invViewPhotoLabel(inv, p.photo_type)) + '</div>' : '') +
                 '<div style="font-size:11px;color:var(--text-muted-color);margin-top:4px">' + escHtml(p.caption || '') + (p.show_in_print ? '' : ' <span style="color:#f97316">(hidden from print)</span>') + '</div></div>';
             }).join('') + '</div>'
           : '<div style="font-size:13px;color:var(--text-muted-color)">No photos attached.</div>') +
@@ -12122,6 +12048,15 @@ function invSquareCardHtml(inv, canCollect, seeAll) {
   if (st === 'failed') {
     return head('Payment did not go through') +
       '<div class="alert alert-error" style="margin:0">' + escHtml(sp.error_description || 'Square could not complete the payment.') + '</div>' +
+      // A tech gets the plain-English sentence. A manager also gets the raw Square
+      // code and whatever Square itself said, so a message that turns out not to
+      // fit the real cause is never a dead end.
+      (seeAll && (sp.error_code || sp.last_error)
+        ? '<div style="margin-top:10px;font-size:11.5px;color:var(--text-muted-color);line-height:1.5">' +
+            (sp.error_code ? 'Square code: <span class="mono">' + escHtml(sp.error_code) + '</span>' : '') +
+            (sp.last_error ? '<br/>' + escHtml(sp.last_error) : '') +
+          '</div>'
+        : '') +
       (canCollect ? '<button class="btn btn-primary" style="margin-top:12px" onclick="invCollectPayment(' + inv.id + ')">Try again</button>' : '') +
       foot;
   }
@@ -12241,25 +12176,6 @@ async function deleteInvoice(id) {
   catch(err) { var e = document.getElementById('view-invoice-error'); if (e) e.innerHTML = '<div class="alert alert-error">' + escHtml(err.message) + '</div>'; else novaAlert(err.message); }
 }
 
-// The rules an invoice was actually judged against ride along on GET /invoices/:id
-// (close_out_rules), so the view screen does not have to re-derive them and cannot
-// disagree with the server about what is missing.
-function invViewPhotoLabel(inv, key) {
-  var cat = (inv && inv.close_out_rules && inv.close_out_rules.photo_requirements) || _invoicePhotoCatalog;
-  var hit = cat.filter(function(r){ return r.key === key; })[0];
-  return hit ? hit.label : key;
-}
-function invMissingPhotoBanner(inv) {
-  var rules = inv && inv.close_out_rules;
-  if (!rules || !Array.isArray(rules.required_photo_keys) || !rules.required_photo_keys.length) return '';
-  var have = {};
-  (inv.photos || []).forEach(function(p){ if (p.photo_type) have[p.photo_type] = true; });
-  var miss = rules.required_photo_keys.filter(function(k){ return !have[k]; });
-  if (!miss.length) return '<div class="alert alert-success" style="margin-bottom:12px">All required photos are attached.</div>';
-  return '<div class="alert alert-warn" style="margin-bottom:12px">Missing required photo' + (miss.length === 1 ? '' : 's') + ': ' +
-    escHtml(miss.map(function(k){ return invViewPhotoLabel(inv, k); }).join(', ')) + '.</div>';
-}
-
 // ---------- Photos ----------
 var _invoicePhotos = [];
 var _invoicePhotoInvId = null;
@@ -12271,55 +12187,13 @@ async function invLoadPhotos(id) {
   invRenderPhotoList();
 }
 
-// The required slots, each showing whether it is filled and offering its own
-// camera button. Tagging happens at upload time so the tech never has to come
-// back and classify a pile of photos afterwards.
-function invRenderPhotoSlots() {
-  var box = document.getElementById('inv-photo-req-slots');
-  var badge = document.getElementById('inv-photo-req-badge');
-  var acctSel = document.getElementById('inv-account');
-  var acctId = acctSel && acctSel.value ? parseInt(acctSel.value, 10) : null;
-  var keys = invRequiredPhotoKeys(acctId);
-  if (badge) {
-    var nMissing = keys.filter(function(k){ return !invHasPhotoOfType(k); }).length;
-    badge.innerHTML = !keys.length ? ''
-      : (nMissing
-        ? '<span class="badge badge-declined">' + nMissing + ' required photo' + (nMissing === 1 ? '' : 's') + ' missing</span>'
-        : '<span class="badge badge-approved">All required photos attached</span>');
-  }
-  if (!box) return;
-  if (!keys.length) { box.innerHTML = ''; return; }
-  box.innerHTML =
-    '<div style="font-size:12px;font-weight:600;margin-bottom:6px">Required photos</div>' +
-    '<div style="display:flex;flex-wrap:wrap;gap:8px">' +
-    keys.map(function(k){
-      var got = invHasPhotoOfType(k);
-      return '<button type="button" class="btn btn-sm ' + (got ? 'btn-secondary' : 'btn-primary') + '" style="white-space:normal;text-align:left" onclick="invPickPhotos(' + JSON.stringify(k).split('"').join('&quot;') + ')">' +
-        (got ? '&#10003; ' : '+ ') + escHtml(invPhotoLabel(k)) + '</button>';
-    }).join('') +
-    '</div>' +
-    '<div style="font-size:11px;color:var(--text-muted-color);margin-top:6px">Entitlement is one photo &mdash; insurance, registration or the rental agreement, whichever the customer has.</div>';
-}
-
-function invHasPhotoOfType(key) {
-  for (var i = 0; i < _invoicePhotos.length; i++) { if (_invoicePhotos[i].photo_type === key) return true; }
-  return false;
-}
-
 function invRenderPhotoList() {
-  invRenderPhotoSlots();
   var box = document.getElementById('inv-photo-list');
   if (!box) return;
   if (!_invoicePhotos.length) { box.innerHTML = '<div style="font-size:13px;color:var(--text-muted-color)">No photos yet.</div>'; return; }
-  var typeOpts = function(cur) {
-    return '<option value="">Other / not required</option>' + _invoicePhotoCatalog.map(function(r){
-      return '<option value="' + escHtml(r.key) + '"' + (cur === r.key ? ' selected' : '') + '>' + escHtml(r.label) + '</option>';
-    }).join('');
-  };
   box.innerHTML = _invoicePhotos.map(function(p){
     return '<div style="width:180px;border:1px solid var(--border);border-radius:8px;padding:8px">' +
       '<img src="' + escHtml(p.url || '') + '" style="width:100%;height:120px;object-fit:cover;border-radius:6px;display:block" />' +
-      '<select onchange="invSetPhotoType(' + p.id + ',this.value)" style="width:100%;margin-top:6px;font-size:12px">' + typeOpts(p.photo_type || '') + '</select>' +
       '<input type="text" value="' + escHtml(p.caption || '') + '" placeholder="Caption" onchange="invSetCaption(' + p.id + ',this.value)" style="width:100%;margin-top:6px;font-size:12px" />' +
       '<label style="display:flex;align-items:center;gap:6px;margin:6px 0 0;font-size:12px;cursor:pointer"><input type="checkbox"' + (p.show_in_print ? ' checked' : '') + ' onchange="invTogglePrint(' + p.id + ',this.checked)" style="width:auto" /> Show on printout</label>' +
       '<button type="button" class="btn btn-ghost btn-sm" style="margin-top:6px" onclick="invRemovePhoto(' + p.id + ')">Remove</button>' +
@@ -12344,27 +12218,10 @@ function invCompressToBlob(file, maxDim, quality) {
   });
 }
 
-// Which requirement slot the next upload fills. Set by the slot button, cleared
-// after the picker returns so a later "Add other photos" is not still tagged.
-var _invPendingPhotoType = '';
-function invPickPhotos(type) {
-  _invPendingPhotoType = type || '';
-  var f = document.getElementById('inv-photo-file');
-  if (!f) return;
-  // A required slot holds exactly one photo, so the picker is single-select for
-  // those; "other photos" stays multi-select.
-  if (_invPendingPhotoType) f.setAttribute('capture', 'environment'); else f.removeAttribute('capture');
-  f.multiple = !_invPendingPhotoType;
-  f.click();
-}
-
 async function invUploadPhotos(input) {
   var files = input.files ? Array.prototype.slice.call(input.files) : [];
   input.value = '';
-  var ptype = _invPendingPhotoType;
-  _invPendingPhotoType = '';
   if (!files.length || !_invoicePhotoInvId) return;
-  if (ptype) files = files.slice(0, 1);
   var status = document.getElementById('inv-photo-status');
   var done = 0;
   for (var i = 0; i < files.length; i++) {
@@ -12373,7 +12230,7 @@ async function invUploadPhotos(input) {
     try {
       var blob = await invCompressToBlob(files[i], 1600, 0.82);
       var nm = (files[i].name || 'photo').replace(/\.[^.]+$/, '') + '.jpg';
-      var pre = await api('POST', '/invoices/' + _invoicePhotoInvId + '/photos/upload-url', { name: nm, mime_type: 'image/jpeg', photo_type: ptype || null });
+      var pre = await api('POST', '/invoices/' + _invoicePhotoInvId + '/photos/upload-url', { name: nm, mime_type: 'image/jpeg' });
       var put = await fetch(pre.uploadUrl, { method: 'PUT', body: blob, headers: { 'Content-Type': 'image/jpeg' } });
       if (!put.ok) throw new Error('Upload failed (' + put.status + ')');
       await api('POST', '/invoices/' + _invoicePhotoInvId + '/photos/' + pre.id + '/confirm', { size_bytes: blob.size, caption: '' });
@@ -12387,14 +12244,6 @@ async function invUploadPhotos(input) {
 async function invSetCaption(photoId, val) {
   try { await api('PATCH', '/invoices/' + _invoicePhotoInvId + '/photos/' + photoId, { caption: val }); }
   catch (e) { novaAlert(e.message); }
-}
-// Re-file a photo into (or out of) a requirement slot without re-uploading it.
-async function invSetPhotoType(photoId, val) {
-  try {
-    await api('PATCH', '/invoices/' + _invoicePhotoInvId + '/photos/' + photoId, { photo_type: val || null });
-    for (var i = 0; i < _invoicePhotos.length; i++) { if (_invoicePhotos[i].id === photoId) _invoicePhotos[i].photo_type = val || null; }
-    invRenderPhotoSlots();
-  } catch (e) { novaAlert(e.message); }
 }
 async function invTogglePrint(photoId, checked) {
   try { await api('PATCH', '/invoices/' + _invoicePhotoInvId + '/photos/' + photoId, { show_in_print: checked }); }
@@ -12504,12 +12353,7 @@ async function printInvoice(id) {
     var _printPhotos = (inv.photos || []).filter(function(p){ return p.show_in_print && p.url; });
     var photosHtml = _printPhotos.length
       ? '<div class="avoid-break" style="margin-top:18px"><div style="font-size:10px;color:#888;text-transform:uppercase;margin-bottom:8px">Photos</div><div style="display:flex;flex-wrap:wrap;gap:12px">' +
-        _printPhotos.map(function(p){
-          var _lbl = p.photo_type ? invViewPhotoLabel(inv, p.photo_type) : '';
-          return '<div style="width:240px"><img src="' + p.url + '" style="width:240px;max-height:210px;object-fit:contain;border:1px solid #ddd" />' +
-            (_lbl ? '<div style="font-size:10px;font-weight:700;color:#333;margin-top:2px">' + esc(_lbl) + '</div>' : '') +
-            '<div style="font-size:10px;color:#555;margin-top:2px">' + esc(p.caption || '') + '</div></div>';
-        }).join('') +
+        _printPhotos.map(function(p){ return '<div style="width:240px"><img src="' + p.url + '" style="width:240px;max-height:210px;object-fit:contain;border:1px solid #ddd" /><div style="font-size:10px;color:#555;margin-top:2px">' + esc(p.caption || '') + '</div></div>'; }).join('') +
         '</div></div>'
       : '';
     var _vehInner = _vehCells.map(function(c){ return cell(c[0], c[1]); }).join('') + cell('Status', invStatusLabel(inv.status));
@@ -12659,11 +12503,6 @@ async function renderInvoiceSetup(el) {
   var defAgr = (cfg && cfg.default_agreement) || '';
   _invSetupPayTypes = (cfg && Array.isArray(cfg.pay_types)) ? cfg.pay_types.slice() : [];
   _invSetupPulsarMap = (cfg && cfg.pulsar_pay_map) || {};
-  _invSetupPhotoReqs = (cfg && Array.isArray(cfg.photo_requirements) && cfg.photo_requirements.length)
-    ? cfg.photo_requirements.map(function(r){ return { key: r.key, label: r.label, required: r.required !== false }; })
-    : INV_DEFAULT_PHOTO_REQS.map(function(r){ return { key: r.key, label: r.label, required: r.required }; });
-  _invSetupSigDefault = (cfg && cfg.signature_required_default) !== false;
-  _invoicePhotoCatalog = _invSetupPhotoReqs.slice();
   el.innerHTML =
     '<div class="page-header"><div><div class="page-title">Invoice Setup</div><div class="page-subtitle">Choose which accounts appear on invoices, set their notes, auto line items, and agreement text</div></div></div>' +
     '<div id="inv-setup-msg"></div>' +
@@ -12673,15 +12512,6 @@ async function renderInvoiceSetup(el) {
         '<textarea id="inv-def-agreement" style="min-height:170px">' + escHtml(defAgr) + '</textarea>' +
         '<div style="margin-top:10px"><button class="btn btn-primary" onclick="saveInvoiceDefaultAgreement()">Save Default Agreement</button></div>' +
       '</div></div>' : '') +
-    '<div class="card mb-4"><div class="card-header"><span class="card-title">Close-Out Requirements</span></div><div class="card-body">' +
-      '<p class="text-muted" style="font-size:13px;margin-bottom:10px">What every invoice has to carry before it can leave Draft. These are set here and here only &mdash; there is no checkbox on the invoice, because the job that most needs a signature and a plate photo is the job where a checkbox gets cleared.</p>' +
-      '<label style="display:flex;align-items:center;gap:8px;margin:0 0 16px;cursor:pointer;font-weight:600"><input type="checkbox" id="inv-sig-default" style="width:auto"' + (_invSetupSigDefault ? ' checked' : '') + ' /> Signature required on every invoice</label>' +
-      '<div style="font-size:13px;font-weight:600;margin-bottom:6px">Required photos</div>' +
-      '<div id="inv-photoreq-list"></div>' +
-      '<button class="btn btn-secondary btn-sm" style="margin-top:6px;white-space:nowrap" onclick="invSetupAddPhotoReq()">' + '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" style="vertical-align:-2px;flex-shrink:0"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>' + ' Add photo type</button>' +
-      '<p class="text-muted" style="font-size:12px;margin:10px 0 0">Untick <em>Required</em> to keep a type on the list as an option without gating on it. Removing a type does not delete photos already filed under it.</p>' +
-      '<div style="margin-top:10px"><button class="btn btn-primary" onclick="invSetupSavePhotoReqs()">Save Close-Out Requirements</button></div>' +
-    '</div></div>' +
     '<div class="card mb-4"><div class="card-header"><span class="card-title">Pay Types</span></div><div class="card-body">' +
       '<p class="text-muted" style="font-size:13px;margin-bottom:10px">These appear in the Pay Type dropdown on invoices.</p>' +
       '<div id="inv-paytypes-list"></div>' +
@@ -12694,114 +12524,11 @@ async function renderInvoiceSetup(el) {
       '<div style="margin-top:10px"><button class="btn btn-primary" onclick="invSetupSavePulsarMap()">Save Pulsar Labels</button></div>' +
     '</div></div>' +
     '<div class="card mb-4"><div class="card-header"><span class="card-title">Square Payments</span></div><div class="card-body" id="inv-square-box"></div></div>' +
-    '<div class="card"><div class="card-header"><span class="card-title">Accounts</span>' +
-      (can('manage_vendors') ? '<button class="btn btn-primary btn-sm" style="white-space:nowrap" onclick="invSetupAddAccount()">' + '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" style="vertical-align:-2px;flex-shrink:0"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>' + ' Add Account</button>' : '') +
-    '</div><div class="card-body" id="inv-setup-accounts"></div></div>';
+    '<div class="card"><div class="card-header"><span class="card-title">Accounts</span></div><div class="card-body" id="inv-setup-accounts"></div></div>';
   renderInvSetupAccounts();
   renderInvSetupPayTypes();
   renderInvSetupPulsarMap();
-  renderInvSetupPhotoReqs();
   renderSquareSetup();
-}
-
-// ---- Close-out requirements (Invoice Setup) --------------------------------
-// Local field readers. The invoice form has its own val()/chk() scoped inside
-// saveInvoice, so these cannot lean on those.
-function _isVal(elId) { var e = document.getElementById(elId); return e ? e.value : ''; }
-function _isChk(elId) { var e = document.getElementById(elId); return !!(e && e.checked); }
-
-function renderInvSetupPhotoReqs() {
-  var box = document.getElementById('inv-photoreq-list');
-  if (!box) return;
-  if (!_invSetupPhotoReqs.length) { box.innerHTML = '<div style="font-size:12px;color:var(--text-muted-color);margin-bottom:6px">No photo types yet. Nothing will be required.</div>'; return; }
-  box.innerHTML = _invSetupPhotoReqs.map(function(r, i){
-    return '<div style="display:flex;gap:8px;align-items:center;margin-bottom:6px;flex-wrap:wrap">' +
-      '<input type="text" value="' + escHtml(r.label || '') + '" placeholder="Photo name" onchange="invSetupPhotoReqEdit(' + i + ',this)" data-field="label" style="max-width:360px;flex:1;min-width:200px" />' +
-      '<label style="display:flex;align-items:center;gap:6px;margin:0;font-size:12px;white-space:nowrap;cursor:pointer"><input type="checkbox"' + (r.required ? ' checked' : '') + ' onchange="invSetupPhotoReqEdit(' + i + ',this)" data-field="required" style="width:auto" /> Required</label>' +
-      '<button class="btn btn-ghost btn-sm" onclick="invSetupRemovePhotoReq(' + i + ')">' + icons.trash + '</button>' +
-    '</div>';
-  }).join('');
-}
-function invSetupAddPhotoReq() { _invSetupPhotoReqs.push({ key: '', label: '', required: true }); renderInvSetupPhotoReqs(); }
-function invSetupPhotoReqEdit(i, input) {
-  if (!_invSetupPhotoReqs[i]) return;
-  var f = input.dataset.field;
-  _invSetupPhotoReqs[i][f] = input.type === 'checkbox' ? input.checked : input.value;
-}
-function invSetupRemovePhotoReq(i) { _invSetupPhotoReqs.splice(i, 1); renderInvSetupPhotoReqs(); }
-async function invSetupSavePhotoReqs() {
-  var msg = document.getElementById('inv-setup-msg');
-  var clean = _invSetupPhotoReqs.filter(function(r){ return (r.label || '').trim(); });
-  var sigOn = _isChk('inv-sig-default');
-  if (!sigOn && !await novaConfirm('Turn OFF the signature requirement for every invoice? Nothing will stop a tech closing out an unsigned job, and an unsigned invoice is very hard to defend in a chargeback.')) return;
-  try {
-    var r = await api('POST', '/invoices/photo-requirements', { requirements: clean, signature_required_default: sigOn });
-    _invSetupPhotoReqs = (r.photo_requirements || clean).map(function(x){ return { key: x.key, label: x.label, required: x.required !== false }; });
-    _invoicePhotoCatalog = _invSetupPhotoReqs.slice();
-    _invSetupSigDefault = r.signature_required_default !== false;
-    _invoiceSigRequiredDefault = _invSetupSigDefault;
-    apiBustCache('/invoices/config');
-    renderInvSetupPhotoReqs();
-    renderInvSetupAccounts();
-    if (msg) { msg.innerHTML = '<div class="alert alert-success">Close-out requirements saved.</div>'; setTimeout(function(){ if (msg) msg.innerHTML=''; }, 2500); }
-  } catch(err) { if (msg) msg.innerHTML = '<div class="alert alert-error">' + escHtml(err.message) + '</div>'; }
-}
-
-// ---- Add an account without leaving Invoice Setup ---------------------------
-// Same vendors table the Accounts page writes to, so the new account shows up in
-// both places at once. show_in_invoice defaults ON, since adding it from here
-// means the point was to put it on invoices.
-function invSetupAddAccount() {
-  var ov = document.createElement('div');
-  ov.className = 'modal-overlay';
-  ov.id = 'inv-addacct-modal';
-  ov.innerHTML =
-    '<div class="modal">' +
-      '<div class="modal-header"><span class="modal-title">Add Account</span>' +
-        '<button class="btn btn-ghost btn-sm" onclick="invSetupCloseAddAccount()">&#x2715;</button></div>' +
-      '<div class="modal-body">' +
-        '<div id="inv-addacct-err"></div>' +
-        '<p style="font-size:13px;color:var(--text-muted-color);margin:0 0 14px">This adds the account to the Accounts page too &mdash; you do not have to add it in both places.</p>' +
-        '<div class="form-group"><label>Account name *</label><input type="text" id="inv-addacct-name" placeholder="e.g. Allstate Motor Club" /></div>' +
-        '<div class="form-group"><label>Account number</label><input type="text" id="inv-addacct-num" /></div>' +
-        '<div class="form-group"><label>City code</label><input type="text" id="inv-addacct-city" maxlength="3" style="max-width:120px;text-transform:uppercase" /></div>' +
-        '<label style="display:flex;align-items:center;gap:8px;margin:0"><input type="checkbox" id="inv-addacct-show" checked style="width:auto" /> Show this account on invoices</label>' +
-      '</div>' +
-      '<div class="modal-footer">' +
-        '<button class="btn btn-ghost btn-sm" onclick="invSetupCloseAddAccount()">Cancel</button>' +
-        '<button class="btn btn-primary btn-sm" id="inv-addacct-save" onclick="invSetupSaveNewAccount()">Add Account</button>' +
-      '</div>' +
-    '</div>';
-  document.body.appendChild(ov);
-  var f = document.getElementById('inv-addacct-name'); if (f) f.focus();
-}
-function invSetupCloseAddAccount() { var ov = document.getElementById('inv-addacct-modal'); if (ov) ov.remove(); }
-async function invSetupSaveNewAccount() {
-  var err = document.getElementById('inv-addacct-err');
-  var name = (_isVal('inv-addacct-name') || '').trim();
-  if (!name) { if (err) err.innerHTML = '<div class="alert alert-error">Account name is required.</div>'; return; }
-  var btn = document.getElementById('inv-addacct-save');
-  if (btn) btn.disabled = true;
-  try {
-    var created = await api('POST', '/vendors', {
-      name: name,
-      account_number: (_isVal('inv-addacct-num') || '').trim() || null,
-      city_code: ((_isVal('inv-addacct-city') || '').trim().toUpperCase() || null),
-      show_in_invoice: _isChk('inv-addacct-show')
-    });
-    apiBustCache('/vendors');
-    apiBustCache('/invoices/accounts');
-    invSetupCloseAddAccount();
-    // Re-read the list rather than pushing the new row in locally, so the setup
-    // screen and the invoice dropdown are reading the same server-side truth.
-    try { _invSetupVendors = await api('GET', '/vendors'); } catch (e) { if (created) _invSetupVendors.push(created); }
-    renderInvSetupAccounts();
-    var msg = document.getElementById('inv-setup-msg');
-    if (msg) { msg.innerHTML = '<div class="alert alert-success">Added ' + escHtml(name) + '.</div>'; setTimeout(function(){ if (msg) msg.innerHTML=''; }, 3000); }
-  } catch (e) {
-    if (btn) btn.disabled = false;
-    if (err) err.innerHTML = '<div class="alert alert-error">' + escHtml(e.message) + '</div>';
-  }
 }
 
 // ---- Square setup (Invoice Setup screen) -----------------------------------
@@ -12942,10 +12669,6 @@ function renderInvSetupAccounts() {
         '<div style="padding:0 12px 12px">' +
           '<div class="form-group"><label>Invoice notes (shown as a popup when this account is selected — rates, important info)</label><textarea id="invset-notes-' + i + '" style="min-height:70px">' + escHtml(v.invoice_notes||'') + '</textarea></div>' +
           '<div class="form-group"><label>Agreement text for this account (leave blank to use the default; use {customer})</label><textarea id="invset-agr-' + i + '" style="min-height:90px">' + escHtml(v.agreement_text||'') + '</textarea></div>' +
-          '<div class="form-group"><label>Required photos for this account</label>' +
-            '<label style="display:flex;align-items:center;gap:8px;margin:0 0 6px;cursor:pointer;font-size:13px"><input type="checkbox" id="invset-photodef-' + i + '"' + (Array.isArray(v.required_photos) ? '' : ' checked') + ' style="width:auto" onchange="invSetupTogglePhotoDefault(' + i + ',this)" /> Use the company list</label>' +
-            '<div id="invset-photos-' + i + '"></div>' +
-          '</div>' +
           '<label style="display:block;margin-bottom:4px">Auto line items (pre-loaded when this account is chosen)</label>' +
           '<div id="invset-auto-' + i + '"></div>' +
           '<button class="btn btn-secondary btn-sm" style="margin-top:6px;white-space:nowrap" onclick="invSetupAddAuto(' + i + ')">' + '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" style="vertical-align:-2px;flex-shrink:0"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>' + ' Add auto line</button>' +
@@ -12953,44 +12676,7 @@ function renderInvSetupAccounts() {
         '</div>' : '') +
     '</div>';
   }).join('');
-  _invSetupVendors.forEach(function(v, i){ if (v._open) { renderInvSetupAuto(i); renderInvSetupAcctPhotos(i); } });
-}
-
-// Per-account override of the required-photo list. required_photos === null means
-// "inherit the company list"; an ARRAY means this account decides, and an empty
-// array is a real answer (this account requires none), not a missing one.
-function renderInvSetupAcctPhotos(i) {
-  var box = document.getElementById('invset-photos-' + i);
-  if (!box) return;
-  var v = _invSetupVendors[i];
-  var custom = Array.isArray(v.required_photos);
-  if (!custom) {
-    var names = _invSetupPhotoReqs.filter(function(r){ return r.required; }).map(function(r){ return r.label; });
-    box.innerHTML = '<div style="font-size:12px;color:var(--text-muted-color)">' +
-      (names.length ? escHtml(names.join(', ')) : 'Nothing is required company-wide right now.') + '</div>';
-    return;
-  }
-  if (!_invSetupPhotoReqs.length) { box.innerHTML = '<div style="font-size:12px;color:var(--text-muted-color)">Add photo types above first.</div>'; return; }
-  box.innerHTML = '<div style="display:flex;flex-direction:column;gap:4px">' + _invSetupPhotoReqs.map(function(r){
-    var on = v.required_photos.indexOf(r.key) !== -1;
-    return '<label style="display:flex;align-items:center;gap:8px;margin:0;font-size:13px;cursor:pointer"><input type="checkbox"' + (on ? ' checked' : '') +
-      ' style="width:auto" onchange="invSetupAcctPhotoToggle(' + i + ',' + JSON.stringify(r.key).split('"').join('&quot;') + ',this.checked)" /> ' + escHtml(r.label) + '</label>';
-  }).join('') + '</div>' +
-  (v.required_photos.length ? '' : '<div style="font-size:12px;color:#b45309;margin-top:6px">Nothing ticked &mdash; this account will require no photos at all.</div>');
-}
-function invSetupTogglePhotoDefault(i, cb) {
-  var v = _invSetupVendors[i];
-  if (cb.checked) v.required_photos = null;
-  else v.required_photos = _invSetupPhotoReqs.filter(function(r){ return r.required; }).map(function(r){ return r.key; });
-  renderInvSetupAcctPhotos(i);
-}
-function invSetupAcctPhotoToggle(i, key, on) {
-  var v = _invSetupVendors[i];
-  if (!Array.isArray(v.required_photos)) v.required_photos = [];
-  var at = v.required_photos.indexOf(key);
-  if (on && at === -1) v.required_photos.push(key);
-  if (!on && at !== -1) v.required_photos.splice(at, 1);
-  renderInvSetupAcctPhotos(i);
+  _invSetupVendors.forEach(function(v, i){ if (v._open) renderInvSetupAuto(i); });
 }
 
 function renderInvSetupAuto(i) {
@@ -13037,8 +12723,6 @@ async function invSetupSave(i) {
     notes: v.notes, rep_name: v.rep_name, rep_email: v.rep_email, rep_phone: v.rep_phone, city_code: v.city_code,
     show_in_invoice: v.show_in_invoice === true, invoice_notes: v.invoice_notes || null,
     agreement_text: v.agreement_text || null,
-    // null = inherit the company list. An array (even empty) = this account decides.
-    required_photos: Array.isArray(v.required_photos) ? v.required_photos : null,
     auto_line_items: (v.auto_line_items && v.auto_line_items.length) ? v.auto_line_items.filter(function(li){ return (li.description||'').trim(); }) : null
   };
   var msg = document.getElementById('inv-setup-msg');

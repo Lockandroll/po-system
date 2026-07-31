@@ -82,6 +82,7 @@ async function handleCallback(req, res) {
       transactionId = d.transaction_id || transactionId;
       clientTransactionId = d.client_transaction_id || clientTransactionId;
       errorCode = d.error_code || errorCode;
+      errorDescription = d.error_description || d.error_message || errorDescription;
       if (d.status === 'error' && !errorCode) errorCode = 'data_invalid';
     } catch (e) {}
   }
@@ -112,9 +113,34 @@ async function handleCallback(req, res) {
 
   if (errorCode) {
     const cancelled = square.isCancel(errorCode);
+
+    // Nova's plain-English text WINS over Square's. Square's ERROR_DESCRIPTION is
+    // written for a developer reading a stack trace, not a tech in a parking lot,
+    // and on iOS it does not exist at all. Square's raw text is kept in last_error
+    // so a manager can still see exactly what Square said.
+    let msg = square.errorMessage(errorCode);
+
+    // A location failure is the one error where the generic sentence is actively
+    // misleading — the city IS mapped, it is just mapped to a location this phone
+    // cannot charge against. Name both so nobody has to guess which of the two.
+    if (square.isLocationError(errorCode)) {
+      let cityCode = '';
+      try {
+        const c = await pool.query('SELECT city_code FROM invoices WHERE id = $1', [row.invoice_id]);
+        cityCode = (c.rows[0] && c.rows[0].city_code) || '';
+      } catch (e) {}
+      msg = square.locationErrorMessage(cityCode, row.square_location_id);
+    }
+
     await pool.query(
-      'UPDATE invoice_payments SET status = $1, error_code = $2, error_description = $3, updated_at = NOW() WHERE id = $4',
-      [cancelled ? 'canceled' : 'failed', String(errorCode).slice(0, 60), String(errorDescription || square.errorMessage(errorCode)).slice(0, 500), row.id]
+      'UPDATE invoice_payments SET status = $1, error_code = $2, error_description = $3, last_error = $4, updated_at = NOW() WHERE id = $5',
+      [
+        cancelled ? 'canceled' : 'failed',
+        String(errorCode).slice(0, 60),
+        msg.slice(0, 500),
+        errorDescription ? ('Square said: ' + String(errorDescription)).slice(0, 500) : null,
+        row.id
+      ]
     );
     return backToInvoice(req, res, row.invoice_id, { sq: v.nonce });
   }

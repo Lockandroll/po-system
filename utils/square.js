@@ -216,8 +216,10 @@ const ERROR_TEXT = {
   payment_canceled: 'Payment canceled.',
   UNAUTHORIZED_CLIENT_ID: 'Nova is not connected to Square yet. Tell an admin.',
   unauthorized_client_id: 'Nova is not connected to Square yet. Tell an admin.',
-  ILLEGAL_LOCATION_ID: 'This city is not set up in Square yet. Tell an admin. Nothing was charged.',
-  invalid_location_id: 'This city is not set up in Square yet. Tell an admin. Nothing was charged.',
+  // These two are overridden by locationErrorMessage() below, which names the
+  // city and the location. This generic text is only the last resort.
+  ILLEGAL_LOCATION_ID: 'Square would not accept the location this city is mapped to. Nothing was charged.',
+  invalid_location_id: 'Square would not accept the location this city is mapped to. Nothing was charged.',
   user_not_active: 'That Square account is not active.',
   USER_NOT_ACTIVE: 'That Square account is not active.',
   INVALID_REQUEST: 'Square rejected the request. Tell an admin.',
@@ -237,6 +239,22 @@ function errorMessage(code) {
 function isCancel(code) {
   const c = String(code || '');
   return c === 'TRANSACTION_CANCELED' || c === 'payment_canceled';
+}
+
+function isLocationError(code) {
+  const c = String(code || '');
+  return c === 'ILLEGAL_LOCATION_ID' || c === 'invalid_location_id' || c === 'INVALID_LOCATION_ID';
+}
+
+// Square rejects a location for exactly two reasons, and the fix is different
+// for each, so the message has to name both possibilities and name the city and
+// location id. "This city is not set up in Square" was the original text here and
+// it was wrong: the city IS set up, it is mapped to a location Square will not
+// take. Whoever reads this is standing in front of a customer.
+function locationErrorMessage(cityCode, locationId) {
+  const where = cityCode ? (cityCode + ' is mapped') : 'This city is mapped';
+  const which = locationId ? (' to Square location ' + locationId) : '';
+  return where + which + ', but Square would not take a payment for it. Either the city is pointed at the wrong Square location in Invoice Setup, or the Square account signed in on this phone does not have access to that location. Nothing was charged.';
 }
 
 // ---------------------------------------------------------------------------
@@ -559,6 +577,8 @@ module.exports = {
   brandToPayType: brandToPayType,
   errorMessage: errorMessage,
   isCancel: isCancel,
+  isLocationError: isLocationError,
+  locationErrorMessage: locationErrorMessage,
   verifyWebhook: verifyWebhook,
   reconcilePayment: reconcilePayment,
   findRowForPayment: findRowForPayment
