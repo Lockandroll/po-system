@@ -2,7 +2,7 @@
 // public/sw.js (the only thing bumped each deploy) — the badge asks the active
 // service worker for it at runtime. This value is just the fallback shown when no
 // service worker is available (e.g. very first visit before it installs).
-var APP_VERSION = 'v87';
+var APP_VERSION = 'v88';
 var _resolvedAppVersion = null;
 
 // Ask the active service worker for its CACHE_VERSION (without the 'nova-' prefix).
@@ -19376,7 +19376,7 @@ async function invLoad() {
         (blank
           ? '<h3>Set up your Equipment List first</h3>' +
             '<p style="max-width:520px;margin:0 auto 18px">Tell Nova what kinds of things you issue &mdash; a reach tool, a jump pack, polo shirts. ' +
-              'Most things are just a count; only expensive gear needs its own serial number.</p>' +
+              'Most things are just a count; only expensive gear needs its own serial number. You can enter how many you have on that same screen.</p>' +
             '<button class="btn btn-primary" onclick="navigate(&#39;asset-catalog&#39;)">Go to the Equipment List</button>'
           : '<h3>Nothing in stock yet</h3>' +
             '<p style="max-width:520px;margin:0 auto 18px">Add what you already own. For anything you buy by the box just give a number &mdash; no serial needed.</p>' +
@@ -20774,9 +20774,27 @@ function openEquipEditor(id) {
             '<input type="number" id="eq-life" min="1" value="' + escHtml(t && t.expected_life_months ? String(t.expected_life_months) : '') + '" /></div>' +
         '</div>' +
         '<div class="form-group" style="display:flex;align-items:center;gap:10px;margin-bottom:10px">' +
-          '<input type="checkbox" id="eq-serialized" style="width:auto"' + (t && t.serialized ? ' checked' : '') + ' />' +
+          '<input type="checkbox" id="eq-serialized" style="width:auto" onchange="equipStockHint()"' + (t && t.serialized ? ' checked' : '') + ' />' +
           '<label for="eq-serialized" style="margin:0;cursor:pointer">Serialized — every unit gets its own asset tag and history</label></div>' +
         '<div style="font-size:12px;color:var(--text-muted-color);margin:-4px 0 18px;line-height:1.5">Leave this off for things you buy by the box (shirts, gloves, blades). Those are tracked as a count per city and a count per tech instead.</div>' +
+        // Opening stock lives HERE, on purpose. Making someone define the type,
+        // save, then walk to Inventory to type a number is the loop Tony hit.
+        // Add only — on an edit the count is already real and belongs to the
+        // ledger, not to a form field that could silently double it.
+        (id ? '' :
+          '<div class="po-panel" style="margin-bottom:16px">' +
+            '<div class="po-panel-h"><span>How many do you have right now</span>' +
+              '<span style="font-size:11.5px;font-weight:500;color:var(--text-muted-color);text-transform:none;letter-spacing:0">optional</span></div>' +
+            '<div class="po-panel-b">' +
+              '<div class="form-row">' +
+                '<div class="form-group" style="margin-bottom:0"><label>City</label>' +
+                  '<select id="eq-stock-city"><option value="">Skip for now</option></select></div>' +
+                '<div class="form-group" style="margin-bottom:0"><label>Quantity</label>' +
+                  '<input type="number" id="eq-stock-qty" min="0" placeholder="0" /></div>' +
+              '</div>' +
+              '<div id="eq-stock-hint" class="po-src" style="font-style:normal;margin-top:12px"></div>' +
+            '</div>' +
+          '</div>') +
         '<div class="po-panel" style="margin-bottom:16px">' +
           '<div class="po-panel-h"><span>Ordering details</span>' +
             '<span style="font-size:11.5px;font-weight:500;color:var(--text-muted-color);text-transform:none;letter-spacing:0">used when a replacement opens a PO</span></div>' +
@@ -20808,6 +20826,32 @@ function openEquipEditor(id) {
     var dl = document.getElementById('eq-vendor-list');
     if (dl && vs && vs.length) dl.innerHTML = vs.map(function (v) { return '<option value="' + escHtml(v.name) + '"></option>'; }).join('');
   }).catch(function () {});
+  if (!id) {
+    equipStockHint();
+    assetMyCities().then(function (cs) {
+      var sel = document.getElementById('eq-stock-city');
+      if (!sel) return;
+      if (!cs.length) {
+        sel.innerHTML = '<option value="">No cities assigned to you</option>';
+        sel.disabled = true;
+        var q = document.getElementById('eq-stock-qty'); if (q) q.disabled = true;
+        return;
+      }
+      // One city means there is nothing to choose, so choose it for them.
+      sel.innerHTML = (cs.length > 1 ? '<option value="">Skip for now</option>' : '') + assetCityOptions(cs, '', '');
+    }).catch(function () {});
+  }
+}
+
+// The opening-stock line reads differently for a serialized type, because those
+// units land untagged and someone has to come back for the serials.
+function equipStockHint() {
+  var h = document.getElementById('eq-stock-hint');
+  if (!h) return;
+  var ser = (document.getElementById('eq-serialized') || {}).checked === true;
+  h.innerHTML = ser
+    ? 'These go on the shelf untagged. Add the asset tags and serials afterwards from Inventory.'
+    : 'Puts that many on the city&#39;s shelf right now. Leave it blank if you would rather count later.';
 }
 
 async function saveEquip(id, btn) {
@@ -20822,11 +20866,32 @@ async function saveEquip(id, btn) {
     manufacturer: v('eq-manu') || null, unit_cost: v('eq-cost') === '' ? null : v('eq-cost'),
     product_url: v('eq-url') || null
   };
+  // Read these BEFORE anything can remove the modal.
+  var stockCity = v('eq-stock-city');
+  var stockQty = parseInt(v('eq-stock-qty'), 10) || 0;
   try {
+    var created = null;
     if (id) await api('PUT', '/assets/types/' + id, body);
-    else await api('POST', '/assets/types', body);
+    else created = await api('POST', '/assets/types', body);
+    var msg = 'Saved';
+    if (created && created.id && stockCity && stockQty > 0) {
+      // From here the TYPE already exists. If the stock call fails we must not
+      // leave the modal open, or a second Save creates a duplicate type.
+      try {
+        await api('POST', '/assets/locations/' + encodeURIComponent(stockCity) + '/receive', {
+          asset_type_id: created.id, qty: stockQty, note: 'opening stock count'
+        });
+        msg = 'Saved. ' + stockQty + ' on the shelf at ' + stockCity + '.';
+      } catch (e2) {
+        var ovf = document.querySelector('.modal-overlay'); if (ovf) ovf.remove();
+        _assetTypes = null;
+        render();
+        showToast('Equipment saved, but the opening count did not go in: ' + e2.message + ' Add it from Inventory.', 'error');
+        return;
+      }
+    }
     var ov = document.querySelector('.modal-overlay'); if (ov) ov.remove();
-    showToast('Saved', 'success');
+    showToast(msg, 'success');
     _assetTypes = null;
     render();
   } catch (err) { btn.disabled = false; assetErr('eq-err', err.message); }
@@ -20999,7 +21064,7 @@ async function openAddItemModal() {
           '<div class="modal-body">' +
             '<p style="font-size:14px;color:var(--text-dim);line-height:1.6;margin-bottom:14px">' +
               'Your Equipment List is empty, so there is nothing to add yet. Tell Nova what kinds of things you issue first &mdash; ' +
-              'a reach tool, a jump pack, polo shirts &mdash; then come back and say how many you have.</p>' +
+              'a reach tool, a jump pack, polo shirts. You can put the count in on that same screen, so you will not have to come back here.</p>' +
             '<div style="font-size:13px;color:var(--text-muted-color);line-height:1.6">' +
               'Most equipment is just a count. Only leave <strong>Serialized</strong> ticked for expensive gear you want to track ' +
               'unit by unit, like a key machine or a programmer.</div>' +
