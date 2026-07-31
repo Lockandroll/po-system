@@ -2,7 +2,7 @@
 // public/sw.js (the only thing bumped each deploy) — the badge asks the active
 // service worker for it at runtime. This value is just the fallback shown when no
 // service worker is available (e.g. very first visit before it installs).
-var APP_VERSION = 'v91';
+var APP_VERSION = 'v92';
 var _resolvedAppVersion = null;
 
 // Ask the active service worker for its CACHE_VERSION (without the 'nova-' prefix).
@@ -5733,14 +5733,14 @@ async function renderEditQuote(el, id) {
       '</div>' +
       '<div style="font-size:11px;font-weight:600;color:var(--text-muted-color);text-transform:uppercase;letter-spacing:0.05em;margin:14px 0 8px">Customer Contact</div>' +
       '<div class="form-row">' +
-        '<div class="form-group" style="flex:2"><label>Street Address</label><input type="text" id="qt-cust-street" value="' + escHtml(quote ? (quote.customer_street || '') : '') + '" placeholder="Street address" /></div>' +
+        '<div class="form-group" style="flex:2 1 220px"><label>Street Address</label><input type="text" id="qt-cust-street" value="' + escHtml(quote ? (quote.customer_street || '') : '') + '" placeholder="Street address" /></div>' +
         '<div class="form-group"><label>City</label><input type="text" id="qt-cust-city" value="' + escHtml(quote ? (quote.customer_city || '') : '') + '" placeholder="City" /></div>' +
         '<div class="form-group" style="max-width:90px"><label>State</label><input type="text" id="qt-cust-state" maxlength="2" value="' + escHtml(quote ? (quote.customer_state || '') : '') + '" style="text-transform:uppercase" /></div>' +
         '<div class="form-group" style="max-width:110px"><label>Zip</label><input type="text" id="qt-cust-zip" value="' + escHtml(quote ? (quote.customer_zip || '') : '') + '" /></div>' +
       '</div>' +
       '<div class="form-row">' +
         '<div class="form-group"><label>Phone</label><input type="tel" id="qt-cust-phone" value="' + escHtml(quote ? (quote.customer_phone || '') : '') + '" placeholder="(555) 555-5555" /></div>' +
-        '<div class="form-group" style="flex:2"><label>Email</label><input type="email" id="qt-cust-email" value="' + escHtml(quote ? (quote.customer_email || '') : '') + '" placeholder="name@example.com" /></div>' +
+        '<div class="form-group" style="flex:2 1 220px"><label>Email</label><input type="email" id="qt-cust-email" value="' + escHtml(quote ? (quote.customer_email || '') : '') + '" placeholder="name@example.com" /></div>' +
       '</div>' +
       '<div class="form-group"><label>Notes</label><textarea id="qt-notes" placeholder="Optional notes...">' + escHtml(quote ? quote.notes || '' : '') + '</textarea></div>' +
     '</div></div>' +
@@ -10817,19 +10817,19 @@ async function renderEditInvoice(el, id) {
     '</div><div class="card-body">' +
       '<input type="file" id="inv-id-file" accept="image/*" capture="environment" style="display:none" onchange="invHandleIdFile(this)" />' +
       '<div class="form-row">' +
-        '<div class="form-group" style="flex:2"><label>Customer Name</label><input type="text" id="inv-customer" value="' + escHtml(v.customer_name||'') + '" /></div>' +
+        '<div class="form-group" style="flex:2 1 220px"><label>Customer Name</label><input type="text" id="inv-customer" value="' + escHtml(v.customer_name||'') + '" /></div>' +
         '<div class="form-group"><label>Driver License #</label><input type="text" id="inv-dl" value="' + escHtml(v.dl_number||'') + '" /></div>' +
         '<div class="form-group" style="max-width:90px"><label>DL State</label><input type="text" id="inv-dlstate" maxlength="2" value="' + escHtml(v.dl_state||'') + '" style="text-transform:uppercase" /></div>' +
       '</div>' +
       '<div class="form-row">' +
-        '<div class="form-group" style="flex:2"><label>Street Address</label><input type="text" id="inv-street" value="' + escHtml(v.street_address||'') + '" /></div>' +
+        '<div class="form-group" style="flex:2 1 220px"><label>Street Address</label><input type="text" id="inv-street" value="' + escHtml(v.street_address||'') + '" /></div>' +
         '<div class="form-group"><label>City</label><input type="text" id="inv-city" value="' + escHtml(v.city||'') + '" /></div>' +
         '<div class="form-group" style="max-width:90px"><label>State</label><input type="text" id="inv-state" maxlength="2" value="' + escHtml(v.state||'') + '" style="text-transform:uppercase" /></div>' +
         '<div class="form-group" style="max-width:110px"><label>Zip</label><input type="text" id="inv-zip" value="' + escHtml(v.zip||'') + '" /></div>' +
       '</div>' +
       '<div class="form-row">' +
         '<div class="form-group"><label>Phone</label><input type="tel" id="inv-phone" value="' + escHtml(v.phone||'') + '" /></div>' +
-        '<div class="form-group" style="flex:2"><label>Email</label><input type="email" id="inv-email" value="' + escHtml(v.email||'') + '" /></div>' +
+        '<div class="form-group" style="flex:2 1 220px"><label>Email</label><input type="email" id="inv-email" value="' + escHtml(v.email||'') + '" /></div>' +
       '</div>' +
       '<div id="inv-scan-status" style="font-size:12px;color:var(--text-muted-color)"></div>' +
       '<div id="inv-id-image-state"></div>' +
@@ -10837,13 +10837,13 @@ async function renderEditInvoice(el, id) {
 
     '<div class="card mb-4"><div class="card-header"><span class="card-title">Vehicle</span></div><div class="card-body">' +
       '<div class="form-row">' +
-        '<div class="form-group" style="flex:2"><label>VIN</label><div style="display:flex;gap:6px"><input type="text" id="inv-vin" value="' + escHtml(v.vin||'') + '" style="text-transform:uppercase" /><button class="btn btn-secondary btn-sm" style="white-space:nowrap" onclick="invScanVin()">Scan</button><button class="btn btn-secondary btn-sm" style="white-space:nowrap" onclick="invDecodeVin()">Decode</button></div><input type="file" id="inv-vin-file" accept="image/*" capture="environment" style="display:none" onchange="invHandleVinFile(this)" /></div>' +
+        '<div class="form-group" style="flex:2 1 220px"><label>VIN</label><div style="display:flex;gap:6px"><input type="text" id="inv-vin" value="' + escHtml(v.vin||'') + '" style="text-transform:uppercase" /><button class="btn btn-secondary btn-sm" style="white-space:nowrap" onclick="invScanVin()">Scan</button><button class="btn btn-secondary btn-sm" style="white-space:nowrap" onclick="invDecodeVin()">Decode</button></div><input type="file" id="inv-vin-file" accept="image/*" capture="environment" style="display:none" onchange="invHandleVinFile(this)" /></div>' +
         '<div class="form-group" style="max-width:90px"><label>Year</label><input type="text" id="inv-vyear" value="' + escHtml(v.vehicle_year||'') + '" /></div>' +
         '<div class="form-group"><label>Make</label><input type="text" id="inv-vmake" value="' + escHtml(v.vehicle_make||'') + '" /></div>' +
         '<div class="form-group"><label>Model</label><input type="text" id="inv-vmodel" value="' + escHtml(v.vehicle_model||'') + '" /></div>' +
       '</div>' +
       '<div class="form-row">' +
-        '<div class="form-group"><label>License / Tag #</label><div style="display:flex;gap:6px"><input type="text" id="inv-tag" value="' + escHtml(v.license_tag||'') + '" style="text-transform:uppercase" oninput="this.value=this.value.toUpperCase()" /><button class="btn btn-secondary btn-sm" style="white-space:nowrap" onclick="invScanPlate()">Scan</button></div><input type="file" id="inv-plate-file" accept="image/*" capture="environment" style="display:none" onchange="invHandlePlateFile(this)" /></div>' +
+        '<div class="form-group" style="flex:1 1 240px"><label>License / Tag #</label><div style="display:flex;gap:6px"><input type="text" id="inv-tag" value="' + escHtml(v.license_tag||'') + '" style="text-transform:uppercase" oninput="this.value=this.value.toUpperCase()" /><button class="btn btn-secondary btn-sm" style="white-space:nowrap" onclick="invScanPlate()">Scan</button></div><input type="file" id="inv-plate-file" accept="image/*" capture="environment" style="display:none" onchange="invHandlePlateFile(this)" /></div>' +
         '<div class="form-group" style="max-width:90px"><label>Tag State</label><input type="text" id="inv-tagstate" maxlength="2" value="' + escHtml(v.tag_state||'') + '" style="text-transform:uppercase" /></div>' +
         '<div class="form-group"><label>Mileage</label><input type="text" id="inv-mileage" value="' + escHtml(v.mileage||'') + '" /></div>' +
       '</div>' +
@@ -10891,9 +10891,16 @@ async function renderEditInvoice(el, id) {
       '<div class="form-group"><label>Agreement Text (printed above the signature; {customer} is replaced with the customer name)</label><textarea id="inv-agreement" style="min-height:140px">' + escHtml(agreementVal) + '</textarea></div>' +
       '<label style="display:flex;align-items:center;gap:8px;margin:0 0 12px;cursor:pointer"><input type="checkbox" id="inv-sig-required" style="width:auto"' + (v.signature_required ? ' checked' : '') + ' /> Signature required <span style="font-size:11px;color:var(--text-muted-color)">(must be signed before this invoice can be marked Completed or Paid)</span></label>' +
       '<label style="display:block;margin-bottom:4px">Signature</label>' +
-      (_invoiceExistingSig ? '<div id="inv-existing-sig" style="margin-bottom:8px;background:#fff;border:1px solid var(--border);border-radius:8px;padding:8px;display:inline-block"><img src="' + _invoiceExistingSig + '" style="max-width:320px;max-height:120px;display:block" /><div style="font-size:11px;color:#666;margin-top:4px">Current signature — draw below to replace</div></div>' : '') +
-      '<div style="background:#fff;border:1px solid var(--border);border-radius:8px;display:inline-block"><canvas id="inv-sigpad" width="600" height="180" style="touch-action:none;width:100%;max-width:600px;display:block"></canvas></div>' +
-      '<div style="margin-top:6px;display:flex;gap:8px;flex-wrap:wrap"><button class="btn btn-secondary btn-sm" onclick="openInvoiceSignatureFullscreen()">' + (icons.edit || '') + ' Tap to sign full screen</button><button class="btn btn-ghost btn-sm" onclick="clearInvoiceSignature()">Clear signature</button></div>' +
+      // An already-signed invoice shows the signature and ONE button. The old
+      // layout put an empty second pad underneath it captioned "draw below to
+      // replace", which read as a bug: two signature boxes, one of them blank.
+      // Redo is now an explicit choice rather than an accident of scrolling.
+      (_invoiceExistingSig
+        ? '<div id="inv-existing-sig" style="margin-bottom:10px;background:#fff;border:1px solid var(--border);border-radius:8px;padding:8px;display:inline-block;max-width:100%;box-sizing:border-box"><img src="' + _invoiceExistingSig + '" style="max-width:100%;width:320px;max-height:120px;display:block" /><div style="font-size:11px;color:#666;margin-top:4px">Signed</div></div>' +
+          '<div id="inv-sig-redo-row" style="margin-bottom:6px"><button class="btn btn-secondary btn-sm" onclick="invRedoSignature()">' + (icons.edit || '') + ' Redo signature</button></div>'
+        : '') +
+      '<div id="inv-sigpad-wrap" style="background:#fff;border:1px solid var(--border);border-radius:8px;display:' + (_invoiceExistingSig ? 'none' : 'inline-block') + '"><canvas id="inv-sigpad" width="600" height="180" style="touch-action:none;width:100%;max-width:600px;display:block"></canvas></div>' +
+      '<div id="inv-sig-actions" style="margin-top:6px;display:' + (_invoiceExistingSig ? 'none' : 'flex') + ';gap:8px;flex-wrap:wrap"><button class="btn btn-secondary btn-sm" onclick="openInvoiceSignatureFullscreen()">' + (icons.edit || '') + ' Tap to sign full screen</button><button class="btn btn-ghost btn-sm" onclick="clearInvoiceSignature()">Clear signature</button></div>' +
     '</div></div>' +
 
     '<div class="card mb-4"><div class="card-header"><span class="card-title">Photos</span></div><div class="card-body">' +
@@ -11161,6 +11168,27 @@ function setupInvoiceSignaturePad() {
     }
   };
 }
+// Redo replaces a signature that is already on the invoice. It has to null
+// _invoiceExistingSig for the same reason clearInvoiceSignature does: saveInvoice
+// falls back to that variable, so leaving it set would silently re-save the old
+// signature and a redo would appear to do nothing.
+//
+// It deliberately does NOT auto-open the full-screen pad. The customer is often
+// not holding the phone at the moment the tech taps Redo.
+function invRedoSignature() {
+  _invoiceExistingSig = null;
+  var ex = document.getElementById('inv-existing-sig');
+  if (ex && ex.parentNode) ex.parentNode.removeChild(ex);
+  var row = document.getElementById('inv-sig-redo-row');
+  if (row && row.parentNode) row.parentNode.removeChild(row);
+  var wrap = document.getElementById('inv-sigpad-wrap');
+  if (wrap) wrap.style.display = 'inline-block';
+  var acts = document.getElementById('inv-sig-actions');
+  if (acts) acts.style.display = 'flex';
+  if (_invoiceSigPad) _invoiceSigPad.clear();
+  if (wrap && wrap.scrollIntoView) { try { wrap.scrollIntoView({ block: 'center', behavior: 'smooth' }); } catch (e) {} }
+}
+
 function clearInvoiceSignature() {
   if (_invoiceSigPad) _invoiceSigPad.clear();
   // Clearing the canvas alone was not enough. saveInvoice falls back to
@@ -11921,7 +11949,7 @@ async function renderViewInvoice(el, id) {
       '<div class="card mb-4"><div class="card-header"><span class="card-title">Authorization</span></div><div class="card-body">' +
         '<div style="white-space:pre-wrap;font-size:12px;color:var(--text-muted-color);line-height:1.6">' + escHtml(agreement) + '</div>' +
         (inv.signature_image
-          ? '<div style="margin-top:14px"><div style="font-size:12px;color:var(--text-muted-color);margin-bottom:4px">Signed by ' + escHtml(inv.signed_name || inv.customer_name || '') + (inv.signed_at ? ' on ' + formatDateTime(inv.signed_at) : '') + '</div><div style="background:#fff;border:1px solid var(--border);border-radius:8px;padding:8px;display:inline-block"><img src="' + inv.signature_image + '" style="max-width:340px;max-height:140px;display:block" /></div></div>'
+          ? '<div style="margin-top:14px"><div style="font-size:12px;color:var(--text-muted-color);margin-bottom:4px">Signed by ' + escHtml(inv.signed_name || inv.customer_name || '') + (inv.signed_at ? ' on ' + formatDateTime(inv.signed_at) : '') + '</div><div style="background:#fff;border:1px solid var(--border);border-radius:8px;padding:8px;display:inline-block;max-width:100%;box-sizing:border-box"><img src="' + inv.signature_image + '" style="max-width:100%;width:340px;max-height:140px;display:block" /></div></div>'
           : '<div style="margin-top:14px;font-size:13px;color:var(--text-muted-color)">No signature captured.</div>' +
             (canSign
               ? '<div style="margin-top:12px"><button class="btn btn-primary btn-sm" onclick="invSignNow(' + inv.id + ')">' + (icons.edit || '') + ' Collect signature</button>'

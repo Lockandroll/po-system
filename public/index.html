@@ -108,7 +108,6 @@
       .hamburger { display: flex; }
       .main-content { padding: 16px; }
       .page-header { flex-wrap: wrap; gap: 12px; }
-      .form-row { grid-template-columns: 1fr; }
       .detail-grid { grid-template-columns: 1fr; }
       .table-wrap { overflow-x: auto; -webkit-overflow-scrolling: touch; }
       .table-wrap table { min-width: 620px; }
@@ -186,7 +185,34 @@
     input:-webkit-autofill, input:-webkit-autofill:hover, input:-webkit-autofill:focus, input:-webkit-autofill:active, textarea:-webkit-autofill, select:-webkit-autofill { -webkit-text-fill-color: var(--text); -webkit-box-shadow: 0 0 0 1000px var(--bg-elevated) inset; box-shadow: 0 0 0 1000px var(--bg-elevated) inset; caret-color: var(--text); transition: background-color 99999s ease-in-out 0s; }
     select option { background: var(--bg-elevated); color: var(--text); }
     textarea { resize: vertical; min-height: 80px; }
-    .form-row { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+    /* Flex, not a fixed 2-column grid. Rows across the app carry per-field
+       intent as inline styles (flex:2 on a Customer Name, max-width:90px on a
+       State box) and every one of those was a no-op under grid, so a 3- or
+       4-field row broke into 2 columns and stranded the small fields alone on a
+       line as squeezed stubs. With flex the inline sizing works as written, a
+       two-field row is still an even split, and narrow screens wrap naturally
+       instead of forcing one field per line. */
+    .form-row { display: flex; flex-wrap: wrap; gap: 16px; align-items: flex-start; }
+    .form-row > * { flex: 1 1 180px; min-width: 0; }
+    /* gap handles the space between fields and between wrapped lines inside one
+       row; the row itself carries the separation from the next row. */
+    .form-row > .form-group { margin-bottom: 0; }
+    .form-row { margin-bottom: 16px; }
+    /* Fields like VIN and License/Tag wrap their input in a nested flex row with
+       nowrap Scan/Decode buttons. A flex item defaults to min-width:auto, so the
+       input refuses to shrink past its min-content and the whole page overflows
+       sideways on a small phone. */
+    .form-group input, .form-group select, .form-group textarea { min-width: 0; }
+    /* Phones. This MUST come after the base .form-row rules above: it is the same
+       specificity, so declaration order decides, and the old copy of this override
+       lived higher up in the file and had never applied at all.
+       Two fields per line at an exact half width, and the desktop width caps come
+       OFF — a 90px "State" box stranded alone on a line with 200px of dead space
+       beside it is what made this form look broken on a phone. Uncapped, a field
+       left on its own simply fills the row. */
+    @media (max-width: 768px) {
+      .form-row > * { flex-basis: calc(50% - 8px); max-width: none !important; }
+    }
     .table-wrap { overflow-x: auto; }
     table { width: 100%; border-collapse: collapse; }
     th { padding: 10px 16px; text-align: left; font-size: 12px; font-weight: 600; color: var(--text-muted-color); text-transform: uppercase; letter-spacing: 0.05em; border-bottom: 1px solid var(--border); background: var(--bg-elevated); }
