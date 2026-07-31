@@ -2,7 +2,7 @@
 // public/sw.js (the only thing bumped each deploy) — the badge asks the active
 // service worker for it at runtime. This value is just the fallback shown when no
 // service worker is available (e.g. very first visit before it installs).
-var APP_VERSION = 'v88';
+var APP_VERSION = 'v90';
 var _resolvedAppVersion = null;
 
 // Ask the active service worker for its CACHE_VERSION (without the 'nova-' prefix).
@@ -990,7 +990,7 @@ async function render() {
     if (_ovOpen) _ovOpen.classList.add('open');
   }
   const content = document.getElementById('content');
-  var _viewPerm = { dashboard:'view_pos', view:'view_pos', running:'view_pos', 'running-admin':'view_pos', new:'create_po', edit:'view_pos', quotes:'view_quotes', 'view-quote':'view_quotes', 'new-quote':'create_quote', 'edit-quote':'edit_quote', 'vr-dashboard':'view_vr', 'view-vr':'view_vr', 'new-vr':'create_vr', 'edit-vr':'edit_vr', deposits:'view_deposits', 'view-deposit':'view_deposits', signoffs:'view_signoffs', 'view-signoff':'view_signoffs', 'new-signoff':'create_signoff', 'edit-signoff':'edit_signoff', 'complete-signoff':'complete_signoff', tasks:'view_tasks', 'task-detail':'view_tasks', 'new-task':'view_tasks', 'edit-task':'view_tasks', 'task-templates':'manage_tasks', 'new-task-template':'manage_tasks', 'edit-task-template':'manage_tasks', 'work-orders':'view_work_orders', 'view-work-order':'view_work_orders', 'new-work-order':'manage_work_orders', schedule:'view_schedule', 'schedule-admin':'manage_schedule', 'schedule-nowork':'manage_schedule', invoices:'view_invoices', 'view-invoice':'view_invoices', 'new-invoice':'create_invoice', 'edit-invoice':'edit_invoice', 'invoice-parts':'view_invoices', refunds:'view_invoices', 'invoice-setup':'manage_invoice_setup', feedback:'view_feedback', 'feedback-detail':'view_feedback', 'call-lookup':'play_call_recordings', signatures:'view_signatures', 'new-signature':'manage_signatures', 'signature-editor':'manage_signatures', timeclock:'view_timeclock', 'timeclock-manager':'manage_timeclock', pto:'view_pto', 'onboarding-admin':'manage_onboarding', 'employee-files':'manage_onboarding', ptt:'view_ptt', inspections:'view_inspections', 'view-inspection':'view_inspections', 'inspection-form':'view_inspections', 'inspection-checklist':'manage_inspections', assets:'manage_assets', 'asset-detail':'manage_assets', 'asset-locations':'manage_assets', 'asset-techs':'manage_assets', 'asset-tech-detail':'view_assets', 'asset-acks':'manage_assets', 'new-asset-ack':'manage_assets', 'view-asset-ack':'view_assets', 'asset-requests':'view_assets', 'asset-catalog':'manage_assets', 'my-equipment':'view_assets' };
+  var _viewPerm = { dashboard:'view_pos', view:'view_pos', running:'view_pos', 'running-admin':'view_pos', new:'create_po', edit:'edit_po', quotes:'view_quotes', 'view-quote':'view_quotes', 'new-quote':'create_quote', 'edit-quote':'edit_quote', 'vr-dashboard':'view_vr', 'view-vr':'view_vr', 'new-vr':'create_vr', 'edit-vr':'edit_vr', deposits:'view_deposits', 'view-deposit':'view_deposits', signoffs:'view_signoffs', 'view-signoff':'view_signoffs', 'new-signoff':'create_signoff', 'edit-signoff':'edit_signoff', 'complete-signoff':'complete_signoff', tasks:'view_tasks', 'task-detail':'view_tasks', 'new-task':'view_tasks', 'edit-task':'view_tasks', 'task-templates':'manage_tasks', 'new-task-template':'manage_tasks', 'edit-task-template':'manage_tasks', 'work-orders':'view_work_orders', 'view-work-order':'view_work_orders', 'new-work-order':'manage_work_orders', schedule:'view_schedule', 'schedule-admin':'manage_schedule', 'schedule-nowork':'manage_schedule', invoices:'view_invoices', 'view-invoice':'view_invoices', 'new-invoice':'create_invoice', 'edit-invoice':'edit_invoice', 'invoice-parts':'view_invoices', refunds:'view_invoices', 'invoice-setup':'manage_invoice_setup', feedback:'view_feedback', 'feedback-detail':'view_feedback', 'call-lookup':'play_call_recordings', signatures:'view_signatures', 'new-signature':'manage_signatures', 'signature-editor':'manage_signatures', timeclock:'view_timeclock', 'timeclock-manager':'manage_timeclock', pto:'view_pto', 'onboarding-admin':'manage_onboarding', 'employee-files':'manage_onboarding', ptt:'view_ptt', inspections:'view_inspections', 'view-inspection':'view_inspections', 'inspection-form':'view_inspections', 'inspection-checklist':'manage_inspections', assets:'manage_assets', 'asset-detail':'manage_assets', 'asset-locations':'manage_assets', 'asset-techs':'manage_assets', 'asset-tech-detail':'view_assets', 'asset-acks':'manage_assets', 'new-asset-ack':'manage_assets', 'view-asset-ack':'view_assets', 'asset-requests':'view_assets', 'asset-catalog':'manage_assets', 'my-equipment':'view_assets' };
   if (_viewPerm[state.currentView] && !can(_viewPerm[state.currentView])) { content.innerHTML = '<div class="alert alert-error">Access denied.</div>'; return; }
   if (state.currentView === 'home') { await renderHomeScreen(content); maybeQuizBanner(content); }
   else if (state.currentView === 'pto') await renderPto(content);
@@ -11088,15 +11088,54 @@ function invRenderCogsPanel() {
 }
 
 // ---------- Signature pad ----------
+// Ink is tracked as a bounding box, in canvas-bitmap pixels, while it is drawn.
+// Everything downstream works off that box instead of the whole canvas. A
+// signature is a short band across a tall phone screen, so fitting the WHOLE
+// full-screen canvas into the wide 600x180 invoice pad shrank a real signature
+// to about 13% of the pad width and printed as an invisible squiggle.
+function sigNewInk() { return { minX: Infinity, minY: Infinity, maxX: -Infinity, maxY: -Infinity, any: false }; }
+function sigNoteInk(box, x, y, pad) {
+  box.any = true;
+  if (x - pad < box.minX) box.minX = x - pad;
+  if (y - pad < box.minY) box.minY = y - pad;
+  if (x + pad > box.maxX) box.maxX = x + pad;
+  if (y + pad > box.maxY) box.maxY = y + pad;
+}
+// Draw the INKED part of src into dctx, scaled to fit and centred. Returns the
+// box the ink now occupies in the destination, so a caller that keeps drawing
+// (the rotate handler) can carry on tracking it. dctx must be UNSCALED.
+function sigFitInk(src, box, dctx, dw, dh, maxScale) {
+  if (!box || !box.any) return null;
+  var sx = Math.max(0, Math.floor(box.minX));
+  var sy = Math.max(0, Math.floor(box.minY));
+  var sw = Math.min(src.width, Math.ceil(box.maxX)) - sx;
+  var sh = Math.min(src.height, Math.ceil(box.maxY)) - sy;
+  if (sw <= 0 || sh <= 0) return null;
+  var padX = dw * 0.04, padY = dh * 0.08;
+  var scale = Math.min((dw - padX * 2) / sw, (dh - padY * 2) / sh);
+  if (maxScale && scale > maxScale) scale = maxScale; // a tiny mark must not blow up to fill the pad
+  var w = sw * scale, h = sh * scale;
+  var x = (dw - w) / 2, y = (dh - h) / 2;
+  dctx.drawImage(src, sx, sy, sw, sh, x, y, w, h);
+  return { minX: x, minY: y, maxX: x + w, maxY: y + h, any: true };
+}
+// Crop the ink out of src and return it on its own canvas as a PNG data URL.
+function sigExportInk(src, box, w, h) {
+  var c = document.createElement('canvas');
+  c.width = w; c.height = h;
+  if (!sigFitInk(src, box, c.getContext('2d'), w, h, 4)) return null;
+  return c.toDataURL('image/png');
+}
+
 function setupInvoiceSignaturePad() {
   var canvas = document.getElementById('inv-sigpad');
   if (!canvas) return;
   var ctx = canvas.getContext('2d');
   ctx.lineWidth = 2.5; ctx.lineCap = 'round'; ctx.lineJoin = 'round'; ctx.strokeStyle = '#111111';
-  var drawing = false, last = null, hasInk = false;
+  var drawing = false, last = null, hasInk = false, ink = sigNewInk();
   function pos(e){ var r = canvas.getBoundingClientRect(); var t = (e.touches && e.touches[0]) ? e.touches[0] : e; return { x: (t.clientX - r.left) * (canvas.width / r.width), y: (t.clientY - r.top) * (canvas.height / r.height) }; }
   function start(e){ e.preventDefault(); drawing = true; last = pos(e); }
-  function move(e){ if (!drawing) return; e.preventDefault(); var p = pos(e); ctx.beginPath(); ctx.moveTo(last.x, last.y); ctx.lineTo(p.x, p.y); ctx.stroke(); last = p; hasInk = true; }
+  function move(e){ if (!drawing) return; e.preventDefault(); var p = pos(e); ctx.beginPath(); ctx.moveTo(last.x, last.y); ctx.lineTo(p.x, p.y); ctx.stroke(); sigNoteInk(ink, last.x, last.y, 2.5); sigNoteInk(ink, p.x, p.y, 2.5); last = p; hasInk = true; }
   function end(){ drawing = false; }
   canvas.addEventListener('mousedown', start);
   canvas.addEventListener('mousemove', move);
@@ -11107,21 +11146,36 @@ function setupInvoiceSignaturePad() {
   _invoiceSigPad = {
     canvas: canvas,
     hasInk: function(){ return hasInk; },
-    clear: function(){ ctx.clearRect(0,0,canvas.width,canvas.height); hasInk = false; },
-    // Copy a signature drawn on another (e.g. full-screen) canvas onto this pad, scaled to fit.
-    fromCanvas: function(src){
+    clear: function(){ ctx.clearRect(0,0,canvas.width,canvas.height); hasInk = false; ink = sigNewInk(); },
+    // Copy a signature drawn on another (e.g. full-screen) canvas onto this pad.
+    // box is the ink bounds on src. Without it the whole of src is used, which
+    // is the old squashing behaviour and is only right if src is pre-cropped.
+    fromCanvas: function(src, box){
       ctx.clearRect(0,0,canvas.width,canvas.height);
-      var sr = src.width / src.height, dr = canvas.width / canvas.height, dw, dh;
-      if (sr > dr) { dw = canvas.width; dh = dw / sr; } else { dh = canvas.height; dw = dh * sr; }
-      ctx.drawImage(src, (canvas.width - dw) / 2, (canvas.height - dh) / 2, dw, dh);
+      var b = (box && box.any) ? box : { minX: 0, minY: 0, maxX: src.width, maxY: src.height, any: true };
+      ink = sigFitInk(src, b, ctx, canvas.width, canvas.height, 4) || sigNewInk();
       hasInk = true;
     }
   };
 }
-function clearInvoiceSignature() { if (_invoiceSigPad) _invoiceSigPad.clear(); }
+function clearInvoiceSignature() {
+  if (_invoiceSigPad) _invoiceSigPad.clear();
+  // Clearing the canvas alone was not enough. saveInvoice falls back to
+  // _invoiceExistingSig, so on an already-signed invoice the old signature came
+  // straight back on save and a signature could never actually be removed.
+  _invoiceExistingSig = null;
+  var ex = document.getElementById('inv-existing-sig');
+  if (ex && ex.parentNode) ex.parentNode.removeChild(ex);
+}
 
-// Full-screen signature capture — tap-to-sign on phones, then copies back to the inline pad.
-function openInvoiceSignatureFullscreen() {
+// Full-screen signature capture. Tap-to-sign on phones, then either copies back
+// to the inline pad (invoice editor) or hands the cropped PNG to opts.onDone
+// (signing straight from the invoice view, including a locked/paid invoice).
+// All drawing here is in BITMAP pixels rather than CSS pixels: the canvas gets
+// re-sized when the phone is rotated, and a pre-scaled context over a resized
+// bitmap is exactly how the coordinates used to drift.
+function openInvoiceSignatureFullscreen(opts) {
+  var onDone = (opts && opts.onDone) || null;
   var old = document.getElementById('inv-sig-fs');
   if (old) old.remove();
   var ov = document.createElement('div');
@@ -11138,20 +11192,42 @@ function openInvoiceSignatureFullscreen() {
       '<div style="position:absolute;left:6%;right:6%;bottom:26%;border-bottom:2px dashed #ccc;pointer-events:none"></div>' +
       '<div style="position:absolute;left:6%;bottom:calc(26% + 6px);font-size:11px;color:#bbb;pointer-events:none">Sign above the line</div>' +
     '</div>' +
-    '<div style="padding:10px 16px;flex:0 0 auto;border-top:1px solid #e5e5e5"><button id="inv-sig-fs-clear" style="background:none;border:1px solid #ddd;border-radius:8px;padding:8px 18px;font-size:14px;color:#333">Clear</button></div>';
+    '<div style="padding:10px 16px;flex:0 0 auto;border-top:1px solid #e5e5e5;display:flex;align-items:center;gap:12px;flex-wrap:wrap">' +
+      '<button id="inv-sig-fs-clear" style="background:none;border:1px solid #ddd;border-radius:8px;padding:8px 18px;font-size:14px;color:#333">Clear</button>' +
+      '<span style="font-size:11px;color:#bbb">Turn the phone sideways for more room to sign.</span>' +
+    '</div>';
   document.body.appendChild(ov);
   var canvas = document.getElementById('inv-sig-fs-canvas');
-  var rect = canvas.getBoundingClientRect();
-  var dpr = window.devicePixelRatio || 1;
-  canvas.width = Math.round(rect.width * dpr);
-  canvas.height = Math.round(rect.height * dpr);
   var ctx = canvas.getContext('2d');
-  ctx.scale(dpr, dpr);
-  ctx.lineWidth = 2.5; ctx.lineCap = 'round'; ctx.lineJoin = 'round'; ctx.strokeStyle = '#111111';
-  var drawing = false, last = null, hasInk = false;
-  function pos(e){ var r = canvas.getBoundingClientRect(); var t = (e.touches && e.touches[0]) ? e.touches[0] : e; return { x: t.clientX - r.left, y: t.clientY - r.top }; }
+  var dpr = window.devicePixelRatio || 1;
+  var ink = sigNewInk();
+  var drawing = false, last = null;
+  function setStroke(){ ctx.lineWidth = 2.5 * dpr; ctx.lineCap = 'round'; ctx.lineJoin = 'round'; ctx.strokeStyle = '#111111'; }
+  function sizeCanvas(){
+    var r = canvas.getBoundingClientRect();
+    var d = window.devicePixelRatio || 1;
+    var w = Math.round(r.width * d), h = Math.round(r.height * d);
+    if (!w || !h) return;
+    if (w === canvas.width && h === canvas.height) { dpr = d; return; }
+    // Re-sizing a canvas wipes both the bitmap and the context state, so the
+    // ink is copied out first and re-fitted into the new shape. Rotating
+    // mid-signature used to leave the bitmap at its old size while the CSS box
+    // changed, which put every later stroke somewhere other than the finger.
+    var keep = null;
+    if (ink.any) {
+      keep = document.createElement('canvas');
+      keep.width = canvas.width; keep.height = canvas.height;
+      keep.getContext('2d').drawImage(canvas, 0, 0);
+    }
+    canvas.width = w; canvas.height = h;
+    dpr = d;
+    setStroke();
+    if (keep) ink = sigFitInk(keep, ink, ctx, w, h, 4) || sigNewInk();
+  }
+  sizeCanvas();
+  function pos(e){ var r = canvas.getBoundingClientRect(); var t = (e.touches && e.touches[0]) ? e.touches[0] : e; return { x: (t.clientX - r.left) * (canvas.width / r.width), y: (t.clientY - r.top) * (canvas.height / r.height) }; }
   function start(e){ e.preventDefault(); drawing = true; last = pos(e); }
-  function move(e){ if (!drawing) return; e.preventDefault(); var p = pos(e); ctx.beginPath(); ctx.moveTo(last.x, last.y); ctx.lineTo(p.x, p.y); ctx.stroke(); last = p; hasInk = true; }
+  function move(e){ if (!drawing) return; e.preventDefault(); var p = pos(e); ctx.beginPath(); ctx.moveTo(last.x, last.y); ctx.lineTo(p.x, p.y); ctx.stroke(); sigNoteInk(ink, last.x, last.y, ctx.lineWidth); sigNoteInk(ink, p.x, p.y, ctx.lineWidth); last = p; }
   function end(){ drawing = false; }
   canvas.addEventListener('mousedown', start);
   canvas.addEventListener('mousemove', move);
@@ -11159,13 +11235,38 @@ function openInvoiceSignatureFullscreen() {
   canvas.addEventListener('touchstart', start, { passive: false });
   canvas.addEventListener('touchmove', move, { passive: false });
   canvas.addEventListener('touchend', end);
-  function close(){ window.removeEventListener('mouseup', end); ov.remove(); }
-  document.getElementById('inv-sig-fs-clear').onclick = function(){ ctx.clearRect(0,0,canvas.width,canvas.height); hasInk = false; };
+  // iOS reports the new size a beat after orientationchange fires, so re-run it.
+  function onResize(){ sizeCanvas(); setTimeout(sizeCanvas, 250); }
+  window.addEventListener('resize', onResize);
+  window.addEventListener('orientationchange', onResize);
+  function close(){
+    window.removeEventListener('mouseup', end);
+    window.removeEventListener('resize', onResize);
+    window.removeEventListener('orientationchange', onResize);
+    ov.remove();
+  }
+  document.getElementById('inv-sig-fs-clear').onclick = function(){ ctx.clearRect(0,0,canvas.width,canvas.height); ink = sigNewInk(); };
   document.getElementById('inv-sig-fs-cancel').onclick = close;
   document.getElementById('inv-sig-fs-done').onclick = function(){
-    if (hasInk && _invoiceSigPad && _invoiceSigPad.fromCanvas) _invoiceSigPad.fromCanvas(canvas);
+    if (!ink.any) { close(); return; }
+    if (onDone) { var url = sigExportInk(canvas, ink, 600, 180); close(); onDone(url); return; }
+    if (_invoiceSigPad && _invoiceSigPad.fromCanvas) _invoiceSigPad.fromCanvas(canvas, ink);
     close();
   };
+}
+
+// Collect an authorization signature straight from the invoice view. This is the
+// only way to sign a PAID invoice: the edit form is locked for non-admins, and
+// the real field order is do the job, take the payment, THEN hand over the phone.
+async function invSignNow(id) {
+  openInvoiceSignatureFullscreen({ onDone: async function(dataUrl){
+    if (!dataUrl) return;
+    try {
+      await api('POST', '/invoices/' + id + '/signature', { signature_image: dataUrl });
+      showToast('Signature saved', 'success');
+      navigate('view-invoice', id);
+    } catch (e) { novaAlert(e.message); }
+  }});
 }
 
 // ---------- VIN + ID smart inputs ----------
@@ -11725,6 +11826,9 @@ async function renderViewInvoice(el, id) {
     var isAdminUser = ['admin', 'owner'].indexOf(state.user.role) !== -1;
     // A paid invoice is frozen: the money changes through a refund, not an edit.
     var canEdit = (seeAll || (can('edit_invoice') && inv.locksmith_id === state.user.id)) && (!invLocked || isAdminUser);
+    // Deliberately NOT gated on invLocked. A paid invoice is frozen for money
+    // edits, but the customer still has to be able to sign the authorization.
+    var canSign = seeAll || (can('edit_invoice') && inv.locksmith_id === state.user.id);
     var canDel = seeAll || (can('delete_invoice') && inv.locksmith_id === state.user.id);
     // Anyone who could have written this invoice can ask for a refund on it.
     var canRefund = can('request_refund') && inv.status !== 'draft' &&
@@ -11815,7 +11919,11 @@ async function renderViewInvoice(el, id) {
         '<div style="white-space:pre-wrap;font-size:12px;color:var(--text-muted-color);line-height:1.6">' + escHtml(agreement) + '</div>' +
         (inv.signature_image
           ? '<div style="margin-top:14px"><div style="font-size:12px;color:var(--text-muted-color);margin-bottom:4px">Signed by ' + escHtml(inv.signed_name || inv.customer_name || '') + (inv.signed_at ? ' on ' + formatDateTime(inv.signed_at) : '') + '</div><div style="background:#fff;border:1px solid var(--border);border-radius:8px;padding:8px;display:inline-block"><img src="' + inv.signature_image + '" style="max-width:340px;max-height:140px;display:block" /></div></div>'
-          : '<div style="margin-top:14px;font-size:13px;color:var(--text-muted-color)">No signature captured.</div>') +
+          : '<div style="margin-top:14px;font-size:13px;color:var(--text-muted-color)">No signature captured.</div>' +
+            (canSign
+              ? '<div style="margin-top:12px"><button class="btn btn-primary btn-sm" onclick="invSignNow(' + inv.id + ')">' + (icons.edit || '') + ' Collect signature</button>'
+                + '<div style="font-size:11px;color:var(--text-muted-color);margin-top:6px">Works on a paid invoice. Only the signature is saved.</div></div>'
+              : '')) +
       '</div></div>' +
       refundHistoryHtml(inv) +
       '<div class="card mb-4"><div class="card-header"><span class="card-title">Photos</span>' +

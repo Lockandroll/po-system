@@ -62,7 +62,9 @@ router.get('/admin', requireAuth, requirePermission('manage_running'), async (re
 });
 
 // POST create an item (requester adds to own list; admin can add to any city)
-router.post('/', requireAuth, async (req, res) => {
+// Gated on view_pos to match the Monthly Req screen: these items get rolled into a
+// real PO later, so a role that cannot see purchasing should not be able to seed it.
+router.post('/', requireAuth, requirePermission('view_pos'), async (req, res) => {
   const description = (req.body.description || '').trim();
   const city_code = req.body.city_code ? req.body.city_code.toUpperCase() : null;
   if (!description) return res.status(400).json({ error: 'Description is required' });

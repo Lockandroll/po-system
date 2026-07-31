@@ -112,7 +112,7 @@ async function canApprove(user, employeeId) {
 // ============================================================================
 
 // Current state for the punch UI. Drives everything.
-router.get('/status', requireAuth, async function (req, res) {
+router.get('/status', requireAuth, requirePermission('view_timeclock'), async function (req, res) {
   const uid = req.user.id;
   const entry = await openEntryFor(uid);
   let state = 'out', open = null, brk = null;
@@ -146,7 +146,7 @@ router.get('/status', requireAuth, async function (req, res) {
   });
 });
 
-router.post('/clock-in', requireAuth, async function (req, res) {
+router.post('/clock-in', requireAuth, requirePermission('view_timeclock'), async function (req, res) {
   const uid = req.user.id;
   const city = await primaryCity(uid);
   // Match a published shift for today to enable lateness + late alerts.
@@ -195,7 +195,7 @@ router.post('/clock-in', requireAuth, async function (req, res) {
   }
 });
 
-router.post('/clock-out', requireAuth, async function (req, res) {
+router.post('/clock-out', requireAuth, requirePermission('view_timeclock'), async function (req, res) {
   const uid = req.user.id;
   const entry = await openEntryFor(uid);
   if (!entry) return res.status(409).json({ error: 'You are not clocked in.' });

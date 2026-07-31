@@ -88,8 +88,13 @@ router.post('/oauth/register', async function (req, res) {
       return res.status(400).json({ error: 'invalid_redirect_uri', error_description: 'redirect_uris is required' });
     }
     for (var i = 0; i < uris.length; i++) {
-      if (!/^https?:\/\//i.test(uris[i])) {
-        return res.status(400).json({ error: 'invalid_redirect_uri', error_description: 'redirect URIs must be http(s)' });
+      // Registration is unauthenticated by protocol design, so the redirect target is
+      // the only thing standing between a stray authorization code and a stranger.
+      // https everywhere, except loopback, which is how native clients do this.
+      var okUri = /^https:\/\//i.test(uris[i]) ||
+        /^http:\/\/(localhost|127\.0\.0\.1)(:|\/|$)/i.test(uris[i]);
+      if (!okUri) {
+        return res.status(400).json({ error: 'invalid_redirect_uri', error_description: 'redirect URIs must be https (or http on localhost)' });
       }
     }
     var clientId = 'nova_' + randToken(16);
@@ -255,11 +260,21 @@ router.post('/oauth/authorize', urlenc, async function (req, res) {
 
 // ---- Token endpoint ----
 async function issueTokens(req, res, userId, clientId, scope) {
-  var ur = await pool.query('SELECT id,email,name,role,active FROM users WHERE id=$1', [userId]);
+  var ur = await pool.query(
+    'SELECT id,email,name,role,active,session_epoch,onboarding_status FROM users WHERE id=$1',
+    [userId]
+  );
   var u = ur.rows[0];
   if (!u || u.active === false) return res.status(400).json({ error: 'invalid_grant', error_description: 'user inactive' });
+  if (u.onboarding_status && u.onboarding_status !== 'complete') {
+    return res.status(400).json({ error: 'invalid_grant', error_description: 'onboarding incomplete' });
+  }
+  // Carry the session epoch. Without it a password reset or forced sign-out - which is
+  // exactly what you do when a token goes missing - left this connection alive for its
+  // full hour, and the 60-day refresh token kept renewing it.
   var access = jwt.sign(
-    { id: u.id, email: u.email, name: u.name, role: u.role, scope: scope || SCOPE, aud: resourceUrl(req), token_use: 'mcp' },
+    { id: u.id, email: u.email, name: u.name, role: u.role, se: Number(u.session_epoch || 0),
+      scope: scope || SCOPE, aud: resourceUrl(req), token_use: 'mcp' },
     process.env.JWT_SECRET, { expiresIn: ACCESS_TTL_SEC }
   );
   var refresh = randToken(48);

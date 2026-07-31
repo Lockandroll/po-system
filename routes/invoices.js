@@ -1027,6 +1027,47 @@ router.post('/', requireAuth, requirePermission('create_invoice'), async (req, r
   }
 });
 
+// Sign an invoice, and ONLY sign it.
+// A paid invoice is frozen by PUT /:id because the Square dispute packet is
+// built from its numbers, but the real field order is do the job, take the
+// payment, THEN hand the customer the phone. Locking the signature behind the
+// same gate made the authorization impossible to collect after the fact. This
+// route is deliberately narrow: it writes signature_image / signed_name /
+// signed_at and nothing else, it never touches money, status or line items, and
+// it refuses to overwrite a signature that is already there.
+router.post('/:id/signature', requireAuth, requirePermission('edit_invoice'), async (req, res) => {
+  try {
+    const r = await pool.query('SELECT id, invoice_number, locksmith_id, customer_name, signature_image FROM invoices WHERE id = $1', [req.params.id]);
+    if (!r.rows.length) return res.status(404).json({ error: 'Invoice not found' });
+    const inv = r.rows[0];
+    if (!canSeeAll(req.user.role) && inv.locksmith_id !== req.user.id) {
+      return res.status(403).json({ error: 'Access denied' });
+    }
+    const img = (req.body || {}).signature_image;
+    if (typeof img !== 'string' || img.indexOf('data:image/png;base64,') !== 0) {
+      return res.status(400).json({ error: 'A signature image is required.' });
+    }
+    if (img.length > 4000000) {
+      return res.status(400).json({ error: 'That signature image is too large.' });
+    }
+    // A signature is evidence. Replacing one is an admin decision, not something
+    // a second pass over the same invoice should do quietly.
+    if (inv.signature_image && ['admin', 'owner'].indexOf(req.user.role) === -1) {
+      return res.status(409).json({ error: 'This invoice is already signed. Ask an admin to replace the signature.' });
+    }
+    const name = (req.body.signed_name || inv.customer_name || '').toString().trim().slice(0, 255) || null;
+    const upd = await pool.query(
+      'UPDATE invoices SET signature_image = $1, signed_name = $2, signed_at = NOW(), updated_at = NOW() WHERE id = $3 RETURNING signature_image, signed_name, signed_at',
+      [img, name, inv.id]
+    );
+    try { await logAudit({ entity_type: 'invoice', entity_id: inv.id, entity_number: String(inv.invoice_number), action: 'signed', user_id: req.user.id, user_name: req.user.name, details: { signed_name: name, replaced: !!inv.signature_image } }); } catch (e) {}
+    res.json(upd.rows[0]);
+  } catch (err) {
+    console.error('Sign invoice error:', err);
+    res.status(500).json({ error: 'Failed to save the signature' });
+  }
+});
+
 router.put('/:id', requireAuth, requirePermission('edit_invoice'), async (req, res) => {
   try {
     const cur = await pool.query('SELECT * FROM invoices WHERE id = $1', [req.params.id]);

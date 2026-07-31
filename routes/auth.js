@@ -273,6 +273,12 @@ router.post('/reset-password', async (req, res) => {
   // Bump the session epoch so every session minted before this reset is invalidated,
   // then hand back a fresh token carrying the new epoch so this response stays signed in.
   await pool.query('UPDATE users SET password_hash=$1, failed_attempts=0, lockout_until=NULL, session_epoch = COALESCE(session_epoch,0) + 1 WHERE id=$2', [password_hash, u.user_id]);
+  // A password reset means "cut off anything still holding my old credentials." That has
+  // to include connected apps: an OAuth refresh token lives 60 days and would otherwise
+  // keep minting fresh access tokens for the external Claude connector.
+  try {
+    await pool.query('UPDATE oauth_refresh_tokens SET revoked = true WHERE user_id = $1 AND revoked = false', [u.user_id]);
+  } catch (e) { console.error('Failed to revoke OAuth refresh tokens on password reset:', e.message); }
   await pool.query('UPDATE password_resets SET used=true WHERE token=$1', [tokenHash]);
   const newEpoch = Number(u.session_epoch || 0) + 1;
   const tokenClaims = { id: u.user_id, email: u.email, name: u.name, role: u.role, se: newEpoch };

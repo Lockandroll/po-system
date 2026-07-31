@@ -161,7 +161,7 @@ router.post('/', requireAuth, requirePermission('create_po'), async (req, res) =
 });
 
 // Update PO
-router.put('/:id', requireAuth, async (req, res) => {
+router.put('/:id', requireAuth, requirePermission('edit_po'), async (req, res) => {
   const vendor_name = req.body.vendor_name;
   const customer_name = req.body.customer_name;
   const city_code = req.body.city_code;
