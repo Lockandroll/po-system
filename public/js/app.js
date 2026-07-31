@@ -2,7 +2,7 @@
 // public/sw.js (the only thing bumped each deploy) — the badge asks the active
 // service worker for it at runtime. This value is just the fallback shown when no
 // service worker is available (e.g. very first visit before it installs).
-var APP_VERSION = 'v86';
+var APP_VERSION = 'v87';
 var _resolvedAppVersion = null;
 
 // Ask the active service worker for its CACHE_VERSION (without the 'nova-' prefix).
@@ -19284,7 +19284,7 @@ async function renderAssetInventory(el) {
         '<div><div class="page-title">Inventory</div><div class="page-subtitle">Every piece of company property, where it is, and who has it</div></div>' +
         '<div class="row-actions">' +
           '<button class="btn btn-secondary btn-sm" onclick="assetExportCsv()">Export CSV</button>' +
-          '<button class="btn btn-primary btn-sm" onclick="openAssetUnitEditor(null)">' + icons.plus + ' Add Item</button>' +
+          '<button class="btn btn-primary btn-sm" onclick="openAddItemModal()">' + icons.plus + ' Add Item</button>' +
         '</div>' +
       '</div>' +
       '<div id="assets-msg"></div>' +
@@ -19371,7 +19371,17 @@ async function invLoad() {
         ' &bull; ' + assetMoney(data.value) + ' replacement value';
     }
     if (!data.items.length) {
-      wrap.innerHTML = '<div class="empty-state"><h3>Nothing here yet</h3><p>Add equipment to the Equipment List, then receive stock into a location.</p></div>';
+      var blank = !(_assetTypes && _assetTypes.length);
+      wrap.innerHTML = '<div class="empty-state">' +
+        (blank
+          ? '<h3>Set up your Equipment List first</h3>' +
+            '<p style="max-width:520px;margin:0 auto 18px">Tell Nova what kinds of things you issue &mdash; a reach tool, a jump pack, polo shirts. ' +
+              'Most things are just a count; only expensive gear needs its own serial number.</p>' +
+            '<button class="btn btn-primary" onclick="navigate(&#39;asset-catalog&#39;)">Go to the Equipment List</button>'
+          : '<h3>Nothing in stock yet</h3>' +
+            '<p style="max-width:520px;margin:0 auto 18px">Add what you already own. For anything you buy by the box just give a number &mdash; no serial needed.</p>' +
+            '<button class="btn btn-primary" onclick="openAddItemModal()">Add Item</button>') +
+      '</div>';
       return;
     }
     var rows = data.items.map(function (r) {
@@ -20970,56 +20980,174 @@ async function saveKit(id, btn) {
   } catch (err) { btn.disabled = false; assetErr('kit-err', err.message); }
 }
 
-function openAssetUnitEditor(id) {
-  Promise.all([assetTypesLoad(), assetMyCities(), id ? api('GET', '/assets/' + id) : Promise.resolve(null)])
-    .then(function (res) {
-      var types = res[0].filter(function (t) { return t.serialized; });
-      var cities = res[1];
-      var a = res[2];
-      var ov = document.createElement('div');
-      ov.className = 'modal-overlay';
+// Add what you already own. Handles both shapes of equipment: a counted item
+// (a reach tool off Amazon, polo shirts) is just a number, while a serialized
+// one gets a row per physical unit. Both go through the same receive endpoint,
+// which writes the ledger for counted stock and creates the units for the rest.
+async function openAddItemModal() {
+  try {
+    var types = await assetTypesLoad(true);
+    var cities = await assetMyCities();
+    var ov = document.createElement('div');
+    ov.className = 'modal-overlay';
+
+    if (!types.length) {
       ov.innerHTML =
         '<div class="modal">' +
-          '<div class="modal-header"><span class="modal-title">' + (a ? 'Edit Item' : 'Add Item') + '</span>' +
+          '<div class="modal-header"><span class="modal-title">Add Item</span>' +
           '<button class="btn btn-ghost btn-sm" onclick="this.closest(\'.modal-overlay\').remove()">&#10005;</button></div>' +
-          '<div class="modal-body"><div id="unit-err"></div>' +
-            (a ? '' :
-              '<div class="form-group"><label>Equipment *</label><select id="unit-type">' +
-                types.map(function (t) { return '<option value="' + t.id + '">' + escHtml(t.name) + '</option>'; }).join('') +
-              '</select>' + (types.length ? '' : '<div style="font-size:12px;color:var(--warning);margin-top:6px">Add a serialized equipment type first.</div>') + '</div>' +
-              '<div class="form-group"><label>City *</label><select id="unit-city">' + assetCityOptions(cities, '', '') + '</select></div>') +
-            '<div class="form-row">' +
-              '<div class="form-group"><label>Asset tag</label><input type="text" id="unit-tag" value="' + escHtml(a ? (a.asset_tag || '') : '') + '" /></div>' +
-              '<div class="form-group"><label>Serial number</label><input type="text" id="unit-serial" value="' + escHtml(a ? (a.serial_number || '') : '') + '" /></div>' +
-            '</div>' +
-            '<div class="form-row">' +
-              '<div class="form-group"><label>Condition</label><select id="unit-cond">' +
-                ['new', 'good', 'fair', 'poor'].map(function (c) { return '<option value="' + c + '"' + (a && a.condition === c ? ' selected' : '') + '>' + c.charAt(0).toUpperCase() + c.slice(1) + '</option>'; }).join('') +
-              '</select></div>' +
-              '<div class="form-group"><label>Purchase date</label><input type="date" id="unit-date" value="' + escHtml(a && a.purchase_date ? String(a.purchase_date).slice(0, 10) : '') + '" /></div>' +
-            '</div>' +
-            '<div class="form-group" style="margin-bottom:0"><label>Notes</label><input type="text" id="unit-notes" value="' + escHtml(a ? (a.notes || '') : '') + '" /></div>' +
+          '<div class="modal-body">' +
+            '<p style="font-size:14px;color:var(--text-dim);line-height:1.6;margin-bottom:14px">' +
+              'Your Equipment List is empty, so there is nothing to add yet. Tell Nova what kinds of things you issue first &mdash; ' +
+              'a reach tool, a jump pack, polo shirts &mdash; then come back and say how many you have.</p>' +
+            '<div style="font-size:13px;color:var(--text-muted-color);line-height:1.6">' +
+              'Most equipment is just a count. Only leave <strong>Serialized</strong> ticked for expensive gear you want to track ' +
+              'unit by unit, like a key machine or a programmer.</div>' +
           '</div>' +
           '<div class="modal-footer"><button class="btn btn-secondary" onclick="this.closest(\'.modal-overlay\').remove()">Cancel</button>' +
-          '<button class="btn btn-primary" onclick="saveAssetUnit(' + (id || 'null') + ',this)">Save</button></div>' +
+          '<button class="btn btn-primary" onclick="this.closest(\'.modal-overlay\').remove();navigate(\'asset-catalog\')">Go to the Equipment List</button></div>' +
         '</div>';
       document.body.appendChild(ov);
-    }).catch(function (e) { showToast(e.message, 'error'); });
+      return;
+    }
+    if (!cities.length) {
+      showToast('You have no cities assigned, so there is nowhere to put stock. Ask an admin to set your cities.', 'error');
+      return;
+    }
+
+    ov.innerHTML =
+      '<div class="modal">' +
+        '<div class="modal-header"><span class="modal-title">Add Item</span>' +
+        '<button class="btn btn-ghost btn-sm" onclick="this.closest(\'.modal-overlay\').remove()">&#10005;</button></div>' +
+        '<div class="modal-body"><div id="add-err"></div>' +
+          '<div class="form-group"><label>Equipment *</label>' +
+            '<select id="add-type" onchange="addItemTypeChanged()">' +
+              types.map(function (t) {
+                return '<option value="' + t.id + '" data-serialized="' + (t.serialized ? '1' : '0') + '">' +
+                  escHtml(t.name) + ' — ' + (t.serialized ? 'serialized' : 'counted') + '</option>';
+              }).join('') +
+            '</select>' +
+            '<div id="add-type-hint" class="po-src" style="font-style:normal"></div></div>' +
+          '<div class="form-row">' +
+            '<div class="form-group"><label>City *</label><select id="add-city">' + assetCityOptions(cities, '', '') + '</select></div>' +
+            '<div class="form-group"><label>How many *</label><input type="number" id="add-qty" min="1" value="1" oninput="addItemTypeChanged()" /></div>' +
+          '</div>' +
+          '<div id="add-unitfields"><div class="form-row">' +
+            '<div class="form-group"><label>Condition</label><select id="add-cond">' +
+              ['new', 'good', 'fair'].map(function (c) { return '<option value="' + c + '">' + c.charAt(0).toUpperCase() + c.slice(1) + '</option>'; }).join('') +
+            '</select></div>' +
+            '<div class="form-group"><label>Purchase date <span style="font-weight:400;font-size:0.8em;color:var(--text-muted-color)">optional</span></label>' +
+              '<input type="date" id="add-date" /></div>' +
+          '</div></div>' +
+          '<div id="add-serials"></div>' +
+          '<div class="form-group" style="margin-bottom:0"><label>Note <span style="font-weight:400;font-size:0.8em;color:var(--text-muted-color)">shows on the location ledger</span></label>' +
+            '<input type="text" id="add-note" placeholder="e.g. opening stock count" /></div>' +
+        '</div>' +
+        '<div class="modal-footer"><button class="btn btn-secondary" onclick="this.closest(\'.modal-overlay\').remove()">Cancel</button>' +
+        '<button class="btn btn-primary" onclick="saveAddItem(this)">Add to inventory</button></div>' +
+      '</div>';
+    document.body.appendChild(ov);
+    addItemTypeChanged();
+  } catch (err) { showToast(err.message, 'error'); }
 }
+
+// Counted equipment needs nothing but a number. Serialized equipment gets a tag
+// and serial box per unit, capped so asking for 200 does not build 200 rows.
+function addItemTypeChanged() {
+  var sel = document.getElementById('add-type');
+  var wrap = document.getElementById('add-serials');
+  var hint = document.getElementById('add-type-hint');
+  if (!sel || !wrap) return;
+  var opt = sel.options[sel.selectedIndex];
+  var serialized = opt && opt.getAttribute('data-serialized') === '1';
+  var qty = parseInt((document.getElementById('add-qty') || {}).value, 10) || 1;
+  if (hint) {
+    hint.innerHTML = serialized
+      ? 'Tracked unit by unit. Each one gets its own tag, serial and history.'
+      : 'Tracked as a count. Just say how many are on the shelf &mdash; no serial numbers.';
+  }
+  // Condition and purchase date belong to a physical unit. A count has neither,
+  // and the receive endpoint does not store them, so do not ask for them.
+  var uf = document.getElementById('add-unitfields');
+  if (uf) uf.style.display = serialized ? '' : 'none';
+  if (!serialized) { wrap.innerHTML = ''; return; }
+  var show = Math.min(qty, 20);
+  var rows = '';
+  for (var i = 0; i < show; i++) {
+    rows += '<div class="form-row" style="margin-bottom:8px">' +
+      '<div class="form-group" style="margin:0"><input type="text" class="add-tag" placeholder="Asset tag ' + (i + 1) + '" /></div>' +
+      '<div class="form-group" style="margin:0"><input type="text" class="add-serial" placeholder="Serial ' + (i + 1) + '" /></div></div>';
+  }
+  wrap.innerHTML = '<div class="rf-sec" style="margin-top:4px">Tags &amp; serials ' +
+    '<span style="text-transform:none;letter-spacing:0;font-weight:400">(optional, can be filled in later)</span></div>' + rows +
+    (qty > show ? '<div style="font-size:12px;color:var(--text-muted-color);margin-bottom:12px">The other ' + (qty - show) +
+      ' will be created untagged. You can add their tags from the item list.</div>' : '<div style="height:8px"></div>');
+}
+
+async function saveAddItem(btn) {
+  function v(x) { var e = document.getElementById(x); return e ? e.value : ''; }
+  var typeId = parseInt(v('add-type'), 10);
+  var qty = parseInt(v('add-qty'), 10) || 0;
+  var city = v('add-city');
+  if (!typeId) { assetErr('add-err', 'Pick the equipment.'); return; }
+  if (qty < 1) { assetErr('add-err', 'How many are you adding?'); return; }
+  btn.disabled = true;
+  try {
+    var tags = Array.prototype.map.call(document.querySelectorAll('.add-tag'), function (i) { return i.value.trim() || null; });
+    var serials = Array.prototype.map.call(document.querySelectorAll('.add-serial'), function (i) { return i.value.trim() || null; });
+    await api('POST', '/assets/locations/' + encodeURIComponent(city) + '/receive', {
+      asset_type_id: typeId, qty: qty,
+      asset_tags: tags, serial_numbers: serials,
+      condition: v('add-cond') || 'new',
+      purchase_date: v('add-date') || null,
+      note: v('add-note') || null
+    });
+    var ov = document.querySelector('.modal-overlay'); if (ov) ov.remove();
+    showToast(qty + ' added to ' + city, 'success');
+    render();
+  } catch (err) { btn.disabled = false; assetErr('add-err', err.message); }
+}
+
+// Editing one existing serialized unit. Adding is handled by openAddItemModal.
+function openAssetUnitEditor(id) {
+  if (!id) return openAddItemModal();
+  api('GET', '/assets/' + id).then(function (a) {
+    var ov = document.createElement('div');
+    ov.className = 'modal-overlay';
+    ov.innerHTML =
+      '<div class="modal">' +
+        '<div class="modal-header"><span class="modal-title">Edit Item</span>' +
+        '<button class="btn btn-ghost btn-sm" onclick="this.closest(\'.modal-overlay\').remove()">&#10005;</button></div>' +
+        '<div class="modal-body"><div id="unit-err"></div>' +
+          '<div class="detail-field" style="margin-bottom:16px"><label>Equipment</label><p>' + escHtml(a.name) + '</p></div>' +
+          '<div class="form-row">' +
+            '<div class="form-group"><label>Asset tag</label><input type="text" id="unit-tag" value="' + escHtml(a.asset_tag || '') + '" /></div>' +
+            '<div class="form-group"><label>Serial number</label><input type="text" id="unit-serial" value="' + escHtml(a.serial_number || '') + '" /></div>' +
+          '</div>' +
+          '<div class="form-row">' +
+            '<div class="form-group"><label>Condition</label><select id="unit-cond">' +
+              ['new', 'good', 'fair', 'poor'].map(function (c) { return '<option value="' + c + '"' + (a.condition === c ? ' selected' : '') + '>' + c.charAt(0).toUpperCase() + c.slice(1) + '</option>'; }).join('') +
+            '</select></div>' +
+            '<div class="form-group"><label>Purchase date</label><input type="date" id="unit-date" value="' + escHtml(a.purchase_date ? String(a.purchase_date).slice(0, 10) : '') + '" /></div>' +
+          '</div>' +
+          '<div class="form-group" style="margin-bottom:0"><label>Notes</label><input type="text" id="unit-notes" value="' + escHtml(a.notes || '') + '" /></div>' +
+          '<div style="font-size:12px;color:var(--text-muted-color);margin-top:12px;line-height:1.5">City is changed with a transfer, never by editing the row, so both locations&#39; books always agree.</div>' +
+        '</div>' +
+        '<div class="modal-footer"><button class="btn btn-secondary" onclick="this.closest(\'.modal-overlay\').remove()">Cancel</button>' +
+        '<button class="btn btn-primary" onclick="saveAssetUnit(' + a.id + ',this)">Save</button></div>' +
+      '</div>';
+    document.body.appendChild(ov);
+  }).catch(function (e) { showToast(e.message, 'error'); });
+}
+
 async function saveAssetUnit(id, btn) {
   function v(x) { var e = document.getElementById(x); return e ? e.value : ''; }
   btn.disabled = true;
   try {
-    var body = {
+    await api('PUT', '/assets/' + id, {
       asset_tag: v('unit-tag') || null, serial_number: v('unit-serial') || null,
       condition: v('unit-cond'), purchase_date: v('unit-date') || null, notes: v('unit-notes') || null
-    };
-    if (id) await api('PUT', '/assets/' + id, body);
-    else {
-      body.asset_type_id = parseInt(v('unit-type'), 10);
-      body.city_code = v('unit-city');
-      await api('POST', '/assets/', body);
-    }
+    });
     var ov = document.querySelector('.modal-overlay'); if (ov) ov.remove();
     showToast('Saved', 'success');
     render();

@@ -804,7 +804,7 @@ router.post('/locations/:cityCode/receive', requireAuth, requirePermission('mana
     } else {
       await adjustStock(client, {
         asset_type_id: typeId, city_code: code, delta: qty,
-        reason: b.po_id ? 'received_po' : 'adjustment',
+        reason: b.po_id ? 'received_po' : 'received',
         ref_type: b.po_id ? 'po' : null, ref_id: intOrNull(b.po_id),
         user: req.user, note: b.note || null
       });
