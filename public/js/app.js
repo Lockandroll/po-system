@@ -2,7 +2,7 @@
 // public/sw.js (the only thing bumped each deploy) — the badge asks the active
 // service worker for it at runtime. This value is just the fallback shown when no
 // service worker is available (e.g. very first visit before it installs).
-var APP_VERSION = 'v84';
+var APP_VERSION = 'v85';
 var _resolvedAppVersion = null;
 
 // Ask the active service worker for its CACHE_VERSION (without the 'nova-' prefix).
@@ -810,7 +810,7 @@ function navModel() {
 
     navItem('suggestions', 'Suggestions', NAVI.suggestion),
     { type: 'link', href: 'https://www.idssonline.com/pulsar.html', label: 'Pulsar Download', icon: NAVI.download },
-    { type: 'link', href: 'https://discord.gg/cMbHbbz47', label: 'Discord Channel', icon: NAVI.discord },
+    { type: 'link', href: 'https://discord.gg/sretUehr5', label: 'Discord Channel', icon: NAVI.discord },
 
     navGroup('settings', 'Settings', icons.settings, [
       isAdminMgr ? navItem('company-info', 'Company Information', NAVI.building, ['company-info', 'settings']) : null,
