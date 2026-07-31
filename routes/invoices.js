@@ -68,6 +68,97 @@ async function getSetting(key, fallback) {
   } catch (e) { return fallback; }
 }
 
+// ---- Close-out policy: signature + required photos -------------------------
+// Both of these used to be (or would naturally have been) per-invoice checkboxes.
+// They are company policy instead, set once under Invoice Setup, because the job
+// that most needs a signature and a plate photo is exactly the job where a tech in
+// a hurry would clear the checkbox. The invoice row still stores the rule it was
+// closed out under (invoices.signature_required), so tightening the policy next
+// month does not retroactively invalidate last month's paperwork.
+
+const DEFAULT_PHOTO_REQUIREMENTS = [
+  { key: 'dl', label: "Driver's License", required: true },
+  { key: 'entitlement', label: 'Entitlement (Insurance / Registration / Rental Agreement)', required: true },
+  { key: 'plate', label: 'License Plate', required: true },
+  { key: 'after_service', label: 'After Service', required: true }
+];
+
+function normalizePhotoKey(k) {
+  return String(k == null ? '' : k).trim().toLowerCase().replace(/[^a-z0-9_]+/g, '_').replace(/^_+|_+$/g, '').slice(0, 40);
+}
+
+// The editable catalog of photo slots. Anything unreadable falls back to the four
+// defaults rather than to "nothing is required" — a corrupt setting must not
+// quietly switch the gate off.
+async function photoRequirementCatalog() {
+  let list;
+  try { list = JSON.parse(await getSetting('invoice_photo_requirements', 'null')); } catch (e) { list = null; }
+  if (!Array.isArray(list)) return DEFAULT_PHOTO_REQUIREMENTS.slice();
+  const out = [];
+  const seen = {};
+  list.forEach(function (r) {
+    if (!r || typeof r !== 'object') return;
+    const key = normalizePhotoKey(r.key);
+    if (!key || seen[key]) return;
+    seen[key] = true;
+    out.push({
+      key: key,
+      label: String(r.label == null ? '' : r.label).trim().slice(0, 120) || key,
+      required: r.required !== false
+    });
+  });
+  return out;
+}
+
+// The rules a given invoice is actually judged against. account_id may be null
+// (a walk-up cash job has no account), in which case the global list applies.
+async function closeOutRules(accountId) {
+  const catalog = await photoRequirementCatalog();
+  const sigRaw = String(await getSetting('invoice_signature_required_default', 'true')).trim().toLowerCase();
+  const signature_required = sigRaw !== 'false' && sigRaw !== '0' && sigRaw !== 'no' && sigRaw !== '';
+  let keys = catalog.filter(function (r) { return r.required; }).map(function (r) { return r.key; });
+  if (accountId) {
+    try {
+      const { rows } = await pool.query('SELECT required_photos FROM vendors WHERE id = $1', [accountId]);
+      const ov = rows.length ? rows[0].required_photos : null;
+      // NULL = inherit the global list. [] = this account genuinely requires none.
+      if (Array.isArray(ov)) {
+        const valid = {};
+        catalog.forEach(function (r) { valid[r.key] = true; });
+        keys = ov.map(normalizePhotoKey).filter(function (k) { return k && valid[k]; });
+      }
+    } catch (e) { /* fall through to the global list */ }
+  }
+  return { signature_required: signature_required, catalog: catalog, required_photo_keys: keys };
+}
+
+// Which required slots have no usable photo on this invoice yet. Only photos that
+// finished uploading count: a 'pending' row is a presigned URL that may never have
+// been written to, so counting it would let a failed upload satisfy the gate.
+async function missingRequiredPhotos(invoiceId, keys) {
+  if (!keys || !keys.length) return [];
+  let have = {};
+  try {
+    const { rows } = await pool.query(
+      "SELECT DISTINCT photo_type FROM invoice_photos WHERE invoice_id = $1 AND status = 'ready' AND photo_type IS NOT NULL",
+      [invoiceId]
+    );
+    rows.forEach(function (r) { have[normalizePhotoKey(r.photo_type)] = true; });
+  } catch (e) { have = {}; }
+  return keys.filter(function (k) { return !have[k]; });
+}
+
+function photoGateError(missingKeys, catalog) {
+  const byKey = {};
+  (catalog || []).forEach(function (r) { byKey[r.key] = r.label; });
+  const names = missingKeys.map(function (k) { return byKey[k] || k; });
+  return {
+    error: 'Missing required photo' + (names.length === 1 ? '' : 's') + ': ' + names.join(', ') + '. Save this as a draft, attach the photos, then close it out.',
+    photos_missing: missingKeys,
+    photos_missing_labels: names
+  };
+}
+
 // The raw Square payload can carry the buyer's email if they took a digital
 // receipt, and internal risk-evaluation fields. The client never needs either,
 // so it is stripped on the way out rather than filtered in the view layer.
@@ -271,7 +362,7 @@ function canSeeAll(role) { return role === 'admin' || role === 'manager'; }
 router.get('/accounts', requireAuth, requirePermission('view_invoices'), async (req, res) => {
   try {
     const { rows } = await pool.query(
-      'SELECT id, name, account_number, invoice_notes, auto_line_items, agreement_text FROM vendors WHERE show_in_invoice = true ORDER BY name ASC'
+      'SELECT id, name, account_number, invoice_notes, auto_line_items, agreement_text, required_photos FROM vendors WHERE show_in_invoice = true ORDER BY name ASC'
     );
     res.json(rows);
   } catch (err) {
@@ -295,7 +386,15 @@ router.get('/config', requireAuth, requirePermission('view_invoices'), async (re
     try { pulsar_pay_map = JSON.parse(await getSetting('pulsar_pay_type_map', '{}')) || {}; } catch (e) { pulsar_pay_map = {}; }
     if (typeof pulsar_pay_map !== 'object' || Array.isArray(pulsar_pay_map)) pulsar_pay_map = {};
     const hc = await pool.query('SELECT home_city FROM users WHERE id = $1', [req.user.id]);
-    res.json({ default_agreement: agreement, pay_types: pay_types, pulsar_pay_map: pulsar_pay_map, home_city: (hc.rows[0] && hc.rows[0].home_city) || null });
+    const rules = await closeOutRules(null);
+    res.json({
+      default_agreement: agreement,
+      pay_types: pay_types,
+      pulsar_pay_map: pulsar_pay_map,
+      home_city: (hc.rows[0] && hc.rows[0].home_city) || null,
+      signature_required_default: rules.signature_required,
+      photo_requirements: rules.catalog
+    });
   } catch (err) {
     res.status(500).json({ error: 'Failed to fetch invoice config' });
   }
@@ -312,6 +411,51 @@ router.post('/pay-types', requireAuth, requirePermission('manage_invoice_setup')
     await pool.query("INSERT INTO settings (key, value, updated_at) VALUES ('invoice_pay_types', $1, NOW()) ON CONFLICT (key) DO UPDATE SET value = $1, updated_at = NOW()", [JSON.stringify(clean)]);
     res.json({ ok: true, pay_types: clean });
   } catch (err) { console.error(err); res.status(500).json({ error: 'Failed to save pay types' }); }
+});
+
+// Save the photo-slot catalog + the Signature Required policy (managers/admin).
+// Removing a slot does NOT delete photos already filed under it; the rows keep
+// their photo_type and simply stop counting toward anything, so re-adding the
+// slot later brings the old evidence back into view instead of orphaning it.
+router.post('/photo-requirements', requireAuth, requirePermission('manage_invoice_setup'), async (req, res) => {
+  const list = req.body && req.body.requirements;
+  if (!Array.isArray(list)) return res.status(400).json({ error: 'requirements must be an array' });
+  if (list.length > 40) return res.status(400).json({ error: 'That is more photo slots than any job needs. Keep it under 40.' });
+  const clean = [];
+  const seen = {};
+  for (const r of list) {
+    if (!r || typeof r !== 'object') continue;
+    const label = String(r.label == null ? '' : r.label).trim().slice(0, 120);
+    if (!label) continue;
+    // A slot's key is its permanent identity: photos already filed against it
+    // point at the key, so it is generated from the label once and then kept.
+    let key = normalizePhotoKey(r.key) || normalizePhotoKey(label);
+    if (!key) continue;
+    if (seen[key]) continue;
+    seen[key] = true;
+    clean.push({ key: key, label: label, required: r.required !== false });
+  }
+  try {
+    await pool.query(
+      "INSERT INTO settings (key, value, updated_at) VALUES ('invoice_photo_requirements', $1, NOW()) ON CONFLICT (key) DO UPDATE SET value = $1, updated_at = NOW()",
+      [JSON.stringify(clean)]
+    );
+    if (req.body.signature_required_default !== undefined) {
+      await pool.query(
+        "INSERT INTO settings (key, value, updated_at) VALUES ('invoice_signature_required_default', $1, NOW()) ON CONFLICT (key) DO UPDATE SET value = $1, updated_at = NOW()",
+        [req.body.signature_required_default === true || req.body.signature_required_default === 'true' ? 'true' : 'false']
+      );
+    }
+    try {
+      await logAudit({
+        entity_type: 'settings', entity_id: 0, entity_number: 'invoice_photo_requirements', action: 'edited',
+        user_id: req.user.id, user_name: req.user.name,
+        details: { required: clean.filter(function (c) { return c.required; }).map(function (c) { return c.key; }), signature_required_default: req.body.signature_required_default }
+      });
+    } catch (e) {}
+    const rules = await closeOutRules(null);
+    res.json({ ok: true, photo_requirements: rules.catalog, signature_required_default: rules.signature_required });
+  } catch (err) { console.error(err); res.status(500).json({ error: 'Failed to save the photo requirements' }); }
 });
 
 // Save the Nova pay type -> Pulsar label map (managers/admin). Blank values are
@@ -636,13 +780,19 @@ router.get('/:id', requireAuth, requirePermission('view_invoices'), async (req, 
     // Attach photos with short-lived presigned view URLs (if R2 is configured).
     invoice.photos = [];
     try {
-      const ph = await pool.query("SELECT id, filename, mime_type, caption, show_in_print, position, r2_key FROM invoice_photos WHERE invoice_id = $1 AND status = 'ready' ORDER BY position, id", [req.params.id]);
+      const ph = await pool.query("SELECT id, filename, mime_type, caption, show_in_print, position, r2_key, photo_type FROM invoice_photos WHERE invoice_id = $1 AND status = 'ready' ORDER BY position, id", [req.params.id]);
       for (const p of ph.rows) {
         let url = null;
         if (r2.configured()) { try { url = await r2.presignDownload(p.r2_key, p.filename || 'photo', true); } catch (e) {} }
-        invoice.photos.push({ id: p.id, filename: p.filename, mime_type: p.mime_type, caption: p.caption, show_in_print: p.show_in_print, position: p.position, url: url });
+        invoice.photos.push({ id: p.id, filename: p.filename, mime_type: p.mime_type, caption: p.caption, show_in_print: p.show_in_print, position: p.position, url: url, photo_type: p.photo_type });
       }
     } catch (e) { /* table may not exist yet on first deploy */ }
+    // The close-out rules this invoice is judged against, so the editor can render
+    // the required slots and gate the save without a second round trip.
+    try {
+      const _r = await closeOutRules(invoice.account_id);
+      invoice.close_out_rules = { signature_required: _r.signature_required, photo_requirements: _r.catalog, required_photo_keys: _r.required_photo_keys };
+    } catch (e) { invoice.close_out_rules = null; }
     // Flag whether a scanned ID is on file (managers view it via /:id/id-image).
     // Never leak the R2 key or the other internal ID-image columns to the client.
     invoice.has_id_image = !!invoice.id_image_r2_key;
@@ -852,9 +1002,10 @@ router.post('/:id/photos/upload-url', requireAuth, requirePermission('create_inv
     if (!/^image\//.test(mime)) return res.status(400).json({ error: 'Only image files can be attached as photos.' });
     const posRow = await pool.query('SELECT COALESCE(MAX(position), -1) + 1 AS next FROM invoice_photos WHERE invoice_id = $1', [id]);
     const key = 'invoices/' + id + '/' + crypto.randomUUID() + '/' + name;
+    const ptype = normalizePhotoKey(req.body.photo_type) || null;
     const { rows } = await pool.query(
-      "INSERT INTO invoice_photos (invoice_id, r2_key, filename, mime_type, position, status, uploaded_by) VALUES ($1,$2,$3,$4,$5,'pending',$6) RETURNING id",
-      [id, key, name, mime, posRow.rows[0].next, req.user.id]
+      "INSERT INTO invoice_photos (invoice_id, r2_key, filename, mime_type, position, status, uploaded_by, photo_type) VALUES ($1,$2,$3,$4,$5,'pending',$6,$7) RETURNING id",
+      [id, key, name, mime, posRow.rows[0].next, req.user.id, ptype]
     );
     const uploadUrl = await r2.presignUpload(key, mime);
     res.json({ id: rows[0].id, uploadUrl: uploadUrl });
@@ -892,6 +1043,8 @@ router.patch('/:id/photos/:photoId', requireAuth, requirePermission('create_invo
     const sets = [], params = [];
     if (req.body.caption !== undefined) { params.push(String(req.body.caption).slice(0, 300)); sets.push('caption = $' + params.length); }
     if (req.body.show_in_print !== undefined) { params.push(req.body.show_in_print === true); sets.push('show_in_print = $' + params.length); }
+    // Re-tagging an existing photo into (or out of) a requirement slot.
+    if (req.body.photo_type !== undefined) { params.push(normalizePhotoKey(req.body.photo_type) || null); sets.push('photo_type = $' + params.length); }
     if (!sets.length) return res.json({ success: true });
     params.push(photoId); params.push(id);
     const r = await pool.query('UPDATE invoice_photos SET ' + sets.join(', ') + ' WHERE id = $' + (params.length - 1) + ' AND invoice_id = $' + params.length + ' RETURNING id', params);
@@ -1032,7 +1185,9 @@ function pickInvoiceFields(b) {
     signed_name: b.signed_name || b.customer_name || null,
     approval_code: b.approval_code || null,
     tax_exempt: b.tax_exempt === true,
-    signature_required: b.signature_required === true,
+    // NOTE: signature_required is deliberately NOT read from the request body. It
+    // is company policy from Invoice Setup, resolved server-side by closeOutRules
+    // in the create/update handlers. A client that sends it is ignored.
     city_code: (b.city_code ? String(b.city_code).trim().toUpperCase().slice(0, 3) : null)
   };
 }
@@ -1067,8 +1222,16 @@ router.post('/', requireAuth, requirePermission('create_invoice'), async (req, r
   const b = req.body || {};
   const f = pickInvoiceFields(b);
   const status = ['draft', 'completed', 'paid'].indexOf(b.status) !== -1 ? b.status : 'draft';
+  const rules = await closeOutRules(f.account_id);
+  f.signature_required = rules.signature_required;
   if (f.signature_required && status !== 'draft' && !f.signature_image) {
     return res.status(400).json({ error: 'A signature is required before this invoice can be marked ' + status + '. Save as draft, or capture a signature.' });
+  }
+  // Photos live on a saved invoice (they upload against its id), so a brand new
+  // invoice cannot possibly have them yet. Rather than let the first save skip the
+  // gate forever, it is refused here and the tech is told to save a draft first.
+  if (status !== 'draft' && rules.required_photo_keys.length) {
+    return res.status(400).json(photoGateError(rules.required_photo_keys, rules.catalog));
   }
   for (const it of (b.line_items || [])) {
     if (!it || !it.description) continue;
@@ -1201,7 +1364,7 @@ router.post('/:id/collect-payment', requireAuth, requirePermission('edit_invoice
   }
   try {
     const r = await pool.query(
-      'SELECT id, invoice_number, status, grand_total, tip_amount, city_code, locksmith_id, signature_required, signature_image FROM invoices WHERE id = $1',
+      'SELECT id, invoice_number, status, grand_total, tip_amount, city_code, locksmith_id, account_id, signature_required, signature_image FROM invoices WHERE id = $1',
       [req.params.id]
     );
     const inv = r.rows[0];
@@ -1217,6 +1380,17 @@ router.post('/:id/collect-payment', requireAuth, requirePermission('edit_invoice
     }
     if (inv.signature_required && !inv.signature_image) {
       return res.status(400).json({ error: 'A signature is required before this invoice can be paid.' });
+    }
+    // Refuse BEFORE the money moves. Checking after Square has taken the card is
+    // useless: the charge is done and the dispute packet is short a photo anyway.
+    const _sqRules = await closeOutRules(inv.account_id);
+    if (_sqRules.required_photo_keys.length) {
+      const _sqMiss = await missingRequiredPhotos(inv.id, _sqRules.required_photo_keys);
+      if (_sqMiss.length) {
+        const _e = photoGateError(_sqMiss, _sqRules.catalog);
+        _e.error = 'Missing required photo' + (_sqMiss.length === 1 ? '' : 's') + ': ' + _e.photos_missing_labels.join(', ') + '. Attach them before collecting payment. Nothing was charged.';
+        return res.status(400).json(_e);
+      }
     }
     const cents = Math.round((parseFloat(inv.grand_total) || 0) * 100);
     if (cents <= 0) return res.status(400).json({ error: 'There is nothing to charge on this invoice.' });
@@ -1387,8 +1561,17 @@ router.put('/:id', requireAuth, requirePermission('edit_invoice'), async (req, r
     // the form, so they are held here whatever the client sent.
     const _refunded = parseFloat(existing.refunded_total) || 0;
     if (_refunded > 0) status = existing.status;
+    const rules = await closeOutRules(f.account_id);
+    f.signature_required = rules.signature_required;
     if (f.signature_required && status !== 'draft' && !f.signature_image) {
       return res.status(400).json({ error: 'A signature is required before this invoice can be marked ' + status + '. Save as draft, or capture a signature.' });
+    }
+    // Same close-out gate as create, but here the photos exist and can be counted.
+    // Only checked on the way out of draft-land; an admin fixing a typo on an
+    // already-closed invoice is not asked to re-shoot photos it never had.
+    if (status !== 'draft' && existing.status === 'draft' && rules.required_photo_keys.length) {
+      const _pmiss = await missingRequiredPhotos(parseInt(req.params.id, 10), rules.required_photo_keys);
+      if (_pmiss.length) return res.status(400).json(photoGateError(_pmiss, rules.catalog));
     }
     for (const it of (b.line_items || [])) {
       if (!it || !it.description) continue;

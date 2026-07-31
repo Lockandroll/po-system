@@ -1762,6 +1762,38 @@ async function initDB() {
       ');' +
       'CREATE INDEX IF NOT EXISTS idx_invoice_photos_invoice ON invoice_photos(invoice_id);'
     );
+    // Which requirement slot a photo fills (dl / entitlement / plate / after_service,
+    // or an admin-defined key). NULL means the tech attached it as an extra photo and
+    // it counts toward nothing.
+    await client.query('ALTER TABLE invoice_photos ADD COLUMN IF NOT EXISTS photo_type VARCHAR(40);');
+    await client.query('CREATE INDEX IF NOT EXISTS idx_invoice_photos_type ON invoice_photos(invoice_id, photo_type);');
+    // Per-account override of the required-photo list. NULL means "use the global
+    // list from Invoice Setup". An empty array means "this account requires none",
+    // which is a real, different answer, so it must survive round-tripping.
+    await client.query('ALTER TABLE vendors ADD COLUMN IF NOT EXISTS required_photos JSONB;');
+    // Signature Required is a company policy set once under Invoice Setup, not a
+    // per-invoice checkbox a tech can quietly clear on the job that most needs the
+    // signature. Default ON. invoices.signature_required is still written on every
+    // save so an old invoice keeps the rule it was closed out under.
+    const _invSigDef = await client.query("SELECT value FROM settings WHERE key = 'invoice_signature_required_default'");
+    if (!_invSigDef.rows.length) {
+      await client.query("INSERT INTO settings (key, value, updated_at) VALUES ('invoice_signature_required_default', 'true', NOW()) ON CONFLICT (key) DO NOTHING");
+    }
+    // The photo slots a non-draft invoice has to fill. Entitlement is deliberately
+    // ONE slot that any of insurance / registration / rental agreement satisfies —
+    // the customer only ever has one of the three.
+    const _invPhotoReq = await client.query("SELECT value FROM settings WHERE key = 'invoice_photo_requirements'");
+    if (!_invPhotoReq.rows.length) {
+      await client.query(
+        "INSERT INTO settings (key, value, updated_at) VALUES ('invoice_photo_requirements', $1, NOW()) ON CONFLICT (key) DO NOTHING",
+        [JSON.stringify([
+          { key: 'dl', label: "Driver's License", required: true },
+          { key: 'entitlement', label: 'Entitlement (Insurance / Registration / Rental Agreement)', required: true },
+          { key: 'plate', label: 'License Plate', required: true },
+          { key: 'after_service', label: 'After Service', required: true }
+        ])]
+      );
+    }
     // Editable pay-type list for invoices
     const _invPay = await client.query("SELECT value FROM settings WHERE key = 'invoice_pay_types'");
     if (!_invPay.rows.length) {

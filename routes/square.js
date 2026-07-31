@@ -17,8 +17,12 @@ const square = require('../utils/square');
 
 const router = express.Router();
 
+// Where to send the browser back to. SQUARE_RETURN_BASE only exists as an
+// override; the rest of Nova already uses APP_URL, so there is no reason to make
+// anyone set a second variable that says the same thing.
 function baseUrl(req) {
   if (process.env.SQUARE_RETURN_BASE) return String(process.env.SQUARE_RETURN_BASE).replace(/\/+$/, '');
+  if (process.env.APP_URL) return String(process.env.APP_URL).replace(/\/+$/, '');
   const cb = square.callbackUrl();
   if (cb) {
     try {

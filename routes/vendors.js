@@ -44,6 +44,20 @@ function cleanRestrictedTo(v) {
   return ids.length ? ids : null;
 }
 
+// Sanitize a per-account required-photo override into an array of slot keys.
+// undefined  -> leave the column alone (the caller did not mean to change it)
+// null / ''  -> clear it, i.e. fall back to the global Invoice Setup list
+// []         -> a real answer: this account requires NO photos
+function cleanRequiredPhotos(v) {
+  if (v === undefined) return undefined;
+  if (v === null || v === '') return null;
+  if (!Array.isArray(v)) return null;
+  const keys = Array.from(new Set(v
+    .map(function (x) { return String(x == null ? '' : x).trim().toLowerCase().slice(0, 40); })
+    .filter(Boolean)));
+  return keys;
+}
+
 // Active users for the per-account restriction picker (managers only).
 router.get('/pickable-users', requirePermission('manage_vendors'), async (req, res) => {
   try {
@@ -83,12 +97,13 @@ router.get('/', requireViewVendors, async (req, res) => {
 
 // POST create vendor
 router.post('/', requirePermission('manage_vendors'), async (req, res) => {
-  const { name, website, account_number, username, password, notes, rep_name, rep_email, rep_phone, city_code, show_in_invoice, invoice_notes, auto_line_items, agreement_text, restricted_to } = req.body;
+  const { name, website, account_number, username, password, notes, rep_name, rep_email, rep_phone, city_code, show_in_invoice, invoice_notes, auto_line_items, agreement_text, restricted_to, required_photos } = req.body;
   if (!name) return res.status(400).json({ error: 'Vendor name is required' });
+  const _reqPhotos = cleanRequiredPhotos(required_photos);
   try {
     const { rows } = await pool.query(
-      'INSERT INTO vendors (name, website, account_number, username, password, notes, rep_name, rep_email, rep_phone, city_code, show_in_invoice, invoice_notes, auto_line_items, agreement_text, restricted_to) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15) RETURNING *',
-      [name, website || null, account_number || null, username || null, password || null, notes || null, rep_name || null, rep_email || null, rep_phone || null, city_code || null, show_in_invoice === true, invoice_notes || null, (auto_line_items != null ? JSON.stringify(auto_line_items) : null), agreement_text || null, cleanRestrictedTo(restricted_to)]
+      'INSERT INTO vendors (name, website, account_number, username, password, notes, rep_name, rep_email, rep_phone, city_code, show_in_invoice, invoice_notes, auto_line_items, agreement_text, restricted_to, required_photos) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16) RETURNING *',
+      [name, website || null, account_number || null, username || null, password || null, notes || null, rep_name || null, rep_email || null, rep_phone || null, city_code || null, show_in_invoice === true, invoice_notes || null, (auto_line_items != null ? JSON.stringify(auto_line_items) : null), agreement_text || null, cleanRestrictedTo(restricted_to), (_reqPhotos === undefined || _reqPhotos === null) ? null : JSON.stringify(_reqPhotos)]
     );
     if (account_number) {
       await pool.query('UPDATE geico_surveys SET city_code = $1, updated_at = NOW() WHERE UPPER(TRIM(account_number)) = UPPER(TRIM($2))', [city_code || null, account_number]);
@@ -102,12 +117,22 @@ router.post('/', requirePermission('manage_vendors'), async (req, res) => {
 
 // PUT update vendor
 router.put('/:id', requirePermission('manage_vendors'), async (req, res) => {
-  const { name, website, account_number, username, password, notes, rep_name, rep_email, rep_phone, city_code, show_in_invoice, invoice_notes, auto_line_items, agreement_text, restricted_to } = req.body;
+  const { name, website, account_number, username, password, notes, rep_name, rep_email, rep_phone, city_code, show_in_invoice, invoice_notes, auto_line_items, agreement_text, restricted_to, required_photos } = req.body;
   if (!name) return res.status(400).json({ error: 'Vendor name is required' });
+  // restricted_to and required_photos are only touched when the caller actually
+  // sent them. The Invoice Setup screen saves an account with the invoice fields
+  // only; before this guard that save silently wiped the account's user
+  // allowlist, which reads as "someone opened the account to everybody".
+  const _params = [name, website || null, account_number || null, username || null, password || null, notes || null, rep_name || null, rep_email || null, rep_phone || null, city_code || null, show_in_invoice === true, invoice_notes || null, (auto_line_items != null ? JSON.stringify(auto_line_items) : null), agreement_text || null];
+  const _sets = ['name=$1', 'website=$2', 'account_number=$3', 'username=$4', 'password=$5', 'notes=$6', 'rep_name=$7', 'rep_email=$8', 'rep_phone=$9', 'city_code=$10', 'show_in_invoice=$11', 'invoice_notes=$12', 'auto_line_items=$13', 'agreement_text=$14'];
+  if (restricted_to !== undefined) { _params.push(cleanRestrictedTo(restricted_to)); _sets.push('restricted_to=$' + _params.length); }
+  const _reqPhotos = cleanRequiredPhotos(required_photos);
+  if (_reqPhotos !== undefined) { _params.push(_reqPhotos === null ? null : JSON.stringify(_reqPhotos)); _sets.push('required_photos=$' + _params.length); }
+  _params.push(req.params.id);
   try {
     const { rows } = await pool.query(
-      'UPDATE vendors SET name=$1, website=$2, account_number=$3, username=$4, password=$5, notes=$6, rep_name=$7, rep_email=$8, rep_phone=$9, city_code=$10, show_in_invoice=$11, invoice_notes=$12, auto_line_items=$13, agreement_text=$14, restricted_to=$15, updated_at=NOW() WHERE id=$16 RETURNING *',
-      [name, website || null, account_number || null, username || null, password || null, notes || null, rep_name || null, rep_email || null, rep_phone || null, city_code || null, show_in_invoice === true, invoice_notes || null, (auto_line_items != null ? JSON.stringify(auto_line_items) : null), agreement_text || null, cleanRestrictedTo(restricted_to), req.params.id]
+      'UPDATE vendors SET ' + _sets.join(', ') + ', updated_at=NOW() WHERE id=$' + _params.length + ' RETURNING *',
+      _params
     );
     if (!rows[0]) return res.status(404).json({ error: 'Vendor not found' });
     if (account_number) {
