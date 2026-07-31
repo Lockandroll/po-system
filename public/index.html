@@ -68,6 +68,24 @@
     html[data-theme="light"] .badge-partially-refunded { background:#fff4e0; color:#b9770b; border-color:#ffe2b0; }
     html[data-theme="light"] .badge-refunded { background:#fdeaea; color:#dc2626; border-color:#f6c9c9; }
     html[data-theme="light"] .badge-refund-awaiting { background:#e7f0fe; color:#2563eb; border-color:#cfe0fb; }
+    html[data-theme="light"] .badge-assigned { background:#e4f7ec; color:#15803d; border-color:#bbe9cd; }
+    html[data-theme="light"] .badge-in-stock { background:#e7f0fe; color:#2563eb; border-color:#cfe0fb; }
+    html[data-theme="light"] .badge-in-transit { background:#f3eafe; color:#8b3fd6; border-color:#e0cdf7; }
+    html[data-theme="light"] .badge-awaiting-return { background:#fff4e0; color:#b9770b; border-color:#ffe2b0; }
+    html[data-theme="light"] .badge-needs-repair { background:#fff4e0; color:#b9770b; border-color:#ffe2b0; }
+    html[data-theme="light"] .badge-lost { background:#fdeaea; color:#dc2626; border-color:#f6c9c9; }
+    html[data-theme="light"] .badge-retired { background:#f4f5f7; color:#9aa1ab; border-color:#e2e4e8; }
+    html[data-theme="light"] .badge-signed { background:#e4f7ec; color:#15803d; border-color:#bbe9cd; }
+    html[data-theme="light"] .badge-awaiting-signature { background:#fff4e0; color:#b9770b; border-color:#ffe2b0; }
+    html[data-theme="light"] .badge-pending { background:#fff4e0; color:#b9770b; border-color:#ffe2b0; }
+    html[data-theme="light"] .badge-fulfilled { background:#e4f7ec; color:#15803d; border-color:#bbe9cd; }
+    html[data-theme="light"] .badge-denied { background:#fdeaea; color:#dc2626; border-color:#f6c9c9; }
+    html[data-theme="light"] .badge-declined { background:#fdeaea; color:#dc2626; border-color:#f6c9c9; }
+    html[data-theme="light"] .badge-void { background:#f4f5f7; color:#9aa1ab; border-color:#e2e4e8; }
+    html[data-theme="light"] .badge-replaced { background:#eceef1; color:#5b6470; }
+    html[data-theme="light"] .alert-warn { background:#fff4e0; color:#8a5a06; border-color:#ffe2b0; }
+    html[data-theme="light"] .ini-box.done { background:#e4f7ec; color:#15803d; border-color:#bbe9cd; }
+    html[data-theme="light"] .asset-ini { background:#e4f7ec; color:#15803d; border-color:#bbe9cd; }
     html[data-theme="light"] .alert-error { background:#fdeaea; color:#b91c1c; border-color:#f6c9c9; }
     html[data-theme="light"] .alert-success { background:#e4f7ec; color:#15803d; border-color:#bbe9cd; }
     html[data-theme="light"] .alert-info { background:#e7f0fe; color:#1d4ed8; border-color:#cfe0fb; }
@@ -192,6 +210,59 @@
     .badge-partially-refunded { background: #2d1a00; color: #fb923c; border: 1px solid #4d2d00; }
     .badge-refunded { background: #2d0d0d; color: #f87171; border: 1px solid #4d1515; }
     .badge-refund-awaiting { background: #0d1e30; color: #60a5fa; border: 1px solid #1e3a5f; }
+
+    /* ---- Asset / Equipment tracker ------------------------------------- */
+    /* Status pills, same formula as the existing badges above. */
+    .badge-assigned      { background: #0d2d17; color: #22c55e; border: 1px solid #134d27; }
+    .badge-in-stock      { background: #0d1e30; color: #60a5fa; border: 1px solid #1e3a5f; }
+    .badge-in-transit    { background: #1a0d2e; color: #a78bfa; border: 1px solid #3b1f6e; }
+    .badge-awaiting-return { background: #2d2100; color: #f59e0b; border: 1px solid #4a3500; }
+    .badge-needs-repair  { background: #2d2100; color: #f59e0b; border: 1px solid #4a3500; }
+    .badge-lost          { background: #2d0d0d; color: #ef4444; border: 1px solid #4d1515; }
+    .badge-retired       { background: #1a1a1a; color: #555; border: 1px solid #2a2a2a; }
+    .badge-signed        { background: #0d2d17; color: #22c55e; border: 1px solid #134d27; }
+    .badge-awaiting-signature { background: #2d2100; color: #f59e0b; border: 1px solid #4a3500; }
+    .badge-pending       { background: #2d2100; color: #f59e0b; border: 1px solid #4a3500; }
+    .badge-fulfilled     { background: #0d2d17; color: #22c55e; border: 1px solid #134d27; }
+    .badge-denied        { background: #2d0d0d; color: #ef4444; border: 1px solid #4d1515; }
+    .badge-declined      { background: #2d0d0d; color: #ef4444; border: 1px solid #4d1515; }
+    .badge-void          { background: #1a1a1a; color: #555; border: 1px solid #2a2a2a; }
+    .badge-replaced      { background: #2a2a2a; color: #aaa; }
+    .alert-warn { background: #2d2100; color: #fcd34d; border: 1px solid #4a3500; }
+    /* Category / tracking chips reuse the .rf-tag shape from refunds. */
+    .rf-tag.tool    { background:rgba(96,165,250,0.14); color:#60a5fa; border:1px solid rgba(96,165,250,0.35); }
+    .rf-tag.gear    { background:rgba(167,139,250,0.14); color:#a78bfa; border:1px solid rgba(167,139,250,0.35); }
+    .rf-tag.uniform { background:rgba(249,115,22,0.14); color:#fb923c; border:1px solid rgba(249,115,22,0.35); }
+    .rf-tag.serial  { background:rgba(34,197,94,0.12); color:#4ade80; border:1px solid rgba(34,197,94,0.30); }
+    .rf-tag.bulk    { background:rgba(136,136,136,0.14); color:#999; border:1px solid rgba(136,136,136,0.30); }
+    .mono { font-family: 'Fira Code', ui-monospace, monospace; font-variant-numeric: tabular-nums; }
+    /* The history strip on a replacement review. */
+    .hist { display:flex; gap:10px; flex-wrap:wrap; }
+    .hist-chip { background:var(--bg-elevated); border:1px solid var(--border); border-radius:8px; padding:8px 12px; min-width:118px; }
+    .hist-chip .n { font-family:'Fira Code',ui-monospace,monospace; font-variant-numeric:tabular-nums; font-size:20px; font-weight:700; color:var(--text); }
+    .hist-chip .l { font-size:11px; color:var(--text-muted-color); text-transform:uppercase; letter-spacing:.05em; margin-top:2px; }
+    .tl { list-style:none; margin:0; padding:0; }
+    .tl li { position:relative; padding:0 0 16px 22px; border-left:2px solid var(--border); }
+    .tl li:last-child { border-left-color:transparent; padding-bottom:0; }
+    .tl li::before { content:''; position:absolute; left:-6px; top:4px; width:10px; height:10px; border-radius:50%; background:var(--primary); }
+    .tl .d { font-size:12px; color:var(--text-muted-color); font-family:'Fira Code',ui-monospace,monospace; }
+    .tl .t { font-size:14px; color:var(--text); margin-top:2px; }
+    /* Technician roster cards. */
+    .asset-roster { display:grid; grid-template-columns:repeat(auto-fill,minmax(280px,1fr)); gap:16px; }
+    .asset-rcard { background:var(--bg-card); border:1px solid var(--border); border-radius:var(--radius); padding:16px; box-shadow:var(--shadow); }
+    .asset-rcard.warn { border-color:#4a3500; }
+    .asset-rlabel { font-size:11px; color:var(--text-muted-color); text-transform:uppercase; letter-spacing:.05em; margin-top:2px; }
+    /* Initial-each-line rows on the signing screen. */
+    .ini-row { display:flex; align-items:center; gap:12px; padding:12px 0; border-bottom:1px solid var(--border-light); }
+    .ini-row:last-child { border-bottom:none; }
+    .ini-box { width:58px; height:44px; flex-shrink:0; border:1px dashed var(--border); border-radius:8px; display:flex; align-items:center; justify-content:center; font-size:11px; color:var(--text-muted-color); cursor:pointer; background:var(--bg-elevated); text-align:center; line-height:1.15; }
+    .ini-box.done { border:1px solid #134d27; background:#0d2d17; color:#4ade80; font-family:'Segoe Script','Snell Roundhand','Brush Script MT',cursive; font-size:19px; font-weight:600; cursor:default; }
+    .asset-ini { display:inline-flex; align-items:center; justify-content:center; width:52px; height:34px; border:1px solid #134d27; background:#0d2d17; color:#4ade80; border-radius:6px; font-family:'Segoe Script','Snell Roundhand','Brush Script MT',cursive; font-size:17px; font-weight:600; }
+    /* The purchase-order panel inside the approve dialog and the equipment editor. */
+    .po-panel { border:1px solid rgba(249,115,22,0.42); border-radius:var(--radius); background:rgba(249,115,22,0.04); overflow:hidden; }
+    .po-panel-h { padding:11px 15px; background:rgba(249,115,22,0.10); border-bottom:1px solid rgba(249,115,22,0.28); display:flex; align-items:center; justify-content:space-between; gap:10px; font-size:13.5px; font-weight:600; color:var(--primary); }
+    .po-panel-b { padding:15px; }
+    .po-src { font-size:11px; color:var(--text-muted-color); margin-top:3px; font-style:italic; }
 
     /* ---- Refund modal: mode switch, line picker, category cards, summary ---- */
     .rf-seg { display:flex; background:var(--bg-elevated); border:1px solid var(--border); border-radius:var(--radius); padding:3px; gap:3px; margin-bottom:16px; }

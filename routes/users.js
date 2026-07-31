@@ -175,17 +175,50 @@ router.put('/:id', requireAuth, requirePermission('manage_users'), async (req, r
     query = 'UPDATE users SET name=COALESCE($1, name), email=COALESCE($2, email), role=COALESCE($3, role), phone=$4, receive_emails=$5, receive_sms=$6, pulsar_name=$7, nickname=$8, hide_from_schedule=$9, extra_perms=COALESCE($10, extra_perms), pay_type=COALESCE($11, pay_type), supervisor_id=$12, title=$13, org_level=$14, hide_from_org=$15, hire_date=$16, home_city=$17, default_backup_id=$18, employment_type=COALESCE($19, employment_type) WHERE id=$20 RETURNING id, name, email, phone, role, title, active, receive_emails, receive_sms, pulsar_name, nickname, hide_from_schedule, hide_from_org, extra_perms, pay_type, employment_type, supervisor_id, org_level, home_city';
     params = [name, email, role, phone || null, receive_emails !== false, receive_sms === true, pulsar_name || null, nickname || null, hide_from_schedule === true, cleanExtraPerms(req.body.extra_perms), (pay_type || null), (supervisor_id || null), (title || null), (org_level || null), (hide_from_org === true), (hire_date || null), (home_city || null), (default_backup_id || null), normEmployment(employment_type), id];
   }
+  // A tech's equipment follows the tech. Read the old home city first so the
+  // move can be detected after the update.
+  const _prevCity = (await pool.query('SELECT home_city FROM users WHERE id=$1', [id])).rows[0];
   try {
     const { rows } = await pool.query(query, params);
     if (!rows[0]) return res.status(404).json({ error: 'User not found' });
     const _cc = await setUserCities(rows[0].id, req.body.city_codes);
     if (_cc) rows[0].city_codes = _cc;
+    // Automatic, but never silent: this writes a real transfer record and tells
+    // both city managers. Never allowed to fail the user save.
+    const _oldCity = _prevCity && _prevCity.home_city ? String(_prevCity.home_city).trim().toUpperCase() : null;
+    const _newCity = rows[0].home_city ? String(rows[0].home_city).trim().toUpperCase() : null;
+    if (_newCity && _newCity !== _oldCity) {
+      relocateAssetsForUser(rows[0].id, _newCity, req.user).catch(function (e) {
+        console.error('asset relocation after home_city change failed:', e && e.message);
+      });
+    }
     res.json(rows[0]);
   } catch (err) {
     if (err.code === '23505') return res.status(400).json({ error: 'Email already in use' });
     throw err;
   }
 });
+
+// Moves every open holding (and the serialized units behind them) to the tech's
+// new city, in one transaction, leaving a transfer record behind. Lives here
+// rather than in routes/assets.js so the user save stays the single place a
+// home city changes.
+async function relocateAssetsForUser(userId, toCity, actor) {
+  const assets = require('./assets');
+  if (!assets || typeof assets.relocateHoldings !== 'function') return;
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const out = await assets.relocateHoldings(client, { user_id: userId, to_city: toCity, actor: actor });
+    await client.query('COMMIT');
+    if (out && typeof assets.notifyRelocation === 'function') {
+      assets.notifyRelocation(userId, out, toCity).catch(function () {});
+    }
+  } catch (e) {
+    await client.query('ROLLBACK').catch(function () {});
+    throw e;
+  } finally { client.release(); }
+}
 
 // Deactivate user (admin only)
 router.post('/:id/deactivate', requireAuth, requirePermission('manage_users'), async (req, res) => {

@@ -78,10 +78,16 @@ ALL_PERMS.push('view_royalty', 'manage_royalty');       // royalty statements mo
 // visibility by default. send_exit_form / view_exit_interviews stay admin-only
 // (admin is '*') and can be granted to individuals via users.extra_perms.
 ALL_PERMS.push('view_offboarding', 'manage_offboarding', 'send_exit_form', 'view_exit_interviews');
+// Asset / equipment tracker. Everyone can see their own equipment and ask for a
+// replacement; managing the inventory and approving replacements are manager
+// decisions. NOTE: this module scopes managers to their OWN cities inside
+// routes/assets.js, unlike every other module here.
+EMPLOYEE_PERMS.push('view_assets', 'request_asset_replacement');
+ALL_PERMS.push('view_assets', 'manage_assets', 'request_asset_replacement', 'approve_asset_replacement');
 
 var DEFAULTS = {
   admin: '*',
-  manager: ['view_users', 'manage_cities', 'manage_geico', 'manage_running', 'manage_vehicles', 'manage_vendors', 'view_vendors', 'manage_addresses', 'approve_vr', 'manage_tasks', 'manage_work_orders', 'manage_schedule', 'manage_parts', 'manage_invoice_setup', 'approve_refund', 'assign_reviews', 'view_feedback', 'manage_feedback', 'manage_signatures', 'manage_timeclock', 'manage_pto', 'view_quiz', 'manage_quiz', 'view_team_quiz', 'manage_onboarding', 'manage_inspections', 'ptt_all_channels', 'view_offboarding', 'play_call_recordings'].concat(EMPLOYEE_PERMS),
+  manager: ['view_users', 'manage_cities', 'manage_geico', 'manage_running', 'manage_vehicles', 'manage_vendors', 'view_vendors', 'manage_addresses', 'approve_vr', 'manage_tasks', 'manage_work_orders', 'manage_schedule', 'manage_parts', 'manage_invoice_setup', 'approve_refund', 'assign_reviews', 'view_feedback', 'manage_feedback', 'manage_signatures', 'manage_timeclock', 'manage_pto', 'view_quiz', 'manage_quiz', 'view_team_quiz', 'manage_onboarding', 'manage_inspections', 'ptt_all_channels', 'view_offboarding', 'play_call_recordings', 'manage_assets', 'approve_asset_replacement'].concat(EMPLOYEE_PERMS),
   locksmith: EMPLOYEE_PERMS.slice(),
   locksmith_coordinator: EMPLOYEE_PERMS.concat(['manage_work_orders', 'ptt_all_channels']),
   dispatcher: EMPLOYEE_PERMS.concat(['manage_work_orders', 'ptt_all_channels']),

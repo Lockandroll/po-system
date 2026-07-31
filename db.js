@@ -2756,6 +2756,333 @@ async function initDB() {
       `);
     }
 
+    // ------------------------------------------------------------------
+    // Asset / Equipment tracker
+    //
+    // Per-LOCATION inventory of company property, assigned to individual
+    // technicians, who initial each line and sign once for what they hold.
+    // Replacements are requested, reviewed against the tech's own history,
+    // and an approval opens a draft PO.
+    //
+    // This is deliberately NOT the parts catalog. the parts table is customer-facing
+    // stock with a retail markup that feeds quotes and invoices; equipment is
+    // company property with a cost and no retail price. The two never join.
+    // ------------------------------------------------------------------
+
+    // The Equipment List: what kinds of things we issue. Company-wide.
+    // vendor_name / item_number / unit_cost are this catalog's own ordering
+    // details and are what a replacement PO writes itself from.
+    await client.query(
+      'CREATE TABLE IF NOT EXISTS asset_types (' +
+      '  id SERIAL PRIMARY KEY,' +
+      '  name VARCHAR(255) NOT NULL,' +
+      '  category VARCHAR(20) NOT NULL DEFAULT ' + "'tool'" + ',' +
+      '  serialized BOOLEAN NOT NULL DEFAULT false,' +
+      '  expected_life_months INTEGER,' +
+      '  vendor_name VARCHAR(255),' +
+      '  item_number VARCHAR(255),' +
+      '  manufacturer VARCHAR(255),' +
+      '  unit_cost DECIMAL(10,2),' +
+      '  product_url TEXT,' +
+      '  notes TEXT,' +
+      '  active BOOLEAN NOT NULL DEFAULT true,' +
+      '  position INTEGER NOT NULL DEFAULT 0,' +
+      '  created_at TIMESTAMPTZ DEFAULT NOW(),' +
+      '  updated_at TIMESTAMPTZ DEFAULT NOW()' +
+      ');'
+    );
+    await client.query('CREATE INDEX IF NOT EXISTS idx_asset_types_active ON asset_types(active);');
+
+    // Serialized units only. Counted items live in asset_stock instead.
+    // city_code is the OWNING location and stays set while the unit is out
+    // with a tech, so a location keeps its own property on its own books.
+    await client.query(
+      'CREATE TABLE IF NOT EXISTS assets (' +
+      '  id SERIAL PRIMARY KEY,' +
+      '  asset_type_id INTEGER NOT NULL REFERENCES asset_types(id) ON DELETE CASCADE,' +
+      '  asset_tag VARCHAR(40) UNIQUE,' +
+      '  serial_number VARCHAR(120),' +
+      '  city_code CHAR(3),' +
+      '  assigned_user_id INTEGER REFERENCES users(id) ON DELETE SET NULL,' +
+      '  status VARCHAR(20) NOT NULL DEFAULT ' + "'in_stock'" + ',' +
+      '  condition VARCHAR(20),' +
+      '  purchase_date DATE,' +
+      '  purchase_cost DECIMAL(10,2),' +
+      '  po_id INTEGER REFERENCES purchase_orders(id) ON DELETE SET NULL,' +
+      '  vehicle_id INTEGER REFERENCES vehicles(id) ON DELETE SET NULL,' +
+      '  notes TEXT,' +
+      '  active BOOLEAN NOT NULL DEFAULT true,' +
+      '  created_at TIMESTAMPTZ DEFAULT NOW(),' +
+      '  updated_at TIMESTAMPTZ DEFAULT NOW()' +
+      ');'
+    );
+    await client.query(
+      'CREATE INDEX IF NOT EXISTS idx_assets_user ON assets(assigned_user_id);' +
+      'CREATE INDEX IF NOT EXISTS idx_assets_city ON assets(city_code);' +
+      'CREATE INDEX IF NOT EXISTS idx_assets_type ON assets(asset_type_id);' +
+      'CREATE INDEX IF NOT EXISTS idx_assets_status ON assets(status);'
+    );
+
+    // Counted stock, per location. min_qty is THIS city's minimum, not a
+    // global one: Charleston runs six trucks and Greenville runs two.
+    await client.query(
+      'CREATE TABLE IF NOT EXISTS asset_stock (' +
+      '  id SERIAL PRIMARY KEY,' +
+      '  asset_type_id INTEGER NOT NULL REFERENCES asset_types(id) ON DELETE CASCADE,' +
+      '  city_code CHAR(3) NOT NULL,' +
+      '  qty_on_hand INTEGER NOT NULL DEFAULT 0,' +
+      '  min_qty INTEGER NOT NULL DEFAULT 0,' +
+      '  updated_at TIMESTAMPTZ DEFAULT NOW(),' +
+      '  UNIQUE(asset_type_id, city_code)' +
+      ');'
+    );
+
+    // Every change to a count, with a reason and a reference. Without this
+    // the numbers drift and nobody can explain why.
+    await client.query(
+      'CREATE TABLE IF NOT EXISTS asset_stock_moves (' +
+      '  id SERIAL PRIMARY KEY,' +
+      '  asset_type_id INTEGER NOT NULL REFERENCES asset_types(id) ON DELETE CASCADE,' +
+      '  city_code CHAR(3) NOT NULL,' +
+      '  delta INTEGER NOT NULL,' +
+      '  reason VARCHAR(30) NOT NULL,' +
+      '  ref_type VARCHAR(20),' +
+      '  ref_id INTEGER,' +
+      '  qty_after INTEGER,' +
+      '  user_id INTEGER REFERENCES users(id) ON DELETE SET NULL,' +
+      '  user_name VARCHAR(255),' +
+      '  note TEXT,' +
+      '  created_at TIMESTAMPTZ DEFAULT NOW()' +
+      ');'
+    );
+    await client.query('CREATE INDEX IF NOT EXISTS idx_asset_moves_city ON asset_stock_moves(city_code, created_at DESC);');
+
+    // City-to-city movement. Stock sits in transit until the receiving city
+    // confirms, which is what catches the box that never arrived.
+    await client.query(
+      'CREATE TABLE IF NOT EXISTS asset_transfers (' +
+      '  id SERIAL PRIMARY KEY,' +
+      '  transfer_number VARCHAR(50) UNIQUE NOT NULL,' +
+      '  from_city CHAR(3) NOT NULL,' +
+      '  to_city CHAR(3) NOT NULL,' +
+      '  status VARCHAR(20) NOT NULL DEFAULT ' + "'in_transit'" + ',' +
+      '  reason VARCHAR(30),' +
+      '  notes TEXT,' +
+      '  sent_by INTEGER REFERENCES users(id) ON DELETE SET NULL,' +
+      '  sent_at TIMESTAMPTZ DEFAULT NOW(),' +
+      '  received_by INTEGER REFERENCES users(id) ON DELETE SET NULL,' +
+      '  received_at TIMESTAMPTZ,' +
+      '  created_at TIMESTAMPTZ DEFAULT NOW()' +
+      ');'
+    );
+    await client.query(
+      'CREATE TABLE IF NOT EXISTS asset_transfer_lines (' +
+      '  id SERIAL PRIMARY KEY,' +
+      '  transfer_id INTEGER NOT NULL REFERENCES asset_transfers(id) ON DELETE CASCADE,' +
+      '  asset_type_id INTEGER REFERENCES asset_types(id) ON DELETE SET NULL,' +
+      '  asset_id INTEGER REFERENCES assets(id) ON DELETE SET NULL,' +
+      '  label VARCHAR(255),' +
+      '  qty INTEGER NOT NULL DEFAULT 1' +
+      ');'
+    );
+    await client.query('CREATE INDEX IF NOT EXISTS idx_asset_tr_lines ON asset_transfer_lines(transfer_id);');
+
+    // THE SPINE. One row per time a person was given something. Open rows
+    // (returned_at IS NULL) are what they hold right now; closed rows are the
+    // history every replacement statistic is derived from. No counters.
+    await client.query(
+      'CREATE TABLE IF NOT EXISTS asset_holdings (' +
+      '  id SERIAL PRIMARY KEY,' +
+      '  user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,' +
+      '  asset_type_id INTEGER NOT NULL REFERENCES asset_types(id) ON DELETE CASCADE,' +
+      '  asset_id INTEGER REFERENCES assets(id) ON DELETE SET NULL,' +
+      '  qty INTEGER NOT NULL DEFAULT 1,' +
+      '  city_code CHAR(3),' +
+      '  unit_cost DECIMAL(10,2),' +
+      '  issued_at TIMESTAMPTZ DEFAULT NOW(),' +
+      '  issued_by INTEGER REFERENCES users(id) ON DELETE SET NULL,' +
+      '  ack_id INTEGER,' +
+      '  returned_at TIMESTAMPTZ,' +
+      '  returned_reason VARCHAR(30),' +
+      '  replaced_by_holding_id INTEGER,' +
+      '  status VARCHAR(20) NOT NULL DEFAULT ' + "'held'" + ',' +
+      '  condition_out VARCHAR(20),' +
+      '  condition_in VARCHAR(20),' +
+      '  notes TEXT,' +
+      '  created_at TIMESTAMPTZ DEFAULT NOW()' +
+      ');'
+    );
+    await client.query(
+      'CREATE INDEX IF NOT EXISTS idx_holdings_user ON asset_holdings(user_id);' +
+      'CREATE INDEX IF NOT EXISTS idx_holdings_open ON asset_holdings(user_id) WHERE returned_at IS NULL;' +
+      'CREATE INDEX IF NOT EXISTS idx_holdings_type_user ON asset_holdings(asset_type_id, user_id);' +
+      'CREATE INDEX IF NOT EXISTS idx_holdings_city ON asset_holdings(city_code);'
+    );
+
+    // Assignment templates. roles[] scopes a kit the same way offboarding
+    // templates are scoped.
+    await client.query(
+      'CREATE TABLE IF NOT EXISTS asset_kits (' +
+      '  id SERIAL PRIMARY KEY,' +
+      '  name VARCHAR(255) NOT NULL,' +
+      '  description TEXT,' +
+      '  roles TEXT[] NOT NULL DEFAULT ' + "'{}'" + ',' +
+      '  active BOOLEAN NOT NULL DEFAULT true,' +
+      '  created_at TIMESTAMPTZ DEFAULT NOW()' +
+      ');'
+    );
+    await client.query(
+      'CREATE TABLE IF NOT EXISTS asset_kit_items (' +
+      '  id SERIAL PRIMARY KEY,' +
+      '  kit_id INTEGER NOT NULL REFERENCES asset_kits(id) ON DELETE CASCADE,' +
+      '  asset_type_id INTEGER NOT NULL REFERENCES asset_types(id) ON DELETE CASCADE,' +
+      '  qty INTEGER NOT NULL DEFAULT 1,' +
+      '  required BOOLEAN NOT NULL DEFAULT true,' +
+      '  position INTEGER NOT NULL DEFAULT 0' +
+      ');'
+    );
+    await client.query('CREATE INDEX IF NOT EXISTS idx_asset_kit_items ON asset_kit_items(kit_id);');
+
+    // The signed document. signature_data is a base64 PNG of a drawn
+    // signature, same shape as signoff_forms, with the same provenance columns.
+    await client.query(
+      'CREATE TABLE IF NOT EXISTS asset_acknowledgments (' +
+      '  id SERIAL PRIMARY KEY,' +
+      '  ack_number VARCHAR(50) UNIQUE NOT NULL,' +
+      '  user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,' +
+      '  city_code CHAR(3),' +
+      '  issued_by INTEGER REFERENCES users(id) ON DELETE SET NULL,' +
+      '  status VARCHAR(20) NOT NULL DEFAULT ' + "'pending'" + ',' +
+      '  note TEXT,' +
+      '  agreement_text TEXT,' +
+      '  signature_data TEXT,' +
+      '  signed_at TIMESTAMPTZ,' +
+      '  declined_reason TEXT,' +
+      '  gps_lat DECIMAL(10,7),' +
+      '  gps_lon DECIMAL(10,7),' +
+      '  gps_accuracy DECIMAL(10,2),' +
+      '  ip VARCHAR(64),' +
+      '  user_agent TEXT,' +
+      '  created_at TIMESTAMPTZ DEFAULT NOW(),' +
+      '  updated_at TIMESTAMPTZ DEFAULT NOW()' +
+      ');'
+    );
+    // Lines are a FROZEN copy taken when the acknowledgment is sent. Renaming
+    // an equipment type next year must not rewrite what somebody signed.
+    await client.query(
+      'CREATE TABLE IF NOT EXISTS asset_ack_lines (' +
+      '  id SERIAL PRIMARY KEY,' +
+      '  ack_id INTEGER NOT NULL REFERENCES asset_acknowledgments(id) ON DELETE CASCADE,' +
+      '  holding_id INTEGER,' +
+      '  asset_type_id INTEGER,' +
+      '  asset_id INTEGER,' +
+      '  label VARCHAR(255) NOT NULL,' +
+      '  serial_number VARCHAR(120),' +
+      '  asset_tag VARCHAR(40),' +
+      '  category VARCHAR(20),' +
+      '  qty INTEGER NOT NULL DEFAULT 1,' +
+      '  condition VARCHAR(20),' +
+      '  unit_cost DECIMAL(10,2),' +
+      '  initials VARCHAR(10),' +
+      '  initials_image_r2_key VARCHAR(512),' +
+      '  initialed_at TIMESTAMPTZ,' +
+      '  position INTEGER NOT NULL DEFAULT 0' +
+      ');'
+    );
+    await client.query(
+      'CREATE INDEX IF NOT EXISTS idx_ack_user ON asset_acknowledgments(user_id);' +
+      'CREATE INDEX IF NOT EXISTS idx_ack_pending ON asset_acknowledgments(user_id) WHERE status = ' + "'pending'" + ';' +
+      'CREATE INDEX IF NOT EXISTS idx_ack_lines ON asset_ack_lines(ack_id);'
+    );
+
+    // Replacement / new-item requests. Header plus lines, because one approval
+    // cuts one PO and a tech may ask for more than one thing at a time.
+    // po_number is snapshotted next to po_id so a deleted PO still reads.
+    await client.query(
+      'CREATE TABLE IF NOT EXISTS asset_requests (' +
+      '  id SERIAL PRIMARY KEY,' +
+      '  request_number VARCHAR(50) UNIQUE NOT NULL,' +
+      '  user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,' +
+      '  city_code CHAR(3),' +
+      '  kind VARCHAR(20) NOT NULL DEFAULT ' + "'replacement'" + ',' +
+      '  notes TEXT,' +
+      '  status VARCHAR(20) NOT NULL DEFAULT ' + "'pending'" + ',' +
+      '  decided_by INTEGER REFERENCES users(id) ON DELETE SET NULL,' +
+      '  decided_at TIMESTAMPTZ,' +
+      '  decision_notes TEXT,' +
+      '  po_id INTEGER REFERENCES purchase_orders(id) ON DELETE SET NULL,' +
+      '  po_number VARCHAR(50),' +
+      '  created_at TIMESTAMPTZ DEFAULT NOW(),' +
+      '  updated_at TIMESTAMPTZ DEFAULT NOW()' +
+      ');'
+    );
+    await client.query(
+      'CREATE TABLE IF NOT EXISTS asset_request_lines (' +
+      '  id SERIAL PRIMARY KEY,' +
+      '  request_id INTEGER NOT NULL REFERENCES asset_requests(id) ON DELETE CASCADE,' +
+      '  asset_type_id INTEGER NOT NULL REFERENCES asset_types(id) ON DELETE CASCADE,' +
+      '  holding_id INTEGER,' +
+      '  qty INTEGER NOT NULL DEFAULT 1,' +
+      '  reason VARCHAR(30),' +
+      '  notes TEXT,' +
+      '  issued_from_stock BOOLEAN NOT NULL DEFAULT false,' +
+      '  fulfilled_holding_id INTEGER,' +
+      '  position INTEGER NOT NULL DEFAULT 0' +
+      ');'
+    );
+    await client.query(
+      'CREATE TABLE IF NOT EXISTS asset_request_photos (' +
+      '  id SERIAL PRIMARY KEY,' +
+      '  request_id INTEGER NOT NULL REFERENCES asset_requests(id) ON DELETE CASCADE,' +
+      '  request_line_id INTEGER,' +
+      '  r2_key VARCHAR(512) NOT NULL,' +
+      '  created_at TIMESTAMPTZ DEFAULT NOW()' +
+      ');'
+    );
+    await client.query(
+      'CREATE INDEX IF NOT EXISTS idx_areq_user ON asset_requests(user_id);' +
+      'CREATE INDEX IF NOT EXISTS idx_areq_pending ON asset_requests(city_code) WHERE status = ' + "'pending'" + ';' +
+      'CREATE INDEX IF NOT EXISTS idx_areq_lines ON asset_request_lines(request_id);' +
+      'CREATE INDEX IF NOT EXISTS idx_areq_photos ON asset_request_photos(request_id);'
+    );
+
+    // CREATE TABLE IF NOT EXISTS will not add columns to a table that already
+    // exists, so any column added after the first deploy goes here.
+    await client.query(
+      'ALTER TABLE asset_types ADD COLUMN IF NOT EXISTS product_url TEXT;' +
+      'ALTER TABLE asset_types ADD COLUMN IF NOT EXISTS manufacturer VARCHAR(255);' +
+      'ALTER TABLE asset_holdings ADD COLUMN IF NOT EXISTS unit_cost DECIMAL(10,2);' +
+      'ALTER TABLE asset_requests ADD COLUMN IF NOT EXISTS po_number VARCHAR(50);' +
+      'ALTER TABLE asset_stock ADD COLUMN IF NOT EXISTS min_qty INTEGER NOT NULL DEFAULT 0;'
+    );
+
+    // One-time backfill: grant the new asset permissions to existing saved role
+    // configs so nobody loses access when the matrix gains rows. Guarded by a
+    // flag so it runs once and never undoes an admin's later choices.
+    const _ab = await client.query("SELECT value FROM settings WHERE key = 'perm_assets_matrix_backfilled'");
+    if (!_ab.rows.length) {
+      const _assetEmployeePerms = ['view_assets', 'request_asset_replacement'];
+      const _assetManagerPerms = ['view_assets', 'request_asset_replacement', 'manage_assets', 'approve_asset_replacement'];
+      const _arp = await client.query("SELECT value FROM settings WHERE key = 'role_permissions'");
+      if (_arp.rows.length && _arp.rows[0].value) {
+        try {
+          const obj = JSON.parse(_arp.rows[0].value);
+          if (obj && typeof obj === 'object') {
+            ['locksmith', 'locksmith_coordinator', 'dispatcher', 'roadside_technician'].forEach(function (r) {
+              if (Array.isArray(obj[r])) {
+                _assetEmployeePerms.forEach(function (p) { if (obj[r].indexOf(p) === -1) obj[r].push(p); });
+              }
+            });
+            if (Array.isArray(obj.manager)) {
+              _assetManagerPerms.forEach(function (p) { if (obj.manager.indexOf(p) === -1) obj.manager.push(p); });
+            }
+            await client.query("INSERT INTO settings (key, value, updated_at) VALUES ('role_permissions', $1, NOW()) ON CONFLICT (key) DO UPDATE SET value = $1, updated_at = NOW()", [JSON.stringify(obj)]);
+          }
+        } catch (e) { console.error('asset perm matrix backfill failed:', e.message); }
+      }
+      await client.query("INSERT INTO settings (key, value) VALUES ('perm_assets_matrix_backfilled', '1') ON CONFLICT (key) DO NOTHING");
+    }
+
     console.log('Database initialized');
   } finally {
     client.release();

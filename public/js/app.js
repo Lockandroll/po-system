@@ -2,7 +2,7 @@
 // public/sw.js (the only thing bumped each deploy) — the badge asks the active
 // service worker for it at runtime. This value is just the fallback shown when no
 // service worker is available (e.g. very first visit before it installs).
-var APP_VERSION = 'v85';
+var APP_VERSION = 'v86';
 var _resolvedAppVersion = null;
 
 // Ask the active service worker for its CACHE_VERSION (without the 'nova-' prefix).
@@ -561,9 +561,9 @@ function badgeHtml(status) {
   return '<span class="badge badge-' + escHtml(cls) + '">' + escHtml(String(status == null ? '' : status).split('_').join(' ')) + '</span>';
 }
 
-var EMPLOYEE_PERMS = ['view_pos','create_po','edit_po','delete_po','submit_po','view_quotes','create_quote','edit_quote','delete_quote','push_quote_po','view_vr','create_vr','edit_vr','delete_vr','submit_vr','view_deposits','create_deposit','delete_deposit','export_deposits','view_signoffs','create_signoff','edit_signoff','complete_signoff','delete_signoff','view_tasks','view_work_orders','view_schedule','view_invoices','create_invoice','edit_invoice','delete_invoice','view_signatures','view_timeclock','view_pto','view_inspections','view_ptt','ptt_direct'];
+var EMPLOYEE_PERMS = ['view_pos','create_po','edit_po','delete_po','submit_po','view_quotes','create_quote','edit_quote','delete_quote','push_quote_po','view_vr','create_vr','edit_vr','delete_vr','submit_vr','view_deposits','create_deposit','delete_deposit','export_deposits','view_signoffs','create_signoff','edit_signoff','complete_signoff','delete_signoff','view_tasks','view_work_orders','view_schedule','view_invoices','create_invoice','edit_invoice','delete_invoice','view_signatures','view_timeclock','view_pto','view_inspections','view_ptt','ptt_direct','view_assets','request_asset_replacement'];
 var PERM_DEFAULTS = {
-  manager: ['view_users','manage_cities','manage_geico','manage_running','manage_vehicles','manage_vendors','manage_addresses','approve_vr','manage_tasks','manage_work_orders','manage_schedule','manage_parts','manage_invoice_setup','assign_reviews','view_feedback','manage_feedback','manage_signatures','manage_timeclock','manage_pto','ptt_all_channels','view_quiz','manage_quiz','view_team_quiz','manage_onboarding','view_vendors','manage_inspections','view_offboarding','play_call_recordings'].concat(EMPLOYEE_PERMS),
+  manager: ['view_users','manage_cities','manage_geico','manage_running','manage_vehicles','manage_vendors','manage_addresses','approve_vr','manage_tasks','manage_work_orders','manage_schedule','manage_parts','manage_invoice_setup','assign_reviews','view_feedback','manage_feedback','manage_signatures','manage_timeclock','manage_pto','ptt_all_channels','view_quiz','manage_quiz','view_team_quiz','manage_onboarding','view_vendors','manage_inspections','view_offboarding','play_call_recordings','manage_assets','approve_asset_replacement'].concat(EMPLOYEE_PERMS),
   locksmith: EMPLOYEE_PERMS.slice(),
   locksmith_coordinator: EMPLOYEE_PERMS.concat(['manage_work_orders','ptt_all_channels']),
   dispatcher: EMPLOYEE_PERMS.concat(['manage_work_orders','ptt_all_channels']),
@@ -658,6 +658,7 @@ async function pushToggle(){
 var NAV_COLLAPSED = '';
 
 var NAVI = {
+  swap: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="17 1 21 5 17 9"/><path d="M3 11V9a4 4 0 0 1 4-4h14"/><polyline points="7 23 3 19 7 15"/><path d="M21 13v2a4 4 0 0 1-4 4H3"/></svg>',
   chevron: '<svg class="nav-chevron" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="9 18 15 12 9 6"/></svg>',
   home: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 9l9-7 9 7v11a2 2 0 01-2 2H5a2 2 0 01-2-2z"/><polyline points="9 22 9 12 15 12 15 22"/></svg>',
   ai: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="6" width="18" height="13" rx="2"/><path d="M8 6V4a1 1 0 011-1h6a1 1 0 011 1v2"/><circle cx="9" cy="12" r="1" fill="currentColor"/><circle cx="15" cy="12" r="1" fill="currentColor"/><path d="M9.5 16h5"/></svg>',
@@ -779,6 +780,24 @@ function navModel() {
       (can('view_vr') && can('view_inspections')) ? navItem('inspections', 'Inspections', NAVI.check, ['inspections', 'inspection-form', 'view-inspection']) : null,
       (can('view_vr') && can('manage_inspections')) ? navItem('inspection-checklist', 'Insp. Checklist', icons.settings) : null
     ]),
+
+    // Equipment. Managers are scoped to their OWN cities inside routes/assets.js,
+    // unlike every other module, because each location runs its own inventory.
+    can('manage_assets')
+      ? navGroup('equipment', 'Equipment', NAVI.box, [
+          navItem('assets', 'Inventory', NAVI.box, ['assets', 'asset-detail']),
+          navItem('asset-locations', 'By Location', icons.map, ['asset-locations']),
+          navItem('asset-techs', 'By Technician', NAVI.people, ['asset-techs', 'asset-tech-detail']),
+          navItem('asset-acks', 'Assignments', NAVI.pen, ['asset-acks', 'new-asset-ack', 'view-asset-ack']),
+          navItem('asset-requests', 'Replacements', NAVI.swap),
+          navItem('asset-catalog', 'Equipment List', icons.settings)
+        ])
+      : (can('view_assets')
+          ? navGroup('equipment', 'Equipment', NAVI.box, [
+              navItem('my-equipment', 'My Equipment', NAVI.box, ['my-equipment', 'view-asset-ack']),
+              can('request_asset_replacement') ? navItem('asset-requests', 'Replacements', NAVI.swap) : null
+            ])
+          : null),
 
     navGroup('people', 'People', NAVI.people, [
       can('view_schedule') ? navItem(can('manage_schedule') ? 'schedule-admin' : 'schedule', 'Schedule', NAVI.calendar, ['schedule', 'schedule-admin', 'schedule-nowork']) : null,
@@ -971,7 +990,7 @@ async function render() {
     if (_ovOpen) _ovOpen.classList.add('open');
   }
   const content = document.getElementById('content');
-  var _viewPerm = { dashboard:'view_pos', view:'view_pos', running:'view_pos', 'running-admin':'view_pos', new:'create_po', edit:'view_pos', quotes:'view_quotes', 'view-quote':'view_quotes', 'new-quote':'create_quote', 'edit-quote':'edit_quote', 'vr-dashboard':'view_vr', 'view-vr':'view_vr', 'new-vr':'create_vr', 'edit-vr':'edit_vr', deposits:'view_deposits', 'view-deposit':'view_deposits', signoffs:'view_signoffs', 'view-signoff':'view_signoffs', 'new-signoff':'create_signoff', 'edit-signoff':'edit_signoff', 'complete-signoff':'complete_signoff', tasks:'view_tasks', 'task-detail':'view_tasks', 'new-task':'view_tasks', 'edit-task':'view_tasks', 'task-templates':'manage_tasks', 'new-task-template':'manage_tasks', 'edit-task-template':'manage_tasks', 'work-orders':'view_work_orders', 'view-work-order':'view_work_orders', 'new-work-order':'manage_work_orders', schedule:'view_schedule', 'schedule-admin':'manage_schedule', 'schedule-nowork':'manage_schedule', invoices:'view_invoices', 'view-invoice':'view_invoices', 'new-invoice':'create_invoice', 'edit-invoice':'edit_invoice', 'invoice-parts':'view_invoices', refunds:'view_invoices', 'invoice-setup':'manage_invoice_setup', feedback:'view_feedback', 'feedback-detail':'view_feedback', 'call-lookup':'play_call_recordings', signatures:'view_signatures', 'new-signature':'manage_signatures', 'signature-editor':'manage_signatures', timeclock:'view_timeclock', 'timeclock-manager':'manage_timeclock', pto:'view_pto', 'onboarding-admin':'manage_onboarding', 'employee-files':'manage_onboarding', ptt:'view_ptt', inspections:'view_inspections', 'view-inspection':'view_inspections', 'inspection-form':'view_inspections', 'inspection-checklist':'manage_inspections' };
+  var _viewPerm = { dashboard:'view_pos', view:'view_pos', running:'view_pos', 'running-admin':'view_pos', new:'create_po', edit:'view_pos', quotes:'view_quotes', 'view-quote':'view_quotes', 'new-quote':'create_quote', 'edit-quote':'edit_quote', 'vr-dashboard':'view_vr', 'view-vr':'view_vr', 'new-vr':'create_vr', 'edit-vr':'edit_vr', deposits:'view_deposits', 'view-deposit':'view_deposits', signoffs:'view_signoffs', 'view-signoff':'view_signoffs', 'new-signoff':'create_signoff', 'edit-signoff':'edit_signoff', 'complete-signoff':'complete_signoff', tasks:'view_tasks', 'task-detail':'view_tasks', 'new-task':'view_tasks', 'edit-task':'view_tasks', 'task-templates':'manage_tasks', 'new-task-template':'manage_tasks', 'edit-task-template':'manage_tasks', 'work-orders':'view_work_orders', 'view-work-order':'view_work_orders', 'new-work-order':'manage_work_orders', schedule:'view_schedule', 'schedule-admin':'manage_schedule', 'schedule-nowork':'manage_schedule', invoices:'view_invoices', 'view-invoice':'view_invoices', 'new-invoice':'create_invoice', 'edit-invoice':'edit_invoice', 'invoice-parts':'view_invoices', refunds:'view_invoices', 'invoice-setup':'manage_invoice_setup', feedback:'view_feedback', 'feedback-detail':'view_feedback', 'call-lookup':'play_call_recordings', signatures:'view_signatures', 'new-signature':'manage_signatures', 'signature-editor':'manage_signatures', timeclock:'view_timeclock', 'timeclock-manager':'manage_timeclock', pto:'view_pto', 'onboarding-admin':'manage_onboarding', 'employee-files':'manage_onboarding', ptt:'view_ptt', inspections:'view_inspections', 'view-inspection':'view_inspections', 'inspection-form':'view_inspections', 'inspection-checklist':'manage_inspections', assets:'manage_assets', 'asset-detail':'manage_assets', 'asset-locations':'manage_assets', 'asset-techs':'manage_assets', 'asset-tech-detail':'view_assets', 'asset-acks':'manage_assets', 'new-asset-ack':'manage_assets', 'view-asset-ack':'view_assets', 'asset-requests':'view_assets', 'asset-catalog':'manage_assets', 'my-equipment':'view_assets' };
   if (_viewPerm[state.currentView] && !can(_viewPerm[state.currentView])) { content.innerHTML = '<div class="alert alert-error">Access denied.</div>'; return; }
   if (state.currentView === 'home') { await renderHomeScreen(content); maybeQuizBanner(content); }
   else if (state.currentView === 'pto') await renderPto(content);
@@ -1063,6 +1082,17 @@ async function render() {
   else if (state.currentView === 'quiz') await renderQuizAdmin(content);
   else if (state.currentView === 'team-quiz') await renderQuizTeam(content);
   else if (state.currentView === 'my-quiz') await renderMyQuiz(content);
+  else if (state.currentView === 'assets') await renderAssetInventory(content);
+  else if (state.currentView === 'asset-detail') await renderAssetDetail(content, state.currentParam);
+  else if (state.currentView === 'asset-locations') await renderAssetLocations(content);
+  else if (state.currentView === 'asset-techs') await renderAssetTechs(content);
+  else if (state.currentView === 'asset-tech-detail') await renderAssetTechDetail(content, state.currentParam);
+  else if (state.currentView === 'asset-acks') await renderAssetAcks(content);
+  else if (state.currentView === 'new-asset-ack') await renderNewAssetAck(content);
+  else if (state.currentView === 'view-asset-ack') await renderViewAssetAck(content, state.currentParam);
+  else if (state.currentView === 'asset-requests') await renderAssetRequests(content);
+  else if (state.currentView === 'asset-catalog') await renderEquipmentList(content);
+  else if (state.currentView === 'my-equipment') await renderMyEquipment(content);
   else { state.currentView = 'home'; await renderHomeScreen(content); maybeQuizBanner(content); }
 }
 
@@ -2911,6 +2941,7 @@ async function renderRoles(el) {
     { group:'SOP Quiz', perms:[ {k:'view_quiz',l:'View the quiz admin screen (assignments, results, compliance)'}, {k:'manage_quiz',l:'Generate, send &amp; configure quizzes'}, {k:'view_team_quiz',l:'View team quiz results for your downline'} ] },
     { group:'Onboarding', perms:[ {k:'manage_onboarding',l:'Manage onboarding paths, new-hire progress &amp; employee files'} ] },
     { group:'Offboarding', gate:'view_offboarding', perms:[ {k:'view_offboarding',l:'View / access module (people in your team)'}, {k:'manage_offboarding',l:'Manage the offboarding lifecycle, steps &amp; templates'}, {k:'send_exit_form',l:'Send exit interview forms'}, {k:'view_exit_interviews',l:'View exit interview responses &amp; insights'} ] },
+    { group:'Equipment / Assets', gate:'view_assets', perms:[ {k:'view_assets',l:'View / access module (see your own equipment)'}, {k:'request_asset_replacement',l:'Request a replacement'}, {k:'manage_assets',l:'Manage inventory, assign equipment &amp; edit the equipment list (own cities only)'}, {k:'approve_asset_replacement',l:'Approve replacements (opens a purchase order)'} ] },
     { group:'Users', perms:[ {k:'view_users',l:'View users'}, {k:'manage_users',l:'Add / edit / remove users'} ] },
     { group:'Administration', perms:[ {k:'manage_settings',l:'Company info, AI context, notifications, roles'}, {k:'view_audit',l:'View audit log'}, {k:'view_ai_admin',l:'View AI history / usage'} ] }
   ];
@@ -19158,4 +19189,1839 @@ function refundLineSummary(r) {
   return r.lines.map(function (l) {
     return refundNum(l.quantity) + ' x ' + (l.description || '') + (l.restock ? ' (restocked)' : '');
   }).join(', ');
+}
+
+// ===========================================================================
+// Asset / Equipment tracker
+//
+// Managers see only their own cities here (routes/assets.js scopes it), which
+// is deliberately different from the rest of Nova. Everything below assumes
+// the server has already filtered; the client never tries to scope anything.
+// ===========================================================================
+
+var _assetTypes = null;
+var _assetCities = null;
+var _assetConfig = null;
+var _invRows = [];
+var _invPage = 1;
+var _invTotal = 0;
+var _invValue = 0;
+var INV_PAGE_SIZE = 25;
+
+function assetMoney(v) {
+  var n = parseFloat(v);
+  if (isNaN(n)) n = 0;
+  return '$' + n.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+}
+function assetCatTag(cat) {
+  var map = { tool: 'TOOL', gear: 'GEAR', uniform: 'UNIF' };
+  var c = cat || 'tool';
+  return '<span class="rf-tag ' + escHtml(c) + '">' + (map[c] || c.toUpperCase()) + '</span>';
+}
+function assetMonths(sec) {
+  var n = parseFloat(sec);
+  if (!n || n <= 0) return '&mdash;';
+  var months = n / 2629800;
+  if (months < 1) return Math.max(1, Math.round(n / 86400)) + ' d';
+  var mo = Math.floor(months);
+  var days = Math.round((months - mo) * 30.44);
+  return mo + ' mo' + (days > 0 ? ' ' + days + ' d' : '');
+}
+function assetDash(v) {
+  return (v === null || v === undefined || v === '') ? '<span style="color:var(--text-muted-color)">&mdash;</span>' : escHtml(String(v));
+}
+async function assetTypesLoad(force) {
+  if (_assetTypes && !force) return _assetTypes;
+  _assetTypes = await api('GET', '/assets/types');
+  return _assetTypes;
+}
+async function assetCitiesLoad() {
+  if (_assetCities) return _assetCities;
+  _assetCities = await api('GET', '/cities');
+  return _assetCities;
+}
+async function assetConfigLoad() {
+  if (_assetConfig) return _assetConfig;
+  _assetConfig = await api('GET', '/assets/config');
+  return _assetConfig;
+}
+// Server-scoped city list for pickers: admins get everything, a manager gets
+// only the cities they actually run.
+async function assetMyCities() {
+  var all = await assetCitiesLoad();
+  var cfg = await assetConfigLoad();
+  if (cfg.all_cities) return all;
+  var mine = cfg.cities || [];
+  return all.filter(function (c) { return mine.indexOf(String(c.code).trim().toUpperCase()) !== -1; });
+}
+function assetCityOptions(cities, selected, allLabel) {
+  var out = allLabel ? '<option value="">' + escHtml(allLabel) + '</option>' : '';
+  cities.forEach(function (c) {
+    var code = String(c.code).trim().toUpperCase();
+    out += '<option value="' + escHtml(code) + '"' + (selected === code ? ' selected' : '') + '>' + escHtml(code + ' — ' + c.name) + '</option>';
+  });
+  return out;
+}
+function assetErr(id, msg) {
+  var el = document.getElementById(id);
+  if (el) el.innerHTML = '<div class="alert alert-error">' + escHtml(msg) + '</div>';
+}
+
+// ---------------------------------------------------------------------------
+// Inventory
+// ---------------------------------------------------------------------------
+
+async function renderAssetInventory(el) {
+  try {
+    var cities = await assetMyCities();
+    var types = await assetTypesLoad();
+    var users = [];
+    try { users = await api('GET', '/users'); } catch (e) { users = []; }
+    var stats = await api('GET', '/assets/stats');
+
+    el.innerHTML =
+      '<div class="page-header">' +
+        '<div><div class="page-title">Inventory</div><div class="page-subtitle">Every piece of company property, where it is, and who has it</div></div>' +
+        '<div class="row-actions">' +
+          '<button class="btn btn-secondary btn-sm" onclick="assetExportCsv()">Export CSV</button>' +
+          '<button class="btn btn-primary btn-sm" onclick="openAssetUnitEditor(null)">' + icons.plus + ' Add Item</button>' +
+        '</div>' +
+      '</div>' +
+      '<div id="assets-msg"></div>' +
+      '<div class="stats-grid">' +
+        '<div class="stat-card"><div class="stat-value">' + stats.tracked + '</div><div class="stat-label">Items tracked</div></div>' +
+        '<div class="stat-card"><div class="stat-value" style="color:var(--success)">' + stats.assigned + '</div><div class="stat-label">Assigned to a tech</div></div>' +
+        '<div class="stat-card"><div class="stat-value" style="color:#60a5fa">' + stats.in_stock + '</div><div class="stat-label">In stock at a city</div></div>' +
+        '<div class="stat-card"><div class="stat-value" style="color:var(--warning)">' + stats.attention + '</div><div class="stat-label">Needs repair / return</div></div>' +
+        '<div class="stat-card"><div class="stat-value" style="color:var(--danger)">' + stats.lost + '</div><div class="stat-label">Unaccounted for</div></div>' +
+        '<div class="stat-card"><div class="stat-value">' + assetMoney(stats.value) + '</div><div class="stat-label">Replacement value</div></div>' +
+      '</div>' +
+      '<div class="card">' +
+        '<div class="card-header"><span class="card-title">All Items</span></div>' +
+        '<div class="card-body" style="border-bottom:1px solid var(--border)">' +
+          '<div class="filter-bar">' +
+            '<input type="text" id="inv-q" placeholder="Search item, asset tag, serial, tech..." style="flex:2;min-width:240px" oninput="invFilterDebounced()" />' +
+            '<select id="inv-city" onchange="invFilter()">' + assetCityOptions(cities, '', 'All Cities') + '</select>' +
+            '<select id="inv-user" onchange="invFilter()"><option value="">All Technicians</option>' +
+              users.filter(function (u) { return u.active !== false; }).map(function (u) { return '<option value="' + u.id + '">' + escHtml(u.name) + '</option>'; }).join('') +
+            '</select>' +
+            '<select id="inv-cat" onchange="invFilter()"><option value="">All Categories</option><option value="tool">Tools &amp; Equipment</option><option value="gear">Issued Gear</option><option value="uniform">Uniform</option></select>' +
+          '</div>' +
+          '<div class="filter-bar" style="margin-bottom:0">' +
+            '<select id="inv-status" onchange="invFilter()" style="max-width:190px"><option value="">All Statuses</option><option value="assigned">Assigned</option><option value="in_stock">In stock</option><option value="awaiting_return">Awaiting return</option><option value="needs_repair">Needs repair</option><option value="lost">Lost</option><option value="in_transit">In transit</option></select>' +
+            '<select id="inv-type" onchange="invFilter()" style="max-width:240px"><option value="">All Equipment</option>' +
+              types.map(function (t) { return '<option value="' + t.id + '">' + escHtml(t.name) + '</option>'; }).join('') +
+            '</select>' +
+            '<button class="btn btn-secondary" onclick="invClear()">Clear</button>' +
+          '</div>' +
+          '<div id="inv-count" style="font-size:13px;color:var(--text-muted-color);margin-top:10px"></div>' +
+        '</div>' +
+        '<div id="inv-table"><div class="loading">Loading&hellip;</div></div>' +
+      '</div>';
+    _invPage = 1;
+    await invLoad();
+  } catch (err) {
+    el.innerHTML = '<div class="alert alert-error">' + escHtml(err.message) + '</div>';
+  }
+}
+
+var _invTimer = null;
+function invFilterDebounced() { clearTimeout(_invTimer); _invTimer = setTimeout(function () { invFilter(); }, 300); }
+function invFilter() { _invPage = 1; invLoad(); }
+function invClear() {
+  ['inv-q', 'inv-city', 'inv-user', 'inv-cat', 'inv-status', 'inv-type'].forEach(function (id) {
+    var e = document.getElementById(id); if (e) e.value = '';
+  });
+  invFilter();
+}
+function invQuery() {
+  function v(id) { var e = document.getElementById(id); return e ? e.value : ''; }
+  var p = [];
+  if (v('inv-q')) p.push('q=' + encodeURIComponent(v('inv-q')));
+  if (v('inv-city')) p.push('city=' + encodeURIComponent(v('inv-city')));
+  if (v('inv-user')) p.push('user_id=' + encodeURIComponent(v('inv-user')));
+  if (v('inv-cat')) p.push('category=' + encodeURIComponent(v('inv-cat')));
+  if (v('inv-status')) p.push('status=' + encodeURIComponent(v('inv-status')));
+  if (v('inv-type')) p.push('asset_type_id=' + encodeURIComponent(v('inv-type')));
+  return p.join('&');
+}
+function assetExportCsv() {
+  var q = invQuery();
+  var url = '/api/assets/export' + (q ? '?' + q : '');
+  fetch(url, { headers: { Authorization: 'Bearer ' + state.token } })
+    .then(function (r) { return r.blob(); })
+    .then(function (b) {
+      var a = document.createElement('a');
+      a.href = URL.createObjectURL(b); a.download = 'inventory.csv'; a.click();
+      setTimeout(function () { URL.revokeObjectURL(a.href); }, 1000);
+    })
+    .catch(function () { showToast('Export failed', 'error'); });
+}
+
+async function invLoad() {
+  var wrap = document.getElementById('inv-table');
+  if (!wrap) return;
+  try {
+    var q = invQuery();
+    var data = await api('GET', '/assets/?page=' + _invPage + '&page_size=' + INV_PAGE_SIZE + (q ? '&' + q : ''));
+    _invRows = data.items; _invTotal = data.total; _invValue = data.value;
+    var countEl = document.getElementById('inv-count');
+    if (countEl) {
+      countEl.innerHTML = '<strong>' + data.items.length + '</strong> of ' + data.total + ' item' + (data.total === 1 ? '' : 's') +
+        ' &bull; ' + assetMoney(data.value) + ' replacement value';
+    }
+    if (!data.items.length) {
+      wrap.innerHTML = '<div class="empty-state"><h3>Nothing here yet</h3><p>Add equipment to the Equipment List, then receive stock into a location.</p></div>';
+      return;
+    }
+    var rows = data.items.map(function (r) {
+      var tag = r.kind === 'unit'
+        ? '<span class="mono" style="font-size:12px;white-space:nowrap">' + escHtml((r.asset_tag || '—') + ' / ' + (r.serial_number || '—')) + '</span>'
+        : '<span style="color:var(--text-muted-color);font-size:13px">' + (r.kind === 'shelf' ? 'on the shelf' : 'counted') + ' (qty ' + r.qty + ')</span>';
+      var click = r.kind === 'unit' ? ' style="cursor:pointer" onclick="navigate(\'asset-detail\',' + r.asset_id + ')"' : '';
+      return '<tr' + click + '>' +
+        '<td><strong style="color:var(--text)">' + escHtml(r.name) + '</strong></td>' +
+        '<td>' + tag + '</td>' +
+        '<td>' + assetCatTag(r.category) + '</td>' +
+        '<td>' + assetDash(r.city_code ? String(r.city_code).trim() : null) + '</td>' +
+        '<td>' + (r.kind === 'shelf' ? '<span style="color:var(--text-muted-color)">on the shelf</span>' : assetDash(r.holder_name)) + '</td>' +
+        '<td style="white-space:nowrap">' + (r.held_since ? formatDate(r.held_since) : '<span style="color:var(--text-muted-color)">&mdash;</span>') + '</td>' +
+        '<td class="mono" style="text-align:center;color:' + (r.times_replaced >= 3 ? 'var(--warning)' : 'var(--text-dim)') + '">' + (r.times_replaced || 0) + '</td>' +
+        '<td>' + assetDash(r.condition) + '</td>' +
+        '<td>' + badgeHtml(r.status) + '</td>' +
+        '<td class="text-right mono">' + assetMoney((parseFloat(r.unit_cost) || 0) * (r.qty || 1)) + '</td>' +
+      '</tr>';
+    }).join('');
+    var totalPages = Math.max(1, Math.ceil(data.total / INV_PAGE_SIZE));
+    wrap.innerHTML =
+      '<div class="table-wrap"><table><thead><tr><th>Item</th><th>Tag / Serial</th><th>Cat</th><th>City</th><th>Assigned To</th>' +
+      '<th>Held Since</th><th>Replaced</th><th>Cond.</th><th>Status</th><th class="text-right">Value</th></tr></thead>' +
+      '<tbody>' + rows + '</tbody></table></div>' +
+      renderPagination(_invPage, totalPages, data.total, 'invPaginate', INV_PAGE_SIZE, 'invPageSize');
+  } catch (err) {
+    wrap.innerHTML = '<div class="alert alert-error">' + escHtml(err.message) + '</div>';
+  }
+}
+function invPaginate(p) { _invPage = p; invLoad(); }
+function invPageSize(v) { INV_PAGE_SIZE = (String(v) === 'all' ? 1000000000 : parseInt(v, 10)) || 25; _invPage = 1; invLoad(); }
+
+async function renderAssetDetail(el, id) {
+  try {
+    var a = await api('GET', '/assets/' + id);
+    el.innerHTML =
+      '<div class="page-header">' +
+        '<div><div class="page-title">' + escHtml(a.asset_tag || a.name) + '</div><div class="page-subtitle">' + escHtml(a.name) + '</div></div>' +
+        '<div class="flex-gap">' +
+          '<button class="btn btn-secondary" onclick="navigate(\'assets\')">&larr; Back</button>' +
+          (a.status === 'awaiting_return' || a.status === 'needs_repair'
+            ? '<button class="btn btn-primary" onclick="assetReceiveReturn(' + a.id + ')">Record it coming back</button>' : '') +
+          '<button class="btn btn-secondary" onclick="openAssetUnitEditor(' + a.id + ')">' + icons.edit + ' Edit</button>' +
+        '</div>' +
+      '</div>' +
+      '<div id="assets-msg"></div>' +
+      '<div class="card mb-4"><div class="card-header"><span class="card-title">Item</span>' + badgeHtml(a.status) + '</div><div class="card-body">' +
+        '<div class="detail-grid" style="grid-template-columns:1fr 1fr 1fr;margin-bottom:0">' +
+          '<div class="detail-field"><label>Equipment</label><p>' + escHtml(a.name) + '</p></div>' +
+          '<div class="detail-field"><label>Asset tag</label><p class="mono">' + escHtml(a.asset_tag || '—') + '</p></div>' +
+          '<div class="detail-field"><label>Serial</label><p class="mono">' + escHtml(a.serial_number || '—') + '</p></div>' +
+          '<div class="detail-field"><label>Location</label><p>' + escHtml(a.city_code ? String(a.city_code).trim() : '—') + '</p></div>' +
+          '<div class="detail-field"><label>Currently with</label><p>' + escHtml(a.holder_name || 'On the shelf') + '</p></div>' +
+          '<div class="detail-field"><label>Replacement cost</label><p class="mono">' + assetMoney(a.unit_cost) + '</p></div>' +
+          '<div class="detail-field"><label>Condition</label><p>' + escHtml(a.condition || '—') + '</p></div>' +
+          '<div class="detail-field"><label>Expected life</label><p>' + (a.expected_life_months ? a.expected_life_months + ' months' : '—') + '</p></div>' +
+          '<div class="detail-field"><label>Vendor</label><p>' + escHtml(a.vendor_name || '—') + '</p></div>' +
+        '</div>' +
+      '</div></div>' +
+      '<div class="card"><div class="card-header"><span class="card-title">Everyone who has held it</span></div>' +
+        (a.holdings.length
+          ? '<div class="table-wrap"><table><thead><tr><th>Technician</th><th>From</th><th>To</th><th>Held for</th><th>Ended</th><th>Signed</th></tr></thead><tbody>' +
+            a.holdings.map(function (h) {
+              return '<tr><td><strong style="color:var(--text)">' + escHtml(h.user_name || '—') + '</strong></td>' +
+                '<td style="white-space:nowrap">' + formatDate(h.issued_at) + '</td>' +
+                '<td style="white-space:nowrap">' + (h.returned_at ? formatDate(h.returned_at) : '<span style="color:var(--success)">still has it</span>') + '</td>' +
+                '<td class="mono">' + assetMonths(h.held_seconds) + '</td>' +
+                '<td>' + (h.returned_reason ? escHtml(String(h.returned_reason).replace(/_/g, ' ')) : '—') + '</td>' +
+                '<td>' + (h.ack_number ? badgeHtml(h.ack_status) + ' <span class="mono" style="font-size:12px">' + escHtml(h.ack_number) + '</span>' : '—') + '</td></tr>';
+            }).join('') + '</tbody></table></div>'
+          : '<div class="empty-state"><h3>Never issued</h3><p>This one has sat on the shelf since it arrived.</p></div>') +
+      '</div>';
+  } catch (err) {
+    el.innerHTML = '<div class="alert alert-error">' + escHtml(err.message) + '</div>';
+  }
+}
+
+async function assetReceiveReturn(id) {
+  var outcome = await _novaDialog({
+    type: 'select', title: 'It came back', message: 'What shape is it in?',
+    options: [{ value: 'in_stock', label: 'Fine, back on the shelf' }, { value: 'needs_repair', label: 'Needs repair' }, { value: 'retired', label: 'Dead, retire it' }],
+    okText: 'Save'
+  });
+  if (!outcome) return;
+  try {
+    await api('POST', '/assets/' + id + '/receive-return', { outcome: outcome });
+    showToast('Recorded', 'success');
+    render();
+  } catch (err) { showToast(err.message, 'error'); }
+}
+
+// ---------------------------------------------------------------------------
+// By Location
+// ---------------------------------------------------------------------------
+
+var _locCity = null;
+
+async function renderAssetLocations(el) {
+  try {
+    var locs = await api('GET', '/assets/locations');
+    if (!locs.length) {
+      el.innerHTML = '<div class="page-header"><div><div class="page-title">By Location</div></div></div>' +
+        '<div class="empty-state"><h3>No locations available to you</h3><p>Equipment is scoped per city. Ask an admin to add your cities on your user record.</p></div>';
+      return;
+    }
+    if (!_locCity || !locs.some(function (l) { return l.code === _locCity; })) _locCity = locs[0].code;
+    var cur = locs.filter(function (l) { return l.code === _locCity; })[0];
+    el.innerHTML =
+      '<div class="page-header">' +
+        '<div><div class="page-title">' + escHtml(cur.code + ' — ' + cur.name) + '</div>' +
+        '<div class="page-subtitle">This location&#39;s inventory. Stock, minimums, and every movement in or out.</div></div>' +
+        '<div class="row-actions">' +
+          '<select style="width:auto;min-width:190px" onchange="locSwitch(this.value)">' +
+            locs.map(function (l) { return '<option value="' + escHtml(l.code) + '"' + (l.code === _locCity ? ' selected' : '') + '>' + escHtml(l.code + ' — ' + l.name) + '</option>'; }).join('') +
+          '</select>' +
+          '<button class="btn btn-secondary btn-sm" onclick="openTransferModal()">Transfer to another city</button>' +
+          '<button class="btn btn-primary btn-sm" onclick="openReceiveModal()">' + icons.plus + ' Receive Stock</button>' +
+        '</div>' +
+      '</div>' +
+      '<div id="assets-msg"></div>' +
+      '<div class="stats-grid">' +
+        '<div class="stat-card"><div class="stat-value">' + cur.items + '</div><div class="stat-label">Items at this location</div></div>' +
+        '<div class="stat-card"><div class="stat-value" style="color:var(--success)">' + cur.out_with_techs + '</div><div class="stat-label">Out with ' + escHtml(cur.code) + ' techs</div></div>' +
+        '<div class="stat-card"><div class="stat-value" style="color:#60a5fa">' + cur.on_shelf + '</div><div class="stat-label">On the shelf</div></div>' +
+        '<div class="stat-card"><div class="stat-value" style="color:var(--warning)">' + cur.below_min + '</div><div class="stat-label">Below minimum</div></div>' +
+        '<div class="stat-card"><div class="stat-value" style="color:var(--warning)">' + cur.awaiting_return + '</div><div class="stat-label">Awaiting return</div></div>' +
+        '<div class="stat-card"><div class="stat-value">' + assetMoney(cur.value) + '</div><div class="stat-label">Value at this location</div></div>' +
+      '</div>' +
+      '<div class="card mb-4">' +
+        '<div class="card-header"><span class="card-title">Stock at ' + escHtml(cur.code) + '</span>' +
+        '<span class="text-muted">Minimums are set per location, not globally</span></div>' +
+        '<div id="loc-stock"><div class="loading">Loading&hellip;</div></div>' +
+      '</div>' +
+      '<div class="card"><div class="card-header"><span class="card-title">Stock movement at ' + escHtml(cur.code) + '</span>' +
+        '<span class="text-muted">Every change to a count, with a reason attached</span></div>' +
+        '<div id="loc-ledger"><div class="loading">Loading&hellip;</div></div>' +
+      '</div>';
+    await locLoad();
+  } catch (err) {
+    el.innerHTML = '<div class="alert alert-error">' + escHtml(err.message) + '</div>';
+  }
+}
+function locSwitch(code) { _locCity = code; render(); }
+
+async function locLoad() {
+  var sw = document.getElementById('loc-stock');
+  var lw = document.getElementById('loc-ledger');
+  try {
+    var rows = await api('GET', '/assets/locations/' + encodeURIComponent(_locCity));
+    var low = rows.filter(function (r) { return r.below_min; }).length;
+    if (sw) {
+      sw.innerHTML =
+        '<div class="table-wrap"><table><thead><tr><th>Item type</th><th>Tracking</th><th>On shelf</th><th>Min for ' + escHtml(_locCity) + '</th>' +
+        '<th>Out with techs</th><th>Awaiting return</th><th>Replaced (12mo)</th><th class="text-right">Shelf value</th><th></th></tr></thead><tbody>' +
+        rows.map(function (r) {
+          return '<tr' + (r.below_min ? ' style="background:rgba(245,158,11,0.05)"' : '') + '>' +
+            '<td><strong style="color:var(--text)">' + escHtml(r.name) + '</strong>' +
+              (r.item_number ? '<div class="mono" style="font-size:11.5px;color:var(--text-muted-color);margin-top:2px">' + escHtml(r.item_number) + '</div>' : '') + '</td>' +
+            '<td><span class="rf-tag ' + (r.serialized ? 'serial' : 'bulk') + '">' + (r.serialized ? 'SERIALIZED' : 'COUNTED') + '</span></td>' +
+            '<td class="mono" style="text-align:center;font-weight:700;color:' + (r.below_min ? 'var(--warning)' : 'var(--text)') + '">' + r.on_shelf + '</td>' +
+            '<td style="text-align:center"><input type="text" value="' + r.min_qty + '" style="width:56px;padding:4px 6px;text-align:center;font-family:\'Fira Code\',monospace" onchange="locSetMin(' + r.asset_type_id + ',this.value,this)" /></td>' +
+            '<td class="mono" style="text-align:center">' + r.out_with_techs + '</td>' +
+            '<td class="mono" style="text-align:center;color:' + (r.awaiting_return > 0 ? 'var(--warning)' : 'var(--text-muted-color)') + '">' + (r.awaiting_return || '—') + '</td>' +
+            '<td class="mono" style="text-align:center">' + r.replaced_12mo + '</td>' +
+            '<td class="text-right mono">' + assetMoney(r.shelf_value) + '</td>' +
+            '<td style="white-space:nowrap">' + (r.serialized ? '' : '<button class="btn btn-ghost btn-sm" onclick="locAdjust(' + r.asset_type_id + ',' + r.on_shelf + ',this)">Adjust</button>') + '</td></tr>';
+        }).join('') + '</tbody></table></div>' +
+        (low ? '<div class="card-body" style="border-top:1px solid var(--border)"><div class="alert alert-warn" style="margin-bottom:0">' +
+          low + ' item' + (low === 1 ? ' is' : 's are') + ' below this location&#39;s minimum.</div></div>' : '');
+    }
+    var led = await api('GET', '/assets/locations/' + encodeURIComponent(_locCity) + '/ledger?limit=40');
+    if (lw) {
+      lw.innerHTML = led.length
+        ? '<div class="table-wrap"><table><thead><tr><th>When</th><th>Item</th><th>Change</th><th>Reason</th><th>By</th><th>On shelf after</th></tr></thead><tbody>' +
+          led.map(function (m) {
+            var up = m.delta > 0;
+            return '<tr><td class="mono" style="white-space:nowrap;color:var(--text-muted-color)">' + formatDateTime(m.created_at) + '</td>' +
+              '<td><strong style="color:var(--text)">' + escHtml(m.name) + '</strong></td>' +
+              '<td class="mono" style="font-weight:700;color:' + (up ? 'var(--success)' : (m.delta === 0 ? 'var(--text-muted-color)' : 'var(--danger)')) + '">' + (up ? '+' : '') + m.delta + '</td>' +
+              '<td>' + escHtml(String(m.reason || '').replace(/_/g, ' ')) + (m.note ? ' <span style="color:var(--text-muted-color)">— ' + escHtml(m.note) + '</span>' : '') + '</td>' +
+              '<td>' + escHtml(m.user_name || '—') + '</td>' +
+              '<td class="mono" style="text-align:center">' + (m.qty_after === null ? '—' : m.qty_after) + '</td></tr>';
+          }).join('') + '</tbody></table></div>'
+        : '<div class="empty-state"><h3>No movement yet</h3><p>Receiving stock or issuing it to a tech will show up here.</p></div>';
+    }
+  } catch (err) {
+    if (sw) sw.innerHTML = '<div class="alert alert-error">' + escHtml(err.message) + '</div>';
+  }
+}
+
+async function locSetMin(typeId, val, inp) {
+  try {
+    await api('PUT', '/assets/locations/' + encodeURIComponent(_locCity) + '/min', { asset_type_id: typeId, min_qty: parseInt(val, 10) || 0 });
+    showToast('Minimum saved', 'success');
+    locLoad();
+  } catch (err) { showToast(err.message, 'error'); if (inp) inp.focus(); }
+}
+
+async function locAdjust(typeId, current, btn) {
+  var to = await novaPrompt('New count on the shelf at ' + _locCity + '. It is ' + current + ' right now.', String(current), { title: 'Adjust the count', okText: 'Save' });
+  if (to === null) return;
+  var note = await novaPrompt('Why is it changing? This goes on the ledger.', '', { title: 'Reason', okText: 'Save' });
+  if (note === null || !String(note).trim()) { showToast('A reason is required', 'error'); return; }
+  try {
+    await api('PUT', '/assets/locations/' + encodeURIComponent(_locCity) + '/stock', { asset_type_id: typeId, qty_on_hand: parseInt(to, 10), note: note });
+    showToast('Count adjusted', 'success');
+    render();
+  } catch (err) { showToast(err.message, 'error'); }
+}
+
+async function openReceiveModal() {
+  var types = await assetTypesLoad(true);
+  var ov = document.createElement('div');
+  ov.className = 'modal-overlay';
+  ov.innerHTML =
+    '<div class="modal">' +
+      '<div class="modal-header"><span class="modal-title">Receive stock into ' + escHtml(_locCity) + '</span>' +
+      '<button class="btn btn-ghost btn-sm" onclick="this.closest(\'.modal-overlay\').remove()">&#10005;</button></div>' +
+      '<div class="modal-body"><div id="recv-err"></div>' +
+        '<div class="form-group"><label>Equipment *</label><select id="recv-type" onchange="recvTypeChanged()">' +
+          types.map(function (t) { return '<option value="' + t.id + '" data-serialized="' + (t.serialized ? '1' : '0') + '">' + escHtml(t.name) + '</option>'; }).join('') +
+        '</select></div>' +
+        '<div class="form-row">' +
+          '<div class="form-group"><label>How many arrived *</label><input type="number" id="recv-qty" min="1" value="1" oninput="recvTypeChanged()" /></div>' +
+          '<div class="form-group"><label>PO number <span style="font-weight:400;font-size:0.8em;color:var(--text-muted-color)">optional</span></label><input type="text" id="recv-po" placeholder="e.g. CHS-2026-0417-DW" /></div>' +
+        '</div>' +
+        '<div id="recv-serials"></div>' +
+        '<div class="form-group" style="margin-bottom:0"><label>Note <span style="font-weight:400;font-size:0.8em;color:var(--text-muted-color)">shows on the ledger</span></label><input type="text" id="recv-note" /></div>' +
+      '</div>' +
+      '<div class="modal-footer"><button class="btn btn-secondary" onclick="this.closest(\'.modal-overlay\').remove()">Cancel</button>' +
+      '<button class="btn btn-primary" onclick="saveReceive(this)">Receive</button></div>' +
+    '</div>';
+  document.body.appendChild(ov);
+  recvTypeChanged();
+}
+function recvTypeChanged() {
+  var sel = document.getElementById('recv-type');
+  var wrap = document.getElementById('recv-serials');
+  if (!sel || !wrap) return;
+  var opt = sel.options[sel.selectedIndex];
+  var serialized = opt && opt.getAttribute('data-serialized') === '1';
+  var qty = Math.min(parseInt((document.getElementById('recv-qty') || {}).value, 10) || 1, 20);
+  if (!serialized) { wrap.innerHTML = '<div style="font-size:12px;color:var(--text-muted-color);margin-bottom:16px">Counted item. This just adds to the number on the shelf at ' + escHtml(_locCity) + '.</div>'; return; }
+  var rows = '';
+  for (var i = 0; i < qty; i++) {
+    rows += '<div class="form-row" style="margin-bottom:8px">' +
+      '<div class="form-group" style="margin:0"><input type="text" class="recv-tag" placeholder="Asset tag ' + (i + 1) + '" /></div>' +
+      '<div class="form-group" style="margin:0"><input type="text" class="recv-serial" placeholder="Serial ' + (i + 1) + '" /></div></div>';
+  }
+  wrap.innerHTML = '<div class="rf-sec">Tags &amp; serials <span style="text-transform:none;letter-spacing:0;font-weight:400">(optional, can be filled in later)</span></div>' + rows +
+    '<div style="height:8px"></div>';
+}
+async function saveReceive(btn) {
+  btn.disabled = true;
+  try {
+    var tags = Array.prototype.map.call(document.querySelectorAll('.recv-tag'), function (i) { return i.value.trim() || null; });
+    var serials = Array.prototype.map.call(document.querySelectorAll('.recv-serial'), function (i) { return i.value.trim() || null; });
+    await api('POST', '/assets/locations/' + encodeURIComponent(_locCity) + '/receive', {
+      asset_type_id: parseInt(document.getElementById('recv-type').value, 10),
+      qty: parseInt(document.getElementById('recv-qty').value, 10) || 1,
+      asset_tags: tags, serial_numbers: serials,
+      note: document.getElementById('recv-note').value || null
+    });
+    var ov = document.querySelector('.modal-overlay'); if (ov) ov.remove();
+    showToast('Stock received', 'success');
+    render();
+  } catch (err) {
+    btn.disabled = false;
+    assetErr('recv-err', err.message);
+  }
+}
+
+async function openTransferModal() {
+  var cities = await assetCitiesLoad();
+  var rows = await api('GET', '/assets/locations/' + encodeURIComponent(_locCity));
+  var avail = rows.filter(function (r) { return r.on_shelf > 0; });
+  var ov = document.createElement('div');
+  ov.className = 'modal-overlay';
+  ov.innerHTML =
+    '<div class="modal">' +
+      '<div class="modal-header"><span class="modal-title">Transfer from ' + escHtml(_locCity) + '</span>' +
+      '<button class="btn btn-ghost btn-sm" onclick="this.closest(\'.modal-overlay\').remove()">&#10005;</button></div>' +
+      '<div class="modal-body"><div id="tr-err"></div>' +
+        '<div class="form-group"><label>To which city *</label><select id="tr-to">' +
+          cities.filter(function (c) { return String(c.code).trim().toUpperCase() !== _locCity; })
+            .map(function (c) { return '<option value="' + escHtml(String(c.code).trim().toUpperCase()) + '">' + escHtml(String(c.code).trim() + ' — ' + c.name) + '</option>'; }).join('') +
+        '</select></div>' +
+        (avail.length
+          ? '<div class="form-row"><div class="form-group"><label>Equipment *</label><select id="tr-type">' +
+            avail.map(function (r) { return '<option value="' + r.asset_type_id + '" data-serialized="' + (r.serialized ? '1' : '0') + '" data-avail="' + r.on_shelf + '">' + escHtml(r.name) + ' (' + r.on_shelf + ' on the shelf)</option>'; }).join('') +
+            '</select></div><div class="form-group"><label>How many *</label><input type="number" id="tr-qty" min="1" value="1" /></div></div>'
+          : '<div class="alert alert-warn">There is nothing on the shelf at ' + escHtml(_locCity) + ' to send.</div>') +
+        '<div class="form-group" style="margin-bottom:0"><label>Note</label><input type="text" id="tr-note" /></div>' +
+        '<div style="font-size:12px;color:var(--text-muted-color);margin-top:12px;line-height:1.5">It leaves your shelf now and lands on theirs only when the receiving city confirms it arrived.</div>' +
+      '</div>' +
+      '<div class="modal-footer"><button class="btn btn-secondary" onclick="this.closest(\'.modal-overlay\').remove()">Cancel</button>' +
+      (avail.length ? '<button class="btn btn-primary" onclick="saveTransfer(this)">Send</button>' : '') + '</div>' +
+    '</div>';
+  document.body.appendChild(ov);
+}
+async function saveTransfer(btn) {
+  btn.disabled = true;
+  try {
+    var sel = document.getElementById('tr-type');
+    var opt = sel.options[sel.selectedIndex];
+    var serialized = opt.getAttribute('data-serialized') === '1';
+    var qty = parseInt(document.getElementById('tr-qty').value, 10) || 1;
+    var lines = [];
+    if (serialized) {
+      var units = await api('GET', '/assets/?city=' + encodeURIComponent(_locCity) + '&status=in_stock&asset_type_id=' + sel.value + '&page_size=' + qty);
+      units.items.slice(0, qty).forEach(function (u) { lines.push({ asset_id: u.asset_id }); });
+      if (!lines.length) throw new Error('Nothing available to send.');
+    } else {
+      lines.push({ asset_type_id: parseInt(sel.value, 10), qty: qty });
+    }
+    await api('POST', '/assets/transfers', {
+      from_city: _locCity, to_city: document.getElementById('tr-to').value,
+      notes: document.getElementById('tr-note').value || null, lines: lines
+    });
+    var ov = document.querySelector('.modal-overlay'); if (ov) ov.remove();
+    showToast('On its way. The receiving city confirms when it lands.', 'success');
+    render();
+  } catch (err) {
+    btn.disabled = false;
+    assetErr('tr-err', err.message);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// By Technician
+// ---------------------------------------------------------------------------
+
+async function renderAssetTechs(el) {
+  try {
+    var rows = await api('GET', '/assets/by-user');
+    var unsigned = rows.filter(function (r) { return r.unsigned_acks > 0; }).length;
+    var totalItems = rows.reduce(function (a, r) { return a + (r.items || 0); }, 0);
+    el.innerHTML =
+      '<div class="page-header">' +
+        '<div><div class="page-title">By Technician</div><div class="page-subtitle">Who is holding what, and who still owes you a signature</div></div>' +
+        '<button class="btn btn-primary" onclick="navigate(\'new-asset-ack\')">' + icons.plus + ' New Assignment</button>' +
+      '</div>' +
+      '<div class="filter-bar">' +
+        '<input type="text" id="tech-q" placeholder="Search technician..." style="flex:2;min-width:240px" oninput="techFilter()" />' +
+        '<select id="tech-sort" onchange="techFilter()"><option value="items">Sort: Most items</option><option value="unsigned">Sort: Unsigned first</option><option value="repl">Sort: Most replacements</option><option value="name">Sort: Name</option></select>' +
+      '</div>' +
+      '<div style="font-size:13px;color:var(--text-muted-color);margin:-4px 0 16px" id="tech-count">' +
+        '<strong>' + rows.length + '</strong> technician' + (rows.length === 1 ? '' : 's') + ' &bull; ' + totalItems + ' items out' +
+        (unsigned ? ' &bull; ' + unsigned + ' awaiting signature' : '') + '</div>' +
+      '<div id="tech-roster"></div>';
+    window._techRows = rows;
+    techFilter();
+  } catch (err) {
+    el.innerHTML = '<div class="alert alert-error">' + escHtml(err.message) + '</div>';
+  }
+}
+function techFilter() {
+  var rows = (window._techRows || []).slice();
+  var q = (document.getElementById('tech-q') || {}).value || '';
+  var sort = (document.getElementById('tech-sort') || {}).value || 'items';
+  if (q) { var lq = q.toLowerCase(); rows = rows.filter(function (r) { return (r.name || '').toLowerCase().indexOf(lq) !== -1; }); }
+  rows.sort(function (a, b) {
+    if (sort === 'name') return (a.name || '').localeCompare(b.name || '');
+    if (sort === 'unsigned') return (b.unsigned_acks - a.unsigned_acks) || (b.items - a.items);
+    if (sort === 'repl') return b.replacements_12mo - a.replacements_12mo;
+    return b.items - a.items;
+  });
+  var wrap = document.getElementById('tech-roster');
+  if (!wrap) return;
+  if (!rows.length) { wrap.innerHTML = '<div class="empty-state"><h3>Nobody yet</h3><p>Assign equipment to a technician and they will show up here.</p></div>'; return; }
+  wrap.innerHTML = '<div class="asset-roster">' + rows.map(function (p) {
+    var initials = (p.name || '').split(' ').map(function (w) { return w[0] || ''; }).join('').toUpperCase().slice(0, 2);
+    return '<div class="asset-rcard' + (p.unsigned_acks > 0 ? ' warn' : '') + '">' +
+      '<div style="display:flex;align-items:center;gap:12px;margin-bottom:14px">' +
+        '<div class="avatar">' + escHtml(initials) + '</div>' +
+        '<div style="min-width:0"><div style="font-size:15px;font-weight:600;color:var(--text)">' + escHtml(p.name) + '</div>' +
+        '<div style="font-size:12px;color:var(--text-muted-color)">' + escHtml(roleLabel ? roleLabel(p.role) : p.role) + (p.home_city ? ' &bull; ' + escHtml(String(p.home_city).trim()) : '') + '</div></div>' +
+        '<div style="margin-left:auto">' + (p.unsigned_acks > 0 ? '<span class="badge badge-awaiting-signature">Awaiting signature</span>' : '<span class="badge badge-signed">Signed</span>') + '</div>' +
+      '</div>' +
+      '<div style="display:flex;gap:18px;margin-bottom:14px">' +
+        '<div><div class="mono" style="font-size:20px;font-weight:700;color:var(--text)">' + p.items + '</div><div class="asset-rlabel">Items</div></div>' +
+        '<div><div class="mono" style="font-size:20px;font-weight:700;color:var(--text)">' + assetMoney(p.value) + '</div><div class="asset-rlabel">Value</div></div>' +
+        '<div><div class="mono" style="font-size:20px;font-weight:700;color:' + (p.replacements_12mo >= 5 ? 'var(--warning)' : 'var(--text)') + '">' + p.replacements_12mo + '</div><div class="asset-rlabel">Repl. 12mo</div></div>' +
+      '</div>' +
+      '<div class="row-actions"><button class="btn btn-secondary btn-sm" style="flex:1;justify-content:center" onclick="navigate(\'asset-tech-detail\',' + p.id + ')">View items</button>' +
+      '<button class="btn btn-ghost btn-sm" onclick="assetAssignTo(' + p.id + ')">Assign</button></div>' +
+    '</div>';
+  }).join('') + '</div>';
+}
+function assetAssignTo(userId) { window._ackPreselectUser = userId; navigate('new-asset-ack'); }
+
+async function renderAssetTechDetail(el, userId) {
+  try {
+    var d = await api('GET', '/assets/by-user/' + userId);
+    var u = d.user;
+    var initials = (u.name || '').split(' ').map(function (w) { return w[0] || ''; }).join('').toUpperCase().slice(0, 2);
+    var lastAck = (d.acks || []).filter(function (a) { return a.status === 'signed'; })[0];
+    var isMe = u.id === state.user.id;
+    el.innerHTML =
+      '<div class="page-header">' +
+        '<div style="display:flex;align-items:center;gap:14px">' +
+          '<div class="avatar" style="width:46px;height:46px;font-size:17px">' + escHtml(initials) + '</div>' +
+          '<div><div class="page-title">' + escHtml(u.name) + '</div><div class="page-subtitle">' +
+            escHtml(roleLabel ? roleLabel(u.role) : u.role) + (u.home_city ? ' &bull; ' + escHtml(String(u.home_city).trim()) : '') +
+            (u.hire_date ? ' &bull; Hired ' + formatDate(u.hire_date) : '') + '</div></div>' +
+        '</div>' +
+        '<div class="flex-gap">' +
+          '<button class="btn btn-secondary" onclick="navigate(\'asset-techs\')">&larr; Back</button>' +
+          (can('manage_assets') && !isMe ? '<button class="btn btn-primary" onclick="assetAssignTo(' + u.id + ')">' + icons.plus + ' Assign Items</button>' : '') +
+        '</div>' +
+      '</div>' +
+      '<div id="assets-msg"></div>' +
+      '<div class="stats-grid">' +
+        '<div class="stat-card"><div class="stat-value">' + d.stats.items + '</div><div class="stat-label">Items held</div></div>' +
+        '<div class="stat-card"><div class="stat-value">' + assetMoney(d.stats.value) + '</div><div class="stat-label">Value assigned</div></div>' +
+        '<div class="stat-card"><div class="stat-value" style="color:var(--warning)">' + d.stats.replacements_12mo + '</div><div class="stat-label">Replacements (12 mo)</div></div>' +
+        '<div class="stat-card"><div class="stat-value" style="color:var(--warning)">' + assetMoney(d.stats.replacement_cost_12mo) + '</div><div class="stat-label">Replacement cost (12 mo)</div></div>' +
+        '<div class="stat-card"><div class="stat-value" style="color:' + (d.pending_acks ? 'var(--warning)' : 'var(--success)') + '">' + (d.pending_acks ? d.pending_acks : 'All') + '</div><div class="stat-label">' + (d.pending_acks ? 'Awaiting signature' : 'Signed for') + '</div></div>' +
+      '</div>' +
+      '<div class="card mb-4">' +
+        '<div class="card-header"><span class="card-title">Currently assigned</span>' +
+        '<span class="text-muted">' + (lastAck ? 'Last signed: ' + escHtml(lastAck.ack_number) + ' on ' + formatDate(lastAck.signed_at) : 'Nothing signed yet') + '</span></div>' +
+        (d.current.length
+          ? '<div class="table-wrap"><table><thead><tr><th>Item</th><th>Tag / Serial</th><th>Cat</th><th>Issued</th><th>Age</th><th>Replaced</th><th>Exp. life</th><th class="text-right">Value</th><th>Signed</th>' +
+            (can('manage_assets') ? '<th></th>' : '') + '</tr></thead><tbody>' +
+            d.current.map(function (h) {
+              var age = (Date.now() - new Date(h.issued_at).getTime()) / 1000;
+              return '<tr><td><strong style="color:var(--text)">' + escHtml(h.name) + (h.qty > 1 ? ' (' + h.qty + ')' : '') + '</strong></td>' +
+                '<td class="mono" style="font-size:12px;white-space:nowrap">' + escHtml(h.asset_tag || (h.serialized ? '—' : 'counted')) + (h.serial_number ? ' / ' + escHtml(h.serial_number) : '') + '</td>' +
+                '<td>' + assetCatTag(h.category) + '</td>' +
+                '<td style="white-space:nowrap">' + formatDate(h.issued_at) + '</td>' +
+                '<td class="mono">' + assetMonths(age) + '</td>' +
+                '<td class="mono" style="text-align:center;font-weight:700;color:' + (h.times_replaced >= 3 ? 'var(--warning)' : 'var(--text-dim)') + '">' + h.times_replaced + '</td>' +
+                '<td class="mono" style="color:var(--text-muted-color)">' + (h.expected_life_months ? h.expected_life_months + ' mo' : '—') + '</td>' +
+                '<td class="text-right mono">' + assetMoney((parseFloat(h.unit_cost) || 0) * (h.qty || 1)) + '</td>' +
+                '<td>' + (h.ack_status ? badgeHtml(h.ack_status === 'signed' ? 'signed' : 'awaiting_signature') : '<span style="color:var(--text-muted-color)">—</span>') + '</td>' +
+                (can('manage_assets') ? '<td style="white-space:nowrap"><button class="btn btn-ghost btn-sm" onclick="assetCollect(' + h.id + ')">Collect</button></td>' : '') +
+              '</tr>';
+            }).join('') + '</tbody></table></div>'
+          : '<div class="empty-state"><h3>Holding nothing</h3><p>Nothing is signed out to them right now.</p></div>') +
+      '</div>' +
+      '<div class="card">' +
+        '<div class="card-header"><span class="card-title">Replacement history</span><span class="text-muted">Everything swapped out, and how long it lasted</span></div>' +
+        (d.history.length
+          ? '<div class="table-wrap"><table><thead><tr><th>Date</th><th>Item</th><th>Reason</th><th>Held for</th><th>Exp. life</th><th class="text-right">Cost</th></tr></thead><tbody>' +
+            d.history.map(function (h) {
+              var lost = h.returned_reason === 'lost' || h.returned_reason === 'stolen';
+              return '<tr><td style="white-space:nowrap">' + formatDate(h.returned_at) + '</td>' +
+                '<td><strong style="color:var(--text)">' + escHtml(h.name) + '</strong></td>' +
+                '<td style="color:' + (lost ? 'var(--danger)' : 'var(--text-dim)') + '">' + escHtml(String(h.returned_reason || h.status || '').replace(/_/g, ' ')) + '</td>' +
+                '<td class="mono">' + assetMonths(h.held_seconds) + '</td>' +
+                '<td class="mono" style="color:var(--text-muted-color)">' + (h.expected_life_months ? h.expected_life_months + ' mo' : '—') + '</td>' +
+                '<td class="text-right mono">' + assetMoney(h.unit_cost) + '</td></tr>';
+            }).join('') + '</tbody></table></div>'
+          : '<div class="empty-state"><h3>Nothing replaced yet</h3><p>Good news, in its way.</p></div>') +
+      '</div>';
+  } catch (err) {
+    el.innerHTML = '<div class="alert alert-error">' + escHtml(err.message) + '</div>';
+  }
+}
+
+async function assetCollect(holdingId) {
+  var reason = await _novaDialog({
+    type: 'select', title: 'Collect it back', message: 'What is happening to it?',
+    options: [
+      { value: 'returned', label: 'Handed back, fine' },
+      { value: 'broken', label: 'Handed back, broken' },
+      { value: 'lost', label: 'Lost' },
+      { value: 'stolen', label: 'Stolen' }
+    ], okText: 'Record it'
+  });
+  if (!reason) return;
+  try {
+    await api('POST', '/assets/holdings/' + holdingId + '/return', {
+      reason: reason, physically_returned: reason !== 'lost' && reason !== 'stolen',
+      condition: reason === 'broken' ? 'poor' : null,
+      restock: reason === 'returned'
+    });
+    showToast('Recorded', 'success');
+    render();
+  } catch (err) { showToast(err.message, 'error'); }
+}
+
+// ---------------------------------------------------------------------------
+// Assignments: build one, view a signed one
+// ---------------------------------------------------------------------------
+
+var _ackDraft = { user_id: null, city: null, lines: [] };
+
+async function renderNewAssetAck(el) {
+  try {
+    var cities = await assetMyCities();
+    var types = await assetTypesLoad(true);
+    var kits = await api('GET', '/assets/kits');
+    var users = await api('GET', '/users');
+    var actives = users.filter(function (u) { return u.active !== false; });
+    var preUser = window._ackPreselectUser || null;
+    window._ackPreselectUser = null;
+    var defCity = cities.length ? String(cities[0].code).trim().toUpperCase() : '';
+    if (preUser) {
+      var pu = actives.filter(function (u) { return u.id === preUser; })[0];
+      if (pu && pu.home_city) defCity = String(pu.home_city).trim().toUpperCase();
+    }
+    _ackDraft = { user_id: preUser, city: defCity, lines: [] };
+
+    el.innerHTML =
+      '<div class="page-header">' +
+        '<div><div class="page-title">New Assignment</div><div class="page-subtitle">Pick a kit, tick what you are actually handing over, then send it to the tech to sign</div></div>' +
+        '<div class="flex-gap">' +
+          '<button class="btn btn-secondary" onclick="navigate(\'asset-acks\')">Cancel</button>' +
+          '<button class="btn btn-primary" onclick="saveAssetAck(this)">Send to Tech to Sign &rarr;</button>' +
+        '</div>' +
+      '</div>' +
+      '<div id="ack-err"></div>' +
+      '<div class="card mb-4"><div class="card-header"><span class="card-title">Who &amp; What</span></div><div class="card-body">' +
+        '<div class="form-row">' +
+          '<div class="form-group"><label>Technician *</label><select id="ack-user" onchange="ackUserChanged()">' +
+            '<option value="">Pick someone</option>' +
+            actives.map(function (u) { return '<option value="' + u.id + '" data-city="' + escHtml(u.home_city ? String(u.home_city).trim().toUpperCase() : '') + '"' + (u.id === preUser ? ' selected' : '') + '>' + escHtml(u.name) + (u.home_city ? ' — ' + escHtml(String(u.home_city).trim()) : '') + '</option>'; }).join('') +
+          '</select></div>' +
+          '<div class="form-group"><label>City <span style="font-weight:400;font-size:0.8em;color:var(--text-muted-color)">stock is pulled from here</span></label>' +
+            '<select id="ack-city" onchange="ackCityChanged()">' + assetCityOptions(cities, defCity, '') + '</select></div>' +
+        '</div>' +
+        '<div class="form-row">' +
+          '<div class="form-group"><label>Kit <span style="font-weight:400;font-size:0.8em;color:var(--text-muted-color)">pre-ticks a standard set, you can still change everything</span></label>' +
+            '<select id="ack-kit" onchange="ackApplyKit()"><option value="">None — start empty</option>' +
+            kits.map(function (k) { return '<option value="' + k.id + '">' + escHtml(k.name) + ' (' + k.items.length + ' items)</option>'; }).join('') +
+            '</select></div>' +
+          '<div class="form-group"><label>Add equipment</label><select id="ack-add" onchange="ackAddLine(this.value); this.value=\'\';">' +
+            '<option value="">Pick equipment to add</option>' +
+            types.map(function (t) { return '<option value="' + t.id + '">' + escHtml(t.name) + '</option>'; }).join('') +
+            '</select></div>' +
+        '</div>' +
+        '<div class="form-group" style="margin-bottom:0"><label>Note to the tech <span style="font-weight:400;font-size:0.8em;color:var(--text-muted-color)">shown above the signature</span></label>' +
+          '<textarea id="ack-note" style="min-height:60px"></textarea></div>' +
+      '</div></div>' +
+      '<div class="card"><div class="card-header"><span class="card-title">Items to assign</span>' +
+        '<button class="btn btn-ghost btn-sm" onclick="_ackDraft.lines=[];ackRenderLines()">Clear</button></div>' +
+        '<div id="ack-lines"></div>' +
+      '</div>';
+    window._ackKits = kits;
+    window._ackTypes = types;
+    ackCityChanged();
+  } catch (err) {
+    el.innerHTML = '<div class="alert alert-error">' + escHtml(err.message) + '</div>';
+  }
+}
+function ackUserChanged() {
+  var sel = document.getElementById('ack-user');
+  var opt = sel.options[sel.selectedIndex];
+  var city = opt ? opt.getAttribute('data-city') : '';
+  if (city) {
+    var cs = document.getElementById('ack-city');
+    for (var i = 0; i < cs.options.length; i++) { if (cs.options[i].value === city) { cs.value = city; break; } }
+  }
+  ackCityChanged();
+}
+async function ackCityChanged() {
+  _ackDraft.city = (document.getElementById('ack-city') || {}).value || '';
+  await ackRenderLines();
+}
+function ackApplyKit() {
+  var id = parseInt((document.getElementById('ack-kit') || {}).value, 10);
+  var kit = (window._ackKits || []).filter(function (k) { return k.id === id; })[0];
+  if (!kit) return;
+  _ackDraft.lines = kit.items.map(function (i) { return { asset_type_id: i.asset_type_id, qty: i.qty, condition: 'new' }; });
+  ackRenderLines();
+}
+function ackAddLine(typeId) {
+  var id = parseInt(typeId, 10);
+  if (!id) return;
+  if (_ackDraft.lines.some(function (l) { return l.asset_type_id === id; })) { showToast('Already on the list', ''); return; }
+  _ackDraft.lines.push({ asset_type_id: id, qty: 1, condition: 'new' });
+  ackRenderLines();
+}
+function ackRemoveLine(i) { _ackDraft.lines.splice(i, 1); ackRenderLines(); }
+function ackSetQty(i, v) { _ackDraft.lines[i].qty = Math.max(1, parseInt(v, 10) || 1); ackRenderLines(); }
+function ackSetCond(i, v) { _ackDraft.lines[i].condition = v; }
+
+async function ackRenderLines() {
+  var wrap = document.getElementById('ack-lines');
+  if (!wrap) return;
+  var byId = {};
+  (window._ackTypes || []).forEach(function (t) { byId[t.id] = t; });
+  if (!_ackDraft.lines.length) {
+    wrap.innerHTML = '<div class="empty-state"><h3>Nothing picked yet</h3><p>Choose a kit, or add equipment one at a time.</p></div>';
+    return;
+  }
+  var stock = {};
+  if (_ackDraft.city) {
+    try {
+      var rows = await api('GET', '/assets/locations/' + encodeURIComponent(_ackDraft.city));
+      rows.forEach(function (r) { stock[r.asset_type_id] = r; });
+    } catch (e) { /* the server will still guard the issue */ }
+  }
+  var total = 0, short = 0;
+  var body = _ackDraft.lines.map(function (l, i) {
+    var t = byId[l.asset_type_id] || {};
+    var st = stock[l.asset_type_id];
+    var avail = st ? st.on_shelf : 0;
+    var low = avail < l.qty;
+    if (low) short++;
+    total += (parseFloat(t.unit_cost) || 0) * l.qty;
+    return '<tr><td><strong style="color:var(--text)">' + escHtml(t.name || '') + '</strong></td>' +
+      '<td>' + assetCatTag(t.category) + '</td>' +
+      '<td style="width:64px"><input type="number" min="1" value="' + l.qty + '" style="padding:5px 8px;text-align:center" onchange="ackSetQty(' + i + ',this.value)" /></td>' +
+      '<td><select onchange="ackSetCond(' + i + ',this.value)" style="padding:5px 8px">' +
+        ['new', 'good', 'fair'].map(function (c) { return '<option value="' + c + '"' + (l.condition === c ? ' selected' : '') + '>' + c.charAt(0).toUpperCase() + c.slice(1) + '</option>'; }).join('') +
+      '</select></td>' +
+      '<td class="mono" style="color:var(--text-muted-color)">' + (t.expected_life_months ? t.expected_life_months + ' mo' : '—') + '</td>' +
+      '<td class="text-right mono">' + assetMoney((parseFloat(t.unit_cost) || 0) * l.qty) + '</td>' +
+      '<td style="white-space:nowrap;font-size:13px;color:' + (low ? 'var(--warning)' : 'var(--text-muted-color)') + '">' + avail + ' on the shelf</td>' +
+      '<td><button class="btn btn-ghost btn-sm" onclick="ackRemoveLine(' + i + ')">&#10005;</button></td></tr>';
+  }).join('');
+  wrap.innerHTML =
+    '<div class="table-wrap"><table class="line-items-table"><thead><tr><th>Item</th><th>Cat</th><th>Qty</th><th>Condition</th><th>Exp. life</th>' +
+    '<th class="text-right">Value</th><th>In stock at ' + escHtml(_ackDraft.city || '—') + '</th><th></th></tr></thead><tbody>' + body + '</tbody>' +
+    '<tfoot><tr class="total-row"><td colspan="5" class="text-right">' + _ackDraft.lines.length + ' items selected — total value</td>' +
+    '<td class="text-right">' + assetMoney(total) + '</td><td colspan="2"></td></tr></tfoot></table></div>' +
+    (short ? '<div class="card-body" style="border-top:1px solid var(--border)"><div class="alert alert-warn" style="margin-bottom:0">' +
+      short + ' item' + (short === 1 ? ' is' : 's are') + ' short at ' + escHtml(_ackDraft.city) + '. Receive stock first, or take them off this assignment.</div></div>' : '');
+}
+
+async function saveAssetAck(btn) {
+  var userId = parseInt((document.getElementById('ack-user') || {}).value, 10);
+  var city = (document.getElementById('ack-city') || {}).value;
+  if (!userId) { assetErr('ack-err', 'Pick the technician.'); return; }
+  if (!city) { assetErr('ack-err', 'Pick the city.'); return; }
+  if (!_ackDraft.lines.length) { assetErr('ack-err', 'Tick at least one item.'); return; }
+  btn.disabled = true;
+  try {
+    var ack = await api('POST', '/assets/acks', {
+      user_id: userId, city_code: city,
+      note: (document.getElementById('ack-note') || {}).value || null,
+      lines: _ackDraft.lines
+    });
+    showToast('Sent to the tech to sign', 'success');
+    navigate('view-asset-ack', ack.id);
+  } catch (err) {
+    btn.disabled = false;
+    assetErr('ack-err', err.message);
+  }
+}
+
+async function renderAssetAcks(el) {
+  try {
+    var rows = await api('GET', '/assets/acks');
+    el.innerHTML =
+      '<div class="page-header">' +
+        '<div><div class="page-title">Assignments</div><div class="page-subtitle">Every equipment acknowledgment, signed or waiting</div></div>' +
+        '<button class="btn btn-primary" onclick="navigate(\'new-asset-ack\')">' + icons.plus + ' New Assignment</button>' +
+      '</div>' +
+      '<div class="card">' +
+        '<div class="card-header"><span class="card-title">Acknowledgments</span>' +
+          '<span class="text-muted">' + rows.filter(function (r) { return r.status === 'pending'; }).length + ' awaiting signature</span></div>' +
+        (rows.length
+          ? '<div class="table-wrap"><table><thead><tr><th>Reference</th><th>Technician</th><th>City</th><th>Items</th><th class="text-right">Value</th><th>Issued</th><th>Signed</th><th>Status</th></tr></thead><tbody>' +
+            rows.map(function (r) {
+              return '<tr style="cursor:pointer" onclick="navigate(\'view-asset-ack\',' + r.id + ')">' +
+                '<td><strong class="mono">' + escHtml(r.ack_number) + '</strong></td>' +
+                '<td>' + escHtml(r.user_name) + '</td>' +
+                '<td>' + escHtml(r.city_code ? String(r.city_code).trim() : '—') + '</td>' +
+                '<td class="mono" style="text-align:center">' + r.line_count + '</td>' +
+                '<td class="text-right mono">' + assetMoney(r.total_value) + '</td>' +
+                '<td style="white-space:nowrap">' + formatDate(r.created_at) + '</td>' +
+                '<td style="white-space:nowrap">' + (r.signed_at ? formatDate(r.signed_at) : '<span style="color:var(--text-muted-color)">—</span>') + '</td>' +
+                '<td>' + badgeHtml(r.status === 'pending' ? 'awaiting_signature' : r.status) + '</td></tr>';
+            }).join('') + '</tbody></table></div>'
+          : '<div class="empty-state"><h3>No assignments yet</h3><p>Create one and the tech signs for it on their phone.</p></div>') +
+      '</div>';
+  } catch (err) {
+    el.innerHTML = '<div class="alert alert-error">' + escHtml(err.message) + '</div>';
+  }
+}
+
+async function renderViewAssetAck(el, id) {
+  try {
+    var a = await api('GET', '/assets/acks/' + id);
+    var isMine = a.user_id === state.user.id;
+    var initialed = a.lines.filter(function (l) { return l.initials; }).length;
+    var total = a.lines.reduce(function (s, l) { return s + (parseFloat(l.unit_cost) || 0) * (l.qty || 1); }, 0);
+
+    if (isMine && a.status === 'pending') { renderAckSigning(el, a); return; }
+
+    el.innerHTML =
+      '<div class="page-header">' +
+        '<div><div class="page-title mono">' + escHtml(a.ack_number) + '</div><div class="page-subtitle">Equipment acknowledgment &bull; ' + escHtml(a.user_name) + '</div></div>' +
+        '<div class="flex-gap">' +
+          '<button class="btn btn-secondary" onclick="navigate(\'' + (can('manage_assets') ? 'asset-acks' : 'my-equipment') + '\')">&larr; Back</button>' +
+          '<button class="btn btn-secondary" onclick="printAssetAck(' + a.id + ')">' + icons.print + ' Print</button>' +
+          (can('manage_assets') && a.status !== 'void' ? '<button class="btn btn-danger" onclick="voidAssetAck(' + a.id + ')">Void</button>' : '') +
+        '</div>' +
+      '</div>' +
+      '<div id="assets-msg"></div>' +
+      (a.status === 'declined' ? '<div class="alert alert-error">The tech flagged this: ' + escHtml(a.declined_reason || '') + '</div>' : '') +
+      '<div class="card mb-4"><div class="card-header"><span class="card-title">Acknowledgment</span>' +
+        badgeHtml(a.status === 'pending' ? 'awaiting_signature' : a.status) + '</div><div class="card-body">' +
+        '<div class="detail-grid" style="grid-template-columns:1fr 1fr 1fr;margin-bottom:0">' +
+          '<div class="detail-field"><label>Technician</label><p>' + escHtml(a.user_name) + '</p></div>' +
+          '<div class="detail-field"><label>City</label><p>' + escHtml(a.city_code ? String(a.city_code).trim() : '—') + '</p></div>' +
+          '<div class="detail-field"><label>Issued by</label><p>' + escHtml(a.issued_by_name || '—') + '</p></div>' +
+          '<div class="detail-field"><label>Issued</label><p>' + formatDate(a.created_at) + '</p></div>' +
+          '<div class="detail-field"><label>Signed</label><p>' + (a.signed_at ? formatDateTime(a.signed_at) : 'Not yet') + '</p></div>' +
+          '<div class="detail-field"><label>Total value</label><p class="mono">' + assetMoney(total) + '</p></div>' +
+        '</div>' +
+        (a.note ? '<div class="detail-field" style="margin-top:20px"><label>Note</label><p style="font-size:14px">' + escHtml(a.note) + '</p></div>' : '') +
+      '</div></div>' +
+      '<div class="card mb-4"><div class="card-header"><span class="card-title">Items — initialed individually</span>' +
+        '<span class="text-muted">' + initialed + ' of ' + a.lines.length + ' initialed</span></div>' +
+        '<div class="table-wrap"><table class="line-items-table"><thead><tr><th style="width:74px">Initials</th><th>Item</th><th>Cat</th><th>Qty</th><th>Serial / Tag</th><th>Condition</th><th class="text-right">Value</th><th>Initialed at</th></tr></thead><tbody>' +
+        a.lines.map(function (l) {
+          return '<tr><td>' + (l.initials
+            ? '<span class="asset-ini">' + escHtml(l.initials) + '</span>'
+            : '<span style="color:var(--text-muted-color);font-size:12px">not yet</span>') + '</td>' +
+            '<td><strong style="color:var(--text)">' + escHtml(l.label) + '</strong></td>' +
+            '<td>' + assetCatTag(l.category) + '</td>' +
+            '<td class="mono" style="text-align:center">' + l.qty + '</td>' +
+            '<td class="mono" style="font-size:12px;white-space:nowrap">' + escHtml(l.asset_tag || (l.serial_number ? '' : 'counted')) + (l.serial_number ? ' / ' + escHtml(l.serial_number) : '') + '</td>' +
+            '<td>' + escHtml(l.condition || '—') + '</td>' +
+            '<td class="text-right mono">' + assetMoney((parseFloat(l.unit_cost) || 0) * (l.qty || 1)) + '</td>' +
+            '<td class="mono" style="font-size:12px;color:var(--text-muted-color);white-space:nowrap">' + (l.initialed_at ? formatDateTime(l.initialed_at) : '—') + '</td></tr>';
+        }).join('') +
+        '</tbody><tfoot><tr class="total-row"><td colspan="6" class="text-right">Total</td><td class="text-right">' + assetMoney(total) + '</td><td></td></tr></tfoot></table></div>' +
+      '</div>' +
+      '<div class="card"><div class="card-header"><span class="card-title">Responsibility statement &amp; signature</span></div><div class="card-body">' +
+        '<div style="background:var(--bg-elevated);border:1px solid var(--border);border-radius:8px;padding:16px;font-size:14px;line-height:1.65;color:var(--text-dim);margin-bottom:20px">' +
+          escHtml(a.agreement_text || '') + '</div>' +
+        (a.signature_data
+          ? '<div class="rf-sec">Technician signature</div>' +
+            '<div style="background:#fff;border:1px solid var(--border);border-radius:8px;display:inline-block;padding:8px">' +
+              '<img src="' + escHtml(a.signature_data) + '" style="max-width:340px;max-height:120px;display:block" alt="signature" /></div>' +
+            '<div style="font-size:12px;color:var(--text-muted-color);margin-top:8px;line-height:1.6">Signed ' + formatDateTime(a.signed_at) +
+              (a.ip ? '<br />IP ' + escHtml(a.ip) : '') +
+              (a.gps_lat ? ' &bull; GPS ' + escHtml(String(a.gps_lat)) + ', ' + escHtml(String(a.gps_lon)) + (a.gps_accuracy ? ' (&plusmn;' + Math.round(a.gps_accuracy) + ' m)' : '') : '') +
+            '</div>'
+          : '<div class="empty-state" style="padding:24px"><h3>Not signed yet</h3><p>The tech signs this on their phone.</p></div>') +
+      '</div></div>';
+  } catch (err) {
+    el.innerHTML = '<div class="alert alert-error">' + escHtml(err.message) + '</div>';
+  }
+}
+
+async function voidAssetAck(id) {
+  var yes = await novaConfirm('Voiding puts every item on this assignment back on the shelf and closes the holdings. The record stays.', { title: 'Void this assignment?', okText: 'Void it' });
+  if (!yes) return;
+  try {
+    var r = await api('POST', '/assets/acks/' + id + '/void', {});
+    showToast('Voided. ' + r.reversed + ' item' + (r.reversed === 1 ? '' : 's') + ' returned to stock.', 'success');
+    render();
+  } catch (err) { showToast(err.message, 'error'); }
+}
+
+function printAssetAck(id) {
+  api('GET', '/assets/acks/' + id).then(function (a) {
+    var total = a.lines.reduce(function (s, l) { return s + (parseFloat(l.unit_cost) || 0) * (l.qty || 1); }, 0);
+    var w = window.open('', '_blank');
+    if (!w) { showToast('Allow pop-ups to print', 'error'); return; }
+    var rows = a.lines.map(function (l) {
+      return '<tr><td style="font-family:cursive;font-size:16px">' + escHtml(l.initials || '') + '</td><td>' + escHtml(l.label) + '</td>' +
+        '<td>' + escHtml(l.asset_tag || '') + (l.serial_number ? ' / ' + escHtml(l.serial_number) : '') + '</td>' +
+        '<td style="text-align:center">' + l.qty + '</td><td style="text-align:right">' + assetMoney((parseFloat(l.unit_cost) || 0) * (l.qty || 1)) + '</td></tr>';
+    }).join('');
+    w.document.write('<html><head><title>' + escHtml(a.ack_number) + '</title><style>' +
+      '@page{margin:14mm}body{font-family:Arial,Helvetica,sans-serif;color:#111;font-size:12px}' +
+      'h1{font-size:18px;margin:0 0 2px}table{width:100%;border-collapse:collapse;margin-top:10px}' +
+      'th,td{border:1px solid #ccc;padding:6px;text-align:left}th{background:#f2f2f2}' +
+      '.meta{margin-top:8px;font-size:12px}.agree{margin-top:16px;border:1px solid #ccc;padding:10px;line-height:1.5}' +
+      '</style></head><body>' +
+      '<h1>Equipment Acknowledgment ' + escHtml(a.ack_number) + '</h1>' +
+      '<div class="meta">' + escHtml(a.user_name) + ' &bull; ' + escHtml(a.city_code ? String(a.city_code).trim() : '') +
+      ' &bull; issued ' + formatDate(a.created_at) + (a.signed_at ? ' &bull; signed ' + formatDateTime(a.signed_at) : '') + '</div>' +
+      '<table><thead><tr><th>Initials</th><th>Item</th><th>Tag / Serial</th><th>Qty</th><th>Value</th></tr></thead><tbody>' + rows +
+      '<tr><td colspan="4" style="text-align:right"><b>Total</b></td><td style="text-align:right"><b>' + assetMoney(total) + '</b></td></tr>' +
+      '</tbody></table>' +
+      '<div class="agree">' + escHtml(a.agreement_text || '') + '</div>' +
+      (a.signature_data ? '<div style="margin-top:14px"><img src="' + escHtml(a.signature_data) + '" style="max-height:90px" /><div style="border-top:1px solid #333;width:280px;margin-top:2px">Technician signature</div></div>' : '') +
+      '</body></html>');
+    w.document.close();
+    setTimeout(function () { w.print(); }, 300);
+  }).catch(function (e) { showToast(e.message, 'error'); });
+}
+
+// ---------------------------------------------------------------------------
+// The tech's side: initial each line, sign once
+// ---------------------------------------------------------------------------
+
+var _ackSignPad = null;
+
+function myInitials() {
+  return (state.user.name || '').split(' ').map(function (w) { return w[0] || ''; }).join('').toUpperCase().slice(0, 3);
+}
+
+function renderAckSigning(el, a) {
+  var done = a.lines.filter(function (l) { return l.initials; }).length;
+  el.innerHTML =
+    '<div class="page-header"><div><div class="page-title">Sign for your equipment</div>' +
+      '<div class="page-subtitle mono">' + escHtml(a.ack_number) + ' &bull; issued by ' + escHtml(a.issued_by_name || 'your manager') + '</div></div></div>' +
+    '<div id="ack-sign-err"></div>' +
+    (a.note ? '<div class="alert alert-info">' + escHtml(a.note) + '</div>' : '') +
+    '<div class="card mb-4"><div class="card-header"><span class="card-title">Initial each item you received</span>' +
+      '<span class="text-muted" id="ack-progress">' + done + ' of ' + a.lines.length + ' initialed</span></div>' +
+      '<div class="card-body" id="ack-sign-lines">' +
+        a.lines.map(function (l) {
+          return '<div class="ini-row" id="ini-row-' + l.id + '">' +
+            '<div class="ini-box' + (l.initials ? ' done' : '') + '" id="ini-box-' + l.id + '" onclick="ackInitial(' + a.id + ',' + l.id + ')">' +
+              (l.initials ? escHtml(l.initials) : 'Tap to<br />initial') + '</div>' +
+            '<div style="min-width:0;flex:1"><div style="font-size:14px;font-weight:600;color:var(--text)">' + escHtml(l.label) + (l.qty > 1 ? ' &times; ' + l.qty : '') + '</div>' +
+            '<div style="font-size:12px;color:var(--text-muted-color)" class="mono">' +
+              escHtml(l.serial_number || l.asset_tag || 'counted') + ' &bull; ' + assetMoney((parseFloat(l.unit_cost) || 0) * (l.qty || 1)) + '</div></div>' +
+          '</div>';
+        }).join('') +
+      '</div>' +
+    '</div>' +
+    '<div class="card"><div class="card-header"><span class="card-title">Accept responsibility</span></div><div class="card-body">' +
+      '<div style="background:var(--bg-elevated);border:1px solid var(--border);border-radius:8px;padding:14px;font-size:13.5px;line-height:1.6;color:var(--text-dim);margin-bottom:16px">' +
+        escHtml(a.agreement_text || '') + '</div>' +
+      '<label>Sign below</label>' +
+      '<div style="background:#fff;border:1px solid var(--border);border-radius:8px;display:block;max-width:600px">' +
+        '<canvas id="ack-sigpad" width="600" height="180" style="touch-action:none;width:100%;max-width:600px;display:block;cursor:crosshair"></canvas></div>' +
+      '<div style="margin-top:8px;display:flex;gap:8px;flex-wrap:wrap">' +
+        '<button class="btn btn-ghost btn-sm" onclick="ackSigClear()">Clear</button>' +
+        '<button class="btn btn-secondary btn-sm" onclick="ackSigFullscreen()">Tap to sign full screen</button>' +
+      '</div>' +
+      '<div style="font-size:11px;color:var(--text-muted-color);margin:14px 0 12px;line-height:1.5">Your signature is stamped with the time, your device and, if you allow it, your location.</div>' +
+      '<div style="display:flex;gap:8px;flex-wrap:wrap">' +
+        '<button class="btn btn-primary" style="flex:1;justify-content:center;padding:13px" onclick="ackSubmitSignature(' + a.id + ',this)">Submit signature</button>' +
+        '<button class="btn btn-secondary" onclick="ackDecline(' + a.id + ')">Something&#39;s wrong</button>' +
+      '</div>' +
+    '</div></div>';
+  setupAckSignaturePad();
+}
+
+function setupAckSignaturePad() {
+  var c = document.getElementById('ack-sigpad');
+  if (!c) return;
+  var ctx = c.getContext('2d');
+  ctx.lineWidth = 2.5; ctx.lineCap = 'round'; ctx.lineJoin = 'round'; ctx.strokeStyle = '#111111';
+  var drawing = false, last = null, ink = false;
+  function pos(e) {
+    var r = c.getBoundingClientRect();
+    var t = (e.touches && e.touches[0]) ? e.touches[0] : e;
+    return { x: (t.clientX - r.left) * (c.width / r.width), y: (t.clientY - r.top) * (c.height / r.height) };
+  }
+  function start(e) { e.preventDefault(); drawing = true; last = pos(e); }
+  function move(e) {
+    if (!drawing) return;
+    e.preventDefault();
+    var p = pos(e);
+    ctx.beginPath(); ctx.moveTo(last.x, last.y); ctx.lineTo(p.x, p.y); ctx.stroke();
+    last = p; ink = true;
+  }
+  function end() { drawing = false; }
+  c.addEventListener('mousedown', start);
+  c.addEventListener('mousemove', move);
+  window.addEventListener('mouseup', end);
+  c.addEventListener('touchstart', start, { passive: false });
+  c.addEventListener('touchmove', move, { passive: false });
+  c.addEventListener('touchend', end);
+  _ackSignPad = {
+    canvas: c,
+    hasInk: function () { return ink; },
+    clear: function () { ctx.clearRect(0, 0, c.width, c.height); ink = false; },
+    fromCanvas: function (src) {
+      ctx.clearRect(0, 0, c.width, c.height);
+      var sr = src.width / src.height, dr = c.width / c.height, dw, dh;
+      if (sr > dr) { dw = c.width; dh = dw / sr; } else { dh = c.height; dw = dh * sr; }
+      ctx.drawImage(src, (c.width - dw) / 2, (c.height - dh) / 2, dw, dh);
+      ink = true;
+    }
+  };
+}
+function ackSigClear() { if (_ackSignPad) _ackSignPad.clear(); }
+
+function ackSigFullscreen() {
+  var ov = document.createElement('div');
+  ov.id = 'ack-sig-fs';
+  ov.style.cssText = 'position:fixed;inset:0;z-index:100000;background:#fff;display:flex;flex-direction:column';
+  ov.innerHTML =
+    '<div style="display:flex;justify-content:space-between;align-items:center;padding:12px 16px;border-bottom:1px solid #e5e5e5;flex:0 0 auto">' +
+      '<button id="ack-fs-cancel" style="background:none;border:none;font-size:16px;color:#666;padding:6px 4px">Cancel</button>' +
+      '<span style="font-size:14px;font-weight:600;color:#111">Sign below</span>' +
+      '<button id="ack-fs-done" style="background:#f97316;color:#fff;border:none;border-radius:8px;padding:8px 20px;font-size:15px;font-weight:600">Done</button>' +
+    '</div>' +
+    '<div style="flex:1 1 auto;position:relative;overflow:hidden">' +
+      '<canvas id="ack-fs-canvas" style="position:absolute;inset:0;width:100%;height:100%;touch-action:none"></canvas>' +
+      '<div style="position:absolute;left:6%;right:6%;bottom:26%;border-bottom:2px dashed #ccc;pointer-events:none"></div>' +
+      '<div style="position:absolute;left:6%;bottom:calc(26% + 6px);font-size:11px;color:#bbb;pointer-events:none">Sign above the line</div>' +
+    '</div>' +
+    '<div style="padding:10px 16px;flex:0 0 auto;border-top:1px solid #e5e5e5"><button id="ack-fs-clear" style="background:none;border:1px solid #ddd;border-radius:8px;padding:8px 18px;font-size:14px;color:#333">Clear</button></div>';
+  document.body.appendChild(ov);
+  var c = document.getElementById('ack-fs-canvas');
+  var rect = c.getBoundingClientRect();
+  var dpr = window.devicePixelRatio || 1;
+  c.width = Math.round(rect.width * dpr); c.height = Math.round(rect.height * dpr);
+  var ctx = c.getContext('2d');
+  ctx.scale(dpr, dpr);
+  ctx.lineWidth = 2.5; ctx.lineCap = 'round'; ctx.lineJoin = 'round'; ctx.strokeStyle = '#111111';
+  var drawing = false, last = null, ink = false;
+  function pos(e) {
+    var r = c.getBoundingClientRect();
+    var t = (e.touches && e.touches[0]) ? e.touches[0] : e;
+    return { x: t.clientX - r.left, y: t.clientY - r.top };
+  }
+  c.addEventListener('touchstart', function (e) { e.preventDefault(); drawing = true; last = pos(e); }, { passive: false });
+  c.addEventListener('mousedown', function (e) { e.preventDefault(); drawing = true; last = pos(e); });
+  function mv(e) { if (!drawing) return; e.preventDefault(); var p = pos(e); ctx.beginPath(); ctx.moveTo(last.x, last.y); ctx.lineTo(p.x, p.y); ctx.stroke(); last = p; ink = true; }
+  c.addEventListener('touchmove', mv, { passive: false });
+  c.addEventListener('mousemove', mv);
+  c.addEventListener('touchend', function () { drawing = false; });
+  window.addEventListener('mouseup', function () { drawing = false; });
+  document.getElementById('ack-fs-clear').onclick = function () { ctx.clearRect(0, 0, c.width, c.height); ink = false; };
+  document.getElementById('ack-fs-cancel').onclick = function () { ov.remove(); };
+  document.getElementById('ack-fs-done').onclick = function () {
+    if (ink && _ackSignPad) _ackSignPad.fromCanvas(c);
+    ov.remove();
+  };
+}
+
+async function ackInitial(ackId, lineId) {
+  var box = document.getElementById('ini-box-' + lineId);
+  if (!box || box.classList.contains('done')) return;
+  var ini = myInitials();
+  box.innerHTML = '<span class="spinner"></span>';
+  try {
+    await api('POST', '/assets/acks/' + ackId + '/lines/' + lineId + '/initial', { initials: ini });
+    box.classList.add('done');
+    box.innerHTML = escHtml(ini);
+    var boxes = document.querySelectorAll('.ini-box');
+    var done = document.querySelectorAll('.ini-box.done').length;
+    var pr = document.getElementById('ack-progress');
+    if (pr) pr.textContent = done + ' of ' + boxes.length + ' initialed';
+  } catch (err) {
+    box.innerHTML = 'Tap to<br />initial';
+    showToast(err.message, 'error');
+  }
+}
+
+function ackGeo() {
+  return new Promise(function (resolve) {
+    if (!navigator.geolocation) return resolve({});
+    var settled = false;
+    var t = setTimeout(function () { if (!settled) { settled = true; resolve({}); } }, 6000);
+    navigator.geolocation.getCurrentPosition(function (p) {
+      if (settled) return; settled = true; clearTimeout(t);
+      resolve({ gps_lat: p.coords.latitude, gps_lon: p.coords.longitude, gps_accuracy: p.coords.accuracy });
+    }, function () { if (settled) return; settled = true; clearTimeout(t); resolve({}); }, { enableHighAccuracy: true, timeout: 5000 });
+  });
+}
+
+async function ackSubmitSignature(ackId, btn) {
+  if (!_ackSignPad || !_ackSignPad.hasInk()) { assetErr('ack-sign-err', 'Draw your signature first.'); return; }
+  btn.disabled = true;
+  btn.textContent = 'Submitting...';
+  try {
+    var geo = await ackGeo();
+    var body = { signature_data: _ackSignPad.canvas.toDataURL('image/png') };
+    if (geo.gps_lat) { body.gps_lat = geo.gps_lat; body.gps_lon = geo.gps_lon; body.gps_accuracy = geo.gps_accuracy; }
+    await api('POST', '/assets/acks/' + ackId + '/sign', body);
+    showToast('Signed. Thanks.', 'success');
+    navigate('my-equipment');
+  } catch (err) {
+    btn.disabled = false;
+    btn.textContent = 'Submit signature';
+    assetErr('ack-sign-err', err.message);
+  }
+}
+
+async function ackDecline(ackId) {
+  var reason = await novaPrompt('What is wrong? Your manager sees this.', '', { title: 'Flag this assignment', okText: 'Send it' });
+  if (reason === null || !String(reason).trim()) return;
+  try {
+    await api('POST', '/assets/acks/' + ackId + '/decline', { reason: reason });
+    showToast('Sent to your manager', 'success');
+    navigate('my-equipment');
+  } catch (err) { showToast(err.message, 'error'); }
+}
+
+// ---------------------------------------------------------------------------
+// My Equipment
+// ---------------------------------------------------------------------------
+
+async function renderMyEquipment(el) {
+  try {
+    var d = await api('GET', '/assets/mine');
+    var total = d.items.reduce(function (s, i) { return s + (parseFloat(i.unit_cost) || 0) * (i.qty || 1); }, 0);
+    el.innerHTML =
+      '<div class="page-header">' +
+        '<div><div class="page-title">My Equipment</div><div class="page-subtitle">' + d.items.length + ' item' + (d.items.length === 1 ? '' : 's') +
+          ' &bull; ' + assetMoney(total) + '</div></div>' +
+        (can('request_asset_replacement') && d.items.length ? '<button class="btn btn-secondary" onclick="openMyReplacement()">Request a replacement</button>' : '') +
+      '</div>' +
+      (d.pending_acks.length
+        ? '<div class="alert alert-warn">You have <strong>' + d.pending_acks.length + ' assignment' + (d.pending_acks.length === 1 ? '' : 's') +
+          '</strong> waiting for your signature. ' + d.pending_acks.map(function (p) {
+            return '<a href="#" onclick="event.preventDefault();navigate(\'view-asset-ack\',' + p.id + ')" style="color:inherit;text-decoration:underline">' + escHtml(p.ack_number) + '</a>';
+          }).join(', ') + '</div>'
+        : '') +
+      (d.open_requests.length
+        ? '<div class="card mb-4"><div class="card-header"><span class="card-title">Your open requests</span></div>' +
+          '<div class="table-wrap"><table><thead><tr><th>Reference</th><th>Raised</th><th>Status</th><th>Note from your manager</th><th>PO</th></tr></thead><tbody>' +
+          d.open_requests.map(function (r) {
+            return '<tr><td class="mono"><strong>' + escHtml(r.request_number) + '</strong></td>' +
+              '<td style="white-space:nowrap">' + formatDate(r.created_at) + '</td>' +
+              '<td>' + badgeHtml(r.status) + '</td>' +
+              '<td>' + escHtml(r.decision_notes || '—') + '</td>' +
+              '<td class="mono">' + escHtml(r.po_number || '—') + '</td></tr>';
+          }).join('') + '</tbody></table></div></div>'
+        : '') +
+      '<div class="card"><div class="card-header"><span class="card-title">Signed out to you</span></div>' +
+        (d.items.length
+          ? '<div class="table-wrap"><table><thead><tr><th>Item</th><th>Tag / Serial</th><th>Cat</th><th>Since</th><th class="text-right">Value</th><th>Signed</th></tr></thead><tbody>' +
+            d.items.map(function (i) {
+              return '<tr><td><strong style="color:var(--text)">' + escHtml(i.name) + (i.qty > 1 ? ' &times; ' + i.qty : '') + '</strong></td>' +
+                '<td class="mono" style="font-size:12px;white-space:nowrap">' + escHtml(i.serial_number || i.asset_tag || 'counted') + '</td>' +
+                '<td>' + assetCatTag(i.category) + '</td>' +
+                '<td style="white-space:nowrap">' + formatDate(i.issued_at) + '</td>' +
+                '<td class="text-right mono">' + assetMoney((parseFloat(i.unit_cost) || 0) * (i.qty || 1)) + '</td>' +
+                '<td>' + (i.ack_status === 'signed' ? '<span class="badge badge-signed">Signed</span>' : '<span class="badge badge-awaiting-signature">Awaiting signature</span>') + '</td></tr>';
+            }).join('') + '</tbody></table></div>'
+          : '<div class="empty-state"><h3>Nothing issued to you</h3><p>When your manager assigns you equipment it appears here for you to sign.</p></div>') +
+      '</div>';
+  } catch (err) {
+    el.innerHTML = '<div class="alert alert-error">' + escHtml(err.message) + '</div>';
+  }
+}
+
+async function openMyReplacement() {
+  var d = await api('GET', '/assets/mine');
+  if (!d.items.length) { showToast('You have nothing issued to you', ''); return; }
+  var ov = document.createElement('div');
+  ov.className = 'modal-overlay';
+  ov.innerHTML =
+    '<div class="modal">' +
+      '<div class="modal-header"><span class="modal-title">Request a replacement</span>' +
+      '<button class="btn btn-ghost btn-sm" onclick="this.closest(\'.modal-overlay\').remove()">&#10005;</button></div>' +
+      '<div class="modal-body"><div id="myreq-err"></div>' +
+        '<div class="form-group"><label>Which item?</label><select id="myreq-holding">' +
+          d.items.map(function (i) {
+            var age = (Date.now() - new Date(i.issued_at).getTime()) / 1000;
+            return '<option value="' + i.id + '" data-type="' + i.asset_type_id + '">' + escHtml(i.name) + ' — held ' + assetMonths(age) + '</option>';
+          }).join('') +
+        '</select></div>' +
+        '<div class="form-group"><label>What happened?</label><select id="myreq-reason">' +
+          '<option value="broken">Broken</option><option value="worn_out">Worn out</option><option value="lost">Lost</option>' +
+          '<option value="stolen">Stolen</option><option value="not_working">Not working right</option>' +
+        '</select></div>' +
+        '<div class="form-group" style="margin-bottom:0"><label>Tell your manager more</label><textarea id="myreq-note" style="min-height:70px"></textarea></div>' +
+        '<div style="font-size:12px;color:var(--text-muted-color);margin-top:12px;line-height:1.5">Keep the old one until you are handed the new one. It stays on your record until you hand it in.</div>' +
+      '</div>' +
+      '<div class="modal-footer"><button class="btn btn-secondary" onclick="this.closest(\'.modal-overlay\').remove()">Cancel</button>' +
+      '<button class="btn btn-primary" onclick="saveMyReplacement(this)">Send to my manager</button></div>' +
+    '</div>';
+  document.body.appendChild(ov);
+}
+async function saveMyReplacement(btn) {
+  btn.disabled = true;
+  try {
+    var sel = document.getElementById('myreq-holding');
+    var opt = sel.options[sel.selectedIndex];
+    await api('POST', '/assets/requests', {
+      lines: [{
+        asset_type_id: parseInt(opt.getAttribute('data-type'), 10),
+        holding_id: parseInt(sel.value, 10), qty: 1,
+        reason: document.getElementById('myreq-reason').value,
+        notes: document.getElementById('myreq-note').value || null
+      }]
+    });
+    var ov = document.querySelector('.modal-overlay'); if (ov) ov.remove();
+    showToast('Sent. Your manager sees it right away.', 'success');
+    render();
+  } catch (err) {
+    btn.disabled = false;
+    assetErr('myreq-err', err.message);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Replacements: the queue and the review
+// ---------------------------------------------------------------------------
+
+async function renderAssetRequests(el) {
+  try {
+    var rows = await api('GET', '/assets/requests');
+    var canDecide = can('approve_asset_replacement');
+    var pending = rows.filter(function (r) { return r.status === 'pending'; });
+    el.innerHTML =
+      '<div class="page-header">' +
+        '<div><div class="page-title">Replacements</div><div class="page-subtitle">' +
+          (canDecide ? 'Requests to swap out equipment. Approving one opens a purchase order.' : 'Your replacement requests') + '</div></div>' +
+        (can('request_asset_replacement') ? '<button class="btn btn-primary" onclick="openMyReplacement()">' + icons.plus + ' Request a replacement</button>' : '') +
+      '</div>' +
+      '<div id="assets-msg"></div>' +
+      (canDecide
+        ? '<div class="stats-grid" style="grid-template-columns:repeat(auto-fit,minmax(160px,1fr))">' +
+          '<div class="stat-card"><div class="stat-value" style="color:var(--warning)">' + pending.length + '</div><div class="stat-label">Pending review</div></div>' +
+          '<div class="stat-card"><div class="stat-value">' + rows.filter(function (r) { return r.status === 'fulfilled'; }).length + '</div><div class="stat-label">Fulfilled</div></div>' +
+          '<div class="stat-card"><div class="stat-value">' + rows.filter(function (r) { return r.status === 'approved'; }).length + '</div><div class="stat-label">Approved, on order</div></div>' +
+          '<div class="stat-card"><div class="stat-value">' + rows.filter(function (r) { return r.status === 'denied'; }).length + '</div><div class="stat-label">Denied</div></div>' +
+        '</div>'
+        : '') +
+      '<div class="card"><div class="card-header"><span class="card-title">Requests</span></div>' +
+        (rows.length
+          ? '<div class="table-wrap"><table><thead><tr><th>Requested</th><th>Tech</th><th>Item</th><th>Reason</th><th>Held for</th>' +
+            '<th>Exp. life</th><th>Prior replacements</th><th>Status</th><th>PO</th><th></th></tr></thead><tbody>' +
+            rows.map(function (r) {
+              var l = (r.lines || [])[0] || {};
+              var more = (r.lines || []).length > 1 ? ' <span style="color:var(--text-muted-color)">+' + ((r.lines || []).length - 1) + ' more</span>' : '';
+              var hot = (l.prior_replacements || 0) >= 2;
+              return '<tr' + (r.status === 'pending' ? ' style="background:rgba(249,115,22,0.04)"' : '') + '>' +
+                '<td style="white-space:nowrap">' + formatDate(r.created_at) + '</td>' +
+                '<td><strong style="color:var(--text)">' + escHtml(r.user_name) + '</strong></td>' +
+                '<td>' + escHtml(l.name || '—') + more + '</td>' +
+                '<td>' + escHtml(String(l.reason || '—').replace(/_/g, ' ')) + '</td>' +
+                '<td class="mono">' + assetMonths(l.held_seconds) + '</td>' +
+                '<td class="mono" style="color:var(--text-muted-color)">' + (l.expected_life_months ? l.expected_life_months + ' mo' : '—') + '</td>' +
+                '<td style="color:' + (hot ? 'var(--warning)' : 'var(--text-muted-color)') + ';font-weight:' + (hot ? '600' : '400') + '">' + (l.prior_replacements || 0) + ' before this</td>' +
+                '<td>' + badgeHtml(r.status) + '</td>' +
+                '<td class="mono" style="font-size:12px">' + escHtml(r.po_number || '—') + '</td>' +
+                '<td style="white-space:nowrap">' +
+                  (canDecide && r.status === 'pending'
+                    ? '<button class="btn btn-primary btn-sm" onclick="openRequestReview(' + r.id + ')">Review</button>'
+                    : '<button class="btn btn-ghost btn-sm" onclick="openRequestReview(' + r.id + ')">View</button>') +
+                '</td></tr>';
+            }).join('') + '</tbody></table></div>'
+          : '<div class="empty-state"><h3>Nothing to review</h3><p>Replacement requests land here.</p></div>') +
+      '</div>';
+  } catch (err) {
+    el.innerHTML = '<div class="alert alert-error">' + escHtml(err.message) + '</div>';
+  }
+}
+
+function histChip(n, l) {
+  return '<div class="hist-chip"><div class="n">' + escHtml(String(n)) + '</div><div class="l">' + escHtml(l) + '</div></div>';
+}
+
+async function openRequestReview(id) {
+  try {
+    var r = await api('GET', '/assets/requests/' + id);
+    var decidable = can('approve_asset_replacement') && r.status === 'pending';
+    window._reqReview = r;
+    var l0 = (r.lines || [])[0] || {};
+    var h = l0.history || {};
+    var missing = (r.lines || []).filter(function (l) { return !l.vendor_name || l.unit_cost === null; });
+
+    var ov = document.createElement('div');
+    ov.className = 'modal-overlay';
+    ov.innerHTML =
+      '<div class="modal" style="max-width:720px">' +
+        '<div class="modal-header"><span class="modal-title">Replacement request — ' + escHtml(r.request_number) + '</span>' +
+        '<button class="btn btn-ghost btn-sm" onclick="this.closest(\'.modal-overlay\').remove()">&#10005;</button></div>' +
+        '<div class="modal-body"><div id="rev-err"></div>' +
+          '<div class="detail-grid" style="grid-template-columns:1fr 1fr;gap:16px;margin-bottom:16px">' +
+            '<div class="detail-field"><label>Technician</label><p>' + escHtml(r.user_name) + ' — ' + escHtml(r.city_code ? String(r.city_code).trim() : '—') + '</p></div>' +
+            '<div class="detail-field"><label>Item</label><p>' + escHtml(l0.name || '—') + '</p></div>' +
+            '<div class="detail-field"><label>Reason given</label><p>' + escHtml(String(l0.reason || '—').replace(/_/g, ' ')) + (l0.notes ? ' — ' + escHtml(l0.notes) : '') + '</p></div>' +
+            '<div class="detail-field"><label>Held for</label><p>' + assetMonths(l0.held_seconds) + '</p></div>' +
+          '</div>' +
+          '<div class="rf-sec">This tech&#39;s history with this item</div>' +
+          '<div class="hist" style="margin-bottom:16px">' +
+            histChip(h.times_replaced || 0, 'Times replaced') +
+            histChip((h.avg_held_months || 0).toFixed(1) + ' mo', 'Avg time held') +
+            histChip((h.expected_life_months || '—') + (h.expected_life_months ? ' mo' : ''), 'Expected life') +
+            histChip(assetMoney(h.spent || 0), 'Spent so far') +
+            histChip((h.crew_per_year || 0).toFixed(1) + '/yr', 'Crew average') +
+          '</div>' +
+          ((h.timeline || []).length > 1
+            ? '<ul class="tl" style="margin-bottom:16px">' + h.timeline.map(function (t) {
+                return '<li><div class="d">' + formatDate(t.issued_at) + ' &rarr; ' + (t.returned_at ? formatDate(t.returned_at) : 'today') + '</div>' +
+                  '<div class="t">Held ' + assetMonths(t.held_seconds) + (t.returned_reason ? ' — ' + escHtml(String(t.returned_reason).replace(/_/g, ' ')) : '') +
+                  (t.unit_cost ? ' &bull; ' + assetMoney(t.unit_cost) : '') + '</div></li>';
+              }).join('') + '</ul>'
+            : '') +
+          (decidable ? requestPoPanel(r, missing) : (r.po_number ? '<div class="alert alert-info">Purchase order ' + escHtml(r.po_number) + '</div>' : '')) +
+          (decidable
+            ? '<div class="form-group" style="margin:16px 0 0"><label>Decision note <span style="font-weight:400;font-size:0.8em;color:var(--text-muted-color)">the tech sees this</span></label>' +
+              '<textarea id="rev-note" style="min-height:56px"></textarea></div>'
+            : (r.decision_notes ? '<div class="detail-field" style="margin-top:12px"><label>Decision note</label><p>' + escHtml(r.decision_notes) + '</p></div>' : '')) +
+        '</div>' +
+        (decidable
+          ? '<div class="modal-footer" style="justify-content:space-between">' +
+              '<span class="text-muted" style="font-size:12.5px;max-width:290px;line-height:1.45">The PO opens as a draft. Nothing is ordered until someone submits it.</span>' +
+              '<div style="display:flex;gap:8px">' +
+                '<button class="btn btn-danger" onclick="denyRequest(' + r.id + ',this)">Deny</button>' +
+                '<button class="btn btn-primary" style="white-space:nowrap" onclick="approveRequest(' + r.id + ',this)">Approve &amp; open PO</button>' +
+              '</div></div>'
+          : '<div class="modal-footer"><button class="btn btn-secondary" onclick="this.closest(\'.modal-overlay\').remove()">Close</button></div>') +
+      '</div>';
+    document.body.appendChild(ov);
+  } catch (err) { showToast(err.message, 'error'); }
+}
+
+function requestPoPanel(r, missing) {
+  var lines = r.lines || [];
+  return '<div class="po-panel">' +
+    '<div class="po-panel-h"><span>Approving this opens a purchase order</span><span class="badge badge-draft">Draft</span></div>' +
+    '<div class="po-panel-b">' +
+      lines.map(function (l, i) {
+        var needs = !l.vendor_name || l.unit_cost === null;
+        return '<div' + (i ? ' style="margin-top:14px;padding-top:14px;border-top:1px solid var(--border)"' : '') + '>' +
+          '<div style="font-size:14px;font-weight:600;color:var(--text);margin-bottom:8px">' + escHtml(l.name) + '</div>' +
+          (needs
+            ? '<div class="form-row"><div class="form-group" style="margin:0"><label>Vendor *</label>' +
+              '<input type="text" class="rev-vendor" data-type="' + l.asset_type_id + '" value="' + escHtml(l.vendor_name || '') + '" /></div>' +
+              '<div class="form-group" style="margin:0"><label>Our cost *</label>' +
+              '<input type="number" step="0.01" min="0" class="rev-cost" data-type="' + l.asset_type_id + '" value="' + (l.unit_cost === null ? '' : escHtml(String(l.unit_cost))) + '" /></div></div>' +
+              '<label style="display:flex;align-items:center;gap:8px;margin:10px 0 0;font-size:13px"><input type="checkbox" class="rev-save" data-type="' + l.asset_type_id + '" style="width:auto" checked /> Save these onto the equipment record</label>'
+            : '<div style="display:grid;grid-template-columns:1.6fr 1fr 1fr;gap:14px">' +
+              '<div class="detail-field"><label>Vendor</label><p>' + escHtml(l.vendor_name) + '</p><div class="po-src">from the Equipment List</div></div>' +
+              '<div class="detail-field"><label>Item #</label><p class="mono">' + escHtml(l.item_number || '—') + '</p><div class="po-src">from the Equipment List</div></div>' +
+              '<div class="detail-field"><label>Our cost</label><p class="mono">' + assetMoney(l.unit_cost) + '</p><div class="po-src">from the Equipment List</div></div>' +
+              '</div>') +
+          '<label style="display:flex;align-items:flex-start;gap:10px;margin:12px 0 0;cursor:pointer">' +
+            '<input type="checkbox" class="rev-issue" data-line="' + l.id + '" style="width:auto;margin-top:3px"' + (l.available >= l.qty ? ' checked' : ' disabled') + ' />' +
+            '<span style="font-size:13.5px;color:var(--text-dim);line-height:1.5">' +
+              (l.available >= l.qty
+                ? '<strong style="color:var(--text)">Issue one from ' + escHtml(String(r.city_code || '').trim()) + ' stock now</strong> — ' + l.available + ' on the shelf. They get it today and this PO puts one back.'
+                : '<strong style="color:var(--warning)">Nothing on the shelf at ' + escHtml(String(r.city_code || '').trim()) + '.</strong> The PO is what they are waiting on.') +
+            '</span></label>' +
+          ((l.available >= l.qty && l.min_qty > 0 && (l.available - l.qty) < l.min_qty)
+            ? '<div class="alert alert-warn" style="margin:10px 0 0;font-size:13px">Issuing this drops ' + escHtml(String(r.city_code || '').trim()) +
+              ' to <strong>' + (l.available - l.qty) + ' on the shelf</strong>, below its minimum of ' + l.min_qty + '.</div>'
+            : '') +
+        '</div>';
+      }).join('') +
+    '</div></div>';
+}
+
+async function approveRequest(id, btn) {
+  btn.disabled = true;
+  try {
+    var lines = Array.prototype.map.call(document.querySelectorAll('.rev-issue'), function (c) {
+      return { id: parseInt(c.getAttribute('data-line'), 10), issue_from_stock: c.checked && !c.disabled };
+    });
+    var overrides = [];
+    Array.prototype.forEach.call(document.querySelectorAll('.rev-vendor'), function (v) {
+      var typeId = parseInt(v.getAttribute('data-type'), 10);
+      var costEl = document.querySelector('.rev-cost[data-type="' + typeId + '"]');
+      var saveEl = document.querySelector('.rev-save[data-type="' + typeId + '"]');
+      overrides.push({
+        asset_type_id: typeId, vendor_name: v.value || null,
+        unit_cost: costEl && costEl.value !== '' ? parseFloat(costEl.value) : null,
+        save: !!(saveEl && saveEl.checked)
+      });
+    });
+    var out = await api('POST', '/assets/requests/' + id + '/approve', {
+      decision_notes: (document.getElementById('rev-note') || {}).value || null,
+      lines: lines, type_overrides: overrides
+    });
+    var ov = document.querySelector('.modal-overlay'); if (ov) ov.remove();
+    showToast(out.po ? 'Approved. Draft PO ' + out.po.po_number + ' opened.' : 'Approved.', 'success');
+    render();
+  } catch (err) {
+    btn.disabled = false;
+    if (err && /vendor and a cost/i.test(err.message)) {
+      assetErr('rev-err', err.message + ' Fill in the vendor and cost above.');
+    } else {
+      assetErr('rev-err', err.message);
+    }
+  }
+}
+
+async function denyRequest(id, btn) {
+  var note = (document.getElementById('rev-note') || {}).value || '';
+  if (!String(note).trim()) {
+    var typed = await novaPrompt('Tell them why. They see this.', '', { title: 'Deny this request', okText: 'Deny it' });
+    if (typed === null) return;
+    note = typed;
+  }
+  btn.disabled = true;
+  try {
+    await api('POST', '/assets/requests/' + id + '/deny', { decision_notes: note || null });
+    var ov = document.querySelector('.modal-overlay'); if (ov) ov.remove();
+    showToast('Denied', 'success');
+    render();
+  } catch (err) { btn.disabled = false; assetErr('rev-err', err.message); }
+}
+
+// ---------------------------------------------------------------------------
+// Equipment List
+// ---------------------------------------------------------------------------
+
+async function renderEquipmentList(el) {
+  try {
+    var types = await assetTypesLoad(true);
+    var kits = await api('GET', '/assets/kits');
+    var noVendor = types.filter(function (t) { return !t.vendor_name || t.unit_cost === null; }).length;
+    el.innerHTML =
+      '<div class="page-header">' +
+        '<div><div class="page-title">Equipment List</div><div class="page-subtitle">Your own catalog of company property. Separate from the Parts List, which is customer stock.</div></div>' +
+        '<div class="row-actions">' +
+          '<button class="btn btn-secondary btn-sm" onclick="equipExportCsv()">Export CSV</button>' +
+          '<button class="btn btn-secondary btn-sm" onclick="document.getElementById(\'equip-csv\').click()">Import CSV</button>' +
+          '<button class="btn btn-primary btn-sm" onclick="openEquipEditor(null)">' + icons.plus + ' Add Equipment</button>' +
+        '</div>' +
+      '</div>' +
+      '<input type="file" id="equip-csv" accept=".csv,text/csv" style="display:none" onchange="equipImportCsv(this)" />' +
+      '<div id="assets-msg"></div>' +
+      '<div class="card mb-4">' +
+        '<div class="card-header"><span class="card-title">Equipment types</span><span class="text-muted">' +
+          types.length + ' types &bull; ' + types.filter(function (t) { return t.serialized; }).length + ' serialized &bull; ' +
+          types.filter(function (t) { return !t.serialized; }).length + ' counted' +
+          (noVendor ? ' &bull; ' + noVendor + ' missing ordering details' : '') + '</span></div>' +
+        '<div class="card-body" style="border-bottom:1px solid var(--border)">' +
+          '<div class="filter-bar" style="margin-bottom:0">' +
+            '<input type="text" id="eq-q" placeholder="Search equipment, item #, vendor..." style="flex:2;min-width:240px" oninput="equipFilter()" />' +
+            '<select id="eq-cat" onchange="equipFilter()"><option value="">All Categories</option><option value="tool">Tools &amp; Equipment</option><option value="gear">Issued Gear</option><option value="uniform">Uniform</option></select>' +
+            '<select id="eq-track" onchange="equipFilter()"><option value="">Serialized &amp; counted</option><option value="1">Serialized only</option><option value="0">Counted only</option></select>' +
+            '<select id="eq-vend" onchange="equipFilter()"><option value="">All vendors</option><option value="none">Missing ordering details</option></select>' +
+          '</div>' +
+        '</div>' +
+        '<div id="eq-table"></div>' +
+      '</div>' +
+      '<div class="card"><div class="card-header"><span class="card-title">Kits (assignment templates)</span>' +
+        '<button class="btn btn-secondary btn-sm" onclick="openKitEditor(null)">' + icons.plus + ' New Kit</button></div>' +
+        '<div class="card-body">' +
+          (kits.length
+            ? '<div class="asset-roster">' + kits.map(function (k) {
+                return '<div class="asset-rcard" style="padding:14px 16px">' +
+                  '<div style="font-size:15px;font-weight:600;color:var(--text);margin-bottom:4px">' + escHtml(k.name) + '</div>' +
+                  '<div style="font-size:12px;color:var(--text-muted-color);margin-bottom:12px">' + k.items.length + ' items</div>' +
+                  '<div style="font-size:12px;color:var(--text-dim);margin-bottom:12px">Applies to: ' + escHtml((k.roles && k.roles.length) ? k.roles.map(function (r) { return roleLabel ? roleLabel(r) : r; }).join(', ') : 'All roles') + '</div>' +
+                  '<div class="row-actions"><button class="btn btn-secondary btn-sm" style="flex:1;justify-content:center" onclick="openKitEditor(' + k.id + ')">Edit kit</button></div></div>';
+              }).join('') + '</div>'
+            : '<div class="empty-state" style="padding:24px"><h3>No kits yet</h3><p>A kit pre-ticks a standard set of equipment on a new assignment.</p></div>') +
+        '</div>' +
+      '</div>';
+    window._equipTypes = types;
+    window._equipKits = kits;
+    equipFilter();
+  } catch (err) {
+    el.innerHTML = '<div class="alert alert-error">' + escHtml(err.message) + '</div>';
+  }
+}
+
+function equipFilter() {
+  var rows = (window._equipTypes || []).slice();
+  function v(id) { var e = document.getElementById(id); return e ? e.value : ''; }
+  var q = v('eq-q').toLowerCase();
+  if (q) rows = rows.filter(function (t) {
+    return (t.name || '').toLowerCase().indexOf(q) !== -1 ||
+      (t.item_number || '').toLowerCase().indexOf(q) !== -1 ||
+      (t.vendor_name || '').toLowerCase().indexOf(q) !== -1;
+  });
+  if (v('eq-cat')) rows = rows.filter(function (t) { return t.category === v('eq-cat'); });
+  if (v('eq-track')) rows = rows.filter(function (t) { return (t.serialized ? '1' : '0') === v('eq-track'); });
+  if (v('eq-vend') === 'none') rows = rows.filter(function (t) { return !t.vendor_name || t.unit_cost === null; });
+  var wrap = document.getElementById('eq-table');
+  if (!wrap) return;
+  if (!rows.length) { wrap.innerHTML = '<div class="empty-state"><h3>Nothing matches</h3><p>Try a different search.</p></div>'; return; }
+  var CAT = { tool: 'Tools &amp; Equipment', gear: 'Issued Gear', uniform: 'Uniform' };
+  wrap.innerHTML =
+    '<div class="table-wrap"><table><thead><tr><th>Equipment</th><th>Category</th><th>Tracking</th><th>Preferred vendor</th>' +
+    '<th class="text-right">Our cost</th><th>Exp. life</th><th>Out with techs</th><th>In stock</th><th>Replaced (12mo)</th><th></th></tr></thead><tbody>' +
+    rows.map(function (t) {
+      var nv = !t.vendor_name || t.unit_cost === null;
+      var onShelf = t.serialized ? t.units_in_stock : t.counted_on_hand;
+      return '<tr' + (nv ? ' style="background:rgba(245,158,11,0.05)"' : '') + '>' +
+        '<td><strong style="color:var(--text)">' + escHtml(t.name) + '</strong>' +
+          (t.item_number ? '<div class="mono" style="font-size:11.5px;color:var(--text-muted-color);margin-top:2px">' + escHtml(t.item_number) + '</div>' : '') + '</td>' +
+        '<td>' + (CAT[t.category] || t.category) + '</td>' +
+        '<td><span class="rf-tag ' + (t.serialized ? 'serial' : 'bulk') + '">' + (t.serialized ? 'SERIALIZED' : 'COUNTED') + '</span></td>' +
+        '<td' + (t.vendor_name ? '' : ' style="color:var(--warning)"') + '>' + escHtml(t.vendor_name || 'Not set yet') + '</td>' +
+        '<td class="text-right' + (t.unit_cost === null ? ' ' : ' mono') + '">' + (t.unit_cost === null ? '<span style="color:var(--warning)">Not set</span>' : assetMoney(t.unit_cost)) + '</td>' +
+        '<td class="mono" style="color:var(--text-muted-color)">' + (t.expected_life_months ? t.expected_life_months + ' mo' : '—') + '</td>' +
+        '<td class="mono" style="text-align:center">' + t.out_with_techs + '</td>' +
+        '<td class="mono" style="text-align:center;color:' + (onShelf === 0 ? 'var(--warning)' : 'var(--text-dim)') + '">' + onShelf + '</td>' +
+        '<td class="mono" style="text-align:center">' + t.replaced_12mo + '</td>' +
+        '<td style="white-space:nowrap"><button class="btn btn-ghost btn-sm" onclick="openEquipEditor(' + t.id + ')">Edit</button></td></tr>';
+    }).join('') + '</tbody></table></div>';
+}
+
+function openEquipEditor(id) {
+  var t = id ? (window._equipTypes || []).filter(function (x) { return x.id === id; })[0] : null;
+  var ov = document.createElement('div');
+  ov.className = 'modal-overlay';
+  ov.innerHTML =
+    '<div class="modal">' +
+      '<div class="modal-header"><span class="modal-title">' + (id ? 'Edit Equipment' : 'Add Equipment') + '</span>' +
+      '<button class="btn btn-ghost btn-sm" onclick="this.closest(\'.modal-overlay\').remove()">&#10005;</button></div>' +
+      '<div class="modal-body"><div id="eq-err"></div>' +
+        '<div class="form-group"><label>Name *</label><input type="text" id="eq-name" value="' + escHtml(t ? t.name : '') + '" /></div>' +
+        '<div class="form-row">' +
+          '<div class="form-group"><label>Category *</label><select id="eq-category">' +
+            ['tool', 'gear', 'uniform'].map(function (c) {
+              var lab = { tool: 'Tools & Equipment', gear: 'Issued Gear', uniform: 'Uniform' }[c];
+              return '<option value="' + c + '"' + (t && t.category === c ? ' selected' : '') + '>' + escHtml(lab) + '</option>';
+            }).join('') + '</select></div>' +
+          '<div class="form-group"><label>Expected life <span style="font-weight:400;font-size:0.8em;color:var(--text-muted-color)">months</span></label>' +
+            '<input type="number" id="eq-life" min="1" value="' + escHtml(t && t.expected_life_months ? String(t.expected_life_months) : '') + '" /></div>' +
+        '</div>' +
+        '<div class="form-group" style="display:flex;align-items:center;gap:10px;margin-bottom:10px">' +
+          '<input type="checkbox" id="eq-serialized" style="width:auto"' + (t && t.serialized ? ' checked' : '') + ' />' +
+          '<label for="eq-serialized" style="margin:0;cursor:pointer">Serialized — every unit gets its own asset tag and history</label></div>' +
+        '<div style="font-size:12px;color:var(--text-muted-color);margin:-4px 0 18px;line-height:1.5">Leave this off for things you buy by the box (shirts, gloves, blades). Those are tracked as a count per city and a count per tech instead.</div>' +
+        '<div class="po-panel" style="margin-bottom:16px">' +
+          '<div class="po-panel-h"><span>Ordering details</span>' +
+            '<span style="font-size:11.5px;font-weight:500;color:var(--text-muted-color);text-transform:none;letter-spacing:0">used when a replacement opens a PO</span></div>' +
+          '<div class="po-panel-b">' +
+            '<div class="form-group"><label>Preferred vendor</label><input type="text" id="eq-vendor" list="eq-vendor-list" value="' + escHtml(t ? (t.vendor_name || '') : '') + '" />' +
+              '<datalist id="eq-vendor-list"></datalist>' +
+              '<div class="po-src">Suggests from your Accounts list, but any name is fine</div></div>' +
+            '<div class="form-row">' +
+              '<div class="form-group" style="margin-bottom:0"><label>Item # <span style="font-weight:400;font-size:0.8em;color:var(--text-muted-color)">supplier&#39;s</span></label>' +
+                '<input type="text" id="eq-item" value="' + escHtml(t ? (t.item_number || '') : '') + '" /></div>' +
+              '<div class="form-group" style="margin-bottom:0"><label>Manufacturer</label>' +
+                '<input type="text" id="eq-manu" value="' + escHtml(t ? (t.manufacturer || '') : '') + '" /></div>' +
+            '</div>' +
+            '<div class="form-group" style="margin:16px 0 0"><label>Our cost</label>' +
+              '<input type="number" step="0.01" min="0" id="eq-cost" value="' + escHtml(t && t.unit_cost !== null && t.unit_cost !== undefined ? String(t.unit_cost) : '') + '" /></div>' +
+            '<div class="form-group" style="margin:16px 0 0"><label>Where to buy it <span style="font-weight:400;font-size:0.8em;color:var(--text-muted-color)">optional</span></label>' +
+              '<input type="text" id="eq-url" value="' + escHtml(t ? (t.product_url || '') : '') + '" /></div>' +
+          '</div>' +
+        '</div>' +
+        '<div style="font-size:12px;color:var(--text-muted-color);line-height:1.55">Our cost is what you pay the vendor. It fills the PO line and it is the figure a tech signs against. Nothing here touches the Parts List, which is customer-facing stock with retail markup on it.</div>' +
+      '</div>' +
+      '<div class="modal-footer">' +
+        (id ? '<button class="btn btn-ghost btn-sm" style="color:var(--danger);margin-right:auto" onclick="retireEquip(' + id + ')">Retire</button>' : '') +
+        '<button class="btn btn-secondary" onclick="this.closest(\'.modal-overlay\').remove()">Cancel</button>' +
+        '<button class="btn btn-primary" onclick="saveEquip(' + (id || 'null') + ',this)">Save</button></div>' +
+    '</div>';
+  document.body.appendChild(ov);
+  api('GET', '/vendors').then(function (vs) {
+    var dl = document.getElementById('eq-vendor-list');
+    if (dl && vs && vs.length) dl.innerHTML = vs.map(function (v) { return '<option value="' + escHtml(v.name) + '"></option>'; }).join('');
+  }).catch(function () {});
+}
+
+async function saveEquip(id, btn) {
+  function v(x) { var e = document.getElementById(x); return e ? e.value : ''; }
+  if (!v('eq-name').trim()) { assetErr('eq-err', 'Name is required.'); return; }
+  btn.disabled = true;
+  var body = {
+    name: v('eq-name'), category: v('eq-category'),
+    serialized: (document.getElementById('eq-serialized') || {}).checked === true,
+    expected_life_months: v('eq-life') || null,
+    vendor_name: v('eq-vendor') || null, item_number: v('eq-item') || null,
+    manufacturer: v('eq-manu') || null, unit_cost: v('eq-cost') === '' ? null : v('eq-cost'),
+    product_url: v('eq-url') || null
+  };
+  try {
+    if (id) await api('PUT', '/assets/types/' + id, body);
+    else await api('POST', '/assets/types', body);
+    var ov = document.querySelector('.modal-overlay'); if (ov) ov.remove();
+    showToast('Saved', 'success');
+    _assetTypes = null;
+    render();
+  } catch (err) { btn.disabled = false; assetErr('eq-err', err.message); }
+}
+
+async function retireEquip(id) {
+  var yes = await novaConfirm('Retiring hides it from new assignments. Anything already issued stays on the record.', { title: 'Retire this equipment?', okText: 'Retire it' });
+  if (!yes) return;
+  try {
+    await api('POST', '/assets/types/' + id + '/deactivate', {});
+    var ov = document.querySelector('.modal-overlay'); if (ov) ov.remove();
+    showToast('Retired', 'success');
+    _assetTypes = null;
+    render();
+  } catch (err) { showToast(err.message, 'error'); }
+}
+
+function equipExportCsv() {
+  fetch('/api/assets/types/export', { headers: { Authorization: 'Bearer ' + state.token } })
+    .then(function (r) { return r.blob(); })
+    .then(function (b) {
+      var a = document.createElement('a');
+      a.href = URL.createObjectURL(b); a.download = 'equipment-list.csv'; a.click();
+      setTimeout(function () { URL.revokeObjectURL(a.href); }, 1000);
+    }).catch(function () { showToast('Export failed', 'error'); });
+}
+
+function equipImportCsv(input) {
+  var f = input.files && input.files[0];
+  if (!f) return;
+  var reader = new FileReader();
+  reader.onload = async function () {
+    input.value = '';
+    try {
+      var rows = parseAssetCsv(String(reader.result));
+      if (!rows.length) { showToast('Nothing to import', 'error'); return; }
+      var out = await api('POST', '/assets/types/bulk', { items: rows });
+      showToast(out.added + ' added, ' + out.updated + ' updated' + (out.skipped ? ', ' + out.skipped + ' skipped' : ''), 'success');
+      _assetTypes = null;
+      render();
+    } catch (err) { showToast(err.message, 'error'); }
+  };
+  reader.readAsText(f);
+}
+
+// Small CSV reader: handles quoted fields and embedded commas, which is all the
+// export produces and all a spreadsheet will hand back.
+function parseAssetCsv(text) {
+  var lines = [];
+  var cur = [], field = '', inQ = false;
+  for (var i = 0; i < text.length; i++) {
+    var ch = text[i];
+    if (inQ) {
+      if (ch === '"') { if (text[i + 1] === '"') { field += '"'; i++; } else inQ = false; }
+      else field += ch;
+    } else if (ch === '"') inQ = true;
+    else if (ch === ',') { cur.push(field); field = ''; }
+    else if (ch === '\n') { cur.push(field); lines.push(cur); cur = []; field = ''; }
+    else if (ch !== '\r') field += ch;
+  }
+  if (field.length || cur.length) { cur.push(field); lines.push(cur); }
+  if (!lines.length) return [];
+  var head = lines[0].map(function (h) { return h.trim().toLowerCase().replace(/\s+/g, '_'); });
+  var out = [];
+  for (var r = 1; r < lines.length; r++) {
+    if (!lines[r].length || (lines[r].length === 1 && !lines[r][0].trim())) continue;
+    var o = {};
+    head.forEach(function (h, idx) { o[h] = (lines[r][idx] || '').trim(); });
+    if (!o.name) continue;
+    out.push({
+      name: o.name, category: o.category || 'tool',
+      serialized: /^(1|true|yes|y|serialized)$/i.test(o.serialized || ''),
+      expected_life_months: o.expected_life_months || null,
+      vendor_name: o.vendor_name || null, item_number: o.item_number || null,
+      manufacturer: o.manufacturer || null,
+      unit_cost: o.unit_cost === '' ? null : o.unit_cost,
+      product_url: o.product_url || null, notes: o.notes || null
+    });
+  }
+  return out;
+}
+
+function openKitEditor(id) {
+  var k = id ? (window._equipKits || []).filter(function (x) { return x.id === id; })[0] : null;
+  var types = window._equipTypes || [];
+  var ROLES = ['locksmith', 'locksmith_coordinator', 'dispatcher', 'roadside_technician', 'manager'];
+  window._kitLines = k ? k.items.map(function (i) { return { asset_type_id: i.asset_type_id, qty: i.qty }; }) : [];
+  var ov = document.createElement('div');
+  ov.className = 'modal-overlay';
+  ov.innerHTML =
+    '<div class="modal" style="max-width:600px">' +
+      '<div class="modal-header"><span class="modal-title">' + (id ? 'Edit Kit' : 'New Kit') + '</span>' +
+      '<button class="btn btn-ghost btn-sm" onclick="this.closest(\'.modal-overlay\').remove()">&#10005;</button></div>' +
+      '<div class="modal-body"><div id="kit-err"></div>' +
+        '<div class="form-group"><label>Name *</label><input type="text" id="kit-name" value="' + escHtml(k ? k.name : '') + '" /></div>' +
+        '<div class="form-group"><label>Applies to <span style="font-weight:400;font-size:0.8em;color:var(--text-muted-color)">leave all unticked for every role</span></label>' +
+          '<div style="display:flex;flex-wrap:wrap;gap:12px">' +
+            ROLES.map(function (r) {
+              var on = k && k.roles && k.roles.indexOf(r) !== -1;
+              return '<label style="display:flex;align-items:center;gap:6px;font-size:13px;margin:0"><input type="checkbox" class="kit-role" value="' + r + '" style="width:auto"' + (on ? ' checked' : '') + ' /> ' + escHtml(roleLabel ? roleLabel(r) : r) + '</label>';
+            }).join('') +
+          '</div></div>' +
+        '<div class="form-group"><label>Add equipment</label><select id="kit-add" onchange="kitAdd(this.value); this.value=\'\';">' +
+          '<option value="">Pick equipment</option>' +
+          types.map(function (t) { return '<option value="' + t.id + '">' + escHtml(t.name) + '</option>'; }).join('') +
+        '</select></div>' +
+        '<div id="kit-lines"></div>' +
+      '</div>' +
+      '<div class="modal-footer"><button class="btn btn-secondary" onclick="this.closest(\'.modal-overlay\').remove()">Cancel</button>' +
+      '<button class="btn btn-primary" onclick="saveKit(' + (id || 'null') + ',this)">Save</button></div>' +
+    '</div>';
+  document.body.appendChild(ov);
+  kitRender();
+}
+function kitAdd(v) {
+  var id = parseInt(v, 10); if (!id) return;
+  if ((window._kitLines || []).some(function (l) { return l.asset_type_id === id; })) return;
+  window._kitLines.push({ asset_type_id: id, qty: 1 });
+  kitRender();
+}
+function kitRemove(i) { window._kitLines.splice(i, 1); kitRender(); }
+function kitQty(i, v) { window._kitLines[i].qty = Math.max(1, parseInt(v, 10) || 1); }
+function kitRender() {
+  var wrap = document.getElementById('kit-lines');
+  if (!wrap) return;
+  var byId = {};
+  (window._equipTypes || []).forEach(function (t) { byId[t.id] = t; });
+  var ls = window._kitLines || [];
+  wrap.innerHTML = ls.length
+    ? '<div class="table-wrap"><table class="line-items-table"><thead><tr><th>Item</th><th>Qty</th><th></th></tr></thead><tbody>' +
+      ls.map(function (l, i) {
+        var t = byId[l.asset_type_id] || {};
+        return '<tr><td>' + escHtml(t.name || '') + '</td>' +
+          '<td style="width:70px"><input type="number" min="1" value="' + l.qty + '" style="padding:5px 8px;text-align:center" onchange="kitQty(' + i + ',this.value)" /></td>' +
+          '<td><button class="btn btn-ghost btn-sm" onclick="kitRemove(' + i + ')">&#10005;</button></td></tr>';
+      }).join('') + '</tbody></table></div>'
+    : '<div style="font-size:13px;color:var(--text-muted-color)">No items on this kit yet.</div>';
+}
+async function saveKit(id, btn) {
+  var name = (document.getElementById('kit-name') || {}).value || '';
+  if (!name.trim()) { assetErr('kit-err', 'Name is required.'); return; }
+  btn.disabled = true;
+  var roles = Array.prototype.filter.call(document.querySelectorAll('.kit-role'), function (c) { return c.checked; }).map(function (c) { return c.value; });
+  try {
+    var body = { name: name, roles: roles, items: window._kitLines || [] };
+    if (id) await api('PUT', '/assets/kits/' + id, body);
+    else await api('POST', '/assets/kits', body);
+    var ov = document.querySelector('.modal-overlay'); if (ov) ov.remove();
+    showToast('Kit saved', 'success');
+    render();
+  } catch (err) { btn.disabled = false; assetErr('kit-err', err.message); }
+}
+
+function openAssetUnitEditor(id) {
+  Promise.all([assetTypesLoad(), assetMyCities(), id ? api('GET', '/assets/' + id) : Promise.resolve(null)])
+    .then(function (res) {
+      var types = res[0].filter(function (t) { return t.serialized; });
+      var cities = res[1];
+      var a = res[2];
+      var ov = document.createElement('div');
+      ov.className = 'modal-overlay';
+      ov.innerHTML =
+        '<div class="modal">' +
+          '<div class="modal-header"><span class="modal-title">' + (a ? 'Edit Item' : 'Add Item') + '</span>' +
+          '<button class="btn btn-ghost btn-sm" onclick="this.closest(\'.modal-overlay\').remove()">&#10005;</button></div>' +
+          '<div class="modal-body"><div id="unit-err"></div>' +
+            (a ? '' :
+              '<div class="form-group"><label>Equipment *</label><select id="unit-type">' +
+                types.map(function (t) { return '<option value="' + t.id + '">' + escHtml(t.name) + '</option>'; }).join('') +
+              '</select>' + (types.length ? '' : '<div style="font-size:12px;color:var(--warning);margin-top:6px">Add a serialized equipment type first.</div>') + '</div>' +
+              '<div class="form-group"><label>City *</label><select id="unit-city">' + assetCityOptions(cities, '', '') + '</select></div>') +
+            '<div class="form-row">' +
+              '<div class="form-group"><label>Asset tag</label><input type="text" id="unit-tag" value="' + escHtml(a ? (a.asset_tag || '') : '') + '" /></div>' +
+              '<div class="form-group"><label>Serial number</label><input type="text" id="unit-serial" value="' + escHtml(a ? (a.serial_number || '') : '') + '" /></div>' +
+            '</div>' +
+            '<div class="form-row">' +
+              '<div class="form-group"><label>Condition</label><select id="unit-cond">' +
+                ['new', 'good', 'fair', 'poor'].map(function (c) { return '<option value="' + c + '"' + (a && a.condition === c ? ' selected' : '') + '>' + c.charAt(0).toUpperCase() + c.slice(1) + '</option>'; }).join('') +
+              '</select></div>' +
+              '<div class="form-group"><label>Purchase date</label><input type="date" id="unit-date" value="' + escHtml(a && a.purchase_date ? String(a.purchase_date).slice(0, 10) : '') + '" /></div>' +
+            '</div>' +
+            '<div class="form-group" style="margin-bottom:0"><label>Notes</label><input type="text" id="unit-notes" value="' + escHtml(a ? (a.notes || '') : '') + '" /></div>' +
+          '</div>' +
+          '<div class="modal-footer"><button class="btn btn-secondary" onclick="this.closest(\'.modal-overlay\').remove()">Cancel</button>' +
+          '<button class="btn btn-primary" onclick="saveAssetUnit(' + (id || 'null') + ',this)">Save</button></div>' +
+        '</div>';
+      document.body.appendChild(ov);
+    }).catch(function (e) { showToast(e.message, 'error'); });
+}
+async function saveAssetUnit(id, btn) {
+  function v(x) { var e = document.getElementById(x); return e ? e.value : ''; }
+  btn.disabled = true;
+  try {
+    var body = {
+      asset_tag: v('unit-tag') || null, serial_number: v('unit-serial') || null,
+      condition: v('unit-cond'), purchase_date: v('unit-date') || null, notes: v('unit-notes') || null
+    };
+    if (id) await api('PUT', '/assets/' + id, body);
+    else {
+      body.asset_type_id = parseInt(v('unit-type'), 10);
+      body.city_code = v('unit-city');
+      await api('POST', '/assets/', body);
+    }
+    var ov = document.querySelector('.modal-overlay'); if (ov) ov.remove();
+    showToast('Saved', 'success');
+    render();
+  } catch (err) { btn.disabled = false; assetErr('unit-err', err.message); }
 }

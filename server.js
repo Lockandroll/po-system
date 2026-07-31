@@ -137,6 +137,7 @@ app.use('/api/quiz', require('./routes/quiz'));
 app.use('/api/quiz-take', require('./routes/quiz').publicRouter);
 app.use('/api/ptt', require('./routes/ptt'));
 app.use('/api/inspections', require('./routes/inspections'));
+app.use('/api/assets', require('./routes/assets'));
 
 // OAuth 2.1 authorization server for the remote MCP (must be before the SPA catch-all)
 app.use('/', require('./routes/oauth'));
