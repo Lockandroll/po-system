@@ -11,6 +11,7 @@ const push = require('../utils/push');
 const r2 = require('../utils/r2');
 const { buildInvoicePdf } = require('../utils/invoicePdf');
 const { buildDisputePdf } = require('../utils/disputePdf');
+const square = require('../utils/square');
 
 const router = express.Router();
 
@@ -65,6 +66,17 @@ async function getSetting(key, fallback) {
     const { rows } = await pool.query('SELECT value FROM settings WHERE key = $1', [key]);
     return rows.length && rows[0].value != null ? rows[0].value : fallback;
   } catch (e) { return fallback; }
+}
+
+// The raw Square payload can carry the buyer's email if they took a digital
+// receipt, and internal risk-evaluation fields. The client never needs either,
+// so it is stripped on the way out rather than filtered in the view layer.
+function scrubPaymentRow(row) {
+  if (!row) return null;
+  const out = Object.assign({}, row);
+  delete out.raw_payment;
+  delete out.state_nonce;
+  return out;
 }
 
 async function generateInvoiceNumber(cityCode) {
@@ -319,6 +331,107 @@ router.post('/pulsar-pay-map', requireAuth, requirePermission('manage_invoice_se
   } catch (err) { console.error(err); res.status(500).json({ error: 'Failed to save the Pulsar pay type map' }); }
 });
 
+// ---- Square payment collection --------------------------------------------
+// See utils/square.js for how the handoff works end to end. These routes are
+// registered ahead of GET /:id so 'square-config' is never read as an id.
+
+// Which Square location each city's money lands in. Deliberately has no default:
+// an unmapped city REFUSES to collect rather than guessing, because a payment in
+// the wrong Square location is silently wrong in deposits, royalty and the
+// per-city P&L and nobody notices for a month.
+async function squareLocationMap() {
+  try { return JSON.parse(await getSetting('square_location_map', '{}')) || {}; } catch (e) { return {}; }
+}
+
+router.get('/square-config', requireAuth, requirePermission('view_invoices'), async (req, res) => {
+  try {
+    const map = await squareLocationMap();
+    const cities = await pool.query('SELECT code, name FROM cities WHERE active = true ORDER BY name');
+    const out = {
+      configured: square.configured(),
+      environment: process.env.SQUARE_ENVIRONMENT === 'sandbox' ? 'sandbox' : 'production',
+      callback_url: square.callbackUrl(),
+      application_id_tail: (process.env.SQUARE_APPLICATION_ID || '').slice(-4),
+      webhook_key_set: !!process.env.SQUARE_WEBHOOK_SIGNATURE_KEY,
+      location_map: map,
+      cities: cities.rows
+    };
+    // Only a setup user needs the live Square location list, and it costs an API
+    // call, so it is not on the read path every tech hits.
+    if (square.configured() && req.query.locations === '1') {
+      try {
+        const locs = await square.sq('GET', '/v2/locations');
+        out.square_locations = (locs.locations || []).map(function (l) {
+          return { id: l.id, name: l.name, status: l.status };
+        });
+      } catch (e) {
+        out.square_locations_error = e.message;
+      }
+    }
+    res.json(out);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Failed to load the Square config' });
+  }
+});
+
+router.put('/square-config', requireAuth, requirePermission('manage_invoice_setup'), async (req, res) => {
+  const map = req.body && req.body.location_map;
+  if (!map || typeof map !== 'object' || Array.isArray(map)) return res.status(400).json({ error: 'location_map must be an object' });
+  const clean = {};
+  Object.keys(map).forEach(function (k) {
+    const key = String(k == null ? '' : k).trim().toUpperCase();
+    const val = String(map[k] == null ? '' : map[k]).trim();
+    if (key && val) clean[key] = val;
+  });
+  try {
+    await pool.query("INSERT INTO settings (key, value, updated_at) VALUES ('square_location_map', $1, NOW()) ON CONFLICT (key) DO UPDATE SET value = $1, updated_at = NOW()", [JSON.stringify(clean)]);
+    res.json({ ok: true, location_map: clean });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Failed to save the Square location map' });
+  }
+});
+
+// Daily reconciliation. Two columns matter: invoices marked paid with no Square
+// payment behind them, and Square payments with no invoice at all.
+router.get('/square-reconciliation', requireAuth, requirePermission('view_invoices'), async (req, res) => {
+  if (!canSeeAll(req.user.role)) return res.status(403).json({ error: 'Access denied' });
+  const day = /^\d{4}-\d{2}-\d{2}$/.test(String(req.query.date || '')) ? req.query.date : null;
+  try {
+    const params = day ? [day] : [];
+    const dayWhere = day ? 'i.invoice_date = $1' : "i.invoice_date >= CURRENT_DATE - INTERVAL '1 day'";
+    const paidNoSquare = await pool.query(
+      'SELECT i.id, i.invoice_number, i.grand_total, i.city_code, i.locksmith_name, i.invoice_date ' +
+      'FROM invoices i LEFT JOIN invoice_payments p ON p.invoice_id = i.id AND p.status = \'reconciled\' ' +
+      "WHERE i.status = 'paid' AND p.id IS NULL AND " + dayWhere + ' ORDER BY i.id DESC LIMIT 200',
+      params
+    );
+    const stuck = await pool.query(
+      "SELECT p.*, i.invoice_number FROM invoice_payments p JOIN invoices i ON i.id = p.invoice_id " +
+      "WHERE p.status IN ('offline_pending','mismatch','returned') ORDER BY p.id DESC LIMIT 200"
+    );
+    const orphans = await pool.query(
+      'SELECT id, square_payment_id, location_id, amount_cents, note, team_member_id, taken_at ' +
+      'FROM square_orphan_payments WHERE resolved = false ORDER BY id DESC LIMIT 200'
+    );
+    const mism = await pool.query(
+      'SELECT p.id, p.invoice_id, i.invoice_number, p.square_team_member_id ' +
+      'FROM invoice_payments p JOIN invoices i ON i.id = p.invoice_id ' +
+      "WHERE p.status = 'reconciled' AND p.team_member_mismatch = true ORDER BY p.id DESC LIMIT 100"
+    );
+    res.json({
+      paid_no_square: paidNoSquare.rows,
+      stuck: stuck.rows,
+      orphans: orphans.rows,
+      wrong_tech: mism.rows
+    });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Failed to build the reconciliation report' });
+  }
+});
+
 // Scan VIN from a photo: AI reads the 17-character VIN off the plate/sticker/barcode.
 router.post('/scan-vin', requireAuth, requirePermission('create_invoice'), async (req, res) => {
   const { image } = req.body;
@@ -570,6 +683,14 @@ router.get('/:id', requireAuth, requirePermission('view_invoices'), async (req, 
       .filter(function (r) { return r.status === 'requested'; })
       .reduce(function (sum, r) { return sum + (parseFloat(r.amount) || 0); }, 0) * 100) / 100;
     invoice.locked = LOCKED_STATUSES.indexOf(invoice.status) !== -1;
+    // Latest Square payment attempt, so the view can show 'paid in Square'
+    // with the real card data, or the stuck/offline state if it never settled.
+    invoice.square_payment = null;
+    invoice.square_enabled = square.configured();
+    try {
+      const sp = await pool.query('SELECT * FROM invoice_payments WHERE invoice_id = $1 ORDER BY id DESC LIMIT 1', [req.params.id]);
+      invoice.square_payment = scrubPaymentRow(sp.rows[0]);
+    } catch (e) { /* table may not exist yet on first deploy */ }
     // COGS for the Pulsar close-out card, computed from the stored per-line
     // snapshots. A refunded part flagged restock went back on the shelf and must
     // come OUT of cost of goods; a part refunded on a comeback (restock false)
@@ -1065,6 +1186,178 @@ router.post('/:id/signature', requireAuth, requirePermission('edit_invoice'), as
   } catch (err) {
     console.error('Sign invoice error:', err);
     res.status(500).json({ error: 'Failed to save the signature' });
+  }
+});
+
+// ---- Collect payment in Square --------------------------------------------
+// Mints an invoice_payments row and hands back the two deep links. The client
+// picks by platform. Nothing is charged here; this only prepares the handoff.
+router.post('/:id/collect-payment', requireAuth, requirePermission('edit_invoice'), async (req, res) => {
+  if (!square.configured()) {
+    return res.status(400).json({ error: 'Square is not connected yet. An admin has to set it up under Invoice Setup.' });
+  }
+  if (!square.callbackUrl()) {
+    return res.status(400).json({ error: 'Square has no callback URL configured. Tell an admin.' });
+  }
+  try {
+    const r = await pool.query(
+      'SELECT id, invoice_number, status, grand_total, tip_amount, city_code, locksmith_id, signature_required, signature_image FROM invoices WHERE id = $1',
+      [req.params.id]
+    );
+    const inv = r.rows[0];
+    if (!inv) return res.status(404).json({ error: 'Invoice not found' });
+    if (!canSeeAll(req.user.role) && inv.locksmith_id !== req.user.id) {
+      return res.status(403).json({ error: 'Access denied' });
+    }
+    if (inv.status === 'draft') {
+      return res.status(400).json({ error: 'Finish the invoice first. A draft has nothing to charge against.' });
+    }
+    if (LOCKED_STATUSES.indexOf(inv.status) !== -1) {
+      return res.status(409).json({ error: 'This invoice is already settled.' });
+    }
+    if (inv.signature_required && !inv.signature_image) {
+      return res.status(400).json({ error: 'A signature is required before this invoice can be paid.' });
+    }
+    const cents = Math.round((parseFloat(inv.grand_total) || 0) * 100);
+    if (cents <= 0) return res.status(400).json({ error: 'There is nothing to charge on this invoice.' });
+
+    const map = await squareLocationMap();
+    const code = String(inv.city_code || '').toUpperCase();
+    const locationId = code ? map[code] : null;
+    if (!locationId) {
+      return res.status(400).json({
+        error: code
+          ? ('The city ' + code + ' is not mapped to a Square location yet. Tell an admin. Nothing was charged.')
+          : 'This invoice has no city on it, so Nova cannot tell which Square location the money belongs to.'
+      });
+    }
+
+    // Already settled against Square? Do not open a second charge.
+    const done = await pool.query("SELECT id FROM invoice_payments WHERE invoice_id = $1 AND status = 'reconciled'", [inv.id]);
+    if (done.rows.length) return res.status(409).json({ error: 'This invoice already has a completed Square payment.' });
+
+    // A payment still waiting on Square blocks a retry, because two open
+    // attempts is how a customer gets charged twice.
+    const open = await pool.query(
+      "SELECT id, status, initiated_at FROM invoice_payments WHERE invoice_id = $1 AND status IN ('returned','offline_pending') ORDER BY id DESC LIMIT 1",
+      [inv.id]
+    );
+    if (open.rows.length) {
+      return res.status(409).json({ error: 'A Square payment for this invoice is still being confirmed. Wait for it to finish before starting another.' });
+    }
+
+    // Abandoned attempts (tech backed out and never came back) go stale after
+    // 30 minutes and stop blocking.
+    await pool.query(
+      "UPDATE invoice_payments SET status = 'canceled', updated_at = NOW() " +
+      "WHERE invoice_id = $1 AND status = 'initiated' AND initiated_at < NOW() - INTERVAL '30 minutes'",
+      [inv.id]
+    );
+    const stillOpen = await pool.query("SELECT id FROM invoice_payments WHERE invoice_id = $1 AND status = 'initiated'", [inv.id]);
+    if (stillOpen.rows.length) {
+      await pool.query("UPDATE invoice_payments SET status = 'canceled', updated_at = NOW() WHERE id = ANY($1::int[])", [stillOpen.rows.map(function (x) { return x.id; })]);
+    }
+
+    const nonce = square.newNonce();
+    const platform = String((req.body && req.body.platform) || '').toLowerCase() === 'ios' ? 'ios' : (String((req.body && req.body.platform) || '').toLowerCase() === 'android' ? 'android' : null);
+    const ins = await pool.query(
+      'INSERT INTO invoice_payments (invoice_id, state_nonce, status, amount_requested_cents, square_location_id, platform, initiated_by) ' +
+      "VALUES ($1,$2,'initiated',$3,$4,$5,$6) RETURNING id",
+      [inv.id, nonce, cents, locationId, platform, req.user.id]
+    );
+
+    const state = square.signState(nonce, inv.id);
+    const urls = square.buildPosUrls({
+      amountCents: cents,
+      note: 'Nova Invoice ' + inv.invoice_number,
+      state: state,
+      locationId: locationId,
+      fallbackUrl: (process.env.SQUARE_RETURN_BASE || '') + '/?view=view-invoice&id=' + inv.id + '&sq_missing=1'
+    });
+
+    try {
+      await logAudit({
+        entity_type: 'invoice', entity_id: inv.id, entity_number: String(inv.invoice_number),
+        action: 'square_payment_started', user_id: req.user.id, user_name: req.user.name,
+        details: { amount_cents: cents, location_id: locationId }
+      });
+    } catch (e) {}
+
+    res.json({
+      payment_id: ins.rows[0].id,
+      nonce: nonce,
+      amount_cents: cents,
+      location_id: locationId,
+      city_code: code,
+      android_url: urls.android,
+      ios_url: urls.ios
+    });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Could not start the Square payment' });
+  }
+});
+
+// Polled by the SPA after Square hands the browser back. Also does a lazy
+// reconcile, so the common case resolves on the first poll without waiting for
+// the webhook.
+router.get('/:id/payment-status', requireAuth, requirePermission('view_invoices'), async (req, res) => {
+  try {
+    const inv = await pool.query('SELECT id, status, locksmith_id, grand_total, tip_amount, authorized_total FROM invoices WHERE id = $1', [req.params.id]);
+    if (!inv.rows.length) return res.status(404).json({ error: 'Invoice not found' });
+    if (!canSeeAll(req.user.role) && inv.rows[0].locksmith_id !== req.user.id) {
+      return res.status(403).json({ error: 'Access denied' });
+    }
+    let rowRes;
+    if (req.query.nonce) {
+      rowRes = await pool.query('SELECT * FROM invoice_payments WHERE invoice_id = $1 AND state_nonce = $2', [req.params.id, req.query.nonce]);
+    } else {
+      rowRes = await pool.query('SELECT * FROM invoice_payments WHERE invoice_id = $1 ORDER BY id DESC LIMIT 1', [req.params.id]);
+    }
+    let row = rowRes.rows[0] || null;
+
+    if (row && (row.status === 'returned' || row.status === 'offline_pending') && row.square_transaction_id) {
+      try { await square.reconcilePayment(row.id); } catch (e) {}
+      const again = await pool.query('SELECT * FROM invoice_payments WHERE id = $1', [row.id]);
+      row = again.rows[0] || row;
+    }
+
+    const fresh = await pool.query('SELECT status, pay_type, card_last4, approval_code, tip_amount, grand_total, authorized_total FROM invoices WHERE id = $1', [req.params.id]);
+    res.json({ payment: row ? scrubPaymentRow(row) : null, invoice: fresh.rows[0] });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Failed to read the payment status' });
+  }
+});
+
+// Manual retry for a stuck row. Managers only — this is the escape hatch when
+// the callback was lost AND the webhook never landed.
+router.post('/:id/payments/:pid/reconcile', requireAuth, requirePermission('edit_invoice'), async (req, res) => {
+  if (!canSeeAll(req.user.role)) return res.status(403).json({ error: 'Access denied' });
+  try {
+    const r = await pool.query('SELECT id FROM invoice_payments WHERE id = $1 AND invoice_id = $2', [req.params.pid, req.params.id]);
+    if (!r.rows.length) return res.status(404).json({ error: 'Payment attempt not found' });
+    const out = await square.reconcilePayment(r.rows[0].id);
+    const again = await pool.query('SELECT * FROM invoice_payments WHERE id = $1', [r.rows[0].id]);
+    res.json({ ok: !!out.ok, reason: out.reason || null, payment: scrubPaymentRow(again.rows[0]) });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Reconcile failed' });
+  }
+});
+
+// Give up on an attempt the tech backed out of, so the button comes back.
+router.post('/:id/payments/:pid/cancel', requireAuth, requirePermission('edit_invoice'), async (req, res) => {
+  try {
+    const r = await pool.query(
+      "UPDATE invoice_payments SET status = 'canceled', updated_at = NOW() " +
+      "WHERE id = $1 AND invoice_id = $2 AND status = 'initiated' RETURNING id",
+      [req.params.pid, req.params.id]
+    );
+    res.json({ ok: !!r.rows.length });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Could not cancel that attempt' });
   }
 });
 

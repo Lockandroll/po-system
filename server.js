@@ -61,6 +61,19 @@ app.use(cors());
 // read the raw body for Svix signature verification.
 app.use('/api/inbound', require('./routes/inbound'));
 
+// Square Point of Sale callback + webhook - mounted here for the same reason:
+// the webhook signature is computed over the RAW body, so express.json() must
+// not have consumed it first. Mounting early also puts these ahead of
+// generalLimiter below, hence the dedicated limiter.
+const squareLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  max: 120,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: 'Too many Square callbacks.' }
+});
+app.use('/api/square', squareLimiter, require('./routes/square'));
+
 app.use(express.json({ limit: '80mb' }));
 app.use(express.static(path.join(__dirname, 'public')));
 

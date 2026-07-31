@@ -2,7 +2,7 @@
 // public/sw.js (the only thing bumped each deploy) — the badge asks the active
 // service worker for it at runtime. This value is just the fallback shown when no
 // service worker is available (e.g. very first visit before it installs).
-var APP_VERSION = 'v90';
+var APP_VERSION = 'v91';
 var _resolvedAppVersion = null;
 
 // Ask the active service worker for its CACHE_VERSION (without the 'nova-' prefix).
@@ -8872,6 +8872,9 @@ async function loadVehicleInspections(vehicleId) {
   var params = new URLSearchParams(window.location.search);
   var deepView = params.get('view');
   var deepId = params.get('id');
+  // Square redirects back with ?view=view-invoice&id=..&sq=<nonce>. Grab the
+  // nonce here, because the replaceState below throws the query away.
+  try { window._sqBootNonce = params.get('sq') || null; window._sqBootMissing = params.get('sq_missing') === '1'; } catch (e) {}
   if (deepView) {
     state.currentView = deepView;
     state.currentParam = deepId ? (isNaN(deepId) ? deepId : parseInt(deepId)) : null;
@@ -11905,8 +11908,7 @@ async function renderViewInvoice(el, id) {
           '<div style="display:flex;justify-content:space-between;padding:3px 0;font-size:13px"><span>Parts</span><span>' + invMoney(inv.parts_amount) + '</span></div>' +
           '<div style="display:flex;justify-content:space-between;padding:3px 0;font-size:13px;border-top:1px solid var(--border)"><span>Subtotal</span><span>' + invMoney(inv.subtotal) + '</span></div>' +
           '<div style="display:flex;justify-content:space-between;padding:3px 0;font-size:13px"><span>Sales Tax (' + (parseFloat(inv.tax_rate)||0).toFixed(2) + '%)</span><span>' + invMoney(inv.tax_amount) + '</span></div>' +
-          (parseFloat(inv.tip_amount) ? '<div style="display:flex;justify-content:space-between;padding:3px 0;font-size:13px"><span>Tip</span><span>' + invMoney(inv.tip_amount) + '</span></div>' : '') +
-          '<div style="display:flex;justify-content:space-between;padding:6px 0;font-size:16px;font-weight:700;border-top:2px solid var(--border)"><span>Grand Total</span><span>' + invMoney(inv.grand_total) + '</span></div>' +
+          invTotalsTailHtml(inv) +
           (parseFloat(inv.refunded_total) > 0
             ? '<div style="display:flex;justify-content:space-between;padding:3px 0;font-size:13px;color:var(--danger)"><span>Refunded</span><span>-' + invMoney(inv.refunded_total) + '</span></div>' +
               '<div style="display:flex;justify-content:space-between;padding:6px 0;font-size:16px;font-weight:700;color:var(--primary);border-top:1px solid var(--border)"><span>Net Collected</span><span>' + invMoney(inv.net_total) + '</span></div>'
@@ -11915,6 +11917,7 @@ async function renderViewInvoice(el, id) {
         (inv.payments_note ? '<div style="margin-top:10px;font-size:13px"><strong>Payments:</strong> ' + escHtml(inv.payments_note) + '</div>' : '') +
         (inv.notes ? '<div style="margin-top:6px;font-size:13px"><strong>Notes:</strong> ' + escHtml(inv.notes) + '</div>' : '') +
       '</div></div>' +
+      invSquareCardHtml(inv, canSign && !invLocked, seeAll) +
       '<div class="card mb-4"><div class="card-header"><span class="card-title">Authorization</span></div><div class="card-body">' +
         '<div style="white-space:pre-wrap;font-size:12px;color:var(--text-muted-color);line-height:1.6">' + escHtml(agreement) + '</div>' +
         (inv.signature_image
@@ -11936,9 +11939,226 @@ async function renderViewInvoice(el, id) {
             }).join('') + '</div>'
           : '<div style="font-size:13px;color:var(--text-muted-color)">No photos attached.</div>') +
       '</div></div>';
+    // Just came back from the Square app. Poll until the server has asked Square
+    // what happened and written it onto the invoice.
+    if (window._sqBootNonce) { _sqReturnNonce = window._sqBootNonce; window._sqBootNonce = null; }
+    if (window._sqBootMissing) {
+      window._sqBootMissing = false;
+      novaAlert('Square Point of Sale is not installed on this phone. Install it from the app store and sign in to the company Square account. Nothing was charged.');
+    }
+    if (_sqReturnNonce) { var _n = _sqReturnNonce; _sqReturnNonce = null; invSqPoll(inv.id, _n, 0); }
   } catch(err) {
     el.innerHTML = '<div class="alert alert-error">' + escHtml(err.message) + '</div>';
   }
+}
+
+// ---- Square payment collection ---------------------------------------------
+// The tech taps Collect Payment, Nova hands off to the Square app with the
+// amount already filled in, and Square redirects the browser back here.
+//
+// Nothing on this page ever marks an invoice paid. The return only tells Nova
+// which attempt came back; the money is written server-side after Nova asks
+// Square what actually happened. See utils/square.js.
+var _sqReturnNonce = null;
+var _sqPollTimer = null;
+var _sqOpening = false;
+
+function invSquarePlatform() {
+  var ua = navigator.userAgent || '';
+  if (/iPad|iPhone|iPod/.test(ua)) return 'ios';
+  if (/Macintosh/.test(ua) && navigator.maxTouchPoints > 1) return 'ios';
+  if (/Android/.test(ua)) return 'android';
+  return 'other';
+}
+
+function invSqMoney(cents) { return invMoney((Number(cents) || 0) / 100); }
+
+function invSqEntryLabel(m) {
+  var map = { EMV: 'EMV chip', CONTACTLESS: 'Tap / contactless', SWIPED: 'Swiped', KEYED: 'Keyed in', ON_FILE: 'Card on file' };
+  return map[String(m || '')] || (m || '');
+}
+
+// When a customer adds a tip inside the Square app the invoice ends up higher
+// than what they signed for. Showing only the new number is exactly the kind of
+// discrepancy that loses a chargeback, so the authorized figure stays visible
+// next to it.
+function invTotalsTailHtml(inv) {
+  var row = function (label, val, extra) {
+    return '<div style="display:flex;justify-content:space-between;padding:3px 0;font-size:13px' + (extra || '') + '"><span>' + label + '</span><span>' + val + '</span></div>';
+  };
+  var big = function (label, val) {
+    return '<div style="display:flex;justify-content:space-between;padding:6px 0;font-size:16px;font-weight:700;border-top:2px solid var(--border)"><span>' + label + '</span><span>' + val + '</span></div>';
+  };
+  var tip = parseFloat(inv.tip_amount) || 0;
+  var auth = parseFloat(inv.authorized_total) || 0;
+  var grand = parseFloat(inv.grand_total) || 0;
+  if (auth > 0 && tip > 0 && (grand - auth) > 0.005) {
+    return row('Authorized at signature', invMoney(auth), ';border-top:1px solid var(--border);padding-top:8px;margin-top:4px') +
+           row('Tip added in Square', '+ ' + invMoney(tip), ';color:var(--success)') +
+           big('Total charged', invMoney(grand));
+  }
+  return (tip ? row('Tip', invMoney(tip)) : '') + big('Grand Total', invMoney(grand));
+}
+
+function invSquareCardHtml(inv, canCollect, seeAll) {
+  var sp = inv.square_payment || null;
+  var st = sp ? String(sp.status || '') : '';
+  var head = function (title, badge) {
+    return '<div class="card mb-4"><div class="card-header"><span class="card-title">' + title + '</span>' + (badge || '') + '</div><div class="card-body">';
+  };
+  var foot = '</div></div>';
+
+  // Settled. Every field below came from Square, not from a tech typing.
+  if (st === 'reconciled') {
+    return head('Paid in Square', '<span class="badge badge-approved">Reconciled</span>') +
+      '<div class="detail-grid">' +
+        '<div class="detail-field"><label>Card</label><p>' + escHtml((sp.card_brand || 'Card') + (sp.card_last4 ? ' ' + String.fromCharCode(8226,8226,8226,8226) + ' ' + sp.card_last4 : '')) + '</p></div>' +
+        '<div class="detail-field"><label>Approval #</label><p class="mono">' + escHtml(sp.auth_result_code || '') + '</p></div>' +
+        '<div class="detail-field"><label>Entry</label><p>' + escHtml(invSqEntryLabel(sp.entry_method)) + '</p></div>' +
+        (parseInt(sp.tip_cents || 0, 10) ? '<div class="detail-field"><label>Tip</label><p>' + invSqMoney(sp.tip_cents) + '</p></div>' : '') +
+        '<div class="detail-field"><label>Total charged</label><p>' + invSqMoney(sp.total_cents) + '</p></div>' +
+        (seeAll ? '<div class="detail-field"><label>Square payment ID</label><p class="mono" style="font-size:12px;word-break:break-all">' + escHtml(sp.square_payment_id || '') + '</p></div>' : '') +
+      '</div>' +
+      (sp.receipt_url ? '<a class="btn btn-secondary btn-sm" style="margin-top:12px" href="' + escHtml(sp.receipt_url) + '" target="_blank" rel="noopener">View Square receipt</a>' : '') +
+      (sp.team_member_mismatch && seeAll ? '<div class="alert alert-warn" style="margin-top:12px">The Square account that ran this card is not the tech assigned to this invoice. Not necessarily wrong, but worth a look.</div>' : '') +
+      foot;
+  }
+
+  // Square took the card offline. NOT paid until Square confirms it.
+  if (st === 'offline_pending') {
+    return head('Payment pending', '<span class="badge badge-awaiting-signature">Offline</span>') +
+      '<div class="alert alert-warn" style="margin:0">' +
+        '<b>Square took this payment offline.</b><br/>' +
+        'The card was accepted on the reader, but there was no signal to reach the bank. Nova will confirm it and mark the invoice paid once the phone is back online. Nothing for you to do.' +
+      '</div>' +
+      (seeAll ? '<button class="btn btn-secondary btn-sm" style="margin-top:12px" onclick="invSqRetry(' + inv.id + ',' + sp.id + ')">Check Square now</button>' : '') +
+      foot;
+  }
+
+  // Square charged something other than this invoice. Never mark paid.
+  if (st === 'mismatch') {
+    return head('Payment needs a manager', '<span class="badge badge-declined">Mismatch</span>') +
+      '<div class="alert alert-error" style="margin:0"><b>Square charged a different amount.</b><br/>' +
+        escHtml(sp.mismatch_reason || 'The amount Square took does not match this invoice.') +
+        '<br/>Nova has not marked this invoice paid.</div>' +
+      (seeAll ? '<button class="btn btn-secondary btn-sm" style="margin-top:12px" onclick="invSqRetry(' + inv.id + ',' + sp.id + ')">Re-check Square</button>' : '') +
+      foot;
+  }
+
+  if (st === 'failed') {
+    return head('Payment did not go through') +
+      '<div class="alert alert-error" style="margin:0">' + escHtml(sp.error_description || 'Square could not complete the payment.') + '</div>' +
+      (canCollect ? '<button class="btn btn-primary" style="margin-top:12px" onclick="invCollectPayment(' + inv.id + ')">Try again</button>' : '') +
+      foot;
+  }
+
+  if (st === 'initiated' || st === 'returned') {
+    var msg = st === 'initiated'
+      ? 'Waiting for Square. Run the card on the reader; Square will bring you back here.'
+      : 'Confirming with Square. Pulling the card details and approval code.';
+    return head('Collecting payment') +
+      '<div style="display:flex;align-items:center;gap:14px"><div class="spinner"></div><div style="font-size:14px;color:var(--text-dim)">' + msg + '</div></div>' +
+      '<div style="margin-top:12px;display:flex;gap:8px;flex-wrap:wrap">' +
+        '<button class="btn btn-secondary btn-sm" onclick="invSqRetry(' + inv.id + ',' + sp.id + ')">Check now</button>' +
+        (st === 'initiated' ? '<button class="btn btn-secondary btn-sm" onclick="invSqCancel(' + inv.id + ',' + sp.id + ')">Cancel this attempt</button>' : '') +
+      '</div>' +
+      foot;
+  }
+
+  // Nothing in flight. Offer the button if this invoice can still take money.
+  if (!canCollect) return '';
+  if (!inv.square_enabled) return '';
+  return head('Payment') +
+    '<div class="alert alert-info" style="margin-bottom:14px">Not yet paid. Collect on the card reader, or record cash and checks by hand on the Edit screen.</div>' +
+    '<button class="btn btn-primary" id="inv-sq-btn" style="width:100%;justify-content:center;font-size:15px;padding:13px" onclick="invCollectPayment(' + inv.id + ')">' +
+      '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="5" width="20" height="14" rx="2"/><path d="M2 10h20"/></svg> Collect Payment in Square' +
+    '</button>' +
+    '<div style="font-size:11px;color:var(--text-muted-color);margin-top:10px;line-height:1.5">Card only. Square cash tenders cannot be matched back to an invoice, so cash and checks stay on the manual fields.</div>' +
+    foot;
+}
+
+async function invCollectPayment(id) {
+  if (_sqOpening) return;
+  var plat = invSquarePlatform();
+  if (plat === 'other') {
+    novaAlert('Collect Payment opens the Square app, so it only works on the phone the Square reader is paired with. On a computer, record the payment by hand instead.');
+    return;
+  }
+  var btn = document.getElementById('inv-sq-btn');
+  if (btn) { btn.disabled = true; btn.textContent = 'Opening Square...'; }
+  _sqOpening = true;
+  try {
+    var r = await api('POST', '/invoices/' + id + '/collect-payment', { platform: plat });
+    var url = plat === 'ios' ? r.ios_url : r.android_url;
+    // If the Square app never comes to the foreground the page stays visible,
+    // which is the only signal a web page gets that the deep link went nowhere.
+    var left = false;
+    var onHide = function () { left = true; };
+    document.addEventListener('visibilitychange', onHide, { once: true });
+    window.location.href = url;
+    setTimeout(function () {
+      document.removeEventListener('visibilitychange', onHide);
+      _sqOpening = false;
+      if (!left && !document.hidden) {
+        novaAlert('Square Point of Sale did not open. Install it from the app store and sign in to the company Square account, then try again. Nothing was charged.');
+        if (btn) { btn.disabled = false; }
+        render();
+      }
+    }, 2500);
+  } catch (e) {
+    _sqOpening = false;
+    if (btn) btn.disabled = false;
+    novaAlert(e.message);
+    render();
+  }
+}
+
+// Poll after Square hands the browser back. The server does the reconcile on
+// each call, so the common case resolves on the first poll.
+async function invSqPoll(id, nonce, tries) {
+  if (_sqPollTimer) { clearTimeout(_sqPollTimer); _sqPollTimer = null; }
+  if (state.currentView !== 'view-invoice' || String(state.currentParam) !== String(id)) return;
+  var out = null;
+  try {
+    out = await api('GET', '/invoices/' + id + '/payment-status?nonce=' + encodeURIComponent(nonce));
+  } catch (e) { out = null; }
+  var st = out && out.payment ? String(out.payment.status || '') : '';
+  if (st === 'reconciled') {
+    _sqReturnNonce = null;
+    showToast('Paid in Square. Card details filled in.', 'success');
+    render();
+    return;
+  }
+  if (st === 'failed' || st === 'canceled' || st === 'mismatch') {
+    _sqReturnNonce = null;
+    render();
+    return;
+  }
+  if (st === 'offline_pending' && tries > 4) {
+    _sqReturnNonce = null;
+    render();
+    return;
+  }
+  if (tries >= 15) {
+    _sqReturnNonce = null;
+    showToast('Still waiting on Square. Nova will finish this on its own.', 'info');
+    render();
+    return;
+  }
+  _sqPollTimer = setTimeout(function () { invSqPoll(id, nonce, tries + 1); }, 2000);
+}
+
+async function invSqRetry(id, pid) {
+  try {
+    await api('POST', '/invoices/' + id + '/payments/' + pid + '/reconcile', {});
+  } catch (e) { novaAlert(e.message); }
+  render();
+}
+
+async function invSqCancel(id, pid) {
+  if (!await novaConfirm('Give up on this payment attempt? Check the Square app first to make sure the card was not already charged.')) return;
+  try { await api('POST', '/invoices/' + id + '/payments/' + pid + '/cancel', {}); } catch (e) {}
+  render();
 }
 
 async function deleteInvoice(id) {
@@ -12294,11 +12514,104 @@ async function renderInvoiceSetup(el) {
       '<div id="inv-pulsarmap-list"></div>' +
       '<div style="margin-top:10px"><button class="btn btn-primary" onclick="invSetupSavePulsarMap()">Save Pulsar Labels</button></div>' +
     '</div></div>' +
+    '<div class="card mb-4"><div class="card-header"><span class="card-title">Square Payments</span></div><div class="card-body" id="inv-square-box"></div></div>' +
     '<div class="card"><div class="card-header"><span class="card-title">Accounts</span></div><div class="card-body" id="inv-setup-accounts"></div></div>';
   renderInvSetupAccounts();
   renderInvSetupPayTypes();
   renderInvSetupPulsarMap();
+  renderSquareSetup();
 }
+
+// ---- Square setup (Invoice Setup screen) -----------------------------------
+var _sqCfg = null;
+
+async function renderSquareSetup() {
+  var box = document.getElementById('inv-square-box');
+  if (!box) return;
+  box.innerHTML = '<div class="loading">Loading' + String.fromCharCode(8230) + '</div>';
+  try {
+    _sqCfg = await api('GET', '/invoices/square-config?locations=1');
+  } catch (e) {
+    box.innerHTML = '<div class="alert alert-error">' + escHtml(e.message) + '</div>';
+    return;
+  }
+  var cfg = _sqCfg || {};
+  var map = cfg.location_map || {};
+  var locs = cfg.square_locations || null;
+
+  var conn = cfg.configured
+    ? '<span class="badge badge-approved">Connected</span>'
+    : '<span class="badge badge-declined">Not connected</span>';
+
+  var envRows =
+    '<div class="detail-grid">' +
+      '<div class="detail-field"><label>Environment</label><p>' + escHtml(cfg.environment || '') + '</p></div>' +
+      '<div class="detail-field"><label>Application</label><p class="mono">' + (cfg.application_id_tail ? ('&hellip;' + escHtml(cfg.application_id_tail)) : '&mdash;') + '</p></div>' +
+      '<div class="detail-field"><label>Callback URL</label><p class="mono" style="font-size:12px;word-break:break-all">' + escHtml(cfg.callback_url || 'not set') + '</p></div>' +
+      '<div class="detail-field"><label>Webhook key</label><p>' + (cfg.webhook_key_set ? 'Set' : 'Not set') + '</p></div>' +
+    '</div>';
+
+  var missing = [];
+  if (!cfg.configured) missing.push('SQUARE_APPLICATION_ID, SQUARE_ACCESS_TOKEN and SQUARE_STATE_SECRET');
+  if (!cfg.callback_url) missing.push('SQUARE_POS_CALLBACK_URL');
+  if (!cfg.webhook_key_set) missing.push('SQUARE_WEBHOOK_SIGNATURE_KEY');
+  var warn = missing.length
+    ? '<div class="alert alert-warn" style="margin-top:12px">Still missing in Railway: ' + escHtml(missing.join('; ')) + '. Collect Payment stays hidden until the first group is set.</div>'
+    : '';
+
+  var locErr = cfg.square_locations_error
+    ? '<div class="alert alert-error" style="margin-top:12px">Could not read locations from Square: ' + escHtml(cfg.square_locations_error) + '</div>'
+    : '';
+
+  var rows = (cfg.cities || []).map(function (c) {
+    var code = String(c.code || '').toUpperCase();
+    var cur = map[code] || '';
+    var input;
+    if (locs && locs.length) {
+      input = '<select data-sqcity="' + escHtml(code) + '"><option value="">&mdash; not set &mdash;</option>' +
+        locs.map(function (l) {
+          return '<option value="' + escHtml(l.id) + '"' + (l.id === cur ? ' selected' : '') + '>' + escHtml(l.name) + (l.status && l.status !== 'ACTIVE' ? ' (' + escHtml(l.status) + ')' : '') + '</option>';
+        }).join('') + '</select>';
+    } else {
+      input = '<input type="text" data-sqcity="' + escHtml(code) + '" value="' + escHtml(cur) + '" placeholder="Square location ID" />';
+    }
+    return '<tr><td>' + escHtml(c.name || '') + '</td><td class="mono">' + escHtml(code) + '</td><td>' + input + '</td>' +
+      '<td>' + (cur ? '<span class="badge badge-approved">Mapped</span>' : '<span class="badge badge-declined">Blocked</span>') + '</td></tr>';
+  }).join('');
+
+  box.innerHTML =
+    '<div style="display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap;margin-bottom:12px">' +
+      '<div style="font-size:13px;color:var(--text-muted-color)">Lets a tech collect a card payment in the Square app straight from an invoice. Square fills the pay type, last four and approval code back into Nova.</div>' + conn +
+    '</div>' +
+    envRows + warn + locErr +
+    '<div style="margin-top:18px;font-size:13px;font-weight:600">City to Square location</div>' +
+    '<p class="text-muted" style="font-size:12.5px;margin:4px 0 10px">A city with no mapping cannot collect payment. That is deliberate: a payment landing in the wrong Square location is silently wrong in deposits, royalty and the per-city numbers, and nobody notices for a month.</p>' +
+    '<div class="table-wrap"><table><thead><tr><th>City</th><th>Code</th><th>Square location</th><th>Status</th></tr></thead><tbody>' +
+      (rows || '<tr><td colspan="4" class="text-muted">No active cities.</td></tr>') +
+    '</tbody></table></div>' +
+    (can('manage_invoice_setup') ? '<div style="margin-top:10px"><button class="btn btn-primary" onclick="saveSquareLocationMap()">Save Square Locations</button></div>' : '');
+}
+
+async function saveSquareLocationMap() {
+  var map = {};
+  var els = document.querySelectorAll('[data-sqcity]');
+  for (var i = 0; i < els.length; i++) {
+    var code = els[i].getAttribute('data-sqcity');
+    var val = (els[i].value || '').trim();
+    if (code && val) map[code] = val;
+  }
+  var msg = document.getElementById('inv-setup-msg');
+  try {
+    await api('PUT', '/invoices/square-config', { location_map: map });
+    apiBustCache('/invoices/square-config');
+    if (msg) { msg.innerHTML = '<div class="alert alert-success">Square locations saved.</div>'; setTimeout(function () { if (msg) msg.innerHTML = ''; }, 2500); }
+    renderSquareSetup();
+  } catch (e) {
+    if (msg) msg.innerHTML = '<div class="alert alert-error">' + escHtml(e.message) + '</div>';
+    else novaAlert(e.message);
+  }
+}
+
 
 // Nova pay type -> Pulsar label. Rows follow the pay-type list, so adding a pay
 // type above automatically gets a mapping row here.

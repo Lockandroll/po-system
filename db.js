@@ -1625,6 +1625,101 @@ async function initDB() {
       'ALTER TABLE invoices ADD COLUMN IF NOT EXISTS refunded_total DECIMAL(10,2) DEFAULT 0;' +
       'ALTER TABLE invoices ADD COLUMN IF NOT EXISTS status_before_refund VARCHAR(20);'
     );
+    // ---- Square payment collection -------------------------------------
+    // A tech taps Collect Payment, Square Point of Sale runs the card, and Nova
+    // fills in the pay type / last 4 / approval code from Square instead of the
+    // tech's thumbs. Kept in its own table rather than columns on invoices for
+    // three reasons: the invoice row gets frozen at 'paid', one invoice may need
+    // split tenders later, and the raw Square payload is worth keeping because
+    // it is what the chargeback packet is built from.
+    await client.query(
+      'CREATE TABLE IF NOT EXISTS invoice_payments (' +
+      '  id SERIAL PRIMARY KEY,' +
+      '  invoice_id INTEGER REFERENCES invoices(id) ON DELETE CASCADE,' +
+      '  state_nonce VARCHAR(64) NOT NULL UNIQUE,' +
+      // initiated | returned | reconciled | offline_pending | mismatch | failed | canceled
+      "  status VARCHAR(24) NOT NULL DEFAULT 'initiated'," +
+      '  amount_requested_cents INTEGER NOT NULL DEFAULT 0,' +
+      '  square_location_id VARCHAR(64),' +
+      '  platform VARCHAR(10),' +
+      '  initiated_by INTEGER REFERENCES users(id) ON DELETE SET NULL,' +
+      '  initiated_at TIMESTAMPTZ DEFAULT NOW(),' +
+      '  returned_at TIMESTAMPTZ,' +
+      '  square_transaction_id VARCHAR(64),' +
+      '  square_client_transaction_id VARCHAR(64),' +
+      '  square_order_id VARCHAR(64),' +
+      '  square_payment_id VARCHAR(64) UNIQUE,' +
+      '  card_brand VARCHAR(40),' +
+      '  card_last4 VARCHAR(4),' +
+      '  auth_result_code VARCHAR(20),' +
+      '  entry_method VARCHAR(20),' +
+      '  avs_status VARCHAR(20),' +
+      '  cvv_status VARCHAR(20),' +
+      '  tip_cents INTEGER DEFAULT 0,' +
+      '  total_cents INTEGER,' +
+      '  processing_fee_cents INTEGER,' +
+      '  receipt_url TEXT,' +
+      '  receipt_number VARCHAR(20),' +
+      '  square_status VARCHAR(20),' +
+      '  square_team_member_id VARCHAR(64),' +
+      '  team_member_mismatch BOOLEAN DEFAULT false,' +
+      '  square_created_at TIMESTAMPTZ,' +
+      '  error_code VARCHAR(60),' +
+      '  error_description TEXT,' +
+      '  mismatch_reason TEXT,' +
+      '  raw_payment JSONB,' +
+      '  reconciled_at TIMESTAMPTZ,' +
+      '  reconcile_attempts INTEGER DEFAULT 0,' +
+      '  last_error TEXT,' +
+      '  created_at TIMESTAMPTZ DEFAULT NOW(),' +
+      '  updated_at TIMESTAMPTZ DEFAULT NOW()' +
+      ');' +
+      'CREATE INDEX IF NOT EXISTS idx_invpay_invoice ON invoice_payments(invoice_id);' +
+      'CREATE INDEX IF NOT EXISTS idx_invpay_status ON invoice_payments(status);' +
+      'CREATE INDEX IF NOT EXISTS idx_invpay_order ON invoice_payments(square_order_id);' +
+      // A card run in the Square app with no Nova invoice behind it. Not an
+      // error, but it is the single most interesting line on the daily
+      // reconciliation report, so it gets recorded rather than dropped.
+      'CREATE TABLE IF NOT EXISTS square_orphan_payments (' +
+      '  id SERIAL PRIMARY KEY,' +
+      '  square_payment_id VARCHAR(64) NOT NULL UNIQUE,' +
+      '  square_order_id VARCHAR(64),' +
+      '  location_id VARCHAR(64),' +
+      '  amount_cents INTEGER,' +
+      '  note TEXT,' +
+      '  team_member_id VARCHAR(64),' +
+      '  taken_at TIMESTAMPTZ,' +
+      '  resolved BOOLEAN DEFAULT false,' +
+      '  raw_payment JSONB,' +
+      '  created_at TIMESTAMPTZ DEFAULT NOW()' +
+      ');'
+    );
+    // CREATE TABLE IF NOT EXISTS never adds columns to a table that already
+    // exists, so every column above also needs an explicit ALTER once this
+    // ships and the table is live.
+    await client.query(
+      'ALTER TABLE invoice_payments ADD COLUMN IF NOT EXISTS square_team_member_id VARCHAR(64);' +
+      'ALTER TABLE invoice_payments ADD COLUMN IF NOT EXISTS team_member_mismatch BOOLEAN DEFAULT false;' +
+      'ALTER TABLE invoice_payments ADD COLUMN IF NOT EXISTS mismatch_reason TEXT;' +
+      'ALTER TABLE invoice_payments ADD COLUMN IF NOT EXISTS platform VARCHAR(10);'
+    );
+    // authorized_total is what the customer SIGNED for, before any tip added
+    // inside the Square app. Without it the signed agreement says one number and
+    // the invoice says another, and that discrepancy is what loses a chargeback.
+    // Every screen that shows a total after a Square tip must show both.
+    await client.query(
+      'ALTER TABLE invoices ADD COLUMN IF NOT EXISTS authorized_total DECIMAL(10,2);' +
+      // Which Square team member this employee signs in as. Lets Nova flag a
+      // payment run by a different tech than the one on the invoice. Soft flag,
+      // never a block — running a card for someone else's job is a real thing.
+      'ALTER TABLE users ADD COLUMN IF NOT EXISTS square_team_member_id VARCHAR(64);'
+    );
+    // Backfill: every already-signed invoice was authorized for exactly what it
+    // totals today, because there was no way to add a tip after the fact. Safe to
+    // re-run; it only ever fills NULLs.
+    await client.query(
+      'UPDATE invoices SET authorized_total = grand_total WHERE authorized_total IS NULL AND signature_image IS NOT NULL;'
+    );
     // Refund permissions: anyone who can create an invoice may REQUEST a refund
     // (that is the tech who wrote it, standing in front of the customer); only a
     // manager and up may approve one. Backfilled into any saved role matrix once,
