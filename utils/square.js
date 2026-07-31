@@ -566,10 +566,458 @@ async function findRowForPayment(payment) {
   return null;
 }
 
+// ---------------------------------------------------------------------------
+// Refunds
+//
+// Nova's refund ledger (invoice_refunds) is the record. This is the part that
+// actually moves the money: POST /v2/refunds against the Square payment the
+// invoice was settled with.
+//
+// Design rules, all of which exist because a refund CANNOT BE UNDONE:
+//
+//   1. The idempotency key is written to the row BEFORE Square is called and
+//      reused on every retry. A double tap, a crashed request, or a browser
+//      refresh reaches Square with the same key and Square returns the same
+//      refund instead of making a second one.
+//   2. The ceiling comes from Square (total charged minus everything already
+//      refunded), not from Nova's ledger, and it is TIP INCLUSIVE. The tip is
+//      added on the reader after the customer signs, so the Square payment is
+//      routinely larger than the figure the invoice was authorized at. Trusting
+//      Nova's own numbers here would under-refund every tipped job.
+//   3. PENDING counts as issued. The money leaves Square the moment the refund
+//      is accepted; it just takes a few days to land. Holding the ledger at
+//      'approved' until COMPLETED would have Nova claiming the customer had not
+//      been paid back while their bank was already processing it.
+//   4. Anything Square refuses leaves the row exactly where it was, so the
+//      manual paste-the-reference path still works. A failed API call must
+//      never strand a refund in a state a human cannot finish.
+// ---------------------------------------------------------------------------
+
+// Square's own words, translated. Same rule as the payment errors: name the
+// specific thing and the actual cause, because whoever reads this is being
+// asked by a customer where their money is.
+const REFUND_ERROR_TEXT = {
+  INSUFFICIENT_FUNDS: 'Square does not have enough in the account to cover this refund right now. Square usually pulls the difference from the linked bank account within a day, so try again tomorrow, or move money into Square and retry. Nothing was refunded.',
+  PAYMENT_NOT_REFUNDABLE: 'Square will not refund this payment. Square blocks refunds on a card payment more than one year old, and on a payment that was already fully refunded or charged back. Nothing was refunded.',
+  REFUND_AMOUNT_INVALID: 'Square rejected the refund amount. It is either more than is left on the payment or not a whole number of cents. Nothing was refunded.',
+  INVALID_AMOUNT: 'Square rejected the refund amount. Nothing was refunded.',
+  REFUND_ALREADY_PENDING: 'Square already has a refund in progress against this payment. Wait for that one to finish before sending another. Nothing new was refunded by this attempt.',
+  REFUND_DECLINED: 'The card issuer declined the refund. The card may be closed or expired. Refund the customer another way and record it here by hand. Nothing was refunded.',
+  UNAUTHORIZED: 'Nova is not allowed to issue refunds on this Square account. The Square access token needs the Payments write permission. Nothing was refunded.',
+  FORBIDDEN: 'Nova is not allowed to issue refunds on this Square account. The Square access token needs the Payments write permission. Nothing was refunded.',
+  NOT_FOUND: 'Square has no record of the payment this invoice was settled with, under the account Nova is connected to. Nothing was refunded.',
+  VERSION_MISMATCH: 'Square changed this payment while Nova was refunding it. Open the invoice again and retry. Nothing was refunded.',
+  RATE_LIMITED: 'Square is rate limiting Nova right now. Wait a minute and try again. Nothing was refunded.',
+  BAD_REQUEST: 'Square rejected the refund request. Tell an admin. Nothing was refunded.',
+  unconfigured: 'Square is not connected to Nova yet, so a refund cannot be sent automatically. Issue it in the Square app and record the reference here by hand.'
+};
+
+function refundErrorMessage(code) {
+  return REFUND_ERROR_TEXT[String(code || '')] ||
+    'Square would not complete this refund. Check the Square dashboard before retrying so the customer is not refunded twice. Nothing was refunded.';
+}
+
+// Terminal in Square's eyes and NOT a transfer of money. These are the two
+// statuses that have to put the refund back in the queue.
+function refundFailed(status) {
+  const s = String(status || '').toUpperCase();
+  return s === 'REJECTED' || s === 'FAILED';
+}
+
+// Money has left (or is leaving) the account.
+function refundLive(status) {
+  const s = String(status || '').toUpperCase();
+  return s === 'PENDING' || s === 'COMPLETED';
+}
+
+function newIdempotencyKey(refundRowId) {
+  // Max 45 characters. This lands at 25.
+  return 'nova-rf-' + Number(refundRowId) + '-' + crypto.randomBytes(5).toString('hex');
+}
+
+// The Square payment this invoice was actually settled with. Only a reconciled
+// row counts: a returned-but-unreconciled attempt has no confirmed payment
+// behind it, and refunding against a guess is how you refund a payment that
+// never completed.
+async function settledPaymentForInvoice(invoiceId) {
+  const r = await pool.query(
+    "SELECT * FROM invoice_payments WHERE invoice_id = $1 AND status = 'reconciled' " +
+    'AND square_payment_id IS NOT NULL ORDER BY id DESC LIMIT 1',
+    [invoiceId]
+  );
+  return r.rows[0] || null;
+}
+
+// What Square will still let us give back on this payment, in cents.
+//
+// TIP INCLUSIVE and deliberately so. total_money is what actually hit the card,
+// tip and all. Nova's grand_total may be smaller (the invoice was authorized
+// pre-tip) or the ledger may have been edited since, and neither is the number
+// the bank moved.
+function refundableCents(payment) {
+  const total = (payment && payment.total_money && Number(payment.total_money.amount)) || 0;
+  const already = (payment && payment.refunded_money && Number(payment.refunded_money.amount)) || 0;
+  const left = total - already;
+  return left > 0 ? left : 0;
+}
+
+function dollars(cents) {
+  return '$' + (Math.round(Number(cents) || 0) / 100).toFixed(2);
+}
+
+// ---------------------------------------------------------------------------
+// issueRefund — the narrow refund writer.
+//
+// Hand it a Nova invoice_refunds row id. It validates against Square, sends the
+// refund, and writes the result back onto that ONE row. It touches no other
+// table: the invoice's own figures are never edited by a refund (that is the
+// whole premise of the ledger) and refunded_total is already covered because
+// 'approved' and 'processed' both count toward it, so a refund reaching Square
+// moves no money on the invoice that was not already committed at approval.
+//
+// Returns { ok, status, message, refund } and never throws for a Square-side
+// refusal — a refusal is an answer, not a crash.
+// ---------------------------------------------------------------------------
+async function issueRefund(refundRowId, actorUserId) {
+  const rowRes = await pool.query('SELECT * FROM invoice_refunds WHERE id = $1', [refundRowId]);
+  const row = rowRes.rows[0];
+  if (!row) return { ok: false, reason: 'not_found', message: 'Refund not found.' };
+
+  if (refundLive(row.square_status) && row.square_refund_id) {
+    return {
+      ok: true, already: true, status: String(row.square_status).toUpperCase(), row: row,
+      message: 'Refund ' + row.refund_number + ' was already sent to Square as ' + row.square_refund_id + '.'
+    };
+  }
+  if (row.status !== 'approved') {
+    return { ok: false, reason: 'bad_status', message: 'Only an approved refund can be sent to Square (refund ' + row.refund_number + ' is ' + row.status + ').' };
+  }
+  if (row.method !== 'card') {
+    return { ok: false, reason: 'not_card', message: 'Refund ' + row.refund_number + ' is set to give the money back as ' + row.method + ', not to the card, so Square cannot process it. Record it here by hand instead.' };
+  }
+  if (!configured()) {
+    return { ok: false, reason: 'unconfigured', message: refundErrorMessage('unconfigured') };
+  }
+
+  const invRes = await pool.query('SELECT id, invoice_number, grand_total, tip_amount FROM invoices WHERE id = $1', [row.invoice_id]);
+  const inv = invRes.rows[0];
+  if (!inv) return { ok: false, reason: 'invoice_gone', message: 'The invoice behind refund ' + row.refund_number + ' no longer exists.' };
+
+  const settled = await settledPaymentForInvoice(row.invoice_id);
+  if (!settled) {
+    return {
+      ok: false, reason: 'no_square_payment',
+      message: 'Invoice #' + inv.invoice_number + ' was not paid through Square in Nova, so there is no Square payment to refund against. Either the card was run outside Nova or it was paid another way. Issue the refund in the Square app and record the reference here by hand.'
+    };
+  }
+
+  // Ask Square what the payment looks like RIGHT NOW rather than trusting the
+  // snapshot Nova stored when it settled. Somebody may have refunded part of it
+  // from the Square dashboard in the meantime, and Nova would not know.
+  let payment = null;
+  try {
+    const got = await sq('GET', '/v2/payments/' + encodeURIComponent(settled.square_payment_id));
+    payment = got && got.payment;
+  } catch (e) {
+    const code = e.squareCode || (e.status === 404 ? 'NOT_FOUND' : (e.code === 'unconfigured' ? 'unconfigured' : ''));
+    await markRefund(row.id, {
+      square_status: 'FAILED',
+      square_error_code: String(code || 'lookup_failed').slice(0, 60),
+      square_error: refundErrorMessage(code),
+      square_attempts: Number(row.square_attempts || 0) + 1
+    });
+    return { ok: false, reason: 'lookup_failed', message: refundErrorMessage(code) };
+  }
+  if (!payment) {
+    const msg = refundErrorMessage('NOT_FOUND');
+    await markRefund(row.id, { square_status: 'FAILED', square_error_code: 'NOT_FOUND', square_error: msg, square_attempts: Number(row.square_attempts || 0) + 1 });
+    return { ok: false, reason: 'no_payment', message: msg };
+  }
+
+  const amountCents = Math.round((Number(row.amount) || 0) * 100);
+  if (!(amountCents > 0)) {
+    return { ok: false, reason: 'zero', message: 'Refund ' + row.refund_number + ' is for nothing, so there is nothing to send.' };
+  }
+
+  const ceiling = refundableCents(payment);
+  if (amountCents > ceiling) {
+    const totalCents = (payment.total_money && Number(payment.total_money.amount)) || 0;
+    const doneCents = (payment.refunded_money && Number(payment.refunded_money.amount)) || 0;
+    const msg = ceiling <= 0
+      ? ('Square payment ' + payment.id + ' on invoice #' + inv.invoice_number + ' has already been refunded in full (' + dollars(doneCents) + ' of ' + dollars(totalCents) + '). There is nothing left to give back. Nothing was refunded.')
+      : ('Refund ' + row.refund_number + ' is for ' + dollars(amountCents) + ', but only ' + dollars(ceiling) + ' is left on Square payment ' + payment.id + ' (' + dollars(totalCents) + ' was charged and ' + dollars(doneCents) + ' has already been refunded, possibly from the Square dashboard). Nothing was refunded.');
+    await markRefund(row.id, {
+      square_payment_id: payment.id,
+      square_status: 'FAILED',
+      square_error_code: 'REFUND_AMOUNT_INVALID',
+      square_error: msg,
+      square_attempts: Number(row.square_attempts || 0) + 1
+    });
+    return { ok: false, reason: 'over_ceiling', message: msg, refundable_cents: ceiling };
+  }
+
+  // Claim the row and pin the idempotency key BEFORE Square is called. COALESCE
+  // means a retry reuses the original key, which is the whole safety net: Square
+  // answers a repeat of the same key with the SAME refund rather than a new one.
+  // The guard is square_refund_id IS NULL, so a previous FAILED attempt can be
+  // retried but an accepted one can never be sent twice.
+  const claim = await pool.query(
+    'UPDATE invoice_refunds SET square_idempotency_key = COALESCE(square_idempotency_key, $1), ' +
+    "square_payment_id = $2, square_order_id = $3, square_amount_cents = $4, square_status = 'SENDING', " +
+    'square_sent_at = NOW(), square_sent_by = $5, square_attempts = COALESCE(square_attempts, 0) + 1, ' +
+    'square_error = NULL, square_error_code = NULL, updated_at = NOW() ' +
+    "WHERE id = $6 AND status = 'approved' AND square_refund_id IS NULL RETURNING *",
+    [newIdempotencyKey(row.id), payment.id, payment.order_id || settled.square_order_id || null, amountCents, actorUserId || null, row.id]
+  );
+  if (!claim.rowCount) {
+    return { ok: false, reason: 'raced', message: 'That refund was just changed by someone else. Reload and check whether it already went to Square.' };
+  }
+  const claimed = claim.rows[0];
+
+  // Attribute the refund to the person issuing it where Nova knows their Square
+  // team member id. Silent when it is not mapped — a missing mapping must never
+  // stop a customer getting their money back.
+  let teamMemberId = null;
+  if (actorUserId) {
+    try {
+      const u = await pool.query('SELECT square_team_member_id FROM users WHERE id = $1', [actorUserId]);
+      teamMemberId = (u.rows[0] && u.rows[0].square_team_member_id) || null;
+    } catch (e) { teamMemberId = null; }
+  }
+
+  const body = {
+    idempotency_key: claimed.square_idempotency_key,
+    payment_id: payment.id,
+    amount_money: { amount: amountCents, currency: (payment.total_money && payment.total_money.currency) || 'USD' },
+    reason: ('Nova ' + (claimed.refund_number || '') + ' invoice ' + inv.invoice_number + ' ' + (claimed.reason_code || '')).trim().slice(0, 190)
+  };
+  if (teamMemberId) body.team_member_id = teamMemberId;
+
+  let refund = null;
+  try {
+    const resp = await sq('POST', '/v2/refunds', body);
+    refund = resp && resp.refund;
+  } catch (e) {
+    const code = e.squareCode || (e.status === 429 ? 'RATE_LIMITED' : (e.status === 401 || e.status === 403 ? 'UNAUTHORIZED' : 'BAD_REQUEST'));
+    const msg = refundErrorMessage(code);
+    let raw = null;
+    try { raw = e.body && e.body.errors ? e.body.errors[0].detail : null; } catch (e2) { raw = null; }
+    await markRefund(claimed.id, {
+      square_status: 'FAILED',
+      square_error_code: String(code).slice(0, 60),
+      square_error: msg + (raw ? (' Square said: ' + String(raw)) : '')
+    });
+    return { ok: false, reason: 'square_refused', code: code, message: msg, square_detail: raw };
+  }
+
+  if (!refund || !refund.id) {
+    const msg = refundErrorMessage('BAD_REQUEST');
+    await markRefund(claimed.id, { square_status: 'FAILED', square_error_code: 'no_refund', square_error: msg });
+    return { ok: false, reason: 'no_refund', message: msg };
+  }
+
+  const sqStatus = String(refund.status || 'PENDING').toUpperCase();
+
+  // Square took the request but will not pay it. Leave the ledger at 'approved'
+  // so it stays in the queue and the manual path is still open.
+  if (refundFailed(sqStatus)) {
+    const msg = 'Square ' + sqStatus.toLowerCase() + ' this refund (' + refund.id + '). ' + refundErrorMessage('REFUND_DECLINED');
+    await markRefund(claimed.id, {
+      square_status: sqStatus,
+      square_error_code: sqStatus,
+      square_error: msg,
+      raw_refund: refund
+    });
+    return { ok: false, reason: 'square_failed', status: sqStatus, message: msg };
+  }
+
+  let feeCents = 0;
+  try {
+    (refund.processing_fee || []).forEach(function (f) { feeCents += Number((f.amount_money || {}).amount) || 0; });
+  } catch (e) { feeCents = 0; }
+
+  // ---- The write --------------------------------------------------------
+  // One statement, only this row, guarded on 'approved' so it cannot resurrect
+  // a refund somebody voided while Square was thinking. external_ref is filled
+  // with the Square refund id, which is exactly what a human would have pasted
+  // in by hand, so every downstream reader keeps working untouched.
+  // The ::text casts are load bearing. A parameter used in two places has to
+  // resolve to ONE type, and square_refund_id (varchar 64) next to external_ref
+  // (varchar 120), or square_status next to a comparison, gives Postgres two
+  // candidates and it refuses the whole statement with "inconsistent types
+  // deduced for parameter". Pinning both sides to text settles it.
+  const done = await pool.query(
+    "UPDATE invoice_refunds SET status = 'processed', square_refund_id = $1::text, square_status = $2::text, " +
+    "square_processing_fee_cents = $3, square_settled_at = CASE WHEN $2::text = 'COMPLETED' THEN NOW() ELSE NULL END, " +
+    'external_ref = $1::text, processed_by = COALESCE($4, approved_by), processed_at = NOW(), ' +
+    'refund_date = CURRENT_DATE, raw_refund = $5, square_error = NULL, square_error_code = NULL, updated_at = NOW() ' +
+    "WHERE id = $6 AND status = 'approved' RETURNING *",
+    [refund.id, sqStatus, feeCents, actorUserId || null, refund, claimed.id]
+  );
+
+  if (!done.rowCount) {
+    // Square HAS refunded the money but Nova's row moved out from under us. Do
+    // not lose the refund id: without it nobody can tie the money back to a
+    // record. Written unguarded on purpose, and loudly.
+    await markRefund(claimed.id, {
+      square_refund_id: refund.id,
+      square_status: sqStatus,
+      raw_refund: refund,
+      square_error: 'Square issued refund ' + refund.id + ' for ' + dollars(amountCents) + ', but this refund record had already changed status. The money HAS left the account. A manager needs to reconcile this by hand.'
+    });
+    try {
+      await logAudit({
+        entity_type: 'refund', entity_id: claimed.id, entity_number: claimed.refund_number,
+        action: 'square_refund_orphaned', user_id: actorUserId || null, user_name: 'Square',
+        details: { square_refund_id: refund.id, amount_cents: amountCents, invoice: inv.invoice_number }
+      });
+    } catch (e) {}
+    return { ok: false, reason: 'raced_after_send', message: 'Square issued refund ' + refund.id + ' for ' + dollars(amountCents) + ', but this record changed while that was happening. The money has left the account. Check the invoice before doing anything else.' };
+  }
+
+  try {
+    await logAudit({
+      entity_type: 'refund', entity_id: claimed.id, entity_number: claimed.refund_number,
+      action: 'refunded_via_square', user_id: actorUserId || null, user_name: 'Square',
+      details: {
+        invoice: inv.invoice_number,
+        square_refund_id: refund.id,
+        square_payment_id: payment.id,
+        amount: (amountCents / 100),
+        square_status: sqStatus,
+        processing_fee_returned: (feeCents / 100)
+      }
+    });
+  } catch (e) {}
+
+  return {
+    ok: true,
+    status: sqStatus,
+    refund: refund,
+    row: done.rows[0],
+    amount_cents: amountCents,
+    message: sqStatus === 'COMPLETED'
+      ? ('Square refunded ' + dollars(amountCents) + ' to the card ending ' + (settled.card_last4 || '----') + '.')
+      : ('Square accepted the ' + dollars(amountCents) + ' refund. It usually reaches the customer bank in a few business days.')
+  };
+}
+
+async function markRefund(id, fields) {
+  const keys = Object.keys(fields);
+  if (!keys.length) return;
+  const sets = keys.map(function (k, i) { return k + ' = $' + (i + 1); });
+  sets.push('updated_at = NOW()');
+  const vals = keys.map(function (k) { return fields[k]; });
+  vals.push(id);
+  await pool.query('UPDATE invoice_refunds SET ' + sets.join(', ') + ' WHERE id = $' + vals.length, vals);
+}
+
+// ---------------------------------------------------------------------------
+// settleRefund — apply a Square refund object to the Nova row it belongs to.
+//
+// Called by the webhook (refund.created / refund.updated) and by the SPA poll.
+// This is how a PENDING refund becomes COMPLETED, and, more importantly, how a
+// refund Square later gives up on gets put back in front of a human instead of
+// sitting in 'Processed' forever while the customer waits for money that is
+// never coming.
+// ---------------------------------------------------------------------------
+async function settleRefund(squareRefund) {
+  if (!squareRefund || !squareRefund.id) return { ok: false, reason: 'no_refund' };
+  const found = await pool.query('SELECT * FROM invoice_refunds WHERE square_refund_id = $1', [squareRefund.id]);
+  let row = found.rows[0];
+  // A refund Nova sent whose response never came back (crashed request, lost
+  // connection). The idempotency key ties it home.
+  if (!row && squareRefund.payment_id) {
+    const byPay = await pool.query(
+      "SELECT * FROM invoice_refunds WHERE square_payment_id = $1 AND square_status = 'SENDING' " +
+      'AND square_refund_id IS NULL ORDER BY id DESC LIMIT 1',
+      [squareRefund.payment_id]
+    );
+    row = byPay.rows[0];
+  }
+  if (!row) return { ok: false, reason: 'not_ours' };
+
+  const sqStatus = String(squareRefund.status || '').toUpperCase();
+  if (!sqStatus) return { ok: false, reason: 'no_status' };
+  if (String(row.square_status || '').toUpperCase() === sqStatus && row.square_refund_id) {
+    return { ok: true, already: true, row: row };
+  }
+
+  let feeCents = 0;
+  try {
+    (squareRefund.processing_fee || []).forEach(function (f) { feeCents += Number((f.amount_money || {}).amount) || 0; });
+  } catch (e) { feeCents = 0; }
+
+  if (refundFailed(sqStatus)) {
+    // The money did NOT move. Put the refund back in the awaiting queue with the
+    // reason attached, and take the Square reference off external_ref so nobody
+    // reads a rejected refund id as proof the customer was paid. The ledger
+    // amount is untouched, so refunded_total does not move either: 'approved'
+    // and 'processed' both count, which is exactly why this reversal is safe.
+    await pool.query(
+      "UPDATE invoice_refunds SET status = CASE WHEN status = 'processed' THEN 'approved' ELSE status END, " +
+      'square_status = $1::text, square_settled_at = NOW(), square_processing_fee_cents = $2, raw_refund = $3, ' +
+      'square_error_code = $1::text, square_error = $4, ' +
+      "external_ref = CASE WHEN external_ref = square_refund_id THEN NULL ELSE external_ref END, " +
+      "processed_by = CASE WHEN status = 'processed' THEN NULL ELSE processed_by END, " +
+      "processed_at = CASE WHEN status = 'processed' THEN NULL ELSE processed_at END, " +
+      'updated_at = NOW() WHERE id = $5',
+      [
+        sqStatus,
+        feeCents,
+        squareRefund,
+        'Square ' + sqStatus.toLowerCase() + ' refund ' + squareRefund.id + ' after accepting it. The customer has NOT been paid. ' + refundErrorMessage('REFUND_DECLINED'),
+        row.id
+      ]
+    );
+    try {
+      await logAudit({
+        entity_type: 'refund', entity_id: row.id, entity_number: row.refund_number,
+        action: 'square_refund_failed', user_id: null, user_name: 'Square',
+        details: { square_refund_id: squareRefund.id, status: sqStatus }
+      });
+    } catch (e) {}
+    return { ok: false, reason: 'square_failed', status: sqStatus, row: row };
+  }
+
+  await pool.query(
+    'UPDATE invoice_refunds SET square_refund_id = $1::text, square_status = $2::text, square_processing_fee_cents = $3, ' +
+    "square_settled_at = CASE WHEN $2::text = 'COMPLETED' THEN NOW() ELSE square_settled_at END, " +
+    'raw_refund = $4, square_error = NULL, square_error_code = NULL, ' +
+    'external_ref = COALESCE(external_ref, $1::text), updated_at = NOW() WHERE id = $5',
+    [squareRefund.id, sqStatus, feeCents, squareRefund, row.id]
+  );
+  return { ok: true, status: sqStatus, row: row };
+}
+
+// Ask Square directly what a refund is doing. Used by the SPA poll so a manager
+// watching the screen does not have to wait for a webhook to arrive.
+async function refreshRefund(refundRowId) {
+  const r = await pool.query('SELECT * FROM invoice_refunds WHERE id = $1', [refundRowId]);
+  const row = r.rows[0];
+  if (!row || !row.square_refund_id) return { ok: false, reason: 'not_sent' };
+  try {
+    const got = await sq('GET', '/v2/refunds/' + encodeURIComponent(row.square_refund_id));
+    const refund = got && got.refund;
+    if (!refund) return { ok: false, reason: 'not_found' };
+    return await settleRefund(refund);
+  } catch (e) {
+    return { ok: false, reason: 'lookup_failed', message: e.message };
+  }
+}
+
 module.exports = {
   configured: configured,
   callbackUrl: callbackUrl,
   sq: sq,
+  issueRefund: issueRefund,
+  settleRefund: settleRefund,
+  refreshRefund: refreshRefund,
+  refundErrorMessage: refundErrorMessage,
+  refundFailed: refundFailed,
+  refundLive: refundLive,
+  refundableCents: refundableCents,
+  settledPaymentForInvoice: settledPaymentForInvoice,
   signState: signState,
   verifyState: verifyState,
   newNonce: newNonce,

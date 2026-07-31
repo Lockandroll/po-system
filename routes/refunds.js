@@ -7,6 +7,7 @@ const { sendSms } = require('../utils/sms');
 const notify = require('../utils/notify');
 const push = require('../utils/push');
 const permissions = require('../utils/permissions');
+const square = require('../utils/square');
 
 const router = express.Router();
 
@@ -24,11 +25,24 @@ const router = express.Router();
 //        \-> rejected            \-> voided (reversal, admin only)
 //
 // Anyone who can create an invoice may REQUEST a refund on one; only a manager
-// or above (approve_refund) may approve it. Money never moves inside Nova:
-// Square is record-only for now, so 'processed' is the human step where someone
-// issues the refund in Square and pastes the reference back here. An approved
-// refund that is never processed shows up in its own queue rather than quietly
-// disappearing.
+// or above (approve_refund) may approve it. An approved refund that is never
+// issued shows up in its own queue rather than quietly disappearing.
+//
+// There are two ways an approved refund becomes 'processed':
+//
+//   POST /:id/send-to-square  -> Nova calls the Square Refunds API and the money
+//                                actually moves. Card refunds on invoices that
+//                                were settled through Square in Nova.
+//   POST /:id/processed       -> a human issued it somewhere else (cash, check,
+//                                the Square dashboard, a refund Square refused)
+//                                and pastes the reference in.
+//
+// Both routes exist on purpose and neither replaces the other. The manual path
+// is the fallback for every case the API cannot cover, so a failed API call can
+// never strand a customer's money.
+//
+// Once Square has accepted a refund it CANNOT be undone, which is why the void
+// route below refuses to touch one.
 //
 // The invoice's refunded_total counts APPROVED and PROCESSED refunds (a manager
 // saying yes is the moment the money is committed), while pending requests are
@@ -101,12 +115,51 @@ var REFUND_SELECT =
   '       i.invoice_number, i.grand_total, i.customer_name, i.city_code, i.account_name, ' +
   '       i.pay_type, i.card_last4, i.email AS customer_email, i.invoice_date, ' +
   '       i.labor_amount, i.parts_amount, i.tax_amount, i.tip_amount, i.refunded_total, i.status AS invoice_status, ' +
-  '       req.name AS requested_by_name, app.name AS approved_by_name, proc.name AS processed_by_name ' +
+  '       req.name AS requested_by_name, app.name AS approved_by_name, proc.name AS processed_by_name, ' +
+  '       sp.square_payment_id AS settled_square_payment_id, sp.card_last4 AS settled_card_last4, ' +
+  '       sp.total_cents AS settled_total_cents, sp.tip_cents AS settled_tip_cents ' +
   'FROM invoice_refunds r ' +
   'JOIN invoices i ON r.invoice_id = i.id ' +
   'LEFT JOIN users req ON r.requested_by = req.id ' +
   'LEFT JOIN users app ON r.approved_by = app.id ' +
-  'LEFT JOIN users proc ON r.processed_by = proc.id ';
+  'LEFT JOIN users proc ON r.processed_by = proc.id ' +
+  // The Square payment this invoice was actually settled with, if any. Drives
+  // whether the screen offers "Refund in Square" at all — showing that button on
+  // an invoice that was never paid through Square just produces a dead end.
+  'LEFT JOIN LATERAL (' +
+  '  SELECT square_payment_id, card_last4, total_cents, tip_cents FROM invoice_payments ' +
+  "  WHERE invoice_id = i.id AND status = 'reconciled' AND square_payment_id IS NOT NULL " +
+  '  ORDER BY id DESC LIMIT 1' +
+  ') sp ON true ';
+
+// Money is with the customer (or on its way) and cannot be pulled back.
+function squareMoneyMoved(r) {
+  return !!(r && r.square_refund_id && square.refundLive(r.square_status));
+}
+
+// Everything the UI needs to decide what to offer, computed once so the queue,
+// the invoice screen and the modal never disagree with each other.
+function decorate(r) {
+  r.reason_label = reasonLabel(r.reason_code);
+  r.method_label = methodLabel(r.method);
+  r.square_money_moved = squareMoneyMoved(r);
+  r.square_enabled = square.configured();
+  r.can_send_to_square =
+    r.status === 'approved' &&
+    r.method === 'card' &&
+    !r.square_money_moved &&
+    !!r.settled_square_payment_id &&
+    r.square_enabled;
+  // Why the button is not there. A manager who expects it and does not see it
+  // should not have to guess.
+  r.square_blocked_reason = r.can_send_to_square ? null
+    : (r.square_money_moved ? null
+    : (r.status !== 'approved' ? null
+    : (!r.square_enabled ? 'Square is not connected to Nova yet, so this has to be refunded by hand.'
+    : (r.method !== 'card' ? ('This refund gives the money back as ' + methodLabel(r.method).toLowerCase() + ', so Square cannot process it.')
+    : 'This invoice was not paid through Square in Nova, so there is no Square payment to refund against.'))));
+  return r;
+}
 
 // Recompute invoices.refunded_total + status from the refund ledger. Called
 // inside the same transaction as every state change so the invoice can never
@@ -429,8 +482,7 @@ router.get('/', requireAuth, requirePermission('view_invoices'), async (req, res
       cr.rows.forEach(function (x) { counts[String(x.refund_id)] = x.n; });
     } catch (e) { /* table may not exist yet on first deploy */ }
     res.json(rows.map(function (r) {
-      r.reason_label = reasonLabel(r.reason_code);
-      r.method_label = methodLabel(r.method);
+      decorate(r);
       r.line_count = counts[String(r.id)] || 0;
       return r;
     }));
@@ -479,8 +531,7 @@ router.get('/:id', requireAuth, requirePermission('view_invoices'), async (req, 
     if (!approver && !canSeeAll(req.user.role) && r.requested_by !== req.user.id) {
       return res.status(403).json({ error: 'Access denied' });
     }
-    r.reason_label = reasonLabel(r.reason_code);
-    r.method_label = methodLabel(r.method);
+    decorate(r);
     r.lines = await loadRefundLines(pool, r.id);
     // What is still refundable per line / per bucket, so the approver's screen
     // can show the same limits the request screen had.
@@ -811,7 +862,126 @@ router.post('/:id/reject', requireAuth, requirePermission('approve_refund'), asy
 });
 
 // ---------------------------------------------------------------------------
-// Mark as issued in Square (record-only phase 1)
+// Send the refund to Square for real
+// ---------------------------------------------------------------------------
+// This is the only route in Nova that moves money OUT. It is gated on
+// approve_refund, the same permission that approves the refund in the first
+// place, and it only ever acts on a refund a manager has already approved --
+// approving and refunding stay two deliberate actions.
+//
+// All the hard parts (idempotency, the tip-inclusive ceiling, the failure
+// branches) live in utils/square.js issueRefund(). This route's job is
+// permissions, the customer receipt, and turning the result into something a
+// human can read.
+//
+// A Square refusal comes back as HTTP 200 with ok:false rather than an error
+// status. It is an answer, not a fault, and the screen needs the message plus
+// the row's new state to tell the manager what to do next.
+router.post('/:id/send-to-square', requireAuth, requirePermission('approve_refund'), async (req, res) => {
+  const b = req.body || {};
+  const rid = refundId(req, res);
+  if (!rid) return;
+  try {
+    const pre = (await pool.query(REFUND_SELECT + 'WHERE r.id = $1', [rid])).rows[0];
+    if (!pre) return res.status(404).json({ error: 'Refund not found' });
+    if (squareMoneyMoved(pre)) {
+      return res.status(409).json({
+        error: 'Refund ' + pre.refund_number + ' has already been refunded in Square as ' + pre.square_refund_id + '. Sending it again would refund the customer twice.'
+      });
+    }
+    if (pre.status !== 'approved') {
+      return res.status(409).json({ error: 'Only an approved refund can be sent to Square (refund ' + pre.refund_number + ' is ' + pre.status + ').' });
+    }
+
+    const result = await square.issueRefund(rid, req.user.id);
+    const after = (await pool.query(REFUND_SELECT + 'WHERE r.id = $1', [rid])).rows[0];
+    if (after) decorate(after);
+
+    if (!result.ok) {
+      try {
+        await logAudit({
+          entity_type: 'refund', entity_id: rid, entity_number: pre.refund_number, action: 'square_refund_refused',
+          user_id: req.user.id, user_name: req.user.name,
+          details: { invoice: pre.invoice_number, amount: money(pre.amount), reason: result.reason, message: result.message }
+        });
+      } catch (e) {}
+      return res.json({ ok: false, reason: result.reason, error: result.message, refund: after });
+    }
+
+    // Customer receipt. Sent only for a refund Square actually took, and only
+    // when asked for, so a manager retrying a failed send never emails the
+    // customer twice about money that has not moved.
+    const inv = (await pool.query('SELECT * FROM invoices WHERE id = $1', [pre.invoice_id])).rows[0] || {};
+    if (b.email_receipt === true && inv.email && !result.already) {
+      try {
+        var net = money(money(inv.grand_total) - money(inv.refunded_total));
+        const html = emailTemplate({
+          badge: 'Refund issued', badgeColor: 'green',
+          title: 'A refund has been issued',
+          body: 'A refund of <strong>' + fmt(pre.amount) + '</strong> has been sent back to the card used on invoice #' + inv.invoice_number +
+                '. Depending on your bank, a card refund can take a few business days to appear on your statement.',
+          details: [
+            { label: 'Invoice #', value: String(inv.invoice_number) },
+            { label: 'Original total', value: fmt(inv.grand_total) },
+            { label: 'Refunded', value: fmt(pre.amount) },
+            { label: 'Net after refunds', value: fmt(net) },
+            { label: 'Back to', value: 'Card ending ' + (pre.settled_card_last4 || inv.card_last4 || '----') }
+          ],
+          footerNote: 'Questions about this refund? Reply to this email and we will help.'
+        });
+        await sendEmail(inv.email, 'Refund issued on invoice #' + inv.invoice_number, html);
+      } catch (e) { console.error('Refund receipt email failed:', e); }
+    }
+
+    // Tell whoever asked for it that the money is on the way.
+    if (!result.already && pre.requested_by && pre.requested_by !== req.user.id) {
+      try {
+        await push.sendPushToUsers([pre.requested_by], {
+          title: 'Refund issued',
+          body: fmt(pre.amount) + ' was refunded to the customer on invoice #' + pre.invoice_number + '.',
+          url: '/'
+        });
+      } catch (e) { console.error('Refund issued push failed:', e); }
+    }
+
+    res.json({
+      ok: true,
+      already: result.already === true,
+      square_status: result.status,
+      square_refund_id: (result.refund && result.refund.id) || (after && after.square_refund_id) || null,
+      message: result.message,
+      refund: after
+    });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Failed to send the refund to Square: ' + err.message });
+  }
+});
+
+// Poll Square for a refund that came back PENDING. Read-only from Nova's point
+// of view -- it asks Square and applies whatever Square says, so it can be
+// called as often as a screen likes.
+router.get('/:id/square-status', requireAuth, requirePermission('view_invoices'), async (req, res) => {
+  const rid = refundId(req, res);
+  if (!rid) return;
+  try {
+    const before = (await pool.query('SELECT id, square_refund_id, square_status FROM invoice_refunds WHERE id = $1', [rid])).rows[0];
+    if (!before) return res.status(404).json({ error: 'Refund not found' });
+    if (before.square_refund_id && String(before.square_status).toUpperCase() === 'PENDING') {
+      try { await square.refreshRefund(rid); } catch (e) { /* Square being down is not an error here */ }
+    }
+    const after = (await pool.query(REFUND_SELECT + 'WHERE r.id = $1', [rid])).rows[0];
+    res.json(decorate(after));
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Failed to check the refund status' });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Mark as issued by hand (cash, check, the Square dashboard, or a refund the
+// API refused). Kept deliberately: this is the fallback for everything the
+// Refunds API cannot do.
 // ---------------------------------------------------------------------------
 
 router.post('/:id/processed', requireAuth, requirePermission('approve_refund'), async (req, res) => {
@@ -823,6 +993,15 @@ router.post('/:id/processed', requireAuth, requirePermission('approve_refund'), 
   try {
     const r = (await pool.query('SELECT * FROM invoice_refunds WHERE id = $1', [rid])).rows[0];
     if (!r) return res.status(404).json({ error: 'Refund not found' });
+    // Checked BEFORE the status guard on purpose. A refund Nova already pushed
+    // through the API is 'processed' already, so the generic "only an approved
+    // refund" message would be technically true and completely unhelpful -- it
+    // would not tell the manager that the customer has in fact been paid.
+    if (squareMoneyMoved(r)) {
+      return res.status(409).json({
+        error: 'Refund ' + r.refund_number + ' was already refunded through Square as ' + r.square_refund_id + ', so there is nothing to record. Reload the page.'
+      });
+    }
     if (r.status !== 'approved') return res.status(409).json({ error: 'Only an approved refund can be marked as issued (this one is ' + r.status + ').' });
 
     var issuedOn = b.refund_date || null;
@@ -876,6 +1055,13 @@ router.post('/:id/processed', requireAuth, requirePermission('approve_refund'), 
 // Refund rows are immutable by design. Voiding does not delete anything: it
 // flips the row to 'voided' with a reason, releases the money back to the
 // invoice, and leaves the whole history readable. Admin only.
+//
+// A void means "that refund never happened", and Nova is only entitled to say
+// that while the money is still in the account. Once Square has accepted a
+// refund it cannot be reversed -- there is no un-refund in the card networks --
+// so voiding one would leave the invoice claiming it collected money that is
+// sitting in the customer's bank. The block below is the whole reason this
+// feature is safe to ship.
 router.post('/:id/void', requireAuth, async (req, res) => {
   if (['admin', 'owner'].indexOf(req.user.role) === -1) {
     return res.status(403).json({ error: 'Only an admin can void a refund.' });
@@ -892,6 +1078,14 @@ router.post('/:id/void', requireAuth, async (req, res) => {
     if (['approved', 'processed'].indexOf(r.status) === -1) {
       await client.query('ROLLBACK');
       return res.status(409).json({ error: 'Only an approved or issued refund can be voided (this one is ' + r.status + ').' });
+    }
+    if (squareMoneyMoved(r)) {
+      await client.query('ROLLBACK');
+      return res.status(409).json({
+        error: 'Refund ' + r.refund_number + ' of ' + fmt(r.amount) + ' was already refunded through Square (' + r.square_refund_id + ', ' +
+               String(r.square_status).toLowerCase() + '). A card refund cannot be reversed, so voiding this record would leave the invoice claiming money the customer already has. ' +
+               'If it was refunded in error, charge the customer again on a new invoice.'
+      });
     }
     await client.query(
       "UPDATE invoice_refunds SET status = 'voided', void_reason = $1, voided_by = $2, voided_at = NOW(), updated_at = NOW() WHERE id = $3",

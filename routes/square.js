@@ -204,6 +204,29 @@ router.post('/webhook', express.raw({ type: '*/*', limit: '2mb' }), async (req, 
     const obj = (evt.data && evt.data.object) || {};
     const payment = obj.payment || null;
 
+    // Refund events. A card refund is accepted as PENDING and settles over the
+    // next few days, so this is how a refund Nova sent becomes COMPLETED -- and,
+    // more importantly, how one Square later gives up on gets put back in front
+    // of a manager instead of sitting in Processed while the customer waits for
+    // money that is never arriving.
+    //
+    // settleRefund() only ever updates a row Nova already sent (matched on the
+    // Square refund id, or on a SENDING row whose response was lost). A refund
+    // issued straight from the Square dashboard has no Nova row and is ignored
+    // here on purpose: inventing a refund record from a webhook would let anyone
+    // with the signature key write money off an invoice.
+    if (type === 'refund.created' || type === 'refund.updated') {
+      const refund = obj.refund || null;
+      if (refund && refund.id) {
+        try {
+          await square.settleRefund(refund);
+        } catch (e) {
+          console.error('Square refund webhook failed for ' + refund.id + ':', e.message);
+        }
+      }
+      return;
+    }
+
     if (type === 'payment.created' || type === 'payment.updated') {
       const row = await square.findRowForPayment(payment);
       if (row) {

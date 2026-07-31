@@ -2,7 +2,7 @@
 // public/sw.js (the only thing bumped each deploy) — the badge asks the active
 // service worker for it at runtime. This value is just the fallback shown when no
 // service worker is available (e.g. very first visit before it installs).
-var APP_VERSION = 'v92';
+var APP_VERSION = 'v93';
 var _resolvedAppVersion = null;
 
 // Ask the active service worker for its CACHE_VERSION (without the 'nova-' prefix).
@@ -18740,6 +18740,49 @@ function refundStatusBadge(status) {
   return '<span class="badge ' + m.cls + '">' + escHtml(m.label) + '</span>';
 }
 
+// ---------- Square refund state ----------
+//
+// A refund row carries two statuses and they mean different things. Nova's own
+// status says where it is in the approval flow; square_status says what the
+// card network is doing about it. Both have to be visible, because "Processed"
+// on its own does not tell a manager whether the customer has the money yet.
+//
+// Vocabulary used everywhere below:
+//   PENDING   -> Square took it, the bank is moving it. The money IS gone.
+//   COMPLETED -> landed.
+//   FAILED / REJECTED -> Square would not pay it. Nothing moved, and the refund
+//                        goes back into the awaiting queue.
+//   SENDING   -> a request is in flight (or crashed mid-flight).
+
+function refundSquareMoved(r) {
+  return !!(r && r.square_refund_id && ['PENDING', 'COMPLETED'].indexOf(String(r.square_status || '').toUpperCase()) !== -1);
+}
+
+function refundSquareBadge(r) {
+  var s = String((r && r.square_status) || '').toUpperCase();
+  if (!s) return '';
+  if (s === 'COMPLETED') {
+    return '<span class="badge badge-approved" title="Square has finished this refund">Refunded in Square</span>';
+  }
+  if (s === 'PENDING') {
+    return '<span class="badge badge-refund-awaiting" title="Square accepted the refund. The money has left the account and reaches the customer bank in a few business days.">Refund settling</span>';
+  }
+  if (s === 'SENDING') {
+    return '<span class="badge badge-submitted">Sending to Square…</span>';
+  }
+  if (s === 'FAILED' || s === 'REJECTED') {
+    return '<span class="badge badge-rejected" title="Nothing was refunded">Square refused</span>';
+  }
+  return '';
+}
+
+// The red box under a refund Square would not pay. Named cause, not a shrug.
+function refundSquareErrorHtml(r) {
+  if (!r || !r.square_error) return '';
+  if (refundSquareMoved(r)) return '';
+  return '<div style="margin-top:6px;font-size:11px;color:var(--danger);line-height:1.5">' + escHtml(r.square_error) + '</div>';
+}
+
 function refundNum(v) { return Math.round((parseFloat(v) || 0) * 100) / 100; }
 
 // Same proportional split the backend applies, mirrored here so the modal can
@@ -18856,13 +18899,116 @@ async function submitRefundRejection(id, btn) {
   }
 }
 
-// ---------- Record the Square refund ----------
+// ---------- Refund the card through Square for real ----------
+//
+// The confirm screen is deliberately heavy. This is the only button in Nova
+// that moves money out of the account and a card refund cannot be undone, so
+// the amount, the card, and the irreversibility are all stated before the
+// manager can press anything.
+
+async function openRefundInSquare(refundId) {
+  var r;
+  try { r = await api('GET', '/refunds/' + refundId); }
+  catch (err) { showToast(err.message, 'error'); return; }
+
+  if (refundSquareMoved(r)) {
+    showToast('That refund has already gone through Square (' + (r.square_refund_id || '') + ').', 'info');
+    render();
+    return;
+  }
+  if (!r.can_send_to_square) {
+    showToast(r.square_blocked_reason || 'This refund cannot be sent to Square.', 'error');
+    return;
+  }
+
+  var last4 = r.settled_card_last4 || r.card_last4 || '';
+  var retry = String(r.square_status || '').toUpperCase() === 'FAILED' || String(r.square_status || '').toUpperCase() === 'REJECTED';
+
+  var overlay = document.createElement('div');
+  overlay.className = 'modal-overlay';
+  overlay.id = 'refund-square-overlay';
+  overlay.innerHTML =
+    '<div class="modal" style="max-width:500px">' +
+      '<div class="modal-header"><span class="modal-title">Refund ' + invMoney(r.amount) + ' in Square</span>' +
+        '<button class="btn btn-ghost btn-sm" onclick="document.getElementById(\'refund-square-overlay\').remove()">&#x2715;</button></div>' +
+      '<div class="modal-body"><div id="refund-square-error"></div>' +
+        (retry && r.square_error
+          ? '<div class="alert alert-error" style="margin-bottom:14px"><strong>The last attempt did not go through.</strong><br>' + escHtml(r.square_error) + '</div>'
+          : '') +
+        '<div class="alert" style="background:#2d1a00;color:#fdba74;border:1px solid #4d2d00;margin-bottom:16px;line-height:1.6">' +
+          '<strong>This sends the money back right now.</strong> Square will return ' +
+          '<strong>' + invMoney(r.amount) + '</strong> to the card' + (last4 ? (' ending <strong>' + escHtml(last4) + '</strong>') : '') +
+          ' used on invoice #' + escHtml(String(r.invoice_number)) + '. <strong>A card refund cannot be reversed.</strong>' +
+        '</div>' +
+        '<div style="display:grid;grid-template-columns:auto 1fr;gap:7px 14px;font-size:13px;margin-bottom:16px">' +
+          '<div style="color:var(--text-muted-color)">Refund #</div><div>' + escHtml(r.refund_number || '') + '</div>' +
+          '<div style="color:var(--text-muted-color)">Reason</div><div>' + escHtml(refundReasonLabel(r.reason_code)) + '</div>' +
+          '<div style="color:var(--text-muted-color)">Approved by</div><div>' + escHtml(r.approved_by_name || 'a manager') + '</div>' +
+          '<div style="color:var(--text-muted-color)">Invoice total</div><div>' + invMoney(r.grand_total) + '</div>' +
+          '<div style="color:var(--text-muted-color)">Amount to refund</div><div style="color:var(--danger);font-weight:600">' + invMoney(r.amount) + '</div>' +
+        '</div>' +
+        (r.customer_email
+          ? '<label style="display:flex;align-items:center;gap:9px;font-weight:400;color:var(--text-dim);font-size:13px">' +
+            '<input type="checkbox" id="rfsq-email" checked style="width:16px;height:16px;padding:0;flex-shrink:0" /> Email ' + escHtml(r.customer_email) + ' a refund receipt</label>'
+          : '<div style="font-size:12px;color:var(--text-muted-color)">No customer email on this invoice, so no receipt will be sent.</div>') +
+      '</div>' +
+      '<div class="modal-footer">' +
+        '<button class="btn btn-secondary" onclick="document.getElementById(\'refund-square-overlay\').remove()">Cancel</button>' +
+        '<button class="btn btn-danger" id="rfsq-go" onclick="submitRefundInSquare(' + r.id + ', this)">Refund ' + invMoney(r.amount) + ' Now</button>' +
+      '</div>' +
+    '</div>';
+  document.body.appendChild(overlay);
+}
+
+async function submitRefundInSquare(id, btn) {
+  var errEl = document.getElementById('refund-square-error');
+  var emailEl = document.getElementById('rfsq-email');
+  // Disabled first thing and never re-enabled on success. The server is
+  // idempotent, but a second click that reaches a server mid-write should not
+  // even be possible from here.
+  btn.disabled = true;
+  btn.textContent = 'Refunding in Square…';
+  var res;
+  try {
+    res = await api('POST', '/refunds/' + id + '/send-to-square', {
+      email_receipt: !!(emailEl && emailEl.checked)
+    });
+  } catch (err) {
+    btn.disabled = false; btn.textContent = 'Try Again';
+    if (errEl) errEl.innerHTML = '<div class="alert alert-error">' + escHtml(err.message) + '</div>';
+    return;
+  }
+
+  // Square answered but refused. Not an exception -- the manager needs the
+  // reason and the manual fallback, both on this screen.
+  if (res && res.ok === false) {
+    btn.disabled = false; btn.textContent = 'Try Again';
+    if (errEl) {
+      errEl.innerHTML = '<div class="alert alert-error" style="line-height:1.6">' + escHtml(res.error || 'Square would not complete this refund.') +
+        '</div><div style="font-size:12px;color:var(--text-muted-color);margin-bottom:14px">' +
+        'You can try again, or refund the customer another way and record it here with <strong>Record by hand</strong>.</div>';
+    }
+    return;
+  }
+
+  var ov = document.getElementById('refund-square-overlay');
+  if (ov) ov.remove();
+  showToast((res && res.message) || 'Refunded in Square.', 'success');
+  render();
+}
+
+// ---------- Record a refund issued somewhere else ----------
 
 async function openRefundProcessed(refundId) {
   var r;
   try { r = await api('GET', '/refunds/' + refundId); }
   catch (err) { showToast(err.message, 'error'); return; }
   if (r.status !== 'approved') { showToast('Only an approved refund can be marked as issued.', 'error'); return; }
+  if (refundSquareMoved(r)) {
+    showToast('That refund already went through Square as ' + (r.square_refund_id || '') + '. There is nothing to record.', 'info');
+    render();
+    return;
+  }
   var today = new Date();
   var iso = today.getFullYear() + '-' + String(today.getMonth() + 1).padStart(2, '0') + '-' + String(today.getDate()).padStart(2, '0');
   var overlay = document.createElement('div');
@@ -18874,7 +19020,12 @@ async function openRefundProcessed(refundId) {
         '<button class="btn btn-ghost btn-sm" onclick="document.getElementById(\'refund-proc-overlay\').remove()">&#x2715;</button></div>' +
       '<div class="modal-body"><div id="refund-proc-error"></div>' +
         '<div class="alert alert-info" style="margin-bottom:16px">Refund <strong>' + escHtml(r.refund_number) + '</strong> for <strong>' + invMoney(r.amount) + '</strong> was approved by ' +
-          escHtml(r.approved_by_name || 'a manager') + '. Issue it in Square, then paste the reference here so the two systems agree.</div>' +
+          escHtml(r.approved_by_name || 'a manager') + '. Use this when the money was given back somewhere other than Nova &mdash; cash, a check, or the Square dashboard. ' +
+          'Paste the reference so the two systems agree.' +
+          (r.can_send_to_square
+            ? '<div style="margin-top:9px">Nova can also send this to Square itself: <a href="#" onclick="document.getElementById(\'refund-proc-overlay\').remove();openRefundInSquare(' + r.id + ');return false;">refund the card now</a>.</div>'
+            : '') +
+        '</div>' +
         '<div class="form-group"><label>' + (r.method === 'check' ? 'Check Number' : r.method === 'cash' ? 'Reference / receipt #' : 'Square Refund ID') + '</label>' +
           '<input type="text" id="rfproc-ref" placeholder="' + (r.method === 'card' ? 'rfnd_...' : 'reference') + '" /></div>' +
         '<div class="form-group"><label>Date Issued</label><input type="date" id="rfproc-date" value="' + iso + '" /></div>' +
@@ -18913,7 +19064,13 @@ async function submitRefundProcessed(id, btn) {
   }
 }
 
-async function voidRefund(id) {
+async function voidRefund(id, moved) {
+  // The server blocks this too. The client check exists so a manager reads the
+  // reason instead of a 409.
+  if (moved) {
+    showToast('This refund already went through Square. A card refund cannot be reversed, so it cannot be voided. To take the money back, charge the customer on a new invoice.', 'error');
+    return;
+  }
   var reason = prompt('Voiding puts this money back on the invoice and leaves the record in place. Why is it being voided?');
   if (reason == null) return;
   reason = String(reason).trim();
@@ -18932,11 +19089,20 @@ function refundHistoryHtml(inv) {
   if (!refunds.length) return '';
   var canApprove = can('approve_refund');
   var isAdmin = ['admin', 'owner'].indexOf(state.user.role) !== -1;
+  // Whether Square can take this refund. The invoice screen already knows which
+  // Square payment settled it, so there is no need to ask the server again.
+  var settledPay = inv.square_payment && inv.square_payment.status === 'reconciled' && inv.square_payment.square_payment_id;
   var rows = refunds.map(function (r) {
+    var moved = refundSquareMoved(r);
+    var canSquare = canApprove && r.status === 'approved' && r.method === 'card' && !moved && !!settledPay && inv.square_enabled !== false;
     var actions = '';
     if (r.status === 'requested' && canApprove) actions += '<button class="btn btn-success btn-sm" onclick="openRefundReview(' + r.id + ')">Review</button>';
-    if (r.status === 'approved' && canApprove) actions += '<button class="btn btn-primary btn-sm" onclick="openRefundProcessed(' + r.id + ')">Record refund</button>';
-    if (['approved', 'processed'].indexOf(r.status) !== -1 && isAdmin) actions += ' <button class="btn btn-secondary btn-sm" onclick="voidRefund(' + r.id + ')">Void</button>';
+    if (canSquare) actions += '<button class="btn btn-danger btn-sm" style="white-space:nowrap" onclick="openRefundInSquare(' + r.id + ')">Refund in Square</button> ';
+    if (r.status === 'approved' && canApprove) {
+      actions += '<button class="btn ' + (canSquare ? 'btn-secondary' : 'btn-primary') + ' btn-sm" style="white-space:nowrap" onclick="openRefundProcessed(' + r.id + ')">' +
+        (canSquare ? 'Record by hand' : 'Record refund') + '</button>';
+    }
+    if (['approved', 'processed'].indexOf(r.status) !== -1 && isAdmin && !moved) actions += ' <button class="btn btn-secondary btn-sm" onclick="voidRefund(' + r.id + ', false)">Void</button>';
     return '<tr>' +
       '<td style="white-space:nowrap">' + escHtml(r.refund_number || '') + '</td>' +
       '<td style="white-space:nowrap">' + formatDate(r.refund_date || r.created_at) + '</td>' +
@@ -18947,7 +19113,10 @@ function refundHistoryHtml(inv) {
       '<td style="white-space:nowrap">' + escHtml(r.requested_by_name || '—') + '</td>' +
       '<td style="white-space:nowrap">' + escHtml(r.approved_by_name || '—') + '</td>' +
       '<td style="white-space:nowrap;font-size:12px">' + escHtml(r.external_ref || '—') + '</td>' +
-      '<td style="white-space:nowrap">' + refundStatusBadge(r.status) + (r.rejection_reason ? ('<div style="font-size:11px;color:var(--text-muted-color)">' + escHtml(r.rejection_reason) + '</div>') : '') + '</td>' +
+      '<td style="white-space:nowrap">' + refundStatusBadge(r.status) +
+        (refundSquareBadge(r) ? ('<div style="margin-top:4px">' + refundSquareBadge(r) + '</div>') : '') +
+        (r.rejection_reason ? ('<div style="font-size:11px;color:var(--text-muted-color)">' + escHtml(r.rejection_reason) + '</div>') : '') +
+        refundSquareErrorHtml(r) + '</td>' +
       '<td style="white-space:nowrap;text-align:right">' + actions + '</td>' +
     '</tr>';
   }).join('');
@@ -19027,8 +19196,16 @@ async function renderRefunds(el) {
             cell(invMoney(r.amount), 'white-space:nowrap;color:var(--danger)'),
             cell(escHtml(r.approved_by_name || '—'), 'white-space:nowrap'),
             cell(formatDate(r.approved_at), 'white-space:nowrap'),
-            cell(escHtml(refundMethodLabel(r.method) + (r.method === 'card' && r.card_last4 ? (' •••• ' + r.card_last4) : ''))),
-            cell(canApprove ? '<button class="btn btn-primary btn-sm" onclick="openRefundProcessed(' + r.id + ')">Record refund</button>' : '', 'text-align:right')
+            cell(escHtml(refundMethodLabel(r.method) + (r.method === 'card' && (r.settled_card_last4 || r.card_last4) ? (' •••• ' + (r.settled_card_last4 || r.card_last4)) : '')) +
+              refundSquareErrorHtml(r)),
+            cell(!canApprove ? ''
+              : ((r.can_send_to_square
+                  ? '<button class="btn btn-danger btn-sm" style="white-space:nowrap" onclick="openRefundInSquare(' + r.id + ')">' +
+                    (String(r.square_status || '').toUpperCase() === 'FAILED' || String(r.square_status || '').toUpperCase() === 'REJECTED' ? 'Retry in Square' : 'Refund in Square') +
+                    '</button> '
+                  : '') +
+                 '<button class="btn ' + (r.can_send_to_square ? 'btn-secondary' : 'btn-primary') + ' btn-sm" style="white-space:nowrap" onclick="openRefundProcessed(' + r.id + ')">' +
+                 (r.can_send_to_square ? 'By hand' : 'Record refund') + '</button>'), 'text-align:right')
           ]);
         }).join('') + '</tbody></table></div>'
       : '';
@@ -19043,8 +19220,9 @@ async function renderRefunds(el) {
             cell(escHtml(refundReasonLabel(r.reason_code))),
             cell(formatDate(r.refund_date || r.processed_at || r.approved_at), 'white-space:nowrap'),
             cell(escHtml(r.external_ref || '—'), 'white-space:nowrap;font-size:12px'),
-            cell(refundStatusBadge(r.status), 'white-space:nowrap'),
-            cell((r.status === 'processed' && isAdmin) ? '<button class="btn btn-secondary btn-sm" onclick="voidRefund(' + r.id + ')">Void</button>' : '', 'text-align:right')
+            cell(refundStatusBadge(r.status) +
+              (refundSquareBadge(r) ? ('<div style="margin-top:4px">' + refundSquareBadge(r) + '</div>') : ''), 'white-space:nowrap'),
+            cell((r.status === 'processed' && isAdmin && !refundSquareMoved(r)) ? '<button class="btn btn-secondary btn-sm" onclick="voidRefund(' + r.id + ', false)">Void</button>' : '', 'text-align:right')
           ]);
         }).join('') + '</tbody></table></div>'
       : '';
@@ -19052,12 +19230,12 @@ async function renderRefunds(el) {
     el.innerHTML =
       '<div class="page-header">' +
         '<div><div class="page-title">Refunds</div>' +
-        '<div class="page-subtitle">' + (canApprove ? 'Approve requests, then record them once they are issued in Square' : 'Refunds you have requested') + '</div></div>' +
+        '<div class="page-subtitle">' + (canApprove ? 'Approve a request, then refund the card in Square or record it by hand' : 'Refunds you have requested') + '</div></div>' +
       '</div>' +
       (canApprove
         ? '<div class="stats-grid">' +
             '<div class="stat-card"><div class="stat-value">' + (summary.pending_count || 0) + '</div><div class="stat-label">Pending approval</div></div>' +
-            '<div class="stat-card"><div class="stat-value" style="color:#60a5fa">' + (summary.awaiting_count || 0) + '</div><div class="stat-label">Approved, not yet in Square</div></div>' +
+            '<div class="stat-card"><div class="stat-value" style="color:#60a5fa">' + (summary.awaiting_count || 0) + '</div><div class="stat-label">Approved, not yet refunded</div></div>' +
             '<div class="stat-card"><div class="stat-value" style="color:var(--danger)">' + invMoney(summary.month_amount) + '</div><div class="stat-label">Refunded this month</div></div>' +
             '<div class="stat-card"><div class="stat-value">' + (summary.month_rate || 0) + '%</div><div class="stat-label">Of invoiced revenue</div></div>' +
           '</div>'

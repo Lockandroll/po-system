@@ -1625,6 +1625,50 @@ async function initDB() {
       'ALTER TABLE invoices ADD COLUMN IF NOT EXISTS refunded_total DECIMAL(10,2) DEFAULT 0;' +
       'ALTER TABLE invoices ADD COLUMN IF NOT EXISTS status_before_refund VARCHAR(20);'
     );
+    // ---- Real refunds pushed to Square ---------------------------------
+    // Everything below tracks a refund that ACTUALLY MOVED MONEY through the
+    // Square Refunds API, as opposed to one somebody typed in by hand. The two
+    // live side by side on purpose: cash, checks, and any refund Square rejects
+    // still go through the manual paste-the-reference path.
+    //
+    // square_status is Square's word, not Nova's: PENDING (accepted, settling
+    // over the next few days), COMPLETED, REJECTED, FAILED, or the local
+    // 'SENDING' while a request is in flight. A refund that Square accepts is
+    // recorded as issued immediately, because the money is gone the moment
+    // Square says PENDING — waiting for COMPLETED would leave the ledger
+    // claiming the customer had not been paid back when they had.
+    //
+    // square_idempotency_key is written BEFORE the call to Square and reused on
+    // every retry, so a double tap, a crashed request, or a browser refresh can
+    // never produce two refunds against one payment.
+    //
+    // square_amount_cents is what Nova actually asked Square for, kept separately
+    // from invoice_refunds.amount so a later edit to the ledger can never make
+    // it look like a different sum was refunded than the one that left the bank.
+    await client.query(
+      'ALTER TABLE invoice_refunds ADD COLUMN IF NOT EXISTS square_payment_id VARCHAR(64);' +
+      'ALTER TABLE invoice_refunds ADD COLUMN IF NOT EXISTS square_refund_id VARCHAR(64);' +
+      'ALTER TABLE invoice_refunds ADD COLUMN IF NOT EXISTS square_order_id VARCHAR(64);' +
+      'ALTER TABLE invoice_refunds ADD COLUMN IF NOT EXISTS square_status VARCHAR(20);' +
+      'ALTER TABLE invoice_refunds ADD COLUMN IF NOT EXISTS square_idempotency_key VARCHAR(45);' +
+      'ALTER TABLE invoice_refunds ADD COLUMN IF NOT EXISTS square_amount_cents INTEGER;' +
+      'ALTER TABLE invoice_refunds ADD COLUMN IF NOT EXISTS square_processing_fee_cents INTEGER;' +
+      'ALTER TABLE invoice_refunds ADD COLUMN IF NOT EXISTS square_sent_at TIMESTAMPTZ;' +
+      'ALTER TABLE invoice_refunds ADD COLUMN IF NOT EXISTS square_settled_at TIMESTAMPTZ;' +
+      'ALTER TABLE invoice_refunds ADD COLUMN IF NOT EXISTS square_sent_by INTEGER;' +
+      'ALTER TABLE invoice_refunds ADD COLUMN IF NOT EXISTS square_error_code VARCHAR(60);' +
+      'ALTER TABLE invoice_refunds ADD COLUMN IF NOT EXISTS square_error TEXT;' +
+      'ALTER TABLE invoice_refunds ADD COLUMN IF NOT EXISTS square_attempts INTEGER DEFAULT 0;' +
+      'ALTER TABLE invoice_refunds ADD COLUMN IF NOT EXISTS raw_refund JSONB;'
+    );
+    // UNIQUE, not just indexed: two Nova rows pointing at one Square refund would
+    // mean the same money was counted against the invoice twice. The partial
+    // index keeps every not-yet-sent refund out of the constraint.
+    await client.query(
+      'CREATE UNIQUE INDEX IF NOT EXISTS idx_invoice_refunds_sq_refund ON invoice_refunds(square_refund_id) WHERE square_refund_id IS NOT NULL;' +
+      'CREATE UNIQUE INDEX IF NOT EXISTS idx_invoice_refunds_sq_idem ON invoice_refunds(square_idempotency_key) WHERE square_idempotency_key IS NOT NULL;' +
+      'CREATE INDEX IF NOT EXISTS idx_invoice_refunds_sq_status ON invoice_refunds(square_status);'
+    );
     // ---- Square payment collection -------------------------------------
     // A tech taps Collect Payment, Square Point of Sale runs the card, and Nova
     // fills in the pay type / last 4 / approval code from Square instead of the
