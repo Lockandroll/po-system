@@ -1658,6 +1658,11 @@ async function initDB() {
       'ALTER TABLE invoice_refunds ADD COLUMN IF NOT EXISTS square_sent_by INTEGER;' +
       'ALTER TABLE invoice_refunds ADD COLUMN IF NOT EXISTS square_error_code VARCHAR(60);' +
       'ALTER TABLE invoice_refunds ADD COLUMN IF NOT EXISTS square_error TEXT;' +
+      // Square publishes ONE receipt per payment and shows the refund on it, so
+      // this is the PAYMENT's receipt_url, not a refund-specific one. Stored on
+      // the refund row anyway so the link survives even if the payment row is
+      // later scrubbed, and so nothing has to guess a URL shape.
+      'ALTER TABLE invoice_refunds ADD COLUMN IF NOT EXISTS square_receipt_url TEXT;' +
       'ALTER TABLE invoice_refunds ADD COLUMN IF NOT EXISTS square_attempts INTEGER DEFAULT 0;' +
       'ALTER TABLE invoice_refunds ADD COLUMN IF NOT EXISTS raw_refund JSONB;'
     );

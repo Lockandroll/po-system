@@ -117,6 +117,10 @@ var REFUND_SELECT =
   '       i.labor_amount, i.parts_amount, i.tax_amount, i.tip_amount, i.refunded_total, i.status AS invoice_status, ' +
   '       req.name AS requested_by_name, app.name AS approved_by_name, proc.name AS processed_by_name, ' +
   '       sp.square_payment_id AS settled_square_payment_id, sp.card_last4 AS settled_card_last4, ' +
+  // Square puts the refund on the PAYMENT's receipt, so fall back to the
+  // payment row when the refund did not capture its own copy (webhook-settled
+  // rows, and every refund issued before square_receipt_url existed).
+  '       COALESCE(r.square_receipt_url, sp.receipt_url) AS square_receipt_url_eff, ' +
   '       sp.total_cents AS settled_total_cents, sp.tip_cents AS settled_tip_cents ' +
   'FROM invoice_refunds r ' +
   'JOIN invoices i ON r.invoice_id = i.id ' +
@@ -127,7 +131,7 @@ var REFUND_SELECT =
   // whether the screen offers "Refund in Square" at all — showing that button on
   // an invoice that was never paid through Square just produces a dead end.
   'LEFT JOIN LATERAL (' +
-  '  SELECT square_payment_id, card_last4, total_cents, tip_cents FROM invoice_payments ' +
+  '  SELECT square_payment_id, card_last4, total_cents, tip_cents, receipt_url FROM invoice_payments ' +
   "  WHERE invoice_id = i.id AND status = 'reconciled' AND square_payment_id IS NOT NULL " +
   '  ORDER BY id DESC LIMIT 1' +
   ') sp ON true ';
@@ -1010,6 +1014,12 @@ router.get('/:id/square-status', requireAuth, requirePermission('view_invoices')
     if (!before) return res.status(404).json({ error: 'Refund not found' });
     if (before.square_refund_id && String(before.square_status).toUpperCase() === 'PENDING') {
       try { await square.refreshRefund(rid); } catch (e) { /* Square being down is not an error here */ }
+    } else if (!before.square_refund_id && String(before.square_status || '').toUpperCase() === 'SENDING') {
+      // Stuck: Square was asked, the answer never got written, and the webhook
+      // never landed either. This used to require a manual retry from a manager
+      // while the ledger claimed the customer had not been paid. Read-only
+      // against Square — it adopts an existing refund, it can never issue one.
+      try { await square.recoverStuckRefund(rid); } catch (e) { /* same */ }
     }
     const after = (await pool.query(REFUND_SELECT + 'WHERE r.id = $1', [rid])).rows[0];
     res.json(decorate(after));

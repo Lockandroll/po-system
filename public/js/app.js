@@ -19437,6 +19437,15 @@ function refundSquareMoved(r) {
   return !!(r && r.square_refund_id && ['PENDING', 'COMPLETED'].indexOf(String(r.square_status || '').toUpperCase()) !== -1);
 }
 
+// Square publishes one receipt per PAYMENT and lists the refund on it, so this
+// link is the payment's receipt. Same wording as the payment card's button.
+function refundReceiptLinkHtml(r) {
+  var url = (r && (r.square_receipt_url_eff || r.square_receipt_url)) || '';
+  if (!url || !refundSquareMoved(r)) return '';
+  return '<a class="btn btn-secondary btn-sm" href="' + escHtml(url) + '" target="_blank" rel="noopener"' +
+    ' title="Opens the Square receipt for this refund">Square receipt</a>';
+}
+
 function refundSquareBadge(r) {
   var s = String((r && r.square_status) || '').toUpperCase();
   if (!s) return '';
@@ -19810,6 +19819,7 @@ function refundHistoryHtml(inv) {
         (canSquare ? 'Record by hand' : 'Record refund') + '</button>';
     }
     if (['approved', 'processed'].indexOf(r.status) !== -1 && isAdmin && !moved) actions += ' <button class="btn btn-secondary btn-sm" onclick="voidRefund(' + r.id + ', false)">Void</button>';
+    if (refundReceiptLinkHtml(r)) actions += ' ' + refundReceiptLinkHtml(r);
     return '<tr>' +
       '<td style="white-space:nowrap">' + escHtml(r.refund_number || '') + '</td>' +
       '<td style="white-space:nowrap">' + formatDate(r.refund_date || r.created_at) + '</td>' +
@@ -19929,7 +19939,8 @@ async function renderRefunds(el) {
             cell(escHtml(r.external_ref || '—'), 'white-space:nowrap;font-size:12px'),
             cell(refundStatusBadge(r.status) +
               (refundSquareBadge(r) ? ('<div style="margin-top:4px">' + refundSquareBadge(r) + '</div>') : ''), 'white-space:nowrap'),
-            cell((r.status === 'processed' && isAdmin && !refundSquareMoved(r)) ? '<button class="btn btn-secondary btn-sm" onclick="voidRefund(' + r.id + ', false)">Void</button>' : '', 'text-align:right')
+            cell(((r.status === 'processed' && isAdmin && !refundSquareMoved(r)) ? '<button class="btn btn-secondary btn-sm" onclick="voidRefund(' + r.id + ', false)">Void</button>' : '') +
+              (refundReceiptLinkHtml(r) ? ' ' + refundReceiptLinkHtml(r) : ''), 'text-align:right')
           ]);
         }).join('') + '</tbody></table></div>'
       : '';

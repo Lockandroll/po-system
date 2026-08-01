@@ -937,9 +937,11 @@ async function issueRefund(refundRowId, actorUserId) {
       "UPDATE invoice_refunds SET status = 'processed', square_refund_id = $1::text, square_status = $2::text, " +
       "square_processing_fee_cents = $3, square_settled_at = CASE WHEN $2::text = 'COMPLETED' THEN NOW() ELSE NULL END, " +
       'external_ref = $1::text, processed_by = COALESCE($4, approved_by), processed_at = NOW(), ' +
-      'refund_date = CURRENT_DATE, raw_refund = $5, square_error = NULL, square_error_code = NULL, updated_at = NOW() ' +
+      // Square shows the refund on the PAYMENT's receipt (same receipt number),
+      // so this is payment.receipt_url. There is no separate refund receipt.
+      'refund_date = CURRENT_DATE, raw_refund = $5, square_receipt_url = $7::text, square_error = NULL, square_error_code = NULL, updated_at = NOW() ' +
       "WHERE id = $6 AND status = 'approved' RETURNING *",
-      [refund.id, sqStatus, feeCents, actorUserId || null, refund, claimed.id]
+      [refund.id, sqStatus, feeCents, actorUserId || null, refund, claimed.id, payment.receipt_url || null]
     );
   } catch (e) {
     writeError = e;
@@ -960,6 +962,7 @@ async function issueRefund(refundRowId, actorUserId) {
         square_refund_id: refund.id,
         square_status: sqStatus,
         raw_refund: refund,
+        square_receipt_url: payment.receipt_url || null,
         square_error: why
       });
     } catch (e) {
@@ -1109,6 +1112,37 @@ async function settleRefund(squareRefund) {
 
 // Ask Square directly what a refund is doing. Used by the SPA poll so a manager
 // watching the screen does not have to wait for a webhook to arrive.
+// A row left in SENDING with no refund id is a refund Square DID take and Nova
+// never managed to write down. Until this existed, nothing healed it on its own:
+// the webhook is the only other route home, and if that never lands the ledger
+// sits there claiming a customer was not paid back when they were. Ask Square
+// what it actually did with the payment and adopt it.
+//
+// Read-only against Square. It can never ISSUE a refund, so it is safe to call
+// from a plain GET that any viewer can trigger.
+async function recoverStuckRefund(refundRowId) {
+  const r = await pool.query('SELECT * FROM invoice_refunds WHERE id = $1', [refundRowId]);
+  const row = r.rows[0];
+  if (!row) return { ok: false, reason: 'not_found' };
+  if (row.square_refund_id) return { ok: false, reason: 'already_recorded' };
+  if (String(row.square_status || '').toUpperCase() !== 'SENDING') return { ok: false, reason: 'not_stuck' };
+  if (!row.square_payment_id) return { ok: false, reason: 'no_payment' };
+  const amountCents = Number(row.square_amount_cents) || Math.round((Number(row.amount) || 0) * 100);
+  if (!(amountCents > 0)) return { ok: false, reason: 'zero' };
+  try {
+    const got = await sq('GET', '/v2/payments/' + encodeURIComponent(row.square_payment_id));
+    const payment = got && got.payment;
+    if (!payment) return { ok: false, reason: 'no_payment' };
+    const found = await findUnrecordedRefund(payment, amountCents);
+    if (!found) return { ok: false, reason: 'nothing_to_adopt' };
+    console.log('Recovering Square refund ' + found.id + ' onto refund row ' + row.id +
+      ': it went out on an earlier attempt that Nova never recorded.');
+    return await settleRefund(found);
+  } catch (e) {
+    return { ok: false, reason: 'lookup_failed', message: e.message };
+  }
+}
+
 async function refreshRefund(refundRowId) {
   const r = await pool.query('SELECT * FROM invoice_refunds WHERE id = $1', [refundRowId]);
   const row = r.rows[0];
@@ -1130,6 +1164,7 @@ module.exports = {
   issueRefund: issueRefund,
   settleRefund: settleRefund,
   refreshRefund: refreshRefund,
+  recoverStuckRefund: recoverStuckRefund,
   refundErrorMessage: refundErrorMessage,
   refundFailed: refundFailed,
   refundLive: refundLive,
