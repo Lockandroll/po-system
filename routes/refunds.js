@@ -213,28 +213,34 @@ function autoAllocate(inv, amount) {
   var parts = money(inv.parts_amount);
   var tax = money(inv.tax_amount);
   var tip = money(inv.tip_amount);
-  var grand = labor + parts + tax + tip;
+  // The card surcharge is a fifth bucket. It has to be here or the denominator
+  // is smaller than what was actually charged, and a full refund would then
+  // allocate MORE labor and tax than the invoice ever had — overstating refunded
+  // SALES, which is the figure that nets against Pulsar and the tax remittance.
+  var surcharge = money(inv.surcharge_amount);
+  var grand = labor + parts + tax + tip + surcharge;
   var amt = money(amount);
-  if (grand <= 0) return { labor: amt, parts: 0, tax: 0, tip: 0 };
+  if (grand <= 0) return { labor: amt, parts: 0, tax: 0, tip: 0, surcharge: 0 };
   var share = amt / grand;
   var a = {
     labor: money(labor * share),
     parts: money(parts * share),
     tax: money(tax * share),
-    tip: money(tip * share)
+    tip: money(tip * share),
+    surcharge: money(surcharge * share)
   };
   // Push any rounding crumb onto the largest bucket so the parts always add up.
-  var diff = money(amt - (a.labor + a.parts + a.tax + a.tip));
+  var diff = money(amt - (a.labor + a.parts + a.tax + a.tip + a.surcharge));
   if (diff !== 0) {
     var biggest = 'labor';
-    ['parts', 'tax', 'tip'].forEach(function (k) { if (a[k] > a[biggest]) biggest = k; });
+    ['parts', 'tax', 'tip', 'surcharge'].forEach(function (k) { if (a[k] > a[biggest]) biggest = k; });
     a[biggest] = money(a[biggest] + diff);
   }
   return a;
 }
 
 function pickAllocation(body, inv, amount) {
-  var hasManual = ['labor_refunded', 'parts_refunded', 'tax_refunded', 'tip_refunded'].some(function (k) {
+  var hasManual = ['labor_refunded', 'parts_refunded', 'tax_refunded', 'tip_refunded', 'surcharge_refunded'].some(function (k) {
     return body[k] !== undefined && body[k] !== null && body[k] !== '';
   });
   if (!hasManual) return autoAllocate(inv, amount);
@@ -242,7 +248,8 @@ function pickAllocation(body, inv, amount) {
     labor: money(body.labor_refunded),
     parts: money(body.parts_refunded),
     tax: money(body.tax_refunded),
-    tip: money(body.tip_refunded)
+    tip: money(body.tip_refunded),
+    surcharge: money(body.surcharge_refunded)
   };
 }
 
@@ -287,7 +294,8 @@ async function invoiceLinesWithRefunded(client, invoiceId, excludeRefundId) {
 async function remainingByBucket(client, inv, excludeRefundId) {
   var sql =
     'SELECT COALESCE(SUM(labor_refunded), 0) AS labor, COALESCE(SUM(parts_refunded), 0) AS parts, ' +
-    'COALESCE(SUM(tax_refunded), 0) AS tax, COALESCE(SUM(tip_refunded), 0) AS tip ' +
+    'COALESCE(SUM(tax_refunded), 0) AS tax, COALESCE(SUM(tip_refunded), 0) AS tip, ' +
+    'COALESCE(SUM(surcharge_refunded), 0) AS surcharge ' +
     "FROM invoice_refunds WHERE invoice_id = $1 AND status IN ('requested', 'approved', 'processed')";
   var params = [inv.id];
   if (excludeRefundId) { sql += ' AND id <> $2'; params.push(excludeRefundId); }
@@ -296,7 +304,8 @@ async function remainingByBucket(client, inv, excludeRefundId) {
     labor: money(money(inv.labor_amount) - money(used.labor)),
     parts: money(money(inv.parts_amount) - money(used.parts)),
     tax: money(money(inv.tax_amount) - money(used.tax)),
-    tip: money(money(inv.tip_amount) - money(used.tip))
+    tip: money(money(inv.tip_amount) - money(used.tip)),
+    surcharge: money(money(inv.surcharge_amount) - money(used.surcharge))
   };
 }
 
@@ -366,7 +375,9 @@ async function buildLineRefund(client, inv, requested, excludeRefundId) {
 
   return {
     lines: out,
-    alloc: { labor: money(labor), parts: money(parts), tax: tax, tip: 0 },
+    // Line mode refunds specific line items, so it never returns the tip or the
+    // card surcharge. Stated explicitly so alloc.surcharge is never undefined.
+    alloc: { labor: money(labor), parts: money(parts), tax: tax, tip: 0, surcharge: 0 },
     amount: money(money(labor) + money(parts) + tax)
   };
 }
@@ -377,11 +388,13 @@ async function buildCategoryRefund(client, inv, body, excludeRefundId) {
   var labor = money(body.labor_refunded);
   var parts = money(body.parts_refunded);
   var tip = money(body.tip_refunded);
-  if (labor < 0 || parts < 0 || tip < 0) return { error: 'A refund amount cannot be negative.' };
-  if (labor + parts + tip <= 0) return { error: 'Enter a labor amount, a parts amount, or both.' };
+  var surcharge = money(body.surcharge_refunded);
+  if (labor < 0 || parts < 0 || tip < 0 || surcharge < 0) return { error: 'A refund amount cannot be negative.' };
+  if (labor + parts + tip + surcharge <= 0) return { error: 'Enter a labor amount, a parts amount, or both.' };
   if (labor > room.labor + 0.005) return { error: 'Only ' + fmt(room.labor) + ' of labor is left to refund on this invoice.' };
   if (parts > room.parts + 0.005) return { error: 'Only ' + fmt(room.parts) + ' of parts is left to refund on this invoice.' };
   if (tip > room.tip + 0.005) return { error: 'Only ' + fmt(room.tip) + ' of the tip is left to refund.' };
+  if (surcharge > room.surcharge + 0.005) return { error: 'Only ' + fmt(room.surcharge) + ' of the card surcharge is left to refund.' };
 
   const lines = await invoiceLinesWithRefunded(client, inv.id, excludeRefundId);
   const share = taxableShares(lines);
@@ -391,8 +404,8 @@ async function buildCategoryRefund(client, inv, body, excludeRefundId) {
 
   return {
     lines: [],
-    alloc: { labor: labor, parts: parts, tax: tax, tip: tip },
-    amount: money(labor + parts + tax + tip),
+    alloc: { labor: labor, parts: parts, tax: tax, tip: tip, surcharge: surcharge },
+    amount: money(labor + parts + tax + tip + surcharge),
     restock_parts: body.restock_parts === true
   };
 }
@@ -612,10 +625,10 @@ router.post('/', requireAuth, requirePermission('request_refund'), async (req, r
 
     const refundNumber = await nextRefundNumber(client, invoiceId, inv.invoice_number);
     const ins = await client.query(
-      'INSERT INTO invoice_refunds (invoice_id, refund_number, amount, labor_refunded, parts_refunded, tax_refunded, tip_refunded, ' +
+      'INSERT INTO invoice_refunds (invoice_id, refund_number, amount, labor_refunded, parts_refunded, tax_refunded, tip_refunded, surcharge_refunded, ' +
       'method, reason_code, reason_notes, mode, part_returned, status, requested_by, requested_at, refund_date) ' +
-      "VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,'requested',$13,NOW(),CURRENT_DATE) RETURNING *",
-      [invoiceId, refundNumber, amount, alloc.labor, alloc.parts, alloc.tax, alloc.tip, method, reason, notes || null, built.mode, partReturned, req.user.id]
+      "VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,'requested',$14,NOW(),CURRENT_DATE) RETURNING *",
+      [invoiceId, refundNumber, amount, alloc.labor, alloc.parts, alloc.tax, alloc.tip, alloc.surcharge || 0, method, reason, notes || null, built.mode, partReturned, req.user.id]
     );
     await insertRefundLines(client, ins.rows[0].id, built.lines);
     await client.query('COMMIT');
@@ -713,14 +726,14 @@ router.post('/:id/approve', requireAuth, requirePermission('approve_refund'), as
       alloc = pickAllocation(b, inv, amount);
       // Amount changed but the approver did not re-split it — re-derive so the
       // buckets keep adding up to the approved figure.
-      var allocSum = money(alloc.labor + alloc.parts + alloc.tax + alloc.tip);
+      var allocSum = money(alloc.labor + alloc.parts + alloc.tax + alloc.tip + (alloc.surcharge || 0));
       if (Math.abs(allocSum - amount) > 0.005) alloc = autoAllocate(inv, amount);
       if (b.part_returned !== undefined) partReturned = b.part_returned === true;
     } else {
       // Approved exactly as requested (a line or category refund the approver
       // did not touch). The stored allocation is already validated.
       amount = money(r.amount);
-      alloc = { labor: money(r.labor_refunded), parts: money(r.parts_refunded), tax: money(r.tax_refunded), tip: money(r.tip_refunded) };
+      alloc = { labor: money(r.labor_refunded), parts: money(r.parts_refunded), tax: money(r.tax_refunded), tip: money(r.tip_refunded), surcharge: money(r.surcharge_refunded) };
       if (mode === 'category' && b.restock_parts !== undefined) partReturned = b.restock_parts === true;
     }
 
@@ -744,9 +757,9 @@ router.post('/:id/approve', requireAuth, requirePermission('approve_refund'), as
 
     const upd = await client.query(
       "UPDATE invoice_refunds SET status = 'approved', amount = $1, labor_refunded = $2, parts_refunded = $3, tax_refunded = $4, " +
-      'tip_refunded = $5, part_returned = $6, approver_note = $7, approved_by = $8, approved_at = NOW(), updated_at = NOW() ' +
+      'tip_refunded = $5, surcharge_refunded = $10, part_returned = $6, approver_note = $7, approved_by = $8, approved_at = NOW(), updated_at = NOW() ' +
       "WHERE id = $9 AND status = 'requested' RETURNING *",
-      [amount, alloc.labor, alloc.parts, alloc.tax, alloc.tip, partReturned, (b.approver_note || '').trim() || null, req.user.id, r.id]
+      [amount, alloc.labor, alloc.parts, alloc.tax, alloc.tip, partReturned, (b.approver_note || '').trim() || null, req.user.id, r.id, alloc.surcharge || 0]
     );
     if (!upd.rowCount) {
       await client.query('ROLLBACK');

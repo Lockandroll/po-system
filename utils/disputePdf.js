@@ -156,6 +156,14 @@ function buildDisputePdf(inv, items, evidence, opts) {
       labelVal('Invoice #', invNo);
       labelVal('Invoice date', fmtDate(inv.invoice_date || inv.created_at));
       labelVal('Amount charged', money(inv.grand_total));
+      // Break the surcharge out explicitly. "Amount charged" alone invites the
+      // cardholder's argument that the total does not match the services listed;
+      // naming the disclosed surcharge answers it inside the packet.
+      if (parseFloat(inv.surcharge_amount)) {
+        var _dRate = parseFloat(inv.surcharge_rate) || 0;
+        labelVal('Card surcharge included', money(inv.surcharge_amount) +
+          (_dRate > 0 ? ' (' + _dRate + '% disclosed before signature)' : ''));
+      }
       if (payLine) labelVal('Payment', payLine);
       if (inv.approval_code) labelVal('Approval / auth code', inv.approval_code);
       labelVal('Packet prepared', fmtDateTime(new Date()));

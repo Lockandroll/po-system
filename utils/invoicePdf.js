@@ -219,6 +219,13 @@ function buildInvoicePdf(inv, items, photos, opts) {
       totRow('Parts Amount', money(inv.parts_amount));
       totRow('Sub-Total', money(inv.subtotal));
       totRow('Sales Tax', money(inv.tax_amount));
+      // The surcharge must be itemised on the customer copy. Card network rules
+      // require it be disclosed as its own amount, and a chargeback that argues
+      // "I was charged more than the invoice said" is won or lost on this line.
+      if (parseFloat(inv.surcharge_amount)) {
+        var _sRate = parseFloat(inv.surcharge_rate) || 0;
+        totRow('Card Surcharge' + (_sRate > 0 ? ' (' + _sRate + '%)' : ''), money(inv.surcharge_amount));
+      }
       if (parseFloat(inv.tip_amount)) totRow('Tip', money(inv.tip_amount));
       hr(doc.y + 1, '#111111'); doc.y += 4;
       totRow('Grand Total', money(inv.grand_total), true);

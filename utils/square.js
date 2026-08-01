@@ -387,7 +387,7 @@ async function reconcilePayment(paymentRowId) {
   } catch (e) { feeCents = 0; }
 
   const invRes = await pool.query(
-    'SELECT id, invoice_number, status, subtotal, tax_amount, tip_amount, grand_total, authorized_total, locksmith_id, followup_task_id FROM invoices WHERE id = $1',
+    'SELECT id, invoice_number, status, subtotal, tax_amount, surcharge_amount, tip_amount, grand_total, authorized_total, locksmith_id, followup_task_id FROM invoices WHERE id = $1',
     [row.invoice_id]
   );
   const inv = invRes.rows[0];
@@ -423,7 +423,15 @@ async function reconcilePayment(paymentRowId) {
   const payTypes = await allowedPayTypes();
   const payType = brandToPayType(card.card_brand, payTypes);
   const newTip = tipCents / 100;
-  const newGrand = (Number(inv.subtotal) || 0) + (Number(inv.tax_amount) || 0) + newTip;
+  // WARNING: surcharge_amount MUST be in this sum. It is a real part of what the
+  // card was charged, it lives in its own column and not in subtotal (so it stays
+  // out of Pulsar and the royalty base), and leaving it out here silently rewrites
+  // grand_total DOWN by the surcharge on every single Square payment. The amount
+  // check above would still pass, because it compares against grand_total before
+  // this line runs — so the invoice would settle as paid, look right, and disagree
+  // with the card by 2.5% in the one column the dispute packet reads.
+  const newGrand = (Number(inv.subtotal) || 0) + (Number(inv.tax_amount) || 0) +
+    (Number(inv.surcharge_amount) || 0) + newTip;
 
   // Refuse if this invoice is already settled against a DIFFERENT Square payment.
   const otherRes = await pool.query(

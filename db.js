@@ -1932,6 +1932,54 @@ async function initDB() {
         ])]
       );
     }
+    // ---- Card surcharge --------------------------------------------------
+    // The customer picks Cash or Card at close-out. Card adds a percentage of
+    // (subtotal + sales tax) as a SEPARATE column.
+    //
+    // WARNING: surcharge_amount must NEVER be folded into subtotal, labor_amount,
+    // parts_amount or tax_amount, and must never become a line item. Those are
+    // what a human reads off the close-out card and types into Pulsar, and the
+    // royalty CSV is downloaded FROM Pulsar. A surcharge that leaks into any of
+    // them pays a 5% royalty + 1% ad fee on money that is not sales. It is also
+    // deliberately outside the taxable base, so sales tax never moves.
+    //
+    //   grand_total = subtotal + tax_amount + surcharge_amount + tip_amount
+    //
+    // surcharge_rate is stored PER INVOICE so an old invoice keeps the rate it
+    // closed out under even after the company setting changes.
+    await client.query(
+      'ALTER TABLE invoices ADD COLUMN IF NOT EXISTS surcharge_amount DECIMAL(10,2) DEFAULT 0;' +
+      'ALTER TABLE invoices ADD COLUMN IF NOT EXISTS surcharge_rate DECIMAL(5,2) DEFAULT 0;' +
+      // 'cash' | 'card' | NULL. NULL means nobody has asked yet, which is what the
+      // close-out popup keys off. It is NOT the same answer as 'cash'.
+      'ALTER TABLE invoices ADD COLUMN IF NOT EXISTS pay_method VARCHAR(10);'
+    );
+    // Every invoice that already exists was closed out before surcharging, so it
+    // carries none. Safe to re-run; only ever touches NULLs.
+    await client.query(
+      'UPDATE invoices SET surcharge_amount = 0 WHERE surcharge_amount IS NULL;' +
+      'UPDATE invoices SET surcharge_rate = 0 WHERE surcharge_rate IS NULL;'
+    );
+    // A refund needs a fifth bucket. Without it, refunding a surcharged invoice
+    // in full spreads the surcharge across labor/parts/tax and overstates
+    // refunded SALES — the very figure that nets against Pulsar and the tax
+    // remittance. NULL-safe: every existing refund carries 0.
+    await client.query(
+      'ALTER TABLE invoice_refunds ADD COLUMN IF NOT EXISTS surcharge_refunded DECIMAL(10,2) DEFAULT 0;'
+    );
+    await client.query('UPDATE invoice_refunds SET surcharge_refunded = 0 WHERE surcharge_refunded IS NULL;');
+    // One company-wide rate, set under Invoice Setup. 2.5 matches what Square's
+    // own built-in surcharge charges on this merchant.
+    const _invSurRate = await client.query("SELECT value FROM settings WHERE key = 'invoice_surcharge_rate'");
+    if (!_invSurRate.rows.length) {
+      await client.query("INSERT INTO settings (key, value, updated_at) VALUES ('invoice_surcharge_rate', '2.5', NOW()) ON CONFLICT (key) DO NOTHING");
+    }
+    // Master switch, default OFF. Off means the popup never appears and every
+    // invoice computes a zero surcharge, which is the safe state to fall back to.
+    const _invSurOn = await client.query("SELECT value FROM settings WHERE key = 'invoice_surcharge_enabled'");
+    if (!_invSurOn.rows.length) {
+      await client.query("INSERT INTO settings (key, value, updated_at) VALUES ('invoice_surcharge_enabled', 'false', NOW()) ON CONFLICT (key) DO NOTHING");
+    }
     // Editable pay-type list for invoices
     const _invPay = await client.query("SELECT value FROM settings WHERE key = 'invoice_pay_types'");
     if (!_invPay.rows.length) {

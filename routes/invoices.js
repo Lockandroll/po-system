@@ -111,7 +111,31 @@ async function generateInvoiceNumber(cityCode) {
   return maxn != null ? (maxn + 1) : start;
 }
 
-function computeTotals(line_items, tax_rate, tip_amount, tax_exempt) {
+// ---------------------------------------------------------------------------
+// Card surcharge.
+//
+// The customer picks Cash or Card at close-out. Card adds a percentage of
+// (subtotal + sales tax).
+//
+// WARNING: the surcharge is deliberately NOT a line item and never enters
+// labor, parts, subtotal or the taxable base. Those are the figures a human
+// reads off the close-out card and types into Pulsar, and the royalty CSV is
+// downloaded FROM Pulsar. A surcharge that leaks into any of them pays a
+// royalty and an ad fee on money that is not sales. Keeping it out of the
+// taxable base is also what guarantees sales tax does not move on a Card job.
+//
+// Rounded to the cent HERE and nowhere else, so the number the customer signs,
+// the number sent to Square, and the number stored are byte-identical.
+function computeSurcharge(pay_method, subtotal, tax_amount, surcharge_rate) {
+  if (String(pay_method || '') !== 'card') return 0;
+  const rate = parseFloat(surcharge_rate) || 0;
+  if (!(rate > 0)) return 0;
+  const base = (parseFloat(subtotal) || 0) + (parseFloat(tax_amount) || 0);
+  if (!(base > 0)) return 0;
+  return Math.round(base * rate) / 100;
+}
+
+function computeTotals(line_items, tax_rate, tip_amount, tax_exempt, pay_method, surcharge_rate) {
   const rate = parseFloat(tax_rate) || 0;
   let labor = 0, parts = 0, taxable = 0, parts_cost = 0, cogs_incomplete = false;
   (line_items || []).forEach(function (it) {
@@ -133,11 +157,46 @@ function computeTotals(line_items, tax_rate, tip_amount, tax_exempt) {
   const subtotal = labor + parts;
   const tax_amount = tax_exempt ? 0 : (taxable * rate / 100);
   const tip = parseFloat(tip_amount) || 0;
-  const grand_total = subtotal + tax_amount + tip;
+  // Surcharge sits between tax and tip: after tax because it is charged on the
+  // taxed total, before tip because a tip is added later inside Square and must
+  // not be surcharged.
+  const surcharge = computeSurcharge(pay_method, subtotal, tax_amount, surcharge_rate);
+  const grand_total = subtotal + tax_amount + surcharge + tip;
   return {
     labor: labor, parts: parts, subtotal: subtotal, tax_amount: tax_amount, tip: tip, grand_total: grand_total,
-    parts_cost: parts_cost, cogs_incomplete: cogs_incomplete
+    surcharge: surcharge, surcharge_rate: (surcharge > 0 ? (parseFloat(surcharge_rate) || 0) : 0),
+    parts_cost: parts_cost, cogs_incomplete: cogs_incomplete,
+    // What a human types into Pulsar. Sales only: no surcharge, no tip.
+    pulsar_total: subtotal + tax_amount
   };
+}
+
+// The company-wide surcharge rate, or 0 when the master switch is off. Read
+// straight from settings on every save rather than cached, because a stale rate
+// silently charges the wrong amount and nobody would notice.
+async function surchargeRate() {
+  try {
+    const r = await pool.query(
+      "SELECT key, value FROM settings WHERE key IN ('invoice_surcharge_enabled', 'invoice_surcharge_rate')"
+    );
+    const map = {};
+    r.rows.forEach(function (row) { map[row.key] = row.value; });
+    if (String(map.invoice_surcharge_enabled || '') !== 'true') return 0;
+    const rate = parseFloat(map.invoice_surcharge_rate);
+    // Clamped to the network ceiling. A typo of 25 must not charge 25%.
+    if (!(rate > 0)) return 0;
+    return Math.min(rate, 3);
+  } catch (e) {
+    // A settings read that fails must never surcharge. Zero is the safe answer.
+    return 0;
+  }
+}
+
+// 'cash' | 'card' | null. Anything else is treated as "not asked yet".
+function normalizePayMethod(v) {
+  const s = String(v == null ? '' : v).trim().toLowerCase();
+  if (s === 'cash' || s === 'card') return s;
+  return null;
 }
 
 // ---------------------------------------------------------------------------
@@ -296,7 +355,15 @@ router.get('/config', requireAuth, requirePermission('view_invoices'), async (re
     try { pulsar_pay_map = JSON.parse(await getSetting('pulsar_pay_type_map', '{}')) || {}; } catch (e) { pulsar_pay_map = {}; }
     if (typeof pulsar_pay_map !== 'object' || Array.isArray(pulsar_pay_map)) pulsar_pay_map = {};
     const hc = await pool.query('SELECT home_city FROM users WHERE id = $1', [req.user.id]);
-    res.json({ default_agreement: agreement, pay_types: pay_types, pulsar_pay_map: pulsar_pay_map, home_city: (hc.rows[0] && hc.rows[0].home_city) || null });
+    // The surcharge rate is shipped to the client for DISPLAY only. Every stored
+    // figure is computed on the server; a client that posts its own number is
+    // ignored. See computeSurcharge.
+    const sur_rate = await surchargeRate();
+    res.json({
+      default_agreement: agreement, pay_types: pay_types, pulsar_pay_map: pulsar_pay_map,
+      home_city: (hc.rows[0] && hc.rows[0].home_city) || null,
+      surcharge_enabled: sur_rate > 0, surcharge_rate: sur_rate
+    });
   } catch (err) {
     res.status(500).json({ error: 'Failed to fetch invoice config' });
   }
@@ -313,6 +380,86 @@ router.post('/pay-types', requireAuth, requirePermission('manage_invoice_setup')
     await pool.query("INSERT INTO settings (key, value, updated_at) VALUES ('invoice_pay_types', $1, NOW()) ON CONFLICT (key) DO UPDATE SET value = $1, updated_at = NOW()", [JSON.stringify(clean)]);
     res.json({ ok: true, pay_types: clean });
   } catch (err) { console.error(err); res.status(500).json({ error: 'Failed to save pay types' }); }
+});
+
+// Set Cash or Card on one invoice and re-price it.
+//
+// This exists so the close-out popup does not have to round-trip the whole
+// invoice form just to record the customer's answer. It touches ONLY
+// pay_method, surcharge_amount, surcharge_rate and grand_total, and it rebuilds
+// them from the invoice's own persisted line items rather than anything in the
+// request body, so it can never move labor, parts, subtotal, tax or the tip.
+//
+// Refused once the invoice is locked: changing the surcharge after the money is
+// taken would rewrite what the customer was charged. Issue a refund instead.
+router.post('/:id/pay-method', requireAuth, requirePermission('edit_invoice'), async (req, res) => {
+  const method = normalizePayMethod((req.body || {}).pay_method);
+  if (!method) return res.status(400).json({ error: 'Pick Cash or Card.' });
+  try {
+    const r = await pool.query('SELECT * FROM invoices WHERE id = $1', [req.params.id]);
+    const inv = r.rows[0];
+    if (!inv) return res.status(404).json({ error: 'Invoice not found' });
+    if (!canSeeAll(req.user.role) && inv.locksmith_id !== req.user.id) {
+      return res.status(403).json({ error: 'Access denied' });
+    }
+    if (LOCKED_STATUSES.indexOf(inv.status) !== -1) {
+      return res.status(409).json({
+        error: 'Invoice #' + inv.invoice_number + ' is already settled, so how it was paid can no longer change the amount. Use Issue Refund.'
+      });
+    }
+    const _existingRate = parseFloat(inv.surcharge_rate) || 0;
+    const sur_rate = _existingRate > 0 ? _existingRate : await surchargeRate();
+    const items = (await pool.query('SELECT * FROM invoice_line_items WHERE invoice_id = $1', [inv.id])).rows;
+    const t = computeTotals(items, inv.tax_rate, inv.tip_amount, inv.tax_exempt === true, method, sur_rate);
+    const upd = await pool.query(
+      'UPDATE invoices SET pay_method = $1, surcharge_amount = $2, surcharge_rate = $3, grand_total = $4, updated_at = NOW() ' +
+      'WHERE id = $5 RETURNING *',
+      [method, t.surcharge, t.surcharge_rate, t.grand_total, inv.id]
+    );
+    try {
+      await logAudit({
+        entity_type: 'invoice', entity_id: inv.id, entity_number: String(inv.invoice_number),
+        action: 'updated', user_id: req.user.id, user_name: req.user.name,
+        details: { pay_method: method, surcharge: t.surcharge, grand_total: t.grand_total }
+      });
+    } catch (e) {}
+    res.json(customerSafeInvoice(upd.rows[0]));
+  } catch (err) { console.error(err); res.status(500).json({ error: 'Failed to save the payment method' }); }
+});
+
+// Save the card surcharge policy (managers/admin). One company-wide rate.
+//
+// The rate is CLAMPED to 0.01-3. Above 3 breaks the card network cap; a zero or
+// negative rate would read as "on but free", which is a confusing state, so
+// turning it off is done with the enabled flag and nothing else.
+router.post('/surcharge', requireAuth, requirePermission('manage_invoice_setup'), async (req, res) => {
+  const b = req.body || {};
+  const enabled = b.enabled === true || b.enabled === 'true';
+  let rate = parseFloat(b.rate);
+  if (enabled) {
+    if (!(rate > 0)) return res.status(400).json({ error: 'Enter a surcharge percentage greater than 0.' });
+    if (rate > 3) return res.status(400).json({ error: 'A card surcharge cannot be more than 3%. That is the card network cap, not a Nova limit.' });
+  }
+  if (!(rate > 0)) rate = 0;
+  rate = Math.round(rate * 100) / 100;
+  try {
+    await pool.query(
+      "INSERT INTO settings (key, value, updated_at) VALUES ('invoice_surcharge_enabled', $1, NOW()) ON CONFLICT (key) DO UPDATE SET value = $1, updated_at = NOW()",
+      [enabled ? 'true' : 'false']
+    );
+    await pool.query(
+      "INSERT INTO settings (key, value, updated_at) VALUES ('invoice_surcharge_rate', $1, NOW()) ON CONFLICT (key) DO UPDATE SET value = $1, updated_at = NOW()",
+      [String(rate)]
+    );
+    try {
+      await logAudit({
+        entity_type: 'settings', entity_id: 0, entity_number: 'invoice_surcharge',
+        action: 'updated', user_id: req.user.id, user_name: req.user.name,
+        details: { enabled: enabled, rate: rate }
+      });
+    } catch (e) {}
+    res.json({ ok: true, enabled: enabled, rate: rate });
+  } catch (err) { console.error(err); res.status(500).json({ error: 'Failed to save the surcharge setting' }); }
 });
 
 // Save the Nova pay type -> Pulsar label map (managers/admin). Blank values are
@@ -1133,7 +1280,11 @@ router.post('/', requireAuth, requirePermission('create_invoice'), async (req, r
     });
   }
   const tax_rate = parseFloat(b.tax_rate) || 0;
-  const t = computeTotals(b.line_items, tax_rate, b.tip_amount, b.tax_exempt === true);
+  // The rate is read from settings on the server, never taken from the request.
+  // A client that posts its own surcharge or rate is ignored.
+  const pay_method = normalizePayMethod(b.pay_method);
+  const sur_rate = await surchargeRate();
+  const t = computeTotals(b.line_items, tax_rate, b.tip_amount, b.tax_exempt === true, pay_method, sur_rate);
   const invoice_date = b.invoice_date || new Date().toISOString().split('T')[0];
   const signedAt = f.signature_image ? new Date() : null;
 
@@ -1143,9 +1294,9 @@ router.post('/', requireAuth, requirePermission('create_invoice'), async (req, r
     try {
       await client.query('BEGIN');
       const ins = await client.query(
-        'INSERT INTO invoices (invoice_number, locksmith_id, locksmith_name, invoice_date, status, account_id, account_name, customer_po_wo, pay_type, card_last4, cc_online, time_in, time_out, customer_name, dl_number, dl_state, street_address, city, state, zip, phone, email, vehicle_year, vehicle_make, vehicle_model, license_tag, tag_state, vin, mileage, ent_registration, ent_insurance, ent_title, ent_rental, tax_rate, labor_amount, parts_amount, subtotal, tax_amount, tip_amount, grand_total, notes, payments_note, agreement_text, signature_image, signed_name, signed_at, approval_code, tax_exempt, signature_required, city_code, parts_cost_total, cogs_incomplete) ' +
-        'VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31,$32,$33,$34,$35,$36,$37,$38,$39,$40,$41,$42,$43,$44,$45,$46,$47,$48,$49,$50,$51,$52) RETURNING *',
-        [invoice_number, req.user.id, req.user.name, invoice_date, status, f.account_id, f.account_name, f.customer_po_wo, f.pay_type, f.card_last4, f.cc_online, f.time_in, f.time_out, f.customer_name, f.dl_number, f.dl_state, f.street_address, f.city, f.state, f.zip, f.phone, f.email, f.vehicle_year, f.vehicle_make, f.vehicle_model, f.license_tag, f.tag_state, f.vin, f.mileage, f.ent_registration, f.ent_insurance, f.ent_title, f.ent_rental, tax_rate, t.labor, t.parts, t.subtotal, t.tax_amount, t.tip, t.grand_total, f.notes, f.payments_note, f.agreement_text, f.signature_image, f.signed_name, signedAt, f.approval_code, f.tax_exempt, f.signature_required, f.city_code, t.parts_cost, t.cogs_incomplete]
+        'INSERT INTO invoices (invoice_number, locksmith_id, locksmith_name, invoice_date, status, account_id, account_name, customer_po_wo, pay_type, card_last4, cc_online, time_in, time_out, customer_name, dl_number, dl_state, street_address, city, state, zip, phone, email, vehicle_year, vehicle_make, vehicle_model, license_tag, tag_state, vin, mileage, ent_registration, ent_insurance, ent_title, ent_rental, tax_rate, labor_amount, parts_amount, subtotal, tax_amount, tip_amount, grand_total, notes, payments_note, agreement_text, signature_image, signed_name, signed_at, approval_code, tax_exempt, signature_required, city_code, parts_cost_total, cogs_incomplete, surcharge_amount, surcharge_rate, pay_method) ' +
+        'VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31,$32,$33,$34,$35,$36,$37,$38,$39,$40,$41,$42,$43,$44,$45,$46,$47,$48,$49,$50,$51,$52,$53,$54,$55) RETURNING *',
+        [invoice_number, req.user.id, req.user.name, invoice_date, status, f.account_id, f.account_name, f.customer_po_wo, f.pay_type, f.card_last4, f.cc_online, f.time_in, f.time_out, f.customer_name, f.dl_number, f.dl_state, f.street_address, f.city, f.state, f.zip, f.phone, f.email, f.vehicle_year, f.vehicle_make, f.vehicle_model, f.license_tag, f.tag_state, f.vin, f.mileage, f.ent_registration, f.ent_insurance, f.ent_title, f.ent_rental, tax_rate, t.labor, t.parts, t.subtotal, t.tax_amount, t.tip, t.grand_total, f.notes, f.payments_note, f.agreement_text, f.signature_image, f.signed_name, signedAt, f.approval_code, f.tax_exempt, f.signature_required, f.city_code, t.parts_cost, t.cogs_incomplete, t.surcharge, t.surcharge_rate, pay_method]
       );
       const invoice = ins.rows[0];
       await insertLineItems(client, invoice.id, b.line_items);
@@ -1249,7 +1400,7 @@ router.post('/:id/collect-payment', requireAuth, requirePermission('edit_invoice
   }
   try {
     const r = await pool.query(
-      'SELECT id, invoice_number, status, grand_total, tip_amount, city_code, locksmith_id, signature_required, signature_image FROM invoices WHERE id = $1',
+      'SELECT id, invoice_number, status, grand_total, tip_amount, city_code, locksmith_id, signature_required, signature_image, pay_method, surcharge_amount FROM invoices WHERE id = $1',
       [req.params.id]
     );
     const inv = r.rows[0];
@@ -1265,6 +1416,17 @@ router.post('/:id/collect-payment', requireAuth, requirePermission('edit_invoice
     }
     if (inv.signature_required && !inv.signature_image) {
       return res.status(400).json({ error: 'A signature is required before this invoice can be paid.' });
+    }
+    // Collecting in Square IS a card payment. If the invoice still says the
+    // customer is paying cash, the surcharge was never added and running the card
+    // now would undercharge by the surcharge on every job. Refuse and name the
+    // fix, rather than silently charging the cash price to a card.
+    if (await surchargeRate() > 0 && normalizePayMethod(inv.pay_method) !== 'card') {
+      return res.status(400).json({
+        error: normalizePayMethod(inv.pay_method) === 'cash'
+          ? ('Invoice #' + inv.invoice_number + ' is set to Cash, so it carries no card surcharge. Reopen it and switch the customer to Card before running the card. Nothing was charged.')
+          : ('Nobody has asked how invoice #' + inv.invoice_number + ' is being paid yet. Reopen it, pick Card, and the surcharge is added. Nothing was charged.')
+      });
     }
     const cents = Math.round((parseFloat(inv.grand_total) || 0) * 100);
     if (cents <= 0) return res.status(400).json({ error: 'There is nothing to charge on this invoice.' });
@@ -1536,6 +1698,15 @@ router.post('/:id/complete', requireAuth, requirePermission('edit_invoice'), asy
     }
     const last4 = b.card_last4 != null ? String(b.card_last4).replace(/\D/g, '').slice(-4) : inv.card_last4;
     const approval = b.approval_code != null ? String(b.approval_code).trim() : inv.approval_code;
+    // With surcharging on, an invoice cannot reach the finish line until somebody
+    // has actually asked the customer. NULL pay_method is "not asked yet", which
+    // is a different answer from Cash and must not be allowed to pass as one.
+    if (await surchargeRate() > 0 && !normalizePayMethod(inv.pay_method)) {
+      return res.status(400).json({
+        error: 'Ask the customer Cash or Card first. Reopen invoice #' + inv.invoice_number + ' and pick one; Card adds the surcharge, Cash does not.',
+        needs_pay_method: true
+      });
+    }
 
     const upd = await pool.query(
       "UPDATE invoices SET status = 'paid', pay_type = $1, card_last4 = $2, approval_code = $3, " +
@@ -1784,11 +1955,15 @@ router.post('/:id/split', requireAuth, requirePermission('create_invoice'), asyn
     // 3. Point the original at the pair and rebuild its totals from its lines.
     await client.query('UPDATE invoices SET split_group_id = $1 WHERE id = $2', [groupId, inv.id]);
     const freshItems = (await client.query('SELECT * FROM invoice_line_items WHERE invoice_id = $1', [inv.id])).rows;
-    const t = computeTotals(freshItems, inv.tax_rate, inv.tip_amount, inv.tax_exempt === true);
+    // Recompute the surcharge off THIS invoice's own stored rate, not the current
+    // company setting. The original was quoted under a rate and a payment method,
+    // and splitting it is not a re-quote — only the base it applies to shrank.
+    const t = computeTotals(freshItems, inv.tax_rate, inv.tip_amount, inv.tax_exempt === true,
+      inv.pay_method, inv.surcharge_rate);
     await client.query(
       'UPDATE invoices SET labor_amount=$1, parts_amount=$2, subtotal=$3, tax_amount=$4, tip_amount=$5, grand_total=$6, ' +
-      'parts_cost_total=$7, cogs_incomplete=$8, updated_at=NOW() WHERE id=$9',
-      [t.labor, t.parts, t.subtotal, t.tax_amount, t.tip, t.grand_total, t.parts_cost, t.cogs_incomplete, inv.id]
+      'parts_cost_total=$7, cogs_incomplete=$8, surcharge_amount=$10, updated_at=NOW() WHERE id=$9',
+      [t.labor, t.parts, t.subtotal, t.tax_amount, t.tip, t.grand_total, t.parts_cost, t.cogs_incomplete, inv.id, t.surcharge]
     );
 
     await client.query('COMMIT');
@@ -1855,7 +2030,18 @@ router.put('/:id', requireAuth, requirePermission('edit_invoice'), async (req, r
       });
     }
     const tax_rate = parseFloat(b.tax_rate) || 0;
-    const t = computeTotals(b.line_items, tax_rate, b.tip_amount, b.tax_exempt === true);
+    // pay_method comes from the close-out popup. An absent key means "leave it
+    // alone" (a partial save from some other screen must not silently wipe the
+    // customer's answer and drop the surcharge); an explicit null clears it.
+    const pay_method = Object.prototype.hasOwnProperty.call(b, 'pay_method')
+      ? normalizePayMethod(b.pay_method)
+      : normalizePayMethod(existing.pay_method);
+    // Reuse the rate this invoice was already quoted under. Only a job that has
+    // never carried a surcharge picks up the current company rate, so an admin
+    // changing the setting mid-shift cannot re-price a job in progress.
+    const _existingRate = parseFloat(existing.surcharge_rate) || 0;
+    const sur_rate = _existingRate > 0 ? _existingRate : await surchargeRate();
+    const t = computeTotals(b.line_items, tax_rate, b.tip_amount, b.tax_exempt === true, pay_method, sur_rate);
     // Never let an edit drop the invoice below what has already been given back,
     // which would leave a refund larger than the sale it came from.
     if (_refunded > 0 && t.grand_total < _refunded - 0.005) {
@@ -1875,8 +2061,8 @@ router.put('/:id', requireAuth, requirePermission('edit_invoice'), async (req, r
         'UPDATE invoices SET completed_at = CASE WHEN $42::text = \'paid\' AND status <> \'paid\' THEN NOW() WHEN $42::text <> \'paid\' THEN NULL ELSE completed_at END, ' +
         'completed_by = CASE WHEN $42::text = \'paid\' AND status <> \'paid\' THEN $51::int WHEN $42::text <> \'paid\' THEN NULL ELSE completed_by END, ' +
         'waiting_since = CASE WHEN $42::text = \'awaiting_payment\' THEN COALESCE(waiting_since, NOW()) ELSE NULL END, ' +
-        'account_id=$1, account_name=$2, customer_po_wo=$3, pay_type=$4, card_last4=$5, cc_online=$6, time_in=$7, time_out=$8, customer_name=$9, dl_number=$10, dl_state=$11, street_address=$12, city=$13, state=$14, zip=$15, phone=$16, email=$17, vehicle_year=$18, vehicle_make=$19, vehicle_model=$20, license_tag=$21, tag_state=$22, vin=$23, mileage=$24, ent_registration=$25, ent_insurance=$26, ent_title=$27, ent_rental=$28, tax_rate=$29, labor_amount=$30, parts_amount=$31, subtotal=$32, tax_amount=$33, tip_amount=$34, grand_total=$35, notes=$36, payments_note=$37, agreement_text=$38, signature_image=$39, signed_name=$40, signed_at=$41, status=$42, invoice_date=$43, approval_code=$44, tax_exempt=$45, signature_required=$46, city_code=$47, parts_cost_total=$48, cogs_incomplete=$49, updated_at=NOW() WHERE id=$50',
-        [f.account_id, f.account_name, f.customer_po_wo, f.pay_type, f.card_last4, f.cc_online, f.time_in, f.time_out, f.customer_name, f.dl_number, f.dl_state, f.street_address, f.city, f.state, f.zip, f.phone, f.email, f.vehicle_year, f.vehicle_make, f.vehicle_model, f.license_tag, f.tag_state, f.vin, f.mileage, f.ent_registration, f.ent_insurance, f.ent_title, f.ent_rental, tax_rate, t.labor, t.parts, t.subtotal, t.tax_amount, t.tip, t.grand_total, f.notes, f.payments_note, f.agreement_text, f.signature_image, f.signed_name, signedAt, status, invoice_date, f.approval_code, f.tax_exempt, f.signature_required, f.city_code, t.parts_cost, t.cogs_incomplete, req.params.id, req.user.id]
+        'account_id=$1, account_name=$2, customer_po_wo=$3, pay_type=$4, card_last4=$5, cc_online=$6, time_in=$7, time_out=$8, customer_name=$9, dl_number=$10, dl_state=$11, street_address=$12, city=$13, state=$14, zip=$15, phone=$16, email=$17, vehicle_year=$18, vehicle_make=$19, vehicle_model=$20, license_tag=$21, tag_state=$22, vin=$23, mileage=$24, ent_registration=$25, ent_insurance=$26, ent_title=$27, ent_rental=$28, tax_rate=$29, labor_amount=$30, parts_amount=$31, subtotal=$32, tax_amount=$33, tip_amount=$34, grand_total=$35, notes=$36, payments_note=$37, agreement_text=$38, signature_image=$39, signed_name=$40, signed_at=$41, status=$42, invoice_date=$43, approval_code=$44, tax_exempt=$45, signature_required=$46, city_code=$47, parts_cost_total=$48, cogs_incomplete=$49, surcharge_amount=$52, surcharge_rate=$53, pay_method=$54, updated_at=NOW() WHERE id=$50',
+        [f.account_id, f.account_name, f.customer_po_wo, f.pay_type, f.card_last4, f.cc_online, f.time_in, f.time_out, f.customer_name, f.dl_number, f.dl_state, f.street_address, f.city, f.state, f.zip, f.phone, f.email, f.vehicle_year, f.vehicle_make, f.vehicle_model, f.license_tag, f.tag_state, f.vin, f.mileage, f.ent_registration, f.ent_insurance, f.ent_title, f.ent_rental, tax_rate, t.labor, t.parts, t.subtotal, t.tax_amount, t.tip, t.grand_total, f.notes, f.payments_note, f.agreement_text, f.signature_image, f.signed_name, signedAt, status, invoice_date, f.approval_code, f.tax_exempt, f.signature_required, f.city_code, t.parts_cost, t.cogs_incomplete, req.params.id, req.user.id, t.surcharge, t.surcharge_rate, pay_method]
       );
       // An edit rewrites the line items wholesale: delete, then re-insert with
       // fresh ids. invoice_refund_lines.invoice_line_item_id is ON DELETE SET
