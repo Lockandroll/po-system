@@ -4427,6 +4427,10 @@ var _reviewsSearchTimer = null;
 var _reviewAssignees = [];
 
 // ── Customer Feedback ──────────────────────────────────────────────────────
+// Where a complaint came from. 'google_review' records are opened automatically
+// from low-star Google reviews by jobs/reviewComplaints.js.
+var FB_SOURCE = { pulsar:'Pulsar email', google_review:'Google review', manual:'Entered by hand', web:'Web form', sms:'Text message' };
+function fbSourceLabel(s) { var k = s || 'pulsar'; return FB_SOURCE[k] || k.replace(/_/g, ' '); }
 var FB_STATUS = { new:'New', complaint_pending:'Complaint pending', customer_contacted:'Customer contacted', in_progress:'In progress', resolved:'Resolved', closed:'Closed' };
 var _feedbackRows = [];
 var _fbSearchT = null;
@@ -4607,7 +4611,7 @@ async function renderFeedbackDetail(el, id){
       '<tr><td style="color:var(--text-muted-color);padding:4px 0">City</td><td style="text-align:right">' + escHtml(f.city_name || f.city_code || '—') + '</td></tr>' +
       '<tr><td style="color:var(--text-muted-color);padding:4px 0">Vehicle</td><td style="text-align:right">' + escHtml(vehicle) + '</td></tr>' +
       '<tr><td style="color:var(--text-muted-color);padding:4px 0">Service task</td><td style="text-align:right">' + escHtml(f.service_task || '—') + '</td></tr>' +
-      '<tr><td style="color:var(--text-muted-color);padding:4px 0">Source</td><td style="text-align:right">' + escHtml((f.source || 'pulsar') + (f.received_at ? ' · ' + formatDate(f.received_at) : '')) + '</td></tr>' +
+      '<tr><td style="color:var(--text-muted-color);padding:4px 0">Source</td><td style="text-align:right">' + escHtml(fbSourceLabel(f.source) + (f.received_at ? ' · ' + formatDate(f.received_at) : '')) + '</td></tr>' +
     '</table></div>';
 
   var aiLine = f.ai_summary ? '<div style="margin-top:10px;padding-top:10px;border-top:1px solid var(--border);font-size:12px;color:var(--text-muted-color)">AI: ' + escHtml(f.ai_summary) + '</div>' : '';
@@ -4835,6 +4839,28 @@ async function reviewsAssign(reviewId, userId, selEl) {
   }
 }
 
+// Open a Customer Feedback complaint for a review by hand. Reviews at or below the
+// complaint threshold file themselves on a schedule; this covers older ones and any
+// higher-star review a manager still wants worked.
+async function reviewsFileComplaint(reviewId, btn) {
+  if (btn) { btn.disabled = true; btn.textContent = 'Filing...'; }
+  try {
+    var r = await api('POST', '/reviews/file-complaint', { review_id: reviewId });
+    for (var i = 0; i < _reviewsRows.length; i++) {
+      if (String(_reviewsRows[i].review_id) === String(reviewId)) {
+        _reviewsRows[i].complaint_id = r.id;
+        if (!_reviewsRows[i].complaint_status) _reviewsRows[i].complaint_status = 'new';
+        break;
+      }
+    }
+    reviewsRenderTable(_reviewsRows);
+    showToast(r.duplicate ? ('That review is already complaint #' + r.id + '.') : ('Complaint #' + r.id + ' filed and assigned.'), r.duplicate ? 'info' : 'success');
+  } catch (e) {
+    if (btn) { btn.disabled = false; btn.textContent = 'File'; }
+    showToast(e.message || 'Could not file the complaint.', 'error');
+  }
+}
+
 function reviewsSearchDebounced() { clearTimeout(_reviewsSearchTimer); _reviewsSearchTimer = setTimeout(function(){ reviewsLoad(); }, 300); }
 function reviewsClearFilters() {
   ['reviews-location','reviews-rating','reviews-search','reviews-from','reviews-to'].forEach(function(id){ var e=document.getElementById(id); if(e) e.value=''; });
@@ -5051,15 +5077,16 @@ function reviewsRenderTable(rows) {
   }
   var _pager = '<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:12px">' + _sizeCtl + _btns + '</div>';
   var canAssign = can('assign_reviews');
+  var canFileComplaint = can('manage_feedback');
   var assignedCount = 0, guessCount = 0;
   for (var _a = 0; _a < rows.length; _a++) { if (rows[_a].assignee_user_id) assignedCount++; else if (rows[_a].assignee) guessCount++; }
   var coverage = total ? (' • ' + assignedCount + ' of ' + total + ' assigned' + (guessCount ? ' • ' + guessCount + ' unmatched AI guess' + (guessCount === 1 ? '' : 'es') : '')) : '';
   wrap.innerHTML =
     '<div style="font-size:12px;color:var(--text-muted-color);margin-bottom:8px">Showing ' + _showing + ' of ' + total + ' review' + (total===1?'':'s') + coverage + '</div>' +
     '<div class="card"><div class="table-wrap"><table>' +
-      '<thead><tr><th>Location</th><th>Reviewer</th><th>Rating</th><th>Review</th><th>Assigned To</th><th>Date</th><th>Reply</th></tr></thead><tbody>' +
+      '<thead><tr><th>Location</th><th>Reviewer</th><th>Rating</th><th>Complaint</th><th>Review</th><th>Assigned To</th><th>Date</th><th>Reply</th></tr></thead><tbody>' +
       (total === 0
-        ? '<tr><td colspan="7" style="text-align:center;color:var(--text-muted-color);padding:32px">No reviews found.</td></tr>'
+        ? '<tr><td colspan="8" style="text-align:center;color:var(--text-muted-color);padding:32px">No reviews found.</td></tr>'
         : page.map(function(r){
             var aName = r.assignee || '';
             var aUid = r.assignee_user_id || null;
@@ -5075,10 +5102,24 @@ function reviewsRenderTable(rows) {
             } else {
               assignCell = (aUid && aName ? escHtml(aName) : '') + badge + guess + ((aName || aUid) ? '' : '<span style="color:var(--text-muted-color)">—</span>');
             }
+            // Low-star reviews are auto-filed as Customer Feedback complaints; show the
+            // link when one exists, and offer a manual File button when it does not.
+            // No File button on a 5-star review - a complaint against praise is almost
+            // always a misclick, and the auto-intake never files one either.
+            var cmpCell;
+            if (r.complaint_id) {
+              cmpCell = '<a href="#" onclick="feedbackOpen(' + r.complaint_id + ');return false" title="Open the complaint record" style="color:var(--primary);font-weight:600;text-decoration:none">#' + r.complaint_id + '</a>' +
+                (r.complaint_status ? '<div style="font-size:10px;color:var(--text-muted-color)">' + escHtml(FB_STATUS[r.complaint_status] || r.complaint_status) + '</div>' : '');
+            } else if (canFileComplaint && r.review_id && (r.rating == null || r.rating <= 4)) {
+              cmpCell = '<button class="btn btn-secondary btn-sm" title="Open a complaint for this review" onclick="reviewsFileComplaint(&#39;' + escHtml(String(r.review_id)) + '&#39;, this)">File</button>';
+            } else {
+              cmpCell = '<span style="color:var(--text-muted-color)">—</span>';
+            }
             return '<tr>' +
               '<td style="white-space:nowrap">' + escHtml(r.location_name||'—') + '</td>' +
               '<td style="white-space:nowrap">' + escHtml(r.reviewer_name||'—') + '</td>' +
               '<td style="white-space:nowrap">' + reviewsStars(r.rating) + '</td>' +
+              '<td style="white-space:nowrap;text-align:center">' + cmpCell + '</td>' +
               '<td style="min-width:280px">' + escHtml(r.review_text||'') + '</td>' +
               '<td style="white-space:nowrap">' + assignCell + '</td>' +
               '<td style="white-space:nowrap">' + escHtml(r.review_date||'—') + '</td>' +
@@ -10666,11 +10707,40 @@ var _invoicePayTypes = INV_PAY_TYPES.slice();
 var _invoicePulsarPayMap = {};
 var _invSetupPayTypes = [];
 var _invSetupPulsarMap = {};
-var INV_STATUSES = ['draft','completed','paid'];
+var INV_STATUSES = ['draft','awaiting_payment','paid'];
+// ---- Invoice process: Active / Waiting for Payment / Completed -------------
+//
+// ⚠️ The STORED status values are unchanged. 'draft' displays as "Active" and
+// 'paid' displays as "Completed"; only 'awaiting_payment' is new. The backend
+// keys refunds, the Square writer and the reconciliation report off 'paid', so
+// the words live here and nowhere else. See db.js for the full reasoning.
+var INV_STATUS_LABELS = {
+  draft: 'Active',
+  awaiting_payment: 'Waiting for Payment',
+  paid: 'Completed',
+  partially_refunded: 'Partially Refunded',
+  refunded: 'Refunded',
+  // Only reachable on a database that has not run the migration yet.
+  completed: 'Waiting for Payment'
+};
+var INV_STATUS_BADGE = {
+  draft: 'badge-active',
+  awaiting_payment: 'badge-waiting',
+  paid: 'badge-completed',
+  partially_refunded: 'badge-partially-refunded',
+  refunded: 'badge-refunded',
+  completed: 'badge-waiting'
+};
+var INV_STATUS_HELP = {
+  draft: 'Still being worked on.',
+  awaiting_payment: 'Work is done and signed. Money is not in yet. Still editable.',
+  paid: 'Done and paid, or billed to an account. Locks the invoice.'
+};
+
 
 function invExt(it){ return (parseFloat(it.quantity)||0) * (parseFloat(it.unit_price)||0); }
 function invMoney(n){ return '$' + (parseFloat(n)||0).toFixed(2); }
-function invStatusLabel(s){ return s ? (s.charAt(0).toUpperCase() + s.slice(1)) : ''; }
+function invStatusLabel(s){ var k = String(s || ''); var m = (typeof INV_STATUS_LABELS !== 'undefined' && INV_STATUS_LABELS) || {}; return m[k] || (k ? (k.charAt(0).toUpperCase() + k.slice(1).split('_').join(' ')) : ''); }
 
 // ---------- Dashboard / list ----------
 async function renderInvoices(el) {
@@ -10727,7 +10797,7 @@ function filterInvoices() {
         '<td>' + escHtml(r.account_name || '—') + '</td>' +
         '<td>' + escHtml(veh) + '</td>' +
         (seeAll ? '<td>' + escHtml(r.locksmith_name || r.locksmith_name_join || '—') + '</td>' : '') +
-        '<td>' + badgeHtml(r.status) + '</td>' +
+        '<td>' + invStatusBadge(r.status) + '</td>' +
         '<td class="text-right">' + invMoney(r.grand_total) +
           (parseFloat(r.refunded_total) > 0
             ? '<div style="font-size:11px;color:var(--danger)">net ' + invMoney((parseFloat(r.grand_total)||0) - (parseFloat(r.refunded_total)||0)) + '</div>'
@@ -10801,7 +10871,8 @@ async function renderEditInvoice(el, id) {
         '<div class="form-group"><label>Account</label><select id="inv-account" onchange="invAccountChange()">' + acctOptions + '</select></div>' +
         '<div class="form-group"><label>City (tax)</label><select id="inv-city-code">' + cityOptions + '</select></div>' +
         '<div class="form-group"><label>Date</label><input type="date" id="inv-date" value="' + escHtml(dateVal) + '" /></div>' +
-        '<div class="form-group"><label>Status</label><select id="inv-status">' + statusOptions + '</select></div>' +
+        '<div class="form-group"><label>Status</label><select id="inv-status" onchange="invStatusHelp()">' + statusOptions + '</select>' +
+          '<div id="inv-status-help" style="font-size:12px;color:var(--text-muted-color);margin-top:5px;line-height:1.5"></div></div>' +
       '</div>' +
       '<div id="inv-account-notes" style="display:none;margin:0 0 12px;padding:10px 12px;border:1px solid var(--primary);border-radius:8px;background:rgba(249,115,22,0.08);font-size:13px;white-space:pre-wrap"></div>' +
       '<div class="form-row">' +
@@ -10915,8 +10986,13 @@ async function renderEditInvoice(el, id) {
 
     '<div class="flex-gap" style="margin-bottom:40px">' +
       '<button class="btn btn-primary" id="inv-save-btn" onclick="saveInvoice(' + (id||'null') + ')">Save Invoice</button>' +
+      // Finishing lives on the VIEW, where the gate checklist and the payment
+      // question are. Sending them there beats duplicating that whole flow here
+      // and then having to keep the two copies in step.
+      (id ? '<button class="btn btn-success" onclick="navigate(\'view-invoice\',' + id + ')">Save is above &mdash; finish on the invoice</button>' : '') +
     '</div>';
 
+  invStatusHelp();
   if (invoiceLineItems.length === 0) { invoiceLineItems.push({ line_type: 'labor', item_number: '', description: '', quantity: 1, unit_price: '', taxable: false }); }
   buildInvoiceLineItemRows();
   setupInvoiceSignaturePad();
@@ -11892,7 +11968,7 @@ async function renderViewInvoice(el, id) {
     var agreement = (inv.agreement_text || '').split('{customer}').join(inv.customer_name || '__________');
     el.innerHTML =
       '<div class="page-header">' +
-        '<div><div class="page-title">Invoice #' + escHtml(inv.invoice_number) + '</div><div class="page-subtitle">' + badgeHtml(inv.status) + ' • ' + formatDate(inv.invoice_date || inv.created_at) + '</div></div>' +
+        '<div><div class="page-title">Invoice #' + escHtml(inv.invoice_number) + '</div><div class="page-subtitle">' + invStatusBadge(inv.status) + ' • ' + formatDate(inv.invoice_date || inv.created_at) + '</div></div>' +
         '<div class="flex-gap">' +
           '<button class="btn btn-secondary" onclick="navigate(\'invoices\')">&larr; Back</button>' +
           '<button class="btn btn-secondary" style="white-space:nowrap" onclick="printInvoice(' + inv.id + ')">' + icons.print + ' Print</button>' +
@@ -11945,6 +12021,8 @@ async function renderViewInvoice(el, id) {
         (inv.payments_note ? '<div style="margin-top:10px;font-size:13px"><strong>Payments:</strong> ' + escHtml(inv.payments_note) + '</div>' : '') +
         (inv.notes ? '<div style="margin-top:6px;font-size:13px"><strong>Notes:</strong> ' + escHtml(inv.notes) + '</div>' : '') +
       '</div></div>' +
+      invSplitLinkHtml(inv) +
+      invProcessCardHtml(inv, canEdit || (!invLocked && can('edit_invoice') && inv.locksmith_id === state.user.id), seeAll) +
       invSquareCardHtml(inv, canSign && !invLocked, seeAll) +
       '<div class="card mb-4"><div class="card-header"><span class="card-title">Authorization</span></div><div class="card-body">' +
         '<div style="white-space:pre-wrap;font-size:12px;color:var(--text-muted-color);line-height:1.6">' + escHtml(agreement) + '</div>' +
@@ -11975,6 +12053,7 @@ async function renderViewInvoice(el, id) {
       novaAlert('Square Point of Sale is not installed on this phone. Install it from the app store and sign in to the company Square account. Nothing was charged.');
     }
     if (_sqReturnNonce) { var _n = _sqReturnNonce; _sqReturnNonce = null; invSqPoll(inv.id, _n, 0); }
+    if (inv.can_reopen_now) invStartGraceCountdown(inv.reopen_seconds_left);
   } catch(err) {
     el.innerHTML = '<div class="alert alert-error">' + escHtml(err.message) + '</div>';
   }
@@ -12196,6 +12275,297 @@ async function invSqCancel(id, pid) {
   if (!await novaConfirm('Give up on this payment attempt? Check the Square app first to make sure the card was not already charged.')) return;
   try { await api('POST', '/invoices/' + id + '/payments/' + pid + '/cancel', {}); } catch (e) {}
   render();
+}
+
+function invStatusBadge(s) {
+  var k = String(s || 'draft');
+  return '<span class="badge ' + (INV_STATUS_BADGE[k] || 'badge-draft') + '">' + escHtml(invStatusLabel(k)) + '</span>';
+}
+
+function invIsBilledPayType(inv, payType) {
+  var list = (inv && inv.billed_pay_types) || ['Account / Invoice', 'Motor Club'];
+  var p = String(payType || '').trim().toLowerCase();
+  if (!p) return false;
+  for (var i = 0; i < list.length; i++) { if (String(list[i]).trim().toLowerCase() === p) return true; }
+  return false;
+}
+
+function invCloseSheet() {
+  var o = document.getElementById('inv-proc-modal');
+  if (o && o.parentNode) o.parentNode.removeChild(o);
+}
+
+// Small modal builder following the pattern the rest of app.js already uses:
+// build a .modal-overlay, append it to the body, remove it by id.
+function invSheet(title, bodyHtml, footHtml) {
+  invCloseSheet();
+  var ov = document.createElement('div');
+  ov.className = 'modal-overlay';
+  ov.id = 'inv-proc-modal';
+  ov.innerHTML =
+    '<div class="modal">' +
+      '<div class="modal-header"><span class="modal-title">' + title + '</span></div>' +
+      '<div class="modal-body"><div id="inv-proc-err"></div>' + bodyHtml + '</div>' +
+      '<div class="modal-footer">' + footHtml + '</div>' +
+    '</div>';
+  document.body.appendChild(ov);
+  ov.addEventListener('click', function (e) { if (e.target === ov) invCloseSheet(); });
+  return ov;
+}
+
+function invSheetError(msg) {
+  var e = document.getElementById('inv-proc-err');
+  if (e) e.innerHTML = '<div class="alert alert-error">' + escHtml(msg) + '</div>';
+  else novaAlert(msg);
+}
+
+// ---- Complete -------------------------------------------------------------
+// Completed now asserts the job is settled, so it has to know how it was paid.
+// An invoice marked done with no payment method is a weak chargeback record.
+function invCompleteSheet(id) {
+  var inv = _currentInvoice;
+  if (!inv || inv.id !== id) { novaAlert('Reopen the invoice and try again.'); return; }
+  if (!inv.can_complete) {
+    var missing = (inv.gates || []).filter(function (g) { return !g.ok; }).map(function (g) { return g.label; });
+    novaAlert('Not finished yet: ' + missing.join(', ') + '.');
+    return;
+  }
+  var types = (_invoicePayTypes && _invoicePayTypes.length) ? _invoicePayTypes : INV_PAY_TYPES;
+  var opts = '<option value="">&mdash; Select &mdash;</option>' + types.map(function (p) {
+    var billed = invIsBilledPayType(inv, p) ? ' (billed)' : '';
+    return '<option value="' + escHtml(p) + '"' + (inv.pay_type === p ? ' selected' : '') + '>' + escHtml(p) + billed + '</option>';
+  }).join('');
+
+  invSheet('Complete Invoice #' + escHtml(inv.invoice_number),
+    '<div style="text-align:center;padding:4px 0 18px">' +
+      '<div style="font-size:12px;color:var(--text-muted-color);text-transform:uppercase;letter-spacing:.06em">Total</div>' +
+      '<div style="font-size:34px;font-weight:700;letter-spacing:-.02em">' + invMoney(inv.grand_total) + '</div>' +
+    '</div>' +
+    '<div class="form-group"><label>How is this being paid?</label><select id="inv-complete-pay">' + opts + '</select></div>' +
+    '<div class="form-row"><div class="form-group"><label>Card Last 4</label><input type="text" id="inv-complete-last4" maxlength="4" inputmode="numeric" value="' + escHtml(inv.card_last4 || '') + '" /></div>' +
+    '<div class="form-group"><label>Approval #</label><input type="text" id="inv-complete-approval" value="' + escHtml(inv.approval_code || '') + '" /></div></div>' +
+    (inv.square_enabled && inv.status !== 'paid'
+      ? '<button class="btn btn-primary" style="width:100%;justify-content:center;margin:6px 0 4px" onclick="invCloseSheet();invCollectPayment(' + inv.id + ')">Or run the card in Square</button>'
+      : '') +
+    '<div style="display:flex;align-items:center;gap:10px;margin:12px 0;color:var(--text-muted-color);font-size:12px"><span style="flex:1;height:1px;background:var(--border)"></span>or<span style="flex:1;height:1px;background:var(--border)"></span></div>' +
+    '<button class="btn btn-secondary" style="width:100%;justify-content:center" onclick="invWaitingSheet(' + inv.id + ')">Customer is paying later</button>' +
+    '<div style="font-size:11.5px;color:var(--text-muted-color);margin-top:10px;line-height:1.5">Account and Motor Club are billed rather than collected, so they finish here. Anything else that has not been paid should go to Waiting for Payment.</div>',
+    '<button class="btn btn-secondary" onclick="invCloseSheet()">Cancel</button>' +
+    '<button class="btn btn-success" id="inv-complete-go" onclick="invDoComplete(' + inv.id + ')">Mark Completed</button>');
+}
+
+async function invDoComplete(id) {
+  var pay = (document.getElementById('inv-complete-pay') || {}).value || '';
+  if (!pay) { invSheetError('Pick how this was paid.'); return; }
+  var btn = document.getElementById('inv-complete-go');
+  if (btn) btn.disabled = true;
+  try {
+    await api('POST', '/invoices/' + id + '/complete', {
+      pay_type: pay,
+      card_last4: (document.getElementById('inv-complete-last4') || {}).value || '',
+      approval_code: (document.getElementById('inv-complete-approval') || {}).value || ''
+    });
+    invCloseSheet();
+    showToast('Invoice completed.', 'success');
+    navigate('view-invoice', id);
+  } catch (e) {
+    if (btn) btn.disabled = false;
+    invSheetError(e.message);
+  }
+}
+
+// ---- Waiting for Payment --------------------------------------------------
+// Parking an invoice raises a real Nova task so the chase does not depend on
+// anybody remembering, and the manager is copied.
+function invWaitingSheet(id) {
+  var inv = _currentInvoice;
+  if (!inv || inv.id !== id) { novaAlert('Reopen the invoice and try again.'); return; }
+  var d = new Date(); d.setDate(d.getDate() + 3);
+  var def = d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0');
+
+  invSheet('Follow up on ' + invMoney(inv.grand_total),
+    '<label>When should someone chase this?</label>' +
+    '<div style="display:flex;gap:8px;flex-wrap:wrap;margin:8px 0 14px">' +
+      '<button class="btn btn-secondary btn-sm" onclick="invWaitDays(1)">Tomorrow</button>' +
+      '<button class="btn btn-secondary btn-sm" onclick="invWaitDays(3)">In 3 days</button>' +
+      '<button class="btn btn-secondary btn-sm" onclick="invWaitDays(7)">Next week</button>' +
+    '</div>' +
+    '<div class="form-group"><label>Follow-up date</label><input type="date" id="inv-wait-date" value="' + def + '" /></div>' +
+    '<div class="form-group"><label>Note <span style="font-weight:400;font-size:12px;color:var(--text-muted-color)">goes on the task</span></label>' +
+      '<textarea id="inv-wait-note" rows="2" placeholder="Customer said they would call with a card Monday."></textarea></div>' +
+    '<div style="font-size:12px;color:var(--text-muted-color);line-height:1.6">A task will be created for ' + escHtml(inv.locksmith_name || inv.locksmith_name_join || 'the tech') + ' and their manager will be copied. It closes itself as soon as the invoice is paid.</div>',
+    '<button class="btn btn-secondary" onclick="invCloseSheet()">Cancel</button>' +
+    '<button class="btn btn-primary" id="inv-wait-go" onclick="invDoWaiting(' + inv.id + ')">Set to Waiting for Payment</button>');
+}
+
+function invWaitDays(n) {
+  var d = new Date(); d.setDate(d.getDate() + n);
+  var el = document.getElementById('inv-wait-date');
+  if (el) el.value = d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0');
+}
+
+async function invDoWaiting(id) {
+  var date = (document.getElementById('inv-wait-date') || {}).value || '';
+  if (!date) { invSheetError('Pick a follow-up date.'); return; }
+  var btn = document.getElementById('inv-wait-go');
+  if (btn) btn.disabled = true;
+  try {
+    await api('POST', '/invoices/' + id + '/waiting', { followup_date: date, note: (document.getElementById('inv-wait-note') || {}).value || '' });
+    invCloseSheet();
+    showToast('Waiting for payment. Follow-up task created.', 'success');
+    navigate('view-invoice', id);
+  } catch (e) {
+    if (btn) btn.disabled = false;
+    invSheetError(e.message);
+  }
+}
+
+// ---- Reopen (grace period) ------------------------------------------------
+// The window length comes from the server (reopen_seconds_left), so it is not
+// duplicated here.
+var _invGraceTimer = null;
+
+function invStartGraceCountdown(secs) {
+  if (_invGraceTimer) { clearInterval(_invGraceTimer); _invGraceTimer = null; }
+  var left = parseInt(secs, 10) || 0;
+  var tick = function () {
+    var el = document.getElementById('inv-grace-left');
+    var box = document.getElementById('inv-grace-box');
+    if (!el || !box) { clearInterval(_invGraceTimer); _invGraceTimer = null; return; }
+    if (left <= 0) { box.parentNode.removeChild(box); clearInterval(_invGraceTimer); _invGraceTimer = null; return; }
+    var m = Math.floor(left / 60), s = left % 60;
+    el.textContent = m + ':' + String(s).padStart(2, '0');
+    left--;
+  };
+  tick();
+  _invGraceTimer = setInterval(tick, 1000);
+}
+
+async function invReopen(id) {
+  if (!await novaConfirm('Put this invoice back to Active so you can change it?')) return;
+  try {
+    await api('POST', '/invoices/' + id + '/reopen', {});
+    showToast('Reopened. The invoice is Active again.', 'success');
+    navigate('view-invoice', id);
+  } catch (e) { novaAlert(e.message); }
+}
+
+// ---- Split billing --------------------------------------------------------
+// ⚠️ This splits BY AMOUNT. It never copies line items, because the month-end
+// parts report and the COGS figure both sum invoice_line_items across every
+// invoice in the period, so a copied part would be ordered twice and costed
+// twice with nothing to flag it.
+function invSplitSheet(id) {
+  var inv = _currentInvoice;
+  if (!inv || inv.id !== id) { novaAlert('Reopen the invoice and try again.'); return; }
+  var accts = (_invoiceAccounts || []).map(function (a) {
+    return '<option value="' + a.id + '">' + escHtml(a.name) + '</option>';
+  }).join('');
+
+  invSheet('Split Invoice #' + escHtml(inv.invoice_number),
+    '<div style="display:flex;justify-content:space-between;padding:8px 0;border-bottom:1px solid var(--border);font-size:15px"><span>This invoice, total</span><b>' + invMoney(inv.grand_total) + '</b></div>' +
+    '<div class="form-group mt-4"><label>Who is covering part of this?</label>' +
+      '<select id="inv-split-acct"><option value="">&mdash; Type a name below &mdash;</option>' + accts + '</select></div>' +
+    '<div class="form-group"><label>Or type the account name</label><input type="text" id="inv-split-name" placeholder="GEICO" /></div>' +
+    '<div class="form-group"><label>How much do they cover?</label><input type="text" id="inv-split-amount" inputmode="decimal" placeholder="100.00" /></div>' +
+    '<div class="form-group"><label>Description on their invoice</label><input type="text" id="inv-split-desc" placeholder="Key make - insurance portion" /></div>' +
+    '<div class="alert alert-info" style="margin:0">Their invoice gets one charge line and no parts, so the parts and cost stay counted once on this invoice. This one drops by the same amount and keeps the signature.</div>',
+    '<button class="btn btn-secondary" onclick="invCloseSheet()">Cancel</button>' +
+    '<button class="btn btn-primary" id="inv-split-go" onclick="invDoSplit(' + inv.id + ')">Create both</button>');
+}
+
+async function invDoSplit(id) {
+  var acctSel = document.getElementById('inv-split-acct');
+  var acctId = acctSel && acctSel.value ? parseInt(acctSel.value, 10) : null;
+  var name = (document.getElementById('inv-split-name') || {}).value || '';
+  if (!acctId && !name.trim()) { invSheetError('Say who is covering part of this.'); return; }
+  var amount = parseFloat((document.getElementById('inv-split-amount') || {}).value || '');
+  if (!(amount > 0)) { invSheetError('Enter how much they cover.'); return; }
+  var btn = document.getElementById('inv-split-go');
+  if (btn) btn.disabled = true;
+  try {
+    var out = await api('POST', '/invoices/' + id + '/split', {
+      account_id: acctId, account_name: name,
+      amount: amount, description: (document.getElementById('inv-split-desc') || {}).value || ''
+    });
+    invCloseSheet();
+    showToast('Split. Invoice #' + out.created.invoice_number + ' created for the account.', 'success');
+    navigate('view-invoice', out.created.id);
+  } catch (e) {
+    if (btn) btn.disabled = false;
+    invSheetError(e.message);
+  }
+}
+
+// ---- The process card on the invoice view ---------------------------------
+function invProcessCardHtml(inv, canEditNow, seeAll) {
+  var head = function (t, b) { return '<div class="card mb-4"><div class="card-header"><span class="card-title">' + t + '</span>' + (b || '') + '</div><div class="card-body">'; };
+  var foot = '</div></div>';
+
+  if (inv.status === 'paid') {
+    var grace = parseInt(inv.reopen_seconds_left, 10) || 0;
+    var canReopen = inv.can_reopen_now || (['admin', 'owner'].indexOf((state.user || {}).role) !== -1);
+    return head('Completed') +
+      '<div class="alert alert-success" style="margin:0"><b>Completed.</b> ' +
+        escHtml(inv.pay_type ? (inv.pay_type + (inv.card_last4 ? (' ending ' + inv.card_last4) : '')) : 'Settled') +
+        (inv.completed_at ? (' on ' + formatDateTime(inv.completed_at)) : '') + '.</div>' +
+      (inv.can_reopen_now
+        ? '<div id="inv-grace-box" style="display:flex;align-items:center;justify-content:space-between;gap:14px;margin-top:14px;padding:12px 14px;border:1px dashed var(--border);border-radius:var(--radius)">' +
+            '<div><b style="font-size:13.5px">Made a mistake?</b><i style="font-style:normal;display:block;font-size:12.5px;color:var(--text-muted-color);margin-top:2px">You can put this back to Active for <span id="inv-grace-left" style="color:var(--primary);font-weight:600">--:--</span> more.</i></div>' +
+            '<button class="btn btn-secondary btn-sm" style="white-space:nowrap" onclick="invReopen(' + inv.id + ')">Reopen</button>' +
+          '</div>'
+        : (canReopen && grace <= 0
+            ? '<div style="margin-top:12px"><button class="btn btn-secondary btn-sm" onclick="invReopen(' + inv.id + ')">Reopen (admin)</button></div>'
+            : '')) +
+      foot;
+  }
+
+  if (inv.status === 'awaiting_payment') {
+    var since = inv.waiting_since ? formatDateTime(inv.waiting_since) : '';
+    return head('Waiting for Payment', '<span class="badge badge-waiting">Owed</span>') +
+      '<div class="alert alert-warn" style="margin:0"><b>' + invMoney(inv.grand_total) + ' owed.</b>' +
+        (since ? ('<br/>Waiting since ' + escHtml(since) + '.') : '') +
+        (inv.followup ? ('<br/>Follow-up task due ' + escHtml(formatDate(inv.followup.due_date)) + '.') : '') +
+      '</div>' +
+      (canEditNow
+        ? '<button class="btn btn-success" style="width:100%;justify-content:center;margin-top:14px;padding:13px" onclick="invCompleteSheet(' + inv.id + ')">Record payment &amp; Complete</button>' +
+          '<button class="btn btn-secondary mt-2" style="width:100%;justify-content:center" onclick="invWaitingSheet(' + inv.id + ')">Change the follow-up date</button>'
+        : '') +
+      foot;
+  }
+
+  // Active
+  if (!canEditNow) return '';
+  var gates = inv.gates || [];
+  var gateRows = gates.map(function (g) {
+    return '<div style="display:flex;justify-content:space-between;gap:12px;padding:8px 0;font-size:13.5px;border-bottom:1px solid var(--border-light)">' +
+      '<span style="color:var(--text-dim)">' + escHtml(g.label) + '</span>' +
+      '<b style="color:' + (g.ok ? 'var(--success)' : 'var(--danger)') + '">' + escHtml(g.detail) + '</b></div>';
+  }).join('');
+  return head('Finish this invoice') +
+    '<button class="btn btn-success" style="width:100%;justify-content:center;font-size:16px;padding:14px' + (inv.can_complete ? '' : ';opacity:.5') + '"' +
+      (inv.can_complete ? '' : ' disabled') + ' onclick="invCompleteSheet(' + inv.id + ')">' +
+      '<svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M20 6L9 17l-5-5"/></svg> Complete Invoice</button>' +
+    (can('create_invoice') ? '<button class="btn btn-secondary mt-2" style="width:100%;justify-content:center" onclick="invSplitSheet(' + inv.id + ')">Split billing (insurance covers part)</button>' : '') +
+    '<div style="margin-top:14px;border:1px solid var(--border);border-radius:var(--radius);padding:2px 12px">' + gateRows + '</div>' +
+    foot;
+}
+
+function invSplitLinkHtml(inv) {
+  if (!inv.split_siblings || !inv.split_siblings.length) return '';
+  return '<div class="card mb-4"><div class="card-body">' +
+    '<div style="font-size:12.5px;color:var(--text-muted-color);line-height:1.7">Part of a split job with ' +
+    inv.split_siblings.map(function (s) {
+      return '<a href="#" onclick="navigate(\'view-invoice\',' + s.id + ');return false;">#' + escHtml(s.invoice_number) + '</a> (' +
+        escHtml(s.account_name || s.customer_name || '') + ' ' + invMoney(s.grand_total) + ', ' + escHtml(invStatusLabel(s.status)) + ')';
+    }).join(' and ') + '.</div></div></div>';
+}
+
+function invStatusHelp() {
+  var sel = document.getElementById('inv-status');
+  var box = document.getElementById('inv-status-help');
+  if (!sel || !box) return;
+  box.textContent = INV_STATUS_HELP[sel.value] || '';
 }
 
 async function deleteInvoice(id) {

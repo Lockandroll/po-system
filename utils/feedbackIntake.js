@@ -121,6 +121,10 @@ async function alreadyExists(source, externalRef) {
   } catch (e) { return null; }
 }
 
+// Plain-English name for where a record came from, used in the activity timeline.
+var SOURCE_LABELS = { pulsar: 'Pulsar email', google_review: 'a Google review', manual: 'a manual entry', web: 'the web form', sms: 'a text message' };
+function sourceLabel(s) { return SOURCE_LABELS[s] || String(s || 'an unknown source').replace(/_/g, ' '); }
+
 // parsed = output of parsePulsarEmail; meta = { source, external_ref, raw_email, raw_subject }
 async function intakeFeedback(parsed, meta) {
   meta = meta || {};
@@ -129,8 +133,13 @@ async function intakeFeedback(parsed, meta) {
   var dupId = await alreadyExists(source, meta.external_ref);
   if (dupId) { console.log('[feedback] duplicate, skipping. id=' + dupId); return { duplicate: true, id: dupId }; }
 
-  var cityCode = await resolveCityCode(parsed.location_raw);
-  var techId = await resolveTechUserId(parsed.tech_name_raw);
+  // A caller that has already resolved the city (the Google-review intake maps a
+  // listing title to a city itself) passes it in; otherwise resolve from the raw
+  // location string the way the Pulsar emails do.
+  var cityCode = parsed.city_code || await resolveCityCode(parsed.location_raw);
+  // Same idea for the tech: a caller holding a confirmed user id (a review already
+  // credited to someone on the Reviews page) skips the name lookup.
+  var techId = parsed.tech_user_id || await resolveTechUserId(parsed.tech_name_raw);
   var recRes = await resolveRecipients(cityCode);
   var recipients = recRes.recipients;
   var assignee = recipients.length ? recipients[0] : null;
@@ -160,7 +169,7 @@ async function intakeFeedback(parsed, meta) {
   );
   var fb = ins.rows[0];
 
-  await logActivity(fb.id, null, 'event', 'Created from ' + (source === 'pulsar' ? 'Pulsar email' : source) + '.', source);
+  await logActivity(fb.id, null, 'event', 'Created from ' + sourceLabel(source) + '.', source);
 
   // Auto-create the task for the city manager.
   var task = null;

@@ -4,3 +4,6 @@ node_modules/
 npm-debug.log*
 .DS_Store
 .fuse_hidden*
+
+# Scratch: files Claude staged during a session. Safe to delete.
+_to_delete/

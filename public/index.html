@@ -56,6 +56,9 @@
     html[data-theme="light"] tr:hover td { background: rgba(0,0,0,0.03); }
     html[data-theme="light"] .auth-logo .logo-wrap { border-color: rgba(0,0,0,0.18); }
     html[data-theme="light"] .badge-draft { background:#eceef1; color:#5b6470; }
+    html[data-theme="light"] .badge-active { background:#e7f0fe; color:#2563eb; border-color:#cfe0fb; }
+    html[data-theme="light"] .badge-waiting { background:#fff4e0; color:#b9770b; border-color:#ffe2b0; }
+    html[data-theme="light"] .badge-completed { background:#e4f7ec; color:#15803d; border-color:#bbe9cd; }
     html[data-theme="light"] .badge-submitted { background:#fff4e0; color:#b9770b; border-color:#ffe2b0; }
     html[data-theme="light"] .badge-approved { background:#e4f7ec; color:#15803d; border-color:#bbe9cd; }
     html[data-theme="light"] .badge-rejected { background:#fdeaea; color:#dc2626; border-color:#f6c9c9; }
@@ -222,6 +225,11 @@
     .btn:focus-visible, .nav-item:focus-visible, .nav-section-header:focus-visible, .nav-sub:focus-visible, .nav-new:focus-visible { outline: 2px solid var(--primary); outline-offset: 2px; }
     .badge { display: inline-flex; align-items: center; padding: 3px 10px; border-radius: 20px; font-size: 12px; font-weight: 600; text-transform: capitalize; }
     .badge-draft { background: #2a2a2a; color: #aaa; }
+    /* Invoice process. Active is neutral-cool (in progress), Waiting is amber
+       (someone owes money), Completed is green (finish line). */
+    .badge-active { background: #1e293b; color: #7dd3fc; }
+    .badge-waiting { background: #3a2a10; color: #fbbf24; }
+    .badge-completed { background: #10281a; color: #4ade80; }
     .badge-submitted { background: #2d2100; color: #f59e0b; border: 1px solid #4a3500; }
     .badge-approved { background: #0d2d17; color: #22c55e; border: 1px solid #134d27; }
     .badge-rejected { background: #2d0d0d; color: #ef4444; border: 1px solid #4d1515; }

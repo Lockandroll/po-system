@@ -26,6 +26,25 @@ async function loadAssignments(ids) {
   return map;
 }
 
+// Complaints already filed against these Google reviews. Low-star reviews are
+// auto-filed into Customer Feedback by jobs/reviewComplaints.js, keyed on
+// external_ref = Google's stable review_id. Never throws.
+async function loadComplaints(ids) {
+  const map = {};
+  const clean = (ids || []).filter(Boolean).map(String);
+  if (!clean.length) return map;
+  try {
+    const { rows } = await novaPool.query(
+      "SELECT external_ref, id, status FROM customer_feedback WHERE source = 'google_review' AND external_ref = ANY($1)",
+      [clean]
+    );
+    rows.forEach(function (r) { map[r.external_ref] = { id: r.id, status: r.status }; });
+  } catch (e) {
+    console.error('loadComplaints failed:', e.message);
+  }
+  return map;
+}
+
 // Link text-only assignments (old free-text names or low-confidence guesses)
 // to real users whose full name, dispatch (pulsar) name, or nickname exactly
 // matches. A bare first name links when every user with that first name has
@@ -138,6 +157,13 @@ router.get('/', requireAuth, async (req, res) => {
       r.assignee_source = a ? a.source : null;
       r.assignee_user_id = a ? a.user_id : null;
       r.assignee_confidence = a ? a.confidence : null;
+    });
+    // Has this review already been turned into a complaint?
+    const cmap = await loadComplaints(rows.map(function (r) { return r.review_id; }));
+    rows.forEach(function (r) {
+      const c = r.review_id ? cmap[String(r.review_id)] : null;
+      r.complaint_id = c ? c.id : null;
+      r.complaint_status = c ? c.status : null;
     });
     res.json(rows);
   } catch (err) {
@@ -460,6 +486,37 @@ router.post('/tech-tally', requireAuth, requireRole('admin'), async (req, res) =
   } catch (err) {
     console.error('POST /api/reviews/tech-tally failed:', err.message);
     res.status(502).json({ error: 'Tally failed: ' + err.message });
+  }
+});
+
+// POST /api/reviews/file-complaint - open a Customer Feedback complaint for one
+// Google review by hand. Reviews at or below the complaint threshold file
+// themselves on a 30-minute cron (jobs/reviewComplaints.js); this is for older
+// reviews from before that job was switched on, and for the occasional higher-star
+// review that still needs working. The UNIQUE(source, external_ref) index makes a
+// double click harmless - it comes back as the existing record.
+router.post('/file-complaint', requireAuth, requirePermission('manage_feedback'), async (req, res) => {
+  const rpool = getReviewsPool();
+  if (!rpool) return notConfigured(res);
+  const reviewId = (req.body && req.body.review_id != null) ? String(req.body.review_id).trim() : '';
+  if (!reviewId) return res.status(400).json({ error: 'review_id is required' });
+  try {
+    const { rows } = await rpool.query(
+      "SELECT id, review_id, location_name, reviewer_name, rating, review_text, " +
+      "to_char(review_date, 'YYYY-MM-DD') AS review_date, created_at " +
+      "FROM reviews WHERE review_id = $1 LIMIT 1",
+      [reviewId]
+    );
+    if (!rows.length) return res.status(404).json({ error: 'That review is not in the reviews database.' });
+    // Required lazily on purpose: jobs/reviewComplaints.js requires THIS file for
+    // the reviews pool, so requiring it at the top would be a cycle.
+    const { fileComplaintForReview } = require('../jobs/reviewComplaints');
+    const result = await fileComplaintForReview(rows[0]);
+    if (!result || !result.id) return res.status(500).json({ error: 'Could not file the complaint. Check the server log.' });
+    res.json({ id: result.id, duplicate: !!result.duplicate, review_id: reviewId });
+  } catch (err) {
+    console.error('POST /api/reviews/file-complaint failed:', err.message);
+    res.status(500).json({ error: 'Failed to file complaint: ' + err.message });
   }
 });
 

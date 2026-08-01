@@ -1764,6 +1764,60 @@ async function initDB() {
     await client.query(
       'UPDATE invoices SET authorized_total = grand_total WHERE authorized_total IS NULL AND signature_image IS NOT NULL;'
     );
+    // ---- Invoice process rework -----------------------------------------
+    // Field feedback was that "Completed" and "Paid" both read as a finish line,
+    // so techs used them interchangeably and the reports stopped meaning
+    // anything. There is now exactly ONE finish line plus a named branch:
+    //
+    //   Active  -> Completed              paid on the spot, or billed to an account
+    //   Active  -> Waiting for Payment -> Completed
+    //
+    // ⚠️ The STORED values deliberately do NOT change. 'draft' displays as
+    // "Active" and 'paid' displays as "Completed". LOCKED_STATUSES,
+    // refunds.status_before_refund (values already sitting in live rows), the
+    // Square narrow writer, the Square reconciliation query and the AI tool
+    // enums all key on 'paid'. Renaming would be two ordered, non-repeatable
+    // migrations across live money records for a cosmetic gain. The labels live
+    // in INV_STATUS_LABELS in public/js/app.js.
+    await client.query(
+      // When the invoice reached the finish line, and who put it there. Drives the
+      // 15-minute reopen grace period; NULL means no grace (old invoices).
+      'ALTER TABLE invoices ADD COLUMN IF NOT EXISTS completed_at TIMESTAMPTZ;' +
+      'ALTER TABLE invoices ADD COLUMN IF NOT EXISTS completed_by INTEGER REFERENCES users(id) ON DELETE SET NULL;' +
+      // When it entered Waiting for Payment, so the list can age it.
+      'ALTER TABLE invoices ADD COLUMN IF NOT EXISTS waiting_since TIMESTAMPTZ;' +
+      // The chase task. Closed automatically when the invoice reaches Completed,
+      // otherwise you build a graveyard of stale follow-ups nobody trusts.
+      'ALTER TABLE invoices ADD COLUMN IF NOT EXISTS followup_task_id INTEGER REFERENCES tasks(id) ON DELETE SET NULL;' +
+      // Split billing (GEICO covers $100 of a key make, customer owes the rest).
+      // Both halves carry the same split_group_id; the generated invoice also
+      // points at the one it came from.
+      'ALTER TABLE invoices ADD COLUMN IF NOT EXISTS split_group_id INTEGER;' +
+      'ALTER TABLE invoices ADD COLUMN IF NOT EXISTS split_parent_id INTEGER REFERENCES invoices(id) ON DELETE SET NULL;' +
+      'CREATE INDEX IF NOT EXISTS idx_invoices_split_group ON invoices(split_group_id);' +
+      'CREATE INDEX IF NOT EXISTS idx_invoices_followup ON invoices(followup_task_id);'
+    );
+    // Pay types that are BILLED rather than collected in the field. An invoice on
+    // one of these completes straight away instead of going to Waiting for
+    // Payment, because nobody is going to chase the customer for it. A setting,
+    // not a hardcoded list, so it can change without a deploy.
+    await client.query(
+      "INSERT INTO settings (key, value) VALUES ('invoice_billed_pay_types', $1) ON CONFLICT (key) DO NOTHING",
+      [JSON.stringify(['Account / Invoice', 'Motor Club'])]
+    );
+    // ONE-TIME: the old 'completed' status meant the work was done but the money
+    // was not in, which is exactly what Waiting for Payment means now. Guarded by
+    // a settings flag so it can never run twice and re-capture invoices that a
+    // human has since moved on purpose. No follow-up tasks are created
+    // retroactively; these are historical.
+    const _invProc = await client.query("SELECT value FROM settings WHERE key = 'invoice_status_rework_migrated'");
+    if (!_invProc.rows.length) {
+      const _moved = await client.query("UPDATE invoices SET status = 'awaiting_payment' WHERE status = 'completed' RETURNING id");
+      if (_moved.rowCount) {
+        console.log('Invoice status rework: moved ' + _moved.rowCount + " invoice(s) from 'completed' to 'awaiting_payment'");
+      }
+      await client.query("INSERT INTO settings (key, value) VALUES ('invoice_status_rework_migrated', '1') ON CONFLICT (key) DO NOTHING");
+    }
     // Refund permissions: anyone who can create an invoice may REQUEST a refund
     // (that is the tech who wrote it, standing in front of the customer); only a
     // manager and up may approve one. Backfilled into any saved role matrix once,

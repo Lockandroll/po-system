@@ -15,6 +15,7 @@ const { startTaskReminders, startRecurringSpawner, startCompletedCleanup } = req
 const { startWorkOrders } = require('./jobs/workOrders');
 const { startDocExpiry } = require('./jobs/docExpiry');
 const { startReviewRatings } = require('./jobs/reviewRatings');
+const { startReviewComplaints } = require('./jobs/reviewComplaints');
 const { startSignatureReminders } = require('./jobs/signatureReminders');
 const { startTimeClock } = require('./jobs/timeclock');
 const { startPtoAccrual } = require('./jobs/ptoAccrual');
@@ -188,6 +189,7 @@ initDB()
     startTimeClock();
     startDocExpiry();
     startReviewRatings();
+    startReviewComplaints();
     startSignatureReminders();
     startPtoAccrual();
     startGeicoIngest();

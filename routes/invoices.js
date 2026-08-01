@@ -12,6 +12,7 @@ const r2 = require('../utils/r2');
 const { buildInvoicePdf } = require('../utils/invoicePdf');
 const { buildDisputePdf } = require('../utils/disputePdf');
 const square = require('../utils/square');
+const { notifyTaskAssigned, notifyTaskCc } = require('../jobs/taskReminders');
 
 const router = express.Router();
 
@@ -706,6 +707,32 @@ router.get('/:id', requireAuth, requirePermission('view_invoices'), async (req, 
     invoice.locked = LOCKED_STATUSES.indexOf(invoice.status) !== -1;
     // Latest Square payment attempt, so the view can show 'paid in Square'
     // with the real card data, or the stuck/offline state if it never settled.
+    // Process state for the Complete button, the reopen grace period and the
+    // split-billing link. Computed here so the client never has to guess.
+    try {
+      invoice.gates = invoiceGates(invoice, invoice.line_items);
+      invoice.can_complete = gatesPass(invoice.gates);
+    } catch (e) { invoice.gates = []; invoice.can_complete = false; }
+    invoice.reopen_seconds_left = graceLeft(invoice);
+    invoice.can_reopen_now = invoice.status === 'paid' && invoice.reopen_seconds_left > 0 && invoice.completed_by === req.user.id;
+    invoice.billed_pay_types = await billedPayTypes();
+    invoice.split_siblings = [];
+    try {
+      if (invoice.split_group_id) {
+        const sib = await pool.query(
+          'SELECT id, invoice_number, account_name, customer_name, grand_total, status FROM invoices WHERE split_group_id = $1 AND id <> $2 ORDER BY id',
+          [invoice.split_group_id, invoice.id]
+        );
+        invoice.split_siblings = sib.rows;
+      }
+    } catch (e) { /* column may not exist yet on first deploy */ }
+    invoice.followup = null;
+    try {
+      if (invoice.followup_task_id) {
+        const ft = await pool.query('SELECT id, title, due_date, status FROM tasks WHERE id = $1', [invoice.followup_task_id]);
+        invoice.followup = ft.rows[0] || null;
+      }
+    } catch (e) {}
     invoice.square_payment = null;
     invoice.square_enabled = square.configured();
     try {
@@ -1087,7 +1114,7 @@ async function insertLineItems(client, invoiceId, line_items) {
 router.post('/', requireAuth, requirePermission('create_invoice'), async (req, res) => {
   const b = req.body || {};
   const f = pickInvoiceFields(b);
-  const status = ['draft', 'completed', 'paid'].indexOf(b.status) !== -1 ? b.status : 'draft';
+  const status = ['draft', 'awaiting_payment', 'paid'].indexOf(b.status) !== -1 ? b.status : 'draft';
   if (f.signature_required && status !== 'draft' && !f.signature_image) {
     return res.status(400).json({ error: 'A signature is required before this invoice can be marked ' + status + '. Save as draft, or capture a signature.' });
   }
@@ -1382,6 +1409,409 @@ router.post('/:id/payments/:pid/cancel', requireAuth, requirePermission('edit_in
   }
 });
 
+// ---- Invoice process: Active / Waiting for Payment / Completed -------------
+//
+// Field feedback was that "Completed" and "Paid" both read as a finish line, so
+// techs picked whichever and the reports stopped meaning anything. There is now
+// one finish line and one named branch:
+//
+//   Active -> Completed                 paid on the spot, or billed to an account
+//   Active -> Waiting for Payment -> Completed
+//
+// ⚠️ The STORED values did not change. 'draft' displays as "Active" and 'paid'
+// displays as "Completed"; only 'awaiting_payment' is new. LOCKED_STATUSES,
+// refunds.status_before_refund, the Square narrow writer and the reconciliation
+// query all key on 'paid'. Do not "tidy" this by renaming the stored values.
+
+// How long the person who completed an invoice can put it back without help.
+// Every user-facing message below derives from this, so changing it here is the
+// only edit needed.
+var COMPLETE_GRACE_MINUTES = 5;
+
+// Pay types that are BILLED rather than collected, so an invoice on one of them
+// finishes immediately instead of waiting for money nobody is going to chase.
+async function billedPayTypes() {
+  try {
+    const raw = await getSetting('invoice_billed_pay_types', '["Account / Invoice","Motor Club"]');
+    const list = JSON.parse(raw);
+    return Array.isArray(list) ? list : [];
+  } catch (e) {
+    return ['Account / Invoice', 'Motor Club'];
+  }
+}
+
+function isBilledPayType(payType, list) {
+  const p = String(payType || '').trim().toLowerCase();
+  if (!p) return false;
+  return (list || []).some(function (x) { return String(x).trim().toLowerCase() === p; });
+}
+
+// Everything that has to be true before an invoice can reach a finish line.
+// Returned to the client so the button can show WHY it is disabled instead of
+// failing after a save, which is how these gates behaved before.
+function invoiceGates(inv, items) {
+  const lines = (items || []).filter(function (i) { return i && String(i.description || '').trim(); });
+  const g = [];
+  g.push({ key: 'customer', label: 'Customer name', ok: !!String(inv.customer_name || '').trim(), detail: inv.customer_name || 'Missing' });
+  g.push({ key: 'items', label: 'At least one line item', ok: lines.length > 0, detail: lines.length ? String(lines.length) : 'Missing' });
+  g.push({ key: 'city', label: 'City, for sales tax', ok: !!inv.city_code, detail: inv.city_code || 'Missing' });
+  if (inv.signature_required) {
+    g.push({ key: 'signature', label: 'Signature (required by policy)', ok: !!inv.signature_image, detail: inv.signature_image ? 'Captured' : 'Not captured' });
+  }
+  g.push({ key: 'total', label: 'Invoice total', ok: (parseFloat(inv.grand_total) || 0) !== 0, detail: '$' + (parseFloat(inv.grand_total) || 0).toFixed(2) });
+  return g;
+}
+
+function gatesPass(gates) {
+  return gates.every(function (g) { return g.ok; });
+}
+
+// Seconds of reopen grace left, or 0. NULL completed_at (every invoice from
+// before this shipped) means no grace, which is the safe direction.
+function graceLeft(inv) {
+  if (!inv.completed_at) return 0;
+  const ms = COMPLETE_GRACE_MINUTES * 60000 - (Date.now() - new Date(inv.completed_at).getTime());
+  return ms > 0 ? Math.floor(ms / 1000) : 0;
+}
+
+// The chase task closes itself the moment the invoice is settled. Without this
+// you accumulate a graveyard of stale follow-ups and nobody trusts the list.
+async function closeFollowupTask(inv, user) {
+  if (!inv || !inv.followup_task_id) return;
+  try {
+    await pool.query(
+      "UPDATE tasks SET status = 'done', completed_at = NOW(), completed_by = $1, updated_at = NOW() " +
+      "WHERE id = $2 AND status <> 'done'",
+      [(user && user.id) || null, inv.followup_task_id]
+    );
+  } catch (e) {
+    console.error('Could not close invoice follow-up task ' + inv.followup_task_id + ':', e.message);
+  }
+}
+
+// Who gets the FYI. The tech's supervisor, falling back to the city's primary
+// manager, which is the same rule customer feedback already uses.
+async function managerFor(userId, cityCode) {
+  try {
+    if (userId) {
+      const u = await pool.query('SELECT supervisor_id FROM users WHERE id = $1', [userId]);
+      const sup = u.rows[0] && u.rows[0].supervisor_id;
+      if (sup) return sup;
+    }
+  } catch (e) {}
+  try {
+    if (cityCode) {
+      const c = await pool.query('SELECT manager_user_id FROM cities WHERE UPPER(code) = UPPER($1)', [cityCode]);
+      const m = c.rows[0] && c.rows[0].manager_user_id;
+      if (m) return m;
+    }
+  } catch (e) {}
+  return null;
+}
+
+// Move an invoice to the finish line. Shared by the Complete Invoice button, the
+// status dropdown, and the Waiting-for-Payment screen.
+router.post('/:id/complete', requireAuth, requirePermission('edit_invoice'), async (req, res) => {
+  try {
+    const r = await pool.query('SELECT * FROM invoices WHERE id = $1', [req.params.id]);
+    const inv = r.rows[0];
+    if (!inv) return res.status(404).json({ error: 'Invoice not found' });
+    if (!canSeeAll(req.user.role) && inv.locksmith_id !== req.user.id) {
+      return res.status(403).json({ error: 'Access denied' });
+    }
+    if (LOCKED_STATUSES.indexOf(inv.status) !== -1) {
+      return res.status(409).json({ error: 'This invoice is already completed.' });
+    }
+    const items = (await pool.query('SELECT * FROM invoice_line_items WHERE invoice_id = $1', [inv.id])).rows;
+    const gates = invoiceGates(inv, items);
+    if (!gatesPass(gates)) {
+      const missing = gates.filter(function (g) { return !g.ok; }).map(function (g) { return g.label.toLowerCase(); });
+      return res.status(400).json({ error: 'Not finished yet: ' + missing.join(', ') + '.', gates: gates });
+    }
+
+    const b = req.body || {};
+    const payType = String(b.pay_type || inv.pay_type || '').trim();
+    if (!payType) {
+      return res.status(400).json({ error: 'Say how this was paid before completing it.' });
+    }
+    const last4 = b.card_last4 != null ? String(b.card_last4).replace(/\D/g, '').slice(-4) : inv.card_last4;
+    const approval = b.approval_code != null ? String(b.approval_code).trim() : inv.approval_code;
+
+    const upd = await pool.query(
+      "UPDATE invoices SET status = 'paid', pay_type = $1, card_last4 = $2, approval_code = $3, " +
+      'completed_at = NOW(), completed_by = $4, waiting_since = NULL, ' +
+      'authorized_total = COALESCE(authorized_total, grand_total), updated_at = NOW() ' +
+      'WHERE id = $5 RETURNING *',
+      [payType, last4 || null, approval || null, req.user.id, inv.id]
+    );
+    await closeFollowupTask(inv, req.user);
+    try {
+      await logAudit({
+        entity_type: 'invoice', entity_id: inv.id, entity_number: String(inv.invoice_number),
+        action: 'completed', user_id: req.user.id, user_name: req.user.name,
+        details: { pay_type: payType, total: inv.grand_total, from: inv.status }
+      });
+    } catch (e) {}
+    res.json({ ok: true, invoice: upd.rows[0], grace_seconds: COMPLETE_GRACE_MINUTES * 60 });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Could not complete the invoice' });
+  }
+});
+
+// Park an invoice as Waiting for Payment and raise the chase task.
+router.post('/:id/waiting', requireAuth, requirePermission('edit_invoice'), async (req, res) => {
+  try {
+    const r = await pool.query('SELECT * FROM invoices WHERE id = $1', [req.params.id]);
+    const inv = r.rows[0];
+    if (!inv) return res.status(404).json({ error: 'Invoice not found' });
+    if (!canSeeAll(req.user.role) && inv.locksmith_id !== req.user.id) {
+      return res.status(403).json({ error: 'Access denied' });
+    }
+    if (LOCKED_STATUSES.indexOf(inv.status) !== -1) {
+      return res.status(409).json({ error: 'This invoice is already completed.' });
+    }
+    const items = (await pool.query('SELECT * FROM invoice_line_items WHERE invoice_id = $1', [inv.id])).rows;
+    const gates = invoiceGates(inv, items);
+    if (!gatesPass(gates)) {
+      const missing = gates.filter(function (g) { return !g.ok; }).map(function (g) { return g.label.toLowerCase(); });
+      return res.status(400).json({ error: 'Not finished yet: ' + missing.join(', ') + '.', gates: gates });
+    }
+
+    const b = req.body || {};
+    const due = /^\d{4}-\d{2}-\d{2}$/.test(String(b.followup_date || '')) ? b.followup_date : null;
+    if (!due) return res.status(400).json({ error: 'Pick a date for someone to chase this.' });
+    const note = String(b.note || '').trim().slice(0, 2000);
+
+    await pool.query(
+      "UPDATE invoices SET status = 'awaiting_payment', waiting_since = COALESCE(waiting_since, NOW()), " +
+      'completed_at = NULL, completed_by = NULL, updated_at = NOW() WHERE id = $1',
+      [inv.id]
+    );
+
+    // One open chase task per invoice. Re-parking an invoice reuses the existing
+    // task and just moves its date, rather than stacking duplicates on somebody.
+    let taskId = inv.followup_task_id;
+    let reused = false;
+    if (taskId) {
+      const t = await pool.query("SELECT id, status FROM tasks WHERE id = $1", [taskId]);
+      if (t.rows.length && t.rows[0].status !== 'done') {
+        await pool.query('UPDATE tasks SET due_date = $1, updated_at = NOW() WHERE id = $2', [due, taskId]);
+        reused = true;
+      } else {
+        taskId = null;
+      }
+    }
+
+    if (!taskId) {
+      const assignee = inv.locksmith_id || req.user.id;
+      const owed = (parseFloat(inv.grand_total) || 0).toFixed(2);
+      const title = 'Collect $' + owed + ' on Invoice #' + inv.invoice_number + (inv.customer_name ? (' - ' + inv.customer_name) : '');
+      const desc = (note ? (note + '\n\n') : '') + 'Invoice #' + inv.invoice_number + ' is waiting for payment. Open it in Nova to record the payment or run the card.';
+      const topPos = (await pool.query("SELECT COALESCE(MIN(position),0)-1 AS p FROM tasks WHERE status = 'todo'")).rows[0].p;
+      const ins = await pool.query(
+        "INSERT INTO tasks (title, description, status, priority, assigned_to, created_by, due_date, position) " +
+        "VALUES ($1,$2,'todo','medium',$3,$4,$5,$6) RETURNING id",
+        [title.slice(0, 255), desc, assignee, req.user.id, due, topPos]
+      );
+      taskId = ins.rows[0].id;
+
+      const mgr = await managerFor(assignee, inv.city_code);
+      if (mgr && mgr !== assignee) {
+        try {
+          await pool.query('INSERT INTO task_cc (task_id, user_id) VALUES ($1,$2) ON CONFLICT (task_id, user_id) DO NOTHING', [taskId, mgr]);
+        } catch (e) {}
+      }
+      await pool.query('UPDATE invoices SET followup_task_id = $1 WHERE id = $2', [taskId, inv.id]);
+
+      // Reuse the real task notification path rather than inventing a parallel
+      // one, so this inherits the reminders and FYI emails that already exist.
+      try { await notifyTaskAssigned(taskId); } catch (e) {}
+      try { await notifyTaskCc(taskId); } catch (e) {}
+    }
+
+    try {
+      await logAudit({
+        entity_type: 'invoice', entity_id: inv.id, entity_number: String(inv.invoice_number),
+        action: 'waiting_for_payment', user_id: req.user.id, user_name: req.user.name,
+        details: { followup_date: due, task_id: taskId, reused_task: reused }
+      });
+    } catch (e) {}
+
+    const fresh = await pool.query('SELECT * FROM invoices WHERE id = $1', [inv.id]);
+    res.json({ ok: true, invoice: fresh.rows[0], task_id: taskId });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Could not set this invoice to Waiting for Payment' });
+  }
+});
+
+// The 15-minute undo. Deliberately narrow: the person who completed it, inside
+// the window. Everyone else still goes through an admin, exactly as before.
+router.post('/:id/reopen', requireAuth, requirePermission('edit_invoice'), async (req, res) => {
+  try {
+    const r = await pool.query('SELECT * FROM invoices WHERE id = $1', [req.params.id]);
+    const inv = r.rows[0];
+    if (!inv) return res.status(404).json({ error: 'Invoice not found' });
+    if (LOCKED_STATUSES.indexOf(inv.status) === -1) {
+      return res.status(400).json({ error: 'This invoice is not completed.' });
+    }
+    if (inv.status !== 'paid') {
+      return res.status(409).json({ error: 'This invoice has refunds against it. Reopening it would strand them.' });
+    }
+
+    // Money that actually moved through Square cannot be walked back by flipping
+    // a status. The refund flow exists for that and leaves a record.
+    try {
+      const sq = await pool.query("SELECT id FROM invoice_payments WHERE invoice_id = $1 AND status = 'reconciled'", [inv.id]);
+      if (sq.rows.length) {
+        return res.status(409).json({ error: 'A card was already run in Square for this invoice. Use a refund so there is a record.' });
+      }
+    } catch (e) { /* table may not exist yet on first deploy */ }
+
+    const isAdmin = ['admin', 'owner'].indexOf(req.user.role) !== -1;
+    const left = graceLeft(inv);
+    const ownGrace = inv.completed_by === req.user.id && left > 0;
+    if (!isAdmin && !ownGrace) {
+      return res.status(403).json({
+        error: inv.completed_by === req.user.id
+          ? 'The ' + COMPLETE_GRACE_MINUTES + ' minutes to undo this has passed. Ask an admin.'
+          : 'Only the person who completed this invoice can reopen it, and only for ' + COMPLETE_GRACE_MINUTES + ' minutes.'
+      });
+    }
+
+    await pool.query(
+      "UPDATE invoices SET status = 'draft', completed_at = NULL, completed_by = NULL, updated_at = NOW() WHERE id = $1",
+      [inv.id]
+    );
+    try {
+      await logAudit({
+        entity_type: 'invoice', entity_id: inv.id, entity_number: String(inv.invoice_number),
+        action: 'reopened', user_id: req.user.id, user_name: req.user.name,
+        details: { via: isAdmin && !ownGrace ? 'admin override' : 'grace period', seconds_after_completing: inv.completed_at ? Math.floor((Date.now() - new Date(inv.completed_at).getTime()) / 1000) : null }
+      });
+    } catch (e) {}
+    const fresh = await pool.query('SELECT * FROM invoices WHERE id = $1', [inv.id]);
+    res.json({ ok: true, invoice: fresh.rows[0] });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Could not reopen the invoice' });
+  }
+});
+
+// Split billing. One job, two invoices: an insurer or account covers part of it
+// and the customer owes the rest.
+//
+// ⚠️ This SPLITS BY AMOUNT rather than duplicating the invoice, and that is the
+// whole point. The month-end parts report and the COGS figure both sum
+// invoice_line_items across every invoice in the period, so copying a $62 key
+// onto a second invoice would order it twice next month and cost it twice on the
+// P&L, with nothing to flag it because both invoices look normal on their own.
+// Here the new invoice gets ONE labor line and no parts, so the key is costed
+// exactly once by construction. Never "improve" this into a full duplicate.
+router.post('/:id/split', requireAuth, requirePermission('create_invoice'), async (req, res) => {
+  const client = await pool.connect();
+  try {
+    const r = await client.query('SELECT * FROM invoices WHERE id = $1', [req.params.id]);
+    const inv = r.rows[0];
+    if (!inv) return res.status(404).json({ error: 'Invoice not found' });
+    if (!canSeeAll(req.user.role) && inv.locksmith_id !== req.user.id) {
+      return res.status(403).json({ error: 'Access denied' });
+    }
+    if (LOCKED_STATUSES.indexOf(inv.status) !== -1) {
+      return res.status(409).json({ error: 'This invoice is completed. Split it before it is finished.' });
+    }
+
+    const b = req.body || {};
+    const amount = Math.round((parseFloat(b.amount) || 0) * 100) / 100;
+    const total = parseFloat(inv.grand_total) || 0;
+    if (!(amount > 0)) return res.status(400).json({ error: 'Enter how much the account is covering.' });
+    if (amount >= total) {
+      return res.status(400).json({ error: 'That is the whole invoice. Change the account on this invoice instead of splitting it.' });
+    }
+
+    let accountId = b.account_id ? parseInt(b.account_id, 10) : null;
+    let accountName = String(b.account_name || '').trim();
+    if (accountId && !accountName) {
+      const a = await client.query('SELECT name FROM vendors WHERE id = $1', [accountId]);
+      accountName = (a.rows[0] && a.rows[0].name) || '';
+    }
+    if (!accountName) return res.status(400).json({ error: 'Say who is covering part of this.' });
+    const desc = String(b.description || '').trim() || (accountName + ' portion');
+
+    await client.query('BEGIN');
+
+    // 1. Reduce the original with a visible, auditable negative LABOR line.
+    //    Labor, not part, so it can never touch COGS or the parts report.
+    //    Non-taxable on purpose: the taxable value of the sale did not change
+    //    just because somebody else is paying part of it, so the tax stays whole
+    //    across the pair. See the note to Tony if the accountant disagrees.
+    const pos = (await client.query('SELECT COALESCE(MAX(position),0)+1 AS p FROM invoice_line_items WHERE invoice_id = $1', [inv.id])).rows[0].p;
+    await client.query(
+      "INSERT INTO invoice_line_items (invoice_id, line_type, description, quantity, unit_price, taxable, position) " +
+      "VALUES ($1,'labor',$2,1,$3,false,$4)",
+      [inv.id, ('Less ' + accountName + ' portion').slice(0, 500), -amount, pos]
+    );
+
+    // 2. The account's invoice: one labor line, no parts, no cost, no signature.
+    const newNumber = await generateInvoiceNumber(inv.city_code);
+    const groupId = inv.split_group_id || inv.id;
+    const ni = await client.query(
+      'INSERT INTO invoices (invoice_number, locksmith_id, locksmith_name, invoice_date, status, account_id, account_name, ' +
+      'customer_po_wo, pay_type, customer_name, street_address, city, state, zip, phone, email, ' +
+      'vehicle_year, vehicle_make, vehicle_model, license_tag, tag_state, vin, mileage, ' +
+      "tax_rate, labor_amount, parts_amount, subtotal, tax_amount, tip_amount, grand_total, " +
+      'agreement_text, signature_required, city_code, split_group_id, split_parent_id, notes) ' +
+      "VALUES ($1,$2,$3,$4,'draft',$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,0,$23,0,$23,0,0,$23,$24,false,$25,$26,$27,$28) RETURNING *",
+      [
+        newNumber, inv.locksmith_id, inv.locksmith_name, inv.invoice_date,
+        accountId, accountName, inv.customer_po_wo,
+        // Billed, so it finishes without anybody chasing a customer.
+        'Account / Invoice',
+        inv.customer_name, inv.street_address, inv.city, inv.state, inv.zip, inv.phone, inv.email,
+        inv.vehicle_year, inv.vehicle_make, inv.vehicle_model, inv.license_tag, inv.tag_state, inv.vin, inv.mileage,
+        amount, inv.agreement_text, inv.city_code, groupId, inv.id,
+        'Split from Invoice #' + inv.invoice_number + '. ' + accountName + ' portion of the same job.'
+      ]
+    );
+    const child = ni.rows[0];
+    await client.query(
+      "INSERT INTO invoice_line_items (invoice_id, line_type, description, quantity, unit_price, taxable, position) " +
+      "VALUES ($1,'labor',$2,1,$3,false,0)",
+      [child.id, desc.slice(0, 500), amount]
+    );
+
+    // 3. Point the original at the pair and rebuild its totals from its lines.
+    await client.query('UPDATE invoices SET split_group_id = $1 WHERE id = $2', [groupId, inv.id]);
+    const freshItems = (await client.query('SELECT * FROM invoice_line_items WHERE invoice_id = $1', [inv.id])).rows;
+    const t = computeTotals(freshItems, inv.tax_rate, inv.tip_amount, inv.tax_exempt === true);
+    await client.query(
+      'UPDATE invoices SET labor_amount=$1, parts_amount=$2, subtotal=$3, tax_amount=$4, tip_amount=$5, grand_total=$6, ' +
+      'parts_cost_total=$7, cogs_incomplete=$8, updated_at=NOW() WHERE id=$9',
+      [t.labor, t.parts, t.subtotal, t.tax_amount, t.tip, t.grand_total, t.parts_cost, t.cogs_incomplete, inv.id]
+    );
+
+    await client.query('COMMIT');
+
+    try {
+      await logAudit({
+        entity_type: 'invoice', entity_id: inv.id, entity_number: String(inv.invoice_number),
+        action: 'split', user_id: req.user.id, user_name: req.user.name,
+        details: { amount: amount, account: accountName, new_invoice_id: child.id, new_invoice_number: child.invoice_number }
+      });
+    } catch (e) {}
+
+    const orig = await pool.query('SELECT * FROM invoices WHERE id = $1', [inv.id]);
+    res.status(201).json({ ok: true, original: orig.rows[0], created: child });
+  } catch (err) {
+    try { await client.query('ROLLBACK'); } catch (e) {}
+    console.error(err);
+    res.status(500).json({ error: 'Could not split the invoice' });
+  } finally {
+    client.release();
+  }
+});
+
 router.put('/:id', requireAuth, requirePermission('edit_invoice'), async (req, res) => {
   try {
     const cur = await pool.query('SELECT * FROM invoices WHERE id = $1', [req.params.id]);
@@ -1402,7 +1832,7 @@ router.put('/:id', requireAuth, requirePermission('edit_invoice'), async (req, r
     }
     const b = req.body || {};
     const f = pickInvoiceFields(b);
-    let status = ['draft', 'completed', 'paid'].indexOf(b.status) !== -1 ? b.status : existing.status;
+    let status = ['draft', 'awaiting_payment', 'paid'].indexOf(b.status) !== -1 ? b.status : existing.status;
     // An admin correcting a refunded invoice must not knock the refund status off
     // it: partially_refunded / refunded are derived from the ledger, not chosen in
     // the form, so they are held here whatever the client sent.
@@ -1442,8 +1872,11 @@ router.put('/:id', requireAuth, requirePermission('edit_invoice'), async (req, r
     try {
       await client.query('BEGIN');
       await client.query(
-        'UPDATE invoices SET account_id=$1, account_name=$2, customer_po_wo=$3, pay_type=$4, card_last4=$5, cc_online=$6, time_in=$7, time_out=$8, customer_name=$9, dl_number=$10, dl_state=$11, street_address=$12, city=$13, state=$14, zip=$15, phone=$16, email=$17, vehicle_year=$18, vehicle_make=$19, vehicle_model=$20, license_tag=$21, tag_state=$22, vin=$23, mileage=$24, ent_registration=$25, ent_insurance=$26, ent_title=$27, ent_rental=$28, tax_rate=$29, labor_amount=$30, parts_amount=$31, subtotal=$32, tax_amount=$33, tip_amount=$34, grand_total=$35, notes=$36, payments_note=$37, agreement_text=$38, signature_image=$39, signed_name=$40, signed_at=$41, status=$42, invoice_date=$43, approval_code=$44, tax_exempt=$45, signature_required=$46, city_code=$47, parts_cost_total=$48, cogs_incomplete=$49, updated_at=NOW() WHERE id=$50',
-        [f.account_id, f.account_name, f.customer_po_wo, f.pay_type, f.card_last4, f.cc_online, f.time_in, f.time_out, f.customer_name, f.dl_number, f.dl_state, f.street_address, f.city, f.state, f.zip, f.phone, f.email, f.vehicle_year, f.vehicle_make, f.vehicle_model, f.license_tag, f.tag_state, f.vin, f.mileage, f.ent_registration, f.ent_insurance, f.ent_title, f.ent_rental, tax_rate, t.labor, t.parts, t.subtotal, t.tax_amount, t.tip, t.grand_total, f.notes, f.payments_note, f.agreement_text, f.signature_image, f.signed_name, signedAt, status, invoice_date, f.approval_code, f.tax_exempt, f.signature_required, f.city_code, t.parts_cost, t.cogs_incomplete, req.params.id]
+        'UPDATE invoices SET completed_at = CASE WHEN $42::text = \'paid\' AND status <> \'paid\' THEN NOW() WHEN $42::text <> \'paid\' THEN NULL ELSE completed_at END, ' +
+        'completed_by = CASE WHEN $42::text = \'paid\' AND status <> \'paid\' THEN $51::int WHEN $42::text <> \'paid\' THEN NULL ELSE completed_by END, ' +
+        'waiting_since = CASE WHEN $42::text = \'awaiting_payment\' THEN COALESCE(waiting_since, NOW()) ELSE NULL END, ' +
+        'account_id=$1, account_name=$2, customer_po_wo=$3, pay_type=$4, card_last4=$5, cc_online=$6, time_in=$7, time_out=$8, customer_name=$9, dl_number=$10, dl_state=$11, street_address=$12, city=$13, state=$14, zip=$15, phone=$16, email=$17, vehicle_year=$18, vehicle_make=$19, vehicle_model=$20, license_tag=$21, tag_state=$22, vin=$23, mileage=$24, ent_registration=$25, ent_insurance=$26, ent_title=$27, ent_rental=$28, tax_rate=$29, labor_amount=$30, parts_amount=$31, subtotal=$32, tax_amount=$33, tip_amount=$34, grand_total=$35, notes=$36, payments_note=$37, agreement_text=$38, signature_image=$39, signed_name=$40, signed_at=$41, status=$42, invoice_date=$43, approval_code=$44, tax_exempt=$45, signature_required=$46, city_code=$47, parts_cost_total=$48, cogs_incomplete=$49, updated_at=NOW() WHERE id=$50',
+        [f.account_id, f.account_name, f.customer_po_wo, f.pay_type, f.card_last4, f.cc_online, f.time_in, f.time_out, f.customer_name, f.dl_number, f.dl_state, f.street_address, f.city, f.state, f.zip, f.phone, f.email, f.vehicle_year, f.vehicle_make, f.vehicle_model, f.license_tag, f.tag_state, f.vin, f.mileage, f.ent_registration, f.ent_insurance, f.ent_title, f.ent_rental, tax_rate, t.labor, t.parts, t.subtotal, t.tax_amount, t.tip, t.grand_total, f.notes, f.payments_note, f.agreement_text, f.signature_image, f.signed_name, signedAt, status, invoice_date, f.approval_code, f.tax_exempt, f.signature_required, f.city_code, t.parts_cost, t.cogs_incomplete, req.params.id, req.user.id]
       );
       // An edit rewrites the line items wholesale: delete, then re-insert with
       // fresh ids. invoice_refund_lines.invoice_line_item_id is ON DELETE SET

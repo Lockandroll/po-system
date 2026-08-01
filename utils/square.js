@@ -387,7 +387,7 @@ async function reconcilePayment(paymentRowId) {
   } catch (e) { feeCents = 0; }
 
   const invRes = await pool.query(
-    'SELECT id, invoice_number, status, subtotal, tax_amount, tip_amount, grand_total, authorized_total, locksmith_id FROM invoices WHERE id = $1',
+    'SELECT id, invoice_number, status, subtotal, tax_amount, tip_amount, grand_total, authorized_total, locksmith_id, followup_task_id FROM invoices WHERE id = $1',
     [row.invoice_id]
   );
   const inv = invRes.rows[0];
@@ -451,7 +451,11 @@ async function reconcilePayment(paymentRowId) {
   await pool.query(
     'UPDATE invoices SET pay_type = $1, card_last4 = $2, cc_online = false, approval_code = $3, ' +
     'tip_amount = $4, grand_total = $5, authorized_total = COALESCE(authorized_total, $6), ' +
-    "status = 'paid', updated_at = NOW() WHERE id = $7",
+    // A Square payment IS the finish line, so it stamps the same completion
+    // fields the Complete Invoice button does and clears the waiting clock.
+    // completed_by is the tech who started the payment, not "Square", so the
+    // 15-minute reopen grace behaves the same either way.
+    "status = 'paid', completed_at = NOW(), completed_by = $8, waiting_since = NULL, updated_at = NOW() WHERE id = $7",
     [
       payType,
       card.last_4 || null,
@@ -459,9 +463,24 @@ async function reconcilePayment(paymentRowId) {
       newTip,
       newGrand,
       (Number(inv.authorized_total) || Number(inv.grand_total) || 0),
-      inv.id
+      inv.id,
+      row.initiated_by || null
     ]
   );
+
+  // Close the chase task if this invoice had one. Money is in; nobody should be
+  // reminded to collect it.
+  if (inv.followup_task_id) {
+    try {
+      await pool.query(
+        "UPDATE tasks SET status = 'done', completed_at = NOW(), completed_by = $1, updated_at = NOW() " +
+        "WHERE id = $2 AND status <> 'done'",
+        [row.initiated_by || null, inv.followup_task_id]
+      );
+    } catch (e) {
+      console.error('Could not close follow-up task ' + inv.followup_task_id + ':', e.message);
+    }
+  }
 
   // Soft cross-check: did the Square team member who ran the card match the tech
   // on the invoice? Not a block — a tech legitimately running a card for someone
