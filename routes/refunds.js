@@ -905,7 +905,18 @@ router.post('/:id/send-to-square', requireAuth, requirePermission('approve_refun
           details: { invoice: pre.invoice_number, amount: money(pre.amount), reason: result.reason, message: result.message }
         });
       } catch (e) {}
-      return res.json({ ok: false, reason: result.reason, error: result.message, refund: after });
+      // money_moved means Square DID refund the customer and only Nova's record
+      // failed. That is the opposite of a refusal and must never read like one:
+      // the screen has to stop offering a retry, because a retry against a fresh
+      // idempotency key would refund the customer a second time.
+      return res.json({
+        ok: false,
+        reason: result.reason,
+        money_moved: result.money_moved === true,
+        square_refund_id: result.square_refund_id || null,
+        error: result.message,
+        refund: after
+      });
     }
 
     // Customer receipt. Sent only for a refund Square actually took, and only
@@ -954,6 +965,23 @@ router.post('/:id/send-to-square', requireAuth, requirePermission('approve_refun
     });
   } catch (err) {
     console.error(err);
+    // Before calling this a failure, check whether the money actually moved.
+    // issueRefund records the Square refund id even when its own write fails, so
+    // if that id is on the row now, the customer HAS been paid and the only thing
+    // that broke was somewhere after the money. Saying "failed to send" here
+    // invites a retry that would refund the customer twice.
+    try {
+      const now = (await pool.query('SELECT square_refund_id, square_status FROM invoice_refunds WHERE id = $1', [rid])).rows[0];
+      if (now && now.square_refund_id) {
+        return res.status(200).json({
+          ok: false,
+          reason: 'write_failed_after_send',
+          money_moved: true,
+          square_refund_id: now.square_refund_id,
+          error: 'Square refunded the customer (' + now.square_refund_id + '), but something went wrong on Nova\'s side afterwards. THE MONEY HAS LEFT THE ACCOUNT. Do not send this refund again. Check the invoice and the Square dashboard.'
+        });
+      }
+    } catch (e) { /* fall through to the plain error below */ }
     res.status(500).json({ error: 'Failed to send the refund to Square: ' + err.message });
   }
 });

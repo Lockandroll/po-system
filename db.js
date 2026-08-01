@@ -1646,9 +1646,9 @@ async function initDB() {
     // from invoice_refunds.amount so a later edit to the ledger can never make
     // it look like a different sum was refunded than the one that left the bank.
     await client.query(
-      'ALTER TABLE invoice_refunds ADD COLUMN IF NOT EXISTS square_payment_id VARCHAR(64);' +
-      'ALTER TABLE invoice_refunds ADD COLUMN IF NOT EXISTS square_refund_id VARCHAR(64);' +
-      'ALTER TABLE invoice_refunds ADD COLUMN IF NOT EXISTS square_order_id VARCHAR(64);' +
+      'ALTER TABLE invoice_refunds ADD COLUMN IF NOT EXISTS square_payment_id VARCHAR(255);' +
+      'ALTER TABLE invoice_refunds ADD COLUMN IF NOT EXISTS square_refund_id VARCHAR(255);' +
+      'ALTER TABLE invoice_refunds ADD COLUMN IF NOT EXISTS square_order_id VARCHAR(255);' +
       'ALTER TABLE invoice_refunds ADD COLUMN IF NOT EXISTS square_status VARCHAR(20);' +
       'ALTER TABLE invoice_refunds ADD COLUMN IF NOT EXISTS square_idempotency_key VARCHAR(45);' +
       'ALTER TABLE invoice_refunds ADD COLUMN IF NOT EXISTS square_amount_cents INTEGER;' +
@@ -1660,6 +1660,27 @@ async function initDB() {
       'ALTER TABLE invoice_refunds ADD COLUMN IF NOT EXISTS square_error TEXT;' +
       'ALTER TABLE invoice_refunds ADD COLUMN IF NOT EXISTS square_attempts INTEGER DEFAULT 0;' +
       'ALTER TABLE invoice_refunds ADD COLUMN IF NOT EXISTS raw_refund JSONB;'
+    );
+    // ---- Square identifiers are long. Widen every one of them. -------------
+    // This cost real money once. A Square PaymentRefund id is the payment id, an
+    // underscore, and a token: about 90 characters, and Square documents the
+    // field as up to 255. The columns were created at VARCHAR(64), so the write
+    // that records the refund threw "value too long for type character
+    // varying(64)" AFTER Square had already moved the money, and Nova ended up
+    // with no record of a refund the customer had been paid.
+    //
+    // Every Square-issued identifier is widened to 255 here, not just the refund
+    // id, because they all come from the same place and none of them are ours to
+    // bound. ALTER TYPE on a varchar widening is a metadata-only change in
+    // Postgres, so this is instant even on a large table, and the UNIQUE indexes
+    // on square_payment_id survive it.
+    await client.query(
+      'ALTER TABLE invoice_refunds ALTER COLUMN square_payment_id TYPE VARCHAR(255);' +
+      'ALTER TABLE invoice_refunds ALTER COLUMN square_refund_id TYPE VARCHAR(255);' +
+      'ALTER TABLE invoice_refunds ALTER COLUMN square_order_id TYPE VARCHAR(255);' +
+      // external_ref holds the Square refund id too (it is what a human would
+      // have pasted in by hand), so it has to be at least as wide.
+      'ALTER TABLE invoice_refunds ALTER COLUMN external_ref TYPE VARCHAR(255);'
     );
     // UNIQUE, not just indexed: two Nova rows pointing at one Square refund would
     // mean the same money was counted against the invoice twice. The partial
@@ -1689,10 +1710,10 @@ async function initDB() {
       '  initiated_by INTEGER REFERENCES users(id) ON DELETE SET NULL,' +
       '  initiated_at TIMESTAMPTZ DEFAULT NOW(),' +
       '  returned_at TIMESTAMPTZ,' +
-      '  square_transaction_id VARCHAR(64),' +
-      '  square_client_transaction_id VARCHAR(64),' +
-      '  square_order_id VARCHAR(64),' +
-      '  square_payment_id VARCHAR(64) UNIQUE,' +
+      '  square_transaction_id VARCHAR(255),' +
+      '  square_client_transaction_id VARCHAR(255),' +
+      '  square_order_id VARCHAR(255),' +
+      '  square_payment_id VARCHAR(255) UNIQUE,' +
       '  card_brand VARCHAR(40),' +
       '  card_last4 VARCHAR(4),' +
       '  auth_result_code VARCHAR(20),' +
@@ -1726,12 +1747,12 @@ async function initDB() {
       // reconciliation report, so it gets recorded rather than dropped.
       'CREATE TABLE IF NOT EXISTS square_orphan_payments (' +
       '  id SERIAL PRIMARY KEY,' +
-      '  square_payment_id VARCHAR(64) NOT NULL UNIQUE,' +
-      '  square_order_id VARCHAR(64),' +
-      '  location_id VARCHAR(64),' +
+      '  square_payment_id VARCHAR(255) NOT NULL UNIQUE,' +
+      '  square_order_id VARCHAR(255),' +
+      '  location_id VARCHAR(255),' +
       '  amount_cents INTEGER,' +
       '  note TEXT,' +
-      '  team_member_id VARCHAR(64),' +
+      '  team_member_id VARCHAR(255),' +
       '  taken_at TIMESTAMPTZ,' +
       '  resolved BOOLEAN DEFAULT false,' +
       '  raw_payment JSONB,' +
@@ -1742,10 +1763,29 @@ async function initDB() {
     // exists, so every column above also needs an explicit ALTER once this
     // ships and the table is live.
     await client.query(
-      'ALTER TABLE invoice_payments ADD COLUMN IF NOT EXISTS square_team_member_id VARCHAR(64);' +
+      'ALTER TABLE invoice_payments ADD COLUMN IF NOT EXISTS square_team_member_id VARCHAR(255);' +
       'ALTER TABLE invoice_payments ADD COLUMN IF NOT EXISTS team_member_mismatch BOOLEAN DEFAULT false;' +
       'ALTER TABLE invoice_payments ADD COLUMN IF NOT EXISTS mismatch_reason TEXT;' +
       'ALTER TABLE invoice_payments ADD COLUMN IF NOT EXISTS platform VARCHAR(10);'
+    );
+    // Widen the Square identifiers on tables that already exist at VARCHAR(64).
+    // See the note above invoice_refunds: a Square PaymentRefund id runs to about
+    // 90 characters and Square documents these fields as up to 255, so a 64-wide
+    // column throws "value too long for type character varying(64)" on a real id.
+    // None of these identifiers are Nova's to bound. ALTER TYPE widening a varchar
+    // is metadata-only in Postgres, so this is instant and the UNIQUE index on
+    // square_payment_id survives it.
+    await client.query(
+      'ALTER TABLE invoice_payments ALTER COLUMN square_transaction_id TYPE VARCHAR(255);' +
+      'ALTER TABLE invoice_payments ALTER COLUMN square_client_transaction_id TYPE VARCHAR(255);' +
+      'ALTER TABLE invoice_payments ALTER COLUMN square_order_id TYPE VARCHAR(255);' +
+      'ALTER TABLE invoice_payments ALTER COLUMN square_payment_id TYPE VARCHAR(255);' +
+      'ALTER TABLE invoice_payments ALTER COLUMN square_location_id TYPE VARCHAR(255);' +
+      'ALTER TABLE invoice_payments ALTER COLUMN square_team_member_id TYPE VARCHAR(255);' +
+      'ALTER TABLE square_orphan_payments ALTER COLUMN square_payment_id TYPE VARCHAR(255);' +
+      'ALTER TABLE square_orphan_payments ALTER COLUMN square_order_id TYPE VARCHAR(255);' +
+      'ALTER TABLE square_orphan_payments ALTER COLUMN location_id TYPE VARCHAR(255);' +
+      'ALTER TABLE square_orphan_payments ALTER COLUMN team_member_id TYPE VARCHAR(255);'
     );
     // authorized_total is what the customer SIGNED for, before any tip added
     // inside the Square app. Without it the signed agreement says one number and

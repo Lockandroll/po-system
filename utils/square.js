@@ -697,6 +697,36 @@ function dollars(cents) {
 // Returns { ok, status, message, refund } and never throws for a Square-side
 // refusal — a refusal is an answer, not a crash.
 // ---------------------------------------------------------------------------
+// Has this payment already been refunded by an attempt Nova failed to record?
+//
+// Square's Payment object carries refund_ids, so this asks Square directly
+// rather than guessing. A candidate only counts when it is for exactly the
+// amount Nova was trying to refund, Square did not reject it, and no other Nova
+// row has already claimed it. Anything short of all three and this returns null
+// and the ordinary path runs, because adopting the wrong refund would be worse
+// than making somebody reconcile by hand.
+async function findUnrecordedRefund(payment, amountCents) {
+  const ids = (payment && payment.refund_ids) || [];
+  if (!ids.length || !(amountCents > 0)) return null;
+  for (let i = 0; i < ids.length; i++) {
+    let r = null;
+    try {
+      const got = await sq('GET', '/v2/refunds/' + encodeURIComponent(ids[i]));
+      r = got && got.refund;
+    } catch (e) { continue; }
+    if (!r || !r.id) continue;
+    if (refundFailed(String(r.status || '').toUpperCase())) continue;
+    const cents = (r.amount_money && Number(r.amount_money.amount)) || 0;
+    if (cents !== amountCents) continue;
+    try {
+      const taken = await pool.query('SELECT id FROM invoice_refunds WHERE square_refund_id = $1', [r.id]);
+      if (taken.rowCount) continue;
+    } catch (e) { continue; }
+    return r;
+  }
+  return null;
+}
+
 async function issueRefund(refundRowId, actorUserId) {
   const rowRes = await pool.query('SELECT * FROM invoice_refunds WHERE id = $1', [refundRowId]);
   const row = rowRes.rows[0];
@@ -758,8 +788,24 @@ async function issueRefund(refundRowId, actorUserId) {
     return { ok: false, reason: 'zero', message: 'Refund ' + row.refund_number + ' is for nothing, so there is nothing to send.' };
   }
 
+  // ---- Recover a refund that went out but never got written ---------------
+  // A row sitting in SENDING with no refund id means Square WAS asked and Nova
+  // never managed to record the answer. Retrying blind is no good: Square has
+  // already taken the money, so refundableCents is now zero and the ceiling
+  // check below would refuse it forever, leaving the ledger permanently
+  // claiming a customer had not been paid back when they had. Ask Square what
+  // it actually did with this payment and adopt that refund instead.
+  let recovered = null;
+  if (String(row.square_status || '').toUpperCase() === 'SENDING' && !row.square_refund_id) {
+    try { recovered = await findUnrecordedRefund(payment, amountCents); } catch (e) { recovered = null; }
+    if (recovered) {
+      console.log('Recovering Square refund ' + recovered.id + ' for ' + dollars(amountCents) +
+        ' on invoice #' + inv.invoice_number + ': it went out on an earlier attempt that Nova never recorded.');
+    }
+  }
+
   const ceiling = refundableCents(payment);
-  if (amountCents > ceiling) {
+  if (!recovered && amountCents > ceiling) {
     const totalCents = (payment.total_money && Number(payment.total_money.amount)) || 0;
     const doneCents = (payment.refunded_money && Number(payment.refunded_money.amount)) || 0;
     const msg = ceiling <= 0
@@ -797,7 +843,7 @@ async function issueRefund(refundRowId, actorUserId) {
   // team member id. Silent when it is not mapped — a missing mapping must never
   // stop a customer getting their money back.
   let teamMemberId = null;
-  if (actorUserId) {
+  if (!recovered && actorUserId) {
     try {
       const u = await pool.query('SELECT square_team_member_id FROM users WHERE id = $1', [actorUserId]);
       teamMemberId = (u.rows[0] && u.rows[0].square_team_member_id) || null;
@@ -812,10 +858,14 @@ async function issueRefund(refundRowId, actorUserId) {
   };
   if (teamMemberId) body.team_member_id = teamMemberId;
 
-  let refund = null;
+  // The recovery case is already holding Square's answer, so it must NOT post
+  // again. Everything below this point treats the two paths identically.
+  let refund = recovered;
   try {
-    const resp = await sq('POST', '/v2/refunds', body);
-    refund = resp && resp.refund;
+    if (!recovered) {
+      const resp = await sq('POST', '/v2/refunds', body);
+      refund = resp && resp.refund;
+    }
   } catch (e) {
     const code = e.squareCode || (e.status === 429 ? 'RATE_LIMITED' : (e.status === 401 || e.status === 403 ? 'UNAUTHORIZED' : 'BAD_REQUEST'));
     const msg = refundErrorMessage(code);
@@ -861,37 +911,71 @@ async function issueRefund(refundRowId, actorUserId) {
   // with the Square refund id, which is exactly what a human would have pasted
   // in by hand, so every downstream reader keeps working untouched.
   // The ::text casts are load bearing. A parameter used in two places has to
-  // resolve to ONE type, and square_refund_id (varchar 64) next to external_ref
-  // (varchar 120), or square_status next to a comparison, gives Postgres two
-  // candidates and it refuses the whole statement with "inconsistent types
-  // deduced for parameter". Pinning both sides to text settles it.
-  const done = await pool.query(
-    "UPDATE invoice_refunds SET status = 'processed', square_refund_id = $1::text, square_status = $2::text, " +
-    "square_processing_fee_cents = $3, square_settled_at = CASE WHEN $2::text = 'COMPLETED' THEN NOW() ELSE NULL END, " +
-    'external_ref = $1::text, processed_by = COALESCE($4, approved_by), processed_at = NOW(), ' +
-    'refund_date = CURRENT_DATE, raw_refund = $5, square_error = NULL, square_error_code = NULL, updated_at = NOW() ' +
-    "WHERE id = $6 AND status = 'approved' RETURNING *",
-    [refund.id, sqStatus, feeCents, actorUserId || null, refund, claimed.id]
-  );
+  // resolve to ONE type, and square_refund_id next to external_ref, or
+  // square_status next to a comparison, gives Postgres two candidates and it
+  // refuses the whole statement with "inconsistent types deduced for
+  // parameter". Pinning both sides to text settles it.
+  //
+  // PAST THIS POINT THE MONEY HAS ALREADY LEFT THE ACCOUNT. Everything below is
+  // recording, not deciding, so nothing here is allowed to throw its way out of
+  // this function. An exception escaping here is how Nova once ended up with a
+  // refund the customer had been paid and no record of it: the column was too
+  // narrow for the Square refund id, the UPDATE threw, and the caller reported a
+  // failure for money that was gone.
+  let done = null;
+  let writeError = null;
+  try {
+    done = await pool.query(
+      "UPDATE invoice_refunds SET status = 'processed', square_refund_id = $1::text, square_status = $2::text, " +
+      "square_processing_fee_cents = $3, square_settled_at = CASE WHEN $2::text = 'COMPLETED' THEN NOW() ELSE NULL END, " +
+      'external_ref = $1::text, processed_by = COALESCE($4, approved_by), processed_at = NOW(), ' +
+      'refund_date = CURRENT_DATE, raw_refund = $5, square_error = NULL, square_error_code = NULL, updated_at = NOW() ' +
+      "WHERE id = $6 AND status = 'approved' RETURNING *",
+      [refund.id, sqStatus, feeCents, actorUserId || null, refund, claimed.id]
+    );
+  } catch (e) {
+    writeError = e;
+    console.error('MONEY MOVED BUT NOVA COULD NOT RECORD IT. Square refund ' + refund.id +
+      ' for ' + dollars(amountCents) + ' on invoice #' + inv.invoice_number + ':', e.message);
+  }
 
-  if (!done.rowCount) {
-    // Square HAS refunded the money but Nova's row moved out from under us. Do
-    // not lose the refund id: without it nobody can tie the money back to a
-    // record. Written unguarded on purpose, and loudly.
-    await markRefund(claimed.id, {
-      square_refund_id: refund.id,
-      square_status: sqStatus,
-      raw_refund: refund,
-      square_error: 'Square issued refund ' + refund.id + ' for ' + dollars(amountCents) + ', but this refund record had already changed status. The money HAS left the account. A manager needs to reconcile this by hand.'
-    });
+  if (writeError || !done.rowCount) {
+    // Square HAS refunded the money but Nova could not write the normal row,
+    // either because it moved out from under us or because the write itself
+    // failed. Do not lose the refund id: without it nobody can tie the money
+    // back to a record. Written unguarded on purpose, and loudly.
+    const why = writeError
+      ? ('Square issued refund ' + refund.id + ' for ' + dollars(amountCents) + ', but Nova could not save it (' + writeError.message + '). The money HAS left the account. A manager needs to reconcile this by hand.')
+      : ('Square issued refund ' + refund.id + ' for ' + dollars(amountCents) + ', but this refund record had already changed status. The money HAS left the account. A manager needs to reconcile this by hand.');
+    try {
+      await markRefund(claimed.id, {
+        square_refund_id: refund.id,
+        square_status: sqStatus,
+        raw_refund: refund,
+        square_error: why
+      });
+    } catch (e) {
+      // Even the recovery write failed. square_error is TEXT and always fits, so
+      // fall back to it alone rather than leaving no trace at all.
+      console.error('Could not record Square refund ' + refund.id + ' on refund row ' + claimed.id + ':', e.message);
+      try {
+        await pool.query('UPDATE invoice_refunds SET square_error = $1, updated_at = NOW() WHERE id = $2', [why, claimed.id]);
+      } catch (e2) { console.error('Could not even write square_error for refund row ' + claimed.id + ':', e2.message); }
+    }
     try {
       await logAudit({
         entity_type: 'refund', entity_id: claimed.id, entity_number: claimed.refund_number,
         action: 'square_refund_orphaned', user_id: actorUserId || null, user_name: 'Square',
-        details: { square_refund_id: refund.id, amount_cents: amountCents, invoice: inv.invoice_number }
+        details: { square_refund_id: refund.id, amount_cents: amountCents, invoice: inv.invoice_number, write_error: writeError ? writeError.message : null }
       });
     } catch (e) {}
-    return { ok: false, reason: 'raced_after_send', message: 'Square issued refund ' + refund.id + ' for ' + dollars(amountCents) + ', but this record changed while that was happening. The money has left the account. Check the invoice before doing anything else.' };
+    return {
+      ok: false,
+      reason: writeError ? 'write_failed_after_send' : 'raced_after_send',
+      money_moved: true,
+      square_refund_id: refund.id,
+      message: 'Square issued refund ' + refund.id + ' for ' + dollars(amountCents) + ', but Nova could not record it. THE MONEY HAS LEFT THE ACCOUNT. Do not send this refund again. Check the invoice and the Square dashboard before doing anything else.'
+    };
   }
 
   try {
@@ -912,12 +996,18 @@ async function issueRefund(refundRowId, actorUserId) {
   return {
     ok: true,
     status: sqStatus,
+    recovered: !!recovered,
     refund: refund,
     row: done.rows[0],
     amount_cents: amountCents,
-    message: sqStatus === 'COMPLETED'
-      ? ('Square refunded ' + dollars(amountCents) + ' to the card ending ' + (settled.card_last4 || '----') + '.')
-      : ('Square accepted the ' + dollars(amountCents) + ' refund. It usually reaches the customer bank in a few business days.')
+    // The recovery wording matters. Telling a manager "Square refunded $1.00"
+    // when the money actually went out days ago would have them looking for a
+    // second charge on the customer statement that is not there.
+    message: recovered
+      ? ('This refund had already gone through Square (' + refund.id + ') on an earlier attempt that Nova failed to record. Nothing new was charged or refunded. The record is now correct: ' + dollars(amountCents) + ' back to the card ending ' + (settled.card_last4 || '----') + '.')
+      : (sqStatus === 'COMPLETED'
+        ? ('Square refunded ' + dollars(amountCents) + ' to the card ending ' + (settled.card_last4 || '----') + '.')
+        : ('Square accepted the ' + dollars(amountCents) + ' refund. It usually reaches the customer bank in a few business days.'))
   };
 }
 

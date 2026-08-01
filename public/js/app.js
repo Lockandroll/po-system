@@ -19344,14 +19344,35 @@ async function submitRefundInSquare(id, btn) {
       email_receipt: !!(emailEl && emailEl.checked)
     });
   } catch (err) {
+    // An outright error means Nova never got a clean answer. It is NOT proof the
+    // money stayed put, so the retry offer comes with the check attached.
     btn.disabled = false; btn.textContent = 'Try Again';
-    if (errEl) errEl.innerHTML = '<div class="alert alert-error">' + escHtml(err.message) + '</div>';
+    if (errEl) {
+      errEl.innerHTML = '<div class="alert alert-error">' + escHtml(err.message) + '</div>' +
+        '<div style="font-size:12px;color:var(--text-muted-color);margin-bottom:14px">' +
+        'Check the Square dashboard for this payment before trying again. If a refund is already showing there, the money went out and you should close this and use <strong>Record by hand</strong> instead.</div>';
+    }
     return;
   }
 
   // Square answered but refused. Not an exception -- the manager needs the
   // reason and the manual fallback, both on this screen.
   if (res && res.ok === false) {
+    // ...unless the money actually moved and only Nova's record failed. Sending
+    // again would refund the customer twice, so the button does not come back.
+    if (res.money_moved) {
+      btn.disabled = true;
+      btn.textContent = 'Money already sent';
+      if (errEl) {
+        errEl.innerHTML = '<div class="alert alert-error" style="line-height:1.6"><strong>The refund went through. Nova could not record it.</strong><br>' +
+          escHtml(res.error || '') + '</div>' +
+          '<div style="font-size:12px;color:var(--text-muted-color);margin-bottom:14px">' +
+          'Do <strong>not</strong> send this again. Close this box, confirm the refund in the Square dashboard' +
+          (res.square_refund_id ? (' (' + escHtml(res.square_refund_id) + ')') : '') +
+          ', then record it here with <strong>Record by hand</strong> so the ledger matches.</div>';
+      }
+      return;
+    }
     btn.disabled = false; btn.textContent = 'Try Again';
     if (errEl) {
       errEl.innerHTML = '<div class="alert alert-error" style="line-height:1.6">' + escHtml(res.error || 'Square would not complete this refund.') +
