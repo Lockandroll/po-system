@@ -824,11 +824,23 @@ router.get('/:id', requireAuth, requirePermission('view_invoices'), async (req, 
     invoice.refunds = [];
     try {
       const rf = await pool.query(
-        'SELECT r.*, req.name AS requested_by_name, app.name AS approved_by_name, proc.name AS processed_by_name ' +
+        'SELECT r.*, req.name AS requested_by_name, app.name AS approved_by_name, proc.name AS processed_by_name, ' +
+        // ⚠️ Must stay in step with REFUND_SELECT in routes/refunds.js. The
+        // Refund History table on THIS page and the one on the Refunds page are
+        // the same renderer fed by two different queries, so a column added to
+        // one and not the other makes the UI silently differ between screens.
+        // Square puts the refund on the PAYMENT's receipt, so fall back to the
+        // payment row for refunds that never captured their own copy.
+        '       COALESCE(r.square_receipt_url, sp.receipt_url) AS square_receipt_url_eff ' +
         'FROM invoice_refunds r ' +
         'LEFT JOIN users req ON r.requested_by = req.id ' +
         'LEFT JOIN users app ON r.approved_by = app.id ' +
         'LEFT JOIN users proc ON r.processed_by = proc.id ' +
+        'LEFT JOIN LATERAL (' +
+        '  SELECT receipt_url FROM invoice_payments ' +
+        "  WHERE invoice_id = r.invoice_id AND status = 'reconciled' AND square_payment_id IS NOT NULL " +
+        '  ORDER BY id DESC LIMIT 1' +
+        ') sp ON true ' +
         'WHERE r.invoice_id = $1 ORDER BY r.id',
         [req.params.id]
       );
