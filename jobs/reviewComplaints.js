@@ -31,6 +31,22 @@ const SOURCE = 'google_review';
 const WATERMARK_KEY = 'review_complaints_watermark';
 const THRESHOLD_KEY = 'review_complaint_max_rating';
 const CITYMAP_KEY = 'review_city_map';
+const SEEDED_FROM_KEY = 'review_complaints_seeded_from';
+// How far back the FIRST run reaches. Turning this feature on should not replay
+// years of history, but it also must not strand a review that came in an hour
+// before the deploy - which is exactly what a hard MAX(id) baseline did.
+const DEFAULT_LOOKBACK_HOURS = 48;
+// How often we look for new reviews. The review-bot pulls from Google every 10
+// minutes, so that is the real floor on how fresh anything can be - polling faster
+// than the bot writes does not make a complaint appear sooner. Two minutes keeps
+// our own added delay small without pretending to beat the bot.
+const POLL_CRON = process.env.REVIEW_COMPLAINTS_CRON || '*/2 * * * *';
+// At a 2-minute cadence an idle day is ~720 passes. Logging "nothing new" on each
+// one would bury the lines that matter, and re-counting the backlog each time would
+// mean 720 full scans of the bot's table over a public connection. So the idle
+// report is throttled; anything actually FILED is always logged immediately.
+const IDLE_LOG_MS = 60 * 60 * 1000;
+let lastIdleLog = 0;
 const PER_RUN_CAP = 25;
 
 // A pass that files 25 complaints makes 25 AI calls and can outlive the 30-minute
@@ -198,39 +214,77 @@ async function fileComplaintForReview(review, opts) {
   return result;
 }
 
-// Read the cursor, seeding it on the very first run. Returns the row id to read
-// past, or null when the caller should stop (first run baseline, or a read error).
+// Highest row id that is OLDER than the lookback window. Everything after it is
+// "recent" and worth filing even on a first run.
+async function baselineId(rpool) {
+  var hours = parseInt(process.env.REVIEW_COMPLAINTS_LOOKBACK_HOURS, 10);
+  if (isNaN(hours) || hours < 0) hours = DEFAULT_LOOKBACK_HOURS;
+  var q = await rpool.query(
+    "SELECT COALESCE(MAX(id), 0)::int AS id FROM reviews WHERE created_at < NOW() - ($1 || ' hours')::interval",
+    [String(hours)]
+  );
+  return { id: q.rows[0].id, hours: hours };
+}
+
+// Read the cursor, seeding it when there isn't a usable one. Returns the row id to
+// read past, or null when the caller should stop (unreadable reviews DB).
+//
+// REVIEW_COMPLAINTS_SINCE is honoured whenever its value CHANGES, not only on a
+// virgin install - that is the supported way to rewind and pick up reviews that
+// were missed, without touching the database by hand.
 async function readWatermark(rpool) {
   var raw = await getSetting(WATERMARK_KEY);
   // Must be a PURE integer. parseInt would happily read '2026-07-01T00:00:00Z' as
   // 2026 - an earlier build of this job stored ISO timestamps, and silently
   // treating one as a row id would freeze the cursor until the bot's ids passed it.
-  if (raw != null && /^\d+$/.test(String(raw).trim())) return parseInt(raw, 10);
-  if (raw != null && String(raw).trim() !== '') {
+  var haveCursor = (raw != null && /^\d+$/.test(String(raw).trim()));
+  var cursor = haveCursor ? parseInt(raw, 10) : null;
+  if (raw != null && !haveCursor && String(raw).trim() !== '') {
     console.warn('[review-complaints] Watermark ' + JSON.stringify(raw) + ' is not a row id - re-baselining.');
   }
 
-  // No usable cursor yet. Anything already in the reviews table predates this
-  // feature, so the baseline is the current highest row id and we file nothing
-  // this pass - unless an explicit start date was supplied.
   var seed = process.env.REVIEW_COMPLAINTS_SINCE || null;
   try {
+    // An explicit start date that we have not already applied wins over whatever
+    // the cursor currently says, forwards OR backwards.
     if (seed) {
-      var s = await rpool.query(
-        'SELECT COALESCE(MAX(id), 0)::int AS id FROM reviews WHERE created_at < $1::timestamptz',
-        [seed]
-      );
-      var seedId = s.rows[0].id;
-      await setSetting(WATERMARK_KEY, seedId);
-      console.log('[review-complaints] Seeded cursor at row ' + seedId + ' from REVIEW_COMPLAINTS_SINCE=' + seed + '.');
-      return seedId;
+      var appliedSeed = await getSetting(SEEDED_FROM_KEY);
+      if (appliedSeed !== seed) {
+        var s = await rpool.query(
+          'SELECT COALESCE(MAX(id), 0)::int AS id FROM reviews WHERE created_at < $1::timestamptz',
+          [seed]
+        );
+        var seedId = s.rows[0].id;
+        await setSetting(WATERMARK_KEY, seedId);
+        await setSetting(SEEDED_FROM_KEY, seed);
+        console.log('[review-complaints] REVIEW_COMPLAINTS_SINCE=' + seed + ' applied - cursor moved to row ' +
+          seedId + '. Reviews ingested after that date will file on this pass.');
+        return seedId;
+      }
     }
-    var m = await rpool.query('SELECT COALESCE(MAX(id), 0)::int AS id FROM reviews');
-    var baseId = m.rows[0].id;
-    await setSetting(WATERMARK_KEY, baseId);
-    console.log('[review-complaints] First run - baseline set at row ' + baseId +
-      '. Reviews ingested from now on will file complaints; nothing was back-filed.');
-    return null;
+
+    if (haveCursor) {
+      // Sanity check: if the reviews table's highest id is BELOW our cursor, the
+      // bot's table was rebuilt or re-keyed and our cursor points at nothing.
+      // Re-baseline rather than sitting silent forever.
+      var top = await rpool.query('SELECT COALESCE(MAX(id), 0)::int AS id FROM reviews');
+      if (top.rows[0].id < cursor) {
+        var reset = await baselineId(rpool);
+        await setSetting(WATERMARK_KEY, reset.id);
+        console.warn('[review-complaints] Cursor ' + cursor + ' is past the reviews table high-water mark ' +
+          top.rows[0].id + ' - the table was rebuilt. Re-baselined to row ' + reset.id + '.');
+        return reset.id;
+      }
+      return cursor;
+    }
+
+    // Virgin install. Reach back over the lookback window so a review that landed
+    // shortly before the deploy still files, but do not replay all of history.
+    var base = await baselineId(rpool);
+    await setSetting(WATERMARK_KEY, base.id);
+    console.log('[review-complaints] First run - cursor set at row ' + base.id + ' (everything ingested in the ' +
+      'last ' + base.hours + 'h will file on this pass; older history was skipped).');
+    return base.id;
   } catch (e) {
     console.error('[review-complaints] Could not seed the cursor:', e.message);
     return null;
@@ -242,7 +296,7 @@ async function checkReviewComplaints() {
   if (!rpool) { console.log('[review-complaints] Reviews DB not configured - skipping.'); return; }
 
   var watermark = await readWatermark(rpool);
-  if (watermark === null) return;  // first run: baseline recorded, nothing to file
+  if (watermark === null) return;  // reviews DB unreadable; readWatermark logged why
 
   var maxRating = await complaintThreshold();
   var rows;
@@ -260,7 +314,30 @@ async function checkReviewComplaints() {
     return;
   }
 
-  if (!rows.length) { console.log('[review-complaints] No new reviews at or below ' + maxRating + ' stars.'); return; }
+  if (!rows.length) {
+    // Say WHY there was nothing to do, so "the review did not file" is answerable
+    // from the Railway log alone instead of guessing at the cursor. Throttled: the
+    // backlog count is a full scan, and at this cadence it would otherwise run every
+    // couple of minutes forever for a line nobody is reading.
+    var now = Date.now();
+    if (now - lastIdleLog < IDLE_LOG_MS) return;
+    lastIdleLog = now;
+    var diag = '';
+    try {
+      var dq = await rpool.query(
+        'SELECT COALESCE(MAX(id), 0)::int AS top, ' +
+        'COUNT(*) FILTER (WHERE rating IS NOT NULL AND rating <= $1 AND id <= $2)::int AS behind FROM reviews',
+        [maxRating, watermark]
+      );
+      diag = ' Cursor is row ' + watermark + ', highest review row is ' + dq.rows[0].top + ', and ' +
+        dq.rows[0].behind + ' review(s) at or below ' + maxRating +
+        ' stars sit behind the cursor (those predate the cursor and will not auto-file - use the File button).';
+    } catch (e) {}
+    console.log('[review-complaints] Nothing new at or below ' + maxRating + ' stars.' + diag);
+    return;
+  }
+  // Something happened, so the next idle pass is worth hearing about again.
+  lastIdleLog = 0;
 
   var overrides = await cityOverrides();
   var filed = 0, dupes = 0, failed = 0, skipped = 0, highestId = watermark;
@@ -291,16 +368,19 @@ async function checkReviewComplaints() {
 }
 
 function startReviewComplaints() {
-  // Every 30 minutes. The review-bot pulls from Google on a 10-minute cron, so a
-  // bad review turns into an assigned complaint within about half an hour.
-  cron.schedule('*/30 * * * *', function () {
+  // Every 2 minutes by default (override with REVIEW_COMPLAINTS_CRON). Combined
+  // with the review-bot's own 10-minute pull from Google, a bad review becomes an
+  // assigned complaint within roughly 12 minutes worst case. The bot's cadence is
+  // the dominant term - polling here faster buys almost nothing, because there is
+  // nothing new in the table to find until the bot writes it.
+  cron.schedule(POLL_CRON, function () {
     if (running) { console.log('[review-complaints] Previous pass still running - skipping this tick.'); return; }
     running = true;
     checkReviewComplaints()
       .catch(function (e) { console.error('[review-complaints] Pass failed:', e.message); })
       .then(function () { running = false; }, function () { running = false; });
   }, { timezone: 'America/New_York' });
-  console.log('[review-complaints] Low-star review intake scheduled (every 30 minutes)');
+  console.log('[review-complaints] Low-star review intake scheduled (' + POLL_CRON + ')');
 }
 
 module.exports = {
