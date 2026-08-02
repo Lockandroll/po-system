@@ -2,7 +2,7 @@
 // public/sw.js (the only thing bumped each deploy) — the badge asks the active
 // service worker for it at runtime. This value is just the fallback shown when no
 // service worker is available (e.g. very first visit before it installs).
-var APP_VERSION = 'v93';
+var APP_VERSION = 'v94';
 var _resolvedAppVersion = null;
 
 // Ask the active service worker for its CACHE_VERSION (without the 'nova-' prefix).
@@ -246,6 +246,9 @@ function _numericVersion(v) {
 async function hardResetClient() {
   if (_hardResetting) return;
   _hardResetting = true;
+  // Flush whatever the invoice editor is holding BEFORE the reload. This reload
+  // is one of the ways a half-typed invoice used to disappear without trace.
+  try { await invDraftSave(true); } catch (e) {}
   try {
     if ('serviceWorker' in navigator) {
       var regs = await navigator.serviceWorker.getRegistrations();
@@ -259,6 +262,20 @@ async function hardResetClient() {
     }
   } catch (e) {}
   location.reload();
+}
+
+// The API says this build is too old to talk to it, but the tech is mid-invoice.
+// showUpdateBar lives in index.html and is a quiet bar rather than an automatic
+// reload, for exactly this reason: someone is always mid-form.
+var _novaUpdateOffered = false;
+function novaOfferForcedUpdate() {
+  if (_novaUpdateOffered) return;
+  _novaUpdateOffered = true;
+  if (typeof showUpdateBar === 'function') {
+    showUpdateBar(function () { invDraftSave(true); setTimeout(hardResetClient, 200); });
+  } else {
+    showToast('Nova needs to update. Save this invoice, then refresh the page.', 'info');
+  }
 }
 
 async function api(method, path, body) {
@@ -330,11 +347,16 @@ async function _apiFetch(method, path, body, silent) {
     var _curN = _numericVersion(_resolvedAppVersion);
     // If we cannot tell what version we are, do nothing. Never reload on a guess.
     if (_minN !== null && _curN !== null && _curN < _minN) {
-      hardResetClient();
+      // ...and never reload out from under a half-typed invoice. The draft is
+      // flushed either way, but a page that vanishes while a customer is standing
+      // there is its own kind of damage. Offer the reload instead of taking it.
+      if (invEditorDirty()) { invDraftSave(true); novaOfferForcedUpdate(); }
+      else hardResetClient();
     }
   }
   // Expired/invalid session: clear creds and bounce to login instead of getting stuck
   if (res.status === 401 && state.token) {
+    try { invDraftSave(true); } catch (e) {}
     state.token = null;
     state.user = null;
     state.permsRev = null;
@@ -906,6 +928,11 @@ function buildNavHtml() {
 }
 
 async function render() {
+  // Leaving the invoice editor: drop its autosave listeners and commit anything
+  // still in flight. Every navigation path in the app funnels through render(),
+  // so this is the one place that catches Cancel, back/forward, sidebar links and
+  // the permission re-render alike.
+  if (_invDraftActive && state.currentView !== 'edit-invoice' && state.currentView !== 'new-invoice') invDraftDetach();
   const app = document.getElementById('app');
   var _signTok = sigGetUrlToken();
   if (_signTok) { await renderSignPage(app, _signTok); return; }
@@ -10908,9 +10935,12 @@ async function renderEditInvoice(el, id) {
     '<div class="page-header">' +
       '<div><div class="page-title">' + (id ? 'Edit Invoice' : 'New Invoice') + '</div>' +
         '<div class="page-subtitle">Locksmith: ' + escHtml(state.user.name) + (id ? ' • #' + escHtml(v.invoice_number) : '') + '</div></div>' +
-      '<button class="btn btn-secondary" onclick="navigate(\'' + (id ? 'view-invoice' : 'invoices') + '\',' + (id||'null') + ')">Cancel</button>' +
+      '<button class="btn btn-secondary" onclick="invCancelEdit(' + (id||'null') + ')">Cancel</button>' +
     '</div>' +
     '<div id="inv-edit-error"></div>' +
+    // Draft restore offer (new invoices) and the "draft saved" tick both land here.
+    '<div id="inv-draft-bar"></div>' +
+    '<div id="inv-draft-status" style="font-size:12px;color:var(--text-muted-color);opacity:0;transition:opacity .25s;margin:0 0 10px;min-height:17px"></div>' +
 
     '<div class="card mb-4"><div class="card-header"><span class="card-title">Account &amp; Payment</span></div><div class="card-body">' +
       '<div class="form-row">' +
@@ -11045,12 +11075,18 @@ async function renderEditInvoice(el, id) {
         : '<p style="font-size:13px;color:var(--text-muted-color);margin:0">Save the invoice first, then reopen it to attach photos.</p>') +
     '</div></div>' +
 
-    '<div class="flex-gap" style="margin-bottom:40px">' +
+    '<div class="flex-gap" style="margin-bottom:8px">' +
       '<button class="btn btn-primary" id="inv-save-btn" onclick="saveInvoice(' + (id||'null') + ')">Save Invoice</button>' +
-      // Finishing lives on the VIEW, where the gate checklist and the payment
-      // question are. Sending them there beats duplicating that whole flow here
-      // and then having to keep the two copies in step.
-      (id ? '<button class="btn btn-success" onclick="navigate(\'view-invoice\',' + id + ')">Save is above &mdash; finish on the invoice</button>' : '') +
+    '</div>' +
+    // There used to be a GREEN "Save is above — finish on the invoice" button here.
+    // It saved nothing: it navigated away and silently threw out every unsaved edit.
+    // Green is the strongest "this is the confirm action" signal in the UI and it sat
+    // right next to the real Save, so techs tapped it and lost the whole invoice.
+    // Removed outright — Cancel in the header already goes to the invoice, and now
+    // it asks first. Finishing still lives on the VIEW, where the gate checklist and
+    // the payment question are; Save takes you straight there.
+    '<div style="font-size:12px;color:var(--text-muted-color);margin-bottom:40px">' +
+      (id ? 'Saving returns you to the invoice, where you finish and take payment.' : 'Saving opens the new invoice, where you finish and take payment.') +
     '</div>';
 
   invStatusHelp();
@@ -11060,6 +11096,11 @@ async function renderEditInvoice(el, id) {
   invRenderIdImageState();
   if (v.account_id) { var sel = document.getElementById('inv-account'); if (sel) invAccountChange(true); }
   if (id) invLoadPhotos(id);
+  // Autosave last, so the initial render is never mistaken for the tech typing.
+  // invDraftOffer is intentionally not awaited: a slow IndexedDB read must not
+  // hold up a form someone is already standing in front of.
+  invDraftAttach(id);
+  invDraftOffer(id);
 }
 
 function invAccountChange(skipAutoItems) {
@@ -11088,6 +11129,7 @@ function invAccountChange(skipAutoItems) {
     _invoiceAutoAppliedFor = id;
     buildInvoiceLineItemRows();
   }
+  invDraftSave();
 }
 
 // The Our Cost cell. Always editable, never locked: a catalog price can be stale,
@@ -11213,6 +11255,11 @@ function updateInvoiceTotals() {
     pRow.style.display = surcharge > 0 ? 'flex' : 'none';
     set('inv-pulsar-amt', subtotal + tax);
   }
+  // Everything that changes a line item, a cost, the tax, the tip or the pay
+  // method funnels through here, so this one call covers all of it for the draft.
+  // Programmatic .value writes (VIN decode, ID scan) fire no input event and are
+  // hooked at their own call sites.
+  invDraftSave();
 }
 
 // Live COGS panel on the edit form. Shows the tech the number Pulsar is going to
@@ -11248,6 +11295,313 @@ function invRenderCogsPanel() {
           '<div class="inv-cogs-note">Margin is shown to managers and admins only.</div>'
         : '') +
     '</div>';
+}
+
+// ---------------------------------------------------------------------------
+// Invoice draft autosave
+//
+// The invoice editor used to hold every field in the DOM and nowhere else, so
+// anything that reloaded the page threw the whole invoice away and dropped the
+// tech back on a blank New Invoice. That reload is neither hypothetical nor rare,
+// and it clusters around the worst possible moment — handing the phone to the
+// customer to sign:
+//   * iOS discards a backgrounded PWA without warning. Handing the phone over,
+//     the customer pressing home, or rotating to landscape (which the signature
+//     pad actively invites) is exactly when that happens.
+//   * A new service worker taking over reloads the page.
+//   * hardResetClient() reloads on its own when the API says the build is stale.
+//
+// So: the same IndexedDB draft store the signoff form already uses. Everything is
+// best effort — a draft failing to save must never break the form the tech is
+// standing in a parking lot trying to submit.
+//
+// The SIGNATURE is deliberately never written to a draft. Restoring a customer's
+// signature onto a form they are not standing in front of would attach a real
+// person's name to an authorization that never happened. It gets re-collected.
+// That is ten seconds, and it keeps the record honest. Same call the signoff
+// draft makes, for the same reason, and it is not negotiable.
+// ---------------------------------------------------------------------------
+var INV_DRAFT_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000;
+// A draft this fresh can only be the page dying under the tech seconds ago, so it
+// restores itself with no questions asked. Anything older gets an explicit offer,
+// because silently pouring a stranger's details into a blank New Invoice is worse
+// than the bug this whole thing exists to fix.
+var INV_DRAFT_AUTO_MS = 5 * 60 * 1000;
+var INV_DRAFT_FIELDS = ['inv-account','inv-city-code','inv-date','inv-status','inv-po','inv-pay','inv-last4','inv-approval',
+  'inv-customer','inv-dl','inv-dlstate','inv-street','inv-city','inv-state','inv-zip','inv-phone','inv-email',
+  'inv-vin','inv-vyear','inv-vmake','inv-vmodel','inv-tag','inv-tagstate','inv-mileage',
+  'inv-tax','inv-tip','inv-notes','inv-agreement'];
+var INV_DRAFT_CHECKS = ['inv-ent-reg','inv-ent-ins','inv-ent-title','inv-ent-rental','inv-tax-exempt'];
+// ⚠️ 'inv-sig-required' is deliberately NOT in that list, and must not be added.
+// Signature Required is a control on the evidence, not a field the tech typed, so
+// it always loads from the invoice/policy and never from a draft. A draft can live
+// for up to seven days; letting one restore that box UNCHECKED would silently drop
+// a signature requirement on an invoice that is supposed to carry one, and nobody
+// would see it happen. Same reasoning as never drafting the signature image.
+var _invDraftActive = false;
+var _invDraftInvId = null;
+var _invDraftTimer = null;
+var _invDraftPending = null;
+var _invDraftDirty = false;
+var _invDraftRestoring = false;
+var _invDraftImgWritten = null;
+var _invDraftOffered = null;
+
+function invDraftKey(id) { return 'invoice:' + (id == null ? 'new' : id) + ':' + ((state.user && state.user.id) || 0); }
+// The scanned ID photo lives under its own key. It is a compressed data URL that
+// can run to hundreds of KB, and re-writing it on every debounced keystroke would
+// make the autosave itself the thing that stutters the form.
+function invDraftImgKey(id) { return invDraftKey(id) + ':idimg'; }
+
+function invDraftWhen(ts) {
+  try { return new Date(ts).toLocaleString([], { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' }); }
+  catch (e) { return ''; }
+}
+
+// Pull the line-item table back into invoiceLineItems. Read each row by
+// data-field, never by position: the Our Cost cell is an input on a hand-typed
+// part but plain text on a catalog part or a labor line, so positional indexing
+// shifts and writes the wrong values into the wrong columns.
+function invSyncLineItemsFromDom() {
+  var rows = document.querySelectorAll('#inv-line-body tr');
+  rows.forEach(function(row, i){
+    if (!invoiceLineItems[i]) return;
+    var typeSel = row.querySelector('select[data-field="line_type"]');
+    if (typeSel) invoiceLineItems[i].line_type = typeSel.value;
+    row.querySelectorAll('input[data-field]').forEach(function(inp){
+      var f = inp.dataset.field;
+      invoiceLineItems[i][f] = (inp.type === 'checkbox') ? inp.checked : inp.value;
+      if (f === 'unit_cost' && inp.value !== '' && !invoiceLineItems[i].cost_source) invoiceLineItems[i].cost_source = 'manual';
+    });
+  });
+}
+
+function invDraftSnapshot() {
+  var f = {}, c = {};
+  INV_DRAFT_FIELDS.forEach(function(idn){ var e = document.getElementById(idn); if (e) f[idn] = e.value; });
+  INV_DRAFT_CHECKS.forEach(function(idn){ var e = document.getElementById(idn); if (e) c[idn] = !!e.checked; });
+  invSyncLineItemsFromDom();
+  var items = [];
+  try { items = JSON.parse(JSON.stringify(invoiceLineItems || [])); } catch (e) { items = []; }
+  return {
+    v: 1,
+    at: Date.now(),
+    fields: f,
+    checks: c,
+    line_items: items,
+    pay_method: _invPayMethod || '',
+    has_id_image: !!_invPendingIdImage
+    // NO signature_image. See the block comment above.
+  };
+}
+
+function invEditorDirty() { return !!(_invDraftActive && _invDraftDirty && document.getElementById('inv-customer')); }
+
+// The snapshot is taken eagerly on every call and only the IndexedDB write is
+// debounced. Reading thirty inputs is cheap, and doing it now means a pending
+// save can still be flushed after the DOM has been torn down — otherwise
+// navigating away mid-keystroke silently drops the last half second.
+function invDraftSave(immediate) {
+  if (!_invDraftActive || _invDraftRestoring) return Promise.resolve();
+  if (!document.getElementById('inv-customer')) return invDraftCommit();
+  _invDraftDirty = true;
+  _invDraftPending = { key: invDraftKey(_invDraftInvId), snap: invDraftSnapshot() };
+  if (_invDraftTimer) { clearTimeout(_invDraftTimer); _invDraftTimer = null; }
+  if (immediate) return invDraftCommit();
+  _invDraftTimer = setTimeout(invDraftCommit, 600);
+  return Promise.resolve();
+}
+
+function invDraftSaveImage() {
+  var cur = _invPendingIdImage || null;
+  if (cur === _invDraftImgWritten) return Promise.resolve(null);
+  _invDraftImgWritten = cur;
+  if (!cur) return novaDraftDel(invDraftImgKey(_invDraftInvId));
+  return novaDraftPut(invDraftImgKey(_invDraftInvId), { v: 1, at: Date.now(), image: cur });
+}
+
+function invDraftCommit() {
+  if (_invDraftTimer) { clearTimeout(_invDraftTimer); _invDraftTimer = null; }
+  var p = _invDraftPending;
+  if (!p) return Promise.resolve(null);
+  _invDraftPending = null;
+  return Promise.all([novaDraftPut(p.key, p.snap), invDraftSaveImage()])
+    .then(function(){ invDraftFlag('saved'); })
+    .catch(function(){ return null; });
+}
+
+// Half the value of an autosave is the tech trusting that it happened.
+function invDraftFlag(kind, when) {
+  var el = document.getElementById('inv-draft-status');
+  if (!el) return;
+  if (kind === 'saved') { el.innerHTML = '<span style="color:#22c55e">&#10003;</span> Draft saved'; el.style.opacity = '1'; }
+  else if (kind === 'restored') { el.innerHTML = '<span style="color:#22c55e">&#10003;</span> Unsaved work restored' + (when ? ' from ' + escHtml(when) : ''); el.style.opacity = '1'; }
+  else if (kind === 'discarded') { el.textContent = 'Draft discarded.'; el.style.opacity = '1'; }
+}
+
+function _invDraftOnEdit() { invDraftSave(); }
+function _invDraftFlush() { if (_invDraftActive) invDraftSave(true); }
+function _invDraftBeforeUnload(e) {
+  if (!invEditorDirty()) return;
+  invDraftSave(true);
+  e.preventDefault();
+  e.returnValue = '';
+  return '';
+}
+
+function invDraftAttach(id) {
+  invDraftDetach(true); // never leave a second set of listeners behind
+  _invDraftActive = true;
+  _invDraftInvId = (id == null ? null : id);
+  _invDraftDirty = false;
+  _invDraftImgWritten = null;
+  _invDraftOffered = null;
+  // Document-level and capture-phase rather than one listener per field: the line
+  // item rows are torn down and rebuilt from scratch every time a line is added,
+  // typed in or removed, so per-element listeners would be dropped constantly.
+  document.addEventListener('input', _invDraftOnEdit, true);
+  document.addEventListener('change', _invDraftOnEdit, true);
+  // iOS kills backgrounded PWAs without warning and does not reliably fire
+  // unload — visibilitychange is the last dependable moment to flush.
+  document.addEventListener('visibilitychange', _invDraftFlush);
+  window.addEventListener('pagehide', _invDraftFlush);
+  window.addEventListener('beforeunload', _invDraftBeforeUnload);
+}
+
+// quiet = tearing down without preserving (the draft was just saved or discarded).
+// Otherwise commit what is still in flight rather than dropping it: the pending
+// snapshot was captured at input time, so it is valid even now the form is gone.
+function invDraftDetach(quiet) {
+  document.removeEventListener('input', _invDraftOnEdit, true);
+  document.removeEventListener('change', _invDraftOnEdit, true);
+  document.removeEventListener('visibilitychange', _invDraftFlush);
+  window.removeEventListener('pagehide', _invDraftFlush);
+  window.removeEventListener('beforeunload', _invDraftBeforeUnload);
+  if (quiet) {
+    if (_invDraftTimer) { clearTimeout(_invDraftTimer); _invDraftTimer = null; }
+    _invDraftPending = null;
+  } else if (_invDraftActive) {
+    invDraftCommit();
+  }
+  _invDraftActive = false;
+  _invDraftDirty = false;
+}
+
+function invDraftDiscard() {
+  var id = _invDraftInvId;
+  var wasActive = _invDraftActive;
+  if (_invDraftTimer) { clearTimeout(_invDraftTimer); _invDraftTimer = null; }
+  _invDraftPending = null;
+  _invDraftDirty = false;
+  _invDraftActive = false;
+  _invDraftImgWritten = null;
+  if (!wasActive) return Promise.resolve(null);
+  return Promise.all([novaDraftDel(invDraftKey(id)), novaDraftDel(invDraftImgKey(id))]).catch(function(){ return null; });
+}
+
+function invDraftSummary(d) {
+  var f = d.fields || {};
+  var who = (f['inv-customer'] || '').toString().trim();
+  var n = (d.line_items || []).filter(function(it){ return it && (it.description || '').toString().trim(); }).length;
+  var bits = [];
+  if (who) bits.push(who);
+  bits.push(n + ' line item' + (n === 1 ? '' : 's'));
+  return bits.join(' · ');
+}
+
+async function invDraftApply(d) {
+  _invDraftRestoring = true;
+  try {
+    Object.keys(d.fields || {}).forEach(function(idn){
+      var e = document.getElementById(idn);
+      if (e && d.fields[idn] != null) e.value = d.fields[idn];
+    });
+    Object.keys(d.checks || {}).forEach(function(idn){
+      var e = document.getElementById(idn);
+      if (e) e.checked = !!d.checks[idn];
+    });
+    if (Array.isArray(d.line_items) && d.line_items.length) invoiceLineItems = d.line_items;
+    _invPayMethod = (d.pay_method === 'cash' || d.pay_method === 'card') ? d.pay_method : '';
+    if (d.has_id_image) {
+      var img = await novaDraftGet(invDraftImgKey(_invDraftInvId));
+      _invPendingIdImage = (img && img.image) || null;
+    }
+    _invDraftImgWritten = _invPendingIdImage || null;
+    var wrap = document.getElementById('inv-paymethod-wrap');
+    if (wrap) wrap.innerHTML = invPayMethodButtonsHtml();
+    if (!invoiceLineItems.length) invoiceLineItems.push({ line_type: 'labor', item_number: '', description: '', quantity: 1, unit_price: '', taxable: false });
+    buildInvoiceLineItemRows();
+    invRenderIdImageState();
+    invStatusHelp();
+    var acct = document.getElementById('inv-account');
+    if (acct && acct.value) invAccountChange(true);
+    var bar = document.getElementById('inv-draft-bar');
+    if (bar) bar.innerHTML = '';
+    invDraftFlag('restored', invDraftWhen(d.at));
+  } catch (e) {
+    // A draft that will not restore must not take the form down with it.
+  } finally {
+    _invDraftRestoring = false;
+  }
+  // Restored work is unsaved work: Cancel has to ask about it, and beforeunload
+  // has to fire for it, exactly as if the tech had typed it all again by hand.
+  _invDraftDirty = true;
+}
+
+async function invDraftRestoreNow() {
+  if (!_invDraftOffered) return;
+  var d = _invDraftOffered;
+  _invDraftOffered = null;
+  await invDraftApply(d);
+}
+
+async function invDraftDiscardNow() {
+  _invDraftOffered = null;
+  var id = _invDraftInvId;
+  await Promise.all([novaDraftDel(invDraftKey(id)), novaDraftDel(invDraftImgKey(id))]).catch(function(){ return null; });
+  var bar = document.getElementById('inv-draft-bar');
+  if (bar) bar.innerHTML = '';
+  invDraftFlag('discarded');
+}
+
+async function invDraftOffer(id) {
+  var key = invDraftKey(id);
+  var d = await novaDraftGet(key);
+  if (!d || d.v !== 1 || !d.at) return;
+  if ((Date.now() - d.at) > INV_DRAFT_MAX_AGE_MS) {
+    novaDraftDel(key); novaDraftDel(invDraftImgKey(id));
+    return;
+  }
+  // The form may already have been navigated away from while this read was in
+  // flight — restoring into a page that is gone would corrupt the next one.
+  if (!_invDraftActive || !document.getElementById('inv-customer')) return;
+  if ((Date.now() - d.at) < INV_DRAFT_AUTO_MS) { await invDraftApply(d); return; }
+  var bar = document.getElementById('inv-draft-bar');
+  if (!bar) return;
+  _invDraftOffered = d;
+  bar.innerHTML =
+    '<div style="border:1px solid var(--primary);background:rgba(249,115,22,0.08);border-radius:10px;padding:12px 14px;margin-bottom:14px">' +
+      '<div style="font-size:13.5px;font-weight:700;margin-bottom:3px">Unfinished invoice from ' + escHtml(invDraftWhen(d.at)) + '</div>' +
+      '<div style="font-size:12px;color:var(--text-muted-color);margin-bottom:10px;line-height:1.5">' + escHtml(invDraftSummary(d)) +
+        '<br />Nova saved this by itself when the page closed. The signature is never kept in a draft &mdash; it has to be re-signed.</div>' +
+      '<div class="flex-gap">' +
+        '<button class="btn btn-primary btn-sm" onclick="invDraftRestoreNow()">Restore it</button>' +
+        '<button class="btn btn-ghost btn-sm" onclick="invDraftDiscardNow()">Start fresh</button>' +
+      '</div>' +
+    '</div>';
+}
+
+// Cancel used to navigate away without a word, which cost a tech the same invoice
+// the green button did. Ask, and only bin the draft if they actually say so.
+async function invCancelEdit(id) {
+  if (invEditorDirty()) {
+    var ok = await novaConfirm('This invoice has changes that have not been saved yet. Leave and throw them away?',
+      { title: 'Unsaved changes', okText: 'Leave and discard', cancelText: 'Keep editing' });
+    if (!ok) return;
+    await invDraftDiscard();
+  }
+  invDraftDetach(true);
+  navigate(id ? 'view-invoice' : 'invoices', id || null);
 }
 
 // ---------- Signature pad ----------
@@ -11364,21 +11718,31 @@ function openInvoiceSignatureFullscreen(opts) {
   if (old) old.remove();
   var ov = document.createElement('div');
   ov.id = 'inv-sig-fs';
-  ov.style.cssText = 'position:fixed;inset:0;z-index:100000;background:#fff;display:flex;flex-direction:column';
+  // A plain inset:0 overlay sits UNDER the phone status bar / browser ribbon, which
+  // is what hid the Done button and clipped the top of the signing area. The safe-area
+  // insets keep every control in the part of the screen the customer can actually see
+  // and reach. index.html sets viewport-fit=cover, without which these resolve to 0.
+  ov.style.cssText = 'position:fixed;inset:0;z-index:100000;background:#fff;display:flex;flex-direction:column;box-sizing:border-box;' +
+    'padding-top:env(safe-area-inset-top);padding-bottom:env(safe-area-inset-bottom);' +
+    'padding-left:env(safe-area-inset-left);padding-right:env(safe-area-inset-right)';
   ov.innerHTML =
-    '<div style="display:flex;justify-content:space-between;align-items:center;padding:12px 16px;border-bottom:1px solid #e5e5e5;flex:0 0 auto">' +
-      '<button id="inv-sig-fs-cancel" style="background:none;border:none;font-size:16px;color:#666;padding:6px 4px">Cancel</button>' +
-      '<span style="font-size:14px;font-weight:600;color:#111">Sign below</span>' +
-      '<button id="inv-sig-fs-done" style="background:#f97316;color:#fff;border:none;border-radius:8px;padding:8px 20px;font-size:15px;font-weight:600">Done</button>' +
+    // Cancel and Clear are small text buttons up top, away from a palm resting on
+    // the screen. The only large target is Done, at the bottom where a thumb is.
+    '<div style="display:flex;justify-content:space-between;align-items:center;padding:8px 12px;flex:0 0 auto">' +
+      '<button id="inv-sig-fs-cancel" style="background:none;border:none;font-size:16px;color:#666;padding:10px 8px;min-height:44px">Cancel</button>' +
+      '<span style="font-size:15px;font-weight:600;color:#111">Sign below</span>' +
+      '<button id="inv-sig-fs-clear" style="background:none;border:none;font-size:16px;color:#666;padding:10px 8px;min-height:44px">Clear</button>' +
     '</div>' +
-    '<div style="flex:1 1 auto;position:relative;overflow:hidden">' +
+    // The signing area is a real bordered box inset from the screen edges, so the
+    // writable area is visible and no stroke can end up under a system bar.
+    '<div style="flex:1 1 auto;position:relative;overflow:hidden;margin:0 14px;border:2px solid #d4d4d4;border-radius:12px;background:#fff">' +
       '<canvas id="inv-sig-fs-canvas" style="position:absolute;inset:0;width:100%;height:100%;touch-action:none"></canvas>' +
-      '<div style="position:absolute;left:6%;right:6%;bottom:26%;border-bottom:2px dashed #ccc;pointer-events:none"></div>' +
-      '<div style="position:absolute;left:6%;bottom:calc(26% + 6px);font-size:11px;color:#bbb;pointer-events:none">Sign above the line</div>' +
+      '<div style="position:absolute;left:8%;right:8%;bottom:24%;border-bottom:2px dashed #ccc;pointer-events:none"></div>' +
+      '<div style="position:absolute;left:8%;bottom:calc(24% + 8px);font-size:11px;color:#bbb;pointer-events:none">Sign above the line</div>' +
     '</div>' +
-    '<div style="padding:10px 16px;flex:0 0 auto;border-top:1px solid #e5e5e5;display:flex;align-items:center;gap:12px;flex-wrap:wrap">' +
-      '<button id="inv-sig-fs-clear" style="background:none;border:1px solid #ddd;border-radius:8px;padding:8px 18px;font-size:14px;color:#333">Clear</button>' +
-      '<span style="font-size:11px;color:#bbb">Turn the phone sideways for more room to sign.</span>' +
+    '<div style="padding:12px 14px 14px;flex:0 0 auto">' +
+      '<div style="font-size:11.5px;color:#aaa;text-align:center;margin-bottom:10px">Turn the phone sideways for more room to sign.</div>' +
+      '<button id="inv-sig-fs-done" style="display:block;width:100%;background:#f97316;color:#fff;border:none;border-radius:12px;padding:0 20px;min-height:62px;font-size:19px;font-weight:700">Done</button>' +
     '</div>';
   document.body.appendChild(ov);
   var canvas = document.getElementById('inv-sig-fs-canvas');
@@ -11465,6 +11829,7 @@ async function invDecodeVin() {
     if (d.year) document.getElementById('inv-vyear').value = d.year;
     if (d.make) document.getElementById('inv-vmake').value = d.make;
     if (d.model) document.getElementById('inv-vmodel').value = d.model;
+    invDraftSave(); // .value writes fire no input event, so the draft is nudged by hand
     if (status) { status.style.color = ''; status.textContent = (d.year || d.make || d.model) ? 'Decoded: ' + [d.year, d.make, d.model].filter(Boolean).join(' ') : 'No match found — enter manually.'; }
   } catch(e) { if (status) { status.style.color = 'var(--danger, #ef4444)'; status.textContent = e.message; } }
 }
@@ -11479,6 +11844,7 @@ async function invHandleIdFile(input) {
     var dataUrl = await invFileToCompressedDataUrl(file, 1600);
     _invPendingIdImage = dataUrl; // keep the photo to save with the invoice (dispute evidence), even if AI can't read it
     invRenderIdImageState();
+    invDraftSave(); // the photo is dispute evidence — it must survive a reload too
     var d = await api('POST', '/invoices/scan-id', { image: dataUrl });
     function setIf(id, val){ if (val) { var e = document.getElementById(id); if (e && !e.value) e.value = val; else if (e) e.value = val; } }
     setIf('inv-customer', d.customer_name);
@@ -11488,6 +11854,7 @@ async function invHandleIdFile(input) {
     setIf('inv-city', d.city);
     setIf('inv-state', d.state);
     setIf('inv-zip', d.zip);
+    invDraftSave(); // .value writes fire no input event, so the draft is nudged by hand
     var filled = [d.customer_name, d.dl_number, d.dl_state, d.street_address, d.city, d.state, d.zip].some(function(x){ return x && String(x).trim(); });
     if (status) { status.style.color = filled ? 'var(--success)' : 'var(--danger, #ef4444)'; status.textContent = filled ? 'ID read — please verify the fields above. The photo will be saved with the invoice.' : 'Photo saved for the invoice, but the details could not be auto-read — type them in. Use a clear, well-lit photo of the FRONT for auto-read.'; }
   } catch(e) { if (status) { status.style.color = 'var(--danger, #ef4444)'; status.textContent = (_invPendingIdImage ? 'Photo saved for the invoice, but auto-read failed: ' : '') + e.message; } }
@@ -11547,6 +11914,7 @@ async function invHandlePlateFile(input) {
       var tagEl = document.getElementById('inv-tag');
       if (tagEl) tagEl.value = d.plate;
       if (d.state) { var stEl = document.getElementById('inv-tagstate'); if (stEl) stEl.value = d.state; }
+      invDraftSave(); // .value writes fire no input event, so the draft is nudged by hand
       if (status) { status.style.color = 'var(--success)'; status.textContent = 'Plate read: ' + d.plate + (d.state ? ' (' + d.state + ')' : '') + ' \u2014 please verify.'; }
     } else {
       if (status) { status.style.color = 'var(--danger, #ef4444)'; status.textContent = 'Could not read a plate from that photo. Try a clearer, straight-on shot, or type it in.'; }
@@ -11560,21 +11928,9 @@ async function saveInvoice(id) {
   var errEl = document.getElementById('inv-edit-error');
   function val(idv){ var e = document.getElementById(idv); return e ? e.value : ''; }
   function chk(idv){ var e = document.getElementById(idv); return e ? e.checked : false; }
-  // Sync line items from DOM (in case last edit not blurred)
-  // Read the row back by data-field, not by input position. The Our Cost cell is
-  // an input on a hand-typed part but plain text on a catalog part or a labor
-  // line, so positional indexing would shift and write the wrong values.
-  var rows = document.querySelectorAll('#inv-line-body tr');
-  rows.forEach(function(row, i){
-    if (!invoiceLineItems[i]) return;
-    var typeSel = row.querySelector('select[data-field="line_type"]');
-    if (typeSel) invoiceLineItems[i].line_type = typeSel.value;
-    row.querySelectorAll('input[data-field]').forEach(function(inp){
-      var f = inp.dataset.field;
-      invoiceLineItems[i][f] = (inp.type === 'checkbox') ? inp.checked : inp.value;
-      if (f === 'unit_cost' && inp.value !== '' && !invoiceLineItems[i].cost_source) invoiceLineItems[i].cost_source = 'manual';
-    });
-  });
+  // Sync line items from DOM (in case last edit not blurred). Shared with the
+  // draft snapshot so the two can never read the table differently.
+  invSyncLineItemsFromDom();
   var customer = val('inv-customer').trim();
   if (!customer) { if (errEl) errEl.innerHTML = '<div class="alert alert-error">Customer name is required.</div>'; window.scrollTo(0,0); return; }
   var items = invoiceLineItems.filter(function(it){ return (it.description||'').toString().trim(); });
@@ -11690,11 +12046,17 @@ async function saveInvoice(id) {
       var _pr = await api('PUT', '/invoices/' + id, payload);
       _invPendingIdImage = null;
       if (payload.id_image && _pr && _pr.id_image_saved === false) showToast('Invoice saved, but the ID photo could not be stored.', 'error');
+      // The server has it now, so the draft has nothing left to protect. Bin it
+      // BEFORE navigating, or render()'s detach would write it straight back.
+      await invDraftDiscard();
+      invDraftDetach(true);
       navigate('view-invoice', id);
     } else {
       var created = await api('POST', '/invoices', payload);
       _invPendingIdImage = null;
       if (payload.id_image && created && created.id_image_saved === false) showToast('Invoice saved, but the ID photo could not be stored.', 'error');
+      await invDraftDiscard();
+      invDraftDetach(true);
       navigate('view-invoice', created.id);
     }
   } catch(err) {
