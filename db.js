@@ -1206,6 +1206,76 @@ async function initDB() {
       'ALTER TABLE deposits ADD COLUMN IF NOT EXISTS ai_deposit_date DATE;' +
       'ALTER TABLE deposits ADD COLUMN IF NOT EXISTS ai_edited BOOLEAN DEFAULT FALSE;'
     );
+    // ---- Pulsar cash reconciliation -------------------------------------
+    // A manager drops the Pulsar "Call Search" CSV for a pay week; every call
+    // where the tech collected CASH lands in pulsar_cash_calls, and the Cash
+    // Deposits page reconciles that against the deposit the tech submitted.
+    // call_uid is Pulsar's own per-call key (verified unique with zero blanks
+    // across a 1,403-row export) and is UNIQUE here so re-importing an
+    // overlapping export can never double-count a call.
+    await client.query(
+      'CREATE TABLE IF NOT EXISTS pulsar_imports (' +
+      '  id SERIAL PRIMARY KEY,' +
+      '  period_start DATE NOT NULL,' +
+      '  period_end DATE NOT NULL,' +
+      '  filename VARCHAR(255),' +
+      '  uploaded_by INTEGER REFERENCES users(id) ON DELETE SET NULL,' +
+      '  uploaded_by_name VARCHAR(255),' +
+      '  total_rows INTEGER DEFAULT 0,' +
+      '  cash_rows INTEGER DEFAULT 0,' +
+      '  cash_total DECIMAL(12,2) DEFAULT 0,' +
+      '  created_at TIMESTAMPTZ DEFAULT NOW()' +
+      ');' +
+      'CREATE TABLE IF NOT EXISTS pulsar_cash_calls (' +
+      '  id SERIAL PRIMARY KEY,' +
+      '  import_id INTEGER REFERENCES pulsar_imports(id) ON DELETE CASCADE,' +
+      '  call_uid VARCHAR(100) NOT NULL,' +
+      '  invoice VARCHAR(50),' +
+      '  call_date DATE NOT NULL,' +
+      '  period_start DATE NOT NULL,' +
+      '  period_end DATE NOT NULL,' +
+      '  location_raw VARCHAR(255),' +
+      '  city_code CHAR(3),' +
+      '  tech_raw VARCHAR(255),' +
+      '  tech_display VARCHAR(255),' +
+      '  tech_user_id INTEGER REFERENCES users(id) ON DELETE SET NULL,' +
+      '  task VARCHAR(100),' +
+      '  status VARCHAR(30),' +
+      '  account VARCHAR(255),' +
+      '  cash DECIMAL(10,2) NOT NULL DEFAULT 0,' +
+      '  tax DECIMAL(10,2) DEFAULT 0,' +
+      '  created_at TIMESTAMPTZ DEFAULT NOW()' +
+      ')'
+    );
+    // Every column added after first release needs its own idempotent ALTER --
+    // CREATE TABLE IF NOT EXISTS will not backfill a table that already exists
+    // on the live database.
+    await client.query(
+      'ALTER TABLE pulsar_imports ADD COLUMN IF NOT EXISTS uploaded_by_name VARCHAR(255);' +
+      'ALTER TABLE pulsar_imports ADD COLUMN IF NOT EXISTS total_rows INTEGER DEFAULT 0;' +
+      'ALTER TABLE pulsar_imports ADD COLUMN IF NOT EXISTS cash_rows INTEGER DEFAULT 0;' +
+      'ALTER TABLE pulsar_imports ADD COLUMN IF NOT EXISTS cash_total DECIMAL(12,2) DEFAULT 0;' +
+      'ALTER TABLE pulsar_cash_calls ADD COLUMN IF NOT EXISTS invoice VARCHAR(50);' +
+      'ALTER TABLE pulsar_cash_calls ADD COLUMN IF NOT EXISTS period_start DATE;' +
+      'ALTER TABLE pulsar_cash_calls ADD COLUMN IF NOT EXISTS period_end DATE;' +
+      'ALTER TABLE pulsar_cash_calls ADD COLUMN IF NOT EXISTS location_raw VARCHAR(255);' +
+      'ALTER TABLE pulsar_cash_calls ADD COLUMN IF NOT EXISTS city_code CHAR(3);' +
+      'ALTER TABLE pulsar_cash_calls ADD COLUMN IF NOT EXISTS tech_raw VARCHAR(255);' +
+      'ALTER TABLE pulsar_cash_calls ADD COLUMN IF NOT EXISTS tech_display VARCHAR(255);' +
+      'ALTER TABLE pulsar_cash_calls ADD COLUMN IF NOT EXISTS tech_user_id INTEGER REFERENCES users(id) ON DELETE SET NULL;' +
+      'ALTER TABLE pulsar_cash_calls ADD COLUMN IF NOT EXISTS task VARCHAR(100);' +
+      'ALTER TABLE pulsar_cash_calls ADD COLUMN IF NOT EXISTS status VARCHAR(30);' +
+      'ALTER TABLE pulsar_cash_calls ADD COLUMN IF NOT EXISTS account VARCHAR(255);' +
+      'ALTER TABLE pulsar_cash_calls ADD COLUMN IF NOT EXISTS tax DECIMAL(10,2) DEFAULT 0;'
+    );
+    await client.query(
+      'CREATE UNIQUE INDEX IF NOT EXISTS idx_pulsar_cash_uid ON pulsar_cash_calls(call_uid);' +
+      'CREATE INDEX IF NOT EXISTS idx_pulsar_cash_period ON pulsar_cash_calls(period_start, period_end);' +
+      'CREATE INDEX IF NOT EXISTS idx_pulsar_cash_tech ON pulsar_cash_calls(tech_user_id);' +
+      'CREATE INDEX IF NOT EXISTS idx_pulsar_cash_import ON pulsar_cash_calls(import_id);' +
+      'CREATE INDEX IF NOT EXISTS idx_pulsar_cash_date ON pulsar_cash_calls(call_date);' +
+      'CREATE INDEX IF NOT EXISTS idx_pulsar_imports_period ON pulsar_imports(period_start);'
+    );
     // Indexes on frequently-filtered columns for the main list views
     await client.query(
       'CREATE INDEX IF NOT EXISTS idx_po_requester ON purchase_orders(requester_id);' +

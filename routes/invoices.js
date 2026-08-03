@@ -1412,7 +1412,7 @@ router.post('/:id/collect-payment', requireAuth, requirePermission('edit_invoice
   }
   try {
     const r = await pool.query(
-      'SELECT id, invoice_number, status, grand_total, tip_amount, city_code, locksmith_id, signature_required, signature_image, pay_method, surcharge_amount FROM invoices WHERE id = $1',
+      'SELECT id, invoice_number, status, customer_name, grand_total, tip_amount, city_code, locksmith_id, signature_required, signature_image, pay_method, surcharge_amount FROM invoices WHERE id = $1',
       [req.params.id]
     );
     const inv = r.rows[0];
@@ -1420,8 +1420,25 @@ router.post('/:id/collect-payment', requireAuth, requirePermission('edit_invoice
     if (!canSeeAll(req.user.role) && inv.locksmith_id !== req.user.id) {
       return res.status(403).json({ error: 'Access denied' });
     }
+    // 'draft' is displayed as "Active" and is the normal state of an invoice a
+    // tech is holding in front of the customer, so it CANNOT be refused outright.
+    // Refusing it made Collect Payment unreachable: the only other unlocked
+    // status is 'awaiting_payment', which needs a chase date first, and 'paid' is
+    // locked. What actually has to be true is that the invoice is FINISHABLE --
+    // the same gates the Complete Invoice button checks -- because a Square
+    // payment IS the finish line (the narrow writer in utils/square.js stamps
+    // status='paid' and completed_at). Anything that could not be completed must
+    // not be chargeable either.
     if (inv.status === 'draft') {
-      return res.status(400).json({ error: 'Finish the invoice first. A draft has nothing to charge against.' });
+      const gitems = (await pool.query('SELECT * FROM invoice_line_items WHERE invoice_id = $1', [inv.id])).rows;
+      const ggates = invoiceGates(inv, gitems);
+      if (!gatesPass(ggates)) {
+        const gmissing = ggates.filter(function (g) { return !g.ok; }).map(function (g) { return g.label.toLowerCase(); });
+        return res.status(400).json({
+          error: 'Invoice #' + inv.invoice_number + ' is not finished yet: ' + gmissing.join(', ') + '. Fix that and the card can be run. Nothing was charged.',
+          gates: ggates
+        });
+      }
     }
     if (LOCKED_STATUSES.indexOf(inv.status) !== -1) {
       return res.status(409).json({ error: 'This invoice is already settled.' });

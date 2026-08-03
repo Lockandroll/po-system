@@ -2,7 +2,7 @@
 // public/sw.js (the only thing bumped each deploy) — the badge asks the active
 // service worker for it at runtime. This value is just the fallback shown when no
 // service worker is available (e.g. very first visit before it installs).
-var APP_VERSION = 'v94';
+var APP_VERSION = 'v95';
 var _resolvedAppVersion = null;
 
 // Ask the active service worker for its CACHE_VERSION (without the 'nova-' prefix).
@@ -9472,6 +9472,10 @@ async function renderDeposits(el) {
         '<button id="dep-submit-btn" class="btn btn-primary" onclick="submitDeposit()">Submit Deposit</button>' +
       '</div></div>';
   }
+  // Managers get the Pulsar cross-check between the submit form and the ledger:
+  // the table below can only show deposits that were MADE, so a technician who
+  // collected cash and submitted nothing is invisible there but not here.
+  if (canManage) html += pvCardHtml();
   html +=
     '<div class="card"><div class="card-body">' +
       '<h3 style="margin-top:0;margin-bottom:16px">' + (canSeeAll ? 'All Deposits' : 'My Deposits') + '</h3>' +
@@ -9480,6 +9484,7 @@ async function renderDeposits(el) {
   el.innerHTML = html;
   if (canSubmit) { renderDepositExpenses(); recalcOverShort(); }
   await loadDepositsTable();
+  if (canManage) await pvLoadRecon();
 }
 
 // Resize an image File to a JPEG data URL (max width 1200). Resolves null on failure.
@@ -22947,4 +22952,327 @@ async function saveAssetUnit(id, btn) {
     showToast('Saved', 'success');
     render();
   } catch (err) { btn.disabled = false; assetErr('unit-err', err.message); }
+}
+
+/* ============ Pulsar cash verification (Cash Deposits page) ============
+ * Import the Pulsar "Call Search" CSV for a pay week, then reconcile what each
+ * technician collected in cash against the deposit they actually submitted.
+ * The deposits table below can only show deposits that were MADE; this is the
+ * only thing on the page that can see a tech who collected cash and submitted
+ * nothing.  Backend: routes/pulsar.js.  No backticks in this block.
+ */
+var _pvState = { csv: '', filename: '', preview: null, assign: {}, recon: null, busy: false, openKey: null, calls: {} };
+
+function pvMoney(n) {
+  var v = Number(n);
+  if (isNaN(v)) v = 0;
+  return '$' + v.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+}
+
+// status -> { label, color, background }.  gap is signed: positive = short.
+function pvBadge(row) {
+  var s = row.status, label, c;
+  if (s === 'match') { label = 'Match'; c = '#22c55e'; }
+  else if (s === 'typo') { label = 'Typo'; c = '#f59e0b'; }
+  else if (s === 'short') { label = 'Short ' + pvMoney(row.gap); c = '#ef4444'; }
+  else if (s === 'over') { label = 'Over ' + pvMoney(Math.abs(row.gap)); c = '#f59e0b'; }
+  else if (s === 'no_deposit') { label = 'No deposit'; c = '#ef4444'; }
+  else if (s === 'unlinked') { label = 'Unlinked name'; c = '#a855f7'; }
+  else if (s === 'no_pulsar') { label = 'No Pulsar data'; c = 'var(--text-muted-color)'; }
+  else { label = s; c = 'var(--text-muted-color)'; }
+  return '<span style="display:inline-block;padding:2px 8px;border-radius:10px;font-size:11px;font-weight:700;' +
+    'color:' + c + ';border:1px solid ' + c + ';white-space:nowrap">' + escHtml(label) + '</span>';
+}
+
+function pvCardHtml() {
+  return '<div class="card" style="margin-bottom:24px"><div class="card-body">' +
+    '<div style="display:flex;justify-content:space-between;align-items:flex-start;gap:12px;flex-wrap:wrap">' +
+      '<div><h3 style="margin:0 0 4px">Pulsar Verification</h3>' +
+      '<p style="margin:0;font-size:13px;color:var(--text-muted-color)">Import the Pulsar Call Search export for a pay week to check every technician&#39;s cash against what they deposited.</p></div>' +
+      '<div style="display:flex;gap:8px;align-items:flex-end;flex-wrap:wrap">' +
+        '<div class="form-group" style="margin:0;min-width:210px"><label>Pay Period</label>' +
+          '<select id="pv-period" onchange="pvLoadRecon()">' + depBuildPeriodOptions() + '</select></div>' +
+        '<div class="form-group" style="margin:0"><label>Call Search CSV</label>' +
+          '<input type="file" id="pv-file" accept=".csv,text/csv" onchange="pvOnFile(this)" /></div>' +
+      '</div>' +
+    '</div>' +
+    '<div id="pv-preview" style="margin-top:14px"></div>' +
+    '<div id="pv-recon" style="margin-top:14px"><div class="loading">Loading…</div></div>' +
+  '</div></div>';
+}
+
+/* ------------------------------------------------------------- import ---- */
+
+function pvOnFile(input) {
+  var f = input && input.files && input.files[0];
+  var prev = document.getElementById('pv-preview');
+  if (!f) { _pvState.csv = ''; _pvState.filename = ''; if (prev) prev.innerHTML = ''; return; }
+  _pvState.filename = f.name;
+  _pvState.assign = {};
+  if (prev) prev.innerHTML = '<div class="loading">Reading ' + escHtml(f.name) + '…</div>';
+  var reader = new FileReader();
+  reader.onload = function (e) {
+    _pvState.csv = String(e.target.result || '');
+    pvPreview();
+  };
+  reader.onerror = function () {
+    if (prev) prev.innerHTML = '<div class="alert alert-error">Could not read that file.</div>';
+  };
+  reader.readAsText(f);
+}
+
+async function pvPreview() {
+  var prev = document.getElementById('pv-preview');
+  if (!prev) return;
+  prev.innerHTML = '<div class="loading">Reading the export…</div>';
+  try {
+    var r = await api('POST', '/pulsar/preview', { csv: _pvState.csv, filename: _pvState.filename });
+    _pvState.preview = r;
+    pvRenderPreview();
+  } catch (err) {
+    _pvState.preview = null;
+    prev.innerHTML = '<div class="alert alert-error">' + escHtml((err && err.message) || 'Could not read that CSV.') + '</div>';
+  }
+}
+
+function pvRenderPreview() {
+  var prev = document.getElementById('pv-preview');
+  var p = _pvState.preview;
+  if (!prev || !p) return;
+
+  var userOpts = '<option value="">— pick a person —</option>' + (p.users || []).map(function (u) {
+    return '<option value="' + u.id + '">' + escHtml(u.name) + '</option>';
+  }).join('');
+
+  var warn = '';
+  if (p.period && p.period.spansMultiple) {
+    warn += '<div class="alert alert-warning" style="margin-bottom:10px">This file covers more than one pay week. Only ' +
+      escHtml(p.period.start) + ' to ' + escHtml(p.period.end) + ' will be imported — re-drop it under the other week to bring that one in too.</div>';
+  }
+  if (p.existing && p.existing.length) {
+    warn += '<div class="alert alert-warning" style="margin-bottom:10px">This pay week was already imported by ' +
+      escHtml(p.existing[0].uploaded_by_name || 'someone') + '. Importing again replaces it.</div>';
+  }
+
+  var unmatchedHtml = '';
+  if (p.unmatched && p.unmatched.length) {
+    unmatchedHtml = '<div style="margin:10px 0;padding:12px;border-radius:8px;border:1px solid #f59e0b;background:rgba(245,158,11,0.08)">' +
+      '<div style="font-weight:700;margin-bottom:6px;color:#f59e0b">' + p.unmatched.length +
+        ' name' + (p.unmatched.length === 1 ? '' : 's') + ' Nova could not place</div>' +
+      '<div style="font-size:12px;color:var(--text-muted-color);margin-bottom:10px">Their cash cannot be pinned on anyone until you say who they are. Your answer is remembered, so you will not be asked again.</div>' +
+      p.unmatched.map(function (t) {
+        return '<div style="display:flex;gap:10px;align-items:center;margin-bottom:6px;flex-wrap:wrap">' +
+          '<code style="min-width:180px">' + escHtml(t.tech_raw) + '</code>' +
+          '<span style="color:var(--text-muted-color);font-size:12px">' + pvMoney(t.cash) + ' · ' + t.calls + ' call' + (t.calls === 1 ? '' : 's') + '</span>' +
+          '<select onchange="pvAssign(this,\'' + escHtml(t.key).replace(/'/g, '&#39;') + '\')" style="min-width:200px">' + userOpts + '</select>' +
+        '</div>';
+      }).join('') +
+    '</div>';
+  }
+
+  var rows = (p.techs || []).map(function (t) {
+    var who = t.user_id
+      ? escHtml(t.user_name)
+      : '<span style="color:#f59e0b">' + escHtml(t.tech_display || t.tech_raw) + ' (unmatched)</span>';
+    var why = t.user_id && t.match_why !== 'saved' && t.match_why !== 'name'
+      ? '<span style="font-size:11px;color:var(--text-muted-color)"> · ' + escHtml(t.match_why) + '</span>' : '';
+    return '<tr><td>' + who + why + '</td><td>' + escHtml(t.tech_raw) + '</td><td>' + escHtml(t.city_code || '—') +
+      '</td><td style="text-align:right">' + t.calls + '</td><td style="text-align:right;font-weight:600">' + pvMoney(t.cash) + '</td></tr>';
+  }).join('');
+
+  prev.innerHTML = warn +
+    '<div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:10px">' +
+      '<div style="flex:1;min-width:130px;background:var(--bg-elevated);border:1px solid var(--border);border-radius:10px;padding:10px 12px">' +
+        '<div style="font-size:11px;color:var(--text-muted-color)">Pay week</div><div style="font-size:15px;font-weight:700">' +
+        escHtml(p.period.start) + ' → ' + escHtml(p.period.end) + '</div></div>' +
+      '<div style="flex:1;min-width:110px;background:var(--bg-elevated);border:1px solid var(--border);border-radius:10px;padding:10px 12px">' +
+        '<div style="font-size:11px;color:var(--text-muted-color)">Cash calls</div><div style="font-size:15px;font-weight:700">' +
+        p.meta.cashRows + ' <span style="font-weight:400;font-size:12px;color:var(--text-muted-color)">of ' + p.meta.totalRows + '</span></div></div>' +
+      '<div style="flex:1;min-width:110px;background:var(--bg-elevated);border:1px solid var(--border);border-radius:10px;padding:10px 12px">' +
+        '<div style="font-size:11px;color:var(--text-muted-color)">Technicians</div><div style="font-size:15px;font-weight:700">' + p.techs.length + '</div></div>' +
+      '<div style="flex:1;min-width:130px;background:var(--bg-elevated);border:1px solid var(--border);border-radius:10px;padding:10px 12px">' +
+        '<div style="font-size:11px;color:var(--text-muted-color)">Cash collected</div><div style="font-size:15px;font-weight:700;color:#f97316">' +
+        pvMoney(p.meta.cashTotal) + '</div></div>' +
+    '</div>' +
+    unmatchedHtml +
+    '<details style="margin-bottom:10px"><summary style="cursor:pointer;font-size:13px;color:var(--text-muted-color)">Show all ' +
+      p.techs.length + ' technicians in this file</summary>' +
+      '<div class="table-wrap" style="margin-top:8px"><table class="table"><thead><tr><th>Nova user</th><th>Pulsar name</th><th>City</th>' +
+      '<th style="text-align:right">Calls</th><th style="text-align:right">Cash</th></tr></thead><tbody>' + rows + '</tbody></table></div></details>' +
+    '<button class="btn btn-primary" id="pv-import-btn" onclick="pvImport()">Import &amp; verify</button> ' +
+    '<button class="btn btn-secondary" onclick="pvCancelImport()">Cancel</button>';
+}
+
+function pvAssign(sel, key) {
+  if (sel.value) _pvState.assign[key] = parseInt(sel.value, 10);
+  else delete _pvState.assign[key];
+}
+
+function pvCancelImport() {
+  _pvState.csv = ''; _pvState.filename = ''; _pvState.preview = null; _pvState.assign = {};
+  var f = document.getElementById('pv-file'); if (f) f.value = '';
+  var prev = document.getElementById('pv-preview'); if (prev) prev.innerHTML = '';
+}
+
+async function pvImport() {
+  if (_pvState.busy || !_pvState.preview) return;
+  _pvState.busy = true;
+  var btn = document.getElementById('pv-import-btn');
+  if (btn) { btn.disabled = true; btn.textContent = 'Importing…'; }
+  try {
+    var r = await api('POST', '/pulsar/import', {
+      csv: _pvState.csv,
+      filename: _pvState.filename,
+      period_start: _pvState.preview.period.start,
+      assignments: _pvState.assign
+    });
+    // Jump the period selector to the week that was just imported, so the
+    // reconciliation below is showing the data the manager just loaded.
+    var sel = document.getElementById('pv-period');
+    if (sel) {
+      var want = _pvState.preview.period.start;
+      for (var i = 0; i < sel.options.length; i++) {
+        if (sel.options[i].value === want) { sel.selectedIndex = i; break; }
+      }
+    }
+    pvCancelImport();
+    showToast('Imported ' + r.cash_rows + ' cash calls (' + pvMoney(r.cash_total) + ')', 'success');
+    await pvLoadRecon();
+  } catch (err) {
+    showToast((err && err.message) || 'Import failed', 'error');
+  } finally {
+    _pvState.busy = false;
+    var b2 = document.getElementById('pv-import-btn');
+    if (b2) { b2.disabled = false; b2.textContent = 'Import & verify'; }
+  }
+}
+
+/* ------------------------------------------------------- reconciliation --- */
+
+async function pvLoadRecon() {
+  var wrap = document.getElementById('pv-recon');
+  if (!wrap) return;
+  var sel = document.getElementById('pv-period');
+  var period = sel ? sel.value : '';
+  if (!period) { wrap.innerHTML = ''; return; }
+  wrap.innerHTML = '<div class="loading">Loading…</div>';
+  _pvState.openKey = null;
+  _pvState.calls = {};
+  try {
+    _pvState.recon = await api('GET', '/pulsar/reconciliation?period_start=' + encodeURIComponent(period));
+    pvRenderRecon();
+  } catch (err) {
+    wrap.innerHTML = '<div class="alert alert-error">' + escHtml((err && err.message) || 'Could not load the reconciliation.') + '</div>';
+  }
+}
+
+function pvRenderRecon() {
+  var wrap = document.getElementById('pv-recon');
+  var d = _pvState.recon;
+  if (!wrap || !d) return;
+
+  if (!d.imported) {
+    wrap.innerHTML = '<div style="padding:16px;border:1px dashed var(--border);border-radius:8px;color:var(--text-muted-color);font-size:13px">' +
+      'No Pulsar export imported for ' + escHtml(d.period_start) + ' → ' + escHtml(d.period_end) + '. ' +
+      'Drop the Call Search CSV above to check this week&#39;s deposits.</div>';
+    return;
+  }
+
+  var t = d.totals;
+  var missing = d.rows.filter(function (r) { return r.status === 'no_deposit' || r.status === 'unlinked'; }).length;
+
+  var kpis = '<div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:12px">' +
+    '<div style="flex:1;min-width:140px;background:var(--bg-elevated);border:1px solid var(--border);border-radius:10px;padding:10px 12px">' +
+      '<div style="font-size:11px;color:var(--text-muted-color)">Pulsar cash</div>' +
+      '<div style="font-size:18px;font-weight:700">' + pvMoney(t.pulsar_cash) + '</div></div>' +
+    '<div style="flex:1;min-width:140px;background:var(--bg-elevated);border:1px solid var(--border);border-radius:10px;padding:10px 12px">' +
+      '<div style="font-size:11px;color:var(--text-muted-color)">Deposited</div>' +
+      '<div style="font-size:18px;font-weight:700">' + pvMoney(t.deposited) + '</div></div>' +
+    '<div style="flex:1;min-width:140px;background:var(--bg-elevated);border:1px solid var(--border);border-radius:10px;padding:10px 12px">' +
+      '<div style="font-size:11px;color:var(--text-muted-color)">Expenses</div>' +
+      '<div style="font-size:18px;font-weight:700">' + pvMoney(t.expenses) + '</div></div>' +
+    '<div style="flex:1;min-width:170px;background:var(--bg-elevated);border:1px solid ' + (t.unaccounted > 0 ? '#ef4444' : 'var(--border)') +
+      ';border-radius:10px;padding:10px 12px">' +
+      '<div style="font-size:11px;color:var(--text-muted-color)">Never deposited</div>' +
+      '<div style="font-size:18px;font-weight:700;color:' + (t.unaccounted > 0 ? '#ef4444' : '#22c55e') + '">' + pvMoney(t.unaccounted) +
+      '</div><div style="font-size:11px;color:var(--text-muted-color)">' + missing + ' technician' + (missing === 1 ? '' : 's') + '</div></div>' +
+  '</div>';
+
+  var rows = d.rows.map(function (r, i) {
+    var enteredCell = (r.entered == null)
+      ? '<span style="color:var(--text-muted-color)">—</span>'
+      : (r.typed_mismatch
+        ? '<span style="color:#f59e0b;font-weight:600" title="The technician typed this; Pulsar says ' + pvMoney(r.pulsar_cash) + '">' + pvMoney(r.entered) + '</span>'
+        : pvMoney(r.entered));
+    var depCell = r.deposit_count
+      ? pvMoney(r.deposited) + '<div style="font-size:11px;color:var(--text-muted-color)">' + escHtml(r.deposit_numbers || '') + '</div>'
+      : '<span style="color:var(--text-muted-color)">—</span>';
+    var nameCell = escHtml(r.user_name || r.tech_raw || '?');
+    if (r.status === 'unlinked') {
+      nameCell = escHtml(r.user_name || r.tech_raw) +
+        '<div style="font-size:11px;color:#a855f7">no Nova user for this Pulsar name</div>';
+    }
+    var expand = r.calls
+      ? '<button class="btn btn-secondary btn-sm" onclick="pvToggleCalls(' + i + ')" style="padding:2px 8px">' +
+        (_pvState.openKey === r.key ? 'Hide' : r.calls + ' call' + (r.calls === 1 ? '' : 's')) + '</button>'
+      : '<span style="color:var(--text-muted-color)">—</span>';
+
+    var main = '<tr' + (r.status === 'no_deposit' || r.status === 'unlinked' ? ' style="background:rgba(239,68,68,0.05)"' : '') + '>' +
+      '<td>' + nameCell + '</td>' +
+      '<td>' + escHtml(r.city_code || '—') + '</td>' +
+      '<td style="text-align:right;font-weight:600">' + (r.calls ? pvMoney(r.pulsar_cash) : '<span style="color:var(--text-muted-color)">—</span>') + '</td>' +
+      '<td style="text-align:right">' + enteredCell + '</td>' +
+      '<td style="text-align:right">' + depCell + '</td>' +
+      '<td style="text-align:right">' + (r.expenses ? pvMoney(r.expenses) : '<span style="color:var(--text-muted-color)">—</span>') + '</td>' +
+      '<td>' + pvBadge(r) + '</td>' +
+      '<td style="text-align:right">' + expand + '</td></tr>';
+
+    var detail = '';
+    if (_pvState.openKey === r.key) {
+      var calls = _pvState.calls[r.key];
+      var inner;
+      if (!calls) inner = '<div class="loading">Loading calls…</div>';
+      else if (!calls.length) inner = '<div style="color:var(--text-muted-color)">No calls found.</div>';
+      else {
+        inner = '<table class="table" style="margin:0"><thead><tr><th>Date</th><th>Invoice</th><th>Task</th>' +
+          '<th>Account</th><th style="text-align:right">Tax</th><th style="text-align:right">Cash</th></tr></thead><tbody>' +
+          calls.map(function (c) {
+            return '<tr><td>' + escHtml(String(c.call_date).slice(0, 10)) + '</td><td>' + escHtml(c.invoice || '—') +
+              '</td><td>' + escHtml(c.task || '—') + '</td><td>' + escHtml(c.account || 'Cash') +
+              '</td><td style="text-align:right;color:var(--text-muted-color)">' + pvMoney(c.tax) +
+              '</td><td style="text-align:right;font-weight:600">' + pvMoney(c.cash) + '</td></tr>';
+          }).join('') + '</tbody></table>';
+      }
+      detail = '<tr><td colspan="8" style="background:var(--bg-elevated);padding:12px">' + inner + '</td></tr>';
+    }
+    return main + detail;
+  }).join('');
+
+  wrap.innerHTML = kpis +
+    '<div style="font-size:12px;color:var(--text-muted-color);margin-bottom:8px">Imported from ' +
+      escHtml(d.imported.filename || 'a CSV') + ' by ' + escHtml(d.imported.uploaded_by_name || 'someone') + '. ' +
+      'Cash figures are Pulsar&#39;s <strong>Collected Cash</strong>, which already includes sales tax.</div>' +
+    '<div class="table-wrap"><table class="table"><thead><tr>' +
+      '<th>Technician</th><th>City</th><th style="text-align:right">Pulsar cash</th>' +
+      '<th style="text-align:right">Tech entered</th><th style="text-align:right">Deposited</th>' +
+      '<th style="text-align:right">Expenses</th><th>Status</th><th></th>' +
+    '</tr></thead><tbody>' + rows + '</tbody></table></div>';
+}
+
+async function pvToggleCalls(i) {
+  var d = _pvState.recon;
+  if (!d || !d.rows[i]) return;
+  var r = d.rows[i];
+  if (_pvState.openKey === r.key) { _pvState.openKey = null; pvRenderRecon(); return; }
+  _pvState.openKey = r.key;
+  pvRenderRecon();
+  if (_pvState.calls[r.key]) return;
+  try {
+    var q = '/pulsar/calls?period_start=' + encodeURIComponent(d.period_start) +
+      (r.user_id ? '&user_id=' + r.user_id : '&tech_raw=' + encodeURIComponent(r.tech_raw || ''));
+    _pvState.calls[r.key] = await api('GET', q);
+  } catch (err) {
+    _pvState.calls[r.key] = [];
+  }
+  if (_pvState.openKey === r.key) pvRenderRecon();
 }

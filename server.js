@@ -123,6 +123,7 @@ app.use('/api/running', require('./routes/running'));
 app.use('/api/royalty', require('./routes/royalty'));
 app.use('/api/geico', require('./routes/geico'));
 app.use('/api/deposits', require('./routes/deposits'));
+app.use('/api/pulsar', require('./routes/pulsar'));
 app.use('/api/signoffs', require('./routes/signoffs'));
 app.use('/api/scheduled', require('./routes/scheduled'));
 app.use('/api/tasks', require('./routes/tasks'));
