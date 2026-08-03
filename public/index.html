@@ -206,6 +206,14 @@
        input refuses to shrink past its min-content and the whole page overflows
        sideways on a small phone. */
     .form-group input, .form-group select, .form-group textarea { min-width: 0; }
+    /* Checkboxes & radios. The global input{width:100%;padding:9px 12px} rule
+       above balloons a bare checkbox, and Chrome scales the control to whatever
+       width is left over -- so a checkbox sitting next to a LONG label in a flex
+       row got squeezed and rendered visibly smaller than one next to a short
+       label. Pin every checkbox/radio to one size and stop them shrinking.
+       !important is required: ~50 of these carry an inline style="width:auto",
+       which would otherwise win over this stylesheet. */
+    input[type="checkbox"], input[type="radio"] { width: 16px !important; height: 16px !important; min-width: 16px; padding: 0 !important; flex: 0 0 auto; }
     /* Phones. This MUST come after the base .form-row rules above: it is the same
        specificity, so declaration order decides, and the old copy of this override
        lived higher up in the file and had never applied at all.
