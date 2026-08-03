@@ -4,6 +4,7 @@ const { pool } = require('../db');
 const { requireAuth, requirePermission } = require('../middleware/auth');
 const { logAudit } = require('../utils/audit');
 const r2 = require('../utils/r2');
+const org = require('../utils/org');
 
 const router = express.Router();
 
@@ -181,9 +182,11 @@ router.get('/compliance', requireAuth, requirePermission('view_inspections'), as
     var params = [month];
     var where = 'v.active = true';
     if (!isPrivileged(req.user)) {
-      // Non-privileged users see the vehicles of the drivers who report to them.
-      params.push(req.user.id);
-      where += ' AND u.supervisor_id = $' + params.length;
+      // Non-privileged users see their team's vehicles: reporting downline plus
+      // anyone based in a city they run (see utils/org.js). Direct reports only
+      // meant a second level of the tree was invisible here.
+      params.push(await org.teamIds(req.user.id));
+      where += ' AND u.id = ANY($' + params.length + '::int[])';
     } else if (cityCode) {
       params.push(cityCode);
       where += ' AND v.city_code = $' + params.length;

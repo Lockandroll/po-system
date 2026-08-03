@@ -1,6 +1,7 @@
 const express = require('express');
 const { pool } = require('../db');
 const { requireAuth } = require('../middleware/auth');
+const org = require('../utils/org');
 
 const router = express.Router();
 
@@ -53,9 +54,13 @@ router.get('/', requireAuth, async function(req, res) {
     const activityQ = pool.query(
       'SELECT entity_type, entity_number, action, user_name, created_at FROM audit_logs ORDER BY created_at DESC LIMIT 8'
     );
+    // Non-privileged viewers get their TEAM's vehicles: reporting downline plus
+    // anyone based in a city they run (see utils/org.js). This was direct reports
+    // only, so a coordinator with a lead under them counted nothing below depth 1.
+    const inspTeamIds = isPrivileged ? [] : await org.teamIds(userId);
     const inspDueQ = isPrivileged
       ? pool.query("SELECT COUNT(*) AS c FROM vehicles v WHERE v.active = true AND v.inspection_exempt = false AND NOT EXISTS (SELECT 1 FROM users au WHERE au.id = v.assigned_user_id AND au.role IN ('admin','owner')) AND NOT EXISTS (SELECT 1 FROM vehicle_inspections i WHERE i.vehicle_id = v.id AND i.period_month = to_char(NOW() AT TIME ZONE 'America/New_York','YYYY-MM'))").catch(function(){ return { rows: [{ c: 0 }] }; })
-      : pool.query("SELECT COUNT(*) AS c FROM vehicles v JOIN users du ON v.assigned_user_id = du.id WHERE v.active = true AND v.inspection_exempt = false AND du.supervisor_id = $1 AND (du.role IS NULL OR du.role NOT IN ('admin','owner')) AND NOT EXISTS (SELECT 1 FROM vehicle_inspections i WHERE i.vehicle_id = v.id AND i.period_month = to_char(NOW() AT TIME ZONE 'America/New_York','YYYY-MM'))", [userId]).catch(function(){ return { rows: [{ c: 0 }] }; });
+      : pool.query("SELECT COUNT(*) AS c FROM vehicles v JOIN users du ON v.assigned_user_id = du.id WHERE v.active = true AND v.inspection_exempt = false AND du.id = ANY($1::int[]) AND (du.role IS NULL OR du.role NOT IN ('admin','owner')) AND NOT EXISTS (SELECT 1 FROM vehicle_inspections i WHERE i.vehicle_id = v.id AND i.period_month = to_char(NOW() AT TIME ZONE 'America/New_York','YYYY-MM'))", [inspTeamIds]).catch(function(){ return { rows: [{ c: 0 }] }; });
 
     const results = await Promise.all([
       pendingVRsQ, pendingPOsQ, vrStatsQ, poStatsQ, quoteStatsQ, fleetStatsQ, myTasksQ, activityQ, inspDueQ

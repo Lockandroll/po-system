@@ -153,6 +153,25 @@ router.get('/:id', requireAuth, requirePermission('view_signoffs'), async (req, 
     // Only the newest trip can spawn the next one, and only once it is finished.
     const last = form.trips[form.trips.length - 1];
     form.can_add_trip = !!(last && last.id === form.id && form.status === 'completed');
+    // The JOB's invoice, if it has one. Drives the button beside the Invoice
+    // Number field: create one, open the existing one, or (when that one is
+    // frozen) create a replacement. Looked up by trip group, so trip 3 finds the
+    // invoice trip 1 created. Best-effort: a lookup failure must not 500 a sheet
+    // a tech is trying to open on site.
+    form.invoice_link = null;
+    try {
+      const { rows: ilr } = await pool.query(
+        'SELECT id, invoice_number, status FROM invoices WHERE signoff_group_id = $1 ORDER BY id DESC LIMIT 1',
+        [groupIdOf(form)]
+      );
+      if (ilr.length) {
+        form.invoice_link = {
+          id: ilr[0].id,
+          invoice_number: String(ilr[0].invoice_number),
+          status: ilr[0].status
+        };
+      }
+    } catch (e) { console.error('Sign-off invoice link lookup failed:', e && e.message); }
     res.json(form);
   } catch (err) {
     console.error(err);
@@ -278,8 +297,13 @@ router.post('/:id/complete', requireAuth, requirePermission('complete_signoff'),
       return res.status(409).json({ error: 'This sign-off is already completed. Ask a manager to reopen it to make changes.' });
     }
     await client.query('BEGIN');
+    // NOTE invoice_number: COALESCE(NULLIF($3, ''), invoice_number). A blank in the
+    // request must NEVER null a number the sheet already carries - that is exactly
+    // how a stamped number used to get wiped by anyone completing the sheet without
+    // retyping it. The field is required client-side, so a legitimate blank never
+    // arrives; a real number still overwrites, so a typo stays correctable.
     const { rows: upd } = await client.query(
-      'UPDATE signoff_forms SET start_time=$1, end_time=$2, invoice_number=$3, work_complete=$4, num_technicians=$5, manager_name=$6, technician_names=$7, work_description=$8, signature_data = COALESCE($9, signature_data), notes=COALESCE($10, notes), gps_lat = COALESCE($11, gps_lat), gps_lon = COALESCE($12, gps_lon), gps_accuracy = COALESCE($13, gps_accuracy), gps_error=$14, signed_at = COALESCE($15, signed_at), status=$16, completed_by=$17, completed_at=NOW(), updated_at=NOW() WHERE id=$18 RETURNING *',
+      'UPDATE signoff_forms SET start_time=$1, end_time=$2, invoice_number = COALESCE(NULLIF($3, \'\'), invoice_number), work_complete=$4, num_technicians=$5, manager_name=$6, technician_names=$7, work_description=$8, signature_data = COALESCE($9, signature_data), notes=COALESCE($10, notes), gps_lat = COALESCE($11, gps_lat), gps_lon = COALESCE($12, gps_lon), gps_accuracy = COALESCE($13, gps_accuracy), gps_error=$14, signed_at = COALESCE($15, signed_at), status=$16, completed_by=$17, completed_at=NOW(), updated_at=NOW() WHERE id=$18 RETURNING *',
       [b.start_time || null, b.end_time || null, b.invoice_number || null, (b.work_complete === true || b.work_complete === false) ? b.work_complete : null, b.num_technicians ? parseInt(b.num_technicians) : null, b.manager_name || null, b.technician_names || null, b.work_description || null, b.signature_data || null, b.notes || null, (b.gps_lat != null && b.gps_lat !== '') ? b.gps_lat : null, (b.gps_lon != null && b.gps_lon !== '') ? b.gps_lon : null, (b.gps_accuracy != null && b.gps_accuracy !== '') ? b.gps_accuracy : null, b.gps_error || null, b.signed_at || null, 'completed', req.user.id, req.params.id]
     );
     const photos = Array.isArray(b.photos) ? b.photos : [];

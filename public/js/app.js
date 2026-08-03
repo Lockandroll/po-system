@@ -2,7 +2,7 @@
 // public/sw.js (the only thing bumped each deploy) — the badge asks the active
 // service worker for it at runtime. This value is just the fallback shown when no
 // service worker is available (e.g. very first visit before it installs).
-var APP_VERSION = 'v95';
+var APP_VERSION = 'v96';
 var _resolvedAppVersion = null;
 
 // Ask the active service worker for its CACHE_VERSION (without the 'nova-' prefix).
@@ -14924,7 +14924,10 @@ async function signoffDraftRestore(id) {
   var touched = false;
   Object.keys(d.fields || {}).forEach(function(idn) {
     var e = document.getElementById(idn);
-    if (e && d.fields[idn]) { e.value = d.fields[idn]; touched = true; }
+    // Skip read-only inputs. The Invoice Number box goes read-only once the job
+    // is linked to a live invoice, and a stale draft must not type an old number
+    // back over the real one.
+    if (e && !e.readOnly && d.fields[idn]) { e.value = d.fields[idn]; touched = true; }
   });
   if (d.photos && d.photos.length) {
     signoffPhotos = d.photos.slice();
@@ -14972,7 +14975,7 @@ async function renderCompleteSignoff(el, id) {
           '</div>' +
         '</div>' +
         '<div class="form-group"><label>Number of Technicians *</label><input type="number" id="so-numtech" min="0" step="1" placeholder="e.g. 2" /></div>' +
-        '<div class="form-group"><label>Invoice Number *</label><input type="text" id="so-invoice-complete" placeholder="Invoice number" /></div>' +
+        '<div class="form-group" style="flex:1.6 1 260px"><label>Invoice Number *</label>' + signoffInvoiceFieldHtml(form) + '</div>' +
       '</div>' +
       '<div class="form-group"><label>Technician Name(s) *</label><input type="text" id="so-techs" placeholder="Names of techs on site" /></div>' +
       '<div class="form-group"><label>Description of Work Done / Cause of Damage *</label><textarea id="so-workdesc" style="min-height:120px" placeholder="Describe the work performed and/or cause of damage..."></textarea></div>' +
@@ -15029,6 +15032,94 @@ function setupSignaturePad() {
     setInk: function(v) { hasInk = v; },
     clear: function() { ctx.clearRect(0, 0, canvas.width, canvas.height); hasInk = false; }
   };
+}
+
+// The Invoice Number field on a sign-off sheet, plus its way out.
+//
+// This box is REQUIRED and a tech standing on site has nothing to type into it,
+// which is the entire reason the button exists. Three states:
+//   no invoice on the job yet -> Create Invoice
+//   job already has a live one -> Open Invoice #N, box prefilled and read-only
+//   that invoice is frozen     -> Create a new invoice, with the reason shown
+//
+// NOTE the value= on the input. It was missing before, and
+// POST /signoffs/:id/complete writes invoice_number from the request body
+// UNCONDITIONALLY - so a sheet that already carried a number had it WIPED by
+// anyone who completed the sheet without retyping it. Do not remove the binding.
+function signoffInvoiceFieldHtml(f) {
+  var link = f.invoice_link || null;
+  var num = link ? link.invoice_number : (f.invoice_number || '');
+  var btn = '';
+  // ONE invoice per job. If the job has one, this button is the way TO it -
+  // whatever state that invoice is in. Status is deliberately not consulted: a
+  // paid invoice is still THIS job's invoice, and a sheet that offers to make a
+  // second one is how a job ends up invoiced twice. No permission gate either;
+  // navigate() enforces invoice access itself, and a blank space where the
+  // button belongs reads as "this job has no invoice", which is a lie.
+  if (link) {
+    btn = '<button type="button" class="btn btn-secondary" style="white-space:nowrap" onclick="navigate(&#39;edit-invoice&#39;,' + link.id + ')">Open Invoice #' + escHtml(link.invoice_number) + '</button>';
+  } else if (can('create_invoice')) {
+    btn = '<button type="button" class="btn btn-primary" id="so-inv-create" style="white-space:nowrap" onclick="signoffCreateInvoice(' + f.id + ')">+ Create Invoice</button>';
+  }
+  var hint = link
+    ? 'Linked to this job. Every trip on it bills onto #' + escHtml(link.invoice_number) + '.'
+    : 'Brings the PO, account, store and site address across.';
+  var color = link ? 'var(--text-muted-color)' : 'var(--primary)';
+  return '<div style="display:flex;gap:8px;align-items:stretch">' +
+      '<input type="text" id="so-invoice-complete" placeholder="Invoice number" style="flex:1 1 auto;min-width:0" value="' + escHtml(num) + '"' + (link ? ' readonly' : '') + ' />' +
+      btn +
+    '</div>' +
+    '<div id="so-inv-hint" style="font-size:12px;margin-top:6px;line-height:1.5;color:' + color + '">' + hint + '</div>';
+}
+
+// Create (or adopt) the invoice for this JOB from a sign-off sheet.
+// The server decides whether this is a new invoice or the one an earlier trip
+// already made, so a double-tap cannot produce two.
+async function signoffCreateInvoice(id) {
+  var btn = document.getElementById('so-inv-create');
+  var label = btn ? btn.textContent : '';
+  var errEl = document.getElementById('signoff-complete-error') || document.getElementById('view-signoff-error');
+  if (btn) { btn.disabled = true; btn.textContent = 'Creating\u2026'; }
+  try {
+    var r = await api('POST', '/invoices/from-signoff/' + id, {});
+    var box = document.getElementById('so-invoice-complete');
+    if (box) { box.value = r.invoice_number; box.readOnly = true; signoffDraftSave(true); }
+    // Never silently accept a blank account. A miss is fixable in one dropdown,
+    // but only if somebody is told about it.
+    if (r.account_matched === false && r.account_text) {
+      await novaAlert('Invoice #' + r.invoice_number + ' was created, but &quot;' + escHtml(r.account_text) + '&quot; did not match an invoice account. Everything else carried over \u2014 pick the account on the invoice.');
+    }
+    var go = await novaConfirm(
+      'Linked to this job and dropped into the Invoice Number field. Open it now to add pricing, or stay and finish the sign-off first.',
+      {
+        title: 'Invoice #' + r.invoice_number + (r.reused ? ' is already on this job' : ' created'),
+        okText: 'Open the invoice',
+        cancelText: 'Stay on the sheet'
+      }
+    );
+    if (go) { navigate('edit-invoice', r.invoice_id); return; }
+    // Staying put. On the completion screen, patch the field in place rather
+    // than re-rendering - a re-render would bin the half-filled form and the
+    // photos the tech is standing in a parking lot holding. On the view screen
+    // there is no form to lose, so just redraw it.
+    if (!box) { navigate('view-signoff', id); return; }
+    var hint = document.getElementById('so-inv-hint');
+    if (hint) {
+      hint.style.color = 'var(--text-muted-color)';
+      hint.textContent = 'Linked to this job. Every trip on it bills onto #' + r.invoice_number + '.';
+    }
+    if (btn) {
+      btn.className = 'btn btn-secondary';
+      btn.textContent = 'Open Invoice #' + r.invoice_number;
+      btn.onclick = function () { navigate('edit-invoice', r.invoice_id); };
+      btn.disabled = false;
+      btn.removeAttribute('id');
+    }
+  } catch (err) {
+    if (btn) { btn.disabled = false; btn.textContent = label; }
+    if (errEl) { errEl.innerHTML = '<div class="alert alert-error">' + escHtml(err.message) + '</div>'; window.scrollTo(0, 0); }
+    else novaAlert(err.message);
+  }
 }
 
 function clearSignoffSignature() { if (_signoffSigPad) _signoffSigPad.clear(); }
@@ -15298,9 +15389,16 @@ async function renderViewSignoff(el, id) {
           (!pend && (f.photos || []).length ? '<button class="btn btn-secondary" style="white-space:nowrap" onclick="downloadSignoffPhotos(' + f.id + ')">&#11015; Download Photos</button>' : '') +
           (pend && can('edit_signoff') ? '<button class="btn btn-secondary" onclick="navigate(\'edit-signoff\',' + f.id + ')">' + icons.edit + ' Edit Setup</button>' : '') +
           (pend && can('complete_signoff') ? '<button class="btn btn-primary" onclick="navigate(\'complete-signoff\',' + f.id + ')" style="white-space:nowrap">&#9998; Complete</button>' : '') +
+          // The job's invoice, whatever state it is in, so the office never has
+          // to go hunting for the number it is looking at. Only a job with none at
+          // all is offered a create button.
+          (f.invoice_link
+            ? '<button class="btn btn-secondary" style="white-space:nowrap" onclick="navigate(&#39;edit-invoice&#39;,' + f.invoice_link.id + ')">Invoice #' + escHtml(f.invoice_link.invoice_number) + '</button>'
+            : (can('create_invoice') ? '<button class="btn btn-primary" id="so-inv-create" style="white-space:nowrap" onclick="signoffCreateInvoice(' + f.id + ')">+ Create Invoice</button>' : '')) +
           (canDelete ? '<button class="btn btn-danger" title="Delete sign-off sheet" onclick="deleteSignoff(' + f.id + ')"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14H6L5 6"/><path d="M10 11v6"/><path d="M14 11v6"/><path d="M9 6V4h6v2"/></svg> Delete</button>' : '') +
         '</div>' +
       '</div>' +
+      '<div id="view-signoff-error"></div>' +
       signoffTripStripHtml(f) +
       '<div class="card mb-4"><div class="card-header"><span class="card-title">Work Order</span></div><div class="card-body">' + signoffSummaryHtml(f) + '</div></div>' +
       completedBlock;

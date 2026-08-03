@@ -1270,7 +1270,11 @@ async function insertLineItems(client, invoiceId, line_items) {
   }
 }
 
-router.post('/', requireAuth, requirePermission('create_invoice'), async (req, res) => {
+// The create handler, named rather than inline so POST /from-signoff below can
+// reuse it verbatim instead of duplicating fifty-odd columns of INSERT, the
+// number generator, the totals math and the close-out gates. Registered
+// immediately after the function body.
+async function invoiceCreateHandler(req, res) {
   const b = req.body || {};
   const f = pickInvoiceFields(b);
   const status = ['draft', 'awaiting_payment', 'paid'].indexOf(b.status) !== -1 ? b.status : 'draft';
@@ -1356,6 +1360,228 @@ router.post('/', requireAuth, requirePermission('create_invoice'), async (req, r
       console.error(err);
       return res.status(500).json({ error: 'Failed to create invoice: ' + err.message });
     }
+  }
+}
+router.post('/', requireAuth, requirePermission('create_invoice'), invoiceCreateHandler);
+
+// ---------------------------------------------------------------------------
+// Create an invoice straight off a sign-off sheet.
+//
+// The tech is standing on site with a REQUIRED "Invoice Number" box in front of
+// them and nothing to type into it. This is that box's way out.
+//
+// The unit is the JOB, not the sheet. A job that needs three visits is three
+// sign-off sheets sharing one trip_group_id, and all three bill onto ONE
+// invoice. See the signoff_group_id migration in db.js for why this is not
+// grouped on po_number.
+//
+// Server-side on purpose. The quote equivalent (pushQuoteToInvoice in app.js)
+// builds its payload in the browser; doing that here would let a double-tap
+// create two invoices for one job, and would make the invoice_number write-back
+// across a trip group non-atomic.
+// ---------------------------------------------------------------------------
+
+function normAcct(x) {
+  return String(x == null ? '' : x).toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
+}
+
+// Match the sheet's free-text account against the invoice account list.
+// Deliberately conservative: anything ambiguous returns NOTHING rather than a
+// guess, because the wrong account silently drags the wrong agreement text,
+// auto line items and tax treatment onto the invoice. A miss is visible and
+// fixable in one dropdown; a wrong match is neither.
+async function matchSignoffAccount(accountText) {
+  var want = normAcct(accountText);
+  if (!want) return null;
+  var q = await pool.query(
+    'SELECT id, name, invoice_notes, auto_line_items, agreement_text FROM vendors WHERE show_in_invoice = true'
+  );
+  var rows = q.rows || [];
+  var exact = rows.filter(function (r) { return normAcct(r.name) === want; });
+  if (exact.length === 1) return exact[0];
+  if (exact.length > 1) return null;
+  var partial = rows.filter(function (r) {
+    var nm = normAcct(r.name);
+    return nm && (nm.indexOf(want) !== -1 || want.indexOf(nm) !== -1);
+  });
+  return partial.length === 1 ? partial[0] : null;
+}
+
+// "Mount Dora, FL 32757" -> { city, state, zip }. Tolerates a missing comma and
+// a ZIP+4. Anything it cannot read comes back empty rather than wrong.
+function splitCityStateZip(x) {
+  var out = { city: '', state: '', zip: '' };
+  var raw = String(x == null ? '' : x).trim();
+  if (!raw) return out;
+  var m = raw.match(/^(.*?)[,\s]+([A-Za-z]{2})[,\s]+(\d{5}(?:-\d{4})?)\s*$/);
+  if (m) { out.city = m[1].trim(); out.state = m[2].toUpperCase(); out.zip = m[3]; return out; }
+  var m2 = raw.match(/^(.*?)[,\s]+([A-Za-z]{2})\s*$/);
+  if (m2) { out.city = m2[1].trim(); out.state = m2[2].toUpperCase(); return out; }
+  out.city = raw;
+  return out;
+}
+
+// city_code picks the invoice NUMBER BAND (cities.invoice_prefix), so a wrong
+// guess misfiles the sequence permanently. Exact name match only, then the
+// tech's home city, then nothing. Never invent one.
+async function cityCodeForSignoff(cityName, userId) {
+  var want = normAcct(cityName);
+  if (want) {
+    try {
+      var cq = await pool.query('SELECT code, name FROM cities');
+      var hit = (cq.rows || []).filter(function (c) { return normAcct(c.name) === want; });
+      if (hit.length === 1) return hit[0].code;
+    } catch (e) {}
+  }
+  try {
+    var uq = await pool.query('SELECT home_city FROM users WHERE id = $1', [userId]);
+    if (uq.rows[0] && uq.rows[0].home_city) return uq.rows[0].home_city;
+  } catch (e) {}
+  return null;
+}
+
+// Stamp the number onto every sheet on the job that does not already carry one.
+// The IS NULL guard matters: a sheet with a hand-typed number is somebody's
+// deliberate answer and must not be overwritten by this.
+async function linkSignoffGroup(groupId, invoiceNumber) {
+  try {
+    await pool.query(
+      "UPDATE signoff_forms SET invoice_number = $1, updated_at = NOW() WHERE trip_group_id = $2 AND (invoice_number IS NULL OR invoice_number = '')",
+      [String(invoiceNumber), groupId]
+    );
+  } catch (e) { console.error('Sign-off invoice link failed:', e && e.message); }
+}
+
+router.post('/from-signoff/:signoffId', requireAuth, requirePermission('create_invoice'), async (req, res) => {
+  try {
+    var sq = await pool.query('SELECT * FROM signoff_forms WHERE id = $1', [req.params.signoffId]);
+    if (!sq.rows.length) return res.status(404).json({ error: 'Sign-off sheet not found' });
+    var form = sq.rows[0];
+    // Same access rule routes/signoffs.js enforces, restated because this route
+    // lives in the invoices file.
+    if (['admin', 'manager'].indexOf(req.user.role) === -1 && form.assigned_to !== req.user.id && form.created_by !== req.user.id) {
+      return res.status(403).json({ error: 'Access denied' });
+    }
+    var groupId = form.trip_group_id || form.id;
+
+    // One invoice per job. If the group already has a live one, hand that back
+    // rather than making a second. This is also what makes a double-tap safe.
+    var exq = await pool.query(
+      'SELECT id, invoice_number, status FROM invoices WHERE signoff_group_id = $1 ORDER BY id DESC LIMIT 1',
+      [groupId]
+    );
+    var existing = exq.rows.length ? exq.rows[0] : null;
+    // ONE invoice per job, full stop. Status is deliberately not consulted: a
+    // paid or refunded invoice is still THIS job's invoice, and the sheet's job
+    // is to point at it, never to quietly open a second one behind the tech's
+    // back. This is also what makes a double-tap safe.
+    if (existing) {
+      await linkSignoffGroup(groupId, existing.invoice_number);
+      return res.json({
+        reused: true,
+        invoice_id: existing.id,
+        invoice_number: String(existing.invoice_number),
+        invoice_status: existing.status,
+        account_matched: true,
+        account_text: form.account || null
+      });
+    }
+    // Falling through means the job has no invoice at all yet.
+
+    var acct = await matchSignoffAccount(form.account);
+    var csz = splitCityStateZip(form.city_state_zip);
+    var cityCode = await cityCodeForSignoff(csz.city, req.user.id);
+
+    // A sign-off has no line items, only a narrative. It becomes one labor line
+    // with a BLANK price so the tech fills in a number instead of retyping the
+    // story. Account auto line items are appended here rather than left to the
+    // editor: invAccountChange() only fires on a user CHANGE, so an account
+    // preselected by this route would otherwise never apply them.
+    var lines = [];
+    var desc = String(form.work_description || '').trim();
+    if (desc) {
+      lines.push({ line_type: 'labor', description: desc.slice(0, 500), quantity: 1, unit_price: '', taxable: false });
+    }
+    if (acct && Array.isArray(acct.auto_line_items)) {
+      acct.auto_line_items.forEach(function (li) {
+        if (!li || !li.description) return;
+        lines.push({
+          line_type: li.line_type === 'labor' ? 'labor' : 'part',
+          item_number: li.item_number || '',
+          description: String(li.description).slice(0, 500),
+          quantity: li.quantity != null ? li.quantity : 1,
+          unit_price: li.unit_price != null ? li.unit_price : '',
+          taxable: li.taxable === true
+        });
+      });
+    }
+
+    var store = String(form.store_name || '').trim();
+    var storeNo = String(form.store_number || '').trim();
+    var noteBits = ['From sign-off ' + form.form_number + (form.po_number ? ' (PO ' + form.po_number + ')' : '')];
+    if (form.service_requested_by) noteBits.push('Requested by: ' + form.service_requested_by);
+    if (form.notes) noteBits.push(String(form.notes).trim());
+
+    var body = {
+      status: 'draft',
+      account_id: acct ? acct.id : null,
+      account_name: acct ? acct.name : null,
+      customer_po_wo: form.po_number || null,
+      customer_name: store ? (store + (storeNo ? ' #' + storeNo : '')) : null,
+      street_address: form.address || null,
+      city: csz.city || null,
+      state: csz.state || null,
+      zip: csz.zip || null,
+      // time_in / time_out are VARCHAR(20). The sign-off fields are free text
+      // and routinely longer ("8/3/26 11:40 AM"). Truncate rather than 500.
+      time_in: form.start_time ? String(form.start_time).slice(0, 20) : null,
+      time_out: form.end_time ? String(form.end_time).slice(0, 20) : null,
+      notes: noteBits.join('\n'),
+      agreement_text: (acct && acct.agreement_text) ? acct.agreement_text : null,
+      city_code: cityCode,
+      line_items: lines
+    };
+
+    // Reuse the real create handler rather than duplicating its INSERT. It
+    // writes its own response, so capture that instead of letting it reply, and
+    // fail loudly if it did not produce an invoice.
+    var captured = null;
+    var shim = {
+      code: 200,
+      status: function (c) { this.code = c; return this; },
+      json: function (payload) { captured = { code: this.code, body: payload }; return this; }
+    };
+    await invoiceCreateHandler({ user: req.user, body: body }, shim);
+    if (!captured || captured.code >= 400 || !captured.body || !captured.body.id) {
+      return res.status(captured && captured.code >= 400 ? captured.code : 500)
+        .json((captured && captured.body && captured.body.error) ? captured.body : { error: 'Failed to create the invoice for this sign-off.' });
+    }
+    var invoice = captured.body;
+
+    await pool.query('UPDATE invoices SET signoff_group_id = $1 WHERE id = $2', [groupId, invoice.id]);
+    await linkSignoffGroup(groupId, invoice.invoice_number);
+
+    try {
+      await logAudit({
+        entity_type: 'invoice', entity_id: invoice.id, entity_number: String(invoice.invoice_number),
+        action: 'created_from_signoff', user_id: req.user.id, user_name: req.user.name,
+        details: {
+          signoff_id: form.id, signoff_number: form.form_number, trip_group_id: groupId,
+          account_matched: !!acct
+        }
+      });
+    } catch (e) {}
+
+    return res.status(201).json({
+      reused: false,
+      invoice_id: invoice.id,
+      invoice_number: String(invoice.invoice_number),
+      account_matched: !!acct,
+      account_text: form.account || null
+    });
+  } catch (err) {
+    console.error(err);
+    return res.status(500).json({ error: 'Failed to create invoice from sign-off: ' + err.message });
   }
 });
 

@@ -9,6 +9,7 @@ const crypto = require('crypto');
 const { pool } = require('../db');
 const { requireAuth, requirePermission } = require('../middleware/auth');
 const permissions = require('../utils/permissions');
+const org = require('../utils/org');
 const { generateQuiz, weekMonday } = require('../utils/quizGen');
 const { sendSms } = require('../utils/sms');
 
@@ -499,21 +500,17 @@ router.post('/:id/send-test', requireAuth, requirePermission('manage_quiz'), asy
   }
 });
 
-// ======================= TEAM (manager, downline-scoped) ===================
-// Managers see quiz history for their own downline only. Read-only: no
+// ======================= TEAM (manager, team-scoped) =======================
+// Managers see quiz history for their team: reporting downline plus their cities. Read-only: no
 // generate/send/settings surface. Gate lets the 'manager' role in out-of-the
 // -box, plus anyone granted the view_team_quiz permission (admin/owner too).
 
+// Team roster for the quiz views. This is VISIBILITY, not authority, so it uses
+// the shared team scope: reporting downline PLUS anyone based in a city this
+// manager runs. A city manager therefore sees the locksmiths who report to Russ.
+// See utils/org.js for why the reporting line is left alone.
 async function downlineIds(managerId) {
-  var r = await pool.query(
-    'WITH RECURSIVE dl AS (' +
-    '  SELECT id FROM users WHERE supervisor_id = $1' +
-    '  UNION' +
-    '  SELECT u.id FROM users u JOIN dl ON u.supervisor_id = dl.id' +
-    ') SELECT id FROM dl',
-    [managerId]
-  );
-  return r.rows.map(function (x) { return x.id; });
+  return await org.teamIds(managerId);
 }
 
 async function requireTeamQuiz(req, res, next) {

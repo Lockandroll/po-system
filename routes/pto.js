@@ -5,6 +5,7 @@ const express = require('express');
 const { pool } = require('../db');
 const { requireAuth, requirePermission } = require('../middleware/auth');
 const { logAudit } = require('../utils/audit');
+const org = require('../utils/org');
 let notify = null; try { notify = require('../utils/notify'); } catch (e) { notify = null; }
 let sendEmail = null, emailTemplate = null, sendSms = null;
 try { var _em = require('../utils/email'); sendEmail = _em.sendEmail; emailTemplate = _em.emailTemplate; } catch (e) { /* optional */ }
@@ -911,16 +912,21 @@ router.post('/requests/:id/cancel-respond', requireAuth, async (req, res) => {
   return res.json({ success: true, status: 'cancelled' });
 });
 
-// ---- TEAM (read-only, downline) -------------------------------------------
+// ---- TEAM (read-only, team-scoped: downline + my cities) -------------------
+// Read-only on purpose. Approving, retro-logging and balance edits below stay
+// on inDownline() (the reporting line) — city scope grants sight, not authority.
 
 router.get('/team', requireAuth, requirePermission('manage_pto'), async (req, res) => {
   const isAdmin = req.user.role === 'admin' || req.user.isOwner;
   const ur = await pool.query('SELECT id, name, title, pay_type, org_level, hire_date, pto_exempt, pto_balance_hours, supervisor_id FROM users WHERE active IS NOT FALSE ORDER BY name ASC');
+  // Resolve the roster ONCE. This used to run a recursive walk per user in the
+  // company, so the cost scaled with headcount for every page load.
+  const teamSet = isAdmin ? null : new Set(await org.teamIds(req.user.id));
   const out = [];
   for (let i = 0; i < ur.rows.length; i++) {
     const u = ur.rows[i];
     if (u.id === req.user.id) continue;
-    if (isAdmin || (await inDownline(req.user.id, u.id))) {
+    if (isAdmin || teamSet.has(Number(u.id))) {
       const pend = await pool.query("SELECT start_date, end_date FROM pto_requests WHERE user_id = $1 AND status = 'pending' ORDER BY start_date ASC LIMIT 1", [u.id]);
       out.push({
         id: u.id, name: u.name, title: u.title, pay_type: u.pay_type || 'hourly',
@@ -937,7 +943,7 @@ router.get('/team', requireAuth, requirePermission('manage_pto'), async (req, re
 router.get('/team/:userId/ledger', requireAuth, requirePermission('manage_pto'), async (req, res) => {
   const target = parseInt(req.params.userId, 10) || 0;
   const isAdmin = req.user.role === 'admin' || req.user.isOwner;
-  if (!isAdmin && !(await inDownline(req.user.id, target))) return res.status(403).json({ error: 'Not in your team' });
+  if (!isAdmin && !(await org.inTeam(req.user, target))) return res.status(403).json({ error: 'Not in your team' });
   const rows = await pool.query('SELECT id, entry_date, kind, amount_hours, description, created_at FROM pto_ledger WHERE user_id = $1 ORDER BY entry_date DESC, id DESC LIMIT 200', [target]);
   res.json(rows.rows);
 });

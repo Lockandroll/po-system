@@ -2029,6 +2029,16 @@ async function initDB() {
       // close-out popup keys off. It is NOT the same answer as 'cash'.
       'ALTER TABLE invoices ADD COLUMN IF NOT EXISTS pay_method VARCHAR(10);'
     );
+    // Sign-off -> invoice link. The unit is the JOB, i.e.
+    // signoff_forms.trip_group_id, NOT the PO string: a PO is user-typed, can
+    // be blank, and can be reused across stores, so grouping on it would merge
+    // unrelated jobs onto one invoice and collapse every blank-PO sheet into a
+    // single one. Deliberately NOT a foreign key, for the same reason
+    // trip_group_id itself is not: deleting a sheet must not drag the invoice.
+    await client.query(
+      'ALTER TABLE invoices ADD COLUMN IF NOT EXISTS signoff_group_id INTEGER;' +
+      'CREATE INDEX IF NOT EXISTS idx_invoices_signoff_group ON invoices(signoff_group_id);'
+    );
     // Every invoice that already exists was closed out before surcharging, so it
     // carries none. Safe to re-run; only ever touches NULLs.
     await client.query(
