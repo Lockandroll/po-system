@@ -1492,16 +1492,12 @@ router.post('/from-signoff/:signoffId', requireAuth, requirePermission('create_i
     var csz = splitCityStateZip(form.city_state_zip);
     var cityCode = await cityCodeForSignoff(csz.city, req.user.id);
 
-    // A sign-off has no line items, only a narrative. It becomes one labor line
-    // with a BLANK price so the tech fills in a number instead of retyping the
-    // story. Account auto line items are appended here rather than left to the
-    // editor: invAccountChange() only fires on a user CHANGE, so an account
+    // The line items are the ACCOUNT's standard ones and nothing else. The
+    // sign-off's work description is a narrative, not a billable line, so it goes
+    // into the notes instead of being priced. Applied here rather than left to
+    // the editor: invAccountChange() only fires on a user CHANGE, so an account
     // preselected by this route would otherwise never apply them.
     var lines = [];
-    var desc = String(form.work_description || '').trim();
-    if (desc) {
-      lines.push({ line_type: 'labor', description: desc.slice(0, 500), quantity: 1, unit_price: '', taxable: false });
-    }
     if (acct && Array.isArray(acct.auto_line_items)) {
       acct.auto_line_items.forEach(function (li) {
         if (!li || !li.description) return;
@@ -1520,6 +1516,10 @@ router.post('/from-signoff/:signoffId', requireAuth, requirePermission('create_i
     var storeNo = String(form.store_number || '').trim();
     var noteBits = ['From sign-off ' + form.form_number + (form.po_number ? ' (PO ' + form.po_number + ')' : '')];
     if (form.service_requested_by) noteBits.push('Requested by: ' + form.service_requested_by);
+    // The work description lands here, not on a line item. It is what happened,
+    // not what is being charged for.
+    var desc = String(form.work_description || '').trim();
+    if (desc) noteBits.push('Work performed: ' + desc);
     if (form.notes) noteBits.push(String(form.notes).trim());
 
     var body = {
