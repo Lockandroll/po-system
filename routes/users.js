@@ -5,6 +5,7 @@ const { pool } = require('../db');
 const { requireAuth, requireRole, requirePermission } = require('../middleware/auth');
 const { sendEmail, emailTemplate } = require('../utils/email');
 const { logAudit } = require('../utils/audit');
+const security = require('../utils/security');
 
 const router = express.Router();
 
@@ -63,7 +64,7 @@ async function sendInvite(user, invitedByName) {
 // List all users (admin only)
 router.get('/', requireAuth, requirePermission('view_users'), async (req, res) => {
   const { rows } = await pool.query(
-    'SELECT id, name, email, phone, role, title, active, receive_emails, receive_sms, pulsar_name, nickname, hide_from_schedule, hide_from_org, pay_type, employment_type, supervisor_id, org_level, hire_date, home_city, default_backup_id, pto_balance_hours, org_x, extra_perms, created_at, last_login_at, last_seen_at FROM users ORDER BY active DESC, name ASC'
+    'SELECT id, name, email, phone, role, title, active, receive_emails, receive_sms, pulsar_name, nickname, hide_from_schedule, hide_from_org, pay_type, employment_type, supervisor_id, org_level, hire_date, home_city, default_backup_id, pto_balance_hours, org_x, extra_perms, created_at, last_login_at, last_seen_at, failed_attempts, lockout_until FROM users ORDER BY active DESC, name ASC'
   );
   const mc = await pool.query('SELECT user_id, city_code FROM user_cities');
   const byU = {};
@@ -110,6 +111,17 @@ router.post('/', requireAuth, requirePermission('manage_users'), async (req, res
     );
     const newUser = rows[0];
     newUser.city_codes = (await setUserCities(newUser.id, req.body.city_codes)) || [];
+    // A newly created admin account is the classic persistence move after a
+    // takeover, so account creation is a security event, not just an HR one.
+    await security.record(req, {
+      event: 'user_created',
+      user_id: newUser.id,
+      user_name: newUser.name,
+      actor: { id: req.user.id, name: req.user.name },
+      alert: (newUser.role === 'admin' || newUser.role === 'owner'),
+      summary: (req.user.name || 'An admin') + ' created a new ' + (ROLE_LABELS[newUser.role] || newUser.role) + ' account for ' + newUser.name + ' (' + newUser.email + ').',
+      details: { email: newUser.email, role: newUser.role }
+    });
     try {
       await sendInvite(newUser, req.user && req.user.name);
     } catch (e) {
@@ -158,7 +170,9 @@ router.put('/:id', requireAuth, requirePermission('manage_users'), async (req, r
   if (role && !VALID_ROLES.includes(role)) {
     return res.status(400).json({ error: 'Invalid role. Must be one of: ' + VALID_ROLES.join(', ') + '.' });
   }
-  const _target = (await pool.query('SELECT role FROM users WHERE id=$1', [id])).rows[0];
+  // Read the full "before" picture, not just the role: this is what the audit
+  // diff below is built from. Without it a role change left no trace at all.
+  const _target = (await pool.query('SELECT id, name, email, role, extra_perms, active FROM users WHERE id=$1', [id])).rows[0];
   if (_target && _target.role === 'owner' && !req.user.isOwner) {
     return res.status(403).json({ error: 'Only an owner can manage owner accounts.' });
   }
@@ -183,6 +197,10 @@ router.put('/:id', requireAuth, requirePermission('manage_users'), async (req, r
     if (!rows[0]) return res.status(404).json({ error: 'User not found' });
     const _cc = await setUserCities(rows[0].id, req.body.city_codes);
     if (_cc) rows[0].city_codes = _cc;
+    // Audit the security-relevant fields only. Editing someone's nickname or
+    // phone is routine; changing what they can DO is not, and that distinction
+    // is what keeps this log readable enough to actually be checked.
+    await auditPrivilegeDiff(req, _target, rows[0], { passwordSet: !!password });
     // Automatic, but never silent: this writes a real transfer record and tells
     // both city managers. Never allowed to fail the user save.
     const _oldCity = _prevCity && _prevCity.home_city ? String(_prevCity.home_city).trim().toUpperCase() : null;
@@ -198,6 +216,47 @@ router.put('/:id', requireAuth, requirePermission('manage_users'), async (req, r
     throw err;
   }
 });
+
+// Compare the security-relevant fields before and after a user save and write
+// ONE audit row if any of them moved. Password changes are reported as a fact
+// ("password was set by an admin") and never with any part of the value.
+// Never throws — an audit failure must not fail the save.
+async function auditPrivilegeDiff(req, before, after, opts) {
+  try {
+    if (!before || !after) return;
+    opts = opts || {};
+    const changes = {};
+    if (before.role !== after.role) changes.role = { from: before.role, to: after.role };
+    const bp = (Array.isArray(before.extra_perms) ? before.extra_perms : []).slice().sort();
+    const ap = (Array.isArray(after.extra_perms) ? after.extra_perms : []).slice().sort();
+    if (bp.join('|') !== ap.join('|')) changes.extra_perms = { from: bp, to: ap };
+    if (before.email !== after.email) changes.email = { from: before.email, to: after.email };
+    if (before.active !== after.active) changes.active = { from: before.active, to: after.active };
+    if (opts.passwordSet) changes.password = 'set by an admin';
+    if (!Object.keys(changes).length) return;
+
+    // Escalation to admin or owner is the case worth waking someone up for.
+    const escalated = changes.role && (changes.role.to === 'admin' || changes.role.to === 'owner');
+    const parts = [];
+    if (changes.role) parts.push('role ' + (ROLE_LABELS[changes.role.from] || changes.role.from) + ' -> ' + (ROLE_LABELS[changes.role.to] || changes.role.to));
+    if (changes.extra_perms) parts.push('extra permissions now [' + (changes.extra_perms.to.join(', ') || 'none') + ']');
+    if (changes.email) parts.push('sign-in email ' + changes.email.from + ' -> ' + changes.email.to);
+    if (changes.password) parts.push('password reset by an admin');
+    if (changes.active) parts.push(changes.active.to === false ? 'access removed' : 'access restored');
+
+    await security.record(req, {
+      event: 'role_changed',
+      user_id: after.id || before.id,
+      user_name: after.name || before.name,
+      actor: { id: req.user && req.user.id, name: req.user && req.user.name },
+      alert: true,
+      summary: ((req.user && req.user.name) || 'An admin') + ' changed ' + (after.name || before.name) + ': ' + parts.join('; ') + '.',
+      details: { changes: changes, escalated_to_admin: !!escalated }
+    });
+  } catch (e) {
+    console.error('[users] privilege audit failed:', e && e.message);
+  }
+}
 
 // Moves every open holding (and the serialized units behind them) to the tech's
 // new city, in one transaction, leaving a transfer record behind. Lives here
@@ -226,19 +285,90 @@ router.post('/:id/deactivate', requireAuth, requirePermission('manage_users'), a
   if (parseInt(id) === req.user.id) {
     return res.status(400).json({ error: 'Cannot deactivate your own account' });
   }
-  const _t = (await pool.query('SELECT role FROM users WHERE id=$1', [id])).rows[0];
+  const _t = (await pool.query('SELECT role, name FROM users WHERE id=$1', [id])).rows[0];
   if (_t && _t.role === 'owner' && !req.user.isOwner) return res.status(403).json({ error: 'Only an owner can deactivate an owner account.' });
-  const { rows } = await pool.query('UPDATE users SET active=false WHERE id=$1 RETURNING id', [id]);
+  const { rows } = await pool.query('UPDATE users SET active=false WHERE id=$1 RETURNING id, name', [id]);
   if (!rows[0]) return res.status(404).json({ error: 'User not found' });
+  await security.record(req, {
+    event: 'user_deactivated',
+    user_id: rows[0].id,
+    user_name: rows[0].name,
+    actor: { id: req.user.id, name: req.user.name },
+    details: { role: _t && _t.role }
+  });
   res.json({ success: true });
 });
 
 // Reactivate user (admin only)
 router.post('/:id/reactivate', requireAuth, requirePermission('manage_users'), async (req, res) => {
   const { id } = req.params;
-  const { rows } = await pool.query('UPDATE users SET active=true WHERE id=$1 RETURNING id', [id]);
+  const { rows } = await pool.query('UPDATE users SET active=true WHERE id=$1 RETURNING id, name, role', [id]);
   if (!rows[0]) return res.status(404).json({ error: 'User not found' });
+  // Restoring access to a dormant account is a favourite persistence trick, so
+  // unlike deactivation this one alerts.
+  await security.record(req, {
+    event: 'user_reactivated',
+    user_id: rows[0].id,
+    user_name: rows[0].name,
+    actor: { id: req.user.id, name: req.user.name },
+    summary: (req.user.name || 'An admin') + ' restored Nova access for ' + rows[0].name + ' (' + (ROLE_LABELS[rows[0].role] || rows[0].role) + ').',
+    details: { role: rows[0].role }
+  });
   res.json({ success: true });
+});
+
+// ---- Account remediation ---------------------------------------------------
+// Until 2026-08 there was no way for an admin to clear a lockout or to sign
+// somebody out. A locked-out employee had to wait 15 minutes or run a password
+// reset, and a compromised session could not be cut off at all short of
+// deactivating the whole account.
+
+// Clear a lockout (admin only). Does NOT change the password.
+router.post('/:id/unlock', requireAuth, requirePermission('manage_users'), async (req, res) => {
+  const { id } = req.params;
+  const { rows } = await pool.query(
+    'UPDATE users SET failed_attempts=0, lockout_until=NULL WHERE id=$1 RETURNING id, name, failed_attempts',
+    [id]
+  );
+  if (!rows[0]) return res.status(404).json({ error: 'User not found' });
+  await security.record(req, {
+    event: 'admin_unlocked_account',
+    user_id: rows[0].id,
+    user_name: rows[0].name,
+    actor: { id: req.user.id, name: req.user.name },
+    details: { note: 'lockout cleared manually' }
+  });
+  res.json({ success: true });
+});
+
+// Force sign-out everywhere (admin only). Bumps session_epoch, which every
+// authenticated request checks in middleware/auth.js, so live JWTs die on their
+// very next call. Also drops remembered devices (otherwise the person signs
+// straight back in with no 2FA) and revokes OAuth refresh tokens (otherwise a
+// connected app keeps minting access tokens for up to 60 days).
+// Deliberately does NOT touch the password: cutting off sessions and locking
+// someone out of their account are different decisions.
+router.post('/:id/signout', requireAuth, requirePermission('manage_users'), async (req, res) => {
+  const { id } = req.params;
+  const _t = (await pool.query('SELECT id, name, role FROM users WHERE id=$1', [id])).rows[0];
+  if (!_t) return res.status(404).json({ error: 'User not found' });
+  if (_t.role === 'owner' && !req.user.isOwner) {
+    return res.status(403).json({ error: 'Only an owner can sign out an owner account.' });
+  }
+  await pool.query('UPDATE users SET session_epoch = COALESCE(session_epoch,0) + 1 WHERE id=$1', [id]);
+  let devices = 0, tokens = 0;
+  try { devices = (await pool.query('DELETE FROM trusted_devices WHERE user_id=$1', [id])).rowCount || 0; }
+  catch (e) { console.error('signout: trusted device purge failed:', e.message); }
+  try { tokens = (await pool.query('UPDATE oauth_refresh_tokens SET revoked = true WHERE user_id = $1 AND revoked = false', [id])).rowCount || 0; }
+  catch (e) { console.error('signout: oauth revoke failed:', e.message); }
+  await security.record(req, {
+    event: 'admin_forced_signout',
+    user_id: _t.id,
+    user_name: _t.name,
+    actor: { id: req.user.id, name: req.user.name },
+    details: { trusted_devices_removed: devices, oauth_tokens_revoked: tokens }
+  });
+  res.json({ success: true, trusted_devices_removed: devices, oauth_tokens_revoked: tokens });
 });
 
 // Delete user (admin only — only if no POs)
@@ -247,7 +377,7 @@ router.delete('/:id', requireAuth, requirePermission('manage_users'), async (req
   if (parseInt(id) === req.user.id) {
     return res.status(400).json({ error: 'Cannot delete your own account' });
   }
-  const _t2 = (await pool.query('SELECT role FROM users WHERE id=$1', [id])).rows[0];
+  const _t2 = (await pool.query('SELECT role, name, email FROM users WHERE id=$1', [id])).rows[0];
   if (_t2 && _t2.role === 'owner' && !req.user.isOwner) return res.status(403).json({ error: 'Only an owner can delete an owner account.' });
   const { rows: poRows } = await pool.query('SELECT COUNT(*) FROM purchase_orders WHERE requester_id=$1', [id]);
   if (parseInt(poRows[0].count) > 0) {
@@ -261,6 +391,16 @@ router.delete('/:id', requireAuth, requirePermission('manage_users'), async (req
     }
     throw err;
   }
+  // The user row is gone, so entity_id points at an id that no longer resolves.
+  // The name and email in details are the only remaining record of who it was.
+  await security.record(req, {
+    event: 'user_deleted',
+    user_id: parseInt(id, 10) || null,
+    user_name: _t2 && _t2.name,
+    actor: { id: req.user.id, name: req.user.name },
+    summary: (req.user.name || 'An admin') + ' permanently deleted the Nova account for ' + ((_t2 && _t2.name) || 'user #' + id) + ((_t2 && _t2.email) ? ' (' + _t2.email + ')' : '') + '.',
+    details: { deleted_name: _t2 && _t2.name, deleted_email: _t2 && _t2.email, deleted_role: _t2 && _t2.role }
+  });
   res.json({ success: true });
 });
 
@@ -299,10 +439,16 @@ router.post('/import', requireAuth, requirePermission('manage_users'), async (re
   const HRS = 8;
   const norm = function (v) { return (v === undefined || v === null) ? '' : String(v).trim(); };
   const asBool = function (v, dflt) { const s = norm(v).toLowerCase(); if (s === '') return dflt; return (s === 'true' || s === 'yes' || s === '1' || s === 'y'); };
-  const allUsers = (await pool.query('SELECT id, LOWER(email) AS email FROM users')).rows;
+  const allUsers = (await pool.query('SELECT id, LOWER(email) AS email, role FROM users')).rows;
   const emailToId = {}; allUsers.forEach(function (u) { emailToId[u.email] = u.id; });
+  // Role BEFORE the import, so the audit row below can say exactly which people
+  // this CSV moved between roles. A bulk import can rewrite every role in the
+  // company in one request and used to leave no trace whatsoever.
+  const roleBefore = {}; allUsers.forEach(function (u) { roleBefore[u.email] = u.role; });
 
   let created = 0, updated = 0; const errors = [];
+  const roleChanges = [];
+  const createdAccounts = [];
   for (let idx = 0; idx < rows.length; idx++) {
     const r = rows[idx] || {};
     const email = norm(r.email).toLowerCase();
@@ -339,6 +485,9 @@ router.post('/import', requireAuth, requirePermission('manage_users'), async (re
         if (norm(r.receive_sms) !== '') { sets.push('receive_sms = $' + p); vals.push(recvS); p++; }
         vals.push(userId);
         await pool.query('UPDATE users SET ' + sets.join(', ') + ' WHERE id = $' + p, vals);
+        if (role && roleBefore[email] && role !== roleBefore[email]) {
+          roleChanges.push({ email: email, from: roleBefore[email], to: role });
+        }
         updated++;
       } else {
         if (!name) { errors.push({ row: idx + 1, email: email, error: 'New user needs a name' }); continue; }
@@ -352,6 +501,7 @@ router.post('/import', requireAuth, requirePermission('manage_users'), async (re
         );
         userId = ins.rows[0].id;
         emailToId[email] = userId;
+        createdAccounts.push({ email: email, role: roleFinal });
         created++;
       }
 
@@ -374,6 +524,17 @@ router.post('/import', requireAuth, requirePermission('manage_users'), async (re
       errors.push({ row: idx + 1, email: email, error: e.message });
     }
   }
+  const escalations = roleChanges.filter(function (c) { return c.to === 'admin' || c.to === 'owner'; })
+    .concat(createdAccounts.filter(function (c) { return c.role === 'admin' || c.role === 'owner'; }));
+  await security.record(req, {
+    event: 'users_bulk_imported',
+    actor: { id: req.user.id, name: req.user.name },
+    // Only worth an alert when the CSV actually moved someone's authority.
+    alert: !!(roleChanges.length || escalations.length),
+    summary: (req.user.name || 'An admin') + ' ran a bulk user import: ' + created + ' created, ' + updated + ' updated, ' +
+      roleChanges.length + ' role change(s)' + (escalations.length ? ', including ' + escalations.length + ' to admin/owner' : '') + '.',
+    details: { created: created, updated: updated, role_changes: roleChanges, created_accounts: createdAccounts, errors: errors.length }
+  });
   res.json({ created: created, updated: updated, errors: errors });
 });
 

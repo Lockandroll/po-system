@@ -2335,12 +2335,17 @@ function usersRenderTable() {
       '<thead><tr><th>Name</th><th>Email</th><th>Role</th><th>Type</th><th>Status</th><th>Last Login</th><th>Last Active</th>' + (can('manage_users') ? '<th></th>' : '') + '</tr></thead>' +
       '<tbody>' + (page.length ? page.map(function(u) {
         var isInactive = u.active === false;
+        // A live lockout is the one thing on this page that might be an attack
+        // in progress, so it outranks the ordinary active/inactive badge.
+        var isLocked = !!(u.lockout_until && new Date(u.lockout_until) > new Date());
         return '<tr class="' + (isInactive ? 'user-row-inactive' : '') + '">' +
           '<td>' + escHtml(u.name) + '</td>' +
           '<td>' + escHtml(u.email) + '</td>' +
           '<td><span class="badge badge-' + escHtml(u.role) + '">' + escHtml(userTitle(u)) + '</span></td>' +
           '<td style="font-size:13px;white-space:nowrap;color:var(--text-muted-color)">' + ((u.employment_type||'full_time')==='part_time' ? 'Part-Time' : ((u.employment_type||'full_time')==='contractor' ? 'Contractor' : 'Full-Time')) + '</td>' +
-          '<td>' + (isInactive ? '<span class="badge badge-inactive">Access Removed</span>' : '<span style="color:var(--success);font-size:13px">&#10003; Active</span>') + '</td>' +
+          '<td>' + (isInactive ? '<span class="badge badge-inactive">Access Removed</span>'
+            : (isLocked ? '<span class="badge" style="background:rgba(239,68,68,0.18);color:#ef4444">Locked</span><div style="font-size:11px;color:var(--text-muted-color);margin-top:2px">' + (u.failed_attempts || 0) + ' failed tries</div>'
+            : '<span style="color:var(--success);font-size:13px">&#10003; Active</span>')) + '</td>' +
           '<td style="font-size:13px;white-space:nowrap;color:var(--text-muted-color)">' + (u.last_login_at ? escHtml(formatDateTime(u.last_login_at)) : '\u2014') + '</td>' +
           '<td>' + userActivityCell(u) + '</td>' +
           (can('manage_users') ? '<td class="flex-gap">' +
@@ -2349,6 +2354,8 @@ function usersRenderTable() {
             (u.id !== state.user.id && !isInactive ? '<button class="btn btn-danger btn-sm" onclick="deactivateUser(' + u.id + ')">Deactivate</button>' : '') +
             (u.id !== state.user.id && isInactive ? '<button class="btn btn-success btn-sm" onclick="reactivateUser(' + u.id + ')">Reactivate</button>' : '') +
             (!isInactive && !u.last_login_at ? '<button class="btn btn-secondary btn-sm" onclick="resendInvite(' + u.id + ')">Resend invite</button>' : '') +
+            (isLocked ? '<button class="btn btn-secondary btn-sm" onclick="unlockUser(' + u.id + ')">Unlock</button>' : '') +
+            (!isInactive && u.last_login_at ? '<button class="btn btn-secondary btn-sm" onclick="forceSignout(' + u.id + ')">Sign out everywhere</button>' : '') +
           '</td>' : '') +
         '</tr>';
       }).join('') : '<tr><td colspan="' + (can('manage_users') ? 8 : 7) + '" style="text-align:center;color:var(--text-muted-color);padding:24px">No users found</td></tr>') +
@@ -2496,6 +2503,26 @@ async function deactivateUser(id) {
 
 async function reactivateUser(id) {
   try { await api('POST', '/users/' + id + '/reactivate'); navigate('users'); }
+  catch(err) { document.getElementById('users-error').innerHTML = '<div class="alert alert-error">' + escHtml(err.message) + '</div>'; }
+}
+
+// Clear a lockout without touching the password. Before this existed a locked
+// out employee had to wait 15 minutes or run a full password reset.
+async function unlockUser(id) {
+  if (!await novaConfirm('Clear the lockout on this account? They can try their password again straight away. Their password is not changed.')) return;
+  try { await api('POST', '/users/' + id + '/unlock'); showToast('Account unlocked.', 'success'); navigate('users'); }
+  catch(err) { document.getElementById('users-error').innerHTML = '<div class="alert alert-error">' + escHtml(err.message) + '</div>'; }
+}
+
+// Kill every live session, remembered device and connected app for one person.
+// The remediation step Nova simply did not have: the only previous way to cut
+// off a compromised session was to deactivate the whole account.
+async function forceSignout(id) {
+  if (!await novaConfirm('Sign this person out of Nova everywhere? Every active session, remembered device and connected app is cut off immediately. Their password is not changed, so they can sign back in as normal.')) return;
+  try {
+    var r = await api('POST', '/users/' + id + '/signout');
+    showToast('Signed out everywhere. Removed ' + (r.trusted_devices_removed || 0) + ' remembered device(s) and revoked ' + (r.oauth_tokens_revoked || 0) + ' app token(s).', 'success');
+  }
   catch(err) { document.getElementById('users-error').innerHTML = '<div class="alert alert-error">' + escHtml(err.message) + '</div>'; }
 }
 
@@ -2762,7 +2789,15 @@ async function renderNotifications(el) {
     { key:'document_expiring', label:'Document expiration reminder', def:'all admins and managers', sms:false, desc:'A stored document is approaching its expiration date and may need renewing.' },
     { key:'review_rating_changed', label:'Google rating changed for a location', def:'all admins', sms:false, desc:'A location\'s Google star rating went up or down.' },
     { key:'signature_completed', label:'Signature request completed', def:'all admins', sms:false, desc:'Everyone has signed a document and it was finalized.' },
-    { key:'signature_declined', label:'Signature request declined', def:'all admins', sms:false, desc:'A signer declined to sign a document.' }
+    { key:'signature_declined', label:'Signature request declined', def:'all admins', sms:false, desc:'A signer declined to sign a document.' },
+    // Security alerts. The notification system has always been able to carry
+    // these; until 2026-08 the catalog simply had no security events in it, so
+    // nobody was ever told when an account locked or an admin was created.
+    { key:'security_lockout', label:'Account locked out / attack detected', def:'all admins and owners', sms:true, desc:'An account was locked after repeated failed passwords, a login code was guessed at until it burned, or several accounts were locked at once. Throttled to one alert per account per 30 minutes so a brute-force run cannot flood your phone.' },
+    { key:'security_new_device', label:'New remembered device enrolled', def:'all admins and owners', sms:false, desc:'Someone ticked "remember this device", which lets that browser sign in for 30 days without a 2FA code. Normal when a person gets a new phone; the thing an attacker plants if they ever get in once.' },
+    { key:'security_role_changed', label:'Role or permissions changed', def:'all admins and owners', sms:false, desc:'Somebody\'s role, extra permissions or sign-in email changed, an account was created, deleted or reactivated, or a bulk CSV import moved people between roles.' },
+    { key:'security_password_reset', label:'Password reset completed', def:'all admins and owners', sms:false, desc:'A password reset went through, which signs that person out of every session, device and connected app.' },
+    { key:'security_oauth', label:'Connected app registered or connected', def:'all admins and owners', sms:true, desc:'An outside app registered itself with Nova, someone connected one to their account, or a connected app replayed a refresh token it should no longer have. App registration is open by protocol design, so knowing what is on the list matters.' }
   ];
   var requester = [
     { key:'po_approved', label:'PO approved', desc:'Tells the person who created the PO that it was approved.' },
@@ -2871,8 +2906,11 @@ async function renderNotifications(el) {
 }
 
 async function saveNotifications() {
-  var broadcast = ['po_submitted','vr_submitted','quote_created','quote_to_pos','signoff_completed','work_order_received','suggestion_created','document_expiring','review_rating_changed','signature_completed','signature_declined'];
-  var smsCapable = { po_submitted:1, vr_submitted:1, quote_created:1, quote_to_pos:1, suggestion_created:1 };
+  // MUST list every key rendered by the broadcast array in renderNotifications — a
+  // key missing here is silently unsaveable. ('feedback_received' was missing.)
+  var broadcast = ['feedback_received','po_submitted','vr_submitted','quote_created','quote_to_pos','signoff_completed','work_order_received','suggestion_created','document_expiring','review_rating_changed','signature_completed','signature_declined',
+    'security_lockout','security_new_device','security_role_changed','security_password_reset','security_oauth'];
+  var smsCapable = { feedback_received:1, po_submitted:1, vr_submitted:1, quote_created:1, quote_to_pos:1, suggestion_created:1, security_lockout:1, security_oauth:1 };
   var requester = ['po_approved','po_rejected','po_cancelled','po_ordered','vr_approved','vr_rejected'];
   function parseEmails(raw) {
     var seen = {}, out = [];
@@ -6656,33 +6694,85 @@ async function renderAuditLog(el) {
     window._auditData = logs;
     _auditPage = 1;
     el.innerHTML =
-      '<div class="page-header"><div><div class="page-title">Audit Log</div><div class="page-subtitle">All PO, Quote, and login activity</div></div>' +
+      '<div class="page-header"><div><div class="page-title">Audit Log</div><div class="page-subtitle">Purchase orders, quotes, and every login &amp; security event</div></div>' +
       '<div class="flex-gap">' +
-        '<select id="audit-filter-type" onchange="auditApplyFilter()" style="width:auto"><option value="">All Types</option><option value="po">POs Only</option><option value="quote">Quotes Only</option><option value="auth">Logins</option></select>' +
-        '<select id="audit-filter-action" onchange="auditApplyFilter()" style="width:auto"><option value="">All Actions</option><option value="login">Login</option><option value="created">Created</option><option value="edited">Edited</option><option value="submitted">Submitted</option><option value="approved">Approved</option><option value="rejected">Rejected</option><option value="cancelled">Cancelled</option><option value="deleted">Deleted</option></select>' +
+        '<select id="audit-filter-type" onchange="auditApplyFilter()" style="width:auto"><option value="">All Types</option><option value="po">POs Only</option><option value="quote">Quotes Only</option><option value="auth">Login &amp; Security</option><option value="vault">Vault</option><option value="user">User Admin</option></select>' +
+        '<select id="audit-filter-action" onchange="auditApplyFilter()" style="width:auto">' +
+          '<option value="">All Actions</option>' +
+          '<optgroup label="Security">' +
+            '<option value="__security">Security events only</option>' +
+            '<option value="__failures">Failed attempts only</option>' +
+            '<option value="login">Successful login</option>' +
+            '<option value="failed_login">Failed login</option>' +
+            '<option value="account_locked">Account locked</option>' +
+            '<option value="login_locked_out">Attempt on a locked account</option>' +
+            '<option value="login_unknown_email">Unknown email</option>' +
+            '<option value="login_inactive">Attempt on a deactivated account</option>' +
+            '<option value="twofa_failed">Wrong 2FA code</option>' +
+            '<option value="twofa_exhausted">2FA code burned</option>' +
+            '<option value="trusted_device_added">Device remembered</option>' +
+            '<option value="trusted_device_revoked">Device revoked</option>' +
+            '<option value="password_reset_request">Reset requested</option>' +
+            '<option value="password_reset_done">Reset completed</option>' +
+            '<option value="role_changed">Role / permissions changed</option>' +
+            '<option value="user_created">User created</option>' +
+            '<option value="user_deactivated">User deactivated</option>' +
+            '<option value="user_reactivated">User reactivated</option>' +
+            '<option value="user_deleted">User deleted</option>' +
+            '<option value="users_bulk_imported">Bulk CSV import</option>' +
+            '<option value="admin_unlocked_account">Admin unlocked an account</option>' +
+            '<option value="admin_forced_signout">Admin forced sign-out</option>' +
+            '<option value="attack_burst">Attack burst detected</option>' +
+            '<option value="lockdown_engaged">Lockdown</option>' +
+            '<option value="oauth_client_registered">Connected app registered</option>' +
+            '<option value="oauth_connected">Connected app linked</option>' +
+            '<option value="oauth_failed_login">Failed login (connect screen)</option>' +
+            '<option value="oauth_refresh_reuse">Token replayed</option>' +
+            '<option value="cors_blocked">Cross-origin request</option>' +
+          '</optgroup>' +
+          '<optgroup label="Business">' +
+            '<option value="created">Created</option><option value="edited">Edited</option><option value="submitted">Submitted</option><option value="approved">Approved</option><option value="rejected">Rejected</option><option value="cancelled">Cancelled</option><option value="deleted">Deleted</option>' +
+          '</optgroup>' +
+        '</select>' +
       '</div></div>' +
-      '<div style="margin-bottom:16px"><input type="text" id="audit-search" placeholder="Search by number, user, action, or details..." style="width:100%;max-width:480px;padding:8px 12px;background:var(--surface-color);border:1px solid rgba(249,115,22,0.35);border-radius:6px;color:var(--text-color);font-size:14px;outline:none;box-shadow:0 0 0 1px rgba(249,115,22,0.15)" oninput="auditApplyFilter()" /></div>' +
+      '<div id="security-panel"></div>' +
+      '<div style="margin-bottom:16px"><input type="text" id="audit-search" placeholder="Search by number, user, action, IP address, or details..." style="width:100%;max-width:480px;padding:8px 12px;background:var(--surface-color);border:1px solid rgba(249,115,22,0.35);border-radius:6px;color:var(--text-color);font-size:14px;outline:none;box-shadow:0 0 0 1px rgba(249,115,22,0.15)" oninput="auditApplyFilter()" /></div>' +
       '<div class="card"><div class="table-wrap">' +
-        '<table><thead><tr><th>Date &amp; Time</th><th>Action</th><th>Type</th><th>Number</th><th>User</th><th>Details</th></tr></thead>' +
+        '<table><thead><tr><th>Date &amp; Time</th><th>Action</th><th>Type</th><th>Number</th><th>User</th><th>IP Address</th><th>Details</th></tr></thead>' +
         '<tbody id="audit-tbody"></tbody></table>' +
       '</div></div>' +
       '<div id="audit-pagination" style="display:flex;gap:8px;align-items:center;margin-top:16px;flex-wrap:wrap"></div>';
     auditApplyFilter();
+    renderSecurityPanel();
   } catch(err) {
     el.innerHTML = '<div class="alert alert-error">' + escHtml(err.message) + '</div>';
   }
 }
+// Every action written by utils/security.js. Kept in sync with EVENTS there.
+var SECURITY_ACTIONS = ['failed_login','login_locked_out','login_unknown_email','login_inactive','account_locked',
+  'twofa_failed','twofa_exhausted','password_reset_request','password_reset_done','trusted_device_added',
+  'trusted_device_revoked','role_changed','user_created','user_deactivated','user_reactivated','user_deleted',
+  'users_bulk_imported','admin_unlocked_account','admin_forced_signout','attack_burst','lockdown_engaged',
+  'oauth_client_registered','oauth_connected','oauth_failed_login','oauth_account_locked','oauth_refresh_reuse',
+  'oauth_tokens_revoked','cors_blocked'];
+// The subset that means somebody tried something and it did not work. This is
+// what you filter to when the question is "were we attacked".
+var FAILURE_ACTIONS = ['failed_login','login_locked_out','login_unknown_email','login_inactive','account_locked',
+  'twofa_failed','twofa_exhausted','attack_burst','oauth_failed_login','oauth_account_locked','oauth_refresh_reuse'];
+
 function auditGetFiltered() {
   var type = (document.getElementById('audit-filter-type') || {}).value || '';
   var action = (document.getElementById('audit-filter-action') || {}).value || '';
   var search = ((document.getElementById('audit-search') || {}).value || '').toLowerCase();
   return (window._auditData || []).filter(function(l) {
     if (type && l.entity_type !== type) return false;
-    if (action && l.action !== action) return false;
+    if (action === '__security') { if (SECURITY_ACTIONS.indexOf(l.action) === -1) return false; }
+    else if (action === '__failures') { if (FAILURE_ACTIONS.indexOf(l.action) === -1) return false; }
+    else if (action && l.action !== action) return false;
     if (search) {
       var details = '';
       if (l.details) { try { var d = JSON.parse(l.details); details = JSON.stringify(d).toLowerCase(); } catch(e) {} }
-      var haystack = [(l.entity_number||''), (l.user_name||''), (l.action||''), (l.entity_type||''), details].join(' ').toLowerCase();
+      var haystack = [(l.entity_number||''), (l.user_name||''), (l.action||''), (l.entity_type||''), (l.ip||''), details].join(' ').toLowerCase();
       if (!haystack.includes(search)) return false;
     }
     return true;
@@ -6707,7 +6797,7 @@ function auditRenderTable() {
   var page = filtered.slice(start, start + _auditPageSize);
   var tbody = document.getElementById('audit-tbody');
   if (!tbody) return;
-  tbody.innerHTML = page.length ? renderAuditRows(page) : '<tr><td colspan="6" style="text-align:center;padding:24px;color:var(--text-muted-color)">No matching entries.</td></tr>';
+  tbody.innerHTML = page.length ? renderAuditRows(page) : '<tr><td colspan="7" style="text-align:center;padding:24px;color:var(--text-muted-color)">No matching entries.</td></tr>';
   var pg = document.getElementById('audit-pagination');
   if (!pg) return;
   var sizeCtl = pageSizeControl(_auditPageSize, 'auditPageSize');
@@ -6720,8 +6810,53 @@ function auditRenderTable() {
   html += '<button class="btn btn-secondary btn-sm" onclick="auditGoPage(' + (_auditPage + 1) + ')" ' + (_auditPage === totalPages ? 'disabled' : '') + '>&rsaquo;</button>';
   pg.innerHTML = html;
 }
+// Human labels for the security actions. Without these the log reads as a wall
+// of snake_case slugs, which is a good way to build a security log nobody ever
+// actually looks at.
+var AUDIT_ACTION_LABELS = {
+  login: 'Login',
+  failed_login: 'Failed login',
+  login_locked_out: 'Attempt on locked account',
+  login_unknown_email: 'Unknown email',
+  login_inactive: 'Attempt on deactivated account',
+  account_locked: 'ACCOUNT LOCKED',
+  twofa_failed: 'Wrong 2FA code',
+  twofa_exhausted: '2FA code burned',
+  password_reset_request: 'Reset requested',
+  password_reset_done: 'Password reset',
+  trusted_device_added: 'Device remembered',
+  trusted_device_revoked: 'Device revoked',
+  role_changed: 'Permissions changed',
+  user_created: 'User created',
+  user_deactivated: 'User deactivated',
+  user_reactivated: 'User reactivated',
+  user_deleted: 'User deleted',
+  users_bulk_imported: 'Bulk CSV import',
+  admin_unlocked_account: 'Admin unlocked account',
+  admin_forced_signout: 'Forced sign-out',
+  attack_burst: 'ATTACK BURST',
+  lockdown_engaged: 'Lockdown',
+  oauth_client_registered: 'App registered',
+  oauth_connected: 'App connected',
+  oauth_failed_login: 'Failed login (connect screen)',
+  oauth_account_locked: 'ACCOUNT LOCKED (connect screen)',
+  oauth_refresh_reuse: 'TOKEN REPLAYED',
+  oauth_tokens_revoked: 'App tokens revoked',
+  cors_blocked: 'Cross-origin request'
+};
+
 function renderAuditRows(logs) {
-  const actionColors = { created: '#22c55e', edited: '#60a5fa', deleted: '#ef4444', submitted: '#f59e0b', approved: '#22c55e', rejected: '#ef4444', cancelled: '#c084fc', login: '#34d399' };
+  const actionColors = { created: '#22c55e', edited: '#60a5fa', deleted: '#ef4444', submitted: '#f59e0b', approved: '#22c55e', rejected: '#ef4444', cancelled: '#c084fc', login: '#34d399',
+    // Red = someone tried and failed. Amber = a real change to who can do what.
+    failed_login: '#f59e0b', login_locked_out: '#ef4444', login_unknown_email: '#f59e0b', login_inactive: '#ef4444',
+    account_locked: '#ef4444', twofa_failed: '#f59e0b', twofa_exhausted: '#ef4444', attack_burst: '#ef4444',
+    lockdown_engaged: '#ef4444', password_reset_request: '#f59e0b', password_reset_done: '#f59e0b',
+    trusted_device_added: '#f59e0b', trusted_device_revoked: '#60a5fa', role_changed: '#f59e0b',
+    user_created: '#f59e0b', user_deleted: '#ef4444', user_deactivated: '#60a5fa', user_reactivated: '#f59e0b',
+    users_bulk_imported: '#f59e0b', admin_unlocked_account: '#60a5fa', admin_forced_signout: '#60a5fa',
+    oauth_client_registered: '#f59e0b', oauth_connected: '#f59e0b', oauth_failed_login: '#f59e0b',
+    oauth_account_locked: '#ef4444', oauth_refresh_reuse: '#ef4444', oauth_tokens_revoked: '#60a5fa',
+    cors_blocked: '#f59e0b' };
   if (!logs.length) return '';
   return logs.map(function(l) {
     const color = actionColors[l.action] || 'var(--text-muted-color)';
@@ -6737,22 +6872,230 @@ function renderAuditRows(logs) {
         if (d.orderer) details += 'Orderer: ' + d.orderer;
         if (d.reason) details += 'Reason: ' + d.reason;
         if (d.method) details += 'Via: ' + d.method + ' ';
-        if (d.ip) details += '(' + d.ip + ')';
+        // Security detail rendering. Deliberately terse — the goal is that a
+        // whole screen of these can be skimmed, not that any one row is complete.
+        if (d.attempt !== undefined && d.of !== undefined) details += 'Attempt ' + d.attempt + ' of ' + d.of + ' ';
+        if (d.attempted_email) details += 'Tried: ' + d.attempted_email + ' ';
+        if (d.attempts !== undefined && d.attempt === undefined) details += d.attempts + ' attempts ';
+        if (d.locked_for_minutes) details += 'Locked ' + d.locked_for_minutes + ' min ';
+        if (d.minutes_remaining !== undefined) details += d.minutes_remaining + ' min left on the lock ';
+        if (d.label) details += 'Device: ' + d.label + ' ';
+        if (d.scope === 'all') details += 'All devices (' + (d.removed || 0) + ') ';
+        if (d.accounts) details += d.accounts + ' accounts locked in ' + (d.window_minutes || '?') + ' min ';
+        if (d.changes) {
+          var c = d.changes;
+          if (c.role) details += 'Role ' + c.role.from + ' → ' + c.role.to + ' ';
+          if (c.extra_perms) details += 'Perms → [' + ((c.extra_perms.to || []).join(', ') || 'none') + '] ';
+          if (c.email) details += 'Email ' + c.email.from + ' → ' + c.email.to + ' ';
+          if (c.password) details += 'Password set by admin ';
+          if (c.active) details += (c.active.to === false ? 'Access removed ' : 'Access restored ');
+        }
+        if (d.role_changes && d.role_changes.length) details += d.role_changes.length + ' role change(s) ';
+        if (d.created !== undefined && d.updated !== undefined) details += d.created + ' created / ' + d.updated + ' updated ';
+        if (d.trusted_devices_removed !== undefined) details += d.trusted_devices_removed + ' device(s), ' + (d.oauth_tokens_revoked || 0) + ' app token(s) revoked ';
+        if (d.deleted_email) details += 'Was: ' + d.deleted_email + ' ';
+        if (d.by_user_name) details += 'By: ' + d.by_user_name + ' ';
+        if (d.reason) details += 'Reason: ' + d.reason;
+        if (d.note) details += d.note;
+        // The IP is its own column now; only fall back to the details copy for
+        // the historical rows written before audit_logs.ip existed.
+        if (!l.ip && d.ip) details += '(' + d.ip + ')';
       } catch(e) {}
     }
     const numLink = l.entity_number
       ? '<a href="#" onclick="navigate(\'' + (l.entity_type === 'po' ? 'view' : 'view-quote') + '\',' + l.entity_id + ');return false;" style="color:var(--primary)">' + escHtml(l.entity_number) + '</a>'
       : '—';
+    var actionLabel = AUDIT_ACTION_LABELS[l.action] || l.action;
+    var capitalize = AUDIT_ACTION_LABELS[l.action] ? 'none' : 'capitalize';
+    var ipCell = l.ip || (function() {
+      if (!l.details) return '';
+      try { var dd = JSON.parse(l.details); return dd.ip || ''; } catch(e) { return ''; }
+    })();
     return '<tr>' +
       '<td style="white-space:nowrap;font-size:13px">' + escHtml(dateStr) + '</td>' +
-      '<td><span style="font-weight:600;color:' + color + ';text-transform:capitalize">' + escHtml(l.action) + '</span></td>' +
-      '<td><span class="badge ' + (l.entity_type === 'po' ? 'badge-submitted' : 'badge-approver') + '" style="font-size:11px">' + escHtml(l.entity_type.toUpperCase()) + '</span></td>' +
+      '<td><span style="font-weight:600;color:' + color + ';text-transform:' + capitalize + '">' + escHtml(actionLabel) + '</span></td>' +
+      '<td><span class="badge ' + (l.entity_type === 'po' ? 'badge-submitted' : 'badge-approver') + '" style="font-size:11px">' + escHtml(String(l.entity_type || '').toUpperCase()) + '</span></td>' +
       '<td>' + numLink + '</td>' +
       '<td>' + escHtml(l.user_name || '—') + '</td>' +
+      '<td style="font-size:12px;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;white-space:nowrap;color:var(--text-muted-color)">' + escHtml(ipCell || '—') + '</td>' +
       '<td style="font-size:13px;color:var(--text-muted-color)">' + escHtml(details || '—') + '</td>' +
     '</tr>';
   }).join('');
 }
+// ── Security panel (top of the Audit Log) ────────────────────────────────────
+// Answers "is something happening right now, and has anything happened?" without
+// making anyone read the log line by line.
+var _securityData = null;
+
+async function renderSecurityPanel() {
+  var host = document.getElementById('security-panel');
+  if (!host) return;
+  host.innerHTML = '<div class="card mb-4"><div class="card-body"><div class="loading">Checking security status…</div></div></div>';
+  var s;
+  try {
+    s = await api('GET', '/audit/security/summary?days=90');
+  } catch (err) {
+    host.innerHTML = '<div class="alert alert-error">Could not load the security summary: ' + escHtml(err.message) + '</div>';
+    return;
+  }
+  _securityData = s;
+
+  var counts = s.event_counts || {};
+  var failures = ['failed_login','login_locked_out','login_unknown_email','login_inactive','twofa_failed','twofa_exhausted']
+    .reduce(function(n, k) { return n + (counts[k] || 0); }, 0);
+  var locked = s.locked_accounts || [];
+  var devices = s.trusted_devices || [];
+
+  // Unusual IPs: an address a person has signed in from exactly once while
+  // having used others, or one address serving several different people. Both
+  // are normal sometimes (new phone, shared office wifi) — the panel flags, it
+  // does not accuse.
+  var byUser = {};
+  (s.login_ips || []).forEach(function(r) { (byUser[r.user_id] = byUser[r.user_id] || []).push(r); });
+  var byIp = {};
+  (s.login_ips || []).forEach(function(r) { (byIp[r.ip] = byIp[r.ip] || []).push(r); });
+  var oneOffs = [];
+  Object.keys(byUser).forEach(function(uid) {
+    var list = byUser[uid];
+    if (list.length < 2) return;
+    list.forEach(function(r) { if (r.logins === 1) oneOffs.push(r); });
+  });
+  oneOffs.sort(function(a, b) { return new Date(b.last_seen) - new Date(a.last_seen); });
+  var sharedIps = Object.keys(byIp).filter(function(ip) {
+    var ids = {}; byIp[ip].forEach(function(r) { ids[r.user_id] = 1; });
+    return Object.keys(ids).length > 2;
+  });
+
+  var ld = s.lockdown || {};
+  var oldest = s.oldest_security_row ? new Date(s.oldest_security_row) : null;
+
+  function stat(label, value, color) {
+    return '<div style="flex:1;min-width:120px;padding:12px 14px;border:1px solid var(--border);border-radius:8px">' +
+      '<div style="font-size:22px;font-weight:700;color:' + (color || 'var(--text-color)') + '">' + value + '</div>' +
+      '<div style="font-size:12px;color:var(--text-muted-color);margin-top:2px">' + label + '</div></div>';
+  }
+
+  var html = '';
+
+  if (ld.active) {
+    html += '<div class="alert alert-error" style="margin-bottom:12px"><strong>Lockdown is active</strong> until ' +
+      escHtml(formatDateTime(ld.until)) + '. Remembered devices are suspended, so every login needs a fresh 2FA code. Logins are not blocked. ' +
+      (can('manage_settings') ? '<button class="btn btn-secondary btn-sm" style="margin-left:8px" onclick="securityEndLockdown()">End lockdown now</button>' : '') +
+      '</div>';
+  }
+  if (locked.length) {
+    html += '<div class="alert alert-error" style="margin-bottom:12px"><strong>' + locked.length + ' account' + (locked.length > 1 ? 's are' : ' is') +
+      ' locked right now</strong> after too many failed passwords. If this was not the person themselves, someone is guessing at their password.</div>';
+  }
+
+  html += '<div class="card mb-4"><div class="card-header"><span class="card-title">Security</span>' +
+    '<span style="font-size:12px;color:var(--text-muted-color)">Last 90 days</span></div><div class="card-body">' +
+    '<div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:16px">' +
+      stat('Successful logins', counts.login || 0) +
+      stat('Failed attempts', failures, failures ? '#f59e0b' : undefined) +
+      stat('Accounts locked', counts.account_locked || 0, (counts.account_locked ? '#ef4444' : undefined)) +
+      stat('Locked right now', locked.length, (locked.length ? '#ef4444' : undefined)) +
+      stat('Remembered devices', devices.length) +
+      stat('Permission changes', (counts.role_changed || 0) + (counts.user_created || 0) + (counts.user_deleted || 0)) +
+    '</div>';
+
+  // How far back the evidence goes. A quiet page means nothing if the rows were
+  // deleted before anyone looked.
+  html += '<div style="font-size:12px;color:var(--text-muted-color);margin-bottom:16px">' +
+    (oldest
+      ? 'Security history goes back to <strong>' + escHtml(formatDateTime(s.oldest_security_row)) + '</strong>. Anything before that was never recorded or has been purged.'
+      : 'No security events have been recorded yet. Failed logins only started being written down when this feature was deployed, so an attack before that date left no trace.') +
+    '</div>';
+
+  if (locked.length) {
+    html += '<div style="font-weight:600;margin-bottom:8px">Locked accounts</div><div class="table-wrap" style="margin-bottom:18px"><table><thead><tr>' +
+      '<th>User</th><th>Role</th><th>Failed attempts</th><th>Locked until</th>' + (can('manage_users') ? '<th></th>' : '') + '</tr></thead><tbody>' +
+      locked.map(function(u) {
+        return '<tr><td>' + escHtml(u.name) + '<div style="font-size:12px;color:var(--text-muted-color)">' + escHtml(u.email) + '</div></td>' +
+          '<td>' + escHtml(u.role) + '</td>' +
+          '<td style="color:#ef4444;font-weight:600">' + (u.failed_attempts || 0) + '</td>' +
+          '<td style="font-size:13px">' + escHtml(formatDateTime(u.lockout_until)) + '</td>' +
+          (can('manage_users') ? '<td class="flex-gap"><button class="btn btn-secondary btn-sm" onclick="securityUnlock(' + u.id + ')">Unlock</button>' +
+            '<button class="btn btn-danger btn-sm" onclick="securitySignout(' + u.id + ')">Sign out everywhere</button></td>' : '') +
+          '</tr>';
+      }).join('') + '</tbody></table></div>';
+  }
+
+  if (oneOffs.length || sharedIps.length) {
+    html += '<div style="font-weight:600;margin-bottom:4px">Unusual sign-in addresses</div>' +
+      '<div style="font-size:12px;color:var(--text-muted-color);margin-bottom:8px">Addresses a person has signed in from only once, while normally using others. A new phone or a hotel looks exactly like this, so treat it as a prompt to ask, not as proof.</div>';
+    if (oneOffs.length) {
+      html += '<div class="table-wrap" style="margin-bottom:12px"><table><thead><tr><th>User</th><th>IP address</th><th>Seen</th></tr></thead><tbody>' +
+        oneOffs.slice(0, 25).map(function(r) {
+          return '<tr><td>' + escHtml(r.user_name || '—') + '</td>' +
+            '<td style="font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12px">' + escHtml(r.ip) + '</td>' +
+            '<td style="font-size:13px">' + escHtml(formatDateTime(r.last_seen)) + '</td></tr>';
+        }).join('') + '</tbody></table></div>';
+      if (oneOffs.length > 25) html += '<div style="font-size:12px;color:var(--text-muted-color);margin-bottom:12px">Showing 25 of ' + oneOffs.length + '.</div>';
+    }
+    if (sharedIps.length) {
+      html += '<div style="font-size:13px;margin-bottom:12px">Shared by more than two people (normal for an office, worth a look otherwise): ' +
+        sharedIps.slice(0, 10).map(function(ip) { return '<code>' + escHtml(ip) + '</code>'; }).join(', ') + '</div>';
+    }
+  }
+
+  if (devices.length) {
+    html += '<div style="font-weight:600;margin-bottom:4px">Remembered devices (' + devices.length + ')</div>' +
+      '<div style="font-size:12px;color:var(--text-muted-color);margin-bottom:8px">Each of these can sign in for 30 days without a 2FA code. If an attacker ever got in once, this is how they come back. Every row should be a device you can account for.</div>' +
+      '<div class="table-wrap"><table><thead><tr><th>User</th><th>Device</th><th>IP</th><th>Added</th><th>Last used</th><th>Expires</th>' + (can('manage_users') ? '<th></th>' : '') + '</tr></thead><tbody>' +
+      devices.map(function(d) {
+        return '<tr><td>' + escHtml(d.user_name || '—') + '</td>' +
+          '<td style="font-size:13px">' + escHtml(d.label || '—') + '</td>' +
+          '<td style="font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12px">' + escHtml(d.ip || '—') + '</td>' +
+          '<td style="font-size:13px;white-space:nowrap">' + escHtml(formatDateTime(d.created_at)) + '</td>' +
+          '<td style="font-size:13px;white-space:nowrap">' + escHtml(d.last_used_at ? formatDateTime(d.last_used_at) : '—') + '</td>' +
+          '<td style="font-size:13px;white-space:nowrap">' + escHtml(formatDateTime(d.expires_at)) + '</td>' +
+          (can('manage_users') ? '<td><button class="btn btn-danger btn-sm" onclick="securitySignout(' + d.user_id + ')">Sign out everywhere</button></td>' : '') +
+          '</tr>';
+      }).join('') + '</tbody></table></div>';
+  }
+
+  if (can('manage_settings')) {
+    html += '<div style="margin-top:18px;padding-top:14px;border-top:1px solid var(--border)">' +
+      '<label style="display:flex;align-items:flex-start;gap:10px;cursor:pointer">' +
+        '<input type="checkbox" id="sec-auto-lockdown"' + (ld.armed ? ' checked' : '') + ' style="width:auto;margin:3px 0 0" onchange="securitySetLockdown(this.checked)" />' +
+        '<span><span style="font-weight:600">Automatic lockdown</span>' +
+        '<div style="font-size:12px;color:var(--text-muted-color);margin-top:2px">When ' + (s.thresholds ? s.thresholds.burst_accounts : 3) + ' or more accounts get locked out within ' +
+        (s.thresholds ? s.thresholds.burst_window_minutes : 15) + ' minutes, Nova suspends remembered devices for ' +
+        (s.thresholds ? s.thresholds.lockdown_minutes : 60) + ' minutes, so every login has to pass a fresh 2FA code. It never blocks logins and never locks accounts, so nobody gets shut out of their own tools.</div></span>' +
+      '</label></div>';
+  }
+
+  html += '</div></div>';
+  host.innerHTML = html;
+}
+
+async function securityUnlock(id) {
+  if (!await novaConfirm('Clear the lockout on this account? They will be able to try their password again right away. This does not change their password.')) return;
+  try { await api('POST', '/users/' + id + '/unlock'); showToast('Account unlocked.', 'success'); renderSecurityPanel(); }
+  catch (err) { showToast(err.message, 'error'); }
+}
+
+async function securitySignout(id) {
+  if (!await novaConfirm('Sign this person out of Nova everywhere? Every active session, every remembered device and every connected app is cut off immediately. Their password is not changed, so they can sign back in normally.')) return;
+  try {
+    var r = await api('POST', '/users/' + id + '/signout');
+    showToast('Signed out everywhere. Removed ' + (r.trusted_devices_removed || 0) + ' remembered device(s).', 'success');
+    renderSecurityPanel();
+  } catch (err) { showToast(err.message, 'error'); }
+}
+
+async function securitySetLockdown(on) {
+  try { await api('POST', '/audit/security/lockdown', { armed: !!on }); showToast('Automatic lockdown ' + (on ? 'armed' : 'disarmed') + '.', 'success'); }
+  catch (err) { showToast(err.message, 'error'); }
+}
+
+async function securityEndLockdown() {
+  if (!await novaConfirm('End the lockdown now? Remembered devices will start working again immediately.')) return;
+  try { await api('POST', '/audit/security/lockdown', { clear: true }); showToast('Lockdown ended.', 'success'); renderSecurityPanel(); }
+  catch (err) { showToast(err.message, 'error'); }
+}
+
 // ── AI Usage Dashboard (admin) ────────────────────────────────────────────────
 function aiUsageMonthStart() {
   var now = new Date();

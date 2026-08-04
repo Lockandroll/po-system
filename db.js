@@ -158,6 +158,20 @@ async function initDB() {
       '  created_at TIMESTAMP DEFAULT NOW()' +
       ');'
     );
+    // Security logging. The IP used to live only inside the free-text details
+    // JSON, which meant it could not be filtered, indexed or shown as a column.
+    // Promote it to a real column; utils/audit.js still mirrors it into details
+    // so the ~90 days of historical rows keep rendering the same way.
+    await client.query(
+      'ALTER TABLE audit_logs ADD COLUMN IF NOT EXISTS ip VARCHAR(64);'
+    );
+    // The audit log is now the intrusion-detection record, so it gets queried by
+    // (entity_type, time) and by action far more than it used to.
+    await client.query(
+      'CREATE INDEX IF NOT EXISTS idx_audit_entity_created ON audit_logs(entity_type, created_at DESC);' +
+      'CREATE INDEX IF NOT EXISTS idx_audit_action_created ON audit_logs(action, created_at DESC);' +
+      'CREATE INDEX IF NOT EXISTS idx_audit_created ON audit_logs(created_at DESC);'
+    );
     await client.query(
       'CREATE TABLE IF NOT EXISTS ai_conversations (' +
       '  id SERIAL PRIMARY KEY,' +

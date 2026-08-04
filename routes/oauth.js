@@ -13,6 +13,12 @@ var bcrypt = require('bcryptjs');
 var jwt = require('jsonwebtoken');
 var pool = require('../db').pool;
 var diag = require('../lib/diag');
+// Until 2026-08 this entire file wrote nothing to audit_logs. Client
+// registration is unauthenticated by protocol design (RFC 7591) and token
+// issuance had no record at all, so a connected app could be added and used
+// with no trace anywhere. Its only diagnostic was lib/diag.js, a 120-line
+// in-memory ring buffer whose reader endpoint had already been removed.
+var security = require('../utils/security');
 
 var router = express.Router();
 var urlenc = express.urlencoded({ extended: false });
@@ -105,6 +111,15 @@ router.post('/oauth/register', async function (req, res) {
       [clientId, clientSecret, name, JSON.stringify(uris)]
     );
     diag.log('register OK client_id=' + clientId + ' uris=' + JSON.stringify(uris));
+    // Anyone on the internet can reach this endpoint, and every call leaves a
+    // permanent oauth_clients row behind. Every row should be a connector
+    // somebody deliberately set up, so every row now gets an audit line.
+    await security.record(req, {
+      event: 'oauth_client_registered',
+      user_name: name,
+      summary: 'A new app registered itself with Nova as "' + name + '". Registration is open by protocol design, so this only becomes a connection if someone signs in and approves it.',
+      details: { client_id: clientId, client_name: name, redirect_uris: uris }
+    });
     res.status(201).json({
       client_id: clientId,
       client_secret: clientSecret,
@@ -225,8 +240,22 @@ router.post('/oauth/authorize', urlenc, async function (req, res) {
     var email = (f.email || '').trim();
     var r = await pool.query('SELECT * FROM users WHERE email=$1', [email]);
     var user = r.rows[0];
-    if (!user) return renderConsent(req, res, f, 'Invalid email or password.');
+    if (!user) {
+      // This screen is a second password prompt on a different URL. It shares
+      // users.failed_attempts with the main login but wrote nothing down.
+      await security.record(req, {
+        event: 'login_unknown_email',
+        details: { attempted_email: String(email).slice(0, 120), via: 'oauth consent screen', client: client.client_name }
+      });
+      return renderConsent(req, res, f, 'Invalid email or password.');
+    }
     if (user.lockout_until && new Date(user.lockout_until) > new Date()) {
+      await security.record(req, {
+        event: 'login_locked_out',
+        user_id: user.id,
+        user_name: user.name,
+        details: { via: 'oauth consent screen', client: client.client_name, locked_until: user.lockout_until }
+      });
       return renderConsent(req, res, f, 'Account locked due to failed attempts. Try again later.');
     }
     var ok = await bcrypt.compare(f.password || '', user.password_hash || '');
@@ -235,12 +264,36 @@ router.post('/oauth/authorize', urlenc, async function (req, res) {
       if (attempts >= MAX_ATTEMPTS) {
         await pool.query('UPDATE users SET failed_attempts=$1, lockout_until=$2 WHERE id=$3',
           [attempts, new Date(Date.now() + LOCKOUT_MINUTES * 60000), user.id]);
+        await security.record(req, {
+          event: 'oauth_account_locked',
+          user_id: user.id,
+          user_name: user.name,
+          summary: user.name + '’s account was locked after ' + attempts + ' failed passwords on the connect-an-app screen (client: ' + client.client_name + ').',
+          details: { attempts: attempts, client: client.client_name, locked_for_minutes: LOCKOUT_MINUTES }
+        });
+        // Same cross-account burst check the main login runs. Without this an
+        // attacker could simply move to this URL to stay under the radar.
+        await security.checkForBurst(req, user.id);
       } else {
         await pool.query('UPDATE users SET failed_attempts=$1 WHERE id=$2', [attempts, user.id]);
+        await security.record(req, {
+          event: 'oauth_failed_login',
+          user_id: user.id,
+          user_name: user.name,
+          details: { attempt: attempts, of: MAX_ATTEMPTS, client: client.client_name }
+        });
       }
       return renderConsent(req, res, f, 'Invalid email or password.');
     }
-    if (user.active === false) return renderConsent(req, res, f, 'Your account has been deactivated.');
+    if (user.active === false) {
+      await security.record(req, {
+        event: 'login_inactive',
+        user_id: user.id,
+        user_name: user.name,
+        details: { via: 'oauth consent screen', client: client.client_name }
+      });
+      return renderConsent(req, res, f, 'Your account has been deactivated.');
+    }
     await pool.query('UPDATE users SET failed_attempts=0, lockout_until=NULL WHERE id=$1', [user.id]);
 
     var code = randToken(32);
@@ -303,6 +356,22 @@ router.post('/oauth/token', urlenc, async function (req, res) {
       if (row.redirect_uri !== b.redirect_uri) return res.status(400).json({ error: 'invalid_grant', error_description: 'redirect mismatch' });
       var challenge = b64url(sha256(b.code_verifier || ''));
       if (challenge !== row.code_challenge) return res.status(400).json({ error: 'invalid_grant', error_description: 'PKCE verification failed' });
+      // A NEW connection is being established. Deliberately logged here and not
+      // on refresh: a connected app refreshes every hour, and 24 rows a day per
+      // client would bury everything else. This fires once per connection.
+      try {
+        var cn = await pool.query('SELECT client_name FROM oauth_clients WHERE client_id=$1', [row.client_id]);
+        var un = await pool.query('SELECT name FROM users WHERE id=$1', [row.user_id]);
+        await security.record(req, {
+          event: 'oauth_connected',
+          user_id: row.user_id,
+          user_name: un.rows[0] && un.rows[0].name,
+          summary: ((un.rows[0] && un.rows[0].name) || 'Someone') + ' connected "' +
+            ((cn.rows[0] && cn.rows[0].client_name) || row.client_id) +
+            '" to their Nova account. It can now act as them, with their permissions, until it is revoked.',
+          details: { client_id: row.client_id, client_name: cn.rows[0] && cn.rows[0].client_name, scope: row.scope }
+        });
+      } catch (e) { /* never block a valid connection over an audit row */ }
       return issueTokens(req, res, row.user_id, row.client_id, row.scope);
     }
     if (grant === 'refresh_token') {
@@ -310,7 +379,32 @@ router.post('/oauth/token', urlenc, async function (req, res) {
       var hash = b64url(sha256(rt));
       var rr = await pool.query('SELECT * FROM oauth_refresh_tokens WHERE token_hash=$1', [hash]);
       var rrow = rr.rows[0];
-      if (!rrow || rrow.revoked || new Date(rrow.expires_at) < new Date()) return res.status(400).json({ error: 'invalid_grant' });
+      // TOKEN REUSE DETECTION. Refresh tokens rotate: presenting one that was
+      // already rotated away means two parties hold the same token, and one of
+      // them is not the legitimate client. Previously this returned a bare
+      // invalid_grant and let the thief keep trying. Now the whole token family
+      // for that user + client is revoked, which forces a fresh consent.
+      if (rrow && rrow.revoked) {
+        var killed = 0;
+        try {
+          killed = (await pool.query(
+            'UPDATE oauth_refresh_tokens SET revoked = true WHERE user_id = $1 AND client_id = $2 AND revoked = false',
+            [rrow.user_id, rrow.client_id]
+          )).rowCount || 0;
+        } catch (e) { console.error('[oauth] family revoke failed:', e.message); }
+        var un2 = await pool.query('SELECT name FROM users WHERE id=$1', [rrow.user_id]).catch(function () { return { rows: [] }; });
+        await security.record(req, {
+          event: 'oauth_refresh_reuse',
+          user_id: rrow.user_id,
+          user_name: un2.rows[0] && un2.rows[0].name,
+          summary: 'A connected-app refresh token that had already been used once was presented again' +
+            ((un2.rows[0] && un2.rows[0].name) ? ' on ' + un2.rows[0].name + '’s account' : '') +
+            '. That means someone kept a copy of it. Every token for that app has been revoked and it will have to be reconnected.',
+          details: { client_id: rrow.client_id, tokens_revoked: killed }
+        });
+        return res.status(400).json({ error: 'invalid_grant', error_description: 'token reuse detected' });
+      }
+      if (!rrow || new Date(rrow.expires_at) < new Date()) return res.status(400).json({ error: 'invalid_grant' });
       if (rrow.client_id !== b.client_id) return res.status(400).json({ error: 'invalid_grant', error_description: 'client mismatch' });
       await pool.query('UPDATE oauth_refresh_tokens SET revoked=true WHERE token_hash=$1', [hash]);
       return issueTokens(req, res, rrow.user_id, rrow.client_id, rrow.scope);

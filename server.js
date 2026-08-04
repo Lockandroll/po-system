@@ -5,6 +5,7 @@ const cors = require('cors');
 const path = require('path');
 const fs = require('fs');
 const rateLimit = require('express-rate-limit');
+const helmet = require('helmet');
 const compression = require('compression');
 const { initDB } = require('./db');
 const { startReminders } = require('./jobs/reminders');
@@ -28,6 +29,77 @@ const app = express();
 
 // Trust Railway's reverse proxy so express-rate-limit keys on the real client IP
 app.set('trust proxy', 1);
+
+// ---------------------------------------------------------------------------
+// Security headers (helmet)
+// ---------------------------------------------------------------------------
+// Nova had no security headers at all before 2026-08. Three of helmet's
+// defaults are deliberately overridden, each because a default would break
+// something real:
+//
+//  * frameguard (X-Frame-Options) is OFF here and applied selectively below.
+//    Helmet's default SAMEORIGIN would stop Outlook from rendering the add-in
+//    taskpane, which Office loads in an iframe from outlook.office.com.
+//  * crossOriginResourcePolicy is 'cross-origin' so the add-in can still pull
+//    its icons and assets. The default 'same-origin' would block them.
+//  * contentSecurityPolicy is OFF unless CSP_ENABLED=true, because app.js
+//    carries 727 inline onclick handlers. A CSP without 'unsafe-inline' would
+//    take the entire UI down; see the opt-in policy below for the version that
+//    still helps.
+//
+// Everything else is helmet's default: nosniff, HSTS, referrer policy, DNS
+// prefetch control, hidePoweredBy, and friends.
+app.use(helmet({
+  contentSecurityPolicy: false,
+  frameguard: false,
+  crossOriginEmbedderPolicy: false,
+  crossOriginResourcePolicy: { policy: 'cross-origin' },
+  referrerPolicy: { policy: 'strict-origin-when-cross-origin' },
+  // includeSubDomains is deliberately OFF: popalockar.com may have subdomains
+  // that are not HTTPS-only, and HSTS on a subdomain you forgot about is very
+  // hard to undo (browsers cache it for the full max-age).
+  hsts: { maxAge: 15552000, includeSubDomains: false, preload: false }
+}));
+
+// Clickjacking protection everywhere EXCEPT the Outlook add-in, which is
+// legitimately framed by Office. /addin/* is static HTML that renders inside
+// the taskpane; /api/addin/* is its API surface and is already scoped to
+// add-in tokens in middleware/auth.js.
+app.use(function (req, res, next) {
+  var p = req.path || '';
+  if (p.indexOf('/addin') !== 0 && p.indexOf('/api/addin') !== 0) {
+    res.setHeader('X-Frame-Options', 'SAMEORIGIN');
+  }
+  next();
+});
+
+// Opt-in Content Security Policy. Set CSP_ENABLED=true to turn it on, and
+// CSP_REPORT_ONLY=true first to watch what it WOULD block without breaking
+// anything. 'unsafe-inline' on script-src is unavoidable while the inline
+// onclick handlers exist, but the rest still earns its keep: it pins where
+// scripts, frames and form posts may go, and kills plugin embedding outright.
+if (String(process.env.CSP_ENABLED || '').toLowerCase() === 'true') {
+  const reportOnly = String(process.env.CSP_REPORT_ONLY || '').toLowerCase() === 'true';
+  app.use(helmet.contentSecurityPolicy({
+    reportOnly: reportOnly,
+    useDefaults: false,
+    directives: {
+      defaultSrc: ["'self'"],
+      scriptSrc: ["'self'", "'unsafe-inline'"],
+      styleSrc: ["'self'", "'unsafe-inline'", 'https://fonts.googleapis.com'],
+      fontSrc: ["'self'", 'https://fonts.gstatic.com', 'data:'],
+      imgSrc: ["'self'", 'data:', 'blob:', 'https:'],
+      connectSrc: ["'self'", 'https:'],
+      mediaSrc: ["'self'", 'blob:', 'data:'],
+      workerSrc: ["'self'", 'blob:'],
+      objectSrc: ["'none'"],
+      baseUri: ["'self'"],
+      formAction: ["'self'"],
+      // Office hosts must be able to frame the add-in taskpane.
+      frameAncestors: ["'self'", 'https://*.office.com', 'https://*.office365.com', 'https://*.live.com', 'https://*.microsoft.com']
+    }
+  }));
+}
 
 // Gzip all responses (app.js bundle + JSON payloads)
 app.use(compression());
@@ -56,7 +128,66 @@ const vaultGateLimiter = rateLimit({
   message: { error: 'Too many vault unlock attempts. Try again in 15 minutes.' }
 });
 
-app.use(cors());
+// ---------------------------------------------------------------------------
+// CORS
+// ---------------------------------------------------------------------------
+// This used to be a bare cors(), which reflects every origin. On a Bearer-token
+// API that is lower risk than it looks (no cookie is used for API auth, and
+// bare cors() sends no credentials), which is exactly why this rolls out in two
+// stages rather than as a hard switch on a live operations platform:
+//
+//   default            allow everything, but LOG each unapproved origin
+//   CORS_STRICT=true   actually block unapproved origins
+//
+// Run on the default for a week, watch the logs and the Audit Log for
+// cors_blocked rows, add anything legitimate to CORS_ORIGINS, then set
+// CORS_STRICT=true. Flipping it on blind is how you discover an integration
+// nobody remembered.
+//
+// Requests with NO Origin header are always allowed: that covers every
+// server-to-server call, and blocking them would kill the Resend inbound
+// webhook, Square's webhook and callback, and the Railway health check.
+const CORS_STRICT = String(process.env.CORS_STRICT || '').toLowerCase() === 'true';
+const corsAllowlist = (function () {
+  const list = [];
+  if (process.env.APP_URL) list.push(String(process.env.APP_URL).replace(/\/$/, ''));
+  String(process.env.CORS_ORIGINS || '').split(',').forEach(function (o) {
+    o = o.trim().replace(/\/$/, '');
+    if (o) list.push(o);
+  });
+  return list;
+})();
+// Office hosts load the Outlook add-in, so they are always allowed.
+const OFFICE_ORIGIN = /^https:\/\/([a-z0-9-]+\.)*(office|office365|outlook|live|microsoft|sharepoint)\.com$/i;
+
+function corsOriginAllowed(origin) {
+  if (!origin) return true;
+  const clean = String(origin).replace(/\/$/, '');
+  if (corsAllowlist.indexOf(clean) !== -1) return true;
+  if (OFFICE_ORIGIN.test(clean)) return true;
+  return false;
+}
+
+const _corsSeen = new Set();
+app.use(cors({
+  origin: function (origin, cb) {
+    if (corsOriginAllowed(origin)) return cb(null, true);
+    // Log each unapproved origin ONCE per boot so a scanner cannot flood the
+    // logs, and write one audit row so it shows up where someone will see it.
+    if (!_corsSeen.has(origin)) {
+      _corsSeen.add(origin);
+      console.warn('[cors] unapproved origin: ' + origin + (CORS_STRICT ? ' (BLOCKED)' : ' (allowed — CORS_STRICT is off)'));
+      try {
+        require('./utils/security').record(null, {
+          event: 'cors_blocked',
+          user_name: 'Nova',
+          details: { origin: origin, enforced: CORS_STRICT }
+        });
+      } catch (e) { /* never let logging break a request */ }
+    }
+    return cb(null, !CORS_STRICT);
+  }
+}));
 
 // Inbound email webhook (Resend) - mounted before express.json so the route can
 // read the raw body for Svix signature verification.
@@ -154,7 +285,40 @@ app.use('/api/ptt', require('./routes/ptt'));
 app.use('/api/inspections', require('./routes/inspections'));
 app.use('/api/assets', require('./routes/assets'));
 
-// OAuth 2.1 authorization server for the remote MCP (must be before the SPA catch-all)
+// OAuth 2.1 authorization server for the remote MCP (must be before the SPA catch-all).
+//
+// These paths sit on '/', NOT under '/api/', so generalLimiter above never saw
+// them: until 2026-08 /oauth/register, /oauth/authorize and /oauth/token had NO
+// rate limit of any kind. /oauth/authorize POST is a full password prompt, and
+// /oauth/register creates a permanent database row while being unauthenticated
+// by protocol design (RFC 7591).
+const oauthRegisterLimiter = rateLimit({
+  windowMs: 60 * 60 * 1000,
+  max: 10,   // a real client registers once, ever
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: 'too_many_requests', error_description: 'Too many client registrations. Try again later.' }
+});
+const oauthAuthorizeLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 20,   // matches the login limiter's intent; a couple of retries is normal
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: 'too_many_requests', error_description: 'Too many connection attempts. Try again in 15 minutes.' }
+});
+const oauthTokenLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  // Access tokens last an hour, so a healthy client refreshes about once an
+  // hour. 120 per 15 minutes leaves enormous headroom for several connected
+  // clients behind one NAT while still capping a grinder.
+  max: 120,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: 'too_many_requests', error_description: 'Too many token requests.' }
+});
+app.use('/oauth/register', oauthRegisterLimiter);
+app.use('/oauth/authorize', oauthAuthorizeLimiter);
+app.use('/oauth/token', oauthTokenLimiter);
 app.use('/', require('./routes/oauth'));
 
 // Unknown API routes return JSON 404 instead of the SPA shell

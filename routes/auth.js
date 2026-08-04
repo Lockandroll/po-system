@@ -7,6 +7,7 @@ const { requireAuth } = require('../middleware/auth');
 const { sendEmail, emailTemplate } = require('../utils/email');
 const { sendSms } = require('../utils/sms');
 const { logAudit } = require('../utils/audit');
+const security = require('../utils/security');
 
 const router = express.Router();
 
@@ -20,7 +21,9 @@ const DEVICE_COOKIE = 'nova_device';
 function sessionTtl(remember) { return remember ? '30d' : '24h'; }
 
 function hashToken(t) { return crypto.createHash('sha256').update(String(t)).digest('hex'); }
-function clientIp(req) { return ((req.headers['x-forwarded-for'] || '').split(',')[0] || '').trim() || req.ip || null; }
+// Single shared implementation now lives in utils/security.js — this file had
+// its own copy, and so did vault.js, signatures.js and assets.js.
+const clientIp = security.clientIp;
 function getDeviceToken(req) {
   var raw = req.headers.cookie || '';
   var parts = raw.split(';');
@@ -57,7 +60,7 @@ router.post('/setup', async (req, res) => {
   );
   const user = result.rows[0];
   const token = jwt.sign({ id: user.id, email: user.email, name: user.name, role: user.role }, process.env.JWT_SECRET, { expiresIn: '24h' });
-  logAudit({ entity_type: 'auth', action: 'login', user_id: user.id, user_name: user.name, details: { method: 'account setup', ip: clientIp(req) } });
+  logAudit({ entity_type: 'auth', action: 'login', user_id: user.id, user_name: user.name, details: { method: 'account setup' }, ip: clientIp(req) });
   pool.query('UPDATE users SET last_login_at = NOW(), last_seen_at = NOW() WHERE id = $1', [user.id]).catch(function(){});
   res.json({ token, user });
 });
@@ -71,12 +74,27 @@ router.post('/login', async (req, res) => {
   const user = rows[0];
 
   if (!user) {
+    // Recorded, but the RESPONSE stays identical to a wrong password so this
+    // endpoint still cannot be used to enumerate which emails have accounts.
+    await security.record(req, {
+      event: 'login_unknown_email',
+      user_name: null,
+      details: { attempted_email: String(email).slice(0, 120) }
+    });
     return res.status(401).json({ error: 'Invalid email or password' });
   }
 
   // Check lockout
   if (user.lockout_until && new Date(user.lockout_until) > new Date()) {
     const mins = Math.ceil((new Date(user.lockout_until) - new Date()) / 60000);
+    // Someone still hammering an account that is ALREADY locked is the clearest
+    // signal there is that this is not a person mistyping their own password.
+    await security.record(req, {
+      event: 'login_locked_out',
+      user_id: user.id,
+      user_name: user.name,
+      details: { locked_until: user.lockout_until, minutes_remaining: mins }
+    });
     return res.status(423).json({ error: 'Account locked due to too many failed attempts. Try again in ' + mins + ' minute(s).' });
   }
 
@@ -87,21 +105,53 @@ router.post('/login', async (req, res) => {
     if (attempts >= MAX_ATTEMPTS) {
       const lockout_until = new Date(Date.now() + LOCKOUT_MINUTES * 60 * 1000);
       await pool.query('UPDATE users SET failed_attempts=$1, lockout_until=$2 WHERE id=$3', [attempts, lockout_until, user.id]);
+      await security.record(req, {
+        event: 'account_locked',
+        user_id: user.id,
+        user_name: user.name,
+        summary: user.name + '’s Nova account was locked after ' + attempts + ' failed password attempts.',
+        details: { attempts: attempts, locked_for_minutes: LOCKOUT_MINUTES, locked_until: lockout_until.toISOString() }
+      });
+      // Cross-account detection. Per-account lockout cannot see the shape of a
+      // real attack; this can. Awaited so the burst row lands in the same order
+      // as the lockout that triggered it, but it never throws.
+      await security.checkForBurst(req, user.id);
       return res.status(423).json({ error: 'Too many failed attempts. Account locked for ' + LOCKOUT_MINUTES + ' minutes.' });
     }
     await pool.query('UPDATE users SET failed_attempts=$1 WHERE id=$2', [attempts, user.id]);
+    // The counter on the users row is wiped by the next successful login, so
+    // this audit row is the only durable record that the attempt ever happened.
+    await security.record(req, {
+      event: 'failed_login',
+      user_id: user.id,
+      user_name: user.name,
+      details: { attempt: attempts, of: MAX_ATTEMPTS }
+    });
     return res.status(401).json({ error: 'Invalid email or password. ' + (MAX_ATTEMPTS - attempts) + ' attempt(s) remaining.' });
   }
 
   if (user.active === false) {
+    // Correct password on a deactivated account. Either an ex-employee still
+    // has working credentials, or someone else has them.
+    await security.record(req, {
+      event: 'login_inactive',
+      user_id: user.id,
+      user_name: user.name,
+      details: { note: 'correct password supplied for a deactivated account' }
+    });
     return res.status(403).json({ error: 'Your account has been deactivated. Contact an administrator.' });
   }
 
   // Reset lockout on success
   await pool.query('UPDATE users SET failed_attempts=0, lockout_until=NULL WHERE id=$1', [user.id]);
 
-  // Trusted device — skip the 2FA code if this device carries a valid remembered token
-  var deviceToken = getDeviceToken(req);
+  // Trusted device — skip the 2FA code if this device carries a valid remembered
+  // token. During a lockdown this shortcut is suspended: a stolen nova_device
+  // cookie stops working, while a real employee just gets asked for a code they
+  // can actually receive. See utils/security.js for why it works that way.
+  var lockedDown = false;
+  try { lockedDown = await security.lockdownActive(); } catch (e) { lockedDown = false; }
+  var deviceToken = lockedDown ? null : getDeviceToken(req);
   if (deviceToken) {
     const td = await pool.query(
       'SELECT id FROM trusted_devices WHERE user_id=$1 AND token_hash=$2 AND expires_at > NOW()',
@@ -115,7 +165,7 @@ router.post('/login', async (req, res) => {
       if (rememberMe) tdClaims.remember = true;
       if (user.onboarding_status && user.onboarding_status !== 'complete') tdClaims.onb = true;
       const tdToken = jwt.sign(tdClaims, process.env.JWT_SECRET, { expiresIn: sessionTtl(rememberMe) });
-      logAudit({ entity_type: 'auth', action: 'login', user_id: user.id, user_name: user.name, details: { method: 'trusted device', ip: clientIp(req) } });
+      logAudit({ entity_type: 'auth', action: 'login', user_id: user.id, user_name: user.name, details: { method: 'trusted device' }, ip: clientIp(req) });
       pool.query('UPDATE users SET last_login_at = NOW(), last_seen_at = NOW() WHERE id = $1', [user.id]).catch(function(){});
       return res.json({ token: tdToken, user: { id: user.id, name: user.name, email: user.email, role: user.role, onboarding_status: user.onboarding_status || 'complete' } });
     }
@@ -158,8 +208,8 @@ router.post('/login', async (req, res) => {
   return res.json({ requires2fa: true, userId: user.id, via: hasSms ? 'sms' : 'email' });
 });
 
-// Verify 2FA code and return JWT
-// TODO(server.js): add loginLimiter to /verify-2fa and /forgot-password
+// Verify 2FA code and return JWT.
+// Rate limited in server.js via loginLimiter (10 per 15 min).
 router.post('/verify-2fa', async (req, res) => {
   const { userId, code, rememberDevice, rememberMe } = req.body;
   if (!userId || !code) return res.status(400).json({ error: 'User ID and code required' });
@@ -169,10 +219,23 @@ router.post('/verify-2fa', async (req, res) => {
     [userId]
   );
   if (!rows[0]) {
+    await security.record(req, {
+      event: 'twofa_failed',
+      user_id: parseInt(userId, 10) || null,
+      details: { reason: 'no live code for this account (expired, already used, or never issued)' }
+    });
     return res.status(401).json({ error: 'Invalid or expired code. Please try logging in again.' });
   }
   if ((rows[0].attempts || 0) >= MAX_2FA_ATTEMPTS) {
     await pool.query('UPDATE two_factor_codes SET used=true WHERE user_id=$1', [userId]);
+    const _u = (await pool.query('SELECT name FROM users WHERE id=$1', [userId])).rows[0];
+    await security.record(req, {
+      event: 'twofa_exhausted',
+      user_id: parseInt(userId, 10) || null,
+      user_name: _u && _u.name,
+      summary: 'A Nova login code was guessed at ' + MAX_2FA_ATTEMPTS + ' times and burned' + (_u && _u.name ? ' on ' + _u.name + '’s account' : '') + '. Someone had the password but not the phone.',
+      details: { attempts: rows[0].attempts }
+    });
     return res.status(429).json({ error: 'Too many incorrect codes. Please log in again to get a new code.' });
   }
   // Codes are stored hashed; compare the hash of the submitted code in constant time.
@@ -185,6 +248,11 @@ router.post('/verify-2fa', async (req, res) => {
   } catch (e) { codeOk = false; }
   if (!codeOk) {
     await pool.query('UPDATE two_factor_codes SET attempts = attempts + 1 WHERE user_id=$1', [userId]);
+    await security.record(req, {
+      event: 'twofa_failed',
+      user_id: parseInt(userId, 10) || null,
+      details: { reason: 'wrong code', attempt: (rows[0].attempts || 0) + 1, of: MAX_2FA_ATTEMPTS }
+    });
     return res.status(401).json({ error: 'Invalid or expired code. Please try logging in again.' });
   }
 
@@ -214,23 +282,48 @@ router.post('/verify-2fa', async (req, res) => {
         [user.id, hashToken(rawToken), deviceLabel(req.headers['user-agent']), clientIp(req), expires]
       );
       setDeviceCookie(req, res, rawToken, expires);
+      // A trusted device is a 30-day 2FA bypass. If an attacker gets in once,
+      // planting one of these is how they come back without a code, so it is
+      // worth telling an admin about even though it is a normal thing to do.
+      const _label = deviceLabel(req.headers['user-agent']);
+      await security.record(req, {
+        event: 'trusted_device_added',
+        user_id: user.id,
+        user_name: user.name,
+        summary: user.name + ' enrolled a new remembered device (' + _label + '). It can sign in for the next ' + TRUST_DAYS + ' days without a 2FA code.',
+        details: { label: _label, expires_at: expires.toISOString(), trust_days: TRUST_DAYS }
+      });
     } catch (e) { console.error('Trusted device save failed:', e); }
   }
 
-  logAudit({ entity_type: 'auth', action: 'login', user_id: user.id, user_name: user.name, details: { method: '2FA', ip: clientIp(req) } });
+  logAudit({ entity_type: 'auth', action: 'login', user_id: user.id, user_name: user.name, details: { method: '2FA' }, ip: clientIp(req) });
   pool.query('UPDATE users SET last_login_at = NOW(), last_seen_at = NOW() WHERE id = $1', [user.id]).catch(function(){});
   res.json({ token, user: { id: user.id, name: user.name, email: user.email, role: user.role, onboarding_status: user.onboarding_status || 'complete' } });
 });
 
-// Forgot password — send reset email
-// TODO(server.js): add loginLimiter to /verify-2fa and /forgot-password
+// Forgot password — send reset email.
+// Rate limited in server.js via loginLimiter (10 per 15 min).
 router.post('/forgot-password', async (req, res) => {
   const { email } = req.body;
   if (!email) return res.status(400).json({ error: 'Email is required' });
   const { rows } = await pool.query('SELECT id, name FROM users WHERE email=$1 AND active=true', [email]);
-  // Always return success to prevent email enumeration
-  if (!rows[0]) return res.json({ success: true });
+  // Always return success to prevent email enumeration. The event is recorded
+  // either way — a run of resets requested for addresses that do not exist is
+  // itself a reconnaissance signal.
+  if (!rows[0]) {
+    await security.record(req, {
+      event: 'password_reset_request',
+      details: { attempted_email: String(email).slice(0, 120), matched: false }
+    });
+    return res.json({ success: true });
+  }
   const user = rows[0];
+  await security.record(req, {
+    event: 'password_reset_request',
+    user_id: user.id,
+    user_name: user.name,
+    details: { matched: true }
+  });
   const token = crypto.randomBytes(32).toString('hex');
   const expires = new Date(Date.now() + 60 * 60 * 1000); // 1 hour
   // Store only the hash at rest; the raw token goes out in the email link below.
@@ -280,6 +373,16 @@ router.post('/reset-password', async (req, res) => {
     await pool.query('UPDATE oauth_refresh_tokens SET revoked = true WHERE user_id = $1 AND revoked = false', [u.user_id]);
   } catch (e) { console.error('Failed to revoke OAuth refresh tokens on password reset:', e.message); }
   await pool.query('UPDATE password_resets SET used=true WHERE token=$1', [tokenHash]);
+  // A completed reset invalidates every existing session and every connected
+  // app. If the account owner did not do this, they need to know today, not in
+  // 90 days when someone happens to read the audit log.
+  await security.record(req, {
+    event: 'password_reset_done',
+    user_id: u.user_id,
+    user_name: u.name,
+    summary: u.name + '’s Nova password was reset. All of their existing sessions, remembered devices and connected apps were signed out.',
+    details: { session_epoch: Number(u.session_epoch || 0) + 1 }
+  });
   const newEpoch = Number(u.session_epoch || 0) + 1;
   const tokenClaims = { id: u.user_id, email: u.email, name: u.name, role: u.role, se: newEpoch };
   if (u.onboarding_status && u.onboarding_status !== 'complete') tokenClaims.onb = true;
@@ -315,16 +418,30 @@ router.get('/trusted-devices', requireAuth, async (req, res) => {
 // Revoke a single trusted device
 router.delete('/trusted-devices/:id', requireAuth, async (req, res) => {
   const current = getDeviceToken(req);
-  const { rows } = await pool.query('SELECT token_hash FROM trusted_devices WHERE id=$1 AND user_id=$2', [req.params.id, req.user.id]);
+  const { rows } = await pool.query('SELECT token_hash, label FROM trusted_devices WHERE id=$1 AND user_id=$2', [req.params.id, req.user.id]);
   await pool.query('DELETE FROM trusted_devices WHERE id=$1 AND user_id=$2', [req.params.id, req.user.id]);
   if (current && rows[0] && rows[0].token_hash === hashToken(current)) res.clearCookie(DEVICE_COOKIE, { path: '/' });
+  if (rows[0]) {
+    await security.record(req, {
+      event: 'trusted_device_revoked',
+      user_id: req.user.id,
+      user_name: req.user.name,
+      details: { label: rows[0].label || null, scope: 'one' }
+    });
+  }
   res.json({ success: true });
 });
 
 // Revoke all trusted devices for the current user
 router.delete('/trusted-devices', requireAuth, async (req, res) => {
-  await pool.query('DELETE FROM trusted_devices WHERE user_id=$1', [req.user.id]);
+  const { rowCount } = await pool.query('DELETE FROM trusted_devices WHERE user_id=$1', [req.user.id]);
   res.clearCookie(DEVICE_COOKIE, { path: '/' });
+  await security.record(req, {
+    event: 'trusted_device_revoked',
+    user_id: req.user.id,
+    user_name: req.user.name,
+    details: { scope: 'all', removed: rowCount || 0 }
+  });
   res.json({ success: true });
 });
 
