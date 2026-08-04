@@ -2,7 +2,7 @@
 // public/sw.js (the only thing bumped each deploy) — the badge asks the active
 // service worker for it at runtime. This value is just the fallback shown when no
 // service worker is available (e.g. very first visit before it installs).
-var APP_VERSION = 'v96';
+var APP_VERSION = 'v97';
 var _resolvedAppVersion = null;
 
 // Ask the active service worker for its CACHE_VERSION (without the 'nova-' prefix).
@@ -1352,7 +1352,7 @@ let _currentQuote = null;
 async function renderDashboard(el) {
   try {
     allPOs = await api('GET', '/pos');
-    const total = allPOs.length;
+    const total = allPOs.filter(function(p){ return p.status !== 'cancelled'; }).length;
     const pending = allPOs.filter(function(p){ return p.status === 'submitted'; }).length;
     const approved = allPOs.filter(function(p){ return p.status === 'approved'; }).length;
     const ordered = allPOs.filter(function(p){ return p.status === 'order placed'; }).length;
@@ -1369,7 +1369,7 @@ async function renderDashboard(el) {
       (can('create_po') ? '<button class="btn btn-primary" onclick="navigate(\'new\')" style="white-space:nowrap">' + icons.plus + ' New PO</button>' : '') +
       '</div></div>' +
       '<div class="stats-grid">' +
-        '<div class="stat-card"><div class="stat-value">' + total + '</div><div class="stat-label">Total POs</div></div>' +
+        '<div class="stat-card" title="Cancelled POs are not counted"><div class="stat-value">' + total + '</div><div class="stat-label">Total POs</div></div>' +
         '<div class="stat-card"><div class="stat-value" style="color:var(--warning)">' + pending + '</div><div class="stat-label">Pending Approval</div></div>' +
         '<div class="stat-card" style="cursor:pointer" onclick="document.getElementById(\'filter-status\').value=\'approved\';applyFilters(true)"><div class="stat-value" style="color:var(--success)">' + approved + '</div><div class="stat-label">Approved — Needs Ordering</div></div>' +
         '<div class="stat-card" style="cursor:pointer" onclick="document.getElementById(\'filter-status\').value=\'order placed\';applyFilters(true)"><div class="stat-value" style="color:#a78bfa">' + ordered + '</div><div class="stat-label">Order Placed</div></div>' +
@@ -1379,8 +1379,9 @@ async function renderDashboard(el) {
         '<div class="card-body" style="border-bottom:1px solid var(--border)">' +
           '<div class="filter-bar">' +
             '<input type="text" id="filter-text" placeholder="Search PO #, vendor, customer..." oninput="applyFilters(true)" />' +
-            '<select id="filter-status" onchange="applyFilters(true)"><option value="">All Statuses</option><option value="draft">Draft</option><option value="submitted">Submitted</option><option value="approved">Approved</option><option value="order placed">Order Placed</option><option value="rejected">Rejected</option><option value="cancelled">Cancelled</option></select>' +
+            '<select id="filter-status" onchange="applyFilters(true)"><option value="_active" selected>Active (no Cancelled)</option><option value="">All Statuses</option><option value="draft">Draft</option><option value="submitted">Submitted</option><option value="approved">Approved</option><option value="order placed">Order Placed</option><option value="rejected">Rejected</option><option value="cancelled">Cancelled</option></select>' +
             '<select id="filter-city" onchange="applyFilters(true)">' + cityOptions + '</select>' +
+            '<span id="po-cancelled-note" style="font-size:13px;color:var(--text-muted-color);align-self:center"></span>' +
           '</div>' +
         '</div>' +
         '<div id="po-table-body" style="padding:0"></div>' +
@@ -1442,15 +1443,22 @@ function quotePageSize(v) { QUOTE_PAGE_SIZE = parsePageSize(v); _quotePage = 1; 
 let _poPage = 1;
 let PO_PAGE_SIZE = 10;
 
+function showAllPOStatuses() {
+  const el = document.getElementById('filter-status');
+  if (el) el.value = '';
+  applyFilters(true);
+}
+
 function applyFilters(resetPage) {
   if (resetPage) _poPage = 1;
   const text = (document.getElementById('filter-text') || {}).value || '';
-  const status = (document.getElementById('filter-status') || {}).value || '';
+  // '_active' is the default selection: every status EXCEPT cancelled. '' means All Statuses.
+  const statusEl = document.getElementById('filter-status');
+  const status = statusEl ? statusEl.value : '_active';
   const city = (document.getElementById('filter-city') || {}).value || '';
   const isApprover = can('approve_po');
 
-  const filtered = allPOs.filter(function(po) {
-    if (status && po.status !== status) return false;
+  function matchesTextCity(po) {
     if (city && po.city_code !== city) return false;
     if (text) {
       const q = text.toLowerCase();
@@ -1458,12 +1466,30 @@ function applyFilters(resetPage) {
       if (!haystack.includes(q)) return false;
     }
     return true;
+  }
+
+  const filtered = allPOs.filter(function(po) {
+    if (status === '_active') { if (po.status === 'cancelled') return false; }
+    else if (status && po.status !== status) return false;
+    return matchesTextCity(po);
   });
+
+  // How many cancelled POs the default filter is holding back right now
+  const hiddenCancelled = (status === '_active')
+    ? allPOs.filter(function(po){ return po.status === 'cancelled' && matchesTextCity(po); }).length
+    : 0;
+  const noteEl = document.getElementById('po-cancelled-note');
+  if (noteEl) {
+    noteEl.innerHTML = hiddenCancelled
+      ? (hiddenCancelled + ' cancelled hidden <a href="#" onclick="event.preventDefault();showAllPOStatuses()" style="color:var(--primary);text-decoration:underline">show</a>')
+      : '';
+  }
 
   const tbody = document.getElementById('po-table-body');
   if (!tbody) return;
   if (filtered.length === 0) {
-    tbody.innerHTML = '<div class="empty-state"><h3>No matching purchase orders</h3><p>Try adjusting your filters.</p></div>';
+    tbody.innerHTML = '<div class="empty-state"><h3>No matching purchase orders</h3><p>Try adjusting your filters.' +
+      (hiddenCancelled ? ' ' + hiddenCancelled + ' cancelled PO' + (hiddenCancelled === 1 ? ' is' : 's are') + ' hidden by default.' : '') + '</p></div>';
     return;
   }
 
