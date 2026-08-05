@@ -3671,6 +3671,233 @@ async function initDB() {
     // use the per-person checkboxes on Edit User, which write users.extra_perms.
     // When it is ready for everyone, tick the boxes in Roles & Access.
 
+
+    // -----------------------------------------------------------------------
+    // DISPATCH PHASE 2A / 2B - the real call record.
+    // Spec: Documents\Claude\Projects\Nova\DISPATCH_PHASE2_SPEC.md
+    //
+    // SHIPS DARK, same as Phase 1: none of the new permissions are backfilled
+    // onto the role matrix (see the note above). The ONE table that IS
+    // backfilled is user_service_categories, and only because an empty row set
+    // there means "sees no calls at all" - it grants nothing by itself, it just
+    // makes the later permission grant behave sanely.
+    // -----------------------------------------------------------------------
+    await client.query(
+      'CREATE TABLE IF NOT EXISTS service_categories (' +
+      '  code VARCHAR(20) PRIMARY KEY,' +
+      '  name VARCHAR(80) NOT NULL,' +
+      '  sort INTEGER NOT NULL DEFAULT 0,' +
+      '  active BOOLEAN NOT NULL DEFAULT true' +
+      ');' +
+      'CREATE TABLE IF NOT EXISTS service_types (' +
+      '  id SERIAL PRIMARY KEY,' +
+      '  code VARCHAR(30) UNIQUE NOT NULL,' +
+      '  name VARCHAR(120) NOT NULL,' +
+      '  category_code VARCHAR(20) NOT NULL REFERENCES service_categories(code),' +
+      '  default_eta_minutes INTEGER,' +
+      '  active BOOLEAN NOT NULL DEFAULT true,' +
+      '  sort INTEGER NOT NULL DEFAULT 0' +
+      ');' +
+      'CREATE INDEX IF NOT EXISTS idx_service_types_cat ON service_types(category_code);'
+    );
+
+    // Seed the four categories. These drive THREE things - who can see a call,
+    // which pay row applies, and which price sheet row matches - so a service
+    // filed under the wrong one both hides work and pays it wrong. Tony
+    // confirms the assignments in the UI; this is only the starting point.
+    await client.query(
+      "INSERT INTO service_categories (code, name, sort) VALUES " +
+      "('roadside','Roadside',1)," +
+      "('locksmith','Locksmith - auto',2)," +
+      "('residential','Residential',3)," +
+      "('commercial','Commercial',4) " +
+      "ON CONFLICT (code) DO NOTHING"
+    );
+
+    // Seed the service catalog from the Pulsar service list. Grouped to match
+    // how the Payroll Pro table already bundles them: the "Core" bundle
+    // (CDU / Gas / Jumpstart / Trunk) is roadside work, Lock Pick and the
+    // Locksmith services are not.
+    await client.query(
+      "INSERT INTO service_types (code, name, category_code, default_eta_minutes, sort) VALUES " +
+      "('CDU','Car Door Unlocking','roadside',25,1)," +
+      "('GAS','Gas Delivery','roadside',30,2)," +
+      "('JS','Jumpstart','roadside',25,3)," +
+      "('TRUNK','Trunk Opening','roadside',30,4)," +
+      "('TIRE','Tire Change','roadside',30,5)," +
+      "('AIR','Air Service','roadside',30,6)," +
+      "('BATT','Battery Assist','roadside',25,7)," +
+      "('MSG','Message','roadside',30,8)," +
+      "('PICK','Lock Pick','locksmith',35,9)," +
+      "('AUTOLS','Auto Locksmith','locksmith',45,10)," +
+      "('BUSLS','Bus Locksmith','locksmith',45,11)," +
+      "('RESLS','Res Locksmith','residential',45,12)," +
+      "('COMLS','Com Locksmith','commercial',45,13) " +
+      "ON CONFLICT (code) DO NOTHING"
+    );
+
+    // Call tags
+    await client.query(
+      'CREATE TABLE IF NOT EXISTS dispatch_tags (' +
+      '  id SERIAL PRIMARY KEY,' +
+      '  name VARCHAR(60) UNIQUE NOT NULL,' +
+      "  color VARCHAR(7) NOT NULL DEFAULT '#f97316'," +
+      '  active BOOLEAN NOT NULL DEFAULT true,' +
+      '  sort INTEGER NOT NULL DEFAULT 0' +
+      ');' +
+      'CREATE TABLE IF NOT EXISTS dispatch_job_tags (' +
+      '  job_id INTEGER NOT NULL REFERENCES dispatch_jobs(id) ON DELETE CASCADE,' +
+      '  tag_id INTEGER NOT NULL REFERENCES dispatch_tags(id) ON DELETE CASCADE,' +
+      '  added_by INTEGER REFERENCES users(id) ON DELETE SET NULL,' +
+      '  added_at TIMESTAMPTZ DEFAULT NOW(),' +
+      '  PRIMARY KEY (job_id, tag_id)' +
+      ');' +
+      'CREATE INDEX IF NOT EXISTS idx_djt_tag ON dispatch_job_tags(tag_id);'
+    );
+    await client.query(
+      "INSERT INTO dispatch_tags (name, color, sort) VALUES " +
+      "('Callback','#f97316',1)," +
+      "('Repeat customer','#3b82f6',2)," +
+      "('Prepaid','#22c55e',3)," +
+      "('Insurance','#a855f7',4)," +
+      "('Gate code','#eab308',5)," +
+      "('Second trip','#f97316',6)," +
+      "('Escalated','#ef4444',7)," +
+      "('Out of area','#ef4444',8)," +
+      "('Do not dispatch','#ef4444',9) " +
+      "ON CONFLICT (name) DO NOTHING"
+    );
+
+    // The call record itself. Every one of these mirrors a column name that
+    // already exists on invoices, so push-to-invoice stays a straight copy
+    // rather than a translation layer. service_type (text) deliberately STAYS
+    // alongside service_type_id - the text is the historical snapshot, and
+    // renaming a service type must not rewrite last year's calls.
+    await client.query(
+      'ALTER TABLE dispatch_jobs ADD COLUMN IF NOT EXISTS service_type_id INTEGER REFERENCES service_types(id);' +
+      'ALTER TABLE dispatch_jobs ADD COLUMN IF NOT EXISTS account_id INTEGER REFERENCES vendors(id) ON DELETE SET NULL;' +
+      'ALTER TABLE dispatch_jobs ADD COLUMN IF NOT EXISTS account_name VARCHAR(255);' +
+      'ALTER TABLE dispatch_jobs ADD COLUMN IF NOT EXISTS account_po VARCHAR(255);' +
+      'ALTER TABLE dispatch_jobs ADD COLUMN IF NOT EXISTS business_name VARCHAR(255);' +
+      'ALTER TABLE dispatch_jobs ADD COLUMN IF NOT EXISTS customer_email VARCHAR(255);' +
+      'ALTER TABLE dispatch_jobs ADD COLUMN IF NOT EXISTS callback_phone VARCHAR(50);' +
+      'ALTER TABLE dispatch_jobs ADD COLUMN IF NOT EXISTS caller_id VARCHAR(50);' +
+      'ALTER TABLE dispatch_jobs ADD COLUMN IF NOT EXISTS cross_street VARCHAR(255);' +
+      'ALTER TABLE dispatch_jobs ADD COLUMN IF NOT EXISTS zip VARCHAR(12);' +
+      'ALTER TABLE dispatch_jobs ADD COLUMN IF NOT EXISTS vehicle_year VARCHAR(8);' +
+      'ALTER TABLE dispatch_jobs ADD COLUMN IF NOT EXISTS vehicle_make VARCHAR(100);' +
+      'ALTER TABLE dispatch_jobs ADD COLUMN IF NOT EXISTS vehicle_model VARCHAR(100);' +
+      'ALTER TABLE dispatch_jobs ADD COLUMN IF NOT EXISTS vehicle_color VARCHAR(40);' +
+      'ALTER TABLE dispatch_jobs ADD COLUMN IF NOT EXISTS license_tag VARCHAR(40);' +
+      'ALTER TABLE dispatch_jobs ADD COLUMN IF NOT EXISTS tag_state VARCHAR(4);' +
+      'ALTER TABLE dispatch_jobs ADD COLUMN IF NOT EXISTS vin VARCHAR(20);' +
+      'ALTER TABLE dispatch_jobs ADD COLUMN IF NOT EXISTS vehicle_location VARCHAR(255);' +
+      'ALTER TABLE dispatch_jobs ADD COLUMN IF NOT EXISTS is_edu BOOLEAN NOT NULL DEFAULT false;' +
+      'ALTER TABLE dispatch_jobs ADD COLUMN IF NOT EXISTS eta_minutes INTEGER;' +
+      'ALTER TABLE dispatch_jobs ADD COLUMN IF NOT EXISTS eta_source VARCHAR(12);' +
+      'ALTER TABLE dispatch_jobs ADD COLUMN IF NOT EXISTS eta_promised_at TIMESTAMPTZ;' +
+      'ALTER TABLE dispatch_jobs ADD COLUMN IF NOT EXISTS quoted_price NUMERIC(10,2);' +
+      'ALTER TABLE dispatch_jobs ADD COLUMN IF NOT EXISTS quoted_price_src VARCHAR(16);' +
+      'ALTER TABLE dispatch_jobs ADD COLUMN IF NOT EXISTS status_since TIMESTAMPTZ;' +
+      'CREATE INDEX IF NOT EXISTS idx_dispatch_stype ON dispatch_jobs(service_type_id);' +
+      'CREATE INDEX IF NOT EXISTS idx_dispatch_account ON dispatch_jobs(account_id);' +
+      'CREATE INDEX IF NOT EXISTS idx_dispatch_created ON dispatch_jobs(created_at);'
+    );
+    // status_since powers the board's "0:07 in status" line. Backfill it from
+    // whatever timestamp the current status was actually set by, so existing
+    // rows do not all read as if they changed status just now.
+    await client.query(
+      'UPDATE dispatch_jobs SET status_since = COALESCE(' +
+      '  CASE status' +
+      "    WHEN 'done' THEN completed_at" +
+      "    WHEN 'goa' THEN goa_at" +
+      "    WHEN 'onscene' THEN arrived_at" +
+      "    WHEN 'enroute' THEN enroute_at" +
+      "    WHEN 'accepted' THEN accepted_at" +
+      "    WHEN 'assigned' THEN assigned_at" +
+      '    ELSE created_at' +
+      '  END, created_at, NOW()) WHERE status_since IS NULL'
+    );
+
+    // Account requirements live on the ACCOUNT, never on the call - a client
+    // that posts po_required is ignored, same rule Invoice Setup already
+    // enforces for signature_required.
+    await client.query(
+      'ALTER TABLE vendors ADD COLUMN IF NOT EXISTS po_required BOOLEAN NOT NULL DEFAULT false;' +
+      'ALTER TABLE vendors ADD COLUMN IF NOT EXISTS vehicle_required BOOLEAN NOT NULL DEFAULT false;' +
+      'ALTER TABLE vendors ADD COLUMN IF NOT EXISTS dispatch_notes TEXT;'
+    );
+
+    // Who can see / be assigned which kind of work. TWO flags, not one: a
+    // coordinator may need to SEE roadside calls to run the board without ever
+    // being assigned one.
+    await client.query(
+      'CREATE TABLE IF NOT EXISTS user_service_categories (' +
+      '  user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,' +
+      '  category_code VARCHAR(20) NOT NULL REFERENCES service_categories(code) ON DELETE CASCADE,' +
+      '  can_view BOOLEAN NOT NULL DEFAULT true,' +
+      '  can_be_assigned BOOLEAN NOT NULL DEFAULT true,' +
+      '  PRIMARY KEY (user_id, category_code)' +
+      ');'
+    );
+
+    // ONE-TIME backfill. This table fails CLOSED - no rows means the person
+    // sees no calls at all - so every existing active user needs a starting
+    // row set before Dispatch is switched on for anyone. It grants no access
+    // on its own; view_dispatch is still unticked for every role.
+    const _uscBf = await client.query("SELECT value FROM settings WHERE key = 'user_service_categories_backfilled'");
+    if (!_uscBf.rows.length) {
+      const _uscRows = await client.query(
+        'INSERT INTO user_service_categories (user_id, category_code, can_view, can_be_assigned) ' +
+        'SELECT u.id, c.code,' +
+        '  CASE WHEN u.role = $1 AND c.code <> $2 THEN false ELSE true END,' +
+        '  CASE' +
+        '    WHEN u.role IN ($3, $4, $5, $6) THEN false' +
+        "    WHEN u.role = $1 AND c.code <> $2 THEN false" +
+        '    WHEN u.role = $7 AND c.code = $2 THEN false' +
+        '    ELSE true' +
+        '  END ' +
+        'FROM users u CROSS JOIN service_categories c ' +
+        'WHERE COALESCE(u.active, true) = true ' +
+        'ON CONFLICT (user_id, category_code) DO NOTHING',
+        ['roadside_technician', 'roadside', 'dispatcher', 'manager', 'admin', 'owner',
+         'locksmith_coordinator']
+      );
+      await client.query("INSERT INTO settings (key, value) VALUES ('user_service_categories_backfilled', '1') ON CONFLICT (key) DO NOTHING");
+      console.log('Dispatch: seeded ' + (_uscRows.rowCount || 0) + ' user/service-category rows (roadside techs = roadside only, locksmiths = everything, office roles = view but do not take calls).');
+    }
+
+    // Saved column choice per person per grid. The board and Call Search share
+    // this - and the EXPORT reads the same list, so nobody widens their own
+    // view by exporting it.
+    await client.query(
+      'CREATE TABLE IF NOT EXISTS user_grid_prefs (' +
+      '  user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,' +
+      '  grid VARCHAR(40) NOT NULL,' +
+      '  columns TEXT[] NOT NULL,' +
+      '  PRIMARY KEY (user_id, grid)' +
+      ');'
+    );
+
+    // Match the free-text service_type on existing calls to the new catalog.
+    // Deliberately conservative: an exact case-insensitive name or code match
+    // only. Anything else stays NULL and shows an amber "Needs service type"
+    // chip, because a wrong category hides the call from the people who should
+    // see it AND pays it off the wrong table. Guessing is worse than blank.
+    const _stBf = await client.query("SELECT value FROM settings WHERE key = 'dispatch_service_type_backfilled'");
+    if (!_stBf.rows.length) {
+      const _matched = await client.query(
+        'UPDATE dispatch_jobs j SET service_type_id = st.id ' +
+        'FROM service_types st ' +
+        'WHERE j.service_type_id IS NULL ' +
+        '  AND j.service_type IS NOT NULL ' +
+        '  AND (LOWER(TRIM(j.service_type)) = LOWER(st.name) OR LOWER(TRIM(j.service_type)) = LOWER(st.code))'
+      );
+      const _left = await client.query('SELECT COUNT(*)::int AS n FROM dispatch_jobs WHERE service_type_id IS NULL');
+      await client.query("INSERT INTO settings (key, value) VALUES ('dispatch_service_type_backfilled', '1') ON CONFLICT (key) DO NOTHING");
+      console.log('Dispatch: matched ' + (_matched.rowCount || 0) + ' call(s) to the service catalog; ' + ((_left.rows[0] && _left.rows[0].n) || 0) + ' still need a service type set by hand.');
+    }
+
     console.log('Database initialized');
   } finally {
     client.release();

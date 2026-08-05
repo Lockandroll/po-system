@@ -100,6 +100,27 @@ ALL_PERMS.push('view_dispatch', 'manage_dispatch');
 // often needs to pass a call along without also being able to create calls or
 // cancel them, and manage_dispatch is too big a hammer for that.
 ALL_PERMS.push('assign_dispatch');
+// --- Dispatch Phase 2A/2B -------------------------------------------------
+// All of these SHIP DARK for the same reason as the two above: not in
+// EMPLOYEE_PERMS, not in any role's DEFAULTS, and db.js does NOT backfill them
+// onto the saved matrix. On deploy only admin and owner can reach any of it.
+ALL_PERMS.push('manage_service_types');   // the service catalog and its categories
+ALL_PERMS.push('manage_dispatch_tags');   // the call-tag list
+// Seeing WHO ELSE opened a call is a supervisory fact, not a working one, so it
+// is its own permission rather than riding on view_dispatch. Managers get it
+// implicitly in routes/dispatch.js; this exists so a lead can be given it
+// without also being made a manager.
+ALL_PERMS.push('view_call_views');
+// Call Search is history, not the live board, so it is gated separately and in
+// three widening steps: your own calls, your whole city, then everything.
+// search_dispatch_all also carries CSV export, because a full call export is a
+// customer list.
+ALL_PERMS.push('search_dispatch', 'search_dispatch_city', 'search_dispatch_all');
+// Roadside techs see customer names and addresses on the LIVE board - they have
+// to knock on the right door. In search and history they do not, and this is
+// the permission that says otherwise. Masking is applied in the query, not the
+// template, and the CSV export reads the same masked projection.
+ALL_PERMS.push('view_customer_pii');
 
 var DEFAULTS = {
   admin: '*',
