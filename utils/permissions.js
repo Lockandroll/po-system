@@ -121,6 +121,10 @@ ALL_PERMS.push('search_dispatch', 'search_dispatch_city', 'search_dispatch_all')
 // the permission that says otherwise. Masking is applied in the query, not the
 // template, and the CSV export reads the same masked projection.
 ALL_PERMS.push('view_customer_pii');
+// Time codes: the windows of the week that decide what a service costs and what
+// ETA the customer is told, per service, per location. Same permission covers
+// the account price exceptions layered on top, because they are one decision.
+ALL_PERMS.push('manage_pricing');
 
 var DEFAULTS = {
   admin: '*',

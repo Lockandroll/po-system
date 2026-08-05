@@ -5,6 +5,7 @@ const { logAudit } = require('../utils/audit');
 const duty = require('../utils/duty');
 const permissions = require('../utils/permissions');
 const push = require('../utils/push');
+const pricing = require('../utils/pricing');
 
 const router = express.Router();
 
@@ -366,17 +367,27 @@ router.post('/jobs', requireAuth, requirePermission('manage_dispatch'), async fu
   }
   const svc = await serviceSnapshot(b.service_type_id);
   const acct = await accountSnapshot(b.account_id);
-  const eta = b.eta_minutes !== null ? b.eta_minutes : (b.is_edu ? null : svc.eta);
+  // The time code covering RIGHT NOW, in that city's own clock, decides both
+  // the price and the ETA - unless the dispatcher typed over either, in which
+  // case what they told the customer wins.
+  const q = await pricing.quote({
+    service_type_id: b.service_type_id, city_code: b.city_code,
+    account_id: b.account_id, is_edu: b.is_edu, when: new Date()
+  });
+  const eta = b.eta_minutes !== null ? b.eta_minutes : (q.eta_minutes || null);
+  const etaSrc = b.eta_minutes !== null ? 'manual' : (q.eta_source || null);
+  const price = b.quoted_price !== null ? b.quoted_price : q.price;
+  const priceSrc = b.quoted_price !== null ? 'manual' : q.price_source;
   const assign = req.body && req.body.assigned_to ? parseInt(req.body.assigned_to, 10) : null;
   const r = await pool.query(
     'INSERT INTO dispatch_jobs (source, status, status_since, priority, service_type, service_type_id, is_edu, ' +
     'account_id, account_name, account_po, business_name, customer_name, customer_phone, callback_phone, ' +
     'caller_id, customer_email, address, cross_street, city_state_zip, zip, city_code, ' +
     'vehicle_year, vehicle_make, vehicle_model, vehicle_color, license_tag, tag_state, vin, vehicle_location, ' +
-    'eta_minutes, eta_source, eta_promised_at, quoted_price, quoted_price_src, ' +
+    'eta_minutes, eta_source, eta_promised_at, quoted_price, quoted_price_src, time_code_id, ' +
     'notes, assigned_to, assigned_at, created_by) ' +
     "VALUES ('manual', $1, NOW(), $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, " +
-    '$18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29, $30, $31, $32, $33, $34, $35, $36) RETURNING id',
+    '$18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29, $30, $31, $32, $33, $34, $35, $36, $37) RETURNING id',
     [assign ? 'assigned' : 'new', b.priority,
       svc.name || b.service_type, b.service_type_id, b.is_edu,
       b.account_id, acct.name, b.account_po, b.business_name,
@@ -384,8 +395,8 @@ router.post('/jobs', requireAuth, requirePermission('manage_dispatch'), async fu
       b.address, b.cross_street, b.city_state_zip, b.zip, b.city_code,
       b.vehicle_year, b.vehicle_make, b.vehicle_model, b.vehicle_color,
       b.license_tag, b.tag_state, b.vin, b.vehicle_location,
-      eta, eta === null ? null : (b.eta_minutes !== null ? 'manual' : 'default'), promisedAt(eta, null),
-      b.quoted_price, b.quoted_price === null ? null : 'manual',
+      eta, eta === null ? null : etaSrc, promisedAt(eta, null),
+      price, price === null ? null : priceSrc, q.time_code_id,
       b.notes, assign, assign ? new Date() : null, req.user.id]
   );
   const id = r.rows[0].id;
@@ -395,6 +406,13 @@ router.post('/jobs', requireAuth, requirePermission('manage_dispatch'), async fu
   await logEvent(id, 'created', req, svc.name || b.service_type || null);
   if (b.is_edu) await logEvent(id, 'edu', req, 'Emergency Door Unlocking - child or pet in vehicle');
   if (acct.name) await logEvent(id, 'account_set', req, acct.name + (acct.po_required ? ' - PO required' : ''));
+  if (price !== null) {
+    await logEvent(id, 'priced', req,
+      '$' + Number(price).toFixed(2) + ' (' + (priceSrc || 'unknown') +
+      (q.time_code_title ? ', ' + q.time_code_title : '') + ')');
+  } else if (q.reason) {
+    await logEvent(id, 'price_missing', req, q.reason);
+  }
   if (assign) { await logEvent(id, 'assigned', req, 'user ' + assign); await notifyAssigned(id, assign); }
   await logAudit({ entity_type: 'dispatch_job', entity_id: id, entity_number: num, action: 'create',
     user_id: req.user.id, user_name: req.user.name, details: { assigned_to: assign }, ip: req.ip });

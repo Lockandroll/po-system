@@ -3898,6 +3898,124 @@ async function initDB() {
       console.log('Dispatch: matched ' + (_matched.rowCount || 0) + ' call(s) to the service catalog; ' + ((_left.rows[0] && _left.rows[0].n) || 0) + ' still need a service type set by hand.');
     }
 
+
+    // -----------------------------------------------------------------------
+    // DISPATCH PHASE 2D - TIME CODES.
+    // Each service, at each location, is carved into named windows of the week
+    // that carry their own price and their own three ETAs. This is what "price
+    // out the services" actually is; the account price sheet below is only the
+    // exception layer on top.
+    // -----------------------------------------------------------------------
+
+    // A time code resolves in the CITY'S OWN clock. Birmingham is an hour
+    // behind Orlando, and a call created at 11:58 PM has to land in Overnight
+    // rather than tomorrow's Morning. Defaulting to New York keeps every
+    // existing city right; Tony sets the Central ones by hand.
+    await client.query(
+      "ALTER TABLE cities ADD COLUMN IF NOT EXISTS timezone VARCHAR(64) NOT NULL DEFAULT 'America/New_York';"
+    );
+
+    await client.query(
+      'CREATE TABLE IF NOT EXISTS location_services (' +
+      '  id SERIAL PRIMARY KEY,' +
+      '  city_code CHAR(3) NOT NULL,' +
+      '  service_type_id INTEGER NOT NULL REFERENCES service_types(id) ON DELETE CASCADE,' +
+      '  active BOOLEAN NOT NULL DEFAULT true,' +
+      '  sort INTEGER NOT NULL DEFAULT 0,' +
+      '  UNIQUE (city_code, service_type_id)' +
+      ');' +
+      'CREATE INDEX IF NOT EXISTS idx_locsvc_city ON location_services(city_code);'
+    );
+
+    await client.query(
+      'CREATE TABLE IF NOT EXISTS service_time_codes (' +
+      '  id SERIAL PRIMARY KEY,' +
+      '  location_service_id INTEGER NOT NULL REFERENCES location_services(id) ON DELETE CASCADE,' +
+      '  code_id SMALLINT NOT NULL,' +
+      '  title VARCHAR(60) NOT NULL,' +
+      '  start_minute SMALLINT NOT NULL,' +
+      '  end_minute SMALLINT NOT NULL,' +
+      '  days SMALLINT NOT NULL DEFAULT 127,' +
+      '  full_charge NUMERIC(10,2),' +
+      '  additional_charge NUMERIC(10,2) NOT NULL DEFAULT 0,' +
+      '  eta_core_low SMALLINT,' +
+      '  eta_core_high SMALLINT,' +
+      '  eta_account SMALLINT,' +
+      '  eta_edu SMALLINT,' +
+      '  schedule_slots SMALLINT NOT NULL DEFAULT 0,' +
+      '  shutdown_message TEXT,' +
+      '  active BOOLEAN NOT NULL DEFAULT true,' +
+      '  UNIQUE (location_service_id, code_id)' +
+      ');' +
+      'CREATE INDEX IF NOT EXISTS idx_stc_locsvc ON service_time_codes(location_service_id);'
+    );
+
+    // Accounts that do not pay the retail time-code price. An account with NO
+    // row here simply pays the time code, which is exactly what "Retail" means,
+    // so there is no separate retail table to keep in step.
+    await client.query(
+      'CREATE TABLE IF NOT EXISTS account_service_prices (' +
+      '  id SERIAL PRIMARY KEY,' +
+      '  account_id INTEGER NOT NULL REFERENCES vendors(id) ON DELETE CASCADE,' +
+      '  service_type_id INTEGER NOT NULL REFERENCES service_types(id) ON DELETE CASCADE,' +
+      '  city_code CHAR(3),' +
+      '  code_id SMALLINT,' +
+      '  full_charge NUMERIC(10,2) NOT NULL,' +
+      '  additional_charge NUMERIC(10,2) NOT NULL DEFAULT 0,' +
+      '  eta_minutes SMALLINT,' +
+      '  effective_from DATE NOT NULL DEFAULT CURRENT_DATE,' +
+      '  effective_to DATE,' +
+      '  active BOOLEAN NOT NULL DEFAULT true' +
+      ');' +
+      'CREATE INDEX IF NOT EXISTS idx_asp_lookup ON account_service_prices(account_id, service_type_id);'
+    );
+
+    await client.query(
+      'ALTER TABLE dispatch_jobs ADD COLUMN IF NOT EXISTS time_code_id INTEGER REFERENCES service_time_codes(id) ON DELETE SET NULL;'
+    );
+
+    // Seed: every active city offers every active service, with the five
+    // standard windows. The WINDOWS and the ETAs are seeded because their shape
+    // is the same everywhere; the PRICES are left NULL on purpose - a seeded
+    // price would be a wrong price quoted to a real customer, and NULL renders
+    // as an amber "Price not set" that warns at close-out instead.
+    const _tcSeed = await client.query("SELECT value FROM settings WHERE key = 'dispatch_time_codes_seeded'");
+    if (!_tcSeed.rows.length) {
+      await client.query(
+        'INSERT INTO location_services (city_code, service_type_id, sort) ' +
+        'SELECT TRIM(c.code), st.id, st.sort FROM cities c CROSS JOIN service_types st ' +
+        'WHERE c.active = true AND st.active = true ' +
+        'ON CONFLICT (city_code, service_type_id) DO NOTHING'
+      );
+      const _windows = [
+        [1, 'Daytime', 8 * 60, 16 * 60 + 59, 25, 45, 40, 20],
+        [2, 'Evening', 17 * 60, 21 * 60 + 29, 30, 50, 45, 20],
+        [5, 'Late night', 21 * 60 + 30, 21 * 60 + 59, 35, 55, 50, 20],
+        [3, 'Overnight', 22 * 60, 5 * 60 + 59, 35, 60, 50, 20],
+        [4, 'Morning', 6 * 60, 7 * 60 + 59, 30, 50, 45, 20]
+      ];
+      for (var _w = 0; _w < _windows.length; _w++) {
+        const _x = _windows[_w];
+        await client.query(
+          'INSERT INTO service_time_codes (location_service_id, code_id, title, start_minute, end_minute, ' +
+          ' days, eta_core_low, eta_core_high, eta_account, eta_edu) ' +
+          'SELECT ls.id, $1, $2, $3, $4, 127, $5, $6, $7, $8 FROM location_services ls ' +
+          'ON CONFLICT (location_service_id, code_id) DO NOTHING',
+          [_x[0], _x[1], _x[2], _x[3], _x[4], _x[5], _x[6], _x[7]]
+        );
+      }
+      const _n = await client.query('SELECT COUNT(*)::int AS n FROM service_time_codes');
+      await client.query("INSERT INTO settings (key, value) VALUES ('dispatch_time_codes_seeded', '1') ON CONFLICT (key) DO NOTHING");
+      console.log('Dispatch: seeded ' + ((_n.rows[0] && _n.rows[0].n) || 0) + ' time-code windows across every city and service. PRICES ARE BLANK on purpose - set them under Location Settings before quoting.');
+    }
+
+    // EDU is a free public service: a child or a pet locked in a vehicle. The
+    // tech is still paid for it from their own pay table, which is why the pay
+    // engine must never derive pay from price.
+    await client.query(
+      "INSERT INTO settings (key, value) VALUES ('dispatch_edu_free', '1') ON CONFLICT (key) DO NOTHING"
+    );
+
     console.log('Database initialized');
   } finally {
     client.release();
