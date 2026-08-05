@@ -1998,6 +1998,22 @@ async function initDB() {
     // list from Invoice Setup". An empty array means "this account requires none",
     // which is a real, different answer, so it must survive round-tripping.
     await client.query('ALTER TABLE vendors ADD COLUMN IF NOT EXISTS required_photos JSONB;');
+    // Per-account close-out requirements (Tony, 2026-08-05). Simple booleans, all
+    // default OFF: an account is flagged only when it genuinely mandates the item.
+    //   require_signature   -> invoice needs a captured signature; this is also the
+    //                          switch that shows the Agreement + Signature block at
+    //                          all. Off -> no agreement, no signature asked for.
+    //   require_entitlement -> at least one Entitlement box (reg/ins/title/rental).
+    //   require_vehicle     -> Year, Make and Model present.
+    //   require_photos      -> at least one photo attached.
+    // Read live at close-out. Signature is ALSO snapshotted onto
+    // invoices.signature_required so an old invoice keeps the rule it closed under.
+    await client.query(
+      'ALTER TABLE vendors ADD COLUMN IF NOT EXISTS require_signature BOOLEAN NOT NULL DEFAULT false;' +
+      'ALTER TABLE vendors ADD COLUMN IF NOT EXISTS require_entitlement BOOLEAN NOT NULL DEFAULT false;' +
+      'ALTER TABLE vendors ADD COLUMN IF NOT EXISTS require_vehicle BOOLEAN NOT NULL DEFAULT false;' +
+      'ALTER TABLE vendors ADD COLUMN IF NOT EXISTS require_photos BOOLEAN NOT NULL DEFAULT false;'
+    );
     // Signature Required is a company policy set once under Invoice Setup, not a
     // per-invoice checkbox a tech can quietly clear on the job that most needs the
     // signature. Default ON. invoices.signature_required is still written on every

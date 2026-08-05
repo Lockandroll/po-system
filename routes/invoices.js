@@ -338,7 +338,7 @@ function canSeeAll(role) { return role === 'admin' || role === 'manager' || role
 router.get('/accounts', requireAuth, requirePermission('view_invoices'), async (req, res) => {
   try {
     const { rows } = await pool.query(
-      'SELECT id, name, account_number, invoice_notes, auto_line_items, agreement_text FROM vendors WHERE show_in_invoice = true ORDER BY name ASC'
+      'SELECT id, name, account_number, invoice_notes, auto_line_items, agreement_text, require_signature, require_entitlement, require_vehicle, require_photos FROM vendors WHERE show_in_invoice = true ORDER BY name ASC'
     );
     res.json(rows);
   } catch (err) {
@@ -876,7 +876,8 @@ router.get('/:id', requireAuth, requirePermission('view_invoices'), async (req, 
     // Process state for the Complete button, the reopen grace period and the
     // split-billing link. Computed here so the client never has to guess.
     try {
-      invoice.gates = invoiceGates(invoice, invoice.line_items);
+      const _reqs = await accountCloseoutReqs(invoice.account_id);
+      invoice.gates = invoiceGates(invoice, invoice.line_items, _reqs, (invoice.photos || []).length);
       invoice.can_complete = gatesPass(invoice.gates);
     } catch (e) { invoice.gates = []; invoice.can_complete = false; }
     invoice.reopen_seconds_left = graceLeft(invoice);
@@ -1284,9 +1285,26 @@ async function insertLineItems(client, invoiceId, line_items) {
 async function invoiceCreateHandler(req, res) {
   const b = req.body || {};
   const f = pickInvoiceFields(b);
-  const status = ['draft', 'awaiting_payment', 'paid'].indexOf(b.status) !== -1 ? b.status : 'draft';
+  let status = ['draft', 'awaiting_payment', 'paid'].indexOf(b.status) !== -1 ? b.status : 'draft';
+  // Close-out requirements come from the ACCOUNT, not the request body. Signature
+  // is snapshotted onto the row (f.signature_required) so the invoice keeps the
+  // rule it closed under; the rest are re-derived live at each finish line.
+  const _reqs = await accountCloseoutReqs(f.account_id);
+  f.signature_required = _reqs.signature;
+  // A brand-new invoice has no photos yet (they upload against a saved id), so an
+  // account that requires photos can never go straight to a finished status —
+  // hold it as a draft and let the tech reopen it to attach them.
+  if (_reqs.photos && status !== 'draft') status = 'draft';
   if (f.signature_required && status !== 'draft' && !f.signature_image) {
     return res.status(400).json({ error: 'A signature is required before this invoice can be marked ' + status + '. Save as draft, or capture a signature.' });
+  }
+  if (status !== 'draft') {
+    if (_reqs.entitlement && !(f.ent_registration || f.ent_insurance || f.ent_title || f.ent_rental)) {
+      return res.status(400).json({ error: 'This account requires entitlement documentation. Check Registration, Insurance, Title or Rental Agreement, or save as draft.' });
+    }
+    if (_reqs.vehicle && !(String(f.vehicle_year || '').trim() && String(f.vehicle_make || '').trim() && String(f.vehicle_model || '').trim())) {
+      return res.status(400).json({ error: 'This account requires vehicle information (year, make and model) before it can be marked ' + status + '. Save as draft, or fill it in.' });
+    }
   }
   for (const it of (b.line_items || [])) {
     if (!it || !it.description) continue;
@@ -1645,7 +1663,7 @@ router.post('/:id/collect-payment', requireAuth, requirePermission('edit_invoice
   }
   try {
     const r = await pool.query(
-      'SELECT id, invoice_number, status, customer_name, grand_total, tip_amount, city_code, locksmith_id, signature_required, signature_image, pay_method, surcharge_amount FROM invoices WHERE id = $1',
+      'SELECT * FROM invoices WHERE id = $1',
       [req.params.id]
     );
     const inv = r.rows[0];
@@ -1653,6 +1671,10 @@ router.post('/:id/collect-payment', requireAuth, requirePermission('edit_invoice
     if (!canSeeAll(req.user.role) && inv.locksmith_id !== req.user.id) {
       return res.status(403).json({ error: 'Access denied' });
     }
+    // Per-account close-out requirements + photo count, used by the finish-line
+    // gate below and by the signature check.
+    const _reqs = await accountCloseoutReqs(inv.account_id);
+    const _pc = await readyPhotoCount(inv.id);
     // 'draft' is displayed as "Active" and is the normal state of an invoice a
     // tech is holding in front of the customer, so it CANNOT be refused outright.
     // Refusing it made Collect Payment unreachable: the only other unlocked
@@ -1664,7 +1686,7 @@ router.post('/:id/collect-payment', requireAuth, requirePermission('edit_invoice
     // not be chargeable either.
     if (inv.status === 'draft') {
       const gitems = (await pool.query('SELECT * FROM invoice_line_items WHERE invoice_id = $1', [inv.id])).rows;
-      const ggates = invoiceGates(inv, gitems);
+      const ggates = invoiceGates(inv, gitems, _reqs, _pc);
       if (!gatesPass(ggates)) {
         const gmissing = ggates.filter(function (g) { return !g.ok; }).map(function (g) { return g.label.toLowerCase(); });
         return res.status(400).json({
@@ -1676,7 +1698,7 @@ router.post('/:id/collect-payment', requireAuth, requirePermission('edit_invoice
     if (LOCKED_STATUSES.indexOf(inv.status) !== -1) {
       return res.status(409).json({ error: 'This invoice is already settled.' });
     }
-    if (inv.signature_required && !inv.signature_image) {
+    if (_reqs.signature && !inv.signature_image) {
       return res.status(400).json({ error: 'A signature is required before this invoice can be paid.' });
     }
     // Collecting in Square IS a card payment. If the invoice still says the
@@ -1870,19 +1892,66 @@ function isBilledPayType(payType, list) {
   return (list || []).some(function (x) { return String(x).trim().toLowerCase() === p; });
 }
 
+// Per-account close-out requirements, read live at gate time. A missing account
+// or a DB hiccup returns all-false, i.e. "no extra requirements" — never a block.
+async function accountCloseoutReqs(accountId) {
+  const none = { signature: false, entitlement: false, vehicle: false, photos: false };
+  const id = parseInt(accountId, 10);
+  if (!Number.isInteger(id) || id <= 0) return none;
+  try {
+    const r = await pool.query('SELECT require_signature, require_entitlement, require_vehicle, require_photos FROM vendors WHERE id = $1', [id]);
+    const v = r.rows[0];
+    if (!v) return none;
+    return {
+      signature: v.require_signature === true,
+      entitlement: v.require_entitlement === true,
+      vehicle: v.require_vehicle === true,
+      photos: v.require_photos === true
+    };
+  } catch (e) { return none; }
+}
+
+// Usable ('ready') photos on an invoice. A half-uploaded 'pending' row does not
+// count toward a photo requirement.
+async function readyPhotoCount(invoiceId) {
+  const id = parseInt(invoiceId, 10);
+  if (!Number.isInteger(id) || id <= 0) return 0;
+  try {
+    const r = await pool.query("SELECT COUNT(*)::int AS n FROM invoice_photos WHERE invoice_id = $1 AND status = 'ready'", [id]);
+    return (r.rows[0] && r.rows[0].n) || 0;
+  } catch (e) { return 0; }
+}
+
 // Everything that has to be true before an invoice can reach a finish line.
 // Returned to the client so the button can show WHY it is disabled instead of
 // failing after a save, which is how these gates behaved before.
-function invoiceGates(inv, items) {
+//   reqs       - per-account requirement booleans (accountCloseoutReqs)
+//   photoCount - count of ready photos, for the photo requirement
+// The $0-total gate was REMOVED 2026-08-05 (Tony): a $0 invoice can be completed.
+// Signature / entitlement / vehicle / photos are account-driven and only appear
+// as gates when the invoice's account asks for them.
+function invoiceGates(inv, items, reqs, photoCount) {
+  reqs = reqs || {};
   const lines = (items || []).filter(function (i) { return i && String(i.description || '').trim(); });
   const g = [];
   g.push({ key: 'customer', label: 'Customer name', ok: !!String(inv.customer_name || '').trim(), detail: inv.customer_name || 'Missing' });
   g.push({ key: 'items', label: 'At least one line item', ok: lines.length > 0, detail: lines.length ? String(lines.length) : 'Missing' });
   g.push({ key: 'city', label: 'City, for sales tax', ok: !!inv.city_code, detail: inv.city_code || 'Missing' });
-  if (inv.signature_required) {
-    g.push({ key: 'signature', label: 'Signature (required by policy)', ok: !!inv.signature_image, detail: inv.signature_image ? 'Captured' : 'Not captured' });
+  if (reqs.signature) {
+    g.push({ key: 'signature', label: 'Signature (required by account)', ok: !!inv.signature_image, detail: inv.signature_image ? 'Captured' : 'Not captured' });
   }
-  g.push({ key: 'total', label: 'Invoice total', ok: (parseFloat(inv.grand_total) || 0) !== 0, detail: '$' + (parseFloat(inv.grand_total) || 0).toFixed(2) });
+  if (reqs.entitlement) {
+    const hasEnt = !!(inv.ent_registration || inv.ent_insurance || inv.ent_title || inv.ent_rental);
+    g.push({ key: 'entitlement', label: 'Entitlement documentation', ok: hasEnt, detail: hasEnt ? 'Provided' : 'None checked' });
+  }
+  if (reqs.vehicle) {
+    const hasVeh = !!(String(inv.vehicle_year || '').trim() && String(inv.vehicle_make || '').trim() && String(inv.vehicle_model || '').trim());
+    g.push({ key: 'vehicle', label: 'Vehicle information', ok: hasVeh, detail: hasVeh ? 'Complete' : 'Year, make and model needed' });
+  }
+  if (reqs.photos) {
+    const n = parseInt(photoCount, 10) || 0;
+    g.push({ key: 'photos', label: 'At least one photo', ok: n > 0, detail: n > 0 ? String(n) : 'None attached' });
+  }
   return g;
 }
 
@@ -1947,7 +2016,9 @@ router.post('/:id/complete', requireAuth, requirePermission('edit_invoice'), asy
       return res.status(409).json({ error: 'This invoice is already completed.' });
     }
     const items = (await pool.query('SELECT * FROM invoice_line_items WHERE invoice_id = $1', [inv.id])).rows;
-    const gates = invoiceGates(inv, items);
+    const _reqs = await accountCloseoutReqs(inv.account_id);
+    const _pc = await readyPhotoCount(inv.id);
+    const gates = invoiceGates(inv, items, _reqs, _pc);
     if (!gatesPass(gates)) {
       const missing = gates.filter(function (g) { return !g.ok; }).map(function (g) { return g.label.toLowerCase(); });
       return res.status(400).json({ error: 'Not finished yet: ' + missing.join(', ') + '.', gates: gates });
@@ -2005,7 +2076,9 @@ router.post('/:id/waiting', requireAuth, requirePermission('edit_invoice'), asyn
       return res.status(409).json({ error: 'This invoice is already completed.' });
     }
     const items = (await pool.query('SELECT * FROM invoice_line_items WHERE invoice_id = $1', [inv.id])).rows;
-    const gates = invoiceGates(inv, items);
+    const _reqs = await accountCloseoutReqs(inv.account_id);
+    const _pc = await readyPhotoCount(inv.id);
+    const gates = invoiceGates(inv, items, _reqs, _pc);
     if (!gatesPass(gates)) {
       const missing = gates.filter(function (g) { return !g.ok; }).map(function (g) { return g.label.toLowerCase(); });
       return res.status(400).json({ error: 'Not finished yet: ' + missing.join(', ') + '.', gates: gates });
@@ -2275,6 +2348,21 @@ router.put('/:id', requireAuth, requirePermission('edit_invoice'), async (req, r
     // the form, so they are held here whatever the client sent.
     const _refunded = parseFloat(existing.refunded_total) || 0;
     if (_refunded > 0) status = existing.status;
+    // Account-driven close-out requirements (see invoiceCreateHandler). Snapshot
+    // signature onto the row; re-derive the rest live for the non-draft gates.
+    const _reqs = await accountCloseoutReqs(f.account_id);
+    f.signature_required = _reqs.signature;
+    if (status !== 'draft') {
+      if (_reqs.photos && (await readyPhotoCount(req.params.id)) === 0) {
+        return res.status(400).json({ error: 'This account requires at least one photo before this invoice can be marked ' + status + '. Save as draft, attach a photo, then finish it.' });
+      }
+      if (_reqs.entitlement && !(f.ent_registration || f.ent_insurance || f.ent_title || f.ent_rental)) {
+        return res.status(400).json({ error: 'This account requires entitlement documentation. Check Registration, Insurance, Title or Rental Agreement, or save as draft.' });
+      }
+      if (_reqs.vehicle && !(String(f.vehicle_year || '').trim() && String(f.vehicle_make || '').trim() && String(f.vehicle_model || '').trim())) {
+        return res.status(400).json({ error: 'This account requires vehicle information (year, make and model) before it can be marked ' + status + '. Save as draft, or fill it in.' });
+      }
+    }
     if (f.signature_required && status !== 'draft' && !f.signature_image) {
       return res.status(400).json({ error: 'A signature is required before this invoice can be marked ' + status + '. Save as draft, or capture a signature.' });
     }

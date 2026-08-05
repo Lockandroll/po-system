@@ -97,13 +97,13 @@ router.get('/', requireViewVendors, async (req, res) => {
 
 // POST create vendor
 router.post('/', requirePermission('manage_vendors'), async (req, res) => {
-  const { name, website, account_number, username, password, notes, rep_name, rep_email, rep_phone, city_code, show_in_invoice, invoice_notes, auto_line_items, agreement_text, restricted_to, required_photos } = req.body;
+  const { name, website, account_number, username, password, notes, rep_name, rep_email, rep_phone, city_code, show_in_invoice, invoice_notes, auto_line_items, agreement_text, restricted_to, required_photos, require_signature, require_entitlement, require_vehicle, require_photos } = req.body;
   if (!name) return res.status(400).json({ error: 'Vendor name is required' });
   const _reqPhotos = cleanRequiredPhotos(required_photos);
   try {
     const { rows } = await pool.query(
-      'INSERT INTO vendors (name, website, account_number, username, password, notes, rep_name, rep_email, rep_phone, city_code, show_in_invoice, invoice_notes, auto_line_items, agreement_text, restricted_to, required_photos) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16) RETURNING *',
-      [name, website || null, account_number || null, username || null, password || null, notes || null, rep_name || null, rep_email || null, rep_phone || null, city_code || null, show_in_invoice === true, invoice_notes || null, (auto_line_items != null ? JSON.stringify(auto_line_items) : null), agreement_text || null, cleanRestrictedTo(restricted_to), (_reqPhotos === undefined || _reqPhotos === null) ? null : JSON.stringify(_reqPhotos)]
+      'INSERT INTO vendors (name, website, account_number, username, password, notes, rep_name, rep_email, rep_phone, city_code, show_in_invoice, invoice_notes, auto_line_items, agreement_text, restricted_to, required_photos, require_signature, require_entitlement, require_vehicle, require_photos) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20) RETURNING *',
+      [name, website || null, account_number || null, username || null, password || null, notes || null, rep_name || null, rep_email || null, rep_phone || null, city_code || null, show_in_invoice === true, invoice_notes || null, (auto_line_items != null ? JSON.stringify(auto_line_items) : null), agreement_text || null, cleanRestrictedTo(restricted_to), (_reqPhotos === undefined || _reqPhotos === null) ? null : JSON.stringify(_reqPhotos), require_signature === true, require_entitlement === true, require_vehicle === true, require_photos === true]
     );
     if (account_number) {
       await pool.query('UPDATE geico_surveys SET city_code = $1, updated_at = NOW() WHERE UPPER(TRIM(account_number)) = UPPER(TRIM($2))', [city_code || null, account_number]);
@@ -117,7 +117,7 @@ router.post('/', requirePermission('manage_vendors'), async (req, res) => {
 
 // PUT update vendor
 router.put('/:id', requirePermission('manage_vendors'), async (req, res) => {
-  const { name, website, account_number, username, password, notes, rep_name, rep_email, rep_phone, city_code, show_in_invoice, invoice_notes, auto_line_items, agreement_text, restricted_to, required_photos } = req.body;
+  const { name, website, account_number, username, password, notes, rep_name, rep_email, rep_phone, city_code, show_in_invoice, invoice_notes, auto_line_items, agreement_text, restricted_to, required_photos, require_signature, require_entitlement, require_vehicle, require_photos } = req.body;
   if (!name) return res.status(400).json({ error: 'Vendor name is required' });
   // restricted_to and required_photos are only touched when the caller actually
   // sent them. The Invoice Setup screen saves an account with the invoice fields
@@ -128,6 +128,12 @@ router.put('/:id', requirePermission('manage_vendors'), async (req, res) => {
   if (restricted_to !== undefined) { _params.push(cleanRestrictedTo(restricted_to)); _sets.push('restricted_to=$' + _params.length); }
   const _reqPhotos = cleanRequiredPhotos(required_photos);
   if (_reqPhotos !== undefined) { _params.push(_reqPhotos === null ? null : JSON.stringify(_reqPhotos)); _sets.push('required_photos=$' + _params.length); }
+  // Close-out requirement booleans, guarded the same way: a save that does not
+  // send the key (e.g. an A/R-only or Invoice-Setup save) must not reset them.
+  if (require_signature !== undefined) { _params.push(require_signature === true); _sets.push('require_signature=$' + _params.length); }
+  if (require_entitlement !== undefined) { _params.push(require_entitlement === true); _sets.push('require_entitlement=$' + _params.length); }
+  if (require_vehicle !== undefined) { _params.push(require_vehicle === true); _sets.push('require_vehicle=$' + _params.length); }
+  if (require_photos !== undefined) { _params.push(require_photos === true); _sets.push('require_photos=$' + _params.length); }
   _params.push(req.params.id);
   try {
     const { rows } = await pool.query(

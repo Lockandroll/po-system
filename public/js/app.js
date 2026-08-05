@@ -5452,6 +5452,12 @@ function showVendorModal(id) {
           '<div class="form-group"><label>Rep Email</label><input type="email" id="vm-rep-email" value="' + escHtml(rep_email||'') + '" placeholder="rep@vendor.com" /></div>' +
           '<div class="form-group"><label>Rep Phone</label><input type="text" id="vm-rep-phone" value="' + escHtml(rep_phone||'') + '" placeholder="555-123-4567" /></div>' +
         '</div>' +
+        '<div style="border-top:1px solid var(--border);margin:16px 0 12px;padding-top:12px;font-size:13px;font-weight:600;color:var(--text-muted-color);text-transform:uppercase;letter-spacing:0.05em">Close-out Requirements</div>' +
+        '<div style="font-size:12px;color:var(--text-muted-color);margin:-4px 0 10px">What an invoice on this account must have before it can be marked Completed or Paid. Leave all off to require none.</div>' +
+        '<label style="display:flex;align-items:center;gap:8px;cursor:pointer;margin-bottom:8px"><input type="checkbox" id="vm-req-signature" style="width:auto"' + (_v.require_signature ? ' checked' : '') + ' /> <span>Require signature <span style="font-size:11px;color:var(--text-muted-color)">(shows the agreement + signature pad; off hides them)</span></span></label>' +
+        '<label style="display:flex;align-items:center;gap:8px;cursor:pointer;margin-bottom:8px"><input type="checkbox" id="vm-req-entitlement" style="width:auto"' + (_v.require_entitlement ? ' checked' : '') + ' /> <span>Require entitlement documentation <span style="font-size:11px;color:var(--text-muted-color)">(Registration, Insurance, Title or Rental Agreement)</span></span></label>' +
+        '<label style="display:flex;align-items:center;gap:8px;cursor:pointer;margin-bottom:8px"><input type="checkbox" id="vm-req-vehicle" style="width:auto"' + (_v.require_vehicle ? ' checked' : '') + ' /> <span>Require vehicle information <span style="font-size:11px;color:var(--text-muted-color)">(year, make and model)</span></span></label>' +
+        '<label style="display:flex;align-items:center;gap:8px;cursor:pointer;margin-bottom:12px"><input type="checkbox" id="vm-req-photos" style="width:auto"' + (_v.require_photos ? ' checked' : '') + ' /> <span>Require at least one photo</span></label>' +
         '<div style="border-top:1px solid var(--border);margin:16px 0 12px;padding-top:12px;font-size:13px;font-weight:600;color:var(--text-muted-color);text-transform:uppercase;letter-spacing:0.05em">Restrict Visibility</div>' +
         '<label style="display:flex;align-items:center;gap:8px;cursor:pointer;margin-bottom:8px"><input type="checkbox" id="vm-restrict" style="width:auto"' + (isRestricted ? ' checked' : '') + ' onchange="vendorToggleRestrict()" /> <span>Only specific people can see this account</span></label>' +
         '<div id="vm-restrict-box" style="' + (isRestricted ? '' : 'display:none') + '">' +
@@ -5504,7 +5510,11 @@ async function saveVendor(id) {
     rep_name: (document.getElementById('vm-rep-name')||{}).value.trim() || null,
     rep_email: (document.getElementById('vm-rep-email')||{}).value.trim() || null,
     rep_phone: (document.getElementById('vm-rep-phone')||{}).value.trim() || null,
-    city_code: (document.getElementById('vm-city')||{}).value || null
+    city_code: (document.getElementById('vm-city')||{}).value || null,
+    require_signature: (document.getElementById('vm-req-signature')||{}).checked === true,
+    require_entitlement: (document.getElementById('vm-req-entitlement')||{}).checked === true,
+    require_vehicle: (document.getElementById('vm-req-vehicle')||{}).checked === true,
+    require_photos: (document.getElementById('vm-req-photos')||{}).checked === true
   };
   var _restrict = (document.getElementById('vm-restrict')||{}).checked;
   var _rids = [];
@@ -11529,6 +11539,14 @@ async function renderEditInvoice(el, id) {
   var today = new Date().toISOString().split('T')[0];
   var dateVal = v.invoice_date ? String(v.invoice_date).split('T')[0] : today;
   var agreementVal = (v.agreement_text != null && v.agreement_text !== '') ? v.agreement_text : _invoiceDefaultAgreement;
+  // Which close-out requirements the current account puts on this invoice — used
+  // to show/hide the signature block and the "Required" chips on load. Kept in
+  // sync by invAccountChange as the account changes.
+  var _invAcctObj = (_invoiceAccounts || []).filter(function(a){ return a.id === v.account_id; })[0] || null;
+  var _invReqSig = !!(_invAcctObj && _invAcctObj.require_signature) || !!_invoiceExistingSig;
+  var _invReqEnt = !!(_invAcctObj && _invAcctObj.require_entitlement);
+  var _invReqVeh = !!(_invAcctObj && _invAcctObj.require_vehicle);
+  var _invReqPho = !!(_invAcctObj && _invAcctObj.require_photos);
 
   var acctOptions = '<option value="">— Select account —</option>' + _invoiceAccounts.map(function(a){
     return '<option value="' + a.id + '"' + (v.account_id === a.id ? ' selected' : '') + '>' + escHtml(a.name) + '</option>';
@@ -11595,7 +11613,7 @@ async function renderEditInvoice(el, id) {
       '<div id="inv-id-image-state"></div>' +
     '</div></div>' +
 
-    '<div class="card mb-4"><div class="card-header"><span class="card-title">Vehicle</span></div><div class="card-body">' +
+    '<div class="card mb-4"><div class="card-header" style="display:flex;justify-content:space-between;align-items:center;gap:8px"><span class="card-title">Vehicle</span><span id="inv-veh-req-hint" style="display:' + (_invReqVeh ? '' : 'none') + ';font-size:11px;font-weight:700;color:var(--primary);border:1px solid var(--primary);border-radius:4px;padding:1px 6px">Required for this account</span></div><div class="card-body">' +
       '<div class="form-row">' +
         '<div class="form-group" style="flex:2 1 220px"><label>VIN</label><div style="display:flex;gap:6px"><input type="text" id="inv-vin" value="' + escHtml(v.vin||'') + '" style="text-transform:uppercase" /><button class="btn btn-secondary btn-sm" style="white-space:nowrap" onclick="invScanVin()">Scan</button><button class="btn btn-secondary btn-sm" style="white-space:nowrap" onclick="invDecodeVin()">Decode</button></div><input type="file" id="inv-vin-file" accept="image/*" capture="environment" style="display:none" onchange="invHandleVinFile(this)" /></div>' +
         '<div class="form-group" style="max-width:90px"><label>Year</label><input type="text" id="inv-vyear" value="' + escHtml(v.vehicle_year||'') + '" /></div>' +
@@ -11621,8 +11639,7 @@ async function renderEditInvoice(el, id) {
         '<button class="btn btn-secondary btn-sm" onclick="addInvoiceLine(\'part\')">' + icons.plus + ' Add Part</button>' +
         '<button class="btn btn-secondary btn-sm" style="white-space:nowrap" onclick="openPartsPicker(\'invoice\')"><svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" style="vertical-align:-2px"><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"/></svg> Add from Parts List</button>' +
       '</div>' +
-      '<div style="display:flex;justify-content:space-between;gap:24px;margin-top:16px;flex-wrap:wrap">' +
-      '<div id="inv-cogs-panel" style="min-width:330px;flex:1;max-width:440px"></div>' +
+      '<div style="display:flex;justify-content:flex-end;gap:24px;margin-top:16px;flex-wrap:wrap">' +
       '<div style="min-width:280px">' +
         '<div style="display:flex;justify-content:space-between;padding:3px 0;font-size:13px"><span>Labor</span><span id="inv-labor">$0.00</span></div>' +
         '<div style="display:flex;justify-content:space-between;padding:3px 0;font-size:13px"><span>Parts</span><span id="inv-parts">$0.00</span></div>' +
@@ -11649,7 +11666,7 @@ async function renderEditInvoice(el, id) {
       '</div></div>' +
     '</div></div>' +
 
-    '<div class="card mb-4"><div class="card-header"><span class="card-title">Entitlement Documentation Provided</span></div><div class="card-body">' +
+    '<div class="card mb-4"><div class="card-header" style="display:flex;justify-content:space-between;align-items:center;gap:8px"><span class="card-title">Entitlement Documentation Provided</span><span id="inv-ent-req-hint" style="display:' + (_invReqEnt ? '' : 'none') + ';font-size:11px;font-weight:700;color:var(--primary);border:1px solid var(--primary);border-radius:4px;padding:1px 6px">Required for this account</span></div><div class="card-body">' +
       '<div style="display:flex;gap:18px;flex-wrap:wrap">' +
         '<label style="display:flex;align-items:center;gap:6px;margin:0"><input type="checkbox" id="inv-ent-reg" style="width:auto"' + (v.ent_registration ? ' checked' : '') + ' /> Registration</label>' +
         '<label style="display:flex;align-items:center;gap:6px;margin:0"><input type="checkbox" id="inv-ent-ins" style="width:auto"' + (v.ent_insurance ? ' checked' : '') + ' /> Insurance</label>' +
@@ -11662,9 +11679,9 @@ async function renderEditInvoice(el, id) {
       '<div class="form-group"><label>Notes</label><textarea id="inv-notes" placeholder="Notes...">' + escHtml(v.notes||'') + '</textarea></div>' +
     '</div></div>' +
 
-    '<div class="card mb-4"><div class="card-header"><span class="card-title">Authorization &amp; Signature</span></div><div class="card-body">' +
+    '<div class="card mb-4" id="inv-sig-card" style="display:' + (_invReqSig ? '' : 'none') + '"><div class="card-header"><span class="card-title">Authorization &amp; Signature</span></div><div class="card-body">' +
       '<div class="form-group"><label>Agreement Text (printed above the signature; {customer} is replaced with the customer name)</label><textarea id="inv-agreement" style="min-height:140px">' + escHtml(agreementVal) + '</textarea></div>' +
-      '<label style="display:flex;align-items:center;gap:8px;margin:0 0 12px;cursor:pointer"><input type="checkbox" id="inv-sig-required" style="width:auto"' + (v.signature_required ? ' checked' : '') + ' /> Signature required <span style="font-size:11px;color:var(--text-muted-color)">(must be signed before this invoice can be marked Completed or Paid)</span></label>' +
+      '<div style="font-size:12px;color:var(--text-muted-color);margin:0 0 12px">This account requires a signature before the invoice can be marked Completed or Paid.</div>' +
       '<label style="display:block;margin-bottom:4px">Signature</label>' +
       // An already-signed invoice shows the signature and ONE button. The old
       // layout put an empty second pad underneath it captioned "draw below to
@@ -11678,7 +11695,7 @@ async function renderEditInvoice(el, id) {
       '<div id="inv-sig-actions" style="margin-top:6px;display:' + (_invoiceExistingSig ? 'none' : 'flex') + ';gap:8px;flex-wrap:wrap"><button class="btn btn-secondary btn-sm" onclick="openInvoiceSignatureFullscreen()">' + (icons.edit || '') + ' Tap to sign full screen</button><button class="btn btn-ghost btn-sm" onclick="clearInvoiceSignature()">Clear signature</button></div>' +
     '</div></div>' +
 
-    '<div class="card mb-4"><div class="card-header"><span class="card-title">Photos</span></div><div class="card-body">' +
+    '<div class="card mb-4"><div class="card-header" style="display:flex;justify-content:space-between;align-items:center;gap:8px"><span class="card-title">Photos</span><span id="inv-photo-req-hint" style="display:' + (_invReqPho ? '' : 'none') + ';font-size:11px;font-weight:700;color:var(--primary);border:1px solid var(--primary);border-radius:4px;padding:1px 6px">Required for this account</span></div><div class="card-body">' +
       (id
         ? '<p style="font-size:12px;color:var(--text-muted-color);margin:0 0 10px">Attach job photos. Uncheck &quot;Show on printout&quot; to keep a photo out of the printed and emailed PDF.</p>' +
           '<input type="file" id="inv-photo-file" accept="image/*" multiple style="display:none" onchange="invUploadPhotos(this)" />' +
@@ -11742,6 +11759,19 @@ function invAccountChange(skipAutoItems) {
     _invoiceAutoAppliedFor = id;
     buildInvoiceLineItemRows();
   }
+  // Close-out requirement UI follows the selected account: show/hide the signature
+  // block and the "Required for this account" chips. An existing signature keeps
+  // the block visible even if the account no longer requires one.
+  var _rSig = !!(acct && acct.require_signature);
+  var _rEnt = !!(acct && acct.require_entitlement);
+  var _rVeh = !!(acct && acct.require_vehicle);
+  var _rPho = !!(acct && acct.require_photos);
+  var _sigCard = document.getElementById('inv-sig-card');
+  if (_sigCard) _sigCard.style.display = (_rSig || _invoiceExistingSig) ? '' : 'none';
+  var _showHint = function (idv, on) { var e = document.getElementById(idv); if (e) e.style.display = on ? '' : 'none'; };
+  _showHint('inv-ent-req-hint', _rEnt);
+  _showHint('inv-veh-req-hint', _rVeh);
+  _showHint('inv-photo-req-hint', _rPho);
   invDraftSave();
 }
 
@@ -11945,12 +11975,11 @@ var INV_DRAFT_FIELDS = ['inv-account','inv-city-code','inv-date','inv-status','i
   'inv-vin','inv-vyear','inv-vmake','inv-vmodel','inv-tag','inv-tagstate','inv-mileage',
   'inv-tax','inv-tip','inv-notes','inv-agreement'];
 var INV_DRAFT_CHECKS = ['inv-ent-reg','inv-ent-ins','inv-ent-title','inv-ent-rental','inv-tax-exempt'];
-// ⚠️ 'inv-sig-required' is deliberately NOT in that list, and must not be added.
-// Signature Required is a control on the evidence, not a field the tech typed, so
-// it always loads from the invoice/policy and never from a draft. A draft can live
-// for up to seven days; letting one restore that box UNCHECKED would silently drop
-// a signature requirement on an invoice that is supposed to carry one, and nobody
-// would see it happen. Same reasoning as never drafting the signature image.
+// NOTE (2026-08-05): the old 'inv-sig-required' per-invoice checkbox is gone.
+// Signature Required is now an ACCOUNT setting (vendors.require_signature), applied
+// from the selected account on load and by invAccountChange, and enforced server
+// side. There is nothing about the signature requirement to draft — it always
+// follows the account. The signature IMAGE is still deliberately never drafted.
 var _invDraftActive = false;
 var _invDraftInvId = null;
 var _invDraftTimer = null;
@@ -12553,7 +12582,14 @@ async function saveInvoice(id) {
   var accountName = accountSel && accountSel.options[accountSel.selectedIndex] && accountId ? accountSel.options[accountSel.selectedIndex].text : null;
   var signature = _invoiceExistingSig || null;
   if (_invoiceSigPad && _invoiceSigPad.hasInk()) signature = _invoiceSigPad.canvas.toDataURL('image/png');
-  var sigRequired = chk('inv-sig-required');
+  var _saveAcct = (_invoiceAccounts || []).filter(function(a){ return a.id === accountId; })[0] || {};
+  var reqSig = _saveAcct.require_signature === true;
+  var reqEnt = _saveAcct.require_entitlement === true;
+  var reqVeh = _saveAcct.require_vehicle === true;
+  var reqPho = _saveAcct.require_photos === true;
+  // Signature is account-driven now; the old per-invoice checkbox is gone. An
+  // existing signature is still honoured even if the account no longer asks for one.
+  var sigRequired = reqSig;
   var invStatus = val('inv-status') || 'draft';
   if (sigRequired && invStatus !== 'draft' && !signature) {
     if (errEl) errEl.innerHTML = '<div class="alert alert-error">A signature is required before this invoice can be marked ' + escHtml(invStatus) + '. Save it as a draft, or capture a signature first.</div>';
@@ -12571,6 +12607,20 @@ async function saveInvoice(id) {
   if (_effStatus !== 'draft') {
     var _gaps = invMissingCostLines(items);
     if (_gaps.length) { invCogsGate(_gaps, id); return; }
+    // Account-driven close-out requirements. The server enforces these too; this
+    // catches them instantly so the tech is not bounced after a round trip.
+    if (reqEnt && !(chk('inv-ent-reg') || chk('inv-ent-ins') || chk('inv-ent-title') || chk('inv-ent-rental'))) {
+      if (errEl) errEl.innerHTML = '<div class="alert alert-error">This account requires entitlement documentation. Check Registration, Insurance, Title or Rental Agreement, or save it as a draft.</div>';
+      window.scrollTo(0,0); return;
+    }
+    if (reqVeh && !(val('inv-vyear').trim() && val('inv-vmake').trim() && val('inv-vmodel').trim())) {
+      if (errEl) errEl.innerHTML = '<div class="alert alert-error">This account requires vehicle information (year, make and model), or save it as a draft.</div>';
+      window.scrollTo(0,0); return;
+    }
+    if (reqPho && id && (_invoicePhotos || []).length === 0) {
+      if (errEl) errEl.innerHTML = '<div class="alert alert-error">This account requires at least one photo. Save it as a draft, attach a photo, then finish it.</div>';
+      window.scrollTo(0,0); return;
+    }
     // Safety net for the Cash/Card question. The buttons sit in the totals block
     // so the normal path is that it is already answered before the customer signs
     // — but a tech who skipped straight to Save must not get past this with the
@@ -12647,7 +12697,7 @@ async function saveInvoice(id) {
     tax_exempt: chk('inv-tax-exempt'),
     tip_amount: parseFloat(val('inv-tip')) || 0,
     notes: val('inv-notes').trim(),
-    agreement_text: val('inv-agreement'),
+    agreement_text: (reqSig || _invoiceExistingSig) ? val('inv-agreement') : null,
     signature_image: signature,
     line_items: items
   };
