@@ -17,7 +17,6 @@ var _dispJobs = [];
 var _dispCanManage = false;
 var _dispCrew = [];
 var _dispTimer = null;
-var _dispShowDone = false;
 var _dispCities = [];
 
 var DISP_STATUS = {
@@ -368,9 +367,24 @@ async function renderDispatch(content) {
 // ---------------------------------------------------------------------------
 //  The duty switch
 // ---------------------------------------------------------------------------
+// The switch belongs on the phone that is in the truck. Dispatch runs this board
+// on a desktop and on a wall display, and "ready" typed from a machine sitting on
+// a desk is a location fix that means nothing - the whole point of the toggle is
+// that it says where the tech actually is. So the card only draws on mobile: the
+// native app, or a phone / tablet browser until the app is on every phone.
+function dispIsMobile() {
+  try {
+    if (typeof novaIsNative === 'function' && novaIsNative()) return true;
+    if (window.matchMedia('(max-width: 768px)').matches) return true;
+    return window.matchMedia('(pointer: coarse)').matches &&
+           window.matchMedia('(max-width: 1024px)').matches;
+  } catch (e) { return false; }
+}
+
 function dispRenderDuty() {
   var host = document.getElementById('disp-duty');
   if (!host) return;
+  if (!dispIsMobile()) { host.innerHTML = ''; return; }
   var on = !!_dispDuty.ready;
   var h = _dispDuty.hours_on_duty;
   var longOn = on && h !== null && h >= DISP_LONG_HOURS;
@@ -413,14 +427,19 @@ async function dispToggleDuty() {
 function dispRenderGate() {
   var body = document.getElementById('disp-body');
   if (!body) return;
+  var mob = dispIsMobile();
   body.innerHTML =
     '<div class="disp-gate">' +
       '<h3>The board opens when you do</h3>' +
       '<p>Calls, addresses and customer details stay hidden until you are ready to accept work. ' +
-         'Tap the green button above when you start your day, and turn it off when you are done.</p>' +
-      '<div id="disp-loc" style="text-align:left"></div>' +
+         (mob
+           ? 'Tap the green button above when you start your day, and turn it off when you are done.'
+           : 'You go ready in the Nova app on your phone - that is the device dispatch needs a position from, ' +
+             'so the switch is not on this screen. Once you are ready there, the board opens here too.') +
+      '</p>' +
+      (mob ? '<div id="disp-loc" style="text-align:left"></div>' : '') +
     '</div>';
-  if (typeof novaLocCard === 'function') novaLocCard(document.getElementById('disp-loc'));
+  if (mob && typeof novaLocCard === 'function') novaLocCard(document.getElementById('disp-loc'));
 }
 
 // ---------------------------------------------------------------------------
@@ -431,7 +450,7 @@ async function dispLoadBoard() {
   if (!body) return;
   var data, crew = { people: [] };
   try {
-    data = await api('GET', '/dispatch/jobs' + (_dispShowDone ? '?done=1' : ''));
+    data = await api('GET', '/dispatch/jobs');
     crew = await api('GET', '/dispatch/duty/all');
   } catch (e) {
     body.innerHTML = '<div class="card"><div class="card-body">' + escHtml(e.message || 'Could not load the board.') + '</div></div>';
@@ -462,7 +481,6 @@ async function dispLoadBoard() {
       '<div class="disp-main">' +
         '<div style="display:flex;gap:9px;flex-wrap:wrap;margin-bottom:12px">' +
           (_dispCanManage ? '<button class="disp-btn go" onclick="dispNewJob()">New call</button>' : '') +
-          '<button class="disp-btn" onclick="dispToggleDone()">' + (_dispShowDone ? 'Hide closed' : 'Show closed (7 days)') + '</button>' +
           '<button class="disp-btn" onclick="dispToggleSound()">' + (dispSoundOn() ? 'Sound on' : 'Sound off') + '</button>' +
           '<button class="disp-btn" onclick="dispColumnPicker()">Columns</button>' +
         '</div>' +
@@ -682,7 +700,6 @@ function dispToggleSound() {
   dispLoadBoard();
 }
 
-function dispToggleDone() { _dispShowDone = !_dispShowDone; dispLoadBoard(); }
 
 function dispJobHtml(j, isMine) {
   var st = DISP_STATUS[j.status] || DISP_STATUS.new;
