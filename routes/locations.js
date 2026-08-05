@@ -20,13 +20,20 @@ const MAX_BATCH = 200;
 const SETTING_DEFAULTS = {
   location_enabled: '1',
   location_require_ready: '1',
-  location_ping_seconds: '45',
-  location_distance_meters: '50',
+  location_ping_seconds: '30',
+  location_distance_meters: '40',
+  location_idle_minutes: '2',
   location_max_accuracy_m: '250',
   location_retention_days: '90',
   location_stale_minutes: '10',
   location_tile_url: 'https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',
-  location_tile_attribution: '&copy; OpenStreetMap contributors'
+  location_tile_attribution: '&copy; OpenStreetMap contributors',
+  // Traffic is a separate, keyed layer. OpenStreetMap has no traffic data at
+  // all, so this is the only way to get congestion onto the map. Off until a
+  // key is entered, so it costs nothing to leave alone.
+  location_traffic_enabled: '0',
+  location_traffic_key: '',
+  location_traffic_url: 'https://api.tomtom.com/traffic/map/4/tile/flow/relative0/{z}/{x}/{y}.png?key={key}'
 };
 const SETTING_KEYS = Object.keys(SETTING_DEFAULTS);
 
@@ -72,8 +79,22 @@ function clientConfig(settings) {
     requireReady: boolOf(settings, 'location_require_ready'),
     intervalSeconds: numOf(settings, 'location_ping_seconds', 10, 3600),
     distanceMeters: numOf(settings, 'location_distance_meters', 0, 5000),
+    idleMinutes: numOf(settings, 'location_idle_minutes', 0.5, 60),
     maxAccuracyMeters: numOf(settings, 'location_max_accuracy_m', 10, 100000)
   };
+}
+
+
+// The traffic tile URL, with the key substituted in. Raster tiles are fetched
+// by the browser, so the key has to travel; this endpoint already requires
+// view_tech_locations, so it only ever reaches someone allowed to see the map.
+// Restrict the key to your own domain in the provider's portal as well.
+function trafficLayer(settings) {
+  const on = boolOf(settings, 'location_traffic_enabled');
+  const key = (settings.location_traffic_key || '').trim();
+  const tpl = (settings.location_traffic_url || '').trim();
+  if (!on || !key || !tpl) return { enabled: false };
+  return { enabled: true, url: tpl.replace('{key}', encodeURIComponent(key)) };
 }
 
 // ---------------------------------------------------------------------------
@@ -292,7 +313,14 @@ router.get('/live', requireAuth, requirePermission('view_tech_locations'), async
     '       tl.source, tl.recorded_at, tl.received_at, ' +
     '       COALESCE(td.ready,false) AS on_duty, td.ready_since, ' +
     '       c.name AS city_name, c.color AS city_color, ' +
-    '       wo.id AS wo_id, wo.wo_ref, wo.store_name, wo.address AS wo_address, wo.status AS wo_status ' +
+    '       wo.id AS wo_id, wo.wo_ref, wo.store_name, wo.address AS wo_address, wo.status AS wo_status, ' +
+    // Counted here rather than in a second round trip: the map redraws every
+    // 20 seconds and a per-tech query per refresh would be silly.
+    "       (SELECT COUNT(*) FROM dispatch_jobs dj WHERE dj.assigned_to = u.id " +
+    "          AND (dj.assigned_at AT TIME ZONE 'America/New_York')::date " +
+    "            = (NOW() AT TIME ZONE 'America/New_York')::date) AS calls_today, " +
+    "       (SELECT COUNT(*) FROM dispatch_jobs dj WHERE dj.assigned_to = u.id " +
+    "          AND dj.status IN ('assigned','accepted','enroute','onscene')) AS open_calls " +
     'FROM users u ' +
     'LEFT JOIN tech_locations tl ON tl.user_id = u.id ' +
     'LEFT JOIN tech_duty td ON td.user_id = u.id ' +
@@ -348,6 +376,8 @@ router.get('/live', requireAuth, requirePermission('view_tech_locations'), async
       ready_since: row.ready_since,
       hours_on_duty: dutyHrs,
       status: status,
+      calls_today: parseInt(row.calls_today, 10) || 0,
+      open_calls: parseInt(row.open_calls, 10) || 0,
       job: row.wo_id ? { id: row.wo_id, ref: row.wo_ref, store: row.store_name, address: row.wo_address, status: row.wo_status } : null
     };
   });
@@ -356,6 +386,7 @@ router.get('/live', requireAuth, requirePermission('view_tech_locations'), async
     techs: techs,
     staleMinutes: staleMin,
     tile: { url: settings.location_tile_url, attribution: settings.location_tile_attribution },
+    traffic: trafficLayer(settings),
     serverTime: new Date().toISOString()
   });
 });

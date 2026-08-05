@@ -53,10 +53,15 @@ function novaLocQueueFix(pos) {
   };
   // Skip a fix that has not moved far enough. Saves battery and stops a parked
   // truck from drawing a fuzzy blob on the map.
+  // A parked truck is the cheapest thing to track: we simply do not report it.
+  // That is where "last seen 4 minutes ago" comes from, and it is deliberate -
+  // the distance filter saves far more battery than a slower interval does.
+  // The idle floor is how stale a STATIONARY tech is allowed to look.
   var minM = (_novaLocCfg && _novaLocCfg.distanceMeters) || 0;
+  var idleMin = (_novaLocCfg && _novaLocCfg.idleMinutes) || 2;
   if (_novaLocLast && minM > 0 && novaLocMeters(_novaLocLast, fix) < minM) {
     var gapMin = (new Date(fix.recorded_at) - new Date(_novaLocLast.recorded_at)) / 60000;
-    if (gapMin < 5) return; // still report at least every 5 min so "last seen" stays honest
+    if (gapMin < idleMin) return;
   }
   fix.is_moving = _novaLocLast ? (novaLocMeters(_novaLocLast, fix) >= 25) : null;
   _novaLocLast = fix;
@@ -246,6 +251,11 @@ function lmInjectStyles() {
     '.lm-more{background:transparent;border:1px dashed var(--border,#2e2e2e);border-radius:10px;padding:9px 12px;color:var(--text-muted-color,#888);font-size:12px;cursor:pointer;text-align:left}' +
     '.lm-more:hover{color:var(--text,#f0f0f0);border-color:var(--primary,#f97316)}' +
     '.lm-pin{border-radius:50%;border:2px solid #fff;box-shadow:0 1px 5px rgba(0,0,0,.5)}' +
+    '.leaflet-tooltip.lm-label{background:var(--bg-card,#1a1a1a);border:1px solid var(--border,#2e2e2e);border-left-width:3px;color:var(--text,#f0f0f0);padding:3px 7px;border-radius:6px;font-size:11px;line-height:1.35;box-shadow:0 2px 6px rgba(0,0,0,.55);white-space:nowrap;font-weight:600}' +
+    '.leaflet-tooltip.lm-label:before{display:none}' +
+    '.lm-label b{font-size:12px;display:block;font-weight:800}' +
+    '.lm-label span{font-weight:500;color:var(--text-muted-color,#888)}' +
+    '.lm-label i{font-style:normal;font-weight:700}' +
     '.lm-tilewarn{position:absolute;left:58px;right:12px;top:12px;z-index:500;background:var(--bg-card,#1a1a1a);border:1px solid var(--warning,#f59e0b);border-radius:10px;padding:11px 14px;font-size:13px;line-height:1.5;color:var(--text-dim,#bbb);box-shadow:var(--shadow-md,0 4px 12px rgba(0,0,0,.5))}' +
     '.lm-tilewarn a{color:var(--primary,#f97316)}' +
     '.lm-legend{display:flex;gap:12px;flex-wrap:wrap;font-size:12px;color:var(--text-muted-color,#888);margin:10px 2px 0}' +
@@ -347,6 +357,118 @@ function lmAgeText(t) {
   return Math.floor(h / 24) + 'd ago';
 }
 
+
+// ---------------------------------------------------------------------------
+//  Traffic
+// ---------------------------------------------------------------------------
+// A second, transparent tile layer painted over the basemap. It lands in
+// Leaflet's tilePane, which sits UNDER the markers, so congestion colours the
+// roads without ever competing with the pins for attention.
+//
+// Off by default and keyed, so it costs nothing until someone turns it on.
+var _lmTrafficLayer = null;
+var _lmTrafficCfg = null;
+
+function lmTrafficOn() {
+  try { return localStorage.getItem('nova_map_traffic') === '1'; } catch (e) { return false; }
+}
+function lmSetTraffic(on) {
+  try { localStorage.setItem('nova_map_traffic', on ? '1' : '0'); } catch (e) {}
+}
+
+function lmApplyTraffic() {
+  if (!_lmMap) return;
+  var want = lmTrafficOn() && _lmTrafficCfg && _lmTrafficCfg.enabled && _lmTrafficCfg.url;
+  if (want && !_lmTrafficLayer) {
+    _lmTrafficLayer = L.tileLayer(_lmTrafficCfg.url, {
+      maxZoom: 22, opacity: 0.75, zIndex: 5,
+      attribution: 'Traffic &copy; TomTom'
+    }).addTo(_lmMap);
+  } else if (!want && _lmTrafficLayer) {
+    _lmMap.removeLayer(_lmTrafficLayer);
+    _lmTrafficLayer = null;
+  }
+  var b = document.getElementById('lm-trafficbtn');
+  if (b) {
+    b.textContent = lmTrafficOn() ? 'Traffic on' : 'Traffic off';
+    // Hidden rather than shown-and-broken when no key is configured: a dead
+    // button that does nothing is worse than no button.
+    b.style.display = (_lmTrafficCfg && _lmTrafficCfg.enabled) ? '' : 'none';
+  }
+}
+
+function lmToggleTraffic() {
+  lmSetTraffic(!lmTrafficOn());
+  lmApplyTraffic();
+}
+
+// ---------------------------------------------------------------------------
+//  Permanent labels
+// ---------------------------------------------------------------------------
+// A pin on its own tells a dispatcher almost nothing at a glance. The label is
+// the part you actually read: who, how fresh, and how many calls they have had.
+//
+// Labels collide when the crew is packed into one part of town, so they are a
+// toggle AND they switch themselves off when zoomed out far enough that they
+// would just be a pile of overlapping boxes.
+var LM_LABEL_MIN_ZOOM = 11;
+
+function lmLabelsOn() {
+  try { return localStorage.getItem('nova_map_labels') !== '0'; } catch (e) { return true; }
+}
+function lmSetLabels(on) {
+  try { localStorage.setItem('nova_map_labels', on ? '1' : '0'); } catch (e) {}
+}
+function lmToggleLabels() {
+  lmSetLabels(!lmLabelsOn());
+  lmApplyLabels();
+  var b = document.getElementById('lm-labelbtn');
+  if (b) b.textContent = lmLabelsOn() ? 'Labels on' : 'Labels off';
+}
+
+// Short name: a first name and an initial fits; a full name pushes the box wide
+// enough to cover the tech parked next to them.
+function lmShortName(name) {
+  var parts = String(name || '').trim().split(/\s+/);
+  if (parts.length < 2) return parts[0] || '?';
+  return parts[0] + ' ' + parts[parts.length - 1].charAt(0);
+}
+
+function lmLabelHtml(t) {
+  var st = LM_STATUS[t.status] || LM_STATUS.no_fix;
+  var calls = t.calls_today || 0;
+  var open = t.open_calls || 0;
+  var bits = '<b>' + escHtml(lmShortName(t.name)) + '</b>' +
+    '<span>' + lmAgeText(t.age_minutes) + '</span>' +
+    '<span> &middot; </span><i style="color:' + st.color + '">' + calls + (calls === 1 ? ' call' : ' calls') + '</i>';
+  if (open) bits += '<span> &middot; </span><i style="color:#f97316">' + open + ' open</i>';
+  return bits;
+}
+
+// Bind, update or drop each label to match the toggle and the current zoom.
+function lmApplyLabels() {
+  if (!_lmMap) return;
+  var want = lmLabelsOn() && _lmMap.getZoom() >= LM_LABEL_MIN_ZOOM;
+  var byId = {};
+  ((_lmData && _lmData.techs) || []).forEach(function (t) { byId[t.user_id] = t; });
+  Object.keys(_lmMarkers).forEach(function (id) {
+    var m = _lmMarkers[id];
+    var t = byId[id];
+    if (!want || !t) { if (m.getTooltip()) m.unbindTooltip(); return; }
+    var st = LM_STATUS[t.status] || LM_STATUS.no_fix;
+    if (m.getTooltip()) {
+      m.setTooltipContent(lmLabelHtml(t));
+    } else {
+      m.bindTooltip(lmLabelHtml(t), {
+        permanent: true, direction: 'top', offset: [0, -11],
+        className: 'lm-label', opacity: 1, interactive: false
+      });
+    }
+    var el = m.getTooltip() && m.getTooltip().getElement();
+    if (el) el.style.borderLeftColor = st.color;
+  });
+}
+
 function lmStop() {
   if (_lmTimer) { clearInterval(_lmTimer); _lmTimer = null; }
 }
@@ -356,7 +478,7 @@ async function renderLiveMap(content) {
   lmStop();
   content.innerHTML =
     '<div class="page-header"><div><div class="page-title">Live Map</div>' +
-      '<div class="page-subtitle">Where the crew is right now. Positions are only recorded while a tech is clocked in.</div></div></div>' +
+      '<div class="page-subtitle">Where the crew is right now. Positions are only recorded while a tech is ready to accept calls.</div></div></div>' +
     '<div class="lm-tabs">' +
       '<button class="lm-tab' + (_lmTab === 'live' ? ' active' : '') + '" onclick="lmSetTab(\'live\')">Live</button>' +
       '<button class="lm-tab' + (_lmTab === 'history' ? ' active' : '') + '" onclick="lmSetTab(\'history\')">History</button>' +
@@ -386,12 +508,18 @@ async function lmRenderLive(host) {
       '<div class="lm-side" id="lm-side"><div class="text-muted" style="padding:8px">Loading crew...</div></div>' +
       '<div class="lm-mapbox"><div id="lm-map"></div></div>' +
     '</div>' +
-    '<div class="lm-legend" id="lm-legend"></div>';
+    '<div class="lm-legend" id="lm-legend">' +
+      '<button class="lm-more" id="lm-labelbtn" style="padding:4px 10px" onclick="lmToggleLabels()">' +
+        (lmLabelsOn() ? 'Labels on' : 'Labels off') + '</button>' +
+      '<button class="lm-more" id="lm-trafficbtn" style="padding:4px 10px;display:none" onclick="lmToggleTraffic()">' +
+        (lmTrafficOn() ? 'Traffic on' : 'Traffic off') + '</button>' +
+    '</div>';
 
-  document.getElementById('lm-legend').innerHTML = Object.keys(LM_STATUS).map(function (k) {
+  // insertAdjacentHTML, not innerHTML: the Labels button already lives in here.
+  document.getElementById('lm-legend').insertAdjacentHTML('beforeend', Object.keys(LM_STATUS).map(function (k) {
     return '<span style="display:inline-flex;align-items:center;gap:6px">' +
       '<span class="lm-dot" style="background:' + LM_STATUS[k].color + '"></span>' + LM_STATUS[k].label + '</span>';
-  }).join('');
+  }).join(''));
 
   await lmRefresh(true);
 
@@ -413,12 +541,15 @@ async function lmRefresh(fit) {
     return;
   }
   _lmData = data;
+  _lmTrafficCfg = data.traffic || { enabled: false };
   var mapEl = document.getElementById('lm-map');
   if (!mapEl) { lmStop(); return; }
 
   if (!_lmMap) {
     _lmMap = L.map(mapEl, { zoomControl: true, attributionControl: true }).setView([32.7765, -79.9311], 10);
     lmAddTiles(_lmMap, data.tile);
+    // Labels are pointless once the pins are on top of each other.
+    _lmMap.on('zoomend', lmApplyLabels);
   }
 
   var withFix = data.techs.filter(function (t) { return t.lat !== null && t.lon !== null; });
@@ -449,6 +580,8 @@ async function lmRefresh(fit) {
   if (fit && withFix.length) {
     _lmMap.fitBounds(withFix.map(function (t) { return [t.lat, t.lon]; }), { padding: [40, 40], maxZoom: 14 });
   }
+  lmApplyTraffic();
+  lmApplyLabels();
   lmRenderSide(data);
 }
 
@@ -705,6 +838,7 @@ async function renderLocationSettings(content) {
       fld('location_ping_seconds', 'Seconds between positions', 'How often a moving phone reports. 45 is a good balance. Lower drains battery fast.', 'number') +
       fld('location_distance_meters', 'Minimum movement (meters)', 'A phone that has not moved this far does not report. This saves more battery than the interval does. 50 is about half a block.', 'number') +
       fld('location_max_accuracy_m', 'Reject fixes worse than (meters)', 'A cell-tower fix can be off by kilometers. Anything less accurate than this is thrown away instead of drawing a lie on the map.', 'number') +
+      fld('location_idle_minutes', 'Report a parked tech at least every (minutes)', 'A tech who has not moved does not report, which is where most of the battery saving comes from. This is the longest a stationary tech is allowed to look stale on the map. 2 is a good balance; raising it saves battery, lowering it makes a parked truck look fresher.', 'number') +
       fld('location_stale_minutes', 'Call a position stale after (minutes)', 'How long before the map greys out a pin and stops claiming it knows where someone is.', 'number') +
       fld('location_retention_days', 'Keep route history for (days)', 'Older breadcrumbs are deleted nightly. Current positions are never swept. 90 days is the default.', 'number') +
       fld('location_tile_url', 'Map tile URL', 'Where the STREET IMAGES behind the pins come from. The default is OpenStreetMap: free, no key, no account. If your network blocks it or you want a different look, paste a MapTiler or Google tiles URL here instead - no code change, no deploy. Keep the {z}/{x}/{y} placeholders, they are how the map asks for each square.') +
@@ -713,6 +847,17 @@ async function renderLocationSettings(content) {
         '<span id="ls-tiletest" style="margin-left:10px;font-size:13px"></span>' +
         '<div class="text-muted" style="font-size:12px;margin-top:6px">Fetches one map square from the URL above and tells you whether it arrived. Run this from a computer on the same network the crew uses.</div>' +
       '</div>' +
+      '<div style="border-top:1px solid var(--border,#2e2e2e);margin:22px 0 18px;padding-top:18px;max-width:520px">' +
+        '<div style="font-weight:800;margin-bottom:4px">Live traffic</div>' +
+        '<div class="text-muted" style="font-size:12px;line-height:1.55">OpenStreetMap has no traffic data, so congestion needs a ' +
+          'separate provider. A free TomTom developer key covers a dispatcher or two: sign up at ' +
+          '<a href="https://developer.tomtom.com" target="_blank" rel="noopener">developer.tomtom.com</a>, ' +
+          'no card needed, then paste the key below. Restrict it to your own domain in their portal while you are there. ' +
+          'Traffic paints the roads underneath the pins, so it never covers a tech.</div>' +
+      '</div>' +
+      chk('location_traffic_enabled', 'Offer live traffic on the map', 'Turns the Traffic button on for dispatchers. Each of them still chooses whether to switch the layer on, and it stays off until they do.') +
+      fld('location_traffic_key', 'Traffic provider key', 'Paste the key here. Leave it blank and the Traffic button never appears.') +
+      fld('location_traffic_url', 'Traffic tile URL', 'Where the congestion images come from. {key} is replaced with the key above. The default is TomTom flow; swap it for HERE or another provider by pasting their tile URL.') +
       fld('location_tile_attribution', 'Map attribution', 'Credit line shown in the map corner. Most tile providers require this.') +
       '<button class="btn btn-primary" onclick="saveLocationSettings()">Save</button>' +
     '</div></div>';
@@ -761,7 +906,8 @@ function testLocationTiles() {
 
 async function saveLocationSettings() {
   var keys = ['location_enabled', 'location_require_ready', 'location_ping_seconds', 'location_distance_meters',
-    'location_max_accuracy_m', 'location_stale_minutes', 'location_retention_days', 'location_tile_url', 'location_tile_attribution'];
+    'location_max_accuracy_m', 'location_idle_minutes', 'location_stale_minutes', 'location_retention_days', 'location_tile_url', 'location_tile_attribution',
+    'location_traffic_enabled', 'location_traffic_key', 'location_traffic_url'];
   var body = {};
   keys.forEach(function (k) {
     var el = document.getElementById('ls-' + k);
