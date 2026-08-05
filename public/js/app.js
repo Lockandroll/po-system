@@ -2,7 +2,7 @@
 // public/sw.js (the only thing bumped each deploy) — the badge asks the active
 // service worker for it at runtime. This value is just the fallback shown when no
 // service worker is available (e.g. very first visit before it installs).
-var APP_VERSION = 'v104';
+var APP_VERSION = 'v105';
 var _resolvedAppVersion = null;
 
 // Ask the active service worker for its CACHE_VERSION (without the 'nova-' prefix).
@@ -11307,16 +11307,19 @@ async function renderInvoices(el) {
     var cityOpts = '<option value="">All cities</option>' + plainOpts(cityList);
     var acctOpts = '<option value="">All accounts</option>' + plainOpts(acctList);
     var lockOpts = '<option value="">All locksmiths</option>' + plainOpts(lockList);
-    var selStyle = 'background:var(--bg-elevated);color:var(--text-dim);border:1px solid var(--border);border-radius:6px;padding:7px 9px;font-size:13px;cursor:pointer;min-width:130px';
+    var selStyle = 'background:var(--bg-elevated);color:var(--text-dim);border:1px solid var(--border);border-radius:6px;padding:7px 9px;font-size:13px;cursor:pointer;width:100%';
 
-    var filterBar =
-      '<div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;padding:12px 16px;border-bottom:1px solid var(--border)">' +
-        '<select id="invoice-filter-status" onchange="filterInvoices()" style="' + selStyle + '">' + statusOpts + '</select>' +
-        '<select id="invoice-filter-city" onchange="filterInvoices()" style="' + selStyle + '">' + cityOpts + '</select>' +
-        '<select id="invoice-filter-account" onchange="filterInvoices()" style="' + selStyle + '">' + acctOpts + '</select>' +
-        (seeAll ? '<select id="invoice-filter-locksmith" onchange="filterInvoices()" style="' + selStyle + '">' + lockOpts + '</select>' : '') +
-        '<button class="btn btn-secondary btn-sm" onclick="invListClearFilters()">Clear filters</button>' +
-        '<span id="invoice-result-count" style="font-size:13px;color:var(--text-muted-color);margin-left:auto"></span>' +
+    // The filter dropdowns live in a menu that stays hidden until the Filters
+    // button is clicked; when open they sit in an evenly split two-column grid.
+    var filterPanel =
+      '<div id="invoice-filter-panel" style="display:none;padding:12px 16px;border-bottom:1px solid var(--border)">' +
+        '<div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">' +
+          '<select id="invoice-filter-status" onchange="filterInvoices()" style="' + selStyle + '">' + statusOpts + '</select>' +
+          '<select id="invoice-filter-city" onchange="filterInvoices()" style="' + selStyle + '">' + cityOpts + '</select>' +
+          '<select id="invoice-filter-account" onchange="filterInvoices()" style="' + selStyle + '">' + acctOpts + '</select>' +
+          (seeAll ? '<select id="invoice-filter-locksmith" onchange="filterInvoices()" style="' + selStyle + '">' + lockOpts + '</select>' : '') +
+        '</div>' +
+        '<div style="margin-top:10px"><button class="btn btn-secondary btn-sm" onclick="invListClearFilters()">Clear filters</button></div>' +
       '</div>';
 
     el.innerHTML =
@@ -11327,11 +11330,18 @@ async function renderInvoices(el) {
       '<div class="card">' +
         '<div class="card-header" style="display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap">' +
           '<span class="card-title">Invoice List</span>' +
-          '<input type="text" id="invoice-search" placeholder="Search #, customer, account, vehicle..." style="width:260px" oninput="filterInvoices()" />' +
+          '<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">' +
+            '<span id="invoice-result-count" style="font-size:13px;color:var(--text-muted-color)"></span>' +
+            '<input type="text" id="invoice-search" placeholder="Search #, customer, account, PO, vehicle..." style="width:240px" oninput="filterInvoices()" />' +
+            '<button type="button" id="invoice-filter-toggle" class="btn btn-secondary btn-sm" onclick="invListToggleFilters()" aria-expanded="false" style="white-space:nowrap">' +
+              '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" style="vertical-align:-2px"><polygon points="22 3 2 3 10 12.46 10 19 14 21 14 12.46 22 3"></polygon></svg>' +
+              ' Filters<span id="invoice-filter-badge"></span>' +
+            '</button>' +
+          '</div>' +
         '</div>' +
         (invoices.length === 0
           ? '<div class="empty-state"><h3>No invoices yet</h3><p>Create your first invoice to get started.</p></div>'
-          : filterBar +
+          : filterPanel +
             '<div id="invoices-table-wrap"></div>' +
             '<div id="invoices-pagination"></div>') +
       '</div>';
@@ -11370,6 +11380,7 @@ function invListFilteredRows() {
       var hit = String(r.invoice_number || '').toLowerCase().indexOf(q) !== -1 ||
                 (r.customer_name || '').toLowerCase().indexOf(q) !== -1 ||
                 (r.account_name || '').toLowerCase().indexOf(q) !== -1 ||
+                (r.customer_po_wo || '').toLowerCase().indexOf(q) !== -1 ||
                 (r.city_code || '').toLowerCase().indexOf(q) !== -1 ||
                 (veh).toLowerCase().indexOf(q) !== -1 ||
                 (r.locksmith_name || r.locksmith_name_join || '').toLowerCase().indexOf(q) !== -1;
@@ -11394,6 +11405,16 @@ function invListClearFilters() {
   });
   _invListPage = 1;
   invListRenderTable();
+}
+
+// Collapse/expand the invoice filter menu (the Filters button toggles this panel).
+function invListToggleFilters() {
+  var p = document.getElementById('invoice-filter-panel');
+  var b = document.getElementById('invoice-filter-toggle');
+  if (!p) return;
+  var willOpen = (p.style.display === 'none' || p.style.display === '');
+  p.style.display = willOpen ? 'block' : 'none';
+  if (b) b.setAttribute('aria-expanded', willOpen ? 'true' : 'false');
 }
 
 function invListGoPage(p) {
@@ -11425,6 +11446,12 @@ function invListRenderTable() {
   var cnt = document.getElementById('invoice-result-count');
   if (cnt) cnt.textContent = total + ' invoice' + (total !== 1 ? 's' : '');
 
+  // Reflect the number of active dropdown filters on the Filters button.
+  var activeFilters = ['invoice-filter-status','invoice-filter-city','invoice-filter-account','invoice-filter-locksmith']
+    .filter(function(id){ var e = document.getElementById(id); return e && e.value; }).length;
+  var badge = document.getElementById('invoice-filter-badge');
+  if (badge) badge.textContent = activeFilters ? ' (' + activeFilters + ')' : '';
+
   var pgEl = document.getElementById('invoices-pagination');
   if (!total) {
     wrap.innerHTML = '<div class="empty-state"><h3>No matching invoices</h3><p>Try a different search or clear the filters.</p></div>';
@@ -11437,7 +11464,7 @@ function invListRenderTable() {
 
   wrap.innerHTML =
     '<div class="table-wrap"><table>' +
-    '<thead><tr><th>Invoice #</th><th>Customer</th><th>City</th><th>Account</th><th>Vehicle</th>' + (seeAll ? '<th>Locksmith</th>' : '') + '<th>Status</th><th class="text-right">Total</th><th>Date</th></tr></thead>' +
+    '<thead><tr><th>Invoice #</th><th>Customer</th><th>City</th><th>Account</th><th>PO #</th><th>Vehicle</th>' + (seeAll ? '<th>Locksmith</th>' : '') + '<th>Status</th><th class="text-right">Total</th><th>Date</th></tr></thead>' +
     '<tbody>' + pageRows.map(function(r){
       var veh = [r.vehicle_year, r.vehicle_make, r.vehicle_model].filter(Boolean).join(' ') || '—';
       return '<tr style="cursor:pointer" onclick="navigate(\'view-invoice\',' + r.id + ')">' +
@@ -11445,6 +11472,7 @@ function invListRenderTable() {
         '<td>' + escHtml(r.customer_name || '—') + '</td>' +
         '<td>' + escHtml(r.city_code || '—') + '</td>' +
         '<td>' + escHtml(r.account_name || '—') + '</td>' +
+        '<td>' + escHtml(r.customer_po_wo || '—') + '</td>' +
         '<td>' + escHtml(veh) + '</td>' +
         (seeAll ? '<td>' + escHtml(r.locksmith_name || r.locksmith_name_join || '—') + '</td>' : '') +
         '<td>' + invStatusBadge(r.status) + '</td>' +
