@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Nova's palette, matching public/index.html so the native chrome and the
+         web UI are the same app rather than two that happen to be stacked. -->
+    <color name="novaBackground">#0F0F0F</color>
+    <color name="colorPrimary">#F97316</color>
+    <color name="colorPrimaryDark">#0F0F0F</color>
+    <color name="colorAccent">#F97316</color>
+</resources>

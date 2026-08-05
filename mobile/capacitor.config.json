@@ -1,0 +1,19 @@
+{
+  "appId": "com.lockandroll.nova",
+  "appName": "Nova",
+  "webDir": "www",
+  "server": {
+    "url": "https://www.popalockar.com",
+    "cleartext": false,
+    "androidScheme": "https",
+    "errorPath": "index.html"
+  },
+  "android": {
+    "allowMixedContent": false,
+    "captureInput": true,
+    "webContentsDebuggingEnabled": true
+  },
+  "plugins": {
+    "BackgroundGeolocation": {}
+  }
+}

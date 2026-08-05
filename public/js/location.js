@@ -21,6 +21,7 @@ var _novaLocLast = null;
 var _novaLocSending = false;
 
 function novaLocNative() {
+  if (typeof novaIsNative === 'function') return novaIsNative();
   return !!(window.Capacitor && typeof window.Capacitor.isNativePlatform === 'function' && window.Capacitor.isNativePlatform());
 }
 function novaLocOptedIn() {
@@ -100,12 +101,28 @@ async function novaLocFlush() {
 async function novaLocStart(force) {
   if (_novaLocWatch !== null) return true;
   if (!novaLocOptedIn() && !force) return false;
-  if (!navigator.geolocation) return false;
 
   var me = null;
   try { me = await api('GET', '/locations/me'); } catch (e) { return false; }
   _novaLocCfg = me && me.config;
   if (!me || !me.tracking) return false;
+
+  // In the app, hand off to the native watcher. It survives a locked screen,
+  // which is the whole reason the shell exists; the browser path below cannot.
+  if (novaLocNative() && typeof novaStartNativeTracking === 'function') {
+    var started = await novaStartNativeTracking(_novaLocCfg);
+    if (started) {
+      // Still run the flush timer so a queue built in a dead zone drains.
+      if (!_novaLocTimer) {
+        var everyNative = Math.max(15, (_novaLocCfg && _novaLocCfg.intervalSeconds) || 45) * 1000;
+        _novaLocTimer = setInterval(novaLocFlush, everyNative);
+      }
+      return true;
+    }
+    return false;
+  }
+
+  if (!navigator.geolocation) return false;
 
   _novaLocWatch = navigator.geolocation.watchPosition(novaLocQueueFix, function (err) {
     if (err && err.code === 1) { novaLocSetOptIn(false); novaLocStop(); }
@@ -123,6 +140,7 @@ async function novaLocStart(force) {
 function novaLocStop() {
   if (_novaLocWatch !== null) { try { navigator.geolocation.clearWatch(_novaLocWatch); } catch (e) {} _novaLocWatch = null; }
   if (_novaLocTimer) { clearInterval(_novaLocTimer); _novaLocTimer = null; }
+  if (typeof novaStopNativeTracking === 'function') novaStopNativeTracking();
 }
 
 // ---------------------------------------------------------------------------
@@ -168,6 +186,10 @@ async function novaLocCard(host) {
         '</div>' +
         '<div class="lm-meta">In the browser this only works while Nova is open on screen. ' +
           'The Nova app keeps reporting with the phone locked.</div>') +
+      (novaLocNative()
+        ? '<div class="lm-meta">Running in the Nova app, so this keeps working with your phone locked and in your pocket. ' +
+          'Android shows a notification the whole time it is on.</div>'
+        : '') +
     '</div>';
 }
 

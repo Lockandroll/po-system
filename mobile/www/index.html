@@ -1,0 +1,45 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+<title>Nova</title>
+<style>
+  :root { color-scheme: dark; }
+  html, body { height: 100%; margin: 0; }
+  body {
+    background: #0f0f0f; color: #f0f0f0;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    display: flex; align-items: center; justify-content: center;
+    padding: 28px; text-align: center;
+  }
+  .box { max-width: 340px; }
+  h1 { font-size: 26px; margin: 0 0 6px; color: #f97316; letter-spacing: .5px; }
+  p { color: #999; font-size: 15px; line-height: 1.6; margin: 0 0 22px; }
+  button {
+    background: #f97316; color: #fff; border: 0; border-radius: 10px;
+    padding: 14px 30px; font-size: 16px; font-weight: 700; cursor: pointer;
+  }
+  .small { font-size: 12px; color: #666; margin-top: 18px; }
+</style>
+</head>
+<body>
+  <div class="box">
+    <h1>Nova</h1>
+    <!--
+      This page is ONLY the fallback. Nova itself is served from the live site
+      (see server.url in capacitor.config.json), which is what lets the app
+      update the moment a deploy lands, with no new build and no store review.
+      A tech only ever sees this screen when the phone cannot reach the server.
+    -->
+    <p id="msg">Nova could not reach the server. Check your signal and try again.</p>
+    <button onclick="location.reload()">Try again</button>
+    <div class="small" id="host"></div>
+  </div>
+<script>
+  try {
+    document.getElementById('host').textContent = 'www.popalockar.com';
+  } catch (e) {}
+</script>
+</body>
+</html>
