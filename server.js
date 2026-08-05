@@ -293,6 +293,7 @@ app.use('/api/dispatch', require('./routes/dispatch'));
 app.use('/api/service-types', require('./routes/serviceTypes'));
 app.use('/api/call-search', require('./routes/callSearch'));
 app.use('/api/time-codes', require('./routes/timeCodes'));
+app.use('/api/coverage', require('./routes/coverage'));
 
 // OAuth 2.1 authorization server for the remote MCP (must be before the SPA catch-all).
 //

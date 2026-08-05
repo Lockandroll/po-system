@@ -4016,6 +4016,72 @@ async function initDB() {
       "INSERT INTO settings (key, value) VALUES ('dispatch_edu_free', '1') ON CONFLICT (key) DO NOTHING"
     );
 
+
+    // -----------------------------------------------------------------------
+    // DISPATCH PHASE 2C - COVERAGE ZONES, and the geocode cache.
+    // Zones are matched by ZIP first and by drawn shape second. Zip is exact
+    // and free; a shape needs a geocode that can fail, and a bad geocode moving
+    // a call into the wrong market means the wrong pay rule and the wrong
+    // royalty bucket.
+    // -----------------------------------------------------------------------
+    await client.query(
+      'CREATE TABLE IF NOT EXISTS coverage_zones (' +
+      '  id SERIAL PRIMARY KEY,' +
+      '  city_code CHAR(3) NOT NULL,' +
+      '  name VARCHAR(120) NOT NULL,' +
+      "  kind VARCHAR(10) NOT NULL DEFAULT 'zip'," +   // 'zip' | 'polygon'
+      '  polygon JSONB,' +
+      '  eta_adjust_minutes INTEGER NOT NULL DEFAULT 0,' +
+      '  price_adjust_type VARCHAR(10),' +             // NULL | 'flat' | 'percent'
+      '  price_adjust_value NUMERIC(10,2),' +
+      '  is_primary BOOLEAN NOT NULL DEFAULT true,' +
+      '  active BOOLEAN NOT NULL DEFAULT true,' +
+      '  sort INTEGER NOT NULL DEFAULT 0' +
+      ');' +
+      'CREATE INDEX IF NOT EXISTS idx_zone_city ON coverage_zones(city_code);' +
+      'CREATE TABLE IF NOT EXISTS coverage_zone_zips (' +
+      '  zone_id INTEGER NOT NULL REFERENCES coverage_zones(id) ON DELETE CASCADE,' +
+      '  zip VARCHAR(10) NOT NULL,' +
+      '  PRIMARY KEY (zone_id, zip)' +
+      ');' +
+      'CREATE INDEX IF NOT EXISTS idx_zone_zip ON coverage_zone_zips(zip);'
+    );
+    // Tony: "there is no overlap really." A zip therefore belongs to exactly ONE
+    // ACTIVE zone, and that is what makes a zone match unique - which in turn is
+    // the only reason the ETA and price overrides can be applied without a
+    // tiebreak rule nobody would remember.
+    //
+    // The guard is in routes/coverage.js, not here: Postgres will not accept a
+    // subquery inside an index predicate, and "unique across ACTIVE zones only"
+    // needs one. A plain unique index would also block moving a zip out of a
+    // zone you had just switched off, which is a normal thing to want to do.
+
+    await client.query(
+      'ALTER TABLE dispatch_jobs ADD COLUMN IF NOT EXISTS zone_id INTEGER REFERENCES coverage_zones(id) ON DELETE SET NULL;' +
+      'ALTER TABLE dispatch_jobs ADD COLUMN IF NOT EXISTS zone_price_adj NUMERIC(10,2);' +
+      'ALTER TABLE dispatch_jobs ADD COLUMN IF NOT EXISTS geocode_accuracy VARCHAR(30);'
+    );
+
+    // The geocode cache. The same address is never paid for twice, and the
+    // provider's licence decides how long a row may live - Geocodio permits
+    // keeping coordinates, Google allows 30 days and then requires deletion.
+    // The TTL lives in utils/geocode.js so nobody has to remember it.
+    await client.query(
+      'CREATE TABLE IF NOT EXISTS geocode_cache (' +
+      '  address_key TEXT NOT NULL,' +
+      '  provider VARCHAR(20) NOT NULL,' +
+      '  formatted TEXT,' +
+      '  lat NUMERIC(9,6),' +
+      '  lon NUMERIC(9,6),' +
+      '  accuracy NUMERIC(4,2),' +
+      '  accuracy_type VARCHAR(30),' +
+      '  hits INTEGER NOT NULL DEFAULT 1,' +
+      '  created_at TIMESTAMPTZ DEFAULT NOW(),' +
+      '  PRIMARY KEY (address_key, provider)' +
+      ');' +
+      'CREATE INDEX IF NOT EXISTS idx_geocache_age ON geocode_cache(provider, created_at);'
+    );
+
     console.log('Database initialized');
   } finally {
     client.release();

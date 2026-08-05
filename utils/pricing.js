@@ -1,5 +1,6 @@
 const { pool } = require('../db');
 const tc = require('./timeCodes');
+const zones = require('./zones');
 
 // ---------------------------------------------------------------------------
 //  What a call costs, and what ETA the customer is told
@@ -129,6 +130,30 @@ async function quote(o) {
     if (out.reason === 'price_not_set') out.reason = null;
   }
 
+  // ---- the coverage zone, on top of whatever won ------------------------
+  // Applied LAST, so it modifies the winning price rather than competing with
+  // it. That is the whole reason zones may not overlap: one match, one
+  // adjustment, no precedence rule to forget.
+  if (opts.zone) {
+    out.zone_id = opts.zone.id;
+    out.zone_name = opts.zone.name;
+    // ⚠️ NOT on a free EDU. A zone surcharge on a child locked in a hot car
+    // would turn a free public service into a $25 bill, which is both wrong and
+    // the sort of wrong that ends up in a local news story. The ETA adjustment
+    // below still applies - a far zone really is further away, and promising 20
+    // minutes when it is 35 is a worse lie on an EDU than on a lockout.
+    if (out.price_source === 'edu_free') {
+      out.zone_price_adj = null;
+    } else {
+      const adj = zones.applyPriceAdjust(out.price, opts.zone);
+      out.price = adj.price;
+      out.zone_price_adj = adj.adjust;
+      if (adj.adjust) out.price_source = (out.price_source || 'time_code') + '+zone';
+    }
+  } else if (opts.out_of_area) {
+    out.out_of_area = true;
+  }
+
   // ---- ETA ---------------------------------------------------------------
   if (!out.eta_source) {
     const eta = tc.etaFor(code, { is_edu: !!opts.is_edu, has_account: !!opts.account_id });
@@ -151,6 +176,15 @@ async function quote(o) {
         out.eta_source = 'default';
       }
     } catch (e) {}
+  }
+  // The zone's ETA adjustment rides on top of whichever ETA won, for the same
+  // reason the price adjustment does.
+  if (opts.zone && out.eta_minutes) {
+    const before = out.eta_minutes;
+    out.eta_minutes = zones.applyEtaAdjust(out.eta_minutes, opts.zone);
+    if (out.eta_low) out.eta_low = zones.applyEtaAdjust(out.eta_low, opts.zone);
+    if (out.eta_high) out.eta_high = zones.applyEtaAdjust(out.eta_high, opts.zone);
+    if (out.eta_minutes !== before) out.eta_source = (out.eta_source || 'core') + '+zone';
   }
   return out;
 }

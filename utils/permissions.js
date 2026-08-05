@@ -125,6 +125,9 @@ ALL_PERMS.push('view_customer_pii');
 // ETA the customer is told, per service, per location. Same permission covers
 // the account price exceptions layered on top, because they are one decision.
 ALL_PERMS.push('manage_pricing');
+// Coverage zones. Separate from pricing because drawing the map of where you
+// work and setting what you charge are different jobs, often different people.
+ALL_PERMS.push('manage_coverage');
 
 var DEFAULTS = {
   admin: '*',

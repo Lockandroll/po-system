@@ -6,6 +6,8 @@ const duty = require('../utils/duty');
 const permissions = require('../utils/permissions');
 const push = require('../utils/push');
 const pricing = require('../utils/pricing');
+const geo = require('../utils/geocode');
+const zones = require('../utils/zones');
 
 const router = express.Router();
 
@@ -370,9 +372,25 @@ router.post('/jobs', requireAuth, requirePermission('manage_dispatch'), async fu
   // The time code covering RIGHT NOW, in that city's own clock, decides both
   // the price and the ETA - unless the dispatcher typed over either, in which
   // case what they told the customer wins.
+  // Coordinates and the coverage zone, before pricing - the zone adjusts the
+  // price, so it has to be known first. Every step here is allowed to come back
+  // empty: dispatch worked without any of it for the whole of Phase 1, and a
+  // geocoding outage must never be the reason a call cannot be taken.
+  var point = null;
+  try { point = await geo.geocode({ address: b.address, city_state_zip: b.city_state_zip, zip: b.zip }); }
+  catch (e) { point = null; }
+  var zoneHit = { zone: null, out_of_area: false, wrong_city: false, matched_by: null };
+  try {
+    zoneHit = await zones.resolve({
+      zip: b.zip, city_code: b.city_code,
+      lat: point && point.lat, lon: point && point.lon
+    });
+  } catch (e) { /* no zones configured yet is the normal case at first */ }
+
   const q = await pricing.quote({
     service_type_id: b.service_type_id, city_code: b.city_code,
-    account_id: b.account_id, is_edu: b.is_edu, when: new Date()
+    account_id: b.account_id, is_edu: b.is_edu, when: new Date(),
+    zone: zoneHit.zone, out_of_area: zoneHit.out_of_area
   });
   const eta = b.eta_minutes !== null ? b.eta_minutes : (q.eta_minutes || null);
   const etaSrc = b.eta_minutes !== null ? 'manual' : (q.eta_source || null);
@@ -385,9 +403,11 @@ router.post('/jobs', requireAuth, requirePermission('manage_dispatch'), async fu
     'caller_id, customer_email, address, cross_street, city_state_zip, zip, city_code, ' +
     'vehicle_year, vehicle_make, vehicle_model, vehicle_color, license_tag, tag_state, vin, vehicle_location, ' +
     'eta_minutes, eta_source, eta_promised_at, quoted_price, quoted_price_src, time_code_id, ' +
+    'lat, lon, geocode_accuracy, zone_id, zone_price_adj, ' +
     'notes, assigned_to, assigned_at, created_by) ' +
     "VALUES ('manual', $1, NOW(), $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, " +
-    '$18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29, $30, $31, $32, $33, $34, $35, $36, $37) RETURNING id',
+    '$18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29, $30, $31, $32, $33, $34, $35, $36, $37, ' +
+    '$38, $39, $40, $41, $42) RETURNING id',
     [assign ? 'assigned' : 'new', b.priority,
       svc.name || b.service_type, b.service_type_id, b.is_edu,
       b.account_id, acct.name, b.account_po, b.business_name,
@@ -397,6 +417,8 @@ router.post('/jobs', requireAuth, requirePermission('manage_dispatch'), async fu
       b.license_tag, b.tag_state, b.vin, b.vehicle_location,
       eta, eta === null ? null : etaSrc, promisedAt(eta, null),
       price, price === null ? null : priceSrc, q.time_code_id,
+      point ? point.lat : null, point ? point.lon : null, point ? point.accuracy_type : null,
+      zoneHit.zone ? zoneHit.zone.id : null, q.zone_price_adj === undefined ? null : q.zone_price_adj,
       b.notes, assign, assign ? new Date() : null, req.user.id]
   );
   const id = r.rows[0].id;
@@ -406,6 +428,26 @@ router.post('/jobs', requireAuth, requirePermission('manage_dispatch'), async fu
   await logEvent(id, 'created', req, svc.name || b.service_type || null);
   if (b.is_edu) await logEvent(id, 'edu', req, 'Emergency Door Unlocking - child or pet in vehicle');
   if (acct.name) await logEvent(id, 'account_set', req, acct.name + (acct.po_required ? ' - PO required' : ''));
+  if (zoneHit.zone) {
+    await logEvent(id, 'zone', req, zoneHit.zone.name +
+      (zoneHit.matched_by ? ' (by ' + zoneHit.matched_by + ')' : '') +
+      (q.zone_price_adj ? ', ' + (q.zone_price_adj > 0 ? '+' : '') + '$' + q.zone_price_adj : ''));
+  }
+  if (zoneHit.wrong_city) {
+    // Usually a typo in the zip, occasionally a genuine border job. Either way
+    // it changes who gets paid for the call, so it is said out loud.
+    await logEvent(id, 'zone_other_city', req,
+      'That zip belongs to ' + (zoneHit.zone && zoneHit.zone.city_code) + ', not the city on this call.');
+  }
+  if (zoneHit.out_of_area) {
+    await logEvent(id, 'out_of_area', req, b.zip ? 'Zip ' + b.zip + ' is not in any coverage zone.' : 'No zip on the call.');
+    try {
+      await pool.query(
+        'INSERT INTO dispatch_job_tags (job_id, tag_id, added_by) ' +
+        "SELECT $1, id, $2 FROM dispatch_tags WHERE name = 'Out of area' AND active = true " +
+        'ON CONFLICT DO NOTHING', [id, req.user.id]);
+    } catch (e) {}
+  }
   if (price !== null) {
     await logEvent(id, 'priced', req,
       '$' + Number(price).toFixed(2) + ' (' + (priceSrc || 'unknown') +
