@@ -2,7 +2,7 @@
 // public/sw.js (the only thing bumped each deploy) — the badge asks the active
 // service worker for it at runtime. This value is just the fallback shown when no
 // service worker is available (e.g. very first visit before it installs).
-var APP_VERSION = 'v97';
+var APP_VERSION = 'v98';
 var _resolvedAppVersion = null;
 
 // Ask the active service worker for its CACHE_VERSION (without the 'nova-' prefix).
@@ -774,7 +774,8 @@ function navModel() {
     can('view_tasks') ? navItem('tasks', 'Tasks', NAVI.check, ['tasks', 'task-detail', 'new-task', 'edit-task', 'task-templates', 'new-task-template', 'edit-task-template']) : null,
 
     navGroup('operations', 'Operations', NAVI.wrench, [
-      can('view_dispatch') ? navItem('dispatch', 'Dispatch', NAVI.wrench) : null,
+      can('view_dispatch') ? navItem('dispatch', 'Dispatch', NAVI.wrench, ['dispatch', 'dispatch-call']) : null,
+      can('search_dispatch') ? navItem('call-search', 'Call Search', icons.search || NAVI.audit) : null,
       can('view_tech_locations') ? navItem('live-map', 'Live Map', icons.map) : null,
       can('view_work_orders') ? navItem('work-orders', 'Work Orders', NAVI.box, ['work-orders', 'view-work-order', 'new-work-order']) : null,
       can('view_signoffs') ? navItem('signoffs', 'Sign-Off Sheets', NAVI.signoff, ['signoffs', 'new-signoff', 'edit-signoff', 'view-signoff', 'complete-signoff']) : null,
@@ -1020,7 +1021,7 @@ async function render() {
     if (_ovOpen) _ovOpen.classList.add('open');
   }
   const content = document.getElementById('content');
-  var _viewPerm = { dashboard:'view_pos', view:'view_pos', running:'view_pos', 'running-admin':'view_pos', new:'create_po', edit:'edit_po', quotes:'view_quotes', 'view-quote':'view_quotes', 'new-quote':'create_quote', 'edit-quote':'edit_quote', 'vr-dashboard':'view_vr', 'view-vr':'view_vr', 'new-vr':'create_vr', 'edit-vr':'edit_vr', deposits:'view_deposits', 'view-deposit':'view_deposits', signoffs:'view_signoffs', 'view-signoff':'view_signoffs', 'new-signoff':'create_signoff', 'edit-signoff':'edit_signoff', 'complete-signoff':'complete_signoff', tasks:'view_tasks', 'task-detail':'view_tasks', 'new-task':'view_tasks', 'edit-task':'view_tasks', 'task-templates':'manage_tasks', 'new-task-template':'manage_tasks', 'edit-task-template':'manage_tasks', 'work-orders':'view_work_orders', 'view-work-order':'view_work_orders', 'new-work-order':'manage_work_orders', schedule:'view_schedule', 'schedule-admin':'manage_schedule', 'schedule-nowork':'manage_schedule', invoices:'view_invoices', 'view-invoice':'view_invoices', 'new-invoice':'create_invoice', 'edit-invoice':'edit_invoice', 'invoice-parts':'view_invoices', refunds:'view_invoices', 'invoice-setup':'manage_invoice_setup', feedback:'view_feedback', 'feedback-detail':'view_feedback', 'call-lookup':'play_call_recordings', signatures:'view_signatures', 'new-signature':'manage_signatures', 'signature-editor':'manage_signatures', timeclock:'view_timeclock', 'timeclock-manager':'manage_timeclock', pto:'view_pto', 'onboarding-admin':'manage_onboarding', 'employee-files':'manage_onboarding', ptt:'view_ptt', inspections:'view_inspections', 'view-inspection':'view_inspections', 'inspection-form':'view_inspections', 'inspection-checklist':'manage_inspections', assets:'manage_assets', 'asset-detail':'manage_assets', 'asset-locations':'manage_assets', 'asset-techs':'manage_assets', 'asset-tech-detail':'view_assets', 'asset-acks':'manage_assets', 'new-asset-ack':'manage_assets', 'view-asset-ack':'view_assets', 'asset-requests':'view_assets', 'asset-catalog':'manage_assets', 'my-equipment':'view_assets', 'live-map':'view_tech_locations', 'location-settings':'manage_settings', dispatch:'view_dispatch' };
+  var _viewPerm = { dashboard:'view_pos', view:'view_pos', running:'view_pos', 'running-admin':'view_pos', new:'create_po', edit:'edit_po', quotes:'view_quotes', 'view-quote':'view_quotes', 'new-quote':'create_quote', 'edit-quote':'edit_quote', 'vr-dashboard':'view_vr', 'view-vr':'view_vr', 'new-vr':'create_vr', 'edit-vr':'edit_vr', deposits:'view_deposits', 'view-deposit':'view_deposits', signoffs:'view_signoffs', 'view-signoff':'view_signoffs', 'new-signoff':'create_signoff', 'edit-signoff':'edit_signoff', 'complete-signoff':'complete_signoff', tasks:'view_tasks', 'task-detail':'view_tasks', 'new-task':'view_tasks', 'edit-task':'view_tasks', 'task-templates':'manage_tasks', 'new-task-template':'manage_tasks', 'edit-task-template':'manage_tasks', 'work-orders':'view_work_orders', 'view-work-order':'view_work_orders', 'new-work-order':'manage_work_orders', schedule:'view_schedule', 'schedule-admin':'manage_schedule', 'schedule-nowork':'manage_schedule', invoices:'view_invoices', 'view-invoice':'view_invoices', 'new-invoice':'create_invoice', 'edit-invoice':'edit_invoice', 'invoice-parts':'view_invoices', refunds:'view_invoices', 'invoice-setup':'manage_invoice_setup', feedback:'view_feedback', 'feedback-detail':'view_feedback', 'call-lookup':'play_call_recordings', signatures:'view_signatures', 'new-signature':'manage_signatures', 'signature-editor':'manage_signatures', timeclock:'view_timeclock', 'timeclock-manager':'manage_timeclock', pto:'view_pto', 'onboarding-admin':'manage_onboarding', 'employee-files':'manage_onboarding', ptt:'view_ptt', inspections:'view_inspections', 'view-inspection':'view_inspections', 'inspection-form':'view_inspections', 'inspection-checklist':'manage_inspections', assets:'manage_assets', 'asset-detail':'manage_assets', 'asset-locations':'manage_assets', 'asset-techs':'manage_assets', 'asset-tech-detail':'view_assets', 'asset-acks':'manage_assets', 'new-asset-ack':'manage_assets', 'view-asset-ack':'view_assets', 'asset-requests':'view_assets', 'asset-catalog':'manage_assets', 'my-equipment':'view_assets', 'live-map':'view_tech_locations', 'location-settings':'manage_settings', dispatch:'view_dispatch', 'dispatch-call':'view_dispatch', 'call-search':'search_dispatch' };
   if (_viewPerm[state.currentView] && !can(_viewPerm[state.currentView])) { content.innerHTML = '<div class="alert alert-error">Access denied.</div>'; return; }
   if (state.currentView === 'home') { await renderHomeScreen(content); maybeQuizBanner(content); }
   else if (state.currentView === 'pto') await renderPto(content);
@@ -1080,6 +1081,8 @@ async function render() {
   else if (state.currentView === 'schedule') await renderSchedule(content);
   else if (state.currentView === 'schedule-admin') await renderScheduleAdmin(content);
   else if (state.currentView === 'dispatch') await renderDispatch(content);
+  else if (state.currentView === 'dispatch-call') await renderDispatchCall(content, state.currentParam);
+  else if (state.currentView === 'call-search') await renderCallSearch(content);
   else if (state.currentView === 'live-map') await renderLiveMap(content);
   else if (state.currentView === 'timeclock') await renderTimeClock(content);
   else if (state.currentView === 'timeclock-manager') await renderTimeClockManager(content);
@@ -2477,11 +2480,61 @@ async function showUserModal(id, returnView) {
           '<input type="checkbox" id="modal-pilot-map" style="width:auto"' + (user && user.extra_perms && user.extra_perms.indexOf('view_tech_locations') !== -1 ? ' checked' : '') + ' />' +
           '<label for="modal-pilot-map" style="margin:0;cursor:pointer">Live Map <span style="font-weight:400;font-size:0.8em;color:var(--text-muted-color)">(lets just this person see where the crew is, without opening it to their whole role)</span></label>' +
         '</div>' +
+        '<div class="form-group" style="display:flex;align-items:center;gap:10px">' +
+          '<input type="checkbox" id="modal-pilot-search" style="width:auto"' + (user && user.extra_perms && user.extra_perms.indexOf('search_dispatch') !== -1 ? ' checked' : '') + ' />' +
+          '<label for="modal-pilot-search" style="margin:0;cursor:pointer">Call Search <span style="font-weight:400;font-size:0.8em;color:var(--text-muted-color)">(call history - by default only calls they were on, with customer names and addresses shortened)</span></label>' +
+        '</div>' +
+        // WHICH KIND OF WORK. This is not a permission - it decides which calls
+        // exist for this person at all, and it fails closed: no ticks here means
+        // they see nothing on the board even with the box above ticked.
+        (id ? '<div class="form-group"><label>Work they can see and take</label>' +
+          '<div id="modal-svc-cats" style="border:1px solid var(--border);border-radius:var(--radius);padding:10px">' +
+            '<span style="color:var(--text-muted-color);font-size:13px">Loading...</span>' +
+          '</div>' +
+          '<div style="font-size:11.5px;color:var(--text-muted-color);margin-top:6px;line-height:1.5">' +
+            'A roadside tech normally has Roadside only. A locksmith has everything. ' +
+            '<b>Nothing ticked means they see no calls at all.</b></div>' +
+        '</div>' : '') +
         '<input type="hidden" id="modal-extra-perms" value="' + escHtml(JSON.stringify((user && user.extra_perms) || [])) + '" />' +
       '</div>' +
       '<div class="modal-footer"><button class="btn btn-secondary" onclick="this.closest(\'.modal-overlay\').remove()">Cancel</button><button class="btn btn-primary" onclick="saveUser(' + (id||'null') + ', this)">Save</button></div>' +
     '</div>';
   document.body.appendChild(overlay);
+  if (id) loadUserServiceCategories(id);
+}
+
+// Loaded after the modal is on the page rather than blocking it - the rest of
+// the form is useful even if this call is slow or the module is switched off.
+async function loadUserServiceCategories(userId) {
+  var box = document.getElementById('modal-svc-cats');
+  if (!box) return;
+  var data;
+  try { data = await api('GET', '/service-types/user/' + userId); }
+  catch (e) { box.innerHTML = '<span style="color:var(--text-muted-color);font-size:13px">Not available.</span>'; return; }
+  var rows = (data.categories || []).map(function (c) {
+    return '<div style="display:flex;align-items:center;gap:12px;padding:4px 0">' +
+      '<div style="flex:1;font-size:13.5px">' + escHtml(c.name) + '</div>' +
+      '<label style="display:flex;align-items:center;gap:6px;margin:0;font-size:12px;cursor:pointer">' +
+        '<input type="checkbox" class="svc-view" data-code="' + escHtml(c.code) + '" style="width:16px;height:16px;padding:0;margin:0"' +
+        (c.can_view ? ' checked' : '') + '> see</label>' +
+      '<label style="display:flex;align-items:center;gap:6px;margin:0;font-size:12px;cursor:pointer">' +
+        '<input type="checkbox" class="svc-assign" data-code="' + escHtml(c.code) + '" style="width:16px;height:16px;padding:0;margin:0"' +
+        (c.can_be_assigned ? ' checked' : '') + '> take</label>' +
+    '</div>';
+  }).join('');
+  box.innerHTML = rows || '<span style="color:var(--text-muted-color);font-size:13px">No categories set up yet.</span>';
+}
+
+async function saveUserServiceCategories(userId) {
+  var views = document.querySelectorAll('.svc-view');
+  if (!views.length) return;
+  var out = [];
+  for (var i = 0; i < views.length; i++) {
+    var code = views[i].getAttribute('data-code');
+    var a = document.querySelector('.svc-assign[data-code="' + code + '"]');
+    out.push({ code: code, can_view: views[i].checked, can_be_assigned: !!(a && a.checked) });
+  }
+  try { await api('POST', '/service-types/user/' + userId, { categories: out }); } catch (e) {}
 }
 
 async function saveUser(id, btn) {
@@ -2497,11 +2550,13 @@ async function saveUser(id, btn) {
   var _existingEp = []; try { _existingEp = JSON.parse((document.getElementById('modal-extra-perms')||{}).value || '[]'); } catch(e) { _existingEp = []; }
   // Preserve grants this form does not manage (e.g. Royalty access lives in extra_perms too);
   // only toggle manage_schedule here so saving a user never silently revokes Royalty access.
-  var _formManaged = ['manage_schedule', 'view_dispatch', 'view_tech_locations'];
+  var _formManaged = ['manage_schedule', 'view_dispatch', 'view_tech_locations', 'search_dispatch'];
   var extra_perms = (Array.isArray(_existingEp) ? _existingEp : []).filter(function(p){ return _formManaged.indexOf(p) === -1; });
   if ((document.getElementById('modal-edit-schedule')||{}).checked === true) extra_perms.push('manage_schedule');
   if ((document.getElementById('modal-pilot-dispatch')||{}).checked === true) extra_perms.push('view_dispatch');
   if ((document.getElementById('modal-pilot-map')||{}).checked === true) extra_perms.push('view_tech_locations');
+  if ((document.getElementById('modal-pilot-search')||{}).checked === true) extra_perms.push('search_dispatch');
+  if (id) { try { await saveUserServiceCategories(id); } catch (e) {} }
   var _cityNodes = document.querySelectorAll('.modal-city'); var city_codes = []; for (var _i=0;_i<_cityNodes.length;_i++){ if(_cityNodes[_i].checked) city_codes.push(_cityNodes[_i].value); }
   var pulsar_name=(document.getElementById('modal-pulsar')||{}).value; if(pulsar_name) pulsar_name=pulsar_name.trim();
   var nickname=(document.getElementById('modal-nickname')||{}).value; if(nickname) nickname=nickname.trim();
@@ -3035,7 +3090,8 @@ async function renderRoles(el) {
     { group:'Scheduling', gate:'view_schedule', perms:[ {k:'view_schedule',l:'View / access schedule'}, {k:'manage_schedule',l:'Build, publish & manage schedules'} ] },
     { group:'Time Off', gate:'view_pto', perms:[ {k:'view_pto',l:'View & request own PTO'}, {k:'manage_pto',l:'Approve, view team & manage PTO settings'} ] },
     { group:'Time Clock', gate:'view_timeclock', perms:[ {k:'view_timeclock',l:'Clock in/out & view own timesheet'}, {k:'manage_timeclock',l:"Manager: who's-in board, timesheets, corrections, approve & submit payroll"} ] },
-    { group:'Dispatch', gate:'view_dispatch', perms:[ {k:'view_dispatch',l:'See the dispatch board (only while marked ready to accept calls)'}, {k:'assign_dispatch',l:'Hand a call to another tech (without full dispatch control)'}, {k:'manage_dispatch',l:'Create, assign &amp; cancel calls; take someone off duty'} ] },
+    { group:'Dispatch', gate:'view_dispatch', perms:[ {k:'view_dispatch',l:'See the dispatch board (only while marked ready to accept calls)'}, {k:'assign_dispatch',l:'Hand a call to another tech (without full dispatch control)'}, {k:'manage_dispatch',l:'Create, assign &amp; cancel calls; take someone off duty'}, {k:'view_call_views',l:'See WHO ELSE opened a call (the Viewed lines on the event log)'}, {k:'manage_service_types',l:'Edit the service catalog &amp; its categories'}, {k:'manage_dispatch_tags',l:'Edit the call-tag list'} ] },
+    { group:'Call Search', gate:'search_dispatch', perms:[ {k:'search_dispatch',l:'Search call history - only calls they were on'}, {k:'search_dispatch_city',l:'Search every call in their home city'}, {k:'search_dispatch_all',l:'Search every call in every city, and export CSV'}, {k:'view_customer_pii',l:'See full customer names &amp; addresses in search (off = shortened)'} ] },
     { group:'Live Map', gate:'view_tech_locations', perms:[ {k:'view_tech_locations',l:'See where the crew is (live map &amp; route history)'}, {k:'manage_tech_locations',l:'Change tracking settings &amp; erase a tech&#39;s location history'} ] },
     { group:'Fleet &amp; Vehicles', perms:[ {k:'manage_vehicles',l:'Manage fleet registry'} ] },
     { group:'Vendors / Accounts', gate:'view_vendors', perms:[ {k:'view_vendors',l:'View / access module'}, {k:'manage_vendors',l:'Manage vendors and accounts'} ] },
