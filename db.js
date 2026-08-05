@@ -4165,6 +4165,134 @@ async function initDB() {
       console.log('Dispatch: created three empty pay grades. No rates are seeded on purpose - set them under Personnel before any call is closed out.');
     }
 
+
+    // -----------------------------------------------------------------------
+    // DISPATCH PHASE 2F - ACCOUNTS RECEIVABLE.
+    // Independent of the board. Everything it needs already sits on invoices;
+    // the account itself stays defined in ONE place - the Accounts tab - for
+    // dispatch, invoicing and A/R alike.
+    // -----------------------------------------------------------------------
+    await client.query(
+      'ALTER TABLE vendors ADD COLUMN IF NOT EXISTS ar_enabled BOOLEAN NOT NULL DEFAULT false;' +
+      'ALTER TABLE vendors ADD COLUMN IF NOT EXISTS net_days INTEGER NOT NULL DEFAULT 30;' +
+      'ALTER TABLE vendors ADD COLUMN IF NOT EXISTS credit_limit NUMERIC(12,2);' +
+      'ALTER TABLE vendors ADD COLUMN IF NOT EXISTS ar_contact_name VARCHAR(255);' +
+      'ALTER TABLE vendors ADD COLUMN IF NOT EXISTS ar_contact_email VARCHAR(255);' +
+      'ALTER TABLE vendors ADD COLUMN IF NOT EXISTS ar_statement_day INTEGER;' +
+      // The column mapping for this account's remittance file, learned once and
+      // reused. Without it somebody re-maps the same six columns every month and
+      // eventually maps one of them wrong.
+      'ALTER TABLE vendors ADD COLUMN IF NOT EXISTS ar_import_map JSONB;'
+    );
+
+    // Batches first: a payment can point at the batch it arrived in, so the
+    // table has to exist before the foreign key does.
+    await client.query(
+      'CREATE TABLE IF NOT EXISTS ar_import_batches (' +
+      '  id SERIAL PRIMARY KEY,' +
+      '  account_id INTEGER REFERENCES vendors(id) ON DELETE SET NULL,' +
+      '  filename VARCHAR(255) NOT NULL,' +
+      // The hash, not the name. Files get renamed; the money inside does not.
+      '  file_hash CHAR(64) NOT NULL,' +
+      '  line_count INTEGER NOT NULL DEFAULT 0,' +
+      '  total_amount NUMERIC(12,2) NOT NULL DEFAULT 0,' +
+      "  status VARCHAR(20) NOT NULL DEFAULT 'staged'," +
+      '  uploaded_by INTEGER REFERENCES users(id) ON DELETE SET NULL,' +
+      '  uploaded_at TIMESTAMPTZ DEFAULT NOW(),' +
+      '  posted_at TIMESTAMPTZ,' +
+      '  posted_by INTEGER REFERENCES users(id) ON DELETE SET NULL,' +
+      '  note TEXT' +
+      ');' +
+      // Posting the same remittance twice is the single most common way A/R
+      // imports go wrong, and it is silent: the account simply reads as paid
+      // ahead until somebody reconciles three months later.
+      'CREATE UNIQUE INDEX IF NOT EXISTS idx_ar_batch_file ON ar_import_batches(account_id, file_hash);'
+    );
+
+    await client.query(
+      'CREATE TABLE IF NOT EXISTS ar_payments (' +
+      '  id SERIAL PRIMARY KEY,' +
+      '  account_id INTEGER NOT NULL REFERENCES vendors(id) ON DELETE CASCADE,' +
+      '  received_on DATE NOT NULL DEFAULT CURRENT_DATE,' +
+      '  amount NUMERIC(12,2) NOT NULL,' +
+      '  method VARCHAR(20),' +
+      '  reference VARCHAR(120),' +
+      '  import_batch_id INTEGER REFERENCES ar_import_batches(id) ON DELETE SET NULL,' +
+      '  notes TEXT,' +
+      '  voided_at TIMESTAMPTZ,' +
+      '  void_reason TEXT,' +
+      '  created_by INTEGER REFERENCES users(id) ON DELETE SET NULL,' +
+      '  created_at TIMESTAMPTZ DEFAULT NOW()' +
+      ');' +
+      'CREATE INDEX IF NOT EXISTS idx_ar_pay_acct ON ar_payments(account_id, received_on);' +
+      'CREATE TABLE IF NOT EXISTS ar_payment_lines (' +
+      '  payment_id INTEGER NOT NULL REFERENCES ar_payments(id) ON DELETE CASCADE,' +
+      '  invoice_id INTEGER NOT NULL REFERENCES invoices(id) ON DELETE CASCADE,' +
+      '  amount NUMERIC(12,2) NOT NULL,' +
+      '  PRIMARY KEY (payment_id, invoice_id)' +
+      ');' +
+      'CREATE INDEX IF NOT EXISTS idx_ar_payline_inv ON ar_payment_lines(invoice_id);'
+    );
+
+    await client.query(
+      'CREATE TABLE IF NOT EXISTS ar_adjustments (' +
+      '  id SERIAL PRIMARY KEY,' +
+      '  invoice_id INTEGER NOT NULL REFERENCES invoices(id) ON DELETE CASCADE,' +
+      '  kind VARCHAR(20) NOT NULL,' +
+      '  amount NUMERIC(12,2) NOT NULL,' +
+      // NOT NULL on purpose. A write-off with no stated reason is the line item
+      // an auditor asks about and nobody can answer.
+      '  reason TEXT NOT NULL,' +
+      '  created_by INTEGER REFERENCES users(id) ON DELETE SET NULL,' +
+      '  created_at TIMESTAMPTZ DEFAULT NOW()' +
+      ');' +
+      'CREATE INDEX IF NOT EXISTS idx_ar_adj_inv ON ar_adjustments(invoice_id);'
+    );
+
+    await client.query(
+      'CREATE TABLE IF NOT EXISTS ar_import_lines (' +
+      '  id SERIAL PRIMARY KEY,' +
+      '  batch_id INTEGER NOT NULL REFERENCES ar_import_batches(id) ON DELETE CASCADE,' +
+      '  line_no INTEGER NOT NULL DEFAULT 0,' +
+      '  raw JSONB NOT NULL,' +
+      '  invoice_number VARCHAR(60),' +
+      '  invoice_id INTEGER REFERENCES invoices(id) ON DELETE SET NULL,' +
+      '  amount NUMERIC(12,2) NOT NULL DEFAULT 0,' +
+      // matched | review | unmatched | resolved. A line that did not match
+      // cleanly can never be auto-applied - an importer that guesses is worse
+      // than no importer.
+      "  match_state VARCHAR(10) NOT NULL DEFAULT 'unmatched'," +
+      '  match_note TEXT' +
+      ');' +
+      'CREATE INDEX IF NOT EXISTS idx_ar_lines_batch ON ar_import_lines(batch_id);'
+    );
+
+    // Balance is DERIVED, never stored. This view is the one definition of it,
+    // so the ledger, the aging report and the credit-limit warning can never
+    // disagree about what an account owes.
+    await client.query(
+      'CREATE OR REPLACE VIEW ar_invoice_balances AS ' +
+      'SELECT i.id AS invoice_id, i.invoice_number, i.account_id, i.account_name, ' +
+      '       i.invoice_date, i.status, TRIM(i.city_code) AS city_code, ' +
+      '       COALESCE(i.grand_total,0) AS total, ' +
+      '       COALESCE(i.refunded_total,0) AS refunded, ' +
+      '       COALESCE(p.applied,0) AS applied, ' +
+      '       COALESCE(a.adjusted,0) AS adjusted, ' +
+      '       ROUND(COALESCE(i.grand_total,0) - COALESCE(i.refunded_total,0) ' +
+      '             - COALESCE(p.applied,0) - COALESCE(a.adjusted,0), 2) AS balance, ' +
+      '       (i.invoice_date + (COALESCE(v.net_days,30) || \' days\')::interval)::date AS due_on ' +
+      'FROM invoices i ' +
+      'LEFT JOIN vendors v ON v.id = i.account_id ' +
+      'LEFT JOIN (SELECT l.invoice_id, SUM(l.amount) AS applied FROM ar_payment_lines l ' +
+      '           JOIN ar_payments pm ON pm.id = l.payment_id AND pm.voided_at IS NULL ' +
+      '           GROUP BY l.invoice_id) p ON p.invoice_id = i.id ' +
+      'LEFT JOIN (SELECT invoice_id, SUM(amount) AS adjusted FROM ar_adjustments GROUP BY invoice_id) a ' +
+      '  ON a.invoice_id = i.id ' +
+      "WHERE i.account_id IS NOT NULL AND i.status <> 'draft'"
+    );
+
+    console.log('A/R: tables ready. No account is A/R-enabled until somebody ticks it on the Accounts tab.');
+
     console.log('Database initialized');
   } finally {
     client.release();

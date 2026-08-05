@@ -135,6 +135,11 @@ ALL_PERMS.push('manage_coverage');
 // Pay figures stay out of the board payload for anyone without view_pay_report,
 // the same treatment the customer phone number already gets.
 ALL_PERMS.push('manage_pay_grades', 'view_pay_report', 'view_own_pay');
+// Accounts Receivable. view_ar reads the aging and the ledgers; manage_ar
+// records payments, adjustments and import batches. ar_writeoff is separate on
+// purpose - writing off a balance is not data entry, it is the line an auditor
+// asks about, and it should take a second person's access to do.
+ALL_PERMS.push('view_ar', 'manage_ar', 'ar_writeoff');
 
 var DEFAULTS = {
   admin: '*',
