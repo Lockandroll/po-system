@@ -24,6 +24,8 @@ const { startQuiz } = require('./jobs/quiz');
 const { startInspectionReminders } = require('./jobs/inspectionReminders');
 const { startAutoDeactivation, startQuarterlyDrill, startOffboardingCleanup } = require('./jobs/offboarding');
 const { startGotoTokenRefresh, startGotoIndex, startGotoReconcile } = require('./jobs/gotoSync');
+const { startLocationCleanup } = require('./jobs/locationCleanup');
+const { startDispatchJobs } = require('./jobs/dispatch');
 
 const app = express();
 
@@ -284,6 +286,8 @@ app.use('/api/quiz-take', require('./routes/quiz').publicRouter);
 app.use('/api/ptt', require('./routes/ptt'));
 app.use('/api/inspections', require('./routes/inspections'));
 app.use('/api/assets', require('./routes/assets'));
+app.use('/api/locations', require('./routes/locations'));
+app.use('/api/dispatch', require('./routes/dispatch'));
 
 // OAuth 2.1 authorization server for the remote MCP (must be before the SPA catch-all).
 //
@@ -367,5 +371,7 @@ initDB()
     startGotoTokenRefresh();
     startGotoIndex();
     startGotoReconcile();
+    startLocationCleanup();
+    startDispatchJobs();
   })
   .catch(err => console.error('DB init error (non-fatal):', err));

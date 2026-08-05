@@ -3495,6 +3495,182 @@ async function initDB() {
       await client.query("INSERT INTO settings (key, value) VALUES ('perm_assets_matrix_backfilled', '1') ON CONFLICT (key) DO NOTHING");
     }
 
+    // ------------------------------------------------------------------
+    //  LOCATION TRACKING (tech breadcrumbs for dispatch)
+    // ------------------------------------------------------------------
+    // tech_locations = ONE row per user, the current position. This is what the
+    // live map reads, so it stays tiny and hot.
+    // location_pings = the append-only trail, swept by jobs/locationCleanup.js.
+    await client.query(
+      'CREATE TABLE IF NOT EXISTS tech_locations (' +
+      '  user_id INTEGER PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,' +
+      '  lat NUMERIC(9,6),' +
+      '  lon NUMERIC(9,6),' +
+      '  accuracy_m REAL,' +
+      '  speed_mps REAL,' +
+      '  heading_deg REAL,' +
+      '  altitude_m REAL,' +
+      '  battery_pct SMALLINT,' +
+      '  is_moving BOOLEAN,' +
+      '  time_entry_id INTEGER REFERENCES time_entries(id) ON DELETE SET NULL,' +
+      '  city_code CHAR(3),' +
+      '  source VARCHAR(20),' +
+      '  recorded_at TIMESTAMPTZ,' +
+      '  received_at TIMESTAMPTZ DEFAULT NOW()' +
+      ');' +
+      'CREATE TABLE IF NOT EXISTS location_pings (' +
+      '  id BIGSERIAL PRIMARY KEY,' +
+      '  user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,' +
+      '  time_entry_id INTEGER REFERENCES time_entries(id) ON DELETE SET NULL,' +
+      '  lat NUMERIC(9,6) NOT NULL,' +
+      '  lon NUMERIC(9,6) NOT NULL,' +
+      '  accuracy_m REAL,' +
+      '  speed_mps REAL,' +
+      '  heading_deg REAL,' +
+      '  altitude_m REAL,' +
+      '  battery_pct SMALLINT,' +
+      '  is_moving BOOLEAN,' +
+      '  source VARCHAR(20),' +
+      '  recorded_at TIMESTAMPTZ NOT NULL,' +
+      '  received_at TIMESTAMPTZ DEFAULT NOW()' +
+      ');'
+    );
+    // Columns added after the first release go here (CREATE TABLE IF NOT EXISTS
+    // will not backfill a table that already exists on Railway).
+    await client.query(
+      'ALTER TABLE tech_locations ADD COLUMN IF NOT EXISTS altitude_m REAL;' +
+      'ALTER TABLE tech_locations ADD COLUMN IF NOT EXISTS battery_pct SMALLINT;' +
+      'ALTER TABLE tech_locations ADD COLUMN IF NOT EXISTS is_moving BOOLEAN;' +
+      'ALTER TABLE tech_locations ADD COLUMN IF NOT EXISTS time_entry_id INTEGER;' +
+      'ALTER TABLE tech_locations ADD COLUMN IF NOT EXISTS city_code CHAR(3);' +
+      'ALTER TABLE tech_locations ADD COLUMN IF NOT EXISTS source VARCHAR(20);' +
+      'ALTER TABLE location_pings ADD COLUMN IF NOT EXISTS altitude_m REAL;' +
+      'ALTER TABLE location_pings ADD COLUMN IF NOT EXISTS battery_pct SMALLINT;' +
+      'ALTER TABLE location_pings ADD COLUMN IF NOT EXISTS is_moving BOOLEAN;' +
+      'ALTER TABLE location_pings ADD COLUMN IF NOT EXISTS source VARCHAR(20);' +
+      'ALTER TABLE location_pings ADD COLUMN IF NOT EXISTS time_entry_id INTEGER;'
+    );
+    // A phone that never saw the ack for a batch resends it. The unique index
+    // turns that retry into a no-op instead of a doubled breadcrumb, so the
+    // ingest endpoint can be safely idempotent (ON CONFLICT DO NOTHING).
+    await client.query(
+      'CREATE UNIQUE INDEX IF NOT EXISTS uniq_locping_user_recorded ON location_pings(user_id, recorded_at);' +
+      'CREATE INDEX IF NOT EXISTS idx_locping_user_time ON location_pings(user_id, recorded_at DESC);' +
+      'CREATE INDEX IF NOT EXISTS idx_locping_recorded ON location_pings(recorded_at);' +
+      'CREATE INDEX IF NOT EXISTS idx_locping_entry ON location_pings(time_entry_id);'
+    );
+
+    // ------------------------------------------------------------------
+    //  DUTY STATUS + DISPATCH
+    // ------------------------------------------------------------------
+    // Techs do not punch a time clock. "Ready to accept calls" is the switch
+    // that gates location storage AND access to the dispatch board.
+    await client.query(
+      'CREATE TABLE IF NOT EXISTS tech_duty (' +
+      '  user_id INTEGER PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,' +
+      '  ready BOOLEAN NOT NULL DEFAULT false,' +
+      '  ready_since TIMESTAMPTZ,' +
+      '  last_changed_at TIMESTAMPTZ DEFAULT NOW(),' +
+      '  changed_by INTEGER REFERENCES users(id) ON DELETE SET NULL,' +
+      '  note TEXT' +
+      ');' +
+      'CREATE TABLE IF NOT EXISTS tech_duty_log (' +
+      '  id BIGSERIAL PRIMARY KEY,' +
+      '  user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,' +
+      '  ready BOOLEAN NOT NULL,' +
+      '  changed_by INTEGER REFERENCES users(id) ON DELETE SET NULL,' +
+      '  note TEXT,' +
+      '  at TIMESTAMPTZ DEFAULT NOW()' +
+      ');' +
+      'CREATE INDEX IF NOT EXISTS idx_duty_ready ON tech_duty(ready) WHERE ready = true;' +
+      'CREATE INDEX IF NOT EXISTS idx_dutylog_user ON tech_duty_log(user_id, at DESC);'
+    );
+
+    // Dispatch jobs. source/source_ref exist from day one so work orders and a
+    // future phone-system feed can land on the SAME board without a migration.
+    await client.query(
+      'CREATE TABLE IF NOT EXISTS dispatch_jobs (' +
+      '  id SERIAL PRIMARY KEY,' +
+      '  job_number VARCHAR(30) UNIQUE,' +
+      "  source VARCHAR(20) NOT NULL DEFAULT 'manual'," +
+      '  source_ref VARCHAR(120),' +
+      "  status VARCHAR(20) NOT NULL DEFAULT 'new'," +
+      "  priority VARCHAR(10) NOT NULL DEFAULT 'normal'," +
+      '  service_type VARCHAR(80),' +
+      '  customer_name VARCHAR(255),' +
+      '  customer_phone VARCHAR(50),' +
+      '  address VARCHAR(255),' +
+      '  city_state_zip VARCHAR(255),' +
+      '  city_code CHAR(3),' +
+      '  lat NUMERIC(9,6),' +
+      '  lon NUMERIC(9,6),' +
+      '  notes TEXT,' +
+      '  assigned_to INTEGER REFERENCES users(id) ON DELETE SET NULL,' +
+      '  assigned_at TIMESTAMPTZ,' +
+      '  accepted_at TIMESTAMPTZ,' +
+      '  enroute_at TIMESTAMPTZ,' +
+      '  arrived_at TIMESTAMPTZ,' +
+      '  completed_at TIMESTAMPTZ,' +
+      '  cancel_reason TEXT,' +
+      '  created_by INTEGER REFERENCES users(id) ON DELETE SET NULL,' +
+      '  created_at TIMESTAMPTZ DEFAULT NOW(),' +
+      '  updated_at TIMESTAMPTZ DEFAULT NOW()' +
+      ');' +
+      'CREATE TABLE IF NOT EXISTS dispatch_job_events (' +
+      '  id BIGSERIAL PRIMARY KEY,' +
+      '  job_id INTEGER NOT NULL REFERENCES dispatch_jobs(id) ON DELETE CASCADE,' +
+      '  event VARCHAR(30) NOT NULL,' +
+      '  user_id INTEGER REFERENCES users(id) ON DELETE SET NULL,' +
+      '  user_name VARCHAR(255),' +
+      '  detail TEXT,' +
+      '  lat NUMERIC(9,6),' +
+      '  lon NUMERIC(9,6),' +
+      '  at TIMESTAMPTZ DEFAULT NOW()' +
+      ');'
+    );
+    // Who looked at a call, and when. One row per person per job so a board
+    // refresh cannot spam the log; first_at is the one that matters in an
+    // argument about whether the tech ever saw it.
+    await client.query(
+      'CREATE TABLE IF NOT EXISTS dispatch_job_views (' +
+      '  job_id INTEGER NOT NULL REFERENCES dispatch_jobs(id) ON DELETE CASCADE,' +
+      '  user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,' +
+      '  first_at TIMESTAMPTZ DEFAULT NOW(),' +
+      '  last_at TIMESTAMPTZ DEFAULT NOW(),' +
+      '  views INTEGER NOT NULL DEFAULT 1,' +
+      '  PRIMARY KEY (job_id, user_id)' +
+      ');' +
+      'CREATE INDEX IF NOT EXISTS idx_djv_job ON dispatch_job_views(job_id);'
+    );
+    await client.query(
+      'ALTER TABLE dispatch_jobs ADD COLUMN IF NOT EXISTS source_ref VARCHAR(120);' +
+      'ALTER TABLE dispatch_jobs ADD COLUMN IF NOT EXISTS goa_at TIMESTAMPTZ;' +
+      'ALTER TABLE dispatch_jobs ADD COLUMN IF NOT EXISTS goa_note TEXT;' +
+      'ALTER TABLE dispatch_jobs ADD COLUMN IF NOT EXISTS accept_reminder_at TIMESTAMPTZ;' +
+      'ALTER TABLE dispatch_jobs ADD COLUMN IF NOT EXISTS unassigned_alert_at TIMESTAMPTZ;' +
+      'ALTER TABLE dispatch_jobs ADD COLUMN IF NOT EXISTS lat NUMERIC(9,6);' +
+      'ALTER TABLE dispatch_jobs ADD COLUMN IF NOT EXISTS lon NUMERIC(9,6);' +
+      'ALTER TABLE dispatch_jobs ADD COLUMN IF NOT EXISTS cancel_reason TEXT;' +
+      'ALTER TABLE dispatch_jobs ADD COLUMN IF NOT EXISTS accepted_at TIMESTAMPTZ;' +
+      'CREATE INDEX IF NOT EXISTS idx_dispatch_status ON dispatch_jobs(status);' +
+      'CREATE INDEX IF NOT EXISTS idx_dispatch_assigned ON dispatch_jobs(assigned_to);' +
+      'CREATE INDEX IF NOT EXISTS idx_dispatch_city ON dispatch_jobs(city_code);' +
+      'CREATE INDEX IF NOT EXISTS idx_dispatch_events ON dispatch_job_events(job_id, at);'
+    );
+
+    // NO permission backfill for Dispatch / Live Map, on purpose.
+    //
+    // Every other module here backfilled its new permissions onto the saved role
+    // matrix so nobody lost access on deploy. This one ships DARK: the rows
+    // appear in Roles & Access unticked, so on the day this deploys the only
+    // people who can see Dispatch or the Live Map are admins and the owner
+    // (admin is '*' and cannot be restricted).
+    //
+    // That is deliberate. Tony asked to pilot this quietly before the crew sees
+    // it. To let one specific tech in without opening it to their whole role,
+    // use the per-person checkboxes on Edit User, which write users.extra_perms.
+    // When it is ready for everyone, tick the boxes in Roles & Access.
+
     console.log('Database initialized');
   } finally {
     client.release();

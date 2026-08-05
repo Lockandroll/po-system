@@ -159,7 +159,7 @@ function _apiNoCache(path) {
          /^\/goto(\/|$)/.test(path) || /\/recordings(\/|$|\?)/.test(path) ||
          /setup-needed/.test(path) || /verify/.test(path) || /usage/.test(path) ||
          /token/.test(path) || /^\/timeclock/.test(path) || /notif/.test(path) ||
-         /\/id-image/.test(path) || /\/dispute-packet/.test(path);
+         /\/id-image/.test(path) || /\/dispute-packet/.test(path) || /^\/locations/.test(path);
 }
 function _apiCacheKey(path) { return (state.viewAsId ? 'v' + state.viewAsId + ' ' : '') + path; }
 function _apiClone(d) { try { return JSON.parse(JSON.stringify(d)); } catch (e) { return d; } }
@@ -774,6 +774,8 @@ function navModel() {
     can('view_tasks') ? navItem('tasks', 'Tasks', NAVI.check, ['tasks', 'task-detail', 'new-task', 'edit-task', 'task-templates', 'new-task-template', 'edit-task-template']) : null,
 
     navGroup('operations', 'Operations', NAVI.wrench, [
+      can('view_dispatch') ? navItem('dispatch', 'Dispatch', NAVI.wrench) : null,
+      can('view_tech_locations') ? navItem('live-map', 'Live Map', icons.map) : null,
       can('view_work_orders') ? navItem('work-orders', 'Work Orders', NAVI.box, ['work-orders', 'view-work-order', 'new-work-order']) : null,
       can('view_signoffs') ? navItem('signoffs', 'Sign-Off Sheets', NAVI.signoff, ['signoffs', 'new-signoff', 'edit-signoff', 'view-signoff', 'complete-signoff']) : null,
       can('view_ptt') ? navItem('ptt', 'Radio', NAVI.mic) : null
@@ -859,6 +861,7 @@ function navModel() {
       can('manage_parts') ? navItem('parts-list', 'Parts List', NAVI.box) : null,
       can('manage_settings') ? navItem('notifications', 'Notifications', NAVI.bell) : null,
       can('manage_settings') ? navItem('scheduled-messages', 'Scheduled Messages', NAVI.clock) : null,
+      can('manage_settings') ? navItem('location-settings', 'Location Tracking', icons.map) : null,
       can('view_users') ? navItem('users', 'Users', icons.users) : null,
       can('manage_cities') ? navItem('cities', 'Cities', icons.map) : null,
       can('view_audit') ? navItem('audit', 'Audit Log', NAVI.audit) : null,
@@ -1017,7 +1020,7 @@ async function render() {
     if (_ovOpen) _ovOpen.classList.add('open');
   }
   const content = document.getElementById('content');
-  var _viewPerm = { dashboard:'view_pos', view:'view_pos', running:'view_pos', 'running-admin':'view_pos', new:'create_po', edit:'edit_po', quotes:'view_quotes', 'view-quote':'view_quotes', 'new-quote':'create_quote', 'edit-quote':'edit_quote', 'vr-dashboard':'view_vr', 'view-vr':'view_vr', 'new-vr':'create_vr', 'edit-vr':'edit_vr', deposits:'view_deposits', 'view-deposit':'view_deposits', signoffs:'view_signoffs', 'view-signoff':'view_signoffs', 'new-signoff':'create_signoff', 'edit-signoff':'edit_signoff', 'complete-signoff':'complete_signoff', tasks:'view_tasks', 'task-detail':'view_tasks', 'new-task':'view_tasks', 'edit-task':'view_tasks', 'task-templates':'manage_tasks', 'new-task-template':'manage_tasks', 'edit-task-template':'manage_tasks', 'work-orders':'view_work_orders', 'view-work-order':'view_work_orders', 'new-work-order':'manage_work_orders', schedule:'view_schedule', 'schedule-admin':'manage_schedule', 'schedule-nowork':'manage_schedule', invoices:'view_invoices', 'view-invoice':'view_invoices', 'new-invoice':'create_invoice', 'edit-invoice':'edit_invoice', 'invoice-parts':'view_invoices', refunds:'view_invoices', 'invoice-setup':'manage_invoice_setup', feedback:'view_feedback', 'feedback-detail':'view_feedback', 'call-lookup':'play_call_recordings', signatures:'view_signatures', 'new-signature':'manage_signatures', 'signature-editor':'manage_signatures', timeclock:'view_timeclock', 'timeclock-manager':'manage_timeclock', pto:'view_pto', 'onboarding-admin':'manage_onboarding', 'employee-files':'manage_onboarding', ptt:'view_ptt', inspections:'view_inspections', 'view-inspection':'view_inspections', 'inspection-form':'view_inspections', 'inspection-checklist':'manage_inspections', assets:'manage_assets', 'asset-detail':'manage_assets', 'asset-locations':'manage_assets', 'asset-techs':'manage_assets', 'asset-tech-detail':'view_assets', 'asset-acks':'manage_assets', 'new-asset-ack':'manage_assets', 'view-asset-ack':'view_assets', 'asset-requests':'view_assets', 'asset-catalog':'manage_assets', 'my-equipment':'view_assets' };
+  var _viewPerm = { dashboard:'view_pos', view:'view_pos', running:'view_pos', 'running-admin':'view_pos', new:'create_po', edit:'edit_po', quotes:'view_quotes', 'view-quote':'view_quotes', 'new-quote':'create_quote', 'edit-quote':'edit_quote', 'vr-dashboard':'view_vr', 'view-vr':'view_vr', 'new-vr':'create_vr', 'edit-vr':'edit_vr', deposits:'view_deposits', 'view-deposit':'view_deposits', signoffs:'view_signoffs', 'view-signoff':'view_signoffs', 'new-signoff':'create_signoff', 'edit-signoff':'edit_signoff', 'complete-signoff':'complete_signoff', tasks:'view_tasks', 'task-detail':'view_tasks', 'new-task':'view_tasks', 'edit-task':'view_tasks', 'task-templates':'manage_tasks', 'new-task-template':'manage_tasks', 'edit-task-template':'manage_tasks', 'work-orders':'view_work_orders', 'view-work-order':'view_work_orders', 'new-work-order':'manage_work_orders', schedule:'view_schedule', 'schedule-admin':'manage_schedule', 'schedule-nowork':'manage_schedule', invoices:'view_invoices', 'view-invoice':'view_invoices', 'new-invoice':'create_invoice', 'edit-invoice':'edit_invoice', 'invoice-parts':'view_invoices', refunds:'view_invoices', 'invoice-setup':'manage_invoice_setup', feedback:'view_feedback', 'feedback-detail':'view_feedback', 'call-lookup':'play_call_recordings', signatures:'view_signatures', 'new-signature':'manage_signatures', 'signature-editor':'manage_signatures', timeclock:'view_timeclock', 'timeclock-manager':'manage_timeclock', pto:'view_pto', 'onboarding-admin':'manage_onboarding', 'employee-files':'manage_onboarding', ptt:'view_ptt', inspections:'view_inspections', 'view-inspection':'view_inspections', 'inspection-form':'view_inspections', 'inspection-checklist':'manage_inspections', assets:'manage_assets', 'asset-detail':'manage_assets', 'asset-locations':'manage_assets', 'asset-techs':'manage_assets', 'asset-tech-detail':'view_assets', 'asset-acks':'manage_assets', 'new-asset-ack':'manage_assets', 'view-asset-ack':'view_assets', 'asset-requests':'view_assets', 'asset-catalog':'manage_assets', 'my-equipment':'view_assets', 'live-map':'view_tech_locations', 'location-settings':'manage_settings', dispatch:'view_dispatch' };
   if (_viewPerm[state.currentView] && !can(_viewPerm[state.currentView])) { content.innerHTML = '<div class="alert alert-error">Access denied.</div>'; return; }
   if (state.currentView === 'home') { await renderHomeScreen(content); maybeQuizBanner(content); }
   else if (state.currentView === 'pto') await renderPto(content);
@@ -1055,6 +1058,7 @@ async function render() {
   else if (state.currentView === 'company-info') await renderCompanyInfo(content);
   else if (state.currentView === 'ai-context') await renderAIContext(content);
   else if (state.currentView === 'notifications') await renderNotifications(content);
+  else if (state.currentView === 'location-settings') await renderLocationSettings(content);
   else if (state.currentView === 'integrations') await renderIntegrations(content);
   else if (state.currentView === 'security') await renderSecurity(content);
   else if (state.currentView === 'scheduled-messages') await renderScheduledMessages(content);
@@ -1075,6 +1079,8 @@ async function render() {
   else if (state.currentView === 'new-work-order') await renderWorkOrderForm(content);
   else if (state.currentView === 'schedule') await renderSchedule(content);
   else if (state.currentView === 'schedule-admin') await renderScheduleAdmin(content);
+  else if (state.currentView === 'dispatch') await renderDispatch(content);
+  else if (state.currentView === 'live-map') await renderLiveMap(content);
   else if (state.currentView === 'timeclock') await renderTimeClock(content);
   else if (state.currentView === 'timeclock-manager') await renderTimeClockManager(content);
   else if (state.currentView === 'org-chart') await renderOrgChart(content);
@@ -2463,6 +2469,14 @@ async function showUserModal(id, returnView) {
           '<input type="checkbox" id="modal-edit-schedule" style="width:auto"' + (user && user.extra_perms && user.extra_perms.indexOf('manage_schedule') !== -1 ? ' checked' : '') + ' />' +
           '<label for="modal-edit-schedule" style="margin:0;cursor:pointer">Can build &amp; edit the schedule <span style="font-weight:400;font-size:0.8em;color:var(--text-muted-color)">(gives this non-manager the full schedule builder for their assigned cities)</span></label>' +
         '</div>' +
+        '<div class="form-group" style="display:flex;align-items:center;gap:10px">' +
+          '<input type="checkbox" id="modal-pilot-dispatch" style="width:auto"' + (user && user.extra_perms && user.extra_perms.indexOf('view_dispatch') !== -1 ? ' checked' : '') + ' />' +
+          '<label for="modal-pilot-dispatch" style="margin:0;cursor:pointer">Dispatch board <span style="font-weight:400;font-size:0.8em;color:var(--text-muted-color)">(lets just this person onto the board while it is being piloted &mdash; they still have to mark themselves ready to accept calls)</span></label>' +
+        '</div>' +
+        '<div class="form-group" style="display:flex;align-items:center;gap:10px">' +
+          '<input type="checkbox" id="modal-pilot-map" style="width:auto"' + (user && user.extra_perms && user.extra_perms.indexOf('view_tech_locations') !== -1 ? ' checked' : '') + ' />' +
+          '<label for="modal-pilot-map" style="margin:0;cursor:pointer">Live Map <span style="font-weight:400;font-size:0.8em;color:var(--text-muted-color)">(lets just this person see where the crew is, without opening it to their whole role)</span></label>' +
+        '</div>' +
         '<input type="hidden" id="modal-extra-perms" value="' + escHtml(JSON.stringify((user && user.extra_perms) || [])) + '" />' +
       '</div>' +
       '<div class="modal-footer"><button class="btn btn-secondary" onclick="this.closest(\'.modal-overlay\').remove()">Cancel</button><button class="btn btn-primary" onclick="saveUser(' + (id||'null') + ', this)">Save</button></div>' +
@@ -2483,8 +2497,11 @@ async function saveUser(id, btn) {
   var _existingEp = []; try { _existingEp = JSON.parse((document.getElementById('modal-extra-perms')||{}).value || '[]'); } catch(e) { _existingEp = []; }
   // Preserve grants this form does not manage (e.g. Royalty access lives in extra_perms too);
   // only toggle manage_schedule here so saving a user never silently revokes Royalty access.
-  var extra_perms = (Array.isArray(_existingEp) ? _existingEp : []).filter(function(p){ return p !== 'manage_schedule'; });
+  var _formManaged = ['manage_schedule', 'view_dispatch', 'view_tech_locations'];
+  var extra_perms = (Array.isArray(_existingEp) ? _existingEp : []).filter(function(p){ return _formManaged.indexOf(p) === -1; });
   if ((document.getElementById('modal-edit-schedule')||{}).checked === true) extra_perms.push('manage_schedule');
+  if ((document.getElementById('modal-pilot-dispatch')||{}).checked === true) extra_perms.push('view_dispatch');
+  if ((document.getElementById('modal-pilot-map')||{}).checked === true) extra_perms.push('view_tech_locations');
   var _cityNodes = document.querySelectorAll('.modal-city'); var city_codes = []; for (var _i=0;_i<_cityNodes.length;_i++){ if(_cityNodes[_i].checked) city_codes.push(_cityNodes[_i].value); }
   var pulsar_name=(document.getElementById('modal-pulsar')||{}).value; if(pulsar_name) pulsar_name=pulsar_name.trim();
   var nickname=(document.getElementById('modal-nickname')||{}).value; if(nickname) nickname=nickname.trim();
@@ -3018,6 +3035,8 @@ async function renderRoles(el) {
     { group:'Scheduling', gate:'view_schedule', perms:[ {k:'view_schedule',l:'View / access schedule'}, {k:'manage_schedule',l:'Build, publish & manage schedules'} ] },
     { group:'Time Off', gate:'view_pto', perms:[ {k:'view_pto',l:'View & request own PTO'}, {k:'manage_pto',l:'Approve, view team & manage PTO settings'} ] },
     { group:'Time Clock', gate:'view_timeclock', perms:[ {k:'view_timeclock',l:'Clock in/out & view own timesheet'}, {k:'manage_timeclock',l:"Manager: who's-in board, timesheets, corrections, approve & submit payroll"} ] },
+    { group:'Dispatch', gate:'view_dispatch', perms:[ {k:'view_dispatch',l:'See the dispatch board (only while marked ready to accept calls)'}, {k:'assign_dispatch',l:'Hand a call to another tech (without full dispatch control)'}, {k:'manage_dispatch',l:'Create, assign &amp; cancel calls; take someone off duty'} ] },
+    { group:'Live Map', gate:'view_tech_locations', perms:[ {k:'view_tech_locations',l:'See where the crew is (live map &amp; route history)'}, {k:'manage_tech_locations',l:'Change tracking settings &amp; erase a tech&#39;s location history'} ] },
     { group:'Fleet &amp; Vehicles', perms:[ {k:'manage_vehicles',l:'Manage fleet registry'} ] },
     { group:'Vendors / Accounts', gate:'view_vendors', perms:[ {k:'view_vendors',l:'View / access module'}, {k:'manage_vendors',l:'Manage vendors and accounts'} ] },
     { group:'Vehicle Inspections', gate:'view_inspections', perms:[ {k:'view_inspections',l:'View / access module (own vehicle inspections)'}, {k:'manage_inspections',l:'Manage checklist, review, edit &amp; delete inspections'} ] },

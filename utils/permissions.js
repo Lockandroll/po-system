@@ -84,6 +84,22 @@ ALL_PERMS.push('view_offboarding', 'manage_offboarding', 'send_exit_form', 'view
 // routes/assets.js, unlike every other module here.
 EMPLOYEE_PERMS.push('view_assets', 'request_asset_replacement');
 ALL_PERMS.push('view_assets', 'manage_assets', 'request_asset_replacement', 'approve_asset_replacement');
+// Live tech locations. Deliberately NOT an employee permission: a tech does not
+// need to see where everyone else is, and handing the whole crew a map of each
+// other is a different product than dispatch. Being TRACKED needs no permission,
+// it is company policy gated on the time clock (see routes/locations.js).
+ALL_PERMS.push('view_tech_locations', 'manage_tech_locations');
+// Dispatch board. Deliberately NOT in EMPLOYEE_PERMS and NOT in any role's
+// DEFAULTS: this module is piloting, so it is off for everybody until an admin
+// ticks the box in Roles & Access, or grants one person via users.extra_perms
+// on Edit User. Seeing the board ALSO requires being marked "ready to accept
+// calls" (routes/dispatch.js requireBoardAccess) - the permission only decides
+// whether the door exists, duty decides whether it is open.
+ALL_PERMS.push('view_dispatch', 'manage_dispatch');
+// Handing a call to someone else is its own permission on purpose. A lead tech
+// often needs to pass a call along without also being able to create calls or
+// cancel them, and manage_dispatch is too big a hammer for that.
+ALL_PERMS.push('assign_dispatch');
 
 var DEFAULTS = {
   admin: '*',
