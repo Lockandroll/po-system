@@ -66,11 +66,20 @@ function likeTerm(s) {
   return '%' + String(s).replace(/([\\%_])/g, '\\$1') + '%';
 }
 
-// GET all quotes (own only, unless admin)
+// Who reads quotes team-wide vs. only their own. Admins and managers always have,
+// and as of 2026-08-05 locksmith coordinators do too: the role exists to coordinate
+// the locksmiths, so it needs to see the whole team's quotes, not just its own
+// (Tony's call). READ scope only. Editing or deleting someone else's quote stays
+// admin-only below, exactly as it already is for managers.
+function canSeeAllQuotes(role) {
+  return role === 'admin' || role === 'manager' || role === 'locksmith_coordinator';
+}
+
+// GET all quotes (own only, unless you can see all; see canSeeAllQuotes)
 router.get('/', requireAuth, requirePermission('view_quotes'), async (req, res) => {
   try {
     let query, params;
-    if (['admin','manager'].includes(req.user.role)) {
+    if (canSeeAllQuotes(req.user.role)) {
       query = LIST_SELECT + ' ORDER BY q.created_at DESC';
       params = [];
     } else {
@@ -106,7 +115,7 @@ router.get('/search', requireAuth, requirePermission('view_quotes'), async (req,
     }
 
     let scope = '';
-    if (!['admin','manager'].includes(req.user.role)) {
+    if (!canSeeAllQuotes(req.user.role)) {
       params.push(req.user.id);
       scope = ' AND q.requester_id = $' + params.length;
     }
@@ -145,7 +154,7 @@ router.get('/:id', requireAuth, requirePermission('view_quotes'), async (req, re
     );
     if (!rows.length) return res.status(404).json({ error: 'Quote not found' });
     const quote = rows[0];
-    if (!['admin', 'manager'].includes(req.user.role) && quote.requester_id !== req.user.id) {
+    if (!canSeeAllQuotes(req.user.role) && quote.requester_id !== req.user.id) {
       return res.status(403).json({ error: 'Access denied' });
     }
     const { rows: items } = await pool.query(
@@ -416,9 +425,9 @@ router.post('/:id/push-to-po', requireAuth, requirePermission('push_quote_po'), 
 // ===== Quote photos =====
 // Reference images attached to a quote. Bytes live in Cloudflare R2; only
 // metadata + the R2 key are stored here. Same access rule as the quote itself:
-// admins/managers see all, everyone else only their own quotes.
+// admins/managers/locksmith coordinators see all, everyone else only their own.
 function canAccessQuote(user, quote) {
-  return user.role === 'admin' || user.role === 'manager' || quote.requester_id === user.id;
+  return canSeeAllQuotes(user.role) || quote.requester_id === user.id;
 }
 
 function sanitizePhotoName(name) {

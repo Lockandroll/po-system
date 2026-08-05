@@ -257,8 +257,18 @@ function buildInvoicePdf(inv, items, photos, opts) {
       }
 
       // ---- Notes / payments ----
-      if (inv.payments_note) { doc.moveDown(0.4); doc.font('Helvetica-Bold').fontSize(9).fillColor('#111111').text('Payments: ', { continued: true }); doc.font('Helvetica').text(String(inv.payments_note)); }
-      if (inv.notes) { doc.font('Helvetica-Bold').fontSize(9).fillColor('#111111').text('Notes: ', { continued: true }); doc.font('Helvetica').text(String(inv.notes)); }
+      // Draw these full-width from the left margin. The totals block above leaves
+      // doc.x parked near the right edge, so without an explicit x + width these
+      // lines would inherit that cursor and wrap in a narrow right-hand column.
+      if (inv.payments_note || inv.notes) doc.moveDown(0.4);
+      if (inv.payments_note) {
+        doc.font('Helvetica-Bold').fontSize(9).fillColor('#111111').text('Payments: ', left, doc.y, { width: pageW, continued: true });
+        doc.font('Helvetica').text(String(inv.payments_note));
+      }
+      if (inv.notes) {
+        doc.font('Helvetica-Bold').fontSize(9).fillColor('#111111').text('Notes: ', left, doc.y, { width: pageW, continued: true });
+        doc.font('Helvetica').text(String(inv.notes));
+      }
 
       // ---- Agreement ----
       var agreement = String(inv.agreement_text || '').split('{customer}').join(inv.customer_name || '__________');

@@ -323,7 +323,14 @@ function anthropicVision(dataUrl, instruction) {
   });
 }
 
-function canSeeAll(role) { return role === 'admin' || role === 'manager'; }
+// Team-wide invoice visibility. Admins and managers have always had it; as of
+// 2026-08-05 locksmith coordinators do too (Tony's call). The role coordinates
+// the locksmiths and needs the whole team's invoices, not just its own. This gate
+// also governs the manager-level invoice surfaces (ID-on-file image, dispute
+// packet, Square reconciliation) and lets the holder act on any invoice they can
+// also WRITE, so a coordinator only reaches those once they hold view_invoices or
+// edit_invoice in Roles & Access, which is the separate go-live toggle.
+function canSeeAll(role) { return role === 'admin' || role === 'manager' || role === 'locksmith_coordinator'; }
 
 // ---- config / accounts -----------------------------------------------------
 
