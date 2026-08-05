@@ -128,6 +128,13 @@ ALL_PERMS.push('manage_pricing');
 // Coverage zones. Separate from pricing because drawing the map of where you
 // work and setting what you charge are different jobs, often different people.
 ALL_PERMS.push('manage_coverage');
+// Tech pay. Three permissions because they are three different trust levels:
+// writing the rate tables, reading everybody's pay, and reading your own.
+// view_own_pay is the one a tech eventually gets; it never widens past the
+// person asking, and it is enforced in the query rather than the template.
+// Pay figures stay out of the board payload for anyone without view_pay_report,
+// the same treatment the customer phone number already gets.
+ALL_PERMS.push('manage_pay_grades', 'view_pay_report', 'view_own_pay');
 
 var DEFAULTS = {
   admin: '*',

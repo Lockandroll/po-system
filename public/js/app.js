@@ -2,7 +2,7 @@
 // public/sw.js (the only thing bumped each deploy) — the badge asks the active
 // service worker for it at runtime. This value is just the fallback shown when no
 // service worker is available (e.g. very first visit before it installs).
-var APP_VERSION = 'v100';
+var APP_VERSION = 'v101';
 var _resolvedAppVersion = null;
 
 // Ask the active service worker for its CACHE_VERSION (without the 'nova-' prefix).
@@ -832,7 +832,9 @@ function navModel() {
       can('view_pto') ? navItem('pto', 'Time Off', NAVI.calendarCheck) : null,
       navItem('org-chart', 'Org Chart', NAVI.orgChart),
       can('manage_onboarding') ? navItem('onboarding-admin', 'Onboarding', NAVI.userCheck) : null,
-      can('manage_onboarding') ? navItem('employee-files', 'Employee Files', NAVI.folder) : null
+      can('manage_onboarding') ? navItem('employee-files', 'Employee Files', NAVI.folder) : null,
+      (can('view_pay_report') || can('manage_pay_grades') || can('view_own_pay'))
+        ? navItem('tech-pay', 'Tech Pay', NAVI.receipt) : null
     ]),
 
     navGroup('docs', 'Training &amp; Docs', NAVI.cap, [
@@ -1024,7 +1026,11 @@ async function render() {
   }
   const content = document.getElementById('content');
   var _viewPerm = { dashboard:'view_pos', view:'view_pos', running:'view_pos', 'running-admin':'view_pos', new:'create_po', edit:'edit_po', quotes:'view_quotes', 'view-quote':'view_quotes', 'new-quote':'create_quote', 'edit-quote':'edit_quote', 'vr-dashboard':'view_vr', 'view-vr':'view_vr', 'new-vr':'create_vr', 'edit-vr':'edit_vr', deposits:'view_deposits', 'view-deposit':'view_deposits', signoffs:'view_signoffs', 'view-signoff':'view_signoffs', 'new-signoff':'create_signoff', 'edit-signoff':'edit_signoff', 'complete-signoff':'complete_signoff', tasks:'view_tasks', 'task-detail':'view_tasks', 'new-task':'view_tasks', 'edit-task':'view_tasks', 'task-templates':'manage_tasks', 'new-task-template':'manage_tasks', 'edit-task-template':'manage_tasks', 'work-orders':'view_work_orders', 'view-work-order':'view_work_orders', 'new-work-order':'manage_work_orders', schedule:'view_schedule', 'schedule-admin':'manage_schedule', 'schedule-nowork':'manage_schedule', invoices:'view_invoices', 'view-invoice':'view_invoices', 'new-invoice':'create_invoice', 'edit-invoice':'edit_invoice', 'invoice-parts':'view_invoices', refunds:'view_invoices', 'invoice-setup':'manage_invoice_setup', feedback:'view_feedback', 'feedback-detail':'view_feedback', 'call-lookup':'play_call_recordings', signatures:'view_signatures', 'new-signature':'manage_signatures', 'signature-editor':'manage_signatures', timeclock:'view_timeclock', 'timeclock-manager':'manage_timeclock', pto:'view_pto', 'onboarding-admin':'manage_onboarding', 'employee-files':'manage_onboarding', ptt:'view_ptt', inspections:'view_inspections', 'view-inspection':'view_inspections', 'inspection-form':'view_inspections', 'inspection-checklist':'manage_inspections', assets:'manage_assets', 'asset-detail':'manage_assets', 'asset-locations':'manage_assets', 'asset-techs':'manage_assets', 'asset-tech-detail':'view_assets', 'asset-acks':'manage_assets', 'new-asset-ack':'manage_assets', 'view-asset-ack':'view_assets', 'asset-requests':'view_assets', 'asset-catalog':'manage_assets', 'my-equipment':'view_assets', 'live-map':'view_tech_locations', 'location-settings':'manage_settings', dispatch:'view_dispatch', 'dispatch-call':'view_dispatch', 'call-search':'search_dispatch', 'time-codes':'manage_pricing', coverage:'manage_coverage' };
-  if (_viewPerm[state.currentView] && !can(_viewPerm[state.currentView])) { content.innerHTML = '<div class="alert alert-error">Access denied.</div>'; return; }
+  var _viewAnyOf = { 'tech-pay': ['view_pay_report', 'manage_pay_grades', 'view_own_pay'] };
+  var _anyOf = _viewAnyOf[state.currentView];
+  if (_anyOf) {
+    if (!_anyOf.some(function (p) { return can(p); })) { content.innerHTML = '<div class="alert alert-error">Access denied.</div>'; return; }
+  } else if (_viewPerm[state.currentView] && !can(_viewPerm[state.currentView])) { content.innerHTML = '<div class="alert alert-error">Access denied.</div>'; return; }
   if (state.currentView === 'home') { await renderHomeScreen(content); maybeQuizBanner(content); }
   else if (state.currentView === 'pto') await renderPto(content);
   else if (state.currentView === 'onboarding-admin') await renderOnboardingAdmin(content);
@@ -1087,6 +1093,7 @@ async function render() {
   else if (state.currentView === 'call-search') await renderCallSearch(content);
   else if (state.currentView === 'time-codes') await renderTimeCodes(content);
   else if (state.currentView === 'coverage') await renderCoverage(content);
+  else if (state.currentView === 'tech-pay') await renderPay(content);
   else if (state.currentView === 'live-map') await renderLiveMap(content);
   else if (state.currentView === 'timeclock') await renderTimeClock(content);
   else if (state.currentView === 'timeclock-manager') await renderTimeClockManager(content);
@@ -3097,6 +3104,10 @@ async function renderRoles(el) {
     { group:'Dispatch', gate:'view_dispatch', perms:[ {k:'view_dispatch',l:'See the dispatch board (only while marked ready to accept calls)'}, {k:'assign_dispatch',l:'Hand a call to another tech (without full dispatch control)'}, {k:'manage_dispatch',l:'Create, assign &amp; cancel calls; take someone off duty'}, {k:'view_call_views',l:'See WHO ELSE opened a call (the Viewed lines on the event log)'}, {k:'manage_service_types',l:'Edit the service catalog &amp; its categories'}, {k:'manage_dispatch_tags',l:'Edit the call-tag list'} ] },
     { group:'Pricing &amp; Service', gate:'manage_pricing', perms:[ {k:'manage_pricing',l:'Set time codes, prices and ETAs per service per city, and account price exceptions'} ] },
     { group:'Coverage Zones', gate:'manage_coverage', perms:[ {k:'manage_coverage',l:'Draw the map of where you work, and what each zone does to price and ETA'} ] },
+    { group:'Tech Pay', gate:'view_pay_report', perms:[
+      {k:'manage_pay_grades',l:'Write the pay tables - grades, rates and per-person overrides'},
+      {k:'view_pay_report',l:'See everybody\'s pay figures and the pay report'},
+      {k:'view_own_pay',l:'See their own pay on their own calls'} ] },
     { group:'Call Search', gate:'search_dispatch', perms:[ {k:'search_dispatch',l:'Search call history - only calls they were on'}, {k:'search_dispatch_city',l:'Search every call in their home city'}, {k:'search_dispatch_all',l:'Search every call in every city, and export CSV'}, {k:'view_customer_pii',l:'See full customer names &amp; addresses in search (off = shortened)'} ] },
     { group:'Live Map', gate:'view_tech_locations', perms:[ {k:'view_tech_locations',l:'See where the crew is (live map &amp; route history)'}, {k:'manage_tech_locations',l:'Change tracking settings &amp; erase a tech&#39;s location history'} ] },
     { group:'Fleet &amp; Vehicles', perms:[ {k:'manage_vehicles',l:'Manage fleet registry'} ] },

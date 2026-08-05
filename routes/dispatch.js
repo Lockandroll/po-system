@@ -7,6 +7,7 @@ const permissions = require('../utils/permissions');
 const push = require('../utils/push');
 const pricing = require('../utils/pricing');
 const geo = require('../utils/geocode');
+const pay = require('../utils/pay');
 const zones = require('../utils/zones');
 
 const router = express.Router();
@@ -263,6 +264,33 @@ async function notifyAssigned(jobId, userId) {
 // list. That means it cannot be read off the screen, copied, or kept, and every
 // call to a customer leaves a record. Managers still see it, because dispatch
 // reads numbers back to people all day.
+// Pay figures get the same treatment as the customer phone number: they do not
+// travel with the board payload unless the person asking is allowed to see
+// them. view_own_pay narrows that to the calls they were the tech on - checked
+// against assigned_to here, on the server, because a figure that reaches the
+// JSON has leaked no matter what the screen chooses to draw.
+const PAY_COLS = ['pay_row_id', 'pay_row_title', 'pay_labor_type', 'pay_basis_amount',
+  'pay_total', 'pay_job_amount', 'pay_vehicle_amount', 'pay_split_pct',
+  'pay_tip_amount', 'pay_note'];
+
+function stripPay(rows, mode, userId) {
+  if (mode === 'all') return rows;
+  return rows.map(function (j) {
+    if (mode === 'own' && j.assigned_to === userId) return j;
+    const out = Object.assign({}, j);
+    PAY_COLS.forEach(function (c) { delete out[c]; });
+    return out;
+  });
+}
+
+// 'all' | 'own' | 'none'
+async function payVisibility(req) {
+  if (await hasPerm(req, 'view_pay_report')) return 'all';
+  if (await hasPerm(req, 'manage_pay_grades')) return 'all';
+  if (await hasPerm(req, 'view_own_pay')) return 'own';
+  return 'none';
+}
+
 function stripPhone(rows) {
   return rows.map(function (j) {
     const out = Object.assign({}, j);
@@ -325,7 +353,7 @@ router.get('/jobs', requireAuth, requirePermission('view_dispatch'), requireBoar
     rows.forEach(function (j) { delete j.views; });
   }
   res.json({
-    jobs: req._dispatchManage ? rows : stripPhone(rows),
+    jobs: stripPay(req._dispatchManage ? rows : stripPhone(rows), await payVisibility(req), req.user.id),
     canManage: !!req._dispatchManage,
     canAssign: await canAssign(req),
     canSeeViews: seeViews,
@@ -352,7 +380,8 @@ router.get('/jobs/:id', requireAuth, requirePermission('view_dispatch'), require
     vws = vw.rows;
   }
   await recordView(id, req.user.id);
-  const job = req._dispatchManage ? r.rows[0] : stripPhone([r.rows[0]])[0];
+  const job = stripPay([req._dispatchManage ? r.rows[0] : stripPhone([r.rows[0]])[0]],
+    await payVisibility(req), req.user.id)[0];
   res.json({ job: job, events: ev.rows, views: vws, canSeeViews: seeViews, canManage: !!req._dispatchManage });
 });
 
@@ -459,7 +488,7 @@ router.post('/jobs', requireAuth, requirePermission('manage_dispatch'), async fu
   await logAudit({ entity_type: 'dispatch_job', entity_id: id, entity_number: num, action: 'create',
     user_id: req.user.id, user_name: req.user.name, details: { assigned_to: assign }, ip: req.ip });
   const out = await pool.query(JOB_SELECT + 'WHERE j.id = $1', [id]);
-  res.json(out.rows[0]);
+  res.json(stripPay([out.rows[0]], await payVisibility(req), req.user.id)[0]);
 });
 
 router.put('/jobs/:id', requireAuth, requirePermission('manage_dispatch'), async function (req, res) {
@@ -517,7 +546,7 @@ router.put('/jobs/:id', requireAuth, requirePermission('manage_dispatch'), async
       b.is_edu ? 'Emergency Door Unlocking - child or pet in vehicle' : null);
   }
   const out = await pool.query(JOB_SELECT + 'WHERE j.id = $1', [id]);
-  res.json(out.rows[0]);
+  res.json(stripPay([out.rows[0]], await payVisibility(req), req.user.id)[0]);
 });
 
 // Assigning to somebody who is not ready is allowed but ANSWERED honestly, so
@@ -663,8 +692,33 @@ router.post('/jobs/:id/status', requireAuth, requirePermission('view_dispatch'),
   await pool.query(sql, want === 'goa' ? [want, id, note] : [want, id]);
   await logEvent(id, want, req, note);
 
+  // ---- freeze the pay ----------------------------------------------------
+  // Computed ONCE, here, and stored with the title of the row that produced it.
+  // A grade edit next month must never restate last month's payroll.
+  //
+  // Wrapped because a pay table that is not set up yet is not a reason a tech
+  // cannot close their call. It fails to a flag on the report, which somebody
+  // reads, rather than a 500 on a phone at 2am, which nobody can act on.
+  if (want === 'done' || want === 'goa') {
+    try {
+      const paid = await pay.snapshotForJob(id, {
+        labor_amount: req.body && req.body.labor_amount,
+        tip_amount: req.body && req.body.tip_amount
+      });
+      if (paid && paid.ok && paid.flags && paid.flags.length) {
+        await logEvent(id, 'pay_flag', req, 'Pay needs attention: ' + paid.flags.join(', '));
+      } else if (paid && paid.ok) {
+        await logEvent(id, 'pay_locked', req,
+          (paid.pay.pay_row_title || 'no row') + ' - $' + Number(paid.pay.pay_total || 0).toFixed(2));
+      }
+    } catch (e) {
+      console.error('pay snapshot failed for job ' + id + ':', e.message);
+      try { await logEvent(id, 'pay_flag', req, 'Pay could not be calculated: ' + e.message); } catch (e2) {}
+    }
+  }
+
   const out = await pool.query(JOB_SELECT + 'WHERE j.id = $1', [id]);
-  res.json(out.rows[0]);
+  res.json(stripPay([out.rows[0]], await payVisibility(req), req.user.id)[0]);
 });
 
 router.post('/jobs/:id/cancel', requireAuth, requirePermission('manage_dispatch'), async function (req, res) {
@@ -737,7 +791,7 @@ router.post('/jobs/:id/tags', requireAuth, requirePermission('view_dispatch'), r
     'ON CONFLICT (job_id, tag_id) DO NOTHING RETURNING job_id', [id, tagId, req.user.id]);
   if (r.rows.length) await logEvent(id, 'tag_added', req, t.rows[0].name);
   const out = await pool.query(JOB_SELECT + 'WHERE j.id = $1', [id]);
-  res.json(out.rows[0]);
+  res.json(stripPay([out.rows[0]], await payVisibility(req), req.user.id)[0]);
 });
 
 router.delete('/jobs/:id/tags/:tagId', requireAuth, requirePermission('view_dispatch'), requireBoardAccess, async function (req, res) {
@@ -748,7 +802,7 @@ router.delete('/jobs/:id/tags/:tagId', requireAuth, requirePermission('view_disp
   const r = await pool.query('DELETE FROM dispatch_job_tags WHERE job_id = $1 AND tag_id = $2 RETURNING job_id', [id, tagId]);
   if (r.rows.length) await logEvent(id, 'tag_removed', req, (t.rows[0] && t.rows[0].name) || null);
   const out = await pool.query(JOB_SELECT + 'WHERE j.id = $1', [id]);
-  res.json(out.rows[0]);
+  res.json(stripPay([out.rows[0]], await payVisibility(req), req.user.id)[0]);
 });
 
 // Reference data the board and the call editor need in one round trip.

@@ -4082,6 +4082,89 @@ async function initDB() {
       'CREATE INDEX IF NOT EXISTS idx_geocache_age ON geocode_cache(provider, created_at);'
     );
 
+
+    // -----------------------------------------------------------------------
+    // DISPATCH PHASE 2E - TECH PAY.
+    // A pay table is rows of: title, amount, labor type, call source, time
+    // codes, services - the shape of the Payroll Pro screen. A GRADE is simply
+    // a saved table. Same grade names company-wide, a separate set of rows per
+    // city, so a transfer keeps their grade instead of needing a new one.
+    // -----------------------------------------------------------------------
+    await client.query(
+      'CREATE TABLE IF NOT EXISTS pay_grades (' +
+      '  id SERIAL PRIMARY KEY,' +
+      '  name VARCHAR(80) NOT NULL,' +
+      '  sort INTEGER NOT NULL DEFAULT 0,' +
+      '  active BOOLEAN NOT NULL DEFAULT true' +
+      ');'
+    );
+
+    await client.query(
+      'CREATE TABLE IF NOT EXISTS pay_rows (' +
+      '  id SERIAL PRIMARY KEY,' +
+      '  grade_id INTEGER REFERENCES pay_grades(id) ON DELETE CASCADE,' +
+      '  user_id INTEGER REFERENCES users(id) ON DELETE CASCADE,' +
+      '  city_code CHAR(3) NOT NULL,' +
+      '  title VARCHAR(80) NOT NULL,' +
+      '  labor_type VARCHAR(24) NOT NULL,' +
+      '  amount NUMERIC(10,2) NOT NULL,' +
+      '  applies_public BOOLEAN NOT NULL DEFAULT true,' +
+      '  applies_accounts BOOLEAN NOT NULL DEFAULT true,' +
+      '  account_id INTEGER REFERENCES vendors(id) ON DELETE CASCADE,' +
+      '  code_ids SMALLINT[],' +
+      '  service_type_ids INTEGER[],' +
+      '  edu_only BOOLEAN NOT NULL DEFAULT false,' +
+      '  note TEXT,' +
+      '  effective_from DATE NOT NULL DEFAULT CURRENT_DATE,' +
+      '  effective_to DATE,' +
+      '  active BOOLEAN NOT NULL DEFAULT true,' +
+      // Exactly one of the two: a row belongs to a grade OR to one person as an
+      // override. A row that is both would be applied twice; a row that is
+      // neither would never be found.
+      '  CONSTRAINT pay_rows_owner CHECK ((grade_id IS NULL) <> (user_id IS NULL))' +
+      ');' +
+      'CREATE INDEX IF NOT EXISTS idx_payrows_grade ON pay_rows(grade_id, city_code);' +
+      'CREATE INDEX IF NOT EXISTS idx_payrows_user ON pay_rows(user_id, city_code);'
+    );
+
+    await client.query(
+      'ALTER TABLE users ADD COLUMN IF NOT EXISTS pay_grade_id INTEGER REFERENCES pay_grades(id) ON DELETE SET NULL;' +
+      "ALTER TABLE users ADD COLUMN IF NOT EXISTS pay_arrangement VARCHAR(20) NOT NULL DEFAULT 'none';" +
+      'ALTER TABLE users ADD COLUMN IF NOT EXISTS vehicle_split_pct NUMERIC(5,2) NOT NULL DEFAULT 0;'
+    );
+
+    // The pay snapshot. Computed ONCE, when the call reaches done or goa, and
+    // stored with the TITLE of the row that produced it - so a grade edit next
+    // month cannot restate last month's payroll, and a tech querying their
+    // cheque gets an answer instead of an argument.
+    await client.query(
+      'ALTER TABLE dispatch_jobs ADD COLUMN IF NOT EXISTS pay_row_id INTEGER REFERENCES pay_rows(id) ON DELETE SET NULL;' +
+      'ALTER TABLE dispatch_jobs ADD COLUMN IF NOT EXISTS pay_row_title VARCHAR(80);' +
+      'ALTER TABLE dispatch_jobs ADD COLUMN IF NOT EXISTS pay_labor_type VARCHAR(24);' +
+      'ALTER TABLE dispatch_jobs ADD COLUMN IF NOT EXISTS pay_basis_amount NUMERIC(10,2);' +
+      'ALTER TABLE dispatch_jobs ADD COLUMN IF NOT EXISTS pay_total NUMERIC(10,2);' +
+      'ALTER TABLE dispatch_jobs ADD COLUMN IF NOT EXISTS pay_job_amount NUMERIC(10,2);' +
+      'ALTER TABLE dispatch_jobs ADD COLUMN IF NOT EXISTS pay_vehicle_amount NUMERIC(10,2);' +
+      'ALTER TABLE dispatch_jobs ADD COLUMN IF NOT EXISTS pay_split_pct NUMERIC(5,2);' +
+      'ALTER TABLE dispatch_jobs ADD COLUMN IF NOT EXISTS pay_tip_amount NUMERIC(10,2);' +
+      'ALTER TABLE dispatch_jobs ADD COLUMN IF NOT EXISTS pay_locked_at TIMESTAMPTZ;' +
+      'ALTER TABLE dispatch_jobs ADD COLUMN IF NOT EXISTS pay_note TEXT;' +
+      'CREATE INDEX IF NOT EXISTS idx_dispatch_pay ON dispatch_jobs(assigned_to, pay_locked_at);'
+    );
+
+    // Three grades to start from, empty. Deliberately no seeded RATES: a seeded
+    // rate is a wrong number on somebody's paycheck, and unlike a wrong price it
+    // is not something a customer will query for you.
+    const _pgSeed = await client.query("SELECT value FROM settings WHERE key = 'pay_grades_seeded'");
+    if (!_pgSeed.rows.length) {
+      await client.query(
+        "INSERT INTO pay_grades (name, sort) VALUES " +
+        "('Grade 1 - Apprentice',1),('Grade 2 - Technician',2),('Grade 3 - Senior',3)"
+      );
+      await client.query("INSERT INTO settings (key, value) VALUES ('pay_grades_seeded', '1') ON CONFLICT (key) DO NOTHING");
+      console.log('Dispatch: created three empty pay grades. No rates are seeded on purpose - set them under Personnel before any call is closed out.');
+    }
+
     console.log('Database initialized');
   } finally {
     client.release();
