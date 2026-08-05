@@ -1,0 +1,98 @@
+# ===========================================================================
+#  Build the Nova Android app
+# ---------------------------------------------------------------------------
+#  GitHub builds the app for you. Nothing needs installing on your computer:
+#  no Android Studio, no Node, no cables.
+#
+#  To get a new app:
+#    1. github.com/Lockandroll/po-system  ->  Actions tab
+#    2. "Build the Nova Android app" on the left  ->  "Run workflow" button
+#    3. Wait for the green tick (about five minutes)
+#    4. The finished app lands on the Releases page as nova.apk
+#
+#  You only need to do this when the NATIVE part changes. Ordinary Nova edits
+#  reach the phones on their own, because the app loads the live site.
+# ===========================================================================
+name: Build the Nova Android app
+
+on:
+  workflow_dispatch:          # the "Run workflow" button
+  push:
+    branches: [ main ]
+    paths:
+      - 'mobile/**'           # only when the shell itself changes
+      - '.github/workflows/android.yml'
+
+permissions:
+  contents: write             # needed to publish the finished app to Releases
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Get the code
+        uses: actions/checkout@v4
+
+      # GitHub's Linux runners already have the Android SDK installed, which is
+      # the whole reason this is easier than building on a laptop.
+      # Java 17, not a newer one. This project is on Android Gradle Plugin 8.2.1
+      # and Gradle 8.2.1, and neither of those runs on Java 21. Bumping this
+      # without bumping those two breaks the build.
+      - name: Set up Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Fetch the app's building blocks
+        working-directory: mobile
+        run: npm install --no-audit --no-fund
+
+      # Regenerates the files that mobile/android/.gitignore deliberately keeps
+      # out of the repo (the web assets copy and the generated config).
+      - name: Wire up the native project
+        working-directory: mobile
+        run: npx cap sync android
+
+      - name: Build it
+        working-directory: mobile/android
+        run: |
+          chmod +x ./gradlew
+          ./gradlew assembleDebug --no-daemon --stacktrace
+
+      - name: Name it something a human can find
+        run: cp mobile/android/app/build/outputs/apk/debug/app-debug.apk nova.apk
+
+      # Kept as a downloadable file on the run itself, as a backstop if the
+      # Release step is ever blocked by repository settings.
+      - name: Attach it to this run
+        uses: actions/upload-artifact@v4
+        with:
+          name: nova-android-app
+          path: nova.apk
+          if-no-files-found: error
+
+      # The one that matters: a permanent, stable link you can open on a phone.
+      # The tag is reused every time, so the address never changes:
+      # https://github.com/Lockandroll/po-system/releases/download/android-latest/nova.apk
+      - name: Publish it to Releases
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: android-latest
+          name: Nova for Android (latest build)
+          body: |
+            Open this page on the phone and tap **nova.apk** to install.
+
+            Built from commit ${{ github.sha }}.
+
+            Android will ask whether to allow installing apps from your browser.
+            Say yes; that is only because this is not coming from the Play Store.
+          files: nova.apk
+          prerelease: true
+          make_latest: false
