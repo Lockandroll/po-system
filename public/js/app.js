@@ -779,7 +779,8 @@ function navModel() {
       can('view_tech_locations') ? navItem('live-map', 'Live Map', icons.map) : null,
       can('view_work_orders') ? navItem('work-orders', 'Work Orders', NAVI.box, ['work-orders', 'view-work-order', 'new-work-order']) : null,
       can('view_signoffs') ? navItem('signoffs', 'Sign-Off Sheets', NAVI.signoff, ['signoffs', 'new-signoff', 'edit-signoff', 'view-signoff', 'complete-signoff']) : null,
-      can('view_ptt') ? navItem('ptt', 'Radio', NAVI.mic) : null
+      can('view_ptt') ? navItem('ptt', 'Radio', NAVI.mic) : null,
+      (can('view_vendors') || can('manage_vendors')) ? navItem('vendors', 'Accounts', NAVI.accounts) : null
     ]),
 
     navGroup('sales', 'Sales &amp; Billing', NAVI.receipt, [
@@ -798,7 +799,6 @@ function navModel() {
     navGroup('purchasing', 'Purchasing', icons.dashboard, [
       can('view_pos') ? navItem('dashboard', 'Purchase Orders', icons.dashboard, ['dashboard', 'new', 'edit', 'view']) : null,
       (can('view_pos') && role !== 'approver') ? navItem(can('manage_running') ? 'running-admin' : 'running', 'Monthly Req', NAVI.reqList, ['running', 'running-admin']) : null,
-      (can('view_vendors') || can('manage_vendors')) ? navItem('vendors', 'Accounts', NAVI.accounts) : null,
       can('manage_parts') ? navItem('parts-list', 'Parts List', NAVI.box) : null
     ]),
 
@@ -5452,12 +5452,6 @@ function showVendorModal(id) {
           '<div class="form-group"><label>Rep Email</label><input type="email" id="vm-rep-email" value="' + escHtml(rep_email||'') + '" placeholder="rep@vendor.com" /></div>' +
           '<div class="form-group"><label>Rep Phone</label><input type="text" id="vm-rep-phone" value="' + escHtml(rep_phone||'') + '" placeholder="555-123-4567" /></div>' +
         '</div>' +
-        '<div style="border-top:1px solid var(--border);margin:16px 0 12px;padding-top:12px;font-size:13px;font-weight:600;color:var(--text-muted-color);text-transform:uppercase;letter-spacing:0.05em">Close-out Requirements</div>' +
-        '<div style="font-size:12px;color:var(--text-muted-color);margin:-4px 0 10px">What an invoice on this account must have before it can be marked Completed or Paid. Leave all off to require none.</div>' +
-        '<label style="display:flex;align-items:center;gap:8px;cursor:pointer;margin-bottom:8px"><input type="checkbox" id="vm-req-signature" style="width:auto"' + (_v.require_signature ? ' checked' : '') + ' /> <span>Require signature <span style="font-size:11px;color:var(--text-muted-color)">(shows the agreement + signature pad; off hides them)</span></span></label>' +
-        '<label style="display:flex;align-items:center;gap:8px;cursor:pointer;margin-bottom:8px"><input type="checkbox" id="vm-req-entitlement" style="width:auto"' + (_v.require_entitlement ? ' checked' : '') + ' /> <span>Require entitlement documentation <span style="font-size:11px;color:var(--text-muted-color)">(Registration, Insurance, Title or Rental Agreement)</span></span></label>' +
-        '<label style="display:flex;align-items:center;gap:8px;cursor:pointer;margin-bottom:8px"><input type="checkbox" id="vm-req-vehicle" style="width:auto"' + (_v.require_vehicle ? ' checked' : '') + ' /> <span>Require vehicle information <span style="font-size:11px;color:var(--text-muted-color)">(year, make and model)</span></span></label>' +
-        '<label style="display:flex;align-items:center;gap:8px;cursor:pointer;margin-bottom:12px"><input type="checkbox" id="vm-req-photos" style="width:auto"' + (_v.require_photos ? ' checked' : '') + ' /> <span>Require at least one photo</span></label>' +
         '<div style="border-top:1px solid var(--border);margin:16px 0 12px;padding-top:12px;font-size:13px;font-weight:600;color:var(--text-muted-color);text-transform:uppercase;letter-spacing:0.05em">Restrict Visibility</div>' +
         '<label style="display:flex;align-items:center;gap:8px;cursor:pointer;margin-bottom:8px"><input type="checkbox" id="vm-restrict" style="width:auto"' + (isRestricted ? ' checked' : '') + ' onchange="vendorToggleRestrict()" /> <span>Only specific people can see this account</span></label>' +
         '<div id="vm-restrict-box" style="' + (isRestricted ? '' : 'display:none') + '">' +
@@ -5510,11 +5504,7 @@ async function saveVendor(id) {
     rep_name: (document.getElementById('vm-rep-name')||{}).value.trim() || null,
     rep_email: (document.getElementById('vm-rep-email')||{}).value.trim() || null,
     rep_phone: (document.getElementById('vm-rep-phone')||{}).value.trim() || null,
-    city_code: (document.getElementById('vm-city')||{}).value || null,
-    require_signature: (document.getElementById('vm-req-signature')||{}).checked === true,
-    require_entitlement: (document.getElementById('vm-req-entitlement')||{}).checked === true,
-    require_vehicle: (document.getElementById('vm-req-vehicle')||{}).checked === true,
-    require_photos: (document.getElementById('vm-req-photos')||{}).checked === true
+    city_code: (document.getElementById('vm-city')||{}).value || null
   };
   var _restrict = (document.getElementById('vm-restrict')||{}).checked;
   var _rids = [];
@@ -14387,6 +14377,12 @@ function renderInvSetupAccounts() {
           '<label style="display:block;margin-bottom:4px">Auto line items (pre-loaded when this account is chosen)</label>' +
           '<div id="invset-auto-' + i + '"></div>' +
           '<button class="btn btn-secondary btn-sm" style="margin-top:6px;white-space:nowrap" onclick="invSetupAddAuto(' + i + ')">' + '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" style="vertical-align:-2px;flex-shrink:0"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>' + ' Add auto line</button>' +
+          '<div style="border-top:1px solid var(--border);margin:16px 0 10px;padding-top:12px;font-size:13px;font-weight:600;color:var(--text-muted-color);text-transform:uppercase;letter-spacing:0.05em">Close-out Requirements</div>' +
+          '<div style="font-size:12px;color:var(--text-muted-color);margin:-2px 0 10px">What an invoice on this account must have before it can be marked Completed or Paid. Leave all off to require none.</div>' +
+          '<label style="display:flex;align-items:center;gap:8px;cursor:pointer;margin-bottom:8px"><input type="checkbox" id="invset-reqsig-' + i + '" style="width:auto"' + (v.require_signature ? ' checked' : '') + ' onchange="invSetupToggleReq(' + i + ',\'require_signature\',this)" /> <span>Require signature <span style="font-size:11px;color:var(--text-muted-color)">(shows the agreement + signature pad; off hides them)</span></span></label>' +
+          '<label style="display:flex;align-items:center;gap:8px;cursor:pointer;margin-bottom:8px"><input type="checkbox" id="invset-reqent-' + i + '" style="width:auto"' + (v.require_entitlement ? ' checked' : '') + ' onchange="invSetupToggleReq(' + i + ',\'require_entitlement\',this)" /> <span>Require entitlement documentation <span style="font-size:11px;color:var(--text-muted-color)">(Registration, Insurance, Title or Rental Agreement)</span></span></label>' +
+          '<label style="display:flex;align-items:center;gap:8px;cursor:pointer;margin-bottom:8px"><input type="checkbox" id="invset-reqveh-' + i + '" style="width:auto"' + (v.require_vehicle ? ' checked' : '') + ' onchange="invSetupToggleReq(' + i + ',\'require_vehicle\',this)" /> <span>Require vehicle information <span style="font-size:11px;color:var(--text-muted-color)">(year, make and model)</span></span></label>' +
+          '<label style="display:flex;align-items:center;gap:8px;cursor:pointer;margin-bottom:4px"><input type="checkbox" id="invset-reqpho-' + i + '" style="width:auto"' + (v.require_photos ? ' checked' : '') + ' onchange="invSetupToggleReq(' + i + ',\'require_photos\',this)" /> <span>Require at least one photo</span></label>' +
           '<div style="margin-top:12px"><button class="btn btn-primary btn-sm" onclick="invSetupSave(' + i + ')">Save Account</button></div>' +
         '</div>' : '') +
     '</div>';
@@ -14414,6 +14410,7 @@ function renderInvSetupAuto(i) {
     }).join('') + '</tbody></table></div>';
 }
 function invSetupToggleShow(i, cb) { _invSetupVendors[i].show_in_invoice = cb.checked; }
+function invSetupToggleReq(i, field, cb) { _invSetupVendors[i][field] = cb.checked === true; }
 function invSetupToggleOpen(i) { _invSetupVendors[i]._open = !_invSetupVendors[i]._open; renderInvSetupAccounts(); }
 function invSetupAddAuto(i) {
   var v = _invSetupVendors[i];
@@ -14438,6 +14435,8 @@ async function invSetupSave(i) {
     notes: v.notes, rep_name: v.rep_name, rep_email: v.rep_email, rep_phone: v.rep_phone, city_code: v.city_code,
     show_in_invoice: v.show_in_invoice === true, invoice_notes: v.invoice_notes || null,
     agreement_text: v.agreement_text || null,
+    require_signature: v.require_signature === true, require_entitlement: v.require_entitlement === true,
+    require_vehicle: v.require_vehicle === true, require_photos: v.require_photos === true,
     auto_line_items: (v.auto_line_items && v.auto_line_items.length) ? v.auto_line_items.filter(function(li){ return (li.description||'').trim(); }) : null
   };
   var msg = document.getElementById('inv-setup-msg');
