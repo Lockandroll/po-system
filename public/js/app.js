@@ -2,7 +2,7 @@
 // public/sw.js (the only thing bumped each deploy) — the badge asks the active
 // service worker for it at runtime. This value is just the fallback shown when no
 // service worker is available (e.g. very first visit before it installs).
-var APP_VERSION = 'v103';
+var APP_VERSION = 'v104';
 var _resolvedAppVersion = null;
 
 // Ask the active service worker for its CACHE_VERSION (without the 'nova-' prefix).
@@ -11282,12 +11282,43 @@ function invMoney(n){ return '$' + (parseFloat(n)||0).toFixed(2); }
 function invStatusLabel(s){ var k = String(s || ''); var m = (typeof INV_STATUS_LABELS !== 'undefined' && INV_STATUS_LABELS) || {}; return m[k] || (k ? (k.charAt(0).toUpperCase() + k.slice(1).split('_').join(' ')) : ''); }
 
 // ---------- Dashboard / list ----------
+// Invoice list: client-side filtering + pagination state.
+// (Named invList* so it never collides with the inventory list's _invPage / invPageSize.)
+var _invListPage = 1;
+var _invListPageSize = 15;
+
 async function renderInvoices(el) {
   try {
     var invoices = await api('GET', '/invoices');
     var seeAll = ['admin','manager'].indexOf(state.user.role) !== -1;
     window._invoicesData = invoices;
     window._invoicesSeeAll = seeAll;
+    _invListPage = 1; // page size persists across visits; page always resets
+
+    // Build the filter dropdown option lists from the loaded data.
+    var cityList = invListUnique(invoices.map(function(r){ return r.city_code; }));
+    var acctList = invListUnique(invoices.map(function(r){ return r.account_name; }));
+    var lockList = seeAll ? invListUnique(invoices.map(function(r){ return r.locksmith_name || r.locksmith_name_join; })) : [];
+    var statusList = INV_STATUSES.slice();
+    invoices.forEach(function(r){ if (r.status && statusList.indexOf(r.status) === -1) statusList.push(r.status); });
+
+    var plainOpts = function(list){ return list.map(function(x){ return '<option value="' + escHtml(x) + '">' + escHtml(x) + '</option>'; }).join(''); };
+    var statusOpts = '<option value="">All statuses</option>' + statusList.map(function(s){ return '<option value="' + escHtml(s) + '">' + escHtml(invStatusLabel(s)) + '</option>'; }).join('');
+    var cityOpts = '<option value="">All cities</option>' + plainOpts(cityList);
+    var acctOpts = '<option value="">All accounts</option>' + plainOpts(acctList);
+    var lockOpts = '<option value="">All locksmiths</option>' + plainOpts(lockList);
+    var selStyle = 'background:var(--bg-elevated);color:var(--text-dim);border:1px solid var(--border);border-radius:6px;padding:7px 9px;font-size:13px;cursor:pointer;min-width:130px';
+
+    var filterBar =
+      '<div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;padding:12px 16px;border-bottom:1px solid var(--border)">' +
+        '<select id="invoice-filter-status" onchange="filterInvoices()" style="' + selStyle + '">' + statusOpts + '</select>' +
+        '<select id="invoice-filter-city" onchange="filterInvoices()" style="' + selStyle + '">' + cityOpts + '</select>' +
+        '<select id="invoice-filter-account" onchange="filterInvoices()" style="' + selStyle + '">' + acctOpts + '</select>' +
+        (seeAll ? '<select id="invoice-filter-locksmith" onchange="filterInvoices()" style="' + selStyle + '">' + lockOpts + '</select>' : '') +
+        '<button class="btn btn-secondary btn-sm" onclick="invListClearFilters()">Clear filters</button>' +
+        '<span id="invoice-result-count" style="font-size:13px;color:var(--text-muted-color);margin-left:auto"></span>' +
+      '</div>';
+
     el.innerHTML =
       '<div class="page-header">' +
         '<div><div class="page-title">Invoices</div><div class="page-subtitle">' + (seeAll ? 'All invoices' : 'Your invoices') + '</div></div>' +
@@ -11296,11 +11327,13 @@ async function renderInvoices(el) {
       '<div class="card">' +
         '<div class="card-header" style="display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap">' +
           '<span class="card-title">Invoice List</span>' +
-          '<input type="text" id="invoice-search" placeholder="Search #, customer, account, vehicle..." style="width:280px" oninput="filterInvoices()" />' +
+          '<input type="text" id="invoice-search" placeholder="Search #, customer, account, vehicle..." style="width:260px" oninput="filterInvoices()" />' +
         '</div>' +
         (invoices.length === 0
           ? '<div class="empty-state"><h3>No invoices yet</h3><p>Create your first invoice to get started.</p></div>'
-          : '<div id="invoices-table-wrap"></div>') +
+          : filterBar +
+            '<div id="invoices-table-wrap"></div>' +
+            '<div id="invoices-pagination"></div>') +
       '</div>';
     if (invoices.length) filterInvoices();
   } catch(err) {
@@ -11308,26 +11341,104 @@ async function renderInvoices(el) {
   }
 }
 
+// De-duplicate + case-insensitively sort a column's values for a filter dropdown (drops blanks).
+function invListUnique(arr) {
+  var seen = {}, out = [];
+  (arr || []).forEach(function(x){
+    var v = (x == null ? '' : String(x)).trim();
+    if (v && !seen[v]) { seen[v] = 1; out.push(v); }
+  });
+  out.sort(function(a, b){ var la = a.toLowerCase(), lb = b.toLowerCase(); return la < lb ? -1 : (la > lb ? 1 : 0); });
+  return out;
+}
+
+// Apply the active search box + dropdown filters to the loaded invoices.
+function invListFilteredRows() {
+  var data = window._invoicesData || [];
+  var q = ((document.getElementById('invoice-search') || {}).value || '').toLowerCase().trim();
+  var fStatus = (document.getElementById('invoice-filter-status') || {}).value || '';
+  var fCity = (document.getElementById('invoice-filter-city') || {}).value || '';
+  var fAccount = (document.getElementById('invoice-filter-account') || {}).value || '';
+  var fLock = (document.getElementById('invoice-filter-locksmith') || {}).value || '';
+  return data.filter(function(r){
+    if (fStatus && String(r.status || '') !== fStatus) return false;
+    if (fCity && String(r.city_code || '').trim() !== fCity) return false;
+    if (fAccount && String(r.account_name || '').trim() !== fAccount) return false;
+    if (fLock && String(r.locksmith_name || r.locksmith_name_join || '').trim() !== fLock) return false;
+    if (q) {
+      var veh = [r.vehicle_year, r.vehicle_make, r.vehicle_model].filter(Boolean).join(' ');
+      var hit = String(r.invoice_number || '').toLowerCase().indexOf(q) !== -1 ||
+                (r.customer_name || '').toLowerCase().indexOf(q) !== -1 ||
+                (r.account_name || '').toLowerCase().indexOf(q) !== -1 ||
+                (r.city_code || '').toLowerCase().indexOf(q) !== -1 ||
+                (veh).toLowerCase().indexOf(q) !== -1 ||
+                (r.locksmith_name || r.locksmith_name_join || '').toLowerCase().indexOf(q) !== -1;
+      if (!hit) return false;
+    }
+    return true;
+  });
+}
+
+// Any filter/search change resets to the first page, then re-renders.
 function filterInvoices() {
+  _invListPage = 1;
+  invListRenderTable();
+}
+
+function invListClearFilters() {
+  var s = document.getElementById('invoice-search');
+  if (s) s.value = '';
+  ['invoice-filter-status','invoice-filter-city','invoice-filter-account','invoice-filter-locksmith'].forEach(function(id){
+    var e = document.getElementById(id);
+    if (e) e.value = '';
+  });
+  _invListPage = 1;
+  invListRenderTable();
+}
+
+function invListGoPage(p) {
+  var total = invListFilteredRows().length;
+  var size = _invListPageSize || 15;
+  var totalPages = Math.max(1, Math.ceil(total / size));
+  _invListPage = Math.min(Math.max(1, p), totalPages);
+  invListRenderTable();
+}
+
+function invListPageSize(v) {
+  _invListPageSize = parsePageSize(v);
+  _invListPage = 1;
+  invListRenderTable();
+}
+
+// Filter -> paginate -> draw the current page of the invoice list.
+function invListRenderTable() {
   var wrap = document.getElementById('invoices-table-wrap');
   if (!wrap || !window._invoicesData) return;
   var seeAll = window._invoicesSeeAll;
-  var q = ((document.getElementById('invoice-search') || {}).value || '').toLowerCase();
-  var rows = window._invoicesData.filter(function(r){
-    if (!q) return true;
-    var veh = [r.vehicle_year, r.vehicle_make, r.vehicle_model].filter(Boolean).join(' ');
-    return String(r.invoice_number||'').toLowerCase().indexOf(q) !== -1 ||
-           (r.customer_name||'').toLowerCase().indexOf(q) !== -1 ||
-           (r.account_name||'').toLowerCase().indexOf(q) !== -1 ||
-           (r.city_code||'').toLowerCase().indexOf(q) !== -1 ||
-           (veh).toLowerCase().indexOf(q) !== -1 ||
-           (r.locksmith_name||r.locksmith_name_join||'').toLowerCase().indexOf(q) !== -1;
-  });
-  if (!rows.length) { wrap.innerHTML = '<div class="empty-state"><h3>No matching invoices</h3><p>Try a different search.</p></div>'; return; }
+  var rows = invListFilteredRows();
+  var total = rows.length;
+  var size = _invListPageSize || 15;
+  var totalPages = Math.max(1, Math.ceil(total / size));
+  var page = Math.min(Math.max(1, _invListPage || 1), totalPages);
+  _invListPage = page;
+
+  var cnt = document.getElementById('invoice-result-count');
+  if (cnt) cnt.textContent = total + ' invoice' + (total !== 1 ? 's' : '');
+
+  var pgEl = document.getElementById('invoices-pagination');
+  if (!total) {
+    wrap.innerHTML = '<div class="empty-state"><h3>No matching invoices</h3><p>Try a different search or clear the filters.</p></div>';
+    if (pgEl) pgEl.innerHTML = '';
+    return;
+  }
+
+  var startIdx = (page - 1) * size;
+  var pageRows = (size >= 1e9) ? rows : rows.slice(startIdx, startIdx + size);
+
   wrap.innerHTML =
     '<div class="table-wrap"><table>' +
     '<thead><tr><th>Invoice #</th><th>Customer</th><th>City</th><th>Account</th><th>Vehicle</th>' + (seeAll ? '<th>Locksmith</th>' : '') + '<th>Status</th><th class="text-right">Total</th><th>Date</th></tr></thead>' +
-    '<tbody>' + rows.map(function(r){
+    '<tbody>' + pageRows.map(function(r){
       var veh = [r.vehicle_year, r.vehicle_make, r.vehicle_model].filter(Boolean).join(' ') || '—';
       return '<tr style="cursor:pointer" onclick="navigate(\'view-invoice\',' + r.id + ')">' +
         '<td style="font-weight:600">#' + escHtml(r.invoice_number) + '</td>' +
@@ -11344,6 +11455,8 @@ function filterInvoices() {
         '<td>' + formatDate(r.invoice_date || r.created_at) + '</td>' +
       '</tr>';
     }).join('') + '</tbody></table></div>';
+
+  if (pgEl) pgEl.innerHTML = renderPagination(page, totalPages, total, 'invListGoPage', size, 'invListPageSize');
 }
 
 // ---------- Create / edit form ----------
