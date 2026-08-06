@@ -138,6 +138,15 @@
     .nav-sub:hover { background:var(--bg-elevated); color:var(--text); }
     .nav-sub.active { background:rgba(249,115,22,0.12); color:var(--primary); font-weight:600; }
     .nav-sub svg { width:14px; height:14px; flex-shrink:0; }
+    .nav-subsection-header { display:flex; align-items:center; justify-content:space-between; gap:8px; padding:7px 12px 7px 36px; margin-bottom:1px; border-radius:var(--radius); cursor:pointer; user-select:none; color:var(--text-muted-color); font-size:13px; font-weight:500; transition:all 0.15s; }
+    .nav-subsection-header:hover { background:var(--bg-elevated); color:var(--text); }
+    .nav-subsection-header.open { color:var(--text); }
+    .nav-subsection-header.section-active { color:var(--primary); }
+    .nav-subsection-header .s-label { display:flex; align-items:center; gap:8px; pointer-events:none; }
+    .nav-subsection-header .s-label svg { width:15px; height:15px; flex-shrink:0; }
+    .nav-subsection-header .nav-chevron { opacity:0.5; transition:transform 0.2s; }
+    .nav-subsection-header.open .nav-chevron { transform:rotate(90deg); opacity:0.85; }
+    .nav-sub-deep { padding-left:52px; }
     .nav-new { display:flex; align-items:center; justify-content:space-between; padding:9px 12px; margin-bottom:8px; border-radius:var(--radius); cursor:pointer; user-select:none; font-size:14px; font-weight:600; color:var(--primary); background:rgba(249,115,22,0.10); border:1px solid rgba(249,115,22,0.35); transition:background 0.15s; }
     .nav-new:hover, .nav-new.open { background:rgba(249,115,22,0.18); }
     .nav-new .s-label { display:flex; align-items:center; gap:10px; pointer-events:none; }
@@ -230,7 +239,7 @@
     td { padding: 12px 16px; font-size: 14px; border-bottom: 1px solid var(--border-light); color: var(--text-dim); }
     tr:last-child td { border-bottom: none; }
     tr:hover td { background: rgba(255,255,255,0.03); }
-    .btn:focus-visible, .nav-item:focus-visible, .nav-section-header:focus-visible, .nav-sub:focus-visible, .nav-new:focus-visible { outline: 2px solid var(--primary); outline-offset: 2px; }
+    .btn:focus-visible, .nav-item:focus-visible, .nav-section-header:focus-visible, .nav-subsection-header:focus-visible, .nav-sub:focus-visible, .nav-new:focus-visible { outline: 2px solid var(--primary); outline-offset: 2px; }
     .badge { display: inline-flex; align-items: center; padding: 3px 10px; border-radius: 20px; font-size: 12px; font-weight: 600; text-transform: capitalize; }
     .badge-draft { background: #2a2a2a; color: #aaa; }
     /* Invoice process. Active is neutral-cool (in progress), Waiting is amber
@@ -429,7 +438,7 @@
     @media (max-width: 768px) {
       input, select, textarea { font-size: 16px; }
       .btn { min-height: 44px; padding: 11px 16px; }
-      .nav-item, .nav-sub, .nav-section-header, .nav-new { min-height: 44px; }
+      .nav-item, .nav-sub, .nav-subsection-header, .nav-section-header, .nav-new { min-height: 44px; }
       .hamburger { min-width: 44px; min-height: 44px; align-items: center; justify-content: center; }
       .main-content { padding: 16px calc(16px + env(safe-area-inset-left)) calc(16px + env(safe-area-inset-bottom)) calc(16px + env(safe-area-inset-right)); }
       .main-header { padding-top: calc(24px + env(safe-area-inset-top)); }
@@ -447,9 +456,9 @@
     .stats-grid .stat-card:nth-child(1){animation-delay:.04s} .stats-grid .stat-card:nth-child(2){animation-delay:.13s}
     .stats-grid .stat-card:nth-child(3){animation-delay:.22s} .stats-grid .stat-card:nth-child(4){animation-delay:.31s}
     @keyframes novaRise { from { opacity:0; filter: blur(8px); } to { opacity:1; filter: blur(0); } }
-    .nav-item, .nav-sub, .nav-section-header { position: relative; }
-    .nav-item::before, .nav-sub::before, .nav-section-header::before { content:""; position:absolute; left:5px; top:50%; height:58%; width:3px; border-radius:3px; background: var(--primary); transform: translateY(-50%) scaleY(0); transform-origin:center; opacity:0; transition: transform .3s cubic-bezier(.34,1.4,.5,1), opacity .25s; }
-    .nav-item:hover::before, .nav-item.active::before, .nav-sub:hover::before, .nav-sub.active::before, .nav-section-header:hover::before, .nav-section-header.section-active::before { transform: translateY(-50%) scaleY(1); opacity:1; }
+    .nav-item, .nav-sub, .nav-subsection-header, .nav-section-header { position: relative; }
+    .nav-item::before, .nav-sub::before, .nav-subsection-header::before, .nav-section-header::before { content:""; position:absolute; left:5px; top:50%; height:58%; width:3px; border-radius:3px; background: var(--primary); transform: translateY(-50%) scaleY(0); transform-origin:center; opacity:0; transition: transform .3s cubic-bezier(.34,1.4,.5,1), opacity .25s; }
+    .nav-item:hover::before, .nav-item.active::before, .nav-sub:hover::before, .nav-sub.active::before, .nav-subsection-header:hover::before, .nav-subsection-header.section-active::before, .nav-section-header:hover::before, .nav-section-header.section-active::before { transform: translateY(-50%) scaleY(1); opacity:1; }
     .nav-item:hover, .nav-sub:hover { transform: translateX(3px); }
     /* UI/UX pilot pass 2 (2026-06-25): CSS-only micro-interactions. Revert: delete this block. */
     .btn { transition: background-color .15s, color .15s, transform .12s ease, box-shadow .2s ease; }

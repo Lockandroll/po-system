@@ -2,7 +2,7 @@
 // public/sw.js (the only thing bumped each deploy) — the badge asks the active
 // service worker for it at runtime. This value is just the fallback shown when no
 // service worker is available (e.g. very first visit before it installs).
-var APP_VERSION = 'v105';
+var APP_VERSION = 'v107';
 var _resolvedAppVersion = null;
 
 // Ask the active service worker for its CACHE_VERSION (without the 'nova-' prefix).
@@ -53,6 +53,7 @@ const state = {
   currentView: null,
   currentParam: null,
   sidebarSection: null,
+  sidebarSub: null,             // nested sub-group open state: null=derive from view, ''=user-collapsed, id=open
   sidebarOpen: false,
   pendingUserId: null,
   pendingRemember: false,
@@ -457,6 +458,17 @@ function toggleSection(section, defaultView) {
   if (nav) { nav.innerHTML = buildNavHtml(); }
   else { render(); }
 }
+// Toggle a nested sub-section (one level below a group). Stops the click from
+// also reaching the parent group header, and repaints only the sidebar so the
+// main content is left untouched. Mirrors toggleSection's collapse sentinel.
+function toggleSubSection(e, sub) {
+  if (e && e.stopPropagation) e.stopPropagation();
+  var cur = (state.sidebarSub == null) ? getSidebarSub(state.currentView) : state.sidebarSub;
+  state.sidebarSub = (cur === sub) ? NAV_COLLAPSED : sub;
+  var nav = document.querySelector('.sidebar-nav');
+  if (nav) { nav.innerHTML = buildNavHtml(); }
+  else { render(); }
+}
 function navigate(view, param) {
   closeSidebar();
   // A permission change landed while the user was mid-form, so we held the re-render
@@ -470,6 +482,8 @@ function navigate(view, param) {
   try { localStorage.setItem('po_view', view); if (param != null && param !== '') localStorage.setItem('po_param', String(param)); else localStorage.removeItem('po_param'); } catch(e) {}
   var sec = getSidebarSection(view);
   if (sec) state.sidebarSection = sec;
+  var sub = getSidebarSub(view);
+  if (sub) state.sidebarSub = sub;
   try {
     var _pk = (param != null ? String(param) : '');
     var _cur = history.state;
@@ -734,6 +748,13 @@ function navGroup(id, label, icon, children) {
   var kids = children.filter(Boolean);
   return kids.length ? { type: 'group', id: id, label: label, icon: icon, children: kids } : null;
 }
+// A nested sub-section inside a group -- one extra level of the tree. Same
+// empty-drop rule as navGroup: if permissions filter out every child, the whole
+// sub-group vanishes and no header is drawn.
+function navSubGroup(id, label, icon, children) {
+  var kids = children.filter(Boolean);
+  return kids.length ? { type: 'subgroup', id: id, label: label, icon: icon, children: kids } : null;
+}
 
 // The whole menu, in display order. Everything here is permission-gated exactly
 // as it was before the regroup; only the arrangement changed.
@@ -780,26 +801,32 @@ function navModel() {
       can('view_work_orders') ? navItem('work-orders', 'Work Orders', NAVI.box, ['work-orders', 'view-work-order', 'new-work-order']) : null,
       can('view_signoffs') ? navItem('signoffs', 'Sign-Off Sheets', NAVI.signoff, ['signoffs', 'new-signoff', 'edit-signoff', 'view-signoff', 'complete-signoff']) : null,
       can('view_ptt') ? navItem('ptt', 'Radio', NAVI.mic) : null,
-      (can('view_vendors') || can('manage_vendors')) ? navItem('vendors', 'Accounts', NAVI.accounts) : null
+      (can('view_vendors') || can('manage_vendors')) ? navItem('vendors', 'Accounts', NAVI.accounts) : null,
+
+      // Dispatch configuration lives one level deeper so the live board, Call
+      // Search and Live Map stay at the top of Operations and the setup screens
+      // tuck under here. Add future dispatch-setup rows to this sub-group.
+      navSubGroup('dispatch-setup', 'Dispatching Setup', icons.settings, [
+        can('manage_pricing') ? navItem('time-codes', 'Pricing &amp; Service', icons.settings) : null,
+        can('manage_coverage') ? navItem('coverage', 'Coverage Zones', icons.map || NAVI.truck) : null
+      ])
     ]),
 
     navGroup('sales', 'Sales &amp; Billing', NAVI.receipt, [
       can('view_quotes') ? navItem('quotes', 'Quotes', icons.quote, ['quotes', 'new-quote', 'edit-quote', 'view-quote']) : null,
       can('view_invoices') ? navItem('invoices', 'Invoices', NAVI.receipt, ['invoices', 'new-invoice', 'edit-invoice', 'view-invoice']) : null,
       can('view_invoices') ? navItem('refunds', 'Refunds', NAVI.refund) : null,
-      can('view_invoices') ? navItem('invoice-parts', 'Parts Used', NAVI.box) : null,
       can('view_deposits') ? navItem('deposits', 'Cash Deposits', NAVI.deposit, ['deposits', 'view-deposit']) : null,
       canRoyalty('view') ? navItem('royalty', 'Royalty', NAVI.royalty) : null,
       can('manage_invoice_setup') ? navItem('invoice-setup', 'Invoice Setup', icons.settings) : null,
-      can('manage_pricing') ? navItem('time-codes', 'Pricing &amp; Service', icons.settings) : null,
-      can('manage_coverage') ? navItem('coverage', 'Coverage Zones', icons.map || NAVI.truck) : null,
       can('view_ar') ? navItem('accounts-receivable', 'Accounts Receivable', NAVI.receipt) : null
     ]),
 
     navGroup('purchasing', 'Purchasing', icons.dashboard, [
       can('view_pos') ? navItem('dashboard', 'Purchase Orders', icons.dashboard, ['dashboard', 'new', 'edit', 'view']) : null,
       (can('view_pos') && role !== 'approver') ? navItem(can('manage_running') ? 'running-admin' : 'running', 'Monthly Req', NAVI.reqList, ['running', 'running-admin']) : null,
-      can('manage_parts') ? navItem('parts-list', 'Parts List', NAVI.box) : null
+      can('manage_parts') ? navItem('parts-list', 'Parts List', NAVI.box) : null,
+      can('view_invoices') ? navItem('invoice-parts', 'Parts Used', NAVI.box) : null
     ]),
 
     navGroup('fleet', 'Fleet', NAVI.truck, [
@@ -890,7 +917,33 @@ function getSidebarSection(view) {
     var n = model[i];
     if (n.type !== 'group') continue;
     for (var j = 0; j < n.children.length; j++) {
-      if (n.children[j].views.indexOf(view) !== -1) return n.id;
+      var c = n.children[j];
+      if (c.type === 'subgroup') {
+        for (var k = 0; k < c.children.length; k++) {
+          if (c.children[k].views.indexOf(view) !== -1) return n.id;
+        }
+      } else if (c.views && c.views.indexOf(view) !== -1) {
+        return n.id;
+      }
+    }
+  }
+  return null;
+}
+
+// The nested sub-group (if any) that owns a view, so it can auto-open alongside
+// its parent group. Returns null for top-level rows.
+function getSidebarSub(view) {
+  if (!view || !state.user) return null;
+  var model = navModel();
+  for (var i = 0; i < model.length; i++) {
+    var n = model[i];
+    if (n.type !== 'group') continue;
+    for (var j = 0; j < n.children.length; j++) {
+      var c = n.children[j];
+      if (c.type !== 'subgroup') continue;
+      for (var k = 0; k < c.children.length; k++) {
+        if (c.children[k].views.indexOf(view) !== -1) return c.id;
+      }
     }
   }
   return null;
@@ -903,11 +956,25 @@ function buildNavHtml() {
   // == null catches null/undefined while preserving NAV_COLLAPSED ('').
   var ss = isMobileNav() ? state.sidebarSection
                          : (state.sidebarSection == null ? getSidebarSection(cv) : state.sidebarSection);
+  // Which nested sub-group is open. null == derive from the current view (so a
+  // nested page opens its sub on load); '' means the user closed it explicitly.
+  var ssub = (state.sidebarSub == null) ? getSidebarSub(cv) : state.sidebarSub;
   var model = navModel();
   var html = '';
 
   function subHtml(kids) {
     return kids.map(function (c) {
+      if (c.type === 'subgroup') {
+        var subOpen = ssub === c.id;
+        var subActive = c.children.some(function (x) { return x.views.indexOf(cv) !== -1; });
+        return '<div class="nav-subsection-header' + (subActive ? ' section-active' : '') + (subOpen ? ' open' : '') + '" onclick="toggleSubSection(event, \'' + c.id + '\')">' +
+                 '<span class="s-label">' + c.icon + ' ' + c.label + '</span>' + NAVI.chevron +
+               '</div>' +
+               (subOpen ? c.children.map(function (x) {
+                  var da = x.views.indexOf(cv) !== -1 ? ' active' : '';
+                  return '<div class="nav-sub nav-sub-deep' + da + '" onclick="navigate(\'' + x.view + '\')">' + x.icon + ' ' + x.label + '</div>';
+               }).join('') : '');
+      }
       var active = c.views.indexOf(cv) !== -1 ? ' active' : '';
       return '<div class="nav-sub' + active + '" onclick="navigate(\'' + c.view + '\')">' + c.icon + ' ' + c.label + '</div>';
     }).join('');
@@ -925,7 +992,10 @@ function buildNavHtml() {
               '</div>' +
               (ss === n.id ? subHtml(n.children) : '');
     } else if (n.type === 'group') {
-      var secActive = n.children.some(function (c) { return c.views.indexOf(cv) !== -1; });
+      var secActive = n.children.some(function (c) {
+        if (c.type === 'subgroup') { return c.children.some(function (x) { return x.views.indexOf(cv) !== -1; }); }
+        return c.views && c.views.indexOf(cv) !== -1;
+      });
       html += '<div class="nav-section-header' + (secActive ? ' section-active' : '') + (ss === n.id ? ' open' : '') + '" onclick="toggleSection(\'' + n.id + '\')">' +
                 '<span class="s-label">' + n.icon + ' ' + n.label + '</span>' + NAVI.chevron +
               '</div>' +
