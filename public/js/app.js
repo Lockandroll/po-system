@@ -14368,7 +14368,10 @@ function renderInvSetupAccounts() {
     return '<div style="border:1px solid var(--border);border-radius:8px;margin-bottom:10px">' +
       '<div style="display:flex;align-items:center;justify-content:space-between;gap:10px;padding:10px 12px">' +
         '<label style="display:flex;align-items:center;gap:8px;margin:0;font-weight:600"><input type="checkbox"' + (v.show_in_invoice ? ' checked' : '') + ' style="width:auto" onchange="invSetupToggleShow(' + i + ',this)" /> ' + escHtml(v.name) + '</label>' +
-        '<button class="btn btn-ghost btn-sm" onclick="invSetupToggleOpen(' + i + ')">' + (open ? 'Close' : 'Configure') + '</button>' +
+        '<div style="display:flex;align-items:center;gap:10px;flex-shrink:0">' +
+          '<span id="invset-rowmsg-' + i + '" style="font-size:12px;font-weight:600" aria-live="polite"></span>' +
+          '<button class="btn btn-ghost btn-sm" onclick="invSetupToggleOpen(' + i + ')">' + (open ? 'Close' : 'Configure') + '</button>' +
+        '</div>' +
       '</div>' +
       (open ?
         '<div style="padding:0 12px 12px">' +
@@ -14409,7 +14412,31 @@ function renderInvSetupAuto(i) {
       '</tr>';
     }).join('') + '</tbody></table></div>';
 }
-function invSetupToggleShow(i, cb) { _invSetupVendors[i].show_in_invoice = cb.checked; }
+async function invSetupToggleShow(i, cb) {
+  var next = cb.checked === true;
+  _invSetupVendors[i].show_in_invoice = next;
+  invSetupRowFlash(i, 'Saving' + String.fromCharCode(8230), null);
+  var ok = await invSetupSave(i, true);
+  if (ok) {
+    invSetupRowFlash(i, next ? 'Added to invoices' : 'Removed from invoices', true);
+  } else {
+    cb.checked = !next;
+    _invSetupVendors[i].show_in_invoice = !next;
+    invSetupRowFlash(i, 'Could not save', false);
+  }
+}
+function invSetupRowFlash(i, text, ok) {
+  var el = document.getElementById('invset-rowmsg-' + i);
+  if (!el) return;
+  el.textContent = text;
+  el.style.color = (ok === false) ? 'var(--danger, #ef4444)' : ((ok === true) ? 'var(--success, #22c55e)' : 'var(--text-muted-color)');
+  if (ok === true) {
+    setTimeout(function () {
+      var e = document.getElementById('invset-rowmsg-' + i);
+      if (e && e.textContent === text) e.textContent = '';
+    }, 2000);
+  }
+}
 function invSetupToggleReq(i, field, cb) { _invSetupVendors[i][field] = cb.checked === true; }
 function invSetupToggleOpen(i) { _invSetupVendors[i]._open = !_invSetupVendors[i]._open; renderInvSetupAccounts(); }
 function invSetupAddAuto(i) {
@@ -14426,7 +14453,7 @@ function invSetupAutoEdit(i, j, input) {
   _invSetupVendors[i].auto_line_items[j][f] = input.type === 'checkbox' ? input.checked : input.value;
 }
 function invSetupRemoveAuto(i, j) { _invSetupVendors[i].auto_line_items.splice(j, 1); renderInvSetupAuto(i); }
-async function invSetupSave(i) {
+async function invSetupSave(i, silent) {
   var v = _invSetupVendors[i];
   var n = document.getElementById('invset-notes-' + i); if (n) v.invoice_notes = n.value;
   var a = document.getElementById('invset-agr-' + i); if (a) v.agreement_text = a.value;
@@ -14440,8 +14467,8 @@ async function invSetupSave(i) {
     auto_line_items: (v.auto_line_items && v.auto_line_items.length) ? v.auto_line_items.filter(function(li){ return (li.description||'').trim(); }) : null
   };
   var msg = document.getElementById('inv-setup-msg');
-  try { await api('PUT', '/vendors/' + v.id, payload); if (msg) { msg.innerHTML = '<div class="alert alert-success">Saved ' + escHtml(v.name) + '.</div>'; setTimeout(function(){ if (msg) msg.innerHTML=''; }, 2500); } }
-  catch(err) { if (msg) msg.innerHTML = '<div class="alert alert-error">' + escHtml(err.message) + '</div>'; }
+  try { await api('PUT', '/vendors/' + v.id, payload); apiBustCache('/vendors'); if (!silent && msg) { msg.innerHTML = '<div class="alert alert-success">Saved ' + escHtml(v.name) + '.</div>'; setTimeout(function(){ if (msg) msg.innerHTML=''; }, 2500); } return true; }
+  catch(err) { if (!silent && msg) { msg.innerHTML = '<div class="alert alert-error">' + escHtml(err.message) + '</div>'; } return false; }
 }
 async function saveInvoiceDefaultAgreement() {
   var t = (document.getElementById('inv-def-agreement')||{}).value || '';
