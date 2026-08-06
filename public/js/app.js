@@ -16790,11 +16790,13 @@ function schedShiftForm(s){
     '<div class="form-group"><label>Unpaid break (min)</label><input type="number" id="sf-break" min="0" value="'+(s&&s.break_minutes?parseInt(s.break_minutes,10):0)+'" style="'+inp+'"></div>'+
     '<div class="form-group"><label>Notes</label><input type="text" id="sf-notes" value="'+escHtml(s&&s.notes?s.notes:'')+'" style="'+inp+'"></div>'+
     '<div class="form-group" style="display:flex;align-items:center;gap:8px"><input type="checkbox" id="sf-publish"'+((s&&s.status==='published')?' checked':'')+' style="width:auto"><label for="sf-publish" style="margin:0;cursor:pointer">Publish now (visible to staff)</label></div>'+
+    (_schedEditId?schedProvenanceHtml(s):'')+
     '<div style="display:flex;justify-content:space-between;gap:8px;margin-top:8px">'+
       (_schedEditId?'<button class="btn btn-danger btn-sm" onclick="schedDeleteShift()">Delete</button>':'<span></span>')+
       '<div style="display:flex;gap:8px"><button class="btn btn-ghost btn-sm" onclick="schedCloseModal()">Cancel</button><button class="btn btn-primary btn-sm" onclick="schedSaveShift()">Save</button></div>'+
     '</div>'
   );
+  if(_schedEditId) schedLoadHistory(_schedEditId);
 }
 function schedNewShift(userId,date){ if(_schedSelMode) return; schedShiftForm({ user_id:userId, _date:date, shift_date:date }); }
 function schedOpenShift(id){ var s=_schedShifts.filter(function(x){return x.id===id;})[0]; if(s) schedShiftForm(s); }
@@ -16813,6 +16815,91 @@ async function schedSaveShift(){
 async function schedDeleteShift(){
   if(!_schedEditId) return; if(!await novaConfirm('Delete this shift?')) return;
   try{ await api('DELETE','/schedule/shifts/'+_schedEditId); schedCloseModal(); await schedLoadAdmin(); schedRenderGrid(); }catch(e){ novaAlert(e.message); }
+}
+
+// ---- shift provenance + change history (editor) ---------------------------
+function schedFmtTs(v){
+  if(!v) return '';
+  var d=new Date(v); if(isNaN(d.getTime())) return String(v);
+  return d.toLocaleString([], { month:'short', day:'numeric', year:'numeric', hour:'numeric', minute:'2-digit' });
+}
+// Level 1: what the shift row itself already knows about where it came from.
+function schedProvenanceHtml(s){
+  if(!s) return '';
+  var lines=[];
+  var who=escHtml(s.created_by_name||'someone');
+  var when=s.created_at?(' on '+escHtml(schedFmtTs(s.created_at))):'';
+  lines.push('<div>Created by '+who+when+'</div>');
+  if(s.updated_at && String(s.updated_at)!==String(s.created_at)){
+    lines.push('<div>Last edited '+escHtml(schedFmtTs(s.updated_at))+'</div>');
+  }
+  if(s.pto_generated){
+    lines.push('<div style="color:#a855f7">Auto-added from an approved PTO request.</div>');
+  }
+  if(s.prev_position_name){
+    lines.push('<div style="color:#a855f7">A PTO approval set this day&#39;s position (was: '+escHtml(s.prev_position_name)+').</div>');
+  }
+  return '<div style="margin-top:10px;padding-top:10px;border-top:1px solid var(--border,#333);font-size:12px;opacity:0.85">'+
+    lines.join('')+
+    '<div style="margin-top:8px;font-weight:600;opacity:0.9">History</div>'+
+    '<div id="sched-history" style="margin-top:4px">Loading history…</div>'+
+  '</div>';
+}
+// Level 2: the recorded change timeline, fetched on demand.
+async function schedLoadHistory(id){
+  var el=document.getElementById('sched-history'); if(!el) return;
+  try{
+    var rows=await api('GET','/schedule/shifts/'+id+'/history');
+    if(!rows||!rows.length){ el.innerHTML='<div style="opacity:0.6">No change history recorded yet.</div>'; return; }
+    el.innerHTML=rows.map(function(e){ return schedHistoryRow(e); }).join('');
+  }catch(err){ el.innerHTML='<div style="opacity:0.6">Could not load history.</div>'; }
+}
+function schedHistoryRow(e){
+  var actor=escHtml(e.actor_name||e.actor_name_now||'System');
+  var when=escHtml(schedFmtTs(e.created_at));
+  var detail=schedEventDetail(e);
+  return '<div style="padding:6px 0;border-bottom:1px solid rgba(255,255,255,0.06)">'+
+    '<div><strong>'+schedEventLabel(e.action)+'</strong> · '+actor+'</div>'+
+    (detail?'<div style="opacity:0.75;margin-top:2px">'+detail+'</div>':'')+
+    '<div style="opacity:0.5;font-size:11px;margin-top:2px">'+when+'</div>'+
+  '</div>';
+}
+function schedEventLabel(a){
+  var m={ created:'Created', updated:'Edited', deleted:'Deleted', published:'Published', unpublished:'Unpublished', reassigned:'Reassigned' };
+  return m[a]||escHtml(a||'Changed');
+}
+function schedFieldLabel(f){
+  var m={ user_id:'Employee', city_code:'City', position_id:'Position', shift_date:'Date', start_time:'Start', end_time:'End', break_minutes:'Break (min)', notes:'Notes', status:'Status' };
+  return m[f]||f;
+}
+function schedPosNameById(id){ var p=_schedPositions.filter(function(x){return String(x.id)===String(id);})[0]; return p?p.name:('#'+id); }
+function schedUserNameById(id){ var u=_schedUsers.filter(function(x){return String(x.id)===String(id);})[0]; return u?u.name:('#'+id); }
+function schedPretty(f,v){
+  if(v===''||v===null||v===undefined) return 'none';
+  if(f==='position_id') return schedPosNameById(v);
+  if(f==='user_id') return schedUserNameById(v);
+  return String(v);
+}
+function schedEventDetail(e){
+  var d=e.details; if(!d) return '';
+  try{ if(typeof d==='string') d=JSON.parse(d); }catch(_e){ return ''; }
+  if(d.changes){
+    var parts=[];
+    Object.keys(d.changes).forEach(function(f){
+      var c=d.changes[f];
+      parts.push(escHtml(schedFieldLabel(f))+': '+escHtml(schedPretty(f,c.from))+' → '+escHtml(schedPretty(f,c.to)));
+    });
+    return parts.join('<br>');
+  }
+  var bits=[];
+  if(d.via==='week_publish') bits.push('via Publish Week');
+  else if(d.via==='bulk') bits.push('via bulk edit');
+  else if(d.via==='bulk_range') bits.push('via bulk date-range edit');
+  else if(d.via==='copy_week') bits.push('via Copy Last Week');
+  else if(d.via==='recurring') bits.push('via recurring generator');
+  if(d.to) bits.push('to '+escHtml(d.to));
+  if(d.status) bits.push('('+escHtml(d.status)+')');
+  return bits.join(' ');
 }
 
 async function schedPublishWeek(){

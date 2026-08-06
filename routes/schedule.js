@@ -79,6 +79,44 @@ function cleanShift(b) {
   return out;
 }
 
+// ---- shift change history (best-effort audit trail) ------------------------
+// A shift_date column comes back from pg as a Date; normalize it to YYYY-MM-DD.
+function sdstr(v) {
+  return v instanceof Date
+    ? ymd(new Date(Date.UTC(v.getUTCFullYear(), v.getUTCMonth(), v.getUTCDate())))
+    : String(v || '').slice(0, 10);
+}
+// Normalize one field for a stable from/to comparison (dates to YYYY-MM-DD,
+// times to HH:MM) so we do not log spurious "changes".
+function cmpVal(f, v) {
+  if (v === null || v === undefined) return '';
+  if (f === 'shift_date') return sdstr(v);
+  if (f === 'start_time' || f === 'end_time') return String(v).slice(0, 5);
+  if (f === 'city_code') return String(v).trim(); // CHAR(3) can be space-padded
+  return String(v).slice(0, 80);
+}
+// { field: {from,to} } for every field that actually changed between two rows.
+function shiftDiff(prev, next) {
+  const out = {};
+  const fields = ['user_id', 'city_code', 'position_id', 'shift_date', 'start_time', 'end_time', 'break_minutes', 'notes', 'status'];
+  for (const f of fields) {
+    const a = cmpVal(f, prev ? prev[f] : undefined);
+    const b = cmpVal(f, next ? next[f] : undefined);
+    if (a !== b) out[f] = { from: a, to: b };
+  }
+  return out;
+}
+// Write one history row. NEVER throws: a logging failure must not break a
+// schedule write. Pass the pool (or a tx client) as db.
+async function logShiftEvent(db, e) {
+  try {
+    await (db || pool).query(
+      'INSERT INTO shift_events (shift_id, employee_id, action, actor_id, actor_name, details) VALUES ($1,$2,$3,$4,$5,$6::jsonb)',
+      [e.shift_id || null, e.employee_id || null, e.action, e.actor_id || null, e.actor_name || null, e.details ? JSON.stringify(e.details) : null]
+    );
+  } catch (err) { console.error('[schedule] shift_event log failed:', err.message); }
+}
+
 // Compute warn-but-allow conflicts for a candidate shift.
 async function computeConflicts(cand, excludeId) {
   const warnings = [];
@@ -195,8 +233,10 @@ router.get('/shifts', requireAuth, requirePermission('manage_schedule'), async (
   const to = RE_DATE.test(req.query.to) ? req.query.to : addDays(from, 6);
   const scope = await allowedCities(req.user);
   const params = [from, to];
-  let sql = 'SELECT s.*, p.name AS position_name, p.color AS position_color, c.color AS city_color, c.name AS city_name FROM shifts s ' +
-    'LEFT JOIN shift_positions p ON p.id = s.position_id LEFT JOIN cities c ON c.code = s.city_code WHERE s.shift_date BETWEEN $1 AND $2';
+  let sql = 'SELECT s.*, p.name AS position_name, p.color AS position_color, c.color AS city_color, c.name AS city_name, ' +
+    'cb.name AS created_by_name, pp.name AS prev_position_name FROM shifts s ' +
+    'LEFT JOIN shift_positions p ON p.id = s.position_id LEFT JOIN cities c ON c.code = s.city_code ' +
+    'LEFT JOIN users cb ON cb.id = s.created_by LEFT JOIN shift_positions pp ON pp.id = s.prev_position_id WHERE s.shift_date BETWEEN $1 AND $2';
   if (req.query.city && String(req.query.city).trim()) {
     params.push(String(req.query.city).trim()); sql += ' AND s.city_code = $' + params.length;
   }
@@ -225,6 +265,7 @@ router.post('/shifts', requireAuth, requirePermission('manage_schedule'), async 
     'VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12) RETURNING *',
     [c.user_id, uname, c.city_code, c.position_id, c.shift_date, c.start_time, c.end_time, c.break_minutes, c.notes, publish ? 'published' : 'draft', publish ? new Date() : null, req.user.id]
   );
+  await logShiftEvent(pool, { shift_id: rows[0].id, employee_id: c.user_id, action: 'created', actor_id: req.user.id, actor_name: req.user.name, details: { shift_date: c.shift_date, start_time: c.start_time, end_time: c.end_time, position_id: c.position_id, city_code: c.city_code, status: publish ? 'published' : 'draft' } });
   const conflicts = await computeConflicts(c, rows[0].id);
   res.status(201).json({ shift: rows[0], conflicts: conflicts });
 });
@@ -240,7 +281,7 @@ router.put('/shifts/:id', requireAuth, requirePermission('manage_schedule'), asy
   // Check the city the shift is in RIGHT NOW as well. Validating only the incoming
   // city_code let a city-scoped scheduler pull another market's shift into their own
   // by passing their own city in the body.
-  const cur = await pool.query('SELECT city_code FROM shifts WHERE id=$1', [req.params.id]);
+  const cur = await pool.query('SELECT * FROM shifts WHERE id=$1', [req.params.id]);
   if (!cur.rows.length) return res.status(404).json({ error: 'Shift not found' });
   if (!cityOk(scope, cur.rows[0].city_code)) return res.status(403).json({ error: 'You are not assigned to that city' });
   const u = await pool.query('SELECT name FROM users WHERE id=$1', [c.user_id]);
@@ -258,6 +299,11 @@ router.put('/shifts/:id', requireAuth, requirePermission('manage_schedule'), asy
     params
   );
   if (!rows.length) return res.status(404).json({ error: 'Shift not found' });
+  const _next = { user_id: c.user_id, city_code: c.city_code, position_id: c.position_id, shift_date: c.shift_date, start_time: c.start_time, end_time: c.end_time, break_minutes: c.break_minutes, notes: c.notes, status: rows[0].status };
+  const _changes = shiftDiff(cur.rows[0], _next);
+  if (Object.keys(_changes).length) {
+    await logShiftEvent(pool, { shift_id: rows[0].id, employee_id: c.user_id, action: 'updated', actor_id: req.user.id, actor_name: req.user.name, details: { changes: _changes } });
+  }
   const conflicts = await computeConflicts(c, rows[0].id);
   res.json({ shift: rows[0], conflicts: conflicts });
 });
@@ -266,11 +312,28 @@ router.delete('/shifts/:id', requireAuth, requirePermission('manage_schedule'), 
   // Create and update are city-scoped; delete was not, so any id could be deleted
   // from any market by anyone holding manage_schedule.
   const scope = await allowedCities(req.user);
-  const ex = await pool.query('SELECT city_code FROM shifts WHERE id=$1', [req.params.id]);
+  const ex = await pool.query('SELECT * FROM shifts WHERE id=$1', [req.params.id]);
   if (!ex.rows.length) return res.status(404).json({ error: 'Shift not found' });
   if (!cityOk(scope, ex.rows[0].city_code)) return res.status(403).json({ error: 'You are not assigned to that city' });
   await pool.query('DELETE FROM shifts WHERE id=$1', [req.params.id]);
+  await logShiftEvent(pool, { shift_id: parseInt(req.params.id, 10) || null, employee_id: ex.rows[0].user_id, action: 'deleted', actor_id: req.user.id, actor_name: req.user.name, details: { shift_date: sdstr(ex.rows[0].shift_date), position_id: ex.rows[0].position_id, status: ex.rows[0].status } });
   res.json({ success: true });
+});
+
+// ---- per-shift change history (editor timeline) ---------------------------
+router.get('/shifts/:id/history', requireAuth, requirePermission('manage_schedule'), async (req, res) => {
+  const id = parseInt(req.params.id, 10) || 0;
+  const ex = await pool.query('SELECT city_code FROM shifts WHERE id=$1', [id]);
+  if (!ex.rows.length) return res.status(404).json({ error: 'Shift not found' });
+  const scope = await allowedCities(req.user);
+  if (!cityOk(scope, ex.rows[0].city_code)) return res.status(403).json({ error: 'You are not assigned to that city' });
+  const { rows } = await pool.query(
+    'SELECT e.id, e.action, e.actor_id, e.actor_name, e.details, e.created_at, u.name AS actor_name_now ' +
+    'FROM shift_events e LEFT JOIN users u ON u.id = e.actor_id ' +
+    'WHERE e.shift_id = $1 ORDER BY e.created_at ASC, e.id ASC',
+    [id]
+  );
+  res.json(rows);
 });
 
 // ---- publish ---------------------------------------------------------------
@@ -286,9 +349,10 @@ router.post('/publish', requireAuth, requirePermission('manage_schedule'), async
     if (!scope.length) return res.json({ published: 0, notified: 0 });
     params.push(scope); sql += ' AND city_code = ANY($' + params.length + '::text[])';
   }
-  sql += ' RETURNING user_id';
+  sql += ' RETURNING id, user_id';
   const { rows } = await pool.query(sql, params);
   await logAudit({ entity_type: 'schedule', action: 'published', user_id: req.user.id, user_name: req.user.name, details: { from: from, to: to, shifts: rows.length } });
+  for (const _r of rows) { await logShiftEvent(pool, { shift_id: _r.id, employee_id: _r.user_id, action: 'published', actor_id: req.user.id, actor_name: req.user.name, details: { via: 'week_publish' } }); }
   res.json({ published: rows.length });
 });
 
@@ -316,6 +380,7 @@ router.post('/bulk-ids', requireAuth, requirePermission('manage_schedule'), asyn
     const g = guard([]); if (!g) return res.json({ affected: 0 });
     const r = await pool.query('DELETE FROM shifts' + g.clause + ' RETURNING id', g.params);
     await logAudit({ entity_type: 'schedule', action: 'bulk_delete', user_id: req.user.id, user_name: req.user.name, details: { count: r.rows.length } });
+    for (const _r of r.rows) { await logShiftEvent(pool, { shift_id: _r.id, action: 'deleted', actor_id: req.user.id, actor_name: req.user.name, details: { via: 'bulk' } }); }
     return res.json({ affected: r.rows.length });
   }
 
@@ -324,6 +389,7 @@ router.post('/bulk-ids', requireAuth, requirePermission('manage_schedule'), asyn
     const g = guard([pub ? 'published' : 'draft', pub ? new Date() : null]); if (!g) return res.json({ affected: 0 });
     const r = await pool.query('UPDATE shifts SET status=$1, published_at=$2, updated_at=NOW()' + g.clause + ' RETURNING id', g.params);
     await logAudit({ entity_type: 'schedule', action: pub ? 'bulk_publish' : 'bulk_unpublish', user_id: req.user.id, user_name: req.user.name, details: { count: r.rows.length } });
+    for (const _r of r.rows) { await logShiftEvent(pool, { shift_id: _r.id, action: pub ? 'published' : 'unpublished', actor_id: req.user.id, actor_name: req.user.name, details: { via: 'bulk' } }); }
     return res.json({ affected: r.rows.length });
   }
 
@@ -336,6 +402,7 @@ router.post('/bulk-ids', requireAuth, requirePermission('manage_schedule'), asyn
     if (!sets.length) return res.status(400).json({ error: 'Nothing to update' });
     const g = guard(vals); if (!g) return res.json({ affected: 0 });
     const r = await pool.query('UPDATE shifts SET ' + sets.join(', ') + ', updated_at=NOW()' + g.clause + ' RETURNING id', g.params);
+    for (const _r of r.rows) { await logShiftEvent(pool, { shift_id: _r.id, action: 'updated', actor_id: req.user.id, actor_name: req.user.name, details: { via: 'bulk' } }); }
     return res.json({ affected: r.rows.length });
   }
 
@@ -346,6 +413,7 @@ router.post('/bulk-ids', requireAuth, requirePermission('manage_schedule'), asyn
     if (!u.rows.length) return res.status(400).json({ error: 'Employee not found' });
     const g = guard([uid, u.rows[0].name]); if (!g) return res.json({ affected: 0 });
     const r = await pool.query('UPDATE shifts SET user_id=$1, user_name=$2, updated_at=NOW()' + g.clause + ' RETURNING id', g.params);
+    for (const _r of r.rows) { await logShiftEvent(pool, { shift_id: _r.id, employee_id: uid, action: 'reassigned', actor_id: req.user.id, actor_name: req.user.name, details: { via: 'bulk', to: u.rows[0].name } }); }
     return res.json({ affected: r.rows.length });
   }
 
@@ -372,11 +440,12 @@ router.post('/copy-week', requireAuth, requirePermission('manage_schedule'), asy
   for (const s of rows) {
     const sd = s.shift_date instanceof Date ? ymd(new Date(Date.UTC(s.shift_date.getUTCFullYear(), s.shift_date.getUTCMonth(), s.shift_date.getUTCDate()))) : String(s.shift_date).slice(0, 10);
     const nd = addDays(sd, offset);
-    await pool.query(
+    const _ins = await pool.query(
       'INSERT INTO shifts (user_id, user_name, city_code, position_id, shift_date, start_time, end_time, break_minutes, notes, status, created_by) ' +
-      "VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,'draft',$10)",
+      "VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,'draft',$10) RETURNING id",
       [s.user_id, s.user_name, s.city_code, s.position_id, nd, s.start_time, s.end_time, s.break_minutes, s.notes, req.user.id]
     );
+    await logShiftEvent(pool, { shift_id: _ins.rows[0].id, employee_id: s.user_id, action: 'created', actor_id: req.user.id, actor_name: req.user.name, details: { via: 'copy_week', shift_date: nd, status: 'draft' } });
     copied++;
   }
   res.json({ copied: copied });
@@ -438,11 +507,12 @@ router.post('/recurring', requireAuth, requirePermission('manage_schedule'), asy
     } else if (dows.indexOf(dowOf(d)) === -1) {
       continue;
     }
-    await pool.query(
+    const _ins = await pool.query(
       'INSERT INTO shifts (user_id, user_name, city_code, position_id, shift_date, start_time, end_time, break_minutes, notes, status, published_at, created_by) ' +
-      'VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)',
+      'VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12) RETURNING id',
       [user_id, uname, city_code, position_id, d, start_time, end_time, break_minutes, notes, publish ? 'published' : 'draft', publish ? new Date() : null, req.user.id]
     );
+    await logShiftEvent(pool, { shift_id: _ins.rows[0].id, employee_id: user_id, action: 'created', actor_id: req.user.id, actor_name: req.user.name, details: { via: 'recurring', shift_date: d, status: publish ? 'published' : 'draft' } });
     created++;
   }
   res.json({ created: created });
@@ -466,7 +536,8 @@ router.post('/bulk', requireAuth, requirePermission('manage_schedule'), async (r
   if (action === 'delete') {
     const params = [user_id, from, to];
     const cc = cityClause(params); if (cc === null) return res.json({ affected: 0 });
-    const r = await pool.query('DELETE FROM shifts WHERE user_id=$1 AND shift_date BETWEEN $2 AND $3' + cc, params);
+    const r = await pool.query('DELETE FROM shifts WHERE user_id=$1 AND shift_date BETWEEN $2 AND $3' + cc + ' RETURNING id', params);
+    for (const _r of r.rows) { await logShiftEvent(pool, { shift_id: _r.id, employee_id: user_id, action: 'deleted', actor_id: req.user.id, actor_name: req.user.name, details: { via: 'bulk_range' } }); }
     return res.json({ affected: r.rowCount });
   }
   const sets = [], params = [];
@@ -479,7 +550,8 @@ router.post('/bulk', requireAuth, requirePermission('manage_schedule'), async (r
   let sql = 'UPDATE shifts SET ' + sets.join(', ') + ', updated_at=NOW() WHERE user_id=$' + pu + ' AND shift_date BETWEEN $' + pf + ' AND $' + pt;
   const cc = cityClause(params); if (cc === null) return res.json({ affected: 0 });
   sql += cc;
-  const r = await pool.query(sql, params);
+  const r = await pool.query(sql + ' RETURNING id', params);
+  for (const _r of r.rows) { await logShiftEvent(pool, { shift_id: _r.id, employee_id: user_id, action: 'updated', actor_id: req.user.id, actor_name: req.user.name, details: { via: 'bulk_range' } }); }
   res.json({ affected: r.rowCount });
 });
 

@@ -992,6 +992,23 @@ async function initDB() {
       'CREATE INDEX IF NOT EXISTS idx_user_cities_user ON user_cities(user_id);' +
       'CREATE INDEX IF NOT EXISTS idx_user_cities_city ON user_cities(city_code);'
     );
+    // Per-shift change history (schedule audit trail). No FK on shift_id on purpose:
+    // a 'deleted' event must survive the shift row it describes. employee_id is a
+    // denormalized convenience; the editor timeline queries by shift_id. details is a
+    // JSON blob ({changes:{field:{from,to}}} for edits, or a small context object).
+    await client.query(
+      'CREATE TABLE IF NOT EXISTS shift_events (' +
+      '  id SERIAL PRIMARY KEY,' +
+      '  shift_id INTEGER,' +
+      '  employee_id INTEGER,' +
+      '  action VARCHAR(30) NOT NULL,' +
+      '  actor_id INTEGER REFERENCES users(id) ON DELETE SET NULL,' +
+      '  actor_name VARCHAR(255),' +
+      '  details JSONB,' +
+      '  created_at TIMESTAMPTZ DEFAULT NOW()' +
+      ');'
+    );
+    await client.query('CREATE INDEX IF NOT EXISTS idx_shift_events_shift ON shift_events(shift_id);');
     await client.query(
       'CREATE TABLE IF NOT EXISTS push_subscriptions (' +
       '  id SERIAL PRIMARY KEY,' +
