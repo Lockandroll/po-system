@@ -387,7 +387,7 @@ async function reconcilePayment(paymentRowId) {
   } catch (e) { feeCents = 0; }
 
   const invRes = await pool.query(
-    'SELECT id, invoice_number, status, subtotal, tax_amount, surcharge_amount, tip_amount, grand_total, authorized_total, locksmith_id, followup_task_id FROM invoices WHERE id = $1',
+    'SELECT id, invoice_number, status, subtotal, tax_amount, surcharge_amount, surcharge_rate, tip_amount, grand_total, authorized_total, locksmith_id, followup_task_id FROM invoices WHERE id = $1',
     [row.invoice_id]
   );
   const inv = invRes.rows[0];
@@ -396,12 +396,28 @@ async function reconcilePayment(paymentRowId) {
     return { ok: false, reason: 'invoice_gone', row: row };
   }
 
-  // Amount check. Compare the pre-tip figures, because the tip is the one part
-  // the customer is allowed to change inside Square. Anything else moving means
+  // Square can apply its OWN card surcharge at the device or location level,
+  // entirely outside anything Nova computed. It lands INSIDE amount_money (so
+  // inside total_money and the pre-tip figure below), but Nova never added it to
+  // the invoice total it sent, so before this fix every surcharged card failed the
+  // amount check and demanded a manager (invoice 8000009, 2026-08-06). Pull it out
+  // before comparing, then record it in surcharge_amount below so grand_total still
+  // equals the card. Square only surcharges credit; debit and un-synced devices
+  // report nothing, so this stays 0 on the normal path and changes nothing there.
+  let squareSurchargeCents = 0;
+  try {
+    squareSurchargeCents = Number(payment.card_details.applied_card_surcharge_details.card_surcharge_money.amount) || 0;
+  } catch (e) { squareSurchargeCents = 0; }
+  if (!(squareSurchargeCents > 0)) squareSurchargeCents = 0;
+
+  // Amount check. Compare the pre-tip figures, because the tip is the one part the
+  // customer is allowed to change inside Square. Square's own surcharge is the only
+  // other sanctioned addition, so it is removed here too; anything else moving means
   // the amount was edited on the device, and that must not silently mark paid.
   const invoicePreTip = money(inv.grand_total) - money(inv.tip_amount);
-  const squarePreTip = totalCents - tipCents;
-  if (Math.abs(invoicePreTip - squarePreTip) > 1) {
+  const squareChargedPreTip = totalCents - tipCents;
+  const squareBasePreTip = squareChargedPreTip - squareSurchargeCents;
+  if (Math.abs(invoicePreTip - squareBasePreTip) > 1) {
     await markRow(row.id, {
       status: 'mismatch',
       square_payment_id: payment.id || null,
@@ -415,7 +431,7 @@ async function reconcilePayment(paymentRowId) {
       total_cents: totalCents,
       receipt_url: payment.receipt_url || null,
       raw_payment: payment,
-      mismatch_reason: 'Invoice is ' + (invoicePreTip / 100).toFixed(2) + ' before tip; Square charged ' + (squarePreTip / 100).toFixed(2) + ' before tip.'
+      mismatch_reason: 'Invoice is ' + (invoicePreTip / 100).toFixed(2) + ' before tip; Square charged ' + (squareBasePreTip / 100).toFixed(2) + ' before tip' + (squareSurchargeCents > 0 ? (' (after removing a ' + (squareSurchargeCents / 100).toFixed(2) + ' card surcharge)') : '') + '.'
     });
     return { ok: false, reason: 'amount_mismatch', row: row, invoice: inv };
   }
@@ -430,8 +446,19 @@ async function reconcilePayment(paymentRowId) {
   // check above would still pass, because it compares against grand_total before
   // this line runs — so the invoice would settle as paid, look right, and disagree
   // with the card by 2.5% in the one column the dispute packet reads.
+  // The surcharge to record on THIS payment: Square's applied surcharge when it
+  // charged one, otherwise whatever the invoice already carried (so an invoice that
+  // used Nova's own surcharge with Square's turned off is never silently rewritten
+  // down). It stays in its own column, out of subtotal, so it never enters Pulsar
+  // or the royalty base.
+  const effectiveSurcharge = squareSurchargeCents > 0
+    ? (squareSurchargeCents / 100)
+    : (Number(inv.surcharge_amount) || 0);
+  const effectiveRate = (squareSurchargeCents > 0 && squareBasePreTip > 0)
+    ? Math.round((squareSurchargeCents / squareBasePreTip) * 1000) / 10
+    : (Number(inv.surcharge_rate) || 0);
   const newGrand = (Number(inv.subtotal) || 0) + (Number(inv.tax_amount) || 0) +
-    (Number(inv.surcharge_amount) || 0) + newTip;
+    effectiveSurcharge + newTip;
 
   // Refuse if this invoice is already settled against a DIFFERENT Square payment.
   const otherRes = await pool.query(
@@ -459,6 +486,7 @@ async function reconcilePayment(paymentRowId) {
   await pool.query(
     'UPDATE invoices SET pay_type = $1, card_last4 = $2, cc_online = false, approval_code = $3, ' +
     'tip_amount = $4, grand_total = $5, authorized_total = COALESCE(authorized_total, $6), ' +
+    'surcharge_amount = $9, surcharge_rate = $10, ' +
     // A Square payment IS the finish line, so it stamps the same completion
     // fields the Complete Invoice button does and clears the waiting clock.
     // completed_by is the tech who started the payment, not "Square", so the
@@ -472,7 +500,9 @@ async function reconcilePayment(paymentRowId) {
       newGrand,
       (Number(inv.authorized_total) || Number(inv.grand_total) || 0),
       inv.id,
-      row.initiated_by || null
+      row.initiated_by || null,
+      effectiveSurcharge,
+      effectiveRate
     ]
   );
 
