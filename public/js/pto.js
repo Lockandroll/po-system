@@ -407,7 +407,19 @@
   };
   async function doApprove(id, reason) {
     try { await api('POST', '/pto/requests/' + id + '/approve', reason ? { override_reason: reason } : {}); showToast('Approved — shifts set to Approved Vacation Day.', 'success'); reload(); }
-    catch (e) { if ((e.message || '').indexOf('coverage_override_required') !== -1) { openOverride(id); } else { showToast(e.message || 'Approve failed.', 'error'); } }
+    catch (e) {
+      var msg = e.message || '';
+      if (msg.indexOf('coverage_override_required') !== -1) { openOverride(id); return; }
+      var isAdmin = !!(window.state && state.user && (state.user.role === 'admin' || state.user.role === 'owner' || state.user.isOwner));
+      if (isAdmin && msg.indexOf('balance') !== -1) {
+        var ok = (typeof novaConfirm === 'function') ? await novaConfirm('This employee does not have enough PTO for this. Approve anyway and let the balance go negative?') : window.confirm('This employee does not have enough PTO for this. Approve anyway and let the balance go negative?');
+        if (!ok) return;
+        try { await api('POST', '/pto/requests/' + id + '/approve', reason ? { allow_negative: true, override_reason: reason } : { allow_negative: true }); showToast('Approved — balance is now negative.', 'success'); reload(); }
+        catch (e2) { showToast(e2.message || 'Approve failed.', 'error'); }
+        return;
+      }
+      showToast(msg || 'Approve failed.', 'error');
+    }
   }
   window.ptoDeny = async function (id) {
     var reason = window.prompt('Reason for denial (optional):', '') || '';
@@ -496,6 +508,7 @@
   window.ptoOpenLog = function (id) {
     var person = null; (CACHE.team || []).forEach(function (p) { if (p.id === id) person = p; });
     var pt = person ? person.pay_type : 'hourly';
+    var isAdmin = !!(window.state && state.user && (state.user.role === 'admin' || state.user.role === 'owner' || state.user.isOwner));
     var m = document.createElement('div'); m.className = 'pto-mask';
     m.innerHTML = '<div class="pto-dlg"><h3>Log PTO (after the fact)</h3><div class="pto-desc">For a call-out converted to PTO after the day passed. Records who logged it and why.</div>' +
       '<div class="pto-row"><div><label class="pto-label">Start (past)</label><input type="date" id="pto-log-s" class="pto-input"></div><div><label class="pto-label">End</label><input type="date" id="pto-log-e" class="pto-input"></div></div>' +
@@ -503,6 +516,7 @@
       '<label class="pto-label">' + (isCommission(pt) ? 'Days to deduct' : 'Hours to deduct') + ' <span style="font-weight:400;color:var(--text-dim,#9a9a9a)">(optional — blank = full day)</span></label><input type="number" min="0" step="' + (isCommission(pt) ? '0.5' : '0.25') + '" id="pto-log-hours" class="pto-input" placeholder="' + (isCommission(pt) ? 'e.g. 0.5 for half a day' : 'e.g. 2 for a couple of hours') + '">' +
       '<label class="pto-label">Reason (required)</label><textarea id="pto-log-reason" class="pto-textarea" rows="2" placeholder="e.g. Called out sick, converting to PTO"></textarea>' +
       '<div class="pto-sub" id="pto-log-prev" style="margin-top:8px"></div>' +
+      (isAdmin ? '<label class="pto-label" style="display:flex;align-items:center;gap:8px;margin-top:8px;font-weight:400"><input type="checkbox" id="pto-log-neg" style="width:auto"> Allow negative balance (admin exception)</label>' : '') +
       '<div class="pto-warn" id="pto-log-err" style="display:none"></div>' +
       '<div style="margin-top:14px;display:flex;gap:10px;justify-content:flex-end"><button class="pto-btn ghost" id="pto-log-cancel">Cancel</button><button class="pto-btn ok" id="pto-log-ok">Log PTO</button></div></div>';
     document.body.appendChild(m);
@@ -537,6 +551,7 @@
     m.querySelector('#pto-log-ok').onclick = async function () {
       var err = m.querySelector('#pto-log-err');
       var payload = { user_id: id, start_date: s.value, end_date: e.value || s.value, kind: m.querySelector('#pto-log-paid').value, paid: m.querySelector('#pto-log-paid').value === 'paid', reason: m.querySelector('#pto-log-reason').value.trim() };
+      if (isAdmin && (m.querySelector('#pto-log-neg') || {}).checked) payload.allow_negative = true;
       if (!payload.start_date) { err.textContent = 'Pick the dates.'; err.style.display = 'block'; return; }
       if (!payload.reason) { err.textContent = 'A reason is required.'; err.style.display = 'block'; return; }
       if (hrsEl.value !== '' && hrsEl.value !== null) {

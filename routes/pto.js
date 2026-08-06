@@ -708,6 +708,11 @@ router.post('/requests/:id/approve', requireAuth, async (req, res) => {
   if (!(await canApprove(req.user, r.user_id))) return res.status(403).json({ error: 'Not your request to approve' });
   if (r.status !== 'pending') return res.status(400).json({ error: 'Request is not pending' });
 
+  // Admin/owner may approve a paid request even when the employee lacks the balance,
+  // taking them negative on purpose (a deliberate exception). Non-admins never can.
+  const isAdmin = req.user.role === 'admin' || req.user.isOwner || req.user.role === 'owner';
+  const allowNegative = isAdmin && !!(req.body && (req.body.allow_negative === true || req.body.allow_negative === 'true'));
+
   const from = ymdOf(r.start_date), to = ymdOf(r.end_date);
   const already = await coverageOverlapCount(from, to, r.user_id);
   const cap = await coverageCap(null);
@@ -717,8 +722,8 @@ router.post('/requests/:id/approve', requireAuth, async (req, res) => {
     return res.status(400).json({ error: 'coverage_override_required', coverage_used: already + 1, coverage_cap: cap });
   }
 
-  // Re-check the hard wall at approval time for paid requests.
-  if (r.paid) {
+  // Re-check the hard wall at approval time for paid requests (admins may override to go negative).
+  if (r.paid && !allowNegative) {
     const bal = await pool.query('SELECT COALESCE(pto_balance_hours,0) AS b FROM users WHERE id = $1', [r.user_id]);
     if (Number(bal.rows[0].b) - Number(r.hours) < 0) return res.status(400).json({ error: 'Employee no longer has the balance for this.' });
   }
@@ -755,7 +760,7 @@ router.post('/requests/:id/approve', requireAuth, async (req, res) => {
   await logAudit({
     entity_type: 'pto_request', entity_id: id, action: over ? 'approved_override' : 'approved',
     user_id: req.user.id, user_name: req.user.name,
-    details: { dates: from + ' to ' + to, coverage_used: already + 1, coverage_cap: cap, override_reason: over ? overrideReason : null }
+    details: { dates: from + ' to ' + to, coverage_used: already + 1, coverage_cap: cap, override_reason: over ? overrideReason : null, negative_override: allowNegative }
   });
   await notifyRequester(r.user_id, 'approved', from, to, r.business_days, req.user.name, null);
   res.json({ success: true, coverage_override: over });
@@ -992,7 +997,9 @@ router.post('/log', requireAuth, requirePermission('manage_pto'), async (req, re
 
   const ur = await pool.query('SELECT name, COALESCE(pto_balance_hours,0) AS bal FROM users WHERE id = $1', [target]);
   if (!ur.rows.length) return res.status(404).json({ error: 'Employee not found' });
-  if (paid && Number(ur.rows[0].bal) - hours < 0) return res.status(400).json({ error: 'Exceeds available balance. No negative balances.' });
+  // Admin/owner may log a paid absence that takes the balance negative on purpose.
+  const allowNegative = isAdmin && (b.allow_negative === true || b.allow_negative === 'true');
+  if (paid && !allowNegative && Number(ur.rows[0].bal) - hours < 0) return res.status(400).json({ error: 'Exceeds available balance. No negative balances.' });
 
   const client = await pool.connect();
   let reqId = null;
@@ -1015,7 +1022,7 @@ router.post('/log', requireAuth, requirePermission('manage_pto'), async (req, re
     return res.status(500).json({ error: 'Log failed: ' + e.message });
   } finally { client.release(); }
 
-  await logAudit({ entity_type: 'pto_request', entity_id: reqId, action: 'logged_retroactive', user_id: req.user.id, user_name: req.user.name, details: { target: target, dates: from + ' to ' + to, reason: reason, paid: paid } });
+  await logAudit({ entity_type: 'pto_request', entity_id: reqId, action: 'logged_retroactive', user_id: req.user.id, user_name: req.user.name, details: { target: target, dates: from + ' to ' + to, reason: reason, paid: paid, negative_override: allowNegative } });
   res.json({ success: true, request_id: reqId });
 });
 
