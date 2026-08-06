@@ -5375,7 +5375,7 @@ function vendorsRenderTable(search) {
                   '<td>' + (v.rep_email ? '<a href="mailto:' + escHtml(v.rep_email) + '" style="color:var(--primary)">' + escHtml(v.rep_email) + '</a>' : '—') + '</td>' +
                   '<td>' + escHtml(v.rep_phone || '—') + '</td>' +
                   (canManage ? '<td style="white-space:nowrap">' +
-                    '<button class="btn btn-secondary btn-sm" onclick="showVendorModal(' + v.id + ',\'' + escHtml(v.name).replace(/'/g,"\\'") + '\',\'' + escHtml(v.website||'').replace(/'/g,"\\'") + '\',\'' + escHtml(v.account_number||'').replace(/'/g,"\\'") + '\',\'' + escHtml(v.username||'').replace(/'/g,"\\'") + '\',\'' + escHtml(v.password||'').replace(/'/g,"\\'") + '\',\'' + escHtml(v.notes||'').replace(/'/g,"\\'") + '\',\'' + escHtml(v.rep_name||'').replace(/'/g,"\\'") + '\',\'' + escHtml(v.rep_email||'').replace(/'/g,"\\'") + '\',\'' + escHtml(v.rep_phone||'').replace(/'/g,"\\'") + '\')">Edit</button> ' +
+                    '<button class="btn btn-secondary btn-sm" onclick="showVendorModal(' + v.id + ')">Edit</button> ' +
                     '<button class="btn btn-danger btn-sm" onclick="deleteVendor(' + v.id + ')">' + icons.trash + ' Delete</button>' +
                   '</td>' : '<td></td>') +
                 '</tr>';
