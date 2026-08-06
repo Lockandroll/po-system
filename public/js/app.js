@@ -11537,6 +11537,11 @@ async function renderEditInvoice(el, id) {
   var _invReqEnt = !!(_invAcctObj && _invAcctObj.require_entitlement);
   var _invReqVeh = !!(_invAcctObj && _invAcctObj.require_vehicle);
   var _invReqPho = !!(_invAcctObj && _invAcctObj.require_photos);
+  // The Entitlement card follows the account the way the signature card does:
+  // shown only when the account requires it. An invoice that already has
+  // entitlement boxes ticked keeps the card so recorded docs are never hidden.
+  var _invHasEnt = !!(v.ent_registration || v.ent_insurance || v.ent_title || v.ent_rental);
+  var _invShowEnt = _invReqEnt || _invHasEnt;
 
   var acctOptions = '<option value="">— Select account —</option>' + _invoiceAccounts.map(function(a){
     return '<option value="' + a.id + '"' + (v.account_id === a.id ? ' selected' : '') + '>' + escHtml(a.name) + '</option>';
@@ -11656,7 +11661,7 @@ async function renderEditInvoice(el, id) {
       '</div></div>' +
     '</div></div>' +
 
-    '<div class="card mb-4"><div class="card-header" style="display:flex;justify-content:space-between;align-items:center;gap:8px"><span class="card-title">Entitlement Documentation Provided</span><span id="inv-ent-req-hint" style="display:' + (_invReqEnt ? '' : 'none') + ';font-size:11px;font-weight:700;color:var(--primary);border:1px solid var(--primary);border-radius:4px;padding:1px 6px">Required for this account</span></div><div class="card-body">' +
+    '<div class="card mb-4" id="inv-ent-card" style="display:' + (_invShowEnt ? '' : 'none') + '"><div class="card-header" style="display:flex;justify-content:space-between;align-items:center;gap:8px"><span class="card-title">Entitlement Documentation Provided</span><span id="inv-ent-req-hint" style="display:' + (_invReqEnt ? '' : 'none') + ';font-size:11px;font-weight:700;color:var(--primary);border:1px solid var(--primary);border-radius:4px;padding:1px 6px">Required for this account</span></div><div class="card-body">' +
       '<div style="display:flex;gap:18px;flex-wrap:wrap">' +
         '<label style="display:flex;align-items:center;gap:6px;margin:0"><input type="checkbox" id="inv-ent-reg" style="width:auto"' + (v.ent_registration ? ' checked' : '') + ' /> Registration</label>' +
         '<label style="display:flex;align-items:center;gap:6px;margin:0"><input type="checkbox" id="inv-ent-ins" style="width:auto"' + (v.ent_insurance ? ' checked' : '') + ' /> Insurance</label>' +
@@ -11758,6 +11763,14 @@ function invAccountChange(skipAutoItems) {
   var _rPho = !!(acct && acct.require_photos);
   var _sigCard = document.getElementById('inv-sig-card');
   if (_sigCard) _sigCard.style.display = (_rSig || _invoiceExistingSig) ? '' : 'none';
+  // Entitlement card shows only when the account requires it, but is never hidden
+  // out from under entitlement boxes the tech has already ticked (same rule the
+  // signature card uses for an existing signature).
+  var _entCard = document.getElementById('inv-ent-card');
+  if (_entCard) {
+    var _entTicked = ['inv-ent-reg','inv-ent-ins','inv-ent-title','inv-ent-rental'].some(function(idv){ var e = document.getElementById(idv); return e && e.checked; });
+    _entCard.style.display = (_rEnt || _entTicked) ? '' : 'none';
+  }
   var _showHint = function (idv, on) { var e = document.getElementById(idv); if (e) e.style.display = on ? '' : 'none'; };
   _showHint('inv-ent-req-hint', _rEnt);
   _showHint('inv-veh-req-hint', _rVeh);
