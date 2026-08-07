@@ -4478,19 +4478,43 @@ function geicoRenderStats(s) {
     geicoStatCard('% Excellent Surveys', excPct + '%', exc + ' of ' + rated, geicoPctColor(excPct)) +
     geicoStatCard('On-Time', otPct + '%', (s.onTime||0) + ' of ' + (s.onTimeAnswered||0) + ' answered', geicoPctColor(otPct)) +
     geicoStatCard('Cities', nCities, unmatched ? (unmatched + ' unmatched') : '');
+  // Per-city scorecards (mirrors the Google Reviews "By Location" cards): survey
+  // count, a big color-coded % Excellent headline, on-time % beneath, city name.
+  // Unmatched surveys are surfaced in the Cities stat card above, not here.
+  var cityRows = (s.byCity||[]).filter(function(c){ return c.k !== '(unmatched)'; }).map(function(c){
+    var cRated = c.rated || 0, cExc = c.excellent || 0, cAns = c.answered || 0, cOn = c.on_time || 0;
+    return {
+      name: c.k, n: c.n || 0,
+      excPct: cRated ? Math.round(cExc*100/cRated) : 0,
+      otPct: cAns ? Math.round(cOn*100/cAns) : 0,
+      rated: cRated, exc: cExc, answered: cAns, hasRating: cRated > 0
+    };
+  });
+  cityRows.sort(function(a,b){
+    if (a.hasRating !== b.hasRating) return a.hasRating ? -1 : 1;
+    return (b.excPct - a.excPct) || (b.n - a.n) || String(a.name).localeCompare(String(b.name));
+  });
+  var cityCards = cityRows.length ? cityRows.map(function(c){
+    var big = c.hasRating ? (c.excPct + '<span style="font-size:18px">%</span>') : '<span style="font-size:20px">n/a</span>';
+    var bigColor = c.hasRating ? geicoPctColor(c.excPct) : 'var(--text-muted-color)';
+    var sub = c.hasRating
+      ? ('Excellent' + (c.answered ? ' &middot; ' + c.otPct + '% on-time' : ''))
+      : (c.answered ? (c.otPct + '% on-time') : 'No ratings yet');
+    var tip = c.name + ' — ' + c.exc + ' of ' + c.rated + ' Excellent' + (c.answered ? (', ' + c.otPct + '% on-time') : '');
+    return '<div class="card" style="padding:16px;min-width:150px;flex:0 0 auto;text-align:center" title="' + escHtml(tip) + '">' +
+        '<div style="font-size:13px;color:var(--text-muted-color)">' + c.n.toLocaleString() + ' survey' + (c.n===1?'':'s') + '</div>' +
+        '<div style="font-size:32px;font-weight:800;color:' + bigColor + ';line-height:1.1;margin:2px 0 4px">' + big + '</div>' +
+        '<div style="font-size:11px;color:var(--text-muted-color);margin-bottom:8px">' + sub + '</div>' +
+        '<div style="font-size:13px;color:var(--text-color);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:180px">' + escHtml(c.name) + '</div>' +
+      '</div>';
+  }).join('') : '<div style="color:var(--text-muted-color);font-size:13px">No city data for this range.</div>';
   var breakdown =
-    '<div class="card" style="flex:2;min-width:240px;padding:16px">' +
-      '<div style="font-size:12px;color:var(--text-muted-color);text-transform:uppercase;letter-spacing:0.5px;margin-bottom:8px">By City</div>' +
-      ((s.byCity||[]).length ? (s.byCity||[]).slice(0,8).map(function(c){
-        var pct = total ? Math.round(c.n*100/total) : 0;
-        return '<div style="display:flex;align-items:center;gap:8px;margin:4px 0">' +
-          '<div style="width:120px;font-size:13px;color:var(--text-color);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">' + escHtml(c.k) + '</div>' +
-          '<div style="flex:1;background:rgba(249,115,22,0.15);border-radius:4px;height:10px"><div style="width:' + pct + '%;background:var(--primary);height:10px;border-radius:4px"></div></div>' +
-          '<div style="width:36px;text-align:right;font-size:12px;color:var(--text-muted-color)">' + c.n + '</div>' +
-        '</div>';
-      }).join('') : '<div style="color:var(--text-muted-color);font-size:13px">No data</div>') +
+    '<div class="card" style="flex:1;min-width:260px;padding:16px">' +
+      '<div style="font-size:12px;color:var(--text-muted-color);text-transform:uppercase;letter-spacing:0.5px;margin-bottom:12px">By City</div>' +
+      '<div style="display:flex;flex-wrap:wrap;gap:12px">' + cityCards + '</div>' +
     '</div>';
-  el.innerHTML = '<div style="display:flex;flex-wrap:wrap;gap:12px">' + cards + '</div>';
+  el.innerHTML = '<div style="display:flex;flex-wrap:wrap;gap:12px;margin-bottom:12px">' + cards + '</div>' +
+    '<div style="display:flex;flex-wrap:wrap;gap:12px">' + breakdown + '</div>';
   _geicoEmpPage = 1;
   geicoRenderEmployeeTable(s);
 }

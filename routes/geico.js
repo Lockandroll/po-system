@@ -78,7 +78,11 @@ router.get('/stats', adminMgr, async (req, res) => {
     const serviceQ = pool.query("SELECT COALESCE(NULLIF(g.service,''),'(none)') AS k, COUNT(*)::int AS n" + base + " GROUP BY 1 ORDER BY n DESC", params);
     const stateQ = pool.query("SELECT COALESCE(NULLIF(g.loss_state,''),'(none)') AS k, COUNT(*)::int AS n" + base + " GROUP BY 1 ORDER BY n DESC", params);
     const cityQ = pool.query(
-      "SELECT COALESCE(c.name,'(unmatched)') AS k, COUNT(*)::int AS n " +
+      "SELECT COALESCE(c.name,'(unmatched)') AS k, COUNT(*)::int AS n, " +
+      " SUM(CASE WHEN g.rating ILIKE 'excellent' THEN 1 ELSE 0 END)::int AS excellent, " +
+      " SUM(CASE WHEN g.rating IS NOT NULL AND g.rating <> '' THEN 1 ELSE 0 END)::int AS rated, " +
+      " SUM(CASE WHEN g.arrived_on_time ILIKE 'yes' THEN 1 ELSE 0 END)::int AS on_time, " +
+      " SUM(CASE WHEN g.arrived_on_time IS NOT NULL AND g.arrived_on_time <> '' THEN 1 ELSE 0 END)::int AS answered " +
       "FROM geico_surveys g LEFT JOIN cities c ON c.code = g.city_code " +
       whereSql + " GROUP BY 1 ORDER BY n DESC", params);
 
