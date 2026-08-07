@@ -1129,4 +1129,44 @@ router.post('/award', requireAuth, async (req, res) => {
   res.json({ success: true, awarded_days: days });
 });
 
+// Manual signed ledger adjustment (admin/owner only). The amount is a signed number of
+// days: a negative value DOCKS time and may take the balance below zero on purpose (a
+// deliberate exception). Distinct from /award (positive bonus only) and /user set_balance
+// (which sets an exact amount). Writes one audited ledger line and moves the cached balance.
+router.post('/adjust', requireAuth, requirePermission('manage_pto'), async (req, res) => {
+  const isAdmin = req.user.role === 'admin' || req.user.isOwner || req.user.role === 'owner';
+  if (!isAdmin) return res.status(403).json({ error: 'Only an admin or owner can adjust PTO' });
+  const b = req.body || {};
+  const target = parseInt(b.user_id, 10) || 0;
+  if (!target) return res.status(400).json({ error: 'Employee is required' });
+  const days = Number(b.days);
+  if (!isFinite(days) || days === 0) return res.status(400).json({ error: 'Enter a non-zero number of days (use a minus sign to dock time)' });
+  if (Math.abs(days) > 400) return res.status(400).json({ error: 'That is too large for a single adjustment' });
+  const reason = String(b.reason || '').trim();
+  if (!reason) return res.status(400).json({ error: 'A reason is required to adjust PTO' });
+  const ur = await pool.query('SELECT name, COALESCE(pto_balance_hours,0) AS bal FROM users WHERE id = $1', [target]);
+  if (!ur.rows.length) return res.status(404).json({ error: 'Employee not found' });
+  const hours = Math.round(days * HRS_PER_DAY * 100) / 100;
+  const before = Math.round((Number(ur.rows[0].bal) || 0) * 100) / 100;
+  const after = Math.round((before + hours) * 100) / 100;
+  const absDays = Math.abs(days);
+  const verb = hours < 0 ? 'Docked ' : 'Added ';
+
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    await postLedger(client, {
+      user_id: target, entry_date: ymd(new Date()), kind: 'adjustment', amount_hours: hours,
+      description: verb + absDays + ' day' + (absDays === 1 ? '' : 's') + ' (manual) - ' + reason, created_by: req.user.id
+    });
+    await client.query('COMMIT');
+  } catch (e) {
+    await client.query('ROLLBACK');
+    return res.status(500).json({ error: 'Adjustment failed: ' + e.message });
+  } finally { client.release(); }
+
+  await logAudit({ entity_type: 'pto_user', entity_id: target, action: 'adjusted_pto', user_id: req.user.id, user_name: req.user.name, details: { target: target, days: days, hours: hours, reason: reason, balance_before: before, balance_after: after, negative_result: after < 0 } });
+  res.json({ success: true, adjusted_days: days, balance_hours: after });
+});
+
 module.exports = router;

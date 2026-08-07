@@ -494,15 +494,24 @@
   window.ptoLedger = async function (id, btn) {
     var tr = document.getElementById('pto-led-' + id);
     if (tr.style.display !== 'none') { tr.style.display = 'none'; btn.textContent = 'View ledger'; return; }
-    var pt = 'hourly'; (CACHE.team || []).forEach(function (p) { if (p.id === id) pt = p.pay_type; });
+    var person = null; (CACHE.team || []).forEach(function (p) { if (p.id === id) person = p; });
+    var pt = person ? person.pay_type : 'hourly';
+    var isAdmin = !!(window.state && state.user && (state.user.role === 'admin' || state.user.role === 'owner' || state.user.isOwner));
     try {
       var led = await api('GET', '/pto/team/' + id + '/ledger');
       var body = led.map(function (l) {
         var amt = Number(l.amount_hours);
         return '<tr><td style="width:80px">' + fmtDate(l.entry_date) + '</td><td>' + escHtml(l.description || l.kind) + '</td><td style="color:' + (amt >= 0 ? '#22c55e' : '#ef4444') + '">' + (amt >= 0 ? '+' : '') + fmtAmt(Math.abs(amt), pt).replace(unitLabel(pt), unitLabel(pt)) + '</td></tr>';
       }).join('');
-      tr.querySelector('td').innerHTML = '<div style="background:var(--bg,#1f1f1f);border-radius:10px;padding:10px 12px"><div class="pto-sub" style="font-weight:700;margin-bottom:6px">PTO ledger (append-only)</div><table class="pto-table" style="margin:0"><thead><tr><th>Date</th><th>Entry</th><th>Change</th></tr></thead><tbody>' + (body || '<tr><td class="pto-sub">No entries.</td></tr>') + '</tbody></table></div>';
+      var adj = isAdmin ? ('<div style="margin-top:10px;border-top:1px solid var(--border,#2c2c2c);padding-top:10px"><div class="pto-sub" style="font-weight:700;margin-bottom:6px">Add adjustment</div><div class="pto-desc" style="margin-bottom:8px">Enter a positive number to add time or a negative number to dock it. A negative result is allowed as a deliberate exception, and every entry is recorded on this ledger.</div><div style="display:flex;gap:8px;flex-wrap:wrap;align-items:flex-end"><div><label class="pto-label">Days (+/-)</label><input type="number" step="0.25" id="pto-adj-days-' + id + '" class="pto-input" style="max-width:120px" placeholder="e.g. -2"></div><div style="flex:1;min-width:180px"><label class="pto-label">Reason (required)</label><input type="text" id="pto-adj-reason-' + id + '" class="pto-input" placeholder="e.g. Correcting an overpaid PTO day"></div><button class="pto-btn ok" id="pto-adj-ok-' + id + '">Apply</button></div><div class="pto-sub" id="pto-adj-prev-' + id + '" style="margin-top:8px"></div><div class="pto-warn" id="pto-adj-err-' + id + '" style="display:none"></div></div>') : '';
+      tr.querySelector('td').innerHTML = '<div style="background:var(--bg,#1f1f1f);border-radius:10px;padding:10px 12px"><div class="pto-sub" style="font-weight:700;margin-bottom:6px">PTO ledger (append-only)</div><table class="pto-table" style="margin:0"><thead><tr><th>Date</th><th>Entry</th><th>Change</th></tr></thead><tbody>' + (body || '<tr><td class="pto-sub">No entries.</td></tr>') + '</tbody></table>' + adj + '</div>';
       tr.style.display = 'table-row'; btn.textContent = 'Hide ledger';
+      if (isAdmin) {
+        var _dEl = document.getElementById('pto-adj-days-' + id), _rEl = document.getElementById('pto-adj-reason-' + id), _pEl = document.getElementById('pto-adj-prev-' + id), _eEl = document.getElementById('pto-adj-err-' + id), _okEl = document.getElementById('pto-adj-ok-' + id);
+        var _bal = person ? Number(person.balance_hours) : 0;
+        _dEl.oninput = function () { var n = Number(_dEl.value); if (_dEl.value === '' || !isFinite(n) || n === 0) { _pEl.textContent = ''; return; } var after = Math.round((_bal + n * HRS_PER_DAY) * 100) / 100; _pEl.innerHTML = (n > 0 ? 'Adds ' : 'Docks ') + '<b>' + fmtAmt(Math.abs(n) * HRS_PER_DAY, pt) + '</b> to a new balance of <b style="color:' + (after < 0 ? '#ef4444' : '#22c55e') + '">' + fmtAmt(after, pt) + '</b>'; };
+        _okEl.onclick = async function () { _eEl.style.display = 'none'; var n = Number(_dEl.value); if (_dEl.value === '' || !isFinite(n) || n === 0) { _eEl.textContent = 'Enter a non-zero number of days (use a minus sign to dock).'; _eEl.style.display = 'block'; return; } var reason = (_rEl.value || '').trim(); if (!reason) { _eEl.textContent = 'A reason is required.'; _eEl.style.display = 'block'; return; } _okEl.disabled = true; try { await api('POST', '/pto/adjust', { user_id: id, days: n, reason: reason }); showToast((n > 0 ? 'Added ' : 'Docked ') + Math.abs(n) + ' day' + (Math.abs(n) === 1 ? '' : 's') + '.', 'success'); reload(); } catch (ex) { _okEl.disabled = false; _eEl.textContent = ex.message || 'Could not apply.'; _eEl.style.display = 'block'; } };
+      }
     } catch (e) { showToast(e.message || 'Could not load ledger.', 'error'); }
   };
   window.ptoOpenLog = function (id) {

@@ -19,8 +19,8 @@ var TC_DAYS = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
 var TC_DAYBITS = [1, 2, 4, 8, 16, 32, 64];
 var TC_COLORS = ['#22c55e', '#f59e0b', '#3b82f6', '#a855f7', '#ef4444', '#14b8a6', '#eab308'];
 
-function tcInjectStyles() {
-  if (document.getElementById('tc-styles')) return;
+function tcCodesInjectStyles() {
+  if (document.getElementById('tc-codes-styles')) return;
   var css =
     '.tc-grid{display:grid;grid-template-columns:250px 1fr;gap:16px;align-items:start}' +
     '@media(max-width:900px){.tc-grid{grid-template-columns:1fr}}' +
@@ -51,7 +51,7 @@ function tcInjectStyles() {
     '.tc-day.on{background:rgba(249,115,22,.18);color:var(--primary);border-color:rgba(249,115,22,.4)}' +
     '.tc-note{font-size:12px;color:var(--text-muted-color);line-height:1.6}';
   var st = document.createElement('style');
-  st.id = 'tc-styles';
+  st.id = 'tc-codes-styles';
   st.textContent = css;
   document.head.appendChild(st);
 }
@@ -72,7 +72,7 @@ function tcHhmmToMin(s) {
 
 // ---------------------------------------------------------------------------
 async function renderTimeCodes(content) {
-  tcInjectStyles();
+  tcCodesInjectStyles();
   content.innerHTML = '<div class="page-header"><div><div class="page-title">Pricing &amp; Service</div>' +
     '<div class="page-subtitle">Loading...</div></div></div>';
   try {
