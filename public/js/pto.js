@@ -410,7 +410,7 @@
     catch (e) {
       var msg = e.message || '';
       if (msg.indexOf('coverage_override_required') !== -1) { openOverride(id); return; }
-      var isAdmin = !!(window.state && state.user && (state.user.role === 'admin' || state.user.role === 'owner' || state.user.isOwner));
+      var isAdmin = !!(state && state.user && (state.user.role === 'admin' || state.user.role === 'owner' || state.user.isOwner));
       if (isAdmin && msg.indexOf('balance') !== -1) {
         var ok = (typeof novaConfirm === 'function') ? await novaConfirm('This employee does not have enough PTO for this. Approve anyway and let the balance go negative?') : window.confirm('This employee does not have enough PTO for this. Approve anyway and let the balance go negative?');
         if (!ok) return;
@@ -437,7 +437,7 @@
     catch (e) { showToast(e.message || 'Failed.', 'error'); }
   };
   window.ptoMgrCancel = function (id) {
-    var isAdmin = !!(window.state && state.user && (state.user.role === 'admin' || state.user.isOwner));
+    var isAdmin = !!(state && state.user && (state.user.role === 'admin' || state.user.isOwner));
     var forceRow = isAdmin ? '<label style="display:flex;gap:8px;align-items:center;margin-top:10px;font-size:13px;color:var(--text-dim,#9a9a9a)"><input type="checkbox" id="pto-mc-force"> Cancel immediately without employee approval (admin)</label>' : '';
     var m = document.createElement('div'); m.className = 'pto-mask';
     m.innerHTML = '<div class="pto-dlg"><h3>Cancel approved PTO</h3><div class="pto-desc">The employee must accept before anything is reversed. A reason memo is required and is logged to the audit trail.</div>' +
@@ -496,7 +496,7 @@
     if (tr.style.display !== 'none') { tr.style.display = 'none'; btn.textContent = 'View ledger'; return; }
     var person = null; (CACHE.team || []).forEach(function (p) { if (p.id === id) person = p; });
     var pt = person ? person.pay_type : 'hourly';
-    var isAdmin = !!(window.state && state.user && (state.user.role === 'admin' || state.user.role === 'owner' || state.user.isOwner));
+    var isAdmin = !!(state && state.user && (state.user.role === 'admin' || state.user.role === 'owner' || state.user.isOwner));
     try {
       var led = await api('GET', '/pto/team/' + id + '/ledger');
       var body = led.map(function (l) {
@@ -517,7 +517,7 @@
   window.ptoOpenLog = function (id) {
     var person = null; (CACHE.team || []).forEach(function (p) { if (p.id === id) person = p; });
     var pt = person ? person.pay_type : 'hourly';
-    var isAdmin = !!(window.state && state.user && (state.user.role === 'admin' || state.user.role === 'owner' || state.user.isOwner));
+    var isAdmin = !!(state && state.user && (state.user.role === 'admin' || state.user.role === 'owner' || state.user.isOwner));
     var m = document.createElement('div'); m.className = 'pto-mask';
     m.innerHTML = '<div class="pto-dlg"><h3>Log PTO (after the fact)</h3><div class="pto-desc">For a call-out converted to PTO after the day passed. Records who logged it and why.</div>' +
       '<div class="pto-row"><div><label class="pto-label">Start (past)</label><input type="date" id="pto-log-s" class="pto-input"></div><div><label class="pto-label">End</label><input type="date" id="pto-log-e" class="pto-input"></div></div>' +
