@@ -114,6 +114,35 @@ async function handleCallback(req, res) {
   if (errorCode) {
     const cancelled = square.isCancel(errorCode);
 
+    // A Point of Sale error code is NOT proof the card was declined. The Square
+    // app can hand the browser back with an error AFTER it has already captured
+    // the card (a known POS-API return glitch; the exact shape of invoice 400005
+    // on 2026-08-08). So only a code Nova RECOGNISES may close the attempt as
+    // failed. An unrecognised code becomes 'unconfirmed': the tech still sees what
+    // Square said, but Nova does NOT mark it failed and does NOT invite a retry
+    // that could double-charge. confirmByReference(), the poll and the webhook then
+    // ask Square directly and settle the invoice if the money really moved. A false
+    // error is otherwise worse than a lost callback: a lost callback leaves the row
+    // reconcilable, a false 'failed' does not.
+    if (!cancelled && !square.isKnownError(errorCode)) {
+      await pool.query(
+        'UPDATE invoice_payments SET status = $1, error_code = $2, error_description = $3, last_error = $4, updated_at = NOW() WHERE id = $5',
+        [
+          'unconfirmed',
+          String(errorCode).slice(0, 60),
+          ('Square returned an unexpected result. Nova is confirming with Square whether the card went through. Do not run the card again.').slice(0, 500),
+          errorDescription ? ('Square said: ' + String(errorDescription)).slice(0, 500) : ('Square code: ' + String(errorCode)).slice(0, 500),
+          row.id
+        ]
+      );
+      // Best-effort immediate recovery so the common case settles without waiting
+      // on the webhook. confirmByReference never marks paid on its own.
+      square.confirmByReference(row.id).catch(function (e) {
+        console.error('Square confirmByReference failed for payment row ' + row.id + ':', e.message);
+      });
+      return backToInvoice(req, res, row.invoice_id, { sq: v.nonce });
+    }
+
     // Nova's plain-English text WINS over Square's. Square's ERROR_DESCRIPTION is
     // written for a developer reading a stack trace, not a tech in a parking lot,
     // and on iOS it does not exist at all. Square's raw text is kept in last_error

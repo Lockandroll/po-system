@@ -140,6 +140,13 @@ ALL_PERMS.push('manage_pay_grades', 'view_pay_report', 'view_own_pay');
 // purpose - writing off a balance is not data entry, it is the line an auditor
 // asks about, and it should take a second person's access to do.
 ALL_PERMS.push('view_ar', 'manage_ar', 'ar_writeoff');
+// Accounts Payable. Ships dark exactly like A/R above: view_ap reads the bills
+// list and what is due; manage_ap adds and edits bills, marks them paid, and
+// sets the reminder settings. NOT in EMPLOYEE_PERMS and NOT in any role's
+// DEFAULTS, and db.js does not backfill it onto the saved matrix - on deploy
+// only admin and owner reach Accounts Payable until someone ticks the box in
+// Settings -> Roles & Access (or grants one person via users.extra_perms).
+ALL_PERMS.push('view_ap', 'manage_ap');
 
 var DEFAULTS = {
   admin: '*',

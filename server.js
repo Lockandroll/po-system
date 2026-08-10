@@ -27,6 +27,7 @@ const { startGotoTokenRefresh, startGotoIndex, startGotoReconcile } = require('.
 const { startLocationCleanup } = require('./jobs/locationCleanup');
 const { startDispatchJobs } = require('./jobs/dispatch');
 const { startArJobs } = require('./jobs/ar');
+const { startApJobs } = require('./jobs/ap');
 
 const app = express();
 
@@ -297,6 +298,7 @@ app.use('/api/time-codes', require('./routes/timeCodes'));
 app.use('/api/coverage', require('./routes/coverage'));
 app.use('/api/pay', require('./routes/pay'));
 app.use('/api/ar', require('./routes/ar'));
+app.use('/api/ap', require('./routes/ap'));
 
 // OAuth 2.1 authorization server for the remote MCP (must be before the SPA catch-all).
 //
@@ -383,5 +385,6 @@ initDB()
     startLocationCleanup();
     startDispatchJobs();
     startArJobs();
+    startApJobs();
   })
   .catch(err => console.error('DB init error (non-fatal):', err));

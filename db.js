@@ -1808,7 +1808,7 @@ async function initDB() {
       '  id SERIAL PRIMARY KEY,' +
       '  invoice_id INTEGER REFERENCES invoices(id) ON DELETE CASCADE,' +
       '  state_nonce VARCHAR(64) NOT NULL UNIQUE,' +
-      // initiated | returned | reconciled | offline_pending | mismatch | failed | canceled
+      // initiated | returned | reconciled | offline_pending | mismatch | failed | canceled | unconfirmed
       "  status VARCHAR(24) NOT NULL DEFAULT 'initiated'," +
       '  amount_requested_cents INTEGER NOT NULL DEFAULT 0,' +
       '  square_location_id VARCHAR(64),' +
@@ -4325,6 +4325,75 @@ async function initDB() {
     );
 
     console.log('A/R: tables ready. No account is A/R-enabled until somebody ticks it on the Accounts tab.');
+
+    // -----------------------------------------------------------------------
+    //  Accounts Payable
+    // -----------------------------------------------------------------------
+    // Bills WE owe. Unlike A/R, the balance here is NOT derived from other
+    // tables - a bill is entered, tracked to a due date, and marked paid, so
+    // its status lives on the row. Everything below ships dark behind view_ap /
+    // manage_ap (see utils/permissions.js): the tables are created on every
+    // boot, but no role can reach them until an admin ticks the box.
+    //
+    // These are brand-new tables, so a single CREATE ... IF NOT EXISTS with all
+    // columns is correct. If you add a column LATER, it must come with its own
+    // ALTER TABLE ... ADD COLUMN IF NOT EXISTS (see the note at the top of this
+    // file): CREATE IF NOT EXISTS will not touch a table that already exists.
+    await client.query(
+      'CREATE TABLE IF NOT EXISTS ap_bills (' +
+      '  id SERIAL PRIMARY KEY,' +
+      '  vendor_id INTEGER REFERENCES vendors(id) ON DELETE SET NULL,' +
+      '  payee VARCHAR(255),' +
+      '  bill_number VARCHAR(120),' +
+      '  category VARCHAR(40),' +
+      '  description TEXT,' +
+      '  amount NUMERIC(12,2) NOT NULL DEFAULT 0,' +
+      '  bill_date DATE,' +
+      '  due_date DATE,' +
+      "  status VARCHAR(16) NOT NULL DEFAULT 'unpaid'," +
+      '  paid_on DATE,' +
+      '  paid_amount NUMERIC(12,2),' +
+      '  paid_method VARCHAR(20),' +
+      '  paid_reference VARCHAR(120),' +
+      '  assigned_to INTEGER REFERENCES users(id) ON DELETE SET NULL,' +
+      '  recurring BOOLEAN NOT NULL DEFAULT false,' +
+      '  recurrence VARCHAR(10),' +
+      '  recurrence_day INTEGER,' +
+      '  series_id INTEGER,' +
+      '  spawned_next BOOLEAN NOT NULL DEFAULT false,' +
+      '  reminder_task_id INTEGER,' +
+      '  reminded_on DATE,' +
+      "  source VARCHAR(16) NOT NULL DEFAULT 'manual'," +
+      '  source_ref VARCHAR(255),' +
+      '  raw_email TEXT,' +
+      '  created_by INTEGER REFERENCES users(id) ON DELETE SET NULL,' +
+      '  created_at TIMESTAMPTZ DEFAULT NOW(),' +
+      '  updated_at TIMESTAMPTZ DEFAULT NOW()' +
+      ');'
+    );
+    // status+due drives both the bills list and the reminder job; the other two
+    // cover the vendor filter and walking a recurring chain.
+    await client.query('CREATE INDEX IF NOT EXISTS idx_ap_bills_status_due ON ap_bills(status, due_date);');
+    await client.query('CREATE INDEX IF NOT EXISTS idx_ap_bills_vendor ON ap_bills(vendor_id);');
+    await client.query('CREATE INDEX IF NOT EXISTS idx_ap_bills_series ON ap_bills(series_id);');
+
+    // Copies of the actual bill (PDF/photo), stored in R2 exactly like every
+    // other upload - bytes go browser<->R2 via presigned URLs, never through us.
+    await client.query(
+      'CREATE TABLE IF NOT EXISTS ap_bill_attachments (' +
+      '  id SERIAL PRIMARY KEY,' +
+      '  bill_id INTEGER REFERENCES ap_bills(id) ON DELETE CASCADE,' +
+      '  r2_key VARCHAR(500) NOT NULL,' +
+      '  filename VARCHAR(255),' +
+      '  content_type VARCHAR(120),' +
+      '  size_bytes BIGINT,' +
+      '  uploaded_by INTEGER REFERENCES users(id) ON DELETE SET NULL,' +
+      '  created_at TIMESTAMPTZ DEFAULT NOW()' +
+      ');'
+    );
+    await client.query('CREATE INDEX IF NOT EXISTS idx_ap_attach_bill ON ap_bill_attachments(bill_id);');
+
+    console.log('A/P: tables ready. Bills are off until an admin grants view_ap / manage_ap.');
 
     console.log('Database initialized');
   } finally {

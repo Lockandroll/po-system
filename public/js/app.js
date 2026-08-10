@@ -819,7 +819,8 @@ function navModel() {
       can('view_deposits') ? navItem('deposits', 'Cash Deposits', NAVI.deposit, ['deposits', 'view-deposit']) : null,
       canRoyalty('view') ? navItem('royalty', 'Royalty', NAVI.royalty) : null,
       can('manage_invoice_setup') ? navItem('invoice-setup', 'Invoice Setup', icons.settings) : null,
-      can('view_ar') ? navItem('accounts-receivable', 'Accounts Receivable', NAVI.receipt) : null
+      can('view_ar') ? navItem('accounts-receivable', 'Accounts Receivable', NAVI.receipt) : null,
+      can('view_ap') ? navItem('accounts-payable', 'Accounts Payable', NAVI.receipt) : null
     ]),
 
     navGroup('purchasing', 'Purchasing', icons.dashboard, [
@@ -1166,6 +1167,7 @@ async function render() {
   else if (state.currentView === 'coverage') await renderCoverage(content);
   else if (state.currentView === 'tech-pay') await renderPay(content);
   else if (state.currentView === 'accounts-receivable') await renderAr(content);
+  else if (state.currentView === 'accounts-payable') await renderAp(content);
   else if (state.currentView === 'live-map') await renderLiveMap(content);
   else if (state.currentView === 'timeclock') await renderTimeClock(content);
   else if (state.currentView === 'timeclock-manager') await renderTimeClockManager(content);
@@ -3184,6 +3186,9 @@ async function renderRoles(el) {
       {k:'view_ar',l:'See the aging report and every account ledger'},
       {k:'manage_ar',l:'Record payments and adjustments, and post import batches'},
       {k:'ar_writeoff',l:'Write a balance off. Separate on purpose - it is not data entry'} ] },
+    { group:'Accounts Payable', gate:'view_ap', perms:[
+      {k:'view_ap',l:'See the bills list, what is due, and paid history'},
+      {k:'manage_ap',l:'Add and edit bills, mark them paid, and set AP reminder settings'} ] },
     { group:'Call Search', gate:'search_dispatch', perms:[ {k:'search_dispatch',l:'Search call history - only calls they were on'}, {k:'search_dispatch_city',l:'Search every call in their home city'}, {k:'search_dispatch_all',l:'Search every call in every city, and export CSV'}, {k:'view_customer_pii',l:'See full customer names &amp; addresses in search (off = shortened)'} ] },
     { group:'Live Map', gate:'view_tech_locations', perms:[ {k:'view_tech_locations',l:'See where the crew is (live map &amp; route history)'}, {k:'manage_tech_locations',l:'Change tracking settings &amp; erase a tech&#39;s location history'} ] },
     { group:'Fleet &amp; Vehicles', perms:[ {k:'manage_vehicles',l:'Manage fleet registry'} ] },
@@ -13453,6 +13458,25 @@ function invSquareCardHtml(inv, canCollect, seeAll) {
       foot;
   }
 
+  // The Square app returned an unexpected result. It may have captured the card
+  // anyway (invoice 400005), so Nova does NOT call this failed and does NOT offer
+  // a retry that could double-charge. It keeps asking Square in the background.
+  if (st === 'unconfirmed') {
+    return head('Confirming payment', '<span class="badge badge-awaiting-signature">Checking</span>') +
+      '<div class="alert alert-warn" style="margin:0">' +
+        '<b>Square returned an unexpected result.</b><br/>' +
+        'The card may still have gone through. Nova is checking with Square and will mark this paid if it did. <b>Do not run the card again.</b> Check the Square app if you are unsure.' +
+      '</div>' +
+      (seeAll && (sp.error_code || sp.last_error)
+        ? '<div style="margin-top:10px;font-size:11.5px;color:var(--text-muted-color);line-height:1.5">' +
+            (sp.error_code ? 'Square code: <span class="mono">' + escHtml(sp.error_code) + '</span>' : '') +
+            (sp.last_error ? '<br/>' + escHtml(sp.last_error) : '') +
+          '</div>'
+        : '') +
+      '<button class="btn btn-secondary btn-sm" style="margin-top:12px" onclick="invSqRetry(' + inv.id + ',' + sp.id + ')">Check Square now</button>' +
+      foot;
+  }
+
   if (st === 'failed') {
     return head('Payment did not go through') +
       '<div class="alert alert-error" style="margin:0">' + escHtml(sp.error_description || 'Square could not complete the payment.') + '</div>' +
@@ -13465,6 +13489,7 @@ function invSquareCardHtml(inv, canCollect, seeAll) {
             (sp.last_error ? '<br/>' + escHtml(sp.last_error) : '') +
           '</div>'
         : '') +
+      (seeAll ? '<button class="btn btn-secondary btn-sm" style="margin-top:12px;margin-right:8px" onclick="invSqRetry(' + inv.id + ',' + sp.id + ')">Check Square for a completed charge</button>' : '') +
       (canCollect ? '<button class="btn btn-primary" style="margin-top:12px" onclick="invCollectPayment(' + inv.id + ')">Try again</button>' : '') +
       foot;
   }
@@ -13631,7 +13656,10 @@ async function invSqPoll(id, nonce, tries) {
     render();
     return;
   }
-  if (st === 'offline_pending' && tries > 4) {
+  if ((st === 'offline_pending' || st === 'unconfirmed') && tries > 4) {
+    // Stop hammering, but leave the invoice on its pending/checking card. The
+    // webhook and confirmByReference keep working in the background; reopening
+    // the invoice shows the settled state once Square confirms.
     _sqReturnNonce = null;
     render();
     return;

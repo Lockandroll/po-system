@@ -246,6 +246,19 @@ function isLocationError(code) {
   return c === 'ILLEGAL_LOCATION_ID' || c === 'invalid_location_id' || c === 'INVALID_LOCATION_ID';
 }
 
+// A Point of Sale error code is only allowed to CLOSE a payment attempt as failed
+// when Nova actually recognises it. Cancels, location errors and every code in
+// ERROR_TEXT are known, unambiguous outcomes where no money moved. Anything else
+// (an undocumented code, or the empty-ish result the Square app can hand back
+// AFTER it has already captured the card) is NOT proof of failure — the callback
+// in routes/square.js routes an unknown code to 'unconfirmed' instead.
+function isKnownError(code) {
+  var c = String(code || '');
+  if (!c) return false;
+  if (isCancel(c) || isLocationError(c)) return true;
+  return Object.prototype.hasOwnProperty.call(ERROR_TEXT, c);
+}
+
 // Square rejects a location for exactly two reasons, and the fix is different
 // for each, so the message has to name both possibilities and name the city and
 // location id. "This city is not set up in Square" was the original text here and
@@ -607,20 +620,122 @@ async function findRowForPayment(payment) {
     );
     if (byOrder.rows[0]) return byOrder.rows[0];
   }
-  const m = /Nova Invoice\s+(\d+)/i.exec(String(payment.note || ''));
+  // Route 3 accepts the invoice number from the note. For the Point of Sale API
+  // that note rides the ORDER line item, not the payment, so payment.note is
+  // usually empty here — fall back to reading it off the order.
+  var invNum = null;
+  var m = /Nova Invoice\s+(\d+)/i.exec(String(payment.note || ''));
   if (m) {
+    invNum = m[1];
+  } else if (payment.order_id) {
+    invNum = await invoiceNumberFromOrder(payment.order_id);
+  }
+  if (invNum) {
     // Deliberately restricted to attempts Nova itself opened and has not yet
     // settled. Matching a reconciled row would let a second card run on the
     // same invoice number quietly overwrite a settled payment.
+    //
+    // 'unconfirmed', 'failed' and 'canceled' are included on purpose: the Square
+    // app can hand the browser back with an error even though it captured the
+    // card, which closes the row before any id was stored (invoice 400005,
+    // 2026-08-08). The completed-payment webhook is how that row gets rescued, so
+    // it has to be reachable here. Route 1 (payment id) and route 2 (order id)
+    // run first, so a payment already tied to a row never reaches this query.
     const byNote = await pool.query(
       'SELECT p.* FROM invoice_payments p JOIN invoices i ON i.id = p.invoice_id ' +
-      'WHERE i.invoice_number = $1 AND p.status IN (\'offline_pending\', \'returned\', \'initiated\') ' +
+      'WHERE i.invoice_number = $1 AND p.status IN (\'offline_pending\', \'returned\', \'initiated\', \'unconfirmed\', \'failed\', \'canceled\') ' +
       'ORDER BY p.id DESC LIMIT 1',
-      [m[1]]
+      [invNum]
     );
     if (byNote.rows[0]) return byNote.rows[0];
   }
   return null;
+}
+
+// Pull the Nova invoice number off a Square ORDER. The Point of Sale note
+// ("Nova Invoice N") is written to the order line item, so a bare payment (which
+// carries no note of its own) can still be tied back to its invoice via the order.
+async function invoiceNumberFromOrder(orderId) {
+  if (!orderId) return null;
+  let order = null;
+  try {
+    const ord = await sq('GET', '/v2/orders/' + encodeURIComponent(orderId));
+    order = ord && ord.order;
+  } catch (e) { return null; }
+  if (!order) return null;
+  const texts = [];
+  if (order.reference_id) texts.push(String(order.reference_id));
+  (order.line_items || []).forEach(function (li) { if (li && li.note) texts.push(String(li.note)); });
+  if (order.note) texts.push(String(order.note));
+  for (let i = 0; i < texts.length; i++) {
+    const mm = /Nova Invoice\s+(\d+)/i.exec(texts[i]);
+    if (mm) return mm[1];
+  }
+  return null;
+}
+
+// Recover a Point of Sale payment that came home with NO Square id.
+//
+// This is the safety valve for the case the callback cannot resolve on its own:
+// the Square app hands the browser back with an error code AFTER it has actually
+// captured the card (a known POS-API return glitch, made more likely by the short
+// auto-return and the tip/signature screens; invoice 400005 on 2026-08-08). The
+// callback has no order id to reconcile against, so instead of trusting the word
+// "error" and stranding a real charge, ask Square directly: did a COMPLETED
+// payment for THIS invoice land at this location around this time?
+//
+// Safe by construction: it never marks anything paid itself. It only fills in the
+// order id, then hands off to reconcilePayment(), which re-checks the amount and
+// refuses a double settlement. A no-match is a silent no-op.
+async function confirmByReference(rowId) {
+  const rowRes = await pool.query('SELECT * FROM invoice_payments WHERE id = $1', [rowId]);
+  const row = rowRes.rows[0];
+  if (!row) return { ok: false, reason: 'not_found' };
+  if (row.status === 'reconciled') return { ok: true, already: true, row: row };
+  // If an id was stored after all, the normal reconcile path applies.
+  if (row.square_transaction_id || row.square_payment_id) {
+    return await reconcilePayment(row.id);
+  }
+  if (!configured()) return { ok: false, reason: 'not_configured', row: row };
+
+  const invRes = await pool.query('SELECT invoice_number FROM invoices WHERE id = $1', [row.invoice_id]);
+  const inv = invRes.rows[0];
+  if (!inv) return { ok: false, reason: 'invoice_gone', row: row };
+
+  // A tech runs one card, so the window is tiny: from just before this attempt
+  // started, at the location this invoice is mapped to, newest first.
+  const startMs = row.initiated_at ? new Date(row.initiated_at).getTime() : (Date.now() - 30 * 60 * 1000);
+  const since = new Date(startMs - 60 * 1000).toISOString();
+  const qs = ['begin_time=' + encodeURIComponent(since), 'sort_order=DESC', 'limit=25'];
+  if (row.square_location_id) qs.push('location_id=' + encodeURIComponent(row.square_location_id));
+
+  let payments = [];
+  try {
+    const list = await sq('GET', '/v2/payments?' + qs.join('&'));
+    payments = (list && list.payments) || [];
+  } catch (e) {
+    await markRow(row.id, { last_error: 'Recovery lookup failed: ' + (e.message || 'unknown') });
+    return { ok: false, reason: 'lookup_failed', row: row };
+  }
+
+  // Match on the invoice number carried in the ORDER note. Only COMPLETED
+  // payments are adopted; an APPROVED-but-not-captured one is left for the webhook
+  // so Nova never settles against money that has not actually moved yet.
+  let matchOrderId = null;
+  for (let i = 0; i < payments.length; i++) {
+    const p = payments[i];
+    if (String(p.status || '') !== 'COMPLETED') continue;
+    if (!p.order_id) continue;
+    let noteNum = null;
+    try { noteNum = await invoiceNumberFromOrder(p.order_id); } catch (e) { noteNum = null; }
+    if (noteNum && String(noteNum) === String(inv.invoice_number)) { matchOrderId = p.order_id; break; }
+  }
+
+  if (!matchOrderId) return { ok: false, reason: 'no_match', row: row };
+
+  // Adopt the order id and let the tested reconcile path do the money write.
+  await markRow(row.id, { square_order_id: matchOrderId, square_transaction_id: matchOrderId });
+  return await reconcilePayment(row.id);
 }
 
 // ---------------------------------------------------------------------------
@@ -1211,5 +1326,8 @@ module.exports = {
   locationErrorMessage: locationErrorMessage,
   verifyWebhook: verifyWebhook,
   reconcilePayment: reconcilePayment,
-  findRowForPayment: findRowForPayment
+  findRowForPayment: findRowForPayment,
+  isKnownError: isKnownError,
+  invoiceNumberFromOrder: invoiceNumberFromOrder,
+  confirmByReference: confirmByReference
 };

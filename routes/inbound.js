@@ -134,6 +134,61 @@ router.post('/email', async function (req, res) {
       return;
     }
 
+    // Mail to the A/P intake address (default bills@) becomes a DRAFT payable.
+    // Same known-sender rule as the task intake below: a staff member forwards a
+    // vendor's bill in, and Nova files it as a review draft for them to confirm.
+    // Nothing is trusted - the amount and due date are parser guesses on a draft,
+    // never a live "pay this" bill (see utils/ap.js createBillFromEmail).
+    const apAddr = (process.env.AP_INBOUND_ADDRESS || 'bills@').toLowerCase();
+    if (toRaw.toLowerCase().indexOf(apAddr) !== -1) {
+      try {
+        const apSender = await findUserByEmail(senderEmail);
+        if (!apSender) { console.log('[ap] ignoring bill email from unknown sender:', senderEmail); return; }
+        const ap = require('../utils/ap');
+        var apSubject = data.subject || '', apText = data.text || '', apHtmlBody = data.html || '';
+        var apAttachments = Array.isArray(data.attachments) ? data.attachments : [];
+        // Pull the full message when the webhook body was thin OR carried no
+        // attachments - the bill itself is almost always an attachment.
+        if (data.email_id && ((!apText && !apHtmlBody) || !apAttachments.length)) {
+          var apFull = await fetchReceivedEmail(data.email_id);
+          if (apFull && apFull.statusCode) { await new Promise(function (r) { setTimeout(r, 2500); }); apFull = await fetchReceivedEmail(data.email_id); }
+          if (apFull && !apFull.statusCode) {
+            apSubject = apSubject || apFull.subject || '';
+            if (!apText) apText = apFull.text || '';
+            if (!apHtmlBody) apHtmlBody = apFull.html || '';
+            if (!apAttachments.length && Array.isArray(apFull.attachments)) apAttachments = apFull.attachments;
+          }
+        }
+        const apParsed = ap.parseBillEmail({ subject: apSubject, text: apText, html: apHtmlBody });
+        const apBill = await ap.createBillFromEmail(apParsed, { id: apSender.id, name: apSender.name },
+          { source_ref: data.email_id || null, raw_email: apText || ap.htmlToText(apHtmlBody) });
+        var apStored = 0;
+        try { apStored = await ap.captureEmailAttachments(apBill.id, apAttachments, apSender.id); }
+        catch (e) { console.error('[ap] attachment capture failed:', e.message); }
+        if (apSender.email) {
+          try {
+            const apDetails = [
+              { label: 'Payee (guess)', value: apParsed.payee || 'not found - set it on the draft' },
+              { label: 'Amount (guess)', value: apParsed.amount != null ? '$' + Number(apParsed.amount).toFixed(2) : 'not found - set it on the draft' },
+              { label: 'Due date (guess)', value: apParsed.due_date || 'not found - set it on the draft' },
+              { label: 'Attachments saved', value: String(apStored) }
+            ];
+            const apConfirm = emailTemplate({
+              badge: 'Bill Draft', badgeColor: 'orange',
+              title: 'Nova saved a draft bill from your email',
+              body: 'It is waiting in Accounts Payable as a draft. Open it, confirm the amount and due date, then save it live - Nova never puts a parsed amount on a live bill on its own.',
+              details: apDetails,
+              buttonText: 'Open Accounts Payable', buttonUrl: APP + '/?view=accounts-payable',
+              footerNote: 'Forward a bill to this address any time to start a draft payable.'
+            });
+            await sendEmail(apSender.email, 'Draft bill created: ' + (apParsed.payee || apParsed.description || 'bill'), apConfirm);
+          } catch (e) { console.error('[ap] confirm email failed:', e.message); }
+        }
+        console.log('[ap] created draft bill #' + apBill.id + ' from ' + apSender.email + ' (' + apStored + ' attachment(s))');
+      } catch (e) { console.error('[ap] processing failed:', e.message); }
+      return;
+    }
+
     const sender = await findUserByEmail(senderEmail);
     if (!sender) {
       console.log('[inbound] ignoring email from unknown sender:', senderEmail);

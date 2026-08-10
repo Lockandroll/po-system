@@ -1814,6 +1814,13 @@ router.get('/:id/payment-status', requireAuth, requirePermission('view_invoices'
       try { await square.reconcilePayment(row.id); } catch (e) {}
       const again = await pool.query('SELECT * FROM invoice_payments WHERE id = $1', [row.id]);
       row = again.rows[0] || row;
+    } else if (row && row.status === 'unconfirmed') {
+      // The Square app returned an unexpected result but may have captured the
+      // card. Ask Square directly; this settles the invoice if the money moved,
+      // so the tech's own polling recovers it even if the webhook is slow.
+      try { await square.confirmByReference(row.id); } catch (e) {}
+      const againU = await pool.query('SELECT * FROM invoice_payments WHERE id = $1', [row.id]);
+      row = againU.rows[0] || row;
     }
 
     const fresh = await pool.query('SELECT status, pay_type, card_last4, approval_code, tip_amount, grand_total, authorized_total FROM invoices WHERE id = $1', [req.params.id]);
@@ -1829,10 +1836,16 @@ router.get('/:id/payment-status', requireAuth, requirePermission('view_invoices'
 router.post('/:id/payments/:pid/reconcile', requireAuth, requirePermission('edit_invoice'), async (req, res) => {
   if (!canSeeAll(req.user.role)) return res.status(403).json({ error: 'Access denied' });
   try {
-    const r = await pool.query('SELECT id FROM invoice_payments WHERE id = $1 AND invoice_id = $2', [req.params.pid, req.params.id]);
+    const r = await pool.query('SELECT id, square_transaction_id, square_payment_id FROM invoice_payments WHERE id = $1 AND invoice_id = $2', [req.params.pid, req.params.id]);
     if (!r.rows.length) return res.status(404).json({ error: 'Payment attempt not found' });
-    const out = await square.reconcilePayment(r.rows[0].id);
-    const again = await pool.query('SELECT * FROM invoice_payments WHERE id = $1', [r.rows[0].id]);
+    // A row that never got a Square id (e.g. the app returned an error even though
+    // it captured the card) cannot be reconciled by id — recover it by invoice
+    // reference instead. Both paths end in the same amount-checked reconcile writer.
+    const prow = r.rows[0];
+    const out = (!prow.square_transaction_id && !prow.square_payment_id)
+      ? await square.confirmByReference(prow.id)
+      : await square.reconcilePayment(prow.id);
+    const again = await pool.query('SELECT * FROM invoice_payments WHERE id = $1', [prow.id]);
     res.json({ ok: !!out.ok, reason: out.reason || null, payment: scrubPaymentRow(again.rows[0]) });
   } catch (err) {
     console.error(err);
