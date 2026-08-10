@@ -3399,7 +3399,7 @@ async function taskDrop(e, status){
   _tasksData=others.concat(dest);
   rerenderTaskBoard();
   try {
-    if (fromStatus!==status){ await api('PATCH','/tasks/'+id+'/status',{status:status}); }
+    if (fromStatus!==status){ await api('PATCH','/tasks/'+id+'/status',{status:status}); if (status==='done') novaFireworks(); }
     var destIds=_tasksData.filter(function(x){ return x.status===status; }).map(function(x){ return x.id; });
     await api('POST','/tasks/reorder',{ ids: destIds });
     if (status==='done'){ var r=await api('GET','/tasks?view='+_taskTab); _tasksData=r||[]; rerenderTaskBoard(); }
@@ -3410,6 +3410,181 @@ function taskStatusLabel(s){ for (var i=0;i<TASK_STATUSES.length;i++) if (TASK_S
 function taskStatusBadge(s){ var m={ todo:['To Do','#888'], in_progress:['In Progress','#3b82f6'], done:['Done','#22c55e'] }; var x=m[s]||[s,'#888']; return '<span style="font-size:11px;font-weight:700;padding:2px 8px;border-radius:10px;background:'+x[1]+'22;color:'+x[1]+'">'+x[0]+'</span>'; }
 function taskIsOverdue(t){ if (!t.due_date || t.status==='done') return false; var d=new Date(t.due_date); var today=new Date(); today.setHours(0,0,0,0); return d < today; }
 function taskFeedback(msg, isErr){ var fb=document.getElementById('tasks-feedback'); if (fb) fb.innerHTML='<div class="alert '+(isErr?'alert-error':'alert-success')+'">'+escHtml(msg)+'</div>'; }
+
+// --- Celebration: a short fireworks burst over the whole screen. --------------
+// Tony asked for a firework animation when a task is marked Done. Pure canvas,
+// no library, no build step. It paints a transparent, click-through full-screen
+// overlay, plays for a couple of seconds, then removes itself and its listeners.
+// House style: string concatenation only, no backticks (CLAUDE.md 1.1).
+// Reusable on purpose - call novaFireworks() from anywhere worth celebrating.
+function novaFireworks(){
+  try {
+    if (typeof document === 'undefined' || !document.body) return;
+    // Don't stack overlays if several tasks are completed in quick succession.
+    if (document.getElementById('nova-fx-canvas')) return;
+
+    var reduce = false;
+    try { reduce = !!(window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches); } catch(e){}
+
+    var canvas = document.createElement('canvas');
+    canvas.id = 'nova-fx-canvas';
+    canvas.setAttribute('aria-hidden', 'true');
+    // pointer-events:none so it never blocks a click; very high z-index so it
+    // paints above modals; transparent so the app shows through.
+    canvas.style.cssText = 'position:fixed;left:0;top:0;width:100%;height:100%;pointer-events:none;z-index:2147483000';
+    document.body.appendChild(canvas);
+
+    var ctx = canvas.getContext('2d');
+    if (!ctx){ if (canvas.parentNode) canvas.parentNode.removeChild(canvas); return; }
+
+    // Cap DPR at 2 so a 4k / retina screen doesn't allocate a huge buffer.
+    var dpr = Math.min(window.devicePixelRatio || 1, 2);
+    var vw = 0, vh = 0;
+    function resize(){
+      vw = window.innerWidth; vh = window.innerHeight;
+      canvas.width = Math.floor(vw * dpr);
+      canvas.height = Math.floor(vh * dpr);
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    }
+    resize();
+    window.addEventListener('resize', resize);
+
+    var COLORS = ['#f97316','#22c55e','#3b82f6','#eab308','#ec4899','#a855f7','#ef4444','#14b8a6','#ffffff'];
+    var GRAVITY = 0.05;
+    var DRAG = 0.985;
+    var particles = [];
+    var rockets = [];
+
+    function rand(a, b){ return a + Math.random() * (b - a); }
+    function pick(arr){ return arr[Math.floor(Math.random() * arr.length)]; }
+
+    // A rocket rises from the bottom, decelerating under gravity, and bursts near
+    // the top of its arc (or when it reaches its target height).
+    function launchRocket(){
+      rockets.push({
+        x: rand(vw * 0.15, vw * 0.85),
+        y: vh + 6,
+        vx: rand(-0.6, 0.6),
+        vy: -rand(vh * 0.011, vh * 0.016),
+        targetY: rand(vh * 0.16, vh * 0.46),
+        color: pick(COLORS)
+      });
+    }
+
+    function explode(x, y, color){
+      var count = reduce ? 26 : Math.floor(rand(48, 78));
+      var baseSpeed = reduce ? 2.2 : rand(2.6, 4.4);
+      for (var i = 0; i < count; i++){
+        var ang = (Math.PI * 2) * (i / count) + rand(-0.14, 0.14);
+        var spd = baseSpeed * rand(0.35, 1);
+        particles.push({
+          x: x, y: y,
+          vx: Math.cos(ang) * spd,
+          vy: Math.sin(ang) * spd,
+          life: 1,
+          decay: rand(0.010, 0.022),
+          color: color,
+          size: rand(1.6, 3.2)
+        });
+      }
+    }
+
+    var start = null;
+    var lastTs = null;
+    var rafId = 0;
+    var lastLaunch = -999;
+    // Stop launching after LAUNCH_MS; keep drawing until the last spark fades,
+    // but never cut the show before MIN_MS or run past the MAX_MS hard stop.
+    var LAUNCH_MS = reduce ? 500 : 1100;
+    var MIN_MS = reduce ? 700 : 1500;
+    var MAX_MS = reduce ? 1700 : 3000;
+
+    // Kick a couple off immediately so it feels instant.
+    launchRocket();
+    if (!reduce) launchRocket();
+
+    function frame(ts){
+      if (start === null){ start = ts; lastTs = ts; }
+      var elapsed = ts - start;
+      // dt = 1 at 60fps; clamp so a stall (backgrounded tab) cannot warp physics.
+      // Scaling every motion by dt keeps the show the same length on 60Hz,
+      // 120Hz and 144Hz screens instead of running 2-2.4x too fast.
+      var dt = (ts - lastTs) / 16.6667;
+      if (dt > 3) dt = 3;
+      if (dt < 0) dt = 0;
+      lastTs = ts;
+      var dragF = Math.pow(DRAG, dt);
+
+      // Fade the previous frame WITHOUT darkening the app: destination-out lowers
+      // the alpha of what is already painted, so the overlay stays transparent
+      // where nothing is drawn (this is what leaves glowing spark trails).
+      var fade = 1 - Math.pow(1 - 0.20, dt);
+      ctx.globalCompositeOperation = 'destination-out';
+      ctx.globalAlpha = 1;
+      ctx.fillStyle = 'rgba(0,0,0,' + fade.toFixed(4) + ')';
+      ctx.fillRect(0, 0, vw, vh);
+      // Additive blending so overlapping sparks glow like real fireworks.
+      ctx.globalCompositeOperation = 'lighter';
+
+      if (elapsed < LAUNCH_MS && (elapsed - lastLaunch) > (reduce ? 240 : 190)){
+        launchRocket();
+        lastLaunch = elapsed;
+      }
+
+      var i;
+      for (i = rockets.length - 1; i >= 0; i--){
+        var ro = rockets[i];
+        ro.x += ro.vx * dt;
+        ro.y += ro.vy * dt;
+        ro.vy += GRAVITY * 0.6 * dt;
+        ctx.globalAlpha = 1;
+        ctx.fillStyle = ro.color;
+        ctx.beginPath();
+        ctx.arc(ro.x, ro.y, 2, 0, Math.PI * 2);
+        ctx.fill();
+        if (ro.vy >= 0 || ro.y <= ro.targetY){
+          explode(ro.x, ro.y, ro.color);
+          rockets.splice(i, 1);
+        }
+      }
+
+      for (i = particles.length - 1; i >= 0; i--){
+        var pa = particles[i];
+        pa.vx *= dragF;
+        pa.vy = pa.vy * dragF + GRAVITY * dt;
+        pa.x += pa.vx * dt;
+        pa.y += pa.vy * dt;
+        pa.life -= pa.decay * dt;
+        if (pa.life <= 0){ particles.splice(i, 1); continue; }
+        ctx.globalAlpha = pa.life < 0 ? 0 : pa.life;
+        ctx.fillStyle = pa.color;
+        ctx.beginPath();
+        ctx.arc(pa.x, pa.y, pa.size * (0.4 + pa.life * 0.6), 0, Math.PI * 2);
+        ctx.fill();
+      }
+      ctx.globalAlpha = 1;
+
+      var empty = (rockets.length === 0 && particles.length === 0);
+      var finished = elapsed > MAX_MS || (elapsed > MIN_MS && elapsed > LAUNCH_MS && empty);
+      if (finished){ cleanup(); return; }
+      rafId = requestAnimationFrame(frame);
+    }
+
+    function cleanup(){
+      try { window.removeEventListener('resize', resize); } catch(e){}
+      if (rafId){ try { cancelAnimationFrame(rafId); } catch(e){} rafId = 0; }
+      if (canvas && canvas.parentNode){ canvas.parentNode.removeChild(canvas); }
+    }
+
+    rafId = requestAnimationFrame(frame);
+    // Safety net: never leave the overlay lingering if rAF gets throttled
+    // (e.g. the tab is backgrounded mid-animation).
+    setTimeout(cleanup, MAX_MS + 800);
+  } catch(e){
+    var c = document.getElementById('nova-fx-canvas');
+    if (c && c.parentNode) c.parentNode.removeChild(c);
+  }
+}
 
 async function renderTasks(el){
   if (!can('view_tasks')){ el.innerHTML='<div class="alert alert-error">Access denied.</div>'; return; }
@@ -3667,7 +3842,7 @@ async function renderTaskDetail(el, id){
     '</div>';
 }
 
-async function taskSetStatus(id, status){ try { await api('PATCH','/tasks/'+id+'/status',{status:status}); navigate('task-detail',id); } catch(e){ taskFeedback(e.message,true); } }
+async function taskSetStatus(id, status){ try { var wasDone = !!(window._taskCurrent && window._taskCurrent.id===id && window._taskCurrent.status==='done'); await api('PATCH','/tasks/'+id+'/status',{status:status}); if (status==='done' && !wasDone) novaFireworks(); navigate('task-detail',id); } catch(e){ taskFeedback(e.message,true); } }
 async function taskToggleSub(sid, done){ try { await api('PATCH','/tasks/subtasks/'+sid,{done:done}); } catch(e){ taskFeedback(e.message,true); } }
 async function taskDelSub(sid){ try { await api('DELETE','/tasks/subtasks/'+sid); var t=window._taskCurrent; if (t) navigate('task-detail',t.id); } catch(e){ taskFeedback(e.message,true); } }
 async function taskAddSub(id){ var v=((document.getElementById('task-newsub')||{}).value||'').trim(); if (!v) return; try { await api('POST','/tasks/'+id+'/subtasks',{title:v}); navigate('task-detail',id); } catch(e){ taskFeedback(e.message,true); } }
