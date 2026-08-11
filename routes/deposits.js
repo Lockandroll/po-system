@@ -11,6 +11,97 @@ const SEE_ALL = ['admin', 'manager'];
 // Roles that can export and delete
 const MANAGE = ['admin', 'manager'];
 
+// ---------------------------------------------------------------------------
+// Editing an already-submitted deposit
+// ---------------------------------------------------------------------------
+// Viewing and deleting are company-wide for a manager. EDITING is not: changing
+// the numbers on a deposit is a correction to another location's books, so a
+// manager is held to the cities they are assigned (users_cities, falling back to
+// their home_city so a manager with no explicit rows is not locked out). Only
+// admin/owner edit across locations. Mirrors routes/assets.js cityScope().
+//
+// Returns null for "every city", or an array of upper-cased 3-letter codes.
+async function editCityScope(req) {
+  if (!req.user) return [];
+  if (req.user.role === 'admin' || req.user.isOwner) return null;
+  var codes = [];
+  try {
+    const r = await pool.query('SELECT city_code FROM user_cities WHERE user_id = $1', [req.user.id]);
+    codes = r.rows.map(function (x) { return (x.city_code || '').trim().toUpperCase(); }).filter(Boolean);
+  } catch (e) { codes = []; }
+  if (!codes.length) {
+    try {
+      const h = await pool.query('SELECT home_city FROM users WHERE id = $1', [req.user.id]);
+      const hc = h.rows.length && h.rows[0].home_city ? String(h.rows[0].home_city).trim().toUpperCase() : '';
+      if (hc) codes.push(hc);
+    } catch (e) { /* leave empty */ }
+  }
+  return codes;
+}
+
+// True when this request may act on the given city. Fails CLOSED on a blank
+// city: a scoped manager cannot edit a deposit that has no city on it.
+function scopeAllows(scope, cityCode) {
+  if (scope === null) return true;
+  if (!cityCode) return false;
+  return scope.indexOf(String(cityCode).trim().toUpperCase()) !== -1;
+}
+
+// Role gate + city gate, in that order. Used for the can_edit flag on the read
+// and enforced again on the write.
+async function mayEditCity(req, cityCode) {
+  if (!MANAGE.includes(req.user.role)) return false;
+  const scope = await editCityScope(req);
+  return scopeAllows(scope, cityCode);
+}
+
+function numOrNull(v) {
+  if (v === null || v === undefined || v === '') return null;
+  const n = parseFloat(v);
+  return isNaN(n) ? null : n;
+}
+function dateOrNull(v) {
+  if (!v) return null;
+  const s = String(v).slice(0, 10);
+  return /^\d{4}-\d{2}-\d{2}$/.test(s) ? s : null;
+}
+function money2(v) {
+  const n = parseFloat(v);
+  return isNaN(n) ? null : Math.round(n * 100) / 100;
+}
+// node-pg hands a DATE column back as a JS Date at LOCAL midnight, so
+// String(d).slice(0,10) yields "Tue Aug 11" and toISOString() shifts the day on
+// any server that is not UTC. Format from the local parts instead.
+function ymdOf(v) {
+  if (!v) return null;
+  if (typeof v === 'string') return v.slice(0, 10);
+  try {
+    var m = String(v.getMonth() + 1); if (m.length < 2) m = '0' + m;
+    var d = String(v.getDate()); if (d.length < 2) d = '0' + d;
+    return v.getFullYear() + '-' + m + '-' + d;
+  } catch (e) { return null; }
+}
+
+// The edit history shown on the deposit page. Read straight out of audit_logs
+// rather than a new table, so the on-page panel and the Audit Log can never
+// disagree about what happened.
+async function depositHistory(id) {
+  try {
+    const { rows } = await pool.query(
+      'SELECT id, action, user_name, details, created_at FROM audit_logs ' +
+      "WHERE entity_type = 'deposit' AND entity_id = $1 ORDER BY created_at ASC, id ASC",
+      [id]
+    );
+    return rows.map(function (r) {
+      var det = null;
+      try { det = r.details ? JSON.parse(r.details) : null; } catch (e) { det = null; }
+      return { id: r.id, action: r.action, user_name: r.user_name, details: det, created_at: r.created_at };
+    });
+  } catch (e) {
+    return [];
+  }
+}
+
 async function generateDepositNumber() {
   const year = new Date().getFullYear();
   const prefix = 'DEP-' + year + '-%';
@@ -312,10 +403,248 @@ router.get('/:id', requireAuth, requirePermission('view_deposits'), async functi
     }
     const ex = await pool.query('SELECT id, description, amount, receipt_image, receipt_filename, COALESCE(no_receipt, FALSE) AS no_receipt, no_receipt_reason FROM deposit_expenses WHERE deposit_id = $1 ORDER BY id', [dep.id]);
     dep.expenses = ex.rows;
+    // The client cannot work out the city scope on its own, so the server says
+    // plainly whether THIS viewer may edit THIS deposit. The Edit button hangs
+    // off this flag; PUT /:id re-checks it and never trusts the answer.
+    dep.can_edit = await mayEditCity(req, dep.city_code);
+    dep.history = await depositHistory(dep.id);
     res.json(dep);
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: 'Failed to fetch deposit' });
+  }
+});
+
+// PUT /:id — correct a submitted deposit. Manager-and-above, and a manager only
+// within their own cities (see editCityScope above); admin/owner anywhere.
+//
+// Body is the DESIRED end state, not a patch:
+//   amount, pulsar_owed, deposit_date, period_start, period_end, city_code, notes
+//   expenses[]      - the full list. { id } keeps/updates an existing row,
+//                     no id inserts a new one, and any existing row whose id is
+//                     absent is deleted. { image } replaces that line's photo,
+//                     { remove_photo:true } clears it.
+//   receipts_keep[] - ids of existing deposit_receipts rows to KEEP. Anything
+//                     not listed is deleted.
+//   receipts_add[]  - { image, filename } new photos.
+//   keep_legacy_receipt - only meaningful on an old deposit whose single photo
+//                     still lives in deposits.receipt_image. Either way that
+//                     column is retired on the first edit: true migrates it into
+//                     deposit_receipts, false drops it.
+router.put('/:id', requireAuth, requirePermission('edit_deposit'), async function(req, res) {
+  const client = await pool.connect();
+  try {
+    const { rows: cur } = await pool.query('SELECT * FROM deposits WHERE id = $1', [req.params.id]);
+    if (!cur.length) return res.status(404).json({ error: 'Deposit not found' });
+    const dep = cur[0];
+
+    // Role + city gate on where the deposit is NOW.
+    if (!MANAGE.includes(req.user.role)) {
+      return res.status(403).json({ error: 'Access denied' });
+    }
+    const scope = await editCityScope(req);
+    if (!scopeAllows(scope, dep.city_code)) {
+      return res.status(403).json({ error: 'You can only edit deposits for the cities you are assigned to.' });
+    }
+
+    const amt = money2(req.body.amount);
+    if (amt === null || amt <= 0) {
+      return res.status(400).json({ error: 'A valid deposit amount is required' });
+    }
+    const deposit_date = dateOrNull(req.body.deposit_date);
+    if (!deposit_date) {
+      return res.status(400).json({ error: 'Deposit date is required' });
+    }
+    const owed = money2(req.body.pulsar_owed);
+    if (owed === null) {
+      return res.status(400).json({ error: 'Pulsar shows owed amount is required' });
+    }
+    const city_code = (req.body.city_code == null ? '' : String(req.body.city_code)).trim().toUpperCase() || null;
+    if (!city_code) {
+      return res.status(400).json({ error: 'City is required' });
+    }
+    // Moving a deposit INTO a city is the same act as editing one already there,
+    // so the destination has to be in scope too. Otherwise a scoped manager
+    // could push a deposit somewhere they cannot see it again.
+    if (!scopeAllows(scope, city_code)) {
+      return res.status(403).json({ error: 'You can only move a deposit into a city you are assigned to.' });
+    }
+    const period_start = dateOrNull(req.body.period_start);
+    const period_end = dateOrNull(req.body.period_end);
+    const notes = (req.body.notes == null || String(req.body.notes).trim() === '') ? null : String(req.body.notes);
+
+    // Existing children, read before the transaction so validation can fail fast.
+    const exRows = (await pool.query('SELECT id, receipt_image FROM deposit_expenses WHERE deposit_id = $1', [dep.id])).rows;
+    const exById = {};
+    exRows.forEach(function (r) { exById[String(r.id)] = r; });
+    const rcRows = (await pool.query('SELECT id FROM deposit_receipts WHERE deposit_id = $1', [dep.id])).rows;
+    const rcIds = rcRows.map(function (r) { return r.id; });
+
+    // Same receipt policy as submission: every expense line carries a photo, or
+    // an explicit "no receipt" with a written reason. An existing photo the
+    // editor did not touch counts.
+    const rawExpenses = Array.isArray(req.body.expenses) ? req.body.expenses : [];
+    const cleanExpenses = [];
+    for (let k = 0; k < rawExpenses.length; k++) {
+      const ex = rawExpenses[k];
+      if (!ex) continue;
+      const exAmt = parseFloat(ex.amount);
+      const desc = (ex.description == null ? '' : String(ex.description)).trim();
+      if (!desc && isNaN(exAmt)) continue;
+      const label = desc || ('expense ' + (k + 1));
+      if (!isNaN(exAmt) && exAmt < 0) {
+        return res.status(400).json({ error: 'Expense amount cannot be negative for "' + label + '".' });
+      }
+      const existing = (ex.id != null && ex.id !== '') ? exById[String(ex.id)] : null;
+      if (ex.id != null && ex.id !== '' && !existing) {
+        return res.status(400).json({ error: 'An expense line on this form no longer exists. Reload the deposit and try again.' });
+      }
+      const removePhoto = ex.remove_photo === true || ex.remove_photo === 'true';
+      const newPhoto = ex.image ? String(ex.image) : null;
+      const keptPhoto = (!removePhoto && !newPhoto && existing && existing.receipt_image) ? true : false;
+      const hasPhoto = !!newPhoto || keptPhoto;
+      const override = ex.no_receipt === true || ex.no_receipt === 'true';
+      const reason = (ex.no_receipt_reason == null ? '' : String(ex.no_receipt_reason)).trim();
+      if (!hasPhoto && !override) {
+        return res.status(400).json({ error: 'A receipt photo is required for "' + label + '". If there is none, tick "No receipt" and explain why.' });
+      }
+      if (!hasPhoto && override && !reason) {
+        return res.status(400).json({ error: 'Please explain why there is no receipt for "' + label + '".' });
+      }
+      cleanExpenses.push({
+        id: existing ? existing.id : null,
+        description: desc.slice(0, 500) || null,
+        amount: isNaN(exAmt) ? 0 : Math.round(exAmt * 100) / 100,
+        newPhoto: newPhoto,
+        filename: ex.filename ? String(ex.filename).slice(0, 255) : null,
+        removePhoto: removePhoto,
+        hasPhoto: hasPhoto,
+        no_receipt: !hasPhoto,
+        no_receipt_reason: hasPhoto ? null : (reason.slice(0, 1000) || null)
+      });
+    }
+
+    // Receipts: which existing rows survive, and what is being added.
+    const keepRaw = Array.isArray(req.body.receipts_keep) ? req.body.receipts_keep : rcIds;
+    const keepIds = keepRaw.map(function (v) { return parseInt(v, 10); }).filter(function (n) { return !isNaN(n) && rcIds.indexOf(n) !== -1; });
+    const addRaw = Array.isArray(req.body.receipts_add) ? req.body.receipts_add : [];
+    const adds = addRaw.filter(function (r) { return r && r.image; });
+    const hasLegacy = !!dep.receipt_image && rcIds.length === 0;
+    const keepLegacy = hasLegacy && (req.body.keep_legacy_receipt === undefined || req.body.keep_legacy_receipt === true || req.body.keep_legacy_receipt === 'true');
+
+    // Recompute the "changed after the AI read the receipt" flag against the NEW
+    // numbers, so the banner on the deposit stays true after a correction.
+    const aiAmount = (dep.ai_amount == null) ? null : parseFloat(dep.ai_amount);
+    const aiDate = ymdOf(dep.ai_deposit_date);
+    const aiEdited = (aiAmount != null && Math.abs(aiAmount - amt) >= 0.005) || (aiDate != null && aiDate !== deposit_date);
+
+    const oldExpenseTotal = (await pool.query('SELECT COALESCE(SUM(amount),0) AS t FROM deposit_expenses WHERE deposit_id = $1', [dep.id])).rows[0].t;
+
+    await client.query('BEGIN');
+    await client.query(
+      'UPDATE deposits SET amount = $1, pulsar_owed = $2, deposit_date = $3, period_start = $4, period_end = $5, ' +
+      'city_code = $6, notes = $7, ai_edited = $8, updated_at = NOW() WHERE id = $9',
+      [amt, owed, deposit_date, period_start, period_end, city_code, notes, aiEdited, dep.id]
+    );
+
+    // Retire the legacy single-image column on the first edit, either by moving
+    // it into deposit_receipts or by dropping it, so every later edit deals with
+    // one uniform list of receipt rows.
+    if (hasLegacy) {
+      if (keepLegacy) {
+        await client.query('INSERT INTO deposit_receipts (deposit_id, image, filename) VALUES ($1,$2,$3)', [dep.id, dep.receipt_image, dep.receipt_filename || null]);
+      }
+      await client.query('UPDATE deposits SET receipt_image = NULL, receipt_filename = NULL WHERE id = $1', [dep.id]);
+    }
+    // Delete the receipts that were not kept.
+    const dropIds = rcIds.filter(function (n) { return keepIds.indexOf(n) === -1; });
+    if (dropIds.length) {
+      await client.query('DELETE FROM deposit_receipts WHERE deposit_id = $1 AND id = ANY($2::int[])', [dep.id, dropIds]);
+    }
+    for (let a = 0; a < adds.length; a++) {
+      await client.query('INSERT INTO deposit_receipts (deposit_id, image, filename) VALUES ($1,$2,$3)', [dep.id, adds[a].image, adds[a].filename || null]);
+    }
+
+    // Expenses: drop the lines that are gone, update the kept ones, insert new.
+    const keptExpenseIds = cleanExpenses.map(function (e) { return e.id; }).filter(function (v) { return v != null; });
+    const dropExpenseIds = exRows.map(function (r) { return r.id; }).filter(function (n) { return keptExpenseIds.indexOf(n) === -1; });
+    if (dropExpenseIds.length) {
+      await client.query('DELETE FROM deposit_expenses WHERE deposit_id = $1 AND id = ANY($2::int[])', [dep.id, dropExpenseIds]);
+    }
+    let expenseTotal = 0;
+    for (let j = 0; j < cleanExpenses.length; j++) {
+      const e = cleanExpenses[j];
+      expenseTotal += e.amount;
+      if (e.id != null) {
+        if (e.newPhoto) {
+          await client.query(
+            'UPDATE deposit_expenses SET description = $1, amount = $2, receipt_image = $3, receipt_filename = $4, no_receipt = FALSE, no_receipt_reason = NULL WHERE id = $5 AND deposit_id = $6',
+            [e.description, e.amount, e.newPhoto, e.filename, e.id, dep.id]
+          );
+        } else if (e.removePhoto) {
+          await client.query(
+            'UPDATE deposit_expenses SET description = $1, amount = $2, receipt_image = NULL, receipt_filename = NULL, no_receipt = $3, no_receipt_reason = $4 WHERE id = $5 AND deposit_id = $6',
+            [e.description, e.amount, e.no_receipt, e.no_receipt_reason, e.id, dep.id]
+          );
+        } else {
+          // Photo untouched — leave receipt_image alone rather than rewriting a
+          // multi-hundred-KB data URL on every save.
+          await client.query(
+            'UPDATE deposit_expenses SET description = $1, amount = $2, no_receipt = $3, no_receipt_reason = $4 WHERE id = $5 AND deposit_id = $6',
+            [e.description, e.amount, e.no_receipt, e.no_receipt_reason, e.id, dep.id]
+          );
+        }
+      } else {
+        await client.query(
+          'INSERT INTO deposit_expenses (deposit_id, description, amount, receipt_image, receipt_filename, no_receipt, no_receipt_reason) VALUES ($1,$2,$3,$4,$5,$6,$7)',
+          [dep.id, e.description, e.amount, e.newPhoto, e.filename, e.no_receipt, e.no_receipt_reason]
+        );
+      }
+    }
+    await client.query('COMMIT');
+
+    // Field-by-field diff for the audit log and the on-page history panel.
+    const changes = {};
+    function note(field, from, to) {
+      if (String(from == null ? '' : from) !== String(to == null ? '' : to)) changes[field] = { from: from == null ? null : from, to: to == null ? null : to };
+    }
+    note('amount', dep.amount == null ? null : parseFloat(dep.amount).toFixed(2), amt.toFixed(2));
+    note('pulsar_owed', dep.pulsar_owed == null ? null : parseFloat(dep.pulsar_owed).toFixed(2), owed.toFixed(2));
+    note('deposit_date', ymdOf(dep.deposit_date), deposit_date);
+    note('period_start', ymdOf(dep.period_start), period_start);
+    note('period_end', ymdOf(dep.period_end), period_end);
+    note('city_code', dep.city_code ? String(dep.city_code).trim() : null, city_code);
+    note('notes', dep.notes, notes);
+    note('expense_total', parseFloat(oldExpenseTotal || 0).toFixed(2), expenseTotal.toFixed(2));
+    note('expense_lines', exRows.length, cleanExpenses.length);
+    note('receipt_count', rcIds.length + (hasLegacy ? 1 : 0), keepIds.length + adds.length + (keepLegacy ? 1 : 0));
+
+    await logAudit({
+      entity_type: 'deposit',
+      entity_id: dep.id,
+      entity_number: dep.deposit_number,
+      action: 'edited',
+      user_id: req.user.id,
+      user_name: req.user.name,
+      details: { changes: changes, reason: (req.body.edit_reason == null ? '' : String(req.body.edit_reason)).trim().slice(0, 500) || null }
+    });
+
+    // Hand back the same shape GET /:id returns so the client can re-render
+    // without a second round trip.
+    const fresh = (await pool.query('SELECT d.*, u.name AS current_user_name FROM deposits d LEFT JOIN users u ON u.id = d.user_id WHERE d.id = $1', [dep.id])).rows[0];
+    if (fresh.current_user_name) fresh.user_name = fresh.current_user_name;
+    delete fresh.current_user_name;
+    fresh.receipts = (await pool.query('SELECT id, image, filename FROM deposit_receipts WHERE deposit_id = $1 ORDER BY id', [dep.id])).rows;
+    fresh.expenses = (await pool.query('SELECT id, description, amount, receipt_image, receipt_filename, COALESCE(no_receipt, FALSE) AS no_receipt, no_receipt_reason FROM deposit_expenses WHERE deposit_id = $1 ORDER BY id', [dep.id])).rows;
+    fresh.can_edit = await mayEditCity(req, fresh.city_code);
+    fresh.history = await depositHistory(dep.id);
+    res.json(fresh);
+  } catch (err) {
+    try { await client.query('ROLLBACK'); } catch (e) {}
+    console.error('Deposit edit failed:', err);
+    res.status(500).json({ error: 'Failed to save changes to this deposit' });
+  } finally {
+    client.release();
   }
 });
 

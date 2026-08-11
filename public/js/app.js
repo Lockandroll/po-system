@@ -3167,7 +3167,7 @@ async function renderRoles(el) {
     { group:'Purchase Orders', gate:'view_pos', perms:[ {k:'view_pos',l:'View / access module'}, {k:'create_po',l:'Create POs'}, {k:'edit_po',l:'Edit POs'}, {k:'delete_po',l:'Delete POs'}, {k:'submit_po',l:'Submit for approval'}, {k:'approve_po',l:'Approve / reject POs'}, {k:'cancel_po',l:'Cancel POs'} ] },
     { group:'Quotes', gate:'view_quotes', perms:[ {k:'view_quotes',l:'View / access module'}, {k:'create_quote',l:'Create quotes'}, {k:'edit_quote',l:'Edit quotes'}, {k:'delete_quote',l:'Delete quotes'}, {k:'push_quote_po',l:'Push quote to PO'} ] },
     { group:'Vehicle Repairs', gate:'view_vr', perms:[ {k:'view_vr',l:'View / access module'}, {k:'create_vr',l:'Create VRs'}, {k:'edit_vr',l:'Edit VRs'}, {k:'delete_vr',l:'Delete VRs'}, {k:'submit_vr',l:'Submit for approval'}, {k:'approve_vr',l:'Approve / reject vehicle repairs'} ] },
-    { group:'Cash Deposits', gate:'view_deposits', perms:[ {k:'view_deposits',l:'View / access module'}, {k:'create_deposit',l:'Create / upload deposit'}, {k:'delete_deposit',l:'Delete deposit'}, {k:'export_deposits',l:'Export deposits (CSV)'} ] },
+    { group:'Cash Deposits', gate:'view_deposits', perms:[ {k:'view_deposits',l:'View / access module'}, {k:'create_deposit',l:'Create / upload deposit'}, {k:'edit_deposit',l:'Edit a submitted deposit (managers: own cities only)'}, {k:'delete_deposit',l:'Delete deposit'}, {k:'export_deposits',l:'Export deposits (CSV)'} ] },
     { group:'Invoices', gate:'view_invoices', perms:[ {k:'view_invoices',l:'View / access module'}, {k:'create_invoice',l:'Create invoices'}, {k:'edit_invoice',l:'Edit invoices'}, {k:'delete_invoice',l:'Delete invoices'}, {k:'request_refund',l:'Request a refund'}, {k:'approve_refund',l:'Approve / reject &amp; record refunds'}, {k:'manage_invoice_setup',l:'Manage invoice setup (accounts, agreement, defaults)'} ] },
     { group:'Signatures', gate:'view_signatures', perms:[ {k:'view_signatures',l:'View / access module'}, {k:'manage_signatures',l:'Create, send, edit & void signature requests'} ] },
     { group:'Work Orders', gate:'view_work_orders', perms:[ {k:'view_work_orders',l:'View / access module'}, {k:'manage_work_orders',l:'Create, edit, dispatch & delete work orders'} ] },
@@ -10744,11 +10744,19 @@ function depShowImage(src) {
   document.body.appendChild(ov);
 }
 
-async function renderViewDeposit(el, id) {
+async function renderViewDeposit(el, id, preloaded) {
   var canManage = ['admin','manager'].includes(state.user.role);
   var dep;
-  try { dep = await api('GET', '/deposits/' + id); }
-  catch(e) { el.innerHTML = '<div class="alert alert-error">' + escHtml(e.message) + '</div>'; return; }
+  if (preloaded) { dep = preloaded; }
+  else {
+    try { dep = await api('GET', '/deposits/' + id); }
+    catch(e) { el.innerHTML = '<div class="alert alert-error">' + escHtml(e.message) + '</div>'; return; }
+  }
+  // Remembered so the in-page edit form can draw over this same container and
+  // hand control back on Cancel without going through the router.
+  depViewEl = el;
+  depViewId = dep.id;
+  depViewData = dep;
   var depAmt = parseFloat(dep.amount) || 0;
   var owed = (dep.pulsar_owed == null) ? null : parseFloat(dep.pulsar_owed);
   var expList = dep.expenses || [];
@@ -10818,6 +10826,9 @@ async function renderViewDeposit(el, id) {
     '<div class="page-header"><div class="page-title"><h2>Deposit ' + escHtml(dep.deposit_number || '') + '</h2><p>' + escHtml(dep.user_name || '') + '</p></div>' +
       '<div style="display:flex;gap:8px">' +
         '<button class="btn btn-secondary" onclick="navigate(\'deposits\')">&larr; Back</button>' +
+        // can_edit comes from the server and already accounts for the city scope,
+        // so a manager never sees an Edit button that would 403 on save.
+        (dep.can_edit ? '<button class="btn btn-primary" onclick="depEnterEdit()">Edit</button>' : '') +
         (can('delete_deposit') ? '<button class="btn btn-secondary" onclick="deleteDeposit(' + dep.id + ')" style="color:#ef4444">' + icons.trash + ' Delete</button>' : '') +
       '</div>' +
     '</div>' +
@@ -10834,7 +10845,401 @@ async function renderViewDeposit(el, id) {
       (dep.notes ? '<div style="margin-bottom:20px"><div style="color:var(--text-muted-color);font-size:13px">Notes</div><div>' + escHtml(dep.notes) + '</div></div>' : '') +
       expensesBlock +
       '<div style="color:var(--text-muted-color);font-size:13px;margin-bottom:8px">Receipts</div>' + receipts +
+      depHistoryHtml(dep.history) +
     '</div></div>';
+}
+
+/* ---------------------------------------------------------------------------
+   Deposit edit history
+   ---------------------------------------------------------------------------
+   Rendered from the audit_logs rows the server returns on GET /deposits/:id, so
+   the panel and the Audit Log page can never disagree. Shown to anyone who can
+   open the deposit: if the numbers on a tech's deposit were changed, the tech
+   should be able to see that they were, and by whom. */
+var DEP_FIELD_LABELS = {
+  amount: 'Deposit amount',
+  pulsar_owed: 'Pulsar shows owed',
+  deposit_date: 'Deposit date',
+  period_start: 'Pay period start',
+  period_end: 'Pay period end',
+  city_code: 'City',
+  notes: 'Notes',
+  expense_total: 'Expense total',
+  expense_lines: 'Expense lines',
+  receipt_count: 'Receipt photos'
+};
+function depHistoryValue(field, v) {
+  if (v === null || v === undefined || v === '') return '<em style="color:var(--text-muted-color)">empty</em>';
+  if (field === 'amount' || field === 'pulsar_owed' || field === 'expense_total') return '$' + escHtml(v);
+  if (field === 'deposit_date' || field === 'period_start' || field === 'period_end') return escHtml(formatDate(v));
+  return escHtml(String(v));
+}
+function depHistoryHtml(history) {
+  var rows = (history || []).filter(function(h) { return h && h.action === 'edited'; });
+  if (!rows.length) return '';
+  var items = rows.slice().reverse().map(function(h) {
+    var ch = (h.details && h.details.changes) ? h.details.changes : {};
+    var keys = Object.keys(ch);
+    var lines = keys.length
+      ? keys.map(function(k) {
+          return '<div style="margin-top:2px">' + escHtml(DEP_FIELD_LABELS[k] || k) + ': ' +
+            depHistoryValue(k, ch[k].from) + ' &rarr; <strong>' + depHistoryValue(k, ch[k].to) + '</strong></div>';
+        }).join('')
+      : '<div style="margin-top:2px;color:var(--text-muted-color)">Saved with no field changes.</div>';
+    var reason = (h.details && h.details.reason)
+      ? '<div style="margin-top:4px;color:var(--text-muted-color);font-style:italic">&ldquo;' + escHtml(h.details.reason) + '&rdquo;</div>'
+      : '';
+    return '<div style="padding:10px 0;border-top:1px solid var(--border-color)">' +
+      '<div style="font-weight:600">' + escHtml(h.user_name || 'Someone') + ' &middot; ' +
+        '<span style="font-weight:400;color:var(--text-muted-color)">' + escHtml(h.created_at ? new Date(h.created_at).toLocaleString() : '') + '</span></div>' +
+      '<div style="font-size:13px">' + lines + reason + '</div>' +
+    '</div>';
+  }).join('');
+  return '<div style="margin-top:24px">' +
+    '<div style="color:var(--text-muted-color);font-size:13px;margin-bottom:2px">Edit history (' + rows.length + ')</div>' +
+    items +
+  '</div>';
+}
+
+/* ---------------------------------------------------------------------------
+   Deposit edit mode
+   ---------------------------------------------------------------------------
+   Draws over the same container renderViewDeposit used rather than adding a
+   router view, so Cancel is a re-render and nothing about the URL or the nav
+   has to change. Receipts are tracked as three lists because that is exactly
+   what PUT /deposits/:id takes: which existing rows to KEEP, which new photos to
+   ADD, and (for a pre-2026 deposit whose single photo still lives in
+   deposits.receipt_image) whether to keep that legacy one. */
+var depViewEl = null;
+var depViewId = null;
+var depViewData = null;
+var depEditExpenses = [];
+var depEditReceipts = [];   // [{ id, image, legacy, keep }]
+var depEditAdds = [];       // [{ image, filename }]
+var depEditCities = [];
+var depEditSaving = false;
+
+function depEditPeriodOptions(currentStart) {
+  var cur = currentStart ? String(currentStart).slice(0, 10) : '';
+  var curMon = depMonday(new Date());
+  var out = '';
+  var seen = false;
+  for (var i = 0; i <= 11; i++) {
+    var mon = depAddDays(curMon, -7 * i);
+    var val = depYmd(mon);
+    if (val === cur) seen = true;
+    out += '<option value="' + val + '"' + (val === cur ? ' selected' : '') + '>' + depWeekLabel(mon) + '</option>';
+  }
+  // An older deposit can sit outside the rolling 12-week window. Keep its own
+  // period on the list rather than silently re-dating it on the first save.
+  if (cur && !seen) {
+    out = '<option value="' + cur + '" selected>' + depWeekLabel(depParseYmd(cur)) + '</option>' + out;
+  }
+  if (!cur) out = '<option value="" selected>&mdash; None &mdash;</option>' + out;
+  return out;
+}
+
+async function depEnterEdit() {
+  if (!depViewEl || !depViewData) return;
+  var dep = depViewData;
+  depEditSaving = false;
+  depEditAdds = [];
+  depEditReceipts = (dep.receipts || []).map(function(r) {
+    return { id: r.id, image: r.image, legacy: (r.id === null || r.id === undefined), keep: true };
+  });
+  depEditExpenses = (dep.expenses || []).map(function(x) {
+    return {
+      id: x.id,
+      description: x.description || '',
+      amount: (x.amount == null) ? '' : String(parseFloat(x.amount).toFixed(2)),
+      existing_image: x.receipt_image || null,
+      new_image: null,
+      filename: null,
+      remove_photo: false,
+      no_receipt: !!x.no_receipt,
+      no_receipt_reason: x.no_receipt_reason || ''
+    };
+  });
+  try { depEditCities = await api('GET', '/cities'); } catch(e) { depEditCities = []; }
+  depRenderEditForm();
+}
+
+function depCancelEdit() {
+  if (!depViewEl) return;
+  renderViewDeposit(depViewEl, depViewId, depViewData);
+}
+
+function depRenderEditForm() {
+  var dep = depViewData;
+  if (!depViewEl || !dep) return;
+  var curCity = (dep.city_code || '').trim().toUpperCase();
+  var haveCity = depEditCities.some(function(c) { return String(c.code || '').trim().toUpperCase() === curCity; });
+  var cityOptions = '<option value="">Select city&hellip;</option>' +
+    // The deposit's own city stays selectable even if that city was since
+    // deactivated or removed from /cities, so saving cannot blank it by accident.
+    (curCity && !haveCity ? '<option value="' + escHtml(curCity) + '" selected>' + escHtml(curCity) + '</option>' : '') +
+    depEditCities.map(function(c) {
+      var code = String(c.code || '').trim().toUpperCase();
+      return '<option value="' + escHtml(c.code) + '"' + (code === curCity ? ' selected' : '') + '>' + escHtml(c.name) + ' (' + escHtml(c.code) + ')</option>';
+    }).join('');
+  depViewEl.innerHTML =
+    '<div class="page-header"><div class="page-title"><h2>Edit Deposit ' + escHtml(dep.deposit_number || '') + '</h2><p>' + escHtml(dep.user_name || '') + '</p></div>' +
+      '<div style="display:flex;gap:8px">' +
+        '<button class="btn btn-secondary" onclick="depCancelEdit()">Cancel</button>' +
+        '<button id="depe-save-btn" class="btn btn-primary" onclick="saveDepositEdit()">Save Changes</button>' +
+      '</div>' +
+    '</div>' +
+    '<div class="card" style="max-width:760px"><div class="card-body">' +
+      '<div id="depe-feedback"></div>' +
+      '<div style="display:flex;gap:12px;flex-wrap:wrap">' +
+        '<div class="form-group" style="flex:1;min-width:160px"><label>Deposit Amount ($) <span style="color:#e24b4a">*</span></label>' +
+          '<input type="number" id="depe-amount" step="0.01" min="0" value="' + escHtml((parseFloat(dep.amount) || 0).toFixed(2)) + '" oninput="depEditRecalc()" /></div>' +
+        '<div class="form-group" style="flex:1;min-width:160px"><label>Pulsar Shows Owed ($) <span style="color:#e24b4a">*</span></label>' +
+          '<input type="number" id="depe-pulsar" step="0.01" min="0" value="' + escHtml(dep.pulsar_owed == null ? '' : parseFloat(dep.pulsar_owed).toFixed(2)) + '" oninput="depEditRecalc()" /></div>' +
+      '</div>' +
+      '<div style="display:flex;gap:12px;flex-wrap:wrap">' +
+        '<div class="form-group" style="flex:1;min-width:160px"><label>Deposit Date <span style="color:#e24b4a">*</span></label>' +
+          '<input type="date" id="depe-date" value="' + escHtml(dep.deposit_date ? String(dep.deposit_date).slice(0,10) : '') + '" /></div>' +
+        '<div class="form-group" style="flex:1;min-width:200px"><label>Pay Period (Week)</label>' +
+          '<select id="depe-period">' + depEditPeriodOptions(dep.period_start) + '</select></div>' +
+      '</div>' +
+      '<div style="display:flex;gap:12px;flex-wrap:wrap">' +
+        '<div class="form-group" style="flex:1;min-width:160px"><label>City <span style="color:#e24b4a">*</span></label>' +
+          '<select id="depe-city">' + cityOptions + '</select>' +
+          '<div style="font-size:12px;color:var(--text-muted-color);margin-top:4px">You can only move a deposit into a city you are assigned to.</div></div>' +
+      '</div>' +
+      '<div class="form-group"><label>Receipt Photos</label>' +
+        '<div id="depe-receipts" style="margin-bottom:8px"></div>' +
+        '<label class="btn btn-secondary btn-sm" style="cursor:pointer;margin:0">Add photo' +
+          '<input type="file" accept="image/*" multiple style="display:none" onchange="depEditAddReceipts(this)" /></label>' +
+      '</div>' +
+      '<div class="form-group"><label>Expenses</label>' +
+        '<div style="font-size:12px;color:var(--text-muted-color);margin-bottom:8px">A receipt photo is required for every expense. If there is none, tick &ldquo;No receipt&rdquo; and explain why.</div>' +
+        '<div id="depe-expense-list"></div>' +
+        '<button type="button" class="btn btn-secondary btn-sm" onclick="depEditAddExpense()">+ Add expense</button>' +
+      '</div>' +
+      '<div class="form-group"><label>Notes</label><textarea id="depe-notes" rows="2" placeholder="Optional notes&hellip;">' + escHtml(dep.notes || '') + '</textarea></div>' +
+      '<div class="form-group"><label>Reason for this edit <span style="color:var(--text-muted-color);font-weight:400">(optional, saved to the history)</span></label>' +
+        '<input type="text" id="depe-reason" maxlength="500" placeholder="e.g. Miscounted the fifties&hellip;" /></div>' +
+      '<div id="depe-overshort" style="margin:4px 0 16px;padding:12px;border-radius:8px;background:var(--bg-color);border:1px solid var(--border-color);font-size:14px"></div>' +
+    '</div></div>';
+  depEditRenderReceipts();
+  depEditRenderExpenses();
+  depEditRecalc();
+}
+
+function depEditRenderReceipts() {
+  var box = document.getElementById('depe-receipts');
+  if (!box) return;
+  var kept = depEditReceipts.filter(function(r) { return r.keep; });
+  var thumbs = depEditReceipts.map(function(r, idx) {
+    if (!r.keep) return '';
+    return '<div style="position:relative;display:inline-block;margin:0 10px 10px 0">' +
+      '<img src="' + r.image + '" onclick="depShowImage(this.src)" style="width:96px;height:96px;object-fit:cover;border-radius:8px;border:1px solid var(--border-color);cursor:zoom-in;display:block" />' +
+      '<button type="button" title="Remove" onclick="depEditDropReceipt(' + idx + ')" style="position:absolute;top:-8px;right:-8px;background:#ef4444;color:#fff;border:none;border-radius:50%;width:22px;height:22px;cursor:pointer;font-weight:700;line-height:1">&times;</button>' +
+    '</div>';
+  }).join('');
+  var addThumbs = depEditAdds.map(function(a, idx) {
+    return '<div style="position:relative;display:inline-block;margin:0 10px 10px 0">' +
+      '<img src="' + a.image + '" onclick="depShowImage(this.src)" style="width:96px;height:96px;object-fit:cover;border-radius:8px;border:2px solid #22c55e;cursor:zoom-in;display:block" />' +
+      '<button type="button" title="Remove" onclick="depEditDropAdd(' + idx + ')" style="position:absolute;top:-8px;right:-8px;background:#ef4444;color:#fff;border:none;border-radius:50%;width:22px;height:22px;cursor:pointer;font-weight:700;line-height:1">&times;</button>' +
+    '</div>';
+  }).join('');
+  var empty = (!kept.length && !depEditAdds.length)
+    ? '<div style="color:#f59e0b;font-size:13px">No receipt photo on this deposit.</div>' : '';
+  box.innerHTML = thumbs + addThumbs + empty;
+}
+
+function depEditDropReceipt(i) { if (depEditReceipts[i]) depEditReceipts[i].keep = false; depEditRenderReceipts(); }
+function depEditDropAdd(i) { depEditAdds.splice(i, 1); depEditRenderReceipts(); }
+
+async function depEditAddReceipts(input) {
+  var files = Array.prototype.slice.call(input.files || []);
+  for (var i = 0; i < files.length; i++) {
+    var data = await depResizeImage(files[i]);
+    if (data) depEditAdds.push({ image: data, filename: files[i].name });
+  }
+  input.value = '';
+  depEditRenderReceipts();
+}
+
+function depEditAddExpense() {
+  depEditExpenses.push({ id: null, description: '', amount: '', existing_image: null, new_image: null, filename: null, remove_photo: false, no_receipt: false, no_receipt_reason: '' });
+  depEditRenderExpenses();
+}
+function depEditUpdExpense(idx, field, val) { if (depEditExpenses[idx]) depEditExpenses[idx][field] = val; }
+function depEditRemoveExpense(idx) { depEditExpenses.splice(idx, 1); depEditRenderExpenses(); depEditRecalc(); }
+function depEditToggleNoReceipt(idx, checked) {
+  var ex = depEditExpenses[idx];
+  if (!ex) return;
+  ex.no_receipt = !!checked;
+  if (checked) { ex.new_image = null; ex.filename = null; if (ex.existing_image) ex.remove_photo = true; }
+  else { ex.no_receipt_reason = ''; if (ex.existing_image) ex.remove_photo = false; }
+  depEditRenderExpenses();
+}
+function depEditDropExpensePhoto(idx) {
+  var ex = depEditExpenses[idx];
+  if (!ex) return;
+  ex.new_image = null;
+  ex.filename = null;
+  if (ex.existing_image) ex.remove_photo = true;
+  depEditRenderExpenses();
+}
+async function depEditSetExpensePhoto(idx, input) {
+  var file = (input.files || [])[0];
+  if (!file || !depEditExpenses[idx]) return;
+  var data = await depResizeImage(file);
+  if (data) {
+    depEditExpenses[idx].new_image = data;
+    depEditExpenses[idx].filename = file.name;
+    depEditExpenses[idx].remove_photo = false;
+    depEditExpenses[idx].no_receipt = false;
+    depEditExpenses[idx].no_receipt_reason = '';
+  }
+  input.value = '';
+  depEditRenderExpenses();
+}
+
+// A line shows a photo when it has a new one, or an untouched existing one.
+function depEditLinePhoto(ex) {
+  if (ex.new_image) return ex.new_image;
+  if (ex.existing_image && !ex.remove_photo) return ex.existing_image;
+  return null;
+}
+
+function depEditRenderExpenses() {
+  var area = document.getElementById('depe-expense-list');
+  if (!area) return;
+  if (!depEditExpenses.length) {
+    area.innerHTML = '<div style="color:var(--text-muted-color);font-size:13px;margin-bottom:8px">No expenses on this deposit.</div>';
+    return;
+  }
+  area.innerHTML = depEditExpenses.map(function(ex, idx) {
+    var photo = depEditLinePhoto(ex);
+    var amtVal = (ex.amount === '' || ex.amount == null) ? '' : escHtml(String(ex.amount));
+    var photoCell = photo
+      ? '<div style="position:relative;display:inline-block"><img src="' + photo + '" onclick="depShowImage(this.src)" style="width:48px;height:48px;object-fit:cover;border-radius:6px;border:1px solid var(--border-color);cursor:zoom-in;display:block" />' +
+          '<button type="button" title="Remove photo" onclick="depEditDropExpensePhoto(' + idx + ')" style="position:absolute;top:-6px;right:-6px;background:#ef4444;color:#fff;border:none;border-radius:50%;width:18px;height:18px;cursor:pointer;font-size:11px;line-height:1">&times;</button></div>'
+      : '<label class="btn btn-secondary btn-sm" style="cursor:pointer;margin:0;white-space:nowrap' + (ex.no_receipt ? ';opacity:0.5;pointer-events:none' : '') + '">Photo<input type="file" accept="image/*" style="display:none" onchange="depEditSetExpensePhoto(' + idx + ',this)" /></label>';
+    return '<div style="border:1px solid var(--border-color);border-radius:8px;padding:10px;margin-bottom:8px">' +
+      '<div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">' +
+        '<input type="text" placeholder="Description" value="' + escHtml(ex.description || '') + '" oninput="depEditUpdExpense(' + idx + ',\'description\',this.value)" style="flex:2;min-width:120px" />' +
+        '<input type="number" step="0.01" min="0" placeholder="0.00" value="' + amtVal + '" oninput="depEditUpdExpense(' + idx + ',\'amount\',this.value);depEditRecalc()" style="flex:1;min-width:90px" />' +
+        photoCell +
+        '<button type="button" class="btn btn-ghost btn-sm" onclick="depEditRemoveExpense(' + idx + ')" style="color:#ef4444">Remove</button>' +
+      '</div>' +
+      (photo ? '' :
+        '<label style="display:flex;align-items:center;gap:8px;margin-top:8px;font-size:13px;color:var(--text-muted-color);cursor:pointer">' +
+          '<input type="checkbox" style="width:auto;margin:0" ' + (ex.no_receipt ? 'checked ' : '') + 'onchange="depEditToggleNoReceipt(' + idx + ',this.checked)" /> No receipt for this expense' +
+        '</label>' +
+        (ex.no_receipt
+          ? '<input type="text" placeholder="Why is there no receipt? (required)" value="' + escHtml(ex.no_receipt_reason || '') + '" oninput="depEditUpdExpense(' + idx + ',\'no_receipt_reason\',this.value)" style="width:100%;margin-top:6px" />'
+          : '')) +
+    '</div>';
+  }).join('');
+}
+
+function depEditRecalc() {
+  var el = document.getElementById('depe-overshort');
+  if (!el) return;
+  var depAmt = parseFloat((document.getElementById('depe-amount') || {}).value) || 0;
+  var owedRaw = (document.getElementById('depe-pulsar') || {}).value;
+  var owed = parseFloat(owedRaw);
+  var exp = 0;
+  depEditExpenses.forEach(function(ex) { var a = parseFloat(ex.amount); if (!isNaN(a)) exp += a; });
+  if (isNaN(owed)) {
+    el.innerHTML = 'Expenses $' + exp.toFixed(2) + ' &middot; enter the Pulsar owed figure to see Over/Short.';
+    return;
+  }
+  var os = owed - depAmt - exp;
+  var label, color;
+  if (Math.abs(os) < 0.005) { label = 'Balanced'; color = '#22c55e'; }
+  else if (os > 0) { label = 'Short $' + os.toFixed(2); color = '#ef4444'; }
+  else { label = 'Over $' + Math.abs(os).toFixed(2); color = '#f59e0b'; }
+  el.innerHTML = 'Pulsar owed $' + owed.toFixed(2) + ' &minus; deposit $' + depAmt.toFixed(2) + ' &minus; expenses $' + exp.toFixed(2) +
+    ' = <span style="font-weight:700;color:' + color + '">' + label + '</span>';
+}
+
+async function saveDepositEdit() {
+  if (depEditSaving) return;
+  var fb = document.getElementById('depe-feedback');
+  var btn = document.getElementById('depe-save-btn');
+  function fail(msg) {
+    if (fb) fb.innerHTML = '<div class="alert alert-error">' + escHtml(msg) + '</div>';
+    depEditSaving = false;
+    if (btn) { btn.disabled = false; btn.textContent = 'Save Changes'; }
+  }
+  if (fb) fb.innerHTML = '';
+  var amount = parseFloat((document.getElementById('depe-amount') || {}).value);
+  if (isNaN(amount) || amount <= 0) return fail('Please enter a valid deposit amount.');
+  var pulsar_owed = parseFloat((document.getElementById('depe-pulsar') || {}).value);
+  if (isNaN(pulsar_owed)) return fail('Please enter what Pulsar shows owed.');
+  var deposit_date = (document.getElementById('depe-date') || {}).value;
+  if (!deposit_date) return fail('Please choose a deposit date.');
+  var city_code = (document.getElementById('depe-city') || {}).value;
+  if (!city_code) return fail('Please choose a city.');
+  var period_start = (document.getElementById('depe-period') || {}).value || null;
+  var period_end = period_start ? depYmd(depAddDays(depParseYmd(period_start), 6)) : null;
+  var notes = ((document.getElementById('depe-notes') || {}).value || '').trim();
+  var edit_reason = ((document.getElementById('depe-reason') || {}).value || '').trim();
+
+  // Same rule the server enforces, checked here so the editor gets a pointed
+  // message instead of a generic 400.
+  var expenses = [];
+  for (var i = 0; i < depEditExpenses.length; i++) {
+    var ex = depEditExpenses[i];
+    var amt = parseFloat(ex.amount);
+    var desc = (ex.description || '').trim();
+    if (!desc && isNaN(amt)) continue;
+    var label = desc || ('expense ' + (i + 1));
+    if (!isNaN(amt) && amt < 0) return fail('Expense amount cannot be negative for "' + label + '".');
+    var photo = depEditLinePhoto(ex);
+    if (!photo && !ex.no_receipt) return fail('A receipt photo is required for "' + label + '". If there is none, tick "No receipt" and explain why.');
+    if (!photo && ex.no_receipt && !(ex.no_receipt_reason || '').trim()) return fail('Please explain why there is no receipt for "' + label + '".');
+    expenses.push({
+      id: ex.id,
+      description: desc,
+      amount: isNaN(amt) ? 0 : amt,
+      image: ex.new_image || null,
+      filename: ex.filename || null,
+      remove_photo: !!ex.remove_photo && !ex.new_image,
+      no_receipt: !photo,
+      no_receipt_reason: photo ? '' : (ex.no_receipt_reason || '').trim()
+    });
+  }
+
+  var receipts_keep = depEditReceipts.filter(function(r) { return r.keep && !r.legacy && r.id != null; }).map(function(r) { return r.id; });
+  var legacyRow = depEditReceipts.filter(function(r) { return r.legacy; })[0];
+  var keep_legacy_receipt = legacyRow ? !!legacyRow.keep : false;
+  var totalReceipts = receipts_keep.length + depEditAdds.length + (keep_legacy_receipt ? 1 : 0);
+  if (!totalReceipts && !await novaConfirm('This deposit will have no receipt photo left. Save anyway?')) {
+    depEditSaving = false;
+    return;
+  }
+
+  depEditSaving = true;
+  if (btn) { btn.disabled = true; btn.textContent = 'Saving…'; }
+  try {
+    var fresh = await api('PUT', '/deposits/' + depViewId, {
+      amount: amount,
+      pulsar_owed: pulsar_owed,
+      deposit_date: deposit_date,
+      period_start: period_start,
+      period_end: period_end,
+      city_code: city_code,
+      notes: notes,
+      expenses: expenses,
+      receipts_keep: receipts_keep,
+      receipts_add: depEditAdds.map(function(a) { return { image: a.image, filename: a.filename }; }),
+      keep_legacy_receipt: keep_legacy_receipt,
+      edit_reason: edit_reason
+    });
+    depEditSaving = false;
+    depViewData = fresh;
+    renderViewDeposit(depViewEl, depViewId, fresh);
+  } catch (e) {
+    fail(e.message || 'Failed to save changes.');
+  }
 }
 
 async function deleteDeposit(id) {

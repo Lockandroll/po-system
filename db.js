@@ -1237,6 +1237,27 @@ async function initDB() {
       'ALTER TABLE deposits ADD COLUMN IF NOT EXISTS ai_deposit_date DATE;' +
       'ALTER TABLE deposits ADD COLUMN IF NOT EXISTS ai_edited BOOLEAN DEFAULT FALSE;'
     );
+    // ---- Deposit edit permission backfill --------------------------------
+    // edit_deposit is new. A saved role_permissions matrix was rebuilt from the
+    // checkboxes that existed when it was last saved, so it cannot contain the
+    // new key and hasPermission() would read the SAVED array (not DEFAULTS) and
+    // deny every manager. Seed it onto manager once. Guarded by a flag so it
+    // never undoes an admin who later unticks the box. Deliberately NOT seeded
+    // onto the technician roles - editing a submitted deposit is supervisory.
+    const _rpDepEdit = await client.query("SELECT value FROM settings WHERE key = 'perm_deposit_edit_backfilled'");
+    if (!_rpDepEdit.rows.length) {
+      const _rpDE = await client.query("SELECT value FROM settings WHERE key = 'role_permissions'");
+      if (_rpDE.rows.length && _rpDE.rows[0].value) {
+        try {
+          const obj = JSON.parse(_rpDE.rows[0].value);
+          if (obj && typeof obj === 'object' && Array.isArray(obj.manager)) {
+            if (obj.manager.indexOf('edit_deposit') === -1) obj.manager.push('edit_deposit');
+            await client.query("INSERT INTO settings (key, value, updated_at) VALUES ('role_permissions', $1, NOW()) ON CONFLICT (key) DO UPDATE SET value = $1, updated_at = NOW()", [JSON.stringify(obj)]);
+          }
+        } catch (e) { console.error('deposit edit perm backfill failed:', e.message); }
+      }
+      await client.query("INSERT INTO settings (key, value) VALUES ('perm_deposit_edit_backfilled', '1') ON CONFLICT (key) DO NOTHING");
+    }
     // ---- Pulsar cash reconciliation -------------------------------------
     // A manager drops the Pulsar "Call Search" CSV for a pay week; every call
     // where the tech collected CASH lands in pulsar_cash_calls, and the Cash
