@@ -16,10 +16,10 @@ async function loadAssignments(ids) {
   if (!clean.length) return map;
   try {
     const { rows } = await novaPool.query(
-      'SELECT review_id, assignee, source, user_id, confidence FROM review_assignments WHERE review_id = ANY($1)',
+      'SELECT review_id, assignee, source, user_id, confidence, suggested_user_id FROM review_assignments WHERE review_id = ANY($1)',
       [clean]
     );
-    rows.forEach(function (r) { map[r.review_id] = { assignee: r.assignee, source: r.source, user_id: r.user_id, confidence: r.confidence }; });
+    rows.forEach(function (r) { map[r.review_id] = { assignee: r.assignee, source: r.source, user_id: r.user_id, confidence: r.confidence, suggested_user_id: r.suggested_user_id }; });
   } catch (e) {
     console.error('loadAssignments failed:', e.message);
   }
@@ -70,6 +70,149 @@ async function backfillAssignmentLinks() {
       "WHERE LOWER(split_part(TRIM(u2.name), ' ', 1)) = LOWER(TRIM(ra.assignee))) = 1"
     );
   } catch (e) { console.error('assignment backfill failed:', e.message); }
+}
+
+// ---------------------------------------------------------------------------
+// Confirming an AI guess
+// ---------------------------------------------------------------------------
+// An unmatched guess is a name the AI pulled out of the review text but was not
+// confident enough (>= MATCH_MIN) to hard-link to a roster user, so nothing is
+// credited. Rather than make a manager open the dropdown and scroll for the
+// right person on every one of those rows, the list endpoint resolves each
+// guess to at most ONE roster user and hands the UI a ready-to-click Confirm
+// target. Resolution order:
+//   1. suggested_user_id — the roster person the AI itself picked. The tally
+//      records this even below the link threshold, so an 80% "Jesse" still
+//      knows WHICH Jesse it meant.
+//   2. name match — full name, dispatch (pulsar) name, a nickname, or a bare
+//      first name, case-insensitive.
+//   3. city tiebreak — when a name matches two or more people (two techs named
+//      Jesse), keep only those whose home_city equals the Nova city behind the
+//      Google listing the review was left on.
+// Anything still ambiguous resolves to null: no Confirm button, dropdown only.
+// A one-click button that credits the wrong tech is worse than no button.
+
+// Roster for confirm resolution. Everyone, including former employees — old
+// reviews still name them.
+async function loadConfirmRoster() {
+  try {
+    const { rows } = await novaPool.query(
+      'SELECT id, name, nickname, pulsar_name, active, home_city FROM users'
+    );
+    return rows;
+  } catch (e) {
+    console.error('confirm roster query failed:', e.message);
+    return [];
+  }
+}
+
+// lowercased name/nickname/first-name -> [user, ...]. A key held by two people
+// is exactly the ambiguity the city tiebreak exists to settle.
+function buildNameIndex(roster) {
+  const idx = {};
+  function add(key, u) {
+    const k = String(key == null ? '' : key).trim().toLowerCase();
+    if (!k) return;
+    if (!idx[k]) idx[k] = [];
+    if (idx[k].indexOf(u) === -1) idx[k].push(u);
+  }
+  (roster || []).forEach(function (u) {
+    const full = String(u.name || '').trim();
+    add(full, u);
+    add(u.pulsar_name, u);
+    String(u.nickname || '').split(',').forEach(function (n) { add(n, u); });
+    if (full) add(full.split(/\s+/)[0], u);
+  });
+  return idx;
+}
+
+// Google listing title -> Nova city code, for the distinct titles on a page.
+// Memoized per call because there are only ever a handful of listings, and the
+// underlying matcher costs a query or three each time.
+async function cityCodesForLocations(names) {
+  const map = {};
+  const distinct = [];
+  (names || []).forEach(function (n) {
+    const k = String(n == null ? '' : n).trim();
+    if (k && distinct.indexOf(k) === -1) distinct.push(k);
+  });
+  if (!distinct.length) return map;
+  let resolveCityForLocation;
+  try {
+    // Required lazily on purpose: jobs/reviewComplaints.js requires THIS file
+    // for the reviews pool, so a top-level require would be a cycle.
+    resolveCityForLocation = require('../jobs/reviewComplaints').resolveCityForLocation;
+  } catch (e) { return map; }
+  if (typeof resolveCityForLocation !== 'function') return map;
+  let overrides = {};
+  try {
+    const s = await novaPool.query("SELECT value FROM settings WHERE key = 'review_city_map'");
+    if (s.rows.length && s.rows[0].value) {
+      const parsed = JSON.parse(s.rows[0].value);
+      if (parsed && typeof parsed === 'object') overrides = parsed;
+    }
+  } catch (e) { overrides = {}; }
+  for (let i = 0; i < distinct.length; i++) {
+    try { map[distinct[i]] = await resolveCityForLocation(distinct[i], overrides); }
+    catch (e) { map[distinct[i]] = null; }
+  }
+  return map;
+}
+
+// The single roster user a guess may be confirmed to, or null. Never returns a
+// user for a row that is already credited.
+function resolveConfirmTarget(a, cityCode, nameIdx, byId) {
+  if (!a || a.user_id) return null;
+  const key = String(a.assignee == null ? '' : a.assignee).trim().toLowerCase();
+  const hits = key ? (nameIdx[key] || []) : [];
+  const want = cityCode ? String(cityCode).trim().toUpperCase() : '';
+  function homeCity(u) { return u.home_city ? String(u.home_city).trim().toUpperCase() : ''; }
+
+  const pick = a.suggested_user_id ? byId[a.suggested_user_id] : null;
+  if (pick) {
+    // Guard the one trap a sub-threshold pick can walk into: a first name two
+    // techs share. If the AI chose the one who is NOT based in the city this
+    // review came from while a same-name tech IS based there, the pick and the
+    // roster disagree in exactly the way that credits the wrong person. Fail
+    // closed and let the dropdown settle it. When the name is unambiguous we do
+    // not second-guess the AI on city — techs cover other cities all the time.
+    if (hits.length > 1 && want && homeCity(pick) && homeCity(pick) !== want &&
+        hits.some(function (u) { return homeCity(u) === want; })) {
+      return null;
+    }
+    return pick;
+  }
+
+  if (!key) return null;
+  if (hits.length === 1) return hits[0];
+  if (hits.length > 1 && want) {
+    const inCity = hits.filter(function (u) { return homeCity(u) === want; });
+    if (inCity.length === 1) return inCity[0];
+  }
+  return null;
+}
+
+// Resolve confirm targets for a batch of rows. Each row needs review_id and
+// location_name; the assignment map supplies the guess. Returns
+// review_id -> { id, name } for the rows that resolved to exactly one person.
+async function resolveConfirmTargets(rows, amap) {
+  const out = {};
+  const pending = (rows || []).filter(function (r) {
+    const a = r.review_id ? amap[r.review_id] : null;
+    return a && a.assignee && !a.user_id;
+  });
+  if (!pending.length) return out;
+  const roster = await loadConfirmRoster();
+  if (!roster.length) return out;
+  const byId = {};
+  roster.forEach(function (u) { byId[u.id] = u; });
+  const nameIdx = buildNameIndex(roster);
+  const cityMap = await cityCodesForLocations(pending.map(function (r) { return r.location_name; }));
+  pending.forEach(function (r) {
+    const hit = resolveConfirmTarget(amap[r.review_id], cityMap[String(r.location_name == null ? '' : r.location_name).trim()], nameIdx, byId);
+    if (hit) out[r.review_id] = { id: hit.id, name: hit.name };
+  });
+  return out;
 }
 
 // Read-only connection to the Google-review-bot's Postgres, which lives in a
@@ -157,6 +300,14 @@ router.get('/', requireAuth, async (req, res) => {
       r.assignee_source = a ? a.source : null;
       r.assignee_user_id = a ? a.user_id : null;
       r.assignee_confidence = a ? a.confidence : null;
+    });
+    // One-click Confirm target for each unmatched guess. Rows that are already
+    // credited cost nothing here — only the undecided ones are resolved.
+    const confirmMap = await resolveConfirmTargets(rows, amap);
+    rows.forEach(function (r) {
+      const c = r.review_id ? confirmMap[r.review_id] : null;
+      r.confirm_user_id = c ? c.id : null;
+      r.confirm_user_name = c ? c.name : null;
     });
     // Has this review already been turned into a complaint?
     const cmap = await loadComplaints(rows.map(function (r) { return r.review_id; }));
@@ -318,16 +469,73 @@ router.put('/assign', requireAuth, requirePermission('assign_reviews'), async (r
     const u = await novaPool.query('SELECT id, name FROM users WHERE id = $1', [userId]);
     if (!u.rows[0]) return res.status(400).json({ error: 'That user does not exist.' });
     await novaPool.query(
-      "INSERT INTO review_assignments (review_id, assignee, user_id, confidence, source, assigned_by, updated_at) " +
-      "VALUES ($1, $2, $3, NULL, 'manual', $4, NOW()) " +
+      "INSERT INTO review_assignments (review_id, assignee, user_id, suggested_user_id, confidence, source, assigned_by, updated_at) " +
+      "VALUES ($1, $2, $3, NULL, NULL, 'manual', $4, NOW()) " +
       "ON CONFLICT (review_id) DO UPDATE SET assignee = EXCLUDED.assignee, user_id = EXCLUDED.user_id, " +
-      "confidence = NULL, source = 'manual', assigned_by = EXCLUDED.assigned_by, updated_at = NOW()",
+      "suggested_user_id = NULL, confidence = NULL, source = 'manual', assigned_by = EXCLUDED.assigned_by, updated_at = NOW()",
       [reviewId, u.rows[0].name, userId, req.user.id]
     );
     res.json({ review_id: reviewId, assignee: u.rows[0].name, user_id: userId, source: 'manual' });
   } catch (err) {
     console.error('PUT /api/reviews/assign failed:', err.message);
     res.status(500).json({ error: 'Failed to save assignment.' });
+  }
+});
+
+// POST /api/reviews/confirm-bulk — accept the AI's guess on many reviews at once.
+// Body: { review_ids: [...] }. The client says WHICH reviews to confirm; it never
+// says WHO to credit. Every id is re-resolved here from scratch (see
+// resolveConfirmTarget), so a stale page cannot push through an assignment we
+// would not compute ourselves right now, and an id whose guess has since become
+// ambiguous is skipped rather than forced. Confirmed rows land as source='manual'
+// exactly like a dropdown pick, so a later tally never overwrites them.
+router.post('/confirm-bulk', requireAuth, requirePermission('assign_reviews'), async (req, res) => {
+  const rpool = getReviewsPool();
+  if (!rpool) return notConfigured(res);
+  const raw = (req.body && Array.isArray(req.body.review_ids)) ? req.body.review_ids : [];
+  const ids = [];
+  raw.forEach(function (v) {
+    const s = String(v == null ? '' : v).trim();
+    if (s && ids.indexOf(s) === -1) ids.push(s);
+  });
+  if (!ids.length) return res.status(400).json({ error: 'review_ids is required' });
+  if (ids.length > 2000) return res.status(400).json({ error: 'Too many reviews in one confirm — narrow the filter first.' });
+  try {
+    const { rows } = await rpool.query(
+      'SELECT review_id, location_name FROM reviews WHERE review_id = ANY($1)',
+      [ids]
+    );
+    const amap = await loadAssignments(rows.map(function (r) { return r.review_id; }));
+    const targets = await resolveConfirmTargets(rows, amap);
+    const results = [];
+    let failed = 0;
+    for (let i = 0; i < rows.length; i++) {
+      const rid = rows[i].review_id;
+      const t = targets[rid];
+      if (!t) continue;
+      try {
+        await novaPool.query(
+          "INSERT INTO review_assignments (review_id, assignee, user_id, suggested_user_id, confidence, source, assigned_by, updated_at) " +
+          "VALUES ($1, $2, $3, NULL, NULL, 'manual', $4, NOW()) " +
+          "ON CONFLICT (review_id) DO UPDATE SET assignee = EXCLUDED.assignee, user_id = EXCLUDED.user_id, " +
+          "suggested_user_id = NULL, confidence = NULL, source = 'manual', assigned_by = EXCLUDED.assigned_by, updated_at = NOW()",
+          [rid, t.name, t.id, req.user.id]
+        );
+        results.push({ review_id: rid, user_id: t.id, assignee: t.name });
+      } catch (e) {
+        failed++;
+        console.error('confirm-bulk upsert failed for ' + rid + ':', e.message);
+      }
+    }
+    res.json({
+      confirmed: results.length,
+      skipped: ids.length - results.length - failed,
+      failed: failed,
+      results: results
+    });
+  } catch (err) {
+    console.error('POST /api/reviews/confirm-bulk failed:', err.message);
+    res.status(500).json({ error: 'Failed to confirm assignments: ' + err.message });
   }
 });
 
@@ -432,17 +640,21 @@ router.post('/tech-tally', requireAuth, requireRole('admin'), async (req, res) =
           if (isLinked) nm = user.name; // store the canonical user name
           if (!nm) continue;            // nobody named — leave unassigned
           try {
+            // suggested_user_id keeps the AI's roster pick even when confidence
+            // is too low to credit anyone. That is what lets the Reviews page
+            // offer "Confirm Jesse Beardshear" on an 80% guess instead of just
+            // printing the bare name "Jesse".
             await novaPool.query(
-              "INSERT INTO review_assignments (review_id, assignee, user_id, confidence, source, updated_at) " +
-              "VALUES ($1, $2, $3, $4, 'ai', NOW()) " +
+              "INSERT INTO review_assignments (review_id, assignee, user_id, suggested_user_id, confidence, source, updated_at) " +
+              "VALUES ($1, $2, $3, $4, $5, 'ai', NOW()) " +
               "ON CONFLICT (review_id) DO UPDATE SET assignee = EXCLUDED.assignee, user_id = EXCLUDED.user_id, " +
-              "confidence = EXCLUDED.confidence, source = 'ai', updated_at = NOW() " +
+              "suggested_user_id = EXCLUDED.suggested_user_id, confidence = EXCLUDED.confidence, source = 'ai', updated_at = NOW() " +
               "WHERE review_assignments.source <> 'manual'",
-              [chunk[i].review_id, nm, isLinked ? user.id : null, conf]
+              [chunk[i].review_id, nm, isLinked ? user.id : null, user ? user.id : null, conf]
             );
             written++;
             if (isLinked) linked++;
-            existing[chunk[i].review_id] = { assignee: nm, source: 'ai', user_id: isLinked ? user.id : null, confidence: conf };
+            existing[chunk[i].review_id] = { assignee: nm, source: 'ai', user_id: isLinked ? user.id : null, suggested_user_id: user ? user.id : null, confidence: conf };
           } catch (e) { console.error('tally upsert failed:', e.message); }
         }
       }

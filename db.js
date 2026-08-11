@@ -2192,6 +2192,12 @@ async function initDB() {
     // shows it as an estimate but never offers it as a selectable choice.
     await client.query('ALTER TABLE review_assignments ADD COLUMN IF NOT EXISTS user_id INTEGER REFERENCES users(id) ON DELETE SET NULL;');
     await client.query('ALTER TABLE review_assignments ADD COLUMN IF NOT EXISTS confidence INTEGER;');
+    // The roster person the AI THINKS the guessed name refers to, kept even when
+    // its confidence lands under the hard-link threshold. user_id stays NULL in
+    // that case (nothing is credited automatically), but the Reviews page can
+    // offer a one-click Confirm against a specific person instead of making a
+    // manager hunt the name out of the dropdown. Cleared on a manual assignment.
+    await client.query('ALTER TABLE review_assignments ADD COLUMN IF NOT EXISTS suggested_user_id INTEGER REFERENCES users(id) ON DELETE SET NULL;');
     // Backfill: link existing text-only assignments whose name exactly equals a
     // user's full name, dispatch (pulsar) name, or one of their nicknames
     // (case-insensitive). A bare first name links when every user with that

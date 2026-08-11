@@ -2,7 +2,7 @@
 // public/sw.js (the only thing bumped each deploy) — the badge asks the active
 // service worker for it at runtime. This value is just the fallback shown when no
 // service worker is available (e.g. very first visit before it installs).
-var APP_VERSION = 'v107';
+var APP_VERSION = 'v108';
 var _resolvedAppVersion = null;
 
 // Ask the active service worker for its CACHE_VERSION (without the 'nova-' prefix).
@@ -5293,12 +5293,77 @@ async function reviewsAssign(reviewId, userId, selEl) {
         _reviewsRows[i].assignee_source = r.source || null;
         _reviewsRows[i].assignee_user_id = r.user_id || null;
         _reviewsRows[i].assignee_confidence = null;
+        _reviewsRows[i].confirm_user_id = null;
+        _reviewsRows[i].confirm_user_name = null;
         break;
       }
     }
     reviewsRenderTable(_reviewsRows);
   } catch (e) {
     if (selEl) { selEl.style.borderColor = '#dc2626'; selEl.title = e.message; }
+  }
+}
+
+// Accept the AI's guess on ONE review. The server already resolved which roster
+// person the guess refers to (its own pick when it had one, otherwise a name
+// match with a home-city tiebreak), so this saves exactly the dropdown pick a
+// manager would have made by hand — same endpoint, same 'manual' source, still
+// changeable afterward.
+async function reviewsConfirm(reviewId, userId, btn) {
+  if (btn) { btn.disabled = true; btn.textContent = '…'; }
+  try {
+    var r = await api('PUT', '/reviews/assign', { review_id: reviewId, user_id: parseInt(userId, 10) });
+    for (var i = 0; i < _reviewsRows.length; i++) {
+      if (String(_reviewsRows[i].review_id) === String(reviewId)) {
+        _reviewsRows[i].assignee = r.assignee || null;
+        _reviewsRows[i].assignee_source = r.source || null;
+        _reviewsRows[i].assignee_user_id = r.user_id || null;
+        _reviewsRows[i].assignee_confidence = null;
+        _reviewsRows[i].confirm_user_id = null;
+        _reviewsRows[i].confirm_user_name = null;
+        break;
+      }
+    }
+    reviewsRenderTable(_reviewsRows);
+  } catch (e) {
+    if (btn) { btn.disabled = false; btn.innerHTML = '&#10003;'; }
+    showToast(e.message || 'Could not confirm that assignment.', 'error');
+  }
+}
+
+// Accept every confirmable guess in the CURRENT FILTER (not just the visible
+// page) in one shot. Only review ids go to the server — it re-resolves each one,
+// so a guess that has since become ambiguous is skipped rather than forced.
+async function reviewsConfirmAll() {
+  var ids = [];
+  for (var i = 0; i < _reviewsRows.length; i++) {
+    var r = _reviewsRows[i];
+    if (r.review_id && !r.assignee_user_id && r.confirm_user_id) ids.push(r.review_id);
+  }
+  if (!ids.length) { showToast('Nothing left to confirm in this filter.', 'info'); return; }
+  if (!confirm('Credit ' + ids.length + ' review' + (ids.length === 1 ? '' : 's') + ' to the people the AI named?\n\nEach one saves as a manual assignment, so a future tally will not overwrite it, and you can still change any of them in the dropdown.')) return;
+  var btn = document.getElementById('reviews-confirm-all');
+  if (btn) { btn.disabled = true; btn.textContent = 'Confirming…'; }
+  try {
+    var res = await api('POST', '/reviews/confirm-bulk', { review_ids: ids });
+    var byId = {};
+    (res.results || []).forEach(function (x) { byId[String(x.review_id)] = x; });
+    for (var j = 0; j < _reviewsRows.length; j++) {
+      var hit = byId[String(_reviewsRows[j].review_id)];
+      if (!hit) continue;
+      _reviewsRows[j].assignee = hit.assignee;
+      _reviewsRows[j].assignee_user_id = hit.user_id;
+      _reviewsRows[j].assignee_source = 'manual';
+      _reviewsRows[j].assignee_confidence = null;
+      _reviewsRows[j].confirm_user_id = null;
+      _reviewsRows[j].confirm_user_name = null;
+    }
+    reviewsRenderTable(_reviewsRows);
+    var left = (res.skipped || 0) + (res.failed || 0);
+    showToast('Confirmed ' + (res.confirmed || 0) + ' review' + ((res.confirmed === 1) ? '' : 's') + (left ? (' • ' + left + ' still need a hand-pick') : ''), 'success');
+  } catch (e) {
+    reviewsRenderTable(_reviewsRows);
+    showToast(e.message || 'Could not confirm those assignments.', 'error');
   }
 }
 
@@ -5541,11 +5606,25 @@ function reviewsRenderTable(rows) {
   var _pager = '<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:12px">' + _sizeCtl + _btns + '</div>';
   var canAssign = can('assign_reviews');
   var canFileComplaint = can('manage_feedback');
-  var assignedCount = 0, guessCount = 0;
-  for (var _a = 0; _a < rows.length; _a++) { if (rows[_a].assignee_user_id) assignedCount++; else if (rows[_a].assignee) guessCount++; }
-  var coverage = total ? (' • ' + assignedCount + ' of ' + total + ' assigned' + (guessCount ? ' • ' + guessCount + ' unmatched AI guess' + (guessCount === 1 ? '' : 'es') : '')) : '';
+  var assignedCount = 0, guessCount = 0, confirmableCount = 0;
+  for (var _a = 0; _a < rows.length; _a++) {
+    if (rows[_a].assignee_user_id) assignedCount++;
+    else if (rows[_a].assignee) {
+      guessCount++;
+      if (rows[_a].confirm_user_id) confirmableCount++;
+    }
+  }
+  var coverage = total ? (' • ' + assignedCount + ' of ' + total + ' assigned' + (guessCount ? ' • ' + guessCount + ' unmatched AI guess' + (guessCount === 1 ? '' : 'es') + (confirmableCount ? ' (' + confirmableCount + ' ready to confirm)' : '') : '')) : '';
+  // One button to take every guess the server could pin to a single person.
+  // Covers the whole current filter, not just the page in front of you.
+  var confirmAllBtn = (canAssign && confirmableCount)
+    ? '<button id="reviews-confirm-all" class="btn btn-primary btn-sm" title="Credit each of these to the person the AI named. Saves as manual assignments you can still change." onclick="reviewsConfirmAll()">&#10003; Confirm ' + confirmableCount + ' AI guess' + (confirmableCount === 1 ? '' : 'es') + '</button>'
+    : '';
   wrap.innerHTML =
-    '<div style="font-size:12px;color:var(--text-muted-color);margin-bottom:8px">Showing ' + _showing + ' of ' + total + ' review' + (total===1?'':'s') + coverage + '</div>' +
+    '<div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-bottom:8px">' +
+      '<div style="font-size:12px;color:var(--text-muted-color)">Showing ' + _showing + ' of ' + total + ' review' + (total===1?'':'s') + coverage + '</div>' +
+      confirmAllBtn +
+    '</div>' +
     '<div class="card"><div class="table-wrap"><table>' +
       '<thead><tr><th>Location</th><th>Reviewer</th><th>Rating</th><th>Complaint</th><th>Review</th><th>Assigned To</th><th>Date</th><th>Reply</th></tr></thead><tbody>' +
       (total === 0
@@ -5556,14 +5635,25 @@ function reviewsRenderTable(rows) {
             var aConf = (r.assignee_confidence == null) ? null : parseInt(r.assignee_confidence, 10);
             var badge = (r.assignee_source === 'ai' && aUid) ? ' <span title="Matched by AI' + (aConf != null ? ' at ' + aConf + '% confidence' : '') + ' — change the dropdown to override" style="font-size:9px;font-weight:700;color:var(--primary);border:1px solid var(--primary);border-radius:3px;padding:0 3px;vertical-align:middle">AI</span>' : '';
             var guess = '';
+            // When the server pinned the guess to exactly one roster person, show
+            // WHO the checkmark would credit. Reading the resolved full name is
+            // the whole point — "Jesse (80%)" alone does not tell you which Jesse.
+            var resolved = '';
+            var confirmBtn = '';
             if (aName && !aUid) {
               guess = '<div title="Estimated name — not linked to a user. Pick from the dropdown to force it." style="font-size:11px;font-style:italic;color:var(--text-muted-color);margin-top:2px;max-width:150px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">' + (r.assignee_source === 'ai' ? 'AI guess: ' : '') + escHtml(aName) + (aConf != null ? ' (' + aConf + '%)' : '') + '</div>';
+              if (r.confirm_user_id && r.confirm_user_name) {
+                resolved = '<div style="font-size:11px;font-weight:600;color:var(--primary);max-width:160px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">&rarr; ' + escHtml(r.confirm_user_name) + '</div>';
+                if (canAssign && r.review_id) {
+                  confirmBtn = ' <button class="btn btn-primary btn-sm" title="Confirm — credit this review to ' + escHtml(r.confirm_user_name) + '" onclick="reviewsConfirm(&#39;' + escHtml(String(r.review_id)) + '&#39;, ' + parseInt(r.confirm_user_id, 10) + ', this)" style="padding:3px 8px;font-size:13px;line-height:1;vertical-align:middle">&#10003;</button>';
+                }
+              }
             }
             var assignCell;
             if (canAssign && r.review_id) {
-              assignCell = '<select onchange="reviewsAssign(&#39;' + escHtml(String(r.review_id)) + '&#39;, this.value, this)" style="width:130px;padding:4px 6px;background:var(--surface-color);border:1px solid rgba(249,115,22,0.35);border-radius:5px;color:var(--text-color);font-size:12px;outline:none">' + reviewsAssigneeOptions(aUid) + '</select>' + badge + guess;
+              assignCell = '<select onchange="reviewsAssign(&#39;' + escHtml(String(r.review_id)) + '&#39;, this.value, this)" style="width:130px;padding:4px 6px;background:var(--surface-color);border:1px solid rgba(249,115,22,0.35);border-radius:5px;color:var(--text-color);font-size:12px;outline:none">' + reviewsAssigneeOptions(aUid) + '</select>' + confirmBtn + badge + guess + resolved;
             } else {
-              assignCell = (aUid && aName ? escHtml(aName) : '') + badge + guess + ((aName || aUid) ? '' : '<span style="color:var(--text-muted-color)">—</span>');
+              assignCell = (aUid && aName ? escHtml(aName) : '') + badge + guess + resolved + ((aName || aUid) ? '' : '<span style="color:var(--text-muted-color)">—</span>');
             }
             // Low-star reviews are auto-filed as Customer Feedback complaints; show the
             // link when one exists, and offer a manual File button when it does not.
