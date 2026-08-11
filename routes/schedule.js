@@ -117,6 +117,60 @@ async function logShiftEvent(db, e) {
   } catch (err) { console.error('[schedule] shift_event log failed:', err.message); }
 }
 
+// One shape for a shift row everywhere it is read, so the single-shift refetch the
+// editor does returns exactly the same fields the week grid put in its cache.
+const SHIFT_SELECT =
+  'SELECT s.*, p.name AS position_name, p.color AS position_color, c.color AS city_color, c.name AS city_name, ' +
+  'cb.name AS created_by_name, pp.name AS prev_position_name FROM shifts s ' +
+  'LEFT JOIN shift_positions p ON p.id = s.position_id LEFT JOIN cities c ON c.code = s.city_code ' +
+  'LEFT JOIN users cb ON cb.id = s.created_by LEFT JOIN shift_positions pp ON pp.id = s.prev_position_id';
+
+// ---- optimistic concurrency for shift writes -------------------------------
+// The editor loads a shift, the user sits on the modal, someone else moves the
+// shift, then the first user saves. Because the form PUTs every field, that save
+// silently reverted the other person's change - and the audit log recorded it as
+// a deliberate date edit, which is how this was found. So the client sends back
+// the updated_at it loaded with, and we refuse the write if the row moved on.
+//
+// A missing expected_updated_at skips the check on purpose: older clients, the
+// bulk routes and the PTO job keep working exactly as before.
+function isStale(expected, row) {
+  if (!expected || !row) return false;
+  const cur = row.updated_at || row.created_at;
+  if (!cur) return false;
+  const a = new Date(expected).getTime();
+  const b = new Date(cur).getTime();
+  if (!isFinite(a) || !isFinite(b)) return false;
+  if (Math.abs(a - b) <= 1000) return false; // same row (tolerate ms/serialization drift)
+  return a < b;                              // only block when the stored copy is NEWER
+}
+// Who touched it last, so the 409 can name them instead of saying "someone".
+async function lastEditor(shiftId) {
+  try {
+    const r = await pool.query(
+      "SELECT actor_name FROM shift_events WHERE shift_id = $1 AND action <> 'created' ORDER BY created_at DESC, id DESC LIMIT 1",
+      [shiftId]
+    );
+    if (r.rows.length && r.rows[0].actor_name) return r.rows[0].actor_name;
+  } catch (err) { console.error('[schedule] lastEditor lookup failed:', err.message); }
+  return null;
+}
+function staleConflict(res, row) {
+  return lastEditor(row.id).then(function (who) {
+    return res.status(409).json({
+      stale: true,
+      error: (who || 'Someone else') + ' changed this shift after you opened it. Reload it before saving.',
+      changed_by: who,
+      changed_at: row.updated_at || row.created_at,
+      shift_id: row.id
+    });
+  });
+}
+// Only these move sources are recorded; anything else is dropped rather than trusted.
+function cleanVia(v) {
+  return (v === 'drag' || v === 'drag_undo') ? v : null;
+}
+
 // Compute warn-but-allow conflicts for a candidate shift.
 async function computeConflicts(cand, excludeId) {
   const warnings = [];
@@ -233,10 +287,7 @@ router.get('/shifts', requireAuth, requirePermission('manage_schedule'), async (
   const to = RE_DATE.test(req.query.to) ? req.query.to : addDays(from, 6);
   const scope = await allowedCities(req.user);
   const params = [from, to];
-  let sql = 'SELECT s.*, p.name AS position_name, p.color AS position_color, c.color AS city_color, c.name AS city_name, ' +
-    'cb.name AS created_by_name, pp.name AS prev_position_name FROM shifts s ' +
-    'LEFT JOIN shift_positions p ON p.id = s.position_id LEFT JOIN cities c ON c.code = s.city_code ' +
-    'LEFT JOIN users cb ON cb.id = s.created_by LEFT JOIN shift_positions pp ON pp.id = s.prev_position_id WHERE s.shift_date BETWEEN $1 AND $2';
+  let sql = SHIFT_SELECT + ' WHERE s.shift_date BETWEEN $1 AND $2';
   if (req.query.city && String(req.query.city).trim()) {
     params.push(String(req.query.city).trim()); sql += ' AND s.city_code = $' + params.length;
   }
@@ -284,6 +335,8 @@ router.put('/shifts/:id', requireAuth, requirePermission('manage_schedule'), asy
   const cur = await pool.query('SELECT * FROM shifts WHERE id=$1', [req.params.id]);
   if (!cur.rows.length) return res.status(404).json({ error: 'Shift not found' });
   if (!cityOk(scope, cur.rows[0].city_code)) return res.status(403).json({ error: 'You are not assigned to that city' });
+  // Refuse a write built on a copy of the row that is already out of date.
+  if (isStale(req.body && req.body.expected_updated_at, cur.rows[0])) return staleConflict(res, cur.rows[0]);
   const u = await pool.query('SELECT name FROM users WHERE id=$1', [c.user_id]);
   const uname = u.rows.length ? u.rows[0].name : null;
   const params = [c.user_id, uname, c.city_code, c.position_id, c.shift_date, c.start_time, c.end_time, c.break_minutes, c.notes];
@@ -302,7 +355,13 @@ router.put('/shifts/:id', requireAuth, requirePermission('manage_schedule'), asy
   const _next = { user_id: c.user_id, city_code: c.city_code, position_id: c.position_id, shift_date: c.shift_date, start_time: c.start_time, end_time: c.end_time, break_minutes: c.break_minutes, notes: c.notes, status: rows[0].status };
   const _changes = shiftDiff(cur.rows[0], _next);
   if (Object.keys(_changes).length) {
-    await logShiftEvent(pool, { shift_id: rows[0].id, employee_id: c.user_id, action: 'updated', actor_id: req.user.id, actor_name: req.user.name, details: { changes: _changes } });
+    // Record HOW it changed. A drag across the grid and a deliberate form edit
+    // both land here as an identical PUT; without this the history cannot tell
+    // an accidental drag from someone typing a new date.
+    const _details = { changes: _changes };
+    const _via = cleanVia(req.body && req.body.via);
+    if (_via) _details.via = _via;
+    await logShiftEvent(pool, { shift_id: rows[0].id, employee_id: c.user_id, action: 'updated', actor_id: req.user.id, actor_name: req.user.name, details: _details });
   }
   const conflicts = await computeConflicts(c, rows[0].id);
   res.json({ shift: rows[0], conflicts: conflicts });
@@ -315,9 +374,23 @@ router.delete('/shifts/:id', requireAuth, requirePermission('manage_schedule'), 
   const ex = await pool.query('SELECT * FROM shifts WHERE id=$1', [req.params.id]);
   if (!ex.rows.length) return res.status(404).json({ error: 'Shift not found' });
   if (!cityOk(scope, ex.rows[0].city_code)) return res.status(403).json({ error: 'You are not assigned to that city' });
+  if (isStale(req.body && req.body.expected_updated_at, ex.rows[0])) return staleConflict(res, ex.rows[0]);
   await pool.query('DELETE FROM shifts WHERE id=$1', [req.params.id]);
   await logShiftEvent(pool, { shift_id: parseInt(req.params.id, 10) || null, employee_id: ex.rows[0].user_id, action: 'deleted', actor_id: req.user.id, actor_name: req.user.name, details: { shift_date: sdstr(ex.rows[0].shift_date), position_id: ex.rows[0].position_id, status: ex.rows[0].status } });
   res.json({ success: true });
+});
+
+// ---- one shift, read live --------------------------------------------------
+// The editor calls this every time it opens a shift. Building the form from the
+// week grid's cached array instead is what let a stale tab silently overwrite
+// someone else's change on save.
+router.get('/shifts/:id', requireAuth, requirePermission('manage_schedule'), async (req, res) => {
+  const id = parseInt(req.params.id, 10) || 0;
+  const { rows } = await pool.query(SHIFT_SELECT + ' WHERE s.id = $1', [id]);
+  if (!rows.length) return res.status(404).json({ error: 'Shift not found' });
+  const scope = await allowedCities(req.user);
+  if (!cityOk(scope, rows[0].city_code)) return res.status(403).json({ error: 'You are not assigned to that city' });
+  res.json(rows[0]);
 });
 
 // ---- per-shift change history (editor timeline) ---------------------------

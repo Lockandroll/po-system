@@ -300,8 +300,13 @@ router.post('/:id/complete', requireAuth, requirePermission('complete_signoff'),
     // NOTE invoice_number: COALESCE(NULLIF($3, ''), invoice_number). A blank in the
     // request must NEVER null a number the sheet already carries - that is exactly
     // how a stamped number used to get wiped by anyone completing the sheet without
-    // retyping it. The field is required client-side, so a legitimate blank never
-    // arrives; a real number still overwrites, so a typo stays correctable.
+    // retyping it. A real number still overwrites, so a typo stays correctable.
+    // A blank IS legitimate now: the client only requires an invoice number when
+    // work_complete is true. A job can run several trips with a sheet each, and
+    // only the trip that finishes it bills - so an unfinished trip closes with
+    // the box empty. The COALESCE is what makes that safe: if an earlier trip
+    // already stamped the job's invoice number, an empty later submission leaves
+    // it exactly where it was.
     const { rows: upd } = await client.query(
       'UPDATE signoff_forms SET start_time=$1, end_time=$2, invoice_number = COALESCE(NULLIF($3, \'\'), invoice_number), work_complete=$4, num_technicians=$5, manager_name=$6, technician_names=$7, work_description=$8, signature_data = COALESCE($9, signature_data), notes=COALESCE($10, notes), gps_lat = COALESCE($11, gps_lat), gps_lon = COALESCE($12, gps_lon), gps_accuracy = COALESCE($13, gps_accuracy), gps_error=$14, signed_at = COALESCE($15, signed_at), status=$16, completed_by=$17, completed_at=NOW(), updated_at=NOW() WHERE id=$18 RETURNING *',
       [b.start_time || null, b.end_time || null, b.invoice_number || null, (b.work_complete === true || b.work_complete === false) ? b.work_complete : null, b.num_technicians ? parseInt(b.num_technicians) : null, b.manager_name || null, b.technician_names || null, b.work_description || null, b.signature_data || null, b.notes || null, (b.gps_lat != null && b.gps_lat !== '') ? b.gps_lat : null, (b.gps_lon != null && b.gps_lon !== '') ? b.gps_lon : null, (b.gps_accuracy != null && b.gps_accuracy !== '') ? b.gps_accuracy : null, b.gps_error || null, b.signed_at || null, 'completed', req.user.id, req.params.id]

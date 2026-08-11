@@ -160,7 +160,8 @@ function _apiNoCache(path) {
          /^\/goto(\/|$)/.test(path) || /\/recordings(\/|$|\?)/.test(path) ||
          /setup-needed/.test(path) || /verify/.test(path) || /usage/.test(path) ||
          /token/.test(path) || /^\/timeclock/.test(path) || /notif/.test(path) ||
-         /\/id-image/.test(path) || /\/dispute-packet/.test(path) || /^\/locations/.test(path);
+         /\/id-image/.test(path) || /\/dispute-packet/.test(path) || /^\/locations/.test(path) ||
+         /^\/schedule\/shifts\/\d+/.test(path); // one shift + its history: always live, never cached
 }
 function _apiCacheKey(path) { return (state.viewAsId ? 'v' + state.viewAsId + ' ' : '') + path; }
 function _apiClone(d) { try { return JSON.parse(JSON.stringify(d)); } catch (e) { return d; } }
@@ -16018,8 +16019,10 @@ async function signoffDraftRestore(id) {
     renderSignoffPhotoGrid();
     touched = true;
   }
-  // The nudge is driven by so-complete, which we just set behind its onchange.
-  if (d.fields && d.fields['so-complete']) toggleTripNudge(d.fields['so-complete']);
+  // The nudge and the invoice-required state are driven by so-complete, which we
+  // just set behind its onchange - fire the handler by hand so a restored "No"
+  // does not come back with the Invoice Number field still marked required.
+  if (d.fields && d.fields['so-complete']) onSignoffCompleteChange(d.fields['so-complete']);
   if (touched) {
     var when = '';
     try { when = new Date(d.saved_at).toLocaleString(); } catch(e) {}
@@ -16053,13 +16056,13 @@ async function renderCompleteSignoff(el, id) {
         '<div class="form-group"><label>End Time &amp; Date *</label><input type="text" id="so-end" placeholder="e.g. 6/19/26 3:00 PM" /></div>' +
       '</div>' +
       '<div class="form-row">' +
-        '<div class="form-group"><label>Is this work 100% complete? *</label><select id="so-complete" onchange="toggleTripNudge(this.value)"><option value="">— Select —</option><option value="yes">Yes</option><option value="no">No</option></select>' +
+        '<div class="form-group"><label>Is this work 100% complete? *</label><select id="so-complete" onchange="onSignoffCompleteChange(this.value)"><option value="">— Select —</option><option value="yes">Yes</option><option value="no">No</option></select>' +
           '<div id="so-trip-nudge" style="display:none;align-items:center;gap:8px;padding:12px 14px;border-radius:var(--radius);background:#2d2100;border:1px solid #4a3500;color:#fbbf24;font-size:13px;line-height:1.5;margin-top:10px">' +
             '<span>Return trip needed? The job will stay open. After you submit this sheet, Nova will offer to set up <strong style="color:#fcd34d">Trip ' + ((form.trip_number || 1) + 1) + '</strong> with the store and PO already filled in.</span>' +
           '</div>' +
         '</div>' +
         '<div class="form-group"><label>Number of Technicians *</label><input type="number" id="so-numtech" min="0" step="1" placeholder="e.g. 2" /></div>' +
-        '<div class="form-group" style="flex:1.6 1 260px"><label>Invoice Number *</label>' + signoffInvoiceFieldHtml(form) + '</div>' +
+        '<div class="form-group" style="flex:1.6 1 260px"><label>Invoice Number <span id="so-invoice-req">*</span></label>' + signoffInvoiceFieldHtml(form) + '</div>' +
       '</div>' +
       '<div class="form-group"><label>Technician Name(s) *</label><input type="text" id="so-techs" placeholder="Names of techs on site" /></div>' +
       '<div class="form-group"><label>Description of Work Done / Cause of Damage *</label><textarea id="so-workdesc" style="min-height:120px" placeholder="Describe the work performed and/or cause of damage..."></textarea></div>' +
@@ -16387,6 +16390,35 @@ function toggleTripNudge(val) {
   if (n) n.style.display = (val === 'no') ? 'flex' : 'none';
 }
 
+// Invoice Number is only a HARD requirement when the work is 100% complete.
+// A job can take several trips and each trip gets its own sign-off sheet, but
+// we do not raise an invoice for every trip - only the trip that finishes the
+// job bills. Requiring a number on an unfinished trip forced techs to invent
+// one (or create a throwaway invoice) just to close the sheet.
+// "No" -> optional. Blank or "Yes" -> required, exactly as before.
+// submitSignoffCompletion enforces the same rule; this only keeps the label
+// and hint telling the truth.
+function syncSignoffInvoiceRequired(val) {
+  var optional = (val === 'no');
+  var star = document.getElementById('so-invoice-req');
+  if (star) star.textContent = optional ? '' : '*';
+  var box = document.getElementById('so-invoice-complete');
+  var hint = document.getElementById('so-inv-hint');
+  // Once an invoice is linked to the job the box goes read-only and the hint
+  // carries that invoice number - never overwrite it with generic copy.
+  if (!box || box.readOnly || !hint) return;
+  hint.textContent = optional
+    ? 'Not required on this trip. Only the trip that finishes the job needs an invoice number.'
+    : 'Brings the PO, account, store and site address across.';
+  hint.style.color = optional ? 'var(--text-muted-color)' : 'var(--primary)';
+}
+
+// Everything that reacts to the 100%-complete answer, in one place.
+function onSignoffCompleteChange(val) {
+  toggleTripNudge(val);
+  syncSignoffInvoiceRequired(val);
+}
+
 function updateSignoffPhotoCaption(i, val) { if (signoffPhotos[i]) { signoffPhotos[i].caption = val; signoffDraftSave(); } }
 
 function removeSignoffPhoto(i) { signoffPhotos.splice(i, 1); renderSignoffPhotoGrid(); signoffDraftSave(true); }
@@ -16405,8 +16437,12 @@ async function submitSignoffCompletion(id) {
   const manager = val('so-manager');
   if (!start_time) return fail('Start time &amp; date is required.');
   if (!end_time) return fail('End time &amp; date is required.');
-  if (!invoice_number) return fail('Invoice number is required.');
   if (!completeSel) return fail('Please select whether the work is 100% complete.');
+  // Only the trip that finishes the job has to carry an invoice number. An
+  // unfinished trip ("No") closes without one - a later trip will invoice.
+  // Checked AFTER completeSel so we never demand an invoice before we know
+  // whether this trip even needs one.
+  if (completeSel === 'yes' && !invoice_number) return fail('Invoice number is required when the work is 100% complete.');
   if (!num_technicians) return fail('Number of technicians is required.');
   if (!technician_names) return fail('Technician name(s) are required.');
   if (!work_description) return fail('Description of work done / cause of damage is required.');
@@ -16636,6 +16672,9 @@ async function printSignoff(id) {
 
 // ===== Scheduling (Sling-style) ============================================
 var _schedMonday = null, _schedCity = '', _schedRole = '', _schedCities = [], _schedUsers = [], _schedPositions = [], _schedShifts = [], _schedEditId = null, _schedEmpCities = {}, _schedScope = null, _schedMode = 'week', _schedMonthAnchor = null;
+// updated_at of the row the open editor was built from. Sent back on save so the
+// server can refuse the write if someone else changed the shift meanwhile.
+var _schedEditStamp = null;
 var _schedSelMode = false, _schedSel = {};
 
 function schedYmd(d){ return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0'); }
@@ -16647,6 +16686,15 @@ function schedTimeFmt(t){ var mm=schedTimeMin(t); var h=Math.floor(mm/60), mn=mm
 function schedShiftHrs(s){ var st=schedTimeMin(s.start_time), en=schedTimeMin(s.end_time); if(en<=st) en+=1440; var m=en-st-(parseInt(s.break_minutes,10)||0); return m>0?m/60:0; }
 function schedDateLabel(ds){ var a=ds.split('-').map(Number); var d=new Date(a[0],a[1]-1,a[2]); return d.toLocaleDateString('en-US',{weekday:'short',month:'short',day:'numeric'}); }
 function schedShiftDate(s){ return String(s.shift_date).slice(0,10); }
+// YYYY-MM-DD to "Fri Aug 14". Built in UTC on purpose: new Date('2026-08-14')
+// parses as UTC midnight and would render as the 13th anywhere west of London.
+function schedDayLabel(d){
+  var a=String(d||'').split('-'); if(a.length!==3) return String(d||'');
+  var dt=new Date(Date.UTC(parseInt(a[0],10),parseInt(a[1],10)-1,parseInt(a[2],10)));
+  if(isNaN(dt.getTime())) return String(d||'');
+  return ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'][dt.getUTCDay()]+' '+
+         ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'][dt.getUTCMonth()]+' '+dt.getUTCDate();
+}
 
 async function schedLoadAdmin(){
   var from, to;
@@ -16999,18 +17047,29 @@ async function schedDrop(e,userId,date){
   await schedMoveShift(id,userId,date);
 }
 
-async function schedMoveShift(id,userId,date){
+async function schedMoveShift(id,userId,date,viaTag){
   if(!id) return;
   var s=_schedShifts.filter(function(x){return x.id===id;})[0];
-  if(!s) return;
-  if(String(s.user_id)===String(userId) && schedShiftDate(s)===date) return;
-  var body={ user_id:userId, shift_date:date, start_time:String(s.start_time).slice(0,5), end_time:String(s.end_time).slice(0,5), position_id:s.position_id||null, city_code:s.city_code||null, break_minutes:(parseInt(s.break_minutes,10)||0), notes:s.notes||'' };
+  if(!s){ if(viaTag==='drag_undo') schedToast('That shift is not in the week you are looking at any more.','warn'); return; }
+  var fromUser=s.user_id, fromDate=schedShiftDate(s);
+  if(String(fromUser)===String(userId) && fromDate===date) return;
+  // via tells the history this was a drag, not someone typing a new date. The two
+  // are an identical PUT on the wire, and the log could not tell them apart.
+  var body={ user_id:userId, shift_date:date, start_time:String(s.start_time).slice(0,5), end_time:String(s.end_time).slice(0,5), position_id:s.position_id||null, city_code:s.city_code||null, break_minutes:(parseInt(s.break_minutes,10)||0), notes:s.notes||'', via:(viaTag||'drag') };
+  if(s.updated_at) body.expected_updated_at=s.updated_at;
   try{
     var res=await api('PUT','/schedule/shifts/'+id,body);
     await schedLoadAdmin(); schedRenderGrid();
     if(res&&res.conflicts&&res.conflicts.length) schedToast('Moved with warnings: '+res.conflicts.join(' '),'warn');
-    else schedToast('Shift moved.','ok');
-  }catch(err){ schedToast(err.message||'Move failed','err'); schedRenderGrid(); }
+    var what='Moved to '+schedDayLabel(date)+(String(fromUser)===String(userId)?'':' \u00b7 '+schedUserNameById(userId));
+    schedToastAction(what+'.','ok','Undo',function(){ schedMoveShift(id,fromUser,fromDate,'drag_undo'); });
+  }catch(err){
+    if(err&&err.status===409&&err.data&&err.data.stale){
+      schedToast((err.data.changed_by||'Someone else')+' changed that shift first, so the move was not applied. Refreshing.','warn');
+      await schedLoadAdmin(); schedRenderGrid(); return;
+    }
+    schedToast(err.message||'Move failed','err'); schedRenderGrid();
+  }
 }
 
 // Touch drag (mobile): long-press a shift to pick it up, drag onto a cell, release.
@@ -17086,6 +17145,7 @@ function schedCloseModal(){ var m=document.getElementById('sched-modal'); if(m) 
 
 function schedShiftForm(s){
   _schedEditId=s&&s.id?s.id:null;
+  _schedEditStamp=(s&&s.updated_at)?s.updated_at:((s&&s.created_at)?s.created_at:null);
   var _isNew=!(s&&s.id);
   var _defPosId=null; if(_isNew){ var _oc=_schedPositions.filter(function(p){return p.active!==false && String(p.name||'').trim().toLowerCase()==='on call';})[0]; if(_oc) _defPosId=_oc.id; }
   var _homeCity=''; if(_isNew){ var _uu=(s&&s.user_id)?_schedUsers.filter(function(u){return u.id==s.user_id;})[0]:null; _homeCity=(_uu&&_uu.home_city)?String(_uu.home_city).trim():''; if(!_homeCity) _homeCity=_schedCity||''; }
@@ -17116,22 +17176,68 @@ function schedShiftForm(s){
   if(_schedEditId) schedLoadHistory(_schedEditId);
 }
 function schedNewShift(userId,date){ if(_schedSelMode) return; schedShiftForm({ user_id:userId, _date:date, shift_date:date }); }
-function schedOpenShift(id){ var s=_schedShifts.filter(function(x){return x.id===id;})[0]; if(s) schedShiftForm(s); }
+// Always re-read the shift before opening the editor. Building the form from
+// _schedShifts (a snapshot from the last grid load) is what let a tab that had
+// been sitting open silently overwrite a change someone else had made since.
+async function schedOpenShift(id){
+  var s=_schedShifts.filter(function(x){return x.id===id;})[0];
+  try{
+    var fresh=await api('GET','/schedule/shifts/'+id);
+    if(fresh&&fresh.id) s=fresh;
+  }catch(err){
+    if(err&&err.status===404){ schedToast('That shift no longer exists.','warn'); await schedLoadAdmin(); schedAfterBulk(); return; }
+    if(!s){ schedToast(err.message||'Could not open that shift.','err'); return; }
+    schedToast('Showing a cached copy - could not reach the server.','warn');
+  }
+  if(s) schedShiftForm(s);
+}
 
-async function schedSaveShift(){
+async function schedSaveShift(force){
   var body={ user_id:document.getElementById('sf-user').value, shift_date:document.getElementById('sf-date').value, start_time:document.getElementById('sf-start').value, end_time:document.getElementById('sf-end').value, position_id:document.getElementById('sf-pos').value||null, city_code:document.getElementById('sf-city').value||null, break_minutes:document.getElementById('sf-break').value||0, notes:document.getElementById('sf-notes').value, publish:document.getElementById('sf-publish').checked };
   if(!body.shift_date||!body.start_time||!body.end_time){ document.getElementById('sched-form-err').innerHTML='<div class="alert alert-error">Date, start and end are required.</div>'; return; }
   if(!body.position_id){ document.getElementById('sched-form-err').innerHTML='<div class="alert alert-error">Please select a position.</div>'; return; }
+  // Tell the server which version of the row this form was built from, unless the
+  // user has looked at the conflict and chosen to overwrite anyway.
+  if(_schedEditId&&_schedEditStamp&&force!==true) body.expected_updated_at=_schedEditStamp;
   try{
     var res=_schedEditId?await api('PUT','/schedule/shifts/'+_schedEditId,body):await api('POST','/schedule/shifts',body);
     schedCloseModal();
     await schedLoadAdmin(); schedRenderGrid();
     if(res&&res.conflicts&&res.conflicts.length) schedToast('Saved with warnings: '+res.conflicts.join(' '),'warn');
-  }catch(e){ document.getElementById('sched-form-err').innerHTML='<div class="alert alert-error">'+escHtml(e.message)+'</div>'; }
+  }catch(e){
+    if(e&&e.status===409&&e.data&&e.data.stale){ schedStaleBanner(e.data); return; }
+    document.getElementById('sched-form-err').innerHTML='<div class="alert alert-error">'+escHtml(e.message)+'</div>';
+  }
 }
-async function schedDeleteShift(){
-  if(!_schedEditId) return; if(!await novaConfirm('Delete this shift?')) return;
-  try{ await api('DELETE','/schedule/shifts/'+_schedEditId); schedCloseModal(); await schedLoadAdmin(); schedRenderGrid(); }catch(e){ novaAlert(e.message); }
+// Someone else got there first. Say who and when, then offer both ways out
+// rather than a dead end: take their version, or overwrite it on purpose.
+function schedStaleBanner(d,forceCall){
+  var el=document.getElementById('sched-form-err'); if(!el) return;
+  var who=escHtml((d&&d.changed_by)||'Someone else');
+  var when=(d&&d.changed_at)?escHtml(schedFmtTs(d.changed_at)):'just now';
+  el.innerHTML='<div class="alert alert-error" style="text-align:left">'+
+    '<div><strong>'+who+'</strong> changed this shift at '+when+', after you opened it.</div>'+
+    '<div style="opacity:0.85;margin-top:4px">Saving now would undo that change.</div>'+
+    '<div style="display:flex;gap:8px;margin-top:9px;flex-wrap:wrap">'+
+      '<button type="button" class="btn btn-ghost btn-sm" onclick="schedReloadShift()">Reload theirs</button>'+
+      '<button type="button" class="btn btn-danger btn-sm" onclick="'+(forceCall||'schedSaveShift(true)')+'">'+(forceCall?'Delete anyway':'Overwrite anyway')+'</button>'+
+    '</div></div>';
+}
+async function schedReloadShift(){
+  var id=_schedEditId; schedCloseModal();
+  if(!id) return;
+  await schedLoadAdmin(); schedRenderGrid();
+  await schedOpenShift(id);
+}
+async function schedDeleteShift(force){
+  if(!_schedEditId) return;
+  if(force!==true && !await novaConfirm('Delete this shift?')) return;
+  var body=(_schedEditStamp&&force!==true)?{expected_updated_at:_schedEditStamp}:null;
+  try{ await api('DELETE','/schedule/shifts/'+_schedEditId,body); schedCloseModal(); await schedLoadAdmin(); schedRenderGrid(); }
+  catch(e){
+    if(e&&e.status===409&&e.data&&e.data.stale){ schedStaleBanner(e.data,'schedDeleteShift(true)'); return; }
+    novaAlert(e.message);
+  }
 }
 
 // ---- shift provenance + change history (editor) ---------------------------
@@ -17171,12 +17277,22 @@ async function schedLoadHistory(id){
     el.innerHTML=rows.map(function(e){ return schedHistoryRow(e); }).join('');
   }catch(err){ el.innerHTML='<div style="opacity:0.6">Could not load history.</div>'; }
 }
+// How the change was made, when the writer recorded it.
+function schedEventVia(e){
+  var d=e&&e.details; if(!d) return '';
+  try{ if(typeof d==='string') d=JSON.parse(d); }catch(_e){ return ''; }
+  return (d&&d.via)?String(d.via):'';
+}
 function schedHistoryRow(e){
   var actor=escHtml(e.actor_name||e.actor_name_now||'System');
   var when=escHtml(schedFmtTs(e.created_at));
+  var via=schedEventVia(e);
+  var label=schedEventLabel(e.action), tag='';
+  if(e.action==='updated'&&via==='drag'){ label='Moved'; tag=' <span style="opacity:0.55;font-size:11px">(dragged on the grid)</span>'; }
+  else if(e.action==='updated'&&via==='drag_undo'){ label='Move undone'; tag=' <span style="opacity:0.55;font-size:11px">(undo)</span>'; }
   var detail=schedEventDetail(e);
   return '<div style="padding:6px 0;border-bottom:1px solid rgba(255,255,255,0.06)">'+
-    '<div><strong>'+schedEventLabel(e.action)+'</strong> · '+actor+'</div>'+
+    '<div><strong>'+label+'</strong> · '+actor+tag+'</div>'+
     (detail?'<div style="opacity:0.75;margin-top:2px">'+detail+'</div>':'')+
     '<div style="opacity:0.5;font-size:11px;margin-top:2px">'+when+'</div>'+
   '</div>';
@@ -17235,6 +17351,24 @@ function schedToast(msg,kind){
   var bd=kind==='ok'?'#22c55e':kind==='warn'?'#f59e0b':'#ef4444';
   var t=document.createElement('div'); t.style.cssText='position:fixed;bottom:20px;left:50%;transform:translateX(-50%);background:'+c+';border:1px solid '+bd+';color:var(--text-color,#fff);padding:11px 18px;border-radius:8px;z-index:300;font-size:13.5px;max-width:90%;box-shadow:0 6px 24px rgba(0,0,0,0.4)';
   t.textContent=msg; document.body.appendChild(t); setTimeout(function(){ t.remove(); },5000);
+}
+// Same toast, plus one inline action. Used for Undo after a drag, which is a
+// single gesture with no confirm step and is very easy to trigger by accident.
+function schedToastAction(msg,kind,label,fn){
+  var c=kind==='ok'?'rgba(34,197,94,0.15)':kind==='warn'?'rgba(245,158,11,0.15)':'rgba(239,68,68,0.15)';
+  var bd=kind==='ok'?'#22c55e':kind==='warn'?'#f59e0b':'#ef4444';
+  var t=document.createElement('div'); t.style.cssText='position:fixed;bottom:20px;left:50%;transform:translateX(-50%);background:'+c+';border:1px solid '+bd+';color:var(--text-color,#fff);padding:11px 18px;border-radius:8px;z-index:300;font-size:13.5px;max-width:90%;box-shadow:0 6px 24px rgba(0,0,0,0.4);display:flex;align-items:center;gap:12px';
+  var span=document.createElement('span'); span.textContent=msg; t.appendChild(span);
+  if(label&&fn){
+    var b=document.createElement('button'); b.type='button'; b.textContent=label;
+    b.style.cssText='background:transparent;border:1px solid '+bd+';color:var(--text-color,#fff);border-radius:6px;padding:3px 12px;font-size:12.5px;font-weight:600;cursor:pointer;white-space:nowrap';
+    b.onclick=function(){ clearTimeout(tm); t.remove(); fn(); };
+    t.appendChild(b);
+  }
+  document.body.appendChild(t);
+  var tm=setTimeout(function(){ t.remove(); },9000);
+  t.addEventListener('mouseenter',function(){ clearTimeout(tm); });
+  return t;
 }
 
 async function schedManagePositions(){
