@@ -14,46 +14,10 @@ const MANAGE = ['admin', 'manager'];
 // ---------------------------------------------------------------------------
 // Editing an already-submitted deposit
 // ---------------------------------------------------------------------------
-// Viewing and deleting are company-wide for a manager. EDITING is not: changing
-// the numbers on a deposit is a correction to another location's books, so a
-// manager is held to the cities they are assigned (users_cities, falling back to
-// their home_city so a manager with no explicit rows is not locked out). Only
-// admin/owner edit across locations. Mirrors routes/assets.js cityScope().
-//
-// Returns null for "every city", or an array of upper-cased 3-letter codes.
-async function editCityScope(req) {
-  if (!req.user) return [];
-  if (req.user.role === 'admin' || req.user.isOwner) return null;
-  var codes = [];
-  try {
-    const r = await pool.query('SELECT city_code FROM user_cities WHERE user_id = $1', [req.user.id]);
-    codes = r.rows.map(function (x) { return (x.city_code || '').trim().toUpperCase(); }).filter(Boolean);
-  } catch (e) { codes = []; }
-  if (!codes.length) {
-    try {
-      const h = await pool.query('SELECT home_city FROM users WHERE id = $1', [req.user.id]);
-      const hc = h.rows.length && h.rows[0].home_city ? String(h.rows[0].home_city).trim().toUpperCase() : '';
-      if (hc) codes.push(hc);
-    } catch (e) { /* leave empty */ }
-  }
-  return codes;
-}
-
-// True when this request may act on the given city. Fails CLOSED on a blank
-// city: a scoped manager cannot edit a deposit that has no city on it.
-function scopeAllows(scope, cityCode) {
-  if (scope === null) return true;
-  if (!cityCode) return false;
-  return scope.indexOf(String(cityCode).trim().toUpperCase()) !== -1;
-}
-
-// Role gate + city gate, in that order. Used for the can_edit flag on the read
-// and enforced again on the write.
-async function mayEditCity(req, cityCode) {
-  if (!MANAGE.includes(req.user.role)) return false;
-  const scope = await editCityScope(req);
-  return scopeAllows(scope, cityCode);
-}
+// The city-scope rule lives in utils/depositAccess.js because the Pulsar
+// reconciliation writes to deposits too ("Correct Deposit Amount") and has to be
+// held to exactly the same rule. Do not re-inline a second copy here.
+const { editCityScope, scopeAllows, mayEditCity } = require('../utils/depositAccess');
 
 function numOrNull(v) {
   if (v === null || v === undefined || v === '') return null;

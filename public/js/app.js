@@ -25033,6 +25033,7 @@ function pvRenderRecon() {
       '<td style="text-align:right">' + depCell + '</td>' +
       '<td style="text-align:right">' + (r.expenses ? pvMoney(r.expenses) : '<span style="color:var(--text-muted-color)">—</span>') + '</td>' +
       '<td>' + pvBadge(r) + '</td>' +
+      '<td>' + pvActionsCell(r, i) + '</td>' +
       '<td style="text-align:right">' + expand + '</td></tr>';
 
     var detail = '';
@@ -25051,7 +25052,7 @@ function pvRenderRecon() {
               '</td><td style="text-align:right;font-weight:600">' + pvMoney(c.cash) + '</td></tr>';
           }).join('') + '</tbody></table>';
       }
-      detail = '<tr><td colspan="8" style="background:var(--bg-elevated);padding:12px">' + inner + '</td></tr>';
+      detail = '<tr><td colspan="9" style="background:var(--bg-elevated);padding:12px">' + inner + '</td></tr>';
     }
     return main + detail;
   }).join('');
@@ -25063,8 +25064,161 @@ function pvRenderRecon() {
     '<div class="table-wrap"><table class="table"><thead><tr>' +
       '<th>Technician</th><th>City</th><th style="text-align:right">Pulsar cash</th>' +
       '<th style="text-align:right">Tech entered</th><th style="text-align:right">Deposited</th>' +
-      '<th style="text-align:right">Expenses</th><th>Status</th><th></th>' +
+      '<th style="text-align:right">Expenses</th><th>Status</th><th>Actions</th><th></th>' +
     '</tr></thead><tbody>' + rows + '</tbody></table></div>';
+}
+
+/* --------------------------------------------------------------- actions ---
+   Two buttons live on a reconciliation row.
+
+   "Send to Task For Manager" appears wherever Pulsar's cash has NOT come in —
+   nothing deposited, a short deposit, or cash under a Pulsar name Nova cannot
+   place. It opens a real Nova task on the city's primary manager to chase the
+   deposit. Once one exists the button is replaced by a link to it, so the same
+   money never gets chased twice.
+
+   "Correct Deposit Amount" appears only when the technician's TYPED "Pulsar
+   shows owed" disagrees with the Pulsar export. It rewrites that typed figure
+   and nothing else — the deposited amount is backed by the receipt photo and is
+   never touched here. */
+
+// True when money Pulsar says was collected has not arrived.
+function pvMoneyMissing(r) {
+  if (!r) return false;
+  if (r.status === 'no_deposit' || r.status === 'unlinked') return true;
+  return Number(r.gap) > 0.005;
+}
+
+function pvActionsCell(r, i) {
+  var out = [];
+  if (pvMoneyMissing(r)) {
+    if (r.reminder_task_id) {
+      out.push('<a href="#" onclick="event.preventDefault();navigate(\'task-detail\',' + r.reminder_task_id + ')" ' +
+        'title="A chase task is already open for this pay week" ' +
+        'style="color:#22c55e;font-size:12px;white-space:nowrap">Task #' + r.reminder_task_id + ' &rarr;</a>');
+    } else {
+      out.push('<button class="btn btn-secondary btn-sm" onclick="pvSendToTask(' + i + ')" style="padding:2px 8px;white-space:nowrap">Send to Task For Manager</button>');
+    }
+  }
+  if (r.can_correct) {
+    out.push('<button class="btn btn-secondary btn-sm" onclick="pvCorrectEntered(' + i + ')" ' +
+      'title="Overwrite the technician&#39;s typed &ldquo;Pulsar shows owed&rdquo; with the real Pulsar figure. The deposited amount is not changed." ' +
+      'style="padding:2px 8px;white-space:nowrap;color:#f59e0b">Correct Deposit Amount</button>');
+  }
+  if (!out.length) return '<span style="color:var(--text-muted-color)">—</span>';
+  return '<div style="display:flex;gap:6px;flex-wrap:wrap">' + out.join('') + '</div>';
+}
+
+// Opens the chase task through the REAL task API, so it gets the normal
+// permission check, activity entry and assignment email. The marker that makes
+// this row remember the task is a separate, best-effort follow-up call.
+async function pvSendToTask(i) {
+  var d = _pvState.recon;
+  if (!d || !d.rows[i]) return;
+  var r = d.rows[i];
+  var who = r.user_name || r.tech_raw || 'this technician';
+  var city = r.city_code || '—';
+  var missing = (r.status === 'no_deposit' || r.status === 'unlinked') ? Number(r.pulsar_cash) : Number(r.gap);
+  var assignee = r.manager_user_id || state.user.id;
+  var assigneeName = r.manager_user_id ? (r.manager_name || 'the city manager') : 'you';
+
+  var confirmMsg = 'Open a task for ' + assigneeName + ' to chase ' + who + '’s deposit?\n\n' +
+    'Pulsar cash: ' + pvMoney(r.pulsar_cash) + '\n' +
+    'Deposited: ' + pvMoney(r.deposited) + '\n' +
+    'Still missing: ' + pvMoney(missing);
+  if (!r.manager_user_id) {
+    confirmMsg += '\n\nNo primary manager is set for ' + city + ', so this will be assigned to you. ' +
+      'Set one under Cities to route it automatically next time.';
+  }
+  if (!await novaConfirm(confirmMsg, { title: 'Send to task', okText: 'Create the task' })) return;
+
+  var periodLabel = formatDate(d.period_start) + ' – ' + formatDate(d.period_end);
+  var title = 'Cash deposit missing — ' + who + ' (' + city + '), week of ' + formatDate(d.period_start);
+  var lines = [];
+  if (r.status === 'unlinked') {
+    lines.push('Pulsar shows ' + pvMoney(r.pulsar_cash) + ' of cash collected under the name "' + (r.tech_raw || who) +
+      '", which does not match any Nova user, so nobody is currently accountable for it.');
+    lines.push('Map the Pulsar name to a Nova user on the Cash Deposits page, then make sure the deposit is turned in.');
+  } else if (r.status === 'no_deposit') {
+    lines.push('Pulsar shows ' + who + ' collected ' + pvMoney(r.pulsar_cash) + ' in cash across ' +
+      r.calls + ' call' + (r.calls === 1 ? '' : 's') + ' for the pay week ' + periodLabel + ', and no deposit has been submitted in Nova.');
+    lines.push('Please make sure the deposit is turned in and recorded on the Cash Deposits page.');
+  } else {
+    lines.push('Pulsar shows ' + who + ' collected ' + pvMoney(r.pulsar_cash) + ' in cash for the pay week ' + periodLabel +
+      ', but only ' + pvMoney(r.deposited) + ' has been deposited' +
+      (r.expenses ? ' and ' + pvMoney(r.expenses) + ' logged as expenses' : '') + '.');
+    lines.push('Please find the remaining ' + pvMoney(missing) + ' and make sure it is deposited and recorded.');
+  }
+  lines.push('');
+  lines.push('Pulsar cash: ' + pvMoney(r.pulsar_cash));
+  lines.push('Deposited: ' + pvMoney(r.deposited));
+  lines.push('Expenses: ' + pvMoney(r.expenses));
+  lines.push('Still missing: ' + pvMoney(missing));
+  if (r.deposit_numbers) lines.push('Deposits on file: ' + r.deposit_numbers);
+  lines.push('');
+  lines.push('Raised from Pulsar Verification on the Cash Deposits page.');
+
+  var task;
+  try {
+    task = await api('POST', '/tasks', {
+      title: title,
+      description: lines.join('\n'),
+      priority: 'high',
+      status: 'todo',
+      assigned_to: assignee,
+      due_date: depYmd(depAddDays(new Date(), 3))
+    });
+  } catch (err) {
+    novaAlert((err && err.message) || 'Could not create the task.');
+    return;
+  }
+  // Best effort: if this marker fails the task still exists, the row just will
+  // not remember it and the button comes back.
+  try {
+    await api('POST', '/pulsar/reconciliation/reminder', {
+      period_start: d.period_start,
+      key: r.key,
+      task_id: task.id,
+      user_id: r.user_id || null,
+      tech_raw: r.tech_raw || null,
+      tech_name: r.user_name || null,
+      city_code: r.city_code || null,
+      assigned_to: assignee,
+      missing: missing
+    });
+  } catch (err) { /* non-fatal */ }
+  await pvLoadRecon();
+  novaAlert('Task #' + task.id + ' created for ' + (r.manager_user_id ? (r.manager_name || 'the city manager') : 'you') + '.');
+}
+
+async function pvCorrectEntered(i) {
+  var d = _pvState.recon;
+  if (!d || !d.rows[i]) return;
+  var r = d.rows[i];
+  var who = r.user_name || r.tech_raw || 'this technician';
+  var multi = r.deposit_count > 1;
+
+  var msg = 'Set ' + who + '’s "Pulsar shows owed" to ' + pvMoney(r.pulsar_cash) + '?\n\n' +
+    'They typed ' + pvMoney(r.entered) + '. Pulsar says ' + pvMoney(r.pulsar_cash) + '.\n\n' +
+    'The deposited amount (' + pvMoney(r.deposited) + ') is NOT changed — that figure is backed by the receipt photo. ' +
+    'This only fixes the typed figure, so a real Over/Short will still show.';
+  if (multi) {
+    msg += '\n\nThis pay week has ' + r.deposit_count + ' deposits (' + (r.deposit_numbers || '') +
+      '). The figure will be split across them in proportion to each deposit, so the week totals ' + pvMoney(r.pulsar_cash) + '.';
+  }
+  msg += '\n\nThe change is recorded in each deposit’s edit history.';
+  if (!await novaConfirm(msg, { title: 'Correct deposit amount', okText: 'Correct it' })) return;
+
+  try {
+    var out = await api('POST', '/pulsar/reconciliation/correct-entered', {
+      period_start: d.period_start,
+      user_id: r.user_id
+    });
+    await pvLoadRecon();
+    if (out && out.updated === 0) novaAlert('That figure already matches Pulsar — nothing to change.');
+  } catch (err) {
+    novaAlert((err && err.message) || 'Could not correct the figure.');
+  }
 }
 
 async function pvToggleCalls(i) {

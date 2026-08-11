@@ -19,8 +19,21 @@ var { pool } = require('../db');
 var { requireAuth, requirePermission } = require('../middleware/auth');
 var { logAudit } = require('../utils/audit');
 var PC = require('../utils/pulsarCash');
+// The reconciliation can WRITE to deposits (the "Correct Deposit Amount"
+// action), so it is held to exactly the same city scope as editing a deposit
+// from the deposit page itself. Shared on purpose - see utils/depositAccess.js.
+var DA = require('../utils/depositAccess');
 
 var router = express.Router();
+
+// Marker rows for "a chase task was already opened for this tech + pay week".
+// Parked in audit_logs rather than in a new table: the fact IS an audit event,
+// and it is what stops the board offering a second task for the same money.
+// audit_logs.entity_type is VARCHAR(20), entity_number VARCHAR(50).
+var REMINDER_ENTITY = 'deposit_reminder';
+function reminderRef(periodStart, key) {
+  return String(periodStart + '|' + (key || '')).slice(0, 50);
+}
 
 // Import and reconciliation are a management view over everyone's money.
 var MANAGE = ['admin', 'manager'];
@@ -450,6 +463,56 @@ router.get('/reconciliation', requireAuth, requirePermission('view_deposits'), m
       if (r.status === 'no_deposit' || r.status === 'unlinked') totals.unaccounted = n2(totals.unaccounted + r.pulsar_cash);
     });
 
+    // Who to hand a chase task to. cities.manager_user_id is the SAME primary
+    // manager Customer Feedback routes to - one answer per city, so two managers
+    // on one city can never turn assignment into a coin flip.
+    var mgrByCity = {};
+    try {
+      var mg = await pool.query(
+        'SELECT c.code, c.manager_user_id, u.name AS manager_name FROM cities c ' +
+        'LEFT JOIN users u ON u.id = c.manager_user_id WHERE c.manager_user_id IS NOT NULL'
+      );
+      mg.rows.forEach(function (m) {
+        mgrByCity[String(m.code || '').trim().toUpperCase()] = { id: m.manager_user_id, name: m.manager_name };
+      });
+    } catch (e) { mgrByCity = {}; }
+
+    // Chase tasks already opened for this pay week, so the board offers a link
+    // instead of a second button. A task that has since been deleted or closed
+    // stops counting - the money is still missing, so the button comes back.
+    var reminderByRef = {};
+    try {
+      var refs = rows.map(function (r) { return reminderRef(periodStart, r.key); });
+      if (refs.length) {
+        var rem = await pool.query(
+          'SELECT a.entity_number, a.details, a.created_at, t.id AS task_id, t.status AS task_status, t.title AS task_title ' +
+          'FROM audit_logs a ' +
+          "LEFT JOIN tasks t ON t.id = NULLIF(a.details::json->>'task_id','')::int " +
+          'WHERE a.entity_type = $1 AND a.entity_number = ANY($2) ' +
+          'ORDER BY a.created_at DESC',
+          [REMINDER_ENTITY, refs]
+        );
+        rem.rows.forEach(function (r) {
+          if (reminderByRef[r.entity_number]) return;   // newest wins
+          if (!r.task_id) return;                       // task was deleted
+          if (r.task_status === 'done') return;         // already handled
+          reminderByRef[r.entity_number] = { task_id: r.task_id, task_status: r.task_status, created_at: r.created_at };
+        });
+      }
+    } catch (e) { reminderByRef = {}; }
+
+    rows.forEach(function (r) {
+      var mgr = mgrByCity[String(r.city_code || '').trim().toUpperCase()] || null;
+      r.manager_user_id = mgr ? mgr.id : null;
+      r.manager_name = mgr ? mgr.name : null;
+      var hit = reminderByRef[reminderRef(periodStart, r.key)] || null;
+      r.reminder_task_id = hit ? hit.task_id : null;
+      r.reminder_task_status = hit ? hit.task_status : null;
+      // A correction is only possible when there is a deposit row to write to
+      // AND the typed figure actually disagrees with Pulsar.
+      r.can_correct = !!(r.deposit_count && r.typed_mismatch);
+    });
+
     var imp = await pool.query(
       'SELECT id, filename, cash_rows, cash_total, uploaded_by_name, created_at FROM pulsar_imports WHERE period_start = $1 ORDER BY created_at DESC LIMIT 1',
       [periodStart]
@@ -575,6 +638,179 @@ router.put('/tech-map', requireAuth, requirePermission('view_deposits'), manageO
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: 'Failed to save the name map' });
+  }
+});
+
+/* ----------------------------------------------- POST /reconciliation/reminder */
+
+/*
+ * Record that a chase task was opened for one technician's pay week.
+ *
+ * The task itself is created by the browser through POST /api/tasks, so it goes
+ * through the real task pipeline - permission check, activity row, assignment
+ * email. This endpoint only writes the marker that makes the reconciliation show
+ * "Task #123" next time instead of offering the button again. Deliberately NOT
+ * the thing that creates the task: duplicating the task pipeline here would mean
+ * two places to keep the notifications working.
+ */
+router.post('/reconciliation/reminder', requireAuth, requirePermission('view_deposits'), manageOnly, async function (req, res) {
+  try {
+    var periodStart = String((req.body && req.body.period_start) || '');
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(periodStart)) return res.status(400).json({ error: 'period_start (YYYY-MM-DD) is required' });
+    var key = String((req.body && req.body.key) || '').trim();
+    if (!key) return res.status(400).json({ error: 'key is required' });
+    var taskId = parseInt(req.body && req.body.task_id, 10);
+    if (!taskId) return res.status(400).json({ error: 'task_id is required' });
+
+    // Never write a marker for a task that is not really there - it would hide
+    // the button forever on money that is still missing.
+    var t = await pool.query('SELECT id, title FROM tasks WHERE id = $1', [taskId]);
+    if (!t.rows.length) return res.status(404).json({ error: 'That task no longer exists' });
+
+    var userId = parseInt(req.body && req.body.user_id, 10);
+    await logAudit({
+      entity_type: REMINDER_ENTITY,
+      entity_id: isNaN(userId) ? null : userId,
+      entity_number: reminderRef(periodStart, key),
+      action: 'task_created',
+      user_id: req.user.id,
+      user_name: req.user.name,
+      details: {
+        task_id: taskId,
+        period_start: periodStart,
+        tech_raw: (req.body && req.body.tech_raw) ? String(req.body.tech_raw).slice(0, 200) : null,
+        tech_name: (req.body && req.body.tech_name) ? String(req.body.tech_name).slice(0, 200) : null,
+        city_code: (req.body && req.body.city_code) ? String(req.body.city_code).slice(0, 3) : null,
+        assigned_to: (req.body && req.body.assigned_to) ? parseInt(req.body.assigned_to, 10) : null,
+        missing: (req.body && req.body.missing != null) ? n2(req.body.missing) : null
+      }
+    });
+    res.json({ success: true, task_id: taskId });
+  } catch (err) {
+    console.error('Pulsar reminder marker error:', err);
+    res.status(500).json({ error: 'The task was created but Nova could not record it against this pay week' });
+  }
+});
+
+/* ---------------------------------------- POST /reconciliation/correct-entered */
+
+/*
+ * "Correct Deposit Amount" - overwrite the figure the technician TYPED into
+ * "Pulsar shows owed" with what the Pulsar export actually says.
+ *
+ * It writes deposits.pulsar_owed and NOTHING else. The deposited amount is left
+ * alone on purpose: that number is backed by the receipt photo, and rewriting it
+ * would both contradict the photo and erase a real Over/Short. This action fixes
+ * a typo; it does not make missing money disappear.
+ *
+ * When the technician filed more than one deposit that week the row compares
+ * TOTALS, so the week's Pulsar figure is spread across those deposits in
+ * proportion to each one's amount (remainder onto the last). The sum then equals
+ * Pulsar exactly, and each individual deposit still reads sensibly on its own
+ * page rather than showing a bare $0.00 owed.
+ */
+router.post('/reconciliation/correct-entered', requireAuth, requirePermission('edit_deposit'), manageOnly, async function (req, res) {
+  var client = await pool.connect();
+  try {
+    var periodStart = String((req.body && req.body.period_start) || '');
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(periodStart)) return res.status(400).json({ error: 'period_start (YYYY-MM-DD) is required' });
+    var periodEnd = PC.addDaysYmd(periodStart, 6);
+    var userId = parseInt(req.body && req.body.user_id, 10);
+    if (!userId) {
+      return res.status(400).json({ error: 'This row is not linked to a Nova user, so there is no deposit to correct. Map the Pulsar name first.' });
+    }
+
+    var deps = await pool.query(
+      'SELECT id, deposit_number, city_code, amount, pulsar_owed FROM deposits WHERE user_id = $1 AND period_start = $2 ORDER BY id',
+      [userId, periodStart]
+    );
+    if (!deps.rows.length) {
+      return res.status(400).json({ error: 'There is no deposit for this technician in this pay week to correct.' });
+    }
+
+    // Same city rule as editing the deposit by hand. EVERY deposit being touched
+    // has to be in scope - a manager must not half-correct a week that spans a
+    // city they do not run.
+    var scope = await DA.editCityScope(req);
+    for (var s = 0; s < deps.rows.length; s++) {
+      if (!DA.scopeAllows(scope, deps.rows[s].city_code)) {
+        return res.status(403).json({ error: 'You can only correct deposits for the cities you are assigned to.' });
+      }
+    }
+
+    var cashq = await pool.query(
+      'SELECT COALESCE(SUM(cash), 0) AS cash FROM pulsar_cash_calls WHERE tech_user_id = $1 AND call_date >= $2 AND call_date <= $3',
+      [userId, periodStart, periodEnd]
+    );
+    var target = n2(cashq.rows[0].cash);
+
+    var priorTotal = 0;
+    deps.rows.forEach(function (d) { priorTotal = n2(priorTotal + Number(d.pulsar_owed || 0)); });
+    if (same(priorTotal, target)) {
+      return res.json({ success: true, updated: 0, pulsar_cash: target, message: 'Already matches Pulsar.' });
+    }
+
+    // Weight by deposit amount; fall back to an even split when every amount is
+    // zero, so a division by zero can never silently zero the whole week.
+    var amounts = deps.rows.map(function (d) { return Math.max(0, Number(d.amount) || 0); });
+    var amountTotal = amounts.reduce(function (a, b) { return a + b; }, 0);
+    var shares = [];
+    var running = 0;
+    for (var i = 0; i < deps.rows.length; i++) {
+      var v;
+      if (i === deps.rows.length - 1) {
+        v = n2(target - running);                       // remainder, so the sum is exact
+      } else if (amountTotal > 0) {
+        v = n2(target * (amounts[i] / amountTotal));
+      } else {
+        v = n2(target / deps.rows.length);
+      }
+      running = n2(running + v);
+      shares.push(v);
+    }
+
+    await client.query('BEGIN');
+    for (var j = 0; j < deps.rows.length; j++) {
+      await client.query('UPDATE deposits SET pulsar_owed = $1, updated_at = NOW() WHERE id = $2', [shares[j], deps.rows[j].id]);
+    }
+    await client.query('COMMIT');
+
+    // One audit row PER deposit, in the same shape routes/deposits.js writes, so
+    // the correction shows up in that deposit's own edit history rather than
+    // appearing to change by itself.
+    for (var k = 0; k < deps.rows.length; k++) {
+      var d = deps.rows[k];
+      var from = (d.pulsar_owed == null) ? null : Number(d.pulsar_owed).toFixed(2);
+      var to = shares[k].toFixed(2);
+      if (from === to) continue;
+      await logAudit({
+        entity_type: 'deposit',
+        entity_id: d.id,
+        entity_number: d.deposit_number,
+        action: 'edited',
+        user_id: req.user.id,
+        user_name: req.user.name,
+        details: {
+          changes: { pulsar_owed: { from: from, to: to } },
+          reason: 'Corrected to the Pulsar figure from the reconciliation for ' + periodStart +
+            (deps.rows.length > 1 ? ' (split across ' + deps.rows.length + ' deposits)' : '')
+        }
+      });
+    }
+
+    res.json({
+      success: true,
+      updated: deps.rows.length,
+      pulsar_cash: target,
+      previous_entered: priorTotal,
+      deposit_numbers: deps.rows.map(function (d) { return d.deposit_number; })
+    });
+  } catch (err) {
+    try { await client.query('ROLLBACK'); } catch (e) {}
+    console.error('Pulsar correct-entered error:', err);
+    res.status(500).json({ error: 'Failed to correct the typed figure' });
+  } finally {
+    client.release();
   }
 });
 
