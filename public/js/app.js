@@ -11007,6 +11007,9 @@ async function renderViewDeposit(el, id, preloaded) {
       '<div style="color:var(--text-muted-color);font-size:13px;margin-bottom:8px">Receipts</div>' + receipts +
       depHistoryHtml(dep.history) +
     '</div></div>';
+
+  // No-op unless this render landed inside the deposit popup.
+  depModalChrome(el);
 }
 
 /* ---------------------------------------------------------------------------
@@ -11186,6 +11189,9 @@ function depRenderEditForm() {
   depEditRenderReceipts();
   depEditRenderExpenses();
   depEditRecalc();
+  // No-op unless this render landed inside the deposit popup. Cancel and Save
+  // are kept; there is nothing here that navigates.
+  depModalChrome(depViewEl);
 }
 
 function depEditRenderReceipts() {
@@ -11396,9 +11402,122 @@ async function saveDepositEdit() {
     });
     depEditSaving = false;
     depViewData = fresh;
+    depModalChanged(depViewEl);
     renderViewDeposit(depViewEl, depViewId, fresh);
   } catch (e) {
     fail(e.message || 'Failed to save changes.');
+  }
+}
+
+/* ------------------------------------------------------------ deposit modal
+   Opens the REAL deposit view in a popup over whatever page asked for it.
+
+   It calls renderViewDeposit() rather than reimplementing the view, so the
+   popup can never drift from the Deposit page: same figures, same receipts,
+   same expenses, same edit history, same server-checked Edit button, and the
+   same in-place edit form. Only the page chrome is changed afterwards, by
+   depModalChrome() below.
+
+   Used from the Pulsar Verification board, where navigating to the deposit page
+   would throw the manager off a reconciliation they are halfway through. */
+var _depModalCtx = null;
+var _depModalEsc = null;
+
+async function openDepositModal(id, opts) {
+  opts = opts || {};
+  if (_depModalCtx) return;           // one at a time
+
+  var ov = document.createElement('div');
+  ov.className = 'modal-overlay';
+  ov.innerHTML =
+    '<div class="modal" style="max-width:820px">' +
+      '<div class="modal-header">' +
+        '<div class="modal-title" id="dep-modal-title">Deposit</div>' +
+        '<button class="btn btn-ghost btn-sm" onclick="closeDepositModal()" aria-label="Close" style="font-size:18px;line-height:1;padding:2px 8px">&times;</button>' +
+      '</div>' +
+      '<div class="modal-body" id="dep-modal-body"><div class="loading">Loading&hellip;</div></div>' +
+    '</div>';
+  document.body.appendChild(ov);
+
+  var body = ov.querySelector('#dep-modal-body');
+  _depModalCtx = { overlay: ov, body: body, onChanged: opts.onChanged || null, changed: false };
+
+  // Backdrop click closes; a click that started inside the panel does not, so a
+  // text selection dragged out of a field cannot dismiss a half-made edit.
+  ov.addEventListener('mousedown', function (e) { if (e.target === ov) closeDepositModal(); });
+  _depModalEsc = function (e) { if (e.key === 'Escape') closeDepositModal(); };
+  document.addEventListener('keydown', _depModalEsc);
+
+  await renderViewDeposit(body, id);
+
+  // Closed while the deposit was still loading: drop the pointers the renderer
+  // just set at a panel that is no longer on the page.
+  if (!_depModalCtx) {
+    if (depViewEl === body) { depViewEl = null; depViewId = null; depViewData = null; }
+  }
+}
+
+/* Called at the end of the real deposit renderers. Outside the popup it does
+   nothing at all. Inside it removes the chrome that would abandon the page
+   underneath — Back navigates away, and Delete redirects after it succeeds —
+   and flattens the card so the view sits in the panel. Re-applied on every
+   render because Cancel and Save redraw the whole container. */
+function depModalChrome(el) {
+  var ctx = _depModalCtx;
+  if (!ctx || !el || el !== ctx.body) return;
+
+  var head = el.querySelector('.page-header');
+  if (head) {
+    var h2 = head.querySelector('h2');
+    var title = document.getElementById('dep-modal-title');
+    if (h2 && title) title.textContent = h2.textContent;
+    var pt = head.querySelector('.page-title');
+    if (pt && pt.parentNode) pt.parentNode.removeChild(pt);
+    var btns = head.querySelectorAll('button');
+    for (var i = 0; i < btns.length; i++) {
+      var on = btns[i].getAttribute('onclick') || '';
+      if (on.indexOf('navigate(') !== -1 || on.indexOf('deleteDeposit(') !== -1) {
+        if (btns[i].parentNode) btns[i].parentNode.removeChild(btns[i]);
+      }
+    }
+    if (!head.querySelector('button')) { if (head.parentNode) head.parentNode.removeChild(head); }
+    else { head.style.justifyContent = 'flex-end'; head.style.marginBottom = '12px'; }
+  }
+
+  var card = el.querySelector('.card');
+  if (card) {
+    card.style.maxWidth = 'none';
+    card.style.border = 'none';
+    card.style.background = 'transparent';
+    card.style.margin = '0';
+    card.style.boxShadow = 'none';
+  }
+  var cb = el.querySelector('.card-body');
+  if (cb) cb.style.padding = '0';
+}
+
+// A save inside the popup makes the numbers on the page behind it stale. The
+// reload is deferred to close so the manager is not yanked out of the deposit
+// they are still reading.
+function depModalChanged(el) {
+  if (_depModalCtx && el && el === _depModalCtx.body) _depModalCtx.changed = true;
+}
+
+async function closeDepositModal(force) {
+  var ctx = _depModalCtx;
+  if (!ctx) return;
+  // #depe-save-btn only exists while the edit form is open, so this asks
+  // exactly when there is unsaved typing to lose.
+  if (!force && ctx.body && ctx.body.querySelector('#depe-save-btn')) {
+    if (!await novaConfirm('Close without saving your changes to this deposit?')) return;
+    if (_depModalCtx !== ctx) return;      // closed some other way while asking
+  }
+  _depModalCtx = null;
+  if (_depModalEsc) { document.removeEventListener('keydown', _depModalEsc); _depModalEsc = null; }
+  if (ctx.overlay && ctx.overlay.parentNode) ctx.overlay.parentNode.removeChild(ctx.overlay);
+  if (depViewEl === ctx.body) { depViewEl = null; depViewId = null; depViewData = null; }
+  if (ctx.changed && ctx.onChanged) {
+    try { ctx.onChanged(); } catch (e) { console.error('deposit modal onChanged failed:', e); }
   }
 }
 
@@ -24937,6 +25056,35 @@ function pvMoney(n) {
   return '$' + v.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 }
 
+/* ------------------------------------------------------- deposit handles ---
+   The deposit numbers under the Deposited figure are links. One per deposit, so
+   a week with two deposits gives two handles instead of one ambiguous one, and
+   the manager can read the receipt without leaving the board.
+
+   A server that has not been redeployed yet sends no ids. In that case the
+   numbers stay plain text rather than becoming links that could open nothing. */
+function pvDepositLinks(r) {
+  var list = r.deposits || [];
+  if (!list.length) {
+    return '<div style="font-size:11px;color:var(--text-muted-color)">' + escHtml(r.deposit_numbers || '') + '</div>';
+  }
+  return '<div style="font-size:11px">' + list.map(function (d) {
+    var label = d.number || ('Deposit #' + d.id);
+    var tip = 'Open ' + label +
+      (d.amount == null ? '' : ' — ' + pvMoney(d.amount)) +
+      (d.deposit_date ? ' on ' + formatDate(d.deposit_date) : '');
+    return '<a href="#" onclick="event.preventDefault();event.stopPropagation();pvOpenDeposit(' + d.id + ')" ' +
+      'title="' + escHtml(tip) + '" style="color:#f97316;text-decoration:none">' + escHtml(label) + '</a>';
+  }).join('<span style="color:var(--text-muted-color)">, </span>') + '</div>';
+}
+
+// Opens the deposit over the board. The reconciliation is only reloaded when the
+// popup actually changed something, so simply looking at a receipt does not
+// collapse an expanded call list.
+function pvOpenDeposit(id) {
+  openDepositModal(id, { onChanged: pvLoadRecon });
+}
+
 // status -> { label, color, background }.  gap is signed: positive = short.
 function pvBadge(row) {
   var s = row.status, label, c;
@@ -25233,7 +25381,7 @@ function pvRenderRecon() {
         ? '<span style="color:#f59e0b;font-weight:600" title="The technician typed this; Pulsar says ' + pvMoney(r.pulsar_cash) + '">' + pvMoney(r.entered) + '</span>'
         : pvMoney(r.entered));
     var depCell = r.deposit_count
-      ? pvMoney(r.deposited) + '<div style="font-size:11px;color:var(--text-muted-color)">' + escHtml(r.deposit_numbers || '') + '</div>'
+      ? pvMoney(r.deposited) + pvDepositLinks(r)
       : '<span style="color:var(--text-muted-color)">—</span>';
     var nameCell = escHtml(r.user_name || r.tech_raw || '?');
     if (r.status === 'unlinked') {

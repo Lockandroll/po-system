@@ -419,7 +419,11 @@ router.get('/reconciliation', requireAuth, requirePermission('view_deposits'), m
       '  COALESCE(SUM(d.pulsar_owed), 0) AS entered, ' +
       '  COALESCE(SUM((SELECT COALESCE(SUM(e.amount), 0) FROM deposit_expenses e WHERE e.deposit_id = d.id)), 0) AS expenses, ' +
       '  BOOL_OR(d.pulsar_owed IS NULL) AS any_entered_null, ' +
-      "  STRING_AGG(d.deposit_number, ', ' ORDER BY d.deposit_number) AS deposit_numbers " +
+      "  STRING_AGG(d.deposit_number, ', ' ORDER BY d.deposit_number) AS deposit_numbers, " +
+      // The ids behind those numbers, so a row on the board can open the actual
+      // deposit instead of leaving the manager to go hunt for it by number.
+      "  JSON_AGG(JSON_BUILD_OBJECT('id', d.id, 'number', d.deposit_number, 'amount', d.amount, " +
+      "    'deposit_date', d.deposit_date) ORDER BY d.deposit_number) AS deposit_list " +
       'FROM deposits d LEFT JOIN users u ON u.id = d.user_id ' +
       'WHERE d.period_start = $1 GROUP BY d.user_id, COALESCE(u.name, d.user_name)',
       [periodStart]
@@ -433,7 +437,7 @@ router.get('/reconciliation', requireAuth, requirePermission('view_deposits'), m
         byKey[key] = {
           key: key, user_id: null, user_name: null, tech_raw: null, city_code: null,
           calls: 0, pulsar_cash: 0, entered: null, deposited: 0, expenses: 0,
-          deposit_count: 0, deposit_numbers: null
+          deposit_count: 0, deposit_numbers: null, deposits: []
         };
       }
       return byKey[key];
@@ -463,6 +467,19 @@ router.get('/reconciliation', requireAuth, requirePermission('view_deposits'), m
       s.entered = r.any_entered_null ? null : n2(Number(r.entered));
       s.deposit_count += r.deposit_count;
       s.deposit_numbers = r.deposit_numbers;
+      // Appended, not assigned: two deposits query rows can squash onto one key
+      // when Nova cannot place the name, and losing one would hide a real
+      // deposit behind a link that never appears.
+      (r.deposit_list || []).forEach(function (d) {
+        if (d && d.id != null) {
+          s.deposits.push({
+            id: d.id,
+            number: d.number || null,
+            amount: d.amount == null ? null : n2(Number(d.amount)),
+            deposit_date: d.deposit_date || null
+          });
+        }
+      });
       s.in_deposits = true;
     });
 
