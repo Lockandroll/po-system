@@ -1232,6 +1232,20 @@ async function initDB() {
       'ALTER TABLE deposit_expenses ADD COLUMN IF NOT EXISTS no_receipt BOOLEAN DEFAULT FALSE;' +
       'ALTER TABLE deposit_expenses ADD COLUMN IF NOT EXISTS no_receipt_reason TEXT;'
     );
+    // Cash-deposit expense review: a manager approves or denies each expense
+    // line one at a time. A DENIED line is money the company is not taking off
+    // what the tech owes, so it drops out of every Over/Short total - which is
+    // why the decision has to live on the row rather than be inferred.
+    // Existing rows land on 'pending', and pending still COUNTS: nothing about
+    // a deposit filed before this shipped changes until someone reviews it.
+    await client.query(
+      "ALTER TABLE deposit_expenses ADD COLUMN IF NOT EXISTS review_status VARCHAR(20) DEFAULT 'pending';" +
+      'ALTER TABLE deposit_expenses ADD COLUMN IF NOT EXISTS review_reason TEXT;' +
+      'ALTER TABLE deposit_expenses ADD COLUMN IF NOT EXISTS reviewed_by INTEGER;' +
+      'ALTER TABLE deposit_expenses ADD COLUMN IF NOT EXISTS reviewed_by_name VARCHAR(255);' +
+      'ALTER TABLE deposit_expenses ADD COLUMN IF NOT EXISTS reviewed_at TIMESTAMPTZ;'
+    );
+    await client.query("UPDATE deposit_expenses SET review_status = 'pending' WHERE review_status IS NULL;");
     await client.query(
       'ALTER TABLE deposits ADD COLUMN IF NOT EXISTS ai_amount DECIMAL(10,2);' +
       'ALTER TABLE deposits ADD COLUMN IF NOT EXISTS ai_deposit_date DATE;' +

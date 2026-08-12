@@ -2,7 +2,7 @@
 // public/sw.js (the only thing bumped each deploy) — the badge asks the active
 // service worker for it at runtime. This value is just the fallback shown when no
 // service worker is available (e.g. very first visit before it installs).
-var APP_VERSION = 'v109';
+var APP_VERSION = 'v110';
 var _resolvedAppVersion = null;
 
 // Ask the active service worker for its CACHE_VERSION (without the 'nova-' prefix).
@@ -10455,7 +10455,7 @@ async function renderDeposits(el) {
           '<div id="dep-receipt-preview" style="margin-top:10px"></div>' +
         '</div>' +
         '<div class="form-group"><label>Expenses</label>' +
-          '<div style="font-size:12px;color:var(--text-muted-color);margin-bottom:8px">Cash paid out before depositing (parts, supplies, etc.). <strong>A receipt photo is required for every expense.</strong> If you truly do not have one, tick &ldquo;No receipt&rdquo; and explain why.</div>' +
+          '<div style="font-size:12px;color:var(--text-muted-color);margin-bottom:8px">Cash paid out before depositing (parts, supplies, etc.). <strong>Every expense needs a description and a receipt photo.</strong> If you truly do not have a receipt, tick &ldquo;No receipt&rdquo; and explain why.</div>' +
           '<div id="dep-expense-list"></div>' +
           '<button type="button" class="btn btn-secondary btn-sm" onclick="addDepositExpense()">+ Add expense</button>' +
         '</div>' +
@@ -10587,7 +10587,7 @@ function renderDepositExpenses() {
       '</div>';
     return '<div style="border:1px solid var(--border-color);border-radius:8px;padding:10px;margin-bottom:10px">' +
       '<div style="display:flex;gap:8px;align-items:center">' +
-        '<input type="text" placeholder="Description" value="' + escHtml(ex.description || '') + '" oninput="updateDepositExpense(' + idx + ',\'description\',this.value)" style="flex:2;min-width:120px" />' +
+        '<input type="text" placeholder="Description (required)" value="' + escHtml(ex.description || '') + '" oninput="updateDepositExpense(' + idx + ',\'description\',this.value)" style="flex:2;min-width:120px" />' +
         '<input type="number" step="0.01" min="0" placeholder="0.00" value="' + amtVal + '" oninput="updateDepositExpense(' + idx + ',\'amount\',this.value);recalcOverShort()" style="flex:1;min-width:90px" />' +
         photo +
         '<button type="button" class="btn btn-ghost btn-sm" onclick="removeDepositExpense(' + idx + ')" style="color:#ef4444">Remove</button>' +
@@ -10697,15 +10697,22 @@ async function submitDeposit() {
   if (!city_code) { fb.innerHTML = '<div class="alert alert-error">Please select a city.</div>'; return; }
   if (!depositReceipts.length) { fb.innerHTML = '<div class="alert alert-error">Please attach at least one receipt photo.</div>'; return; }
   var receipts = depositReceipts.map(function(r) { return { image: r.data, filename: r.name }; });
+  // A line counts once the tech has put ANYTHING on it: text, a number, a photo or a
+  // ticked "No receipt". Completely blank rows are still dropped silently; everything
+  // else has to say what the money was spent on.
   var realExpenses = depositExpenses.filter(function(ex) {
     var hasDesc = ex.description && ex.description.trim();
     var hasAmt = ex.amount !== '' && ex.amount != null && !isNaN(parseFloat(ex.amount));
-    return hasDesc || hasAmt;
+    return hasDesc || hasAmt || !!ex.data || !!ex.no_receipt;
   });
   // Receipt policy: a photo on every expense, or a ticked override with a written reason.
   for (var ei = 0; ei < realExpenses.length; ei++) {
     var rex = realExpenses[ei];
     var rlabel = (rex.description && rex.description.trim()) ? rex.description.trim() : ('expense ' + (ei + 1));
+    if (!(rex.description && rex.description.trim())) {
+      fb.innerHTML = '<div class="alert alert-error">Please add a description for expense ' + (ei + 1) + ' (what the money was spent on).</div>';
+      return;
+    }
     if (!rex.data && !rex.no_receipt) {
       fb.innerHTML = '<div class="alert alert-error">A receipt photo is required for &ldquo;' + escHtml(rlabel) + '&rdquo;. If you do not have one, tick &ldquo;No receipt&rdquo; and explain why.</div>';
       return;
@@ -11289,7 +11296,7 @@ function depEditRenderExpenses() {
       : '<label class="btn btn-secondary btn-sm" style="cursor:pointer;margin:0;white-space:nowrap' + (ex.no_receipt ? ';opacity:0.5;pointer-events:none' : '') + '">Photo<input type="file" accept="image/*" style="display:none" onchange="depEditSetExpensePhoto(' + idx + ',this)" /></label>';
     return '<div style="border:1px solid var(--border-color);border-radius:8px;padding:10px;margin-bottom:8px">' +
       '<div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">' +
-        '<input type="text" placeholder="Description" value="' + escHtml(ex.description || '') + '" oninput="depEditUpdExpense(' + idx + ',\'description\',this.value)" style="flex:2;min-width:120px" />' +
+        '<input type="text" placeholder="Description (required)" value="' + escHtml(ex.description || '') + '" oninput="depEditUpdExpense(' + idx + ',\'description\',this.value)" style="flex:2;min-width:120px" />' +
         '<input type="number" step="0.01" min="0" placeholder="0.00" value="' + amtVal + '" oninput="depEditUpdExpense(' + idx + ',\'amount\',this.value);depEditRecalc()" style="flex:1;min-width:90px" />' +
         photoCell +
         '<button type="button" class="btn btn-ghost btn-sm" onclick="depEditRemoveExpense(' + idx + ')" style="color:#ef4444">Remove</button>' +
@@ -11356,10 +11363,11 @@ async function saveDepositEdit() {
     var ex = depEditExpenses[i];
     var amt = parseFloat(ex.amount);
     var desc = (ex.description || '').trim();
-    if (!desc && isNaN(amt)) continue;
-    var label = desc || ('expense ' + (i + 1));
-    if (!isNaN(amt) && amt < 0) return fail('Expense amount cannot be negative for "' + label + '".');
     var photo = depEditLinePhoto(ex);
+    if (!desc && isNaN(amt) && !photo && !ex.no_receipt) continue;
+    if (!desc) return fail('Please add a description for expense ' + (i + 1) + ' (what the money was spent on).');
+    var label = desc;
+    if (!isNaN(amt) && amt < 0) return fail('Expense amount cannot be negative for "' + label + '".');
     if (!photo && !ex.no_receipt) return fail('A receipt photo is required for "' + label + '". If there is none, tick "No receipt" and explain why.');
     if (!photo && ex.no_receipt && !(ex.no_receipt_reason || '').trim()) return fail('Please explain why there is no receipt for "' + label + '".');
     expenses.push({

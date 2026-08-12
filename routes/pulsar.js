@@ -417,7 +417,10 @@ router.get('/reconciliation', requireAuth, requirePermission('view_deposits'), m
       'SELECT d.user_id, COALESCE(u.name, d.user_name) AS user_name, MIN(d.city_code) AS city_code, ' +
       '  COUNT(*)::int AS deposit_count, COALESCE(SUM(d.amount), 0) AS deposited, ' +
       '  COALESCE(SUM(d.pulsar_owed), 0) AS entered, ' +
-      '  COALESCE(SUM((SELECT COALESCE(SUM(e.amount), 0) FROM deposit_expenses e WHERE e.deposit_id = d.id)), 0) AS expenses, ' +
+      // A DENIED expense line is one the manager refused, so it no longer
+      // offsets the cash Pulsar says was collected. Same rule as the Over/Short
+      // on the deposit page - see the review block in routes/deposits.js.
+      "  COALESCE(SUM((SELECT COALESCE(SUM(e.amount), 0) FROM deposit_expenses e WHERE e.deposit_id = d.id AND COALESCE(e.review_status, 'pending') <> 'denied')), 0) AS expenses, " +
       '  BOOL_OR(d.pulsar_owed IS NULL) AS any_entered_null, ' +
       "  STRING_AGG(d.deposit_number, ', ' ORDER BY d.deposit_number) AS deposit_numbers, " +
       // The ids behind those numbers, so a row on the board can open the actual

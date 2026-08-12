@@ -166,7 +166,12 @@ router.post('/', requireAuth, requirePermission('create_deposit'), async functio
       if (!ex) continue;
       const exAmtChk = parseFloat(ex.amount);
       const descChk = (ex.description == null ? '' : String(ex.description)).trim();
-      if (!descChk && isNaN(exAmtChk)) continue;
+      const touchedChk = !!ex.image || ex.no_receipt === true || ex.no_receipt === 'true';
+      if (!descChk && isNaN(exAmtChk) && !touchedChk) continue;
+      // Description is mandatory: an amount with no explanation cannot be reconciled.
+      if (!descChk) {
+        return res.status(400).json({ error: 'A description is required for expense ' + (k + 1) + ' (what the money was spent on).' });
+      }
       if (!isNaN(exAmtChk) && exAmtChk < 0) {
         return res.status(400).json({ error: 'Expense amount cannot be negative for "' + (descChk || ('expense ' + (k + 1))) + '".' });
       }
@@ -255,7 +260,7 @@ router.post('/', requireAuth, requirePermission('create_deposit'), async functio
       const ex = expenses[j];
       if (!ex) continue;
       const exAmt = parseFloat(ex.amount);
-      const desc = (ex.description == null ? '' : String(ex.description)).slice(0, 500);
+      const desc = (ex.description == null ? '' : String(ex.description)).trim().slice(0, 500);
       if (!desc && isNaN(exAmt)) continue;
       const safeAmt = isNaN(exAmt) ? 0 : exAmt;
       expenseTotal += safeAmt;
@@ -454,8 +459,13 @@ router.put('/:id', requireAuth, requirePermission('edit_deposit'), async functio
       if (!ex) continue;
       const exAmt = parseFloat(ex.amount);
       const desc = (ex.description == null ? '' : String(ex.description)).trim();
-      if (!desc && isNaN(exAmt)) continue;
-      const label = desc || ('expense ' + (k + 1));
+      const touched = !!ex.image || ex.no_receipt === true || ex.no_receipt === 'true' || (ex.id != null && ex.id !== '');
+      if (!desc && isNaN(exAmt) && !touched) continue;
+      // Description is mandatory: an amount with no explanation cannot be reconciled.
+      if (!desc) {
+        return res.status(400).json({ error: 'A description is required for expense ' + (k + 1) + ' (what the money was spent on).' });
+      }
+      const label = desc;
       if (!isNaN(exAmt) && exAmt < 0) {
         return res.status(400).json({ error: 'Expense amount cannot be negative for "' + label + '".' });
       }
