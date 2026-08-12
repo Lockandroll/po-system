@@ -24910,9 +24910,69 @@ function pvCardHtml() {
           '<input type="file" id="pv-file" accept=".csv,text/csv" onchange="pvOnFile(this)" /></div>' +
       '</div>' +
     '</div>' +
+    pvColumnsHtml() +
     '<div id="pv-preview" style="margin-top:14px"></div>' +
     '<div id="pv-recon" style="margin-top:14px"><div class="loading">Loading…</div></div>' +
   '</div></div>';
+}
+
+/* --------------------------------------------------- required export columns
+   What Pulsar has to be told to include. The five REQUIRED names are exactly
+   the ones utils/pulsarCash.js keys off (COL.tech / date / cash / status / uid);
+   if you change that table, change this list with it.
+
+   Call UID earns its warning: it is the only required column the server cannot
+   refuse the file over, because the extractor skips those rows one at a time
+   rather than rejecting the export. Without it an import looks like it worked
+   and finds nothing. */
+function pvColChip(name, note) {
+  return '<div style="display:flex;gap:8px;align-items:baseline;padding:3px 0">' +
+    '<code style="font-size:12px;background:var(--bg-color);border:1px solid var(--border-color);border-radius:4px;padding:1px 6px;white-space:nowrap">' + escHtml(name) + '</code>' +
+    '<span style="font-size:12px;color:var(--text-muted-color)">' + note + '</span></div>';
+}
+
+function pvColumnsHtml() {
+  return '<div style="margin-top:12px;border:1px solid var(--border-color);border-radius:10px;background:var(--bg-elevated)">' +
+    '<div style="padding:10px 14px;font-size:12.5px">' +
+      '<strong>Required columns:</strong> ' +
+      '<code style="font-size:12px">Tech ID</code> &middot; ' +
+      '<code style="font-size:12px">Pay Period</code> &middot; ' +
+      '<code style="font-size:12px">Collected Cash</code> &middot; ' +
+      '<code style="font-size:12px">Status</code> &middot; ' +
+      '<code style="font-size:12px">Call UID</code>' +
+      '<span style="color:var(--text-muted-color)"> &mdash; leave any of these out and the import finds nothing.</span>' +
+    '</div>' +
+    '<details style="border-top:1px solid var(--border-color)">' +
+      '<summary style="cursor:pointer;padding:9px 14px;font-size:12.5px;color:var(--text-muted-color)">How to set the export up in Pulsar</summary>' +
+      '<div style="padding:2px 14px 14px;font-size:12.5px;line-height:1.5">' +
+        '<div style="display:flex;gap:26px;flex-wrap:wrap">' +
+          '<div style="flex:1;min-width:260px">' +
+            '<div style="font-weight:700;margin:6px 0 4px">Columns Nova needs</div>' +
+            pvColChip('Tech ID', 'who collected the cash. Holds a name in &ldquo;Last, First&rdquo; form.') +
+            pvColChip('Pay Period', 'which pay week the call belongs to. <em>Date Closed</em> is used as a fallback.') +
+            pvColChip('Collected Cash', 'the money itself. Already includes sales tax.') +
+            pvColChip('Status', 'only <strong>Completed</strong> and <strong>GOA</strong> count as cash in hand.') +
+            pvColChip('Call UID', '<span style="color:#f59e0b">the dedupe key. Without it every row is skipped and the import silently comes back empty.</span>') +
+            '<div style="font-weight:700;margin:12px 0 4px">Worth including</div>' +
+            pvColChip('Collected Tax', 'shown in the per-call drill-down.') +
+            pvColChip('Location', 'how Nova puts each technician in a city.') +
+            pvColChip('Invoice', 'shown in the drill-down.') +
+            pvColChip('Task', 'shown in the drill-down.') +
+            pvColChip('Account', 'shown in the drill-down.') +
+          '</div>' +
+          '<div style="flex:1;min-width:240px">' +
+            '<div style="font-weight:700;margin:6px 0 4px">Filters</div>' +
+            '<div style="margin-bottom:9px"><strong>Date range</strong><br>The whole pay week, Monday through Sunday. Match it to the Pay Period selected above.</div>' +
+            '<div style="margin-bottom:9px"><strong>Location</strong><br>All cities, or leave it unfiltered. One export covers everybody.</div>' +
+            '<div style="margin-bottom:9px"><strong>Status</strong><br>Include every status. Do <strong>not</strong> filter to Completed only &mdash; a paid GOA carries cash too, and filtering it out hides money the technician is holding.</div>' +
+            '<div style="margin-bottom:9px"><strong>Format</strong><br>Export as <strong>CSV</strong>, then drop it in the box above.</div>' +
+            '<div style="font-size:11.5px;color:var(--text-muted-color);border-top:1px solid var(--border-color);padding-top:9px">' +
+              'Re-dropping a week replaces it rather than doubling it, so a corrected export is safe to import again.</div>' +
+          '</div>' +
+        '</div>' +
+      '</div>' +
+    '</details>' +
+  '</div>';
 }
 
 /* ------------------------------------------------------------- import ---- */

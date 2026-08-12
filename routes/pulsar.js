@@ -45,6 +45,49 @@ function manageOnly(req, res, next) {
 
 function n2(v) { return Math.round((Number(v) || 0) * 100) / 100; }
 
+/* ------------------------------------------------- export column reporting */
+
+// Turn the extractor's internal key ('cash') into the header a manager will
+// actually look for in Pulsar ('Collected Cash'). PC.COL lists aliases
+// most-trusted first, so the first entry is the canonical name.
+function colName(key) {
+  var a = PC.COL[key];
+  return (a && a[0]) ? a[0] : key;
+}
+
+// Why did a file that parsed fine yield nothing?
+//
+// "Every row had $0.00 in Collected Cash" used to be the only answer given, and
+// it is the WRONG one in the most likely case: an export with no "Call UID"
+// column. The extractor cannot refuse that file up front - it skips those rows
+// one at a time - so a manager saw a confident, incorrect explanation and no way
+// to know which column to add. Each branch below names the missing column.
+function noRowsReason(meta) {
+  if (!meta.cashRows && meta.skippedNoUid) {
+    return 'Nothing could be imported: this export has no "' + colName('uid') + '" column, which Nova needs so a call cannot be counted twice. ' +
+      'Add it in Pulsar and export the week again.';
+  }
+  if (!meta.cashRows && meta.skippedNoDate) {
+    return 'Nothing could be imported: none of the cash rows had a usable date. Include "' + colName('date') + '" (or at least "Date Closed") in the export.';
+  }
+  if (!meta.cashRows && meta.skippedNoTech) {
+    return 'Nothing could be imported: the cash rows carry no technician name. Include "' + colName('tech') + '" in the export.';
+  }
+  if (!meta.consideredRows) {
+    return 'No cash calls found in this file. Every row had $0.00 in "' + colName('cash') + '".';
+  }
+  return 'No cash calls found. ' + meta.consideredRows + ' row(s) had cash but none were ' + PC.CASH_STATUSES.join(' or ') +
+    ', so none of it is money a technician is holding. Check that the export was not filtered to a single status.';
+}
+
+// "missing the tech, cash column(s)" meant nothing to anyone looking at Pulsar.
+function missingColumnsError(meta) {
+  var names = (meta.missing || []).map(colName);
+  return 'This does not look like a Pulsar Call Search export. It is missing the ' +
+    names.join(' and ') + ' column' + (names.length === 1 ? '' : 's') +
+    '. In Pulsar, add ' + (names.length === 1 ? 'that column' : 'those columns') + ' to the Call Search export and download it again.';
+}
+
 // Exact-to-the-penny comparison. 0.005 is half a cent -- it absorbs float
 // representation error only, never a real difference. Tony chose exact: a $0.10
 // gap is a $0.10 gap and it says so.
@@ -183,14 +226,10 @@ router.post('/preview', requireAuth, requirePermission('view_deposits'), manageO
 
     var out = PC.extractCashRows(csv);
     if (out.meta.missing.length) {
-      return res.status(400).json({
-        error: 'This does not look like a Pulsar Call Search export -- missing the ' +
-          out.meta.missing.join(', ') + ' column(s).',
-        columns: out.meta.columns
-      });
+      return res.status(400).json({ error: missingColumnsError(out.meta), columns: out.meta.columns });
     }
     if (!out.rows.length) {
-      return res.status(400).json({ error: 'No cash calls found in this file. Every row had $0.00 in Collected Cash.' });
+      return res.status(400).json({ error: noRowsReason(out.meta) });
     }
 
     var period = PC.detectPeriod(out.rows);
@@ -260,8 +299,8 @@ router.post('/import', requireAuth, requirePermission('view_deposits'), manageOn
     var filename = String((req.body && req.body.filename) || '').slice(0, 255) || null;
 
     var out = PC.extractCashRows(csv);
-    if (out.meta.missing.length) return res.status(400).json({ error: 'Missing column(s): ' + out.meta.missing.join(', ') });
-    if (!out.rows.length) return res.status(400).json({ error: 'No cash calls found in this file' });
+    if (out.meta.missing.length) return res.status(400).json({ error: missingColumnsError(out.meta) });
+    if (!out.rows.length) return res.status(400).json({ error: noRowsReason(out.meta) });
 
     var detected = PC.detectPeriod(out.rows);
     var periodStart = /^\d{4}-\d{2}-\d{2}$/.test(String(req.body.period_start || '')) ? String(req.body.period_start) : detected.start;
