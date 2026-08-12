@@ -122,7 +122,7 @@ async function alreadyExists(source, externalRef) {
 }
 
 // Plain-English name for where a record came from, used in the activity timeline.
-var SOURCE_LABELS = { pulsar: 'Pulsar email', google_review: 'a Google review', manual: 'a manual entry', web: 'the web form', sms: 'a text message' };
+var SOURCE_LABELS = { pulsar: 'Pulsar email', google_review: 'a Google review', geico_survey: 'a Geico ERS survey', manual: 'a manual entry', web: 'the web form', sms: 'a text message' };
 function sourceLabel(s) { return SOURCE_LABELS[s] || String(s || 'an unknown source').replace(/_/g, ' '); }
 
 // parsed = output of parsePulsarEmail; meta = { source, external_ref, raw_email, raw_subject }

@@ -10,6 +10,7 @@ const compression = require('compression');
 const { initDB } = require('./db');
 const { startReminders } = require('./jobs/reminders');
 const { startGeicoReport, startGeicoIngest } = require('./jobs/geicoIngest');
+const { startGeicoComplaints } = require('./jobs/geicoComplaints');
 const { startCleanup } = require('./jobs/cleanup');
 const { startScheduledMessages } = require('./jobs/scheduledMessages');
 const { startTaskReminders, startRecurringSpawner, startCompletedCleanup } = require('./jobs/taskReminders');
@@ -374,6 +375,7 @@ initDB()
     startPtoAccrual();
     startGeicoIngest();
     startGeicoReport();
+    startGeicoComplaints();
     startQuiz();
     startInspectionReminders();
     startAutoDeactivation();

@@ -35,12 +35,16 @@ router.get('/', adminMgr, async (req, res) => {
     const limit = Math.min(parseInt(req.query.limit, 10) || 500, 2000);
     const offset = parseInt(req.query.offset, 10) || 0;
 
+    // cf: the Customer Feedback complaint already filed against this survey, if
+    // any. Poor/Fair surveys file themselves through jobs/geicoComplaints.js,
+    // keyed on external_ref = the Geico PO number.
     const sql =
       "SELECT g.id, to_char(g.date_received,'YYYY-MM-DD') AS date_received, g.account_number, " +
       "       g.city_code, COALESCE(c.name,'') AS city_name, g.po_number, g.service, g.loss_state, " +
       "       to_char(g.date_of_dispatch,'MM/DD/YYYY') AS date_of_dispatch, g.arrived_on_time, " +
-      "       g.time_to_arrive, g.rating, g.employee_name " +
+      "       g.time_to_arrive, g.rating, g.employee_name, cf.id AS complaint_id, cf.status AS complaint_status " +
       "FROM geico_surveys g LEFT JOIN cities c ON c.code = g.city_code " +
+      "LEFT JOIN customer_feedback cf ON cf.source = 'geico_survey' AND cf.external_ref = g.po_number " +
       whereSql + " ORDER BY g.date_received DESC, c.name ASC NULLS LAST " +
       "LIMIT " + limit + " OFFSET " + offset;
 
@@ -166,6 +170,29 @@ router.post('/import-employees', adminMgr, async (req, res) => {
   } catch (err) {
     console.error('POST /api/geico/import-employees failed:', err);
     res.status(500).json({ error: 'Failed to import employees' });
+  }
+});
+
+// POST /api/geico/file-complaint - open a Customer Feedback complaint for one
+// survey by hand. Poor/Fair surveys file themselves on a schedule
+// (jobs/geicoComplaints.js); this is for surveys from before that job was
+// switched on, and for the occasional better-rated survey that still needs
+// working. The UNIQUE(source, external_ref) index makes a double click harmless
+// - it comes back as the existing record.
+//   body: { po_number }
+router.post('/file-complaint', requireAuth, requirePermission('manage_feedback'), async (req, res) => {
+  const po = (req.body && req.body.po_number != null) ? String(req.body.po_number).trim() : '';
+  if (!po) return res.status(400).json({ error: 'po_number is required' });
+  try {
+    const { SURVEY_COLUMNS, fileComplaintForSurvey } = require('../jobs/geicoComplaints');
+    const { rows } = await pool.query(SURVEY_COLUMNS + 'WHERE g.po_number = $1 LIMIT 1', [po]);
+    if (!rows.length) return res.status(404).json({ error: 'That PO number is not in the survey table.' });
+    const result = await fileComplaintForSurvey(rows[0]);
+    if (!result || !result.id) return res.status(500).json({ error: 'Could not file the complaint. Check the server log.' });
+    res.json({ id: result.id, duplicate: !!result.duplicate, po_number: po });
+  } catch (err) {
+    console.error('POST /api/geico/file-complaint failed:', err.message);
+    res.status(500).json({ error: 'Failed to file complaint: ' + err.message });
   }
 });
 

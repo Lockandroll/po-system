@@ -2,7 +2,7 @@
 // public/sw.js (the only thing bumped each deploy) — the badge asks the active
 // service worker for it at runtime. This value is just the fallback shown when no
 // service worker is available (e.g. very first visit before it installs).
-var APP_VERSION = 'v108';
+var APP_VERSION = 'v109';
 var _resolvedAppVersion = null;
 
 // Ask the active service worker for its CACHE_VERSION (without the 'nova-' prefix).
@@ -4871,10 +4871,46 @@ function geicoRatingBadge(r) {
   return '<span style="display:inline-block;padding:2px 8px;border-radius:10px;font-size:12px;font-weight:600;color:#fff;background:' + c + '">' + escHtml(r) + '</span>';
 }
 
+// Same buckets jobs/geicoComplaints.js uses server-side. Kept in step with it so
+// the File button appears on exactly the surveys that could be complaints.
+function geicoRatingBucket(r) {
+  var s = (r == null ? '' : String(r)).trim();
+  if (!s) return null;
+  if (/poor|bad/i.test(s)) return 'poor';
+  if (/fair/i.test(s)) return 'fair';
+  if (/excellent/i.test(s)) return 'excellent';
+  if (/good/i.test(s)) return 'good';
+  return 'unknown';
+}
+
+// Open a Customer Feedback complaint for one survey by hand. Poor and Fair
+// surveys file themselves on a schedule; this covers older ones and any
+// better-rated survey a manager still wants worked.
+async function geicoFileComplaint(poNumber, btn) {
+  if (btn) { btn.disabled = true; btn.textContent = 'Filing...'; }
+  try {
+    var r = await api('POST', '/geico/file-complaint', { po_number: poNumber });
+    for (var i = 0; i < _geicoRows.length; i++) {
+      if (String(_geicoRows[i].po_number) === String(poNumber)) {
+        _geicoRows[i].complaint_id = r.id;
+        if (!_geicoRows[i].complaint_status) _geicoRows[i].complaint_status = 'new';
+        break;
+      }
+    }
+    geicoRenderTable(_geicoRows);
+    showToast(r.duplicate ? ('That survey is already complaint #' + r.id + '.') : ('Complaint #' + r.id + ' filed and assigned.'), r.duplicate ? 'info' : 'success');
+  } catch (e) {
+    if (btn) { btn.disabled = false; btn.textContent = 'File'; }
+    showToast(e.message || 'Could not file the complaint.', 'error');
+  }
+}
+
 function geicoPaginate(p) { _geicoPage = p; geicoRenderTable(_geicoRows); }
 function geicoPageSize(v) { GEICO_PAGE_SIZE = parsePageSize(v); _geicoPage = 1; geicoRenderTable(_geicoRows); }
 function geicoRenderTable(rows) {
   var wrap = document.getElementById('geico-table-wrap'); if (!wrap) return;
+  var canFileComplaint = can('manage_feedback');
+  var canOpenComplaint = can('view_feedback');
   var total = rows.length;
   var totalPages = Math.max(1, Math.ceil(total / GEICO_PAGE_SIZE));
   if (_geicoPage > totalPages) _geicoPage = totalPages;
@@ -4892,10 +4928,26 @@ function geicoRenderTable(rows) {
   wrap.innerHTML =
     '<div style="font-size:12px;color:var(--text-muted-color);margin-bottom:8px">Showing ' + _showing + ' of ' + total + ' survey' + (total===1?'':'s') + '</div>' +
     '<div class="card"><div class="table-wrap"><table>' +
-      '<thead><tr><th>Received</th><th>Account #</th><th>City</th><th>PO #</th><th>Service</th><th>State</th><th>Dispatch</th><th>On Time</th><th>Arrival</th><th>Rating</th><th>Employee</th></tr></thead><tbody>' +
+      '<thead><tr><th>Received</th><th>Account #</th><th>City</th><th>PO #</th><th>Service</th><th>State</th><th>Dispatch</th><th>On Time</th><th>Arrival</th><th>Rating</th><th>Employee</th><th style="text-align:center">Complaint</th></tr></thead><tbody>' +
       (total === 0
-        ? '<tr><td colspan="11" style="text-align:center;color:var(--text-muted-color);padding:32px">No surveys found.</td></tr>'
+        ? '<tr><td colspan="12" style="text-align:center;color:var(--text-muted-color);padding:32px">No surveys found.</td></tr>'
         : page.map(function(r){
+            var cmpCell;
+            if (r.complaint_id) {
+              var statusLine = r.complaint_status ? '<div style="font-size:10px;color:var(--text-muted-color)">' + escHtml(FB_STATUS[r.complaint_status] || r.complaint_status) + '</div>' : '';
+              // The complaint number opens the record so the survey list doubles as
+              // a progress view. Only a link for someone who can actually open it -
+              // renderFeedbackDetail refuses without view_feedback, so without the
+              // gate this would be a dead click for a Geico-only manager.
+              cmpCell = (canOpenComplaint
+                ? '<a href="#" onclick="feedbackOpen(' + r.complaint_id + ');return false" title="Open complaint #' + r.complaint_id + ' to track progress" style="color:var(--primary);font-weight:600;text-decoration:none">#' + r.complaint_id + '</a>'
+                : '<span title="A complaint is on file. Ask an admin for access to Customer Feedback to open it." style="font-weight:600">#' + r.complaint_id + '</span>'
+              ) + statusLine;
+            } else if (canFileComplaint && r.po_number && geicoRatingBucket(r.rating) !== 'excellent') {
+              cmpCell = '<button class="btn btn-secondary btn-sm" title="Open a complaint for this survey" onclick="geicoFileComplaint(&#39;' + escHtml(String(r.po_number)) + '&#39;, this)">File</button>';
+            } else {
+              cmpCell = '<span style="color:var(--text-muted-color)">—</span>';
+            }
             return '<tr>' +
               '<td style="white-space:nowrap">' + escHtml(r.date_received||'—') + '</td>' +
               '<td>' + escHtml(r.account_number||'—') + '</td>' +
@@ -4908,6 +4960,7 @@ function geicoRenderTable(rows) {
               '<td>' + escHtml(r.time_to_arrive||'—') + '</td>' +
               '<td>' + geicoRatingBadge(r.rating) + '</td>' +
               '<td>' + escHtml(r.employee_name||'\u2014') + '</td>' +
+              '<td style="white-space:nowrap;text-align:center">' + cmpCell + '</td>' +
             '</tr>';
           }).join('')) +
       '</tbody></table></div></div>' + _pager;
@@ -4998,8 +5051,9 @@ var _reviewAssignees = [];
 
 // ── Customer Feedback ──────────────────────────────────────────────────────
 // Where a complaint came from. 'google_review' records are opened automatically
-// from low-star Google reviews by jobs/reviewComplaints.js.
-var FB_SOURCE = { pulsar:'Pulsar email', google_review:'Google review', manual:'Entered by hand', web:'Web form', sms:'Text message' };
+// from low-star Google reviews by jobs/reviewComplaints.js, and 'geico_survey'
+// records from Poor/Fair Geico ERS surveys by jobs/geicoComplaints.js.
+var FB_SOURCE = { pulsar:'Pulsar email', google_review:'Google review', geico_survey:'Geico survey', manual:'Entered by hand', web:'Web form', sms:'Text message' };
 function fbSourceLabel(s) { var k = s || 'pulsar'; return FB_SOURCE[k] || k.replace(/_/g, ' '); }
 var FB_STATUS = { new:'New', complaint_pending:'Complaint pending', customer_contacted:'Customer contacted', in_progress:'In progress', resolved:'Resolved', closed:'Closed' };
 var _feedbackRows = [];
