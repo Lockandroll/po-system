@@ -2,7 +2,7 @@
 // public/sw.js (the only thing bumped each deploy) — the badge asks the active
 // service worker for it at runtime. This value is just the fallback shown when no
 // service worker is available (e.g. very first visit before it installs).
-var APP_VERSION = 'v110';
+var APP_VERSION = 'v111';
 var _resolvedAppVersion = null;
 
 // Ask the active service worker for its CACHE_VERSION (without the 'nova-' prefix).
@@ -10836,6 +10836,16 @@ function renderDepositsHistory() {
     if (d.has_missing_expense_receipt) {
       flags += '<span title="An expense on this deposit has no receipt" style="display:inline-block;margin-left:6px;padding:1px 6px;border-radius:10px;font-size:11px;font-weight:700;background:rgba(239,68,68,0.15);color:#ef4444;border:1px solid rgba(239,68,68,0.4)">No receipt</span>';
     }
+    // Expense review state, so a manager can see from the list which deposits
+    // still need a decision without opening each one.
+    var pendingN = parseInt(d.pending_expense_count, 10) || 0;
+    if (pendingN) {
+      flags += '<span title="' + pendingN + ' expense line(s) not yet approved or denied" style="display:inline-block;margin-left:6px;padding:1px 6px;border-radius:10px;font-size:11px;font-weight:700;background:rgba(245,158,11,0.15);color:#f59e0b;border:1px solid rgba(245,158,11,0.4)">' + pendingN + ' to review</span>';
+    }
+    var deniedAmt = parseFloat(d.denied_expenses) || 0;
+    if (deniedAmt > 0) {
+      flags += '<span title="$' + deniedAmt.toFixed(2) + ' of expenses was denied and is not counted" style="display:inline-block;margin-left:6px;padding:1px 6px;border-radius:10px;font-size:11px;font-weight:700;background:rgba(239,68,68,0.15);color:#ef4444;border:1px solid rgba(239,68,68,0.4)">Denied $' + deniedAmt.toFixed(2) + '</span>';
+    }
     return '<tr style="cursor:pointer" onclick="navigate(\'view-deposit\',' + d.id + ')">' +
       '<td style="white-space:nowrap">' + formatDate(d.deposit_date) + '</td>' +
       '<td style="white-space:nowrap">' + ((d.period_start && d.period_end) ? (formatDate(d.period_start) + ' – ' + formatDate(d.period_end)) : '—') + '</td>' +
@@ -10859,7 +10869,7 @@ async function exportDepositsCSV() {
     var res = await api('GET', '/deposits/export');
     var deposits = res.deposits || [];
     var rows = [];
-    rows.push(['Deposit #','Date','Pay Period Start','Pay Period End','Amount','Pulsar Owed','Total Expenses','Over/Short','City','Submitted By','Notes','Receipt File','Has Receipt','Edited After AI','AI Amount','AI Date','Expense Missing Receipt','Submitted At'].join(','));
+    rows.push(['Deposit #','Date','Pay Period Start','Pay Period End','Amount','Pulsar Owed','Total Expenses','Denied Expenses','Expenses Awaiting Review','Over/Short','City','Submitted By','Notes','Receipt File','Has Receipt','Edited After AI','AI Amount','AI Date','Expense Missing Receipt','Submitted At'].join(','));
     deposits.forEach(function(d) {
       var depAmt = parseFloat(d.amount) || 0;
       var exp = parseFloat(d.total_expenses) || 0;
@@ -10873,6 +10883,8 @@ async function exportDepositsCSV() {
         depAmt.toFixed(2),
         owed == null ? '' : owed.toFixed(2),
         exp.toFixed(2),
+        (parseFloat(d.denied_expenses) || 0).toFixed(2),
+        String(parseInt(d.pending_expense_count, 10) || 0),
         os,
         d.city_code || '',
         d.user_name || '',
@@ -10927,8 +10939,25 @@ async function renderViewDeposit(el, id, preloaded) {
   var depAmt = parseFloat(dep.amount) || 0;
   var owed = (dep.pulsar_owed == null) ? null : parseFloat(dep.pulsar_owed);
   var expList = dep.expenses || [];
+  // expTotal is the COUNTED total: a denied line is one the company refused, so
+  // it stops reducing what the tech owes. deniedTotal is kept separately and
+  // shown on its own row, so the money is still accounted for on the page
+  // rather than just disappearing out of the maths.
   var expTotal = 0;
-  expList.forEach(function(x) { var a = parseFloat(x.amount); if (!isNaN(a)) expTotal += a; });
+  var deniedTotal = 0;
+  var pendingCount = 0;
+  expList.forEach(function(x) {
+    var a = parseFloat(x.amount);
+    if (isNaN(a)) a = 0;
+    var st = depExpStatus(x);
+    if (st === 'denied') { deniedTotal += a; return; }
+    if (st === 'pending') pendingCount++;
+    expTotal += a;
+  });
+  // Approving or denying a line changes what the tech owes, so it is gated on
+  // exactly the same server-computed flag as editing the deposit. A manager
+  // outside the city still sees every decision, just no buttons.
+  var canReview = !!dep.can_edit;
 
   var receiptList = dep.receipts || [];
   var receipts = receiptList.length
@@ -10940,6 +10969,8 @@ async function renderViewDeposit(el, id, preloaded) {
   var expensesBlock = '';
   if (expList.length) {
     var expRows = expList.map(function(x) {
+      var st = depExpStatus(x);
+      var amt = parseFloat(x.amount) || 0;
       var thumb;
       if (x.receipt_image) {
         thumb = '<img src="' + x.receipt_image + '" onclick="depShowImage(this.src)" style="height:46px;width:46px;object-fit:cover;border-radius:6px;border:1px solid var(--border-color);cursor:zoom-in;display:block" />';
@@ -10949,13 +10980,42 @@ async function renderViewDeposit(el, id, preloaded) {
       } else {
         thumb = '<span style="color:var(--text-muted-color)">—</span>';
       }
-      return '<tr><td>' + escHtml(x.description || '—') + '</td><td style="white-space:nowrap;text-align:right">$' + (parseFloat(x.amount) || 0).toFixed(2) + '</td><td>' + thumb + '</td></tr>';
+      // A denied amount is struck through rather than hidden: the reviewer needs
+      // to see what was claimed as well as what was allowed.
+      var amtCell = (st === 'denied')
+        ? '<span style="text-decoration:line-through;color:var(--text-muted-color)">$' + amt.toFixed(2) + '</span>'
+        : '$' + amt.toFixed(2);
+      var actions = '';
+      if (canReview) {
+        var btns = [];
+        if (st !== 'approved') btns.push('<button class="btn btn-ghost btn-sm" onclick="depReviewExpense(' + x.id + ',\'approved\')" style="color:#22c55e">Approve</button>');
+        if (st !== 'denied') btns.push('<button class="btn btn-ghost btn-sm" onclick="depReviewExpense(' + x.id + ',\'denied\')" style="color:#ef4444">Deny</button>');
+        actions = '<td style="white-space:nowrap">' + btns.join('') + '</td>';
+      }
+      return '<tr>' +
+        '<td>' + escHtml(x.description || '—') + '</td>' +
+        '<td style="white-space:nowrap;text-align:right">' + amtCell + '</td>' +
+        '<td>' + thumb + '</td>' +
+        '<td>' + depExpStatusCell(x) + '</td>' +
+        actions +
+      '</tr>';
     }).join('');
+    var blankCols = '<td></td><td></td>' + (canReview ? '<td></td>' : '');
+    var deniedRow = (deniedTotal > 0)
+      ? '<tr><td style="color:var(--text-muted-color)">Denied (not counted)</td>' +
+          '<td style="text-align:right;color:var(--text-muted-color)">&minus;$' + deniedTotal.toFixed(2) + '</td>' + blankCols + '</tr>'
+      : '';
     expensesBlock =
       '<div style="margin-bottom:20px">' +
         '<div style="color:var(--text-muted-color);font-size:13px;margin-bottom:8px">Expenses</div>' +
-        '<div class="table-wrap"><table class="table"><thead><tr><th>Description</th><th style="text-align:right">Amount</th><th>Receipt</th></tr></thead><tbody>' + expRows +
-          '<tr><td style="font-weight:700">Total</td><td style="text-align:right;font-weight:700">$' + expTotal.toFixed(2) + '</td><td></td></tr>' +
+        (canReview && pendingCount
+          ? '<div style="margin-bottom:8px;padding:8px 10px;border-radius:8px;background:rgba(245,158,11,0.08);border:1px solid rgba(245,158,11,0.4);font-size:13px;color:var(--text-color)">' +
+              '<strong>' + pendingCount + '</strong> expense ' + (pendingCount === 1 ? 'line is' : 'lines are') + ' waiting on your review. Pending lines still count against the deposit until you deny them.' +
+            '</div>'
+          : '') +
+        '<div class="table-wrap"><table class="table"><thead><tr><th>Description</th><th style="text-align:right">Amount</th><th>Receipt</th><th>Status</th>' + (canReview ? '<th></th>' : '') + '</tr></thead><tbody>' + expRows +
+          deniedRow +
+          '<tr><td style="font-weight:700">Total counted</td><td style="text-align:right;font-weight:700">$' + expTotal.toFixed(2) + '</td>' + blankCols + '</tr>' +
         '</tbody></table></div>' +
       '</div>';
   }
@@ -10986,6 +11046,9 @@ async function renderViewDeposit(el, id, preloaded) {
       '<div style="margin-bottom:20px;padding:12px;border-radius:8px;background:var(--bg-color);border:1px solid var(--border-color);font-size:14px">' +
         'Pulsar owed $' + owed.toFixed(2) + ' &minus; deposit $' + depAmt.toFixed(2) + ' &minus; expenses $' + expTotal.toFixed(2) +
         ' = <span style="font-weight:700;color:' + color + '">' + label + '</span>' +
+        (deniedTotal > 0
+          ? '<div style="margin-top:6px;font-size:13px;color:var(--text-muted-color)">$' + deniedTotal.toFixed(2) + ' of denied expenses is left out of this.</div>'
+          : '') +
       '</div>';
   }
 
@@ -11020,6 +11083,66 @@ async function renderViewDeposit(el, id, preloaded) {
 }
 
 /* ---------------------------------------------------------------------------
+   Expense review (approve / deny)
+   ---------------------------------------------------------------------------
+   A manager decides on each expense line one at a time. Denying one takes it
+   out of the Over/Short maths on this page, out of the Expenses column on the
+   deposits list, and out of the Pulsar reconciliation - the server does all
+   three, so nothing here has to be kept in step by hand.
+
+   An older row has no review_status at all, so everything reads it through
+   depExpStatus() and treats "missing" as pending, which counts. */
+function depExpStatus(x) {
+  var s = (x && x.review_status) ? String(x.review_status).toLowerCase() : 'pending';
+  return (s === 'approved' || s === 'denied') ? s : 'pending';
+}
+function depExpChip(status) {
+  var map = {
+    approved: { text: 'Approved', color: '#22c55e' },
+    denied: { text: 'Denied', color: '#ef4444' },
+    pending: { text: 'Pending', color: '#f59e0b' }
+  };
+  var c = map[status] || map.pending;
+  return '<span style="display:inline-block;padding:1px 8px;border-radius:10px;font-size:11px;font-weight:700;white-space:nowrap;color:' + c.color +
+    ';background:' + c.color + '1f;border:1px solid ' + c.color + '66">' + c.text + '</span>';
+}
+function depExpStatusCell(x) {
+  var st = depExpStatus(x);
+  var who = x.reviewed_by_name
+    ? '<div style="font-size:11px;color:var(--text-muted-color);white-space:nowrap">by ' + escHtml(x.reviewed_by_name) +
+        (x.reviewed_at ? ' &middot; ' + escHtml(new Date(x.reviewed_at).toLocaleDateString()) : '') + '</div>'
+    : '';
+  var why = (st === 'denied' && x.review_reason)
+    ? '<div style="font-size:12px;color:#ef4444;max-width:240px;white-space:normal">' + escHtml(x.review_reason) + '</div>'
+    : '';
+  return depExpChip(st) + who + why;
+}
+
+// Approve or deny one line. The server hands back the whole deposit, so the
+// page re-renders from the same shape GET /deposits/:id returns and the totals
+// can never drift from what the server thinks they are.
+async function depReviewExpense(expenseId, status) {
+  if (!depViewId) return;
+  var reason = '';
+  if (status === 'denied') {
+    // Required, and asked for BEFORE anything is written - a denial the tech
+    // cannot make sense of is worse than no denial at all.
+    reason = await novaPrompt('Why is this expense being denied? The tech will see this.', '', { title: 'Deny expense', okText: 'Deny it' });
+    if (reason === null || reason === undefined) return;      // cancelled
+    reason = String(reason).trim();
+    if (!reason) { await novaAlert('Please give a reason for denying this expense.'); return; }
+  }
+  try {
+    var fresh = await api('POST', '/deposits/' + depViewId + '/expenses/' + expenseId + '/review', { status: status, reason: reason });
+    depViewData = fresh;
+    depModalChanged(depViewEl);
+    renderViewDeposit(depViewEl, depViewId, fresh);
+  } catch (e) {
+    await novaAlert(e.message || 'Failed to save that decision.');
+  }
+}
+
+/* ---------------------------------------------------------------------------
    Deposit edit history
    ---------------------------------------------------------------------------
    Rendered from the audit_logs rows the server returns on GET /deposits/:id, so
@@ -11044,10 +11167,27 @@ function depHistoryValue(field, v) {
   if (field === 'deposit_date' || field === 'period_start' || field === 'period_end') return escHtml(formatDate(v));
   return escHtml(String(v));
 }
+// One approve/deny decision, written as a sentence. Kept apart from the field
+// diff above because "Dale denied Tolls $95.45" is a different kind of event
+// from "Dale retyped the deposit amount", and reading them the same way loses
+// which one actually happened.
+function depReviewHistoryItem(h) {
+  var d = h.details || {};
+  var to = String(d.to || 'pending').toLowerCase();
+  var verb = to === 'approved' ? 'Approved' : (to === 'denied' ? 'Denied' : 'Sent back for review');
+  var what = escHtml(d.description || 'an expense') + (d.amount == null ? '' : ' &middot; $' + escHtml(String(d.amount)));
+  return '<div style="padding:10px 0;border-top:1px solid var(--border-color)">' +
+    '<div style="font-weight:600">' + escHtml(h.user_name || 'Someone') + ' &middot; ' +
+      '<span style="font-weight:400;color:var(--text-muted-color)">' + escHtml(h.created_at ? new Date(h.created_at).toLocaleString() : '') + '</span></div>' +
+    '<div style="font-size:13px;margin-top:2px">' + verb + ' ' + what + '</div>' +
+    (d.reason ? '<div style="margin-top:4px;color:var(--text-muted-color);font-style:italic">&ldquo;' + escHtml(d.reason) + '&rdquo;</div>' : '') +
+  '</div>';
+}
 function depHistoryHtml(history) {
-  var rows = (history || []).filter(function(h) { return h && h.action === 'edited'; });
+  var rows = (history || []).filter(function(h) { return h && (h.action === 'edited' || h.action === 'expense_review'); });
   if (!rows.length) return '';
   var items = rows.slice().reverse().map(function(h) {
+    if (h.action === 'expense_review') return depReviewHistoryItem(h);
     var ch = (h.details && h.details.changes) ? h.details.changes : {};
     var keys = Object.keys(ch);
     var lines = keys.length
@@ -11066,7 +11206,7 @@ function depHistoryHtml(history) {
     '</div>';
   }).join('');
   return '<div style="margin-top:24px">' +
-    '<div style="color:var(--text-muted-color);font-size:13px;margin-bottom:2px">Edit history (' + rows.length + ')</div>' +
+    '<div style="color:var(--text-muted-color);font-size:13px;margin-bottom:2px">History (' + rows.length + ')</div>' +
     items +
   '</div>';
 }
@@ -11127,7 +11267,14 @@ async function depEnterEdit() {
       filename: null,
       remove_photo: false,
       no_receipt: !!x.no_receipt,
-      no_receipt_reason: x.no_receipt_reason || ''
+      no_receipt_reason: x.no_receipt_reason || '',
+      // Carried so the form can show the decision and leave denied lines out of
+      // its running total. original_amount is what the server compares against:
+      // changing a line's amount sends it back to pending there, and the form
+      // says so rather than letting it happen quietly.
+      review_status: depExpStatus(x),
+      review_reason: x.review_reason || '',
+      original_amount: (x.amount == null) ? null : parseFloat(x.amount)
     };
   });
   try { depEditCities = await api('GET', '/cities'); } catch(e) { depEditCities = []; }
@@ -11294,7 +11441,20 @@ function depEditRenderExpenses() {
       ? '<div style="position:relative;display:inline-block"><img src="' + photo + '" onclick="depShowImage(this.src)" style="width:48px;height:48px;object-fit:cover;border-radius:6px;border:1px solid var(--border-color);cursor:zoom-in;display:block" />' +
           '<button type="button" title="Remove photo" onclick="depEditDropExpensePhoto(' + idx + ')" style="position:absolute;top:-6px;right:-6px;background:#ef4444;color:#fff;border:none;border-radius:50%;width:18px;height:18px;cursor:pointer;font-size:11px;line-height:1">&times;</button></div>'
       : '<label class="btn btn-secondary btn-sm" style="cursor:pointer;margin:0;white-space:nowrap' + (ex.no_receipt ? ';opacity:0.5;pointer-events:none' : '') + '">Photo<input type="file" accept="image/*" style="display:none" onchange="depEditSetExpensePhoto(' + idx + ',this)" /></label>';
+    // The decision on the line, shown read-only here: approving and denying
+    // happen on the deposit page, one click, no form to save. The note is not
+    // conditional on the amount having moved yet, because this block is not
+    // re-rendered on every keystroke - a standing warning is honest, a stale
+    // one would not be.
+    var st = ex.id ? depExpStatus(ex) : 'pending';
+    var reviewLine = ex.id
+      ? '<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:8px">' + depExpChip(st) +
+          (st === 'denied' && ex.review_reason ? '<span style="font-size:12px;color:#ef4444">' + escHtml(ex.review_reason) + '</span>' : '') +
+          (st === 'pending' ? '' : '<span style="font-size:12px;color:var(--text-muted-color)">Changing this amount sends the line back to Pending.</span>') +
+        '</div>'
+      : '';
     return '<div style="border:1px solid var(--border-color);border-radius:8px;padding:10px;margin-bottom:8px">' +
+      reviewLine +
       '<div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">' +
         '<input type="text" placeholder="Description (required)" value="' + escHtml(ex.description || '') + '" oninput="depEditUpdExpense(' + idx + ',\'description\',this.value)" style="flex:2;min-width:120px" />' +
         '<input type="number" step="0.01" min="0" placeholder="0.00" value="' + amtVal + '" oninput="depEditUpdExpense(' + idx + ',\'amount\',this.value);depEditRecalc()" style="flex:1;min-width:90px" />' +
@@ -11318,8 +11478,18 @@ function depEditRecalc() {
   var depAmt = parseFloat((document.getElementById('depe-amount') || {}).value) || 0;
   var owedRaw = (document.getElementById('depe-pulsar') || {}).value;
   var owed = parseFloat(owedRaw);
+  // Matches the server: a denied line does not count, and a line whose amount
+  // has just been changed goes back to pending, so it does.
   var exp = 0;
-  depEditExpenses.forEach(function(ex) { var a = parseFloat(ex.amount); if (!isNaN(a)) exp += a; });
+  var deniedOut = 0;
+  depEditExpenses.forEach(function(ex) {
+    var a = parseFloat(ex.amount);
+    if (isNaN(a)) return;
+    var stillDenied = ex.id && depExpStatus(ex) === 'denied' &&
+      !(ex.original_amount != null && Math.abs(a - ex.original_amount) >= 0.005);
+    if (stillDenied) { deniedOut += a; return; }
+    exp += a;
+  });
   if (isNaN(owed)) {
     el.innerHTML = 'Expenses $' + exp.toFixed(2) + ' &middot; enter the Pulsar owed figure to see Over/Short.';
     return;
@@ -11330,7 +11500,8 @@ function depEditRecalc() {
   else if (os > 0) { label = 'Short $' + os.toFixed(2); color = '#ef4444'; }
   else { label = 'Over $' + Math.abs(os).toFixed(2); color = '#f59e0b'; }
   el.innerHTML = 'Pulsar owed $' + owed.toFixed(2) + ' &minus; deposit $' + depAmt.toFixed(2) + ' &minus; expenses $' + exp.toFixed(2) +
-    ' = <span style="font-weight:700;color:' + color + '">' + label + '</span>';
+    ' = <span style="font-weight:700;color:' + color + '">' + label + '</span>' +
+    (deniedOut > 0 ? '<div style="margin-top:6px;font-size:13px;color:var(--text-muted-color)">$' + deniedOut.toFixed(2) + ' of denied expenses is left out of this.</div>' : '');
 }
 
 async function saveDepositEdit() {

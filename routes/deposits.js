@@ -19,6 +19,30 @@ const MANAGE = ['admin', 'manager'];
 // held to exactly the same rule. Do not re-inline a second copy here.
 const { editCityScope, scopeAllows, mayEditCity } = require('../utils/depositAccess');
 
+// ---------------------------------------------------------------------------
+// Expense review
+// ---------------------------------------------------------------------------
+// Every expense line carries an approve/deny decision. A DENIED line is an
+// expense the company is not accepting, so it must not reduce what the tech
+// owes: it drops out of every total, everywhere. PENDING still counts, so a
+// deposit nobody has reviewed yet reads exactly as it did before this shipped.
+// The rule below is the whole feature - keep every expense SUM in this file
+// (and the Pulsar reconciliation in routes/pulsar.js) going through it.
+const REVIEW_STATUSES = ['pending', 'approved', 'denied'];
+function counted(alias) {
+  const a = alias ? alias + '.' : '';
+  return "COALESCE(" + a + "review_status, 'pending') <> 'denied'";
+}
+function denied(alias) {
+  const a = alias ? alias + '.' : '';
+  return "COALESCE(" + a + "review_status, 'pending') = 'denied'";
+}
+// One column list, so the three places that hand a deposit back to the client
+// can never drift apart on which review fields they include.
+const EXPENSE_COLS = 'id, description, amount, receipt_image, receipt_filename, ' +
+  'COALESCE(no_receipt, FALSE) AS no_receipt, no_receipt_reason, ' +
+  "COALESCE(review_status, 'pending') AS review_status, review_reason, reviewed_by_name, reviewed_at";
+
 function numOrNull(v) {
   if (v === null || v === undefined || v === '') return null;
   const n = parseFloat(v);
@@ -313,8 +337,12 @@ router.get('/', requireAuth, requirePermission('view_deposits'), async function(
     const cols = 'd.id, d.deposit_number, d.user_id, COALESCE(u.name, d.user_name) AS user_name, d.city_code, d.amount, d.pulsar_owed, d.deposit_date, d.period_start, d.period_end, d.notes, d.receipt_filename, ' +
       'd.ai_amount, d.ai_deposit_date, COALESCE(d.ai_edited, FALSE) AS ai_edited, ' +
       '(d.receipt_image IS NOT NULL OR EXISTS(SELECT 1 FROM deposit_receipts r WHERE r.deposit_id = d.id)) AS has_receipt, ' +
-      'COALESCE((SELECT SUM(e.amount) FROM deposit_expenses e WHERE e.deposit_id = d.id), 0) AS total_expenses, ' +
-      'EXISTS(SELECT 1 FROM deposit_expenses e2 WHERE e2.deposit_id = d.id AND e2.no_receipt = TRUE) AS has_missing_expense_receipt, ' +
+      'COALESCE((SELECT SUM(e.amount) FROM deposit_expenses e WHERE e.deposit_id = d.id AND ' + counted('e') + '), 0) AS total_expenses, ' +
+      'COALESCE((SELECT SUM(e5.amount) FROM deposit_expenses e5 WHERE e5.deposit_id = d.id AND ' + denied('e5') + '), 0) AS denied_expenses, ' +
+      "(SELECT COUNT(*) FROM deposit_expenses e6 WHERE e6.deposit_id = d.id AND COALESCE(e6.review_status, 'pending') = 'pending') AS pending_expense_count, " +
+      // A denied line is not this deposit's problem any more, so its missing
+      // receipt is not either - it would leave a flag nobody can ever clear.
+      'EXISTS(SELECT 1 FROM deposit_expenses e2 WHERE e2.deposit_id = d.id AND e2.no_receipt = TRUE AND ' + counted('e2') + ') AS has_missing_expense_receipt, ' +
       'd.created_at';
     let query, params;
     if (SEE_ALL.includes(req.user.role)) {
@@ -341,9 +369,11 @@ router.get('/export', requireAuth, requirePermission('export_deposits'), async f
     const { rows } = await pool.query(
       'SELECT d.deposit_number, COALESCE(u.name, d.user_name) AS user_name, d.city_code, d.amount, d.pulsar_owed, d.deposit_date, d.period_start, d.period_end, d.notes, d.receipt_filename, ' +
       'd.ai_amount, d.ai_deposit_date, COALESCE(d.ai_edited, FALSE) AS ai_edited, ' +
-      'EXISTS(SELECT 1 FROM deposit_expenses e2 WHERE e2.deposit_id = d.id AND e2.no_receipt = TRUE) AS has_missing_expense_receipt, ' +
+      'EXISTS(SELECT 1 FROM deposit_expenses e2 WHERE e2.deposit_id = d.id AND e2.no_receipt = TRUE AND ' + counted('e2') + ') AS has_missing_expense_receipt, ' +
       '(d.receipt_image IS NOT NULL OR EXISTS(SELECT 1 FROM deposit_receipts r WHERE r.deposit_id = d.id)) AS has_receipt, ' +
-      'COALESCE((SELECT SUM(e.amount) FROM deposit_expenses e WHERE e.deposit_id = d.id), 0) AS total_expenses, ' +
+      'COALESCE((SELECT SUM(e.amount) FROM deposit_expenses e WHERE e.deposit_id = d.id AND ' + counted('e') + '), 0) AS total_expenses, ' +
+      'COALESCE((SELECT SUM(e5.amount) FROM deposit_expenses e5 WHERE e5.deposit_id = d.id AND ' + denied('e5') + '), 0) AS denied_expenses, ' +
+      "(SELECT COUNT(*) FROM deposit_expenses e6 WHERE e6.deposit_id = d.id AND COALESCE(e6.review_status, 'pending') = 'pending') AS pending_expense_count, " +
       'd.created_at FROM deposits d LEFT JOIN users u ON u.id = d.user_id ORDER BY d.deposit_date DESC, d.created_at DESC'
     );
     res.json({ deposits: rows });
@@ -353,30 +383,43 @@ router.get('/export', requireAuth, requirePermission('export_deposits'), async f
   }
 });
 
+// The full single-deposit shape: the row, its receipts, its expense lines with
+// their review state, whether this viewer may edit it, and the history. Used by
+// GET /:id and by the two writes that hand a fresh copy straight back, so a
+// saved edit and a re-fetch can never disagree about what a deposit looks like.
+async function depositPayload(req, id) {
+  const { rows } = await pool.query('SELECT d.*, u.name AS current_user_name FROM deposits d LEFT JOIN users u ON u.id = d.user_id WHERE d.id = $1', [id]);
+  if (!rows.length) return null;
+  const dep = rows[0];
+  if (dep.current_user_name) dep.user_name = dep.current_user_name;
+  delete dep.current_user_name;
+  dep.receipts = (await pool.query('SELECT id, image, filename FROM deposit_receipts WHERE deposit_id = $1 ORDER BY id', [dep.id])).rows;
+  // Back-compat: surface the legacy single image as a receipt if no child rows exist.
+  if (!dep.receipts.length && dep.receipt_image) {
+    dep.receipts = [{ id: null, image: dep.receipt_image, filename: dep.receipt_filename || null }];
+  }
+  dep.expenses = (await pool.query('SELECT ' + EXPENSE_COLS + ' FROM deposit_expenses WHERE deposit_id = $1 ORDER BY id', [dep.id])).rows;
+  // The client cannot work out the city scope on its own, so the server says
+  // plainly whether THIS viewer may edit THIS deposit. The Edit and the
+  // Approve/Deny buttons hang off this flag; both writes re-check it and never
+  // trust the answer.
+  dep.can_edit = await mayEditCity(req, dep.city_code);
+  dep.history = await depositHistory(dep.id);
+  return dep;
+}
+
 // GET /:id — single deposit incl. receipts and expenses (owner or see-all roles)
 router.get('/:id', requireAuth, requirePermission('view_deposits'), async function(req, res) {
   try {
-    const { rows } = await pool.query('SELECT d.*, u.name AS current_user_name FROM deposits d LEFT JOIN users u ON u.id = d.user_id WHERE d.id = $1', [req.params.id]);
-    if (!rows.length) return res.status(404).json({ error: 'Deposit not found' });
-    const dep = rows[0];
-    if (dep.current_user_name) dep.user_name = dep.current_user_name;
-    delete dep.current_user_name;
-    if (!SEE_ALL.includes(req.user.role) && dep.user_id !== req.user.id) {
+    // The ownership gate runs on its own cheap query FIRST, so a tech who is
+    // not allowed to see this deposit never causes its images to be read.
+    const own = await pool.query('SELECT user_id FROM deposits WHERE id = $1', [req.params.id]);
+    if (!own.rows.length) return res.status(404).json({ error: 'Deposit not found' });
+    if (!SEE_ALL.includes(req.user.role) && own.rows[0].user_id !== req.user.id) {
       return res.status(403).json({ error: 'Access denied' });
     }
-    const rc = await pool.query('SELECT id, image, filename FROM deposit_receipts WHERE deposit_id = $1 ORDER BY id', [dep.id]);
-    dep.receipts = rc.rows;
-    // Back-compat: surface the legacy single image as a receipt if no child rows exist.
-    if (!dep.receipts.length && dep.receipt_image) {
-      dep.receipts = [{ id: null, image: dep.receipt_image, filename: dep.receipt_filename || null }];
-    }
-    const ex = await pool.query('SELECT id, description, amount, receipt_image, receipt_filename, COALESCE(no_receipt, FALSE) AS no_receipt, no_receipt_reason FROM deposit_expenses WHERE deposit_id = $1 ORDER BY id', [dep.id]);
-    dep.expenses = ex.rows;
-    // The client cannot work out the city scope on its own, so the server says
-    // plainly whether THIS viewer may edit THIS deposit. The Edit button hangs
-    // off this flag; PUT /:id re-checks it and never trusts the answer.
-    dep.can_edit = await mayEditCity(req, dep.city_code);
-    dep.history = await depositHistory(dep.id);
+    const dep = await depositPayload(req, req.params.id);
+    if (!dep) return res.status(404).json({ error: 'Deposit not found' });
     res.json(dep);
   } catch (err) {
     console.error(err);
@@ -443,7 +486,7 @@ router.put('/:id', requireAuth, requirePermission('edit_deposit'), async functio
     const notes = (req.body.notes == null || String(req.body.notes).trim() === '') ? null : String(req.body.notes);
 
     // Existing children, read before the transaction so validation can fail fast.
-    const exRows = (await pool.query('SELECT id, receipt_image FROM deposit_expenses WHERE deposit_id = $1', [dep.id])).rows;
+    const exRows = (await pool.query("SELECT id, receipt_image, amount, COALESCE(review_status, 'pending') AS review_status FROM deposit_expenses WHERE deposit_id = $1", [dep.id])).rows;
     const exById = {};
     exRows.forEach(function (r) { exById[String(r.id)] = r; });
     const rcRows = (await pool.query('SELECT id FROM deposit_receipts WHERE deposit_id = $1', [dep.id])).rows;
@@ -485,10 +528,21 @@ router.put('/:id', requireAuth, requirePermission('edit_deposit'), async functio
       if (!hasPhoto && override && !reason) {
         return res.status(400).json({ error: 'Please explain why there is no receipt for "' + label + '".' });
       }
+      // Changing what a line is WORTH invalidates any decision already made on
+      // it: an approval was for the old figure, and a denial of the old figure
+      // should not silently carry over to a corrected one. So an amount change
+      // sends the line back to pending. Fixing a typo in the description, or
+      // swapping the photo, leaves the decision alone.
+      const newAmount = isNaN(exAmt) ? 0 : Math.round(exAmt * 100) / 100;
+      const resetReview = !!existing && Math.abs(parseFloat(existing.amount || 0) - newAmount) >= 0.005;
       cleanExpenses.push({
         id: existing ? existing.id : null,
         description: desc.slice(0, 500) || null,
-        amount: isNaN(exAmt) ? 0 : Math.round(exAmt * 100) / 100,
+        amount: newAmount,
+        resetReview: resetReview,
+        // Where this line ENDS UP after the save - a new line and a reset line
+        // are both pending, which counts.
+        reviewStatus: (!existing || resetReview) ? 'pending' : existing.review_status,
         newPhoto: newPhoto,
         filename: ex.filename ? String(ex.filename).slice(0, 255) : null,
         removePhoto: removePhoto,
@@ -512,7 +566,9 @@ router.put('/:id', requireAuth, requirePermission('edit_deposit'), async functio
     const aiDate = ymdOf(dep.ai_deposit_date);
     const aiEdited = (aiAmount != null && Math.abs(aiAmount - amt) >= 0.005) || (aiDate != null && aiDate !== deposit_date);
 
-    const oldExpenseTotal = (await pool.query('SELECT COALESCE(SUM(amount),0) AS t FROM deposit_expenses WHERE deposit_id = $1', [dep.id])).rows[0].t;
+    // Counted only, both sides, so the "Expense total" line in the history is
+    // comparing like with like and a denial does not read as a phantom edit.
+    const oldExpenseTotal = (await pool.query('SELECT COALESCE(SUM(amount),0) AS t FROM deposit_expenses WHERE deposit_id = $1 AND ' + counted(), [dep.id])).rows[0].t;
 
     await client.query('BEGIN');
     await client.query(
@@ -548,7 +604,7 @@ router.put('/:id', requireAuth, requirePermission('edit_deposit'), async functio
     let expenseTotal = 0;
     for (let j = 0; j < cleanExpenses.length; j++) {
       const e = cleanExpenses[j];
-      expenseTotal += e.amount;
+      if (e.reviewStatus !== 'denied') expenseTotal += e.amount;
       if (e.id != null) {
         if (e.newPhoto) {
           await client.query(
@@ -566,6 +622,14 @@ router.put('/:id', requireAuth, requirePermission('edit_deposit'), async functio
           await client.query(
             'UPDATE deposit_expenses SET description = $1, amount = $2, no_receipt = $3, no_receipt_reason = $4 WHERE id = $5 AND deposit_id = $6',
             [e.description, e.amount, e.no_receipt, e.no_receipt_reason, e.id, dep.id]
+          );
+        }
+        // Kept out of the three branches above deliberately: it applies to all
+        // of them and to none of their photo bookkeeping.
+        if (e.resetReview) {
+          await client.query(
+            "UPDATE deposit_expenses SET review_status = 'pending', review_reason = NULL, reviewed_by = NULL, reviewed_by_name = NULL, reviewed_at = NULL WHERE id = $1 AND deposit_id = $2",
+            [e.id, dep.id]
           );
         }
       } else {
@@ -605,20 +669,98 @@ router.put('/:id', requireAuth, requirePermission('edit_deposit'), async functio
 
     // Hand back the same shape GET /:id returns so the client can re-render
     // without a second round trip.
-    const fresh = (await pool.query('SELECT d.*, u.name AS current_user_name FROM deposits d LEFT JOIN users u ON u.id = d.user_id WHERE d.id = $1', [dep.id])).rows[0];
-    if (fresh.current_user_name) fresh.user_name = fresh.current_user_name;
-    delete fresh.current_user_name;
-    fresh.receipts = (await pool.query('SELECT id, image, filename FROM deposit_receipts WHERE deposit_id = $1 ORDER BY id', [dep.id])).rows;
-    fresh.expenses = (await pool.query('SELECT id, description, amount, receipt_image, receipt_filename, COALESCE(no_receipt, FALSE) AS no_receipt, no_receipt_reason FROM deposit_expenses WHERE deposit_id = $1 ORDER BY id', [dep.id])).rows;
-    fresh.can_edit = await mayEditCity(req, fresh.city_code);
-    fresh.history = await depositHistory(dep.id);
-    res.json(fresh);
+    res.json(await depositPayload(req, dep.id));
   } catch (err) {
     try { await client.query('ROLLBACK'); } catch (e) {}
     console.error('Deposit edit failed:', err);
     res.status(500).json({ error: 'Failed to save changes to this deposit' });
   } finally {
     client.release();
+  }
+});
+
+// POST /:id/expenses/:expenseId/review — approve or deny ONE expense line.
+//
+// Body: { status: 'approved' | 'denied' | 'pending', reason }
+//   - a denial REQUIRES a written reason; it is what the tech will read.
+//   - approving (or sending a line back to pending) clears any old reason.
+// Held to exactly the same gate as editing the deposit: the edit_deposit
+// permission, a manage role, and the manager's own cities. Denying a line
+// changes what the tech owes, so it is an edit in every way that matters.
+router.post('/:id/expenses/:expenseId/review', requireAuth, requirePermission('edit_deposit'), async function(req, res) {
+  try {
+    const { rows: cur } = await pool.query('SELECT id, deposit_number, city_code FROM deposits WHERE id = $1', [req.params.id]);
+    if (!cur.length) return res.status(404).json({ error: 'Deposit not found' });
+    const dep = cur[0];
+
+    if (!MANAGE.includes(req.user.role)) {
+      return res.status(403).json({ error: 'Access denied' });
+    }
+    const scope = await editCityScope(req);
+    if (!scopeAllows(scope, dep.city_code)) {
+      return res.status(403).json({ error: 'You can only review expenses for the cities you are assigned to.' });
+    }
+
+    const status = (req.body.status == null ? '' : String(req.body.status)).trim().toLowerCase();
+    if (REVIEW_STATUSES.indexOf(status) === -1) {
+      return res.status(400).json({ error: 'Status must be approved, denied or pending.' });
+    }
+    const reason = (req.body.reason == null ? '' : String(req.body.reason)).trim().slice(0, 1000);
+    if (status === 'denied' && !reason) {
+      return res.status(400).json({ error: 'Please say why this expense is being denied.' });
+    }
+
+    const exq = await pool.query(
+      "SELECT id, description, amount, COALESCE(review_status, 'pending') AS review_status, review_reason " +
+      'FROM deposit_expenses WHERE id = $1 AND deposit_id = $2',
+      [req.params.expenseId, dep.id]
+    );
+    if (!exq.rows.length) return res.status(404).json({ error: 'That expense is not on this deposit.' });
+    const ex = exq.rows[0];
+    const from = ex.review_status;
+    const reviewed = status !== 'pending';
+
+    await pool.query(
+      'UPDATE deposit_expenses SET review_status = $1, review_reason = $2, reviewed_by = $3, reviewed_by_name = $4, ' +
+      'reviewed_at = ' + (reviewed ? 'NOW()' : 'NULL') + ' WHERE id = $5 AND deposit_id = $6',
+      [
+        status,
+        status === 'denied' ? reason : null,
+        reviewed ? req.user.id : null,
+        reviewed ? req.user.name : null,
+        ex.id,
+        dep.id
+      ]
+    );
+
+    // Logged under its own action rather than 'edited' so the deposit's history
+    // panel and the Audit Log page can tell "a manager denied a $40 line" apart
+    // from "a manager retyped the deposit amount". Re-stating a decision that
+    // has not actually changed writes nothing, so clicking Approve twice does
+    // not fill the history with no-ops.
+    if (from !== status || (status === 'denied' && (ex.review_reason || '') !== reason)) {
+      await logAudit({
+        entity_type: 'deposit',
+        entity_id: dep.id,
+        entity_number: dep.deposit_number,
+        action: 'expense_review',
+        user_id: req.user.id,
+        user_name: req.user.name,
+        details: {
+          expense_id: ex.id,
+          description: ex.description || null,
+          amount: parseFloat(ex.amount || 0).toFixed(2),
+          from: from,
+          to: status,
+          reason: status === 'denied' ? reason : null
+        }
+      });
+    }
+
+    res.json(await depositPayload(req, dep.id));
+  } catch (err) {
+    console.error('Deposit expense review failed:', err);
+    res.status(500).json({ error: 'Failed to save that decision' });
   }
 });
 
