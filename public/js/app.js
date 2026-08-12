@@ -3312,6 +3312,11 @@ var _taskPendingFiles = [];
 var _taskSubRows = [];
 var _taskFormUsers = [];
 var _taskFormTemplates = [];
+// Set while the new-task form is open inside a modal instead of as a page.
+// taskSave() checks it so a save closes the modal and hands the ids back rather
+// than navigating away from whatever page opened it.
+var _taskModalCtx = null;
+var _taskModalEsc = null;
 var _taskDetailUsers = [];
 var _taskDragId = null;
 var _taskDragGhost = null;
@@ -4198,6 +4203,105 @@ async function renderTaskForm(el, id){
   if(!id) taskRenderSubRows();
 }
 
+/* ---------------------------------------------------------------- task modal
+   Opens the REAL new-task form in a popup, prefilled.
+
+   It calls renderTaskForm() rather than reimplementing the form, so the modal
+   can never drift from the Tasks page: same fields, same validation, same
+   permission behaviour, same multi-assignee bulk path, same attachments and
+   subtasks. The only things changed afterwards are the page chrome (the page
+   header's Cancel button navigates away, which would abandon the page the modal
+   was opened from) and the prefilled values. */
+async function openTaskModal(prefill, opts) {
+  prefill = prefill || {};
+  opts = opts || {};
+  if (_taskModalCtx) return;          // one at a time
+  _taskForceSelf = false;
+
+  var ov = document.createElement('div');
+  ov.className = 'modal-overlay';
+  ov.innerHTML =
+    '<div class="modal" style="max-width:760px">' +
+      '<div class="modal-header">' +
+        '<div class="modal-title">' + escHtml(opts.heading || 'New Task') + '</div>' +
+        '<button class="btn btn-ghost btn-sm" onclick="closeTaskModal()" aria-label="Close" style="font-size:18px;line-height:1;padding:2px 8px">&times;</button>' +
+      '</div>' +
+      '<div class="modal-body" id="task-modal-body"><div class="loading">Loading&hellip;</div></div>' +
+    '</div>';
+  document.body.appendChild(ov);
+  _taskModalCtx = { onSaved: opts.onSaved || null, overlay: ov };
+
+  // Backdrop click closes; a click that started inside the panel does not, so a
+  // text selection dragged out of a field cannot dismiss a half-written task.
+  ov.addEventListener('mousedown', function (e) { if (e.target === ov) closeTaskModal(); });
+  _taskModalEsc = function (e) { if (e.key === 'Escape') closeTaskModal(); };
+  document.addEventListener('keydown', _taskModalEsc);
+
+  var body = document.getElementById('task-modal-body');
+  await renderTaskForm(body, null);
+  if (!_taskModalCtx) return;         // closed while the form was loading
+
+  var ph = body.querySelector('.page-header');
+  if (ph) ph.remove();
+  var card = body.querySelector('.card');
+  if (card) { card.style.maxWidth = 'none'; card.style.border = 'none'; card.style.background = 'transparent'; card.style.margin = '0'; card.style.boxShadow = 'none'; }
+  var cb = body.querySelector('.card-body');
+  if (cb) cb.style.padding = '0';
+
+  if (opts.note && cb) {
+    var n = document.createElement('div');
+    n.style.cssText = 'margin-bottom:14px;padding:10px 12px;border-radius:8px;background:rgba(245,158,11,0.10);border:1px solid rgba(245,158,11,0.4);font-size:13px';
+    n.textContent = opts.note;
+    cb.insertBefore(n, cb.firstChild);
+  }
+
+  applyTaskPrefill(prefill);
+}
+
+function applyTaskPrefill(p) {
+  p = p || {};
+  function set(id, v) { var el = document.getElementById(id); if (el && v != null && v !== '') el.value = v; }
+  set('tk-title', p.title);
+  set('tk-desc', p.description);
+  set('tk-priority', p.priority);
+  set('tk-due', p.due_date);
+  var ids = p.assignees || [];
+  if (ids.length) {
+    // With manage_tasks the new-task form shows a checkbox list; without it there
+    // is no assignee control at all and the task lands on the creator, which is
+    // the same thing the Tasks page does.
+    var hit = 0;
+    var boxes = document.querySelectorAll('.tk-assignee');
+    for (var i = 0; i < boxes.length; i++) {
+      if (ids.indexOf(parseInt(boxes[i].value, 10)) !== -1) { boxes[i].checked = true; hit++; }
+    }
+    if (hit && typeof taskUpdateAssigneeCount === 'function') taskUpdateAssigneeCount();
+    var sel = document.getElementById('tk-assignee');
+    if (sel) sel.value = String(ids[0]);
+  }
+  var t = document.getElementById('tk-title');
+  if (t) { try { t.focus(); t.setSelectionRange(t.value.length, t.value.length); } catch (e) {} }
+}
+
+function closeTaskModal() {
+  var ctx = _taskModalCtx;
+  _taskModalCtx = null;
+  if (_taskModalEsc) { document.removeEventListener('keydown', _taskModalEsc); _taskModalEsc = null; }
+  if (ctx && ctx.overlay && ctx.overlay.parentNode) ctx.overlay.parentNode.removeChild(ctx.overlay);
+  _taskPendingFiles = [];
+  _taskSubRows = [];
+}
+
+// Where a save lands. Returns true when the modal handled it, so taskSave()
+// skips its normal navigate() and the page underneath is left alone.
+function taskSaveLanded(ids) {
+  if (!_taskModalCtx) return false;
+  var cb = _taskModalCtx.onSaved;
+  closeTaskModal();
+  if (cb) { try { cb(ids || []); } catch (e) { console.error('task modal onSaved failed:', e); } }
+  return true;
+}
+
 async function taskSave(id){
   var payload = {
     title: (document.getElementById('tk-title').value||'').trim(),
@@ -4229,6 +4333,7 @@ async function taskSave(id){
     try {
       var rb = await api('POST','/tasks/bulk',payload);
       _taskPendingFiles=[];
+      if (taskSaveLanded((rb && rb.ids) || [])) return;
       if (rb && rb.ids && rb.ids.length===1) navigate('task-detail', rb.ids[0]); else navigate('tasks');
     } catch(e){ taskFeedback(e.message,true); }
     return;
@@ -4240,6 +4345,7 @@ async function taskSave(id){
     if (id && _taskPendingFiles.length){ try { await api('POST','/tasks/'+savedId+'/attachments',{attachments:_taskPendingFiles}); } catch(e){} }
     _taskPendingFiles=[];
     _taskForceSelf=false;
+    if (taskSaveLanded(savedId ? [savedId] : [])) return;
     navigate('task-detail', savedId);
   } catch(e){ taskFeedback(e.message,true); }
 }
@@ -25112,9 +25218,12 @@ function pvActionsCell(r, i) {
   return '<div style="display:flex;gap:6px;flex-wrap:wrap">' + out.join('') + '</div>';
 }
 
-// Opens the chase task through the REAL task API, so it gets the normal
-// permission check, activity entry and assignment email. The marker that makes
-// this row remember the task is a separate, best-effort follow-up call.
+// Opens the REAL new-task form in a modal, prefilled from the row, so the
+// manager reads and adjusts the chase task before it exists rather than firing
+// it off blind behind a yes/no dialog. Saving goes through POST /api/tasks the
+// same as the Tasks page, so the permission check, activity entry and assignment
+// email all still happen. The marker that makes this row remember the task is a
+// separate, best-effort follow-up call.
 async function pvSendToTask(i) {
   var d = _pvState.recon;
   if (!d || !d.rows[i]) return;
@@ -25123,17 +25232,6 @@ async function pvSendToTask(i) {
   var city = r.city_code || '—';
   var missing = (r.status === 'no_deposit' || r.status === 'unlinked') ? Number(r.pulsar_cash) : Number(r.gap);
   var assignee = r.manager_user_id || state.user.id;
-  var assigneeName = r.manager_user_id ? (r.manager_name || 'the city manager') : 'you';
-
-  var confirmMsg = 'Open a task for ' + assigneeName + ' to chase ' + who + '’s deposit?\n\n' +
-    'Pulsar cash: ' + pvMoney(r.pulsar_cash) + '\n' +
-    'Deposited: ' + pvMoney(r.deposited) + '\n' +
-    'Still missing: ' + pvMoney(missing);
-  if (!r.manager_user_id) {
-    confirmMsg += '\n\nNo primary manager is set for ' + city + ', so this will be assigned to you. ' +
-      'Set one under Cities to route it automatically next time.';
-  }
-  if (!await novaConfirm(confirmMsg, { title: 'Send to task', okText: 'Create the task' })) return;
 
   var periodLabel = formatDate(d.period_start) + ' – ' + formatDate(d.period_end);
   var title = 'Cash deposit missing — ' + who + ' (' + city + '), week of ' + formatDate(d.period_start);
@@ -25161,37 +25259,45 @@ async function pvSendToTask(i) {
   lines.push('');
   lines.push('Raised from Pulsar Verification on the Cash Deposits page.');
 
-  var task;
-  try {
-    task = await api('POST', '/tasks', {
-      title: title,
-      description: lines.join('\n'),
-      priority: 'high',
-      status: 'todo',
-      assigned_to: assignee,
-      due_date: depYmd(depAddDays(new Date(), 3))
-    });
-  } catch (err) {
-    novaAlert((err && err.message) || 'Could not create the task.');
-    return;
-  }
-  // Best effort: if this marker fails the task still exists, the row just will
-  // not remember it and the button comes back.
-  try {
-    await api('POST', '/pulsar/reconciliation/reminder', {
-      period_start: d.period_start,
-      key: r.key,
-      task_id: task.id,
-      user_id: r.user_id || null,
-      tech_raw: r.tech_raw || null,
-      tech_name: r.user_name || null,
-      city_code: r.city_code || null,
-      assigned_to: assignee,
-      missing: missing
-    });
-  } catch (err) { /* non-fatal */ }
-  await pvLoadRecon();
-  novaAlert('Task #' + task.id + ' created for ' + (r.manager_user_id ? (r.manager_name || 'the city manager') : 'you') + '.');
+  await openTaskModal({
+    title: title,
+    description: lines.join('\n'),
+    priority: 'high',
+    due_date: depYmd(depAddDays(new Date(), 3)),
+    assignees: [assignee]
+  }, {
+    heading: 'Chase ' + who + '’s deposit',
+    note: r.manager_user_id ? null
+      : ('No primary manager is set for ' + city + ', so this is assigned to you. Set one under Cities to route it there automatically next time.'),
+    onSaved: async function (ids) {
+      // Several assignees means several tasks; the row only needs to know that
+      // one exists, so the first id is what gets remembered.
+      var taskId = (ids && ids.length) ? ids[0] : null;
+      if (taskId) {
+        // Best effort: if this marker fails the task still exists, the row just
+        // will not remember it and the button comes back.
+        try {
+          await api('POST', '/pulsar/reconciliation/reminder', {
+            period_start: d.period_start,
+            key: r.key,
+            task_id: taskId,
+            user_id: r.user_id || null,
+            tech_raw: r.tech_raw || null,
+            tech_name: r.user_name || null,
+            city_code: r.city_code || null,
+            assigned_to: assignee,
+            missing: missing
+          });
+        } catch (err) { /* non-fatal */ }
+      }
+      await pvLoadRecon();
+      if (taskId) {
+        novaAlert(ids.length > 1
+          ? (ids.length + ' tasks created (#' + ids.join(', #') + ').')
+          : ('Task #' + taskId + ' created.'));
+      }
+    }
+  });
 }
 
 async function pvCorrectEntered(i) {
