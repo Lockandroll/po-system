@@ -25025,7 +25025,10 @@ function pvRenderRecon() {
         (_pvState.openKey === r.key ? 'Hide' : r.calls + ' call' + (r.calls === 1 ? '' : 's')) + '</button>'
       : '<span style="color:var(--text-muted-color)">—</span>';
 
-    var main = '<tr' + (r.status === 'no_deposit' || r.status === 'unlinked' ? ' style="background:rgba(239,68,68,0.05)"' : '') + '>' +
+    // class, not an inline style: an inline tr background gets painted over by
+    // the global "tr:hover td" rule, so the row went grey the instant you
+    // reached for its button. See the .row-alert rules in index.html.
+    var main = '<tr' + (r.status === 'no_deposit' || r.status === 'unlinked' ? ' class="row-alert"' : '') + '>' +
       '<td>' + nameCell + '</td>' +
       '<td>' + escHtml(r.city_code || '—') + '</td>' +
       '<td style="text-align:right;font-weight:600">' + (r.calls ? pvMoney(r.pulsar_cash) : '<span style="color:var(--text-muted-color)">—</span>') + '</td>' +

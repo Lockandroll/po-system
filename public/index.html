@@ -239,6 +239,21 @@
     td { padding: 12px 16px; font-size: 14px; border-bottom: 1px solid var(--border-light); color: var(--text-dim); }
     tr:last-child td { border-bottom: none; }
     tr:hover td { background: rgba(255,255,255,0.03); }
+    /* Flagged table rows (a row that is trying to tell you something is wrong).
+       The tint MUST sit on the td, not the tr: the tr:hover rule directly above
+       paints the CELLS, so a background set on the tr alone gets covered the
+       moment you point at the row - a red "no deposit" row turned grey exactly
+       when you reached for its button. These keep the colour and DEEPEN it on
+       hover instead. Use class="row-alert" (red) or class="row-warn" (amber) on
+       the tr rather than an inline style. */
+    tr.row-alert td { background: rgba(239,68,68,0.06); }
+    tr.row-warn td { background: rgba(245,158,11,0.06); }
+    tr.row-alert:hover td { background: rgba(239,68,68,0.13); }
+    tr.row-warn:hover td { background: rgba(245,158,11,0.13); }
+    html[data-theme="light"] tr.row-alert td { background: rgba(239,68,68,0.07); }
+    html[data-theme="light"] tr.row-warn td { background: rgba(245,158,11,0.07); }
+    html[data-theme="light"] tr.row-alert:hover td { background: rgba(239,68,68,0.15); }
+    html[data-theme="light"] tr.row-warn:hover td { background: rgba(245,158,11,0.15); }
     .btn:focus-visible, .nav-item:focus-visible, .nav-section-header:focus-visible, .nav-subsection-header:focus-visible, .nav-sub:focus-visible, .nav-new:focus-visible { outline: 2px solid var(--primary); outline-offset: 2px; }
     .badge { display: inline-flex; align-items: center; padding: 3px 10px; border-radius: 20px; font-size: 12px; font-weight: 600; text-transform: capitalize; }
     .badge-draft { background: #2a2a2a; color: #aaa; }
