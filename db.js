@@ -4554,6 +4554,32 @@ async function initDB() {
 
     await client.query('ALTER TABLE webhook_event_stats ADD COLUMN IF NOT EXISTS duplicate_count BIGINT NOT NULL DEFAULT 0;');
 
+    // How this source decides what a duplicate is: id | bytes | off.
+    await client.query("ALTER TABLE webhook_sources ADD COLUMN IF NOT EXISTS dedupe_mode VARCHAR(12) NOT NULL DEFAULT 'id';");
+
+    // dedupe_key is SEPARATE from external_id on purpose.
+    //
+    // They started as one column, and that conflated two different things: the
+    // partner's id (which always belongs on the row, for display and for
+    // tracing a record back to their system) and the value we enforce
+    // uniqueness on (which we may want to stop enforcing). With one column,
+    // "turn duplicate checking off" also meant "lose the id from the screen",
+    // and a sentinel id like "0" became a real key.
+    //
+    // Now: external_id is always recorded and never constrained. dedupe_key is
+    // set only when the source is deduping on the id, and it alone carries the
+    // unique index.
+    await client.query('ALTER TABLE webhook_events ADD COLUMN IF NOT EXISTS dedupe_key VARCHAR(200);');
+    await client.query('UPDATE webhook_events SET dedupe_key = external_id WHERE dedupe_key IS NULL AND external_id IS NOT NULL;');
+    await client.query(
+      'CREATE UNIQUE INDEX IF NOT EXISTS idx_webhook_events_dedupe_key ' +
+      'ON webhook_events(source_slug, dedupe_key) WHERE dedupe_key IS NOT NULL;'
+    );
+    // The old index enforced uniqueness on external_id, which must now be free
+    // to repeat. Dropped AFTER the new one exists so there is no window with
+    // neither in place.
+    await client.query('DROP INDEX IF EXISTS idx_webhook_events_dedupe;');
+
     // Per-type traffic counters, including for records the filter DROPPED.
     //
     // This is what makes a firehose safe to narrow. Pulsar's feed carries every

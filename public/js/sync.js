@@ -20,6 +20,116 @@ var _syncSigning = false;      // does the server have a key to store signing se
 var _syncFormats = [];
 var _syncSearchTimer = null;
 
+/* ------------------------------------------------- partner event type names */
+
+// Pulsar's Header_Types enum, from Duty 2026-08-13. A screen full of bare
+// numbers is unreadable, and the numbers are the whole routing key here.
+//
+// Kept in the UI rather than the server on purpose: it is a display aid, and
+// nothing on the server should start BEHAVING differently because a number has
+// a name. An unknown code still shows, as itself - the list is not a filter.
+//
+// NOTE the two corrections to what was said in chat: 2000 is NOT a new digital
+// (it is Calls Live ID Added), and digitals are the 5000 range, not 2000/2001.
+var PULSAR_TYPES = {
+  '61': 'Active Call → New Status → Direct Tech',
+  '62': 'Active Call → Clear Tech',
+  '63': 'Active Call → Cancelled',
+  '64': 'Active Call → Close',
+  '65': 'Active Call → Changed',
+  '66': 'Active Call → New Status',
+  '67': 'Active Call → New Status → Accepted',
+  '68': 'Active Call → New Status → Enroute',
+  '69': 'Active Call → New Status → OnSite',
+  '70': 'Old Pulsar → New Entry',
+  '71': 'Active Call → New Status → Approaching',
+  '990': 'Analyse Request',
+  '991': 'Analyse Response',
+  '992': 'Device Log → Response',
+  '998': 'Report Log',
+  '999': 'Boot User',
+  '1001': 'Location Update',
+  '1002': 'BB Update',
+  '1003': 'Location Map Details Update',
+  '1004': 'Location Update → Overrides',
+  '1005': 'MA Update → Overrides',
+  '1006': 'MA Update → Settings',
+  '1007': 'MA Update → Everything',
+  '1010': 'Account Update',
+  '1011': 'Account Delete',
+  '1020': 'Personnel Update',
+  '1021': 'Personnel Delete',
+  '1025': 'Personnel Status → Logon',
+  '1026': 'Personnel Status → Update',
+  '1027': 'Personnel Status → Logoff',
+  '1030': 'Calls → New',
+  '1031': 'Calls → Updated',
+  '1032': 'Calls → Closed',
+  '1033': 'Calls → Closed → UID',
+  '1034': 'Calls → zNew → New',
+  '1035': 'Calls → Schedule Updated',
+  '1040': 'Calls → ReSend',
+  '1041': 'Calls → ReSend ToEveryone',
+  '1050': 'Calls → Transfer → New',
+  '1051': 'Calls → Transfer → Live',
+  '1060': 'Calls → Survey Ready',
+  '1061': 'Calls → Digital Receipt Ready',
+  '1062': 'Calls → Digital Tech Cancelled',
+  '1063': 'Calls → Digital Tech Sent Canned Msg',
+  '1072': 'Calls → Flip',
+  '1073': 'Calls → Poke',
+  '1090': 'Calls → New ETA',
+  '1091': 'Calls → New ETA → From Mobile',
+  '2000': 'Calls → Live ID Added',
+  '2010': 'Calls → Live ID Removed',
+  '2020': 'Calls → Call Status Updated',
+  '2300': 'Message Tech',
+  '2310': 'Jobox → Message Location',
+  '2320': 'Jobox → Message Dispatched By',
+  '2400': 'Chat Start → User',
+  '2401': 'Chat Start → Center',
+  '2402': 'Chat Start → Location',
+  '2500': 'Chat User → Msg',
+  '2502': 'Chat User → Msg RoomBased',
+  '3000': 'Schedule → Updated',
+  '3010': 'Schedule → Shift → Updated',
+  '3011': 'Schedule → Shift → Deleted',
+  '4000': 'Vehicles → Updated',
+  '5000': 'Digital → New Job',
+  '5001': 'Digital → New Transcript PCD Push',
+  '5002': 'Digital → Job Fetched',
+  '5003': 'Digital → New Approved Digital',
+  '5006': 'Digital → GOA Result → Allstate',
+  '5007': 'Digital → GOA Result → ISSC',
+  '5008': 'Digital → GOA Result → TM',
+  '5010': 'Digital → Accepted',
+  '5011': 'Digital → Accepted → BigData',
+  '5012': 'Digital → Rejected',
+  '5014': 'Digital → Expired',
+  '5016': 'Digital → Cancelled',
+  '5020': 'Digital → Account Offline',
+  '5022': 'Digital → Account Online',
+  '5024': 'Digital → Account Registered',
+  '5026': 'Digital → Account UnRegistered',
+  '5029': 'Digital → Account Updated',
+  '5030': 'Digital → New MA Job',
+  '5036': 'Digital → New Import Job',
+  '5077': 'Digital → Additional Service → Result → ISSC',
+  '5078': 'Digital → General Message → Result → ISSC',
+  '6000': 'Accounting Calls Confirmed',
+  '6500': 'EI → Image Uploaded',
+  '7010': 'Master Account → Auth Adj Updated',
+  '8000': 'Techs → Heartbeat',
+  '50000': 'Boot Off'
+};
+
+function syncTypeLabel(slug, code) {
+  if (code === null || code === undefined || code === '') return '';
+  if (String(slug) !== 'pulsar') return '';
+  return PULSAR_TYPES[String(code)] || '';
+}
+
+
 function syncInjectStyles() {
   if (document.getElementById('sync-styles')) return;
   var css =
@@ -255,8 +365,11 @@ async function syncRenderTraffic(body) {
   rows.forEach(function (r) {
     var st = Number(r.stored_count || 0), dr = Number(r.dropped_count || 0);
     var du = Number(r.duplicate_count || 0), n = st + dr + du || 1;
+    var lbl = syncTypeLabel(r.source_slug, r.event_type);
     var type = r.event_type === '' || r.event_type === null ? '<span class="sy-note">(no type)</span>'
-      : '<span class="sy-mono">' + escHtml(r.event_type) + '</span>';
+      : '<span class="sy-mono">' + escHtml(r.event_type) + '</span>' +
+        (lbl ? '<div class="sy-note">' + escHtml(lbl) + '</div>'
+             : '<div class="sy-note" style="color:#f0b849">unknown code</div>');
     html +=
       '<tr>' +
         '<td>' + type + '</td>' +
@@ -381,7 +494,9 @@ async function syncRenderEvents(body) {
         '<td class="sy-mono">' + Number(e.id) + '</td>' +
         '<td class="sy-note">' + escHtml(syncDateStr(e.received_at)) + '</td>' +
         '<td class="sy-note">' + escHtml(e.source_slug) + '</td>' +
-        '<td class="sy-mono">' + escHtml(e.event_type || '') + '</td>' +
+        '<td><span class="sy-mono">' + escHtml(e.event_type || '') + '</span>' +
+          (syncTypeLabel(e.source_slug, e.event_type)
+            ? '<div class="sy-note">' + escHtml(syncTypeLabel(e.source_slug, e.event_type)) + '</div>' : '') + '</td>' +
         '<td class="sy-mono sy-note">' + escHtml(e.external_id || '') + '</td>' +
         '<td><span class="sy-chip ' + escHtml(e.status) + '">' + escHtml(e.status) + '</span>' +
           syncSigChip(e.sig_state) + err + '</td>' +
@@ -430,7 +545,9 @@ async function syncOpenEvent(id) {
     '<div class="sy-kv" style="margin-bottom:16px">' +
       '<div class="lbl">Event</div><div class="sy-mono">#' + Number(e.id) + '</div>' +
       '<div class="lbl">Source</div><div>' + escHtml(e.source_slug) + '</div>' +
-      '<div class="lbl">Type</div><div class="sy-mono">' + escHtml(e.event_type || '(none)') + '</div>' +
+      '<div class="lbl">Type</div><div><span class="sy-mono">' + escHtml(e.event_type || '(none)') + '</span>' +
+        (syncTypeLabel(e.source_slug, e.event_type)
+          ? ' <span class="sy-note">' + escHtml(syncTypeLabel(e.source_slug, e.event_type)) + '</span>' : '') + '</div>' +
       '<div class="lbl">Their id</div><div class="sy-mono">' + escHtml(e.external_id || '(none sent)') + '</div>' +
       '<div class="lbl">Status</div><div><span class="sy-chip ' + escHtml(e.status) + '">' + escHtml(e.status) + '</span></div>' +
       '<div class="lbl">Received</div><div>' + escHtml(syncDateStr(e.received_at)) + '</div>' +
@@ -493,6 +610,9 @@ function syncRenderSources(body) {
     if (s.hmac_mode === 'require') auth += '<span class="sy-chip on">signed</span>';
     else if (s.hmac_mode === 'observe') auth += '<span class="sy-chip parked">observing</span>';
 
+    if (s.dedupe_mode === 'off') auth += ' <span class="sy-chip parked">dupes allowed</span>';
+    else if (s.dedupe_mode === 'bytes') auth += ' <span class="sy-chip off">dupes by content</span>';
+
     var accepting = s.accept_types
       ? '<span class="sy-mono">' + escHtml(s.accept_types) + '</span>'
       : '<span class="sy-note">everything</span>';
@@ -547,6 +667,17 @@ function syncSourceForm(s) {
       '<input id="sy-f-handler" value="' + escHtml(s.handler || '') + '" placeholder="defaults to the slug">' +
       '<div class="sy-note">The function in utils/webhookHandlers.js that knows what this partner&#39;s ' +
       'data means. Leave it alone until one exists &mdash; deliveries park safely in the meantime.</div></div>' +
+    '<div class="form-group"><label>Duplicate checking</label>' +
+      '<select id="sy-f-dedupemode">' +
+        '<option value="id"' + ((s.dedupe_mode || 'id') === 'id' ? ' selected' : '') + '>Use their id field</option>' +
+        '<option value="bytes"' + (s.dedupe_mode === 'bytes' ? ' selected' : '') + '>Compare the raw record instead</option>' +
+        '<option value="off"' + (s.dedupe_mode === 'off' ? ' selected' : '') + '>Off &mdash; store everything</option>' +
+      '</select>' +
+      '<div class="sy-note"><strong>Off is a reasonable place to start.</strong> Getting the id field wrong ' +
+      'means real records disappear with no error, which is far worse than a few repeated rows &mdash; and ' +
+      'until a handler exists, a repeat costs nothing but a row. Switch to <em>Use their id field</em> once ' +
+      'you have confirmed which field is genuinely unique. The partner&#39;s id is recorded on every event ' +
+      'either way.</div></div>' +
     '<div class="form-group"><label>Their id field</label>' +
       '<input id="sy-f-dedupe" value="' + escHtml(s.dedupe_path || '') + '" placeholder="id">' +
       '<div class="sy-note">Which field holds their own id for each record, so a resend is not stored twice. ' +
@@ -633,6 +764,7 @@ function syncFormValues(withSlug) {
     dedupe_path: (document.getElementById('sy-f-dedupe') || {}).value || '',
     event_type_path: (document.getElementById('sy-f-type') || {}).value || '',
     accept_types: (document.getElementById('sy-f-accept') || {}).value || '',
+    dedupe_mode: (document.getElementById('sy-f-dedupemode') || {}).value || 'id',
     secret_header: (document.getElementById('sy-f-secretheader') || {}).value || ''
   };
   var hm = document.getElementById('sy-f-hmacmode');

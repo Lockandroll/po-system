@@ -140,6 +140,14 @@ function normTypes(v) {
 // in this field must never be the thing that starts rejecting a partner's
 // traffic, and must never silently disable a check that WAS enforcing either -
 // hence the explicit three-way.
+// Unknown values fall back to 'id' - what the source was created with. A typo
+// must not silently switch a source into storing everything twice, and must not
+// silently start suppressing records either.
+function dedupeMode(v) {
+  var m = String(v || '').trim().toLowerCase();
+  return (m === 'bytes' || m === 'off') ? m : 'id';
+}
+
 function hmacMode(v) {
   var m = String(v || '').trim().toLowerCase();
   return (m === 'observe' || m === 'require') ? m : 'off';
@@ -155,7 +163,7 @@ function baseUrl(req) {
 
 router.get('/sources', requireAuth, requirePermission('view_sync'), async function (req, res) {
   var r = await pool.query(
-    'SELECT s.id, s.slug, s.name, s.secret_hint, s.secret_header, s.handler, s.enabled, s.dedupe_path, s.event_type_path, s.accept_types, ' +
+    'SELECT s.id, s.slug, s.name, s.secret_hint, s.secret_header, s.handler, s.enabled, s.dedupe_path, s.dedupe_mode, s.event_type_path, s.accept_types, ' +
     's.hmac_mode, s.hmac_header, s.hmac_ts_header, s.hmac_format, s.hmac_max_skew_s, (s.hmac_secret_enc IS NOT NULL) AS hmac_key_set, ' +
     's.last_event_at, s.created_at, u.name AS created_by_name, ' +
     '(SELECT COUNT(*) FROM webhook_events e WHERE e.source_slug = s.slug) AS event_count, ' +
@@ -202,14 +210,15 @@ router.post('/sources', requireAuth, requirePermission('manage_sync'), async fun
   var secret = supplied || ingest.newSecret();
 
   var r = await pool.query(
-    'INSERT INTO webhook_sources (slug, name, secret_hash, secret_hint, secret_header, handler, enabled, dedupe_path, event_type_path, accept_types, created_by) ' +
-    'VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) RETURNING id',
+    'INSERT INTO webhook_sources (slug, name, secret_hash, secret_hint, secret_header, handler, enabled, dedupe_path, dedupe_mode, event_type_path, accept_types, created_by) ' +
+    'VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12) RETURNING id',
     [
       slug, name, ingest.sha256(secret), secret.slice(-4),
       String(req.body.secret_header || '').trim().toLowerCase() || null,
       String(req.body.handler || slug).trim() || slug,
       req.body.enabled === false ? false : true,
       String(req.body.dedupe_path || '').trim() || null,
+      dedupeMode(req.body.dedupe_mode),
       String(req.body.event_type_path || '').trim() || null,
       normTypes(req.body.accept_types),
       req.user.id
@@ -247,9 +256,9 @@ router.put('/sources/:id', requireAuth, requirePermission('manage_sync'), async 
   if (!name) return res.status(400).json({ error: 'Name is required' });
 
   var r = await pool.query(
-    'UPDATE webhook_sources SET name = $2, handler = $3, enabled = $4, dedupe_path = $5, event_type_path = $6, accept_types = $7, ' +
+    'UPDATE webhook_sources SET name = $2, handler = $3, enabled = $4, dedupe_path = $5, event_type_path = $6, accept_types = $7, dedupe_mode = $14, ' +
     'secret_header = $8, hmac_mode = $9, hmac_header = $10, hmac_ts_header = $11, hmac_format = $12, hmac_max_skew_s = $13, updated_at = NOW() ' +
-    'WHERE id = $1 RETURNING id, slug, name, handler, enabled, dedupe_path, event_type_path, accept_types, ' +
+    'WHERE id = $1 RETURNING id, slug, name, handler, enabled, dedupe_path, dedupe_mode, event_type_path, accept_types, ' +
     'secret_header, hmac_mode, hmac_header, hmac_ts_header, hmac_format, hmac_max_skew_s',
     [
       s.id, name,
@@ -263,7 +272,8 @@ router.put('/sources/:id', requireAuth, requirePermission('manage_sync'), async 
       req.body.hmac_header !== undefined ? (String(req.body.hmac_header).trim().toLowerCase() || null) : s.hmac_header,
       req.body.hmac_ts_header !== undefined ? (String(req.body.hmac_ts_header).trim().toLowerCase() || null) : s.hmac_ts_header,
       req.body.hmac_format !== undefined ? (String(req.body.hmac_format).trim() || null) : s.hmac_format,
-      req.body.hmac_max_skew_s !== undefined ? Math.max(0, Number(req.body.hmac_max_skew_s) || 0) : s.hmac_max_skew_s
+      req.body.hmac_max_skew_s !== undefined ? Math.max(0, Number(req.body.hmac_max_skew_s) || 0) : s.hmac_max_skew_s,
+      req.body.dedupe_mode !== undefined ? dedupeMode(req.body.dedupe_mode) : s.dedupe_mode
     ]
   );
   ingest.cacheBust(s.slug);
@@ -408,7 +418,7 @@ router.get('/events', requireAuth, requirePermission('view_sync'), async functio
   // send megabytes per event and a list screen must not drag that across the
   // wire; the detail route below returns them one at a time.
   var r = await pool.query(
-    'SELECT id, source_slug, event_type, external_id, status, attempts, last_error, ' +
+    'SELECT id, source_slug, event_type, external_id, dedupe_key, status, attempts, last_error, ' +
     'received_at, processed_at, next_attempt_at, ip, sig_state, LENGTH(raw_body) AS bytes ' +
     'FROM webhook_events ' + (where.length ? 'WHERE ' + where.join(' AND ') + ' ' : '') +
     'ORDER BY id DESC LIMIT $' + params.length,

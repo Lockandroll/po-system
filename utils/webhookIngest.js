@@ -293,7 +293,7 @@ async function loadSource(slug) {
   var now = Date.now();
   if (hit && hit.expires > now) return hit.row;
   var r = await pool.query(
-    'SELECT id, slug, name, secret_hash, secret_header, handler, enabled, dedupe_path, event_type_path, accept_types, ' +
+    'SELECT id, slug, name, secret_hash, secret_header, handler, enabled, dedupe_path, dedupe_mode, event_type_path, accept_types, ' +
     'hmac_mode, hmac_header, hmac_ts_header, hmac_secret_enc, hmac_format, hmac_max_skew_s FROM webhook_sources WHERE slug = $1',
     [key]
   );
@@ -447,6 +447,20 @@ async function flushStats() {
 //
 // itemRaw is the exact text this record is stored as: the request's own bytes
 // for a single object, the re-serialized element for a member of a batch.
+// id    dedupe on the partner's own id  (default, safest once the id is trusted)
+// bytes  no id, compare the raw bytes inside a short window
+// off    store everything, never suppress anything
+//
+// The mode is per source because "is their id actually unique" is a question
+// about THEM, and the honest answer early in an integration is "nobody knows
+// yet". Getting it wrong in the 'id' direction is silent data loss, which is
+// far worse than a few duplicate rows - so 'off' is a legitimate place to sit
+// while you find out.
+function dedupeMode(source) {
+  var m = String(source.dedupe_mode || 'id').toLowerCase();
+  return (m === 'bytes' || m === 'off') ? m : 'id';
+}
+
 async function storeOne(source, req, itemRaw, item, sigNote) {
   var eventType = scalar(pluck(item, source.event_type_path || 'event'))
     || scalar((req.headers || {})['x-event-type']);
@@ -459,28 +473,38 @@ async function storeOne(source, req, itemRaw, item, sigNote) {
   }
 
   var bodyHash = sha256(itemRaw);
-  var externalId = dedupeId(pluck(item, source.dedupe_path || 'id'))
-    || dedupeId((req.headers || {})['x-event-id']);
+  var mode = dedupeMode(source);
+
+  // externalId is ALWAYS recorded - it is the partner's id and belongs on the
+  // row whatever we do about duplicates. dedupeKey is what the unique index
+  // actually enforces, and it is only set when we are deduping on the id.
+  // Keeping them as one column was what made "turn duplicate checking off"
+  // mean "lose the id from the screen".
+  var externalId = scalar(pluck(item, source.dedupe_path || 'id'))
+    || scalar((req.headers || {})['x-event-id']);
+  var dedupeKey = mode === 'id'
+    ? (dedupeId(pluck(item, source.dedupe_path || 'id')) || dedupeId((req.headers || {})['x-event-id']))
+    : null;
 
   // Dedupe path 1: the source gave us its own event id. The partial unique
   // index does the work, so a race between two concurrent deliveries of the
   // same id resolves in the database rather than in application logic.
-  if (externalId) {
+  if (dedupeKey) {
     var ins = await pool.query(
-      'INSERT INTO webhook_events (source_slug, event_type, external_id, body_hash, payload, raw_body, headers, ip, status, next_attempt_at, sig_state) ' +
-      "VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'pending',NOW(),$9) " +
-      'ON CONFLICT (source_slug, external_id) WHERE external_id IS NOT NULL DO NOTHING ' +
+      'INSERT INTO webhook_events (source_slug, event_type, external_id, dedupe_key, body_hash, payload, raw_body, headers, ip, status, next_attempt_at, sig_state) ' +
+      "VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,'pending',NOW(),$10) " +
+      'ON CONFLICT (source_slug, dedupe_key) WHERE dedupe_key IS NOT NULL DO NOTHING ' +
       'RETURNING id',
-      [source.slug, eventType, externalId, bodyHash, JSON.stringify(item), itemRaw, JSON.stringify(safeHeaders(req)), clientIp(req), sigNote || null]
+      [source.slug, eventType, externalId, dedupeKey, bodyHash, JSON.stringify(item), itemRaw, JSON.stringify(safeHeaders(req)), clientIp(req), sigNote || null]
     );
     if (!ins.rows.length) {
       var prior = await pool.query(
-        'SELECT id FROM webhook_events WHERE source_slug = $1 AND external_id = $2',
-        [source.slug, externalId]
+        'SELECT id FROM webhook_events WHERE source_slug = $1 AND dedupe_key = $2',
+        [source.slug, dedupeKey]
       );
       countEvent(source.slug, eventType, 'duplicate');
       console.warn('[sync] ' + source.slug + ' duplicate ' + (eventType ? 'type ' + eventType + ' ' : '') +
-        'id "' + externalId + '" - already stored as event ' + (prior.rows[0] ? prior.rows[0].id : '?') +
+        'id "' + dedupeKey + '" - already stored as event ' + (prior.rows[0] ? prior.rows[0].id : '?') +
         ', nothing new written. If this id was expected to be NEW, the dedupe field is wrong.');
       return { id: prior.rows[0] ? Number(prior.rows[0].id) : null, duplicate: true };
     }
@@ -491,19 +515,21 @@ async function storeOne(source, req, itemRaw, item, sigNote) {
   // Dedupe path 2: no id anywhere. Identical bytes inside the blind window are
   // a retry of a delivery whose 200 got lost. Outside it, assume a real
   // re-send and store it.
-  var dup = await pool.query(
-    'SELECT id FROM webhook_events WHERE source_slug = $1 AND body_hash = $2 AND received_at > NOW() - ($3::bigint * INTERVAL ' + "'1 millisecond'" + ') ORDER BY id DESC LIMIT 1',
-    [source.slug, bodyHash, BLIND_DEDUPE_MS]
-  );
-  if (dup.rows.length) {
-    countEvent(source.slug, eventType, 'duplicate');
-    return { id: Number(dup.rows[0].id), duplicate: true };
+  if (mode !== 'off') {
+    var dup = await pool.query(
+      'SELECT id FROM webhook_events WHERE source_slug = $1 AND body_hash = $2 AND received_at > NOW() - ($3::bigint * INTERVAL ' + "'1 millisecond'" + ') ORDER BY id DESC LIMIT 1',
+      [source.slug, bodyHash, BLIND_DEDUPE_MS]
+    );
+    if (dup.rows.length) {
+      countEvent(source.slug, eventType, 'duplicate');
+      return { id: Number(dup.rows[0].id), duplicate: true };
+    }
   }
 
   var ins2 = await pool.query(
-    'INSERT INTO webhook_events (source_slug, event_type, external_id, body_hash, payload, raw_body, headers, ip, status, next_attempt_at, sig_state) ' +
-    "VALUES ($1,$2,NULL,$3,$4,$5,$6,$7,'pending',NOW(),$8) RETURNING id",
-    [source.slug, eventType, bodyHash, JSON.stringify(item), itemRaw, JSON.stringify(safeHeaders(req)), clientIp(req), sigNote || null]
+    'INSERT INTO webhook_events (source_slug, event_type, external_id, dedupe_key, body_hash, payload, raw_body, headers, ip, status, next_attempt_at, sig_state) ' +
+    "VALUES ($1,$2,$3,NULL,$4,$5,$6,$7,$8,'pending',NOW(),$9) RETURNING id",
+    [source.slug, eventType, externalId, bodyHash, JSON.stringify(item), itemRaw, JSON.stringify(safeHeaders(req)), clientIp(req), sigNote || null]
   );
   countEvent(source.slug, eventType, 'stored');
   return { id: Number(ins2.rows[0].id), duplicate: false };
@@ -529,6 +555,7 @@ var INSERT_CHUNK = 200;
 async function storeMany(source, req, items, sigNote) {
   var hdrs = JSON.stringify(safeHeaders(req));
   var ip = clientIp(req);
+  var mode = dedupeMode(source);
 
   // 1. Shape every record once, and drop the filtered ones without a query.
   var rows = [];
@@ -546,7 +573,11 @@ async function storeMany(source, req, items, sigNote) {
     rows.push({
       raw: itemRaw,
       hash: sha256(itemRaw),
-      externalId: dedupeId(pluck(item, source.dedupe_path || 'id')) || dedupeId((req.headers || {})['x-event-id']),
+      // Always recorded; only enforced when the mode says so. See storeOne.
+      externalId: scalar(pluck(item, source.dedupe_path || 'id')) || scalar((req.headers || {})['x-event-id']),
+      dedupeKey: mode === 'id'
+        ? (dedupeId(pluck(item, source.dedupe_path || 'id')) || dedupeId((req.headers || {})['x-event-id']))
+        : null,
       type: eventType,
       payload: itemRaw
     });
@@ -560,13 +591,17 @@ async function storeMany(source, req, items, sigNote) {
   // itself, and Postgres cannot resolve an in-statement conflict for us.
   var withId = [], withoutId = [], seenId = {}, seenHash = {};
   rows.forEach(function (r) {
-    if (r.externalId) {
-      if (seenId[r.externalId]) { duplicates++; return; }
-      seenId[r.externalId] = true;
+    if (r.dedupeKey) {
+      if (seenId[r.dedupeKey]) { duplicates++; countEvent(source.slug, r.type, 'duplicate'); return; }
+      seenId[r.dedupeKey] = true;
       withId.push(r);
     } else {
-      if (seenHash[r.hash]) { duplicates++; return; }
-      seenHash[r.hash] = true;
+      // With duplicate checking off, nothing is collapsed - not even bytes that
+      // repeat inside the same request. That is the whole point of 'off'.
+      if (mode !== 'off') {
+        if (seenHash[r.hash]) { duplicates++; countEvent(source.slug, r.type, 'duplicate'); return; }
+        seenHash[r.hash] = true;
+      }
       withoutId.push(r);
     }
   });
@@ -577,24 +612,24 @@ async function storeMany(source, req, items, sigNote) {
     var chunk = withId.slice(c, c + INSERT_CHUNK);
     var vals = [], params = [];
     chunk.forEach(function (r, n) {
-      var b = n * 9;
+      var b = n * 10;
       vals.push('($' + (b + 1) + ',$' + (b + 2) + ',$' + (b + 3) + ',$' + (b + 4) + ',$' + (b + 5) +
-        ',$' + (b + 6) + ',$' + (b + 7) + ',$' + (b + 8) + ",'pending',NOW(),$" + (b + 9) + ')');
-      params.push(source.slug, r.type, r.externalId, r.hash, r.payload, r.raw, hdrs, ip, sigNote || null);
+        ',$' + (b + 6) + ',$' + (b + 7) + ',$' + (b + 8) + ',$' + (b + 9) + ",'pending',NOW(),$" + (b + 10) + ')');
+      params.push(source.slug, r.type, r.externalId, r.dedupeKey, r.hash, r.payload, r.raw, hdrs, ip, sigNote || null);
     });
     var ins = await pool.query(
-      'INSERT INTO webhook_events (source_slug, event_type, external_id, body_hash, payload, raw_body, headers, ip, status, next_attempt_at, sig_state) ' +
+      'INSERT INTO webhook_events (source_slug, event_type, external_id, dedupe_key, body_hash, payload, raw_body, headers, ip, status, next_attempt_at, sig_state) ' +
       'VALUES ' + vals.join(',') + ' ' +
-      'ON CONFLICT (source_slug, external_id) WHERE external_id IS NOT NULL DO NOTHING ' +
-      'RETURNING id, external_id',
+      'ON CONFLICT (source_slug, dedupe_key) WHERE dedupe_key IS NOT NULL DO NOTHING ' +
+      'RETURNING id, dedupe_key',
       params
     );
     var got = {};
-    ins.rows.forEach(function (row) { got[row.external_id] = Number(row.id); });
+    ins.rows.forEach(function (row) { got[row.dedupe_key] = Number(row.id); });
     chunk.forEach(function (r) {
-      if (got[r.externalId] !== undefined) {
-        ids.push(got[r.externalId]);
-        fresh.push(got[r.externalId]);
+      if (got[r.dedupeKey] !== undefined) {
+        ids.push(got[r.dedupeKey]);
+        fresh.push(got[r.dedupeKey]);
         countEvent(source.slug, r.type, 'stored');
       } else {
         duplicates++;
@@ -606,32 +641,35 @@ async function storeMany(source, req, items, sigNote) {
   // 4. Records with no id of their own: ONE lookup for the whole set rather
   // than one per record, then insert the survivors.
   if (withoutId.length) {
-    var hashes = withoutId.map(function (r) { return r.hash; });
-    var prior = await pool.query(
-      'SELECT DISTINCT body_hash FROM webhook_events WHERE source_slug = $1 AND body_hash = ANY($2::text[]) ' +
-      "AND received_at > NOW() - ($3::bigint * INTERVAL '1 millisecond')",
-      [source.slug, hashes, BLIND_DEDUPE_MS]
-    );
-    var seen = {};
-    prior.rows.forEach(function (row) { seen[row.body_hash] = true; });
-
     var toInsert = [];
-    withoutId.forEach(function (r) {
-      if (seen[r.hash]) { duplicates++; countEvent(source.slug, r.type, 'duplicate'); }
-      else toInsert.push(r);
-    });
+    if (mode === 'off') {
+      toInsert = withoutId;                 // no lookup at all
+    } else {
+      var hashes = withoutId.map(function (r) { return r.hash; });
+      var prior = await pool.query(
+        'SELECT DISTINCT body_hash FROM webhook_events WHERE source_slug = $1 AND body_hash = ANY($2::text[]) ' +
+        "AND received_at > NOW() - ($3::bigint * INTERVAL '1 millisecond')",
+        [source.slug, hashes, BLIND_DEDUPE_MS]
+      );
+      var seen = {};
+      prior.rows.forEach(function (row) { seen[row.body_hash] = true; });
+      withoutId.forEach(function (r) {
+        if (seen[r.hash]) { duplicates++; countEvent(source.slug, r.type, 'duplicate'); }
+        else toInsert.push(r);
+      });
+    }
 
     for (var c2 = 0; c2 < toInsert.length; c2 += INSERT_CHUNK) {
       var chunk2 = toInsert.slice(c2, c2 + INSERT_CHUNK);
       var vals2 = [], params2 = [];
       chunk2.forEach(function (r, n) {
-        var b2 = n * 8;
-        vals2.push('($' + (b2 + 1) + ',$' + (b2 + 2) + ',NULL,$' + (b2 + 3) + ',$' + (b2 + 4) + ',$' + (b2 + 5) +
-          ',$' + (b2 + 6) + ',$' + (b2 + 7) + ",'pending',NOW(),$" + (b2 + 8) + ')');
-        params2.push(source.slug, r.type, r.hash, r.payload, r.raw, hdrs, ip, sigNote || null);
+        var b2 = n * 9;
+        vals2.push('($' + (b2 + 1) + ',$' + (b2 + 2) + ',$' + (b2 + 3) + ',NULL,$' + (b2 + 4) + ',$' + (b2 + 5) +
+          ',$' + (b2 + 6) + ',$' + (b2 + 7) + ',$' + (b2 + 8) + ",'pending',NOW(),$" + (b2 + 9) + ')');
+        params2.push(source.slug, r.type, r.externalId, r.hash, r.payload, r.raw, hdrs, ip, sigNote || null);
       });
       var ins2 = await pool.query(
-        'INSERT INTO webhook_events (source_slug, event_type, external_id, body_hash, payload, raw_body, headers, ip, status, next_attempt_at, sig_state) ' +
+        'INSERT INTO webhook_events (source_slug, event_type, external_id, dedupe_key, body_hash, payload, raw_body, headers, ip, status, next_attempt_at, sig_state) ' +
         'VALUES ' + vals2.join(',') + ' RETURNING id',
         params2
       );
@@ -941,6 +979,7 @@ module.exports = {
   sha256: sha256,
   pluck: pluck,
   dedupeId: dedupeId,
+  dedupeMode: dedupeMode,
   presentedSecret: presentedSecret,
   MAX_BODY_BYTES: MAX_BODY_BYTES,
   MAX_BATCH: MAX_BATCH,
