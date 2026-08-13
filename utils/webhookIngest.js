@@ -96,6 +96,29 @@ function pluck(obj, path) {
   return cur;
 }
 
+// Values that mean "this record has no id", even though they are technically
+// present. Every system has them and they are never a real key.
+//
+// THIS IS THE BUG THAT ATE A BATCH: Pulsar's envelope uses "0" and the nil GUID
+// as its empty markers. utils/webhookHandlers.js already knew that, but the
+// DEDUPE key did not - so a run of records that all carried autonum "0" every
+// one looked like the same id, the first was stored, and the rest were
+// discarded as duplicates. Silently, with a 200 to the partner.
+//
+// A record with no usable id is not a duplicate. It falls through to byte
+// comparison instead, which is blunter but cannot invent a collision.
+var DEDUPE_SENTINELS = {
+  '0': true, '-1': true, 'null': true, 'undefined': true, 'none': true, 'false': true,
+  '00000000-0000-0000-0000-000000000000': true
+};
+
+function dedupeId(v) {
+  var id = scalar(v);
+  if (!id) return null;
+  if (DEDUPE_SENTINELS[id.toLowerCase()]) return null;
+  return id;
+}
+
 function scalar(v) {
   if (v === null || v === undefined) return null;
   if (typeof v === 'object') return null;
@@ -436,8 +459,8 @@ async function storeOne(source, req, itemRaw, item, sigNote) {
   }
 
   var bodyHash = sha256(itemRaw);
-  var externalId = scalar(pluck(item, source.dedupe_path || 'id'))
-    || scalar((req.headers || {})['x-event-id']);
+  var externalId = dedupeId(pluck(item, source.dedupe_path || 'id'))
+    || dedupeId((req.headers || {})['x-event-id']);
 
   // Dedupe path 1: the source gave us its own event id. The partial unique
   // index does the work, so a race between two concurrent deliveries of the
@@ -523,7 +546,7 @@ async function storeMany(source, req, items, sigNote) {
     rows.push({
       raw: itemRaw,
       hash: sha256(itemRaw),
-      externalId: scalar(pluck(item, source.dedupe_path || 'id')) || scalar((req.headers || {})['x-event-id']),
+      externalId: dedupeId(pluck(item, source.dedupe_path || 'id')) || dedupeId((req.headers || {})['x-event-id']),
       type: eventType,
       payload: itemRaw
     });
@@ -917,6 +940,7 @@ module.exports = {
   newSecret: newSecret,
   sha256: sha256,
   pluck: pluck,
+  dedupeId: dedupeId,
   presentedSecret: presentedSecret,
   MAX_BODY_BYTES: MAX_BODY_BYTES,
   MAX_BATCH: MAX_BATCH,
