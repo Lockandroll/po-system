@@ -374,9 +374,9 @@ router.get('/stats', requireAuth, requirePermission('view_sync'), async function
   var where = '';
   if (req.query.source) { params.push(String(req.query.source)); where = 'WHERE source_slug = $1 '; }
   var r = await pool.query(
-    'SELECT source_slug, event_type, stored_count, dropped_count, first_seen, last_seen ' +
+    'SELECT source_slug, event_type, stored_count, dropped_count, duplicate_count, first_seen, last_seen ' +
     'FROM webhook_event_stats ' + where +
-    'ORDER BY (stored_count + dropped_count) DESC, event_type',
+    'ORDER BY (stored_count + dropped_count + duplicate_count) DESC, event_type',
     params
   );
   res.json({

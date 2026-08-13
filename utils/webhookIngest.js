@@ -368,11 +368,21 @@ function accepts(source, eventType) {
 // which is why events are never handled this way.
 var _stats = new Map();
 
-function countEvent(slug, eventType, stored) {
+// kind: 'stored' | 'dropped' | 'duplicate'
+//
+// Duplicates are counted SEPARATELY rather than as stored. They used to be
+// lumped in with stored, which produced the worst possible reporting: the
+// traffic screen said records were arriving and being kept, the event log
+// showed nothing new, and there was no number anywhere that explained the gap.
+// A deduped record is a real delivery that deliberately produced no event, and
+// that is exactly the thing an operator needs to be able to see.
+function countEvent(slug, eventType, kind) {
   var key = slug + '\u0000' + (eventType === null || eventType === undefined ? '' : String(eventType));
   var row = _stats.get(key);
-  if (!row) { row = { stored: 0, dropped: 0 }; _stats.set(key, row); }
-  if (stored) row.stored++; else row.dropped++;
+  if (!row) { row = { stored: 0, dropped: 0, duplicate: 0 }; _stats.set(key, row); }
+  if (kind === 'dropped') row.dropped++;
+  else if (kind === 'duplicate') row.duplicate++;
+  else row.stored++;
 }
 
 async function flushStats() {
@@ -388,13 +398,14 @@ async function flushStats() {
     var v = entries[i][1];
     try {
       await pool.query(
-        'INSERT INTO webhook_event_stats (source_slug, event_type, stored_count, dropped_count, first_seen, last_seen) ' +
-        'VALUES ($1,$2,$3,$4,NOW(),NOW()) ' +
+        'INSERT INTO webhook_event_stats (source_slug, event_type, stored_count, dropped_count, duplicate_count, first_seen, last_seen) ' +
+        'VALUES ($1,$2,$3,$4,$5,NOW(),NOW()) ' +
         'ON CONFLICT (source_slug, event_type) DO UPDATE SET ' +
         'stored_count = webhook_event_stats.stored_count + EXCLUDED.stored_count, ' +
         'dropped_count = webhook_event_stats.dropped_count + EXCLUDED.dropped_count, ' +
+        'duplicate_count = webhook_event_stats.duplicate_count + EXCLUDED.duplicate_count, ' +
         'last_seen = NOW()',
-        [parts[0], parts[1] || '', v.stored, v.dropped]
+        [parts[0], parts[1] || '', v.stored, v.dropped, v.duplicate || 0]
       );
       n++;
     } catch (e) {
@@ -417,7 +428,7 @@ async function storeOne(source, req, itemRaw, item, sigNote) {
   // The filter runs BEFORE the hash and before any query, so an unwanted record
   // costs one Set lookup rather than a round trip.
   if (!accepts(source, eventType)) {
-    countEvent(source.slug, eventType, false);
+    countEvent(source.slug, eventType, 'dropped');
     return { id: null, duplicate: false, filtered: true };
   }
 
@@ -441,10 +452,13 @@ async function storeOne(source, req, itemRaw, item, sigNote) {
         'SELECT id FROM webhook_events WHERE source_slug = $1 AND external_id = $2',
         [source.slug, externalId]
       );
-      countEvent(source.slug, eventType, true);
+      countEvent(source.slug, eventType, 'duplicate');
+      console.warn('[sync] ' + source.slug + ' duplicate ' + (eventType ? 'type ' + eventType + ' ' : '') +
+        'id "' + externalId + '" - already stored as event ' + (prior.rows[0] ? prior.rows[0].id : '?') +
+        ', nothing new written. If this id was expected to be NEW, the dedupe field is wrong.');
       return { id: prior.rows[0] ? Number(prior.rows[0].id) : null, duplicate: true };
     }
-    countEvent(source.slug, eventType, true);
+    countEvent(source.slug, eventType, 'stored');
     return { id: Number(ins.rows[0].id), duplicate: false };
   }
 
@@ -456,7 +470,7 @@ async function storeOne(source, req, itemRaw, item, sigNote) {
     [source.slug, bodyHash, BLIND_DEDUPE_MS]
   );
   if (dup.rows.length) {
-    countEvent(source.slug, eventType, true);
+    countEvent(source.slug, eventType, 'duplicate');
     return { id: Number(dup.rows[0].id), duplicate: true };
   }
 
@@ -465,7 +479,7 @@ async function storeOne(source, req, itemRaw, item, sigNote) {
     "VALUES ($1,$2,NULL,$3,$4,$5,$6,$7,'pending',NOW(),$8) RETURNING id",
     [source.slug, eventType, bodyHash, JSON.stringify(item), itemRaw, JSON.stringify(safeHeaders(req)), clientIp(req), sigNote || null]
   );
-  countEvent(source.slug, eventType, true);
+  countEvent(source.slug, eventType, 'stored');
   return { id: Number(ins2.rows[0].id), duplicate: false };
 }
 

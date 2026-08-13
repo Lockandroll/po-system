@@ -4552,6 +4552,8 @@ async function initDB() {
     // how you confirm a formulation is matching consistently before enforcing.
     await client.query('ALTER TABLE webhook_events ADD COLUMN IF NOT EXISTS sig_state VARCHAR(40);');
 
+    await client.query('ALTER TABLE webhook_event_stats ADD COLUMN IF NOT EXISTS duplicate_count BIGINT NOT NULL DEFAULT 0;');
+
     // Per-type traffic counters, including for records the filter DROPPED.
     //
     // This is what makes a firehose safe to narrow. Pulsar's feed carries every

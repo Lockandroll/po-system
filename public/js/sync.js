@@ -52,7 +52,7 @@ function syncInjectStyles() {
       'border-radius:8px;padding:8px 10px;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12.5px;word-break:break-all}' +
     '.sy-bar{height:8px;border-radius:99px;background:rgba(127,127,127,.15);overflow:hidden;display:flex;min-width:90px}' +
     '.sy-bar i{display:block;height:100%}' +
-    '.sy-bar i.st{background:#4ade80}.sy-bar i.dr{background:rgba(148,163,184,.55)}' +
+    '.sy-bar i.st{background:#4ade80}.sy-bar i.dr{background:rgba(148,163,184,.55)}.sy-bar i.du{background:#f59e0b}' +
     '.sy-kv{display:grid;grid-template-columns:150px 1fr;gap:6px 14px;font-size:14px}' +
     '.sy-kv .lbl{color:var(--text-muted-color)}' +
     '.sy-row-click{cursor:pointer}' +
@@ -201,9 +201,13 @@ async function syncRenderTraffic(body) {
   catch (e) { body.innerHTML = '<div class="alert alert-error">' + escHtml(e.message) + '</div>'; return; }
 
   var rows = d.types || [];
-  var totStored = 0, totDropped = 0;
-  rows.forEach(function (r) { totStored += Number(r.stored_count || 0); totDropped += Number(r.dropped_count || 0); });
-  var tot = totStored + totDropped;
+  var totStored = 0, totDropped = 0, totDup = 0;
+  rows.forEach(function (r) {
+    totStored += Number(r.stored_count || 0);
+    totDropped += Number(r.dropped_count || 0);
+    totDup += Number(r.duplicate_count || 0);
+  });
+  var tot = totStored + totDropped + totDup;
 
   var html =
     '<div class="sy-cards">' +
@@ -211,11 +215,22 @@ async function syncRenderTraffic(body) {
         '<div class="s">records seen, all time</div></div>' +
       '<div class="sy-card"><div class="k">Kept</div><div class="v">' + syncNum(totStored) + '</div>' +
         '<div class="s">stored as events</div></div>' +
+      '<div class="sy-card' + (totDup ? ' amber' : '') + '"><div class="k">Duplicates</div><div class="v">' + syncNum(totDup) + '</div>' +
+        '<div class="s">' + (totDup ? 'same id seen before' : 'none') + '</div></div>' +
       '<div class="sy-card"><div class="k">Filtered out</div><div class="v">' + syncNum(totDropped) + '</div>' +
         '<div class="s">' + (totDropped ? 'types not on the accept list' : 'nothing is being dropped') + '</div></div>' +
       '<div class="sy-card"><div class="k">Event types</div><div class="v">' + syncNum(rows.length) + '</div>' +
         '<div class="s">distinct codes seen</div></div>' +
     '</div>';
+
+  // The single most confusing thing this screen can show: traffic arriving,
+  // nothing appearing in the event log, and no obvious reason. Say it outright.
+  if (totDup) {
+    html += '<div class="sy-warn"><strong>' + syncNum(totDup) + ' records were treated as duplicates</strong> ' +
+      'and produced no event, because their id had been seen before. If those were meant to be new records, ' +
+      'the <em>Their id field</em> setting on this source is pointing at something that is not unique &mdash; ' +
+      'fix that and the partner can resend.</div>';
+  }
 
   html += syncSourcePicker();
 
@@ -233,12 +248,13 @@ async function syncRenderTraffic(body) {
   html +=
     '<div class="card"><div class="card-body" style="padding:0;overflow-x:auto">' +
     '<table class="table"><thead><tr>' +
-      '<th>Event type</th><th>Source</th><th class="sy-num">Kept</th><th class="sy-num">Dropped</th>' +
+      '<th>Event type</th><th>Source</th><th class="sy-num">Kept</th><th class="sy-num">Dupes</th><th class="sy-num">Dropped</th>' +
       '<th style="width:130px">Mix</th><th>First seen</th><th>Last seen</th>' +
     '</tr></thead><tbody>';
 
   rows.forEach(function (r) {
-    var st = Number(r.stored_count || 0), dr = Number(r.dropped_count || 0), n = st + dr || 1;
+    var st = Number(r.stored_count || 0), dr = Number(r.dropped_count || 0);
+    var du = Number(r.duplicate_count || 0), n = st + dr + du || 1;
     var type = r.event_type === '' || r.event_type === null ? '<span class="sy-note">(no type)</span>'
       : '<span class="sy-mono">' + escHtml(r.event_type) + '</span>';
     html +=
@@ -246,9 +262,11 @@ async function syncRenderTraffic(body) {
         '<td>' + type + '</td>' +
         '<td class="sy-note">' + escHtml(r.source_slug) + '</td>' +
         '<td class="sy-num">' + syncNum(st) + '</td>' +
+        '<td class="sy-num">' + (du ? '<span style="color:#f59e0b">' + syncNum(du) + '</span>' : '<span class="sy-note">&mdash;</span>') + '</td>' +
         '<td class="sy-num">' + (dr ? syncNum(dr) : '<span class="sy-note">&mdash;</span>') + '</td>' +
         '<td><div class="sy-bar">' +
           '<i class="st" style="width:' + ((st / n) * 100).toFixed(1) + '%"></i>' +
+          '<i class="du" style="width:' + ((du / n) * 100).toFixed(1) + '%"></i>' +
           '<i class="dr" style="width:' + ((dr / n) * 100).toFixed(1) + '%"></i>' +
         '</div></td>' +
         '<td class="sy-note">' + escHtml(syncDateStr(r.first_seen)) + '</td>' +
