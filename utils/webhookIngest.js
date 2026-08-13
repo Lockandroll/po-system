@@ -39,11 +39,14 @@ var MAX_BODY_BYTES = Number(process.env.SYNC_MAX_BODY_BYTES || 2 * 1024 * 1024);
 // assume a genuine re-sync and store it.
 var BLIND_DEDUPE_MS = Number(process.env.SYNC_BLIND_DEDUPE_MS || 10 * 60 * 1000);
 
-// Records per POST when a partner sends a top-level array. Generous, because a
-// backfill legitimately arrives in big batches, but bounded: each record is a
-// separate INSERT and one request should not be able to hold a connection for
-// a minute.
-var MAX_BATCH = Number(process.env.SYNC_MAX_BATCH || 1000);
+// Records per POST when a partner sends a top-level array.
+//
+// This was 1000 when each record cost its own INSERT. Now that a batch is a
+// handful of bulk statements, the old number was just an arbitrary wall a
+// partner could hit for no reason. 5000 records of Pulsar's envelope is about
+// 1.25 MB, which sits comfortably under MAX_BODY_BYTES - so the two limits now
+// bite at roughly the same point instead of one shadowing the other.
+var MAX_BATCH = Number(process.env.SYNC_MAX_BATCH || 5000);
 
 // Attempt N (1-based) waits this long before the next try. Past the end of the
 // list the event is dead-lettered: status 'failed', next_attempt_at NULL, and
@@ -483,6 +486,143 @@ async function storeOne(source, req, itemRaw, item, sigNote) {
   return { id: Number(ins2.rows[0].id), duplicate: false };
 }
 
+// Rows per INSERT statement. Postgres caps a statement at 65535 parameters and
+// this uses 9 per row, so the ceiling is ~7000 - but a smaller chunk keeps any
+// single statement quick and keeps the partner's connection moving.
+var INSERT_CHUNK = 200;
+
+// Store a whole array in a handful of statements instead of one per record.
+//
+// THIS IS WHY: the first version looped storeOne() and awaited a round trip per
+// record, all BEFORE the response was sent. One object was two queries; a
+// 500-record array was over a thousand, with the partner's syncer sitting on
+// its timeout the whole time. Pulsar timed out. The receiver was built around
+// "answer fast" and the batch path was quietly doing the opposite.
+//
+// Dedupe survives the rewrite intact: the partial unique index still decides,
+// via ON CONFLICT DO NOTHING, so a resent batch overlapping an earlier one
+// still stores only what is new. Records the database did not return are the
+// duplicates.
+async function storeMany(source, req, items, sigNote) {
+  var hdrs = JSON.stringify(safeHeaders(req));
+  var ip = clientIp(req);
+
+  // 1. Shape every record once, and drop the filtered ones without a query.
+  var rows = [];
+  var filtered = 0;
+  for (var i = 0; i < items.length; i++) {
+    var item = items[i];
+    var eventType = scalar(pluck(item, source.event_type_path || 'event'))
+      || scalar((req.headers || {})['x-event-type']);
+    if (!accepts(source, eventType)) {
+      countEvent(source.slug, eventType, 'dropped');
+      filtered++;
+      continue;
+    }
+    var itemRaw = JSON.stringify(item);
+    rows.push({
+      raw: itemRaw,
+      hash: sha256(itemRaw),
+      externalId: scalar(pluck(item, source.dedupe_path || 'id')) || scalar((req.headers || {})['x-event-id']),
+      type: eventType,
+      payload: itemRaw
+    });
+  }
+  if (!rows.length) return { ids: [], fresh: [], duplicates: 0, filtered: filtered };
+
+  var ids = [], fresh = [], duplicates = 0;
+
+  // 2. Collapse repeats WITHIN this request before touching the database. A
+  // partner that includes the same record twice in one array should not race
+  // itself, and Postgres cannot resolve an in-statement conflict for us.
+  var withId = [], withoutId = [], seenId = {}, seenHash = {};
+  rows.forEach(function (r) {
+    if (r.externalId) {
+      if (seenId[r.externalId]) { duplicates++; return; }
+      seenId[r.externalId] = true;
+      withId.push(r);
+    } else {
+      if (seenHash[r.hash]) { duplicates++; return; }
+      seenHash[r.hash] = true;
+      withoutId.push(r);
+    }
+  });
+
+  // 3. Records carrying an id: one INSERT per chunk. Whatever comes back is
+  // new; whatever does not was already here.
+  for (var c = 0; c < withId.length; c += INSERT_CHUNK) {
+    var chunk = withId.slice(c, c + INSERT_CHUNK);
+    var vals = [], params = [];
+    chunk.forEach(function (r, n) {
+      var b = n * 9;
+      vals.push('($' + (b + 1) + ',$' + (b + 2) + ',$' + (b + 3) + ',$' + (b + 4) + ',$' + (b + 5) +
+        ',$' + (b + 6) + ',$' + (b + 7) + ',$' + (b + 8) + ",'pending',NOW(),$" + (b + 9) + ')');
+      params.push(source.slug, r.type, r.externalId, r.hash, r.payload, r.raw, hdrs, ip, sigNote || null);
+    });
+    var ins = await pool.query(
+      'INSERT INTO webhook_events (source_slug, event_type, external_id, body_hash, payload, raw_body, headers, ip, status, next_attempt_at, sig_state) ' +
+      'VALUES ' + vals.join(',') + ' ' +
+      'ON CONFLICT (source_slug, external_id) WHERE external_id IS NOT NULL DO NOTHING ' +
+      'RETURNING id, external_id',
+      params
+    );
+    var got = {};
+    ins.rows.forEach(function (row) { got[row.external_id] = Number(row.id); });
+    chunk.forEach(function (r) {
+      if (got[r.externalId] !== undefined) {
+        ids.push(got[r.externalId]);
+        fresh.push(got[r.externalId]);
+        countEvent(source.slug, r.type, 'stored');
+      } else {
+        duplicates++;
+        countEvent(source.slug, r.type, 'duplicate');
+      }
+    });
+  }
+
+  // 4. Records with no id of their own: ONE lookup for the whole set rather
+  // than one per record, then insert the survivors.
+  if (withoutId.length) {
+    var hashes = withoutId.map(function (r) { return r.hash; });
+    var prior = await pool.query(
+      'SELECT DISTINCT body_hash FROM webhook_events WHERE source_slug = $1 AND body_hash = ANY($2::text[]) ' +
+      "AND received_at > NOW() - ($3::bigint * INTERVAL '1 millisecond')",
+      [source.slug, hashes, BLIND_DEDUPE_MS]
+    );
+    var seen = {};
+    prior.rows.forEach(function (row) { seen[row.body_hash] = true; });
+
+    var toInsert = [];
+    withoutId.forEach(function (r) {
+      if (seen[r.hash]) { duplicates++; countEvent(source.slug, r.type, 'duplicate'); }
+      else toInsert.push(r);
+    });
+
+    for (var c2 = 0; c2 < toInsert.length; c2 += INSERT_CHUNK) {
+      var chunk2 = toInsert.slice(c2, c2 + INSERT_CHUNK);
+      var vals2 = [], params2 = [];
+      chunk2.forEach(function (r, n) {
+        var b2 = n * 8;
+        vals2.push('($' + (b2 + 1) + ',$' + (b2 + 2) + ',NULL,$' + (b2 + 3) + ',$' + (b2 + 4) + ',$' + (b2 + 5) +
+          ',$' + (b2 + 6) + ',$' + (b2 + 7) + ",'pending',NOW(),$" + (b2 + 8) + ')');
+        params2.push(source.slug, r.type, r.hash, r.payload, r.raw, hdrs, ip, sigNote || null);
+      });
+      var ins2 = await pool.query(
+        'INSERT INTO webhook_events (source_slug, event_type, external_id, body_hash, payload, raw_body, headers, ip, status, next_attempt_at, sig_state) ' +
+        'VALUES ' + vals2.join(',') + ' RETURNING id',
+        params2
+      );
+      ins2.rows.forEach(function (row, n) {
+        ids.push(Number(row.id));
+        fresh.push(Number(row.id));
+        countEvent(source.slug, chunk2[n] ? chunk2[n].type : null, 'stored');
+      });
+    }
+  }
+
+  return { ids: ids, fresh: fresh, duplicates: duplicates, filtered: filtered };
+}
+
 // Turn a raw request into one or more stored webhook_events rows.
 //
 // Returns one of:
@@ -585,15 +725,10 @@ async function receive(req, slug) {
         return { ok: false, status: 400, error: 'invalid_batch_item', detail: 'Element ' + v + ' is not a JSON object.' };
       }
     }
-    var ids = [], fresh = [], dups = 0, filtered = 0;
-    for (var i2 = 0; i2 < payload.length; i2++) {
-      var one = await storeOne(source, req, JSON.stringify(payload[i2]), payload[i2], sigNote);
-      if (one.filtered) { filtered++; continue; }
-      ids.push(one.id);
-      if (one.duplicate) dups++; else fresh.push(one.id);
-    }
+    var many = await storeMany(source, req, payload, sigNote);
     await touchSource(source.slug);
-    return { ok: true, batch: true, accepted: ids.length, duplicates: dups, filtered: filtered, ids: ids, fresh: fresh, signature: sigNote };
+    return { ok: true, batch: true, accepted: many.ids.length, duplicates: many.duplicates,
+      filtered: many.filtered, ids: many.ids, fresh: many.fresh, signature: sigNote };
   }
 
   if (typeof payload !== 'object' || payload === null) {
@@ -697,6 +832,27 @@ function runEventDetached(id) {
   });
 }
 
+// Drain a batch of freshly stored events with a small amount of concurrency.
+// Detached on purpose: the HTTP response has already gone out, and nothing here
+// may surface on it. Anything this misses is still 'pending' with a
+// next_attempt_at in the past, so runDue() collects it.
+var BATCH_CONCURRENCY = Number(process.env.SYNC_BATCH_CONCURRENCY || 4);
+
+function runBatchDetached(ids) {
+  if (!ids || !ids.length) return;
+  var queue = ids.slice();
+  var workers = Math.min(BATCH_CONCURRENCY, queue.length);
+  for (var w = 0; w < workers; w++) {
+    setImmediate(async function drain() {
+      while (queue.length) {
+        var id = queue.shift();
+        try { await runEvent(id); }
+        catch (e) { console.error('[sync] batch processing failed for event ' + id + ': ' + (e && e.message)); }
+      }
+    });
+  }
+}
+
 // The cron sweep: everything whose retry time has come, plus anything that was
 // stored but never picked up (a crash between the INSERT and the setImmediate).
 async function runDue(limit) {
@@ -743,11 +899,14 @@ module.exports = {
   receive: receive,
   runEvent: runEvent,
   runEventDetached: runEventDetached,
+  runBatchDetached: runBatchDetached,
   runDue: runDue,
   replay: replay,
   loadSource: loadSource,
   cacheBust: cacheBust,
   accepts: accepts,
+  storeMany: storeMany,
+  INSERT_CHUNK: INSERT_CHUNK,
   verifySignature: verifySignature,
   sealSecret: sealSecret,
   openSecret: openSecret,

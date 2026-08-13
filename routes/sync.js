@@ -93,7 +93,12 @@ inboundRouter.post('/:slug', async function (req, res) {
       ids: out.ids,
       received: true
     });
-    out.fresh.forEach(function (id) { ingest.runEventDetached(id); });
+    // NOT one setImmediate per record. A thousand of those would all hit the
+    // pool at once, immediately after we told the partner we were done - the
+    // burst just moves from before the response to after it. A small pool
+    // drains the batch steadily instead, and anything missed is picked up by
+    // the retry sweep anyway.
+    ingest.runBatchDetached(out.fresh);
     return;
   }
 
