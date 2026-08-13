@@ -411,6 +411,57 @@ function countEvent(slug, eventType, kind) {
   else row.stored++;
 }
 
+/* ------------------------------------------------------- rejection tracking */
+
+// Deliveries that were TURNED AWAY, and therefore left no event behind.
+//
+// This exists because of a real dead end: a partner insisting they are sending,
+// nothing arriving, and no way to tell the difference between "their requests
+// are being rejected" and "their requests never left". A 401 deliberately tells
+// the caller nothing - but it should not tell US nothing too.
+//
+// Payloads are NOT kept here. A rejected request is unauthenticated by
+// definition; storing its body would make this endpoint a way to write
+// arbitrary content into Nova without a token. Only the fact, the reason, the
+// slug and the IP.
+var _rejects = new Map();
+var REJECT_KEY_CAP = 200;   // a scanner must not be able to grow this without bound
+
+function countReject(slug, reason, ip) {
+  var key = String(slug || '') + '\u0000' + String(reason || '') + '\u0000' + String(ip || '');
+  var row = _rejects.get(key);
+  if (!row) {
+    if (_rejects.size >= REJECT_KEY_CAP) return;   // drop rather than grow
+    row = { n: 0 };
+    _rejects.set(key, row);
+  }
+  row.n++;
+}
+
+async function flushRejections() {
+  if (!_rejects.size) return { flushed: 0 };
+  var batch = _rejects;
+  _rejects = new Map();
+  var n = 0;
+  var entries = Array.from(batch.entries());
+  for (var i = 0; i < entries.length; i++) {
+    var parts = entries[i][0].split('\u0000');
+    try {
+      await pool.query(
+        'INSERT INTO webhook_rejections (source_slug, reason, ip, hits, first_seen, last_seen) ' +
+        'VALUES ($1,$2,$3,$4,NOW(),NOW()) ' +
+        'ON CONFLICT (source_slug, reason, ip) DO UPDATE SET ' +
+        'hits = webhook_rejections.hits + EXCLUDED.hits, last_seen = NOW()',
+        [parts[0] || '', parts[1] || '', parts[2] || '', entries[i][1].n]
+      );
+      n++;
+    } catch (e) {
+      console.error('[sync] rejection flush failed: ' + e.message);
+    }
+  }
+  return { flushed: n };
+}
+
 async function flushStats() {
   if (!_stats.size) return { flushed: 0 };
   // Swapped out first, so deliveries arriving during the flush accumulate into
@@ -710,19 +761,23 @@ async function storeMany(source, req, items, sigNote) {
 async function receive(req, slug) {
   var source = await loadSource(slug);
   if (!source) {
-    // Deliberately the same shape and status as a bad token. An unauthenticated
-    // caller must not be able to enumerate which sources exist.
+    // Deliberately the same shape and status as a bad token: an unauthenticated
+    // caller must not be able to enumerate which sources exist. It is recorded
+    // on OUR side though - the caller learns nothing, we learn everything.
+    countReject(slug, 'unknown_source', clientIp(req));
     return { ok: false, status: 401, error: 'unauthorized' };
   }
 
   var presented = presentedSecret(req, source);
   if (!presented || !hashEquals(sha256(presented), source.secret_hash)) {
+    countReject(slug, presented ? 'wrong_token' : 'no_token', clientIp(req));
     return { ok: false, status: 401, error: 'unauthorized' };
   }
 
   if (!source.enabled) {
     // Authenticated, so it is safe to be specific. 503 rather than 403 because
     // this is a temporary state and a well-behaved syncer should retry.
+    countReject(slug, 'source_disabled', clientIp(req));
     return { ok: false, status: 503, error: 'source_disabled', detail: 'This sync source is turned off in Nova.' };
   }
 
@@ -730,8 +785,12 @@ async function receive(req, slug) {
   if (Buffer.isBuffer(raw)) raw = raw.toString('utf8');
   else if (typeof raw !== 'string') raw = raw ? JSON.stringify(raw) : '';
 
-  if (!raw) return { ok: false, status: 400, error: 'empty_body' };
+  if (!raw) {
+    countReject(slug, 'empty_body', clientIp(req));
+    return { ok: false, status: 400, error: 'empty_body' };
+  }
   if (Buffer.byteLength(raw, 'utf8') > MAX_BODY_BYTES) {
+    countReject(slug, 'payload_too_large', clientIp(req));
     return { ok: false, status: 413, error: 'payload_too_large', detail: 'Limit is ' + MAX_BODY_BYTES + ' bytes.' };
   }
 
@@ -745,6 +804,7 @@ async function receive(req, slug) {
     // oracle that explains exactly which part was wrong is a gift to whoever is
     // probing it; the admin can read the real reason in the Nova log.
     console.warn('[sync] ' + source.slug + ' signature rejected: ' + sig.state + (sig.detail ? ' - ' + sig.detail : ''));
+    countReject(slug, 'bad_signature', clientIp(req));
     return { ok: false, status: 401, error: 'bad_signature' };
   }
   if (mode === 'observe' && sig.state !== 'ok') {
@@ -764,6 +824,7 @@ async function receive(req, slug) {
   } catch (e) {
     // Never a retry. Sending the same malformed bytes again will fail the same
     // way, so say so plainly instead of letting a syncer loop on it.
+    countReject(slug, 'invalid_json', clientIp(req));
     return { ok: false, status: 400, error: 'invalid_json', detail: e.message };
   }
 
@@ -775,6 +836,7 @@ async function receive(req, slug) {
       return { ok: true, batch: true, accepted: 0, duplicates: 0, filtered: 0, ids: [], fresh: [], signature: sigNote };
     }
     if (payload.length > MAX_BATCH) {
+      countReject(slug, 'batch_too_large', clientIp(req));
       return { ok: false, status: 413, error: 'batch_too_large', detail: 'Limit is ' + MAX_BATCH + ' records per POST.' };
     }
     // Validated BEFORE anything is stored, so a batch is all-or-nothing at the
@@ -783,6 +845,7 @@ async function receive(req, slug) {
     for (var v = 0; v < payload.length; v++) {
       var it = payload[v];
       if (!it || typeof it !== 'object' || Array.isArray(it)) {
+        countReject(slug, 'invalid_batch_item', clientIp(req));
         return { ok: false, status: 400, error: 'invalid_batch_item', detail: 'Element ' + v + ' is not a JSON object.' };
       }
     }
@@ -795,6 +858,7 @@ async function receive(req, slug) {
   if (typeof payload !== 'object' || payload === null) {
     // A bare string, number or null parsed fine but carries nothing we could
     // ever route. Permanent, so say 400 rather than let a syncer loop on it.
+    countReject(slug, 'invalid_payload', clientIp(req));
     return { ok: false, status: 400, error: 'invalid_payload', detail: 'Body must be a JSON object or an array of objects.' };
   }
 
@@ -975,6 +1039,8 @@ module.exports = {
   HMAC_FORMATS: HMAC_FORMATS,
   countEvent: countEvent,
   flushStats: flushStats,
+  countReject: countReject,
+  flushRejections: flushRejections,
   newSecret: newSecret,
   sha256: sha256,
   pluck: pluck,

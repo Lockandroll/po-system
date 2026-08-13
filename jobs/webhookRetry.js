@@ -79,6 +79,11 @@ async function flushStats() {
   } catch (err) {
     console.error('[sync] stats flush failed: ' + err.message);
   }
+  try {
+    await ingest.flushRejections();
+  } catch (err) {
+    console.error('[sync] rejection flush failed: ' + err.message);
+  }
 }
 
 function startWebhookRetry() {

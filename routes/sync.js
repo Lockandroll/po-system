@@ -400,6 +400,16 @@ router.get('/stats', requireAuth, requirePermission('view_sync'), async function
   });
 });
 
+// Who knocked and was turned away. The other half of the traffic picture: the
+// stats table only ever sees requests that got far enough to be counted.
+router.get('/rejections', requireAuth, requirePermission('view_sync'), async function (req, res) {
+  var r = await pool.query(
+    'SELECT source_slug, reason, ip, hits, first_seen, last_seen FROM webhook_rejections ' +
+    'ORDER BY last_seen DESC LIMIT 200'
+  );
+  res.json({ rejections: r.rows });
+});
+
 /* ------------------------------------------------------------------- events */
 
 router.get('/events', requireAuth, requirePermission('view_sync'), async function (req, res) {

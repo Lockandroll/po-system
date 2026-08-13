@@ -343,6 +343,7 @@ async function syncRenderTraffic(body) {
   }
 
   html += syncSourcePicker();
+  html += '<div id="sy-rejects"></div>';
 
   if (!rows.length) {
     html +=
@@ -391,6 +392,56 @@ async function syncRenderTraffic(body) {
     '<div class="sy-note" style="margin-top:10px">' + escHtml(d.note || '') + '</div>';
 
   body.innerHTML = html;
+  syncLoadRejections();
+}
+
+// Rendered after the main table so a slow query cannot hold up the numbers
+// everyone actually came for.
+async function syncLoadRejections() {
+  var el = document.getElementById('sy-rejects');
+  if (!el) return;
+  var d;
+  try { d = await api('GET', '/sync/rejections'); } catch (e) { return; }
+  var rows = (d.rejections || []).filter(function (r) {
+    return !_syncFilter.source || r.source_slug === _syncFilter.source || !r.source_slug;
+  });
+  if (!rows.length) { el.innerHTML = ''; return; }
+
+  var total = 0;
+  rows.forEach(function (r) { total += Number(r.hits || 0); });
+
+  var REASONS = {
+    no_token: 'sent no token at all',
+    wrong_token: 'sent the wrong token',
+    unknown_source: 'posted to a URL with no source behind it',
+    source_disabled: 'the source was switched off',
+    bad_signature: 'the signature did not match',
+    invalid_json: 'the body was not valid JSON',
+    invalid_payload: 'the body was not an object or array',
+    invalid_batch_item: 'an array element was not an object',
+    empty_body: 'sent an empty body',
+    payload_too_large: 'the body was over the size limit',
+    batch_too_large: 'too many records in one POST'
+  };
+
+  var h = '<div class="sy-warn" style="margin-top:18px"><strong>' + syncNum(total) +
+    ' deliveries were turned away</strong> and produced no event. If a partner says they are sending ' +
+    'and nothing is arriving, this is usually the answer.</div>' +
+    '<div class="card"><div class="card-body" style="padding:0;overflow-x:auto">' +
+    '<table class="table"><thead><tr><th>What happened</th><th>URL</th><th>From</th>' +
+    '<th class="sy-num">Times</th><th>Last</th></tr></thead><tbody>';
+
+  rows.forEach(function (r) {
+    h += '<tr>' +
+      '<td>' + escHtml(REASONS[r.reason] || r.reason) + '<div class="sy-note sy-mono">' + escHtml(r.reason) + '</div></td>' +
+      '<td class="sy-mono sy-note">' + escHtml(r.source_slug || '(none)') + '</td>' +
+      '<td class="sy-mono sy-note">' + escHtml(r.ip || '') + '</td>' +
+      '<td class="sy-num">' + syncNum(r.hits) + '</td>' +
+      '<td class="sy-note">' + escHtml(syncDateStr(r.last_seen)) + '</td>' +
+    '</tr>';
+  });
+  h += '</tbody></table></div></div>';
+  el.innerHTML = h;
 }
 
 function syncSourcePicker() {

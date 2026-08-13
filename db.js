@@ -4554,6 +4554,28 @@ async function initDB() {
 
     await client.query('ALTER TABLE webhook_event_stats ADD COLUMN IF NOT EXISTS duplicate_count BIGINT NOT NULL DEFAULT 0;');
 
+    // Deliveries that were turned away and left no event behind.
+    //
+    // Without this, a partner saying "I am definitely sending" and Nova showing
+    // nothing is an unfalsifiable argument: a rejected request left no trace on
+    // either side. The caller still learns nothing from a 401 - we just stop
+    // being blind to it ourselves.
+    //
+    // No payloads. A rejected request is unauthenticated by definition, and
+    // storing its body would turn this into a way to write into Nova without a
+    // token. Reason, slug, IP and a count only.
+    await client.query(
+      'CREATE TABLE IF NOT EXISTS webhook_rejections (' +
+      "  source_slug VARCHAR(64) NOT NULL DEFAULT ''," +
+      "  reason VARCHAR(40) NOT NULL DEFAULT ''," +
+      "  ip VARCHAR(64) NOT NULL DEFAULT ''," +
+      '  hits BIGINT NOT NULL DEFAULT 0,' +
+      '  first_seen TIMESTAMPTZ DEFAULT NOW(),' +
+      '  last_seen TIMESTAMPTZ DEFAULT NOW(),' +
+      '  PRIMARY KEY (source_slug, reason, ip)' +
+      ');'
+    );
+
     // How this source decides what a duplicate is: id | bytes | off.
     await client.query("ALTER TABLE webhook_sources ADD COLUMN IF NOT EXISTS dedupe_mode VARCHAR(12) NOT NULL DEFAULT 'id';");
 
