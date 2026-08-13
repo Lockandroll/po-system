@@ -29,6 +29,7 @@ const { startLocationCleanup } = require('./jobs/locationCleanup');
 const { startDispatchJobs } = require('./jobs/dispatch');
 const { startArJobs } = require('./jobs/ar');
 const { startApJobs } = require('./jobs/ap');
+const { startWebhookRetry } = require('./jobs/webhookRetry');
 
 const app = express();
 
@@ -211,6 +212,21 @@ const squareLimiter = rateLimit({
 });
 app.use('/api/square', squareLimiter, require('./routes/square'));
 
+// Inbound sync receiver (Pulsar's syncer and anything after it). Mounted here
+// for the same reason as the two above: utils/webhookIngest.js stores the RAW
+// bytes that arrived, and express.json() would have already consumed them.
+// Its own limiter because it sits ahead of generalLimiter, and a deliberately
+// generous one - a partner backfilling a day of history is a burst, not abuse,
+// and the endpoint can only ever append a row to webhook_events.
+const syncLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  max: Number(process.env.SYNC_RATE_LIMIT || 600),
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { ok: false, error: 'rate_limited', detail: 'Too many sync deliveries. Slow down and retry.' }
+});
+app.use('/api/sync/in', syncLimiter, require('./routes/sync').inboundRouter);
+
 app.use(express.json({ limit: '80mb' }));
 app.use(express.static(path.join(__dirname, 'public')));
 
@@ -300,6 +316,7 @@ app.use('/api/coverage', require('./routes/coverage'));
 app.use('/api/pay', require('./routes/pay'));
 app.use('/api/ar', require('./routes/ar'));
 app.use('/api/ap', require('./routes/ap'));
+app.use('/api/sync', require('./routes/sync'));
 
 // OAuth 2.1 authorization server for the remote MCP (must be before the SPA catch-all).
 //
@@ -388,5 +405,6 @@ initDB()
     startDispatchJobs();
     startArJobs();
     startApJobs();
+    startWebhookRetry();
   })
   .catch(err => console.error('DB init error (non-fatal):', err));

@@ -5,6 +5,45 @@ const org = require('../utils/org');
 
 const router = express.Router();
 
+// Distil an audit row's details JSON down to one short line for the dashboard
+// activity feed, or '' when there is nothing worth saying.
+//
+// Why this exists: an action name alone can be actively misleading. A PTO
+// approval logged as 'approved_override' tells you a rule was bypassed but not
+// why, even though routes/pto.js REQUIRES a reason before it will let the
+// approval through — the reason was always captured, just never displayed.
+//
+// This is an allowlist on purpose. Only the keys named below are ever echoed;
+// anything else in details stays server-side. The feed is visible to every
+// privileged viewer regardless of city or reporting line, so this stays terse
+// and factual. The details column may arrive as JSON text or as a parsed object
+// depending on the column type, so handle both.
+function activityNote(row) {
+  if (!row || !row.details) return '';
+  var d = row.details;
+  if (typeof d === 'string') {
+    try { d = JSON.parse(d); } catch (e) { return ''; }
+  }
+  if (!d || typeof d !== 'object') return '';
+
+  var parts = [];
+  var reason = d.override_reason || d.reason || '';
+  if (reason) {
+    reason = String(reason).trim();
+    // One line in a feed, not an essay. The full text is on the Audit Log page.
+    if (reason.length > 140) reason = reason.slice(0, 137) + '...';
+    if (reason) parts.push('"' + reason + '"');
+  }
+  if (d.coverage_used != null && d.coverage_cap != null) {
+    parts.push('coverage ' + d.coverage_used + ' of ' + d.coverage_cap);
+  }
+  // Approving paid PTO that takes the employee's balance negative is a second,
+  // separate override on the same action and is NOT reason-prompted, so flag it
+  // explicitly rather than letting it hide behind the coverage reason.
+  if (d.negative_override === true) parts.push('balance taken negative');
+  return parts.join(' - ');
+}
+
 router.get('/', requireAuth, async function(req, res) {
   try {
     const isPrivileged = ['admin', 'manager'].includes(req.user.role);
@@ -51,9 +90,20 @@ router.get('/', requireAuth, async function(req, res) {
       "SELECT id, title, status, priority, due_date FROM tasks WHERE assigned_to = $1 AND status <> 'done' ORDER BY (due_date IS NULL), due_date ASC, CASE priority WHEN 'urgent' THEN 0 WHEN 'high' THEN 1 WHEN 'medium' THEN 2 ELSE 3 END LIMIT 12",
       [userId]
     ).catch(function() { return { rows: [] }; });
-    const activityQ = pool.query(
-      'SELECT entity_type, entity_number, action, user_name, created_at FROM audit_logs ORDER BY created_at DESC LIMIT 8'
-    );
+    // The activity feed is company-wide and EVERY role sees it, so the raw
+    // audit details blob must never ship to the client here — it holds free
+    // text (override reasons, denial reasons, changed emails) that has no
+    // business on a locksmith's home screen. Privileged viewers get the row
+    // WITH details so activityNote() below can distill one short, allowlisted
+    // line; everyone else gets the same five columns as before. The full,
+    // unfiltered detail lives on the Audit Log page behind view_audit.
+    const activityQ = isPrivileged
+      ? pool.query(
+          'SELECT entity_type, entity_number, action, user_name, created_at, details FROM audit_logs ORDER BY created_at DESC LIMIT 8'
+        )
+      : pool.query(
+          'SELECT entity_type, entity_number, action, user_name, created_at FROM audit_logs ORDER BY created_at DESC LIMIT 8'
+        );
     // Non-privileged viewers get their TEAM's vehicles: reporting downline plus
     // anyone based in a city they run (see utils/org.js). This was direct reports
     // only, so a coordinator with a lead under them counted nothing below depth 1.
@@ -72,7 +122,13 @@ router.get('/', requireAuth, async function(req, res) {
     const quoteStats = results[4].rows;
     const fleetStats = results[5].rows;
     const myTasks = results[6].rows;
-    const activity = results[7].rows;
+    // Replace details with the distilled note. The blob itself never ships.
+    const activity = results[7].rows.map(function (r) {
+      var note = activityNote(r);
+      delete r.details;
+      if (note) r.note = note;
+      return r;
+    });
     const inspDue = results[8].rows;
 
     res.json({

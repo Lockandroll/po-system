@@ -317,6 +317,15 @@
 
   // ---- APPROVED HISTORY (paginated, 10 per page) ---------------------------
   var APPR_PAGE = 1;
+  // Badge + memo for a PTO row that was approved over the coverage cap.
+  // Returns '' for an ordinary approval so normal rows stay clean.
+  function overrideNote(r) {
+    if (!r || !r.coverage_override) return '';
+    var reason = String(r.override_reason || '').trim();
+    return '<br><span class="pto-pill denied" title="Approved over the coverage cap">override</span>' +
+      (reason ? '<div class="pto-sub" style="font-style:italic;margin-top:3px">&ldquo;' + escHtml(reason) + '&rdquo;</div>' : '');
+  }
+
   async function loadApproved(page) {
     var host = document.getElementById('pto-appr-list');
     if (!host) return;
@@ -331,7 +340,12 @@
         return '<tr><td><b>' + escHtml(r.user_name || '') + '</b>' + tag + '<br><span class="pto-sub">' + escHtml(r.pay_type || '') + '</span></td>' +
           '<td>' + d + '</td><td>' + dayBreakdown(r) + '</td><td>' + fmtAmt(Number(r.hours), r.pay_type) + '</td>' +
           '<td>' + escHtml(r.type || '') + '</td>' +
-          '<td>' + escHtml(r.approver_name || '—') + '</td>' +
+          // An override is the one row on this screen someone will later ask
+          // "why?" about, so show the reason inline instead of making them dig
+          // through the audit log. The approver was forced to type it at
+          // approval time (routes/pto.js refuses with coverage_override_required
+          // when it is blank), so it is never empty on an overridden row.
+          '<td>' + escHtml(r.approver_name || '—') + overrideNote(r) + '</td>' +
           '<td>' + (r.decided_at ? fmtDate(r.decided_at) : '—') + '</td>' +
           '<td style="white-space:nowrap"><button class="pto-btn no sm" onclick="ptoMgrCancel(' + r.id + ')">Cancel</button></td></tr>';
       }).join('');

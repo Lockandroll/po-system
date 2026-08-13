@@ -152,6 +152,13 @@ ALL_PERMS.push('view_ap', 'manage_ap');
 // deposit, but correcting the numbers on one already on the books is a
 // supervisory act. routes/deposits.js gates it a SECOND time on role AND on the
 // editor's assigned cities, so a manager can only fix their own locations.
+// Inbound sync (webhooks). Ships dark like A/P above: view_sync reads the
+// source list and the event log; manage_sync creates sources, rotates tokens
+// and replays events. NOT in EMPLOYEE_PERMS and NOT in any role's DEFAULTS.
+// manage_sync in particular is close to admin - the token it hands out is a
+// standing write path into Nova from outside - so it should stay with admin
+// and owner unless there is a specific reason to widen it.
+ALL_PERMS.push('view_sync', 'manage_sync');
 ALL_PERMS.push('edit_deposit');
 
 var DEFAULTS = {

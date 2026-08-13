@@ -2,7 +2,7 @@
 // public/sw.js (the only thing bumped each deploy) — the badge asks the active
 // service worker for it at runtime. This value is just the fallback shown when no
 // service worker is available (e.g. very first visit before it installs).
-var APP_VERSION = 'v111';
+var APP_VERSION = 'v112';
 var _resolvedAppVersion = null;
 
 // Ask the active service worker for its CACHE_VERSION (without the 'nova-' prefix).
@@ -901,7 +901,8 @@ function navModel() {
       can('manage_cities') ? navItem('cities', 'Cities', icons.map) : null,
       can('view_audit') ? navItem('audit', 'Audit Log', NAVI.audit) : null,
       can('manage_settings') ? navItem('roles', 'Roles &amp; Access', NAVI.shield) : null,
-      isAdmin ? navItem('integrations', 'Integrations', NAVI.plug) : null
+      isAdmin ? navItem('integrations', 'Integrations', NAVI.plug) : null,
+      can('view_sync') ? navItem('data-sync', 'Data Sync', NAVI.plug) : null
     ])
   ];
 
@@ -1142,6 +1143,7 @@ async function render() {
   else if (state.currentView === 'notifications') await renderNotifications(content);
   else if (state.currentView === 'location-settings') await renderLocationSettings(content);
   else if (state.currentView === 'integrations') await renderIntegrations(content);
+  else if (state.currentView === 'data-sync') await renderSync(content);
   else if (state.currentView === 'security') await renderSecurity(content);
   else if (state.currentView === 'scheduled-messages') await renderScheduledMessages(content);
   else if (state.currentView === 'roles') await renderRoles(content);
@@ -5876,10 +5878,10 @@ function vendorsRenderTable(search) {
   wrap.innerHTML =
     '<div class="card"><div class="table-wrap">' +
       '<table>' +
-        '<thead><tr><th>Account Name</th><th>Website</th><th>Account #</th><th>City Assigned</th><th>Username</th><th>Password</th><th>Notes</th><th>Rep Name</th><th>Rep Email</th><th>Rep Phone</th><th></th></tr></thead>' +
+        '<thead><tr><th>Account Name</th><th>Website</th><th>Account #</th><th>City Assigned</th><th>Username</th><th>Password</th><th>Security Q&amp;A</th><th>Notes</th><th>Rep Name</th><th>Rep Email</th><th>Rep Phone</th><th></th></tr></thead>' +
         '<tbody>' +
           (filtered.length === 0
-            ? '<tr><td colspan="11" style="text-align:center;color:var(--text-muted-color);padding:32px">No accounts found.</td></tr>'
+            ? '<tr><td colspan="12" style="text-align:center;color:var(--text-muted-color);padding:32px">No accounts found.</td></tr>'
             : filtered.map(function(v) {
                 return '<tr>' +
                   '<td style="font-weight:600;color:var(--text)">' + escHtml(v.name) + ((v.restricted_to && v.restricted_to.length) ? ' <span style="font-size:11px;font-weight:700;color:var(--primary);border:1px solid var(--primary);border-radius:4px;padding:1px 5px;vertical-align:middle">RESTRICTED</span>' : '') + '</td>' +
@@ -5895,6 +5897,7 @@ function vendorsRenderTable(search) {
                         '</span>'
                       : '—') +
                   '</td>' +
+                  '<td style="white-space:nowrap">' + vendorSqCell(v) + '</td>' +
                   '<td style="max-width:200px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">' + escHtml(v.notes || '—') + '</td>' +
                   '<td>' + escHtml(v.rep_name || '—') + '</td>' +
                   '<td>' + (v.rep_email ? '<a href="mailto:' + escHtml(v.rep_email) + '" style="color:var(--primary)">' + escHtml(v.rep_email) + '</a>' : '—') + '</td>' +
@@ -5928,6 +5931,155 @@ function toggleVendorPw(id, pw) {
   } else { el.textContent = '••••••••'; btn.textContent = 'Show'; }
 }
 
+// ── Account security questions ───────────────────────────────────────────────
+// Some vendor portals will not reset a password until you answer one of these,
+// so the answers are treated exactly like the password: masked by default,
+// revealed one at a time, and never sent to view-only users at all (the server
+// strips them, so a view-only caller simply has an empty list here).
+
+// Normalize whatever came back on the account into an array of {q,a} rows.
+function vendorSqList(v) {
+  var raw = v && v.security_questions;
+  if (typeof raw === 'string') { try { raw = JSON.parse(raw); } catch (e) { raw = null; } }
+  if (!Array.isArray(raw)) return [];
+  return raw.filter(function (r) { return r && typeof r === 'object' && ((r.q || '') !== '' || (r.a || '') !== ''); });
+}
+
+// The Accounts-table cell: a count you can click, or an em dash.
+function vendorSqCell(v) {
+  var n = vendorSqList(v).length;
+  if (!n) return '<span style="color:var(--text-muted-color)">—</span>';
+  return '<button class="btn btn-ghost btn-sm" style="padding:2px 8px;font-size:12px;border:1px solid var(--border)" ' +
+    'onclick="vendorViewQuestions(' + v.id + ')">Q&amp;A (' + n + ')</button>';
+}
+
+var _vendorSqViewing = [];
+
+// Read-only popup. Answers start masked; Show and Copy work per row so you
+// never have to expose the rest of them to read one.
+function vendorViewQuestions(id) {
+  var v = (_vendorsData || []).find(function (x) { return x.id === id; });
+  if (!v) return;
+  var rows = vendorSqList(v);
+  _vendorSqViewing = rows;
+  var body = rows.map(function (r, i) {
+    return '<div style="border:1px solid var(--border);border-radius:8px;padding:10px 12px;margin-bottom:8px">' +
+      '<div style="font-size:13px;font-weight:600;color:var(--text);margin-bottom:6px">' + escHtml(r.q || '(no question recorded)') + '</div>' +
+      '<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">' +
+        '<span id="sqa-' + i + '" style="font-family:monospace;letter-spacing:1px;font-size:13px;word-break:break-all">' +
+          ((r.a || '') ? '••••••••' : '<span style="color:var(--text-muted-color);font-family:inherit;letter-spacing:0">no answer saved</span>') + '</span>' +
+        ((r.a || '')
+          ? '<button class="btn btn-ghost btn-sm" style="padding:2px 8px;font-size:12px" onclick="vendorSqReveal(' + i + ',this)">Show</button>' +
+            '<button class="btn btn-ghost btn-sm" style="padding:2px 8px;font-size:12px" onclick="vendorSqCopyAnswer(' + i + ',this)">Copy</button>'
+          : '') +
+      '</div>' +
+    '</div>';
+  }).join('');
+  var overlay = document.createElement('div');
+  overlay.className = 'modal-overlay';
+  overlay.id = 'vendor-sq-overlay';
+  overlay.innerHTML =
+    '<div class="modal" style="max-width:480px">' +
+      '<div class="modal-header"><span class="modal-title">Security Questions &mdash; ' + escHtml(v.name || '') + '</span>' +
+        '<button class="btn btn-ghost btn-sm" onclick="vendorCloseQuestions()">&#x2715;</button></div>' +
+      '<div class="modal-body">' + (body || '<div style="color:var(--text-muted-color);font-size:13px">No security questions saved for this account.</div>') + '</div>' +
+      '<div class="modal-footer"><button class="btn btn-secondary" onclick="vendorCloseQuestions()">Close</button></div>' +
+    '</div>';
+  document.body.appendChild(overlay);
+}
+
+// Drop the plaintext answers when the popup closes so they are not sitting in
+// a module-level variable for the rest of the session.
+function vendorCloseQuestions() {
+  _vendorSqViewing = [];
+  var o = document.getElementById('vendor-sq-overlay');
+  if (o) o.remove();
+}
+
+function vendorSqReveal(i, btn) {
+  var el = document.getElementById('sqa-' + i);
+  if (!el) return;
+  var row = _vendorSqViewing[i] || {};
+  if (btn.textContent === 'Show') { el.textContent = row.a || ''; btn.textContent = 'Hide'; }
+  else { el.textContent = '••••••••'; btn.textContent = 'Show'; }
+}
+
+function vendorSqCopyAnswer(i, btn) {
+  var row = _vendorSqViewing[i] || {};
+  copyToClipboard(row.a || '', btn);
+}
+
+// ── Security-question editor rows (Add / Edit Account modal) ─────────────────
+// These two must stay in step with SQ_MAX_ROWS / SQ_MAX_LEN in routes/vendors.js.
+// The server REJECTS anything past them rather than trimming, so the maxlength
+// below is what stops you from typing an answer that cannot be saved. A
+// silently shortened answer is a wrong answer, and you would only find that out
+// when a vendor portal locks the account.
+var VENDOR_SQ_MAX_ROWS = 25;
+var VENDOR_SQ_MAX_LEN = 300;
+
+function vendorSqRowHtml(q, a) {
+  return '<div class="vm-sq-row" style="border:1px solid var(--border);border-radius:8px;padding:10px;margin-bottom:8px">' +
+    '<div style="display:flex;align-items:center;gap:8px;margin-bottom:6px">' +
+      '<input type="text" class="vm-sq-q" maxlength="' + VENDOR_SQ_MAX_LEN + '" value="' + escHtml(q || '') + '" placeholder="Question, e.g. Mother&#39;s maiden name" style="flex:1" />' +
+      '<button type="button" class="btn btn-ghost btn-sm" style="padding:2px 8px;color:var(--danger)" title="Remove this question" onclick="vendorSqRemoveRow(this)">&#x2715;</button>' +
+    '</div>' +
+    '<div style="display:flex;align-items:center;gap:8px">' +
+      '<input type="password" class="vm-sq-a" maxlength="' + VENDOR_SQ_MAX_LEN + '" value="' + escHtml(a || '') + '" placeholder="Answer" autocomplete="off" style="flex:1" />' +
+      '<button type="button" class="btn btn-secondary btn-sm" style="white-space:nowrap" onclick="vendorSqToggleAnswer(this)">Show</button>' +
+    '</div>' +
+  '</div>';
+}
+
+function vendorSqEditorHtml(rows) {
+  return (rows && rows.length ? rows.map(function (r) { return vendorSqRowHtml(r.q, r.a); }).join('') : '');
+}
+
+function vendorSqAddRow() {
+  var box = document.getElementById('vm-sq-list');
+  if (!box) return;
+  if (box.querySelectorAll('.vm-sq-row').length >= VENDOR_SQ_MAX_ROWS) {
+    showToast('An account can hold at most ' + VENDOR_SQ_MAX_ROWS + ' security questions.', 'error');
+    return;
+  }
+  var empty = document.getElementById('vm-sq-empty');
+  if (empty) empty.remove();
+  box.insertAdjacentHTML('beforeend', vendorSqRowHtml('', ''));
+  var inputs = box.querySelectorAll('.vm-sq-q');
+  if (inputs.length) inputs[inputs.length - 1].focus();
+}
+
+function vendorSqRemoveRow(btn) {
+  var row = btn.closest('.vm-sq-row');
+  if (row) row.remove();
+  var box = document.getElementById('vm-sq-list');
+  if (box && !box.querySelector('.vm-sq-row')) {
+    box.innerHTML = '<div id="vm-sq-empty" style="color:var(--text-muted-color);font-size:13px;padding:4px 0">No security questions on this account.</div>';
+  }
+}
+
+function vendorSqToggleAnswer(btn) {
+  var input = btn.previousElementSibling;
+  if (!input) return;
+  if (input.type === 'password') { input.type = 'text'; btn.textContent = 'Hide'; }
+  else { input.type = 'password'; btn.textContent = 'Show'; }
+}
+
+// Collect the editor rows into the payload shape. A row with neither a
+// question nor an answer is dropped, so a blank row someone added and then
+// ignored does not get saved.
+function vendorSqCollect() {
+  var out = [];
+  var rows = document.querySelectorAll('#vm-sq-list .vm-sq-row');
+  for (var i = 0; i < rows.length; i++) {
+    var q = ((rows[i].querySelector('.vm-sq-q') || {}).value || '').trim();
+    var a = ((rows[i].querySelector('.vm-sq-a') || {}).value || '').trim();
+    if (!q && !a) continue;
+    out.push({ q: q, a: a });
+  }
+  return out;
+}
+
 function vendorOpenSite(url, pw) {
   var open = function() { window.open(url.startsWith('http') ? url : 'https://' + url, '_blank'); };
   if (pw && navigator.clipboard) {
@@ -5949,6 +6101,7 @@ function showVendorModal(id) {
   const _v = isEdit ? ((_vendorsData || []).find(function(x){ return x.id === id; }) || {}) : {};
   const name = _v.name || '', website = _v.website || '', account_number = _v.account_number || '', username = _v.username || '', password = _v.password || '', notes = _v.notes || '', rep_name = _v.rep_name || '', rep_email = _v.rep_email || '', rep_phone = _v.rep_phone || '', city_code = _v.city_code || '';
   const isRestricted = Array.isArray(_v.restricted_to) && _v.restricted_to.length > 0, allow = Array.isArray(_v.restricted_to) ? _v.restricted_to : [];
+  const _sq = vendorSqList(_v);
   const overlay = document.createElement('div');
   overlay.className = 'modal-overlay';
   overlay.id = 'vendor-modal-overlay';
@@ -5970,7 +6123,13 @@ function showVendorModal(id) {
             '<button type="button" class="btn btn-secondary btn-sm" style="white-space:nowrap" onclick="toggleVendorModalPw()">Show</button>' +
           '</div></div>' +
         '<div class="form-group"><label>City Assigned</label><select id="vm-city">' + vendorCityOptions(city_code) + '</select></div>' +
-        '<div class="form-group"><label>Notes</label><textarea id="vm-notes" placeholder="Any additional info...">' + escHtml(notes||'') + '</textarea></div>' +
+        '<div style="border-top:1px solid var(--border);margin:16px 0 12px;padding-top:12px;display:flex;align-items:center;justify-content:space-between;gap:10px">' +
+          '<span style="font-size:13px;font-weight:600;color:var(--text-muted-color);text-transform:uppercase;letter-spacing:0.05em">Security Questions</span>' +
+          '<button type="button" class="btn btn-secondary btn-sm" onclick="vendorSqAddRow()">+ Add Question</button>' +
+        '</div>' +
+        '<div style="color:var(--text-muted-color);font-size:12px;margin-bottom:8px">Optional. Answers are hidden by default and are only sent to people who can see this account&#39;s password.</div>' +
+        '<div id="vm-sq-list">' + (_sq.length ? vendorSqEditorHtml(_sq) : '<div id="vm-sq-empty" style="color:var(--text-muted-color);font-size:13px;padding:4px 0">No security questions on this account.</div>') + '</div>' +
+        '<div class="form-group" style="margin-top:16px"><label>Notes</label><textarea id="vm-notes" placeholder="Any additional info...">' + escHtml(notes||'') + '</textarea></div>' +
         '<div style="border-top:1px solid var(--border);margin:16px 0 12px;padding-top:12px;font-size:13px;font-weight:600;color:var(--text-muted-color);text-transform:uppercase;letter-spacing:0.05em">Rep Contact</div>' +
         '<div class="form-group"><label>Rep Name</label><input type="text" id="vm-rep-name" value="' + escHtml(rep_name||'') + '" placeholder="Sales rep name" /></div>' +
         '<div class="form-row">' +
@@ -6035,6 +6194,10 @@ async function saveVendor(id) {
   var _rids = [];
   if (_restrict) { var _cbs = document.querySelectorAll('.vm-user:checked'); for (var _i=0;_i<_cbs.length;_i++) _rids.push(parseInt(_cbs[_i].value,10)); }
   payload.restricted_to = _restrict ? _rids : null;
+  // Always sent from this modal, so clearing every row really does clear them.
+  // The Invoice Setup screen (invSetupSave) saves an account without this key,
+  // and the server leaves the column alone when it is absent.
+  payload.security_questions = vendorSqCollect();
   try {
     if (id) { await api('PUT', '/vendors/' + id, payload); }
     else { await api('POST', '/vendors', payload); }
@@ -7519,7 +7682,21 @@ function renderAuditRows(logs) {
         if (d.customer) details += 'Customer: ' + d.customer + ' ';
         if (d.total !== undefined) details += '$' + parseFloat(d.total).toFixed(2);
         if (d.orderer) details += 'Orderer: ' + d.orderer;
-        if (d.reason) details += 'Reason: ' + d.reason;
+        if (d.reason) details += 'Reason: ' + d.reason + ' ';
+        // PTO coverage override. routes/pto.js REFUSES the approval unless the
+        // approver types a reason, so this key is always populated on an
+        // approved_override row — it just had no renderer, which made every
+        // override look unexplained. Note the key is override_reason, NOT
+        // reason; that mismatch is why these read blank for so long.
+        if (d.override_reason) details += 'Override reason: ' + d.override_reason + ' ';
+        if (d.coverage_used !== undefined && d.coverage_cap !== undefined && d.coverage_cap !== null) {
+          details += '(coverage ' + d.coverage_used + ' of ' + d.coverage_cap + ') ';
+        }
+        // A second, independent override on the same action: an admin approving
+        // paid PTO for someone who lacks the balance. It is NOT reason-prompted,
+        // so surface the flag or it stays completely invisible.
+        if (d.negative_override === true) details += 'Balance taken negative ';
+        if (d.dates) details += 'Dates: ' + d.dates + ' ';
         if (d.method) details += 'Via: ' + d.method + ' ';
         // Security detail rendering. Deliberately terse — the goal is that a
         // whole screen of these can be skimmed, not that any one row is complete.
@@ -7544,7 +7721,8 @@ function renderAuditRows(logs) {
         if (d.trusted_devices_removed !== undefined) details += d.trusted_devices_removed + ' device(s), ' + (d.oauth_tokens_revoked || 0) + ' app token(s) revoked ';
         if (d.deleted_email) details += 'Was: ' + d.deleted_email + ' ';
         if (d.by_user_name) details += 'By: ' + d.by_user_name + ' ';
-        if (d.reason) details += 'Reason: ' + d.reason;
+        // (d.reason was rendered up top; the duplicate that used to sit here
+        // printed every reason into the cell twice.)
         if (d.note) details += d.note;
         // The IP is its own column now; only fall back to the details copy for
         // the historical rows written before audit_logs.ip existed.
@@ -10025,6 +10203,10 @@ async function renderHomeScreen(el) {
       return '<div style="display:flex;gap:10px;padding:8px 0;border-bottom:0.5px solid var(--border-color);align-items:flex-start">' +
         '<div style="width:7px;height:7px;border-radius:50%;background:' + col + ';margin-top:5px;flex-shrink:0"></div>' +
         '<div><div style="font-size:12px;color:var(--text-color)">' + escHtml(label) + (a.user_name ? ' <span style="color:var(--text-muted-color)">by ' + escHtml(a.user_name) + '</span>' : '') + '</div>' +
+        // The "why" line. routes/dashboard.js builds a.note from an allowlist
+        // and only sends it to privileged viewers, so there is nothing to gate
+        // here: if the server sent it, it is showable.
+        (a.note ? '<div style="font-size:11px;color:var(--text-muted-color);font-style:italic;margin-top:2px">' + escHtml(a.note) + '</div>' : '') +
         '<div style="font-size:11px;color:var(--text-muted-color)">' + formatDate(a.created_at) + '</div></div>' +
       '</div>';
     }).join('') : '<div style="text-align:center;padding:24px;color:var(--text-muted-color);font-size:13px">No recent activity.</div>';

@@ -4436,6 +4436,147 @@ async function initDB() {
 
     console.log('A/P: tables ready. Bills are off until an admin grants view_ap / manage_ap.');
 
+
+    // -----------------------------------------------------------------------
+    // Inbound sync receiver (generic webhooks) - see utils/webhookIngest.js
+    // -----------------------------------------------------------------------
+    // One row per partner that POSTs JSON at Nova. The shared secret is stored
+    // as a SHA-256 hash and never in plaintext: it is generated, shown to the
+    // admin exactly once, and after that only the hash and the last 4
+    // characters (so you can tell which token is live) exist anywhere.
+    await client.query(
+      'CREATE TABLE IF NOT EXISTS webhook_sources (' +
+      '  id SERIAL PRIMARY KEY,' +
+      '  slug VARCHAR(64) UNIQUE NOT NULL,' +
+      '  name VARCHAR(160) NOT NULL,' +
+      '  secret_hash VARCHAR(128) NOT NULL,' +
+      '  secret_hint VARCHAR(16),' +
+      '  handler VARCHAR(64),' +
+      '  enabled BOOLEAN NOT NULL DEFAULT true,' +
+      '  dedupe_path VARCHAR(200),' +
+      '  event_type_path VARCHAR(200),' +
+      '  last_event_at TIMESTAMPTZ,' +
+      '  created_by INTEGER REFERENCES users(id) ON DELETE SET NULL,' +
+      '  created_at TIMESTAMPTZ DEFAULT NOW(),' +
+      '  updated_at TIMESTAMPTZ DEFAULT NOW()' +
+      ');'
+    );
+
+    // Every delivery, stored verbatim BEFORE anything interprets it.
+    //
+    // raw_body is kept alongside the parsed payload on purpose. The parsed JSON
+    // is what handlers read, but when a partner swears they sent a field and we
+    // do not have it, the only thing that settles the argument is the exact
+    // bytes that arrived.
+    //
+    // status:  pending    stored, waiting to be processed
+    //          processing claimed by a worker
+    //          done       handler succeeded
+    //          skipped    handler understood it and deliberately ignored it
+    //          parked     no handler registered yet - replay once one exists
+    //          failed     handler threw; retried on a backoff, then dead-lettered
+    await client.query(
+      'CREATE TABLE IF NOT EXISTS webhook_events (' +
+      '  id BIGSERIAL PRIMARY KEY,' +
+      '  source_slug VARCHAR(64) NOT NULL,' +
+      '  event_type VARCHAR(120),' +
+      '  external_id VARCHAR(200),' +
+      '  body_hash CHAR(64) NOT NULL,' +
+      '  payload JSONB,' +
+      '  raw_body TEXT,' +
+      '  headers JSONB,' +
+      '  ip VARCHAR(64),' +
+      "  status VARCHAR(16) NOT NULL DEFAULT 'pending'," +
+      '  attempts INTEGER NOT NULL DEFAULT 0,' +
+      '  last_error TEXT,' +
+      '  next_attempt_at TIMESTAMPTZ,' +
+      '  received_at TIMESTAMPTZ DEFAULT NOW(),' +
+      '  processed_at TIMESTAMPTZ' +
+      ');'
+    );
+
+    // THE dedupe guarantee. Partial, because plenty of partners send no id at
+    // all and NULLs would otherwise be treated as distinct values forever. When
+    // an id IS present this index is what makes a duplicate delivery a no-op
+    // even if two copies arrive at the same instant on two connections.
+    await client.query(
+      'CREATE UNIQUE INDEX IF NOT EXISTS idx_webhook_events_dedupe ' +
+      'ON webhook_events(source_slug, external_id) WHERE external_id IS NOT NULL;'
+    );
+    // The retry sweep's query, once a minute, forever. Partial so it stays
+    // small: on a healthy system almost every row is 'done' and not in here.
+    await client.query(
+      'CREATE INDEX IF NOT EXISTS idx_webhook_events_queue ' +
+      "ON webhook_events(next_attempt_at) WHERE status IN ('pending','failed');"
+    );
+    await client.query(
+      'CREATE INDEX IF NOT EXISTS idx_webhook_events_source ON webhook_events(source_slug, id DESC);'
+    );
+    await client.query(
+      'CREATE INDEX IF NOT EXISTS idx_webhook_events_status ON webhook_events(status);'
+    );
+
+    // Which event types this source actually wants. Empty/NULL = everything.
+    // Added as an ALTER so an existing deploy picks it up without a rebuild.
+    await client.query('ALTER TABLE webhook_sources ADD COLUMN IF NOT EXISTS accept_types TEXT;');
+
+    // Per-source auth shape. Partners choose their own header spellings and
+    // will not change them for us, so every one of these is configuration
+    // rather than a code branch. Pulsar sends the token in a header literally
+    // named 'auth', plus an HMAC in 'Pulsar-Signature'.
+    //
+    // hmac_secret_enc is ENCRYPTED, not hashed. A bearer token can be stored
+    // one-way because verifying means hashing what arrived; an HMAC key must be
+    // recoverable to recompute the signature. See the secret box in
+    // utils/webhookIngest.js.
+    //
+    // hmac_mode: off | observe | require
+    //   observe computes the signature, records the verdict on every event and
+    //   logs what WOULD have been rejected, while still accepting the data.
+    //   That is the same two-stage rollout server.js uses for CORS_STRICT, and
+    //   it is how you discover a partner's exact formulation from their own
+    //   traffic instead of from a sentence in a chat window.
+    await client.query(
+      "ALTER TABLE webhook_sources ADD COLUMN IF NOT EXISTS secret_header VARCHAR(64);" +
+      "ALTER TABLE webhook_sources ADD COLUMN IF NOT EXISTS hmac_mode VARCHAR(12) NOT NULL DEFAULT 'off';" +
+      'ALTER TABLE webhook_sources ADD COLUMN IF NOT EXISTS hmac_header VARCHAR(64);' +
+      'ALTER TABLE webhook_sources ADD COLUMN IF NOT EXISTS hmac_ts_header VARCHAR(64);' +
+      'ALTER TABLE webhook_sources ADD COLUMN IF NOT EXISTS hmac_secret_enc TEXT;' +
+      'ALTER TABLE webhook_sources ADD COLUMN IF NOT EXISTS hmac_format VARCHAR(40);' +
+      'ALTER TABLE webhook_sources ADD COLUMN IF NOT EXISTS hmac_max_skew_s INTEGER NOT NULL DEFAULT 300;'
+    );
+
+    // What the signature check concluded for the request this event came from:
+    // 'ok:body', 'mismatch', 'missing', 'stale', 'no_key', or NULL when the
+    // source does not sign. In observe mode this column IS the report - it is
+    // how you confirm a formulation is matching consistently before enforcing.
+    await client.query('ALTER TABLE webhook_events ADD COLUMN IF NOT EXISTS sig_state VARCHAR(40);');
+
+    // Per-type traffic counters, including for records the filter DROPPED.
+    //
+    // This is what makes a firehose safe to narrow. Pulsar's feed carries every
+    // event in their system; you cannot decide which codes matter by reading a
+    // spec, you decide by watching what actually shows up. These counters give
+    // that picture indefinitely at a few bytes per type, whether or not the
+    // payload was kept.
+    //
+    // Written from an in-memory buffer flushed on a timer, NOT once per
+    // delivery - see utils/webhookIngest.js flushStats(). One counter row per
+    // type would otherwise be the hottest row in the database.
+    await client.query(
+      'CREATE TABLE IF NOT EXISTS webhook_event_stats (' +
+      '  source_slug VARCHAR(64) NOT NULL,' +
+      "  event_type VARCHAR(120) NOT NULL DEFAULT ''," +
+      '  stored_count BIGINT NOT NULL DEFAULT 0,' +
+      '  dropped_count BIGINT NOT NULL DEFAULT 0,' +
+      '  first_seen TIMESTAMPTZ DEFAULT NOW(),' +
+      '  last_seen TIMESTAMPTZ DEFAULT NOW(),' +
+      '  PRIMARY KEY (source_slug, event_type)' +
+      ');'
+    );
+
+    console.log('Sync: inbound webhook tables ready. No sources exist until an admin creates one.');
+
     console.log('Database initialized');
   } finally {
     client.release();
