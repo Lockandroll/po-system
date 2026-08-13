@@ -44,10 +44,17 @@ inboundRouter.use(express.raw({ type: function () { return true; }, limit: inges
 // A GET on the same URL so anyone (including the partner) can confirm they have
 // the right address without sending data. It reveals nothing: no token check,
 // no source lookup, no indication of whether that slug exists.
+//
+// Which is exactly why the message does NOT name a header. Each source decides
+// what its token header is called, and looking that up here would turn this
+// into an endpoint that tells a stranger which integrations exist. Naming one
+// specific header instead would be worse than saying nothing: it contradicts
+// whatever the partner was actually told, for every source that uses a
+// different one.
 inboundRouter.get('/:slug', function (req, res) {
   res.json({
     ok: true,
-    message: 'Nova sync endpoint. POST JSON here with your token in the X-Nova-Token header.',
+    message: 'Nova sync endpoint. This address is live. POST your JSON here, with the token in the header you were given.',
     method: 'POST',
     content_type: 'application/json'
   });
