@@ -100,9 +100,20 @@ function syncCopy(text, label) {
   }
 }
 
+// Seconds matter here in a way they do not elsewhere in Nova. This is the
+// screen where you ask "did the retry fire", "how long was it parked", "did
+// these forty records arrive in one burst or over an hour" - and a date, or
+// even a date and minute, cannot answer any of those.
 function syncDateStr(v) {
   if (!v) return '';
-  try { return formatDate(v); } catch (e) { return String(v).slice(0, 19).replace('T', ' '); }
+  try {
+    var d = new Date(v);
+    if (isNaN(d.getTime())) return String(v);
+    return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' }) + ' ' +
+      d.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', second: '2-digit' });
+  } catch (e) {
+    return String(v).slice(0, 19).replace('T', ' ');
+  }
 }
 
 function syncNum(n) {
