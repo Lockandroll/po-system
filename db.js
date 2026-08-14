@@ -4495,14 +4495,20 @@ async function initDB() {
       ');'
     );
 
-    // THE dedupe guarantee. Partial, because plenty of partners send no id at
-    // all and NULLs would otherwise be treated as distinct values forever. When
-    // an id IS present this index is what makes a duplicate delivery a no-op
-    // even if two copies arrive at the same instant on two connections.
-    await client.query(
-      'CREATE UNIQUE INDEX IF NOT EXISTS idx_webhook_events_dedupe ' +
-      'ON webhook_events(source_slug, external_id) WHERE external_id IS NOT NULL;'
-    );
+    // NOTE: the unique dedupe index used to be created HERE, on
+    // (source_slug, external_id). It moved further down, onto dedupe_key.
+    //
+    // It must not be recreated here, and this comment exists so nobody puts it
+    // back. external_id is now the PARTNER's id - recorded on every row and
+    // deliberately allowed to repeat, because duplicate checking can be turned
+    // off, and because a sentinel like "0" is a perfectly normal value for a
+    // partner to send on thousands of records.
+    //
+    // Leaving the old CREATE in place cost a production outage: the migration
+    // below drops that index, so on the NEXT boot this line tried to recreate it
+    // over data that legitimately had repeats, threw 23505, and aborted initDB -
+    // taking every table defined after this point down with it. A failed
+    // migration that stops halfway is worse than one that never ran.
     // The retry sweep's query, once a minute, forever. Partial so it stays
     // small: on a healthy system almost every row is 'done' and not in here.
     await client.query(
@@ -4593,10 +4599,23 @@ async function initDB() {
     // unique index.
     await client.query('ALTER TABLE webhook_events ADD COLUMN IF NOT EXISTS dedupe_key VARCHAR(200);');
     await client.query('UPDATE webhook_events SET dedupe_key = external_id WHERE dedupe_key IS NULL AND external_id IS NOT NULL;');
-    await client.query(
-      'CREATE UNIQUE INDEX IF NOT EXISTS idx_webhook_events_dedupe_key ' +
-      'ON webhook_events(source_slug, dedupe_key) WHERE dedupe_key IS NOT NULL;'
-    );
+    // Wrapped: if historic rows already contain a repeated dedupe_key (from a
+    // period when duplicate checking was off, or from the sentinel bug), the
+    // CREATE fails - and an initDB that throws here would take out everything
+    // defined below it. Dedupe still works without the index; the index makes it
+    // race-proof. Losing the guarantee is survivable, losing the rest of the
+    // schema is not.
+    try {
+      await client.query(
+        'CREATE UNIQUE INDEX IF NOT EXISTS idx_webhook_events_dedupe_key ' +
+        'ON webhook_events(source_slug, dedupe_key) WHERE dedupe_key IS NOT NULL;'
+      );
+    } catch (e) {
+      console.error('Sync: could not create the dedupe index (' + e.message + '). ' +
+        'Duplicate checking still works in application code, but concurrent identical ' +
+        'deliveries are no longer resolved by the database. Clear the offending rows ' +
+        'and restart to restore it.');
+    }
     // The old index enforced uniqueness on external_id, which must now be free
     // to repeat. Dropped AFTER the new one exists so there is no window with
     // neither in place.
