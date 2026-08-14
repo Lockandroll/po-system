@@ -2066,6 +2066,12 @@ async function initDB() {
     // list from Invoice Setup". An empty array means "this account requires none",
     // which is a real, different answer, so it must survive round-tripping.
     await client.query('ALTER TABLE vendors ADD COLUMN IF NOT EXISTS required_photos JSONB;');
+    // Per-account security questions, as an ordered JSONB array of { q, a }.
+    // NULL means the account has none. The answers are credentials and ride out
+    // on the same gate as the username/password (routes/vendors.js). This column
+    // was referenced by the route and the editor before it was ever created, so
+    // every account save 500'd on 42703 until this migration landed.
+    await client.query('ALTER TABLE vendors ADD COLUMN IF NOT EXISTS security_questions JSONB;');
     // Per-account close-out requirements (Tony, 2026-08-05). Simple booleans, all
     // default OFF: an account is flagged only when it genuinely mandates the item.
     //   require_signature   -> invoice needs a captured signature; this is also the
