@@ -19,6 +19,10 @@ var _syncHandlers = [];
 var _syncSigning = false;      // does the server have a key to store signing secrets with
 var _syncFormats = [];
 var _syncSearchTimer = null;
+var _syncAuto = true;          // live refresh on by default - this is a watch screen
+var _syncTimer = null;
+var _syncLastLoad = null;
+var SYNC_POLL_MS = 15000;
 
 /* ------------------------------------------------- partner event type names */
 
@@ -122,6 +126,45 @@ var PULSAR_TYPES = {
   '8000': 'Techs → Heartbeat',
   '50000': 'Boot Off'
 };
+
+// Pulsar location ids, from Duty 2026-08-13.
+//
+// ⚠️ THE KEYS ARE STRINGS AND MUST STAY STRINGS. These are 18-digit values -
+// larger than JavaScript can hold exactly as a number. Quoted, they are exact;
+// unquoted, 201002101610450898 silently becomes 201002101610450900 and every
+// lookup misses. Duty flagged the same trap on his side: "if claude stores
+// these big numbers make sure you tell him to save it as a string, otherwise
+// it'll break". Nova stores them as text end to end, never a numeric column.
+//
+// This list is PARTIAL - 201002101605265794 has already been seen in real
+// traffic and is not in it. Unknown ids render as themselves, never blank.
+var PULSAR_LOCATIONS = {
+  '201002101610382729': 'Columbus, GA',
+  '201002101610416735': 'Clearwater',
+  '201002101610432566': 'Jacksonville',
+  '201002101610450898': 'Orlando',
+  '201002101610470309': 'Tampa',
+  '201002101610493226': 'Birmingham',
+  '201002101610517900': 'Savannah',
+  '201002101611115885': 'Tallahassee'
+};
+
+function syncLocationName(id) {
+  var s = String(id === null || id === undefined ? '' : id).trim();
+  if (!s || s === '0') return '';
+  return PULSAR_LOCATIONS[s] || '';
+}
+
+// Pulsar ids are timestamps: yyyyMMddHHmmssffff. Handy when gmtStamp is
+// DateTime.MinValue, which it always is so far.
+function syncIdTime(id) {
+  var s = String(id === null || id === undefined ? '' : id).trim();
+  if (!/^\d{18}$/.test(s)) return '';
+  var d = new Date(s.slice(0, 4) + '-' + s.slice(4, 6) + '-' + s.slice(6, 8) + 'T' +
+    s.slice(8, 10) + ':' + s.slice(10, 12) + ':' + s.slice(12, 14) + 'Z');
+  if (isNaN(d.getTime())) return '';
+  return d.toLocaleString('en-US', { month: 'short', day: 'numeric', year: 'numeric', hour: 'numeric', minute: '2-digit' });
+}
 
 function syncTypeLabel(slug, code) {
   if (code === null || code === undefined || code === '') return '';
@@ -238,6 +281,8 @@ async function renderSync(content) {
     '<div class="page-header"><div><div class="page-title">Data Sync</div>' +
       '<div class="page-subtitle">What partners are pushing into Nova, and what happened to it.</div></div>' +
       '<div class="flex-gap">' +
+        '<button class="btn btn-sm ' + (_syncAuto ? 'btn-secondary' : 'btn-ghost') + '" id="sync-auto-btn" ' +
+          'onclick="syncToggleAuto()" title="Refresh this screen automatically">' + (_syncAuto ? 'Live' : 'Paused') + '</button>' +
         '<button class="btn btn-secondary btn-sm" onclick="syncRefresh()">Refresh</button>' +
         (syncCan('manage_sync') ? '<button class="btn btn-primary btn-sm" onclick="syncNewSource()">Add a source</button>' : '') +
       '</div></div>' +
@@ -246,7 +291,8 @@ async function renderSync(content) {
       '<div class="sy-tab' + (_syncTab === 'events' ? ' on' : '') + '" onclick="syncGo(\'events\')">Events</div>' +
       '<div class="sy-tab' + (_syncTab === 'sources' ? ' on' : '') + '" onclick="syncGo(\'sources\')">Sources</div>' +
     '</div>' +
-    '<div id="sync-body"></div>';
+    '<div id="sync-body"></div>' +
+    '<div id="sync-stamp" class="sy-note" style="margin-top:10px;text-align:right"></div>';
 
   // The source list feeds the filter dropdowns on every tab, so it is loaded
   // once here rather than per tab.
@@ -259,6 +305,7 @@ async function renderSync(content) {
   } catch (e) { _syncSources = null; }
 
   await syncLoad();
+  syncStartAuto();
 }
 
 function syncGo(t) {
@@ -268,6 +315,48 @@ function syncGo(t) {
 
 function syncRefresh() {
   renderSync(document.getElementById('content') || document.querySelector('.content'));
+}
+
+// This screen is watched while waiting for a partner to send something, and it
+// used to sit there dead until someone hit Refresh. Which meant the honest
+// answer to "is anything arriving?" was "I don't know, my page is stale."
+//
+// The guards matter more than the timer. A poll that fires while a dialog is
+// open, or while someone is typing a search, or in a tab nobody is looking at,
+// is worse than no poll at all.
+function syncStartAuto() {
+  if (_syncTimer) { clearInterval(_syncTimer); _syncTimer = null; }
+  _syncTimer = setInterval(function () {
+    // The screen has been navigated away from - stop, and do not leak a timer
+    // that quietly calls the API forever.
+    if (!document.getElementById('sync-body')) {
+      clearInterval(_syncTimer);
+      _syncTimer = null;
+      return;
+    }
+    if (!_syncAuto) return;
+    if (document.hidden) return;                                 // background tab
+    if (document.getElementById('sync-modal')) return;           // never redraw under an open dialog
+    var el = document.activeElement;
+    if (el && (el.id === 'sync-search' || el.tagName === 'SELECT')) return;  // do not fight the user
+    syncLoad();
+  }, SYNC_POLL_MS);
+}
+
+function syncToggleAuto() {
+  _syncAuto = !_syncAuto;
+  var b = document.getElementById('sync-auto-btn');
+  if (b) b.textContent = _syncAuto ? 'Live' : 'Paused';
+  if (b) b.className = 'btn btn-sm ' + (_syncAuto ? 'btn-secondary' : 'btn-ghost');
+  if (_syncAuto) syncLoad();
+}
+
+function syncStamp() {
+  var el = document.getElementById('sync-stamp');
+  if (!el) return;
+  var d = new Date();
+  el.textContent = 'updated ' + d.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', second: '2-digit' }) +
+    (_syncAuto ? ' - refreshing every ' + (SYNC_POLL_MS / 1000) + 's' : ' - paused');
 }
 
 async function syncLoad() {
@@ -298,6 +387,8 @@ async function syncLoad() {
     return;
   }
 
+  _syncLastLoad = Date.now();
+  syncStamp();
   if (_syncTab === 'sources') return syncRenderSources(body);
   if (_syncTab === 'events') return syncRenderEvents(body);
   return syncRenderTraffic(body);
@@ -389,7 +480,8 @@ async function syncRenderTraffic(body) {
   });
 
   html += '</tbody></table></div></div>' +
-    '<div class="sy-note" style="margin-top:10px">' + escHtml(d.note || '') + '</div>';
+    '<div class="sy-note" style="margin-top:10px">' + escHtml(d.note || '') +
+    ' The Events tab is always current; only these totals lag.</div>';
 
   body.innerHTML = html;
   syncLoadRejections();
@@ -617,6 +709,7 @@ async function syncOpenEvent(id) {
       '<div class="lbl">From</div><div class="sy-note">' + escHtml(e.ip || '') + '</div>' +
     '</div>' +
     (e.last_error ? '<div class="sy-warn" style="white-space:pre-wrap">' + escHtml(e.last_error) + '</div>' : '') +
+    syncDecoded(e) +
     '<div style="font-weight:700;font-size:13px;margin-bottom:6px">Payload as received</div>' +
     '<pre class="sy-pre">' + escHtml(pretty) + '</pre>';
 
@@ -624,6 +717,51 @@ async function syncOpenEvent(id) {
   syncModal('Event #' + e.id, body, canReplay ? 'Replay' : '', function () {
     syncReplay(e.id);
   }, true);
+}
+
+// Translates the opaque parts of a Pulsar envelope into something a human can
+// act on. Shown ABOVE the raw payload, never instead of it - the raw bytes stay
+// the source of truth, this is only a reading aid.
+function syncDecoded(e) {
+  if (String(e.source_slug) !== 'pulsar') return '';
+  var p = e.payload || {};
+  var rows = [];
+
+  var loc = syncLocationName(p.locationID);
+  if (loc) {
+    rows.push(['Location', escHtml(loc) + ' <span class="sy-note sy-mono">' + escHtml(String(p.locationID)) + '</span>']);
+  } else if (p.locationID && String(p.locationID) !== '0') {
+    rows.push(['Location', '<span class="sy-mono">' + escHtml(String(p.locationID)) + '</span> ' +
+      '<span class="sy-note">not in the known list</span>']);
+  }
+
+  // dataTarget is composite and its shape DIFFERS BY EVENT TYPE - '(}' on call
+  // status, ':' on digitals. Split on whichever is present rather than assuming.
+  var dt = String(p.dataTarget || '');
+  if (dt) {
+    var parts = dt.indexOf('(}') !== -1 ? dt.split('(}') : (dt.indexOf(':') !== -1 ? dt.split(':') : [dt]);
+    if (parts.length > 1) {
+      var head = syncIdTime(parts[0]);
+      rows.push(['Reference', parts.map(function (x, i) {
+        return '<span class="sy-mono">' + escHtml(x) + '</span>' +
+          (i === 0 && head ? ' <span class="sy-note">(' + escHtml(head) + ')</span>' : '');
+      }).join(' <span class="sy-note">&middot;</span> ')]);
+    }
+  }
+
+  var tt = syncIdTime(p.targetID);
+  if (tt) rows.push(['Record created', escHtml(tt) + ' <span class="sy-note">derived from targetID</span>']);
+
+  // Worth saying out loud - it looks like a date and is not one.
+  if (String(p.gmtStamp || '').indexOf('0001-01-01') === 0) {
+    rows.push(['Their timestamp', '<span class="sy-note">not set (0001-01-01) &mdash; use Received above</span>']);
+  }
+
+  if (!rows.length) return '';
+  return '<div style="font-weight:700;font-size:13px;margin-bottom:6px">Decoded</div>' +
+    '<div class="sy-kv" style="margin-bottom:16px">' +
+    rows.map(function (r) { return '<div class="lbl">' + r[0] + '</div><div>' + r[1] + '</div>'; }).join('') +
+    '</div>';
 }
 
 async function syncReplay(id) {

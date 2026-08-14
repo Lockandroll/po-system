@@ -2,7 +2,7 @@
 // public/sw.js (the only thing bumped each deploy) — the badge asks the active
 // service worker for it at runtime. This value is just the fallback shown when no
 // service worker is available (e.g. very first visit before it installs).
-var APP_VERSION = 'v113';
+var APP_VERSION = 'v114';
 var _resolvedAppVersion = null;
 
 // Ask the active service worker for its CACHE_VERSION (without the 'nova-' prefix).
@@ -157,7 +157,7 @@ var API_CACHE_SWR = 6000;  // if the cached copy is older than this, refresh in 
 function _apiNoCache(path) {
   // Endpoints that must always be live (session/auth, AI, exports, time clock, notifications).
   return /^\/auth(\/|$)/.test(path) || /^\/ai(\/|$)/.test(path) || /export/.test(path) ||
-         /^\/goto(\/|$)/.test(path) || /\/recordings(\/|$|\?)/.test(path) ||
+         /^\/goto(\/|$)/.test(path) || /^\/judi(\/|$)/.test(path) || /\/recordings(\/|$|\?)/.test(path) ||
          /setup-needed/.test(path) || /verify/.test(path) || /usage/.test(path) ||
          /token/.test(path) || /^\/timeclock/.test(path) || /notif/.test(path) ||
          /\/id-image/.test(path) || /\/dispute-packet/.test(path) || /^\/locations/.test(path) ||
