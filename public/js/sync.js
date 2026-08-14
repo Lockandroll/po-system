@@ -515,10 +515,15 @@ async function syncRenderEvents(body) {
     });
     html += '</select>';
   }
-  html += '<input id="sync-search" placeholder="Search id, type, or raw body&hellip;" value="' + escHtml(_syncFilter.q) +
+  html += '<input id="sync-search" placeholder="Search id, type, sender IP, or raw body&hellip;" value="' + escHtml(_syncFilter.q) +
     '" oninput="syncOnSearch(this.value)" style="width:260px;flex:1;min-width:180px">';
   if (syncCan('manage_sync') && _syncFilter.source && (_syncFilter.status === 'parked' || _syncFilter.status === 'failed')) {
     html += '<button class="btn btn-secondary btn-sm" onclick="syncReplayBatch()">Replay all shown</button>';
+  }
+  // Only offered with a source AND a real search term - see the guard rails on
+  // the endpoint. Without both, there is nothing safe to delete.
+  if (syncCan('manage_sync') && _syncFilter.source && _syncFilter.q && _syncFilter.q.trim().length >= 4) {
+    html += '<button class="btn btn-ghost btn-sm" style="color:#f87171" onclick="syncPurge()">Delete matching&hellip;</button>';
   }
   html += '</div>';
 
@@ -533,7 +538,7 @@ async function syncRenderEvents(body) {
   html +=
     '<div class="card"><div class="card-body" style="padding:0;overflow-x:auto">' +
     '<table class="table"><thead><tr>' +
-      '<th style="width:70px">#</th><th>Received</th><th>Source</th><th>Type</th><th>Their id</th>' +
+      '<th style="width:70px">#</th><th>Received</th><th>From</th><th>Type</th><th>Their id</th>' +
       '<th>Status</th><th class="sy-num">Tries</th><th class="sy-num">Size</th><th style="width:1%"></th>' +
     '</tr></thead><tbody>';
 
@@ -544,7 +549,10 @@ async function syncRenderEvents(body) {
       '<tr class="sy-row-click" onclick="syncOpenEvent(' + Number(e.id) + ')">' +
         '<td class="sy-mono">' + Number(e.id) + '</td>' +
         '<td class="sy-note">' + escHtml(syncDateStr(e.received_at)) + '</td>' +
-        '<td class="sy-note">' + escHtml(e.source_slug) + '</td>' +
+        '<td class="sy-mono sy-note" style="cursor:pointer" title="Click to see only this sender" ' +
+          'onclick="event.stopPropagation();syncOnSearch(' + JSON.stringify(String(e.ip || '')).replace(/"/g, '&quot;') + ');' +
+          'var b=document.getElementById(\'sync-search\');if(b)b.value=' +
+          JSON.stringify(String(e.ip || '')).replace(/"/g, '&quot;') + ';">' + escHtml(e.ip || '') + '</td>' +
         '<td><span class="sy-mono">' + escHtml(e.event_type || '') + '</span>' +
           (syncTypeLabel(e.source_slug, e.event_type)
             ? '<div class="sy-note">' + escHtml(syncTypeLabel(e.source_slug, e.event_type)) + '</div>' : '') + '</td>' +
@@ -624,6 +632,24 @@ async function syncReplay(id) {
     showToast('Replayed event #' + id + ' — ' + st, st === 'failed' ? 'error' : 'success');
   } catch (e) { showToast(e.message, 'error'); return; }
   syncCloseModal();
+  syncLoad();
+}
+
+// Deleting real partner data would be a serious mistake, so the confirm names
+// the term, the source and the count rather than asking "are you sure".
+async function syncPurge() {
+  var src = _syncFilter.source, q = (_syncFilter.q || '').trim();
+  if (!src || q.length < 4) return;
+  if (!confirm('Permanently delete every ' + src + ' event matching "' + q + '"?\n\n' +
+    'This cannot be undone. Only use it for test traffic.')) return;
+  var resetCounters = confirm('Also reset the traffic counters for ' + src + '?\n\n' +
+    'OK  = clear the Traffic and Rejections tallies too, so the numbers match what is left.\n' +
+    'Cancel = delete the events but keep the historical counts.');
+  try {
+    var out = await api('POST', '/sync/events/purge', { source: src, q: q, reset_counters: resetCounters });
+    showToast('Deleted ' + out.deleted + ' event(s)' + (out.counters_reset ? ' and reset the counters' : ''), 'success');
+  } catch (e) { showToast(e.message, 'error'); return; }
+  _syncFilter.q = '';
   syncLoad();
 }
 

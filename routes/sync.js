@@ -419,7 +419,11 @@ router.get('/events', requireAuth, requirePermission('view_sync'), async functio
   if (req.query.status) { params.push(String(req.query.status)); where.push('status = $' + params.length); }
   if (req.query.q) {
     params.push('%' + String(req.query.q) + '%');
-    where.push('(external_id ILIKE $' + params.length + ' OR event_type ILIKE $' + params.length + ' OR raw_body ILIKE $' + params.length + ')');
+    // ip is in the search on purpose: "which of these came from THEM" is the
+    // question this screen gets asked most, and pasting an address into the box
+    // is the fastest way to ask it.
+    where.push('(external_id ILIKE $' + params.length + ' OR event_type ILIKE $' + params.length +
+      ' OR ip ILIKE $' + params.length + ' OR raw_body ILIKE $' + params.length + ')');
   }
   var limit = Math.min(Number(req.query.limit) || 100, 500);
   params.push(limit);
@@ -442,6 +446,53 @@ router.get('/events/:id', requireAuth, requirePermission('view_sync'), async fun
   var r = await pool.query('SELECT * FROM webhook_events WHERE id = $1', [req.params.id]);
   if (!r.rows.length) return res.status(404).json({ error: 'Not found' });
   res.json(r.rows[0]);
+});
+
+// Delete events matching a search term. A DELIBERATE exception to this
+// module's rule that nothing is ever thrown away.
+//
+// It exists for one situation: test traffic. Self-test runs and partner
+// smoke-tests leave rows that are real deliveries but not real data, and
+// leaving them in skews every count on the screen you use to judge whether the
+// integration is healthy.
+//
+// The guard rails matter more than the feature:
+//   * a search term is REQUIRED and must be at least 4 characters, so there is
+//     no accidental "delete everything for this source"
+//   * a source is REQUIRED, so a term cannot reach across integrations
+//   * the count is returned and the action is audited with the term used
+// Deleting a partner's real data should be hard. Deleting your own test rows
+// should not require a database console.
+router.post('/events/purge', requireAuth, requirePermission('manage_sync'), async function (req, res) {
+  var source = String(req.body.source || '').trim();
+  var q = String(req.body.q || '').trim();
+  if (!source) return res.status(400).json({ error: 'source is required' });
+  if (q.length < 4) {
+    return res.status(400).json({ error: 'A search term of at least 4 characters is required, so nothing is deleted by accident.' });
+  }
+
+  var r = await pool.query(
+    'DELETE FROM webhook_events WHERE source_slug = $1 AND ' +
+    '(raw_body ILIKE $2 OR external_id ILIKE $2 OR ip ILIKE $2) RETURNING id',
+    [source, '%' + q + '%']
+  );
+
+  // Counters are cumulative and separate from the rows, so a purge that left
+  // them alone would delete the evidence and keep the tally - the screen would
+  // still claim traffic that no longer exists anywhere.
+  var resetStats = req.body.reset_counters === true;
+  if (resetStats) {
+    await pool.query('DELETE FROM webhook_event_stats WHERE source_slug = $1', [source]);
+    await pool.query('DELETE FROM webhook_rejections WHERE source_slug = $1', [source]);
+  }
+
+  await logAudit({
+    entity_type: 'sync_event', entity_number: source, action: 'purged',
+    user_id: req.user.id, user_name: req.user.name,
+    details: { term: q, deleted: r.rows.length, counters_reset: resetStats }, ip: req.ip
+  });
+
+  res.json({ deleted: r.rows.length, counters_reset: resetStats });
 });
 
 // Replay is how a 'parked' backlog becomes real data once a handler exists, and
