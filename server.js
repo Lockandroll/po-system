@@ -372,7 +372,46 @@ app.use((err, req, res, next) => {
 
 const PORT = process.env.PORT || 3000;
 
-app.listen(PORT, () => console.log('PO System running on port ' + PORT));
+const server = app.listen(PORT, () => console.log('PO System running on port ' + PORT));
+
+// ---------------------------------------------------------------------------
+// Expect: 100-continue
+// ---------------------------------------------------------------------------
+// .NET / WCF clients send headers with 'Expect: 100-continue' and then WAIT for
+// a '100 Continue' before transmitting a single byte of the body. If that
+// interim response never reaches them, they sit there until their own timeout
+// and abort - the server sees a request whose Content-Length was announced and
+// whose body never arrived:
+//
+//     BadRequestError: request aborted   expected: 3787, received: 0
+//
+// Node already answers this automatically when nothing is listening for
+// 'checkContinue'. This handler exists for two reasons anyway:
+//
+//   1. It makes the behaviour explicit and reviewable rather than implicit.
+//   2. It LOGS it. Without this there is no way to tell, from inside the app,
+//      whether a partner is even getting that far - which cost an evening.
+//
+// It cannot fix a proxy in front of us that swallows the 1xx response. If these
+// log lines appear and the partner still times out, the interim response is
+// being eaten upstream and the fix has to be on their side
+// (ServicePointManager.Expect100Continue = false).
+let _continueSeen = 0;
+let _continueLoggedAt = 0;
+server.on('checkContinue', function (req, res) {
+  _continueSeen++;
+  const now = Date.now();
+  // Throttled to once a minute: a syncer that uses this sends it on every
+  // request, and the log is not the place to count them.
+  if (now - _continueLoggedAt > 60000) {
+    _continueLoggedAt = now;
+    console.log('[http] Expect: 100-continue from ' +
+      ((req.headers['x-forwarded-for'] || '').split(',')[0].trim() || req.socket.remoteAddress) +
+      ' for ' + req.method + ' ' + req.url + ' (' + _continueSeen + ' so far) - answering 100 Continue');
+  }
+  res.writeContinue();
+  app(req, res);
+});
 
 initDB()
   .then(() => {

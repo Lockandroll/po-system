@@ -421,6 +421,7 @@ async function syncLoadRejections() {
     invalid_batch_item: 'an array element was not an object',
     empty_body: 'sent an empty body',
     payload_too_large: 'the body was over the size limit',
+    body_never_sent: 'announced a body then never sent it, and gave up waiting',
     batch_too_large: 'too many records in one POST'
   };
 

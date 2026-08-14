@@ -113,6 +113,35 @@ inboundRouter.post('/:slug', async function (req, res) {
   if (!out.duplicate && out.id) ingest.runEventDetached(out.id);
 });
 
+// A request that announced a body and never sent one never reaches the handler
+// above, so until now it left NO trace in Nova - only in the platform logs.
+// That gap is exactly what made a partner's "I am definitely sending" impossible
+// to check: they were reaching us, and we could not see it.
+//
+// Mounted after the routes so it only sees errors from them. Express identifies
+// an error handler by its arity, so the unused 'next' must stay.
+inboundRouter.use(function (err, req, res, next) {
+  var slug = String(req.path || '').replace(/^\//, '').split('/')[0].slice(0, 64);
+  var ip = String((req.headers['x-forwarded-for'] || '').split(',')[0].trim() || req.ip || '').slice(0, 64);
+
+  if (err && (err.type === 'request.aborted' || err.code === 'ECONNABORTED')) {
+    ingest.countReject(slug, 'body_never_sent', ip);
+    console.warn('[sync] ' + slug + ' from ' + ip + ': client announced ' + (err.expected || '?') +
+      ' bytes and sent ' + (err.received || 0) + ', then aborted. Classic Expect: 100-continue stall - ' +
+      'the sender is waiting for a go-ahead it never received.');
+    // The socket is already gone; there is nobody left to answer.
+    return;
+  }
+
+  if (err && err.type === 'entity.too.large') {
+    ingest.countReject(slug, 'payload_too_large', ip);
+    return res.status(413).json({ ok: false, error: 'payload_too_large' });
+  }
+
+  console.error('[sync] unhandled receiver error for "' + slug + '": ' + (err && err.message));
+  if (!res.headersSent) res.status(500).json({ ok: false, error: 'nova_error' });
+});
+
 /* ============================================================ admin surface */
 
 var router = express.Router();
