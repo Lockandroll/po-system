@@ -276,6 +276,10 @@ app.use('/api/royalty', require('./routes/royalty'));
 app.use('/api/geico', require('./routes/geico'));
 app.use('/api/deposits', require('./routes/deposits'));
 app.use('/api/pulsar', require('./routes/pulsar'));
+// Nova -> Pulsar. Ships disarmed: PULSAR_OUT_MODE is 'off' until somebody sets
+// it, so mounting this does not by itself give Nova the ability to change
+// anything in their system. See utils/pulsarOut.js.
+app.use('/api/pulsar-out', require('./routes/pulsarOut'));
 app.use('/api/signoffs', require('./routes/signoffs'));
 app.use('/api/scheduled', require('./routes/scheduled'));
 app.use('/api/tasks', require('./routes/tasks'));

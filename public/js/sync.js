@@ -12,7 +12,7 @@
  * apostrophe inside an HTML string. Mirrors public/js/ap.js on purpose.
  * --------------------------------------------------------------------------- */
 
-var _syncTab = 'traffic';          // traffic | events | sources
+var _syncTab = 'traffic';          // traffic | events | sources | outbound
 var _syncFilter = { source: '', status: '', q: '' };
 var _syncSources = null;
 var _syncHandlers = [];
@@ -290,6 +290,9 @@ async function renderSync(content) {
       '<div class="sy-tab' + (_syncTab === 'traffic' ? ' on' : '') + '" onclick="syncGo(\'traffic\')">Traffic</div>' +
       '<div class="sy-tab' + (_syncTab === 'events' ? ' on' : '') + '" onclick="syncGo(\'events\')">Events</div>' +
       '<div class="sy-tab' + (_syncTab === 'sources' ? ' on' : '') + '" onclick="syncGo(\'sources\')">Sources</div>' +
+      // The other direction. Everything to the left of this is what partners
+      // send US; this tab is what WE send them.
+      '<div class="sy-tab' + (_syncTab === 'outbound' ? ' on' : '') + '" onclick="syncGo(\'outbound\')">Outbound</div>' +
     '</div>' +
     '<div id="sync-body"></div>' +
     '<div id="sync-stamp" class="sy-note" style="margin-top:10px;text-align:right"></div>';
@@ -363,6 +366,12 @@ async function syncLoad() {
   var body = document.getElementById('sync-body');
   if (!body) return;
   body.innerHTML = '<div class="card"><div class="card-body">Loading&hellip;</div></div>';
+
+  // The outbound tab is checked FIRST, before the source checks below. It does
+  // not depend on any inbound source existing - you can be sending to Pulsar
+  // long before anyone has pointed a webhook at us, and an empty inbound
+  // configuration should not hide the outbound screen.
+  if (_syncTab === 'outbound') return syncRenderOutbound(body);
 
   if (_syncSources === null) {
     body.innerHTML = '<div class="alert alert-error">Could not read the sync sources.</div>';
@@ -1067,4 +1076,248 @@ async function syncRotate(id) {
     var out = await api('POST', '/sync/sources/' + id + '/rotate', {});
     syncShowToken(out, 'New token');
   } catch (e) { showToast(e.message, 'error'); }
+}
+
+/* ---------------------------------------------------------------- outbound */
+/*
+ * The other direction: what Nova asked Pulsar to do.
+ *
+ * This screen exists mainly so that arming the integration is a deliberate,
+ * visible act rather than an environment variable nobody remembers setting. It
+ * shows, at a glance: which mode we are in, whether the credentials are loaded,
+ * which endpoint URLs we actually have, and every call we have made.
+ *
+ * It never displays a credential. The server sends back "set, ends 4A2B" and
+ * that is all there is to render - see utils/pulsarOut.js credFingerprint().
+ */
+
+var _syncOut = null;
+
+async function syncRenderOutbound(body) {
+  var st, calls;
+  try {
+    st = await api('GET', '/pulsar-out/status');
+    calls = await api('GET', '/pulsar-out/calls?limit=50');
+  } catch (e) {
+    body.innerHTML = '<div class="alert alert-error">Could not read the outbound status. ' + escHtml(e.message) + '</div>';
+    return;
+  }
+  _syncOut = st;
+
+  var mode = String(st.mode || 'off');
+  var banner;
+  if (mode === 'off') {
+    banner = '<div class="sy-note" style="background:rgba(148,163,184,.1);border:1px solid var(--border);' +
+      'border-radius:var(--radius);padding:11px 14px;margin-bottom:14px">' +
+      '<b>Outbound is switched off.</b> Nothing Nova does can change anything in Pulsar right now. ' +
+      'Set <span class="sy-mono">PULSAR_OUT_MODE</span> to <span class="sy-mono">dry</span> to rehearse ' +
+      'requests without sending them, or <span class="sy-mono">live</span> to arm it.</div>';
+  } else if (mode === 'dry') {
+    banner = '<div class="sy-warn"><b>Dry run.</b> Requests are built and logged in full, but nothing ' +
+      'is sent. What you see in the log below is byte for byte what would have gone out.</div>';
+  } else {
+    banner = '<div class="sy-good"><b>Live.</b> Actions on this screen change real dispatch state in ' +
+      'Pulsar. Every one is logged below and written to the audit log.</div>';
+  }
+
+  // Credentials and URLs. A missing URL is the single most likely reason an
+  // action is unavailable, so it is stated plainly rather than left to be
+  // discovered by a failed call.
+  var eps = st.endpoints || {};
+  var cfg =
+    '<div class="card" style="margin-bottom:14px"><div class="card-body">' +
+      '<div class="sy-kv">' +
+        '<div class="lbl">Mode</div><div><span class="sy-chip ' + (mode === 'live' ? 'on' : 'off') + '">' + escHtml(mode) + '</span></div>' +
+        '<div class="lbl">sKey</div><div class="sy-mono">' + escHtml(st.skey || 'not set') + '</div>' +
+        '<div class="lbl">Token</div><div class="sy-mono">' + escHtml(st.token || 'not set') + '</div>' +
+        '<div class="lbl">API URL</div><div class="sy-mono" style="word-break:break-all">' + escHtml(eps.api || '') + '</div>' +
+        '<div class="lbl">Import URL</div><div class="sy-mono" style="word-break:break-all">' +
+          (eps['import'] ? escHtml(eps['import']) : '<span class="sy-note">not set - add_call is unavailable until Pulsar provisions one</span>') + '</div>' +
+        '<div class="lbl">GPS URL</div><div class="sy-mono" style="word-break:break-all">' +
+          (eps.gps ? escHtml(eps.gps) : '<span class="sy-note">not set - gps is unavailable until Pulsar provisions one</span>') + '</div>' +
+      '</div>' +
+      '<div class="sy-note" style="margin-top:12px">The key values themselves are never sent to this ' +
+        'screen. Only the last four characters, so you can tell one key from another.</div>' +
+    '</div></div>';
+
+  // The actions. "Verified" means somebody watched it work against the real
+  // API - not that it matches the documentation.
+  var acts = (st.actions || []).map(function (a) {
+    var can = st.ready && a.available && mode !== 'off';
+    var why = !st.ready ? 'credentials are not set'
+            : !a.available ? 'no URL configured for the ' + a.endpoint + ' endpoint'
+            : mode === 'off' ? 'outbound is switched off' : '';
+    return '<tr>' +
+      '<td><span class="sy-mono">' + escHtml(a.name) + '</span>' +
+        '<div class="sy-note">' + escHtml(a.describe || '') + '</div></td>' +
+      '<td class="sy-note">' + escHtml(a.endpoint) + '</td>' +
+      '<td>' + (a.verified
+          ? '<span class="sy-chip done">verified</span>'
+          : '<span class="sy-chip ' + (a.draft ? 'parked' : 'off') + '">' + (a.draft ? 'draft' : 'unverified') + '</span>') + '</td>' +
+      '<td class="sy-note sy-mono">' + escHtml((a.required || []).join(', ') || '-') + '</td>' +
+      '<td class="sy-note">' + (a.expect_header ? 'watch for ' + escHtml(String(a.expect_header)) : '<span class="sy-note">&mdash;</span>') + '</td>' +
+      '<td style="text-align:right">' +
+        (can
+          ? '<button class="btn btn-secondary btn-sm" onclick="syncOutRun(\'' + escHtml(a.name) + '\')">Run</button>'
+          : '<span class="sy-note" title="' + escHtml(why) + '">unavailable</span>') +
+      '</td>' +
+    '</tr>';
+  }).join('');
+
+  var actions =
+    '<div class="card" style="margin-bottom:14px">' +
+      '<div class="card-header"><span class="card-title">What Nova can ask Pulsar to do</span></div>' +
+      '<div class="card-body" style="padding:0">' +
+        '<table class="table"><thead><tr>' +
+          '<th>Action</th><th>Endpoint</th><th>State</th><th>Needs</th><th>Echo</th><th></th>' +
+        '</tr></thead><tbody>' + acts + '</tbody></table>' +
+      '</div>' +
+      '<div class="card-body sy-note" style="border-top:1px solid var(--border)">' +
+        '<b>Verified</b> means somebody has watched that action succeed against the real API, not that ' +
+        'it matches the documentation. An unverified action is refused in live mode unless you tick ' +
+        '"send it anyway" - so a wrong guess costs a rejection in the log below rather than a real ' +
+        'technician sent to a real address.' +
+      '</div>' +
+    '</div>';
+
+  var rows = (calls.calls || []).map(function (c) {
+    var chip = c.status === 'done' ? 'done'
+             : c.status === 'dry' ? 'pending'
+             : c.status === 'failed' ? 'parked'
+             : c.status === 'dead' ? 'failed' : 'processing';
+    return '<tr class="sy-row-click" onclick="syncOutDetail(' + c.id + ')">' +
+      '<td class="sy-mono">' + c.id + '</td>' +
+      '<td class="sy-mono">' + escHtml(c.action) + '</td>' +
+      '<td><span class="sy-chip ' + chip + '">' + escHtml(c.status) + '</span></td>' +
+      '<td class="sy-note">' + (c.http_status === null || c.http_status === undefined ? '&mdash;' : c.http_status) + '</td>' +
+      '<td class="sy-note">' + (c.duration_ms === null || c.duration_ms === undefined ? '&mdash;' : c.duration_ms + 'ms') + '</td>' +
+      '<td class="sy-note">' + escHtml(c.user_name || 'system') + '</td>' +
+      '<td class="sy-note">' + escHtml(syncDateStr(c.created_at)) + '</td>' +
+      '<td class="sy-note" style="max-width:280px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' +
+        escHtml(c.error || '') + '</td>' +
+    '</tr>';
+  }).join('');
+
+  var log =
+    '<div class="card">' +
+      '<div class="card-header"><span class="card-title">Call log</span></div>' +
+      '<div class="card-body" style="padding:0">' +
+        (rows
+          ? '<table class="table"><thead><tr><th>#</th><th>Action</th><th>Status</th><th>HTTP</th>' +
+            '<th>Took</th><th>By</th><th>When</th><th>Problem</th></tr></thead><tbody>' + rows + '</tbody></table>'
+          : '<div class="card-body sy-note" style="text-align:center;padding:30px">' +
+            'Nothing sent yet. Start with <span class="sy-mono">auth_test</span> - it is fully documented, ' +
+            'it changes nothing in Pulsar, and if it comes back clean then the credentials and both ' +
+            'header names are right.</div>') +
+      '</div>' +
+    '</div>';
+
+  body.innerHTML = banner + cfg + actions + log;
+}
+
+// The parameter form. The fields vary per action and their list is still
+// growing on Pulsar's side, so this is a JSON box rather than a generated form:
+// a box accepts a field we have never heard of, and a generated form silently
+// drops it.
+function syncOutRun(name) {
+  var spec = ((_syncOut && _syncOut.actions) || []).filter(function (a) { return a.name === name; })[0] || {};
+  var seed = {};
+  (spec.required || []).forEach(function (k) { seed[k] = ''; });
+
+  var warn = '';
+  if (!spec.verified && (_syncOut || {}).mode === 'live') {
+    warn = '<div class="sy-warn">This action has not been confirmed against the real API' +
+      (spec.draft ? ', and Pulsar documents the endpoint as a draft' : '') +
+      '. Nothing will be sent unless you tick the box below.</div>';
+  }
+  if ((_syncOut || {}).mode === 'dry') {
+    warn += '<div class="sy-note" style="margin-bottom:10px">Dry run: this will be built and logged, ' +
+      'but not sent.</div>';
+  }
+
+  syncModal('Run ' + name, warn +
+    '<div class="sy-note" style="margin-bottom:8px">' + escHtml(spec.describe || '') + '</div>' +
+    '<div class="form-group"><label class="form-label">Parameters (JSON)</label>' +
+      '<textarea id="sy-out-params" class="form-input sy-mono" rows="10">' +
+        escHtml(JSON.stringify(seed, null, 2)) + '</textarea>' +
+      '<div class="sy-note" style="margin-top:6px">Pulsar ids are 18 digits and must be quoted as ' +
+        'strings. An id passed as a bare number loses its last two digits before it ever reaches ' +
+        'this code, so the request will be refused rather than sent to the wrong record.</div>' +
+    '</div>' +
+    (spec.verified ? '' :
+      '<label class="sy-note" style="display:flex;gap:8px;align-items:center;margin-top:6px">' +
+        '<input type="checkbox" id="sy-out-force"> Send it anyway, even though it is unverified' +
+      '</label>') +
+    '<div id="sy-out-err" class="alert alert-error" style="display:none;margin-top:10px"></div>',
+    'Send', async function () {
+      var errEl = document.getElementById('sy-out-err');
+      var raw = document.getElementById('sy-out-params').value;
+      var params;
+      try { params = JSON.parse(raw || '{}'); }
+      catch (e) {
+        errEl.style.display = 'block';
+        errEl.textContent = 'That is not valid JSON: ' + e.message;
+        return;
+      }
+      var forceEl = document.getElementById('sy-out-force');
+      try {
+        var out = await api('POST', '/pulsar-out/actions/' + encodeURIComponent(name),
+          { params: params, force: !!(forceEl && forceEl.checked) });
+        syncCloseModal();
+        if (out.dry) {
+          showToast('Dry run recorded as call #' + out.id + '. Nothing was sent.', 'success');
+        } else if (out.ok && out.uncertain) {
+          showToast('Sent, but Pulsar answered in a shape we do not recognise. Watch the Events tab.', 'success');
+        } else if (out.ok) {
+          showToast('Sent' + (out.expect_header ? ' - now watch Events for ' + out.expect_header : ''), 'success');
+        } else {
+          showToast('Pulsar refused it: ' + (out.error || 'no reason given'), 'error');
+        }
+        syncRefresh();
+      } catch (e) {
+        errEl.style.display = 'block';
+        errEl.textContent = e.message;
+      }
+    }, true);
+}
+
+async function syncOutDetail(id) {
+  var c;
+  try {
+    var d = await api('GET', '/pulsar-out/calls?limit=200');
+    c = (d.calls || []).filter(function (r) { return r.id === id; })[0];
+  } catch (e) { showToast(e.message, 'error'); return; }
+  if (!c) return;
+
+  var pretty = function (s) {
+    if (!s) return '';
+    try { return JSON.stringify(JSON.parse(s), null, 2); } catch (e) { return String(s); }
+  };
+
+  syncModal('Outbound call #' + c.id,
+    '<div class="sy-kv" style="margin-bottom:14px">' +
+      '<div class="lbl">Action</div><div class="sy-mono">' + escHtml(c.action) + '</div>' +
+      '<div class="lbl">Endpoint</div><div class="sy-mono">' + escHtml(c.request_shape || '') + '</div>' +
+      '<div class="lbl">Mode</div><div>' + escHtml(c.mode) + '</div>' +
+      '<div class="lbl">Status</div><div>' + escHtml(c.status) + '</div>' +
+      '<div class="lbl">HTTP</div><div>' + (c.http_status === null ? '&mdash;' : c.http_status) + '</div>' +
+      '<div class="lbl">Took</div><div>' + (c.duration_ms === null ? '&mdash;' : c.duration_ms + 'ms') + '</div>' +
+      '<div class="lbl">Attempts</div><div>' + escHtml(String(c.attempts)) + '</div>' +
+      '<div class="lbl">By</div><div>' + escHtml(c.user_name || 'system') + '</div>' +
+      '<div class="lbl">Sent</div><div>' + escHtml(syncDateStr(c.created_at)) + '</div>' +
+      (c.error ? '<div class="lbl">Problem</div><div style="color:#f87171">' + escHtml(c.error) + '</div>' : '') +
+    '</div>' +
+    '<div class="sy-note" style="margin-bottom:4px">Request sent (credentials removed before storage)</div>' +
+    '<pre class="sy-pre">' + escHtml(pretty(c.request_body)) + '</pre>' +
+    '<div class="sy-note" style="margin:12px 0 4px">Response</div>' +
+    '<pre class="sy-pre">' + escHtml(pretty(c.response_body) || '(none)') + '</pre>',
+    syncCan('pulsar_write') ? 'Send again' : null,
+    async function () {
+      try {
+        await api('POST', '/pulsar-out/calls/' + c.id + '/resend', {});
+        syncCloseModal();
+        showToast('Sent again', 'success');
+        syncRefresh();
+      } catch (e) { showToast(e.message, 'error'); }
+    }, true);
 }

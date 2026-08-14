@@ -158,7 +158,13 @@ ALL_PERMS.push('view_ap', 'manage_ap');
 // manage_sync in particular is close to admin - the token it hands out is a
 // standing write path into Nova from outside - so it should stay with admin
 // and owner unless there is a specific reason to widen it.
-ALL_PERMS.push('view_sync', 'manage_sync');
+//
+// pulsar_write is the OUTBOUND counterpart and is deliberately not the same
+// permission as manage_sync: reading what a partner sent us and changing what
+// is on their dispatch board are different privileges. Someone triaging our
+// event log has no need to put a technician enroute in someone else's system.
+// Also ships dark, also in no role's DEFAULTS.
+ALL_PERMS.push('view_sync', 'manage_sync', 'pulsar_write');
 ALL_PERMS.push('edit_deposit');
 
 var DEFAULTS = {

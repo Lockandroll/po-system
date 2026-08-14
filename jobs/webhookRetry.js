@@ -22,6 +22,7 @@
 var cron = require('node-cron');
 var { pool } = require('../db');
 var ingest = require('../utils/webhookIngest');
+var pulsarOut = require('../utils/pulsarOut');
 
 var RETRY_CRON = process.env.SYNC_RETRY_CRON || '* * * * *';
 var BATCH = Number(process.env.SYNC_RETRY_BATCH || 50);
@@ -46,6 +47,18 @@ async function sweep() {
     if (out.processed) console.log('[sync] retry sweep processed ' + out.processed + ' event(s)');
   } catch (err) {
     console.error('[sync] retry sweep failed: ' + err.message);
+  }
+  // The outbound side rides the same minute. Its own try/catch, because an
+  // inbound failure must not stop us retrying a dispatch instruction and an
+  // outbound failure must not stop us draining the inbound queue - the two
+  // directions share a schedule, not a fate.
+  try {
+    if (pulsarOut.mode() !== 'off') {
+      var o = await pulsarOut.runDue(25);
+      if (o.claimed) console.log('[pulsar-out] retried ' + o.claimed + ' call(s), ' + o.done + ' succeeded');
+    }
+  } catch (err) {
+    console.error('[pulsar-out] retry sweep failed: ' + err.message);
   } finally {
     running = false;
   }

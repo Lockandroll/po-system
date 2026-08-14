@@ -4662,6 +4662,54 @@ async function initDB() {
 
     console.log('Sync: inbound webhook tables ready. No sources exist until an admin creates one.');
 
+    // ---------------------------------------------------------------- outbound
+    // The other direction: what Nova asked Pulsar to do.
+    //
+    // The row is written BEFORE the request leaves, which is what makes the
+    // difference between "we tried and it failed" and the far worse "something
+    // changed in their dispatch system and we have no record of asking".
+    //
+    // request_body is stored REDACTED - utils/pulsarOut.js strips the sKey and
+    // the token before anything reaches this table. Nothing here should ever be
+    // a credential, and if you find one, that is a bug in redact() rather than
+    // a reason to add a column to hide it in.
+    await client.query(
+      'CREATE TABLE IF NOT EXISTS outbound_calls (' +
+      '  id SERIAL PRIMARY KEY,' +
+      "  target VARCHAR(64) NOT NULL DEFAULT 'pulsar'," +
+      '  action VARCHAR(64) NOT NULL,' +
+      "  params JSONB NOT NULL DEFAULT '{}'::jsonb," +
+      '  request_shape VARCHAR(24),' +
+      '  request_url TEXT,' +
+      '  request_body TEXT,' +
+      "  mode VARCHAR(8) NOT NULL DEFAULT 'dry'," +
+      "  status VARCHAR(16) NOT NULL DEFAULT 'sending'," +
+      '  http_status INTEGER,' +
+      '  response_body TEXT,' +
+      '  error TEXT,' +
+      '  attempts INTEGER NOT NULL DEFAULT 0,' +
+      '  next_attempt_at TIMESTAMPTZ,' +
+      '  duration_ms INTEGER,' +
+      '  user_id INTEGER,' +
+      '  user_name VARCHAR(120),' +
+      '  correlation VARCHAR(120),' +
+      '  created_at TIMESTAMPTZ DEFAULT NOW(),' +
+      '  finished_at TIMESTAMPTZ' +
+      ');'
+    );
+    // The retry sweep's only query. Partial, because on a healthy day almost no
+    // rows are 'failed' and there is no reason to carry the rest of the table.
+    await client.query(
+      'CREATE INDEX IF NOT EXISTS idx_outbound_calls_due ' +
+      "ON outbound_calls(next_attempt_at) WHERE status = 'failed';"
+    );
+    await client.query(
+      'CREATE INDEX IF NOT EXISTS idx_outbound_calls_recent ON outbound_calls(target, id DESC);'
+    );
+
+    console.log('Sync: outbound call log ready, mode ' + (process.env.PULSAR_OUT_MODE || 'off') + '.');
+
+
     console.log('Database initialized');
   } finally {
     client.release();
