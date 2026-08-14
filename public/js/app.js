@@ -2,7 +2,7 @@
 // public/sw.js (the only thing bumped each deploy) — the badge asks the active
 // service worker for it at runtime. This value is just the fallback shown when no
 // service worker is available (e.g. very first visit before it installs).
-var APP_VERSION = 'v114';
+var APP_VERSION = 'v115';
 var _resolvedAppVersion = null;
 
 // Ask the active service worker for its CACHE_VERSION (without the 'nova-' prefix).
@@ -4646,11 +4646,13 @@ var GEICO_PAGE_SIZE = 10;
 var _geicoEmpRows = [];
 var _geicoEmpPage = 1;
 var GEICO_EMP_PAGE_SIZE = 10;
+var _geicoEmployees = [];
 
 async function renderGeicoReviews(el) {
   if (!can('manage_geico')) { el.innerHTML = '<div class="alert alert-error">Access denied.</div>'; return; }
   var cities = [];
   try { cities = await api('GET', '/cities'); } catch(e) { cities = []; }
+  await geicoLoadEmployees();
   var cityOpts = '<option value="">All cities</option>' + cities.map(function(c){ return '<option value="' + escHtml(c.code) + '">' + escHtml(c.name) + '</option>'; }).join('');
   var iS = 'padding:8px 10px;background:var(--surface-color);border:1px solid rgba(249,115,22,0.35);border-radius:6px;color:var(--text-color);font-size:13px;outline:none';
   var lbl = 'display:block;font-size:11px;color:var(--text-muted-color);margin-bottom:4px';
@@ -4834,7 +4836,7 @@ function geicoRenderEmployeeTable(s) {
   var unassigned = (s.byEmployee||[]).filter(function(e){ return e.k === '(unassigned)'; }).reduce(function(a,b){ return a + b.n; }, 0);
   var head = '<div style="font-size:12px;color:var(--text-muted-color);text-transform:uppercase;letter-spacing:0.5px;margin-bottom:8px">By Employee' + (unassigned ? ' &middot; ' + unassigned + ' unassigned' : '') + '</div>';
   if (!emps.length) {
-    el.innerHTML = '<div class="card" style="padding:16px">' + head + '<div style="color:var(--text-muted-color);font-size:13px">No employees assigned yet. Export the surveys, fill in the Employee column, then use Import Employees.</div></div>';
+    el.innerHTML = '<div class="card" style="padding:16px">' + head + '<div style="color:var(--text-muted-color);font-size:13px">No employees assigned yet. Pick one from the Employee dropdown on any survey, or export the surveys, fill in the Employee column and use Import Employees.</div></div>';
     return;
   }
   var total = emps.length;
@@ -4907,6 +4909,80 @@ async function geicoFileComplaint(poNumber, btn) {
   }
 }
 
+// The roster behind the Employee dropdown. Real Nova users only, active first -
+// a survey has to credit a real person for the By Employee leaderboard to mean
+// anything.
+async function geicoLoadEmployees() {
+  try { _geicoEmployees = await api('GET', '/geico/employees') || []; }
+  catch (e) { _geicoEmployees = []; }
+}
+
+function geicoEmployeeOptions(r) {
+  var sel = r.employee_user_id ? String(r.employee_user_id) : '';
+  var act = '', former = '';
+  for (var i = 0; i < _geicoEmployees.length; i++) {
+    var u = _geicoEmployees[i];
+    var opt = '<option value="' + u.id + '"' + (sel === String(u.id) ? ' selected' : '') + '>' + escHtml(u.name || '') + '</option>';
+    if (u.active) act += opt; else former += opt;
+  }
+  // A name the CSV import could not match to anybody stays visible under a
+  // sentinel value, selected, so the cell still reads as the raw Geico Tech ID
+  // and importing never loses information it could not map.
+  var raw = (!sel && r.employee_name)
+    ? '<option value="__raw__" selected>' + escHtml(r.employee_name) + ' (imported)</option>'
+    : '';
+  return raw + '<option value=""' + ((!sel && !raw) ? ' selected' : '') + '>Unassigned</option>' +
+    act + (former ? '<optgroup label="Former">' + former + '</optgroup>' : '');
+}
+
+function geicoEmployeeCell(r) {
+  if (!r.po_number) return '<span style="color:var(--text-muted-color)">' + escHtml(r.employee_name || '\u2014') + '</span>';
+  var st = 'padding:4px 6px;background:var(--surface-color);border:1px solid rgba(249,115,22,0.28);border-radius:6px;color:var(--text-color);font-size:12px;max-width:180px';
+  var title = r.employee_source === 'manual' ? 'Picked by hand' : (r.employee_source === 'import' ? 'From the employee CSV import' : 'Nobody credited yet');
+  return '<select style="' + st + '" title="' + escHtml(title) + '" onchange="geicoAssignEmployee(&#39;' + escHtml(String(r.po_number)) + '&#39;, this.value, this)">' + geicoEmployeeOptions(r) + '</select>';
+}
+
+// Credit one survey to a person. A pick made here is stamped 'manual' server
+// side and a later CSV import will not overwrite it.
+async function geicoAssignEmployee(poNumber, value, selEl) {
+  if (value === '__raw__') return;
+  var userId = value ? parseInt(value, 10) : null;
+  if (selEl) selEl.disabled = true;
+  try {
+    var r = await api('PUT', '/geico/assign-employee', { po_number: poNumber, user_id: userId });
+    for (var i = 0; i < _geicoRows.length; i++) {
+      if (String(_geicoRows[i].po_number) === String(poNumber)) {
+        _geicoRows[i].employee_name = r.employee_name || null;
+        _geicoRows[i].employee_user_id = r.employee_user_id || null;
+        _geicoRows[i].employee_source = r.employee_source || null;
+        break;
+      }
+    }
+    geicoRenderTable(_geicoRows);
+    showToast(r.employee_name ? ('Credited to ' + r.employee_name + '.') : 'Employee cleared.', 'success');
+    geicoRefreshStats();
+  } catch (e) {
+    if (selEl) { selEl.disabled = false; selEl.style.borderColor = '#dc2626'; }
+    showToast((e && e.message) ? e.message : 'Could not save that employee.', 'error');
+  }
+}
+
+// Repaint the stat cards and the By Employee leaderboard after one assignment.
+// Deliberately NOT geicoLoad(), which resets the table to page 1 and would
+// bounce someone out of the page they are working through.
+async function geicoRefreshStats() {
+  try {
+    var stats = await api('GET', '/geico/stats' + geicoListQS());
+    _geicoStats = stats;
+    geicoRenderStats(stats);
+    // Only rebuild the Employee filter list when nothing is filtered by it: the
+    // row just reassigned may have been the last one under the selected name,
+    // and dropping that option would silently clear the filter.
+    var esel = document.getElementById('geico-employee');
+    if (esel && !esel.value) geicoPopulateDropdowns(stats);
+  } catch (e) { /* the table already shows the truth; a stale stat card is not worth an error banner */ }
+}
+
 function geicoPaginate(p) { _geicoPage = p; geicoRenderTable(_geicoRows); }
 function geicoPageSize(v) { GEICO_PAGE_SIZE = parsePageSize(v); _geicoPage = 1; geicoRenderTable(_geicoRows); }
 function geicoRenderTable(rows) {
@@ -4961,7 +5037,7 @@ function geicoRenderTable(rows) {
               '<td>' + escHtml(r.arrived_on_time||'—') + '</td>' +
               '<td>' + escHtml(r.time_to_arrive||'—') + '</td>' +
               '<td>' + geicoRatingBadge(r.rating) + '</td>' +
-              '<td>' + escHtml(r.employee_name||'\u2014') + '</td>' +
+              '<td>' + geicoEmployeeCell(r) + '</td>' +
               '<td style="white-space:nowrap;text-align:center">' + cmpCell + '</td>' +
             '</tr>';
           }).join('')) +
@@ -5028,6 +5104,10 @@ async function geicoHandleCsv(text) {
   try {
     var resp = await api('POST', '/geico/import-employees', { rows: rows });
     var msg = 'Updated ' + resp.updated + ' survey' + (resp.updated===1?'':'s') + '.';
+    if (resp.matched != null) msg += '\nMatched ' + resp.matched + ' to a Nova user.';
+    if (resp.unmatched) msg += '\n' + resp.unmatched + ' name(s) matched nobody on the roster and were kept as plain text.';
+    if (resp.unmatchedNames && resp.unmatchedNames.length) msg += '\nUnmatched: ' + resp.unmatchedNames.join(', ') + '.';
+    if (resp.manualKept) msg += '\nLeft ' + resp.manualKept + ' row(s) alone because an employee was picked by hand there.';
     if (resp.skipped) msg += '\nSkipped ' + resp.skipped + ' row(s) with a missing PO # or name.';
     if (resp.notFound) { msg += '\n' + resp.notFound + ' PO #(s) were not found'; if (resp.notFoundList && resp.notFoundList.length) msg += ': ' + resp.notFoundList.join(', '); msg += '.'; }
     novaAlert(msg);

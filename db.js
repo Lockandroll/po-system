@@ -505,6 +505,22 @@ async function initDB() {
     await client.query(
       'ALTER TABLE geico_surveys ADD COLUMN IF NOT EXISTS employee_name VARCHAR(120);'
     );
+    // Who gets credit for the survey. employee_name is the display string
+    // (a copy of users.name once linked, otherwise the raw Geico "Tech ID"
+    // text); employee_user_id is the real Nova user behind it, set by the
+    // Employee dropdown on the survey table or by the CSV import when the
+    // imported name matched somebody on the roster. employee_source records
+    // which of the two put it there - 'manual' rows are never overwritten by a
+    // later CSV import.
+    await client.query(
+      'ALTER TABLE geico_surveys ADD COLUMN IF NOT EXISTS employee_user_id INTEGER REFERENCES users(id) ON DELETE SET NULL;'
+    );
+    await client.query(
+      'ALTER TABLE geico_surveys ADD COLUMN IF NOT EXISTS employee_source VARCHAR(10);'
+    );
+    await client.query(
+      'CREATE INDEX IF NOT EXISTS idx_geico_employee_user ON geico_surveys(employee_user_id);'
+    );
     await client.query(
       'CREATE TABLE IF NOT EXISTS signoff_forms (' +
       '  id SERIAL PRIMARY KEY,' +
