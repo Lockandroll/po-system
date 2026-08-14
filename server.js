@@ -290,6 +290,9 @@ app.use('/api/refunds', require('./routes/refunds'));
 app.use('/api/reviews', require('./routes/reviews'));
 app.use('/api/feedback', require('./routes/feedback'));
 app.use('/api/goto', require('./routes/goto'));
+// Judi (MidTN Dispatch AI receptionist) call history for Call Lookup.
+// A separate system from the GoTo index above; one contact can appear in both.
+app.use('/api/judi', require('./routes/judi'));
 app.use('/api/mcp', require('./routes/mcp'));
 app.use('/api/addin', require('./routes/addin'));
 app.use('/api/vault', require('./routes/vault'));

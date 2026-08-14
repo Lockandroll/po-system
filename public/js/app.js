@@ -22012,7 +22012,7 @@ async function fbRecUnhideAll(feedbackId) {
 // function would mean threading a mode flag through every branch of it. The
 // small formatting helpers ARE shared - fbRecFmtDur, fbRecWhen, fbRecBytes.
 
-var _clState = { phone: '', data: null, searched: false };
+var _clState = { phone: '', data: null, judi: null, novaErr: null, judiErr: null, filter: 'all', searched: false };
 
 async function renderCallLookup(el) {
   if (!can('play_call_recordings')) { el.innerHTML = '<div class="alert alert-error">Access denied.</div>'; return; }
@@ -22040,7 +22040,7 @@ async function renderCallLookup(el) {
 }
 
 function clClear() {
-  _clState = { phone: '', data: null, searched: false };
+  _clState = { phone: '', data: null, judi: null, novaErr: null, judiErr: null, filter: 'all', searched: false };
   var i = document.getElementById('cl-phone');
   if (i) { i.value = ''; try { i.focus(); } catch (e) {} }
   clRenderResults();
@@ -22058,21 +22058,54 @@ async function clSearch() {
   var rough = String(_clState.phone).replace(/\D/g, '');
   if (rough.length < 10) {
     _clState.data = null;
+    _clState.judi = null;
+    _clState.novaErr = null;
+    _clState.judiErr = null;
     _clState.searched = false;
     host.innerHTML = '<div style="font-size:13px;color:var(--text-muted-color)">Enter a full 10-digit number. A partial one would pull up calls belonging to other people.</div>';
     return;
   }
 
   host.innerHTML = '<div class="loading">Searching&hellip;</div>';
-  try {
-    _clState.data = await api('GET', '/goto/lookup?phone=' + encodeURIComponent(_clState.phone));
-    _clState.searched = true;
-  } catch (e) {
+
+  // Both sources are fired in PARALLEL and merged on the client. Judi is a
+  // third-party API running on somebody else&#39;s uptime, so it must never be
+  // able to stop Nova&#39;s own indexed calls from rendering. allSettled, not
+  // all: one rejection here has to degrade the page, not empty it.
+  var qs = '?phone=' + encodeURIComponent(_clState.phone);
+  var settled = await Promise.allSettled([
+    api('GET', '/goto/lookup' + qs),
+    api('GET', '/judi/lookup' + qs)
+  ]);
+  var novaRes = settled[0];
+  var judiRes = settled[1];
+
+  if (novaRes.status === 'fulfilled') {
+    _clState.data = novaRes.value;
+    _clState.novaErr = null;
+  } else {
     _clState.data = null;
+    _clState.novaErr = (novaRes.reason && novaRes.reason.message) || 'Nova call index unavailable';
+  }
+
+  if (judiRes.status === 'fulfilled') {
+    _clState.judi = judiRes.value;
+    _clState.judiErr = null;
+  } else {
+    _clState.judi = null;
+    _clState.judiErr = (judiRes.reason && judiRes.reason.message) || 'Judi unavailable';
+  }
+
+  // "searched" means we asked, not that both answered. Only when BOTH sources
+  // fail is there nothing to render, and then the error belongs on screen
+  // rather than an empty state that reads as "this customer never called".
+  if (novaRes.status === 'rejected' && judiRes.status === 'rejected') {
     _clState.searched = false;
-    host.innerHTML = '<div class="alert alert-error">' + escHtml(e.message) + '</div>';
+    host.innerHTML = '<div class="alert alert-error">' + escHtml(_clState.novaErr) + '</div>' +
+      '<div class="alert alert-error">' + escHtml(_clState.judiErr) + '</div>';
     return;
   }
+  _clState.searched = true;
   clRenderResults();
 }
 
@@ -22080,57 +22113,67 @@ function clRenderResults() {
   var host = document.getElementById('cl-results');
   if (!host) return;
   var d = _clState.data;
+  var j = _clState.judi;
 
-  if (!_clState.searched || !d) {
+  if (!_clState.searched) {
     host.innerHTML = '<div style="font-size:13px;color:var(--text-muted-color)">Enter a phone number above to see its calls.</div>';
     return;
   }
-  if (d.reason === 'bad_phone') {
+  if (d && d.reason === 'bad_phone') {
     host.innerHTML = '<div style="font-size:13px;color:var(--text-muted-color)">That does not look like a full phone number.</div>';
     return;
   }
 
-  var calls = d.calls || [];
-  var who = escHtml(d.formatted || d.digits || '');
+  var merged = clMerged();
+  var novaCount = merged.filter(function (m) { return m.src === 'nova'; }).length;
+  var judiCount = merged.length - novaCount;
+  var who = escHtml((d && (d.formatted || d.digits)) || (j && j.digits) || '');
 
-  if (!calls.length) {
-    // "we looked and found none" and "the index is empty" look identical but need
-    // completely different actions, so say which one it is.
-    if (!d.indexed) {
-      host.innerHTML = '<div style="font-size:13px;color:var(--text-muted-color)">No calls have been indexed yet. An admin can run a backfill in Settings &rsaquo; Integrations.</div>';
+  // Anything that went wrong with ONE source is said out loud above the rows.
+  // A silently missing source looks exactly like a customer who never called
+  // that way, and those two need opposite reactions.
+  var notes = '';
+  if (_clState.novaErr) notes += clNote('Nova call index unavailable: ' + _clState.novaErr);
+  if (_clState.judiErr) notes += clNote('Judi unavailable: ' + _clState.judiErr + '. Nova calls are still listed below.');
+  else if (j && j.configured === false) notes += clNote('Judi is not connected yet, so only Nova calls appear here. An admin sets JUDI_API_KEY in Railway.');
+
+  if (!merged.length) {
+    // "we looked and found none" and "the index is empty" look identical but
+    // need completely different actions, so say which one it is.
+    if (d && !d.indexed) {
+      host.innerHTML = notes + '<div style="font-size:13px;color:var(--text-muted-color)">No calls have been indexed yet. An admin can run a backfill in Settings &rsaquo; Integrations.</div>';
       return;
     }
-    host.innerHTML = '<div style="font-size:13px;color:var(--text-muted-color)">No calls found for ' + who + '. The index only reaches as far back as the last backfill.</div>';
+    host.innerHTML = notes + '<div style="font-size:13px;color:var(--text-muted-color)">No calls found for ' + who + '. Nova only reaches back as far as the last backfill, and Judi only matches the number the customer called FROM.</div>';
     return;
   }
 
-  var withRec = calls.filter(function (c) { return c.has_recording; }).length;
+  var shown = merged.filter(function (m) { return _clState.filter === 'all' || _clState.filter === m.src; });
 
-  var rows = calls.map(function (c) {
-    var dirDot = c.direction === 'OUTBOUND' ? '&#8599;' : '&#8600;';
-    var dirLabel = c.direction === 'OUTBOUND' ? 'Outbound' : 'Inbound';
-    var playBtn = c.has_recording
-      ? '<button class="btn btn-secondary btn-sm" onclick="clPlay(' + c.call_id + ')">&#9654; Play</button>'
-      : '<span style="font-size:11px;color:var(--text-muted-color)">No recording</span>';
-
-    return '<div style="padding:9px 0;border-bottom:1px solid var(--border)">' +
-      '<div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">' +
-        '<span style="font-size:13px;min-width:110px">' + dirDot + ' ' + dirLabel + '</span>' +
-        '<span style="font-size:13px;flex:1;min-width:150px">' + fbRecWhen(c.started_at) + '</span>' +
-        '<span style="font-size:12px;color:var(--text-muted-color);min-width:60px">' + escHtml(fbRecFmtDur(c.duration_sec)) + '</span>' +
-        playBtn +
-      '</div>' +
-      '<div id="cl-player-' + c.call_id + '"></div>' +
-      '</div>';
-  }).join('');
-
-  var head = '<div style="font-size:12px;color:var(--text-muted-color);margin-bottom:6px">' +
-    calls.length + ' call' + (calls.length === 1 ? '' : 's') + ' for ' + who + ', newest first &middot; ' +
-    withRec + ' with audio' +
-    (calls.length > 20 ? ' &middot; this many calls on one number usually means a business or a shared line' : '') +
+  var chips = '<div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:10px">' +
+    clChip('all', 'All', merged.length) +
+    clChip('nova', 'Nova', novaCount) +
+    clChip('judi', 'Judi', judiCount) +
     '</div>';
 
-  host.innerHTML = head + rows;
+  var withRec = merged.filter(function (m) {
+    return m.src === 'nova' ? m.nova.has_recording : m.judi.has_recording;
+  }).length;
+
+  var head = '<div style="font-size:12px;color:var(--text-muted-color);margin-bottom:6px">' +
+    merged.length + ' contact' + (merged.length === 1 ? '' : 's') + ' for ' + who + ', newest first &middot; ' +
+    withRec + ' with audio' +
+    (merged.length > 20 ? ' &middot; this many on one number usually means a business or a shared line' : '') +
+    '</div>';
+
+  var rows = shown.map(function (m) {
+    return m.src === 'nova' ? clNovaRow(m.nova) : clJudiRow(m.judi, m.idx);
+  }).join('');
+  if (!shown.length) {
+    rows = '<div style="font-size:13px;color:var(--text-muted-color);padding:10px 0">Nothing from that source for this number.</div>';
+  }
+
+  host.innerHTML = notes + head + chips + rows;
 }
 
 // Mints the URL at click time (it lives ~120 seconds), so no page ever holds a

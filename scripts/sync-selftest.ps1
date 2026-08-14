@@ -116,7 +116,7 @@ Write-Host "SINGLE RECORD" -ForegroundColor Cyan
 $one = Send "POST" ('{"autonum":"888' + $stamp.Substring(8) + '01","gmtStamp":"' +
   (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ") +
   '","dataHeader":5010,"dataTarget":"selftest","locationID":"3","targetID":"0"}')
-Show "a valid single record is accepted" ($one.Status -eq 202 -or $one.Status -eq 200) "HTTP $($one.Status)  $($one.Body)"
+Show "a valid single record is accepted" ($one.Status -eq 200 -or $one.Status -eq 202) "HTTP $($one.Status)  $($one.Body)"
 
 $dupe = Send "POST" ('{"autonum":"888' + $stamp.Substring(8) + '01","dataHeader":5010,"dataTarget":"selftest"}')
 if ($dupe.Body -match '"duplicate":true') {
@@ -132,7 +132,7 @@ Write-Host "ARRAYS - what Pulsar actually sends" -ForegroundColor Cyan
 $arr = '[{"autonum":"888' + $stamp.Substring(8) + '10","dataHeader":5000,"dataTarget":"selftest"},' +
        '{"autonum":"888' + $stamp.Substring(8) + '11","dataHeader":5010,"dataTarget":"selftest"}]'
 $a = Send "POST" $arr
-Show "a 2-record array is accepted" ($a.Status -eq 202 -or $a.Status -eq 200) "HTTP $($a.Status)  $($a.Body)"
+Show "a 2-record array is accepted" ($a.Status -eq 200 -or $a.Status -eq 202) "HTTP $($a.Status)  $($a.Body)"
 
 # The one that used to time out.
 $items = @()
@@ -144,7 +144,7 @@ $bulk = "[" + ($items -join ",") + "]"
 $sw = [System.Diagnostics.Stopwatch]::StartNew()
 $b = Send "POST" $bulk
 $sw.Stop()
-Show "a 100-record batch is accepted" ($b.Status -eq 202 -or $b.Status -eq 200) "HTTP $($b.Status) in $($sw.ElapsedMilliseconds)ms  $($b.Body)"
+Show "a 100-record batch is accepted" ($b.Status -eq 200 -or $b.Status -eq 202) "HTTP $($b.Status) in $($sw.ElapsedMilliseconds)ms  $($b.Body)"
 Show "the batch answered quickly" ($sw.ElapsedMilliseconds -lt 10000) "$($sw.ElapsedMilliseconds)ms - this is the check that catches the timeout bug coming back"
 
 # ---------------------------------------------------------------- bad bodies

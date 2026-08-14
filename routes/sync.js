@@ -29,6 +29,24 @@ var { pool } = require('../db');
 var { requireAuth, requirePermission } = require('../middleware/auth');
 var { logAudit } = require('../utils/audit');
 var ingest = require('../utils/webhookIngest');
+
+// What a successful delivery answers with.
+//
+// This was 202 Accepted, which is the semantically correct code for "stored,
+// will process later" - and semantics lost an argument with reality. Pulsar's
+// WCF client works against another franchise's receiver that returns 200, and
+// ours was the only one it would not talk to.
+//
+// There is a plausible mechanism: a client using Expect: 100-continue is
+// entitled to treat ANY final status as "do not send the body" (RFC 7231
+// s5.1.1). A 202 arriving where it expected a 100 could stop it dead - which
+// matches exactly what the logs show, headers in and zero bytes of body.
+//
+// Whether or not that is the cause here, being the one endpoint in the network
+// that answers differently is not a hill worth dying on. The response BODY has
+// always carried the real detail (duplicate, filtered, ids), and anything that
+// reads it learns strictly more than the status code ever told it.
+var SUCCESS_STATUS = Number(process.env.SYNC_SUCCESS_STATUS || 200);
 var handlers = require('../utils/webhookHandlers');
 
 /* =========================================================== public receiver */
@@ -80,11 +98,13 @@ inboundRouter.post('/:slug', async function (req, res) {
   // queue; making it wait on our processing turns our slow query into their
   // duplicate delivery.
   //
-  // 202 means "we stored something new", 200 means "we already had all of it".
-  // Both are success; the distinction exists only so a partner can see whether
-  // a retry actually did anything.
+  // Every success answers with the same status (200 by default, see
+  // SUCCESS_STATUS above). Whether anything was new is in the body, not the
+  // status line - 'duplicate', 'filtered' and 'accepted' say far more than a
+  // 200-vs-202 distinction ever did, and they cannot be misread by a client
+  // that only understands one of the two.
   if (out.batch) {
-    res.status(out.fresh.length ? 202 : 200).json({
+    res.status(SUCCESS_STATUS).json({
       ok: true,
       batch: true,
       accepted: out.accepted,
@@ -102,7 +122,7 @@ inboundRouter.post('/:slug', async function (req, res) {
     return;
   }
 
-  res.status(out.duplicate ? 200 : 202).json({
+  res.status(SUCCESS_STATUS).json({
     ok: true,
     id: out.id,
     duplicate: !!out.duplicate,
