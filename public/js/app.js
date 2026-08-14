@@ -2,7 +2,7 @@
 // public/sw.js (the only thing bumped each deploy) — the badge asks the active
 // service worker for it at runtime. This value is just the fallback shown when no
 // service worker is available (e.g. very first visit before it installs).
-var APP_VERSION = 'v112';
+var APP_VERSION = 'v113';
 var _resolvedAppVersion = null;
 
 // Ask the active service worker for its CACHE_VERSION (without the 'nova-' prefix).
@@ -22222,6 +22222,266 @@ async function clPlay(callId) {
     meta.innerHTML = '<span style="color:#e24b4a">' + escHtml(why) + '</span> ' +
       '<a href="' + escHtml(r.url) + '" target="_blank" rel="noopener" style="color:var(--primary)">Download it</a> ' +
       '<span>(' + escHtml(fbRecBytes(r.bytes)) + ')</span>';
+  });
+
+  slot.appendChild(audio);
+  slot.appendChild(meta);
+}
+
+// ===========================================================================
+// Judi rows on the Call Lookup timeline
+// ---------------------------------------------------------------------------
+// Judi is the AI receptionist that answers the inbound Pop-A-Lock line, run by
+// MidTN Dispatch. It is a DIFFERENT system from Nova&#39;s GoTo index, and the two
+// are shown as ONE timeline because that is the only way the story reads
+// correctly: Judi answers at 10:50 and transfers, a human picks up on GoTo at
+// 10:52.
+//
+// THERE IS DELIBERATELY NO DEDUP BETWEEN THE SOURCES. Those two rows are two
+// legs of one contact, and collapsing them would destroy the exact thing this
+// page exists to show. If the near-duplicate rows ever look like a bug, this
+// comment is the record that they are not.
+//
+// Nothing from Judi is stored anywhere. Every field below came from a live
+// fetch and is gone when the page is closed. Backend: routes/judi.js.
+// ===========================================================================
+
+function clMerged() {
+  var out = [];
+  var d = _clState.data;
+  var j = _clState.judi;
+  if (d && d.calls) {
+    d.calls.forEach(function (c) { out.push({ src: 'nova', t: c.started_at, nova: c }); });
+  }
+  if (j && j.calls) {
+    // idx is into the UNFILTERED judi array and is what the detail and play
+    // handlers look the call up by. Threading the short_code through an inline
+    // onclick instead would mean escaping an opaque third-party string into an
+    // HTML attribute, and short_code is not always short or tidy.
+    j.calls.forEach(function (c, i) { out.push({ src: 'judi', t: c.started_at, judi: c, idx: i }); });
+  }
+  out.sort(function (a, b) {
+    return new Date(b.t || 0).getTime() - new Date(a.t || 0).getTime();
+  });
+  return out;
+}
+
+function clNote(msg) {
+  return '<div style="font-size:12px;padding:7px 9px;margin-bottom:8px;border:1px solid rgba(249,115,22,0.35);border-radius:6px;color:var(--text-muted-color)">' + escHtml(msg) + '</div>';
+}
+
+function clChip(key, label, count) {
+  var on = _clState.filter === key;
+  var css = 'padding:4px 10px;border-radius:999px;font-size:12px;cursor:pointer;border:1px solid ' +
+    (on ? 'var(--primary)' : 'var(--border)') + ';background:' + (on ? 'var(--primary)' : 'transparent') +
+    ';color:' + (on ? '#fff' : 'var(--text-muted-color)');
+  return '<button onclick="clSetFilter(&#39;' + key + '&#39;)" style="' + css + '">' + escHtml(label) + ' ' + count + '</button>';
+}
+
+function clSetFilter(key) {
+  _clState.filter = key;
+  clRenderResults();
+}
+
+function clSrcBadge(label, color) {
+  return '<span style="font-size:10px;font-weight:600;letter-spacing:0.4px;padding:2px 6px;border-radius:4px;background:' + color + ';color:#fff">' + label + '</span>';
+}
+
+function clNovaRow(c) {
+  var dirDot = c.direction === 'OUTBOUND' ? '&#8599;' : '&#8600;';
+  var dirLabel = c.direction === 'OUTBOUND' ? 'Outbound' : 'Inbound';
+  var playBtn = c.has_recording
+    ? '<button class="btn btn-secondary btn-sm" onclick="clPlay(' + c.call_id + ')">&#9654; Play</button>'
+    : '<span style="font-size:11px;color:var(--text-muted-color)">No recording</span>';
+
+  return '<div style="padding:9px 0;border-bottom:1px solid var(--border)">' +
+    '<div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">' +
+      clSrcBadge('NOVA', '#f97316') +
+      '<span style="font-size:13px;min-width:96px">' + dirDot + ' ' + dirLabel + '</span>' +
+      '<span style="font-size:13px;flex:1;min-width:150px">' + fbRecWhen(c.started_at) + '</span>' +
+      '<span style="font-size:12px;color:var(--text-muted-color);min-width:60px">' + escHtml(fbRecFmtDur(c.duration_sec)) + '</span>' +
+      playBtn +
+    '</div>' +
+    '<div id="cl-player-' + c.call_id + '"></div>' +
+    '</div>';
+}
+
+function clJudiRow(c, i) {
+  var isChat = c.channel === 'chat';
+  var icon = isChat ? '&#128172;' : '&#8600;';
+  var label = isChat ? 'Chat' : 'Inbound';
+
+  var bits = [];
+  if (c.customer_name) bits.push(escHtml(c.customer_name));
+  if (c.outcome) bits.push(escHtml(String(c.outcome).replace(/_/g, ' ')));
+  if (c.quote_amount !== null && c.quote_amount !== undefined) bits.push('$' + c.quote_amount.toFixed(2));
+  // A 999 never reaches here as a number: the server turns the sentinel into
+  // eta_unavailable, because "999 min ETA" on screen is how a dispatcher ends
+  // up promising a customer a tech who is sixteen hours away.
+  if (c.eta_unavailable) bits.push('<span style="color:#e2a04a">no coverage</span>');
+  else if (c.eta_minutes !== null && c.eta_minutes !== undefined) bits.push(c.eta_minutes + ' min ETA');
+  if (c.grade_score !== null && c.grade_score !== undefined) bits.push('grade ' + c.grade_score);
+
+  var playBtn = c.has_recording
+    ? '<button class="btn btn-secondary btn-sm" onclick="clPlayJudi(' + i + ')">&#9654; Play</button>'
+    : '<span style="font-size:11px;color:var(--text-muted-color)">' + (isChat ? 'Chat, no audio' : 'No recording') + '</span>';
+
+  return '<div style="padding:9px 0;border-bottom:1px solid var(--border)">' +
+    '<div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">' +
+      clSrcBadge('JUDI', '#7c5cff') +
+      '<span style="font-size:13px;min-width:96px">' + icon + ' ' + label + '</span>' +
+      '<span style="font-size:13px;flex:1;min-width:150px">' + fbRecWhen(c.started_at) + '</span>' +
+      '<span style="font-size:12px;color:var(--text-muted-color);min-width:60px">' + escHtml(fbRecFmtDur(c.duration_sec || 0)) + '</span>' +
+      '<button class="btn btn-secondary btn-sm" onclick="clOpenJudi(' + i + ')">Details</button>' +
+      playBtn +
+    '</div>' +
+    (bits.length ? '<div style="font-size:12px;color:var(--text-muted-color);margin-top:3px">' + bits.join(' &middot; ') + '</div>' : '') +
+    '<div id="cl-judi-' + i + '"></div>' +
+    '<div id="cl-judiplay-' + i + '"></div>' +
+    '</div>';
+}
+
+// Opening a detail is itself the disclosure: it pulls the full English
+// transcript, which is the whole call in a form far easier to read and forward
+// than audio. The server audits every open for exactly that reason.
+async function clOpenJudi(i) {
+  var slot = document.getElementById('cl-judi-' + i);
+  var c = _clState.judi && _clState.judi.calls && _clState.judi.calls[i];
+  if (!slot || !c) return;
+  if (slot.getAttribute('data-open') === '1') {
+    slot.innerHTML = '';
+    slot.removeAttribute('data-open');
+    return;
+  }
+  slot.innerHTML = '<div style="font-size:12px;color:var(--text-muted-color);padding:6px 0">Loading&hellip;</div>';
+
+  var r;
+  try {
+    r = await api('GET', '/judi/call/' + encodeURIComponent(c.short_code));
+  } catch (e) {
+    slot.innerHTML = '<div style="font-size:12px;color:#e24b4a;padding:6px 0">' + escHtml(e.message) + '</div>';
+    return;
+  }
+  slot.setAttribute('data-open', '1');
+  slot.innerHTML = clJudiDetailHtml(r.call || {});
+}
+
+function clJudiDetailHtml(c) {
+  var facts = [];
+  function fact(k, v) {
+    if (v === null || v === undefined || v === '') return;
+    facts.push('<div style="display:flex;gap:8px"><span style="min-width:104px;color:var(--text-muted-color)">' + k +
+      '</span><span>' + escHtml(String(v)) + '</span></div>');
+  }
+  fact('Customer', c.customer_name);
+  fact('Location', c.location_name || c.location_id);
+  fact('Service', c.service_type);
+  fact('Vehicle', c.vehicle);
+  fact('Address', c.address);
+  fact('Outcome', c.outcome ? String(c.outcome).replace(/_/g, ' ') : '');
+  fact('Quote', (c.quote_amount === null || c.quote_amount === undefined) ? '' : '$' + c.quote_amount.toFixed(2));
+  fact('ETA', c.eta_unavailable
+    ? 'Location closed or no tech available'
+    : ((c.eta_minutes === null || c.eta_minutes === undefined) ? '' : c.eta_minutes + ' minutes'));
+  fact('Sentiment', c.user_sentiment);
+
+  var grades = '';
+  if (c.grades && c.grades.length) {
+    grades = '<div style="margin-top:10px"><div style="font-size:11px;color:var(--text-muted-color);margin-bottom:4px">AI grade' +
+      ((c.grade_score === null || c.grade_score === undefined) ? '' : ' &middot; overall ' + c.grade_score) + '</div>' +
+      c.grades.map(function (g) {
+        return '<div style="padding:4px 0;border-bottom:1px solid var(--border)">' +
+          '<span style="font-size:12px">' + escHtml(g.dimension) +
+          ((g.score === null || g.score === undefined) ? '' : ' &mdash; ' + g.score) + '</span>' +
+          (g.notes ? '<div style="font-size:11px;color:var(--text-muted-color);margin-top:2px">' + escHtml(g.notes) + '</div>' : '') +
+          '</div>';
+      }).join('') + '</div>';
+  }
+
+  // A chat row has no transcript at all; its content lives in chat_summary.
+  var body = c.transcript || c.chat_summary || c.summary || '';
+  var bodyLabel = c.transcript ? 'Transcript' : (c.chat_summary ? 'Chat summary' : 'Summary');
+  var text = body
+    ? '<div style="margin-top:10px"><div style="font-size:11px;color:var(--text-muted-color);margin-bottom:4px">' + bodyLabel + '</div>' +
+      '<div style="max-height:320px;overflow:auto;white-space:pre-wrap;font-size:12px;line-height:1.5;padding:8px;border:1px solid var(--border);border-radius:6px">' +
+      escHtml(body) + '</div></div>'
+    : '';
+
+  return '<div style="margin-top:8px;padding:10px;border:1px solid var(--border);border-radius:6px;font-size:12px">' +
+    (facts.length ? '<div style="display:grid;gap:3px">' + facts.join('') + '</div>' : '') +
+    grades + text +
+    '<div style="font-size:10px;color:var(--text-muted-color);margin-top:8px">Live from Judi. Nova stores none of this, and opening it is written to the audit log under your name.</div>' +
+    '</div>';
+}
+
+// The audio is fetched THROUGH Nova and turned into a blob, rather than pointed
+// at the upstream media URL. Whether that URL is signed and expiring or
+// permanent and public was never confirmed, and a permanent unsigned link in
+// the page source is customer audio one copy-paste away from anybody. Going
+// through Nova also means the play lands in the audit log.
+//
+// An <audio src> cannot carry an Authorization header, which is why this is a
+// fetch and not a src assignment.
+async function clPlayJudi(i) {
+  var slot = document.getElementById('cl-judiplay-' + i);
+  var c = _clState.judi && _clState.judi.calls && _clState.judi.calls[i];
+  if (!slot || !c) return;
+  if (slot.getAttribute('data-open') === '1') {
+    var old = slot.getAttribute('data-blob');
+    if (old) { try { URL.revokeObjectURL(old); } catch (e) {} }
+    slot.innerHTML = '';
+    slot.removeAttribute('data-open');
+    slot.removeAttribute('data-blob');
+    return;
+  }
+  slot.innerHTML = '<div style="font-size:12px;color:var(--text-muted-color);padding:6px 0">Loading audio&hellip;</div>';
+
+  var blobUrl = null;
+  var mime = '';
+  var bytes = 0;
+  try {
+    var headers = {};
+    if (state.token) headers['Authorization'] = 'Bearer ' + state.token;
+    if (state.viewAsId) headers['X-View-As'] = String(state.viewAsId);
+    var res = await fetch('/api/judi/call/' + encodeURIComponent(c.short_code) + '/play', { headers: headers });
+    if (!res.ok) {
+      var msg = 'Could not load this recording (' + res.status + ').';
+      try { var j = await res.json(); if (j && j.error) msg = j.error; } catch (e) {}
+      throw new Error(msg);
+    }
+    var blob = await res.blob();
+    mime = blob.type || 'audio/mpeg';
+    bytes = blob.size;
+    blobUrl = URL.createObjectURL(blob);
+  } catch (e) {
+    slot.innerHTML = '<div style="font-size:12px;color:#e24b4a;padding:6px 0">' + escHtml(e.message) + '</div>';
+    return;
+  }
+
+  slot.setAttribute('data-open', '1');
+  slot.setAttribute('data-blob', blobUrl);
+  slot.innerHTML = '';
+
+  var audio = document.createElement('audio');
+  audio.controls = true;
+  // preload="metadata", never "none". With autoplay blocked, a preload="none"
+  // player fetches nothing and sits at 0:00 / 0:00 showing no error at all.
+  audio.preload = 'metadata';
+  audio.style.width = '100%';
+  audio.style.marginTop = '8px';
+  audio.src = blobUrl;
+
+  var meta = document.createElement('div');
+  meta.style.cssText = 'font-size:11px;color:var(--text-muted-color);margin-top:4px';
+  meta.innerHTML = escHtml(fbRecBytes(bytes)) + ' &middot; ' + escHtml(mime);
+
+  // An <audio> that cannot decode its source fails SILENTLY. Say so out loud.
+  audio.addEventListener('error', function () {
+    var why = 'The browser could not play this file.';
+    if (mime && String(mime).indexOf('audio') !== 0) {
+      why = 'Judi returned this as ' + mime + ', which is not audio. The recording may not be ready yet.';
+    }
+    meta.innerHTML = '<span style="color:#e24b4a">' + escHtml(why) + '</span>';
   });
 
   slot.appendChild(audio);
