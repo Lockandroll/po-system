@@ -315,14 +315,20 @@ async function allowedPayTypes() {
   }
 }
 
-async function markRow(id, fields) {
+async function markRow(id, fields, guardSql) {
   const keys = Object.keys(fields);
   if (!keys.length) return;
   const sets = keys.map(function (k, i) { return k + ' = $' + (i + 1); });
   sets.push('updated_at = NOW()');
   const vals = keys.map(function (k) { return fields[k]; });
   vals.push(id);
-  await pool.query('UPDATE invoice_payments SET ' + sets.join(', ') + ' WHERE id = $' + vals.length, vals);
+  // guardSql is an optional hardcoded predicate ANDed onto the WHERE. It exists so a
+  // demotion (mismatch/failed) can be made atomic against a row another caller has
+  // already settled: read-then-write is not enough, because reconcilePayment reads
+  // the row at the top and does not stamp 'reconciled' until ~200 lines later, after
+  // the invoice write. Never build this string from user input.
+  await pool.query('UPDATE invoice_payments SET ' + sets.join(', ') + ' WHERE id = $' + vals.length +
+    (guardSql ? (' AND ' + guardSql) : ''), vals);
 }
 
 async function reconcilePayment(paymentRowId) {
@@ -382,7 +388,7 @@ async function reconcilePayment(paymentRowId) {
       square_order_id: orderId,
       square_status: sqStatus,
       error_description: 'Square reports this payment as ' + sqStatus.toLowerCase() + '.'
-    });
+    }, "status <> 'reconciled'");
     return { ok: false, reason: 'square_failed', row: row };
   }
   if (sqStatus !== 'COMPLETED') {
@@ -405,7 +411,7 @@ async function reconcilePayment(paymentRowId) {
   );
   const inv = invRes.rows[0];
   if (!inv) {
-    await markRow(row.id, { status: 'failed', last_error: 'Invoice no longer exists' });
+    await markRow(row.id, { status: 'failed', last_error: 'Invoice no longer exists' }, "status <> 'reconciled'");
     return { ok: false, reason: 'invoice_gone', row: row };
   }
 
@@ -427,7 +433,24 @@ async function reconcilePayment(paymentRowId) {
   // customer is allowed to change inside Square. Square's own surcharge is the only
   // other sanctioned addition, so it is removed here too; anything else moving means
   // the amount was edited on the device, and that must not silently mark paid.
-  const invoicePreTip = money(inv.grand_total) - money(inv.tip_amount);
+  //
+  // WARNING: the invoice side MUST be rebuilt from subtotal + tax. Do NOT read it
+  // back out of grand_total. The narrow writer below folds the surcharge and the tip
+  // INTO grand_total, so a SECOND pass over the same payment re-reads a total that
+  // already contains Square's surcharge, subtracts that same surcharge from the
+  // Square side only, and lands exactly one surcharge apart. That demoted an invoice
+  // which had already settled correctly to 'mismatch' (2026-08-14: settled at 284.28,
+  // then flagged "Invoice is 237.87 before tip; Square charged 232.07 before tip").
+  // subtotal and tax_amount are the only money columns this function never writes, so
+  // building from them makes the check give the same answer however many times it
+  // runs. Re-entry is normal, not exotic: an 'unconfirmed' row is reachable by the
+  // webhook AND by the SPA's 2-second poll before it is ever stamped reconciled.
+  //
+  // surcharge_amount IS rewritten below, so it only belongs on the invoice side when
+  // Square did not apply a surcharge of its own. When Square did, that surcharge is
+  // already out of squareBasePreTip and must not be counted a second time here.
+  const invoicePreTip = money(inv.subtotal) + money(inv.tax_amount) +
+    (squareSurchargeCents > 0 ? 0 : money(inv.surcharge_amount));
   const squareChargedPreTip = totalCents - tipCents;
   const squareBasePreTip = squareChargedPreTip - squareSurchargeCents;
   if (Math.abs(invoicePreTip - squareBasePreTip) > 1) {
@@ -444,8 +467,17 @@ async function reconcilePayment(paymentRowId) {
       total_cents: totalCents,
       receipt_url: payment.receipt_url || null,
       raw_payment: payment,
-      mismatch_reason: 'Invoice is ' + (invoicePreTip / 100).toFixed(2) + ' before tip; Square charged ' + (squareBasePreTip / 100).toFixed(2) + ' before tip' + (squareSurchargeCents > 0 ? (' (after removing a ' + (squareSurchargeCents / 100).toFixed(2) + ' card surcharge)') : '') + '.'
-    });
+      // Say what was actually compared, and quote at least one figure the manager can
+      // see on their own screen. Both sides here are a BASE: tip removed from each,
+      // and any card surcharge removed from each. When Square surcharged, that base is
+      // not the invoice total, so printing it alone as "the invoice" sends a manager
+      // hunting for a number that appears nowhere.
+      mismatch_reason: 'Invoice base is ' + (invoicePreTip / 100).toFixed(2) +
+        ' and Square charged a base of ' + (squareBasePreTip / 100).toFixed(2) +
+        ' (tip' + (squareSurchargeCents > 0 ? (' and the ' + (squareSurchargeCents / 100).toFixed(2) + ' card surcharge Square added') : '') +
+        ' removed from both). Invoice total on screen: ' + (money(inv.grand_total) / 100).toFixed(2) +
+        '; Square took ' + (totalCents / 100).toFixed(2) + '.'
+    }, "status <> 'reconciled'");
     return { ok: false, reason: 'amount_mismatch', row: row, invoice: inv };
   }
 
@@ -484,7 +516,7 @@ async function reconcilePayment(paymentRowId) {
       square_payment_id: payment.id || null,
       raw_payment: payment,
       mismatch_reason: 'This invoice was already settled against Square payment ' + otherRes.rows[0].square_payment_id + '. A manager has to sort this out.'
-    });
+    }, "status <> 'reconciled'");
     return { ok: false, reason: 'already_settled', row: row };
   }
 
@@ -504,7 +536,18 @@ async function reconcilePayment(paymentRowId) {
     // fields the Complete Invoice button does and clears the waiting clock.
     // completed_by is the tech who started the payment, not "Square", so the
     // 15-minute reopen grace behaves the same either way.
-    "status = 'paid', completed_at = NOW(), completed_by = $8, waiting_since = NULL, updated_at = NOW() WHERE id = $7",
+    //
+    // ...but only on the pass that actually settles it. In an UPDATE, the right-hand
+    // side sees the OLD row, so these CASEs ask "was this invoice already settled
+    // before I got here?". A second pass over the same payment, or a manager clicking
+    // Re-check Square days later, must not re-stamp completed_at to today (that would
+    // re-arm the reopen grace and move the invoice in anything keyed on completion) and
+    // must not force a partially_refunded invoice back to plain 'paid'. Same shape as
+    // the CASE guards on PUT /invoices/:id.
+    "status = CASE WHEN status IN ('paid', 'partially_refunded', 'refunded') THEN status ELSE 'paid' END, " +
+    "completed_at = CASE WHEN status IN ('paid', 'partially_refunded', 'refunded') THEN completed_at ELSE NOW() END, " +
+    "completed_by = CASE WHEN status IN ('paid', 'partially_refunded', 'refunded') THEN completed_by ELSE $8 END, " +
+    "waiting_since = NULL, updated_at = NOW() WHERE id = $7",
     [
       payType,
       card.last_4 || null,
@@ -570,8 +613,13 @@ async function reconcilePayment(paymentRowId) {
     last_error: null
   });
 
+  // Only the pass that actually moved the invoice writes the money audit row. inv was
+  // read before the writer above, so an already-settled status here means another pass
+  // (or an earlier manual re-check) got there first. CLAUDE.md 9 says audit anything
+  // that moves money. Two rows for one card would say the money moved twice.
+  const wasAlreadySettled = ['paid', 'partially_refunded', 'refunded'].indexOf(String(inv.status || '')) !== -1;
   try {
-    await logAudit({
+    if (!wasAlreadySettled) await logAudit({
       entity_type: 'invoice',
       entity_id: inv.id,
       entity_number: String(inv.invoice_number),

@@ -14840,11 +14840,22 @@ function invSquareCardHtml(inv, canCollect, seeAll) {
   }
 
   // Square charged something other than this invoice. Never mark paid.
+  //
+  // A mismatch raised AFTER the invoice already settled is a different situation from
+  // one raised instead of settling, and the card must not claim the invoice is unpaid
+  // when it plainly is. A tech was told exactly that on an invoice Square had already
+  // charged, which is the worst possible moment to imply the card did not go through.
   if (st === 'mismatch') {
+    // Every settled state counts, not just 'paid'. A partially refunded invoice was
+    // still paid, and telling anyone otherwise is the same lie in a different suit.
+    var mPaid = ['paid', 'partially_refunded', 'refunded'].indexOf(String(inv.status || '')) !== -1;
     return head('Payment needs a manager', '<span class="badge badge-declined">Mismatch</span>') +
       '<div class="alert alert-error" style="margin:0"><b>Square charged a different amount.</b><br/>' +
         escHtml(sp.mismatch_reason || 'The amount Square took does not match this invoice.') +
-        '<br/>Nova has not marked this invoice paid.</div>' +
+        (mPaid
+          ? '<br/>This invoice <b>is</b> marked paid, so the card did go through. <b>Do not run it again.</b> Check the Square receipt against the total above and have a manager re-check Square.'
+          : '<br/>Nova has not marked this invoice paid.') +
+      '</div>' +
       (seeAll ? '<button class="btn btn-secondary btn-sm" style="margin-top:12px" onclick="invSqRetry(' + inv.id + ',' + sp.id + ')">Re-check Square</button>' : '') +
       foot;
   }
@@ -15035,6 +15046,12 @@ async function invSqPoll(id, nonce, tries) {
   try {
     out = await api('GET', '/invoices/' + id + '/payment-status?nonce=' + encodeURIComponent(nonce));
   } catch (e) { out = null; }
+  // This poll is a GET, so it busts nothing. But hitting it is exactly what makes
+  // the server reconcile, which can flip the invoice to paid. Without this line every
+  // render() below re-reads /invoices/:id from the cache for up to API_CACHE_TTL (60s)
+  // and the payment cards describe an invoice state that is already stale. That is how
+  // a settled invoice kept showing "Nova has not marked this invoice paid".
+  apiBustCache('/invoices/' + id);
   var st = out && out.payment ? String(out.payment.status || '') : '';
   if (st === 'reconciled') {
     _sqReturnNonce = null;
