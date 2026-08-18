@@ -50,9 +50,19 @@ const PO_JOIN =
   'LEFT JOIN users ord ON po.orderer_id = ord.id ' +
   'LEFT JOIN shipping_addresses sa ON po.shipping_address_id = sa.id ';
 
+// Who reads POs team-wide vs. only their own. Admins and managers always have,
+// and locksmith coordinators do too, same as canSeeAllQuotes() in routes/quotes.js
+// (Tony's call, 2026-08-18): the role exists to coordinate the locksmiths, so it
+// needs to see the whole team's POs on the PO Dashboard, not just its own. READ
+// scope only — approving, editing, cancelling, or deleting someone else's PO
+// stays admin-only below, exactly as it already was.
+function canSeeAllPOs(role) {
+  return role === 'admin' || role === 'manager' || role === 'locksmith_coordinator';
+}
+
 // Export all POs with line items as JSON (for CSV download)
 router.get('/export', requireAuth, requirePermission('view_pos'), async (req, res) => {
-  const isApproverOrAdmin = ['admin', 'manager'].includes(req.user.role);
+  const isApproverOrAdmin = canSeeAllPOs(req.user.role);
   const poQuery = PO_JOIN +
     (isApproverOrAdmin ? '' : 'WHERE po.requester_id = $1 ') +
     'ORDER BY po.created_at DESC';
@@ -79,7 +89,7 @@ router.get('/export', requireAuth, requirePermission('view_pos'), async (req, re
 
 // Get all POs
 router.get('/', requireAuth, requirePermission('view_pos'), async (req, res) => {
-  const isApproverOrAdmin = ['admin', 'manager'].includes(req.user.role);
+  const isApproverOrAdmin = canSeeAllPOs(req.user.role);
   const query = PO_JOIN +
     (isApproverOrAdmin ? '' : 'WHERE po.requester_id = $1 ') +
     'ORDER BY po.created_at DESC';
@@ -98,7 +108,7 @@ router.get('/:id', requireAuth, requirePermission('view_pos'), async (req, res) 
   const po = rows[0];
   if (!po) return res.status(404).json({ error: 'PO not found' });
 
-  if (!['admin', 'manager'].includes(req.user.role) && po.requester_id !== req.user.id) {
+  if (!canSeeAllPOs(req.user.role) && po.requester_id !== req.user.id) {
     return res.status(403).json({ error: 'Forbidden' });
   }
 
@@ -537,9 +547,9 @@ router.post('/:id/tracking', requireAuth, requirePermission('view_pos'), async (
     return res.status(400).json({ error: 'Tracking can only be added after a PO is approved or ordered' });
   }
   // Anyone who can see this PO on the dashboard can add/edit its tracking.
-  // Mirrors GET /:id: admins/managers see all; everyone else (locksmiths, etc.)
-  // only their own POs or ones they were assigned to order.
-  const canViewPO = ['admin', 'manager'].includes(req.user.role) || po.requester_id === req.user.id || po.orderer_id === req.user.id;
+  // Mirrors GET /:id: admins/managers/locksmith coordinators see all; everyone
+  // else (locksmiths, etc.) only their own POs or ones they were assigned to order.
+  const canViewPO = canSeeAllPOs(req.user.role) || po.requester_id === req.user.id || po.orderer_id === req.user.id;
   if (!canViewPO) {
     return res.status(403).json({ error: 'You do not have access to this PO' });
   }
