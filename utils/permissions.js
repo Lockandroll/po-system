@@ -166,10 +166,17 @@ ALL_PERMS.push('view_ap', 'manage_ap');
 // Also ships dark, also in no role's DEFAULTS.
 ALL_PERMS.push('view_sync', 'manage_sync', 'pulsar_write');
 ALL_PERMS.push('edit_deposit');
+// Submitting a deposit "on behalf of" someone else — the manager fills out the
+// form and picks who it is credited to, instead of it always being whoever is
+// logged in. Deliberately NOT in EMPLOYEE_PERMS: a tech only ever submits their
+// own. routes/deposits.js gates it a SECOND time on the target employee's home
+// city, exactly like edit_deposit gates the deposit's own city — a manager can
+// only complete deposits for employees in the cities they are assigned to.
+ALL_PERMS.push('complete_deposit_for_employee');
 
 var DEFAULTS = {
   admin: '*',
-  manager: ['view_users', 'manage_cities', 'manage_geico', 'manage_running', 'manage_vehicles', 'manage_vendors', 'view_vendors', 'manage_addresses', 'approve_vr', 'manage_tasks', 'manage_work_orders', 'manage_schedule', 'manage_parts', 'manage_invoice_setup', 'approve_refund', 'assign_reviews', 'view_feedback', 'manage_feedback', 'manage_signatures', 'manage_timeclock', 'manage_pto', 'view_quiz', 'manage_quiz', 'view_team_quiz', 'manage_onboarding', 'manage_inspections', 'ptt_all_channels', 'view_offboarding', 'play_call_recordings', 'manage_assets', 'approve_asset_replacement', 'edit_deposit'].concat(EMPLOYEE_PERMS),
+  manager: ['view_users', 'manage_cities', 'manage_geico', 'manage_running', 'manage_vehicles', 'manage_vendors', 'view_vendors', 'manage_addresses', 'approve_vr', 'manage_tasks', 'manage_work_orders', 'manage_schedule', 'manage_parts', 'manage_invoice_setup', 'approve_refund', 'assign_reviews', 'view_feedback', 'manage_feedback', 'manage_signatures', 'manage_timeclock', 'manage_pto', 'view_quiz', 'manage_quiz', 'view_team_quiz', 'manage_onboarding', 'manage_inspections', 'ptt_all_channels', 'view_offboarding', 'play_call_recordings', 'manage_assets', 'approve_asset_replacement', 'edit_deposit', 'complete_deposit_for_employee'].concat(EMPLOYEE_PERMS),
   locksmith: EMPLOYEE_PERMS.slice(),
   locksmith_coordinator: EMPLOYEE_PERMS.concat(['manage_work_orders', 'ptt_all_channels']),
   dispatcher: EMPLOYEE_PERMS.concat(['manage_work_orders', 'ptt_all_channels']),

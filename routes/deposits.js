@@ -3,6 +3,7 @@ const https = require('https');
 const { pool } = require('../db');
 const { requireAuth, requirePermission } = require('../middleware/auth');
 const { logAudit } = require('../utils/audit');
+const { hasPermission } = require('../utils/permissions');
 
 const router = express.Router();
 
@@ -182,6 +183,41 @@ router.post('/', requireAuth, requirePermission('create_deposit'), async functio
       return res.status(400).json({ error: 'City is required' });
     }
     const owed = parseFloat(pulsar_owed);
+    // Who this deposit is CREDITED to. Defaults to whoever is submitting it.
+    // A manager (or admin/owner) holding complete_deposit_for_employee may pick
+    // someone else — the picker on the client only offers people in scope, but
+    // that is a convenience, not the gate: this is re-checked here regardless of
+    // what the client sent, exactly like editCityScope re-checks an edit.
+    let targetUserId = req.user.id;
+    let targetUserName = req.user.name;
+    let submittedById = null;
+    let submittedByName = null;
+    const rawEmployeeId = req.body.employee_user_id;
+    if (rawEmployeeId != null && rawEmployeeId !== '') {
+      const empId = parseInt(rawEmployeeId, 10);
+      if (isNaN(empId)) {
+        return res.status(400).json({ error: 'Invalid employee selected' });
+      }
+      if (empId !== req.user.id) {
+        const allowed = await hasPermission(req.user.role, 'complete_deposit_for_employee');
+        if (!allowed) {
+          return res.status(403).json({ error: 'You do not have permission to submit a deposit on behalf of someone else.' });
+        }
+        const empRows = await pool.query('SELECT id, name, home_city, active FROM users WHERE id = $1', [empId]);
+        if (!empRows.rows.length || empRows.rows[0].active === false) {
+          return res.status(400).json({ error: 'That employee could not be found.' });
+        }
+        const emp = empRows.rows[0];
+        const scope = await editCityScope(req);
+        if (!scopeAllows(scope, emp.home_city)) {
+          return res.status(403).json({ error: 'You can only complete deposits for employees in the cities you are assigned to.' });
+        }
+        targetUserId = emp.id;
+        targetUserName = emp.name;
+        submittedById = req.user.id;
+        submittedByName = req.user.name;
+      }
+    }
     // Receipt policy: every expense line must carry a photo, or an explicit "no receipt"
     // override with a written reason.  Enforced here so it cannot be bypassed client-side.
     const rawExpenses = Array.isArray(req.body.expenses) ? req.body.expenses : [];
@@ -220,19 +256,21 @@ router.post('/', requireAuth, requirePermission('create_deposit'), async functio
     // Duplicate-submission guards.
     const idem = (req.body.idempotency_key == null ? '' : String(req.body.idempotency_key)).slice(0, 64) || null;
     const confirmDuplicate = req.body.confirm_duplicate === true || req.body.confirm_duplicate === 'true';
-    const RETURN_COLS = 'id, deposit_number, user_id, user_name, city_code, amount, deposit_date, period_start, period_end, notes, pulsar_owed, ai_amount, ai_deposit_date, ai_edited, created_at';
+    const RETURN_COLS = 'id, deposit_number, user_id, user_name, city_code, amount, deposit_date, period_start, period_end, notes, pulsar_owed, ai_amount, ai_deposit_date, ai_edited, submitted_by_id, submitted_by_name, created_at';
     // Hard guard: identical idempotency key means the client already submitted this exact request — return the saved row instead of inserting again.
     if (idem) {
       const prior = await pool.query('SELECT ' + RETURN_COLS + ' FROM deposits WHERE idempotency_key = $1', [idem]);
       if (prior.rows.length) { return res.status(200).json(prior.rows[0]); }
     }
     // Soft guard: same person, date, amount and pay period already on file — ask the client to confirm before creating a second one.
+    // Keyed on the CREDITED employee, not whoever is typing it in, so a manager
+    // completing a second deposit for the same tech still gets warned.
     if (!confirmDuplicate) {
       const dupq = await pool.query(
         'SELECT id, deposit_number FROM deposits WHERE user_id = $1 AND deposit_date = $2 AND amount = $3 ' +
         'AND period_start IS NOT DISTINCT FROM $4::date AND city_code IS NOT DISTINCT FROM $5 ' +
         'ORDER BY created_at DESC LIMIT 1',
-        [req.user.id, deposit_date, amt, period_start || null, city_code || null]
+        [targetUserId, deposit_date, amt, period_start || null, city_code || null]
       );
       if (dupq.rows.length) {
         return res.status(200).json({ duplicate: true, existing_id: dupq.rows[0].id, existing_number: dupq.rows[0].deposit_number });
@@ -251,12 +289,12 @@ router.post('/', requireAuth, requirePermission('create_deposit'), async functio
     try {
     await client.query('BEGIN');
     const { rows } = await client.query(
-      'INSERT INTO deposits (deposit_number, user_id, user_name, city_code, amount, deposit_date, period_start, period_end, notes, pulsar_owed, idempotency_key, ai_amount, ai_deposit_date, ai_edited) ' +
-      'VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14) RETURNING ' + RETURN_COLS,
+      'INSERT INTO deposits (deposit_number, user_id, user_name, city_code, amount, deposit_date, period_start, period_end, notes, pulsar_owed, idempotency_key, ai_amount, ai_deposit_date, ai_edited, submitted_by_id, submitted_by_name) ' +
+      'VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16) RETURNING ' + RETURN_COLS,
       [
         deposit_number,
-        req.user.id,
-        req.user.name,
+        targetUserId,
+        targetUserName,
         city_code || null,
         amt,
         deposit_date,
@@ -267,7 +305,9 @@ router.post('/', requireAuth, requirePermission('create_deposit'), async functio
         idem,
         aiAmount,
         aiDate,
-        aiEdited
+        aiEdited,
+        submittedById,
+        submittedByName
       ]
     );
     dep = rows[0];
@@ -316,7 +356,7 @@ router.post('/', requireAuth, requirePermission('create_deposit'), async functio
         action: 'created',
         user_id: req.user.id,
         user_name: req.user.name,
-        details: { amount: amt, pulsar_owed: owed, expense_total: expenseTotal, city_code: city_code || null, ai_amount: aiAmount, ai_deposit_date: aiDate, ai_edited: aiEdited }
+        details: { amount: amt, pulsar_owed: owed, expense_total: expenseTotal, city_code: city_code || null, ai_amount: aiAmount, ai_deposit_date: aiDate, ai_edited: aiEdited, on_behalf_of: submittedById ? targetUserName : null }
       });
     }
     res.status(replayed ? 200 : 201).json(dep);
@@ -343,6 +383,7 @@ router.get('/', requireAuth, requirePermission('view_deposits'), async function(
       // A denied line is not this deposit's problem any more, so its missing
       // receipt is not either - it would leave a flag nobody can ever clear.
       'EXISTS(SELECT 1 FROM deposit_expenses e2 WHERE e2.deposit_id = d.id AND e2.no_receipt = TRUE AND ' + counted('e2') + ') AS has_missing_expense_receipt, ' +
+      'd.submitted_by_id, d.submitted_by_name, ' +
       'd.created_at';
     let query, params;
     if (SEE_ALL.includes(req.user.role)) {
@@ -374,12 +415,34 @@ router.get('/export', requireAuth, requirePermission('export_deposits'), async f
       'COALESCE((SELECT SUM(e.amount) FROM deposit_expenses e WHERE e.deposit_id = d.id AND ' + counted('e') + '), 0) AS total_expenses, ' +
       'COALESCE((SELECT SUM(e5.amount) FROM deposit_expenses e5 WHERE e5.deposit_id = d.id AND ' + denied('e5') + '), 0) AS denied_expenses, ' +
       "(SELECT COUNT(*) FROM deposit_expenses e6 WHERE e6.deposit_id = d.id AND COALESCE(e6.review_status, 'pending') = 'pending') AS pending_expense_count, " +
+      'd.submitted_by_id, d.submitted_by_name, ' +
       'd.created_at FROM deposits d LEFT JOIN users u ON u.id = d.user_id ORDER BY d.deposit_date DESC, d.created_at DESC'
     );
     res.json({ deposits: rows });
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: 'Failed to export deposits' });
+  }
+});
+
+// GET /employees — who this manager (or admin/owner) may complete a deposit
+// "on behalf of". Scoped exactly like editing a deposit (see utils/depositAccess.js):
+// a manager only sees active users whose HOME CITY is one they are assigned to;
+// admin/owner see everyone. Excludes the requester — submitting for yourself is
+// the ordinary form above, it needs no picker. Must be registered before GET
+// /:id, or Express would try to parse "employees" as a deposit id.
+router.get('/employees', requireAuth, requirePermission('complete_deposit_for_employee'), async function(req, res) {
+  try {
+    const scope = await editCityScope(req);
+    const { rows } = await pool.query(
+      'SELECT id, name, home_city FROM users WHERE active = TRUE AND id <> $1 ORDER BY name ASC',
+      [req.user.id]
+    );
+    const list = rows.filter(function (u) { return scopeAllows(scope, u.home_city); });
+    res.json(list);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Failed to fetch employee list' });
   }
 });
 

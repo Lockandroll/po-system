@@ -1267,6 +1267,16 @@ async function initDB() {
       'ALTER TABLE deposits ADD COLUMN IF NOT EXISTS ai_deposit_date DATE;' +
       'ALTER TABLE deposits ADD COLUMN IF NOT EXISTS ai_edited BOOLEAN DEFAULT FALSE;'
     );
+    // A manager (or admin/owner) can complete a deposit "on behalf of" an
+    // employee. user_id/user_name stay the person the deposit is CREDITED to
+    // (unchanged everywhere else in the app - the Pulsar reconciliation, the
+    // deposit list, etc.). submitted_by_* records who actually typed it in,
+    // only when that is someone other than the credited employee - a normal
+    // self-submitted deposit leaves both columns NULL.
+    await client.query(
+      'ALTER TABLE deposits ADD COLUMN IF NOT EXISTS submitted_by_id INTEGER REFERENCES users(id) ON DELETE SET NULL;' +
+      'ALTER TABLE deposits ADD COLUMN IF NOT EXISTS submitted_by_name VARCHAR(255);'
+    );
     // ---- Deposit edit permission backfill --------------------------------
     // edit_deposit is new. A saved role_permissions matrix was rebuilt from the
     // checkboxes that existed when it was last saved, so it cannot contain the
@@ -1287,6 +1297,24 @@ async function initDB() {
         } catch (e) { console.error('deposit edit perm backfill failed:', e.message); }
       }
       await client.query("INSERT INTO settings (key, value) VALUES ('perm_deposit_edit_backfilled', '1') ON CONFLICT (key) DO NOTHING");
+    }
+    // complete_deposit_for_employee is new for the same reason as edit_deposit
+    // above - a saved matrix cannot contain a key that did not exist when it was
+    // last written. Same one-time seed, same guard flag, same restriction to
+    // manager only (never the technician roles).
+    const _rpDepFor = await client.query("SELECT value FROM settings WHERE key = 'perm_deposit_complete_for_backfilled'");
+    if (!_rpDepFor.rows.length) {
+      const _rpDF = await client.query("SELECT value FROM settings WHERE key = 'role_permissions'");
+      if (_rpDF.rows.length && _rpDF.rows[0].value) {
+        try {
+          const obj = JSON.parse(_rpDF.rows[0].value);
+          if (obj && typeof obj === 'object' && Array.isArray(obj.manager)) {
+            if (obj.manager.indexOf('complete_deposit_for_employee') === -1) obj.manager.push('complete_deposit_for_employee');
+            await client.query("INSERT INTO settings (key, value, updated_at) VALUES ('role_permissions', $1, NOW()) ON CONFLICT (key) DO UPDATE SET value = $1, updated_at = NOW()", [JSON.stringify(obj)]);
+          }
+        } catch (e) { console.error('deposit complete-for perm backfill failed:', e.message); }
+      }
+      await client.query("INSERT INTO settings (key, value) VALUES ('perm_deposit_complete_for_backfilled', '1') ON CONFLICT (key) DO NOTHING");
     }
     // ---- Pulsar cash reconciliation -------------------------------------
     // A manager drops the Pulsar "Call Search" CSV for a pay week; every call

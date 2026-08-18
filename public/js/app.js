@@ -3169,7 +3169,7 @@ async function renderRoles(el) {
     { group:'Purchase Orders', gate:'view_pos', perms:[ {k:'view_pos',l:'View / access module'}, {k:'create_po',l:'Create POs'}, {k:'edit_po',l:'Edit POs'}, {k:'delete_po',l:'Delete POs'}, {k:'submit_po',l:'Submit for approval'}, {k:'approve_po',l:'Approve / reject POs'}, {k:'cancel_po',l:'Cancel POs'} ] },
     { group:'Quotes', gate:'view_quotes', perms:[ {k:'view_quotes',l:'View / access module'}, {k:'create_quote',l:'Create quotes'}, {k:'edit_quote',l:'Edit quotes'}, {k:'delete_quote',l:'Delete quotes'}, {k:'push_quote_po',l:'Push quote to PO'} ] },
     { group:'Vehicle Repairs', gate:'view_vr', perms:[ {k:'view_vr',l:'View / access module'}, {k:'create_vr',l:'Create VRs'}, {k:'edit_vr',l:'Edit VRs'}, {k:'delete_vr',l:'Delete VRs'}, {k:'submit_vr',l:'Submit for approval'}, {k:'approve_vr',l:'Approve / reject vehicle repairs'} ] },
-    { group:'Cash Deposits', gate:'view_deposits', perms:[ {k:'view_deposits',l:'View / access module'}, {k:'create_deposit',l:'Create / upload deposit'}, {k:'edit_deposit',l:'Edit a submitted deposit (managers: own cities only)'}, {k:'delete_deposit',l:'Delete deposit'}, {k:'export_deposits',l:'Export deposits (CSV)'} ] },
+    { group:'Cash Deposits', gate:'view_deposits', perms:[ {k:'view_deposits',l:'View / access module'}, {k:'create_deposit',l:'Create / upload deposit'}, {k:'complete_deposit_for_employee',l:'Complete a deposit on behalf of an employee (managers: own cities only)'}, {k:'edit_deposit',l:'Edit a submitted deposit (managers: own cities only)'}, {k:'delete_deposit',l:'Delete deposit'}, {k:'export_deposits',l:'Export deposits (CSV)'} ] },
     { group:'Invoices', gate:'view_invoices', perms:[ {k:'view_invoices',l:'View / access module'}, {k:'create_invoice',l:'Create invoices'}, {k:'edit_invoice',l:'Edit invoices'}, {k:'delete_invoice',l:'Delete invoices'}, {k:'request_refund',l:'Request a refund'}, {k:'approve_refund',l:'Approve / reject &amp; record refunds'}, {k:'manage_invoice_setup',l:'Manage invoice setup (accounts, agreement, defaults)'} ] },
     { group:'Signatures', gate:'view_signatures', perms:[ {k:'view_signatures',l:'View / access module'}, {k:'manage_signatures',l:'Create, send, edit & void signature requests'} ] },
     { group:'Work Orders', gate:'view_work_orders', perms:[ {k:'view_work_orders',l:'View / access module'}, {k:'manage_work_orders',l:'Create, edit, dispatch & delete work orders'} ] },
@@ -10678,6 +10678,7 @@ async function renderDeposits(el) {
   var canManage = ['admin','manager'].includes(state.user.role);
   var canSeeAll = ['admin','manager','approver'].includes(state.user.role);
   var canSubmit = can('create_deposit');
+  var canCompleteFor = can('complete_deposit_for_employee');
   depositReceipts = [];
   depositExpenses = [];
   depExtractTried = false;
@@ -10690,6 +10691,19 @@ async function renderDeposits(el) {
   var cityOptions = '<option value="">Select city…</option>' + cities.map(function(c) {
     return '<option value="' + escHtml(c.code) + '">' + escHtml(c.name) + ' (' + escHtml(c.code) + ')</option>';
   }).join('');
+  // Who this deposit can be credited to, when the viewer is allowed to complete
+  // one on behalf of someone else. The server re-checks this list on submit —
+  // it is not the actual gate — so a request failure here just means no picker.
+  var employeeOptions = '';
+  if (canSubmit && canCompleteFor) {
+    var employees = [];
+    try { employees = await api('GET', '/deposits/employees'); } catch(e) {}
+    if (employees.length) {
+      employeeOptions = '<option value="">Myself (' + escHtml(state.user.name || 'you') + ')</option>' + employees.map(function(u) {
+        return '<option value="' + u.id + '">' + escHtml(u.name) + (u.home_city ? ' (' + escHtml(u.home_city) + ')' : '') + '</option>';
+      }).join('');
+    }
+  }
   var today = new Date().toISOString().slice(0,10);
   var html =
     '<div class="page-header"><div class="page-title"><h2>Cash Deposits</h2><p>Upload your weekly deposit receipt</p></div>' +
@@ -10700,6 +10714,10 @@ async function renderDeposits(el) {
       '<div class="card" style="max-width:680px;margin-bottom:24px"><div class="card-body">' +
         '<h3 style="margin-top:0;margin-bottom:16px">Submit a Deposit</h3>' +
         '<div id="dep-feedback"></div>' +
+        (employeeOptions
+          ? '<div class="form-group"><label>On Behalf Of</label><select id="dep-employee">' + employeeOptions + '</select>' +
+              '<div style="font-size:12px;color:var(--text-muted-color);margin-top:4px">Pick an employee to complete this deposit for them — it will be credited to their name.</div></div>'
+          : '') +
         '<div style="display:flex;gap:12px;flex-wrap:wrap">' +
           '<div class="form-group" style="flex:1;min-width:160px"><label>Deposit Amount ($)</label><input type="number" id="dep-amount" step="0.01" min="0" placeholder="0.00" oninput="recalcOverShort()" /></div>' +
           '<div class="form-group" style="flex:1;min-width:160px"><label>Pulsar Shows Owed ($) <span style="color:#e24b4a">*</span></label><input type="number" id="dep-pulsar" step="0.01" min="0" placeholder="0.00" oninput="recalcOverShort()" /></div>' +
@@ -10952,6 +10970,8 @@ async function submitDeposit() {
   var period_end = periodMon ? depYmd(depAddDays(depParseYmd(periodMon), 6)) : '';
   var city_code = document.getElementById('dep-city').value;
   var notes = document.getElementById('dep-notes').value.trim();
+  var employeeEl = document.getElementById('dep-employee');
+  var employee_user_id = employeeEl ? employeeEl.value : '';
   if (!amount || parseFloat(amount) <= 0) { fb.innerHTML = '<div class="alert alert-error">Please enter a valid amount.</div>'; return; }
   if (pulsar_owed === '' || pulsar_owed == null || isNaN(parseFloat(pulsar_owed))) { fb.innerHTML = '<div class="alert alert-error">Please enter the Pulsar shows owed amount.</div>'; return; }
   if (!deposit_date) { fb.innerHTML = '<div class="alert alert-error">Please choose a deposit date.</div>'; return; }
@@ -10998,7 +11018,7 @@ async function submitDeposit() {
   function resetBtn() { if (btn) { btn.disabled = false; btn.textContent = 'Submit Deposit'; } }
   if (btn) { btn.disabled = true; btn.textContent = 'Submitting…'; }
   function send(confirmDuplicate) {
-    return api('POST', '/deposits', { amount: amount, pulsar_owed: pulsar_owed, deposit_date: deposit_date, period_start: period_start, period_end: period_end, city_code: city_code, notes: notes, receipts: receipts, expenses: expenses, ai_amount: depAiAmount, ai_deposit_date: depAiDate, idempotency_key: depIdemKey, confirm_duplicate: !!confirmDuplicate });
+    return api('POST', '/deposits', { amount: amount, pulsar_owed: pulsar_owed, deposit_date: deposit_date, period_start: period_start, period_end: period_end, city_code: city_code, notes: notes, receipts: receipts, expenses: expenses, ai_amount: depAiAmount, ai_deposit_date: depAiDate, idempotency_key: depIdemKey, confirm_duplicate: !!confirmDuplicate, employee_user_id: employee_user_id || null });
   }
   try {
     var res = await send(false);
@@ -11012,6 +11032,9 @@ async function submitDeposit() {
     document.getElementById('dep-pulsar').value = '';
     document.getElementById('dep-notes').value = '';
     document.getElementById('dep-receipt').value = '';
+    // Back to "Myself" so the next submission is not silently credited to the
+    // last employee picked — each one has to be a deliberate choice.
+    if (employeeEl) employeeEl.value = '';
     depositReceipts = [];
     depositExpenses = [];
     depExtractTried = false;
@@ -11117,7 +11140,7 @@ function renderDepositsHistory() {
       '<td style="white-space:nowrap">' + (exp > 0 ? '$' + exp.toFixed(2) : '—') + '</td>' +
       '<td style="white-space:nowrap">' + osCell + '</td>' +
       '<td>' + escHtml(d.city_code || '—') + '</td>' +
-      (canSeeAll ? '<td>' + escHtml(d.user_name || '—') + '</td>' : '') +
+      (canSeeAll ? '<td>' + escHtml(d.user_name || '—') + (d.submitted_by_id ? '<div style="font-size:11px;color:var(--text-muted-color)">via ' + escHtml(d.submitted_by_name || 'manager') + '</div>' : '') + '</td>' : '') +
       '<td>' + receipt + '</td>' +
       (can('delete_deposit') ? '<td><button class="btn btn-ghost btn-sm" onclick="event.stopPropagation();deleteDeposit(' + d.id + ')" style="color:#ef4444">Delete</button></td>' : '') +
     '</tr>';
@@ -11131,7 +11154,7 @@ async function exportDepositsCSV() {
     var res = await api('GET', '/deposits/export');
     var deposits = res.deposits || [];
     var rows = [];
-    rows.push(['Deposit #','Date','Pay Period Start','Pay Period End','Amount','Pulsar Owed','Total Expenses','Denied Expenses','Expenses Awaiting Review','Over/Short','City','Submitted By','Notes','Receipt File','Has Receipt','Edited After AI','AI Amount','AI Date','Expense Missing Receipt','Submitted At'].join(','));
+    rows.push(['Deposit #','Date','Pay Period Start','Pay Period End','Amount','Pulsar Owed','Total Expenses','Denied Expenses','Expenses Awaiting Review','Over/Short','City','Credited To','Completed By (if not self)','Notes','Receipt File','Has Receipt','Edited After AI','AI Amount','AI Date','Expense Missing Receipt','Submitted At'].join(','));
     deposits.forEach(function(d) {
       var depAmt = parseFloat(d.amount) || 0;
       var exp = parseFloat(d.total_expenses) || 0;
@@ -11150,6 +11173,7 @@ async function exportDepositsCSV() {
         os,
         d.city_code || '',
         d.user_name || '',
+        d.submitted_by_id ? (d.submitted_by_name || '') : '',
         d.notes || '',
         d.receipt_filename || '',
         d.has_receipt ? 'Yes' : 'No',
@@ -11315,7 +11339,9 @@ async function renderViewDeposit(el, id, preloaded) {
   }
 
   el.innerHTML =
-    '<div class="page-header"><div class="page-title"><h2>Deposit ' + escHtml(dep.deposit_number || '') + '</h2><p>' + escHtml(dep.user_name || '') + '</p></div>' +
+    '<div class="page-header"><div class="page-title"><h2>Deposit ' + escHtml(dep.deposit_number || '') + '</h2><p>' + escHtml(dep.user_name || '') +
+      (dep.submitted_by_id ? ' <span style="color:var(--text-muted-color);font-weight:400">&middot; submitted by ' + escHtml(dep.submitted_by_name || 'a manager') + ' on behalf of ' + escHtml(dep.user_name || 'this employee') + '</span>' : '') +
+      '</p></div>' +
       '<div style="display:flex;gap:8px">' +
         '<button class="btn btn-secondary" onclick="navigate(\'deposits\')">&larr; Back</button>' +
         // can_edit comes from the server and already accounts for the city scope,
