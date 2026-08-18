@@ -4553,6 +4553,24 @@ function smLastSent(m) {
   return late ? '<span style="color:#ef4444;font-weight:600">' + txt + '</span>' : txt;
 }
 
+// A shift-end message has no single clock time - it lands N minutes before the
+// end of whatever the person&#39;s last published shift of the week happens to be.
+function smLeadLabel(mins) {
+  var m = parseInt(mins, 10); if (isNaN(m) || m < 0) m = 120;
+  if (m === 0) return 'right when their shift ends';
+  var h = m / 60;
+  var txt = (h === Math.floor(h)) ? String(h) : h.toFixed(1);
+  return (m < 60 ? m + ' min' : txt + ' hr') + ' before their shift ends';
+}
+
+function smWhen(m) {
+  if (m.trigger_type === 'shift_end') {
+    return 'Last day of each person&#39;s work week, ' + smLeadLabel(m.lead_minutes) +
+      (m.skip_if_deposited ? ' (skipped if they already deposited for that week)' : '');
+  }
+  return SM_DOW[m.day_of_week] + 's at ' + smTime12(m.send_time);
+}
+
 function smTime12(t) {
   var p = String(t || '09:00').split(':');
   var h = parseInt(p[0], 10); var mm = p[1] || '00';
@@ -4591,7 +4609,7 @@ function smCard(m) {
   try { roles = JSON.parse(m.audience_roles || '[]'); } catch (e) { roles = []; }
   var audience = roles.length ? roles.map(roleLabel).join(', ') : 'No one selected';
   var chan = m.channel === 'both' ? 'SMS + Email' : (m.channel === 'email' ? 'Email' : 'SMS');
-  var when = SM_DOW[m.day_of_week] + 's at ' + smTime12(m.send_time);
+  var when = smWhen(m);
   var status = m.enabled
     ? '<span style="color:#22c55e;font-weight:600">On</span>'
     : '<span style="color:var(--text-muted-color)">Off</span>';
@@ -4600,7 +4618,7 @@ function smCard(m) {
       '<div style="flex:1;min-width:240px">' +
         '<div style="font-size:16px;font-weight:700;margin-bottom:6px">' + escHtml(m.name) + ' &nbsp; ' + status + '</div>' +
         '<div style="font-size:13px;color:var(--text-muted-color);line-height:1.7">' +
-          'When: ' + escHtml(when) + '<br>' +
+          'When: ' + when + '<br>' +
           'Sends: ' + escHtml(chan) + ' to ' + escHtml(audience) + (m.ignore_opt_out ? ' (ignores opt-out)' : '') + '<br>' +
           'Last sent: ' + smLastSent(m) +
         '</div>' +
@@ -4632,13 +4650,31 @@ function smRenderForm(m) {
     return '<label style="display:inline-flex;align-items:center;gap:6px;margin-right:16px;font-weight:400"><input type="checkbox" class="sm-role" value="' + r + '"' + ck + ' style="width:auto"> ' + roleLabel(r) + '</label>';
   }).join('');
   var dowOpts = SM_DOW.map(function (n, i) { return '<option value="' + i + '"' + (i === dow ? ' selected' : '') + '>' + n + '</option>'; }).join('');
+  var trig = m.trigger_type === 'shift_end' ? 'shift_end' : 'weekly';
+  var leadMin = (m.lead_minutes == null) ? 120 : parseInt(m.lead_minutes, 10);
+  if (isNaN(leadMin) || leadMin < 0) leadMin = 120;
+  var leadHrs = Math.round((leadMin / 60) * 100) / 100;
   body.innerHTML =
     '<div class="card"><div class="card-body">' +
       '<h3 style="margin-top:0">' + (m.id ? 'Edit' : 'New') + ' Scheduled Message</h3>' +
       '<div class="form-group"><label>Name</label><input type="text" id="sm-name" value="' + escHtml(m.name || '') + '" placeholder="e.g. Monday deposit reminder" /></div>' +
-      '<div style="display:flex;gap:12px;flex-wrap:wrap">' +
+      '<div class="form-group"><label>When to send</label><select id="sm-trigger" onchange="smTriggerChanged()">' +
+        '<option value="weekly"' + (trig === 'weekly' ? ' selected' : '') + '>Same day and time every week</option>' +
+        '<option value="shift_end"' + (trig === 'shift_end' ? ' selected' : '') + '>Before the end of each person&#39;s last shift of the week</option>' +
+      '</select></div>' +
+      '<div id="sm-weekly-fields" style="display:' + (trig === 'weekly' ? 'flex' : 'none') + ';gap:12px;flex-wrap:wrap">' +
         '<div class="form-group" style="flex:1;min-width:150px"><label>Day of week</label><select id="sm-dow">' + dowOpts + '</select></div>' +
         '<div class="form-group" style="flex:1;min-width:150px"><label>Time (ET)</label><input type="time" id="sm-time" value="' + escHtml(m.send_time || '09:00') + '" /></div>' +
+      '</div>' +
+      '<div id="sm-shift-fields" style="display:' + (trig === 'shift_end' ? 'block' : 'none') + '">' +
+        '<div class="form-group" style="max-width:320px"><label>How long before their shift ends</label>' +
+          '<input type="number" id="sm-lead" min="0" max="12" step="0.5" value="' + leadHrs + '" /> ' +
+          '<div style="font-size:12px;color:var(--text-muted-color);margin-top:4px">Hours. Nova uses the last shift each person is <strong>published</strong> to work that Monday&ndash;Sunday week, so a 6am&ndash;6pm Monday&ndash;Friday tech is texted Friday at 4:00pm. Everyone gets it at most once a week.</div>' +
+        '</div>' +
+        '<div class="form-group"><label style="display:inline-flex;align-items:center;gap:8px;font-weight:400"><input type="checkbox" id="sm-skipdep"' + (m.skip_if_deposited ? ' checked' : '') + ' style="width:auto"> Skip anyone who already turned in a deposit covering that week</label></div>' +
+        '<div style="font-size:12px;color:var(--text-muted-color);margin:-6px 0 14px">Heads up: an overnight shift can push this late. A 2pm&ndash;2am shift with a 2 hour lead sends at midnight. Raise the hours to pull it earlier.</div>' +
+      '</div>' +
+      '<div style="display:flex;gap:12px;flex-wrap:wrap">' +
         '<div class="form-group" style="flex:1;min-width:150px"><label>Channel</label><select id="sm-channel">' +
           '<option value="sms"' + (chan === 'sms' ? ' selected' : '') + '>SMS</option>' +
           '<option value="email"' + (chan === 'email' ? ' selected' : '') + '>Email</option>' +
@@ -4657,12 +4693,26 @@ function smRenderForm(m) {
     '</div></div>';
 }
 
+function smTriggerChanged() {
+  var t = document.getElementById('sm-trigger');
+  if (!t) return;
+  var wk = document.getElementById('sm-weekly-fields');
+  var se = document.getElementById('sm-shift-fields');
+  if (wk) wk.style.display = (t.value === 'shift_end') ? 'none' : 'flex';
+  if (se) se.style.display = (t.value === 'shift_end') ? 'block' : 'none';
+}
+
 async function smSave(id) {
   var roles = [];
   document.querySelectorAll('.sm-role').forEach(function (c) { if (c.checked) roles.push(c.value); });
   var fb = document.getElementById('sm-feedback');
+  var leadHrs = parseFloat(document.getElementById('sm-lead').value);
+  if (isNaN(leadHrs) || leadHrs < 0) leadHrs = 2;
   var payload = {
     name: document.getElementById('sm-name').value.trim(),
+    trigger_type: document.getElementById('sm-trigger').value,
+    lead_minutes: Math.round(leadHrs * 60),
+    skip_if_deposited: document.getElementById('sm-skipdep').checked,
     day_of_week: parseInt(document.getElementById('sm-dow').value, 10),
     send_time: document.getElementById('sm-time').value || '09:00',
     channel: document.getElementById('sm-channel').value,
@@ -4692,6 +4742,7 @@ async function smToggle(id) {
   try {
     await api('PUT', '/scheduled/' + id, {
       name: m.name, day_of_week: m.day_of_week, send_time: m.send_time, channel: m.channel,
+      trigger_type: m.trigger_type, lead_minutes: m.lead_minutes, skip_if_deposited: m.skip_if_deposited,
       audience_roles: roles, ignore_opt_out: m.ignore_opt_out, subject: m.subject, message: m.message, enabled: !m.enabled
     });
     await smLoadList();

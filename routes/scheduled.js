@@ -15,12 +15,23 @@ function clean(b) {
   let dow = parseInt(b.day_of_week, 10);
   if (isNaN(dow) || dow < 0 || dow > 6) dow = 1;
   const t = /^([01]\d|2[0-3]):[0-5]\d$/.test(b.send_time) ? b.send_time : '09:00';
+  // 'weekly'    = fixed day + clock time (the original behaviour)
+  // 'shift_end' = per person, N minutes before the end of the last shift they are
+  //               published to work that Mon-Sun week. day_of_week/send_time are
+  //               kept on the row but ignored, so switching back loses nothing.
+  const trigger = b.trigger_type === 'shift_end' ? 'shift_end' : 'weekly';
+  let lead = parseInt(b.lead_minutes, 10);
+  if (isNaN(lead) || lead < 0) lead = 120;
+  if (lead > 720) lead = 720;
   return {
     name: (b.name || '').trim() || 'Untitled reminder',
     enabled: b.enabled !== false,
     channel: channel,
     audience_roles: JSON.stringify(roles),
     ignore_opt_out: b.ignore_opt_out === true || b.ignore_opt_out === 'true',
+    trigger_type: trigger,
+    lead_minutes: lead,
+    skip_if_deposited: b.skip_if_deposited === true || b.skip_if_deposited === 'true',
     day_of_week: dow,
     send_time: t,
     subject: (b.subject || '').trim() || null,
@@ -37,9 +48,9 @@ router.post('/', requireAuth, requirePermission('manage_settings'), async (req, 
   const c = clean(req.body || {});
   if (!c.message) return res.status(400).json({ error: 'Message text is required' });
   const { rows } = await pool.query(
-    'INSERT INTO scheduled_messages (name, enabled, channel, audience_roles, ignore_opt_out, day_of_week, send_time, subject, message, created_by) ' +
-    'VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) RETURNING *',
-    [c.name, c.enabled, c.channel, c.audience_roles, c.ignore_opt_out, c.day_of_week, c.send_time, c.subject, c.message, req.user.id]
+    'INSERT INTO scheduled_messages (name, enabled, channel, audience_roles, ignore_opt_out, trigger_type, lead_minutes, skip_if_deposited, day_of_week, send_time, subject, message, created_by) ' +
+    'VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13) RETURNING *',
+    [c.name, c.enabled, c.channel, c.audience_roles, c.ignore_opt_out, c.trigger_type, c.lead_minutes, c.skip_if_deposited, c.day_of_week, c.send_time, c.subject, c.message, req.user.id]
   );
   res.status(201).json(rows[0]);
 });
@@ -48,8 +59,8 @@ router.put('/:id', requireAuth, requirePermission('manage_settings'), async (req
   const c = clean(req.body || {});
   if (!c.message) return res.status(400).json({ error: 'Message text is required' });
   const { rows } = await pool.query(
-    'UPDATE scheduled_messages SET name=$1, enabled=$2, channel=$3, audience_roles=$4, ignore_opt_out=$5, day_of_week=$6, send_time=$7, subject=$8, message=$9, updated_at=NOW() WHERE id=$10 RETURNING *',
-    [c.name, c.enabled, c.channel, c.audience_roles, c.ignore_opt_out, c.day_of_week, c.send_time, c.subject, c.message, req.params.id]
+    'UPDATE scheduled_messages SET name=$1, enabled=$2, channel=$3, audience_roles=$4, ignore_opt_out=$5, trigger_type=$6, lead_minutes=$7, skip_if_deposited=$8, day_of_week=$9, send_time=$10, subject=$11, message=$12, updated_at=NOW() WHERE id=$13 RETURNING *',
+    [c.name, c.enabled, c.channel, c.audience_roles, c.ignore_opt_out, c.trigger_type, c.lead_minutes, c.skip_if_deposited, c.day_of_week, c.send_time, c.subject, c.message, req.params.id]
   );
   if (!rows.length) return res.status(404).json({ error: 'Scheduled message not found' });
   res.json(rows[0]);

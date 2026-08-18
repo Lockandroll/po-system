@@ -607,6 +607,32 @@ async function initDB() {
       '  updated_at TIMESTAMPTZ DEFAULT NOW()' +
       ');'
     );
+    // Shift-end trigger: a second flavour of scheduled message that is timed off
+    // each person's own schedule (N minutes before the end of the last shift they
+    // are published to work that week) instead of a fixed day + clock time.
+    await client.query(
+      "ALTER TABLE scheduled_messages ADD COLUMN IF NOT EXISTS trigger_type VARCHAR(20) NOT NULL DEFAULT 'weekly';" +
+      'ALTER TABLE scheduled_messages ADD COLUMN IF NOT EXISTS lead_minutes INTEGER NOT NULL DEFAULT 120;' +
+      'ALTER TABLE scheduled_messages ADD COLUMN IF NOT EXISTS skip_if_deposited BOOLEAN NOT NULL DEFAULT false;'
+    );
+    // One row per person per week that a shift-end message actually went out for.
+    // The unique index is the whole point: a shift-end message has a different
+    // send time for every person, so the single last_run_on column on the message
+    // cannot keep them straight. Claiming a row before sending is what stops the
+    // per-minute tick (and its 3 hour catch-up window) texting anyone twice.
+    await client.query(
+      'CREATE TABLE IF NOT EXISTS scheduled_message_sends (' +
+      '  id SERIAL PRIMARY KEY,' +
+      '  message_id INTEGER NOT NULL REFERENCES scheduled_messages(id) ON DELETE CASCADE,' +
+      '  user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,' +
+      '  week_start DATE NOT NULL,' +
+      '  sent_at TIMESTAMPTZ DEFAULT NOW(),' +
+      '  UNIQUE(message_id, user_id, week_start)' +
+      ');'
+    );
+    await client.query(
+      'CREATE INDEX IF NOT EXISTS idx_sched_msg_sends_msg ON scheduled_message_sends(message_id, week_start);'
+    );
     const _smSeed = await client.query("SELECT value FROM settings WHERE key = 'scheduled_seed_v1'");
     if (!_smSeed.rows.length) {
       await client.query(
@@ -625,6 +651,28 @@ async function initDB() {
         ]
       );
       await client.query("INSERT INTO settings (key, value, updated_at) VALUES ('scheduled_seed_v1', 'done', NOW()) ON CONFLICT (key) DO NOTHING");
+    }
+    const _smSeed2 = await client.query("SELECT value FROM settings WHERE key = 'scheduled_seed_shift_end_v1'");
+    if (!_smSeed2.rows.length) {
+      await client.query(
+        'INSERT INTO scheduled_messages (name, enabled, channel, audience_roles, ignore_opt_out, trigger_type, lead_minutes, skip_if_deposited, day_of_week, send_time, subject, message) ' +
+        'VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)',
+        [
+          'End of work week deposit reminder',
+          true,
+          'sms',
+          JSON.stringify(['locksmith', 'roadside_technician']),
+          true,
+          'shift_end',
+          120,
+          true,
+          5,
+          '16:00',
+          'Deposit due today',
+          'Hey {first_name}, you have a deposit due. Please make that deposit today before you finish up.'
+        ]
+      );
+      await client.query("INSERT INTO settings (key, value, updated_at) VALUES ('scheduled_seed_shift_end_v1', 'done', NOW()) ON CONFLICT (key) DO NOTHING");
     }
     await client.query(
       'CREATE TABLE IF NOT EXISTS tasks (' +
