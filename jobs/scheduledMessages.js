@@ -6,6 +6,28 @@ const { resolveDateTokens } = require('../utils/messageTokens');
 
 const TZ = 'America/New_York';
 
+// How late Nova is still willing to send a message it missed.
+//
+// This used to be an exact HH:MM string match, which meant the send existed for
+// exactly one minute a week. A deploy, a Railway restart, a slow tick or a process
+// that was not running at 09:00 dropped the whole week's reminder with no error,
+// no log line and no way to tell afterwards that it had happened. That is half of
+// how the 2026-08-18 SMS outage stayed invisible for days.
+//
+// Bounded on purpose: catching up a 9am reminder at 9:20 is helpful. Catching it
+// up at 11pm is just confusing, and worse, it trains people to ignore it.
+const CATCHUP_MINUTES = 180;
+
+// 'HH:MM' (or 'HH:MM:SS' straight out of Postgres) -> minutes past midnight.
+function hhmmToMin(v) {
+  const m = /^(\d{1,2}):(\d{2})/.exec(String(v || ''));
+  if (!m) return null;
+  const h = parseInt(m[1], 10);
+  const mi = parseInt(m[2], 10);
+  if (!(h >= 0 && h <= 23) || !(mi >= 0 && mi <= 59)) return null;
+  return h * 60 + mi;
+}
+
 function firstName(name) { return String(name || '').trim().split(/\s+/)[0] || 'there'; }
 function applyTokens(text, user) { return resolveDateTokens(String(text || '').replace(/\{first_name\}/g, firstName(user && user.name))); }
 
@@ -18,7 +40,8 @@ function nowParts() {
   const dowMap = { Sun: 0, Mon: 1, Tue: 2, Wed: 3, Thu: 4, Fri: 5, Sat: 6 };
   const hh = map.hour === '24' ? '00' : map.hour;
   const dateStr = new Intl.DateTimeFormat('en-CA', { timeZone: TZ, year: 'numeric', month: '2-digit', day: '2-digit' }).format(d);
-  return { dow: dowMap[map.weekday], hhmm: hh + ':' + map.minute, dateStr: dateStr };
+  const nowMin = parseInt(hh, 10) * 60 + parseInt(map.minute, 10);
+  return { dow: dowMap[map.weekday], hhmm: hh + ':' + map.minute, nowMin: nowMin, dateStr: dateStr };
 }
 
 async function audienceUsers(roles) {
@@ -78,13 +101,37 @@ async function tick() {
     for (let i = 0; i < rows.length; i++) {
       const m = rows[i];
       if (m.day_of_week !== t.dow) continue;
-      if (String(m.send_time).slice(0, 5) !== t.hhmm) continue;
+
+      const due = hhmmToMin(m.send_time);
+      if (due == null) continue;
+      const late = t.nowMin - due;
+      if (late < 0 || late > CATCHUP_MINUTES) continue;
+
       const lastStr = m.last_run_on
         ? (typeof m.last_run_on === 'string' ? m.last_run_on.slice(0, 10) : new Date(m.last_run_on).toISOString().slice(0, 10))
         : null;
+      // The one and only guard against sending twice in a day. It carries more
+      // weight now than it did under the exact-minute match, because the window
+      // below gives the tick 180 chances to fire instead of one.
       if (lastStr === t.dateStr) continue;
+
+      // Do not catch up a message that did not exist, or was rescheduled, when its
+      // slot passed today. Saving a Tuesday 9am reminder at 2pm on a Tuesday would
+      // otherwise fire it instantly, at everybody. Comparing updated_at against how
+      // late we are needs no timezone maths: "the slot was N minutes ago" and "the row
+      // changed less than N minutes ago" are measured against the same clock.
+      if (late > 0 && m.updated_at && (Date.now() - new Date(m.updated_at).getTime()) < late * 60000) {
+        console.log('[scheduled] "' + m.name + '" skipped catch-up: it was created or edited after ' +
+          'today\'s ' + String(m.send_time).slice(0, 5) + ' ET slot.');
+        continue;
+      }
+
       // Mark first to avoid a double-send if delivery runs long.
       await pool.query('UPDATE scheduled_messages SET last_run_on = $1 WHERE id = $2', [t.dateStr, m.id]);
+      if (late > 0) {
+        console.log('[scheduled] "' + m.name + '" is ' + late + ' min late for its ' +
+          String(m.send_time).slice(0, 5) + ' ET slot; sending now rather than losing the week.');
+      }
       await runScheduledMessage(m, {});
     }
   } catch (err) {
@@ -97,4 +144,4 @@ function startScheduledMessages() {
   console.log('[scheduled] Scheduled-messages runner started (per-minute check, ' + TZ + ')');
 }
 
-module.exports = { startScheduledMessages, runScheduledMessage };
+module.exports = { startScheduledMessages, runScheduledMessage, tick, hhmmToMin, nowParts, CATCHUP_MINUTES };

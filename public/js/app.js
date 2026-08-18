@@ -156,7 +156,10 @@ var API_CACHE_TTL = 60000; // serve a cached copy instantly for up to 60s
 var API_CACHE_SWR = 6000;  // if the cached copy is older than this, refresh in the background
 function _apiNoCache(path) {
   // Endpoints that must always be live (session/auth, AI, exports, time clock, notifications).
-  return /^\/auth(\/|$)/.test(path) || /^\/ai(\/|$)/.test(path) || /export/.test(path) ||
+  // A health screen must never answer from cache: a stale 'all fine' is the
+  // exact failure this page exists to catch.
+  return /^\/job-health/.test(path) ||
+         /^\/auth(\/|$)/.test(path) || /^\/ai(\/|$)/.test(path) || /export/.test(path) ||
          /^\/goto(\/|$)/.test(path) || /^\/judi(\/|$)/.test(path) || /\/recordings(\/|$|\?)/.test(path) ||
          /setup-needed/.test(path) || /verify/.test(path) || /usage/.test(path) ||
          /token/.test(path) || /^\/timeclock/.test(path) || /notif/.test(path) ||
@@ -896,6 +899,7 @@ function navModel() {
       can('manage_parts') ? navItem('parts-list', 'Parts List', NAVI.box) : null,
       can('manage_settings') ? navItem('notifications', 'Notifications', NAVI.bell) : null,
       can('manage_settings') ? navItem('scheduled-messages', 'Scheduled Messages', NAVI.clock) : null,
+      can('manage_settings') ? navItem('job-health', 'Job Health', NAVI.bars) : null,
       can('manage_settings') ? navItem('location-settings', 'Location Tracking', icons.map) : null,
       can('view_users') ? navItem('users', 'Users', icons.users) : null,
       can('manage_cities') ? navItem('cities', 'Cities', icons.map) : null,
@@ -1146,6 +1150,7 @@ async function render() {
   else if (state.currentView === 'data-sync') await renderSync(content);
   else if (state.currentView === 'security') await renderSecurity(content);
   else if (state.currentView === 'scheduled-messages') await renderScheduledMessages(content);
+  else if (state.currentView === 'job-health') await renderJobHealth(content);
   else if (state.currentView === 'roles') await renderRoles(content);
   else if (state.currentView === 'parts-list') await renderPartsList(content);
   else if (state.currentView === 'suggestions') await renderSuggestions(content);
@@ -4353,9 +4358,200 @@ async function taskSave(id){
 }
 
 
+// ── Job Health (admin) ───────────────────────────────────────────────────────
+//
+// Every automated thing in Nova (the SOP quiz text, the Monday deposit reminder,
+// task reminders, the time clock, PTO accrual, GEICO, AR/AP, webhook retry) runs
+// off a timer in the server process. Until this screen existed there was no way
+// to tell from inside the product whether those timers were running. On
+// 2026-08-18 they were not, for days, and the site looked perfectly healthy the
+// whole time. This is the screen that answers "is the schedule alive".
+
+var JH_LABEL = {
+  ok: 'Healthy',
+  waiting: 'Waiting for first run',
+  timer: 'Internal timer',
+  erroring: 'Last run failed',
+  stale: 'Overdue',
+  never_ran: 'Never ran',
+  failed_to_start: 'Failed to start',
+  not_registered: 'Not registered'
+};
+var JH_COLOR = {
+  ok: '#22c55e',
+  waiting: 'var(--text-muted-color)',
+  timer: 'var(--text-muted-color)',
+  erroring: '#f59e0b',
+  stale: '#ef4444',
+  never_ran: '#ef4444',
+  failed_to_start: '#ef4444',
+  not_registered: '#ef4444'
+};
+var JH_HINT = {
+  waiting: 'Registered, but its schedule has not come round yet. Normal right after a deploy.',
+  timer: 'Runs on an internal interval rather than a cron, so individual runs are not tracked here. Registration is.',
+  erroring: 'It is running on schedule but the work inside it threw. See the error.',
+  stale: 'It registered but has not run in far longer than its schedule allows. Treat this as broken.',
+  never_ran: 'It registered at boot and has never run since. Treat this as broken.',
+  failed_to_start: 'It threw while starting, so its timers were never created. Nothing it does is happening.',
+  not_registered: 'It has run before on an earlier deploy, but this deploy never started it. Usually means it was removed from server.js or it is throwing before registration.'
+};
+
+function jhAgo(d) {
+  if (!d) return null;
+  var diff = Date.now() - new Date(d).getTime();
+  if (diff < 0) diff = 0;
+  var s = Math.floor(diff / 1000);
+  if (s < 90) return s + 's ago';
+  var m = Math.floor(s / 60);
+  if (m < 90) return m + 'm ago';
+  var h = Math.floor(m / 60);
+  if (h < 48) return h + 'h ago';
+  return Math.floor(h / 24) + 'd ago';
+}
+
+function jhEvery(ms) {
+  if (ms == null) return '';
+  if (ms < 3600000) return 'about every ' + Math.round(ms / 60000) + ' min';
+  if (ms < 86400000) return 'about every ' + Math.round(ms / 3600000) + ' h';
+  var d = Math.round(ms / 86400000);
+  return d === 1 ? 'about daily' : 'about every ' + d + ' days';
+}
+
+async function renderJobHealth(el) {
+  if (!can('manage_settings')) { el.innerHTML = '<div class="alert alert-error">Access denied.</div>'; return; }
+  el.innerHTML =
+    '<div class="page-header"><div class="page-title"><h2>Job Health</h2>' +
+      '<p>Every scheduled job in Nova, and when it last actually ran.</p></div>' +
+      '<button class="btn btn-secondary" onclick="jhLoad()">Refresh</button></div>' +
+    '<div id="jh-body"><div class="loading">Loading…</div></div>';
+  await jhLoad();
+}
+
+async function jhLoad() {
+  var body = document.getElementById('jh-body');
+  if (!body) return;
+  try {
+    var d = await api('GET', '/job-health');
+    body.innerHTML = jhRender(d);
+  } catch (e) {
+    body.innerHTML = '<div class="alert alert-error">' + escHtml(e.message) + '</div>';
+  }
+}
+
+function jhRender(d) {
+  var jobs = d.jobs || [];
+  var boot = d.boot || {};
+  var counts = d.counts || {};
+  var out = '';
+
+  // The headline case. If this fires, nothing on a timer is happening at all and
+  // no per-job row below matters.
+  if (!boot.jobs_registered) {
+    out += '<div class="alert alert-error" style="margin-bottom:14px"><strong>No scheduled jobs are registered in this process.</strong><br>' +
+      'Nothing automated is running: no quiz texts, no deposit reminder, no task reminders, no time clock. ' +
+      'Check the latest deploy log for &quot;[boot] scheduled jobs started&quot; and for a migration error above it.</div>';
+  }
+  if (d.store_error) {
+    out += '<div class="alert alert-warning" style="margin-bottom:14px">The job_runs table could not be read (' +
+      escHtml(d.store_error) + '), so lifetime counts and history are missing. ' +
+      'Everything below is what this server process has seen since it booted.</div>';
+  }
+
+  var bad = (counts.stale || 0) + (counts.never_ran || 0) + (counts.failed_to_start || 0) + (counts.not_registered || 0);
+  var warn = counts.erroring || 0;
+  var summary =
+    '<span style="color:' + (bad ? '#ef4444' : 'var(--text-muted-color)') + ';font-weight:' + (bad ? '700' : '400') + '">' +
+      bad + ' needing attention</span>' +
+    ' &nbsp;·&nbsp; <span style="color:' + (warn ? '#f59e0b' : 'var(--text-muted-color)') + '">' + warn + ' erroring</span>' +
+    ' &nbsp;·&nbsp; <span style="color:var(--text-muted-color)">' + (counts.ok || 0) + ' healthy of ' + jobs.length + '</span>';
+
+  out += '<div class="card" style="margin-bottom:14px"><div class="card-body">' +
+    '<div style="font-size:14px;margin-bottom:6px">' + summary + '</div>' +
+    '<div style="font-size:12px;color:var(--text-muted-color)">' +
+      'Server booted ' + escHtml(jhAgo(boot.booted_at) || 'unknown') +
+      ' &nbsp;·&nbsp; ' + (boot.jobs_registered || 0) + ' schedulers, ' + (boot.crons_registered || 0) + ' timers' +
+      ' &nbsp;·&nbsp; times are read live, this page is never cached' +
+    '</div></div></div>';
+
+  out += '<div class="card"><div class="card-body"><div class="table-wrap">' +
+    '<table class="table" style="font-size:13px"><thead><tr>' +
+      '<th>Job</th><th>Schedule</th><th>Last run</th><th>Runs</th><th>Status</th>' +
+    '</tr></thead><tbody>';
+
+  for (var i = 0; i < jobs.length; i++) {
+    var j = jobs[i];
+    var color = JH_COLOR[j.status] || 'var(--text-muted-color)';
+    var label = JH_LABEL[j.status] || j.status;
+    var hint = JH_HINT[j.status];
+
+    var last = '<span style="color:var(--text-muted-color)">Not since boot</span>';
+    if (j.last_run_at) {
+      last = escHtml(jhAgo(j.last_run_at)) +
+        '<div style="font-size:11px;color:var(--text-muted-color)">' + escHtml(formatDate(j.last_run_at)) +
+        (j.last_duration_ms != null ? ' &nbsp;·&nbsp; ' + j.last_duration_ms + 'ms' : '') + '</div>';
+    } else if (j.last_run_previous_boot) {
+      last = '<span style="color:var(--text-muted-color)">' + escHtml(jhAgo(j.last_run_previous_boot)) +
+        '<div style="font-size:11px">' + escHtml(formatDate(j.last_run_previous_boot)) + ' (before this deploy)</div></span>';
+    }
+
+    var runs = '<span style="color:var(--text-muted-color)">—</span>';
+    if (j.runs_this_boot != null) {
+      runs = j.runs_this_boot + ' this boot' +
+        (j.total_runs != null ? '<div style="font-size:11px;color:var(--text-muted-color)">' + j.total_runs + ' all time</div>' : '');
+    }
+
+    var detail = '';
+    if (j.boot_error) {
+      detail += '<div style="font-size:12px;color:#ef4444;margin-top:4px">' + escHtml(j.boot_error) + '</div>';
+    } else if (j.last_error && j.status === 'erroring') {
+      detail += '<div style="font-size:12px;color:#f59e0b;margin-top:4px">' + escHtml(j.last_error) + '</div>';
+    }
+    if (hint) detail += '<div style="font-size:11px;color:var(--text-muted-color);margin-top:4px">' + hint + '</div>';
+    if ((j.errors_this_boot || 0) > 0 && j.status !== 'erroring') {
+      detail += '<div style="font-size:11px;color:var(--text-muted-color);margin-top:4px">' +
+        j.errors_this_boot + ' failed run(s) since boot, but the most recent one succeeded.</div>';
+    }
+
+    out += '<tr>' +
+      '<td style="font-weight:600;white-space:nowrap">' + escHtml(j.job_name) + '</td>' +
+      '<td style="font-size:12px;color:var(--text-muted-color);white-space:nowrap">' +
+        escHtml(j.schedules || '—') +
+        (j.expected_interval_ms != null ? '<div style="font-size:11px">' + escHtml(jhEvery(j.expected_interval_ms)) + '</div>' : '') +
+      '</td>' +
+      '<td style="font-size:13px">' + last + '</td>' +
+      '<td style="font-size:13px;white-space:nowrap">' + runs + '</td>' +
+      '<td style="min-width:220px"><span style="color:' + color + ';font-weight:700;font-size:13px">' + escHtml(label) + '</span>' + detail + '</td>' +
+    '</tr>';
+  }
+
+  out += '</tbody></table></div></div></div>';
+  out += '<div style="font-size:12px;color:var(--text-muted-color);margin-top:12px;line-height:1.7">' +
+    '<strong>Reading this screen.</strong> &quot;Overdue&quot; means a job registered but has not fired in longer than its own schedule plus slack, ' +
+    'so treat it as broken rather than slow. A job that says &quot;Failed to start&quot; created no timers at all, so nothing it does is happening. ' +
+    '&quot;Not registered&quot; means it ran on a previous deploy but this one never started it.<br>' +
+    'Counts labelled &quot;this boot&quot; reset when Railway restarts the server. All-time counts are stored and survive restarts, ' +
+    'but are written at most once every few minutes per job, so they can trail the live figure slightly.' +
+    '</div>';
+  return out;
+}
+
 // ── Scheduled Messages (admin) ───────────────────────────────────────────────
 var SM_DOW = ['Sunday','Monday','Tuesday','Wednesday','Thursday','Friday','Saturday'];
 var SM_ROLES = ['locksmith','locksmith_coordinator','dispatcher','roadside_technician','manager','admin'];
+
+// The single most useful fact about a scheduled message, and it was already in
+// the API payload (GET /scheduled is a SELECT *) without ever being shown. If
+// this says weeks ago on a weekly message, the runner is not running - go to
+// Settings > Job Health and look at startScheduledMessages.
+function smLastSent(m) {
+  if (!m.last_run_on) return '<span style="color:#f59e0b">never</span>';
+  var d = String(m.last_run_on).slice(0, 10);
+  var days = Math.floor((Date.now() - new Date(d + 'T12:00:00').getTime()) / 86400000);
+  var late = days > 9;
+  var txt = escHtml(d) + (days <= 0 ? ' (today)' : ' (' + days + 'd ago)');
+  return late ? '<span style="color:#ef4444;font-weight:600">' + txt + '</span>' : txt;
+}
 
 function smTime12(t) {
   var p = String(t || '09:00').split(':');
@@ -4405,7 +4601,8 @@ function smCard(m) {
         '<div style="font-size:16px;font-weight:700;margin-bottom:6px">' + escHtml(m.name) + ' &nbsp; ' + status + '</div>' +
         '<div style="font-size:13px;color:var(--text-muted-color);line-height:1.7">' +
           'When: ' + escHtml(when) + '<br>' +
-          'Sends: ' + escHtml(chan) + ' to ' + escHtml(audience) + (m.ignore_opt_out ? ' (ignores opt-out)' : '') +
+          'Sends: ' + escHtml(chan) + ' to ' + escHtml(audience) + (m.ignore_opt_out ? ' (ignores opt-out)' : '') + '<br>' +
+          'Last sent: ' + smLastSent(m) +
         '</div>' +
         '<div style="font-size:13px;margin-top:8px;padding:8px 10px;background:var(--bg-elevated);border-radius:6px;white-space:pre-wrap">' + escHtml(m.message) + '</div>' +
       '</div>' +
@@ -18997,6 +19194,7 @@ function mySchedMonthHtml(){
       { label: 'Parts List', view: 'parts-list', kw: 'parts catalog part inventory', show: function () { return can('manage_parts'); } },
       { label: 'Notifications', view: 'notifications', kw: 'notification email settings alerts', show: function () { return can('manage_settings'); } },
       { label: 'Scheduled Messages', view: 'scheduled-messages', kw: 'scheduled message reminder', show: function () { return can('manage_settings'); } },
+      { label: 'Job Health', view: 'job-health', kw: 'job health cron scheduled jobs timer stuck stopped reminder not sending diagnose', show: function () { return can('manage_settings'); } },
       { label: 'Users', view: 'users', kw: 'user employee staff people account team', show: function () { return can('view_users'); } },
       { label: 'Cities', view: 'cities', kw: 'city location branch', show: function () { return can('manage_cities'); } },
       { label: 'Audit Log', view: 'audit', kw: 'audit log history activity', show: function () { return can('view_audit'); } },

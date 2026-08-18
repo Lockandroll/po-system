@@ -30,6 +30,21 @@ const { startDispatchJobs } = require('./jobs/dispatch');
 const { startArJobs } = require('./jobs/ar');
 const { startApJobs } = require('./jobs/ap');
 const { startWebhookRetry } = require('./jobs/webhookRetry');
+// Guarded on purpose. utils/jobHealth.js and routes/jobHealth.js are NEW files, and
+// a new file that does not make it into the commit is how this repo has broken a
+// deploy before. A diagnostics module must never be the thing that stops Nova from
+// booting - that would be a cruel joke given what it is for.
+let jobHealth;
+try {
+  jobHealth = require('./utils/jobHealth');
+} catch (e) {
+  console.error('[boot] utils/jobHealth.js is missing or failed to load (' + (e && e.message) +
+    '). Jobs run as normal; Settings > Job Health will be empty.');
+  const noop = function () {};
+  jobHealth = { install: noop, beginRegister: noop, endRegister: noop,
+                snapshot: function () { return []; },
+                boot: function () { return { installed: false, jobs_registered: 0, crons_registered: 0 }; } };
+}
 
 const app = express();
 
@@ -282,6 +297,8 @@ app.use('/api/pulsar', require('./routes/pulsar'));
 app.use('/api/pulsar-out', require('./routes/pulsarOut'));
 app.use('/api/signoffs', require('./routes/signoffs'));
 app.use('/api/scheduled', require('./routes/scheduled'));
+try { app.use('/api/job-health', require('./routes/jobHealth')); }
+catch (e) { console.error('[boot] routes/jobHealth.js not loaded (' + (e && e.message) + '); the Job Health screen will 404.'); }
 app.use('/api/tasks', require('./routes/tasks'));
 app.use('/api/task-templates', require('./routes/taskTemplates'));
 app.use('/api/work-orders', require('./routes/workOrders'));
@@ -428,14 +445,30 @@ server.on('checkContinue', function (req, res) {
 //
 // Jobs now start whether or not the migrations finished, and each one is isolated so a
 // single scheduler throwing on startup cannot take the rest down with it.
+//
+// Each start is also bracketed by utils/jobHealth, which wraps node-cron so every
+// timer registered in here is attributed to the scheduler that created it and
+// records its own last run. That is what feeds Settings > Job Health, and it is
+// the thing that would have made this outage visible on day one instead of day five.
 let _jobsStarted = false;
 function _startJob(name, fn) {
-  try { fn(); }
-  catch (e) { console.error('[boot] scheduled job failed to start: ' + name + ' (' + (e && e.message ? e.message : e) + ')'); }
+  jobHealth.beginRegister(name);
+  try {
+    fn();
+    jobHealth.endRegister(name, null);
+  } catch (e) {
+    const msg = (e && e.message ? e.message : String(e));
+    console.error('[boot] scheduled job failed to start: ' + name + ' (' + msg + ')');
+    jobHealth.endRegister(name, msg);
+  }
 }
 function startScheduledJobs() {
   if (_jobsStarted) return;
   _jobsStarted = true;
+  // Must happen before the first _startJob: it patches the cron module the job
+  // files already hold a reference to, and only calls made after this are seen.
+  try { jobHealth.install(); }
+  catch (e) { console.error('[boot] job health tracking unavailable: ' + (e && e.message)); }
   _startJob('startReminders', startReminders);
   _startJob('startCleanup', startCleanup);
   _startJob('startScheduledMessages', startScheduledMessages);

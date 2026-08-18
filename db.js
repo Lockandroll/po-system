@@ -4787,6 +4787,39 @@ async function initDB() {
     console.log('Sync: outbound call log ready, mode ' + (process.env.PULSAR_OUT_MODE || 'off') + '.');
 
 
+    // ---- Job health -------------------------------------------------------
+    //
+    // One row per scheduled job. This is the durable half of utils/jobHealth.js:
+    // the in-memory mirror dies with the process, and the question people actually
+    // ask ("when did the deposit reminder last run?") is usually asked about a
+    // process that has since restarted.
+    //
+    // Wrapped, and last on purpose. A diagnostics table must never be the reason
+    // migrations fail - that would be the 2026-08-18 outage wearing a new hat.
+    try {
+      await client.query(
+        'CREATE TABLE IF NOT EXISTS job_runs (' +
+        '  job_name VARCHAR(80) PRIMARY KEY,' +
+        '  schedules TEXT,' +
+        '  registered_at TIMESTAMPTZ,' +
+        '  boot_error TEXT,' +
+        '  last_run_at TIMESTAMPTZ,' +
+        '  last_ok_at TIMESTAMPTZ,' +
+        '  last_error_at TIMESTAMPTZ,' +
+        '  last_error TEXT,' +
+        '  last_duration_ms INTEGER,' +
+        '  run_count BIGINT NOT NULL DEFAULT 0,' +
+        '  error_count BIGINT NOT NULL DEFAULT 0,' +
+        '  updated_at TIMESTAMPTZ DEFAULT NOW()' +
+        ');'
+      );
+      console.log('Job health: job_runs ready.');
+    } catch (e) {
+      console.error('Job health: could not create job_runs (' + e.message + '). ' +
+        'Scheduled jobs still run; the Job Health panel will fall back to what this ' +
+        'process knows since boot.');
+    }
+
     console.log('Database initialized');
   } finally {
     client.release();
