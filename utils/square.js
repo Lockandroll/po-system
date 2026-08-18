@@ -722,6 +722,15 @@ async function invoiceNumberFromOrder(orderId) {
   return null;
 }
 
+// How far past the attempt to look, how many payments to pull back, and how many
+// of those to open the order for. The window is hours rather than minutes because
+// an offline capture is created when the device syncs, not when the card was
+// tapped. The order reads are capped because each one is its own round trip to
+// Square and this runs behind a button somebody is standing there waiting on.
+const RECOVERY_WINDOW_MS = 6 * 60 * 60 * 1000;
+const RECOVERY_PAGE = 100;
+const RECOVERY_LOOKUPS = 25;
+
 // Recover a Point of Sale payment that came home with NO Square id.
 //
 // This is the safety valve for the case the callback cannot resolve on its own:
@@ -746,15 +755,43 @@ async function confirmByReference(rowId) {
   }
   if (!configured()) return { ok: false, reason: 'not_configured', row: row };
 
-  const invRes = await pool.query('SELECT invoice_number FROM invoices WHERE id = $1', [row.invoice_id]);
+  // subtotal/tax/surcharge come along so the candidate list can be ordered by
+  // amount below. They are never used to decide a match — the order note does that.
+  const invRes = await pool.query(
+    'SELECT invoice_number, subtotal, tax_amount, surcharge_amount FROM invoices WHERE id = $1',
+    [row.invoice_id]
+  );
   const inv = invRes.rows[0];
   if (!inv) return { ok: false, reason: 'invoice_gone', row: row };
 
-  // A tech runs one card, so the window is tiny: from just before this attempt
-  // started, at the location this invoice is mapped to, newest first.
+  // A tech runs one card, so the window is tiny — but it needs TWO ends, and the
+  // far one is the whole point.
+  //
+  // This used to send begin_time only, with sort_order=DESC. That asks Square for
+  // the NEWEST payments at the location since the attempt started, which is the
+  // right answer for about an hour and the wrong answer forever after: the payment
+  // being hunted sinks down the list as ordinary business piles on top of it, and
+  // the first page stops containing it. Invoice 400005 was charged 2026-08-07 and
+  // was still sitting 'failed' on 2026-08-18, and every press of "Check Square for
+  // a completed charge" faithfully fetched the 25 most recent Jacksonville
+  // payments, none of which were it. Nothing errored, nothing logged, it simply
+  // never matched — which reads to a manager as a dead button.
+  //
+  // Closing the far end and sorting ASC makes the page start AT the attempt instead
+  // of at today, so a row that has been stuck for two weeks gets the same answer as
+  // one that got stuck a minute ago.
   const startMs = row.initiated_at ? new Date(row.initiated_at).getTime() : (Date.now() - 30 * 60 * 1000);
   const since = new Date(startMs - 60 * 1000).toISOString();
-  const qs = ['begin_time=' + encodeURIComponent(since), 'sort_order=DESC', 'limit=25'];
+  const until = new Date(startMs + RECOVERY_WINDOW_MS).toISOString();
+  const qs = [
+    'begin_time=' + encodeURIComponent(since),
+    'end_time=' + encodeURIComponent(until),
+    'sort_order=ASC',
+    'limit=' + RECOVERY_PAGE
+  ];
+  // Leaving this off does NOT search every location: Square falls back to the
+  // seller's default location, so an omitted id quietly searches the wrong city.
+  // Every row POST /invoices/:id/collect writes carries one.
   if (row.square_location_id) qs.push('location_id=' + encodeURIComponent(row.square_location_id));
 
   let payments = [];
@@ -766,20 +803,50 @@ async function confirmByReference(rowId) {
     return { ok: false, reason: 'lookup_failed', row: row };
   }
 
-  // Match on the invoice number carried in the ORDER note. Only COMPLETED
-  // payments are adopted; an APPROVED-but-not-captured one is left for the webhook
-  // so Nova never settles against money that has not actually moved yet.
+  // Match on the invoice number carried in the ORDER note. Only COMPLETED payments
+  // are adopted; an APPROVED-but-not-captured one is left for the webhook so Nova
+  // never settles against money that has not actually moved yet.
+  //
+  // Reading that note costs one GET /v2/orders per candidate, so the candidates are
+  // put in a sensible order before any reading starts: a payment whose pre-tip
+  // amount already equals this invoice goes first. That is an ORDER, never a
+  // FILTER. The note still decides, so a Square card surcharge — which lands inside
+  // amount_money and therefore moves it off the invoice figure — is still checked,
+  // just later. Without the ordering, a wider window would only buy a wider bill in
+  // API calls.
+  const wantPreTipCents = money(inv.subtotal) + money(inv.tax_amount) + money(inv.surcharge_amount);
+  const candidates = payments.filter(function (p) {
+    return String(p.status || '') === 'COMPLETED' && !!p.order_id;
+  });
+  candidates.sort(function (a, b) {
+    const aHit = (Number((a.amount_money || {}).amount) || 0) === wantPreTipCents ? 0 : 1;
+    const bHit = (Number((b.amount_money || {}).amount) || 0) === wantPreTipCents ? 0 : 1;
+    return aHit - bHit;
+  });
+
   let matchOrderId = null;
-  for (let i = 0; i < payments.length; i++) {
-    const p = payments[i];
-    if (String(p.status || '') !== 'COMPLETED') continue;
-    if (!p.order_id) continue;
+  const looked = Math.min(candidates.length, RECOVERY_LOOKUPS);
+  for (let i = 0; i < looked; i++) {
     let noteNum = null;
-    try { noteNum = await invoiceNumberFromOrder(p.order_id); } catch (e) { noteNum = null; }
-    if (noteNum && String(noteNum) === String(inv.invoice_number)) { matchOrderId = p.order_id; break; }
+    try { noteNum = await invoiceNumberFromOrder(candidates[i].order_id); } catch (e) { noteNum = null; }
+    if (noteNum && String(noteNum) === String(inv.invoice_number)) { matchOrderId = candidates[i].order_id; break; }
   }
 
-  if (!matchOrderId) return { ok: false, reason: 'no_match', row: row };
+  if (!matchOrderId) {
+    // Never let a cap read as an answer. "Nova looked at everything and it is not
+    // there" and "Nova stopped looking" are different facts, and only the first one
+    // is any kind of evidence the card was not charged. Both go on the row so the
+    // manager reads which one happened instead of guessing.
+    const capped = candidates.length > looked || payments.length >= RECOVERY_PAGE;
+    await markRow(row.id, {
+      last_error: (capped
+        ? ('Checked ' + looked + ' of ' + candidates.length + ' completed Square payments in the window; none carried a Nova Invoice ' +
+           inv.invoice_number + ' note. The search hit its cap, so this is NOT proof the card was not charged.')
+        : ('Checked all ' + candidates.length + ' completed Square payments in the window; none carried a Nova Invoice ' +
+           inv.invoice_number + ' note.')).slice(0, 500)
+    });
+    return { ok: false, reason: capped ? 'no_match_capped' : 'no_match', row: row, checked: looked, candidates: candidates.length };
+  }
 
   // Adopt the order id and let the tested reconcile path do the money write.
   await markRow(row.id, { square_order_id: matchOrderId, square_transaction_id: matchOrderId });

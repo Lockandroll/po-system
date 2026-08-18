@@ -15107,11 +15107,51 @@ async function invSqPoll(id, nonce, tries) {
   _sqPollTimer = setTimeout(function () { invSqPoll(id, nonce, tries + 1); }, 2000);
 }
 
+// What the re-check actually found.
+//
+// This button used to POST, throw the answer away and re-render, so the one case
+// that matters most — Nova asked Square and Square had nothing — repainted the
+// identical screen and read as a dead button (invoice 400005: eleven days of
+// pressing it while the charge sat in Square the whole time). It is the only
+// control a manager has when real money is in Square and Nova disagrees, so it
+// now says which of these happened, because they lead to different next moves.
+var SQ_RECHECK_TEXT = {
+  no_match: 'Nova checked every completed Square payment in the window and none of them carry this invoice number. If you can see the charge in the Square app, do not run the card again — send a manager the Square receipt number so it can be attached by hand.',
+  // Deliberately NOT phrased as "not charged". Nova stopped early here, so absence
+  // of a match is absence of evidence, not evidence of absence.
+  no_match_capped: 'Nova ran out of room before it ran out of payments to check, so this is NOT proof the card was not charged. Check the Square app for the charge before running it again.',
+  no_transaction_yet: 'Square has not handed back a transaction for this attempt. Give it a moment, then check again.',
+  not_configured: 'Nova is not connected to Square yet. Tell an admin.',
+  invoice_gone: 'That invoice no longer exists.',
+  lookup_failed: 'Nova could not reach Square. Try again in a minute.',
+  wrong_square_account: 'Square does not have this payment under the company account. The phone may be signed in to a different Square account.',
+  no_tender: 'Square has the order but no card on it yet.',
+  no_payment: 'Square returned nothing for this payment.',
+  square_failed: 'Square reports this payment as failed or canceled. Nothing was charged.',
+  not_complete: 'Square authorized the card but has not captured it yet. Nova will keep checking.',
+  amount_mismatch: 'Square charged a different amount than this invoice. A manager has to sort this out — the payment note says what was compared.',
+  already_settled: 'This invoice was already settled against a different Square payment. A manager has to sort this out.',
+  not_found: 'Nova has no record of that payment attempt.'
+};
+
 async function invSqRetry(id, pid) {
+  var out = null;
   try {
-    await api('POST', '/invoices/' + id + '/payments/' + pid + '/reconcile', {});
-  } catch (e) { novaAlert(e.message); }
+    out = await api('POST', '/invoices/' + id + '/payments/' + pid + '/reconcile', {});
+  } catch (e) {
+    novaAlert(e.message);
+    render();
+    return;
+  }
+  // Repaint first. On success the screen itself is the answer — it now reads Paid,
+  // with the card and the tip on it — so a dialog saying so would just be in the way.
   render();
+  if (out && out.ok) return;
+  var reason = (out && out.reason) || '';
+  novaAlert(
+    SQ_RECHECK_TEXT[reason] || 'Nova could not confirm a charge for this invoice with Square. Check the Square app before running the card again.',
+    { title: 'Nothing confirmed' }
+  );
 }
 
 async function invSqCancel(id, pid) {
