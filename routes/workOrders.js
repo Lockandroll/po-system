@@ -53,6 +53,34 @@ router.post('/ingest', keyAuth, async (req, res) => {
   }
 });
 
+// GET /api/work-orders/health - is the mailbox poll actually running?
+// A dead Azure secret or a flipped-off setting used to look exactly like a quiet week.
+router.get('/health', requireAuth, requirePermission('view_work_orders'), async (req, res) => {
+  try {
+    res.json(await woJob.ingestHealth());
+  } catch (err) { console.error(err); res.status(500).json({ error: 'Failed to read intake health' }); }
+});
+
+// POST /api/work-orders/catch-up - re-scan the mailbox over a wider window.
+// The scheduled poll only looks back 72 hours, so anything missed during an outage
+// longer than that is never picked up again on its own. Dedup on email_message_id plus
+// the deleted-email tombstones make this safe to run as often as you like.
+router.post('/catch-up', requireAuth, requirePermission('manage_work_orders'), async (req, res) => {
+  try {
+    const raw = parseInt((req.body && req.body.lookbackHours), 10);
+    const hours = Math.min(Math.max(isNaN(raw) ? 168 : raw, 1), 720);
+    const summary = await woJob.runIngest({ lookbackHours: hours, top: 100, paginate: true });
+    try {
+      await logAudit({ entity_type: 'work_order', entity_id: null, entity_number: null, action: 'catch_up_scan',
+        user_id: req.user.id, user_name: req.user.name, details: { lookback_hours: hours, summary: summary } });
+    } catch (e) {}
+    res.json({ ok: true, lookbackHours: hours, summary: summary });
+  } catch (err) {
+    console.error('POST /api/work-orders/catch-up failed:', err);
+    res.status(500).json({ error: err.message || 'Catch-up scan failed' });
+  }
+});
+
 // GET /api/work-orders/counts — per-status counts (scoped to what the user can see)
 router.get('/counts', requireAuth, requirePermission('view_work_orders'), async (req, res) => {
   try {
@@ -95,7 +123,8 @@ router.get('/', requireAuth, requirePermission('view_work_orders'), async (req, 
       const p = '$' + params.length;
       where.push('(account_name ILIKE ' + p + ' OR store_name ILIKE ' + p + ' OR store_number ILIKE ' + p +
         ' OR service_requested ILIKE ' + p + ' OR po_number ILIKE ' + p + ' OR wo_number ILIKE ' + p + ' OR wo_ref ILIKE ' + p +
-        ' OR vin ILIKE ' + p + ' OR claim_id ILIKE ' + p + ' OR yard_name ILIKE ' + p + ' OR bay_location ILIKE ' + p + ')');
+        ' OR vin ILIKE ' + p + ' OR claim_id ILIKE ' + p + ' OR yard_name ILIKE ' + p + ' OR bay_location ILIKE ' + p +
+        ' OR email_subject ILIKE ' + p + ' OR email_from ILIKE ' + p + ')');
     }
     const whereSql = where.length ? ('WHERE ' + where.join(' AND ')) : '';
     const limit = Math.min(parseInt(req.query.limit, 10) || 25, 200);
@@ -111,6 +140,7 @@ router.get('/', requireAuth, requirePermission('view_work_orders'), async (req, 
       '       w.service_requested, w.needed_by, w.confidence, w.assigned_to, a.name AS assignee_name, ' +
       '       w.nte_amount, w.revision_count, w.last_revision_at, ' +
       '       w.signoff_id, w.email_received_at, w.created_at, ' +
+      '       w.email_subject, w.email_from, w.parse_error, ' +
       "       (SELECT COUNT(*) FROM work_order_attachments x WHERE x.work_order_id = w.id)::int AS attachment_count " +
       'FROM work_orders w LEFT JOIN users a ON w.assigned_to = a.id ' +
       whereSql +
@@ -384,6 +414,12 @@ router.post('/:id/reparse', requireAuth, requirePermission('manage_work_orders')
        (ex.nte_amount !== null && ex.nte_amount !== undefined) ? ex.nte_amount : woJob.moneyOrNull(parsed.nte_amount),
        req.params.id]
     );
+    // A re-parse that works has to lift the row back out of the hole it fell into.
+    // Leaving it stamped 'error' meant a fixed work order still never reached the queue.
+    if (ex.status === 'error' || ex.status === 'rejected') {
+      await pool.query("UPDATE work_orders SET status='received', parse_error=NULL, updated_at=NOW() WHERE id=$1", [req.params.id]);
+      await woJob.addActivity(req.params.id, req.user, 'event', 'moved back to Received after a successful re-parse (was ' + ex.status + ')');
+    }
     await woJob.addActivity(req.params.id, req.user, 'event', 're-parsed with AI as a ' + jobType + ' job');
     if (jobType === 'vehicle' && !woJob.normalizeVin(parsed.vin)) {
       await woJob.addActivity(req.params.id, req.user, 'event', 'no VIN could be read from this work order — check the attached form');
@@ -395,8 +431,19 @@ router.post('/:id/reparse', requireAuth, requirePermission('manage_work_orders')
 // DELETE /api/work-orders/:id (manage)
 router.delete('/:id', requireAuth, requirePermission('manage_work_orders'), async (req, res) => {
   try {
-    const ex = (await pool.query('SELECT wo_ref FROM work_orders WHERE id = $1', [req.params.id])).rows[0];
+    const ex = (await pool.query('SELECT wo_ref, email_message_id FROM work_orders WHERE id = $1', [req.params.id])).rows[0];
     if (!ex) return res.status(404).json({ error: 'Work order not found' });
+    // Remember the email, or the next mailbox poll simply recreates the row: dedup keys
+    // on email_message_id, and the message is still sitting in the lookback window.
+    if (ex.email_message_id) {
+      try {
+        await pool.query(
+          "INSERT INTO work_order_dead_emails (email_message_id, wo_ref, reason, deleted_by, deleted_by_name) " +
+          "VALUES ($1,$2,'deleted',$3,$4) ON CONFLICT (email_message_id) DO NOTHING",
+          [ex.email_message_id, ex.wo_ref || null, req.user.id, req.user.name]
+        );
+      } catch (e) { console.error('[work-orders] tombstone write failed:', e.message); }
+    }
     await pool.query('DELETE FROM work_orders WHERE id = $1', [req.params.id]);
     try { await logAudit({ entity_type: 'work_order', entity_id: parseInt(req.params.id), entity_number: ex.wo_ref, action: 'deleted', user_id: req.user.id, user_name: req.user.name }); } catch (e) {}
     res.json({ success: true });

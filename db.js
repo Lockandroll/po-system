@@ -953,6 +953,21 @@ async function initDB() {
       ');' +
       'CREATE INDEX IF NOT EXISTS idx_wo_nte_hist ON work_order_nte_history(work_order_id);'
     );
+    // Work Orders — tombstones for emails whose work order was deleted by hand.
+    // The mailbox poll dedups on email_message_id against work_orders, so deleting a
+    // work order used to make the very next poll (72h window) recreate it. Keeping the
+    // message id here means a deletion sticks, and it lets the manual catch-up sweep
+    // reach back weeks without resurrecting anything anyone threw away on purpose.
+    await client.query(
+      'CREATE TABLE IF NOT EXISTS work_order_dead_emails (' +
+      '  email_message_id TEXT PRIMARY KEY,' +
+      '  wo_ref VARCHAR(30),' +
+      "  reason VARCHAR(30) NOT NULL DEFAULT 'deleted'," +
+      '  deleted_by INTEGER REFERENCES users(id) ON DELETE SET NULL,' +
+      '  deleted_by_name VARCHAR(255),' +
+      '  created_at TIMESTAMPTZ DEFAULT NOW()' +
+      ');'
+    );
     // Scheduling — manager-built weekly shift schedule (Sling-style). Wall-clock
     // times (shift_date + start/end time) keep the grid DST-proof for the local day.
     await client.query(

@@ -22,6 +22,19 @@ async function getSetting(key) {
   } catch (e) { return null; }
 }
 
+// Health beacon. The ingest used to fail in total silence: a dead Graph secret or a
+// flipped-off setting looked exactly like "no new work orders today". Every run now
+// stamps its outcome into settings so the Work Orders screen can show a red banner.
+async function setSetting(key, value) {
+  try {
+    await pool.query(
+      'INSERT INTO settings (key, value, updated_at) VALUES ($1,$2,NOW()) ' +
+      'ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = NOW()',
+      [key, (value === null || value === undefined) ? null : String(value)]
+    );
+  } catch (e) { /* the beacon must never be the thing that breaks the ingest */ }
+}
+
 async function cfg() {
   const mailbox = process.env.WORK_ORDERS_MAILBOX || (await getSetting('work_orders_mailbox')) || 'workorders@popalockar.com';
   const enabledSetting = await getSetting('work_orders_enabled');
@@ -348,12 +361,90 @@ async function notifyRevision(target, oldNte, newNte, nteChanged) {
   } catch (e) { console.error('[work-orders] revision notify failed:', e.message); }
 }
 
+// The AI parse was a single shot: 45 second timeout, no retry. One overloaded API
+// response, one slow multi-page scan, and the work order was stamped 'error' forever
+// with no email and no push to tell anyone. Transient failures now get three tries.
+function isTransientParseError(m) {
+  const t = String(m || '').toLowerCase();
+  return t.indexOf('timed out') !== -1 || t.indexOf('timeout') !== -1 ||
+    t.indexOf('overloaded') !== -1 || t.indexOf('rate limit') !== -1 ||
+    t.indexOf('429') !== -1 || t.indexOf('500') !== -1 || t.indexOf('502') !== -1 ||
+    t.indexOf('503') !== -1 || t.indexOf('529') !== -1 ||
+    t.indexOf('econn') !== -1 || t.indexOf('socket') !== -1 || t.indexOf('network') !== -1 ||
+    t.indexOf('empty ai response') !== -1 || t.indexOf('failed to parse') !== -1 ||
+    // A truncated or garbled response is a bad draw, not a bad email. Worth another go.
+    t.indexOf('json') !== -1 || t.indexOf('unexpected') !== -1;
+}
+async function parseWithRetry(bodyText, usable, knownAccounts, maxAttempts) {
+  const max = maxAttempts || 3;
+  let lastErr = null;
+  for (let i = 1; i <= max; i++) {
+    try {
+      const parsed = await parseWorkOrderEmail(bodyText, usable, knownAccounts);
+      return { parsed: parsed, error: null, attempts: i };
+    } catch (e) {
+      lastErr = e.message || 'parse failed';
+      if (i >= max || !isTransientParseError(lastErr)) break;
+      console.warn('[work-orders] parse attempt ' + i + '/' + max + ' failed (' + lastErr + '), retrying');
+      await new Promise(function (r) { setTimeout(r, i * 4000); });
+    }
+  }
+  return { parsed: null, error: lastErr, attempts: max };
+}
+
+// A work order that fails to parse, or that the AI decides is not a work order, used to
+// land in the database in total silence: no email, no push, and no tab on the Work Orders
+// screen that listed it. That silence IS what gets reported as "the email never came
+// through". Both outcomes now page the same people a clean work order would.
+async function notifyAttention(kind, detail, msg, woRef) {
+  try {
+    const isErr = kind === 'error';
+    const rec = await notify.broadcastRecipients('work_order_received', "role IN ('admin','manager')");
+    const title = isErr ? 'Work order needs attention' : 'Email filed as not a work order';
+    await push.sendPushToUsers(rec.userIds, {
+      title: title,
+      body: (msg && msg.subject) ? msg.subject : 'Open Work Orders to review it.',
+      url: '/'
+    });
+    const emails = rec.emails || [];
+    if (!emails.length) return;
+    const base = (process.env.APP_URL || '').replace(/\/$/, '');
+    const html = emailTemplate({
+      badge: isErr ? 'Needs attention' : 'Not a work order',
+      badgeColor: 'red',
+      title: title,
+      body: isErr
+        ? 'An email arrived in the work orders mailbox but Nova could not read it. The email and any attachments were saved, so nothing is lost. Open it, check the attached form, and either use Re-parse with AI or fill the fields in by hand.'
+        : 'An email arrived in the work orders mailbox and the AI decided it was not a work order. If that call is wrong, open it and use Re-parse with AI.',
+      details: [
+        { label: 'Ref', value: woRef || '-' },
+        { label: 'From', value: (msg && msg.fromAddress) || '-' },
+        { label: 'Subject', value: (msg && msg.subject) || '(no subject)' },
+        { label: 'Received', value: (msg && msg.receivedDateTime) || '-' },
+        { label: isErr ? 'Reason' : 'Note', value: detail || '-' }
+      ],
+      buttonText: 'Open Work Orders',
+      buttonUrl: base + '/?view=work-orders',
+      footerNote: 'Automated notification from Nova when a work order email cannot be read.'
+    });
+    await sendEmail(emails, (isErr ? 'Work Order Needs Attention: ' : 'Work Order Email Rejected: ') + ((msg && msg.subject) || (woRef || '')), html);
+  } catch (e) { console.error('[work-orders] attention notify failed:', e.message); }
+}
+
 // Process a single Graph message into a work_orders row.
 // Returns 'created' | 'revision' | 'duplicate' | 'ignored'.
 async function processMessage(msg, conf, mailbox, knownAccounts) {
   // Dedup
   const dup = await pool.query('SELECT id FROM work_orders WHERE email_message_id = $1', [msg.internetMessageId]);
   if (dup.rows.length) return 'duplicate';
+  // A work order someone deleted on purpose must stay deleted. Without this the very
+  // next poll (the lookback window is measured in days) simply recreated the row.
+  // Defensive: if the migration has not run yet, a missing table must not stop the
+  // whole intake. Better to risk resurrecting one deleted row than to ingest nothing.
+  try {
+    const dead = await pool.query('SELECT 1 FROM work_order_dead_emails WHERE email_message_id = $1', [msg.internetMessageId]);
+    if (dead.rows.length) return 'duplicate';
+  } catch (e) { console.error('[work-orders] tombstone check failed:', e.message); }
 
   // Gate. The keyword list reads only the SUBJECT and BODY, but a dispatcher like
   // Fenkell puts the whole work order inside an attached form and sends a one-line
@@ -405,22 +496,31 @@ async function processMessage(msg, conf, mailbox, knownAccounts) {
   }
 
   // Parse with Claude
-  let parsed = null, parseError = null;
-  try {
-    parsed = await parseWorkOrderEmail(msg.bodyText, usable, knownAccounts);
-  } catch (e) {
-    parseError = e.message || 'parse failed';
-  }
+  const attempt = await parseWithRetry(msg.bodyText, usable, knownAccounts, 3);
+  const parsed = attempt.parsed;
+  const parseError = attempt.error;
 
   if (!parsed) {
     await pool.query("UPDATE work_orders SET status='error', parse_error=$1, updated_at=NOW() WHERE id=$2", [parseError, woId]);
-    await addActivity(woId, null, 'event', 'parse failed: ' + parseError);
+    await addActivity(woId, null, 'event', 'parse failed after ' + attempt.attempts + ' attempt(s): ' + parseError);
+    console.error('[work-orders] ' + woRef + ' parse failed after ' + attempt.attempts + ' attempt(s): ' + parseError);
+    try { await logAudit({ entity_type: 'work_order', entity_id: woId, entity_number: woRef, action: 'parse_failed', user_id: null, user_name: 'System', details: { error: parseError, subject: msg.subject, from: msg.fromAddress } }); } catch (e) {}
+    await notifyAttention('error', parseError, msg, woRef);
     return 'created';
   }
 
   if (parsed.is_work_order === false) {
-    await pool.query("UPDATE work_orders SET status='rejected', parsed=$1, updated_at=NOW() WHERE id=$2", [JSON.stringify(parsed), woId]);
-    await addActivity(woId, null, 'event', 'auto-rejected: not a work order');
+    // Still write the identifying fields. A rejected row used to be completely blank,
+    // so searching Nova for the number on the form found nothing and the row read as
+    // "-" in every column, which is indistinguishable from the email never arriving.
+    await pool.query(
+      "UPDATE work_orders SET status='rejected', parsed=$1, account_name=$2, wo_number=$3, po_number=$4, " +
+      'store_name=$5, service_requested=$6, updated_at=NOW() WHERE id=$7',
+      [JSON.stringify(parsed), strOrNull(parsed.account_name), strOrNull(parsed.wo_number), strOrNull(parsed.po_number),
+       strOrNull(parsed.store_name), strOrNull(parsed.service_requested), woId]
+    );
+    await addActivity(woId, null, 'event', 'auto-rejected: the AI read this email as not a work order');
+    await notifyAttention('rejected', strOrNull(parsed.notes) || 'The AI did not read this email as a work order.', msg, woRef);
     return 'created';
   }
 
@@ -485,7 +585,7 @@ async function processMessage(msg, conf, mailbox, knownAccounts) {
 }
 
 // Poll the mailbox and process new messages. Returns a summary.
-async function runIngest(options) {
+async function doIngest(options) {
   options = options || {};
   const conf = await cfg();
   if (!options.force && !conf.enabled) {
@@ -514,6 +614,52 @@ async function runIngest(options) {
   return { mailbox: conf.mailbox, fetched: messages.length, created: created, revised: revised, duplicate: duplicate, ignored: ignored, since: sinceIso };
 }
 
+// Same poll, wrapped in a health beacon. Nothing here changes what gets ingested; it
+// records WHETHER the poll ran, so a dead Graph secret or a flipped-off setting shows up
+// as a red banner on the Work Orders screen instead of looking like a quiet week.
+async function runIngest(options) {
+  await setSetting('work_orders_last_run', new Date().toISOString());
+  try {
+    const summary = await doIngest(options);
+    if (summary && summary.skipped) {
+      await setSetting('work_orders_last_error', 'Intake skipped: ' + summary.reason);
+    } else {
+      await setSetting('work_orders_last_ok', new Date().toISOString());
+      await setSetting('work_orders_last_error', '');
+      await setSetting('work_orders_last_summary', JSON.stringify(summary));
+    }
+    return summary;
+  } catch (e) {
+    await setSetting('work_orders_last_error', (e && e.message) ? e.message : 'ingest failed');
+    throw e;
+  }
+}
+
+// Read the beacon back for the Work Orders screen.
+async function ingestHealth() {
+  const conf = await cfg();
+  const lastRun = await getSetting('work_orders_last_run');
+  const lastOk = await getSetting('work_orders_last_ok');
+  const lastError = await getSetting('work_orders_last_error');
+  let summary = null;
+  try { summary = JSON.parse((await getSetting('work_orders_last_summary')) || 'null'); } catch (e) { summary = null; }
+  const okAge = lastOk ? Math.round((Date.now() - new Date(lastOk).getTime()) / 60000) : null;
+  const graphConfigured = !!(process.env.MS_TENANT_ID && process.env.MS_CLIENT_ID && process.env.MS_CLIENT_SECRET);
+  return {
+    enabled: conf.enabled,
+    mailbox: conf.mailbox,
+    graph_configured: graphConfigured,
+    last_run: lastRun || null,
+    last_ok: lastOk || null,
+    last_ok_minutes_ago: okAge,
+    last_error: lastError || null,
+    last_summary: summary,
+    // The poll is on a one minute cron, so anything past 15 minutes is a real outage
+    // and not a slow tick.
+    healthy: !!(conf.enabled && graphConfigured && !lastError && okAge !== null && okAge <= 15)
+  };
+}
+
 var _woIngestRunning = false;
 function startWorkOrders() {
   // Every minute; idempotent (dedup on email_message_id). Guard prevents overlapping runs.
@@ -529,6 +675,10 @@ function startWorkOrders() {
 }
 
 module.exports = {
+  ingestHealth: ingestHealth,
+  parseWithRetry: parseWithRetry,
+  isTransientParseError: isTransientParseError,
+  notifyAttention: notifyAttention,
   deriveCityCode: deriveCityCode,
   normalizeVin: normalizeVin,
   moneyOrNull: moneyOrNull,

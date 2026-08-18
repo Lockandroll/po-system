@@ -2,7 +2,7 @@
 // public/sw.js (the only thing bumped each deploy) — the badge asks the active
 // service worker for it at runtime. This value is just the fallback shown when no
 // service worker is available (e.g. very first visit before it installs).
-var APP_VERSION = 'v115';
+var APP_VERSION = 'v116';
 var _resolvedAppVersion = null;
 
 // Ask the active service worker for its CACHE_VERSION (without the 'nova-' prefix).
@@ -16136,6 +16136,13 @@ var WO_STATUS_META = {
 var WO_FLOW = ['received', 'in_process', 'job_completed', 'paperwork_sent'];
 var _woState = { status: 'received', q: '', page: 1, limit: 25, total: 0, counts: {} };
 
+// A row whose AI parse failed has no account, no WO number, nothing at all. The email
+// subject is the only handle left on it, so show that rather than a bare dash.
+function woFallbackLabel(w) {
+  var t = w.email_subject || w.email_from || '';
+  if (!t) return '—';
+  return t.length > 48 ? t.slice(0, 48) + '…' : t;
+}
 function woBadge(s) {
   var m = WO_STATUS_META[s] || { label: s, bg: '#eee', fg: '#333' };
   return '<span class="badge" style="background:' + m.bg + ';color:' + m.fg + '">' + escHtml(m.label) + '</span>';
@@ -16148,7 +16155,7 @@ function woConfBadge(c) {
 
 function woTabsHtml() {
   var counts = _woState.counts || {};
-  var defs = [['received','Received'],['in_process','In Process'],['job_completed','Job Completed'],['paperwork_sent','Paperwork Sent'],['rejected','Rejected'],['','All']];
+  var defs = [['received','Received'],['in_process','In Process'],['job_completed','Job Completed'],['paperwork_sent','Paperwork Sent'],['rejected','Rejected'],['error','Parse Error'],['','All']];
   return defs.map(function (d) {
     var st = d[0], label = d[1];
     var n = counts[st] || 0;
@@ -16322,10 +16329,14 @@ async function renderWorkOrders(el) {
       (can('manage_work_orders') ? '<button class="btn btn-primary" onclick="navigate(\'new-work-order\')" style="white-space:nowrap">' + icons.plus + ' New Work Order</button>' : '') +
     '</div>' +
     '<div id="wo-error"></div>' +
+    '<div id="wo-health"></div>' +
     '<div class="card">' +
       '<div class="card-header" style="display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap">' +
         '<div id="wo-tabs" style="display:flex;gap:6px;flex-wrap:wrap">' + woTabsHtml() + '</div>' +
-        '<input type="text" id="wo-search" placeholder="Search account, store, PO, service..." style="width:260px" value="' + escHtml(_woState.q) + '" oninput="woSearchDebounced()" />' +
+        '<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">' +
+          (can('manage_work_orders') ? '<button class="btn btn-secondary btn-sm" id="wo-catchup-btn" onclick="woCatchUp()" title="Re-scan the work orders mailbox back 14 days for anything the every-minute poll missed">Check for missed emails</button>' : '') +
+          '<input type="text" id="wo-search" placeholder="Search account, store, PO, subject..." style="width:260px" value="' + escHtml(_woState.q) + '" oninput="woSearchDebounced()" />' +
+        '</div>' +
       '</div>' +
       (can('manage_work_orders') ?
         '<div class="card-body" style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;border-bottom:1px solid var(--border-color)">' +
@@ -16339,6 +16350,48 @@ async function renderWorkOrders(el) {
       '<div id="wo-wrap"><div class="loading">Loading…</div></div>' +
     '</div>';
   await woLoad();
+  woLoadHealth();
+}
+
+// Is the mailbox poll actually alive? A dead Azure secret or a flipped-off setting
+// used to look exactly like a quiet week, which is how work orders went missing for
+// days without anyone knowing there was anything to look for.
+async function woLoadHealth() {
+  var box = document.getElementById('wo-health');
+  if (!box) return;
+  var h;
+  try { h = await api('GET', '/work-orders/health'); } catch (e) { return; }
+  if (!h || h.healthy) { box.innerHTML = ''; return; }
+  var why;
+  if (!h.enabled) why = 'Work order email intake is turned OFF, so nothing is being pulled from ' + escHtml(h.mailbox || 'the mailbox') + '.';
+  else if (!h.graph_configured) why = 'The Microsoft 365 connection is not configured, so the mailbox cannot be read.';
+  else if (h.last_error) why = 'The last mailbox check failed: ' + escHtml(h.last_error);
+  else if (h.last_ok_minutes_ago === null || h.last_ok_minutes_ago === undefined) why = 'The mailbox has not been checked since the last restart.';
+  else why = 'The mailbox has not been checked successfully in ' + h.last_ok_minutes_ago + ' minutes.';
+  box.innerHTML = '<div class="alert alert-error" style="margin-bottom:16px">' +
+    '<strong>Work order emails may not be coming in.</strong><br>' + why +
+    (can('manage_work_orders') ? '<br><span style="font-size:12.5px">Once that is fixed, use <strong>Check for missed emails</strong> to pull in anything that arrived while it was down.</span>' : '') +
+  '</div>';
+}
+
+// The scheduled poll only reaches back 72 hours, so an outage longer than that loses
+// emails permanently. This re-scans 14 days; dedup and the deleted-email tombstones
+// make it safe to run as often as you like.
+async function woCatchUp() {
+  var btn = document.getElementById('wo-catchup-btn');
+  if (btn) { btn.disabled = true; btn.textContent = 'Scanning...'; }
+  try {
+    var r = await api('POST', '/work-orders/catch-up', { lookbackHours: 336 });
+    var sm = r.summary || {};
+    if (sm.skipped) novaAlert('The mailbox scan did not run: ' + (sm.reason || 'intake is turned off') + '.');
+    else novaAlert('Scanned ' + (sm.fetched || 0) + ' message(s) from the last 14 days. Added ' + (sm.created || 0) + ', folded in ' + (sm.revised || 0) + ' revision(s), already had ' + (sm.duplicate || 0) + ', skipped ' + (sm.ignored || 0) + '.');
+    try { _woState.counts = await api('GET', '/work-orders/counts'); } catch (e) {}
+    await woLoad();
+    woLoadHealth();
+  } catch (e) {
+    novaAlert('Scan failed: ' + e.message);
+  }
+  if (btn) { btn.disabled = false; btn.textContent = 'Check for missed emails'; }
 }
 
 function woSetFilter(st) { _woState.status = st; _woState.page = 1; woLoad(); }
@@ -16391,7 +16444,7 @@ function woRow(w, manage) {
     '<td><strong>' + escHtml(w.wo_ref || ('#' + w.id)) + '</strong>' + (w.confidence ? ' ' + woConfBadge(w.confidence) : '') +
       ((w.priority === 'urgent' || w.priority === 'high') ? ' <span title="' + escHtml(w.priority) + ' priority" style="color:#fca5a5;font-weight:700">!</span>' : '') + '</td>' +
     '<td style="font-family:ui-monospace,Menlo,Consolas,monospace;font-size:12.5px">' + escHtml(w.wo_number || '—') + '</td>' +
-    '<td>' + escHtml(w.account_name || '—') + (w.city_code ? ' <span style="color:var(--text-muted-color)">· ' + escHtml(w.city_code) + '</span>' : '') + '</td>' +
+    '<td>' + escHtml(w.account_name || woFallbackLabel(w)) + (w.city_code ? ' <span style="color:var(--text-muted-color)">· ' + escHtml(w.city_code) + '</span>' : '') + '</td>' +
     '<td>' + escHtml(w.store_name || '—') + (w.store_number ? ' <span style="color:var(--text-muted-color)">#' + escHtml(w.store_number) + '</span>' : '') + '</td>' +
     '<td>' + escHtml(svc) + '</td>' +
     '<td>' + (woMoney(w.nte_amount) ? escHtml(woMoney(w.nte_amount)) : '<span style="color:var(--text-muted-color)">—</span>') +
@@ -16528,7 +16581,7 @@ async function renderViewWorkOrder(el, id) {
   el.innerHTML =
     '<div class="page-header">' +
       '<div><div class="page-title">' + escHtml(w.wo_ref || ('Work Order #' + id)) + ' ' + woBadge(w.status) + ' ' + woConfBadge(w.confidence) + '</div>' +
-        '<div class="page-subtitle">' + escHtml(w.account_name || '—') + (w.store_name ? ' &middot; ' + escHtml(w.store_name) : '') + '</div></div>' +
+        '<div class="page-subtitle">' + escHtml(w.account_name || woFallbackLabel(w)) + (w.store_name ? ' &middot; ' + escHtml(w.store_name) : '') + '</div></div>' +
       '<button class="btn btn-secondary" onclick="navigate(\'work-orders\')">&larr; Back</button>' +
     '</div>' +
     '<div id="wo-detail-error"></div>' +
