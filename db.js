@@ -4663,7 +4663,35 @@ async function initDB() {
     // set only when the source is deduping on the id, and it alone carries the
     // unique index.
     await client.query('ALTER TABLE webhook_events ADD COLUMN IF NOT EXISTS dedupe_key VARCHAR(200);');
-    await client.query('UPDATE webhook_events SET dedupe_key = external_id WHERE dedupe_key IS NULL AND external_id IS NOT NULL;');
+    // Back-fill dedupe_key from external_id, but ONLY where it cannot collide.
+    //
+    // This was a bare UPDATE, and once the unique index below exists it is exactly as
+    // dangerous as the CREATE it sits above. A partner that re-sends an id we have
+    // already indexed leaves NULL-keyed rows behind; the back-fill then sets them to a
+    // value that is already taken, Postgres raises 23505, and initDB throws. Because
+    // every scheduled job in Nova starts inside initDB().then(...) in server.js, that
+    // silently killed the ENTIRE schedule (work order intake, task reminders, the time
+    // clock, PTO accrual, GEICO, AR/AP, webhook retry) on every boot, for as long as
+    // those rows sat in the table. Hit in production 2026-08-18: (pulsar, 88802044501).
+    //
+    // So: skip any row whose key is already claimed, take only the earliest row of each
+    // unclaimed group, and wrap it anyway. A row left with a NULL dedupe_key is still
+    // deduped in application code; it just is not index-enforced.
+    try {
+      const backfilled = await client.query(
+        'UPDATE webhook_events we SET dedupe_key = we.external_id' +
+        ' WHERE we.dedupe_key IS NULL AND we.external_id IS NOT NULL' +
+        '   AND we.id = (SELECT MIN(y.id) FROM webhook_events y' +
+        '                 WHERE y.source_slug = we.source_slug AND y.external_id = we.external_id' +
+        '                   AND y.dedupe_key IS NULL)' +
+        '   AND NOT EXISTS (SELECT 1 FROM webhook_events x' +
+        '                    WHERE x.source_slug = we.source_slug AND x.dedupe_key = we.external_id);'
+      );
+      if (backfilled.rowCount) console.log('Sync: back-filled dedupe_key on ' + backfilled.rowCount + ' webhook event(s).');
+    } catch (e) {
+      console.error('Sync: dedupe_key back-fill skipped (' + e.message + '). Those rows keep a NULL ' +
+        'dedupe_key and are still duplicate-checked in application code. Nothing else is affected.');
+    }
     // Wrapped: if historic rows already contain a repeated dedupe_key (from a
     // period when duplicate checking was off, or from the sentinel bug), the
     // CREATE fails - and an initDB that throws here would take out everything

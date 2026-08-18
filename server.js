@@ -420,37 +420,61 @@ server.on('checkContinue', function (req, res) {
   app(req, res);
 });
 
+// Scheduled jobs used to live INSIDE initDB().then(...), which meant one failing
+// migration statement silently disabled every timer in Nova: work order intake, task
+// reminders, the time clock, PTO accrual, GEICO, AR/AP, webhook retry, all of it. The
+// site kept serving pages perfectly, so nothing looked wrong from the outside. Hit in
+// production 2026-08-18 by a duplicate key in the webhook_events back-fill (see db.js).
+//
+// Jobs now start whether or not the migrations finished, and each one is isolated so a
+// single scheduler throwing on startup cannot take the rest down with it.
+let _jobsStarted = false;
+function _startJob(name, fn) {
+  try { fn(); }
+  catch (e) { console.error('[boot] scheduled job failed to start: ' + name + ' (' + (e && e.message ? e.message : e) + ')'); }
+}
+function startScheduledJobs() {
+  if (_jobsStarted) return;
+  _jobsStarted = true;
+  _startJob('startReminders', startReminders);
+  _startJob('startCleanup', startCleanup);
+  _startJob('startScheduledMessages', startScheduledMessages);
+  _startJob('startTaskReminders', startTaskReminders);
+  _startJob('startRecurringSpawner', startRecurringSpawner);
+  _startJob('startCompletedCleanup', startCompletedCleanup);
+  _startJob('startWorkOrders', startWorkOrders);
+  _startJob('startTimeClock', startTimeClock);
+  _startJob('startDocExpiry', startDocExpiry);
+  _startJob('startReviewRatings', startReviewRatings);
+  _startJob('startReviewComplaints', startReviewComplaints);
+  _startJob('startSignatureReminders', startSignatureReminders);
+  _startJob('startPtoAccrual', startPtoAccrual);
+  _startJob('startGeicoIngest', startGeicoIngest);
+  _startJob('startGeicoReport', startGeicoReport);
+  _startJob('startGeicoComplaints', startGeicoComplaints);
+  _startJob('startQuiz', startQuiz);
+  _startJob('startInspectionReminders', startInspectionReminders);
+  _startJob('startAutoDeactivation', startAutoDeactivation);
+  _startJob('startQuarterlyDrill', startQuarterlyDrill);
+  _startJob('startOffboardingCleanup', startOffboardingCleanup);
+  _startJob('startGotoTokenRefresh', startGotoTokenRefresh);
+  _startJob('startGotoIndex', startGotoIndex);
+  _startJob('startGotoReconcile', startGotoReconcile);
+  _startJob('startLocationCleanup', startLocationCleanup);
+  _startJob('startDispatchJobs', startDispatchJobs);
+  _startJob('startArJobs', startArJobs);
+  _startJob('startApJobs', startApJobs);
+  _startJob('startWebhookRetry', startWebhookRetry);
+  console.log('[boot] scheduled jobs started (' + 29 + ')');
+}
+
 initDB()
   .then(() => {
     console.log('Database initialized');
-    startReminders();
-    startCleanup();
-    startScheduledMessages();
-    startTaskReminders();
-    startRecurringSpawner();
-    startCompletedCleanup();
-    startWorkOrders();
-    startTimeClock();
-    startDocExpiry();
-    startReviewRatings();
-    startReviewComplaints();
-    startSignatureReminders();
-    startPtoAccrual();
-    startGeicoIngest();
-    startGeicoReport();
-    startGeicoComplaints();
-    startQuiz();
-    startInspectionReminders();
-    startAutoDeactivation();
-    startQuarterlyDrill();
-    startOffboardingCleanup();
-    startGotoTokenRefresh();
-    startGotoIndex();
-    startGotoReconcile();
-    startLocationCleanup();
-    startDispatchJobs();
-    startArJobs();
-    startApJobs();
-    startWebhookRetry();
   })
-  .catch(err => console.error('DB init error (non-fatal):', err));
+  .catch(err => {
+    console.error('DB init error (non-fatal):', err);
+    console.error('[boot] MIGRATIONS DID NOT FINISH. Scheduled jobs are starting anyway; any that ' +
+      'depend on a table the failed statement was meant to create may error. Fix the error above and redeploy.');
+  })
+  .then(startScheduledJobs);
