@@ -4369,33 +4369,64 @@ async function taskSave(id){
 
 var JH_LABEL = {
   ok: 'Healthy',
-  waiting: 'Waiting for first run',
-  timer: 'Internal timer',
+  waiting: 'Waiting',
+  timer: 'Registered',
   erroring: 'Last run failed',
   stale: 'Overdue',
   never_ran: 'Never ran',
   failed_to_start: 'Failed to start',
   not_registered: 'Not registered'
 };
-var JH_COLOR = {
-  ok: '#22c55e',
-  waiting: 'var(--text-muted-color)',
-  timer: 'var(--text-muted-color)',
-  erroring: '#f59e0b',
-  stale: '#ef4444',
-  never_ran: '#ef4444',
-  failed_to_start: '#ef4444',
-  not_registered: '#ef4444'
+// Tone drives the chip colour. Status colours are reserved: they never mean anything
+// other than state, and every chip carries a dot AND a word so it still reads if the
+// colour does not land (colour-blindness, forced-contrast, a printed screenshot).
+var JH_TONE = {
+  ok: 'good', waiting: 'idle', timer: 'idle', erroring: 'warn',
+  stale: 'bad', never_ran: 'bad', failed_to_start: 'bad', not_registered: 'bad'
 };
 var JH_HINT = {
-  waiting: 'Registered, but its schedule has not come round yet. Normal right after a deploy.',
-  timer: 'Runs on an internal interval rather than a cron, so individual runs are not tracked here. Registration is.',
-  erroring: 'It is running on schedule but the work inside it threw. See the error.',
+  waiting: 'Registered and scheduled, but their time has not come round yet. Normal right after a deploy.',
+  timer: 'These run on their own interval rather than a cron, so individual runs are not tracked. Registration is.',
+  erroring: 'It is running on schedule but the work inside it threw.',
   stale: 'It registered but has not run in far longer than its schedule allows. Treat this as broken.',
   never_ran: 'It registered at boot and has never run since. Treat this as broken.',
   failed_to_start: 'It threw while starting, so its timers were never created. Nothing it does is happening.',
-  not_registered: 'It has run before on an earlier deploy, but this deploy never started it. Usually means it was removed from server.js or it is throwing before registration.'
+  not_registered: 'It ran on an earlier deploy but this one never started it. Usually it was removed from server.js, or it throws before it can register.'
 };
+// What the office calls each job. The function name is still shown underneath, small,
+// so this screen stays greppable against server.js.
+var JH_NAMES = {
+  startReminders: 'Purchase order reminders',
+  startCleanup: 'Nightly cleanup',
+  startScheduledMessages: 'Scheduled messages',
+  startTaskReminders: 'Task reminders',
+  startRecurringSpawner: 'Recurring tasks',
+  startCompletedCleanup: 'Completed task cleanup',
+  startWorkOrders: 'Work order intake',
+  startTimeClock: 'Time clock',
+  startDocExpiry: 'Document expiry',
+  startReviewRatings: 'Review ratings',
+  startReviewComplaints: 'Review complaints',
+  startSignatureReminders: 'Signature reminders',
+  startPtoAccrual: 'PTO accrual',
+  startGeicoIngest: 'GEICO survey intake',
+  startGeicoReport: 'GEICO weekly report',
+  startGeicoComplaints: 'GEICO complaints',
+  startQuiz: 'Quiz',
+  startInspectionReminders: 'Inspection reminders',
+  startAutoDeactivation: 'Auto-deactivation',
+  startQuarterlyDrill: 'Quarterly security drill',
+  startOffboardingCleanup: 'Offboarding cleanup',
+  startGotoTokenRefresh: 'GoTo token refresh',
+  startGotoIndex: 'GoTo call index',
+  startGotoReconcile: 'GoTo reconcile',
+  startLocationCleanup: 'Location history cleanup',
+  startDispatchJobs: 'Dispatch',
+  startArJobs: 'Accounts receivable',
+  startApJobs: 'Accounts payable',
+  startWebhookRetry: 'Webhook retry'
+};
+function jhName(fn) { return JH_NAMES[fn] || String(fn || ''); }
 
 function jhAgo(d) {
   if (!d) return null;
@@ -4409,22 +4440,190 @@ function jhAgo(d) {
   if (h < 48) return h + 'h ago';
   return Math.floor(h / 24) + 'd ago';
 }
-
 function jhEvery(ms) {
   if (ms == null) return '';
-  if (ms < 3600000) return 'about every ' + Math.round(ms / 60000) + ' min';
-  if (ms < 86400000) return 'about every ' + Math.round(ms / 3600000) + ' h';
+  if (ms < 3600000) return 'About every ' + Math.round(ms / 60000) + ' min';
+  if (ms < 86400000) {
+    var hrs = Math.round(ms / 3600000);
+    return 'About every ' + hrs + (hrs === 1 ? ' hour' : ' hours');
+  }
   var d = Math.round(ms / 86400000);
-  return d === 1 ? 'about daily' : 'about every ' + d + ' days';
+  return d === 1 ? 'About daily' : 'About every ' + d + ' days';
+}
+
+// ---- cron: read it, say it in English, and work out when it fires next -------
+// "0 13 * * 1" is not a fact anybody can act on. "Mondays at 1:00 PM, next in 6 days"
+// is. Everything below exists to turn the first into the second. Numeric fields only,
+// which is all Nova's schedules use; anything unparseable falls back to the raw text.
+var JH_DOW = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+function jhField(txt, lo, hi) {
+  var out = [], parts = String(txt).split(',');
+  for (var i = 0; i < parts.length; i++) {
+    var t = parts[i].trim(), step = 1, range = t;
+    var slash = t.indexOf('/');
+    if (slash !== -1) { step = parseInt(t.slice(slash + 1), 10); range = t.slice(0, slash); if (!(step > 0)) return null; }
+    var a, b;
+    if (range === '*') { a = lo; b = hi; }
+    else if (range.indexOf('-') > 0) {
+      var bits = range.split('-'); a = parseInt(bits[0], 10); b = parseInt(bits[1], 10);
+    } else { a = parseInt(range, 10); b = (slash === -1) ? a : hi; }
+    if (isNaN(a) || isNaN(b) || a < lo || b > hi || a > b) return null;
+    for (var v = a; v <= b; v += step) if (out.indexOf(v) === -1) out.push(v);
+  }
+  out.sort(function (x, y) { return x - y; });
+  return out.length ? out : null;
+}
+function jhCronParts(expr) {
+  var f = String(expr || '').trim().split(/\s+/);
+  if (f.length !== 5) return null;
+  var p = {
+    min: jhField(f[0], 0, 59), hour: jhField(f[1], 0, 23), dom: jhField(f[2], 1, 31),
+    mon: jhField(f[3], 1, 12), dow: jhField(f[4], 0, 6),
+    domStar: f[2] === '*', dowStar: f[4] === '*', raw: f
+  };
+  if (!p.min || !p.hour || !p.dom || !p.mon || !p.dow) return null;
+  return p;
+}
+function jhClock(h, m) {
+  var ap = h < 12 ? 'AM' : 'PM', hh = h % 12; if (hh === 0) hh = 12;
+  return hh + ':' + (m < 10 ? '0' + m : m) + ' ' + ap;
+}
+function jhListOf(arr, fn) {
+  var v = arr.map(fn);
+  if (v.length === 1) return v[0];
+  if (v.length === 2) return v[0] + ' and ' + v[1];
+  if (v.length <= 4) return v.slice(0, -1).join(', ') + ' and ' + v[v.length - 1];
+  return v.slice(0, 3).join(', ') + ' and ' + (v.length - 3) + ' more';
+}
+function jhCronText(expr) {
+  var p = jhCronParts(expr);
+  if (!p) return null;
+  var everyMin = p.min.length === 60, everyHour = p.hour.length === 24;
+  var when = '';
+  if (everyMin && everyHour) return 'Every minute';
+  if (everyMin) return 'Every minute during ' + jhListOf(p.hour, function (h) { return jhClock(h, 0); });
+  if (everyHour) {
+    if (p.min.length === 1) return 'Hourly at :' + (p.min[0] < 10 ? '0' + p.min[0] : p.min[0]);
+    var gap = p.min.length > 1 ? p.min[1] - p.min[0] : 0;
+    if (gap > 0 && 60 % gap === 0 && p.min.length === 60 / gap) return 'Every ' + gap + ' minutes';
+    return 'Hourly at ' + jhListOf(p.min, function (m) { return ':' + (m < 10 ? '0' + m : m); });
+  }
+  if (p.min.length === 1 && p.hour.length > 1) {
+    var hgap = p.hour[1] - p.hour[0];
+    if (hgap > 0 && 24 % hgap === 0 && p.hour.length === 24 / hgap) when = 'Every ' + hgap + ' hours';
+  }
+  if (!when) {
+    var times = [];
+    for (var hi = 0; hi < p.hour.length; hi++) for (var mi = 0; mi < p.min.length; mi++) times.push([p.hour[hi], p.min[mi]]);
+    when = 'at ' + jhListOf(times, function (t) { return jhClock(t[0], t[1]); });
+  }
+  var days = 'Daily';
+  if (!p.dowStar) days = jhListOf(p.dow, function (d) { return JH_DOW[d] + 's'; });
+  else if (!p.domStar) days = 'Day ' + jhListOf(p.dom, function (d) { return String(d); }) + ' of the month';
+  if (p.mon.length !== 12) days += ' in ' + jhListOf(p.mon, function (m) { return ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'][m - 1]; });
+  return when.indexOf('Every ') === 0 ? (when + (days === 'Daily' ? '' : ', ' + days)) : (days + ' ' + when);
+}
+function jhDayMatches(p, d) {
+  if (p.mon.indexOf(d.getMonth() + 1) === -1) return false;
+  var domOk = p.dom.indexOf(d.getDate()) !== -1, dowOk = p.dow.indexOf(d.getDay()) !== -1;
+  // Standard cron: with BOTH day fields restricted, either one matching is enough.
+  if (!p.domStar && !p.dowStar) return domOk || dowOk;
+  if (!p.domStar) return domOk;
+  if (!p.dowStar) return dowOk;
+  return true;
+}
+// Walk days, not minutes. A yearly cron would be half a million minute-steps; this is
+// at most 400 day-steps plus one pass over the matching day.
+function jhCronNext(expr, from) {
+  var p = jhCronParts(expr);
+  if (!p) return null;
+  var start = new Date(from.getTime());
+  start.setSeconds(0, 0);
+  start.setMinutes(start.getMinutes() + 1);
+  for (var off = 0; off < 400; off++) {
+    var day = new Date(start.getFullYear(), start.getMonth(), start.getDate() + off);
+    if (!jhDayMatches(p, day)) continue;
+    for (var hi = 0; hi < p.hour.length; hi++) {
+      for (var mi = 0; mi < p.min.length; mi++) {
+        var t = new Date(day.getFullYear(), day.getMonth(), day.getDate(), p.hour[hi], p.min[mi], 0, 0);
+        if (t.getTime() >= start.getTime()) return t;
+      }
+    }
+  }
+  return null;
+}
+function jhSplit(schedules) {
+  return String(schedules || '').split(',').map(function (x) { return x.trim(); }).filter(Boolean);
+}
+function jhScheduleText(schedules) {
+  var list = jhSplit(schedules);
+  if (!list.length) return null;
+  var said = [], ok = true;
+  list.forEach(function (c) { var t = jhCronText(c); if (t) { if (said.indexOf(t) === -1) said.push(t); } else ok = false; });
+  if (!ok || !said.length) return null;
+  if (said.length === 1) return said[0];
+  // "Daily at 3:15 AM" + "Daily at 3:20 AM" reads better merged.
+  var allDaily = said.every(function (t) { return t.indexOf('Daily at ') === 0; });
+  if (allDaily) return 'Daily at ' + jhListOf(said, function (t) { return t.slice(9); });
+  return said.join(' and ');
+}
+function jhNextRun(schedules) {
+  var now = new Date(), best = null;
+  jhSplit(schedules).forEach(function (c) {
+    var n = jhCronNext(c, now);
+    if (n && (!best || n.getTime() < best.getTime())) best = n;
+  });
+  return best;
+}
+function jhUntil(d) {
+  if (!d) return null;
+  var s = Math.round((d.getTime() - Date.now()) / 1000);
+  if (s < 0) s = 0;
+  if (s < 60) return 'in ' + s + 's';
+  var m = Math.round(s / 60);
+  if (m < 60) return 'in ' + m + 'm';
+  var h = Math.floor(m / 60), rm = m % 60;
+  if (h < 24) return 'in ' + h + 'h' + (rm ? ' ' + rm + 'm' : '');
+  var days = Math.round(h / 24);
+  return 'in ' + days + (days === 1 ? ' day' : ' days');
+}
+function jhWhenText(d) {
+  if (!d) return '';
+  var now = new Date();
+  var today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  var that = new Date(d.getFullYear(), d.getMonth(), d.getDate());
+  var days = Math.round((that - today) / 86400000);
+  var t = jhClock(d.getHours(), d.getMinutes());
+  if (days === 0) return 'Today, ' + t;
+  if (days === 1) return 'Tomorrow, ' + t;
+  if (days < 7) return JH_DOW[d.getDay()] + ', ' + t;
+  return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' }) + ', ' + t;
+}
+
+function jhNum(n) {
+  if (n == null) return '0';
+  return String(n).replace(/\B(?=(\d{3})+(?!\d))/g, ',');
+}
+function jhDur(ms) {
+  if (ms == null) return '';
+  return ms < 1000 ? (ms + 'ms') : ((Math.round(ms / 100) / 10) + 's');
+}
+function jhChip(status) {
+  var tone = JH_TONE[status] || 'idle';
+  return '<span class="jh-chip jh-' + tone + '"><span class="jh-dot"></span>' + escHtml(JH_LABEL[status] || status) + '</span>';
+}
+function jhToneColor(tone) {
+  return tone === 'good' ? '#22c55e' : tone === 'warn' ? '#f59e0b' : tone === 'bad' ? '#ef4444' : '#6b7280';
 }
 
 async function renderJobHealth(el) {
   if (!can('manage_settings')) { el.innerHTML = '<div class="alert alert-error">Access denied.</div>'; return; }
   el.innerHTML =
-    '<div class="page-header"><div class="page-title"><h2>Job Health</h2>' +
-      '<p>Every scheduled job in Nova, and when it last actually ran.</p></div>' +
+    '<div class="page-header">' +
+      '<div><div class="page-title">Job Health</div>' +
+      '<div class="page-subtitle">Every scheduled job in Nova, and when it last actually ran.</div></div>' +
       '<button class="btn btn-secondary" onclick="jhLoad()">Refresh</button></div>' +
-    '<div id="jh-body"><div class="loading">Loading…</div></div>';
+    '<div id="jh-body"><div class="loading">Loading\u2026</div></div>';
   await jhLoad();
 }
 
@@ -4439,17 +4638,19 @@ async function jhLoad() {
   }
 }
 
+// One table of 29 rows, 14 of which repeated the same sentence, is a log dump. The
+// job of this screen is to answer "is anything broken" before you read a single row,
+// so: a headline, then the broken ones, then everything else grouped with its
+// explanation said ONCE in the section header instead of on every line.
 function jhRender(d) {
   var jobs = d.jobs || [];
   var boot = d.boot || {};
   var counts = d.counts || {};
   var out = '';
 
-  // The headline case. If this fires, nothing on a timer is happening at all and
-  // no per-job row below matters.
   if (!boot.jobs_registered) {
     out += '<div class="alert alert-error" style="margin-bottom:14px"><strong>No scheduled jobs are registered in this process.</strong><br>' +
-      'Nothing automated is running: no quiz texts, no deposit reminder, no task reminders, no time clock. ' +
+      'Nothing automated is happening: no work order intake, no task reminders, no time clock, no quiz texts. ' +
       'Check the latest deploy log for &quot;[boot] scheduled jobs started&quot; and for a migration error above it.</div>';
   }
   if (d.store_error) {
@@ -4458,80 +4659,138 @@ function jhRender(d) {
       'Everything below is what this server process has seen since it booted.</div>';
   }
 
-  var bad = (counts.stale || 0) + (counts.never_ran || 0) + (counts.failed_to_start || 0) + (counts.not_registered || 0);
-  var warn = counts.erroring || 0;
-  var summary =
-    '<span style="color:' + (bad ? '#ef4444' : 'var(--text-muted-color)') + ';font-weight:' + (bad ? '700' : '400') + '">' +
-      bad + ' needing attention</span>' +
-    ' &nbsp;·&nbsp; <span style="color:' + (warn ? '#f59e0b' : 'var(--text-muted-color)') + '">' + warn + ' erroring</span>' +
-    ' &nbsp;·&nbsp; <span style="color:var(--text-muted-color)">' + (counts.ok || 0) + ' healthy of ' + jobs.length + '</span>';
+  var by = { bad: [], warn: [], ok: [], waiting: [], timer: [] };
+  jobs.forEach(function (j) {
+    if (j.status === 'timer') by.timer.push(j);
+    else if (j.status === 'waiting') by.waiting.push(j);
+    else if (j.status === 'ok') by.ok.push(j);
+    else if (j.status === 'erroring') by.warn.push(j);
+    else by.bad.push(j);
+  });
 
-  out += '<div class="card" style="margin-bottom:14px"><div class="card-body">' +
-    '<div style="font-size:14px;margin-bottom:6px">' + summary + '</div>' +
-    '<div style="font-size:12px;color:var(--text-muted-color)">' +
-      'Server booted ' + escHtml(jhAgo(boot.booted_at) || 'unknown') +
-      ' &nbsp;·&nbsp; ' + (boot.jobs_registered || 0) + ' schedulers, ' + (boot.crons_registered || 0) + ' timers' +
-      ' &nbsp;·&nbsp; times are read live, this page is never cached' +
-    '</div></div></div>';
+  var nBad = by.bad.length, nWarn = by.warn.length;
+  var hero = nBad ? 'is-bad' : (nWarn ? 'is-warn' : 'is-good');
+  var headline = nBad
+    ? (nBad === 1 ? '1 job is not running' : nBad + ' jobs are not running')
+    : (nWarn ? (nWarn === 1 ? '1 job is failing while it runs' : nWarn + ' jobs are failing while they run')
+             : 'All ' + jobs.length + ' jobs are registered and running');
+  var badgeTone = nBad ? 'bad' : (nWarn ? 'warn' : 'good');
+  var badgeText = nBad ? (nBad + ' need attention') : (nWarn ? (nWarn + ' erroring') : 'All clear');
+  var badge = '<span class="jh-chip jh-' + badgeTone + '"><span class="jh-dot"></span>' + escHtml(badgeText) + '</span>';
 
-  out += '<div class="card"><div class="card-body"><div class="table-wrap">' +
-    '<table class="table" style="font-size:13px"><thead><tr>' +
-      '<th>Job</th><th>Schedule</th><th>Last run</th><th>Runs</th><th>Status</th>' +
-    '</tr></thead><tbody>';
+  var seg = [
+    { n: nBad, c: '#ef4444', label: 'need attention' },
+    { n: nWarn, c: '#f59e0b', label: 'erroring' },
+    { n: by.ok.length, c: '#22c55e', label: 'healthy' },
+    { n: by.waiting.length, c: '#6b7280', label: 'waiting for first run' },
+    { n: by.timer.length, c: '#52525b', label: 'internal timers' }
+  ];
+  out += '<div class="jh-hero ' + hero + '">' +
+    '<div class="jh-hero-top">' + badge +
+      '<div><div class="jh-hero-title">' + escHtml(headline) + '</div>' +
+      '<div class="jh-hero-meta">Server booted <b>' + escHtml(jhAgo(boot.booted_at) || 'unknown') + '</b>' +
+        ' &nbsp;\u00b7&nbsp; <b>' + (boot.jobs_registered || 0) + '</b> schedulers, <b>' + (boot.crons_registered || 0) + '</b> timers' +
+        ' &nbsp;\u00b7&nbsp; read live, never cached</div></div></div>' +
+    '<div class="jh-meter">' +
+      seg.filter(function (x) { return x.n > 0; }).map(function (x) {
+        return '<span style="flex:' + x.n + ';background:' + x.c + '"></span>';
+      }).join('') +
+    '</div><div class="jh-legend">' +
+      seg.map(function (x) {
+        return '<span><i style="background:' + x.c + '"></i><b>' + x.n + '</b> ' + escHtml(x.label) + '</span>';
+      }).join('') +
+    '</div></div>';
 
-  for (var i = 0; i < jobs.length; i++) {
-    var j = jobs[i];
-    var color = JH_COLOR[j.status] || 'var(--text-muted-color)';
-    var label = JH_LABEL[j.status] || j.status;
-    var hint = JH_HINT[j.status];
-
-    var last = '<span style="color:var(--text-muted-color)">Not since boot</span>';
+  function lastCell(j) {
     if (j.last_run_at) {
-      last = escHtml(jhAgo(j.last_run_at)) +
-        '<div style="font-size:11px;color:var(--text-muted-color)">' + escHtml(formatDate(j.last_run_at)) +
-        (j.last_duration_ms != null ? ' &nbsp;·&nbsp; ' + j.last_duration_ms + 'ms' : '') + '</div>';
-    } else if (j.last_run_previous_boot) {
-      last = '<span style="color:var(--text-muted-color)">' + escHtml(jhAgo(j.last_run_previous_boot)) +
-        '<div style="font-size:11px">' + escHtml(formatDate(j.last_run_previous_boot)) + ' (before this deploy)</div></span>';
+      return '<div class="jh-when">' + escHtml(jhAgo(j.last_run_at)) + '</div>' +
+        '<div class="jh-sub">' + escHtml(formatDate(j.last_run_at)) +
+        (j.last_duration_ms != null ? ' &nbsp;\u00b7&nbsp; ' + jhDur(j.last_duration_ms) : '') + '</div>';
     }
-
-    var runs = '<span style="color:var(--text-muted-color)">—</span>';
-    if (j.runs_this_boot != null) {
-      runs = j.runs_this_boot + ' this boot' +
-        (j.total_runs != null ? '<div style="font-size:11px;color:var(--text-muted-color)">' + j.total_runs + ' all time</div>' : '');
+    if (j.last_run_previous_boot) {
+      return '<div class="jh-sub">' + escHtml(formatDate(j.last_run_previous_boot)) + ' (before this deploy)</div>';
     }
-
-    var detail = '';
-    if (j.boot_error) {
-      detail += '<div style="font-size:12px;color:#ef4444;margin-top:4px">' + escHtml(j.boot_error) + '</div>';
-    } else if (j.last_error && j.status === 'erroring') {
-      detail += '<div style="font-size:12px;color:#f59e0b;margin-top:4px">' + escHtml(j.last_error) + '</div>';
-    }
-    if (hint) detail += '<div style="font-size:11px;color:var(--text-muted-color);margin-top:4px">' + hint + '</div>';
-    if ((j.errors_this_boot || 0) > 0 && j.status !== 'erroring') {
-      detail += '<div style="font-size:11px;color:var(--text-muted-color);margin-top:4px">' +
-        j.errors_this_boot + ' failed run(s) since boot, but the most recent one succeeded.</div>';
-    }
-
-    out += '<tr>' +
-      '<td style="font-weight:600;white-space:nowrap">' + escHtml(j.job_name) + '</td>' +
-      '<td style="font-size:12px;color:var(--text-muted-color);white-space:nowrap">' +
-        escHtml(j.schedules || '—') +
-        (j.expected_interval_ms != null ? '<div style="font-size:11px">' + escHtml(jhEvery(j.expected_interval_ms)) + '</div>' : '') +
-      '</td>' +
-      '<td style="font-size:13px">' + last + '</td>' +
-      '<td style="font-size:13px;white-space:nowrap">' + runs + '</td>' +
-      '<td style="min-width:220px"><span style="color:' + color + ';font-weight:700;font-size:13px">' + escHtml(label) + '</span>' + detail + '</td>' +
-    '</tr>';
+    return '<div class="jh-sub">Never</div>';
+  }
+  function schedCell(j) {
+    var text = jhScheduleText(j.schedules);
+    return '<div>' + escHtml(text || jhEvery(j.expected_interval_ms) || j.schedules || '\u2014') + '</div>' +
+      (j.schedules ? '<div class="jh-cron">' + escHtml(j.schedules) + '</div>' : '');
+  }
+  function nextCell(j) {
+    var n = jhNextRun(j.schedules);
+    if (!n) return '<span class="jh-sub">\u2014</span>';
+    return '<div class="jh-when">' + escHtml(jhUntil(n)) + '</div><div class="jh-sub">' + escHtml(jhWhenText(n)) + '</div>';
+  }
+  function nameCell(j) {
+    return '<div class="jh-name">' + escHtml(jhName(j.job_name)) + '</div><div class="jh-fn">' + escHtml(j.job_name) + '</div>';
+  }
+  function bar(tone) { return '<td class="bar"><span class="rowbar" style="background:' + jhToneColor(tone) + '"></span></td>'; }
+  function wrongCell(j) {
+    var html = '<div>' + escHtml(JH_HINT[j.status] || '') + '</div>';
+    var err = j.boot_error || j.last_error || j.previous_error;
+    if (err) html += '<div class="jh-err">' + escHtml(err) + '</div>';
+    return html;
+  }
+  function section(title, count, note, headCells, rows, tone) {
+    if (!count) return '';
+    return '<div class="jh-sec"><div class="jh-sec-head">' +
+      '<span class="jh-sec-title"' + (tone === 'bad' ? ' style="color:#f87171"' : tone === 'warn' ? ' style="color:#fbbf24"' : '') + '>' + escHtml(title) + '</span>' +
+      '<span class="jh-sec-count">' + count + '</span>' +
+      (note ? '<span class="jh-sec-note">' + escHtml(note) + '</span>' : '') +
+      '</div><div class="jh-card' + (tone === 'bad' ? ' accent-bad' : '') + '"><table class="jh"><thead><tr><th class="bar"></th>' +
+      headCells.map(function (h) { return '<th>' + h + '</th>'; }).join('') +
+      '</tr></thead><tbody>' + rows + '</tbody></table></div></div>';
   }
 
-  out += '</tbody></table></div></div></div>';
-  out += '<div style="font-size:12px;color:var(--text-muted-color);margin-top:12px;line-height:1.7">' +
-    '<strong>Reading this screen.</strong> &quot;Overdue&quot; means a job registered but has not fired in longer than its own schedule plus slack, ' +
-    'so treat it as broken rather than slow. A job that says &quot;Failed to start&quot; created no timers at all, so nothing it does is happening. ' +
-    '&quot;Not registered&quot; means it ran on a previous deploy but this one never started it.<br>' +
-    'Counts labelled &quot;this boot&quot; reset when Railway restarts the server. All-time counts are stored and survive restarts, ' +
-    'but are written at most once every few minutes per job, so they can trail the live figure slightly.' +
+  out += section('Needs attention', nBad, 'These are not doing their work. Everything below this section is fine.',
+    ['Job', 'Schedule', 'Last run', 'What is wrong', 'Status'],
+    by.bad.map(function (j) {
+      return '<tr>' + bar('bad') + '<td>' + nameCell(j) + '</td><td>' + schedCell(j) + '</td><td>' + lastCell(j) +
+        '</td><td class="jh-wrong">' + wrongCell(j) + '</td><td>' + jhChip(j.status) + '</td></tr>';
+    }).join(''), 'bad');
+
+  out += section('Running, but the work is failing', nWarn, null,
+    ['Job', 'Schedule', 'Last run', 'What is wrong', 'Status'],
+    by.warn.map(function (j) {
+      return '<tr>' + bar('warn') + '<td>' + nameCell(j) + '</td><td>' + schedCell(j) + '</td><td>' + lastCell(j) +
+        '</td><td class="jh-wrong">' + wrongCell(j) + '</td><td>' + jhChip(j.status) + '</td></tr>';
+    }).join(''), 'warn');
+
+  out += section('Running normally', by.ok.length, null,
+    ['Job', 'Schedule', 'Last run', 'Next run', 'Runs', 'Status'],
+    by.ok.map(function (j) {
+      var extra = ((j.errors_this_boot || 0) > 0)
+        ? '<div class="jh-sub">' + j.errors_this_boot + ' failed run(s) since boot, but the most recent one succeeded.</div>' : '';
+      return '<tr>' + bar('good') + '<td>' + nameCell(j) + '</td><td>' + schedCell(j) + '</td><td>' + lastCell(j) +
+        '</td><td>' + nextCell(j) + '</td><td class="jh-runs"><b>' + jhNum(j.runs_this_boot || 0) + '</b> this boot' +
+        (j.total_runs != null ? '<div class="jh-sub"><b>' + jhNum(j.total_runs) + '</b> all time</div>' : '') + extra +
+        '</td><td>' + jhChip(j.status) + '</td></tr>';
+    }).join(''), 'good');
+
+  out += section('Waiting for their first run', by.waiting.length, JH_HINT.waiting,
+    ['Job', 'Schedule', 'Next run', 'Last run', 'All time'],
+    by.waiting.map(function (j) {
+      return '<tr>' + bar('idle') + '<td>' + nameCell(j) + '</td><td>' + schedCell(j) + '</td><td>' + nextCell(j) +
+        '</td><td>' + lastCell(j) + '</td><td class="jh-runs"><b>' + jhNum(j.total_runs != null ? j.total_runs : 0) + '</b></td></tr>';
+    }).join(''), 'idle');
+
+  out += section('Internal timers', by.timer.length, JH_HINT.timer,
+    ['Job', 'Interval', 'Registered', 'Status'],
+    by.timer.map(function (j) {
+      return '<tr>' + bar('idle') + '<td>' + nameCell(j) + '</td><td>' + escHtml(jhEvery(j.expected_interval_ms) || 'On its own interval') +
+        '</td><td>' + (j.registered_at ? '<div class="jh-when">' + escHtml(jhAgo(j.registered_at)) + '</div><div class="jh-sub">at boot</div>' : '<span class="jh-sub">\u2014</span>') +
+        '</td><td>' + jhChip(j.status) + '</td></tr>';
+    }).join(''), 'idle');
+
+  out += '<div class="jh-foot">' +
+    '<strong>Reading this screen.</strong> ' +
+    '<b>Overdue</b> means a job registered but has not fired in longer than its own schedule plus slack, so treat it as broken rather than slow. ' +
+    '<b>Failed to start</b> means it created no timers at all, so nothing it does is happening. ' +
+    '<b>Not registered</b> means it ran on an earlier deploy but this one never started it.<br>' +
+    'Counts labelled &quot;this boot&quot; reset when Railway restarts the server. All-time counts survive restarts but are written at most ' +
+    'once every few minutes per job, so they can trail the live figure slightly. Next-run times are worked out from the cron in your browser, ' +
+    'so they follow your clock, not the server&#39;s.' +
     '</div>';
   return out;
 }
