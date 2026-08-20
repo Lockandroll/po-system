@@ -8,6 +8,7 @@
 
 var express = require('express');
 var { requireAuth } = require('../middleware/auth');
+var speech = require('../utils/speech');
 
 var router = express.Router();
 
@@ -43,7 +44,7 @@ router.get('/config', requireAuth, function (req, res) {
 // Body: raw audio bytes (Content-Type is the recorder mime, e.g. audio/webm).
 // Returns: { text }  (via ElevenLabs Scribe)
 router.post('/transcribe', requireAuth, express.raw({ type: '*/*', limit: '25mb' }), async function (req, res) {
-  if (!ELEVEN_KEY()) {
+  if (!speech.configured()) {
     return res.status(503).json({ error: 'Speech-to-text is not configured. Add ELEVENLABS_API_KEY in Railway Variables.' });
   }
   var audio = req.body;
@@ -51,31 +52,15 @@ router.post('/transcribe', requireAuth, express.raw({ type: '*/*', limit: '25mb'
     return res.status(400).json({ error: 'No audio received.' });
   }
   try {
-    var mime = req.headers['content-type'] || 'audio/webm';
-    var ext = mimeToExt(mime);
-    var form = new FormData();
-    form.append('file', new Blob([audio], { type: mime }), 'command.' + ext);
-    form.append('model_id', STT_MODEL());
-    form.append('language_code', 'en');       // single-speaker English commands
-    form.append('num_speakers', '1');
-    form.append('diarize', 'false');
-    form.append('tag_audio_events', 'false');  // do not annotate (laughter) etc.
-
-    var r = await fetch('https://api.elevenlabs.io/v1/speech-to-text', {
-      method: 'POST',
-      headers: { 'xi-api-key': ELEVEN_KEY() },  // FormData sets its own Content-Type
-      body: form
-    });
-    if (!r.ok) {
-      var errTxt = await r.text();
-      console.error('Scribe error', r.status, errTxt);
-      return res.status(502).json({ error: 'Transcription failed (' + r.status + ').' });
-    }
-    var data = await r.json();
-    res.json({ text: (data && data.text ? String(data.text).trim() : '') });
+    // The Scribe call itself now lives in utils/speech.js, because the check-in
+    // recording pipeline is a background job with no request to authenticate and
+    // faking one to reach a helper is the kind of thing that looks fine until it
+    // is not. Behaviour here is unchanged.
+    var text = await speech.transcribe(audio, req.headers['content-type'] || 'audio/webm', { filename: 'command' });
+    res.json({ text: text });
   } catch (err) {
     console.error('transcribe error', err);
-    res.status(500).json({ error: 'Transcription error.' });
+    res.status(502).json({ error: err.message || 'Transcription error.' });
   }
 });
 

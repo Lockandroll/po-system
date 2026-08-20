@@ -550,7 +550,11 @@ async function processMessage(msg, conf, mailbox, knownAccounts) {
     'store_name=$7, store_number=$8, address=$9, city_state_zip=$10, service_requested=$11, service_requested_by=$12, ' +
     'contact_name=$13, contact_phone=$14, needed_by=$15, notes=$16, parsed=$17, confidence=$18, priority=$19, ' +
     'job_type=$20, claim_id=$21, vin=$22, vehicle_year=$23, vehicle_make=$24, vehicle_model=$25, vehicle_mileage=$26, ' +
-    'repair_code=$27, yard_name=$28, bay_location=$29, special_instructions=$30, nte_amount=$31, updated_at=NOW() WHERE id=$32',
+    'repair_code=$27, yard_name=$28, bay_location=$29, special_instructions=$30, nte_amount=$31, ' +
+    // The call-in details the account printed on the document. This is the whole
+    // reason the check-in feature can exist without integrating with anybody:
+    // the number is already arriving, it was just being thrown away.
+    'checkin_phone=$33, checkin_reference=$34, checkin_instructions=$35, updated_at=NOW() WHERE id=$32',
     [acct.account_id, strOrNull(parsed.account_name), strOrNull(parsed.account_number), cityCode,
      strOrNull(parsed.po_number), strOrNull(parsed.wo_number), strOrNull(parsed.store_name), strOrNull(parsed.store_number),
      strOrNull(parsed.address), strOrNull(parsed.city_state_zip), strOrNull(parsed.service_requested), strOrNull(parsed.service_requested_by),
@@ -559,7 +563,8 @@ async function processMessage(msg, conf, mailbox, knownAccounts) {
      jobType, strOrNull(parsed.claim_id), normalizeVin(parsed.vin), strOrNull(parsed.vehicle_year),
      strOrNull(parsed.vehicle_make), strOrNull(parsed.vehicle_model), strOrNull(parsed.vehicle_mileage),
      strOrNull(parsed.repair_code), strOrNull(parsed.yard_name), strOrNull(parsed.bay_location),
-     strOrNull(parsed.special_instructions), moneyOrNull(parsed.nte_amount), woId]
+     strOrNull(parsed.special_instructions), moneyOrNull(parsed.nte_amount), woId,
+     strOrNull(parsed.checkin_phone), strOrNull(parsed.checkin_reference), strOrNull(parsed.checkin_instructions)]
   );
   await addActivity(woId, null, 'event', 'received by email and parsed as a ' + jobType + ' job (confidence: ' + (strOrNull(parsed.confidence) || 'n/a') + ')');
   // A vehicle job with no VIN is the one failure worth shouting about — the VIN IS

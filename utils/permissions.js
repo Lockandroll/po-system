@@ -173,6 +173,21 @@ ALL_PERMS.push('edit_deposit');
 // city, exactly like edit_deposit gates the deposit's own city — a manager can
 // only complete deposits for employees in the cities they are assigned to.
 ALL_PERMS.push('complete_deposit_for_employee');
+// Check-in / check-out on a job. Nova calls the account's phone tree on the
+// technician's behalf and, when the tree confirms it, stamps the job.
+//
+// checkin_job IS in EMPLOYEE_PERMS, unlike most new modules here, and that is
+// deliberate rather than an oversight: a check-in a technician cannot fire is
+// not a feature. It ships inert anyway, because nothing can be dialled until an
+// admin has written and tested a profile for that account.
+//
+// The other two ship dark in the usual way, in no role's DEFAULTS. Writing a
+// phone script decides what Nova says to a customer's system, and forcing a
+// check-in asserts somebody was on site when the evidence says otherwise. Both
+// belong with admin and owner until there is a specific reason to widen them.
+ALL_PERMS.push('checkin_job');
+ALL_PERMS.push('manage_ivr_profiles', 'override_checkin');
+EMPLOYEE_PERMS.push('checkin_job');
 
 var DEFAULTS = {
   admin: '*',

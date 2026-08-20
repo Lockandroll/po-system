@@ -30,6 +30,7 @@ const { startDispatchJobs } = require('./jobs/dispatch');
 const { startArJobs } = require('./jobs/ar');
 const { startApJobs } = require('./jobs/ap');
 const { startWebhookRetry } = require('./jobs/webhookRetry');
+const { startCheckinSweeper, startCheckinRetention } = require('./jobs/checkins');
 // Guarded on purpose. utils/jobHealth.js and routes/jobHealth.js are NEW files, and
 // a new file that does not make it into the commit is how this repo has broken a
 // deploy before. A diagnostics module must never be the thing that stops Nova from
@@ -227,6 +228,20 @@ const squareLimiter = rateLimit({
 });
 app.use('/api/square', squareLimiter, require('./routes/square'));
 
+// Twilio voice callbacks for check-in. Mounted here for the LIMITER, not for a
+// raw body: one call fires three callbacks and a burst of them should not be
+// eating generalLimiter's 200/min alongside the app. The signature is verified
+// over the parsed form parameters, so unlike the two above this router is happy
+// with express.urlencoded.
+const twilioVoiceLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  max: 300,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: 'Too many Twilio callbacks.' }
+});
+app.use('/api/twilio/voice', twilioVoiceLimiter, require('./routes/twilioVoice'));
+
 // Inbound sync receiver (Pulsar's syncer and anything after it). Mounted here
 // for the same reason as the two above: utils/webhookIngest.js stores the RAW
 // bytes that arrived, and express.json() would have already consumed them.
@@ -302,6 +317,7 @@ catch (e) { console.error('[boot] routes/jobHealth.js not loaded (' + (e && e.me
 app.use('/api/tasks', require('./routes/tasks'));
 app.use('/api/task-templates', require('./routes/taskTemplates'));
 app.use('/api/work-orders', require('./routes/workOrders'));
+app.use('/api/checkins', require('./routes/checkins'));
 app.use('/api/schedule', require('./routes/schedule'));
 app.use('/api/timeclock', require('./routes/timeclock'));
 app.use('/api/push', require('./routes/push'));
@@ -498,6 +514,8 @@ function startScheduledJobs() {
   _startJob('startArJobs', startArJobs);
   _startJob('startApJobs', startApJobs);
   _startJob('startWebhookRetry', startWebhookRetry);
+  _startJob('startCheckinSweeper', startCheckinSweeper);
+  _startJob('startCheckinRetention', startCheckinRetention);
   console.log('[boot] scheduled jobs started (' + 29 + ')');
 }
 

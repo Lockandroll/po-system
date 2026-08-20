@@ -728,6 +728,48 @@
 .ai-msg-bubble.nova-bubble-in { animation:aiBubbleIn .3s ease both; }
 @keyframes aiBubbleIn { from{ opacity:0; transform:translateY(8px); } to{ opacity:1; transform:translateY(0); } }
 @media (prefers-reduced-motion: reduce){ .ai-typing-dots span,#ai-send-btn:not(:disabled),.ai-msg-bubble.nova-bubble-in{ animation:none; } }
+
+/* ---- Check-in / check-out (Job Clock, scripts, monitor) ---------------- */
+.ci-row-wrap { display:flex; gap:28px; align-items:flex-start; flex-wrap:wrap; }
+.ci-cell { flex:1 1 190px; min-width:0; }
+.clabel { font-size:11px; font-weight:600; color:var(--text-muted-color); text-transform:uppercase; letter-spacing:.04em; margin-bottom:4px; }
+.cval { font-size:17px; color:var(--text); font-weight:500; display:flex; align-items:center; gap:7px; flex-wrap:wrap; }
+.cval.cdim, .cdim { color:var(--text-muted-color); font-weight:400; }
+.csub { font-size:12px; color:var(--text-muted-color); margin-top:4px; line-height:1.55; }
+.ci-tick { color:#4ade80; font-size:15px; }
+.ci-lnk { color:var(--primary); text-decoration:none; font-size:12px; }
+.ci-spin { width:13px; height:13px; border:2px solid var(--border); border-top-color:var(--primary); border-radius:50%; display:inline-block; animation:ciSpin .8s linear infinite; }
+@keyframes ciSpin { to { transform:rotate(360deg); } }
+.ci-callout { background:var(--bg-elevated); border:1px solid var(--border); border-radius:var(--radius); padding:10px 14px; margin-top:12px; }
+.ci-row { display:flex; justify-content:space-between; gap:12px; padding:5px 0; font-size:13px; }
+.ci-k { color:var(--text-muted-color); flex:0 0 auto; }
+.ci-v { color:var(--text); font-size:15px; text-align:right; word-break:break-word; }
+.ci-tel { background:#15803d; color:#fff; border:none; text-decoration:none; }
+.ci-tel:hover { background:#166534; }
+.ci-telsm { text-decoration:none; margin-left:6px; }
+.ci-instr { margin-top:16px; padding:12px 14px; background:var(--bg-elevated); border:1px solid var(--border); border-radius:var(--radius); }
+.ci-auth { display:flex; justify-content:space-between; align-items:center; gap:16px; flex-wrap:wrap; margin-top:16px; padding:14px 16px; background:var(--bg-elevated); border:1px solid var(--border); border-radius:var(--radius); }
+.ci-tx { margin-top:14px; border:1px solid var(--border); border-radius:var(--radius); overflow:hidden; }
+.ci-tx-h { background:var(--bg-elevated); padding:8px 13px; font-size:11px; font-weight:600; color:var(--text-muted-color); text-transform:uppercase; letter-spacing:.04em; }
+.ci-tx-b { padding:12px 14px; font-size:13px; line-height:1.65; color:var(--text-dim); font-style:italic; }
+.ci-hl { background:#10281a; color:#4ade80; border-radius:3px; padding:1px 4px; font-style:normal; }
+.ci-scripts { border:1px solid var(--border); border-radius:var(--radius); overflow:hidden; }
+.ci-srow { display:flex; align-items:center; gap:12px; padding:9px 13px; border-bottom:1px solid var(--border-light); font-size:13px; flex-wrap:wrap; }
+.ci-srow:last-child { border-bottom:none; }
+.ci-snum { width:20px; height:20px; border-radius:50%; background:var(--bg-elevated); color:var(--text-muted-color); font-size:11px; display:inline-flex; align-items:center; justify-content:center; flex:0 0 auto; }
+.ci-sact { color:var(--text); background:var(--bg-elevated); padding:3px 8px; border-radius:4px; font-size:12px; min-width:150px; }
+.ci-sdesc { color:var(--text-muted-color); flex:1; min-width:160px; }
+.ci-sx { color:var(--text-muted-color); cursor:pointer; padding:0 4px; }
+.ci-sx:hover { color:var(--danger); }
+.ci-sadd .ci-snum { color:var(--primary); }
+.ci-prev { background:var(--bg-elevated); border:1px solid var(--border); border-radius:var(--radius); padding:12px 14px; margin-top:14px; }
+.ci-capbox { border:1px solid var(--border); border-radius:var(--radius); padding:14px 16px; margin-top:6px; }
+.ci-kpis { display:flex; gap:12px; margin-bottom:16px; flex-wrap:wrap; }
+.ci-kpi { flex:1 1 150px; background:var(--bg-card); border:1px solid var(--border); border-radius:var(--radius); padding:14px 16px; }
+.ci-kpi-n { font-size:26px; font-weight:700; color:var(--text); }
+.ci-kpi-l { font-size:12px; color:var(--text-muted-color); margin-top:2px; }
+.mono { font-family:'Fira Code', ui-monospace, monospace; }
+@media (prefers-reduced-motion: reduce){ .ci-spin { animation:none; } }
 </style>
 <script>
 if ('serviceWorker' in navigator) {

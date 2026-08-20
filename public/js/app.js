@@ -2,7 +2,7 @@
 // public/sw.js (the only thing bumped each deploy) — the badge asks the active
 // service worker for it at runtime. This value is just the fallback shown when no
 // service worker is available (e.g. very first visit before it installs).
-var APP_VERSION = 'v117';
+var APP_VERSION = 'v118';
 var _resolvedAppVersion = null;
 
 // Ask the active service worker for its CACHE_VERSION (without the 'nova-' prefix).
@@ -803,6 +803,9 @@ function navModel() {
       can('search_dispatch') ? navItem('call-search', 'Call Search', icons.search || NAVI.audit) : null,
       can('view_tech_locations') ? navItem('live-map', 'Live Map', icons.map) : null,
       can('view_work_orders') ? navItem('work-orders', 'Work Orders', NAVI.box, ['work-orders', 'view-work-order', 'new-work-order']) : null,
+      // Check-in lives beside Work Orders because that is where the number it
+      // dials comes from. Managers get the monitor; only an admin writes a script.
+      can('manage_work_orders') ? navItem('checkin-monitor', 'Check-Ins', NAVI.box, ['checkin-monitor', 'checkin-profiles', 'checkin-profile']) : null,
       can('view_signoffs') ? navItem('signoffs', 'Sign-Off Sheets', NAVI.signoff, ['signoffs', 'new-signoff', 'edit-signoff', 'view-signoff', 'complete-signoff']) : null,
       can('view_ptt') ? navItem('ptt', 'Radio', NAVI.mic) : null,
       (can('view_vendors') || can('manage_vendors')) ? navItem('vendors', 'Accounts', NAVI.accounts) : null,
@@ -1165,6 +1168,9 @@ async function render() {
   else if (state.currentView === 'edit-task-template') await renderTaskTemplateForm(content, state.currentParam);
   else if (state.currentView === 'work-orders') await renderWorkOrders(content);
   else if (state.currentView === 'view-work-order') await renderViewWorkOrder(content, state.currentParam);
+  else if (state.currentView === 'checkin-monitor') await renderCheckinMonitor(content);
+  else if (state.currentView === 'checkin-profiles') await renderCheckinProfiles(content);
+  else if (state.currentView === 'checkin-profile') await renderCheckinProfile(content, state.currentParam);
   else if (state.currentView === 'new-work-order') await renderWorkOrderForm(content);
   else if (state.currentView === 'schedule') await renderSchedule(content);
   else if (state.currentView === 'schedule-admin') await renderScheduleAdmin(content);
@@ -3199,6 +3205,10 @@ async function renderRoles(el) {
       {k:'manage_ap',l:'Add and edit bills, mark them paid, and set AP reminder settings'} ] },
     { group:'Call Search', gate:'search_dispatch', perms:[ {k:'search_dispatch',l:'Search call history - only calls they were on'}, {k:'search_dispatch_city',l:'Search every call in their home city'}, {k:'search_dispatch_all',l:'Search every call in every city, and export CSV'}, {k:'view_customer_pii',l:'See full customer names &amp; addresses in search (off = shortened)'} ] },
     { group:'Live Map', gate:'view_tech_locations', perms:[ {k:'view_tech_locations',l:'See where the crew is (live map &amp; route history)'}, {k:'manage_tech_locations',l:'Change tracking settings &amp; erase a tech&#39;s location history'} ] },
+    { group:'Check-In / Check-Out', perms:[
+      {k:'checkin_job',l:'Check a job in and out (this is the technician&#39;s row - without it the buttons do not exist)'},
+      {k:'manage_ivr_profiles',l:'Write and test the phone scripts Nova dials. Ships off for everyone but admin'},
+      {k:'override_checkin',l:'Force a check-in against the evidence. Ships off for everyone but admin'} ] },
     { group:'Fleet &amp; Vehicles', perms:[ {k:'manage_vehicles',l:'Manage fleet registry'} ] },
     { group:'Vendors / Accounts', gate:'view_vendors', perms:[ {k:'view_vendors',l:'View / access module'}, {k:'manage_vendors',l:'Manage vendors and accounts'} ] },
     { group:'Vehicle Inspections', gate:'view_inspections', perms:[ {k:'view_inspections',l:'View / access module (own vehicle inspections)'}, {k:'manage_inspections',l:'Manage checklist, review, edit &amp; delete inspections'} ] },
@@ -17271,6 +17281,7 @@ async function renderViewWorkOrder(el, id) {
     '<div id="wo-detail-error"></div>' +
     woSupersededBanner(w) +
     woSummaryCard(w) +
+    '<div id="checkin-host"></div>' +
     assignCard +
     (actions ? '<div class="card mb-4"><div class="card-body"><div class="flex-gap" style="flex-wrap:wrap">' + actions + '</div></div></div>' : '') +
     woNteCard(w, id, manage) +
@@ -17288,6 +17299,9 @@ async function renderViewWorkOrder(el, id) {
         ? w.activity.map(function (a) { return '<div style="font-size:13px;padding:6px 0;border-bottom:1px solid var(--border-color)"><span style="color:var(--text-muted-color)">' + formatDate(a.created_at) + ' &middot; ' + escHtml(a.user_name || 'System') + '</span> — ' + escHtml(a.body || '') + '</div>'; }).join('')
         : '<div style="color:var(--text-muted-color);font-size:13px">No activity yet.</div>') +
     '</div></div>';
+  // The Job Clock loads after the page so a slow check-in lookup never holds up
+  // the work order itself.
+  checkinMount('checkin-host', id);
 }
 
 // Sign-off trips on a work order. Renders only when the job actually took more than one visit —
@@ -17943,6 +17957,637 @@ async function openSignoffWorkOrderModal(id) {
   }
 }
 
+
+// ===========================================================================
+// Check-In / Check-Out
+//
+// National accounts dispatch by email work order, and the work order names the
+// number the technician has to call on arrival and again on leaving. Nova has
+// already read that document, so the number, the vendor id and the instructions
+// are sitting in the database; this is the part that puts them in the hand of
+// the person standing at the door, and offers to make the call for him.
+//
+// The one rule that shapes every screen below: Nova only says a job is checked
+// in when the phone tree said so, out loud, on a recording. A call that merely
+// connected is a FAILURE here, loudly, because a false check-in is worse than a
+// missing one - nobody goes looking for it until the invoice is denied.
+// ===========================================================================
+
+var _checkinCfg = null;
+var _checkinTimer = null;
+
+async function checkinConfig() {
+  if (_checkinCfg) return _checkinCfg;
+  try { _checkinCfg = await api('GET', '/checkins/config'); }
+  catch (e) { _checkinCfg = { voice: { configured: false }, can_call: false, fields: [] }; }
+  return _checkinCfg;
+}
+
+function checkinStopPolling() {
+  if (_checkinTimer) { clearTimeout(_checkinTimer); _checkinTimer = null; }
+}
+
+function checkinLabel(dir) { return dir === 'out' ? 'Check Out' : 'Check In'; }
+
+function checkinStamp(ev) {
+  if (!ev) return null;
+  var t = ev.confirmed_at || null;
+  if (!t) return null;
+  var d = new Date(t);
+  return d.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }) + ' &middot; ' + formatDate(t);
+}
+
+function checkinMethodLine(ev) {
+  if (!ev) return '';
+  if (ev.status === 'manual') return 'Called in by hand' + (ev.requested_by_name ? ' &middot; ' + escHtml(ev.requested_by_name) : '');
+  var bits = ['Phone'];
+  if (ev.status === 'confirmed') bits.push('confirmed');
+  if (ev.call_duration) bits.push(ev.call_duration + 's');
+  return bits.join(' &middot; ');
+}
+
+// One cell of the Job Clock: what happened, when, and how we know.
+function checkinCell(state, dir) {
+  var ev = dir === 'out' ? state.checkout : state.checkin;
+  var stampAt = dir === 'out' ? state.checked_out_at : state.checked_in_at;
+  var label = checkinLabel(dir);
+  var head = '<div class="clabel">' + label + '</div>';
+
+  if (ev && (ev.status === 'pending' || ev.status === 'dialing' || ev.status === 'in_progress')) {
+    return '<div class="ci-cell">' + head +
+      '<div class="cval"><span class="ci-spin"></span> Calling ' + escHtml(ev.phone_number || '') + '&hellip;</div>' +
+      '<div class="csub">Nova will not mark this done until the tree confirms it.</div></div>';
+  }
+  if (ev && ev.status === 'failed') {
+    return '<div class="ci-cell">' + head +
+      '<div class="cval" style="color:#fca5a5">Not ' + (dir === 'out' ? 'checked out' : 'checked in') + '</div>' +
+      '<div class="csub">' + escHtml(ev.failure_reason || 'The call did not confirm.') + '</div></div>';
+  }
+  if (ev && (ev.status === 'confirmed' || ev.status === 'manual')) {
+    return '<div class="ci-cell">' + head +
+      '<div class="cval"><span class="ci-tick">&#10003;</span> ' + (checkinStamp(ev) || formatDate(stampAt)) + '</div>' +
+      '<div class="csub">' + checkinMethodLine(ev) +
+        (ev.transcript || ev.recording_key
+          ? '<br /><a href="#" class="ci-lnk" onclick="event.preventDefault();openCheckinRecord(' + ev.id + ')">View ' + (ev.status === 'manual' ? 'record' : 'call record') + '</a>'
+          : '') +
+      '</div></div>';
+  }
+  return '<div class="ci-cell">' + head +
+    '<div class="cval cdim">Not ' + (dir === 'out' ? 'checked out' : 'checked in') + '</div></div>';
+}
+
+// The failure panel. Deliberately the loudest thing on the card, and it hands
+// over the number, the id and a dial button rather than telling somebody to go
+// and find them.
+function checkinFailureHtml(state, dir) {
+  var ev = dir === 'out' ? state.checkout : state.checkin;
+  if (!ev || ev.status !== 'failed') return '';
+  var num = ev.phone_number || state.checkin_phone || '';
+  var tel = String(num).replace(/[^0-9+]/g, '');
+  return '<div class="alert alert-error" style="margin:14px 0 0">' +
+      '<b>Not ' + (dir === 'out' ? 'checked out' : 'checked in') + '.</b> ' +
+      escHtml(ev.failure_reason || 'Nova could not confirm the call.') +
+      ' <b>Call it in yourself now.</b>' +
+    '</div>' +
+    '<div class="ci-callout">' +
+      (num ? '<div class="ci-row"><span class="ci-k">Number</span><span class="ci-v mono">' + escHtml(num) + '</span></div>' : '') +
+      (state.checkin_reference ? '<div class="ci-row"><span class="ci-k">Your ID</span><span class="ci-v mono">' + escHtml(state.checkin_reference) + '</span></div>' : '') +
+      (state.wo_number ? '<div class="ci-row"><span class="ci-k">Work order</span><span class="ci-v mono">' + escHtml(state.wo_number) + '</span></div>' : '') +
+    '</div>' +
+    '<div class="flex-gap" style="margin-top:12px;flex-wrap:wrap">' +
+      (tel ? '<a class="btn ci-tel" href="tel:' + escHtml(tel) + '">&#128222;&nbsp; Call It In Yourself</a>' : '') +
+      (can('checkin_job') ? '<button class="btn btn-secondary" onclick="checkinFire(' + state.work_order_id + ',&#39;' + dir + '&#39;,this)">Have Nova retry</button>' : '') +
+      (can('checkin_job') ? '<button class="btn btn-secondary" onclick="checkinManual(' + state.work_order_id + ',&#39;' + dir + '&#39;,this)">I called in, mark it done</button>' : '') +
+      (ev.transcript ? '<button class="btn btn-secondary" onclick="openCheckinRecord(' + ev.id + ')">What Nova heard</button>' : '') +
+    '</div>';
+}
+
+// The instructions the account printed on the work order, verbatim. Shown even
+// when Nova cannot dial, because the whole point is that the technician should
+// never have to go hunting through an email at a customer's door.
+function checkinInstructionsHtml(state) {
+  if (!state.checkin_instructions && !state.checkin_phone) return '';
+  var tel = String(state.checkin_phone || '').replace(/[^0-9+]/g, '');
+  return '<div class="ci-instr">' +
+    '<div class="clabel">From the work order</div>' +
+    (state.checkin_phone
+      ? '<div style="font-size:15px;margin:2px 0 6px"><span class="mono">' + escHtml(state.checkin_phone) + '</span>' +
+        (state.checkin_reference ? ' <span class="cdim">&middot; ID ' + escHtml(state.checkin_reference) + '</span>' : '') +
+        (tel ? ' <a class="btn btn-secondary btn-sm ci-telsm" href="tel:' + escHtml(tel) + '">&#128222; Call</a>' : '') +
+        '</div>'
+      : '') +
+    (state.checkin_instructions ? '<div class="csub" style="white-space:pre-wrap;line-height:1.6">' + escHtml(state.checkin_instructions) + '</div>' : '') +
+    '</div>';
+}
+
+// The whole card. Rendered from one payload so the work order page and the
+// sign-off sheet cannot drift apart.
+function checkinCardHtml(state) {
+  if (!state) return '';
+  var done = state.checkin && (state.checkin.status === 'confirmed' || state.checkin.status === 'manual');
+  var outDone = state.checkout && (state.checkout.status === 'confirmed' || state.checkout.status === 'manual');
+  var busy = function (ev) { return ev && (ev.status === 'pending' || ev.status === 'dialing' || ev.status === 'in_progress'); };
+  var anyBusy = busy(state.checkin) || busy(state.checkout);
+
+  var actions = '';
+  if (can('checkin_job') && !anyBusy) {
+    if (!done) {
+      actions = state.can_call
+        ? '<button class="btn btn-primary" style="white-space:nowrap" onclick="checkinFire(' + state.work_order_id + ',&#39;in&#39;,this)">&#9654;&nbsp; Check In Now</button>'
+        : '<button class="btn btn-secondary" style="white-space:nowrap" onclick="checkinManual(' + state.work_order_id + ',&#39;in&#39;,this)">Mark checked in</button>';
+    } else if (!outDone) {
+      actions = state.can_call
+        ? '<button class="btn btn-primary" style="white-space:nowrap" onclick="checkinFire(' + state.work_order_id + ',&#39;out&#39;,this)">&#9654;&nbsp; Check Out Now</button>'
+        : '<button class="btn btn-secondary" style="white-space:nowrap" onclick="checkinManual(' + state.work_order_id + ',&#39;out&#39;,this)">Mark checked out</button>';
+    }
+  }
+
+  var onsite = '';
+  if (state.checked_in_at && state.checked_out_at) {
+    var mins = Math.max(0, Math.round((new Date(state.checked_out_at) - new Date(state.checked_in_at)) / 60000));
+    onsite = '<div class="ci-cell"><div class="clabel">On site</div><div class="cval">' +
+      (mins >= 60 ? Math.floor(mins / 60) + 'h ' + (mins % 60) + 'm' : mins + 'm') + '</div></div>';
+  }
+
+  var auth = state.auth_number
+    ? '<div class="ci-auth"><div><div class="clabel">' +
+        escHtml((state.profile && state.profile.capture_label) || 'Authorization number') + '</div>' +
+        '<div class="mono" style="font-size:18px;color:var(--text);margin-top:2px">' + escHtml(state.auth_number) + '</div></div>' +
+        '<div class="csub" style="text-align:right">Read back by the tree<br />and kept on this job</div></div>'
+    : '';
+
+  var note = '';
+  if (!state.can_call && state.blocked_reason && can('checkin_job')) {
+    note = '<div class="csub" style="margin-top:12px">' + state.blocked_reason +
+      (can('manage_ivr_profiles') ? ' <a href="#" class="ci-lnk" onclick="event.preventDefault();navigate(&#39;checkin-profiles&#39;)">Set one up</a>' : '') +
+      '</div>';
+  }
+  if (state.number_mismatch) {
+    note += '<div class="alert alert-warn" style="margin:12px 0 0">This work order prints <b>' +
+      escHtml(state.checkin_phone) + '</b>, but the saved script dials <b>' +
+      escHtml(state.profile ? state.profile.phone_number : '') + '</b>. Nova dials the saved one. ' +
+      'If the account changed its line, somebody should update the profile.</div>';
+  }
+
+  return '<div class="card mb-4" id="checkin-card"><div class="card-header">' +
+      '<span class="card-title">Job Clock</span>' +
+      '<span style="font-size:12px;color:var(--text-muted-color)">' + escHtml(state.account_name || '') +
+        (state.profile ? ' &middot; ' + (state.profile.method === 'phone' ? 'phone tree' : 'off') : '') + '</span>' +
+    '</div><div class="card-body">' +
+      '<div class="ci-row-wrap">' + checkinCell(state, 'in') + checkinCell(state, 'out') + onsite +
+        (actions ? '<div class="ci-cell" style="flex:0 0 auto">' + actions + '</div>' : '') +
+      '</div>' +
+      checkinFailureHtml(state, 'in') + checkinFailureHtml(state, 'out') +
+      auth + checkinInstructionsHtml(state) + note +
+    '</div></div>';
+}
+
+// Draws the card into a host element and keeps it live while a call is running.
+async function checkinMount(hostId, workOrderId) {
+  var host = document.getElementById(hostId);
+  if (!host) return;
+  var cfg = await checkinConfig();
+  var state;
+  try { state = await api('GET', '/checkins/state/' + workOrderId); }
+  catch (e) { host.innerHTML = ''; return; }
+  // Nothing to say: no profile, nothing printed on the work order, and no
+  // history. Drawing an empty card would just be furniture.
+  if (!state.profile && !state.checkin_phone && !state.checkin && !state.checkout) { host.innerHTML = ''; return; }
+  host.innerHTML = checkinCardHtml(state);
+
+  var busy = function (ev) { return ev && (ev.status === 'pending' || ev.status === 'dialing' || ev.status === 'in_progress'); };
+  checkinStopPolling();
+  if (busy(state.checkin) || busy(state.checkout)) {
+    _checkinTimer = setTimeout(function () {
+      if (document.getElementById(hostId)) checkinMount(hostId, workOrderId);
+    }, 4000);
+  }
+}
+
+function checkinHostId() { return 'checkin-host'; }
+
+async function checkinFire(workOrderId, dir, btn) {
+  if (btn) { btn.disabled = true; btn.textContent = 'Calling...'; }
+  var gps = await checkinGps();
+  try {
+    await api('POST', '/checkins/' + workOrderId + '/' + dir, gps || {});
+  } catch (err) {
+    if (btn) { btn.disabled = false; }
+    novaAlert(err.message);
+  }
+  checkinMount(checkinHostId(), workOrderId);
+}
+
+async function checkinManual(workOrderId, dir, btn) {
+  var word = dir === 'out' ? 'checked out' : 'checked in';
+  if (!await novaConfirm('Record that you called this in yourself and are ' + word + '?')) return;
+  if (btn) btn.disabled = true;
+  var gps = await checkinGps();
+  try {
+    await api('POST', '/checkins/' + workOrderId + '/' + dir + '/manual', gps || {});
+  } catch (err) { novaAlert(err.message); }
+  if (btn) btn.disabled = false;
+  checkinMount(checkinHostId(), workOrderId);
+}
+
+// Best effort, and quick. A check-in must never be blocked waiting on a GPS fix
+// that is not coming; the coordinates are supporting evidence, not the point.
+function checkinGps() {
+  return new Promise(function (resolve) {
+    if (!navigator.geolocation) return resolve(null);
+    var done = false;
+    var t = setTimeout(function () { if (!done) { done = true; resolve(null); } }, 4000);
+    navigator.geolocation.getCurrentPosition(function (p) {
+      if (done) return; done = true; clearTimeout(t);
+      resolve({ lat: p.coords.latitude, lon: p.coords.longitude, accuracy: p.coords.accuracy });
+    }, function () { if (!done) { done = true; clearTimeout(t); resolve(null); } },
+      { enableHighAccuracy: true, timeout: 3500, maximumAge: 15000 });
+  });
+}
+
+// The evidence. On a phone call this is the recording and the transcript with
+// the matched phrase highlighted; on a manual entry it is who said they called.
+async function openCheckinRecord(eventId) {
+  var ov = document.createElement('div');
+  ov.className = 'nova-dialog-overlay';
+  ov.innerHTML = '<div class="nova-dlg" style="max-width:640px;text-align:left"><div class="nova-dlg-title">Check-in record</div>' +
+    '<div style="font-size:13px;color:var(--text-muted-color);margin-top:8px">Loading&hellip;</div></div>';
+  document.body.appendChild(ov);
+  function close() {
+    ov.classList.add('closing');
+    document.removeEventListener('keydown', onKey);
+    setTimeout(function () { if (ov.parentNode) ov.parentNode.removeChild(ov); }, 140);
+  }
+  function onKey(e) { if (e.key === 'Escape') { e.preventDefault(); close(); } }
+  document.addEventListener('keydown', onKey);
+  ov.addEventListener('mousedown', function (e) { if (e.target === ov) close(); });
+
+  var ev;
+  try { ev = await api('GET', '/checkins/event/' + eventId); }
+  catch (err) {
+    ov.querySelector('.nova-dlg').innerHTML = '<div class="nova-dlg-title">Check-in record</div>' +
+      '<div class="alert alert-error" style="margin-top:14px">' + escHtml(err.message) + '</div>' +
+      '<div class="nova-dlg-actions"><button class="btn btn-secondary" id="ci-close">Close</button></div>';
+    var b0 = ov.querySelector('#ci-close'); if (b0) b0.addEventListener('click', close);
+    return;
+  }
+
+  var statusBadge = ev.status === 'confirmed' ? '<span class="badge badge-completed">Confirmed</span>'
+    : ev.status === 'manual' ? '<span class="badge badge-pending">Called in by hand</span>'
+    : ev.status === 'failed' ? '<span class="badge badge-denied">Failed</span>'
+    : '<span class="badge badge-active">In progress</span>';
+
+  // Show WHY it was accepted by highlighting the phrase that matched. If Nova
+  // cannot point at the words, it should not have said yes.
+  var body = escHtml(ev.transcript || '');
+  if (ev.transcript && ev.confirmation_text) {
+    var idx = ev.transcript.toLowerCase().indexOf(String(ev.confirmation_text).toLowerCase());
+    if (idx !== -1) {
+      body = escHtml(ev.transcript.slice(0, idx)) +
+        '<span class="ci-hl">' + escHtml(ev.transcript.substr(idx, ev.confirmation_text.length)) + '</span>' +
+        escHtml(ev.transcript.slice(idx + ev.confirmation_text.length));
+    }
+  }
+
+  ov.querySelector('.nova-dlg').innerHTML =
+    '<div class="nova-dlg-title">' + (ev.direction === 'out' ? 'Check-out' : 'Check-in') + ' record ' + statusBadge + '</div>' +
+    '<div style="font-size:13px;color:var(--text-muted-color);margin:6px 0 14px">' +
+      escHtml(ev.phone_number || 'no call placed') +
+      (ev.requested_by_name ? ' &middot; ' + escHtml(ev.requested_by_name) : '') +
+      (ev.requested_at ? ' &middot; ' + formatDate(ev.requested_at) : '') +
+      (ev.call_duration ? ' &middot; ' + ev.call_duration + 's' : '') +
+    '</div>' +
+    '<div class="ci-callout">' +
+      (ev.script_preview ? '<div class="ci-row"><span class="ci-k">What Nova dialled</span><span class="ci-v mono" style="font-size:12px">' + escHtml(ev.script_preview) + '</span></div>' : '') +
+      (ev.gps_lat ? '<div class="ci-row"><span class="ci-k">Location at dial</span><span class="ci-v" style="font-size:13px">' + escHtml(String(ev.gps_lat)) + ', ' + escHtml(String(ev.gps_lon)) + (ev.gps_accuracy ? ' (&plusmn;' + Math.round(ev.gps_accuracy) + 'm)' : '') + '</span></div>' : '') +
+      (ev.auth_number ? '<div class="ci-row"><span class="ci-k">Number read back</span><span class="ci-v mono">' + escHtml(ev.auth_number) + '</span></div>' : '') +
+      (ev.failure_reason ? '<div class="ci-row"><span class="ci-k">Why it failed</span><span class="ci-v" style="font-size:13px;color:#fca5a5">' + escHtml(ev.failure_reason) + '</span></div>' : '') +
+    '</div>' +
+    (ev.transcript
+      ? '<div class="ci-tx"><div class="ci-tx-h">What Nova heard</div><div class="ci-tx-b">' + body + '</div></div>'
+      : '<div class="csub" style="margin-top:12px">No recording was transcribed for this one.</div>') +
+    (ev.recording_url ? '<audio controls preload="none" src="' + escHtml(ev.recording_url) + '" style="width:100%;margin-top:12px"></audio>' : '') +
+    '<div class="nova-dlg-actions"><button class="btn btn-secondary" id="ci-close">Close</button></div>';
+  var b = ov.querySelector('#ci-close');
+  if (b) b.addEventListener('click', close);
+}
+
+// ---------------------------------------------------------------------------
+// Account setup: the phone script.
+//
+// An account's tree is data, so a changed menu is an edit here and not a deploy.
+// Every "send" step points at a FIELD on the work order rather than a typed
+// value, because the id and the job number are already printed on the document
+// Nova parsed - nobody should be retyping them per account.
+// ---------------------------------------------------------------------------
+
+var _ciProfile = null;
+var _ciFields = [];
+var _ciVendors = [];
+
+function ciStepRow(step, i, which) {
+  var t = step.type;
+  var act = t === 'wait' ? 'wait ' + (step.seconds || 3) + 's'
+    : t === 'press' ? 'press ' + (step.digits || '')
+    : t === 'send' ? 'send ' + (step.suffix ? '&hellip; then ' + escHtml(step.suffix) : '&hellip;')
+    : t === 'listen' ? 'listen ' + (step.seconds || 20) + 's' : escHtml(t);
+  var right;
+  if (t === 'send') {
+    right = '<select onchange="ciSetField(&#39;' + which + '&#39;,' + i + ',this.value)" style="max-width:260px">' +
+      _ciFields.map(function (f) {
+        return '<option value="' + f.key + '"' + (step.field === f.key ? ' selected' : '') + '>' + escHtml(f.label) + '</option>';
+      }).join('') + '</select>';
+  } else if (t === 'press') {
+    right = '<input type="text" value="' + escHtml(step.digits || '') + '" placeholder="e.g. 1" ' +
+      'onchange="ciSetDigits(&#39;' + which + '&#39;,' + i + ',this.value)" style="max-width:120px" />';
+  } else if (t === 'wait' || t === 'listen') {
+    right = '<input type="number" min="1" max="' + (t === 'listen' ? 120 : 60) + '" value="' + (step.seconds || (t === 'listen' ? 20 : 3)) + '" ' +
+      'onchange="ciSetSeconds(&#39;' + which + '&#39;,' + i + ',this.value)" style="max-width:110px" /> <span class="cdim">seconds</span>';
+  } else { right = ''; }
+  return '<div class="ci-srow"><span class="ci-snum">' + (i + 1) + '</span>' +
+    '<span class="mono ci-sact">' + act + '</span>' +
+    '<span class="ci-sdesc">' + right + '</span>' +
+    '<span class="ci-sx" title="Remove" onclick="ciDelStep(&#39;' + which + '&#39;,' + i + ')">&times;</span></div>';
+}
+
+function ciStepsHtml(which) {
+  var steps = (_ciProfile[which] || []);
+  return '<div class="ci-scripts">' +
+    steps.map(function (s, i) { return ciStepRow(s, i, which); }).join('') +
+    '<div class="ci-srow ci-sadd">' +
+      '<span class="ci-snum">+</span>' +
+      '<span class="ci-sdesc" style="display:flex;gap:6px;flex-wrap:wrap">' +
+        '<button class="btn btn-secondary btn-sm" onclick="ciAddStep(&#39;' + which + '&#39;,&#39;wait&#39;)">Wait</button>' +
+        '<button class="btn btn-secondary btn-sm" onclick="ciAddStep(&#39;' + which + '&#39;,&#39;press&#39;)">Press a key</button>' +
+        '<button class="btn btn-secondary btn-sm" onclick="ciAddStep(&#39;' + which + '&#39;,&#39;send&#39;)">Send a field</button>' +
+        '<button class="btn btn-secondary btn-sm" onclick="ciAddStep(&#39;' + which + '&#39;,&#39;listen&#39;)">Listen</button>' +
+      '</span>' +
+    '</div></div>';
+}
+
+function ciEnsure(which) { if (!Array.isArray(_ciProfile[which])) _ciProfile[which] = []; }
+function ciAddStep(which, type) {
+  ciEnsure(which);
+  var step = type === 'wait' ? { type: 'wait', seconds: 3 }
+    : type === 'press' ? { type: 'press', digits: '1' }
+    : type === 'send' ? { type: 'send', field: (_ciFields[0] || {}).key || 'wo_number', suffix: '#' }
+    : { type: 'listen', seconds: 20 };
+  _ciProfile[which].push(step);
+  ciRedrawSteps(which);
+}
+function ciDelStep(which, i) { ciEnsure(which); _ciProfile[which].splice(i, 1); ciRedrawSteps(which); }
+function ciSetField(which, i, v) { ciEnsure(which); _ciProfile[which][i].field = v; }
+function ciSetDigits(which, i, v) { ciEnsure(which); _ciProfile[which][i].digits = v; }
+function ciSetSeconds(which, i, v) { ciEnsure(which); _ciProfile[which][i].seconds = parseInt(v, 10) || 1; }
+function ciRedrawSteps(which) {
+  var host = document.getElementById('ci-steps-' + which);
+  if (host) host.innerHTML = ciStepsHtml(which);
+}
+
+async function renderCheckinProfiles(el) {
+  if (!can('manage_ivr_profiles')) { el.innerHTML = '<div class="alert alert-error">Access denied.</div>'; return; }
+  el.innerHTML = '<div class="loading">Loading&hellip;</div>';
+  var rows = [], cfg = await checkinConfig();
+  try { rows = await api('GET', '/checkins/profiles'); } catch (e) { rows = []; }
+
+  var warn = cfg.voice && cfg.voice.configured
+    ? (cfg.voice.using_sms_number
+        ? '<div class="alert alert-warn">Voice is running on <b>TWILIO_FROM_NUMBER</b>, the same number that sends two-factor texts. Set <b>TWILIO_VOICE_FROM_NUMBER</b> to a dedicated number so check-in calls cannot die with it.</div>'
+        : '')
+    : '<div class="alert alert-warn">Twilio voice is not configured yet, so nothing here can dial. Set <b>TWILIO_ACCOUNT_SID</b>, <b>TWILIO_AUTH_TOKEN</b>, <b>TWILIO_VOICE_FROM_NUMBER</b> and <b>TWILIO_WEBHOOK_BASE</b> in Railway.</div>';
+
+  el.innerHTML =
+    '<div class="page-header"><div><div class="page-title">Check-In Scripts</div>' +
+      '<div class="page-subtitle">What Nova presses when it calls an account&#39;s check-in line</div></div>' +
+      '<div class="flex-gap"><button class="btn btn-primary" onclick="navigate(&#39;checkin-profile&#39;,0)">+ New Script</button></div></div>' +
+    warn +
+    (rows.length
+      ? '<div class="card"><div class="table-wrap"><table><thead><tr><th>Account</th><th>Number</th><th>Status</th><th>Last tested</th><th></th></tr></thead><tbody>' +
+        rows.map(function (p) {
+          var badge = p.needs_review ? '<span class="badge badge-denied">Needs review</span>'
+            : p.method !== 'phone' ? '<span class="badge badge-draft">Off</span>'
+            : p.active ? '<span class="badge badge-completed">Live</span>'
+            : '<span class="badge badge-pending">Not tested</span>';
+          return '<tr><td>' + escHtml(p.vendor_name || p.name || '') + '</td>' +
+            '<td class="mono">' + escHtml(p.phone_number || '') + '</td>' +
+            '<td>' + badge + (p.needs_review && p.needs_review_reason ? '<div class="csub">' + escHtml(p.needs_review_reason) + '</div>' : '') + '</td>' +
+            '<td>' + (p.last_test_at ? formatDate(p.last_test_at) : '<span class="cdim">never</span>') + '</td>' +
+            '<td><button class="btn btn-secondary btn-sm" onclick="navigate(&#39;checkin-profile&#39;,' + p.id + ')">Open</button></td></tr>';
+        }).join('') + '</tbody></table></div></div>'
+      : '<div class="card"><div class="card-body"><div class="empty-state" style="padding:28px">' +
+        '<h3>No scripts yet</h3><p>A script tells Nova which keys to press when it calls an account&#39;s check-in line. ' +
+        'The number and the ID come off the work order, so all you write here is the menu.</p></div></div></div>');
+}
+
+async function renderCheckinProfile(el, id) {
+  if (!can('manage_ivr_profiles')) { el.innerHTML = '<div class="alert alert-error">Access denied.</div>'; return; }
+  el.innerHTML = '<div class="loading">Loading&hellip;</div>';
+  var cfg = await checkinConfig();
+  _ciFields = cfg.fields || [];
+  try { _ciVendors = await api('GET', '/vendors'); } catch (e) { _ciVendors = []; }
+  if (id) {
+    try { _ciProfile = await api('GET', '/checkins/profiles/' + id); }
+    catch (e) { el.innerHTML = '<div class="alert alert-error">' + escHtml(e.message) + '</div>'; return; }
+  } else {
+    _ciProfile = { id: null, method: 'phone', site_radius_ft: 500, checkin_steps: [], checkout_steps: [],
+      confirm_phrases: 'you are checked in; check in successful', checkout_confirm_phrases: 'check out complete',
+      capture_label: 'Authorization number' };
+  }
+  ciEnsure('checkin_steps'); ciEnsure('checkout_steps');
+
+  var vendorOpts = '<option value="">&mdash; pick an account &mdash;</option>' + _ciVendors.map(function (v) {
+    return '<option value="' + v.id + '"' + (String(_ciProfile.vendor_id) === String(v.id) ? ' selected' : '') + '>' + escHtml(v.name) + '</option>';
+  }).join('');
+
+  el.innerHTML =
+    '<div class="page-header"><div><div class="page-title">' + escHtml(_ciProfile.vendor_name || _ciProfile.name || 'New check-in script') + '</div>' +
+      '<div class="page-subtitle">Account setup &middot; Check-In / Check-Out</div></div>' +
+      '<div class="flex-gap"><button class="btn btn-secondary" onclick="navigate(&#39;checkin-profiles&#39;)">&larr; Back</button>' +
+      '<button class="btn btn-primary" id="ci-save" onclick="ciSaveProfile()">Save</button></div></div>' +
+    '<div id="ci-err"></div>' +
+    (_ciProfile.needs_review
+      ? '<div class="alert alert-error"><b>Flagged for review.</b> ' + escHtml(_ciProfile.needs_review_reason || '') +
+        ' Nova will not dial this account until somebody listens to the recording and saves this script again.</div>' : '') +
+
+    '<div class="card mb-4"><div class="card-header"><span class="card-title">1. How Nova checks in</span></div><div class="card-body">' +
+      '<div class="form-row" style="margin-bottom:0">' +
+        '<div class="form-group"><label>Account</label><select id="ci-vendor">' + vendorOpts + '</select></div>' +
+        '<div class="form-group"><label>Method</label><select id="ci-method">' +
+          '<option value="phone"' + (_ciProfile.method === 'phone' ? ' selected' : '') + '>Phone tree (DTMF)</option>' +
+          '<option value="off"' + (_ciProfile.method === 'off' ? ' selected' : '') + '>Off (this account does not require check-in)</option>' +
+        '</select></div>' +
+        '<div class="form-group"><label>Number to call</label><input type="text" id="ci-phone" value="' + escHtml(_ciProfile.phone_number || '') + '" placeholder="(800) 555-0142" /></div>' +
+      '</div>' +
+      '<div class="csub">Nova only ever dials the number saved here, never one typed into a request. That is what guarantees it cannot be talked into calling somewhere else.</div>' +
+    '</div></div>' +
+
+    '<div class="card mb-4"><div class="card-header"><span class="card-title">2. The steps</span>' +
+      '<span style="font-size:12px;color:var(--text-muted-color)">Values come off the work order. Nobody types them.</span></div><div class="card-body">' +
+      '<div class="clabel" style="margin-bottom:6px">Check-in</div><div id="ci-steps-checkin_steps">' + ciStepsHtml('checkin_steps') + '</div>' +
+      '<div class="clabel" style="margin:18px 0 6px">Check-out</div><div id="ci-steps-checkout_steps">' + ciStepsHtml('checkout_steps') + '</div>' +
+      '<div class="ci-prev" id="ci-preview"><div class="clabel">Preview</div>' +
+        '<div class="csub">Save, then pick a work order below to see exactly what would be dialled.</div></div>' +
+      '<div class="form-row" style="margin-top:14px">' +
+        '<div class="form-group" style="flex:1 1 220px"><label>Preview against work order #</label>' +
+          '<input type="text" id="ci-prev-wo" placeholder="Nova work order id, e.g. 1041" /></div>' +
+        '<div class="form-group" style="flex:0 0 auto;display:flex;align-items:flex-end">' +
+          '<button class="btn btn-secondary" onclick="ciPreview()">Show me</button></div>' +
+      '</div>' +
+    '</div></div>' +
+
+    '<div class="card mb-4"><div class="card-header"><span class="card-title">3. How Nova knows it worked</span></div><div class="card-body">' +
+      '<div class="form-group"><label>Nova only marks a check-in when the recording contains one of these</label>' +
+        '<input type="text" id="ci-phrases" value="' + escHtml(_ciProfile.confirm_phrases || '') + '" placeholder="you are checked in; check in successful" /></div>' +
+      '<div class="form-group"><label>And for check-out</label>' +
+        '<input type="text" id="ci-phrases-out" value="' + escHtml(_ciProfile.checkout_confirm_phrases || '') + '" placeholder="check out complete" /></div>' +
+      '<div class="ci-capbox">' +
+        '<div class="clabel">Save the number the tree reads back at check-out</div>' +
+        '<div class="csub" style="margin:4px 0 10px">Many trees speak a confirmation or authorization number once, and never send it anywhere. It is the proof the trip happened, so Nova pulls it out of the recording and keeps it on the job and the invoice. Leave this blank if your tree does not read one back.</div>' +
+        '<div class="form-row" style="margin-bottom:0">' +
+          '<div class="form-group" style="flex:2 1 300px"><label>Find it with</label>' +
+            '<input type="text" id="ci-capture" class="mono" value="' + escHtml(_ciProfile.capture_pattern || '') + '" placeholder="authorization number is ([a-z0-9 -]+)" /></div>' +
+          '<div class="form-group" style="flex:1 1 180px"><label>Call it</label>' +
+            '<input type="text" id="ci-caplabel" value="' + escHtml(_ciProfile.capture_label || '') + '" placeholder="Authorization number" /></div>' +
+        '</div>' +
+      '</div>' +
+      '<div class="flex-gap" style="margin-top:16px;flex-wrap:wrap">' +
+        (_ciProfile.id ? '<button class="btn btn-secondary" onclick="ciTestCall()">&#9742; Test Call</button>' : '') +
+        (_ciProfile.id ? '<button class="btn ' + (_ciProfile.active ? 'btn-secondary' : 'btn-primary') + '" onclick="ciToggleActive()">' +
+          (_ciProfile.active ? 'Take offline' : 'Mark live') + '</button>' : '') +
+        (_ciProfile.id ? '<button class="btn btn-ghost" style="color:#b91c1c" onclick="ciDeleteProfile()">Delete</button>' : '') +
+        '<span class="csub" style="margin:0">' +
+          (_ciProfile.last_test_at ? 'Last tested ' + formatDate(_ciProfile.last_test_at) : 'Never tested') +
+        '</span>' +
+      '</div>' +
+      '<div class="csub" style="margin-top:10px">A script goes <b>offline every time you save it</b>. Changing the steps, the number or the phrase means the last test no longer proves anything, and an untested script is how Nova ends up telling a client somebody arrived when they did not.</div>' +
+    '</div></div>';
+}
+
+function ciCollect() {
+  function v(id) { var e = document.getElementById(id); return e ? e.value : ''; }
+  return {
+    vendor_id: v('ci-vendor') || null,
+    name: (_ciVendors.filter(function (x) { return String(x.id) === String(v('ci-vendor')); })[0] || {}).name || _ciProfile.name,
+    method: v('ci-method') || 'phone',
+    phone_number: v('ci-phone'),
+    site_radius_ft: _ciProfile.site_radius_ft || 500,
+    checkin_steps: _ciProfile.checkin_steps || [],
+    checkout_steps: _ciProfile.checkout_steps || [],
+    confirm_phrases: v('ci-phrases'),
+    checkout_confirm_phrases: v('ci-phrases-out'),
+    capture_pattern: v('ci-capture'),
+    capture_label: v('ci-caplabel')
+  };
+}
+
+async function ciSaveProfile() {
+  var btn = document.getElementById('ci-save');
+  if (btn) { btn.disabled = true; btn.textContent = 'Saving...'; }
+  try {
+    var body = ciCollect();
+    if (!body.vendor_id) throw new Error('Pick the account this script belongs to.');
+    var saved = _ciProfile.id
+      ? await api('PUT', '/checkins/profiles/' + _ciProfile.id, body)
+      : await api('POST', '/checkins/profiles', body);
+    navigate('checkin-profile', saved.id);
+  } catch (err) {
+    var e = document.getElementById('ci-err');
+    if (e) e.innerHTML = '<div class="alert alert-error">' + escHtml(err.message) + '</div>';
+    if (btn) { btn.disabled = false; btn.textContent = 'Save'; }
+  }
+}
+
+async function ciPreview() {
+  var wo = (document.getElementById('ci-prev-wo') || {}).value;
+  var host = document.getElementById('ci-preview');
+  if (!_ciProfile.id) { if (host) host.innerHTML = '<div class="clabel">Preview</div><div class="csub">Save the script first.</div>'; return; }
+  try {
+    var p = await api('POST', '/checkins/profiles/' + _ciProfile.id + '/preview', { work_order_id: wo || null, direction: 'in' });
+    host.innerHTML = '<div class="clabel">Preview' + (p.work_order ? ' on ' + escHtml(p.work_order.wo_ref || ('#' + p.work_order.id)) : '') + '</div>' +
+      '<div class="mono" style="font-size:13px;color:var(--text);line-height:1.9;margin-top:4px">' + escHtml(p.preview) + '</div>' +
+      (p.problems && p.problems.length
+        ? '<div class="alert alert-error" style="margin:10px 0 0">' + p.problems.map(escHtml).join('<br />') + '</div>'
+        : '<div class="csub" style="margin-top:6px">These are the digits as they will actually be sent, dashes and spaces removed.</div>');
+  } catch (err) {
+    host.innerHTML = '<div class="clabel">Preview</div><div class="alert alert-error" style="margin:6px 0 0">' + escHtml(err.message) + '</div>';
+  }
+}
+
+async function ciTestCall() {
+  var wo = await novaPrompt('Test call against which Nova work order id? The values on that job are what will be dialled.');
+  if (!wo) return;
+  try {
+    await api('POST', '/checkins/profiles/' + _ciProfile.id + '/test', { work_order_id: parseInt(wo, 10), direction: 'in' });
+    novaAlert('Calling now. It will not stamp anything, and it cannot block a real check-in. Open the Check-In Monitor in a few seconds to hear what came back.');
+  } catch (err) { novaAlert(err.message); }
+}
+
+async function ciToggleActive() {
+  try {
+    var out = await api('POST', '/checkins/profiles/' + _ciProfile.id + '/activate', { active: !_ciProfile.active });
+    _ciProfile.active = out.active;
+    navigate('checkin-profile', _ciProfile.id);
+  } catch (err) { novaAlert(err.message); }
+}
+
+async function ciDeleteProfile() {
+  if (!await novaConfirm('Delete this check-in script? Jobs on this account will fall back to the number printed on the work order.')) return;
+  try { await api('DELETE', '/checkins/profiles/' + _ciProfile.id); navigate('checkin-profiles'); }
+  catch (err) { novaAlert(err.message); }
+}
+
+// ---------------------------------------------------------------------------
+// The monitor. So somebody notices at 4pm instead of at invoice time.
+// ---------------------------------------------------------------------------
+async function renderCheckinMonitor(el) {
+  if (!can('manage_work_orders')) { el.innerHTML = '<div class="alert alert-error">Access denied.</div>'; return; }
+  el.innerHTML = '<div class="loading">Loading&hellip;</div>';
+  var data;
+  try { data = await api('GET', '/checkins/monitor?days=' + (state.checkinDays || 1)); }
+  catch (e) { el.innerHTML = '<div class="alert alert-error">' + escHtml(e.message) + '</div>'; return; }
+
+  function kpi(n, l, colour) {
+    return '<div class="ci-kpi"><div class="ci-kpi-n"' + (colour ? ' style="color:' + colour + '"' : '') + '>' + n + '</div><div class="ci-kpi-l">' + l + '</div></div>';
+  }
+  var badge = function (e) {
+    if (e.status === 'confirmed') return '<span class="badge badge-completed">Confirmed</span>';
+    if (e.status === 'manual') return '<span class="badge badge-pending">Called by hand</span>';
+    if (e.status === 'failed') return '<span class="badge badge-denied">Failed</span>';
+    return '<span class="badge badge-active">In progress</span>';
+  };
+
+  el.innerHTML =
+    '<div class="page-header"><div><div class="page-title">Check-In Monitor</div>' +
+      '<div class="page-subtitle">' + data.events.length + ' event' + (data.events.length === 1 ? '' : 's') +
+      ' in the last ' + data.days + ' day' + (data.days === 1 ? '' : 's') + '</div></div>' +
+      '<div class="flex-gap">' +
+        [1, 7, 30].map(function (d) {
+          return '<button class="btn ' + (data.days === d ? 'btn-primary' : 'btn-secondary') + ' btn-sm" onclick="state.checkinDays=' + d + ';navigate(&#39;checkin-monitor&#39;)">' + d + 'd</button>';
+        }).join('') +
+        (can('manage_ivr_profiles') ? '<button class="btn btn-secondary btn-sm" onclick="navigate(&#39;checkin-profiles&#39;)">Scripts</button>' : '') +
+      '</div></div>' +
+    '<div class="ci-kpis">' +
+      kpi(data.counts.confirmed, 'Confirmed', '#4ade80') +
+      kpi(data.counts.manual, 'Called by hand', '#fbbf24') +
+      kpi(data.counts.failed, 'Failed', '#ef4444') +
+      kpi(data.counts.open, 'In progress', '#7dd3fc') +
+    '</div>' +
+    (data.events.length
+      ? '<div class="card"><div class="table-wrap"><table><thead><tr><th>Job</th><th>Account</th><th>Tech</th><th>Direction</th><th>Result</th><th>When</th><th></th></tr></thead><tbody>' +
+        data.events.map(function (e) {
+          return '<tr><td class="mono">' + escHtml(e.wo_ref || e.wo_number || ('#' + e.work_order_id)) + '</td>' +
+            '<td>' + escHtml(e.account_name || '') + '</td>' +
+            '<td>' + escHtml(e.tech_name || '') + '</td>' +
+            '<td>' + (e.direction === 'out' ? 'Check out' : 'Check in') + '</td>' +
+            '<td>' + badge(e) + (e.failure_reason ? '<div class="csub">' + escHtml(e.failure_reason) + '</div>' : '') + '</td>' +
+            '<td>' + formatDate(e.requested_at) + '</td>' +
+            '<td><button class="btn btn-secondary btn-sm" onclick="openCheckinRecord(' + e.id + ')">Record</button>' +
+            ' <button class="btn btn-secondary btn-sm" onclick="navigate(&#39;view-work-order&#39;,' + e.work_order_id + ')">Job</button></td></tr>';
+        }).join('') + '</tbody></table></div></div>'
+      : '<div class="card"><div class="card-body"><div class="empty-state" style="padding:28px"><h3>Nothing yet</h3>' +
+        '<p>Check-ins will appear here as they happen.</p></div></div></div>');
+}
+
 // ---------------------------------------------------------------------------
 // Draft store (IndexedDB)
 //
@@ -18140,6 +18785,7 @@ async function renderCompleteSignoff(el, id) {
       '</div>' +
     '</div>' +
     '<div id="signoff-complete-error"></div>' +
+    '<div id="checkin-host"></div>' +
     '<div class="card mb-4"><div class="card-header"><span class="card-title">Work Order</span></div><div class="card-body">' + signoffSummaryHtml(form) + '</div></div>' +
     '<div class="card mb-4"><div class="card-header"><span class="card-title">On-Site Details</span></div><div class="card-body">' +
       '<div class="form-row">' +
@@ -18179,6 +18825,9 @@ async function renderCompleteSignoff(el, id) {
     '<div class="flex-gap"><button class="btn btn-primary" id="btn-complete-signoff" onclick="submitSignoffCompletion(' + form.id + ')">&#10003; Submit &amp; Email Admins</button></div>';
   renderSignoffSigPreview();
   renderSignoffPhotoGrid();
+  // Same card as the work order page, driven by the same payload, so the two
+  // screens cannot drift. It resolves through the sheet's linked work order.
+  if (form.work_order_link) checkinMount('checkin-host', form.work_order_link.id);
   _signoffDraftId = form.id;
   signoffDraftAttach();
   await signoffDraftRestore(form.id);
@@ -18611,9 +19260,11 @@ async function renderViewSignoff(el, id) {
         '</div>' +
       '</div>' +
       '<div id="view-signoff-error"></div>' +
+      '<div id="checkin-host"></div>' +
       signoffTripStripHtml(f) +
       '<div class="card mb-4"><div class="card-header"><span class="card-title">Work Order</span></div><div class="card-body">' + signoffSummaryHtml(f) + '</div></div>' +
       completedBlock;
+    if (f.work_order_link) checkinMount('checkin-host', f.work_order_link.id);
     // Just submitted as "work not complete" — offer the return trip while the tech is still on site.
     if (_signoffOfferTrip) {
       _signoffOfferTrip = false;

@@ -4683,7 +4683,6 @@ async function initDB() {
     // how you confirm a formulation is matching consistently before enforcing.
     await client.query('ALTER TABLE webhook_events ADD COLUMN IF NOT EXISTS sig_state VARCHAR(40);');
 
-    await client.query('ALTER TABLE webhook_event_stats ADD COLUMN IF NOT EXISTS duplicate_count BIGINT NOT NULL DEFAULT 0;');
 
     // Deliveries that were turned away and left no event behind.
     //
@@ -4796,6 +4795,13 @@ async function initDB() {
       '  PRIMARY KEY (source_slug, event_type)' +
       ');'
     );
+    // MOVED HERE 2026-08-19. This ALTER used to sit about a hundred lines above,
+    // BEFORE the CREATE it depends on, which meant initDB threw
+    // 'relation "webhook_event_stats" does not exist' on any database that did
+    // not already have the table. Railway never noticed because the table was
+    // already there; a fresh deploy, a restored backup or a staging clone would
+    // have died here and silently skipped every migration below this point.
+    await client.query('ALTER TABLE webhook_event_stats ADD COLUMN IF NOT EXISTS duplicate_count BIGINT NOT NULL DEFAULT 0;');
 
     console.log('Sync: inbound webhook tables ready. No sources exist until an admin creates one.');
 
@@ -4846,6 +4852,144 @@ async function initDB() {
 
     console.log('Sync: outbound call log ready, mode ' + (process.env.PULSAR_OUT_MODE || 'off') + '.');
 
+
+    // ---- Check-in / check-out --------------------------------------------
+    //
+    // National accounts dispatch by email work order, and the work order itself
+    // carries the number the technician must call to check in on arrival and
+    // check out on departure. Nova already ingests and parses those documents,
+    // so the call-in details are extracted alongside everything else and the
+    // technician never has to go hunting through an email at a customer's door.
+    //
+    // An account's phone tree is stored as DATA (an ordered list of steps), not
+    // code, so a changed menu is an edit rather than a deploy. See
+    // utils/ivrScript.js for the step shapes.
+    await client.query(
+      'CREATE TABLE IF NOT EXISTS ivr_profiles (' +
+      '  id SERIAL PRIMARY KEY,' +
+      '  vendor_id INTEGER REFERENCES vendors(id) ON DELETE CASCADE,' +
+      '  name VARCHAR(120),' +
+      "  method VARCHAR(20) NOT NULL DEFAULT 'phone'," +
+      '  phone_number VARCHAR(50),' +
+      '  site_radius_ft INTEGER NOT NULL DEFAULT 500,' +
+      '  checkin_steps JSONB,' +
+      '  checkout_steps JSONB,' +
+      '  confirm_phrases TEXT,' +
+      '  checkout_confirm_phrases TEXT,' +
+      '  capture_pattern TEXT,' +
+      '  capture_label VARCHAR(80),' +
+      '  active BOOLEAN NOT NULL DEFAULT false,' +
+      '  needs_review BOOLEAN NOT NULL DEFAULT false,' +
+      '  needs_review_reason TEXT,' +
+      '  last_test_at TIMESTAMPTZ,' +
+      '  last_test_ok BOOLEAN,' +
+      '  last_test_note TEXT,' +
+      '  created_by INTEGER REFERENCES users(id) ON DELETE SET NULL,' +
+      '  created_at TIMESTAMPTZ DEFAULT NOW(),' +
+      '  updated_at TIMESTAMPTZ DEFAULT NOW()' +
+      ');'
+    );
+    // One profile per account. A second row for the same vendor is always a
+    // mistake, and finding that out at dial time is too late.
+    await client.query(
+      'CREATE UNIQUE INDEX IF NOT EXISTS idx_ivr_profiles_vendor ON ivr_profiles(vendor_id) WHERE vendor_id IS NOT NULL;'
+    );
+
+    // Every attempt, confirmed or not. This table is the source of truth for
+    // whether a job was checked in; the stamps on work_orders below are a
+    // convenience copy for the screens.
+    await client.query(
+      'CREATE TABLE IF NOT EXISTS checkin_events (' +
+      '  id SERIAL PRIMARY KEY,' +
+      '  work_order_id INTEGER REFERENCES work_orders(id) ON DELETE CASCADE,' +
+      '  signoff_id INTEGER REFERENCES signoff_forms(id) ON DELETE SET NULL,' +
+      '  profile_id INTEGER REFERENCES ivr_profiles(id) ON DELETE SET NULL,' +
+      '  direction VARCHAR(4) NOT NULL,' +
+      "  method VARCHAR(12) NOT NULL DEFAULT 'call'," +
+      "  status VARCHAR(16) NOT NULL DEFAULT 'pending'," +
+      '  requested_by INTEGER REFERENCES users(id) ON DELETE SET NULL,' +
+      '  requested_at TIMESTAMPTZ DEFAULT NOW(),' +
+      '  phone_number VARCHAR(50),' +
+      '  script_preview TEXT,' +
+      '  call_sid VARCHAR(64),' +
+      '  call_status VARCHAR(24),' +
+      '  call_duration INTEGER,' +
+      '  recording_sid VARCHAR(64),' +
+      '  recording_key TEXT,' +
+      '  transcript TEXT,' +
+      '  confirmed_at TIMESTAMPTZ,' +
+      '  confirmation_text TEXT,' +
+      '  auth_number VARCHAR(64),' +
+      '  failure_reason TEXT,' +
+      '  gps_lat NUMERIC(9,6),' +
+      '  gps_lon NUMERIC(9,6),' +
+      '  gps_accuracy REAL,' +
+      '  attempt SMALLINT NOT NULL DEFAULT 1,' +
+      '  is_test BOOLEAN NOT NULL DEFAULT false,' +
+      '  created_at TIMESTAMPTZ DEFAULT NOW(),' +
+      '  updated_at TIMESTAMPTZ DEFAULT NOW()' +
+      ');'
+    );
+    // THE idempotency guard, and the whole defence against a double tap placing
+    // two calls. The Calls API has no idempotency key, so the database refuses
+    // the second attempt instead of application code trying to be clever about
+    // it. 'failed' is deliberately outside the index so a failed call can be
+    // retried; test calls are outside it so they never block a real one.
+    await client.query(
+      'CREATE UNIQUE INDEX IF NOT EXISTS idx_checkin_live ON checkin_events(work_order_id, direction) ' +
+      "WHERE is_test = false AND status IN ('pending','dialing','in_progress','confirmed','manual');"
+    );
+    await client.query('CREATE INDEX IF NOT EXISTS idx_checkin_call_sid ON checkin_events(call_sid);');
+    // The sweeper's only query: calls that started and never reported back.
+    await client.query(
+      'CREATE INDEX IF NOT EXISTS idx_checkin_open ON checkin_events(requested_at) ' +
+      "WHERE status IN ('pending','dialing','in_progress');"
+    );
+
+    // The call-in details, extracted off the work order by the AI parser, plus
+    // the confirmed stamps. checkin_* are what the document said; checked_*_at
+    // are what actually happened.
+    await client.query(
+      'ALTER TABLE work_orders ADD COLUMN IF NOT EXISTS checkin_phone VARCHAR(50);' +
+      '  ALTER TABLE work_orders ADD COLUMN IF NOT EXISTS checkin_reference VARCHAR(80);' +
+      '  ALTER TABLE work_orders ADD COLUMN IF NOT EXISTS checkin_instructions TEXT;' +
+      '  ALTER TABLE work_orders ADD COLUMN IF NOT EXISTS checked_in_at TIMESTAMPTZ;' +
+      '  ALTER TABLE work_orders ADD COLUMN IF NOT EXISTS checked_out_at TIMESTAMPTZ;' +
+      '  ALTER TABLE work_orders ADD COLUMN IF NOT EXISTS checkin_auth_number VARCHAR(64);'
+    );
+    // A per-technician ID, for the accounts whose tree asks for one that is not
+    // printed on the work order. Most do not, which is why the work order's own
+    // checkin_reference is tried first.
+    await client.query('ALTER TABLE users ADD COLUMN IF NOT EXISTS ivr_reference VARCHAR(80);');
+
+    // Permissions. checkin_job goes to the working roles, because a check-in a
+    // technician cannot fire is not a feature. The other two ship dark: only
+    // admin and owner can write a phone script or force a check-in until
+    // somebody ticks the box in Settings > Roles & Access.
+    //
+    // A saved role_permissions matrix cannot contain a key that did not exist
+    // when it was last written, and saveRoles() rebuilds each role from the rows
+    // on screen - which is how the SOP Quiz permissions were once wiped. So the
+    // seed below is not optional bookkeeping, it is the thing that stops these
+    // from vanishing on the first save.
+    const _rpCheckin = await client.query("SELECT value FROM settings WHERE key = 'perm_checkin_backfilled'");
+    if (!_rpCheckin.rows.length) {
+      const _rpCI = await client.query("SELECT value FROM settings WHERE key = 'role_permissions'");
+      if (_rpCI.rows.length && _rpCI.rows[0].value) {
+        try {
+          const obj = JSON.parse(_rpCI.rows[0].value);
+          if (obj && typeof obj === 'object') {
+            ['manager', 'locksmith', 'locksmith_coordinator', 'dispatcher', 'roadside_technician'].forEach(function (r) {
+              if (Array.isArray(obj[r]) && obj[r].indexOf('checkin_job') === -1) obj[r].push('checkin_job');
+            });
+            await client.query("INSERT INTO settings (key, value, updated_at) VALUES ('role_permissions', $1, NOW()) ON CONFLICT (key) DO UPDATE SET value = $1, updated_at = NOW()", [JSON.stringify(obj)]);
+          }
+        } catch (e) { console.error('check-in perm backfill failed:', e.message); }
+      }
+      await client.query("INSERT INTO settings (key, value) VALUES ('perm_checkin_backfilled', '1') ON CONFLICT (key) DO NOTHING");
+    }
+
+    console.log('Check-in: ivr_profiles + checkin_events ready.');
 
     // ---- Job health -------------------------------------------------------
     //

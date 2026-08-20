@@ -61,6 +61,9 @@ var SCHEMA_PROMPT =
   '  "service_requested": "concise description of the work requested",\n' +
   '  "service_requested_by": "date/time it must be done by, or unknown",\n' +
   '  "special_instructions": "hard constraints the technician must obey, one per sentence: prohibited tools, key-cutting limits, where the keycode comes from, retrieval deadlines, required photos or paperwork. Empty string if none",\n' +
+  '  "checkin_phone": "the phone number the technician must call to CHECK IN on arrival and CHECK OUT on leaving, if the document names one. This is the compliance line, often labelled Check In, Call In, IVR, Arrival Call, or Vendor Check-In. It is NOT the site contact number and NOT the dispatcher general line. Digits as printed, or unknown",\n' +
+  '  "checkin_reference": "any vendor ID, technician ID, provider number or PIN the check-in line asks for, when it is distinct from the work order number, or unknown",\n' +
+  '  "checkin_instructions": "the check-in and check-out instructions copied VERBATIM from the document, including which keys to press and in what order. Empty string if none",\n' +
   '  "contact_name": "site or requester contact, or unknown",\n' +
   '  "contact_phone": "contact phone, or unknown",\n' +
   '  "needed_by": "YYYY-MM-DD if a clear due date is present, otherwise unknown",\n' +
@@ -73,6 +76,7 @@ var SCHEMA_PROMPT =
   'revised form is the SAME number as the original - never change or invent a work order number to make it look new. ' +
   'nte_amount is a spend LIMIT, not a price or an estimate: if the form only shows a quoted price, a labor rate, or ' +
   'an invoice total and no explicit not-to-exceed limit, return unknown for nte_amount. ' +
+  'Check-in fields: many national accounts require the technician to phone a compliance line on arrival and again on departure, and print that number on the work order. Only fill checkin_phone when the document actually ties a number to checking in, calling in, or arrival - a plain site contact number is NOT a check-in line, and guessing one is worse than leaving it unknown. ' +
   'Leave the VEHICLE JOBS ONLY fields unknown on a site job, and the SITE JOBS ONLY fields ' +
   'unknown on a vehicle job - never put a railyard in store_name. ' +
   'Set is_work_order to false if this email is not actually a work order (e.g. a reply, ' +
