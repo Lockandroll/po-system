@@ -2,7 +2,7 @@
 // public/sw.js (the only thing bumped each deploy) — the badge asks the active
 // service worker for it at runtime. This value is just the fallback shown when no
 // service worker is available (e.g. very first visit before it installs).
-var APP_VERSION = 'v122';
+var APP_VERSION = 'v123';
 var _resolvedAppVersion = null;
 
 // Ask the active service worker for its CACHE_VERSION (without the 'nova-' prefix).
@@ -18308,9 +18308,9 @@ function ciStepRow(step, i, which) {
         return '<option value="' + f.key + '"' + (step.field === f.key ? ' selected' : '') + '>' + escHtml(f.label) + '</option>';
       }).join('') + '</select>' +
       '<span class="cdim" style="font-size:12px">then</span>' +
-      '<input type="text" value="' + escHtml(step.suffix == null ? '#' : step.suffix) + '" placeholder="#" ' +
-      'title="Sent straight after the value. Usually #." ' +
-      'onchange="ciSetSuffix(&#39;' + which + '&#39;,' + i + ',this.value)" style="flex:0 0 64px" />';
+      '<input type="text" value="' + escHtml(step.suffix == null ? '#' : step.suffix) + '" placeholder="none" ' +
+      'title="Sent straight after the value. Usually #, sometimes *. Leave it blank if the tree wants nothing." ' +
+      'onchange="ciSetSuffix(&#39;' + which + '&#39;,' + i + ',this.value)" style="flex:0 0 74px;text-align:center" />';
   } else if (t === 'press') {
     right = '<input type="text" value="' + escHtml(step.digits || '') + '" placeholder="e.g. 1" ' +
       'onchange="ciSetDigits(&#39;' + which + '&#39;,' + i + ',this.value)" style="max-width:120px" />';
