@@ -17209,6 +17209,9 @@ async function renderViewWorkOrder(el, id) {
       var _soLabel = (_soTrips.length > 1) ? ' — Trip ' + (w.signoff.trip_number || _soTrips.length) : '';
       actions += '<button class="btn btn-secondary" onclick="navigate(\'' + (w.signoff.status === 'completed' ? 'view-signoff' : 'complete-signoff') + '\',' + w.signoff.id + ')">Open Sign-Off (' + escHtml(w.signoff.form_number || '') + _soLabel + ')</button>';
     }
+    if (w.invoice_link && can('view_invoices')) {
+      actions += '<button class="btn btn-secondary" onclick="navigate(\'view-invoice\',' + w.invoice_link.id + ')">Open Invoice (#' + escHtml(w.invoice_link.invoice_number || '') + ')</button>';
+    }
     if (w.source === 'email') actions += '<button class="btn btn-secondary" onclick="woReparse(' + id + ')">Re-parse with AI</button>';
     actions += '<button class="btn btn-ghost" style="color:#b91c1c" onclick="woDelete(' + id + ')">Delete</button>';
   }

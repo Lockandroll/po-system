@@ -190,6 +190,25 @@ async function loadWorkOrder(id) {
     );
     wo.signoffs = so.rows;
     wo.signoff = so.rows.length ? so.rows[so.rows.length - 1] : null;
+    // The job's invoice, if one exists. Looked up by trip group so any trip on
+    // the job finds the invoice an earlier trip created. Best-effort: a lookup
+    // failure must not break the work order detail page.
+    wo.invoice_link = null;
+    try {
+      const inv = await pool.query(
+        'SELECT id, invoice_number, status FROM invoices WHERE signoff_group_id = ' +
+        '(SELECT COALESCE(trip_group_id, id) FROM signoff_forms WHERE id = $1) ' +
+        'ORDER BY id DESC LIMIT 1',
+        [wo.signoff_id]
+      );
+      if (inv.rows.length) {
+        wo.invoice_link = {
+          id: inv.rows[0].id,
+          invoice_number: String(inv.rows[0].invoice_number),
+          status: inv.rows[0].status
+        };
+      }
+    } catch (e) { console.error('Work order invoice link lookup failed:', e && e.message); }
   }
   return wo;
 }
