@@ -2,7 +2,7 @@
 // public/sw.js (the only thing bumped each deploy) — the badge asks the active
 // service worker for it at runtime. This value is just the fallback shown when no
 // service worker is available (e.g. very first visit before it installs).
-var APP_VERSION = 'v119';
+var APP_VERSION = 'v121';
 var _resolvedAppVersion = null;
 
 // Ask the active service worker for its CACHE_VERSION (without the 'nova-' prefix).
@@ -18335,6 +18335,8 @@ function ciStepsHtml(which) {
 }
 
 function ciEnsure(which) { if (!Array.isArray(_ciProfile[which])) _ciProfile[which] = []; }
+// Step edits are not <input> events on a tracked field, so they save explicitly.
+function ciTouched() { try { ciDraftSave(); } catch (e) { /* best effort */ } }
 function ciAddStep(which, type) {
   ciEnsure(which);
   var step = type === 'wait' ? { type: 'wait', seconds: 3 }
@@ -18343,11 +18345,12 @@ function ciAddStep(which, type) {
     : { type: 'listen', seconds: 20 };
   _ciProfile[which].push(step);
   ciRedrawSteps(which);
+  ciTouched();
 }
-function ciDelStep(which, i) { ciEnsure(which); _ciProfile[which].splice(i, 1); ciRedrawSteps(which); }
-function ciSetField(which, i, v) { ciEnsure(which); _ciProfile[which][i].field = v; }
-function ciSetDigits(which, i, v) { ciEnsure(which); _ciProfile[which][i].digits = v; }
-function ciSetSeconds(which, i, v) { ciEnsure(which); _ciProfile[which][i].seconds = parseInt(v, 10) || 1; }
+function ciDelStep(which, i) { ciEnsure(which); _ciProfile[which].splice(i, 1); ciRedrawSteps(which); ciTouched(); }
+function ciSetField(which, i, v) { ciEnsure(which); _ciProfile[which][i].field = v; ciTouched(); }
+function ciSetDigits(which, i, v) { ciEnsure(which); _ciProfile[which][i].digits = v; ciTouched(); }
+function ciSetSeconds(which, i, v) { ciEnsure(which); _ciProfile[which][i].seconds = parseInt(v, 10) || 1; ciTouched(); }
 function ciRedrawSteps(which) {
   var host = document.getElementById('ci-steps-' + which);
   if (host) host.innerHTML = ciStepsHtml(which);
@@ -18414,6 +18417,7 @@ async function renderCheckinProfile(el, id) {
       '<div class="flex-gap"><button class="btn btn-secondary" onclick="navigate(&#39;checkin-profiles&#39;)">&larr; Back</button>' +
       '<button class="btn btn-primary" id="ci-save" onclick="ciSaveProfile()">Save</button></div></div>' +
     '<div id="ci-err"></div>' +
+    '<div id="ci-draft"></div>' +
     (_ciProfile.needs_review
       ? '<div class="alert alert-error"><b>Flagged for review.</b> ' + escHtml(_ciProfile.needs_review_reason || '') +
         ' Nova will not dial this account until somebody listens to the recording and saves this script again.</div>' : '') +
@@ -18436,11 +18440,15 @@ async function renderCheckinProfile(el, id) {
       '<div class="clabel" style="margin:18px 0 6px">Check-out</div><div id="ci-steps-checkout_steps">' + ciStepsHtml('checkout_steps') + '</div>' +
       '<div class="ci-prev" id="ci-preview"><div class="clabel">Preview</div>' +
         '<div class="csub">Save, then pick a work order below to see exactly what would be dialled.</div></div>' +
-      '<div class="form-row" style="margin-top:14px">' +
-        '<div class="form-group" style="flex:1 1 220px"><label>Preview against work order #</label>' +
-          '<input type="text" id="ci-prev-wo" placeholder="Nova work order id, e.g. 1041" /></div>' +
-        '<div class="form-group" style="flex:0 0 auto;display:flex;align-items:flex-end">' +
-          '<button class="btn btn-secondary" onclick="ciPreview()">Show me</button></div>' +
+      // Input and button on one line under a single label. The earlier version put
+      // each in its own form-group inside a form-row, which stretched the input the
+      // full width of the card and left the button floating off on its own.
+      '<div class="form-group" style="margin-top:14px">' +
+        '<label>Preview against work order #</label>' +
+        '<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">' +
+          '<input type="text" id="ci-prev-wo" placeholder="Nova work order id, e.g. 1041" style="flex:0 1 260px" />' +
+          '<button class="btn btn-secondary" style="flex:0 0 auto" onclick="ciPreview()">Show me</button>' +
+        '</div>' +
       '</div>' +
     '</div></div>' +
 
@@ -18470,6 +18478,112 @@ async function renderCheckinProfile(el, id) {
       '</div>' +
       '<div class="csub" style="margin-top:10px">A script goes <b>offline every time you save it</b>. Changing the steps, the number or the phrase means the last test no longer proves anything, and an untested script is how Nova ends up telling a client somebody arrived when they did not.</div>' +
     '</div></div>';
+
+  ciDraftAttach();
+  await ciDraftRestore(id);
+}
+
+// ---------------------------------------------------------------------------
+// Draft protection for the script editor.
+//
+// Added 2026-08-20 after a service worker update reloaded the page and threw
+// away a script somebody was halfway through writing. The sign-off form has
+// carried this for months, and its comment names the exact cause: "a
+// backgrounded PWA, a service worker update or a tab crash loses the whole
+// sheet". This editor should have had it from the start.
+//
+// Everything is best-effort. A draft failing to save must never be the reason a
+// script cannot be written.
+// ---------------------------------------------------------------------------
+var _ciDraftTimer = null;
+
+function ciDraftKey(id) {
+  var u = (state.user && state.user.id) || 0;
+  return 'ivr:' + u + ':' + (id || 'new');
+}
+
+function ciDraftSnapshot() {
+  var body = ciCollect();
+  return { v: 1, at: Date.now(), body: body };
+}
+
+function ciDraftSave(immediate) {
+  if (_ciProfile === null) return;
+  if (_ciDraftTimer) { clearTimeout(_ciDraftTimer); _ciDraftTimer = null; }
+  var go = function () {
+    try { novaDraftPut(ciDraftKey(_ciProfile.id), ciDraftSnapshot()); } catch (e) { /* best effort */ }
+  };
+  if (immediate) go(); else _ciDraftTimer = setTimeout(go, 700);
+}
+
+function _ciDraftFlush() {
+  if (_ciProfile !== null && document.getElementById('ci-phone')) ciDraftSave(true);
+}
+
+function ciDraftAttach() {
+  ['ci-vendor','ci-method','ci-phone','ci-phrases','ci-phrases-out','ci-capture','ci-caplabel'].forEach(function (idn) {
+    var e = document.getElementById(idn);
+    if (!e) return;
+    e.addEventListener('input', function () { ciDraftSave(); });
+    e.addEventListener('change', function () { ciDraftSave(); });
+  });
+  // iOS kills backgrounded PWAs without firing unload; visibilitychange is the
+  // last dependable moment to flush.
+  document.addEventListener('visibilitychange', _ciDraftFlush);
+  window.addEventListener('pagehide', _ciDraftFlush);
+}
+
+function ciDraftDetach() {
+  document.removeEventListener('visibilitychange', _ciDraftFlush);
+  window.removeEventListener('pagehide', _ciDraftFlush);
+}
+
+// Restores into the live form. Only offers a draft that is actually different
+// from what was loaded from the server, so re-opening a saved script does not
+// nag about a draft identical to it.
+async function ciDraftRestore(id) {
+  var d = await novaDraftGet(ciDraftKey(id));
+  if (!d || d.v !== 1 || !d.body) return;
+  var b = d.body;
+  // Compare only the keys the draft actually carries. A draft written by an
+  // older build may not have every field, and a MISSING key means "no opinion",
+  // not "cleared to empty" - treating those the same would nag on every open.
+  var differs = false;
+  ['phone_number','confirm_phrases','checkout_confirm_phrases','capture_pattern','capture_label','method'].forEach(function (k) {
+    if (b[k] === undefined) return;
+    if ((b[k] || '') !== (_ciProfile[k] || '')) differs = true;
+  });
+  if (b.checkin_steps !== undefined &&
+      JSON.stringify(b.checkin_steps || []) !== JSON.stringify(_ciProfile.checkin_steps || [])) differs = true;
+  if (b.checkout_steps !== undefined &&
+      JSON.stringify(b.checkout_steps || []) !== JSON.stringify(_ciProfile.checkout_steps || [])) differs = true;
+  if (!differs) { novaDraftDel(ciDraftKey(id)); return; }
+
+  var host = document.getElementById('ci-draft');
+  if (!host) return;
+  var when = new Date(d.at);
+  host.innerHTML = '<div class="alert alert-warn" style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">' +
+    '<span style="flex:1 1 240px"><b>Unsaved changes recovered.</b> You were editing this at ' +
+    escHtml(when.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })) +
+    ' and the page reloaded before you saved.</span>' +
+    '<button class="btn btn-primary btn-sm" id="ci-draft-use">Restore them</button>' +
+    '<button class="btn btn-secondary btn-sm" id="ci-draft-drop">Discard</button></div>';
+  var use = document.getElementById('ci-draft-use');
+  var drop = document.getElementById('ci-draft-drop');
+  if (use) use.addEventListener('click', function () {
+    _ciProfile.checkin_steps = b.checkin_steps || [];
+    _ciProfile.checkout_steps = b.checkout_steps || [];
+    function put(idn, v) { var e = document.getElementById(idn); if (e && v != null) e.value = v; }
+    put('ci-vendor', b.vendor_id); put('ci-method', b.method); put('ci-phone', b.phone_number);
+    put('ci-phrases', b.confirm_phrases); put('ci-phrases-out', b.checkout_confirm_phrases);
+    put('ci-capture', b.capture_pattern); put('ci-caplabel', b.capture_label);
+    ciRedrawSteps('checkin_steps'); ciRedrawSteps('checkout_steps');
+    host.innerHTML = '<div class="alert alert-success">Restored. Save when you are happy with it.</div>';
+  });
+  if (drop) drop.addEventListener('click', function () {
+    novaDraftDel(ciDraftKey(id));
+    host.innerHTML = '';
+  });
 }
 
 function ciCollect() {
@@ -18498,6 +18612,10 @@ async function ciSaveProfile() {
     var saved = _ciProfile.id
       ? await api('PUT', '/checkins/profiles/' + _ciProfile.id, body)
       : await api('POST', '/checkins/profiles', body);
+    // It is on the server now, so the local copy is no longer worth offering back.
+    novaDraftDel(ciDraftKey(_ciProfile.id));
+    if (!_ciProfile.id) novaDraftDel(ciDraftKey(null));
+    ciDraftDetach();
     navigate('checkin-profile', saved.id);
   } catch (err) {
     var e = document.getElementById('ci-err');
