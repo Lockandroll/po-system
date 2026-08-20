@@ -117,8 +117,11 @@ function validate(steps, values) {
     if (s.type === 'unknown') errs.push('Step ' + (s.i + 1) + ' has an unrecognised type.');
     if (s.type === 'press' && !s.digits) errs.push('Step ' + (s.i + 1) + ' presses nothing.');
     if (s.type === 'send' && s.missing) {
+      // Say what to DO about it. "This job does not have it" is a fact; the
+      // person reading it wants the next move, and there are only two.
       errs.push('Step ' + (s.i + 1) + ' sends ' + (s.field ? fieldLabel(s.field) : 'a value') +
-        ', which this job does not have.');
+        ', which this job does not have. Type it onto the work order, or re-parse the ' +
+        'work order to pull it off the paperwork.');
     }
     // send-with-suffix immediately followed by a press of that same key
     if (s.type === 'send' && s.suffix) {

@@ -2,7 +2,7 @@
 // public/sw.js (the only thing bumped each deploy) — the badge asks the active
 // service worker for it at runtime. This value is just the fallback shown when no
 // service worker is available (e.g. very first visit before it installs).
-var APP_VERSION = 'v128';
+var APP_VERSION = 'v129';
 var _resolvedAppVersion = null;
 
 // Ask the active service worker for its CACHE_VERSION (without the 'nova-' prefix).
@@ -18691,7 +18691,11 @@ async function ciPreview() {
         (p.work_order.account_name ? ' <span class="cdim">(' + escHtml(p.work_order.account_name) + ')</span>' : '') : '') + '</div>' +
       '<div class="mono" style="font-size:13px;color:var(--text);line-height:1.9;margin-top:4px">' + escHtml(p.preview) + '</div>' +
       (p.problems && p.problems.length
-        ? '<div class="alert alert-error" style="margin:10px 0 0">' + p.problems.map(escHtml).join('<br />') + '</div>'
+        ? '<div class="alert alert-error" style="margin:10px 0 0">' + p.problems.map(escHtml).join('<br />') +
+          (p.work_order ? '<div style="margin-top:10px"><button class="btn btn-secondary btn-sm" ' +
+            'onclick="navigate(&#39;view-work-order&#39;,' + p.work_order.id + ')">Open ' +
+            escHtml(p.work_order.wo_ref || p.work_order.wo_number || ('#' + p.work_order.id)) + '</button></div>' : '') +
+          '</div>'
         : '<div class="csub" style="margin-top:6px">These are the digits as they will actually be sent, dashes and spaces removed.</div>');
   } catch (err) {
     host.innerHTML = '<div class="clabel">Preview</div><div class="alert alert-error" style="margin:6px 0 0">' + escHtml(err.message) + '</div>';
