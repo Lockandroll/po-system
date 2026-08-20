@@ -95,16 +95,46 @@ function resolve(steps, values) {
 }
 
 // Errors a human has to fix, not warnings. An empty array means dialable.
+//
+// There are two legitimate ways to terminate an entry: a suffix on the send step,
+// or a separate press step after it. Both are supported because both read
+// naturally to different people. What is NEVER right is doing both, and that
+// mistake is invisible on screen - which is exactly why it is caught here rather
+// than left to be discovered on a live call.
+//
+// It matters because the double tone is a RACE, not a clean failure. The first
+// pound ends the tree's collection and sends it off to fetch its next prompt;
+// whether the second lands in that gap and is discarded, or arrives just inside
+// the next prompt and ends it empty, comes down to a few hundred milliseconds of
+// somebody else's network. A script that works four times out of five is worse
+// than one that never works.
 function validate(steps, values) {
   var errs = [];
   var list = resolve(steps, values);
   if (!list.length) { errs.push('The script has no steps.'); return errs; }
-  list.forEach(function (s) {
+  list.forEach(function (s, idx) {
     if (s.type === 'unknown') errs.push('Step ' + (s.i + 1) + ' has an unrecognised type.');
     if (s.type === 'press' && !s.digits) errs.push('Step ' + (s.i + 1) + ' presses nothing.');
     if (s.type === 'send' && s.missing) {
       errs.push('Step ' + (s.i + 1) + ' sends ' + (s.field ? fieldLabel(s.field) : 'a value') +
         ', which this job does not have.');
+    }
+    // send-with-suffix immediately followed by a press of that same key
+    if (s.type === 'send' && s.suffix) {
+      var nxt = list[idx + 1];
+      if (nxt && nxt.type === 'press' && nxt.digits === s.suffix) {
+        errs.push('Step ' + (s.i + 1) + ' already ends with ' + s.suffix + ', and step ' + (nxt.i + 1) +
+          ' presses ' + nxt.digits + ' again. Send it twice and the tree may drop the next prompt. ' +
+          'Either clear the "then" box on step ' + (s.i + 1) + ' or delete step ' + (nxt.i + 1) + '.');
+      }
+    }
+    // the same key pressed twice in a row on its own
+    if (s.type === 'press' && s.digits) {
+      var prev = list[idx - 1];
+      if (prev && prev.type === 'press' && prev.digits === s.digits) {
+        errs.push('Steps ' + (prev.i + 1) + ' and ' + (s.i + 1) + ' both press ' + s.digits +
+          ' with nothing in between. That is almost never intended.');
+      }
     }
   });
   return errs;

@@ -2,7 +2,7 @@
 // public/sw.js (the only thing bumped each deploy) — the badge asks the active
 // service worker for it at runtime. This value is just the fallback shown when no
 // service worker is available (e.g. very first visit before it installs).
-var APP_VERSION = 'v123';
+var APP_VERSION = 'v125';
 var _resolvedAppVersion = null;
 
 // Ask the active service worker for its CACHE_VERSION (without the 'nova-' prefix).
@@ -18397,6 +18397,43 @@ async function renderCheckinProfiles(el) {
         'The number and the ID come off the work order, so all you write here is the menu.</p></div></div></div>');
 }
 
+// The panel beside the step builder. Written for the person who has just been
+// handed this screen and a work order, not for whoever wrote the code.
+function ciHelpHtml() {
+  function sec(title, body) {
+    return '<div class="ci-help-sec"><div class="ci-help-h">' + title + '</div>' + body + '</div>';
+  }
+  return '<aside class="ci-help">' +
+    sec('What a script is',
+      '<p>Nova dials the number, waits, and presses keys. It never speaks. ' +
+      'Every value it types comes off the work order, so nobody keys a job number in twice.</p>') +
+    sec('The four steps',
+      '<ul>' +
+      '<li><b>wait</b> &mdash; let the tree talk. Nothing is pressed.</li>' +
+      '<li><b>press</b> &mdash; one fixed key, like <span class="mono">1</span> for English.</li>' +
+      '<li><b>send</b> &mdash; a value off the work order, like the work order number.</li>' +
+      '<li><b>listen</b> &mdash; the quiet at the end where the tree says whether it worked. Always last.</li>' +
+      '</ul>') +
+    sec('Ending an entry',
+      '<p>Two ways, and never both at once:</p><ul>' +
+      '<li>leave <span class="mono">#</span> in the <b>then</b> box on a <b>send</b> step, or</li>' +
+      '<li>clear that box and add a <b>press</b> <span class="mono">#</span> step after it</li>' +
+      '</ul><p>Do both and the pound goes twice. The tree may drop the next prompt, ' +
+      'and it will not fail the same way every time. Nova refuses to dial a script that does this.</p>') +
+    sec('Getting the waits right',
+      '<p>Call the number yourself once with a stopwatch and write down how long each prompt runs. ' +
+      'Too short and Nova types into a question the tree has not asked yet. Too long and the tree ' +
+      'gives up waiting. When you are unsure, go longer.</p>') +
+    sec('How Nova knows it worked',
+      '<p>Only by hearing the phrase from section 3 on the recording. A call that connects, runs, ' +
+      'and hangs up is a <b>failure</b> &mdash; the job is not stamped and the technician is told to ' +
+      'call it in himself. That is deliberate: a check-in nobody made is better than one nobody can prove.</p>') +
+    sec('Before it will dial',
+      '<p>A script is offline until somebody runs a <b>Test Call</b>, listens to it, and marks it live. ' +
+      'Saving any change takes it offline again, because the last test no longer proves anything.</p>') +
+  '</aside>';
+}
+
 async function renderCheckinProfile(el, id) {
   if (!can('manage_ivr_profiles')) { el.innerHTML = '<div class="alert alert-error">Access denied.</div>'; return; }
   el.innerHTML = '<div class="loading">Loading&hellip;</div>';
@@ -18442,6 +18479,11 @@ async function renderCheckinProfile(el, id) {
 
     '<div class="card mb-4"><div class="card-header"><span class="card-title">2. The steps</span>' +
       '<span style="font-size:12px;color:var(--text-muted-color)">Values come off the work order. Nobody types them.</span></div><div class="card-body">' +
+      // Steps left, explanation right. It wraps to one column under about 900px,
+      // with the help dropping BELOW the builder rather than above it, so a phone
+      // still opens on the thing you came here to edit.
+      '<div class="ci-split">' +
+      '<div class="ci-split-main">' +
       '<div class="clabel" style="margin-bottom:6px">Check-in</div><div id="ci-steps-checkin_steps">' + ciStepsHtml('checkin_steps') + '</div>' +
       '<div class="clabel" style="margin:18px 0 6px">Check-out</div><div id="ci-steps-checkout_steps">' + ciStepsHtml('checkout_steps') + '</div>' +
       '<div class="ci-prev" id="ci-preview"><div class="clabel">Preview</div>' +
@@ -18455,6 +18497,8 @@ async function renderCheckinProfile(el, id) {
           '<input type="text" id="ci-prev-wo" placeholder="Nova work order id, e.g. 1041" style="flex:0 1 260px" />' +
           '<button class="btn btn-secondary" style="flex:0 0 auto" onclick="ciPreview()">Show me</button>' +
         '</div>' +
+      '</div>' +
+      '</div>' + ciHelpHtml() +
       '</div>' +
     '</div></div>' +
 
