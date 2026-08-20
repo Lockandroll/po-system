@@ -3,7 +3,7 @@
 // Files are uploaded and downloaded directly between the browser and R2 using
 // short-lived presigned URLs - bytes never pass through this server, so there
 // is no practical file-size limit and no load on Railway.
-const { S3Client, PutObjectCommand, GetObjectCommand, DeleteObjectCommand } = require('@aws-sdk/client-s3');
+const { S3Client, PutObjectCommand, GetObjectCommand, DeleteObjectCommand, HeadObjectCommand } = require('@aws-sdk/client-s3');
 const { getSignedUrl } = require('@aws-sdk/s3-request-presigner');
 
 const ACCOUNT_ID = process.env.R2_ACCOUNT_ID;
@@ -69,9 +69,26 @@ async function getObjectBuffer(key) {
   return Buffer.from(bytes);
 }
 
+// Does this object actually exist, and how big is it? Used when a client claims
+// it uploaded a file: the browser PUTs to R2 directly, so this server never sees
+// the bytes and has to ask. Returns null when the object is definitely not there.
+// Any OTHER error (network, throttling) is rethrown - callers must not read a
+// transient failure as "the file is missing".
+async function headObject(key) {
+  try {
+    const res = await client().send(new HeadObjectCommand({ Bucket: BUCKET, Key: key }));
+    return { size: res.ContentLength || 0, contentType: res.ContentType || null };
+  } catch (e) {
+    const code = (e && (e.name || e.Code)) || '';
+    const status = e && e.$metadata && e.$metadata.httpStatusCode;
+    if (code === 'NotFound' || code === 'NoSuchKey' || status === 404) return null;
+    throw e;
+  }
+}
+
 async function deleteObject(key) {
   if (!key) return;
   await client().send(new DeleteObjectCommand({ Bucket: BUCKET, Key: key }));
 }
 
-module.exports = { configured, presignUpload, presignDownload, getObjectBuffer, putObject, deleteObject };
+module.exports = { configured, presignUpload, presignDownload, getObjectBuffer, putObject, headObject, deleteObject };

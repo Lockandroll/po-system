@@ -1325,6 +1325,18 @@ async function initDB() {
       'ALTER TABLE deposit_expenses ADD COLUMN IF NOT EXISTS reviewed_at TIMESTAMPTZ;'
     );
     await client.query("UPDATE deposit_expenses SET review_status = 'pending' WHERE review_status IS NULL;");
+    // Cash-deposit expense ATTACHMENTS (added 2026-08-20). A receipt is not always
+    // a photo - a parts order or a fuel account can arrive as a spreadsheet or a PDF.
+    // Those bytes live in Cloudflare R2 (utils/r2.js), exactly like the Document Vault,
+    // and only the pointer lives here. receipt_image is untouched: every deposit filed
+    // before this shipped still carries its inline data-URL photo and renders unchanged.
+    // A line has EITHER a photo, OR a file, OR a "no receipt" reason - never a mix.
+    await client.query(
+      'ALTER TABLE deposit_expenses ADD COLUMN IF NOT EXISTS file_key TEXT;' +
+      'ALTER TABLE deposit_expenses ADD COLUMN IF NOT EXISTS file_name VARCHAR(255);' +
+      'ALTER TABLE deposit_expenses ADD COLUMN IF NOT EXISTS file_mime VARCHAR(255);' +
+      'ALTER TABLE deposit_expenses ADD COLUMN IF NOT EXISTS file_size BIGINT;'
+    );
     await client.query(
       'ALTER TABLE deposits ADD COLUMN IF NOT EXISTS ai_amount DECIMAL(10,2);' +
       'ALTER TABLE deposits ADD COLUMN IF NOT EXISTS ai_deposit_date DATE;' +

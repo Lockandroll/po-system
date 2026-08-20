@@ -2,7 +2,7 @@
 // public/sw.js (the only thing bumped each deploy) — the badge asks the active
 // service worker for it at runtime. This value is just the fallback shown when no
 // service worker is available (e.g. very first visit before it installs).
-var APP_VERSION = 'v116';
+var APP_VERSION = 'v117';
 var _resolvedAppVersion = null;
 
 // Ask the active service worker for its CACHE_VERSION (without the 'nova-' prefix).
@@ -11226,7 +11226,8 @@ async function renderDeposits(el) {
               '<div style="font-size:12px;color:var(--text-muted-color);margin-top:4px">Pick an employee to complete this deposit for them — it will be credited to their name.</div></div>'
           : '') +
         '<div style="display:flex;gap:12px;flex-wrap:wrap">' +
-          '<div class="form-group" style="flex:1;min-width:160px"><label>Deposit Amount ($)</label><input type="number" id="dep-amount" step="0.01" min="0" placeholder="0.00" oninput="recalcOverShort()" /></div>' +
+          '<div class="form-group" style="flex:1;min-width:160px"><label>Deposit Amount ($)</label><input type="number" id="dep-amount" step="0.01" min="0" placeholder="0.00" oninput="recalcOverShort()" />' +
+            '<div style="font-size:12px;color:var(--text-muted-color);margin-top:4px">Banked nothing this week? Leave this at 0.00 and just add your expenses below.</div></div>' +
           '<div class="form-group" style="flex:1;min-width:160px"><label>Pulsar Shows Owed ($) <span style="color:#e24b4a">*</span></label><input type="number" id="dep-pulsar" step="0.01" min="0" placeholder="0.00" oninput="recalcOverShort()" /></div>' +
         '</div>' +
         '<div style="display:flex;gap:12px;flex-wrap:wrap">' +
@@ -11238,7 +11239,7 @@ async function renderDeposits(el) {
         '</div>' +
         '<div class="form-group"><label>Receipt Photos</label>' +
           '<input type="file" id="dep-receipt" accept="image/*" multiple onchange="addDepositReceipts(this)" />' +
-          '<div style="font-size:12px;color:var(--text-muted-color);margin-top:4px">You can attach more than one photo (deposit slip, cash count sheet, etc.).</div>' +
+          '<div style="font-size:12px;color:var(--text-muted-color);margin-top:4px">You can attach more than one photo (deposit slip, cash count sheet, etc.). Not needed if the deposit is 0.00 and you are only claiming expenses.</div>' +
           '<div id="dep-receipt-preview" style="margin-top:10px"></div>' +
         '</div>' +
         '<div class="form-group"><label>Expenses</label>' +
@@ -11344,8 +11345,67 @@ async function runDepositExtract() {
   }
 }
 
+// ===== Expense attachments that are not photos =====
+// A receipt is not always something you can photograph: a parts order or a fuel
+// account comes as a spreadsheet or a PDF. Those never fit the photo path -
+// depResizeImage draws the file into a canvas, so anything that is not an image
+// came back null and silently attached nothing.
+//
+// A file goes straight from the browser to Cloudflare R2 through a presigned PUT
+// (the same route the Document Vault uses) and the row keeps only the pointer.
+// The Photo button is untouched: it still resizes, still runs the AI amount
+// extract, and every expense filed before this still renders from its data URL.
+var DEP_FILE_MAX_MB = 25;
+var DEP_FILE_ACCEPT = '.xlsx,.xls,.xlsm,.xlsb,.csv,.ods,.numbers,.pdf,.doc,.docx,.txt,.rtf,.heic,.png,.jpg,.jpeg';
+
+async function depUploadExpenseFile(file, statusEl) {
+  if (!file) return null;
+  if (file.size > DEP_FILE_MAX_MB * 1024 * 1024) {
+    showToast('That file is larger than ' + DEP_FILE_MAX_MB + ' MB. Please attach a smaller one.', 'error');
+    return null;
+  }
+  var mime = file.type || 'application/octet-stream';
+  if (statusEl) statusEl.textContent = 'Uploading ' + file.name + '\u2026';
+  try {
+    var pre = await api('POST', '/deposits/expense-file/upload-url', { file_name: file.name, mime_type: mime });
+    var put = await fetch(pre.uploadUrl, { method: 'PUT', headers: { 'Content-Type': mime }, body: file });
+    if (!put.ok) throw new Error('Upload failed (' + put.status + '). Please try again.');
+    if (statusEl) statusEl.textContent = '';
+    return { key: pre.file_key, name: file.name, mime: mime, size: file.size };
+  } catch (e) {
+    if (statusEl) statusEl.textContent = '';
+    showToast((e && e.message) || 'That file could not be uploaded.', 'error');
+    return null;
+  }
+}
+
+function depFileSize(bytes) {
+  var n = parseInt(bytes, 10);
+  if (isNaN(n) || n <= 0) return '';
+  if (n < 1024) return n + ' B';
+  if (n < 1024 * 1024) return Math.round(n / 1024) + ' KB';
+  return (Math.round(n / (1024 * 1024) * 10) / 10) + ' MB';
+}
+
+// The attached-file pill. removeCall is omitted on read-only views, where the
+// name itself becomes the download link instead.
+function depFileChip(name, size, removeCall, openCall) {
+  var label = escHtml(name || 'Attachment');
+  var sz = depFileSize(size);
+  var inner = openCall
+    ? '<a href="#" onclick="' + openCall + ';return false" style="color:var(--primary-color);text-decoration:none;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + label + '</a>'
+    : '<span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + label + '</span>';
+  return '<span style="display:inline-flex;align-items:center;gap:6px;max-width:240px;padding:4px 8px;border:1px solid var(--border-color);border-radius:8px;background:var(--bg-color);font-size:12px">' +
+    inner +
+    (sz ? '<span style="color:var(--text-muted-color);white-space:nowrap">' + sz + '</span>' : '') +
+    (removeCall
+      ? '<button type="button" title="Remove file" onclick="' + removeCall + '" style="background:none;border:none;color:#ef4444;cursor:pointer;font-size:15px;line-height:1;padding:0">&times;</button>'
+      : '') +
+  '</span>';
+}
+
 function addDepositExpense() {
-  depositExpenses.push({ description: '', amount: '', data: null, name: null, no_receipt: false, no_receipt_reason: '' });
+  depositExpenses.push({ description: '', amount: '', data: null, name: null, file: null, no_receipt: false, no_receipt_reason: '' });
   renderDepositExpenses();
 }
 
@@ -11359,11 +11419,20 @@ function renderDepositExpenses() {
   }
   area.innerHTML = depositExpenses.map(function(ex, idx) {
     var amtVal = (ex.amount === '' || ex.amount == null) ? '' : escHtml(String(ex.amount));
-    var photo = ex.data
-      ? '<div style="position:relative;display:inline-block"><img src="' + ex.data + '" style="width:48px;height:48px;object-fit:cover;border-radius:6px;border:1px solid var(--border-color);display:block" /><button type="button" title="Remove photo" onclick="removeDepositExpensePhoto(' + idx + ')" style="position:absolute;top:-6px;right:-6px;background:#ef4444;color:#fff;border:none;border-radius:50%;width:18px;height:18px;cursor:pointer;font-size:11px;line-height:1">×</button></div>'
-      : '<label class="btn btn-secondary btn-sm" style="cursor:pointer;margin:0;white-space:nowrap' + (ex.no_receipt ? ';opacity:0.5;pointer-events:none' : '') + '">Photo<input type="file" accept="image/*" style="display:none" onchange="setDepositExpensePhoto(' + idx + ',this)" /></label>';
-    // No-receipt override: only offered when there is no photo, and it demands a written reason.
-    var override = ex.data ? '' :
+    var dim = ex.no_receipt ? ';opacity:0.5;pointer-events:none' : '';
+    var photo;
+    if (ex.data) {
+      photo = '<div style="position:relative;display:inline-block"><img src="' + ex.data + '" style="width:48px;height:48px;object-fit:cover;border-radius:6px;border:1px solid var(--border-color);display:block" /><button type="button" title="Remove photo" onclick="removeDepositExpensePhoto(' + idx + ')" style="position:absolute;top:-6px;right:-6px;background:#ef4444;color:#fff;border:none;border-radius:50%;width:18px;height:18px;cursor:pointer;font-size:11px;line-height:1">×</button></div>';
+    } else if (ex.file) {
+      photo = depFileChip(ex.file.name, ex.file.size, 'removeDepositExpenseFile(' + idx + ')');
+    } else {
+      // Two ways in, on purpose. Photo keeps the camera-and-AI path a tech uses on
+      // a phone; File takes the spreadsheet or PDF that path could never hold.
+      photo = '<label class="btn btn-secondary btn-sm" style="cursor:pointer;margin:0;white-space:nowrap' + dim + '">Photo<input type="file" accept="image/*" style="display:none" onchange="setDepositExpensePhoto(' + idx + ',this)" /></label>' +
+        '<label class="btn btn-secondary btn-sm" style="cursor:pointer;margin:0;white-space:nowrap' + dim + '">File<input type="file" accept="' + DEP_FILE_ACCEPT + '" style="display:none" onchange="setDepositExpenseFile(' + idx + ',this)" /></label>';
+    }
+    // No-receipt override: only offered when nothing is attached, and it demands a written reason.
+    var override = (ex.data || ex.file) ? '' :
       '<div style="margin:6px 0 0 2px">' +
         '<label style="display:inline-flex;align-items:center;gap:6px;margin:0;font-size:13px;color:var(--text-muted-color);cursor:pointer">' +
           '<input type="checkbox" style="width:auto;margin:0" ' + (ex.no_receipt ? 'checked ' : '') + 'onchange="toggleDepositExpenseNoReceipt(' + idx + ',this.checked)" /> No receipt for this expense' +
@@ -11394,6 +11463,23 @@ function toggleDepositExpenseNoReceipt(idx, checked) {
   renderDepositExpenses();
 }
 function removeDepositExpense(idx) { depositExpenses.splice(idx, 1); renderDepositExpenses(); }
+function removeDepositExpenseFile(idx) { if (depositExpenses[idx]) depositExpenses[idx].file = null; renderDepositExpenses(); }
+// The file's twin of setDepositExpensePhoto. No resize and no AI extract: a
+// spreadsheet has no slip to read an amount off, so that stays typed by hand.
+async function setDepositExpenseFile(idx, input) {
+  var file = (input.files || [])[0];
+  if (!file || !depositExpenses[idx]) { if (input) input.value = ''; return; }
+  var up = await depUploadExpenseFile(file, document.getElementById('dep-exp-status-' + idx));
+  input.value = '';
+  if (up && depositExpenses[idx]) {
+    depositExpenses[idx].file = up;
+    depositExpenses[idx].data = null;
+    depositExpenses[idx].name = null;
+    depositExpenses[idx].no_receipt = false;
+    depositExpenses[idx].no_receipt_reason = '';
+  }
+  renderDepositExpenses();
+}
 async function setDepositExpensePhoto(idx, input) {
   var file = input.files[0];
   if (!file || !depositExpenses[idx]) return;
@@ -11401,6 +11487,8 @@ async function setDepositExpensePhoto(idx, input) {
   if (data) {
     depositExpenses[idx].data = data;
     depositExpenses[idx].name = file.name;
+    // One attachment slot per line: a photo replaces a file that was there.
+    depositExpenses[idx].file = null;
     // A photo satisfies the receipt requirement, so drop any override that was set.
     depositExpenses[idx].no_receipt = false;
     depositExpenses[idx].no_receipt_reason = '';
@@ -11479,21 +11567,32 @@ async function submitDeposit() {
   var notes = document.getElementById('dep-notes').value.trim();
   var employeeEl = document.getElementById('dep-employee');
   var employee_user_id = employeeEl ? employeeEl.value : '';
-  if (!amount || parseFloat(amount) <= 0) { fb.innerHTML = '<div class="alert alert-error">Please enter a valid amount.</div>'; return; }
-  if (pulsar_owed === '' || pulsar_owed == null || isNaN(parseFloat(pulsar_owed))) { fb.innerHTML = '<div class="alert alert-error">Please enter the Pulsar shows owed amount.</div>'; return; }
-  if (!deposit_date) { fb.innerHTML = '<div class="alert alert-error">Please choose a deposit date.</div>'; return; }
-  if (!periodMon) { fb.innerHTML = '<div class="alert alert-error">Please select a pay period.</div>'; return; }
-  if (!city_code) { fb.innerHTML = '<div class="alert alert-error">Please select a city.</div>'; return; }
-  if (!depositReceipts.length) { fb.innerHTML = '<div class="alert alert-error">Please attach at least one receipt photo.</div>'; return; }
-  var receipts = depositReceipts.map(function(r) { return { image: r.data, filename: r.name }; });
   // A line counts once the tech has put ANYTHING on it: text, a number, a photo or a
   // ticked "No receipt". Completely blank rows are still dropped silently; everything
   // else has to say what the money was spent on.
   var realExpenses = depositExpenses.filter(function(ex) {
     var hasDesc = ex.description && ex.description.trim();
     var hasAmt = ex.amount !== '' && ex.amount != null && !isNaN(parseFloat(ex.amount));
-    return hasDesc || hasAmt || !!ex.data || !!ex.no_receipt;
+    return hasDesc || hasAmt || !!ex.data || !!ex.file || !!ex.no_receipt;
   });
+  // Expenses-only submission. A tech who paid cash out but banked nothing still has to
+  // account for the week, so a blank or 0.00 deposit goes through as long as there is
+  // real expense money on the form. A blank form with nothing on it is still an error.
+  var expTotalNow = 0;
+  realExpenses.forEach(function(ex) { var a = parseFloat(ex.amount); if (!isNaN(a) && a > 0) expTotalNow += a; });
+  var amtNum = (amount === '' || amount == null) ? 0 : parseFloat(amount);
+  var expensesOnly = !isNaN(amtNum) && amtNum === 0 && expTotalNow > 0;
+  if (isNaN(amtNum) || amtNum < 0) { fb.innerHTML = '<div class="alert alert-error">Please enter a valid amount.</div>'; return; }
+  if (amtNum === 0 && !expensesOnly) { fb.innerHTML = '<div class="alert alert-error">Please enter a valid amount. If you banked nothing this week, leave it at 0.00 and add the expense the cash was spent on.</div>'; return; }
+  amount = amtNum.toFixed(2);
+  if (pulsar_owed === '' || pulsar_owed == null || isNaN(parseFloat(pulsar_owed))) { fb.innerHTML = '<div class="alert alert-error">Please enter the Pulsar shows owed amount.</div>'; return; }
+  if (!deposit_date) { fb.innerHTML = '<div class="alert alert-error">Please choose a deposit date.</div>'; return; }
+  if (!periodMon) { fb.innerHTML = '<div class="alert alert-error">Please select a pay period.</div>'; return; }
+  if (!city_code) { fb.innerHTML = '<div class="alert alert-error">Please select a city.</div>'; return; }
+  // Nothing banked means there is no deposit slip to photograph. Every expense still
+  // needs its own receipt (or a ticked "No receipt" with a reason) - checked below.
+  if (!depositReceipts.length && !expensesOnly) { fb.innerHTML = '<div class="alert alert-error">Please attach at least one receipt photo.</div>'; return; }
+  var receipts = depositReceipts.map(function(r) { return { image: r.data, filename: r.name }; });
   // Receipt policy: a photo on every expense, or a ticked override with a written reason.
   for (var ei = 0; ei < realExpenses.length; ei++) {
     var rex = realExpenses[ei];
@@ -11502,23 +11601,30 @@ async function submitDeposit() {
       fb.innerHTML = '<div class="alert alert-error">Please add a description for expense ' + (ei + 1) + ' (what the money was spent on).</div>';
       return;
     }
-    if (!rex.data && !rex.no_receipt) {
-      fb.innerHTML = '<div class="alert alert-error">A receipt photo is required for &ldquo;' + escHtml(rlabel) + '&rdquo;. If you do not have one, tick &ldquo;No receipt&rdquo; and explain why.</div>';
+    if (!rex.data && !rex.file && !rex.no_receipt) {
+      fb.innerHTML = '<div class="alert alert-error">A receipt is required for &ldquo;' + escHtml(rlabel) + '&rdquo; &mdash; a photo or a file. If you do not have one, tick &ldquo;No receipt&rdquo; and explain why.</div>';
       return;
     }
-    if (!rex.data && rex.no_receipt && !(rex.no_receipt_reason && rex.no_receipt_reason.trim())) {
+    if (!rex.data && !rex.file && rex.no_receipt && !(rex.no_receipt_reason && rex.no_receipt_reason.trim())) {
       fb.innerHTML = '<div class="alert alert-error">Please explain why there is no receipt for &ldquo;' + escHtml(rlabel) + '&rdquo;.</div>';
       return;
     }
   }
   var expenses = realExpenses.map(function(ex) {
+    var attached = !!ex.data || !!ex.file;
     return {
       description: ex.description || '',
       amount: parseFloat(ex.amount) || 0,
       image: ex.data || null,
       filename: ex.name || null,
-      no_receipt: !ex.data && !!ex.no_receipt,
-      no_receipt_reason: (!ex.data && ex.no_receipt) ? (ex.no_receipt_reason || '').trim() : null
+      // The file was already uploaded to R2 when it was picked; this is only the
+      // pointer, and the server re-checks that the key is one it issued to us.
+      file_key: ex.file ? ex.file.key : null,
+      file_name: ex.file ? ex.file.name : null,
+      file_mime: ex.file ? ex.file.mime : null,
+      file_size: ex.file ? ex.file.size : null,
+      no_receipt: !attached && !!ex.no_receipt,
+      no_receipt_reason: (!attached && ex.no_receipt) ? (ex.no_receipt_reason || '').trim() : null
     };
   });
   if (!depIdemKey) depIdemKey = depNewIdemKey();
@@ -11704,6 +11810,16 @@ async function exportDepositsCSV() {
 }
 
 // Fullscreen image viewer for deposit / expense receipts. Click anywhere to close.
+// Expense attachments live in R2, so the link is minted on demand by the server
+// and handed straight to the browser. Nothing durable is ever rendered into the page.
+async function depOpenExpenseFile(depId, expenseId) {
+  try {
+    var r = await api('GET', '/deposits/' + depId + '/expenses/' + expenseId + '/file?inline=1');
+    if (r && r.url) window.open(r.url, '_blank', 'noopener');
+    else showToast('That attachment could not be opened.', 'error');
+  } catch (e) { showToast((e && e.message) || 'That attachment could not be opened.', 'error'); }
+}
+
 function depShowImage(src) {
   if (!src) return;
   var ov = document.createElement('div');
@@ -11767,6 +11883,10 @@ async function renderViewDeposit(el, id, preloaded) {
       var thumb;
       if (x.receipt_image) {
         thumb = '<img src="' + x.receipt_image + '" onclick="depShowImage(this.src)" style="height:46px;width:46px;object-fit:cover;border-radius:6px;border:1px solid var(--border-color);cursor:zoom-in;display:block" />';
+      } else if (x.file_name) {
+        // Nothing to thumbnail a spreadsheet with, so the name IS the link. The
+        // URL is fetched on click and expires in minutes, so it cannot leak here.
+        thumb = depFileChip(x.file_name, x.file_size, null, 'depOpenExpenseFile(' + dep.id + ',' + x.id + ')');
       } else if (x.no_receipt) {
         thumb = '<span style="color:#ef4444;font-weight:600;white-space:nowrap">No receipt</span>' +
           (x.no_receipt_reason ? '<div style="color:var(--text-muted-color);font-size:12px;max-width:260px;white-space:normal">' + escHtml(x.no_receipt_reason) + '</div>' : '');
@@ -12058,7 +12178,11 @@ async function depEnterEdit() {
       description: x.description || '',
       amount: (x.amount == null) ? '' : String(parseFloat(x.amount).toFixed(2)),
       existing_image: x.receipt_image || null,
+      // The attachment on the row, if it is a file rather than a photo. Kept as
+      // a flag plus its display name: the key never reaches the client.
+      existing_file: x.file_name ? { name: x.file_name, size: x.file_size, mime: x.file_mime } : null,
       new_image: null,
+      new_file: null,
       filename: null,
       remove_photo: false,
       no_receipt: !!x.no_receipt,
@@ -12179,7 +12303,7 @@ async function depEditAddReceipts(input) {
 }
 
 function depEditAddExpense() {
-  depEditExpenses.push({ id: null, description: '', amount: '', existing_image: null, new_image: null, filename: null, remove_photo: false, no_receipt: false, no_receipt_reason: '' });
+  depEditExpenses.push({ id: null, description: '', amount: '', existing_image: null, existing_file: null, new_image: null, new_file: null, filename: null, remove_photo: false, no_receipt: false, no_receipt_reason: '' });
   depEditRenderExpenses();
 }
 function depEditUpdExpense(idx, field, val) { if (depEditExpenses[idx]) depEditExpenses[idx][field] = val; }
@@ -12188,16 +12312,34 @@ function depEditToggleNoReceipt(idx, checked) {
   var ex = depEditExpenses[idx];
   if (!ex) return;
   ex.no_receipt = !!checked;
-  if (checked) { ex.new_image = null; ex.filename = null; if (ex.existing_image) ex.remove_photo = true; }
-  else { ex.no_receipt_reason = ''; if (ex.existing_image) ex.remove_photo = false; }
+  if (checked) { ex.new_image = null; ex.new_file = null; ex.filename = null; if (ex.existing_image || ex.existing_file) ex.remove_photo = true; }
+  else { ex.no_receipt_reason = ''; if (ex.existing_image || ex.existing_file) ex.remove_photo = false; }
   depEditRenderExpenses();
 }
 function depEditDropExpensePhoto(idx) {
   var ex = depEditExpenses[idx];
   if (!ex) return;
   ex.new_image = null;
+  ex.new_file = null;
   ex.filename = null;
-  if (ex.existing_image) ex.remove_photo = true;
+  if (ex.existing_image || ex.existing_file) ex.remove_photo = true;
+  depEditRenderExpenses();
+}
+// Attaching a file while correcting a deposit. Same upload path as the submit
+// form; the manager needs edit_deposit, which the server checks again.
+async function depEditSetExpenseFile(idx, input) {
+  var file = (input.files || [])[0];
+  if (!file || !depEditExpenses[idx]) { if (input) input.value = ''; return; }
+  var up = await depUploadExpenseFile(file, null);
+  input.value = '';
+  if (up && depEditExpenses[idx]) {
+    depEditExpenses[idx].new_file = up;
+    depEditExpenses[idx].new_image = null;
+    depEditExpenses[idx].filename = null;
+    depEditExpenses[idx].remove_photo = false;
+    depEditExpenses[idx].no_receipt = false;
+    depEditExpenses[idx].no_receipt_reason = '';
+  }
   depEditRenderExpenses();
 }
 async function depEditSetExpensePhoto(idx, input) {
@@ -12206,6 +12348,7 @@ async function depEditSetExpensePhoto(idx, input) {
   var data = await depResizeImage(file);
   if (data) {
     depEditExpenses[idx].new_image = data;
+    depEditExpenses[idx].new_file = null;
     depEditExpenses[idx].filename = file.name;
     depEditExpenses[idx].remove_photo = false;
     depEditExpenses[idx].no_receipt = false;
@@ -12218,7 +12361,16 @@ async function depEditSetExpensePhoto(idx, input) {
 // A line shows a photo when it has a new one, or an untouched existing one.
 function depEditLinePhoto(ex) {
   if (ex.new_image) return ex.new_image;
+  if (ex.new_file) return null;
   if (ex.existing_image && !ex.remove_photo) return ex.existing_image;
+  return null;
+}
+// Same question for a file attachment. Photo and file share one slot, so at most
+// one of these two ever answers.
+function depEditLineFile(ex) {
+  if (ex.new_file) return ex.new_file;
+  if (ex.new_image) return null;
+  if (ex.existing_file && !ex.remove_photo) return ex.existing_file;
   return null;
 }
 
@@ -12231,11 +12383,22 @@ function depEditRenderExpenses() {
   }
   area.innerHTML = depEditExpenses.map(function(ex, idx) {
     var photo = depEditLinePhoto(ex);
+    var efile = depEditLineFile(ex);
     var amtVal = (ex.amount === '' || ex.amount == null) ? '' : escHtml(String(ex.amount));
-    var photoCell = photo
-      ? '<div style="position:relative;display:inline-block"><img src="' + photo + '" onclick="depShowImage(this.src)" style="width:48px;height:48px;object-fit:cover;border-radius:6px;border:1px solid var(--border-color);cursor:zoom-in;display:block" />' +
-          '<button type="button" title="Remove photo" onclick="depEditDropExpensePhoto(' + idx + ')" style="position:absolute;top:-6px;right:-6px;background:#ef4444;color:#fff;border:none;border-radius:50%;width:18px;height:18px;cursor:pointer;font-size:11px;line-height:1">&times;</button></div>'
-      : '<label class="btn btn-secondary btn-sm" style="cursor:pointer;margin:0;white-space:nowrap' + (ex.no_receipt ? ';opacity:0.5;pointer-events:none' : '') + '">Photo<input type="file" accept="image/*" style="display:none" onchange="depEditSetExpensePhoto(' + idx + ',this)" /></label>';
+    var edim = ex.no_receipt ? ';opacity:0.5;pointer-events:none' : '';
+    var photoCell;
+    if (photo) {
+      photoCell = '<div style="position:relative;display:inline-block"><img src="' + photo + '" onclick="depShowImage(this.src)" style="width:48px;height:48px;object-fit:cover;border-radius:6px;border:1px solid var(--border-color);cursor:zoom-in;display:block" />' +
+          '<button type="button" title="Remove photo" onclick="depEditDropExpensePhoto(' + idx + ')" style="position:absolute;top:-6px;right:-6px;background:#ef4444;color:#fff;border:none;border-radius:50%;width:18px;height:18px;cursor:pointer;font-size:11px;line-height:1">&times;</button></div>';
+    } else if (efile) {
+      // An already-saved file opens through the server; one just picked has not
+      // been attached to the row yet, so there is nothing to open until Save.
+      photoCell = depFileChip(efile.name, efile.size, 'depEditDropExpensePhoto(' + idx + ')',
+        (ex.existing_file && !ex.new_file && ex.id) ? ('depOpenExpenseFile(' + depViewId + ',' + ex.id + ')') : null);
+    } else {
+      photoCell = '<label class="btn btn-secondary btn-sm" style="cursor:pointer;margin:0;white-space:nowrap' + edim + '">Photo<input type="file" accept="image/*" style="display:none" onchange="depEditSetExpensePhoto(' + idx + ',this)" /></label>' +
+        '<label class="btn btn-secondary btn-sm" style="cursor:pointer;margin:0;white-space:nowrap' + edim + '">File<input type="file" accept="' + DEP_FILE_ACCEPT + '" style="display:none" onchange="depEditSetExpenseFile(' + idx + ',this)" /></label>';
+    }
     // The decision on the line, shown read-only here: approving and denying
     // happen on the deposit page, one click, no form to save. The note is not
     // conditional on the amount having moved yet, because this block is not
@@ -12256,7 +12419,7 @@ function depEditRenderExpenses() {
         photoCell +
         '<button type="button" class="btn btn-ghost btn-sm" onclick="depEditRemoveExpense(' + idx + ')" style="color:#ef4444">Remove</button>' +
       '</div>' +
-      (photo ? '' :
+      ((photo || efile) ? '' :
         '<label style="display:flex;align-items:center;gap:8px;margin-top:8px;font-size:13px;color:var(--text-muted-color);cursor:pointer">' +
           '<input type="checkbox" style="width:auto;margin:0" ' + (ex.no_receipt ? 'checked ' : '') + 'onchange="depEditToggleNoReceipt(' + idx + ',this.checked)" /> No receipt for this expense' +
         '</label>' +
@@ -12310,7 +12473,7 @@ async function saveDepositEdit() {
   }
   if (fb) fb.innerHTML = '';
   var amount = parseFloat((document.getElementById('depe-amount') || {}).value);
-  if (isNaN(amount) || amount <= 0) return fail('Please enter a valid deposit amount.');
+  if (isNaN(amount) || amount < 0) return fail('Please enter a valid deposit amount.');
   var pulsar_owed = parseFloat((document.getElementById('depe-pulsar') || {}).value);
   if (isNaN(pulsar_owed)) return fail('Please enter what Pulsar shows owed.');
   var deposit_date = (document.getElementById('depe-date') || {}).value;
@@ -12330,23 +12493,37 @@ async function saveDepositEdit() {
     var amt = parseFloat(ex.amount);
     var desc = (ex.description || '').trim();
     var photo = depEditLinePhoto(ex);
-    if (!desc && isNaN(amt) && !photo && !ex.no_receipt) continue;
+    var efile = depEditLineFile(ex);
+    var attached = !!photo || !!efile;
+    if (!desc && isNaN(amt) && !attached && !ex.no_receipt) continue;
     if (!desc) return fail('Please add a description for expense ' + (i + 1) + ' (what the money was spent on).');
     var label = desc;
     if (!isNaN(amt) && amt < 0) return fail('Expense amount cannot be negative for "' + label + '".');
-    if (!photo && !ex.no_receipt) return fail('A receipt photo is required for "' + label + '". If there is none, tick "No receipt" and explain why.');
-    if (!photo && ex.no_receipt && !(ex.no_receipt_reason || '').trim()) return fail('Please explain why there is no receipt for "' + label + '".');
+    if (!attached && !ex.no_receipt) return fail('A receipt is required for "' + label + '" - a photo or a file. If there is none, tick "No receipt" and explain why.');
+    if (!attached && ex.no_receipt && !(ex.no_receipt_reason || '').trim()) return fail('Please explain why there is no receipt for "' + label + '".');
     expenses.push({
       id: ex.id,
       description: desc,
       amount: isNaN(amt) ? 0 : amt,
       image: ex.new_image || null,
       filename: ex.filename || null,
-      remove_photo: !!ex.remove_photo && !ex.new_image,
-      no_receipt: !photo,
-      no_receipt_reason: photo ? '' : (ex.no_receipt_reason || '').trim()
+      // Only a NEW file is sent. An untouched one is left alone by the server,
+      // which is what keeps its key out of the browser in the first place.
+      file_key: ex.new_file ? ex.new_file.key : null,
+      file_name: ex.new_file ? ex.new_file.name : null,
+      file_mime: ex.new_file ? ex.new_file.mime : null,
+      file_size: ex.new_file ? ex.new_file.size : null,
+      remove_photo: !!ex.remove_photo && !ex.new_image && !ex.new_file,
+      no_receipt: !attached,
+      no_receipt_reason: attached ? '' : (ex.no_receipt_reason || '').trim()
     });
   }
+
+  // Same rule as the submit form: a 0.00 deposit only means something when there is
+  // expense money on it. Checked here because the expense lines are only known now.
+  var editExpTotal = 0;
+  expenses.forEach(function(e) { if (e.amount > 0) editExpTotal += e.amount; });
+  if (amount === 0 && editExpTotal <= 0) return fail('A $0.00 deposit needs at least one expense on it. Enter the deposit amount, or add the expense the cash was spent on.');
 
   var receipts_keep = depEditReceipts.filter(function(r) { return r.keep && !r.legacy && r.id != null; }).map(function(r) { return r.id; });
   var legacyRow = depEditReceipts.filter(function(r) { return r.legacy; })[0];

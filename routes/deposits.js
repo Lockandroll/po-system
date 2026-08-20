@@ -1,9 +1,11 @@
 const express = require('express');
 const https = require('https');
+const crypto = require('crypto');
 const { pool } = require('../db');
 const { requireAuth, requirePermission } = require('../middleware/auth');
 const { logAudit } = require('../utils/audit');
 const { hasPermission } = require('../utils/permissions');
+const r2 = require('../utils/r2');
 
 const router = express.Router();
 
@@ -19,6 +21,99 @@ const MANAGE = ['admin', 'manager'];
 // reconciliation writes to deposits too ("Correct Deposit Amount") and has to be
 // held to exactly the same rule. Do not re-inline a second copy here.
 const { editCityScope, scopeAllows, mayEditCity } = require('../utils/depositAccess');
+
+// ---------------------------------------------------------------------------
+// Expense attachments (spreadsheets, PDFs - anything that is not a photo)
+// ---------------------------------------------------------------------------
+// A receipt is not always a photo. A parts order or a fuel account arrives as a
+// spreadsheet, and the expense line had nowhere to put one: the picker was
+// accept="image/*" and the bytes were base64'd straight into the row.
+//
+// Those files go to Cloudflare R2 instead - browser to R2 direct via a presigned
+// PUT, exactly like the Document Vault - and only the pointer is stored here.
+// Nothing about the photo path changed: receipt_image still holds the inline
+// data URL, old rows included, and the receipt policy is unchanged in substance -
+// a line carries EITHER a photo, OR a file, OR a written "no receipt" reason.
+const EXPENSE_FILE_PREFIX = 'deposits/expenses/';
+function sanitizeFileName(s) {
+  return String(s || 'file').replace(/[^a-zA-Z0-9._-]+/g, '_').slice(0, 200) || 'file';
+}
+// A key coming back from a browser is only honoured if it sits under the prefix
+// this server handed THAT user. Without this check a submitted key would be an
+// open pointer into the bucket and anyone could claim someone else's object.
+function ownsExpenseKey(key, userId) {
+  const m = /^deposits\/expenses\/(\d+)\/[0-9a-f-]{36}\/[A-Za-z0-9._-]{1,200}$/.exec(String(key || ''));
+  return !!m && m[1] === String(userId);
+}
+// Turn what the client SAYS it uploaded into something worth storing. The bytes
+// never pass through this server, so existence has to be asked of R2 directly.
+// Returns { file, error }: error is a message safe to hand the user verbatim.
+async function resolveExpenseFile(ex, userId) {
+  const key = (ex && ex.file_key != null) ? String(ex.file_key) : '';
+  if (!key) return { file: null, error: null };
+  if (!ownsExpenseKey(key, userId)) {
+    return { file: null, error: 'That attachment could not be verified. Please attach the file again.' };
+  }
+  let size = parseInt(ex.file_size, 10);
+  if (isNaN(size) || size < 0) size = null;
+  if (r2.configured()) {
+    let head;
+    // A storage hiccup must not reject a receipt the tech really did upload, so
+    // only a definite "not there" (null) fails the line. A thrown error is
+    // transient by definition here and the claim is taken at face value.
+    try { head = await r2.headObject(key); } catch (e) { head = undefined; }
+    if (head === null) {
+      return { file: null, error: 'That attachment did not finish uploading. Please attach the file again.' };
+    }
+    if (head && head.size) size = head.size;
+  }
+  return {
+    file: {
+      key: key,
+      name: String(ex.file_name || key.split('/').pop() || 'receipt').slice(0, 255),
+      mime: String(ex.file_mime || 'application/octet-stream').slice(0, 255),
+      size: size
+    },
+    error: null
+  };
+}
+// Orphaned objects are harmless but they are still the company's storage bill,
+// so a removed or replaced attachment takes its bytes with it. Always best
+// effort and always AFTER the transaction commits: losing the object matters
+// far less than failing a save that already succeeded in the database.
+async function dropExpenseObjects(keys) {
+  for (let i = 0; i < (keys || []).length; i++) {
+    if (!keys[i]) continue;
+    try { if (r2.configured()) await r2.deleteObject(keys[i]); }
+    catch (e) { console.error('Deposit expense file cleanup failed:', e.message); }
+  }
+}
+// "create_deposit OR edit_deposit": a tech attaching a file to the deposit they
+// are filing, or a manager attaching one while correcting a filed deposit.
+// Composed from the existing requirePermission rather than reimplementing its
+// role + extra-perm lookup, so that rule keeps exactly one definition.
+function gateAllows(gate, req) {
+  return new Promise(function (resolve) {
+    let done = false;
+    const fake = {
+      status: function () { return fake; },
+      json: function () { if (!done) { done = true; resolve(false); } return fake; },
+      send: function () { if (!done) { done = true; resolve(false); } return fake; }
+    };
+    try { gate(req, fake, function () { if (!done) { done = true; resolve(true); } }); }
+    catch (e) { if (!done) { done = true; resolve(false); } }
+  });
+}
+function requireAnyPermission(perms) {
+  const gates = perms.map(function (p) { return requirePermission(p); });
+  return async function (req, res, next) {
+    if (!req.user) return res.status(401).json({ error: 'Unauthorized' });
+    for (let i = 0; i < gates.length; i++) {
+      if (await gateAllows(gates[i], req)) return next();
+    }
+    return res.status(403).json({ error: 'Forbidden' });
+  };
+}
 
 // ---------------------------------------------------------------------------
 // Expense review
@@ -40,7 +135,10 @@ function denied(alias) {
 }
 // One column list, so the three places that hand a deposit back to the client
 // can never drift apart on which review fields they include.
+// file_key is deliberately NOT handed to the client: it is a pointer into the
+// bucket, and downloads go through the authenticated /file endpoint instead.
 const EXPENSE_COLS = 'id, description, amount, receipt_image, receipt_filename, ' +
+  'file_name, file_mime, file_size, ' +
   'COALESCE(no_receipt, FALSE) AS no_receipt, no_receipt_reason, ' +
   "COALESCE(review_status, 'pending') AS review_status, review_reason, reviewed_by_name, reviewed_at";
 
@@ -163,15 +261,52 @@ router.post('/ai-extract', requireAuth, requirePermission('create_deposit'), asy
   }
 });
 
+// POST /expense-file/upload-url — reserve a spot in R2 for one expense
+// attachment and hand back a presigned PUT the browser uploads to directly.
+// Registered before the /:id routes so Express never reads "expense-file" as an id.
+//
+// Nothing is written to the database here. The key comes back on the deposit
+// submission (or edit) and is verified there, so an upload that is started and
+// abandoned leaves nothing behind but an unreferenced object.
+router.post('/expense-file/upload-url', requireAuth, requireAnyPermission(['create_deposit', 'edit_deposit']), async function (req, res) {
+  try {
+    if (!r2.configured()) {
+      return res.status(503).json({ error: 'File storage is not set up yet, so only photos can be attached. Ask an admin to add the R2 settings.' });
+    }
+    const name = (req.body && req.body.file_name != null ? String(req.body.file_name) : '').trim();
+    if (!name) return res.status(400).json({ error: 'File name is required' });
+    const mime = (req.body && req.body.mime_type != null ? String(req.body.mime_type) : '').trim().slice(0, 255) || 'application/octet-stream';
+    const key = EXPENSE_FILE_PREFIX + req.user.id + '/' + crypto.randomUUID() + '/' + sanitizeFileName(name);
+    const uploadUrl = await r2.presignUpload(key, mime);
+    res.json({ file_key: key, uploadUrl: uploadUrl });
+  } catch (err) {
+    console.error('Deposit expense upload-url failed:', err.message);
+    res.status(500).json({ error: 'Could not start that upload. Please try again.' });
+  }
+});
+
 // POST / — submit a deposit with optional Pulsar-owed figure, multiple receipt
 // photos, and expense lines (each expense may carry its own photo).
 router.post('/', requireAuth, requirePermission('create_deposit'), async function(req, res) {
   const client = await pool.connect();
   try {
     const { amount, deposit_date, period_start, period_end, city_code, notes, pulsar_owed, receipt_image, receipt_filename } = req.body;
-    const amt = parseFloat(amount);
-    if (isNaN(amt) || amt <= 0) {
+    // Expenses-only submission: a technician who paid cash out but banked nothing
+    // still has to account for the week, so a 0.00 deposit is accepted as long as
+    // there is real expense money on it. Totalled from the raw body here because the
+    // per-line expense validation further down runs after this check.
+    let bodyExpenseTotal = 0;
+    (Array.isArray(req.body.expenses) ? req.body.expenses : []).forEach(function (ex) {
+      if (!ex) return;
+      const v = parseFloat(ex.amount);
+      if (!isNaN(v) && v > 0) bodyExpenseTotal += v;
+    });
+    const amt = (amount === '' || amount == null) ? 0 : parseFloat(amount);
+    if (isNaN(amt) || amt < 0) {
       return res.status(400).json({ error: 'A valid deposit amount is required' });
+    }
+    if (amt === 0 && bodyExpenseTotal <= 0) {
+      return res.status(400).json({ error: 'A $0.00 deposit is only allowed when the submission has at least one expense on it.' });
     }
     if (!deposit_date) {
       return res.status(400).json({ error: 'Deposit date is required' });
@@ -218,15 +353,24 @@ router.post('/', requireAuth, requirePermission('create_deposit'), async functio
         submittedByName = req.user.name;
       }
     }
-    // Receipt policy: every expense line must carry a photo, or an explicit "no receipt"
-    // override with a written reason.  Enforced here so it cannot be bypassed client-side.
+    // Receipt policy: every expense line must carry a photo OR a file, or an explicit
+    // "no receipt" override with a written reason.  Enforced here so it cannot be
+    // bypassed client-side.
     const rawExpenses = Array.isArray(req.body.expenses) ? req.body.expenses : [];
+    // Attachments first, so the policy check below can treat a spreadsheet exactly
+    // like a photo. Index-aligned with rawExpenses and reused by the insert loop.
+    const expenseFiles = [];
+    for (let k = 0; k < rawExpenses.length; k++) {
+      const rf = await resolveExpenseFile(rawExpenses[k], req.user.id);
+      if (rf.error) return res.status(400).json({ error: rf.error });
+      expenseFiles.push(rf.file);
+    }
     for (let k = 0; k < rawExpenses.length; k++) {
       const ex = rawExpenses[k];
       if (!ex) continue;
       const exAmtChk = parseFloat(ex.amount);
       const descChk = (ex.description == null ? '' : String(ex.description)).trim();
-      const touchedChk = !!ex.image || ex.no_receipt === true || ex.no_receipt === 'true';
+      const touchedChk = !!ex.image || !!expenseFiles[k] || ex.no_receipt === true || ex.no_receipt === 'true';
       if (!descChk && isNaN(exAmtChk) && !touchedChk) continue;
       // Description is mandatory: an amount with no explanation cannot be reconciled.
       if (!descChk) {
@@ -235,12 +379,12 @@ router.post('/', requireAuth, requirePermission('create_deposit'), async functio
       if (!isNaN(exAmtChk) && exAmtChk < 0) {
         return res.status(400).json({ error: 'Expense amount cannot be negative for "' + (descChk || ('expense ' + (k + 1))) + '".' });
       }
-      const hasPhoto = !!ex.image;
+      const hasPhoto = !!ex.image || !!expenseFiles[k];
       const override = ex.no_receipt === true || ex.no_receipt === 'true';
       const reason = (ex.no_receipt_reason == null ? '' : String(ex.no_receipt_reason)).trim();
       const label = descChk || ('expense ' + (k + 1));
       if (!hasPhoto && !override) {
-        return res.status(400).json({ error: 'A receipt photo is required for "' + label + '". If you do not have one, check "No receipt" and explain why.' });
+        return res.status(400).json({ error: 'A receipt is required for "' + label + '" - a photo or a file. If you do not have one, check "No receipt" and explain why.' });
       }
       if (!hasPhoto && override && !reason) {
         return res.status(400).json({ error: 'Please explain why there is no receipt for "' + label + '".' });
@@ -265,7 +409,10 @@ router.post('/', requireAuth, requirePermission('create_deposit'), async functio
     // Soft guard: same person, date, amount and pay period already on file — ask the client to confirm before creating a second one.
     // Keyed on the CREDITED employee, not whoever is typing it in, so a manager
     // completing a second deposit for the same tech still gets warned.
-    if (!confirmDuplicate) {
+    // Skipped on an expenses-only submission: the guard is keyed on the amount, so
+    // every 0.00 deposit would look like a duplicate of the last one. What actually
+    // distinguishes them is the expense lines, which this query cannot see.
+    if (!confirmDuplicate && amt > 0) {
       const dupq = await pool.query(
         'SELECT id, deposit_number FROM deposits WHERE user_id = $1 AND deposit_date = $2 AND amount = $3 ' +
         'AND period_start IS NOT DISTINCT FROM $4::date AND city_code IS NOT DISTINCT FROM $5 ' +
@@ -328,11 +475,16 @@ router.post('/', requireAuth, requirePermission('create_deposit'), async functio
       if (!desc && isNaN(exAmt)) continue;
       const safeAmt = isNaN(exAmt) ? 0 : exAmt;
       expenseTotal += safeAmt;
-      const noRc = !ex.image && (ex.no_receipt === true || ex.no_receipt === 'true');
+      const exFile = expenseFiles[j] || null;
+      const noRc = !ex.image && !exFile && (ex.no_receipt === true || ex.no_receipt === 'true');
       const noRcReason = noRc ? (ex.no_receipt_reason == null ? '' : String(ex.no_receipt_reason)).trim().slice(0, 1000) : null;
       await client.query(
-        'INSERT INTO deposit_expenses (deposit_id, description, amount, receipt_image, receipt_filename, no_receipt, no_receipt_reason) VALUES ($1,$2,$3,$4,$5,$6,$7)',
-        [dep.id, desc || null, safeAmt, ex.image || null, ex.filename || null, noRc, noRcReason || null]
+        'INSERT INTO deposit_expenses (deposit_id, description, amount, receipt_image, receipt_filename, no_receipt, no_receipt_reason, file_key, file_name, file_mime, file_size) ' +
+        'VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)',
+        [
+          dep.id, desc || null, safeAmt, ex.image || null, ex.filename || null, noRc, noRcReason || null,
+          exFile ? exFile.key : null, exFile ? exFile.name : null, exFile ? exFile.mime : null, exFile ? exFile.size : null
+        ]
       );
     }
     await client.query('COMMIT');
@@ -490,6 +642,40 @@ router.get('/:id', requireAuth, requirePermission('view_deposits'), async functi
   }
 });
 
+// GET /:id/expenses/:expenseId/file — a short-lived link to that line's
+// attachment. The bytes live in R2, so this hands back a presigned URL rather
+// than proxying the file; ?inline=1 previews (PDFs, images) instead of saving.
+// Gated exactly like GET /:id: a tech sees their own deposits, see-all roles see
+// every one. Deliberately checked on its own cheap query before any key is read.
+router.get('/:id/expenses/:expenseId/file', requireAuth, requirePermission('view_deposits'), async function(req, res) {
+  try {
+    const own = await pool.query('SELECT user_id FROM deposits WHERE id = $1', [req.params.id]);
+    if (!own.rows.length) return res.status(404).json({ error: 'Deposit not found' });
+    if (!SEE_ALL.includes(req.user.role) && own.rows[0].user_id !== req.user.id) {
+      return res.status(403).json({ error: 'Access denied' });
+    }
+    const exq = await pool.query(
+      'SELECT file_key, file_name, file_mime FROM deposit_expenses WHERE id = $1 AND deposit_id = $2',
+      [req.params.expenseId, req.params.id]
+    );
+    if (!exq.rows.length) return res.status(404).json({ error: 'That expense is not on this deposit.' });
+    const row = exq.rows[0];
+    if (!row.file_key) return res.status(404).json({ error: 'There is no file on that expense.' });
+    if (!r2.configured()) return res.status(503).json({ error: 'File storage is not set up, so this attachment cannot be opened.' });
+    const url = await r2.presignDownload(
+      row.file_key,
+      row.file_name || 'receipt',
+      req.query.inline === '1',
+      300,
+      row.file_mime || undefined
+    );
+    res.json({ url: url, file_name: row.file_name || 'receipt' });
+  } catch (err) {
+    console.error('Deposit expense file link failed:', err.message);
+    res.status(500).json({ error: 'Could not open that attachment.' });
+  }
+});
+
 // PUT /:id — correct a submitted deposit. Manager-and-above, and a manager only
 // within their own cities (see editCityScope above); admin/owner anywhere.
 //
@@ -498,7 +684,9 @@ router.get('/:id', requireAuth, requirePermission('view_deposits'), async functi
 //   expenses[]      - the full list. { id } keeps/updates an existing row,
 //                     no id inserts a new one, and any existing row whose id is
 //                     absent is deleted. { image } replaces that line's photo,
-//                     { remove_photo:true } clears it.
+//                     { file_key } replaces it with an uploaded file (a photo and
+//                     a file are the same slot - setting one clears the other),
+//                     { remove_photo:true } clears whichever is there.
 //   receipts_keep[] - ids of existing deposit_receipts rows to KEEP. Anything
 //                     not listed is deleted.
 //   receipts_add[]  - { image, filename } new photos.
@@ -523,7 +711,7 @@ router.put('/:id', requireAuth, requirePermission('edit_deposit'), async functio
     }
 
     const amt = money2(req.body.amount);
-    if (amt === null || amt <= 0) {
+    if (amt === null || amt < 0) {
       return res.status(400).json({ error: 'A valid deposit amount is required' });
     }
     const deposit_date = dateOrNull(req.body.deposit_date);
@@ -549,7 +737,7 @@ router.put('/:id', requireAuth, requirePermission('edit_deposit'), async functio
     const notes = (req.body.notes == null || String(req.body.notes).trim() === '') ? null : String(req.body.notes);
 
     // Existing children, read before the transaction so validation can fail fast.
-    const exRows = (await pool.query("SELECT id, receipt_image, amount, COALESCE(review_status, 'pending') AS review_status FROM deposit_expenses WHERE deposit_id = $1", [dep.id])).rows;
+    const exRows = (await pool.query("SELECT id, receipt_image, file_key, amount, COALESCE(review_status, 'pending') AS review_status FROM deposit_expenses WHERE deposit_id = $1", [dep.id])).rows;
     const exById = {};
     exRows.forEach(function (r) { exById[String(r.id)] = r; });
     const rcRows = (await pool.query('SELECT id FROM deposit_receipts WHERE deposit_id = $1', [dep.id])).rows;
@@ -559,13 +747,24 @@ router.put('/:id', requireAuth, requirePermission('edit_deposit'), async functio
     // an explicit "no receipt" with a written reason. An existing photo the
     // editor did not touch counts.
     const rawExpenses = Array.isArray(req.body.expenses) ? req.body.expenses : [];
+    // Attachments resolved up front, same as on submission, so a spreadsheet
+    // satisfies the receipt policy exactly like a photo does.
+    const editFiles = [];
+    for (let k = 0; k < rawExpenses.length; k++) {
+      const rf = await resolveExpenseFile(rawExpenses[k], req.user.id);
+      if (rf.error) return res.status(400).json({ error: rf.error });
+      editFiles.push(rf.file);
+    }
+    // Objects whose row no longer points at them once this save lands. Deleted
+    // from R2 after the COMMIT, never before - see dropExpenseObjects.
+    const staleKeys = [];
     const cleanExpenses = [];
     for (let k = 0; k < rawExpenses.length; k++) {
       const ex = rawExpenses[k];
       if (!ex) continue;
       const exAmt = parseFloat(ex.amount);
       const desc = (ex.description == null ? '' : String(ex.description)).trim();
-      const touched = !!ex.image || ex.no_receipt === true || ex.no_receipt === 'true' || (ex.id != null && ex.id !== '');
+      const touched = !!ex.image || !!editFiles[k] || ex.no_receipt === true || ex.no_receipt === 'true' || (ex.id != null && ex.id !== '');
       if (!desc && isNaN(exAmt) && !touched) continue;
       // Description is mandatory: an amount with no explanation cannot be reconciled.
       if (!desc) {
@@ -581,12 +780,17 @@ router.put('/:id', requireAuth, requirePermission('edit_deposit'), async functio
       }
       const removePhoto = ex.remove_photo === true || ex.remove_photo === 'true';
       const newPhoto = ex.image ? String(ex.image) : null;
-      const keptPhoto = (!removePhoto && !newPhoto && existing && existing.receipt_image) ? true : false;
-      const hasPhoto = !!newPhoto || keptPhoto;
+      const newFile = editFiles[k] || null;
+      // One attachment slot per line: a new photo replaces a file and vice versa,
+      // and "remove" clears whichever is on the row.
+      const keptPhoto = (!removePhoto && !newPhoto && !newFile && existing && existing.receipt_image) ? true : false;
+      const keptFile = (!removePhoto && !newPhoto && !newFile && existing && existing.file_key) ? true : false;
+      const hasPhoto = !!newPhoto || !!newFile || keptPhoto || keptFile;
+      if (existing && existing.file_key && !keptFile) staleKeys.push(existing.file_key);
       const override = ex.no_receipt === true || ex.no_receipt === 'true';
       const reason = (ex.no_receipt_reason == null ? '' : String(ex.no_receipt_reason)).trim();
       if (!hasPhoto && !override) {
-        return res.status(400).json({ error: 'A receipt photo is required for "' + label + '". If there is none, tick "No receipt" and explain why.' });
+        return res.status(400).json({ error: 'A receipt is required for "' + label + '" - a photo or a file. If there is none, tick "No receipt" and explain why.' });
       }
       if (!hasPhoto && override && !reason) {
         return res.status(400).json({ error: 'Please explain why there is no receipt for "' + label + '".' });
@@ -607,12 +811,21 @@ router.put('/:id', requireAuth, requirePermission('edit_deposit'), async functio
         // are both pending, which counts.
         reviewStatus: (!existing || resetReview) ? 'pending' : existing.review_status,
         newPhoto: newPhoto,
+        newFile: newFile,
         filename: ex.filename ? String(ex.filename).slice(0, 255) : null,
         removePhoto: removePhoto,
         hasPhoto: hasPhoto,
         no_receipt: !hasPhoto,
         no_receipt_reason: hasPhoto ? null : (reason.slice(0, 1000) || null)
       });
+    }
+
+    // Same rule as submission: an edit may zero the deposit, but only on a record
+    // that still carries expense money. Checked here, once the lines are validated.
+    let cleanExpenseTotal = 0;
+    cleanExpenses.forEach(function (e) { if (e.amount > 0) cleanExpenseTotal += e.amount; });
+    if (amt === 0 && cleanExpenseTotal <= 0) {
+      return res.status(400).json({ error: 'A $0.00 deposit needs at least one expense on it.' });
     }
 
     // Receipts: which existing rows survive, and what is being added.
@@ -661,6 +874,7 @@ router.put('/:id', requireAuth, requirePermission('edit_deposit'), async functio
     // Expenses: drop the lines that are gone, update the kept ones, insert new.
     const keptExpenseIds = cleanExpenses.map(function (e) { return e.id; }).filter(function (v) { return v != null; });
     const dropExpenseIds = exRows.map(function (r) { return r.id; }).filter(function (n) { return keptExpenseIds.indexOf(n) === -1; });
+    exRows.forEach(function (r) { if (r.file_key && dropExpenseIds.indexOf(r.id) !== -1) staleKeys.push(r.file_key); });
     if (dropExpenseIds.length) {
       await client.query('DELETE FROM deposit_expenses WHERE deposit_id = $1 AND id = ANY($2::int[])', [dep.id, dropExpenseIds]);
     }
@@ -671,17 +885,28 @@ router.put('/:id', requireAuth, requirePermission('edit_deposit'), async functio
       if (e.id != null) {
         if (e.newPhoto) {
           await client.query(
-            'UPDATE deposit_expenses SET description = $1, amount = $2, receipt_image = $3, receipt_filename = $4, no_receipt = FALSE, no_receipt_reason = NULL WHERE id = $5 AND deposit_id = $6',
+            'UPDATE deposit_expenses SET description = $1, amount = $2, receipt_image = $3, receipt_filename = $4, ' +
+            'file_key = NULL, file_name = NULL, file_mime = NULL, file_size = NULL, ' +
+            'no_receipt = FALSE, no_receipt_reason = NULL WHERE id = $5 AND deposit_id = $6',
             [e.description, e.amount, e.newPhoto, e.filename, e.id, dep.id]
+          );
+        } else if (e.newFile) {
+          await client.query(
+            'UPDATE deposit_expenses SET description = $1, amount = $2, receipt_image = NULL, receipt_filename = NULL, ' +
+            'file_key = $3, file_name = $4, file_mime = $5, file_size = $6, ' +
+            'no_receipt = FALSE, no_receipt_reason = NULL WHERE id = $7 AND deposit_id = $8',
+            [e.description, e.amount, e.newFile.key, e.newFile.name, e.newFile.mime, e.newFile.size, e.id, dep.id]
           );
         } else if (e.removePhoto) {
           await client.query(
-            'UPDATE deposit_expenses SET description = $1, amount = $2, receipt_image = NULL, receipt_filename = NULL, no_receipt = $3, no_receipt_reason = $4 WHERE id = $5 AND deposit_id = $6',
+            'UPDATE deposit_expenses SET description = $1, amount = $2, receipt_image = NULL, receipt_filename = NULL, ' +
+            'file_key = NULL, file_name = NULL, file_mime = NULL, file_size = NULL, ' +
+            'no_receipt = $3, no_receipt_reason = $4 WHERE id = $5 AND deposit_id = $6',
             [e.description, e.amount, e.no_receipt, e.no_receipt_reason, e.id, dep.id]
           );
         } else {
-          // Photo untouched — leave receipt_image alone rather than rewriting a
-          // multi-hundred-KB data URL on every save.
+          // Attachment untouched — leave receipt_image and the file pointer alone
+          // rather than rewriting a multi-hundred-KB data URL on every save.
           await client.query(
             'UPDATE deposit_expenses SET description = $1, amount = $2, no_receipt = $3, no_receipt_reason = $4 WHERE id = $5 AND deposit_id = $6',
             [e.description, e.amount, e.no_receipt, e.no_receipt_reason, e.id, dep.id]
@@ -697,12 +922,19 @@ router.put('/:id', requireAuth, requirePermission('edit_deposit'), async functio
         }
       } else {
         await client.query(
-          'INSERT INTO deposit_expenses (deposit_id, description, amount, receipt_image, receipt_filename, no_receipt, no_receipt_reason) VALUES ($1,$2,$3,$4,$5,$6,$7)',
-          [dep.id, e.description, e.amount, e.newPhoto, e.filename, e.no_receipt, e.no_receipt_reason]
+          'INSERT INTO deposit_expenses (deposit_id, description, amount, receipt_image, receipt_filename, no_receipt, no_receipt_reason, file_key, file_name, file_mime, file_size) ' +
+          'VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)',
+          [
+            dep.id, e.description, e.amount, e.newPhoto, e.filename, e.no_receipt, e.no_receipt_reason,
+            e.newFile ? e.newFile.key : null, e.newFile ? e.newFile.name : null,
+            e.newFile ? e.newFile.mime : null, e.newFile ? e.newFile.size : null
+          ]
         );
       }
     }
     await client.query('COMMIT');
+    // Committed, so the rows no longer point at these objects. Best effort.
+    await dropExpenseObjects(staleKeys);
 
     // Field-by-field diff for the audit log and the on-page history panel.
     const changes = {};
@@ -833,8 +1065,16 @@ router.delete('/:id', requireAuth, requirePermission('delete_deposit'), async fu
     return res.status(403).json({ error: 'Access denied' });
   }
   try {
+    // Read the expense attachments BEFORE the delete cascades their rows away,
+    // so the objects can follow the record out. Never blocks the delete.
+    let doomedKeys = [];
+    try {
+      doomedKeys = (await pool.query('SELECT file_key FROM deposit_expenses WHERE deposit_id = $1 AND file_key IS NOT NULL', [req.params.id]))
+        .rows.map(function (r) { return r.file_key; });
+    } catch (e) { doomedKeys = []; }
     const { rows } = await pool.query('DELETE FROM deposits WHERE id = $1 RETURNING id, deposit_number', [req.params.id]);
     if (!rows.length) return res.status(404).json({ error: 'Deposit not found' });
+    await dropExpenseObjects(doomedKeys);
     await logAudit({
       entity_type: 'deposit',
       entity_id: rows[0].id,
