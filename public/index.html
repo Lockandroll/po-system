@@ -772,8 +772,13 @@
 @media (prefers-reduced-motion: reduce){ .ci-spin { animation:none; } }
 /* Script editor: steps on the left, explanation on the right. */
 .ci-split { display:flex; gap:22px; align-items:flex-start; flex-wrap:wrap; }
-.ci-split-main { flex:1 1 460px; min-width:0; }
-.ci-help { flex:0 1 320px; min-width:250px; background:var(--bg-elevated); border:1px solid var(--border); border-radius:var(--radius); padding:4px 16px 14px; }
+/* The step rows only need enough width for a dropdown and two small boxes, so the
+   builder is capped and the help takes the rest. Before this it grew to fill a
+   wide monitor and the rows ended up mostly empty space. */
+.ci-split-main { flex:1 1 440px; min-width:0; max-width:860px; }
+.ci-help { flex:1 1 340px; min-width:250px; background:var(--bg-elevated); border:1px solid var(--border); border-radius:var(--radius); padding:4px 16px 14px; }
+/* Panel fills the space; the TEXT does not, because a 1300px line is unreadable. */
+.ci-help p, .ci-help ul { max-width:560px; }
 .ci-help-sec { padding:12px 0 0; border-top:1px solid var(--border); margin-top:12px; }
 .ci-help-sec:first-child { border-top:none; margin-top:0; }
 .ci-help-h { font-size:11px; font-weight:700; color:var(--text); text-transform:uppercase; letter-spacing:.05em; margin-bottom:6px; }
