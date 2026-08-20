@@ -66,12 +66,12 @@ source of truth for the app version**:
 - `server.js` reads it from disk at boot and serves it at `GET /api/version`, which feeds
   the version badge in the sidebar.
 
-Current value: **`nova-v259`**. Bump it whenever anything under `public/` changes.
+Current value: **`nova-v333`**. Bump it whenever anything under `public/` changes.
 
 ### 1.4 `initDB()` is the only migration mechanism, and it is idempotent
 
-`db.js` (4,302 lines) runs on every boot. It contains **147 `CREATE TABLE IF NOT EXISTS`**
-statements and **357 `ALTER TABLE`** statements. There is no migration tool, no version
+`db.js` (5,037 lines) runs on every boot. It contains **167 `CREATE TABLE IF NOT EXISTS`**
+statements and **400 `ALTER TABLE`** statements. There is no migration tool, no version
 table, and no down-migrations.
 
 - `CREATE TABLE IF NOT EXISTS` **does not add columns to a table that already exists.**
@@ -85,7 +85,7 @@ table, and no down-migrations.
 ### 1.5 New modules ship dark
 
 Several modules are deployed but reachable by nobody. `utils/permissions.js` builds
-`ALL_PERMS` (102 permissions today); a permission that appears in `ALL_PERMS` but in
+`ALL_PERMS` (112 permissions today); a permission that appears in `ALL_PERMS` but in
 neither `EMPLOYEE_PERMS` nor any role's `DEFAULTS` is invisible to every role except
 `admin`/`owner` until someone ticks the box in **Settings → Roles & Access** (or grants it
 to one person via `users.extra_perms`).
@@ -94,7 +94,13 @@ Currently shipped dark: all of Dispatch (`view_dispatch`, `manage_dispatch`,
 `assign_dispatch`), the Phase 2A/2B dispatch stack (`manage_service_types`,
 `manage_dispatch_tags`, `view_call_views`, `search_dispatch*`, `view_customer_pii`,
 `manage_pricing`, `manage_coverage`), tech pay (`manage_pay_grades`, `view_pay_report`,
-`view_own_pay`) and A/R (`view_ar`, `manage_ar`, `ar_writeoff`).
+`view_own_pay`), A/R (`view_ar`, `manage_ar`, `ar_writeoff`), Accounts Payable
+(`view_ap`, `manage_ap`), inbound/outbound sync (`view_sync`, `manage_sync`,
+`pulsar_write` — the webhook token in `manage_sync` is close to admin, so it stays
+admin/owner-only by design, not just by omission) and the IVR check-in stack
+(`manage_ivr_profiles`, `override_checkin` — `checkin_job` itself *is* in
+`EMPLOYEE_PERMS`, deliberately, but ships inert until an admin writes a phone
+profile for the account).
 
 **Do not add a new permission to `DEFAULTS` or `EMPLOYEE_PERMS` as part of building a
 feature.** That is a separate, deliberate go-live decision.
@@ -126,7 +132,7 @@ definition. Same for anything named `*.bak-*`.
 | DB | PostgreSQL via `pg` Pool | Railway Postgres; no SSL when the host is `*.railway.internal` |
 | Auth | `jsonwebtoken` + `bcryptjs` | 24h rolling JWT, SMS 2FA |
 | Security | `helmet`, `cors`, `express-rate-limit`, `compression` | CSP and strict CORS are both **opt-in via env** |
-| Scheduling | `node-cron` | 20 modules in `jobs/`, all started from `server.js` after `initDB()` |
+| Scheduling | `node-cron` | 24 modules in `jobs/`, all started from `server.js` after `initDB()` |
 | Files | `@aws-sdk/client-s3` + `s3-request-presigner` | Cloudflare R2, browser↔R2 direct via presigned URLs |
 | PDF | `pdfkit` (generate), `pdf-lib` (flatten/stamp) | invoices, sign-offs, dispute packets, signatures |
 | Excel | `exceljs` | royalty statements |
@@ -134,36 +140,40 @@ definition. Same for anything named `*.bak-*`.
 | Frontend | Vanilla JS, classic `<script>` tags | **no framework, no bundler, no build step** |
 | Mobile | Capacitor Android shell in `mobile/` | built by `.github/workflows/android-workflow.yml` |
 
-**There is no build step, no test suite, and no linter.** `npm start` runs `node server.js`.
-The only automated check in the repo is the Android workflow. This is why §1.1's
-`node --check` habit matters so much.
+**There is no build step, no automated test suite, and no linter.** `npm start` runs
+`node server.js`. A handful of `test*.js` scripts at the repo root (§3) exercise specific
+features by hand against a real Postgres — they are not run in CI and nothing fails a
+push if they'd fail. The only automated check in the repo is the Android workflow. This
+is why §1.1's `node --check` habit matters so much.
 
 ---
 
 ## 3. Repo layout
 
 Line counts are JS/HTML/CSS only, excluding `node_modules`, `.git` and `_to_delete`.
-**Total: ~85,600 lines.**
+**Total: 105,502 lines** (checked against commit `7ee1064`, 2026-08-20).
 
 ```
 po-system/
-  server.js                 387    Express app: helmet/CORS/limiters, 60 router mounts, job startup
-  db.js                   4,302    pool + initDB() — 147 CREATE TABLE, 357 ALTER TABLE
+  server.js                 531    Express app: helmet/CORS/limiters, 74 router mounts, job startup
+  db.js                   5,037    pool + initDB() — 167 CREATE TABLE, 400 ALTER TABLE
   package.json                     no build/test scripts; start = node server.js
   .env.example                     documented env vars (see §7 for the gaps)
 
-  routes/       58 files  29,167    one Express router per domain (see ARCHITECTURE.md §5)
-  utils/        39 files   9,877    integrations + shared logic (email, sms, r2, square, goto, pay, pricing…)
+  routes/       65 files  33,339    one Express router per domain (see ARCHITECTURE.md §5)
+  utils/        50 files  14,454    integrations + shared logic (email, sms, r2, square, goto, pay, pricing…)
   lib/           2 files   2,482    novaTools.js (AI tool registry), diag.js
-  jobs/         20 files   3,354    node-cron schedules
+  jobs/         24 files   4,661    node-cron schedules
   middleware/    1 file      210    auth.js — requireAuth / requireRole / requirePermission
-  scripts/       1 file      177    one-off ops script (backout_pto_grant.js)
+  scripts/       2 files     263    one-off ops scripts (backout_pto_grant.js, ap_selftest.js)
+  test*.js       6 files   2,576    ad-hoc verification scripts at repo root (check-in, IVR sim,
+                                     outbound + DOM variants); not wired to CI — see §2
 
-  public/                 35,575    the entire frontend, served static
-    index.html               875    shell + inline styles; loads the 15 modules below in order
-    js/app.js             23,843    the app: state, api(), navigate/render, 115 render* screens
-    js/*.js       14 more           per-module screens (see §5)
-    sw.js                          service worker + CACHE_VERSION (the app version)
+  public/                 41,949    the entire frontend, served static
+    index.html             1,032    shell + inline styles; loads the 17 modules below in order
+    js/app.js             28,224    the app: state, api(), navigate/render, 119 render* screens
+    js/*.js       16 more           per-module screens (see §5)
+    sw.js                     142   service worker + CACHE_VERSION (the app version)
     vendor/leaflet/                vendored Leaflet for the maps
     addin/                         Outlook add-in taskpane
 
@@ -176,8 +186,9 @@ po-system/
 **Docs in the repo:** `README.md` (setup + deploy), `ARCHITECTURE.md` (deep reference),
 this file, plus per-feature specs — `INVOICES_SPEC.md`, `OFFBOARDING_IMPLEMENTATION.md`,
 `OFFBOARDING_API_QUICK_REFERENCE.md`, `EMAIL_TO_TASK_SETUP.md`, `NOVA_VOICE_SETUP.md`,
-`ROYALTY_MODULE_BUILD.md`, `mobile/README.md`. Feature specs describe *intent at the time
-they were written* and may lag the code.
+`ROYALTY_MODULE_BUILD.md`, `AP_MODULE_SETUP.md`, `SYNC_RECEIVER.md`, `PULSAR_OUTBOUND.md`,
+`mobile/README.md`. Feature specs describe *intent at the time they were written* and may
+lag the code.
 
 ---
 
@@ -252,16 +263,17 @@ and is cached for 15s.
 
 ## 5. Frontend: how the SPA works
 
-**`public/index.html` is no longer the whole frontend.** It is an 875-line shell that
-loads 15 classic scripts in a fixed order:
+**`public/index.html` is no longer the whole frontend.** It is a 1,032-line shell that
+loads 17 classic scripts in a fixed order:
 
 ```
 app.js  vault.js  pto.js  onboarding.js  offboarding.js  ptt.js  nova-voice.js
 native.js  location.js  dispatch.js  callSearch.js  timeCodes.js  coverage.js  pay.js  ar.js
+ap.js  sync.js
 ```
 
 These are **classic scripts, not modules.** Everything is global by design, because
-`app.js` contains **761 inline `onclick=` handlers** that need to resolve global function
+`app.js` contains **839 inline `onclick=` handlers** that need to resolve global function
 names. Consequences a newcomer will hit:
 
 - A module can call anything `app.js` defines with `function foo()` or `var foo`.
@@ -270,7 +282,7 @@ names. Consequences a newcomer will hit:
   a function.
 - Load order matters. `app.js` must be first; any module using `api()`, `state` or `can()`
   depends on it.
-- Those 761 inline handlers are also why **CSP is off by default** — a policy without
+- Those 839 inline handlers are also why **CSP is off by default** — a policy without
   `'unsafe-inline'` takes the entire UI down. `CSP_ENABLED=true` turns on a policy that
   still allows inline script but pins everything else.
 
@@ -281,7 +293,7 @@ names. Consequences a newcomer will hit:
 | `state` | the whole client state: user, token, current view, caches |
 | `api(method, path, body)` | fetch wrapper. GETs are cached with stale-while-revalidate and deduped in-flight; any non-GET busts the cache. Handles `X-New-Token`, `X-Perms-Rev`, `X-Min-Version`, and 401 → login |
 | `navigate(view, param)` | sets `state.currentView`, pushes history, persists to localStorage, calls `render()` |
-| `render()` | dispatches to one of 115 `render*` functions in `app.js` (125 across all modules) |
+| `render()` | dispatches to one of 119 `render*` functions in `app.js` (138 across all modules) |
 | `navModel()` | builds the sidebar from `can(...)` checks — the nav *is* the permission map |
 | `can(perm)` | client-side permission check (cosmetic only; the server is authoritative) |
 | `icons` / `NAVI` | inline SVG icon set |
@@ -290,16 +302,18 @@ names. Consequences a newcomer will hit:
 
 | File | Lines | Owns |
 |---|---|---|
-| `app.js` | 23,843 | everything not listed below |
+| `app.js` | 28,224 | everything not listed below |
 | `onboarding.js` | 1,678 | locked new-hire track + admin path builder |
+| `sync.js` | 1,323 | inbound webhook sources, event log, replay (see `SYNC_RECEIVER.md`) |
 | `dispatch.js` | 1,302 | dispatch board + "ready to accept calls" duty toggle |
 | `ptt.js` | 1,294 | Zello-style push-to-talk radio (LiveKit) |
 | `location.js` | 924 | tech location card + dispatcher Live Map (Leaflet) |
+| `pto.js` | 681 | time off: requests, approvals, ledger |
 | `vault.js` | 646 | owner-only zero-knowledge credential vault (all crypto in-browser) |
-| `pto.js` | 643 | time off: requests, approvals, ledger |
 | `offboarding.js` | 587 | offboarding wizard, templates, public exit form, insights |
 | `pay.js` | 568 | tech pay grades and the pay report |
 | `ar.js` | 541 | A/R aging, per-account ledger, payment import |
+| `ap.js` | 473 | Accounts Payable: bills, due dates, payment marking (see `AP_MODULE_SETUP.md`) |
 | `timeCodes.js` | 417 | per-location pricing windows and ETAs |
 | `callSearch.js` | 359 | call history with PII masking |
 | `native.js` | 238 | Capacitor bridge: background GPS, external links, disclosure |
@@ -310,22 +324,23 @@ names. Consequences a newcomer will hit:
 
 ## 6. Data model
 
-147 tables, all created in `db.js`. Grouped by domain:
+~165 tables, all created in `db.js`. Grouped by domain:
 
-- **Identity** `users`, `cities`, `user_cities`, `settings`, `audit_logs`, `password_resets`, `two_factor_codes`, `trusted_devices`, `push_subscriptions`
-- **Purchasing** `purchase_orders`, `po_line_items`, `running_list_items`, `parts`, `vendors`, `shipping_addresses`
+- **Identity** `users`, `cities`, `user_cities`, `settings`, `audit_logs`, `password_resets`, `two_factor_codes`, `trusted_devices`, `push_subscriptions`, `user_grid_prefs`
+- **Purchasing** `purchase_orders`, `po_line_items`, `running_list_items`, `parts`, `vendors`, `shipping_addresses`, `ap_bills`, `ap_bill_attachments`
 - **Sales** `quotes`, `quote_line_items`, `quote_photos`, `invoices`, `invoice_line_items`, `invoice_photos`, `invoice_payments`, `invoice_refunds`, `invoice_refund_lines`, `square_orphan_payments`
 - **Dispatch** `dispatch_jobs`, `dispatch_job_events`, `dispatch_job_views`, `dispatch_tags`, `dispatch_job_tags`, `service_categories`, `service_types`, `user_service_categories`, `tech_duty`, `tech_duty_log`, `tech_locations`, `location_pings`
 - **Pricing & coverage** `location_services`, `service_time_codes`, `account_service_prices`, `coverage_zones`, `coverage_zone_zips`, `geocode_cache`
 - **Pay & A/R** `pay_grades`, `pay_rows`, `ar_payments`, `ar_payment_lines`, `ar_adjustments`, `ar_import_batches`, `ar_import_lines`
 - **Fleet** `vehicles`, `vehicle_repairs`, `vr_line_items`, `vehicle_inspections`, `inspection_items`, `inspection_photos`, `inspection_checklist`
-- **People** `time_entries`, `time_breaks`, `time_week_approvals`, `holidays`, `shifts`, `shift_positions`, `pto_requests`, `pto_ledger`, `pto_request_days`, `pto_cancellations`
+- **People** `time_entries`, `time_breaks`, `time_week_approvals`, `holidays`, `shifts`, `shift_positions`, `shift_events`, `pto_requests`, `pto_ledger`, `pto_request_days`, `pto_cancellations`
 - **On/offboarding** `onboarding_steps`, `onboarding_progress`, `onboarding_quiz_attempts`, `onboarding_packet_responses`, `onboarding_events`, `hr_documents`, `offboardings`, `offboarding_templates`, `offboarding_template_steps`, `offboarding_steps`, `offboarding_events`, `exit_interviews`, `exit_interview_questions`, `exit_interview_answers`
-- **Work** `tasks`, `task_subtasks`, `task_activity`, `task_attachments`, `task_cc`, `task_templates`, `task_template_steps`, `work_orders`, `work_order_attachments`, `work_order_activity`, `work_order_nte_history`, `signoff_forms`, `signoff_photos`
+- **Work** `tasks`, `task_subtasks`, `task_activity`, `task_attachments`, `task_cc`, `task_templates`, `task_template_steps`, `work_orders`, `work_order_attachments`, `work_order_activity`, `work_order_nte_history`, `work_order_dead_emails`, `signoff_forms`, `signoff_photos`, `suggestions`
 - **Customers** `customer_feedback`, `customer_feedback_activity`, `customer_feedback_attachments`, `review_assignments`, `review_rating_snapshots`, `geico_surveys`, `feedback_call_recordings`
 - **Docs & signing** `documents`, `document_folders`, `document_shares`, `sop_documents`, `sop_chunks`, `signature_requests`, `signature_signers`, `signature_fields`, `signature_events`, `signature_templates`
 - **Money in** `deposits`, `deposit_receipts`, `deposit_expenses`, `pulsar_imports`, `pulsar_cash_calls`, `royalty_statements`
 - **Integrations** `goto_oauth`, `goto_calls`, `goto_webhook`, `goto_pending_media`, `oauth_clients`, `oauth_codes`, `oauth_refresh_tokens`, `ai_conversations`, `ai_usage`, `ai_monthly_usage`
+- **Sync, messaging & IVR** (new since 2026-08-05, see `SYNC_RECEIVER.md` / `PULSAR_OUTBOUND.md`) `webhook_sources`, `webhook_events`, `webhook_event_stats`, `webhook_rejections`, `outbound_calls`, `scheduled_messages`, `scheduled_message_sends`, `ivr_profiles`, `checkin_events`, `job_runs`
 - **Vault** `vault_members`, `vault_entries`, `vault_challenges`
 - **Assets** `asset_types`, `assets`, `asset_stock`, `asset_stock_moves`, `asset_transfers`, `asset_transfer_lines`, `asset_holdings`, `asset_kits`, `asset_kit_items`, `asset_acknowledgments`, `asset_ack_lines`, `asset_requests`, `asset_request_lines`, `asset_request_photos`
 
@@ -338,11 +353,12 @@ signed original stays byte-for-byte intact.
 
 ## 7. Environment
 
-The code reads **79** environment variables and `.env.example` now documents all of them.
-The 25 added on 2026-08-05 are in a clearly-marked block at the bottom of the file — CORS,
-CSP, geocoding, the whole Square set, three GoTo extras, the low-star-review job, and
-security retention. Several were already live in Railway while being undocumented here, so
-**check Railway before assuming a feature is unconfigured.**
+The code reads **117** environment variables; `.env.example` documents **93** of them —
+drifted **24** behind again since the 2026-08-05 catch-up (the AP, sync/webhook, and IVR
+modules each read their own env block and none of it made it into `.env.example` yet).
+Several were already live in Railway while being undocumented here, so **check Railway
+before assuming a feature is unconfigured, and check the drift command below before
+assuming `.env.example` is current.**
 
 If you add a `process.env.X` read, add it to `.env.example` in the same commit. To find
 drift later:
@@ -409,20 +425,22 @@ updated.
 
 Honest list, so nobody wastes an afternoon rediscovering these:
 
-- **`routes/invoices.js` contains two raw NUL bytes** (lines ~2343 and ~2348) used as a
-  string key separator. It parses and runs fine, but `grep` treats the file as binary and
-  skips it unless you pass `-a`. If you are searching for something and this file seems
-  empty, that's why.
-- **`public/js/app.js` is 23,843 lines** and holds 115 screens. It is the main source of
+- **`routes/invoices.js` contains two raw NUL bytes** (lines ~2451 and ~2456) used as a
+  string key separator. It parses and runs fine. As of this file's current size, plain
+  `grep` no longer flags it as binary — the earlier `-a` workaround isn't necessary
+  anymore, but don't count on that staying true as the file changes size again.
+- **`public/js/app.js` is 28,224 lines** and holds 119 screens. It is the main source of
   merge pain. New screens should go in their own `public/js/<module>.js` and be added to
   both `index.html` and `sw.js`'s `SHELL_ASSETS`.
-- **No tests, no linter, no CI on the Node code.** `node --check` is the whole safety net.
+- **No automated tests, no linter, no CI on the Node code.** The `test*.js` scripts at
+  the repo root are manual, not CI-run. `node --check` is the whole automated safety net.
 - **`server.js` uses `app.get('*', ...)` for the SPA catch-all, which only works on
   Express 4.** The lockfile pins 4.22.2. Upgrading to Express 5 throws at boot on that
   line (path-to-regexp no longer accepts a bare `*`) — the replacement is a plain
   `app.use((req, res) => ...)` fallback. Don't bump Express casually.
-- **`.env.example` drifts easily** — it was 25 variables behind the code until 2026-08-05.
-  Add new `process.env` reads to it in the same commit (§7 has a one-liner that finds drift).
+- **`.env.example` drifts easily** — it was 25 variables behind the code until 2026-08-05,
+  and as of this update it's **24 behind again** (§7). Add new `process.env` reads to it
+  in the same commit (§7 has a one-liner that finds drift).
 - **Feature spec `.md` files at the repo root may lag the implementation.** They are
   design records, not documentation of current behaviour.
 - **`_to_delete/`** is stale scratch (§1.7).

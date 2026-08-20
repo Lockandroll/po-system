@@ -2,7 +2,7 @@
 // public/sw.js (the only thing bumped each deploy) — the badge asks the active
 // service worker for it at runtime. This value is just the fallback shown when no
 // service worker is available (e.g. very first visit before it installs).
-var APP_VERSION = 'v130';
+var APP_VERSION = 'v131';
 var _resolvedAppVersion = null;
 
 // Ask the active service worker for its CACHE_VERSION (without the 'nova-' prefix).
@@ -18523,7 +18523,14 @@ async function renderCheckinProfile(el, id) {
         '</div>' +
       '</div>' +
       '<div class="flex-gap" style="margin-top:16px;flex-wrap:wrap">' +
-        (_ciProfile.id ? '<button class="btn btn-secondary" onclick="ciTestCall()">&#9742; Test Call</button>' : '') +
+        // Two buttons rather than a dialog. The first version worked out the
+        // direction itself - check-in if there were check-in steps, otherwise
+        // check-out - which meant that the moment a check-out script existed,
+        // Test Call could never reach it again.
+        (_ciProfile.id && (_ciProfile.checkin_steps || []).length
+          ? '<button class="btn btn-secondary" onclick="ciTestCall(&#39;in&#39;)">&#9742; Test check-in</button>' : '') +
+        (_ciProfile.id && (_ciProfile.checkout_steps || []).length
+          ? '<button class="btn btn-secondary" onclick="ciTestCall(&#39;out&#39;)">&#9742; Test check-out</button>' : '') +
         (_ciProfile.id ? '<button class="btn ' + (_ciProfile.active ? 'btn-secondary' : 'btn-primary') + '" onclick="ciToggleActive()">' +
           (_ciProfile.active ? 'Take offline' : 'Mark live') + '</button>' : '') +
         (_ciProfile.id ? '<button class="btn btn-ghost" style="color:#b91c1c" onclick="ciDeleteProfile()">Delete</button>' : '') +
@@ -18713,10 +18720,11 @@ function ciTestRender(html) {
 // for a real check-in, which means the result has to come back HERE. Otherwise
 // the one button whose whole job is to tell you whether the script works fires
 // into silence.
-async function ciTestCall() {
-  var wo = await novaPrompt('Test against which work order? The work order number off the paperwork is fine, or Nova&#39;s own id.');
+async function ciTestCall(dir) {
+  dir = (dir === 'out') ? 'out' : 'in';
+  var wo = await novaPrompt('Test the ' + (dir === 'out' ? 'check-OUT' : 'check-IN') +
+    ' script against which work order? The work order number off the paperwork is fine, or Nova&#39;s own id.');
   if (!wo) return;
-  var dir = (_ciProfile.checkin_steps || []).length ? 'in' : 'out';
   ciTestRender('<div class="ci-callout" style="margin-top:12px"><span class="ci-spin"></span> Placing the call&hellip;</div>');
   var ev;
   try {

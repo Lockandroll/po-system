@@ -36,6 +36,7 @@ function ok(cond, msg) {
   checks++;
   if (!cond) { failures++; console.log('  FAIL  ' + msg); }
 }
+function eqish(msg, got, want) { ok(got === want, msg + ' (got ' + JSON.stringify(got) + ')'); }
 
 // --- The script Tony actually ran, and the job it ran against ---------------
 var STEPS = [
@@ -50,6 +51,12 @@ var STEPS = [
   { type: 'listen', seconds: 25 }
 ];
 var VALUES = { checkin_reference: '62163', checkin_tracking: '360493481' };
+
+// The check-out script. Identical up to the read-back, then 2 instead of pound,
+// which is the branch that reads an authorization number back.
+var STEPS_OUT = STEPS.map(function (s) {
+  return (s.type === 'press' && s.digits === '#') ? { type: 'press', digits: '2', label: 'completing' } : s;
+});
 
 // --- Turning TwiML into a stream of tones ----------------------------------
 // <Pause length="n"/> is n seconds. <Play digits="..."/> plays each tone for
@@ -123,8 +130,8 @@ function post(port, path, digits) {
 
 // Walk the clock. Returns everything the far end SPOKE, in order, which is the
 // closest thing this harness has to a recording.
-async function runCall(port, mode, TONE, WPS) {
-  var xml = ivr.renderTwiml(STEPS, VALUES, {});
+async function runCall(port, mode, TONE, WPS, steps) {
+  var xml = ivr.renderTwiml(steps || STEPS, VALUES, {});
   var tones = toneStream(xml, TONE);
   var idx = 0;
   var t = 0;
@@ -195,6 +202,26 @@ async function runCall(port, mode, TONE, WPS) {
   ok(m.matched, 'matchConfirmation finds it (' + m.reason + ')');
   ok(ivr.captureValue(transcript, 'authorization number is ([A-Z0-9 ]+)') !== null ||
      transcript.indexOf('SC 77 4419 0093') !== -1, 'the authorization number is in the transcript');
+
+  console.log('\nCheck-out reaches its own branch, and the capture pattern finds the number');
+  for (var T2 = 0.3; T2 <= 0.81; T2 += 0.1) {
+    for (var W2 = 2.2; W2 <= 3.61; W2 += 0.35) {
+      var out = await runCall(port, 'ok', T2, W2, STEPS_OUT);
+      ok(ivr.matchConfirmation(out, 'check out complete').matched,
+         'check-out confirms at tone=' + T2.toFixed(1) + ' wps=' + W2.toFixed(2) + ' :: ' + out.slice(-70));
+      ok(!ivr.matchConfirmation(out, 'you are checked in').matched,
+         'check-out does NOT say the check-in phrase at tone=' + T2.toFixed(1) + ' wps=' + W2.toFixed(2));
+    }
+  }
+  var outT = await runCall(port, 'ok', 0.5, 2.8, STEPS_OUT);
+  eqish('capture pulls the authorization number',
+        ivr.captureValue(outT, 'authorization number is ([a-z0-9 -]+)'), 'SC 77 4419 0093');
+  console.log('  ' + outT.slice(-80));
+
+  console.log('\nThe check-in script is untouched by the longer confirm prompt');
+  var again = await runCall(port, 'ok', 0.5, 2.8);
+  ok(again.indexOf('You are checked in') !== -1, 'check-in still confirms');
+  ok(!ivr.matchConfirmation(again, 'check out complete').matched, 'check-in does NOT say the check-out phrase');
 
   console.log('\nThe other modes still behave');
   var wrong = await runCall(port, 'wrong', 0.5, 2.8);

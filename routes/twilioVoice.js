@@ -198,10 +198,20 @@ router.post('/fake-ivr', function (req, res) {
       'Thank you. Now enter your work order or tracking number, followed by the pound key.', { pin: digits });
   }
 
-  // 4. Read back and confirm. One key, and it moves - including pound.
+  // 4. Read back, then branch. One key, and it moves - including pound.
+  //
+  // Pound arrives, checks in, and says so. 2 arrives, checks OUT, and reads an
+  // authorization number back. That second path is the only way to exercise the
+  // capture pattern, which is the one piece of a profile that a check-in test
+  // can never prove: a check-in has nothing to capture.
+  //
+  // Both branches hang off the SAME prompt on purpose. Lengthening the wording
+  // costs nothing, because a one-key menu is cut off by barge-in the instant the
+  // tone lands, so the check-in script that already passes keeps passing.
   if (step === 'confirm') {
     return fakeMenu(res, 'done', mode,
-      'You entered ' + spell(digits) + '. Press pound to confirm, or zero to re-enter.',
+      'You entered ' + spell(digits) + '. Press pound to confirm your arrival, ' +
+      'press 2 if you are completing the job, or press zero to re-enter.',
       { pin: fakeDigits(req.query.pin), job: digits });
   }
 
@@ -217,6 +227,17 @@ router.post('/fake-ivr', function (req, res) {
   }
 
   var heard = 'P I N ' + spell(pin) + ', work order ' + spell(job) + '. ';
+
+  if (raw === '2') {
+    if (mode === 'wrong') {
+      return twiml(res, '<?xml version="1.0" encoding="UTF-8"?>\n<Response>' +
+        '<Say>' + heard + 'Your request has been noted. Goodbye.</Say><Hangup/></Response>');
+    }
+    return twiml(res, '<?xml version="1.0" encoding="UTF-8"?>\n<Response>' +
+      '<Say>' + heard + 'Check out complete. ' +
+      'Your authorization number is ' + FAKE_AUTH + '. Thank you.</Say>' +
+      '<Pause length="1"/><Hangup/></Response>');
+  }
 
   if (mode === 'wrong') {
     return twiml(res, '<?xml version="1.0" encoding="UTF-8"?>\n<Response>' +
@@ -238,7 +259,10 @@ router.get('/fake-ivr', function (req, res) {
     '  1. language        one key, moves immediately      press 1\n' +
     '  2. unique PIN      digits, ends on pound           62163#\n' +
     '  3. work order      digits, ends on pound           360493481#\n' +
-    '  4. confirm         one key, moves immediately      press #\n' +
+    '  4a. check in       one key, moves immediately      press #\n' +
+    '  4b. check OUT      one key, moves immediately      press 2\n' +
+    '      check out is the branch that reads an authorization number back,\n' +
+    '      so it is the only one that exercises a capture pattern.\n' +
     'The one-key steps do NOT wait for a pound. That is the difference between a\n' +
     'menu and an entry field, and getting it wrong slides a whole script one\n' +
     'prompt out of phase.\n' +
