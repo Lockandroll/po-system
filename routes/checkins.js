@@ -32,6 +32,21 @@ async function guardWorkOrder(req, id) {
   return { wo: rows[0] };
 }
 
+// Nobody knows a work order's internal database id, and asking for one is a
+// good way to make a test call feel like homework. Accept whatever is to hand:
+// the Nova id, the client's work order number, or Nova's own WO- reference.
+async function resolveWorkOrder(raw) {
+  var v = String(raw == null ? '' : raw).trim();
+  if (!v) return null;
+  if (/^\d+$/.test(v)) {
+    var byId = await pool.query('SELECT * FROM work_orders WHERE id = $1', [parseInt(v, 10)]);
+    if (byId.rows.length) return byId.rows[0];
+  }
+  var byNum = await pool.query(
+    'SELECT * FROM work_orders WHERE wo_number = $1 OR wo_ref = $1 ORDER BY id DESC LIMIT 1', [v]);
+  return byNum.rows.length ? byNum.rows[0] : null;
+}
+
 function dirOf(raw) {
   var d = String(raw || '').toLowerCase();
   if (d === 'in' || d === 'checkin' || d === 'check-in') return 'in';
@@ -104,9 +119,10 @@ router.get('/monitor', requireAuth, requirePermission('manage_work_orders'), asy
       'FROM checkin_events e ' +
       'LEFT JOIN users u ON e.requested_by = u.id ' +
       'LEFT JOIN work_orders w ON e.work_order_id = w.id ' +
-      "WHERE e.is_test = false AND e.requested_at > NOW() - ($1 || ' days')::interval " +
+      'WHERE e.is_test = ANY($2) ' +
+      "AND e.requested_at > NOW() - ($1 || ' days')::interval " +
       'ORDER BY e.id DESC LIMIT 500',
-      [String(days)]
+      [String(days), (req.query.tests === '1' ? [true, false] : [false])]
     );
     var counts = { confirmed: 0, manual: 0, failed: 0, open: 0 };
     rows.forEach(function (r) {
@@ -115,7 +131,7 @@ router.get('/monitor', requireAuth, requirePermission('manage_work_orders'), asy
       else if (r.status === 'failed') counts.failed++;
       else counts.open++;
     });
-    res.json({ days: days, counts: counts, events: rows });
+    res.json({ days: days, counts: counts, events: rows, includes_tests: req.query.tests === '1' });
   } catch (err) { console.error(err); res.status(500).json({ error: 'Failed to load the monitor' }); }
 });
 
@@ -225,7 +241,9 @@ router.post('/profiles/:id/preview', requireAuth, requirePermission('manage_ivr_
   try {
     var profile = await engine.loadProfile(req.params.id);
     if (!profile) return res.status(404).json({ error: 'Not found' });
-    var wo = req.body && req.body.work_order_id ? await engine.loadWorkOrder(req.body.work_order_id) : null;
+    var wanted = req.body && (req.body.work_order_id || req.body.work_order);
+    var wo = wanted ? await resolveWorkOrder(wanted) : null;
+    if (wanted && !wo) return res.status(404).json({ error: 'No work order matches "' + String(wanted).slice(0, 40) + '".' });
     var values = wo ? engine.jobValues(wo, req.user) : {};
     var dir = dirOf(req.body && req.body.direction) || 'in';
     var steps = (dir === 'out' ? profile.checkout_steps : profile.checkin_steps) || [];
@@ -235,7 +253,7 @@ router.post('/profiles/:id/preview', requireAuth, requirePermission('manage_ivr_
       twiml: ivr.renderTwiml(steps, values, {}),
       problems: ivr.validate(steps, values),
       resolved: ivr.resolve(steps, values),
-      work_order: wo ? { id: wo.id, wo_ref: wo.wo_ref, wo_number: wo.wo_number } : null
+      work_order: wo ? { id: wo.id, wo_ref: wo.wo_ref, wo_number: wo.wo_number, account_name: wo.account_name } : null
     });
   } catch (err) { console.error(err); res.status(500).json({ error: 'Failed to build the preview' }); }
 });
@@ -246,15 +264,33 @@ router.post('/profiles/:id/test', requireAuth, requirePermission('manage_ivr_pro
   try {
     var profile = await engine.loadProfile(req.params.id);
     if (!profile) return res.status(404).json({ error: 'Not found' });
-    var woId = req.body && req.body.work_order_id ? parseInt(req.body.work_order_id, 10) : null;
-    if (!woId) return res.status(400).json({ error: 'Pick a work order to test against.' });
+    var wanted = req.body && (req.body.work_order_id || req.body.work_order);
+    if (!wanted) return res.status(400).json({ error: 'Pick a work order to test against.' });
+    var wo = await resolveWorkOrder(wanted);
+    if (!wo) return res.status(404).json({ error: 'No work order matches "' + String(wanted).slice(0, 40) + '".' });
     var ev = await engine.startCall({
-      workOrderId: woId,
+      workOrderId: wo.id,
       direction: dirOf(req.body && req.body.direction) || 'in',
       user: req.user, profile: profile, isTest: true
     });
     res.json(ev);
   } catch (err) { res.status(400).json({ error: err.message || 'Test call failed.' }); }
+});
+
+// A test call is excluded from the Monitor on purpose, so this is where its
+// result comes back. Without it the Test Call button fires into silence, which
+// is the worst possible behaviour for the one button whose entire job is to tell
+// you whether the script works.
+router.get('/profiles/:id/tests', requireAuth, requirePermission('manage_ivr_profiles'), async (req, res) => {
+  try {
+    var { rows } = await pool.query(
+      'SELECT e.*, w.wo_ref, w.wo_number FROM checkin_events e ' +
+      'LEFT JOIN work_orders w ON e.work_order_id = w.id ' +
+      'WHERE e.profile_id = $1 AND e.is_test = true ORDER BY e.id DESC LIMIT 10',
+      [req.params.id]
+    );
+    res.json(rows);
+  } catch (err) { console.error(err); res.status(500).json({ error: 'Failed to load test calls' }); }
 });
 
 // Marking a profile live is its own act, done after a human has listened to a

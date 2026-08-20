@@ -2,7 +2,7 @@
 // public/sw.js (the only thing bumped each deploy) — the badge asks the active
 // service worker for it at runtime. This value is just the fallback shown when no
 // service worker is available (e.g. very first visit before it installs).
-var APP_VERSION = 'v125';
+var APP_VERSION = 'v126';
 var _resolvedAppVersion = null;
 
 // Ask the active service worker for its CACHE_VERSION (without the 'nova-' prefix).
@@ -18494,7 +18494,7 @@ async function renderCheckinProfile(el, id) {
       '<div class="form-group" style="margin-top:14px">' +
         '<label>Preview against work order #</label>' +
         '<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">' +
-          '<input type="text" id="ci-prev-wo" placeholder="Nova work order id, e.g. 1041" style="flex:0 1 260px" />' +
+          '<input type="text" id="ci-prev-wo" placeholder="work order number, or WO-1041" style="flex:0 1 260px" />' +
           '<button class="btn btn-secondary" style="flex:0 0 auto" onclick="ciPreview()">Show me</button>' +
         '</div>' +
       '</div>' +
@@ -18526,6 +18526,7 @@ async function renderCheckinProfile(el, id) {
           (_ciProfile.last_test_at ? 'Last tested ' + formatDate(_ciProfile.last_test_at) : 'Never tested') +
         '</span>' +
       '</div>' +
+      '<div id="ci-test-status"></div>' +
       '<div class="csub" style="margin-top:10px">A script goes <b>offline every time you save it</b>. Changing the steps, the number or the phrase means the last test no longer proves anything, and an untested script is how Nova ends up telling a client somebody arrived when they did not.</div>' +
     '</div></div>';
 
@@ -18679,8 +18680,10 @@ async function ciPreview() {
   var host = document.getElementById('ci-preview');
   if (!_ciProfile.id) { if (host) host.innerHTML = '<div class="clabel">Preview</div><div class="csub">Save the script first.</div>'; return; }
   try {
-    var p = await api('POST', '/checkins/profiles/' + _ciProfile.id + '/preview', { work_order_id: wo || null, direction: 'in' });
-    host.innerHTML = '<div class="clabel">Preview' + (p.work_order ? ' on ' + escHtml(p.work_order.wo_ref || ('#' + p.work_order.id)) : '') + '</div>' +
+    var p = await api('POST', '/checkins/profiles/' + _ciProfile.id + '/preview', { work_order: (wo || '').trim() || null, direction: 'in' });
+    host.innerHTML = '<div class="clabel">Preview' +
+      (p.work_order ? ' on ' + escHtml(p.work_order.wo_ref || p.work_order.wo_number || ('#' + p.work_order.id)) +
+        (p.work_order.account_name ? ' <span class="cdim">(' + escHtml(p.work_order.account_name) + ')</span>' : '') : '') + '</div>' +
       '<div class="mono" style="font-size:13px;color:var(--text);line-height:1.9;margin-top:4px">' + escHtml(p.preview) + '</div>' +
       (p.problems && p.problems.length
         ? '<div class="alert alert-error" style="margin:10px 0 0">' + p.problems.map(escHtml).join('<br />') + '</div>'
@@ -18690,13 +18693,71 @@ async function ciPreview() {
   }
 }
 
+var _ciTestPoll = null;
+
+function ciTestRender(html) {
+  var h = document.getElementById('ci-test-status');
+  if (h) h.innerHTML = html;
+}
+
+// A test call is deliberately kept out of the Monitor so it can never be mistaken
+// for a real check-in, which means the result has to come back HERE. Otherwise
+// the one button whose whole job is to tell you whether the script works fires
+// into silence.
 async function ciTestCall() {
-  var wo = await novaPrompt('Test call against which Nova work order id? The values on that job are what will be dialled.');
+  var wo = await novaPrompt('Test against which work order? The work order number off the paperwork is fine, or Nova&#39;s own id.');
   if (!wo) return;
+  var dir = (_ciProfile.checkin_steps || []).length ? 'in' : 'out';
+  ciTestRender('<div class="ci-callout" style="margin-top:12px"><span class="ci-spin"></span> Placing the call&hellip;</div>');
+  var ev;
   try {
-    await api('POST', '/checkins/profiles/' + _ciProfile.id + '/test', { work_order_id: parseInt(wo, 10), direction: 'in' });
-    novaAlert('Calling now. It will not stamp anything, and it cannot block a real check-in. Open the Check-In Monitor in a few seconds to hear what came back.');
-  } catch (err) { novaAlert(err.message); }
+    ev = await api('POST', '/checkins/profiles/' + _ciProfile.id + '/test',
+      { work_order: String(wo).trim(), direction: dir });
+  } catch (err) {
+    ciTestRender('<div class="alert alert-error" style="margin-top:12px">' + escHtml(err.message) + '</div>');
+    return;
+  }
+  ciTestWatch(ev.id, 0);
+}
+
+// A call plus a recording plus a transcript is usually 30 to 60 seconds. Give it
+// three minutes, then stop and say what to check, rather than spinning forever.
+async function ciTestWatch(eventId, tries) {
+  if (_ciTestPoll) { clearTimeout(_ciTestPoll); _ciTestPoll = null; }
+  var ev;
+  try { ev = await api('GET', '/checkins/event/' + eventId); }
+  catch (e) { ciTestRender('<div class="alert alert-error" style="margin-top:12px">' + escHtml(e.message) + '</div>'); return; }
+
+  var link = '<button class="btn btn-secondary btn-sm" onclick="openCheckinRecord(' + ev.id + ')">What Nova heard</button>';
+
+  if (ev.status === 'confirmed') {
+    ciTestRender('<div class="alert alert-success" style="margin-top:12px;display:flex;gap:10px;align-items:center;flex-wrap:wrap">' +
+      '<span style="flex:1 1 240px"><b>The script works.</b> The tree said &ldquo;' +
+      escHtml(ev.confirmation_text || '') + '&rdquo;' +
+      (ev.auth_number ? ', and read back <span class="mono">' + escHtml(ev.auth_number) + '</span>' : '') +
+      '. Nothing was stamped, because this was a test.</span>' + link +
+      (_ciProfile.active ? '' : '<button class="btn btn-primary btn-sm" onclick="ciToggleActive()">Mark live</button>') +
+      '</div>');
+    return;
+  }
+  if (ev.status === 'failed') {
+    ciTestRender('<div class="alert alert-error" style="margin-top:12px;display:flex;gap:10px;align-items:center;flex-wrap:wrap">' +
+      '<span style="flex:1 1 240px"><b>Not confirmed.</b> ' + escHtml(ev.failure_reason || 'The call did not confirm.') +
+      (ev.transcript ? ' Read the transcript, then adjust the waits, the steps, or the confirmation phrase.' : '') +
+      '</span>' + (ev.transcript ? link : '') + '</div>');
+    return;
+  }
+  if (tries > 45) {
+    ciTestRender('<div class="alert alert-warn" style="margin-top:12px">Still waiting on the recording after three minutes. ' +
+      'That usually means Twilio could not reach this server, so the callbacks never arrived. ' + link + '</div>');
+    return;
+  }
+  var what = ev.status === 'in_progress' ? 'On the call' : 'Dialling';
+  ciTestRender('<div class="ci-callout" style="margin-top:12px;display:flex;gap:10px;align-items:center">' +
+    '<span class="ci-spin"></span><span>' + what + '&hellip; ' +
+    (ev.call_duration ? ev.call_duration + 's so far. ' : '') +
+    'Nova waits for the recording before it decides.</span></div>');
+  _ciTestPoll = setTimeout(function () { ciTestWatch(eventId, tries + 1); }, 4000);
 }
 
 async function ciToggleActive() {
@@ -18720,7 +18781,7 @@ async function renderCheckinMonitor(el) {
   if (!can('manage_work_orders')) { el.innerHTML = '<div class="alert alert-error">Access denied.</div>'; return; }
   el.innerHTML = '<div class="loading">Loading&hellip;</div>';
   var data;
-  try { data = await api('GET', '/checkins/monitor?days=' + (state.checkinDays || 1)); }
+  try { data = await api('GET', '/checkins/monitor?days=' + (state.checkinDays || 1) + (state.checkinTests ? '&tests=1' : '')); }
   catch (e) { el.innerHTML = '<div class="alert alert-error">' + escHtml(e.message) + '</div>'; return; }
 
   function kpi(n, l, colour) {
@@ -18741,6 +18802,8 @@ async function renderCheckinMonitor(el) {
         [1, 7, 30].map(function (d) {
           return '<button class="btn ' + (data.days === d ? 'btn-primary' : 'btn-secondary') + ' btn-sm" onclick="state.checkinDays=' + d + ';navigate(&#39;checkin-monitor&#39;)">' + d + 'd</button>';
         }).join('') +
+        '<button class="btn ' + (state.checkinTests ? 'btn-primary' : 'btn-secondary') + ' btn-sm" ' +
+          'onclick="state.checkinTests=!state.checkinTests;navigate(&#39;checkin-monitor&#39;)">Test calls</button>' +
         (can('manage_ivr_profiles') ? '<button class="btn btn-secondary btn-sm" onclick="navigate(&#39;checkin-profiles&#39;)">Scripts</button>' : '') +
       '</div></div>' +
     '<div class="ci-kpis">' +
@@ -18752,7 +18815,8 @@ async function renderCheckinMonitor(el) {
     (data.events.length
       ? '<div class="card"><div class="table-wrap"><table><thead><tr><th>Job</th><th>Account</th><th>Tech</th><th>Direction</th><th>Result</th><th>When</th><th></th></tr></thead><tbody>' +
         data.events.map(function (e) {
-          return '<tr><td class="mono">' + escHtml(e.wo_ref || e.wo_number || ('#' + e.work_order_id)) + '</td>' +
+          return '<tr><td class="mono">' + escHtml(e.wo_ref || e.wo_number || ('#' + e.work_order_id)) +
+            (e.is_test ? ' <span class="badge badge-draft">test</span>' : '') + '</td>' +
             '<td>' + escHtml(e.account_name || '') + '</td>' +
             '<td>' + escHtml(e.tech_name || '') + '</td>' +
             '<td>' + (e.direction === 'out' ? 'Check out' : 'Check in') + '</td>' +
