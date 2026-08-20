@@ -2,7 +2,7 @@
 // public/sw.js (the only thing bumped each deploy) — the badge asks the active
 // service worker for it at runtime. This value is just the fallback shown when no
 // service worker is available (e.g. very first visit before it installs).
-var APP_VERSION = 'v121';
+var APP_VERSION = 'v122';
 var _resolvedAppVersion = null;
 
 // Ask the active service worker for its CACHE_VERSION (without the 'nova-' prefix).
@@ -18296,16 +18296,21 @@ var _ciVendors = [];
 
 function ciStepRow(step, i, which) {
   var t = step.type;
-  var act = t === 'wait' ? 'wait ' + (step.seconds || 3) + 's'
-    : t === 'press' ? 'press ' + (step.digits || '')
-    : t === 'send' ? 'send ' + (step.suffix ? '&hellip; then ' + escHtml(step.suffix) : '&hellip;')
-    : t === 'listen' ? 'listen ' + (step.seconds || 20) + 's' : escHtml(t);
+  // Just the verb. The value lives in the control beside it, and printing it
+  // twice ("wait 6s" next to a box containing 6) reads like two settings.
+  var act = (t === 'wait' || t === 'press' || t === 'send' || t === 'listen') ? t : escHtml(t);
   var right;
   if (t === 'send') {
-    right = '<select onchange="ciSetField(&#39;' + which + '&#39;,' + i + ',this.value)" style="max-width:260px">' +
+    // The suffix is editable rather than a fixed pound. Most trees end an entry
+    // with #, some use *, and a few want nothing at all.
+    right = '<select onchange="ciSetField(&#39;' + which + '&#39;,' + i + ',this.value)" style="flex:0 1 240px">' +
       _ciFields.map(function (f) {
         return '<option value="' + f.key + '"' + (step.field === f.key ? ' selected' : '') + '>' + escHtml(f.label) + '</option>';
-      }).join('') + '</select>';
+      }).join('') + '</select>' +
+      '<span class="cdim" style="font-size:12px">then</span>' +
+      '<input type="text" value="' + escHtml(step.suffix == null ? '#' : step.suffix) + '" placeholder="#" ' +
+      'title="Sent straight after the value. Usually #." ' +
+      'onchange="ciSetSuffix(&#39;' + which + '&#39;,' + i + ',this.value)" style="flex:0 0 64px" />';
   } else if (t === 'press') {
     right = '<input type="text" value="' + escHtml(step.digits || '') + '" placeholder="e.g. 1" ' +
       'onchange="ciSetDigits(&#39;' + which + '&#39;,' + i + ',this.value)" style="max-width:120px" />';
@@ -18315,7 +18320,7 @@ function ciStepRow(step, i, which) {
   } else { right = ''; }
   return '<div class="ci-srow"><span class="ci-snum">' + (i + 1) + '</span>' +
     '<span class="mono ci-sact">' + act + '</span>' +
-    '<span class="ci-sdesc">' + right + '</span>' +
+    '<span class="ci-sdesc" style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">' + right + '</span>' +
     '<span class="ci-sx" title="Remove" onclick="ciDelStep(&#39;' + which + '&#39;,' + i + ')">&times;</span></div>';
 }
 
@@ -18350,6 +18355,7 @@ function ciAddStep(which, type) {
 function ciDelStep(which, i) { ciEnsure(which); _ciProfile[which].splice(i, 1); ciRedrawSteps(which); ciTouched(); }
 function ciSetField(which, i, v) { ciEnsure(which); _ciProfile[which][i].field = v; ciTouched(); }
 function ciSetDigits(which, i, v) { ciEnsure(which); _ciProfile[which][i].digits = v; ciTouched(); }
+function ciSetSuffix(which, i, v) { ciEnsure(which); _ciProfile[which][i].suffix = v; ciTouched(); }
 function ciSetSeconds(which, i, v) { ciEnsure(which); _ciProfile[which][i].seconds = parseInt(v, 10) || 1; ciTouched(); }
 function ciRedrawSteps(which) {
   var host = document.getElementById('ci-steps-' + which);
