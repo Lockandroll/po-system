@@ -554,7 +554,7 @@ async function processMessage(msg, conf, mailbox, knownAccounts) {
     // The call-in details the account printed on the document. This is the whole
     // reason the check-in feature can exist without integrating with anybody:
     // the number is already arriving, it was just being thrown away.
-    'checkin_phone=$33, checkin_reference=$34, checkin_instructions=$35, updated_at=NOW() WHERE id=$32',
+    'checkin_phone=$33, checkin_reference=$34, checkin_instructions=$35, checkin_tracking=$36, updated_at=NOW() WHERE id=$32',
     [acct.account_id, strOrNull(parsed.account_name), strOrNull(parsed.account_number), cityCode,
      strOrNull(parsed.po_number), strOrNull(parsed.wo_number), strOrNull(parsed.store_name), strOrNull(parsed.store_number),
      strOrNull(parsed.address), strOrNull(parsed.city_state_zip), strOrNull(parsed.service_requested), strOrNull(parsed.service_requested_by),
@@ -564,7 +564,8 @@ async function processMessage(msg, conf, mailbox, knownAccounts) {
      strOrNull(parsed.vehicle_make), strOrNull(parsed.vehicle_model), strOrNull(parsed.vehicle_mileage),
      strOrNull(parsed.repair_code), strOrNull(parsed.yard_name), strOrNull(parsed.bay_location),
      strOrNull(parsed.special_instructions), moneyOrNull(parsed.nte_amount), woId,
-     strOrNull(parsed.checkin_phone), strOrNull(parsed.checkin_reference), strOrNull(parsed.checkin_instructions)]
+     strOrNull(parsed.checkin_phone), strOrNull(parsed.checkin_reference), strOrNull(parsed.checkin_instructions),
+     strOrNull(parsed.checkin_tracking)]
   );
   await addActivity(woId, null, 'event', 'received by email and parsed as a ' + jobType + ' job (confidence: ' + (strOrNull(parsed.confidence) || 'n/a') + ')');
   // A vehicle job with no VIN is the one failure worth shouting about — the VIN IS

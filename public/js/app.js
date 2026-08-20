@@ -2,7 +2,7 @@
 // public/sw.js (the only thing bumped each deploy) — the badge asks the active
 // service worker for it at runtime. This value is just the fallback shown when no
 // service worker is available (e.g. very first visit before it installs).
-var APP_VERSION = 'v126';
+var APP_VERSION = 'v127';
 var _resolvedAppVersion = null;
 
 // Ask the active service worker for its CACHE_VERSION (without the 'nova-' prefix).
@@ -17262,7 +17262,9 @@ async function renderViewWorkOrder(el, id) {
       // The check-in line, as printed on this work order. The AI parser fills
       // these in, but a number read off a fax is exactly the sort of thing a
       // person should be able to correct without waiting for anybody.
-      '<div class="form-row">' + fld('Check-In Phone', 'wo-checkin_phone', w.checkin_phone, 'the line to call on arrival') + fld('Check-In ID', 'wo-checkin_reference', w.checkin_reference, 'vendor or tech ID the line asks for') + '</div>' +
+      '<div class="form-row">' + fld('Check-In Phone', 'wo-checkin_phone', w.checkin_phone, 'the line to call on arrival') +
+        fld('Check-In PIN', 'wo-checkin_reference', w.checkin_reference, 'the PIN the tree asks for') +
+        fld('Check-In Tracking #', 'wo-checkin_tracking', w.checkin_tracking, 'the job number the tree asks for') + '</div>' +
       '<div class="form-group"><label>Check-In Instructions</label><textarea id="wo-checkin_instructions" placeholder="What the work order says to do on arrival and departure">' + escHtml(w.checkin_instructions || '') + '</textarea></div>' +
       '<button class="btn btn-secondary" onclick="woSaveEdit(' + id + ')">Save changes</button>'
     : fld('Account', '', w.account_name) + fld('Account #', '', w.account_number) +
@@ -17274,7 +17276,8 @@ async function renderViewWorkOrder(el, id) {
       fld('Address', '', w.address) + fld('City / State / Zip', '', w.city_state_zip) +
       fld('Service', '', w.service_requested) + fld('Requested By', '', w.service_requested_by) + fld('Needed By', '', w.needed_by ? formatDate(w.needed_by) : '') +
       fld('Contact', '', w.contact_name) + fld('Phone', '', w.contact_phone) + fld('Priority', '', w.priority) +
-      fld('Check-In Phone', '', w.checkin_phone) + fld('Check-In ID', '', w.checkin_reference) +
+      fld('Check-In Phone', '', w.checkin_phone) + fld('Check-In PIN', '', w.checkin_reference) +
+      fld('Check-In Tracking #', '', w.checkin_tracking) +
       (w.checkin_instructions ? '<div style="margin-top:12px;padding:10px 12px;background:var(--bg-elevated);border-radius:6px;font-size:13px;white-space:pre-wrap"><strong>Check-in:</strong> ' + escHtml(w.checkin_instructions) + '</div>' : '') +
       (w.notes ? '<div style="margin-top:12px;padding:10px 12px;background:var(--bg-elevated);border-radius:6px;font-size:13px"><strong>Notes:</strong> ' + escHtml(w.notes) + '</div>' : '');
   var rightCard = '<div class="card" style="margin:0"><div class="card-header"><span class="card-title">' + (fieldsEditable ? 'Parsed Details (check &amp; correct)' : 'Details') + '</span></div><div class="card-body">' + fieldsInner + '</div></div>';
@@ -17442,7 +17445,7 @@ async function woSaveEdit(id) {
     service_requested: woGet('wo-service_requested'), service_requested_by: woGet('wo-service_requested_by'), needed_by: woGet('wo-needed_by'),
     contact_name: woGet('wo-contact_name'), contact_phone: woGet('wo-contact_phone'), priority: woGet('wo-priority'), notes: woGet('wo-notes'),
     checkin_phone: woGet('wo-checkin_phone'), checkin_reference: woGet('wo-checkin_reference'),
-    checkin_instructions: woGet('wo-checkin_instructions')
+    checkin_tracking: woGet('wo-checkin_tracking'), checkin_instructions: woGet('wo-checkin_instructions')
   };
   // Only send keys the form actually rendered — a vehicle job has no store inputs and
   // a site job has no yard inputs, and undefined means "leave it alone" on the API.
@@ -18060,7 +18063,8 @@ function checkinFailureHtml(state, dir) {
     '</div>' +
     '<div class="ci-callout">' +
       (num ? '<div class="ci-row"><span class="ci-k">Number</span><span class="ci-v mono">' + escHtml(num) + '</span></div>' : '') +
-      (state.checkin_reference ? '<div class="ci-row"><span class="ci-k">Your ID</span><span class="ci-v mono">' + escHtml(state.checkin_reference) + '</span></div>' : '') +
+      (state.checkin_reference ? '<div class="ci-row"><span class="ci-k">PIN</span><span class="ci-v mono">' + escHtml(state.checkin_reference) + '</span></div>' : '') +
+      (state.checkin_tracking ? '<div class="ci-row"><span class="ci-k">Tracking #</span><span class="ci-v mono">' + escHtml(state.checkin_tracking) + '</span></div>' : '') +
       (state.wo_number ? '<div class="ci-row"><span class="ci-k">Work order</span><span class="ci-v mono">' + escHtml(state.wo_number) + '</span></div>' : '') +
     '</div>' +
     '<div class="flex-gap" style="margin-top:12px;flex-wrap:wrap">' +
@@ -18081,7 +18085,8 @@ function checkinInstructionsHtml(state) {
     '<div class="clabel">From the work order</div>' +
     (state.checkin_phone
       ? '<div style="font-size:15px;margin:2px 0 6px"><span class="mono">' + escHtml(state.checkin_phone) + '</span>' +
-        (state.checkin_reference ? ' <span class="cdim">&middot; ID ' + escHtml(state.checkin_reference) + '</span>' : '') +
+        (state.checkin_reference ? ' <span class="cdim">&middot; PIN ' + escHtml(state.checkin_reference) + '</span>' : '') +
+        (state.checkin_tracking ? ' <span class="cdim">&middot; Tracking ' + escHtml(state.checkin_tracking) + '</span>' : '') +
         (tel ? ' <a class="btn btn-secondary btn-sm ci-telsm" href="tel:' + escHtml(tel) + '">&#128222; Call</a>' : '') +
         '</div>'
       : '') +

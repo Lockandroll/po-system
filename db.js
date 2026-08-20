@@ -4952,6 +4952,10 @@ async function initDB() {
     await client.query(
       'ALTER TABLE work_orders ADD COLUMN IF NOT EXISTS checkin_phone VARCHAR(50);' +
       '  ALTER TABLE work_orders ADD COLUMN IF NOT EXISTS checkin_reference VARCHAR(80);' +
+      // Two values, because the trees that want a PIN usually want a job number
+      // straight after it, and on ServiceChannel work orders that second number
+      // is the TRACKING number rather than the work order number printed above.
+      '  ALTER TABLE work_orders ADD COLUMN IF NOT EXISTS checkin_tracking VARCHAR(80);' +
       '  ALTER TABLE work_orders ADD COLUMN IF NOT EXISTS checkin_instructions TEXT;' +
       '  ALTER TABLE work_orders ADD COLUMN IF NOT EXISTS checked_in_at TIMESTAMPTZ;' +
       '  ALTER TABLE work_orders ADD COLUMN IF NOT EXISTS checked_out_at TIMESTAMPTZ;' +

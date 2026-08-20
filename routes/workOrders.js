@@ -296,7 +296,7 @@ router.put('/:id', requireAuth, requirePermission('manage_work_orders'), async (
       // A manager correcting the check-in line by hand. The parser is good but a
       // number it read off a fax is exactly the sort of thing a person should be
       // able to fix without waiting for anybody.
-      'checkin_phone=$32, checkin_reference=$33, checkin_instructions=$34, updated_at=NOW() WHERE id=$31',
+      'checkin_phone=$32, checkin_reference=$33, checkin_instructions=$34, checkin_tracking=$35, updated_at=NOW() WHERE id=$31',
       [acct.account_id, pick('account_name', ex.account_name), pick('account_number', ex.account_number), cityCode,
        pick('po_number', ex.po_number), pick('wo_number', ex.wo_number), pick('store_name', ex.store_name), pick('store_number', ex.store_number),
        pick('address', ex.address), pick('city_state_zip', ex.city_state_zip), pick('service_requested', ex.service_requested), pick('service_requested_by', ex.service_requested_by),
@@ -308,7 +308,8 @@ router.put('/:id', requireAuth, requirePermission('manage_work_orders'), async (
        pick('vehicle_year', ex.vehicle_year), pick('vehicle_make', ex.vehicle_make), pick('vehicle_model', ex.vehicle_model),
        pick('vehicle_mileage', ex.vehicle_mileage), pick('repair_code', ex.repair_code), pick('yard_name', ex.yard_name),
        pick('bay_location', ex.bay_location), pick('special_instructions', ex.special_instructions), newNte, req.params.id,
-       pick('checkin_phone', ex.checkin_phone), pick('checkin_reference', ex.checkin_reference), pick('checkin_instructions', ex.checkin_instructions)]
+       pick('checkin_phone', ex.checkin_phone), pick('checkin_reference', ex.checkin_reference), pick('checkin_instructions', ex.checkin_instructions),
+       pick('checkin_tracking', ex.checkin_tracking)]
     );
     if (nteChanged) {
       await pool.query(
@@ -408,7 +409,7 @@ router.post('/:id/reparse', requireAuth, requirePermission('manage_work_orders')
       'repair_code=$26, yard_name=$27, bay_location=$28, special_instructions=$29, nte_amount=$30, ' +
       // Re-parsing an old work order is how the back catalogue grows check-in
       // data without anybody retyping anything.
-      'checkin_phone=$32, checkin_reference=$33, checkin_instructions=$34, updated_at=NOW() WHERE id=$31',
+      'checkin_phone=$32, checkin_reference=$33, checkin_instructions=$34, checkin_tracking=$35, updated_at=NOW() WHERE id=$31',
       [acct.account_id, strOrNull(parsed.account_name), strOrNull(parsed.account_number), cityCode, strOrNull(parsed.po_number), strOrNull(parsed.wo_number),
        strOrNull(parsed.store_name), strOrNull(parsed.store_number), strOrNull(parsed.address), strOrNull(parsed.city_state_zip), strOrNull(parsed.service_requested),
        strOrNull(parsed.service_requested_by), strOrNull(parsed.contact_name), strOrNull(parsed.contact_phone), dateOrNull(parsed.needed_by), strOrNull(parsed.notes),
@@ -421,7 +422,8 @@ router.post('/:id/reparse', requireAuth, requirePermission('manage_work_orders')
        // stomp a limit a manager set by hand or one a later revision raised.
        (ex.nte_amount !== null && ex.nte_amount !== undefined) ? ex.nte_amount : woJob.moneyOrNull(parsed.nte_amount),
        req.params.id,
-       strOrNull(parsed.checkin_phone), strOrNull(parsed.checkin_reference), strOrNull(parsed.checkin_instructions)]
+       strOrNull(parsed.checkin_phone), strOrNull(parsed.checkin_reference), strOrNull(parsed.checkin_instructions),
+       strOrNull(parsed.checkin_tracking)]
     );
     // A re-parse that works has to lift the row back out of the hole it fell into.
     // Leaving it stamped 'error' meant a fixed work order still never reached the queue.

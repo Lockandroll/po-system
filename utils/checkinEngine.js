@@ -95,6 +95,7 @@ function jobValues(wo, user) {
     store_number: wo.store_number,
     account_number: wo.account_number,
     checkin_reference: wo.checkin_reference,
+    checkin_tracking: wo.checkin_tracking,
     tech_reference: wo.checkin_reference || (user && user.ivr_reference) || null,
     num_technicians: null
   };
@@ -131,6 +132,7 @@ async function jobState(workOrderId) {
     wo_number: wo.wo_number,
     checkin_phone: wo.checkin_phone,
     checkin_reference: wo.checkin_reference,
+    checkin_tracking: wo.checkin_tracking,
     checkin_instructions: wo.checkin_instructions,
     checked_in_at: wo.checked_in_at,
     checked_out_at: wo.checked_out_at,

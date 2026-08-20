@@ -36,7 +36,8 @@ var FIELDS = {
   claim_id: 'Claim / Ref ID',
   store_number: 'Store #',
   account_number: 'Account #',
-  checkin_reference: 'Check-In ID (work order)',
+  checkin_reference: 'Check-In PIN (work order)',
+  checkin_tracking: 'Check-In Tracking # (work order)',
   tech_reference: 'Technician ID',
   num_technicians: 'Number of technicians'
 };
