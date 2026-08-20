@@ -216,6 +216,50 @@ function matchConfirmation(transcript, phrasesRaw) {
   return { matched: false, phrase: null, reason: 'phrase_not_heard' };
 }
 
+// What the tree said INSTEAD, translated into the next thing to do.
+//
+// "Nova never heard the confirmation phrase" is true of every failure and
+// therefore useful for none of them. The first live test failed with a
+// transcript that ended "Nothing was entered. Goodbye." - which is not a
+// mystery at all, it is a tree telling you a keypress landed in the wrong
+// prompt. This turns the handful of things trees actually say into the one
+// sentence that shortens the next attempt.
+//
+// Deliberately a small list of phrases that mean the same thing on every tree.
+// It is a hint printed under the transcript, never an input to the verdict:
+// nothing here can confirm a check-in or clear a flag.
+var SIGNALS = [
+  { any: ['no longer in service', 'has been disconnected', 'not in service', 'is not a working number'],
+    say: 'That number is dead. Get the current check-in number off a recent work order before dialling again.' },
+  { any: ['leave a message', 'after the tone', 'after the beep', 'voice mail', 'voicemail', 'not available to take your call'],
+    say: 'That is a voicemail box, not a phone tree. Nova only dials trees. Check the number on the work order.' },
+  { any: ['nothing was entered', 'no entry was received', 'did not receive any input', 'we did not receive', 'i did not get that', 'we did not get that', 'no input was received'],
+    say: 'The tree heard nothing where it expected digits, which almost always means a keypress landed while it was still reading the prompt before. Add a second or two to the wait in front of that step.' },
+  { any: ['not recognized', 'not valid', 'is invalid', 'was not found', 'no record', 'could not be found'],
+    say: 'The tree got the digits but did not like them. Read them back off the transcript: if they are short, the wait before that step is too short and the front of the number is being clipped.' },
+  { any: ['please try again', 'let us try that again', 'one more time'],
+    say: 'The tree asked to start that entry over, so the script and the tree are out of step from that point on.' },
+  { any: ['press 1 for', 'press one for', 'main menu', 'for english press', 'for english, press'],
+    say: 'The recording ends on a menu, so the call never got past it. Either the first wait is too short and the keypress went out before the tree answered, or the menu wants a pound after the key.' },
+  { any: ['transferring', 'please hold', 'one moment', 'representative', 'agent will be with you'],
+    say: 'That path leads to a person. Nova is only ever meant to talk to a tree - change the steps so it stays inside the automated menu.' }
+];
+
+function diagnose(transcript) {
+  var hay = normalizeTranscript(transcript);
+  if (!hay) return 'There is no transcript, so the recording never arrived or the line was silent.';
+  if (hay.split(' ').length < 6) return 'The tree barely said anything. It may have answered and hung up, or the recording was cut short.';
+  // Late signals first: what a tree says last is what went wrong.
+  var best = null;
+  SIGNALS.forEach(function (sig) {
+    sig.any.forEach(function (phrase) {
+      var at = hay.lastIndexOf(phrase);
+      if (at !== -1 && (!best || at > best.at)) best = { at: at, say: sig.say };
+    });
+  });
+  return best ? best.say : null;
+}
+
 // The confirmation / authorization number the tree reads back at check-out.
 // Stored as a plain regex on the profile but never shown to a manager as one -
 // the setup screen builds it from a highlighted example (see the mockups).
@@ -261,5 +305,6 @@ module.exports = {
   normalizeForCapture: normalizeForCapture,
   parsePhrases: parsePhrases,
   matchConfirmation: matchConfirmation,
+  diagnose: diagnose,
   captureValue: captureValue
 };

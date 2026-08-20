@@ -130,11 +130,34 @@ var FAKE_AUTH = 'SC 77 4419 0093';
 function fakeDigits(v) { return String(v == null ? '' : v).replace(/[^0-9]/g, '').slice(0, 24); }
 function spell(v) { return String(v || '').split('').join(' '); }
 
-function fakeGather(res, step, mode, say, carry) {
+// A prompt that collects ONE key and moves on the instant it lands, the way a
+// language menu or a yes/no confirm does. numDigits="1" and NO finishOnKey.
+//
+// Both halves of that matter, and the first live test proved why. A menu built
+// as numDigits="24" finishOnKey="#" does not advance when you press 1 - it stops
+// talking and keeps listening. The next thing the script sent (a PIN, then its
+// pound) landed in the LANGUAGE gather, ending it with "162163", and every
+// prompt after that was answered by the digits meant for the one before it. The
+// script was fine. The tree was not a tree.
+//
+// finishOnKey has to be empty as well, or a confirm prompt that asks for pound
+// gets pound as its FIRST key, which Twilio reads as "finished, nothing entered"
+// and falls straight through to the no-input line.
+function fakeMenu(res, step, mode, say, carry) {
+  return fakeGather(res, step, mode, say, carry, 'input="dtmf" timeout="10" numDigits="1" finishOnKey=""');
+}
+
+// A prompt that collects a run of digits terminated by pound: a PIN, a work
+// order number. This is the shape the old code used for everything.
+function fakeEntry(res, step, mode, say, carry) {
+  return fakeGather(res, step, mode, say, carry, 'input="dtmf" timeout="10" numDigits="24" finishOnKey="#"');
+}
+
+function fakeGather(res, step, mode, say, carry, attrs) {
   var q = '?step=' + step + '&amp;mode=' + encodeURIComponent(mode);
   Object.keys(carry || {}).forEach(function (k) { q += '&amp;' + k + '=' + encodeURIComponent(carry[k]); });
   twiml(res, '<?xml version="1.0" encoding="UTF-8"?>\n<Response>' +
-    '<Gather input="dtmf" timeout="10" numDigits="24" finishOnKey="#" ' +
+    '<Gather ' + attrs + ' ' +
     'action="/api/twilio/voice/fake-ivr' + q + '" method="POST">' +
     '<Say>' + say + '</Say>' +
     '</Gather>' +
@@ -144,22 +167,26 @@ function fakeGather(res, step, mode, say, carry) {
 router.post('/fake-ivr', function (req, res) {
   var mode = String(req.query.mode || 'ok').toLowerCase();
   var step = String(req.query.step || 'start');
-  var digits = fakeDigits(req.body.Digits);
+  var raw = String(req.body.Digits == null ? '' : req.body.Digits);
+  var digits = fakeDigits(raw);
 
   if (mode === 'silent') {
     return twiml(res, '<?xml version="1.0" encoding="UTF-8"?>\n<Response><Pause length="15"/><Hangup/></Response>');
   }
 
+  // 1. Language. One key, and it moves.
   if (step === 'start') {
-    return fakeGather(res, 'pin', mode,
+    return fakeMenu(res, 'pin', mode,
       'Thank you for calling the vendor check in line. For English, press 1. Para espanol, oprima 2.', {});
   }
 
+  // 2. PIN. Digits then pound. (The digits arriving here are the language key.)
   if (step === 'pin') {
-    return fakeGather(res, 'job', mode,
+    return fakeEntry(res, 'job', mode,
       'Please enter your unique PIN number, followed by the pound key.', {});
   }
 
+  // 3. Work order. Digits then pound. (The digits arriving here are the PIN.)
   if (step === 'job') {
     if (mode === 'reject') {
       return twiml(res, '<?xml version="1.0" encoding="UTF-8"?>\n<Response>' +
@@ -167,12 +194,13 @@ router.post('/fake-ivr', function (req, res) {
         'Please check your work order and try again. Goodbye.</Say>' +
         '<Pause length="2"/><Hangup/></Response>');
     }
-    return fakeGather(res, 'confirm', mode,
+    return fakeEntry(res, 'confirm', mode,
       'Thank you. Now enter your work order or tracking number, followed by the pound key.', { pin: digits });
   }
 
+  // 4. Read back and confirm. One key, and it moves - including pound.
   if (step === 'confirm') {
-    return fakeGather(res, 'done', mode,
+    return fakeMenu(res, 'done', mode,
       'You entered ' + spell(digits) + '. Press pound to confirm, or zero to re-enter.',
       { pin: fakeDigits(req.query.pin), job: digits });
   }
@@ -180,6 +208,14 @@ router.post('/fake-ivr', function (req, res) {
   // step === 'done'
   var pin = fakeDigits(req.query.pin);
   var job = fakeDigits(req.query.job);
+
+  // It offered zero to re-enter, so it honours zero to re-enter. A tree that
+  // says something it will not do teaches a script the wrong timing.
+  if (raw === '0') {
+    return fakeEntry(res, 'confirm', mode,
+      'Re-enter your work order or tracking number, followed by the pound key.', { pin: pin });
+  }
+
   var heard = 'P I N ' + spell(pin) + ', work order ' + spell(job) + '. ';
 
   if (mode === 'wrong') {
@@ -199,10 +235,13 @@ router.get('/fake-ivr', function (req, res) {
     'Nova test phone tree.\n\n' +
     'Point a spare Twilio number at POST ' + (twilio.webhookBase() || '') + '/api/twilio/voice/fake-ivr\n\n' +
     'It asks, in this order:\n' +
-    '  1. language        press 1\n' +
-    '  2. unique PIN      digits then #\n' +
-    '  3. work order      digits then #\n' +
-    '  4. confirm         #\n' +
+    '  1. language        one key, moves immediately      press 1\n' +
+    '  2. unique PIN      digits, ends on pound           62163#\n' +
+    '  3. work order      digits, ends on pound           360493481#\n' +
+    '  4. confirm         one key, moves immediately      press #\n' +
+    'The one-key steps do NOT wait for a pound. That is the difference between a\n' +
+    'menu and an entry field, and getting it wrong slides a whole script one\n' +
+    'prompt out of phase.\n' +
     'then reads back everything it heard, so a half-received PIN shows up in the\n' +
     'transcript instead of failing as a mystery.\n\n' +
     'Modes: ?mode=ok (default), ?mode=reject, ?mode=silent, ?mode=wrong\n'

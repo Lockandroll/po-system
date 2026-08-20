@@ -309,6 +309,10 @@ async function onRecording(id, data) {
   var why = verdict.reason === 'no_phrases_configured'
     ? 'This account has no confirmation phrase configured, so Nova cannot tell whether the call worked.'
     : 'The call ran to the end but Nova never heard the confirmation phrase.';
+  // Say what the tree said instead, in terms of the next thing to change. A
+  // failure reason that is identical on every failure teaches nobody anything.
+  var hint = ivr.diagnose(transcript);
+  if (hint) why += ' ' + hint;
   await fail(id, why);
 
   // The tree said something, and it was not what this profile expects. That is
