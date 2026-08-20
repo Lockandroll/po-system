@@ -2,7 +2,7 @@
 // public/sw.js (the only thing bumped each deploy) — the badge asks the active
 // service worker for it at runtime. This value is just the fallback shown when no
 // service worker is available (e.g. very first visit before it installs).
-var APP_VERSION = 'v118';
+var APP_VERSION = 'v119';
 var _resolvedAppVersion = null;
 
 // Ask the active service worker for its CACHE_VERSION (without the 'nova-' prefix).
@@ -17259,6 +17259,11 @@ async function renderViewWorkOrder(el, id) {
       '<div class="form-row">' + fld('Contact Name', 'wo-contact_name', w.contact_name) + fld('Contact Phone', 'wo-contact_phone', w.contact_phone) + '</div>' +
       '<div class="form-group"><label>Priority</label><select id="wo-priority">' + ['low', 'normal', 'high', 'urgent'].map(function (p) { return '<option value="' + p + '"' + (w.priority === p ? ' selected' : '') + '>' + p + '</option>'; }).join('') + '</select></div>' +
       '<div class="form-group"><label>Notes</label><textarea id="wo-notes">' + escHtml(w.notes || '') + '</textarea></div>' +
+      // The check-in line, as printed on this work order. The AI parser fills
+      // these in, but a number read off a fax is exactly the sort of thing a
+      // person should be able to correct without waiting for anybody.
+      '<div class="form-row">' + fld('Check-In Phone', 'wo-checkin_phone', w.checkin_phone, 'the line to call on arrival') + fld('Check-In ID', 'wo-checkin_reference', w.checkin_reference, 'vendor or tech ID the line asks for') + '</div>' +
+      '<div class="form-group"><label>Check-In Instructions</label><textarea id="wo-checkin_instructions" placeholder="What the work order says to do on arrival and departure">' + escHtml(w.checkin_instructions || '') + '</textarea></div>' +
       '<button class="btn btn-secondary" onclick="woSaveEdit(' + id + ')">Save changes</button>'
     : fld('Account', '', w.account_name) + fld('Account #', '', w.account_number) +
       fld('Work Order #', '', w.wo_number) + fld('PO #', '', w.po_number) +
@@ -17269,6 +17274,8 @@ async function renderViewWorkOrder(el, id) {
       fld('Address', '', w.address) + fld('City / State / Zip', '', w.city_state_zip) +
       fld('Service', '', w.service_requested) + fld('Requested By', '', w.service_requested_by) + fld('Needed By', '', w.needed_by ? formatDate(w.needed_by) : '') +
       fld('Contact', '', w.contact_name) + fld('Phone', '', w.contact_phone) + fld('Priority', '', w.priority) +
+      fld('Check-In Phone', '', w.checkin_phone) + fld('Check-In ID', '', w.checkin_reference) +
+      (w.checkin_instructions ? '<div style="margin-top:12px;padding:10px 12px;background:var(--bg-elevated);border-radius:6px;font-size:13px;white-space:pre-wrap"><strong>Check-in:</strong> ' + escHtml(w.checkin_instructions) + '</div>' : '') +
       (w.notes ? '<div style="margin-top:12px;padding:10px 12px;background:var(--bg-elevated);border-radius:6px;font-size:13px"><strong>Notes:</strong> ' + escHtml(w.notes) + '</div>' : '');
   var rightCard = '<div class="card" style="margin:0"><div class="card-header"><span class="card-title">' + (fieldsEditable ? 'Parsed Details (check &amp; correct)' : 'Details') + '</span></div><div class="card-body">' + fieldsInner + '</div></div>';
 
@@ -17433,7 +17440,9 @@ async function woSaveEdit(id) {
     yard_name: woGet('wo-yard_name'), bay_location: woGet('wo-bay_location'),
     address: woGet('wo-address'), city_state_zip: woGet('wo-city_state_zip'),
     service_requested: woGet('wo-service_requested'), service_requested_by: woGet('wo-service_requested_by'), needed_by: woGet('wo-needed_by'),
-    contact_name: woGet('wo-contact_name'), contact_phone: woGet('wo-contact_phone'), priority: woGet('wo-priority'), notes: woGet('wo-notes')
+    contact_name: woGet('wo-contact_name'), contact_phone: woGet('wo-contact_phone'), priority: woGet('wo-priority'), notes: woGet('wo-notes'),
+    checkin_phone: woGet('wo-checkin_phone'), checkin_reference: woGet('wo-checkin_reference'),
+    checkin_instructions: woGet('wo-checkin_instructions')
   };
   // Only send keys the form actually rendered — a vehicle job has no store inputs and
   // a site job has no yard inputs, and undefined means "leave it alone" on the API.
