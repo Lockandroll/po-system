@@ -104,74 +104,107 @@ router.post('/recording/:id', verify, async function (req, res) {
 // ---------------------------------------------------------------------------
 // A phone tree of our own.
 //
-// Point a test profile at a second Twilio number wired to this endpoint and the
-// entire loop runs end to end for about three cents, without ever appearing in a
-// real client's call log. It can be made to fail on purpose, which matters more
-// than the happy path: rejecting the id, going silent, and reading back a
-// confirmation that does not match are all code paths that otherwise ship
-// untested.
+// Point a spare Twilio number at this endpoint and the whole loop runs end to
+// end for about three cents, without ever appearing in a client's call log. That
+// last part matters more than the money: dialling a real check-in line to test a
+// script files a real check-in against a real job.
 //
-// Deliberately NOT signature-verified: it is an inbound call handler, and the
-// number that reaches it is one we own and configure.
+// The shape deliberately mirrors the ServiceChannel tree, which is the one Nova
+// meets first: language, then PIN, then job number, then a confirm keypress. A
+// test tree shaped differently from the real one proves very little.
 //
-//   ?mode=ok       normal, confirms and reads back an authorization number
-//   ?mode=reject   rejects whatever id is entered
-//   ?mode=silent   says nothing at all
-//   ?mode=wrong    confirms with wording that will not match a phrase
+// It ECHOES BACK the digits it received. If a wait is too short and only half a
+// PIN arrives, that shows up in the transcript as the wrong number rather than
+// as a mystery failure.
+//
+// Deliberately NOT signature-verified: it is an inbound call handler on a number
+// we own and configure.
+//
+//   ?mode=ok       normal. Confirms and reads back an authorization number.
+//   ?mode=reject   rejects the PIN, the way a real tree does with a bad one.
+//   ?mode=silent   answers and says nothing at all.
+//   ?mode=wrong    confirms, but with wording that will not match a phrase.
 // ---------------------------------------------------------------------------
 var FAKE_AUTH = 'SC 77 4419 0093';
 
+function fakeDigits(v) { return String(v == null ? '' : v).replace(/[^0-9]/g, '').slice(0, 24); }
+function spell(v) { return String(v || '').split('').join(' '); }
+
+function fakeGather(res, step, mode, say, carry) {
+  var q = '?step=' + step + '&amp;mode=' + encodeURIComponent(mode);
+  Object.keys(carry || {}).forEach(function (k) { q += '&amp;' + k + '=' + encodeURIComponent(carry[k]); });
+  twiml(res, '<?xml version="1.0" encoding="UTF-8"?>\n<Response>' +
+    '<Gather input="dtmf" timeout="10" numDigits="24" finishOnKey="#" ' +
+    'action="/api/twilio/voice/fake-ivr' + q + '" method="POST">' +
+    '<Say>' + say + '</Say>' +
+    '</Gather>' +
+    '<Say>Nothing was entered. Goodbye.</Say><Hangup/></Response>');
+}
+
 router.post('/fake-ivr', function (req, res) {
   var mode = String(req.query.mode || 'ok').toLowerCase();
-  var digits = String(req.body.Digits || '');
+  var step = String(req.query.step || 'start');
+  var digits = fakeDigits(req.body.Digits);
 
   if (mode === 'silent') {
-    return twiml(res, '<?xml version="1.0" encoding="UTF-8"?>\n<Response>' +
-      '<Pause length="12"/><Hangup/></Response>');
+    return twiml(res, '<?xml version="1.0" encoding="UTF-8"?>\n<Response><Pause length="15"/><Hangup/></Response>');
   }
 
-  // First leg: greet and collect. Any DTMF at all satisfies the Gather; the
-  // script under test is what decides which keys get sent.
-  if (!req.query.step) {
-    return twiml(res, '<?xml version="1.0" encoding="UTF-8"?>\n<Response>' +
-      '<Gather input="dtmf" timeout="8" numDigits="20" finishOnKey="#" ' +
-      'action="/api/twilio/voice/fake-ivr?step=2&amp;mode=' + encodeURIComponent(mode) + '" method="POST">' +
-      '<Say>Thank you for calling the vendor check in line. For English, press one. ' +
-      'Please enter your identification number followed by the pound key.</Say>' +
-      '</Gather>' +
-      '<Say>We did not receive any input. Goodbye.</Say><Hangup/></Response>');
+  if (step === 'start') {
+    return fakeGather(res, 'pin', mode,
+      'Thank you for calling the vendor check in line. For English, press 1. Para espanol, oprima 2.', {});
   }
 
-  if (req.query.step === '2') {
+  if (step === 'pin') {
+    return fakeGather(res, 'job', mode,
+      'Please enter your unique PIN number, followed by the pound key.', {});
+  }
+
+  if (step === 'job') {
     if (mode === 'reject') {
       return twiml(res, '<?xml version="1.0" encoding="UTF-8"?>\n<Response>' +
-        '<Say>That identification number was not recognized. Please re-enter your number, ' +
-        'followed by the pound key.</Say><Pause length="6"/><Hangup/></Response>');
+        '<Say>The PIN number ' + spell(digits) + ' was not recognized. ' +
+        'Please check your work order and try again. Goodbye.</Say>' +
+        '<Pause length="2"/><Hangup/></Response>');
     }
-    return twiml(res, '<?xml version="1.0" encoding="UTF-8"?>\n<Response>' +
-      '<Gather input="dtmf" timeout="8" numDigits="20" finishOnKey="#" ' +
-      'action="/api/twilio/voice/fake-ivr?step=3&amp;mode=' + encodeURIComponent(mode) + '" method="POST">' +
-      '<Say>Thank you. Now enter your work order number, followed by the pound key.</Say>' +
-      '</Gather>' +
-      '<Say>We did not receive a work order number. Goodbye.</Say><Hangup/></Response>');
+    return fakeGather(res, 'confirm', mode,
+      'Thank you. Now enter your work order or tracking number, followed by the pound key.', { pin: digits });
   }
+
+  if (step === 'confirm') {
+    return fakeGather(res, 'done', mode,
+      'You entered ' + spell(digits) + '. Press pound to confirm, or zero to re-enter.',
+      { pin: fakeDigits(req.query.pin), job: digits });
+  }
+
+  // step === 'done'
+  var pin = fakeDigits(req.query.pin);
+  var job = fakeDigits(req.query.job);
+  var heard = 'P I N ' + spell(pin) + ', work order ' + spell(job) + '. ';
 
   if (mode === 'wrong') {
     return twiml(res, '<?xml version="1.0" encoding="UTF-8"?>\n<Response>' +
-      '<Say>Your request has been noted. Goodbye.</Say><Hangup/></Response>');
+      '<Say>' + heard + 'Your request has been noted. Goodbye.</Say><Hangup/></Response>');
   }
 
   return twiml(res, '<?xml version="1.0" encoding="UTF-8"?>\n<Response>' +
-    '<Say>Work order ' + digits.split('').join(' ') + ' received. You are checked in at this time. ' +
+    '<Say>' + heard + 'You are checked in at this time. ' +
     'Your authorization number is ' + FAKE_AUTH + '. Thank you.</Say>' +
     '<Pause length="1"/><Hangup/></Response>');
 });
 
-// A GET on the fake IVR so a human can eyeball it in a browser without dialling.
+// A GET so a human can eyeball it in a browser without dialling.
 router.get('/fake-ivr', function (req, res) {
   res.type('text/plain').send(
     'Nova test phone tree.\n\n' +
-    'Point a Twilio number at POST ' + (twilio.webhookBase() || '') + '/api/twilio/voice/fake-ivr\n' +
+    'Point a spare Twilio number at POST ' + (twilio.webhookBase() || '') + '/api/twilio/voice/fake-ivr\n\n' +
+    'It asks, in this order:\n' +
+    '  1. language        press 1\n' +
+    '  2. unique PIN      digits then #\n' +
+    '  3. work order      digits then #\n' +
+    '  4. confirm         #\n' +
+    'then reads back everything it heard, so a half-received PIN shows up in the\n' +
+    'transcript instead of failing as a mystery.\n\n' +
     'Modes: ?mode=ok (default), ?mode=reject, ?mode=silent, ?mode=wrong\n'
   );
 });
