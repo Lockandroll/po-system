@@ -207,8 +207,13 @@ router.put('/profiles/:id', requireAuth, requirePermission('manage_ivr_profiles'
   try {
     var b = profileBody(req.body || {});
     var keepActive = req.body && req.body.keep_active === true;
+    if (!b.vendor_id) return res.status(400).json({ error: 'Pick the account this script belongs to.' });
+    // vendor_id is in the SET list on purpose. It was left out of the first
+    // version, so changing the Account dropdown and saving appeared to work and
+    // then silently reverted on reload. A field the form offers to edit has to
+    // actually be written.
     var { rows } = await pool.query(
-      'UPDATE ivr_profiles SET name = $2, method = $3, phone_number = $4, site_radius_ft = $5, ' +
+      'UPDATE ivr_profiles SET vendor_id = $13, name = $2, method = $3, phone_number = $4, site_radius_ft = $5, ' +
       'checkin_steps = $6, checkout_steps = $7, confirm_phrases = $8, checkout_confirm_phrases = $9, ' +
       'capture_pattern = $10, capture_label = $11, ' +
       'active = CASE WHEN $12 THEN active ELSE false END, ' +
@@ -216,13 +221,19 @@ router.put('/profiles/:id', requireAuth, requirePermission('manage_ivr_profiles'
       'WHERE id = $1 RETURNING *',
       [req.params.id, b.name, b.method, b.phone_number, b.site_radius_ft,
         JSON.stringify(b.checkin_steps), JSON.stringify(b.checkout_steps),
-        b.confirm_phrases, b.checkout_confirm_phrases, b.capture_pattern, b.capture_label, keepActive]
+        b.confirm_phrases, b.checkout_confirm_phrases, b.capture_pattern, b.capture_label, keepActive,
+        b.vendor_id]
     );
     if (!rows.length) return res.status(404).json({ error: 'Not found' });
     await logAudit({ entity_type: 'ivr_profile', entity_id: rows[0].id, action: 'updated',
       user_id: req.user.id, user_name: req.user.name, details: 'Check-in profile updated' });
     res.json(rows[0]);
-  } catch (err) { console.error(err); res.status(500).json({ error: 'Failed to save profile' }); }
+  } catch (err) {
+    if (err && String(err.code) === '23505') {
+      return res.status(409).json({ error: 'That account already has a script. Open that one instead, or delete it first.' });
+    }
+    console.error(err); res.status(500).json({ error: 'Failed to save profile' });
+  }
 });
 
 router.delete('/profiles/:id', requireAuth, requirePermission('manage_ivr_profiles'), async (req, res) => {
