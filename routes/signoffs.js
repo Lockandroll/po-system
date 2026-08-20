@@ -57,6 +57,47 @@ async function tripCountOf(groupId) {
   return (rows[0] && rows[0].c) || 1;
 }
 
+// ---- Linked work order ---------------------------------------------------
+// A sign-off sheet carries no work_order_id of its own; the link runs the other
+// way, because work_orders.signoff_id points at the LIVE trip. So the lookup has
+// to go through the trip group: whichever work order points at any sheet in this
+// series is this job's work order. That is what lets trip 3 find the WO that
+// trip 1 was born from.
+//
+// Fallback: a sheet someone typed in by hand before the WO arrived has no
+// pointer at all, so we match on the client's WO number instead — but only when
+// EXACTLY ONE live work order carries that number. Two accounts reusing a number
+// fails closed rather than showing a tech somebody else's job.
+async function findLinkedWorkOrder(form) {
+  const { rows } = await pool.query(
+    'SELECT * FROM work_orders ' +
+    'WHERE signoff_id IN (SELECT id FROM signoff_forms WHERE trip_group_id = $1) ' +
+    'ORDER BY id DESC LIMIT 1',
+    [groupIdOf(form)]
+  );
+  if (rows.length) return rows[0];
+  const wn = String(form.wo_number || '').trim();
+  if (!wn) return null;
+  const { rows: byNum } = await pool.query(
+    'SELECT * FROM work_orders WHERE wo_number = $1 AND revision_of_id IS NULL ORDER BY id DESC LIMIT 2',
+    [wn]
+  );
+  return byNum.length === 1 ? byNum[0] : null;
+}
+
+// Read access to a sheet, in one place. Mirrors the rule GET /:id enforces:
+// admins and managers see everything, everyone else sees only sheets assigned to
+// (or created by) them. Returns { form } or { err: 403|404 }.
+async function loadSheetForRead(req, id) {
+  const { rows } = await pool.query('SELECT * FROM signoff_forms WHERE id = $1', [id]);
+  if (!rows.length) return { err: 404, message: 'Sign-off sheet not found' };
+  const form = rows[0];
+  if (!SEE_ALL.includes(req.user.role) && form.assigned_to !== req.user.id && form.created_by !== req.user.id) {
+    return { err: 403, message: 'Access denied' };
+  }
+  return { form: form };
+}
+
 async function sendWithAttachments(recipients, subject, html, attachments) {
   if (!process.env.RESEND_API_KEY) { console.warn('RESEND_API_KEY not set — skipping signoff email'); return; }
   try {
@@ -172,10 +213,79 @@ router.get('/:id', requireAuth, requirePermission('view_signoffs'), async (req, 
         };
       }
     } catch (e) { console.error('Sign-off invoice link lookup failed:', e && e.message); }
+    // The JOB's work order, if it came from one. Only enough to draw the button —
+    // the popup pulls the full record (and the original document) on demand, so a
+    // sheet opening on a phone in a parking lot never drags a PDF down with it.
+    // Best-effort for the same reason the invoice lookup is.
+    form.work_order_link = null;
+    try {
+      const wo = await findLinkedWorkOrder(form);
+      if (wo) {
+        const { rows: ac } = await pool.query('SELECT COUNT(*)::int AS c FROM work_order_attachments WHERE work_order_id = $1', [wo.id]);
+        form.work_order_link = {
+          id: wo.id,
+          wo_ref: wo.wo_ref || null,
+          wo_number: wo.wo_number || null,
+          status: wo.status || null,
+          attachment_count: (ac[0] && ac[0].c) || 0
+        };
+      }
+    } catch (e) { console.error('Sign-off work order link lookup failed:', e && e.message); }
     res.json(form);
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: 'Failed to fetch sign-off sheet' });
+  }
+});
+
+// GET /:id/work-order — the work order behind this sheet, for the popup.
+//
+// Gated on view_signoffs and the SHEET's access rule on purpose, NOT on
+// view_work_orders. GET /api/work-orders/:id only lets you through if you manage
+// work orders or the WO itself is assigned to you, and a tech is routinely
+// assigned the sign-off while the work order sits with the coordinator. Anyone
+// allowed to open the sheet is allowed to read the order it came from.
+router.get('/:id/work-order', requireAuth, requirePermission('view_signoffs'), async (req, res) => {
+  try {
+    const got = await loadSheetForRead(req, req.params.id);
+    if (got.err) return res.status(got.err).json({ error: got.message });
+    const wo = await findLinkedWorkOrder(got.form);
+    if (!wo) return res.status(404).json({ error: 'No work order is linked to this sign-off sheet.' });
+    // Attachment metadata only. The bytes come one at a time from the route below.
+    const { rows: att } = await pool.query(
+      'SELECT id, filename, mime_type, size_bytes FROM work_order_attachments WHERE work_order_id = $1 ORDER BY id',
+      [wo.id]
+    );
+    wo.attachments = att;
+    // parsed is the AI extractor's raw scratch output — the popup shows the
+    // corrected columns, never that. email_body stays: with no PDF or image on
+    // the order it IS the original document.
+    delete wo.parsed;
+    res.json(wo);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Failed to load the linked work order' });
+  }
+});
+
+// GET /:id/work-order/attachment/:aid — the original document for the popup.
+// Same access rule as above, and the attachment has to belong to THIS sheet's
+// work order — the id in the URL is never trusted on its own.
+router.get('/:id/work-order/attachment/:aid', requireAuth, requirePermission('view_signoffs'), async (req, res) => {
+  try {
+    const got = await loadSheetForRead(req, req.params.id);
+    if (got.err) return res.status(got.err).json({ error: got.message });
+    const wo = await findLinkedWorkOrder(got.form);
+    if (!wo) return res.status(404).json({ error: 'No work order is linked to this sign-off sheet.' });
+    const { rows } = await pool.query(
+      'SELECT image_data, mime_type, filename FROM work_order_attachments WHERE id = $1 AND work_order_id = $2',
+      [req.params.aid, wo.id]
+    );
+    if (!rows.length) return res.status(404).json({ error: 'Attachment not found' });
+    res.json({ image_data: rows[0].image_data, mime_type: rows[0].mime_type, filename: rows[0].filename });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Failed to load the work order document' });
   }
 });
 

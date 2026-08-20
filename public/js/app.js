@@ -17624,6 +17624,149 @@ function signoffSummaryHtml(f) {
 }
 
 // ---------------------------------------------------------------------------
+// "View Work Order" — the order behind the sheet, in a popup.
+//
+// A tech standing at the door has the sign-off sheet open and needs the thing
+// the sheet was made from: what was actually asked for, the NTE, the site
+// contact, and the client's own PDF. Navigating away to the work order page
+// loses a half-filled form (and its photos), so this is a modal and nothing
+// else. It is deliberately read-only — corrections belong on the WO page, in
+// front of someone who manages work orders.
+//
+// The button only renders when GET /signoffs/:id came back with a
+// work_order_link, so a hand-typed sheet with no order behind it shows nothing
+// rather than a button that apologises.
+// ---------------------------------------------------------------------------
+function signoffWorkOrderBtnHtml(f) {
+  if (!f || !f.work_order_link) return '';
+  var wl = f.work_order_link;
+  var label = wl.wo_ref || (wl.wo_number ? 'WO ' + wl.wo_number : 'Work Order');
+  return '<button class="btn btn-secondary" style="white-space:nowrap" onclick="openSignoffWorkOrderModal(' + f.id + ')" title="View the work order this sheet came from">' +
+    '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="vertical-align:-2px;margin-right:5px"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="8" y1="13" x2="16" y2="13"/><line x1="8" y1="17" x2="13" y2="17"/></svg>' +
+    escHtml(label) + '</button>';
+}
+
+function signoffWoModalShell(inner) {
+  return '<div class="nova-dlg" role="dialog" aria-modal="true" aria-label="Work order" ' +
+    'style="max-width:900px;text-align:left;padding:0;display:flex;flex-direction:column;max-height:88vh">' + inner + '</div>';
+}
+
+async function openSignoffWorkOrderModal(id) {
+  var ov = document.createElement('div');
+  ov.className = 'nova-dialog-overlay';
+  ov.innerHTML = signoffWoModalShell(
+    '<div style="padding:22px 24px"><div class="nova-dlg-title">Work Order</div>' +
+    '<div style="font-size:13px;color:var(--text-muted-color);margin-top:8px">Loading…</div></div>'
+  );
+  document.body.appendChild(ov);
+  function close() {
+    ov.classList.add('closing');
+    document.removeEventListener('keydown', onKey);
+    setTimeout(function() { if (ov.parentNode) ov.parentNode.removeChild(ov); }, 140);
+  }
+  function onKey(e) { if (e.key === 'Escape') { e.preventDefault(); close(); } }
+  document.addEventListener('keydown', onKey);
+  ov.addEventListener('mousedown', function(e) { if (e.target === ov) close(); });
+
+  var w;
+  try {
+    w = await api('GET', '/signoffs/' + id + '/work-order');
+  } catch (err) {
+    ov.innerHTML = signoffWoModalShell(
+      '<div style="padding:22px 24px"><div class="nova-dlg-title">Work Order</div>' +
+      '<div class="alert alert-error" style="margin:14px 0 0">' + escHtml(err.message) + '</div>' +
+      '<div class="nova-dlg-actions" style="margin-top:16px"><button class="btn btn-secondary" id="wo-modal-close">Close</button></div></div>'
+    );
+    ov.addEventListener('mousedown', function(e) { if (e.target === ov) close(); });
+    var cb = ov.querySelector('#wo-modal-close');
+    if (cb) cb.addEventListener('click', close);
+    return;
+  }
+
+  // Same rule the work order page uses: prefer a PDF, then an image, and fall
+  // back to the email body when the client sent no attachment at all.
+  function isPdfAtt(a) { var m = (a.mime_type || '').toLowerCase(), n = (a.filename || '').toLowerCase(); return m.indexOf('pdf') !== -1 || /\.pdf$/.test(n); }
+  function isImgAtt(a) { var m = (a.mime_type || '').toLowerCase(), n = (a.filename || '').toLowerCase(); return m.indexOf('image/') === 0 || /\.(png|jpe?g|gif|webp|bmp|tiff?)$/.test(n); }
+  var atts = w.attachments || [];
+  var docAtt = atts.filter(isPdfAtt)[0] || atts.filter(isImgAtt)[0] || null;
+
+  function row(label, val, full) {
+    if (val == null || val === '') return '';
+    return '<div' + (full ? ' style="grid-column:1/-1"' : '') + '>' +
+      '<div style="font-size:11px;font-weight:600;color:var(--text-muted-color);text-transform:uppercase;letter-spacing:0.04em;margin-bottom:3px">' + label + '</div>' +
+      '<div style="font-size:14px;white-space:pre-wrap;line-height:1.5">' + escHtml(String(val)) + '</div></div>';
+  }
+  var isVeh = woIsVehicle(w);
+  var nte = money2(w.nte_amount);
+  var fields =
+    row('Account', w.account_name) + row('Account #', w.account_number) +
+    row('Work Order #', w.wo_number) + row('PO #', w.po_number) +
+    row('Claim / Ref ID', w.claim_id) + row('City Code', w.city_code) +
+    (isVeh
+      ? row('Yard / Terminal', w.yard_name) + row('Bay', w.bay_location) +
+        row('Vehicle', [w.vehicle_year, w.vehicle_make, w.vehicle_model].filter(Boolean).join(' ')) +
+        row('VIN', w.vin) + row('Mileage', w.vehicle_mileage) + row('Repair Code', w.repair_code)
+      : row('Store', (w.store_name || '') + (w.store_number ? ' (#' + w.store_number + ')' : ''))) +
+    row('Address', w.address) + row('City / State / Zip', w.city_state_zip) +
+    row('Contact', w.contact_name) + row('Contact Phone', w.contact_phone) +
+    row('Requested By', w.service_requested_by) + row('Needed By', w.needed_by ? formatDate(w.needed_by) : '') +
+    row('Priority', w.priority) + row('NTE', nte != null ? ('$' + nte.toFixed(2)) : '') +
+    row('Service Requested', w.service_requested, true) +
+    row('Special Instructions', w.special_instructions, true) +
+    row('Notes', w.notes, true);
+
+  var head =
+    '<div style="padding:18px 24px 14px;border-bottom:1px solid var(--border);display:flex;align-items:flex-start;justify-content:space-between;gap:12px;flex-wrap:wrap">' +
+      '<div><div class="nova-dlg-title" style="margin-bottom:4px">' + escHtml(w.wo_ref || ('Work Order #' + w.id)) + ' ' + woBadge(w.status) + '</div>' +
+        '<div style="font-size:12px;color:var(--text-muted-color)">' + escHtml(w.account_name || '') +
+        (w.store_name ? ' &middot; ' + escHtml(w.store_name) : '') + '</div></div>' +
+      '<button class="btn btn-secondary btn-sm" id="wo-modal-close">Close</button>' +
+    '</div>';
+
+  var body =
+    '<div style="padding:18px 24px 22px;overflow:auto;flex:1 1 auto">' +
+      (fields
+        ? '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(190px,1fr));gap:14px 18px">' + fields + '</div>'
+        : '<div style="font-size:13px;color:var(--text-muted-color)">Nothing was parsed off this order.</div>') +
+      '<div style="margin-top:20px">' +
+        '<div style="font-size:11px;font-weight:600;color:var(--text-muted-color);text-transform:uppercase;letter-spacing:0.04em;margin-bottom:8px">Original Document</div>' +
+        '<div id="wo-modal-doc" style="font-size:13px;color:var(--text-muted-color)">' +
+          (docAtt ? 'Loading document…' : '') +
+        '</div>' +
+      '</div>' +
+    '</div>';
+
+  ov.innerHTML = signoffWoModalShell(head + body);
+  ov.addEventListener('mousedown', function(e) { if (e.target === ov) close(); });
+  var closeBtn = ov.querySelector('#wo-modal-close');
+  if (closeBtn) closeBtn.addEventListener('click', close);
+
+  // The document is fetched only after the fields are already on screen, so a
+  // slow connection shows the tech the address and the NTE while the PDF lands.
+  var host = ov.querySelector('#wo-modal-doc');
+  if (!host) return;
+  if (!docAtt) {
+    host.innerHTML = w.email_body
+      ? '<pre style="white-space:pre-wrap;word-break:break-word;max-height:420px;overflow:auto;background:var(--bg-elevated);padding:12px;border-radius:6px;font-size:13px;font-family:inherit;color:var(--text)">' + escHtml(w.email_body) + '</pre>'
+      : 'No document or email body on this order.';
+    return;
+  }
+  var doc;
+  try { doc = await api('GET', '/signoffs/' + id + '/work-order/attachment/' + docAtt.id); }
+  catch (e) { if (ov.parentNode) host.innerHTML = 'Could not load the document: ' + escHtml(e.message); return; }
+  if (!ov.parentNode) return;
+  if (isPdfAtt(docAtt)) {
+    // A data: iframe is what the work order page uses and it is the only thing
+    // that works offline-ish on a phone — the bytes are already in hand.
+    host.innerHTML = '<iframe src="data:application/pdf;base64,' + doc.image_data + '" style="width:100%;height:min(60vh,560px);border:0;border-radius:6px;background:#fff"></iframe>' +
+      '<div style="margin-top:6px"><a href="data:application/pdf;base64,' + doc.image_data + '" target="_blank" rel="noopener" style="color:var(--primary);font-size:12px">Open in a new tab</a></div>';
+  } else {
+    host.innerHTML = '<a href="data:' + (doc.mime_type || 'image/jpeg') + ';base64,' + doc.image_data + '" target="_blank" rel="noopener">' +
+      '<img src="data:' + (doc.mime_type || 'image/jpeg') + ';base64,' + doc.image_data + '" style="max-width:100%;border:1px solid var(--border);border-radius:6px" /></a>';
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Draft store (IndexedDB)
 //
 // Field forms hold everything in memory until submit, so a backgrounded PWA, a
@@ -17814,7 +17957,10 @@ async function renderCompleteSignoff(el, id) {
     '<div class="page-header">' +
       '<div><div class="page-title">Complete ' + escHtml(form.form_number) + '</div><div class="page-subtitle">Fill in on-site details, capture photos, and have the manager sign.</div>' +
         '<div id="so-draft-status" style="font-size:12px;color:var(--text-muted-color);margin-top:6px;opacity:0;transition:opacity .2s">Draft saved</div></div>' +
-      '<button class="btn btn-secondary" onclick="navigate(\'signoffs\')">Cancel</button>' +
+      '<div class="flex-gap">' +
+        signoffWorkOrderBtnHtml(form) +
+        '<button class="btn btn-secondary" onclick="navigate(\'signoffs\')">Cancel</button>' +
+      '</div>' +
     '</div>' +
     '<div id="signoff-complete-error"></div>' +
     '<div class="card mb-4"><div class="card-header"><span class="card-title">Work Order</span></div><div class="card-body">' + signoffSummaryHtml(form) + '</div></div>' +
@@ -18273,6 +18419,7 @@ async function renderViewSignoff(el, id) {
         '<div><div class="page-title">' + escHtml(f.form_number) + signoffTripChip(f) + '</div><div class="page-subtitle">Work Order Sign-Off' + (pend ? ' · Awaiting completion' : ' · Completed') + '</div></div>' +
         '<div class="flex-gap">' +
           '<button class="btn btn-secondary" onclick="navigate(\'signoffs\')">&larr; Back</button>' +
+          signoffWorkOrderBtnHtml(f) +
           (!pend ? '<button class="btn btn-secondary" style="white-space:nowrap" onclick="printSignoff(' + f.id + ')">' + icons.print + ' Print</button>' : '') +
           (!pend && (f.photos || []).length ? '<button class="btn btn-secondary" style="white-space:nowrap" onclick="downloadSignoffPhotos(' + f.id + ')">&#11015; Download Photos</button>' : '') +
           (pend && can('edit_signoff') ? '<button class="btn btn-secondary" onclick="navigate(\'edit-signoff\',' + f.id + ')">' + icons.edit + ' Edit Setup</button>' : '') +
