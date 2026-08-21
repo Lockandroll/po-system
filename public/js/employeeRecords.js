@@ -154,6 +154,10 @@
       '.er-grid2{display:grid;grid-template-columns:1fr 1fr;gap:14px}',
       '@media(max-width:640px){.er-grid3,.er-grid2{grid-template-columns:1fr}}',
       '.er-row{cursor:pointer}',
+      '.er-spark{display:flex;align-items:flex-end;gap:3px;height:44px;margin:12px 0 6px}',
+      '.er-sb{flex:1;min-width:4px;border-radius:2px 2px 0 0;background:var(--bg-elevated);position:relative}',
+      '.er-sb.hit{background:var(--warning)}',
+      '.er-sblab{display:flex;justify-content:space-between;font-size:10.5px;color:var(--text-muted-color)}',
       '.er-row:hover td{background:rgba(249,115,22,0.06)}',
       '.er-win{display:flex;gap:12px;padding:13px 0;border-bottom:1px solid var(--border-light)}',
       '.er-win:last-child{border-bottom:none}',
@@ -420,6 +424,7 @@
         (lateCount
           ? 'Marked by a manager on the deposit or the Pulsar board. Documenting them pulls the real dates in, so nothing is written from memory.'
           : 'Nothing marked late. Managers mark a deposit late from the Pulsar reconciliation board.') + '</div>' +
+        sparkHtml(d.late_deposits.by_month, d.late_deposits.months) +
         (lateCount && d.can_act && can('create_employee_note')
           ? '<button class="btn btn-secondary btn-sm" style="margin-top:12px;width:100%;justify-content:center" ' +
             'onclick="erDocumentLate()">Document these</button>' : '') +
@@ -448,6 +453,38 @@
       '<div style="margin-top:10px;padding-top:10px;border-top:1px solid var(--border-light)">' +
       'Every time somebody opens a disciplinary record it is written to the audit log.</div>' +
       '</div></div></div>';
+  }
+
+  // Twelve months of late deposits as a bar per month. Empty months are drawn
+  // as flat stubs rather than skipped, because the gaps are the point: three in
+  // a row reads differently from three spread over a year, and a table of
+  // counts hides that difference completely.
+  function sparkHtml(byMonth, months) {
+    months = months || 12;
+    var have = {};
+    (byMonth || []).forEach(function (b) { have[b.month] = b.count; });
+    var keys = [], now = new Date();
+    for (var i = months - 1; i >= 0; i--) {
+      var dt = new Date(now.getFullYear(), now.getMonth() - i, 1);
+      keys.push(dt.getFullYear() + '-' + (dt.getMonth() + 1 < 10 ? '0' : '') + (dt.getMonth() + 1));
+    }
+    var max = 1;
+    keys.forEach(function (k) { if ((have[k] || 0) > max) max = have[k]; });
+    if (!Object.keys(have).length) return '';
+    var bars = keys.map(function (k) {
+      var n = have[k] || 0;
+      var pct = n ? Math.max(14, Math.round((n / max) * 100)) : 6;
+      return '<div class="er-sb' + (n ? ' hit' : '') + '" style="height:' + pct + '%" title="' + k + ': ' + n + '"></div>';
+    }).join('');
+    var first = keys[0], last = keys[keys.length - 1];
+    return '<div class="er-spark">' + bars + '</div>' +
+      '<div class="er-sblab"><span>' + esc(monthLabel(first)) + '</span><span>' + esc(monthLabel(last)) + '</span></div>';
+  }
+
+  function monthLabel(ym) {
+    var M = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+    var p = String(ym || '').split('-');
+    return (M[parseInt(p[1], 10) - 1] || '') + ' ' + String(p[0] || '').slice(2);
   }
 
   function levelName(n) {

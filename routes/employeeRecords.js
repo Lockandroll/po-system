@@ -196,10 +196,25 @@ async function lateDeposits(userId, months) {
       'ORDER BY deposit_date DESC LIMIT 50',
       [userId, String(months)]
     );
+    // Bucketed by month as well as listed, because "is this getting better or
+    // worse" is a different question from "how many", and it is the one worth
+    // answering before anybody writes anything.
+    var byMonth = [];
+    try {
+      const m = await pool.query(
+        "SELECT TO_CHAR(DATE_TRUNC('month', deposit_date), 'YYYY-MM') AS ym, COUNT(*)::int AS n " +
+        "FROM deposits WHERE user_id = $1 AND is_late = true AND deposit_date > CURRENT_DATE - ($2 || ' months')::interval " +
+        "GROUP BY DATE_TRUNC('month', deposit_date) ORDER BY 1 ASC",
+        [userId, String(months)]
+      );
+      byMonth = m.rows.map(function (x) { return { month: x.ym, count: x.n }; });
+    } catch (e) { byMonth = []; }
+
     return {
       available: true,
       months: months,
       count: r.rows.length,
+      by_month: byMonth,
       deposits: r.rows.map(function (d) {
         return {
           id: d.id, number: d.deposit_number, date: dstr(d.deposit_date),
@@ -208,7 +223,7 @@ async function lateDeposits(userId, months) {
       })
     };
   } catch (e) {
-    return { available: false, months: months, count: 0, deposits: [] };
+    return { available: false, months: months, count: 0, by_month: [], deposits: [] };
   }
 }
 
@@ -434,7 +449,7 @@ router.get('/employee/:id', requireAuth, requirePermission('view_employee_record
     var sup = u.supervisor_id ? await userRow(u.supervisor_id) : null;
     var late = await lateDeposits(target, 12);
     res.json({
-      late_deposits: { count: late.count, months: late.months, available: late.available },
+      late_deposits: { count: late.count, months: late.months, available: late.available, by_month: late.by_month || [] },
       late_deposit_text: lateDepositText(u.name, late),
       user: {
         id: u.id, name: u.name, role: u.role, home_city: u.home_city,

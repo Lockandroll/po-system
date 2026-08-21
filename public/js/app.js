@@ -11274,6 +11274,7 @@ async function renderDeposits(el) {
   // the table below can only show deposits that were MADE, so a technician who
   // collected cash and submitted nothing is invisible there but not here.
   if (canManage) html += pvCardHtml();
+  if (canManage) html += depLateCardHtml();
   html +=
     '<div class="card"><div class="card-body">' +
       '<h3 style="margin-top:0;margin-bottom:16px">' + (canSeeAll ? 'All Deposits' : 'My Deposits') + '</h3>' +
@@ -11283,6 +11284,120 @@ async function renderDeposits(el) {
   if (canSubmit) { renderDepositExpenses(); recalcOverShort(); }
   await loadDepositsTable();
   if (canManage) await pvLoadRecon();
+  if (canManage) await depLoadLateSummary();
+}
+
+/* ------------------------------------------------------- late deposits -----
+   Who is late, ranked, with the previous window beside each number and the
+   whole thing bucketed by month above it.
+
+   A count on its own says nothing. Three this quarter is a problem if last
+   quarter was zero and a relief if it was eight, so the previous window is
+   never optional here. The month bars exist to answer a different question
+   entirely: whether this is people or process. Everybody spiking in the same
+   month is a routine that broke, and no amount of documenting individuals
+   fixes that.
+
+   Manager and up only. One person's lateness is their own business, and a
+   leaderboard of it is not something to hand the crew. */
+function depLateCardHtml() {
+  return '<div class="card" style="margin-bottom:24px"><div class="card-body">' +
+    '<div style="display:flex;justify-content:space-between;align-items:flex-start;gap:12px;flex-wrap:wrap">' +
+      '<div><h3 style="margin:0 0 4px">Late Deposits</h3>' +
+      '<p style="margin:0;font-size:13px;color:var(--text-muted-color)">Deposits a manager marked late, ranked by how often. The bars show when they happened, which is usually what tells you whether it is people or the routine.</p></div>' +
+      '<div style="display:flex;gap:8px;align-items:flex-end;flex-wrap:wrap">' +
+        '<div class="form-group" style="margin:0;min-width:150px"><label>Window</label>' +
+          '<select id="dep-late-months" onchange="depLoadLateSummary()">' +
+            '<option value="3">Last 3 months</option>' +
+            '<option value="6">Last 6 months</option>' +
+            '<option value="12" selected>Last 12 months</option>' +
+          '</select></div>' +
+        '<div class="form-group" style="margin:0;min-width:130px"><label>City</label>' +
+          '<input id="dep-late-city" placeholder="All" style="text-transform:uppercase" onchange="depLoadLateSummary()"></div>' +
+      '</div>' +
+    '</div>' +
+    '<div id="dep-late-body" style="margin-top:14px"><div class="loading">Loading…</div></div>' +
+  '</div></div>';
+}
+
+async function depLoadLateSummary() {
+  var body = document.getElementById('dep-late-body');
+  if (!body) return;
+  var months = (document.getElementById('dep-late-months') || {}).value || '12';
+  var city = String((document.getElementById('dep-late-city') || {}).value || '').trim().toUpperCase();
+  body.innerHTML = '<div class="loading">Loading…</div>';
+  var d;
+  try { d = await api('GET', '/deposits/late-summary?months=' + months + (city ? '&city=' + encodeURIComponent(city) : '')); }
+  catch (e) { body.innerHTML = '<div style="color:var(--text-muted-color);font-size:13px">' + escHtml(e.message || 'Could not load.') + '</div>'; return; }
+
+  if (!d.rows.length) {
+    body.innerHTML = '<div style="text-align:center;padding:28px 16px;color:var(--text-muted-color);font-size:13px">' +
+      'Nothing marked late in this window' + (city ? ' for ' + escHtml(city) : '') + '.<br>' +
+      '<span style="font-size:12px">Mark a deposit late from the Pulsar Verification board above, or from the deposit itself.</span></div>';
+    return;
+  }
+
+  var rows = d.rows.map(function (r) {
+    var delta = r.count - r.prev_count;
+    var trend;
+    if (!r.prev_count && r.count) trend = '<span style="color:var(--text-muted-color)">new</span>';
+    else if (delta > 0) trend = '<span style="color:#ef4444">&#9650; ' + delta + '</span>';
+    else if (delta < 0) trend = '<span style="color:#22c55e">&#9660; ' + Math.abs(delta) + '</span>';
+    else trend = '<span style="color:var(--text-muted-color)">level</span>';
+    var open = (r.user_id && can('view_employee_records'))
+      ? '<button class="btn btn-secondary btn-sm" onclick="depOpenLateFile(' + r.user_id + ')" style="padding:2px 8px;white-space:nowrap">Open file</button>'
+      : '';
+    return '<tr>' +
+      '<td style="font-weight:500;color:var(--text)">' + escHtml(r.name || '') + '</td>' +
+      '<td>' + escHtml(r.city || '—') + '</td>' +
+      '<td style="font-weight:700;color:' + (r.count >= 3 ? '#f59e0b' : 'var(--text)') + '">' + r.count + '</td>' +
+      '<td style="color:var(--text-muted-color)">' + r.prev_count + '</td>' +
+      '<td>' + trend + '</td>' +
+      '<td>' + escHtml(r.last_date || '—') + '</td>' +
+      '<td style="text-align:right">' + open + '</td>' +
+    '</tr>';
+  }).join('');
+
+  body.innerHTML = depLateBars(d.by_month, parseInt(months, 10)) +
+    '<div style="font-size:12px;color:var(--text-muted-color);margin:0 0 12px">' +
+    d.total + ' late deposit' + (d.total === 1 ? '' : 's') + ' across ' + d.people + ' ' +
+    (d.people === 1 ? 'person' : 'people') + ' in the last ' + months + ' months. ' +
+    'The second column is the ' + months + ' months before that, so the number has something to be measured against.</div>' +
+    '<div class="table-wrap"><table><thead><tr>' +
+    '<th>Employee</th><th>City</th><th>Late</th><th>Previous ' + months + ' mo</th><th>Trend</th><th>Most recent</th><th></th>' +
+    '</tr></thead><tbody>' + rows + '</tbody></table></div>';
+}
+
+function depLateBars(byMonth, months) {
+  months = months || 12;
+  var have = {};
+  (byMonth || []).forEach(function (b) { have[b.month] = b.count; });
+  if (!Object.keys(have).length) return '';
+  var keys = [], now = new Date();
+  for (var i = months - 1; i >= 0; i--) {
+    var dt = new Date(now.getFullYear(), now.getMonth() - i, 1);
+    keys.push(dt.getFullYear() + '-' + (dt.getMonth() + 1 < 10 ? '0' : '') + (dt.getMonth() + 1));
+  }
+  var max = 1;
+  keys.forEach(function (k) { if ((have[k] || 0) > max) max = have[k]; });
+  var M = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+  var bars = keys.map(function (k) {
+    var n = have[k] || 0;
+    var pct = n ? Math.max(12, Math.round((n / max) * 100)) : 5;
+    var lab = M[parseInt(k.split('-')[1], 10) - 1] || '';
+    return '<div style="flex:1;display:flex;flex-direction:column;justify-content:flex-end;align-items:center;gap:4px" title="' + k + ': ' + n + '">' +
+      (n ? '<div style="font-size:10px;color:var(--text-muted-color)">' + n + '</div>' : '') +
+      '<div style="width:100%;height:' + pct + '%;min-height:3px;border-radius:3px 3px 0 0;background:' + (n ? '#f59e0b' : 'var(--bg-elevated)') + '"></div>' +
+      '<div style="font-size:10px;color:var(--text-muted-color)">' + lab + '</div></div>';
+  }).join('');
+  return '<div style="display:flex;align-items:flex-end;gap:4px;height:110px;margin-bottom:14px">' + bars + '</div>';
+}
+
+// Straight into their employee file, on the Timeline, where the Late deposits
+// card and the Document these button are.
+function depOpenLateFile(userId) {
+  navigate('employee-files');
+  setTimeout(function () { if (typeof erOpenFile === 'function') erOpenFile(userId); }, 60);
 }
 
 // Resize an image File to a JPEG data URL (max width 1200). Resolves null on failure.

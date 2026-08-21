@@ -623,6 +623,80 @@ async function depositPayload(req, id) {
   return dep;
 }
 
+// Who is late, ranked, with the previous window beside it so the number means
+// something. A count on its own says nothing: three in the last quarter is a
+// problem if the quarter before was zero and an improvement if it was eight.
+//
+// Company-wide for a manager, matching how VIEWING deposits already works (the
+// city scope in utils/depositAccess.js governs writing, not reading). A
+// technician gets nothing here at all - one person's lateness is their own
+// business, and a leaderboard of it is not something to hand the crew.
+router.get('/late-summary', requireAuth, requirePermission('view_deposits'), async function (req, res) {
+  try {
+    if (!SEE_ALL.includes(req.user.role)) return res.status(403).json({ error: 'Access denied' });
+    var months = Math.min(Math.max(parseInt(req.query.months, 10) || 12, 1), 60);
+    var city = (req.query.city || '').trim().toUpperCase();
+
+    var params = [String(months)];
+    var cityClause = '';
+    if (city) { params.push(city); cityClause = ' AND UPPER(TRIM(d.city_code)) = $2 '; }
+
+    const { rows } = await pool.query(
+      'SELECT d.user_id, COALESCE(u.name, d.user_name) AS name, ' +
+      '  MAX(UPPER(TRIM(COALESCE(u.home_city, d.city_code)))) AS city, ' +
+      "  COUNT(*) FILTER (WHERE d.deposit_date > CURRENT_DATE - ($1 || ' months')::interval)::int AS n, " +
+      "  COUNT(*) FILTER (WHERE d.deposit_date > CURRENT_DATE - ($1 || ' months')::interval * 2 " +
+      "                     AND d.deposit_date <= CURRENT_DATE - ($1 || ' months')::interval)::int AS prev_n, " +
+      "  MAX(d.deposit_date) FILTER (WHERE d.deposit_date > CURRENT_DATE - ($1 || ' months')::interval) AS last_date " +
+      'FROM deposits d LEFT JOIN users u ON u.id = d.user_id ' +
+      "WHERE d.is_late = true AND d.deposit_date > CURRENT_DATE - ($1 || ' months')::interval * 2 " +
+      cityClause +
+      'GROUP BY d.user_id, COALESCE(u.name, d.user_name) ' +
+      'HAVING COUNT(*) FILTER (WHERE d.deposit_date > CURRENT_DATE - ($1 || \' months\')::interval) > 0 ' +
+      'ORDER BY n DESC, last_date DESC NULLS LAST',
+      params
+    );
+
+    // Every late deposit in the window, bucketed by month, so the page can draw
+    // the shape of it rather than only the total. Whether it is people or
+    // process is usually visible here and nowhere else: everybody spiking in
+    // the same month is a routine that broke, not a crew that got careless.
+    var byMonth = [];
+    try {
+      const m = await pool.query(
+        "SELECT TO_CHAR(DATE_TRUNC('month', d.deposit_date), 'YYYY-MM') AS ym, COUNT(*)::int AS n " +
+        'FROM deposits d LEFT JOIN users u ON u.id = d.user_id ' +
+        "WHERE d.is_late = true AND d.deposit_date > CURRENT_DATE - ($1 || ' months')::interval " +
+        cityClause +
+        "GROUP BY DATE_TRUNC('month', d.deposit_date) ORDER BY 1 ASC",
+        params
+      );
+      byMonth = m.rows.map(function (x) { return { month: x.ym, count: x.n }; });
+    } catch (e) { byMonth = []; }
+
+    res.json({
+      months: months,
+      city: city || null,
+      total: rows.reduce(function (a, r) { return a + r.n; }, 0),
+      people: rows.length,
+      by_month: byMonth,
+      rows: rows.map(function (r) {
+        return {
+          user_id: r.user_id,
+          name: r.name,
+          city: r.city || null,
+          count: r.n,
+          prev_count: r.prev_n,
+          last_date: r.last_date ? String(r.last_date).slice(0, 10) : null
+        };
+      })
+    });
+  } catch (err) {
+    console.error('[deposits] late summary failed:', err);
+    res.status(500).json({ error: 'Could not build the late-deposit summary.' });
+  }
+});
+
 // GET /:id — single deposit incl. receipts and expenses (owner or see-all roles)
 router.get('/:id', requireAuth, requirePermission('view_deposits'), async function(req, res) {
   try {
