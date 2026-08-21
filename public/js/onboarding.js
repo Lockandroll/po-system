@@ -45,6 +45,9 @@
     '.onb-pill.ready{background:#dcfce7;color:#15803d}' +
     '.onb-pill.busy{background:#fff3e8;color:#c2520a}' +
     '.onb-pill.review{background:#e0e7ff;color:#4338ca}' +
+    // Outlined rather than solid on purpose: it sits one column over from the
+    // solid amber status pill, and two solid ambers on one row stop being scannable.
+    '.onb-pill.never{background:transparent;color:#c2520a;border:1px solid #c2520a;padding:1px 8px}' +
     '.onb-doc{border:1px solid var(--border,#2a2a2a);border-radius:10px;overflow:hidden;background:var(--bg,#0f0f0f);margin-bottom:14px;height:min(70vh,560px)}' +
     '.onb-doc iframe{width:100%;height:100%;border:0;display:block;background:#fff}' +
     '.onb-doc-fallback{display:flex;flex-direction:column;align-items:center;justify-content:center;text-align:center;height:auto;padding:34px 16px;gap:6px}' +
@@ -1010,7 +1013,8 @@
       return '<tr>' +
         '<td><b>' + escHtml(u.name) + '</b><br><span class="onb-note">' + escHtml(u.supervisor_name ? 'Reports to ' + u.supervisor_name : 'No supervisor set') + '</span>' +
           '<br><span class="onb-note">' + escHtml('P1: ' + (u.phase1_approver_name || u.supervisor_name || 'admin') + ' \u00b7 P2: ' + (u.phase2_approver_name || u.supervisor_name || 'admin')) + '</span></td>' +
-        '<td style="min-width:140px"><div class="onb-bar" style="margin:0 0 4px"><div style="width:' + pct + '%"></div></div><span class="onb-note">' + u.steps_done + ' / ' + u.steps_total + '</span></td>' +
+        '<td style="min-width:140px"><div class="onb-bar" style="margin:0 0 4px"><div style="width:' + pct + '%"></div></div><span class="onb-note">' + u.steps_done + ' / ' + u.steps_total + '</span>' +
+          '<div style="margin-top:5px">' + onbSeenHtml(u) + '</div></td>' +
         '<td>' + (u.ready_for_signoff
             ? '<span class="onb-pill ready">READY FOR SIGN-OFF</span>'
             : (u.awaiting_phase2_start
@@ -1091,6 +1095,27 @@
   // stuck: that link is the only way they get a password, and the roster had no
   // way to send another. Users -> Resend invite needs manage_users and refuses
   // anyone who has already logged in, which is why this is its own button.
+  // "Last seen" for the roster. Two genuinely different states share this spot:
+  //
+  //   never logged in  -> the invite never landed. Nothing to nudge; use Resend
+  //                       invite. Called out with a pill so it reads across the table.
+  //   logged in        -> last_seen_at, stamped by middleware/auth on any
+  //                       authenticated request. It says they are IN Nova, not that
+  //                       they are working the track - the progress bar above says that.
+  //
+  // timeAgo() (app.js) returns null past a week, so anything older falls back to a
+  // plain date rather than "37d ago".
+  function onbSeenHtml(u) {
+    if (!u.has_logged_in) return '<span class="onb-pill never">NEVER SIGNED IN</span>';
+    var ago = timeAgo(u.last_seen_at);
+    if (ago === 'now') return '<span class="onb-note" style="color:#16a34a">&#9679; Active now</span>';
+    if (ago) return '<span class="onb-note">Seen ' + escHtml(ago) + '</span>';
+    // Logged in at some point but nothing recent (or an account from before
+    // last_seen_at existed) - fall back to whatever date we do have.
+    var when = u.last_seen_at || u.last_login_at;
+    return '<span class="onb-note">Seen ' + escHtml(when ? formatDate(when) : '\u2014') + '</span>';
+  }
+
   window.onbResendInvite = async function (id) {
     var u = (window._onbProgress || []).filter(function (x) { return x.id === id; })[0] || {};
     var to = u.email || 'the address on file';
