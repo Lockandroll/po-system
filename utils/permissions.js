@@ -189,6 +189,27 @@ ALL_PERMS.push('checkin_job');
 ALL_PERMS.push('manage_ivr_profiles', 'override_checkin');
 EMPLOYEE_PERMS.push('checkin_job');
 
+// Employee records - performance documentation, both halves of it.
+//
+// Every one of these ships DARK: none is in EMPLOYEE_PERMS, none is in any
+// role's DEFAULTS, and db.js does not backfill them onto the saved matrix. On
+// deploy only admin and owner can reach any of it, which is what Tony asked
+// for. Managers get it by ticking the boxes in Roles & Access, at which point
+// the city scoping in routes/employeeRecords.js starts doing the real work.
+//
+// The split is deliberate. Writing a coaching note and issuing a disciplinary
+// notice are not the same act and should not be the same permission: a lead
+// often needs to document a conversation without also being able to start
+// somebody down the ladder. approve_discipline is separate again, because the
+// approver is by definition not the person who wrote it.
+ALL_PERMS.push(
+  'view_employee_records',    // open the records half of Employee Files
+  'create_employee_note',     // recognition, coaching notes, performance notes
+  'create_disciplinary',      // draft and submit a disciplinary notice
+  'approve_discipline',       // approve or send back somebody else's notice
+  'manage_employee_records'   // void, delete, edit visibility company-wide
+);
+
 var DEFAULTS = {
   admin: '*',
   manager: ['view_users', 'manage_cities', 'manage_geico', 'manage_running', 'manage_vehicles', 'manage_vendors', 'view_vendors', 'manage_addresses', 'approve_vr', 'manage_tasks', 'manage_work_orders', 'manage_schedule', 'manage_parts', 'manage_invoice_setup', 'approve_refund', 'assign_reviews', 'view_feedback', 'manage_feedback', 'manage_signatures', 'manage_timeclock', 'manage_pto', 'view_quiz', 'manage_quiz', 'view_team_quiz', 'manage_onboarding', 'manage_inspections', 'ptt_all_channels', 'view_offboarding', 'play_call_recordings', 'manage_assets', 'approve_asset_replacement', 'edit_deposit', 'complete_deposit_for_employee'].concat(EMPLOYEE_PERMS),

@@ -425,8 +425,9 @@ router.get('/reconciliation', requireAuth, requirePermission('view_deposits'), m
       "  STRING_AGG(d.deposit_number, ', ' ORDER BY d.deposit_number) AS deposit_numbers, " +
       // The ids behind those numbers, so a row on the board can open the actual
       // deposit instead of leaving the manager to go hunt for it by number.
+      '  BOOL_OR(d.is_late) AS any_late, ' +
       "  JSON_AGG(JSON_BUILD_OBJECT('id', d.id, 'number', d.deposit_number, 'amount', d.amount, " +
-      "    'deposit_date', d.deposit_date) ORDER BY d.deposit_number) AS deposit_list " +
+      "    'deposit_date', d.deposit_date, 'is_late', COALESCE(d.is_late, false)) ORDER BY d.deposit_number) AS deposit_list " +
       'FROM deposits d LEFT JOIN users u ON u.id = d.user_id ' +
       'WHERE d.period_start = $1 GROUP BY d.user_id, COALESCE(u.name, d.user_name)',
       [periodStart]
@@ -440,7 +441,7 @@ router.get('/reconciliation', requireAuth, requirePermission('view_deposits'), m
         byKey[key] = {
           key: key, user_id: null, user_name: null, tech_raw: null, city_code: null,
           calls: 0, pulsar_cash: 0, entered: null, deposited: 0, expenses: 0,
-          deposit_count: 0, deposit_numbers: null, deposits: []
+          deposit_count: 0, deposit_numbers: null, deposits: [], any_late: false
         };
       }
       return byKey[key];
@@ -479,11 +480,13 @@ router.get('/reconciliation', requireAuth, requirePermission('view_deposits'), m
             id: d.id,
             number: d.number || null,
             amount: d.amount == null ? null : n2(Number(d.amount)),
-            deposit_date: d.deposit_date || null
+            deposit_date: d.deposit_date || null,
+            is_late: !!d.is_late
           });
         }
       });
       s.in_deposits = true;
+      if (r.any_late) s.any_late = true;
     });
 
     var rows = Object.keys(byKey).map(function (k) {

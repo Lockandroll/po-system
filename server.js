@@ -31,6 +31,7 @@ const { startArJobs } = require('./jobs/ar');
 const { startApJobs } = require('./jobs/ap');
 const { startWebhookRetry } = require('./jobs/webhookRetry');
 const { startCheckinSweeper, startCheckinRetention } = require('./jobs/checkins');
+const { startEmployeeRecords } = require('./jobs/employeeRecords');
 // Guarded on purpose. utils/jobHealth.js and routes/jobHealth.js are NEW files, and
 // a new file that does not make it into the commit is how this repo has broken a
 // deploy before. A diagnostics module must never be the thing that stops Nova from
@@ -337,6 +338,10 @@ app.use('/api/signatures', require('./routes/signatures'));
 app.use('/api/sign', require('./routes/signatures').publicRouter);
 app.use('/api/pto', require('./routes/pto'));
 app.use('/api/onboarding', require('./routes/onboarding'));
+// Employee records - the structured half of Employee Files. Every route inside
+// is behind a permission no role has yet, so on deploy only admin and owner
+// can reach it (see utils/permissions.js).
+app.use('/api/employee-records', require('./routes/employeeRecords'));
 const offboardingRoutes = require('./routes/offboarding');
 app.use('/api/offboarding', offboardingRoutes);
 app.use('/api/exit-interviews', offboardingRoutes.exitInterviewRouter);
@@ -516,7 +521,8 @@ function startScheduledJobs() {
   _startJob('startWebhookRetry', startWebhookRetry);
   _startJob('startCheckinSweeper', startCheckinSweeper);
   _startJob('startCheckinRetention', startCheckinRetention);
-  console.log('[boot] scheduled jobs started (' + 29 + ')');
+  _startJob('startEmployeeRecords', startEmployeeRecords);
+  console.log('[boot] scheduled jobs started (' + 30 + ')');
 }
 
 initDB()

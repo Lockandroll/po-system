@@ -1352,6 +1352,24 @@ async function initDB() {
       'ALTER TABLE deposits ADD COLUMN IF NOT EXISTS submitted_by_id INTEGER REFERENCES users(id) ON DELETE SET NULL;' +
       'ALTER TABLE deposits ADD COLUMN IF NOT EXISTS submitted_by_name VARCHAR(255);'
     );
+    // A deposit can be marked LATE by a manager. This is a judgment call, not a
+    // computed one: Nova does not know every excuse, and a system that decided
+    // lateness on its own would be wrong often enough to poison the record it
+    // feeds. So a person marks it, their name is on it, and it is reversible.
+    //
+    // The point of storing it is the count. Late deposits are the single most
+    // common thing a technician gets documented for, and reconstructing "how
+    // many times" from memory at the moment somebody is writing a warning is
+    // exactly how a warning ends up wrong. See routes/employeeRecords.js, which
+    // reads these columns to pre-fill a record with the actual dates.
+    await client.query(
+      'ALTER TABLE deposits ADD COLUMN IF NOT EXISTS is_late BOOLEAN NOT NULL DEFAULT false;' +
+      'ALTER TABLE deposits ADD COLUMN IF NOT EXISTS late_marked_at TIMESTAMPTZ;' +
+      'ALTER TABLE deposits ADD COLUMN IF NOT EXISTS late_marked_by INTEGER;' +
+      'ALTER TABLE deposits ADD COLUMN IF NOT EXISTS late_marked_by_name VARCHAR(255);' +
+      'ALTER TABLE deposits ADD COLUMN IF NOT EXISTS late_reason TEXT;'
+    );
+    await client.query('CREATE INDEX IF NOT EXISTS deposits_late_idx ON deposits (user_id, deposit_date DESC) WHERE is_late = true;');
     // ---- Deposit edit permission backfill --------------------------------
     // edit_deposit is new. A saved role_permissions matrix was rebuilt from the
     // checkboxes that existed when it was last saved, so it cannot contain the
@@ -5027,6 +5045,141 @@ async function initDB() {
         'Scheduled jobs still run; the Job Health panel will fall back to what this ' +
         'process knows since boot.');
     }
+
+    // ---- Employee records (performance documentation) ---------------------
+    //
+    // One table, four kinds of record: recognition, coaching, performance and
+    // disciplinary. They live together on purpose - the point of a personnel
+    // file is that praise and problems sit on ONE timeline, in order. Splitting
+    // them would quietly recreate the thing this module exists to avoid, a
+    // system where the only thing anyone ever documents is bad news.
+    //
+    // Only 'recognition' is ever allowed onto a public surface (the Recent Wins
+    // card). Nothing else may be inferred from one either - see the comment on
+    // show_in_wins below.
+    await client.query(
+      'CREATE TABLE IF NOT EXISTS employee_records (' +
+      '  id SERIAL PRIMARY KEY,' +
+      '  user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,' +
+      '  type VARCHAR(24) NOT NULL,' +
+      '  level SMALLINT,' +
+      '  category VARCHAR(60),' +
+      '  occurred_on DATE,' +
+      '  body TEXT,' +
+      '  corrective_action TEXT,' +
+      '  consequence TEXT,' +
+      '  sop_id INTEGER,' +
+      '  sop_label VARCHAR(200),' +
+      '  source VARCHAR(40),' +
+      '  external_ref VARCHAR(80),' +
+      '  status VARCHAR(24) NOT NULL DEFAULT ' + "'active'" + ',' +
+      '  visible_to_employee BOOLEAN NOT NULL DEFAULT false,' +
+      '  show_in_wins BOOLEAN NOT NULL DEFAULT false,' +
+      '  notified_at TIMESTAMPTZ,' +
+      '  acknowledged_at TIMESTAMPTZ,' +
+      '  employee_response TEXT,' +
+      '  employee_response_at TIMESTAMPTZ,' +
+      '  approver_id INTEGER,' +
+      '  approver_name VARCHAR(120),' +
+      '  approver_note TEXT,' +
+      '  submitted_at TIMESTAMPTZ,' +
+      '  approved_at TIMESTAMPTZ,' +
+      '  returned_at TIMESTAMPTZ,' +
+      '  sent_at TIMESTAMPTZ,' +
+      '  opened_at TIMESTAMPTZ,' +
+      '  reminded_at TIMESTAMPTZ,' +
+      '  reminder_count INTEGER NOT NULL DEFAULT 0,' +
+      '  expires_at TIMESTAMPTZ,' +
+      '  signed_at TIMESTAMPTZ,' +
+      '  signature_data TEXT,' +
+      '  signature_name VARCHAR(160),' +
+      '  signature_ip VARCHAR(64),' +
+      '  refused_at TIMESTAMPTZ,' +
+      '  refusal_kind VARCHAR(40),' +
+      '  refusal_note TEXT,' +
+      '  refusal_by INTEGER,' +
+      '  refusal_by_name VARCHAR(120),' +
+      '  followup_on DATE,' +
+      '  followup_outcome VARCHAR(24),' +
+      '  followup_note TEXT,' +
+      '  followup_done_at TIMESTAMPTZ,' +
+      '  followup_nagged_at TIMESTAMPTZ,' +
+      '  escalation_days INTEGER NOT NULL DEFAULT 90,' +
+      '  counts_until DATE,' +
+      '  ai_check JSONB,' +
+      '  city_code VARCHAR(20),' +
+      '  created_by INTEGER,' +
+      '  created_by_name VARCHAR(120),' +
+      '  created_at TIMESTAMPTZ DEFAULT NOW(),' +
+      '  updated_at TIMESTAMPTZ DEFAULT NOW(),' +
+      '  voided_at TIMESTAMPTZ,' +
+      '  void_reason TEXT' +
+      ');'
+    );
+    // Every column gets an idempotent ALTER as well as being in the CREATE. The
+    // CREATE only runs on a database that has never seen this table, so a column
+    // added later would silently never appear on the live one. See the tasks
+    // table for what that failure looks like in production.
+    var _erCols = [
+      'user_id INTEGER', 'type VARCHAR(24)', 'level SMALLINT', 'category VARCHAR(60)',
+      'occurred_on DATE', 'body TEXT', 'corrective_action TEXT', 'consequence TEXT',
+      'sop_id INTEGER', 'sop_label VARCHAR(200)', 'source VARCHAR(40)', 'external_ref VARCHAR(80)',
+      "status VARCHAR(24) NOT NULL DEFAULT 'active'",
+      'visible_to_employee BOOLEAN NOT NULL DEFAULT false',
+      'show_in_wins BOOLEAN NOT NULL DEFAULT false',
+      'notified_at TIMESTAMPTZ', 'acknowledged_at TIMESTAMPTZ',
+      'employee_response TEXT', 'employee_response_at TIMESTAMPTZ',
+      'approver_id INTEGER', 'approver_name VARCHAR(120)', 'approver_note TEXT',
+      'submitted_at TIMESTAMPTZ', 'approved_at TIMESTAMPTZ', 'returned_at TIMESTAMPTZ',
+      'sent_at TIMESTAMPTZ', 'opened_at TIMESTAMPTZ', 'reminded_at TIMESTAMPTZ',
+      'reminder_count INTEGER NOT NULL DEFAULT 0', 'expires_at TIMESTAMPTZ',
+      'signed_at TIMESTAMPTZ', 'signature_data TEXT', 'signature_name VARCHAR(160)',
+      'signature_ip VARCHAR(64)', 'refused_at TIMESTAMPTZ', 'refusal_kind VARCHAR(40)',
+      'refusal_note TEXT', 'refusal_by INTEGER', 'refusal_by_name VARCHAR(120)',
+      'followup_on DATE', 'followup_outcome VARCHAR(24)', 'followup_note TEXT',
+      'followup_done_at TIMESTAMPTZ', 'followup_nagged_at TIMESTAMPTZ',
+      'escalation_days INTEGER NOT NULL DEFAULT 90', 'counts_until DATE',
+      'ai_check JSONB', 'city_code VARCHAR(20)',
+      'created_by INTEGER', 'created_by_name VARCHAR(120)',
+      'created_at TIMESTAMPTZ DEFAULT NOW()', 'updated_at TIMESTAMPTZ DEFAULT NOW()',
+      'voided_at TIMESTAMPTZ', 'void_reason TEXT'
+    ];
+    for (var _eri = 0; _eri < _erCols.length; _eri++) {
+      await client.query('ALTER TABLE employee_records ADD COLUMN IF NOT EXISTS ' + _erCols[_eri] + ';');
+    }
+    await client.query('CREATE INDEX IF NOT EXISTS employee_records_user_idx ON employee_records (user_id, created_at DESC);');
+    await client.query('CREATE INDEX IF NOT EXISTS employee_records_status_idx ON employee_records (status);');
+    await client.query('CREATE INDEX IF NOT EXISTS employee_records_followup_idx ON employee_records (followup_on) WHERE followup_outcome IS NULL;');
+    // The Recent Wins card reads exactly this index and nothing else. It is
+    // deliberately narrow: type = recognition AND show_in_wins. No other record
+    // type has a code path onto a shared screen, and no public count may be
+    // derived from this table, because a number that goes up when someone is
+    // written up leaks the write-up.
+    await client.query('CREATE INDEX IF NOT EXISTS employee_records_wins_idx ON employee_records (created_at DESC) WHERE show_in_wins = true;');
+
+    // Append-only history for a record. Mirrors customer_feedback_activity: the
+    // record row holds the current state, this holds how it got there. Nothing
+    // in here is ever updated or deleted while the record lives.
+    await client.query(
+      'CREATE TABLE IF NOT EXISTS employee_record_events (' +
+      '  id SERIAL PRIMARY KEY,' +
+      '  record_id INTEGER NOT NULL REFERENCES employee_records(id) ON DELETE CASCADE,' +
+      '  action VARCHAR(40) NOT NULL,' +
+      '  note TEXT,' +
+      '  details JSONB,' +
+      '  user_id INTEGER,' +
+      '  user_name VARCHAR(120),' +
+      '  created_at TIMESTAMPTZ DEFAULT NOW()' +
+      ');'
+    );
+    var _ereCols = ['record_id INTEGER', 'action VARCHAR(40)', 'note TEXT', 'details JSONB',
+      'user_id INTEGER', 'user_name VARCHAR(120)', 'created_at TIMESTAMPTZ DEFAULT NOW()'];
+    for (var _erei = 0; _erei < _ereCols.length; _erei++) {
+      await client.query('ALTER TABLE employee_record_events ADD COLUMN IF NOT EXISTS ' + _ereCols[_erei] + ';');
+    }
+    await client.query('CREATE INDEX IF NOT EXISTS employee_record_events_rec_idx ON employee_record_events (record_id, id DESC);');
+
+    console.log('Employee records: employee_records + employee_record_events ready.');
 
     console.log('Database initialized');
   } finally {

@@ -3224,6 +3224,12 @@ async function renderRoles(el) {
     { group:'Onboarding', perms:[ {k:'manage_onboarding',l:'Manage onboarding paths, new-hire progress &amp; employee files'} ] },
     { group:'Offboarding', gate:'view_offboarding', perms:[ {k:'view_offboarding',l:'View / access module (people in your team)'}, {k:'manage_offboarding',l:'Manage the offboarding lifecycle, steps &amp; templates'}, {k:'send_exit_form',l:'Send exit interview forms'}, {k:'view_exit_interviews',l:'View exit interview responses &amp; insights'} ] },
     { group:'Equipment / Assets', gate:'view_assets', perms:[ {k:'view_assets',l:'View / access module (see your own equipment)'}, {k:'request_asset_replacement',l:'Request a replacement'}, {k:'manage_assets',l:'Manage inventory, assign equipment &amp; edit the equipment list (own cities only)'}, {k:'approve_asset_replacement',l:'Approve replacements (opens a purchase order)'} ] },
+    { group:'Employee Records', gate:'view_employee_records', perms:[
+      {k:'view_employee_records',l:'Open the records half of Employee Files (their city and their team)'},
+      {k:'create_employee_note',l:'Add recognition, coaching notes &amp; performance notes'},
+      {k:'create_disciplinary',l:'Draft &amp; submit disciplinary notices, record refusals and follow-ups'},
+      {k:'approve_discipline',l:'Approve or send back somebody else&#39;s disciplinary notice'},
+      {k:'manage_employee_records',l:'Void records &amp; change visibility company-wide'} ] },
     { group:'Users', perms:[ {k:'view_users',l:'View users'}, {k:'manage_users',l:'Add / edit / remove users'} ] },
     { group:'Administration', perms:[ {k:'manage_settings',l:'Company info, AI context, notifications, roles'}, {k:'view_audit',l:'View audit log'}, {k:'view_ai_admin',l:'View AI history / usage'} ] }
   ];
@@ -10818,6 +10824,8 @@ async function renderHomeScreen(el) {
         '<span style="font-size:12px;color:var(--primary);cursor:pointer" onclick="navigate(\'tasks\')">View all</span></div>' + myTasksHtml +
       '</div></div>') : '') +
 
+      '<div id="home-wins"></div>' +
+
       '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:12px;margin-bottom:24px">' +
         ((isPrivileged && can('view_vr')) ? '<div class="card" style="cursor:pointer" onclick="navigate(\'vr-dashboard\')"><div class="card-body" style="text-align:center;padding:16px">' +
           '<div style="font-size:28px;font-weight:700;color:' + (s.pending_vr > 0 ? '#f59e0b' : '#22c55e') + '">' + s.pending_vr + '</div>' +
@@ -11842,6 +11850,35 @@ function depShowImage(src) {
   document.body.appendChild(ov);
 }
 
+/* Mark the deposit on screen late, or take the mark off.
+   Deliberately a person pressing a button rather than something Nova works out:
+   it has no view of the excuse, and a system that guessed wrong would poison
+   the very count this feeds. The reason is optional but it is what a write-up
+   ends up quoting, so it is asked for. */
+async function depToggleLate(late) {
+  if (!depViewId) return;
+  var reason = null;
+  if (late) {
+    reason = prompt('Why was this deposit late? (optional, but it is what the write-up will quote)');
+    if (reason === null) return;
+  }
+  try {
+    var out = await api('POST', '/deposits/' + depViewId + '/late', { late: !!late, reason: reason || null });
+    if (depViewData) {
+      depViewData.is_late = !!late;
+      depViewData.late_reason = late ? (reason || null) : null;
+      depViewData.late_marked_by_name = late ? (state.user && state.user.name) : null;
+      depViewData.late_marked_at = late ? new Date().toISOString() : null;
+    }
+    if (late && out && typeof out.late_count_12m === 'number') {
+      showToast('Marked late. That is ' + out.late_count_12m + ' in the last 12 months.', 'success');
+    } else {
+      showToast(late ? 'Marked late.' : 'Late mark removed.', late ? 'success' : 'info');
+    }
+    renderViewDeposit(depViewEl, depViewId, depViewData);
+  } catch (e) { showToast(e.message || 'Could not mark it.', 'error'); }
+}
+
 async function renderViewDeposit(el, id, preloaded) {
   var canManage = ['admin','manager'].includes(state.user.role);
   var dep;
@@ -11984,9 +12021,24 @@ async function renderViewDeposit(el, id, preloaded) {
         // can_edit comes from the server and already accounts for the city scope,
         // so a manager never sees an Edit button that would 403 on save.
         (dep.can_edit ? '<button class="btn btn-primary" onclick="depEnterEdit()">Edit</button>' : '') +
+        // Same gate as Edit: marking a deposit late is a judgment written onto
+        // another location's books, so it is held to the city scope too.
+        (dep.can_edit
+          ? (dep.is_late
+            ? '<button class="btn btn-secondary" onclick="depToggleLate(false)" style="color:#f87171;border-color:#4d1515" title="Marked late. Click to take the mark off.">Late &#10003;</button>'
+            : '<button class="btn btn-secondary" onclick="depToggleLate(true)" title="Mark this deposit late. It is counted on their employee file and can be undone.">Mark late</button>')
+          : '') +
         (can('delete_deposit') ? '<button class="btn btn-secondary" onclick="deleteDeposit(' + dep.id + ')" style="color:#ef4444">' + icons.trash + ' Delete</button>' : '') +
       '</div>' +
     '</div>' +
+    (dep.is_late
+      ? '<div class="alert alert-warn" style="max-width:760px;margin-bottom:16px;font-size:13px">' +
+        '<b>Marked late</b>' +
+        (dep.late_marked_by_name ? ' by ' + escHtml(dep.late_marked_by_name) : '') +
+        (dep.late_marked_at ? ' on ' + formatDate(dep.late_marked_at) : '') + '.' +
+        (dep.late_reason ? '<br>' + escHtml(dep.late_reason) : '') +
+        '<br><span style="font-size:12px">Counted on their employee file. It can be taken off again.</span></div>'
+      : '') +
     '<div class="card" style="max-width:760px"><div class="card-body">' +
       '<div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:20px">' +
         '<div><div style="color:var(--text-muted-color);font-size:13px">Deposit Amount</div><div style="font-size:20px;font-weight:700;color:#f97316">$' + depAmt.toFixed(2) + '</div></div>' +
@@ -28100,8 +28152,79 @@ function pvActionsCell(r, i) {
       'title="Overwrite the technician&#39;s typed &ldquo;Pulsar shows owed&rdquo; with the real Pulsar figure. The deposited amount is not changed." ' +
       'style="padding:2px 8px;white-space:nowrap;color:#f59e0b">Correct Deposit Amount</button>');
   }
+  // Late is a judgment, so it is a person pressing a button, not something the
+  // board works out. It only appears where there IS a deposit to mark - a row
+  // with no deposit at all is a different problem, and "Send to Task For
+  // Manager" above is the answer to that one.
+  if (can('edit_deposit') && r.deposits && r.deposits.length) {
+    if (r.any_late) {
+      out.push('<button class="btn btn-secondary btn-sm" onclick="pvToggleLate(' + i + ',false)" ' +
+        'title="Marked late. Click to take the mark off." ' +
+        'style="padding:2px 8px;white-space:nowrap;color:#f87171;border-color:#4d1515">Late &#10003;</button>');
+    } else {
+      out.push('<button class="btn btn-secondary btn-sm" onclick="pvToggleLate(' + i + ',true)" ' +
+        'title="Mark this deposit late. It is counted on their employee file and can be undone." ' +
+        'style="padding:2px 8px;white-space:nowrap">Mark late</button>');
+    }
+  }
   if (!out.length) return '<span style="color:var(--text-muted-color)">—</span>';
   return '<div style="display:flex;gap:6px;flex-wrap:wrap">' + out.join('') + '</div>';
+}
+
+/* Mark (or unmark) this row's deposits as late.
+   A pay week can hold more than one deposit for the same person. Rather than
+   guess which one was late, marking asks - unless there is only one, in which
+   case asking would be theatre. Clearing takes the mark off all of them. */
+async function pvToggleLate(i, late) {
+  var d = _pvState.recon;
+  if (!d || !d.rows[i]) return;
+  var r = d.rows[i];
+  var list = (r.deposits || []).filter(function (x) { return x && x.id != null; });
+  if (!list.length) return;
+
+  var targets = list;
+  var reason = null;
+
+  if (late) {
+    if (list.length > 1) {
+      var pick = prompt('Which deposit was late?\n\n' +
+        list.map(function (x, n) { return (n + 1) + '. ' + (x.number || ('#' + x.id)) +
+          (x.deposit_date ? '  ' + String(x.deposit_date).slice(0, 10) : '') +
+          (x.amount != null ? '  $' + Number(x.amount).toFixed(2) : ''); }).join('\n') +
+        '\n\nEnter a number, or "all".');
+      if (pick === null) return;
+      pick = String(pick).trim().toLowerCase();
+      if (pick !== 'all') {
+        var n = parseInt(pick, 10);
+        if (!n || n < 1 || n > list.length) { showToast('That is not one of the deposits listed.', 'error'); return; }
+        targets = [list[n - 1]];
+      }
+    }
+    reason = prompt('Why was it late? (optional, but it is what the write-up will quote)');
+    if (reason === null) return;
+  } else {
+    targets = list.filter(function (x) { return x.is_late; });
+    if (!targets.length) targets = list;
+  }
+
+  var failed = 0, count = null;
+  for (var k = 0; k < targets.length; k++) {
+    try {
+      var out = await api('POST', '/deposits/' + targets[k].id + '/late', { late: !!late, reason: reason || null });
+      if (out && typeof out.late_count_12m === 'number') count = out.late_count_12m;
+      targets[k].is_late = !!late;
+    } catch (e) { failed++; showToast(e.message || 'Could not mark it.', 'error'); }
+  }
+  if (failed === targets.length) return;
+
+  r.any_late = (r.deposits || []).some(function (x) { return x.is_late; });
+  if (late) {
+    showToast((r.user_name || 'They') + ' now has ' + (count == null ? 'a' : count) +
+      ' late deposit' + (count === 1 ? '' : 's') + ' on file in the last 12 months.', 'success');
+  } else {
+    showToast('Late mark removed.', 'info');
+  }
+  if (typeof pvRenderRecon === 'function') pvRenderRecon();
 }
 
 // Opens the REAL new-task form in a modal, prefilled from the row, so the

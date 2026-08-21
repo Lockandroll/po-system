@@ -10,6 +10,7 @@ var SHELL_ASSETS = [
   '/js/vault.js',
   '/js/pto.js',
   '/js/onboarding.js',
+  '/js/employeeRecords.js',
   '/js/ptt.js',
   '/js/nova-voice.js',
   '/js/native.js',

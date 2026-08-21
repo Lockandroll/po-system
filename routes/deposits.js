@@ -1090,4 +1090,101 @@ router.delete('/:id', requireAuth, requirePermission('delete_deposit'), async fu
   }
 });
 
+/* --------------------------------------------------------------- late ------
+   Marking a deposit late.
+
+   This is a judgment call and it stays one. Nova is not deciding lateness on
+   its own: it has no view of the excuse, the truck that broke down or the bank
+   that shut early, and a system that guessed would be wrong often enough to
+   poison the very record this exists to feed. A manager marks it, their name
+   goes on it, and it can be taken back off.
+
+   Gated exactly like editing a deposit - role plus the city scope in
+   utils/depositAccess.js - because it is the same kind of act: writing a
+   judgment onto another location's books. One copy of that rule, one place to
+   change it.
+
+   The count is the point. "How many times has he been late?" is the question
+   somebody is trying to answer at the moment they are writing a warning, and
+   answering it from memory is how a warning ends up wrong. */
+router.post('/:id/late', requireAuth, requirePermission('edit_deposit'), async function (req, res) {
+  try {
+    const { rows } = await pool.query('SELECT id, deposit_number, city_code, user_id, user_name, deposit_date, is_late FROM deposits WHERE id = $1', [req.params.id]);
+    if (!rows.length) return res.status(404).json({ error: 'Deposit not found' });
+    const dep = rows[0];
+
+    if (!MANAGE.includes(req.user.role)) return res.status(403).json({ error: 'Access denied' });
+    const scope = await editCityScope(req);
+    if (!scopeAllows(scope, dep.city_code)) {
+      return res.status(403).json({ error: 'You can only mark deposits late for the cities you are assigned to.' });
+    }
+
+    const late = req.body && req.body.late === false ? false : true;
+    const reason = (req.body && req.body.reason != null) ? String(req.body.reason).trim().slice(0, 2000) : null;
+
+    if (late) {
+      await pool.query(
+        'UPDATE deposits SET is_late = true, late_marked_at = NOW(), late_marked_by = $2, late_marked_by_name = $3, late_reason = $4, updated_at = NOW() WHERE id = $1',
+        [dep.id, req.user.id, req.user.name, reason]
+      );
+    } else {
+      // Clearing wipes the whole mark rather than leaving a half-record behind.
+      // The audit row below is what remembers that it was ever set.
+      await pool.query(
+        'UPDATE deposits SET is_late = false, late_marked_at = NULL, late_marked_by = NULL, late_marked_by_name = NULL, late_reason = NULL, updated_at = NOW() WHERE id = $1',
+        [dep.id]
+      );
+    }
+
+    await logAudit({
+      entity_type: 'deposit',
+      entity_id: dep.id,
+      entity_number: dep.deposit_number,
+      action: late ? 'marked_late' : 'late_cleared',
+      user_id: req.user.id,
+      user_name: req.user.name,
+      details: { employee: dep.user_name, deposit_date: dep.deposit_date, reason: reason || undefined }
+    });
+
+    // How many times this person has been marked late in the last 12 months,
+    // handed straight back so the button can say so without a second round trip.
+    var count = 0;
+    try {
+      const c = await pool.query(
+        "SELECT COUNT(*)::int AS n FROM deposits WHERE user_id = $1 AND is_late = true AND deposit_date > CURRENT_DATE - INTERVAL '12 months'",
+        [dep.user_id]
+      );
+      count = c.rows.length ? c.rows[0].n : 0;
+    } catch (e) {}
+
+    res.json({ success: true, late: late, late_count_12m: count });
+  } catch (err) {
+    console.error('[deposits] late mark failed:', err);
+    res.status(500).json({ error: 'Could not mark the deposit.' });
+  }
+});
+
+// Every late deposit for one person, newest first. Read by the Employee Files
+// record module to pre-fill documentation with the real dates rather than a
+// remembered number.
+router.get('/late/:userId', requireAuth, requirePermission('view_deposits'), async function (req, res) {
+  try {
+    var uid = parseInt(req.params.userId, 10) || 0;
+    if (!SEE_ALL.includes(req.user.role) && uid !== req.user.id) {
+      return res.status(403).json({ error: 'Access denied' });
+    }
+    var months = Math.min(Math.max(parseInt(req.query.months, 10) || 12, 1), 60);
+    const { rows } = await pool.query(
+      'SELECT id, deposit_number, deposit_date, amount, city_code, late_marked_at, late_marked_by_name, late_reason ' +
+      "FROM deposits WHERE user_id = $1 AND is_late = true AND deposit_date > CURRENT_DATE - ($2 || ' months')::interval " +
+      'ORDER BY deposit_date DESC',
+      [uid, String(months)]
+    );
+    res.json({ user_id: uid, months: months, count: rows.length, deposits: rows });
+  } catch (err) {
+    console.error('[deposits] late list failed:', err);
+    res.status(500).json({ error: 'Could not load late deposits.' });
+  }
+});
+
 module.exports = router;
