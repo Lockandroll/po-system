@@ -65,6 +65,12 @@ var SCHEMA_PROMPT =
   '  "checkin_reference": "the PIN, vendor ID, technician ID or provider number the check-in line asks for FIRST, when it is distinct from the job number. Often written PIN#, Vendor ID, or Provider #. Digits only, no label. Or unknown",\n' +
   '  "checkin_tracking": "the tracking, service, or job number the check-in line asks for SECOND, when the document names one specifically for the IVR. Often written TRACKING#, Tracking Number, or Service ID. This is frequently NOT the same as the work order number printed elsewhere on the form. Digits only, no label. Or unknown",\n' +
   '  "checkin_instructions": "the check-in and check-out instructions copied VERBATIM from the document, including which keys to press and in what order. Empty string if none",\n' +
+  '  "checkin_required": "yes | no | unknown - does this document require the technician to check in on arrival? Answer no ONLY when the document actually says so",\n' +
+  '  "checkout_required": "yes | no | unknown - does it separately require checking OUT on departure? in/out means yes to both; call on arrival alone means no here",\n' +
+  '  "checkin_method": "phone | app | portal | phone_or_app | unknown - how the check-in is performed",\n' +
+  '  "checkin_pay_gated": "true if the document ties the check-in to being paid, otherwise false",\n' +
+  '  "checkin_evidence": "the ONE sentence from the document that proves your checkin_required answer, copied VERBATIM. Empty string only if the document says nothing either way",\n' +
+  '  "checkin_ask_order": "the values the check-in line asks for, in the order the document prints them, as a short array of labels such as [\\"PIN\\",\\"TRACKING\\"]. Empty array if the document does not say",\n' +
   '  "contact_name": "site or requester contact, or unknown",\n' +
   '  "contact_phone": "contact phone, or unknown",\n' +
   '  "needed_by": "YYYY-MM-DD if a clear due date is present, otherwise unknown",\n' +
@@ -79,6 +85,12 @@ var SCHEMA_PROMPT =
   'an invoice total and no explicit not-to-exceed limit, return unknown for nte_amount. ' +
   'Check-in fields: many national accounts require the technician to phone a compliance line on arrival and again on departure, and print that number on the work order. Only fill checkin_phone when the document actually ties a number to checking in, calling in, or arrival - a plain site contact number is NOT a check-in line, and guessing one is worse than leaving it unknown. ' +
   'A real example of the whole pattern in one sentence: "Tech must IVR in/out for each site visit via the app or by calling 555-500-0000 (PIN# 11111, TRACKING# 222222222)." That yields checkin_phone 555-500-0000, checkin_reference 11111, checkin_tracking 222222222, and the sentence itself as checkin_instructions. Note the PIN and the tracking number are DIFFERENT values and the tracking number is not necessarily the work order number elsewhere on the form. ' +
+  'Whether check-in is REQUIRED is a separate question from whether a number is printed, and it is the one that matters most. ' +
+  'A document that says no check-in required, IVR not required, check-in waived, or no call-in for this site means checkin_required is "no" - read the negation, do not match on the words check in alone. ' +
+  'Checking IN and checking OUT are two questions: "IVR in/out for each site visit" is yes to both, while "call our dispatcher on arrival" is yes to checkin_required and "unknown" to checkout_required unless departure is mentioned. ' +
+  'A check-in performed through a vendor app or web portal is still REQUIRED - set checkin_required to yes and checkin_method to app or portal. Use phone_or_app when the document offers both, as ServiceChannel work orders usually do. ' +
+  'Use "unknown" freely. Unknown gets looked at by a person; "no" does not, so a wrong "no" is the expensive mistake and a wrong "unknown" costs nothing. ' +
+  'checkin_evidence must be COPIED from the document, never summarised or reworded - it is what a manager reads when they disagree with your answer. ' +
   'Leave the VEHICLE JOBS ONLY fields unknown on a site job, and the SITE JOBS ONLY fields ' +
   'unknown on a vehicle job - never put a railyard in store_name. ' +
   'Set is_work_order to false if this email is not actually a work order (e.g. a reply, ' +
@@ -145,4 +157,114 @@ async function parseWorkOrderEmail(bodyText, attachments, knownAccounts) {
   return JSON.parse(jsonStr);
 }
 
-module.exports = { looksLikeWorkOrder: looksLikeWorkOrder, parseWorkOrderEmail: parseWorkOrderEmail };
+// ---------------------------------------------------------------------------
+// Is a check-in required?
+//
+// The parser answers it; this turns that answer into the six columns and, more
+// importantly, refuses to let a confident wrong answer be invisible.
+//
+// The expensive failure is a false "no". A job that needed an IVR and did not
+// get one is not a scorecard ding, it is an unpaid trip ("IVR, SIGN OFF &
+// PHOTOS ARE REQUIRED FOR PAYMENT"). Unknown routes to a person; no does not.
+// So a free keyword sweep runs alongside the model, and when the two disagree
+// the row is flagged rather than quietly believed.
+//
+// No backticks in this file.
+
+var CHECKIN_WORDS = /check[\s-]?in|check[\s-]?out|call[\s-]?in|\bivr\b|arrival call|vendor check|check[\s-]?in\/out/i;
+
+// The same words in a sentence that CANCELS them. Matched near the keyword, not
+// anywhere in the document, or one "no check-in required" line on page 4 of a
+// terms-and-conditions block would clear a real requirement on page 1.
+var CHECKIN_NEGATIONS = /(no|not|never|without)\s+(\w+\s+){0,3}(check[\s-]?in|call[\s-]?in|ivr)|check[\s-]?in\s+(is\s+)?(not\s+required|waived|n\/a)|ivr\s+(is\s+)?(not\s+required|waived|n\/a)/i;
+
+function keywordHit(text) { return CHECKIN_WORDS.test(String(text == null ? '' : text)); }
+function negationHit(text) { return CHECKIN_NEGATIONS.test(String(text == null ? '' : text)); }
+
+function triState(v) {
+  var s = String(v == null ? '' : v).trim().toLowerCase();
+  if (s === 'yes' || s === 'true' || s === 'y') return 'yes';
+  if (s === 'no' || s === 'false' || s === 'n') return 'no';
+  return 'unknown';
+}
+
+var METHODS = ['phone', 'app', 'portal', 'phone_or_app'];
+function methodOf(v) {
+  var s = String(v == null ? '' : v).trim().toLowerCase().replace(/[\s-]+/g, '_');
+  if (s === 'phone_or_app' || s === 'app_or_phone' || s === 'either') return 'phone_or_app';
+  return METHODS.indexOf(s) === -1 ? 'unknown' : s;
+}
+
+function askOrder(v) {
+  var list = Array.isArray(v) ? v : (typeof v === 'string' ? String(v).split(/[,;|]/) : []);
+  var out = [];
+  list.forEach(function (x) {
+    var t = String(x == null ? '' : x).trim().replace(/[^A-Za-z0-9 #/_-]/g, '').slice(0, 24);
+    if (t && out.length < 6) out.push(t);
+  });
+  return out.length ? out.join(', ') : null;
+}
+
+// rawText is the work order as it arrived (email body, and whatever text the
+// caller has). It is only ever used for the keyword sweep, never as an answer.
+function checkinRequirement(parsed, rawText) {
+  parsed = parsed || {};
+  var required = triState(parsed.checkin_required);
+  var checkout = triState(parsed.checkout_required);
+  var method = methodOf(parsed.checkin_method);
+  var evidence = String(parsed.checkin_evidence == null ? '' : parsed.checkin_evidence).trim().slice(0, 1000);
+  var hay = String(rawText == null ? '' : rawText) + ' ' +
+    String(parsed.checkin_instructions == null ? '' : parsed.checkin_instructions) + ' ' +
+    String(parsed.special_instructions == null ? '' : parsed.special_instructions) + ' ' +
+    String(parsed.notes == null ? '' : parsed.notes);
+  var words = keywordHit(hay);
+  var negated = negationHit(hay);
+  var notes = [];
+
+  // The two disagreements worth a person's time. Neither overrides the model:
+  // a note is a flag on a screen, not a second opinion pretending to be one.
+  if (words && !negated && required === 'no') {
+    notes.push('The document uses check-in language but the parser answered no. Worth reading before this job is treated as exempt.');
+  }
+  if (!words && required === 'yes') {
+    notes.push('The parser answered yes but no check-in wording was found in the text. If the answer came off an attached form that is fine; otherwise check it.');
+  }
+  // A number with no verdict is the common case on a form that prints the line
+  // in a header block and never writes a sentence about it.
+  if (required === 'unknown' && parsed.checkin_phone && String(parsed.checkin_phone).toLowerCase() !== 'unknown') {
+    notes.push('A check-in number was found but the document never says plainly whether checking in is required.');
+  }
+
+  return {
+    checkin_required: required,
+    checkout_required: checkout,
+    checkin_method: method,
+    checkin_pay_gated: parsed.checkin_pay_gated === true || String(parsed.checkin_pay_gated).toLowerCase() === 'true',
+    checkin_evidence: evidence || null,
+    checkin_ask_order: askOrder(parsed.checkin_ask_order),
+    checkin_ai_note: notes.length ? notes.join(' ') : null
+  };
+}
+
+// The one UPDATE all three call sites share: the email ingest, the re-parse, and
+// nothing else. Kept here so the six columns can never drift apart between them.
+async function saveCheckinRequirement(pool, workOrderId, parsed, rawText) {
+  var f = checkinRequirement(parsed, rawText);
+  await pool.query(
+    'UPDATE work_orders SET checkin_required = $2, checkout_required = $3, checkin_method = $4, ' +
+    'checkin_pay_gated = $5, checkin_evidence = $6, checkin_ask_order = $7, checkin_ai_note = $8, ' +
+    'updated_at = NOW() WHERE id = $1',
+    [workOrderId, f.checkin_required, f.checkout_required, f.checkin_method,
+      f.checkin_pay_gated, f.checkin_evidence, f.checkin_ask_order, f.checkin_ai_note]
+  );
+  return f;
+}
+
+module.exports = {
+  looksLikeWorkOrder: looksLikeWorkOrder,
+  parseWorkOrderEmail: parseWorkOrderEmail,
+  keywordHit: keywordHit,
+  negationHit: negationHit,
+  checkinRequirement: checkinRequirement,
+  saveCheckinRequirement: saveCheckinRequirement
+};

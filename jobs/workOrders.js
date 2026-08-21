@@ -7,7 +7,7 @@
 const cron = require('node-cron');
 const { pool } = require('../db');
 const { getInboxMessages, getMessageAttachments } = require('../utils/graph');
-const { looksLikeWorkOrder, parseWorkOrderEmail } = require('../utils/workOrderParser');
+const { looksLikeWorkOrder, parseWorkOrderEmail, saveCheckinRequirement } = require('../utils/workOrderParser');
 const notify = require('../utils/notify');
 const push = require('../utils/push');
 const { logAudit } = require('../utils/audit');
@@ -567,6 +567,12 @@ async function processMessage(msg, conf, mailbox, knownAccounts) {
      strOrNull(parsed.checkin_phone), strOrNull(parsed.checkin_reference), strOrNull(parsed.checkin_instructions),
      strOrNull(parsed.checkin_tracking)]
   );
+  // Whether a check-in is required at all, which is a different question from
+  // whether a number was printed. Its own statement rather than seven more
+  // placeholders on the one above, because that statement is already at $36 and
+  // a mis-numbered parameter there is a silent data corruption.
+  try { await saveCheckinRequirement(pool, woId, parsed, msg.bodyText || ''); }
+  catch (e) { console.error('[work-orders] check-in requirement: ' + e.message); }
   await addActivity(woId, null, 'event', 'received by email and parsed as a ' + jobType + ' job (confidence: ' + (strOrNull(parsed.confidence) || 'n/a') + ')');
   // A vehicle job with no VIN is the one failure worth shouting about — the VIN IS
   // the job. Leave a breadcrumb so whoever reviews it knows to open the PDF.

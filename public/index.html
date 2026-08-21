@@ -791,6 +791,13 @@
 .ci-help b { color:var(--text-dim); font-weight:600; }
 .ci-help .mono { color:var(--text-dim); background:var(--bg-card); border-radius:3px; padding:0 4px; }
 @media (max-width: 900px) { .ci-help { flex:1 1 100%; } }
+/* The "what this line asks for" checklist.
+   The bare-checkbox reset is not optional: the global input rule sets
+   width:100% and padding, which balloons a checkbox into a grey slab and pushes
+   its label off the row. Every inline checkbox in Nova needs these three. */
+.ci-needs { display:flex; flex-direction:column; gap:6px; }
+.ci-need { display:flex; align-items:center; gap:8px; font-size:13px; color:var(--text-dim); font-weight:400; cursor:pointer; }
+.ci-need input[type="checkbox"] { width:16px; height:16px; padding:0; margin:0; flex:0 0 auto; }
 </style>
 <script>
 if ('serviceWorker' in navigator) {

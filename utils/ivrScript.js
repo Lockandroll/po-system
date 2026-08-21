@@ -295,6 +295,7 @@ function captureValue(transcript, pattern) {
 
 module.exports = {
   normalizeDigits: normalizeDigits,
+  xmlEscape: xmlEscape,
   fieldLabel: fieldLabel,
   fieldList: fieldList,
   resolve: resolve,

@@ -154,6 +154,7 @@ async function q(sql, p) { return (await pool.query(sql, p)).rows; }
 var IDS = {};
 async function seed() {
   await q('TRUNCATE checkin_events, ivr_profiles RESTART IDENTITY CASCADE');
+  await q("DELETE FROM signoff_forms");
   await q("DELETE FROM work_orders");
   await q("DELETE FROM vendors");
   await q("DELETE FROM users");
@@ -175,6 +176,13 @@ async function seed() {
     "INSERT INTO work_orders (wo_ref,status,account_id,account_name,wo_number,assigned_to) " +
     "VALUES ('WO-1042','in_process',$1,'No Profile Co','9911',2) RETURNING id", [IDS.vendor2]);
   IDS.woNoProfile = wo2[0].id;
+
+  // A sign-off sheet, because a check-out reads its answers off the sheet and
+  // writes the technician's typed ones back to it. The sheet is the record.
+  var sheet = await q(
+    "INSERT INTO signoff_forms (form_number, status, wo_number, account) VALUES ('SO-1041','pending','4419-88213','23rd Group') RETURNING id");
+  IDS.signoff = sheet[0].id;
+  await q('UPDATE work_orders SET signoff_id=$1 WHERE id=$2', [IDS.signoff, IDS.wo]);
 
   var prof = await q(
     "INSERT INTO ivr_profiles (vendor_id,name,method,phone_number,checkin_steps,checkout_steps,confirm_phrases," +
@@ -647,6 +655,283 @@ async function seed() {
   eq('e164: empty', engine.toE164(''), '');
   ok('sameNumber ignores formatting', engine.sameNumber('(800) 555-0142', '18005550142'));
   ok('sameNumber says no when they differ', !engine.sameNumber('8005550142', '8665559911'));
+
+  // ================= 18. Is a check-in even required? =================
+  //
+  // The parser now answers that, and it is a different question from whether a
+  // number was printed. The expensive failure is a false "no": a job that needed
+  // an IVR and did not get one is an unpaid trip.
+  var parser = require('./utils/workOrderParser');
+  var academyLine = 'IVR, SIGN OFF & PHOTOS ARE REQUIRED FOR PAYMENT Tech must IVR in/out for each site visit ' +
+    'via Service Channel app or by calling 516-500-7776 (PIN# 62163, TRACKING# 360493481).';
+  var reqd = parser.checkinRequirement({
+    checkin_required: 'yes', checkout_required: 'yes', checkin_method: 'phone_or_app',
+    checkin_pay_gated: true, checkin_evidence: academyLine, checkin_ask_order: ['PIN', 'TRACKING'],
+    checkin_phone: '516-500-7776'
+  }, academyLine);
+  eq('required: the Academy line reads as required', reqd.checkin_required, 'yes');
+  eq('required: and check-out separately', reqd.checkout_required, 'yes');
+  eq('required: phone or app', reqd.checkin_method, 'phone_or_app');
+  ok('required: tied to payment', reqd.checkin_pay_gated === true);
+  eq('required: the ask order is kept', reqd.checkin_ask_order, 'PIN, TRACKING');
+  ok('required: a clean answer raises no flag', reqd.checkin_ai_note === null);
+
+  var negative = parser.checkinRequirement({ checkin_required: 'no', checkin_evidence: 'No check-in required for this location.' },
+    'No check-in required for this location. Call the store manager on arrival.');
+  eq('required: a negation is believed', negative.checkin_required, 'no');
+  ok('required: and is NOT flagged as a disagreement', negative.checkin_ai_note === null);
+
+  var disagree = parser.checkinRequirement({ checkin_required: 'no' }, 'Tech must IVR in and out for each visit.');
+  ok('required: a wrong no IS flagged', !!disagree.checkin_ai_note);
+  eq('required: an unrecognised method falls back', parser.checkinRequirement({ checkin_method: 'carrier pigeon' }, '').checkin_method, 'unknown');
+
+  await q("UPDATE work_orders SET checkin_required='yes', checkout_required='yes', checkin_method='phone_or_app', " +
+          "checkin_pay_gated=true, checkin_evidence=$2, checkin_ask_order='PIN, TRACKING' WHERE id=$1", [IDS.wo, academyLine]);
+  auth.setUser({ id: 1, name: 'Admin', role: 'admin' });
+  r = await req('GET', '/api/checkins/state/' + IDS.wo);
+  eq('state: carries the required answer', r.body.checkin_required, 'yes');
+  eq('state: and the method', r.body.checkin_method, 'phone_or_app');
+  ok('state: and says it is tied to payment', r.body.checkin_pay_gated === true);
+  has('state: and the evidence sentence', r.body.checkin_evidence, 'REQUIRED FOR PAYMENT');
+
+  await q("UPDATE work_orders SET checkin_method='app' WHERE id=$1", [IDS.wo]);
+  r = await req('GET', '/api/checkins/state/' + IDS.wo);
+  ok('state: an app-only account cannot be dialled', r.body.can_call === false);
+  ok('state: and is marked as done by hand', r.body.by_hand === true);
+  has('state: and says why in plain words', r.body.blocked_reason, 'through their app');
+  await q("UPDATE work_orders SET checkin_method='phone' WHERE id=$1", [IDS.wo]);
+
+  // ================= 19. Readiness =================
+  //
+  // Its own job and its own sheet: the work order above has already been checked
+  // in and out by the sections before this one, and the idempotency index is
+  // quite right to refuse a second live call on it.
+  var readiness = require('./utils/checkinReadiness');
+  var wo3 = await q(
+    "INSERT INTO work_orders (wo_ref,status,account_id,account_name,wo_number,store_number,assigned_to," +
+    "checkin_phone,checkin_reference,checkin_tracking,checkin_required,checkout_required,checkin_method) " +
+    "VALUES ('WO-1120','in_process',$1,'23rd Group','4419-88999','774',2,'800-555-0142','4471','360493481','yes','yes','phone') RETURNING id",
+    [IDS.vendor]);
+  IDS.wo3 = wo3[0].id;
+  var sheet3 = await q("INSERT INTO signoff_forms (form_number, status, wo_number, account) VALUES ('SO-1043','pending','4419-88999','23rd Group') RETURNING id");
+  IDS.signoff3 = sheet3[0].id;
+  await q('UPDATE work_orders SET signoff_id=$1 WHERE id=$2', [IDS.signoff3, IDS.wo3]);
+
+  r = await req('GET', '/api/checkins/readiness/' + IDS.wo3 + '/in');
+  ok('readiness: a check-in with a PIN on the work order is ready', r.body.ready === true);
+  eq('readiness: nothing to ask', r.body.ask.length, 0);
+  var pinRow = r.body.values.filter(function (v) { return v.key === 'checkin_reference'; })[0];
+  ok('readiness: the PIN is masked on the way out', /^\u2022+71$/.test(pinRow.value || ''), pinRow);
+  eq('readiness: and its provenance is named', pinRow.source, 'work order');
+
+  // The check-out tree wants two things the sheet has not answered.
+  await q("UPDATE ivr_profiles SET mode='ai', status_map='{\"complete\":\"1\",\"return_trip\":\"3\"}'::jsonb, " +
+          "needs='{\"in\":[\"checkin_reference\",\"checkin_tracking\"],\"out\":[\"checkin_reference\",\"job_status\",\"num_technicians\"]}'::jsonb " +
+          'WHERE id=$1', [IDS.profile]);
+  r = await req('GET', '/api/checkins/readiness/' + IDS.wo3 + '/out');
+  ok('readiness: the check-out is NOT ready', r.body.ready === false);
+  eq('readiness: it asks two things', r.body.ask.map(function (a) { return a.key; }).join(','), 'job_status,num_technicians');
+  eq('readiness: and nothing is blocked', r.body.blocked.length, 0);
+  has('readiness: each question says why the tree wants it', r.body.ask[0].why, 'tree asks');
+
+  auth.setUser({ id: 2, name: 'Tech A', role: 'locksmith' });
+  r = await req('POST', '/api/checkins/' + IDS.wo3 + '/out', {});
+  eq('readiness: dialling without the answers is refused', r.status, 422);
+  ok('readiness: and it is a question, not a fault', r.body.needs_answers === true);
+  eq('readiness: with the same two questions', r.body.ask.length, 2);
+
+  // The one rule that keeps this honest.
+  var st = readiness.readiness({ direction: 'out', profile: { mode: 'ai', needs: { out: ['job_status'] }, status_map: { complete: '1' } }, workOrder: {} });
+  var merged = readiness.applyAnswers(st, { job_status: 'complete', checkin_reference: '99999' });
+  eq('readiness: an answer it never asked for is DROPPED', merged.rejected.join(','), 'checkin_reference');
+  eq('readiness: and the one it asked for is kept', merged.answers.job_status, 'complete');
+
+  r = await req('POST', '/api/checkins/' + IDS.wo3 + '/out', { answers: { job_status: 'complete', num_technicians: '2' }, signoff_id: IDS.signoff3 });
+  eq('readiness: with the answers, the call goes out', r.status, 200);
+  var outEv = r.body;
+  eq('readiness: the answers are kept on the event', outEv.answers.num_technicians, '2');
+  var doneSheet = (await q('SELECT num_technicians, work_complete FROM signoff_forms WHERE id=$1', [IDS.signoff3]))[0];
+  eq('readiness: and written through to the SHEET, which is the record', doneSheet.num_technicians, 2);
+  ok('readiness: including the completion answer', doneSheet.work_complete === true);
+  eq('readiness: the call ran in AI mode', outEv.mode, 'ai');
+  has('readiness: and dialled the AI endpoint', calls[calls.length - 1].Url, '/api/twilio/voice/ai/');
+
+  // The digit is resolved from the account map, never left to the model.
+  var prep = await engine.prepare({ workOrderId: IDS.wo3, direction: 'out', user: { id: 2 }, signoffId: IDS.signoff3 });
+  eq('readiness: job status becomes THIS account\'s digit', prep.values.job_status, '1');
+
+  // ================= 20. The AI navigator, end to end =================
+  var brain = require('./utils/ivrBrain');
+  var aiEv = outEv;
+
+  r = await twilioPost('/api/twilio/voice/ai/' + aiEv.id, { CallSid: 'CA-ai-1' });
+  has('ai: the call opens by listening, not talking', r.raw, '<Gather input="speech"');
+  has('ai: silence still calls back', r.raw, 'actionOnEmptyResult="true"');
+  ok('ai: it says nothing on the way in', r.raw.indexOf('<Say') === -1);
+
+  // A tree that offers a person. The interlock must hang up BEFORE the model is
+  // asked anything - there is no API key in this harness, so if it ever reached
+  // the model this would fail rather than pass.
+  var transferEv = (await q(
+    "INSERT INTO checkin_events (work_order_id, profile_id, direction, method, status, mode, requested_by, is_test, turns) " +
+    "VALUES ($1,$2,'in','call','in_progress','ai',2,true,'[]'::jsonb) RETURNING *", [IDS.wo3, IDS.profile]))[0];
+  r = await twilioPost('/api/twilio/voice/ai/' + transferEv.id + '/turn', { SpeechResult: 'One moment please, a representative will be with you shortly.' });
+  has('ai: a transfer hangs up', r.raw, '<Hangup/>');
+  var after = (await q('SELECT * FROM checkin_events WHERE id=$1', [transferEv.id]))[0];
+  eq('ai: and the call is failed', after.status, 'failed');
+  has('ai: and says a person was on the line', after.failure_reason, 'reaches a person');
+  eq('ai: the turn is on the record', after.turn_count, 1);
+  eq('ai: recorded as an interlock decision, not a model one', after.turns[0].source, 'interlock');
+
+  // The quote rule, through the real webhook: a model that invents a
+  // confirmation must produce a FAILED call, never a check-in.
+  var lieEv = (await q(
+    "INSERT INTO checkin_events (work_order_id, profile_id, direction, method, status, mode, requested_by, is_test, turns, live_transcript) " +
+    "VALUES ($1,$2,'in','call','in_progress','ai',2,true,'[]'::jsonb,'thank you for calling') RETURNING *", [IDS.wo3, IDS.profile]))[0];
+  var lie = await engine.aiTurn(lieEv.id, 'Thank you. Your entry has been received.', {
+    callModel: async function () { return { text: JSON.stringify({ action: 'confirm', quote: 'your check in has been recorded successfully' }) }; }
+  });
+  has('ai: an invented confirmation hangs up', lie, '<Hangup/>');
+  var lieRow = (await q('SELECT * FROM checkin_events WHERE id=$1', [lieEv.id]))[0];
+  eq('ai: an invented confirmation is a FAILURE', lieRow.status, 'failed');
+  ok('ai: it is NOT confirmed', lieRow.confirmed_at === null);
+  has('ai: and says the recording does not support it', lieRow.failure_reason, 'not in the recording');
+  has('ai: the claimed wording is kept for a person to read', lieRow.ai_quote, 'recorded successfully');
+
+  // A real confirmation, quoted from what the tree actually said.
+  var okEv = (await q(
+    "INSERT INTO checkin_events (work_order_id, profile_id, direction, method, status, mode, requested_by, is_test, turns, live_transcript) " +
+    "VALUES ($1,$2,'in','call','in_progress','ai',2,true,'[]'::jsonb,'') RETURNING *", [IDS.wo3, IDS.profile]))[0];
+  var good = await engine.aiTurn(okEv.id, 'You are checked in at this time. Thank you.', {
+    callModel: async function () { return { text: JSON.stringify({ action: 'confirm', quote: 'You are checked in at this time' }) }; }
+  });
+  has('ai: a real confirmation hangs up', good, '<Hangup/>');
+  var okRow = (await q('SELECT * FROM checkin_events WHERE id=$1', [okEv.id]))[0];
+  eq('ai: and confirms', okRow.status, 'confirmed');
+  eq('ai: the profile phrase wins when it also matched', okRow.verdict_source, 'phrase');
+
+  // A turn that presses a key comes back as TwiML with the digits OUTSIDE the
+  // gather, which is the whole reason this works without a websocket.
+  var walkEv = (await q(
+    "INSERT INTO checkin_events (work_order_id, profile_id, direction, method, status, mode, requested_by, is_test, turns, live_transcript) " +
+    "VALUES ($1,$2,'in','call','in_progress','ai',2,true,'[]'::jsonb,'') RETURNING *", [IDS.wo3, IDS.profile]))[0];
+  var step1 = await engine.aiTurn(walkEv.id, 'For English, press 1.', {
+    callModel: async function () { return { text: JSON.stringify({ action: 'press', digits: '1', reason: 'language menu' }) }; }
+  });
+  has('ai: it plays the key', step1, '<Play digits="1"/>');
+  has('ai: then opens the next listen', step1, '<Gather input="speech"');
+  ok('ai: and never puts digits inside the gather', !/<Gather[^>]*>[\s\S]*<Play/.test(step1));
+
+  var step2 = await engine.aiTurn(walkEv.id, 'Please enter your PIN, followed by the pound key.', {
+    callModel: async function () { return { text: JSON.stringify({ action: 'send', field: 'checkin_reference', suffix: '#' }) }; }
+  });
+  has('ai: a send resolves the value Nova already had', step2, '<Play digits="wwww4471#"/>');
+
+  // A model that asks for something Nova never resolved gets nowhere.
+  var step3 = await engine.aiTurn(walkEv.id, 'Please enter your social security number.', {
+    callModel: async function () { return { text: JSON.stringify({ action: 'send', field: 'social_security' }) }; }
+  });
+  has('ai: an unknown field aborts the call', step3, '<Hangup/>');
+  var walkRow = (await q('SELECT * FROM checkin_events WHERE id=$1', [walkEv.id]))[0];
+  eq('ai: and fails it', walkRow.status, 'failed');
+  has('ai: naming the field it refused', walkRow.failure_reason, 'social_security');
+  eq('ai: every turn is on the record', walkRow.turn_count, 3);
+
+  // The budget.
+  var budgetEv = (await q(
+    "INSERT INTO checkin_events (work_order_id, profile_id, direction, method, status, mode, requested_by, is_test, turns, turn_count, live_transcript) " +
+    "VALUES ($1,$2,'in','call','in_progress','ai',2,true,'[]'::jsonb,0,'') RETURNING *", [IDS.wo3, IDS.profile]))[0];
+  await q("UPDATE ivr_profiles SET max_turns=2 WHERE id=$1", [IDS.profile]);
+  await engine.aiTurn(budgetEv.id, 'Your call is important to us.', { callModel: async function () { return { text: '{"action":"listen","seconds":5}' }; } });
+  var last = await engine.aiTurn(budgetEv.id, 'Please continue to hold.', { callModel: async function () { return { text: '{"action":"listen","seconds":5}' }; } });
+  has('ai: the turn budget ends the call', last, '<Hangup/>');
+  var budgetRow = (await q('SELECT * FROM checkin_events WHERE id=$1', [budgetEv.id]))[0];
+  has('ai: and says so with the conversation attached', budgetRow.failure_reason, 'all 2 turns');
+  await q("UPDATE ivr_profiles SET max_turns=12 WHERE id=$1", [IDS.profile]);
+
+  // ================= 21. Learn once, then stop paying =================
+  var sig = brain.actionSignature([
+    { action: 'press', digits: '1' }, { action: 'wait', seconds: 3 },
+    { action: 'send', field: 'checkin_reference', suffix: '#' }
+  ]);
+  eq('promote: waits are not part of the signature', sig, 'p1|scheckin_reference#');
+
+  await q("UPDATE ivr_profiles SET ai_streak=0, ai_streak_signature=NULL WHERE id=$1", [IDS.profile]);
+  var turnsJson = JSON.stringify([
+    { action: 'press', digits: '1', reason: 'English' },
+    { action: 'send', field: 'checkin_reference', suffix: '#' },
+    { action: 'send', field: 'wo_number', suffix: '#' }
+  ]);
+  for (var streak = 1; streak <= 3; streak++) {
+    var pe = (await q(
+      "INSERT INTO checkin_events (work_order_id, profile_id, direction, method, status, mode, requested_by, is_test, turns, confirmation_text) " +
+      "VALUES ($1,$2,'in','call','in_progress','ai',2,false,$3::jsonb,'you are checked in') RETURNING *",
+      [IDS.wo3, IDS.profile, turnsJson]))[0];
+    await engine.noteAiSuccess(pe);
+    await q("DELETE FROM checkin_events WHERE id=$1", [pe.id]);
+  }
+  var prof3 = (await q('SELECT ai_streak, ai_streak_signature FROM ivr_profiles WHERE id=$1', [IDS.profile]))[0];
+  eq('promote: three identical runs count up', prof3.ai_streak, 3);
+  has('promote: and the signature is recorded', prof3.ai_streak_signature, 'scheckin_reference#');
+
+  var promoteEv = (await q(
+    "INSERT INTO checkin_events (work_order_id, profile_id, direction, method, status, mode, requested_by, is_test, turns, confirmation_text) " +
+    "VALUES ($1,$2,'in','call','confirmed','ai',2,false,$3::jsonb,'you are checked in at this time') RETURNING *",
+    [IDS.wo3, IDS.profile, turnsJson]))[0];
+  auth.setUser({ id: 1, name: 'Admin', role: 'admin' });
+  r = await req('POST', '/api/checkins/profiles/' + IDS.profile + '/promote', { direction: 'in' });
+  eq('promote: saving it as a script works', r.status, 200);
+  eq('promote: the keypresses become steps', r.body.steps.length, 4);
+  eq('promote: ending in a listen', r.body.steps[3].type, 'listen');
+  eq('promote: the first step is the language key', r.body.steps[0].digits, '1');
+  ok('promote: the new script is NOT live until it is tested', r.body.profile.active === false);
+  eq('promote: and the streak resets', r.body.profile.ai_streak, 0);
+  has('promote: the wording it heard becomes the phrase to expect', r.body.profile.confirm_phrases, 'checked in at this time');
+  await q("DELETE FROM checkin_events WHERE id=$1", [promoteEv.id]);
+
+  // ================= 22. The account PIN =================
+  //
+  // A vendor credential. It is encrypted before it is stored and it is never
+  // read back, not even by the screen that set it.
+  process.env.HR_DOC_ENC_KEY = Buffer.alloc(32, 7).toString('base64');
+  r = await req('POST', '/api/checkins/profiles/' + IDS.profile + '/pin', { pin: '778812' });
+  eq('pin: it saves', r.status, 200);
+  ok('pin: the profile says it has one', r.body.has_account_pin === true);
+  eq('pin: and shows only the last two digits', r.body.account_pin_hint, '..12');
+  ok('pin: the ciphertext never leaves the server', r.body.account_pin_enc === undefined);
+  r = await req('GET', '/api/checkins/profiles/' + IDS.profile);
+  ok('pin: not on the read either', r.body.account_pin_enc === undefined);
+  var stored = (await q('SELECT account_pin_enc FROM ivr_profiles WHERE id=$1', [IDS.profile]))[0];
+  ok('pin: what IS stored is not the PIN', String(stored.account_pin_enc).indexOf('778812') === -1);
+  eq('pin: and it decrypts back correctly', engine.accountPin({ account_pin_enc: stored.account_pin_enc }), '778812');
+
+  // A job with no PIN of its own now borrows the account's.
+  var pinWo = (await q(
+    "INSERT INTO work_orders (wo_ref,status,account_id,account_name,wo_number,assigned_to) " +
+    "VALUES ('WO-PIN','in_process',$1,'23rd Group','5150',2) RETURNING id", [IDS.vendor]))[0];
+  var pinPrep = await engine.prepare({ workOrderId: pinWo.id, direction: 'in', user: { id: 2 } });
+  eq('pin: a job with no PIN printed uses the account one', pinPrep.values.checkin_reference, '778812');
+  eq('pin: and says where it came from', pinPrep.state.values[0].source, 'account setup');
+
+  r = await req('POST', '/api/checkins/profiles/' + IDS.profile + '/pin', { pin: '' });
+  ok('pin: it can be cleared', r.body.has_account_pin === false);
+  delete process.env.HR_DOC_ENC_KEY;
+  r = await req('POST', '/api/checkins/profiles/' + IDS.profile + '/pin', { pin: '1234' });
+  eq('pin: with no encryption key it refuses rather than storing it in the clear', r.status, 400);
+  has('pin: and says what to do', r.body.error, 'HR_DOC_ENC_KEY');
+
+  // ================= 23. The new fake-IVR modes =================
+  r = await fake('?step=job&mode=reprompt', '4471');
+  has('fake: reprompt asks for the PIN a second time', r.raw, 'did not get all of that');
+  r = await fake('?step=job&mode=reprompt&again=1', '4471');
+  has('fake: and moves on once it has it', r.raw, 'work order or tracking number');
+  r = await fake('?step=pin&mode=reorder', '1');
+  has('fake: reorder asks tracking FIRST', r.raw, 'tracking number');
+  r = await fake('?step=job&mode=reorder', '360493481');
+  has('fake: then the PIN', r.raw, 'PIN number');
+  r = await fake('?step=pin&mode=transfer', '1');
+  has('fake: transfer routes to a person', r.raw, 'representative');
+  ok('fake: and never confirms anything', r.raw.indexOf('checked in') === -1);
 
   console.log('\nPASS ' + pass + '   FAIL ' + fail);
   if (failures.length) { console.log('FAILURES:'); failures.forEach(f => console.log('  - ' + f)); }

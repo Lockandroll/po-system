@@ -70,6 +70,46 @@ router.post('/script/:id', verify, async function (req, res) {
 });
 
 // ---------------------------------------------------------------------------
+// The AI navigator.
+//
+//   POST /ai/:id        the call connected. Say nothing, listen.
+//   POST /ai/:id/turn   the tree said something. Decide, and answer with the
+//                       next keypress plus a fresh listen.
+//
+// One ordinary signed webhook per turn, which is why this needs no WebSocket and
+// no new dependency. Twilio abandons a webhook at 15 seconds and the model is
+// capped at 8, so a slow answer degrades into a wait rather than a dead line.
+// ---------------------------------------------------------------------------
+router.post('/ai/:id', verify, async function (req, res) {
+  try {
+    var ev = await checkins.loadEvent(req.params.id);
+    if (!ev) return hangup(res);
+    await checkins.markDialing(ev.id, req.body.CallSid || null);
+    return twiml(res, await checkins.aiOpen(ev));
+  } catch (err) {
+    console.error('[twilio-voice] ai open:', err.message);
+    return hangup(res);
+  }
+});
+
+router.post('/ai/:id/turn', verify, async function (req, res) {
+  try {
+    // SpeechResult is what Twilio's recogniser heard. Confidence is logged with
+    // the turn but never gates anything: Twilio does not guarantee it is even
+    // present, and a tree that mumbles is still a tree.
+    var heard = req.body.SpeechResult || '';
+    var xml = await checkins.aiTurn(req.params.id, heard, {});
+    return twiml(res, xml);
+  } catch (err) {
+    console.error('[twilio-voice] ai turn:', err.message);
+    // Never leave a tree listening to silence on our account. Hang up, and let
+    // the sweeper and the technician's SMS take it from here.
+    try { await checkins.fail(req.params.id, 'The call broke down mid-conversation: ' + err.message); } catch (e) { /* already failing */ }
+    return hangup(res);
+  }
+});
+
+// ---------------------------------------------------------------------------
 // Call lifecycle. Nothing here decides whether a check-in worked - that happens
 // on the recording callback, from the transcript. A completed call is only ever
 // evidence that the phone hung up.
@@ -180,14 +220,38 @@ router.post('/fake-ivr', function (req, res) {
       'Thank you for calling the vendor check in line. For English, press 1. Para espanol, oprima 2.', {});
   }
 
+  // A tree that routes to a person. Nothing about the script can fix this, and
+  // that is the point: it exists to prove the interlock hangs up on it BEFORE
+  // the model is ever asked what to do.
+  if (step === 'pin' && mode === 'transfer') {
+    return twiml(res, '<?xml version="1.0" encoding="UTF-8"?>\n<Response>' +
+      '<Say>One moment please, a representative will be with you shortly.</Say>' +
+      '<Pause length="8"/><Say>Still holding for the next available agent.</Say>' +
+      '<Pause length="8"/><Hangup/></Response>');
+  }
+
   // 2. PIN. Digits then pound. (The digits arriving here are the language key.)
+  //
+  // mode=reorder asks for the tracking number FIRST. A fixed script sends the
+  // PIN into the tracking prompt and never recovers, which is exactly the class
+  // of failure the navigator exists for.
   if (step === 'pin') {
     return fakeEntry(res, 'job', mode,
-      'Please enter your unique PIN number, followed by the pound key.', {});
+      mode === 'reorder'
+        ? 'Please enter your tracking number, followed by the pound key.'
+        : 'Please enter your unique PIN number, followed by the pound key.', {});
   }
 
   // 3. Work order. Digits then pound. (The digits arriving here are the PIN.)
   if (step === 'job') {
+    // mode=reprompt asks the first value again, once, the way a real tree does
+    // when it thinks it only got half of it. Everything a blind script sends
+    // after this point lands one prompt late.
+    if (mode === 'reprompt' && req.query.again !== '1') {
+      return fakeEntry(res, 'job', mode,
+        'We did not get all of that. Please enter your unique PIN number again, followed by the pound key.',
+        { again: '1' });
+    }
     if (mode === 'reject') {
       return twiml(res, '<?xml version="1.0" encoding="UTF-8"?>\n<Response>' +
         '<Say>The PIN number ' + spell(digits) + ' was not recognized. ' +
@@ -195,7 +259,10 @@ router.post('/fake-ivr', function (req, res) {
         '<Pause length="2"/><Hangup/></Response>');
     }
     return fakeEntry(res, 'confirm', mode,
-      'Thank you. Now enter your work order or tracking number, followed by the pound key.', { pin: digits });
+      mode === 'reorder'
+        ? 'Thank you. Now enter your PIN number, followed by the pound key.'
+        : 'Thank you. Now enter your work order or tracking number, followed by the pound key.',
+      { pin: digits });
   }
 
   // 4. Read back, then branch. One key, and it moves - including pound.
@@ -268,7 +335,15 @@ router.get('/fake-ivr', function (req, res) {
     'prompt out of phase.\n' +
     'then reads back everything it heard, so a half-received PIN shows up in the\n' +
     'transcript instead of failing as a mystery.\n\n' +
-    'Modes: ?mode=ok (default), ?mode=reject, ?mode=silent, ?mode=wrong\n'
+    'Modes:\n' +
+    '  ?mode=ok        (default) confirms and reads an authorization number back\n' +
+    '  ?mode=reject    rejects the PIN the way a real tree does with a bad one\n' +
+    '  ?mode=silent    answers and says nothing at all\n' +
+    '  ?mode=wrong     confirms, but with wording no phrase will match\n' +
+    '  ?mode=reprompt  asks for the PIN a second time - a fixed script never recovers\n' +
+    '  ?mode=reorder   asks tracking BEFORE pin - a fixed script sends the wrong value\n' +
+    '  ?mode=transfer  routes to a person - the interlock must hang up on this one\n' +
+    'The last three exist for the AI navigator. A script is expected to FAIL them.\n'
   );
 });
 

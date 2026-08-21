@@ -3,7 +3,7 @@ const { pool } = require('../db');
 const { requireAuth, requirePermission } = require('../middleware/auth');
 const perms = require('../utils/permissions');
 const { logAudit } = require('../utils/audit');
-const { parseWorkOrderEmail } = require('../utils/workOrderParser');
+const { parseWorkOrderEmail, saveCheckinRequirement } = require('../utils/workOrderParser');
 const woJob = require('../jobs/workOrders');
 const signoffTrips = require('../utils/signoffTrips');
 
@@ -335,6 +335,29 @@ router.put('/:id', requireAuth, requirePermission('manage_work_orders'), async (
        pick('checkin_phone', ex.checkin_phone), pick('checkin_reference', ex.checkin_reference), pick('checkin_instructions', ex.checkin_instructions),
        pick('checkin_tracking', ex.checkin_tracking)]
     );
+    // A person overruling the parser on whether this job needs a check-in.
+    // Setting it by hand also CLEARS the disagreement note, because the note
+    // exists to get somebody to look and somebody just did.
+    var ciTouched = ['checkin_required', 'checkout_required', 'checkin_method'].some(function (k) { return b[k] !== undefined; });
+    if (ciTouched) {
+      var triOf = function (v, cur) {
+        if (v === undefined) return cur;
+        var t = String(v == null ? '' : v).toLowerCase();
+        return (t === 'yes' || t === 'no') ? t : 'unknown';
+      };
+      var METHOD_OK = ['phone', 'app', 'portal', 'phone_or_app', 'unknown'];
+      var mIn = b.checkin_method === undefined ? ex.checkin_method
+        : (METHOD_OK.indexOf(String(b.checkin_method || '').toLowerCase()) === -1 ? 'unknown' : String(b.checkin_method).toLowerCase());
+      await pool.query(
+        'UPDATE work_orders SET checkin_required = $2, checkout_required = $3, checkin_method = $4, ' +
+        'checkin_ai_note = NULL, updated_at = NOW() WHERE id = $1',
+        [req.params.id, triOf(b.checkin_required, ex.checkin_required),
+          triOf(b.checkout_required, ex.checkout_required), mIn]
+      );
+      await woJob.addActivity(req.params.id, req.user, 'event',
+        'set check-in required to ' + triOf(b.checkin_required, ex.checkin_required) +
+        ' and check-out required to ' + triOf(b.checkout_required, ex.checkout_required));
+    }
     if (nteChanged) {
       await pool.query(
         "INSERT INTO work_order_nte_history (work_order_id, old_amount, new_amount, source, changed_by, changed_by_name, note) VALUES ($1,$2,$3,'manual',$4,$5,$6)",
@@ -489,6 +512,10 @@ router.post('/:id/reparse', requireAuth, requirePermission('manage_work_orders')
        strOrNull(parsed.checkin_phone), strOrNull(parsed.checkin_reference), strOrNull(parsed.checkin_instructions),
        strOrNull(parsed.checkin_tracking)]
     );
+    // Re-parsing the back catalogue is how the required / not-required answer
+    // gets filled in for jobs that arrived before the parser knew to ask.
+    try { await saveCheckinRequirement(pool, req.params.id, parsed, ex.email_body || ''); }
+    catch (e) { console.error('[work-orders] check-in requirement: ' + e.message); }
     // A re-parse that works has to lift the row back out of the hole it fell into.
     // Leaving it stamped 'error' meant a fixed work order still never reached the queue.
     if (ex.status === 'error' || ex.status === 'rejected') {

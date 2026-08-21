@@ -4979,6 +4979,84 @@ async function initDB() {
       '  ALTER TABLE work_orders ADD COLUMN IF NOT EXISTS checked_out_at TIMESTAMPTZ;' +
       '  ALTER TABLE work_orders ADD COLUMN IF NOT EXISTS checkin_auth_number VARCHAR(64);'
     );
+
+    // Whether a check-in is REQUIRED, which is a different question from whether
+    // a number was printed and the one that decides whether the Job Clock draws
+    // at all. checkin_evidence is the sentence the parser copied to justify its
+    // answer; checkin_ai_note is set when a free keyword sweep DISAGREES with
+    // that answer, so a confident wrong "no" is visible instead of silent.
+    //
+    // checkin_method matters because app-only and portal-only accounts are real
+    // (Chain Store Maintenance, KeyMe). Those still require a check-in, Nova
+    // just cannot place it, and saying so is better than pretending they are
+    // unsupported.
+    await client.query(
+      'ALTER TABLE work_orders ADD COLUMN IF NOT EXISTS checkin_required VARCHAR(10);' +
+      '  ALTER TABLE work_orders ADD COLUMN IF NOT EXISTS checkout_required VARCHAR(10);' +
+      '  ALTER TABLE work_orders ADD COLUMN IF NOT EXISTS checkin_method VARCHAR(16);' +
+      '  ALTER TABLE work_orders ADD COLUMN IF NOT EXISTS checkin_pay_gated BOOLEAN;' +
+      '  ALTER TABLE work_orders ADD COLUMN IF NOT EXISTS checkin_evidence TEXT;' +
+      '  ALTER TABLE work_orders ADD COLUMN IF NOT EXISTS checkin_ask_order VARCHAR(200);' +
+      '  ALTER TABLE work_orders ADD COLUMN IF NOT EXISTS checkin_ai_note TEXT;'
+    );
+
+    // ---- The AI navigator -------------------------------------------------
+    //
+    // A blind pre-rendered run of tones works until a tree adds a prompt,
+    // re-orders two entries, or re-prompts because the first entry was clipped,
+    // and then it fails silently. So a profile can now run in 'ai' mode, where
+    // Nova hears each prompt and decides the next keypress, or 'ai_fallback',
+    // where the cheap deterministic script runs first and the model only picks
+    // up the pieces.
+    //
+    // 'script' stays the default and every existing row keeps it, so nothing
+    // that works today changes behaviour on deploy.
+    //
+    // status_map exists so the ONE business fact in a check-out tree - which
+    // digit means "job complete" on this account - is configuration and not
+    // something a model reasons about mid-call. Nova resolves the digit before
+    // dialling and the model only decides WHEN to send it.
+    //
+    // account_pin_enc holds the accounts that issue one PIN to the company
+    // instead of printing it on each work order. It is a vendor credential, so
+    // it is AES-256-GCM encrypted with the same HR_DOC_ENC_KEY the onboarding
+    // documents use and is never returned to a browser; account_pin_hint is the
+    // last two digits, which is enough for a manager to tell two PINs apart.
+    await client.query(
+      "ALTER TABLE ivr_profiles ADD COLUMN IF NOT EXISTS mode VARCHAR(12) NOT NULL DEFAULT 'script';" +
+      '  ALTER TABLE ivr_profiles ADD COLUMN IF NOT EXISTS goal_checkin TEXT;' +
+      '  ALTER TABLE ivr_profiles ADD COLUMN IF NOT EXISTS goal_checkout TEXT;' +
+      '  ALTER TABLE ivr_profiles ADD COLUMN IF NOT EXISTS playbook TEXT;' +
+      '  ALTER TABLE ivr_profiles ADD COLUMN IF NOT EXISTS max_turns SMALLINT NOT NULL DEFAULT 12;' +
+      '  ALTER TABLE ivr_profiles ADD COLUMN IF NOT EXISTS status_map JSONB;' +
+      // What the tree asks for, per direction, as {"in":[keys],"out":[keys]}. A
+      // script says this implicitly through its send steps; an AI profile has no
+      // steps to read, and guessing at dial time is how a call ends up halfway
+      // through a tree with nothing to type.
+      '  ALTER TABLE ivr_profiles ADD COLUMN IF NOT EXISTS needs JSONB;' +
+      '  ALTER TABLE ivr_profiles ADD COLUMN IF NOT EXISTS account_pin_enc TEXT;' +
+      '  ALTER TABLE ivr_profiles ADD COLUMN IF NOT EXISTS account_pin_hint VARCHAR(12);' +
+      '  ALTER TABLE ivr_profiles ADD COLUMN IF NOT EXISTS ai_streak SMALLINT NOT NULL DEFAULT 0;' +
+      '  ALTER TABLE ivr_profiles ADD COLUMN IF NOT EXISTS ai_streak_signature TEXT;'
+    );
+
+    // What the model did, turn by turn, and how the verdict was reached.
+    //
+    // verdict_source is the point of this block. 'phrase' means the profile's
+    // configured wording was found, which is free and needs no model at all;
+    // 'ai_quoted' means the model called it AND the words it quoted were located
+    // in the transcript Nova accumulated itself. There is no third way to be
+    // confirmed. ai_quote is kept so the claim can be re-checked later by a
+    // person who was not on the call.
+    await client.query(
+      'ALTER TABLE checkin_events ADD COLUMN IF NOT EXISTS turns JSONB;' +
+      '  ALTER TABLE checkin_events ADD COLUMN IF NOT EXISTS turn_count SMALLINT NOT NULL DEFAULT 0;' +
+      '  ALTER TABLE checkin_events ADD COLUMN IF NOT EXISTS answers JSONB;' +
+      '  ALTER TABLE checkin_events ADD COLUMN IF NOT EXISTS verdict_source VARCHAR(12);' +
+      '  ALTER TABLE checkin_events ADD COLUMN IF NOT EXISTS ai_quote TEXT;' +
+      '  ALTER TABLE checkin_events ADD COLUMN IF NOT EXISTS live_transcript TEXT;' +
+      "  ALTER TABLE checkin_events ADD COLUMN IF NOT EXISTS mode VARCHAR(12) NOT NULL DEFAULT 'script';"
+    );
     // A per-technician ID, for the accounts whose tree asks for one that is not
     // printed on the work order. Most do not, which is why the work order's own
     // checkin_reference is tried first.

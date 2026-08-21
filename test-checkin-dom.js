@@ -278,6 +278,124 @@ function baseState(over) {
      (whole.match(/function openCheckinRecord\(/g) || []).length === 1 &&
      (whole.match(/function renderCheckinMonitor\(/g) || []).length === 1);
 
+  // ---------- 14. is any of this required? ----------
+  h = w.checkinCardHtml(baseState({ checkin_required: 'yes', checkin_pay_gated: true }));
+  has('required: a pay-gated job says so on the card', h, 'Required for payment');
+  h = w.checkinCardHtml(baseState({ checkin_required: 'yes', checkin_pay_gated: false }));
+  has('required: an ordinary one just says required', h, '>Required<');
+  hasnt('required: and does not claim payment rides on it', h, 'Required for payment');
+  h = w.checkinCardHtml(baseState({ checkin_required: 'unknown' }));
+  has('required: an unknown answer says it is unsure rather than guessing', h, 'Not sure it is required');
+  h = w.checkinCardHtml(baseState({ checkin_required: 'yes', checkin_evidence: 'Tech must IVR in/out for each site visit.' }));
+  has('required: the sentence that proves it is quoted', h, 'Tech must IVR in/out for each site visit.');
+  h = w.checkinCardHtml(baseState({ checkin_ai_note: 'The document uses check-in language but the parser answered no.' }));
+  has('required: a parser disagreement is shown to a manager', h, 'parser answered no');
+  w.eval("__perms = { checkin_job: true };");
+  h = w.checkinCardHtml(baseState({ checkin_ai_note: 'The document uses check-in language but the parser answered no.' }));
+  hasnt('required: but not to a technician, who cannot act on it', h, 'parser answered no');
+  w.eval("__perms = { checkin_job: true, manage_ivr_profiles: true, manage_work_orders: true };");
+
+  h = w.checkinCardHtml(baseState({ by_hand: true, can_call: false, checkin_method: 'app',
+    blocked_reason: 'This account checks in through their app, so it has to be done by hand.' }));
+  has('required: an app-only account says so', h, 'through their app');
+  hasnt('required: and offers no Call button', h, 'Check In Now');
+  has('required: but still shows the number to tap', h, 'href="tel:8005550142"');
+
+  h = w.checkinCardHtml(baseState({ profile: Object.assign({}, baseState().profile, { mode: 'ai' }) }));
+  has('required: the card says which lane this account is on', h, 'AI navigator');
+
+  // A job the account exempted should not be showing anybody a button.
+  var host = w.document.createElement('div'); host.id = 'ci-host-x'; w.document.body.appendChild(host);
+  w.eval("__responses['/checkins/config'] = { voice: { configured: true }, can_call: true, fields: [] };");
+  w.eval("__responses['/checkins/state/77'] = { work_order_id: 77, checkin_required: 'no', checkin_phone: '800-555-0142', profile: { id: 1, method: 'phone' }, checkin: null, checkout: null, events: [] };");
+  await w.checkinMount('ci-host-x', 77);
+  eq('required: a job marked NOT required draws nothing at all', host.innerHTML, '');
+
+  // ---------- 15. asking the tech in the moment ----------
+  var ASK = [
+    { key: 'job_status', label: 'Job status', type: 'choice', why: 'The check-out tree asks whether the job is finished.',
+      options: [{ value: 'complete', label: 'Finished, nothing left to do' }, { value: 'return_trip', label: 'Not finished, coming back' }] },
+    { key: 'num_technicians', label: 'Technicians on site', type: 'number', why: 'The check-out tree asks how many technicians were on site.', suggested: '1' }
+  ];
+  w.checkinAskSheet(41, 'out', ASK);
+  var sheet = w.document.querySelector('.nova-dialog-overlay');
+  ok('ask: a sheet opens', !!sheet);
+  has('ask: it explains why it is asking', sheet.innerHTML, 'has not answered yet');
+  has('ask: the choice is a dropdown', sheet.innerHTML, '<select id="ci-ask-0"');
+  has('ask: with the account wording', sheet.innerHTML, 'Finished, nothing left to do');
+  has('ask: the count is a number box', sheet.innerHTML, 'type="number"');
+  has('ask: pre-filled with the obvious answer', sheet.innerHTML, 'value="1"');
+  has('ask: each question says why the tree wants it', sheet.innerHTML, 'how many technicians were on site');
+
+  w.eval("__responses['/checkins/41/out'] = { id: 9, status: 'dialing' };");
+  w.eval("__responses['/checkins/state/41'] = { work_order_id: 41, profile: { id: 1, method: 'phone' }, checkin: null, checkout: null, events: [] };");
+  w.eval("__calls.length = 0; __lastBody = null;");
+  w.eval("api = async function(m,p,b){ __calls.push(m+' '+p); __lastBody = b; if(!(p in __responses)) throw new Error('no stub for '+p); return __responses[p]; };");
+  sheet.querySelector('#ci-ask-go').click();
+  await tick(30);
+  var body = w.eval('__lastBody');
+  ok('ask: answering fires the call', w.eval('__calls').indexOf('POST /checkins/41/out') !== -1, w.eval('__calls'));
+  eq('ask: and carries the answers', body.answers.job_status, 'complete');
+  eq('ask: including the head count', body.answers.num_technicians, '1');
+  ok('ask: the sheet closes behind it', !w.document.querySelector('.nova-dialog-overlay:not(.closing)'));
+
+  // A 422 from the server is a question, not a failure: it must open the sheet
+  // rather than throw an alert at somebody standing at a door.
+  w.eval("__alerts.length = 0; __calls.length = 0;");
+  w.eval("api = async function(m,p,b){ __calls.push(m+' '+p); if (p === '/checkins/41/out') { var e = new Error('needs answers'); e.status = 422; e.data = { needs_answers: true, ask: " + JSON.stringify(ASK) + " }; throw e; } if(!(p in __responses)) throw new Error('no stub for '+p); return __responses[p]; };");
+  Array.prototype.slice.call(w.document.querySelectorAll('.nova-dialog-overlay')).forEach(function (n) { n.remove(); });
+  await w.checkinFire(41, 'out', null);
+  await tick(20);
+  ok('ask: a 422 opens the sheet', !!w.document.querySelector('.nova-dialog-overlay'));
+  eq('ask: and says nothing scary', w.eval('__alerts').length, 0);
+  Array.prototype.slice.call(w.document.querySelectorAll('.nova-dialog-overlay')).forEach(function (n) { n.remove(); });
+
+  // ---------- 16. the record, for an AI call ----------
+  w.eval("__responses['/checkins/event/31'] = " + JSON.stringify({
+    id: 31, direction: 'in', status: 'confirmed', verdict_source: 'ai_quoted',
+    ai_quote: 'You are checked in at this time', confirmation_text: 'You are checked in at this time',
+    phone_number: '800-555-0142', live_transcript: 'For English press 1. You are checked in at this time.',
+    transcript: null, turns: [
+      { n: 1, heard: 'For English, press 1.', action: 'press', digits: '1', reason: 'language menu', confidence: 'high', source: 'model' },
+      { n: 2, heard: 'You are checked in at this time.', action: 'confirm', source: 'model' }
+    ]
+  }) + ";");
+  w.eval("api = async function(m,p,b){ __calls.push(m+' '+p); if(!(p in __responses)) throw new Error('no stub for '+p); return __responses[p]; };");
+  await w.openCheckinRecord(31);
+  await tick(20);
+  var dlg = w.document.querySelector('.nova-dialog-overlay .nova-dlg');
+  has('record: says how Nova knows', dlg.innerHTML, 'How Nova knows');
+  has('record: and that the quote was checked against the recording', dlg.innerHTML, 'found those words in the recording');
+  has('record: shows the conversation turn by turn', dlg.innerHTML, 'Turn by turn');
+  has('record: including what the tree said', dlg.innerHTML, 'For English, press 1.');
+  has('record: and what Nova did about it', dlg.innerHTML, 'pressed 1');
+  has('record: falls back to the live transcript before the recording lands', dlg.innerHTML, 'live from the call');
+  Array.prototype.slice.call(w.document.querySelectorAll('.nova-dialog-overlay')).forEach(function (n) { n.remove(); });
+
+  w.eval("__responses['/checkins/event/32'] = " + JSON.stringify({
+    id: 32, direction: 'in', status: 'failed',
+    failure_reason: 'The AI said this job was checked in, but the words it quoted are not in the recording.',
+    ai_quote: 'your check in has been recorded successfully',
+    live_transcript: 'Thank you. Your entry has been received.', turns: []
+  }) + ";");
+  await w.openCheckinRecord(32);
+  await tick(20);
+  dlg = w.document.querySelector('.nova-dialog-overlay .nova-dlg');
+  has('record: an invented quote is shown', dlg.innerHTML, 'recorded successfully');
+  has('record: and marked as not found', dlg.innerHTML, 'not found in the recording');
+  Array.prototype.slice.call(w.document.querySelectorAll('.nova-dialog-overlay')).forEach(function (n) { n.remove(); });
+
+  // ---------- 17. the profile screen ----------
+  has('profile: the AI card exists', whole, 'ciAiCardHtml');
+  has('profile: mode is collected', whole, "mode: v('ci-mode')");
+  has('profile: so is the playbook', whole, "playbook: v('ci-playbook')");
+  has('profile: and what the line asks for', whole, 'needs: (function ()');
+  has('profile: the status map is per account, not per call', whole, "id=\"ci-status-");
+  has('profile: promotion is offered, never automatic', whole, 'Save it as the check-in script');
+  has('profile: the PIN is write-only', whole, 'replace the saved PIN');
+  has('profile: draft cover includes the new inputs', whole, "'ci-playbook','ci-maxturns'");
+  has('profile: the checkbox reset is present or the list balloons', fs.readFileSync('public/index.html', 'utf8'), '.ci-need input[type="checkbox"]');
+
   console.log('\nPASS ' + pass + '   FAIL ' + fail);
   if (failures.length) { console.log('FAILURES:'); failures.forEach(f => console.log('  - ' + f)); }
   process.exit(fail ? 1 : 0);
