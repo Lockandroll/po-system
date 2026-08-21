@@ -5,6 +5,7 @@ const perms = require('../utils/permissions');
 const { logAudit } = require('../utils/audit');
 const { parseWorkOrderEmail } = require('../utils/workOrderParser');
 const woJob = require('../jobs/workOrders');
+const signoffTrips = require('../utils/signoffTrips');
 
 const router = express.Router();
 
@@ -190,6 +191,10 @@ async function loadWorkOrder(id) {
     );
     wo.signoffs = so.rows;
     wo.signoff = so.rows.length ? so.rows[so.rows.length - 1] : null;
+    // Can this job take another sign-off sheet right now? True only when every trip on it is
+    // finished — one live sheet per job. This is what draws the "+ Add Sign-Off Sheet" tile and
+    // pre-ticks the box in the reopen dialog, so the UI never offers a trip the API would refuse.
+    wo.can_add_signoff_trip = !!(so.rows.length && so.rows.every(function (t) { return t.status === 'completed'; }));
     // The job's invoice, if one exists. Looked up by trip group so any trip on
     // the job finds the invoice an earlier trip created. Best-effort: a lookup
     // failure must not break the work order detail page.
@@ -348,11 +353,18 @@ router.put('/:id', requireAuth, requirePermission('manage_work_orders'), async (
   } catch (err) { console.error(err); res.status(500).json({ error: 'Failed to update work order' }); }
 });
 
-async function setStatus(req, id, status, assignTo) {
+// opts (all optional):
+//   new_trip    — the caller is REOPENING a finished job (the account added work after sign-off)
+//                 and wants the next sign-off sheet created for the return visit.
+//   trip_reason — why, in the tech's words. Lands on the new sheet and in the WO activity trail.
+//   note        — extra words appended to the activity line (the reopen reason, today).
+async function setStatus(req, id, status, assignTo, opts) {
+  opts = opts || {};
   const ex = (await pool.query('SELECT * FROM work_orders WHERE id = $1', [id])).rows[0];
   if (!ex) return { error: 'Work order not found', code: 404 };
   if (STATUSES.indexOf(status) === -1) return { error: 'Invalid status', code: 400 };
 
+  const reopening = (status === 'in_process' && (ex.status === 'job_completed' || ex.status === 'paperwork_sent'));
   let signoffNote = '';
   // Moving into 'in_process' = an employee approved Claude's info: stamp reviewer + ensure a sign-off exists.
   if (status === 'in_process' && ex.status !== 'in_process') {
@@ -365,6 +377,33 @@ async function setStatus(req, id, status, assignTo) {
         await pool.query('UPDATE work_orders SET signoff_id=$1 WHERE id=$2', [sid, id]);
         signoffNote = ' (pending sign-off created)';
       } catch (e) { console.error('signoff create on approve failed:', e.message); }
+    } else if (opts.new_trip) {
+      // Reopening a job that already has sheets. The one the WO points at is signed and locked,
+      // so the tech needs a fresh one for the added work.
+      //
+      // Best-effort on purpose: if the trip cannot be created the STATUS CHANGE MUST STILL
+      // HAPPEN. A manager who reopened a job and got a 500 back would have no idea whether the
+      // job moved. The activity line says what went wrong instead.
+      try {
+        const series = await signoffTrips.seriesForSheet(ex.signoff_id);
+        if (series && series.open) {
+          // A sheet is somehow already open on this job. Don't make a second live one — point
+          // the work order at the open sheet and say so.
+          await pool.query('UPDATE work_orders SET signoff_id=$1 WHERE id=$2', [series.open.id, id]);
+          signoffNote = ' (sign-off ' + series.open.form_number + ' was already open, so no new trip was created)';
+        } else {
+          const srcId = (series && series.latest) ? series.latest.id : ex.signoff_id;
+          const r = await signoffTrips.createNextTrip(srcId, {
+            userId: req.user.id,
+            userName: req.user.name,
+            assignedTo: (assignTo !== undefined) ? (assignTo ? parseInt(assignTo, 10) : null) : undefined,
+            trip_reason: opts.trip_reason || null,
+            via: 'work_order'
+          });
+          if (r.error) signoffNote = ' (sign-off trip NOT created: ' + r.error + ')';
+          else signoffNote = ' and created sign-off Trip ' + r.trip.trip_number + ' (' + r.trip.form_number + ')';
+        }
+      } catch (e) { console.error('reopen trip create failed:', e && e.message); signoffNote = ' (sign-off trip NOT created: ' + (e && e.message) + ')'; }
     }
   }
   const fields = ['status=$1', 'updated_at=NOW()'];
@@ -372,15 +411,21 @@ async function setStatus(req, id, status, assignTo) {
   if (assignTo !== undefined) { params.push(assignTo ? parseInt(assignTo, 10) : null); fields.splice(1, 0, 'assigned_to=$' + params.length); }
   params.push(id);
   await pool.query('UPDATE work_orders SET ' + fields.join(', ') + ' WHERE id=$' + params.length, params);
-  await woJob.addActivity(id, req.user, 'event', 'set status to ' + status + signoffNote);
-  try { await logAudit({ entity_type: 'work_order', entity_id: parseInt(id), entity_number: ex.wo_ref, action: status, user_id: req.user.id, user_name: req.user.name }); } catch (e) {}
+  const verb = reopening ? ('reopened this work order to in_process (was ' + ex.status + ')') : ('set status to ' + status);
+  const why = (reopening && opts.trip_reason) ? (' - "' + String(opts.trip_reason).trim() + '"') : '';
+  await woJob.addActivity(id, req.user, 'event', verb + signoffNote + why);
+  try { await logAudit({ entity_type: 'work_order', entity_id: parseInt(id), entity_number: ex.wo_ref, action: reopening ? 'reopened' : status, user_id: req.user.id, user_name: req.user.name, details: reopening ? { from: ex.status, reason: opts.trip_reason || null, new_trip: !!opts.new_trip } : undefined }); } catch (e) {}
   return { ok: true };
 }
 
 // PATCH /api/work-orders/:id/status
 router.patch('/:id/status', requireAuth, requirePermission('manage_work_orders'), async (req, res) => {
   try {
-    const r = await setStatus(req, req.params.id, (req.body && req.body.status), req.body ? req.body.assigned_to : undefined);
+    const b = req.body || {};
+    const r = await setStatus(req, req.params.id, b.status, b.assigned_to, {
+      new_trip: b.new_trip === true || b.new_trip === 'true',
+      trip_reason: b.trip_reason || null
+    });
     if (r.error) return res.status(r.code).json({ error: r.error });
     res.json(await loadWorkOrder(req.params.id));
   } catch (err) { console.error(err); res.status(500).json({ error: 'Failed to update status' }); }

@@ -6,6 +6,7 @@ const { emailTemplate } = require('../utils/email');
 const notify = require('../utils/notify');
 const push = require('../utils/push');
 const { buildSignoffPdf } = require('../utils/signoffPdf');
+const signoffTrips = require('../utils/signoffTrips');
 
 const router = express.Router();
 
@@ -40,9 +41,8 @@ function groupIdOf(form) {
   return form.trip_group_id || form.id;
 }
 
-function tripFormNumber(baseNumber, tripNumber) {
-  return String(baseNumber) + '-T' + tripNumber;
-}
+// tripFormNumber and the trip INSERT now live in utils/signoffTrips.js — the work order
+// module creates trips too, and two copies of that INSERT is how the numbering drifts.
 
 // Label used on the PDF, in email subjects, and in attachment filenames.
 // Returns '' for an ordinary single-visit job so nothing changes for the common case.
@@ -338,8 +338,7 @@ router.put('/:id', requireAuth, requirePermission('edit_signoff'), async (req, r
 });
 
 // POST /:id/trip — start the next visit on this job.
-// Copies the job setup forward; everything that belongs to a visit (times, techs, signature,
-// photos, invoice #) starts empty, because the manager signs for the visit that actually happened.
+// The copy-forward itself lives in utils/signoffTrips.js; this route owns the access rule.
 router.post('/:id/trip', requireAuth, requirePermission('create_signoff'), async (req, res) => {
   const b = req.body || {};
   try {
@@ -349,43 +348,20 @@ router.post('/:id/trip', requireAuth, requirePermission('create_signoff'), async
     if (!SEE_ALL.includes(req.user.role) && src.assigned_to !== req.user.id && src.created_by !== req.user.id) {
       return res.status(403).json({ error: 'Access denied' });
     }
-    if (src.status !== 'completed') {
-      return res.status(400).json({ error: 'Finish this sheet before adding the next trip.' });
-    }
-    const groupId = groupIdOf(src);
-    // One live sheet per job — no two open trips at once.
-    const open = await pool.query("SELECT id, form_number FROM signoff_forms WHERE trip_group_id = $1 AND status = 'pending' LIMIT 1", [groupId]);
-    if (open.rows.length) {
-      return res.status(400).json({ error: 'Trip ' + open.rows[0].form_number + ' is still open on this job. Complete it before adding another.' });
-    }
-    const agg = await pool.query('SELECT MAX(trip_number) AS maxtrip, MIN(trip_base_number) AS base FROM signoff_forms WHERE trip_group_id = $1', [groupId]);
-    const nextTrip = (agg.rows[0].maxtrip || 1) + 1;
-    const base = agg.rows[0].base || src.trip_base_number || src.form_number;
-    const form_number = tripFormNumber(base, nextTrip);
-    const assigned = (b.assigned_to !== undefined && b.assigned_to !== null && b.assigned_to !== '')
+    // A blank pick in the assignee dropdown has always meant "same tech as last trip" here,
+    // not "unassign". undefined is what tells the helper to inherit.
+    const assignedTo = (b.assigned_to !== undefined && b.assigned_to !== null && b.assigned_to !== '')
       ? (parseInt(b.assigned_to, 10) || null)
-      : (src.assigned_to || null);
-    const { rows: ins } = await pool.query(
-      'INSERT INTO signoff_forms (form_number, status, wo_number, po_number, account, store_name, store_number, address, city_state_zip, service_requested_by, notes, created_by, assigned_to, trip_group_id, trip_number, trip_base_number, trip_reason) ' +
-      'VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17) RETURNING *',
-      [form_number, 'pending', src.wo_number, src.po_number, src.account, src.store_name, src.store_number, src.address, src.city_state_zip, src.service_requested_by, src.notes, req.user.id, assigned, groupId, nextTrip, base, b.trip_reason || null]
-    );
-    const trip = ins[0];
-    try {
-      await logAudit({
-        entity_type: 'signoff', entity_id: trip.id, entity_number: form_number, action: 'trip_created',
-        user_id: req.user.id, user_name: req.user.name,
-        details: { trip_number: nextTrip, from: src.form_number, reason: b.trip_reason || null }
-      });
-    } catch (e) {}
-    // Point any work order on this job at the live trip so "Open Sign-Off" lands on the current sheet.
-    try {
-      await pool.query(
-        'UPDATE work_orders SET signoff_id = $1, updated_at = NOW() WHERE signoff_id IN (SELECT id FROM signoff_forms WHERE trip_group_id = $2)',
-        [trip.id, groupId]
-      );
-    } catch (e) { console.error('Repoint work order to new trip failed:', e && e.message); }
-    res.status(201).json(trip);
+      : undefined;
+    const r = await signoffTrips.createNextTrip(src.id, {
+      userId: req.user.id,
+      userName: req.user.name,
+      assignedTo: assignedTo,
+      trip_reason: b.trip_reason || null,
+      via: 'signoff'
+    });
+    if (r.error) return res.status(r.code || 400).json({ error: r.error });
+    res.status(201).json(r.trip);
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: 'Failed to add trip: ' + err.message });

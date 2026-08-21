@@ -2,7 +2,7 @@
 // public/sw.js (the only thing bumped each deploy) — the badge asks the active
 // service worker for it at runtime. This value is just the fallback shown when no
 // service worker is available (e.g. very first visit before it installs).
-var APP_VERSION = 'v131';
+var APP_VERSION = 'v132';
 var _resolvedAppVersion = null;
 
 // Ask the active service worker for its CACHE_VERSION (without the 'nova-' prefix).
@@ -17369,6 +17369,13 @@ async function renderViewWorkOrder(el, id) {
     } else if (w.status === 'job_completed') {
       actions += '<button class="btn btn-primary" onclick="woSetStatus(' + id + ',\'paperwork_sent\')">Mark Paperwork Sent</button>';
     }
+    // Reopen. The account coming back for more work AFTER sign-off is routine, and until now the
+    // only way back to In Process was the bulk dropdown on the list page. Offered from
+    // paperwork_sent too (Tony's call) because accounts add work after they have been told the
+    // job is done; the dialog warns about it.
+    if (w.status === 'job_completed' || w.status === 'paperwork_sent') {
+      actions += '<button class="btn btn-secondary" onclick="woReopen(' + id + ')">&#8617; Reopen &rarr; In Process</button>';
+    }
     if (w.signoff_id && w.signoff) {
       // w.signoff is the live trip (the latest one on the job). Use its own id rather than
       // w.signoff_id so the button always opens the current sheet.
@@ -17484,11 +17491,15 @@ async function renderViewWorkOrder(el, id) {
   checkinMount('checkin-host', id);
 }
 
-// Sign-off trips on a work order. Renders only when the job actually took more than one visit —
-// a single-visit job keeps the plain "Open Sign-Off" button and nothing else.
+// Sign-off trips on a work order.
+//
+// This used to bail out on single-visit jobs (trips.length <= 1) — which was exactly the case
+// that needed it. A finished one-visit job is where a second sheet gets added, and the only door
+// to that was buried three clicks deep in the Sign-Off module. Now the card renders as soon as
+// the job has any sheet at all, and carries the "+ Add Sign-Off Sheet" tile.
 function woSignoffTripsCard(w) {
   var trips = w.signoffs || [];
-  if (trips.length <= 1) return '';
+  if (!trips.length) return '';
   var cards = trips.map(function (t) {
     var done = t.status === 'completed';
     var meta = done
@@ -17506,12 +17517,25 @@ function woSignoffTripsCard(w) {
     '</div>';
   }).join('');
   var openTrip = trips.filter(function (t) { return t.status !== 'completed'; }).length > 0;
+  // can_add_signoff_trip comes from the API and is true only when every trip on the job is
+  // finished, so the tile never offers a trip the API would refuse. create_signoff is the
+  // permission POST /signoffs/:id/trip actually checks.
+  var canAdd = !!w.can_add_signoff_trip && can('create_signoff');
+  var nextTrip = trips.length + 1;
+  var addTile = canAdd
+    ? '<div onclick="openAddTripModal(' + trips[trips.length - 1].id + ',' + nextTrip + ')" ' +
+      'style="display:flex;align-items:center;justify-content:center;min-width:150px;padding:12px 14px;border-radius:var(--radius);' +
+      'border:1px dashed var(--border);color:var(--text-muted-color);font-size:13px;font-weight:500;cursor:pointer;gap:6px">' +
+      '+ Add Sign-Off Sheet (Trip ' + nextTrip + ')</div>'
+    : '';
   var note = openTrip
     ? '<div class="alert alert-info" style="margin:14px 0 0">This job stays open until the latest trip is signed off as 100% complete.</div>'
-    : '';
+    : (canAdd
+        ? '<div class="alert alert-info" style="margin:14px 0 0">Account added work after sign-off? Add a sheet here, or use Reopen to move the job back to In Process at the same time.</div>'
+        : '');
   return '<div class="card mb-4"><div class="card-header"><span class="card-title">Sign-Off Sheets</span>' +
-    '<span style="font-size:12px;color:var(--text-muted-color)">' + trips.length + ' visits</span></div>' +
-    '<div class="card-body"><div style="display:flex;align-items:stretch;gap:8px;flex-wrap:wrap">' + cards + '</div>' + note + '</div></div>';
+    '<span style="font-size:12px;color:var(--text-muted-color)">' + trips.length + (trips.length === 1 ? ' visit' : ' visits') + '</span></div>' +
+    '<div class="card-body"><div style="display:flex;align-items:stretch;gap:8px;flex-wrap:wrap">' + cards + addTile + '</div>' + note + '</div></div>';
 }
 
 // ---- Vehicle jobs (Fenkell / VEHI-TRAC port work) ---------------------------
@@ -17630,6 +17654,120 @@ async function woSetStatus(id, status) {
   if (ae) body.assigned_to = ae.value || null;
   try { await api('PATCH', '/work-orders/' + id + '/status', body); navigate('view-work-order', id); }
   catch (e) { var er = document.getElementById('wo-detail-error'); if (er) er.innerHTML = '<div class="alert alert-error">' + escHtml(e.message) + '</div>'; }
+}
+// Reopen a finished work order because the account asked for more work after sign-off.
+//
+// Two things have to happen and they used to live in two different modules: the job goes back to
+// In Process, and the tech needs a sheet to sign for the return visit — the sheet already on the
+// job is signed and locked, so reopening alone would leave them with a read-only page. One
+// dialog, one PATCH.
+async function woReopen(id) {
+  var errBox = document.getElementById('wo-detail-error');
+  var w = null;
+  try { w = await api('GET', '/work-orders/' + id); }
+  catch (e) { if (errBox) errBox.innerHTML = '<div class="alert alert-error">' + escHtml(e.message) + '</div>'; return; }
+  var assignees = [];
+  try { assignees = await api('GET', '/work-orders/assignees'); } catch (e) {}
+
+  var trips = w.signoffs || [];
+  var openSheet = trips.filter(function (t) { return t.status !== 'completed'; })[0] || null;
+  var nextTrip = trips.length + 1;
+  var canTrip = !!w.can_add_signoff_trip;
+  var hasNoSheet = !trips.length;
+
+  var carry = [
+    (w.po_number ? 'PO ' + w.po_number : null),
+    w.account_name,
+    (w.store_name ? w.store_name + (w.store_number ? ' #' + w.store_number : '') : null),
+    w.address, w.city_state_zip
+  ].filter(Boolean).map(escHtml).join(' &middot; ');
+
+  // What the checkbox says depends on the shape of the job. Three cases, and only the first
+  // one is armed: the other two would either duplicate a live sheet or ask for a Trip 2 on a
+  // job that never had a Trip 1.
+  var tripLine, tripHint, tripArmed;
+  if (canTrip) {
+    tripArmed = true;
+    tripLine = 'Create sign-off sheet Trip ' + nextTrip + ' for the additional work';
+    tripHint = 'Trip ' + (trips.length || 1) + ' stays signed and locked. Untick to reopen without a new sheet.';
+  } else if (openSheet) {
+    tripArmed = false;
+    tripLine = 'Sign-off ' + escHtml(openSheet.form_number || '') + ' is still open on this job';
+    tripHint = 'One live sheet per job, so no new trip is created. Reopening points the work order back at that sheet.';
+  } else {
+    tripArmed = false;
+    tripLine = hasNoSheet ? 'A pending sign-off sheet will be created' : 'No new sign-off sheet';
+    tripHint = hasNoSheet ? 'This job has no sheet yet, so moving it to In Process makes the first one.' : 'This job cannot take another trip right now.';
+  }
+
+  var warn = (w.status === 'paperwork_sent')
+    ? '<div class="alert alert-error" style="margin:0 0 14px">Paperwork for this job has already gone to the account. Reopening it means the second sheet lands after they were told the job was finished.</div>'
+    : '';
+
+  var ov = document.createElement('div');
+  ov.className = 'nova-dialog-overlay';
+  ov.innerHTML = '<div class="nova-dlg" role="dialog" aria-modal="true" style="max-width:470px;text-align:left">' +
+    '<div class="nova-dlg-title">Reopen ' + escHtml(w.wo_ref || 'this work order') + ' &rarr; In Process</div>' +
+    '<div style="font-size:12px;color:var(--text-muted-color);margin-bottom:14px">The account asked for more work after the job was signed off.</div>' +
+    warn +
+    (carry ? '<div style="font-size:12px;color:var(--text-muted-color);background:var(--bg-elevated);border:1px solid var(--border);border-radius:var(--radius);padding:10px 12px;line-height:1.7;margin-bottom:16px">' +
+      '<span style="color:var(--text-dim)">Carries over:</span> ' + carry + '<br />' +
+      '<span style="color:var(--text-dim)">Starts empty:</span> times, technicians, signature, photos, invoice #</div>' : '') +
+    '<label for="wo-reopen-trip" style="display:flex;gap:10px;align-items:flex-start;border-radius:var(--radius);padding:12px 13px;margin-bottom:14px;cursor:' + (tripArmed ? 'pointer' : 'default') + ';' +
+      'background:' + (tripArmed ? 'rgba(249,115,22,0.07)' : 'var(--bg-elevated)') + ';border:1px solid ' + (tripArmed ? 'rgba(249,115,22,0.35)' : 'var(--border)') + '">' +
+      '<input type="checkbox" id="wo-reopen-trip" style="margin-top:2px;flex-shrink:0"' + (tripArmed ? ' checked' : ' disabled') + ' />' +
+      '<span><span style="font-size:13.5px;font-weight:600;color:var(--text)">' + tripLine + '</span>' +
+      '<span style="display:block;font-size:12px;color:var(--text-muted-color);margin-top:3px">' + tripHint + '</span></span>' +
+    '</label>' +
+    '<div class="form-group"><label>Assign to</label><select id="wo-reopen-assignee">' +
+      '<option value="">&mdash; Leave as is &mdash;</option>' +
+      assignees.map(function (u) {
+        return '<option value="' + u.id + '"' + (String(w.assigned_to) === String(u.id) ? ' selected' : '') + '>' + escHtml(u.name) + '</option>';
+      }).join('') +
+    '</select></div>' +
+    '<div class="form-group" style="margin-bottom:0"><label>Why is this being reopened?</label>' +
+      '<textarea id="wo-reopen-reason" rows="3" placeholder="e.g. Store manager added rear panic bar rekey after sign-off" style="resize:vertical"></textarea>' +
+      '<div style="font-size:11.5px;color:var(--text-muted-color);margin-top:5px">Goes on the new sheet and into this work order&#39;s activity trail.</div></div>' +
+    '<div id="wo-reopen-error"></div>' +
+    '<div class="nova-dlg-actions">' +
+      '<button class="btn btn-secondary" id="wo-reopen-cancel">Never mind</button>' +
+      '<button class="btn btn-primary" id="wo-reopen-ok">' + (tripArmed ? 'Reopen &amp; Create Trip ' + nextTrip : 'Reopen') + '</button>' +
+    '</div></div>';
+  document.body.appendChild(ov);
+
+  function close() {
+    ov.classList.add('closing');
+    document.removeEventListener('keydown', onKey);
+    setTimeout(function () { if (ov.parentNode) ov.parentNode.removeChild(ov); }, 140);
+  }
+  function onKey(e) { if (e.key === 'Escape') { e.preventDefault(); close(); } }
+  document.addEventListener('keydown', onKey);
+  ov.addEventListener('mousedown', function (e) { if (e.target === ov) close(); });
+  ov.querySelector('#wo-reopen-cancel').addEventListener('click', close);
+  ov.querySelector('#wo-reopen-ok').addEventListener('click', async function () {
+    var btn = this;
+    var label = btn.innerHTML;
+    btn.disabled = true; btn.textContent = 'Reopening...';
+    var cb = ov.querySelector('#wo-reopen-trip');
+    var body = {
+      status: 'in_process',
+      new_trip: !!(cb && !cb.disabled && cb.checked),
+      trip_reason: ((ov.querySelector('#wo-reopen-reason') || {}).value || '').trim() || null
+    };
+    // Only send an assignee when one was actually picked. An empty string would reach the API as
+    // "unassign", and quietly stripping the tech off a job someone is reopening is not the ask.
+    var sel = ov.querySelector('#wo-reopen-assignee');
+    if (sel && sel.value) body.assigned_to = sel.value;
+    try {
+      await api('PATCH', '/work-orders/' + id + '/status', body);
+      close();
+      navigate('view-work-order', id);
+    } catch (err) {
+      var e2 = ov.querySelector('#wo-reopen-error');
+      if (e2) e2.innerHTML = '<div class="alert alert-error" style="margin:14px 0 0">' + escHtml(err.message) + '</div>';
+      btn.disabled = false; btn.innerHTML = label;
+    }
+  });
 }
 async function woAssign(id) {
   var ae = document.getElementById('wo-assignee');
