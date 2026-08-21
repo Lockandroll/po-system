@@ -3,15 +3,13 @@ const bcrypt = require('bcryptjs');
 const crypto = require('crypto');
 const { pool } = require('../db');
 const { requireAuth, requireRole, requirePermission } = require('../middleware/auth');
-const { sendEmail, emailTemplate } = require('../utils/email');
+// The invite email moved to utils/invite.js when the New Hires roster grew its
+// own Resend button — both routers send the identical message from one place.
+const { sendInvite } = require('../utils/invite');
 const { logAudit } = require('../utils/audit');
 const security = require('../utils/security');
 
 const router = express.Router();
-
-// Same sha256 helper used in routes/auth.js — invite/reset tokens are stored HASHED
-// at rest; only the raw token is emailed to the user.
-function hashToken(t) { return crypto.createHash('sha256').update(String(t)).digest('hex'); }
 
 const VALID_ROLES = ['locksmith', 'locksmith_coordinator', 'dispatcher', 'roadside_technician', 'manager', 'admin', 'owner'];
 
@@ -31,34 +29,6 @@ async function setUserCities(userId, codes) {
   await pool.query('DELETE FROM user_cities WHERE user_id=$1', [userId]);
   for (const c of clean) await pool.query('INSERT INTO user_cities (user_id, city_code) VALUES ($1,$2) ON CONFLICT (user_id, city_code) DO NOTHING', [userId, c]);
   return clean;
-}
-
-// Create an invite token and email the new user a link to set their own password.
-async function sendInvite(user, invitedByName) {
-  const token = crypto.randomBytes(32).toString('hex');
-  const expires = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000); // 7 days
-  await pool.query(
-    'INSERT INTO password_resets (user_id, token, expires_at) VALUES ($1, $2, $3) ON CONFLICT (user_id) DO UPDATE SET token=$2, expires_at=$3, used=false',
-    [user.id, hashToken(token), expires]
-  );
-  const appUrl = (process.env.APP_URL || '').replace(/\/$/, '');
-  const inviteUrl = appUrl + '/?reset=' + token;
-  const html = emailTemplate({
-    badge: 'Welcome',
-    badgeColor: 'green',
-    title: 'You\'ve been invited to Nova',
-    body: 'Hi ' + user.name + ', an account has been created for you' +
-          (invitedByName ? ' by ' + invitedByName : '') +
-          ' on Nova, the Lock and Roll operations platform. Click below to set your password and finish setting up your account. This link expires in 7 days.',
-    details: [
-      { label: 'Email', value: user.email },
-      { label: 'Role', value: ROLE_LABELS[user.role] || user.role }
-    ],
-    buttonText: 'Set Your Password',
-    buttonUrl: inviteUrl,
-    footerNote: 'If you weren\'t expecting this invitation, you can ignore this email.'
-  });
-  await sendEmail([user.email], 'Welcome to Nova — set your password', html);
 }
 
 // List all users (admin only)
@@ -546,12 +516,16 @@ router.post('/:id/invite', requireAuth, requirePermission('manage_users'), async
   if (!user) return res.status(404).json({ error: 'User not found' });
   if (user.active === false) return res.status(400).json({ error: 'User is deactivated. Reactivate the account before sending an invite.' });
   if (user.last_login_at) return res.status(400).json({ error: 'This user has already set up their account and logged in. Use password reset instead.' });
+  var sent = false;
   try {
-    await sendInvite(user, req.user && req.user.name);
+    sent = await sendInvite(user, req.user && req.user.name);
   } catch (e) {
     console.error('Resend invite failed:', e);
-    return res.status(502).json({ error: 'Could not send the invite email. Please try again.' });
+    sent = false;
   }
+  // sendEmail() swallows its own errors, so before it started reporting back this
+  // handler always answered "sent" even when Resend had rejected the message.
+  if (!sent) return res.status(502).json({ error: 'The invite email could not be sent. Check the address on file and try again - the old link may no longer work.' });
   await logAudit({ entity_type: 'user', entity_id: user.id, action: 'invite_resent', user_id: req.user.id, user_name: req.user.name, details: { email: user.email } });
   res.json({ success: true });
 });

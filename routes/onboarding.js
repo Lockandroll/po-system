@@ -12,6 +12,9 @@ const { logAudit } = require('../utils/audit');
 const r2 = require('../utils/r2');
 const { sendEmail, emailTemplate } = require('../utils/email');
 const { sendSms } = require('../utils/sms');
+// Shared with routes/users.js so the roster Resend button and the original
+// new-hire invite are byte-for-byte the same email.
+const { sendInvite } = require('../utils/invite');
 const push = require('../utils/push');
 const hrCrypto = require('../utils/hrCrypto');
 
@@ -1564,7 +1567,7 @@ admin.get('/progress', async (req, res) => {
   const allSteps = await activeSteps();
   const total = allSteps.length;
   const ur = await pool.query(
-    "SELECT u.id, u.name, u.title, u.role, u.onboarding_enrolled_at, u.supervisor_id, u.onboarding_completion_override, " +
+    "SELECT u.id, u.name, u.title, u.role, u.email, u.last_login_at, u.onboarding_enrolled_at, u.supervisor_id, u.onboarding_completion_override, " +
     "u.onboarding_phase, u.onboarding_phase1_approved_at, s.name AS supervisor_name, " +
     "u.onboarding_phase1_approver_id, u.onboarding_phase2_approver_id, " +
     "a1.name AS phase1_approver_name, a2.name AS phase2_approver_name " +
@@ -1590,6 +1593,10 @@ admin.get('/progress', async (req, res) => {
     const awaitingPhase1Review = p1AllDone && parseInt(u.onboarding_phase, 10) !== 2 && !u.onboarding_phase1_approved_at;
     out.push({
       id: u.id, name: u.name, title: u.title, role: u.role,
+      // Both feed the Resend invite button: the address so the admin can see
+      // where it is going before sending, and whether they have ever logged
+      // in so the confirm can say what the link will actually do.
+      email: u.email, has_logged_in: !!u.last_login_at,
       supervisor_id: u.supervisor_id, supervisor_name: u.supervisor_name,
       phase1_approver_id: u.onboarding_phase1_approver_id, phase1_approver_name: u.phase1_approver_name,
       phase2_approver_id: u.onboarding_phase2_approver_id, phase2_approver_name: u.phase2_approver_name,
@@ -1689,6 +1696,47 @@ admin.post('/users/:id/remove', async (req, res) => {
   await pool.query("UPDATE users SET onboarding_status = 'complete' WHERE id = $1", [target]);
   await logAudit({ entity_type: 'onboarding', entity_id: target, action: 'removed', user_id: req.user.id, user_name: req.user.name, details: { user: ur.rows[0].name } });
   res.json({ success: true });
+});
+
+// ---- Resend the set-password invite ----------------------------------------
+
+// A hire who deletes the welcome email has no way in: that link is the only
+// thing that gets them a password, and until now nothing on the New Hires roster
+// could send another one. Users -> Resend invite did exist, but it needs
+// manage_users (most people who run onboarding do not have it) and it refuses
+// anyone who has ever logged in.
+//
+// This one is gated on manage_onboarding, and it deliberately sends even to a
+// hire who HAS logged in before (Tony's call). That is safe because sendInvite()
+// only writes a password_resets row - it never touches password_hash - so an
+// existing password keeps working right up until they click the new link.
+//
+// Scoped to people actually IN onboarding, so manage_onboarding can never be
+// turned into a way to mail a fresh password link to an admin.
+admin.post('/users/:id/invite', async (req, res) => {
+  const target = parseInt(req.params.id, 10) || 0;
+  const ur = await pool.query('SELECT id, name, email, role, active, onboarding_status, last_login_at FROM users WHERE id = $1', [target]);
+  const u = ur.rows[0];
+  if (!u) return res.status(404).json({ error: 'User not found' });
+  if (!u.onboarding_status || u.onboarding_status === 'complete') return res.status(400).json({ error: 'That person is not in onboarding.' });
+  if (u.active === false) return res.status(400).json({ error: 'That account is deactivated. Reactivate it before sending an invite.' });
+  if (!u.email) return res.status(400).json({ error: 'There is no email address on file for ' + u.name + '. Add one under Users first.' });
+  var sent = false;
+  try {
+    sent = await sendInvite(u, req.user && req.user.name);
+  } catch (e) {
+    console.error('[onboarding] resend invite failed:', e.message);
+    sent = false;
+  }
+  // sendEmail() reports whether Resend accepted it, so the admin is never told
+  // "sent" about a message that never left the building.
+  if (!sent) return res.status(502).json({ error: 'The invite email could not be sent. Check the address on file and try again - the old link may no longer work.' });
+  await logAudit({
+    entity_type: 'onboarding', entity_id: u.id, action: 'invite_resent',
+    user_id: req.user.id, user_name: req.user.name,
+    details: { email: u.email, had_logged_in: !!u.last_login_at }
+  });
+  res.json({ success: true, email: u.email });
 });
 
 // ---- Phase 1 review (direct supervisor / owner / admin) ---------------------

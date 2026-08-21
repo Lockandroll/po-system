@@ -1025,6 +1025,7 @@
           '<button class="onb-btn ghost" style="padding:8px 12px;font-size:13px" onclick="onbOpenReview(' + u.id + ')">Docs</button> ' +
           '<button class="onb-btn ghost" style="padding:8px 12px;font-size:13px" onclick="onbOverride(' + u.id + ')">Completion' + (u.completion_override ? ' •' : '') + '</button> ' +
           '<button class="onb-btn ghost" style="padding:8px 12px;font-size:13px" onclick="onbDownloadRecord(' + u.id + ')">Record</button> ' +
+          '<button class="onb-btn ghost" style="padding:8px 12px;font-size:13px" onclick="onbResendInvite(' + u.id + ')">Resend invite</button> ' +
           '<button class="onb-btn ghost" style="padding:8px 12px;font-size:13px" onclick="onbRemove(' + u.id + ')">Remove</button>' +
         '</td></tr>' +
         '<tr id="onb-detail-' + u.id + '" style="display:none"><td colspan="4"></td></tr>' +
@@ -1086,6 +1087,25 @@
     try { await api('POST', '/onboarding/admin/users/' + id + '/phase2/start', {}); showToast('Phase 2 started for ' + name + '.', 'success'); renderOnboardingAdmin(document.getElementById('content')); }
     catch (e) { showToast(e.message || 'Could not start Phase 2.', 'error'); }
   };
+  // Resend the "set your password" email. A hire who deletes the original one is
+  // stuck: that link is the only way they get a password, and the roster had no
+  // way to send another. Users -> Resend invite needs manage_users and refuses
+  // anyone who has already logged in, which is why this is its own button.
+  window.onbResendInvite = async function (id) {
+    var u = (window._onbProgress || []).filter(function (x) { return x.id === id; })[0] || {};
+    var to = u.email || 'the address on file';
+    var msg = 'Send ' + (u.name || 'this hire') + ' a fresh set-your-password link at ' + to + '?\n\n'
+      + 'Any earlier invite link stops working.'
+      + (u.has_logged_in ? ' They have signed in before, so the password they have now keeps working until they use the new link.' : '');
+    if (!await novaConfirm(msg, { title: 'Resend invite', okText: 'Send it' })) return;
+    try {
+      var r = await api('POST', '/onboarding/admin/users/' + id + '/invite', {});
+      showToast('Invite sent to ' + ((r && r.email) || to) + '.', 'success');
+    } catch (e) {
+      showToast(e.message || 'Could not send the invite.', 'error');
+    }
+  };
+
   window.onbRemove = async function (id) {
     if (!window.confirm('Remove them from onboarding? Their full access unlocks WITHOUT sign-off.')) return;
     try { await api('POST', '/onboarding/admin/users/' + id + '/remove', {}); showToast('Removed from onboarding.', 'info'); renderOnboardingAdmin(document.getElementById('content')); }

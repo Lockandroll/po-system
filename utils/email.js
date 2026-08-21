@@ -2,8 +2,12 @@ function esc(s) {
   return String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 }
 
+// Returns true when Resend accepted the message, false when it did not (no API
+// key, non-2xx, or a thrown fetch). Added for the "Resend invite" buttons, which
+// were otherwise reporting success on a send that never left the building.
+// Every other caller ignores the return value and is unaffected.
 async function sendEmail(to, subject, html, cc, attachments) {
-  if (!process.env.RESEND_API_KEY) { console.warn('RESEND_API_KEY not set — skipping email'); return; }
+  if (!process.env.RESEND_API_KEY) { console.warn('RESEND_API_KEY not set — skipping email'); return false; }
   try {
     const body = {
       from: process.env.FROM_EMAIL || 'Lock and Roll <onboarding@resend.dev>',
@@ -21,9 +25,12 @@ async function sendEmail(to, subject, html, cc, attachments) {
     if (!resp.ok) {
       const text = await resp.text();
       console.error('Resend error ' + resp.status + ':', text);
+      return false;
     }
+    return true;
   } catch (err) {
     console.error('Email send failed:', err.message);
+    return false;
   }
 }
 
