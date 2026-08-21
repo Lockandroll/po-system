@@ -153,6 +153,8 @@
       '.er-grid3{display:grid;grid-template-columns:1fr 1fr 1fr;gap:14px}',
       '.er-grid2{display:grid;grid-template-columns:1fr 1fr;gap:14px}',
       '@media(max-width:640px){.er-grid3,.er-grid2{grid-template-columns:1fr}}',
+      '.er-row{cursor:pointer}',
+      '.er-row:hover td{background:rgba(249,115,22,0.06)}',
       '.er-win{display:flex;gap:12px;padding:13px 0;border-bottom:1px solid var(--border-light)}',
       '.er-win:last-child{border-bottom:none}',
       '.er-win .who{font-size:13.5px;font-weight:600;color:var(--text)}',
@@ -201,7 +203,10 @@
       if (c.performance) chips.push('<span class="badge badge-active">' + c.performance + ' note' + (c.performance === 1 ? '' : 's') + '</span>');
       if (c.disciplinary) chips.push('<span class="badge badge-rejected">' + c.disciplinary + ' formal</span>');
       if (!chips.length) chips.push('<span style="color:var(--text-muted-color);font-size:13px">No records</span>');
-      return '<tr>' +
+      // The whole row opens the file. The button stays because it is the thing
+      // people look for, but it stops the click so the row handler does not
+      // also fire and open the same file twice.
+      return '<tr class="er-row" onclick="erOpenFile(' + u.id + ')">' +
         '<td><div style="display:flex;align-items:center;gap:10px">' +
         '<div class="avatar" style="width:28px;height:28px;font-size:11px">' + esc(initials(u.name)) + '</div>' +
         '<div><div style="color:var(--text);font-weight:500">' + esc(u.name) + '</div>' +
@@ -210,7 +215,7 @@
         '<td>' + chips.join(' ') + '</td>' +
         '<td>' + (u.doc_count || 0) + '</td>' +
         '<td>' + esc(relDays(u.last_activity)) + '</td>' +
-        '<td style="text-align:right"><button class="btn btn-secondary btn-sm" onclick="erOpenFile(' + u.id + ')">Open file</button></td>' +
+        '<td style="text-align:right"><button class="btn btn-secondary btn-sm" onclick="event.stopPropagation();erOpenFile(' + u.id + ')">Open file</button></td>' +
         '</tr>';
     }).join('');
 
