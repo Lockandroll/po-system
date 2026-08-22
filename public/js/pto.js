@@ -118,6 +118,12 @@
     var n = 0, d = new Date(s); while (d <= e) { var w = d.getDay(); if (w !== 0 && w !== 6) n++; d.setDate(d.getDate() + 1); } return n;
   }
   function fmtDate(v) { var d = parseLocal(v); return d ? d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' }) : ''; }
+  // 'Mon Aug 24'. The weekday is what an approver actually reasons about when
+  // judging coverage, and a bare date makes them count on their fingers.
+  function fmtDayDate(v) {
+    var d = parseLocal(v);
+    return d ? d.toLocaleDateString('en-US', { weekday: 'short' }) + ' ' + fmtDate(v) : '';
+  }
   // Local-date string arithmetic for the detail dialog's schedule grid. Mirrors
   // the server's addDaysStr/mondayOfStr, but built on local dates so the grid
   // lines up with what the approver sees everywhere else in the app.
@@ -711,7 +717,7 @@
           (meta.length ? '<span class="m">' + meta.join(' · ') + '</span>' : '') + '</div>';
       }).join('') || '<div class="pto-empty">—</div>';
       cols += '<div class="pto-day' + (isReq ? ' req' : '') + (day === today ? ' today' : '') + '">' +
-        '<div class="pto-day-hd">' + escHtml(fmtDate(day)) + '</div>' + tag + items + '</div>';
+        '<div class="pto-day-hd">' + escHtml(fmtDayDate(day)) + '</div>' + tag + items + '</div>';
     }
     return '<div class="pto-wk"><div class="pto-wk-hd' + (touched ? ' is-req' : '') + '">' +
       escHtml(label) + '</div>' +
@@ -855,7 +861,7 @@
       var lastReq = reqWeeks.length ? reqWeeks[reqWeeks.length - 1] : null;
       weeks.forEach(function (m) {
         var wkEnd = addDaysLocal(m, 6);
-        var dates = fmtDate(m) + ' \u2013 ' + fmtDate(wkEnd);
+        var dates = fmtDayDate(m) + ' \u2013 ' + fmtDayDate(wkEnd);
         var role;
         if (firstReq && m < firstReq) role = 'Week before';
         else if (lastReq && m > lastReq) role = 'Week after';

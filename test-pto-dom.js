@@ -201,13 +201,24 @@ async function run() {
   has(dh, 'those days are the highlighted columns below'.replace('those', 'Those'), 'pointing at the highlight');
   has(dh, '1 paid, 1 unpaid', 'with the day mix');
   has(dh, 'pto-key', 'a colour key is present');
+  console.log('== day headers name the weekday ==');
+  var hdTexts = Array.prototype.map.call(dlg.querySelectorAll('.pto-day-hd'), function (x) { return x.textContent; });
+  eq(hdTexts.length, 21, 'three weeks of seven day headers');
+  ok(/^(Mon|Tue|Wed|Thu|Fri|Sat|Sun) [A-Z][a-z]{2} \d{1,2}$/.test(hdTexts[0]),
+     'header reads like "Mon Aug 24"  (got ' + hdTexts[0] + ')');
+  var names = hdTexts.slice(0, 7).map(function (t) { return t.split(' ')[0]; });
+  eq(names.join(','), 'Mon,Tue,Wed,Thu,Fri,Sat,Sun', 'a week runs Monday to Sunday, in order');
+  var names2 = hdTexts.slice(7, 14).map(function (t) { return t.split(' ')[0]; });
+  eq(names2.join(','), 'Mon,Tue,Wed,Thu,Fri,Sat,Sun', 'and every week starts on Monday');
+
   console.log('== week blocks name their role ==');
   var hds = Array.prototype.map.call(dlg.querySelectorAll('.pto-wk-hd'), function (x) { return x.textContent; });
   eq(hds.length, 3, 'three week blocks');
   ok(hds[0].indexOf('Week before') === 0, 'the first is labelled Week before  (got ' + hds[0] + ')');
   ok(hds[1].indexOf('Requested') === 0, 'the middle is labelled Requested  (got ' + hds[1] + ')');
   ok(hds[2].indexOf('Week after') === 0, 'the last is labelled Week after  (got ' + hds[2] + ')');
-  ok(hds[0].indexOf(String(d(-7)).slice(5) ) !== -1 || hds[0].indexOf('Aug') !== -1 || hds[0].indexOf('Sep') !== -1, 'and still carries its dates');
+  ok(/Week before {2}\u00b7 {2}(Mon|Tue|Wed|Thu|Fri|Sat|Sun) /.test(hds[0]),
+     'the week label carries weekday + date  (got ' + hds[0] + ')');
   var mine = dlg.querySelectorAll('.pto-chip.me');
   eq(mine.length, 2, 'the requester own two shifts are outlined');
   has(dh, 'Christopher Benson', 'a colleague shift appears in the grid');
