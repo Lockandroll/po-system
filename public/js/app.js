@@ -8786,14 +8786,25 @@ async function renderDocuments(el) {
     warn = '<div style="background:rgba(234,179,8,0.12);border:1px solid #eab308;border-radius:8px;padding:10px 14px;margin-bottom:14px;font-size:13px">File storage is not configured yet. Folders and sharing work now, but uploads and downloads need the R2_* environment variables set in Railway. Your folder structure is safe.</div>';
   }
 
+  var head =
+    '<div class="doc-hide-sm" style="display:flex;align-items:center;gap:12px;padding:9px 14px;border-bottom:1px solid var(--border);font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:0.6px;color:var(--text-muted-color)">' +
+    '<div style="flex:1;min-width:0">Name</div>' +
+    '<div class="doc-hide-sm" style="width:120px;flex:0 0 120px">Expiration</div>' +
+    '<div class="doc-hide-sm" style="width:80px;flex:0 0 80px;text-align:right">Size</div>' +
+    '<div class="doc-hide-sm" style="width:150px;flex:0 0 150px">Owner</div>' +
+    '<div class="doc-actcol" style="flex:0 0 auto"></div>' +
+    '</div>';
+
   var rows = '';
   data.folders.forEach(function (f) {
     rows += '<div style="display:flex;align-items:center;gap:12px;padding:11px 14px;border-bottom:1px solid var(--border)">' +
       '<div style="flex:1;min-width:0;cursor:pointer;display:flex;align-items:center;gap:10px" onclick="navigate(\'documents\',' + f.id + ')">' + docFolderIcon +
       '<span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + escHtml(f.name) + '</span>' +
       (f.shareCount ? '<span class="doc-badge">shared</span>' : '') + '</div>' +
-      '<div class="doc-hide-sm" style="width:150px;color:var(--text-muted-color);font-size:13px">' + escHtml(f.owner_name || '') + '</div>' +
-      '<div style="text-align:right;white-space:nowrap">' + docMenu('folder', f.id, f.canEdit) + '</div>' +
+      '<div class="doc-hide-sm" style="width:120px;flex:0 0 120px"></div>' +
+      '<div class="doc-hide-sm" style="width:80px;flex:0 0 80px"></div>' +
+      '<div class="doc-hide-sm" style="width:150px;flex:0 0 150px;color:var(--text-muted-color);font-size:13px">' + escHtml(f.owner_name || '') + '</div>' +
+      '<div class="doc-actcol" style="flex:0 0 auto;text-align:right;white-space:nowrap">' + docMenu('folder', f.id, f.canEdit) + '</div>' +
       '</div>';
   });
   data.files.forEach(function (f) {
@@ -8803,12 +8814,14 @@ async function renderDocuments(el) {
       (f.shareCount ? '<span class="doc-badge">shared</span>' : '') +
       (f.emailable ? '<span class="doc-badge" style="background:rgba(59,130,246,0.15);color:#3b82f6">email</span>' : '') +
       docExpiryBadge(f) + '</div>' +
-      '<div class="doc-hide-sm" style="width:80px;color:var(--text-muted-color);font-size:13px;text-align:right">' + docFmtSize(f.size_bytes) + '</div>' +
-      '<div class="doc-hide-sm" style="width:150px;color:var(--text-muted-color);font-size:13px">' + escHtml(f.owner_name || '') + '</div>' +
-      '<div style="text-align:right;white-space:nowrap">' + docMenu('file', f.id, f.canEdit, f.emailable) + '</div>' +
+      docExpiryCell(f) +
+      '<div class="doc-hide-sm" style="width:80px;flex:0 0 80px;color:var(--text-muted-color);font-size:13px;text-align:right">' + docFmtSize(f.size_bytes) + '</div>' +
+      '<div class="doc-hide-sm" style="width:150px;flex:0 0 150px;color:var(--text-muted-color);font-size:13px">' + escHtml(f.owner_name || '') + '</div>' +
+      '<div class="doc-actcol" style="flex:0 0 auto;text-align:right;white-space:nowrap">' + docMenu('file', f.id, f.canEdit, f.emailable) + '</div>' +
       '</div>';
   });
   if (!data.folders.length && !data.files.length) {
+    head = '';
     rows = '<div style="padding:44px;text-align:center;color:var(--text-muted-color)">This folder is empty.</div>';
   }
 
@@ -8820,7 +8833,7 @@ async function renderDocuments(el) {
     '<div style="font-size:14px">' + crumb + '</div>' +
     '<div>' + actions + '</div>' +
     '</div>' +
-    '<div class="card" id="doc-droparea"' + ((data.canWriteHere && data.storageReady) ? ' ondragover="docDragOver(event)" ondragleave="docDragLeave(event)" ondrop="docDrop(event)"' : '') + '><div class="card-body" style="padding:0">' + rows + '</div></div>' +
+    '<div class="card" id="doc-droparea"' + ((data.canWriteHere && data.storageReady) ? ' ondragover="docDragOver(event)" ondragleave="docDragLeave(event)" ondrop="docDrop(event)"' : '') + '><div class="card-body" style="padding:0">' + head + rows + '</div></div>' +
     ((data.canWriteHere && data.storageReady) ? '<div style="margin-top:10px;font-size:12px;color:var(--text-muted-color);display:flex;align-items:center;gap:6px"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="flex-shrink:0"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>Drag files from your computer onto the list to upload them here.</div>' : '');
 }
 
@@ -9043,12 +9056,38 @@ function docExpiryBadge(f) {
   var today = new Date(); today.setHours(0, 0, 0, 0);
   var fmt = exp.toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' });
   if (today.getTime() >= exp.getTime())
-    return ' <span class="doc-badge" title="Expired" style="background:rgba(239,68,68,0.16);color:#ef4444">expired ' + escHtml(fmt) + '</span>';
+    return ' <span class="doc-badge doc-show-sm" title="Expired" style="background:rgba(239,68,68,0.16);color:#ef4444">expired ' + escHtml(fmt) + '</span>';
   var lead = docLeadDate(f.expires_on, f.reminder_lead_num, f.reminder_lead_unit);
   if (today.getTime() >= lead.getTime())
-    return ' <span class="doc-badge" title="Expires " style="background:rgba(234,179,8,0.18);color:#eab308">expiring ' + escHtml(fmt) + '</span>';
+    return ' <span class="doc-badge doc-show-sm" title="Expires" style="background:rgba(234,179,8,0.18);color:#eab308">expiring ' + escHtml(fmt) + '</span>';
   return '';
 }
+// The Expiration column. Files only: a date, coloured red once it has passed and
+// amber once the reminder lead time has started. Editors can click the cell to
+// open the same picker the calendar button opens.
+function docExpiryCell(f) {
+  var box = 'class="doc-hide-sm" style="width:120px;flex:0 0 120px;font-size:13px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;';
+  var click = f.canEdit ? ' onclick="event.stopPropagation();docSetExpiry(' + f.id + ')"' : '';
+  var reach = f.canEdit ? 'cursor:pointer;' : '';
+  var exp = f.expires_on ? new Date(String(f.expires_on).slice(0, 10) + 'T00:00:00') : null;
+  if (!exp || isNaN(exp.getTime())) {
+    return '<div ' + box + reach + 'color:var(--text-muted-color)" title="' +
+      (f.canEdit ? 'No expiration set. Click to set one.' : 'No expiration set') + '"' + click + '>&mdash;</div>';
+  }
+  var today = new Date(); today.setHours(0, 0, 0, 0);
+  var fmt = exp.toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' });
+  var colour = 'color:var(--text-muted-color)';
+  var tip = 'Expires ' + fmt;
+  if (today.getTime() >= exp.getTime()) {
+    colour = 'color:#ef4444;font-weight:600';
+    tip = 'Expired ' + fmt;
+  } else if (today.getTime() >= docLeadDate(f.expires_on, f.reminder_lead_num, f.reminder_lead_unit).getTime()) {
+    colour = 'color:#eab308;font-weight:600';
+    tip = 'Expiring soon: ' + fmt;
+  }
+  return '<div ' + box + reach + colour + '" title="' + escHtml(tip) + '"' + click + '>' + escHtml(fmt) + '</div>';
+}
+
 function docSetExpiry(id) {
   var f = docFind('file', id);
   if (!f) return;

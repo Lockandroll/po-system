@@ -425,6 +425,11 @@
     .doc-badge { font-size: 10px; text-transform: uppercase; letter-spacing: 0.5px; background: rgba(249,115,22,0.15); color: var(--primary); padding: 2px 6px; border-radius: 4px; }
     .doc-act { padding: 4px 7px !important; font-size: 15px !important; line-height: 1; }
     @media (max-width: 640px) { .doc-hide-sm { display: none !important; } }
+    @media (min-width: 641px) { .doc-show-sm { display: none !important; } }
+    /* Reserves room for the row buttons so the Document Vault column headings line
+       up with the cells under them. Phones give the space back to the file name. */
+    .doc-actcol { min-width: 236px; }
+    @media (max-width: 640px) { .doc-actcol { min-width: 0; } }
     .filter-bar { display: flex; gap: 10px; flex-wrap: wrap; margin-bottom: 16px; align-items: center; }
     .filter-bar input, .filter-bar select { width: auto; flex: 1; min-width: 140px; }
     .empty-state { text-align: center; padding: 48px 24px; color: var(--text-muted-color); }
