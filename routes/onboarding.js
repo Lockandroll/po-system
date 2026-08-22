@@ -17,6 +17,7 @@ const { sendSms } = require('../utils/sms');
 const { sendInvite } = require('../utils/invite');
 const push = require('../utils/push');
 const hrCrypto = require('../utils/hrCrypto');
+const org = require('../utils/org');
 
 const router = express.Router();
 
@@ -1567,7 +1568,7 @@ admin.get('/progress', async (req, res) => {
   const allSteps = await activeSteps();
   const total = allSteps.length;
   const ur = await pool.query(
-    "SELECT u.id, u.name, u.title, u.role, u.email, u.last_login_at, u.last_seen_at, u.onboarding_enrolled_at, u.supervisor_id, u.onboarding_completion_override, " +
+    "SELECT u.id, u.name, u.title, u.role, u.email, u.last_login_at, u.onboarding_enrolled_at, u.supervisor_id, u.onboarding_completion_override, " +
     "u.onboarding_phase, u.onboarding_phase1_approved_at, s.name AS supervisor_name, " +
     "u.onboarding_phase1_approver_id, u.onboarding_phase2_approver_id, " +
     "a1.name AS phase1_approver_name, a2.name AS phase2_approver_name " +
@@ -1597,12 +1598,6 @@ admin.get('/progress', async (req, res) => {
       // where it is going before sending, and whether they have ever logged
       // in so the confirm can say what the link will actually do.
       email: u.email, has_logged_in: !!u.last_login_at,
-      // Roster "last seen" column. last_seen_at is stamped by middleware/auth on
-      // any authenticated request (throttled to 60s), so it answers "are they in
-      // Nova at all", not "are they working the onboarding track". A null
-      // last_login_at is the different, louder case: they never got in, which is
-      // a Resend invite problem rather than a slow-hire problem.
-      last_seen_at: u.last_seen_at, last_login_at: u.last_login_at,
       supervisor_id: u.supervisor_id, supervisor_name: u.supervisor_name,
       phase1_approver_id: u.onboarding_phase1_approver_id, phase1_approver_name: u.phase1_approver_name,
       phase2_approver_id: u.onboarding_phase2_approver_id, phase2_approver_name: u.phase2_approver_name,
@@ -1826,10 +1821,17 @@ admin.post('/users/:id/packet-details', async (req, res) => {
 });
 
 // Stream a decrypted HR document inline for review (access-checked + audited).
+// The decrypted viewer behind every document on the file page. Same rule, or
+// the bytes would still be reachable by id even with the list locked down.
 admin.get('/hr-doc/:docId', async (req, res) => {
   const docId = parseInt(req.params.docId, 10) || 0;
   const dr = await pool.query('SELECT user_id, r2_key, mime_type, name FROM hr_documents WHERE id = $1', [docId]);
   if (!dr.rows.length) return res.status(404).json({ error: 'Not found' });
+  // The rank rule applies to the BYTES too. Locking the list but not the viewer
+  // would leave every document reachable by guessing an id.
+  const _vu = await pool.query('SELECT id, role FROM users WHERE id = $1', [dr.rows[0].user_id]);
+  if (!_vu.rows.length) return res.status(404).json({ error: 'Not found' });
+  if (!(await org.canOpenFile(req.user, _vu.rows[0]))) return res.status(403).json({ error: 'You cannot open that document.' });
   if (!(await canSignOff(req.user, dr.rows[0].user_id))) return res.status(403).json({ error: 'Not permitted.' });
   try {
     const bytes = await hrCrypto.getDecrypted(dr.rows[0].r2_key);
@@ -2094,8 +2096,16 @@ admin.get('/users/:id/record.csv', async (req, res) => {
 });
 
 // ================= EMPLOYEE FILES (living personnel file) =====================
-// Access mirrors onboarding review: Owner/Admin company-wide, Manager downline
-// (canSignOff = admin/owner OR in the target's supervisor chain).
+//
+// Access is NOT canSignOff on its own. canSignOff answers "may this person act
+// on that onboarding", which is true for any admin about any other admin - fine
+// for a checklist, wrong for a personnel file.
+//
+// These four routes add utils/org.js canOpenFile on top: a file may only be
+// opened by somebody strictly ABOVE the person it belongs to, so admin cannot
+// read admin and one city manager cannot read another. Tony's requirement,
+// 2026-08-21. The onboarding routes above deliberately keep the looser rule -
+// approving somebody's paperwork is a different act from reading their file.
 
 admin.get('/employees', async (req, res) => {
   var rows;
@@ -2107,6 +2117,9 @@ admin.get('/employees', async (req, res) => {
       'UNION SELECT u.id, u.name, u.role FROM users u JOIN dl ON u.supervisor_id = dl.id) ' +
       'SELECT id, name, role FROM dl ORDER BY name ASC', [req.user.id])).rows;
   }
+  // Drop peers, the viewer's upline and the viewer themself before anything is
+  // counted or returned.
+  rows = org.filterOpenable(req.user, rows);
   const counts = await pool.query("SELECT user_id, COUNT(*)::int AS n FROM hr_documents WHERE review_status <> 'superseded' GROUP BY user_id");
   const cmap = {}; counts.rows.forEach(function (c) { cmap[c.user_id] = c.n; });
   res.json(rows.map(function (u) { return { id: u.id, name: u.name, role: u.role, doc_count: cmap[u.id] || 0 }; }));
@@ -2114,16 +2127,22 @@ admin.get('/employees', async (req, res) => {
 
 admin.get('/employees/:id/file', async (req, res) => {
   const target = parseInt(req.params.id, 10) || 0;
-  if (!(await canSignOff(req.user, target))) return res.status(403).json({ error: 'Not permitted.' });
   const ur = await pool.query('SELECT id, name, role FROM users WHERE id = $1', [target]);
   if (!ur.rows.length) return res.status(404).json({ error: 'Not found' });
+  if (!(await org.canOpenFile(req.user, ur.rows[0])) || !(await canSignOff(req.user, target))) {
+    return res.status(403).json({ error: 'You cannot open that file.' });
+  }
   const docs = await pool.query("SELECT id, category, slot_key, name, mime_type, expires_at, verify_status, review_status, source, uploaded_by_name, created_at FROM hr_documents WHERE user_id = $1 AND review_status <> 'superseded' ORDER BY category ASC, id DESC", [target]);
   res.json({ user: ur.rows[0], documents: docs.rows });
 });
 
 admin.post('/employees/:id/upload', async (req, res) => {
   const target = parseInt(req.params.id, 10) || 0;
-  if (!(await canSignOff(req.user, target))) return res.status(403).json({ error: 'Not permitted.' });
+  const _tu = await pool.query('SELECT id, role FROM users WHERE id = $1', [target]);
+  if (!_tu.rows.length) return res.status(404).json({ error: 'Not found' });
+  if (!(await org.canOpenFile(req.user, _tu.rows[0])) || !(await canSignOff(req.user, target))) {
+    return res.status(403).json({ error: 'You cannot add to that file.' });
+  }
   if (!hrCrypto.storageReady()) return res.status(503).json({ error: 'Secure storage is not configured.' });
   const b = req.body || {};
   const category = String(b.category || 'other').slice(0, 40);
@@ -2147,7 +2166,11 @@ admin.delete('/employees/hr-doc/:docId', async (req, res) => {
   const docId = parseInt(req.params.docId, 10) || 0;
   const dr = await pool.query('SELECT user_id, r2_key FROM hr_documents WHERE id = $1', [docId]);
   if (!dr.rows.length) return res.json({ success: true });
-  if (!(await canSignOff(req.user, dr.rows[0].user_id))) return res.status(403).json({ error: 'Not permitted.' });
+  const _du = await pool.query('SELECT id, role FROM users WHERE id = $1', [dr.rows[0].user_id]);
+  if (!_du.rows.length) return res.status(404).json({ error: 'Not found' });
+  if (!(await org.canOpenFile(req.user, _du.rows[0])) || !(await canSignOff(req.user, dr.rows[0].user_id))) {
+    return res.status(403).json({ error: 'You cannot change that file.' });
+  }
   try { await r2.deleteObject(dr.rows[0].r2_key); } catch (e) {}
   await pool.query('DELETE FROM hr_documents WHERE id = $1', [docId]);
   await logAudit({ entity_type: 'hr_document', entity_id: docId, action: 'deleted', user_id: req.user.id, user_name: req.user.name, details: {} });

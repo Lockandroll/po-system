@@ -139,8 +139,64 @@ async function inTeam(user, targetOrId) {
   return ids.indexOf(targetId) !== -1;
 }
 
+// ---------------------------------------------------------------------------
+// PERSONNEL FILE ACCESS
+//
+// A third question, separate again from the two above, and the strictest of the
+// three: who may OPEN somebody's personnel file.
+//
+// Scope answers "is this person in my part of the company". It is not enough on
+// its own, because it says nothing about rank. Without the rule below, two
+// admins can read each other's disciplinary history and two managers in the
+// same city can read each other's, which is not what a personnel file is for.
+// Tony's requirement, 2026-08-21: "I just want to make sure that no one can open
+// up another peer's employee file. Even admin to admin."
+//
+// So a file may only be opened by somebody STRICTLY ABOVE the person it belongs
+// to. Equal rank is refused, which blocks peers and, because your supervisor is
+// never below you, blocks your upline at the same time. Nobody opens their own
+// file here either - that is My File, which shows what was shared with them
+// rather than the manager's view of it.
+//
+// Owner sits at the top because somebody has to. Two owners cannot read each
+// other, by the same rule.
+var RANK = { owner: 4, admin: 3, manager: 2 };
+
+// Works for a req.user (where an owner has been coerced to role 'admin' with
+// isOwner set - see middleware/auth.js) and for a raw users row alike.
+function rankOf(u) {
+  if (!u) return 0;
+  if (u.isOwner === true) return RANK.owner;
+  return RANK[u.role] || 1;
+}
+
+// viewer: req.user. target: a users row, or at minimum { id, role }.
+// Returns false rather than throwing on anything unexpected.
+async function canOpenFile(viewer, target) {
+  if (!viewer || !target) return false;
+  var vid = idOf(viewer), tid = idOf(target);
+  if (!vid || !tid) return false;
+  if (vid === tid) return false;                       // your own file is My File
+  if (rankOf(viewer) <= rankOf(target)) return false;  // peers and upline
+  if (isAdminLike(viewer)) return true;                // admin and owner reach the company
+  return await inTeam(viewer, tid);                    // everyone else: city + downline
+}
+
+// The same rule expressed as a filter, for building a roster in one pass rather
+// than a query per person.
+function filterOpenable(viewer, rows) {
+  var vid = idOf(viewer), vr = rankOf(viewer);
+  return (rows || []).filter(function (r) {
+    return r && Number(r.id) !== vid && vr > rankOf(r);
+  });
+}
+
 module.exports = {
   MAX_DEPTH: MAX_DEPTH,
+  RANK: RANK,
+  rankOf: rankOf,
+  canOpenFile: canOpenFile,
+  filterOpenable: filterOpenable,
   isAdminLike: isAdminLike,
   chainIds: chainIds,
   isUpline: isUpline,

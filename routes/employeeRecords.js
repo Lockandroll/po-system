@@ -153,10 +153,16 @@ async function scopeIds(user) {
   return await org.teamIds(user.id);
 }
 
+// Whether this viewer may OPEN this person's file.
+//
+// Delegates to utils/org.js canOpenFile, which adds the rank rule on top of
+// scope: a file can only be opened by somebody strictly ABOVE the person it
+// belongs to. That is what stops admin reading admin and one city manager
+// reading another. Scope alone would let both through.
 async function inScope(user, targetId) {
-  if (isAdminLike(user)) return targetId !== user.id ? true : true;
-  var ids = await scopeIds(user);
-  return Array.isArray(ids) && ids.indexOf(parseInt(targetId, 10)) !== -1;
+  var t = await userRow(targetId);
+  if (!t) return false;
+  return await org.canOpenFile(user, t);
 }
 
 // Whether this viewer may WRITE a record about this person. Scope is necessary
@@ -171,8 +177,10 @@ async function canActOn(user, targetId) {
   if (await org.isUpline(targetId, user.id)) {
     return { ok: false, why: 'You cannot write a record about someone you report to.' };
   }
-  if (!isAdminLike(user) && !(await inScope(user, targetId))) {
-    return { ok: false, why: 'That employee is not in your city or your team.' };
+  // Same gate as opening the file. If you cannot read it you certainly cannot
+  // write to it, and this is what keeps peers out of each other's records.
+  if (!(await inScope(user, targetId))) {
+    return { ok: false, why: 'You cannot write a record on that person.' };
   }
   return { ok: true };
 }
@@ -383,6 +391,11 @@ router.get('/roster', requireAuth, requirePermission('view_employee_records'), a
         [ids]
       )).rows;
     }
+    // Drop anyone at or above the viewer's own rank, and the viewer themself.
+    // Without this an admin lists every other admin and the owner, and a city
+    // manager lists the other manager in their city - and a name on a roster
+    // with a records count beside it is already a disclosure.
+    rows = org.filterOpenable(req.user, rows);
     var idList = rows.map(function (u) { return u.id; });
     var counts = { rows: [] };
     if (idList.length) {
@@ -470,8 +483,8 @@ async function rosterStats(user, idList) {
 router.get('/employee/:id', requireAuth, requirePermission('view_employee_records'), async (req, res) => {
   try {
     var target = parseInt(req.params.id, 10) || 0;
-    if (!isAdminLike(req.user) && !(await inScope(req.user, target))) {
-      return res.status(403).json({ error: 'That employee is not in your city or your team.' });
+    if (!(await inScope(req.user, target))) {
+      return res.status(403).json({ error: 'You cannot open that file.' });
     }
     var u = await userRow(target);
     if (!u) return res.status(404).json({ error: 'Not found.' });
@@ -973,7 +986,7 @@ router.get('/:id/signals', requireAuth, requirePermission('view_employee_records
   try {
     var rec = await loadRecord(req.params.id);
     if (!rec) return res.status(404).json({ error: 'Not found.' });
-    if (!isAdminLike(req.user) && !(await inScope(req.user, rec.user_id))) {
+    if (!(await inScope(req.user, rec.user_id))) {
       return res.status(403).json({ error: 'Not permitted.' });
     }
     var since = rec.sent_at || rec.approved_at || rec.created_at;
@@ -1044,7 +1057,7 @@ router.get('/:id/events', requireAuth, requirePermission('view_employee_records'
   try {
     var rec = await loadRecord(req.params.id);
     if (!rec) return res.status(404).json({ error: 'Not found.' });
-    if (!isAdminLike(req.user) && !(await inScope(req.user, rec.user_id))) {
+    if (!(await inScope(req.user, rec.user_id))) {
       return res.status(403).json({ error: 'Not permitted.' });
     }
     // Opening a disciplinary record is itself an event worth keeping. Who has
@@ -1141,7 +1154,7 @@ router.delete('/:id', requireAuth, requirePermission('create_disciplinary'), asy
 router.get('/employee/:id/late-deposits', requireAuth, requirePermission('view_employee_records'), async (req, res) => {
   try {
     var target = parseInt(req.params.id, 10) || 0;
-    if (!isAdminLike(req.user) && !(await inScope(req.user, target))) {
+    if (!(await inScope(req.user, target))) {
       return res.status(403).json({ error: 'Not permitted.' });
     }
     var u = await userRow(target);
@@ -1160,7 +1173,7 @@ router.get('/employee/:id/late-deposits', requireAuth, requirePermission('view_e
 router.get('/employee/:id/shortages', requireAuth, requirePermission('view_employee_records'), async (req, res) => {
   try {
     var target = parseInt(req.params.id, 10) || 0;
-    if (!isAdminLike(req.user) && !(await inScope(req.user, target))) {
+    if (!(await inScope(req.user, target))) {
       return res.status(403).json({ error: 'Not permitted.' });
     }
     var u = await userRow(target);

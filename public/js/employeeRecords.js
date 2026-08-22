@@ -446,7 +446,12 @@
     if (lateAvail && !lateCount) second.push('No deposits marked late.');
     if (lateCount) second.push(lateCount + ' deposit' + (lateCount === 1 ? '' : 's') + ' marked late.');
     if (shCount) second.push(shCount + ' pay week' + (shCount === 1 ? '' : 's') + ' with cash unaccounted for.');
-    if (open.length) second.push(open.slice(0, 2).join(' and ') + '.');
+    if (open.length) {
+      // Sentence-cased, because this lands after a full stop rather than
+      // mid-sentence: "3 deposits marked late. A notice awaiting signature."
+      var o = open.slice(0, 2).join(' and ');
+      second.push(o.charAt(0).toUpperCase() + o.slice(1) + '.');
+    }
 
     var standing =
       '<div class="card" style="margin-bottom:14px"><div class="card-header">' +
@@ -554,8 +559,10 @@
 
     var who = '<div class="card"><div class="card-header"><div class="card-title">Who can see this file</div></div>' +
       '<div class="card-body"><div style="font-size:12px;color:var(--text-muted-color);line-height:1.7">' +
-      'Admins and the owner, company-wide. Managers holding the permission see their own city and their own ' +
-      'downline. ' + esc(S.file.user.name.split(' ')[0]) + ' sees only the records marked visible.' +
+      'A file can only be opened by somebody above the person it belongs to. Two admins cannot read each ' +
+      'other, and neither can two managers in the same city. Owner and admins reach everyone below them; ' +
+      'managers reach their own city and their own downline. ' +
+      esc(S.file.user.name.split(' ')[0]) + ' sees only the records marked visible.' +
       '<div style="margin-top:10px;padding-top:10px;border-top:1px solid var(--border-light)">' +
       'Opening a disciplinary record is written to the audit log, so ' + esc(S.file.user.name.split(' ')[0]) +
       ' can always be told who has read their file.</div>' +
