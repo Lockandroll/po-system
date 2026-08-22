@@ -18533,7 +18533,13 @@ async function checkinMount(hostId, workOrderId) {
   // The document says this account does NOT want a check-in. Showing a Check In
   // button anyway teaches people to ignore the badge, which is worse than the
   // button being missing. History still shows, if there is any.
-  if (state.checkin_required === 'no' && !state.checkin && !state.checkout) { host.innerHTML = ''; return; }
+  //
+  // A parser disagreement is the exception and has to be: the note exists to get
+  // somebody to look, so hiding the card that carries it would bury exactly the
+  // case where the "no" is most likely to be wrong.
+  if (state.checkin_required === 'no' && !state.checkin && !state.checkout && !state.checkin_ai_note) {
+    host.innerHTML = ''; return;
+  }
   host.innerHTML = checkinCardHtml(state);
 
   var busy = function (ev) { return ev && (ev.status === 'pending' || ev.status === 'dialing' || ev.status === 'in_progress'); };
@@ -18736,6 +18742,8 @@ async function openCheckinRecord(eventId) {
           : t.action === 'press' ? 'pressed ' + escHtml(t.digits || '')
           : t.action === 'wait' ? 'waited'
           : t.action === 'listen' ? 'kept listening'
+          : t.action === 'confirm' ? 'took that as the confirmation'
+          : t.action === 'abort' ? 'ended the call'
           : escHtml(t.action || '');
         return '<div style="margin-bottom:10px">' +
           '<div style="color:var(--text-muted-color);font-size:12px">turn ' + (t.n || '') +

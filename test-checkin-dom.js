@@ -311,6 +311,13 @@ function baseState(over) {
   await w.checkinMount('ci-host-x', 77);
   eq('required: a job marked NOT required draws nothing at all', host.innerHTML, '');
 
+  // ...unless the parser and the keyword sweep disagree, in which case burying
+  // the card would bury the one case where the "no" is most likely wrong.
+  w.eval("__responses['/checkins/state/78'] = { work_order_id: 78, checkin_required: 'no', checkin_ai_note: 'The document uses check-in language but the parser answered no.', checkin_phone: '800-555-0142', profile: { id: 1, method: 'phone' }, checkin: null, checkout: null, events: [] };");
+  var host2 = w.document.createElement('div'); host2.id = 'ci-host-y'; w.document.body.appendChild(host2);
+  await w.checkinMount('ci-host-y', 78);
+  has('required: a flagged NO still draws, so somebody sees the flag', host2.innerHTML, 'parser answered no');
+
   // ---------- 15. asking the tech in the moment ----------
   var ASK = [
     { key: 'job_status', label: 'Job status', type: 'choice', why: 'The check-out tree asks whether the job is finished.',
