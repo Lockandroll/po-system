@@ -58,7 +58,31 @@
       '.pto-dayname{font-size:13px;font-weight:600}',
       '.pto-daysel{max-width:172px}',
       '.pto-daysel.k-off{color:#9ca3af}',
-      '.pto-daysel.k-unpaid{color:#eab308}'
+      '.pto-daysel.k-unpaid{color:#eab308}',
+      // Approval detail dialog. Wider than .pto-dlg because it carries a
+      // three-week schedule grid; scrolls internally so the page behind stays put.
+      '.pto-dlg.wide{max-width:920px;max-height:86vh;overflow:auto}',
+      '.pto-clickable{cursor:pointer}',
+      '.pto-clickable:hover>td{background:rgba(255,255,255,.035)}',
+      '.pto-clickable:focus-visible{outline:2px solid var(--primary,#f97316);outline-offset:-2px}',
+      '.pto-neg{color:#ef4444;font-weight:700}',
+      '.pto-pos{color:#22c55e;font-weight:700}',
+      '.pto-sec{margin-top:18px;padding-top:14px;border-top:1px solid var(--border,#2a2a2a)}',
+      '.pto-sec:first-child{margin-top:0;padding-top:0;border-top:none}',
+      '.pto-sec h4{margin:0 0 8px;font-size:12px;text-transform:uppercase;letter-spacing:.6px;color:var(--text-dim,#9a9a9a);font-weight:700}',
+      '.pto-wk{margin-bottom:14px}',
+      '.pto-wk-hd{font-size:12px;font-weight:700;color:var(--text-dim,#9a9a9a);margin-bottom:6px}',
+      '.pto-wk-hd.is-req{color:var(--primary,#f97316)}',
+      '.pto-days{display:flex;gap:6px;overflow-x:auto;padding-bottom:4px}',
+      '.pto-day{flex:1 1 118px;min-width:118px}',
+      '.pto-day-hd{font-weight:700;font-size:11px;padding:3px 4px;margin-bottom:5px;border-bottom:1px solid var(--border,#2a2a2a);white-space:nowrap}',
+      '.pto-day.req .pto-day-hd{color:var(--primary,#f97316);background:rgba(249,115,22,.08);border-radius:4px 4px 0 0}',
+      '.pto-day.today .pto-day-hd{text-decoration:underline}',
+      '.pto-chip{border:1px solid var(--border,#2a2a2a);border-radius:6px;padding:4px 6px;margin-bottom:5px;font-size:11px;line-height:1.35}',
+      '.pto-chip.me{outline:2px solid var(--primary,#f97316);outline-offset:-1px}',
+      '.pto-chip b{display:block;font-size:11.5px}',
+      '.pto-chip .m{color:var(--text-dim,#9a9a9a);font-size:10.5px}',
+      '.pto-empty{color:var(--text-dim,#777);font-size:11px;padding:3px 4px}'
     ].join('');
     var s = document.createElement('style');
     s.id = 'pto-styles'; s.textContent = css;
@@ -72,6 +96,22 @@
     var n = 0, d = new Date(s); while (d <= e) { var w = d.getDay(); if (w !== 0 && w !== 6) n++; d.setDate(d.getDate() + 1); } return n;
   }
   function fmtDate(v) { var d = parseLocal(v); return d ? d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' }) : ''; }
+  // Local-date string arithmetic for the detail dialog's schedule grid. Mirrors
+  // the server's addDaysStr/mondayOfStr, but built on local dates so the grid
+  // lines up with what the approver sees everywhere else in the app.
+  function addDaysLocal(dateStr, n) {
+    var d = parseLocal(dateStr); if (!d) return dateStr;
+    d.setDate(d.getDate() + n); return ymdLocal(d);
+  }
+  function mondayLocal(dateStr) {
+    var d = parseLocal(dateStr); if (!d) return dateStr;
+    var w = d.getDay(); // 0=Sun..6=Sat
+    return addDaysLocal(dateStr, -(w === 0 ? 6 : w - 1));
+  }
+  // Compact 'Sep 7 – Sep 9', collapsing to one date for a single-day range.
+  function rangeShort(a, b) {
+    return String(b).slice(0, 10) === String(a).slice(0, 10) ? fmtDate(a) : fmtDate(a) + ' \u2013 ' + fmtDate(b);
+  }
   function isCommission(pt) { return pt === 'commission'; }
   function unitLabel(pt) { return isCommission(pt) ? 'days' : 'hrs'; }
   function toUnit(hours, pt) { return isCommission(pt) ? (hours / HRS_PER_DAY) : hours; }
@@ -302,17 +342,57 @@
       var acts = isCancel
         ? '<button class="pto-btn ok sm" onclick="ptoCancelConfirm(' + r.id + ')">Approve cancellation</button> <button class="pto-btn no sm" onclick="ptoCancelKeep(' + r.id + ')">Keep approved</button>'
         : '<button class="pto-btn ok sm" onclick="ptoApprove(' + r.id + ',' + (r.coverage_over ? 'true' : 'false') + ')">Approve</button> <button class="pto-btn no sm" onclick="ptoDeny(' + r.id + ')">Deny</button>';
-      return '<tr><td><b>' + escHtml(r.user_name || '') + '</b>' + (isCancel ? ' <span class="pto-pill denied">CANCELLATION</span>' : '') + '<br><span class="pto-sub">' + escHtml(r.pay_type || '') + '</span></td>' +
+      return '<tr class="pto-clickable" tabindex="0" role="button" data-pto-open="' + r.id + '" ' +
+        'aria-label="Open details for ' + escHtml(r.user_name || 'this request') + '">' +
+        '<td><b>' + escHtml(r.user_name || '') + '</b>' + (isCancel ? ' <span class="pto-pill denied">CANCELLATION</span>' : '') + '<br><span class="pto-sub">' + escHtml(r.pay_type || '') + '</span></td>' +
         '<td>' + d + '</td><td>' + dayBreakdown(r) + '</td><td>' + fmtAmt(Number(r.hours), r.pay_type) + '</td>' +
+        '<td>' + balanceCell(r) + '</td>' +
         '<td>' + cov + '</td>' +
         '<td style="white-space:nowrap">' + acts + '</td></tr>';
     }).join('');
-    body.innerHTML = '<div class="pto-panel"><h3>Pending Approvals</h3><div class="pto-desc">Requests from your reporting line. Approving over the coverage cap requires a reason (logged to audit).</div>' +
-      '<table class="pto-table"><thead><tr><th>Employee</th><th>Dates</th><th>Days</th><th>Amount</th><th>Coverage</th><th>Actions</th></tr></thead><tbody>' +
-      (rows || '<tr><td colspan="6" class="pto-sub">Nothing pending. 🎉</td></tr>') + '</tbody></table></div>' +
+    body.innerHTML = '<div class="pto-panel"><h3>Pending Approvals</h3><div class="pto-desc">Requests from your reporting line. Click a row for the employee&#39;s PTO history and the city schedule. Approving over the coverage cap requires a reason (logged to audit).</div>' +
+      '<table class="pto-table"><thead><tr><th>Employee</th><th>Dates</th><th>Days</th><th>Amount</th><th>Balance</th><th>Coverage</th><th>Actions</th></tr></thead><tbody>' +
+      (rows || '<tr><td colspan="7" class="pto-sub">Nothing pending. 🎉</td></tr>') + '</tbody></table></div>' +
       '<div class="pto-panel"><h3>Approved</h3><div class="pto-desc">Time off you have approved, newest first.</div>' +
       '<div id="pto-appr-list"><div class="loading">Loading…</div></div></div>';
+    wireRowOpen(body);
     loadApproved(1);
+  }
+
+  // Balance preview for a queue row. r.hours is paid-days-only, so an unpaid or
+  // scheduled-off request reads "no charge" rather than a misleading 0.0.
+  function balanceCell(r) {
+    var pt = r.pay_type;
+    var bal = Number(r.balance_hours);
+    if (!isFinite(bal)) return '<span class="pto-sub">—</span>';
+    var cost = Number(r.cost_hours) || 0;
+    if (cost <= 0) return '<b>' + fmtAmt(bal, pt) + '</b><br><span class="pto-sub">no charge</span>';
+    var after = Number(r.balance_after);
+    var cls = r.insufficient ? 'pto-neg' : '';
+    return '<b>' + fmtAmt(bal, pt) + '</b><br><span class="pto-sub">&rarr; <span class="' + cls + '">' +
+      (r.insufficient ? '\u26a0 ' : '') + fmtAmt(after, pt) + '</span> after</span>';
+  }
+
+  // Row opens the detail dialog, but a click that lands on a button must still be
+  // just that button — the approver should never have to close a dialog they did
+  // not ask for. Enter/Space open it too, so the row is reachable by keyboard.
+  function wireRowOpen(root) {
+    var rows = (root || document).querySelectorAll('[data-pto-open]');
+    for (var i = 0; i < rows.length; i++) {
+      (function (tr) {
+        var id = parseInt(tr.getAttribute('data-pto-open'), 10) || 0;
+        tr.addEventListener('click', function (ev) {
+          if (ev.target && ev.target.closest && ev.target.closest('button,a,input,select,textarea')) return;
+          window.ptoDetail(id);
+        });
+        tr.addEventListener('keydown', function (ev) {
+          if (ev.key !== 'Enter' && ev.key !== ' ' && ev.key !== 'Spacebar') return;
+          if (ev.target && ev.target.closest && ev.target.closest('button,a,input,select,textarea')) return;
+          ev.preventDefault();
+          window.ptoDetail(id);
+        });
+      })(rows[i]);
+    }
   }
 
   // ---- APPROVED HISTORY (paginated, 10 per page) ---------------------------
@@ -334,10 +414,13 @@
     try {
       var data = await api('GET', '/pto/approved?page=' + page + '&page_size=10');
       var list = (data && data.rows) || [];
+      CACHE.approvedRows = list;
       var rows = list.map(function (r) {
         var d = fmtDate(r.start_date) + (String(r.end_date).slice(0, 10) !== String(r.start_date).slice(0, 10) ? ' – ' + fmtDate(r.end_date) : '');
         var tag = r.retroactive ? ' <span class="pto-pill locked">logged</span>' : '';
-        return '<tr><td><b>' + escHtml(r.user_name || '') + '</b>' + tag + '<br><span class="pto-sub">' + escHtml(r.pay_type || '') + '</span></td>' +
+        return '<tr class="pto-clickable" tabindex="0" role="button" data-pto-open="' + r.id + '" ' +
+          'aria-label="Open details for ' + escHtml(r.user_name || 'this request') + '">' +
+          '<td><b>' + escHtml(r.user_name || '') + '</b>' + tag + '<br><span class="pto-sub">' + escHtml(r.pay_type || '') + '</span></td>' +
           '<td>' + d + '</td><td>' + dayBreakdown(r) + '</td><td>' + fmtAmt(Number(r.hours), r.pay_type) + '</td>' +
           '<td>' + escHtml(r.type || '') + '</td>' +
           // An override is the one row on this screen someone will later ask
@@ -362,6 +445,7 @@
           '</span></div>';
       }
       host.innerHTML = table + pager;
+      wireRowOpen(host);
     } catch (e) {
       host.innerHTML = '<div class="alert alert-error">Could not load approved list (' + escHtml(e.message || 'error') + ').</div>';
     }
@@ -488,6 +572,274 @@
       document.body.removeChild(m); doApprove(id, r);
     };
   }
+
+
+  // ---- APPROVAL DETAIL DIALOG ----------------------------------------------
+  // Opens instantly from the cached queue row, then hydrates from
+  // /pto/requests/:id/context. Everything an approver needs to decide is here:
+  // what it costs them, what they have already taken, who else is off, and what
+  // the market's schedule looks like around the dates.
+  var DLG = null;
+
+  function closeDetail() {
+    if (!DLG) return;
+    var m = DLG;
+    DLG = null; // clear first, so an observer firing mid-teardown is a no-op
+    if (m._obs) { try { m._obs.disconnect(); } catch (e) { /* ignore */ } m._obs = null; }
+    if (m.parentNode) m.parentNode.removeChild(m);
+    document.removeEventListener('keydown', onDetailKey);
+    document.body.style.overflow = m._prevOverflow || '';
+  }
+  // The mask hangs off document.body, so an app-level navigation that swaps out
+  // #content would leave it floating over the next screen with the page scroll
+  // still locked. Watch the content host and close if it is rebuilt underneath us.
+  function watchForNavigation(m) {
+    var host = document.getElementById('content');
+    if (!host || typeof MutationObserver !== 'function') return;
+    var obs = new MutationObserver(function () { if (DLG === m) closeDetail(); });
+    obs.observe(host, { childList: true });
+    m._obs = obs;
+  }
+  function onDetailKey(ev) { if (ev.key === 'Escape') closeDetail(); }
+
+  function pill(status) {
+    var cls = status === 'approved' ? 'approved'
+      : (status === 'denied' || status === 'cancelled') ? 'denied'
+      : (status === 'pending') ? 'pending' : 'locked';
+    return '<span class="pto-pill ' + cls + '">' + escHtml(statusText(status)) + '</span>';
+  }
+  function longDate(v) {
+    var d = parseLocal(v);
+    return d ? d.toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric', year: 'numeric' }) : '';
+  }
+  function rangeText(a, b) {
+    return String(b).slice(0, 10) === String(a).slice(0, 10) ? longDate(a) : longDate(a) + ' – ' + longDate(b);
+  }
+  function hhmm(t) {
+    var p = String(t || '').split(':'); if (p.length < 2) return String(t || '');
+    var h = parseInt(p[0], 10); if (!isFinite(h)) return String(t || '');
+    var ap = h >= 12 ? 'p' : 'a', h12 = h % 12; if (h12 === 0) h12 = 12;
+    return h12 + (p[1] === '00' ? '' : ':' + p[1]) + ap;
+  }
+
+  // shift_positions.color is admin-editable free text and it lands inside a
+  // style attribute, so anything that is not plainly a colour is refused rather
+  // than escaped — a mangled swatch is fine, a stray event handler is not.
+  // Restricted to 3- and 6-digit hex, and shorthand is expanded, because the
+  // caller appends a two-digit alpha ('#f00' + '14' would be the invalid
+  // '#f0014' and the tint would just vanish).
+  function safeColor(v) {
+    var c = String(v === null || v === undefined ? '' : v).trim();
+    if (/^#[0-9a-fA-F]{6}$/.test(c)) return c;
+    if (/^#[0-9a-fA-F]{3}$/.test(c)) return '#' + c[1] + c[1] + c[2] + c[2] + c[3] + c[3];
+    return '#3b82f6';
+  }
+
+  // One week of the market's grid, in the same visual language as the schedule
+  // screen. Deliberately a local copy rather than a call into app.js's
+  // mySchedWeekHtml, which reads that module's globals.
+  function ptoWeekHtml(monday, shifts, meId, reqDates, label) {
+    var byDay = {};
+    (shifts || []).forEach(function (s) { (byDay[s.shift_date] = byDay[s.shift_date] || []).push(s); });
+    var today = ymdLocal(new Date());
+    var touched = false, cols = '';
+    for (var i = 0; i < 7; i++) {
+      var day = addDaysLocal(monday, i);
+      var isReq = reqDates.indexOf(day) !== -1;
+      if (isReq) touched = true;
+      var list = (byDay[day] || []).slice().sort(function (a, b) { return String(a.start_time).localeCompare(String(b.start_time)); });
+      var items = list.map(function (s) {
+        var col = safeColor(s.position_color);
+        var meta = [];
+        if (s.position_name) meta.push(escHtml(s.position_name));
+        if (s.notes) meta.push(escHtml(s.notes));
+        return '<div class="pto-chip' + (Number(s.user_id) === Number(meId) ? ' me' : '') + '" ' +
+          'style="background:' + col + '14;border-left:3px solid ' + col + '">' +
+          '<b>' + escHtml((s.user_name || '').trim()) + '</b>' +
+          '<span class="m">' + escHtml(hhmm(s.start_time)) + '–' + escHtml(hhmm(s.end_time)) + '</span>' +
+          (meta.length ? '<span class="m">' + meta.join(' · ') + '</span>' : '') + '</div>';
+      }).join('') || '<div class="pto-empty">—</div>';
+      cols += '<div class="pto-day' + (isReq ? ' req' : '') + (day === today ? ' today' : '') + '">' +
+        '<div class="pto-day-hd">' + escHtml(fmtDate(day)) + '</div>' + items + '</div>';
+    }
+    return '<div class="pto-wk"><div class="pto-wk-hd' + (touched ? ' is-req' : '') + '">' +
+      escHtml(label) + (touched ? ' · requested' : '') + '</div>' +
+      '<div class="pto-days">' + cols + '</div></div>';
+  }
+
+  function detailBodyHtml(C) {
+    var pt = C.employee.pay_type;
+    var reqDates = (C.request.days || []).map(function (x) { return x.date; });
+    var meId = C.employee.id;
+
+    // --- header
+    var h = '<div class="pto-sec"><h3 style="margin:0 0 2px;font-size:18px">' + escHtml(C.employee.name) + '</h3>' +
+      '<div class="pto-sub">' + escHtml(C.employee.title || '') + (C.employee.title ? ' · ' : '') + escHtml(pt) +
+      (C.employee.hire_date ? ' · hired ' + escHtml(fmtDate(C.employee.hire_date)) + ' (' + C.employee.tenure_years + ' yr' + (C.employee.tenure_years === 1 ? '' : 's') + ')' : '') + '</div>' +
+      '<div style="margin-top:8px;font-size:14px"><b>' + escHtml(rangeText(C.request.start_date, C.request.end_date)) + '</b></div>' +
+      '<div class="pto-sub">' + dayBreakdown(C.request) + ' · ' + escHtml(C.request.type || 'Vacation') +
+      ' · ' + escHtml(C.request.tier_label) + ' · submitted ' + escHtml(fmtDate(C.request.created_at)) + '</div>' +
+      (C.request.cancel_memo ? '<div class="pto-sub" style="font-style:italic;margin-top:6px">&ldquo;' + escHtml(C.request.cancel_memo) + '&rdquo;</div>' : '') +
+      '</div>';
+
+    // --- balance
+    var afterCls = C.balance.insufficient ? 'pto-neg' : 'pto-pos';
+    h += '<div class="pto-sec"><h4>Balance</h4><div class="pto-cards">' +
+      '<div class="pto-card"><h4>Available now</h4><div class="pto-stat">' + fmtAmt(C.balance.current_hours, pt) + '</div></div>' +
+      '<div class="pto-card"><h4>This request</h4><div class="pto-stat">' +
+        (C.balance.cost_hours > 0 ? '− ' + fmtAmt(C.balance.cost_hours, pt) : 'no charge') + '</div>' +
+        (C.balance.cost_hours > 0 ? '' : '<div class="pto-sub">unpaid or scheduled off</div>') + '</div>' +
+      '<div class="pto-card"><h4>After approval</h4><div class="pto-stat ' + afterCls + '">' + fmtAmt(C.balance.after_hours, pt) + '</div></div>' +
+      '</div>' +
+      (C.balance.insufficient ? '<div class="pto-warn">Approving this takes them negative. Only an admin can, and it must be deliberate.</div>' : '') +
+      '<div class="pto-sub" style="margin-top:8px">' +
+        (C.employee.accrues
+          ? 'Accrues ' + (C.employee.accrual_monthly_hours / HRS_PER_DAY).toFixed(2) + ' days/mo (' + C.employee.accrual_days_per_year + ' days/yr band)'
+          : 'Does not accrue — ' + (C.employee.exempt ? 'exempt role' : (C.employee.employment_type !== 'full_time' ? escHtml(C.employee.employment_type) : 'no hire date on file'))) +
+        (C.employee.eligible_now ? '' : ' · <span class="pto-neg">not eligible until ' + escHtml(fmtDate(C.employee.eligible_date)) + '</span>') +
+      '</div></div>';
+
+    // --- last 12 months
+    var hr = (C.history.requests || []).map(function (x) {
+      return '<tr><td style="white-space:nowrap">' + escHtml(rangeShort(x.start_date, x.end_date)) + '</td>' +
+        '<td>' + dayBreakdown(x) + '</td>' +
+        '<td>' + (Number(x.hours) > 0 ? fmtAmt(Number(x.hours), pt) : '<span class="pto-sub">—</span>') + '</td>' +
+        '<td>' + escHtml(x.type || '') + (x.retroactive ? ' <span class="pto-pill locked">logged</span>' : '') +
+          (x.coverage_override ? ' <span class="pto-pill denied" title="' +
+            escHtml(x.override_reason || 'Approved over the coverage cap') + '">override</span>' : '') + '</td>' +
+        '<td>' + pill(x.status) + '</td>' +
+        '<td class="pto-sub">' + escHtml(x.approver_name || '—') + '</td></tr>';
+    }).join('');
+    h += '<div class="pto-sec"><h4>Previous PTO · last 12 months</h4>' +
+      '<div class="pto-desc">Used <b>' + fmtAmt(C.history.used_hours, pt) + '</b> since ' + escHtml(fmtDate(C.history.window_from)) + '. Denied and cancelled requests are included.</div>' +
+      '<table class="pto-table"><thead><tr><th>Dates</th><th>Days</th><th>Amount</th><th>Type</th><th>Status</th><th>Decided by</th></tr></thead><tbody>' +
+      (hr || '<tr><td colspan="6" class="pto-sub">No PTO in the last 12 months.</td></tr>') + '</tbody></table>';
+
+    var lr = (C.history.ledger || []).map(function (l) {
+      var amt = Number(l.amount_hours);
+      return '<tr><td style="width:86px">' + escHtml(fmtDate(l.entry_date)) + '</td>' +
+        '<td>' + escHtml(l.description || l.kind) + '</td>' +
+        '<td style="color:' + (amt >= 0 ? '#22c55e' : '#ef4444') + '">' + (amt >= 0 ? '+' : '−') + fmtAmt(Math.abs(amt), pt) + '</td></tr>';
+    }).join('');
+    var up = (C.history.upcoming || []).map(function (x) {
+      return '<li>' + escHtml(rangeShort(x.start_date, x.end_date)) + ' <span class="pto-sub">' +
+        dayBreakdown(x) + ' · ' + escHtml(x.type || '') + '</span> ' + pill(x.status) + '</li>';
+    }).join('');
+    if (up) {
+      h += '<div class="pto-sub" style="margin-top:10px;font-weight:700">Already booked ahead</div>' +
+        '<ul style="margin:4px 0 0;padding-left:18px;font-size:13px">' + up + '</ul>';
+    }
+    h += '<details style="margin-top:10px"><summary class="pto-sub" style="cursor:pointer">Ledger detail (' + (C.history.ledger || []).length + ' entries)</summary>' +
+      '<table class="pto-table" style="margin-top:6px"><thead><tr><th>Date</th><th>Entry</th><th>Change</th></tr></thead><tbody>' +
+      (lr || '<tr><td colspan="3" class="pto-sub">No ledger entries in the window.</td></tr>') + '</tbody></table></details></div>';
+
+    // --- coverage
+    var cvPill = C.coverage.cap === null || C.coverage.cap === undefined
+      ? '<span class="pto-sub">no cap set</span>'
+      : '<span class="pto-pill ' + (C.coverage.over ? 'denied' : 'approved') + '">' + (C.coverage.over ? '⚠ ' : '') + C.coverage.used + ' of ' + C.coverage.cap + '</span>';
+    // scoped tells us whether that number really is this market's. When a market
+    // resolved but has no cap of its own the count is still company-wide, and
+    // saying '2 of 1 in Atlanta' would pin a Nashville absence on Atlanta.
+    var cvWhere = C.coverage.scoped
+      ? '<span class="pto-sub">in ' + escHtml(C.coverage.city_name || C.coverage.city_code) + '</span>'
+      : '<span class="pto-sub">counted company-wide against the default cap' +
+        (C.coverage.city_code
+          ? ' \u2014 no cap is set for ' + escHtml(C.coverage.city_name || C.coverage.city_code)
+          : ' \u2014 no market on file for this employee') + '</span>';
+    h += '<div class="pto-sec"><h4>Coverage</h4><div>' + cvPill + ' ' + cvWhere + '</div>';
+    if ((C.coverage.others_off || []).length) {
+      h += '<div class="pto-sub" style="margin-top:8px">Already off on overlapping days' +
+        (C.coverage.scoped ? '' : ' (company-wide)') + ':</div><ul style="margin:4px 0 0;padding-left:18px;font-size:13px">' +
+        C.coverage.others_off.map(function (x) {
+          return '<li>' + escHtml(x.name) + ' <span class="pto-sub">' + escHtml(rangeShort(x.start_date, x.end_date)) + '</span></li>';
+        }).join('') + '</ul>';
+    } else {
+      h += '<div class="pto-sub" style="margin-top:8px">Nobody else is off on these days.</div>';
+    }
+    if (C.coverage.names_truncated) {
+      h += '<div class="pto-sub" style="margin-top:6px">Only the first names are listed; the count above is complete.</div>';
+    }
+    if ((C.coverage.others_pending || []).length) {
+      h += '<div class="pto-sub" style="margin-top:8px">Also asked for these days (still pending):</div><ul style="margin:4px 0 0;padding-left:18px;font-size:13px;color:var(--text-dim,#9a9a9a)">' +
+        C.coverage.others_pending.map(function (x) {
+          return '<li>' + escHtml(x.name) + ' ' + escHtml(rangeShort(x.start_date, x.end_date)) + '</li>';
+        }).join('') + '</ul>';
+    }
+    h += '</div>';
+
+    // --- schedule: week before, week(s) of, week after
+    h += '<div class="pto-sec"><h4>' + escHtml(C.schedule.city_name || C.schedule.city_code || 'City') + ' schedule</h4>';
+    if (!C.schedule.city_code) {
+      h += '<div class="pto-sub">No market resolved for this employee, so there is no city grid to show. Set their home city on the employee record.</div>';
+    } else {
+      h += '<div class="pto-desc">Published shifts, week before through week after. The requested days are highlighted and ' + escHtml(String(C.employee.name || 'their').split(' ')[0]) + '&#39;s own shifts are outlined.</div>';
+      var wk = mondayLocal(C.schedule.from), guard = 0;
+      while (wk <= C.schedule.to && guard++ < 8) {
+        var wkEnd = addDaysLocal(wk, 6);
+        h += ptoWeekHtml(wk, C.schedule.shifts, meId, reqDates, fmtDate(wk) + ' – ' + fmtDate(wkEnd));
+        wk = addDaysLocal(wk, 7);
+      }
+      if (!(C.schedule.shifts || []).length) {
+        h += '<div class="pto-sub">Nothing published in this window.</div>';
+      }
+      if (C.schedule.shifts_truncated) {
+        h += '<div class="pto-warn">This market has more shifts in the window than the grid will show. Open the schedule screen for the full picture.</div>';
+      }
+      if (C.schedule.truncated) {
+        h += '<div class="pto-warn">This request runs to ' + escHtml(fmtDate(C.request.end_date)) +
+          '. The grid stops at ' + escHtml(fmtDate(C.schedule.to)) + ' — open the schedule screen for the rest.</div>';
+      }
+    }
+    h += '</div>';
+    return h;
+  }
+
+  window.ptoDetail = async function (id) {
+    closeDetail();
+    var cached = null;
+    (CACHE.approvals || []).forEach(function (x) { if (Number(x.id) === Number(id)) cached = x; });
+    (CACHE.approvedRows || []).forEach(function (x) { if (Number(x.id) === Number(id)) cached = x; });
+
+    var m = document.createElement('div');
+    m.className = 'pto-mask';
+    m._prevOverflow = document.body.style.overflow;
+    var st = cached ? cached.status : null;
+    var foot = st === 'pending'
+      ? '<button class="pto-btn ok" id="pto-dt-ok">Approve</button> <button class="pto-btn no" id="pto-dt-no">Deny</button>'
+      : (st === 'cancel_requested'
+        ? '<button class="pto-btn ok" id="pto-dt-cok">Approve cancellation</button> <button class="pto-btn no" id="pto-dt-ckeep">Keep approved</button>'
+        : '');
+    m.innerHTML = '<div class="pto-dlg wide" role="dialog" aria-modal="true" aria-label="PTO request detail">' +
+      '<div id="pto-dt-body"><div class="loading">Loading' + '…' + '</div>' +
+        (cached ? '<div class="pto-sub" style="margin-top:6px">' + escHtml(cached.user_name || '') + ' · ' +
+          escHtml(fmtDate(cached.start_date)) + '</div>' : '') + '</div>' +
+      '<div style="margin-top:16px;display:flex;gap:10px;justify-content:flex-end;flex-wrap:wrap">' +
+        foot + '<button class="pto-btn ghost" id="pto-dt-close">Close</button></div></div>';
+    document.body.appendChild(m);
+    document.body.style.overflow = 'hidden';
+    DLG = m;
+    watchForNavigation(m);
+    document.addEventListener('keydown', onDetailKey);
+    m.addEventListener('click', function (ev) { if (ev.target === m) closeDetail(); });
+    m.querySelector('#pto-dt-close').onclick = closeDetail;
+    var okBtn = m.querySelector('#pto-dt-ok'), noBtn = m.querySelector('#pto-dt-no');
+    if (okBtn) okBtn.onclick = function () { var over = !!(cached && cached.coverage_over); closeDetail(); window.ptoApprove(id, over); };
+    if (noBtn) noBtn.onclick = function () { closeDetail(); window.ptoDeny(id); };
+    var cokBtn = m.querySelector('#pto-dt-cok'), ckeepBtn = m.querySelector('#pto-dt-ckeep');
+    if (cokBtn) cokBtn.onclick = function () { closeDetail(); window.ptoCancelConfirm(id); };
+    if (ckeepBtn) ckeepBtn.onclick = function () { closeDetail(); window.ptoCancelKeep(id); };
+
+    try {
+      var C = await api('GET', '/pto/requests/' + id + '/context');
+      if (DLG !== m) return; // the approver closed it, or opened another row
+      // Keep the footer honest if the cap moved since the queue was fetched.
+      if (okBtn) okBtn.onclick = function () { var over = !!(C.coverage && C.coverage.over); closeDetail(); window.ptoApprove(id, over); };
+      m.querySelector('#pto-dt-body').innerHTML = detailBodyHtml(C);
+    } catch (e) {
+      if (DLG !== m) return;
+      m.querySelector('#pto-dt-body').innerHTML = '<div class="alert alert-error">Could not load the detail (' + escHtml(e.message || 'error') + ').</div>';
+    }
+  };
 
   // ---- TEAM PTO ------------------------------------------------------------
   async function tabTeam(body) {

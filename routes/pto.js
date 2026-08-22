@@ -155,22 +155,143 @@ async function postLedger(client, e) {
   await client.query('UPDATE users SET pto_balance_hours = COALESCE(pto_balance_hours,0) + $1 WHERE id = $2', [e.amount_hours, e.user_id]);
 }
 
-// Count distinct people already off (approved) on any day overlapping [from,to].
-async function coverageOverlapCount(from, to, excludeUserId) {
-  const r = await pool.query(
-    'SELECT COUNT(DISTINCT user_id)::int AS c FROM pto_requests ' +
-    'WHERE status = $1 AND NOT (end_date < $2 OR start_date > $3) AND user_id <> $4',
-    ['approved', from, to, excludeUserId || 0]
-  );
-  return r.rows.length ? r.rows[0].c : 0;
+// Resolve the market a person belongs to, for coverage and for the schedule
+// snapshot. Order matches applyDaysToSchedule (home_city first, then user_cities)
+// with a shift-based lookup slotted in between, so someone whose home_city is
+// blank but who is visibly working a market still resolves to that market.
+// Returns a trimmed 3-char code, or null when we genuinely cannot tell.
+async function resolveUserCity(userId, from, to) {
+  if (!userId) return null;
+  const u = await pool.query('SELECT home_city FROM users WHERE id = $1', [userId]);
+  if (u.rows.length && u.rows[0].home_city && String(u.rows[0].home_city).trim()) {
+    return String(u.rows[0].home_city).trim();
+  }
+  if (from && to) {
+    // Most-scheduled market within a fortnight either side of the request.
+    // Published only — a draft week is not evidence of where someone works — and
+    // PTO marker shifts are excluded, or a long absence would out-vote real work.
+    const markers = await ptoMarkerPositions();
+    const s = await pool.query(
+      'SELECT TRIM(city_code) AS code, COUNT(*)::int AS n FROM shifts ' +
+      "WHERE user_id = $1 AND status = 'published' AND city_code IS NOT NULL AND TRIM(city_code) <> '' " +
+      "AND shift_date BETWEEN ($2::date - INTERVAL '14 days') AND ($3::date + INTERVAL '14 days') " +
+      'AND (position_id IS NULL OR NOT (position_id = ANY($4::int[]))) ' +
+      'GROUP BY TRIM(city_code) ORDER BY n DESC, code ASC LIMIT 1',
+      [userId, from, to, markers]
+    );
+    if (s.rows.length && s.rows[0].code) return s.rows[0].code;
+  }
+  const c = await pool.query('SELECT TRIM(city_code) AS code FROM user_cities WHERE user_id = $1 ORDER BY id ASC LIMIT 1', [userId]);
+  if (c.rows.length && c.rows[0].code) return c.rows[0].code;
+  return null;
 }
-// The coverage cap that applies (per-market caps are keyed by city_code; MVP falls
-// back to a single default when we cannot resolve the requester's market).
-async function coverageCap(cityCode) {
-  const caps = await getJsonSetting('pto_coverage_caps', {});
-  if (cityCode && caps && caps[cityCode] !== undefined) return Number(caps[cityCode]);
-  const def = await getSetting('pto_coverage_default', null);
-  return def === null || def === undefined ? null : Number(def);
+
+// Distinct people already approved off on any day overlapping [from,to].
+// Ids only, unbounded: this is the count the coverage gate rests on, and a LIMIT
+// here would silently under-count and wave a request through.
+async function overlapUserIds(from, to, excludeUserId, statuses) {
+  const r = await pool.query(
+    'SELECT DISTINCT user_id, status FROM pto_requests ' +
+    'WHERE status = ANY($1::text[]) AND NOT (end_date < $2 OR start_date > $3) AND user_id <> $4',
+    [statuses, from, to, excludeUserId || 0]
+  );
+  return r.rows;
+}
+// The same overlaps as rows we can name, for the dialog. Bounded, because this
+// one only feeds a list on screen — never the count.
+const OVERLAP_NAME_LIMIT = 60;
+async function overlapRows(from, to, excludeUserId, statuses) {
+  const r = await pool.query(
+    'SELECT r.user_id, r.start_date, r.end_date, r.status, u.name ' +
+    'FROM pto_requests r JOIN users u ON u.id = r.user_id ' +
+    'WHERE r.status = ANY($1::text[]) AND NOT (r.end_date < $2 OR r.start_date > $3) AND r.user_id <> $4 ' +
+    'ORDER BY r.start_date ASC, u.name ASC LIMIT ' + (OVERLAP_NAME_LIMIT + 1),
+    [statuses, from, to, excludeUserId || 0]
+  );
+  return r.rows;
+}
+
+// Shared per-HTTP-request scratch: resolved markets and the two settings reads.
+// Markets are keyed by user AND window, because resolveUserCity's shift lookup
+// is relative to the request dates — one key per user would let the first row in
+// the approvals queue pin everyone's market for every other row.
+function coverageCtx() { return { city: {}, caps: undefined, def: undefined }; }
+async function resolveUserCityMemo(userId, from, to, ctx) {
+  const key = userId + '|' + from + '|' + to;
+  if (ctx && ctx.city[key] !== undefined) return ctx.city[key];
+  const c = await resolveUserCity(userId, from, to);
+  if (ctx) ctx.city[key] = c;
+  return c;
+}
+// Above this many distinct people off at once we stop resolving markets one by
+// one and fall back to the company-wide count, which is never looser.
+const SCOPE_RESOLVE_LIMIT = 200;
+// Row cap on the dialog's schedule grid. A 6-week window in a large market can
+// legitimately exceed this, so the payload flags it rather than trailing off.
+const SHIFT_LIMIT = 1500;
+
+// THE authoritative coverage decision. The queue badge, the detail dialog and
+// the approve gate all call this, so the three can never disagree.
+//
+// Scoping rule, deliberately conservative on two counts:
+//  - we narrow to one market ONLY when that market has its own configured cap.
+//    Narrowing the count while still measuring against the company-wide default
+//    would make the gate LOOSER than it was before per-market caps worked.
+//  - inside a scoped count, anyone whose own market cannot be resolved is still
+//    counted. Dropping them is how a long absence disappears from the tally:
+//    an approved absence rewrites its shifts to PTO markers, which the resolver
+//    ignores, so exactly the people the gate exists to catch resolve to null.
+async function resolveCoverage(userId, from, to, ctx) {
+  ctx = ctx || coverageCtx();
+  const city = await resolveUserCityMemo(userId, from, to, ctx);
+
+  if (ctx.caps === undefined) ctx.caps = await getJsonSetting('pto_coverage_caps', {});
+  const rawCap = (city && ctx.caps) ? ctx.caps[city] : undefined;
+  // A hand-edited settings blob can hold junk. NaN would silently disable the
+  // gate (every comparison against it is false), so treat unparseable as unset.
+  const cityCap = (rawCap === null || rawCap === undefined || rawCap === '' || !isFinite(Number(rawCap)))
+    ? null : Number(rawCap);
+
+  const STATUSES = ['approved', 'pending'];
+  const ids = await overlapUserIds(from, to, userId, STATUSES);
+  const approvedIds = {};
+  ids.forEach(function (x) { if (x.status === 'approved') approvedIds[x.user_id] = 1; });
+  const approvedList = Object.keys(approvedIds).map(Number);
+
+  let cap, scoped = false, inMarket = null;
+  if (cityCap !== null && approvedList.length <= SCOPE_RESOLVE_LIMIT) {
+    inMarket = {};
+    for (let i = 0; i < ids.length; i++) {
+      const uid = Number(ids[i].user_id);
+      if (inMarket[uid] === undefined) {
+        const c = await resolveUserCityMemo(uid, from, to, ctx);
+        inMarket[uid] = (c === city) || c === null; // unknown counts against us
+      }
+    }
+    cap = cityCap; scoped = true;
+  } else {
+    if (ctx.def === undefined) ctx.def = await getSetting('pto_coverage_default', null);
+    const def = ctx.def;
+    cap = (def === null || def === undefined || def === '' || !isFinite(Number(def))) ? null : Number(def);
+  }
+
+  const keep = function (uid) { return !scoped || inMarket[Number(uid)]; };
+  const used = approvedList.filter(keep).length + 1;
+
+  const rows = await overlapRows(from, to, userId, STATUSES);
+  const namesTruncated = rows.length > OVERLAP_NAME_LIMIT;
+  const shown = rows.slice(0, OVERLAP_NAME_LIMIT).filter(function (x) { return keep(x.user_id); });
+  const shape = function (x) {
+    return { user_id: x.user_id, name: x.name, start_date: ymdOf(x.start_date), end_date: ymdOf(x.end_date), status: x.status };
+  };
+
+  return {
+    city_code: city, cap: cap, used: used, scoped: scoped,
+    over: cap !== null && used > cap,
+    names_truncated: namesTruncated,
+    others_off: shown.filter(function (x) { return x.status === 'approved'; }).map(shape),
+    others_pending: shown.filter(function (x) { return x.status !== 'approved'; }).map(shape)
+  };
 }
 
 // ---- notifications (email + SMS, non-fatal) --------------------------------
@@ -266,6 +387,26 @@ async function ptoMarkerPositions() {
   if (off) arr.push(off);
   return arr;
 }
+// UTC-safe date-string arithmetic for the schedule window. Kept local rather than
+// imported from routes/schedule.js so this module has no cross-route dependency.
+function addDaysStr(dateStr, n) {
+  const a = String(dateStr).slice(0, 10).split('-').map(Number);
+  const dt = new Date(Date.UTC(a[0], a[1] - 1, a[2]));
+  dt.setUTCDate(dt.getUTCDate() + n);
+  const y = dt.getUTCFullYear(), m = String(dt.getUTCMonth() + 1).padStart(2, '0'), d = String(dt.getUTCDate()).padStart(2, '0');
+  return y + '-' + m + '-' + d;
+}
+// Monday (week start) of the given date, as YYYY-MM-DD. Matches routes/schedule.js.
+function mondayOfStr(dateStr) {
+  const a = String(dateStr).slice(0, 10).split('-').map(Number);
+  const day = new Date(Date.UTC(a[0], a[1] - 1, a[2])).getUTCDay(); // 0=Sun..6=Sat
+  return addDaysStr(dateStr, -(day === 0 ? 6 : day - 1));
+}
+function daysBetween(a, b) {
+  const pa = String(a).slice(0, 10).split('-').map(Number), pb = String(b).slice(0, 10).split('-').map(Number);
+  return Math.round((Date.UTC(pb[0], pb[1] - 1, pb[2]) - Date.UTC(pa[0], pa[1] - 1, pa[2])) / 86400000);
+}
+
 // Every calendar date string in [a,b] inclusive (weekends included — 24/7 crew).
 function eachDate(a, b) {
   const s = parseDate(a), e = parseDate(b), out = [];
@@ -633,18 +774,32 @@ router.post('/requests', requireAuth, async (req, res) => {
 
 router.get('/approvals', requireAuth, async (req, res) => {
   const pend = await pool.query(
-    'SELECT r.*, u.name AS user_name, u.pay_type FROM pto_requests r JOIN users u ON u.id = r.user_id ' +
+    'SELECT r.*, u.name AS user_name, u.pay_type, u.title, ' +
+    'COALESCE(u.pto_balance_hours,0) AS balance_hours, u.pto_exempt, u.employment_type, u.hire_date ' +
+    'FROM pto_requests r JOIN users u ON u.id = r.user_id ' +
     "WHERE r.status IN ('pending','cancel_requested') ORDER BY r.created_at ASC"
   );
+  const ctx = coverageCtx();
   const out = [];
   for (let i = 0; i < pend.rows.length; i++) {
     const r = pend.rows[i];
     if (await canApprove(req.user, r.user_id)) {
-      const already = await coverageOverlapCount(ymdOf(r.start_date), ymdOf(r.end_date), r.user_id);
-      const cap = await coverageCap(null);
-      r.coverage_used = already + 1;
-      r.coverage_cap = cap;
-      r.coverage_over = cap !== null && (already + 1) > cap;
+      const from = ymdOf(r.start_date), to = ymdOf(r.end_date);
+      const cv = await resolveCoverage(r.user_id, from, to, ctx);
+      r.coverage_city = cv.city_code;
+      r.coverage_used = cv.used;
+      r.coverage_cap = cv.cap;
+      r.coverage_over = cv.over;
+      // Balance preview. r.hours is already paid-days-only (paidDays * 8), so an
+      // unpaid or scheduled-off request costs nothing and reads as "no charge".
+      // Surfacing this here turns the approve-time wall at the bottom of
+      // /requests/:id/approve into a number the approver can see beforehand.
+      const bal = Number(r.balance_hours) || 0;
+      const cost = r.paid ? (Number(r.hours) || 0) : 0;
+      r.balance_hours = bal;
+      r.cost_hours = cost;
+      r.balance_after = Math.round((bal - cost) * 100) / 100;
+      r.insufficient = cost > 0 && (bal - cost) < 0;
       out.push(r);
     }
   }
@@ -673,6 +828,184 @@ router.get('/approved', requireAuth, async (req, res) => {
   const start = (page - 1) * pageSize;
   const rows = mine.slice(start, start + pageSize);
   res.json({ rows: rows, total: total, page: page, page_size: pageSize, pages: pages });
+});
+
+// ---- REQUEST CONTEXT (everything the approver needs on one screen) ---------
+// Gated by canApprove alone, deliberately: /pto/team/:userId/ledger needs
+// manage_pto, which plenty of legitimate approvers do not carry. Authority to
+// decide the request is authority to see what the decision rests on.
+// Also does its own shifts query rather than calling /schedule/city, because
+// that route gates on view_schedule and the caller's own city scope — an
+// approver may rightly approve someone in a market they cannot browse.
+router.get('/requests/:id/context', requireAuth, async (req, res) => {
+  const id = parseInt(req.params.id, 10) || 0;
+  const rr = await pool.query('SELECT * FROM pto_requests WHERE id = $1', [id]);
+  if (!rr.rows.length) return res.status(404).json({ error: 'Request not found' });
+  const r = rr.rows[0];
+  if (!(await canApprove(req.user, r.user_id))) return res.status(403).json({ error: 'Not your request to view' });
+
+  const from = ymdOf(r.start_date), to = ymdOf(r.end_date);
+
+  // ---- employee + accrual (mirrors /pto/me so the two screens never disagree)
+  const ur = await pool.query(
+    'SELECT id, name, title, pay_type, hire_date, COALESCE(pto_balance_hours,0) AS pto_balance_hours, ' +
+    'pto_exempt, employment_type FROM users WHERE id = $1', [r.user_id]
+  );
+  if (!ur.rows.length) return res.status(404).json({ error: 'Employee not found' });
+  const u = ur.rows[0];
+  const bands = await getJsonSetting('pto_accrual_bands', DEFAULT_BANDS);
+  const waiting = Number(await getSetting('pto_waiting_days', 90)) || 90;
+  const years = tenureYears(u.hire_date);
+  const band = resolveBand(bands, years);
+  const exempt = u.pto_exempt === true;
+  const fullTime = (u.employment_type || 'full_time') === 'full_time';
+  const accrues = !exempt && fullTime && !!u.hire_date;
+  const elig = await eligibleInfo(u, waiting);
+
+  // ---- balance preview (same arithmetic as the queue row)
+  const balance = Number(u.pto_balance_hours) || 0;
+  const cost = r.paid ? (Number(r.hours) || 0) : 0;
+
+  // ---- day tags for this request
+  const dayRows = await pool.query('SELECT day_date, kind FROM pto_request_days WHERE request_id = $1 ORDER BY day_date ASC', [id]);
+  const days = dayRows.rows.length
+    ? dayRows.rows.map(function (x) { return { date: ymdOf(x.day_date), kind: x.kind }; })
+    : eachDate(from, to).map(function (d) { return { date: d, kind: r.paid ? 'paid' : 'unpaid' }; });
+
+  // ---- rolling 12 months of history. Anchored on TODAY, not on the request's
+  // start date: a request dated six months out would otherwise shift the window
+  // forward and hide PTO the employee genuinely took inside the last year.
+  const winTo = ymd(new Date());
+  const winFrom = (function () { const s = new Date(); s.setFullYear(s.getFullYear() - 1); return ymd(s); })();
+  const HIST_COLS =
+    'SELECT r2.id, r2.start_date, r2.end_date, r2.business_days, r2.hours, r2.type, r2.paid, r2.status, ' +
+    'r2.paid_days, r2.unpaid_days, r2.off_days, r2.retroactive, r2.coverage_override, r2.override_reason, ' +
+    'r2.decided_at, r2.created_at, a.name AS approver_name ' +
+    'FROM pto_requests r2 LEFT JOIN users a ON a.id = r2.approver_id ';
+  // Past decisions: anything in the window that is not still-live-and-future.
+  // A request denied last week for dates next month belongs here — it is exactly
+  // the "we already said no to these days" signal an approver needs — so the
+  // split is by whether the time is still coming, not merely by date.
+  const LIVE = "('approved','pending','cancel_requested')";
+  const hist = await pool.query(
+    HIST_COLS + 'WHERE r2.user_id = $1 AND r2.id <> $2 AND r2.end_date >= $3 ' +
+    'AND (r2.start_date <= $4 OR r2.status NOT IN ' + LIVE + ') ' +
+    'ORDER BY r2.start_date DESC, r2.id DESC LIMIT 60',
+    [r.user_id, id, winFrom, winTo]
+  );
+  // Booked ahead: still-live requests starting after today. A manager deciding
+  // this request wants to know what they have already promised.
+  const ahead = await pool.query(
+    HIST_COLS + 'WHERE r2.user_id = $1 AND r2.id <> $2 AND r2.start_date > $3 ' +
+    'AND r2.status IN ' + LIVE + ' ' +
+    'ORDER BY r2.start_date ASC, r2.id ASC LIMIT 30',
+    [r.user_id, id, winTo]
+  );
+  const led = await pool.query(
+    'SELECT id, entry_date, kind, amount_hours, description, created_at FROM pto_ledger ' +
+    'WHERE user_id = $1 AND entry_date >= $2 AND entry_date <= $3 ' +
+    'ORDER BY entry_date DESC, id DESC LIMIT 200',
+    [r.user_id, winFrom, winTo]
+  );
+  // Net of reversals: a cancelled PTO posts a positive 'reversal' line, and
+  // counting only 'usage' would keep reporting time the employee never took.
+  // Bounded at BOTH ends: /approve posts the usage line dated to the request's
+  // start, so an approved future trip would otherwise be counted as already
+  // taken under a heading that says "last 12 months".
+  const usedRow = await pool.query(
+    "SELECT COALESCE(SUM(-amount_hours),0) AS h FROM pto_ledger " +
+    "WHERE user_id = $1 AND entry_date >= $2 AND entry_date <= $3 AND kind IN ('usage','reversal')",
+    [r.user_id, winFrom, winTo]
+  );
+  const usedHours = Number(usedRow.rows[0].h) || 0;
+
+  // ---- coverage, with the names behind the number
+  const cv = await resolveCoverage(r.user_id, from, to, coverageCtx());
+  const city = cv.city_code;
+
+  // ---- schedule: week before, week(s) of, week after. Capped so a month-long
+  // request cannot drag the whole quarter's grid into one dialog.
+  const schedFrom = addDaysStr(mondayOfStr(from), -7);
+  const wantTo = addDaysStr(mondayOfStr(to), 13); // Sunday of the week AFTER the end week
+  const MAX_WEEKS = 6;
+  // Clamping from the end would silently drop the tail of a long request — the
+  // approver would read an empty grid as "nobody scheduled". Clamp, but say so.
+  let schedTo = wantTo;
+  let schedTruncated = false;
+  if (daysBetween(schedFrom, wantTo) + 1 > MAX_WEEKS * 7) {
+    schedTo = addDaysStr(schedFrom, MAX_WEEKS * 7 - 1);
+    schedTruncated = true;
+  }
+  let shifts = [];
+  let shiftsTruncated = false;
+  if (city) {
+    const sr = await pool.query(
+      'SELECT s.id, s.user_id, s.shift_date, s.start_time, s.end_time, s.notes, s.city_code, ' +
+      'p.name AS position_name, p.color AS position_color, c.name AS city_name, u2.name AS user_name ' +
+      'FROM shifts s LEFT JOIN shift_positions p ON p.id = s.position_id ' +
+      'LEFT JOIN cities c ON TRIM(c.code) = TRIM(s.city_code) ' +
+      'JOIN users u2 ON u2.id = s.user_id ' +
+      "WHERE s.status = 'published' AND TRIM(s.city_code) = $1 AND s.shift_date BETWEEN $2 AND $3 " +
+      'AND COALESCE(u2.hide_from_schedule, false) = false ' +
+      'ORDER BY s.shift_date ASC, s.start_time ASC LIMIT ' + (SHIFT_LIMIT + 1),
+      [city, schedFrom, schedTo]
+    );
+    // Same reasoning as the week clamp: a grid that quietly stops mid-window
+    // reads as "nobody is scheduled", which is the opposite of the truth.
+    if (sr.rows.length > SHIFT_LIMIT) { shiftsTruncated = true; sr.rows.length = SHIFT_LIMIT; }
+    shifts = sr.rows.map(function (s) { s.shift_date = ymdOf(s.shift_date); return s; });
+  }
+  let cityName = null;
+  if (city) {
+    const cn = await pool.query('SELECT name FROM cities WHERE TRIM(code) = $1 LIMIT 1', [city]);
+    cityName = cn.rows.length ? cn.rows[0].name : null;
+  }
+
+  res.json({
+    request: {
+      id: r.id, user_id: r.user_id, start_date: from, end_date: to, type: r.type, paid: r.paid,
+      status: r.status, hours: Number(r.hours) || 0, business_days: r.business_days,
+      paid_days: r.paid_days, unpaid_days: r.unpaid_days, off_days: r.off_days,
+      required_level: r.required_level, created_at: r.created_at, cancel_memo: r.cancel_memo,
+      days: days, tier_label: requiredTier(Number(r.business_days) || 0).label
+    },
+    employee: {
+      id: u.id, name: u.name, title: u.title, pay_type: u.pay_type || 'hourly',
+      hire_date: u.hire_date ? ymdOf(u.hire_date) : null,
+      tenure_years: years, exempt: exempt, accrues: accrues,
+      employment_type: u.employment_type || 'full_time',
+      accrual_monthly_hours: accrues ? monthlyHoursFromBand(band) : 0,
+      accrual_days_per_year: accrues ? (Number(band && band.days_per_year) || 0) : 0,
+      eligible_date: elig.eligible_date, eligible_now: elig.eligible_now
+    },
+    balance: {
+      current_hours: balance,
+      cost_hours: cost,
+      after_hours: Math.round((balance - cost) * 100) / 100,
+      insufficient: cost > 0 && (balance - cost) < 0
+    },
+    history: {
+      window_from: winFrom, window_to: winTo,
+      used_hours: usedHours,
+      requests: hist.rows.map(function (x) {
+        x.start_date = ymdOf(x.start_date); x.end_date = ymdOf(x.end_date); return x;
+      }),
+      upcoming: ahead.rows.map(function (x) {
+        x.start_date = ymdOf(x.start_date); x.end_date = ymdOf(x.end_date); return x;
+      }),
+      ledger: led.rows.map(function (x) { x.entry_date = ymdOf(x.entry_date); return x; })
+    },
+    coverage: {
+      city_code: city, city_name: cityName, scoped: cv.scoped,
+      cap: cv.cap, used: cv.used, over: cv.over, names_truncated: cv.names_truncated,
+      others_off: cv.others_off, others_pending: cv.others_pending
+    },
+    schedule: {
+      from: schedFrom, to: schedTo, requested_to: wantTo, truncated: schedTruncated,
+      shifts_truncated: shiftsTruncated,
+      city_code: city, city_name: cityName, shifts: shifts
+    }
+  });
 });
 
 // ---- CANCELLATIONS LOG (paginated, reporting-line scope) -------------------
@@ -714,12 +1047,13 @@ router.post('/requests/:id/approve', requireAuth, async (req, res) => {
   const allowNegative = isAdmin && !!(req.body && (req.body.allow_negative === true || req.body.allow_negative === 'true'));
 
   const from = ymdOf(r.start_date), to = ymdOf(r.end_date);
-  const already = await coverageOverlapCount(from, to, r.user_id);
-  const cap = await coverageCap(null);
-  const over = cap !== null && (already + 1) > cap;
+  // Exactly the resolver the queue badge and the detail dialog used, so what the
+  // approver was shown is what the gate enforces.
+  const cv = await resolveCoverage(r.user_id, from, to, coverageCtx());
+  const city = cv.city_code, cap = cv.cap, over = cv.over;
   const overrideReason = String((req.body && req.body.override_reason) || '').trim();
   if (over && !overrideReason) {
-    return res.status(400).json({ error: 'coverage_override_required', coverage_used: already + 1, coverage_cap: cap });
+    return res.status(400).json({ error: 'coverage_override_required', coverage_used: cv.used, coverage_cap: cap });
   }
 
   // Re-check the hard wall at approval time for paid requests (admins may override to go negative).
@@ -760,7 +1094,7 @@ router.post('/requests/:id/approve', requireAuth, async (req, res) => {
   await logAudit({
     entity_type: 'pto_request', entity_id: id, action: over ? 'approved_override' : 'approved',
     user_id: req.user.id, user_name: req.user.name,
-    details: { dates: from + ' to ' + to, coverage_used: already + 1, coverage_cap: cap, override_reason: over ? overrideReason : null, negative_override: allowNegative }
+    details: { dates: from + ' to ' + to, coverage_city: city, coverage_used: cv.used, coverage_cap: cap, coverage_scoped: cv.scoped, override_reason: over ? overrideReason : null, negative_override: allowNegative }
   });
   await notifyRequester(r.user_id, 'approved', from, to, r.business_days, req.user.name, null);
   res.json({ success: true, coverage_override: over });
