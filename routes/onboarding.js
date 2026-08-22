@@ -1568,7 +1568,7 @@ admin.get('/progress', async (req, res) => {
   const allSteps = await activeSteps();
   const total = allSteps.length;
   const ur = await pool.query(
-    "SELECT u.id, u.name, u.title, u.role, u.email, u.last_login_at, u.onboarding_enrolled_at, u.supervisor_id, u.onboarding_completion_override, " +
+    "SELECT u.id, u.name, u.title, u.role, u.email, u.last_login_at, u.last_seen_at, u.onboarding_enrolled_at, u.supervisor_id, u.onboarding_completion_override, " +
     "u.onboarding_phase, u.onboarding_phase1_approved_at, s.name AS supervisor_name, " +
     "u.onboarding_phase1_approver_id, u.onboarding_phase2_approver_id, " +
     "a1.name AS phase1_approver_name, a2.name AS phase2_approver_name " +
@@ -1598,6 +1598,14 @@ admin.get('/progress', async (req, res) => {
       // where it is going before sending, and whether they have ever logged
       // in so the confirm can say what the link will actually do.
       email: u.email, has_logged_in: !!u.last_login_at,
+      // Roster "last seen" column. last_seen_at is stamped by middleware/auth on
+      // any authenticated request (throttled to 60s), so it answers "are they in
+      // Nova at all", not "are they working the onboarding track". A null
+      // last_login_at is the different, louder case: they never got in, which is
+      // a Resend invite problem rather than a slow-hire problem.
+      // Both must ship together with the SELECT above - dropping either one
+      // silently degrades every row to "Seen -" (regressed in d60955a).
+      last_seen_at: u.last_seen_at, last_login_at: u.last_login_at,
       supervisor_id: u.supervisor_id, supervisor_name: u.supervisor_name,
       phase1_approver_id: u.onboarding_phase1_approver_id, phase1_approver_name: u.phase1_approver_name,
       phase2_approver_id: u.onboarding_phase2_approver_id, phase2_approver_name: u.phase2_approver_name,
