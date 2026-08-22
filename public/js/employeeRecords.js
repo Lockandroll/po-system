@@ -384,20 +384,137 @@
     return '<button class="btn ' + cls + ' btn-sm" onclick="' + onclick + '">' + label + '</button>';
   }
 
+  /* The right-hand rail.
+     Written to state what is TRUE about this person, in that order, rather than
+     to lay out every possible bad outcome up front. A file with nothing on it
+     used to open with an empty five-rung discipline ladder and a red zero,
+     which framed somebody before they had done anything. Two rules came out of
+     that and both are load-bearing:
+
+       1. A zero is never coloured. Colour has to mean something, and painting a
+          clean file in warning colours spends the meaning on nothing.
+       2. A card that has nothing to say does not render. The ladder appears
+          once there is a notice on it and not before; the late-deposit card
+          appears once something has been marked late.
+
+     The tone is deliberately flat rather than encouraging. A card that
+     congratulates somebody for having no records would look ridiculous sitting
+     on the file of somebody who has two warnings, and the same words have to
+     work on both. */
   function sideHtml() {
     var d = S.file, L = d.ladder || {};
     var levels = (S.meta && S.meta.levels) || [];
-    var steps = levels.map(function (lv) {
-      var cls = '';
-      if (lv.n <= L.highest_live) cls = ' done';
-      if (lv.n === L.highest_live) cls = ' cur';
-      var short = lv.label.replace(' Warning (documented)', '').replace(' Warning', '');
-      return '<div class="er-step' + cls + '">' + esc(short) + '</div>';
-    }).join('');
+    var recs = (d.records || []).filter(function (r) { return r.status !== 'void' && r.status !== 'draft'; });
 
     var counts = { recognition: 0, coaching: 0, performance: 0, disciplinary: 0 };
-    (d.records || []).forEach(function (r) { if (counts[r.type] !== undefined && r.status !== 'void' && r.status !== 'draft') counts[r.type]++; });
+    recs.forEach(function (r) { if (counts[r.type] !== undefined) counts[r.type]++; });
+    var total = counts.recognition + counts.coaching + counts.performance + counts.disciplinary;
 
+    var lateAvail = !!(d.late_deposits && d.late_deposits.available);
+    var lateCount = (d.late_deposits && d.late_deposits.count) || 0;
+
+    // Anything actually waiting on somebody. These are the only things that
+    // earn a colour on an otherwise quiet file.
+    var open = [];
+    recs.forEach(function (r) {
+      if (r.status === 'sent') open.push('a notice awaiting signature');
+      else if (r.status === 'pending_approval') open.push('a notice awaiting approval');
+      else if (r.status === 'expired') open.push('a signature request that expired');
+      if (r.followup_on && !r.followup_outcome && ['signed', 'refused', 'expired', 'sent'].indexOf(r.status) !== -1) {
+        open.push('a follow-up due ' + shortDate(r.followup_on));
+      }
+    });
+
+    // ---- Standing -----------------------------------------------------------
+    var line, dot;
+    if (L.highest_live) {
+      line = 'Highest live level: ' + esc(levelName(L.highest_live)) + '.';
+      dot = 'var(--danger)';
+    } else if (total === 0 && !lateCount) {
+      line = 'Nothing on record in the last 12 months.';
+      dot = 'var(--success)';
+    } else if (counts.disciplinary === 0 && counts.coaching === 0 && !lateCount) {
+      line = total + ' record' + (total === 1 ? '' : 's') + ' on file, none of it disciplinary.';
+      dot = 'var(--success)';
+    } else {
+      line = total + ' record' + (total === 1 ? '' : 's') + ' in the last 12 months. No live notice.';
+      dot = 'var(--text-muted-color)';
+    }
+    var second = [];
+    if (lateAvail && !lateCount) second.push('No deposits marked late.');
+    if (lateCount) second.push(lateCount + ' deposit' + (lateCount === 1 ? '' : 's') + ' marked late.');
+    if (open.length) second.push(open.slice(0, 2).join(' and ') + '.');
+
+    var standing =
+      '<div class="card" style="margin-bottom:14px"><div class="card-header">' +
+      '<div class="card-title">Standing</div>' +
+      '<span style="font-size:12px;color:var(--text-muted-color)">last 12 months</span></div>' +
+      '<div class="card-body">' +
+      '<div style="display:flex;gap:9px;align-items:flex-start">' +
+      '<div style="width:9px;height:9px;border-radius:50%;background:' + dot + ';margin-top:5px;flex-shrink:0"></div>' +
+      '<div><div style="font-size:14px;color:var(--text);line-height:1.5">' + line + '</div>' +
+      (second.length
+        ? '<div style="font-size:12.5px;color:var(--text-muted-color);margin-top:5px;line-height:1.6">' + second.join(' ') + '</div>'
+        : '') +
+      '</div></div></div></div>';
+
+    // ---- Late deposits, only when there are some ----------------------------
+    var lateCard = '';
+    if (lateAvail && lateCount) {
+      lateCard = '<div class="card" style="margin-bottom:14px;border-color:#4a3500">' +
+        '<div class="card-header" style="border-bottom-color:#4a3500">' +
+        '<div class="card-title">Late deposits</div>' +
+        '<span style="font-size:12px;color:var(--text-muted-color)">last 12 months</span></div>' +
+        '<div class="card-body">' +
+        '<div style="font-size:28px;font-weight:700;font-family:\'Fira Code\',ui-monospace,monospace;color:var(--warning)">' + lateCount + '</div>' +
+        '<div style="font-size:12px;color:var(--text-muted-color);margin-top:4px;line-height:1.6">' +
+        'Marked by a manager on the deposit or the Pulsar board. Documenting them pulls the real dates in, ' +
+        'so nothing is written from memory.</div>' +
+        sparkHtml(d.late_deposits.by_month, d.late_deposits.months) +
+        (d.can_act && can('create_employee_note')
+          ? '<button class="btn btn-secondary btn-sm" style="margin-top:12px;width:100%;justify-content:center" ' +
+            'onclick="erDocumentLate()">Document these</button>' : '') +
+        '</div></div>';
+    }
+
+    // ---- The ladder, only once there is something on it ---------------------
+    var ladderCard = '';
+    if (L.total_count) {
+      var steps = levels.map(function (lv) {
+        var cls = '';
+        if (lv.n <= L.highest_live) cls = ' done';
+        if (lv.n === L.highest_live) cls = ' cur';
+        var short = lv.label.replace(' Warning (documented)', '').replace(' Warning', '');
+        return '<div class="er-step' + cls + '">' + esc(short) + '</div>';
+      }).join('');
+      ladderCard = '<div class="card" style="margin-bottom:14px"><div class="card-header">' +
+        '<div class="card-title">Progressive discipline</div></div>' +
+        '<div class="card-body"><div class="er-ladder" style="margin-bottom:12px">' + steps + '</div>' +
+        '<div style="font-size:12px;color:var(--text-muted-color)">' +
+        (L.highest_live
+          ? 'Highest live level: ' + esc(levelName(L.highest_live)) + '. '
+          : 'Nothing live. ' + L.total_count + ' past notice' + (L.total_count === 1 ? '' : 's') + ' outside the window. ') +
+        'Ladder position is informational; nothing escalates automatically, and a notice past its window stays ' +
+        'on the file but stops counting.</div></div></div>';
+    }
+
+    // ---- Counts. A zero is grey, always. ------------------------------------
+    function kv(label, n, colour) {
+      return '<div class="er-kv"><span>' + label + '</span>' +
+        '<span' + (n ? ' style="color:' + colour + '"' : ' style="color:var(--text-muted-color);font-weight:400"') + '>' + n + '</span></div>';
+    }
+    var countsCard =
+      '<div class="card" style="margin-bottom:14px"><div class="card-header"><div class="card-title">Last 12 months</div></div>' +
+      '<div class="card-body" style="padding:8px 20px">' +
+      kv('Recognition', counts.recognition, 'var(--success)') +
+      kv('Coaching notes', counts.coaching, 'var(--warning)') +
+      kv('Performance notes', counts.performance, 'var(--text)') +
+      kv('Formal discipline', counts.disciplinary, 'var(--danger)') +
+      '</div></div>';
+
+    // ---- Add to file --------------------------------------------------------
+    // Recognition is the only filled button. A filled red one invites clicking,
+    // and that is the action you least want to be easy.
     var add = '';
     if (d.can_act && can('create_employee_note')) {
       add = '<div class="card" style="margin-bottom:14px"><div class="card-header"><div class="card-title">Add to file</div></div>' +
@@ -406,53 +523,21 @@
         '<button class="btn btn-secondary btn-sm" style="justify-content:flex-start" onclick="erNewRecord(\'coaching\')">Coaching note</button>' +
         '<button class="btn btn-secondary btn-sm" style="justify-content:flex-start" onclick="erNewRecord(\'performance\')">Performance note</button>' +
         (can('create_disciplinary')
-          ? '<button class="btn btn-danger btn-sm" style="justify-content:flex-start" onclick="erNewDisciplinary()">Disciplinary action</button>' : '') +
+          ? '<button class="btn btn-secondary btn-sm" style="justify-content:flex-start;color:#f87171;border-color:#4d1515" ' +
+            'onclick="erNewDisciplinary()">Disciplinary action</button>' : '') +
         '</div></div>';
     }
 
-    var lateCount = (d.late_deposits && d.late_deposits.count) || 0;
-    var lateCard = '';
-    if (d.late_deposits && d.late_deposits.available) {
-      lateCard = '<div class="card" style="margin-bottom:14px' + (lateCount ? ';border-color:#4a3500' : '') + '">' +
-        '<div class="card-header"' + (lateCount ? ' style="border-bottom-color:#4a3500"' : '') + '>' +
-        '<div class="card-title">Late deposits</div>' +
-        '<span style="font-size:12px;color:var(--text-muted-color)">last 12 months</span></div>' +
-        '<div class="card-body">' +
-        '<div style="font-size:28px;font-weight:700;font-family:\'Fira Code\',ui-monospace,monospace;color:' +
-        (lateCount ? 'var(--warning)' : 'var(--success)') + '">' + lateCount + '</div>' +
-        '<div style="font-size:12px;color:var(--text-muted-color);margin-top:4px;line-height:1.6">' +
-        (lateCount
-          ? 'Marked by a manager on the deposit or the Pulsar board. Documenting them pulls the real dates in, so nothing is written from memory.'
-          : 'Nothing marked late. Managers mark a deposit late from the Pulsar reconciliation board.') + '</div>' +
-        sparkHtml(d.late_deposits.by_month, d.late_deposits.months) +
-        (lateCount && d.can_act && can('create_employee_note')
-          ? '<button class="btn btn-secondary btn-sm" style="margin-top:12px;width:100%;justify-content:center" ' +
-            'onclick="erDocumentLate()">Document these</button>' : '') +
-        '</div></div>';
-    }
-
-    return lateCard + '<div class="card" style="margin-bottom:14px"><div class="card-header"><div class="card-title">Progressive discipline</div></div>' +
-      '<div class="card-body"><div class="er-ladder" style="margin-bottom:12px">' + steps + '</div>' +
-      '<div style="font-size:12px;color:var(--text-muted-color)">' +
-      (L.highest_live ? 'Highest live level: ' + esc(levelName(L.highest_live)) + '. ' : 'No live notices. ') +
-      'Ladder position is informational; nothing escalates automatically, and a notice past its window stays ' +
-      'on the file but stops counting.</div></div></div>' +
-
-      '<div class="card" style="margin-bottom:14px"><div class="card-header"><div class="card-title">Last 12 months</div></div>' +
-      '<div class="card-body" style="padding:8px 20px">' +
-      '<div class="er-kv"><span>Recognition</span><span style="color:var(--success)">' + counts.recognition + '</span></div>' +
-      '<div class="er-kv"><span>Coaching notes</span><span style="color:var(--warning)">' + counts.coaching + '</span></div>' +
-      '<div class="er-kv"><span>Performance notes</span><span>' + counts.performance + '</span></div>' +
-      '<div class="er-kv"><span>Formal discipline</span><span style="color:var(--danger)">' + counts.disciplinary + '</span></div>' +
-      '</div></div>' + add +
-
-      '<div class="card"><div class="card-header"><div class="card-title">Who can see this file</div></div>' +
+    var who = '<div class="card"><div class="card-header"><div class="card-title">Who can see this file</div></div>' +
       '<div class="card-body"><div style="font-size:12px;color:var(--text-muted-color);line-height:1.7">' +
       'Admins and the owner, company-wide. Managers holding the permission see their own city and their own ' +
       'downline. ' + esc(S.file.user.name.split(' ')[0]) + ' sees only the records marked visible.' +
       '<div style="margin-top:10px;padding-top:10px;border-top:1px solid var(--border-light)">' +
-      'Every time somebody opens a disciplinary record it is written to the audit log.</div>' +
+      'Opening a disciplinary record is written to the audit log, so ' + esc(S.file.user.name.split(' ')[0]) +
+      ' can always be told who has read their file.</div>' +
       '</div></div></div>';
+
+    return standing + lateCard + ladderCard + countsCard + add + who;
   }
 
   // Twelve months of late deposits as a bar per month. Empty months are drawn

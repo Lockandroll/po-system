@@ -849,6 +849,26 @@ async function seed() {
   has('ai: and says so with the conversation attached', budgetRow.failure_reason, 'all 2 turns');
   await q("UPDATE ivr_profiles SET max_turns=12 WHERE id=$1", [IDS.profile]);
 
+  // A test call on an ai_fallback profile has to be able to reach the NAVIGATOR,
+  // not just the script it would run in production. Without the explicit lane
+  // there is no way to hear the half nobody has heard yet.
+  await q("UPDATE ivr_profiles SET mode='ai_fallback' WHERE id=$1", [IDS.profile]);
+  auth.setUser({ id: 1, name: 'Admin', role: 'admin' });
+  calls.length = 0;
+  r = await req('POST', '/api/checkins/profiles/' + IDS.profile + '/test', { work_order: 'WO-1120', direction: 'in', mode: 'ai' });
+  eq('test call: the AI lane can be asked for by name', r.status, 200);
+  eq('test call: and runs in AI mode', r.body.mode, 'ai');
+  has('test call: dialling the AI endpoint', calls[calls.length - 1].Url, '/api/twilio/voice/ai/');
+  ok('test call: still flagged as a test, so it can never stamp a job', r.body.is_test === true);
+  await q("DELETE FROM checkin_events WHERE id=$1", [r.body.id]);
+
+  calls.length = 0;
+  r = await req('POST', '/api/checkins/profiles/' + IDS.profile + '/test', { work_order: 'WO-1120', direction: 'in', mode: 'script' });
+  eq('test call: the script lane still works on the same profile', r.body.mode, 'script');
+  has('test call: dialling the script endpoint', calls[calls.length - 1].Url, '/api/twilio/voice/script/');
+  await q("DELETE FROM checkin_events WHERE id=$1", [r.body.id]);
+  await q("UPDATE ivr_profiles SET mode='ai' WHERE id=$1", [IDS.profile]);
+
   // ================= 21. Learn once, then stop paying =================
   var sig = brain.actionSignature([
     { action: 'press', digits: '1' }, { action: 'wait', seconds: 3 },

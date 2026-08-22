@@ -394,10 +394,15 @@ router.post('/profiles/:id/test', requireAuth, requirePermission('manage_ivr_pro
     if (!wanted) return res.status(400).json({ error: 'Pick a work order to test against.' });
     var wo = await resolveWorkOrder(wanted);
     if (!wo) return res.status(404).json({ error: 'No work order matches "' + String(wanted).slice(0, 40) + '".' });
+    // Which lane to test, explicitly. An ai_fallback profile runs the script in
+    // production, so without this there is no way to exercise the navigator on
+    // it at all - and the navigator is the half nobody has heard yet.
+    var lane = String((req.body && req.body.mode) || '').toLowerCase();
     var ev = await engine.startCall({
       workOrderId: wo.id,
       direction: dirOf(req.body && req.body.direction) || 'in',
-      user: req.user, profile: profile, isTest: true
+      user: req.user, profile: profile, isTest: true,
+      forceMode: (lane === 'ai' || lane === 'script') ? lane : undefined
     });
     res.json(ev);
   } catch (err) { res.status(400).json({ error: err.message || 'Test call failed.' }); }

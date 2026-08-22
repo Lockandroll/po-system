@@ -19024,10 +19024,16 @@ async function renderCheckinProfile(el, id) {
         // direction itself - check-in if there were check-in steps, otherwise
         // check-out - which meant that the moment a check-out script existed,
         // Test Call could never reach it again.
+        // A profile on the AI navigator has NO steps, so gating these on the step
+        // count hid the test button on exactly the accounts whose behaviour
+        // nobody has heard yet. Each lane gets its own button when it exists.
         (_ciProfile.id && (_ciProfile.checkin_steps || []).length
-          ? '<button class="btn btn-secondary" onclick="ciTestCall(&#39;in&#39;)">&#9742; Test check-in</button>' : '') +
+          ? '<button class="btn btn-secondary" onclick="ciTestCall(&#39;in&#39;,&#39;script&#39;)">&#9742; Test check-in</button>' : '') +
         (_ciProfile.id && (_ciProfile.checkout_steps || []).length
-          ? '<button class="btn btn-secondary" onclick="ciTestCall(&#39;out&#39;)">&#9742; Test check-out</button>' : '') +
+          ? '<button class="btn btn-secondary" onclick="ciTestCall(&#39;out&#39;,&#39;script&#39;)">&#9742; Test check-out</button>' : '') +
+        (_ciProfile.id && (_ciProfile.mode || 'script') !== 'script'
+          ? '<button class="btn btn-secondary" onclick="ciTestCall(&#39;in&#39;,&#39;ai&#39;)">&#9742; Test check-in with AI</button>' +
+            '<button class="btn btn-secondary" onclick="ciTestCall(&#39;out&#39;,&#39;ai&#39;)">&#9742; Test check-out with AI</button>' : '') +
         (_ciProfile.id ? '<button class="btn ' + (_ciProfile.active ? 'btn-secondary' : 'btn-primary') + '" onclick="ciToggleActive()">' +
           (_ciProfile.active ? 'Take offline' : 'Mark live') + '</button>' : '') +
         (_ciProfile.id ? '<button class="btn btn-ghost" style="color:#b91c1c" onclick="ciDeleteProfile()">Delete</button>' : '') +
@@ -19370,16 +19376,18 @@ function ciTestRender(html) {
 // for a real check-in, which means the result has to come back HERE. Otherwise
 // the one button whose whole job is to tell you whether the script works fires
 // into silence.
-async function ciTestCall(dir) {
+async function ciTestCall(dir, lane) {
   dir = (dir === 'out') ? 'out' : 'in';
-  var wo = await novaPrompt('Test the ' + (dir === 'out' ? 'check-OUT' : 'check-IN') +
-    ' script against which work order? The work order number off the paperwork is fine, or Nova&#39;s own id.');
+  lane = (lane === 'ai') ? 'ai' : 'script';
+  var wo = await novaPrompt('Test the ' + (dir === 'out' ? 'check-OUT' : 'check-IN') + ' ' +
+    (lane === 'ai' ? 'navigator' : 'script') +
+    ' against which work order? The work order number off the paperwork is fine, or Nova&#39;s own id.');
   if (!wo) return;
   ciTestRender('<div class="ci-callout" style="margin-top:12px"><span class="ci-spin"></span> Placing the call&hellip;</div>');
   var ev;
   try {
     ev = await api('POST', '/checkins/profiles/' + _ciProfile.id + '/test',
-      { work_order: String(wo).trim(), direction: dir });
+      { work_order: String(wo).trim(), direction: dir, mode: lane });
   } catch (err) {
     ciTestRender('<div class="alert alert-error" style="margin-top:12px">' + escHtml(err.message) + '</div>');
     return;

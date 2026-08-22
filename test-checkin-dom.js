@@ -400,6 +400,8 @@ function baseState(over) {
   has('profile: the status map is per account, not per call', whole, "id=\"ci-status-");
   has('profile: promotion is offered, never automatic', whole, 'Save it as the check-in script');
   has('profile: the PIN is write-only', whole, 'replace the saved PIN');
+  has('profile: an AI profile with NO steps can still be test called', whole, "(_ciProfile.mode || 'script') !== 'script'");
+  has('profile: and the lane is passed through', whole, "direction: dir, mode: lane");
   has('profile: draft cover includes the new inputs', whole, "'ci-playbook','ci-maxturns'");
   has('profile: the checkbox reset is present or the list balloons', fs.readFileSync('public/index.html', 'utf8'), '.ci-need input[type="checkbox"]');
 
