@@ -36,7 +36,7 @@ var APPROVALS = [
 var CONTEXT = {
   request: { id: 10, user_id: 2, start_date: d(2), end_date: d(3), type: 'Vacation', paid: true, status: 'pending',
     hours: 16, business_days: 2, paid_days: 2, unpaid_days: 0, off_days: 0, created_at: d(-5),
-    days: [{ date: d(2), kind: 'paid' }, { date: d(3), kind: 'paid' }], tier_label: 'Direct supervisor' },
+    days: [{ date: d(2), kind: 'paid' }, { date: d(3), kind: 'unpaid' }], tier_label: 'Direct supervisor' },
   employee: { id: 2, name: 'Kayleigh Young', title: 'Tech', pay_type: 'hourly', hire_date: '2023-03-01',
     tenure_years: 3, exempt: false, accrues: true, employment_type: 'full_time',
     accrual_monthly_hours: 10, accrual_days_per_year: 15, eligible_date: '2023-05-30', eligible_now: true },
@@ -97,7 +97,7 @@ async function run() {
   // The module registers its own ptoApprove/ptoDeny; spy on them so the dialog
   // footer can be verified without a network round trip.
   var realApprove = w.ptoApprove;
-  w.ptoApprove = function (id, over) { w.__approveCalls.push([id, over]); };
+  w.ptoApprove = function (id, over, days) { w.__approveCalls.push([id, over, days === undefined ? null : days]); };
   w.ptoDeny = function (id) { w.__denyCalls.push(id); };
   ok(typeof realApprove === 'function', 'module exposes ptoApprove');
   ok(typeof w.ptoDetail === 'function', 'module exposes ptoDetail');
@@ -186,6 +186,28 @@ async function run() {
   eq(dayCols.length, 7, 'seven day columns per week');
   var reqDays = dlg.querySelectorAll('.pto-day.req');
   eq(reqDays.length, 2, 'both requested days highlighted');
+  // The whole column must carry the highlight, not just the header text —
+  // header-only tinting was too easy to scroll straight past.
+  ok(dlg.querySelector('.pto-day.req .pto-day-hd') !== null, 'header still marked');
+  // The request is pending, so each requested column is an editable classifier
+  // rather than a static badge (see the re-tag section further down).
+  var tags = dlg.querySelectorAll('.pto-day-sel');
+  eq(tags.length, 2, 'every requested column is labelled');
+  eq(tags[0].value, 'paid', 'the paid day says so');
+  eq(tags[1].value, 'unpaid', 'the unpaid day says so');
+  ok(tags[0].className.indexOf('k-paid') !== -1, 'and is coloured by kind');
+  has(dh, 'pto-reqline', 'the dates are spelled out above the grid');
+  has(dh, 'Requesting', 'in plain words');
+  has(dh, 'those days are the highlighted columns below'.replace('those', 'Those'), 'pointing at the highlight');
+  has(dh, '1 paid, 1 unpaid', 'with the day mix');
+  has(dh, 'pto-key', 'a colour key is present');
+  console.log('== week blocks name their role ==');
+  var hds = Array.prototype.map.call(dlg.querySelectorAll('.pto-wk-hd'), function (x) { return x.textContent; });
+  eq(hds.length, 3, 'three week blocks');
+  ok(hds[0].indexOf('Week before') === 0, 'the first is labelled Week before  (got ' + hds[0] + ')');
+  ok(hds[1].indexOf('Requested') === 0, 'the middle is labelled Requested  (got ' + hds[1] + ')');
+  ok(hds[2].indexOf('Week after') === 0, 'the last is labelled Week after  (got ' + hds[2] + ')');
+  ok(hds[0].indexOf(String(d(-7)).slice(5) ) !== -1 || hds[0].indexOf('Aug') !== -1 || hds[0].indexOf('Sep') !== -1, 'and still carries its dates');
   var mine = dlg.querySelectorAll('.pto-chip.me');
   eq(mine.length, 2, 'the requester own two shifts are outlined');
   has(dh, 'Christopher Benson', 'a colleague shift appears in the grid');
@@ -193,12 +215,32 @@ async function run() {
   var reqLabels = Array.prototype.filter.call(dlg.querySelectorAll('.pto-wk-hd'), function (x) { return x.className.indexOf('is-req') !== -1; });
   eq(reqLabels.length, 1, 'only the week containing the request is marked');
 
+  console.log('== a multi-week request numbers its requested weeks ==');
+  var savedDays = CONTEXT.request.days, savedEnd = CONTEXT.request.end_date;
+  CONTEXT.request.days = [{ date: d(2), kind: 'paid' }, { date: d(3), kind: 'paid' },
+                          { date: d(8), kind: 'paid' }, { date: d(9), kind: 'unpaid' }];
+  CONTEXT.request.end_date = d(9);
+  w.document.querySelector('#pto-dt-close').dispatchEvent(new w.MouseEvent('click', { bubbles: true }));
+  r10.children[0].dispatchEvent(new w.MouseEvent('click', { bubbles: true }));
+  await new Promise(function (r) { setTimeout(r, 0); });
+  var mw = w.document.querySelector('.pto-mask');
+  var hds2 = Array.prototype.map.call(mw.querySelectorAll('.pto-wk-hd'), function (x) { return x.textContent; });
+  ok(hds2[0].indexOf('Week before') === 0, 'still a week before  (got ' + hds2[0] + ')');
+  ok(hds2[1].indexOf('Requested \u00b7 week 1 of 2') === 0, 'first requested week numbered  (got ' + hds2[1] + ')');
+  ok(hds2[2].indexOf('Requested \u00b7 week 2 of 2') === 0, 'second requested week numbered  (got ' + hds2[2] + ')');
+  eq(mw.querySelectorAll('.pto-day.req').length, 4, 'all four requested days highlighted across both weeks');
+  CONTEXT.request.days = savedDays; CONTEXT.request.end_date = savedEnd;
+  w.document.querySelector('#pto-dt-close').dispatchEvent(new w.MouseEvent('click', { bubbles: true }));
+  r10.children[0].dispatchEvent(new w.MouseEvent('click', { bubbles: true }));
+  await new Promise(function (r) { setTimeout(r, 0); });
+  dlg = w.document.querySelector('.pto-mask');
+
   console.log('== dialog: footer + close ==');
   var ok2 = dlg.querySelector('#pto-dt-ok');
   ok(!!ok2, 'Approve button in the footer');
   ok2.dispatchEvent(new w.MouseEvent('click', { bubbles: true }));
   eq(w.document.querySelectorAll('.pto-mask').length, 0, 'approving from the dialog closes it');
-  eq(JSON.stringify(w.__approveCalls), JSON.stringify([[10, true]]), 'approve called with the live over-cap flag');
+  eq(JSON.stringify(w.__approveCalls.map(function (c) { return [c[0], c[1]]; })), JSON.stringify([[10, true]]), 'approve called with the live over-cap flag');
 
   // Escape closes.
   r10.children[1].dispatchEvent(new w.MouseEvent('click', { bubbles: true }));
@@ -360,6 +402,86 @@ async function run() {
   ok(!!w.document.querySelector('#pto-dt-cok'), 'Approve cancellation offered');
   ok(!!w.document.querySelector('#pto-dt-ckeep'), 'Keep approved offered');
   ok(!w.document.querySelector('#pto-dt-ok'), 'and not the plain Approve button');
+  w.document.querySelector('#pto-dt-close').dispatchEvent(new w.MouseEvent('click', { bubbles: true }));
+  APPROVALS[0].status = 'pending';
+
+  console.log('== approver can re-tag a day in the dialog ==');
+  w.__approveCalls = [];
+  w.document.querySelectorAll('.pto-mask').forEach(function (x) { x.remove(); });
+  w.document.body.style.overflow = '';
+  w.ptoGo('approvals');
+  for (var t3 = 0; t3 < 6; t3++) await new Promise(function (r) { setTimeout(r, 0); });
+  var host3 = w.document.getElementById('content');
+  var rr10 = host3.querySelector('tr[data-pto-open="10"]');
+  rr10.children[0].dispatchEvent(new w.MouseEvent('click', { bubbles: true }));
+  await new Promise(function (r) { setTimeout(r, 0); });
+  var md = w.document.querySelector('.pto-mask');
+  var sels = md.querySelectorAll('[data-retag]');
+  eq(sels.length, 2, 'one selector per requested day');
+  eq(sels[0].value, 'paid', 'seeded from what was submitted');
+  eq(sels[1].value, 'unpaid', 'including the unpaid one');
+  eq(Array.prototype.map.call(sels[0].options, function (o) { return o.value; }).join(','), 'paid,unpaid,off',
+     'all three classifications offered, in both directions');
+  eq(md.querySelector('#pto-retag-note').textContent.indexOf('No changes'), 0, 'starts clean');
+  eq(md.querySelector('#pto-dt-ok').textContent, 'Approve', 'button is the plain one');
+
+  // Flip the paid day to off.
+  sels[0].value = 'off';
+  sels[0].dispatchEvent(new w.Event('change', { bubbles: true }));
+  var note = md.querySelector('#pto-retag-note').textContent;
+  has(note, '1 day re-classified', 'the change is counted');
+  has(note, 'paid', 'naming what it was');
+  has(note, 'off', 'and what it became');
+  has(note, '16.0 hrs', 'the old cost is shown');
+  has(note, '0.0 hrs', 'and the new one');
+  has(note, 'told what changed', 'and that the employee will be notified');
+  eq(md.querySelector('#pto-dt-ok').textContent, 'Approve with changes', 'the button says the approval is not as-submitted');
+  ok(sels[0].className.indexOf('k-off') !== -1, 'the selector recolours to match');
+  ok(sels[0].className.indexOf('moved') !== -1, 'and is marked as moved');
+  // The visible label must follow the value, not stay on what was submitted.
+  eq(sels[0].options[sels[0].selectedIndex].textContent, 'DAY OFF', 'and the label the approver reads changes too');
+  eq(sels[0].selectedIndex, 2, 'the off option is the selected one');
+  var col0 = sels[0].closest('.pto-day');
+  ok(col0.className.indexOf('moved') !== -1, 'the whole column is marked as changed');
+
+  // Put it back; the dialog should forget the change entirely.
+  sels[0].value = 'paid';
+  sels[0].dispatchEvent(new w.Event('change', { bubbles: true }));
+  eq(md.querySelector('#pto-retag-note').textContent.indexOf('No changes'), 0, 'reverting clears the change');
+  eq(md.querySelector('#pto-dt-ok').textContent, 'Approve', 'and the button goes back');
+  ok(sels[0].className.indexOf('moved') === -1, 'moved marker cleared');
+
+  // Change it again and approve.
+  sels[1].value = 'off';
+  sels[1].dispatchEvent(new w.Event('change', { bubbles: true }));
+  md.querySelector('#pto-dt-ok').dispatchEvent(new w.MouseEvent('click', { bubbles: true }));
+  eq(w.__approveCalls.length, 1, 'approve fired');
+  var call = w.__approveCalls[0];
+  eq(call[0], 10, 'for the right request');
+  ok(Array.isArray(call[2]), 'and it carries the day tags');
+  eq(call[2].length, 2, 'all days sent, not just the changed one');
+  eq(call[2][0].kind, 'paid', 'untouched day keeps its kind');
+  eq(call[2][1].kind, 'off', 'changed day carries the new kind');
+
+  console.log('== approving as submitted sends no override ==');
+  w.__approveCalls = [];
+  rr10.children[0].dispatchEvent(new w.MouseEvent('click', { bubbles: true }));
+  await new Promise(function (r) { setTimeout(r, 0); });
+  w.document.querySelector('#pto-dt-ok').dispatchEvent(new w.MouseEvent('click', { bubbles: true }));
+  eq(w.__approveCalls.length, 1, 'approve fired');
+  eq(w.__approveCalls[0][2], null, 'no days payload when nothing was changed');
+
+  console.log('== a decided request is read-only ==');
+  APPROVALS[0].status = 'cancel_requested';
+  w.ptoGo('approvals');
+  for (var t4 = 0; t4 < 6; t4++) await new Promise(function (r) { setTimeout(r, 0); });
+  w.document.getElementById('content').querySelector('tr[data-pto-open="10"]').children[0]
+    .dispatchEvent(new w.MouseEvent('click', { bubbles: true }));
+  await new Promise(function (r) { setTimeout(r, 0); });
+  var mro = w.document.querySelector('.pto-mask');
+  eq(mro.querySelectorAll('[data-retag]').length, 0, 'no selectors on a non-pending request');
+  eq(mro.querySelectorAll('.pto-day-tag').length, 2, 'the days are still labelled, just not editable');
+  eq(mro.querySelector('#pto-retag-note'), null, 'and no change summary');
   w.document.querySelector('#pto-dt-close').dispatchEvent(new w.MouseEvent('click', { bubbles: true }));
   APPROVALS[0].status = 'pending';
 

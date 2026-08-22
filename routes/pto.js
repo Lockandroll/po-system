@@ -320,29 +320,45 @@ async function notifyApprover(supId, requesterName, from, to, days, paid, type, 
     }
   } catch (e) { console.error('[pto] approver notify failed:', e.message); }
 }
-async function notifyRequester(userId, decision, from, to, days, approverName, reason) {
+async function notifyRequester(userId, decision, from, to, days, approverName, reason, retag) {
   if (!userId) return;
   try {
     var rec = notify ? await notify.broadcastRecipients('pto_decided', 'id = ' + userId) : { emails: [], phones: [] };
     var dates = from + (to !== from ? ' to ' + to : '');
     var approved = decision === 'approved';
+    // An approver can re-tag individual days at approval time. Saying "approved"
+    // and nothing else, when two of those days are now unpaid, means the employee
+    // finds out at payroll. Spell it out instead.
+    var changed = Array.isArray(retag) ? retag : [];
+    var toUnpaid = changed.filter(function (c) { return c.to === 'unpaid'; });
+    var changeLines = changed.map(function (c) { return c.date + ': ' + c.from + ' \u2192 ' + c.to; });
+    var changeShort = changed.length
+      ? (toUnpaid.length
+        ? (toUnpaid.length + ' day' + (toUnpaid.length === 1 ? '' : 's') + ' now UNPAID (' + toUnpaid.map(function (c) { return c.date; }).join(', ') + ')')
+        : (changed.length + ' day' + (changed.length === 1 ? '' : 's') + ' re-classified'))
+      : '';
     if (rec.emails && rec.emails.length && sendEmail && emailTemplate) {
       var html = emailTemplate({
         badge: approved ? 'Approved' : 'Not Approved', badgeColor: approved ? 'green' : 'red',
         title: approved ? 'Your PTO is approved' : 'Your PTO was not approved',
-        body: approved ? 'Your time off has been approved. This is your clearance to take the time.' : ('Your PTO request was not approved' + (reason ? ': ' + reason : '.')),
+        body: approved
+          ? ('Your time off has been approved. This is your clearance to take the time.' +
+             (changed.length ? ' Your manager changed how some of these days are classified — see below.' : ''))
+          : ('Your PTO request was not approved' + (reason ? ': ' + reason : '.')),
         details: [
           { label: 'Dates', value: dates },
-          { label: 'Business days', value: String(days) },
-          { label: approved ? 'Approved by' : 'Reviewed by', value: approverName || 'your manager' }
-        ],
+          { label: 'Days away', value: String(days) }
+        ].concat(changed.length ? [{ label: 'Changed at approval', value: changeLines.join(' | ') }] : [])
+         .concat([{ label: approved ? 'Approved by' : 'Reviewed by', value: approverName || 'your manager' }]),
         buttonText: 'View in Nova', buttonUrl: appUrl('/')
       });
-      await sendEmail(rec.emails, (approved ? 'PTO approved: ' : 'PTO not approved: ') + dates, html);
+      await sendEmail(rec.emails,
+        (approved ? (changed.length ? 'PTO approved with changes: ' : 'PTO approved: ') : 'PTO not approved: ') + dates, html);
     }
     if (rec.phones && rec.phones.length && sendSms) {
       var msg = approved
-        ? ('Lock & Roll: Your PTO ' + dates + ' was approved by ' + (approverName || 'your manager') + '.')
+        ? ('Lock & Roll: Your PTO ' + dates + ' was approved by ' + (approverName || 'your manager') + '.' +
+           (changeShort ? ' Note: ' + changeShort + '.' : ''))
         : ('Lock & Roll: Your PTO ' + dates + ' was not approved' + (reason ? ' (' + reason + ')' : '') + '.');
       await sendSms(rec.phones, msg + ' ' + appUrl('/'));
     }
@@ -770,6 +786,35 @@ router.post('/requests', requireAuth, async (req, res) => {
   res.json(reqRow);
 });
 
+// An approver may correct a day's kind at approval time (a "paid" day the person
+// was never rostered for becomes "off"; a paid day the company will not fund
+// becomes "unpaid"). The re-tag may only RESHAPE the days already requested — it
+// can never add or drop a date, because that would be a different request than
+// the one the employee submitted and the approver was routed.
+// Returns { days, changes } or { error }.
+function reconcileDayTags(submitted, proposed) {
+  const want = normalizeDayTags(proposed);
+  if (!want.length) return { error: 'No days were supplied.' };
+  const have = {};
+  submitted.forEach(function (d) { have[d.date] = d.kind; });
+  const haveDates = Object.keys(have).sort();
+  const wantDates = want.map(function (d) { return d.date; }).sort();
+  if (haveDates.length !== wantDates.length || haveDates.join(',') !== wantDates.join(',')) {
+    return { error: 'The days do not match this request. Deny it and ask for the dates to be resubmitted.' };
+  }
+  const changes = [];
+  want.forEach(function (d) {
+    if (have[d.date] !== d.kind) changes.push({ date: d.date, from: have[d.date], to: d.kind });
+  });
+  return { days: want, changes: changes };
+}
+// Plain-English summary of a re-tag, for the employee's notice and the audit log.
+function describeRetag(changes) {
+  return changes.map(function (c) {
+    return c.date + ': ' + c.from + ' \u2192 ' + c.to;
+  }).join('; ');
+}
+
 // ---- APPROVALS QUEUE (requests I can act on) -------------------------------
 
 router.get('/approvals', requireAuth, async (req, res) => {
@@ -1047,6 +1092,31 @@ router.post('/requests/:id/approve', requireAuth, async (req, res) => {
   const allowNegative = isAdmin && !!(req.body && (req.body.allow_negative === true || req.body.allow_negative === 'true'));
 
   const from = ymdOf(r.start_date), to = ymdOf(r.end_date);
+
+  // What the employee submitted, and what the approver wants it to be.
+  const subRows = await pool.query('SELECT day_date, kind FROM pto_request_days WHERE request_id = $1 ORDER BY day_date ASC', [id]);
+  const submitted = subRows.rows.length
+    ? subRows.rows.map(function (x) { return { date: ymdOf(x.day_date), kind: x.kind }; })
+    : eachDate(from, to).map(function (d) { return { date: d, kind: r.paid ? 'paid' : 'unpaid' }; });
+
+  let days = submitted, retag = [];
+  if (req.body && Array.isArray(req.body.days) && req.body.days.length) {
+    const rec = reconcileDayTags(submitted, req.body.days);
+    if (rec.error) return res.status(400).json({ error: rec.error });
+    days = rec.days; retag = rec.changes;
+  }
+
+  // Every derived total is recomputed from the FINAL tags, never carried over
+  // from submit time — otherwise a day re-tagged to unpaid would still be
+  // deducted from the balance.
+  const paidDays = days.filter(function (d) { return d.kind === 'paid'; }).length;
+  const unpaidDays = days.filter(function (d) { return d.kind === 'unpaid'; }).length;
+  const offDays = days.filter(function (d) { return d.kind === 'off'; }).length;
+  const awayDays = paidDays + unpaidDays;
+  const hours = paidDays * HRS_PER_DAY;
+  const isPaid = paidDays > 0;
+  const tier = requiredTier(awayDays);
+
   // Exactly the resolver the queue badge and the detail dialog used, so what the
   // approver was shown is what the gate enforces.
   const cv = await resolveCoverage(r.user_id, from, to, coverageCtx());
@@ -1056,33 +1126,37 @@ router.post('/requests/:id/approve', requireAuth, async (req, res) => {
     return res.status(400).json({ error: 'coverage_override_required', coverage_used: cv.used, coverage_cap: cap });
   }
 
-  // Re-check the hard wall at approval time for paid requests (admins may override to go negative).
-  if (r.paid && !allowNegative) {
+  // Re-check the hard wall at approval time, against the FINAL paid hours — a
+  // re-tag that drops paid days can legitimately bring an unaffordable request
+  // back inside the balance. (Admins may still override to go negative.)
+  if (hours > 0 && !allowNegative) {
     const bal = await pool.query('SELECT COALESCE(pto_balance_hours,0) AS b FROM users WHERE id = $1', [r.user_id]);
-    if (Number(bal.rows[0].b) - Number(r.hours) < 0) return res.status(400).json({ error: 'Employee no longer has the balance for this.' });
+    if (Number(bal.rows[0].b) - hours < 0) return res.status(400).json({ error: 'Employee no longer has the balance for this.' });
   }
 
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
+    // Persist the corrected tags first, so the stored request matches what is
+    // about to be deducted and drawn on the schedule.
+    if (retag.length) await writeRequestDays(client, id, days);
     await client.query(
-      'UPDATE pto_requests SET status = $1, approver_id = $2, decided_at = NOW(), coverage_override = $3, override_reason = $4, updated_at = NOW() WHERE id = $5',
-      ['approved', req.user.id, over, over ? overrideReason : null, id]
+      'UPDATE pto_requests SET status = $1, approver_id = $2, decided_at = NOW(), coverage_override = $3, ' +
+      'override_reason = $4, hours = $5, paid = $6, paid_days = $7, unpaid_days = $8, off_days = $9, ' +
+      'business_days = $10, required_level = $11, updated_at = NOW() WHERE id = $12',
+      ['approved', req.user.id, over, over ? overrideReason : null, hours, isPaid,
+       paidDays, unpaidDays, offDays, awayDays, tier.level, id]
     );
-    if (r.paid) {
+    if (hours > 0) {
       await postLedger(client, {
-        user_id: r.user_id, entry_date: from, kind: 'usage', amount_hours: -Number(r.hours),
+        user_id: r.user_id, entry_date: from, kind: 'usage', amount_hours: -hours,
         description: 'PTO ' + from + (to !== from ? ' to ' + to : ''), request_id: id, created_by: req.user.id
       });
     }
     // Reflect on the schedule per tagged day: paid -> Paid Vacation, unpaid -> Unpaid
     // Vacation, off -> Scheduled Off. Flip an existing shift or add a published marker,
     // so an approval always shows on the grid. Only paid days were deducted above.
-    const drows = await client.query('SELECT day_date, kind FROM pto_request_days WHERE request_id = $1 ORDER BY day_date ASC', [id]);
-    const applyDays = drows.rows.length
-      ? drows.rows.map(function (x) { return { date: ymdOf(x.day_date), kind: x.kind }; })
-      : eachDate(from, to).map(function (d) { return { date: d, kind: r.paid ? 'paid' : 'unpaid' }; });
-    await applyDaysToSchedule(client, r.user_id, applyDays, req.user.id);
+    await applyDaysToSchedule(client, r.user_id, days, req.user.id);
     await client.query('COMMIT');
   } catch (e) {
     await client.query('ROLLBACK');
@@ -1094,10 +1168,18 @@ router.post('/requests/:id/approve', requireAuth, async (req, res) => {
   await logAudit({
     entity_type: 'pto_request', entity_id: id, action: over ? 'approved_override' : 'approved',
     user_id: req.user.id, user_name: req.user.name,
-    details: { dates: from + ' to ' + to, coverage_city: city, coverage_used: cv.used, coverage_cap: cap, coverage_scoped: cv.scoped, override_reason: over ? overrideReason : null, negative_override: allowNegative }
+    details: { dates: from + ' to ' + to, coverage_city: city, coverage_used: cv.used, coverage_cap: cap,
+      coverage_scoped: cv.scoped, override_reason: over ? overrideReason : null, negative_override: allowNegative,
+      retagged: retag.length ? describeRetag(retag) : null,
+      paid_days: paidDays, unpaid_days: unpaidDays, off_days: offDays, hours: hours }
   });
-  await notifyRequester(r.user_id, 'approved', from, to, r.business_days, req.user.name, null);
-  res.json({ success: true, coverage_override: over });
+  // The employee is told WHAT changed, not just that it was approved. A day
+  // silently flipped to unpaid would otherwise surface as a short paycheck.
+  await notifyRequester(r.user_id, 'approved', from, to, awayDays, req.user.name, null, retag);
+  res.json({
+    success: true, coverage_override: over, retagged: retag,
+    hours: hours, paid_days: paidDays, unpaid_days: unpaidDays, off_days: offDays
+  });
 });
 
 // ---- DENY ------------------------------------------------------------------

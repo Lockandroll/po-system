@@ -73,14 +73,36 @@
       '.pto-wk{margin-bottom:14px}',
       '.pto-wk-hd{font-size:12px;font-weight:700;color:var(--text-dim,#9a9a9a);margin-bottom:6px}',
       '.pto-wk-hd.is-req{color:var(--primary,#f97316)}',
-      '.pto-days{display:flex;gap:6px;overflow-x:auto;padding-bottom:4px}',
-      '.pto-day{flex:1 1 118px;min-width:118px}',
-      '.pto-day-hd{font-weight:700;font-size:11px;padding:3px 4px;margin-bottom:5px;border-bottom:1px solid var(--border,#2a2a2a);white-space:nowrap}',
-      '.pto-day.req .pto-day-hd{color:var(--primary,#f97316);background:rgba(249,115,22,.08);border-radius:4px 4px 0 0}',
+      '.pto-days{display:flex;gap:5px;overflow-x:auto;padding-bottom:4px}',
+      // flex-basis 0 so the seven columns share the width evenly instead of the
+      // last one clipping off the right edge; min-width is the point at which
+      // the week starts scrolling rather than squashing.
+      '.pto-day{flex:1 1 0;min-width:96px;border-radius:7px;padding:0 4px 4px;border:1px solid transparent}',
+      '.pto-day-hd{font-weight:700;font-size:11px;padding:4px;margin-bottom:5px;border-bottom:1px solid var(--border,#2a2a2a);white-space:nowrap}',
+      // A requested day is the whole point of this grid, so it gets the entire
+      // column: tinted ground, a solid border, and a label saying what kind of
+      // day it is. Tinting only the header text made them easy to scroll past.
+      '.pto-day.req{background:rgba(249,115,22,.11);border-color:rgba(249,115,22,.55)}',
+      '.pto-day.req .pto-day-hd{color:var(--primary,#f97316);border-bottom-color:rgba(249,115,22,.45)}',
+      '.pto-day-tag{display:block;font-size:9.5px;font-weight:800;letter-spacing:.6px;text-transform:uppercase;padding:2px 4px;margin:0 -4px 5px;border-radius:4px;text-align:center}',
+      '.pto-day-tag.k-paid{background:rgba(249,115,22,.9);color:#0f0f0f}',
+      '.pto-day-tag.k-unpaid{background:rgba(234,179,8,.9);color:#0f0f0f}',
+      '.pto-day-tag.k-off{background:rgba(156,163,175,.85);color:#0f0f0f}',
+      '.pto-day-sel{display:block;width:100%;margin:0 0 5px;padding:2px 3px;border-radius:4px;border:none;font-size:9.5px;font-weight:800;letter-spacing:.4px;text-transform:uppercase;text-align:center;cursor:pointer;font-family:inherit;color-scheme:dark;appearance:none;-webkit-appearance:none}',
+      '.pto-day-sel.k-paid{background:rgba(249,115,22,.9);color:#0f0f0f}',
+      '.pto-day-sel.k-unpaid{background:rgba(234,179,8,.9);color:#0f0f0f}',
+      '.pto-day-sel.k-off{background:rgba(156,163,175,.85);color:#0f0f0f}',
+      '.pto-day-sel.moved{outline:2px solid #fff;outline-offset:-2px}',
+      '.pto-day.moved{border-color:#fff}',
+      '.pto-retag{margin-top:8px;font-size:12.5px;padding:8px 10px;border-radius:8px;background:rgba(255,255,255,.06);border:1px solid var(--border,#2a2a2a)}',
       '.pto-day.today .pto-day-hd{text-decoration:underline}',
-      '.pto-chip{border:1px solid var(--border,#2a2a2a);border-radius:6px;padding:4px 6px;margin-bottom:5px;font-size:11px;line-height:1.35}',
+      '.pto-reqline{font-size:13px;margin:0 0 10px;padding:8px 10px;border-radius:8px;background:rgba(249,115,22,.1);border:1px solid rgba(249,115,22,.45)}',
+      '.pto-reqline b{color:var(--primary,#f97316)}',
+      '.pto-key{display:flex;gap:12px;flex-wrap:wrap;margin:0 0 10px;font-size:11px;color:var(--text-dim,#9a9a9a)}',
+      '.pto-key i{display:inline-block;width:10px;height:10px;border-radius:3px;margin-right:4px;vertical-align:-1px;font-style:normal}',
+      '.pto-chip{border:1px solid var(--border,#2a2a2a);border-radius:6px;padding:4px 5px;margin-bottom:5px;font-size:11px;line-height:1.3;overflow-wrap:anywhere}',
       '.pto-chip.me{outline:2px solid var(--primary,#f97316);outline-offset:-1px}',
-      '.pto-chip b{display:block;font-size:11.5px}',
+      '.pto-chip b{display:block;font-size:11px}',
       '.pto-chip .m{color:var(--text-dim,#9a9a9a);font-size:10.5px}',
       '.pto-empty{color:var(--text-dim,#777);font-size:11px;padding:3px 4px}'
     ].join('');
@@ -499,20 +521,34 @@
     }
   }
   window.ptoCancPage = function (p) { loadCancellations(p); };
-  window.ptoApprove = function (id, over) {
-    if (over) return openOverride(id);
-    doApprove(id, '');
+  window.ptoApprove = function (id, over, days) {
+    if (over) return openOverride(id, days);
+    doApprove(id, '', days);
   };
-  async function doApprove(id, reason) {
-    try { await api('POST', '/pto/requests/' + id + '/approve', reason ? { override_reason: reason } : {}); showToast('Approved — shifts set to Approved Vacation Day.', 'success'); reload(); }
+  // days is the approver's per-day re-tag, or null to approve exactly as
+  // submitted. It has to survive both retry paths below, or a correction would
+  // be silently dropped the moment an override or a negative balance is in play.
+  async function doApprove(id, reason, days) {
+    function payload(extra) {
+      var b = extra || {};
+      if (reason) b.override_reason = reason;
+      if (days && days.length) b.days = days;
+      return b;
+    }
+    function okToast(r) {
+      var n = (r && r.retagged && r.retagged.length) || 0;
+      showToast(n ? ('Approved with ' + n + ' day' + (n === 1 ? '' : 's') + ' re-classified — the employee was told what changed.')
+                  : 'Approved — shifts set to Approved Vacation Day.', 'success');
+    }
+    try { var r1 = await api('POST', '/pto/requests/' + id + '/approve', payload()); okToast(r1); reload(); }
     catch (e) {
       var msg = e.message || '';
-      if (msg.indexOf('coverage_override_required') !== -1) { openOverride(id); return; }
+      if (msg.indexOf('coverage_override_required') !== -1) { openOverride(id, days); return; }
       var isAdmin = !!(state && state.user && (state.user.role === 'admin' || state.user.role === 'owner' || state.user.isOwner));
       if (isAdmin && msg.indexOf('balance') !== -1) {
         var ok = (typeof novaConfirm === 'function') ? await novaConfirm('This employee does not have enough PTO for this. Approve anyway and let the balance go negative?') : window.confirm('This employee does not have enough PTO for this. Approve anyway and let the balance go negative?');
         if (!ok) return;
-        try { await api('POST', '/pto/requests/' + id + '/approve', reason ? { allow_negative: true, override_reason: reason } : { allow_negative: true }); showToast('Approved — balance is now negative.', 'success'); reload(); }
+        try { var r2 = await api('POST', '/pto/requests/' + id + '/approve', payload({ allow_negative: true })); okToast(r2); reload(); }
         catch (e2) { showToast(e2.message || 'Approve failed.', 'error'); }
         return;
       }
@@ -558,7 +594,7 @@
       } catch (e) { err.textContent = e.message || 'Failed.'; err.style.display = 'block'; }
     };
   };
-  function openOverride(id) {
+  function openOverride(id, days) {
     var m = document.createElement('div'); m.className = 'pto-mask';
     m.innerHTML = '<div class="pto-dlg"><h3>Override — reason required</h3><div class="pto-desc">Approving this exceeds the coverage cap. A reason is required and will be logged to the audit trail.</div>' +
       '<textarea id="pto-ov-reason" class="pto-textarea" rows="3" placeholder="Why are you approving over the cap?"></textarea>' +
@@ -569,7 +605,7 @@
     m.querySelector('#pto-ov-ok').onclick = function () {
       var r = m.querySelector('#pto-ov-reason').value.trim();
       if (!r) { m.querySelector('#pto-ov-err').style.display = 'block'; return; }
-      document.body.removeChild(m); doApprove(id, r);
+      document.body.removeChild(m); doApprove(id, r, days);
     };
   }
 
@@ -638,15 +674,30 @@
   // One week of the market's grid, in the same visual language as the schedule
   // screen. Deliberately a local copy rather than a call into app.js's
   // mySchedWeekHtml, which reads that module's globals.
-  function ptoWeekHtml(monday, shifts, meId, reqDates, label) {
+  function ptoWeekHtml(monday, shifts, meId, reqKinds, label, editable) {
     var byDay = {};
     (shifts || []).forEach(function (s) { (byDay[s.shift_date] = byDay[s.shift_date] || []).push(s); });
     var today = ymdLocal(new Date());
     var touched = false, cols = '';
     for (var i = 0; i < 7; i++) {
       var day = addDaysLocal(monday, i);
-      var isReq = reqDates.indexOf(day) !== -1;
+      var kind = reqKinds[day];
+      var isReq = !!kind;
       if (isReq) touched = true;
+      var tag = '';
+      if (isReq && editable) {
+        // The approver corrects the day right where they are looking at the
+        // roster for it, rather than in a separate form away from the evidence.
+        var opts = ['paid', 'unpaid', 'off'].map(function (k) {
+          return '<option value="' + k + '"' + (k === kind ? ' selected' : '') + '>' +
+            (k === 'off' ? 'DAY OFF' : k.toUpperCase() + ' PTO') + '</option>';
+        }).join('');
+        tag = '<select class="pto-day-sel k-' + kind + '" data-retag="' + day + '" ' +
+          'title="Change how this day is classified" ' +
+          'aria-label="Classification for ' + escHtml(fmtDate(day)) + '">' + opts + '</select>';
+      } else if (isReq) {
+        tag = '<span class="pto-day-tag k-' + kind + '">' + (kind === 'off' ? 'day off' : kind + ' PTO') + '</span>';
+      }
       var list = (byDay[day] || []).slice().sort(function (a, b) { return String(a.start_time).localeCompare(String(b.start_time)); });
       var items = list.map(function (s) {
         var col = safeColor(s.position_color);
@@ -660,16 +711,17 @@
           (meta.length ? '<span class="m">' + meta.join(' · ') + '</span>' : '') + '</div>';
       }).join('') || '<div class="pto-empty">—</div>';
       cols += '<div class="pto-day' + (isReq ? ' req' : '') + (day === today ? ' today' : '') + '">' +
-        '<div class="pto-day-hd">' + escHtml(fmtDate(day)) + '</div>' + items + '</div>';
+        '<div class="pto-day-hd">' + escHtml(fmtDate(day)) + '</div>' + tag + items + '</div>';
     }
     return '<div class="pto-wk"><div class="pto-wk-hd' + (touched ? ' is-req' : '') + '">' +
-      escHtml(label) + (touched ? ' · requested' : '') + '</div>' +
+      escHtml(label) + '</div>' +
       '<div class="pto-days">' + cols + '</div></div>';
   }
 
-  function detailBodyHtml(C) {
+  function detailBodyHtml(C, editable) {
     var pt = C.employee.pay_type;
-    var reqDates = (C.request.days || []).map(function (x) { return x.date; });
+    var reqKinds = {};
+    (C.request.days || []).forEach(function (x) { reqKinds[x.date] = x.kind; });
     var meId = C.employee.id;
 
     // --- header
@@ -772,15 +824,50 @@
     if (!C.schedule.city_code) {
       h += '<div class="pto-sub">No market resolved for this employee, so there is no city grid to show. Set their home city on the employee record.</div>';
     } else {
-      h += '<div class="pto-desc">Published shifts, week before through week after. The requested days are highlighted and ' + escHtml(String(C.employee.name || 'their').split(' ')[0]) + '&#39;s own shifts are outlined.</div>';
+      // Spell the dates out. The tinting alone left approvers hunting for which
+      // columns were the request.
+      var firstName = escHtml(String(C.employee.name || 'their').split(' ')[0]);
+      var kinds = {};
+      (C.request.days || []).forEach(function (x) { kinds[x.kind] = (kinds[x.kind] || 0) + 1; });
+      var kindBits = [];
+      if (kinds.paid) kindBits.push(kinds.paid + ' paid');
+      if (kinds.unpaid) kindBits.push(kinds.unpaid + ' unpaid');
+      if (kinds.off) kindBits.push(kinds.off + ' day off');
+      h += '<div class="pto-reqline">Requesting <b>' + escHtml(rangeText(C.request.start_date, C.request.end_date)) +
+        '</b>' + (kindBits.length ? ' &mdash; ' + escHtml(kindBits.join(', ')) : '') +
+        '. Those days are the highlighted columns below.</div>';
+      var key = '<span><i style="background:rgba(249,115,22,.9)"></i>paid PTO</span>';
+      if (kinds.unpaid) key += '<span><i style="background:rgba(234,179,8,.9)"></i>unpaid</span>';
+      if (kinds.off) key += '<span><i style="background:rgba(156,163,175,.85)"></i>day off</span>';
+      key += '<span><i style="border:2px solid var(--primary,#f97316);background:transparent"></i>' + firstName + '&#39;s shifts</span>';
+      h += '<div class="pto-key">' + key + '</div>' +
+        '<div class="pto-desc">Published shifts for the week before, the requested weeks, and the week after.' +
+        (editable ? ' You can re-classify any requested day before approving \u2014 the employee is told what changed.' : '') +
+        '</div>';
+      var weeks = [];
       var wk = mondayLocal(C.schedule.from), guard = 0;
-      while (wk <= C.schedule.to && guard++ < 8) {
-        var wkEnd = addDaysLocal(wk, 6);
-        h += ptoWeekHtml(wk, C.schedule.shifts, meId, reqDates, fmtDate(wk) + ' – ' + fmtDate(wkEnd));
-        wk = addDaysLocal(wk, 7);
-      }
+      while (wk <= C.schedule.to && guard++ < 8) { weeks.push(wk); wk = addDaysLocal(wk, 7); }
+      var reqWeeks = weeks.filter(function (m) {
+        for (var i = 0; i < 7; i++) { if (reqKinds[addDaysLocal(m, i)]) return true; }
+        return false;
+      });
+      var firstReq = reqWeeks.length ? reqWeeks[0] : null;
+      var lastReq = reqWeeks.length ? reqWeeks[reqWeeks.length - 1] : null;
+      weeks.forEach(function (m) {
+        var wkEnd = addDaysLocal(m, 6);
+        var dates = fmtDate(m) + ' \u2013 ' + fmtDate(wkEnd);
+        var role;
+        if (firstReq && m < firstReq) role = 'Week before';
+        else if (lastReq && m > lastReq) role = 'Week after';
+        else if (reqWeeks.length > 1) role = 'Requested \u00b7 week ' + (reqWeeks.indexOf(m) + 1) + ' of ' + reqWeeks.length;
+        else role = 'Requested';
+        h += ptoWeekHtml(m, C.schedule.shifts, meId, reqKinds, role + '  \u00b7  ' + dates, editable);
+      });
       if (!(C.schedule.shifts || []).length) {
         h += '<div class="pto-sub">Nothing published in this window.</div>';
+      }
+      if (editable) {
+        h += '<div class="pto-retag" id="pto-retag-note">No changes \u2014 approving exactly as requested.</div>';
       }
       if (C.schedule.shifts_truncated) {
         h += '<div class="pto-warn">This market has more shifts in the window than the grid will show. Open the schedule screen for the full picture.</div>';
@@ -792,6 +879,62 @@
     }
     h += '</div>';
     return h;
+  }
+
+  // Bind the per-day selects. Keeps a live picture of the corrected request and
+  // restates what it will cost, because re-tagging a day changes the deduction
+  // and the approver should see that before committing, not after.
+  function wireRetag(m, C, onChange) {
+    var orig = {};
+    (C.request.days || []).forEach(function (x) { orig[x.date] = x.kind; });
+    var cur = {};
+    Object.keys(orig).forEach(function (k) { cur[k] = orig[k]; });
+    var pt = C.employee.pay_type;
+    var note = m.querySelector('#pto-retag-note');
+    var sels = m.querySelectorAll('[data-retag]');
+
+    function current() {
+      return Object.keys(cur).sort().map(function (d) { return { date: d, kind: cur[d] }; });
+    }
+    function changed() {
+      return Object.keys(cur).sort().filter(function (d) { return cur[d] !== orig[d]; })
+        .map(function (d) { return { date: d, from: orig[d], to: cur[d] }; });
+    }
+    function refresh() {
+      var diff = changed();
+      var paid = 0;
+      Object.keys(cur).forEach(function (d) { if (cur[d] === 'paid') paid++; });
+      var cost = paid * HRS_PER_DAY;
+      var was = C.balance.cost_hours;
+      var after = Math.round((C.balance.current_hours - cost) * 100) / 100;
+      if (note) {
+        if (!diff.length) {
+          note.innerHTML = 'No changes \u2014 approving exactly as requested.';
+        } else {
+          var lines = diff.map(function (c) {
+            return '<li>' + escHtml(fmtDate(c.date)) + ': <b>' + escHtml(c.from) + '</b> \u2192 <b>' + escHtml(c.to) + '</b></li>';
+          }).join('');
+          note.innerHTML = '<b>' + diff.length + ' day' + (diff.length === 1 ? '' : 's') + ' re-classified</b>' +
+            '<ul style="margin:5px 0 0;padding-left:18px">' + lines + '</ul>' +
+            '<div style="margin-top:6px">Cost ' + (cost === was ? 'unchanged at <b>' + fmtAmt(cost, pt) + '</b>'
+              : '<b>' + fmtAmt(was, pt) + '</b> \u2192 <b>' + fmtAmt(cost, pt) + '</b>') +
+            ', leaving <b class="' + (after < 0 ? 'pto-neg' : 'pto-pos') + '">' + fmtAmt(after, pt) + '</b>.' +
+            ' The employee will be told what changed.</div>';
+        }
+      }
+      onChange(diff.length ? current() : null, after < 0);
+    }
+    Array.prototype.forEach.call(sels, function (sel) {
+      sel.onchange = function () {
+        var day = sel.getAttribute('data-retag');
+        cur[day] = sel.value;
+        sel.className = 'pto-day-sel k-' + sel.value + (cur[day] !== orig[day] ? ' moved' : '');
+        var col = sel.closest ? sel.closest('.pto-day') : null;
+        if (col) col.className = 'pto-day req' + (cur[day] !== orig[day] ? ' moved' : '');
+        refresh();
+      };
+    });
+    refresh();
   }
 
   window.ptoDetail = async function (id) {
@@ -832,9 +975,18 @@
     try {
       var C = await api('GET', '/pto/requests/' + id + '/context');
       if (DLG !== m) return; // the approver closed it, or opened another row
-      // Keep the footer honest if the cap moved since the queue was fetched.
-      if (okBtn) okBtn.onclick = function () { var over = !!(C.coverage && C.coverage.over); closeDetail(); window.ptoApprove(id, over); };
-      m.querySelector('#pto-dt-body').innerHTML = detailBodyHtml(C);
+      var editable = st === 'pending';
+      m.querySelector('#pto-dt-body').innerHTML = detailBodyHtml(C, editable);
+      // Keep the footer honest if the cap moved since the queue was fetched, and
+      // carry any per-day correction through to the approve call.
+      var retagDays = null;
+      if (okBtn) okBtn.onclick = function () { var over = !!(C.coverage && C.coverage.over); closeDetail(); window.ptoApprove(id, over, retagDays); };
+      if (editable) {
+        wireRetag(m, C, function (days) {
+          retagDays = days;
+          if (okBtn) okBtn.textContent = days ? 'Approve with changes' : 'Approve';
+        });
+      }
     } catch (e) {
       if (DLG !== m) return;
       m.querySelector('#pto-dt-body').innerHTML = '<div class="alert alert-error">Could not load the detail (' + escHtml(e.message || 'error') + ').</div>';

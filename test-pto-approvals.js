@@ -27,7 +27,10 @@ Module._load = function (request, parent, isMain) {
     requireRole: function () { return function (req, res, next) { next(); }; },
     requirePermission: function () { return function (req, res, next) { next(); }; }
   };
-  if (request === '../utils/audit') return { logAudit: async function () {} };
+  if (request === '../utils/audit') return { logAudit: async function (e) {
+    await pool.query('INSERT INTO audit_logs (entity_type, entity_id, action, user_id, user_name, details) VALUES ($1,$2,$3,$4,$5,$6)',
+      [e.entity_type, e.entity_id, e.action, e.user_id, e.user_name, JSON.stringify(e.details || {})]);
+  } };
   if (request === '../utils/notify') { var e = new Error('no notify'); e.code = 'MODULE_NOT_FOUND'; throw e; }
   if (request === '../utils/email' || request === '../utils/sms') { var e2 = new Error('no mailer'); e2.code = 'MODULE_NOT_FOUND'; throw e2; }
   if (request === '../utils/org') return {
@@ -52,6 +55,17 @@ function req(method, path) {
       res.on('end', function () { var j = null; try { j = JSON.parse(b); } catch (e) {} resolve({ status: res.statusCode, body: j, raw: b }); });
     });
     r.on('error', reject); r.end();
+  });
+}
+function reqBody(method, path, body) {
+  var data = JSON.stringify(body || {});
+  return new Promise(function (resolve, reject) {
+    var r = http.request({ host: '127.0.0.1', port: server.address().port, method: method, path: path,
+      headers: { 'content-type': 'application/json', 'content-length': Buffer.byteLength(data) } }, function (res) {
+      var b = ''; res.on('data', function (c) { b += c; });
+      res.on('end', function () { var j = null; try { j = JSON.parse(b); } catch (e) {} resolve({ status: res.statusCode, body: j, raw: b }); });
+    });
+    r.on('error', reject); r.write(data); r.end();
   });
 }
 
@@ -79,14 +93,17 @@ async function schema() {
     '  paid_days INTEGER DEFAULT 0, unpaid_days INTEGER DEFAULT 0, off_days INTEGER DEFAULT 0,' +
     '  cancel_memo TEXT, cancel_initiated_by INTEGER, cancel_initiated_at TIMESTAMP,' +
     '  created_at TIMESTAMPTZ DEFAULT NOW(), updated_at TIMESTAMPTZ DEFAULT NOW());' +
-    'CREATE TABLE pto_request_days (id SERIAL PRIMARY KEY, request_id INTEGER, day_date DATE, kind VARCHAR(10));' +
+    "CREATE TABLE pto_request_days (id SERIAL PRIMARY KEY, request_id INTEGER NOT NULL, day_date DATE NOT NULL," +
+    "  kind VARCHAR(12) NOT NULL DEFAULT 'paid', UNIQUE(request_id, day_date));" +
     'CREATE TABLE pto_ledger (id SERIAL PRIMARY KEY, user_id INTEGER, entry_date DATE, kind VARCHAR(30),' +
     '  amount_hours NUMERIC(8,2), description TEXT, accrual_period VARCHAR(10), request_id INTEGER,' +
     '  created_by INTEGER, created_at TIMESTAMPTZ DEFAULT NOW());' +
     'CREATE TABLE pto_cancellations (id SERIAL PRIMARY KEY, request_id INTEGER, user_id INTEGER, start_date DATE,' +
     '  end_date DATE, business_days INTEGER, hours NUMERIC(8,2), type VARCHAR(60), paid BOOLEAN, source VARCHAR(40),' +
     '  memo TEXT, initiated_by INTEGER, decided_by INTEGER, created_at TIMESTAMPTZ DEFAULT NOW());' +
-    'CREATE TABLE settings (key VARCHAR(120) PRIMARY KEY, value TEXT);'
+    'CREATE TABLE settings (key VARCHAR(120) PRIMARY KEY, value TEXT);' +
+    'CREATE TABLE audit_logs (id SERIAL PRIMARY KEY, entity_type VARCHAR(60), entity_id INTEGER, action VARCHAR(60),' +
+    '  user_id INTEGER, user_name VARCHAR(255), details JSONB, created_at TIMESTAMPTZ DEFAULT NOW());'
   );
 }
 
@@ -387,6 +404,105 @@ async function main() {
   eq(c4.body.coverage.scoped, false, 'flagged as unscoped');
   eq(c4.body.coverage.used, 3, 'company-wide count when the market is unknown');
   eq(c4.body.schedule.shifts.length, 0, 'no market means no schedule grid');
+
+  console.log('== approver re-tags days at approval time ==');
+  // Fresh, self-contained: Tara has exactly 24 hrs and asks for 3 paid days.
+  await pool.query("UPDATE settings SET value = '{}' WHERE key = 'pto_coverage_caps';");
+  await pool.query("UPDATE settings SET value = '99' WHERE key = 'pto_coverage_default';");
+  await pool.query("INSERT INTO users (id,name,role,pay_type,supervisor_id,hire_date,home_city,pto_balance_hours) VALUES (7,'Tara Ridge','employee','hourly',1,'2021-01-01','ATL',24);");
+  await pool.query("SELECT setval('users_id_seq',(SELECT MAX(id) FROM users));");
+  async function freshReq(rid) {
+    await pool.query("DELETE FROM pto_request_days WHERE request_id = $1", [rid]);
+    await pool.query("DELETE FROM pto_requests WHERE id = $1", [rid]);
+    await pool.query("DELETE FROM pto_ledger WHERE user_id = 7;");
+    await pool.query("DELETE FROM shifts WHERE user_id = 7;");
+    await pool.query("UPDATE users SET pto_balance_hours = 24 WHERE id = 7;");
+    await pool.query("INSERT INTO pto_requests (id,user_id,start_date,end_date,business_days,hours,type,paid,status,required_level,paid_days) VALUES ($1,7,$2,$3,3,24,'Vacation',true,'pending',4,3)", [rid, d(50), d(52)]);
+    await pool.query("INSERT INTO pto_request_days (request_id,day_date,kind) VALUES ($1,$2,'paid'),($1,$3,'paid'),($1,$4,'paid')", [rid, d(50), d(51), d(52)]);
+  }
+
+  await freshReq(50);
+  var reA = await req('POST', '/api/pto/requests/50/approve');
+  eq(reA.status, 200, 'plain approve still works with no days supplied');
+  var rowA = (await pool.query('SELECT hours, paid_days, unpaid_days, off_days, paid, business_days FROM pto_requests WHERE id = 50')).rows[0];
+  eq(Number(rowA.hours), 24, 'all three days still paid');
+  eq(Number((await pool.query('SELECT pto_balance_hours b FROM users WHERE id = 7')).rows[0].b), 0, 'balance deducted in full');
+
+  await freshReq(51);
+  var reB = await reqBody('POST', '/api/pto/requests/51/approve', { days: [
+    { date: d(50), kind: 'paid' }, { date: d(51), kind: 'unpaid' }, { date: d(52), kind: 'off' } ] });
+  eq(reB.status, 200, 're-tagged approve accepted');
+  eq(reB.body.retagged.length, 2, 'two changes reported back');
+  eq(reB.body.hours, 8, 'only the remaining paid day costs anything');
+  var rowB = (await pool.query('SELECT hours, paid_days, unpaid_days, off_days, paid, business_days, required_level FROM pto_requests WHERE id = 51')).rows[0];
+  eq(Number(rowB.hours), 8, 'stored hours recomputed from the FINAL tags');
+  eq(Number(rowB.paid_days), 1, 'paid_days recomputed');
+  eq(Number(rowB.unpaid_days), 1, 'unpaid_days recomputed');
+  eq(Number(rowB.off_days), 1, 'off_days recomputed');
+  eq(Number(rowB.business_days), 2, 'a day tagged off is no longer an absence');
+  eq(rowB.paid, true, 'still a paid request while one paid day remains');
+  eq(Number((await pool.query('SELECT pto_balance_hours b FROM users WHERE id = 7')).rows[0].b), 16, 'only 8 hrs deducted, not 24');
+  var ledB = (await pool.query("SELECT amount_hours FROM pto_ledger WHERE user_id = 7 AND kind = 'usage'")).rows;
+  eq(ledB.length, 1, 'one usage line');
+  eq(Number(ledB[0].amount_hours), -8, 'and it matches the corrected hours');
+  var daysB = (await pool.query('SELECT kind FROM pto_request_days WHERE request_id = 51 ORDER BY day_date')).rows.map(function (x) { return x.kind; });
+  eq(daysB.join(','), 'paid,unpaid,off', 'the corrected tags are persisted');
+  var posB = (await pool.query('SELECT position_id FROM shifts WHERE user_id = 7 ORDER BY shift_date')).rows.map(function (x) { return Number(x.position_id); });
+  eq(posB.join(','), '5,7,9', 'the schedule is marked from the CORRECTED tags, not the submitted ones');
+
+  console.log('== every paid day removed ==');
+  await freshReq(52);
+  var reC = await reqBody('POST', '/api/pto/requests/52/approve', { days: [
+    { date: d(50), kind: 'unpaid' }, { date: d(51), kind: 'unpaid' }, { date: d(52), kind: 'off' } ] });
+  eq(reC.status, 200, 'approve with nothing paid');
+  eq(reC.body.hours, 0, 'costs nothing');
+  eq(Number((await pool.query('SELECT pto_balance_hours b FROM users WHERE id = 7')).rows[0].b), 24, 'balance untouched');
+  eq((await pool.query("SELECT COUNT(*)::int c FROM pto_ledger WHERE user_id = 7 AND kind = 'usage'")).rows[0].c, 0, 'no ledger line at all');
+  eq((await pool.query('SELECT paid FROM pto_requests WHERE id = 52')).rows[0].paid, false, 'the request is no longer a paid one');
+
+  console.log('== a re-tag can rescue an unaffordable request ==');
+  await freshReq(53);
+  await pool.query("UPDATE users SET pto_balance_hours = 8 WHERE id = 7;");
+  var reD = await req('POST', '/api/pto/requests/53/approve');
+  eq(reD.status, 400, 'as submitted it exceeds the balance');
+  ok(String(reD.body.error).indexOf('balance') !== -1, 'and says so');
+  var reE = await reqBody('POST', '/api/pto/requests/53/approve', { days: [
+    { date: d(50), kind: 'paid' }, { date: d(51), kind: 'unpaid' }, { date: d(52), kind: 'unpaid' } ] });
+  eq(reE.status, 200, 'the same request approves once two days go unpaid');
+  eq(Number((await pool.query('SELECT pto_balance_hours b FROM users WHERE id = 7')).rows[0].b), 0, 'balance lands exactly at zero');
+
+  console.log('== a re-tag cannot become a different request ==');
+  await freshReq(54);
+  var badA = await reqBody('POST', '/api/pto/requests/54/approve', { days: [
+    { date: d(50), kind: 'paid' }, { date: d(51), kind: 'paid' } ] });
+  eq(badA.status, 400, 'dropping a day is refused');
+  ok(String(badA.body.error).indexOf('do not match') !== -1, 'with a message that says what to do instead');
+  var badB = await reqBody('POST', '/api/pto/requests/54/approve', { days: [
+    { date: d(50), kind: 'paid' }, { date: d(51), kind: 'paid' }, { date: d(52), kind: 'paid' }, { date: d(53), kind: 'paid' } ] });
+  eq(badB.status, 400, 'adding a day is refused');
+  var badC = await reqBody('POST', '/api/pto/requests/54/approve', { days: [
+    { date: d(50), kind: 'paid' }, { date: d(51), kind: 'paid' }, { date: d(60), kind: 'paid' } ] });
+  eq(badC.status, 400, 'swapping a date is refused');
+  eq((await pool.query('SELECT status FROM pto_requests WHERE id = 54')).rows[0].status, 'pending', 'and the request is untouched by any of it');
+  var junk = await reqBody('POST', '/api/pto/requests/54/approve', { days: [
+    { date: d(50), kind: 'sabbatical' }, { date: d(51), kind: 'paid' }, { date: d(52), kind: 'paid' } ] });
+  eq(junk.status, 200, 'an unknown kind falls back to paid rather than erroring');
+  eq(Number((await pool.query('SELECT hours FROM pto_requests WHERE id = 54')).rows[0].hours), 24, 'and is treated as paid');
+
+  console.log('== the re-tag is written to the audit trail ==');
+  var aud = (await pool.query("SELECT details FROM audit_logs WHERE entity_type = 'pto_request' AND entity_id = 51 ORDER BY id DESC LIMIT 1")).rows;
+  ok(aud.length > 0, 'an audit row exists');
+  var det = typeof aud[0].details === 'string' ? JSON.parse(aud[0].details) : aud[0].details;
+  ok(det && String(det.retagged || '').indexOf('paid \u2192 unpaid') !== -1, 'and it names the change  (got ' + JSON.stringify(det && det.retagged) + ')');
+  eq(det.hours, 8, 'with the final hours');
+
+  console.log('== a non-approver still cannot re-tag ==');
+  await freshReq(55);
+  CURRENT_USER = { id: 99, name: 'Nobody', role: 'employee', isOwner: false };
+  var forb2 = await reqBody('POST', '/api/pto/requests/55/approve', { days: [{ date: d(50), kind: 'off' }, { date: d(51), kind: 'off' }, { date: d(52), kind: 'off' }] });
+  eq(forb2.status, 403, 'refused before any re-tag is considered');
+  eq((await pool.query('SELECT status FROM pto_requests WHERE id = 55')).rows[0].status, 'pending', 'request untouched');
+  CURRENT_USER = { id: 1, name: 'Ada Admin', role: 'admin', isOwner: true };
 
   server.close();
   await pool.end();
