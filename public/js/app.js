@@ -2,7 +2,7 @@
 // public/sw.js (the only thing bumped each deploy) — the badge asks the active
 // service worker for it at runtime. This value is just the fallback shown when no
 // service worker is available (e.g. very first visit before it installs).
-var APP_VERSION = 'v133';
+var APP_VERSION = 'v131';
 var _resolvedAppVersion = null;
 
 // Ask the active service worker for its CACHE_VERSION (without the 'nova-' prefix).
@@ -17369,13 +17369,6 @@ async function renderViewWorkOrder(el, id) {
     } else if (w.status === 'job_completed') {
       actions += '<button class="btn btn-primary" onclick="woSetStatus(' + id + ',\'paperwork_sent\')">Mark Paperwork Sent</button>';
     }
-    // Reopen. The account coming back for more work AFTER sign-off is routine, and until now the
-    // only way back to In Process was the bulk dropdown on the list page. Offered from
-    // paperwork_sent too (Tony's call) because accounts add work after they have been told the
-    // job is done; the dialog warns about it.
-    if (w.status === 'job_completed' || w.status === 'paperwork_sent') {
-      actions += '<button class="btn btn-secondary" onclick="woReopen(' + id + ')">&#8617; Reopen &rarr; In Process</button>';
-    }
     if (w.signoff_id && w.signoff) {
       // w.signoff is the live trip (the latest one on the job). Use its own id rather than
       // w.signoff_id so the button always opens the current sheet.
@@ -17443,22 +17436,6 @@ async function renderViewWorkOrder(el, id) {
         fld('Check-In PIN', 'wo-checkin_reference', w.checkin_reference, 'the PIN the tree asks for') +
         fld('Check-In Tracking #', 'wo-checkin_tracking', w.checkin_tracking, 'the job number the tree asks for') + '</div>' +
       '<div class="form-group"><label>Check-In Instructions</label><textarea id="wo-checkin_instructions" placeholder="What the work order says to do on arrival and departure">' + escHtml(w.checkin_instructions || '') + '</textarea></div>' +
-      // Whether a check-in is required at all. The parser answers it and is
-      // usually right, but a wrong "no" is an unpaid trip, so a person can
-      // overrule it - and doing so clears the flag, because the flag only ever
-      // existed to get somebody to look.
-      '<div class="form-row">' +
-        '<div class="form-group"><label>Check-in required?</label><select id="wo-checkin_required">' +
-          woTriOpts(w.checkin_required) + '</select></div>' +
-        '<div class="form-group"><label>Check-out required?</label><select id="wo-checkout_required">' +
-          woTriOpts(w.checkout_required) + '</select></div>' +
-        '<div class="form-group"><label>Done how?</label><select id="wo-checkin_method">' +
-          [['unknown', 'not sure'], ['phone', 'by phone'], ['app', 'their app'], ['portal', 'their web portal'], ['phone_or_app', 'phone or their app']]
-            .map(function (m) { return '<option value="' + m[0] + '"' + ((w.checkin_method || 'unknown') === m[0] ? ' selected' : '') + '>' + m[1] + '</option>'; }).join('') +
-          '</select></div>' +
-      '</div>' +
-      (w.checkin_evidence ? '<div class="csub" style="margin:-6px 0 14px;font-style:italic">The document said: &ldquo;' + escHtml(w.checkin_evidence) + '&rdquo;</div>' : '') +
-      (w.checkin_ai_note ? '<div class="alert alert-warn" style="margin:0 0 14px">' + escHtml(w.checkin_ai_note) + '</div>' : '') +
       '<button class="btn btn-secondary" onclick="woSaveEdit(' + id + ')">Save changes</button>'
     : fld('Account', '', w.account_name) + fld('Account #', '', w.account_number) +
       fld('Work Order #', '', w.wo_number) + fld('PO #', '', w.po_number) +
@@ -17471,8 +17448,6 @@ async function renderViewWorkOrder(el, id) {
       fld('Contact', '', w.contact_name) + fld('Phone', '', w.contact_phone) + fld('Priority', '', w.priority) +
       fld('Check-In Phone', '', w.checkin_phone) + fld('Check-In PIN', '', w.checkin_reference) +
       fld('Check-In Tracking #', '', w.checkin_tracking) +
-      fld('Check-in required', '', woTriLabel(w.checkin_required) + (w.checkin_pay_gated ? ' (and tied to payment)' : '')) +
-      fld('Check-out required', '', woTriLabel(w.checkout_required)) +
       (w.checkin_instructions ? '<div style="margin-top:12px;padding:10px 12px;background:var(--bg-elevated);border-radius:6px;font-size:13px;white-space:pre-wrap"><strong>Check-in:</strong> ' + escHtml(w.checkin_instructions) + '</div>' : '') +
       (w.notes ? '<div style="margin-top:12px;padding:10px 12px;background:var(--bg-elevated);border-radius:6px;font-size:13px"><strong>Notes:</strong> ' + escHtml(w.notes) + '</div>' : '');
   var rightCard = '<div class="card" style="margin:0"><div class="card-header"><span class="card-title">' + (fieldsEditable ? 'Parsed Details (check &amp; correct)' : 'Details') + '</span></div><div class="card-body">' + fieldsInner + '</div></div>';
@@ -17509,15 +17484,11 @@ async function renderViewWorkOrder(el, id) {
   checkinMount('checkin-host', id);
 }
 
-// Sign-off trips on a work order.
-//
-// This used to bail out on single-visit jobs (trips.length <= 1) — which was exactly the case
-// that needed it. A finished one-visit job is where a second sheet gets added, and the only door
-// to that was buried three clicks deep in the Sign-Off module. Now the card renders as soon as
-// the job has any sheet at all, and carries the "+ Add Sign-Off Sheet" tile.
+// Sign-off trips on a work order. Renders only when the job actually took more than one visit —
+// a single-visit job keeps the plain "Open Sign-Off" button and nothing else.
 function woSignoffTripsCard(w) {
   var trips = w.signoffs || [];
-  if (!trips.length) return '';
+  if (trips.length <= 1) return '';
   var cards = trips.map(function (t) {
     var done = t.status === 'completed';
     var meta = done
@@ -17535,25 +17506,12 @@ function woSignoffTripsCard(w) {
     '</div>';
   }).join('');
   var openTrip = trips.filter(function (t) { return t.status !== 'completed'; }).length > 0;
-  // can_add_signoff_trip comes from the API and is true only when every trip on the job is
-  // finished, so the tile never offers a trip the API would refuse. create_signoff is the
-  // permission POST /signoffs/:id/trip actually checks.
-  var canAdd = !!w.can_add_signoff_trip && can('create_signoff');
-  var nextTrip = trips.length + 1;
-  var addTile = canAdd
-    ? '<div onclick="openAddTripModal(' + trips[trips.length - 1].id + ',' + nextTrip + ')" ' +
-      'style="display:flex;align-items:center;justify-content:center;min-width:150px;padding:12px 14px;border-radius:var(--radius);' +
-      'border:1px dashed var(--border);color:var(--text-muted-color);font-size:13px;font-weight:500;cursor:pointer;gap:6px">' +
-      '+ Add Sign-Off Sheet (Trip ' + nextTrip + ')</div>'
-    : '';
   var note = openTrip
     ? '<div class="alert alert-info" style="margin:14px 0 0">This job stays open until the latest trip is signed off as 100% complete.</div>'
-    : (canAdd
-        ? '<div class="alert alert-info" style="margin:14px 0 0">Account added work after sign-off? Add a sheet here, or use Reopen to move the job back to In Process at the same time.</div>'
-        : '');
+    : '';
   return '<div class="card mb-4"><div class="card-header"><span class="card-title">Sign-Off Sheets</span>' +
-    '<span style="font-size:12px;color:var(--text-muted-color)">' + trips.length + (trips.length === 1 ? ' visit' : ' visits') + '</span></div>' +
-    '<div class="card-body"><div style="display:flex;align-items:stretch;gap:8px;flex-wrap:wrap">' + cards + addTile + '</div>' + note + '</div></div>';
+    '<span style="font-size:12px;color:var(--text-muted-color)">' + trips.length + ' visits</span></div>' +
+    '<div class="card-body"><div style="display:flex;align-items:stretch;gap:8px;flex-wrap:wrap">' + cards + '</div>' + note + '</div></div>';
 }
 
 // ---- Vehicle jobs (Fenkell / VEHI-TRAC port work) ---------------------------
@@ -17646,17 +17604,6 @@ async function woSetJobType(id, jobType) {
 }
 
 function woGet(fid) { var e = document.getElementById(fid); return e ? e.value.trim() : undefined; }
-// yes / no / not sure, in the three places it is shown. Written out rather than a
-// checkbox because "we do not know" is a real answer here and a tick box cannot
-// say it: unknown gets looked at by a person, no does not.
-function woTriOpts(v) {
-  var cur = (v === 'yes' || v === 'no') ? v : 'unknown';
-  return [['unknown', 'not sure'], ['yes', 'yes'], ['no', 'no']].map(function (o) {
-    return '<option value="' + o[0] + '"' + (cur === o[0] ? ' selected' : '') + '>' + o[1] + '</option>';
-  }).join('');
-}
-function woTriLabel(v) { return v === 'yes' ? 'yes' : v === 'no' ? 'no' : 'not sure'; }
-
 async function woSaveEdit(id) {
   var body = {
     account_name: woGet('wo-account_name'), account_number: woGet('wo-account_number'),
@@ -17668,9 +17615,7 @@ async function woSaveEdit(id) {
     service_requested: woGet('wo-service_requested'), service_requested_by: woGet('wo-service_requested_by'), needed_by: woGet('wo-needed_by'),
     contact_name: woGet('wo-contact_name'), contact_phone: woGet('wo-contact_phone'), priority: woGet('wo-priority'), notes: woGet('wo-notes'),
     checkin_phone: woGet('wo-checkin_phone'), checkin_reference: woGet('wo-checkin_reference'),
-    checkin_tracking: woGet('wo-checkin_tracking'), checkin_instructions: woGet('wo-checkin_instructions'),
-    checkin_required: woGet('wo-checkin_required'), checkout_required: woGet('wo-checkout_required'),
-    checkin_method: woGet('wo-checkin_method')
+    checkin_tracking: woGet('wo-checkin_tracking'), checkin_instructions: woGet('wo-checkin_instructions')
   };
   // Only send keys the form actually rendered — a vehicle job has no store inputs and
   // a site job has no yard inputs, and undefined means "leave it alone" on the API.
@@ -17685,120 +17630,6 @@ async function woSetStatus(id, status) {
   if (ae) body.assigned_to = ae.value || null;
   try { await api('PATCH', '/work-orders/' + id + '/status', body); navigate('view-work-order', id); }
   catch (e) { var er = document.getElementById('wo-detail-error'); if (er) er.innerHTML = '<div class="alert alert-error">' + escHtml(e.message) + '</div>'; }
-}
-// Reopen a finished work order because the account asked for more work after sign-off.
-//
-// Two things have to happen and they used to live in two different modules: the job goes back to
-// In Process, and the tech needs a sheet to sign for the return visit — the sheet already on the
-// job is signed and locked, so reopening alone would leave them with a read-only page. One
-// dialog, one PATCH.
-async function woReopen(id) {
-  var errBox = document.getElementById('wo-detail-error');
-  var w = null;
-  try { w = await api('GET', '/work-orders/' + id); }
-  catch (e) { if (errBox) errBox.innerHTML = '<div class="alert alert-error">' + escHtml(e.message) + '</div>'; return; }
-  var assignees = [];
-  try { assignees = await api('GET', '/work-orders/assignees'); } catch (e) {}
-
-  var trips = w.signoffs || [];
-  var openSheet = trips.filter(function (t) { return t.status !== 'completed'; })[0] || null;
-  var nextTrip = trips.length + 1;
-  var canTrip = !!w.can_add_signoff_trip;
-  var hasNoSheet = !trips.length;
-
-  var carry = [
-    (w.po_number ? 'PO ' + w.po_number : null),
-    w.account_name,
-    (w.store_name ? w.store_name + (w.store_number ? ' #' + w.store_number : '') : null),
-    w.address, w.city_state_zip
-  ].filter(Boolean).map(escHtml).join(' &middot; ');
-
-  // What the checkbox says depends on the shape of the job. Three cases, and only the first
-  // one is armed: the other two would either duplicate a live sheet or ask for a Trip 2 on a
-  // job that never had a Trip 1.
-  var tripLine, tripHint, tripArmed;
-  if (canTrip) {
-    tripArmed = true;
-    tripLine = 'Create sign-off sheet Trip ' + nextTrip + ' for the additional work';
-    tripHint = 'Trip ' + (trips.length || 1) + ' stays signed and locked. Untick to reopen without a new sheet.';
-  } else if (openSheet) {
-    tripArmed = false;
-    tripLine = 'Sign-off ' + escHtml(openSheet.form_number || '') + ' is still open on this job';
-    tripHint = 'One live sheet per job, so no new trip is created. Reopening points the work order back at that sheet.';
-  } else {
-    tripArmed = false;
-    tripLine = hasNoSheet ? 'A pending sign-off sheet will be created' : 'No new sign-off sheet';
-    tripHint = hasNoSheet ? 'This job has no sheet yet, so moving it to In Process makes the first one.' : 'This job cannot take another trip right now.';
-  }
-
-  var warn = (w.status === 'paperwork_sent')
-    ? '<div class="alert alert-error" style="margin:0 0 14px">Paperwork for this job has already gone to the account. Reopening it means the second sheet lands after they were told the job was finished.</div>'
-    : '';
-
-  var ov = document.createElement('div');
-  ov.className = 'nova-dialog-overlay';
-  ov.innerHTML = '<div class="nova-dlg" role="dialog" aria-modal="true" style="max-width:470px;text-align:left">' +
-    '<div class="nova-dlg-title">Reopen ' + escHtml(w.wo_ref || 'this work order') + ' &rarr; In Process</div>' +
-    '<div style="font-size:12px;color:var(--text-muted-color);margin-bottom:14px">The account asked for more work after the job was signed off.</div>' +
-    warn +
-    (carry ? '<div style="font-size:12px;color:var(--text-muted-color);background:var(--bg-elevated);border:1px solid var(--border);border-radius:var(--radius);padding:10px 12px;line-height:1.7;margin-bottom:16px">' +
-      '<span style="color:var(--text-dim)">Carries over:</span> ' + carry + '<br />' +
-      '<span style="color:var(--text-dim)">Starts empty:</span> times, technicians, signature, photos, invoice #</div>' : '') +
-    '<label for="wo-reopen-trip" style="display:flex;gap:10px;align-items:flex-start;border-radius:var(--radius);padding:12px 13px;margin-bottom:14px;cursor:' + (tripArmed ? 'pointer' : 'default') + ';' +
-      'background:' + (tripArmed ? 'rgba(249,115,22,0.07)' : 'var(--bg-elevated)') + ';border:1px solid ' + (tripArmed ? 'rgba(249,115,22,0.35)' : 'var(--border)') + '">' +
-      '<input type="checkbox" id="wo-reopen-trip" style="margin-top:2px;flex-shrink:0"' + (tripArmed ? ' checked' : ' disabled') + ' />' +
-      '<span><span style="font-size:13.5px;font-weight:600;color:var(--text)">' + tripLine + '</span>' +
-      '<span style="display:block;font-size:12px;color:var(--text-muted-color);margin-top:3px">' + tripHint + '</span></span>' +
-    '</label>' +
-    '<div class="form-group"><label>Assign to</label><select id="wo-reopen-assignee">' +
-      '<option value="">&mdash; Leave as is &mdash;</option>' +
-      assignees.map(function (u) {
-        return '<option value="' + u.id + '"' + (String(w.assigned_to) === String(u.id) ? ' selected' : '') + '>' + escHtml(u.name) + '</option>';
-      }).join('') +
-    '</select></div>' +
-    '<div class="form-group" style="margin-bottom:0"><label>Why is this being reopened?</label>' +
-      '<textarea id="wo-reopen-reason" rows="3" placeholder="e.g. Store manager added rear panic bar rekey after sign-off" style="resize:vertical"></textarea>' +
-      '<div style="font-size:11.5px;color:var(--text-muted-color);margin-top:5px">Goes on the new sheet and into this work order&#39;s activity trail.</div></div>' +
-    '<div id="wo-reopen-error"></div>' +
-    '<div class="nova-dlg-actions">' +
-      '<button class="btn btn-secondary" id="wo-reopen-cancel">Never mind</button>' +
-      '<button class="btn btn-primary" id="wo-reopen-ok">' + (tripArmed ? 'Reopen &amp; Create Trip ' + nextTrip : 'Reopen') + '</button>' +
-    '</div></div>';
-  document.body.appendChild(ov);
-
-  function close() {
-    ov.classList.add('closing');
-    document.removeEventListener('keydown', onKey);
-    setTimeout(function () { if (ov.parentNode) ov.parentNode.removeChild(ov); }, 140);
-  }
-  function onKey(e) { if (e.key === 'Escape') { e.preventDefault(); close(); } }
-  document.addEventListener('keydown', onKey);
-  ov.addEventListener('mousedown', function (e) { if (e.target === ov) close(); });
-  ov.querySelector('#wo-reopen-cancel').addEventListener('click', close);
-  ov.querySelector('#wo-reopen-ok').addEventListener('click', async function () {
-    var btn = this;
-    var label = btn.innerHTML;
-    btn.disabled = true; btn.textContent = 'Reopening...';
-    var cb = ov.querySelector('#wo-reopen-trip');
-    var body = {
-      status: 'in_process',
-      new_trip: !!(cb && !cb.disabled && cb.checked),
-      trip_reason: ((ov.querySelector('#wo-reopen-reason') || {}).value || '').trim() || null
-    };
-    // Only send an assignee when one was actually picked. An empty string would reach the API as
-    // "unassign", and quietly stripping the tech off a job someone is reopening is not the ask.
-    var sel = ov.querySelector('#wo-reopen-assignee');
-    if (sel && sel.value) body.assigned_to = sel.value;
-    try {
-      await api('PATCH', '/work-orders/' + id + '/status', body);
-      close();
-      navigate('view-work-order', id);
-    } catch (err) {
-      var e2 = ov.querySelector('#wo-reopen-error');
-      if (e2) e2.innerHTML = '<div class="alert alert-error" style="margin:14px 0 0">' + escHtml(err.message) + '</div>';
-      btn.disabled = false; btn.innerHTML = label;
-    }
-  });
 }
 async function woAssign(id) {
   var ae = document.getElementById('wo-assignee');
@@ -18469,26 +18300,6 @@ function checkinCardHtml(state) {
         '<div class="csub" style="text-align:right">Read back by the tree<br />and kept on this job</div></div>'
     : '';
 
-  // Whether a check-in is required at all is a different question from whether a
-  // number was printed, and it is the one that decides whether this card should
-  // be pushing a button at anybody. "Required for payment" is not a scorecard
-  // ding, it is an unpaid trip, so it says so.
-  var reqLine = '';
-  if (state.checkin_required === 'yes') {
-    reqLine = '<span class="badge ' + (state.checkin_pay_gated ? 'badge-denied' : 'badge-active') + '">' +
-      (state.checkin_pay_gated ? 'Required for payment' : 'Required') + '</span>';
-  } else if (state.checkin_required === 'unknown' || !state.checkin_required) {
-    reqLine = '<span class="badge badge-pending">Not sure it is required</span>';
-  }
-  var evidence = '';
-  if (state.checkin_evidence) {
-    evidence = '<div class="csub" style="margin-top:10px;font-style:italic;line-height:1.6">&ldquo;' +
-      escHtml(state.checkin_evidence) + '&rdquo;</div>';
-  }
-  var aiNote = state.checkin_ai_note && can('manage_work_orders')
-    ? '<div class="alert alert-warn" style="margin:12px 0 0">' + escHtml(state.checkin_ai_note) + '</div>'
-    : '';
-
   var note = '';
   if (!state.can_call && state.blocked_reason && can('checkin_job')) {
     note = '<div class="csub" style="margin-top:12px">' + state.blocked_reason +
@@ -18503,19 +18314,15 @@ function checkinCardHtml(state) {
   }
 
   return '<div class="card mb-4" id="checkin-card"><div class="card-header">' +
-      '<span class="card-title">Job Clock</span> ' + reqLine +
+      '<span class="card-title">Job Clock</span>' +
       '<span style="font-size:12px;color:var(--text-muted-color)">' + escHtml(state.account_name || '') +
-        (state.profile
-          ? ' &middot; ' + (state.profile.method === 'phone'
-              ? (state.profile.mode === 'ai' ? 'AI navigator' : state.profile.mode === 'ai_fallback' ? 'script, then AI' : 'phone tree')
-              : 'off')
-          : '') + '</span>' +
+        (state.profile ? ' &middot; ' + (state.profile.method === 'phone' ? 'phone tree' : 'off') : '') + '</span>' +
     '</div><div class="card-body">' +
       '<div class="ci-row-wrap">' + checkinCell(state, 'in') + checkinCell(state, 'out') + onsite +
         (actions ? '<div class="ci-cell" style="flex:0 0 auto">' + actions + '</div>' : '') +
       '</div>' +
       checkinFailureHtml(state, 'in') + checkinFailureHtml(state, 'out') +
-      auth + checkinInstructionsHtml(state) + evidence + note + aiNote +
+      auth + checkinInstructionsHtml(state) + note +
     '</div></div>';
 }
 
@@ -18530,16 +18337,6 @@ async function checkinMount(hostId, workOrderId) {
   // Nothing to say: no profile, nothing printed on the work order, and no
   // history. Drawing an empty card would just be furniture.
   if (!state.profile && !state.checkin_phone && !state.checkin && !state.checkout) { host.innerHTML = ''; return; }
-  // The document says this account does NOT want a check-in. Showing a Check In
-  // button anyway teaches people to ignore the badge, which is worse than the
-  // button being missing. History still shows, if there is any.
-  //
-  // A parser disagreement is the exception and has to be: the note exists to get
-  // somebody to look, so hiding the card that carries it would bury exactly the
-  // case where the "no" is most likely to be wrong.
-  if (state.checkin_required === 'no' && !state.checkin && !state.checkout && !state.checkin_ai_note) {
-    host.innerHTML = ''; return;
-  }
   host.innerHTML = checkinCardHtml(state);
 
   var busy = function (ev) { return ev && (ev.status === 'pending' || ev.status === 'dialing' || ev.status === 'in_progress'); };
@@ -18553,87 +18350,16 @@ async function checkinMount(hostId, workOrderId) {
 
 function checkinHostId() { return 'checkin-host'; }
 
-async function checkinFire(workOrderId, dir, btn, answers) {
+async function checkinFire(workOrderId, dir, btn) {
   if (btn) { btn.disabled = true; btn.textContent = 'Calling...'; }
   var gps = await checkinGps();
-  var payload = Object.assign({}, gps || {});
-  if (answers) payload.answers = answers;
   try {
-    await api('POST', '/checkins/' + workOrderId + '/' + dir, payload);
+    await api('POST', '/checkins/' + workOrderId + '/' + dir, gps || {});
   } catch (err) {
     if (btn) { btn.disabled = false; }
-    // Not a failure so much as a question. The check-out tree is going to ask
-    // how many technicians were on site and whether the job is finished, and the
-    // sheet has not answered yet - so ask, here, before anything dials. Better a
-    // tap now than a call that dies halfway through a phone tree.
-    if (err.status === 422 && err.data && err.data.needs_answers) {
-      checkinAskSheet(workOrderId, dir, err.data.ask || []);
-      return;
-    }
     novaAlert(err.message);
   }
   checkinMount(checkinHostId(), workOrderId);
-}
-
-// The little form that stands between a tap and a dial.
-//
-// Everything on it was asked for by readiness, and nothing else is accepted:
-// the server drops any answer it did not ask for, which is what stops a browser
-// handing Nova a PIN. Answers go onto the sign-off sheet as well as the call,
-// because the sheet is the record.
-function checkinAskSheet(workOrderId, dir, ask) {
-  if (!ask.length) return;
-  var ov = document.createElement('div');
-  ov.className = 'nova-dialog-overlay';
-  function fieldHtml(a, i) {
-    var id = 'ci-ask-' + i;
-    var input;
-    if (a.type === 'choice') {
-      input = '<select id="' + id + '" data-key="' + escHtml(a.key) + '">' +
-        (a.options || []).map(function (o) {
-          return '<option value="' + escHtml(o.value) + '">' + escHtml(o.label) + '</option>';
-        }).join('') + '</select>';
-    } else if (a.type === 'number') {
-      input = '<input id="' + id + '" data-key="' + escHtml(a.key) + '" type="number" min="1" max="20" value="' +
-        escHtml(a.suggested || '1') + '" />';
-    } else if (a.type === 'date') {
-      input = '<input id="' + id + '" data-key="' + escHtml(a.key) + '" type="date" />';
-    } else {
-      input = '<input id="' + id + '" data-key="' + escHtml(a.key) + '" type="text" autocomplete="off" />';
-    }
-    return '<div class="form-group"><label>' + escHtml(a.label) + '</label>' + input +
-      (a.why ? '<div class="csub" style="margin-top:4px">' + escHtml(a.why) + '</div>' : '') + '</div>';
-  }
-  ov.innerHTML = '<div class="nova-dlg" style="max-width:460px;text-align:left">' +
-    '<div class="nova-dlg-title">Before Nova calls</div>' +
-    '<div class="csub" style="margin:6px 0 14px">The ' + (dir === 'out' ? 'check-out' : 'check-in') +
-      ' line is going to ask for ' + (ask.length === 1 ? 'this' : 'these') + ', and the sign-off sheet has not answered yet.</div>' +
-    ask.map(fieldHtml).join('') +
-    '<div class="nova-dlg-actions">' +
-      '<button class="btn btn-secondary" id="ci-ask-cancel">Cancel</button>' +
-      '<button class="btn btn-primary" id="ci-ask-go">Save &amp; call</button>' +
-    '</div></div>';
-  document.body.appendChild(ov);
-  function close() {
-    ov.classList.add('closing');
-    document.removeEventListener('keydown', onKey);
-    setTimeout(function () { if (ov.parentNode) ov.parentNode.removeChild(ov); }, 140);
-  }
-  function onKey(e) { if (e.key === 'Escape') { e.preventDefault(); close(); } }
-  document.addEventListener('keydown', onKey);
-  ov.addEventListener('mousedown', function (e) { if (e.target === ov) close(); });
-  ov.querySelector('#ci-ask-cancel').addEventListener('click', close);
-  ov.querySelector('#ci-ask-go').addEventListener('click', function () {
-    var answers = {};
-    ask.forEach(function (a, i) {
-      var el = ov.querySelector('#ci-ask-' + i);
-      if (el && String(el.value).trim()) answers[a.key] = el.value;
-    });
-    close();
-    checkinFire(workOrderId, dir, null, answers);
-  });
-  var first = ov.querySelector('input, select');
-  if (first) setTimeout(function () { first.focus(); }, 60);
 }
 
 async function checkinManual(workOrderId, dir, btn) {
@@ -18697,63 +18423,14 @@ async function openCheckinRecord(eventId) {
 
   // Show WHY it was accepted by highlighting the phrase that matched. If Nova
   // cannot point at the words, it should not have said yes.
-  //
-  // An AI-navigated call is judged live, off what Twilio's recogniser produced
-  // during the call, so its transcript exists before the recording is ever
-  // fetched. Fall back to it rather than showing an empty box for a minute.
-  var tx = ev.transcript || ev.live_transcript || '';
-  var body = escHtml(tx);
-  if (tx && ev.confirmation_text) {
-    var idx = tx.toLowerCase().indexOf(String(ev.confirmation_text).toLowerCase());
+  var body = escHtml(ev.transcript || '');
+  if (ev.transcript && ev.confirmation_text) {
+    var idx = ev.transcript.toLowerCase().indexOf(String(ev.confirmation_text).toLowerCase());
     if (idx !== -1) {
-      body = escHtml(tx.slice(0, idx)) +
-        '<span class="ci-hl">' + escHtml(tx.substr(idx, ev.confirmation_text.length)) + '</span>' +
-        escHtml(tx.slice(idx + ev.confirmation_text.length));
+      body = escHtml(ev.transcript.slice(0, idx)) +
+        '<span class="ci-hl">' + escHtml(ev.transcript.substr(idx, ev.confirmation_text.length)) + '</span>' +
+        escHtml(ev.transcript.slice(idx + ev.confirmation_text.length));
     }
-  }
-
-  // How Nova knows. 'phrase' is the account's own configured wording, which
-  // needs no model at all; 'ai_quoted' means the model called it AND the words
-  // it quoted were found in the transcript. There is no third way to be
-  // confirmed, and saying which one applied is the difference between evidence
-  // and an assertion.
-  var verdict = '';
-  if (ev.status === 'confirmed' && ev.verdict_source) {
-    verdict = '<div class="ci-row"><span class="ci-k">How Nova knows</span><span class="ci-v" style="font-size:13px">' +
-      (ev.verdict_source === 'phrase'
-        ? 'The tree said the wording this account is set up to expect.'
-        : 'The AI heard it and quoted the words back, and Nova found those words in the recording.') +
-      '</span></div>';
-  }
-  var quoted = ev.ai_quote
-    ? '<div class="ci-row"><span class="ci-k">The AI quoted</span><span class="ci-v" style="font-size:13px">&ldquo;' +
-      escHtml(ev.ai_quote) + '&rdquo;' +
-      (ev.status === 'failed' ? ' <span style="color:#fca5a5">(not found in the recording)</span>' : '') +
-      '</span></div>'
-    : '';
-
-  // The conversation, turn by turn. On a call that went wrong this is the whole
-  // story: what the tree said, and what Nova did about it.
-  var turnHtml = '';
-  if (Array.isArray(ev.turns) && ev.turns.length) {
-    turnHtml = '<div class="ci-tx" style="margin-top:12px"><div class="ci-tx-h">Turn by turn</div><div class="ci-tx-b">' +
-      ev.turns.map(function (t) {
-        var did = t.action === 'send' ? 'sent ' + escHtml(t.field || '') + (t.suffix ? ' then ' + escHtml(t.suffix) : '')
-          : t.action === 'press' ? 'pressed ' + escHtml(t.digits || '')
-          : t.action === 'wait' ? 'waited'
-          : t.action === 'listen' ? 'kept listening'
-          : t.action === 'confirm' ? 'took that as the confirmation'
-          : t.action === 'abort' ? 'ended the call'
-          : escHtml(t.action || '');
-        return '<div style="margin-bottom:10px">' +
-          '<div style="color:var(--text-muted-color);font-size:12px">turn ' + (t.n || '') +
-            (t.source === 'interlock' ? ' &middot; stopped by Nova, not the AI' : '') +
-            (t.source === 'timeout' ? ' &middot; the AI did not answer in time' : '') +
-            (t.confidence ? ' &middot; ' + escHtml(t.confidence) + ' confidence' : '') + '</div>' +
-          '<div>heard: ' + escHtml(t.heard || '(silence)') + '</div>' +
-          '<div style="color:var(--text)">Nova ' + did + (t.reason ? ' &mdash; ' + escHtml(t.reason) : '') + '</div>' +
-          '</div>';
-      }).join('') + '</div></div>';
   }
 
   ov.querySelector('.nova-dlg').innerHTML =
@@ -18769,14 +18446,10 @@ async function openCheckinRecord(eventId) {
       (ev.gps_lat ? '<div class="ci-row"><span class="ci-k">Location at dial</span><span class="ci-v" style="font-size:13px">' + escHtml(String(ev.gps_lat)) + ', ' + escHtml(String(ev.gps_lon)) + (ev.gps_accuracy ? ' (&plusmn;' + Math.round(ev.gps_accuracy) + 'm)' : '') + '</span></div>' : '') +
       (ev.auth_number ? '<div class="ci-row"><span class="ci-k">Number read back</span><span class="ci-v mono">' + escHtml(ev.auth_number) + '</span></div>' : '') +
       (ev.failure_reason ? '<div class="ci-row"><span class="ci-k">Why it failed</span><span class="ci-v" style="font-size:13px;color:#fca5a5">' + escHtml(ev.failure_reason) + '</span></div>' : '') +
-      verdict + quoted +
     '</div>' +
-    (tx
-      ? '<div class="ci-tx"><div class="ci-tx-h">What Nova heard' +
-        (!ev.transcript && ev.live_transcript ? ' <span class="csub">(live from the call; the recording is still being fetched)</span>' : '') +
-        '</div><div class="ci-tx-b">' + body + '</div></div>'
+    (ev.transcript
+      ? '<div class="ci-tx"><div class="ci-tx-h">What Nova heard</div><div class="ci-tx-b">' + body + '</div></div>'
       : '<div class="csub" style="margin-top:12px">No recording was transcribed for this one.</div>') +
-    turnHtml +
     (ev.recording_url ? '<audio controls preload="none" src="' + escHtml(ev.recording_url) + '" style="width:100%;margin-top:12px"></audio>' : '') +
     '<div class="nova-dlg-actions"><button class="btn btn-secondary" id="ci-close">Close</button></div>';
   var b = ov.querySelector('#ci-close');
@@ -19024,16 +18697,10 @@ async function renderCheckinProfile(el, id) {
         // direction itself - check-in if there were check-in steps, otherwise
         // check-out - which meant that the moment a check-out script existed,
         // Test Call could never reach it again.
-        // A profile on the AI navigator has NO steps, so gating these on the step
-        // count hid the test button on exactly the accounts whose behaviour
-        // nobody has heard yet. Each lane gets its own button when it exists.
         (_ciProfile.id && (_ciProfile.checkin_steps || []).length
-          ? '<button class="btn btn-secondary" onclick="ciTestCall(&#39;in&#39;,&#39;script&#39;)">&#9742; Test check-in</button>' : '') +
+          ? '<button class="btn btn-secondary" onclick="ciTestCall(&#39;in&#39;)">&#9742; Test check-in</button>' : '') +
         (_ciProfile.id && (_ciProfile.checkout_steps || []).length
-          ? '<button class="btn btn-secondary" onclick="ciTestCall(&#39;out&#39;,&#39;script&#39;)">&#9742; Test check-out</button>' : '') +
-        (_ciProfile.id && (_ciProfile.mode || 'script') !== 'script'
-          ? '<button class="btn btn-secondary" onclick="ciTestCall(&#39;in&#39;,&#39;ai&#39;)">&#9742; Test check-in with AI</button>' +
-            '<button class="btn btn-secondary" onclick="ciTestCall(&#39;out&#39;,&#39;ai&#39;)">&#9742; Test check-out with AI</button>' : '') +
+          ? '<button class="btn btn-secondary" onclick="ciTestCall(&#39;out&#39;)">&#9742; Test check-out</button>' : '') +
         (_ciProfile.id ? '<button class="btn ' + (_ciProfile.active ? 'btn-secondary' : 'btn-primary') + '" onclick="ciToggleActive()">' +
           (_ciProfile.active ? 'Take offline' : 'Mark live') + '</button>' : '') +
         (_ciProfile.id ? '<button class="btn btn-ghost" style="color:#b91c1c" onclick="ciDeleteProfile()">Delete</button>' : '') +
@@ -19043,143 +18710,10 @@ async function renderCheckinProfile(el, id) {
       '</div>' +
       '<div id="ci-test-status"></div>' +
       '<div class="csub" style="margin-top:10px">A script goes <b>offline every time you save it</b>. Changing the steps, the number or the phrase means the last test no longer proves anything, and an untested script is how Nova ends up telling a client somebody arrived when they did not.</div>' +
-    '</div></div>' +
-    ciAiCardHtml(cfg);
+    '</div></div>';
 
   ciDraftAttach();
   await ciDraftRestore(id);
-}
-
-// ---------------------------------------------------------------------------
-// Section 4: what happens when the tree does not follow the script.
-//
-// A fixed run of tones works until a tree adds a prompt, re-orders two entries,
-// or re-prompts because the first entry was clipped - and then it fails
-// silently. This is where an account is told to listen instead.
-// ---------------------------------------------------------------------------
-var CI_STATUS_KEYS = [
-  { key: 'complete', label: 'Job finished' },
-  { key: 'incomplete_parts', label: 'Not finished, waiting on parts' },
-  { key: 'return_trip', label: 'Not finished, coming back' },
-  { key: 'cancelled', label: 'Cancelled on site' }
-];
-
-function ciNeedsHtml(cfg, dir) {
-  var chosen = (_ciProfile.needs && _ciProfile.needs[dir]) || (cfg.default_needs && cfg.default_needs[dir]) || [];
-  return (cfg.readiness_fields || []).map(function (f) {
-    var on = chosen.indexOf(f.key) !== -1;
-    return '<label class="ci-need"><input type="checkbox" class="ci-need-' + dir + '" value="' + escHtml(f.key) + '"' +
-      (on ? ' checked' : '') + ' /> ' + escHtml(f.label) + '</label>';
-  }).join('');
-}
-
-function ciAiCardHtml(cfg) {
-  var mode = _ciProfile.mode || 'script';
-  var map = _ciProfile.status_map || {};
-  var streak = _ciProfile.ai_streak || 0;
-
-  var promote = '';
-  if (_ciProfile.id && streak >= 3) {
-    promote = '<div class="alert alert-info" style="margin:0 0 14px">' +
-      '<b>This tree has stopped surprising Nova.</b> The last ' + streak +
-      ' AI calls pressed exactly the same keys in the same order, which usually means the menu is stable. ' +
-      'Saving that run as a script drops the cost of every future call on this account by about eight times, ' +
-      'and the AI is still there if the tree changes again.<br />' +
-      '<button class="btn btn-primary btn-sm" style="margin-top:10px" onclick="ciPromote(&#39;in&#39;)">Save it as the check-in script</button> ' +
-      '<button class="btn btn-secondary btn-sm" style="margin-top:10px" onclick="ciPromote(&#39;out&#39;)">Save the check-out one</button>' +
-      '</div>';
-  }
-
-  return '<div class="card mb-4"><div class="card-header"><span class="card-title">4. When the tree does not follow the script</span>' +
-    '<span style="font-size:12px;color:var(--text-muted-color)">The AI navigator</span></div><div class="card-body">' +
-    promote +
-    '<div class="form-row">' +
-      '<div class="form-group" style="flex:2 1 320px"><label>How Nova should get through this tree</label>' +
-        '<select id="ci-mode">' + (cfg.modes || []).map(function (m) {
-          return '<option value="' + escHtml(m.value) + '"' + (mode === m.value ? ' selected' : '') + '>' + escHtml(m.label) + '</option>';
-        }).join('') + '</select>' +
-        '<div class="csub" style="margin-top:6px">' +
-          (cfg.modes || []).map(function (m) { return '<div><b>' + escHtml(m.label) + '</b> &mdash; ' + escHtml(m.hint) + '</div>'; }).join('') +
-        '</div></div>' +
-      '<div class="form-group" style="flex:0 1 160px"><label>Give up after</label>' +
-        '<input type="number" id="ci-maxturns" min="1" max="20" value="' + escHtml(String(_ciProfile.max_turns || 12)) + '" />' +
-        '<div class="csub" style="margin-top:6px">turns. Nova hangs up and tells the technician.</div></div>' +
-    '</div>' +
-
-    '<div class="form-group"><label>What Nova is trying to do (check-in)</label>' +
-      '<input type="text" id="ci-goal-in" value="' + escHtml(_ciProfile.goal_checkin || '') + '" placeholder="Check this job in and hear the tree say so." /></div>' +
-    '<div class="form-group"><label>And on the way out</label>' +
-      '<input type="text" id="ci-goal-out" value="' + escHtml(_ciProfile.goal_checkout || '') + '" placeholder="Check this job out and keep the authorization number it reads back." /></div>' +
-    '<div class="form-group"><label>Anything known about this tree</label>' +
-      '<textarea id="ci-playbook" rows="3" placeholder="Press 1 for English. It asks for the PIN first, then the tracking number, each ending with pound. It re-reads the number back before confirming.">' +
-      escHtml(_ciProfile.playbook || '') + '</textarea>' +
-      '<div class="csub" style="margin-top:4px">Plain sentences. Whatever you would tell a new technician before handing him the phone.</div></div>' +
-
-    '<div class="ci-capbox">' +
-      '<div class="clabel">What this line asks for</div>' +
-      '<div class="csub" style="margin:4px 0 10px">A script says this through its send steps. The navigator has no steps to read, so it is set here. Nova will not dial until it has every one of these in hand.</div>' +
-      '<div class="form-row" style="margin-bottom:0">' +
-        '<div class="form-group"><label>Checking in</label><div class="ci-needs">' + ciNeedsHtml(cfg, 'in') + '</div></div>' +
-        '<div class="form-group"><label>Checking out</label><div class="ci-needs">' + ciNeedsHtml(cfg, 'out') + '</div></div>' +
-      '</div>' +
-    '</div>' +
-
-    '<div class="ci-capbox">' +
-      '<div class="clabel">Which key means what, on the check-out</div>' +
-      '<div class="csub" style="margin:4px 0 10px">The tree asks whether the job is finished and wants a number for the answer. Which number means what is a fact about this account, not something to work out mid-call, so it is set here and Nova resolves it before it dials. Leave blank the ones this tree does not offer.</div>' +
-      '<div class="form-row" style="margin-bottom:0">' +
-        CI_STATUS_KEYS.map(function (k) {
-          return '<div class="form-group" style="flex:1 1 160px"><label>' + escHtml(k.label) + '</label>' +
-            '<input type="text" class="mono" id="ci-status-' + k.key + '" maxlength="4" style="max-width:90px" value="' +
-            escHtml(map[k.key] || '') + '" placeholder="1" /></div>';
-        }).join('') +
-      '</div>' +
-    '</div>' +
-
-    '<div class="ci-capbox">' +
-      '<div class="clabel">This account issues one PIN to the company' +
-        (_ciProfile.has_account_pin ? ' <span class="badge badge-completed">saved, ending ' + escHtml(_ciProfile.account_pin_hint || '') + '</span>' : '') + '</div>' +
-      '<div class="csub" style="margin:4px 0 10px">Only for accounts that do NOT print a PIN on each work order. It is a vendor credential, so Nova encrypts it and never shows it again &mdash; if you forget it, type a new one. Leave this alone if the PIN is on the paperwork.</div>' +
-      '<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">' +
-        '<input type="password" id="ci-pin" autocomplete="new-password" placeholder="' +
-          (_ciProfile.has_account_pin ? 'replace the saved PIN' : 'account PIN') + '" style="flex:0 1 220px" />' +
-        '<button class="btn btn-secondary" style="flex:0 0 auto" onclick="ciSavePin()">Save PIN</button>' +
-        (_ciProfile.has_account_pin ? '<button class="btn btn-ghost" style="flex:0 0 auto" onclick="ciClearPin()">Remove it</button>' : '') +
-      '</div>' +
-    '</div>' +
-
-    '<div class="csub" style="margin-top:14px">The navigator hangs up the moment a tree offers a person, before it asks the AI anything &mdash; Nova only ever talks to a machine. And a call only counts as a check-in if the AI can quote the words the tree said <b>and</b> Nova finds those words in the recording. Anything else is a failure, loudly.</div>' +
-    '</div></div>';
-}
-
-async function ciPromote(dir) {
-  if (!_ciProfile.id) return;
-  if (!await novaConfirm('Save what the AI did on its last successful ' + (dir === 'out' ? 'check-out' : 'check-in') +
-    ' as this account&#39;s script? It will need a test call before it goes live.')) return;
-  try {
-    await api('POST', '/checkins/profiles/' + _ciProfile.id + '/promote', { direction: dir });
-    navigate('checkin-profile', _ciProfile.id);
-  } catch (e) { novaAlert(e.message); }
-}
-
-async function ciSavePin() {
-  var el = document.getElementById('ci-pin');
-  if (!el || !String(el.value).trim()) return novaAlert('Type the PIN first.');
-  if (!_ciProfile.id) return novaAlert('Save the script first, then set the PIN on it.');
-  try {
-    await api('POST', '/checkins/profiles/' + _ciProfile.id + '/pin', { pin: el.value });
-    el.value = '';
-    navigate('checkin-profile', _ciProfile.id);
-  } catch (e) { novaAlert(e.message); }
-}
-
-async function ciClearPin() {
-  if (!_ciProfile.id) return;
-  if (!await novaConfirm('Remove the saved account PIN? Jobs that do not print their own will stop being callable.')) return;
-  try {
-    await api('POST', '/checkins/profiles/' + _ciProfile.id + '/pin', { pin: '' });
-    navigate('checkin-profile', _ciProfile.id);
-  } catch (e) { novaAlert(e.message); }
 }
 
 // ---------------------------------------------------------------------------
@@ -19220,9 +18754,7 @@ function _ciDraftFlush() {
 }
 
 function ciDraftAttach() {
-  ['ci-vendor','ci-method','ci-phone','ci-phrases','ci-phrases-out','ci-capture','ci-caplabel',
-   'ci-mode','ci-goal-in','ci-goal-out','ci-playbook','ci-maxturns',
-   'ci-status-complete','ci-status-incomplete_parts','ci-status-return_trip','ci-status-cancelled'].forEach(function (idn) {
+  ['ci-vendor','ci-method','ci-phone','ci-phrases','ci-phrases-out','ci-capture','ci-caplabel'].forEach(function (idn) {
     var e = document.getElementById(idn);
     if (!e) return;
     e.addEventListener('input', function () { ciDraftSave(); });
@@ -19300,25 +18832,7 @@ function ciCollect() {
     confirm_phrases: v('ci-phrases'),
     checkout_confirm_phrases: v('ci-phrases-out'),
     capture_pattern: v('ci-capture'),
-    capture_label: v('ci-caplabel'),
-    mode: v('ci-mode') || 'script',
-    goal_checkin: v('ci-goal-in'),
-    goal_checkout: v('ci-goal-out'),
-    playbook: v('ci-playbook'),
-    max_turns: parseInt(v('ci-maxturns'), 10) || 12,
-    status_map: (function () {
-      var m = {};
-      CI_STATUS_KEYS.forEach(function (k) { var d = v('ci-status-' + k.key); if (d) m[k.key] = d; });
-      return m;
-    })(),
-    needs: (function () {
-      function picked(dir) {
-        return Array.prototype.slice.call(document.querySelectorAll('.ci-need-' + dir))
-          .filter(function (c) { return c.checked; })
-          .map(function (c) { return c.value; });
-      }
-      return { in: picked('in'), out: picked('out') };
-    })()
+    capture_label: v('ci-caplabel')
   };
 }
 
@@ -19376,18 +18890,16 @@ function ciTestRender(html) {
 // for a real check-in, which means the result has to come back HERE. Otherwise
 // the one button whose whole job is to tell you whether the script works fires
 // into silence.
-async function ciTestCall(dir, lane) {
+async function ciTestCall(dir) {
   dir = (dir === 'out') ? 'out' : 'in';
-  lane = (lane === 'ai') ? 'ai' : 'script';
-  var wo = await novaPrompt('Test the ' + (dir === 'out' ? 'check-OUT' : 'check-IN') + ' ' +
-    (lane === 'ai' ? 'navigator' : 'script') +
-    ' against which work order? The work order number off the paperwork is fine, or Nova&#39;s own id.');
+  var wo = await novaPrompt('Test the ' + (dir === 'out' ? 'check-OUT' : 'check-IN') +
+    ' script against which work order? The work order number off the paperwork is fine, or Nova&#39;s own id.');
   if (!wo) return;
   ciTestRender('<div class="ci-callout" style="margin-top:12px"><span class="ci-spin"></span> Placing the call&hellip;</div>');
   var ev;
   try {
     ev = await api('POST', '/checkins/profiles/' + _ciProfile.id + '/test',
-      { work_order: String(wo).trim(), direction: dir, mode: lane });
+      { work_order: String(wo).trim(), direction: dir });
   } catch (err) {
     ciTestRender('<div class="alert alert-error" style="margin-top:12px">' + escHtml(err.message) + '</div>');
     return;
@@ -28732,6 +28244,123 @@ function pvRenderRecon() {
    and nothing else — the deposited amount is backed by the receipt photo and is
    never touched here. */
 
+// Below this a gap is rounding, not a shortage. Mirrored server side in
+// routes/deposits.js, which is where it is actually enforced.
+var PV_SHORT_MIN = 5;
+
+var PV_SHORTAGE_REASONS = [
+  ['expense_not_logged', 'An expense was not logged', 'Cash was spent before banking and never entered. Closes the row. Counts for nothing.'],
+  ['typo', 'The typed figure was wrong', 'The technician mistyped what Pulsar showed. Closes the row. Counts for nothing.'],
+  ['pulsar_wrong', 'Pulsar is wrong', 'The export overstates what was actually collected. Closes the row. Counts for nothing.'],
+  ['cash_unaccounted', 'Cash cannot be accounted for', 'Nothing explains the gap. This is the only answer that reaches their employee file.']
+];
+
+function pvShortageTitle(sh) {
+  if (!sh) return '';
+  var label = '';
+  PV_SHORTAGE_REASONS.forEach(function (x) { if (x[0] === sh.reason) label = x[1]; });
+  return label + (sh.by ? ' - recorded by ' + sh.by : '') + (sh.note ? '. ' + sh.note : '');
+}
+
+/* The two-step resolution. Step one is this modal; step two is that only one of
+   the four answers counts. */
+function pvExplainShortage(i) {
+  var d = _pvState.recon;
+  if (!d || !d.rows[i]) return;
+  var r = d.rows[i];
+  var current = r.shortage ? r.shortage.reason : '';
+  window._pvShortRow = i;
+  window._pvShortReason = current || '';
+
+  var opts = PV_SHORTAGE_REASONS.map(function (x) {
+    var sel = (x[0] === current);
+    return '<div class="er-type' + (sel ? ' sel' : '') + '" id="pvsr-' + x[0] + '" onclick="pvPickShortReason(\'' + x[0] + '\')">' +
+      '<b' + (x[0] === 'cash_unaccounted' ? ' style="color:#f87171"' : '') + '>' + escHtml(x[1]) + '</b>' +
+      '<small>' + escHtml(x[2]) + '</small></div>';
+  }).join('');
+
+  var body =
+    '<div style="font-size:13px;color:var(--text-dim);line-height:1.6;margin-bottom:14px">' +
+    '<b style="color:var(--text)">' + escHtml(r.user_name || 'This technician') + '</b> is short ' +
+    '<b style="color:#f87171">' + pvMoney(Math.abs(r.gap)) + '</b> for this pay week. ' +
+    'Pulsar ' + pvMoney(r.pulsar_cash) + ', deposited ' + pvMoney(r.deposited) + ', expenses ' + pvMoney(r.expenses) + '.' +
+    '</div>' +
+    '<div style="font-size:12.5px;color:var(--text-muted-color);line-height:1.6;margin-bottom:14px">' +
+    'A gap is not an offence until somebody establishes why it is there. Three of these four close the row ' +
+    'and go no further.</div>' +
+    '<div class="er-types" style="grid-template-columns:1fr;gap:8px;margin-bottom:14px">' + opts + '</div>' +
+    '<div class="form-group" style="margin-bottom:0"><label>Note <span id="pvsr-req" style="color:var(--danger);display:none">*</span></label>' +
+    '<textarea id="pvsr-note" style="min-height:80px" placeholder="What was established, and how.">' +
+    escHtml((r.shortage && r.shortage.note) || '') + '</textarea>' +
+    '<div style="font-size:12px;color:var(--text-muted-color);margin-top:6px" id="pvsr-hint">Required if the cash cannot be accounted for.</div></div>';
+
+  var footer = '<button class="btn btn-secondary" onclick="pvCloseShortage()">Cancel</button>' +
+    (r.shortage ? '<button class="btn btn-ghost" style="color:#f87171" onclick="pvClearShortage(' + r.shortage.id + ')">Clear</button>' : '') +
+    '<button class="btn btn-primary" onclick="pvSaveShortage()">Record it</button>';
+
+  var wrap = document.createElement('div');
+  wrap.className = 'modal-overlay';
+  wrap.id = 'pv-short-modal';
+  wrap.innerHTML = '<div class="modal" style="max-width:600px">' +
+    '<div class="modal-header"><div class="modal-title">Why is this pay week short?</div>' +
+    '<div style="cursor:pointer;color:var(--text-muted-color)" onclick="pvCloseShortage()">&#10005;</div></div>' +
+    '<div class="modal-body">' + body + '</div>' +
+    '<div class="modal-footer">' + footer + '</div></div>';
+  document.body.appendChild(wrap);
+  if (current) pvPickShortReason(current);
+}
+
+function pvCloseShortage() {
+  var m = document.getElementById('pv-short-modal');
+  if (m && m.parentNode) m.parentNode.removeChild(m);
+}
+
+function pvPickShortReason(key) {
+  window._pvShortReason = key;
+  PV_SHORTAGE_REASONS.forEach(function (x) {
+    var e = document.getElementById('pvsr-' + x[0]);
+    if (e) e.className = 'er-type' + (x[0] === key ? ' sel' : '');
+  });
+  var req = document.getElementById('pvsr-req');
+  if (req) req.style.display = (key === 'cash_unaccounted') ? '' : 'none';
+}
+
+async function pvSaveShortage() {
+  var i = window._pvShortRow;
+  var d = _pvState.recon;
+  if (!d || !d.rows[i]) return;
+  var r = d.rows[i];
+  var reason = window._pvShortReason;
+  if (!reason) { showToast('Pick a reason.', 'error'); return; }
+  var note = String((document.getElementById('pvsr-note') || {}).value || '').trim();
+  if (reason === 'cash_unaccounted' && !note) {
+    showToast('Unaccounted cash needs a note saying what was established.', 'error');
+    return;
+  }
+  try {
+    var out = await api('POST', '/deposits/shortage', {
+      user_id: r.user_id, period_start: d.period_start, period_end: d.period_end,
+      reason: reason, note: note
+    });
+    pvCloseShortage();
+    if (out.counts) {
+      showToast('Recorded as unaccounted. That is ' + out.unaccounted_12m + ' in the last 12 months.', 'success');
+    } else {
+      showToast('Explained. It does not count against them.', 'info');
+    }
+    await pvLoadRecon();
+  } catch (e) { showToast(e.message || 'Could not record it.', 'error'); }
+}
+
+async function pvClearShortage(id) {
+  try {
+    await api('DELETE', '/deposits/shortage/' + id, {});
+    pvCloseShortage();
+    showToast('Resolution cleared.', 'info');
+    await pvLoadRecon();
+  } catch (e) { showToast(e.message || 'Could not clear it.', 'error'); }
+}
+
 // True when money Pulsar says was collected has not arrived.
 function pvMoneyMissing(r) {
   if (!r) return false;
@@ -28754,6 +28383,31 @@ function pvActionsCell(r, i) {
     out.push('<button class="btn btn-secondary btn-sm" onclick="pvCorrectEntered(' + i + ')" ' +
       'title="Overwrite the technician&#39;s typed &ldquo;Pulsar shows owed&rdquo; with the real Pulsar figure. The deposited amount is not changed." ' +
       'style="padding:2px 8px;white-space:nowrap;color:#f59e0b">Correct Deposit Amount</button>');
+  }
+  /* A gap of more than PV_SHORT_MIN gets an "Explain shortage" button, and it
+     is deliberately NOT the same shape as Mark late.
+
+     Late is binary: the money arrived after the deadline or it did not. A
+     shortage is a discrepancy - an unlogged expense, a typo in the figure the
+     technician entered, Pulsar being wrong, or cash that is actually missing -
+     and until somebody looks you do not know which. Correct Deposit Amount sits
+     two buttons away for exactly that reason. So the manager answers WHY, and
+     only "cash unaccounted for" reaches anybody's employee file. The other
+     three close the row and count for nothing.
+
+     Only short, never over, and never a few cents either way. */
+  if (can('edit_deposit') && r.user_id && Number(r.gap) > PV_SHORT_MIN) {
+    if (r.shortage) {
+      out.push('<button class="btn btn-secondary btn-sm" onclick="pvExplainShortage(' + i + ')" ' +
+        'title="' + escHtml(pvShortageTitle(r.shortage)) + '" ' +
+        'style="padding:2px 8px;white-space:nowrap;' +
+        (r.shortage.counts ? 'color:#f87171;border-color:#4d1515' : 'color:var(--text-muted-color)') + '">' +
+        (r.shortage.counts ? 'Unaccounted' : 'Explained') + '</button>');
+    } else {
+      out.push('<button class="btn btn-secondary btn-sm" onclick="pvExplainShortage(' + i + ')" ' +
+        'title="Record why this pay week is short. Only cash that cannot be accounted for reaches their file." ' +
+        'style="padding:2px 8px;white-space:nowrap;color:#f59e0b">Explain shortage</button>');
+    }
   }
   // Late is a judgment, so it is a person pressing a button, not something the
   // board works out. It only appears where there IS a deposit to mark - a row

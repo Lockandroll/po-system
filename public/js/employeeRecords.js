@@ -412,6 +412,8 @@
 
     var lateAvail = !!(d.late_deposits && d.late_deposits.available);
     var lateCount = (d.late_deposits && d.late_deposits.count) || 0;
+    var shCount = (d.shortages && d.shortages.count) || 0;
+    var shTotal = (d.shortages && d.shortages.total) || 0;
 
     // Anything actually waiting on somebody. These are the only things that
     // earn a colour on an otherwise quiet file.
@@ -430,10 +432,10 @@
     if (L.highest_live) {
       line = 'Highest live level: ' + esc(levelName(L.highest_live)) + '.';
       dot = 'var(--danger)';
-    } else if (total === 0 && !lateCount) {
+    } else if (total === 0 && !lateCount && !shCount) {
       line = 'Nothing on record in the last 12 months.';
       dot = 'var(--success)';
-    } else if (counts.disciplinary === 0 && counts.coaching === 0 && !lateCount) {
+    } else if (counts.disciplinary === 0 && counts.coaching === 0 && !lateCount && !shCount) {
       line = total + ' record' + (total === 1 ? '' : 's') + ' on file, none of it disciplinary.';
       dot = 'var(--success)';
     } else {
@@ -443,6 +445,7 @@
     var second = [];
     if (lateAvail && !lateCount) second.push('No deposits marked late.');
     if (lateCount) second.push(lateCount + ' deposit' + (lateCount === 1 ? '' : 's') + ' marked late.');
+    if (shCount) second.push(shCount + ' pay week' + (shCount === 1 ? '' : 's') + ' with cash unaccounted for.');
     if (open.length) second.push(open.slice(0, 2).join(' and ') + '.');
 
     var standing =
@@ -474,6 +477,27 @@
         (d.can_act && can('create_employee_note')
           ? '<button class="btn btn-secondary btn-sm" style="margin-top:12px;width:100%;justify-content:center" ' +
             'onclick="erDocumentLate()">Document these</button>' : '') +
+        '</div></div>';
+    }
+
+    // ---- Unaccounted cash, only when a manager established that it was -------
+    // Explained gaps never reach this file. An unlogged expense or a typo
+    // closed the row on the reconciliation board and stopped there.
+    var shCard = '';
+    if (shCount) {
+      shCard = '<div class="card" style="margin-bottom:14px;border-color:#4d1515">' +
+        '<div class="card-header" style="border-bottom-color:#4d1515">' +
+        '<div class="card-title">Cash unaccounted for</div>' +
+        '<span style="font-size:12px;color:var(--text-muted-color)">last 12 months</span></div>' +
+        '<div class="card-body">' +
+        '<div style="font-size:28px;font-weight:700;font-family:\'Fira Code\',ui-monospace,monospace;color:#f87171">' +
+        shCount + '</div>' +
+        '<div style="font-size:12px;color:var(--text-muted-color);margin-top:4px;line-height:1.6">' +
+        'Pay week' + (shCount === 1 ? '' : 's') + ' where a manager established the gap was not an expense, a typo ' +
+        'or a Pulsar error. $' + Number(shTotal).toFixed(2) + ' in total.</div>' +
+        (d.can_act && can('create_employee_note')
+          ? '<button class="btn btn-secondary btn-sm" style="margin-top:12px;width:100%;justify-content:center" ' +
+            'onclick="erDocumentShortages()">Document these</button>' : '') +
         '</div></div>';
     }
 
@@ -537,7 +561,7 @@
       ' can always be told who has read their file.</div>' +
       '</div></div></div>';
 
-    return standing + lateCard + ladderCard + countsCard + add + who;
+    return standing + shCard + lateCard + ladderCard + countsCard + add + who;
   }
 
   // Twelve months of late deposits as a bar per month. Empty months are drawn
@@ -640,6 +664,36 @@
       var cat = el('er-cat');
       if (cat) { for (var i = 0; i < cat.options.length; i++) if (cat.options[i].value === 'Cash handling') cat.selectedIndex = i; }
     }, 30);
+  };
+
+  // Same shape as the late-deposit bridge: pull the real pay weeks and amounts,
+  // pre-fill a record with them, and let the manager write the judgment.
+  window.erDocumentShortages = async function () {
+    var d;
+    try { d = await api('GET', API + '/employee/' + S.employeeId + '/shortages'); }
+    catch (e) { toast(e.message || 'Could not load the shortages.', 'error'); return; }
+    if (!d.shortages || !d.shortages.count) { toast('Nothing unaccounted for.', 'info'); return; }
+    var rows = d.shortages.shortages.map(function (x) {
+      return '<div class="er-kv"><span>Week of ' + esc(x.period_start) + '</span>' +
+        '<span style="color:#f87171">$' + Number(x.amount).toFixed(2) + '</span></div>' +
+        (x.note ? '<div style="font-size:12px;color:var(--text-muted-color);padding:0 0 8px">' + esc(x.note) + '</div>' : '');
+    }).join('');
+    modal('Document unaccounted cash &middot; ' + esc(S.file.user.name),
+      '<div style="font-size:13px;color:var(--text-dim);line-height:1.6;margin-bottom:14px">' +
+      'These are the pay weeks where a manager established the gap was not an expense, a typo or a Pulsar ' +
+      'error. The dates and amounts go in for you; you write the rest.</div>' +
+      '<div class="card" style="margin-bottom:14px"><div class="card-body" style="padding:6px 16px">' + rows + '</div></div>' +
+      '<div class="form-group" style="margin-bottom:0"><label>What kind of record</label><div class="er-types">' +
+      '<div class="er-type sel" id="er-lk-coaching" onclick="erPickLateKind(\'coaching\')"><b>Coaching note</b>' +
+      '<small>A documented conversation. Internal, no signature, no approval.</small></div>' +
+      (can('create_disciplinary')
+        ? '<div class="er-type" id="er-lk-disciplinary" onclick="erPickLateKind(\'disciplinary\')"><b>Disciplinary notice</b>' +
+          '<small>Opens the full form at the level the ladder suggests, needs approval.</small></div>' : '') +
+      '</div></div>',
+      '<button class="btn btn-secondary" onclick="erCloseModal()">Cancel</button>' +
+      '<button class="btn btn-primary" onclick="erStartLateRecord()">Continue</button>', 640);
+    S.lateKind = 'coaching';
+    S.lateText = d.suggested_text || '';
   };
 
   // ==================================================================

@@ -697,6 +697,176 @@ router.get('/late-summary', requireAuth, requirePermission('view_deposits'), asy
   }
 });
 
+/* ------------------------------------------------------ shortages ----------
+   Resolving a gap between what Pulsar says was collected and what was banked.
+
+   Two steps on purpose, and the reason is worth keeping in front of whoever
+   edits this next. A late deposit is a fact: it arrived after the deadline or
+   it did not. A shortage is a DISCREPANCY. It can be an expense nobody logged,
+   a typo in the figure the technician typed, Pulsar being wrong, or cash that
+   is genuinely missing, and until somebody looks you do not know which. Making
+   a shortage one click from a write-up would mean documenting people for
+   arithmetic.
+
+   So the manager answers WHY first, and only 'cash_unaccounted' counts toward
+   anybody's file. The other three answers close the row and count for nothing -
+   which quietly gives you a measure of how often the board is wrong rather than
+   the money.
+
+   The gap is RECOMPUTED here from the Pulsar import and the deposits. The
+   browser sends who and which pay week, never the number. */
+var SHORTAGE_REASONS = ['expense_not_logged', 'typo', 'pulsar_wrong', 'cash_unaccounted'];
+var SHORTAGE_MIN = 5;   // below this it is rounding noise, not a shortage
+
+function n2(v) { return Math.round((Number(v) || 0) * 100) / 100; }
+
+// What the reconciliation board would show for this person in this pay week.
+// Mirrors the maths in routes/pulsar.js: Pulsar cash minus (deposited plus the
+// expenses that were not denied). A denied expense is one the company refused,
+// so it stops offsetting what the technician owes.
+async function shortageFigures(userId, periodStart, periodEnd) {
+  const p = await pool.query(
+    'SELECT COALESCE(SUM(cash), 0) AS cash FROM pulsar_cash_calls WHERE tech_user_id = $1 AND call_date >= $2 AND call_date <= $3',
+    [userId, periodStart, periodEnd]
+  );
+  const d = await pool.query(
+    'SELECT COALESCE(SUM(d.amount), 0) AS deposited, ' +
+    "  COALESCE(SUM((SELECT COALESCE(SUM(e.amount), 0) FROM deposit_expenses e WHERE e.deposit_id = d.id AND COALESCE(e.review_status, 'pending') <> 'denied')), 0) AS expenses, " +
+    '  MIN(d.city_code) AS city_code ' +
+    'FROM deposits d WHERE d.user_id = $1 AND d.period_start = $2',
+    [userId, periodStart]
+  );
+  var cash = n2(p.rows[0] && p.rows[0].cash);
+  var deposited = n2(d.rows[0] && d.rows[0].deposited);
+  var expenses = n2(d.rows[0] && d.rows[0].expenses);
+  return {
+    pulsar_cash: cash,
+    deposited: deposited,
+    expenses: expenses,
+    gap: n2(cash - (deposited + expenses)),
+    city_code: (d.rows[0] && d.rows[0].city_code) || null
+  };
+}
+
+router.post('/shortage', requireAuth, requirePermission('edit_deposit'), async function (req, res) {
+  try {
+    if (!MANAGE.includes(req.user.role)) return res.status(403).json({ error: 'Access denied' });
+    var b = req.body || {};
+    var userId = parseInt(b.user_id, 10) || 0;
+    var periodStart = String(b.period_start || '');
+    if (!userId || !/^\d{4}-\d{2}-\d{2}$/.test(periodStart)) {
+      return res.status(400).json({ error: 'A technician and a pay period are required.' });
+    }
+    var reason = String(b.reason || '');
+    if (SHORTAGE_REASONS.indexOf(reason) === -1) return res.status(400).json({ error: 'Say why the gap is there.' });
+
+    const u = await pool.query('SELECT id, name, home_city FROM users WHERE id = $1', [userId]);
+    if (!u.rows.length) return res.status(404).json({ error: 'Technician not found' });
+
+    var periodEnd = /^\d{4}-\d{2}-\d{2}$/.test(String(b.period_end || '')) ? String(b.period_end) : periodStart;
+    var fig = await shortageFigures(userId, periodStart, periodEnd);
+
+    // The gap is the server's number, not the browser's, and the threshold is
+    // enforced here as well as in the UI. A row that is a few cents out is
+    // rounding, and counting it would make the number meaningless.
+    if (fig.gap < SHORTAGE_MIN) {
+      return res.status(400).json({ error: 'That pay week is not short by more than $' + SHORTAGE_MIN + '.' });
+    }
+
+    var city = fig.city_code || u.rows[0].home_city || null;
+    const scope = await editCityScope(req);
+    if (!scopeAllows(scope, city)) {
+      return res.status(403).json({ error: 'You can only resolve shortages for the cities you are assigned to.' });
+    }
+
+    var counts = reason === 'cash_unaccounted';
+    var note = (b.note != null) ? String(b.note).trim().slice(0, 2000) : null;
+    if (counts && !note) return res.status(400).json({ error: 'Unaccounted cash needs a note saying what was established.' });
+
+    const ins = await pool.query(
+      'INSERT INTO deposit_shortages (user_id, user_name, city_code, period_start, period_end, gap_amount, ' +
+      'pulsar_cash, deposited, expenses, reason, counts, note, resolved_by, resolved_by_name) ' +
+      'VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14) ' +
+      'ON CONFLICT (user_id, period_start) DO UPDATE SET reason = EXCLUDED.reason, counts = EXCLUDED.counts, ' +
+      'note = EXCLUDED.note, gap_amount = EXCLUDED.gap_amount, pulsar_cash = EXCLUDED.pulsar_cash, ' +
+      'deposited = EXCLUDED.deposited, expenses = EXCLUDED.expenses, city_code = EXCLUDED.city_code, ' +
+      'resolved_by = EXCLUDED.resolved_by, resolved_by_name = EXCLUDED.resolved_by_name, ' +
+      'resolved_at = NOW(), updated_at = NOW() RETURNING id',
+      [userId, u.rows[0].name, city, periodStart, periodEnd, fig.gap, fig.pulsar_cash, fig.deposited,
+        fig.expenses, reason, counts, note, req.user.id, req.user.name]
+    );
+
+    await logAudit({
+      entity_type: 'deposit_shortage', entity_id: ins.rows[0].id,
+      action: counts ? 'shortage_unaccounted' : 'shortage_explained',
+      user_id: req.user.id, user_name: req.user.name,
+      details: { employee: u.rows[0].name, period_start: periodStart, gap: fig.gap, reason: reason }
+    });
+
+    var count = 0;
+    try {
+      const c = await pool.query(
+        "SELECT COUNT(*)::int AS n FROM deposit_shortages WHERE user_id = $1 AND counts = true AND period_start > CURRENT_DATE - INTERVAL '12 months'",
+        [userId]
+      );
+      count = c.rows.length ? c.rows[0].n : 0;
+    } catch (e) {}
+
+    res.json({ success: true, id: ins.rows[0].id, counts: counts, gap: fig.gap, unaccounted_12m: count });
+  } catch (err) {
+    console.error('[deposits] shortage resolve failed:', err);
+    res.status(500).json({ error: 'Could not record the resolution.' });
+  }
+});
+
+// Undo a resolution. The audit rows above are what remember it was ever made.
+router.delete('/shortage/:id', requireAuth, requirePermission('edit_deposit'), async function (req, res) {
+  try {
+    if (!MANAGE.includes(req.user.role)) return res.status(403).json({ error: 'Access denied' });
+    const { rows } = await pool.query('SELECT * FROM deposit_shortages WHERE id = $1', [req.params.id]);
+    if (!rows.length) return res.json({ success: true });
+    const scope = await editCityScope(req);
+    if (!scopeAllows(scope, rows[0].city_code)) {
+      return res.status(403).json({ error: 'You can only resolve shortages for the cities you are assigned to.' });
+    }
+    await pool.query('DELETE FROM deposit_shortages WHERE id = $1', [req.params.id]);
+    await logAudit({
+      entity_type: 'deposit_shortage', entity_id: rows[0].id, action: 'shortage_resolution_cleared',
+      user_id: req.user.id, user_name: req.user.name,
+      details: { employee: rows[0].user_name, period_start: rows[0].period_start, was: rows[0].reason }
+    });
+    res.json({ success: true });
+  } catch (err) {
+    console.error('[deposits] shortage clear failed:', err);
+    res.status(500).json({ error: 'Could not clear it.' });
+  }
+});
+
+// Unaccounted shortages for one person. Only the ones that COUNT come back -
+// the explained ones are not part of anybody's record and are none of the
+// employee file's business.
+router.get('/shortages/:userId', requireAuth, requirePermission('view_deposits'), async function (req, res) {
+  try {
+    var uid = parseInt(req.params.userId, 10) || 0;
+    if (!SEE_ALL.includes(req.user.role) && uid !== req.user.id) return res.status(403).json({ error: 'Access denied' });
+    var months = Math.min(Math.max(parseInt(req.query.months, 10) || 12, 1), 60);
+    const { rows } = await pool.query(
+      'SELECT id, period_start, period_end, gap_amount, note, resolved_by_name, resolved_at, city_code ' +
+      "FROM deposit_shortages WHERE user_id = $1 AND counts = true AND period_start > CURRENT_DATE - ($2 || ' months')::interval " +
+      'ORDER BY period_start DESC',
+      [uid, String(months)]
+    );
+    res.json({
+      user_id: uid, months: months, count: rows.length,
+      total: rows.reduce(function (a, r) { return a + Number(r.gap_amount || 0); }, 0),
+      shortages: rows
+    });
+  } catch (err) {
+    console.error('[deposits] shortage list failed:', err);
+    res.status(500).json({ error: 'Could not load shortages.' });
+  }
+});
+
 // GET /:id — single deposit incl. receipts and expenses (owner or see-all roles)
 router.get('/:id', requireAuth, requirePermission('view_deposits'), async function(req, res) {
   try {

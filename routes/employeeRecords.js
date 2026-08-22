@@ -227,6 +227,43 @@ async function lateDeposits(userId, months) {
   }
 }
 
+// Unaccounted shortages. Only the ones a manager RESOLVED as cash that cannot
+// be accounted for ever get here - an unlogged expense or a typo closed the row
+// on the reconciliation board and is none of the employee file's business.
+// Wrapped for the same reason as the late one.
+async function unaccountedShortages(userId, months) {
+  months = months || 12;
+  try {
+    const r = await pool.query(
+      'SELECT id, period_start, gap_amount, note, resolved_by_name ' +
+      "FROM deposit_shortages WHERE user_id = $1 AND counts = true AND period_start > CURRENT_DATE - ($2 || ' months')::interval " +
+      'ORDER BY period_start DESC LIMIT 50',
+      [userId, String(months)]
+    );
+    var total = 0;
+    var list = r.rows.map(function (x) {
+      total += Number(x.gap_amount || 0);
+      return {
+        id: x.id, period_start: dstr(x.period_start), amount: Number(x.gap_amount || 0),
+        note: x.note, resolved_by: x.resolved_by_name
+      };
+    });
+    return { available: true, months: months, count: list.length, total: Math.round(total * 100) / 100, shortages: list };
+  } catch (e) {
+    return { available: false, months: months, count: 0, total: 0, shortages: [] };
+  }
+}
+
+function shortageText(sh) {
+  if (!sh || !sh.count) return '';
+  var lines = sh.shortages.slice(0, 8).map(function (x) {
+    return 'Pay week beginning ' + x.period_start + ': $' + x.amount.toFixed(2) +
+      (x.note ? ' - ' + x.note : '');
+  });
+  return sh.count + ' pay week' + (sh.count === 1 ? '' : 's') + ' in the last ' + sh.months +
+    ' months where cash could not be accounted for, totalling $' + sh.total.toFixed(2) + '.\n' + lines.join('\n');
+}
+
 // The sentence a manager would otherwise have to assemble by hand. Facts only:
 // dates, count, and any reasons that were typed at the time. No adjectives -
 // the wording check would flag them anyway, and rightly.
@@ -448,9 +485,12 @@ router.get('/employee/:id', requireAuth, requirePermission('view_employee_record
 
     var sup = u.supervisor_id ? await userRow(u.supervisor_id) : null;
     var late = await lateDeposits(target, 12);
+    var shorts = await unaccountedShortages(target, 12);
     res.json({
       late_deposits: { count: late.count, months: late.months, available: late.available, by_month: late.by_month || [] },
       late_deposit_text: lateDepositText(u.name, late),
+      shortages: { count: shorts.count, total: shorts.total, months: shorts.months, available: shorts.available },
+      shortage_text: shortageText(shorts),
       user: {
         id: u.id, name: u.name, role: u.role, home_city: u.home_city,
         email: u.email || null, has_email: !!u.email,
@@ -1112,6 +1152,25 @@ router.get('/employee/:id/late-deposits', requireAuth, requirePermission('view_e
   } catch (e) {
     console.error('[employee-records] late deposits failed:', e);
     res.status(500).json({ error: 'Could not load the late deposits.' });
+  }
+});
+
+// The unaccounted shortages behind the count, plus the sentence that would go
+// on a record. Same shape and the same scoping as the late-deposit drill-down.
+router.get('/employee/:id/shortages', requireAuth, requirePermission('view_employee_records'), async (req, res) => {
+  try {
+    var target = parseInt(req.params.id, 10) || 0;
+    if (!isAdminLike(req.user) && !(await inScope(req.user, target))) {
+      return res.status(403).json({ error: 'Not permitted.' });
+    }
+    var u = await userRow(target);
+    if (!u) return res.status(404).json({ error: 'Not found.' });
+    var months = Math.min(Math.max(parseInt(req.query.months, 10) || 12, 1), 60);
+    var sh = await unaccountedShortages(target, months);
+    res.json({ user: { id: u.id, name: u.name }, shortages: sh, suggested_text: shortageText(sh) });
+  } catch (e) {
+    console.error('[employee-records] shortages failed:', e);
+    res.status(500).json({ error: 'Could not load the shortages.' });
   }
 });
 

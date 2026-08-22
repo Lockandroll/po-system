@@ -509,6 +509,28 @@ router.get('/reconciliation', requireAuth, requirePermission('view_deposits'), m
       return s;
     });
 
+    // Any shortage already explained for this pay week, so the board shows the
+    // answer rather than asking again. Wrapped: a deployment where the
+    // deposit_shortages migration has not landed must not take the board down.
+    try {
+      var sh = await pool.query(
+        'SELECT id, user_id, reason, counts, note, gap_amount, resolved_by_name, resolved_at ' +
+        'FROM deposit_shortages WHERE period_start = $1',
+        [periodStart]
+      );
+      var shByUser = {};
+      sh.rows.forEach(function (x) { shByUser[x.user_id] = x; });
+      rows.forEach(function (r) {
+        var x = r.user_id ? shByUser[r.user_id] : null;
+        r.shortage = x ? {
+          id: x.id, reason: x.reason, counts: !!x.counts, note: x.note,
+          gap_amount: Number(x.gap_amount), by: x.resolved_by_name
+        } : null;
+      });
+    } catch (e) {
+      rows.forEach(function (r) { r.shortage = null; });
+    }
+
     var order = { no_deposit: 0, unlinked: 1, short: 2, over: 3, typo: 4, no_pulsar: 5, match: 6 };
     rows.sort(function (a, b) {
       var d = (order[a.status] || 9) - (order[b.status] || 9);
