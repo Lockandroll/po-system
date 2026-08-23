@@ -48,7 +48,7 @@ function sliceRegion(from, to, label) {
 
 const STAFF = sliceRegion('var QUOTE_STATUSES = {', '// ===== Quote photos', 'staff-side quote approval');
 const PUBLIC = sliceRegion('var qaData = null;', '// ----- Public signing page (no login) -----', 'customer approval page');
-const HELPERS = ['escHtml', 'formatDate', 'formatDateTime', 'timeAgo', 'resolveTokens', 'quoteAgo', 'quoteRowActivityHtml'].map(sliceFunction).join('\n');
+const HELPERS = ['escHtml', 'formatDate', 'formatDateTime', 'timeAgo', 'resolveTokens', 'quoteValidDate', 'ymdPlusDays', 'quoteAgo', 'quoteRowActivityHtml'].map(sliceFunction).join('\n');
 
 const sandbox = {
   console: console,
@@ -119,8 +119,8 @@ b = sandbox.quoteStatusBannerHtml({ status: 'declined', approver_name: 'D H', de
 has('a declined quote with no reason says so', b, 'No reason given');
 b = sandbox.quoteStatusBannerHtml({ status: 'changes_requested' });
 has('changes banner warns that editing voids the link', b, 'void their link');
-b = sandbox.quoteStatusBannerHtml({ status: 'expired' });
-has('expired banner tells you what to do', b, 're-send');
+b = sandbox.quoteStatusBannerHtml({ status: 'expired', valid_until: '2026-08-01' });
+has('expired banner tells you what to do', b, 'Change date');
 // Customer-supplied text must be escaped everywhere it lands.
 b = sandbox.quoteStatusBannerHtml({ status: 'declined', approver_name: '<img src=x onerror=alert(1)>', decline_reason: '<script>bad()</script>', responded_at: new Date() });
 lacks('a hostile approver name is escaped', b, '<img src=x');
@@ -249,6 +249,74 @@ has('a changes request shows the message', T({ event_type: 'changes_requested', 
 has('a void caused by an edit says so', T({ event_type: 'link_voided', actor_name: 'Tony', details: { reason: 'edited' } }), 'quote was edited');
 has('an unknown event still renders', T({ event_type: 'some_new_thing', details: {} }), 'some new thing');
 lacks('a hostile event message is escaped', T({ event_type: 'changes_requested', details: { message: '<script>x</script>' } }), '<script>');
+
+section('The valid-through date');
+
+// {default_date} used to be "today + 30, computed right now", so the same quote
+// claimed a different date every day it was opened and could never lapse.
+const TERMS = 'This proposal is valid until {default_date}. Any major changes to the cost of parts will be discussed.';
+eq('the token resolves to the quote\'s own date', sandbox.resolveTokens(TERMS, '2026-09-22').indexOf('valid until 09/22/2026') !== -1, true);
+eq('a date-only string works', sandbox.quoteValidDate('2026-09-22'), '09/22/2026');
+eq('an ISO timestamp is trimmed to its day', sandbox.quoteValidDate('2026-09-22T00:00:00.000Z'), '09/22/2026');
+eq('a missing date yields null', sandbox.quoteValidDate(null), null);
+eq('junk yields null', sandbox.quoteValidDate('next tuesday'), null);
+// A quote with no date must not have a promise invented for it.
+eq('with no date the token is left visible, not guessed', sandbox.resolveTokens(TERMS, null), TERMS);
+eq('and the same for junk', sandbox.resolveTokens(TERMS, 'whenever'), TERMS);
+eq('empty text is passed through', sandbox.resolveTokens('', '2026-09-22'), '');
+
+// The old bug, asserted directly: two renders of the same quote must agree.
+const r1 = sandbox.resolveTokens(TERMS, '2026-09-22');
+const r2 = sandbox.resolveTokens(TERMS, '2026-09-22');
+eq('the same quote always renders the same date', r1, r2);
+lacks('and it is not derived from today', sandbox.resolveTokens(TERMS, '2020-01-05'), String(new Date().getFullYear() + 1));
+has('a date in the past renders as the past', sandbox.resolveTokens(TERMS, '2020-01-05'), '01/05/2020');
+
+// The date input helper the editor and send dialog both prefill from.
+ok('ymdPlusDays returns an input-ready date', /^\d{4}-\d{2}-\d{2}$/.test(sandbox.ymdPlusDays(30)), sandbox.ymdPlusDays(30));
+ok('30 days out is later than today', sandbox.ymdPlusDays(30) > sandbox.ymdPlusDays(0));
+ok('and 0 is today', sandbox.ymdPlusDays(0) === sandbox.ymdPlusDays());
+
+section('Past its date, but still answerable');
+let pb = sandbox.quoteStatusBannerHtml({ status: 'expired', valid_until: '2026-08-01' });
+has('the banner no longer claims the link is dead', pb, 'still works');
+has('and names the date it was good through', pb, '08/01/2026');
+lacks('and never says "expired link"', pb.toLowerCase(), 'link expired');
+eq('the pill reads as a date, not a dead end', sandbox.quoteStatusPill('expired').indexOf('Past valid date') !== -1, true);
+has('the row hint says the link still works', sandbox.quoteRowActivityHtml({ status: 'expired' }), 'link still works');
+
+section('A late approval is flagged');
+let ab = sandbox.quoteStatusBannerHtml({ status: 'approved', approver_name: 'Danielle Harlow', approved_total: 2486.4, responded_at: new Date(), approved_late_days: 12 });
+has('the banner shows the customer PO', sandbox.quoteStatusBannerHtml({ status: 'approved', approver_name: 'D H', approved_total: 1, responded_at: new Date(), customer_po_number: 'PO-4500123987' }), 'PO-4500123987');
+has('and their note', sandbox.quoteStatusBannerHtml({ status: 'approved', approver_name: 'D H', approved_total: 1, responded_at: new Date(), customer_approval_notes: 'Gate code is 4412' }), 'Gate code is 4412');
+lacks('a hostile note is escaped on the banner', sandbox.quoteStatusBannerHtml({ status: 'approved', approver_name: 'D H', approved_total: 1, responded_at: new Date(), customer_approval_notes: '<script>x</script>' }), '<script>');
+has('the trail shows the PO', sandbox.quoteEventText({ event_type: 'approved', actor_name: 'D H', details: { total: 1, po_number: 'PO-99' } }), 'Their PO PO-99');
+has('an edit while the customer is looking is on the trail', sandbox.quoteEventText({ event_type: 'edited_while_out', actor_name: 'Tony', details: {} }), 'their link still works');
+has('the banner says how many days late', ab, '12 days past its valid date');
+has('and tells you to re-check pricing', ab, 'Check the pricing still works');
+let ok1 = sandbox.quoteStatusBannerHtml({ status: 'approved', approver_name: 'D H', approved_total: 100, responded_at: new Date(), approved_late_days: null });
+lacks('an on-time approval says nothing about lateness', ok1, 'past its valid date');
+has('one day late is singular', sandbox.quoteStatusBannerHtml({ status: 'approved', approver_name: 'D H', approved_total: 1, responded_at: new Date(), approved_late_days: 1 }), '1 day past');
+has('the trail flags a late approval', sandbox.quoteEventText({ event_type: 'approved', actor_name: 'D H', details: { total: 1, late_days: 12 } }), '12 days past its valid date');
+lacks('and not an on-time one', sandbox.quoteEventText({ event_type: 'approved', actor_name: 'D H', details: { total: 1 } }), 'past its valid date');
+has('a date change is on the trail', sandbox.quoteEventText({ event_type: 'valid_until_changed', actor_name: 'Tony', details: { from: '2026-08-01', to: '2026-09-30', extended: true } }), 'extended to 09/30/2026');
+has('and says where it moved from', sandbox.quoteEventText({ event_type: 'valid_until_changed', actor_name: 'Tony', details: { from: '2026-08-01', to: '2026-09-30', extended: true } }), 'from 08/01/2026');
+has('shortening reads as changed, not extended', sandbox.quoteEventText({ event_type: 'valid_until_changed', actor_name: 'Tony', details: { from: '2026-09-30', to: '2026-08-01', extended: false } }), 'changed to');
+
+section('Editing no longer voids, so the page guards the total instead');
+has('the approve dialog asks for their PO number', String(sandbox.qaOpenApprove), 'qa-po');
+has('and for a note', String(sandbox.qaOpenApprove), 'qa-anote');
+has('the PO field explains why it is worth filling in', String(sandbox.qaOpenApprove), 'on the invoice');
+has('the submit sends the fingerprint it rendered', String(sandbox.qaSubmitApprove), 'seen_version');
+has('and reads it off the payload the page drew', String(sandbox.qaSubmitApprove), 'qaData && qaData.version');
+has('a changed quote reloads instead of approving', String(sandbox.qaSubmitApprove), 'quote_changed');
+has('and says so in the customer\'s words', String(sandbox.qaSubmitApprove), 'updated since you opened it');
+has('the receipt shows their PO back to them', String(sandbox.qaReceiptHtml), 'customer_po_number');
+
+section('The customer page offers approve or ask');
+ok('the decline dialog is gone from the build', typeof sandbox.qaOpenDecline === 'undefined');
+ok('approve is still there', typeof sandbox.qaOpenApprove === 'function');
+ok('and ask a question is still there', typeof sandbox.qaOpenMessage === 'function');
 
 console.log('\n' + '-'.repeat(60));
 console.log(PASS + ' passed, ' + FAIL + ' failed');

@@ -68,6 +68,26 @@ function quoteTotals(items, taxRate) {
   return { subtotal: subtotal, tax_rate: rate, tax_amount: tax, total: subtotal + tax };
 }
 
+// A fingerprint of everything the customer can actually SEE. Editing a sent
+// quote no longer voids their link, so this is what stops somebody approving a
+// total that moved while their page was open: the page sends back the version it
+// rendered, and an approval whose version no longer matches is refused.
+//
+// Deliberately built from the visible fields rather than updated_at, because
+// updated_at also moves on things the customer never sees (a status flip to
+// 'viewed'), which would reject approvals for no reason.
+function quoteVersion(quote, items) {
+  const t = quoteTotals(items, quote.tax_rate);
+  const material = JSON.stringify([
+    t.total.toFixed(2), t.tax_amount.toFixed(2), t.tax_rate,
+    ymd(quote.valid_until), quote.customer_name || '', quote.notes || '', quote.important_info || '',
+    (items || []).map(function (i) {
+      return [i.description, String(i.quantity), String(i.list_price), !!i.taxable].join('\x1f');
+    })
+  ]);
+  return crypto.createHash('sha1').update(material).digest('hex').slice(0, 16);
+}
+
 // The ONLY shape that ever reaches a customer. A whitelist, never SELECT *.
 //
 // Deliberately absent: unit_price (OUR COST), item_number, manufacturer, url,
@@ -79,6 +99,7 @@ function publicQuotePayload(quote, items, settings) {
   return {
     quote_number: quote.quote_number,
     status: quote.status,
+    version: quoteVersion(quote, items),
     customer_name: quote.customer_name,
     customer_street: quote.customer_street,
     customer_city: quote.customer_city,
@@ -88,13 +109,16 @@ function publicQuotePayload(quote, items, settings) {
     customer_email: quote.customer_email,
     notes: quote.notes,
     important_info: quote.important_info,
-    message: quote.customer_message,
     created_at: quote.created_at,
     sent_at: quote.sent_at,
-    expires_at: quote.token_expires_at,
+    valid_until: ymd(quote.valid_until),
+    days_past_valid: daysPast(quote.valid_until),
+
     responded_at: quote.responded_at,
     approver_name: quote.approver_name,
     approver_title: quote.approver_title,
+    customer_po_number: quote.customer_po_number,
+    customer_approval_notes: quote.customer_approval_notes,
     approved_total: quote.approved_total == null ? null : parseFloat(quote.approved_total),
     decline_reason: quote.decline_reason,
     prepared_by: { name: quote.requester_name || null, email: quote.requester_email || null, phone: quote.requester_phone || null },
@@ -132,6 +156,63 @@ async function publicCompanySettings() {
 // the SMS, the approval page and the email sender's display name, so a franchise
 // name change is not a code edit. Internal Nova notifications are untouched -
 // they keep using emailTemplate's own default.
+// The quote's valid-until date, as a plain YYYY-MM-DD calendar day. Everything
+// customer-facing reads this one value, so the printed terms, the email, the
+// approval page and the {default_date} token can never disagree.
+//
+// It does NOT gate the approval link. Tony's call: the date is a promise about
+// pricing, not a lock on the door - a customer who comes back late should be
+// able to say yes and have somebody call them, rather than hit a dead end.
+const DEFAULT_VALID_DAYS = 30;
+
+// A DATE column comes back from node-pg as a JS Date at LOCAL midnight (Nova's
+// db.js sets no type parser). The calendar day must therefore be read with the
+// LOCAL getters. Formatting it in another timezone shifts it a day and turns
+// "valid through Sep 22" into Sep 21 on the customer's quote. See the pg DATE
+// gotcha: never String(dateObj).slice(0, 10) either, that drops the year.
+function ymd(d) {
+  if (!d) return null;
+  if (typeof d === 'string') return /^\d{4}-\d{2}-\d{2}/.test(d) ? d.slice(0, 10) : null;
+  const x = (d instanceof Date) ? d : new Date(d);
+  if (isNaN(x.getTime())) return null;
+  return x.getFullYear() + '-' + String(x.getMonth() + 1).padStart(2, '0') + '-' + String(x.getDate()).padStart(2, '0');
+}
+
+// "Today" is a real instant rather than a stored calendar day, so unlike ymd()
+// it IS timezone sensitive: a quote good through Aug 23 is still good at 8pm in
+// Atlanta even though UTC has already rolled over to the 24th.
+function todayYmd() {
+  return new Intl.DateTimeFormat('en-CA', { timeZone: 'America/New_York', year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date());
+}
+function prettyDate(d) {
+  const v = ymd(d);
+  if (!v) return null;
+  return new Date(v + 'T12:00:00Z').toLocaleDateString('en-US', { timeZone: 'UTC', month: 'short', day: 'numeric', year: 'numeric' });
+}
+
+// Accepts 'YYYY-MM-DD' only. Anything else is treated as "not supplied" rather
+// than guessed at, because a mis-parsed date here becomes a promise to a customer.
+function normValidUntil(v) {
+  if (v == null || v === '') return null;
+  const str = String(v).slice(0, 10);
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(str)) return null;
+  const d = new Date(str + 'T12:00:00Z');
+  return isNaN(d.getTime()) ? null : str;
+}
+function defaultValidUntil() {
+  const d = new Date(Date.now() + DEFAULT_VALID_DAYS * 86400000);
+  return ymd(d);
+}
+// Whole days a quote is past its date. 0 means still current.
+function daysPast(validUntil) {
+  const vu = ymd(validUntil);
+  if (!vu) return 0;
+  const a = Date.parse(vu + 'T00:00:00Z');
+  const b = Date.parse(todayYmd() + 'T00:00:00Z');
+  return Math.max(0, Math.round((b - a) / 86400000));
+}
+function isPastValid(validUntil) { return daysPast(validUntil) > 0; }
+
 const DEFAULT_BRAND = 'Lock and Roll LLC';
 async function customerBrand() {
   try {
@@ -151,8 +232,7 @@ function quoteFromAddress(brand) {
   if (process.env.QUOTE_FROM_EMAIL) return process.env.QUOTE_FROM_EMAIL;
   const base = process.env.FROM_EMAIL || '';
   const m = base.match(/<([^>]+)>/);
-  const addr = m ? m[1] : base.trim();
-  if (!addr) return undefined;
+  const addr = (m ? m[1] : base.trim()) || 'onboarding@resend.dev';
   return brand + ' <' + addr + '>';
 }
 
@@ -197,9 +277,7 @@ function quoteSmsVars(quote, items, brand) {
     total: '$' + t.total.toFixed(2),
     link: quoteLink(quote.approval_token),
     prepared_by: quote.requester_name || brand,
-    expires: quote.token_expires_at
-      ? new Date(quote.token_expires_at).toLocaleDateString('en-US', { timeZone: 'America/New_York', month: 'short', day: 'numeric', year: 'numeric' })
-      : ''
+    expires: prettyDate(quote.valid_until) || ''
   };
 }
 
@@ -215,9 +293,11 @@ async function loadByToken(token) {
   if (!rows.length) return null;
   const quote = rows[0];
   const { rows: items } = await pool.query('SELECT * FROM quote_line_items WHERE quote_id = $1 ORDER BY id', [quote.id]);
-  var expired = quote.status === 'expired' ||
-    (!isAnswered(quote.status) && quote.token_expires_at && new Date(quote.token_expires_at) < new Date());
-  return { quote: quote, items: items, expired: expired };
+  // Past its date, but NOT a gate. Tony's call: a customer who comes back late
+  // should be able to say yes and have somebody call them, not hit a dead end.
+  // The link stays live; the page says the pricing was good through X and the
+  // approval is flagged as late to the people who have to honour it.
+  return { quote: quote, items: items, pastValid: isPastValid(quote.valid_until) };
 }
 
 function getInitials(name) {
@@ -401,8 +481,8 @@ router.post('/', requireAuth, requirePermission('create_quote'), async (req, res
     try {
       await client.query('BEGIN');
       const { rows } = await client.query(
-        'INSERT INTO quotes (quote_number, requester_id, customer_name, city_code, notes, important_info, tax_rate, tax_amount, total_amount, customer_street, customer_city, customer_state, customer_zip, customer_phone, customer_email) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15) RETURNING *',
-        [quote_number, req.user.id, customer_name, city_code || null, notes || null, important_info || null, taxRateVal, tax_amount, total, cc.customer_street, cc.customer_city, cc.customer_state, cc.customer_zip, cc.customer_phone, cc.customer_email]
+        'INSERT INTO quotes (quote_number, requester_id, customer_name, city_code, notes, important_info, tax_rate, tax_amount, total_amount, customer_street, customer_city, customer_state, customer_zip, customer_phone, customer_email, valid_until) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16) RETURNING *',
+        [quote_number, req.user.id, customer_name, city_code || null, notes || null, important_info || null, taxRateVal, tax_amount, total, cc.customer_street, cc.customer_city, cc.customer_state, cc.customer_zip, cc.customer_phone, cc.customer_email, normValidUntil(req.body.valid_until) || defaultValidUntil()]
       );
       const quote = rows[0];
       for (const item of (line_items || [])) {
@@ -462,18 +542,12 @@ router.put('/:id', requireAuth, requirePermission('edit_quote'), async (req, res
     if (req.user.role !== 'admin' && quote.requester_id !== req.user.id) {
       return res.status(403).json({ error: 'Access denied' });
     }
-    // A sent quote is read-only. The customer may have the page open right now,
-    // so the numbers must not move under them. Editing is still allowed, but it
-    // is an explicit act that VOIDS the link they were sent - the frontend turns
-    // this 409 into the "this will void the link you sent <name>" confirm.
-    if (isOut(quote.status) && !req.body.confirm_void) {
-      return res.status(409).json({
-        error: 'quote_is_out',
-        status: quote.status,
-        sent_to: quote.sent_to || quote.customer_email || null,
-        message: 'This quote has already been sent to the customer. Editing it will void the link they were sent and put the quote back in draft.'
-      });
-    }
+    // Editing a sent quote is allowed and does NOT void the customer's link.
+    // Tony's call. The hazard it used to guard against - a customer approving a
+    // total that moved while their page was open - is handled at the point of
+    // approval instead: the page sends back a fingerprint of what it displayed,
+    // and an approval whose fingerprint no longer matches is refused and the page
+    // reloaded. See quoteVersion() and POST /:token/approve.
     const { customer_name, city_code, notes, important_info, tax_rate, line_items } = req.body;
     const cc = pickCustomerContact(req.body);
     if (!customer_name) return res.status(400).json({ error: 'Customer name is required' });
@@ -495,19 +569,9 @@ router.put('/:id', requireAuth, requirePermission('edit_quote'), async (req, res
     try {
       await client.query('BEGIN');
       await client.query(
-        'UPDATE quotes SET customer_name=$1, city_code=$2, notes=$3, important_info=$4, tax_rate=$5, tax_amount=$6, total_amount=$7, customer_street=$8, customer_city=$9, customer_state=$10, customer_zip=$11, customer_phone=$12, customer_email=$13, updated_at=NOW() WHERE id=$14',
-        [customer_name, city_code || null, notes || null, important_info || null, taxRateVal, tax_amount, total, cc.customer_street, cc.customer_city, cc.customer_state, cc.customer_zip, cc.customer_phone, cc.customer_email, req.params.id]
+        'UPDATE quotes SET customer_name=$1, city_code=$2, notes=$3, important_info=$4, tax_rate=$5, tax_amount=$6, total_amount=$7, customer_street=$8, customer_city=$9, customer_state=$10, customer_zip=$11, customer_phone=$12, customer_email=$13, valid_until=COALESCE($14::date, valid_until), updated_at=NOW() WHERE id=$15',
+        [customer_name, city_code || null, notes || null, important_info || null, taxRateVal, tax_amount, total, cc.customer_street, cc.customer_city, cc.customer_state, cc.customer_zip, cc.customer_phone, cc.customer_email, normValidUntil(req.body.valid_until), req.params.id]
       );
-      // Voiding happens in the SAME transaction as the edit, so a quote can never
-      // end up edited but still reachable on the old link.
-      if (isOut(quote.status)) {
-        await client.query(
-          "UPDATE quotes SET status = 'draft', approval_token = NULL, token_expires_at = NULL, " +
-          'sent_at = NULL, sent_to = NULL, first_viewed_at = NULL, last_reminded_at = NULL, reminder_count = 0 ' +
-          'WHERE id = $1',
-          [req.params.id]
-        );
-      }
       await client.query('DELETE FROM quote_line_items WHERE quote_id = $1', [req.params.id]);
       for (const item of (line_items || [])) {
         await client.query(
@@ -517,11 +581,12 @@ router.put('/:id', requireAuth, requirePermission('edit_quote'), async (req, res
       }
       await client.query('COMMIT');
       await logAudit({ entity_type: 'quote', entity_id: parseInt(req.params.id), entity_number: quote.quote_number, action: 'edited', user_id: req.user.id, user_name: req.user.name });
+      // The customer's link survives the edit, so the trail records that what they
+      // are looking at just changed under them.
       if (isOut(quote.status)) {
-        await logQuoteEvent(parseInt(req.params.id), 'link_voided', { actorName: req.user.name, req: req, details: { was: quote.status, reason: 'edited' } });
-        try { await logAudit({ entity_type: 'quote', entity_id: parseInt(req.params.id), entity_number: quote.quote_number, action: 'customer_link_voided', user_id: req.user.id, user_name: req.user.name, details: { was: quote.status } }); } catch (e) {}
+        await logQuoteEvent(parseInt(req.params.id), 'edited_while_out', { actorName: req.user.name, req: req, details: { status: quote.status } });
       }
-      res.json({ success: true, id: parseInt(req.params.id), voided: isOut(quote.status) });
+      res.json({ success: true, id: parseInt(req.params.id), voided: false });
     } catch (err) {
       await client.query('ROLLBACK');
       throw err;
@@ -781,9 +846,7 @@ async function sendQuoteEmail(quote, items, opts) {
   var brand = o.brand || await customerBrand();
   var link = quoteLink(quote.approval_token);
   var t = quoteTotals(items, quote.tax_rate);
-  var validThrough = quote.token_expires_at
-    ? new Date(quote.token_expires_at).toLocaleDateString('en-US', { timeZone: 'America/New_York', month: 'short', day: 'numeric', year: 'numeric' })
-    : null;
+  var validThrough = prettyDate(quote.valid_until);
   var greeting = 'Hi ' + (quote.customer_name || 'there') + ',';
   var intro = o.reminder
     ? 'Just a friendly reminder that your quote from ' + brand + ' is still waiting for your review.'
@@ -841,20 +904,34 @@ router.post('/:id/send', requireAuth, requirePermission('send_quote'), async (re
     const { rows: items } = await pool.query('SELECT * FROM quote_line_items WHERE quote_id = $1 ORDER BY id', [req.params.id]);
     if (!items.length) return res.status(400).json({ error: 'This quote has no line items yet.' });
 
-    // 1..365 days, defaulting to 30. The value doubles as the "valid through"
-    // line the customer sees, so it is a business promise, not just a timer.
-    var days = parseInt(req.body.expires_days, 10);
-    if (!Number.isFinite(days) || days < 1 || days > 365) days = 30;
-    const expires = new Date(Date.now() + days * 86400000);
+    // The window is the QUOTE's valid_until, never a separate number picked at
+    // send time - that split is exactly what let the printed terms and the
+    // approval page disagree. The dialog may pass a new date, which updates the
+    // quote itself so both keep reading the same value.
+    const vu = normValidUntil(req.body.valid_until) || ymd(quote.valid_until) || defaultValidUntil();
+    const late = daysPast(vu);
+    // Sending an already-stale quote is allowed - the tech may well intend to
+    // honour it - but never silently. The frontend turns this into a confirm.
+    if (late > 0 && !req.body.confirm_stale) {
+      return res.status(409).json({
+        error: 'past_valid_until',
+        valid_until: vu,
+        days_past: late,
+        message: 'This quote was only good through ' + vu + ', which was ' + late + ' day' + (late === 1 ? '' : 's') +
+          ' ago. You can still send it and the customer can still approve, but the price you quoted may no longer work.'
+      });
+    }
+    // Kept as a record of what was promised. It does NOT gate the link.
+    const expires = new Date(vu + 'T23:59:59Z');
     const token = newApprovalToken();
 
     const upd = await pool.query(
-      "UPDATE quotes SET status = 'sent', approval_token = $1, token_expires_at = $2, sent_at = NOW(), sent_to = $3, " +
+      "UPDATE quotes SET status = 'sent', approval_token = $1, token_expires_at = $2, valid_until = $8::date, sent_at = NOW(), sent_to = $3, " +
       'sent_by = $4, customer_message = $5, customer_email = COALESCE(NULLIF($6, \'\'), customer_email), ' +
       'first_viewed_at = NULL, responded_at = NULL, approver_name = NULL, approver_title = NULL, approver_ip = NULL, ' +
-      'approved_total = NULL, signature_data = NULL, decline_reason = NULL, last_reminded_at = NULL, reminder_count = 0, ' +
+      'approved_total = NULL, signature_data = NULL, decline_reason = NULL, approved_late_days = NULL, last_reminded_at = NULL, reminder_count = 0, ' +
       'updated_at = NOW() WHERE id = $7 RETURNING *',
-      [token, expires, to, req.user.id, message, to, req.params.id]
+      [token, expires, to, req.user.id, message, to, req.params.id, vu]
     );
     const sent = Object.assign({}, upd.rows[0], { requester_name: quote.requester_name, requester_email: quote.requester_email });
 
@@ -867,10 +944,10 @@ router.post('/:id/send', requireAuth, requirePermission('send_quote'), async (re
       catch (e) { console.error('[quotes] customer SMS failed:', e.message); }
     }
 
-    await logQuoteEvent(quote.id, 'sent', { actorName: req.user.name, req: req, details: { to: to, sms: sms || null, expires_days: days, emailed: emailed } });
+    await logQuoteEvent(quote.id, 'sent', { actorName: req.user.name, req: req, details: { to: to, sms: sms || null, valid_until: vu, sent_stale_days: late > 0 ? late : null, emailed: emailed } });
     try { await logAudit({ entity_type: 'quote', entity_id: quote.id, entity_number: quote.quote_number, action: 'sent_to_customer', user_id: req.user.id, user_name: req.user.name, details: { to: to } }); } catch (e) {}
 
-    res.json({ success: true, emailed: emailed, link: quoteLink(token), expires_at: expires });
+    res.json({ success: true, emailed: emailed, link: quoteLink(token), valid_until: vu });
   } catch (err) {
     console.error('Quote send error:', err);
     res.status(500).json({ error: 'Failed to send quote' });
@@ -958,6 +1035,45 @@ router.post('/sms-preview', requireAuth, requirePermission('manage_settings'), a
   }
 });
 
+// POST /:id/valid-until - move the date WITHOUT voiding the customer's link.
+//
+// Tony's call: a date change never voids. Editing anything else still does,
+// because prices moving under an open page is the thing the read-only rule
+// exists to stop - but the valid-through date is a promise about how long that
+// price stands, and re-issuing a link just to say "you have another week" is
+// friction on a friendly gesture.
+router.post('/:id/valid-until', requireAuth, requirePermission('edit_quote'), async (req, res) => {
+  try {
+    const { rows } = await pool.query('SELECT * FROM quotes WHERE id = $1', [req.params.id]);
+    if (!rows.length) return res.status(404).json({ error: 'Quote not found' });
+    const quote = rows[0];
+    if (!canAccessQuote(req.user, quote)) return res.status(403).json({ error: 'Access denied' });
+
+    const next = normValidUntil(req.body.valid_until);
+    if (!next) return res.status(400).json({ error: 'Give a date as YYYY-MM-DD.' });
+    const prev = ymd(quote.valid_until);
+    if (next === prev) return res.json({ success: true, valid_until: next, unchanged: true });
+
+    // token_expires_at is kept in step purely as a record of what was promised.
+    await pool.query(
+      "UPDATE quotes SET valid_until = $1::date, token_expires_at = CASE WHEN approval_token IS NULL THEN token_expires_at ELSE ($1 || ' 23:59:59')::timestamp END, updated_at = NOW() WHERE id = $2",
+      [next, req.params.id]
+    );
+    // A quote that had lapsed and has been given a new date is waiting again.
+    if (quote.status === 'expired' && !isPastValid(next)) {
+      await pool.query("UPDATE quotes SET status = CASE WHEN first_viewed_at IS NULL THEN 'sent' ELSE 'viewed' END WHERE id = $1", [req.params.id]);
+    }
+    await logQuoteEvent(quote.id, 'valid_until_changed', {
+      actorName: req.user.name, req: req, details: { from: prev, to: next, extended: !prev || next > prev }
+    });
+    try { await logAudit({ entity_type: 'quote', entity_id: quote.id, entity_number: quote.quote_number, action: 'valid_until_changed', user_id: req.user.id, user_name: req.user.name, details: { from: prev, to: next } }); } catch (e) {}
+    res.json({ success: true, valid_until: next, voided: false });
+  } catch (err) {
+    console.error('Quote valid-until error:', err);
+    res.status(500).json({ error: 'Failed to change the date' });
+  }
+});
+
 // GET /:id/events - the customer-facing activity trail for one quote.
 router.get('/:id/events', requireAuth, requirePermission('view_quotes'), async (req, res) => {
   try {
@@ -1003,25 +1119,40 @@ async function notifyDecision(quote, kind, extra) {
     } catch (e) {}
 
     const amount = quote.approved_total != null ? ('$' + parseFloat(quote.approved_total).toFixed(2)) : null;
-    try { await push.sendPushToUsers(userIds, { title: 'Quote ' + label, body: who + ' ' + label + ' ' + quote.quote_number + (amount ? (' - ' + amount) : ''), url: '/' }); } catch (e) {}
+    const late = quote.approved_late_days || 0;
+    const lateLine = late > 0
+      ? 'This landed <strong>' + late + ' day' + (late === 1 ? '' : 's') + ' after the quote\'s valid-through date</strong> of ' +
+        (ymd(quote.valid_until) || 'unknown') + '. Check the pricing still works before you order anything.'
+      : '';
+    try {
+      await push.sendPushToUsers(userIds, {
+        title: late > 0 ? 'LATE quote ' + label : 'Quote ' + label,
+        body: who + ' ' + label + ' ' + quote.quote_number + (amount ? (' - ' + amount) : '') + (late > 0 ? ' (' + late + 'd past its date)' : ''),
+        url: '/'
+      });
+    } catch (e) {}
 
     if (emails.length) {
       const html = emailTemplate({
-        badge: kind === 'approved' ? 'Approved' : (kind === 'declined' ? 'Declined' : 'Changes requested'),
-        badgeColor: kind === 'approved' ? 'green' : 'red',
+        badge: late > 0 ? 'Approved late' : (kind === 'approved' ? 'Approved' : (kind === 'declined' ? 'Declined' : 'Changes requested')),
+        badgeColor: late > 0 ? 'red' : (kind === 'approved' ? 'green' : 'red'),
         title: 'Quote ' + quote.quote_number + ' was ' + label,
-        body: '<strong>' + who + '</strong> ' + label + ' this quote.' + (extra ? ('<br><br>' + String(extra).replace(/[<>]/g, '')) : ''),
+        body: '<strong>' + who + '</strong> ' + label + ' this quote.' +
+          (lateLine ? ('<br><br>' + lateLine) : '') +
+          (quote.customer_approval_notes ? ('<br><br><strong>They added:</strong> ' + String(quote.customer_approval_notes).replace(/[<>]/g, '')) : '') +
+          (extra ? ('<br><br>' + String(extra).replace(/[<>]/g, '')) : ''),
         details: [
           { label: 'Quote number', value: quote.quote_number },
           { label: 'Customer', value: quote.customer_name || '-' },
           { label: 'Prepared by', value: quote.requester_name || '-' }
-        ].concat(amount ? [{ label: 'Approved total', value: amount }] : []),
+        ].concat(amount ? [{ label: 'Approved total', value: amount }] : [])
+         .concat(quote.customer_po_number ? [{ label: 'Their PO number', value: quote.customer_po_number }] : []),
         buttonText: 'Open the quote', buttonUrl: url
       });
-      await sendEmail(emails, 'Quote ' + quote.quote_number + ' ' + label + ' by ' + (quote.customer_name || 'the customer'), html);
+      await sendEmail(emails, (late > 0 ? 'LATE: ' : '') + 'Quote ' + quote.quote_number + ' ' + label + ' by ' + (quote.customer_name || 'the customer'), html);
     }
     if (phones.length) {
-      await sendSms(phones, 'Lock and Roll: ' + who + ' ' + label + ' quote ' + quote.quote_number + (amount ? (' (' + amount + ')') : '') + '. ' + url);
+      await sendSms(phones, 'Lock and Roll: ' + who + ' ' + label + ' quote ' + quote.quote_number + (amount ? (' (' + amount + ')') : '') + (late > 0 ? ' - ' + late + ' DAYS PAST its valid date, check pricing' : '') + '. ' + url);
     }
   } catch (e) { console.error('[quotes] decision notify failed:', e.message); }
 }
@@ -1037,17 +1168,12 @@ pub.get('/:token', async (req, res) => {
     if (!found) return res.status(404).json({ error: 'not_found' });
     const quote = found.quote;
 
-    if (found.expired) {
-      if (quote.status !== 'expired' && !isAnswered(quote.status)) {
-        await pool.query("UPDATE quotes SET status = 'expired', updated_at = NOW() WHERE id = $1", [quote.id]);
-        await logQuoteEvent(quote.id, 'expired', { req: req });
-      }
-      return res.status(410).json({
-        error: 'expired',
-        quote_number: quote.quote_number,
-        company: await publicCompanySettings(),
-        prepared_by: { name: quote.requester_name, email: quote.requester_email, phone: quote.requester_phone }
-      });
+    // A quote past its date still renders in full and stays answerable. The only
+    // difference is that the payload says so, so the page can be honest about it.
+    if (found.pastValid && quote.status !== 'expired' && !isAnswered(quote.status)) {
+      await pool.query("UPDATE quotes SET status = 'expired', updated_at = NOW() WHERE id = $1", [quote.id]);
+      quote.status = 'expired';
+      await logQuoteEvent(quote.id, 'expired', { req: req });
     }
 
     // First open flips sent -> viewed and tells the team. Later opens only add
@@ -1076,25 +1202,41 @@ pub.post('/:token/approve', async (req, res) => {
     const found = await loadByToken(req.params.token);
     if (!found) return res.status(404).json({ error: 'not_found' });
     const quote = found.quote;
-    if (found.expired) return res.status(410).json({ error: 'This quote has expired. Please ask for an updated one.' });
     if (isAnswered(quote.status)) return res.status(409).json({ error: 'already_answered', status: quote.status });
 
     const name = String(req.body.name || '').trim().slice(0, 255);
     const title = req.body.title ? String(req.body.title).trim().slice(0, 120) : null;
     const signature = req.body.signature ? String(req.body.signature).slice(0, 400000) : null;
+    const poNumber = req.body.po_number ? String(req.body.po_number).trim().slice(0, 100) : null;
+    const custNotes = req.body.notes ? String(req.body.notes).trim().slice(0, 4000) : null;
     if (name.length < 2) return res.status(400).json({ error: 'Please type your full name to approve.' });
     // The consent box is the part that carries weight; a click alone is not it.
     if (req.body.consent !== true) return res.status(400).json({ error: 'Please tick the authorization box to approve.' });
+
+    // The quote may have been edited while this page sat open. Refuse rather than
+    // bind somebody to a total they never saw, and hand back the current one so
+    // the page can show them what changed.
+    const currentVersion = quoteVersion(quote, found.items);
+    if (req.body.seen_version && req.body.seen_version !== currentVersion) {
+      return res.status(409).json({ error: 'quote_changed', version: currentVersion });
+    }
+    if (!req.body.seen_version) {
+      return res.status(400).json({ error: 'Please reload the page and try again.' });
+    }
 
     // Recomputed here, not taken from the browser. The customer approves the
     // number the server says the quote is worth.
     const t = quoteTotals(found.items, quote.tax_rate);
 
+    // How many days past the promised date this landed. Stored so the people who
+    // have to honour the price find out BEFORE they order parts, not after.
+    const lateDays = daysPast(quote.valid_until);
     const upd = await pool.query(
       "UPDATE quotes SET status = 'approved', responded_at = NOW(), approver_name = $1, approver_title = $2, " +
-      'approver_ip = $3, approved_total = $4, signature_data = $5, updated_at = NOW() ' +
-      "WHERE id = $6 AND status NOT IN ('approved','declined') RETURNING id",
-      [name, title, clientIp(req), t.total, signature, quote.id]
+      'approver_ip = $3, approved_total = $4, signature_data = $5, approved_late_days = $6, ' +
+      'customer_po_number = $7, customer_approval_notes = $8, updated_at = NOW() ' +
+      "WHERE id = $9 AND status NOT IN ('approved','declined') RETURNING id",
+      [name, title, clientIp(req), t.total, signature, lateDays > 0 ? lateDays : null, poNumber, custNotes, quote.id]
     );
     // Lost the race against another tab or a double tap: treat it as done, not an error.
     if (!upd.rows.length) return res.status(409).json({ error: 'already_answered' });
@@ -1103,11 +1245,14 @@ pub.post('/:token/approve', async (req, res) => {
     quote.approver_name = name;
     quote.approver_title = title;
     quote.approved_total = t.total;
-    await logQuoteEvent(quote.id, 'approved', { actorName: name, req: req, details: { title: title, total: t.total, signed: !!signature } });
+    quote.approved_late_days = lateDays > 0 ? lateDays : null;
+    quote.customer_po_number = poNumber;
+    quote.customer_approval_notes = custNotes;
+    await logQuoteEvent(quote.id, 'approved', { actorName: name, req: req, details: { title: title, total: t.total, signed: !!signature, late_days: lateDays > 0 ? lateDays : null, valid_until: ymd(quote.valid_until), po_number: poNumber, notes: custNotes } });
     try { await logAudit({ entity_type: 'quote', entity_id: quote.id, entity_number: quote.quote_number, action: 'approved_by_customer', user_id: null, user_name: name, details: { total: t.total, title: title } }); } catch (e) {}
     notifyDecision(quote, 'approved', null).catch(function () {});
 
-    res.json({ success: true, status: 'approved', approved_total: t.total, approver_name: name, responded_at: new Date() });
+    res.json({ success: true, status: 'approved', approved_total: t.total, approver_name: name, responded_at: new Date(), late_days: lateDays > 0 ? lateDays : 0, po_number: poNumber });
   } catch (err) {
     console.error('Quote approve error:', err);
     res.status(500).json({ error: 'Failed to record your approval' });
@@ -1120,7 +1265,6 @@ pub.post('/:token/decline', async (req, res) => {
     const found = await loadByToken(req.params.token);
     if (!found) return res.status(404).json({ error: 'not_found' });
     const quote = found.quote;
-    if (found.expired) return res.status(410).json({ error: 'This quote has expired.' });
     if (isAnswered(quote.status)) return res.status(409).json({ error: 'already_answered', status: quote.status });
 
     const name = String(req.body.name || quote.customer_name || '').trim().slice(0, 255);
@@ -1154,7 +1298,6 @@ pub.post('/:token/message', async (req, res) => {
     const found = await loadByToken(req.params.token);
     if (!found) return res.status(404).json({ error: 'not_found' });
     const quote = found.quote;
-    if (found.expired) return res.status(410).json({ error: 'This quote has expired.' });
     if (isAnswered(quote.status)) return res.status(409).json({ error: 'already_answered', status: quote.status });
 
     const message = String(req.body.message || '').trim().slice(0, 4000);

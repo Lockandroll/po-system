@@ -145,7 +145,21 @@ async function initDB() {
       'ALTER TABLE quotes ADD COLUMN IF NOT EXISTS approved_total DECIMAL(10,2);' +
       'ALTER TABLE quotes ADD COLUMN IF NOT EXISTS signature_data TEXT;' +
       'ALTER TABLE quotes ADD COLUMN IF NOT EXISTS customer_message TEXT;' +
-      'ALTER TABLE quotes ADD COLUMN IF NOT EXISTS decline_reason TEXT;'
+      'ALTER TABLE quotes ADD COLUMN IF NOT EXISTS decline_reason TEXT;' +
+      // The single date behind every "this proposal is valid until X" a customer
+      // ever sees: the {default_date} token, the approval page, the email and the
+      // printout all read THIS. Before it existed the token was computed as
+      // today+30 at RENDER time, so the same quote claimed a different date every
+      // day it was opened and could never actually lapse.
+      // Deliberately a DATE, not a timestamp: it is a business promise, not a
+      // deadline, and it does NOT gate the approval link.
+      'ALTER TABLE quotes ADD COLUMN IF NOT EXISTS valid_until DATE;' +
+      'ALTER TABLE quotes ADD COLUMN IF NOT EXISTS approved_late_days INTEGER;' +
+      // What the CUSTOMER supplies at the moment they approve. Their PO number
+      // is what their accounts payable will match our invoice against, so it is
+      // captured at the point they commit rather than chased down afterwards.
+      'ALTER TABLE quotes ADD COLUMN IF NOT EXISTS customer_po_number VARCHAR(100);' +
+      'ALTER TABLE quotes ADD COLUMN IF NOT EXISTS customer_approval_notes TEXT;'
     );
     // The customer-facing trail: every send, view, reminder and decision, with
     // the IP and user agent that produced it. Separate from audit_log because
@@ -164,6 +178,22 @@ async function initDB() {
     );
     // Idempotent and individually guarded. A failure here must never take down
     // initDB and with it every scheduled job - see the boot chain in server.js.
+    // One-time backfill. Legacy quotes have no valid_until, and their
+    // {default_date} used to render as "30 days from whenever you looked", so
+    // created_at + 30 days is the honest reading of what they promised. This
+    // makes an old quote correctly read as past its date instead of eternally
+    // valid. Guarded by a settings key and individually try/caught - a failure
+    // here must never take down initDB and with it every scheduled job.
+    try {
+      const _bf = await client.query("SELECT value FROM settings WHERE key = 'quote_valid_until_backfilled'");
+      if (!_bf.rows.length) {
+        const _r = await client.query(
+          "UPDATE quotes SET valid_until = (created_at + INTERVAL '30 days')::date WHERE valid_until IS NULL"
+        );
+        await client.query("INSERT INTO settings (key, value) VALUES ('quote_valid_until_backfilled', 'true') ON CONFLICT (key) DO NOTHING");
+        console.log('Quotes: backfilled valid_until on ' + _r.rowCount + ' legacy quote(s).');
+      }
+    } catch (e) { console.error('quote valid_until backfill skipped:', e.message); }
     try {
       await client.query('CREATE UNIQUE INDEX IF NOT EXISTS idx_quotes_approval_token ON quotes(approval_token) WHERE approval_token IS NOT NULL;');
     } catch (e) { console.error('quotes approval_token index skipped:', e.message); }

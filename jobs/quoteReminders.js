@@ -3,7 +3,7 @@ const { pool } = require('../db');
 const quotes = require('../routes/quotes');
 
 // Daily, 09:00 ET:
-//   1. expire any sent quote past its token_expires_at
+//   1. label any sent quote past its valid_until (the link stays live)
 //   2. nudge the customer at 3 days and again at 7 days with no answer
 //
 // Deliberately capped at TWO nudges. A third email from a company you have not
@@ -13,10 +13,13 @@ const NUDGE_DAYS = [3, 7];
 async function runQuoteReminders() {
   var expired = 0, nudged = 0;
   try {
-    // --- 1. expire ---------------------------------------------------------
+    // --- 1. mark quotes past their date ------------------------------------
+    // This is a LABEL, not a lock. The approval link keeps working past this
+    // point by design - see routes/quotes.js. All this does is stop the quote
+    // sitting in the list looking like it is still live.
     const stale = (await pool.query(
       "SELECT id FROM quotes WHERE status IN ('sent','viewed','changes_requested') " +
-      'AND token_expires_at IS NOT NULL AND token_expires_at < NOW()'
+      "AND valid_until IS NOT NULL AND valid_until < (NOW() AT TIME ZONE 'America/New_York')::date"
     )).rows;
     for (var i = 0; i < stale.length; i++) {
       try {
@@ -34,7 +37,7 @@ async function runQuoteReminders() {
       'FROM quotes q JOIN users u ON q.requester_id = u.id ' +
       "WHERE q.status IN ('sent','viewed') " +
       '  AND q.approval_token IS NOT NULL ' +
-      '  AND (q.token_expires_at IS NULL OR q.token_expires_at > NOW()) ' +
+      "  AND (q.valid_until IS NULL OR q.valid_until >= (NOW() AT TIME ZONE 'America/New_York')::date) " +
       '  AND q.sent_at IS NOT NULL ' +
       '  AND q.reminder_count < $1 ' +
       "  AND COALESCE(q.sent_to, q.customer_email) <> ''",
@@ -64,7 +67,7 @@ async function runQuoteReminders() {
       } catch (e) { console.error('[quoteReminders] nudge failed for quote ' + q.id + ':', e.message); }
     }
 
-    console.log('[quoteReminders] Nudged ' + nudged + ' quote(s); expired ' + expired + '.');
+    console.log('[quoteReminders] Nudged ' + nudged + ' quote(s); ' + expired + ' passed their valid-through date (links still live).');
   } catch (err) {
     console.error('[quoteReminders] Job failed:', err.message);
   }

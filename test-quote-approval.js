@@ -101,12 +101,12 @@ function extractQuoteMigration() {
   const src = fs.readFileSync(require.resolve('./db.js'), 'utf8');
   const start = src.indexOf("ALTER TABLE quotes ADD COLUMN IF NOT EXISTS status");
   if (start === -1) throw new Error('db.js no longer contains the quote approval migration');
-  const end = src.indexOf("ALTER TABLE quotes ADD COLUMN IF NOT EXISTS decline_reason TEXT;", start);
+  const end = src.indexOf("ALTER TABLE quotes ADD COLUMN IF NOT EXISTS customer_approval_notes TEXT;", start);
   if (end === -1) throw new Error('db.js quote approval migration is truncated');
   const chunk = src.slice(start - 1, end + 80);
   // Pull the SQL out of the JS string concatenation.
   const stmts = chunk.match(/ALTER TABLE quotes ADD COLUMN IF NOT EXISTS [^;]+;/g) || [];
-  if (stmts.length < 16) throw new Error('expected >=16 ALTER statements, found ' + stmts.length);
+  if (stmts.length < 21) throw new Error('expected >=19 ALTER statements, found ' + stmts.length);
   return stmts;
 }
 
@@ -127,7 +127,11 @@ const NEW_COLUMNS = [
   ['approved_total', 'numeric', null],
   ['signature_data', 'text', null],
   ['customer_message', 'text', null],
-  ['decline_reason', 'text', null]
+  ['decline_reason', 'text', null],
+  ['valid_until', 'date', null],
+  ['approved_late_days', 'integer', null],
+  ['customer_po_number', 'character varying', null],
+  ['customer_approval_notes', 'text', null]
 ];
 
 async function testMigration() {
@@ -150,7 +154,7 @@ async function testMigration() {
   await pool.query("INSERT INTO quotes (quote_number, requester_id, customer_name, total_amount) VALUES ('QT-2025-0001-TM', 1, 'Old Customer', 500)");
 
   const stmts = extractQuoteMigration();
-  ok('migration extracted from db.js (' + stmts.length + ' ALTERs)', stmts.length >= 17);
+  ok('migration extracted from db.js (' + stmts.length + ' ALTERs)', stmts.length >= 21);
 
   // CREATE TABLE IF NOT EXISTS would have silently skipped this table. The
   // ALTERs are the whole reason prod does not 500 on "column does not exist".
@@ -181,6 +185,22 @@ async function testMigration() {
 
   // status is NOT NULL, so an old row can never read as "unknown state".
   eq('quotes.status is NOT NULL', cols.status.is_nullable, 'NO');
+
+  // The valid_until backfill, run against the same genuine legacy table. A quote
+  // written before this feature promised "30 days from whenever you looked", so
+  // created_at + 30 is the honest fixed reading of it.
+  await pool.query("UPDATE quotes SET created_at = NOW() - INTERVAL '90 days' WHERE quote_number = 'QT-2025-0001-TM'");
+  await pool.query("INSERT INTO quotes (quote_number, requester_id, customer_name, created_at) VALUES ('QT-2025-0002-TM', 1, 'Second Legacy', NOW() - INTERVAL '10 days')");
+  await pool.query("UPDATE quotes SET valid_until = NULL");
+  const _bf = await pool.query("UPDATE quotes SET valid_until = (created_at + INTERVAL '30 days')::date WHERE valid_until IS NULL");
+  eq('the backfill touches every legacy row', _bf.rowCount, 2);
+  const _old = (await pool.query("SELECT to_char(valid_until,'YYYY-MM-DD') AS v, to_char((created_at + INTERVAL '30 days')::date,'YYYY-MM-DD') AS want FROM quotes WHERE quote_number = 'QT-2025-0001-TM'")).rows[0];
+  eq('a 90-day-old quote gets created_at + 30, i.e. long past', _old.v, _old.want);
+  ok('so it correctly reads as lapsed rather than eternally valid', _old.v < new Date().toISOString().slice(0, 10), _old.v);
+  const _recent = (await pool.query("SELECT to_char(valid_until,'YYYY-MM-DD') AS v FROM quotes WHERE quote_number = 'QT-2025-0002-TM'")).rows[0];
+  ok('a 10-day-old quote is still current', _recent.v >= new Date().toISOString().slice(0, 10), _recent.v);
+  const _again = await pool.query("UPDATE quotes SET valid_until = (created_at + INTERVAL '30 days')::date WHERE valid_until IS NULL");
+  eq('and re-running it touches nothing', _again.rowCount, 0);
 
   await pool.query('RESET search_path');
 }
@@ -224,6 +244,7 @@ async function buildSchema() {
     '  user_agent VARCHAR(500), details JSONB, created_at TIMESTAMP DEFAULT NOW());'
   );
   await pool.query('CREATE UNIQUE INDEX IF NOT EXISTS idx_quotes_approval_token ON quotes(approval_token) WHERE approval_token IS NOT NULL;');
+  await pool.query("UPDATE quotes SET valid_until = (created_at + INTERVAL '30 days')::date WHERE valid_until IS NULL");
   await pool.query('CREATE INDEX IF NOT EXISTS idx_quote_events_quote ON quote_events(quote_id, created_at);');
 
   await pool.query("INSERT INTO users (name, email, phone, receive_emails, receive_sms) VALUES ($1,$2,$3,true,false)", ['Tony McKeon', 'tony@lockandroll.com', '4045550100']);
@@ -281,7 +302,18 @@ async function makeQuote(opts) {
   return Object.assign(q, { expected_subtotal: t, expected_tax: tax, expected_total: t + tax });
 }
 
+// Approving now carries a fingerprint of what the page displayed, so the server
+// can refuse an approval whose numbers moved. Real clients read it off the GET;
+// the tests do the same rather than faking a value.
+async function approve(token, body) {
+  const page = await req('GET', '/api/quote-approve/' + token);
+  const v = page.body && page.body.version;
+  return req('POST', '/api/quote-approve/' + token + '/approve', Object.assign({ seen_version: v }, body || {}));
+}
+
 // Walks a whole JSON payload looking for anything that smells like our cost.
+function isAnsweredStatus(st) { return st === 'approved' || st === 'declined'; }
+
 function deepFindKeys(obj, keys, path, hits) {
   path = path || '$'; hits = hits || [];
   if (obj === null || typeof obj !== 'object') return hits;
@@ -399,16 +431,15 @@ async function testApprove(q) {
   section('Approving');
   SENT.emails.length = 0; SENT.push.length = 0; SENT.audit.length = 0;
 
-  let r = await req('POST', '/api/quote-approve/' + q.approval_token + '/approve', { name: 'Danielle Harlow' });
+  let r = await approve(q.approval_token, { name: 'Danielle Harlow' });
   eq('approve without consent is refused', r.status, 400);
-  r = await req('POST', '/api/quote-approve/' + q.approval_token + '/approve', { consent: true, name: 'D' });
+  r = await approve(q.approval_token, { consent: true, name: 'D' });
   eq('approve without a real name is refused', r.status, 400);
-  r = await req('POST', '/api/quote-approve/' + q.approval_token + '/approve', { consent: 'true', name: 'Danielle Harlow' });
+  r = await approve(q.approval_token, { consent: 'true', name: 'Danielle Harlow' });
   eq('a stringy consent value is not consent', r.status, 400);
 
   // A browser-supplied total must be ignored: the server approves its own math.
-  r = await req('POST', '/api/quote-approve/' + q.approval_token + '/approve',
-    { consent: true, name: 'Danielle Harlow', title: 'Property Manager', total: 1, approved_total: 1, signature: 'data:image/png;base64,iVBOR' });
+  r = await approve(q.approval_token, { consent: true, name: 'Danielle Harlow', title: 'Property Manager', total: 1, approved_total: 1, signature: 'data:image/png;base64,iVBOR', po_number: 'PO-4500123987', notes: 'Gate code is 4412, ask for Marcus at the dock.' });
   eq('approve succeeds', r.status, 200);
   ok('the response echoes the server total', Math.abs(r.body.approved_total - q.expected_total) < 0.005, String(r.body.approved_total));
 
@@ -434,7 +465,7 @@ async function testApprove(q) {
   ok('the preparer is on the push list', SENT.push.length && SENT.push[0].ids.indexOf(1) !== -1);
   ok('an audit row was written', SENT.audit.some(function (a) { return a.action === 'approved_by_customer'; }));
 
-  r = await req('POST', '/api/quote-approve/' + q.approval_token + '/approve', { consent: true, name: 'Someone Else' });
+  r = await approve(q.approval_token, { consent: true, name: 'Someone Else' });
   eq('a second approval is refused', r.status, 409);
   eq('the refusal is the already-answered one', r.body.error, 'already_answered');
   const still = (await pool.query('SELECT approver_name FROM quotes WHERE id = $1', [q.id])).rows[0];
@@ -478,7 +509,7 @@ async function testDeclineAndMessage() {
   eq('no decision was recorded', row.responded_at, null);
 
   // The whole point: this is not a decision, so the quote stays answerable.
-  r = await req('POST', '/api/quote-approve/' + tok + '/approve', { consent: true, name: 'Danielle Harlow' });
+  r = await approve(tok, { consent: true, name: 'Danielle Harlow' });
   eq('the customer can still approve after asking a question', r.status, 200);
   row = (await pool.query('SELECT status FROM quotes WHERE id = $1', [q2.id])).rows[0];
   eq('and the quote lands on approved', row.status, 'approved');
@@ -489,90 +520,290 @@ async function testDeclineAndMessage() {
 }
 
 async function testExpiry() {
-  section('Expiry');
+  section('Past the valid-through date (a label, not a lock)');
+
   const q = await makeQuote({});
-  await req('POST', '/api/quotes/' + q.id + '/send', { expires_days: 1 });
+  await req('POST', '/api/quotes/' + q.id + '/send', {});
   const tok = (await pool.query('SELECT approval_token FROM quotes WHERE id = $1', [q.id])).rows[0].approval_token;
-  await pool.query("UPDATE quotes SET token_expires_at = NOW() - INTERVAL '1 day' WHERE id = $1", [q.id]);
+  await pool.query("UPDATE quotes SET valid_until = ((NOW() AT TIME ZONE 'America/New_York')::date - 12) WHERE id = $1", [q.id]);
 
   let r = await req('GET', '/api/quote-approve/' + tok);
-  eq('an expired link is a 410', r.status, 410);
-  eq('and says so plainly', r.body.error, 'expired');
-  ok('the expired page still names the quote', r.body.quote_number === q.quote_number);
-  // The pricing must not ride along on the expired response.
-  ok('an expired response carries no pricing', r.body.total === undefined && r.body.line_items === undefined);
+  eq('a lapsed link still loads the quote in full', r.status, 200);
+  ok('and says how far past it is', r.body.days_past_valid === 12, String(r.body.days_past_valid));
+  ok('the pricing is still shown', r.body.total > 0 && r.body.line_items.length > 0);
+  ok('the date is on the payload', /^\d{4}-\d{2}-\d{2}$/.test(r.body.valid_until || ''), r.body.valid_until);
+  ok('and it still leaks no cost', deepFindKeys(r.body, ['unit_price', 'item_number', 'manufacturer']).length === 0);
 
-  const row = (await pool.query('SELECT status FROM quotes WHERE id = $1', [q.id])).rows[0];
-  eq('the quote is marked expired', row.status, 'expired');
+  eq('the quote is labelled as past its date', (await pool.query('SELECT status FROM quotes WHERE id = $1', [q.id])).rows[0].status, 'expired');
 
-  r = await req('POST', '/api/quote-approve/' + tok + '/approve', { consent: true, name: 'Danielle Harlow' });
-  eq('an expired quote cannot be approved', r.status, 410);
-  r = await req('POST', '/api/quote-approve/' + tok + '/message', { message: 'still interested' });
-  eq('an expired quote cannot take a message either', r.status, 410);
+  // The whole point of Tony's call: a late customer can still say yes.
+  SENT.emails.length = 0; SENT.push.length = 0;
+  r = await approve(tok, { consent: true, name: 'Danielle Harlow' });
+  eq('a lapsed quote can STILL be approved', r.status, 200);
+  eq('and the response reports how late it was', r.body.late_days, 12);
 
-  // An already-answered quote must NOT be expired out from under its receipt.
+  const row = (await pool.query('SELECT status, approved_late_days, approved_total FROM quotes WHERE id = $1', [q.id])).rows[0];
+  eq('the status lands on approved', row.status, 'approved');
+  eq('the lateness is recorded', row.approved_late_days, 12);
+  ok('and the total is still the server figure', Math.abs(parseFloat(row.approved_total) - q.expected_total) < 0.005);
+
+  await new Promise(function (res) { setTimeout(res, 200); });
+  ok('the team email shouts LATE in the subject', SENT.emails.some(function (m) { return m.subject.indexOf('LATE:') === 0; }),
+     SENT.emails.map(function (m) { return m.subject; }).join(' | '));
+  ok('the email body says how many days past', SENT.emails.some(function (m) { return m.html.indexOf('12 days after') !== -1; }));
+  ok('the email tells them to re-check pricing', SENT.emails.some(function (m) { return m.html.indexOf('Check the pricing still works') !== -1; }));
+  ok('the push flags it too', SENT.push.some(function (pu) { return pu.payload.title.indexOf('LATE') !== -1; }));
+
+  const ev = (await pool.query("SELECT details FROM quote_events WHERE quote_id = $1 AND event_type = 'approved'", [q.id])).rows[0];
+  eq('the trail records the lateness', ev.details.late_days, 12);
+
+  // An approval inside the window must NOT be flagged.
   const q2 = await makeQuote({});
   await req('POST', '/api/quotes/' + q2.id + '/send', {});
   const tok2 = (await pool.query('SELECT approval_token FROM quotes WHERE id = $1', [q2.id])).rows[0].approval_token;
-  await req('POST', '/api/quote-approve/' + tok2 + '/approve', { consent: true, name: 'Danielle Harlow' });
-  await pool.query("UPDATE quotes SET token_expires_at = NOW() - INTERVAL '1 day' WHERE id = $1", [q2.id]);
-  r = await req('GET', '/api/quote-approve/' + tok2);
-  eq('an approved quote past its date still shows the receipt', r.status, 200);
-  eq('and stays approved', r.body.status, 'approved');
+  SENT.emails.length = 0;
+  r = await approve(tok2, { consent: true, name: 'Danielle Harlow' });
+  eq('an on-time approval reports zero lateness', r.body.late_days, 0);
+  eq('and stores NULL, not 0', (await pool.query('SELECT approved_late_days FROM quotes WHERE id = $1', [q2.id])).rows[0].approved_late_days, null);
+  await new Promise(function (res) { setTimeout(res, 200); });
+  ok('and nothing shouts LATE', !SENT.emails.some(function (m) { return m.subject.indexOf('LATE') !== -1; }));
+
+  // A quote whose date is today is NOT late.
+  const q3 = await makeQuote({});
+  await req('POST', '/api/quotes/' + q3.id + '/send', {});
+  const tok3 = (await pool.query('SELECT approval_token FROM quotes WHERE id = $1', [q3.id])).rows[0].approval_token;
+  await pool.query("UPDATE quotes SET valid_until = (NOW() AT TIME ZONE 'America/New_York')::date WHERE id = $1", [q3.id]);
+  r = await req('GET', '/api/quote-approve/' + tok3);
+  eq('the last day of validity is not past', r.body.days_past_valid, 0);
+  r = await approve(tok3, { consent: true, name: 'D H' });
+  eq('and approving on the last day is not late', r.body.late_days, 0);
 }
 
-async function testReadOnlyAndVoid() {
-  section('A sent quote is read-only');
+async function testStaleSend() {
+  section('Sending a quote that has already lapsed');
+  const q = await makeQuote({});
+  await pool.query("UPDATE quotes SET valid_until = ((NOW() AT TIME ZONE 'America/New_York')::date - 5) WHERE id = $1", [q.id]);
+
+  let r = await req('POST', '/api/quotes/' + q.id + '/send', {});
+  eq('sending a lapsed quote is stopped', r.status, 409);
+  eq('with the structured reason the UI needs', r.body.error, 'past_valid_until');
+  eq('and says how far past', r.body.days_past, 5);
+  ok('the message names the date', (r.body.message || '').indexOf(r.body.valid_until) !== -1, r.body.message);
+  eq('nothing was sent', (await pool.query('SELECT status FROM quotes WHERE id = $1', [q.id])).rows[0].status, 'draft');
+
+  r = await req('POST', '/api/quotes/' + q.id + '/send', { confirm_stale: true });
+  eq('confirming sends it anyway', r.status, 200);
+  const row = (await pool.query('SELECT status, approval_token FROM quotes WHERE id = $1', [q.id])).rows[0];
+  eq('the quote is out', row.status, 'sent');
+  const ev = (await pool.query("SELECT details FROM quote_events WHERE quote_id = $1 AND event_type = 'sent'", [q.id])).rows[0];
+  eq('and the trail records that it went out stale', ev.details.sent_stale_days, 5);
+
+  // The customer can act on it immediately - the link was never dead.
+  r = await req('GET', '/api/quote-approve/' + row.approval_token);
+  eq('the customer can open it right away', r.status, 200);
+  ok('and is told it has lapsed', r.body.days_past_valid > 0);
+
+  // Sending with a NEW date fixes the quote itself, no confirm needed.
+  const q2 = await makeQuote({});
+  await pool.query("UPDATE quotes SET valid_until = ((NOW() AT TIME ZONE 'America/New_York')::date - 5) WHERE id = $1", [q2.id]);
+  const future = new Date(Date.now() + 21 * 86400000).toISOString().slice(0, 10);
+  r = await req('POST', '/api/quotes/' + q2.id + '/send', { valid_until: future });
+  eq('sending with a fresh date needs no confirm', r.status, 200);
+  eq('and the response echoes it', r.body.valid_until, future);
+  eq('the QUOTE itself now carries that date', (await pool.query("SELECT to_char(valid_until,'YYYY-MM-DD') AS v FROM quotes WHERE id = $1", [q2.id])).rows[0].v, future);
+}
+
+async function testValidUntil() {
+  section('The valid-through date is one value everywhere');
+
+  // A new quote gets a date without anyone asking for one.
+  let r = await req('POST', '/api/quotes', {
+    customer_name: 'Default Date Co', city_code: 'ATL', tax_rate: 0,
+    line_items: [{ description: 'Rekey', quantity: 1, unit_price: 10, list_price: 40, taxable: false, line_type: 'part' }]
+  });
+  ok('a quote can be created without a date', r.status === 200 || r.status === 201, 'status ' + r.status);
+  let vu = (await pool.query("SELECT to_char(valid_until,'YYYY-MM-DD') AS v FROM quotes WHERE id = $1", [r.body.id])).rows[0].v;
+  const _d30 = new Date(Date.now() + 30 * 86400000);
+  const expect30 = _d30.getFullYear() + '-' + String(_d30.getMonth() + 1).padStart(2, '0') + '-' + String(_d30.getDate()).padStart(2, '0');
+  eq('and defaults to 30 days out', vu, expect30);
+
+  // An explicit date is honoured.
+  const chosen = new Date(Date.now() + 45 * 86400000).toISOString().slice(0, 10);
+  r = await req('POST', '/api/quotes', {
+    customer_name: 'Chosen Date Co', city_code: 'ATL', tax_rate: 0, valid_until: chosen,
+    line_items: [{ description: 'Rekey', quantity: 1, unit_price: 10, list_price: 40, taxable: false, line_type: 'part' }]
+  });
+  const id2 = r.body.id;
+  eq('an explicit date is stored', (await pool.query("SELECT to_char(valid_until,'YYYY-MM-DD') AS v FROM quotes WHERE id = $1", [id2])).rows[0].v, chosen);
+
+  // Garbage is refused rather than guessed at - it becomes a promise to a customer.
+  r = await req('POST', '/api/quotes', {
+    customer_name: 'Junk Date Co', city_code: 'ATL', tax_rate: 0, valid_until: 'next tuesday',
+    line_items: [{ description: 'Rekey', quantity: 1, unit_price: 10, list_price: 40, taxable: false, line_type: 'part' }]
+  });
+  eq('an unparseable date falls back to the default rather than being guessed',
+     (await pool.query("SELECT to_char(valid_until,'YYYY-MM-DD') AS v FROM quotes WHERE id = $1", [r.body.id])).rows[0].v, expect30);
+
+  // An edit that omits the field must not blank the promise.
+  await req('PUT', '/api/quotes/' + id2, {
+    customer_name: 'Chosen Date Co', city_code: 'ATL', tax_rate: 0,
+    line_items: [{ description: 'Rekey', quantity: 2, unit_price: 10, list_price: 40, taxable: false, line_type: 'part' }]
+  });
+  eq('an edit that omits the date leaves it alone', (await pool.query("SELECT to_char(valid_until,'YYYY-MM-DD') AS v FROM quotes WHERE id = $1", [id2])).rows[0].v, chosen);
+
+  // --- the same date reaches the customer everywhere ---
+  const q = await makeQuote({});
+  const soon = new Date(Date.now() + 20 * 86400000).toISOString().slice(0, 10);
+  await pool.query('UPDATE quotes SET valid_until = $1::date WHERE id = $2', [soon, q.id]);
+  SENT.emails.length = 0; SENT.sms.length = 0;
+  await pool.query("INSERT INTO settings (key, value) VALUES ('quote_sms_template', $1) ON CONFLICT (key) DO UPDATE SET value = $1", ['Good through {expires}. {link}']);
+  await req('POST', '/api/quotes/' + q.id + '/send', { sms_to: '4045550182' });
+
+  const pretty = new Date(soon + 'T12:00:00Z').toLocaleDateString('en-US', { timeZone: 'UTC', month: 'short', day: 'numeric', year: 'numeric' });
+  ok('the email shows the quote date as Valid through', SENT.emails[0].html.indexOf(pretty) !== -1, pretty + ' not in email');
+  ok('the SMS {expires} token shows the same date', SENT.sms[0].body.indexOf(pretty) !== -1, SENT.sms[0].body);
+  const tok = (await pool.query('SELECT approval_token FROM quotes WHERE id = $1', [q.id])).rows[0].approval_token;
+  const page = (await req('GET', '/api/quote-approve/' + tok)).body;
+  eq('and the approval page carries the same date', page.valid_until, soon);
+  eq('with nothing past yet', page.days_past_valid, 0);
+  await pool.query("DELETE FROM settings WHERE key = 'quote_sms_template'");
+
+  // --- changing the date must NOT void the link ---
+  const later = new Date(Date.now() + 60 * 86400000).toISOString().slice(0, 10);
+  r = await req('POST', '/api/quotes/' + q.id + '/valid-until', { valid_until: later });
+  eq('the date can be changed on a sent quote', r.status, 200);
+  eq('and it reports no void', r.body.voided, false);
+  const after = (await pool.query("SELECT status, approval_token, to_char(valid_until,'YYYY-MM-DD') AS v FROM quotes WHERE id = $1", [q.id])).rows[0];
+  eq('the date moved', after.v, later);
+  eq('the customer link is untouched', after.approval_token, tok);
+  ok('and the quote is still out', after.status === 'sent' || after.status === 'viewed');
+  eq('the old link still works', (await req('GET', '/api/quote-approve/' + tok)).status, 200);
+
+  const cev = (await pool.query("SELECT details FROM quote_events WHERE quote_id = $1 AND event_type = 'valid_until_changed'", [q.id])).rows[0];
+  eq('the change is on the trail', cev.details.to, later);
+  eq('and it knows the date was extended', cev.details.extended, true);
+
+  r = await req('POST', '/api/quotes/' + q.id + '/valid-until', { valid_until: 'soon' });
+  eq('a junk date is refused outright', r.status, 400);
+
+  // Re-dating a lapsed quote puts it back in play.
+  const q3 = await makeQuote({});
+  await req('POST', '/api/quotes/' + q3.id + '/send', {});
+  await pool.query("UPDATE quotes SET valid_until = ((NOW() AT TIME ZONE 'America/New_York')::date - 3), status = 'expired' WHERE id = $1", [q3.id]);
+  await req('POST', '/api/quotes/' + q3.id + '/valid-until', { valid_until: later });
+  eq('extending a lapsed quote makes it waiting again',
+     (await pool.query('SELECT status FROM quotes WHERE id = $1', [q3.id])).rows[0].status, 'sent');
+}
+
+async function testEditWhileOut() {
+  section('Editing a sent quote (no longer voids the link)');
   const q = await makeQuote({});
   await req('POST', '/api/quotes/' + q.id + '/send', {});
   const before = (await pool.query('SELECT * FROM quotes WHERE id = $1', [q.id])).rows[0];
 
-  // The real editor always submits every contact field, so the test does too -
-  // PUT replaces them wholesale and omitting one blanks it.
+  // What the customer's open page is showing right now.
+  const seen = (await req('GET', '/api/quote-approve/' + before.approval_token)).body;
+  ok('the page hands out a version fingerprint', /^[a-f0-9]{16}$/.test(seen.version || ''), seen.version);
+
   const edit = {
     customer_name: 'Riverbend Storage LLC', city_code: 'ATL', notes: 'Edited', important_info: null, tax_rate: 8.9,
     customer_email: 'd.harlow@riverbendstor.com', customer_phone: '4045550182',
-    line_items: [{ description: 'Rekey', quantity: 6, unit_price: 22, list_price: 75, taxable: true, line_type: 'part' }]
+    line_items: [{ description: 'Rekey', quantity: 6, unit_price: 22, list_price: 95, taxable: true, line_type: 'part' }]
   };
-
   let r = await req('PUT', '/api/quotes/' + q.id, edit);
-  eq('editing a sent quote is refused', r.status, 409);
-  eq('with the structured reason the UI needs', r.body.error, 'quote_is_out');
-  eq('and tells the UI who it went to', r.body.sent_to, 'd.harlow@riverbendstor.com');
-  const unchanged = (await pool.query('SELECT notes, approval_token FROM quotes WHERE id = $1', [q.id])).rows[0];
-  ok('nothing was written on the refused edit', unchanged.notes !== 'Edited');
-  eq('and the token is untouched', unchanged.approval_token, before.approval_token);
-
-  edit.confirm_void = true;
-  r = await req('PUT', '/api/quotes/' + q.id, edit);
-  eq('editing with an explicit void succeeds', r.status, 200);
-  ok('the response says the link was voided', r.body.voided === true);
+  eq('editing a sent quote just works', r.status, 200);
+  ok('and reports no void', r.body.voided === false);
 
   const after = (await pool.query('SELECT * FROM quotes WHERE id = $1', [q.id])).rows[0];
   eq('the edit landed', after.notes, 'Edited');
-  eq('the quote is back to draft', after.status, 'draft');
-  eq('the token is gone', after.approval_token, null);
-  eq('the expiry is cleared', after.token_expires_at, null);
-  eq('sent_at is cleared', after.sent_at, null);
-  eq('the view stamp is cleared', after.first_viewed_at, null);
-  eq('the reminder counter is reset', after.reminder_count, 0);
+  ok('the quote is STILL out to the customer', after.status === 'sent' || after.status === 'viewed', after.status);
+  eq('the customer link is untouched', after.approval_token, before.approval_token);
+  ok('sent_at survives', !!after.sent_at);
+  eq('the old link still opens', (await req('GET', '/api/quote-approve/' + before.approval_token)).status, 200);
 
-  // The old link must be dead the moment the edit lands.
-  r = await req('GET', '/api/quote-approve/' + before.approval_token);
-  eq('the old customer link is dead', r.status, 404);
+  const ev = (await pool.query("SELECT * FROM quote_events WHERE quote_id = $1 AND event_type = 'edited_while_out'", [q.id])).rows;
+  eq('the trail records that it changed under them', ev.length, 1);
 
-  const ev = (await pool.query("SELECT * FROM quote_events WHERE quote_id = $1 AND event_type = 'link_voided'", [q.id])).rows;
-  eq('the void is on the trail', ev.length, 1);
-  eq('and says why', ev[0].details.reason, 'edited');
+  // THE safety property. The customer is still holding the old page.
+  const fresh = (await req('GET', '/api/quote-approve/' + before.approval_token)).body;
+  ok('the fingerprint moved with the edit', fresh.version !== seen.version, seen.version + ' -> ' + fresh.version);
+  r = await req('POST', '/api/quote-approve/' + before.approval_token + '/approve',
+    { seen_version: seen.version, consent: true, name: 'Danielle Harlow' });
+  eq('approving the version they saw is refused', r.status, 409);
+  eq('with the reason the page needs', r.body.error, 'quote_changed');
+  eq('and the current fingerprint to reload with', r.body.version, fresh.version);
+  ok('nothing was recorded', !isAnsweredStatus((await pool.query('SELECT status FROM quotes WHERE id = $1', [q.id])).rows[0].status));
 
-  // Revoke, the version that does not touch the quote itself.
+  // An approval with no fingerprint at all is refused too - that is a client that
+  // cannot have shown them a total.
+  r = await req('POST', '/api/quote-approve/' + before.approval_token + '/approve', { consent: true, name: 'Danielle Harlow' });
+  eq('an approval with no fingerprint is refused', r.status, 400);
+
+  // Reload, then approve: they get the NEW total, having seen it.
+  r = await approve(before.approval_token, { consent: true, name: 'Danielle Harlow' });
+  eq('approving the reloaded version works', r.status, 200);
+  const newTotal = 6 * 95 * 1.089;
+  ok('and binds them to the edited total, not the old one',
+     Math.abs(r.body.approved_total - newTotal) < 0.02, r.body.approved_total + ' vs ' + newTotal);
+
+  // Revoke is still the manual kill switch.
+  const q2 = await makeQuote({});
+  await req('POST', '/api/quotes/' + q2.id + '/send', {});
+  const tok2 = (await pool.query('SELECT approval_token FROM quotes WHERE id = $1', [q2.id])).rows[0].approval_token;
+  eq('revoke succeeds', (await req('POST', '/api/quotes/' + q2.id + '/revoke', {})).status, 200);
+  eq('and the link really is dead', (await req('GET', '/api/quote-approve/' + tok2)).status, 404);
+  eq('with the quote back in draft', (await pool.query('SELECT status FROM quotes WHERE id = $1', [q2.id])).rows[0].status, 'draft');
+}
+
+async function testCustomerPoAndNotes() {
+  section('The PO number and note a customer adds when approving');
+  const q = await makeQuote({});
   await req('POST', '/api/quotes/' + q.id + '/send', {});
   const tok = (await pool.query('SELECT approval_token FROM quotes WHERE id = $1', [q.id])).rows[0].approval_token;
-  r = await req('POST', '/api/quotes/' + q.id + '/revoke', {});
-  eq('revoke succeeds', r.status, 200);
-  r = await req('GET', '/api/quote-approve/' + tok);
-  eq('the revoked link is dead', r.status, 404);
-  eq('and the quote is a draft again', (await pool.query('SELECT status FROM quotes WHERE id = $1', [q.id])).rows[0].status, 'draft');
+
+  SENT.emails.length = 0;
+  const r = await approve(tok, {
+    consent: true, name: 'Danielle Harlow', title: 'Property Manager',
+    po_number: 'PO-4500123987', notes: 'Gate code is 4412, ask for Marcus at the dock.'
+  });
+  eq('the approval takes them', r.status, 200);
+  eq('and echoes the PO back', r.body.po_number, 'PO-4500123987');
+
+  const row = (await pool.query('SELECT customer_po_number, customer_approval_notes FROM quotes WHERE id = $1', [q.id])).rows[0];
+  eq('the PO number is stored', row.customer_po_number, 'PO-4500123987');
+  eq('the note is stored', row.customer_approval_notes, 'Gate code is 4412, ask for Marcus at the dock.');
+
+  const ev = (await pool.query("SELECT details FROM quote_events WHERE quote_id = $1 AND event_type = 'approved'", [q.id])).rows[0];
+  eq('the PO is on the trail', ev.details.po_number, 'PO-4500123987');
+  ok('and so is the note', (ev.details.notes || '').indexOf('Gate code') !== -1);
+
+  await new Promise(function (res) { setTimeout(res, 200); });
+  ok('the team email shows the PO number', SENT.emails.some(function (m) { return m.html.indexOf('PO-4500123987') !== -1; }));
+  ok('and quotes their note back', SENT.emails.some(function (m) { return m.html.indexOf('Gate code is 4412') !== -1; }));
+
+  // The receipt the customer sees on reload.
+  const page = (await req('GET', '/api/quote-approve/' + tok)).body;
+  eq('the receipt carries the PO', page.customer_po_number, 'PO-4500123987');
+  ok('and still leaks no cost', deepFindKeys(page, ['unit_price', 'approver_ip']).length === 0);
+
+  // Both are optional.
+  const q2 = await makeQuote({});
+  await req('POST', '/api/quotes/' + q2.id + '/send', {});
+  const tok2 = (await pool.query('SELECT approval_token FROM quotes WHERE id = $1', [q2.id])).rows[0].approval_token;
+  eq('approving with neither still works', (await approve(tok2, { consent: true, name: 'D H' })).status, 200);
+  const row2 = (await pool.query('SELECT customer_po_number, customer_approval_notes FROM quotes WHERE id = $1', [q2.id])).rows[0];
+  eq('and stores NULL rather than an empty string', row2.customer_po_number, null);
+  eq('same for the note', row2.customer_approval_notes, null);
+
+  // A hostile PO number must not survive as markup in the notification.
+  const q3 = await makeQuote({});
+  await req('POST', '/api/quotes/' + q3.id + '/send', {});
+  const tok3 = (await pool.query('SELECT approval_token FROM quotes WHERE id = $1', [q3.id])).rows[0].approval_token;
+  SENT.emails.length = 0;
+  await approve(tok3, { consent: true, name: 'D H', po_number: '<script>x</script>', notes: '<img src=x onerror=y>' });
+  await new Promise(function (res) { setTimeout(res, 200); });
+  ok('a hostile PO is escaped in the email', !SENT.emails.some(function (m) { return m.html.indexOf('<script>x</script>') !== -1; }));
+  ok('and a hostile note is stripped', !SENT.emails.some(function (m) { return m.html.indexOf('<img src=x') !== -1; }));
 }
 
 async function testApprovedTotalSurvivesEdits() {
@@ -580,7 +811,7 @@ async function testApprovedTotalSurvivesEdits() {
   const q = await makeQuote({});
   await req('POST', '/api/quotes/' + q.id + '/send', {});
   const tok = (await pool.query('SELECT approval_token FROM quotes WHERE id = $1', [q.id])).rows[0].approval_token;
-  await req('POST', '/api/quote-approve/' + tok + '/approve', { consent: true, name: 'Danielle Harlow' });
+  await approve(tok, { consent: true, name: 'Danielle Harlow' });
   const agreed = parseFloat((await pool.query('SELECT approved_total FROM quotes WHERE id = $1', [q.id])).rows[0].approved_total);
 
   // Somebody re-opens and re-prices it later. The record of what the customer
@@ -603,7 +834,7 @@ async function testDeleteGuard() {
   const q = await makeQuote({});
   await req('POST', '/api/quotes/' + q.id + '/send', {});
   const tok = (await pool.query('SELECT approval_token FROM quotes WHERE id = $1', [q.id])).rows[0].approval_token;
-  await req('POST', '/api/quote-approve/' + tok + '/approve', { consent: true, name: 'Danielle Harlow' });
+  await approve(tok, { consent: true, name: 'Danielle Harlow' });
 
   CURRENT_USER = { id: 1, name: 'Tony McKeon', role: 'manager' };
   let r = await req('DELETE', '/api/quotes/' + q.id);
@@ -657,21 +888,23 @@ async function testRemindAndJob() {
   await jobs.runQuoteReminders();
   eq('there is never a third nudge', SENT.emails.length, 0);
 
-  // Expiry sweep.
-  await pool.query("UPDATE quotes SET token_expires_at = NOW() - INTERVAL '1 day' WHERE id = $1", [q.id]);
+  // Past-date sweep. This is a LABEL now, not a lock - the link stays live.
+  await pool.query("UPDATE quotes SET status = 'sent', valid_until = ((NOW() AT TIME ZONE 'America/New_York')::date - 1) WHERE id = $1", [q.id]);
   await jobs.runQuoteReminders();
-  eq('the job expires an overdue quote', (await pool.query('SELECT status FROM quotes WHERE id = $1', [q.id])).rows[0].status, 'expired');
+  eq('the job labels a quote past its date', (await pool.query('SELECT status FROM quotes WHERE id = $1', [q.id])).rows[0].status, 'expired');
+  const _stillTok = (await pool.query('SELECT approval_token FROM quotes WHERE id = $1', [q.id])).rows[0].approval_token;
+  eq('and the customer link is NOT killed', (await req('GET', '/api/quote-approve/' + _stillTok)).status, 200);
 
   // An answered quote must never be nudged or expired.
   const q2 = await makeQuote({});
   await req('POST', '/api/quotes/' + q2.id + '/send', {});
   const tok2 = (await pool.query('SELECT approval_token FROM quotes WHERE id = $1', [q2.id])).rows[0].approval_token;
-  await req('POST', '/api/quote-approve/' + tok2 + '/approve', { consent: true, name: 'Danielle Harlow' });
-  await pool.query("UPDATE quotes SET sent_at = NOW() - INTERVAL '9 days', token_expires_at = NOW() - INTERVAL '1 day' WHERE id = $1", [q2.id]);
+  await approve(tok2, { consent: true, name: 'Danielle Harlow' });
+  await pool.query("UPDATE quotes SET sent_at = NOW() - INTERVAL '9 days', valid_until = ((NOW() AT TIME ZONE 'America/New_York')::date - 1) WHERE id = $1", [q2.id]);
   SENT.emails.length = 0;
   await jobs.runQuoteReminders();
   eq('an approved quote is never nudged', SENT.emails.length, 0);
-  eq('and is never expired', (await pool.query('SELECT status FROM quotes WHERE id = $1', [q2.id])).rows[0].status, 'approved');
+  eq('and is never relabelled', (await pool.query('SELECT status FROM quotes WHERE id = $1', [q2.id])).rows[0].status, 'approved');
 }
 
 async function testEvents() {
@@ -681,7 +914,7 @@ async function testEvents() {
   await req('POST', '/api/quotes/' + q.id + '/send', {});
   const tok = (await pool.query('SELECT approval_token FROM quotes WHERE id = $1', [q.id])).rows[0].approval_token;
   await req('GET', '/api/quote-approve/' + tok);
-  await req('POST', '/api/quote-approve/' + tok + '/approve', { consent: true, name: 'Danielle Harlow' });
+  await approve(tok, { consent: true, name: 'Danielle Harlow' });
 
   const r = await req('GET', '/api/quotes/' + q.id + '/events');
   eq('the feed loads', r.status, 200);
@@ -719,6 +952,32 @@ async function testBrandAndSms() {
   await req('POST', '/api/quotes/' + q.id + '/send', {});
   eq('the sender keeps the verified address but takes the new display name',
      SENT.emails[0].opts.from, 'Pop-A-Lock of Atlanta <noreply@novaops.dev>');
+
+  // An unset FROM_EMAIL used to hand control back to sendEmail's own hardcoded
+  // default and silently throw the brand away.
+  const _savedFrom = process.env.FROM_EMAIL;
+  delete process.env.FROM_EMAIL;
+  q = await makeQuote({});
+  SENT.emails.length = 0;
+  await req('POST', '/api/quotes/' + q.id + '/send', {});
+  eq('with no FROM_EMAIL at all the brand still wins the display name',
+     SENT.emails[0].opts.from, 'Pop-A-Lock of Atlanta <onboarding@resend.dev>');
+  process.env.FROM_EMAIL = _savedFrom;
+
+  // A bare address with no display name is just as valid a FROM_EMAIL.
+  process.env.FROM_EMAIL = 'noreply@novaops.dev';
+  q = await makeQuote({});
+  SENT.emails.length = 0;
+  await req('POST', '/api/quotes/' + q.id + '/send', {});
+  eq('a bare FROM_EMAIL address still gets the brand in front of it',
+     SENT.emails[0].opts.from, 'Pop-A-Lock of Atlanta <noreply@novaops.dev>');
+
+  // Whatever display name FROM_EMAIL carries is DISCARDED for customer mail.
+  process.env.FROM_EMAIL = 'Nova <noreply@novaops.dev>';
+  q = await makeQuote({});
+  SENT.emails.length = 0;
+  await req('POST', '/api/quotes/' + q.id + '/send', {});
+  ok('the FROM_EMAIL display name never reaches a customer', SENT.emails[0].opts.from.indexOf('Nova') === -1, SENT.emails[0].opts.from);
 
   process.env.QUOTE_FROM_EMAIL = 'Pop-A-Lock <quotes@popalockar.com>';
   q = await makeQuote({});
@@ -814,7 +1073,10 @@ async function main() {
     await testApprove(q);
     await testDeclineAndMessage();
     await testExpiry();
-    await testReadOnlyAndVoid();
+    await testStaleSend();
+    await testValidUntil();
+    await testEditWhileOut();
+    await testCustomerPoAndNotes();
     await testApprovedTotalSurvivesEdits();
     await testDeleteGuard();
     await testRemindAndJob();

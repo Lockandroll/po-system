@@ -2,7 +2,7 @@
 // public/sw.js (the only thing bumped each deploy) — the badge asks the active
 // service worker for it at runtime. This value is just the fallback shown when no
 // service worker is available (e.g. very first visit before it installs).
-var APP_VERSION = 'v401';
+var APP_VERSION = 'v403';
 var _resolvedAppVersion = null;
 
 // Ask the active service worker for its CACHE_VERSION (without the 'nova-' prefix).
@@ -7090,16 +7090,50 @@ async function saveEditAddress(id, cityCode, cityName, btn) {
 
 // ── Quotes ────────────────────────────────────────────────────────────────────
 
+// Shows the tech exactly what {default_date} will print, and says so plainly
+// when the date is already in the past.
+function quoteValidPreview() {
+  var el = document.getElementById('qt-valid-until');
+  var out = document.getElementById('qt-valid-preview');
+  if (!el || !out) return;
+  var shown = quoteValidDate(el.value);
+  if (!shown) { out.innerHTML = '<span style="color:var(--danger)">Pick a date, or {default_date} will print as-is.</span>'; return; }
+  var past = el.value < ymdPlusDays(0);
+  out.innerHTML = past
+    ? '<span style="color:var(--warning)">Prints <strong>' + escHtml(shown) + '</strong> — already in the past.</span>'
+    : 'Prints <strong>' + escHtml(shown) + '</strong>.';
+}
+
 function getDefaultImportantInfo() {
   return 'This proposal is valid until {default_date}. Any major changes to the cost of parts, if any, will be discussed once the proposal is approved.\n\nPop-A-Lock will provide a 90-day warranty for the labor. Pop-A-Lock will facilitate any warranty for the parts based on the manufacturer\'s specification of warranty. After 90 days, Pop-A-Lock will charge labor to facilitate the part warranty.';
 }
 
-function resolveTokens(text) {
+// {default_date} used to be "today + 30 days, computed right now", so the same
+// quote claimed a different valid-until date every single day it was opened or
+// printed, and could never actually lapse. It now resolves to the quote's own
+// valid_until, which is the one date the email, the approval page, the printout
+// and this token all read.
+function quoteValidDate(validUntil) {
+  if (!validUntil) return null;
+  var str = String(validUntil).slice(0, 10);
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(str)) return null;
+  var p = str.split('-');
+  return p[1] + '/' + p[2] + '/' + p[0];
+}
+function resolveTokens(text, validUntil) {
   if (!text) return text;
-  var d = new Date();
-  d.setDate(d.getDate() + 30);
-  var formatted = (d.getMonth()+1).toString().padStart(2,'0') + '/' + d.getDate().toString().padStart(2,'0') + '/' + d.getFullYear();
+  var formatted = quoteValidDate(validUntil);
+  // No date on the quote (a legacy row the backfill missed): leave the token
+  // visible rather than inventing a promise nobody made.
+  if (!formatted) return text;
   return text.replace(/\{default_date\}/g, formatted);
+}
+
+// YYYY-MM-DD for a date input, N days out from today.
+function ymdPlusDays(n) {
+  var d = new Date();
+  d.setDate(d.getDate() + (n || 0));
+  return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0');
 }
 
 let quoteLineItems = [];
@@ -7127,7 +7161,7 @@ function quoteRowActivityHtml(q) {
   else if (st === 'changes_requested') note = 'Waiting on you';
   else if (st === 'approved') note = 'Approved ' + quoteAgo(q.responded_at);
   else if (st === 'declined') note = 'Declined ' + quoteAgo(q.responded_at);
-  else if (st === 'expired') note = 'Link expired';
+  else if (st === 'expired') note = 'Past its date, link still works';
   if (!note) return '';
   return '<div style="font-size:11px;color:var(--text-muted-color);margin-top:3px">' + escHtml(note) + '</div>';
 }
@@ -7351,6 +7385,7 @@ async function renderEditQuote(el, id) {
     return '<option value="' + escHtml(c.code) + '"' + (quote && quote.city_code === c.code ? ' selected' : '') + '>' + escHtml(c.name) + ' (' + escHtml(c.code) + ')</option>';
   }).join('');
   const importantInfoVal = quote ? (quote.important_info || '') : getDefaultImportantInfo();
+  const validUntilVal = quote && quote.valid_until ? String(quote.valid_until).slice(0, 10) : ymdPlusDays(30);
   const taxRateVal = quote ? (quote.tax_rate !== null && quote.tax_rate !== undefined ? parseFloat(quote.tax_rate) : '') : '';
   el.innerHTML =
     '<div class="page-header">' +
@@ -7400,7 +7435,19 @@ async function renderEditQuote(el, id) {
     '</div></div>' +
     '<div class="card mb-4"><div class="card-header"><span class="card-title">Important Information</span></div><div class="card-body">' +
       '<p class="text-muted" style="margin-bottom:12px;font-size:13px">Printed at the bottom of the quote. Edit as needed.</p>' +
-      '<textarea id="qt-important-info" style="min-height:120px">' + escHtml(importantInfoVal) + '</textarea>' + varLegendHtml('These dynamic date variables auto-fill on recurring tasks and scheduled messages. You can reference them here too.', 'qt-important-info') +
+      '<textarea id="qt-important-info" style="min-height:120px">' + escHtml(importantInfoVal) + '</textarea>' +
+      // The old legend here offered seven date variables that are only wired up
+      // for recurring tasks and scheduled messages - typing {today} on a quote
+      // printed the literal text to the customer. Replaced with the one date
+      // this field actually needs.
+      '<div style="margin-top:14px;padding-top:14px;border-top:1px solid var(--border);display:flex;gap:16px;align-items:flex-end;flex-wrap:wrap">' +
+        '<div style="flex:0 0 auto"><label style="display:block;font-size:11px;font-weight:600;letter-spacing:0.06em;text-transform:uppercase;color:var(--text-muted-color);margin-bottom:5px">Quote valid through</label>' +
+          '<input type="date" id="qt-valid-until" value="' + escHtml(validUntilVal) + '" oninput="quoteValidPreview()" style="width:auto;min-width:170px" /></div>' +
+        '<div style="flex:1 1 260px;font-size:12.5px;color:var(--text-muted-color);line-height:1.5;padding-bottom:9px">' +
+          'Type <code>{default_date}</code> in the text above and it prints this date. The same date is used on the customer approval page, in the quote email and on the printout.' +
+          '<div id="qt-valid-preview" style="margin-top:4px"></div>' +
+        '</div>' +
+      '</div>' +
     '</div></div>' +
     '<div class="card mb-4"><div class="card-header"><span class="card-title">Photos</span></div><div class="card-body">' +
       '<p class="text-muted" style="margin-bottom:12px;font-size:13px">Attach reference photos (job site, hardware, key blanks, etc.) to help with this quote. Photos are saved when you save the quote.</p>' +
@@ -7498,6 +7545,7 @@ async function saveQuote(id) {
   const taxRateRaw = document.getElementById('qt-tax-rate').value;
   const tax_rate = parseFloat(taxRateRaw);
   const important_info = document.getElementById('qt-important-info').value.trim();
+  const valid_until = (document.getElementById('qt-valid-until') || {}).value || null;
   const _qv = function(elId){ const e = document.getElementById(elId); return e ? e.value.trim() : ''; };
   const customer_street = _qv('qt-cust-street');
   const customer_city = _qv('qt-cust-city');
@@ -7525,28 +7573,14 @@ async function saveQuote(id) {
     novaBtnBusy(btn, 'Saving\u2026');
     let newId;
     if (id) {
-      const _payload = { customer_name, city_code: city_code || null, notes, important_info, tax_rate, line_items: validItems, customer_street, customer_city, customer_state, customer_zip, customer_phone, customer_email };
-      try {
-        await api('PUT', '/quotes/' + id, _payload);
-      } catch (e) {
-        // The quote is already in front of a customer. The server refuses the
-        // edit until we say, in as many words, that the link they were sent is
-        // going away. Nobody should move numbers under an open page by accident.
-        if (!(e && e.status === 409 && e.data && e.data.error === 'quote_is_out')) throw e;
-        novaBtnReset(document.getElementById('btn-save-quote'));
-        const _who = e.data.sent_to || 'the customer';
-        const _ok = await novaConfirm(
-          'This quote has already been sent to ' + _who + '.\n\nSaving will void the link they were sent and put the quote back in draft, so you can send them a fresh one.',
-          { title: 'Void the customer link?', okText: 'Save and void the link', cancelText: 'Keep it as sent' }
-        );
-        if (!_ok) return;
-        novaBtnBusy(document.getElementById('btn-save-quote'), 'Saving\u2026');
-        _payload.confirm_void = true;
-        await api('PUT', '/quotes/' + id, _payload);
-      }
+      // Editing a sent quote no longer voids the customer's link. The hazard that
+      // guarded against is handled at approval time instead: the customer page
+      // sends back a fingerprint of what it displayed, and an approval whose
+      // fingerprint has gone stale is refused and the page reloaded.
+      await api('PUT', '/quotes/' + id, { customer_name, city_code: city_code || null, notes, important_info, tax_rate, line_items: validItems, customer_street, customer_city, customer_state, customer_zip, customer_phone, customer_email, valid_until });
       newId = id;
     } else {
-      const q = await api('POST', '/quotes', { customer_name, city_code: city_code || null, notes, important_info, tax_rate, line_items: validItems, customer_street, customer_city, customer_state, customer_zip, customer_phone, customer_email });
+      const q = await api('POST', '/quotes', { customer_name, city_code: city_code || null, notes, important_info, tax_rate, line_items: validItems, customer_street, customer_city, customer_state, customer_zip, customer_phone, customer_email, valid_until });
       newId = q.id;
     }
     if (quotePendingPhotos.length) {
@@ -7657,7 +7691,9 @@ var QUOTE_STATUSES = {
   changes_requested: { label: 'Changes requested', cls: 'cancelled' },
   approved:          { label: 'Approved',          cls: 'approved' },
   declined:          { label: 'Declined',          cls: 'declined' },
-  expired:           { label: 'Expired',           cls: 'inactive' }
+  // NOT a dead link. The customer can still approve; this only says the quote is
+  // past the date it promised, which is a thing you want to see in the list.
+  expired:           { label: 'Past valid date',   cls: 'inactive' }
 };
 
 function quoteStatusMeta(status) {
@@ -7679,8 +7715,9 @@ function quoteSendButtonHtml(q) {
       (noEmail ? ' disabled title="Add a customer email on this quote first."' : '') +
       ' onclick="openQuoteSendDialog(' + q.id + ')">&#9993; Send to Customer</button>';
   }
-  if (st === 'sent' || st === 'viewed' || st === 'changes_requested') {
-    return '<button class="btn btn-secondary" style="white-space:nowrap" onclick="remindQuoteCustomer(' + q.id + ')">&#8635; Send a reminder</button>' +
+  if (st === 'sent' || st === 'viewed' || st === 'changes_requested' || st === 'expired') {
+    return (st !== 'expired' ? '<button class="btn btn-secondary" style="white-space:nowrap" onclick="remindQuoteCustomer(' + q.id + ')">&#8635; Send a reminder</button>' : '') +
+           '<button class="btn btn-secondary" style="white-space:nowrap" onclick="changeQuoteValidUntil(' + q.id + ')">&#128197; Change date</button>' +
            '<button class="btn btn-secondary" style="white-space:nowrap" onclick="showQuoteLink(' + q.id + ')">&#128279; Customer link</button>';
   }
   return '';
@@ -7708,15 +7745,21 @@ function quoteStatusBannerHtml(q) {
     title = 'The customer asked for changes';
     sub = 'See Customer activity below for what they said. Editing this quote will void their link and send a new one.';
   } else if (st === 'approved') {
-    title = 'Approved by ' + escHtml(q.approver_name || 'the customer');
+    var lateD = parseInt(q.approved_late_days, 10) || 0;
+    title = 'Approved by ' + escHtml(q.approver_name || 'the customer') +
+      (lateD > 0 ? ' &mdash; ' + lateD + ' day' + (lateD === 1 ? '' : 's') + ' past its valid date' : '');
     sub = (q.approver_title ? escHtml(q.approver_title) + ' &middot; ' : '') +
-      '$' + parseFloat(q.approved_total || q.total_amount || 0).toFixed(2) + ' &middot; ' + escHtml(formatDateTime(q.responded_at));
+      '$' + parseFloat(q.approved_total || q.total_amount || 0).toFixed(2) + ' &middot; ' + escHtml(formatDateTime(q.responded_at)) +
+      (q.customer_po_number ? ' &middot; their PO <strong>' + escHtml(q.customer_po_number) + '</strong>' : '') +
+      (lateD > 0 ? ' &middot; <strong>Check the pricing still works before ordering.</strong>' : '') +
+      (q.customer_approval_notes ? '<div style="margin-top:5px;padding-left:10px;border-left:2px solid var(--border)">' + escHtml(q.customer_approval_notes) + '</div>' : '');
   } else if (st === 'declined') {
     title = 'Declined by ' + escHtml(q.approver_name || 'the customer');
     sub = (q.decline_reason ? escHtml(q.decline_reason) : 'No reason given') + ' &middot; ' + escHtml(formatDateTime(q.responded_at));
   } else if (st === 'expired') {
-    title = 'The customer link expired';
-    sub = 'It was never answered. Edit and re-send to give them a fresh link.';
+    title = 'Past its valid-through date';
+    sub = 'It was good through ' + escHtml(quoteValidDate(q.valid_until) || 'an unset date') +
+      '. The customer link still works and they can still approve — use Change date to give them a current one.';
   }
 
   return '<div style="' + box + '">' +
@@ -7745,14 +7788,8 @@ async function openQuoteSendDialog(id) {
         '<input id="qsd-sms" type="tel" style="' + fld + '" value="' + escHtml(q.customer_phone || '') + '" placeholder="(555) 555-0100" /></div>' +
       '<div><label style="' + lbl + '" for="qsd-msg">Message (optional)</label>' +
         '<textarea id="qsd-msg" rows="3" style="' + fld + ';resize:vertical" placeholder="Anything you want them to read before the numbers."></textarea></div>' +
-      '<div><label style="' + lbl + '" for="qsd-days">Link expires in</label>' +
-        '<select id="qsd-days" style="' + fld + '">' +
-          '<option value="14">14 days</option>' +
-          '<option value="30" selected>30 days</option>' +
-          '<option value="45">45 days</option>' +
-          '<option value="60">60 days</option>' +
-          '<option value="90">90 days</option>' +
-        '</select>' +
+      '<div><label style="' + lbl + '" for="qsd-valid-until">Quote valid through</label>' +
+        '<input type="date" id="qsd-valid-until" style="' + fld + '" value="' + escHtml(q.valid_until ? String(q.valid_until).slice(0, 10) : '') + '" />' +
         '<div id="qsd-valid" style="font-size:12px;color:var(--text-muted-color);margin-top:4px"></div></div>' +
     '</div>' +
     '<div id="qsd-err" style="font-size:13px;color:var(--danger,#dc2626);margin-bottom:8px"></div>' +
@@ -7768,14 +7805,20 @@ async function openQuoteSendDialog(id) {
   ov.addEventListener('mousedown', function (e) { if (e.target === ov) close(); });
   ov.querySelector('#qsd-cancel').addEventListener('click', close);
 
-  var daysEl = ov.querySelector('#qsd-days');
+  var daysEl = ov.querySelector('#qsd-valid-until');
   function paintValid() {
-    var d = parseInt(daysEl.value, 10) || 30;
-    var until = new Date(Date.now() + d * 86400000);
-    ov.querySelector('#qsd-valid').textContent = 'The customer sees "valid through ' +
-      until.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }) + '".';
+    var out = ov.querySelector('#qsd-valid');
+    var shown = quoteValidDate(daysEl.value);
+    if (!shown) { out.innerHTML = '<span style="color:var(--danger)">Pick a date.</span>'; return; }
+    // Changing it here changes the QUOTE, not just the link - one date drives the
+    // printed terms, the email and the approval page alike.
+    var past = daysEl.value < ymdPlusDays(0);
+    out.innerHTML = past
+      ? '<span style="color:var(--warning)">Already past. You can still send it, but you will be asked to confirm.</span>'
+      : 'Shown to the customer, printed on the quote, and used by {default_date}.';
   }
   daysEl.addEventListener('change', paintValid);
+  daysEl.addEventListener('input', paintValid);
   paintValid();
   ov.querySelector('#qsd-to').focus();
 
@@ -7785,14 +7828,29 @@ async function openQuoteSendDialog(id) {
     var err = ov.querySelector('#qsd-err');
     err.textContent = '';
     if (!to || to.indexOf('@') === -1) { err.textContent = 'That does not look like an email address.'; return; }
+    var payload = {
+      to: to,
+      sms_to: (ov.querySelector('#qsd-sms').value || '').trim() || null,
+      message: (ov.querySelector('#qsd-msg').value || '').trim() || null,
+      valid_until: daysEl.value || null
+    };
     novaBtnBusy(btn, 'Sending…');
     try {
-      var r = await api('POST', '/quotes/' + id + '/send', {
-        to: to,
-        sms_to: (ov.querySelector('#qsd-sms').value || '').trim() || null,
-        message: (ov.querySelector('#qsd-msg').value || '').trim() || null,
-        expires_days: parseInt(daysEl.value, 10) || 30
-      });
+      var r;
+      try {
+        r = await api('POST', '/quotes/' + id + '/send', payload);
+      } catch (e1) {
+        // The quote is already past its date. Allowed, but never silently - the
+        // tech is the one deciding to honour a price that has lapsed.
+        if (!(e1 && e1.status === 409 && e1.data && e1.data.error === 'past_valid_until')) throw e1;
+        novaBtnReset(btn);
+        var goAhead = await novaConfirm(e1.data.message + '\n\nSend it anyway?',
+          { title: 'This quote has lapsed', okText: 'Send it anyway', cancelText: 'Let me change the date' });
+        if (!goAhead) return;
+        novaBtnBusy(btn, 'Sending…');
+        payload.confirm_stale = true;
+        r = await api('POST', '/quotes/' + id + '/send', payload);
+      }
       close();
       if (r && r.emailed === false) {
         await novaAlert('The quote was marked as sent, but the email did not go out. Check the Resend key in Railway, then use Send a reminder.');
@@ -7803,6 +7861,26 @@ async function openQuoteSendDialog(id) {
       err.textContent = e.message;
     }
   });
+}
+
+// Moving the date does NOT void the customer's link. Editing anything else
+// still does - see the 409 in saveQuote - because prices shifting under an open
+// page is the thing that rule exists to stop. How long a price stands is a
+// different promise, and extending it only ever helps the customer.
+async function changeQuoteValidUntil(id) {
+  var q = _currentQuote && _currentQuote.id === id ? _currentQuote : null;
+  if (!q) { try { q = await api('GET', '/quotes/' + id); } catch (e) { return novaAlert(e.message); } }
+  var current = q.valid_until ? String(q.valid_until).slice(0, 10) : ymdPlusDays(30);
+  var next = await novaPrompt(
+    'What date should this quote be good through? The customer\'s link keeps working either way.',
+    current, { title: 'Change valid-through date', okText: 'Save date' }
+  );
+  if (!next) return;
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(next.trim())) return novaAlert('Use the format YYYY-MM-DD, for example ' + ymdPlusDays(30) + '.');
+  try {
+    await api('POST', '/quotes/' + id + '/valid-until', { valid_until: next.trim() });
+    navigate('view-quote', id);
+  } catch (e) { novaAlert(e.message); }
 }
 
 async function remindQuoteCustomer(id) {
@@ -7841,11 +7919,15 @@ function quoteEventText(ev) {
     case 'sent':              return '<strong>Sent</strong> to ' + escHtml(d.to || 'the customer') + (ev.actor_name ? ' <span style="color:var(--text-muted-color)">by ' + escHtml(ev.actor_name) + '</span>' : '');
     case 'viewed':            return 'Opened the quote';
     case 'reminded':          return 'Reminder sent' + (ev.actor_name === 'system' ? ' <span style="color:var(--text-muted-color)">automatically</span>' : (ev.actor_name ? ' <span style="color:var(--text-muted-color)">by ' + escHtml(ev.actor_name) + '</span>' : ''));
-    case 'approved':          return '<strong>Approved</strong> by ' + escHtml(ev.actor_name || 'the customer') + (d.total != null ? ' &mdash; $' + parseFloat(d.total).toFixed(2) : '') + (d.signed ? ' <span style="color:var(--text-muted-color)">(signed)</span>' : '');
+    case 'approved':          return '<strong>Approved</strong> by ' + escHtml(ev.actor_name || 'the customer') + (d.total != null ? ' &mdash; $' + parseFloat(d.total).toFixed(2) : '') + (d.signed ? ' <span style="color:var(--text-muted-color)">(signed)</span>' : '') + (d.late_days ? ' <span style="color:var(--danger)">' + d.late_days + ' day' + (d.late_days === 1 ? '' : 's') + ' past its valid date</span>' : '') + (d.po_number ? '<div style="color:var(--text-muted-color);margin-top:1px">Their PO ' + escHtml(d.po_number) + '</div>' : '') + (d.notes ? '<div style="color:var(--text-muted-color);margin-top:1px">&ldquo;' + escHtml(d.notes) + '&rdquo;</div>' : '');
     case 'declined':          return '<strong>Declined</strong> by ' + escHtml(ev.actor_name || 'the customer') + (d.reason ? ': ' + escHtml(d.reason) : '');
     case 'changes_requested': return '<strong>Asked for changes</strong>' + (d.message ? ': ' + escHtml(d.message) : '') + (d.phone ? ' <span style="color:var(--text-muted-color)">(call ' + escHtml(d.phone) + ')</span>' : '');
+    case 'edited_while_out':  return 'Quote edited while the customer had it open <span style="color:var(--text-muted-color)">(their link still works; they will be shown the new version before they can approve)</span>' + (ev.actor_name ? ' <span style="color:var(--text-muted-color)">by ' + escHtml(ev.actor_name) + '</span>' : '');
     case 'link_voided':       return 'Customer link voided' + (d.reason === 'edited' ? ' <span style="color:var(--text-muted-color)">(quote was edited)</span>' : '') + (ev.actor_name ? ' <span style="color:var(--text-muted-color)">by ' + escHtml(ev.actor_name) + '</span>' : '');
-    case 'expired':           return 'The link expired';
+    case 'expired':           return 'Passed its valid-through date <span style="color:var(--text-muted-color)">(link still works)</span>';
+    case 'valid_until_changed': return 'Valid-through date ' + (d.extended ? 'extended' : 'changed') + ' to ' + escHtml(quoteValidDate(d.to) || String(d.to || '')) +
+                                  (d.from ? ' <span style="color:var(--text-muted-color)">from ' + escHtml(quoteValidDate(d.from) || String(d.from)) + '</span>' : '') +
+                                  (ev.actor_name ? ' <span style="color:var(--text-muted-color)">by ' + escHtml(ev.actor_name) + '</span>' : '');
     default:                  return escHtml(String(ev.event_type).split('_').join(' '));
   }
 }
@@ -8109,7 +8191,10 @@ async function pushQuoteToInvoice(id) {
       phone: q.customer_phone || '',
       email: q.customer_email || '',
       tax_rate: parseFloat(q.tax_rate) || 0,
-      notes: 'From quote ' + q.quote_number + (q.notes ? ('\n' + q.notes) : ''),
+      notes: 'From quote ' + q.quote_number + (q.notes ? ('\n' + q.notes) : '') + (q.customer_approval_notes ? ('\nCustomer note at approval: ' + q.customer_approval_notes) : ''),
+      // Their PO number was captured at the moment they approved, so it lands on
+      // the invoice their accounts payable will match it against.
+      customer_po_wo: q.customer_po_number || null,
       line_items: lines
     };
     var created = await api('POST', '/invoices', payload);
@@ -8318,6 +8403,7 @@ async function printQuote(id) {
     const detailFields = [
       { label: 'City', value: q.city_code || '—' },
       { label: 'Quote Date', value: formatDate(q.created_at) },
+      { label: 'Valid Through', value: quoteValidDate(q.valid_until) || '\u2014' },
       { label: 'Quote Number', value: q.quote_number }
     ];
 
@@ -8364,7 +8450,7 @@ async function printQuote(id) {
     const importantHtml = q.important_info
       ? '<div class="avoid-break" style="padding:20px 32px;border-bottom:1px solid #e5e7eb">' +
           '<div style="font-size:11px;font-weight:600;color:#6b7280;text-transform:uppercase;letter-spacing:0.05em;margin-bottom:6px">Important Information</div>' +
-          '<div style="font-size:12px;color:#6b7280;white-space:pre-wrap;line-height:1.6">' + esc(resolveTokens(q.important_info)) + '</div>' +
+          '<div style="font-size:12px;color:#6b7280;white-space:pre-wrap;line-height:1.6">' + esc(resolveTokens(q.important_info, q.valid_until)) + '</div>' +
         '</div>'
       : '';
 
@@ -22447,6 +22533,7 @@ function qaReceiptHtml(d) {
   var receipt = '<div style="margin-top:16px;padding-top:14px;border-top:1px solid var(--border);font-size:11px;color:var(--text-muted-color);line-height:1.8;letter-spacing:0.04em;text-transform:uppercase">' +
     escHtml(d.status) + ' ' + escHtml(when) + '<br>' +
     escHtml(d.approver_name || '') + (d.approver_title ? ' &middot; ' + escHtml(d.approver_title) : '') +
+    (d.customer_po_number ? ' &middot; PO ' + escHtml(d.customer_po_number) : '') +
     (approved && d.approved_total != null ? ' &middot; ' + qaMoney(d.approved_total) : '') +
     ' &middot; ref ' + escHtml(d.quote_number) +
   '</div>';
@@ -22542,19 +22629,25 @@ async function renderQuoteApprovePage(app, token) {
     '<div style="font-size:26px;font-weight:700;letter-spacing:-0.02em">' + qaMoney(d.total) + '</div>' +
   '</div></div>';
 
-  var validNote = d.expires_at
-    ? '<div style="font-size:12px;color:var(--text-muted-color);margin-bottom:14px">This pricing is good through <strong>' + escHtml(formatDate(d.expires_at)) + '</strong>.</div>'
-    : '';
+  // Past the date the page is honest about it and the Approve button stays live.
+  // A customer who comes back late should be able to say yes and have somebody
+  // call them, not hit a dead end.
+  var validNote = '';
+  if (d.days_past_valid > 0) {
+    validNote = '<div style="display:flex;gap:11px;align-items:flex-start;padding:12px 14px;border-radius:8px;border:1px solid var(--border);background:var(--bg-card);margin-bottom:14px">' +
+      '<div style="font-size:17px;line-height:1.2">&#9888;</div>' +
+      '<div><div style="font-weight:600;font-size:13.5px;margin-bottom:2px">This pricing was good through ' + escHtml(quoteValidDate(d.valid_until) || '') + '</div>' +
+      '<div style="font-size:12.5px;color:var(--text-muted-color);line-height:1.5">You can still approve it. We will get in touch to confirm the pricing still works before anything is scheduled.</div></div>' +
+    '</div>';
+  } else if (d.valid_until) {
+    validNote = '<div style="font-size:12px;color:var(--text-muted-color);margin-bottom:14px">This pricing is good through <strong>' + escHtml(quoteValidDate(d.valid_until)) + '</strong>.</div>';
+  }
 
-  var msg = d.message
-    ? qaCard('A note from ' + escHtml((d.prepared_by && d.prepared_by.name) || 'us'),
-        '<div style="font-size:13.5px;line-height:1.6;white-space:pre-wrap">' + escHtml(d.message) + '</div>')
-    : '';
   var notes = d.notes
     ? qaCard('Notes', '<div style="font-size:13.5px;line-height:1.6;white-space:pre-wrap">' + escHtml(d.notes) + '</div>')
     : '';
   var important = d.important_info
-    ? qaCard('Important information', '<div style="font-size:12.5px;line-height:1.6;color:var(--text-muted-color);white-space:pre-wrap">' + escHtml(resolveTokens(d.important_info)) + '</div>')
+    ? qaCard('Important information', '<div style="font-size:12.5px;line-height:1.6;color:var(--text-muted-color);white-space:pre-wrap">' + escHtml(resolveTokens(d.important_info, d.valid_until)) + '</div>')
     : '';
   var contact = (d.prepared_by && (d.prepared_by.phone || d.prepared_by.email))
     ? qaCard('Questions?', '<div style="font-size:13.5px;line-height:1.7">' +
@@ -22564,7 +22657,9 @@ async function renderQuoteApprovePage(app, token) {
     : '';
 
   var actions = '<div style="position:sticky;bottom:0;background:var(--bg);border-top:1px solid var(--border);padding:12px 0;display:flex;gap:8px;justify-content:center;flex-wrap:wrap;margin-top:8px">' +
-    '<button class="btn btn-secondary" onclick="qaOpenDecline()">Decline</button>' +
+    // No Decline button by design. A customer who does not want this either says
+    // nothing or wants something changed, and Ask a question catches the second
+    // one - which is the case worth catching.
     '<button class="btn btn-secondary" onclick="qaOpenMessage()">Ask a question</button>' +
     '<button class="btn btn-primary" onclick="qaOpenApprove()" style="background:#0f6b41;border-color:#0f6b41">&#10003; Approve this quote</button>' +
   '</div>' +
@@ -22574,7 +22669,7 @@ async function renderQuoteApprovePage(app, token) {
   app.innerHTML = qaShell(
     hero + totalBox + validNote +
     qaCard('What is included', qaLineItemsHtml(d), '<span style="font-size:11px;color:var(--text-muted-color)">' + count + ' item' + (count === 1 ? '' : 's') + '</span>') +
-    msg + notes + important + contact + actions,
+    notes + important + contact + actions,
     d.company
   );
 }
@@ -22615,6 +22710,11 @@ function qaOpenApprove() {
       '<input id="qa-name" type="text" style="' + QA_FIELD + '" autocomplete="name" /></div>' +
     '<div><label style="' + QA_LABEL + '" for="qa-title">Title (optional)</label>' +
       '<input id="qa-title" type="text" style="' + QA_FIELD + '" placeholder="Property Manager" /></div>' +
+    '<div><label style="' + QA_LABEL + '" for="qa-po">Your PO number (optional)</label>' +
+      '<input id="qa-po" type="text" style="' + QA_FIELD + '" placeholder="e.g. 4500123987" />' +
+      '<div style="font-size:11.5px;color:var(--text-muted-color);margin-top:4px">If your company needs a PO on the invoice, put it here and it will be on ours.</div></div>' +
+    '<div><label style="' + QA_LABEL + '" for="qa-anote">Anything we should know? (optional)</label>' +
+      '<textarea id="qa-anote" rows="3" style="' + QA_FIELD + ';resize:vertical" placeholder="Access instructions, timing, who to ask for on site..."></textarea></div>' +
     '<div><label style="' + QA_LABEL + '">Sign here (optional)</label>' +
       '<canvas id="qa-pad" width="420" height="110" style="width:100%;height:110px;background:#fff;border:1px dashed var(--border);border-radius:7px;touch-action:none;cursor:crosshair"></canvas>' +
       '<button type="button" class="btn btn-secondary btn-sm" style="margin-top:6px" onclick="qaPadClear()">Clear</button></div>' +
@@ -22670,50 +22770,38 @@ async function qaSubmitApprove() {
   if (!consent) { qaErr('Please tick the authorization box to approve.'); return; }
   novaBtnBusy(btn, 'Approving…');
   try {
-    var body = { name: name, title: title || null, consent: true };
+    var body = {
+      name: name,
+      title: title || null,
+      consent: true,
+      po_number: ((document.getElementById('qa-po') || {}).value || '').trim() || null,
+      notes: ((document.getElementById('qa-anote') || {}).value || '').trim() || null,
+      // The fingerprint of exactly what this page rendered. If the quote has been
+      // edited since, the server refuses rather than binding them to a total they
+      // never saw.
+      seen_version: qaData && qaData.version
+    };
     if (qaPad && qaPad.ink) { try { body.signature = qaPad.c.toDataURL('image/png'); } catch (e) {} }
     var res = await fetch('/api/quote-approve/' + encodeURIComponent(qaToken) + '/approve', {
       method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body)
     });
     var out = await res.json();
+    if (!res.ok && out.error === 'quote_changed') {
+      qaCloseOverlay();
+      await renderQuoteApprovePage(document.getElementById('app'), qaToken);
+      return novaAlert('This quote was updated since you opened it, so we have loaded the latest version. Please take another look at the total before approving.',
+        { title: 'The quote has changed' });
+    }
     if (!res.ok) throw new Error(out.error === 'already_answered' ? 'This quote has already been answered.' : (out.error || 'Could not record your approval.'));
     qaCloseOverlay();
     await renderQuoteApprovePage(document.getElementById('app'), qaToken);
   } catch (e) { novaBtnReset(btn); qaErr(e.message); }
 }
 
-function qaOpenDecline() {
-  var d = qaData;
-  if (!d) return;
-  qaOverlay(
-    'Decline quote ' + escHtml(d.quote_number),
-    '<div style="font-size:13px;color:var(--text-muted-color);line-height:1.55">If you just want something changed instead, use <strong>Ask a question</strong> &mdash; that keeps the quote open.</div>' +
-    '<div><label style="' + QA_LABEL + '" for="qa-dname">Your name</label>' +
-      '<input id="qa-dname" type="text" style="' + QA_FIELD + '" value="' + escHtml(d.customer_name || '') + '" /></div>' +
-    '<div><label style="' + QA_LABEL + '" for="qa-reason">Anything we should know? (optional)</label>' +
-      '<textarea id="qa-reason" rows="3" style="' + QA_FIELD + ';resize:vertical" placeholder="Went with someone else, timing, budget…"></textarea></div>',
-    'Decline this quote', 'background:#b3261e;border-color:#b3261e'
-  );
-  document.getElementById('qa-ok').addEventListener('click', async function () {
-    var btn = this;
-    qaErr('');
-    novaBtnBusy(btn, 'Sending…');
-    try {
-      var res = await fetch('/api/quote-approve/' + encodeURIComponent(qaToken) + '/decline', {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          name: (document.getElementById('qa-dname').value || '').trim(),
-          reason: (document.getElementById('qa-reason').value || '').trim() || null
-        })
-      });
-      var out = await res.json();
-      if (!res.ok) throw new Error(out.error === 'already_answered' ? 'This quote has already been answered.' : (out.error || 'Could not record your response.'));
-      qaCloseOverlay();
-      await renderQuoteApprovePage(document.getElementById('app'), qaToken);
-    } catch (e) { novaBtnReset(btn); qaErr(e.message); }
-  });
-}
-
+// qaOpenDecline() was removed 2026-08-23: the customer page offers Approve and
+// Ask a question only. The POST /:token/decline route is deliberately LEFT in
+// place - it is token-gated and guarded against a second answer, and keeping it
+// means restoring the button is a one-line change if that call is reversed.
 function qaOpenMessage() {
   var d = qaData;
   if (!d) return;
