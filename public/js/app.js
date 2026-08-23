@@ -2,7 +2,7 @@
 // public/sw.js (the only thing bumped each deploy) — the badge asks the active
 // service worker for it at runtime. This value is just the fallback shown when no
 // service worker is available (e.g. very first visit before it installs).
-var APP_VERSION = 'v400';
+var APP_VERSION = 'v401';
 var _resolvedAppVersion = null;
 
 // Ask the active service worker for its CACHE_VERSION (without the 'nova-' prefix).
@@ -1025,6 +1025,8 @@ async function render() {
   const app = document.getElementById('app');
   var _signTok = sigGetUrlToken();
   if (_signTok) { await renderSignPage(app, _signTok); return; }
+  var _qaTok = qaGetUrlToken();
+  if (_qaTok) { await renderQuoteApprovePage(app, _qaTok); return; }
   var _quizTok = new URLSearchParams(window.location.search).get('quiz');
   if (_quizTok) { await renderQuizTake(app, _quizTok); return; }
   if (!state.token || !state.user) {
@@ -3178,7 +3180,7 @@ async function renderRoles(el) {
 
   var groups = [
     { group:'Purchase Orders', gate:'view_pos', perms:[ {k:'view_pos',l:'View / access module'}, {k:'create_po',l:'Create POs'}, {k:'edit_po',l:'Edit POs'}, {k:'delete_po',l:'Delete POs'}, {k:'submit_po',l:'Submit for approval'}, {k:'approve_po',l:'Approve / reject POs'}, {k:'cancel_po',l:'Cancel POs'} ] },
-    { group:'Quotes', gate:'view_quotes', perms:[ {k:'view_quotes',l:'View / access module'}, {k:'create_quote',l:'Create quotes'}, {k:'edit_quote',l:'Edit quotes'}, {k:'delete_quote',l:'Delete quotes'}, {k:'push_quote_po',l:'Push quote to PO'} ] },
+    { group:'Quotes', gate:'view_quotes', perms:[ {k:'view_quotes',l:'View / access module'}, {k:'create_quote',l:'Create quotes'}, {k:'edit_quote',l:'Edit quotes'}, {k:'delete_quote',l:'Delete quotes'}, {k:'push_quote_po',l:'Push quote to PO'}, {k:'send_quote',l:'Send quotes to customers'} ] },
     { group:'Vehicle Repairs', gate:'view_vr', perms:[ {k:'view_vr',l:'View / access module'}, {k:'create_vr',l:'Create VRs'}, {k:'edit_vr',l:'Edit VRs'}, {k:'delete_vr',l:'Delete VRs'}, {k:'submit_vr',l:'Submit for approval'}, {k:'approve_vr',l:'Approve / reject vehicle repairs'} ] },
     { group:'Cash Deposits', gate:'view_deposits', perms:[ {k:'view_deposits',l:'View / access module'}, {k:'create_deposit',l:'Create / upload deposit'}, {k:'complete_deposit_for_employee',l:'Complete a deposit on behalf of an employee (managers: own cities only)'}, {k:'edit_deposit',l:'Edit a submitted deposit (managers: own cities only)'}, {k:'delete_deposit',l:'Delete deposit'}, {k:'export_deposits',l:'Export deposits (CSV)'} ] },
     { group:'Invoices', gate:'view_invoices', perms:[ {k:'view_invoices',l:'View / access module'}, {k:'create_invoice',l:'Create invoices'}, {k:'edit_invoice',l:'Edit invoices'}, {k:'delete_invoice',l:'Delete invoices'}, {k:'request_refund',l:'Request a refund'}, {k:'approve_refund',l:'Approve / reject &amp; record refunds'}, {k:'manage_invoice_setup',l:'Manage invoice setup (accounts, agreement, defaults)'} ] },
@@ -7039,6 +7041,22 @@ let quoteLineItems = [];
 // when the form is (re)opened.
 let quotePendingPhotos = [];
 
+// A quote list is a pipeline, not an archive. The pill says where a quote is;
+// this line says whether it needs you today. "Opened 3x, no answer" is the row
+// that is worth a phone call, and it should not take a click to find that out.
+function quoteRowActivityHtml(q) {
+  var st = q.status || 'draft';
+  var note = '';
+  if (st === 'sent') note = 'Sent ' + timeAgo(q.sent_at) + (q.reminder_count > 0 ? ', ' + q.reminder_count + ' reminder' + (q.reminder_count === 1 ? '' : 's') : '') + ', not opened';
+  else if (st === 'viewed') note = 'Opened ' + timeAgo(q.first_viewed_at) + ', no answer';
+  else if (st === 'changes_requested') note = 'Waiting on you';
+  else if (st === 'approved') note = timeAgo(q.responded_at);
+  else if (st === 'declined') note = timeAgo(q.responded_at);
+  else if (st === 'expired') note = 'Link expired';
+  if (!note) return '';
+  return '<div style="font-size:11px;color:var(--text-muted-color);margin-top:3px">' + escHtml(note) + '</div>';
+}
+
 function renderQuoteRows(quotes, isAdmin) {
   return quotes.map(function(q) {
     return '<tr style="cursor:pointer" onclick="navigate(\'view-quote\',' + q.id + ')">' +
@@ -7046,6 +7064,7 @@ function renderQuoteRows(quotes, isAdmin) {
       '<td>' + escHtml(q.customer_name) + '</td>' +
       '<td>' + escHtml(q.city_code || '—') + '</td>' +
       (isAdmin ? '<td>' + escHtml(q.requester_name || '—') + '</td>' : '') +
+      '<td>' + quoteStatusPill(q.status) + quoteRowActivityHtml(q) + '</td>' +
       '<td>$' + parseFloat(q.total_amount).toFixed(2) + '</td>' +
       '<td>' + formatDate(q.created_at) + '</td>' +
     '</tr>';
@@ -7091,7 +7110,7 @@ function quoteFilterValue(id) {
 }
 
 function clearQuoteFilters() {
-  ['quote-search', 'quote-filter-city', 'quote-filter-by', 'quote-filter-from', 'quote-filter-to', 'quote-filter-min', 'quote-filter-max']
+  ['quote-search', 'quote-filter-city', 'quote-filter-status', 'quote-filter-by', 'quote-filter-from', 'quote-filter-to', 'quote-filter-min', 'quote-filter-max']
     .forEach(function(id) { var e = document.getElementById(id); if (e) e.value = ''; });
   filterQuotes(true);
 }
@@ -7141,6 +7160,17 @@ async function renderQuotes(el) {
               '<div class="filter-bar">' +
                 '<input type="text" id="quote-search" placeholder="Search quote #, customer, city, item, note, phone, email..." oninput="filterQuotes(true)" />' +
                 '<select id="quote-filter-city" onchange="filterQuotes(true)">' + cityOptions + '</select>' +
+                '<select id="quote-filter-status" onchange="filterQuotes(true)">' +
+                  '<option value="">Any status</option>' +
+                  '<option value="open">Open (sent, viewed, changes)</option>' +
+                  '<option value="draft">Draft</option>' +
+                  '<option value="sent">Sent</option>' +
+                  '<option value="viewed">Viewed</option>' +
+                  '<option value="changes_requested">Changes requested</option>' +
+                  '<option value="approved">Approved</option>' +
+                  '<option value="declined">Declined</option>' +
+                  '<option value="expired">Expired</option>' +
+                '</select>' +
                 (seeAll ? '<select id="quote-filter-by" onchange="filterQuotes(true)">' + byOptions + '</select>' : '') +
               '</div>' +
               '<div class="filter-bar" style="margin-bottom:0">' +
@@ -7169,6 +7199,7 @@ function filterQuotes(resetPage) {
   // Space-separated terms are ANDed, so "camry ATL" narrows instead of widening.
   const terms = quoteFilterValue('quote-search').toLowerCase().split(/\s+/).filter(Boolean);
   const city = quoteFilterValue('quote-filter-city');
+  const status = quoteFilterValue('quote-filter-status');
   const by = quoteFilterValue('quote-filter-by');
   const from = quoteFilterValue('quote-filter-from');
   const to = quoteFilterValue('quote-filter-to');
@@ -7177,6 +7208,11 @@ function filterQuotes(resetPage) {
 
   const filtered = window._quotesData.filter(function(r) {
     if (city && (r.city_code || '') !== city) return false;
+    // 'open' is the one people actually want: everything still waiting on a
+    // customer, without having to pick three statuses one at a time.
+    if (status === 'open') {
+      if (['sent', 'viewed', 'changes_requested'].indexOf(r.status || 'draft') === -1) return false;
+    } else if (status && (r.status || 'draft') !== status) return false;
     if (by && String(r.requester_id) !== by) return false;
     if (from || to) {
       const d = quoteDateKey(r);
@@ -7217,7 +7253,7 @@ function filterQuotes(resetPage) {
   const page = filtered.slice(start, start + QUOTE_PAGE_SIZE);
   wrap.innerHTML =
     '<div class="table-wrap"><table id="quotes-table">' +
-    '<thead><tr><th>Quote #</th><th>Customer</th><th>City</th>' + (isAdmin ? '<th>Created By</th>' : '') + '<th>Total</th><th>Date</th><th></th></tr></thead>' +
+    '<thead><tr><th>Quote #</th><th>Customer</th><th>City</th>' + (isAdmin ? '<th>Created By</th>' : '') + '<th>Status</th><th>Total</th><th>Date</th><th></th></tr></thead>' +
     '<tbody>' + renderQuoteRows(page, isAdmin) + '</tbody>' +
     '</table></div>' +
     renderPagination(_quotePage, totalPages, filtered.length, 'quotePaginate', QUOTE_PAGE_SIZE, 'quotePageSize');
@@ -7414,7 +7450,25 @@ async function saveQuote(id) {
     novaBtnBusy(btn, 'Saving\u2026');
     let newId;
     if (id) {
-      await api('PUT', '/quotes/' + id, { customer_name, city_code: city_code || null, notes, important_info, tax_rate, line_items: validItems, customer_street, customer_city, customer_state, customer_zip, customer_phone, customer_email });
+      const _payload = { customer_name, city_code: city_code || null, notes, important_info, tax_rate, line_items: validItems, customer_street, customer_city, customer_state, customer_zip, customer_phone, customer_email };
+      try {
+        await api('PUT', '/quotes/' + id, _payload);
+      } catch (e) {
+        // The quote is already in front of a customer. The server refuses the
+        // edit until we say, in as many words, that the link they were sent is
+        // going away. Nobody should move numbers under an open page by accident.
+        if (!(e && e.status === 409 && e.data && e.data.error === 'quote_is_out')) throw e;
+        novaBtnReset(document.getElementById('btn-save-quote'));
+        const _who = e.data.sent_to || 'the customer';
+        const _ok = await novaConfirm(
+          'This quote has already been sent to ' + _who + '.\n\nSaving will void the link they were sent and put the quote back in draft, so you can send them a fresh one.',
+          { title: 'Void the customer link?', okText: 'Save and void the link', cancelText: 'Keep it as sent' }
+        );
+        if (!_ok) return;
+        novaBtnBusy(document.getElementById('btn-save-quote'), 'Saving\u2026');
+        _payload.confirm_void = true;
+        await api('PUT', '/quotes/' + id, _payload);
+      }
       newId = id;
     } else {
       const q = await api('POST', '/quotes', { customer_name, city_code: city_code || null, notes, important_info, tax_rate, line_items: validItems, customer_street, customer_city, customer_state, customer_zip, customer_phone, customer_email });
@@ -7449,6 +7503,7 @@ async function renderViewQuote(el, id) {
           '<button class="btn btn-secondary" onclick="navigate(\'quotes\')">&larr; Back</button>' +
           '<button class="btn btn-secondary" style="white-space:nowrap" onclick="printQuote(' + q.id + ')">' + icons.print + ' Print Quote</button>' +
           '<button class="btn btn-secondary" id="ai-review-btn" onclick="reviewQuoteWithAI()" style="color:var(--primary);border-color:var(--primary);">&#10024; AI Review</button>' +
+          (can('send_quote') ? quoteSendButtonHtml(q) : '') +
           (can('push_quote_po') ? '<button class="btn btn-primary" onclick="pushQuoteToPO(' + q.id + ')" style="white-space:nowrap">&#10142; Push to PO</button>' : '') +
           (can('create_invoice') ? '<button class="btn btn-primary" onclick="pushQuoteToInvoice(' + q.id + ')" style="white-space:nowrap">&#10142; Push to Invoice</button>' : '') +
           (canEdit ? '<button class="btn btn-secondary" onclick="navigate(\'edit-quote\',' + q.id + ')">' + icons.edit + ' Edit</button>' : '') +
@@ -7456,6 +7511,7 @@ async function renderViewQuote(el, id) {
         '</div>' +
       '</div>' +
       '<div id="view-quote-error"></div>' +
+      quoteStatusBannerHtml(q) +
       '<div class="card mb-4"><div class="card-header"><span class="card-title">Quote Information</span></div><div class="card-body">' +
         '<div class="detail-grid">' +
           '<div class="detail-field"><label>Quote Number</label><p>' + escHtml(q.quote_number) + '</p></div>' +
@@ -7502,10 +7558,240 @@ async function renderViewQuote(el, id) {
             '<button type="button" class="btn btn-secondary btn-sm" style="margin-bottom:12px" onclick="document.getElementById(\'quote-photo-input\').click()">' + icons.plus + ' Add Photos</button>'
           : '') +
         '<div id="quote-photos-list"></div>' +
-      '</div></div>';
+      '</div></div>' +
+      (q.status && q.status !== 'draft'
+        ? '<div class="card" style="margin-top:16px"><div class="card-header"><span class="card-title">Customer activity</span></div><div class="card-body"><div id="quote-activity"></div></div></div>'
+        : '');
     loadQuotePhotos(q.id, canEdit);
+    if (q.status && q.status !== 'draft') loadQuoteActivity(q.id);
   } catch(err) {
     el.innerHTML = '<div class="alert alert-error">' + escHtml(err.message) + '</div>';
+  }
+}
+
+// ===== Customer approval =====================================================
+// A quote now has a lifecycle: draft -> sent -> viewed -> answered. Everything
+// below drives the staff side of that. The customer-facing page is further down
+// (renderQuoteApprovePage), and shares no code with the authenticated views on
+// purpose - it must never be able to render a cost.
+
+var QUOTE_STATUSES = {
+  draft:             { label: 'Draft',             cls: 'draft' },
+  sent:              { label: 'Sent',              cls: 'waiting' },
+  viewed:            { label: 'Viewed',            cls: 'active' },
+  changes_requested: { label: 'Changes requested', cls: 'cancelled' },
+  approved:          { label: 'Approved',          cls: 'approved' },
+  declined:          { label: 'Declined',          cls: 'declined' },
+  expired:           { label: 'Expired',           cls: 'inactive' }
+};
+
+function quoteStatusMeta(status) {
+  return QUOTE_STATUSES[status || 'draft'] || QUOTE_STATUSES.draft;
+}
+
+function quoteStatusPill(status) {
+  var m = quoteStatusMeta(status);
+  return '<span class="badge badge-' + m.cls + '">' + escHtml(m.label) + '</span>';
+}
+
+// The one button that changes with the quote's state, so a tech never has to
+// work out which action is available.
+function quoteSendButtonHtml(q) {
+  var st = q.status || 'draft';
+  if (st === 'draft') {
+    var noEmail = !q.customer_email;
+    return '<button class="btn btn-primary" style="white-space:nowrap"' +
+      (noEmail ? ' disabled title="Add a customer email on this quote first."' : '') +
+      ' onclick="openQuoteSendDialog(' + q.id + ')">&#9993; Send to Customer</button>';
+  }
+  if (st === 'sent' || st === 'viewed' || st === 'changes_requested') {
+    return '<button class="btn btn-secondary" style="white-space:nowrap" onclick="remindQuoteCustomer(' + q.id + ')">&#8635; Send a reminder</button>' +
+           '<button class="btn btn-secondary" style="white-space:nowrap" onclick="showQuoteLink(' + q.id + ')">&#128279; Customer link</button>';
+  }
+  return '';
+}
+
+// The strip under the page header. It answers "where is this quote right now"
+// before you have to read anything else on the page.
+function quoteStatusBannerHtml(q) {
+  var st = q.status || 'draft';
+  var box = 'display:flex;align-items:center;gap:12px;flex-wrap:wrap;padding:12px 14px;border-radius:8px;border:1px solid var(--border-color);margin-bottom:16px;background:var(--card-bg,var(--bg-color))';
+  var title = '', sub = '';
+
+  if (st === 'draft') {
+    title = 'Not sent yet';
+    sub = 'Once you send it, this quote locks until the customer answers or you re-open it.';
+  } else if (st === 'sent') {
+    title = 'Waiting on the customer';
+    sub = 'Sent to ' + escHtml(q.sent_to || q.customer_email || 'the customer') + ' ' + escHtml(timeAgo(q.sent_at)) + '. Not opened yet.' +
+      (q.reminder_count > 0 ? ' ' + q.reminder_count + ' reminder' + (q.reminder_count === 1 ? '' : 's') + ' sent.' : '');
+  } else if (st === 'viewed') {
+    title = 'Opened, no answer yet';
+    sub = 'First opened ' + escHtml(timeAgo(q.first_viewed_at)) + '. Sent to ' + escHtml(q.sent_to || q.customer_email || 'the customer') + '.' +
+      (q.reminder_count > 0 ? ' ' + q.reminder_count + ' reminder' + (q.reminder_count === 1 ? '' : 's') + ' sent.' : '');
+  } else if (st === 'changes_requested') {
+    title = 'The customer asked for changes';
+    sub = 'See Customer activity below for what they said. Editing this quote will void their link and send a new one.';
+  } else if (st === 'approved') {
+    title = 'Approved by ' + escHtml(q.approver_name || 'the customer');
+    sub = (q.approver_title ? escHtml(q.approver_title) + ' &middot; ' : '') +
+      '$' + parseFloat(q.approved_total || q.total_amount || 0).toFixed(2) + ' &middot; ' + escHtml(formatDateTime(q.responded_at));
+  } else if (st === 'declined') {
+    title = 'Declined by ' + escHtml(q.approver_name || 'the customer');
+    sub = (q.decline_reason ? escHtml(q.decline_reason) : 'No reason given') + ' &middot; ' + escHtml(formatDateTime(q.responded_at));
+  } else if (st === 'expired') {
+    title = 'The customer link expired';
+    sub = 'It was never answered. Edit and re-send to give them a fresh link.';
+  }
+
+  return '<div style="' + box + '">' +
+    quoteStatusPill(st) +
+    '<div style="min-width:0"><div style="font-weight:600;font-size:14px">' + title + '</div>' +
+    '<div style="font-size:13px;color:var(--text-muted-color)">' + sub + '</div></div>' +
+  '</div>';
+}
+
+// ---- Send dialog ------------------------------------------------------------
+async function openQuoteSendDialog(id) {
+  var q = _currentQuote;
+  if (!q || q.id !== id) { try { q = await api('GET', '/quotes/' + id); } catch (e) { return novaAlert(e.message); } }
+  if (!q.customer_email) return novaAlert('Add a customer email address to this quote before sending it.');
+
+  var ov = document.createElement('div');
+  ov.className = 'nova-dialog-overlay';
+  var lbl = 'display:block;font-size:11px;font-weight:600;letter-spacing:0.06em;text-transform:uppercase;color:var(--text-muted-color);margin-bottom:4px';
+  var fld = 'width:100%;padding:8px 10px;border:1px solid var(--border-color);border-radius:6px;background:var(--input-bg,transparent);color:inherit;font-size:13px;font-family:inherit';
+  ov.innerHTML = '<div class="nova-dlg" role="dialog" aria-modal="true" style="max-width:460px;text-align:left">' +
+    '<div class="nova-dlg-title">Send ' + escHtml(q.quote_number) + ' to the customer</div>' +
+    '<div style="display:flex;flex-direction:column;gap:12px;margin:14px 0">' +
+      '<div><label style="' + lbl + '" for="qsd-to">To</label>' +
+        '<input id="qsd-to" type="email" style="' + fld + '" value="' + escHtml(q.customer_email) + '" /></div>' +
+      '<div><label style="' + lbl + '" for="qsd-sms">Also text this link to (optional)</label>' +
+        '<input id="qsd-sms" type="tel" style="' + fld + '" value="' + escHtml(q.customer_phone || '') + '" placeholder="(555) 555-0100" /></div>' +
+      '<div><label style="' + lbl + '" for="qsd-msg">Message (optional)</label>' +
+        '<textarea id="qsd-msg" rows="3" style="' + fld + ';resize:vertical" placeholder="Anything you want them to read before the numbers."></textarea></div>' +
+      '<div><label style="' + lbl + '" for="qsd-days">Link expires in</label>' +
+        '<select id="qsd-days" style="' + fld + '">' +
+          '<option value="14">14 days</option>' +
+          '<option value="30" selected>30 days</option>' +
+          '<option value="45">45 days</option>' +
+          '<option value="60">60 days</option>' +
+          '<option value="90">90 days</option>' +
+        '</select>' +
+        '<div id="qsd-valid" style="font-size:12px;color:var(--text-muted-color);margin-top:4px"></div></div>' +
+    '</div>' +
+    '<div id="qsd-err" style="font-size:13px;color:var(--danger,#dc2626);margin-bottom:8px"></div>' +
+    '<div class="nova-dlg-actions">' +
+      '<button class="btn btn-secondary" id="qsd-cancel">Never mind</button>' +
+      '<button class="btn btn-primary" id="qsd-send">Send quote</button>' +
+    '</div></div>';
+  document.body.appendChild(ov);
+
+  function close() { if (ov.parentNode) ov.parentNode.removeChild(ov); document.removeEventListener('keydown', onKey); }
+  function onKey(e) { if (e.key === 'Escape') { e.preventDefault(); close(); } }
+  document.addEventListener('keydown', onKey);
+  ov.addEventListener('mousedown', function (e) { if (e.target === ov) close(); });
+  ov.querySelector('#qsd-cancel').addEventListener('click', close);
+
+  var daysEl = ov.querySelector('#qsd-days');
+  function paintValid() {
+    var d = parseInt(daysEl.value, 10) || 30;
+    var until = new Date(Date.now() + d * 86400000);
+    ov.querySelector('#qsd-valid').textContent = 'The customer sees "valid through ' +
+      until.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }) + '".';
+  }
+  daysEl.addEventListener('change', paintValid);
+  paintValid();
+  ov.querySelector('#qsd-to').focus();
+
+  ov.querySelector('#qsd-send').addEventListener('click', async function () {
+    var btn = this;
+    var to = (ov.querySelector('#qsd-to').value || '').trim();
+    var err = ov.querySelector('#qsd-err');
+    err.textContent = '';
+    if (!to || to.indexOf('@') === -1) { err.textContent = 'That does not look like an email address.'; return; }
+    novaBtnBusy(btn, 'Sending…');
+    try {
+      var r = await api('POST', '/quotes/' + id + '/send', {
+        to: to,
+        sms_to: (ov.querySelector('#qsd-sms').value || '').trim() || null,
+        message: (ov.querySelector('#qsd-msg').value || '').trim() || null,
+        expires_days: parseInt(daysEl.value, 10) || 30
+      });
+      close();
+      if (r && r.emailed === false) {
+        await novaAlert('The quote was marked as sent, but the email did not go out. Check the Resend key in Railway, then use Send a reminder.');
+      }
+      navigate('view-quote', id);
+    } catch (e) {
+      novaBtnReset(btn);
+      err.textContent = e.message;
+    }
+  });
+}
+
+async function remindQuoteCustomer(id) {
+  if (!await novaConfirm('Send the customer another copy of this quote link?', { okText: 'Send it' })) return;
+  try {
+    var r = await api('POST', '/quotes/' + id + '/remind', {});
+    await novaAlert(r && r.emailed === false ? 'The reminder did not go out - check the email settings in Railway.' : 'Reminder sent.');
+    navigate('view-quote', id);
+  } catch (e) { novaAlert(e.message); }
+}
+
+// Shows the live customer link so a tech can read it over the phone or paste it
+// into a text, and offers the one way to kill it without editing the quote.
+async function showQuoteLink(id) {
+  try {
+    var evs = await api('GET', '/quotes/' + id + '/events');
+    var sent = (evs || []).filter(function (e) { return e.event_type === 'sent'; })[0];
+    var q = _currentQuote && _currentQuote.id === id ? _currentQuote : await api('GET', '/quotes/' + id);
+    var link = window.location.origin + '/quote/' + (q.approval_token || '');
+    if (!q.approval_token) return novaAlert('This quote has no active customer link.');
+    var msg = link + '\n\nSent to ' + ((sent && sent.details && sent.details.to) || q.sent_to || 'the customer') +
+      '.\nExpires ' + formatDate(q.token_expires_at) + '.';
+    if (navigator.clipboard) { try { await navigator.clipboard.writeText(link); msg = 'Copied to your clipboard.\n\n' + msg; } catch (e) {} }
+    if (await novaConfirm(msg, { title: 'Customer link', okText: 'Void this link', cancelText: 'Close' })) {
+      if (!await novaConfirm('Void the link? The customer will not be able to open the quote until you send it again.', { okText: 'Void it' })) return;
+      await api('POST', '/quotes/' + id + '/revoke', {});
+      navigate('view-quote', id);
+    }
+  } catch (e) { novaAlert(e.message); }
+}
+
+// ---- Activity trail ---------------------------------------------------------
+function quoteEventText(ev) {
+  var d = ev.details || {};
+  switch (ev.event_type) {
+    case 'sent':              return '<strong>Sent</strong> to ' + escHtml(d.to || 'the customer') + (ev.actor_name ? ' <span style="color:var(--text-muted-color)">by ' + escHtml(ev.actor_name) + '</span>' : '');
+    case 'viewed':            return 'Opened the quote';
+    case 'reminded':          return 'Reminder sent' + (ev.actor_name === 'system' ? ' <span style="color:var(--text-muted-color)">automatically</span>' : (ev.actor_name ? ' <span style="color:var(--text-muted-color)">by ' + escHtml(ev.actor_name) + '</span>' : ''));
+    case 'approved':          return '<strong>Approved</strong> by ' + escHtml(ev.actor_name || 'the customer') + (d.total != null ? ' &mdash; $' + parseFloat(d.total).toFixed(2) : '') + (d.signed ? ' <span style="color:var(--text-muted-color)">(signed)</span>' : '');
+    case 'declined':          return '<strong>Declined</strong> by ' + escHtml(ev.actor_name || 'the customer') + (d.reason ? ': ' + escHtml(d.reason) : '');
+    case 'changes_requested': return '<strong>Asked for changes</strong>' + (d.message ? ': ' + escHtml(d.message) : '') + (d.phone ? ' <span style="color:var(--text-muted-color)">(call ' + escHtml(d.phone) + ')</span>' : '');
+    case 'link_voided':       return 'Customer link voided' + (d.reason === 'edited' ? ' <span style="color:var(--text-muted-color)">(quote was edited)</span>' : '') + (ev.actor_name ? ' <span style="color:var(--text-muted-color)">by ' + escHtml(ev.actor_name) + '</span>' : '');
+    case 'expired':           return 'The link expired';
+    default:                  return escHtml(String(ev.event_type).split('_').join(' '));
+  }
+}
+
+async function loadQuoteActivity(id) {
+  var box = document.getElementById('quote-activity');
+  if (!box) return;
+  box.innerHTML = '<div class="text-muted" style="font-size:13px">Loading activity…</div>';
+  try {
+    var evs = await api('GET', '/quotes/' + id + '/events');
+    if (!evs || !evs.length) { box.innerHTML = '<div class="text-muted" style="font-size:13px">Nothing yet.</div>'; return; }
+    box.innerHTML = evs.map(function (ev) {
+      return '<div style="display:flex;gap:10px;align-items:flex-start;padding:8px 0;border-bottom:1px solid var(--border-color)">' +
+        '<div style="flex:1;min-width:0;font-size:13px;line-height:1.5">' + quoteEventText(ev) +
+          (ev.ip ? '<div style="font-size:11px;color:var(--text-muted-color);margin-top:1px">' + escHtml(ev.ip) + '</div>' : '') +
+        '</div>' +
+        '<div style="font-size:11px;color:var(--text-muted-color);white-space:nowrap" title="' + escHtml(formatDateTime(ev.created_at)) + '">' + escHtml(timeAgo(ev.created_at)) + '</div>' +
+      '</div>';
+    }).join('');
+  } catch (e) {
+    box.innerHTML = '<div class="text-muted" style="font-size:13px">Could not load activity: ' + escHtml(e.message) + '</div>';
   }
 }
 
@@ -22025,6 +22311,369 @@ async function sigVoidRequest(id) {
   if (!ok) return;
   try { await api('POST', '/signatures/' + id + '/void', {}); showToast('Voided', 'success'); navigate('signatures'); }
   catch (e) { novaAlert(e.message); }
+}
+
+// ----- Public quote approval page (no login) --------------------------------
+// Reached at /quote/<64-char token>. Rendered before the auth check in render(),
+// talks to /api/quote-approve with raw fetch (there is no JWT), and is fed by a
+// server-side whitelist that cannot express a cost. See publicQuotePayload() in
+// routes/quotes.js - the reason a customer never sees our unit_price is that the
+// number is not in the response at all, not that this page declines to draw it.
+
+var qaData = null;      // the payload for the quote currently on screen
+var qaToken = null;
+var qaPad = null;
+
+function qaGetUrlToken() {
+  try {
+    var m = (location.pathname || '').match(/^\/quote\/([a-f0-9]{64})/);
+    return m ? m[1] : null;
+  } catch (e) { return null; }
+}
+
+function qaMoney(n) { return '$' + (parseFloat(n) || 0).toFixed(2); }
+
+function qaShell(inner, company) {
+  var c = company || {};
+  var brand = c.logo
+    ? '<img src="' + escHtml(c.logo) + '" alt="' + escHtml(c.company_name || 'Logo') + '" style="height:30px;max-width:170px;object-fit:contain;display:block" />'
+    : '<div style="display:flex;align-items:center;gap:9px;font-weight:700;font-size:15px;color:#fff">' +
+      '<span style="width:24px;height:24px;border-radius:6px;background:#f97316;display:grid;place-items:center;font-size:12px">&#128274;</span>' +
+      escHtml(c.company_name || 'Lock and Roll LLC') + '</div>';
+  return '<div style="min-height:100vh;background:var(--bg-color)">' +
+    '<div style="background:#14171c;padding:13px 18px;display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap">' +
+      brand +
+      '<div style="font-size:12px;color:#98a0ab">' + escHtml(c.company_phone || '') + '</div>' +
+    '</div>' +
+    '<div style="max-width:660px;margin:0 auto;padding:20px 16px 40px">' + inner + '</div>' +
+  '</div>';
+}
+
+function qaCard(title, body, extraHeader) {
+  return '<div class="card" style="margin-bottom:14px"><div class="card-header"><span class="card-title">' + title + '</span>' +
+    (extraHeader || '') + '</div><div class="card-body">' + body + '</div></div>';
+}
+
+// The read-only receipt. Shown to a customer who already answered, and to
+// anyone who opens the link again afterwards, so the link never lies about
+// what state the quote is in.
+function qaReceiptHtml(d) {
+  var approved = d.status === 'approved';
+  var when = d.responded_at ? formatDateTime(d.responded_at) : '';
+  var head = approved
+    ? '<div style="width:48px;height:48px;border-radius:50%;background:#e4f7ec;color:#15803d;display:grid;place-items:center;font-size:24px;margin:0 auto 10px">&#10003;</div>' +
+      '<h2 style="font-size:20px;font-weight:700;margin:0 0 6px">Approved &mdash; thank you' + (d.approver_name ? ', ' + escHtml(String(d.approver_name).split(' ')[0]) : '') + '</h2>' +
+      '<p style="font-size:13.5px;color:var(--text-muted-color);margin:0">' +
+        escHtml(d.prepared_by && d.prepared_by.name ? d.prepared_by.name : 'Our team') + ' has been notified and will be in touch to schedule.</p>'
+    : '<div style="width:48px;height:48px;border-radius:50%;background:#fdeaea;color:#dc2626;display:grid;place-items:center;font-size:24px;margin:0 auto 10px">&times;</div>' +
+      '<h2 style="font-size:20px;font-weight:700;margin:0 0 6px">Quote declined</h2>' +
+      '<p style="font-size:13.5px;color:var(--text-muted-color);margin:0">Thanks for letting us know. If anything changes, just give us a call.</p>';
+
+  var receipt = '<div style="margin-top:16px;padding-top:14px;border-top:1px solid var(--border-color);font-size:11px;color:var(--text-muted-color);line-height:1.8;letter-spacing:0.04em;text-transform:uppercase">' +
+    escHtml(d.status) + ' ' + escHtml(when) + '<br>' +
+    escHtml(d.approver_name || '') + (d.approver_title ? ' &middot; ' + escHtml(d.approver_title) : '') +
+    (approved && d.approved_total != null ? ' &middot; ' + qaMoney(d.approved_total) : '') +
+    ' &middot; ref ' + escHtml(d.quote_number) +
+  '</div>';
+
+  return '<div class="card"><div class="card-body" style="text-align:center;padding:30px 20px">' + head + receipt +
+    '<div style="margin-top:16px;display:flex;gap:8px;justify-content:center;flex-wrap:wrap">' +
+      '<button class="btn btn-secondary" onclick="window.print()">Save a copy</button>' +
+    '</div></div></div>';
+}
+
+function qaLineItemsHtml(d) {
+  var cell = 'padding:9px 8px;border-bottom:1px solid var(--border-color)';
+  var head = 'padding:7px 8px;font-size:11px;text-transform:uppercase;letter-spacing:0.06em;color:var(--text-muted-color);border-bottom:1px solid var(--border-color)';
+  var rows = (d.line_items || []).map(function (it) {
+    return '<tr>' +
+      '<td style="' + cell + '">' + escHtml(it.description) + '</td>' +
+      '<td style="' + cell + ';text-align:right">' + escHtml(String(it.quantity)) + '</td>' +
+      '<td style="' + cell + ';text-align:right">' + qaMoney(it.list_price) + '</td>' +
+      '<td style="' + cell + ';text-align:right">' + qaMoney(it.quantity * it.list_price) + '</td>' +
+    '</tr>';
+  }).join('');
+  var foot = '<tr><td colspan="3" style="padding:8px;text-align:right;color:var(--text-muted-color)">Subtotal</td>' +
+      '<td style="padding:8px;text-align:right">' + qaMoney(d.subtotal) + '</td></tr>' +
+    (d.tax_amount > 0
+      ? '<tr><td colspan="3" style="padding:8px;text-align:right;color:var(--text-muted-color)">Tax (' + escHtml(String(d.tax_rate)) + '%)</td>' +
+        '<td style="padding:8px;text-align:right">' + qaMoney(d.tax_amount) + '</td></tr>'
+      : '') +
+    '<tr><td colspan="3" style="padding:10px 8px;text-align:right;font-weight:700">Total</td>' +
+      '<td style="padding:10px 8px;text-align:right;font-weight:700">' + qaMoney(d.total) + '</td></tr>';
+  return '<div class="table-wrap"><table style="width:100%;border-collapse:collapse;font-size:13px">' +
+    '<thead><tr>' +
+      '<th style="' + head + ';text-align:left">Description</th>' +
+      '<th style="' + head + ';text-align:right">Qty</th>' +
+      '<th style="' + head + ';text-align:right">Price</th>' +
+      '<th style="' + head + ';text-align:right">Total</th>' +
+    '</tr></thead><tbody>' + rows + '</tbody><tfoot>' + foot + '</tfoot></table></div>';
+}
+
+async function renderQuoteApprovePage(app, token) {
+  qaToken = token;
+  app.className = 'no-sidebar';
+  app.innerHTML = '<div class="loading">Loading your quote…</div>';
+
+  var r, d;
+  try {
+    r = await fetch('/api/quote-approve/' + encodeURIComponent(token));
+    d = await r.json();
+  } catch (e) {
+    app.innerHTML = qaShell('<div class="alert alert-error">We could not load this quote. Please check your connection and try again.</div>', {});
+    return;
+  }
+
+  if (r.status === 404 || (d && d.error === 'not_found')) {
+    app.innerHTML = qaShell('<div class="card"><div class="card-body" style="text-align:center;padding:34px 20px">' +
+      '<h2 style="font-size:19px;font-weight:700;margin:0 0 8px">This link is no longer active</h2>' +
+      '<p style="font-size:13.5px;color:var(--text-muted-color);margin:0">The quote may have been updated and re-sent. Please check your email for a newer message, or contact us and we will send a fresh copy.</p>' +
+      '</div></div>', {});
+    return;
+  }
+  if (r.status === 410 || (d && d.error === 'expired')) {
+    var who = (d && d.prepared_by) || {};
+    app.innerHTML = qaShell('<div class="card"><div class="card-body" style="text-align:center;padding:34px 20px">' +
+      '<h2 style="font-size:19px;font-weight:700;margin:0 0 8px">This quote has expired</h2>' +
+      '<p style="font-size:13.5px;color:var(--text-muted-color);margin:0 0 6px">Quote ' + escHtml((d && d.quote_number) || '') + ' is past the date it was good through, so the pricing is no longer current.</p>' +
+      '<p style="font-size:13.5px;color:var(--text-muted-color);margin:0">Get in touch and we will put together an updated one' +
+        (who.email ? ': <strong>' + escHtml(who.email) + '</strong>' : '') + '.</p>' +
+      '</div></div>', (d && d.company) || {});
+    return;
+  }
+  if (!r.ok) {
+    app.innerHTML = qaShell('<div class="alert alert-error">' + escHtml((d && d.error) || 'Something went wrong loading this quote.') + '</div>', {});
+    return;
+  }
+
+  qaData = d;
+  var answered = d.status === 'approved' || d.status === 'declined';
+
+  var hero = '<div style="margin-bottom:16px">' +
+    '<h1 style="font-size:22px;font-weight:700;margin:0 0 4px;letter-spacing:-0.01em">Quote ' + escHtml(d.quote_number) + '</h1>' +
+    '<div style="font-size:13px;color:var(--text-muted-color)">Prepared for ' + escHtml(d.customer_name || '') +
+      (d.prepared_by && d.prepared_by.name ? ' by ' + escHtml(d.prepared_by.name) : '') +
+      ' &middot; ' + escHtml(formatDate(d.created_at)) + '</div>' +
+  '</div>';
+
+  if (answered) {
+    app.innerHTML = qaShell(hero + qaReceiptHtml(d) + qaCard('What was included', qaLineItemsHtml(d)), d.company);
+    return;
+  }
+
+  var totalBox = '<div class="card" style="margin-bottom:14px"><div class="card-body" style="display:flex;justify-content:space-between;align-items:baseline;gap:12px;flex-wrap:wrap">' +
+    '<div><div style="font-size:11px;text-transform:uppercase;letter-spacing:0.09em;color:var(--text-muted-color)">Total</div>' +
+      (d.tax_amount > 0 ? '<div style="font-size:12px;color:var(--text-muted-color)">Includes ' + qaMoney(d.tax_amount) + ' tax</div>' : '') + '</div>' +
+    '<div style="font-size:26px;font-weight:700;letter-spacing:-0.02em">' + qaMoney(d.total) + '</div>' +
+  '</div></div>';
+
+  var validNote = d.expires_at
+    ? '<div style="font-size:12px;color:var(--text-muted-color);margin-bottom:14px">This pricing is good through <strong>' + escHtml(formatDate(d.expires_at)) + '</strong>.</div>'
+    : '';
+
+  var msg = d.message
+    ? qaCard('A note from ' + escHtml((d.prepared_by && d.prepared_by.name) || 'us'),
+        '<div style="font-size:13.5px;line-height:1.6;white-space:pre-wrap">' + escHtml(d.message) + '</div>')
+    : '';
+  var notes = d.notes
+    ? qaCard('Notes', '<div style="font-size:13.5px;line-height:1.6;white-space:pre-wrap">' + escHtml(d.notes) + '</div>')
+    : '';
+  var important = d.important_info
+    ? qaCard('Important information', '<div style="font-size:12.5px;line-height:1.6;color:var(--text-muted-color);white-space:pre-wrap">' + escHtml(resolveTokens(d.important_info)) + '</div>')
+    : '';
+  var contact = (d.prepared_by && (d.prepared_by.phone || d.prepared_by.email))
+    ? qaCard('Questions?', '<div style="font-size:13.5px;line-height:1.7">' +
+        escHtml(d.prepared_by.name || '') + '<br>' +
+        (d.prepared_by.phone ? escHtml(d.prepared_by.phone) + '<br>' : '') +
+        (d.prepared_by.email ? escHtml(d.prepared_by.email) : '') + '</div>')
+    : '';
+
+  var actions = '<div style="position:sticky;bottom:0;background:var(--bg-color);border-top:1px solid var(--border-color);padding:12px 0;display:flex;gap:8px;justify-content:center;flex-wrap:wrap;margin-top:8px">' +
+    '<button class="btn btn-secondary" onclick="qaOpenDecline()">Decline</button>' +
+    '<button class="btn btn-secondary" onclick="qaOpenMessage()">Ask a question</button>' +
+    '<button class="btn btn-primary" onclick="qaOpenApprove()" style="background:#0f6b41;border-color:#0f6b41">&#10003; Approve this quote</button>' +
+  '</div>' +
+  '<div style="font-size:11.5px;color:var(--text-muted-color);text-align:center;margin-top:8px">Approving records your name, the date and this exact total. Nothing is charged now.</div>';
+
+  var count = (d.line_items || []).length;
+  app.innerHTML = qaShell(
+    hero + totalBox + validNote +
+    qaCard('What is included', qaLineItemsHtml(d), '<span style="font-size:11px;color:var(--text-muted-color)">' + count + ' item' + (count === 1 ? '' : 's') + '</span>') +
+    msg + notes + important + contact + actions,
+    d.company
+  );
+}
+
+// ---- the three customer actions --------------------------------------------
+function qaOverlay(titleHtml, bodyHtml, okLabel, okStyle) {
+  var ov = document.createElement('div');
+  ov.className = 'nova-dialog-overlay';
+  ov.id = 'qa-ov';
+  ov.innerHTML = '<div class="nova-dlg" role="dialog" aria-modal="true" style="max-width:440px;text-align:left">' +
+    '<div class="nova-dlg-title">' + titleHtml + '</div>' +
+    '<div style="display:flex;flex-direction:column;gap:12px;margin:14px 0">' + bodyHtml + '</div>' +
+    '<div id="qa-err" style="font-size:13px;color:#dc2626;margin-bottom:8px"></div>' +
+    '<div class="nova-dlg-actions">' +
+      '<button class="btn btn-secondary" onclick="qaCloseOverlay()">Back</button>' +
+      '<button class="btn btn-primary" id="qa-ok"' + (okStyle ? ' style="' + okStyle + '"' : '') + '>' + okLabel + '</button>' +
+    '</div></div>';
+  document.body.appendChild(ov);
+  ov.addEventListener('mousedown', function (e) { if (e.target === ov) qaCloseOverlay(); });
+  return ov;
+}
+function qaCloseOverlay() { var ov = document.getElementById('qa-ov'); if (ov && ov.parentNode) ov.parentNode.removeChild(ov); qaPad = null; }
+function qaErr(m) { var e = document.getElementById('qa-err'); if (e) e.textContent = m; }
+
+var QA_FIELD = 'width:100%;padding:8px 10px;border:1px solid var(--border-color);border-radius:6px;background:var(--input-bg,transparent);color:inherit;font-size:13px;font-family:inherit';
+var QA_LABEL = 'display:block;font-size:11px;font-weight:600;letter-spacing:0.06em;text-transform:uppercase;color:var(--text-muted-color);margin-bottom:4px';
+
+function qaOpenApprove() {
+  var d = qaData;
+  if (!d) return;
+  qaOverlay(
+    'Approve quote ' + escHtml(d.quote_number),
+    '<div style="display:flex;justify-content:space-between;align-items:baseline;gap:10px;padding:10px 12px;border:1px solid var(--border-color);border-radius:7px">' +
+      '<div style="font-size:11px;text-transform:uppercase;letter-spacing:0.09em;color:var(--text-muted-color)">You are approving</div>' +
+      '<div style="font-size:20px;font-weight:700">' + qaMoney(d.total) + '</div>' +
+    '</div>' +
+    '<div><label style="' + QA_LABEL + '" for="qa-name">Your full name</label>' +
+      '<input id="qa-name" type="text" style="' + QA_FIELD + '" autocomplete="name" /></div>' +
+    '<div><label style="' + QA_LABEL + '" for="qa-title">Title (optional)</label>' +
+      '<input id="qa-title" type="text" style="' + QA_FIELD + '" placeholder="Property Manager" /></div>' +
+    '<div><label style="' + QA_LABEL + '">Sign here (optional)</label>' +
+      '<canvas id="qa-pad" width="420" height="110" style="width:100%;height:110px;background:#fff;border:1px dashed var(--border-color);border-radius:7px;touch-action:none;cursor:crosshair"></canvas>' +
+      '<button type="button" class="btn btn-secondary btn-sm" style="margin-top:6px" onclick="qaPadClear()">Clear</button></div>' +
+    '<label style="display:flex;gap:9px;align-items:flex-start;font-size:12.5px;line-height:1.5;cursor:pointer">' +
+      '<input type="checkbox" id="qa-consent" style="margin-top:3px;flex:0 0 auto" />' +
+      '<span>I am authorized to approve this work for ' + escHtml(d.customer_name || 'this customer') +
+      ', and I agree that my typed name and signature count as my signature.</span>' +
+    '</label>',
+    'Approve ' + qaMoney(d.total),
+    'background:#0f6b41;border-color:#0f6b41'
+  );
+  qaPadInit();
+  var nameEl = document.getElementById('qa-name');
+  if (nameEl) nameEl.focus();
+  document.getElementById('qa-ok').addEventListener('click', qaSubmitApprove);
+}
+
+function qaPadInit() {
+  var c = document.getElementById('qa-pad');
+  if (!c) return;
+  var ctx = c.getContext('2d');
+  ctx.lineWidth = 2.2; ctx.lineCap = 'round'; ctx.lineJoin = 'round'; ctx.strokeStyle = '#111';
+  qaPad = { c: c, ctx: ctx, drawing: false, ink: false, last: null };
+  function pt(e) {
+    var r = c.getBoundingClientRect();
+    var t = (e.touches && e.touches[0]) || e;
+    return { x: (t.clientX - r.left) * (c.width / r.width), y: (t.clientY - r.top) * (c.height / r.height) };
+  }
+  function down(e) { e.preventDefault(); qaPad.drawing = true; qaPad.last = pt(e); }
+  function move(e) {
+    if (!qaPad || !qaPad.drawing) return;
+    e.preventDefault();
+    var p = pt(e);
+    ctx.beginPath(); ctx.moveTo(qaPad.last.x, qaPad.last.y); ctx.lineTo(p.x, p.y); ctx.stroke();
+    qaPad.last = p; qaPad.ink = true;
+  }
+  function up() { if (qaPad) qaPad.drawing = false; }
+  c.addEventListener('mousedown', down); c.addEventListener('mousemove', move);
+  window.addEventListener('mouseup', up);
+  c.addEventListener('touchstart', down, { passive: false });
+  c.addEventListener('touchmove', move, { passive: false });
+  c.addEventListener('touchend', up);
+}
+function qaPadClear() { if (!qaPad) return; qaPad.ctx.clearRect(0, 0, qaPad.c.width, qaPad.c.height); qaPad.ink = false; }
+
+async function qaSubmitApprove() {
+  var btn = document.getElementById('qa-ok');
+  var name = (document.getElementById('qa-name').value || '').trim();
+  var title = (document.getElementById('qa-title').value || '').trim();
+  var consent = document.getElementById('qa-consent').checked;
+  qaErr('');
+  if (name.length < 2) { qaErr('Please type your full name.'); return; }
+  if (!consent) { qaErr('Please tick the authorization box to approve.'); return; }
+  novaBtnBusy(btn, 'Approving…');
+  try {
+    var body = { name: name, title: title || null, consent: true };
+    if (qaPad && qaPad.ink) { try { body.signature = qaPad.c.toDataURL('image/png'); } catch (e) {} }
+    var res = await fetch('/api/quote-approve/' + encodeURIComponent(qaToken) + '/approve', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body)
+    });
+    var out = await res.json();
+    if (!res.ok) throw new Error(out.error === 'already_answered' ? 'This quote has already been answered.' : (out.error || 'Could not record your approval.'));
+    qaCloseOverlay();
+    await renderQuoteApprovePage(document.getElementById('app'), qaToken);
+  } catch (e) { novaBtnReset(btn); qaErr(e.message); }
+}
+
+function qaOpenDecline() {
+  var d = qaData;
+  if (!d) return;
+  qaOverlay(
+    'Decline quote ' + escHtml(d.quote_number),
+    '<div style="font-size:13px;color:var(--text-muted-color);line-height:1.55">If you just want something changed instead, use <strong>Ask a question</strong> &mdash; that keeps the quote open.</div>' +
+    '<div><label style="' + QA_LABEL + '" for="qa-dname">Your name</label>' +
+      '<input id="qa-dname" type="text" style="' + QA_FIELD + '" value="' + escHtml(d.customer_name || '') + '" /></div>' +
+    '<div><label style="' + QA_LABEL + '" for="qa-reason">Anything we should know? (optional)</label>' +
+      '<textarea id="qa-reason" rows="3" style="' + QA_FIELD + ';resize:vertical" placeholder="Went with someone else, timing, budget…"></textarea></div>',
+    'Decline this quote', 'background:#b3261e;border-color:#b3261e'
+  );
+  document.getElementById('qa-ok').addEventListener('click', async function () {
+    var btn = this;
+    qaErr('');
+    novaBtnBusy(btn, 'Sending…');
+    try {
+      var res = await fetch('/api/quote-approve/' + encodeURIComponent(qaToken) + '/decline', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          name: (document.getElementById('qa-dname').value || '').trim(),
+          reason: (document.getElementById('qa-reason').value || '').trim() || null
+        })
+      });
+      var out = await res.json();
+      if (!res.ok) throw new Error(out.error === 'already_answered' ? 'This quote has already been answered.' : (out.error || 'Could not record your response.'));
+      qaCloseOverlay();
+      await renderQuoteApprovePage(document.getElementById('app'), qaToken);
+    } catch (e) { novaBtnReset(btn); qaErr(e.message); }
+  });
+}
+
+function qaOpenMessage() {
+  var d = qaData;
+  if (!d) return;
+  var who = (d.prepared_by && d.prepared_by.name) || 'us';
+  qaOverlay(
+    'Send ' + escHtml(who) + ' a question',
+    '<div style="font-size:13px;color:var(--text-muted-color);line-height:1.55">Tell us what you would like changed. Nothing is approved or declined &mdash; the quote stays open and ' + escHtml(who) + ' gets your note right away.</div>' +
+    '<div><label style="' + QA_LABEL + '" for="qa-msg">Your message</label>' +
+      '<textarea id="qa-msg" rows="4" style="' + QA_FIELD + ';resize:vertical"></textarea></div>' +
+    '<div><label style="' + QA_LABEL + '" for="qa-phone">Best number to reach you (optional)</label>' +
+      '<input id="qa-phone" type="tel" style="' + QA_FIELD + '" value="' + escHtml(d.customer_phone || '') + '" /></div>',
+    'Send it'
+  );
+  document.getElementById('qa-msg').focus();
+  document.getElementById('qa-ok').addEventListener('click', async function () {
+    var btn = this;
+    var message = (document.getElementById('qa-msg').value || '').trim();
+    qaErr('');
+    if (message.length < 2) { qaErr('Please tell us what you would like changed.'); return; }
+    novaBtnBusy(btn, 'Sending…');
+    try {
+      var res = await fetch('/api/quote-approve/' + encodeURIComponent(qaToken) + '/message', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ message: message, phone: (document.getElementById('qa-phone').value || '').trim() || null })
+      });
+      var out = await res.json();
+      if (!res.ok) throw new Error(out.error || 'Could not send your message.');
+      qaCloseOverlay();
+      document.getElementById('app').innerHTML = qaShell('<div class="card"><div class="card-body" style="text-align:center;padding:34px 20px">' +
+        '<div style="width:48px;height:48px;border-radius:50%;background:#e7f0fe;color:#2563eb;display:grid;place-items:center;font-size:22px;margin:0 auto 10px">&#9993;</div>' +
+        '<h2 style="font-size:19px;font-weight:700;margin:0 0 6px">Message sent</h2>' +
+        '<p style="font-size:13.5px;color:var(--text-muted-color);margin:0">' + escHtml(who) + ' has your note and will get back to you. Your quote stays open in the meantime &mdash; this link still works.</p>' +
+        '</div></div>', (qaData && qaData.company) || {});
+    } catch (e) { novaBtnReset(btn); qaErr(e.message); }
+  });
 }
 
 // ----- Public signing page (no login) -----

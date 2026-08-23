@@ -121,8 +121,55 @@ async function initDB() {
       'ALTER TABLE quotes ADD COLUMN IF NOT EXISTS customer_state VARCHAR(4);' +
       'ALTER TABLE quotes ADD COLUMN IF NOT EXISTS customer_zip VARCHAR(12);' +
       'ALTER TABLE quotes ADD COLUMN IF NOT EXISTS customer_phone VARCHAR(50);' +
-      'ALTER TABLE quotes ADD COLUMN IF NOT EXISTS customer_email VARCHAR(255);'
+      'ALTER TABLE quotes ADD COLUMN IF NOT EXISTS customer_email VARCHAR(255);' +
+      // --- Customer approval (2026-08-23) ---------------------------------
+      // A quote had no lifecycle at all: it was created and then it was
+      // whatever someone remembered it was. These carry it from draft to an
+      // answer, and record who gave that answer.
+      // approved_total is stored SEPARATELY from total_amount on purpose. If a
+      // quote is ever re-opened and edited, total_amount moves; approved_total
+      // is what the customer actually agreed to and must never move with it.
+      "ALTER TABLE quotes ADD COLUMN IF NOT EXISTS status VARCHAR(24) NOT NULL DEFAULT 'draft';" +
+      'ALTER TABLE quotes ADD COLUMN IF NOT EXISTS approval_token VARCHAR(64);' +
+      'ALTER TABLE quotes ADD COLUMN IF NOT EXISTS token_expires_at TIMESTAMP;' +
+      'ALTER TABLE quotes ADD COLUMN IF NOT EXISTS sent_at TIMESTAMP;' +
+      'ALTER TABLE quotes ADD COLUMN IF NOT EXISTS sent_to VARCHAR(255);' +
+      'ALTER TABLE quotes ADD COLUMN IF NOT EXISTS sent_by INTEGER REFERENCES users(id);' +
+      'ALTER TABLE quotes ADD COLUMN IF NOT EXISTS last_reminded_at TIMESTAMP;' +
+      'ALTER TABLE quotes ADD COLUMN IF NOT EXISTS reminder_count INTEGER NOT NULL DEFAULT 0;' +
+      'ALTER TABLE quotes ADD COLUMN IF NOT EXISTS first_viewed_at TIMESTAMP;' +
+      'ALTER TABLE quotes ADD COLUMN IF NOT EXISTS responded_at TIMESTAMP;' +
+      'ALTER TABLE quotes ADD COLUMN IF NOT EXISTS approver_name VARCHAR(255);' +
+      'ALTER TABLE quotes ADD COLUMN IF NOT EXISTS approver_title VARCHAR(120);' +
+      'ALTER TABLE quotes ADD COLUMN IF NOT EXISTS approver_ip VARCHAR(64);' +
+      'ALTER TABLE quotes ADD COLUMN IF NOT EXISTS approved_total DECIMAL(10,2);' +
+      'ALTER TABLE quotes ADD COLUMN IF NOT EXISTS signature_data TEXT;' +
+      'ALTER TABLE quotes ADD COLUMN IF NOT EXISTS customer_message TEXT;' +
+      'ALTER TABLE quotes ADD COLUMN IF NOT EXISTS decline_reason TEXT;'
     );
+    // The customer-facing trail: every send, view, reminder and decision, with
+    // the IP and user agent that produced it. Separate from audit_log because
+    // these events have no logged-in user behind them.
+    await client.query(
+      'CREATE TABLE IF NOT EXISTS quote_events (' +
+      '  id SERIAL PRIMARY KEY,' +
+      '  quote_id INTEGER REFERENCES quotes(id) ON DELETE CASCADE,' +
+      '  event_type VARCHAR(32) NOT NULL,' +
+      '  actor_name VARCHAR(255),' +
+      '  ip VARCHAR(64),' +
+      '  user_agent VARCHAR(500),' +
+      '  details JSONB,' +
+      '  created_at TIMESTAMP DEFAULT NOW()' +
+      ');'
+    );
+    // Idempotent and individually guarded. A failure here must never take down
+    // initDB and with it every scheduled job - see the boot chain in server.js.
+    try {
+      await client.query('CREATE UNIQUE INDEX IF NOT EXISTS idx_quotes_approval_token ON quotes(approval_token) WHERE approval_token IS NOT NULL;');
+    } catch (e) { console.error('quotes approval_token index skipped:', e.message); }
+    try {
+      await client.query('CREATE INDEX IF NOT EXISTS idx_quote_events_quote ON quote_events(quote_id, created_at);');
+    } catch (e) { console.error('quote_events index skipped:', e.message); }
     await client.query(
       'CREATE TABLE IF NOT EXISTS shipping_addresses (' +
       '  id SERIAL PRIMARY KEY,' +

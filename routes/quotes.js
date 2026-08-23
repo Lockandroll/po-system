@@ -14,6 +14,136 @@ const notify = require('../utils/notify');
 const push = require('../utils/push');
 
 const router = express.Router();
+const pub = express.Router();          // customer-facing token surface, no JWT
+
+// ===================== Customer approval helpers =====================
+// The customer never logs in. Everything they can reach hangs off a random
+// 64-char token that lives on the quote row, exactly like the signer tokens in
+// routes/signatures.js. See server.js for where `pub` is mounted.
+
+const APPROVAL_STATUSES = ['draft', 'sent', 'viewed', 'approved', 'declined', 'changes_requested', 'expired'];
+
+// A quote is "out" once it has been sent: the customer may be looking at it, so
+// its numbers must not move under them. Draft is the only freely editable state.
+function isOut(status) { return !!status && status !== 'draft'; }
+
+// A quote that has already been answered. These never accept a second answer.
+function isAnswered(status) { return status === 'approved' || status === 'declined'; }
+
+function appBase() { return (process.env.APP_URL || '').replace(/\/$/, ''); }
+function quoteLink(token) { return appBase() + '/quote/' + token; }
+
+function newApprovalToken() { return crypto.randomBytes(32).toString('hex'); }
+
+function clientIp(req) {
+  var raw = (req.headers['x-forwarded-for'] || '').split(',')[0].trim() || req.ip || '';
+  return String(raw).slice(0, 64);
+}
+
+async function logQuoteEvent(quoteId, eventType, opts) {
+  var o = opts || {};
+  try {
+    await pool.query(
+      'INSERT INTO quote_events (quote_id, event_type, actor_name, ip, user_agent, details) VALUES ($1,$2,$3,$4,$5,$6)',
+      [quoteId, eventType, o.actorName || null,
+       o.req ? clientIp(o.req) : null,
+       o.req ? String(o.req.headers['user-agent'] || '').slice(0, 500) : null,
+       o.details ? JSON.stringify(o.details) : null]
+    );
+  } catch (e) { console.error('[quotes] event log failed:', e.message); }
+}
+
+// Totals are recomputed from the line items rather than read off the row, so a
+// customer can never be shown a total that drifted from what is on the page.
+// Mirrors the math in POST / PUT above and in printQuote() on the frontend.
+function quoteTotals(items, taxRate) {
+  var rate = parseFloat(taxRate) || 0;
+  var subtotal = 0, taxable = 0;
+  (items || []).forEach(function (it) {
+    var line = (parseFloat(it.quantity) || 0) * (parseFloat(it.list_price) || 0);
+    subtotal += line;
+    if (it.taxable) taxable += line;
+  });
+  var tax = taxable * rate / 100;
+  return { subtotal: subtotal, tax_rate: rate, tax_amount: tax, total: subtotal + tax };
+}
+
+// The ONLY shape that ever reaches a customer. A whitelist, never SELECT *.
+//
+// Deliberately absent: unit_price (OUR COST), item_number, manufacturer, url,
+// requester_id, city_code, and every internal id. That matches exactly what
+// printQuote() already puts in front of a customer today - description,
+// quantity, list price, line total - and nothing more.
+function publicQuotePayload(quote, items, settings) {
+  var t = quoteTotals(items, quote.tax_rate);
+  return {
+    quote_number: quote.quote_number,
+    status: quote.status,
+    customer_name: quote.customer_name,
+    customer_street: quote.customer_street,
+    customer_city: quote.customer_city,
+    customer_state: quote.customer_state,
+    customer_zip: quote.customer_zip,
+    customer_phone: quote.customer_phone,
+    customer_email: quote.customer_email,
+    notes: quote.notes,
+    important_info: quote.important_info,
+    message: quote.customer_message,
+    created_at: quote.created_at,
+    sent_at: quote.sent_at,
+    expires_at: quote.token_expires_at,
+    responded_at: quote.responded_at,
+    approver_name: quote.approver_name,
+    approver_title: quote.approver_title,
+    approved_total: quote.approved_total == null ? null : parseFloat(quote.approved_total),
+    decline_reason: quote.decline_reason,
+    prepared_by: { name: quote.requester_name || null, email: quote.requester_email || null, phone: quote.requester_phone || null },
+    company: settings || {},
+    subtotal: t.subtotal,
+    tax_rate: t.tax_rate,
+    tax_amount: t.tax_amount,
+    total: t.total,
+    line_items: (items || []).map(function (it) {
+      return {
+        description: it.description,
+        quantity: parseFloat(it.quantity) || 0,
+        list_price: parseFloat(it.list_price) || 0,
+        taxable: !!it.taxable,
+        line_type: normLineType(it.line_type)
+      };
+    })
+  };
+}
+
+// The company header fields the customer page renders. Same whitelist the
+// authenticated /api/settings exposes to non-admins.
+async function publicCompanySettings() {
+  try {
+    const { rows } = await pool.query(
+      "SELECT key, value FROM settings WHERE key IN ('logo','company_name','company_phone','company_address','company_city_state_zip')"
+    );
+    var out = {};
+    rows.forEach(function (r) { out[r.key] = r.value; });
+    return out;
+  } catch (e) { return {}; }
+}
+
+// Load a quote by token and decide whether it is still usable. Returns
+// { quote, items, expired } or null when the token matches nothing.
+async function loadByToken(token) {
+  if (!token || !/^[a-f0-9]{64}$/.test(String(token))) return null;
+  const { rows } = await pool.query(
+    'SELECT q.*, u.name AS requester_name, u.email AS requester_email, u.phone AS requester_phone ' +
+    'FROM quotes q JOIN users u ON q.requester_id = u.id WHERE q.approval_token = $1',
+    [token]
+  );
+  if (!rows.length) return null;
+  const quote = rows[0];
+  const { rows: items } = await pool.query('SELECT * FROM quote_line_items WHERE quote_id = $1 ORDER BY id', [quote.id]);
+  var expired = quote.status === 'expired' ||
+    (!isAnswered(quote.status) && quote.token_expires_at && new Date(quote.token_expires_at) < new Date());
+  return { quote: quote, items: items, expired: expired };
+}
 
 function getInitials(name) {
   return name.split(' ').filter(Boolean).map(function(p) { return p[0]; }).join('').toUpperCase().slice(0, 3);
@@ -257,6 +387,18 @@ router.put('/:id', requireAuth, requirePermission('edit_quote'), async (req, res
     if (req.user.role !== 'admin' && quote.requester_id !== req.user.id) {
       return res.status(403).json({ error: 'Access denied' });
     }
+    // A sent quote is read-only. The customer may have the page open right now,
+    // so the numbers must not move under them. Editing is still allowed, but it
+    // is an explicit act that VOIDS the link they were sent - the frontend turns
+    // this 409 into the "this will void the link you sent <name>" confirm.
+    if (isOut(quote.status) && !req.body.confirm_void) {
+      return res.status(409).json({
+        error: 'quote_is_out',
+        status: quote.status,
+        sent_to: quote.sent_to || quote.customer_email || null,
+        message: 'This quote has already been sent to the customer. Editing it will void the link they were sent and put the quote back in draft.'
+      });
+    }
     const { customer_name, city_code, notes, important_info, tax_rate, line_items } = req.body;
     const cc = pickCustomerContact(req.body);
     if (!customer_name) return res.status(400).json({ error: 'Customer name is required' });
@@ -281,6 +423,16 @@ router.put('/:id', requireAuth, requirePermission('edit_quote'), async (req, res
         'UPDATE quotes SET customer_name=$1, city_code=$2, notes=$3, important_info=$4, tax_rate=$5, tax_amount=$6, total_amount=$7, customer_street=$8, customer_city=$9, customer_state=$10, customer_zip=$11, customer_phone=$12, customer_email=$13, updated_at=NOW() WHERE id=$14',
         [customer_name, city_code || null, notes || null, important_info || null, taxRateVal, tax_amount, total, cc.customer_street, cc.customer_city, cc.customer_state, cc.customer_zip, cc.customer_phone, cc.customer_email, req.params.id]
       );
+      // Voiding happens in the SAME transaction as the edit, so a quote can never
+      // end up edited but still reachable on the old link.
+      if (isOut(quote.status)) {
+        await client.query(
+          "UPDATE quotes SET status = 'draft', approval_token = NULL, token_expires_at = NULL, " +
+          'sent_at = NULL, sent_to = NULL, first_viewed_at = NULL, last_reminded_at = NULL, reminder_count = 0 ' +
+          'WHERE id = $1',
+          [req.params.id]
+        );
+      }
       await client.query('DELETE FROM quote_line_items WHERE quote_id = $1', [req.params.id]);
       for (const item of (line_items || [])) {
         await client.query(
@@ -290,7 +442,11 @@ router.put('/:id', requireAuth, requirePermission('edit_quote'), async (req, res
       }
       await client.query('COMMIT');
       await logAudit({ entity_type: 'quote', entity_id: parseInt(req.params.id), entity_number: quote.quote_number, action: 'edited', user_id: req.user.id, user_name: req.user.name });
-      res.json({ success: true, id: parseInt(req.params.id) });
+      if (isOut(quote.status)) {
+        await logQuoteEvent(parseInt(req.params.id), 'link_voided', { actorName: req.user.name, req: req, details: { was: quote.status, reason: 'edited' } });
+        try { await logAudit({ entity_type: 'quote', entity_id: parseInt(req.params.id), entity_number: quote.quote_number, action: 'customer_link_voided', user_id: req.user.id, user_name: req.user.name, details: { was: quote.status } }); } catch (e) {}
+      }
+      res.json({ success: true, id: parseInt(req.params.id), voided: isOut(quote.status) });
     } catch (err) {
       await client.query('ROLLBACK');
       throw err;
@@ -311,6 +467,11 @@ router.delete('/:id', requireAuth, requirePermission('delete_quote'), async (req
     const quote = rows[0];
     if (req.user.role !== 'admin' && quote.requester_id !== req.user.id) {
       return res.status(403).json({ error: 'Access denied' });
+    }
+    // An approved quote is the record of what a customer agreed to and what they
+    // will be billed against. Only an admin can destroy that.
+    if (quote.status === 'approved' && req.user.role !== 'admin') {
+      return res.status(409).json({ error: 'This quote was approved by the customer, so it is kept as a record. Ask an admin if it truly needs deleting.' });
     }
     await pool.query('DELETE FROM quotes WHERE id = $1', [req.params.id]);
     await logAudit({ entity_type: 'quote', entity_id: quote.id, entity_number: quote.quote_number, action: 'deleted', user_id: req.user.id, user_name: req.user.name });
@@ -536,4 +697,374 @@ router.delete('/photos/:photoId', requireAuth, requirePermission('edit_quote'), 
   }
 });
 
+// ===================== Customer approval: staff side =====================
+
+// Build and send the customer's email (and optional SMS). Used by both the
+// initial send and the reminder job, so the two can never drift apart.
+async function sendQuoteEmail(quote, items, opts) {
+  var o = opts || {};
+  var link = quoteLink(quote.approval_token);
+  var t = quoteTotals(items, quote.tax_rate);
+  var validThrough = quote.token_expires_at
+    ? new Date(quote.token_expires_at).toLocaleDateString('en-US', { timeZone: 'America/New_York', month: 'short', day: 'numeric', year: 'numeric' })
+    : null;
+  var greeting = 'Hi ' + (quote.customer_name || 'there') + ',';
+  var intro = o.reminder
+    ? 'Just a friendly reminder that your quote from Lock and Roll is still waiting for your review.'
+    : 'Here is the quote you asked for. You can review everything and approve it right from the link below.';
+  var html = emailTemplate({
+    badge: o.reminder ? 'Reminder' : 'Quote ready', badgeColor: 'orange',
+    title: o.reminder ? 'Your quote is still waiting' : 'Your quote is ready to review',
+    body: greeting + '<br><br>' + intro +
+      (quote.customer_message ? ('<br><br>' + String(quote.customer_message).replace(/[<>]/g, '')) : ''),
+    details: [
+      { label: 'Quote number', value: quote.quote_number },
+      { label: 'Prepared by', value: quote.requester_name || 'Lock and Roll LLC' },
+      { label: 'Total', value: '$' + t.total.toFixed(2) }
+    ].concat(validThrough ? [{ label: 'Valid through', value: validThrough }] : []),
+    buttonText: 'Review & approve', buttonUrl: link,
+    footerNote: 'This link is unique to you, so please do not forward it. Questions? Just reply to this email and it goes straight to ' + (quote.requester_name || 'us') + '.'
+  });
+  // A customer-facing send, so it gets its own sender identity and a reply-to
+  // that reaches a human. Falls back to the internal defaults when unset.
+  return sendEmail(
+    quote.sent_to || quote.customer_email,
+    (o.reminder ? 'Reminder: your quote from Lock and Roll - ' : 'Your quote from Lock and Roll - ') + quote.quote_number,
+    html, null, null,
+    {
+      from: process.env.QUOTE_FROM_EMAIL || undefined,
+      replyTo: process.env.QUOTE_REPLY_TO || quote.requester_email || undefined
+    }
+  );
+}
+
+// POST /:id/send - put the quote in front of the customer.
+router.post('/:id/send', requireAuth, requirePermission('send_quote'), async (req, res) => {
+  try {
+    const { rows } = await pool.query(
+      'SELECT q.*, u.name AS requester_name, u.email AS requester_email FROM quotes q JOIN users u ON q.requester_id = u.id WHERE q.id = $1',
+      [req.params.id]
+    );
+    if (!rows.length) return res.status(404).json({ error: 'Quote not found' });
+    const quote = rows[0];
+    if (!canAccessQuote(req.user, quote)) return res.status(403).json({ error: 'Access denied' });
+    if (isOut(quote.status)) return res.status(409).json({ error: 'This quote has already been sent. Edit it to void the old link, or use Send a reminder.' });
+
+    const to = String(req.body.to || quote.customer_email || '').trim().slice(0, 255);
+    if (!to || to.indexOf('@') === -1) return res.status(400).json({ error: 'A customer email address is required to send a quote.' });
+    const sms = req.body.sms_to ? String(req.body.sms_to).trim().slice(0, 50) : null;
+    const message = req.body.message ? String(req.body.message).trim().slice(0, 2000) : null;
+
+    const { rows: items } = await pool.query('SELECT * FROM quote_line_items WHERE quote_id = $1 ORDER BY id', [req.params.id]);
+    if (!items.length) return res.status(400).json({ error: 'This quote has no line items yet.' });
+
+    // 1..365 days, defaulting to 30. The value doubles as the "valid through"
+    // line the customer sees, so it is a business promise, not just a timer.
+    var days = parseInt(req.body.expires_days, 10);
+    if (!Number.isFinite(days) || days < 1 || days > 365) days = 30;
+    const expires = new Date(Date.now() + days * 86400000);
+    const token = newApprovalToken();
+
+    const upd = await pool.query(
+      "UPDATE quotes SET status = 'sent', approval_token = $1, token_expires_at = $2, sent_at = NOW(), sent_to = $3, " +
+      'sent_by = $4, customer_message = $5, customer_email = COALESCE(NULLIF($6, \'\'), customer_email), ' +
+      'first_viewed_at = NULL, responded_at = NULL, approver_name = NULL, approver_title = NULL, approver_ip = NULL, ' +
+      'approved_total = NULL, signature_data = NULL, decline_reason = NULL, last_reminded_at = NULL, reminder_count = 0, ' +
+      'updated_at = NOW() WHERE id = $7 RETURNING *',
+      [token, expires, to, req.user.id, message, to, req.params.id]
+    );
+    const sent = Object.assign({}, upd.rows[0], { requester_name: quote.requester_name, requester_email: quote.requester_email });
+
+    var emailed = false;
+    try { emailed = await sendQuoteEmail(sent, items); }
+    catch (e) { console.error('[quotes] customer email failed:', e.message); }
+    if (sms) {
+      try {
+        await sendSms(sms, 'Lock and Roll: your quote ' + quote.quote_number + ' is ready to review and approve. ' + quoteLink(token));
+      } catch (e) { console.error('[quotes] customer SMS failed:', e.message); }
+    }
+
+    await logQuoteEvent(quote.id, 'sent', { actorName: req.user.name, req: req, details: { to: to, sms: sms || null, expires_days: days, emailed: emailed } });
+    try { await logAudit({ entity_type: 'quote', entity_id: quote.id, entity_number: quote.quote_number, action: 'sent_to_customer', user_id: req.user.id, user_name: req.user.name, details: { to: to } }); } catch (e) {}
+
+    res.json({ success: true, emailed: emailed, link: quoteLink(token), expires_at: expires });
+  } catch (err) {
+    console.error('Quote send error:', err);
+    res.status(500).json({ error: 'Failed to send quote' });
+  }
+});
+
+// POST /:id/remind - nudge a customer who has not answered yet.
+router.post('/:id/remind', requireAuth, requirePermission('send_quote'), async (req, res) => {
+  try {
+    const { rows } = await pool.query(
+      'SELECT q.*, u.name AS requester_name, u.email AS requester_email FROM quotes q JOIN users u ON q.requester_id = u.id WHERE q.id = $1',
+      [req.params.id]
+    );
+    if (!rows.length) return res.status(404).json({ error: 'Quote not found' });
+    const quote = rows[0];
+    if (!canAccessQuote(req.user, quote)) return res.status(403).json({ error: 'Access denied' });
+    if (['sent', 'viewed', 'changes_requested'].indexOf(quote.status) === -1) {
+      return res.status(409).json({ error: 'Nothing to remind - this quote is ' + quote.status + '.' });
+    }
+    if (!quote.approval_token) return res.status(409).json({ error: 'This quote has no active customer link.' });
+
+    const { rows: items } = await pool.query('SELECT * FROM quote_line_items WHERE quote_id = $1 ORDER BY id', [req.params.id]);
+    var emailed = false;
+    try { emailed = await sendQuoteEmail(quote, items, { reminder: true }); }
+    catch (e) { console.error('[quotes] reminder failed:', e.message); }
+    await pool.query('UPDATE quotes SET last_reminded_at = NOW(), reminder_count = reminder_count + 1 WHERE id = $1', [req.params.id]);
+    await logQuoteEvent(quote.id, 'reminded', { actorName: req.user.name, req: req, details: { to: quote.sent_to, manual: true } });
+    res.json({ success: true, emailed: emailed });
+  } catch (err) {
+    console.error('Quote remind error:', err);
+    res.status(500).json({ error: 'Failed to send reminder' });
+  }
+});
+
+// POST /:id/revoke - kill the customer link without editing anything.
+router.post('/:id/revoke', requireAuth, requirePermission('send_quote'), async (req, res) => {
+  try {
+    const { rows } = await pool.query('SELECT * FROM quotes WHERE id = $1', [req.params.id]);
+    if (!rows.length) return res.status(404).json({ error: 'Quote not found' });
+    const quote = rows[0];
+    if (!canAccessQuote(req.user, quote)) return res.status(403).json({ error: 'Access denied' });
+    if (!isOut(quote.status)) return res.status(409).json({ error: 'This quote has not been sent.' });
+    if (isAnswered(quote.status) && req.user.role !== 'admin') {
+      return res.status(409).json({ error: 'The customer has already answered this quote. Ask an admin to re-open it.' });
+    }
+    await pool.query(
+      "UPDATE quotes SET status = 'draft', approval_token = NULL, token_expires_at = NULL, sent_at = NULL, sent_to = NULL, " +
+      'first_viewed_at = NULL, last_reminded_at = NULL, reminder_count = 0, updated_at = NOW() WHERE id = $1',
+      [req.params.id]
+    );
+    await logQuoteEvent(quote.id, 'link_voided', { actorName: req.user.name, req: req, details: { was: quote.status, reason: 'revoked' } });
+    try { await logAudit({ entity_type: 'quote', entity_id: quote.id, entity_number: quote.quote_number, action: 'customer_link_voided', user_id: req.user.id, user_name: req.user.name, details: { was: quote.status } }); } catch (e) {}
+    res.json({ success: true });
+  } catch (err) {
+    console.error('Quote revoke error:', err);
+    res.status(500).json({ error: 'Failed to revoke the link' });
+  }
+});
+
+// GET /:id/events - the customer-facing activity trail for one quote.
+router.get('/:id/events', requireAuth, requirePermission('view_quotes'), async (req, res) => {
+  try {
+    const qr = await pool.query('SELECT id, requester_id FROM quotes WHERE id = $1', [req.params.id]);
+    if (!qr.rows.length) return res.status(404).json({ error: 'Quote not found' });
+    if (!canAccessQuote(req.user, qr.rows[0])) return res.status(403).json({ error: 'Access denied' });
+    const { rows } = await pool.query(
+      'SELECT id, event_type, actor_name, ip, user_agent, details, created_at FROM quote_events WHERE quote_id = $1 ORDER BY created_at DESC, id DESC LIMIT 200',
+      [req.params.id]
+    );
+    res.json(rows);
+  } catch (err) {
+    console.error('Quote events error:', err);
+    res.status(500).json({ error: 'Failed to fetch activity' });
+  }
+});
+
+// ===================== Customer approval: public (token) =====================
+// Mounted at /api/quote-approve in server.js. No JWT, no session, no cookies.
+
+// Tell the team a customer did something. Best-effort on every channel.
+async function notifyDecision(quote, kind, extra) {
+  try {
+    const base = appBase();
+    const label = kind === 'approved' ? 'approved' : (kind === 'declined' ? 'declined' : 'asked for changes on');
+    const url = base + '/?view=view-quote&id=' + quote.id;
+    const who = quote.approver_name || quote.customer_name || 'The customer';
+
+    // The person who wrote the quote always hears about it, plus whoever has the
+    // broadcast turned on.
+    const _q = await notify.broadcastRecipients('quote_' + kind, "role IN ('admin', 'owner')");
+    var emails = (_q.emails || []).slice();
+    var phones = (_q.phones || []).slice();
+    var userIds = (_q.userIds || []).slice();
+    try {
+      const pr = await pool.query('SELECT id, email, phone, receive_emails, receive_sms FROM users WHERE id = $1', [quote.requester_id]);
+      if (pr.rows.length) {
+        const p = pr.rows[0];
+        if (p.email && p.receive_emails !== false && emails.indexOf(p.email) === -1) emails.push(p.email);
+        if (p.phone && p.receive_sms === true && phones.indexOf(p.phone) === -1) phones.push(p.phone);
+        if (userIds.indexOf(p.id) === -1) userIds.push(p.id);
+      }
+    } catch (e) {}
+
+    const amount = quote.approved_total != null ? ('$' + parseFloat(quote.approved_total).toFixed(2)) : null;
+    try { await push.sendPushToUsers(userIds, { title: 'Quote ' + label, body: who + ' ' + label + ' ' + quote.quote_number + (amount ? (' - ' + amount) : ''), url: '/' }); } catch (e) {}
+
+    if (emails.length) {
+      const html = emailTemplate({
+        badge: kind === 'approved' ? 'Approved' : (kind === 'declined' ? 'Declined' : 'Changes requested'),
+        badgeColor: kind === 'approved' ? 'green' : 'red',
+        title: 'Quote ' + quote.quote_number + ' was ' + label,
+        body: '<strong>' + who + '</strong> ' + label + ' this quote.' + (extra ? ('<br><br>' + String(extra).replace(/[<>]/g, '')) : ''),
+        details: [
+          { label: 'Quote number', value: quote.quote_number },
+          { label: 'Customer', value: quote.customer_name || '-' },
+          { label: 'Prepared by', value: quote.requester_name || '-' }
+        ].concat(amount ? [{ label: 'Approved total', value: amount }] : []),
+        buttonText: 'Open the quote', buttonUrl: url
+      });
+      await sendEmail(emails, 'Quote ' + quote.quote_number + ' ' + label + ' by ' + (quote.customer_name || 'the customer'), html);
+    }
+    if (phones.length) {
+      await sendSms(phones, 'Lock and Roll: ' + who + ' ' + label + ' quote ' + quote.quote_number + (amount ? (' (' + amount + ')') : '') + '. ' + url);
+    }
+  } catch (e) { console.error('[quotes] decision notify failed:', e.message); }
+}
+
+// GET /:token - what the customer sees. Records the view; changes nothing else.
+//
+// This is a GET, so it must stay safe: mail scanners and link prefetchers in
+// Outlook and corporate gateways WILL fetch it unattended. Approving is a POST
+// with a name and an explicit consent flag, below.
+pub.get('/:token', async (req, res) => {
+  try {
+    const found = await loadByToken(req.params.token);
+    if (!found) return res.status(404).json({ error: 'not_found' });
+    const quote = found.quote;
+
+    if (found.expired) {
+      if (quote.status !== 'expired' && !isAnswered(quote.status)) {
+        await pool.query("UPDATE quotes SET status = 'expired', updated_at = NOW() WHERE id = $1", [quote.id]);
+        await logQuoteEvent(quote.id, 'expired', { req: req });
+      }
+      return res.status(410).json({
+        error: 'expired',
+        quote_number: quote.quote_number,
+        company: await publicCompanySettings(),
+        prepared_by: { name: quote.requester_name, email: quote.requester_email, phone: quote.requester_phone }
+      });
+    }
+
+    // First open flips sent -> viewed and tells the team. Later opens only add
+    // an event, so the trail shows "opened 3x" without re-notifying anybody.
+    if (quote.status === 'sent') {
+      await pool.query("UPDATE quotes SET status = 'viewed', first_viewed_at = COALESCE(first_viewed_at, NOW()), updated_at = NOW() WHERE id = $1", [quote.id]);
+      quote.status = 'viewed';
+      quote.first_viewed_at = quote.first_viewed_at || new Date();
+      try {
+        const pr = await pool.query('SELECT id FROM users WHERE id = $1', [quote.requester_id]);
+        if (pr.rows.length) await push.sendPushToUsers([pr.rows[0].id], { title: 'Quote opened', body: (quote.customer_name || 'The customer') + ' opened ' + quote.quote_number + '.', url: '/' });
+      } catch (e) {}
+    }
+    await logQuoteEvent(quote.id, 'viewed', { req: req });
+
+    res.json(publicQuotePayload(quote, found.items, await publicCompanySettings()));
+  } catch (err) {
+    console.error('Public quote view error:', err);
+    res.status(500).json({ error: 'Failed to load the quote' });
+  }
+});
+
+// POST /:token/approve - the decision. Requires a typed name AND explicit consent.
+pub.post('/:token/approve', async (req, res) => {
+  try {
+    const found = await loadByToken(req.params.token);
+    if (!found) return res.status(404).json({ error: 'not_found' });
+    const quote = found.quote;
+    if (found.expired) return res.status(410).json({ error: 'This quote has expired. Please ask for an updated one.' });
+    if (isAnswered(quote.status)) return res.status(409).json({ error: 'already_answered', status: quote.status });
+
+    const name = String(req.body.name || '').trim().slice(0, 255);
+    const title = req.body.title ? String(req.body.title).trim().slice(0, 120) : null;
+    const signature = req.body.signature ? String(req.body.signature).slice(0, 400000) : null;
+    if (name.length < 2) return res.status(400).json({ error: 'Please type your full name to approve.' });
+    // The consent box is the part that carries weight; a click alone is not it.
+    if (req.body.consent !== true) return res.status(400).json({ error: 'Please tick the authorization box to approve.' });
+
+    // Recomputed here, not taken from the browser. The customer approves the
+    // number the server says the quote is worth.
+    const t = quoteTotals(found.items, quote.tax_rate);
+
+    const upd = await pool.query(
+      "UPDATE quotes SET status = 'approved', responded_at = NOW(), approver_name = $1, approver_title = $2, " +
+      'approver_ip = $3, approved_total = $4, signature_data = $5, updated_at = NOW() ' +
+      "WHERE id = $6 AND status NOT IN ('approved','declined') RETURNING id",
+      [name, title, clientIp(req), t.total, signature, quote.id]
+    );
+    // Lost the race against another tab or a double tap: treat it as done, not an error.
+    if (!upd.rows.length) return res.status(409).json({ error: 'already_answered' });
+
+    quote.status = 'approved';
+    quote.approver_name = name;
+    quote.approver_title = title;
+    quote.approved_total = t.total;
+    await logQuoteEvent(quote.id, 'approved', { actorName: name, req: req, details: { title: title, total: t.total, signed: !!signature } });
+    try { await logAudit({ entity_type: 'quote', entity_id: quote.id, entity_number: quote.quote_number, action: 'approved_by_customer', user_id: null, user_name: name, details: { total: t.total, title: title } }); } catch (e) {}
+    notifyDecision(quote, 'approved', null).catch(function () {});
+
+    res.json({ success: true, status: 'approved', approved_total: t.total, approver_name: name, responded_at: new Date() });
+  } catch (err) {
+    console.error('Quote approve error:', err);
+    res.status(500).json({ error: 'Failed to record your approval' });
+  }
+});
+
+// POST /:token/decline
+pub.post('/:token/decline', async (req, res) => {
+  try {
+    const found = await loadByToken(req.params.token);
+    if (!found) return res.status(404).json({ error: 'not_found' });
+    const quote = found.quote;
+    if (found.expired) return res.status(410).json({ error: 'This quote has expired.' });
+    if (isAnswered(quote.status)) return res.status(409).json({ error: 'already_answered', status: quote.status });
+
+    const name = String(req.body.name || quote.customer_name || '').trim().slice(0, 255);
+    const reason = req.body.reason ? String(req.body.reason).trim().slice(0, 2000) : null;
+
+    const upd = await pool.query(
+      "UPDATE quotes SET status = 'declined', responded_at = NOW(), approver_name = $1, approver_ip = $2, " +
+      "decline_reason = $3, updated_at = NOW() WHERE id = $4 AND status NOT IN ('approved','declined') RETURNING id",
+      [name, clientIp(req), reason, quote.id]
+    );
+    if (!upd.rows.length) return res.status(409).json({ error: 'already_answered' });
+
+    quote.status = 'declined';
+    quote.approver_name = name;
+    await logQuoteEvent(quote.id, 'declined', { actorName: name, req: req, details: { reason: reason } });
+    try { await logAudit({ entity_type: 'quote', entity_id: quote.id, entity_number: quote.quote_number, action: 'declined_by_customer', user_id: null, user_name: name, details: { reason: reason } }); } catch (e) {}
+    notifyDecision(quote, 'declined', reason).catch(function () {});
+
+    res.json({ success: true, status: 'declined' });
+  } catch (err) {
+    console.error('Quote decline error:', err);
+    res.status(500).json({ error: 'Failed to record your response' });
+  }
+});
+
+// POST /:token/message - "ask a question". Deliberately NOT a decision: the
+// quote stays open and answerable. Most quotes that die get negotiated, not
+// rejected, and this is the path that catches them.
+pub.post('/:token/message', async (req, res) => {
+  try {
+    const found = await loadByToken(req.params.token);
+    if (!found) return res.status(404).json({ error: 'not_found' });
+    const quote = found.quote;
+    if (found.expired) return res.status(410).json({ error: 'This quote has expired.' });
+    if (isAnswered(quote.status)) return res.status(409).json({ error: 'already_answered', status: quote.status });
+
+    const message = String(req.body.message || '').trim().slice(0, 4000);
+    const phone = req.body.phone ? String(req.body.phone).trim().slice(0, 50) : null;
+    if (message.length < 2) return res.status(400).json({ error: 'Please tell us what you would like changed.' });
+
+    await pool.query("UPDATE quotes SET status = 'changes_requested', updated_at = NOW() WHERE id = $1", [quote.id]);
+    quote.status = 'changes_requested';
+    await logQuoteEvent(quote.id, 'changes_requested', { actorName: quote.customer_name, req: req, details: { message: message, phone: phone } });
+    notifyDecision(quote, 'changes_requested', message + (phone ? ('<br><br>Best number: ' + phone) : '')).catch(function () {});
+
+    res.json({ success: true, status: 'changes_requested' });
+  } catch (err) {
+    console.error('Quote message error:', err);
+    res.status(500).json({ error: 'Failed to send your message' });
+  }
+});
+
 module.exports = router;
+module.exports.publicRouter = pub;
+// Exported for jobs/quoteReminders.js so the nudge email and the send email can
+// never drift apart.
+module.exports.sendQuoteEmail = sendQuoteEmail;
+module.exports.quoteLink = quoteLink;

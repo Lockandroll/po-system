@@ -128,6 +128,13 @@ ALL_PERMS.push('manage_pricing');
 // Coverage zones. Separate from pricing because drawing the map of where you
 // work and setting what you charge are different jobs, often different people.
 ALL_PERMS.push('manage_coverage');
+// Sending a quote to a customer is deliberately NOT edit_quote. Building a
+// quote and putting a price in front of a customer under the company's name
+// are different acts, so they are different permissions. Ships to admin,
+// manager and locksmith_coordinator via DEFAULTS - but Nova's role matrix has
+// already been saved, so it must ALSO be ticked in Roles & Access to take
+// effect for those roles (see the note in nova-adding-a-permission).
+ALL_PERMS.push('send_quote');
 // Tech pay. Three permissions because they are three different trust levels:
 // writing the rate tables, reading everybody's pay, and reading your own.
 // view_own_pay is the one a tech eventually gets; it never widens past the
@@ -212,9 +219,9 @@ ALL_PERMS.push(
 
 var DEFAULTS = {
   admin: '*',
-  manager: ['view_users', 'manage_cities', 'manage_geico', 'manage_running', 'manage_vehicles', 'manage_vendors', 'view_vendors', 'manage_addresses', 'approve_vr', 'manage_tasks', 'manage_work_orders', 'manage_schedule', 'manage_parts', 'manage_invoice_setup', 'approve_refund', 'assign_reviews', 'view_feedback', 'manage_feedback', 'manage_signatures', 'manage_timeclock', 'manage_pto', 'view_quiz', 'manage_quiz', 'view_team_quiz', 'manage_onboarding', 'manage_inspections', 'ptt_all_channels', 'view_offboarding', 'play_call_recordings', 'manage_assets', 'approve_asset_replacement', 'edit_deposit', 'complete_deposit_for_employee'].concat(EMPLOYEE_PERMS),
+  manager: ['view_users', 'manage_cities', 'manage_geico', 'manage_running', 'manage_vehicles', 'manage_vendors', 'view_vendors', 'manage_addresses', 'approve_vr', 'manage_tasks', 'manage_work_orders', 'manage_schedule', 'manage_parts', 'manage_invoice_setup', 'approve_refund', 'assign_reviews', 'view_feedback', 'manage_feedback', 'manage_signatures', 'manage_timeclock', 'manage_pto', 'view_quiz', 'manage_quiz', 'view_team_quiz', 'manage_onboarding', 'manage_inspections', 'ptt_all_channels', 'view_offboarding', 'play_call_recordings', 'manage_assets', 'approve_asset_replacement', 'edit_deposit', 'complete_deposit_for_employee', 'send_quote'].concat(EMPLOYEE_PERMS),
   locksmith: EMPLOYEE_PERMS.slice(),
-  locksmith_coordinator: EMPLOYEE_PERMS.concat(['manage_work_orders', 'ptt_all_channels']),
+  locksmith_coordinator: EMPLOYEE_PERMS.concat(['manage_work_orders', 'ptt_all_channels', 'send_quote']),
   dispatcher: EMPLOYEE_PERMS.concat(['manage_work_orders', 'ptt_all_channels']),
   roadside_technician: EMPLOYEE_PERMS.slice()
 };

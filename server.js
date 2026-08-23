@@ -19,6 +19,7 @@ const { startDocExpiry } = require('./jobs/docExpiry');
 const { startReviewRatings } = require('./jobs/reviewRatings');
 const { startReviewComplaints } = require('./jobs/reviewComplaints');
 const { startSignatureReminders } = require('./jobs/signatureReminders');
+const { startQuoteReminders } = require('./jobs/quoteReminders');
 const { startTimeClock } = require('./jobs/timeclock');
 const { startPtoAccrual } = require('./jobs/ptoAccrual');
 const { startQuiz } = require('./jobs/quiz');
@@ -347,6 +348,10 @@ app.use('/api/offboarding', offboardingRoutes);
 app.use('/api/exit-interviews', offboardingRoutes.exitInterviewRouter);
 app.use('/api/quiz', require('./routes/quiz'));
 app.use('/api/quiz-take', require('./routes/quiz').publicRouter);
+// Customer quote approval. No JWT: everything hangs off a 64-char token on the
+// quote row. The /quote/:token URL itself needs nothing - app.get('*') already
+// serves the SPA, which routes on the path (see render() in public/js/app.js).
+app.use('/api/quote-approve', require('./routes/quotes').publicRouter);
 app.use('/api/ptt', require('./routes/ptt'));
 app.use('/api/inspections', require('./routes/inspections'));
 app.use('/api/assets', require('./routes/assets'));
@@ -502,6 +507,7 @@ function startScheduledJobs() {
   _startJob('startReviewRatings', startReviewRatings);
   _startJob('startReviewComplaints', startReviewComplaints);
   _startJob('startSignatureReminders', startSignatureReminders);
+  _startJob('startQuoteReminders', startQuoteReminders);
   _startJob('startPtoAccrual', startPtoAccrual);
   _startJob('startGeicoIngest', startGeicoIngest);
   _startJob('startGeicoReport', startGeicoReport);
@@ -522,7 +528,7 @@ function startScheduledJobs() {
   _startJob('startCheckinSweeper', startCheckinSweeper);
   _startJob('startCheckinRetention', startCheckinRetention);
   _startJob('startEmployeeRecords', startEmployeeRecords);
-  console.log('[boot] scheduled jobs started (' + 30 + ')');
+  console.log('[boot] scheduled jobs started (' + 31 + ')');
 }
 
 initDB()

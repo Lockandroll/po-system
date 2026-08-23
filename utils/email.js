@@ -6,15 +6,22 @@ function esc(s) {
 // key, non-2xx, or a thrown fetch). Added for the "Resend invite" buttons, which
 // were otherwise reporting success on a send that never left the building.
 // Every other caller ignores the return value and is unaffected.
-async function sendEmail(to, subject, html, cc, attachments) {
+// opts (all optional) let a CUSTOMER-facing send override the internal defaults
+// without touching any of the ~200 existing callers:
+//   opts.from    - sender, e.g. QUOTE_FROM_EMAIL. Falls back to FROM_EMAIL.
+//   opts.replyTo - where a human reply should land. Nothing set this before, which
+//                  is why every Nova email read as no-reply.
+async function sendEmail(to, subject, html, cc, attachments, opts) {
   if (!process.env.RESEND_API_KEY) { console.warn('RESEND_API_KEY not set — skipping email'); return false; }
   try {
+    const o = opts || {};
     const body = {
-      from: process.env.FROM_EMAIL || 'Lock and Roll <onboarding@resend.dev>',
+      from: o.from || process.env.FROM_EMAIL || 'Lock and Roll <onboarding@resend.dev>',
       to: Array.isArray(to) ? to : [to],
       subject,
       html
     };
+    if (o.replyTo) body.reply_to = Array.isArray(o.replyTo) ? o.replyTo : [o.replyTo];
     if (cc && cc.length > 0) body.cc = Array.isArray(cc) ? cc : [cc];
     if (attachments && attachments.length) body.attachments = attachments;
     const resp = await fetch('https://api.resend.com/emails', {
