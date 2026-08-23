@@ -48,7 +48,7 @@ function sliceRegion(from, to, label) {
 
 const STAFF = sliceRegion('var QUOTE_STATUSES = {', '// ===== Quote photos', 'staff-side quote approval');
 const PUBLIC = sliceRegion('var qaData = null;', '// ----- Public signing page (no login) -----', 'customer approval page');
-const HELPERS = ['escHtml', 'formatDate', 'formatDateTime', 'timeAgo', 'resolveTokens', 'quoteRowActivityHtml'].map(sliceFunction).join('\n');
+const HELPERS = ['escHtml', 'formatDate', 'formatDateTime', 'timeAgo', 'resolveTokens', 'quoteAgo', 'quoteRowActivityHtml'].map(sliceFunction).join('\n');
 
 const sandbox = {
   console: console,
@@ -91,6 +91,20 @@ has('one reminder is singular', sandbox.quoteRowActivityHtml({ status: 'sent', s
 has('a viewed row says no answer yet', sandbox.quoteRowActivityHtml({ status: 'viewed', first_viewed_at: new Date(Date.now() - 2 * 3600000) }), 'no answer');
 has('a changes row says it is on you', sandbox.quoteRowActivityHtml({ status: 'changes_requested' }), 'Waiting on you');
 eq('a draft row adds no hint', sandbox.quoteRowActivityHtml({ status: 'draft' }), '');
+
+// timeAgo() returns null past 7 days. Caught by a screenshot: a quote sent 9
+// days ago rendered as the literal "Sent null" in the list.
+const OLD = new Date(Date.now() - 9 * day);
+const older = sandbox.quoteRowActivityHtml({ status: 'sent', sent_at: OLD, reminder_count: 2 });
+lacks('a quote sent over a week ago never renders "null"', older, 'null');
+has('it falls back to the date', older, 'Sent on');
+lacks('a viewed quote over a week old never renders "null"', sandbox.quoteRowActivityHtml({ status: 'viewed', first_viewed_at: OLD }), 'null');
+lacks('a declined quote over a week old never renders "null"', sandbox.quoteRowActivityHtml({ status: 'declined', responded_at: OLD }), 'null');
+has('and says what happened', sandbox.quoteRowActivityHtml({ status: 'declined', responded_at: OLD }), 'Declined on');
+has('a recently declined quote still reads as relative', sandbox.quoteRowActivityHtml({ status: 'declined', responded_at: new Date(Date.now() - 2 * day) }), 'Declined 2d ago');
+lacks('a missing timestamp never renders "null"', sandbox.quoteRowActivityHtml({ status: 'sent', sent_at: null, reminder_count: 0 }), 'null');
+lacks('the banner never renders "null" for an old send', sandbox.quoteStatusBannerHtml({ status: 'sent', sent_at: OLD, sent_to: 'a@b.com', reminder_count: 0 }), 'null');
+lacks('the banner never renders "null" for an old view', sandbox.quoteStatusBannerHtml({ status: 'viewed', first_viewed_at: OLD, sent_to: 'a@b.com', reminder_count: 0 }), 'null');
 
 section('Status banner');
 let b = sandbox.quoteStatusBannerHtml({ status: 'draft' });
@@ -207,6 +221,14 @@ has('a configured logo is used', logoShell, 'data:image/png;base64,AAA');
 lacks('and replaces the fallback lockup', logoShell, '&#128274;');
 const bare = sandbox.qaShell('x', {});
 has('with no settings it still names the company', bare, 'Lock and Roll LLC');
+has('the shell fills the flex parent', shell, 'flex:1');
+has('and spans the full width', shell, 'width:100%');
+has('and covers the viewport height', shell, 'min-height:100vh');
+has('and paints its own background', shell, 'background:var(--bg)');
+lacks('and never uses a CSS variable Nova does not define', shell, '--bg-color');
+lacks('the line items table uses a real border token', sandbox.qaLineItemsHtml(PAYLOAD), '--border-color');
+lacks('the banner does not use --border-color', sandbox.quoteStatusBannerHtml({ status: 'draft' }), '--border-color');
+lacks('the banner does not use --bg-color', sandbox.quoteStatusBannerHtml({ status: 'draft' }), '--bg-color');
 
 section('Customer page: money');
 eq('money formats two decimals', sandbox.qaMoney(2486.4), '$2486.40');

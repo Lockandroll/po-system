@@ -2896,7 +2896,7 @@ async function renderCompanyInfo(el) {
       '</div>' +
     '</div></div>' +
     '<div class="card mt-4" style="margin-top:20px"><div class="card-header"><span class="card-title">Company Details</span></div><div class="card-body">' +
-      '<p class="text-muted mb-4" style="margin-bottom:16px">Shown on printed quotes below the logo. Enter your office address and main phone number.</p>' +
+      '<p class="text-muted mb-4" style="margin-bottom:16px">This is the name customers see. It appears on printed quotes, in the header of the quote email, in the quote text message, on the customer approval page, and as the sender name on quote emails. Internal Nova notifications are not affected.</p>' +
       '<div class="form-row">' +
         '<div class="form-group"><label>Company Name</label><input type="text" id="company-name" value="' + escHtml(settings.company_name || '') + '" placeholder="e.g. Pop-A-Lock" /></div>' +
         '<div class="form-group"><label>Company Phone</label><input type="text" id="company-phone" value="' + escHtml(settings.company_phone || '') + '" placeholder="e.g. 337-873-2983" /></div>' +
@@ -2910,6 +2910,23 @@ async function renderCompanyInfo(el) {
       '<div class="form-group"><label>Payroll Email</label><input type="email" id="payroll-email" value="' + escHtml(settings.timeclock_payroll_email || '') + '" placeholder="e.g. payroll@popalockar.com" /></div>' +
       '<button class="btn btn-primary" onclick="savePayrollEmail()">Save Payroll Email</button>' +
     '</div></div>' +
+    '<div class="card mt-4" style="margin-top:20px"><div class="card-header"><span class="card-title">Customer Quote Text Message</span></div><div class="card-body">' +
+      '<p class="text-muted mb-4" style="margin-bottom:16px">The text a customer gets when you send them a quote, if you fill in their mobile number. Edit it here and it takes effect on the next send &mdash; no deploy needed.</p>' +
+      '<div class="form-group"><label>Message</label>' +
+        '<textarea id="quote-sms-template" rows="3" placeholder="Leave blank to use the default" oninput="quoteSmsPreview()">' + escHtml(settings.quote_sms_template || '') + '</textarea>' +
+      '</div>' +
+      '<div class="text-muted" style="font-size:12.5px;margin-bottom:10px">Tokens: ' +
+        ['company','customer','quote_number','total','link','prepared_by','expires'].map(function(t) {
+          return '<code style="cursor:pointer" title="Click to insert" onclick="quoteSmsInsert(\'' + t + '\')">{' + t + '}</code>';
+        }).join(' ') +
+        '<br>The approval link is always included &mdash; if you leave <code>{link}</code> out it gets added to the end.</div>' +
+      '<div style="border:1px solid var(--border);border-radius:8px;padding:12px;background:var(--bg)">' +
+        '<div style="font-size:11px;font-weight:600;letter-spacing:0.06em;text-transform:uppercase;color:var(--text-muted-color);margin-bottom:6px">Preview</div>' +
+        '<div id="quote-sms-preview" style="font-size:13px;line-height:1.5;white-space:pre-wrap">&hellip;</div>' +
+        '<div id="quote-sms-meta" style="font-size:11.5px;color:var(--text-muted-color);margin-top:6px"></div>' +
+      '</div>' +
+      '<button class="btn btn-primary" style="margin-top:14px" onclick="saveQuoteSmsTemplate()">Save Message</button>' +
+    '</div></div>' +
     (can('manage_settings') ?
     '<div class="card mt-4" style="margin-top:20px"><div class="card-header"><span class="card-title">App Updates</span></div><div class="card-body">' +
       '<p class="text-muted mb-4" style="margin-bottom:16px">When a new version ships, anyone with Nova open is offered a &quot;Reload&quot; prompt automatically. Use the field below only when an old version is actually <strong>broken</strong> against the current server &mdash; any client below this number will clear its cache and reload itself on its next action. Users stay signed in.</p>' +
@@ -2920,6 +2937,7 @@ async function renderCompanyInfo(el) {
       '</div>' +
       '<button class="btn btn-primary" onclick="saveClientMinVersion()">Save Minimum Version</button>' +
     '</div></div>' : '');
+  if (can('manage_settings')) quoteSmsPreview();
   if (can('manage_settings')) {
     fetch('/api/version', { cache: 'no-store' })
       .then(function (r) { return r.ok ? r.json() : null; })
@@ -5134,6 +5152,55 @@ async function saveCompanyInfo() {
   }
 }
 
+// The preview is rendered SERVER-side on purpose: it runs the same
+// renderQuoteSms() the send route does, so what this box shows is exactly what a
+// customer receives. A second implementation in the browser would drift.
+var _quoteSmsTimer = null;
+function quoteSmsPreview() {
+  clearTimeout(_quoteSmsTimer);
+  _quoteSmsTimer = setTimeout(async function () {
+    var box = document.getElementById('quote-sms-preview');
+    var meta = document.getElementById('quote-sms-meta');
+    if (!box) return;
+    try {
+      var el = document.getElementById('quote-sms-template');
+      var r = await api('POST', '/quotes/sms-preview', { template: el ? el.value : '' });
+      box.textContent = r.body;
+      meta.textContent = r.length + ' characters, ' + r.segments + ' text message' + (r.segments === 1 ? '' : 's') +
+        (el && !el.value.trim() ? ' (using the default wording)' : '');
+    } catch (e) {
+      box.textContent = 'Could not render a preview: ' + e.message;
+      if (meta) meta.textContent = '';
+    }
+  }, 250);
+}
+
+function quoteSmsInsert(token) {
+  var el = document.getElementById('quote-sms-template');
+  if (!el) return;
+  var start = el.selectionStart == null ? el.value.length : el.selectionStart;
+  var end = el.selectionEnd == null ? el.value.length : el.selectionEnd;
+  var t = '{' + token + '}';
+  el.value = el.value.slice(0, start) + t + el.value.slice(end);
+  el.focus();
+  el.selectionStart = el.selectionEnd = start + t.length;
+  quoteSmsPreview();
+}
+
+async function saveQuoteSmsTemplate() {
+  var val = ((document.getElementById('quote-sms-template') || {}).value || '').trim();
+  try {
+    if (val) await api('PUT', '/settings/quote_sms_template', { value: val });
+    else await api('DELETE', '/settings/quote_sms_template').catch(function () {});
+    document.getElementById('settings-success').innerHTML =
+      '<div class="alert alert-success">' + (val ? 'Quote text message saved.' : 'Reset to the default wording.') + '</div>';
+    setTimeout(function () { var el = document.getElementById('settings-success'); if (el) el.innerHTML = ''; }, 4000);
+    quoteSmsPreview();
+  } catch (err) {
+    document.getElementById('settings-error').innerHTML = '<div class="alert alert-error">' + escHtml(err.message) + '</div>';
+  }
+}
+
 async function savePayrollEmail() {
   const val = (document.getElementById('payroll-email') || {}).value || '';
   try {
@@ -7041,17 +7108,25 @@ let quoteLineItems = [];
 // when the form is (re)opened.
 let quotePendingPhotos = [];
 
+// timeAgo() deliberately gives up past 7 days and returns null, which is fine
+// for "active now" badges and wrong everywhere here: a quote sent 9 days ago
+// rendered as the literal string "Sent null". Fall back to the date itself.
+function quoteAgo(d) {
+  if (!d) return 'at an unknown time';
+  return timeAgo(d) || ('on ' + formatDate(d));
+}
+
 // A quote list is a pipeline, not an archive. The pill says where a quote is;
 // this line says whether it needs you today. "Opened 3x, no answer" is the row
 // that is worth a phone call, and it should not take a click to find that out.
 function quoteRowActivityHtml(q) {
   var st = q.status || 'draft';
   var note = '';
-  if (st === 'sent') note = 'Sent ' + timeAgo(q.sent_at) + (q.reminder_count > 0 ? ', ' + q.reminder_count + ' reminder' + (q.reminder_count === 1 ? '' : 's') : '') + ', not opened';
-  else if (st === 'viewed') note = 'Opened ' + timeAgo(q.first_viewed_at) + ', no answer';
+  if (st === 'sent') note = 'Sent ' + quoteAgo(q.sent_at) + (q.reminder_count > 0 ? ', ' + q.reminder_count + ' reminder' + (q.reminder_count === 1 ? '' : 's') : '') + ', not opened';
+  else if (st === 'viewed') note = 'Opened ' + quoteAgo(q.first_viewed_at) + ', no answer';
   else if (st === 'changes_requested') note = 'Waiting on you';
-  else if (st === 'approved') note = timeAgo(q.responded_at);
-  else if (st === 'declined') note = timeAgo(q.responded_at);
+  else if (st === 'approved') note = 'Approved ' + quoteAgo(q.responded_at);
+  else if (st === 'declined') note = 'Declined ' + quoteAgo(q.responded_at);
   else if (st === 'expired') note = 'Link expired';
   if (!note) return '';
   return '<div style="font-size:11px;color:var(--text-muted-color);margin-top:3px">' + escHtml(note) + '</div>';
@@ -7615,7 +7690,7 @@ function quoteSendButtonHtml(q) {
 // before you have to read anything else on the page.
 function quoteStatusBannerHtml(q) {
   var st = q.status || 'draft';
-  var box = 'display:flex;align-items:center;gap:12px;flex-wrap:wrap;padding:12px 14px;border-radius:8px;border:1px solid var(--border-color);margin-bottom:16px;background:var(--card-bg,var(--bg-color))';
+  var box = 'display:flex;align-items:center;gap:12px;flex-wrap:wrap;padding:12px 14px;border-radius:8px;border:1px solid var(--border);margin-bottom:16px;background:var(--bg-card)';
   var title = '', sub = '';
 
   if (st === 'draft') {
@@ -7623,11 +7698,11 @@ function quoteStatusBannerHtml(q) {
     sub = 'Once you send it, this quote locks until the customer answers or you re-open it.';
   } else if (st === 'sent') {
     title = 'Waiting on the customer';
-    sub = 'Sent to ' + escHtml(q.sent_to || q.customer_email || 'the customer') + ' ' + escHtml(timeAgo(q.sent_at)) + '. Not opened yet.' +
+    sub = 'Sent to ' + escHtml(q.sent_to || q.customer_email || 'the customer') + ' ' + escHtml(quoteAgo(q.sent_at)) + '. Not opened yet.' +
       (q.reminder_count > 0 ? ' ' + q.reminder_count + ' reminder' + (q.reminder_count === 1 ? '' : 's') + ' sent.' : '');
   } else if (st === 'viewed') {
     title = 'Opened, no answer yet';
-    sub = 'First opened ' + escHtml(timeAgo(q.first_viewed_at)) + '. Sent to ' + escHtml(q.sent_to || q.customer_email || 'the customer') + '.' +
+    sub = 'First opened ' + escHtml(quoteAgo(q.first_viewed_at)) + '. Sent to ' + escHtml(q.sent_to || q.customer_email || 'the customer') + '.' +
       (q.reminder_count > 0 ? ' ' + q.reminder_count + ' reminder' + (q.reminder_count === 1 ? '' : 's') + ' sent.' : '');
   } else if (st === 'changes_requested') {
     title = 'The customer asked for changes';
@@ -7660,7 +7735,7 @@ async function openQuoteSendDialog(id) {
   var ov = document.createElement('div');
   ov.className = 'nova-dialog-overlay';
   var lbl = 'display:block;font-size:11px;font-weight:600;letter-spacing:0.06em;text-transform:uppercase;color:var(--text-muted-color);margin-bottom:4px';
-  var fld = 'width:100%;padding:8px 10px;border:1px solid var(--border-color);border-radius:6px;background:var(--input-bg,transparent);color:inherit;font-size:13px;font-family:inherit';
+  var fld = 'width:100%;padding:8px 10px;border:1px solid var(--border);border-radius:6px;background:var(--bg);color:inherit;font-size:13px;font-family:inherit';
   ov.innerHTML = '<div class="nova-dlg" role="dialog" aria-modal="true" style="max-width:460px;text-align:left">' +
     '<div class="nova-dlg-title">Send ' + escHtml(q.quote_number) + ' to the customer</div>' +
     '<div style="display:flex;flex-direction:column;gap:12px;margin:14px 0">' +
@@ -7783,7 +7858,7 @@ async function loadQuoteActivity(id) {
     var evs = await api('GET', '/quotes/' + id + '/events');
     if (!evs || !evs.length) { box.innerHTML = '<div class="text-muted" style="font-size:13px">Nothing yet.</div>'; return; }
     box.innerHTML = evs.map(function (ev) {
-      return '<div style="display:flex;gap:10px;align-items:flex-start;padding:8px 0;border-bottom:1px solid var(--border-color)">' +
+      return '<div style="display:flex;gap:10px;align-items:flex-start;padding:8px 0;border-bottom:1px solid var(--border)">' +
         '<div style="flex:1;min-width:0;font-size:13px;line-height:1.5">' + quoteEventText(ev) +
           (ev.ip ? '<div style="font-size:11px;color:var(--text-muted-color);margin-top:1px">' + escHtml(ev.ip) + '</div>' : '') +
         '</div>' +
@@ -22340,7 +22415,7 @@ function qaShell(inner, company) {
     : '<div style="display:flex;align-items:center;gap:9px;font-weight:700;font-size:15px;color:#fff">' +
       '<span style="width:24px;height:24px;border-radius:6px;background:#f97316;display:grid;place-items:center;font-size:12px">&#128274;</span>' +
       escHtml(c.company_name || 'Lock and Roll LLC') + '</div>';
-  return '<div style="min-height:100vh;background:var(--bg-color)">' +
+  return '<div style="flex:1;width:100%;min-height:100vh;background:var(--bg)">' +
     '<div style="background:#14171c;padding:13px 18px;display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap">' +
       brand +
       '<div style="font-size:12px;color:#98a0ab">' + escHtml(c.company_phone || '') + '</div>' +
@@ -22369,7 +22444,7 @@ function qaReceiptHtml(d) {
       '<h2 style="font-size:20px;font-weight:700;margin:0 0 6px">Quote declined</h2>' +
       '<p style="font-size:13.5px;color:var(--text-muted-color);margin:0">Thanks for letting us know. If anything changes, just give us a call.</p>';
 
-  var receipt = '<div style="margin-top:16px;padding-top:14px;border-top:1px solid var(--border-color);font-size:11px;color:var(--text-muted-color);line-height:1.8;letter-spacing:0.04em;text-transform:uppercase">' +
+  var receipt = '<div style="margin-top:16px;padding-top:14px;border-top:1px solid var(--border);font-size:11px;color:var(--text-muted-color);line-height:1.8;letter-spacing:0.04em;text-transform:uppercase">' +
     escHtml(d.status) + ' ' + escHtml(when) + '<br>' +
     escHtml(d.approver_name || '') + (d.approver_title ? ' &middot; ' + escHtml(d.approver_title) : '') +
     (approved && d.approved_total != null ? ' &middot; ' + qaMoney(d.approved_total) : '') +
@@ -22383,8 +22458,8 @@ function qaReceiptHtml(d) {
 }
 
 function qaLineItemsHtml(d) {
-  var cell = 'padding:9px 8px;border-bottom:1px solid var(--border-color)';
-  var head = 'padding:7px 8px;font-size:11px;text-transform:uppercase;letter-spacing:0.06em;color:var(--text-muted-color);border-bottom:1px solid var(--border-color)';
+  var cell = 'padding:9px 8px;border-bottom:1px solid var(--border)';
+  var head = 'padding:7px 8px;font-size:11px;text-transform:uppercase;letter-spacing:0.06em;color:var(--text-muted-color);border-bottom:1px solid var(--border)';
   var rows = (d.line_items || []).map(function (it) {
     return '<tr>' +
       '<td style="' + cell + '">' + escHtml(it.description) + '</td>' +
@@ -22488,7 +22563,7 @@ async function renderQuoteApprovePage(app, token) {
         (d.prepared_by.email ? escHtml(d.prepared_by.email) : '') + '</div>')
     : '';
 
-  var actions = '<div style="position:sticky;bottom:0;background:var(--bg-color);border-top:1px solid var(--border-color);padding:12px 0;display:flex;gap:8px;justify-content:center;flex-wrap:wrap;margin-top:8px">' +
+  var actions = '<div style="position:sticky;bottom:0;background:var(--bg);border-top:1px solid var(--border);padding:12px 0;display:flex;gap:8px;justify-content:center;flex-wrap:wrap;margin-top:8px">' +
     '<button class="btn btn-secondary" onclick="qaOpenDecline()">Decline</button>' +
     '<button class="btn btn-secondary" onclick="qaOpenMessage()">Ask a question</button>' +
     '<button class="btn btn-primary" onclick="qaOpenApprove()" style="background:#0f6b41;border-color:#0f6b41">&#10003; Approve this quote</button>' +
@@ -22524,7 +22599,7 @@ function qaOverlay(titleHtml, bodyHtml, okLabel, okStyle) {
 function qaCloseOverlay() { var ov = document.getElementById('qa-ov'); if (ov && ov.parentNode) ov.parentNode.removeChild(ov); qaPad = null; }
 function qaErr(m) { var e = document.getElementById('qa-err'); if (e) e.textContent = m; }
 
-var QA_FIELD = 'width:100%;padding:8px 10px;border:1px solid var(--border-color);border-radius:6px;background:var(--input-bg,transparent);color:inherit;font-size:13px;font-family:inherit';
+var QA_FIELD = 'width:100%;padding:8px 10px;border:1px solid var(--border);border-radius:6px;background:var(--bg);color:inherit;font-size:13px;font-family:inherit';
 var QA_LABEL = 'display:block;font-size:11px;font-weight:600;letter-spacing:0.06em;text-transform:uppercase;color:var(--text-muted-color);margin-bottom:4px';
 
 function qaOpenApprove() {
@@ -22532,7 +22607,7 @@ function qaOpenApprove() {
   if (!d) return;
   qaOverlay(
     'Approve quote ' + escHtml(d.quote_number),
-    '<div style="display:flex;justify-content:space-between;align-items:baseline;gap:10px;padding:10px 12px;border:1px solid var(--border-color);border-radius:7px">' +
+    '<div style="display:flex;justify-content:space-between;align-items:baseline;gap:10px;padding:10px 12px;border:1px solid var(--border);border-radius:7px">' +
       '<div style="font-size:11px;text-transform:uppercase;letter-spacing:0.09em;color:var(--text-muted-color)">You are approving</div>' +
       '<div style="font-size:20px;font-weight:700">' + qaMoney(d.total) + '</div>' +
     '</div>' +
@@ -22541,7 +22616,7 @@ function qaOpenApprove() {
     '<div><label style="' + QA_LABEL + '" for="qa-title">Title (optional)</label>' +
       '<input id="qa-title" type="text" style="' + QA_FIELD + '" placeholder="Property Manager" /></div>' +
     '<div><label style="' + QA_LABEL + '">Sign here (optional)</label>' +
-      '<canvas id="qa-pad" width="420" height="110" style="width:100%;height:110px;background:#fff;border:1px dashed var(--border-color);border-radius:7px;touch-action:none;cursor:crosshair"></canvas>' +
+      '<canvas id="qa-pad" width="420" height="110" style="width:100%;height:110px;background:#fff;border:1px dashed var(--border);border-radius:7px;touch-action:none;cursor:crosshair"></canvas>' +
       '<button type="button" class="btn btn-secondary btn-sm" style="margin-top:6px" onclick="qaPadClear()">Clear</button></div>' +
     '<label style="display:flex;gap:9px;align-items:flex-start;font-size:12.5px;line-height:1.5;cursor:pointer">' +
       '<input type="checkbox" id="qa-consent" style="margin-top:3px;flex:0 0 auto" />' +

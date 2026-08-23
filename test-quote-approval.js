@@ -690,6 +690,114 @@ async function testEvents() {
   ok('newest first', new Date(r.body[0].created_at) >= new Date(r.body[r.body.length - 1].created_at));
 }
 
+async function testBrandAndSms() {
+  section('Branding and the customer text message');
+  CURRENT_PERMS = null;
+
+  // --- the brand -----------------------------------------------------------
+  await pool.query("DELETE FROM settings WHERE key = 'company_name'");
+  let q = await makeQuote({});
+  SENT.emails.length = 0;
+  await req('POST', '/api/quotes/' + q.id + '/send', {});
+  ok('with no company_name it falls back to Lock and Roll LLC', SENT.emails[0].html.indexOf('Lock and Roll LLC') !== -1);
+
+  await pool.query("INSERT INTO settings (key, value) VALUES ('company_name', $1) ON CONFLICT (key) DO UPDATE SET value = $1", ['Pop-A-Lock of Atlanta']);
+  q = await makeQuote({});
+  SENT.emails.length = 0; SENT.sms.length = 0;
+  await req('POST', '/api/quotes/' + q.id + '/send', { sms_to: '4045550182' });
+  const mail = SENT.emails[0];
+  ok('the email header uses the Settings brand', mail.html.indexOf('>Pop-A-Lock of Atlanta</td>') !== -1);
+  ok('the subject uses the brand', mail.subject.indexOf('Your quote from Pop-A-Lock of Atlanta') === 0, mail.subject);
+  ok('the email body never says the old name', mail.html.indexOf('Lock and Roll') === -1);
+  ok('the SMS uses the brand', SENT.sms[0].body.indexOf('Pop-A-Lock of Atlanta') === 0, SENT.sms[0].body);
+
+  // --- the sender ----------------------------------------------------------
+  delete process.env.QUOTE_FROM_EMAIL;
+  process.env.FROM_EMAIL = 'Nova <noreply@novaops.dev>';
+  q = await makeQuote({});
+  SENT.emails.length = 0;
+  await req('POST', '/api/quotes/' + q.id + '/send', {});
+  eq('the sender keeps the verified address but takes the new display name',
+     SENT.emails[0].opts.from, 'Pop-A-Lock of Atlanta <noreply@novaops.dev>');
+
+  process.env.QUOTE_FROM_EMAIL = 'Pop-A-Lock <quotes@popalockar.com>';
+  q = await makeQuote({});
+  SENT.emails.length = 0;
+  await req('POST', '/api/quotes/' + q.id + '/send', {});
+  eq('an explicit QUOTE_FROM_EMAIL wins outright', SENT.emails[0].opts.from, 'Pop-A-Lock <quotes@popalockar.com>');
+  delete process.env.QUOTE_FROM_EMAIL;
+
+  // --- the SMS template ----------------------------------------------------
+  await pool.query("DELETE FROM settings WHERE key = 'quote_sms_template'");
+  q = await makeQuote({});
+  SENT.sms.length = 0;
+  await req('POST', '/api/quotes/' + q.id + '/send', { sms_to: '4045550182' });
+  let body = SENT.sms[0].body;
+  ok('the default template names the quote', body.indexOf(q.quote_number) !== -1, body);
+  ok('the default template shows the total', body.indexOf('$' + q.expected_total.toFixed(2)) !== -1, body);
+  ok('the default template carries the link', /\/quote\/[a-f0-9]{64}/.test(body), body);
+  ok('and never leaks a cost', body.indexOf('22.00') === -1);
+
+  await pool.query("INSERT INTO settings (key, value) VALUES ('quote_sms_template', $1) ON CONFLICT (key) DO UPDATE SET value = $1",
+    ["Hi {customer}, it's {prepared_by} at {company}. Your estimate {quote_number} ({total}) is ready - approve it here: {link} Good through {expires}."]);
+  q = await makeQuote({});
+  SENT.sms.length = 0;
+  await req('POST', '/api/quotes/' + q.id + '/send', { sms_to: '4045550182' });
+  body = SENT.sms[0].body;
+  ok('a custom template is used', body.indexOf('Hi Riverbend Storage LLC') === 0, body);
+  ok('{prepared_by} resolves', body.indexOf("it's Tony McKeon at") !== -1, body);
+  ok('{company} resolves', body.indexOf('Pop-A-Lock of Atlanta') !== -1);
+  ok('{quote_number} resolves', body.indexOf(q.quote_number) !== -1);
+  ok('{expires} resolves to a date', /Good through [A-Z][a-z]{2} \d/.test(body), body);
+  ok('no token braces survive', body.indexOf('{') === -1, body);
+
+  // A template that forgets the link would send a dead end.
+  await pool.query("UPDATE settings SET value = $1 WHERE key = 'quote_sms_template'", ['Your quote {quote_number} is ready.']);
+  q = await makeQuote({});
+  SENT.sms.length = 0;
+  await req('POST', '/api/quotes/' + q.id + '/send', { sms_to: '4045550182' });
+  body = SENT.sms[0].body;
+  ok('a template with no {link} still gets the link appended', /\/quote\/[a-f0-9]{64}$/.test(body), body);
+
+  // An unknown token is left visible rather than silently blanked, so a typo
+  // is obvious in the preview instead of shipping an odd-looking text.
+  await pool.query("UPDATE settings SET value = $1 WHERE key = 'quote_sms_template'", ['Quote {quote_nunber} ready {link}']);
+  q = await makeQuote({});
+  SENT.sms.length = 0;
+  await req('POST', '/api/quotes/' + q.id + '/send', { sms_to: '4045550182' });
+  ok('a misspelled token is left visible', SENT.sms[0].body.indexOf('{quote_nunber}') !== -1, SENT.sms[0].body);
+
+  // Over-long prose is trimmed; the link never is.
+  await pool.query("UPDATE settings SET value = $1 WHERE key = 'quote_sms_template'", ['x'.repeat(400) + ' {link}']);
+  q = await makeQuote({});
+  SENT.sms.length = 0;
+  await req('POST', '/api/quotes/' + q.id + '/send', { sms_to: '4045550182' });
+  body = SENT.sms[0].body;
+  ok('an over-long template is trimmed', body.length <= 320, 'length ' + body.length);
+  ok('but the link survives the trim', /\/quote\/[a-f0-9]{64}$/.test(body), body);
+
+  // --- the preview endpoint ------------------------------------------------
+  await pool.query("DELETE FROM settings WHERE key = 'quote_sms_template'");
+  let r = await req('POST', '/api/quotes/sms-preview', { template: 'Hi {customer}, {quote_number} for {total}: {link}' });
+  eq('the preview renders', r.status, 200);
+  ok('it resolves the sample customer', r.body.body.indexOf('Hi Riverbend Storage LLC') === 0, r.body.body);
+  ok('it reports a character count', r.body.length === r.body.body.length);
+  ok('it reports segments', r.body.segments >= 1);
+  ok('it hands back the token list', (r.body.tokens || []).indexOf('prepared_by') !== -1);
+  ok('and the default wording', (r.body.default_template || '').indexOf('{link}') !== -1);
+
+  r = await req('POST', '/api/quotes/sms-preview', { template: '' });
+  ok('an empty template previews the default', r.body.body.indexOf('Pop-A-Lock of Atlanta') === 0, r.body.body);
+
+  r = await req('POST', '/api/quotes/sms-preview', { template: 'Long ' + 'y'.repeat(400) + ' {link}' });
+  ok('the preview trims exactly like the sender does', r.body.length <= 320, 'length ' + r.body.length);
+
+  CURRENT_PERMS = ['view_quotes'];
+  r = await req('POST', '/api/quotes/sms-preview', { template: 'x {link}' });
+  eq('the preview needs manage_settings', r.status, 403);
+  CURRENT_PERMS = null;
+}
+
 // ---------------------------------------------------------------------------
 async function main() {
   if (!process.env.DATABASE_URL) { console.error('Set DATABASE_URL to a scratch Postgres and re-run.'); process.exit(2); }
@@ -711,6 +819,7 @@ async function main() {
     await testDeleteGuard();
     await testRemindAndJob();
     await testEvents();
+    await testBrandAndSms();
   } catch (e) {
     FAIL++; FAILURES.push('THREW: ' + e.stack);
     console.error('\nTHREW:', e.stack);

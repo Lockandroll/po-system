@@ -41,7 +41,11 @@ async function sendEmail(to, subject, html, cc, attachments, opts) {
   }
 }
 
-function emailTemplate({ badge, badgeColor, title, body, details, buttonText, buttonUrl, footerNote }) {
+// `brand` (optional) is the name shown in the black header bar. It defaults to
+// Lock and Roll LLC so every existing internal notification is unchanged; the
+// customer-facing quote email passes the company_name setting instead, so a
+// franchise name change is one field in Settings rather than a code edit.
+function emailTemplate({ badge, badgeColor, title, body, details, buttonText, buttonUrl, footerNote, brand }) {
   var badgeBg = badgeColor === 'green' ? '#dcfce7' : badgeColor === 'red' ? '#fee2e2' : '#fff3e8';
   var badgeFg = badgeColor === 'green' ? '#15803d' : badgeColor === 'red' ? '#b91c1c' : '#c2520a';
 
@@ -61,7 +65,7 @@ function emailTemplate({ badge, badgeColor, title, body, details, buttonText, bu
   '<tr><td style="background:#111111;padding:20px 28px">' +
     '<table role="presentation" cellpadding="0" cellspacing="0"><tr>' +
       '<td style="background:#f97316;width:36px;height:36px;border-radius:6px;text-align:center;vertical-align:middle;font-size:18px;line-height:36px">🔒</td>' +
-      '<td style="padding-left:12px;color:#ffffff;font-size:16px;font-weight:700;vertical-align:middle">Lock and Roll LLC</td>' +
+      '<td style="padding-left:12px;color:#ffffff;font-size:16px;font-weight:700;vertical-align:middle">' + esc(brand || 'Lock and Roll LLC') + '</td>' +
     '</tr></table>' +
   '</td></tr>' +
 

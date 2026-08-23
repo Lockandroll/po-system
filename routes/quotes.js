@@ -128,6 +128,81 @@ async function publicCompanySettings() {
   } catch (e) { return {}; }
 }
 
+// The name a CUSTOMER sees, from Settings. One field drives the email header,
+// the SMS, the approval page and the email sender's display name, so a franchise
+// name change is not a code edit. Internal Nova notifications are untouched -
+// they keep using emailTemplate's own default.
+const DEFAULT_BRAND = 'Lock and Roll LLC';
+async function customerBrand() {
+  try {
+    const { rows } = await pool.query("SELECT value FROM settings WHERE key = 'company_name'");
+    const v = rows.length ? String(rows[0].value || '').trim() : '';
+    return v || DEFAULT_BRAND;
+  } catch (e) { return DEFAULT_BRAND; }
+}
+
+// The sender Resend is handed. QUOTE_FROM_EMAIL is an env var and not a setting
+// because the DOMAIN has to be verified in Resend before it will send at all -
+// that is a DNS decision, not something to change from a text box. The display
+// NAME in front of it is free, so when no override is set we keep FROM_EMAIL's
+// verified address and put the Settings brand in front of it. That means the
+// name a customer sees can change today, with no DNS work.
+function quoteFromAddress(brand) {
+  if (process.env.QUOTE_FROM_EMAIL) return process.env.QUOTE_FROM_EMAIL;
+  const base = process.env.FROM_EMAIL || '';
+  const m = base.match(/<([^>]+)>/);
+  const addr = m ? m[1] : base.trim();
+  if (!addr) return undefined;
+  return brand + ' <' + addr + '>';
+}
+
+// Customer SMS wording lives in Settings so it can be changed without a deploy.
+// Tokens match the {brace} convention already used by recurring tasks and
+// scheduled messages (see utils/messageTokens.js).
+const DEFAULT_QUOTE_SMS = '{company}: your quote {quote_number} for {total} is ready to review and approve. {link}';
+const SMS_TOKENS = ['company', 'customer', 'quote_number', 'total', 'link', 'prepared_by', 'expires'];
+
+async function quoteSmsTemplate() {
+  try {
+    const { rows } = await pool.query("SELECT value FROM settings WHERE key = 'quote_sms_template'");
+    const v = rows.length ? String(rows[0].value || '').trim() : '';
+    return v || DEFAULT_QUOTE_SMS;
+  } catch (e) { return DEFAULT_QUOTE_SMS; }
+}
+
+function renderQuoteSms(template, vals) {
+  var out = String(template || DEFAULT_QUOTE_SMS).replace(/\{(\w+)\}/g, function (m, key) {
+    return Object.prototype.hasOwnProperty.call(vals, key) ? String(vals[key] == null ? '' : vals[key]) : m;
+  });
+  // A quote text without the link is a dead end, so the link is appended when
+  // the template forgot it rather than sending something the customer cannot act on.
+  if (vals.link && out.indexOf(vals.link) === -1) out = out.replace(/\s*$/, '') + ' ' + vals.link;
+  // One segment is 160 chars; the link eats ~70 of them. Trim the PROSE, never
+  // the link, so an over-long template degrades instead of breaking.
+  const MAX = 320;
+  if (out.length > MAX && vals.link) {
+    const tail = ' ' + vals.link;
+    out = out.slice(0, Math.max(0, MAX - tail.length)).replace(/\s+\S*$/, '') + tail;
+  }
+  return out;
+}
+
+// Everything a customer SMS can say about one quote.
+function quoteSmsVars(quote, items, brand) {
+  const t = quoteTotals(items, quote.tax_rate);
+  return {
+    company: brand,
+    customer: quote.customer_name || '',
+    quote_number: quote.quote_number,
+    total: '$' + t.total.toFixed(2),
+    link: quoteLink(quote.approval_token),
+    prepared_by: quote.requester_name || brand,
+    expires: quote.token_expires_at
+      ? new Date(quote.token_expires_at).toLocaleDateString('en-US', { timeZone: 'America/New_York', month: 'short', day: 'numeric', year: 'numeric' })
+      : ''
+  };
+}
+
 // Load a quote by token and decide whether it is still usable. Returns
 // { quote, items, expired } or null when the token matches nothing.
 async function loadByToken(token) {
@@ -703,6 +778,7 @@ router.delete('/photos/:photoId', requireAuth, requirePermission('edit_quote'), 
 // initial send and the reminder job, so the two can never drift apart.
 async function sendQuoteEmail(quote, items, opts) {
   var o = opts || {};
+  var brand = o.brand || await customerBrand();
   var link = quoteLink(quote.approval_token);
   var t = quoteTotals(items, quote.tax_rate);
   var validThrough = quote.token_expires_at
@@ -710,7 +786,7 @@ async function sendQuoteEmail(quote, items, opts) {
     : null;
   var greeting = 'Hi ' + (quote.customer_name || 'there') + ',';
   var intro = o.reminder
-    ? 'Just a friendly reminder that your quote from Lock and Roll is still waiting for your review.'
+    ? 'Just a friendly reminder that your quote from ' + brand + ' is still waiting for your review.'
     : 'Here is the quote you asked for. You can review everything and approve it right from the link below.';
   var html = emailTemplate({
     badge: o.reminder ? 'Reminder' : 'Quote ready', badgeColor: 'orange',
@@ -719,23 +795,30 @@ async function sendQuoteEmail(quote, items, opts) {
       (quote.customer_message ? ('<br><br>' + String(quote.customer_message).replace(/[<>]/g, '')) : ''),
     details: [
       { label: 'Quote number', value: quote.quote_number },
-      { label: 'Prepared by', value: quote.requester_name || 'Lock and Roll LLC' },
+      { label: 'Prepared by', value: quote.requester_name || brand },
       { label: 'Total', value: '$' + t.total.toFixed(2) }
     ].concat(validThrough ? [{ label: 'Valid through', value: validThrough }] : []),
-    buttonText: 'Review & approve', buttonUrl: link,
+    buttonText: 'Review & approve', buttonUrl: link, brand: brand,
     footerNote: 'This link is unique to you, so please do not forward it. Questions? Just reply to this email and it goes straight to ' + (quote.requester_name || 'us') + '.'
   });
   // A customer-facing send, so it gets its own sender identity and a reply-to
   // that reaches a human. Falls back to the internal defaults when unset.
   return sendEmail(
     quote.sent_to || quote.customer_email,
-    (o.reminder ? 'Reminder: your quote from Lock and Roll - ' : 'Your quote from Lock and Roll - ') + quote.quote_number,
+    (o.reminder ? 'Reminder: your quote from ' : 'Your quote from ') + brand + ' - ' + quote.quote_number,
     html, null, null,
     {
-      from: process.env.QUOTE_FROM_EMAIL || undefined,
+      from: quoteFromAddress(brand),
       replyTo: process.env.QUOTE_REPLY_TO || quote.requester_email || undefined
     }
   );
+}
+
+// The customer SMS, wording from Settings. Shared by the send route and the
+// reminder job so the two can never drift apart.
+async function sendQuoteSms(to, quote, items, brand) {
+  const body = renderQuoteSms(await quoteSmsTemplate(), quoteSmsVars(quote, items, brand || await customerBrand()));
+  return sendSms(to, body);
 }
 
 // POST /:id/send - put the quote in front of the customer.
@@ -775,13 +858,13 @@ router.post('/:id/send', requireAuth, requirePermission('send_quote'), async (re
     );
     const sent = Object.assign({}, upd.rows[0], { requester_name: quote.requester_name, requester_email: quote.requester_email });
 
+    const brand = await customerBrand();
     var emailed = false;
-    try { emailed = await sendQuoteEmail(sent, items); }
+    try { emailed = await sendQuoteEmail(sent, items, { brand: brand }); }
     catch (e) { console.error('[quotes] customer email failed:', e.message); }
     if (sms) {
-      try {
-        await sendSms(sms, 'Lock and Roll: your quote ' + quote.quote_number + ' is ready to review and approve. ' + quoteLink(token));
-      } catch (e) { console.error('[quotes] customer SMS failed:', e.message); }
+      try { await sendQuoteSms(sms, sent, items, brand); }
+      catch (e) { console.error('[quotes] customer SMS failed:', e.message); }
     }
 
     await logQuoteEvent(quote.id, 'sent', { actorName: req.user.name, req: req, details: { to: to, sms: sms || null, expires_days: days, emailed: emailed } });
@@ -844,6 +927,34 @@ router.post('/:id/revoke', requireAuth, requirePermission('send_quote'), async (
   } catch (err) {
     console.error('Quote revoke error:', err);
     res.status(500).json({ error: 'Failed to revoke the link' });
+  }
+});
+
+// POST /sms-preview - render a candidate SMS template against sample values.
+//
+// Deliberately server-side. A preview built separately in the browser is a
+// second implementation that drifts from the one that actually sends; this runs
+// the real renderQuoteSms, so what Settings shows is what a customer gets.
+router.post('/sms-preview', requireAuth, requirePermission('manage_settings'), async (req, res) => {
+  try {
+    const brand = await customerBrand();
+    const template = (req.body && typeof req.body.template === 'string' && req.body.template.trim())
+      ? req.body.template : await quoteSmsTemplate();
+    const body = renderQuoteSms(template, {
+      company: brand,
+      customer: 'Riverbend Storage LLC',
+      quote_number: 'QT-' + new Date().getFullYear() + '-0418-TM',
+      total: '$2,486.40',
+      link: appBase() + '/quote/' + 'a1b2c3d4'.repeat(8),
+      prepared_by: req.user.name,
+      expires: 'Sep 22'
+    });
+    // 160 chars per segment for plain GSM text, 153 once a message splits.
+    const segments = body.length <= 160 ? 1 : Math.ceil(body.length / 153);
+    res.json({ body: body, length: body.length, segments: segments, tokens: SMS_TOKENS, default_template: DEFAULT_QUOTE_SMS });
+  } catch (err) {
+    console.error('SMS preview error:', err);
+    res.status(500).json({ error: 'Failed to render the preview' });
   }
 });
 
