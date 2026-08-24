@@ -5325,6 +5325,230 @@ async function initDB() {
 
     console.log('Employee records: employee_records + employee_record_events ready.');
 
+    // ---- Certificates of Insurance ---------------------------------------
+    //
+    // What an account requires on its certificate is a contract term, not a
+    // preference, and it is the thing that goes missing at renewal. These four
+    // tables keep it: what each account demands, every certificate ever issued
+    // to them, and the once-a-year cycle that gets new ones out the door.
+    //
+    // Requirements live in their OWN table rather than as more columns on
+    // vendors. vendors already carries 25+ bolt-on columns, and a COI applies
+    // to a minority of accounts - hanging thirty more nullable columns off it
+    // to serve that minority is how that table got the way it is.
+    //
+    // Portal credentials are deliberately NOT duplicated here. The account row
+    // already holds username / password / security_questions and stays the one
+    // copy; this table only records the portal URL and how to file there.
+    var _coiLimits = ['gl_occurrence', 'gl_aggregate', 'gl_products_agg', 'auto_csl',
+      'umbrella_each', 'umbrella_agg', 'garagekeepers', 'el_each_accident',
+      'el_disease_each', 'el_disease_policy'];
+    var _coiReqCols = _coiLimits.map(function (k) { return '  req_' + k + ' NUMERIC(12,0),'; }).join('');
+    var _coiLimCols = _coiLimits.map(function (k) { return '  lim_' + k + ' NUMERIC(12,0),'; }).join('');
+
+    await client.query(
+      'CREATE TABLE IF NOT EXISTS account_coi_requirements (' +
+      '  id SERIAL PRIMARY KEY,' +
+      '  account_id INTEGER NOT NULL UNIQUE REFERENCES vendors(id) ON DELETE CASCADE,' +
+      '  coi_required BOOLEAN NOT NULL DEFAULT true,' +
+      '  holder_name VARCHAR(255),' +
+      '  holder_address TEXT,' +
+      '  additional_insured JSONB,' +
+      '  ai_wording TEXT,' +
+      '  waiver_gl BOOLEAN NOT NULL DEFAULT false,' +
+      '  waiver_auto BOOLEAN NOT NULL DEFAULT false,' +
+      '  waiver_wc BOOLEAN NOT NULL DEFAULT false,' +
+      '  primary_noncontrib BOOLEAN NOT NULL DEFAULT false,' +
+      '  req_wc_statutory BOOLEAN NOT NULL DEFAULT false,' +
+      '  cancel_notice_days SMALLINT,' +
+      '  named_insured VARCHAR(255),' +
+      "  submit_method VARCHAR(10) NOT NULL DEFAULT 'email'," +
+      '  submit_emails TEXT,' +
+      '  submit_portal_url VARCHAR(255),' +
+      '  submit_notes TEXT,' +
+      '  off_cycle BOOLEAN NOT NULL DEFAULT false,' +
+      '  source_note TEXT,' +
+      _coiReqCols +
+      '  updated_by INTEGER,' +
+      '  updated_by_name VARCHAR(255),' +
+      '  created_at TIMESTAMPTZ DEFAULT NOW(),' +
+      '  updated_at TIMESTAMPTZ DEFAULT NOW()' +
+      ');'
+    );
+
+    // Every certificate ever issued for an account. The newest un-superseded
+    // 'ready' row is the current one; the rest are history and stay readable -
+    // an expired certificate is the only proof of what was in force on the day
+    // of a job that later turns into a claim.
+    await client.query(
+      'CREATE TABLE IF NOT EXISTS account_coi_certificates (' +
+      '  id SERIAL PRIMARY KEY,' +
+      '  account_id INTEGER NOT NULL REFERENCES vendors(id) ON DELETE CASCADE,' +
+      '  cycle_id INTEGER,' +
+      '  r2_key VARCHAR(512) UNIQUE NOT NULL,' +
+      '  file_name VARCHAR(255) NOT NULL,' +
+      '  mime_type VARCHAR(255),' +
+      '  size_bytes BIGINT DEFAULT 0,' +
+      "  status VARCHAR(20) NOT NULL DEFAULT 'pending'," +
+      '  effective_on DATE,' +
+      '  expires_on DATE,' +
+      '  carrier VARCHAR(255),' +
+      '  policy_numbers TEXT,' +
+      _coiLimCols +
+      '  has_ai BOOLEAN NOT NULL DEFAULT false,' +
+      '  has_waiver BOOLEAN NOT NULL DEFAULT false,' +
+      '  has_pnc BOOLEAN NOT NULL DEFAULT false,' +
+      '  has_wc BOOLEAN NOT NULL DEFAULT false,' +
+      '  mismatch JSONB,' +
+      '  notes TEXT,' +
+      '  sent_at TIMESTAMPTZ,' +
+      '  sent_to TEXT,' +
+      '  sent_by INTEGER,' +
+      '  sent_by_name VARCHAR(255),' +
+      '  superseded BOOLEAN NOT NULL DEFAULT false,' +
+      '  reminder_sent_at TIMESTAMPTZ,' +
+      '  expiry_notice_sent_at TIMESTAMPTZ,' +
+      '  uploaded_by INTEGER,' +
+      '  uploaded_by_name VARCHAR(255),' +
+      '  created_at TIMESTAMPTZ DEFAULT NOW(),' +
+      '  updated_at TIMESTAMPTZ DEFAULT NOW()' +
+      ');'
+    );
+
+    // One renewal cycle per policy year. Opening a cycle SNAPSHOTS the accounts
+    // that required a certificate at that moment into coi_renewal_items, so an
+    // account added in March never appears in January's history, and closing a
+    // cycle leaves a true record of what actually went out that year.
+    await client.query(
+      'CREATE TABLE IF NOT EXISTS coi_renewal_cycles (' +
+      '  id SERIAL PRIMARY KEY,' +
+      '  name VARCHAR(120) NOT NULL,' +
+      '  policy_effective DATE,' +
+      '  policy_expires DATE,' +
+      "  status VARCHAR(12) NOT NULL DEFAULT 'open'," +
+      '  packet_generated_at TIMESTAMPTZ,' +
+      '  created_by INTEGER,' +
+      '  created_by_name VARCHAR(255),' +
+      '  created_at TIMESTAMPTZ DEFAULT NOW(),' +
+      '  closed_at TIMESTAMPTZ' +
+      ');'
+    );
+
+    await client.query(
+      'CREATE TABLE IF NOT EXISTS coi_renewal_items (' +
+      '  id SERIAL PRIMARY KEY,' +
+      '  cycle_id INTEGER NOT NULL REFERENCES coi_renewal_cycles(id) ON DELETE CASCADE,' +
+      '  account_id INTEGER NOT NULL REFERENCES vendors(id) ON DELETE CASCADE,' +
+      "  status VARCHAR(12) NOT NULL DEFAULT 'needed'," +
+      '  requested_at TIMESTAMPTZ,' +
+      '  certificate_id INTEGER,' +
+      '  sent_at TIMESTAMPTZ,' +
+      '  confirmed_at TIMESTAMPTZ,' +
+      '  notes TEXT,' +
+      '  updated_at TIMESTAMPTZ DEFAULT NOW()' +
+      ');'
+    );
+
+    // Idempotent ALTERs for every column above. CREATE TABLE IF NOT EXISTS does
+    // not backfill a table that already exists on the live database, so a column
+    // added later only reaches production through one of these.
+    var _coiReqAlter = [
+      'account_id INTEGER', 'coi_required BOOLEAN NOT NULL DEFAULT true',
+      'holder_name VARCHAR(255)', 'holder_address TEXT', 'additional_insured JSONB',
+      'ai_wording TEXT', 'waiver_gl BOOLEAN NOT NULL DEFAULT false',
+      'waiver_auto BOOLEAN NOT NULL DEFAULT false', 'waiver_wc BOOLEAN NOT NULL DEFAULT false',
+      'primary_noncontrib BOOLEAN NOT NULL DEFAULT false',
+      'req_wc_statutory BOOLEAN NOT NULL DEFAULT false', 'cancel_notice_days SMALLINT',
+      'named_insured VARCHAR(255)', "submit_method VARCHAR(10) NOT NULL DEFAULT 'email'",
+      'submit_emails TEXT', 'submit_portal_url VARCHAR(255)', 'submit_notes TEXT',
+      'off_cycle BOOLEAN NOT NULL DEFAULT false', 'source_note TEXT',
+      'updated_by INTEGER', 'updated_by_name VARCHAR(255)',
+      'created_at TIMESTAMPTZ DEFAULT NOW()', 'updated_at TIMESTAMPTZ DEFAULT NOW()'
+    ].concat(_coiLimits.map(function (k) { return 'req_' + k + ' NUMERIC(12,0)'; }));
+    for (var _cri = 0; _cri < _coiReqAlter.length; _cri++) {
+      await client.query('ALTER TABLE account_coi_requirements ADD COLUMN IF NOT EXISTS ' + _coiReqAlter[_cri] + ';');
+    }
+
+    var _coiCertAlter = [
+      'account_id INTEGER', 'cycle_id INTEGER', 'file_name VARCHAR(255)',
+      'mime_type VARCHAR(255)', 'size_bytes BIGINT DEFAULT 0',
+      "status VARCHAR(20) NOT NULL DEFAULT 'pending'", 'effective_on DATE', 'expires_on DATE',
+      'carrier VARCHAR(255)', 'policy_numbers TEXT',
+      'has_ai BOOLEAN NOT NULL DEFAULT false', 'has_waiver BOOLEAN NOT NULL DEFAULT false',
+      'has_pnc BOOLEAN NOT NULL DEFAULT false', 'has_wc BOOLEAN NOT NULL DEFAULT false',
+      'mismatch JSONB', 'notes TEXT', 'sent_at TIMESTAMPTZ', 'sent_to TEXT',
+      'sent_by INTEGER', 'sent_by_name VARCHAR(255)',
+      'superseded BOOLEAN NOT NULL DEFAULT false',
+      'reminder_sent_at TIMESTAMPTZ', 'expiry_notice_sent_at TIMESTAMPTZ',
+      'uploaded_by INTEGER', 'uploaded_by_name VARCHAR(255)',
+      'created_at TIMESTAMPTZ DEFAULT NOW()', 'updated_at TIMESTAMPTZ DEFAULT NOW()'
+    ].concat(_coiLimits.map(function (k) { return 'lim_' + k + ' NUMERIC(12,0)'; }));
+    for (var _cci = 0; _cci < _coiCertAlter.length; _cci++) {
+      await client.query('ALTER TABLE account_coi_certificates ADD COLUMN IF NOT EXISTS ' + _coiCertAlter[_cci] + ';');
+    }
+
+    var _coiCycleAlter = ['name VARCHAR(120)', 'policy_effective DATE', 'policy_expires DATE',
+      "status VARCHAR(12) NOT NULL DEFAULT 'open'", 'packet_generated_at TIMESTAMPTZ',
+      'created_by INTEGER', 'created_by_name VARCHAR(255)',
+      'created_at TIMESTAMPTZ DEFAULT NOW()', 'closed_at TIMESTAMPTZ'];
+    for (var _cyi = 0; _cyi < _coiCycleAlter.length; _cyi++) {
+      await client.query('ALTER TABLE coi_renewal_cycles ADD COLUMN IF NOT EXISTS ' + _coiCycleAlter[_cyi] + ';');
+    }
+
+    var _coiItemAlter = ['cycle_id INTEGER', 'account_id INTEGER',
+      "status VARCHAR(12) NOT NULL DEFAULT 'needed'", 'requested_at TIMESTAMPTZ',
+      'certificate_id INTEGER', 'sent_at TIMESTAMPTZ', 'confirmed_at TIMESTAMPTZ',
+      'notes TEXT', 'updated_at TIMESTAMPTZ DEFAULT NOW()'];
+    for (var _cii = 0; _cii < _coiItemAlter.length; _cii++) {
+      await client.query('ALTER TABLE coi_renewal_items ADD COLUMN IF NOT EXISTS ' + _coiItemAlter[_cii] + ';');
+    }
+
+    // One item per account per cycle. Re-snapshotting an open cycle updates in
+    // place instead of stacking a second row for the same account.
+    await client.query('CREATE UNIQUE INDEX IF NOT EXISTS coi_items_cycle_account_idx ON coi_renewal_items (cycle_id, account_id);');
+    await client.query('CREATE INDEX IF NOT EXISTS coi_certs_account_idx ON account_coi_certificates (account_id, expires_on DESC);');
+    await client.query("CREATE INDEX IF NOT EXISTS coi_certs_live_idx ON account_coi_certificates (expires_on) WHERE status = 'ready' AND superseded = false;");
+    await client.query('CREATE INDEX IF NOT EXISTS coi_req_account_idx ON account_coi_requirements (account_id);');
+
+    // ---- Account paperwork -----------------------------------------------
+    //
+    // The signed agreement and anything else that belongs to an account as a
+    // FILE. Kept apart from the COI tables on purpose: a certificate is a set
+    // of numbers Nova checks, an agreement is a document a person reads, and
+    // merging them would mean columns that only ever apply to one of the two.
+    await client.query(
+      'CREATE TABLE IF NOT EXISTS account_documents (' +
+      '  id SERIAL PRIMARY KEY,' +
+      '  account_id INTEGER NOT NULL REFERENCES vendors(id) ON DELETE CASCADE,' +
+      "  kind VARCHAR(20) NOT NULL DEFAULT 'agreement'," +
+      '  title VARCHAR(255),' +
+      '  r2_key VARCHAR(512) UNIQUE NOT NULL,' +
+      '  file_name VARCHAR(255) NOT NULL,' +
+      '  mime_type VARCHAR(255),' +
+      '  size_bytes BIGINT DEFAULT 0,' +
+      "  status VARCHAR(20) NOT NULL DEFAULT 'pending'," +
+      '  effective_on DATE,' +
+      '  expires_on DATE,' +
+      '  notes TEXT,' +
+      '  uploaded_by INTEGER,' +
+      '  uploaded_by_name VARCHAR(255),' +
+      '  created_at TIMESTAMPTZ DEFAULT NOW(),' +
+      '  updated_at TIMESTAMPTZ DEFAULT NOW()' +
+      ');'
+    );
+    var _adCols = ['account_id INTEGER', "kind VARCHAR(20) NOT NULL DEFAULT 'agreement'",
+      'title VARCHAR(255)', 'file_name VARCHAR(255)', 'mime_type VARCHAR(255)',
+      'size_bytes BIGINT DEFAULT 0', "status VARCHAR(20) NOT NULL DEFAULT 'pending'",
+      'effective_on DATE', 'expires_on DATE', 'notes TEXT', 'uploaded_by INTEGER',
+      'uploaded_by_name VARCHAR(255)', 'created_at TIMESTAMPTZ DEFAULT NOW()',
+      'updated_at TIMESTAMPTZ DEFAULT NOW()'];
+    for (var _adi = 0; _adi < _adCols.length; _adi++) {
+      await client.query('ALTER TABLE account_documents ADD COLUMN IF NOT EXISTS ' + _adCols[_adi] + ';');
+    }
+    await client.query('CREATE INDEX IF NOT EXISTS account_documents_account_idx ON account_documents (account_id, created_at DESC);');
+
+    console.log('COI: account_coi_requirements + account_coi_certificates + coi_renewal_cycles + coi_renewal_items + account_documents ready.');
+
     console.log('Database initialized');
   } finally {
     client.release();

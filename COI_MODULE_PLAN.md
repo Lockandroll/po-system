@@ -277,3 +277,56 @@ makes renewal a one-afternoon job.
    separate "off-cycle" section rather than pretending they belong to this year's batch.
 5. **Auto-request.** Should Nova email the agent automatically when a new account is created with
    `coi_required = true`, or is that always a human decision? Recommend human for v1.
+
+---
+
+## 13. Build record (2026-08-24)
+
+Built and verified on the clone. **Awaiting commit and push.**
+
+**New files** (all eight must be `git add`ed or the Railway deploy MODULE_NOT_FOUNDs):
+`utils/coi.js`, `utils/coiPacketPdf.js`, `routes/coi.js`, `routes/accountDocs.js`,
+`jobs/coiExpiry.js`, `public/js/coi.js`, `test-coi.js`, `test-coi-dom.js`.
+
+**Modified:** `db.js` (five tables), `server.js` (two routes + the cron), `utils/permissions.js`
+(`manage_coi`), `public/js/app.js` (nav item, router, view permissions, Roles matrix,
+notification event, COI column and banner on Accounts), `public/index.html` (script tag),
+`public/sw.js` (nova-v406 to nova-v407).
+
+### Changed from the plan above
+
+- **Agreements were added mid-build**, at Tony's request: PDFs of agreements, W-9s and rate
+  sheets attach to the same account page, in their own `account_documents` table with
+  `routes/accountDocs.js`. They ride on `manage_vendors`, not `manage_coi`, because they are
+  account paperwork rather than insurance.
+- **The packet is fetched as base64 JSON** at `GET /api/coi/cycles/:id/packet`, not streamed
+  from a `.pdf` URL. A `window.open` cannot send the JWT header, and putting the token in the
+  URL would leak it into browser history and server logs.
+- **The badge counts mismatches too.** The plan had the badge as missing + expired + expiring;
+  a certificate that falls short of the requirement needs the same phone call, so it counts.
+- **No nav-item badge.** Nova has no nav badge styling anywhere, so the count surfaces as a
+  banner at the top of Accounts and as the stat cards on the COI screen instead.
+- **Reminder cadence split.** Expiring and expired use the per-certificate dedup flags, once
+  each. Missing and below-requirement have no such flag and take weeks to fix, so they go out
+  **weekly on Mondays** rather than nagging daily.
+
+### Verification
+
+256 assertions, all passing:
+
+- `test-coi.js` — 159 against a real PostgreSQL 16. Runs the real `initDB()` **twice** (a
+  non-idempotent migration fails there rather than on the next Railway boot), asserts every
+  column the routes name exists, then exercises the actual SQL: the requirements upsert, the
+  `DISTINCT ON` that picks the current certificate, supersede resync, the cycle snapshot and
+  its unique index, the auto-advance on upload, and that a **closed** cycle is left alone.
+  Plus the full `computeMismatch` / `coiStatus` matrix including precedence both ways round.
+- `test-coi-dom.js` — 81 in jsdom against the shipped `public/js/coi.js`: all three screens,
+  filtering, search, the requirements round-trip, the live mismatch preview clearing when the
+  limits are corrected, the portal dialog replacing the email form, and the packet going
+  through the authenticated call.
+- 16 more for the Accounts column and banner, run by slicing them out of `app.js` on the clone.
+- The packet PDF was rendered and read at 3 accounts and again at 25 (15 pages): no block split
+  across a page, no clipped text, correct page numbering.
+
+`node --check` passes on all thirteen touched files. Every delivered file md5-matches the
+container copy it was built from.

@@ -703,6 +703,7 @@ var NAVI = {
   home: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 9l9-7 9 7v11a2 2 0 01-2 2H5a2 2 0 01-2-2z"/><polyline points="9 22 9 12 15 12 15 22"/></svg>',
   ai: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="6" width="18" height="13" rx="2"/><path d="M8 6V4a1 1 0 011-1h6a1 1 0 011 1v2"/><circle cx="9" cy="12" r="1" fill="currentColor"/><circle cx="15" cy="12" r="1" fill="currentColor"/><path d="M9.5 16h5"/></svg>',
   chat: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15a2 2 0 01-2 2H7l-4 4V5a2 2 0 012-2h14a2 2 0 012 2z"/></svg>',
+  shieldCheck: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2l8 4v6c0 5-3.4 8.7-8 10-4.6-1.3-8-5-8-10V6z"/><path d="M9 12l2 2 4-4"/></svg>',
   bars: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/><line x1="6" y1="20" x2="6" y2="14"/></svg>',
   audit: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/></svg>',
   truck: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="1" y="3" width="15" height="13" rx="2"/><path d="M16 8h6l3 4v4h-9V8z"/><circle cx="5.5" cy="18.5" r="2.5"/><circle cx="18.5" cy="18.5" r="2.5"/></svg>',
@@ -809,6 +810,10 @@ function navModel() {
       can('view_signoffs') ? navItem('signoffs', 'Sign-Off Sheets', NAVI.signoff, ['signoffs', 'new-signoff', 'edit-signoff', 'view-signoff', 'complete-signoff']) : null,
       can('view_ptt') ? navItem('ptt', 'Radio', NAVI.mic) : null,
       (can('view_vendors') || can('manage_vendors')) ? navItem('vendors', 'Accounts', NAVI.accounts) : null,
+      // Certificates of insurance sit beside Accounts because that is where the
+      // requirements come from; the badge counts what needs a human.
+      (can('view_vendors') || can('manage_vendors') || can('manage_coi'))
+        ? navItem('coi', 'COI', NAVI.shieldCheck, ['coi', 'coi-account', 'coi-cycle']) : null,
 
       // Dispatch configuration lives one level deeper so the live board, Call
       // Search and Live Map stay at the top of Operations and the setup screens
@@ -1109,7 +1114,10 @@ async function render() {
   }
   const content = document.getElementById('content');
   var _viewPerm = { dashboard:'view_pos', view:'view_pos', running:'view_pos', 'running-admin':'view_pos', new:'create_po', edit:'edit_po', quotes:'view_quotes', 'view-quote':'view_quotes', 'new-quote':'create_quote', 'edit-quote':'edit_quote', 'vr-dashboard':'view_vr', 'view-vr':'view_vr', 'new-vr':'create_vr', 'edit-vr':'edit_vr', deposits:'view_deposits', 'view-deposit':'view_deposits', signoffs:'view_signoffs', 'view-signoff':'view_signoffs', 'new-signoff':'create_signoff', 'edit-signoff':'edit_signoff', 'complete-signoff':'complete_signoff', tasks:'view_tasks', 'task-detail':'view_tasks', 'new-task':'view_tasks', 'edit-task':'view_tasks', 'task-templates':'manage_tasks', 'new-task-template':'manage_tasks', 'edit-task-template':'manage_tasks', 'work-orders':'view_work_orders', 'view-work-order':'view_work_orders', 'new-work-order':'manage_work_orders', schedule:'view_schedule', 'schedule-admin':'manage_schedule', 'schedule-nowork':'manage_schedule', invoices:'view_invoices', 'view-invoice':'view_invoices', 'new-invoice':'create_invoice', 'edit-invoice':'edit_invoice', 'invoice-parts':'view_invoices', refunds:'view_invoices', 'invoice-setup':'manage_invoice_setup', feedback:'view_feedback', 'feedback-detail':'view_feedback', 'call-lookup':'play_call_recordings', signatures:'view_signatures', 'new-signature':'manage_signatures', 'signature-editor':'manage_signatures', timeclock:'view_timeclock', 'timeclock-manager':'manage_timeclock', pto:'view_pto', 'onboarding-admin':'manage_onboarding', 'employee-files':'manage_onboarding', ptt:'view_ptt', inspections:'view_inspections', 'view-inspection':'view_inspections', 'inspection-form':'view_inspections', 'inspection-checklist':'manage_inspections', assets:'manage_assets', 'asset-detail':'manage_assets', 'asset-locations':'manage_assets', 'asset-techs':'manage_assets', 'asset-tech-detail':'view_assets', 'asset-acks':'manage_assets', 'new-asset-ack':'manage_assets', 'view-asset-ack':'view_assets', 'asset-requests':'view_assets', 'asset-catalog':'manage_assets', 'my-equipment':'view_assets', 'live-map':'view_tech_locations', 'location-settings':'manage_settings', dispatch:'view_dispatch', 'dispatch-call':'view_dispatch', 'call-search':'search_dispatch', 'time-codes':'manage_pricing', coverage:'manage_coverage', 'accounts-receivable':'view_ar' };
-  var _viewAnyOf = { 'tech-pay': ['view_pay_report', 'manage_pay_grades', 'view_own_pay'] };
+  var _viewAnyOf = { 'tech-pay': ['view_pay_report', 'manage_pay_grades', 'view_own_pay'],
+    coi: ['view_vendors', 'manage_vendors', 'manage_coi'],
+    'coi-account': ['view_vendors', 'manage_vendors', 'manage_coi'],
+    'coi-cycle': ['view_vendors', 'manage_vendors', 'manage_coi'] };
   var _anyOf = _viewAnyOf[state.currentView];
   if (_anyOf) {
     if (!_anyOf.some(function (p) { return can(p); })) { content.innerHTML = '<div class="alert alert-error">Access denied.</div>'; return; }
@@ -1126,6 +1134,9 @@ async function render() {
   else if (state.currentView === 'users') await renderUsers(content);
   else if (state.currentView === 'cities') await renderCities(content);
   else if (state.currentView === 'vendors') await renderVendors(content);
+  else if (state.currentView === 'coi') await renderCoi(content);
+  else if (state.currentView === 'coi-account') await renderCoiAccount(content, state.currentParam);
+  else if (state.currentView === 'coi-cycle') await renderCoiCycle(content, state.currentParam);
   else if (state.currentView === 'audit') await renderAuditLog(content);
   else if (state.currentView === 'settings') await renderSettings(content);
   else if (state.currentView === 'quotes') await renderQuotes(content);
@@ -3004,6 +3015,7 @@ async function renderNotifications(el) {
     { key:'work_order_received', label:'New work order received', def:'all admins and managers', sms:false, desc:'A new incoming work order / job ticket arrived to be dispatched.' },
     { key:'suggestion_created', label:'New employee suggestion', def:'all admins and managers', sms:true, desc:'An employee submitted an idea through the suggestion box.' },
     { key:'document_expiring', label:'Document expiration reminder', def:'all admins and managers', sms:false, desc:'A stored document is approaching its expiration date and may need renewing.' },
+    { key:'coi_expiring', label:'Certificate of insurance reminder', def:'all admins and managers', sms:false, desc:'An account&#39;s certificate of insurance is expiring, has expired, or does not meet what that account requires.' },
     { key:'review_rating_changed', label:'Google rating changed for a location', def:'all admins', sms:false, desc:'A location\'s Google star rating went up or down.' },
     { key:'signature_completed', label:'Signature request completed', def:'all admins', sms:false, desc:'Everyone has signed a document and it was finalized.' },
     { key:'signature_declined', label:'Signature request declined', def:'all admins', sms:false, desc:'A signer declined to sign a document.' },
@@ -3125,7 +3137,7 @@ async function renderNotifications(el) {
 async function saveNotifications() {
   // MUST list every key rendered by the broadcast array in renderNotifications — a
   // key missing here is silently unsaveable. ('feedback_received' was missing.)
-  var broadcast = ['feedback_received','po_submitted','vr_submitted','quote_created','quote_to_pos','signoff_completed','work_order_received','suggestion_created','document_expiring','review_rating_changed','signature_completed','signature_declined',
+  var broadcast = ['feedback_received','po_submitted','vr_submitted','quote_created','quote_to_pos','signoff_completed','work_order_received','suggestion_created','document_expiring','coi_expiring','review_rating_changed','signature_completed','signature_declined',
     'security_lockout','security_new_device','security_role_changed','security_password_reset','security_oauth'];
   var smsCapable = { feedback_received:1, po_submitted:1, vr_submitted:1, quote_created:1, quote_to_pos:1, suggestion_created:1, security_lockout:1, security_oauth:1 };
   var requester = ['po_approved','po_rejected','po_cancelled','po_ordered','vr_approved','vr_rejected'];
@@ -3230,7 +3242,7 @@ async function renderRoles(el) {
       {k:'manage_ivr_profiles',l:'Write and test the phone scripts Nova dials. Ships off for everyone but admin'},
       {k:'override_checkin',l:'Force a check-in against the evidence. Ships off for everyone but admin'} ] },
     { group:'Fleet &amp; Vehicles', perms:[ {k:'manage_vehicles',l:'Manage fleet registry'} ] },
-    { group:'Vendors / Accounts', gate:'view_vendors', perms:[ {k:'view_vendors',l:'View / access module'}, {k:'manage_vendors',l:'Manage vendors and accounts'} ] },
+    { group:'Vendors / Accounts', gate:'view_vendors', perms:[ {k:'view_vendors',l:'View / access module'}, {k:'manage_vendors',l:'Manage vendors and accounts'}, {k:'manage_coi',l:'Manage certificates of insurance'} ] },
     { group:'Vehicle Inspections', gate:'view_inspections', perms:[ {k:'view_inspections',l:'View / access module (own vehicle inspections)'}, {k:'manage_inspections',l:'Manage checklist, review, edit &amp; delete inspections'} ] },
     { group:'Shipping Addresses', perms:[ {k:'manage_addresses',l:'Manage shipping addresses'} ] },
     { group:'Cities', perms:[ {k:'manage_cities',l:'Manage cities'} ] },
@@ -6521,12 +6533,19 @@ async function renderVendors(el) {
   if (!can('view_vendors') && !can('manage_vendors')) { el.innerHTML = '<div class="alert alert-error">Access denied.</div>'; return; }
   var canManage = can('manage_vendors');
   try { _vendorsData = await api('GET', '/vendors'); } catch(e) { _vendorsData = []; }
+  // COI status per account, so the chip on this table and the COI screen are
+  // reading the same server-computed answer rather than two sets of rules.
+  _vendorCoi = {};
+  try {
+    var _coiRes = await api('GET', '/coi');
+    (_coiRes.accounts || []).forEach(function(a) { _vendorCoi[a.account_id] = a; });
+  } catch(e) { _vendorCoi = {}; }
   try { _vendorCities = await api('GET', '/cities'); } catch(e) { _vendorCities = []; }
   if (canManage) { try { _vendorUsers = await api('GET', '/vendors/pickable-users'); } catch(e) { _vendorUsers = []; } } else { _vendorUsers = []; }
   el.innerHTML =
     '<div class="page-header"><div><div class="page-title">Accounts</div><div class="page-subtitle">Vendor account logins &amp; credentials</div></div>' +
     (canManage ? '<button class="btn btn-primary" onclick="showVendorModal()">+ Add Account</button>' : '') + '</div>' +
-    '<div id="vendor-msg"></div>' +
+    '<div id="vendor-msg"></div>' + vendorCoiBanner() +
     '<div style="margin-bottom:16px"><input type="text" id="vendors-search" placeholder="Search by name, website, or username..." style="width:100%;max-width:400px;padding:8px 12px;background:var(--surface-color);border:1px solid rgba(249,115,22,0.35);border-radius:6px;color:var(--text-color);font-size:14px;outline:none;box-shadow:0 0 0 1px rgba(249,115,22,0.15)" oninput="vendorsFilter(this.value)" /></div>' +
     '<div id="vendors-table-wrap"></div>';
   vendorsRenderTable('');
@@ -6534,6 +6553,51 @@ async function renderVendors(el) {
 
 function vendorsFilter(val) {
   vendorsRenderTable(val.toLowerCase());
+}
+
+// One line at the top of Accounts when something needs a certificate. Counted
+// from the same server-computed statuses the column shows, so the banner and
+// the pills can never disagree about how many there are.
+function vendorCoiBanner() {
+  var bad = { missing: 0, expired: 0, expiring: 0, mismatch: 0 };
+  var total = 0;
+  for (var id in _vendorCoi) {
+    var k = (_vendorCoi[id].status || {}).key;
+    if (bad[k] !== undefined) { bad[k]++; total++; }
+  }
+  if (!total) return '';
+  var bits = [];
+  if (bad.missing) bits.push(bad.missing + ' never issued');
+  if (bad.expired) bits.push(bad.expired + ' expired');
+  if (bad.expiring) bits.push(bad.expiring + ' expiring within 60 days');
+  if (bad.mismatch) bits.push(bad.mismatch + ' below requirement');
+  return '<div class="alert alert-warn" style="display:flex;justify-content:space-between;gap:12px;flex-wrap:wrap;align-items:center">' +
+    '<span><strong>' + total + ' account' + (total === 1 ? '' : 's') + ' need' + (total === 1 ? 's' : '') +
+    ' attention on insurance.</strong> ' + bits.join(', ') + '.</span>' +
+    '<span style="text-decoration:underline;cursor:pointer" onclick="navigate(\'coi\')">Open the COI screen</span></div>';
+}
+
+// Certificate status for one account row. The label, colour and note all come
+// from the server (utils/coi.js); this only decides which pill class to use.
+var _vendorCoi = {};
+var VENDOR_COI_CLASS = { green: 'badge-approved', amber: 'badge-submitted', red: 'badge-rejected', grey: 'badge-inactive' };
+
+function vendorCoiCell(v) {
+  var row = _vendorCoi[v.id];
+  if (!row) {
+    return can('manage_coi')
+      ? '<span style="font-size:12px;color:var(--primary);cursor:pointer" onclick="navigate(\'coi\')">Set up</span>'
+      : '<span style="color:var(--text-muted-color)">—</span>';
+  }
+  var st = row.status || {};
+  var cls = VENDOR_COI_CLASS[st.tone] || 'badge-inactive';
+  var note = st.key === 'current' && row.expires_on
+    ? ('Exp ' + String(row.expires_on).slice(5, 7) + '/' + String(row.expires_on).slice(8, 10) + '/' + String(row.expires_on).slice(0, 4))
+    : (st.note || '');
+  return '<span style="cursor:pointer" onclick="navigate(\'coi-account\',' + v.id + ')">' +
+    '<span class="badge ' + cls + '">' + escHtml(st.label || '') + '</span>' +
+    (note ? ('<span style="font-size:12px;color:var(--text-muted-color);margin-left:6px">' + escHtml(note) + '</span>') : '') +
+    '</span>';
 }
 
 function vendorsRenderTable(search) {
@@ -6550,15 +6614,16 @@ function vendorsRenderTable(search) {
   wrap.innerHTML =
     '<div class="card"><div class="table-wrap">' +
       '<table>' +
-        '<thead><tr><th>Account Name</th><th>Website</th><th>Account #</th><th>City Assigned</th><th>Username</th><th>Password</th><th>Security Q&amp;A</th><th>Notes</th><th>Rep Name</th><th>Rep Email</th><th>Rep Phone</th><th></th></tr></thead>' +
+        '<thead><tr><th>Account Name</th><th>Website</th><th>Account #</th><th>COI</th><th>City Assigned</th><th>Username</th><th>Password</th><th>Security Q&amp;A</th><th>Notes</th><th>Rep Name</th><th>Rep Email</th><th>Rep Phone</th><th></th></tr></thead>' +
         '<tbody>' +
           (filtered.length === 0
-            ? '<tr><td colspan="12" style="text-align:center;color:var(--text-muted-color);padding:32px">No accounts found.</td></tr>'
+            ? '<tr><td colspan="13" style="text-align:center;color:var(--text-muted-color);padding:32px">No accounts found.</td></tr>'
             : filtered.map(function(v) {
                 return '<tr>' +
                   '<td style="font-weight:600;color:var(--text)">' + escHtml(v.name) + ((v.restricted_to && v.restricted_to.length) ? ' <span style="font-size:11px;font-weight:700;color:var(--primary);border:1px solid var(--primary);border-radius:4px;padding:1px 5px;vertical-align:middle">RESTRICTED</span>' : '') + '</td>' +
                   '<td>' + (v.website ? '<a href="#" onclick="vendorOpenSite(\'' + escHtml(v.website).replace(/'/g,"\\'") + '\',\'' + escHtml(v.password||'').replace(/'/g,"\\'") + '\');return false;" style="color:var(--primary)">' + escHtml(v.website) + '</a>' : '—') + '</td>' +
                   '<td>' + escHtml(v.account_number || '—') + '</td>' +
+                  '<td style="white-space:nowrap">' + vendorCoiCell(v) + '</td>' +
                   '<td>' + escHtml(vendorCityLabel(v.city_code)) + '</td>' +
                   '<td>' + escHtml(v.username || '—') + '</td>' +
                   '<td>' +
