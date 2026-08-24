@@ -59,6 +59,11 @@
       '.pto-daysel{max-width:172px}',
       '.pto-daysel.k-off{color:#9ca3af}',
       '.pto-daysel.k-unpaid{color:#eab308}',
+      '.pto-dayctl{display:flex;align-items:center;gap:6px}',
+      '.pto-dayhrs{max-width:78px;text-align:right}',
+      '.pto-dayhrs.hidden{visibility:hidden}',
+      '.pto-hrsunit{font-size:11px;color:var(--text-dim,#9a9a9a)}',
+      '.pto-hrsunit.hidden{visibility:hidden}',
       // Approval detail dialog. Wider than .pto-dlg because it carries a
       // three-week schedule grid; scrolls internally so the page behind stays put.
       '.pto-dlg.wide{max-width:920px;max-height:86vh;overflow:auto}',
@@ -93,6 +98,9 @@
       '.pto-day-sel.k-unpaid{background:rgba(234,179,8,.9);color:#0f0f0f}',
       '.pto-day-sel.k-off{background:rgba(156,163,175,.85);color:#0f0f0f}',
       '.pto-day-sel.moved{outline:2px solid #fff;outline-offset:-2px}',
+      '.pto-day-hrs{display:block;width:100%;margin:0 0 5px;padding:2px 3px;border-radius:4px;border:1px solid var(--border,#3a3a3a);background:var(--bg,#1f1f1f);color:inherit;font-size:10.5px;font-weight:700;text-align:center;font-family:inherit;color-scheme:dark}',
+      '.pto-day-hrs.hidden{display:none}',
+      '.pto-day-hrs.moved{outline:2px solid #fff;outline-offset:-2px}',
       '.pto-day.moved{border-color:#fff}',
       '.pto-retag{margin-top:8px;font-size:12.5px;padding:8px 10px;border-radius:8px;background:rgba(255,255,255,.06);border:1px solid var(--border,#2a2a2a)}',
       '.pto-day.today .pto-day-hd{text-decoration:underline}',
@@ -153,12 +161,33 @@
     if (!s || !e || e < s) return out;
     var d = new Date(s); while (d <= e) { out.push(ymdLocal(d)); d.setDate(d.getDate() + 1); } return out;
   }
-  // Read the per-day tag selects out of the request form as [{date, kind}].
+  // Read the per-day tag selects out of the request form as [{date, kind, hours}].
+  // hours is only meaningful on a paid day; 0 on a paid day means the box was left
+  // blank or nonsense, which submitRequest refuses rather than charging a full 8.
   function collectDaysFromDom() {
     var out = [], sels = document.querySelectorAll('#pto-daygrid .pto-daysel');
-    for (var i = 0; i < sels.length; i++) out.push({ date: sels[i].getAttribute('data-date'), kind: sels[i].value });
+    for (var i = 0; i < sels.length; i++) {
+      var dt = sels[i].getAttribute('data-date');
+      var kind = sels[i].value;
+      var box = document.querySelector('#pto-daygrid .pto-dayhrs[data-hrs="' + dt + '"]');
+      var h = box ? Number(box.value) : HRS_PER_DAY;
+      if (!isFinite(h) || h <= 0) h = 0;
+      out.push({ date: dt, kind: kind, hours: kind === 'paid' ? h : 0 });
+    }
     return out;
   }
+  // Total a set of tagged days costs. Only paid days spend balance.
+  function paidHoursOf(days) {
+    var t = 0;
+    (days || []).forEach(function (x) { if (x.kind === 'paid') t += (Number(x.hours) > 0 ? Number(x.hours) : 0); });
+    return Math.round(t * 100) / 100;
+  }
+  function hrsText(h) { return (Math.round(Number(h) * 10) / 10).toFixed(1) + 'h'; }
+  // Commission staff are tracked in DAYS — balance, awards and reports are all in
+  // days — so part days are for hourly and salary people only. Tony's call,
+  // 2026-08-24. The server enforces the same rule; this only keeps the box off
+  // the screen for someone who could not use it.
+  function takesPartDays(pt) { return !isCommission(pt); }
   // Human summary of a request's day mix, with a fallback for legacy rows.
   function dayBreakdown(r) {
     var p = Number(r.paid_days) || 0, u = Number(r.unpaid_days) || 0, o = Number(r.off_days) || 0;
@@ -231,7 +260,11 @@
         '<div class="pto-card"><h4>Eligible To Use</h4><div class="pto-stat sm">' + escHtml(elig) + '</div><div class="pto-sub">' + (me.eligible_now ? 'past waiting period' : 'inside first 90 days') + '</div></div>' +
       '</div>' +
       '<div class="pto-panel">' +
-        '<h3>Request Time Off</h3><div class="pto-desc">Pick your dates, then mark each day Paid, Unpaid, or a regular scheduled day off. Only paid days use your balance.</div>' +
+        '<h3>Request Time Off</h3><div class="pto-desc">Pick your dates, then mark each day Paid, Unpaid, or a regular scheduled day off. ' +
+        (takesPartDays(pt)
+          ? 'A paid day defaults to a full 8 hours \u2014 change it to take part of a day, down to a tenth of an hour. '
+          : 'Your PTO is tracked in whole days. ') +
+        'Only paid days use your balance.</div>' +
         '<div class="pto-row">' +
           '<div><label class="pto-label">Start date</label><input type="date" id="pto-start" class="pto-input"></div>' +
           '<div><label class="pto-label">End date</label><input type="date" id="pto-end" class="pto-input"></div>' +
@@ -252,6 +285,8 @@
 
     var sd = document.getElementById('pto-start'), ed = document.getElementById('pto-end');
     var dayKinds = {}; // date -> kind, remembered across grid rebuilds
+    var dayHrs = {};   // date -> hours on a paid day, likewise remembered
+    var partDays = takesPartDays(pt); // commission staff get no hours boxes at all
     function selClass(k) { return 'pto-select pto-daysel' + (k === 'off' ? ' k-off' : (k === 'unpaid' ? ' k-unpaid' : '')); }
     function buildGrid() {
       var grid = document.getElementById('pto-daygrid');
@@ -260,20 +295,42 @@
       if (list.length > 62) { grid.innerHTML = '<div class="pto-warn" style="display:block">That is a long stretch — please request up to about two months at a time.</div>'; preview(); return; }
       var rowsHtml = list.map(function (dt) {
         var k = dayKinds[dt] || 'paid';
+        var hv = (dayHrs[dt] === undefined || dayHrs[dt] === '') ? HRS_PER_DAY : dayHrs[dt];
         var dow = parseLocal(dt).toLocaleDateString('en-US', { weekday: 'short' });
+        var hoursCtl = partDays
+          ? '<input type="number" class="pto-input pto-dayhrs' + (k === 'paid' ? '' : ' hidden') + '" data-hrs="' + dt + '" ' +
+              'min="0.1" step="0.1" value="' + hv + '" aria-label="Hours of PTO on ' + escHtml(fmtDate(dt)) + '">' +
+            '<span class="pto-hrsunit' + (k === 'paid' ? '' : ' hidden') + '" data-unit="' + dt + '">hrs</span>'
+          : '';
         return '<div class="pto-daytag"><span class="pto-dayname">' + dow + ' ' + fmtDate(dt) + '</span>' +
+          '<span class="pto-dayctl">' + hoursCtl +
           '<select class="' + selClass(k) + '" data-date="' + dt + '">' +
           '<option value="paid"' + (k === 'paid' ? ' selected' : '') + '>Paid</option>' +
           '<option value="unpaid"' + (k === 'unpaid' ? ' selected' : '') + '>Unpaid</option>' +
           '<option value="off"' + (k === 'off' ? ' selected' : '') + '>Scheduled off</option>' +
-          '</select></div>';
+          '</select></span></div>';
       }).join('');
-      grid.innerHTML = '<div style="display:flex;align-items:center;justify-content:space-between;margin-top:12px"><label class="pto-label" style="margin:0">Mark each day</label>' +
+      grid.innerHTML = '<div style="display:flex;align-items:center;justify-content:space-between;margin-top:12px"><label class="pto-label" style="margin:0">Mark each day' + (partDays ? ' \u00b7 hours are editable on paid days' : '') + '</label>' +
         '<span style="display:flex;gap:6px"><button type="button" class="pto-btn ghost sm" id="pto-all-paid">All paid</button><button type="button" class="pto-btn ghost sm" id="pto-all-off">All off</button></span></div>' +
         '<div class="pto-daylist">' + rowsHtml + '</div>';
       var sels = grid.querySelectorAll('.pto-daysel');
       for (var i = 0; i < sels.length; i++) {
-        sels[i].onchange = function () { dayKinds[this.getAttribute('data-date')] = this.value; this.className = selClass(this.value); preview(); };
+        sels[i].onchange = function () {
+          var dt2 = this.getAttribute('data-date');
+          dayKinds[dt2] = this.value;
+          this.className = selClass(this.value);
+          // The hours box belongs to a paid day only: an unpaid or scheduled-off
+          // day costs nothing, so leaving an amount showing there would be a lie.
+          var box = grid.querySelector('.pto-dayhrs[data-hrs="' + dt2 + '"]');
+          var unit = grid.querySelector('.pto-hrsunit[data-unit="' + dt2 + '"]');
+          if (box) box.className = 'pto-input pto-dayhrs' + (this.value === 'paid' ? '' : ' hidden');
+          if (unit) unit.className = 'pto-hrsunit' + (this.value === 'paid' ? '' : ' hidden');
+          preview();
+        };
+      }
+      var hbs = grid.querySelectorAll('.pto-dayhrs');
+      for (var j = 0; j < hbs.length; j++) {
+        hbs[j].oninput = function () { dayHrs[this.getAttribute('data-hrs')] = this.value === '' ? '' : Number(this.value); preview(); };
       }
       var ap = document.getElementById('pto-all-paid'); if (ap) ap.onclick = function () { list.forEach(function (dt) { dayKinds[dt] = 'paid'; }); buildGrid(); };
       var ao = document.getElementById('pto-all-off'); if (ao) ao.onclick = function () { list.forEach(function (dt) { dayKinds[dt] = 'off'; }); buildGrid(); };
@@ -283,13 +340,26 @@
       var pv = document.getElementById('pto-preview');
       var days = collectDaysFromDom();
       if (!days.length) { pv.textContent = 'Select dates to see the summary.'; return; }
-      var paidN = 0, unpaidN = 0, offN = 0;
-      days.forEach(function (x) { if (x.kind === 'unpaid') unpaidN++; else if (x.kind === 'off') offN++; else paidN++; });
-      var amt = paidN * HRS_PER_DAY, after = bal - amt, away = paidN + unpaidN;
+      var paidN = 0, unpaidN = 0, offN = 0, partial = 0, blank = 0;
+      days.forEach(function (x) {
+        if (x.kind === 'unpaid') unpaidN++;
+        else if (x.kind === 'off') offN++;
+        else {
+          paidN++;
+          if (!(Number(x.hours) > 0)) blank++;
+          else if (Number(x.hours) !== HRS_PER_DAY) partial++;
+        }
+      });
+      var amt = paidHoursOf(days), after = bal - amt, away = paidN + unpaidN;
       var parts = ['<b>' + paidN + '</b> paid'];
       if (unpaidN) parts.push('<b>' + unpaidN + '</b> unpaid');
       if (offN) parts.push('<b>' + offN + '</b> scheduled off');
-      pv.innerHTML = parts.join(' · ') + ' · uses <b>' + fmtAmt(amt, pt) + '</b> · balance after <b style="color:' + (after < 0 ? '#ef4444' : '#22c55e') + '">' + fmtAmt(after, pt) + '</b><br>Routes to: <b>' + escHtml(tierLabel(away)) + '</b>';
+      // A partial day still costs a whole day of coverage, so say it once rather
+      // than letting someone read a 3-hour ask as easier to get approved.
+      var note = partial ? '<br><span class="pto-sub">' + partial + ' partial day' + (partial === 1 ? '' : 's') +
+        ' \u2014 a part day still counts as a day away for scheduling.</span>' : '';
+      if (blank) note += '<br><span style="color:#ef4444">Enter hours greater than 0 on every paid day.</span>';
+      pv.innerHTML = parts.join(' · ') + ' · uses <b>' + fmtAmt(amt, pt) + '</b> · balance after <b style="color:' + (after < 0 ? '#ef4444' : '#22c55e') + '">' + fmtAmt(after, pt) + '</b><br>Routes to: <b>' + escHtml(tierLabel(away)) + '</b>' + note;
     }
     sd.onchange = ed.onchange = buildGrid;
     document.getElementById('pto-submit').onclick = submitRequest;
@@ -336,6 +406,9 @@
     if (!start) { err.textContent = 'Pick a start date.'; err.style.display = 'block'; return; }
     var days = collectDaysFromDom();
     if (!days.length) { err.textContent = 'Pick your dates.'; err.style.display = 'block'; return; }
+    var badDay = null;
+    days.forEach(function (x) { if (!badDay && x.kind === 'paid' && !(Number(x.hours) > 0)) badDay = x.date; });
+    if (badDay) { err.textContent = 'Enter hours greater than 0 for ' + fmtDate(badDay) + ', or mark that day unpaid or scheduled off.'; err.style.display = 'block'; return; }
     var body = { type: document.getElementById('pto-type').value, days: days, start_date: days[0].date, end_date: days[days.length - 1].date };
     try {
       await api('POST', '/pto/requests', body);
@@ -543,7 +616,7 @@
     }
     function okToast(r) {
       var n = (r && r.retagged && r.retagged.length) || 0;
-      showToast(n ? ('Approved with ' + n + ' day' + (n === 1 ? '' : 's') + ' re-classified — the employee was told what changed.')
+      showToast(n ? ('Approved with ' + n + ' day' + (n === 1 ? '' : 's') + ' changed — the employee was told what changed.')
                   : 'Approved — shifts set to Approved Vacation Day.', 'success');
     }
     try { var r1 = await api('POST', '/pto/requests/' + id + '/approve', payload()); okToast(r1); reload(); }
@@ -680,7 +753,7 @@
   // One week of the market's grid, in the same visual language as the schedule
   // screen. Deliberately a local copy rather than a call into app.js's
   // mySchedWeekHtml, which reads that module's globals.
-  function ptoWeekHtml(monday, shifts, meId, reqKinds, label, editable) {
+  function ptoWeekHtml(monday, shifts, meId, reqKinds, label, editable, reqHours, partDays) {
     var byDay = {};
     (shifts || []).forEach(function (s) { (byDay[s.shift_date] = byDay[s.shift_date] || []).push(s); });
     var today = ymdLocal(new Date());
@@ -698,11 +771,22 @@
           return '<option value="' + k + '"' + (k === kind ? ' selected' : '') + '>' +
             (k === 'off' ? 'DAY OFF' : k.toUpperCase() + ' PTO') + '</option>';
         }).join('');
+        var hv = (reqHours && reqHours[day] > 0) ? reqHours[day] : HRS_PER_DAY;
         tag = '<select class="pto-day-sel k-' + kind + '" data-retag="' + day + '" ' +
           'title="Change how this day is classified" ' +
-          'aria-label="Classification for ' + escHtml(fmtDate(day)) + '">' + opts + '</select>';
+          'aria-label="Classification for ' + escHtml(fmtDate(day)) + '">' + opts + '</select>' +
+          // The amount sits under the classification, so one column answers both
+          // questions an approver has about a day: what kind, and how much. Absent
+          // for commission staff, who take whole days and have no hours to correct.
+          (partDays
+            ? '<input type="number" class="pto-day-hrs' + (kind === 'paid' ? '' : ' hidden') + '" data-retaghrs="' + day + '" ' +
+                'min="0.1" step="0.1" value="' + hv + '" title="Hours of PTO on this day" ' +
+                'aria-label="Hours of PTO on ' + escHtml(fmtDate(day)) + '">'
+            : '');
       } else if (isReq) {
-        tag = '<span class="pto-day-tag k-' + kind + '">' + (kind === 'off' ? 'day off' : kind + ' PTO') + '</span>';
+        var hs = (partDays && kind === 'paid' && reqHours && reqHours[day] > 0 && reqHours[day] !== HRS_PER_DAY)
+          ? (' \u00b7 ' + hrsText(reqHours[day])) : '';
+        tag = '<span class="pto-day-tag k-' + kind + '">' + (kind === 'off' ? 'day off' : kind + ' PTO') + escHtml(hs) + '</span>';
       }
       var list = (byDay[day] || []).slice().sort(function (a, b) { return String(a.start_time).localeCompare(String(b.start_time)); });
       var items = list.map(function (s) {
@@ -726,8 +810,12 @@
 
   function detailBodyHtml(C, editable) {
     var pt = C.employee.pay_type;
-    var reqKinds = {};
-    (C.request.days || []).forEach(function (x) { reqKinds[x.date] = x.kind; });
+    var partDays = takesPartDays(pt); // no hours to show, or change, for commission
+    var reqKinds = {}, reqHours = {};
+    (C.request.days || []).forEach(function (x) {
+      reqKinds[x.date] = x.kind;
+      reqHours[x.date] = Number(x.hours) > 0 ? Number(x.hours) : HRS_PER_DAY;
+    });
     var meId = C.employee.id;
 
     // --- header
@@ -836,7 +924,16 @@
       var kinds = {};
       (C.request.days || []).forEach(function (x) { kinds[x.kind] = (kinds[x.kind] || 0) + 1; });
       var kindBits = [];
-      if (kinds.paid) kindBits.push(kinds.paid + ' paid');
+      var paidHrs = 0, partialDays = 0;
+      (C.request.days || []).forEach(function (x) {
+        if (x.kind !== 'paid') return;
+        var hx = Number(x.hours) > 0 ? Number(x.hours) : HRS_PER_DAY;
+        paidHrs += hx;
+        if (hx !== HRS_PER_DAY) partialDays++;
+      });
+      // Only spell the hours out when they are not the plain full days everyone
+      // assumes — otherwise every request would read '2 paid (16.0h)' for nothing.
+      if (kinds.paid) kindBits.push(kinds.paid + ' paid' + ((partDays && partialDays) ? ' (' + hrsText(paidHrs) + ' total, ' + partialDays + ' part day' + (partialDays === 1 ? '' : 's') + ')' : ''));
       if (kinds.unpaid) kindBits.push(kinds.unpaid + ' unpaid');
       if (kinds.off) kindBits.push(kinds.off + ' day off');
       h += '<div class="pto-reqline">Requesting <b>' + escHtml(rangeText(C.request.start_date, C.request.end_date)) +
@@ -848,7 +945,11 @@
       key += '<span><i style="border:2px solid var(--primary,#f97316);background:transparent"></i>' + firstName + '&#39;s shifts</span>';
       h += '<div class="pto-key">' + key + '</div>' +
         '<div class="pto-desc">Published shifts for the week before, the requested weeks, and the week after.' +
-        (editable ? ' You can re-classify any requested day before approving \u2014 the employee is told what changed.' : '') +
+        (editable
+          ? (partDays
+            ? ' You can re-classify any requested day, or change the hours on a paid one, before approving \u2014 the employee is told what changed.'
+            : ' You can re-classify any requested day before approving \u2014 the employee is told what changed. This employee is tracked in whole days.')
+          : '') +
         '</div>';
       var weeks = [];
       var wk = mondayLocal(C.schedule.from), guard = 0;
@@ -867,7 +968,7 @@
         else if (lastReq && m > lastReq) role = 'Week after';
         else if (reqWeeks.length > 1) role = 'Requested \u00b7 week ' + (reqWeeks.indexOf(m) + 1) + ' of ' + reqWeeks.length;
         else role = 'Requested';
-        h += ptoWeekHtml(m, C.schedule.shifts, meId, reqKinds, role + '  \u00b7  ' + dates, editable);
+        h += ptoWeekHtml(m, C.schedule.shifts, meId, reqKinds, role + '  \u00b7  ' + dates, editable, reqHours, partDays);
       });
       if (!(C.schedule.shifts || []).length) {
         h += '<div class="pto-sub">Nothing published in this window.</div>';
@@ -891,36 +992,56 @@
   // restates what it will cost, because re-tagging a day changes the deduction
   // and the approver should see that before committing, not after.
   function wireRetag(m, C, onChange) {
-    var orig = {};
-    (C.request.days || []).forEach(function (x) { orig[x.date] = x.kind; });
-    var cur = {};
-    Object.keys(orig).forEach(function (k) { cur[k] = orig[k]; });
+    var orig = {}, origH = {};
+    (C.request.days || []).forEach(function (x) {
+      orig[x.date] = x.kind;
+      origH[x.date] = Number(x.hours) > 0 ? Number(x.hours) : HRS_PER_DAY;
+    });
+    var cur = {}, curH = {};
+    Object.keys(orig).forEach(function (k) { cur[k] = orig[k]; curH[k] = origH[k]; });
     var pt = C.employee.pay_type;
     var note = m.querySelector('#pto-retag-note');
     var sels = m.querySelectorAll('[data-retag]');
+    var hrsBoxes = m.querySelectorAll('[data-retaghrs]');
 
+    function hoursOn(d) { return cur[d] === 'paid' ? (Number(curH[d]) > 0 ? Number(curH[d]) : 0) : 0; }
+    function moved(d) {
+      // An hours edit on a day that stays paid moves the deduction and the
+      // paycheck, so it counts as a change exactly like a re-classification.
+      if (cur[d] !== orig[d]) return true;
+      return cur[d] === 'paid' && hoursOn(d) !== origH[d];
+    }
     function current() {
-      return Object.keys(cur).sort().map(function (d) { return { date: d, kind: cur[d] }; });
+      return Object.keys(cur).sort().map(function (d) { return { date: d, kind: cur[d], hours: hoursOn(d) }; });
     }
     function changed() {
-      return Object.keys(cur).sort().filter(function (d) { return cur[d] !== orig[d]; })
-        .map(function (d) { return { date: d, from: orig[d], to: cur[d] }; });
+      return Object.keys(cur).sort().filter(moved)
+        .map(function (d) { return { date: d, from: orig[d], to: cur[d], from_hours: origH[d], to_hours: hoursOn(d) }; });
     }
+    function label(kind, hrs) { return kind === 'paid' ? 'paid ' + hrsText(hrs) : kind; }
     function refresh() {
       var diff = changed();
-      var paid = 0;
-      Object.keys(cur).forEach(function (d) { if (cur[d] === 'paid') paid++; });
-      var cost = paid * HRS_PER_DAY;
+      var cost = 0, blank = 0;
+      Object.keys(cur).forEach(function (d) {
+        if (cur[d] !== 'paid') return;
+        if (!(Number(curH[d]) > 0)) blank++;
+        cost += hoursOn(d);
+      });
+      cost = Math.round(cost * 100) / 100;
       var was = C.balance.cost_hours;
       var after = Math.round((C.balance.current_hours - cost) * 100) / 100;
       if (note) {
-        if (!diff.length) {
+        if (blank) {
+          note.innerHTML = '<span style="color:#ef4444"><b>Enter hours greater than 0 on every paid day</b>' +
+            ' \u2014 or mark that day unpaid or a day off.</span>';
+        } else if (!diff.length) {
           note.innerHTML = 'No changes \u2014 approving exactly as requested.';
         } else {
           var lines = diff.map(function (c) {
-            return '<li>' + escHtml(fmtDate(c.date)) + ': <b>' + escHtml(c.from) + '</b> \u2192 <b>' + escHtml(c.to) + '</b></li>';
+            return '<li>' + escHtml(fmtDate(c.date)) + ': <b>' + escHtml(label(c.from, c.from_hours)) + '</b> \u2192 <b>' +
+              escHtml(label(c.to, c.to_hours)) + '</b></li>';
           }).join('');
-          note.innerHTML = '<b>' + diff.length + ' day' + (diff.length === 1 ? '' : 's') + ' re-classified</b>' +
+          note.innerHTML = '<b>' + diff.length + ' day' + (diff.length === 1 ? '' : 's') + ' changed</b>' +
             '<ul style="margin:5px 0 0;padding-left:18px">' + lines + '</ul>' +
             '<div style="margin-top:6px">Cost ' + (cost === was ? 'unchanged at <b>' + fmtAmt(cost, pt) + '</b>'
               : '<b>' + fmtAmt(was, pt) + '</b> \u2192 <b>' + fmtAmt(cost, pt) + '</b>') +
@@ -928,15 +1049,31 @@
             ' The employee will be told what changed.</div>';
         }
       }
-      onChange(diff.length ? current() : null, after < 0);
+      // A blank amount is not a correction anyone can act on, so it is never sent.
+      onChange((diff.length && !blank) ? current() : null, after < 0);
+    }
+    function markCol(day) {
+      var box = m.querySelector('[data-retaghrs="' + day + '"]');
+      var sel = m.querySelector('[data-retag="' + day + '"]');
+      var isMoved = moved(day);
+      if (sel) sel.className = 'pto-day-sel k-' + cur[day] + (isMoved ? ' moved' : '');
+      if (box) box.className = 'pto-day-hrs' + (cur[day] === 'paid' ? '' : ' hidden') + (isMoved ? ' moved' : '');
+      var col = sel && sel.closest ? sel.closest('.pto-day') : null;
+      if (col) col.className = 'pto-day req' + (isMoved ? ' moved' : '');
     }
     Array.prototype.forEach.call(sels, function (sel) {
       sel.onchange = function () {
         var day = sel.getAttribute('data-retag');
         cur[day] = sel.value;
-        sel.className = 'pto-day-sel k-' + sel.value + (cur[day] !== orig[day] ? ' moved' : '');
-        var col = sel.closest ? sel.closest('.pto-day') : null;
-        if (col) col.className = 'pto-day req' + (cur[day] !== orig[day] ? ' moved' : '');
+        markCol(day);
+        refresh();
+      };
+    });
+    Array.prototype.forEach.call(hrsBoxes, function (box) {
+      box.oninput = function () {
+        var day = box.getAttribute('data-retaghrs');
+        curH[day] = box.value === '' ? 0 : Number(box.value);
+        markCol(day);
         refresh();
       };
     });
@@ -1046,7 +1183,7 @@
     m.innerHTML = '<div class="pto-dlg"><h3>Log PTO (after the fact)</h3><div class="pto-desc">For a call-out converted to PTO after the day passed. Records who logged it and why.</div>' +
       '<div class="pto-row"><div><label class="pto-label">Start (past)</label><input type="date" id="pto-log-s" class="pto-input"></div><div><label class="pto-label">End</label><input type="date" id="pto-log-e" class="pto-input"></div></div>' +
       '<label class="pto-label">Type</label><select id="pto-log-paid" class="pto-select"><option value="paid">Approved Vacation Day (paid)</option><option value="unpaid">Unpaid Vacation Day</option><option value="off">Scheduled off (no charge)</option></select>' +
-      '<label class="pto-label">' + (isCommission(pt) ? 'Days to deduct' : 'Hours to deduct') + ' <span style="font-weight:400;color:var(--text-dim,#9a9a9a)">(optional — blank = full day)</span></label><input type="number" min="0" step="' + (isCommission(pt) ? '0.5' : '0.25') + '" id="pto-log-hours" class="pto-input" placeholder="' + (isCommission(pt) ? 'e.g. 0.5 for half a day' : 'e.g. 2 for a couple of hours') + '">' +
+      '<label class="pto-label">' + (isCommission(pt) ? 'Days to deduct' : 'Hours to deduct') + ' <span style="font-weight:400;color:var(--text-dim,#9a9a9a)">(optional — blank = full day)</span></label><input type="number" min="0" step="' + (isCommission(pt) ? '0.5' : '0.1') + '" id="pto-log-hours" class="pto-input" placeholder="' + (isCommission(pt) ? 'e.g. 0.5 for half a day' : 'e.g. 2 for a couple of hours') + '">' +
       '<label class="pto-label">Reason (required)</label><textarea id="pto-log-reason" class="pto-textarea" rows="2" placeholder="e.g. Called out sick, converting to PTO"></textarea>' +
       '<div class="pto-sub" id="pto-log-prev" style="margin-top:8px"></div>' +
       (isAdmin ? '<label class="pto-label" style="display:flex;align-items:center;gap:8px;margin-top:8px;font-weight:400"><input type="checkbox" id="pto-log-neg" style="width:auto"> Allow negative balance (admin exception)</label>' : '') +

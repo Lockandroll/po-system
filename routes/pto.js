@@ -1,6 +1,8 @@
 // PTO — requests, approvals, ledger, team visibility, retroactive logging, settings.
-// Everything is stored in HOURS (8 hrs = 1 day). The frontend displays hours for
-// hourly/salary staff and days for commission staff. No backticks in this file.
+// Everything is stored in HOURS (8 hrs = 1 day). A paid day defaults to a full 8
+// but may be any positive amount in 0.1-hour steps, so a 3-hour absence costs 3.
+// The frontend displays hours for hourly/salary staff and days for commission
+// staff. No backticks in this file.
 const express = require('express');
 const { pool } = require('../db');
 const { requireAuth, requirePermission } = require('../middleware/auth');
@@ -18,6 +20,69 @@ const HRS_PER_DAY = 8;
 const RE_DATE = /^\d{4}-\d{2}-\d{2}$/;
 const APPROVED_VACATION_POSITION_ID = 5; // shift_positions row "Approved Vacation Day"
 const UNPAID_VACATION_POSITION_ID = 7;   // shift_positions row "Unpaid Vacation Day"
+
+// ---- partial days -----------------------------------------------------------
+// PTO is taken in 0.1-hour increments. A paid day with no amount on it means a
+// full day (8), which is what every request looked like before partials existed
+// and what every legacy pto_request_days row still means. The only ceiling is
+// the person's own balance, enforced by the no-negative wall, not by a constant.
+function normHours(raw) {
+  if (raw === undefined || raw === null || String(raw).trim() === '') return HRS_PER_DAY;
+  const n = Number(raw);
+  if (!isFinite(n) || n <= 0) return NaN;
+  const r = Math.round(n * 10) / 10; // snap to the 0.1 grid
+  return r > 0 ? r : NaN;
+}
+// Hours a single tagged day costs. Unpaid and scheduled-off days always cost 0.
+// A paid day with NO amount recorded at all is a full day — that is what every
+// request meant before partials existed. An amount that IS recorded is taken at
+// face value, including a zero, so a stored total never drifts from its days.
+function dayHours(d) {
+  if (!d || d.kind !== 'paid') return 0;
+  if (d.hours === null || d.hours === undefined || d.hours === '') return HRS_PER_DAY;
+  const h = Number(d.hours);
+  if (!isFinite(h)) return HRS_PER_DAY;
+  return h > 0 ? h : 0;
+}
+function sumPaidHours(days) {
+  let t = 0;
+  for (let i = 0; i < (days || []).length; i++) t += dayHours(days[i]);
+  return Math.round(t * 100) / 100;
+}
+// First paid day whose amount did not survive normHours, or null.
+function badHoursDate(days) {
+  for (let i = 0; i < (days || []).length; i++) {
+    if (days[i].kind === 'paid' && !(Number(days[i].hours) > 0)) return days[i].date;
+  }
+  return null;
+}
+// One label for an amount of PTO, used by the audit trail and the employee's notice.
+// Commission staff are tracked in DAYS, not hours — their balance is displayed,
+// awarded and reported in days, so a 3-hour deduction has nowhere to live on
+// their record. Part days are for hourly and salary people only. Tony's call,
+// 2026-08-24.
+function tracksHours(payType) { return String(payType || 'hourly').toLowerCase() !== 'commission'; }
+// The first paid day that is not a whole day, or null. Used to refuse a part day
+// for someone who does not take part days, rather than silently rounding it.
+function partialDayFor(days) {
+  for (let i = 0; i < (days || []).length; i++) {
+    if (days[i].kind === 'paid' && dayHours(days[i]) !== HRS_PER_DAY) return days[i].date;
+  }
+  return null;
+}
+const WHOLE_DAYS_ONLY = 'Commission staff take PTO in whole days, so hours cannot be set on a day.';
+function fmtHrs(h) {
+  const n = (h === undefined || h === null) ? HRS_PER_DAY : Number(h);
+  return (Math.round(n * 10) / 10).toFixed(1) + 'h';
+}
+// A row out of pto_request_days -> a tagged day. hours IS NULL on every row
+// written before partial days shipped, and those all meant a full paid day.
+function dayRowToTag(x) {
+  const kind = x.kind === 'unpaid' ? 'unpaid' : (x.kind === 'off' ? 'off' : 'paid');
+  const raw = (x.hours === null || x.hours === undefined) ? null : Number(x.hours);
+  const h = (raw === null || !isFinite(raw)) ? HRS_PER_DAY : (raw > 0 ? raw : 0);
+  return { date: ymdOf(x.day_date), kind: kind, hours: kind === 'paid' ? h : 0 };
+}
 
 // ---- small helpers ---------------------------------------------------------
 
@@ -331,12 +396,23 @@ async function notifyRequester(userId, decision, from, to, days, approverName, r
     // finds out at payroll. Spell it out instead.
     var changed = Array.isArray(retag) ? retag : [];
     var toUnpaid = changed.filter(function (c) { return c.to === 'unpaid'; });
-    var changeLines = changed.map(function (c) { return c.date + ': ' + c.from + ' \u2192 ' + c.to; });
-    var changeShort = changed.length
-      ? (toUnpaid.length
-        ? (toUnpaid.length + ' day' + (toUnpaid.length === 1 ? '' : 's') + ' now UNPAID (' + toUnpaid.map(function (c) { return c.date; }).join(', ') + ')')
-        : (changed.length + ' day' + (changed.length === 1 ? '' : 's') + ' re-classified'))
-      : '';
+    // A day still paid but cut from 8.0 to 3.0 is a short paycheck too, so it gets
+    // named in the same breath as a day flipped to unpaid.
+    var hoursOnly = changed.filter(function (c) { return c.from === 'paid' && c.to === 'paid'; });
+    var changeLines = changed.map(function (c) {
+      var a = c.from === 'paid' ? 'paid ' + fmtHrs(c.from_hours) : c.from;
+      var b2 = c.to === 'paid' ? 'paid ' + fmtHrs(c.to_hours) : c.to;
+      return c.date + ': ' + a + ' \u2192 ' + b2;
+    });
+    var changeShort = '';
+    if (toUnpaid.length) {
+      changeShort = toUnpaid.length + ' day' + (toUnpaid.length === 1 ? '' : 's') + ' now UNPAID (' + toUnpaid.map(function (c) { return c.date; }).join(', ') + ')';
+    } else if (changed.length && hoursOnly.length === changed.length) {
+      changeShort = 'hours changed on ' + changed.length + ' day' + (changed.length === 1 ? '' : 's') + ' (' +
+        hoursOnly.map(function (c) { return c.date + ' ' + fmtHrs(c.to_hours); }).join(', ') + ')';
+    } else if (changed.length) {
+      changeShort = changed.length + ' day' + (changed.length === 1 ? '' : 's') + ' re-classified';
+    }
     if (rec.emails && rec.emails.length && sendEmail && emailTemplate) {
       var html = emailTemplate({
         badge: approved ? 'Approved' : 'Not Approved', badgeColor: approved ? 'green' : 'red',
@@ -502,9 +578,11 @@ async function writeRequestDays(client, requestId, days) {
   for (let i = 0; i < days.length; i++) {
     const k = days[i].kind === 'unpaid' ? 'unpaid' : (days[i].kind === 'off' ? 'off' : 'paid');
     if (k === 'paid') paid++; else if (k === 'unpaid') unpaid++; else off++;
+    const h = k === 'paid' ? dayHours({ kind: 'paid', hours: days[i].hours }) : 0;
     await client.query(
-      'INSERT INTO pto_request_days (request_id, day_date, kind) VALUES ($1,$2,$3) ON CONFLICT (request_id, day_date) DO UPDATE SET kind = EXCLUDED.kind',
-      [requestId, days[i].date, k]
+      'INSERT INTO pto_request_days (request_id, day_date, kind, hours) VALUES ($1,$2,$3,$4) ' +
+      'ON CONFLICT (request_id, day_date) DO UPDATE SET kind = EXCLUDED.kind, hours = EXCLUDED.hours',
+      [requestId, days[i].date, k, h]
     );
   }
   return { paid: paid, unpaid: unpaid, off: off };
@@ -713,10 +791,26 @@ router.get('/project', requireAuth, async (req, res) => {
   });
 });
 
+// Split a total into n per-day amounts on the 0.1 grid that sum back to the total.
+// Rounded DOWN per day with the remainder on the first day, so no day can ever
+// come out negative — which a rounded-up share would do on a small total.
+function spreadHours(total, n) {
+  const out = [];
+  if (!n) return out;
+  const each = Math.floor((Number(total) / n) * 10) / 10;
+  let used = 0;
+  for (let i = 1; i < n; i++) { out.push(each); used += each; }
+  out.unshift(Math.round((Number(total) - used) * 100) / 100);
+  return out;
+}
+
 // ---- CREATE A REQUEST ------------------------------------------------------
 
-// Normalize a posted day-tag list into sorted, de-duped [{date, kind}] entries.
-// kind is one of paid | unpaid | off (anything else becomes paid).
+// Normalize a posted day-tag list into sorted, de-duped [{date, kind, hours}]
+// entries. kind is one of paid | unpaid | off (anything else becomes paid).
+// hours only means anything on a paid day; it defaults to a full 8 and is NaN
+// when the caller sent something that is not a positive number, which the
+// routes turn into a 400 rather than silently charging a full day.
 function normalizeDayTags(input) {
   if (!Array.isArray(input)) return [];
   const map = {};
@@ -726,9 +820,9 @@ function normalizeDayTags(input) {
     if (!RE_DATE.test(d)) continue;
     let k = String(it.kind || 'paid').toLowerCase();
     if (k !== 'unpaid' && k !== 'off') k = 'paid';
-    map[d] = k; // last wins -> de-dupes a date
+    map[d] = { kind: k, hours: k === 'paid' ? normHours(it.hours) : 0 }; // last wins -> de-dupes a date
   }
-  return Object.keys(map).sort().map(function (d) { return { date: d, kind: map[d] }; });
+  return Object.keys(map).sort().map(function (d) { return { date: d, kind: map[d].kind, hours: map[d].hours }; });
 }
 
 router.post('/requests', requireAuth, async (req, res) => {
@@ -741,18 +835,30 @@ router.post('/requests', requireAuth, async (req, res) => {
     const end0 = RE_DATE.test(b.end_date) ? b.end_date : b.start_date;
     if (parseDate(end0) < parseDate(b.start_date)) return res.status(400).json({ error: 'End date is before start date' });
     const k0 = b.paid === false ? 'unpaid' : 'paid';
-    days = eachDate(b.start_date, end0).map(function (d) { return { date: d, kind: k0 }; });
+    days = eachDate(b.start_date, end0).map(function (d) { return { date: d, kind: k0, hours: k0 === 'paid' ? HRS_PER_DAY : 0 }; });
   }
   if (!days.length) return res.status(400).json({ error: 'Select at least one day' });
+  const badDay = badHoursDate(days);
+  if (badDay) return res.status(400).json({ error: 'Hours for ' + badDay + ' must be a positive number (0.1 hour steps).' });
   const start = days[0].date, end = days[days.length - 1].date;
   const paidDays = days.filter(function (d) { return d.kind === 'paid'; }).length;
   const unpaidDays = days.filter(function (d) { return d.kind === 'unpaid'; }).length;
   const offDays = days.filter(function (d) { return d.kind === 'off'; }).length;
   const awayDays = paidDays + unpaidDays; // paid + unpaid drive approval + coverage
-  const hours = paidDays * HRS_PER_DAY;   // only paid days cost PTO (8h per day)
+  // Only paid days cost PTO, and each one costs whatever was asked for on it —
+  // a full 8 unless the person typed a smaller (or larger) amount. A partial day
+  // still counts as a whole day for coverage and the approval tier above: being
+  // gone for three hours still leaves a hole in that day's roster.
+  const hours = sumPaidHours(days);
 
-  const ur = await pool.query('SELECT id, name, hire_date, pto_balance_hours, supervisor_id FROM users WHERE id = $1', [uid]);
+  const ur = await pool.query('SELECT id, name, hire_date, pto_balance_hours, supervisor_id, pay_type FROM users WHERE id = $1', [uid]);
   const u = ur.rows[0];
+  // A commission employee's balance is kept in days; refuse the part day here
+  // rather than quietly rounding it to a full one and deducting more than asked.
+  if (u && !tracksHours(u.pay_type)) {
+    const partial = partialDayFor(days);
+    if (partial) return res.status(400).json({ error: WHOLE_DAYS_ONLY });
+  }
   const waiting = Number(await getSetting('pto_waiting_days', 90)) || 90;
   const elig = await eligibleInfo(u, waiting);
   if (!elig.eligible_now) return res.status(400).json({ error: 'You are inside your first ' + waiting + ' days. Eligible ' + elig.eligible_date + '.' });
@@ -796,22 +902,33 @@ function reconcileDayTags(submitted, proposed) {
   const want = normalizeDayTags(proposed);
   if (!want.length) return { error: 'No days were supplied.' };
   const have = {};
-  submitted.forEach(function (d) { have[d.date] = d.kind; });
+  submitted.forEach(function (d) { have[d.date] = d; });
   const haveDates = Object.keys(have).sort();
   const wantDates = want.map(function (d) { return d.date; }).sort();
   if (haveDates.length !== wantDates.length || haveDates.join(',') !== wantDates.join(',')) {
     return { error: 'The days do not match this request. Deny it and ask for the dates to be resubmitted.' };
   }
+  const bad = badHoursDate(want);
+  if (bad) return { error: 'Hours for ' + bad + ' must be a positive number (0.1 hour steps).' };
   const changes = [];
   want.forEach(function (d) {
-    if (have[d.date] !== d.kind) changes.push({ date: d.date, from: have[d.date], to: d.kind });
+    const was = have[d.date];
+    // An hours-only edit (8.0 -> 3.0, both still paid) is a real change: it moves
+    // the deduction and the paycheck, so it is reported like any re-classification.
+    const kindMoved = was.kind !== d.kind;
+    const hoursMoved = was.kind === 'paid' && d.kind === 'paid' && dayHours(was) !== dayHours(d);
+    if (kindMoved || hoursMoved) {
+      changes.push({ date: d.date, from: was.kind, to: d.kind, from_hours: dayHours(was), to_hours: dayHours(d) });
+    }
   });
   return { days: want, changes: changes };
 }
 // Plain-English summary of a re-tag, for the employee's notice and the audit log.
 function describeRetag(changes) {
   return changes.map(function (c) {
-    return c.date + ': ' + c.from + ' \u2192 ' + c.to;
+    const a = c.from === 'paid' ? 'paid ' + fmtHrs(c.from_hours) : c.from;
+    const b = c.to === 'paid' ? 'paid ' + fmtHrs(c.to_hours) : c.to;
+    return c.date + ': ' + a + ' \u2192 ' + b;
   }).join('; ');
 }
 
@@ -912,10 +1029,10 @@ router.get('/requests/:id/context', requireAuth, async (req, res) => {
   const cost = r.paid ? (Number(r.hours) || 0) : 0;
 
   // ---- day tags for this request
-  const dayRows = await pool.query('SELECT day_date, kind FROM pto_request_days WHERE request_id = $1 ORDER BY day_date ASC', [id]);
+  const dayRows = await pool.query('SELECT day_date, kind, hours FROM pto_request_days WHERE request_id = $1 ORDER BY day_date ASC', [id]);
   const days = dayRows.rows.length
-    ? dayRows.rows.map(function (x) { return { date: ymdOf(x.day_date), kind: x.kind }; })
-    : eachDate(from, to).map(function (d) { return { date: d, kind: r.paid ? 'paid' : 'unpaid' }; });
+    ? dayRows.rows.map(dayRowToTag)
+    : eachDate(from, to).map(function (d) { return { date: d, kind: r.paid ? 'paid' : 'unpaid', hours: r.paid ? HRS_PER_DAY : 0 }; });
 
   // ---- rolling 12 months of history. Anchored on TODAY, not on the request's
   // start date: a request dated six months out would otherwise shift the window
@@ -1094,15 +1211,21 @@ router.post('/requests/:id/approve', requireAuth, async (req, res) => {
   const from = ymdOf(r.start_date), to = ymdOf(r.end_date);
 
   // What the employee submitted, and what the approver wants it to be.
-  const subRows = await pool.query('SELECT day_date, kind FROM pto_request_days WHERE request_id = $1 ORDER BY day_date ASC', [id]);
+  const subRows = await pool.query('SELECT day_date, kind, hours FROM pto_request_days WHERE request_id = $1 ORDER BY day_date ASC', [id]);
   const submitted = subRows.rows.length
-    ? subRows.rows.map(function (x) { return { date: ymdOf(x.day_date), kind: x.kind }; })
-    : eachDate(from, to).map(function (d) { return { date: d, kind: r.paid ? 'paid' : 'unpaid' }; });
+    ? subRows.rows.map(dayRowToTag)
+    : eachDate(from, to).map(function (d) { return { date: d, kind: r.paid ? 'paid' : 'unpaid', hours: r.paid ? HRS_PER_DAY : 0 }; });
 
   let days = submitted, retag = [];
   if (req.body && Array.isArray(req.body.days) && req.body.days.length) {
     const rec = reconcileDayTags(submitted, req.body.days);
     if (rec.error) return res.status(400).json({ error: rec.error });
+    // An approver cannot cut a commission employee to part of a day either —
+    // the same rule that governs what they could submit governs the correction.
+    const ptq = await pool.query('SELECT pay_type FROM users WHERE id = $1', [r.user_id]);
+    if (ptq.rows.length && !tracksHours(ptq.rows[0].pay_type) && partialDayFor(rec.days)) {
+      return res.status(400).json({ error: WHOLE_DAYS_ONLY });
+    }
     days = rec.days; retag = rec.changes;
   }
 
@@ -1113,8 +1236,10 @@ router.post('/requests/:id/approve', requireAuth, async (req, res) => {
   const unpaidDays = days.filter(function (d) { return d.kind === 'unpaid'; }).length;
   const offDays = days.filter(function (d) { return d.kind === 'off'; }).length;
   const awayDays = paidDays + unpaidDays;
-  const hours = paidDays * HRS_PER_DAY;
-  const isPaid = paidDays > 0;
+  // Summed from the FINAL per-day amounts, so an approver who cut a day from 8
+  // to 3 deducts 3 — and a day re-tagged to unpaid deducts nothing at all.
+  const hours = sumPaidHours(days);
+  const isPaid = hours > 0;
   const tier = requiredTier(awayDays);
 
   // Exactly the resolver the queue badge and the detail dialog used, so what the
@@ -1409,7 +1534,11 @@ router.post('/log', requireAuth, requirePermission('manage_pto'), async (req, re
   const unpaidDays = kind === 'unpaid' ? calDays : 0;
   const offDays = kind === 'off' ? calDays : 0;
   const awayDays = paidDays + unpaidDays;
-  const dayTags = eachDate(from, to).map(function (d) { return { date: d, kind: kind }; });
+  // Per-day amounts for the tag rows. An explicit total is spread evenly across
+  // the days it covers (remainder on the first day) so the stored per-day hours
+  // always add back up to the hours on the request itself.
+  const spread = spreadHours(hours, calDays);
+  const dayTags = eachDate(from, to).map(function (d, i) { return { date: d, kind: kind, hours: paid ? spread[i] : 0 }; });
 
   const ur = await pool.query('SELECT name, COALESCE(pto_balance_hours,0) AS bal FROM users WHERE id = $1', [target]);
   if (!ur.rows.length) return res.status(404).json({ error: 'Employee not found' });

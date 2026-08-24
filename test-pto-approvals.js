@@ -91,10 +91,10 @@ async function schema() {
     "  status VARCHAR(30) DEFAULT 'pending', required_level INTEGER, approver_id INTEGER, decided_at TIMESTAMPTZ," +
     '  coverage_override BOOLEAN DEFAULT false, override_reason TEXT, retroactive BOOLEAN NOT NULL DEFAULT false,' +
     '  paid_days INTEGER DEFAULT 0, unpaid_days INTEGER DEFAULT 0, off_days INTEGER DEFAULT 0,' +
-    '  cancel_memo TEXT, cancel_initiated_by INTEGER, cancel_initiated_at TIMESTAMP,' +
+    '  cancel_memo TEXT, cancel_initiated_by INTEGER, cancel_initiated_at TIMESTAMP, decision_reason TEXT,' +
     '  created_at TIMESTAMPTZ DEFAULT NOW(), updated_at TIMESTAMPTZ DEFAULT NOW());' +
     "CREATE TABLE pto_request_days (id SERIAL PRIMARY KEY, request_id INTEGER NOT NULL, day_date DATE NOT NULL," +
-    "  kind VARCHAR(12) NOT NULL DEFAULT 'paid', UNIQUE(request_id, day_date));" +
+    "  kind VARCHAR(12) NOT NULL DEFAULT 'paid', hours NUMERIC(6,2), UNIQUE(request_id, day_date));" +
     'CREATE TABLE pto_ledger (id SERIAL PRIMARY KEY, user_id INTEGER, entry_date DATE, kind VARCHAR(30),' +
     '  amount_hours NUMERIC(8,2), description TEXT, accrual_period VARCHAR(10), request_id INTEGER,' +
     '  created_by INTEGER, created_at TIMESTAMPTZ DEFAULT NOW());' +
@@ -493,8 +493,175 @@ async function main() {
   var aud = (await pool.query("SELECT details FROM audit_logs WHERE entity_type = 'pto_request' AND entity_id = 51 ORDER BY id DESC LIMIT 1")).rows;
   ok(aud.length > 0, 'an audit row exists');
   var det = typeof aud[0].details === 'string' ? JSON.parse(aud[0].details) : aud[0].details;
-  ok(det && String(det.retagged || '').indexOf('paid \u2192 unpaid') !== -1, 'and it names the change  (got ' + JSON.stringify(det && det.retagged) + ')');
+  ok(det && String(det.retagged || '').indexOf('paid 8.0h \u2192 unpaid') !== -1, 'and it names the change, hours and all  (got ' + JSON.stringify(det && det.retagged) + ')');
   eq(det.hours, 8, 'with the final hours');
+
+
+  console.log('== partial days: an employee asks for part of a day ==');
+  // Tara submits for herself. 3 hours on one day, a full day on the next.
+  CURRENT_USER = { id: 7, name: 'Tara Ridge', role: 'employee', isOwner: false };
+  await pool.query('DELETE FROM pto_request_days; DELETE FROM pto_requests; DELETE FROM pto_ledger; DELETE FROM shifts;');
+  await pool.query('UPDATE users SET pto_balance_hours = 24 WHERE id = 7;');
+  var pA = await reqBody('POST', '/api/pto/requests', { type: 'Vacation', days: [
+    { date: d(70), kind: 'paid', hours: 3 }, { date: d(71), kind: 'paid', hours: 8 } ] });
+  eq(pA.status, 200, 'a part-day request is accepted');
+  eq(Number(pA.body.hours), 11, 'it costs 3 + 8, not 16');
+  eq(Number(pA.body.business_days), 2, 'a 3-hour day is still a day away for scheduling');
+  eq(Number(pA.body.paid_days), 2, 'and still counts as a paid day');
+  var pADays = (await pool.query('SELECT day_date, kind, hours FROM pto_request_days WHERE request_id = $1 ORDER BY day_date', [pA.body.id])).rows;
+  eq(pADays.map(function (x) { return Number(x.hours); }).join(','), '3,8', 'the per-day amounts are stored');
+
+  console.log('== 0.1 is the grid, and nothing smaller ==');
+  var pB = await reqBody('POST', '/api/pto/requests', { type: 'Vacation', days: [{ date: d(72), kind: 'paid', hours: 2.55 }] });
+  eq(pB.status, 200, 'a fractional amount is accepted');
+  eq(Number(pB.body.hours), 2.6, 'and snapped to the nearest tenth');
+  var pC = await reqBody('POST', '/api/pto/requests', { type: 'Vacation', days: [{ date: d(73), kind: 'paid', hours: 0.1 }] });
+  eq(pC.status, 200, 'a tenth of an hour is a legal request');
+  eq(Number(pC.body.hours), 0.1, 'and costs exactly that');
+
+  console.log('== a paid day with no usable amount is refused, never charged as 8 ==');
+  var badH = [0, -3, 'abc', 0.04];
+  for (var bi = 0; bi < badH.length; bi++) {
+    var pD = await reqBody('POST', '/api/pto/requests', { type: 'Vacation', days: [{ date: d(74), kind: 'paid', hours: badH[bi] }] });
+    eq(pD.status, 400, 'hours of ' + JSON.stringify(badH[bi]) + ' is refused');
+    ok(String(pD.body.error).indexOf('positive number') !== -1, 'with a message that says what is wrong');
+  }
+  var pE = await reqBody('POST', '/api/pto/requests', { type: 'Vacation', days: [{ date: d(74), kind: 'paid' }] });
+  eq(pE.status, 200, 'no amount at all still means a full day');
+  eq(Number(pE.body.hours), 8, 'which costs 8');
+  var pF = await reqBody('POST', '/api/pto/requests', { type: 'Vacation', days: [
+    { date: d(75), kind: 'unpaid', hours: 0 }, { date: d(76), kind: 'off', hours: 0 } ] });
+  eq(pF.status, 200, 'unpaid and off days need no amount');
+  eq(Number(pF.body.hours), 0, 'and cost nothing');
+
+  console.log('== the balance is the only ceiling ==');
+  await pool.query('DELETE FROM pto_request_days; DELETE FROM pto_requests;');
+  await pool.query('UPDATE users SET pto_balance_hours = 6 WHERE id = 7;');
+  var wallA = await reqBody('POST', '/api/pto/requests', { type: 'Vacation', days: [{ date: d(80), kind: 'paid', hours: 8 }] });
+  eq(wallA.status, 400, 'a full day is out of reach on a 6-hour balance');
+  var wallB = await reqBody('POST', '/api/pto/requests', { type: 'Vacation', days: [{ date: d(80), kind: 'paid', hours: 3 }] });
+  eq(wallB.status, 200, 'but the 3 hours she actually needs go through');
+  var wallC = await reqBody('POST', '/api/pto/requests', { type: 'Vacation', days: [{ date: d(81), kind: 'paid', hours: 12 }] });
+  eq(wallC.status, 400, 'and nothing above the balance is allowed, cap or no cap');
+  await pool.query('UPDATE users SET pto_balance_hours = 24 WHERE id = 7;');
+  var wallD = await reqBody('POST', '/api/pto/requests', { type: 'Vacation', days: [{ date: d(82), kind: 'paid', hours: 12 }] });
+  eq(wallD.status, 200, 'a 12-hour shift can be taken whole when the balance covers it');
+  eq(Number(wallD.body.hours), 12, 'at its real length');
+
+  console.log('== approving a partial day deducts the partial amount ==');
+  CURRENT_USER = { id: 1, name: 'Ada Admin', role: 'admin', isOwner: true };
+  await pool.query('DELETE FROM pto_request_days; DELETE FROM pto_requests; DELETE FROM pto_ledger; DELETE FROM shifts;');
+  await pool.query('UPDATE users SET pto_balance_hours = 24 WHERE id = 7;');
+  await pool.query("INSERT INTO pto_requests (id,user_id,start_date,end_date,business_days,hours,type,paid,status,required_level,paid_days) VALUES (60,7,$1,$1,1,3,'Vacation',true,'pending',4,1)", [d(90)]);
+  await pool.query("INSERT INTO pto_request_days (request_id,day_date,kind,hours) VALUES (60,$1,'paid',3)", [d(90)]);
+  var apA = await req('POST', '/api/pto/requests/60/approve');
+  eq(apA.status, 200, 'approved as submitted');
+  eq(Number(apA.body.hours), 3, 'three hours, not eight');
+  eq(Number((await pool.query('SELECT pto_balance_hours b FROM users WHERE id = 7')).rows[0].b), 21, 'balance down by exactly 3');
+  var ledP = (await pool.query("SELECT amount_hours FROM pto_ledger WHERE user_id = 7 AND kind = 'usage'")).rows;
+  eq(Number(ledP[0].amount_hours), -3, 'and the ledger line matches');
+  eq(Number((await pool.query('SELECT position_id FROM shifts WHERE user_id = 7')).rows[0].position_id), 5, 'the day is still marked on the schedule');
+
+  console.log('== the approver can change the hours, not just the classification ==');
+  await pool.query('DELETE FROM pto_request_days; DELETE FROM pto_requests; DELETE FROM pto_ledger; DELETE FROM shifts;');
+  await pool.query('UPDATE users SET pto_balance_hours = 24 WHERE id = 7;');
+  await pool.query("INSERT INTO pto_requests (id,user_id,start_date,end_date,business_days,hours,type,paid,status,required_level,paid_days) VALUES (61,7,$1,$2,2,16,'Vacation',true,'pending',4,2)", [d(95), d(96)]);
+  await pool.query("INSERT INTO pto_request_days (request_id,day_date,kind,hours) VALUES (61,$1,'paid',8),(61,$2,'paid',8)", [d(95), d(96)]);
+  var apB = await reqBody('POST', '/api/pto/requests/61/approve', { days: [
+    { date: d(95), kind: 'paid', hours: 3 }, { date: d(96), kind: 'paid', hours: 8 } ] });
+  eq(apB.status, 200, 'an hours-only correction is accepted');
+  eq(apB.body.retagged.length, 1, 'and reported as one change');
+  eq(apB.body.retagged[0].from_hours, 8, 'from 8');
+  eq(apB.body.retagged[0].to_hours, 3, 'to 3');
+  eq(Number(apB.body.hours), 11, 'the request now costs 11');
+  eq(Number((await pool.query('SELECT hours FROM pto_requests WHERE id = 61')).rows[0].hours), 11, 'stored on the request');
+  eq(Number((await pool.query('SELECT pto_balance_hours b FROM users WHERE id = 7')).rows[0].b), 13, 'and deducted from the balance');
+  eq((await pool.query('SELECT hours FROM pto_request_days WHERE request_id = 61 ORDER BY day_date')).rows.map(function (x) { return Number(x.hours); }).join(','), '3,8', 'the corrected per-day amounts are persisted');
+  var audP = (await pool.query("SELECT details FROM audit_logs WHERE entity_id = 61 ORDER BY id DESC LIMIT 1")).rows[0];
+  var detP = typeof audP.details === 'string' ? JSON.parse(audP.details) : audP.details;
+  ok(String(detP.retagged || '').indexOf('paid 8.0h → paid 3.0h') !== -1, 'the audit trail names the hours change  (got ' + JSON.stringify(detP.retagged) + ')');
+
+  console.log('== an approver cannot zero a paid day out ==');
+  await pool.query("UPDATE pto_requests SET status = 'pending' WHERE id = 61;");
+  var apC = await reqBody('POST', '/api/pto/requests/61/approve', { days: [
+    { date: d(95), kind: 'paid', hours: 0 }, { date: d(96), kind: 'paid', hours: 8 } ] });
+  eq(apC.status, 400, 'zero hours on a paid day is refused');
+  ok(String(apC.body.error).indexOf('positive number') !== -1, 'with the same message the employee gets');
+  eq((await pool.query('SELECT status FROM pto_requests WHERE id = 61')).rows[0].status, 'pending', 'and the request is untouched');
+
+  console.log('== hours ride through the balance wall and the context payload ==');
+  await pool.query("UPDATE users SET pto_balance_hours = 4 WHERE id = 7;");
+  var apD = await reqBody('POST', '/api/pto/requests/61/approve', { days: [
+    { date: d(95), kind: 'paid', hours: 8 }, { date: d(96), kind: 'paid', hours: 8 } ] });
+  eq(apD.status, 400, '16 hours is refused against a 4-hour balance');
+  var ctxP = await req('GET', '/api/pto/requests/61/context');
+  eq(ctxP.status, 200, 'context loads');
+  eq(ctxP.body.request.days.map(function (x) { return x.hours; }).join(','), '3,8', 'and hands the approver the per-day amounts');
+  var apE = await reqBody('POST', '/api/pto/requests/61/approve', { days: [
+    { date: d(95), kind: 'paid', hours: 2 }, { date: d(96), kind: 'paid', hours: 2 } ] });
+  eq(apE.status, 200, 'cutting the hours rescues it, exactly as re-tagging does');
+  eq(Number((await pool.query('SELECT pto_balance_hours b FROM users WHERE id = 7')).rows[0].b), 0, 'landing exactly at zero');
+
+  console.log('== cancelling a partial day restores the partial amount ==');
+  var canP = await req('POST', '/api/pto/requests/61/cancel');
+  eq(canP.status, 200, 'cancel accepted');
+  eq(Number((await pool.query('SELECT pto_balance_hours b FROM users WHERE id = 7')).rows[0].b), 4, 'the 4 hours come back, not 16');
+
+
+  console.log('== a retroactive log spreads its hours across the days it covers ==');
+  await pool.query('DELETE FROM pto_request_days; DELETE FROM pto_requests; DELETE FROM pto_ledger; DELETE FROM shifts;');
+  await pool.query('UPDATE users SET pto_balance_hours = 24 WHERE id = 7;');
+  var logA = await reqBody('POST', '/api/pto/log', { user_id: 7, start_date: d(-10), end_date: d(-8), kind: 'paid', hours: 11, reason: 'Called out, converting to PTO' });
+  eq(logA.status, 200, 'logged after the fact');
+  var lrow = (await pool.query('SELECT hours FROM pto_requests WHERE id = $1', [logA.body.request_id])).rows[0];
+  eq(Number(lrow.hours), 11, 'the request carries the total that was entered');
+  var lday = (await pool.query('SELECT hours FROM pto_request_days WHERE request_id = $1 ORDER BY day_date', [logA.body.request_id])).rows.map(function (x) { return Number(x.hours); });
+  eq(lday.reduce(function (a, b) { return Math.round((a + b) * 100) / 100; }, 0), 11, 'and the per-day amounts add back up to it');
+  ok(lday.every(function (x) { return x >= 0; }), 'with no day coming out negative');
+  eq(Number((await pool.query('SELECT pto_balance_hours b FROM users WHERE id = 7')).rows[0].b), 13, 'the balance is docked once, by the total');
+  var logB = await reqBody('POST', '/api/pto/log', { user_id: 7, start_date: d(-20), end_date: d(-20), kind: 'paid', hours: 0.5, reason: 'Half an hour short' });
+  eq(logB.status, 200, 'a half-hour log is legal');
+  eq(Number((await pool.query('SELECT hours FROM pto_request_days WHERE request_id = $1', [logB.body.request_id])).rows[0].hours), 0.5, 'stored on the day');
+
+
+  console.log('== commission staff take whole days, never part days ==');
+  // Christopher (id 3) is commission: his balance is reported in days, so an
+  // hours-level deduction has nowhere to live on his record.
+  await pool.query('DELETE FROM pto_request_days; DELETE FROM pto_requests; DELETE FROM pto_ledger; DELETE FROM shifts;');
+  await pool.query('UPDATE users SET pto_balance_hours = 40 WHERE id = 3;');
+  CURRENT_USER = { id: 3, name: 'Christopher Benson', role: 'employee', isOwner: false };
+  var comA = await reqBody('POST', '/api/pto/requests', { type: 'Vacation', days: [{ date: d(100), kind: 'paid', hours: 3 }] });
+  eq(comA.status, 400, 'a 3-hour ask from a commission employee is refused');
+  ok(String(comA.body.error).indexOf('whole days') !== -1, 'and says why');
+  eq((await pool.query('SELECT COUNT(*)::int c FROM pto_requests')).rows[0].c, 0, 'nothing was written');
+  var comB = await reqBody('POST', '/api/pto/requests', { type: 'Vacation', days: [{ date: d(100), kind: 'paid' }] });
+  eq(comB.status, 200, 'a whole day goes through as it always did');
+  eq(Number(comB.body.hours), 8, 'costing one full day');
+  var comC = await reqBody('POST', '/api/pto/requests', { type: 'Vacation', days: [{ date: d(101), kind: 'paid', hours: 8 }] });
+  eq(comC.status, 200, 'an explicit full day is fine too');
+  var comD = await reqBody('POST', '/api/pto/requests', { type: 'Vacation', days: [
+    { date: d(102), kind: 'paid' }, { date: d(103), kind: 'paid', hours: 6 } ] });
+  eq(comD.status, 400, 'one part day anywhere in the request is enough to refuse it');
+
+  console.log('== and an approver cannot cut a commission day to part of one ==');
+  CURRENT_USER = { id: 1, name: 'Ada Admin', role: 'admin', isOwner: true };
+  var comReq = comB.body.id;
+  var comE = await reqBody('POST', '/api/pto/requests/' + comReq + '/approve', { days: [{ date: d(100), kind: 'paid', hours: 4 }] });
+  eq(comE.status, 400, 'the approver is held to the same rule');
+  ok(String(comE.body.error).indexOf('whole days') !== -1, 'with the same explanation');
+  eq((await pool.query('SELECT status FROM pto_requests WHERE id = $1', [comReq])).rows[0].status, 'pending', 'and the request is untouched');
+  var comF = await reqBody('POST', '/api/pto/requests/' + comReq + '/approve', { days: [{ date: d(100), kind: 'unpaid' }] });
+  eq(comF.status, 200, 're-classifying the whole day is still allowed');
+  eq(Number(comF.body.hours), 0, 'and costs nothing');
+  eq(Number((await pool.query('SELECT pto_balance_hours b FROM users WHERE id = 3')).rows[0].b), 40, 'the commission balance is untouched');
+
+  console.log('== an hourly employee is not caught by the commission rule ==');
+  CURRENT_USER = { id: 7, name: 'Tara Ridge', role: 'employee', isOwner: false };
+  await pool.query('UPDATE users SET pto_balance_hours = 24 WHERE id = 7;');
+  var hrlyOK = await reqBody('POST', '/api/pto/requests', { type: 'Vacation', days: [{ date: d(105), kind: 'paid', hours: 3 }] });
+  eq(hrlyOK.status, 200, 'the same 3-hour ask goes through for an hourly person');
+  eq(Number(hrlyOK.body.hours), 3, 'at three hours');
+  CURRENT_USER = { id: 1, name: 'Ada Admin', role: 'admin', isOwner: true };
 
   console.log('== a non-approver still cannot re-tag ==');
   await freshReq(55);

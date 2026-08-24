@@ -1278,6 +1278,10 @@ async function initDB() {
     );
     await client.query('CREATE INDEX IF NOT EXISTS idx_pto_request_days_request ON pto_request_days(request_id);');
     await client.query('CREATE INDEX IF NOT EXISTS idx_pto_request_days_date ON pto_request_days(day_date);');
+    // Partial days: hours a single PTO day costs, in 0.1-hour steps. NULL on every
+    // row written before partials shipped, and routes/pto.js reads NULL as a full
+    // paid day (8) — so old requests keep costing exactly what they always did.
+    await client.query('ALTER TABLE pto_request_days ADD COLUMN IF NOT EXISTS hours NUMERIC(6,2);');
     // Neutral schedule marker for a regular scheduled day off (NOT PTO). Ensured by
     // name so we never depend on a hardcoded id; pto.js resolves the id by name.
     await client.query("INSERT INTO shift_positions (name, color) SELECT 'Scheduled Off', '#6b7280' WHERE NOT EXISTS (SELECT 1 FROM shift_positions WHERE name = 'Scheduled Off');");

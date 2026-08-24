@@ -36,7 +36,7 @@ var APPROVALS = [
 var CONTEXT = {
   request: { id: 10, user_id: 2, start_date: d(2), end_date: d(3), type: 'Vacation', paid: true, status: 'pending',
     hours: 16, business_days: 2, paid_days: 2, unpaid_days: 0, off_days: 0, created_at: d(-5),
-    days: [{ date: d(2), kind: 'paid' }, { date: d(3), kind: 'unpaid' }], tier_label: 'Direct supervisor' },
+    days: [{ date: d(2), kind: 'paid', hours: 8 }, { date: d(3), kind: 'unpaid', hours: 0 }], tier_label: 'Direct supervisor' },
   employee: { id: 2, name: 'Kayleigh Young', title: 'Tech', pay_type: 'hourly', hire_date: '2023-03-01',
     tenure_years: 3, exempt: false, accrues: true, employment_type: 'full_time',
     accrual_monthly_hours: 10, accrual_days_per_year: 15, eligible_date: '2023-05-30', eligible_now: true },
@@ -440,7 +440,7 @@ async function run() {
   sels[0].value = 'off';
   sels[0].dispatchEvent(new w.Event('change', { bubbles: true }));
   var note = md.querySelector('#pto-retag-note').textContent;
-  has(note, '1 day re-classified', 'the change is counted');
+  has(note, '1 day changed', 'the change is counted');
   has(note, 'paid', 'naming what it was');
   has(note, 'off', 'and what it became');
   has(note, '16.0 hrs', 'the old cost is shown');
@@ -495,6 +495,188 @@ async function run() {
   eq(mro.querySelector('#pto-retag-note'), null, 'and no change summary');
   w.document.querySelector('#pto-dt-close').dispatchEvent(new w.MouseEvent('click', { bubbles: true }));
   APPROVALS[0].status = 'pending';
+
+
+  console.log('== dialog: the hours on a paid day are editable ==');
+  w.__approveCalls = [];
+  // Re-render: the read-only case above left a cancel_requested row on screen.
+  w.ptoGo('approvals');
+  for (var th = 0; th < 6; th++) await new Promise(function (r) { setTimeout(r, 0); });
+  var rrH = w.document.getElementById('content').querySelector('tr[data-pto-open="10"]');
+  rrH.children[0].dispatchEvent(new w.MouseEvent('click', { bubbles: true }));
+  await new Promise(function (r) { setTimeout(r, 0); });
+  var mh = w.document.querySelector('.pto-mask');
+  var hboxes = mh.querySelectorAll('[data-retaghrs]');
+  eq(hboxes.length, 2, 'one hours box per requested day');
+  eq(hboxes[0].value, '8', 'seeded from the submitted amount');
+  eq(hboxes[0].getAttribute('step'), '0.1', 'stepping in tenths of an hour');
+  eq(hboxes[0].getAttribute('min'), '0.1', 'and never below a tenth');
+  ok(hboxes[1].className.indexOf('hidden') !== -1, 'the unpaid day has no amount to show');
+
+  hboxes[0].value = '3';
+  hboxes[0].dispatchEvent(new w.Event('input', { bubbles: true }));
+  var hnote = mh.querySelector('#pto-retag-note').textContent;
+  has(hnote, '1 day changed', 'an hours edit counts as a change');
+  has(hnote, 'paid 8.0h', 'naming what it was');
+  has(hnote, 'paid 3.0h', 'and what it became');
+  has(hnote, '3.0 hrs', 'the new cost is restated');
+  eq(mh.querySelector('#pto-dt-ok').textContent, 'Approve with changes', 'and the button says so');
+  ok(hboxes[0].className.indexOf('moved') !== -1, 'the box is marked as moved');
+
+  console.log('== a blank amount is never sent as an approval ==');
+  hboxes[0].value = '';
+  hboxes[0].dispatchEvent(new w.Event('input', { bubbles: true }));
+  has(mh.querySelector('#pto-retag-note').textContent, 'Enter hours greater than 0', 'the approver is told to fix it');
+  eq(mh.querySelector('#pto-dt-ok').textContent, 'Approve', 'and no change is staged');
+
+  hboxes[0].value = '3.5';
+  hboxes[0].dispatchEvent(new w.Event('input', { bubbles: true }));
+  mh.querySelector('#pto-dt-ok').dispatchEvent(new w.MouseEvent('click', { bubbles: true }));
+  eq(w.__approveCalls.length, 1, 'approve fired');
+  var hcall = w.__approveCalls[0][2];
+  ok(Array.isArray(hcall), 'with the day payload');
+  eq(hcall[0].hours, 3.5, 'carrying the corrected hours');
+  eq(hcall[0].kind, 'paid', 'on a day that is still paid');
+  eq(hcall[1].hours, 0, 'and nothing on the unpaid day');
+
+  console.log('== flipping a day off hides its amount and drops it from the cost ==');
+  rrH.children[0].dispatchEvent(new w.MouseEvent('click', { bubbles: true }));
+  await new Promise(function (r) { setTimeout(r, 0); });
+  var mh2 = w.document.querySelector('.pto-mask');
+  var sel2 = mh2.querySelectorAll('[data-retag]')[0];
+  var box2 = mh2.querySelectorAll('[data-retaghrs]')[0];
+  sel2.value = 'off';
+  sel2.dispatchEvent(new w.Event('change', { bubbles: true }));
+  ok(box2.className.indexOf('hidden') !== -1, 'the amount box is hidden on a day off');
+  has(mh2.querySelector('#pto-retag-note').textContent, '0.0 hrs', 'and the request costs nothing');
+  w.document.querySelector('#pto-dt-close').dispatchEvent(new w.MouseEvent('click', { bubbles: true }));
+
+  console.log('== a decided part day still shows how long it was ==');
+  APPROVALS[0].status = 'approved';
+  CONTEXT.request.status = 'approved';
+  CONTEXT.request.days = [{ date: d(2), kind: 'paid', hours: 3 }, { date: d(3), kind: 'unpaid', hours: 0 }];
+  w.ptoGo('approvals');
+  for (var tp = 0; tp < 6; tp++) await new Promise(function (r) { setTimeout(r, 0); });
+  var rowP = w.document.getElementById('content').querySelector('tr[data-pto-open="10"]');
+  rowP.children[0].dispatchEvent(new w.MouseEvent('click', { bubbles: true }));
+  await new Promise(function (r) { setTimeout(r, 0); });
+  var mp = w.document.querySelector('.pto-mask');
+  eq(mp.querySelectorAll('[data-retaghrs]').length, 0, 'no editable amounts on a decided request');
+  var tagTxt = Array.prototype.map.call(mp.querySelectorAll('.pto-day-tag'), function (x) { return x.textContent; }).join('|');
+  has(tagTxt, '3.0h', 'the part day is labelled with its length');
+  has(mp.querySelector('.pto-reqline').textContent, '1 part day', 'and the summary line calls it a part day');
+  w.document.querySelector('#pto-dt-close').dispatchEvent(new w.MouseEvent('click', { bubbles: true }));
+  APPROVALS[0].status = 'pending';
+  CONTEXT.request.status = 'pending';
+  CONTEXT.request.days = [{ date: d(2), kind: 'paid', hours: 8 }, { date: d(3), kind: 'unpaid', hours: 0 }];
+
+  console.log('== request form: hours per day ==');
+  var ME = { pay_type: 'hourly', balance_hours: 12, accrual_monthly_hours: 10, tenure_years: 3,
+    eligible_now: true, eligible_date: '2023-05-30', requests: [] };
+  var apiReal = w.api;
+  var SUBMITTED = null;
+  w.api = async function (method, url, body) {
+    if (url === '/pto/me') return JSON.parse(JSON.stringify(ME));
+    if (url === '/pto/requests' && method === 'POST') { SUBMITTED = body; return { id: 1 }; }
+    return apiReal(method, url, body);
+  };
+  w.ptoGo('me');
+  for (var tm = 0; tm < 6; tm++) await new Promise(function (r) { setTimeout(r, 0); });
+  var hostMe = w.document.getElementById('content');
+  var sdEl = hostMe.querySelector('#pto-start'), edEl = hostMe.querySelector('#pto-end');
+  sdEl.value = d(10); edEl.value = d(11);
+  sdEl.dispatchEvent(new w.Event('change', { bubbles: true }));
+  var boxes = hostMe.querySelectorAll('.pto-dayhrs');
+  eq(boxes.length, 2, 'an hours box per selected day');
+  eq(boxes[0].value, '8', 'defaulting to a full day');
+  eq(boxes[0].getAttribute('step'), '0.1', 'in tenths of an hour');
+  has(hostMe.querySelector('#pto-preview').textContent, '16.0 hrs', 'two full days cost 16');
+
+  boxes[0].value = '3';
+  boxes[0].dispatchEvent(new w.Event('input', { bubbles: true }));
+  var pvTxt = hostMe.querySelector('#pto-preview').textContent;
+  has(pvTxt, '11.0 hrs', 'a 3-hour day makes it 11');
+  has(pvTxt, '1.0 hrs', 'and the balance after is 12 - 11');
+  has(pvTxt, '1 partial day', 'the part day is called out');
+  has(pvTxt, 'still counts as a day away', 'with what that means for the schedule');
+  has(pvTxt, 'Direct supervisor', 'and the routing is unchanged by the shorter day');
+
+  boxes[0].value = '';
+  boxes[0].dispatchEvent(new w.Event('input', { bubbles: true }));
+  has(hostMe.querySelector('#pto-preview').textContent, 'Enter hours greater than 0', 'a blank amount is flagged');
+  hostMe.querySelector('#pto-submit').dispatchEvent(new w.MouseEvent('click', { bubbles: true }));
+  await new Promise(function (r) { setTimeout(r, 0); });
+  eq(SUBMITTED, null, 'and nothing is submitted while it is blank');
+  has(hostMe.querySelector('#pto-req-err').textContent, 'Enter hours greater than 0', 'the error says which day');
+
+  boxes[0].value = '3.5';
+  boxes[0].dispatchEvent(new w.Event('input', { bubbles: true }));
+  var kindSel = hostMe.querySelectorAll('.pto-daysel')[1];
+  kindSel.value = 'off';
+  kindSel.dispatchEvent(new w.Event('change', { bubbles: true }));
+  ok(hostMe.querySelectorAll('.pto-dayhrs')[1].className.indexOf('hidden') !== -1, 'a scheduled-off day shows no amount');
+  ok(hostMe.querySelectorAll('.pto-hrsunit')[1].className.indexOf('hidden') !== -1, 'and no hrs label beside it');
+  has(src, '.pto-hrsunit.hidden', 'the hidden state has a rule to hide it');
+  has(hostMe.querySelector('#pto-preview').textContent, '3.5 hrs', 'and costs nothing itself');
+  hostMe.querySelector('#pto-submit').dispatchEvent(new w.MouseEvent('click', { bubbles: true }));
+  await new Promise(function (r) { setTimeout(r, 0); });
+  ok(SUBMITTED !== null, 'the request is submitted');
+  eq(SUBMITTED.days.length, 2, 'both days are sent');
+  eq(SUBMITTED.days[0].hours, 3.5, 'the paid day carries its hours');
+  eq(SUBMITTED.days[1].hours, 0, 'and the day off carries none');
+  w.api = apiReal;
+
+
+  console.log('== commission staff see no hours boxes at all ==');
+  // The approval dialog first: same request, an employee tracked in days.
+  var savedPt = CONTEXT.employee.pay_type;
+  CONTEXT.employee.pay_type = 'commission';
+  CONTEXT.request.days = [{ date: d(2), kind: 'paid', hours: 8 }, { date: d(3), kind: 'paid', hours: 8 }];
+  w.ptoGo('approvals');
+  for (var tc = 0; tc < 6; tc++) await new Promise(function (r) { setTimeout(r, 0); });
+  w.document.getElementById('content').querySelector('tr[data-pto-open="10"]').children[0]
+    .dispatchEvent(new w.MouseEvent('click', { bubbles: true }));
+  await new Promise(function (r) { setTimeout(r, 0); });
+  var mc = w.document.querySelector('.pto-mask');
+  eq(mc.querySelectorAll('[data-retaghrs]').length, 0, 'no hours boxes for a commission employee');
+  eq(mc.querySelectorAll('[data-retag]').length, 2, 'but the paid/unpaid/off selectors are still there');
+  has(mc.textContent, 'tracked in whole days', 'and the dialog says why');
+  // Re-classifying still works and still restates the cost, in days.
+  var csel = mc.querySelectorAll('[data-retag]')[0];
+  csel.value = 'off';
+  csel.dispatchEvent(new w.Event('change', { bubbles: true }));
+  has(mc.querySelector('#pto-retag-note').textContent, '1 day changed', 'a re-classification is still counted');
+  w.document.querySelector('#pto-dt-close').dispatchEvent(new w.MouseEvent('click', { bubbles: true }));
+  CONTEXT.employee.pay_type = savedPt;
+  CONTEXT.request.days = [{ date: d(2), kind: 'paid', hours: 8 }, { date: d(3), kind: 'unpaid', hours: 0 }];
+
+  // Then the request form for a commission employee.
+  var apiReal2 = w.api;
+  var SUBMITTED2 = null;
+  var MEC = { pay_type: 'commission', balance_hours: 40, accrual_monthly_hours: 10, tenure_years: 3,
+    eligible_now: true, eligible_date: '2023-05-30', requests: [] };
+  w.api = async function (method, url, body) {
+    if (url === '/pto/me') return JSON.parse(JSON.stringify(MEC));
+    if (url === '/pto/requests' && method === 'POST') { SUBMITTED2 = body; return { id: 2 }; }
+    return apiReal2(method, url, body);
+  };
+  w.ptoGo('me');
+  for (var tc2 = 0; tc2 < 6; tc2++) await new Promise(function (r) { setTimeout(r, 0); });
+  var hostC = w.document.getElementById('content');
+  has(hostC.textContent, 'tracked in whole days', 'the form says so up front');
+  lacks(hostC.innerHTML, 'a tenth of an hour', 'and does not offer part days');
+  var sdC = hostC.querySelector('#pto-start'), edC = hostC.querySelector('#pto-end');
+  sdC.value = d(10); edC.value = d(11);
+  sdC.dispatchEvent(new w.Event('change', { bubbles: true }));
+  eq(hostC.querySelectorAll('.pto-dayhrs').length, 0, 'no hours boxes in the grid');
+  eq(hostC.querySelectorAll('.pto-daysel').length, 2, 'the paid/unpaid/off selectors remain');
+  has(hostC.querySelector('#pto-preview').textContent, '2.0 days', 'and the cost reads in days');
+  hostC.querySelector('#pto-submit').dispatchEvent(new w.MouseEvent('click', { bubbles: true }));
+  await new Promise(function (r) { setTimeout(r, 0); });
+  ok(SUBMITTED2 !== null, 'the request submits');
+  eq(SUBMITTED2.days[0].hours, 8, 'each paid day goes up as a full day');
+  eq(SUBMITTED2.days[1].hours, 8, 'both of them');
+  w.api = apiReal2;
 
   console.log('== no backticks in the shipped file ==');
   eq(src.indexOf('`'), -1, 'public/js/pto.js contains no backtick');
