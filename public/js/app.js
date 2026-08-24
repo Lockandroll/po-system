@@ -2,7 +2,7 @@
 // public/sw.js (the only thing bumped each deploy) — the badge asks the active
 // service worker for it at runtime. This value is just the fallback shown when no
 // service worker is available (e.g. very first visit before it installs).
-var APP_VERSION = 'v403';
+var APP_VERSION = 'v405';
 var _resolvedAppVersion = null;
 
 // Ask the active service worker for its CACHE_VERSION (without the 'nova-' prefix).
@@ -23177,7 +23177,19 @@ function tcInjectStyles(){
     '.tc-table{width:100%;border-collapse:collapse;font-size:14px}'+
     '.tc-table th{text-align:left;color:var(--text-muted-color,#71717a);font-size:11px;text-transform:uppercase;padding:7px 8px;border-bottom:1px solid var(--border,#2c2c2c)}'+
     '.tc-table td{padding:8px;border-bottom:1px solid var(--border,#2c2c2c)}'+
-    '.tc-live{display:inline-block;width:8px;height:8px;border-radius:50%;background:#22c55e;margin-right:6px}';
+    '.tc-live{display:inline-block;width:8px;height:8px;border-radius:50%;background:#22c55e;margin-right:6px}'+
+    // Break sub-rows sit UNDER their day and are visually subordinate to it:
+    // hairline separator, indented label, slightly recessed background.
+    '.tc-brkrow>td{border-bottom:1px dotted var(--border,#2c2c2c);background:rgba(255,255,255,.018);font-size:13px;padding-top:6px;padding-bottom:6px}'+
+    '.tc-brkrow:last-child>td{border-bottom:1px solid var(--border,#2c2c2c)}'+
+    '.tc-brklbl{padding-left:22px !important;color:var(--text-muted-color,#a1a1aa);white-space:nowrap}'+
+    '.tc-brkarrow{color:var(--text-muted-color,#71717a);margin-right:5px}'+
+    '.tc-brksel{height:32px;padding:4px 8px;font-size:12px}'+
+    '.tc-brkrow .tc-dt{width:172px;height:32px;font-size:12px}'+
+    '.tc-brkrow .tc-savebtn{height:32px;padding:0 12px;font-size:12px}'+
+    '.tc-delbtn{border:1px solid var(--border,#2c2c2c);background:transparent;color:#ef4444;border-radius:8px;height:32px;padding:0 10px;font-weight:800;font-size:14px;line-height:1;cursor:pointer}'+
+    '.tc-delbtn:hover{background:#ef4444;color:#111;border-color:#ef4444}'+
+    '.tc-unpaid{color:#facc15;font-weight:700}';
   document.head.appendChild(el);
 }
 function tcInjectMgrStyles(){
@@ -23385,10 +23397,33 @@ async function tcBreak(type){
   tcReload();
 }
 
-// Regular / Overtime / Holiday / Vacation summary chips (minutes in, H:MM out).
-function tcBreakdownHtml(bd){
+// ---- Break helpers ---------------------------------------------------------
+// One place decides what a break is worth, so the day cell, the sub-row, the
+// week chips and the deduction can never disagree with each other.
+function tcBreakMins(b){
+  if(!b||!b.break_end_at)return 0;
+  return Math.max(0,Math.round((new Date(b.break_end_at)-new Date(b.break_start_at))/60000));
+}
+function tcBreakUnpaid(b){return !b||b.type!=='paid';}
+// 'unpaid' is what the punch screen calls Lunch and 'paid' is what it calls a
+// Break — keep the words the employee actually tapped.
+function tcBreakLabel(b){return tcBreakUnpaid(b)?'Lunch (unpaid)':'Break (paid)';}
+function tcSortedBreaks(e){
+  return ((e&&e.breaks)||[]).slice().sort(function(a,b){return new Date(a.break_start_at)-new Date(b.break_start_at);});
+}
+function tcEntryPaidBreak(e){var p=0;tcSortedBreaks(e).forEach(function(b){if(!tcBreakUnpaid(b))p+=tcBreakMins(b);});return p;}
+
+// Regular / Overtime / Holiday / Vacation summary chips (minutes in, H:MM out),
+// plus Lunch / Breaks totals when the week's entries are handed in.
+function tcBreakdownHtml(bd,entries){
   if(!bd)return '';
   var items=[['Regular',bd.regular,'#22c55e'],['Overtime',bd.overtime,'#f59e0b'],['Holiday',bd.holiday,'#a855f7'],['Vacation',bd.vacation,'#38bdf8']];
+  if(entries){
+    var lunch=0,paidbrk=0;
+    entries.forEach(function(e){lunch+=tcEntryUnpaid(e);paidbrk+=tcEntryPaidBreak(e);});
+    items.push(['Lunch',lunch,'#facc15']);
+    items.push(['Breaks',paidbrk,'#94a3b8']);
+  }
   var chips=items.map(function(it){
     return '<div style="flex:1;min-width:92px;background:var(--card-bg-2,#202020);border:1px solid var(--border,#2c2c2c);border-radius:10px;padding:8px 10px">'+
       '<div style="font-size:10px;text-transform:uppercase;letter-spacing:.04em;color:var(--text-muted-color,#71717a)">'+it[0]+'</div>'+
@@ -23404,8 +23439,9 @@ async function tcRenderMySheet(body){
   _tcWeek=data.from;
   var ap=data.approval||{};
   var rows=(data.entries||[]).map(function(e){
-    var unpaid=0;(e.breaks||[]).forEach(function(b){if(b.type==='unpaid'&&b.break_end_at)unpaid+=Math.round((new Date(b.break_end_at)-new Date(b.break_start_at))/60000);});
-    return '<tr><td>'+tcDay(e.clock_in_at)+'</td><td>'+tcClock(e.clock_in_at)+'</td><td>'+tcClock(e.clock_out_at)+'</td><td>'+(unpaid?unpaid+'m':'')+'</td><td style="text-align:right">'+(e.worked_minutes!=null?tcHM(tcRoundQ(e.worked_minutes)):'open')+'</td></tr>';
+    var unpaid=tcEntryUnpaid(e);
+    return '<tr><td>'+tcDay(e.clock_in_at)+'</td><td>'+tcClock(e.clock_in_at)+'</td><td>'+tcClock(e.clock_out_at)+'</td><td>'+(unpaid?'<span class="tc-unpaid">'+unpaid+'m</span>':'<span class="tc-dim">&mdash;</span>')+'</td><td style="text-align:right">'+(e.worked_minutes!=null?tcHM(tcRoundQ(e.worked_minutes)):'open')+'</td></tr>'+
+      tcBreakRowsHtml(e,5,false);
   }).join('')||'<tr><td colspan="5" class="tc-dim">No punches this week.</td></tr>';
   var total=(data.entries||[]).reduce(function(s,e){return s+tcRoundQ(e.worked_minutes||0);},0);
   var st=ap.status||'open';
@@ -23423,7 +23459,7 @@ async function tcRenderMySheet(body){
         '<div style="font-size:22px;font-weight:800">'+tcHM(total)+'</div>'+
       '</div>'+
       '<table class="tc-table"><thead><tr><th>Day</th><th>In</th><th>Out</th><th>Unpaid</th><th style="text-align:right">Worked</th></tr></thead><tbody>'+rows+'</tbody></table>'+
-      tcBreakdownHtml(data.breakdown)+
+      tcBreakdownHtml(data.breakdown,data.entries||[])+
       '<div style="margin-top:14px;text-align:right">'+right+'</div>'+
     '</div>';
 }
@@ -23470,7 +23506,62 @@ async function tcReviewFlag(id){
 // ---- datetime helpers for manager corrections (browser-local == app TZ) ----
 function tcInputVal(ts){if(!ts)return '';var d=new Date(ts);if(isNaN(d.getTime()))return '';var p=function(n){return String(n).padStart(2,'0');};return d.getFullYear()+'-'+p(d.getMonth()+1)+'-'+p(d.getDate())+'T'+p(d.getHours())+':'+p(d.getMinutes());}
 function tcInputToIso(v){if(!v)return null;var d=new Date(v);return isNaN(d.getTime())?null:d.toISOString();}
-function tcEntryUnpaid(e){var u=0;(e.breaks||[]).forEach(function(b){if(b.type==='unpaid'&&b.break_end_at)u+=Math.round((new Date(b.break_end_at)-new Date(b.break_start_at))/60000);});return u;}
+function tcEntryUnpaid(e){var u=0;tcSortedBreaks(e).forEach(function(b){if(tcBreakUnpaid(b))u+=tcBreakMins(b);});return u;}
+
+// Which day currently has its 'add a break' form open (manager view only).
+var _tcAddBrkEntry=null;
+// Indented rows listing every lunch/break under its day. cols is the parent
+// table's column count so the read-only variant lines up; editable turns the
+// times into inputs and adds Save / remove / add controls.
+function tcBreakRowsHtml(e,cols,editable){
+  var out=tcSortedBreaks(e).map(function(b){
+    var unpaid=tcBreakUnpaid(b);
+    var open=!b.break_end_at;
+    var mins=tcBreakMins(b);
+    var unpaidCell=open?'<span class="tc-dim">running</span>'
+      :(unpaid?'<span class="tc-unpaid">'+mins+'m</span>':'<span class="tc-dim">&mdash;</span>');
+    // The Worked column says what this break DID to the day's total.
+    var effect=open?'<span class="tc-dim">on break now</span>'
+      :(unpaid?'<span class="tc-unpaid">&minus;'+tcHM(mins)+'</span>':'<span class="tc-dim">'+mins+'m paid</span>');
+    if(!editable){
+      return '<tr class="tc-brkrow"><td class="tc-brklbl"><span class="tc-brkarrow">&#8627;</span>'+tcBreakLabel(b)+'</td>'+
+        '<td>'+tcClock(b.break_start_at)+'</td>'+
+        '<td>'+(b.break_end_at?tcClock(b.break_end_at):'<span class="tc-dim">&mdash;</span>')+'</td>'+
+        '<td>'+unpaidCell+'</td>'+
+        '<td style="text-align:right">'+effect+'</td>'+
+        (cols>5?'<td></td>':'')+'</tr>';
+    }
+    return '<tr class="tc-brkrow">'+
+      '<td class="tc-brklbl"><span class="tc-brkarrow">&#8627;</span>'+
+        '<select id="tcbt-'+b.id+'" class="tc-inp tc-brksel">'+
+          '<option value="unpaid"'+(unpaid?' selected':'')+'>Lunch (unpaid)</option>'+
+          '<option value="paid"'+(unpaid?'':' selected')+'>Break (paid)</option></select></td>'+
+      '<td><input type="datetime-local" id="tcbs-'+b.id+'" value="'+tcInputVal(b.break_start_at)+'" class="tc-inp tc-dt"></td>'+
+      '<td><input type="datetime-local" id="tcbe-'+b.id+'" value="'+tcInputVal(b.break_end_at)+'" class="tc-inp tc-dt"></td>'+
+      '<td>'+unpaidCell+'</td>'+
+      '<td style="text-align:right">'+effect+'</td>'+
+      '<td style="text-align:right;white-space:nowrap"><button class="tc-savebtn" onclick="tcSaveBreak('+b.id+')">Save</button> '+
+        '<button class="tc-delbtn" title="Remove this break" onclick="tcDeleteBreak('+b.id+')">&times;</button></td></tr>';
+  }).join('');
+  if(!editable)return out;
+  if(_tcAddBrkEntry===e.id){
+    out+='<tr class="tc-brkrow">'+
+      '<td class="tc-brklbl"><span class="tc-brkarrow">&#8627;</span>'+
+        '<select id="tcnbt-'+e.id+'" class="tc-inp tc-brksel">'+
+          '<option value="unpaid">Lunch (unpaid)</option>'+
+          '<option value="paid">Break (paid)</option></select></td>'+
+      '<td><input type="datetime-local" id="tcnbs-'+e.id+'" class="tc-inp tc-dt"></td>'+
+      '<td><input type="datetime-local" id="tcnbe-'+e.id+'" class="tc-inp tc-dt"></td>'+
+      '<td colspan="2" class="tc-dim" style="text-align:right">Must fall inside this punch</td>'+
+      '<td style="text-align:right;white-space:nowrap"><button class="tc-savebtn" onclick="tcCreateBreak('+e.id+')">Add</button> '+
+        '<button class="tc-delbtn" title="Cancel" onclick="tcCancelAddBreak()">&times;</button></td></tr>';
+  }else{
+    out+='<tr class="tc-brkrow"><td class="tc-brklbl"><span class="tc-brkarrow">&#8627;</span>'+
+      '<button class="tc-linkbtn" style="font-size:12px" onclick="tcAddBreakRow('+e.id+')">+ Add lunch or break</button></td>'+
+      '<td colspan="'+(cols-1)+'"></td></tr>';
+  }
+  return out;
+}
 
 function tcSheetsHtml(sheet){
   var ws=sheet.weekStart;
@@ -23510,16 +23601,18 @@ function tcMgrDetailHtml(u,ws){
     var flag=(e.status==='auto_closed'||e.status==='flagged')?' <span class="tc-tag" style="background:rgba(234,179,8,.15);color:#facc15">'+(e.status==='auto_closed'?'auto-closed':'flagged')+'</span>':'';
     var worked=(e.worked_minutes!=null?tcHM(tcRoundQ(e.worked_minutes)):'<span class="tc-dim">open</span>');
     if(locked){
-      return '<tr><td>'+tcDay(e.clock_in_at)+flag+'</td><td>'+tcClock(e.clock_in_at)+'</td><td>'+tcClock(e.clock_out_at)+'</td><td>'+(unpaid?unpaid+'m':'&mdash;')+'</td><td style="text-align:right">'+worked+'</td><td></td></tr>';
+      return '<tr><td>'+tcDay(e.clock_in_at)+flag+'</td><td>'+tcClock(e.clock_in_at)+'</td><td>'+tcClock(e.clock_out_at)+'</td><td>'+(unpaid?'<span class="tc-unpaid">'+unpaid+'m</span>':'&mdash;')+'</td><td style="text-align:right">'+worked+'</td><td></td></tr>'+
+        tcBreakRowsHtml(e,6,false);
     }
     return '<tr>'+
       '<td style="white-space:nowrap">'+tcDay(e.clock_in_at)+flag+'</td>'+
       '<td><input type="datetime-local" id="tcin-'+e.id+'" value="'+tcInputVal(e.clock_in_at)+'" class="tc-inp tc-dt"></td>'+
       '<td><input type="datetime-local" id="tcout-'+e.id+'" value="'+tcInputVal(e.clock_out_at)+'" class="tc-inp tc-dt"></td>'+
-      '<td>'+(unpaid?unpaid+'m':'&mdash;')+'</td>'+
+      '<td>'+(unpaid?'<span class="tc-unpaid">'+unpaid+'m</span>':'&mdash;')+'</td>'+
       '<td style="text-align:right;font-weight:700">'+worked+'</td>'+
       '<td style="text-align:right"><button class="tc-savebtn" onclick="tcSaveEntry('+e.id+')">Save</button></td>'+
-      '</tr>';
+      '</tr>'+
+      tcBreakRowsHtml(e,6,true);
   }).join('')||'<tr><td colspan="6" class="tc-dim" style="padding:16px 8px">No punches this week &mdash; use &ldquo;Add a missing punch&rdquo; below.</td></tr>';
   var act='';
   if(status==='emp_approved')act=u.canApprove?'<button class="tc-savebtn" onclick="tcMgrApprove('+u.user.id+',\''+ws+'\')">Approve week</button>':'<span class="tc-dim">awaiting their manager</span>';
@@ -23553,7 +23646,7 @@ function tcMgrDetailHtml(u,ws){
         '</div>'+
       '</div>'+
       '<table class="tc-table"><thead><tr><th>Day</th><th>In</th><th>Out</th><th>Unpaid</th><th style="text-align:right">Worked</th><th></th></tr></thead><tbody>'+rows+'</tbody></table>'+
-      tcBreakdownHtml(u.breakdown)+
+      tcBreakdownHtml(u.breakdown,u.entries||[])+
       '<div style="margin-top:16px;text-align:right">'+act+'</div>'+
     '</div>'+lockBanner+addCard;
 }
@@ -23593,6 +23686,51 @@ async function tcSaveEntry(id){
   try{await api('PATCH','/timeclock/entry/'+id,{clock_in_at:cin,clock_out_at:cout,reason:reason});}
   catch(e){await novaAlert(e.message);return;}
   tcSheetsReload();
+}
+// ---- Break corrections -----------------------------------------------------
+// Same contract as a punch correction: a reason is mandatory and the server
+// recomputes worked minutes, so we just re-render from what it gives back.
+async function tcSaveBreak(id){
+  var sEl=document.getElementById('tcbs-'+id),eEl=document.getElementById('tcbe-'+id),tEl=document.getElementById('tcbt-'+id);
+  if(!sEl)return;
+  var st=tcInputToIso(sEl.value);
+  if(!st){await novaAlert('A valid break start time is required.');return;}
+  var en=(eEl&&eEl.value)?tcInputToIso(eEl.value):null;
+  if(eEl&&eEl.value&&!en){await novaAlert('That break end time is not a valid time.');return;}
+  if(en&&new Date(en)<=new Date(st)){await novaAlert('The break end must be after the break start.');return;}
+  var reason=await novaPrompt('Reason for this break correction (required):','',{title:'Edit break',okText:'Save change'});
+  if(reason===null)return;
+  reason=String(reason).trim();
+  if(!reason){await novaAlert('A reason is required to correct a break.');return;}
+  try{await api('PATCH','/timeclock/break/'+id,{type:tEl?tEl.value:undefined,break_start_at:st,break_end_at:en,reason:reason});}
+  catch(e){await novaAlert(e.message);return;}
+  _tcAddBrkEntry=null;tcSheetsReload();
+}
+async function tcDeleteBreak(id){
+  var reason=await novaPrompt('Remove this break? The day\u2019s worked total will go back up. Reason (required):','',{title:'Remove break',okText:'Remove it'});
+  if(reason===null)return;
+  reason=String(reason).trim();
+  if(!reason){await novaAlert('A reason is required to remove a break.');return;}
+  try{await api('DELETE','/timeclock/break/'+id,{reason:reason});}
+  catch(e){await novaAlert(e.message);return;}
+  _tcAddBrkEntry=null;tcSheetsReload();
+}
+function tcAddBreakRow(entryId){_tcAddBrkEntry=entryId;tcSheetsReload();}
+function tcCancelAddBreak(){_tcAddBrkEntry=null;tcSheetsReload();}
+async function tcCreateBreak(entryId){
+  var sEl=document.getElementById('tcnbs-'+entryId),eEl=document.getElementById('tcnbe-'+entryId),tEl=document.getElementById('tcnbt-'+entryId);
+  var st=tcInputToIso(sEl&&sEl.value);
+  if(!st){await novaAlert('Enter when the break started.');return;}
+  var en=(eEl&&eEl.value)?tcInputToIso(eEl.value):null;
+  if(eEl&&eEl.value&&!en){await novaAlert('That break end time is not a valid time.');return;}
+  if(en&&new Date(en)<=new Date(st)){await novaAlert('The break end must be after the break start.');return;}
+  var reason=await novaPrompt('Why is this break being added (required)?','',{title:'Add break',okText:'Add it'});
+  if(reason===null)return;
+  reason=String(reason).trim();
+  if(!reason){await novaAlert('A reason is required to add a break.');return;}
+  try{await api('POST','/timeclock/entry/'+entryId+'/break',{type:tEl?tEl.value:'unpaid',break_start_at:st,break_end_at:en,reason:reason});}
+  catch(e){await novaAlert(e.message);return;}
+  _tcAddBrkEntry=null;tcSheetsReload();
 }
 async function tcAddEntry(uid){
   var inEl=document.getElementById('tcadd-in'),outEl=document.getElementById('tcadd-out'),rsnEl=document.getElementById('tcadd-rsn');

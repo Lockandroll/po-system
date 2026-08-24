@@ -470,6 +470,130 @@ router.post('/entry', requireAuth, requirePermission('manage_timeclock'), async 
   res.json(r.rows[0]);
 });
 
+// ---- Break corrections (manager) -------------------------------------------
+// The unpaid number on a timesheet is only meaningful if the breaks behind it
+// are correctable, so a break is edited exactly like a punch: reason required,
+// blocked once the week is submitted, audited, and the parent entry's
+// worked_minutes recomputed from the stored rows afterwards.
+async function recomputeEntry(entryId) {
+  const e = (await pool.query('SELECT * FROM time_entries WHERE id = $1', [entryId])).rows[0];
+  if (!e) return null;
+  const breaks = await loadBreaks(entryId);
+  const worked = workedMinutes(e, breaks);
+  await pool.query('UPDATE time_entries SET worked_minutes = $1, updated_at = NOW() WHERE id = $2', [worked, entryId]);
+  e.worked_minutes = worked;
+  return e;
+}
+// Shared guard: load the entry a break edit targets and refuse once its week is
+// submitted to payroll. Responds itself and returns null when it refuses.
+async function entryForBreakEdit(entryId, res) {
+  const e = (await pool.query('SELECT * FROM time_entries WHERE id = $1', [entryId])).rows[0];
+  if (!e) { res.status(404).json({ error: 'That punch no longer exists.' }); return null; }
+  if (await weekLocked(e.user_id, mondayOf(nyDateStr(new Date(e.clock_in_at))))) {
+    res.status(423).json({ error: 'That week is submitted. Reopen it before editing.' });
+    return null;
+  }
+  return e;
+}
+// A break has to sit inside the punch it belongs to, otherwise the unpaid
+// deduction can exceed the gross and the worked total silently floors at zero.
+function breakWindowError(entry, startIso, endIso) {
+  const start = new Date(startIso);
+  if (isNaN(start.getTime())) return 'A valid break start time is required.';
+  const end = endIso ? new Date(endIso) : null;
+  if (endIso && isNaN(end.getTime())) return 'That break end time is not a valid time.';
+  if (end && end <= start) return 'The break end must be after the break start.';
+  if (start < new Date(entry.clock_in_at)) return 'The break starts before this punch does.';
+  if (entry.clock_out_at) {
+    const out = new Date(entry.clock_out_at);
+    if (start >= out) return 'The break starts after this punch ends.';
+    if (end && end > out) return 'The break ends after this punch does.';
+  }
+  return null;
+}
+function breakMinutes(startIso, endIso) {
+  return endIso ? Math.max(0, minsBetween(startIso, endIso)) : null;
+}
+function breakType(v, fallback) {
+  if (v === 'paid' || v === 'unpaid') return v;
+  return fallback;
+}
+
+// Correct one break (times and/or paid-vs-unpaid). Requires a reason.
+router.patch('/break/:id', requireAuth, requirePermission('manage_timeclock'), async function (req, res) {
+  const id = parseInt(req.params.id, 10);
+  const reason = (req.body && req.body.reason || '').trim();
+  if (!reason) return res.status(400).json({ error: 'A correction reason is required.' });
+  const cur = (await pool.query('SELECT * FROM time_breaks WHERE id = $1', [id])).rows[0];
+  if (!cur) return res.status(404).json({ error: 'Break not found.' });
+  const entry = await entryForBreakEdit(cur.entry_id, res);
+  if (!entry) return;
+  const type = breakType(req.body.type, cur.type === 'paid' ? 'paid' : 'unpaid');
+  const start = req.body.break_start_at || cur.break_start_at;
+  // undefined = leave alone; null = clear it back to an open break.
+  const end = req.body.break_end_at !== undefined ? req.body.break_end_at : cur.break_end_at;
+  const bad = breakWindowError(entry, start, end);
+  if (bad) return res.status(400).json({ error: bad });
+  const mins = breakMinutes(start, end);
+  await pool.query(
+    'UPDATE time_breaks SET type = $1, break_start_at = $2, break_end_at = $3, minutes = $4 WHERE id = $5',
+    [type, start, end, mins, id]
+  );
+  const fresh = await recomputeEntry(cur.entry_id);
+  await logAudit({ entity_type: 'time_break', entity_id: id, action: 'correct', user_id: req.user.id, user_name: req.user.name,
+    details: { reason: reason, entry_id: cur.entry_id, for: entry.user_id,
+      before: { type: cur.type, start: cur.break_start_at, end: cur.break_end_at },
+      after: { type: type, start: start, end: end },
+      worked: { before: entry.worked_minutes, after: fresh ? fresh.worked_minutes : null } } });
+  res.json({ break: (await pool.query('SELECT * FROM time_breaks WHERE id = $1', [id])).rows[0], entry: fresh });
+});
+
+// Add a break someone forgot to punch. Requires a reason.
+router.post('/entry/:id/break', requireAuth, requirePermission('manage_timeclock'), async function (req, res) {
+  const entryId = parseInt(req.params.id, 10);
+  const reason = (req.body && req.body.reason || '').trim();
+  if (!reason) return res.status(400).json({ error: 'A reason is required to add a break.' });
+  const entry = await entryForBreakEdit(entryId, res);
+  if (!entry) return;
+  const type = breakType(req.body.type, 'unpaid');
+  const start = req.body.break_start_at;
+  const end = req.body.break_end_at || null;
+  if (!start) return res.status(400).json({ error: 'A break start time is required.' });
+  const bad = breakWindowError(entry, start, end);
+  if (bad) return res.status(400).json({ error: bad });
+  // Only one break can be open at a time, or /break/end has no idea which to close.
+  if (!end && await openBreakFor(entryId)) {
+    return res.status(409).json({ error: 'There is already an open break on this punch. Give this one an end time.' });
+  }
+  const r = await pool.query(
+    'INSERT INTO time_breaks (entry_id, type, break_start_at, break_end_at, minutes) VALUES ($1,$2,$3,$4,$5) RETURNING *',
+    [entryId, type, start, end, breakMinutes(start, end)]
+  );
+  const fresh = await recomputeEntry(entryId);
+  await logAudit({ entity_type: 'time_break', entity_id: r.rows[0].id, action: 'manual_add', user_id: req.user.id, user_name: req.user.name,
+    details: { reason: reason, entry_id: entryId, for: entry.user_id, type: type, start: start, end: end,
+      worked: { before: entry.worked_minutes, after: fresh ? fresh.worked_minutes : null } } });
+  res.json({ break: r.rows[0], entry: fresh });
+});
+
+// Remove a break that should never have been there. Requires a reason.
+router.delete('/break/:id', requireAuth, requirePermission('manage_timeclock'), async function (req, res) {
+  const id = parseInt(req.params.id, 10);
+  const reason = ((req.body && req.body.reason) || req.query.reason || '').trim();
+  if (!reason) return res.status(400).json({ error: 'A reason is required to remove a break.' });
+  const cur = (await pool.query('SELECT * FROM time_breaks WHERE id = $1', [id])).rows[0];
+  if (!cur) return res.status(404).json({ error: 'Break not found.' });
+  const entry = await entryForBreakEdit(cur.entry_id, res);
+  if (!entry) return;
+  await pool.query('DELETE FROM time_breaks WHERE id = $1', [id]);
+  const fresh = await recomputeEntry(cur.entry_id);
+  await logAudit({ entity_type: 'time_break', entity_id: id, action: 'delete', user_id: req.user.id, user_name: req.user.name,
+    details: { reason: reason, entry_id: cur.entry_id, for: entry.user_id,
+      removed: { type: cur.type, start: cur.break_start_at, end: cur.break_end_at },
+      worked: { before: entry.worked_minutes, after: fresh ? fresh.worked_minutes : null } } });
+  res.json({ ok: true, entry: fresh });
+});
+
 // Manager approves an employee's week (employee must have approved first).
 router.post('/week/mgr-approve', requireAuth, requirePermission('manage_timeclock'), async function (req, res) {
   const uid = parseInt(req.body.user_id, 10);
