@@ -2,7 +2,7 @@
 // public/sw.js (the only thing bumped each deploy) — the badge asks the active
 // service worker for it at runtime. This value is just the fallback shown when no
 // service worker is available (e.g. very first visit before it installs).
-var APP_VERSION = 'v406';
+var APP_VERSION = 'v410';
 var _resolvedAppVersion = null;
 
 // Ask the active service worker for its CACHE_VERSION (without the 'nova-' prefix).
@@ -10786,18 +10786,29 @@ function inspRenderCompliance(el) {
   }).join(''));
   var rows = d.vehicles.map(function (v) {
     var key = inspComplianceStatusKey(v, meta);
-    var canStart = !inspIsExempt(v) && (priv || (v.driver_supervisor_id && v.driver_supervisor_id === state.user.id) || (v.inspector_id && v.inspector_id === state.user.id));
+    var canStart = !inspIsExempt(v) && (priv || (v.driver_supervisor_id && v.driver_supervisor_id === state.user.id) || (v.effective_inspector_id && v.effective_inspector_id === state.user.id));
     var exReason = v.inspection_exempt ? (v.inspection_exempt_reason || 'Exempt') : (inspIsExempt(v) ? 'Assigned to admin' : '');
-    var inspName = v.inspector_name || v.manager_name;
+    // The inspector defaults to the manager of the driver's home city; the picker is
+    // only there to override it. The resolved name is shown either way - hiding it
+    // behind the picker is what made every van read Unassigned to an admin.
+    var inspName = v.effective_inspector_name;
+    var inspWhy = v.effective_inspector_source === 'city' ? (v.inspector_city || '') + ' manager'
+      : (v.effective_inspector_source === 'supervisor' ? 'supervisor' : '');
+    var inspLine = inspIsExempt(v) ? ''
+      : '<div style="font-size:11px;color:var(--text-muted-color)">Inspector: ' +
+        (inspName ? escHtml(inspName) + (inspWhy ? ' <span style="opacity:0.7">(' + escHtml(inspWhy) + ')</span>' : '')
+                  : '<span style="color:var(--warning-color,#fbbf24)">nobody manages ' + escHtml(v.inspector_city || 'this city') + '</span>') +
+        '</div>';
     var respCell;
     if (d.can_assign_inspector && !inspIsExempt(v)) {
-      var inspOpts = '<option value="">— Unassigned —</option>' + (d.inspectors || []).map(function (ins) {
+      var defName = v.city_manager_name || v.manager_name;
+      var inspOpts = '<option value="">' + (defName ? escHtml('— Default: ' + defName + ' —') : '— No default —') + '</option>' + (d.inspectors || []).map(function (ins) {
         return '<option value="' + ins.id + '"' + (v.inspector_id === ins.id ? ' selected' : '') + '>' + escHtml(ins.name) + '</option>';
       }).join('');
-      respCell = escHtml(v.driver_name || 'Unassigned') +
-        '<div style="margin-top:4px"><select data-prev="' + (v.inspector_id || '') + '" onchange="inspSetInspector(this,' + v.vehicle_id + ')" style="font-size:11px;padding:2px 4px;max-width:150px;color:var(--text-muted-color)" title="Assign inspector">' + inspOpts + '</select></div>';
+      respCell = escHtml(v.driver_name || 'Unassigned') + inspLine +
+        '<div style="margin-top:4px"><select data-prev="' + (v.inspector_id || '') + '" onchange="inspSetInspector(this,' + v.vehicle_id + ')" style="font-size:11px;padding:2px 4px;max-width:150px;color:var(--text-muted-color)" title="Override the default inspector for this vehicle">' + inspOpts + '</select></div>';
     } else {
-      respCell = escHtml(v.driver_name || 'Unassigned') + (!inspIsExempt(v) && inspName ? '<div style="font-size:11px;color:var(--text-muted-color)">Inspector: ' + escHtml(inspName) + '</div>' : '');
+      respCell = escHtml(v.driver_name || 'Unassigned') + inspLine;
     }
     var action = v.inspection_id
       ? '<button class="btn btn-secondary btn-sm" onclick="navigate(\'view-inspection\',' + v.inspection_id + ')">View</button>'
@@ -10850,10 +10861,10 @@ async function inspSetInspector(sel, vehicleId) {
   try {
     await api('PUT', '/inspections/vehicle/' + vehicleId + '/inspector', { inspector_id: val || null });
     sel.setAttribute('data-prev', val);
-    if (_inspCompliance && _inspCompliance.vehicles) {
-      var row = _inspCompliance.vehicles.filter(function (x) { return x.vehicle_id === vehicleId; })[0];
-      if (row) { row.inspector_id = val ? parseInt(val, 10) : null; row.inspector_name = val ? (sel.options[sel.selectedIndex] || {}).text : null; }
-    }
+    // Clearing the override hands the vehicle back to its city manager, and only the
+    // server resolves that, so refetch rather than patching the row in place.
+    await inspComplianceReload();
+    return;
   } catch (e) {
     (window.novaAlert || window.alert)(e.message);
     sel.value = prev;

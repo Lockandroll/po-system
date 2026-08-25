@@ -108,6 +108,40 @@ function sanitizePhotoName(name) {
   return String(name || 'photo').replace(/[^a-zA-Z0-9._-]/g, '_').slice(0, 120) || 'photo';
 }
 
+// Who inspects a vehicle, in order: the person explicitly picked on the vehicle,
+// then the manager of the driver's home city (falling back to the city the van
+// itself is based in when the driver has no home city on file), then the driver's
+// own supervisor as a last resort. Mutates the row and returns it.
+//
+// The city manager is the DEFAULT, not a fallback for the supervisor: a van is
+// inspected by whoever runs the city it sits in, and the picker only exists to
+// override that for a one-off.
+function resolveInspector(r, cityMgr) {
+  var code = String(r.driver_home_city || r.city_code || '').trim().toUpperCase();
+  var cm = code ? (cityMgr || {})[code] : null;
+  r.inspector_city = code || null;
+  r.city_manager_id = cm ? cm.id : null;
+  r.city_manager_name = cm ? cm.name : null;
+  if (r.inspector_id) {
+    r.effective_inspector_id = r.inspector_id;
+    r.effective_inspector_name = r.inspector_name || null;
+    r.effective_inspector_source = 'assigned';
+  } else if (cm) {
+    r.effective_inspector_id = cm.id;
+    r.effective_inspector_name = cm.name;
+    r.effective_inspector_source = 'city';
+  } else if (r.driver_supervisor_id) {
+    r.effective_inspector_id = r.driver_supervisor_id;
+    r.effective_inspector_name = r.manager_name || null;
+    r.effective_inspector_source = 'supervisor';
+  } else {
+    r.effective_inspector_id = null;
+    r.effective_inspector_name = null;
+    r.effective_inspector_source = null;
+  }
+  return r;
+}
+
 function isPrivileged(user) { return ['admin', 'owner', 'manager'].includes(user.role); }
 // Who may COMPLETE an inspection: admins/managers, the assigned driver's direct
 // manager (supervisor), or the inspector explicitly assigned to the vehicle.
@@ -285,7 +319,8 @@ router.get('/compliance', requireAuth, requirePermission('view_inspections'), as
     const { rows } = await pool.query(
       'SELECT v.id as vehicle_id, v.year, v.make_model, v.license_plate, v.city_code, v.assigned_user_id, ' +
       '       v.inspection_exempt, v.inspection_exempt_reason, u.name as driver_name, ' +
-      '       u.supervisor_id as driver_supervisor_id, u.role as driver_role, mgr.name as manager_name, ' +
+      '       u.supervisor_id as driver_supervisor_id, u.role as driver_role, u.home_city as driver_home_city, ' +
+      '       mgr.name as manager_name, ' +
       '       v.inspector_id, iu.name as inspector_name, ' +
       '       i.id as inspection_id, i.inspection_number, i.status, i.overall_result, i.mileage, ' +
       '       i.submitted_by, su.name as submitted_by_name, i.created_at as inspected_at, ' +
@@ -301,11 +336,15 @@ router.get('/compliance', requireAuth, requirePermission('view_inspections'), as
       params.concat(['ready'])
     );
     var cutoff = await getCutoffDay();
-    // Candidate inspectors (admins / owners) + whether this viewer may reassign.
+    var cityMgr = await org.cityManagerMap();
+    rows.forEach(function (r) { resolveInspector(r, cityMgr); });
+    // Everyone who can be handed an inspection. Managers belong on this list: the
+    // city manager usually IS one, and leaving them off is why the picker only ever
+    // offered admins.
     var canAssign = ['admin', 'owner'].includes(req.user.role);
     var inspectors = [];
     if (canAssign) {
-      const ir = await pool.query("SELECT id, name FROM users WHERE active = true AND role IN ('admin', 'owner') ORDER BY name");
+      const ir = await pool.query("SELECT id, name, role FROM users WHERE active = true AND role IN ('manager', 'admin', 'owner') ORDER BY name");
       inspectors = ir.rows;
     }
     res.json({ month: month, cutoff_day: cutoff, current_month: etMonth(), vehicles: rows, inspectors: inspectors, can_assign_inspector: canAssign });
@@ -326,7 +365,9 @@ router.put('/vehicle/:id/inspector', requireAuth, requirePermission('view_inspec
     var inspectorId = req.body.inspector_id ? parseInt(req.body.inspector_id, 10) : null;
     var inspectorName = null;
     if (inspectorId) {
-      const ur = await pool.query("SELECT id, name FROM users WHERE id = $1 AND active = true AND role IN ('admin', 'owner')", [inspectorId]);
+      // Managers belong here as much as admins do - the default inspector IS a city
+      // manager, so refusing to save one made the widened picker unusable.
+      const ur = await pool.query("SELECT id, name FROM users WHERE id = $1 AND active = true AND role IN ('manager', 'admin', 'owner')", [inspectorId]);
       if (!ur.rows.length) return res.status(400).json({ error: 'Selected user is not a valid inspector.' });
       inspectorName = ur.rows[0].name;
     }
@@ -660,4 +701,5 @@ router.delete('/photos/:photoId', requireAuth, requirePermission('view_inspectio
   }
 });
 
+router.resolveInspector = resolveInspector;
 module.exports = router;

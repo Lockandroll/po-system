@@ -129,6 +129,32 @@ async function teamIds(userOrId) {
   return out;
 }
 
+// The manager of a city: ONE responsible name per city code, for the places that
+// need a single owner rather than a roster (vehicle inspections today).
+//
+// Candidates are active managers/admins/owners who watch the city in user_cities.
+// A plain manager deliberately outranks an admin or owner here - admins watch
+// every city, so picking by rank would hand every city to the same person. Ties
+// break toward whoever watches the FEWEST cities (the most dedicated to this one),
+// then the lowest id, so the answer is stable instead of whatever Postgres happens
+// to return first. Returns { CITYCODE: userRow } keyed by upper-cased code.
+async function cityManagerMap() {
+  const { rows } = await pool.query(
+    'SELECT DISTINCT ON (uc.code) uc.code, u.id, u.name, u.email, u.phone, u.role, ' +
+    '       u.receive_emails, u.receive_sms ' +
+    'FROM (SELECT user_id, UPPER(TRIM(city_code)) AS code FROM user_cities WHERE city_code IS NOT NULL) uc ' +
+    'JOIN users u ON u.id = uc.user_id ' +
+    "WHERE u.active = true AND u.role IN ('manager','admin','owner') " +
+    'ORDER BY uc.code, ' +
+    "         CASE u.role WHEN 'manager' THEN 0 ELSE 1 END, " +
+    '         (SELECT COUNT(*) FROM user_cities c2 WHERE c2.user_id = u.id), ' +
+    '         u.id'
+  );
+  const map = {};
+  rows.forEach(function (r) { map[r.code] = r; });
+  return map;
+}
+
 // Single-target form of teamIds. Admin/owner reach everyone but themselves.
 // Do NOT use this to gate an action.
 async function inTeam(user, targetOrId) {
@@ -202,6 +228,7 @@ module.exports = {
   isUpline: isUpline,
   downlineIds: downlineIds,
   cityCodesFor: cityCodesFor,
+  cityManagerMap: cityManagerMap,
   teamIds: teamIds,
   inTeam: inTeam
 };
