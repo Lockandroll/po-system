@@ -172,6 +172,18 @@
     .photo-del { position: absolute; top: 4px; right: 4px; display: flex; align-items: center; justify-content: center; width: 22px; height: 22px; min-height: 22px; padding: 0; border-radius: 50%; font-size: 14px; line-height: 1; font-weight: 700; }
     .btn svg { width: 15px; height: 15px; flex-shrink: 0; }
     .table-wrap .btn { vertical-align: middle; } /* keep action buttons (Edit / Delete) vertically centered on one line */
+    /* Accounts table: the header stays put while the rows scroll under it, and the
+       Account Name column sizes itself to the name instead of wrapping mid-word.
+       The wrap scrolls on BOTH axes here (the page itself does not scroll the rows),
+       which is what makes position:sticky on the header actually stick. */
+    .vendors-scroll { overflow: auto; max-height: calc(100vh - 300px); min-height: 320px; }
+    .vendors-scroll thead th { position: sticky; top: 0; z-index: 3; }
+    /* width:1% is the shrink-to-fit trick - the column takes its content width,
+       and the inner block caps it so a very long name wraps instead of running away. */
+    .vendors-scroll td.vendor-name-cell, .vendors-scroll th.vendor-name-cell { width: 1%; white-space: nowrap; }
+    .vendors-scroll .vn-name { display: block; max-width: 240px; white-space: normal; overflow-wrap: anywhere; }
+    .vendors-scroll .vn-restricted { display: block; width: fit-content; margin-top: 3px; font-size: 11px; font-weight: 700; color: var(--primary); border: 1px solid var(--primary); border-radius: 4px; padding: 1px 5px; letter-spacing: .02em; }
+    @media (max-width: 768px) { .vendors-scroll { max-height: calc(100vh - 240px); } .vendors-scroll .vn-name { max-width: 170px; } }
     .nova-info { position: relative; display: inline-flex; align-items: center; cursor: pointer; margin: 0 2px 0 5px; vertical-align: middle; }
     .nova-info .ni-ico { width: 14px; height: 14px; border-radius: 50%; border: 1px solid var(--text-muted-color); color: var(--text-muted-color); font-size: 10px; font-weight: 700; font-style: normal; display: inline-flex; align-items: center; justify-content: center; line-height: 1; font-family: Georgia, serif; }
     .nova-info:hover .ni-ico { border-color: var(--primary); color: var(--primary); }

@@ -6626,15 +6626,15 @@ function vendorsRenderTable(search) {
   var wrap = document.getElementById('vendors-table-wrap');
   if (!wrap) return;
   wrap.innerHTML =
-    '<div class="card"><div class="table-wrap">' +
+    '<div class="card"><div class="table-wrap vendors-scroll">' +
       '<table>' +
-        '<thead><tr><th>Account Name</th><th>Website</th><th>Account #</th><th>COI</th><th>City Assigned</th><th>Username</th><th>Password</th><th>Security Q&amp;A</th><th>Notes</th><th>Rep Name</th><th>Rep Email</th><th>Rep Phone</th><th></th></tr></thead>' +
+        '<thead><tr><th class="vendor-name-cell">Account Name</th><th>Website</th><th>Account #</th><th>COI</th><th>City Assigned</th><th>Username</th><th>Password</th><th>Security Q&amp;A</th><th>Notes</th><th>Rep Name</th><th>Rep Email</th><th>Rep Phone</th><th></th></tr></thead>' +
         '<tbody>' +
           (filtered.length === 0
             ? '<tr><td colspan="13" style="text-align:center;color:var(--text-muted-color);padding:32px">No accounts found.</td></tr>'
             : filtered.map(function(v) {
                 return '<tr>' +
-                  '<td style="font-weight:600;color:var(--text)">' + escHtml(v.name) + ((v.restricted_to && v.restricted_to.length) ? ' <span style="font-size:11px;font-weight:700;color:var(--primary);border:1px solid var(--primary);border-radius:4px;padding:1px 5px;vertical-align:middle">RESTRICTED</span>' : '') + '</td>' +
+                  '<td class="vendor-name-cell" style="font-weight:600;color:var(--text)"><span class="vn-name">' + escHtml(v.name) + '</span>' + ((v.restricted_to && v.restricted_to.length) ? '<span class="vn-restricted">RESTRICTED</span>' : '') + '</td>' +
                   '<td>' + (v.website ? '<a href="#" onclick="vendorOpenSite(\'' + escHtml(v.website).replace(/'/g,"\\'") + '\',\'' + escHtml(v.password||'').replace(/'/g,"\\'") + '\');return false;" style="color:var(--primary)">' + escHtml(v.website) + '</a>' : '—') + '</td>' +
                   '<td>' + escHtml(v.account_number || '—') + '</td>' +
                   '<td style="white-space:nowrap">' + vendorCoiCell(v) + '</td>' +
