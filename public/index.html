@@ -181,9 +181,16 @@
     /* width:1% is the shrink-to-fit trick - the column takes its content width,
        and the inner block caps it so a very long name wraps instead of running away. */
     .vendors-scroll td.vendor-name-cell, .vendors-scroll th.vendor-name-cell { width: 1%; white-space: nowrap; }
-    .vendors-scroll .vn-name { display: block; max-width: 240px; white-space: normal; overflow-wrap: anywhere; }
+    /* Names stay on one line. nowrap makes the column's min-content the whole name,
+       so the browser cannot squeeze this column to make room for the other twelve.
+       A name past the length limit gets .vn-wrap at render time and wraps inside a cap. */
+    .vendors-scroll .vn-name { display: block; white-space: nowrap; }
+    .vendors-scroll .vendor-name-cell.vn-wrap .vn-name { white-space: normal; max-width: 240px; overflow-wrap: anywhere; }
     .vendors-scroll .vn-restricted { display: block; width: fit-content; margin-top: 3px; font-size: 11px; font-weight: 700; color: var(--primary); border: 1px solid var(--primary); border-radius: 4px; padding: 1px 5px; letter-spacing: .02em; }
-    @media (max-width: 768px) { .vendors-scroll { max-height: calc(100vh - 240px); } .vendors-scroll .vn-name { max-width: 170px; } }
+    @media (max-width: 768px) { .vendors-scroll { max-height: calc(100vh - 240px); } .vendors-scroll .vendor-name-cell.vn-wrap .vn-name { max-width: 170px; } }
+    /* Accounts header: keep + Add Account next to the title. space-between throws it to
+       the far right edge once the wide table stretches the page. */
+    .vendors-header { justify-content: flex-start; gap: 20px; }
     .nova-info { position: relative; display: inline-flex; align-items: center; cursor: pointer; margin: 0 2px 0 5px; vertical-align: middle; }
     .nova-info .ni-ico { width: 14px; height: 14px; border-radius: 50%; border: 1px solid var(--text-muted-color); color: var(--text-muted-color); font-size: 10px; font-weight: 700; font-style: normal; display: inline-flex; align-items: center; justify-content: center; line-height: 1; font-family: Georgia, serif; }
     .nova-info:hover .ni-ico { border-color: var(--primary); color: var(--primary); }

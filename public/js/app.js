@@ -2,7 +2,7 @@
 // public/sw.js (the only thing bumped each deploy) — the badge asks the active
 // service worker for it at runtime. This value is just the fallback shown when no
 // service worker is available (e.g. very first visit before it installs).
-var APP_VERSION = 'v410';
+var APP_VERSION = 'v414';
 var _resolvedAppVersion = null;
 
 // Ask the active service worker for its CACHE_VERSION (without the 'nova-' prefix).
@@ -6557,7 +6557,7 @@ async function renderVendors(el) {
   try { _vendorCities = await api('GET', '/cities'); } catch(e) { _vendorCities = []; }
   if (canManage) { try { _vendorUsers = await api('GET', '/vendors/pickable-users'); } catch(e) { _vendorUsers = []; } } else { _vendorUsers = []; }
   el.innerHTML =
-    '<div class="page-header"><div><div class="page-title">Accounts</div><div class="page-subtitle">Vendor account logins &amp; credentials</div></div>' +
+    '<div class="page-header vendors-header"><div><div class="page-title">Accounts</div><div class="page-subtitle">Vendor account logins &amp; credentials</div></div>' +
     (canManage ? '<button class="btn btn-primary" onclick="showVendorModal()">+ Add Account</button>' : '') + '</div>' +
     '<div id="vendor-msg"></div>' + vendorCoiBanner() +
     '<div style="margin-bottom:16px"><input type="text" id="vendors-search" placeholder="Search by name, website, or username..." style="width:100%;max-width:400px;padding:8px 12px;background:var(--surface-color);border:1px solid rgba(249,115,22,0.35);border-radius:6px;color:var(--text-color);font-size:14px;outline:none;box-shadow:0 0 0 1px rgba(249,115,22,0.15)" oninput="vendorsFilter(this.value)" /></div>' +
@@ -6614,6 +6614,10 @@ function vendorCoiCell(v) {
     '</span>';
 }
 
+// Account names sit on one line. Past this many characters a name is allowed to
+// wrap (inside a 240px cap in CSS) rather than stretch the column across the table.
+var VENDOR_NAME_WRAP_AT = 28;
+
 function vendorsRenderTable(search) {
   var canManage = can('manage_vendors');
   var filtered = _vendorsData.filter(function(v) {
@@ -6634,7 +6638,9 @@ function vendorsRenderTable(search) {
             ? '<tr><td colspan="13" style="text-align:center;color:var(--text-muted-color);padding:32px">No accounts found.</td></tr>'
             : filtered.map(function(v) {
                 return '<tr>' +
-                  '<td class="vendor-name-cell" style="font-weight:600;color:var(--text)"><span class="vn-name">' + escHtml(v.name) + '</span>' + ((v.restricted_to && v.restricted_to.length) ? '<span class="vn-restricted">RESTRICTED</span>' : '') + '</td>' +
+                  '<td class="vendor-name-cell' + ((v.name || '').length > VENDOR_NAME_WRAP_AT ? ' vn-wrap' : '') + '" style="font-weight:600;color:var(--text)">' +
+                    '<span class="vn-name">' + escHtml(v.name) + '</span>' +
+                    ((v.restricted_to && v.restricted_to.length) ? '<span class="vn-restricted">RESTRICTED</span>' : '') + '</td>' +
                   '<td>' + (v.website ? '<a href="#" onclick="vendorOpenSite(\'' + escHtml(v.website).replace(/'/g,"\\'") + '\',\'' + escHtml(v.password||'').replace(/'/g,"\\'") + '\');return false;" style="color:var(--primary)">' + escHtml(v.website) + '</a>' : '—') + '</td>' +
                   '<td>' + escHtml(v.account_number || '—') + '</td>' +
                   '<td style="white-space:nowrap">' + vendorCoiCell(v) + '</td>' +
