@@ -11128,7 +11128,10 @@ async function renderInspectionChecklistAdmin(el) {
   if (!can('manage_inspections')) { el.innerHTML = '<div class="alert alert-error">Access denied.</div>'; return; }
   el.innerHTML = '<div class="loading">Loading…</div>';
   try {
-    var items = await api('GET', '/inspections/checklist?all=1');
+    var items = await api('GET', '/inspections/checklist');
+    var archive = [];
+    try { archive = await api('GET', '/inspections/checklist/archive'); } catch (e) { archive = []; }
+    window._inspClArchive = archive || [];
     window._inspClEdit = items.map(function (it) {
       var type = (it.type === 'text') ? 'text' : 'dropdown';
       return { item_key: it.item_key, label: it.label, type: type, requires_photo: !!it.requires_photo, options: (Array.isArray(it.options) && it.options.length) ? it.options.map(function (o) { return { label: o.label, color: o.color, followup: !!o.followup }; }) : inspItemOptions({}).slice() };
@@ -11183,7 +11186,7 @@ function inspClRender(el) {
         '<input type="text" value="' + escHtml(it.label) + '" oninput="window._inspClEdit[' + i + '].label=this.value" placeholder="Item label" style="flex:2;min-width:180px" />' +
         '<select onchange="window._inspClEdit[' + i + '].type=this.value;inspClRerender()" style="min-width:120px"><option value="dropdown"' + (it.type !== 'text' ? ' selected' : '') + '>Dropdown</option><option value="text"' + (it.type === 'text' ? ' selected' : '') + '>Text</option></select>' +
         '<label style="font-size:13px;display:flex;align-items:center;gap:5px"><input type="checkbox"' + (it.requires_photo ? ' checked' : '') + ' onchange="window._inspClEdit[' + i + '].requires_photo=this.checked" /> Photo</label>' +
-        '<button class="btn btn-ghost btn-sm" style="color:var(--danger-color,#ef4444)" onclick="inspClRemove(' + i + ')">Remove item</button>' +
+        '<button class="btn btn-ghost btn-sm" style="color:var(--danger-color,#ef4444)" title="Takes this question off the checklist when you save. It moves to Retired items at the bottom of this page." onclick="inspClRemove(' + i + ')">Remove item</button>' +
       '</div>' + optsEditor +
     '</div></div>';
   }).join('');
@@ -11202,6 +11205,7 @@ function inspClRender(el) {
         'blues/grays = No effect &mdash; shown next to each answer. The worst answer selected sets the inspection&#39;s overall result.</div>' +
       '<div style="margin-top:6px"><strong>Text</strong> &mdash; a free write-in (mileage, notes, and the like) that never affects the result.</div>' +
       '<div style="margin-top:6px">Tick <strong>Photo</strong> to require a photo for that item. Tick <strong>Follow-up</strong> on any answer to auto-open a task (assigned to the driver) whenever that answer is picked.</div>' +
+      '<div style="margin-top:6px"><strong>Remove item</strong> takes a question off the checklist when you save. It drops to <strong>Retired items</strong> at the bottom of this page, where you can restore it or delete it for good. Inspections already submitted keep their answers either way.</div>' +
     '</div>' +
     '<div id="insp-cl-msg"></div>' +
     (rows || '<div style="color:var(--text-muted-color);margin-bottom:12px">No items yet.</div>') +
@@ -11209,7 +11213,53 @@ function inspClRender(el) {
       '<button class="btn btn-secondary" onclick="inspClAdd()">' + icons.plus + ' Add item</button>' +
       '<div style="flex:1"></div>' +
       '<button class="btn btn-primary" id="insp-cl-save" onclick="inspClSave(this)">Save Checklist</button>' +
-    '</div>';
+    '</div>' +
+    inspClArchiveHtml();
+}
+// Retired items live in their own table (inspection_checklist_archive). They are
+// gone from the checklist and from the entry form; this panel exists only so a
+// removal can be undone without retyping the item's answers and colors.
+function inspClArchiveHtml() {
+  var arch = window._inspClArchive || [];
+  if (!arch.length) return '';
+  var rows = arch.map(function (a) {
+    var n = Array.isArray(a.options) ? a.options.length : 0;
+    var meta = (a.type === 'text') ? 'Write-in' : (n + ' answer' + (n === 1 ? '' : 's'));
+    if (a.requires_photo) meta += ' &middot; photo';
+    if (a.retired_at) meta += ' &middot; retired ' + escHtml(formatDate(a.retired_at));
+    if (a.retired_by_name) meta += ' by ' + escHtml(a.retired_by_name);
+    return '<div class="card" style="margin-bottom:6px"><div class="card-body" style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">' +
+      '<div style="flex:1;min-width:200px">' +
+        '<div style="font-weight:600">' + escHtml(a.label) + '</div>' +
+        '<div style="color:var(--text-muted-color);font-size:12px">' + meta + '</div>' +
+      '</div>' +
+      '<button class="btn btn-secondary btn-sm" onclick="inspClRestore(' + a.id + ')">Restore</button>' +
+      '<button class="btn btn-ghost btn-sm" style="color:var(--danger-color,#ef4444)" onclick="inspClPurge(' + a.id + ')">Delete forever</button>' +
+    '</div></div>';
+  }).join('');
+  return '<div style="margin-top:34px;border-top:1px solid var(--border-color);padding-top:18px">' +
+    '<div style="font-weight:700;margin-bottom:4px">Retired items (' + arch.length + ')</div>' +
+    '<div style="color:var(--text-muted-color);font-size:13px;margin-bottom:12px">Off the checklist and no longer asked on an inspection. Restore puts one back at the bottom of the list above. Inspections already submitted keep their answers either way.</div>' +
+    rows +
+  '</div>';
+}
+function inspClMsg(err) {
+  var m = document.getElementById('insp-cl-msg');
+  if (m) { m.innerHTML = '<div class="alert alert-error">' + escHtml(err.message) + '</div>'; window.scrollTo(0, 0); }
+}
+async function inspClRestore(id) {
+  if (!await novaConfirm('Put this item back on the checklist? It returns at the bottom of the list, and any unsaved edits above are reloaded from the last save.', { okText: 'Restore it' })) return;
+  try {
+    await api('POST', '/inspections/checklist/archive/' + id + '/restore', {});
+    await renderInspectionChecklistAdmin(document.getElementById('content') || document.getElementById('app'));
+  } catch (err) { inspClMsg(err); }
+}
+async function inspClPurge(id) {
+  if (!await novaConfirm('Delete this retired item for good? It cannot be restored afterwards. Inspections that already used it keep their answers.', { okText: 'Delete it' })) return;
+  try {
+    await api('DELETE', '/inspections/checklist/archive/' + id);
+    await renderInspectionChecklistAdmin(document.getElementById('content') || document.getElementById('app'));
+  } catch (err) { inspClMsg(err); }
 }
 function inspClRerender() { inspClRender(document.getElementById('content') || document.getElementById('app')); }
 function inspClAdd() { window._inspClEdit.push({ item_key: '', label: '', type: 'dropdown', requires_photo: false, options: inspItemOptions({}).slice() }); inspClRerender(); }

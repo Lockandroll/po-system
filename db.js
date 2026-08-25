@@ -398,8 +398,31 @@ async function initDB() {
       'CREATE UNIQUE INDEX IF NOT EXISTS idx_insp_vehicle_month ON vehicle_inspections(vehicle_id, period_month);' +
       'CREATE INDEX IF NOT EXISTS idx_insp_period ON vehicle_inspections(period_month);' +
       'CREATE INDEX IF NOT EXISTS idx_insp_items_insp ON inspection_items(inspection_id);' +
-      'CREATE INDEX IF NOT EXISTS idx_insp_photos_insp ON inspection_photos(inspection_id);'
+      'CREATE INDEX IF NOT EXISTS idx_insp_photos_insp ON inspection_photos(inspection_id);' +
+      'CREATE TABLE IF NOT EXISTS inspection_checklist_archive (' +
+      '  id SERIAL PRIMARY KEY,' +
+      '  item_key VARCHAR(60) NOT NULL,' +
+      '  label VARCHAR(255) NOT NULL,' +
+      "  type VARCHAR(20) NOT NULL DEFAULT 'dropdown'," +
+      '  sort_order INTEGER DEFAULT 0,' +
+      '  requires_photo BOOLEAN NOT NULL DEFAULT false,' +
+      '  options JSONB,' +
+      '  retired_at TIMESTAMP DEFAULT NOW(),' +
+      '  retired_by INTEGER,' +
+      '  retired_by_name VARCHAR(255)' +
+      ');' +
+      'CREATE INDEX IF NOT EXISTS idx_insp_cl_archive_key ON inspection_checklist_archive(item_key);'
     );
+    // Retired checklist items used to sit in inspection_checklist with active =
+    // false, and the editor loaded them straight back in. They now move to
+    // inspection_checklist_archive and leave the live table entirely. Safe for
+    // history: inspection_items snapshots label/answer/color per inspection and
+    // never reads the checklist definition back.
+    await client.query(
+      'INSERT INTO inspection_checklist_archive (item_key, label, type, sort_order, requires_photo, options) ' +
+      'SELECT item_key, label, type, sort_order, requires_photo, options FROM inspection_checklist WHERE active = false'
+    );
+    await client.query('DELETE FROM inspection_checklist WHERE active = false');
     // Seed the default monthly inspection checklist once (only when empty).
     await client.query(
       'INSERT INTO inspection_checklist (item_key, label, type, sort_order, requires_photo, active, options) ' +

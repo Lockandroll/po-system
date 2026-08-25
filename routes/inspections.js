@@ -118,13 +118,14 @@ function canSubmit(user, driverSupervisorId, inspectorId) {
 }
 
 // ===== Checklist =====
-// Active checklist (for the entry form). Admins/managers get all + inactive via ?all=1.
+// The live checklist. Retired items are not in this table at all - they move to
+// inspection_checklist_archive on save. The old ?all=1 flag is accepted and
+// ignored, so a cached client cannot pull a retired item back into the editor.
 router.get('/checklist', requireAuth, requirePermission('view_inspections'), async function (req, res) {
   try {
-    var all = req.query.all === '1' && isPrivileged(req.user);
     const { rows } = await pool.query(
       'SELECT id, item_key, label, type, sort_order, requires_photo, options, active FROM inspection_checklist' +
-      (all ? '' : ' WHERE active = true') +
+      ' WHERE active = true' +
       ' ORDER BY sort_order, id'
     );
     res.json(rows);
@@ -134,42 +135,132 @@ router.get('/checklist', requireAuth, requirePermission('view_inspections'), asy
   }
 });
 
-// Replace the checklist definition (manage only).
+// Replace the checklist definition (manage only). Anything missing from the payload
+// is RETIRED: copied into inspection_checklist_archive and deleted from the live
+// table, so reopening the editor shows exactly what was saved and nothing else.
+// Safe for history - inspection_items snapshots each answer's label and color at
+// submit time and never reads the checklist definition back.
 router.put('/checklist', requireAuth, requirePermission('manage_inspections'), async function (req, res) {
   const items = Array.isArray(req.body.items) ? req.body.items : null;
   if (!items) return res.status(400).json({ error: 'items array required' });
+  // Clean the payload before touching the table, so a blank or empty list is
+  // rejected up front rather than wiping the checklist.
+  const keep = [];
+  for (var i = 0; i < items.length; i++) {
+    var it = items[i];
+    var key = (it.item_key || '').trim().toLowerCase().replace(/[^a-z0-9_]/g, '_').slice(0, 60);
+    var label = (it.label || '').trim().slice(0, 255);
+    if (!label) continue;
+    // A brand new item arrives without a key. Derive one from the label the same
+    // way the editor does, rather than dropping the item on the floor.
+    if (!key) key = label.toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_+|_+$/g, '').slice(0, 60) || 'item';
+    // Two items sharing a key would silently collapse into one on the upsert.
+    var base = key, dupN = 2;
+    while (keep.some(function (k) { return k.key === key; })) { key = base.slice(0, 55) + '_' + dupN; dupN++; }
+    var type = (it.type === 'text') ? 'text' : 'dropdown';
+    var opts = null;
+    if (type === 'dropdown' && Array.isArray(it.options)) {
+      var clean = it.options.map(function (o) { return { label: String((o && o.label) || '').slice(0, 60), color: String((o && o.color) || '').toLowerCase().slice(0, 20), followup: !!(o && o.followup) }; }).filter(function (o) { return o.label; });
+      opts = JSON.stringify(clean);
+    }
+    keep.push({ key: key, label: label, type: type, opts: opts, reqPhoto: !!it.requires_photo });
+  }
+  if (!keep.length) return res.status(400).json({ error: 'The checklist needs at least one item. Remove items one at a time instead of clearing the list.' });
+  const keys = keep.map(function (k) { return k.key; });
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
-    // Deactivate everything, then upsert the provided rows as active.
-    await client.query('UPDATE inspection_checklist SET active = false');
-    for (var i = 0; i < items.length; i++) {
-      var it = items[i];
-      var key = (it.item_key || '').trim().toLowerCase().replace(/[^a-z0-9_]/g, '_').slice(0, 60);
-      var label = (it.label || '').trim().slice(0, 255);
-      if (!key || !label) continue;
-      var type = (it.type === 'text') ? 'text' : 'dropdown';
-      var opts = null;
-      if (type === 'dropdown' && Array.isArray(it.options)) {
-        var clean = it.options.map(function (o) { return { label: String((o && o.label) || '').slice(0, 60), color: String((o && o.color) || '').toLowerCase().slice(0, 20), followup: !!(o && o.followup) }; }).filter(function (o) { return o.label; });
-        opts = JSON.stringify(clean);
-      }
-      var reqPhoto = !!it.requires_photo;
+    await client.query(
+      'INSERT INTO inspection_checklist_archive (item_key, label, type, sort_order, requires_photo, options, retired_by, retired_by_name) ' +
+      'SELECT item_key, label, type, sort_order, requires_photo, options, $1, $2 FROM inspection_checklist WHERE NOT (item_key = ANY($3::text[]))',
+      [req.user.id, req.user.name || null, keys]
+    );
+    const { rows: retired } = await client.query(
+      'DELETE FROM inspection_checklist WHERE NOT (item_key = ANY($1::text[])) RETURNING item_key',
+      [keys]
+    );
+    // An item that is back on the list drops out of the retired pile, so the same
+    // question is never both live and restorable.
+    await client.query('DELETE FROM inspection_checklist_archive WHERE item_key = ANY($1::text[])', [keys]);
+    for (var j = 0; j < keep.length; j++) {
+      var k = keep[j];
       await client.query(
         'INSERT INTO inspection_checklist (item_key, label, type, sort_order, requires_photo, options, active) VALUES ($1,$2,$3,$4,$5,$6,true) ' +
         'ON CONFLICT (item_key) DO UPDATE SET label = EXCLUDED.label, type = EXCLUDED.type, sort_order = EXCLUDED.sort_order, requires_photo = EXCLUDED.requires_photo, options = EXCLUDED.options, active = true',
-        [key, label, type, i, reqPhoto, opts]
+        [k.key, k.label, k.type, j, k.reqPhoto, k.opts]
       );
     }
     await client.query('COMMIT');
-    await logAudit({ entity_type: 'inspection_checklist', entity_id: 0, action: 'edited', user_id: req.user.id, user_name: req.user.name });
-    res.json({ success: true });
+    await logAudit({ entity_type: 'inspection_checklist', entity_id: 0, action: 'edited', user_id: req.user.id, user_name: req.user.name, details: { items: keep.length, retired: retired.map(function (r) { return r.item_key; }) } });
+    res.json({ success: true, items: keep.length, retired: retired.length });
   } catch (err) {
     await client.query('ROLLBACK').catch(function () {});
     console.error(err);
     res.status(500).json({ error: 'Failed to save checklist' });
   } finally {
     client.release();
+  }
+});
+
+// Retired checklist items. Nothing here is asked on an inspection; the table exists
+// so a removal can be undone without retyping the item's options and colors.
+router.get('/checklist/archive', requireAuth, requirePermission('manage_inspections'), async function (req, res) {
+  try {
+    const { rows } = await pool.query(
+      'SELECT id, item_key, label, type, sort_order, requires_photo, options, retired_at, retired_by_name ' +
+      'FROM inspection_checklist_archive ORDER BY retired_at DESC, id DESC'
+    );
+    res.json(rows);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Failed to load retired items' });
+  }
+});
+
+// Put a retired item back on the checklist, at the bottom of the list.
+router.post('/checklist/archive/:id/restore', requireAuth, requirePermission('manage_inspections'), async function (req, res) {
+  var id = parseInt(req.params.id, 10);
+  if (!id) return res.status(400).json({ error: 'Invalid id' });
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const { rows } = await client.query('SELECT * FROM inspection_checklist_archive WHERE id = $1', [id]);
+    if (!rows.length) { await client.query('ROLLBACK'); return res.status(404).json({ error: 'Retired item not found' }); }
+    var a = rows[0];
+    const { rows: live } = await client.query('SELECT 1 FROM inspection_checklist WHERE item_key = $1', [a.item_key]);
+    if (live.length) { await client.query('ROLLBACK'); return res.status(409).json({ error: 'A checklist item with that name is already active. Rename that one first, then restore this.' }); }
+    const { rows: mx } = await client.query('SELECT COALESCE(MAX(sort_order), 0) AS m FROM inspection_checklist');
+    // options comes back from JSONB as a JS array; hand it back as JSON text, or
+    // node-postgres writes it as a Postgres array literal instead.
+    await client.query(
+      'INSERT INTO inspection_checklist (item_key, label, type, sort_order, requires_photo, options, active) VALUES ($1,$2,$3,$4,$5,$6,true)',
+      [a.item_key, a.label, a.type, (parseInt(mx[0].m, 10) || 0) + 1, a.requires_photo, a.options == null ? null : JSON.stringify(a.options)]
+    );
+    await client.query('DELETE FROM inspection_checklist_archive WHERE id = $1', [id]);
+    await client.query('COMMIT');
+    await logAudit({ entity_type: 'inspection_checklist', entity_id: 0, action: 'restored', user_id: req.user.id, user_name: req.user.name, details: { item_key: a.item_key } });
+    res.json({ success: true, item_key: a.item_key });
+  } catch (err) {
+    await client.query('ROLLBACK').catch(function () {});
+    console.error(err);
+    res.status(500).json({ error: 'Failed to restore item' });
+  } finally {
+    client.release();
+  }
+});
+
+// Drop a retired item for good.
+router.delete('/checklist/archive/:id', requireAuth, requirePermission('manage_inspections'), async function (req, res) {
+  var id = parseInt(req.params.id, 10);
+  if (!id) return res.status(400).json({ error: 'Invalid id' });
+  try {
+    const { rows } = await pool.query('DELETE FROM inspection_checklist_archive WHERE id = $1 RETURNING item_key', [id]);
+    if (!rows.length) return res.status(404).json({ error: 'Retired item not found' });
+    await logAudit({ entity_type: 'inspection_checklist', entity_id: 0, action: 'deleted', user_id: req.user.id, user_name: req.user.name, details: { item_key: rows[0].item_key } });
+    res.json({ success: true });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Failed to delete item' });
   }
 });
 
