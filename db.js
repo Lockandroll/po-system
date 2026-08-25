@@ -5017,6 +5017,46 @@ async function initDB() {
       'CREATE UNIQUE INDEX IF NOT EXISTS idx_ivr_profiles_vendor ON ivr_profiles(vendor_id) WHERE vendor_id IS NOT NULL;'
     );
 
+    // The AI navigator's half of the profile. Added 2026-08-25, late: the
+    // navigator itself shipped in utils/ivrBrain.js on 2026-08-21 but these
+    // columns never landed, so every profile save was writing to columns that
+    // did not exist. ALTERs rather than edits to the CREATE above, because
+    // CREATE TABLE IF NOT EXISTS does nothing at all to a table that is already
+    // there - the fifth time that has bitten this file.
+    //
+    // routes/checkins.js writes EVERY one of these on every profile save,
+    // whatever the browser sent, so a missing column here is not a dormant
+    // feature. It is a 500 on the Save button.
+    await client.query(
+      // script | ai_fallback | ai. Anything else the route coerces to script.
+      "ALTER TABLE ivr_profiles ADD COLUMN IF NOT EXISTS mode VARCHAR(16) NOT NULL DEFAULT 'script';" +
+      // What the navigator is trying to achieve, per direction, plus whatever is
+      // already known about the tree. Both go into the prompt; neither is code.
+      '  ALTER TABLE ivr_profiles ADD COLUMN IF NOT EXISTS goal_checkin TEXT;' +
+      '  ALTER TABLE ivr_profiles ADD COLUMN IF NOT EXISTS goal_checkout TEXT;' +
+      '  ALTER TABLE ivr_profiles ADD COLUMN IF NOT EXISTS playbook TEXT;' +
+      // Hard-capped at 20 in utils/ivrBrain.js. This is the per-account ceiling
+      // under it, because a turn is a paid Gather and a tree that has not
+      // finished in twelve is not going to.
+      '  ALTER TABLE ivr_profiles ADD COLUMN IF NOT EXISTS max_turns SMALLINT NOT NULL DEFAULT 12;' +
+      // Which keypad digit means complete on THIS tree, and what the tree asks
+      // for in each direction. Both are business facts about the account and are
+      // deliberately kept out of the model's hands: no map configured means the
+      // check-out is BLOCKED, never guessed.
+      '  ALTER TABLE ivr_profiles ADD COLUMN IF NOT EXISTS status_map JSONB;' +
+      '  ALTER TABLE ivr_profiles ADD COLUMN IF NOT EXISTS needs JSONB;' +
+      // Three identical AI runs in a row is what earns a tree the offer to be
+      // saved as a cheap script. utils/checkinEngine.js noteAiSuccess().
+      '  ALTER TABLE ivr_profiles ADD COLUMN IF NOT EXISTS ai_streak INTEGER NOT NULL DEFAULT 0;' +
+      '  ALTER TABLE ivr_profiles ADD COLUMN IF NOT EXISTS ai_streak_signature TEXT;' +
+      // The account's own PIN, for the accounts that issue one to the company
+      // instead of printing it on every work order. A vendor credential, so it is
+      // encrypted with the same HR_DOC_ENC_KEY the onboarding documents use and
+      // is never read back to a browser. The hint is the last two characters.
+      '  ALTER TABLE ivr_profiles ADD COLUMN IF NOT EXISTS account_pin_enc TEXT;' +
+      '  ALTER TABLE ivr_profiles ADD COLUMN IF NOT EXISTS account_pin_hint VARCHAR(12);'
+    );
+
     // Every attempt, confirmed or not. This table is the source of truth for
     // whether a job was checked in; the stamps on work_orders below are a
     // convenience copy for the screens.
@@ -5068,6 +5108,27 @@ async function initDB() {
       "WHERE status IN ('pending','dialing','in_progress');"
     );
 
+    // The AI navigator's half of an event, same 2026-08-25 catch-up as above.
+    //
+    // live_transcript is what Twilio heard while the call was still up, and it
+    // is what the green light is decided from - the recording pass afterwards is
+    // evidence and a discrepancy check, and it never un-confirms a row, because
+    // by then the technician has already driven away.
+    //
+    // ai_quote plus verdict_source are how a confirmation the model claimed is
+    // told apart from one a phrase match found, months later, by somebody
+    // reading a denied invoice.
+    await client.query(
+      "ALTER TABLE checkin_events ADD COLUMN IF NOT EXISTS mode VARCHAR(16) NOT NULL DEFAULT 'script';" +
+      // What the technician typed on the way past, and every turn of the call.
+      '  ALTER TABLE checkin_events ADD COLUMN IF NOT EXISTS answers JSONB;' +
+      '  ALTER TABLE checkin_events ADD COLUMN IF NOT EXISTS turns JSONB;' +
+      '  ALTER TABLE checkin_events ADD COLUMN IF NOT EXISTS turn_count SMALLINT NOT NULL DEFAULT 0;' +
+      '  ALTER TABLE checkin_events ADD COLUMN IF NOT EXISTS live_transcript TEXT;' +
+      '  ALTER TABLE checkin_events ADD COLUMN IF NOT EXISTS ai_quote TEXT;' +
+      '  ALTER TABLE checkin_events ADD COLUMN IF NOT EXISTS verdict_source VARCHAR(16);'
+    );
+
     // The call-in details, extracted off the work order by the AI parser, plus
     // the confirmed stamps. checkin_* are what the document said; checked_*_at
     // are what actually happened.
@@ -5081,7 +5142,22 @@ async function initDB() {
       '  ALTER TABLE work_orders ADD COLUMN IF NOT EXISTS checkin_instructions TEXT;' +
       '  ALTER TABLE work_orders ADD COLUMN IF NOT EXISTS checked_in_at TIMESTAMPTZ;' +
       '  ALTER TABLE work_orders ADD COLUMN IF NOT EXISTS checked_out_at TIMESTAMPTZ;' +
-      '  ALTER TABLE work_orders ADD COLUMN IF NOT EXISTS checkin_auth_number VARCHAR(64);'
+      '  ALTER TABLE work_orders ADD COLUMN IF NOT EXISTS checkin_auth_number VARCHAR(64);' +
+      // What the parser concluded about whether this job needs a check-in at all,
+      // and how it is performed. checkin_evidence is the sentence it COPIED out of
+      // the document to prove the answer, so a manager who disagrees reads what it
+      // read instead of arguing with a yes or a no. utils/workOrderParser.js.
+      //
+      // checkin_method matters beyond bookkeeping: app and portal mean Nova
+      // cannot place the call at all, and the screen says so rather than drawing
+      // a button that fails.
+      "  ALTER TABLE work_orders ADD COLUMN IF NOT EXISTS checkin_required VARCHAR(8);" +
+      '  ALTER TABLE work_orders ADD COLUMN IF NOT EXISTS checkout_required VARCHAR(8);' +
+      '  ALTER TABLE work_orders ADD COLUMN IF NOT EXISTS checkin_method VARCHAR(16);' +
+      '  ALTER TABLE work_orders ADD COLUMN IF NOT EXISTS checkin_pay_gated BOOLEAN DEFAULT false;' +
+      '  ALTER TABLE work_orders ADD COLUMN IF NOT EXISTS checkin_evidence TEXT;' +
+      '  ALTER TABLE work_orders ADD COLUMN IF NOT EXISTS checkin_ask_order VARCHAR(200);' +
+      '  ALTER TABLE work_orders ADD COLUMN IF NOT EXISTS checkin_ai_note TEXT;'
     );
     // A per-technician ID, for the accounts whose tree asks for one that is not
     // printed on the work order. Most do not, which is why the work order's own

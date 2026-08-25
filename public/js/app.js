@@ -18878,6 +18878,52 @@ function checkinInstructionsHtml(state) {
     '</div>';
 }
 
+// What the document said about whether this job needs a check-in at all.
+//
+// The parser answers three ways and the third one matters: an UNKNOWN is shown
+// as unknown rather than rounded to yes or no, because a technician who is told
+// something is required when it is not learns to ignore the card.
+//
+// checkin_evidence is the sentence the parser COPIED out of the work order to
+// prove its answer. It is on the card so a manager who disagrees reads what it
+// read, instead of arguing with a yes.
+function checkinRequiredHtml(state) {
+  var r = state.checkin_required;
+  var badge = '';
+  if (r === 'yes') {
+    badge = state.checkin_pay_gated
+      ? '<span class="badge badge-denied">Required for payment</span>'
+      : '<span class="badge badge-active">Required</span>';
+  } else if (r === 'unknown') {
+    badge = '<span class="badge badge-pending">Not sure it is required</span>';
+  } else if (r === 'no') {
+    badge = '<span class="badge">Not required</span>';
+  }
+  if (state.checkout_required === 'yes') badge += ' <span class="badge badge-active">Check-out too</span>';
+  if (!badge && !state.checkin_evidence && !state.checkin_ai_note) return '';
+  return '<div style="margin-bottom:12px">' + badge +
+    (state.checkin_evidence
+      ? '<div class="csub" style="margin-top:6px">From the work order: &ldquo;' + escHtml(state.checkin_evidence) + '&rdquo;</div>'
+      : '') +
+    // A parser disagreement is a manager's problem, not a technician's: he
+    // cannot act on it and it would only make the card look unreliable.
+    (state.checkin_ai_note && can('manage_work_orders')
+      ? '<div class="alert alert-warn" style="margin:8px 0 0">' + escHtml(state.checkin_ai_note) + '</div>'
+      : '') +
+    '</div>';
+}
+
+// Which lane this account is on, in the header, because it changes what a
+// failure means and what a call costs.
+function checkinLaneLabel(profile) {
+  if (!profile) return '';
+  if (profile.method !== 'phone') return 'off';
+  var m = String(profile.mode || 'script').toLowerCase();
+  if (m === 'ai') return 'AI navigator';
+  if (m === 'ai_fallback') return 'phone tree, AI navigator if it fails';
+  return 'phone tree';
+}
+
 // The whole card. Rendered from one payload so the work order page and the
 // sign-off sheet cannot drift apart.
 function checkinCardHtml(state) {
@@ -18930,8 +18976,9 @@ function checkinCardHtml(state) {
   return '<div class="card mb-4" id="checkin-card"><div class="card-header">' +
       '<span class="card-title">Job Clock</span>' +
       '<span style="font-size:12px;color:var(--text-muted-color)">' + escHtml(state.account_name || '') +
-        (state.profile ? ' &middot; ' + (state.profile.method === 'phone' ? 'phone tree' : 'off') : '') + '</span>' +
+        (state.profile ? ' &middot; ' + checkinLaneLabel(state.profile) : '') + '</span>' +
     '</div><div class="card-body">' +
+      checkinRequiredHtml(state) +
       '<div class="ci-row-wrap">' + checkinCell(state, 'in') + checkinCell(state, 'out') + onsite +
         (actions ? '<div class="ci-cell" style="flex:0 0 auto">' + actions + '</div>' : '') +
       '</div>' +
@@ -18951,6 +18998,14 @@ async function checkinMount(hostId, workOrderId) {
   // Nothing to say: no profile, nothing printed on the work order, and no
   // history. Drawing an empty card would just be furniture.
   if (!state.profile && !state.checkin_phone && !state.checkin && !state.checkout) { host.innerHTML = ''; return; }
+  // The document says this account does not want a check-in. Drawing a button
+  // anyway teaches people to check in where nobody asked them to.
+  //
+  // The exception is a parser disagreement: burying the card there would bury
+  // the one case where the no is most likely to be wrong.
+  if (state.checkin_required === 'no' && !state.checkin_ai_note && !state.checkin && !state.checkout) {
+    host.innerHTML = ''; return;
+  }
   host.innerHTML = checkinCardHtml(state);
 
   var busy = function (ev) { return ev && (ev.status === 'pending' || ev.status === 'dialing' || ev.status === 'in_progress'); };
@@ -18964,16 +19019,86 @@ async function checkinMount(hostId, workOrderId) {
 
 function checkinHostId() { return 'checkin-host'; }
 
-async function checkinFire(workOrderId, dir, btn) {
+async function checkinFire(workOrderId, dir, btn, answers) {
   if (btn) { btn.disabled = true; btn.textContent = 'Calling...'; }
   var gps = await checkinGps();
+  var body = gps || {};
+  if (answers) body.answers = answers;
   try {
-    await api('POST', '/checkins/' + workOrderId + '/' + dir, gps || {});
+    await api('POST', '/checkins/' + workOrderId + '/' + dir, body);
   } catch (err) {
     if (btn) { btn.disabled = false; }
+    // 422 is the server asking a QUESTION - the tree wants something the
+    // sign-off sheet has not answered - and the answer to a question is not an
+    // alert thrown at somebody standing at a customer's door. Ask him the one
+    // or two things and dial. Anything else is an ordinary failure.
+    if (err && err.status === 422 && err.data && err.data.needs_answers) {
+      checkinAskSheet(workOrderId, dir, err.data.ask || []);
+      return;
+    }
     novaAlert(err.message);
   }
   checkinMount(checkinHostId(), workOrderId);
+}
+
+// The two questions the tree wants and the paperwork did not answer.
+//
+// Only ever built from the server's own list: a field Nova did not ask for is
+// dropped server-side, so this sheet cannot be used to hand Nova a PIN or a
+// job status that contradicts the signed sheet. utils/checkinReadiness.js
+// applyAnswers() is where that is enforced, and there is a test for it.
+function checkinAskSheet(workOrderId, dir, ask) {
+  ask = ask || [];
+  var ov = document.createElement('div');
+  ov.className = 'nova-dialog-overlay';
+  function close() {
+    ov.classList.add('closing');
+    document.removeEventListener('keydown', onKey);
+    setTimeout(function () { if (ov.parentNode) ov.parentNode.removeChild(ov); }, 140);
+  }
+  function onKey(e) { if (e.key === 'Escape') { e.preventDefault(); close(); } }
+  document.addEventListener('keydown', onKey);
+
+  var rows = ask.map(function (a, i) {
+    var id = 'ci-ask-' + i;
+    var input;
+    if (a.type === 'choice') {
+      input = '<select id="' + id + '">' + (a.options || []).map(function (o) {
+        return '<option value="' + escHtml(o.value) + '">' + escHtml(o.label) + '</option>';
+      }).join('') + '</select>';
+    } else if (a.type === 'number') {
+      input = '<input type="number" id="' + id + '" min="1" max="99" value="' + escHtml(a.suggested || '') + '" />';
+    } else if (a.type === 'date') {
+      input = '<input type="date" id="' + id + '" />';
+    } else {
+      input = '<input type="text" id="' + id + '" value="' + escHtml(a.suggested || '') + '" />';
+    }
+    return '<div class="form-group"><label>' + escHtml(a.label || a.key) + '</label>' + input +
+      (a.why ? '<div class="csub">' + escHtml(a.why) + '</div>' : '') + '</div>';
+  }).join('');
+
+  ov.innerHTML = '<div class="nova-dlg" style="max-width:460px;text-align:left">' +
+    '<div class="nova-dlg-title">Before Nova calls</div>' +
+    '<div class="csub" style="margin:6px 0 14px">The tree asks for this and the sign-off sheet has not answered yet. Nova will not dial until it can say where every value came from.</div>' +
+    rows +
+    '<div class="nova-dlg-actions">' +
+      '<button class="btn btn-secondary" id="ci-ask-x">Cancel</button>' +
+      '<button class="btn btn-primary" id="ci-ask-go">Call now</button>' +
+    '</div></div>';
+  document.body.appendChild(ov);
+  ov.addEventListener('mousedown', function (e) { if (e.target === ov) close(); });
+  var x = ov.querySelector('#ci-ask-x'); if (x) x.addEventListener('click', close);
+  var go = ov.querySelector('#ci-ask-go');
+  if (go) go.addEventListener('click', function () {
+    var answers = {};
+    ask.forEach(function (a, i) {
+      var e = ov.querySelector('#ci-ask-' + i);
+      var v = e ? String(e.value == null ? '' : e.value).trim() : '';
+      if (v) answers[a.key] = v;
+    });
+    close();
+    checkinFire(workOrderId, dir, null, answers);
+  });
 }
 
 async function checkinManual(workOrderId, dir, btn) {
@@ -19001,6 +19126,29 @@ function checkinGps() {
     }, function () { if (!done) { done = true; clearTimeout(t); resolve(null); } },
       { enableHighAccuracy: true, timeout: 3500, maximumAge: 15000 });
   });
+}
+
+// Did the tree really say what the model claims it said?
+//
+// The same normalisation utils/ivrBrain.js verifyQuote() uses server-side, for
+// the same reason: a transcript writes numbers and punctuation however it likes,
+// and the question being asked is whether the WORDS are there.
+function checkinQuoteFound(haystack, quote) {
+  function flat(s) { return String(s == null ? '' : s).toLowerCase().replace(/[^a-z0-9 ]+/g, ' ').replace(/\s+/g, ' ').trim(); }
+  var h = flat(haystack), q = flat(quote);
+  return !!(h && q && h.indexOf(q) !== -1);
+}
+
+// What Nova did about what it heard, in the words a person would use.
+function checkinTurnVerb(t) {
+  var a = String((t && t.action) || '').toLowerCase();
+  if (a === 'press') return 'pressed ' + escHtml(t.digits || '');
+  if (a === 'send') return 'sent the ' + escHtml(String(t.field || 'value').replace(/_/g, ' '));
+  if (a === 'wait') return 'waited';
+  if (a === 'listen') return 'listened';
+  if (a === 'confirm') return 'called it confirmed';
+  if (a === 'abort') return 'hung up';
+  return escHtml(a || 'did nothing');
 }
 
 // The evidence. On a phone call this is the recording and the transcript with
@@ -19061,13 +19209,67 @@ async function openCheckinRecord(eventId) {
       (ev.auth_number ? '<div class="ci-row"><span class="ci-k">Number read back</span><span class="ci-v mono">' + escHtml(ev.auth_number) + '</span></div>' : '') +
       (ev.failure_reason ? '<div class="ci-row"><span class="ci-k">Why it failed</span><span class="ci-v" style="font-size:13px;color:#fca5a5">' + escHtml(ev.failure_reason) + '</span></div>' : '') +
     '</div>' +
+    checkinKnowsHtml(ev) +
+    checkinTurnsHtml(ev) +
     (ev.transcript
       ? '<div class="ci-tx"><div class="ci-tx-h">What Nova heard</div><div class="ci-tx-b">' + body + '</div></div>'
-      : '<div class="csub" style="margin-top:12px">No recording was transcribed for this one.</div>') +
+      : ev.live_transcript
+        ? '<div class="ci-tx"><div class="ci-tx-h">What Nova heard <span class="cdim">(live from the call)</span></div>' +
+          '<div class="ci-tx-b">' + escHtml(ev.live_transcript) + '</div>' +
+          '<div class="csub">This is what the line heard while the call was still up, which is what the green light was decided from. The recording is transcribed a minute or so later and lands here.</div></div>'
+        : '<div class="csub" style="margin-top:12px">No recording was transcribed for this one.</div>') +
     (ev.recording_url ? '<audio controls preload="none" src="' + escHtml(ev.recording_url) + '" style="width:100%;margin-top:12px"></audio>' : '') +
     '<div class="nova-dlg-actions"><button class="btn btn-secondary" id="ci-close">Close</button></div>';
   var b = ov.querySelector('#ci-close');
   if (b) b.addEventListener('click', close);
+}
+
+
+// How Nova knows, spelled out.
+//
+// A confirmation the model produced is not the same evidence as one a phrase
+// match found, and months later, on a denied invoice, that difference is the
+// whole argument. So the quote is shown either way, and whether the recording
+// actually contains it is stated rather than implied.
+function checkinKnowsHtml(ev) {
+  if (!ev.ai_quote && !ev.verdict_source) return '';
+  var heard = String(ev.transcript || ev.live_transcript || '');
+  var found = checkinQuoteFound(heard, ev.ai_quote);
+  var how;
+  if (ev.verdict_source === 'ai_quoted') {
+    how = found
+      ? 'The navigator judged this confirmed and quoted what it heard, and we found those words in the recording.'
+      : 'The navigator judged this confirmed and quoted what it heard, but those words are not in the recording.';
+  } else if (ev.verdict_source === 'phrase') {
+    how = 'The recording contains one of the phrases this account was set up to listen for. No model was involved in the verdict.';
+  } else {
+    how = 'The navigator quoted what it thought it heard.';
+  }
+  return '<div class="ci-callout" style="margin-top:12px">' +
+    '<div class="ci-row"><span class="ci-k">How Nova knows</span><span class="ci-v" style="font-size:13px">' + how + '</span></div>' +
+    (ev.ai_quote
+      ? '<div class="ci-row"><span class="ci-k">It quoted</span><span class="ci-v" style="font-size:13px">&ldquo;' + escHtml(ev.ai_quote) + '&rdquo; ' +
+        (found ? '<span class="cdim">(found in the recording)</span>' : '<span style="color:#fca5a5">(not found in the recording)</span>') +
+        '</span></div>'
+      : '') +
+    '</div>';
+}
+
+// The call as a conversation. This is the whole reason the AI lane is
+// defensible: every keypress has the prompt that caused it sitting next to it.
+function checkinTurnsHtml(ev) {
+  var turns = Array.isArray(ev.turns) ? ev.turns : [];
+  if (!turns.length) return '';
+  return '<div class="ci-tx"><div class="ci-tx-h">Turn by turn</div><div class="ci-tx-b">' +
+    turns.map(function (t, i) {
+      return '<div style="margin-bottom:10px">' +
+        '<div class="cdim" style="font-size:12px">' + (t.n || (i + 1)) + '. the tree said</div>' +
+        '<div>' + escHtml(t.heard || '') + '</div>' +
+        '<div class="cdim" style="font-size:12px;margin-top:2px">Nova ' + checkinTurnVerb(t) +
+          (t.reason ? ' &middot; ' + escHtml(t.reason) : '') +
+          (t.source === 'hardstop' ? ' &middot; forced, the model was never asked' : '') +
+        '</div></div>';
+    }).join('') + '</div></div>';
 }
 
 // ---------------------------------------------------------------------------
@@ -19081,6 +19283,9 @@ async function openCheckinRecord(eventId) {
 
 var _ciProfile = null;
 var _ciFields = [];
+// The whole /checkins/config payload, not just the script fields: the AI half of
+// the editor is built from readiness_fields, default_needs and modes.
+var _ciCfg = null;
 var _ciVendors = [];
 
 function ciStepRow(step, i, which) {
@@ -19227,6 +19432,7 @@ async function renderCheckinProfile(el, id) {
   if (!can('manage_ivr_profiles')) { el.innerHTML = '<div class="alert alert-error">Access denied.</div>'; return; }
   el.innerHTML = '<div class="loading">Loading&hellip;</div>';
   var cfg = await checkinConfig();
+  _ciCfg = cfg;
   _ciFields = cfg.fields || [];
   try { _ciVendors = await api('GET', '/vendors'); } catch (e) { _ciVendors = []; }
   if (id) {
@@ -19234,6 +19440,7 @@ async function renderCheckinProfile(el, id) {
     catch (e) { el.innerHTML = '<div class="alert alert-error">' + escHtml(e.message) + '</div>'; return; }
   } else {
     _ciProfile = { id: null, method: 'phone', site_radius_ft: 500, checkin_steps: [], checkout_steps: [],
+      mode: 'script', max_turns: 12,
       confirm_phrases: 'you are checked in; check in successful', checkout_confirm_phrases: 'check out complete',
       capture_label: 'Authorization number' };
   }
@@ -19264,9 +19471,12 @@ async function renderCheckinProfile(el, id) {
         '<div class="form-group"><label>Number to call</label><input type="text" id="ci-phone" value="' + escHtml(_ciProfile.phone_number || '') + '" placeholder="(800) 555-0142" /></div>' +
       '</div>' +
       '<div class="csub">Nova only ever dials the number saved here, never one typed into a request. That is what guarantees it cannot be talked into calling somewhere else.</div>' +
+      ciPinHtml() +
     '</div></div>' +
 
-    '<div class="card mb-4"><div class="card-header"><span class="card-title">2. The steps</span>' +
+    ciAiCardHtml() +
+
+    '<div class="card mb-4"><div class="card-header"><span class="card-title">3. The steps</span>' +
       '<span style="font-size:12px;color:var(--text-muted-color)">Values come off the work order. Nobody types them.</span></div><div class="card-body">' +
       // Steps left, explanation right. It wraps to one column under about 900px,
       // with the help dropping BELOW the builder rather than above it, so a phone
@@ -19291,7 +19501,7 @@ async function renderCheckinProfile(el, id) {
       '</div>' +
     '</div></div>' +
 
-    '<div class="card mb-4"><div class="card-header"><span class="card-title">3. How Nova knows it worked</span></div><div class="card-body">' +
+    '<div class="card mb-4"><div class="card-header"><span class="card-title">4. How Nova knows it worked</span></div><div class="card-body">' +
       '<div class="form-group"><label>Nova only marks a check-in when the recording contains one of these</label>' +
         '<input type="text" id="ci-phrases" value="' + escHtml(_ciProfile.confirm_phrases || '') + '" placeholder="you are checked in; check in successful" /></div>' +
       '<div class="form-group"><label>And for check-out</label>' +
@@ -19311,10 +19521,7 @@ async function renderCheckinProfile(el, id) {
         // direction itself - check-in if there were check-in steps, otherwise
         // check-out - which meant that the moment a check-out script existed,
         // Test Call could never reach it again.
-        (_ciProfile.id && (_ciProfile.checkin_steps || []).length
-          ? '<button class="btn btn-secondary" onclick="ciTestCall(&#39;in&#39;)">&#9742; Test check-in</button>' : '') +
-        (_ciProfile.id && (_ciProfile.checkout_steps || []).length
-          ? '<button class="btn btn-secondary" onclick="ciTestCall(&#39;out&#39;)">&#9742; Test check-out</button>' : '') +
+        ciTestBtnsHtml() +
         (_ciProfile.id ? '<button class="btn ' + (_ciProfile.active ? 'btn-secondary' : 'btn-primary') + '" onclick="ciToggleActive()">' +
           (_ciProfile.active ? 'Take offline' : 'Mark live') + '</button>' : '') +
         (_ciProfile.id ? '<button class="btn btn-ghost" style="color:#b91c1c" onclick="ciDeleteProfile()">Delete</button>' : '') +
@@ -19368,7 +19575,9 @@ function _ciDraftFlush() {
 }
 
 function ciDraftAttach() {
-  ['ci-vendor','ci-method','ci-phone','ci-phrases','ci-phrases-out','ci-capture','ci-caplabel'].forEach(function (idn) {
+  ['ci-vendor','ci-method','ci-phone','ci-phrases','ci-phrases-out','ci-capture','ci-caplabel',
+   'ci-mode','ci-goal-in','ci-goal-out','ci-playbook','ci-maxturns',
+   'ci-status-complete','ci-status-incomplete_parts','ci-status-return_trip','ci-status-cancelled'].forEach(function (idn) {
     var e = document.getElementById(idn);
     if (!e) return;
     e.addEventListener('input', function () { ciDraftSave(); });
@@ -19396,7 +19605,8 @@ async function ciDraftRestore(id) {
   // older build may not have every field, and a MISSING key means "no opinion",
   // not "cleared to empty" - treating those the same would nag on every open.
   var differs = false;
-  ['phone_number','confirm_phrases','checkout_confirm_phrases','capture_pattern','capture_label','method'].forEach(function (k) {
+  ['phone_number','confirm_phrases','checkout_confirm_phrases','capture_pattern','capture_label','method',
+   'mode','goal_checkin','goal_checkout','playbook'].forEach(function (k) {
     if (b[k] === undefined) return;
     if ((b[k] || '') !== (_ciProfile[k] || '')) differs = true;
   });
@@ -19424,6 +19634,16 @@ async function ciDraftRestore(id) {
     put('ci-vendor', b.vendor_id); put('ci-method', b.method); put('ci-phone', b.phone_number);
     put('ci-phrases', b.confirm_phrases); put('ci-phrases-out', b.checkout_confirm_phrases);
     put('ci-capture', b.capture_pattern); put('ci-caplabel', b.capture_label);
+    put('ci-mode', b.mode); put('ci-maxturns', b.max_turns);
+    put('ci-goal-in', b.goal_checkin); put('ci-goal-out', b.goal_checkout); put('ci-playbook', b.playbook);
+    CI_STATUS_KEYS.forEach(function (k) { put('ci-status-' + k, (b.status_map || {})[k]); });
+    ['in', 'out'].forEach(function (dir) {
+      ((_ciCfg || {}).readiness_fields || []).forEach(function (f) {
+        var box = document.getElementById('ci-need-' + dir + '-' + f.key);
+        if (box && b.needs) box.checked = ((b.needs[dir] || []).indexOf(f.key) !== -1);
+      });
+    });
+    ciModeChanged();
     ciRedrawSteps('checkin_steps'); ciRedrawSteps('checkout_steps');
     host.innerHTML = '<div class="alert alert-success">Restored. Save when you are happy with it.</div>';
   });
@@ -19431,6 +19651,195 @@ async function ciDraftRestore(id) {
     novaDraftDel(ciDraftKey(id));
     host.innerHTML = '';
   });
+}
+
+// ---------------------------------------------------------------------------
+// The AI navigator's half of a profile.
+//
+// Everything on this card is DATA the navigator is handed, not instructions it
+// is trusted to obey. The goal and the playbook shape the prompt; what the tree
+// asks for and which key means finished are resolved BEFORE the call and the
+// model never gets to invent either. See utils/ivrBrain.js for why that split
+// is the whole design.
+// ---------------------------------------------------------------------------
+var CI_STATUS_KEYS = ['complete', 'incomplete_parts', 'return_trip', 'cancelled'];
+
+function ciAiCardHtml() {
+  var cfg = _ciCfg || {};
+  var modes = cfg.modes || [{ value: 'script', label: 'Script only', hint: '' },
+    { value: 'ai_fallback', label: 'Script, then AI', hint: '' },
+    { value: 'ai', label: 'AI navigator', hint: '' }];
+  var cur = String(_ciProfile.mode || 'script').toLowerCase();
+  var opts = modes.map(function (m) {
+    return '<option value="' + escHtml(m.value) + '"' + (m.value === cur ? ' selected' : '') + '>' + escHtml(m.label) + '</option>';
+  }).join('');
+  var hints = modes.map(function (m) {
+    return '<div style="margin-bottom:3px"><b>' + escHtml(m.label) + '</b>' + (m.hint ? ' &middot; ' + escHtml(m.hint) : '') + '</div>';
+  }).join('');
+  var sm = _ciProfile.status_map || {};
+  function digit(k, label) {
+    return '<div class="form-group" style="flex:1 1 150px"><label>' + label + '</label>' +
+      '<input type="text" id="ci-status-' + k + '" class="mono" maxlength="4" value="' + escHtml(sm[k] || '') + '" placeholder="e.g. 1" /></div>';
+  }
+  return '<div class="card mb-4"><div class="card-header"><span class="card-title">2. Who navigates the tree</span></div><div class="card-body">' +
+    '<div class="form-row" style="margin-bottom:6px">' +
+      '<div class="form-group" style="flex:2 1 260px"><label>Mode</label>' +
+        '<select id="ci-mode" onchange="ciModeChanged()">' + opts + '</select></div>' +
+      '<div class="form-group" style="flex:1 1 150px"><label>Turns before it gives up</label>' +
+        '<input type="number" id="ci-maxturns" min="1" max="20" value="' + (parseInt(_ciProfile.max_turns, 10) || 12) + '" /></div>' +
+    '</div>' +
+    '<div class="csub" style="margin-bottom:14px">' + hints + '</div>' +
+    '<div id="ci-ai-box"' + (cur === 'script' ? ' style="display:none"' : '') + '>' +
+      '<div class="csub" style="margin-bottom:14px">An AI call runs about <b>19 cents</b> against roughly <b>2.5 cents</b> for a scripted one, because every turn is a paid speech gather. After three clean runs of the same tree Nova offers to save what it learned as an ordinary script, and you stop paying for it.</div>' +
+      '<div class="form-group"><label>What it is trying to do &mdash; check-in</label>' +
+        '<input type="text" id="ci-goal-in" value="' + escHtml(_ciProfile.goal_checkin || '') + '" placeholder="check this job in and get the confirmation number" /></div>' +
+      '<div class="form-group"><label>And check-out</label>' +
+        '<input type="text" id="ci-goal-out" value="' + escHtml(_ciProfile.goal_checkout || '') + '" placeholder="check this job out and say whether the work is finished" /></div>' +
+      '<div class="form-group"><label>What you already know about this tree</label>' +
+        '<textarea id="ci-playbook" rows="4" placeholder="Press 1 for vendor. It asks for the PIN twice on a bad line. The menu re-reads itself if you wait.">' +
+        escHtml(_ciProfile.playbook || '') + '</textarea>' +
+        '<div class="csub">Anything you would tell a new hire before handing them the phone. It is read as notes about the tree, never as commands.</div></div>' +
+      '<div class="clabel" style="margin:18px 0 6px">What the tree asks for</div>' +
+      '<div class="csub" style="margin-bottom:10px">Nova will not dial until it can name every one of these and say where it came from. Tick nothing and it assumes the usual: the PIN and the tracking number, plus job status and head count on a check-out.</div>' +
+      ciNeedsHtml('in') + ciNeedsHtml('out') +
+      '<div class="clabel" style="margin:18px 0 6px">Which key means what, on a check-out</div>' +
+      '<div class="csub" style="margin-bottom:10px">The one thing the model never decides. Nothing here means a check-out is <b>blocked</b> rather than guessed, because the wrong status closes the job in the wrong state on the client&#39;s side.</div>' +
+      '<div class="form-row" style="margin-bottom:0">' +
+        digit('complete', 'Finished') + digit('incomplete_parts', 'Waiting on parts') +
+        digit('return_trip', 'Coming back') + digit('cancelled', 'Cancelled on site') +
+      '</div>' +
+      ciPromoteHtml() +
+    '</div>' +
+  '</div></div>';
+}
+
+// Learn once, then stop paying.
+//
+// Three consecutive AI runs that pressed the same keys in the same order says
+// the tree is stable - it was just never scripted. This turns that run into
+// ordinary steps the cheap path can run forever. NOTHING here is automatic:
+// the new script arrives switched off and has to pass a test call like any
+// other, because a script nobody has heard is how Nova ends up telling a
+// client somebody arrived when they did not.
+function ciPromoteHtml() {
+  var streak = parseInt(_ciProfile.ai_streak, 10) || 0;
+  if (!_ciProfile.id || streak < 3) {
+    return '<div class="csub" style="margin-top:16px">After <b>three</b> AI calls in a row that press the same keys in the same order, Nova offers to save what it learned here as an ordinary script and stop charging you for the model.' +
+      (streak ? ' <b>' + streak + '</b> so far.' : '') + '</div>';
+  }
+  return '<div class="alert alert-success" style="margin:16px 0 0;display:flex;gap:10px;align-items:center;flex-wrap:wrap">' +
+    '<span style="flex:1 1 260px"><b>This tree has not changed in ' + streak + ' calls.</b> Nova can save what it learned as a plain script, which costs about an eighth as much to run. It arrives switched off and needs a test call, like any other.</span>' +
+    '<button class="btn btn-primary btn-sm" onclick="ciPromote(&#39;in&#39;)">Save it as the check-in script</button>' +
+    '<button class="btn btn-secondary btn-sm" onclick="ciPromote(&#39;out&#39;)">&hellip; or the check-out one</button>' +
+    '</div>';
+}
+
+async function ciPromote(dir) {
+  var host = document.getElementById('ci-err');
+  if (!_ciProfile.id) return;
+  if (!await novaConfirm('Save what the navigator learned as the ' + (dir === 'out' ? 'check-out' : 'check-in') +
+    ' script? It replaces the steps that are there now, and the profile goes offline until it passes a test call.')) return;
+  try {
+    var saved = await api('POST', '/checkins/profiles/' + _ciProfile.id + '/promote', { direction: dir });
+    navigate('checkin-profile', saved.profile ? saved.profile.id : _ciProfile.id);
+  } catch (err) {
+    if (host) host.innerHTML = '<div class="alert alert-error">' + escHtml(err.message) + '</div>';
+  }
+}
+
+// The fields the tree asks for, per direction. A script says this out loud
+// through its send steps, so it is only asked here - an AI profile has no steps
+// to read, and guessing at dial time is how a call ends up halfway through a
+// tree with nothing left to type.
+function ciNeedsHtml(dir) {
+  var cfg = _ciCfg || {};
+  var fields = cfg.readiness_fields || [];
+  var chosen = (_ciProfile.needs && _ciProfile.needs[dir]) || [];
+  var boxes = fields.map(function (f) {
+    var on = chosen.indexOf(f.key) !== -1;
+    return '<label class="ci-need"><input type="checkbox" id="ci-need-' + dir + '-' + f.key + '"' +
+      (on ? ' checked' : '') + ' onchange="ciTouched()" /> ' + escHtml(f.label) +
+      (f.askable ? '' : ' <span class="cdim">(setup only &mdash; nobody can type this at a door)</span>') + '</label>';
+  }).join('');
+  return '<div style="margin-bottom:12px"><div class="cdim" style="font-size:12px;margin-bottom:4px">' +
+    (dir === 'out' ? 'Check-out' : 'Check-in') + '</div><div class="ci-needs">' +
+    (boxes || '<span class="cdim">No fields configured.</span>') + '</div></div>';
+}
+
+function ciModeChanged() {
+  var e = document.getElementById('ci-mode');
+  var box = document.getElementById('ci-ai-box');
+  if (box) box.style.display = ((e && e.value) === 'script' || !e) ? 'none' : '';
+  ciTouched();
+}
+
+function ciStatusMap() {
+  var out = {};
+  CI_STATUS_KEYS.forEach(function (k) {
+    var e = document.getElementById('ci-status-' + k);
+    var d = e ? String(e.value || '').replace(/[^0-9*#]/g, '').slice(0, 4) : '';
+    if (d) out[k] = d;
+  });
+  return Object.keys(out).length ? out : null;
+}
+
+// The account's own PIN, for the accounts that issue one to the company rather
+// than printing it on every work order. Write-only: it is encrypted server-side
+// and never read back, so a manager who cannot remember it types a new one.
+function ciPinHtml() {
+  if (!_ciProfile.id) {
+    return '<div class="csub" style="margin-top:10px">If this account issues one PIN to the company instead of printing it on each work order, save the script first and a box for it appears here.</div>';
+  }
+  var has = !!_ciProfile.has_account_pin;
+  return '<div class="form-row" style="margin:12px 0 0">' +
+    '<div class="form-group" style="flex:2 1 300px"><label>Account PIN' +
+      (has ? ' <span class="cdim">(one is saved' + (_ciProfile.account_pin_hint ? ', ending ' + escHtml(_ciProfile.account_pin_hint) : '') + ')</span>' : '') +
+      '</label><input type="password" id="ci-pin" autocomplete="new-password" placeholder="' +
+      (has ? 'type a new one to replace the saved PIN' : 'only if the tree asks for a PIN that is not on the work order') + '" /></div>' +
+    '<div class="form-group" style="flex:0 0 auto;align-self:flex-end">' +
+      '<button class="btn btn-secondary" onclick="ciSavePin()">Save PIN</button></div>' +
+    '</div>' +
+    '<div class="csub">Encrypted and never shown again. Nova reads it only on the way to a keypad. Empty the box and press Save PIN to remove the one on file.</div>';
+}
+
+async function ciSavePin() {
+  var e = document.getElementById('ci-pin');
+  var host = document.getElementById('ci-err');
+  if (!e || !_ciProfile.id) return;
+  try {
+    var saved = await api('POST', '/checkins/profiles/' + _ciProfile.id + '/pin', { pin: e.value });
+    _ciProfile.has_account_pin = saved.has_account_pin;
+    _ciProfile.account_pin_hint = saved.account_pin_hint;
+    e.value = '';
+    if (host) host.innerHTML = '<div class="alert alert-success">' + (saved.has_account_pin ? 'PIN saved.' : 'PIN removed.') + '</div>';
+  } catch (err) {
+    if (host) host.innerHTML = '<div class="alert alert-error">' + escHtml(err.message) + '</div>';
+  }
+}
+
+// Which lane to test, explicitly.
+//
+// An ai_fallback profile runs the SCRIPT in production and only reaches for the
+// model when that script has already failed, so without a lane there is no way
+// to exercise the navigator on it at all - and the navigator is the half nobody
+// has heard yet.
+function ciTestBtnsHtml() {
+  if (!_ciProfile.id) return '';
+  var aiOn = (_ciProfile.mode || 'script') !== 'script';
+  var m = String(_ciProfile.mode || 'script').toLowerCase();
+  var sfx = aiOn ? ' (script)' : '';
+  var out = '';
+  if (m !== 'ai' && (_ciProfile.checkin_steps || []).length) {
+    out += '<button class="btn btn-secondary" onclick="ciTestCall(&#39;in&#39;,&#39;script&#39;)">&#9742; Test check-in' + sfx + '</button>';
+  }
+  if (m !== 'ai' && (_ciProfile.checkout_steps || []).length) {
+    out += '<button class="btn btn-secondary" onclick="ciTestCall(&#39;out&#39;,&#39;script&#39;)">&#9742; Test check-out' + sfx + '</button>';
+  }
+  if (aiOn) {
+    out += '<button class="btn btn-secondary" onclick="ciTestCall(&#39;in&#39;,&#39;ai&#39;)">&#9742; Test check-in (AI)</button>';
+    out += '<button class="btn btn-secondary" onclick="ciTestCall(&#39;out&#39;,&#39;ai&#39;)">&#9742; Test check-out (AI)</button>';
+  }
+  return out;
 }
 
 function ciCollect() {
@@ -19446,7 +19855,26 @@ function ciCollect() {
     confirm_phrases: v('ci-phrases'),
     checkout_confirm_phrases: v('ci-phrases-out'),
     capture_pattern: v('ci-capture'),
-    capture_label: v('ci-caplabel')
+    capture_label: v('ci-caplabel'),
+    mode: v('ci-mode') || 'script',
+    goal_checkin: v('ci-goal-in'),
+    goal_checkout: v('ci-goal-out'),
+    playbook: v('ci-playbook'),
+    max_turns: parseInt(v('ci-maxturns'), 10) || 12,
+    status_map: ciStatusMap(),
+    // Inline rather than behind a helper, so what a save actually sends is
+    // readable in one place beside everything else it sends.
+    needs: (function () {
+      var fields = (_ciCfg || {}).readiness_fields || [];
+      var out = { in: [], out: [] };
+      ['in', 'out'].forEach(function (dir) {
+        fields.forEach(function (f) {
+          var e = document.getElementById('ci-need-' + dir + '-' + f.key);
+          if (e && e.checked) out[dir].push(f.key);
+        });
+      });
+      return (out.in.length || out.out.length) ? out : null;
+    })()
   };
 }
 
@@ -19504,8 +19932,9 @@ function ciTestRender(html) {
 // for a real check-in, which means the result has to come back HERE. Otherwise
 // the one button whose whole job is to tell you whether the script works fires
 // into silence.
-async function ciTestCall(dir) {
+async function ciTestCall(dir, lane) {
   dir = (dir === 'out') ? 'out' : 'in';
+  lane = (lane === 'ai' || lane === 'script') ? lane : null;
   var wo = await novaPrompt('Test the ' + (dir === 'out' ? 'check-OUT' : 'check-IN') +
     ' script against which work order? The work order number off the paperwork is fine, or Nova&#39;s own id.');
   if (!wo) return;
@@ -19513,7 +19942,7 @@ async function ciTestCall(dir) {
   var ev;
   try {
     ev = await api('POST', '/checkins/profiles/' + _ciProfile.id + '/test',
-      { work_order: String(wo).trim(), direction: dir });
+      { work_order: String(wo).trim(), direction: dir, mode: lane });
   } catch (err) {
     ciTestRender('<div class="alert alert-error" style="margin-top:12px">' + escHtml(err.message) + '</div>');
     return;
