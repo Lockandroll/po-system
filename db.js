@@ -1583,6 +1583,29 @@ async function initDB() {
       'CREATE INDEX IF NOT EXISTS idx_pulsar_cash_date ON pulsar_cash_calls(call_date);' +
       'CREATE INDEX IF NOT EXISTS idx_pulsar_imports_period ON pulsar_imports(period_start);'
     );
+
+    // Who gets copied (FYI) on the deposit chase task the Pulsar Verification
+    // board opens. Stored as a settings list of user ids rather than hard-coded
+    // names so the list can change without a deploy; seeded ONCE, only when the
+    // key is absent, so clearing it to [] in the UI stays cleared and a later
+    // boot never resurrects a name Tony deliberately removed. If neither name
+    // resolves yet (fresh database, users not created), nothing is written and
+    // the next boot tries again.
+    const _depCc = await client.query("SELECT value FROM settings WHERE key = 'deposit_chase_cc_user_ids'");
+    if (!_depCc.rows.length) {
+      try {
+        const _ccSeed = await client.query(
+          "SELECT id FROM users WHERE active = true AND LOWER(TRIM(name)) = ANY($1) ORDER BY id",
+          [['tony mckeon', 'ben landers']]
+        );
+        if (_ccSeed.rows.length) {
+          await client.query(
+            "INSERT INTO settings (key, value, updated_at) VALUES ('deposit_chase_cc_user_ids', $1, NOW()) ON CONFLICT (key) DO NOTHING",
+            [JSON.stringify(_ccSeed.rows.map(function (r) { return r.id; }))]
+          );
+        }
+      } catch (e) { console.error('deposit chase CC seed failed:', e.message); }
+    }
     // Indexes on frequently-filtered columns for the main list views
     await client.query(
       'CREATE INDEX IF NOT EXISTS idx_po_requester ON purchase_orders(requester_id);' +

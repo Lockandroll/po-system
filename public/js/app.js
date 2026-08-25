@@ -4334,6 +4334,18 @@ function applyTaskPrefill(p) {
     var sel = document.getElementById('tk-assignee');
     if (sel) sel.value = String(ids[0]);
   }
+  // Copy (FYI) pre-ticks. These are awareness-only - no task is created for
+  // them - so they are ADDED to whatever is already ticked and never clear a
+  // box the form put there itself.
+  var ccIds = p.cc || [];
+  if (ccIds.length) {
+    var ccHit = 0;
+    var ccBoxes = document.querySelectorAll('.tk-cc');
+    for (var c = 0; c < ccBoxes.length; c++) {
+      if (ccIds.indexOf(parseInt(ccBoxes[c].value, 10)) !== -1 && !ccBoxes[c].checked) { ccBoxes[c].checked = true; ccHit++; }
+    }
+    if (ccHit && typeof taskUpdateCcCount === 'function') taskUpdateCcCount();
+  }
   var t = document.getElementById('tk-title');
   if (t) { try { t.focus(); t.setSelectionRange(t.value.length, t.value.length); } catch (e) {} }
 }
@@ -30313,6 +30325,22 @@ async function pvToggleLate(i, late) {
 // same as the Tasks page, so the permission check, activity entry and assignment
 // email all still happen. The marker that makes this row remember the task is a
 // separate, best-effort follow-up call.
+// Explains the pre-ticked manager when it is NOT the obvious answer. The
+// ordinary case - the primary manager of the tech's home city - gets no note,
+// because a banner on every single task trains people to stop reading them.
+function pvAssigneeNote(r, who, city) {
+  if (r.manager_source === 'home') return null;
+  if (r.manager_source === 'worked') {
+    return 'No primary manager is set for ' + (r.home_city_code
+      ? (who + '’s home city (' + r.home_city_code + ')')
+      : (who + '’s home city, and no home city is set on their profile'))
+      + ', so this is assigned to ' + (r.manager_name || 'the manager') + ', who runs ' +
+      (r.manager_city_code || city) + ' where the calls were worked.';
+  }
+  return 'No primary manager is set for ' + (r.home_city_code || city) +
+    ', so this is assigned to you. Set one under Cities to route it there automatically next time.';
+}
+
 async function pvSendToTask(i) {
   var d = _pvState.recon;
   if (!d || !d.rows[i]) return;
@@ -30320,7 +30348,15 @@ async function pvSendToTask(i) {
   var who = r.user_name || r.tech_raw || 'this technician';
   var city = r.city_code || '—';
   var missing = (r.status === 'no_deposit' || r.status === 'unlinked') ? Number(r.pulsar_cash) : Number(r.gap);
+  // r.manager_user_id is the primary manager of the tech's HOME city, falling
+  // back to the city the calls were worked in (routes/pulsar.js decides; the
+  // browser must not second-guess it or the two answers drift).
   var assignee = r.manager_user_id || state.user.id;
+  // Copied (FYI) so the office sees the chase without a task landing on them.
+  // Server-supplied, from the deposit_chase_cc_user_ids setting.
+  var ccIds = (d.cc_default || []).map(function (x) { return x.id; }).filter(function (x) {
+    return x && x !== assignee;   // the assignee already gets the real task
+  });
 
   var periodLabel = formatDate(d.period_start) + ' – ' + formatDate(d.period_end);
   var title = 'Cash deposit missing — ' + who + ' (' + city + '), week of ' + formatDate(d.period_start);
@@ -30353,11 +30389,11 @@ async function pvSendToTask(i) {
     description: lines.join('\n'),
     priority: 'high',
     due_date: depYmd(depAddDays(new Date(), 3)),
-    assignees: [assignee]
+    assignees: [assignee],
+    cc: ccIds
   }, {
     heading: 'Chase ' + who + '’s deposit',
-    note: r.manager_user_id ? null
-      : ('No primary manager is set for ' + city + ', so this is assigned to you. Set one under Cities to route it there automatically next time.'),
+    note: pvAssigneeNote(r, who, city),
     onSaved: async function (ids) {
       // Several assignees means several tasks; the row only needs to know that
       // one exists, so the first id is what gets remembered.

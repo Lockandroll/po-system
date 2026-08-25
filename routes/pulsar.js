@@ -561,6 +561,42 @@ router.get('/reconciliation', requireAuth, requirePermission('view_deposits'), m
       });
     } catch (e) { mgrByCity = {}; }
 
+    // The tech's HOME city, which is the one whose manager actually runs them.
+    // r.city_code is where the CALLS were worked, and a tech who covered another
+    // market for a week would otherwise hand the chase to a manager who has
+    // never met them. Home city wins; the worked city is the fallback.
+    var homeByUser = {};
+    try {
+      var uids = rows.map(function (r) { return r.user_id; }).filter(function (id) { return !!id; });
+      if (uids.length) {
+        var hc = await pool.query('SELECT id, home_city FROM users WHERE id = ANY($1)', [uids]);
+        hc.rows.forEach(function (u) {
+          if (u.home_city) homeByUser[u.id] = String(u.home_city).trim().toUpperCase();
+        });
+      }
+    } catch (e) { homeByUser = {}; }
+
+    // People copied (FYI) on the chase task by default. A settings list of user
+    // ids, not hard-coded names, so the list changes without a deploy. Filtered
+    // through users so a deactivated or deleted person quietly drops off instead
+    // of the browser pre-ticking a checkbox that is no longer in the list.
+    var ccDefault = [];
+    try {
+      var cs = await pool.query("SELECT value FROM settings WHERE key = 'deposit_chase_cc_user_ids'");
+      var wanted = cs.rows.length ? JSON.parse(cs.rows[0].value || '[]') : [];
+      if (!Array.isArray(wanted)) wanted = [];
+      wanted = wanted.map(function (v) { return parseInt(v, 10); }).filter(function (v) { return v > 0; });
+      if (wanted.length) {
+        var cu = await pool.query('SELECT id, name FROM users WHERE id = ANY($1) AND active = true', [wanted]);
+        // Keep the order the setting lists them in, not whatever the query returns.
+        var byId = {};
+        cu.rows.forEach(function (u) { byId[u.id] = u.name; });
+        wanted.forEach(function (id) {
+          if (byId[id]) ccDefault.push({ id: id, name: byId[id] });
+        });
+      }
+    } catch (e) { ccDefault = []; }
+
     // Chase tasks already opened for this pay week, so the board offers a link
     // instead of a second button. A task that has since been deleted or closed
     // stops counting - the money is still missing, so the button comes back.
@@ -586,7 +622,16 @@ router.get('/reconciliation', requireAuth, requirePermission('view_deposits'), m
     } catch (e) { reminderByRef = {}; }
 
     rows.forEach(function (r) {
-      var mgr = mgrByCity[String(r.city_code || '').trim().toUpperCase()] || null;
+      var homeCity = r.user_id ? (homeByUser[r.user_id] || null) : null;
+      var workCity = String(r.city_code || '').trim().toUpperCase() || null;
+      var homeMgr = homeCity ? (mgrByCity[homeCity] || null) : null;
+      var workMgr = workCity ? (mgrByCity[workCity] || null) : null;
+      var mgr = homeMgr || workMgr;
+      r.home_city_code = homeCity;
+      // Which city produced the pre-ticked manager, so the modal can say so
+      // rather than leaving the manager to guess why a name appeared.
+      r.manager_source = homeMgr ? 'home' : (workMgr ? 'worked' : null);
+      r.manager_city_code = homeMgr ? homeCity : (workMgr ? workCity : null);
       r.manager_user_id = mgr ? mgr.id : null;
       r.manager_name = mgr ? mgr.name : null;
       var hit = reminderByRef[reminderRef(periodStart, r.key)] || null;
@@ -607,7 +652,8 @@ router.get('/reconciliation', requireAuth, requirePermission('view_deposits'), m
       period_end: periodEnd,
       imported: imp.rows.length ? imp.rows[0] : null,
       rows: rows,
-      totals: totals
+      totals: totals,
+      cc_default: ccDefault
     });
   } catch (err) {
     console.error('Pulsar reconciliation error:', err);
