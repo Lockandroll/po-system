@@ -2,7 +2,7 @@
 // public/sw.js (the only thing bumped each deploy) — the badge asks the active
 // service worker for it at runtime. This value is just the fallback shown when no
 // service worker is available (e.g. very first visit before it installs).
-var APP_VERSION = 'v405';
+var APP_VERSION = 'v406';
 var _resolvedAppVersion = null;
 
 // Ask the active service worker for its CACHE_VERSION (without the 'nova-' prefix).
@@ -5997,7 +5997,9 @@ async function renderFeedbackDetail(el, id){
       '<div style="flex:1;min-width:260px">' + actCard + '</div>' +
     '</div>';
   fbTechChanged();
-  fbLoadRecordings(f.id);
+  // The phone goes in with the id: Judi is matched on the number the customer
+  // called FROM, and the panel has no other way to know it.
+  fbLoadRecordings(f.id, f.customer_phone);
 }
 
 function _fbCollect(){
@@ -25022,78 +25024,339 @@ function fbRecWhen(iso) {
   try { return escHtml(formatDateTime(iso)); } catch (e) { return escHtml(String(iso)); }
 }
 
-async function fbLoadRecordings(feedbackId) {
-  var host = document.getElementById('fb-recordings');
-  if (!host) return;
-  var d;
-  try { d = await api('GET', '/feedback/' + feedbackId + '/recordings'); }
-  catch (e) {
-    host.innerHTML = '<div style="font-size:13px;color:var(--text-muted-color)">Could not load call recordings: ' + escHtml(e.message) + '</div>';
-    return;
-  }
-  host.innerHTML = fbRecordingsHtml(feedbackId, d);
+// ===== Two sources, one timeline =====
+//
+// Nova's own GoTo index AND Judi, the AI receptionist on the inbound
+// Pop-A-Lock line. A customer complaint routinely touches both - Judi answers
+// and transfers, a human picks up on GoTo a minute later - and this panel used
+// to query only the first. So a complaint could read "no calls found" while
+// the customer's call sat in the other system the whole time.
+//
+// NO DEDUP BETWEEN THE SOURCES, deliberately, same as the Call Lookup page.
+// Those two rows are two legs of one contact and collapsing them destroys the
+// exact story the panel exists to tell. If the near-duplicates ever look like
+// a bug, this comment is the record that they are not.
+//
+// Judi rides play_call_recordings, the permission its own routes already
+// require. A viewer without it is never asked, so nobody sees a 403 dressed up
+// as an outage. Nothing from Judi is stored; it is refetched on every load.
+var _fbRecState = { id: null, phone: '', nova: null, judi: null, novaErr: null, judiErr: null, busy: false };
+
+// How recent a complaint has to be for a freshness caveat to be worth showing.
+// Past this, the index has long since caught up, and a standing "may not be
+// here yet" line would only teach people to stop reading the line.
+var FB_REC_LAG_WINDOW_MS = 6 * 3600000;
+
+// Is the index too young to be trusted about THIS complaint?
+//
+// The signal is the high-water mark of the WHOLE index against when the
+// complaint arrived. If the newest call Nova holds is older than the complaint
+// itself, then everything that happened in between - including the call the
+// complaint is about - has not been pulled in yet. Newest is taken across all
+// numbers on purpose: it measures the indexer, not the customer.
+function fbRecLag(d) {
+  if (!d || !d.index) return null;
+  var at = d.complaint_at ? new Date(d.complaint_at).getTime() : 0;
+  if (!at || isNaN(at)) return null;
+  if (Date.now() - at > FB_REC_LAG_WINDOW_MS) return null;
+  var newest = d.index.newest ? new Date(d.index.newest).getTime() : 0;
+  if (newest && newest >= at) return null;
+  return { newest: d.index.newest || null, at: d.complaint_at };
 }
 
-function fbRecordingsHtml(feedbackId, d) {
-  var calls = (d && d.calls) || [];
+// Takes HTML, not text - callers embed already-escaped values and a button.
+function fbRecNote(html) {
+  return '<div style="font-size:12px;padding:7px 9px;margin-bottom:8px;border:1px solid rgba(249,115,22,0.35);border-radius:6px;color:var(--text-muted-color);line-height:1.5">' + html + '</div>';
+}
+
+function fbRecRefreshBtn(feedbackId, label) {
+  return '<button class="btn btn-secondary btn-sm" style="margin-top:6px" onclick="fbRecRefresh(' + feedbackId + ')">' + escHtml(label || 'Check GoTo now') + '</button>';
+}
+
+// Judi is only worth asking when the user may see its content AND we have a
+// full number. The length check is a GUARD ONLY - the server does the real
+// normalising, because stripping non-digits here mangles an extension:
+// "704.555.0134 x22" naively becomes a valid-looking key belonging to nobody.
+function fbRecWantsJudi() {
+  if (!can('play_call_recordings')) return false;
+  return String(_fbRecState.phone || '').replace(/\D/g, '').length >= 10;
+}
+
+function fbRecAbsorb(settled, wantJudi) {
+  var n = settled[0];
+  if (n && n.status === 'fulfilled') { _fbRecState.nova = n.value; _fbRecState.novaErr = null; }
+  else { _fbRecState.nova = null; _fbRecState.novaErr = (n && n.reason && n.reason.message) || 'Call index unavailable'; }
+
+  if (!wantJudi) { _fbRecState.judi = null; _fbRecState.judiErr = null; return; }
+  var j = settled[1];
+  if (j && j.status === 'fulfilled') { _fbRecState.judi = j.value; _fbRecState.judiErr = null; }
+  else { _fbRecState.judi = null; _fbRecState.judiErr = (j && j.reason && j.reason.message) || 'Judi unavailable'; }
+}
+
+function fbRecRender(feedbackId) {
+  var host = document.getElementById('fb-recordings');
+  if (!host) return;
+  host.innerHTML = fbRecordingsHtml(feedbackId, _fbRecState.nova, _fbRecState.judi, {
+    nova: _fbRecState.novaErr, judi: _fbRecState.judiErr
+  });
+}
+
+// Loaded after the complaint renders rather than blocking it, so a slow index
+// query never delays the page a manager actually came to read.
+//
+// allSettled, not all: Judi runs on somebody else's uptime and must be able to
+// degrade this panel, never empty it.
+async function fbLoadRecordings(feedbackId, phone) {
+  var host = document.getElementById('fb-recordings');
+  if (!host) return;
+  if (phone !== undefined && phone !== null) _fbRecState.phone = String(phone || '');
+  if (_fbRecState.id !== feedbackId) { _fbRecState.judi = null; _fbRecState.judiErr = null; }
+  _fbRecState.id = feedbackId;
+
+  var wantJudi = fbRecWantsJudi();
+  var jobs = [api('GET', '/feedback/' + feedbackId + '/recordings')];
+  if (wantJudi) jobs.push(api('GET', '/judi/lookup?phone=' + encodeURIComponent(_fbRecState.phone)));
+
+  var settled = await Promise.allSettled(jobs);
+  fbRecAbsorb(settled, wantJudi);
+  fbRecRender(feedbackId);
+}
+
+// Pull from GoTo on demand instead of waiting out the ten-minute cron.
+//
+// This is the whole point of the fix: a manager opening a critical complaint
+// three minutes after the call should not have to know that Nova indexes on a
+// schedule. The server bounds the work; this just asks and re-renders.
+async function fbRecRefresh(feedbackId) {
+  if (_fbRecState.busy) return;
+  var host = document.getElementById('fb-recordings');
+  if (!host) return;
+  _fbRecState.busy = true;
+  host.innerHTML = '<div style="font-size:13px;color:var(--text-muted-color)">Asking GoTo for anything new&hellip; this takes a few seconds.</div>';
+
+  var wantJudi = fbRecWantsJudi();
+  var jobs = [api('POST', '/feedback/' + feedbackId + '/recordings/refresh', {})];
+  if (wantJudi) jobs.push(api('GET', '/judi/lookup?phone=' + encodeURIComponent(_fbRecState.phone)));
+
+  var settled = await Promise.allSettled(jobs);
+  _fbRecState.busy = false;
+  fbRecAbsorb(settled, wantJudi);
+  fbRecRender(feedbackId);
+
+  var d = _fbRecState.nova;
+  if (!d) { showToast(_fbRecState.novaErr || 'Could not refresh call recordings.', 'error'); return; }
+  var r = d.refreshed;
+  if (!r) return;
+  if (r.reason === 'not_configured' || r.reason === 'not_connected') {
+    showToast('GoTo is not connected, so there was nothing to pull.', 'error'); return;
+  }
+  if (r.reason === 'failed') {
+    showToast('Could not reach GoTo just now. Showing what Nova already had.', 'error'); return;
+  }
+  if (r.reason === 'cooldown') {
+    showToast('Nova checked moments ago. Showing the latest it has.', 'info'); return;
+  }
+  if (r.inserted) {
+    showToast('Pulled in ' + r.inserted + ' new call' + (r.inserted === 1 ? '' : 's') + ' from GoTo.', 'success'); return;
+  }
+  if (r.attached) {
+    showToast('Attached ' + r.attached + ' newly available recording' + (r.attached === 1 ? '' : 's') + '.', 'success'); return;
+  }
+  showToast('GoTo had nothing new for this window.', 'info');
+}
+
+// One list, newest first, GoTo and Judi interleaved. idx is into the UNFILTERED
+// judi array and is what the detail and play handlers look the call up by;
+// threading short_code through an inline onclick instead would mean escaping an
+// opaque third-party string into an HTML attribute, and short_code is not
+// always short or tidy.
+function fbRecMerged(calls, judiCalls) {
+  var out = [];
+  (calls || []).forEach(function (c) { out.push({ src: 'nova', t: c.started_at, nova: c }); });
+  (judiCalls || []).forEach(function (c, i) { out.push({ src: 'judi', t: c.started_at, judi: c, idx: i }); });
+  out.sort(function (a, b) { return new Date(b.t || 0).getTime() - new Date(a.t || 0).getTime(); });
+  return out;
+}
+
+function fbRecordingsHtml(feedbackId, d, j, errs) {
+  errs = errs || {};
   var canEdit = can('manage_feedback');
 
+  // Anything that went wrong with ONE source is said out loud above the rows.
+  // A silently missing source looks exactly like a customer who never called,
+  // and those two need opposite reactions.
+  var notes = '';
+  if (errs.nova) notes += fbRecNote('Nova call index unavailable: ' + escHtml(errs.nova));
+  if (errs.judi) notes += fbRecNote('Judi unavailable: ' + escHtml(errs.judi) + '. GoTo calls are still listed below.');
+
   if (d && d.reason === 'no_phone') {
-    return '<div style="font-size:13px;color:var(--text-muted-color)">No phone number on this complaint, so there is nothing to match calls against.</div>';
+    return notes + '<div style="font-size:13px;color:var(--text-muted-color)">No phone number on this complaint, so there is nothing to match calls against.</div>';
   }
-  if (!calls.length) {
-    // Distinguish "we looked and there are none" from "the index is empty", because
-    // those need completely different actions and look identical otherwise.
-    if (!d.indexed) {
-      return '<div style="font-size:13px;color:var(--text-muted-color)">No calls have been indexed yet. An admin can run a backfill in Settings &rsaquo; Integrations.</div>';
+
+  // The caveat belongs above the ROWS, not only on an empty list. Three old
+  // calls plus a missing one from four minutes ago reads as a complete history
+  // and is not one.
+  var lag = fbRecLag(d);
+  if (lag) {
+    notes += fbRecNote(
+      (lag.newest
+        ? 'Nova&#39;s call index is current through ' + fbRecWhen(lag.newest) + '.'
+        : 'Nova&#39;s call index is empty.') +
+      ' This complaint arrived at ' + fbRecWhen(lag.at) +
+      '. GoTo publishes a call a few minutes after it ends and Nova pulls every 10 minutes, so a recent call may not be here yet.' +
+      '<br />' + fbRecRefreshBtn(feedbackId)
+    );
+  }
+
+  var judiAsked = !!j && j.configured !== false;
+
+  // WHY Judi is not represented, when it is not. Three different situations
+  // used to collapse into one sentence that named only one of them - and named
+  // it wrongly in the other two, telling a manager the complaint had no usable
+  // phone number when the truth was that Judi has no API key. That is the same
+  // class of bug as the 90-day line, so it gets said precisely or not at all.
+  var judiGap = '';
+  if (!judiAsked && !errs.judi && can('play_call_recordings')) {
+    if (j && j.configured === false) {
+      judiGap = 'Judi is not connected, so only GoTo calls were searched. An admin sets JUDI_API_KEY in Railway.';
+    } else if (!fbRecWantsJudi()) {
+      judiGap = 'Judi was not searched. It matches only the number a customer called FROM, and this complaint has no full one.';
     }
-    return '<div style="font-size:13px;color:var(--text-muted-color)">No calls found for this number in the last 90 days.</div>';
   }
+  var judiGapHtml = judiGap
+    ? '<div style="font-size:11px;color:var(--text-muted-color);margin-top:6px">' + escHtml(judiGap) + '</div>'
+    : '';
 
-  var visible = calls.filter(function (c) { return !c.hidden; });
-  var hiddenCount = calls.length - visible.length;
+  var merged = fbRecMerged((d && d.calls) || [], (j && j.calls) || []);
+  var visible = merged.filter(function (m) { return m.src !== 'nova' || !m.nova.hidden; });
+  var hiddenCount = merged.length - visible.length;
 
-  var rows = visible.map(function (c) {
-    var dirDot = c.direction === 'OUTBOUND' ? '&#8599;' : '&#8600;';
-    var dirLabel = c.direction === 'OUTBOUND' ? 'Outbound' : 'Inbound';
-    var star = c.is_primary
-      ? '<span title="This is the complaint call" style="color:var(--primary)">&#9733;</span>'
-      : (canEdit ? '<span title="Mark as the complaint call" style="cursor:pointer;color:var(--text-muted-color)" onclick="fbRecSetPrimary(' + feedbackId + ',' + c.call_id + ')">&#9734;</span>' : '');
-
-    var playBtn;
-    if (!c.has_recording) {
-      playBtn = '<span style="font-size:11px;color:var(--text-muted-color)">No recording</span>';
-    } else if (!d.canPlay) {
-      playBtn = '<span style="font-size:11px;color:var(--text-muted-color)" title="You do not have permission to play recordings">Locked</span>';
+  if (!visible.length) {
+    var why;
+    if (d && d.index && d.index.empty) {
+      why = 'No calls have been indexed yet. An admin can run a backfill in Settings &rsaquo; Integrations.';
+    } else if (lag) {
+      why = 'Nothing for this number in Nova&#39;s index yet.';
     } else {
-      playBtn = '<button class="btn btn-secondary btn-sm" onclick="fbRecPlay(' + feedbackId + ',' + c.call_id + ')">&#9654; Play</button>';
+      // NOT "in the last 90 days". That was never true - the query has no date
+      // filter at all. What actually bounds it is how far back the last
+      // backfill reached.
+      why = 'No calls to or from this number in Nova&#39;s call index, which reaches back only as far as the last backfill.' +
+        (judiAsked ? ' Judi has none either.' : '');
     }
+    return notes +
+      '<div style="font-size:13px;color:var(--text-muted-color)">' + why + '</div>' + judiGapHtml +
+      (lag ? '' : '<div style="margin-top:8px">' + fbRecRefreshBtn(feedbackId) + '</div>');
+  }
 
-    return '<div style="padding:9px 0;border-bottom:1px solid var(--border)">' +
-      '<div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">' +
-        '<span style="font-size:13px;min-width:132px">' + dirDot + ' ' + dirLabel + '</span>' +
-        '<span style="font-size:13px;flex:1;min-width:150px">' + fbRecWhen(c.started_at) + '</span>' +
-        '<span style="font-size:12px;color:var(--text-muted-color);min-width:60px">' + escHtml(fbRecFmtDur(c.duration_sec)) + '</span>' +
-        playBtn + star +
-        (canEdit ? '<span style="cursor:pointer;font-size:11px;color:var(--text-muted-color)" title="Not related to this complaint" onclick="fbRecHide(' + feedbackId + ',' + c.call_id + ')">Hide</span>' : '') +
-      '</div>' +
-      (c.is_primary ? '<div style="font-size:11px;color:var(--primary);margin-top:3px">Marked as the complaint call</div>' : '') +
-      '<div id="fb-rec-player-' + c.call_id + '"></div>' +
-      '</div>';
+  // Source badges only earn their space when there is more than one source in
+  // play. On a GoTo-only panel every row would carry the same badge.
+  var showBadge = judiAsked;
+
+  var rows = visible.map(function (m) {
+    return m.src === 'nova'
+      ? fbRecNovaRow(feedbackId, m.nova, canEdit, d, showBadge)
+      : fbRecJudiRow(m.judi, m.idx);
   }).join('');
 
+  var novaCount = visible.filter(function (m) { return m.src === 'nova'; }).length;
+  var judiCount = visible.length - novaCount;
+
   var foot = '<div style="font-size:11px;color:var(--text-muted-color);margin-top:8px">' +
-    visible.length + ' call' + (visible.length === 1 ? '' : 's') + ' for this number, newest first' +
+    visible.length + ' contact' + (visible.length === 1 ? '' : 's') + ' for this number, newest first' +
+    (showBadge ? ' &middot; ' + novaCount + ' GoTo, ' + judiCount + ' Judi' : '') +
     (hiddenCount ? ' &middot; ' + hiddenCount + ' hidden' : '') +
     (visible.length > 8 ? ' &middot; a lot of calls here may mean a shared or business number' : '') +
-
     '</div>';
 
   var unhide = (hiddenCount && canEdit)
     ? '<div style="margin-top:6px"><span style="font-size:11px;color:var(--primary);cursor:pointer" onclick="fbRecUnhideAll(' + feedbackId + ')">Show hidden</span></div>'
     : '';
 
-  return rows + foot + unhide;
+  var actions = '<div style="margin-top:8px">' + fbRecRefreshBtn(feedbackId, 'Check GoTo for newer calls') + '</div>';
+
+  return notes + rows + foot + judiGapHtml + unhide + actions;
+}
+
+function fbRecNovaRow(feedbackId, c, canEdit, d, showBadge) {
+  var dirDot = c.direction === 'OUTBOUND' ? '&#8599;' : '&#8600;';
+  var dirLabel = c.direction === 'OUTBOUND' ? 'Outbound' : 'Inbound';
+  var star = c.is_primary
+    ? '<span title="This is the complaint call" style="color:var(--primary)">&#9733;</span>'
+    : (canEdit ? '<span title="Mark as the complaint call" style="cursor:pointer;color:var(--text-muted-color)" onclick="fbRecSetPrimary(' + feedbackId + ',' + c.call_id + ')">&#9734;</span>' : '');
+
+  var playBtn;
+  if (!c.has_recording) {
+    // A call is indexed BEFORE its recording attaches - GoTo hangs the audio on
+    // minutes to hours later. So this is "not yet", not "never", and saying so
+    // stops someone concluding the call was never recorded.
+    playBtn = '<span style="font-size:11px;color:var(--text-muted-color)" title="GoTo attaches a recording minutes to hours after the call ends">No recording yet</span>';
+  } else if (!(d && d.canPlay)) {
+    playBtn = '<span style="font-size:11px;color:var(--text-muted-color)" title="You do not have permission to play recordings">Locked</span>';
+  } else {
+    playBtn = '<button class="btn btn-secondary btn-sm" onclick="fbRecPlay(' + feedbackId + ',' + c.call_id + ')">&#9654; Play</button>';
+  }
+
+  return '<div style="padding:9px 0;border-bottom:1px solid var(--border)">' +
+    '<div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">' +
+      (showBadge ? clSrcBadge('GOTO', '#f97316') : '') +
+      '<span style="font-size:13px;min-width:96px">' + dirDot + ' ' + dirLabel + '</span>' +
+      '<span style="font-size:13px;flex:1;min-width:150px">' + fbRecWhen(c.started_at) + '</span>' +
+      '<span style="font-size:12px;color:var(--text-muted-color);min-width:60px">' + escHtml(fbRecFmtDur(c.duration_sec)) + '</span>' +
+      playBtn + star +
+      (canEdit ? '<span style="cursor:pointer;font-size:11px;color:var(--text-muted-color)" title="Not related to this complaint" onclick="fbRecHide(' + feedbackId + ',' + c.call_id + ')">Hide</span>' : '') +
+    '</div>' +
+    (c.is_primary ? '<div style="font-size:11px;color:var(--primary);margin-top:3px">Marked as the complaint call</div>' : '') +
+    '<div id="fb-rec-player-' + c.call_id + '"></div>' +
+    '</div>';
+}
+
+// Judi rows carry no complaint-scoped state. There is no primary star and no
+// Hide: those write to feedback_call_recordings, which keys on a goto_calls id,
+// and Judi calls are never stored. Offering the controls and having them fail
+// would be worse than not offering them.
+function fbRecJudiRow(c, i) {
+  var isChat = c.channel === 'chat';
+  var icon = isChat ? '&#128172;' : '&#8600;';
+  var label = isChat ? 'Chat' : 'Inbound';
+
+  var bits = [];
+  if (c.outcome) bits.push(escHtml(String(c.outcome).replace(/_/g, ' ')));
+  if (c.quote_amount !== null && c.quote_amount !== undefined) bits.push('$' + c.quote_amount.toFixed(2));
+  // A 999 never reaches here as a number: the server turns the sentinel into
+  // eta_unavailable, because "999 min ETA" on screen is how a dispatcher ends
+  // up promising a customer a tech who is sixteen hours away.
+  if (c.eta_unavailable) bits.push('<span style="color:#e2a04a">no coverage</span>');
+  else if (c.eta_minutes !== null && c.eta_minutes !== undefined) bits.push(c.eta_minutes + ' min ETA');
+  if (c.grade_score !== null && c.grade_score !== undefined) bits.push('grade ' + c.grade_score);
+
+  var playBtn = c.has_recording
+    ? '<button class="btn btn-secondary btn-sm" onclick="fbRecPlayJudi(' + i + ')">&#9654; Play</button>'
+    : '<span style="font-size:11px;color:var(--text-muted-color)">' + (isChat ? 'Chat, no audio' : 'No recording') + '</span>';
+
+  return '<div style="padding:9px 0;border-bottom:1px solid var(--border)">' +
+    '<div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">' +
+      clSrcBadge('JUDI', '#7c5cff') +
+      '<span style="font-size:13px;min-width:96px">' + icon + ' ' + label + '</span>' +
+      '<span style="font-size:13px;flex:1;min-width:150px">' + fbRecWhen(c.started_at) + '</span>' +
+      '<span style="font-size:12px;color:var(--text-muted-color);min-width:60px">' + escHtml(fbRecFmtDur(c.duration_sec || 0)) + '</span>' +
+      '<button class="btn btn-secondary btn-sm" onclick="fbRecOpenJudi(' + i + ')">Details</button>' +
+      playBtn +
+    '</div>' +
+    (bits.length ? '<div style="font-size:12px;color:var(--text-muted-color);margin-top:3px">' + bits.join(' &middot; ') + '</div>' : '') +
+    '<div id="fb-judi-' + i + '"></div>' +
+    '<div id="fb-judiplay-' + i + '"></div>' +
+    '</div>';
+}
+
+async function fbRecOpenJudi(i) {
+  var c = _fbRecState.judi && _fbRecState.judi.calls && _fbRecState.judi.calls[i];
+  return judiDetailInto('fb-judi-' + i, c);
+}
+
+async function fbRecPlayJudi(i) {
+  var c = _fbRecState.judi && _fbRecState.judi.calls && _fbRecState.judi.calls[i];
+  return judiPlayInto('fb-judiplay-' + i, c);
 }
 
 function fbRecBytes(n) {
@@ -25526,8 +25789,16 @@ function clJudiRow(c, i) {
 // transcript, which is the whole call in a form far easier to read and forward
 // than audio. The server audits every open for exactly that reason.
 async function clOpenJudi(i) {
-  var slot = document.getElementById('cl-judi-' + i);
   var c = _clState.judi && _clState.judi.calls && _clState.judi.calls[i];
+  return judiDetailInto('cl-judi-' + i, c);
+}
+
+// Open one Judi call's detail into ANY slot. Split out of clOpenJudi so the
+// complaint panel can show the same detail without a second copy of it, and so
+// the rule above keeps holding in both places: opening a Judi detail pulls the
+// whole English transcript, which IS the disclosure the server audits.
+async function judiDetailInto(slotId, c) {
+  var slot = document.getElementById(slotId);
   if (!slot || !c) return;
   if (slot.getAttribute('data-open') === '1') {
     slot.innerHTML = '';
@@ -25604,8 +25875,16 @@ function clJudiDetailHtml(c) {
 // An <audio src> cannot carry an Authorization header, which is why this is a
 // fetch and not a src assignment.
 async function clPlayJudi(i) {
-  var slot = document.getElementById('cl-judiplay-' + i);
   var c = _clState.judi && _clState.judi.calls && _clState.judi.calls[i];
+  return judiPlayInto('cl-judiplay-' + i, c);
+}
+
+// Stream one Judi recording into ANY slot. Same split as judiDetailInto, and
+// the same constraint still applies: fetch -> blob -> objectURL, never an
+// <audio src>, because an audio element cannot carry the Authorization header
+// the proxy route requires.
+async function judiPlayInto(slotId, c) {
+  var slot = document.getElementById(slotId);
   if (!slot || !c) return;
   if (slot.getAttribute('data-open') === '1') {
     var old = slot.getAttribute('data-blob');

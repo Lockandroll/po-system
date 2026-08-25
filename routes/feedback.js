@@ -378,41 +378,200 @@ function callRow(r) {
 // GET /api/feedback/:id/recordings
 // Metadata only. No URLs are issued here - playback is a separate, permissioned
 // call, so merely opening a complaint never mints a link to customer audio.
+//
+// FRESHNESS IS PART OF THE ANSWER. goto_calls is a SNAPSHOT written by a cron
+// every 10 minutes, and GoTo publishes a call summary some minutes after the
+// call ends. A complaint opened minutes after the call it is about therefore
+// reads an index that does not hold that call yet. So the high-water mark of
+// the index ships with every response: it is the only way the page can say
+// "not yet" instead of "never", and for a manager deciding whether to escalate
+// those are opposite conclusions.
+//
+// Tony, 2026-08-25: the panel said "No calls found for this number in the last
+// 90 days" about a call that was sitting in GoTo the whole time, three minutes
+// old. It was also not true that anything was filtered to 90 days.
+
+// Load the complaint and apply the city scope. Split out because the refresh
+// route needs the same two checks BEFORE it is allowed to spend an upstream
+// GoTo call on someone else's city.
+async function complaintForCalls(id, req) {
+  const fb = await pool.query(
+    'SELECT id, city_code, customer_phone, received_at FROM customer_feedback WHERE id = $1', [id]
+  );
+  if (!fb.rows.length) return { notFound: true };
+  const scope = await cityScope(req.user);
+  if (scope !== null && scope.indexOf(fb.rows[0].city_code) === -1) return { denied: true };
+  return { row: fb.rows[0] };
+}
+
+async function recordingsPayload(id, req, row) {
+  let canPlay = false;
+  try { canPlay = await permissions.hasPermission(req.user.role, 'play_call_recordings'); } catch (e) { canPlay = false; }
+  if (!canPlay && req.user.id) {
+    const ur = req._userRow;
+    if (ur && Array.isArray(ur.extra_perms) && ur.extra_perms.indexOf('play_call_recordings') !== -1) canPlay = true;
+  }
+
+  // One pass for the count and both high-water marks.
+  //
+  // 'indexed' stays in the payload even though nothing new reads it. Nova's
+  // service worker is stale-while-revalidate, so the FIRST load after a deploy
+  // runs the PREVIOUS app.js against this response. That older bundle branches
+  // on !d.indexed and would announce "no calls have been indexed yet" - a worse
+  // lie than the one being fixed here. Remove this field only once a forced
+  // client_min_version has gone out.
+  const idx = await pool.query(
+    'SELECT COUNT(*)::int AS n, MAX(call_started_at) AS newest,' +
+    ' MAX(last_seen_revision) AS last_sync FROM goto_calls'
+  );
+  const index = {
+    empty: idx.rows[0].n === 0,
+    newest: idx.rows[0].newest || null,
+    last_sync: idx.rows[0].last_sync || null
+  };
+
+  const base = {
+    canPlay: canPlay,
+    indexed: idx.rows[0].n,
+    index: index,
+    complaint_at: row.received_at || null,
+    storageReady: r2.configured(),
+    gotoConnected: goto.configured()
+  };
+
+  const digits = goto.normalizeDigits(row.customer_phone);
+  if (!digits) {
+    base.calls = [];
+    base.reason = 'no_phone';
+    return base;
+  }
+  const rows = await pool.query(
+    'SELECT c.*, l.is_primary, l.hidden, l.note FROM goto_calls c' +
+    ' LEFT JOIN feedback_call_recordings l ON l.call_id = c.id AND l.feedback_id = $1' +
+    ' WHERE c.external_digits = $2 ORDER BY c.call_started_at DESC NULLS LAST LIMIT 200',
+    [id, digits]
+  );
+  base.calls = rows.rows.map(callRow);
+  base.digits = digits;
+  return base;
+}
+
 router.get('/:id/recordings', requireAuth, requirePermission('view_feedback'), async function (req, res) {
   try {
     const id = parseInt(req.params.id, 10);
-    const fb = await pool.query('SELECT id, city_code, customer_phone FROM customer_feedback WHERE id = $1', [id]);
-    if (!fb.rows.length) return res.status(404).json({ error: 'Not found' });
-    const scope = await cityScope(req.user);
-    if (scope !== null && scope.indexOf(fb.rows[0].city_code) === -1) {
-      return res.status(403).json({ error: 'Not in your cities' });
-    }
-    const digits = goto.normalizeDigits(fb.rows[0].customer_phone);
-    if (!digits) {
-      return res.json({ calls: [], reason: 'no_phone', canPlay: false, indexed: 0 });
-    }
-    const rows = await pool.query(
-      'SELECT c.*, l.is_primary, l.hidden, l.note FROM goto_calls c' +
-      ' LEFT JOIN feedback_call_recordings l ON l.call_id = c.id AND l.feedback_id = $1' +
-      ' WHERE c.external_digits = $2 ORDER BY c.call_started_at DESC NULLS LAST LIMIT 200',
-      [id, digits]
-    );
-    let canPlay = false;
-    try { canPlay = await permissions.hasPermission(req.user.role, 'play_call_recordings'); } catch (e) { canPlay = false; }
-    if (!canPlay && req.user.id) {
-      const ur = req._userRow;
-      if (ur && Array.isArray(ur.extra_perms) && ur.extra_perms.indexOf('play_call_recordings') !== -1) canPlay = true;
-    }
-    const total = await pool.query('SELECT COUNT(*)::int AS n FROM goto_calls');
-    res.json({
-      calls: rows.rows.map(callRow),
-      canPlay: canPlay,
-      indexed: total.rows[0].n,
-      storageReady: r2.configured()
-    });
+    const c = await complaintForCalls(id, req);
+    if (c.notFound) return res.status(404).json({ error: 'Not found' });
+    if (c.denied) return res.status(403).json({ error: 'Not in your cities' });
+    res.json(await recordingsPayload(id, req, c.row));
   } catch (e) {
     console.error('GET /feedback/:id/recordings:', e.message);
     res.status(500).json({ error: 'Failed to load call recordings' });
+  }
+});
+
+// POST /api/feedback/:id/recordings/refresh
+//
+// Pull the recent window from GoTo NOW instead of waiting up to ten minutes for
+// the cron. This is deliberately NOT a backfill: the window is small and hard
+// bounded so the work always fits inside the life of one HTTP request. A real
+// backfill is an admin action with its own background runner and progress
+// endpoint, and must not be reachable from a complaint page by anybody who can
+// view feedback.
+//
+// Three guards, in this order:
+//   single-flight - two managers clicking at once share ONE upstream sync,
+//                   because the window is global and not per complaint
+//   cooldown      - a click inside the gap re-reads the table and says so,
+//                   rather than hammering GoTo from a page anyone can refresh
+//   bounded window- at most 24h back, at most 20 pages (2,000 calls), against
+//                   a real day of about 650
+const REC_REFRESH_GAP_MS = 45000;
+const REC_REFRESH_MAX_PAGES = 20;
+let _recRefreshAt = 0;
+let _recRefreshFlight = null;
+
+async function runRecordingsSync(sinceMs) {
+  const now = Date.now();
+  // Never reach further back than a day. A complaint about last month is not
+  // something an on-demand sync can rescue, and pretending otherwise would have
+  // this route page thousands of calls while a browser sits waiting.
+  const floor = now - 24 * 3600000;
+  // The upper clamp also guarantees end > start, which syncWindow requires.
+  const startMs = Math.min(Math.max(sinceMs, floor), now - 120000);
+  const stats = await goto.syncWindow({
+    startIso: new Date(startMs).toISOString(),
+    endIso: new Date(now).toISOString(),
+    maxPages: REC_REFRESH_MAX_PAGES
+  });
+  // A RECORDING_UPLOADED notification can arrive before its call is indexed.
+  // Now that the call may have just landed, attach anything parked waiting.
+  let drained = { attached: 0 };
+  try { drained = await goto.drainPendingMedia(); } catch (e) { drained = { attached: 0 }; }
+  return {
+    inserted: stats.inserted || 0,
+    updated: stats.updated || 0,
+    seen: stats.seen || 0,
+    attached: drained.attached || 0
+  };
+}
+
+router.post('/:id/recordings/refresh', requireAuth, requirePermission('view_feedback'), async function (req, res) {
+  try {
+    const id = parseInt(req.params.id, 10);
+    const c = await complaintForCalls(id, req);
+    if (c.notFound) return res.status(404).json({ error: 'Not found' });
+    if (c.denied) return res.status(403).json({ error: 'Not in your cities' });
+
+    const refreshed = { ran: false, reason: null, inserted: 0, updated: 0, attached: 0 };
+
+    if (!goto.configured()) {
+      refreshed.reason = 'not_configured';
+    } else {
+      let st = null;
+      try { st = await goto.status(); } catch (e) { st = null; }
+      if (!st || !st.connected || !st.accountKey) {
+        refreshed.reason = 'not_connected';
+      } else if (_recRefreshFlight) {
+        try {
+          const r = await _recRefreshFlight;
+          refreshed.ran = true;
+          refreshed.reason = 'shared';
+          refreshed.inserted = r.inserted;
+          refreshed.updated = r.updated;
+          refreshed.attached = r.attached;
+        } catch (e) { refreshed.reason = 'failed'; }
+      } else if (Date.now() - _recRefreshAt < REC_REFRESH_GAP_MS) {
+        refreshed.reason = 'cooldown';
+      } else {
+        // Reach back past when the complaint arrived, so the call it is about
+        // is inside the window even though it happened a little earlier.
+        const at = c.row.received_at ? Date.parse(c.row.received_at) : NaN;
+        const since = (isNaN(at) ? Date.now() : at) - 2 * 3600000;
+        _recRefreshFlight = runRecordingsSync(since);
+        try {
+          const r = await _recRefreshFlight;
+          refreshed.ran = true;
+          refreshed.inserted = r.inserted;
+          refreshed.updated = r.updated;
+          refreshed.attached = r.attached;
+        } catch (e) {
+          console.error('feedback recordings refresh:', e.message);
+          refreshed.reason = 'failed';
+        } finally {
+          _recRefreshAt = Date.now();
+          _recRefreshFlight = null;
+        }
+      }
+    }
+
+    // Re-read AFTER the sync so the browser gets the fresh list in the same
+    // round trip it used to ask for the refresh.
+    const body = await recordingsPayload(id, req, c.row);
+    body.refreshed = refreshed;
+    res.json(body);
+  } catch (e) {
+    console.error('POST /feedback/:id/recordings/refresh:', e.message);
+    res.status(500).json({ error: 'Failed to refresh call recordings' });
   }
 });
 
