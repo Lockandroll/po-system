@@ -29,6 +29,10 @@
     meta: null,
     draft: null,
     check: null,
+    policy: null,
+    // Files picked in the New Record modal, which has no record id yet. They are
+    // held here and uploaded the moment the note comes back with one.
+    queue: [],
     busy: false
   };
 
@@ -86,6 +90,167 @@
     var b = STATUS_BADGE[status];
     if (!b || !b[0]) return '';
     return '<span class="badge ' + b[0] + '">' + b[1] + '</span>';
+  }
+
+  // ------------------------------------------------------------------ files
+  //
+  // Supporting documentation. The bytes go browser -> R2 direct through a
+  // presigned URL and never travel through Nova's API, the same way A/P bill
+  // attachments and HR documents already work. Three calls: ask for a URL, PUT
+  // the file, tell the server it landed.
+  //
+  // An attachment hangs off a record and inherits that record's visibility, so
+  // anything attached to a shared notice is openable by the employee. The form
+  // says so out loud, because "supporting documentation" is exactly where a
+  // manager's private working notes would otherwise end up.
+  var MAX_FILE_BYTES = 25 * 1024 * 1024;
+
+  function fileSize(n) {
+    if (n === null || n === undefined) return '';
+    n = Number(n);
+    if (!isFinite(n)) return '';
+    if (n < 1024) return n + ' B';
+    if (n < 1048576) return Math.round(n / 1024) + ' KB';
+    return (n / 1048576).toFixed(n < 10485760 ? 1 : 0) + ' MB';
+  }
+
+  function fileTag(name, type) {
+    var nm = String(name || '');
+    var ext = nm.indexOf('.') !== -1 ? nm.split('.').pop() : '';
+    if (ext && ext.length <= 4) return ext.toUpperCase();
+    if (String(type || '').indexOf('image/') === 0) return 'IMG';
+    return 'DOC';
+  }
+
+  function pickFiles(cb) {
+    var inp = document.createElement('input');
+    inp.type = 'file';
+    inp.multiple = true;
+    inp.onchange = function () { cb(Array.prototype.slice.call(inp.files || [])); };
+    inp.click();
+  }
+
+  // One file against a record that already exists. Never throws: a third file
+  // that fails must not lose the two that already went up.
+  async function uploadTo(recordId, file) {
+    if (file.size > MAX_FILE_BYTES) {
+      toast(file.name + ' is larger than 25MB. Attach a smaller copy.', 'error');
+      return false;
+    }
+    var ctype = file.type || 'application/octet-stream';
+    var pre;
+    try {
+      pre = await api('POST', API + '/' + recordId + '/attachments/upload-url',
+        { filename: file.name, content_type: ctype, size_bytes: file.size });
+    } catch (e) { toast(e.message || 'Could not start the upload.', 'error'); return false; }
+    try {
+      var put = await fetch(pre.url, { method: 'PUT', body: file, headers: { 'Content-Type': ctype } });
+      if (!put.ok) throw new Error('storage returned ' + put.status);
+    } catch (e) { toast('Upload failed: ' + (e.message || 'storage unreachable'), 'error'); return false; }
+    try {
+      await api('POST', API + '/' + recordId + '/attachments/confirm',
+        { key: pre.key, filename: file.name, content_type: ctype, size_bytes: file.size });
+    } catch (e) { toast(e.message || 'Could not save the attachment.', 'error'); return false; }
+    return true;
+  }
+
+  // Sequential rather than parallel on purpose: these are photos off a phone on
+  // a truck, and six concurrent PUTs on a bad connection is how all six fail.
+  async function uploadAll(recordId, files) {
+    var ok = 0;
+    for (var i = 0; i < files.length; i++) {
+      if (await uploadTo(recordId, files[i])) ok++;
+    }
+    if (ok) toast(ok + ' file' + (ok === 1 ? '' : 's') + ' attached.', 'success');
+    return ok;
+  }
+
+  window.erOpenAttachment = async function (id) {
+    try {
+      var r = await api('GET', API + '/attachments/' + id + '/download');
+      window.open(r.url, '_blank');
+    } catch (e) { toast(e.message || 'Could not open that document.', 'error'); }
+  };
+
+  // Read-only chips, for the timeline and My File. Renders nothing when there is
+  // nothing attached - an empty "Attachments" heading on every record would
+  // just be noise on the 95% of records that have none.
+  function attachChips(list) {
+    if (!list || !list.length) return '';
+    return '<div class="er-chips">' + list.map(function (a) {
+      return '<div class="er-chip" onclick="erOpenAttachment(' + a.id + ')" title="' +
+        esc(a.filename || '') + '"><span class="er-fic" style="width:18px;height:18px;font-size:8px">' +
+        esc(fileTag(a.filename, a.content_type)) + '</span><b>' + esc(a.filename || 'Attachment') + '</b></div>';
+    }).join('') + '</div>';
+  }
+
+  // The editable list, for a record you are still writing.
+  function attachRows(list) {
+    if (!list || !list.length) return '';
+    return '<div class="er-files">' + list.map(function (a) {
+      return '<div class="er-file">' +
+        '<div class="er-fic">' + esc(fileTag(a.filename, a.content_type)) + '</div>' +
+        '<div class="nm" onclick="erOpenAttachment(' + a.id + ')">' + esc(a.filename || 'Attachment') + '</div>' +
+        '<div class="sz">' + esc(fileSize(a.size_bytes)) + '</div>' +
+        '<div class="rm" title="Remove" onclick="erRemoveAttachment(' + a.id + ')">&#10005;</div>' +
+        '</div>';
+    }).join('') + '</div>';
+  }
+
+  // The same list for files that are only picked, not uploaded yet.
+  function queueRows() {
+    var q = S.queue || [];
+    if (!q.length) return '';
+    return '<div class="er-files">' + q.map(function (f, i) {
+      return '<div class="er-file">' +
+        '<div class="er-fic">' + esc(fileTag(f.name, f.type)) + '</div>' +
+        '<div class="nm plain">' + esc(f.name) + '</div>' +
+        '<div class="sz">' + esc(fileSize(f.size)) + '</div>' +
+        '<div class="rm" title="Remove" onclick="erUnqueue(' + i + ')">&#10005;</div>' +
+        '</div>';
+    }).join('') + '</div>';
+  }
+
+  window.erQueueFiles = function () {
+    pickFiles(function (files) {
+      if (!files.length) return;
+      S.queue = (S.queue || []).concat(files);
+      var host = el('er-queue');
+      if (host) host.innerHTML = queueRows();
+    });
+  };
+
+  window.erUnqueue = function (i) {
+    (S.queue || []).splice(i, 1);
+    var host = el('er-queue');
+    if (host) host.innerHTML = queueRows();
+  };
+
+  // Attach to a record that already exists, from the timeline.
+  window.erAttachTo = function (id) {
+    pickFiles(async function (files) {
+      if (!files.length) return;
+      if (await uploadAll(id, files)) window.erOpenFile(S.employeeId, S.tab);
+    });
+  };
+
+  window.erRemoveAttachment = async function (aid) {
+    if (!confirm('Remove this document from the record?')) return;
+    try { await api('DELETE', API + '/attachments/' + aid, {}); }
+    catch (e) { toast(e.message || 'Could not remove it.', 'error'); return; }
+    toast('Removed.', 'info');
+    if (S.view === 'disciplinary' && S.draft && S.draft.id) await refreshAttachments(S.draft.id);
+    else window.erOpenFile(S.employeeId, S.tab);
+  };
+
+  async function refreshAttachments(id) {
+    var host = el('er-attach-list');
+    if (!host) return;
+    try {
+      var out = await api('GET', API + '/' + id + '/attachments');
+      if (S.draft) S.draft.attachments = out.attachments || [];
+      host.innerHTML = attachRows(out.attachments || []);
+    } catch (e) { /* the list is cosmetic - the files are filed either way */ }
   }
 
   // ------------------------------------------------------------------ css
@@ -166,7 +331,30 @@
       '.er-win .txt{font-size:13px;color:var(--text-dim);line-height:1.55;margin-top:4px;white-space:pre-wrap}',
       '.er-you{font-size:10px;font-weight:800;letter-spacing:.08em;background:rgba(249,115,22,.16);color:var(--primary);border:1px solid rgba(249,115,22,.4);padding:1px 6px;border-radius:4px;margin-left:7px;vertical-align:middle}',
       '.er-pad{background:#fff;border-radius:6px;height:130px;position:relative;overflow:hidden;touch-action:none;cursor:crosshair}',
-      '.er-pad canvas{display:block;width:100%;height:100%}'
+      '.er-pad canvas{display:block;width:100%;height:100%}',
+      '.er-files{display:flex;flex-direction:column;gap:6px;margin:9px 0}',
+      '.er-file{display:flex;align-items:center;gap:9px;padding:8px 10px;background:var(--bg-elevated);border:1px solid var(--border);border-radius:var(--radius);font-size:12.5px}',
+      '.er-file .nm{color:var(--text);font-weight:500;flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;cursor:pointer}',
+      '.er-file .nm:hover{color:var(--primary);text-decoration:underline}',
+      '.er-file .nm.plain{cursor:default}.er-file .nm.plain:hover{color:var(--text);text-decoration:none}',
+      '.er-file .sz{color:var(--text-muted-color);font-size:11px;white-space:nowrap}',
+      '.er-file .rm{color:var(--text-muted-color);cursor:pointer;font-size:13px;padding:0 3px;flex-shrink:0}',
+      '.er-file .rm:hover{color:#f87171}',
+      '.er-fic{width:24px;height:24px;border-radius:5px;background:var(--bg-card);border:1px solid var(--border);display:flex;align-items:center;justify-content:center;font-size:9px;font-weight:800;color:var(--text-muted-color);flex-shrink:0}',
+      '.er-chips{display:flex;flex-wrap:wrap;gap:6px;margin-top:9px}',
+      '.er-chip{display:inline-flex;align-items:center;gap:6px;max-width:240px;padding:3px 10px;border-radius:20px;background:var(--bg-elevated);border:1px solid var(--border);font-size:11.5px;color:var(--text-dim);cursor:pointer}',
+      '.er-chip:hover{border-color:var(--primary);color:var(--text)}',
+      '.er-chip b{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-weight:500}',
+      '.er-polrow{display:flex;gap:8px;align-items:center}',
+      '.er-polrow select{flex:1;min-width:0}',
+      '.er-pol-list{margin-top:10px}',
+      '.er-pol{border:1px solid #3b1f6e;background:#150c26;border-radius:var(--radius);padding:11px 13px;margin-bottom:8px}',
+      '.er-pol.empty{color:var(--text-muted-color);font-size:12.5px;line-height:1.6;margin-top:10px;background:none;border-style:dashed;border-color:var(--border)}',
+      '.er-pol-h{display:flex;justify-content:space-between;align-items:center;gap:10px;margin-bottom:7px}',
+      '.er-pol-h b{font-size:13px;color:var(--text)}',
+      '.er-pol-q{font-size:12.5px;color:var(--text-dim);line-height:1.6;border-left:2px solid #6d28d9;padding-left:10px;font-style:italic}',
+      '.er-pol-w{font-size:12px;color:var(--text-muted-color);margin-top:7px;line-height:1.55}',
+      '.er-pol-note{font-size:11.5px;color:var(--text-muted-color);line-height:1.5}'
     ].join('\n');
     document.head.appendChild(st);
   }
@@ -349,6 +537,7 @@
       (r.corrective_action ? '<div class="er-body" style="margin-top:8px"><b style="color:var(--text)">Must change:</b> ' + esc(r.corrective_action) + '</div>' : '') +
       (r.employee_response ? '<div class="er-sugg"><b style="color:var(--text)">Employee response</b><br>' + esc(r.employee_response) + '</div>' : '') +
       (r.void_reason ? '<div class="er-meta" style="color:#f87171">Voided: ' + esc(r.void_reason) + '</div>' : '') +
+      attachChips(r.attachments) +
       '<div class="er-meta">' + meta.join(' <span class="sep">&middot;</span> ') + '</div>' +
       actionsHtml(r) + '</div></div>';
   }
@@ -372,6 +561,13 @@
       if (r.followup_on && !r.followup_outcome && ['signed', 'refused', 'expired', 'sent'].indexOf(r.status) !== -1 && mine && can('create_disciplinary')) {
         a.push(btn('Follow-up', 'btn-secondary', 'erFollowup(' + r.id + ')'));
       }
+    }
+    // Attaching to an ALREADY ISSUED notice is allowed on purpose. The notice
+    // text is append-only, but the evidence for it often arrives afterwards -
+    // the customer sends the email on Thursday - and every add and remove lands
+    // in the record history with a name on it.
+    if (mine && r.status !== 'void' && can('create_employee_note')) {
+      a.push(btn('Attach file', 'btn-ghost', 'erAttachTo(' + r.id + ')'));
     }
     if (r.status !== 'void' && can('manage_employee_records')) {
       a.push(btn('Void', 'btn-ghost', 'erVoid(' + r.id + ')'));
@@ -749,8 +945,12 @@
   // ==================================================================
   // NEW NOTE (recognition / coaching / performance)
   // ==================================================================
-  window.erNewRecord = function (type) {
+  window.erNewRecord = function (type, keepQueue) {
     type = type || 'recognition';
+    // Clicking a type card rebuilds this whole modal, so it passes keepQueue -
+    // otherwise switching from Coaching to Performance would silently drop the
+    // files somebody had already picked.
+    if (!keepQueue) S.queue = [];
     if (type === 'disciplinary') return window.erNewDisciplinary();
     var cats = (S.meta && S.meta.categories) || [];
     var isPraise = type === 'recognition';
@@ -773,6 +973,11 @@
       (isPraise ? sw('er-wins', true, 'Show in Recent Wins',
         'Everyone in their city sees their name and this text on the Home screen. Filing this record IS the post; there is nowhere else to put it.') : '') +
       '</div>' +
+      '<div class="form-group"><label>Supporting documentation</label>' +
+      '<div id="er-queue">' + queueRows() + '</div>' +
+      '<button class="btn btn-secondary btn-sm" onclick="erQueueFiles()">Add files</button>' +
+      '<div style="font-size:12px;color:var(--text-muted-color);margin-top:8px;line-height:1.6">' +
+      'Uploaded when you save. Up to 25MB each. If this record is shared, the files are shared with it.</div></div>' +
       '<div style="font-size:12px;color:var(--text-muted-color)">Saving notifies them if it is shared.</div>';
     modal('New Record &middot; ' + esc(S.file.user.name), body,
       '<button class="btn btn-secondary" onclick="erCloseModal()">Cancel</button>' +
@@ -780,7 +985,7 @@
   };
 
   function typeCard(key, current, title, help) {
-    return '<div class="er-type' + (key === current ? ' sel' : '') + '" onclick="erNewRecord(\'' + key + '\')">' +
+    return '<div class="er-type' + (key === current ? ' sel' : '') + '" onclick="erNewRecord(\'' + key + '\', true)">' +
       '<b>' + title + '</b><small>' + help + '</small></div>';
   }
 
@@ -793,7 +998,9 @@
     };
     var b = el('er-save'); if (b) b.disabled = true;
     try {
-      await api('POST', API + '/notes', payload);
+      var out = await api('POST', API + '/notes', payload);
+      if ((S.queue || []).length && out && out.id) await uploadAll(out.id, S.queue);
+      S.queue = [];
       closeModal();
       toast('Added to the file.', 'success');
       window.erOpenFile(S.employeeId, 'timeline');
@@ -818,6 +1025,7 @@
     S.view = 'disciplinary';
     S.draft = rec || null;
     S.check = (rec && rec.ai_check) || null;
+    S.policy = null;
     drawDisciplinary();
   }
 
@@ -831,6 +1039,33 @@
     var today = new Date().toISOString().slice(0, 10);
     var occurred = (rec.occurred_on ? String(rec.occurred_on).slice(0, 10) : today);
     var escDays = rec.escalation_days || (S.meta && S.meta.default_escalation_days) || 90;
+
+    // Three states for the policy field: nothing cited, one of the library SOPs
+    // (sop_id), or something typed by hand (sop_label with no sop_id). An older
+    // record made before the library existed lands in the third.
+    // A policy comes from one of two places, so the option value carries which:
+    // "sop:4" is the SOP library, "doc:9" is a file in a policy folder of the
+    // Document Vault. They are grouped so it is obvious which is which.
+    var pols = (S.meta && S.meta.policies) || [];
+    var sopMode = rec.sop_id ? ('sop:' + rec.sop_id)
+      : (rec.policy_document_id ? ('doc:' + rec.policy_document_id)
+        : (rec.sop_label ? 'other' : ''));
+    var polGroups = [];
+    pols.forEach(function (pd) {
+      var g = pd.group || 'Policies';
+      var found = null;
+      polGroups.forEach(function (x) { if (x.name === g) found = x; });
+      if (!found) { found = { name: g, items: [] }; polGroups.push(found); }
+      found.items.push(pd);
+    });
+    var polOpts = '<option value=""' + (sopMode === '' ? ' selected' : '') + '>None cited</option>' +
+      polGroups.map(function (g) {
+        return '<optgroup label="' + esc(g.name) + '">' + g.items.map(function (pd) {
+          return '<option value="' + esc(pd.value) + '"' + (sopMode === pd.value ? ' selected' : '') + '>' +
+            esc(pd.title) + '</option>';
+        }).join('') + '</optgroup>';
+      }).join('') +
+      '<option value="other"' + (sopMode === 'other' ? ' selected' : '') + '>Other (type it in)</option>';
 
     var steps = levels.map(function (l) {
       var cls = '';
@@ -881,25 +1116,33 @@
       '<div class="form-group"><label>Date of incident</label><input type="date" id="er-date" value="' + occurred + '"></div>' +
       '</div>' +
       '<div class="form-group"><label>Description of the incident <span style="color:var(--danger)">*</span></label>' +
-      '<textarea id="er-body" style="min-height:120px" onblur="erCheckWording()">' + esc(rec.body || '') + '</textarea>' +
+      '<textarea id="er-body" style="min-height:120px">' + esc(rec.body || '') + '</textarea>' +
       '<div style="display:flex;gap:8px;align-items:center;margin-top:8px">' +
       '<button class="btn btn-secondary btn-sm" onclick="erCheckWording(true)">Check wording</button>' +
-      '<span style="font-size:12px;color:var(--text-muted-color)">Runs again when you submit. Red flags block submission.</span></div>' +
+      '<span style="font-size:12px;color:var(--text-muted-color)">Only runs when you click it, and once more when you submit. Red flags block submission.</span></div>' +
       '<div id="er-ai-body"></div></div>' +
       '<div class="form-group" style="margin-bottom:0"><label>Policy or SOP violated</label>' +
-      '<input id="er-sop" placeholder="e.g. SOP-14 Attendance and Punctuality" value="' + esc(rec.sop_label || '') + '"></div>' +
+      '<div class="er-polrow"><select id="er-sop-id" onchange="erSopChanged()">' + polOpts + '</select>' +
+      '<button class="btn btn-secondary btn-sm" onclick="erSuggestPolicy()">Suggest policy</button></div>' +
+      '<input id="er-sop" placeholder="e.g. SOP-14 Attendance and Punctuality" value="' + esc(rec.sop_label || '') +
+      '" style="margin-top:8px' + (sopMode === 'other' ? '' : ';display:none') + '">' +
+      '<div style="font-size:12px;color:var(--text-muted-color);margin-top:6px;line-height:1.6">' +
+      (pols.length
+        ? 'From your SOP library and any Document Vault folder marked as a policy source. Suggest policy reads the incident above and offers only clauses it can quote out of a real document.'
+        : 'Nothing indexed yet, so type the policy name. Upload SOPs under Settings &gt; SOPs, or mark a vault folder as a policy source, and they show up in this list.') +
+      '</div><div id="er-pol-out"></div></div>' +
       '</div></div>' +
 
       '<div class="card" style="margin-bottom:16px"><div class="card-header"><div class="card-title">Corrective action</div></div>' +
       '<div class="card-body">' +
       '<div class="form-group"><label>What must change <span style="color:var(--danger)">*</span></label>' +
-      '<textarea id="er-corrective" style="min-height:80px" onblur="erCheckWording()">' + esc(rec.corrective_action || '') + '</textarea>' +
+      '<textarea id="er-corrective" style="min-height:80px">' + esc(rec.corrective_action || '') + '</textarea>' +
       '<div id="er-ai-corrective_action"></div></div>' +
       '<div class="form-group"><label>Consequence if it does not <span style="color:var(--danger)">*</span></label>' +
       '<div style="display:flex;gap:8px;align-items:center;margin-bottom:7px;flex-wrap:wrap">' +
       '<span class="badge badge-active" style="text-transform:none" id="er-cons-tag">Default wording for ' + esc(levelName(lvl)) + '</span>' +
       '<span style="font-size:12px;color:var(--text-muted-color)">Refills when you change the level. Edit it freely.</span></div>' +
-      '<textarea id="er-consequence" style="min-height:70px" onblur="erCheckWording()">' +
+      '<textarea id="er-consequence" style="min-height:70px">' +
       esc(rec.consequence || cons[String(lvl)] || '') + '</textarea>' +
       '<div id="er-ai-consequence"></div></div>' +
       '<div class="er-grid2">' +
@@ -910,6 +1153,18 @@
       '<input type="number" id="er-esc" min="0" max="3650" value="' + escDays + '">' +
       '<div style="font-size:12px;color:var(--text-muted-color);margin-top:6px">Days. After that it stays on the file but stops escalating.</div></div>' +
       '</div></div></div>' +
+
+      '<div class="card" style="margin-bottom:16px"><div class="card-header">' +
+      '<div class="card-title">Supporting documentation</div>' +
+      '<span style="font-size:12px;color:var(--text-muted-color)">optional</span></div>' +
+      '<div class="card-body">' +
+      '<div id="er-attach-list">' + attachRows(rec.attachments || []) + '</div>' +
+      '<button class="btn btn-secondary btn-sm" onclick="erAddAttachments()">Add files</button>' +
+      '<div style="font-size:12px;color:var(--text-muted-color);margin-top:9px;line-height:1.6">' +
+      'The photo, the signed policy page, the customer email, the timesheet. Up to 25MB each, and they stay ' +
+      'with the notice permanently. ' + esc(d.user.name.split(' ')[0]) + ' can open anything attached here once ' +
+      'the notice is sent, so this is for the evidence, not for your working notes.</div>' +
+      '</div></div>' +
 
       '<div class="card"><div class="card-header"><div class="card-title">Approval and delivery</div>' +
       '<span class="badge badge-waiting">Required at every level</span></div>' +
@@ -943,8 +1198,9 @@
       '<span style="color:#fbbf24;font-weight:700">Amber, advisory</span><br>' +
       'Guessing at intent or state of mind<br>Absolutes you cannot keep<br>' +
       'Missing dates, times or measurable standards<br>Vague expectations<br><br>' +
-      'It never writes the facts for you and never edits anything on its own. What you save is what you typed, ' +
-      'and the result is stored with the notice.' +
+      'It never writes the facts for you and never edits anything on its own, and it does not run while you ' +
+      'type - only when you click Check wording, and once more when you submit. What you save is what you ' +
+      'typed, and the result is stored with the notice.' +
       '</div></div></div>' +
 
       '</div></div>';
@@ -973,6 +1229,116 @@
     if (isDefault) box.value = cons[String(lvl)] || '';
   };
 
+  // A file has to hang off a record, so an unsaved notice is saved first. That
+  // is also why the incident description is required before you can attach
+  // anything: erSaveDraft refuses an empty one, and says so.
+  window.erAddAttachments = function () {
+    pickFiles(async function (files) {
+      if (!files.length) return;
+      var id = (S.draft && S.draft.id) || null;
+      if (!id) {
+        id = await window.erSaveDraft(true);
+        if (!id) return;
+        toast('Draft saved, so the files have somewhere to go.', 'info');
+      }
+      await uploadAll(id, files);
+      await refreshAttachments(id);
+    });
+  };
+
+  // ---- policy ---------------------------------------------------------------
+  //
+  // sop_id is the citation; sop_label is what gets printed on the notice. When a
+  // library SOP is picked the label is filled from its title, so the notice
+  // reads the same whether the policy came from the list or was typed.
+  // "sop:4" / "doc:9" / "other" / "". Returns the pair the server stores; exactly
+  // one of the two is ever set.
+  function citation() {
+    var v = String(val('er-sop-id') || '');
+    var m = /^(sop|doc):([0-9]+)$/.exec(v);
+    if (!m) return { sop_id: null, policy_document_id: null };
+    return m[1] === 'sop'
+      ? { sop_id: parseInt(m[2], 10), policy_document_id: null }
+      : { sop_id: null, policy_document_id: parseInt(m[2], 10) };
+  }
+
+  window.erSopChanged = function () {
+    var sel = el('er-sop-id'), box = el('er-sop');
+    if (!sel || !box) return;
+    var other = String(sel.value || '') === 'other';
+    box.style.display = other ? '' : 'none';
+    if (!other) {
+      var opt = sel.options && sel.options[sel.selectedIndex];
+      box.value = sel.value ? String((opt && (opt.text || opt.textContent)) || '') : '';
+    }
+  };
+
+  window.erSuggestPolicy = async function () {
+    var body = String(val('er-body') || '').trim();
+    if (!body) { toast('Describe the incident first. The suggestion reads what you wrote.', 'error'); return; }
+    if (S.busy) return;
+    S.busy = true;
+    var host = el('er-pol-out');
+    if (host) host.innerHTML = '<div class="er-pol empty">Reading your policy documents&hellip;</div>';
+    try {
+      var d = await api('POST', API + '/policy-suggest', { body: body, category: val('er-cat') });
+      S.policy = d;
+      paintPolicy(d);
+    } catch (e) {
+      if (host) host.innerHTML = '';
+      toast(e.message || 'Could not read your policy documents.', 'error');
+    }
+    S.busy = false;
+  };
+
+  // An empty list is a normal answer, so it gets a real explanation rather than
+  // silence. "The AI is switched off" and "your SOP library does not cover this
+  // yet" are two different problems with two different fixes.
+  function paintPolicy(d) {
+    var host = el('er-pol-out'); if (!host) return;
+    if (!d) { host.innerHTML = ''; return; }
+    var cands = d.candidates || [];
+    if (!cands.length) {
+      var why;
+      if (d.reason === 'no_key') why = 'The AI is not configured on this deployment, so there is nothing to suggest from. Pick the policy yourself.';
+      else if (d.reason === 'ai_failed') why = 'Could not reach the model just now. Pick the policy yourself, or try again.';
+      else why = 'Nothing in your policy documents covers what you described. Pick one yourself, or add the policy under Settings &gt; SOPs or your policy folder in Documents, and try again.';
+      host.innerHTML = '<div class="er-pol empty">' + why + '</div>';
+      return;
+    }
+    host.innerHTML = '<div class="er-pol-list">' + cands.map(function (c, i) {
+      return '<div class="er-pol">' +
+        '<div class="er-pol-h"><b>' + esc(c.title) + '</b>' +
+        '<button class="btn btn-primary btn-sm" onclick="erUsePolicy(' + i + ')">Use this</button></div>' +
+        '<div class="er-pol-q">' + esc(c.quote) + '</div>' +
+        (c.why ? '<div class="er-pol-w">' + esc(c.why) + '</div>' : '') +
+        '</div>';
+    }).join('') +
+      '<div class="er-pol-note">Each line above is quoted from the SOP itself. Anything the model could not ' +
+      'quote out of a real document was dropped rather than shown to you.</div></div>';
+  }
+
+  window.erUsePolicy = function (i) {
+    var c = S.policy && S.policy.candidates && S.policy.candidates[i];
+    if (!c) return;
+    var want = (c.source === 'document') ? ('doc:' + c.document_id) : ('sop:' + c.sop_id);
+    var sel = el('er-sop-id'), box = el('er-sop');
+    if (box) box.value = c.title;
+    if (sel) {
+      sel.value = want;
+      if (String(sel.value) !== want) {
+        // The SOP was deactivated between loading this form and now. Keep the
+        // citation as free text rather than silently dropping it on the floor.
+        sel.value = 'other';
+        if (box) box.style.display = '';
+        toast('That policy is no longer in the list, so it has been kept as typed text.', 'info');
+        return;
+      }
+    }
+    if (box) box.style.display = 'none';
+    toast('Policy set to ' + c.title + '.', 'success');
+  };
+
   window.erApproverChanged = async function () {
     var sel = el('er-approver'), any = el('er-approver-any');
     if (!sel || !any) return;
@@ -999,6 +1365,8 @@
       body: String(val('er-body') || '').trim(),
       corrective_action: String(val('er-corrective') || '').trim(),
       consequence: String(val('er-consequence') || '').trim(),
+      sop_id: citation().sop_id,
+      policy_document_id: citation().policy_document_id,
       sop_label: val('er-sop'),
       followup_on: val('er-followup'),
       escalation_days: parseInt(val('er-esc'), 10)
@@ -1090,8 +1458,13 @@
     var sug = r.suggestion;
     if (sug.replaces && box.value.indexOf(sug.replaces) !== -1) box.value = box.value.replace(sug.replaces, sug.text);
     else box.value = sug.text;
-    toast('Wording replaced. Re-checking.', 'info');
-    window.erCheckWording();
+    // Deliberately does NOT re-run the check. The check runs when you ask for it
+    // and when you submit, and nowhere else - it used to fire on every blur,
+    // which spent a model call on the pre-filled consequence line before the
+    // manager had typed a word.
+    if (S.check && S.check.fields && S.check.fields[field]) S.check.fields[field] = null;
+    paintCheck(S.check);
+    toast('Wording replaced. Click Check wording when you want it looked at again.', 'info');
   };
   window.erDismissSuggestion = function (field) {
     if (S.check && S.check.fields && S.check.fields[field]) S.check.fields[field].suggestion = null;
@@ -1135,6 +1508,10 @@
           (r.sop_label ? field('Policy cited', r.sop_label) : '') +
           (r.followup_on ? field('Follow-up date', shortDate(r.followup_on)) : '') +
           checkSummary(r.ai_check) +
+          (r.attachments && r.attachments.length
+            ? '<div style="font-size:11px;text-transform:uppercase;letter-spacing:.06em;color:var(--text-muted-color);font-weight:600;margin-top:12px">Supporting documentation</div>'
+            : '') +
+          attachChips(r.attachments) +
           '<div class="form-group" style="margin-top:14px"><label>Note (shown to the author, not the employee)</label>' +
           '<textarea id="er-anote-' + r.id + '" style="min-height:60px"></textarea></div>' +
           '<div style="display:flex;gap:8px;flex-wrap:wrap">' +
@@ -1372,6 +1749,7 @@
         '<div class="er-body" style="margin-bottom:10px">' + esc(r.body || '') + '</div>' +
         (r.corrective_action ? field('What must change', r.corrective_action) : '') +
         (r.consequence ? field('Consequence if it does not', r.consequence) : '') +
+        attachChips(r.attachments) +
         '<div style="font-size:12px;color:var(--text-muted-color);margin:10px 0">Issued by ' +
         esc(r.created_by_name || '') + (r.approver_name ? ', approved by ' + esc(r.approver_name) : '') +
         '. Signing confirms you have read it. It does not mean you agree with it, and you can attach a ' +
@@ -1409,6 +1787,7 @@
       '<div class="er-head"><div class="er-title">' + title + '</div>' + badge(r.status) + '</div>' +
       '<div class="er-body">' + esc(r.body || '') + '</div>' +
       (r.employee_response ? '<div class="er-sugg"><b style="color:var(--text)">Your response</b><br>' + esc(r.employee_response) + '</div>' : '') +
+      attachChips(r.attachments) +
       '<div class="er-meta">' + esc(shortDate(r.occurred_on || r.created_at)) +
       (r.created_by_name ? ' <span class="sep">&middot;</span> ' + esc(r.created_by_name) : '') +
       (r.signed_at ? ' <span class="sep">&middot;</span> You signed this' : '') +

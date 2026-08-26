@@ -1730,6 +1730,69 @@ async function initDB() {
     await client.query('CREATE INDEX IF NOT EXISTS document_shares_resource_idx ON document_shares (resource_type, resource_id);');
     await client.query('CREATE INDEX IF NOT EXISTS document_shares_user_idx ON document_shares (grantee_user_id);');
     await client.query('CREATE INDEX IF NOT EXISTS document_shares_role_idx ON document_shares (grantee_role);');
+
+    // ---- Vault documents as searchable text ---------------------------------
+    //
+    // A folder marked policy_source is company policy: its files are extracted to
+    // text, indexed, and may be QUOTED to anybody who can write a disciplinary
+    // notice or ask Neurolock a policy question. That is wider than the vault's
+    // own share rules, which is exactly why it is an explicit per-folder flag and
+    // not something inferred from a folder's name at read time. Everything else
+    // in the vault stays share-scoped and is never indexed.
+    await client.query('ALTER TABLE document_folders ADD COLUMN IF NOT EXISTS policy_source BOOLEAN NOT NULL DEFAULT false;');
+    // One-time convenience: a folder already called Policies is almost certainly
+    // the one. Runs once, guarded by a settings key, so un-ticking it later
+    // sticks instead of being switched back on at every boot.
+    try {
+      const _psDone = await client.query("SELECT value FROM settings WHERE key = 'policy_folder_seeded'");
+      if (!_psDone.rows.length) {
+        const _seeded = await client.query(
+          "UPDATE document_folders SET policy_source = true WHERE LOWER(TRIM(name)) IN ('policies','policy') RETURNING id"
+        );
+        await client.query("INSERT INTO settings (key, value) VALUES ('policy_folder_seeded', $1) ON CONFLICT (key) DO NOTHING",
+          [String(_seeded.rows.length)]);
+        if (_seeded.rows.length) console.log('Vault: flagged ' + _seeded.rows.length + ' folder(s) named Policies as a policy source.');
+      }
+    } catch (e) { console.error('Policy folder seed skipped:', e.message); }
+
+    // The extracted words. One row per document, and it dies with the document -
+    // ON DELETE CASCADE is the whole promise here: delete the file (or the folder
+    // above it) and the text is gone in the same statement, with nothing left to
+    // remember to clean up. status says WHY a document has no words, which is the
+    // difference between "scanned, no text layer" and "we have not looked yet".
+    await client.query(
+      'CREATE TABLE IF NOT EXISTS document_text (' +
+      '  document_id INTEGER PRIMARY KEY REFERENCES documents(id) ON DELETE CASCADE,' +
+      '  content TEXT,' +
+      '  char_count INTEGER NOT NULL DEFAULT 0,' +
+      '  page_count INTEGER,' +
+      "  status VARCHAR(20) NOT NULL DEFAULT 'pending'," +
+      '  detail TEXT,' +
+      '  extracted_at TIMESTAMPTZ DEFAULT NOW()' +
+      ');'
+    );
+    var _dtCols = ['content TEXT', 'char_count INTEGER NOT NULL DEFAULT 0', 'page_count INTEGER',
+      "status VARCHAR(20) NOT NULL DEFAULT 'pending'", 'detail TEXT', 'extracted_at TIMESTAMPTZ DEFAULT NOW()'];
+    for (var _dti = 0; _dti < _dtCols.length; _dti++) {
+      await client.query('ALTER TABLE document_text ADD COLUMN IF NOT EXISTS ' + _dtCols[_dti] + ';');
+    }
+
+    // Searchable chunks, same shape and the same tsvector trick as sop_chunks, so
+    // the two can be UNIONed into one ranked result set by utils/policySuggest.js
+    // and by Neurolock.
+    await client.query(
+      'CREATE TABLE IF NOT EXISTS document_chunks (' +
+      '  id SERIAL PRIMARY KEY,' +
+      '  document_id INTEGER NOT NULL REFERENCES documents(id) ON DELETE CASCADE,' +
+      '  chunk_index INTEGER NOT NULL,' +
+      '  content TEXT NOT NULL,' +
+      "  tsv tsvector GENERATED ALWAYS AS (to_tsvector('english', content)) STORED" +
+      ');'
+    );
+    await client.query('CREATE INDEX IF NOT EXISTS document_chunks_tsv_idx ON document_chunks USING GIN (tsv);');
+    await client.query('CREATE INDEX IF NOT EXISTS document_chunks_doc_idx ON document_chunks (document_id);');
+    await client.query('CREATE INDEX IF NOT EXISTS document_text_status_idx ON document_text (status);');
+    console.log('Vault text: document_text + document_chunks ready.');
     await client.query('ALTER TABLE documents ADD COLUMN IF NOT EXISTS emailable BOOLEAN NOT NULL DEFAULT false;');
     // Document expiration + reminder lead time (number + unit days/weeks/months).
     await client.query('ALTER TABLE documents ADD COLUMN IF NOT EXISTS expires_on DATE;');
@@ -5272,6 +5335,7 @@ async function initDB() {
       '  corrective_action TEXT,' +
       '  consequence TEXT,' +
       '  sop_id INTEGER,' +
+      '  policy_document_id INTEGER,' +
       '  sop_label VARCHAR(200),' +
       '  source VARCHAR(40),' +
       '  external_ref VARCHAR(80),' +
@@ -5342,7 +5406,7 @@ async function initDB() {
       'followup_on DATE', 'followup_outcome VARCHAR(24)', 'followup_note TEXT',
       'followup_done_at TIMESTAMPTZ', 'followup_nagged_at TIMESTAMPTZ',
       'escalation_days INTEGER NOT NULL DEFAULT 90', 'counts_until DATE',
-      'ai_check JSONB', 'city_code VARCHAR(20)',
+      'ai_check JSONB', 'city_code VARCHAR(20)', 'policy_document_id INTEGER',
       'created_by INTEGER', 'created_by_name VARCHAR(120)',
       'created_at TIMESTAMPTZ DEFAULT NOW()', 'updated_at TIMESTAMPTZ DEFAULT NOW()',
       'voided_at TIMESTAMPTZ', 'void_reason TEXT'
@@ -5381,6 +5445,44 @@ async function initDB() {
       await client.query('ALTER TABLE employee_record_events ADD COLUMN IF NOT EXISTS ' + _ereCols[_erei] + ';');
     }
     await client.query('CREATE INDEX IF NOT EXISTS employee_record_events_rec_idx ON employee_record_events (record_id, id DESC);');
+
+    // Supporting documentation hung off a record. Photos of the damage, the
+    // signed policy page, the timesheet, the customer email - the evidence that
+    // makes a notice hold up months later when nobody remembers the day.
+    //
+    // Bytes live in R2 and never pass through the API (utils/r2.js presigns both
+    // directions). Only the pointer is stored here. ON DELETE CASCADE means
+    // deleting a draft takes its attachment ROWS with it; the R2 objects are
+    // removed explicitly in routes/employeeRecords.js, and an orphaned object is
+    // harmless where a dangling row would not be.
+    //
+    // There is deliberately no per-file visibility flag. An attachment inherits
+    // the visibility of the record it hangs on, so there is exactly ONE rule
+    // deciding who sees what on a file, and no way for a file to be shared by a
+    // route that forgot to check the second flag.
+    await client.query(
+      'CREATE TABLE IF NOT EXISTS employee_record_attachments (' +
+      '  id SERIAL PRIMARY KEY,' +
+      '  record_id INTEGER NOT NULL REFERENCES employee_records(id) ON DELETE CASCADE,' +
+      '  r2_key VARCHAR(500) NOT NULL,' +
+      '  filename VARCHAR(255),' +
+      '  content_type VARCHAR(120),' +
+      '  size_bytes BIGINT,' +
+      '  uploaded_by INTEGER,' +
+      '  uploaded_by_name VARCHAR(120),' +
+      '  created_at TIMESTAMPTZ DEFAULT NOW()' +
+      ');'
+    );
+    // CREATE TABLE IF NOT EXISTS will not add a column to a table that already
+    // exists, so every column above is repeated here. Yes, again. See the five
+    // other comments in this file that say the same thing.
+    var _eraCols = ['record_id INTEGER', 'r2_key VARCHAR(500)', 'filename VARCHAR(255)',
+      'content_type VARCHAR(120)', 'size_bytes BIGINT', 'uploaded_by INTEGER',
+      'uploaded_by_name VARCHAR(120)', 'created_at TIMESTAMPTZ DEFAULT NOW()'];
+    for (var _erai = 0; _erai < _eraCols.length; _erai++) {
+      await client.query('ALTER TABLE employee_record_attachments ADD COLUMN IF NOT EXISTS ' + _eraCols[_erai] + ';');
+    }
+    await client.query('CREATE INDEX IF NOT EXISTS employee_record_attachments_rec_idx ON employee_record_attachments (record_id, id);');
 
     // ---- Deposit shortages ------------------------------------------------
     //
@@ -5445,7 +5547,7 @@ async function initDB() {
 
     console.log('Deposit shortages: deposit_shortages ready.');
 
-    console.log('Employee records: employee_records + employee_record_events ready.');
+    console.log('Employee records: employee_records + employee_record_events + employee_record_attachments ready.');
 
     // ---- Certificates of Insurance ---------------------------------------
     //

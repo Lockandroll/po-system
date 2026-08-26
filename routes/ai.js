@@ -3,6 +3,7 @@ const https = require('https');
 const { pool } = require('../db');
 const { requireAuth, requireRole, requirePermission } = require('../middleware/auth');
 const novaTools = require('../lib/novaTools');
+const docText = require('../utils/docText');
 
 const router = express.Router();
 
@@ -227,22 +228,52 @@ router.post('/chat', requireAuth, async function(req, res) {
     const customContext = ctxRow.rows.length && ctxRow.rows[0].value ? ctxRow.rows[0].value.trim() : '';
     let sopContext = '';
     try {
-      const sopActive = await pool.query("SELECT COUNT(*)::int AS n FROM sop_documents WHERE active = true");
-      if (sopActive.rows[0].n > 0) {
+      // Is there anything to search at all? Counts BOTH sources - a company
+      // that keeps its policies only in the Document Vault has no active SOP
+      // rows, and checking sop_documents alone would skip retrieval for them.
+      let _corpus = 0;
+      try {
+        const sopActive = await pool.query("SELECT COUNT(*)::int AS n FROM sop_documents WHERE active = true");
+        _corpus += sopActive.rows[0].n;
+      } catch (e) {}
+      try {
+        const vaultActive = await pool.query(
+          docText.POLICY_TREE_CTE +
+          " SELECT COUNT(*)::int AS n FROM documents d WHERE d.status = 'ready' AND d.folder_id IN (SELECT id FROM policy_tree)"
+        );
+        _corpus += vaultActive.rows[0].n;
+      } catch (e) {}
+      if (_corpus > 0) {
         const queryText = extractSopQuery(messages);
         const parts = [];
         if (queryText) {
           // Full-text retrieval: pull the SOP chunks most relevant to the question.
           // OR-combine the query terms (better recall than the default AND); rank chunks by overlap.
-          const retrieved = await pool.query(
-            "WITH q AS (SELECT replace(websearch_to_tsquery('english', $1)::text, '&', '|')::tsquery AS tq) " +
+          // Two sources, searched as one: the SOP library, and any Document
+          // Vault folder an admin flagged as a policy source (utils/docText.js).
+          // The union is tried first and falls back to SOPs alone, so a
+          // deployment without the document_chunks migration still answers from
+          // the SOPs instead of losing retrieval entirely.
+          const _sopSelect =
             "SELECT d.title, c.content, ts_rank(c.tsv, q.tq) AS rank " +
-            "FROM sop_chunks c " +
-            "JOIN sop_documents d ON d.id = c.sop_id, q " +
-            "WHERE d.active = true AND c.tsv @@ q.tq " +
-            "ORDER BY rank DESC LIMIT 12",
-            [queryText]
-          );
+            "FROM sop_chunks c JOIN sop_documents d ON d.id = c.sop_id, q " +
+            "WHERE d.active = true AND c.tsv @@ q.tq";
+          const _vaultSelect =
+            "SELECT doc.name AS title, dc.content, ts_rank(dc.tsv, q.tq) AS rank " +
+            "FROM document_chunks dc JOIN documents doc ON doc.id = dc.document_id, q " +
+            "WHERE doc.status = 'ready' AND doc.folder_id IN (SELECT id FROM policy_tree) AND dc.tsv @@ q.tq";
+          const _qCte = "q AS (SELECT replace(websearch_to_tsquery('english', $1)::text, '&', '|')::tsquery AS tq)";
+          let retrieved;
+          try {
+            retrieved = await pool.query(
+              docText.POLICY_TREE_CTE + ', ' + _qCte + ' ' +
+              _sopSelect + ' UNION ALL ' + _vaultSelect + ' ORDER BY rank DESC LIMIT 14',
+              [queryText]
+            );
+          } catch (e) {
+            console.error('SOP+vault retrieval failed, falling back to SOPs:', e.message);
+            retrieved = await pool.query('WITH ' + _qCte + ' ' + _sopSelect + ' ORDER BY rank DESC LIMIT 12', [queryText]);
+          }
           let budget = 40000;
           for (const r of retrieved.rows) {
             if (budget <= 0) break;
@@ -252,7 +283,7 @@ router.post('/chat', requireAuth, async function(req, res) {
           }
         }
         if (parts.length) {
-          sopContext = '\n\nRelevant excerpts from company SOP and reference documents (treat these as authoritative for company procedures, pricing, and policies; mention the document title when you rely on one):\n' + parts.join('\n\n');
+          sopContext = '\n\nRelevant excerpts from company SOP, policy and reference documents (treat these as authoritative for company procedures, pricing, and policies; mention the document title when you rely on one):\n' + parts.join('\n\n');
         }
       }
     } catch (e) { console.error('SOP retrieval failed:', e.message); }

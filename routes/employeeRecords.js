@@ -33,6 +33,10 @@ const notify = require('../utils/notify');
 const { sendEmail, emailTemplate } = require('../utils/email');
 const { sendSms } = require('../utils/sms');
 const recordCheck = require('../utils/recordCheck');
+const permissions = require('../utils/permissions');
+const r2 = require('../utils/r2');
+const policySuggest = require('../utils/policySuggest');
+const docText = require('../utils/docText');
 
 // ---------------------------------------------------------------- constants
 
@@ -289,8 +293,13 @@ function lateDepositText(name, late) {
 }
 
 // What the employee themself is allowed to see of a record.
-function employeeView(r) {
+// The employee's view of one record. Attachments are passed IN rather than
+// looked up here: this function is the single place that decides what an
+// employee is allowed to see of a record, and a query hidden inside it would be
+// a second place, reachable from any caller that forgot the visibility filter.
+function employeeView(r, attachments) {
   return {
+    attachments: attachments || [],
     id: r.id,
     type: r.type,
     level: r.level,
@@ -316,9 +325,166 @@ function employeeView(r) {
   };
 }
 
+// The SOP library, for the "Policy or SOP violated" dropdown. Only active
+// documents, and only id + title - the bodies are large and the form has no use
+// for them.
+//
+// Wrapped, because an empty or missing sop_documents table must not stop anybody
+// writing a notice. With no library the dropdown simply offers the free-text
+// option, which is what the field was before this existed.
+async function activePolicies() {
+  var out = [];
+  try {
+    const r = await pool.query('SELECT id, title FROM sop_documents WHERE active = true ORDER BY title ASC');
+    r.rows.forEach(function (x) {
+      out.push({ value: 'sop:' + x.id, source: 'sop', id: x.id, title: x.title, group: 'SOP library' });
+    });
+  } catch (e) {
+    console.error('[employee-records] SOP list failed:', e.message);
+  }
+  // Files in a Document Vault folder an admin flagged as a policy source. Only
+  // ones that actually produced text: a scanned PDF sitting in Policies cannot
+  // be quoted, so offering it in the dropdown would promise something the
+  // suggester can never deliver.
+  try {
+    const r = await pool.query(
+      docText.POLICY_TREE_CTE +
+      " SELECT d.id, d.name FROM documents d JOIN document_text t ON t.document_id = d.id " +
+      " WHERE d.status = 'ready' AND t.status = 'ok' AND d.folder_id IN (SELECT id FROM policy_tree) " +
+      ' ORDER BY d.name ASC'
+    );
+    r.rows.forEach(function (x) {
+      out.push({ value: 'doc:' + x.id, source: 'document', id: x.id, title: x.name, group: 'Policy folder' });
+    });
+  } catch (e) {
+    console.error('[employee-records] vault policy list failed:', e.message);
+  }
+  return out;
+}
+
 async function loadRecord(id) {
   const r = await pool.query('SELECT * FROM employee_records WHERE id = $1', [parseInt(id, 10) || 0]);
   return r.rows.length ? r.rows[0] : null;
+}
+
+// ---------------------------------------------------------------- attachments
+
+// Supporting documentation hung off a record: the photo, the signed policy page,
+// the customer email, the timesheet. Bytes go browser <-> R2 direct through a
+// presigned URL and never pass through this API, the same way HR documents and
+// A/P bills already work (see utils/r2.js and CLAUDE.md section 9).
+var ATTACH_PREFIX = 'employee-records/';
+var MAX_ATTACH_BYTES = 25 * 1024 * 1024;
+
+// Statuses an employee never sees on their own file. Kept next to the gate that
+// uses it rather than inlined, because GET /me filters on the same list and the
+// two drifting apart is exactly how a draft accusation ends up shared.
+var EMPLOYEE_HIDDEN_STATUSES = ['draft', 'pending_approval', 'returned', 'void'];
+
+function attachKey(recordId, filename) {
+  return ATTACH_PREFIX + recordId + '/' + Date.now() + '-' +
+    String(filename || 'file').replace(/[^A-Za-z0-9._-]/g, '_').slice(0, 120);
+}
+
+function attachView(a) {
+  return {
+    id: a.id,
+    record_id: a.record_id,
+    filename: a.filename,
+    content_type: a.content_type,
+    size_bytes: (a.size_bytes === null || a.size_bytes === undefined) ? null : Number(a.size_bytes),
+    uploaded_by: a.uploaded_by,
+    uploaded_by_name: a.uploaded_by_name,
+    created_at: a.created_at
+  };
+}
+
+// Attachments for a whole page of records at once, as { recordId: [...] }. One
+// query on purpose: the file screen renders every record it loaded, and doing
+// this per row is the obvious N+1 waiting to be written.
+//
+// Wrapped, because a deploy where the migration has not landed yet must not take
+// the employee file down with it. A file with no attachment list still works; a
+// file that 500s does not.
+async function attachmentsByRecord(ids) {
+  var out = {};
+  if (!ids || !ids.length) return out;
+  try {
+    const rows = (await pool.query(
+      'SELECT * FROM employee_record_attachments WHERE record_id = ANY($1::int[]) ORDER BY id',
+      [ids]
+    )).rows;
+    rows.forEach(function (a) {
+      if (!out[a.record_id]) out[a.record_id] = [];
+      out[a.record_id].push(attachView(a));
+    });
+  } catch (e) {
+    console.error('[employee-records] attachment load failed:', e.message);
+  }
+  return out;
+}
+
+// requirePermission() cannot express "a manager in scope OR this record's own
+// employee", and the download route needs exactly that. This is the permission
+// half of it, extra_perms included, mirroring middleware/auth.js so one person
+// granted a capability directly is not silently locked out here.
+async function viewerHasPerm(req, perm) {
+  try {
+    if (await permissions.hasPermission(req.user.role, perm)) return true;
+  } catch (e) {
+    try { if (permissions.defaultHas(req.user.role, perm)) return true; } catch (_) {}
+  }
+  try {
+    var cached = req._userRow;
+    if (cached && cached.id === req.user.id) {
+      return Array.isArray(cached.extra_perms) && cached.extra_perms.indexOf(perm) !== -1;
+    }
+    const r = await pool.query('SELECT extra_perms FROM users WHERE id = $1', [req.user.id]);
+    var ep = r.rows.length ? r.rows[0].extra_perms : null;
+    return Array.isArray(ep) && ep.indexOf(perm) !== -1;
+  } catch (e) { return false; }
+}
+
+// Who may READ the documents on a record. Two doors, deliberately different:
+//
+//   * a manager comes in through view_employee_records plus scope;
+//   * the employee comes in only on their OWN record, and only once it is both
+//     shared with them and past the statuses above.
+//
+// An attachment inherits the visibility of the record it hangs on. There is no
+// per-file share flag anywhere in this module, and that is a decision rather
+// than an omission: two flags means two rules, and the way two rules eventually
+// disagree here is that something private lands on somebody's My File screen.
+//
+// The draft clause is the same one GET /employee/:id enforces on the record
+// text. A half-written accusation is private to whoever is writing it, and so
+// is every photo attached to it - including from an admin.
+async function canReadAttachments(req, rec) {
+  if (!rec) return false;
+  if (rec.status === 'draft' && rec.created_by !== req.user.id) return false;
+  if (await viewerHasPerm(req, 'view_employee_records')) {
+    if (await inScope(req.user, rec.user_id)) return true;
+  }
+  if (rec.approver_id === req.user.id && rec.status === 'pending_approval') {
+    if (await viewerHasPerm(req, 'approve_discipline')) return true;
+  }
+  if (rec.user_id === req.user.id) {
+    return !!rec.visible_to_employee && EMPLOYEE_HIDDEN_STATUSES.indexOf(rec.status) === -1;
+  }
+  return false;
+}
+
+// Who may ADD or REMOVE documents. Same authority as writing the record itself
+// (canActOn: in scope, not yourself, not somebody you report to) plus the draft
+// rule. A void record is frozen: it stays readable forever, but nothing new is
+// hung off it, because a void notice is evidence of what was decided and when.
+async function canWriteAttachments(req, rec) {
+  if (!rec) return { ok: false, why: 'Not found.' };
+  if (rec.status === 'void') return { ok: false, why: 'That record is void. Nothing more can be attached to it.' };
+  if (rec.status === 'draft' && rec.created_by !== req.user.id) {
+    return { ok: false, why: 'That draft belongs to somebody else.' };
+  }
+  return await canActOn(req.user, rec.user_id);
 }
 
 async function userRow(id) {
@@ -368,6 +534,7 @@ router.get('/meta', requireAuth, requirePermission('view_employee_records'), asy
     levels: LEVELS.map(function (l) { return { n: l.n, key: l.key, label: l.label, suspension: !!l.suspension }; }),
     categories: CATEGORIES,
     consequences: await consequenceDefaults(),
+    policies: await activePolicies(),
     sign_window_days: SIGN_WINDOW_DAYS,
     default_escalation_days: 90,
     ai_available: !!process.env.ANTHROPIC_API_KEY
@@ -496,6 +663,8 @@ router.get('/employee/:id', requireAuth, requirePermission('view_employee_record
       [target, req.user.id]
     )).rows;
 
+    var attach = await attachmentsByRecord(rows.map(function (r) { return r.id; }));
+
     var sup = u.supervisor_id ? await userRow(u.supervisor_id) : null;
     var late = await lateDeposits(target, 12);
     var shorts = await unaccountedShortages(target, 12);
@@ -514,7 +683,8 @@ router.get('/employee/:id', requireAuth, requirePermission('view_employee_record
           level_label: levelLabel(r.level),
           occurred_on: dstr(r.occurred_on),
           followup_on: dstr(r.followup_on),
-          counts_until: dstr(r.counts_until)
+          counts_until: dstr(r.counts_until),
+          attachments: attach[r.id] || []
         });
       }),
       ladder: ladderFor(rows),
@@ -645,6 +815,26 @@ router.post('/check', requireAuth, requirePermission('create_employee_note'), as
   }
 });
 
+// Suggest which SOP the described incident breached. Retrieval over the SOP
+// library, then the model, then a quote check - see utils/policySuggest.js. It
+// suggests and never selects: the manager still picks the policy, and an empty
+// list is a normal answer rather than an error.
+router.post('/policy-suggest', requireAuth, requirePermission('create_employee_note'), async (req, res) => {
+  try {
+    var b = req.body || {};
+    var out = await policySuggest.suggest(pool, {
+      body: clean(b.body, 8000),
+      category: clean(b.category, 60)
+    });
+    res.json(out);
+  } catch (e) {
+    console.error('[employee-records] policy suggest failed:', e);
+    // Same rule as the wording check: never fail closed. Losing the suggestion
+    // must not stop somebody citing the policy themselves.
+    res.json({ available: false, reason: 'ai_failed', candidates: [] });
+  }
+});
+
 // ---------------------------------------------------------------- disciplinary
 
 // Create or update a DRAFT disciplinary notice. Once submitted it is frozen.
@@ -675,8 +865,15 @@ router.post('/disciplinary', requireAuth, requirePermission('create_disciplinary
     if (!isFinite(escDays) || escDays < 0 || escDays > 3650) escDays = 90;
 
     var u = await userRow(target);
+    // Two citation columns because a policy now comes from one of two places:
+    // sop_id for the SOP library, policy_document_id for a file in a policy
+    // folder. Exactly one is set. sop_label is what actually prints on the
+    // notice, and is filled from whichever title was chosen.
+    var citedSop = parseInt(b.sop_id, 10) || null;
+    var citedDoc = parseInt(b.policy_document_id, 10) || null;
+    if (citedSop && citedDoc) citedDoc = null;
     var fields = [target, 'disciplinary', level, clean(b.category, 60), occurred, body, corrective, consequence,
-      parseInt(b.sop_id, 10) || null, clean(b.sop_label, 200), followup, escDays,
+      citedSop, clean(b.sop_label, 200), followup, escDays,
       addDays(occurred, escDays), (u && u.home_city) || null];
 
     var rec;
@@ -684,17 +881,18 @@ router.post('/disciplinary', requireAuth, requirePermission('create_disciplinary
       rec = (await pool.query(
         'UPDATE employee_records SET level=$2, category=$3, occurred_on=$4, body=$5, corrective_action=$6, ' +
         'consequence=$7, sop_id=$8, sop_label=$9, followup_on=$10, escalation_days=$11, counts_until=$12, ' +
+        'policy_document_id=$13, ' +
         "status='draft', updated_at=NOW() WHERE id=$1 RETURNING *",
-        [existing.id, level, fields[3], occurred, body, corrective, consequence, fields[8], fields[9], followup, escDays, fields[12]]
+        [existing.id, level, fields[3], occurred, body, corrective, consequence, fields[8], fields[9], followup, escDays, fields[12], citedDoc]
       )).rows[0];
       await logEvent(rec.id, 'draft_saved', req.user);
     } else {
       rec = (await pool.query(
         'INSERT INTO employee_records (user_id, type, level, category, occurred_on, body, corrective_action, ' +
         'consequence, sop_id, sop_label, followup_on, escalation_days, counts_until, city_code, status, ' +
-        'visible_to_employee, created_by, created_by_name) ' +
-        "VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,'draft',$15,$16,$17) RETURNING *",
-        fields.concat([b.visible_to_employee !== false, req.user.id, req.user.name])
+        'visible_to_employee, created_by, created_by_name, policy_document_id) ' +
+        "VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,'draft',$15,$16,$17,$18) RETURNING *",
+        fields.concat([b.visible_to_employee !== false, req.user.id, req.user.name, citedDoc])
       )).rows[0];
       await logEvent(rec.id, 'created', req.user, null, { level: level });
     }
@@ -779,7 +977,10 @@ router.get('/approvals', requireAuth, requirePermission('approve_discipline'), a
     if (!isAdminLike(req.user)) { sql += 'AND r.approver_id = $1 '; params.push(req.user.id); }
     sql += 'ORDER BY r.submitted_at ASC';
     const rows = (await pool.query(sql, params)).rows;
-    res.json(rows.map(function (r) { return Object.assign({ level_label: levelLabel(r.level) }, r); }));
+    var attach = await attachmentsByRecord(rows.map(function (r) { return r.id; }));
+    res.json(rows.map(function (r) {
+      return Object.assign({ level_label: levelLabel(r.level), attachments: attach[r.id] || [] }, r);
+    }));
   } catch (e) {
     console.error('[employee-records] approvals failed:', e);
     res.status(500).json({ error: 'Could not load approvals.' });
@@ -1187,6 +1388,158 @@ router.get('/employee/:id/shortages', requireAuth, requirePermission('view_emplo
   }
 });
 
+// ---------------------------------------------------------------- attachments
+
+// Three calls to add a file, matching routes/ap.js and routes/onboarding.js:
+// presign, the browser PUTs the bytes straight to R2, then confirm. The server
+// never handles the bytes, so a 40MB photo does not have to fit through
+// express.json and does not sit in this process's memory.
+//
+// Read access is decided by canReadAttachments(), which is the ONLY gate in
+// this section. A manager reaches these through scope; the employee reaches
+// their own once the record is shared with them.
+
+router.post('/:id/attachments/upload-url', requireAuth, requirePermission('create_employee_note'), async (req, res) => {
+  try {
+    var rec = await loadRecord(req.params.id);
+    if (!rec) return res.status(404).json({ error: 'Not found.' });
+    var guard = await canWriteAttachments(req, rec);
+    if (!guard.ok) return res.status(403).json({ error: guard.why });
+    if (!r2.configured()) return res.status(503).json({ error: 'File storage is not configured yet.' });
+
+    var b = req.body || {};
+    var fname = clean(b.filename, 255) || 'attachment';
+    var ctype = clean(b.content_type, 120) || 'application/octet-stream';
+    var size = parseInt(b.size_bytes, 10) || 0;
+    if (size > MAX_ATTACH_BYTES) {
+      return res.status(413).json({
+        error: 'That file is larger than ' + Math.round(MAX_ATTACH_BYTES / 1048576) + 'MB. Attach a smaller copy.'
+      });
+    }
+    var key = attachKey(rec.id, fname);
+    var url = await r2.presignUpload(key, ctype);
+    res.json({ success: true, url: url, key: key, filename: fname, content_type: ctype });
+  } catch (e) {
+    console.error('[employee-records] attachment presign failed:', e);
+    res.status(500).json({ error: 'Could not start the upload.' });
+  }
+});
+
+router.post('/:id/attachments/confirm', requireAuth, requirePermission('create_employee_note'), async (req, res) => {
+  try {
+    var rec = await loadRecord(req.params.id);
+    if (!rec) return res.status(404).json({ error: 'Not found.' });
+    var guard = await canWriteAttachments(req, rec);
+    if (!guard.ok) return res.status(403).json({ error: guard.why });
+
+    var b = req.body || {};
+    var key = clean(b.key, 500);
+    // The key must be one WE handed out, for THIS record. A client that names
+    // its own key could point a row at another employee's evidence and this
+    // route would file the pointer without ever reading the object.
+    if (!key || key.indexOf(ATTACH_PREFIX + rec.id + '/') !== 0) {
+      return res.status(400).json({ error: 'Bad upload key.' });
+    }
+
+    // Trust the object, not the browser, for the size - and check the PUT
+    // actually landed, so a failed upload leaves no row pointing at nothing.
+    // headObject() returns null only when the object is definitely absent and
+    // rethrows anything else; a transient R2 error must not lose the manager's
+    // file, so that case falls through to the size the browser reported.
+    var size = parseInt(b.size_bytes, 10) || null;
+    try {
+      var head = await r2.headObject(key);
+      if (!head) return res.status(400).json({ error: 'That upload did not arrive. Try it again.' });
+      size = head.size || size;
+    } catch (e) {
+      console.error('[employee-records] attachment head failed:', e.message);
+    }
+
+    const ins = await pool.query(
+      'INSERT INTO employee_record_attachments (record_id, r2_key, filename, content_type, size_bytes, uploaded_by, uploaded_by_name) ' +
+      'VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING *',
+      [rec.id, key, clean(b.filename, 255), clean(b.content_type, 120), size, req.user.id, req.user.name]
+    );
+    var row = ins.rows[0];
+    await logEvent(rec.id, 'attachment_added', req.user, clean(b.filename, 255), { filename: row.filename, bytes: size });
+    await logAudit({
+      entity_type: 'employee_record', entity_id: rec.id, action: 'attachment_added',
+      user_id: req.user.id, user_name: req.user.name,
+      details: { filename: row.filename, bytes: size }
+    });
+    res.json({ success: true, attachment: attachView(row) });
+  } catch (e) {
+    console.error('[employee-records] attachment confirm failed:', e);
+    res.status(500).json({ error: 'Could not save the attachment.' });
+  }
+});
+
+// The list for one record. Used by the disciplinary form, which is looking at a
+// draft that no other endpoint returns yet.
+router.get('/:id/attachments', requireAuth, async (req, res) => {
+  try {
+    var rec = await loadRecord(req.params.id);
+    if (!rec || !(await canReadAttachments(req, rec))) return res.status(404).json({ error: 'Not found.' });
+    const rows = (await pool.query(
+      'SELECT * FROM employee_record_attachments WHERE record_id = $1 ORDER BY id', [rec.id]
+    )).rows;
+    res.json({ attachments: rows.map(attachView) });
+  } catch (e) {
+    console.error('[employee-records] attachment list failed:', e);
+    res.status(500).json({ error: 'Could not load the documents.' });
+  }
+});
+
+// A short-lived presigned GET. No permission middleware on purpose: the gate is
+// canReadAttachments(), because the employee has no record permission at all and
+// still has to be able to open the evidence attached to their own notice.
+router.get('/attachments/:aid/download', requireAuth, async (req, res) => {
+  try {
+    const a = (await pool.query(
+      'SELECT * FROM employee_record_attachments WHERE id = $1', [parseInt(req.params.aid, 10) || 0]
+    )).rows[0];
+    if (!a) return res.status(404).json({ error: 'Not found.' });
+    var rec = await loadRecord(a.record_id);
+    if (!(await canReadAttachments(req, rec))) return res.status(404).json({ error: 'Not found.' });
+    if (!r2.configured()) return res.status(503).json({ error: 'File storage is not configured yet.' });
+    var url = await r2.presignDownload(a.r2_key, a.filename || 'attachment', true, 300, a.content_type || undefined);
+    res.json({ success: true, url: url });
+  } catch (e) {
+    console.error('[employee-records] attachment download failed:', e);
+    res.status(500).json({ error: 'Could not open that document.' });
+  }
+});
+
+// Removing one. The row goes, then the object; an orphaned object in R2 is
+// harmless where a row pointing at a deleted object is a broken link on
+// somebody's file. Logged either way - what was attached to a notice and when
+// it stopped being attached is exactly the kind of thing that gets asked about
+// a year later.
+router.delete('/attachments/:aid', requireAuth, requirePermission('create_employee_note'), async (req, res) => {
+  try {
+    const a = (await pool.query(
+      'SELECT * FROM employee_record_attachments WHERE id = $1', [parseInt(req.params.aid, 10) || 0]
+    )).rows[0];
+    if (!a) return res.status(404).json({ error: 'Not found.' });
+    var rec = await loadRecord(a.record_id);
+    if (!rec) return res.status(404).json({ error: 'Not found.' });
+    var guard = await canWriteAttachments(req, rec);
+    if (!guard.ok) return res.status(403).json({ error: guard.why });
+
+    await pool.query('DELETE FROM employee_record_attachments WHERE id = $1', [a.id]);
+    try { if (r2.configured()) await r2.deleteObject(a.r2_key); } catch (e) { /* orphan object is harmless */ }
+    await logEvent(rec.id, 'attachment_removed', req.user, a.filename || null, { filename: a.filename });
+    await logAudit({
+      entity_type: 'employee_record', entity_id: rec.id, action: 'attachment_removed',
+      user_id: req.user.id, user_name: req.user.name, details: { filename: a.filename }
+    });
+    res.json({ success: true });
+  } catch (e) {
+    console.error('[employee-records] attachment delete failed:', e);
+    res.status(500).json({ error: 'Could not remove that document.' });
+  }
+});
+
 // ---------------------------------------------------------------- employee side
 
 // The employee's own view. No permission gate - this is their own file, the
@@ -1208,7 +1561,8 @@ router.get('/me', requireAuth, async (req, res) => {
         [unseen.map(function (r) { return r.id; })]);
       for (var i = 0; i < unseen.length; i++) await logEvent(unseen[i].id, 'opened', req.user);
     }
-    res.json({ records: rows.map(employeeView) });
+    var attach = await attachmentsByRecord(rows.map(function (r) { return r.id; }));
+    res.json({ records: rows.map(function (r) { return employeeView(r, attach[r.id] || []); }) });
   } catch (e) {
     console.error('[employee-records] me failed:', e);
     res.status(500).json({ error: 'Could not load your file.' });

@@ -5,6 +5,7 @@ const { requireAuth } = require('../middleware/auth');
 const { logAudit } = require('../utils/audit');
 const r2 = require('../utils/r2');
 const { sendEmail } = require('../utils/email');
+const docText = require('../utils/docText');
 
 const router = express.Router();
 
@@ -101,7 +102,7 @@ router.get('/', requireAuth, async function (req, res) {
 
     let current = null, ancestors = [];
     if (folderId != null) {
-      const fr = await pool.query('SELECT id, name, parent_id FROM document_folders WHERE id = $1', [folderId]);
+      const fr = await pool.query('SELECT id, name, parent_id, policy_source FROM document_folders WHERE id = $1', [folderId]);
       if (!fr.rows.length) return res.status(404).json({ error: 'Folder not found' });
       current = fr.rows[0];
       if (!canViewFolder(ctx, folderId)) return res.status(403).json({ error: 'You do not have access to this folder' });
@@ -118,12 +119,17 @@ router.get('/', requireAuth, async function (req, res) {
     }
 
     const allFolders = (await pool.query(
-      'SELECT id, name, parent_id, owner_id, owner_name, created_at FROM document_folders ORDER BY name ASC'
+      'SELECT id, name, parent_id, owner_id, owner_name, created_at, policy_source FROM document_folders ORDER BY name ASC'
     )).rows;
+    // text_status is LEFT JOINed rather than required: a deploy where the
+    // migration has not landed, or a file nobody has indexed, both come back
+    // null and the screen simply shows nothing next to that file.
     const allFiles = (await pool.query(
-      "SELECT id, name, folder_id, mime_type, size_bytes, owner_id, owner_name, emailable, created_at, " +
-      "expires_on, reminder_lead_num, reminder_lead_unit " +
-      "FROM documents WHERE status = 'ready' ORDER BY name ASC"
+      "SELECT d.id, d.name, d.folder_id, d.mime_type, d.size_bytes, d.owner_id, d.owner_name, d.emailable, " +
+      "d.created_at, d.expires_on, d.reminder_lead_num, d.reminder_lead_unit, " +
+      "t.status AS text_status, t.char_count AS text_chars, t.detail AS text_detail " +
+      "FROM documents d LEFT JOIN document_text t ON t.document_id = d.id " +
+      "WHERE d.status = 'ready' ORDER BY d.name ASC"
     )).rows;
 
     let folders, files;
@@ -146,16 +152,27 @@ router.get('/', requireAuth, async function (req, res) {
     (await pool.query('SELECT resource_type, resource_id, COUNT(*)::int AS n FROM document_shares GROUP BY resource_type, resource_id')).rows
       .forEach(function (r) { shareCounts[r.resource_type + ':' + r.resource_id] = r.n; });
 
+    // Inherited, not just the folder's own flag: a subfolder of Policies is
+    // policy too, and the screen has to say so or a file dropped one level down
+    // looks unindexed for no visible reason.
+    var inPolicyTree = false;
+    if (folderId != null) {
+      try { inPolicyTree = await docText.isPolicyFolder(pool, folderId); } catch (e) {}
+    }
+
     res.json({
       folder: current,
       ancestors: ancestors,
       canWriteHere: canWriteInto(ctx, folderId),
       storageReady: r2.configured(),
+      inPolicyTree: inPolicyTree,
+      isAdmin: req.user.role === 'admin',
       folders: folders.map(function (f) {
         return {
           id: f.id, name: f.name, owner_name: f.owner_name, created_at: f.created_at,
           mine: f.owner_id === req.user.id, canEdit: canEditFolder(ctx, f.id),
-          shareCount: shareCounts['folder:' + f.id] || 0
+          shareCount: shareCounts['folder:' + f.id] || 0,
+          policy_source: !!f.policy_source
         };
       }),
       files: files.map(function (f) {
@@ -164,7 +181,12 @@ router.get('/', requireAuth, async function (req, res) {
           owner_name: f.owner_name, created_at: f.created_at,
           mine: f.owner_id === req.user.id, canEdit: canEditFile(ctx, f), emailable: !!f.emailable,
           expires_on: f.expires_on, reminder_lead_num: f.reminder_lead_num, reminder_lead_unit: f.reminder_lead_unit,
-          shareCount: shareCounts['file:' + f.id] || 0
+          shareCount: shareCounts['file:' + f.id] || 0,
+          // Only meaningful inside a policy folder; elsewhere it is always null
+          // because nothing else in the vault is ever read.
+          text_status: f.text_status || null,
+          text_chars: f.text_chars == null ? null : Number(f.text_chars),
+          text_detail: f.text_detail || null
         };
       })
     });
@@ -222,6 +244,16 @@ router.put('/folders/:id', requireAuth, async function (req, res) {
     if (typeof req.body.name === 'string' && req.body.name.trim()) {
       params.push(req.body.name.trim().slice(0, 255)); sets.push('name = $' + params.length);
     }
+    // Marking a folder as a policy source widens who can read what is inside it:
+    // the text becomes quotable to anyone writing a disciplinary notice, and to
+    // Neurolock. That is wider than the folder's own shares, so it is an admin
+    // decision and nobody else's.
+    var policyChanged = false;
+    if (req.body.policy_source !== undefined) {
+      if (req.user.role !== 'admin') return res.status(403).json({ error: 'Only admins can mark a folder as a policy source' });
+      params.push(!!req.body.policy_source); sets.push('policy_source = $' + params.length);
+      policyChanged = true;
+    }
     // Expiration + reminder lead time. Changing the expiry re-arms both reminders.
     if (req.body.expires_on !== undefined) {
       var exp = req.body.expires_on;
@@ -257,6 +289,23 @@ router.put('/folders/:id', requireAuth, async function (req, res) {
     params.push(id);
     await pool.query('UPDATE document_folders SET ' + sets.join(', ') + ' WHERE id = $' + params.length, params);
     logAudit({ entity_type: 'document_folder', entity_id: id, action: 'update', user_id: req.user.id, user_name: req.user.name });
+
+    // Turning the flag ON reads everything under the folder. Turning it OFF
+    // deletes the extracted words on the spot - un-ticking the box has to mean
+    // the AI stops being able to quote from it, not just that new files are
+    // skipped, or the setting is a lie.
+    if (policyChanged) {
+      var nowPolicy = !!req.body.policy_source;
+      if (nowPolicy) {
+        docText.reindexPolicyFolders(pool, { onlyMissing: true })
+          .then(function (r) { console.log('[doc-text] policy folder on: ' + JSON.stringify({ total: r.total, ok: r.ok, no_text: r.no_text })); })
+          .catch(function (e) { console.error('[doc-text] reindex after toggle failed:', e.message); });
+      } else {
+        try {
+          await docText.clearFolders(pool, descendantFolderIds(ctx, id));
+        } catch (e) { console.error('[doc-text] clear after toggle failed:', e.message); }
+      }
+    }
     res.json({ success: true });
   } catch (err) {
     console.error('Folder update error:', err);
@@ -328,7 +377,14 @@ router.post('/:id/confirm', requireAuth, async function (req, res) {
     const size = Math.max(0, parseInt(req.body.size_bytes, 10) || 0);
     await pool.query("UPDATE documents SET size_bytes = $1, status = 'ready', updated_at = NOW() WHERE id = $2", [size, id]);
     logAudit({ entity_type: 'document', entity_id: id, action: 'upload', user_id: req.user.id, user_name: req.user.name, details: { name: dr.rows[0].name } });
-    res.json({ success: true });
+    // A file that landed in a policy folder gets read now, in the background.
+    // Nothing anywhere else in the vault is ever extracted.
+    var indexing = false;
+    if (await docText.isPolicyDocument(pool, id)) {
+      indexing = true;
+      docText.indexInBackground(pool, id);
+    }
+    res.json({ success: true, indexing: indexing });
   } catch (err) {
     console.error('Confirm error:', err);
     res.status(500).json({ error: 'Failed to confirm upload' });
@@ -400,6 +456,16 @@ router.put('/:id', requireAuth, async function (req, res) {
     params.push(id);
     await pool.query('UPDATE documents SET ' + sets.join(', ') + ' WHERE id = $' + params.length, params);
     logAudit({ entity_type: 'document', entity_id: id, action: 'update', user_id: req.user.id, user_name: req.user.name });
+
+    // Moving a file follows the folder it lands in. Dragged into Policies it
+    // gets read; dragged out, its words go with it - otherwise a file could be
+    // quoted from a folder it no longer lives in.
+    if (req.body.folder_id !== undefined) {
+      try {
+        if (await docText.isPolicyDocument(pool, id)) docText.indexInBackground(pool, id);
+        else await docText.clearDocuments(pool, [id]);
+      } catch (e) { console.error('[doc-text] move follow-up failed:', e.message); }
+    }
     res.json({ success: true });
   } catch (err) {
     console.error('File update error:', err);
@@ -466,6 +532,50 @@ router.post('/:id/email', requireAuth, async function (req, res) {
   } catch (err) {
     console.error('Document email error:', err);
     res.status(500).json({ error: 'Failed to send the document' });
+  }
+});
+
+// ---- Policy text ----
+// Reading a vault file into searchable text. Both routes are admin-only for the
+// same reason the folder flag is: what comes out of here can be quoted to people
+// the file itself was never shared with.
+
+// Re-read every file under every policy-source folder. This is what makes the
+// feature work on documents that were uploaded long before it existed - nothing
+// has to be re-uploaded. Pass full=true to redo the ones already indexed, which
+// is what you want after replacing a scanned PDF with a searchable one.
+router.post('/reindex-policies', requireAuth, async function (req, res) {
+  try {
+    if (req.user.role !== 'admin') return res.status(403).json({ error: 'Admins only' });
+    var out = await docText.reindexPolicyFolders(pool, { onlyMissing: (req.body || {}).full !== true });
+    logAudit({
+      entity_type: 'document', entity_id: 0, action: 'reindex_policies',
+      user_id: req.user.id, user_name: req.user.name,
+      details: { total: out.total, ok: out.ok, no_text: out.no_text, skipped: out.skipped }
+    });
+    res.json(out);
+  } catch (err) {
+    console.error('Policy reindex error:', err);
+    res.status(500).json({ error: 'Failed to re-read the policy folders' });
+  }
+});
+
+// One file, on demand. Also the way to check WHY a file is not searchable: the
+// status and detail come straight back.
+router.post('/:id/reindex', requireAuth, async function (req, res) {
+  try {
+    if (req.user.role !== 'admin') return res.status(403).json({ error: 'Admins only' });
+    var id = parseInt(req.params.id, 10);
+    const dr = await pool.query('SELECT id FROM documents WHERE id = $1', [id]);
+    if (!dr.rows.length) return res.status(404).json({ error: 'File not found' });
+    if (!(await docText.isPolicyDocument(pool, id))) {
+      return res.status(400).json({ error: 'That file is not in a policy folder, so it is not read at all.' });
+    }
+    var out = await docText.indexDocument(pool, id);
+    res.json(out);
+  } catch (err) {
+    console.error('Reindex error:', err);
+    res.status(500).json({ error: 'Failed to read that file' });
   }
 });
 

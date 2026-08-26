@@ -9256,6 +9256,8 @@ var docClipboard = null;
 var docCache = { folders: [], files: [] };
 var docCanWrite = false;
 var docStorageReady = false;
+var docInPolicyTree = false;
+var docIsAdmin = false;
 
 function docFmtSize(n) {
   n = Number(n) || 0;
@@ -9288,6 +9290,8 @@ async function renderDocuments(el) {
   docCache = { folders: data.folders, files: data.files };
   docCanWrite = !!data.canWriteHere;
   docStorageReady = !!data.storageReady;
+  docInPolicyTree = !!data.inPolicyTree;
+  docIsAdmin = !!data.isAdmin;
 
   var crumb = '<span onclick="navigate(\'documents\')" style="cursor:pointer;color:var(--primary)">Document Vault</span>';
   (data.ancestors || []).forEach(function (a) {
@@ -9304,6 +9308,9 @@ async function renderDocuments(el) {
       '<button class="btn btn-primary btn-sm" onclick="docPickFiles()"' + (data.storageReady ? '' : ' disabled') + '><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="vertical-align:-3px"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg> Upload</button>' +
       '<input type="file" id="doc-file-input" multiple style="display:none" onchange="docUploadFiles(this)" />';
   }
+  if (docInPolicyTree && docIsAdmin) {
+    actions = '<button class="btn btn-secondary btn-sm" onclick="docReindexPolicies()" title="Read every file in your policy folders again">Re-read policies</button> ' + actions;
+  }
 
   var paste = '';
   if (docClipboard) {
@@ -9311,6 +9318,15 @@ async function renderDocuments(el) {
       '<span>Moving <strong>' + escHtml(docClipboard.name) + '</strong> &mdash; open a destination folder, then move it here.</span>' +
       '<span><button class="btn btn-primary btn-sm" onclick="docPasteHere()"' + (data.canWriteHere ? '' : ' disabled') + '>Move here</button> ' +
       '<button class="btn btn-ghost btn-sm" onclick="docCancelMove()">Cancel</button></span></div>';
+  }
+
+  var policyNote = '';
+  if (docInPolicyTree) {
+    policyNote = '<div style="background:rgba(139,92,246,0.10);border:1px solid #6d28d9;border-radius:8px;padding:11px 14px;margin-bottom:14px;font-size:13px;line-height:1.55">' +
+      '<strong>Policy folder.</strong> Files here are read into text so Nova can quote them on a disciplinary ' +
+      'notice and answer policy questions. That means their wording can be shown to anyone who can write a ' +
+      'notice, which is wider than who this folder is shared with. Everything else in the Document Vault is ' +
+      'never read.</div>';
   }
 
   var warn = '';
@@ -9332,7 +9348,8 @@ async function renderDocuments(el) {
     rows += '<div style="display:flex;align-items:center;gap:12px;padding:11px 14px;border-bottom:1px solid var(--border)">' +
       '<div style="flex:1;min-width:0;cursor:pointer;display:flex;align-items:center;gap:10px" onclick="navigate(\'documents\',' + f.id + ')">' + docFolderIcon +
       '<span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + escHtml(f.name) + '</span>' +
-      (f.shareCount ? '<span class="doc-badge">shared</span>' : '') + '</div>' +
+      (f.shareCount ? '<span class="doc-badge">shared</span>' : '') +
+      (f.policy_source ? '<span class="doc-badge" style="background:rgba(139,92,246,0.18);color:#a78bfa">policy</span>' : '') + '</div>' +
       '<div class="doc-hide-sm" style="width:120px;flex:0 0 120px"></div>' +
       '<div class="doc-hide-sm" style="width:80px;flex:0 0 80px"></div>' +
       '<div class="doc-hide-sm" style="width:150px;flex:0 0 150px;color:var(--text-muted-color);font-size:13px">' + escHtml(f.owner_name || '') + '</div>' +
@@ -9345,7 +9362,7 @@ async function renderDocuments(el) {
       '<span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + escHtml(f.name) + '</span>' +
       (f.shareCount ? '<span class="doc-badge">shared</span>' : '') +
       (f.emailable ? '<span class="doc-badge" style="background:rgba(59,130,246,0.15);color:#3b82f6">email</span>' : '') +
-      docExpiryBadge(f) + '</div>' +
+      docExpiryBadge(f) + docTextBadge(f) + '</div>' +
       docExpiryCell(f) +
       '<div class="doc-hide-sm" style="width:80px;flex:0 0 80px;color:var(--text-muted-color);font-size:13px;text-align:right">' + docFmtSize(f.size_bytes) + '</div>' +
       '<div class="doc-hide-sm" style="width:150px;flex:0 0 150px;color:var(--text-muted-color);font-size:13px">' + escHtml(f.owner_name || '') + '</div>' +
@@ -9360,7 +9377,7 @@ async function renderDocuments(el) {
   el.innerHTML =
     '<div class="page-title"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="margin-right:8px;vertical-align:-4px"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>Document Vault</div>' +
     '<div class="page-subtitle">Secure file storage. Share folders or files with specific people or whole roles.</div>' +
-    warn + paste +
+    policyNote + warn + paste +
     '<div style="display:flex;justify-content:space-between;align-items:center;gap:12px;margin:14px 0;flex-wrap:wrap">' +
     '<div style="font-size:14px">' + crumb + '</div>' +
     '<div>' + actions + '</div>' +
@@ -9378,6 +9395,19 @@ function docMenu(type, id, canEdit, emailable) {
     if (isAdm) b += '<button class="btn btn-ghost btn-sm doc-act" title="' + (emailable ? 'Emailing allowed (click to disable)' : 'Allow emailing') + '" onclick="event.stopPropagation();docToggleEmail(' + id + ',' + (emailable ? 1 : 0) + ')"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="' + (emailable ? '#f97316' : 'currentColor') + '" stroke-width="2" style="vertical-align:-2px"><rect x="3" y="5" width="18" height="14" rx="2"/><path d="M3 7l9 6 9-6"/></svg></button>';
     if (canEdit) b += '<button class="btn btn-ghost btn-sm doc-act" title="Set expiration" onclick="event.stopPropagation();docSetExpiry(' + id + ')"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="vertical-align:-2px"><rect x="3" y="4" width="18" height="18" rx="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></svg></button>';
   }
+  if (type === 'folder' && isAdm) {
+    var pf = docFind('folder', id);
+    var isPolicy = !!(pf && pf.policy_source);
+    b += '<button class="btn btn-ghost btn-sm doc-act" title="' +
+      (isPolicy ? 'This is a policy folder (click to stop)' : 'Use as a policy folder, so Nova can quote from it') +
+      '" onclick="event.stopPropagation();docTogglePolicy(' + id + ',' + (isPolicy ? 1 : 0) + ')">' +
+      '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="' + (isPolicy ? '#a78bfa' : 'currentColor') +
+      '" stroke-width="2" style="vertical-align:-2px"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>' +
+      '<polyline points="14 2 14 8 20 8"/><line x1="8" y1="13" x2="16" y2="13"/><line x1="8" y1="17" x2="13" y2="17"/></svg></button>';
+  }
+  if (type === 'file' && isAdm && docInPolicyTree) {
+    b += '<button class="btn btn-ghost btn-sm doc-act" title="Read this file again" onclick="event.stopPropagation();docReindexOne(' + id + ')">&#8635;</button>';
+  }
   if (canEdit) {
     b += '<button class="btn btn-ghost btn-sm doc-act" title="Share" onclick="event.stopPropagation();docShare(\'' + type + '\',' + id + ')">&#9737;</button>';
     b += '<button class="btn btn-ghost btn-sm doc-act" title="Rename" onclick="event.stopPropagation();docRename(\'' + type + '\',' + id + ')">&#9998;</button>';
@@ -9385,6 +9415,74 @@ function docMenu(type, id, canEdit, emailable) {
     b += '<button class="btn btn-ghost btn-sm doc-act" title="Delete" onclick="event.stopPropagation();docDelete(\'' + type + '\',' + id + ')">&#128465;</button>';
   }
   return b;
+}
+
+// Whether a policy file actually produced words. The one worth showing loudly is
+// "no text": the file uploaded, it opens, it looks fine in the viewer, and it is
+// invisible to every search in the building.
+function docTextBadge(f) {
+  if (!docInPolicyTree || !f.text_status) return '';
+  var st = f.text_status;
+  if (st === 'ok') {
+    var words = f.text_chars ? (' ' + Math.round(f.text_chars / 6).toLocaleString() + ' words') : '';
+    return '<span class="doc-badge" style="background:rgba(34,197,94,0.15);color:#4ade80" title="Nova can quote from this file">readable' + words + '</span>';
+  }
+  if (st === 'no_text') {
+    return '<span class="doc-badge" style="background:rgba(239,68,68,0.15);color:#f87171" title="' +
+      escHtml(f.text_detail || 'No text layer.') + '">no text layer</span>';
+  }
+  if (st === 'unsupported') {
+    return '<span class="doc-badge" title="Only PDFs and plain text can be read">not readable</span>';
+  }
+  return '<span class="doc-badge" style="background:rgba(234,179,8,0.15);color:#eab308" title="' +
+    escHtml(f.text_detail || st) + '">' + escHtml(st.replace(/_/g, ' ')) + '</span>';
+}
+
+// Admin only. Turning it on reads everything in the folder; turning it off
+// deletes the extracted words, so the AI stops being able to quote it.
+async function docTogglePolicy(id, on) {
+  var f = docFind('folder', id);
+  var name = f ? f.name : 'this folder';
+  if (!on) {
+    var msg = 'Make "' + name + '" a policy folder?\n\n' +
+      'Every PDF and text file in it (and in any folder inside it) will be read into searchable text. ' +
+      'Nova will be able to quote that wording on a disciplinary notice and in Neurolock, for anyone who ' +
+      'can write a notice, which is wider than who this folder is shared with.';
+    if (!(await novaConfirm(msg))) return;
+  } else {
+    if (!(await novaConfirm('Stop using "' + name + '" as a policy folder?\n\nThe extracted text is deleted, so Nova can no longer quote from it. The files themselves are untouched.'))) return;
+  }
+  try {
+    await api('PUT', '/documents/folders/' + id, { policy_source: !on });
+    showToast(!on ? 'Reading the files now. Give it a moment, then re-open the folder.' : 'Policy text removed.', 'success');
+    docReload();
+  } catch (e) { showToast(e.message || 'Could not change that.', 'error'); }
+}
+
+// Re-read everything. This is what makes files that were uploaded long before
+// any of this existed searchable, without re-uploading a single one.
+async function docReindexPolicies() {
+  if (!(await novaConfirm('Read every file in your policy folders again? Files already read are skipped unless you have replaced them.'))) return;
+  showToast('Reading your policy folders...', 'info');
+  try {
+    var r = await api('POST', '/documents/reindex-policies', { full: false });
+    var bits = [r.ok + ' readable'];
+    if (r.skipped) bits.push(r.skipped + ' already done');
+    if (r.no_text) bits.push(r.no_text + ' with no text layer');
+    if (r.unsupported) bits.push(r.unsupported + ' not readable');
+    if (r.failed) bits.push(r.failed + ' failed');
+    showToast(bits.join(', ') + '.', (r.no_text || r.failed) ? 'info' : 'success');
+    docReload();
+  } catch (e) { showToast(e.message || 'Could not read the policy folders.', 'error'); }
+}
+
+async function docReindexOne(id) {
+  try {
+    var r = await api('POST', '/documents/' + id + '/reindex', {});
+    if (r.status === 'ok') showToast('Read it: ' + (r.chars || 0).toLocaleString() + ' characters, ' + (r.chunks || 0) + ' searchable sections.', 'success');
+    else showToast((r.status === 'no_text' ? 'No text layer. ' : '') + (r.detail || r.status), 'info');
+    docReload();
+  } catch (e) { showToast(e.message || 'Could not read that file.', 'error'); }
 }
 
 function docReload() { renderDocuments(document.getElementById('content')); }
