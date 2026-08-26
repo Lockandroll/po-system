@@ -531,6 +531,29 @@ router.get('/reconciliation', requireAuth, requirePermission('view_deposits'), m
       rows.forEach(function (r) { r.shortage = null; });
     }
 
+    // A pay week already marked as never deposited, so the board shows the mark
+    // rather than offering to make it twice. Wrapped for the same reason as the
+    // shortages above: a deployment where the deposit_missed migration has not
+    // landed must not take the board down.
+    try {
+      var mi = await pool.query(
+        'SELECT id, user_id, reason, pulsar_cash, marked_by_name, marked_at ' +
+        'FROM deposit_missed WHERE period_start = $1',
+        [periodStart]
+      );
+      var miByUser = {};
+      mi.rows.forEach(function (x) { miByUser[x.user_id] = x; });
+      rows.forEach(function (r) {
+        var x = r.user_id ? miByUser[r.user_id] : null;
+        r.missed = x ? {
+          id: x.id, reason: x.reason, by: x.marked_by_name,
+          at: x.marked_at, pulsar_cash: Number(x.pulsar_cash || 0)
+        } : null;
+      });
+    } catch (e) {
+      rows.forEach(function (r) { r.missed = null; });
+    }
+
     var order = { no_deposit: 0, unlinked: 1, short: 2, over: 3, typo: 4, no_pulsar: 5, match: 6 };
     rows.sort(function (a, b) {
       var d = (order[a.status] || 9) - (order[b.status] || 9);

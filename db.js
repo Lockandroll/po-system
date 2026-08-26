@@ -5547,6 +5547,62 @@ async function initDB() {
 
     console.log('Deposit shortages: deposit_shortages ready.');
 
+    // ---- Missed deposits ---------------------------------------------------
+    //
+    // A deposit that never arrived at all.
+    //
+    // is_late lives on the deposits row, which works right up until the thing
+    // being marked is the ABSENCE of one: Pulsar shows cash collected for a pay
+    // week and nothing was ever submitted. There is no row to write the flag
+    // onto, so the reconciliation board offered no way to record it and the
+    // worst case on the board was the one case that could not be documented.
+    //
+    // Keyed by person and pay period for the same reason deposit_shortages is:
+    // that is what a reconciliation row is, and a week is what is missing.
+    //
+    // It counts as ONE late deposit, deliberately - "how many times has he been
+    // late?" is the question a write-up is answering, and splitting the answer
+    // across two numbers is how a write-up ends up wrong. The union that does
+    // the counting lives in utils/lateEvents.js and it is the only place that
+    // knows these two shapes add up.
+    await client.query(
+      'CREATE TABLE IF NOT EXISTS deposit_missed (' +
+      '  id SERIAL PRIMARY KEY,' +
+      '  user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,' +
+      '  user_name VARCHAR(255),' +
+      '  city_code CHAR(3),' +
+      '  period_start DATE NOT NULL,' +
+      '  period_end DATE,' +
+      // Snapshots of what the board showed at the moment it was marked, so the
+      // record still explains itself after the Pulsar import has been replaced.
+      '  pulsar_cash DECIMAL(10,2),' +
+      '  calls INTEGER,' +
+      '  reason TEXT,' +
+      '  marked_by INTEGER,' +
+      '  marked_by_name VARCHAR(255),' +
+      '  marked_at TIMESTAMPTZ DEFAULT NOW(),' +
+      '  created_at TIMESTAMPTZ DEFAULT NOW(),' +
+      '  updated_at TIMESTAMPTZ DEFAULT NOW()' +
+      ');'
+    );
+    var _dmCols = [
+      'user_id INTEGER', 'user_name VARCHAR(255)', 'city_code CHAR(3)',
+      'period_start DATE', 'period_end DATE', 'pulsar_cash DECIMAL(10,2)', 'calls INTEGER',
+      'reason TEXT', 'marked_by INTEGER', 'marked_by_name VARCHAR(255)',
+      'marked_at TIMESTAMPTZ DEFAULT NOW()', 'created_at TIMESTAMPTZ DEFAULT NOW()',
+      'updated_at TIMESTAMPTZ DEFAULT NOW()'
+    ];
+    for (var _dmi = 0; _dmi < _dmCols.length; _dmi++) {
+      await client.query('ALTER TABLE deposit_missed ADD COLUMN IF NOT EXISTS ' + _dmCols[_dmi] + ';');
+    }
+    // One mark per person per pay week. Marking twice overwrites rather than
+    // stacking, so a week cannot be counted twice by being marked twice.
+    await client.query('CREATE UNIQUE INDEX IF NOT EXISTS deposit_missed_person_period_idx ON deposit_missed (user_id, period_start);');
+    await client.query('CREATE INDEX IF NOT EXISTS deposit_missed_person_date_idx ON deposit_missed (user_id, period_end DESC);');
+
+    console.log('Missed deposits: deposit_missed ready.');
+
+
     console.log('Employee records: employee_records + employee_record_events + employee_record_attachments ready.');
 
     // ---- Certificates of Insurance ---------------------------------------

@@ -611,6 +611,8 @@
 
     var lateAvail = !!(d.late_deposits && d.late_deposits.available);
     var lateCount = (d.late_deposits && d.late_deposits.count) || 0;
+    // Of those, the pay weeks where no deposit was ever submitted.
+    var lateMissed = (d.late_deposits && d.late_deposits.missed_count) || 0;
     var shCount = (d.shortages && d.shortages.count) || 0;
     var shTotal = (d.shortages && d.shortages.total) || 0;
 
@@ -643,7 +645,8 @@
     }
     var second = [];
     if (lateAvail && !lateCount) second.push('No deposits marked late.');
-    if (lateCount) second.push(lateCount + ' deposit' + (lateCount === 1 ? '' : 's') + ' marked late.');
+    if (lateCount) second.push(lateCount + ' deposit' + (lateCount === 1 ? '' : 's') + ' marked late' +
+      (lateMissed ? ', ' + lateMissed + ' of which ' + (lateMissed === 1 ? 'was' : 'were') + ' never deposited at all' : '') + '.');
     if (shCount) second.push(shCount + ' pay week' + (shCount === 1 ? '' : 's') + ' with cash unaccounted for.');
     if (open.length) {
       // Sentence-cased, because this lands after a full stop rather than
@@ -676,7 +679,9 @@
         '<div style="font-size:28px;font-weight:700;font-family:\'Fira Code\',ui-monospace,monospace;color:var(--warning)">' + lateCount + '</div>' +
         '<div style="font-size:12px;color:var(--text-muted-color);margin-top:4px;line-height:1.6">' +
         'Marked by a manager on the deposit or the Pulsar board. Documenting them pulls the real dates in, ' +
-        'so nothing is written from memory.</div>' +
+        'so nothing is written from memory.' +
+        (lateMissed ? ' <span style="color:#f87171">' + lateMissed + ' of these ' + (lateMissed === 1 ? 'is a pay week' : 'are pay weeks') +
+          ' where cash was collected and no deposit was submitted.</span>' : '') + '</div>' +
         sparkHtml(d.late_deposits.by_month, d.late_deposits.months) +
         (d.can_act && can('create_employee_note')
           ? '<button class="btn btn-secondary btn-sm" style="margin-top:12px;width:100%;justify-content:center" ' +
@@ -817,13 +822,19 @@
     catch (e) { toast(e.message || 'Could not load the late deposits.', 'error'); return; }
     if (!d.late || !d.late.count) { toast('Nothing marked late.', 'info'); return; }
     var rows = d.late.deposits.map(function (x) {
-      return '<div class="er-kv"><span>' + esc(x.date || '') + (x.number ? ' &middot; ' + esc(x.number) : '') + '</span>' +
+      // A pay week that never produced a deposit has no number to show and its
+      // date is the day it was due, so it says what it is instead.
+      var label = x.missed
+        ? 'Week of ' + esc(x.period_start || x.date || '') + ' &middot; no deposit submitted'
+        : esc(x.date || '') + (x.number ? ' &middot; ' + esc(x.number) : '');
+      return '<div class="er-kv"><span' + (x.missed ? ' style="color:#f87171"' : '') + '>' + label + '</span>' +
         '<span style="font-weight:400;color:var(--text-muted-color)">' + esc(x.reason || (x.marked_by ? 'marked by ' + x.marked_by : '')) + '</span></div>';
     }).join('');
     modal('Document late deposits &middot; ' + esc(S.file.user.name),
       '<div style="font-size:13px;color:var(--text-dim);line-height:1.6;margin-bottom:14px">' +
-      'These are the deposits a manager marked late in the last 12 months. Pick what kind of record this ' +
-      'should be; the dates go in for you and you write the rest.</div>' +
+      'These are the deposits a manager marked late in the last 12 months, including any pay week where no ' +
+      'deposit was submitted at all. Pick what kind of record this should be; the dates go in for you and you ' +
+      'write the rest.</div>' +
       '<div class="card" style="margin-bottom:14px"><div class="card-body" style="padding:6px 16px">' + rows + '</div></div>' +
       '<div class="form-group" style="margin-bottom:0"><label>What kind of record</label><div class="er-types">' +
       '<div class="er-type sel" id="er-lk-coaching" onclick="erPickLateKind(\'coaching\')"><b>Coaching note</b>' +

@@ -37,6 +37,7 @@ const permissions = require('../utils/permissions');
 const r2 = require('../utils/r2');
 const policySuggest = require('../utils/policySuggest');
 const docText = require('../utils/docText');
+const { lateEvents } = require('../utils/lateEvents');
 
 // ---------------------------------------------------------------- constants
 
@@ -202,10 +203,13 @@ function rowIsDisciplinary(r) { return r && r.type === 'disciplinary'; }
 async function lateDeposits(userId, months) {
   months = months || 12;
   try {
+    var LATE = await lateEvents();
     const r = await pool.query(
-      'SELECT id, deposit_number, deposit_date, city_code, late_marked_by_name, late_reason ' +
-      "FROM deposits WHERE user_id = $1 AND is_late = true AND deposit_date > CURRENT_DATE - ($2 || ' months')::interval " +
-      'ORDER BY deposit_date DESC LIMIT 50',
+      'SELECT d.deposit_id AS id, d.deposit_number, d.late_date, d.city_code, ' +
+      '  d.marked_by_name, d.reason, d.missed, d.period_start ' +
+      'FROM ' + LATE + ' d ' +
+      "WHERE d.user_id = $1 AND d.late_date > CURRENT_DATE - ($2 || ' months')::interval " +
+      'ORDER BY d.late_date DESC LIMIT 50',
       [userId, String(months)]
     );
     // Bucketed by month as well as listed, because "is this getting better or
@@ -214,9 +218,10 @@ async function lateDeposits(userId, months) {
     var byMonth = [];
     try {
       const m = await pool.query(
-        "SELECT TO_CHAR(DATE_TRUNC('month', deposit_date), 'YYYY-MM') AS ym, COUNT(*)::int AS n " +
-        "FROM deposits WHERE user_id = $1 AND is_late = true AND deposit_date > CURRENT_DATE - ($2 || ' months')::interval " +
-        "GROUP BY DATE_TRUNC('month', deposit_date) ORDER BY 1 ASC",
+        "SELECT TO_CHAR(DATE_TRUNC('month', d.late_date), 'YYYY-MM') AS ym, COUNT(*)::int AS n " +
+        'FROM ' + LATE + ' d ' +
+        "WHERE d.user_id = $1 AND d.late_date > CURRENT_DATE - ($2 || ' months')::interval " +
+        "GROUP BY DATE_TRUNC('month', d.late_date) ORDER BY 1 ASC",
         [userId, String(months)]
       );
       byMonth = m.rows.map(function (x) { return { month: x.ym, count: x.n }; });
@@ -227,10 +232,14 @@ async function lateDeposits(userId, months) {
       months: months,
       count: r.rows.length,
       by_month: byMonth,
+      // A pay week that never produced a deposit carries no id and no number:
+      // it is dated by the end of the pay week, which is the day it was due.
+      missed_count: r.rows.filter(function (d) { return d.missed; }).length,
       deposits: r.rows.map(function (d) {
         return {
-          id: d.id, number: d.deposit_number, date: dstr(d.deposit_date),
-          city: d.city_code, marked_by: d.late_marked_by_name, reason: d.late_reason
+          id: d.id, number: d.deposit_number, date: dstr(d.late_date),
+          city: d.city_code, marked_by: d.marked_by_name, reason: d.reason,
+          missed: !!d.missed, period_start: d.missed ? dstr(d.period_start) : null
         };
       })
     };
@@ -281,11 +290,29 @@ function shortageText(sh) {
 // the wording check would flag them anyway, and rightly.
 function lateDepositText(name, late) {
   if (!late || !late.count) return '';
-  var dates = late.deposits.map(function (d) { return d.date; }).filter(Boolean);
-  var shown = dates.slice(0, 8);
-  var txt = late.count + ' deposit' + (late.count === 1 ? '' : 's') +
-    ' recorded late in the last ' + late.months + ' months' +
-    (shown.length ? ' (' + shown.join(', ') + (dates.length > shown.length ? ', and ' + (dates.length - shown.length) + ' more' : '') + ')' : '') + '.';
+  // A deposit that arrived late and a pay week that produced no deposit at all
+  // are both counted as late, but they are not the same sentence and a manager
+  // should not have to work out which is which from a list of dates.
+  var arrived = late.deposits.filter(function (d) { return !d.missed; });
+  var never = late.deposits.filter(function (d) { return d.missed; });
+  var parts = [];
+
+  if (arrived.length) {
+    var dates = arrived.map(function (d) { return d.date; }).filter(Boolean);
+    var shown = dates.slice(0, 8);
+    parts.push(arrived.length + ' deposit' + (arrived.length === 1 ? '' : 's') +
+      ' recorded late in the last ' + late.months + ' months' +
+      (shown.length ? ' (' + shown.join(', ') + (dates.length > shown.length ? ', and ' + (dates.length - shown.length) + ' more' : '') + ')' : '') + '.');
+  }
+  if (never.length) {
+    var weeks = never.map(function (d) { return d.period_start || d.date; }).filter(Boolean);
+    var wShown = weeks.slice(0, 8);
+    parts.push(never.length + ' pay week' + (never.length === 1 ? '' : 's') +
+      ' in the last ' + late.months + ' months where cash was collected and no deposit was submitted' +
+      (wShown.length ? ' (week beginning ' + wShown.join(', ') + (weeks.length > wShown.length ? ', and ' + (weeks.length - wShown.length) + ' more' : '') + ')' : '') + '.');
+  }
+
+  var txt = parts.join('\n');
   var reasons = late.deposits.filter(function (d) { return d.reason; })
     .slice(0, 4).map(function (d) { return d.date + ': ' + d.reason; });
   if (reasons.length) txt += '\nRecorded at the time: ' + reasons.join('; ') + '.';
@@ -687,7 +714,7 @@ router.get('/employee/:id', requireAuth, requirePermission('view_employee_record
     var late = await lateDeposits(target, 12);
     var shorts = await unaccountedShortages(target, 12);
     res.json({
-      late_deposits: { count: late.count, months: late.months, available: late.available, by_month: late.by_month || [] },
+      late_deposits: { count: late.count, missed_count: late.missed_count || 0, months: late.months, available: late.available, by_month: late.by_month || [] },
       late_deposit_text: lateDepositText(u.name, late),
       shortages: { count: shorts.count, total: shorts.total, months: shorts.months, available: shorts.available },
       shortage_text: shortageText(shorts),
@@ -1239,9 +1266,9 @@ router.get('/:id/signals', requireAuth, requirePermission('view_employee_records
     try {
       const dl = await pool.query(
         'SELECT ' +
-        '  COUNT(*) FILTER (WHERE deposit_date > $2::date)::int AS since_n,' +
-        "  COUNT(*) FILTER (WHERE deposit_date > $2::date - 30 AND deposit_date <= $2::date)::int AS before_n " +
-        'FROM deposits WHERE user_id = $1 AND is_late = true',
+        '  COUNT(*) FILTER (WHERE d.late_date > $2::date)::int AS since_n,' +
+        "  COUNT(*) FILTER (WHERE d.late_date > $2::date - 30 AND d.late_date <= $2::date)::int AS before_n " +
+        'FROM ' + (await lateEvents()) + ' d WHERE d.user_id = $1',
         [rec.user_id, since]
       );
       if (dl.rows.length) {

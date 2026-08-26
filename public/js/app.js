@@ -2,7 +2,7 @@
 // public/sw.js (the only thing bumped each deploy) — the badge asks the active
 // service worker for it at runtime. This value is just the fallback shown when no
 // service worker is available (e.g. very first visit before it installs).
-var APP_VERSION = 'v414';
+var APP_VERSION = 'v419';
 var _resolvedAppVersion = null;
 
 // Ask the active service worker for its CACHE_VERSION (without the 'nova-' prefix).
@@ -12040,7 +12040,7 @@ function depLateCardHtml() {
   return '<div class="card" style="margin-bottom:24px"><div class="card-body">' +
     '<div style="display:flex;justify-content:space-between;align-items:flex-start;gap:12px;flex-wrap:wrap">' +
       '<div><h3 style="margin:0 0 4px">Late Deposits</h3>' +
-      '<p style="margin:0;font-size:13px;color:var(--text-muted-color)">Deposits a manager marked late, ranked by how often. The bars show when they happened, which is usually what tells you whether it is people or the routine.</p></div>' +
+      '<p style="margin:0;font-size:13px;color:var(--text-muted-color)">Deposits a manager marked late, ranked by how often, including pay weeks where cash was collected and no deposit was submitted at all. The bars show when they happened, which is usually what tells you whether it is people or the routine.</p></div>' +
       '<div style="display:flex;gap:8px;align-items:flex-end;flex-wrap:wrap">' +
         '<div class="form-group" style="margin:0;min-width:150px"><label>Window</label>' +
           '<select id="dep-late-months" onchange="depLoadLateSummary()">' +
@@ -12069,7 +12069,7 @@ async function depLoadLateSummary() {
   if (!d.rows.length) {
     body.innerHTML = '<div style="text-align:center;padding:28px 16px;color:var(--text-muted-color);font-size:13px">' +
       'Nothing marked late in this window' + (city ? ' for ' + escHtml(city) : '') + '.<br>' +
-      '<span style="font-size:12px">Mark a deposit late from the Pulsar Verification board above, or from the deposit itself.</span></div>';
+      '<span style="font-size:12px">Mark a deposit late from the Pulsar Verification board above, or from the deposit itself. A pay week with no deposit at all is marked from the board.</span></div>';
     return;
   }
 
@@ -12086,7 +12086,12 @@ async function depLoadLateSummary() {
     return '<tr>' +
       '<td style="font-weight:500;color:var(--text)">' + escHtml(r.name || '') + '</td>' +
       '<td>' + escHtml(r.city || '—') + '</td>' +
-      '<td style="font-weight:700;color:' + (r.count >= 3 ? '#f59e0b' : 'var(--text)') + '">' + r.count + '</td>' +
+      // The half of the number that is worse than late is called out rather
+      // than folded in: three late deposits and three weeks that never arrived
+      // are not the same conversation.
+      '<td style="font-weight:700;color:' + (r.count >= 3 ? '#f59e0b' : 'var(--text)') + '">' + r.count +
+        (r.missed_count ? '<div style="font-size:11px;font-weight:400;color:#f87171;white-space:nowrap">' +
+          r.missed_count + ' never deposited</div>' : '') + '</td>' +
       '<td style="color:var(--text-muted-color)">' + r.prev_count + '</td>' +
       '<td>' + trend + '</td>' +
       '<td>' + escHtml(r.last_date || '—') + '</td>' +
@@ -30354,10 +30359,19 @@ function pvActionsCell(r, i) {
         'style="padding:2px 8px;white-space:nowrap;color:#f59e0b">Explain shortage</button>');
     }
   }
-  // Late is a judgment, so it is a person pressing a button, not something the
-  // board works out. It only appears where there IS a deposit to mark - a row
-  // with no deposit at all is a different problem, and "Send to Task For
-  // Manager" above is the answer to that one.
+  /* Late is a judgment, so it is a person pressing a button, not something the
+     board works out.
+
+     It comes in two shapes and they are the same fact. A deposit that arrived
+     after the deadline gets the mark on the deposit. A pay week where Pulsar
+     shows cash collected and NOTHING was ever submitted has no deposit to put
+     it on - so the mark goes on the pay week instead (POST /deposits/missed)
+     and counts as one late deposit everywhere the count is read.
+
+     That row used to get "Send to Task For Manager" and nothing else, which
+     left the worst row on the board as the only one that could not be
+     documented. The chase task is still there beside it: one is what happens
+     next, the other is what is on record. */
   if (can('edit_deposit') && r.deposits && r.deposits.length) {
     if (r.any_late) {
       out.push('<button class="btn btn-secondary btn-sm" onclick="pvToggleLate(' + i + ',false)" ' +
@@ -30366,6 +30380,18 @@ function pvActionsCell(r, i) {
     } else {
       out.push('<button class="btn btn-secondary btn-sm" onclick="pvToggleLate(' + i + ',true)" ' +
         'title="Mark this deposit late. It is counted on their employee file and can be undone." ' +
+        'style="padding:2px 8px;white-space:nowrap">Mark late</button>');
+    }
+  } else if (can('edit_deposit') && r.user_id && r.status === 'no_deposit') {
+    if (r.missed) {
+      out.push('<button class="btn btn-secondary btn-sm" onclick="pvToggleLate(' + i + ',false)" ' +
+        'title="' + escHtml('Marked late: no deposit was submitted for this pay week' +
+          (r.missed.by ? ', by ' + r.missed.by : '') + '.' +
+          (r.missed.reason ? ' ' + r.missed.reason : '') + ' Click to take the mark off.') + '" ' +
+        'style="padding:2px 8px;white-space:nowrap;color:#f87171;border-color:#4d1515">Late &#10003;</button>');
+    } else {
+      out.push('<button class="btn btn-secondary btn-sm" onclick="pvToggleLate(' + i + ',true)" ' +
+        'title="No deposit was submitted for this pay week. Marking it late counts on their employee file the same as a late deposit, and can be undone." ' +
         'style="padding:2px 8px;white-space:nowrap">Mark late</button>');
     }
   }
@@ -30382,7 +30408,9 @@ async function pvToggleLate(i, late) {
   if (!d || !d.rows[i]) return;
   var r = d.rows[i];
   var list = (r.deposits || []).filter(function (x) { return x && x.id != null; });
-  if (!list.length) return;
+  // Nothing was ever submitted for this week, so there is no deposit to mark.
+  // The pay week itself carries the mark instead.
+  if (!list.length) return pvToggleMissed(i, late);
 
   var targets = list;
   var reason = null;
@@ -30427,6 +30455,52 @@ async function pvToggleLate(i, late) {
     showToast('Late mark removed.', 'info');
   }
   if (typeof pvRenderRecon === 'function') pvRenderRecon();
+}
+
+/* Mark (or unmark) a whole pay week as never deposited.
+
+   Keyed by the person and the pay week rather than by a deposit, because that
+   is what is missing. The server recomputes the money and the city from the
+   Pulsar import for that week - the browser sends who and which week and never
+   a figure - and refuses the mark outright if a deposit for the week has turned
+   up in the meantime, because then the deposit is the thing to mark and marking
+   both would count one week twice. */
+async function pvToggleMissed(i, late) {
+  var d = _pvState.recon;
+  if (!d || !d.rows[i]) return;
+  var r = d.rows[i];
+  if (!r.user_id) { showToast('Nova cannot tell whose week this is until the name is mapped.', 'error'); return; }
+  var who = r.user_name || 'this technician';
+
+  var reason = null;
+  if (late) {
+    if (!await novaConfirm(
+      'Record that ' + who + ' never submitted a deposit for this pay week?\n\n' +
+      'Pulsar shows ' + pvMoney(r.pulsar_cash) + ' in cash collected and nothing was banked. ' +
+      'This counts on their employee file as a late deposit and can be undone.',
+      { title: 'Mark pay week late', okText: 'Mark it late' })) return;
+    reason = prompt('Why was it late? (optional, but it is what the write-up will quote)');
+    if (reason === null) return;
+  }
+
+  try {
+    var out = await api('POST', '/deposits/missed', {
+      user_id: r.user_id,
+      period_start: d.period_start,
+      missed: !!late,
+      reason: reason || null
+    });
+    await pvLoadRecon();
+    if (late) {
+      var count = (out && typeof out.late_count_12m === 'number') ? out.late_count_12m : null;
+      showToast((r.user_name || 'They') + ' now has ' + (count == null ? 'a' : count) +
+        ' late deposit' + (count === 1 ? '' : 's') + ' on file in the last 12 months.', 'success');
+    } else {
+      showToast('Late mark removed.', 'info');
+    }
+  } catch (e) {
+    showToast((e && e.message) || 'Could not mark the pay week.', 'error');
+  }
 }
 
 // Opens the REAL new-task form in a modal, prefilled from the row, so the

@@ -22,6 +22,12 @@ const MANAGE = ['admin', 'manager'];
 // held to exactly the same rule. Do not re-inline a second copy here.
 const { editCityScope, scopeAllows, mayEditCity } = require('../utils/depositAccess');
 
+// Late is counted from BOTH shapes it comes in - a deposit marked late, and a
+// pay week where no deposit was ever submitted. utils/lateEvents.js is the only
+// place that knows the two add up to one number; nothing here counts is_late on
+// its own any more.
+const { lateEvents, lateCount } = require('../utils/lateEvents');
+
 // ---------------------------------------------------------------------------
 // Expense attachments (spreadsheets, PDFs - anything that is not a photo)
 // ---------------------------------------------------------------------------
@@ -640,19 +646,24 @@ router.get('/late-summary', requireAuth, requirePermission('view_deposits'), asy
     var params = [String(months)];
     var cityClause = '';
     if (city) { params.push(city); cityClause = ' AND UPPER(TRIM(d.city_code)) = $2 '; }
+    var LATE = await lateEvents();
 
     const { rows } = await pool.query(
       'SELECT d.user_id, COALESCE(u.name, d.user_name) AS name, ' +
       '  MAX(UPPER(TRIM(COALESCE(u.home_city, d.city_code)))) AS city, ' +
-      "  COUNT(*) FILTER (WHERE d.deposit_date > CURRENT_DATE - ($1 || ' months')::interval)::int AS n, " +
-      "  COUNT(*) FILTER (WHERE d.deposit_date > CURRENT_DATE - ($1 || ' months')::interval * 2 " +
-      "                     AND d.deposit_date <= CURRENT_DATE - ($1 || ' months')::interval)::int AS prev_n, " +
-      "  MAX(d.deposit_date) FILTER (WHERE d.deposit_date > CURRENT_DATE - ($1 || ' months')::interval) AS last_date " +
-      'FROM deposits d LEFT JOIN users u ON u.id = d.user_id ' +
-      "WHERE d.is_late = true AND d.deposit_date > CURRENT_DATE - ($1 || ' months')::interval * 2 " +
+      "  COUNT(*) FILTER (WHERE d.late_date > CURRENT_DATE - ($1 || ' months')::interval)::int AS n, " +
+      "  COUNT(*) FILTER (WHERE d.late_date > CURRENT_DATE - ($1 || ' months')::interval * 2 " +
+      "                     AND d.late_date <= CURRENT_DATE - ($1 || ' months')::interval)::int AS prev_n, " +
+      // The half of the number that is worse than late, kept beside it rather
+      // than folded away: three late deposits and three weeks that never
+      // arrived are not the same conversation.
+      "  COUNT(*) FILTER (WHERE d.missed AND d.late_date > CURRENT_DATE - ($1 || ' months')::interval)::int AS missed_n, " +
+      "  MAX(d.late_date) FILTER (WHERE d.late_date > CURRENT_DATE - ($1 || ' months')::interval) AS last_date " +
+      'FROM ' + LATE + ' d LEFT JOIN users u ON u.id = d.user_id ' +
+      "WHERE d.late_date > CURRENT_DATE - ($1 || ' months')::interval * 2 " +
       cityClause +
       'GROUP BY d.user_id, COALESCE(u.name, d.user_name) ' +
-      'HAVING COUNT(*) FILTER (WHERE d.deposit_date > CURRENT_DATE - ($1 || \' months\')::interval) > 0 ' +
+      'HAVING COUNT(*) FILTER (WHERE d.late_date > CURRENT_DATE - ($1 || \' months\')::interval) > 0 ' +
       'ORDER BY n DESC, last_date DESC NULLS LAST',
       params
     );
@@ -664,11 +675,11 @@ router.get('/late-summary', requireAuth, requirePermission('view_deposits'), asy
     var byMonth = [];
     try {
       const m = await pool.query(
-        "SELECT TO_CHAR(DATE_TRUNC('month', d.deposit_date), 'YYYY-MM') AS ym, COUNT(*)::int AS n " +
-        'FROM deposits d LEFT JOIN users u ON u.id = d.user_id ' +
-        "WHERE d.is_late = true AND d.deposit_date > CURRENT_DATE - ($1 || ' months')::interval " +
+        "SELECT TO_CHAR(DATE_TRUNC('month', d.late_date), 'YYYY-MM') AS ym, COUNT(*)::int AS n " +
+        'FROM ' + LATE + ' d LEFT JOIN users u ON u.id = d.user_id ' +
+        "WHERE d.late_date > CURRENT_DATE - ($1 || ' months')::interval " +
         cityClause +
-        "GROUP BY DATE_TRUNC('month', d.deposit_date) ORDER BY 1 ASC",
+        "GROUP BY DATE_TRUNC('month', d.late_date) ORDER BY 1 ASC",
         params
       );
       byMonth = m.rows.map(function (x) { return { month: x.ym, count: x.n }; });
@@ -687,7 +698,8 @@ router.get('/late-summary', requireAuth, requirePermission('view_deposits'), asy
           city: r.city || null,
           count: r.n,
           prev_count: r.prev_n,
-          last_date: r.last_date ? String(r.last_date).slice(0, 10) : null
+          missed_count: r.missed_n || 0,
+          last_date: ymdOf(r.last_date)
         };
       })
     });
@@ -864,6 +876,158 @@ router.get('/shortages/:userId', requireAuth, requirePermission('view_deposits')
   } catch (err) {
     console.error('[deposits] shortage list failed:', err);
     res.status(500).json({ error: 'Could not load shortages.' });
+  }
+});
+
+/* ------------------------------------------------------- missed ------------
+   The deposit that never came.
+
+   Marking a deposit late needs a deposit. The one row on the reconciliation
+   board that cannot produce one is the worst row on it: Pulsar says cash was
+   collected and nothing was ever submitted. Until this existed that row could
+   be chased with a task and nothing else - the only case on the board that
+   could not be documented was the case most worth documenting.
+
+   So the mark hangs off the pay week instead, keyed by person and period the
+   same way a shortage is, and it counts as one late deposit everywhere the
+   count is read (utils/lateEvents.js).
+
+   Gated exactly like marking a deposit late: edit_deposit, a manage role, and
+   the city scope in utils/depositAccess.js. Same act, same rule.
+
+   The city and the money are the SERVER's figures, taken from the Pulsar import
+   for that person and week. The browser sends who and which week, never a
+   number - the same rule as the shortage endpoint above. */
+
+// Deposits are keyed on the pay week's Monday; the week runs six days past it.
+function addDaysYmd(ymd, n) {
+  var t = Date.parse(String(ymd) + 'T00:00:00Z');
+  if (isNaN(t)) return ymd;
+  return new Date(t + n * 86400000).toISOString().slice(0, 10);
+}
+
+// What Pulsar says this person collected in cash that week, and where.
+async function missedFigures(userId, periodStart, periodEnd) {
+  const p = await pool.query(
+    'SELECT COALESCE(SUM(cash), 0) AS cash, COUNT(*)::int AS calls, MIN(city_code) AS city_code ' +
+    'FROM pulsar_cash_calls WHERE tech_user_id = $1 AND call_date >= $2 AND call_date <= $3',
+    [userId, periodStart, periodEnd]
+  );
+  var r = p.rows[0] || {};
+  return { pulsar_cash: n2(r.cash), calls: r.calls || 0, city_code: r.city_code || null };
+}
+
+router.post('/missed', requireAuth, requirePermission('edit_deposit'), async function (req, res) {
+  try {
+    if (!MANAGE.includes(req.user.role)) return res.status(403).json({ error: 'Access denied' });
+    var b = req.body || {};
+    var userId = parseInt(b.user_id, 10) || 0;
+    var periodStart = String(b.period_start || '');
+    if (!userId || !/^\d{4}-\d{2}-\d{2}$/.test(periodStart)) {
+      return res.status(400).json({ error: 'A technician and a pay period are required.' });
+    }
+    var marking = !(b.missed === false || b.late === false);
+
+    const u = await pool.query('SELECT id, name, home_city FROM users WHERE id = $1', [userId]);
+    if (!u.rows.length) return res.status(404).json({ error: 'Technician not found' });
+    var who = u.rows[0].name;
+
+    var periodEnd = /^\d{4}-\d{2}-\d{2}$/.test(String(b.period_end || ''))
+      ? String(b.period_end) : addDaysYmd(periodStart, 6);
+
+    // Clearing first: it must keep working even for a week that has since
+    // received its deposit, because that is exactly when somebody looks again.
+    if (!marking) {
+      const ex = await pool.query('SELECT * FROM deposit_missed WHERE user_id = $1 AND period_start = $2', [userId, periodStart]);
+      if (!ex.rows.length) return res.json({ success: true, late: false, late_count_12m: await lateCount(userId, 12) });
+      const scope0 = await editCityScope(req);
+      if (!scopeAllows(scope0, ex.rows[0].city_code)) {
+        return res.status(403).json({ error: 'You can only mark deposits late for the cities you are assigned to.' });
+      }
+      await pool.query('DELETE FROM deposit_missed WHERE id = $1', [ex.rows[0].id]);
+      await logAudit({
+        entity_type: 'deposit_missed', entity_id: ex.rows[0].id,
+        entity_number: periodStart,
+        action: 'late_cleared',
+        user_id: req.user.id, user_name: req.user.name,
+        details: { employee: who, period_start: periodStart, no_deposit: true }
+      });
+      return res.json({ success: true, late: false, late_count_12m: await lateCount(userId, 12) });
+    }
+
+    // A week that HAS a deposit is not a missed week, and letting it be marked
+    // as one would put two marks on one week and count it twice. The deposit is
+    // the better record when there is one, so the answer is to go mark that.
+    const dep = await pool.query(
+      'SELECT COUNT(*)::int AS n FROM deposits WHERE user_id = $1 AND period_start = $2',
+      [userId, periodStart]
+    );
+    if (dep.rows[0] && dep.rows[0].n > 0) {
+      return res.status(400).json({
+        error: 'There is a deposit for that pay week now. Mark the deposit itself late instead.'
+      });
+    }
+
+    var fig = await missedFigures(userId, periodStart, periodEnd);
+    var city = fig.city_code || u.rows[0].home_city || null;
+    const scope = await editCityScope(req);
+    if (!scopeAllows(scope, city)) {
+      return res.status(403).json({ error: 'You can only mark deposits late for the cities you are assigned to.' });
+    }
+
+    var reason = (b.reason != null) ? String(b.reason).trim().slice(0, 2000) : null;
+    if (!reason) reason = null;
+
+    const ins = await pool.query(
+      'INSERT INTO deposit_missed (user_id, user_name, city_code, period_start, period_end, ' +
+      'pulsar_cash, calls, reason, marked_by, marked_by_name) ' +
+      'VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) ' +
+      'ON CONFLICT (user_id, period_start) DO UPDATE SET period_end = EXCLUDED.period_end, ' +
+      'city_code = EXCLUDED.city_code, pulsar_cash = EXCLUDED.pulsar_cash, calls = EXCLUDED.calls, ' +
+      'reason = EXCLUDED.reason, marked_by = EXCLUDED.marked_by, marked_by_name = EXCLUDED.marked_by_name, ' +
+      'marked_at = NOW(), updated_at = NOW() RETURNING id',
+      [userId, who, city, periodStart, periodEnd, fig.pulsar_cash, fig.calls, reason, req.user.id, req.user.name]
+    );
+
+    await logAudit({
+      entity_type: 'deposit_missed', entity_id: ins.rows[0].id,
+      entity_number: periodStart,
+      action: 'marked_late',
+      user_id: req.user.id, user_name: req.user.name,
+      details: {
+        employee: who, period_start: periodStart, period_end: periodEnd,
+        no_deposit: true, pulsar_cash: fig.pulsar_cash, reason: reason || undefined
+      }
+    });
+
+    res.json({
+      success: true, late: true, missed: true, id: ins.rows[0].id,
+      pulsar_cash: fig.pulsar_cash,
+      late_count_12m: await lateCount(userId, 12)
+    });
+  } catch (err) {
+    console.error('[deposits] missed mark failed:', err);
+    res.status(500).json({ error: 'Could not mark the pay week.' });
+  }
+});
+
+// Every pay week marked as never deposited for one person. Same scoping as the
+// late list below it.
+router.get('/missed/:userId', requireAuth, requirePermission('view_deposits'), async function (req, res) {
+  try {
+    var uid = parseInt(req.params.userId, 10) || 0;
+    if (!SEE_ALL.includes(req.user.role) && uid !== req.user.id) return res.status(403).json({ error: 'Access denied' });
+    var months = Math.min(Math.max(parseInt(req.query.months, 10) || 12, 1), 60);
+    const { rows } = await pool.query(
+      'SELECT id, period_start, period_end, city_code, pulsar_cash, calls, reason, marked_by_name, marked_at ' +
+      "FROM deposit_missed WHERE user_id = $1 AND COALESCE(period_end, period_start + 6) > CURRENT_DATE - ($2 || ' months')::interval " +
+      'ORDER BY period_start DESC',
+      [uid, String(months)]
+    );
+    res.json({ user_id: uid, months: months, count: rows.length, missed: rows });
+  } catch (err) {
+    console.error('[deposits] missed list failed:', err);
+    res.status(500).json({ error: 'Could not load the missed deposits.' });
   }
 });
 
@@ -1390,16 +1554,12 @@ router.post('/:id/late', requireAuth, requirePermission('edit_deposit'), async f
       details: { employee: dep.user_name, deposit_date: dep.deposit_date, reason: reason || undefined }
     });
 
-    // How many times this person has been marked late in the last 12 months,
-    // handed straight back so the button can say so without a second round trip.
-    var count = 0;
-    try {
-      const c = await pool.query(
-        "SELECT COUNT(*)::int AS n FROM deposits WHERE user_id = $1 AND is_late = true AND deposit_date > CURRENT_DATE - INTERVAL '12 months'",
-        [dep.user_id]
-      );
-      count = c.rows.length ? c.rows[0].n : 0;
-    } catch (e) {}
+    // How many times this person has been late in the last 12 months, handed
+    // straight back so the button can say so without a second round trip. Pay
+    // weeks that never produced a deposit at all are part of that number - see
+    // utils/lateEvents.js for why they are counted together and how a week that
+    // is marked both ways is stopped from counting twice.
+    var count = await lateCount(dep.user_id, 12);
 
     res.json({ success: true, late: late, late_count_12m: count });
   } catch (err) {
@@ -1418,10 +1578,16 @@ router.get('/late/:userId', requireAuth, requirePermission('view_deposits'), asy
       return res.status(403).json({ error: 'Access denied' });
     }
     var months = Math.min(Math.max(parseInt(req.query.months, 10) || 12, 1), 60);
+    // Field names are kept as they were so every existing reader still works;
+    // a pay week that never produced a deposit arrives with id and number null,
+    // missed = true, and the end of the pay week as its date.
     const { rows } = await pool.query(
-      'SELECT id, deposit_number, deposit_date, amount, city_code, late_marked_at, late_marked_by_name, late_reason ' +
-      "FROM deposits WHERE user_id = $1 AND is_late = true AND deposit_date > CURRENT_DATE - ($2 || ' months')::interval " +
-      'ORDER BY deposit_date DESC',
+      'SELECT d.deposit_id AS id, d.deposit_number, d.late_date AS deposit_date, d.amount, d.city_code, ' +
+      '  d.marked_at AS late_marked_at, d.marked_by_name AS late_marked_by_name, d.reason AS late_reason, ' +
+      '  d.missed, d.period_start ' +
+      'FROM ' + (await lateEvents()) + ' d ' +
+      "WHERE d.user_id = $1 AND d.late_date > CURRENT_DATE - ($2 || ' months')::interval " +
+      'ORDER BY d.late_date DESC',
       [uid, String(months)]
     );
     res.json({ user_id: uid, months: months, count: rows.length, deposits: rows });
