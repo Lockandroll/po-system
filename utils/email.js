@@ -88,9 +88,15 @@ function emailTemplate({ badge, badgeColor, title, body, details, buttonText, bu
     // including every employee-records email. Tony caught it in a disciplinary
     // notice, 2026-08-26. Callers that want no button pass neither.
     ((buttonText && buttonUrl) ?
-      '<table role="presentation" cellpadding="0" cellspacing="0" style="margin-bottom:28px"><tr>' +
-        '<td style="background:#f97316;border-radius:6px">' +
-          '<a href="' + buttonUrl + '" style="display:inline-block;padding:14px 28px;color:#ffffff;font-size:15px;font-weight:700;text-decoration:none;letter-spacing:0.2px">' + buttonText + ' &rarr;</a>' +
+      // Bulletproof button: the padding lives on the TD and the anchor carries
+      // no display/padding of its own. Outlook on Windows renders through Word,
+      // which ignores display:inline-block and mishandles padding on an inline
+      // <a> - that is what turned this into a 370x130 orange slab in Tony's
+      // inbox, 2026-08-26. bgcolor + background-color both, for clients that
+      // strip one or the other.
+      '<table role="presentation" border="0" cellpadding="0" cellspacing="0" style="margin:0 0 28px;border-collapse:separate"><tr>' +
+        '<td align="center" bgcolor="#f97316" style="background-color:#f97316;border-radius:6px;padding:13px 26px;mso-padding-alt:13px 26px">' +
+          '<a href="' + buttonUrl + '" style="color:#ffffff;font-family:-apple-system,Helvetica Neue,Arial,sans-serif;font-size:15px;font-weight:700;line-height:20px;text-decoration:none;letter-spacing:0.2px;white-space:nowrap">' + buttonText + ' &rarr;</a>' +
         '</td>' +
       '</tr></table>'
     : '') +

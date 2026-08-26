@@ -2,7 +2,7 @@
 // public/sw.js (the only thing bumped each deploy) — the badge asks the active
 // service worker for it at runtime. This value is just the fallback shown when no
 // service worker is available (e.g. very first visit before it installs).
-var APP_VERSION = 'v419';
+var APP_VERSION = 'v420';
 var _resolvedAppVersion = null;
 
 // Ask the active service worker for its CACHE_VERSION (without the 'nova-' prefix).
@@ -845,8 +845,8 @@ function navModel() {
     navGroup('fleet', 'Fleet', NAVI.truck, [
       can('view_vr') ? navItem('vr-dashboard', 'Vehicle Repairs', icons.dashboard, ['vr-dashboard', 'new-vr', 'edit-vr', 'view-vr']) : null,
       (can('view_vr') && can('manage_vehicles')) ? navItem('fleet-registry', 'Fleet Registry', NAVI.db, ['fleet-registry', 'new-vehicle', 'edit-vehicle', 'vehicle-history']) : null,
-      (can('view_vr') && can('view_inspections')) ? navItem('inspections', 'Inspections', NAVI.check, ['inspections', 'inspection-form', 'view-inspection']) : null,
-      (can('view_vr') && can('manage_inspections')) ? navItem('inspection-checklist', 'Insp. Checklist', icons.settings) : null
+      can('view_inspections') ? navItem('inspections', 'Inspections', NAVI.check, ['inspections', 'inspection-form', 'view-inspection']) : null,
+      can('manage_inspections') ? navItem('inspection-checklist', 'Insp. Checklist', icons.settings) : null
     ]),
 
     // Equipment. Managers are scoped to their OWN cities inside routes/assets.js,
