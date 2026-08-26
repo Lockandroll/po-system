@@ -617,10 +617,24 @@
     .inv-gate-check input[type="checkbox"] { width:16px; height:16px; padding:0; flex:0 0 auto; }
     .inv-gate-reason { margin-top:6px; font-size:12px; }
 
-    /* Phone: the five-column field row stacks, and the copy button stays a
-       44px-class tap target rather than shrinking with the layout. */
-    @media (max-width: 720px) {
+    /* Phone AND tablet: the five-column field row stacks, and the copy button
+       stays a 44px-class tap target rather than shrinking with the layout.
+       ⚠️ 1000px, not 720px, and not the 768px sidebar breakpoint either. Between
+       768px and ~1000px the sidebar is still PINNED at 240px, so a portrait
+       tablet (~800px) keeps the sidebar and gets the desktop row: 22+176+150+62
+       = 410px of fixed track + 40px of gaps = 450px, against a content area of
+       roughly 520px. That left ~30px for the label, and overflow-wrap:anywhere
+       then broke "Payment total" into one letter per line down the card.
+       Tony's tablet, invoice 800053, v421. Raise this if the fixed columns
+       above ever grow. */
+    @media (max-width: 1000px) {
       .inv-po-row { grid-template-columns:18px minmax(0,1fr) auto 46px; row-gap:2px; }
+      /* The label is a known short phrase, never free text, so let it keep its
+         own line rather than wrap. Paired with the min-content floor below it
+         means a long value shrinks the VALUE cell, not the label — the reverse
+         is what produced the one-letter-per-line column. */
+      .inv-po-label { white-space:nowrap; }
+      .inv-po-val   { min-width:0; overflow-wrap:anywhere; }
       .inv-po-n      { grid-column:1; grid-row:1; }
       .inv-po-label  { grid-column:2; grid-row:1; }
       .inv-po-val    { grid-column:3; grid-row:1; font-size:15px; }
