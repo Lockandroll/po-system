@@ -499,6 +499,24 @@ function appUrl(path) {
   return (process.env.APP_URL || '').replace(/\/$/, '') + (path || '');
 }
 
+// Every email out of this module gets exactly one call to action, and these two
+// helpers are the only places that know where it points.
+//
+// The employee's view id is 'my-documents'. There is NO 'my-file' view in
+// app.js - the render chain falls through to the home screen for anything it
+// does not recognise - so the '?view=my-file' links these emails carried from
+// day one dropped people on the dashboard with no explanation, and nobody ever
+// reached their file from an email. Found and fixed 2026-08-26.
+//
+// Functions, not constants: APP_URL is read at send time, so a boot order or a
+// test that sets the env late still gets a real link.
+function myFileBtn() {
+  return { buttonText: 'Open your file', buttonUrl: appUrl('/?view=my-documents') };
+}
+function recordsBtn() {
+  return { buttonText: 'Open Employee Files', buttonUrl: appUrl('/?view=employee-files') };
+}
+
 // Tell the employee something landed. Email plus SMS, both honouring their own
 // notification preferences. Deliberately vague in the SMS: the fact that a
 // notice exists is not something to spell out in a message that shows on a
@@ -776,9 +794,9 @@ router.post('/notes', requireAuth, requirePermission('create_employee_note'), as
         '<p>' + (isPraise
           ? 'Your manager added a recognition to your file.'
           : 'Your manager added a note to your file.') + '</p>' +
-        '<p style="white-space:pre-wrap">' + escapeHtml(body) + '</p>' +
-        '<p><a href="' + appUrl('/?view=my-file') + '">Open your file in Nova</a></p>',
-        isPraise ? 'Nova: your manager added a recognition to your file.' : null
+        '<p style="white-space:pre-wrap">' + escapeHtml(body) + '</p>',
+        isPraise ? 'Nova: your manager added a recognition to your file.' : null,
+        myFileBtn()
       );
       await pool.query('UPDATE employee_records SET notified_at = NOW() WHERE id = $1', [rec.id]);
     }
@@ -956,9 +974,9 @@ router.post('/disciplinary/:id/submit', requireAuth, requirePermission('create_d
       approver,
       'A disciplinary notice needs your approval',
       '<p>' + escapeHtml(req.user.name) + ' has submitted a ' + escapeHtml(levelLabel(rec.level)) +
-      ' for ' + escapeHtml(u.name) + ' and needs your approval before it can be sent.</p>' +
-      '<p><a href="' + appUrl('/?view=employee-files') + '">Review it in Nova</a></p>',
-      'Nova: ' + req.user.name + ' needs your approval on a disciplinary notice.'
+      ' for ' + escapeHtml(u.name) + ' and needs your approval before it can be sent.</p>',
+      'Nova: ' + req.user.name + ' needs your approval on a disciplinary notice.',
+      recordsBtn()
     );
     res.json({ success: true, check: check });
   } catch (e) {
@@ -1020,16 +1038,16 @@ router.post('/disciplinary/:id/approve', requireAuth, requirePermission('approve
       'A notice in your file needs your signature',
       '<p>A ' + escapeHtml(levelLabel(rec.level)) + ' has been issued and is waiting for your signature in Nova.</p>' +
       '<p>Signing confirms you have read it. It does not mean you agree with it, and you can attach a written ' +
-      'response of your own.</p>' +
-      '<p><a href="' + appUrl('/?view=my-file') + '">Open your file in Nova</a></p>',
-      'Nova: a notice in your file needs your signature.'
+      'response of your own.</p>',
+      'Nova: a notice in your file needs your signature.',
+      myFileBtn()
     );
 
     var author = await userRow(rec.created_by);
     if (author) {
       await tellEmployee(author, 'Your notice was approved',
         '<p>' + escapeHtml(req.user.name) + ' approved the ' + escapeHtml(levelLabel(rec.level)) +
-        ' for ' + escapeHtml((u && u.name) || '') + '. It has been sent for signature.</p>', null);
+        ' for ' + escapeHtml((u && u.name) || '') + '. It has been sent for signature.</p>', null, recordsBtn());
     }
     res.json({ success: true });
   } catch (e) {
@@ -1059,7 +1077,7 @@ router.post('/disciplinary/:id/return', requireAuth, requirePermission('approve_
       await tellEmployee(author, 'Your notice was sent back',
         '<p>' + escapeHtml(req.user.name) + ' sent back the ' + escapeHtml(levelLabel(rec.level)) +
         ' for ' + escapeHtml((u && u.name) || '') + '.</p><p style="white-space:pre-wrap">' + escapeHtml(note) + '</p>' +
-        '<p>Everything you wrote is still there.</p>', null);
+        '<p>Everything you wrote is still there.</p>', null, recordsBtn());
     }
     res.json({ success: true });
   } catch (e) {
@@ -1085,9 +1103,8 @@ router.post('/disciplinary/:id/resend', requireAuth, requirePermission('create_d
     await pool.query('UPDATE employee_records SET reminded_at=NOW(), reminder_count=reminder_count+1 WHERE id=$1', [rec.id]);
     await logEvent(rec.id, 'reminded', req.user);
     await tellEmployee(u, 'Reminder: a notice needs your signature',
-      '<p>A ' + escapeHtml(levelLabel(rec.level)) + ' in your file is still waiting for your signature.</p>' +
-      '<p><a href="' + appUrl('/?view=my-file') + '">Open your file in Nova</a></p>',
-      'Nova: a notice in your file is still waiting for your signature.');
+      '<p>A ' + escapeHtml(levelLabel(rec.level)) + ' in your file is still waiting for your signature.</p>',
+      'Nova: a notice in your file is still waiting for your signature.', myFileBtn());
     res.json({ success: true });
   } catch (e) {
     console.error('[employee-records] resend failed:', e);
@@ -1172,7 +1189,7 @@ router.post('/:id/followup', requireAuth, requirePermission('create_disciplinary
     if (outcome === 'corrected' && b.tell_employee !== false && u) {
       await tellEmployee(u, 'Follow-up closed out',
         '<p>Your manager has closed out the follow-up on a notice in your file and recorded it as corrected.</p>' +
-        '<p style="white-space:pre-wrap">' + escapeHtml(note) + '</p>', null);
+        '<p style="white-space:pre-wrap">' + escapeHtml(note) + '</p>', null, myFileBtn());
     }
     res.json({ success: true, next_level: outcome === 'not_corrected' ? Math.min((rec.level || 0) + 1, 5) : null });
   } catch (e) {
@@ -1569,6 +1586,36 @@ router.get('/me', requireAuth, async (req, res) => {
   }
 });
 
+// How many notices are waiting on THIS person's signature, and nothing else.
+//
+// This does not breach rule 2 at the top of the file: it is the caller's own
+// file, it is a count of things they have already been emailed about, and it
+// says nothing about anybody else. No endpoint here returns a count about
+// another person to a non-privileged viewer, and this one does not either.
+//
+// It exists because GET /me is the wrong thing for a home-screen banner to
+// call: opening the file is what stamps opened_at, and opened_at is half the
+// delivery trail that stands in for a witness signature. A banner that marked
+// a notice as read merely by drawing itself would quietly destroy that
+// evidence. So this route reads and writes nothing.
+//
+// It also fails QUIET rather than closed - a banner is not worth a red error
+// across somebody's home screen, and the notice is still sitting in their file
+// either way.
+router.get('/me/pending', requireAuth, async (req, res) => {
+  try {
+    const r = await pool.query(
+      'SELECT COUNT(*)::int AS n FROM employee_records ' +
+      "WHERE user_id=$1 AND type='disciplinary' AND status='sent' AND visible_to_employee=true",
+      [req.user.id]
+    );
+    res.json({ count: (r.rows[0] && r.rows[0].n) || 0 });
+  } catch (e) {
+    console.error('[employee-records] pending count failed:', e.message);
+    res.json({ count: 0 });
+  }
+});
+
 // Sign. In-app rather than a public tokenised link: everybody here has a Nova
 // login, so the signature is tied to an authenticated session instead of to
 // whoever happens to have the URL, and the notice never has to leave the app.
@@ -1594,7 +1641,7 @@ router.post('/me/:id/sign', requireAuth, async (req, res) => {
     var author = await userRow(rec.created_by);
     if (author) {
       await tellEmployee(author, req.user.name + ' signed the notice',
-        '<p>' + escapeHtml(req.user.name) + ' has signed the ' + escapeHtml(levelLabel(rec.level)) + '.</p>', null);
+        '<p>' + escapeHtml(req.user.name) + ' has signed the ' + escapeHtml(levelLabel(rec.level)) + '.</p>', null, recordsBtn());
     }
     res.json({ success: true });
   } catch (e) {
@@ -1632,7 +1679,7 @@ router.post('/me/:id/response', requireAuth, async (req, res) => {
     if (author) {
       await tellEmployee(author, req.user.name + ' attached a response',
         '<p>' + escapeHtml(req.user.name) + ' has attached a written response to a notice in their file.</p>' +
-        '<p style="white-space:pre-wrap">' + escapeHtml(text) + '</p>', null);
+        '<p style="white-space:pre-wrap">' + escapeHtml(text) + '</p>', null, recordsBtn());
     }
     res.json({ success: true });
   } catch (e) {

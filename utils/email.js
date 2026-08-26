@@ -82,11 +82,18 @@ function emailTemplate({ badge, badgeColor, title, body, details, buttonText, bu
       '</td></tr></table>'
     : '') +
 
-    '<table role="presentation" cellpadding="0" cellspacing="0" style="margin-bottom:28px"><tr>' +
-      '<td style="background:#f97316;border-radius:6px">' +
-        '<a href="' + buttonUrl + '" style="display:inline-block;padding:14px 28px;color:#ffffff;font-size:15px;font-weight:700;text-decoration:none;letter-spacing:0.2px">' + buttonText + ' &rarr;</a>' +
-      '</td>' +
-    '</tr></table>' +
+    // The button is drawn ONLY when the caller supplied both halves of it.
+    // Without this guard, every caller that omits them shipped a live orange
+    // button reading "null" and pointing at href="null" - 14 call sites did,
+    // including every employee-records email. Tony caught it in a disciplinary
+    // notice, 2026-08-26. Callers that want no button pass neither.
+    ((buttonText && buttonUrl) ?
+      '<table role="presentation" cellpadding="0" cellspacing="0" style="margin-bottom:28px"><tr>' +
+        '<td style="background:#f97316;border-radius:6px">' +
+          '<a href="' + buttonUrl + '" style="display:inline-block;padding:14px 28px;color:#ffffff;font-size:15px;font-weight:700;text-decoration:none;letter-spacing:0.2px">' + buttonText + ' &rarr;</a>' +
+        '</td>' +
+      '</tr></table>'
+    : '') +
 
     '<table role="presentation" width="100%" cellpadding="0" cellspacing="0"><tr><td style="border-top:1px solid #eeeeee;padding-top:20px">' +
       '<p style="font-size:12px;color:#aaaaaa;line-height:1.6;margin:0">' +

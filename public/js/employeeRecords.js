@@ -324,6 +324,9 @@
       '.er-sb.hit{background:var(--warning)}',
       '.er-sblab{display:flex;justify-content:space-between;font-size:10.5px;color:var(--text-muted-color)}',
       '.er-row:hover td{background:rgba(249,115,22,0.06)}',
+      '.er-nav-count{display:inline-block;min-width:18px;padding:0 5px;margin-left:7px;border-radius:9px;background:var(--warning,#f59e0b);color:#2d1c00;font-size:11px;font-weight:800;line-height:18px;text-align:center;vertical-align:middle}',
+      '.er-notice{border-color:#4a3500}',
+      '.er-notice-dot{width:34px;height:34px;border-radius:50%;background:#f59e0b;color:#2d1c00;font-size:19px;font-weight:800;display:flex;align-items:center;justify-content:center;flex-shrink:0}',
       '.er-win{display:flex;gap:12px;padding:13px 0;border-bottom:1px solid var(--border-light)}',
       '.er-win:last-child{border-bottom:none}',
       '.er-win .who{font-size:13.5px;font-weight:600;color:var(--text)}',
@@ -1726,6 +1729,10 @@
     try {
       var d = await api('GET', API + '/me');
       mine.innerHTML = myRecordsHtml(d.records || []);
+      // The file is loaded, so the sidebar count is reconciled from it rather
+      // than by asking again. Every action that changes it - sign, refuse,
+      // acknowledge - re-renders this screen, so the badge follows for free.
+      setPending((d.records || []).filter(function (r) { return r.needs_signature; }).length);
     } catch (e) { mine.innerHTML = ''; }
     if (typeof origMyFile === 'function') {
       try { await origMyFile(el('er-docs')); } catch (e) {}
@@ -1878,6 +1885,7 @@
     window.renderHomeScreen = async function (host) {
       await origHome(host);
       try { await fillWins(); } catch (e) {}
+      try { await fillNotice(); } catch (e) {}
     };
   }
 
@@ -1906,5 +1914,114 @@
       '</div></div>';
   }
 
+  // ---- "You have a notice to sign" -----------------------------------------
+  //
+  // A notice used to be announced in exactly one place: an email. That email
+  // pointed at ?view=my-file, a view that does not exist, so it landed people on
+  // the home screen with no explanation - and nothing on the home screen said
+  // why. Three surfaces now carry it: this banner, a count on the My Documents
+  // row, and the file itself.
+  //
+  // All of them read ONE number, from /me/pending, and deliberately NOT from
+  // GET /me. That route stamps opened_at, which is half of the delivery trail
+  // that stands in for a witness signature on a notice nobody signs. A badge
+  // that marked a notice as read merely by drawing itself would destroy the
+  // evidence it exists to protect.
+  var PEND = { count: 0, loaded: false, inflight: null };
+
+  function setPending(n) {
+    n = n || 0;
+    PEND.loaded = true;
+    if (n === PEND.count) return;
+    PEND.count = n;
+    redrawNav();
+  }
+
+  // Repaints the sidebar only. render() would throw the user's scroll position
+  // away, and this can land at any moment - it is a background fetch.
+  function redrawNav() {
+    try {
+      var nav = document.querySelector('.sidebar-nav');
+      if (nav && typeof buildNavHtml === 'function') nav.innerHTML = buildNavHtml();
+    } catch (e) {}
+  }
+
+  // Callers COALESCE onto one fetch rather than each starting their own. The
+  // sidebar kicks one off on first paint and the home banner asks for a fresh
+  // one a moment later; without this the banner got back the stale number the
+  // sidebar had not finished replacing, decided nothing was pending, and hid
+  // itself - on exactly the load where somebody has a notice waiting.
+  function refreshPending(force) {
+    if (PEND.inflight) return PEND.inflight;
+    if (PEND.loaded && !force) return Promise.resolve(PEND.count);
+    if (typeof state === 'undefined' || !state || !state.token || !state.user) return Promise.resolve(0);
+    PEND.inflight = (async function () {
+      var n = PEND.count;
+      try {
+        var d = await api('GET', API + '/me/pending');
+        n = (d && d.count) || 0;
+      } catch (e) {
+        // Fail quiet. The route does too, and for the same reason: a badge is
+        // not worth an error across somebody's home screen.
+      }
+      PEND.inflight = null;
+      setPending(n);
+      return PEND.count;
+    })();
+    return PEND.inflight;
+  }
+
+  // The sidebar count. navModel() is a function declaration in app.js, so it is
+  // reassignable here for the same reason renderMyFile is (see the header), and
+  // buildNavHtml drops a nav label into the HTML unescaped - which is what lets
+  // a badge ride along on the label without app.js's nav code changing at all.
+  var origNavModel = window.navModel;
+  if (typeof origNavModel === 'function') {
+    window.navModel = function () {
+      var model = origNavModel.apply(this, arguments);
+      // First paint after login, wherever the user lands. Fire and forget: the
+      // fetch repaints the sidebar itself when it comes back, and the loaded
+      // flag holds it to one call for the session.
+      if (!PEND.loaded && !PEND.inflight) { try { refreshPending(); } catch (e) {} }
+      if (PEND.count > 0) stampBadge(model);
+      return model;
+    };
+  }
+
+  function stampBadge(nodes) {
+    for (var i = 0; i < (nodes || []).length; i++) {
+      var n = nodes[i];
+      if (!n) continue;
+      if (n.children) { stampBadge(n.children); continue; }
+      if (n.view === 'my-documents' && String(n.label).indexOf('er-nav-count') === -1) {
+        n.label = n.label + '<span class="er-nav-count">' + PEND.count + '</span>';
+      }
+    }
+  }
+
+  // The banner. Sits in the slot app.js renders above My Tasks.
+  async function fillNotice() {
+    var slot = el('home-notice');
+    if (!slot) return;
+    injectCss();
+    var n = await refreshPending(true);
+    if (!n) { slot.innerHTML = ''; return; }
+    slot.innerHTML =
+      '<div class="card er-notice" style="margin-bottom:24px">' +
+      '<div class="card-body" style="display:flex;gap:14px;align-items:center;flex-wrap:wrap">' +
+      '<div class="er-notice-dot">!</div>' +
+      '<div style="flex:1;min-width:210px">' +
+      '<div style="font-size:15px;font-weight:700;color:var(--text)">' +
+      (n === 1 ? 'A notice in your file needs your signature'
+               : n + ' notices in your file need your signature') + '</div>' +
+      '<div style="font-size:12.5px;color:var(--text-muted-color);margin-top:3px;line-height:1.55">' +
+      'Signing confirms you have read it. It does not mean you agree with it, and you can attach a ' +
+      'written response of your own.</div></div>' +
+      '<button class="btn btn-primary" onclick="navigate(&#39;my-documents&#39;)">Open my file</button>' +
+      '</div></div>';
+  }
+
   window.erRefreshWins = fillWins;
+  window.erFillNotice = fillNotice;
+  window.erRefreshPending = function () { return refreshPending(true); };
 })();

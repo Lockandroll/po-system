@@ -78,9 +78,13 @@ async function runSignatureSweep() {
   );
   for (var j = 0; j < due.rows.length; j++) {
     var d = due.rows[j];
+    // 'my-documents' is the real view id. This carried '?view=my-file' from day
+    // one, which matched nothing in app.js and fell through to the home screen,
+    // so no reminder ever reached the file it was nagging about. See myFileBtn()
+    // in routes/employeeRecords.js. Fixed 2026-08-26.
     await mail(d, 'Reminder: a notice needs your signature',
       '<p>A notice in your file is still waiting for your signature. Signing confirms you have read it. ' +
-      'It does not mean you agree with it.</p>', 'Open your file', appUrl('/?view=my-file'));
+      'It does not mean you agree with it.</p>', 'Open your file', appUrl('/?view=my-documents'));
     try {
       if (d.phone && d.receive_sms) await sendSms(d.phone, 'Nova: a notice in your file is still waiting for your signature.');
     } catch (e) {}

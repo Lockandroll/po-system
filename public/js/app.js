@@ -3213,7 +3213,7 @@ async function renderRoles(el) {
     { group:'Quotes', gate:'view_quotes', perms:[ {k:'view_quotes',l:'View / access module'}, {k:'create_quote',l:'Create quotes'}, {k:'edit_quote',l:'Edit quotes'}, {k:'delete_quote',l:'Delete quotes'}, {k:'push_quote_po',l:'Push quote to PO'}, {k:'send_quote',l:'Send quotes to customers'} ] },
     { group:'Vehicle Repairs', gate:'view_vr', perms:[ {k:'view_vr',l:'View / access module'}, {k:'create_vr',l:'Create VRs'}, {k:'edit_vr',l:'Edit VRs'}, {k:'delete_vr',l:'Delete VRs'}, {k:'submit_vr',l:'Submit for approval'}, {k:'approve_vr',l:'Approve / reject vehicle repairs'} ] },
     { group:'Cash Deposits', gate:'view_deposits', perms:[ {k:'view_deposits',l:'View / access module'}, {k:'create_deposit',l:'Create / upload deposit'}, {k:'complete_deposit_for_employee',l:'Complete a deposit on behalf of an employee (managers: own cities only)'}, {k:'edit_deposit',l:'Edit a submitted deposit (managers: own cities only)'}, {k:'delete_deposit',l:'Delete deposit'}, {k:'export_deposits',l:'Export deposits (CSV)'} ] },
-    { group:'Invoices', gate:'view_invoices', perms:[ {k:'view_invoices',l:'View / access module'}, {k:'create_invoice',l:'Create invoices'}, {k:'edit_invoice',l:'Edit invoices'}, {k:'delete_invoice',l:'Delete invoices'}, {k:'request_refund',l:'Request a refund'}, {k:'approve_refund',l:'Approve / reject &amp; record refunds'}, {k:'manage_invoice_setup',l:'Manage invoice setup (accounts, agreement, defaults)'} ] },
+    { group:'Invoices', gate:'view_invoices', perms:[ {k:'view_invoices',l:'View / access module'}, {k:'create_invoice',l:'Create invoices'}, {k:'edit_invoice',l:'Edit invoices'}, {k:'delete_invoice',l:'Delete invoices'}, {k:'request_refund',l:'Request a refund'}, {k:'approve_refund',l:'Approve / reject & record refunds'}, {k:'manage_invoice_setup',l:'Manage invoice setup (accounts, agreement, defaults)'} ] },
     { group:'Signatures', gate:'view_signatures', perms:[ {k:'view_signatures',l:'View / access module'}, {k:'manage_signatures',l:'Create, send, edit & void signature requests'} ] },
     { group:'Work Orders', gate:'view_work_orders', perms:[ {k:'view_work_orders',l:'View / access module'}, {k:'manage_work_orders',l:'Create, edit, dispatch & delete work orders'} ] },
     { group:'Sign-Off Sheets', gate:'view_signoffs', perms:[ {k:'view_signoffs',l:'View / access module'}, {k:'create_signoff',l:'Create sign-off sheets'}, {k:'edit_signoff',l:'Edit setup'}, {k:'complete_signoff',l:'Complete on site'}, {k:'delete_signoff',l:'Delete sign-off sheets'} ] },
@@ -3221,7 +3221,7 @@ async function renderRoles(el) {
     { group:'Scheduling', gate:'view_schedule', perms:[ {k:'view_schedule',l:'View / access schedule'}, {k:'manage_schedule',l:'Build, publish & manage schedules'} ] },
     { group:'Time Off', gate:'view_pto', perms:[ {k:'view_pto',l:'View & request own PTO'}, {k:'manage_pto',l:'Approve, view team & manage PTO settings'} ] },
     { group:'Time Clock', gate:'view_timeclock', perms:[ {k:'view_timeclock',l:'Clock in/out & view own timesheet'}, {k:'manage_timeclock',l:"Manager: who's-in board, timesheets, corrections, approve & submit payroll"} ] },
-    { group:'Dispatch', gate:'view_dispatch', perms:[ {k:'view_dispatch',l:'See the dispatch board (only while marked ready to accept calls)'}, {k:'assign_dispatch',l:'Hand a call to another tech (without full dispatch control)'}, {k:'manage_dispatch',l:'Create, assign &amp; cancel calls; take someone off duty'}, {k:'view_call_views',l:'See WHO ELSE opened a call (the Viewed lines on the event log)'}, {k:'manage_service_types',l:'Edit the service catalog &amp; its categories'}, {k:'manage_dispatch_tags',l:'Edit the call-tag list'} ] },
+    { group:'Dispatch', gate:'view_dispatch', perms:[ {k:'view_dispatch',l:'See the dispatch board (only while marked ready to accept calls)'}, {k:'assign_dispatch',l:'Hand a call to another tech (without full dispatch control)'}, {k:'manage_dispatch',l:'Create, assign & cancel calls; take someone off duty'}, {k:'view_call_views',l:'See WHO ELSE opened a call (the Viewed lines on the event log)'}, {k:'manage_service_types',l:'Edit the service catalog & its categories'}, {k:'manage_dispatch_tags',l:'Edit the call-tag list'} ] },
     { group:'Pricing &amp; Service', gate:'manage_pricing', perms:[ {k:'manage_pricing',l:'Set time codes, prices and ETAs per service per city, and account price exceptions'} ] },
     { group:'Coverage Zones', gate:'manage_coverage', perms:[ {k:'manage_coverage',l:'Draw the map of where you work, and what each zone does to price and ETA'} ] },
     { group:'Tech Pay', gate:'view_pay_report', perms:[
@@ -3235,15 +3235,15 @@ async function renderRoles(el) {
     { group:'Accounts Payable', gate:'view_ap', perms:[
       {k:'view_ap',l:'See the bills list, what is due, and paid history'},
       {k:'manage_ap',l:'Add and edit bills, mark them paid, and set AP reminder settings'} ] },
-    { group:'Call Search', gate:'search_dispatch', perms:[ {k:'search_dispatch',l:'Search call history - only calls they were on'}, {k:'search_dispatch_city',l:'Search every call in their home city'}, {k:'search_dispatch_all',l:'Search every call in every city, and export CSV'}, {k:'view_customer_pii',l:'See full customer names &amp; addresses in search (off = shortened)'} ] },
-    { group:'Live Map', gate:'view_tech_locations', perms:[ {k:'view_tech_locations',l:'See where the crew is (live map &amp; route history)'}, {k:'manage_tech_locations',l:'Change tracking settings &amp; erase a tech&#39;s location history'} ] },
+    { group:'Call Search', gate:'search_dispatch', perms:[ {k:'search_dispatch',l:'Search call history - only calls they were on'}, {k:'search_dispatch_city',l:'Search every call in their home city'}, {k:'search_dispatch_all',l:'Search every call in every city, and export CSV'}, {k:'view_customer_pii',l:'See full customer names & addresses in search (off = shortened)'} ] },
+    { group:'Live Map', gate:'view_tech_locations', perms:[ {k:'view_tech_locations',l:'See where the crew is (live map & route history)'}, {k:'manage_tech_locations',l:'Change tracking settings & erase a tech\'s location history'} ] },
     { group:'Check-In / Check-Out', perms:[
-      {k:'checkin_job',l:'Check a job in and out (this is the technician&#39;s row - without it the buttons do not exist)'},
+      {k:'checkin_job',l:'Check a job in and out (this is the technician\'s row - without it the buttons do not exist)'},
       {k:'manage_ivr_profiles',l:'Write and test the phone scripts Nova dials. Ships off for everyone but admin'},
       {k:'override_checkin',l:'Force a check-in against the evidence. Ships off for everyone but admin'} ] },
     { group:'Fleet &amp; Vehicles', perms:[ {k:'manage_vehicles',l:'Manage fleet registry'} ] },
     { group:'Vendors / Accounts', gate:'view_vendors', perms:[ {k:'view_vendors',l:'View / access module'}, {k:'manage_vendors',l:'Manage vendors and accounts'}, {k:'manage_coi',l:'Manage certificates of insurance'} ] },
-    { group:'Vehicle Inspections', gate:'view_inspections', perms:[ {k:'view_inspections',l:'View / access module (own vehicle inspections)'}, {k:'manage_inspections',l:'Manage checklist, review, edit &amp; delete inspections'} ] },
+    { group:'Vehicle Inspections', gate:'view_inspections', perms:[ {k:'view_inspections',l:'View / access module (own vehicle inspections)'}, {k:'manage_inspections',l:'Manage checklist, review, edit & delete inspections'} ] },
     { group:'Shipping Addresses', perms:[ {k:'manage_addresses',l:'Manage shipping addresses'} ] },
     { group:'Cities', perms:[ {k:'manage_cities',l:'Manage cities'} ] },
     { group:'Monthly Requisition', perms:[ {k:'manage_running',l:'Manage monthly requisition (admin list)'} ] },
@@ -3252,16 +3252,16 @@ async function renderRoles(el) {
     { group:'Reviews', perms:[ {k:'assign_reviews',l:'Assign Google reviews to technicians'} ] },
     { group:'Customer Feedback', gate:'view_feedback', perms:[ {k:'view_feedback',l:'View / access module'}, {k:'manage_feedback',l:'Manage feedback (resolve, reassign, add notes)'}, {k:'play_call_recordings',l:'Play customer call recordings (every play is logged)'} ] },
     { group:'Radio (PTT)', gate:'view_ptt', perms:[ {k:'view_ptt',l:'View / access Radio (own city channels + All Hands)'}, {k:'ptt_all_channels',l:'Join every channel (dispatch function)'}, {k:'ptt_direct',l:'Direct person-to-person talk'} ] },
-    { group:'SOP Quiz', perms:[ {k:'view_quiz',l:'View the quiz admin screen (assignments, results, compliance)'}, {k:'manage_quiz',l:'Generate, send &amp; configure quizzes'}, {k:'view_team_quiz',l:'View team quiz results for your downline'} ] },
-    { group:'Onboarding', perms:[ {k:'manage_onboarding',l:'Manage onboarding paths, new-hire progress &amp; employee files'} ] },
-    { group:'Offboarding', gate:'view_offboarding', perms:[ {k:'view_offboarding',l:'View / access module (people in your team)'}, {k:'manage_offboarding',l:'Manage the offboarding lifecycle, steps &amp; templates'}, {k:'send_exit_form',l:'Send exit interview forms'}, {k:'view_exit_interviews',l:'View exit interview responses &amp; insights'} ] },
-    { group:'Equipment / Assets', gate:'view_assets', perms:[ {k:'view_assets',l:'View / access module (see your own equipment)'}, {k:'request_asset_replacement',l:'Request a replacement'}, {k:'manage_assets',l:'Manage inventory, assign equipment &amp; edit the equipment list (own cities only)'}, {k:'approve_asset_replacement',l:'Approve replacements (opens a purchase order)'} ] },
+    { group:'SOP Quiz', perms:[ {k:'view_quiz',l:'View the quiz admin screen (assignments, results, compliance)'}, {k:'manage_quiz',l:'Generate, send & configure quizzes'}, {k:'view_team_quiz',l:'View team quiz results for your downline'} ] },
+    { group:'Onboarding', perms:[ {k:'manage_onboarding',l:'Manage onboarding paths, new-hire progress & employee files'} ] },
+    { group:'Offboarding', gate:'view_offboarding', perms:[ {k:'view_offboarding',l:'View / access module (people in your team)'}, {k:'manage_offboarding',l:'Manage the offboarding lifecycle, steps & templates'}, {k:'send_exit_form',l:'Send exit interview forms'}, {k:'view_exit_interviews',l:'View exit interview responses & insights'} ] },
+    { group:'Equipment / Assets', gate:'view_assets', perms:[ {k:'view_assets',l:'View / access module (see your own equipment)'}, {k:'request_asset_replacement',l:'Request a replacement'}, {k:'manage_assets',l:'Manage inventory, assign equipment & edit the equipment list (own cities only)'}, {k:'approve_asset_replacement',l:'Approve replacements (opens a purchase order)'} ] },
     { group:'Employee Records', gate:'view_employee_records', perms:[
       {k:'view_employee_records',l:'Open the records half of Employee Files (their city and their team)'},
-      {k:'create_employee_note',l:'Add recognition, coaching notes &amp; performance notes'},
-      {k:'create_disciplinary',l:'Draft &amp; submit disciplinary notices, record refusals and follow-ups'},
-      {k:'approve_discipline',l:'Approve or send back somebody else&#39;s disciplinary notice'},
-      {k:'manage_employee_records',l:'Void records &amp; change visibility company-wide'} ] },
+      {k:'create_employee_note',l:'Add recognition, coaching notes & performance notes'},
+      {k:'create_disciplinary',l:'Draft & submit disciplinary notices, record refusals and follow-ups'},
+      {k:'approve_discipline',l:'Approve or send back somebody else\'s disciplinary notice'},
+      {k:'manage_employee_records',l:'Void records & change visibility company-wide'} ] },
     { group:'Users', perms:[ {k:'view_users',l:'View users'}, {k:'manage_users',l:'Add / edit / remove users'} ] },
     { group:'Administration', perms:[ {k:'manage_settings',l:'Company info, AI context, notifications, roles'}, {k:'view_audit',l:'View audit log'}, {k:'view_ai_admin',l:'View AI history / usage'} ] }
   ];
@@ -11549,6 +11549,12 @@ async function renderHomeScreen(el) {
         '<div style="font-size:22px;font-weight:700;color:var(--text-color)">' + greeting + ', ' + escHtml(state.user.name.split(' ')[0]) + '</div>' +
         '<div style="font-size:13px;color:var(--text-muted-color);margin-top:4px">' + dateStr + '</div>' +
       '</div>' +
+
+      // Filled by public/js/employeeRecords.js when the person has a notice
+      // waiting on their signature. It sits ABOVE My Tasks on purpose: it is
+      // the one thing on this screen with a deadline attached to it.
+      '<div id="home-notice"></div>' +
+
       (can('view_tasks') ? ('<div class="card" style="margin-bottom:24px"><div class="card-body">' +
         '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px"><div style="font-size:15px;font-weight:700">My Tasks</div>' +
         '<span style="font-size:12px;color:var(--primary);cursor:pointer" onclick="navigate(\'tasks\')">View all</span></div>' + myTasksHtml +
