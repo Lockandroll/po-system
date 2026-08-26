@@ -95,7 +95,14 @@
     body { font-family: 'Fira Sans', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: var(--bg); color: var(--text); min-height: 100vh; }
     #app { display: flex; min-height: 100vh; width: 100%; }
     #sidebar { width: 240px; background: #111; border-right: 1px solid var(--border); display: flex; flex-direction: column; position: fixed; top: 0; left: 0; height: 100vh; height: 100dvh; z-index: 100; transition: transform 0.25s ease; }
-    #main { margin-left: 240px; flex: 1; display: flex; flex-direction: column; min-height: 100vh; }
+    /* min-width:0 is load-bearing. #main is a flex item; a flex item's default
+       min-width is auto, so it refuses to shrink below its content's intrinsic
+       width. A wide table (Accounts, 13 nowrap columns) then stretched #main past
+       the viewport, put a scrollbar on the PAGE, and slid every screen right off
+       the fixed sidebar. With min-width:0 the overflow lands on .table-wrap /
+       .vendors-scroll where it belongs and the page itself never scrolls sideways. */
+    #main { margin-left: 240px; flex: 1; min-width: 0; display: flex; flex-direction: column; min-height: 100vh; }
+    .main-content { min-width: 0; }
     .main-header { background: #111; border-bottom: 1px solid var(--border); padding: 16px 24px; display: flex; align-items: center; justify-content: space-between; }
     .main-content { padding: 24px; flex: 1; }
     #app.no-sidebar #sidebar { display: none; }
