@@ -2533,11 +2533,13 @@ async function initDB() {
       await client.query("INSERT INTO settings (key, value) VALUES ('perm_onboarding_matrix_backfilled', '1') ON CONFLICT (key) DO NOTHING");
     }
     // Vehicle Inspections shipped as its own permission pair, but nothing ever
-    // pushed it onto an ALREADY SAVED role matrix - and Nova's was saved long
-    // before. The result: manager DEFAULTS listed manage_inspections and
-    // EMPLOYEE_PERMS listed view_inspections, yet no live manager had either, so
-    // the Inspections item never drew in the Fleet menu (Tony, 2026-08-26).
-    // Run once, manager only; admin/owner are unrestricted already.
+    // pushed view_inspections onto an ALREADY SAVED role matrix - and Nova's was
+    // saved long before - so no live manager had it and the Inspections item never
+    // drew in the Fleet menu (Tony, 2026-08-26).
+    // view_inspections ONLY. manage_inspections is the checklist editor, the review
+    // sign-off and delete, and Tony wants managers limited to assigning an
+    // inspection and completing one. Run once, manager only; this never REMOVES a
+    // permission, so a box an admin deliberately ticked is left alone.
     const _inspPerm = await client.query("SELECT value FROM settings WHERE key = 'perm_inspections_matrix_backfilled'");
     if (!_inspPerm.rows.length) {
       const _rpInsp = await client.query("SELECT value FROM settings WHERE key = 'role_permissions'");
@@ -2545,11 +2547,8 @@ async function initDB() {
         try {
           const obj = JSON.parse(_rpInsp.rows[0].value);
           if (obj && typeof obj === 'object' && Array.isArray(obj.manager)) {
-            let changed = false;
-            ['view_inspections', 'manage_inspections'].forEach(function (k) {
-              if (obj.manager.indexOf(k) === -1) { obj.manager.push(k); changed = true; }
-            });
-            if (changed) {
+            if (obj.manager.indexOf('view_inspections') === -1) {
+              obj.manager.push('view_inspections');
               await client.query("INSERT INTO settings (key, value, updated_at) VALUES ('role_permissions', $1, NOW()) ON CONFLICT (key) DO UPDATE SET value = $1, updated_at = NOW()", [JSON.stringify(obj)]);
             }
           }

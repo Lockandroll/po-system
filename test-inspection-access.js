@@ -59,9 +59,11 @@ ok(mgr !== null, 'a user with only view_inspections still gets a Fleet group');
 has(ids(mgr).join(','), 'inspections', 'Inspections draws without view_vr');
 lacks(ids(mgr).join(','), 'vr-dashboard', 'Vehicle Repairs stays hidden without view_vr');
 
-// The checklist editor follows the same rule.
+// The checklist editor follows the same rule - but it is NOT a manager power.
 var mgr2 = fleetFor(['manage_inspections']);
 has(ids(mgr2).join(','), 'inspection-checklist', 'Insp. Checklist draws without view_vr');
+lacks(ids(mgr).join(','), 'inspection-checklist',
+  'a manager (view_inspections only) gets NO Insp. Checklist item');
 
 // A full manager sees everything, in order.
 var full = fleetFor(['view_vr', 'manage_vehicles', 'view_inspections', 'manage_inspections']);
@@ -72,6 +74,10 @@ eq(ids(full).join(','), 'vr-dashboard,fleet-registry,inspections,inspection-chec
 var tech = fleetFor(['view_vr']);
 eq(ids(tech).join(','), 'vr-dashboard', 'view_vr alone does NOT unlock Inspections');
 eq(fleetFor([]), null, 'no fleet permissions at all drops the group entirely');
+
+// The Checklist shortcut button on the grid page is gated the same way.
+var grid = SRC.slice(SRC.indexOf('Vehicle Inspections</div>'), SRC.indexOf('Vehicle Inspections</div>') + 800);
+has(grid, "can('manage_inspections') ? '<button", 'the Checklist button on the grid needs manage_inspections');
 
 // The view router must agree with the menu, or the link 403s on arrival.
 var vp = SRC.slice(SRC.indexOf('var _viewPerm = {'), SRC.indexOf('var _viewPerm = {') + 4000);
@@ -111,17 +117,54 @@ console.log('\n--- db.js one-time permission backfill ---');
 var DB = fs.readFileSync('db.js', 'utf8');
 has(DB, "perm_inspections_matrix_backfilled", 'the backfill has its own run-once settings key');
 var bf = DB.slice(DB.indexOf("perm_inspections_matrix_backfilled"), DB.indexOf("perm_inspections_matrix_backfilled") + 1800);
-has(bf, "'view_inspections', 'manage_inspections'", 'both inspection permissions are backfilled');
+has(bf, "obj.manager.push('view_inspections')", 'view_inspections is backfilled');
+lacks(bf, 'manage_inspections', 'manage_inspections is NOT backfilled - managers stay out of the checklist');
 has(bf, 'Array.isArray(obj.manager)', 'it only touches a saved matrix that actually has a manager array');
-has(bf, 'indexOf(k) === -1', 'it never duplicates a permission the matrix already has');
+has(bf, "indexOf('view_inspections') === -1", 'it never duplicates a permission the matrix already has');
 has(bf, 'ON CONFLICT (key) DO UPDATE SET value = $1', 'the updated matrix is written back');
 lacks(bf, 'obj.admin', 'admin is left alone - admin is unrestricted by design');
 
 // The defaults a fresh install uses must line up with what the backfill grants.
 var perms = fs.readFileSync('utils/permissions.js', 'utf8');
 var mgrDefaults = perms.slice(perms.indexOf('  manager: ['), perms.indexOf('\n', perms.indexOf('  manager: [')));
-has(mgrDefaults, 'manage_inspections', 'manager DEFAULTS already carry manage_inspections');
+lacks(mgrDefaults, 'manage_inspections', 'manager DEFAULTS no longer carry manage_inspections');
 has(perms, "EMPLOYEE_PERMS.push('view_inspections')", 'view_inspections reaches manager via EMPLOYEE_PERMS');
+has(perms, "ALL_PERMS.push('view_inspections', 'manage_inspections')", 'manage_inspections still exists as a grantable permission');
+var appDefaults = SRC.slice(SRC.indexOf('  manager: ['), SRC.indexOf('\n', SRC.indexOf('  manager: [')));
+lacks(appDefaults, 'manage_inspections', 'the frontend defaults mirror agrees with utils/permissions.js');
+
+console.log('\n--- routes/inspections.js: assign and complete, nothing more ---');
+
+var R = fs.readFileSync('routes/inspections.js', 'utf8');
+
+// Assigning an inspector is now a manager power.
+var assign = R.slice(R.indexOf("router.put('/vehicle/:id/inspector'"), R.indexOf("router.put('/vehicle/:id/inspector'") + 1400);
+has(assign, "['admin', 'owner', 'manager'].includes(req.user.role)", 'a manager may assign the inspector');
+has(assign, "role IN ('manager', 'admin', 'owner')", 'managers remain valid targets to assign TO');
+has(R, "var canAssign = ['admin', 'owner', 'manager'].includes(req.user.role)",
+  'the grid sends can_assign_inspector to managers so the picker draws');
+
+// Completing one already worked for managers, via role not permission.
+has(R, "function canSubmit(user, driverSupervisorId, inspectorId) {", 'canSubmit still governs completing');
+var submit = R.slice(R.indexOf('function canSubmit('), R.indexOf('function canSubmit(') + 400);
+has(submit, "['admin', 'owner', 'manager'].includes(user.role)", 'a manager may complete an inspection');
+has(submit, 'user.id === inspectorId', 'the assigned inspector may complete their own');
+
+// But editing someone else's, reviewing and deleting are not manager powers.
+var edit = R.slice(R.indexOf("router.put('/:id'"), R.indexOf("router.put('/:id'") + 1600);
+has(edit, "var isAdminOwner = ['admin', 'owner'].includes(req.user.role)", 'editing is gated on admin/owner, not isPrivileged');
+has(edit, "!isAdminOwner && insp.submitted_by !== req.user.id", 'a manager may still fix an inspection they submitted');
+lacks(edit, 'isPrivileged(req.user)', 'the edit handler no longer leans on isPrivileged');
+has(R, "router.post('/:id/review', requireAuth, requirePermission('manage_inspections')", 'review sign-off still needs manage_inspections');
+has(R, "router.delete('/:id', requireAuth, requirePermission('manage_inspections')", 'delete still needs manage_inspections');
+has(R, "router.put('/checklist', requireAuth, requirePermission('manage_inspections')", 'editing the checklist still needs manage_inspections');
+has(R, "router.get('/checklist', requireAuth, requirePermission('view_inspections')", 'READING the checklist stays on view_inspections - the inspection form needs it');
+
+// Read scoping is untouched: a manager still sees the whole grid.
+var compliance = R.slice(R.indexOf("router.get('/compliance'"), R.indexOf("router.get('/compliance'") + 900);
+has(compliance, 'if (!isPrivileged(req.user))', 'the compliance grid still scopes on isPrivileged');
+has(R, "function isPrivileged(user) { return ['admin', 'owner', 'manager'].includes(user.role); }",
+  'isPrivileged still includes manager, so the grid stays unscoped for them');
 
 console.log('\n  ' + PASS + ' passed, ' + FAIL + ' failed\n');
 process.exit(FAIL ? 1 : 0);

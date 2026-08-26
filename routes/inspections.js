@@ -341,7 +341,7 @@ router.get('/compliance', requireAuth, requirePermission('view_inspections'), as
     // Everyone who can be handed an inspection. Managers belong on this list: the
     // city manager usually IS one, and leaving them off is why the picker only ever
     // offered admins.
-    var canAssign = ['admin', 'owner'].includes(req.user.role);
+    var canAssign = ['admin', 'owner', 'manager'].includes(req.user.role);
     var inspectors = [];
     if (canAssign) {
       const ir = await pool.query("SELECT id, name, role FROM users WHERE active = true AND role IN ('manager', 'admin', 'owner') ORDER BY name");
@@ -354,10 +354,14 @@ router.get('/compliance', requireAuth, requirePermission('view_inspections'), as
   }
 });
 
-// ===== Assign the inspector responsible for a vehicle (admin / owner only) =====
+// ===== Assign the inspector responsible for a vehicle (admin / owner / manager) =====
+// Managers were added 2026-08-26: handing a van to whoever is actually going to
+// walk out to it is the manager's job, and routing every reassignment through an
+// admin was the reason vehicles sat on the default. It stays a role check rather
+// than manage_inspections, which is now admin-only (checklist, review, delete).
 router.put('/vehicle/:id/inspector', requireAuth, requirePermission('view_inspections'), async function (req, res) {
-  if (!['admin', 'owner'].includes(req.user.role)) {
-    return res.status(403).json({ error: 'Only an admin or owner can assign inspectors.' });
+  if (!['admin', 'owner', 'manager'].includes(req.user.role)) {
+    return res.status(403).json({ error: 'Only an admin, owner or manager can assign inspectors.' });
   }
   try {
     var vehicleId = parseInt(req.params.id, 10);
@@ -508,8 +512,14 @@ router.put('/:id', requireAuth, requirePermission('view_inspections'), async fun
     const { rows } = await pool.query('SELECT * FROM vehicle_inspections WHERE id = $1', [req.params.id]);
     if (!rows.length) return res.status(404).json({ error: 'Inspection not found' });
     const insp = rows[0];
-    if (!isPrivileged(req.user) && insp.submitted_by !== req.user.id) return res.status(403).json({ error: 'Access denied' });
-    if (insp.status === 'reviewed' && !isPrivileged(req.user)) return res.status(400).json({ error: 'Reviewed inspections cannot be edited' });
+    // isPrivileged() includes manager, and it is right to for READ scoping - a
+    // manager sees the whole grid. Editing is different: a manager may complete an
+    // inspection and fix their own, not rewrite somebody else's, and not reopen a
+    // reviewed one. Those stay admin/owner (Tony, 2026-08-26). The UI hid the
+    // button already; this closes the API behind it.
+    var isAdminOwner = ['admin', 'owner'].includes(req.user.role);
+    if (!isAdminOwner && insp.submitted_by !== req.user.id) return res.status(403).json({ error: 'Access denied' });
+    if (insp.status === 'reviewed' && !isAdminOwner) return res.status(400).json({ error: 'Reviewed inspections cannot be edited' });
     const { mileage, notes, items } = req.body;
     const result = deriveResult(items);
     const client = await pool.connect();
