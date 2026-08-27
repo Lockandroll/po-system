@@ -1556,6 +1556,113 @@ function renderPagination(page, totalPages, totalItems, callbackName, pageSize, 
     '</div>' +
   '</div>';
 }
+// ---------- List UI state: filters, page and sort survive a round trip ------
+// Russ Beechly, 2026-08-27: filter a list, open a row, come back — and the
+// filter was gone and you were on page 1 of everything again. These helpers
+// keep one small record per list so a fresh render can put the controls back
+// the way the user left them.
+//
+// In memory only, on purpose (Tony&#39;s call): the state lives as long as the
+// tab does. A filter that survives a reload is a filter people forget is on,
+// and then swear their invoices went missing.
+var _listUiState = {};
+
+function listState(key) {
+  if (!_listUiState[key]) _listUiState[key] = { fields: {}, sort: '', dir: 'asc' };
+  return _listUiState[key];
+}
+
+// Read the live control values into the record. Called from each list's own
+// filter/render function, so every keystroke and dropdown change is already
+// saved by the time the user clicks a row.
+function listStateCapture(key, ids) {
+  var s = listState(key);
+  (ids || []).forEach(function(id) {
+    var e = document.getElementById(id);
+    if (e) s.fields[id] = e.value;
+  });
+  return s;
+}
+
+// Put the saved values back on freshly rendered controls. Returns true if any
+// non-empty value landed, which is the cue to open a collapsed filter panel so
+// nobody stares at a short list wondering why.
+// A saved option that no longer exists in the data (the account was renamed,
+// the locksmith left) will not stick on a <select>; that is caught here and
+// dropped, so the list falls back to All instead of filtering everything out.
+function listStateRestore(key, ids) {
+  var s = listState(key);
+  var any = false;
+  (ids || []).forEach(function(id) {
+    var v = s.fields[id];
+    if (v == null || v === '') return;
+    var e = document.getElementById(id);
+    if (!e) return;
+    e.value = v;
+    if (e.value === v) any = true; else s.fields[id] = '';
+  });
+  return any;
+}
+
+// Forget the saved filters for a list (its Clear button).
+function listStateForget(key, ids) {
+  var s = listState(key);
+  (ids || []).forEach(function(id) { s.fields[id] = ''; });
+}
+
+// --- Column sorting ---------------------------------------------------------
+// First click on a header sorts ascending, a second flips it, a third clears it
+// and hands the list back to its natural order.
+function listSortToggle(key, col) {
+  var s = listState(key);
+  if (s.sort !== col) { s.sort = col; s.dir = 'asc'; }
+  else if (s.dir === 'asc') { s.dir = 'desc'; }
+  else { s.sort = ''; s.dir = 'asc'; }
+  return s;
+}
+
+function listSortArrow(key, col) {
+  var s = listState(key);
+  if (s.sort !== col) return '<span style="opacity:0.3;font-size:9px">&#9650;&#9660;</span>';
+  return '<span style="color:var(--primary);font-size:9px">' + (s.dir === 'asc' ? '&#9650;' : '&#9660;') + '</span>';
+}
+
+// A clickable <th>. cb is the name of the list's own sort handler, which the
+// header calls with the column key.
+function listSortTh(key, col, label, cb, attrs) {
+  return '<th ' + (attrs || '') + ' onclick="' + cb + '(&#39;' + col + '&#39;)"' +
+    ' style="cursor:pointer;white-space:nowrap;-webkit-user-select:none;user-select:none"' +
+    ' title="Sort by ' + escHtml(label) + '">' +
+    escHtml(label) + ' ' + listSortArrow(key, col) + '</th>';
+}
+
+// One comparator for every sortable list. spec maps a column key to a getter;
+// a getter returning a number sorts numerically, anything else compares as
+// lower-case text. Blank cells always sink to the bottom, in BOTH directions —
+// an empty value should never outrank a real one just because the arrow flipped.
+function listSortRows(rows, spec, key) {
+  var s = listState(key);
+  var get = (spec || {})[s.sort];
+  if (!get) return rows;
+  var mul = (s.dir === 'desc') ? -1 : 1;
+  return rows.slice().sort(function(a, b) {
+    var va = get(a), vb = get(b);
+    var ea = (va == null || va === '');
+    var eb = (vb == null || vb === '');
+    if (ea && eb) return 0;
+    if (ea) return 1;
+    if (eb) return -1;
+    if (typeof va === 'number' && typeof vb === 'number') return (va - vb) * mul;
+    var sa = String(va).toLowerCase(), sb = String(vb).toLowerCase();
+    return (sa < sb ? -1 : (sa > sb ? 1 : 0)) * mul;
+  });
+}
+
+// The two things every list sorts by and gets wrong: money kept as a string,
+// and a timestamp that has to compare as a number rather than as text.
+function listSortNum(v) { var n = parseFloat(v); return isNaN(n) ? null : n; }
+function listSortTime(v) { if (!v) return null; var t = new Date(v).getTime(); return isNaN(t) ? null : t; }
+
 function poPaginate(p) { _poPage = p; applyFilters(); }
 function poPageSize(v) { PO_PAGE_SIZE = parsePageSize(v); _poPage = 1; applyFilters(); }
 function quotePaginate(p) { _quotePage = p; filterQuotes(); }
@@ -7268,6 +7375,31 @@ function renderQuoteRows(quotes, isAdmin) {
 let _quotePage = 1;
 let QUOTE_PAGE_SIZE = 10;
 
+// What the quote dashboard remembers between visits, and what each sortable
+// column reads. See listState()/listSortRows() up by renderPagination.
+var QUOTE_LIST_FILTER_IDS = ['quote-search', 'quote-filter-city', 'quote-filter-status', 'quote-filter-by', 'quote-filter-from', 'quote-filter-to', 'quote-filter-min', 'quote-filter-max'];
+var QUOTE_LIST_SORTS = {
+  // Quote numbers carry a prefix, so sort on the digits when there are any —
+  // otherwise Q-100 would sit between Q-10 and Q-11.
+  number: function(r) {
+    var raw = String(r.quote_number || '');
+    var n = parseFloat(raw.replace(/[^0-9.]/g, ''));
+    return isNaN(n) ? raw : n;
+  },
+  customer: function(r) { return r.customer_name || ''; },
+  city: function(r) { return r.city_code || ''; },
+  by: function(r) { return r.requester_name || ''; },
+  status: function(r) { return r.status || 'draft'; },
+  total: function(r) { return listSortNum(r.total_amount); },
+  date: function(r) { return listSortTime(r.created_at); }
+};
+
+function quoteListSort(col) {
+  listSortToggle('quotes', col);
+  _quotePage = 1;
+  filterQuotes();
+}
+
 // Everything the quote search box is allowed to match, flattened to one lower-
 // case string and cached on the row. items_text comes from the server (rolled
 // up from quote_line_items) so a part number or manufacturer finds the quote.
@@ -7304,8 +7436,8 @@ function quoteFilterValue(id) {
 }
 
 function clearQuoteFilters() {
-  ['quote-search', 'quote-filter-city', 'quote-filter-status', 'quote-filter-by', 'quote-filter-from', 'quote-filter-to', 'quote-filter-min', 'quote-filter-max']
-    .forEach(function(id) { var e = document.getElementById(id); if (e) e.value = ''; });
+  QUOTE_LIST_FILTER_IDS.forEach(function(id) { var e = document.getElementById(id); if (e) e.value = ''; });
+  listStateForget('quotes', QUOTE_LIST_FILTER_IDS);
   filterQuotes(true);
 }
 
@@ -7313,7 +7445,8 @@ async function renderQuotes(el) {
   try {
     const quotes = await api('GET', '/quotes');
     const seeAll = ['admin', 'manager'].indexOf(state.user.role) !== -1;
-    _quotePage = 1;
+    // Page and filters both persist across visits now; filterQuotes clamps the
+    // page when the remembered filters leave fewer of them.
     window._quotesData = quotes;
     window._quotesIsAdmin = seeAll;
 
@@ -7378,7 +7511,13 @@ async function renderQuotes(el) {
             '</div>' +
             '<div id="quotes-table-wrap"></div>') +
       '</div>';
-    if (quotes.length > 0) filterQuotes();
+    if (quotes.length > 0) {
+      // Put the user's own filters back before the first paint, so returning
+      // from a quote lands on the rows they left. (Russ Beechly, 2026-08-27)
+      listStateRestore('quotes', QUOTE_LIST_FILTER_IDS);
+      // No argument on purpose: filterQuotes(true) would reset to page 1.
+      filterQuotes();
+    }
   } catch(err) {
     el.innerHTML = '<div class="alert alert-error">' + escHtml(err.message) + '</div>';
   }
@@ -7389,6 +7528,9 @@ function filterQuotes(resetPage) {
   const wrap = document.getElementById('quotes-table-wrap');
   if (!wrap || !window._quotesData) return;
   const isAdmin = window._quotesIsAdmin;
+  // Remember the controls on every draw, so whatever is on screen when the user
+  // clicks into a quote is what comes back with them.
+  listStateCapture('quotes', QUOTE_LIST_FILTER_IDS);
 
   // Space-separated terms are ANDed, so "camry ATL" narrows instead of widening.
   const terms = quoteFilterValue('quote-search').toLowerCase().split(/\s+/).filter(Boolean);
@@ -7400,7 +7542,7 @@ function filterQuotes(resetPage) {
   const min = parseFloat(quoteFilterValue('quote-filter-min'));
   const max = parseFloat(quoteFilterValue('quote-filter-max'));
 
-  const filtered = window._quotesData.filter(function(r) {
+  const matched = window._quotesData.filter(function(r) {
     if (city && (r.city_code || '') !== city) return false;
     // 'open' is the one people actually want: everything still waiting on a
     // customer, without having to pick three statuses one at a time.
@@ -7427,6 +7569,10 @@ function filterQuotes(resetPage) {
     return true;
   });
 
+  // Sorting happens after filtering and before paging, so page 2 of a sorted
+  // list is the second slice of the WHOLE sorted set, not a re-sorted page.
+  const filtered = listSortRows(matched, QUOTE_LIST_SORTS, 'quotes');
+
   const countEl = document.getElementById('quotes-count');
   if (countEl) {
     const sum = filtered.reduce(function(a, r) { return a + (parseFloat(r.total_amount) || 0); }, 0);
@@ -7447,7 +7593,16 @@ function filterQuotes(resetPage) {
   const page = filtered.slice(start, start + QUOTE_PAGE_SIZE);
   wrap.innerHTML =
     '<div class="table-wrap"><table id="quotes-table">' +
-    '<thead><tr><th>Quote #</th><th>Customer</th><th>City</th>' + (isAdmin ? '<th>Created By</th>' : '') + '<th>Status</th><th>Total</th><th>Date</th><th></th></tr></thead>' +
+    '<thead><tr>' +
+      listSortTh('quotes', 'number', 'Quote #', 'quoteListSort') +
+      listSortTh('quotes', 'customer', 'Customer', 'quoteListSort') +
+      listSortTh('quotes', 'city', 'City', 'quoteListSort') +
+      (isAdmin ? listSortTh('quotes', 'by', 'Created By', 'quoteListSort') : '') +
+      listSortTh('quotes', 'status', 'Status', 'quoteListSort') +
+      listSortTh('quotes', 'total', 'Total', 'quoteListSort') +
+      listSortTh('quotes', 'date', 'Date', 'quoteListSort') +
+      '<th></th>' +
+    '</tr></thead>' +
     '<tbody>' + renderQuoteRows(page, isAdmin) + '</tbody>' +
     '</table></div>' +
     renderPagination(_quotePage, totalPages, filtered.length, 'quotePaginate', QUOTE_PAGE_SIZE, 'quotePageSize');
@@ -14405,13 +14560,40 @@ function invStatusLabel(s){ var k = String(s || ''); var m = (typeof INV_STATUS_
 var _invListPage = 1;
 var _invListPageSize = 15;
 
+// Everything the invoice list remembers between visits, and what each sortable
+// column reads. See listState()/listSortRows() up by renderPagination.
+var INV_LIST_FILTER_IDS = ['invoice-search', 'invoice-filter-status', 'invoice-filter-city', 'invoice-filter-account', 'invoice-filter-locksmith'];
+var INV_LIST_DROPDOWN_IDS = ['invoice-filter-status', 'invoice-filter-city', 'invoice-filter-account', 'invoice-filter-locksmith'];
+var INV_LIST_SORTS = {
+  // An invoice number that is all digits sorts as a number, so #9 lands before
+  // #10 instead of after it.
+  number: function(r) { var n = parseFloat(r.invoice_number); return isNaN(n) ? (r.invoice_number || '') : n; },
+  customer: function(r) { return r.customer_name || ''; },
+  city: function(r) { return r.city_code || ''; },
+  account: function(r) { return r.account_name || ''; },
+  po: function(r) { return r.customer_po_wo || ''; },
+  vehicle: function(r) { return [r.vehicle_year, r.vehicle_make, r.vehicle_model].filter(Boolean).join(' '); },
+  locksmith: function(r) { return r.locksmith_name || r.locksmith_name_join || ''; },
+  // Sort on the label people can actually see, not the raw enum.
+  status: function(r) { return invStatusLabel(r.status); },
+  total: function(r) { return listSortNum(r.grand_total); },
+  date: function(r) { return listSortTime(r.invoice_date || r.created_at); }
+};
+
+function invListSort(col) {
+  listSortToggle('invoices', col);
+  _invListPage = 1;
+  invListRenderTable();
+}
+
 async function renderInvoices(el) {
   try {
     var invoices = await api('GET', '/invoices');
     var seeAll = ['admin','manager'].indexOf(state.user.role) !== -1;
     window._invoicesData = invoices;
     window._invoicesSeeAll = seeAll;
-    _invListPage = 1; // page size persists across visits; page always resets
+    // Page, page size and filters all persist across visits now; invListRenderTable
+    // clamps the page if the remembered filters leave fewer pages than before.
 
     // Build the filter dropdown option lists from the loaded data.
     var cityList = invListUnique(invoices.map(function(r){ return r.city_code; }));
@@ -14463,7 +14645,24 @@ async function renderInvoices(el) {
             '<div id="invoices-table-wrap"></div>' +
             '<div id="invoices-pagination"></div>') +
       '</div>';
-    if (invoices.length) filterInvoices();
+    if (invoices.length) {
+      // Put the user's own filters back before the first paint, so returning
+      // from an invoice lands on the rows they left. Open the filter menu too
+      // when a dropdown is set, or a narrowed list looks like missing data.
+      if (listStateRestore('invoices', INV_LIST_FILTER_IDS)) {
+        var _invOn = INV_LIST_DROPDOWN_IDS.filter(function(id) {
+          var e = document.getElementById(id); return e && e.value;
+        }).length;
+        if (_invOn) {
+          var _invPanel = document.getElementById('invoice-filter-panel');
+          var _invBtn = document.getElementById('invoice-filter-toggle');
+          if (_invPanel) _invPanel.style.display = 'block';
+          if (_invBtn) _invBtn.setAttribute('aria-expanded', 'true');
+        }
+      }
+      // Deliberately NOT filterInvoices(): that resets to page 1.
+      invListRenderTable();
+    }
   } catch(err) {
     el.innerHTML = '<div class="alert alert-error">' + escHtml(err.message) + '</div>';
   }
@@ -14517,10 +14716,11 @@ function filterInvoices() {
 function invListClearFilters() {
   var s = document.getElementById('invoice-search');
   if (s) s.value = '';
-  ['invoice-filter-status','invoice-filter-city','invoice-filter-account','invoice-filter-locksmith'].forEach(function(id){
+  INV_LIST_DROPDOWN_IDS.forEach(function(id){
     var e = document.getElementById(id);
     if (e) e.value = '';
   });
+  listStateForget('invoices', INV_LIST_FILTER_IDS);
   _invListPage = 1;
   invListRenderTable();
 }
@@ -14554,7 +14754,10 @@ function invListRenderTable() {
   var wrap = document.getElementById('invoices-table-wrap');
   if (!wrap || !window._invoicesData) return;
   var seeAll = window._invoicesSeeAll;
-  var rows = invListFilteredRows();
+  // Remember the controls on every draw, so whatever is on screen when the user
+  // clicks into an invoice is what comes back with them.
+  listStateCapture('invoices', INV_LIST_FILTER_IDS);
+  var rows = listSortRows(invListFilteredRows(), INV_LIST_SORTS, 'invoices');
   var total = rows.length;
   var size = _invListPageSize || 15;
   var totalPages = Math.max(1, Math.ceil(total / size));
@@ -14565,7 +14768,7 @@ function invListRenderTable() {
   if (cnt) cnt.textContent = total + ' invoice' + (total !== 1 ? 's' : '');
 
   // Reflect the number of active dropdown filters on the Filters button.
-  var activeFilters = ['invoice-filter-status','invoice-filter-city','invoice-filter-account','invoice-filter-locksmith']
+  var activeFilters = INV_LIST_DROPDOWN_IDS
     .filter(function(id){ var e = document.getElementById(id); return e && e.value; }).length;
   var badge = document.getElementById('invoice-filter-badge');
   if (badge) badge.textContent = activeFilters ? ' (' + activeFilters + ')' : '';
@@ -14582,7 +14785,18 @@ function invListRenderTable() {
 
   wrap.innerHTML =
     '<div class="table-wrap"><table>' +
-    '<thead><tr><th>Invoice #</th><th>Customer</th><th>City</th><th>Account</th><th>PO #</th><th>Vehicle</th>' + (seeAll ? '<th>Locksmith</th>' : '') + '<th>Status</th><th class="text-right">Total</th><th>Date</th></tr></thead>' +
+    '<thead><tr>' +
+      listSortTh('invoices', 'number', 'Invoice #', 'invListSort') +
+      listSortTh('invoices', 'customer', 'Customer', 'invListSort') +
+      listSortTh('invoices', 'city', 'City', 'invListSort') +
+      listSortTh('invoices', 'account', 'Account', 'invListSort') +
+      listSortTh('invoices', 'po', 'PO #', 'invListSort') +
+      listSortTh('invoices', 'vehicle', 'Vehicle', 'invListSort') +
+      (seeAll ? listSortTh('invoices', 'locksmith', 'Locksmith', 'invListSort') : '') +
+      listSortTh('invoices', 'status', 'Status', 'invListSort') +
+      listSortTh('invoices', 'total', 'Total', 'invListSort', 'class="text-right"') +
+      listSortTh('invoices', 'date', 'Date', 'invListSort') +
+    '</tr></thead>' +
     '<tbody>' + pageRows.map(function(r){
       var veh = [r.vehicle_year, r.vehicle_make, r.vehicle_model].filter(Boolean).join(' ') || '—';
       return '<tr style="cursor:pointer" onclick="navigate(\'view-invoice\',' + r.id + ')">' +
@@ -18006,6 +18220,15 @@ function woSearchDebounced() {
 }
 function woPaginate(p) { _woState.page = p; woLoad(); }
 
+// Sorting is server-side here (the list is paged by the server), so a header
+// click just records the column and reloads. _woState already survives a trip
+// into a work order and back, which is why there is no filter restore here.
+function woSortBy(col) {
+  listSortToggle('work-orders', col);
+  _woState.page = 1;
+  woLoad();
+}
+
 async function woLoad() {
   var wrap = document.getElementById('wo-wrap');
   if (!wrap) return;
@@ -18016,6 +18239,11 @@ async function woLoad() {
   if (_woState.q) qs.push('q=' + encodeURIComponent(_woState.q));
   qs.push('limit=' + _woState.limit);
   qs.push('offset=' + ((_woState.page - 1) * _woState.limit));
+  var woSortState = listState('work-orders');
+  if (woSortState.sort) {
+    qs.push('sort=' + encodeURIComponent(woSortState.sort));
+    qs.push('dir=' + (woSortState.dir === 'desc' ? 'desc' : 'asc'));
+  }
   var data;
   try { data = await api('GET', '/work-orders?' + qs.join('&')); }
   catch (e) { wrap.innerHTML = '<div class="alert alert-error">' + escHtml(e.message) + '</div>'; return; }
@@ -18032,7 +18260,16 @@ async function woLoad() {
     '<div class="table-wrap"><table>' +
     '<thead><tr>' +
       (manage ? '<th style="width:28px"></th>' : '') +
-      '<th>Ref</th><th>WO #</th><th>Account</th><th>Store</th><th>Service</th><th>NTE</th><th>Needed</th><th>Status</th><th>Assignee</th><th></th>' +
+      listSortTh('work-orders', 'ref', 'Ref', 'woSortBy') +
+      listSortTh('work-orders', 'wo_number', 'WO #', 'woSortBy') +
+      listSortTh('work-orders', 'account', 'Account', 'woSortBy') +
+      listSortTh('work-orders', 'store', 'Store', 'woSortBy') +
+      listSortTh('work-orders', 'service', 'Service', 'woSortBy') +
+      listSortTh('work-orders', 'nte', 'NTE', 'woSortBy') +
+      listSortTh('work-orders', 'needed', 'Needed', 'woSortBy') +
+      listSortTh('work-orders', 'status', 'Status', 'woSortBy') +
+      listSortTh('work-orders', 'assignee', 'Assignee', 'woSortBy') +
+      '<th></th>' +
     '</tr></thead><tbody>' +
     items.map(function (w) { return woRow(w, manage); }).join('') +
     '</tbody></table></div>' +

@@ -134,6 +134,30 @@ router.get('/', requireAuth, requirePermission('view_work_orders'), async (req, 
     const totalQ = await pool.query('SELECT COUNT(*)::int AS n FROM work_orders ' + whereSql, params);
     const total = totalQ.rows[0].n;
 
+    // Column sort from the list header. Only a key in WO_SORTS ever reaches the
+    // SQL — the raw query value is never interpolated — and the default order
+    // below is exactly what it was before sorting existed.
+    const WO_SORTS = {
+      ref: 'w.wo_ref',
+      wo_number: 'w.wo_number',
+      account: 'w.account_name',
+      store: 'w.store_name',
+      service: 'w.service_requested',
+      nte: 'w.nte_amount',
+      needed: 'w.needed_by',
+      // Sort status the way the board reads, not alphabetically.
+      status: "CASE w.status WHEN 'received' THEN 0 WHEN 'in_process' THEN 1 WHEN 'job_completed' THEN 2 ELSE 3 END",
+      assignee: 'a.name'
+    };
+    const sortExpr = WO_SORTS[String(req.query.sort || '')] || null;
+    const sortDir = String(req.query.dir || '').toLowerCase() === 'desc' ? 'DESC' : 'ASC';
+    const orderSql = sortExpr
+      // created_at DESC is the tiebreaker so a sorted page never shuffles between
+      // reloads when several rows share the same account, store or NTE.
+      ? ' ORDER BY ' + sortExpr + ' ' + sortDir + ' NULLS LAST, w.created_at DESC '
+      : " ORDER BY CASE w.status WHEN 'received' THEN 0 WHEN 'in_process' THEN 1 WHEN 'job_completed' THEN 2 ELSE 3 END, " +
+        ' w.needed_by NULLS LAST, w.created_at DESC ';
+
     const listSql =
       'SELECT w.id, w.wo_ref, w.source, w.status, w.priority, w.account_name, w.store_name, w.store_number, ' +
       '       w.wo_number, w.po_number, w.city_code, ' +
@@ -145,8 +169,7 @@ router.get('/', requireAuth, requirePermission('view_work_orders'), async (req, 
       "       (SELECT COUNT(*) FROM work_order_attachments x WHERE x.work_order_id = w.id)::int AS attachment_count " +
       'FROM work_orders w LEFT JOIN users a ON w.assigned_to = a.id ' +
       whereSql +
-      " ORDER BY CASE w.status WHEN 'received' THEN 0 WHEN 'in_process' THEN 1 WHEN 'job_completed' THEN 2 ELSE 3 END, " +
-      '         w.needed_by NULLS LAST, w.created_at DESC ' +
+      orderSql +
       'LIMIT ' + limit + ' OFFSET ' + offset;
     const { rows } = await pool.query(listSql, params);
     res.json({ items: rows, total: total, limit: limit, offset: offset });
