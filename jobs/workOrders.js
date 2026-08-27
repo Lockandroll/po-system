@@ -237,7 +237,59 @@ async function notifyReceived(wo) {
 //   - wo_number must be present on the new form and equal (case/space-insensitive)
 //   - the live work order must still be open (not rejected, superseded, or an error stub)
 //   - the accounts must not contradict each other (same account_id, or one side unknown)
-async function findRevisionTarget(parsed, excludeId) {
+// A code as printed, reduced to something two spellings of the same value both reach.
+function looseKey(v) {
+  const s = strOrNull(v);
+  if (!s) return null;
+  const k = s.toUpperCase().replace(/[^A-Z0-9]/g, '');
+  return k || null;
+}
+// Street addresses are written a dozen ways (St / Street / ST.), so comparing the whole
+// string invents disagreements. The house number does not vary, and two jobs with
+// different house numbers are at different places. Absent number = no verdict.
+function houseNumber(v) {
+  const s = strOrNull(v);
+  if (!s) return null;
+  const m = s.match(/^\s*(\d+)/);
+  return m ? m[1] : null;
+}
+function zipKey(v) {
+  const s = strOrNull(v);
+  if (!s) return null;
+  const m = s.match(/(\d{5})(?:-\d{4})?\s*$/);
+  return m ? m[1] : null;
+}
+
+// Does this incoming form describe a DIFFERENT job than the one we were about to fold it
+// into? These are the fields that identify which job it is, as opposed to who the customer
+// is. A field only votes when it is present on BOTH sides: an absent value is silence, not
+// agreement. Any single disagreement is decisive, because a wo_number match cannot outrank
+// a different purchase order or a different street address.
+//
+// This exists because wo_number is not reliably unique per job. Bass Pro prints one site
+// code (S108121C) on every form it sends, so six separate stores' work orders parsed to the
+// same wo_number and five of them were folded into the first, taking their PDFs with them.
+// The dispatcher had sent them individually precisely so they would stay separate.
+function identityConflict(parsed, row) {
+  const checks = [
+    { label: 'PO number', a: looseKey(parsed.po_number), b: looseKey(row.po_number) },
+    { label: 'claim/reference ID', a: looseKey(parsed.claim_id), b: looseKey(row.claim_id) },
+    { label: 'store number', a: looseKey(parsed.store_number), b: looseKey(row.store_number) },
+    { label: 'VIN', a: normalizeVin(parsed.vin), b: normalizeVin(row.vin) },
+    { label: 'street address', a: houseNumber(parsed.address), b: houseNumber(row.address) },
+    { label: 'ZIP', a: zipKey(parsed.city_state_zip), b: zipKey(row.city_state_zip) }
+  ];
+  for (let i = 0; i < checks.length; i++) {
+    const c = checks[i];
+    if (c.a && c.b && c.a !== c.b) {
+      return c.label + ' differs (' + c.a + ' vs ' + c.b + ')';
+    }
+  }
+  return null;
+}
+
+async function findRevisionTarget(parsed, excludeId, blockedOut) {
+  const blocked = blockedOut || [];
   const wono = strOrNull(parsed && parsed.wo_number);
   if (!wono) return null;
   try {
@@ -248,11 +300,24 @@ async function findRevisionTarget(parsed, excludeId) {
     );
     if (!rows.length) return null;
     const acct = await resolveAccount(parsed);
-    const match = rows.filter(function (r) {
+    const sameAccount = rows.filter(function (r) {
       // An unknown account on EITHER side must not authorize a merge — require both present and
       // equal. Ambiguous cases fall through as a new WO rather than risking a bad merge.
       return acct.account_id && r.account_id && r.account_id === acct.account_id;
     });
+    // Same customer, same number on the form — now prove it is the same JOB. A shared site or
+    // contract code makes wo_number agree across unrelated jobs, so the identifying fields get
+    // the last word and a single disagreement disqualifies the candidate outright.
+    const match = [];
+    for (let i = 0; i < sameAccount.length; i++) {
+      const why = identityConflict(parsed, sameAccount[i]);
+      if (why) {
+        console.log('[work-orders] not a revision of ' + sameAccount[i].wo_ref + ': ' + why);
+        blocked.push({ wo_ref: sameAccount[i].wo_ref, reason: why });
+      } else {
+        match.push(sameAccount[i]);
+      }
+    }
     // Oldest open match is the original job; anything newer with the same number is noise.
     return match.length ? match[0] : null;
   } catch (e) {
@@ -375,12 +440,12 @@ function isTransientParseError(m) {
     // A truncated or garbled response is a bad draw, not a bad email. Worth another go.
     t.indexOf('json') !== -1 || t.indexOf('unexpected') !== -1;
 }
-async function parseWithRetry(bodyText, usable, knownAccounts, maxAttempts) {
+async function parseWithRetry(bodyText, usable, knownAccounts, maxAttempts, subject) {
   const max = maxAttempts || 3;
   let lastErr = null;
   for (let i = 1; i <= max; i++) {
     try {
-      const parsed = await parseWorkOrderEmail(bodyText, usable, knownAccounts);
+      const parsed = await parseWorkOrderEmail(bodyText, usable, knownAccounts, subject);
       return { parsed: parsed, error: null, attempts: i };
     } catch (e) {
       lastErr = e.message || 'parse failed';
@@ -496,7 +561,7 @@ async function processMessage(msg, conf, mailbox, knownAccounts) {
   }
 
   // Parse with Claude
-  const attempt = await parseWithRetry(msg.bodyText, usable, knownAccounts, 3);
+  const attempt = await parseWithRetry(msg.bodyText, usable, knownAccounts, 3, msg.subject);
   const parsed = attempt.parsed;
   const parseError = attempt.error;
 
@@ -527,7 +592,8 @@ async function processMessage(msg, conf, mailbox, knownAccounts) {
   // Is this a revision of a job we already have? A dispatcher approving an NTE increase
   // re-sends the SAME work order number with a higher limit — that must UPDATE the
   // original, not open a second work order. Checked before we fill in the new row.
-  const target = await findRevisionTarget(parsed, woId);
+  const blockedRevisions = [];
+  const target = await findRevisionTarget(parsed, woId, blockedRevisions);
   if (target) {
     const r = await applyRevision(target, parsed, woId, msg);
     console.log('[work-orders] revision folded into ' + target.wo_ref + (r.nteChanged ? ' (NTE ' + money(r.oldNte) + ' -> ' + money(r.newNte) + ')' : ' (no NTE change)'));
@@ -588,6 +654,16 @@ async function processMessage(msg, conf, mailbox, knownAccounts) {
       await pool.query('UPDATE work_orders SET signoff_id=$1 WHERE id=$2', [sid, woId]);
       await addActivity(woId, null, 'event', 'pending sign-off sheet created');
     } catch (e) { console.error('[work-orders] signoff create failed:', e.message); }
+  }
+
+  // A near-miss is worth saying out loud. This form carried the same wo_number as an open
+  // job and was kept separate anyway — if that call was wrong, the only way anyone finds
+  // out is by reading why it was made.
+  if (blockedRevisions.length) {
+    const detail = blockedRevisions.map(function (b) { return b.wo_ref + ' (' + b.reason + ')'; }).join('; ');
+    await addActivity(woId, null, 'event',
+      'opened as a separate job even though work order number ' + (strOrNull(parsed.wo_number) || '(none)') +
+      ' matches ' + detail + '. Same number, different job.');
   }
 
   const finalRow = (await pool.query('SELECT * FROM work_orders WHERE id=$1', [woId])).rows[0];
@@ -696,6 +772,7 @@ module.exports = {
   moneyOrNull: moneyOrNull,
   money: money,
   findRevisionTarget: findRevisionTarget,
+  identityConflict: identityConflict,
   applyRevision: applyRevision,
   jobTypeOf: jobTypeOf,
   runIngest: runIngest,

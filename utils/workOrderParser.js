@@ -79,6 +79,12 @@ var SCHEMA_PROMPT =
   '  "confidence": "high | medium | low"\n' +
   '}\n' +
   'Rules: Use the string "unknown" for any field not present. Do NOT invent values. ' +
+  'wo_number must identify THIS JOB, not the customer, the site, or the contract. Many dispatchers print a ' +
+  'single site/contract/location code on every form they send (e.g. S108121C on all of an account\'s stores) ' +
+  'while the number that actually distinguishes one job from another appears in the EMAIL SUBJECT. When the ' +
+  'subject carries a job/work-order number, prefer it, and put the shared site or contract code in claim_id ' +
+  'instead. If the only number you can find is one that would plainly be identical across every job for this ' +
+  'customer, return unknown for wo_number rather than returning the shared code. ' +
   'A dispatcher raises the NTE by re-sending the SAME work order with a higher limit, so the wo_number on a ' +
   'revised form is the SAME number as the original - never change or invent a work order number to make it look new. ' +
   'nte_amount is a spend LIMIT, not a price or an estimate: if the form only shows a quoted price, a labor rate, or ' +
@@ -128,7 +134,7 @@ function callClaude(content, maxTokens, isPdf) {
 
 // Parse an email into the structured shape above.
 // attachments: [{ filename, mime, contentBytes(base64) }] (already size/type filtered by caller)
-async function parseWorkOrderEmail(bodyText, attachments, knownAccounts) {
+async function parseWorkOrderEmail(bodyText, attachments, knownAccounts, subject) {
   if (!process.env.ANTHROPIC_API_KEY) throw new Error('AI not configured (ANTHROPIC_API_KEY missing)');
 
   var content = [];
@@ -147,7 +153,9 @@ async function parseWorkOrderEmail(bodyText, attachments, knownAccounts) {
   if (knownAccounts && knownAccounts.length) {
     accountsBlock = '\n\nKNOWN ACCOUNTS (our existing customers). For account_name, if the company that sent/assigned this work order matches one of these, return that EXACT name. If none clearly matches, extract the dispatcher/sender company as written. Never use the store/site name as the account:\n- ' + knownAccounts.slice(0, 300).join('\n- ');
   }
-  content.push({ type: 'text', text: SCHEMA_PROMPT + accountsBlock + '\n\nEMAIL BODY:\n' + (bodyText || '(no text body)') });
+  content.push({ type: 'text', text: SCHEMA_PROMPT + accountsBlock +
+    '\n\nEMAIL SUBJECT:\n' + (subject || '(no subject)') +
+    '\n\nEMAIL BODY:\n' + (bodyText || '(no text body)') });
 
   var result = await callClaude(content, 1500, hasPdf);
   if (result && result.error) throw new Error(result.error.message || 'AI error');

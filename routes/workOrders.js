@@ -483,7 +483,7 @@ router.post('/:id/reparse', requireAuth, requirePermission('manage_work_orders')
     const accRows = await pool.query("SELECT name FROM vendors WHERE name IS NOT NULL AND TRIM(name) <> '' ORDER BY name");
     const knownAccounts = accRows.rows.map(function (r) { return r.name; });
     let parsed;
-    try { parsed = await parseWorkOrderEmail(ex.email_body || '', attachments, knownAccounts); }
+    try { parsed = await parseWorkOrderEmail(ex.email_body || '', attachments, knownAccounts, ex.email_subject || ''); }
     catch (e) { return res.status(502).json({ error: 'AI parse failed: ' + e.message }); }
     const acct = await resolveAccountId(parsed.account_number, parsed.account_name);
     const cityCode = await woJob.deriveCityCode(parsed, acct);
