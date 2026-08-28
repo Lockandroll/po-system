@@ -1716,8 +1716,13 @@ router.post('/me/:id/response', requireAuth, async (req, res) => {
 
 // ---------------------------------------------------------------- recent wins
 
-// The Home screen card. City-scoped, three of them, NO DATES - Tony's call, so
+// The Home screen card. Company-wide, three of them, NO DATES - Tony's call, so
 // a quiet week never reads as a stale card.
+//
+// It was city-scoped until 2026-08-28. Tony opened it up: a small market seeing
+// only its own wins mostly saw an empty card, and recognition that stops at a
+// city line is not much of a culture. Each row now carries the person's own city
+// instead, so a Columbia tech reading a Charleston win knows where it came from.
 //
 // Note what is not here: no counts, no per-person totals, no "most recognised"
 // ranking. Recognition is the only record type this endpoint can see at all,
@@ -1726,9 +1731,6 @@ router.post('/me/:id/response', requireAuth, async (req, res) => {
 router.get('/wins', requireAuth, async (req, res) => {
   try {
     var limit = Math.min(parseInt(req.query.limit, 10) || 3, 10);
-    var city = null;
-    const me = await userRow(req.user.id);
-    city = me && me.home_city ? String(me.home_city).trim().toUpperCase() : null;
 
     // created_by_name is the person who WROTE the recognition, not the person
     // who approved it. On a shout-out those are two different people on purpose
@@ -1737,19 +1739,21 @@ router.get('/wins', requireAuth, async (req, res) => {
     // off their own compliment.
     var sql =
       'SELECT r.id, r.body, r.category, r.user_id, r.source, r.created_by_name, ' +
-      'u.name AS employee_name ' +
+      'u.name AS employee_name, COALESCE(u.home_city, r.city_code) AS win_city ' +
       'FROM employee_records r JOIN users u ON u.id = r.user_id ' +
       "WHERE r.show_in_wins = true AND r.type = 'recognition' AND r.status = 'active' " +
-      'AND u.active IS NOT FALSE ';
-    var params = [];
-    if (city) { sql += 'AND UPPER(TRIM(COALESCE(u.home_city, r.city_code, $1))) = $1 '; params.push(city); }
-    sql += 'ORDER BY r.created_at DESC LIMIT ' + limit;
-    const rows = (await pool.query(sql, params)).rows;
+      'AND u.active IS NOT FALSE ' +
+      'ORDER BY r.created_at DESC LIMIT ' + limit;
+    const rows = (await pool.query(sql)).rows;
     res.json({
-      city: city,
+      // Kept in the payload but no longer a filter: the card header used to
+      // stamp the viewer's own city on a city-scoped list. Now every row carries
+      // its own.
+      city: null,
       wins: rows.map(function (r) {
         return {
           id: r.id, name: r.employee_name, category: r.category, body: r.body,
+          city: r.win_city ? String(r.win_city).trim().toUpperCase() : null,
           by: r.created_by_name || null,
           peer: r.source === 'shoutout',
           is_me: r.user_id === req.user.id
@@ -2000,7 +2004,7 @@ router.post('/shoutouts/:id/approve', requireAuth, requirePermission('create_emp
     await tellEmployee(
       u,
       'A shout-out from ' + (s.from_name || 'a coworker'),
-      '<p>' + escapeHtml(s.from_name || 'A coworker') + ' recognised you, and it has been added to your file.</p>' +
+      '<p>' + escapeHtml(s.from_name || 'A coworker') + ' recognized you, and it has been added to your file.</p>' +
       '<p style="white-space:pre-wrap">' + escapeHtml(body) + '</p>',
       'Nova: ' + (s.from_name || 'a coworker') + ' sent you a shout-out.',
       myFileBtn()

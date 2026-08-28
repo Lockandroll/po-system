@@ -333,6 +333,7 @@
       '.er-win .cat{font-size:12px;color:var(--text-muted-color)}',
       '.er-win .lab{font-size:12px;font-weight:600;color:var(--text-muted-color)}',
       '.er-win .txt{font-size:13px;color:var(--text-dim);line-height:1.55;margin-top:4px;white-space:pre-wrap}',
+      '.er-city{font-size:10px;font-weight:700;letter-spacing:.06em;color:var(--text-muted-color);border:1px solid var(--border);border-radius:4px;padding:1px 5px;margin-left:6px;vertical-align:middle}',
       '.er-win .by{font-size:11.5px;color:var(--text-muted-color);margin-top:6px}',
       '.er-win .by b{color:var(--text-dim);font-weight:600}',
       '.er-so{border:1px solid var(--border);border-radius:var(--radius);background:var(--bg-elevated);padding:14px 16px;margin-bottom:12px}',
@@ -1750,7 +1751,7 @@
   // PEER SHOUT-OUTS
   // ==================================================================
   //
-  // An employee recognising a COWORKER. It is a nomination, not a record: the
+  // An employee recognizing a COWORKER. It is a nomination, not a record: the
   // modal says that out loud, because somebody who thinks they are posting
   // straight to the Home screen and then waits two days for it to appear has
   // been misled by the UI, not by the manager who was reading it.
@@ -1853,7 +1854,7 @@
       'color:var(--text-muted-color);cursor:pointer" onclick="erBackToRoster()">&#8592; Employee Files</div>';
     if (!list.length) {
       host.innerHTML = back + '<div class="card"><div class="empty-state"><h3>No shout-outs waiting</h3>' +
-        '<p style="font-size:13px;color:var(--text-muted-color)">When somebody recognises a coworker, ' +
+        '<p style="font-size:13px;color:var(--text-muted-color)">When somebody recognizes a coworker, ' +
         'it lands here before it goes anywhere else.</p></div></div>';
       return;
     }
@@ -2175,6 +2176,8 @@
       '<div class="card-title">Recent Wins</div>' +
       '<div style="display:flex;align-items:center;gap:10px">' +
       ((d && d.city) ? '<span style="font-size:12px;color:var(--text-muted-color)">' + esc(d.city) + '</span>' : '') +
+      // The card went company-wide 2026-08-28, so the header no longer stamps a
+      // single city on the list. Each row carries its own instead - see below.
       (mayShout ? '<button class="btn btn-secondary btn-sm" onclick="erShoutout()">+ Shout-out</button>' : '') +
       '</div></div>';
 
@@ -2189,6 +2192,7 @@
       return '<div class="er-win">' +
         '<div class="avatar" style="width:34px;height:34px;font-size:12px">' + esc(initials(w.name)) + '</div>' +
         '<div><div><span class="lab">Employee:</span> <span class="who">' + esc(w.name) + '</span>' +
+        (w.city ? ' <span class="er-city">' + esc(w.city) + '</span>' : '') +
         (w.category ? ' <span class="cat">&middot; ' + esc(w.category) + '</span>' : '') +
         (w.is_me ? '<span class="er-you">YOU</span>' : '') + '</div>' +
         '<div class="txt">' + esc(w.body || '') + '</div>' + by + '</div></div>';
