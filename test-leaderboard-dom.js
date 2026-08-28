@@ -449,8 +449,18 @@ async function uploadFlow() {
     return out;
   }
   eq('the four money columns are ticked for you', ticked(), [4, 5, 6, 7]);
-  eq('every column is offered, not just the numeric ones',
+  eq('every column with values in it is offered, not just the numeric ones',
      doc.querySelectorAll('#lb-value-cols .lb-vc').length, 9);
+  // A Pulsar export ends on a trailing comma, so the last column is empty in
+  // every row. It cannot be summed and it should not pad a 78-row tick list.
+  var withBlank = JSON.parse(JSON.stringify(PREVIEW));
+  withBlank.columns.push({ index: 9, header: 'Column J', raw_header: '', filled: 0, numeric_ratio: 0, total: 0, samples: [] });
+  env.w.__fixtures['POST /leaderboard/preview'] = withBlank;
+  await env.w.lbRefreshPreview(true);
+  eq('a column that is empty in every row is left out',
+     doc.querySelectorAll('#lb-value-cols .lb-vc').length, 9);
+  env.w.__fixtures['POST /leaderboard/preview'] = PREVIEW;
+  await env.w.lbRefreshPreview(true);
   has('and it explains why the four', step2, 'Pulsar export');
   has('naming what Tech Paid Gross actually is', step2, 'what the tech earned');
   has('the running total names the columns being added', step2, 'Collected Cash + Collected Check');

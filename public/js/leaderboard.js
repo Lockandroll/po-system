@@ -395,7 +395,14 @@
   // added up, so this is a tick list rather than a dropdown - and the four are
   // ticked for you when Nova recognises them.
   function colChecks(cols, chosen) {
-    return '<div class="lb-cols" id="lb-value-cols">' + cols.map(function (c) {
+    // A Pulsar export is 78 columns wide and several of them are empty in every
+    // row (it ends on a trailing comma). Nothing can be summed out of a column
+    // with no values, so they are left out of the list rather than padding it -
+    // unless one is somehow already ticked, in which case hiding it would be
+    // worse than showing it.
+    return '<div class="lb-cols" id="lb-value-cols">' + cols.filter(function (c) {
+      return c.filled > 0 || chosen.indexOf(c.index) !== -1;
+    }).map(function (c) {
       var on = chosen.indexOf(c.index) !== -1;
       var sample = (c.samples || []).slice(0, 2).join(', ');
       return '<label class="lb-col' + (on ? '' : ' off') + '">' +
