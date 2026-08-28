@@ -41,6 +41,33 @@ const HOME_TOP = 5;
 
 function bad(res, msg) { return res.status(400).json({ error: msg }); }
 
+// The choices a human confirmed on the upload screen, defaulted from what Nova
+// guessed. Written once and used by BOTH /preview and /import so the preview
+// can never be produced by different rules than the import that follows it.
+function chosen(b, a) {
+  function pick(sent, fallback) {
+    return (sent === undefined || sent === null || sent === '') ? fallback : parseInt(sent, 10);
+  }
+  var mode = (b.mode === 'count' || b.mode === 'sum') ? b.mode : a.mode;
+  var sentCols = b.value_cols !== undefined ? b.value_cols : b.value_col;
+  var statuses = b.status_values;
+  if (statuses === undefined || statuses === null || statuses === '') statuses = a.suggestion.status_values;
+  if (!Array.isArray(statuses)) statuses = String(statuses).split('|');
+  return {
+    mode: mode,
+    header_row: pick(b.header_row, a.header_row),
+    name_col: pick(b.name_col, a.suggestion.name),
+    city_col: pick(b.city_col, a.suggestion.city),
+    value_cols: (sentCols === undefined || sentCols === null || sentCols === '')
+      ? a.suggestion.values : LB.valueColList(sentCols),
+    match_col: pick(b.match_col, a.suggestion.match_col),
+    match_text: b.match_text === undefined || b.match_text === null
+      ? a.suggestion.match_text : String(b.match_text).trim().slice(0, 120),
+    status_col: pick(b.status_col, a.suggestion.status_col),
+    status_values: statuses.map(function (x) { return String(x).trim(); }).filter(Boolean)
+  };
+}
+
 function ymd(v) {
   var s = String(v == null ? '' : v).slice(0, 10);
   return /^\d{4}-\d{2}-\d{2}$/.test(s) ? s : '';
@@ -175,7 +202,8 @@ router.get('/week/:id', manage, async function (req, res) {
     if (!id) return bad(res, 'Which week?');
     const w = await pool.query(
       'SELECT id, metric, week_start::text AS week_start, file_name, sheet_name, name_column, ' +
-      '       value_column, city_column, row_count, matched_count, total_value, uploaded_by_name, ' +
+      '       value_column, city_column, mode, match_column, match_text, status_column, ' +
+      '       status_values, row_count, matched_count, total_value, uploaded_by_name, ' +
       '       created_at, updated_at FROM leaderboard_weeks WHERE id = $1', [id]
     );
     if (!w.rows.length) return res.status(404).json({ error: 'That week is not here.' });
@@ -217,20 +245,20 @@ router.post('/preview', manage, async function (req, res) {
 
     // A sheet the caller has already confirmed columns on re-analyses with
     // those columns, so the preview and the import agree row for row.
-    const a = LB.analyzeSheet(sheet.grid, metric);
-    const nameCol = b.name_col === undefined || b.name_col === null || b.name_col === '' ? a.suggestion.name : parseInt(b.name_col, 10);
-    // The value is a SET of columns, summed - a Pulsar export splits the money
-    // across cash / check / card / account and all four are the revenue.
-    const sentCols = b.value_cols !== undefined ? b.value_cols : b.value_col;
-    const valueCols = (sentCols === undefined || sentCols === null || sentCols === '')
-      ? a.suggestion.values : LB.valueColList(sentCols);
-    const cityCol = b.city_col === undefined || b.city_col === null || b.city_col === '' ? a.suggestion.city : parseInt(b.city_col, 10);
-    const headerRow = b.header_row === undefined || b.header_row === null || b.header_row === '' ? a.header_row : parseInt(b.header_row, 10);
+    // Revenue is a SET of columns summed (a Pulsar export splits the money four
+    // ways). Batteries is a COUNT of rows matching a rule, because there is no
+    // battery-quantity column to add.
+    const a = LB.analyzeSheet(sheet.grid, metric, b.mode);
+    const c = chosen(b, a);
+    const ready = c.name_col >= 0 &&
+      (c.mode === 'count' ? (c.match_col >= 0 && !!c.match_text) : c.value_cols.length > 0);
 
-    var rows = [], skipped = { no_name: 0, no_value: 0, total_row: 0 }, resolved = [];
-    if (nameCol >= 0 && valueCols.length) {
+    var rows = [], skipped = { no_name: 0, no_value: 0, total_row: 0, no_match: 0, wrong_status: 0 }, resolved = [];
+    if (ready) {
       const x = LB.extractRows(sheet.grid, {
-        header_row: headerRow, name_col: nameCol, value_cols: valueCols, city_col: cityCol
+        header_row: c.header_row, name_col: c.name_col, city_col: c.city_col, mode: c.mode,
+        value_cols: c.value_cols, match_col: c.match_col, match_text: c.match_text,
+        status_col: c.status_col, status_values: c.status_values
       });
       rows = x.rows; skipped = x.skipped;
       const resolver = LB.buildResolver(await roster());
@@ -246,9 +274,15 @@ router.post('/preview', manage, async function (req, res) {
     res.json({
       sheets: (book.sheets || []).map(function (s) { return s.name; }),
       sheet: sheet.name,
-      header_row: headerRow,
+      header_row: c.header_row,
+      mode: c.mode,
       columns: a.columns,
-      suggestion: { name: nameCol, values: valueCols, city: cityCol },
+      status_options: a.status_options || [],
+      suggestion: {
+        name: c.name_col, values: c.value_cols, city: c.city_col,
+        match_col: c.match_col, match_text: c.match_text,
+        status_col: c.status_col, status_values: c.status_values
+      },
       auto: a.suggestion,
       preset_used: a.preset_used === true,
       confident: a.confident,
@@ -278,19 +312,22 @@ router.post('/import', manage, async function (req, res) {
     const sheet = pickSheet(book, b.sheet);
     if (!sheet) return bad(res, 'That workbook has no sheets in it.');
 
-    const a = LB.analyzeSheet(sheet.grid, metric);
-    const headerRow = b.header_row === undefined || b.header_row === null || b.header_row === '' ? a.header_row : parseInt(b.header_row, 10);
-    const nameCol = b.name_col === undefined || b.name_col === null || b.name_col === '' ? a.suggestion.name : parseInt(b.name_col, 10);
-    const sentCols = b.value_cols !== undefined ? b.value_cols : b.value_col;
-    const valueCols = (sentCols === undefined || sentCols === null || sentCols === '')
-      ? a.suggestion.values : LB.valueColList(sentCols);
-    const cityCol = b.city_col === undefined || b.city_col === null || b.city_col === '' ? a.suggestion.city : parseInt(b.city_col, 10);
-    if (!(nameCol >= 0)) return bad(res, 'Tell Nova which column holds the name.');
-    if (!valueCols.length) return bad(res, 'Tick at least one column for the number.');
-    if (valueCols.indexOf(nameCol) !== -1) return bad(res, 'The name column cannot also be one of the number columns.');
+    const a = LB.analyzeSheet(sheet.grid, metric, b.mode);
+    const c = chosen(b, a);
+    if (!(c.name_col >= 0)) return bad(res, 'Tell Nova which column holds the name.');
+    if (c.mode === 'count') {
+      if (!(c.match_col >= 0)) return bad(res, 'Tell Nova which column says what the call was.');
+      if (!c.match_text) return bad(res, 'Tell Nova what that column has to contain, for example batt.');
+      if (c.match_col === c.name_col) return bad(res, 'The name column cannot also be the one being matched.');
+    } else {
+      if (!c.value_cols.length) return bad(res, 'Tick at least one column for the number.');
+      if (c.value_cols.indexOf(c.name_col) !== -1) return bad(res, 'The name column cannot also be one of the number columns.');
+    }
 
     const x = LB.extractRows(sheet.grid, {
-      header_row: headerRow, name_col: nameCol, value_cols: valueCols, city_col: cityCol
+      header_row: c.header_row, name_col: c.name_col, city_col: c.city_col, mode: c.mode,
+      value_cols: c.value_cols, match_col: c.match_col, match_text: c.match_text,
+      status_col: c.status_col, status_values: c.status_values
     });
     if (!x.rows.length) {
       return bad(res, 'Nothing readable came out of that sheet. Check the header row and the columns you ticked.');
@@ -315,8 +352,11 @@ router.post('/import', manage, async function (req, res) {
       return null;
     }
     // What the week detail screen shows so somebody can see, months later,
-    // which columns this board was actually built from.
-    const valueLabel = valueCols.map(headerOf).filter(Boolean).join(' + ').slice(0, 500);
+    // exactly how this board was built.
+    const valueLabel = (c.mode === 'count'
+      ? ('rows where ' + (headerOf(c.match_col) || 'the matched column') + ' contains "' + c.match_text + '"' +
+         (c.status_values.length ? (', ' + (headerOf(c.status_col) || 'status') + ' = ' + c.status_values.join(' / ')) : ''))
+      : c.value_cols.map(headerOf).filter(Boolean).join(' + ')).slice(0, 500);
 
     await client.query('BEGIN');
     // Re-uploading a week REPLACES it. Uploading the wrong file is the likeliest
@@ -333,19 +373,29 @@ router.post('/import', manage, async function (req, res) {
       await client.query(
         'UPDATE leaderboard_weeks SET file_name=$2, file_hash=$3, sheet_name=$4, name_column=$5, ' +
         'value_column=$6, city_column=$7, row_count=$8, matched_count=$9, total_value=$10, ' +
-        'uploaded_by=$11, uploaded_by_name=$12, updated_at=NOW() WHERE id=$1',
-        [weekId, String(b.filename || '').slice(0, 255), hash, sheet.name, headerOf(nameCol),
-         valueLabel, cityCol >= 0 ? headerOf(cityCol) : null, rows.length, matched,
-         total, req.user.id, req.user.name]
+        'uploaded_by=$11, uploaded_by_name=$12, mode=$13, match_column=$14, match_text=$15, ' +
+        'status_column=$16, status_values=$17, updated_at=NOW() WHERE id=$1',
+        [weekId, String(b.filename || '').slice(0, 255), hash, sheet.name, headerOf(c.name_col),
+         valueLabel, c.city_col >= 0 ? headerOf(c.city_col) : null, rows.length, matched,
+         total, req.user.id, req.user.name, c.mode,
+         c.mode === 'count' ? headerOf(c.match_col) : null,
+         c.mode === 'count' ? c.match_text : null,
+         c.mode === 'count' && c.status_col >= 0 ? headerOf(c.status_col) : null,
+         c.mode === 'count' && c.status_values.length ? c.status_values.join('|') : null]
       );
     } else {
       const ins = await client.query(
         'INSERT INTO leaderboard_weeks (metric, week_start, file_name, file_hash, sheet_name, ' +
         'name_column, value_column, city_column, row_count, matched_count, total_value, ' +
-        'uploaded_by, uploaded_by_name) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13) RETURNING id',
-        [metric, week, String(b.filename || '').slice(0, 255), hash, sheet.name, headerOf(nameCol),
-         valueLabel, cityCol >= 0 ? headerOf(cityCol) : null, rows.length, matched,
-         total, req.user.id, req.user.name]
+        'uploaded_by, uploaded_by_name, mode, match_column, match_text, status_column, status_values) ' +
+        'VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18) RETURNING id',
+        [metric, week, String(b.filename || '').slice(0, 255), hash, sheet.name, headerOf(c.name_col),
+         valueLabel, c.city_col >= 0 ? headerOf(c.city_col) : null, rows.length, matched,
+         total, req.user.id, req.user.name, c.mode,
+         c.mode === 'count' ? headerOf(c.match_col) : null,
+         c.mode === 'count' ? c.match_text : null,
+         c.mode === 'count' && c.status_col >= 0 ? headerOf(c.status_col) : null,
+         c.mode === 'count' && c.status_values.length ? c.status_values.join('|') : null]
       );
       weekId = ins.rows[0].id;
     }
@@ -364,7 +414,7 @@ router.post('/import', manage, async function (req, res) {
       entity_type: 'leaderboard', entity_id: weekId, entity_number: metric + ' ' + week,
       action: replaced ? 'edited' : 'created', user_id: req.user.id, user_name: req.user.name,
       details: { metric: metric, week_start: week, rows: rows.length, matched: matched,
-                 file: String(b.filename || ''), columns: valueLabel, replaced: replaced },
+                 file: String(b.filename || ''), rule: valueLabel, replaced: replaced },
       ip: req.ip
     });
 

@@ -56,6 +56,8 @@
         'font-size:11px;font-weight:700;flex-shrink:0;background:var(--bg-color);color:var(--text-muted-color)}' +
       '.lb-name{font-size:13px;flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}' +
       '.lb-val{font-size:13px;font-weight:700;white-space:nowrap}' +
+      '.lb-where{font-size:12px;color:var(--text-muted-color);white-space:nowrap;max-width:45%;' +
+        'overflow:hidden;text-overflow:ellipsis}' +
       '.lb-you{font-size:9px;font-weight:800;letter-spacing:0.5px;background:#1d4429;color:#4ade80;' +
         'border-radius:4px;padding:1px 5px;margin-left:6px;vertical-align:1px}' +
       '.lb-unmatched{color:var(--text-muted-color);font-style:italic}' +
@@ -67,6 +69,7 @@
       '.lb-col .h{font-weight:600;white-space:nowrap}' +
       '.lb-col .s{color:var(--text-muted-color);font-size:12px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0}' +
       '.lb-col.off .h,.lb-col.off .s{opacity:0.55}' +
+      '.lb-mini{font-size:11px;color:var(--text-muted-color);margin-bottom:3px}' +
       '@media (max-width:760px){.lb-home-grid{grid-template-columns:1fr !important}}';
     document.head.appendChild(st);
   }
@@ -83,11 +86,20 @@
     } else {
       body = board.top.map(function (r, i) {
         var rc = RANK_COLOR[i];
+        // The revenue board shows WHERE, not HOW MUCH - Tony's call, 2026-08-28.
+        // The order already says who won; putting each person's weekly take on
+        // every employee's home screen says a good deal more than that. The
+        // figures are still on the Leaderboards screen, behind the permission.
+        // A count of batteries is not the same thing, so that one keeps its
+        // number: on that board the number IS the achievement.
+        var right = (metric === 'revenue')
+          ? '<div class="lb-where">' + esc(r.city_code || '') + '</div>'
+          : '<div class="lb-val">' + fmt(metric, r.value) + '</div>';
         return '<div class="lb-row">' +
           '<div class="lb-rank"' + (rc ? (' style="background:' + rc + ';color:#1a1a1a"') : '') + '>' + (i + 1) + '</div>' +
           '<div class="lb-name' + (r.user_id ? '' : ' lb-unmatched') + '">' + esc(r.name) +
             (r.is_me ? '<span class="lb-you">YOU</span>' : '') + '</div>' +
-          '<div class="lb-val">' + fmt(metric, r.value) + '</div>' +
+          right +
         '</div>';
       }).join('');
     }
@@ -228,7 +240,7 @@
         '<h2>' + esc(METRIC_LABEL[w.metric] || w.metric) + ' &middot; ' + esc(w.week_label) + '</h2>' +
         '<p>' + esc(w.file_name || 'uploaded file') + (w.sheet_name ? (' &middot; sheet ' + esc(w.sheet_name)) : '') +
         (w.name_column ? (' &middot; name from &ldquo;' + esc(w.name_column) + '&rdquo;') : '') +
-        (w.value_column ? (', number from ' + esc(w.value_column)) : '') + '</p></div>' +
+        (w.value_column ? (', ' + (w.mode === 'count' ? 'counting ' : 'number from ') + esc(w.value_column)) : '') + '</p></div>' +
       '</div>' +
       (unmatched
         ? ('<div class="alert alert-warn">' + unmatched + ' name' + (unmatched === 1 ? '' : 's') +
@@ -239,7 +251,7 @@
       '<div class="card"><div class="card-body" style="padding:0">' +
         '<div style="overflow-x:auto"><table class="data-table"><thead><tr>' +
           '<th style="text-align:center;width:44px">#</th><th>Name</th>' +
-          '<th style="text-align:right">' + (w.metric === 'revenue' ? 'Revenue' : 'Batteries') + '</th>' +
+          '<th style="text-align:right">' + (w.mode === 'count' ? 'Calls' : (w.metric === 'revenue' ? 'Revenue' : 'Batteries')) + '</th>' +
           '<th>City</th><th style="text-align:right">Linked to</th>' +
         '</tr></thead><tbody>' + rows + '</tbody></table></div>' +
       '</div></div>';
@@ -347,8 +359,16 @@
       body.sheet = val('lb-sheet') || _lbPrev.sheet;
       body.header_row = val('lb-header');
       body.name_col = val('lb-name-col');
-      body.value_cols = checkedValueCols();
       body.city_col = val('lb-city-col');
+      body.mode = _lbPrev.mode;
+      if (_lbPrev.mode === 'count') {
+        body.match_col = val('lb-match-col');
+        body.match_text = val('lb-match-text');
+        body.status_col = val('lb-status-col');
+        body.status_values = checkedStatuses();
+      } else {
+        body.value_cols = checkedValueCols();
+      }
     }
     var box = el('lb-step2');
     if (box) box.innerHTML = '<div class="loading">Reading the file&hellip;</div>';
@@ -394,13 +414,78 @@
     return out;
   }
 
+  function checkedStatuses() {
+    var out = [];
+    var boxes = document.querySelectorAll('#lb-status-values .lb-sv');
+    for (var i = 0; i < boxes.length; i++) if (boxes[i].checked) out.push(boxes[i].value);
+    return out;
+  }
+
+  // The counting rule, in the words of the thing it counts: "count a call when
+  // Task contains batt, and Status is Completed."
+  function countRuleHtml(cols, p) {
+    var opts = p.status_options || [];
+    var chosen = p.suggestion.status_values || [];
+    return '<div class="form-group">' +
+      '<label>Count a call when&hellip;</label>' +
+      '<div style="display:flex;gap:10px;flex-wrap:wrap;align-items:flex-end">' +
+        '<div style="flex:1;min-width:180px"><div class="lb-mini">this column</div>' +
+          '<select id="lb-match-col" class="form-control" onchange="lbRefreshPreview()">' +
+            colOptions(cols, p.suggestion.match_col) + '</select></div>' +
+        '<div style="width:170px"><div class="lb-mini">contains</div>' +
+          '<input id="lb-match-text" class="form-control" value="' + esc(p.suggestion.match_text || '') + '" ' +
+          'onchange="lbRefreshPreview()" placeholder="batt"></div>' +
+      '</div>' +
+      '<div style="font-size:12px;color:var(--text-muted-color);margin-top:4px">' +
+        'Not case sensitive, and it matches anywhere in the cell &mdash; ' +
+        '&ldquo;batt&rdquo; catches Battery, BATT Jump and Car Battery Replacement alike.</div>' +
+    '</div>' +
+    '<div class="form-group">' +
+      '<label>&hellip;and the call ended like this</label>' +
+      '<div style="display:flex;gap:10px;flex-wrap:wrap;align-items:flex-start">' +
+        '<div style="flex:1;min-width:180px"><div class="lb-mini">status column</div>' +
+          '<select id="lb-status-col" class="form-control" onchange="lbRefreshPreview()">' +
+            '<option value="-1"' + (p.suggestion.status_col === -1 ? ' selected' : '') + '>&mdash; do not filter &mdash;</option>' +
+            colOptions(cols, p.suggestion.status_col) + '</select></div>' +
+        '<div style="flex:1;min-width:190px"><div class="lb-mini">' +
+          (opts.length ? 'tick what counts' : 'nothing to tick') + '</div>' +
+          '<div class="lb-cols" id="lb-status-values" style="max-height:120px">' +
+            (opts.length ? opts.map(function (o) {
+              var on = chosen.indexOf(o.value) !== -1;
+              return '<label class="lb-col' + (on ? '' : ' off') + '">' +
+                '<input type="checkbox" class="lb-sv" value="' + esc(o.value) + '"' + (on ? ' checked' : '') +
+                  ' onchange="lbRefreshPreview()">' +
+                '<span class="h">' + esc(o.value) + '</span>' +
+                '<span class="s">' + o.count + ' row' + (o.count === 1 ? '' : 's') + '</span>' +
+              '</label>';
+            }).join('')
+             : '<div style="padding:8px 9px;font-size:12px;color:var(--text-muted-color)">Pick a status column first.</div>') +
+          '</div></div>' +
+      '</div>' +
+      '<div style="font-size:12px;color:var(--text-muted-color);margin-top:4px">' +
+        'Tick nothing and every call counts, cancelled and GOA included.</div>' +
+    '</div>';
+  }
+
+  function headerOf(cols, i) {
+    for (var k = 0; k < cols.length; k++) if (cols[k].index === i) return cols[k].header;
+    return null;
+  }
+
   function valueSummary(cols, p) {
+    if (p.mode === 'count') {
+      if (!(p.suggestion.match_col >= 0) || !p.suggestion.match_text) {
+        return 'Say what a call has to contain and Nova will count them.';
+      }
+      var st = p.suggestion.status_values || [];
+      return 'Counting calls where ' + (headerOf(cols, p.suggestion.match_col) || 'that column') +
+        ' contains &ldquo;' + esc(p.suggestion.match_text) + '&rdquo;' +
+        (st.length ? (' and ' + (headerOf(cols, p.suggestion.status_col) || 'status') + ' is ' +
+                      st.map(esc).join(' or ')) : ', any status') + '.';
+    }
     var chosen = p.suggestion.values || [];
     if (!chosen.length) return 'Nothing ticked yet, so there is no number to rank on.';
-    var names = chosen.map(function (i) {
-      for (var k = 0; k < cols.length; k++) if (cols[k].index === i) return cols[k].header;
-      return null;
-    }).filter(Boolean);
+    var names = chosen.map(function (i) { return headerOf(cols, i); }).filter(Boolean);
     return (chosen.length === 1 ? 'Ranking on ' : 'Adding up ') + names.join(' + ') + '.';
   }
 
@@ -415,7 +500,9 @@
     var rows = res.length ? res.map(function (r) {
       return '<tr>' +
         '<td style="text-align:center">' + r.rank + '</td>' +
-        '<td>' + esc(r.raw_name) + (r.lines > 1 ? ('<span style="font-size:11px;color:var(--text-muted-color)"> (' + r.lines + ' rows added up)</span>') : '') + '</td>' +
+        '<td>' + esc(r.raw_name) +
+          (r.lines > 1 && p.mode !== 'count'
+            ? ('<span style="font-size:11px;color:var(--text-muted-color)"> (' + r.lines + ' rows added up)</span>') : '') + '</td>' +
         '<td>' + (r.user_id
             ? ('<span style="color:#22c55e">' + esc(r.matched_name) + '</span>')
             : '<span style="color:#f59e0b">not matched</span>') + '</td>' +
@@ -444,31 +531,39 @@
             '<option value="-1"' + (p.suggestion.city === -1 ? ' selected' : '') + '>&mdash; none &mdash;</option>' +
             colOptions(cols, p.suggestion.city) + '</select></div>' +
       '</div>' +
-      '<div class="form-group">' +
-        '<label>' + (metric === 'revenue' ? 'Revenue' : 'Batteries') + ' &mdash; tick every column that counts, they are added together</label>' +
-        (p.preset_used
-          ? ('<div style="font-size:12px;color:#22c55e;margin:-2px 0 6px">Recognised a Pulsar export: the four Collected columns are ticked. ' +
-             'Tech Paid Gross is what the tech earned, not revenue, so it is not.</div>')
-          : '') +
-        colChecks(cols, p.suggestion.values || []) +
-        '<div id="lb-value-sum" style="font-size:12px;color:var(--text-muted-color);margin-top:5px">' + valueSummary(cols, p) + '</div>' +
-      '</div>' +
+      (p.mode === 'count'
+        ? (countRuleHtml(cols, p) +
+           '<div id="lb-value-sum" style="font-size:12px;color:var(--text-muted-color);margin:-6px 0 10px">' + valueSummary(cols, p) + '</div>')
+        : ('<div class="form-group">' +
+            '<label>Revenue &mdash; tick every column that counts, they are added together</label>' +
+            (p.preset_used
+              ? ('<div style="font-size:12px;color:#22c55e;margin:-2px 0 6px">Recognised a Pulsar export: the four Collected columns are ticked. ' +
+                 'Tech Paid Gross is what the tech earned, not revenue, so it is not.</div>')
+              : '') +
+            colChecks(cols, p.suggestion.values || []) +
+            '<div id="lb-value-sum" style="font-size:12px;color:var(--text-muted-color);margin-top:5px">' + valueSummary(cols, p) + '</div>' +
+          '</div>')) +
       '<div style="font-size:12px;color:var(--text-muted-color);margin:2px 0 10px">' +
         p.rows_found + ' ' + (p.rows_found === 1 ? 'person' : 'people') + ' found' +
         (p.skipped && p.skipped.total_row ? (' &middot; ' + p.skipped.total_row + ' total row(s) ignored') : '') +
         (p.skipped && p.skipped.no_value ? (' &middot; ' + p.skipped.no_value + ' row(s) had no readable number') : '') +
+        (p.skipped && p.skipped.no_match ? (' &middot; ' + p.skipped.no_match + ' call(s) were something else') : '') +
+        (p.skipped && p.skipped.wrong_status ? (' &middot; ' + p.skipped.wrong_status + ' matching call(s) did not end in a status you ticked') : '') +
       '</div>' +
       '<div style="max-height:260px;overflow:auto;border:1px solid var(--border-color);border-radius:8px">' +
         '<table class="data-table"><thead><tr><th style="width:40px;text-align:center">#</th>' +
         '<th>Name in the sheet</th><th>Matched to</th><th style="text-align:right">' +
-        (metric === 'revenue' ? 'Revenue' : 'Batteries') + '</th></tr></thead><tbody>' + rows + '</tbody></table>' +
+        (metric === 'revenue' ? 'Revenue' : 'Calls') + '</th></tr></thead><tbody>' + rows + '</tbody></table>' +
       '</div>' +
       (res.length > 5
         ? '<div style="font-size:12px;color:var(--text-muted-color);margin-top:6px">The home screen shows the top five. Everyone here is kept, so the ranking survives a name being linked later.</div>'
         : '');
 
     var btn = el('lb-import-btn');
-    if (btn) btn.disabled = !(p.rows_found > 0 && (p.suggestion.values || []).length > 0);
+    var ready = p.mode === 'count'
+      ? (p.suggestion.match_col >= 0 && !!p.suggestion.match_text)
+      : ((p.suggestion.values || []).length > 0);
+    if (btn) btn.disabled = !(p.rows_found > 0 && ready);
   }
 
   window.lbImport = async function () {
@@ -476,12 +571,17 @@
     if (!_lbFile || !_lbPrev) { toast('Pick a file first.', 'error'); return; }
     var week = val('lb-week');
     if (!week) { toast('Pick the week this file covers.', 'error'); return; }
-    if (!checkedValueCols().length) { toast('Tick at least one column for the number.', 'error'); return; }
+    var countMode = _lbPrev && _lbPrev.mode === 'count';
+    if (countMode) {
+      if (!val('lb-match-text')) { toast('Say what the task column has to contain, for example batt.', 'error'); return; }
+    } else if (!checkedValueCols().length) {
+      toast('Tick at least one column for the number.', 'error'); return;
+    }
     _lbBusy = true;
     var btn = el('lb-import-btn');
     if (btn) { btn.disabled = true; btn.textContent = 'Importing...'; }
     try {
-      var out = await api('POST', API + '/import', {
+      var payload = {
         metric: val('lb-metric') || 'revenue',
         week_start: week,
         filename: _lbFile.name,
@@ -489,9 +589,18 @@
         sheet: val('lb-sheet') || _lbPrev.sheet,
         header_row: val('lb-header'),
         name_col: val('lb-name-col'),
-        value_cols: checkedValueCols(),
-        city_col: val('lb-city-col')
-      });
+        city_col: val('lb-city-col'),
+        mode: _lbPrev.mode
+      };
+      if (countMode) {
+        payload.match_col = val('lb-match-col');
+        payload.match_text = val('lb-match-text');
+        payload.status_col = val('lb-status-col');
+        payload.status_values = checkedStatuses();
+      } else {
+        payload.value_cols = checkedValueCols();
+      }
+      var out = await api('POST', API + '/import', payload);
       lbCloseModal();
       toast((out.replaced ? 'Week replaced' : 'Week published') + ' - ' + out.rows + ' people, ' +
             out.unmatched + ' unmatched.', 'success');

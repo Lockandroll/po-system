@@ -86,6 +86,23 @@ function pulsarGrid() {
   ];
 }
 
+// The battery board is not a column at all. A Pulsar export has no
+// battery-quantity field: a battery sale is a CALL whose Task says "batt", and
+// the board is how many of those each tech COMPLETED. Cancelled and GOA calls
+// mentioning a battery must not count.
+function batteryGrid() {
+  return [
+    ['Tech ID', 'Location', 'Task', 'Status', 'Collected Cash', 'Collected Check',
+     'Collected CC', 'Collected Account', 'Tech Paid Gross'],
+    ['Benson, Chris', 'Columbus, GA', 'Car Battery Replacement', 'Completed', '', '', '$98.00', '', '$15.44'],
+    ['Benson, Chris', 'Columbus, GA', 'BATT - Jump/Install', 'Completed', '$25.00', '', '', '', '$19.76'],
+    ['Benson, Chris', 'Columbus, GA', 'Battery Test', 'Canceled', '', '', '', '', '$0.00'],
+    ['Sawyer III, Darrell', 'Muscogee', 'Lockout', 'Completed', '', '', '', '$250.00', '$40.00'],
+    ['Sawyer III, Darrell', 'Muscogee', 'battery', 'Completed', '', '', '$60.00', '', '$12.00'],
+    ['Harris, Donald E', 'Muscogee', 'Battery', 'GOA', '', '', '', '', '$0.00']
+  ];
+}
+
 async function xlsxOf(grid, sheetName) {
   const ExcelJS = require('exceljs');
   const wb = new ExcelJS.Workbook();
@@ -154,8 +171,9 @@ async function httpTests(grid) {
 
     // Same file, told it is the battery board: a different column, and the
     // pulsar_name match is used for Darrell.
-    var pvb = await call('POST', '/preview', { metric: 'batteries', filename: 'week34.xlsx', file_base64: b64 });
-    eq('preview: the battery board picks Batteries Sold', pvb.body.suggestion.values, [4]);
+    var pvb = await call('POST', '/preview', { metric: 'batteries', filename: 'week34.xlsx', file_base64: b64, mode: 'sum' });
+    eq('preview: told to add up, the battery board picks Batteries Sold', pvb.body.suggestion.values, [4]);
+    eq('preview: and says which mode it used', pvb.body.mode, 'sum');
     eq('preview: and ranks by batteries', pvb.body.resolved[0].raw_name, 'Sawyer III, Darrell');
     eq('preview: pulsar_name is the tier that matched him', pvb.body.resolved[0].match_tier, 1);
 
@@ -174,7 +192,7 @@ async function httpTests(grid) {
     // ---- import ----------------------------------------------------------
     var im = await call('POST', '/import', {
       metric: 'batteries', week_start: '2026-08-17', filename: 'week34.xlsx', file_base64: b64,
-      sheet: 'Week 34', header_row: 3, name_col: 0, value_cols: [4], city_col: 1
+      sheet: 'Week 34', header_row: 3, name_col: 0, value_cols: [4], city_col: 1, mode: 'sum'
     });
     eq('POST /import succeeds', im.status, 200);
     eq('import: four people', im.body.rows, 4);
@@ -194,7 +212,7 @@ async function httpTests(grid) {
     // Re-uploading the SAME metric and week replaces it rather than doubling it.
     var im2 = await call('POST', '/import', {
       metric: 'batteries', week_start: '2026-08-17', filename: 'week34-fixed.xlsx', file_base64: b64,
-      sheet: 'Week 34', header_row: 3, name_col: 0, value_cols: [3], city_col: 1
+      sheet: 'Week 34', header_row: 3, name_col: 0, value_cols: [3], city_col: 1, mode: 'sum'
     });
     ok('import: the second upload replaces the first', im2.body.replaced === true);
     eq('one week row, not two',
@@ -215,13 +233,13 @@ async function httpTests(grid) {
                                         filename: 'x.xlsx', name_col: 0, value_cols: [0] })).status, 400);
     eq('import with nothing ticked is refused',
        (await call('POST', '/import', { metric: 'revenue', week_start: '2026-08-17', file_base64: b64,
-                                        filename: 'x.xlsx', name_col: 0, value_cols: [] })).status, 400);
+                                        filename: 'x.xlsx', name_col: 0, value_cols: [], mode: 'sum' })).status, 400);
     eq('import with no file is refused',
        (await call('POST', '/import', { metric: 'revenue', week_start: '2026-08-17', filename: 'x.xlsx' })).status, 400);
     var emptySheet = (await xlsxOf([['Name', 'Revenue']], 'Empty')).toString('base64');
     var imEmpty = await call('POST', '/import', {
       metric: 'revenue', week_start: '2026-08-17', filename: 'empty.xlsx', file_base64: emptySheet,
-      header_row: 0, name_col: 0, value_cols: [1], city_col: -1
+      header_row: 0, name_col: 0, value_cols: [1], city_col: -1, mode: 'sum'
     });
     eq('a sheet with a header and nothing under it is refused', imEmpty.status, 400);
     eq('and nothing was written', (await pool.query("SELECT COUNT(*)::int AS n FROM leaderboard_weeks WHERE metric='revenue'")).rows[0].n, 0);
@@ -251,6 +269,55 @@ async function httpTests(grid) {
     eq('pulsar import: ranked by collected money', pEnt.rows.map(function (r) { return Number(r.value); }), [250, 123]);
     eq('pulsar import: the full location survives', pEnt.rows[1].city_code, 'Columbus, GA');
     await pool.query("DELETE FROM leaderboard_weeks WHERE week_start='2026-08-10'");
+
+    // ---- the battery board, end to end -----------------------------------
+    var bb64 = (await xlsxOf(batteryGrid(), 'Calls')).toString('base64');
+    var bPrev = await call('POST', '/preview', { metric: 'batteries', filename: 'calls.xlsx', file_base64: bb64 });
+    eq('battery preview: it counts rather than adds', bPrev.body.mode, 'count');
+    eq('battery preview: the rule is Task contains batt', bPrev.body.suggestion.match_text, 'batt');
+    eq('battery preview: Completed is ticked for you', bPrev.body.suggestion.status_values, ['Completed']);
+    eq('battery preview: and the file\'s own statuses are offered',
+       bPrev.body.status_options.map(function (o) { return o.value; }), ['Completed', 'Canceled', 'GOA']);
+    eq('battery preview: two people, not six calls', bPrev.body.rows_found, 2);
+    eq('battery preview: Chris completed two', bPrev.body.resolved[0].value, 2);
+
+    var bIm = await call('POST', '/import', {
+      metric: 'batteries', week_start: '2026-08-03', filename: 'calls.xlsx', file_base64: bb64,
+      sheet: 'Calls', header_row: 0, name_col: bPrev.body.suggestion.name,
+      city_col: bPrev.body.suggestion.city, mode: 'count',
+      match_col: bPrev.body.suggestion.match_col, match_text: 'batt',
+      status_col: bPrev.body.suggestion.status_col, status_values: ['Completed']
+    });
+    eq('battery import: succeeds', bIm.status, 200);
+    eq('battery import: two people on the board', bIm.body.rows, 2);
+    var bWeek = (await pool.query(
+      "SELECT mode, match_column, match_text, status_column, status_values, value_column, total_value " +
+      "FROM leaderboard_weeks WHERE metric='batteries' AND week_start='2026-08-03'")).rows[0];
+    eq('battery import: the mode is recorded', bWeek.mode, 'count');
+    eq('battery import: and the whole rule, so it can be read back months later',
+       [bWeek.match_column, bWeek.match_text, bWeek.status_column, bWeek.status_values],
+       ['Task', 'batt', 'Status', 'Completed']);
+    eq('battery import: the rule reads in English on the week screen', bWeek.value_column,
+       'rows where Task contains "batt", Status = Completed');
+    eq('battery import: three battery calls counted in total', Number(bWeek.total_value), 3);
+    // Read the week itself rather than /home: an older summed batteries week is
+    // still the newest one for that metric, and /home deliberately shows the
+    // newest. That is the behaviour, not a bug.
+    var bDet = await call('GET', '/week/' + bIm.body.week_id);
+    eq('battery week: ranked by calls', bDet.body.entries[0].value, 2);
+    eq('battery week: and the runner-up has one', bDet.body.entries[1].value, 1);
+    eq('battery week: the location rides along for the Home card', bDet.body.entries[0].city_code, 'Columbus, GA');
+    eq('battery week: the screen calls it a counting board', bDet.body.week.mode, 'count');
+
+    eq('a counting import with nothing to match on is refused',
+       (await call('POST', '/import', { metric: 'batteries', week_start: '2026-08-03', filename: 'c.xlsx',
+                                        file_base64: bb64, mode: 'count', name_col: 0, match_col: 2,
+                                        match_text: '' })).status, 400);
+    eq('and one where the name column is also the matched column is refused',
+       (await call('POST', '/import', { metric: 'batteries', week_start: '2026-08-03', filename: 'c.xlsx',
+                                        file_base64: bb64, mode: 'count', name_col: 2, match_col: 2,
+                                        match_text: 'batt' })).status, 400);
+    await pool.query("DELETE FROM leaderboard_weeks WHERE week_start='2026-08-03'");
 
     // ---- linking through the route --------------------------------------
     var wkId = (await pool.query("SELECT id FROM leaderboard_weeks WHERE metric='batteries'")).rows[0].id;
@@ -344,9 +411,12 @@ async function main() {
   eq('revenue: city column', aRev.suggestion.city, 1);
   ok('revenue: confident', aRev.confident === true);
 
-  var aBat = LB.analyzeSheet(grid, 'batteries');
+  // Told to ADD UP a column, the battery board still finds the right one.
+  var aBat = LB.analyzeSheet(grid, 'batteries', 'sum');
   eq('batteries: same name column', aBat.suggestion.name, 0);
   eq('batteries: picks Batteries Sold, not Revenue', aBat.suggestion.values, [4]);
+  eq('batteries: but its own default is to COUNT', LB.METRICS.batteries.mode, 'count');
+  eq('revenue adds up', LB.METRICS.revenue.mode, 'sum');
 
   // A header word must not be able to win when it is the name column.
   var same = LB.analyzeSheet([['Total', 'Amount'], ['Chris', '10']], 'revenue');
@@ -388,6 +458,52 @@ async function main() {
      noPreset.preset_used !== true && noPreset.suggestion.values.length === 1);
   ok('and it still refuses to land on Tech Paid Gross',
      noPreset.suggestion.values[0] !== pulsar[0].indexOf('Tech Paid Gross'), JSON.stringify(noPreset.suggestion));
+
+  // ---- counting, not adding ----------------------------------------------
+  var bg = batteryGrid();
+  var aC = LB.analyzeSheet(bg, 'batteries');
+  eq('the battery board counts rows', aC.mode, 'count');
+  eq('it finds the Task column', bg[0][aC.suggestion.match_col], 'Task');
+  eq('and looks for "batt" in it', aC.suggestion.match_text, 'batt');
+  eq('it finds the Status column, not Process Status', bg[0][aC.suggestion.status_col], 'Status');
+  eq('and offers what the file really holds', aC.status_options.map(function (o) { return o.value; }),
+     ['Completed', 'Canceled', 'GOA']);
+  eq('with a count beside each', aC.status_options[0].count, 4);
+  eq('Completed is ticked, Canceled and GOA are not', aC.suggestion.status_values, ['Completed']);
+  eq('city is still found', bg[0][aC.suggestion.city], 'Location');
+  ok('and it is confident', aC.confident === true);
+  eq('a counting board ticks no value columns at all', aC.suggestion.values, []);
+
+  var xc = LB.extractRows(bg, { header_row: 0, name_col: aC.suggestion.name, city_col: aC.suggestion.city,
+    mode: 'count', match_col: aC.suggestion.match_col, match_text: aC.suggestion.match_text,
+    status_col: aC.suggestion.status_col, status_values: aC.suggestion.status_values });
+  eq('two people sold batteries', xc.rows.length, 2);
+  eq('Chris completed two of them', xc.rows[0].value, 2);
+  eq('Darrell one', xc.rows[1].value, 1);
+  eq('the lockout was not a battery', xc.skipped.no_match, 1);
+  eq('and the cancelled + GOA battery calls did not count', xc.skipped.wrong_status, 2);
+  ok('nobody is on the board with a zero', xc.rows.every(function (r) { return r.value > 0; }));
+
+  // "batt" is a substring match, case-insensitive, anywhere in the cell.
+  eq('BATT, Battery and Car Battery Replacement all match', xc.rows[0].lines, 2);
+
+  // Tick nothing and every call counts, GOA and cancelled included.
+  var xcAll = LB.extractRows(bg, { header_row: 0, name_col: 0, city_col: 1, mode: 'count',
+    match_col: 2, match_text: 'batt', status_col: 3, status_values: [] });
+  eq('with no status ticked, every battery call counts',
+     xcAll.rows.map(function (r) { return r.value; }), [3, 1, 1]);
+  eq('and nothing is thrown out for its status', xcAll.skipped.wrong_status, 0);
+
+  // A different word, same machinery.
+  var xcLock = LB.extractRows(bg, { header_row: 0, name_col: 0, city_col: 1, mode: 'count',
+    match_col: 2, match_text: 'lockout', status_col: 3, status_values: ['Completed'] });
+  eq('the rule is not hard-wired to batteries', xcLock.rows.length, 1);
+  eq('and it counted the right call', xcLock.rows[0].raw_name, 'Sawyer III, Darrell');
+
+  // The same sheet, added up instead: revenue still works off it.
+  var aCsum = LB.analyzeSheet(bg, 'revenue');
+  eq('the same file feeds the revenue board', aCsum.mode, 'sum');
+  ok('off the four Collected columns', aCsum.preset_used === true);
 
   // Several columns summed, and a blank in one of them.
   var multi = LB.extractRows([['n', 'a', 'b'], ['Chris', '10', ''], ['Chris', '', '5'], ['Dana', '', '']],

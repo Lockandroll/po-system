@@ -5939,6 +5939,11 @@ async function initDB() {
       '  name_column VARCHAR(255),' +
       '  value_column VARCHAR(500),' +
       '  city_column VARCHAR(255),' +
+      "  mode VARCHAR(10) NOT NULL DEFAULT 'sum'," +
+      '  match_column VARCHAR(255),' +
+      '  match_text VARCHAR(120),' +
+      '  status_column VARCHAR(255),' +
+      '  status_values TEXT,' +
       '  row_count INTEGER DEFAULT 0,' +
       '  matched_count INTEGER DEFAULT 0,' +
       '  total_value NUMERIC(14,2) DEFAULT 0,' +
@@ -5950,7 +5955,10 @@ async function initDB() {
     );
     var _lbwCols = ['metric VARCHAR(20)', 'week_start DATE', 'file_name VARCHAR(255)',
       'file_hash VARCHAR(64)', 'sheet_name VARCHAR(255)', 'name_column VARCHAR(255)',
-      'value_column VARCHAR(500)', 'city_column VARCHAR(255)', 'row_count INTEGER DEFAULT 0',
+      'value_column VARCHAR(500)', 'city_column VARCHAR(255)',
+      "mode VARCHAR(10) NOT NULL DEFAULT 'sum'", 'match_column VARCHAR(255)',
+      'match_text VARCHAR(120)', 'status_column VARCHAR(255)', 'status_values TEXT',
+      'row_count INTEGER DEFAULT 0',
       'matched_count INTEGER DEFAULT 0', 'total_value NUMERIC(14,2) DEFAULT 0',
       'uploaded_by INTEGER', 'uploaded_by_name VARCHAR(255)',
       'created_at TIMESTAMPTZ DEFAULT NOW()', 'updated_at TIMESTAMPTZ DEFAULT NOW()'];
@@ -5992,6 +6000,10 @@ async function initDB() {
     // Four money columns summed into one label: "Collected Cash + Collected
     // Check + Collected CC + Collected Account" does not fit in 255 forever.
     await client.query('ALTER TABLE leaderboard_weeks ALTER COLUMN value_column TYPE VARCHAR(500);');
+    // 'sum' adds columns up (revenue). 'count' counts rows that match a rule
+    // (batteries: a completed call whose Task says "batt"), because a Pulsar
+    // export has no battery-quantity column to add.
+    await client.query("UPDATE leaderboard_weeks SET mode = 'sum' WHERE mode IS NULL;");
     await client.query('CREATE INDEX IF NOT EXISTS leaderboard_entries_week_idx ON leaderboard_entries (week_id, rank);');
     await client.query('CREATE INDEX IF NOT EXISTS leaderboard_entries_user_idx ON leaderboard_entries (user_id);');
 

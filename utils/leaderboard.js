@@ -33,6 +33,8 @@ var METRICS = {
     key: 'revenue',
     label: 'Top Revenue',
     unit: 'money',
+    // Money is ADDED UP out of columns.
+    mode: 'sum',
     preset: ['collected cash', 'collected check', 'collected cc', 'collected account'],
     hints: ['total collected', 'collected', 'revenue', 'total sales', 'gross sales',
             'sales', 'total', 'amount', 'ticket', 'invoiced', 'billed', 'gross']
@@ -41,10 +43,30 @@ var METRICS = {
     key: 'batteries',
     label: 'Most Batteries Sold',
     unit: 'count',
+    // Batteries are COUNTED, not added up. There is no quantity column on a
+    // Pulsar export: a battery sale is a CALL whose Task says "batt", and the
+    // board is how many of those calls each tech completed. Tony's rule, and
+    // the only one the export can actually answer.
+    mode: 'count',
+    default_match: 'batt',
     hints: ['batteries sold', 'battery sold', 'batteries', 'battery', 'batt',
             'units sold', 'units', 'qty sold', 'qty', 'quantity', 'sold', 'count']
   }
 };
+
+// The column holding what the call WAS, for a counting board.
+var MATCH_HINTS = ['task', 'service', 'service type', 'job type', 'call type',
+                   'description', 'work performed', 'item'];
+
+// The column holding how the call ENDED. Pulsar writes Completed / GOA /
+// Canceled in "Status"; "Process Status" is a billing flag (Confirmed) and is
+// deliberately further down the list.
+var STATUS_HINTS = ['status', 'call status', 'job status', 'disposition',
+                    'outcome', 'process status'];
+
+// Which of those values mean the work actually happened. Used to pre-tick the
+// status list; the human still confirms it.
+var DONE_STATUS = /^(completed|complete|done|closed|finished|paid)$/i;
 
 function isMetric(m) { return Object.prototype.hasOwnProperty.call(METRICS, String(m)); }
 
@@ -262,6 +284,25 @@ function profileColumns(grid, headerRow) {
   return cols;
 }
 
+// Every distinct value under one column, most common first. The status filter
+// on a counting board is a tick list of what is ACTUALLY in the file, not a
+// guess at what Pulsar might have written this week.
+function distinctValues(grid, headerRow, col, limit) {
+  if (!(col >= 0)) return [];
+  var tally = {}, order = [];
+  for (var r = headerRow + 1; r < grid.length; r++) {
+    var v = String(((grid[r] || [])[col]) === undefined ? '' : grid[r][col]).trim();
+    if (v === '') continue;
+    var k = squash(v);
+    if (!tally[k]) { tally[k] = { value: v, count: 0 }; order.push(k); }
+    tally[k].count++;
+  }
+  var out = order.map(function (k) { return tally[k]; });
+  out.sort(function (a, b) { return b.count - a.count || a.value.localeCompare(b.value); });
+  out.forEach(function (x) { x.done = DONE_STATUS.test(x.value); });
+  return out.slice(0, limit || 40);
+}
+
 function colLetter(i) {
   var s = '';
   i = i + 1;
@@ -274,8 +315,9 @@ function colLetter(i) {
  * Returns everything the confirm screen needs, including the columns it did
  * NOT pick, because the whole point is that a human overrules this.
  */
-function analyzeSheet(grid, metric) {
+function analyzeSheet(grid, metric, mode) {
   var m = METRICS[metric] || METRICS.revenue;
+  mode = (mode === 'count' || mode === 'sum') ? mode : (m.mode || 'sum');
   var headerRow = findHeaderRow(grid);
   var cols = profileColumns(grid, headerRow);
 
@@ -332,19 +374,50 @@ function analyzeSheet(grid, metric) {
     if (best) valueCols = [best.index];
   }
 
+  // A COUNTING board does not add a column up. It counts the rows that say the
+  // right thing: Task contains "batt", Status is Completed. So instead of value
+  // columns it proposes a rule, and offers the status values the file really
+  // holds rather than a guess at Pulsar's vocabulary.
+  var matchCol = -1, matchScore = 0, statusCol = -1, statusScore = 0;
+  if (mode === 'count') {
+    valueCols = [];
+    cols.forEach(function (c) {
+      if (!c.filled || c.index === nameCol) return;
+      var sm = hintScore(c.raw_header, MATCH_HINTS);
+      if (sm > matchScore) { matchScore = sm; matchCol = c.index; }
+      var ss = hintScore(c.raw_header, STATUS_HINTS);
+      if (ss > statusScore) { statusScore = ss; statusCol = c.index; }
+    });
+    if (matchCol !== -1 && matchCol === statusCol) statusCol = -1;
+  }
+  var statusOptions = mode === 'count' ? distinctValues(grid, headerRow, statusCol) : [];
+
   var cityCol = -1, cityScore = 0;
   cols.forEach(function (c) {
     if (!c.filled || c.index === nameCol || valueCols.indexOf(c.index) !== -1) return;
+    if (c.index === matchCol || c.index === statusCol) return;
     var s = hintScore(c.raw_header, CITY_HINTS);
     if (s > cityScore) { cityScore = s; cityCol = c.index; }
   });
 
   return {
     header_row: headerRow,
+    mode: mode,
     columns: cols,
-    suggestion: { name: nameCol, values: valueCols, city: cityCol },
+    status_options: statusOptions,
+    suggestion: {
+      name: nameCol,
+      values: valueCols,
+      city: cityCol,
+      match_col: matchCol,
+      match_text: mode === 'count' ? (m.default_match || '') : '',
+      status_col: statusCol,
+      status_values: statusOptions.filter(function (o) { return o.done; }).map(function (o) { return o.value; })
+    },
     preset_used: presetHit,
-    confident: nameCol !== -1 && valueCols.length > 0 && nameScore > 0 && (presetHit || valueScore > 0),
+    confident: mode === 'count'
+      ? (nameCol !== -1 && matchCol !== -1 && matchScore > 0 && nameScore > 0)
+      : (nameCol !== -1 && valueCols.length > 0 && nameScore > 0 && (presetHit || valueScore > 0)),
     preview: grid.slice(headerRow, headerRow + 9)
   };
 }
@@ -376,7 +449,16 @@ function extractRows(grid, opts) {
   var nameCol = parseInt(opts.name_col, 10);
   var valueCols = valueColList(opts.value_cols !== undefined ? opts.value_cols : opts.value_col);
   var cityCol = opts.city_col === null || opts.city_col === undefined || opts.city_col === '' ? -1 : parseInt(opts.city_col, 10);
-  var skipped = { no_name: 0, no_value: 0, total_row: 0 };
+  var mode = opts.mode === 'count' ? 'count' : 'sum';
+  var matchCol = opts.match_col === null || opts.match_col === undefined || opts.match_col === '' ? -1 : parseInt(opts.match_col, 10);
+  var matchText = squash(opts.match_text);
+  var statusCol = opts.status_col === null || opts.status_col === undefined || opts.status_col === '' ? -1 : parseInt(opts.status_col, 10);
+  var statusOk = {};
+  var statusList = Array.isArray(opts.status_values) ? opts.status_values
+    : (opts.status_values ? String(opts.status_values).split('|') : []);
+  statusList.forEach(function (v) { var k = squash(v); if (k) statusOk[k] = 1; });
+  var filterStatus = statusCol >= 0 && Object.keys(statusOk).length > 0;
+  var skipped = { no_name: 0, no_value: 0, total_row: 0, no_match: 0, wrong_status: 0 };
   var byKey = {};
   var order = [];
 
@@ -385,13 +467,26 @@ function extractRows(grid, opts) {
     var name = String(row[nameCol] === undefined ? '' : row[nameCol]).trim();
     if (name === '') { skipped.no_name++; continue; }
     if (TOTAL_ROW.test(name)) { skipped.total_row++; continue; }
-    // A call paid entirely by card has three of the four money columns blank.
-    // Blank is not "unreadable" when a sibling column has a number in it - the
-    // row only fails when NONE of the chosen columns can be read.
     var value = 0, readable = false;
-    for (var vc = 0; vc < valueCols.length; vc++) {
-      var one = toNumber(row[valueCols[vc]]);
-      if (one !== null) { value += one; readable = true; }
+    if (mode === 'count') {
+      // Counting board: this row is worth 1 if it says the right thing.
+      // The task test comes first so "how many rows even mention batteries"
+      // stays separable from "how many of those were completed".
+      if (matchCol >= 0 && matchText) {
+        var cell = squash(row[matchCol]);
+        if (cell.indexOf(matchText) === -1) { skipped.no_match++; continue; }
+      }
+      if (filterStatus && !statusOk[squash(row[statusCol])]) { skipped.wrong_status++; continue; }
+      value = 1;
+      readable = true;
+    } else {
+      // A call paid entirely by card has three of the four money columns blank.
+      // Blank is not "unreadable" when a sibling column has a number in it -
+      // the row only fails when NONE of the chosen columns can be read.
+      for (var vc = 0; vc < valueCols.length; vc++) {
+        var one = toNumber(row[valueCols[vc]]);
+        if (one !== null) { value += one; readable = true; }
+      }
     }
     if (!readable) { skipped.no_value++; continue; }
     var key = squash(name);
@@ -512,6 +607,10 @@ function weekLabel(ymd) {
 
 module.exports = {
   METRICS: METRICS,
+  MATCH_HINTS: MATCH_HINTS,
+  STATUS_HINTS: STATUS_HINTS,
+  DONE_STATUS: DONE_STATUS,
+  distinctValues: distinctValues,
   isMetric: isMetric,
   NAME_HINTS: NAME_HINTS,
   CITY_HINTS: CITY_HINTS,

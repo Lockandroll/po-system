@@ -156,7 +156,9 @@ const PREVIEW = {
     { index: 7, header: 'Collected Account', raw_header: 'Collected Account', filled: 5, numeric_ratio: 1, total: 250, samples: ['$25.00'] },
     { index: 8, header: 'Tech Paid Gross', raw_header: 'Tech Paid Gross', filled: 5, numeric_ratio: 1, total: 75.2, samples: ['$15.44'] }
   ],
-  suggestion: { name: 0, values: [4, 5, 6, 7], city: 1 },
+  mode: 'sum',
+  status_options: [],
+  suggestion: { name: 0, values: [4, 5, 6, 7], city: 1, match_col: -1, match_text: '', status_col: -1, status_values: [] },
   auto: { name: 0, values: [4, 5, 6, 7], city: 1 },
   preset_used: true,
   confident: true,
@@ -166,6 +168,31 @@ const PREVIEW = {
     { rank: 1, raw_name: 'Benson, Chris', value: 5110.55, city_code: 'VAB', lines: 2, user_id: 9001, matched_name: 'Chris Benson', match_tier: 2 },
     { rank: 2, raw_name: 'Sawyer III, Darrell', value: 3980, city_code: 'VAB', lines: 1, user_id: 9002, matched_name: 'Darrell Sawyer', match_tier: 1 },
     { rank: 3, raw_name: 'Ghost, Nobody', value: 640, city_code: null, lines: 1, user_id: null, matched_name: null, match_tier: null }
+  ]
+};
+
+// The battery board: a rule, not a column.
+const COUNT_PREVIEW = {
+  sheets: ['Calls'], sheet: 'Calls', header_row: 0, mode: 'count',
+  columns: [
+    { index: 0, header: 'Tech ID', raw_header: 'Tech ID', filled: 6, numeric_ratio: 0, total: 0, samples: ['Benson, Chris'] },
+    { index: 1, header: 'Location', raw_header: 'Location', filled: 6, numeric_ratio: 0, total: 0, samples: ['Columbus, GA'] },
+    { index: 2, header: 'Task', raw_header: 'Task', filled: 6, numeric_ratio: 0, total: 0, samples: ['Car Battery Replacement'] },
+    { index: 3, header: 'Status', raw_header: 'Status', filled: 6, numeric_ratio: 0, total: 0, samples: ['Completed'] }
+  ],
+  status_options: [
+    { value: 'Completed', count: 4, done: true },
+    { value: 'Canceled', count: 1, done: false },
+    { value: 'GOA', count: 1, done: false }
+  ],
+  suggestion: { name: 0, values: [], city: 1, match_col: 2, match_text: 'batt', status_col: 3, status_values: ['Completed'] },
+  auto: { name: 0, values: [], city: 1, match_col: 2, match_text: 'batt', status_col: 3, status_values: ['Completed'] },
+  preset_used: false, confident: true, preview: [],
+  rows_found: 2, unmatched: 0,
+  skipped: { no_name: 0, no_value: 0, total_row: 0, no_match: 1, wrong_status: 2 },
+  resolved: [
+    { rank: 1, raw_name: 'Benson, Chris', value: 2, city_code: 'Columbus, GA', lines: 2, user_id: 9001, matched_name: 'Chris Benson', match_tier: 2 },
+    { rank: 2, raw_name: 'Sawyer III, Darrell', value: 1, city_code: 'Muscogee', lines: 1, user_id: 9002, matched_name: 'Darrell Sawyer', match_tier: 1 }
   ]
 };
 
@@ -218,10 +245,14 @@ async function homeCards() {
   has('the revenue card is titled', html, 'Top Revenue');
   has('the battery card is titled', html, 'Most Batteries Sold');
   has('the week is named on the card', html, 'Aug 17 - Aug 23, 2026');
-  has('money is formatted', html, '$5,110.55');
-  has('a whole-dollar total still gets cents', html, '$3,980.00');
-  has('batteries are a plain count, not money', html, '>14<');
-  lacks('and carry no dollar sign', html, '$14');
+  // Tony 2026-08-28: the revenue card shows WHERE, not how much. The order
+  // already says who won; the figures stay behind the permission.
+  lacks('no dollar figure on the revenue card', html, '$5,110.55');
+  lacks('none at all, in fact', html, '$');
+  has('the location takes its place', html, 'VAB');
+  has('for the person from another market too', html, 'CHE');
+  has('and it is styled as a quiet aside, not a headline number', html, 'lb-where');
+  has('batteries keep their count - there the number IS the achievement', html, '>14<');
   has('the viewer is flagged on their own row', html, 'lb-you');
   has('five rows on the revenue card', html, '>5<');
   has('an unmatched name is shown as unmatched', html, 'lb-unmatched');
@@ -269,7 +300,7 @@ async function homeCardsEdges() {
   loadLeaderboard(env3);
   await env3.w.renderHomeScreen(host3);
   has('the missing board says so', host3.innerHTML, 'Nothing uploaded for this board yet.');
-  has('the other one still renders', host3.innerHTML, '$5,110.55');
+  has('the other one still renders', host3.innerHTML, 'Chris Benson');
 
   // The endpoint failing must not take the home screen down with it.
   const env4 = makeWindow({ perms: [], fixtures: { 'GET /leaderboard/home': { __error: 'boom' } } });
@@ -454,6 +485,89 @@ async function uploadFlow() {
   has('and the result is reported', env.w.toasts[env.w.toasts.length - 1].m, '3 people');
 }
 
+async function countingBoard() {
+  console.log('The battery board: counting calls, not adding a column');
+  var imported = null;
+  const env = makeWindow({
+    perms: ['manage_leaderboard'],
+    fixtures: {
+      'GET /leaderboard': WEEK_LIST,
+      // The real route echoes back the rule it was given, so the fixture does
+      // too - otherwise a redraw silently resets what the user just ticked and
+      // the test would be checking the fixture instead of the code.
+      'POST /leaderboard/preview': function (body) {
+        var out = JSON.parse(JSON.stringify(COUNT_PREVIEW));
+        if (body && body.match_text !== undefined) out.suggestion.match_text = body.match_text;
+        if (body && Array.isArray(body.status_values)) out.suggestion.status_values = body.status_values;
+        return out;
+      },
+      'GET /leaderboard/week/4': WEEK_DETAIL,
+      'POST /leaderboard/import': function (body) {
+        imported = body;
+        return { ok: true, week_id: 4, replaced: false, rows: 2, matched: 2, unmatched: 0, skipped: {} };
+      }
+    }
+  });
+  loadLeaderboard(env);
+  const doc = env.w.document;
+  const host = doc.getElementById('content');
+  await env.w.renderLeaderboards(host);
+  env.w.lbUploadModal();
+  doc.getElementById('lb-metric').value = 'batteries';
+
+  const blob = new env.w.Blob(['x'], { type: 'text/csv' });
+  const file = new env.w.File([blob], 'calls.csv', { type: 'text/csv' });
+  const input = doc.getElementById('lb-file');
+  Object.defineProperty(input, 'files', { value: [file], configurable: true });
+  await new Promise(function (resolve) { env.w.lbPickFile(input); setTimeout(resolve, 60); });
+
+  const step2 = doc.getElementById('lb-step2').innerHTML;
+  has('it asks what makes a call count', step2, 'Count a call when');
+  has('and how the call had to end', step2, 'and the call ended like this');
+  lacks('there is no column-summing tick list on this board', step2, 'they are added together');
+  eq('the Task column is picked', doc.getElementById('lb-match-col').value, '2');
+  eq('and the word to look for is batt', doc.getElementById('lb-match-text').value, 'batt');
+  eq('the Status column is picked', doc.getElementById('lb-status-col').value, '3');
+  has('every status in the file is offered', step2, 'Canceled');
+  has('with how many rows carry it', step2, '4 rows');
+  ok('Completed is ticked', doc.querySelector('#lb-status-values .lb-sv[value="Completed"]').checked === true);
+  ok('Canceled is not', doc.querySelector('#lb-status-values .lb-sv[value="Canceled"]').checked === false);
+  ok('nor GOA', doc.querySelector('#lb-status-values .lb-sv[value="GOA"]').checked === false);
+  has('the rule is spelled out in words', step2, 'Counting calls where Task contains');
+  has('naming the statuses that count', step2, 'Status is Completed');
+  has('the calls that were something else are accounted for', step2, '1 call(s) were something else');
+  has('and so are the ones that did not finish', step2, '2 matching call(s) did not end in a status you ticked');
+  has('the preview column is calls, not batteries', step2, '>Calls<');
+  lacks('and a person with two calls is not described as rows added up', step2, 'rows added up');
+
+  // Changing the rule asks the server again, with the new rule.
+  doc.getElementById('lb-match-text').value = 'lockout';
+  doc.querySelector('#lb-status-values .lb-sv[value="GOA"]').checked = true;
+  await env.w.lbRefreshPreview();
+  var last = env.calls.filter(function (c) { return c.path === '/leaderboard/preview'; }).pop();
+  eq('the new word is sent', last.body.match_text, 'lockout');
+  eq('with every ticked status', last.body.status_values, ['Completed', 'GOA']);
+  eq('and the mode, so the server counts rather than adds', last.body.mode, 'count');
+  eq('no value columns are sent on a counting board', last.body.value_cols, undefined);
+
+  // Emptying the word blocks the import rather than counting every call.
+  doc.getElementById('lb-match-text').value = '';
+  var before = env.calls.length;
+  await env.w.lbImport();
+  eq('an empty rule sends nothing', env.calls.length, before);
+  has('and says what is missing', env.w.toasts[env.w.toasts.length - 1].m, 'has to contain');
+
+  doc.getElementById('lb-match-text').value = 'batt';
+  await env.w.lbImport();
+  ok('the import went through', !!imported);
+  eq('it counts', imported.mode, 'count');
+  eq('on the Task column', imported.match_col, '2');
+  eq('for the word batt', imported.match_text, 'batt');
+  eq('filtered to the ticked statuses', imported.status_values, ['Completed', 'GOA']);
+  eq('the browser sends no numbers here either', imported.rows, undefined);
+  ok('and no value columns', imported.value_cols === undefined);
+}
+
 async function winsInThePairSlot() {
   console.log('Recent Wins in the slot Recent Activity used to hold');
   const WINS = { city: 'VAB', wins: [
@@ -483,7 +597,7 @@ async function winsInThePairSlot() {
   has('with the win itself', winsSlot.innerHTML, 'Drove back out at 9pm.');
   lacks('and no longer carries its own bottom margin inside the grid', winsSlot.innerHTML, 'margin-bottom:24px');
   eq('the pair stays two columns when there are wins', pair.style.gridTemplateColumns, '1fr 1fr');
-  has('and the leaderboards filled too - both wrappers ran', env.w.document.getElementById('home-leaders').innerHTML, '$5,110.55');
+  has('and the leaderboards filled too - both wrappers ran', env.w.document.getElementById('home-leaders').innerHTML, 'Top Revenue');
 
   // A quiet week: no wins at all.
   const env2 = makeWindow({
@@ -512,6 +626,7 @@ async function main() {
   await adminScreen();
   await weekDetail();
   await uploadFlow();
+  await countingBoard();
   await winsInThePairSlot();
   console.log('');
   console.log(pass + ' passed, ' + fail + ' failed');
