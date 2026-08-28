@@ -2347,6 +2347,28 @@ async function initDB() {
       'CREATE INDEX IF NOT EXISTS idx_invoices_split_group ON invoices(split_group_id);' +
       'CREATE INDEX IF NOT EXISTS idx_invoices_followup ON invoices(followup_task_id);'
     );
+    // ---- Canceled invoices -------------------------------------------------
+    // A fourth status, 'canceled': the job did not happen. The customer declined
+    // the price, nobody was there, the job could not be done, or the invoice was
+    // written twice. It is NOT a refund -- no money ever moved -- so it must not
+    // go anywhere near the refund ledger, and the badge must not be red.
+    //
+    // ⚠️ The money columns are deliberately NOT zeroed. grand_total keeps what was
+    // quoted, because the one thing worth looking at later is what the customer
+    // turned down. Every REPORT excludes canceled rows instead; see the parts
+    // report in routes/invoices.js. Zeroing the row would destroy that evidence
+    // and could not be undone by a reopen.
+    //
+    // invoices.status is a plain VARCHAR(20) with no CHECK constraint, so the new
+    // value needs no migration -- nothing existing becomes canceled.
+    await client.query(
+      'ALTER TABLE invoices ADD COLUMN IF NOT EXISTS canceled_at TIMESTAMPTZ;' +
+      'ALTER TABLE invoices ADD COLUMN IF NOT EXISTS canceled_by INTEGER REFERENCES users(id) ON DELETE SET NULL;' +
+      // One of the four keys in CANCEL_REASONS (routes/invoices.js). Stored as the
+      // key, not the label, so the wording can be reworded without a migration.
+      'ALTER TABLE invoices ADD COLUMN IF NOT EXISTS cancel_reason VARCHAR(40);' +
+      'ALTER TABLE invoices ADD COLUMN IF NOT EXISTS cancel_note TEXT;'
+    );
     // Pay types that are BILLED rather than collected in the field. An invoice on
     // one of these completes straight away instead of going to Waiting for
     // Payment, because nobody is going to chase the customer for it. A setting,
@@ -5915,7 +5937,7 @@ async function initDB() {
       '  file_hash VARCHAR(64),' +
       '  sheet_name VARCHAR(255),' +
       '  name_column VARCHAR(255),' +
-      '  value_column VARCHAR(255),' +
+      '  value_column VARCHAR(500),' +
       '  city_column VARCHAR(255),' +
       '  row_count INTEGER DEFAULT 0,' +
       '  matched_count INTEGER DEFAULT 0,' +
@@ -5928,7 +5950,7 @@ async function initDB() {
     );
     var _lbwCols = ['metric VARCHAR(20)', 'week_start DATE', 'file_name VARCHAR(255)',
       'file_hash VARCHAR(64)', 'sheet_name VARCHAR(255)', 'name_column VARCHAR(255)',
-      'value_column VARCHAR(255)', 'city_column VARCHAR(255)', 'row_count INTEGER DEFAULT 0',
+      'value_column VARCHAR(500)', 'city_column VARCHAR(255)', 'row_count INTEGER DEFAULT 0',
       'matched_count INTEGER DEFAULT 0', 'total_value NUMERIC(14,2) DEFAULT 0',
       'uploaded_by INTEGER', 'uploaded_by_name VARCHAR(255)',
       'created_at TIMESTAMPTZ DEFAULT NOW()', 'updated_at TIMESTAMPTZ DEFAULT NOW()'];
@@ -5953,16 +5975,23 @@ async function initDB() {
       '  raw_name VARCHAR(255) NOT NULL,' +
       '  match_tier INTEGER,' +
       '  value NUMERIC(14,2) NOT NULL DEFAULT 0,' +
-      '  city_code VARCHAR(10),' +
+      '  city_code VARCHAR(40),' +
       '  created_at TIMESTAMPTZ DEFAULT NOW()' +
       ');'
     );
     var _lbeCols = ['week_id INTEGER', 'rank INTEGER', 'user_id INTEGER', 'raw_name VARCHAR(255)',
-      'match_tier INTEGER', 'value NUMERIC(14,2) NOT NULL DEFAULT 0', 'city_code VARCHAR(10)',
+      'match_tier INTEGER', 'value NUMERIC(14,2) NOT NULL DEFAULT 0', 'city_code VARCHAR(40)',
       'created_at TIMESTAMPTZ DEFAULT NOW()'];
     for (var _lbei = 0; _lbei < _lbeCols.length; _lbei++) {
       await client.query('ALTER TABLE leaderboard_entries ADD COLUMN IF NOT EXISTS ' + _lbeCols[_lbei] + ';');
     }
+    // The city on a leaderboard row is whatever the sheet's location column
+    // said - "Columbus, GA" on a Pulsar export, not a three-letter Nova city
+    // code - so 10 characters was never going to be enough.
+    await client.query('ALTER TABLE leaderboard_entries ALTER COLUMN city_code TYPE VARCHAR(40);');
+    // Four money columns summed into one label: "Collected Cash + Collected
+    // Check + Collected CC + Collected Account" does not fit in 255 forever.
+    await client.query('ALTER TABLE leaderboard_weeks ALTER COLUMN value_column TYPE VARCHAR(500);');
     await client.query('CREATE INDEX IF NOT EXISTS leaderboard_entries_week_idx ON leaderboard_entries (week_id, rank);');
     await client.query('CREATE INDEX IF NOT EXISTS leaderboard_entries_user_idx ON leaderboard_entries (user_id);');
 

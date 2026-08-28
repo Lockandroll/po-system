@@ -1,6 +1,17 @@
 # Nova — Invoice close-out bar + Cancel status (plan, not yet built)
 
-_Drafted 2026-08-28 for Tony. Nothing in this has been coded yet._
+_Drafted 2026-08-28 for Tony. **BUILT and VERIFIED the same day** — 67 assertions against a real
+Postgres (`test-invoice-cancel.js`) and 65 render assertions against the real app.js
+(`test-invoice-cancel-dom.js`), all green. v426 / sw v426. Not committed; Tony commits and pushes._
+
+**Two questions were left open in this plan and were answered during the build:**
+
+1. **A canceled invoice still prints and emails.** It carries a `CANCELED — NO CHARGE` banner under
+   the header, `STATUS: CANCELED`, and every total at $0.00. The line items still show what was
+   quoted, because that is the useful part; no number on the page reads as an amount owed.
+2. **The Pulsar payment-type token is configurable, not hard-coded.** It comes from
+   `pulsar_pay_type_map.__canceled` in settings and defaults to `Canceled`. If Pulsar wants a
+   different word, it changes in Invoice Setup with no deploy.
 
 ## What Tony asked for
 
@@ -192,8 +203,21 @@ disabled when a gate fails while Cancel stays live; canceled invoice renders the
 cancel banner with reason and author, and a Pulsar card whose six copy values are
 `<number>, 0.00, 0.00, 0.00, Canceled, 0.00`.
 
-## 8. Open question
+## 8. What the build added beyond this plan
 
-Should a canceled invoice still be printable / emailable to the customer? Current thinking: yes,
-but the PDF prints **CANCELED — NO CHARGE** across it and every total at $0.00. Needs Tony's call
-before `utils/invoicePdf.js` is touched.
+Found while wiring it up, all of it enforced on both sides:
+
+- **Every other endpoint had to learn to refuse a canceled invoice**, not just complete/waiting:
+  `/pay-method` (which re-prices), `/collect-payment` (which would charge a real card for a job
+  that did not happen), and `PUT /:id`. All four say the same sentence, and it always names Reopen.
+- **`PUT /:id` refuses admins too.** Editing a canceled invoice would leave it carrying
+  "canceled by Tony, customer declined" while live — and that string prints on the PDF.
+- **`graceLeft()` had to learn which stamp to read.** It keyed on `completed_at`, which is NULL on
+  a canceled invoice, so the 15-minute undo would have reported "expired" the instant it was
+  cancelled and sent every mis-tap to an admin.
+- **Canceled is filtered OUT of the edit form's Status dropdown** (it is still in the list filter).
+  A dropdown Save reads cannot collect a reason, and the server refuses a cancel without one.
+- **Cancelling out of Waiting for Payment clears `waiting_since` and closes the chase task**, or the
+  invoice keeps ageing on a debt nobody is owed and a tech keeps being told to collect it.
+- **The cancel dialog names the actual parts** on the invoice in its warning, and says what to do
+  instead if a part really was cut.

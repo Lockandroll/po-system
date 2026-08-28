@@ -34,7 +34,7 @@ function fmtDateTime(d) {
 }
 
 function statusLabel(s) {
-  return { draft: 'Draft', completed: 'Completed', paid: 'Paid' }[s] || (s ? String(s) : '');
+  return { draft: 'Draft', completed: 'Completed', paid: 'Paid', canceled: 'CANCELED' }[s] || (s ? String(s) : '');
 }
 
 // inv: invoice row. items: line_items rows. photos: [{ buffer, caption }] (already
@@ -75,6 +75,13 @@ function buildInvoicePdf(inv, items, photos, opts) {
         .text('Locksmith: ' + (inv.locksmith_name || inv.locksmith_name_join || ''), { width: pageW, align: 'right' })
         .text('Date: ' + fmtDate(inv.invoice_date || inv.created_at), { width: pageW, align: 'right' });
 
+      // A canceled invoice can still be printed or emailed -- a customer who
+      // declined a price sometimes wants the paperwork showing they were not
+      // charged. It must be unmistakable at a glance, though: a canceled invoice
+      // that looks like a normal one is a document somebody can present as a
+      // bill. Hence a banner at the top AND every total at zero further down.
+      var isCanceled = inv.status === 'canceled';
+
       // Company address (left, under logo/name)
       var afterHead = Math.max(doc.y, headTop + 52);
       if (company.name && logoBuf) {
@@ -89,6 +96,18 @@ function buildInvoicePdf(inv, items, photos, opts) {
       doc.save().rect(left, doc.y, pageW, 3).fill('#f97316').restore();
       doc.y += 12;
       doc.fillColor('#111111');
+
+      // The banner replaces nothing and hides nothing -- it sits above the whole
+      // document so there is no way to read the page without seeing it first.
+      if (isCanceled) {
+        var banY = doc.y;
+        doc.save().rect(left, banY, pageW, 26).fill('#fde68a').restore();
+        doc.save().rect(left, banY, 4, 26).fill('#b45309').restore();
+        doc.font('Helvetica-Bold').fontSize(11).fillColor('#7c2d12')
+          .text('CANCELED \u2014 NO CHARGE', left + 12, banY + 8, { width: pageW - 24 });
+        doc.y = banY + 34;
+        doc.fillColor('#111111');
+      }
 
       // ---- Two-column info ----
       function sectionHeader(text, x, w) {
@@ -207,6 +226,9 @@ function buildInvoicePdf(inv, items, photos, opts) {
       // ---- Totals ----
       doc.y += 6;
       ensureRoom(120);
+      // ⚠️ On a canceled invoice every figure below prints as zero. The line
+      // items above still show what was quoted, which is the useful part, but no
+      // number on this document may read as an amount owed.
       var totX = right - 220, totLblW = 130, totValW = 90;
       function totRow(label, val, bold) {
         doc.font(bold ? 'Helvetica-Bold' : 'Helvetica').fontSize(bold ? 11 : 9).fillColor(bold ? '#111111' : '#555555');
@@ -215,23 +237,29 @@ function buildInvoicePdf(inv, items, photos, opts) {
         doc.font(bold ? 'Helvetica-Bold' : 'Helvetica').fillColor('#111111').text(val, totX + totLblW, ty, { width: totValW, align: 'right' });
         doc.y = ty + (bold ? 16 : 13);
       }
-      totRow('Labor Amount', money(inv.labor_amount));
-      totRow('Parts Amount', money(inv.parts_amount));
-      totRow('Sub-Total', money(inv.subtotal));
-      totRow('Sales Tax', money(inv.tax_amount));
+      var zero = function (v) { return isCanceled ? 0 : v; };
+      totRow('Labor Amount', money(zero(inv.labor_amount)));
+      totRow('Parts Amount', money(zero(inv.parts_amount)));
+      totRow('Sub-Total', money(zero(inv.subtotal)));
+      totRow('Sales Tax', money(zero(inv.tax_amount)));
       // The surcharge must be itemised on the customer copy. Card network rules
       // require it be disclosed as its own amount, and a chargeback that argues
       // "I was charged more than the invoice said" is won or lost on this line.
-      if (parseFloat(inv.surcharge_amount)) {
+      if (!isCanceled && parseFloat(inv.surcharge_amount)) {
         var _sRate = parseFloat(inv.surcharge_rate) || 0;
         totRow('Card Surcharge' + (_sRate > 0 ? ' (' + _sRate + '%)' : ''), money(inv.surcharge_amount));
       }
-      if (parseFloat(inv.tip_amount)) totRow('Tip', money(inv.tip_amount));
+      if (!isCanceled && parseFloat(inv.tip_amount)) totRow('Tip', money(inv.tip_amount));
       hr(doc.y + 1, '#111111'); doc.y += 4;
-      totRow('Grand Total', money(inv.grand_total), true);
+      totRow(isCanceled ? 'Total Charged' : 'Grand Total', money(zero(inv.grand_total)), true);
+      if (isCanceled) {
+        doc.font('Helvetica-Bold').fontSize(9).fillColor('#b45309')
+          .text('CANCELED \u2014 NO CHARGE', totX - 60, doc.y, { width: totLblW + totValW + 60, align: 'right' });
+        doc.y += 14;
+      }
       // Refunds never rewrite the invoice above, so the customer copy shows the
       // original total and then what has come back off it.
-      var refundedTotal = parseFloat(inv.refunded_total) || 0;
+      var refundedTotal = isCanceled ? 0 : (parseFloat(inv.refunded_total) || 0);
       if (refundedTotal > 0) {
         totRow('Refunded', '-' + money(refundedTotal));
         hr(doc.y + 1, '#111111'); doc.y += 4;

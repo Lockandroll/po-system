@@ -22,13 +22,20 @@ var PC = require('./pulsarCash');
 
 // The two boards. 'hints' are header words that mean "this is the number";
 // they are matched as substrings of a squashed header, most-specific first.
+//
+// 'preset' is a group of headers that belong TOGETHER, and it beats every hint
+// when the whole group is present. Revenue on a Pulsar call export is not one
+// column: money arrives as cash, a check, a card or on account, and the four
+// have to be added. Guessing one of them - or worse, "Tech Paid Gross", which
+// is what the TECH earned - is exactly the wrong answer, so the group wins.
 var METRICS = {
   revenue: {
     key: 'revenue',
     label: 'Top Revenue',
     unit: 'money',
-    hints: ['revenue', 'total sales', 'gross sales', 'sales', 'gross', 'total collected',
-            'collected', 'amount', 'total', 'ticket', 'invoiced', 'billed']
+    preset: ['collected cash', 'collected check', 'collected cc', 'collected account'],
+    hints: ['total collected', 'collected', 'revenue', 'total sales', 'gross sales',
+            'sales', 'total', 'amount', 'ticket', 'invoiced', 'billed', 'gross']
   },
   batteries: {
     key: 'batteries',
@@ -48,6 +55,13 @@ var NAME_HINTS = ['tech id', 'tech name', 'technician', 'employee name', 'employ
 
 // Header words that mean "this column is the city / market".
 var CITY_HINTS = ['city code', 'city', 'location', 'market', 'branch', 'store', 'shop', 'office'];
+
+// Numeric columns that are never the board's number, whatever else their header
+// says. 'Tech Paid Gross' is what the technician EARNED and it sits right next
+// to the money on a Pulsar export; picking it would put the highest-paid person
+// on a board labelled revenue. 'Charged' is what was billed, not what came in.
+var NOT_VALUE_HINTS = ['tech paid', 'paid gross', 'cost of goods', 'cost', 'mileage',
+                       'cycle time', 'charged', 'tax', 'discount', 'commission'];
 
 // Rows whose name cell is one of these are the sheet's own summary lines, not
 // people. They would otherwise win every board by a mile.
@@ -280,28 +294,47 @@ function analyzeSheet(grid, metric) {
     });
   }
 
-  // Value: header hint first; failing that, the mostly-numeric column with the
-  // largest total, which on a revenue export is the money and on a battery
-  // export is the count. Never the same column as the name.
-  var valueCol = -1, valueScore = 0;
-  cols.forEach(function (c) {
-    if (!c.filled || c.index === nameCol) return;
-    if (c.numeric_ratio < 0.5) return;
-    var s = hintScore(c.raw_header, m.hints);
-    if (s > valueScore) { valueScore = s; valueCol = c.index; }
-  });
-  if (valueCol === -1) {
+  // Value: a SET of columns, summed. Usually one, but a Pulsar export splits
+  // the money four ways and all four are the same number.
+  //
+  //   1. the metric's preset, if every column in it is on this sheet
+  //   2. the best header hint
+  //   3. the mostly-numeric column with the largest total
+  //
+  // A column on NOT_VALUE_HINTS is never picked automatically at steps 2 or 3.
+  // It can still be ticked by hand - this decides the default, not the rules.
+  var valueCols = [], valueScore = 0, presetHit = false;
+  if (m.preset && m.preset.length) {
+    var found = [];
+    m.preset.forEach(function (want) {
+      cols.forEach(function (c) { if (squash(c.raw_header) === want) found.push(c.index); });
+    });
+    if (found.length === m.preset.length) { valueCols = found; presetHit = true; }
+  }
+  if (!valueCols.length) {
+    var pick = -1;
+    cols.forEach(function (c) {
+      if (!c.filled || c.index === nameCol) return;
+      if (c.numeric_ratio < 0.5) return;
+      if (hintScore(c.raw_header, NOT_VALUE_HINTS) > 0) return;
+      var sc = hintScore(c.raw_header, m.hints);
+      if (sc > valueScore) { valueScore = sc; pick = c.index; }
+    });
+    if (pick !== -1) valueCols = [pick];
+  }
+  if (!valueCols.length) {
     var best = null;
     cols.forEach(function (c) {
       if (!c.filled || c.index === nameCol || c.numeric_ratio < 0.5) return;
+      if (hintScore(c.raw_header, NOT_VALUE_HINTS) > 0) return;
       if (!best || Math.abs(c.total) > Math.abs(best.total)) best = c;
     });
-    if (best) valueCol = best.index;
+    if (best) valueCols = [best.index];
   }
 
   var cityCol = -1, cityScore = 0;
   cols.forEach(function (c) {
-    if (!c.filled || c.index === nameCol || c.index === valueCol) return;
+    if (!c.filled || c.index === nameCol || valueCols.indexOf(c.index) !== -1) return;
     var s = hintScore(c.raw_header, CITY_HINTS);
     if (s > cityScore) { cityScore = s; cityCol = c.index; }
   });
@@ -309,10 +342,24 @@ function analyzeSheet(grid, metric) {
   return {
     header_row: headerRow,
     columns: cols,
-    suggestion: { name: nameCol, value: valueCol, city: cityCol },
-    confident: nameCol !== -1 && valueCol !== -1 && nameScore > 0 && valueScore > 0,
+    suggestion: { name: nameCol, values: valueCols, city: cityCol },
+    preset_used: presetHit,
+    confident: nameCol !== -1 && valueCols.length > 0 && nameScore > 0 && (presetHit || valueScore > 0),
     preview: grid.slice(headerRow, headerRow + 9)
   };
+}
+
+// Normalise whatever the caller sent for the value columns into a clean array
+// of indices: an array, a single number, or "3,4,5".
+function valueColList(v) {
+  if (v === null || v === undefined || v === '') return [];
+  var raw = Array.isArray(v) ? v : String(v).split(',');
+  var out = [];
+  raw.forEach(function (x) {
+    var n = parseInt(x, 10);
+    if (n >= 0 && out.indexOf(n) === -1) out.push(n);
+  });
+  return out;
 }
 
 /*
@@ -327,7 +374,7 @@ function extractRows(grid, opts) {
   var headerRow = parseInt(opts.header_row, 10);
   if (!(headerRow >= 0)) headerRow = 0;
   var nameCol = parseInt(opts.name_col, 10);
-  var valueCol = parseInt(opts.value_col, 10);
+  var valueCols = valueColList(opts.value_cols !== undefined ? opts.value_cols : opts.value_col);
   var cityCol = opts.city_col === null || opts.city_col === undefined || opts.city_col === '' ? -1 : parseInt(opts.city_col, 10);
   var skipped = { no_name: 0, no_value: 0, total_row: 0 };
   var byKey = {};
@@ -338,8 +385,15 @@ function extractRows(grid, opts) {
     var name = String(row[nameCol] === undefined ? '' : row[nameCol]).trim();
     if (name === '') { skipped.no_name++; continue; }
     if (TOTAL_ROW.test(name)) { skipped.total_row++; continue; }
-    var value = toNumber(row[valueCol]);
-    if (value === null) { skipped.no_value++; continue; }
+    // A call paid entirely by card has three of the four money columns blank.
+    // Blank is not "unreadable" when a sibling column has a number in it - the
+    // row only fails when NONE of the chosen columns can be read.
+    var value = 0, readable = false;
+    for (var vc = 0; vc < valueCols.length; vc++) {
+      var one = toNumber(row[valueCols[vc]]);
+      if (one !== null) { value += one; readable = true; }
+    }
+    if (!readable) { skipped.no_value++; continue; }
     var key = squash(name);
     if (!byKey[key]) {
       byKey[key] = { raw_name: name, value: 0, city_code: '', lines: 0 };
@@ -347,8 +401,10 @@ function extractRows(grid, opts) {
     }
     byKey[key].value += value;
     byKey[key].lines++;
+    // Kept as the sheet wrote it. On a Pulsar export this is "Columbus, GA",
+    // not a Nova city code, and shouting it in a table helps nobody.
     if (cityCol >= 0 && !byKey[key].city_code) {
-      byKey[key].city_code = String(row[cityCol] === undefined ? '' : row[cityCol]).trim().toUpperCase().slice(0, 10);
+      byKey[key].city_code = String(row[cityCol] === undefined ? '' : row[cityCol]).trim().slice(0, 40);
     }
   }
 
@@ -459,6 +515,7 @@ module.exports = {
   isMetric: isMetric,
   NAME_HINTS: NAME_HINTS,
   CITY_HINTS: CITY_HINTS,
+  NOT_VALUE_HINTS: NOT_VALUE_HINTS,
   cellText: cellText,
   toNumber: toNumber,
   csvGrid: csvGrid,
@@ -468,6 +525,7 @@ module.exports = {
   profileColumns: profileColumns,
   analyzeSheet: analyzeSheet,
   extractRows: extractRows,
+  valueColList: valueColList,
   buildResolver: buildResolver,
   lastMonday: lastMonday,
   weekLabel: weekLabel,

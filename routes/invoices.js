@@ -21,6 +21,30 @@ const router = express.Router();
 // so there is a record, not through a silent edit.
 var LOCKED_STATUSES = ['paid', 'partially_refunded', 'refunded'];
 
+// 'canceled' is deliberately NOT in LOCKED_STATUSES. Locked means the money
+// settled and the way out is a refund, which leaves a ledger entry. Canceled
+// means no money ever moved and the way out is a reopen. Folding the two
+// together would put canceled invoices in front of the refund flow, which would
+// then try to return money that was never taken.
+var CANCELED_STATUS = 'canceled';
+
+// The four things that actually happen on a truck. Stored as the KEY on
+// invoices.cancel_reason so the wording can be reworded without a migration;
+// the label is what the UI and the audit trail show.
+var CANCEL_REASONS = {
+  declined: 'Customer declined the price',
+  no_show: 'Gone on arrival / no-show',
+  cannot_complete: 'Could not complete the job',
+  duplicate: 'Duplicate or wrong invoice'
+};
+
+// One sentence, used by every endpoint that has to turn a canceled invoice away.
+// They all say the same thing on purpose: the fix is always Reopen, never a
+// workaround somewhere else.
+function canceledRefusal(inv) {
+  return 'Invoice #' + inv.invoice_number + ' is canceled. If the job actually happened, reopen it first.';
+}
+
 function sanitizeName(n) {
   return String(n || 'photo').replace(/[^A-Za-z0-9._-]+/g, '_').slice(0, 120) || 'photo';
 }
@@ -369,7 +393,16 @@ router.get('/config', requireAuth, requirePermission('view_invoices'), async (re
     res.json({
       default_agreement: agreement, pay_types: pay_types, pulsar_pay_map: pulsar_pay_map,
       home_city: (hc.rows[0] && hc.rows[0].home_city) || null,
-      surcharge_enabled: sur_rate > 0, surcharge_rate: sur_rate
+      surcharge_enabled: sur_rate > 0, surcharge_rate: sur_rate,
+      // Shipped rather than duplicated in app.js. The server VALIDATES against
+      // CANCEL_REASONS, so a hardcoded client list would silently start posting
+      // keys the server rejects the moment either side is edited alone.
+      cancel_reasons: Object.keys(CANCEL_REASONS).map(function (k) { return { key: k, label: CANCEL_REASONS[k] }; }),
+      // What goes in Pulsar's payment-type field when the call closes canceled.
+      // Configurable through the same pulsar_pay_type_map setting the pay types
+      // already use, so it can be corrected without a deploy if Pulsar wants a
+      // different token.
+      pulsar_canceled_label: pulsar_pay_map.__canceled || 'Canceled'
     });
   } catch (err) {
     res.status(500).json({ error: 'Failed to fetch invoice config' });
@@ -413,6 +446,9 @@ router.post('/:id/pay-method', requireAuth, requirePermission('edit_invoice'), a
       return res.status(409).json({
         error: 'Invoice #' + inv.invoice_number + ' is already settled, so how it was paid can no longer change the amount. Use Issue Refund.'
       });
+    }
+    if (inv.status === CANCELED_STATUS) {
+      return res.status(409).json({ error: canceledRefusal(inv) });
     }
     const _existingRate = parseFloat(inv.surcharge_rate) || 0;
     const sur_rate = _existingRate > 0 ? _existingRate : await surchargeRate();
@@ -729,7 +765,12 @@ router.get('/parts-report', requireAuth, requirePermission('view_invoices'), asy
       "            FROM invoice_refund_lines l JOIN invoice_refunds r ON r.id = l.refund_id " +
       "            WHERE l.restock = true AND r.status IN ('approved', 'processed') " +
       "            GROUP BY l.invoice_line_item_id ) rs ON rs.invoice_line_item_id = li.id " +
-      "WHERE li.line_type = 'part' AND inv.invoice_date >= $1 AND inv.invoice_date < $2 " +
+      // ⚠️ A canceled job did not happen, so its parts are still on the truck.
+      // Without this the blank on a canceled invoice gets ordered AGAIN next
+      // month, and nothing in the report says why. This query filtered on date
+      // alone before canceling existed, so this line is the whole guard.
+      "WHERE li.line_type = 'part' AND inv.status <> 'canceled' " +
+      "  AND inv.invoice_date >= $1 AND inv.invoice_date < $2 " +
       "GROUP BY COALESCE(NULLIF(li.item_number, ''), p.item_number), li.description, p.preferred_vendor " +
       "HAVING SUM(li.quantity - COALESCE(rs.restocked_qty, 0)) > 0 " +
       "ORDER BY total_qty DESC",
@@ -871,6 +912,14 @@ router.get('/:id', requireAuth, requirePermission('view_invoices'), async (req, 
       .filter(function (r) { return r.status === 'requested'; })
       .reduce(function (sum, r) { return sum + (parseFloat(r.amount) || 0); }, 0) * 100) / 100;
     invoice.locked = LOCKED_STATUSES.indexOf(invoice.status) !== -1;
+    invoice.cancel_reason_label = invoice.cancel_reason ? (CANCEL_REASONS[invoice.cancel_reason] || invoice.cancel_reason) : null;
+    invoice.canceled_by_name = null;
+    if (invoice.canceled_by) {
+      try {
+        const cb = await pool.query('SELECT name FROM users WHERE id = $1', [invoice.canceled_by]);
+        invoice.canceled_by_name = (cb.rows[0] || {}).name || null;
+      } catch (e) {}
+    }
     // Latest Square payment attempt, so the view can show 'paid in Square'
     // with the real card data, or the stuck/offline state if it never settled.
     // Process state for the Complete button, the reopen grace period and the
@@ -881,7 +930,10 @@ router.get('/:id', requireAuth, requirePermission('view_invoices'), async (req, 
       invoice.can_complete = gatesPass(invoice.gates);
     } catch (e) { invoice.gates = []; invoice.can_complete = false; }
     invoice.reopen_seconds_left = graceLeft(invoice);
-    invoice.can_reopen_now = invoice.status === 'paid' && invoice.reopen_seconds_left > 0 && invoice.completed_by === req.user.id;
+    invoice.can_reopen_now = invoice.reopen_seconds_left > 0 && (
+      (invoice.status === 'paid' && invoice.completed_by === req.user.id) ||
+      (invoice.status === CANCELED_STATUS && invoice.canceled_by === req.user.id)
+    );
     invoice.billed_pay_types = await billedPayTypes();
     invoice.split_siblings = [];
     try {
@@ -932,7 +984,12 @@ router.get('/:id', requireAuth, requirePermission('view_invoices'), async (req, 
         [req.params.id]
       );
       const row = cg.rows[0] || {};
-      const cogs = Math.round((parseFloat(row.cogs) || 0) * 100) / 100;
+      // No job, no consumption, no cost of goods. The line snapshots stay on the
+      // row for the record, but the FIGURE a manager reads has to be zero or the
+      // margin on a canceled call reads as a loss the size of the parts.
+      const cogs = invoice.status === CANCELED_STATUS
+        ? 0
+        : Math.round((parseFloat(row.cogs) || 0) * 100) / 100;
       const unknown = parseInt(row.unknown_lines, 10) || 0;
       const uncosted = parseInt(row.uncosted_lines, 10) || 0;
       invoice.cogs = {
@@ -941,12 +998,18 @@ router.get('/:id', requireAuth, requirePermission('view_invoices'), async (req, 
         // explicitly marked "no cost available", and a legacy line the backfill
         // could not price. Reporting "all costed" over a partial figure is worse
         // than reporting no figure, because the tech has no reason to doubt it.
-        incomplete: invoice.cogs_incomplete === true || unknown > 0 || uncosted > 0,
+        // A canceled invoice is never "incomplete COGS" -- there is nothing left
+        // to cost, so the warning would send someone off to fill in numbers that
+        // must stay zero.
+        incomplete: invoice.status !== CANCELED_STATUS &&
+          (invoice.cogs_incomplete === true || unknown > 0 || uncosted > 0),
         unknown_lines: unknown,
         uncosted_lines: uncosted,
         costed_lines: parseInt(row.costed_lines, 10) || 0,
         part_lines: parseInt(row.part_lines, 10) || 0,
-        gross_profit: Math.round((((parseFloat(invoice.subtotal) || 0) - cogs)) * 100) / 100
+        gross_profit: invoice.status === CANCELED_STATUS
+          ? 0
+          : Math.round((((parseFloat(invoice.subtotal) || 0) - cogs)) * 100) / 100
       };
     } catch (e) {
       invoice.cogs = { total: parseFloat(invoice.parts_cost_total) || 0, incomplete: invoice.cogs_incomplete === true, unknown_lines: 0, uncosted_lines: 0, costed_lines: 0, part_lines: 0, gross_profit: 0 };
@@ -1698,6 +1761,11 @@ router.post('/:id/collect-payment', requireAuth, requirePermission('edit_invoice
     if (LOCKED_STATUSES.indexOf(inv.status) !== -1) {
       return res.status(409).json({ error: 'This invoice is already settled.' });
     }
+    // Nothing was charged and nothing is owed. Running a card against a canceled
+    // invoice would take real money for a job that did not happen.
+    if (inv.status === CANCELED_STATUS) {
+      return res.status(409).json({ error: canceledRefusal(inv) + ' Nothing was charged.' });
+    }
     if (_reqs.signature && !inv.signature_image) {
       return res.status(400).json({ error: 'A signature is required before this invoice can be paid.' });
     }
@@ -2229,8 +2297,12 @@ function gatesPass(gates) {
 // Seconds of reopen grace left, or 0. NULL completed_at (every invoice from
 // before this shipped) means no grace, which is the safe direction.
 function graceLeft(inv) {
-  if (!inv.completed_at) return 0;
-  const ms = COMPLETE_GRACE_MINUTES * 60000 - (Date.now() - new Date(inv.completed_at).getTime());
+  // ⚠️ Read the stamp that belongs to the status. A canceled invoice has a NULL
+  // completed_at, so keying on completed_at alone would report "no grace" and
+  // send every mis-tap to an admin.
+  const at = inv.status === CANCELED_STATUS ? inv.canceled_at : inv.completed_at;
+  if (!at) return 0;
+  const ms = COMPLETE_GRACE_MINUTES * 60000 - (Date.now() - new Date(at).getTime());
   return ms > 0 ? Math.floor(ms / 1000) : 0;
 }
 
@@ -2281,6 +2353,9 @@ router.post('/:id/complete', requireAuth, requirePermission('edit_invoice'), asy
     }
     if (LOCKED_STATUSES.indexOf(inv.status) !== -1) {
       return res.status(409).json({ error: 'This invoice is already completed.' });
+    }
+    if (inv.status === CANCELED_STATUS) {
+      return res.status(409).json({ error: canceledRefusal(inv) });
     }
     const items = (await pool.query('SELECT * FROM invoice_line_items WHERE invoice_id = $1', [inv.id])).rows;
     const _reqs = await accountCloseoutReqs(inv.account_id);
@@ -2341,6 +2416,9 @@ router.post('/:id/waiting', requireAuth, requirePermission('edit_invoice'), asyn
     }
     if (LOCKED_STATUSES.indexOf(inv.status) !== -1) {
       return res.status(409).json({ error: 'This invoice is already completed.' });
+    }
+    if (inv.status === CANCELED_STATUS) {
+      return res.status(409).json({ error: canceledRefusal(inv) });
     }
     const items = (await pool.query('SELECT * FROM invoice_line_items WHERE invoice_id = $1', [inv.id])).rows;
     const _reqs = await accountCloseoutReqs(inv.account_id);
@@ -2419,17 +2497,111 @@ router.post('/:id/waiting', requireAuth, requirePermission('edit_invoice'), asyn
   }
 });
 
-// The 15-minute undo. Deliberately narrow: the person who completed it, inside
-// the window. Everyone else still goes through an admin, exactly as before.
+// ---- Cancel ----------------------------------------------------------------
+// The job did not happen. The customer declined the price, nobody was there, the
+// job could not be done, or the invoice was written twice.
+//
+// ⚠️ Deliberately NOT gated on invoiceGates(). Every other close-out path is,
+// because a completed invoice has to be a valid one. A cancel is the opposite
+// case: a gone-on-arrival has no customer name and no line items, so gating this
+// would lock the button shut in exactly the situation it exists for.
+//
+// ⚠️ The money columns are NOT zeroed. grand_total keeps what was quoted, which
+// is the one thing worth reading later; the REPORTS exclude canceled rows
+// instead (parts report, COGS). Zeroing here could not be undone by a reopen.
+router.post('/:id/cancel', requireAuth, requirePermission('edit_invoice'), async (req, res) => {
+  try {
+    const r = await pool.query('SELECT * FROM invoices WHERE id = $1', [req.params.id]);
+    const inv = r.rows[0];
+    if (!inv) return res.status(404).json({ error: 'Invoice not found' });
+    if (!canSeeAll(req.user.role) && inv.locksmith_id !== req.user.id) {
+      return res.status(403).json({ error: 'Access denied' });
+    }
+    if (inv.status === CANCELED_STATUS) {
+      return res.status(409).json({ error: 'Invoice #' + inv.invoice_number + ' is already canceled.' });
+    }
+    // Money that settled cannot be walked back by flipping a status. That is what
+    // the refund flow is for, and it leaves a record; a cancel would not.
+    if (LOCKED_STATUSES.indexOf(inv.status) !== -1) {
+      return res.status(409).json({
+        error: 'Invoice #' + inv.invoice_number + ' is already settled, so it cannot be canceled. Issue a refund instead, which leaves a record of the money going back.'
+      });
+    }
+    // Belt and braces on the one that actually costs money. An invoice can carry a
+    // reconciled Square payment while its status has not caught up yet (the narrow
+    // writer in utils/square.js runs on a callback), and cancelling in that window
+    // would strand a real charge on a $0 job.
+    try {
+      const sq = await pool.query("SELECT id FROM invoice_payments WHERE invoice_id = $1 AND status = 'reconciled'", [inv.id]);
+      if (sq.rows.length) {
+        return res.status(409).json({ error: 'A card was already run in Square for invoice #' + inv.invoice_number + '. Use a refund so there is a record of the money going back.' });
+      }
+      // A charge still in flight has to land before anyone decides what happened.
+      const open = await pool.query(
+        "SELECT id FROM invoice_payments WHERE invoice_id = $1 AND status IN ('initiated','returned','offline_pending') ORDER BY id DESC LIMIT 1",
+        [inv.id]
+      );
+      if (open.rows.length) {
+        return res.status(409).json({ error: 'A Square payment for this invoice is still being confirmed. Wait for it to finish, then cancel if it did not go through.' });
+      }
+    } catch (e) { /* table may not exist yet on first deploy */ }
+
+    const b = req.body || {};
+    const reason = String(b.reason || '').trim();
+    if (!CANCEL_REASONS[reason]) {
+      return res.status(400).json({
+        error: 'Say what happened before cancelling this invoice.',
+        reasons: Object.keys(CANCEL_REASONS).map(function (k) { return { key: k, label: CANCEL_REASONS[k] }; })
+      });
+    }
+    const note = String(b.note || '').trim().slice(0, 2000);
+
+    const upd = await pool.query(
+      "UPDATE invoices SET status = 'canceled', canceled_at = NOW(), canceled_by = $1, " +
+      'cancel_reason = $2, cancel_note = $3, ' +
+      // Cancelling out of Waiting for Payment must clear the "waiting since"
+      // clock too, or the invoice keeps ageing on a debt nobody is owed.
+      'waiting_since = NULL, completed_at = NULL, completed_by = NULL, updated_at = NOW() ' +
+      'WHERE id = $4 RETURNING *',
+      [req.user.id, reason, note || null, inv.id]
+    );
+    // Nobody should be chasing money on a job that did not happen.
+    await closeFollowupTask(inv, req.user);
+    try {
+      await logAudit({
+        entity_type: 'invoice', entity_id: inv.id, entity_number: String(inv.invoice_number),
+        action: 'canceled', user_id: req.user.id, user_name: req.user.name,
+        details: {
+          reason: reason, reason_label: CANCEL_REASONS[reason], note: note || null,
+          from: inv.status, would_have_been: inv.grand_total
+        }
+      });
+    } catch (e) {}
+    res.json({ ok: true, invoice: upd.rows[0], grace_seconds: COMPLETE_GRACE_MINUTES * 60 });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Could not cancel the invoice' });
+  }
+});
+
+// The 15-minute undo, for a COMPLETED invoice, and the way back from a CANCELED
+// one. Deliberately narrow: the person who did it, inside the window. Everyone
+// else still goes through an admin, exactly as before.
+//
+// ⚠️ The grace rule is keyed off the ACTION, not off one column. A completed
+// invoice is graced on completed_at/completed_by; a canceled one on
+// canceled_at/canceled_by. Reading completed_by on a canceled invoice would find
+// NULL and hand every tech an unlimited reopen.
 router.post('/:id/reopen', requireAuth, requirePermission('edit_invoice'), async (req, res) => {
   try {
     const r = await pool.query('SELECT * FROM invoices WHERE id = $1', [req.params.id]);
     const inv = r.rows[0];
     if (!inv) return res.status(404).json({ error: 'Invoice not found' });
-    if (LOCKED_STATUSES.indexOf(inv.status) === -1) {
+    const wasCanceled = inv.status === CANCELED_STATUS;
+    if (!wasCanceled && LOCKED_STATUSES.indexOf(inv.status) === -1) {
       return res.status(400).json({ error: 'This invoice is not completed.' });
     }
-    if (inv.status !== 'paid') {
+    if (!wasCanceled && inv.status !== 'paid') {
       return res.status(409).json({ error: 'This invoice has refunds against it. Reopening it would strand them.' });
     }
 
@@ -2443,25 +2615,37 @@ router.post('/:id/reopen', requireAuth, requirePermission('edit_invoice'), async
     } catch (e) { /* table may not exist yet on first deploy */ }
 
     const isAdmin = ['admin', 'owner'].indexOf(req.user.role) !== -1;
+    const actor = wasCanceled ? inv.canceled_by : inv.completed_by;
     const left = graceLeft(inv);
-    const ownGrace = inv.completed_by === req.user.id && left > 0;
+    const ownGrace = actor === req.user.id && left > 0;
+    const verb = wasCanceled ? 'canceled' : 'completed';
     if (!isAdmin && !ownGrace) {
       return res.status(403).json({
-        error: inv.completed_by === req.user.id
+        error: actor === req.user.id
           ? 'The ' + COMPLETE_GRACE_MINUTES + ' minutes to undo this has passed. Ask an admin.'
-          : 'Only the person who completed this invoice can reopen it, and only for ' + COMPLETE_GRACE_MINUTES + ' minutes.'
+          : 'Only the person who ' + verb + ' this invoice can reopen it, and only for ' + COMPLETE_GRACE_MINUTES + ' minutes.'
       });
     }
 
+    // Every trace of the previous ending is cleared, both endings. Leaving a
+    // cancel_reason on a reopened invoice would print "canceled by Tony" on an
+    // invoice that is Active again.
     await pool.query(
-      "UPDATE invoices SET status = 'draft', completed_at = NULL, completed_by = NULL, updated_at = NOW() WHERE id = $1",
+      "UPDATE invoices SET status = 'draft', completed_at = NULL, completed_by = NULL, " +
+      'canceled_at = NULL, canceled_by = NULL, cancel_reason = NULL, cancel_note = NULL, ' +
+      'updated_at = NOW() WHERE id = $1',
       [inv.id]
     );
     try {
       await logAudit({
         entity_type: 'invoice', entity_id: inv.id, entity_number: String(inv.invoice_number),
         action: 'reopened', user_id: req.user.id, user_name: req.user.name,
-        details: { via: isAdmin && !ownGrace ? 'admin override' : 'grace period', seconds_after_completing: inv.completed_at ? Math.floor((Date.now() - new Date(inv.completed_at).getTime()) / 1000) : null }
+        details: {
+          via: isAdmin && !ownGrace ? 'admin override' : 'grace period',
+          from: inv.status,
+          seconds_after_completing: inv.completed_at ? Math.floor((Date.now() - new Date(inv.completed_at).getTime()) / 1000) : null,
+          seconds_after_canceling: inv.canceled_at ? Math.floor((Date.now() - new Date(inv.canceled_at).getTime()) / 1000) : null
+        }
       });
     } catch (e) {}
     const fresh = await pool.query('SELECT * FROM invoices WHERE id = $1', [inv.id]);
@@ -2606,6 +2790,13 @@ router.put('/:id', requireAuth, requirePermission('edit_invoice'), async (req, r
       return res.status(403).json({
         error: 'This invoice is ' + existing.status.split('_').join(' ') + ' and is locked. Use Issue Refund to change what the customer was charged, or ask an admin to correct a typo.'
       });
+    }
+    // A canceled invoice is frozen for EVERYONE, admins included. There is one
+    // way back and it is Reopen -- which clears the cancel columns as it goes.
+    // Allowing an edit here would leave a live invoice still carrying
+    // "canceled by Tony, customer declined", which then prints on the PDF.
+    if (existing.status === CANCELED_STATUS) {
+      return res.status(409).json({ error: canceledRefusal(existing) });
     }
     const b = req.body || {};
     const f = pickInvoiceFields(b);

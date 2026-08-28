@@ -219,14 +219,18 @@ router.post('/preview', manage, async function (req, res) {
     // those columns, so the preview and the import agree row for row.
     const a = LB.analyzeSheet(sheet.grid, metric);
     const nameCol = b.name_col === undefined || b.name_col === null || b.name_col === '' ? a.suggestion.name : parseInt(b.name_col, 10);
-    const valueCol = b.value_col === undefined || b.value_col === null || b.value_col === '' ? a.suggestion.value : parseInt(b.value_col, 10);
+    // The value is a SET of columns, summed - a Pulsar export splits the money
+    // across cash / check / card / account and all four are the revenue.
+    const sentCols = b.value_cols !== undefined ? b.value_cols : b.value_col;
+    const valueCols = (sentCols === undefined || sentCols === null || sentCols === '')
+      ? a.suggestion.values : LB.valueColList(sentCols);
     const cityCol = b.city_col === undefined || b.city_col === null || b.city_col === '' ? a.suggestion.city : parseInt(b.city_col, 10);
     const headerRow = b.header_row === undefined || b.header_row === null || b.header_row === '' ? a.header_row : parseInt(b.header_row, 10);
 
     var rows = [], skipped = { no_name: 0, no_value: 0, total_row: 0 }, resolved = [];
-    if (nameCol >= 0 && valueCol >= 0) {
+    if (nameCol >= 0 && valueCols.length) {
       const x = LB.extractRows(sheet.grid, {
-        header_row: headerRow, name_col: nameCol, value_col: valueCol, city_col: cityCol
+        header_row: headerRow, name_col: nameCol, value_cols: valueCols, city_col: cityCol
       });
       rows = x.rows; skipped = x.skipped;
       const resolver = LB.buildResolver(await roster());
@@ -244,8 +248,9 @@ router.post('/preview', manage, async function (req, res) {
       sheet: sheet.name,
       header_row: headerRow,
       columns: a.columns,
-      suggestion: { name: nameCol, value: valueCol, city: cityCol },
+      suggestion: { name: nameCol, values: valueCols, city: cityCol },
       auto: a.suggestion,
+      preset_used: a.preset_used === true,
       confident: a.confident,
       preview: a.preview,
       rows_found: rows.length,
@@ -276,17 +281,19 @@ router.post('/import', manage, async function (req, res) {
     const a = LB.analyzeSheet(sheet.grid, metric);
     const headerRow = b.header_row === undefined || b.header_row === null || b.header_row === '' ? a.header_row : parseInt(b.header_row, 10);
     const nameCol = b.name_col === undefined || b.name_col === null || b.name_col === '' ? a.suggestion.name : parseInt(b.name_col, 10);
-    const valueCol = b.value_col === undefined || b.value_col === null || b.value_col === '' ? a.suggestion.value : parseInt(b.value_col, 10);
+    const sentCols = b.value_cols !== undefined ? b.value_cols : b.value_col;
+    const valueCols = (sentCols === undefined || sentCols === null || sentCols === '')
+      ? a.suggestion.values : LB.valueColList(sentCols);
     const cityCol = b.city_col === undefined || b.city_col === null || b.city_col === '' ? a.suggestion.city : parseInt(b.city_col, 10);
     if (!(nameCol >= 0)) return bad(res, 'Tell Nova which column holds the name.');
-    if (!(valueCol >= 0)) return bad(res, 'Tell Nova which column holds the number.');
-    if (nameCol === valueCol) return bad(res, 'The name and the number cannot be the same column.');
+    if (!valueCols.length) return bad(res, 'Tick at least one column for the number.');
+    if (valueCols.indexOf(nameCol) !== -1) return bad(res, 'The name column cannot also be one of the number columns.');
 
     const x = LB.extractRows(sheet.grid, {
-      header_row: headerRow, name_col: nameCol, value_col: valueCol, city_col: cityCol
+      header_row: headerRow, name_col: nameCol, value_cols: valueCols, city_col: cityCol
     });
     if (!x.rows.length) {
-      return bad(res, 'Nothing readable came out of that sheet. Check the header row and the two columns.');
+      return bad(res, 'Nothing readable came out of that sheet. Check the header row and the columns you ticked.');
     }
     if (x.rows.length > MAX_ROWS) return bad(res, 'That sheet has more rows than a weekly board should. Check the file.');
 
@@ -295,7 +302,7 @@ router.post('/import', manage, async function (req, res) {
       const hit = resolver.resolve(r.raw_name);
       return {
         rank: i + 1, raw_name: r.raw_name.slice(0, 255), value: r.value,
-        city_code: (r.city_code || '').slice(0, 10) || null,
+        city_code: (r.city_code || '').slice(0, 40) || null,
         user_id: hit.user_id, match_tier: hit.tier
       };
     });
@@ -307,6 +314,9 @@ router.post('/import', manage, async function (req, res) {
       for (var k = 0; k < headers.length; k++) if (headers[k].index === i) return headers[k].header;
       return null;
     }
+    // What the week detail screen shows so somebody can see, months later,
+    // which columns this board was actually built from.
+    const valueLabel = valueCols.map(headerOf).filter(Boolean).join(' + ').slice(0, 500);
 
     await client.query('BEGIN');
     // Re-uploading a week REPLACES it. Uploading the wrong file is the likeliest
@@ -325,7 +335,7 @@ router.post('/import', manage, async function (req, res) {
         'value_column=$6, city_column=$7, row_count=$8, matched_count=$9, total_value=$10, ' +
         'uploaded_by=$11, uploaded_by_name=$12, updated_at=NOW() WHERE id=$1',
         [weekId, String(b.filename || '').slice(0, 255), hash, sheet.name, headerOf(nameCol),
-         headerOf(valueCol), cityCol >= 0 ? headerOf(cityCol) : null, rows.length, matched,
+         valueLabel, cityCol >= 0 ? headerOf(cityCol) : null, rows.length, matched,
          total, req.user.id, req.user.name]
       );
     } else {
@@ -334,7 +344,7 @@ router.post('/import', manage, async function (req, res) {
         'name_column, value_column, city_column, row_count, matched_count, total_value, ' +
         'uploaded_by, uploaded_by_name) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13) RETURNING id',
         [metric, week, String(b.filename || '').slice(0, 255), hash, sheet.name, headerOf(nameCol),
-         headerOf(valueCol), cityCol >= 0 ? headerOf(cityCol) : null, rows.length, matched,
+         valueLabel, cityCol >= 0 ? headerOf(cityCol) : null, rows.length, matched,
          total, req.user.id, req.user.name]
       );
       weekId = ins.rows[0].id;
@@ -354,7 +364,7 @@ router.post('/import', manage, async function (req, res) {
       entity_type: 'leaderboard', entity_id: weekId, entity_number: metric + ' ' + week,
       action: replaced ? 'edited' : 'created', user_id: req.user.id, user_name: req.user.name,
       details: { metric: metric, week_start: week, rows: rows.length, matched: matched,
-                 file: String(b.filename || ''), replaced: replaced },
+                 file: String(b.filename || ''), columns: valueLabel, replaced: replaced },
       ip: req.ip
     });
 

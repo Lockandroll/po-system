@@ -60,6 +60,13 @@
         'border-radius:4px;padding:1px 5px;margin-left:6px;vertical-align:1px}' +
       '.lb-unmatched{color:var(--text-muted-color);font-style:italic}' +
       '.lb-empty{text-align:center;padding:22px;color:var(--text-muted-color);font-size:13px}' +
+      '.lb-cols{max-height:186px;overflow:auto;border:1px solid var(--border-color);border-radius:8px;padding:4px 2px}' +
+      '.lb-col{display:flex;align-items:center;gap:8px;padding:5px 9px;border-radius:6px;cursor:pointer;font-size:13px}' +
+      '.lb-col:hover{background:var(--bg-color)}' +
+      '.lb-col input{width:15px;height:15px;flex-shrink:0;margin:0;accent-color:var(--primary)}' +
+      '.lb-col .h{font-weight:600;white-space:nowrap}' +
+      '.lb-col .s{color:var(--text-muted-color);font-size:12px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0}' +
+      '.lb-col.off .h,.lb-col.off .s{opacity:0.55}' +
       '@media (max-width:760px){.lb-home-grid{grid-template-columns:1fr !important}}';
     document.head.appendChild(st);
   }
@@ -221,7 +228,7 @@
         '<h2>' + esc(METRIC_LABEL[w.metric] || w.metric) + ' &middot; ' + esc(w.week_label) + '</h2>' +
         '<p>' + esc(w.file_name || 'uploaded file') + (w.sheet_name ? (' &middot; sheet ' + esc(w.sheet_name)) : '') +
         (w.name_column ? (' &middot; name from &ldquo;' + esc(w.name_column) + '&rdquo;') : '') +
-        (w.value_column ? (', number from &ldquo;' + esc(w.value_column) + '&rdquo;') : '') + '</p></div>' +
+        (w.value_column ? (', number from ' + esc(w.value_column)) : '') + '</p></div>' +
       '</div>' +
       (unmatched
         ? ('<div class="alert alert-warn">' + unmatched + ' name' + (unmatched === 1 ? '' : 's') +
@@ -327,20 +334,24 @@
   // board, where last time&#39;s picks mean nothing).
   window.lbRefreshPreview = async function (reset) {
     if (!_lbFile) return;
-    var box = el('lb-step2');
-    if (box) box.innerHTML = '<div class="loading">Reading the file&hellip;</div>';
     var body = {
       metric: val('lb-metric') || 'revenue',
       filename: _lbFile.name,
       file_base64: _lbFile.b64
     };
+    // Read the pickers BEFORE anything is drawn over them. The loading line
+    // below replaces the whole panel, so reading them afterwards sent blanks
+    // and the server quietly fell back to its own guess - which is to say,
+    // every column you changed by hand snapped back on the next redraw.
     if (!reset && _lbPrev) {
       body.sheet = val('lb-sheet') || _lbPrev.sheet;
       body.header_row = val('lb-header');
       body.name_col = val('lb-name-col');
-      body.value_col = val('lb-value-col');
+      body.value_cols = checkedValueCols();
       body.city_col = val('lb-city-col');
     }
+    var box = el('lb-step2');
+    if (box) box.innerHTML = '<div class="loading">Reading the file&hellip;</div>';
     try { _lbPrev = await api('POST', API + '/preview', body); }
     catch (e) {
       _lbPrev = null;
@@ -357,6 +368,40 @@
       return '<option value="' + c.index + '"' + (c.index === selected ? ' selected' : '') + '>' +
         esc(c.header) + (sample ? (' &mdash; ' + esc(sample.slice(0, 34))) : '') + '</option>';
     }).join('');
+  }
+
+  // The number is a SET of columns, not one. A Pulsar call export splits the
+  // money across Collected Cash / Check / CC / Account and revenue is all four
+  // added up, so this is a tick list rather than a dropdown - and the four are
+  // ticked for you when Nova recognises them.
+  function colChecks(cols, chosen) {
+    return '<div class="lb-cols" id="lb-value-cols">' + cols.map(function (c) {
+      var on = chosen.indexOf(c.index) !== -1;
+      var sample = (c.samples || []).slice(0, 2).join(', ');
+      return '<label class="lb-col' + (on ? '' : ' off') + '">' +
+        '<input type="checkbox" class="lb-vc" value="' + c.index + '"' + (on ? ' checked' : '') +
+          ' onchange="lbRefreshPreview()">' +
+        '<span class="h">' + esc(c.header) + '</span>' +
+        (sample ? ('<span class="s">' + esc(sample.slice(0, 40)) + '</span>') : '') +
+      '</label>';
+    }).join('') + '</div>';
+  }
+
+  function checkedValueCols() {
+    var out = [];
+    var boxes = document.querySelectorAll('#lb-value-cols .lb-vc');
+    for (var i = 0; i < boxes.length; i++) if (boxes[i].checked) out.push(parseInt(boxes[i].value, 10));
+    return out;
+  }
+
+  function valueSummary(cols, p) {
+    var chosen = p.suggestion.values || [];
+    if (!chosen.length) return 'Nothing ticked yet, so there is no number to rank on.';
+    var names = chosen.map(function (i) {
+      for (var k = 0; k < cols.length; k++) if (cols[k].index === i) return cols[k].header;
+      return null;
+    }).filter(Boolean);
+    return (chosen.length === 1 ? 'Ranking on ' : 'Adding up ') + names.join(' + ') + '.';
   }
 
   function drawPreview() {
@@ -394,12 +439,19 @@
           '<input type="number" id="lb-header" class="form-control" min="0" value="' + (p.header_row || 0) + '" onchange="lbRefreshPreview()"></div>' +
         '<div class="form-group" style="flex:1;min-width:180px"><label>Name column</label>' +
           '<select id="lb-name-col" class="form-control" onchange="lbRefreshPreview()">' + colOptions(cols, p.suggestion.name) + '</select></div>' +
-        '<div class="form-group" style="flex:1;min-width:180px"><label>' + (metric === 'revenue' ? 'Revenue' : 'Batteries') + ' column</label>' +
-          '<select id="lb-value-col" class="form-control" onchange="lbRefreshPreview()">' + colOptions(cols, p.suggestion.value) + '</select></div>' +
         '<div class="form-group" style="flex:1;min-width:150px"><label>City column (optional)</label>' +
           '<select id="lb-city-col" class="form-control" onchange="lbRefreshPreview()">' +
             '<option value="-1"' + (p.suggestion.city === -1 ? ' selected' : '') + '>&mdash; none &mdash;</option>' +
             colOptions(cols, p.suggestion.city) + '</select></div>' +
+      '</div>' +
+      '<div class="form-group">' +
+        '<label>' + (metric === 'revenue' ? 'Revenue' : 'Batteries') + ' &mdash; tick every column that counts, they are added together</label>' +
+        (p.preset_used
+          ? ('<div style="font-size:12px;color:#22c55e;margin:-2px 0 6px">Recognised a Pulsar export: the four Collected columns are ticked. ' +
+             'Tech Paid Gross is what the tech earned, not revenue, so it is not.</div>')
+          : '') +
+        colChecks(cols, p.suggestion.values || []) +
+        '<div id="lb-value-sum" style="font-size:12px;color:var(--text-muted-color);margin-top:5px">' + valueSummary(cols, p) + '</div>' +
       '</div>' +
       '<div style="font-size:12px;color:var(--text-muted-color);margin:2px 0 10px">' +
         p.rows_found + ' ' + (p.rows_found === 1 ? 'person' : 'people') + ' found' +
@@ -416,7 +468,7 @@
         : '');
 
     var btn = el('lb-import-btn');
-    if (btn) btn.disabled = !(p.rows_found > 0);
+    if (btn) btn.disabled = !(p.rows_found > 0 && (p.suggestion.values || []).length > 0);
   }
 
   window.lbImport = async function () {
@@ -424,6 +476,7 @@
     if (!_lbFile || !_lbPrev) { toast('Pick a file first.', 'error'); return; }
     var week = val('lb-week');
     if (!week) { toast('Pick the week this file covers.', 'error'); return; }
+    if (!checkedValueCols().length) { toast('Tick at least one column for the number.', 'error'); return; }
     _lbBusy = true;
     var btn = el('lb-import-btn');
     if (btn) { btn.disabled = true; btn.textContent = 'Importing...'; }
@@ -436,7 +489,7 @@
         sheet: val('lb-sheet') || _lbPrev.sheet,
         header_row: val('lb-header'),
         name_col: val('lb-name-col'),
-        value_col: val('lb-value-col'),
+        value_cols: checkedValueCols(),
         city_col: val('lb-city-col')
       });
       lbCloseModal();

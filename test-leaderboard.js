@@ -72,6 +72,20 @@ function sampleGrid() {
   ];
 }
 
+// What Pulsar's Call Search export actually looks like: one row per CALL, the
+// money split four ways, and Tech Paid Gross sitting right beside it.
+function pulsarGrid() {
+  return [
+    ['Tech ID', 'Location', 'Cycle Time', 'Call UID', 'Collected Cash', 'Collected Check',
+     'Collected CC', 'Collected Account', 'Collected Tax', 'Charged Labor', 'Cost of Goods',
+     'Tech Paid Gross'],
+    ['Benson, Chris', 'Columbus, GA', '12', 'uid-1', '', '', '$98.00', '', '$0.00', '$98.00', '$12.00', '$15.44'],
+    ['Benson, Chris', 'Columbus, GA', '9', 'uid-2', '$25.00', '', '', '', '$0.00', '$25.00', '$0.00', '$19.76'],
+    ['Sawyer III, Darrell', 'Muscogee', '20', 'uid-3', '', '', '', '$250.00', '$0.00', '$250.00', '$0.00', '$40.00'],
+    ['Ghost, Nobody', 'Muscogee', '4', 'uid-4', '', '', '', '', '', '', '', '$0.00']
+  ];
+}
+
 async function xlsxOf(grid, sheetName) {
   const ExcelJS = require('exceljs');
   const wb = new ExcelJS.Workbook();
@@ -129,7 +143,7 @@ async function httpTests(grid) {
     eq('POST /preview succeeds', pv.status, 200);
     eq('preview: header row found', pv.body.header_row, 3);
     eq('preview: name column guessed', pv.body.suggestion.name, 0);
-    eq('preview: revenue column guessed', pv.body.suggestion.value, 3);
+    eq('preview: revenue column guessed', pv.body.suggestion.values, [3]);
     eq('preview: people found', pv.body.rows_found, 4);
     eq('preview: the top name is resolved to the roster', pv.body.resolved[0].matched_name, 'Chris Benson');
     eq('preview: the duplicate lines were folded', pv.body.resolved[0].lines, 2);
@@ -141,14 +155,14 @@ async function httpTests(grid) {
     // Same file, told it is the battery board: a different column, and the
     // pulsar_name match is used for Darrell.
     var pvb = await call('POST', '/preview', { metric: 'batteries', filename: 'week34.xlsx', file_base64: b64 });
-    eq('preview: the battery board picks Batteries Sold', pvb.body.suggestion.value, 4);
+    eq('preview: the battery board picks Batteries Sold', pvb.body.suggestion.values, [4]);
     eq('preview: and ranks by batteries', pvb.body.resolved[0].raw_name, 'Sawyer III, Darrell');
     eq('preview: pulsar_name is the tier that matched him', pvb.body.resolved[0].match_tier, 1);
 
     // A column the human overrides is respected.
     var pvo = await call('POST', '/preview', {
       metric: 'revenue', filename: 'week34.xlsx', file_base64: b64,
-      sheet: 'Week 34', header_row: 3, name_col: 0, value_col: 4, city_col: -1
+      sheet: 'Week 34', header_row: 3, name_col: 0, value_cols: [4], city_col: -1
     });
     eq('preview: an overridden column is used', pvo.body.resolved[0].value, 14);
     eq('preview: and city can be turned off', pvo.body.resolved[0].city_code, null);
@@ -160,7 +174,7 @@ async function httpTests(grid) {
     // ---- import ----------------------------------------------------------
     var im = await call('POST', '/import', {
       metric: 'batteries', week_start: '2026-08-17', filename: 'week34.xlsx', file_base64: b64,
-      sheet: 'Week 34', header_row: 3, name_col: 0, value_col: 4, city_col: 1
+      sheet: 'Week 34', header_row: 3, name_col: 0, value_cols: [4], city_col: 1
     });
     eq('POST /import succeeds', im.status, 200);
     eq('import: four people', im.body.rows, 4);
@@ -180,7 +194,7 @@ async function httpTests(grid) {
     // Re-uploading the SAME metric and week replaces it rather than doubling it.
     var im2 = await call('POST', '/import', {
       metric: 'batteries', week_start: '2026-08-17', filename: 'week34-fixed.xlsx', file_base64: b64,
-      sheet: 'Week 34', header_row: 3, name_col: 0, value_col: 3, city_col: 1
+      sheet: 'Week 34', header_row: 3, name_col: 0, value_cols: [3], city_col: 1
     });
     ok('import: the second upload replaces the first', im2.body.replaced === true);
     eq('one week row, not two',
@@ -198,16 +212,45 @@ async function httpTests(grid) {
        (await call('POST', '/import', { metric: 'morale', week_start: '2026-08-17', file_base64: b64, filename: 'x.xlsx' })).status, 400);
     eq('import with the name and number in one column is refused',
        (await call('POST', '/import', { metric: 'revenue', week_start: '2026-08-17', file_base64: b64,
-                                        filename: 'x.xlsx', name_col: 0, value_col: 0 })).status, 400);
+                                        filename: 'x.xlsx', name_col: 0, value_cols: [0] })).status, 400);
+    eq('import with nothing ticked is refused',
+       (await call('POST', '/import', { metric: 'revenue', week_start: '2026-08-17', file_base64: b64,
+                                        filename: 'x.xlsx', name_col: 0, value_cols: [] })).status, 400);
     eq('import with no file is refused',
        (await call('POST', '/import', { metric: 'revenue', week_start: '2026-08-17', filename: 'x.xlsx' })).status, 400);
     var emptySheet = (await xlsxOf([['Name', 'Revenue']], 'Empty')).toString('base64');
     var imEmpty = await call('POST', '/import', {
       metric: 'revenue', week_start: '2026-08-17', filename: 'empty.xlsx', file_base64: emptySheet,
-      header_row: 0, name_col: 0, value_col: 1, city_col: -1
+      header_row: 0, name_col: 0, value_cols: [1], city_col: -1
     });
     eq('a sheet with a header and nothing under it is refused', imEmpty.status, 400);
     eq('and nothing was written', (await pool.query("SELECT COUNT(*)::int AS n FROM leaderboard_weeks WHERE metric='revenue'")).rows[0].n, 0);
+
+    // ---- a real Pulsar export, end to end -------------------------------
+    // The four Collected columns summed, on the sheet shape Tony actually has.
+    var pb64 = (await xlsxOf(pulsarGrid(), 'Calls')).toString('base64');
+    var pPrev = await call('POST', '/preview', { metric: 'revenue', filename: 'calls.xlsx', file_base64: pb64 });
+    eq('pulsar preview: four columns ticked for you', pPrev.body.suggestion.values.length, 4);
+    ok('pulsar preview: and it says so', pPrev.body.preset_used === true);
+    eq('pulsar preview: Chris totals both his calls', pPrev.body.resolved[1].value, 123);
+
+    var pIm = await call('POST', '/import', Object.assign({
+      metric: 'revenue', week_start: '2026-08-10', filename: 'calls.xlsx', file_base64: pb64
+    }, { sheet: 'Calls', header_row: 0, name_col: pPrev.body.suggestion.name,
+         value_cols: pPrev.body.suggestion.values, city_col: pPrev.body.suggestion.city }));
+    eq('pulsar import: succeeds', pIm.status, 200);
+    eq('pulsar import: the call with nothing collected is not a person', pIm.body.rows, 2);
+    var pRow = (await pool.query(
+      "SELECT value_column, city_column FROM leaderboard_weeks WHERE metric='revenue' AND week_start='2026-08-10'")).rows[0];
+    eq('pulsar import: the week records which columns it added up', pRow.value_column,
+       'Collected Cash + Collected Check + Collected CC + Collected Account');
+    eq('pulsar import: and where the city came from', pRow.city_column, 'Location');
+    var pEnt = await pool.query(
+      "SELECT e.raw_name, e.value, e.city_code FROM leaderboard_entries e " +
+      "JOIN leaderboard_weeks w ON w.id = e.week_id WHERE w.week_start='2026-08-10' ORDER BY e.rank");
+    eq('pulsar import: ranked by collected money', pEnt.rows.map(function (r) { return Number(r.value); }), [250, 123]);
+    eq('pulsar import: the full location survives', pEnt.rows[1].city_code, 'Columbus, GA');
+    await pool.query("DELETE FROM leaderboard_weeks WHERE week_start='2026-08-10'");
 
     // ---- linking through the route --------------------------------------
     var wkId = (await pool.query("SELECT id FROM leaderboard_weeks WHERE metric='batteries'")).rows[0].id;
@@ -297,21 +340,67 @@ async function main() {
 
   var aRev = LB.analyzeSheet(grid, 'revenue');
   eq('revenue: name column', aRev.suggestion.name, 0);
-  eq('revenue: value column', aRev.suggestion.value, 3);
+  eq('revenue: value column', aRev.suggestion.values, [3]);
   eq('revenue: city column', aRev.suggestion.city, 1);
   ok('revenue: confident', aRev.confident === true);
 
   var aBat = LB.analyzeSheet(grid, 'batteries');
   eq('batteries: same name column', aBat.suggestion.name, 0);
-  eq('batteries: picks Batteries Sold, not Revenue', aBat.suggestion.value, 4);
+  eq('batteries: picks Batteries Sold, not Revenue', aBat.suggestion.values, [4]);
 
   // A header word must not be able to win when it is the name column.
   var same = LB.analyzeSheet([['Total', 'Amount'], ['Chris', '10']], 'revenue');
-  ok('name and value are never the same column', same.suggestion.name !== same.suggestion.value,
+  ok('name and value are never the same column', same.suggestion.values.indexOf(same.suggestion.name) === -1,
      JSON.stringify(same.suggestion));
 
+  // ---- the shape Pulsar actually exports ---------------------------------
+  // Money arrives split four ways and the sheet ALSO carries Tech Paid Gross,
+  // which is what the technician earned. Picking that would put the highest-paid
+  // person on a board labelled revenue, so it must never be the default.
+  var pulsar = pulsarGrid();
+  var aP = LB.analyzeSheet(pulsar, 'revenue');
+  ok('pulsar: the four Collected columns are recognised as a set', aP.preset_used === true);
+  eq('pulsar: and all four are picked', aP.suggestion.values.map(function (i) { return pulsar[0][i]; }),
+     ['Collected Cash', 'Collected Check', 'Collected CC', 'Collected Account']);
+  eq('pulsar: Tech ID is the name', pulsar[0][aP.suggestion.name], 'Tech ID');
+  eq('pulsar: Location is the city', pulsar[0][aP.suggestion.city], 'Location');
+  ok('pulsar: Tech Paid Gross is not picked',
+     aP.suggestion.values.indexOf(pulsar[0].indexOf('Tech Paid Gross')) === -1);
+  ok('pulsar: neither is Collected Tax', aP.suggestion.values.indexOf(pulsar[0].indexOf('Collected Tax')) === -1);
+  ok('pulsar: nor Charged Labor, which is billed and not collected',
+     aP.suggestion.values.indexOf(pulsar[0].indexOf('Charged Labor')) === -1);
+
+  var xp = LB.extractRows(pulsar, { header_row: 0, name_col: aP.suggestion.name,
+    value_cols: aP.suggestion.values, city_col: aP.suggestion.city });
+  eq('pulsar: a card-only call still counts', xp.rows[1].value, 123);
+  eq('pulsar: (98 on the card + 25 in cash, across two calls)', xp.rows[1].lines, 2);
+  eq('pulsar: an account-only call counts too', xp.rows[0].value, 250);
+  eq('pulsar: the location is kept as written, not shouted', xp.rows[0].city_code, 'Muscogee');
+  eq('pulsar: a call with nothing collected is not a person with no number',
+     xp.rows.length, 2);
+
+  // Without the preset the same sheet would have picked the wrong column, which
+  // is the bug this whole change exists to stop.
+  var noPreset = LB.analyzeSheet(pulsar.map(function (r) {
+    return r.map(function (c) { return c === 'Collected Cash' ? 'Money A' : c; });
+  }), 'revenue');
+  ok('with the group broken up, the guess falls back to a single column',
+     noPreset.preset_used !== true && noPreset.suggestion.values.length === 1);
+  ok('and it still refuses to land on Tech Paid Gross',
+     noPreset.suggestion.values[0] !== pulsar[0].indexOf('Tech Paid Gross'), JSON.stringify(noPreset.suggestion));
+
+  // Several columns summed, and a blank in one of them.
+  var multi = LB.extractRows([['n', 'a', 'b'], ['Chris', '10', ''], ['Chris', '', '5'], ['Dana', '', '']],
+    { header_row: 0, name_col: 0, value_cols: [1, 2], city_col: -1 });
+  eq('a blank sibling column is a zero, not a skipped row', multi.rows[0].value, 15);
+  eq('but a row with nothing readable anywhere is skipped', multi.skipped.no_value, 1);
+  eq('value_cols accepts a comma string too',
+     LB.extractRows([['n', 'a', 'b'], ['Chris', '10', '5']], { header_row: 0, name_col: 0, value_cols: '1,2' }).rows[0].value, 15);
+  eq('and the old single value_col still works',
+     LB.extractRows([['n', 'a'], ['Chris', '10']], { header_row: 0, name_col: 0, value_col: 1 }).rows[0].value, 10);
+
   // ---- turning the grid into rows ----------------------------------------
-  var x = LB.extractRows(grid, { header_row: 3, name_col: 0, value_col: 3, city_col: 1 });
+  var x = LB.extractRows(grid, { header_row: 3, name_col: 0, value_cols: [3], city_col: 1 });
   eq('rows: one per person, not one per line', x.rows.length, 4);
   eq('rows: the duplicate is summed', x.rows[0].raw_name, 'Benson, Chris');
   eq('rows: summed value', x.rows[0].value, 5110.55);
@@ -323,20 +412,20 @@ async function main() {
 
   // Ties break on name so the same file always produces the same order.
   var tie = LB.extractRows([['n', 'v'], ['Zeb', '10'], ['Abe', '10']],
-    { header_row: 0, name_col: 0, value_col: 1, city_col: -1 });
+    { header_row: 0, name_col: 0, value_cols: [1], city_col: -1 });
   eq('ties break on name', tie.rows.map(function (r) { return r.raw_name; }), ['Abe', 'Zeb']);
 
   // ---- reading a real workbook -------------------------------------------
   var buf = await xlsxOf(grid, 'Week 34');
   var book = await LB.readWorkbook(buf, 'week34.xlsx');
   eq('xlsx: sheet name survives', book.sheets[0].name, 'Week 34');
-  var xr = LB.extractRows(book.sheets[0].grid, { header_row: LB.findHeaderRow(book.sheets[0].grid), name_col: 0, value_col: 3, city_col: 1 });
+  var xr = LB.extractRows(book.sheets[0].grid, { header_row: LB.findHeaderRow(book.sheets[0].grid), name_col: 0, value_cols: [3], city_col: 1 });
   eq('xlsx: same rows as the grid it was written from', xr.rows.length, 4);
   eq('xlsx: same top value', xr.rows[0].value, 5110.55);
 
   var csvBook = await LB.readWorkbook(Buffer.from('Name,Revenue\nChris,100\nDarrell,50\n', 'utf8'), 'w.csv');
   eq('csv: read as one sheet', csvBook.sheets.length, 1);
-  eq('csv: rows', LB.extractRows(csvBook.sheets[0].grid, { header_row: 0, name_col: 0, value_col: 1, city_col: -1 }).rows.length, 2);
+  eq('csv: rows', LB.extractRows(csvBook.sheets[0].grid, { header_row: 0, name_col: 0, value_cols: [1], city_col: -1 }).rows.length, 2);
 
   var xlsErr = null;
   try { await LB.readWorkbook(Buffer.from('nope'), 'old.xls'); } catch (e) { xlsErr = e; }
@@ -386,7 +475,7 @@ async function main() {
   eq('one person claiming a key twice still matches', R3.resolve('Young, Kay').user_id, 1);
 
   // ---- the week, as routes/leaderboard.js writes it -----------------------
-  var rows = LB.extractRows(grid, { header_row: 3, name_col: 0, value_col: 3, city_col: 1 }).rows
+  var rows = LB.extractRows(grid, { header_row: 3, name_col: 0, value_cols: [3], city_col: 1 }).rows
     .map(function (r, i) {
       var hit = R.resolve(r.raw_name);
       return { rank: i + 1, raw_name: r.raw_name, value: r.value, city_code: r.city_code,

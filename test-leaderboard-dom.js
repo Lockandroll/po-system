@@ -150,10 +150,15 @@ const PREVIEW = {
     { index: 1, header: 'Location', raw_header: 'Location', filled: 5, numeric_ratio: 0, total: 0, samples: ['VAB'] },
     { index: 2, header: 'Calls', raw_header: 'Calls', filled: 5, numeric_ratio: 1, total: 82, samples: ['31'] },
     { index: 3, header: 'Revenue', raw_header: 'Revenue', filled: 5, numeric_ratio: 1, total: 11950.65, samples: ['$4,210.55'] },
-    { index: 4, header: 'Batteries Sold', raw_header: 'Batteries Sold', filled: 5, numeric_ratio: 1, total: 30, samples: ['9'] }
+    { index: 4, header: 'Collected Cash', raw_header: 'Collected Cash', filled: 5, numeric_ratio: 1, total: 25, samples: ['$0.00'] },
+    { index: 5, header: 'Collected Check', raw_header: 'Collected Check', filled: 5, numeric_ratio: 1, total: 0, samples: ['$0.00'] },
+    { index: 6, header: 'Collected CC', raw_header: 'Collected CC', filled: 5, numeric_ratio: 1, total: 98, samples: ['$98.00'] },
+    { index: 7, header: 'Collected Account', raw_header: 'Collected Account', filled: 5, numeric_ratio: 1, total: 250, samples: ['$25.00'] },
+    { index: 8, header: 'Tech Paid Gross', raw_header: 'Tech Paid Gross', filled: 5, numeric_ratio: 1, total: 75.2, samples: ['$15.44'] }
   ],
-  suggestion: { name: 0, value: 3, city: 1 },
-  auto: { name: 0, value: 3, city: 1 },
+  suggestion: { name: 0, values: [4, 5, 6, 7], city: 1 },
+  auto: { name: 0, values: [4, 5, 6, 7], city: 1 },
+  preset_used: true,
   confident: true,
   preview: [], rows_found: 3, unmatched: 1,
   skipped: { no_name: 0, no_value: 1, total_row: 1 },
@@ -397,7 +402,7 @@ async function uploadFlow() {
 
   const step2 = doc.getElementById('lb-step2').innerHTML;
   has('the guessed columns are shown for confirmation', step2, 'Name column');
-  has('with the metric named on the value picker', step2, 'Revenue column');
+  has('the number is a tick list, not a single pick', step2, 'they are added together');
   eq('the city picker can be set to none',
      doc.querySelector('#lb-city-col option[value="-1"]') ? 'yes' : 'no', 'yes');
   has('the matched people are previewed', step2, 'Chris Benson');
@@ -405,14 +410,43 @@ async function uploadFlow() {
   has('rows that were folded together say so', step2, '2 rows added up');
   has('and the skipped lines are accounted for', step2, 'total row(s) ignored');
   eq('the name column defaults to the guess', doc.getElementById('lb-name-col').value, '0');
-  eq('the value column defaults to the guess', doc.getElementById('lb-value-col').value, '3');
+
+  // The four Collected columns come pre-ticked and Tech Paid Gross does not.
+  function ticked() {
+    var out = [], b = doc.querySelectorAll('#lb-value-cols .lb-vc');
+    for (var i = 0; i < b.length; i++) if (b[i].checked) out.push(parseInt(b[i].value, 10));
+    return out;
+  }
+  eq('the four money columns are ticked for you', ticked(), [4, 5, 6, 7]);
+  eq('every column is offered, not just the numeric ones',
+     doc.querySelectorAll('#lb-value-cols .lb-vc').length, 9);
+  has('and it explains why the four', step2, 'Pulsar export');
+  has('naming what Tech Paid Gross actually is', step2, 'what the tech earned');
+  has('the running total names the columns being added', step2, 'Collected Cash + Collected Check');
   ok('import is now allowed', doc.getElementById('lb-import-btn').disabled === false);
+
+  // Unticking one sends the smaller set back to the server to be re-read.
+  doc.querySelector('#lb-value-cols .lb-vc[value="4"]').checked = false;
+  await env.w.lbRefreshPreview();
+  var last = env.calls.filter(function (c) { return c.path === '/leaderboard/preview'; }).pop();
+  eq('unticking a column changes what is asked for', last.body.value_cols, [5, 6, 7]);
+
+  // With nothing ticked, import refuses before it sends anything.
+  var boxes = doc.querySelectorAll('#lb-value-cols .lb-vc');
+  for (var bi = 0; bi < boxes.length; bi++) boxes[bi].checked = false;
+  var beforeCount = env.calls.length;
+  await env.w.lbImport();
+  eq('nothing ticked means nothing is sent', env.calls.length, beforeCount);
+  has('and it says why', env.w.toasts[env.w.toasts.length - 1].m, 'Tick at least one column');
+  for (var bj = 0; bj < boxes.length; bj++) boxes[bj].checked = [4, 5, 6, 7].indexOf(parseInt(boxes[bj].value, 10)) !== -1;
 
   await env.w.lbImport();
   ok('the import went through', !!imported);
   eq('it names the board', imported.metric, 'revenue');
   eq('and the week', imported.week_start, '2026-08-17');
-  eq('and the columns a human confirmed', [imported.name_col, imported.value_col], ['0', '3']);
+  eq('and the columns a human confirmed', imported.name_col, '0');
+  eq('with every ticked money column, so the four are summed server-side',
+     imported.value_cols, [4, 5, 6, 7]);
   ok('it sends the file again so the SERVER reads the numbers', !!imported.file_base64);
   eq('the browser never sends a single figure', imported.rows, undefined);
   eq('or a resolved person', imported.resolved, undefined);

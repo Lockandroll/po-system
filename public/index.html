@@ -70,6 +70,7 @@
     html[data-theme="light"] .badge-inactive { background:#f4f5f7; color:#9aa1ab; border-color:#e2e4e8; }
     html[data-theme="light"] .badge-partially-refunded { background:#fff4e0; color:#b9770b; border-color:#ffe2b0; }
     html[data-theme="light"] .badge-refunded { background:#fdeaea; color:#dc2626; border-color:#f6c9c9; }
+    html[data-theme="light"] .badge-canceled { background:#f1f2f4; color:#6b7280; border-color:#e2e4e8; }
     html[data-theme="light"] .badge-refund-awaiting { background:#e7f0fe; color:#2563eb; border-color:#cfe0fb; }
     html[data-theme="light"] .badge-assigned { background:#e4f7ec; color:#15803d; border-color:#bbe9cd; }
     html[data-theme="light"] .badge-in-stock { background:#e7f0fe; color:#2563eb; border-color:#cfe0fb; }
@@ -301,6 +302,10 @@
        row status that means 'approved but not yet issued in Square'. */
     .badge-partially-refunded { background: #2d1a00; color: #fb923c; border: 1px solid #4d2d00; }
     .badge-refunded { background: #2d0d0d; color: #f87171; border: 1px solid #4d1515; }
+    /* Canceled is GREY, deliberately. badge-refunded above is the red one. A
+       cancel is not a refund -- no money ever moved -- and two red pills in one
+       list is how a declined quote gets read as money going back out. */
+    .badge-canceled { background: #232323; color: #a1a1aa; border: 1px solid #3a3a3a; }
     .badge-refund-awaiting { background: #0d1e30; color: #60a5fa; border: 1px solid #1e3a5f; }
 
     /* ---- Asset / Equipment tracker ------------------------------------- */
@@ -605,6 +610,52 @@
     .inv-closeout-stub-body { font-size:12.5px; line-height:1.7; max-width:640px; }
     .inv-closeout-stub-facts { margin-top:11px; display:flex; gap:20px; flex-wrap:wrap; font-size:12px; }
     .inv-closeout-stub-facts strong { color:var(--text-dim); font-family:'Fira Code', ui-monospace, monospace; }
+
+    /* ---- Invoice close-out bar ------------------------------------------
+       Sticks to the bottom of the viewport for the whole scroll, so the three
+       ways an invoice can end are always under the tech's thumb. The negative
+       margins pull it out to the edges of .main-content's 24px padding (16px on
+       mobile, matched in the media query below) so it reads as a bar rather than
+       a card. */
+    .inv-actionbar { position:sticky; bottom:0; z-index:20; margin:18px -24px 0;
+      padding:14px 24px calc(14px + env(safe-area-inset-bottom));
+      background:rgba(17,17,17,0.96); backdrop-filter:blur(8px); -webkit-backdrop-filter:blur(8px);
+      border-top:1px solid var(--border); }
+    html[data-theme="light"] .inv-actionbar { background:rgba(255,255,255,0.97); }
+    .inv-actionbar-inner { display:flex; gap:10px; align-items:stretch; }
+    .inv-ab-btn { flex:1; display:flex; flex-direction:column; align-items:center; justify-content:center; gap:3px;
+      border-radius:var(--radius); padding:13px 10px; font-family:inherit; font-size:15px; font-weight:600;
+      cursor:pointer; border:1px solid transparent; line-height:1.2; text-align:center; transition:all .15s ease; }
+    .inv-ab-btn small { font-size:11px; font-weight:400; opacity:.82; }
+    .inv-ab-complete { background:var(--success); color:#fff; flex:1.4; }
+    .inv-ab-complete:hover:not([disabled]) { background:#16a34a; box-shadow:0 4px 14px rgba(34,197,94,.25); }
+    .inv-ab-waiting { background:transparent; color:var(--warning); border-color:rgba(245,158,11,.55); }
+    .inv-ab-waiting:hover:not([disabled]) { background:rgba(245,158,11,.10); }
+    /* Quietest of the three, and furthest from the green. It is destructive and
+       it is the one nobody should hit by accident on a phone in the dark. */
+    .inv-ab-cancel { background:transparent; color:var(--text-muted-color); border-color:var(--border); flex:.8; }
+    .inv-ab-cancel:hover { color:var(--danger); border-color:rgba(239,68,68,.5); background:rgba(239,68,68,.06); }
+    .inv-ab-btn[disabled] { opacity:.4; cursor:not-allowed; }
+    .inv-ab-hint { font-size:11.5px; color:var(--text-muted-color); margin-top:9px; text-align:center; line-height:1.5; }
+    @media (max-width: 640px) {
+      /* Green takes a full-width row of its own ABOVE the other two, so a thumb
+         reaching for Complete can never land on Cancel. Done with grid
+         placement rather than a wrapper element, so the DOM order stays the
+         same as the desktop bar and one render feeds both. */
+      .inv-actionbar { margin:16px -16px 0; padding:12px 16px calc(14px + env(safe-area-inset-bottom)); }
+      .inv-actionbar-inner { display:grid; grid-template-columns:1.5fr 1fr; gap:8px; }
+      .inv-ab-complete { grid-column:1 / -1; grid-row:1; padding:15px; }
+      .inv-ab-waiting  { grid-column:1; grid-row:2; }
+      .inv-ab-cancel   { grid-column:2; grid-row:2; }
+      .inv-ab-hint { text-align:left; }
+    }
+
+    /* Reason picker in the cancel sheet. */
+    .inv-cancel-reason { display:block; border:1px solid var(--border); border-radius:9px; padding:11px 13px;
+      margin-bottom:8px; font-size:14px; cursor:pointer; background:var(--bg-elevated); transition:all .15s ease; }
+    .inv-cancel-reason:hover { border-color:var(--text-muted-color); }
+    .inv-cancel-reason.sel { border-color:var(--primary); background:rgba(249,115,22,0.09); }
+    .inv-cancel-reason i { font-style:normal; display:block; font-size:11.5px; color:var(--text-muted-color); margin-top:2px; }
 
     /* Close-out gate modal */
     .inv-gate-list { border:1px solid var(--border); border-radius:8px; overflow:hidden; }

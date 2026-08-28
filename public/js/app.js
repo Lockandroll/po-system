@@ -2,7 +2,7 @@
 // public/sw.js (the only thing bumped each deploy) — the badge asks the active
 // service worker for it at runtime. This value is just the fallback shown when no
 // service worker is available (e.g. very first visit before it installs).
-var APP_VERSION = 'v425';
+var APP_VERSION = 'v426';
 var _resolvedAppVersion = null;
 
 // Ask the active service worker for its CACHE_VERSION (without the 'nova-' prefix).
@@ -14898,7 +14898,25 @@ function invPayMethodButtonsHtml() {
   // pair lines up under them rather than hugging the right edge of the card.
   return '<div style="display:flex;gap:6px;justify-content:center">' + btn('cash', 'Cash') + btn('card', 'Card') + '</div>';
 }
-var INV_STATUSES = ['draft','awaiting_payment','paid'];
+var INV_STATUSES = ['draft','awaiting_payment','paid','canceled'];
+
+// Filled from GET /invoices/config so the reason keys can never drift from the
+// list the server validates against. Defaults only cover a cold start.
+var _invCancelReasons = [
+  { key: 'declined', label: 'Customer declined the price' },
+  { key: 'no_show', label: 'Gone on arrival / no-show' },
+  { key: 'cannot_complete', label: 'Could not complete the job' },
+  { key: 'duplicate', label: 'Duplicate or wrong invoice' }
+];
+// The one-liner under each reason. Wording only, so it lives here rather than
+// riding along on every config call.
+var INV_CANCEL_REASON_HINTS = {
+  declined: 'Quoted on site, customer said no.',
+  no_show: 'Nobody there, or they solved it before you arrived.',
+  cannot_complete: 'Wrong vehicle, no key data, wrong equipment.',
+  duplicate: 'Written twice, or on the wrong call.'
+};
+var _invPulsarCanceledLabel = 'Canceled';
 // ---- Invoice process: Active / Waiting for Payment / Completed -------------
 //
 // ⚠️ The STORED status values are unchanged. 'draft' displays as "Active" and
@@ -14909,6 +14927,7 @@ var INV_STATUS_LABELS = {
   draft: 'Active',
   awaiting_payment: 'Waiting for Payment',
   paid: 'Completed',
+  canceled: 'Canceled',
   partially_refunded: 'Partially Refunded',
   refunded: 'Refunded',
   // Only reachable on a database that has not run the migration yet.
@@ -14918,6 +14937,10 @@ var INV_STATUS_BADGE = {
   draft: 'badge-active',
   awaiting_payment: 'badge-waiting',
   paid: 'badge-completed',
+  // ⚠️ GREY, never red. Red is badge-refunded, and a cancel is not a refund --
+  // no money ever moved. Two red pills in one list is how somebody reads a
+  // declined quote as money going back out the door.
+  canceled: 'badge-canceled',
   partially_refunded: 'badge-partially-refunded',
   refunded: 'badge-refunded',
   completed: 'badge-waiting'
@@ -14925,7 +14948,8 @@ var INV_STATUS_BADGE = {
 var INV_STATUS_HELP = {
   draft: 'Still being worked on.',
   awaiting_payment: 'Work is done and signed. Money is not in yet. Still editable.',
-  paid: 'Done and paid, or billed to an account. Locks the invoice.'
+  paid: 'Done and paid, or billed to an account. Locks the invoice.',
+  canceled: 'The job did not happen. Nothing charged, no parts used, no revenue.'
 };
 
 
@@ -15209,6 +15233,8 @@ async function renderEditInvoice(el, id) {
     _invoiceDefaultAgreement = (cfg && cfg.default_agreement) || '';
     _invoicePayTypes = (cfg && Array.isArray(cfg.pay_types) && cfg.pay_types.length) ? cfg.pay_types : INV_PAY_TYPES;
     _invoicePulsarPayMap = (cfg && cfg.pulsar_pay_map) || {};
+    if (cfg && cfg.cancel_reasons && cfg.cancel_reasons.length) _invCancelReasons = cfg.cancel_reasons;
+    if (cfg && cfg.pulsar_canceled_label) _invPulsarCanceledLabel = cfg.pulsar_canceled_label;
     _invSurchargeOn = !!(cfg && cfg.surcharge_enabled);
     _invSurchargeRate = (cfg && parseFloat(cfg.surcharge_rate)) || 0;
     invHomeCity = (cfg && cfg.home_city) || '';
@@ -15260,7 +15286,13 @@ async function renderEditInvoice(el, id) {
   var payOptions = '<option value="">— Select —</option>' + _invoicePayTypes.map(function(p){
     return '<option value="' + escHtml(p) + '"' + (v.pay_type === p ? ' selected' : '') + '>' + escHtml(p) + '</option>';
   }).join('');
-  var statusOptions = INV_STATUSES.map(function(s){
+  // ⚠️ Canceled is filtered OUT here on purpose. It is the one status that
+  // requires a reason, and the server refuses a cancel without one. Offering it
+  // in a dropdown Save reads would produce an invoice canceled with no reason,
+  // or a save that fails for a reason the tech cannot see. Cancelling goes
+  // through the button on the invoice view and POST /invoices/:id/cancel, and
+  // nowhere else. (The list FILTER does show Canceled -- different job.)
+  var statusOptions = INV_STATUSES.filter(function(s){ return s !== 'canceled'; }).map(function(s){
     return '<option value="' + s + '"' + ((v.status||'draft') === s ? ' selected' : '') + '>' + invStatusLabel(s) + '</option>';
   }).join('');
   var invCityDefault = (id && v.city_code) ? v.city_code : (invHomeCity || '');
@@ -16664,6 +16696,25 @@ function invPulsarTotal(inv) {
 
 function invPulsarFields(inv) {
   function bare(n) { return (parseFloat(n) || 0).toFixed(2); }
+  // ⚠️ A canceled call closes at ZERO on every money field, hard-coded, never
+  // derived from the invoice. The royalty and the ad fee are both computed from
+  // what gets typed into Pulsar, so any non-zero figure here pays a percentage
+  // on revenue that does not exist. Same reasoning as invPulsarTotal, which
+  // already keeps the surcharge and the tip out for being not-a-sale; a canceled
+  // job is the whole invoice being not-a-sale.
+  //
+  // The invoice NUMBER still goes in, because the call has to close rather than
+  // sit open in Pulsar. That is the entire point of unlocking this card.
+  if (inv.status === 'canceled') {
+    return [
+      { label: 'Invoice #', display: String(inv.invoice_number), copyValue: String(inv.invoice_number) },
+      { label: 'Parts total', display: invMoney(0), copyValue: '0.00' },
+      { label: 'Labor total', display: invMoney(0), copyValue: '0.00' },
+      { label: 'COGS total', display: invMoney(0), copyValue: '0.00', accent: true },
+      { label: 'Payment type', display: _invPulsarCanceledLabel, copyValue: _invPulsarCanceledLabel },
+      { label: 'Payment total', display: invMoney(0), copyValue: '0.00' }
+    ];
+  }
   var cogs = (inv.cogs && inv.cogs.total != null) ? inv.cogs.total : (parseFloat(inv.parts_cost_total) || 0);
   var payLabel = inv.pay_type || '';
   if (payLabel && _invoicePulsarPayMap && _invoicePulsarPayMap[payLabel]) payLabel = _invoicePulsarPayMap[payLabel];
@@ -16680,6 +16731,10 @@ function invPulsarFields(inv) {
 }
 
 function invCloseoutHtml(inv, seeAll) {
+  // Canceled falls THROUGH to the unlocked card. The tech still has a call open
+  // in Pulsar and still has to close it; withholding the copy buttons would just
+  // send them to retype six fields by hand off a screen that says nothing.
+  var isCanceled = inv.status === 'canceled';
   var isDraft = (inv.status || 'draft') === 'draft';
   var cg = inv.cogs || {};
   var cogsVal = (cg.total != null) ? cg.total : (parseFloat(inv.parts_cost_total) || 0);
@@ -16693,8 +16748,8 @@ function invCloseoutHtml(inv, seeAll) {
       '</div><div class="card-body"><div class="inv-closeout-stub">' +
         '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="flex:0 0 auto;margin-top:2px"><rect x="4" y="11" width="16" height="10" rx="2"/><path d="M8 11V8a4 4 0 0 1 8 0v3"/></svg>' +
         '<div>' +
-          '<div class="inv-closeout-stub-title">Available once this invoice is Completed</div>' +
-          '<div class="inv-closeout-stub-body">A draft can still change. If Pulsar gets closed off a draft and the invoice is edited afterwards, the two systems disagree and nothing catches it. Finish the invoice, set it to Completed, then close the call.</div>' +
+          '<div class="inv-closeout-stub-title">Available once this invoice is Completed or Canceled</div>' +
+          '<div class="inv-closeout-stub-body">A draft can still change. If Pulsar gets closed off a draft and the invoice is edited afterwards, the two systems disagree and nothing catches it. Finish the invoice, or cancel it, then close the call.</div>' +
           '<div class="inv-closeout-stub-facts">' +
             '<span>Working COGS so far <strong>' + invMoney(cogsVal) + '</strong></span>' +
             (cg.part_lines
@@ -16725,13 +16780,17 @@ function invCloseoutHtml(inv, seeAll) {
   var sur = parseFloat(inv.surcharge_amount) || 0;
   // Parts + Labor is the subtotal; Payment total adds sales tax and stops there.
   // Spell it out or someone decides a correct figure is wrong and "fixes" it.
-  var recon = 'Parts ' + parts.toFixed(2) + ' + Labor ' + labor.toFixed(2) +
-    ' + Tax ' + tax.toFixed(2) + ' = Payment total ' + invPulsarTotal(inv).toFixed(2);
+  var recon = isCanceled
+    ? 'Canceled invoice \u2014 every money field closes at 0.00'
+    : ('Parts ' + parts.toFixed(2) + ' + Labor ' + labor.toFixed(2) +
+       ' + Tax ' + tax.toFixed(2) + ' = Payment total ' + invPulsarTotal(inv).toFixed(2));
   // When the card ran for more than that, say so and say why, with the card
   // figure named. Otherwise a tech reconciling against the Square receipt sees
   // two different numbers and assumes Nova is wrong.
   var excluded = '';
-  if (sur > 0 || tip > 0) {
+  if (isCanceled) {
+    excluded = '<div class="inv-closeout-note">The invoice number still gets closed in Pulsar so the call is not left open, but it closes at zero: no sale, no royalty, no ad fee. What was on the invoice before it was canceled is kept below for the record.</div>';
+  } else if (sur > 0 || tip > 0) {
     var bits = [];
     if (sur > 0) bits.push('surcharge ' + invMoney(sur));
     if (tip > 0) bits.push('tip ' + invMoney(tip));
@@ -16749,7 +16808,9 @@ function invCloseoutHtml(inv, seeAll) {
   // hand-typed lines the backfill could not price is exactly the case where a
   // confident tick mark would send a wrong number into Pulsar unquestioned.
   var status = '';
-  if (cg.incomplete) {
+  if (isCanceled) {
+    status = '';
+  } else if (cg.incomplete) {
     var why = [];
     if (cg.unknown_lines) why.push(cg.unknown_lines + ' closed with no cost available');
     if (cg.uncosted_lines) why.push(cg.uncosted_lines + ' with no cost on record');
@@ -16764,7 +16825,7 @@ function invCloseoutHtml(inv, seeAll) {
     ? '<div class="inv-closeout-note">Pulsar was closed at the sales figure from the day, ' + invMoney(invPulsarTotal(inv)) + '. Net after refunds is ' + invMoney(inv.net_total) + '.</div>'
     : '';
   var marginHtml = '';
-  if (seeAll) {
+  if (seeAll && !isCanceled) {
     var gp = (cg.gross_profit != null) ? cg.gross_profit : ((parseFloat(inv.subtotal) || 0) - cogsVal);
     var sub = parseFloat(inv.subtotal) || 0;
     marginHtml = '<div class="inv-closeout-margin">' +
@@ -16832,18 +16893,26 @@ async function renderViewInvoice(el, id) {
       _invoicePulsarPayMap = (_cfg && _cfg.pulsar_pay_map) || {};
       _invSurchargeOn = !!(_cfg && _cfg.surcharge_enabled);
       _invSurchargeRate = (_cfg && parseFloat(_cfg.surcharge_rate)) || 0;
+      if (_cfg && _cfg.cancel_reasons && _cfg.cancel_reasons.length) _invCancelReasons = _cfg.cancel_reasons;
+      if (_cfg && _cfg.pulsar_canceled_label) _invPulsarCanceledLabel = _cfg.pulsar_canceled_label;
     } catch(e) {}
     var seeAll = ['admin','manager'].indexOf(state.user.role) !== -1;
     var invLocked = ['paid', 'partially_refunded', 'refunded'].indexOf(inv.status) !== -1;
+    var invCanceled = inv.status === 'canceled';
     var isAdminUser = ['admin', 'owner'].indexOf(state.user.role) !== -1;
     // A paid invoice is frozen: the money changes through a refund, not an edit.
-    var canEdit = (seeAll || (can('edit_invoice') && inv.locksmith_id === state.user.id)) && (!invLocked || isAdminUser);
+    // A canceled one is frozen for everyone including admins -- the way back is
+    // Reopen, which clears the cancel reason as it goes. Matching PUT /:id.
+    var canEdit = (seeAll || (can('edit_invoice') && inv.locksmith_id === state.user.id)) && (!invLocked || isAdminUser) && !invCanceled;
     // Deliberately NOT gated on invLocked. A paid invoice is frozen for money
     // edits, but the customer still has to be able to sign the authorization.
     var canSign = seeAll || (can('edit_invoice') && inv.locksmith_id === state.user.id);
     var canDel = seeAll || (can('delete_invoice') && inv.locksmith_id === state.user.id);
     // Anyone who could have written this invoice can ask for a refund on it.
-    var canRefund = can('request_refund') && inv.status !== 'draft' &&
+    // Canceled joins draft here: nothing was ever collected, so there is nothing
+    // to send back. Offering Issue Refund on a $0 job is how a real refund gets
+    // pushed through Square against a charge that never existed.
+    var canRefund = can('request_refund') && inv.status !== 'draft' && inv.status !== 'canceled' &&
       (seeAll || inv.locksmith_id === state.user.id) &&
       (parseFloat(inv.net_total || inv.grand_total) - parseFloat(inv.pending_refund_total || 0)) > 0.005;
     var veh = [inv.vehicle_year, inv.vehicle_make, inv.vehicle_model].filter(Boolean).join(' ') || '—';
@@ -16908,7 +16977,9 @@ async function renderViewInvoice(el, id) {
         field('Vehicle', veh) + field('VIN', inv.vin) + field('License / Tag', inv.license_tag ? (inv.license_tag + (inv.tag_state ? ' (' + inv.tag_state + ')' : '')) : '') + field('Mileage', inv.mileage) +
       '</div></div></div>' +
       invCloseoutHtml(inv, seeAll) +
-      '<div class="card mb-4"><div class="card-header"><span class="card-title">Labor / Parts</span></div><div class="card-body">' +
+      '<div class="card mb-4"><div class="card-header"><span class="card-title">Labor / Parts</span>' +
+        (invCanceled ? '<span class="badge badge-canceled">Not charged</span>' : '') +
+      '</div><div class="card-body"' + (invCanceled ? ' style="opacity:.55"' : '') + '>' +
         '<div class="table-wrap"><table class="line-items-table">' +
         '<thead><tr><th>Type</th><th>Item #</th><th>Description</th><th>Unit Price</th><th>Qty</th><th title="What the part cost us">Our Cost</th><th>Tax</th><th class="text-right">Extension</th></tr></thead>' +
         '<tbody>' + itemsHtml + '</tbody></table></div>' +
@@ -16917,8 +16988,11 @@ async function renderViewInvoice(el, id) {
           '<div style="display:flex;justify-content:space-between;padding:3px 0;font-size:13px"><span>Parts</span><span>' + invMoney(inv.parts_amount) + '</span></div>' +
           '<div style="display:flex;justify-content:space-between;padding:3px 0;font-size:13px;border-top:1px solid var(--border)"><span>Subtotal</span><span>' + invMoney(inv.subtotal) + '</span></div>' +
           '<div style="display:flex;justify-content:space-between;padding:3px 0;font-size:13px"><span>Sales Tax (' + (parseFloat(inv.tax_rate)||0).toFixed(2) + '%)</span><span>' + invMoney(inv.tax_amount) + '</span></div>' +
-          invTotalsTailHtml(inv) +
-          (parseFloat(inv.refunded_total) > 0
+          (invCanceled
+            ? '<div style="display:flex;justify-content:space-between;padding:3px 0;font-size:13px;color:var(--text-muted-color)"><span>Would have been</span><span style="text-decoration:line-through">' + invMoney(inv.grand_total) + '</span></div>' +
+              '<div style="display:flex;justify-content:space-between;padding:6px 0;font-size:16px;font-weight:700;border-top:2px solid var(--border)"><span>Charged</span><span>' + invMoney(0) + '</span></div>'
+            : invTotalsTailHtml(inv)) +
+          (!invCanceled && parseFloat(inv.refunded_total) > 0
             ? '<div style="display:flex;justify-content:space-between;padding:3px 0;font-size:13px;color:var(--danger)"><span>Refunded</span><span>-' + invMoney(inv.refunded_total) + '</span></div>' +
               '<div style="display:flex;justify-content:space-between;padding:6px 0;font-size:16px;font-weight:700;color:var(--primary);border-top:1px solid var(--border)"><span>Net Collected</span><span>' + invMoney(inv.net_total) + '</span></div>'
             : '') +
@@ -16949,7 +17023,10 @@ async function renderViewInvoice(el, id) {
                 '<div style="font-size:11px;color:var(--text-muted-color);margin-top:4px">' + escHtml(p.caption || '') + (p.show_in_print ? '' : ' <span style="color:#f97316">(hidden from print)</span>') + '</div></div>';
             }).join('') + '</div>'
           : '<div style="font-size:13px;color:var(--text-muted-color)">No photos attached.</div>') +
-      '</div></div>';
+      '</div></div>' +
+      // Last element on the page, so position:sticky pins it to the bottom of
+      // the viewport for the whole scroll rather than only at the end.
+      invActionBarHtml(inv, canEdit || (!invLocked && !invCanceled && can('edit_invoice') && inv.locksmith_id === state.user.id));
     // Just came back from the Square app. Poll until the server has asked Square
     // what happened and written it onto the invoice.
     if (window._sqBootNonce) { _sqReturnNonce = window._sqBootNonce; window._sqBootNonce = null; }
@@ -17699,6 +17776,74 @@ async function invDoWaiting(id) {
   }
 }
 
+// ---- Cancel ---------------------------------------------------------------
+// A reason is required. Not bureaucracy: a canceled invoice burns a number and
+// drops a job out of every report, and three months later the only thing that
+// explains the gap is this field.
+var _invCancelReason = '';
+
+function invCancelPick(key) {
+  _invCancelReason = key;
+  var box = document.getElementById('inv-cancel-reasons');
+  if (!box) return;
+  var kids = box.querySelectorAll('[data-reason]');
+  for (var i = 0; i < kids.length; i++) {
+    if (kids[i].getAttribute('data-reason') === key) kids[i].classList.add('sel');
+    else kids[i].classList.remove('sel');
+  }
+  var e = document.getElementById('inv-proc-err');
+  if (e) e.innerHTML = '';
+}
+
+function invCancelSheet(id) {
+  var inv = _currentInvoice;
+  if (!inv || inv.id !== id) { novaAlert('Reopen the invoice and try again.'); return; }
+  _invCancelReason = '';
+  var reasons = (_invCancelReasons || []).map(function (r) {
+    var hint = INV_CANCEL_REASON_HINTS[r.key] || '';
+    return '<div class="inv-cancel-reason" data-reason="' + escHtml(r.key) + '" onclick="invCancelPick(\'' + escHtml(r.key) + '\')">' +
+      escHtml(r.label) + (hint ? ('<i>' + escHtml(hint) + '</i>') : '') + '</div>';
+  }).join('');
+  // Named parts, if there are any, so the warning is about THIS invoice rather
+  // than a generic caution somebody learns to scroll past.
+  var partLines = (inv.line_items || []).filter(function (it) { return it.line_type !== 'labor' && String(it.description || '').trim(); });
+  var partsWarn = partLines.length
+    ? '<div class="alert alert-warn" style="margin:14px 0 0;font-size:12.5px;line-height:1.65">' +
+        '<b>Parts go back on the truck.</b> ' +
+        escHtml(partLines.map(function (it) { return it.description; }).join(', ')) +
+        (partLines.length === 1 ? ' will not be counted' : ' will not be counted') +
+        ' toward next month&#39;s order, and no COGS is recorded. If a part was actually cut or used, complete the invoice at the right price instead of cancelling it.</div>'
+    : '';
+
+  invSheet('Cancel Invoice #' + escHtml(inv.invoice_number),
+    '<div style="font-size:13px;color:var(--text-muted-color);line-height:1.65;margin-bottom:14px">This invoice keeps its number and stays on the books at ' + invMoney(0) + '. Nothing is deleted. Pick what happened:</div>' +
+    '<div id="inv-cancel-reasons">' + reasons + '</div>' +
+    '<div class="form-group" style="margin-top:14px"><label>Anything to add <span style="font-weight:400;font-size:12px;color:var(--text-muted-color)">optional</span></label>' +
+      '<textarea id="inv-cancel-note" rows="2" placeholder="Customer said it was too high, called a dealer instead."></textarea></div>' +
+    partsWarn,
+    '<button class="btn btn-secondary" onclick="invCloseSheet()">Keep it open</button>' +
+    '<button class="btn btn-danger" id="inv-cancel-go" onclick="invDoCancel(' + inv.id + ')">Cancel this invoice</button>');
+}
+
+async function invDoCancel(id) {
+  if (!_invCancelReason) { invSheetError('Pick what happened before cancelling this.'); return; }
+  var btn = document.getElementById('inv-cancel-go');
+  if (btn) btn.disabled = true;
+  try {
+    await api('POST', '/invoices/' + id + '/cancel', {
+      reason: _invCancelReason,
+      note: (document.getElementById('inv-cancel-note') || {}).value || ''
+    });
+    invCloseSheet();
+    _invCancelReason = '';
+    showToast('Canceled. Close the call in Pulsar as canceled.', 'success');
+    navigate('view-invoice', id);
+  } catch (e) {
+    if (btn) btn.disabled = false;
+    invSheetError(e.message);
+  }
+}
+
 // ---- Reopen (grace period) ------------------------------------------------
 // The window length comes from the server (reopen_seconds_left), so it is not
 // duplicated here.
@@ -17721,7 +17866,10 @@ function invStartGraceCountdown(secs) {
 }
 
 async function invReopen(id) {
-  if (!await novaConfirm('Put this invoice back to Active so you can change it?')) return;
+  var _wasCanceled = _currentInvoice && _currentInvoice.id === id && _currentInvoice.status === 'canceled';
+  if (!await novaConfirm(_wasCanceled
+    ? 'Put this invoice back to Active? The cancel reason is cleared and the job counts again.'
+    : 'Put this invoice back to Active so you can change it?')) return;
   try {
     await api('POST', '/invoices/' + id + '/reopen', {});
     showToast('Reopened. The invoice is Active again.', 'success');
@@ -17777,9 +17925,43 @@ async function invDoSplit(id) {
 }
 
 // ---- The process card on the invoice view ---------------------------------
+//
+// The card carries the CONTEXT for the invoice's current state -- what is owed,
+// what is still missing, when it was settled. The BUTTONS live in the sticky bar
+// at the bottom of the page (invActionBarHtml). Splitting them that way is what
+// lets a tech scroll the whole invoice with the three close-out choices always
+// under their thumb, which is the thing Tony asked for.
+//
+// ⚠️ Both functions read the same inv.status and inv.can_complete. If you add a
+// state to one, add it to the other, or the page will offer a button the card
+// says is impossible.
 function invProcessCardHtml(inv, canEditNow, seeAll) {
   var head = function (t, b) { return '<div class="card mb-4"><div class="card-header"><span class="card-title">' + t + '</span>' + (b || '') + '</div><div class="card-body">'; };
   var foot = '</div></div>';
+
+  if (inv.status === 'canceled') {
+    var cLeft = parseInt(inv.reopen_seconds_left, 10) || 0;
+    var cAdmin = ['admin', 'owner'].indexOf((state.user || {}).role) !== -1;
+    var who = inv.canceled_by_name ? escHtml(inv.canceled_by_name) : 'someone';
+    var when = inv.canceled_at ? formatDateTime(inv.canceled_at) : '';
+    var why = inv.cancel_reason_label ? escHtml(inv.cancel_reason_label) : 'No reason recorded';
+    return head('Canceled', '<span class="badge badge-canceled">No charge</span>') +
+      '<div class="alert alert-warn" style="margin:0;line-height:1.7">' +
+        '<b>Canceled by ' + who + (when ? (' on ' + escHtml(when)) : '') + '.</b><br/>' +
+        'Reason: ' + why +
+        (inv.cancel_note ? (' &mdash; &ldquo;' + escHtml(inv.cancel_note) + '&rdquo;') : '') + '<br/>' +
+        'Nothing was charged. This invoice is out of revenue, out of COGS and out of the month-end parts order. Close the call in Pulsar as canceled.' +
+      '</div>' +
+      (inv.can_reopen_now
+        ? '<div id="inv-grace-box" style="display:flex;align-items:center;justify-content:space-between;gap:14px;margin-top:14px;padding:12px 14px;border:1px dashed var(--border);border-radius:var(--radius)">' +
+            '<div><b style="font-size:13.5px">Cancelled it by mistake?</b><i style="font-style:normal;display:block;font-size:12.5px;color:var(--text-muted-color);margin-top:2px">You can put this back to Active for <span id="inv-grace-left" style="color:var(--primary);font-weight:600">--:--</span> more.</i></div>' +
+            '<button class="btn btn-secondary btn-sm" style="white-space:nowrap" onclick="invReopen(' + inv.id + ')">Reopen</button>' +
+          '</div>'
+        : (cAdmin && cLeft <= 0
+            ? '<div style="margin-top:12px"><button class="btn btn-secondary btn-sm" onclick="invReopen(' + inv.id + ')">Reopen (admin)</button></div>'
+            : '')) +
+      foot;
+  }
 
   if (inv.status === 'paid') {
     var grace = parseInt(inv.reopen_seconds_left, 10) || 0;
@@ -17821,13 +18003,48 @@ function invProcessCardHtml(inv, canEditNow, seeAll) {
       '<span style="color:var(--text-dim)">' + escHtml(g.label) + '</span>' +
       '<b style="color:' + (g.ok ? 'var(--success)' : 'var(--danger)') + '">' + escHtml(g.detail) + '</b></div>';
   }).join('');
+  // The green Complete button used to live right here. It moved to the bottom
+  // bar; the checklist stayed, because a disabled Complete is only fair if the
+  // reason it is disabled is on the same screen as the button.
   return head('Finish this invoice') +
-    '<button class="btn btn-success" style="width:100%;justify-content:center;font-size:16px;padding:14px' + (inv.can_complete ? '' : ';opacity:.5') + '"' +
-      (inv.can_complete ? '' : ' disabled') + ' onclick="invCompleteSheet(' + inv.id + ')">' +
-      '<svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M20 6L9 17l-5-5"/></svg> Complete Invoice</button>' +
-    (can('create_invoice') ? '<button class="btn btn-secondary mt-2" style="width:100%;justify-content:center" onclick="invSplitSheet(' + inv.id + ')">Split billing (insurance covers part)</button>' : '') +
+    '<div style="font-size:13px;color:var(--text-muted-color);line-height:1.65">Everything below has to pass before this invoice can be Completed or set to Waiting for Payment.</div>' +
     '<div style="margin-top:14px;border:1px solid var(--border);border-radius:var(--radius);padding:2px 12px">' + gateRows + '</div>' +
+    (can('create_invoice') ? '<button class="btn btn-secondary mt-2" style="width:100%;justify-content:center;margin-top:12px" onclick="invSplitSheet(' + inv.id + ')">Split billing (insurance covers part)</button>' : '') +
     foot;
+}
+
+// ---- The close-out bar that sits at the bottom of the invoice --------------
+// Three ways an invoice can end, always in the same order, always in the same
+// place: Waiting for Payment, Complete, Cancel.
+//
+// ⚠️ Cancel is NEVER disabled, even when the gate checklist fails. Complete and
+// Waiting both assert the invoice is a valid finished document, so they are
+// gated on inv.can_complete. A cancel asserts the opposite -- the job did not
+// happen -- and a gone-on-arrival has no customer name and no line items. Gating
+// all three together locks the only usable button in exactly the case it exists
+// for. The server agrees: /complete and /waiting run invoiceGates, /cancel does
+// not.
+//
+// ⚠️ Cancel is also visually the QUIETEST of the three (ghost, muted, narrowest)
+// and sits furthest from the green. It is destructive and it is the one nobody
+// should hit by accident on a phone in the dark.
+function invActionBarHtml(inv, canActNow) {
+  if (!canActNow) return '';
+  if (['paid', 'partially_refunded', 'refunded', 'canceled'].indexOf(inv.status) !== -1) return '';
+  var ok = !!inv.can_complete;
+  var dis = ok ? '' : ' disabled';
+  var why = ok
+    ? 'Complete locks the invoice. Waiting for Payment raises a follow-up task and keeps it editable.'
+    : 'Complete and Waiting need the checklist above to pass. Cancel does not &mdash; a job that never happened can always be closed out.';
+  return '<div class="inv-actionbar"><div class="inv-actionbar-inner">' +
+      '<button type="button" class="inv-ab-btn inv-ab-waiting"' + dis + ' onclick="invWaitingSheet(' + inv.id + ')">' +
+        'Waiting for Payment<small>Work done, money not in</small></button>' +
+      '<button type="button" class="inv-ab-btn inv-ab-complete"' + dis + ' onclick="invCompleteSheet(' + inv.id + ')">' +
+        '<span><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" style="vertical-align:-2px"><path d="M20 6L9 17l-5-5"/></svg> Complete</span>' +
+        '<small>Paid or billed &mdash; locks it</small></button>' +
+      '<button type="button" class="inv-ab-btn inv-ab-cancel" onclick="invCancelSheet(' + inv.id + ')">' +
+        'Cancel<small>Job did not happen</small></button>' +
+    '</div><div class="inv-ab-hint">' + why + '</div></div>';
 }
 
 function invSplitLinkHtml(inv) {
