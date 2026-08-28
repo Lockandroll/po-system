@@ -86,20 +86,17 @@
     } else {
       body = board.top.map(function (r, i) {
         var rc = RANK_COLOR[i];
-        // The revenue board shows WHERE, not HOW MUCH - Tony's call, 2026-08-28.
-        // The order already says who won; putting each person's weekly take on
-        // every employee's home screen says a good deal more than that. The
-        // figures are still on the Leaderboards screen, behind the permission.
-        // A count of batteries is not the same thing, so that one keeps its
-        // number: on that board the number IS the achievement.
-        var right = (metric === 'revenue')
-          ? '<div class="lb-where">' + esc(r.city_code || '') + '</div>'
-          : '<div class="lb-val">' + fmt(metric, r.value) + '</div>';
+        // NAME AND CITY. No figures on either board - Tony's call, 2026-08-28,
+        // said twice. The rank already says who won; the revenue somebody
+        // brought in and the number of batteries they moved are both nobody
+        // else's business on a screen the whole company opens every morning.
+        // The numbers live on the Leaderboards screen behind manage_leaderboard,
+        // and routes/leaderboard.js does not even send them to /home.
         return '<div class="lb-row">' +
           '<div class="lb-rank"' + (rc ? (' style="background:' + rc + ';color:#1a1a1a"') : '') + '>' + (i + 1) + '</div>' +
           '<div class="lb-name' + (r.user_id ? '' : ' lb-unmatched') + '">' + esc(r.name) +
             (r.is_me ? '<span class="lb-you">YOU</span>' : '') + '</div>' +
-          right +
+          '<div class="lb-where">' + esc(r.city_code || '') + '</div>' +
         '</div>';
       }).join('');
     }

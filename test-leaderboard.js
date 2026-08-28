@@ -203,7 +203,11 @@ async function httpTests(grid) {
     eq('GET /home succeeds', home.status, 200);
     eq('home: the battery board is live', home.body.batteries.week_start, '2026-08-17');
     eq('home: ranked by batteries', home.body.batteries.top[0].name, 'Darrell Sawyer');
-    eq('home: value carried through', home.body.batteries.top[0].value, 14);
+    // The figure that produced the ranking is NOT sent to the browser. Tony
+    // 2026-08-28: name and city only. Hiding it in CSS would still ship every
+    // technician's week to anybody who opened devtools.
+    eq('home: the number never leaves the server', home.body.batteries.top[0].value, undefined);
+    eq('home: the city does', home.body.batteries.top[0].city_code, 'VAB');
     eq('home: the unmatched name still appears', home.body.batteries.top[3].name, 'Ghost, Nobody');
     ok('home: and is marked as unlinked', home.body.batteries.top[3].user_id === null);
     ok('home: the revenue board is absent until it is uploaded', home.body.revenue === null);
@@ -221,7 +225,11 @@ async function httpTests(grid) {
        (await pool.query('SELECT COUNT(*)::int AS n FROM leaderboard_entries')).rows[0].n, 4);
     var home2 = await call('GET', '/home');
     eq('home reflects the corrected column immediately', home2.body.batteries.top[0].name, 'Chris Benson');
-    eq('and the corrected number', home2.body.batteries.top[0].value, 5110.55);
+    eq('and still sends no figure', home2.body.batteries.top[0].value, undefined);
+    // The number itself is still right - it is just read from the week screen,
+    // which is behind manage_leaderboard.
+    var wkNow = (await pool.query("SELECT id FROM leaderboard_weeks WHERE metric='batteries'")).rows[0].id;
+    eq('the corrected number is on the week screen', (await call('GET', '/week/' + wkNow)).body.entries[0].value, 5110.55);
 
     // ---- what import refuses --------------------------------------------
     eq('import without a week is refused',
@@ -307,6 +315,8 @@ async function httpTests(grid) {
     eq('battery week: ranked by calls', bDet.body.entries[0].value, 2);
     eq('battery week: and the runner-up has one', bDet.body.entries[1].value, 1);
     eq('battery week: the location rides along for the Home card', bDet.body.entries[0].city_code, 'Columbus, GA');
+    var bHome2 = await call('GET', '/week/' + bIm.body.week_id);
+    eq('battery week: the count is readable HERE, behind the permission', bHome2.body.entries[0].value, 2);
     eq('battery week: the screen calls it a counting board', bDet.body.week.mode, 'count');
 
     eq('a counting import with nothing to match on is refused',
@@ -319,6 +329,21 @@ async function httpTests(grid) {
                                         match_text: 'batt' })).status, 400);
     await pool.query("DELETE FROM leaderboard_weeks WHERE week_start='2026-08-03'");
 
+    // A week uploaded WITHOUT a location column still says where each person
+    // works, from their Nova home city - otherwise the card is a list of names
+    // against a blank column.
+    var noCity = await call('POST', '/import', {
+      metric: 'revenue', week_start: '2026-09-07', filename: 'nocity.xlsx', file_base64: b64,
+      sheet: 'Week 34', header_row: 3, name_col: 0, value_cols: [3], city_col: -1, mode: 'sum'
+    });
+    eq('an import with no city column still works', noCity.status, 200);
+    var hc = await call('GET', '/home');
+    eq('and the card falls back to the roster home city', hc.body.revenue.top[0].city_code, 'VAB');
+    ok('while an unmatched name, who has no roster row, simply has none',
+       hc.body.revenue.top.filter(function (r) { return !r.user_id; })
+         .every(function (r) { return r.city_code === null; }));
+    await pool.query("DELETE FROM leaderboard_weeks WHERE week_start='2026-09-07'");
+
     // ---- linking through the route --------------------------------------
     var wkId = (await pool.query("SELECT id FROM leaderboard_weeks WHERE metric='batteries'")).rows[0].id;
     var ghost = (await pool.query("SELECT id FROM leaderboard_entries WHERE week_id=$1 AND raw_name='Ghost, Nobody'", [wkId])).rows[0];
@@ -329,7 +354,11 @@ async function httpTests(grid) {
     eq('linking onto somebody already there merges them', afterLink.body.batteries.top.length, 3);
     var donald = afterLink.body.batteries.top.filter(function (r) { return r.name === 'Donald Harris'; });
     eq('the merged row appears once', donald.length, 1);
-    eq('with both numbers added up', donald[0].value, 2740.1);
+    // The merged figure is read from the week screen, not /home - /home does
+    // not carry figures at all any more.
+    var mergedDet = await call('GET', '/week/' + wkId);
+    eq('with both numbers added up',
+       mergedDet.body.entries.filter(function (r) { return r.name === 'Donald Harris'; })[0].value, 2740.1);
     eq('and the board is still ranked 1..n',
        afterLink.body.batteries.top.map(function (r) { return r.rank; }), [1, 2, 3]);
 

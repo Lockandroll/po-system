@@ -95,18 +95,18 @@ const HOME_BOARDS = {
   revenue: {
     week_id: 4, week_start: '2026-08-17', week_label: 'Aug 17 - Aug 23, 2026', row_count: 6,
     top: [
-      { rank: 1, name: 'Chris Benson', user_id: 9001, is_me: false, value: 5110.55, city_code: 'VAB' },
-      { rank: 2, name: 'Tony McKeon', user_id: 7, is_me: true, value: 3980, city_code: 'VAB' },
-      { rank: 3, name: 'Donald Harris', user_id: 9003, is_me: false, value: 2100.1, city_code: 'CHE' },
-      { rank: 4, name: 'Ghost <b>Nobody</b> & Co', user_id: null, is_me: false, value: 640, city_code: null },
-      { rank: 5, name: 'Dana Harris', user_id: 9004, is_me: false, value: 120, city_code: 'CHE' }
+      { rank: 1, name: 'Chris Benson', user_id: 9001, is_me: false, city_code: 'VAB' },
+      { rank: 2, name: 'Tony McKeon', user_id: 7, is_me: true, city_code: 'VAB' },
+      { rank: 3, name: 'Donald Harris', user_id: 9003, is_me: false, city_code: 'CHE' },
+      { rank: 4, name: 'Ghost <b>Nobody</b> & Co', user_id: null, is_me: false, city_code: null },
+      { rank: 5, name: 'Dana Harris', user_id: 9004, is_me: false, city_code: 'CHE' }
     ]
   },
   batteries: {
     week_id: 5, week_start: '2026-08-17', week_label: 'Aug 17 - Aug 23, 2026', row_count: 6,
     top: [
-      { rank: 1, name: 'Darrell Sawyer', user_id: 9002, is_me: false, value: 14, city_code: 'VAB' },
-      { rank: 2, name: 'Chris Benson', user_id: 9001, is_me: false, value: 11, city_code: 'VAB' }
+      { rank: 1, name: 'Darrell Sawyer', user_id: 9002, is_me: false, city_code: 'VAB' },
+      { rank: 2, name: 'Chris Benson', user_id: 9001, is_me: false, city_code: 'VAB' }
     ]
   }
 };
@@ -245,14 +245,16 @@ async function homeCards() {
   has('the revenue card is titled', html, 'Top Revenue');
   has('the battery card is titled', html, 'Most Batteries Sold');
   has('the week is named on the card', html, 'Aug 17 - Aug 23, 2026');
-  // Tony 2026-08-28: the revenue card shows WHERE, not how much. The order
-  // already says who won; the figures stay behind the permission.
+  // Tony 2026-08-28, said twice: name and city, no figures on EITHER board.
   lacks('no dollar figure on the revenue card', html, '$5,110.55');
   lacks('none at all, in fact', html, '$');
-  has('the location takes its place', html, 'VAB');
+  lacks('and no battery count either', html, '>14<');
+  lacks('nor the runner-up count', html, '>11<');
+  has('the location takes their place', html, 'VAB');
   has('for the person from another market too', html, 'CHE');
-  has('and it is styled as a quiet aside, not a headline number', html, 'lb-where');
-  has('batteries keep their count - there the number IS the achievement', html, '>14<');
+  has('on both cards, styled the same quiet way', html, 'lb-where');
+  eq('one city per row and nothing else on the right',
+     (html.match(/lb-where/g) || []).length, 7);
   has('the viewer is flagged on their own row', html, 'lb-you');
   has('five rows on the revenue card', html, '>5<');
   has('an unmatched name is shown as unmatched', html, 'lb-unmatched');

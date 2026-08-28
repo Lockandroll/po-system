@@ -127,8 +127,18 @@ async function latestBoard(metric, meId, limit) {
   );
   if (!w.rows.length) return null;
   const week = w.rows[0];
+  // NOTE the COALESCE and, more importantly, what is NOT selected. The Home
+  // cards show a name and a city and nothing else, so the figure that produced
+  // the ranking is never sent to the browser at all - not hidden with CSS, not
+  // sent and ignored. An employee opening devtools on their own home screen
+  // must not be able to read what everybody earned. The numbers live behind
+  // manage_leaderboard on /week/:id.
+  //
+  // The city falls back to the person's Nova home city, so a week uploaded
+  // without a location column still says where each person works.
   const e = await pool.query(
-    'SELECT e.id, e.rank, e.user_id, e.raw_name, e.value, e.city_code, u.name AS user_name ' +
+    'SELECT e.id, e.rank, e.user_id, e.raw_name, ' +
+    "       COALESCE(NULLIF(e.city_code, ''), u.home_city) AS city_code, u.name AS user_name " +
     'FROM leaderboard_entries e LEFT JOIN users u ON u.id = e.user_id ' +
     'WHERE e.week_id = $1 ORDER BY e.rank ASC LIMIT $2', [week.id, limit]
   );
@@ -146,7 +156,6 @@ async function latestBoard(metric, meId, limit) {
         name: r.user_name || r.raw_name,
         user_id: r.user_id,
         is_me: r.user_id != null && r.user_id === meId,
-        value: Number(r.value),
         city_code: r.city_code || null
       };
     })
