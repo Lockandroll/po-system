@@ -5572,6 +5572,70 @@ async function initDB() {
     }
     await client.query('CREATE INDEX IF NOT EXISTS employee_record_attachments_rec_idx ON employee_record_attachments (record_id, id);');
 
+    // ---- Peer shout-outs --------------------------------------------------
+    //
+    // Recognition an employee writes about a COWORKER. This is the one thing
+    // employee_records cannot express on its own: every write into that table
+    // goes through canActOn(), and canActOn deliberately refuses peers. That
+    // guard is not an obstacle to route around - it is what stops the records
+    // system being used as a weapon sideways - so a peer's praise waits in this
+    // table until somebody with the authority to write the record approves it.
+    //
+    // On approval this row does NOT become the record, it SPAWNS one: an
+    // ordinary type='recognition' row with visible_to_employee = true, credited
+    // to the person who WROTE it (created_by / created_by_name) with the
+    // approver stored separately in approver_id. That split is the whole point.
+    // Recent Wins then says "Shout-out from <the coworker>" rather than naming
+    // the manager who merely let it through, while the file still records both.
+    //
+    // record_id points at whatever was created, so an approved shout-out keeps
+    // its own trail. A declined one never touches employee_records at all, and
+    // the person it was written about is never told it existed - being told you
+    // were nominated and then declined is worse than never hearing about it.
+    await client.query(
+      'CREATE TABLE IF NOT EXISTS shoutouts (' +
+      '  id SERIAL PRIMARY KEY,' +
+      '  to_user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,' +
+      '  from_user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,' +
+      '  from_name VARCHAR(120),' +
+      '  category VARCHAR(60),' +
+      '  body TEXT,' +
+      '  status VARCHAR(24) NOT NULL DEFAULT ' + "'pending'" + ',' +
+      '  city_code VARCHAR(20),' +
+      '  record_id INTEGER,' +
+      '  reviewed_by INTEGER,' +
+      '  reviewed_by_name VARCHAR(120),' +
+      '  reviewed_at TIMESTAMPTZ,' +
+      '  decline_reason TEXT,' +
+      '  created_at TIMESTAMPTZ DEFAULT NOW(),' +
+      '  updated_at TIMESTAMPTZ DEFAULT NOW()' +
+      ');'
+    );
+    // Same reason as every other table in this file: CREATE TABLE IF NOT EXISTS
+    // does nothing to a table that already exists, so a column added later would
+    // never appear on the live database. Every column is repeated here.
+    var _soCols = [
+      'to_user_id INTEGER', 'from_user_id INTEGER', 'from_name VARCHAR(120)',
+      'category VARCHAR(60)', 'body TEXT',
+      "status VARCHAR(24) NOT NULL DEFAULT 'pending'",
+      'city_code VARCHAR(20)', 'record_id INTEGER',
+      'reviewed_by INTEGER', 'reviewed_by_name VARCHAR(120)', 'reviewed_at TIMESTAMPTZ',
+      'decline_reason TEXT',
+      'created_at TIMESTAMPTZ DEFAULT NOW()', 'updated_at TIMESTAMPTZ DEFAULT NOW()'
+    ];
+    for (var _soi = 0; _soi < _soCols.length; _soi++) {
+      await client.query('ALTER TABLE shoutouts ADD COLUMN IF NOT EXISTS ' + _soCols[_soi] + ';');
+    }
+    // The approval queue reads exactly this partial index and nothing else.
+    await client.query("CREATE INDEX IF NOT EXISTS shoutouts_pending_idx ON shoutouts (created_at) WHERE status = 'pending';");
+    await client.query('CREATE INDEX IF NOT EXISTS shoutouts_to_idx ON shoutouts (to_user_id, created_at DESC);');
+    await client.query('CREATE INDEX IF NOT EXISTS shoutouts_from_idx ON shoutouts (from_user_id, created_at DESC);');
+    // One person cannot have two shout-outs pending for the same coworker. The
+    // route checks this too and returns a readable message; the constraint is
+    // here because two fast taps on a phone are one race, not two intentions.
+    await client.query('CREATE UNIQUE INDEX IF NOT EXISTS shoutouts_one_pending_idx ' +
+      "ON shoutouts (from_user_id, to_user_id) WHERE status = 'pending';");
+
     // ---- Deposit shortages ------------------------------------------------
     //
     // A shortage is NOT the same kind of fact as a late deposit, and this table
@@ -5691,7 +5755,7 @@ async function initDB() {
     console.log('Missed deposits: deposit_missed ready.');
 
 
-    console.log('Employee records: employee_records + employee_record_events + employee_record_attachments ready.');
+    console.log('Employee records: employee_records + employee_record_events + employee_record_attachments + shoutouts ready.');
 
     // ---- Certificates of Insurance ---------------------------------------
     //

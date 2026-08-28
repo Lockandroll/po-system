@@ -66,7 +66,7 @@ source of truth for the app version**:
 - `server.js` reads it from disk at boot and serves it at `GET /api/version`, which feeds
   the version badge in the sidebar.
 
-Current value: **`nova-v333`**. Bump it whenever anything under `public/` changes.
+Current value: **`nova-v429`**. Bump it whenever anything under `public/` changes.
 
 ### 1.4 `initDB()` is the only migration mechanism, and it is idempotent
 
@@ -100,7 +100,11 @@ Currently shipped dark: all of Dispatch (`view_dispatch`, `manage_dispatch`,
 admin/owner-only by design, not just by omission) and the IVR check-in stack
 (`manage_ivr_profiles`, `override_checkin` — `checkin_job` itself *is* in
 `EMPLOYEE_PERMS`, deliberately, but ships inert until an admin writes a phone
-profile for the account).
+profile for the account), the employee-records stack (`view_employee_records`,
+`create_employee_note`, `create_disciplinary`, `approve_discipline`,
+`manage_employee_records`) and peer shout-outs (`submit_shoutout` — the one
+permission in that stack eventually meant for *everybody*, so it is the first
+box to tick when peer recognition goes live).
 
 **Do not add a new permission to `DEFAULTS` or `EMPLOYEE_PERMS` as part of building a
 feature.** That is a separate, deliberate go-live decision.

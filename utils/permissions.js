@@ -222,6 +222,20 @@ ALL_PERMS.push(
   'manage_employee_records'   // void, delete, edit visibility company-wide
 );
 
+// Peer shout-outs. An employee writing recognition about a COWORKER, which no
+// other permission in this module can express: create_employee_note is a
+// manager's authority over their own people, and canActOn() refuses peers
+// outright. submit_shoutout only lets somebody NOMINATE - the shout-out is not
+// a record and reaches nobody until an approver who already holds
+// create_employee_note for that person approves it. There is deliberately no
+// separate approve_shoutout: whoever may write a recognition may release one.
+//
+// This is the one permission here that is eventually meant for EVERYBODY, but
+// it still ships dark like the rest of the module (see the note above). Tick it
+// on for the roles that should have it in Settings > Roles & Access; until then
+// only admin and owner can send one.
+ALL_PERMS.push('submit_shoutout');
+
 // Weekly leaderboards - the two Home-screen cards (top revenue, most batteries
 // sold) and the screen that uploads the spreadsheet behind them.
 //

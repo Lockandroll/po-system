@@ -331,7 +331,18 @@
       '.er-win:last-child{border-bottom:none}',
       '.er-win .who{font-size:13.5px;font-weight:600;color:var(--text)}',
       '.er-win .cat{font-size:12px;color:var(--text-muted-color)}',
+      '.er-win .lab{font-size:12px;font-weight:600;color:var(--text-muted-color)}',
       '.er-win .txt{font-size:13px;color:var(--text-dim);line-height:1.55;margin-top:4px;white-space:pre-wrap}',
+      '.er-win .by{font-size:11.5px;color:var(--text-muted-color);margin-top:6px}',
+      '.er-win .by b{color:var(--text-dim);font-weight:600}',
+      '.er-so{border:1px solid var(--border);border-radius:var(--radius);background:var(--bg-elevated);padding:14px 16px;margin-bottom:12px}',
+      '.er-so-head{display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap;margin-bottom:7px}',
+      '.er-so-body{font-size:13px;color:var(--text-dim);line-height:1.55;white-space:pre-wrap}',
+      '.er-so-meta{font-size:11.5px;color:var(--text-muted-color);margin-top:9px}',
+      '.er-so-st{font-size:10.5px;font-weight:800;letter-spacing:.06em;padding:2px 8px;border-radius:20px;text-transform:uppercase}',
+      '.er-so-st.pending{background:#2d2100;color:#f59e0b}',
+      '.er-so-st.approved{background:#0b1c12;color:#4ade80}',
+      '.er-so-st.declined{background:#1a1a1a;color:#8a8a8a}',
       '.er-you{font-size:10px;font-weight:800;letter-spacing:.08em;background:rgba(249,115,22,.16);color:var(--primary);border:1px solid rgba(249,115,22,.4);padding:1px 6px;border-radius:4px;margin-left:7px;vertical-align:middle}',
       '.er-pad{background:#fff;border-radius:6px;height:130px;position:relative;overflow:hidden;touch-action:none;cursor:crosshair}',
       '.er-pad canvas{display:block;width:100%;height:100%}',
@@ -374,8 +385,18 @@
   // ==================================================================
   async function renderRoster(host) {
     host.innerHTML = '<div class="loading">Loading…</div>';
-    var d;
-    try { d = await api('GET', API + '/roster'); }
+    var d, soCount = 0;
+    try {
+      // The shout-out queue rides along with the roster rather than getting its
+      // own screen load. It is allowed to fail on its own: a queue that will not
+      // load must not stop somebody opening an employee file.
+      var jobs = [api('GET', API + '/roster')];
+      var mayApprove = (typeof can === 'function') && can('create_employee_note');
+      if (mayApprove) jobs.push(api('GET', API + '/shoutouts/pending').catch(function () { return null; }));
+      var got = await Promise.all(jobs);
+      d = got[0];
+      soCount = (got[1] && (got[1].shoutouts || []).length) || 0;
+    }
     catch (e) { host.innerHTML = '<div class="alert alert-error">' + esc(e.message || 'Could not load.') + '</div>'; return; }
     S.roster = d;
     var s = d.stats || {};
@@ -389,6 +410,14 @@
 
     var approvalsBtn = can('approve_discipline') && s.pending_approval
       ? '<button class="btn btn-secondary" onclick="erOpenApprovals()">Approvals (' + s.pending_approval + ')</button>' : '';
+
+    // Shown whenever the viewer could approve one, count or no count. The
+    // discipline button above hides itself at zero because nobody goes looking
+    // for an empty approvals list; this one is where peer recognition lives, and
+    // a queue nobody can find is a queue nobody clears.
+    var shoutBtn = ((typeof can === 'function') && can('create_employee_note'))
+      ? '<button class="btn ' + (soCount ? 'btn-primary' : 'btn-secondary') +
+        '" onclick="erOpenShoutouts()">Shout-outs' + (soCount ? ' (' + soCount + ')' : '') + '</button>' : '';
 
     var rows = (d.employees || []).map(function (u) {
       var c = u.counts || {};
@@ -418,7 +447,7 @@
       '<div class="page-header"><div><h2 style="font-size:22px;font-weight:600">Employee Files</h2>' +
       '<p style="font-size:13px;color:var(--text-muted-color);margin-top:4px">' + (s.people || 0) +
       ' ' + ((s.people === 1) ? 'person' : 'people') + ' you can open</p></div>' +
-      '<div style="display:flex;gap:8px;flex-wrap:wrap">' + approvalsBtn + '</div></div>' +
+      '<div style="display:flex;gap:8px;flex-wrap:wrap">' + shoutBtn + approvalsBtn + '</div></div>' +
 
       '<div class="stats-grid">' +
       '<div class="stat-card"><div class="stat-value">' + (s.people || 0) + '</div><div class="stat-label">People in scope</div></div>' +
@@ -1716,6 +1745,215 @@
     modal('Record history', body, '<button class="btn btn-secondary" onclick="erCloseModal()">Close</button>', 560);
   };
 
+
+  // ==================================================================
+  // PEER SHOUT-OUTS
+  // ==================================================================
+  //
+  // An employee recognising a COWORKER. It is a nomination, not a record: the
+  // modal says that out loud, because somebody who thinks they are posting
+  // straight to the Home screen and then waits two days for it to appear has
+  // been misled by the UI, not by the manager who was reading it.
+  //
+  // Everything on this side is gated by submit_shoutout, which ships dark like
+  // the rest of this module. Approving is gated by create_employee_note, and the
+  // server re-checks canActOn() per row on top of that - the queue below only
+  // ever shows rows the viewer is actually allowed to clear.
+  var SO = { people: null, pending: [] };
+
+  window.erShoutout = async function () {
+    injectCss();
+    if (!SO.people) {
+      try { var d = await api('GET', API + '/shoutouts/people'); SO.people = d.people || []; }
+      catch (e) { toast(e.message || 'Could not load your coworkers.', 'error'); return; }
+    }
+    if (!SO.people.length) { toast('Nobody to send one to yet.', 'info'); return; }
+    var opts = '<option value="">Pick a coworker...</option>' + SO.people.map(function (p) {
+      return '<option value="' + p.id + '">' + esc(p.name) +
+        (p.home_city ? ' (' + esc(p.home_city) + ')' : '') + '</option>';
+    }).join('');
+    modal('Send a shout-out',
+      '<div class="form-group"><label>Who</label><select id="er-so-to">' + opts + '</select></div>' +
+      '<div class="form-group"><label>What for ' +
+      '<span style="color:var(--text-muted-color);font-weight:400">(optional)</span></label>' +
+      '<input id="er-so-cat" maxlength="60" placeholder="Customer service, Teamwork, Safety..."></div>' +
+      '<div class="form-group"><label>What did they do?</label>' +
+      '<textarea id="er-so-body" rows="5" maxlength="2000" ' +
+      'placeholder="Be specific: what happened, and why it mattered."></textarea></div>' +
+      '<div class="alert alert-info" style="font-size:12.5px;margin:0">A manager reads it before it goes ' +
+      'anywhere. If it goes out, it lands on their file and on Recent Wins with <b>your</b> name on it.</div>',
+      '<button class="btn btn-secondary" onclick="erCloseModal()">Cancel</button>' +
+      '<button class="btn btn-primary" id="er-so-send" onclick="erShoutoutSend()">Send it</button>', 560);
+  };
+
+  window.erShoutoutSend = async function () {
+    var to = parseInt(val('er-so-to'), 10) || 0;
+    var body = String(val('er-so-body') || '').trim();
+    if (!to) { toast('Pick a coworker first.', 'error'); return; }
+    if (!body) { toast('Say what they did.', 'error'); return; }
+    var b = el('er-so-send');
+    if (b) { b.disabled = true; b.textContent = 'Sending...'; }
+    try {
+      await api('POST', API + '/shoutouts', {
+        to_user_id: to,
+        category: String(val('er-so-cat') || '').trim(),
+        body: body
+      });
+      closeModal();
+      toast('Sent. A manager will take a look at it.', 'success');
+      // If My File is open behind the modal, the sent list under it is now stale.
+      if (typeof state !== 'undefined' && state && state.currentView === 'my-documents') {
+        try { await window.renderMyFile(content()); } catch (e) {}
+      }
+    } catch (e) {
+      toast(e.message || 'Could not send it.', 'error');
+      if (b) { b.disabled = false; b.textContent = 'Send it'; }
+    }
+  };
+
+  // ---- what I have sent, shown on My File ----------------------------------
+  //
+  // Deliberately only on the AUTHOR&#39;s screen. A pending shout-out is invisible
+  // to the person it is about, so that a declined one is never something they
+  // find out existed.
+  async function mySentShoutoutsHtml() {
+    if (!((typeof can === 'function') && can('submit_shoutout'))) return '';
+    var rows;
+    try { var d = await api('GET', API + '/shoutouts/mine'); rows = d.shoutouts || []; }
+    catch (e) { return ''; }
+    var list = rows.length ? rows.map(function (s) {
+      var st = String(s.status || 'pending');
+      var lab = st === 'approved' ? 'Posted' : (st === 'declined' ? 'Not posted' : 'With a manager');
+      return '<div class="er-so">' +
+        '<div class="er-so-head"><div style="font-size:13.5px;font-weight:600;color:var(--text)">' +
+        'For ' + esc(s.to_name || '') + (s.category ? ' <span class="cat" style="font-weight:400;font-size:12px;color:var(--text-muted-color)">&middot; ' + esc(s.category) + '</span>' : '') +
+        '</div><span class="er-so-st ' + esc(st) + '">' + lab + '</span></div>' +
+        '<div class="er-so-body">' + esc(s.body || '') + '</div>' +
+        (st === 'declined' && s.decline_reason
+          ? '<div class="er-sugg" style="margin-top:9px">' + esc(s.decline_reason) + '</div>' : '') +
+        '<div class="er-so-meta">' + esc(shortDate(s.created_at)) + '</div></div>';
+    }).join('') : '<div style="color:var(--text-muted-color);font-size:13px">' +
+      'You have not sent one yet. Caught somebody doing good work?</div>';
+
+    return '<div class="card" style="margin-bottom:16px"><div class="card-header">' +
+      '<div class="card-title">Shout-outs you sent</div>' +
+      '<button class="btn btn-secondary btn-sm" onclick="erShoutout()">+ Shout-out</button>' +
+      '</div><div class="card-body">' + list + '</div></div>';
+  }
+
+  // ---- the approval queue ---------------------------------------------------
+  window.erOpenShoutouts = async function () {
+    var host = content(); if (!host) return;
+    host.innerHTML = '<div class="loading">Loading...</div>';
+    var list;
+    try { var d = await api('GET', API + '/shoutouts/pending'); list = d.shoutouts || []; }
+    catch (e) { host.innerHTML = '<div class="alert alert-error">' + esc(e.message || 'Could not load.') + '</div>'; return; }
+    SO.pending = list;
+    var back = '<div style="display:flex;align-items:center;gap:8px;margin-bottom:14px;font-size:13px;' +
+      'color:var(--text-muted-color);cursor:pointer" onclick="erBackToRoster()">&#8592; Employee Files</div>';
+    if (!list.length) {
+      host.innerHTML = back + '<div class="card"><div class="empty-state"><h3>No shout-outs waiting</h3>' +
+        '<p style="font-size:13px;color:var(--text-muted-color)">When somebody recognises a coworker, ' +
+        'it lands here before it goes anywhere else.</p></div></div>';
+      return;
+    }
+    host.innerHTML = back +
+      '<div class="page-header"><div><h2 style="font-size:22px;font-weight:600">Shout-outs</h2>' +
+      '<p style="font-size:13px;color:var(--text-muted-color);margin-top:4px">' + list.length +
+      ' waiting on you. Approving adds it to the file and credits whoever wrote it, not you.</p></div></div>' +
+      list.map(function (s) {
+        return '<div class="er-so">' +
+          '<div class="er-so-head">' +
+          '<div style="display:flex;align-items:center;gap:10px">' +
+          '<div class="avatar" style="width:30px;height:30px;font-size:11px">' + esc(initials(s.to_name)) + '</div>' +
+          '<div><div style="font-size:14px;font-weight:600;color:var(--text)">' + esc(s.to_name || '') + '</div>' +
+          '<div style="font-size:11.5px;color:var(--text-muted-color)">' + esc(s.to_role || '') +
+          (s.to_city ? ' &middot; ' + esc(s.to_city) : '') + '</div></div></div>' +
+          (s.category ? '<span class="badge badge-active">' + esc(s.category) + '</span>' : '') +
+          '</div>' +
+          '<div class="er-so-body">' + esc(s.body || '') + '</div>' +
+          '<div class="er-so-meta">Written by <b style="color:var(--text-dim)">' + esc(s.from_name || '') +
+          '</b> &middot; ' + esc(shortDate(s.created_at)) + '</div>' +
+          '<div class="er-acts">' +
+          '<button class="btn btn-primary btn-sm" onclick="erSoApprove(' + s.id + ')">Review and approve</button>' +
+          '<button class="btn btn-secondary btn-sm" onclick="erSoDecline(' + s.id + ')">Decline</button>' +
+          '</div></div>';
+      }).join('');
+  };
+
+  function soById(id) {
+    for (var i = 0; i < SO.pending.length; i++) if (SO.pending[i].id === id) return SO.pending[i];
+    return null;
+  }
+
+  // The approver may tidy the wording before it goes on a permanent file and
+  // onto a shared screen - that is half of what approval is for. The original is
+  // kept on the record&#39;s event trail, so an edit is never a silent rewrite.
+  window.erSoApprove = function (id) {
+    var s = soById(id);
+    if (!s) { toast('Reload the page and try again.', 'error'); return; }
+    modal('Approve this shout-out',
+      '<div style="font-size:13px;color:var(--text-muted-color);margin-bottom:14px">' +
+      'For <b style="color:var(--text)">' + esc(s.to_name) + '</b>, written by ' + esc(s.from_name) + '.</div>' +
+      '<div class="form-group"><label>Category ' +
+      '<span style="color:var(--text-muted-color);font-weight:400">(optional)</span></label>' +
+      '<input id="er-so-acat" maxlength="60" value="' + esc(s.category || '') + '"></div>' +
+      '<div class="form-group"><label>Wording</label>' +
+      '<textarea id="er-so-abody" rows="5" maxlength="8000">' + esc(s.body || '') + '</textarea>' +
+      '<div style="font-size:11.5px;color:var(--text-muted-color);margin-top:5px">' +
+      'Edit it if it needs tidying. The original is kept on the record history either way.</div></div>' +
+      sw('er-so-awins', true, 'Show on Recent Wins',
+        'Off means it still goes on their file and they are still told about it, it just does not go on the Home screen.'),
+      '<button class="btn btn-secondary" onclick="erCloseModal()">Cancel</button>' +
+      '<button class="btn btn-primary" id="er-so-ago" onclick="erSoApproveGo(' + id + ')">Approve</button>', 600);
+  };
+
+  window.erSoApproveGo = async function (id) {
+    var b = el('er-so-ago');
+    if (b) { b.disabled = true; b.textContent = 'Approving...'; }
+    try {
+      await api('POST', API + '/shoutouts/' + id + '/approve', {
+        body: String(val('er-so-abody') || '').trim(),
+        category: String(val('er-so-acat') || '').trim(),
+        show_in_wins: swOn('er-so-awins')
+      });
+      closeModal();
+      toast('Approved. It is on their file now.', 'success');
+      await window.erOpenShoutouts();
+    } catch (e) {
+      toast(e.message || 'Could not approve it.', 'error');
+      if (b) { b.disabled = false; b.textContent = 'Approve'; }
+    }
+  };
+
+  window.erSoDecline = function (id) {
+    var s = soById(id);
+    if (!s) { toast('Reload the page and try again.', 'error'); return; }
+    modal('Decline this shout-out',
+      '<div class="alert alert-info" style="font-size:12.5px">' + esc(s.to_name) + ' was never told this ' +
+      'existed and will not be told now. Only ' + esc(s.from_name) + ' hears back.</div>' +
+      '<div class="form-group"><label>What should ' + esc(s.from_name) + ' know? ' +
+      '<span style="color:var(--text-muted-color);font-weight:400">(optional)</span></label>' +
+      '<textarea id="er-so-dr" rows="3" maxlength="500" ' +
+      'placeholder="Kept short and kind. It is sent to them as written."></textarea></div>',
+      '<button class="btn btn-secondary" onclick="erCloseModal()">Cancel</button>' +
+      '<button class="btn btn-danger" id="er-so-dgo" onclick="erSoDeclineGo(' + id + ')">Decline</button>', 560);
+  };
+
+  window.erSoDeclineGo = async function (id) {
+    var b = el('er-so-dgo');
+    if (b) { b.disabled = true; b.textContent = 'Working...'; }
+    try {
+      await api('POST', API + '/shoutouts/' + id + '/decline', { reason: String(val('er-so-dr') || '').trim() });
+      closeModal();
+      toast('Declined.', 'info');
+      await window.erOpenShoutouts();
+    } catch (e) {
+      toast(e.message || 'Could not decline it.', 'error');
+      if (b) { b.disabled = false; b.textContent = 'Decline'; }
+    }
+  };
+
   // ==================================================================
   // WRAPPERS over onboarding.js / app.js
   // ==================================================================
@@ -1735,7 +1973,7 @@
   var origMyFile = window.renderMyFile;
   window.renderMyFile = async function (host) {
     injectCss();
-    host.innerHTML = '<div id="er-mine"></div><div id="er-docs"></div>';
+    host.innerHTML = '<div id="er-mine"></div><div id="er-sent"></div><div id="er-docs"></div>';
     var mine = el('er-mine');
     try {
       var d = await api('GET', API + '/me');
@@ -1745,6 +1983,12 @@
       // acknowledge - re-renders this screen, so the badge follows for free.
       setPending((d.records || []).filter(function (r) { return r.needs_signature; }).length);
     } catch (e) { mine.innerHTML = ''; }
+    // Shout-outs this person has SENT, and where each one got to. Its own fetch
+    // and its own slot so a failure here cannot take the file down with it.
+    try {
+      var sent = el('er-sent');
+      if (sent) sent.innerHTML = await mySentShoutoutsHtml();
+    } catch (e) {}
     if (typeof origMyFile === 'function') {
       try { await origMyFile(el('er-docs')); } catch (e) {}
     }
@@ -1905,13 +2149,19 @@
     if (!slot) return;
     injectCss();
     var d;
-    try { d = await api('GET', API + '/wins'); } catch (e) { return; }
+    try { d = await api('GET', API + '/wins'); } catch (e) { d = null; }
     var wins = (d && d.wins) || [];
+    var mayShout = (typeof can === 'function') && can('submit_shoutout');
+
     // This slot is now the right-hand half of the Home pair (Needs Approval on
-    // the left) - it took the Recent Activity card's place on 2026-08-28. With
+    // the left) - it took the Recent Activity card&#39;s place on 2026-08-28. With
     // nothing to show, collapse the row to one column rather than leaving a
     // gap: a quiet week should look like a shorter page, not a broken one.
-    if (!wins.length) {
+    //
+    // Unless the viewer can send a shout-out. Then the card stays and carries
+    // the button, because a week with no recognition on it is exactly when that
+    // button is worth being able to find.
+    if (!wins.length && !mayShout) {
       slot.innerHTML = '';
       var pair0 = el('home-pair');
       if (pair0) pair0.style.gridTemplateColumns = '1fr';
@@ -1919,21 +2169,36 @@
     }
     var pair = el('home-pair');
     if (pair) pair.style.gridTemplateColumns = '1fr 1fr';
-    slot.innerHTML =
-      '<div class="card" style="margin:0;border-color:#1d4429">' +
+
+    var head =
       '<div class="card-header" style="border-bottom-color:#1d4429">' +
       '<div class="card-title">Recent Wins</div>' +
-      (d.city ? '<span style="font-size:12px;color:var(--text-muted-color)">' + esc(d.city) + '</span>' : '') +
-      '</div><div class="card-body" style="padding:6px 20px">' +
-      wins.map(function (w) {
-        return '<div class="er-win">' +
-          '<div class="avatar" style="width:34px;height:34px;font-size:12px">' + esc(initials(w.name)) + '</div>' +
-          '<div><div><span class="who">' + esc(w.name) + '</span>' +
-          (w.category ? ' <span class="cat">&middot; ' + esc(w.category) + '</span>' : '') +
-          (w.is_me ? '<span class="er-you">YOU</span>' : '') + '</div>' +
-          '<div class="txt">' + esc(w.body || '') + '</div></div></div>';
-      }).join('') +
+      '<div style="display:flex;align-items:center;gap:10px">' +
+      ((d && d.city) ? '<span style="font-size:12px;color:var(--text-muted-color)">' + esc(d.city) + '</span>' : '') +
+      (mayShout ? '<button class="btn btn-secondary btn-sm" onclick="erShoutout()">+ Shout-out</button>' : '') +
       '</div></div>';
+
+    var body = wins.length ? wins.map(function (w) {
+      // The credit line names whoever WROTE the recognition. On a peer
+      // shout-out that is the coworker, not the manager who released it: the
+      // server keeps created_by and approver_id apart precisely so this line can
+      // say the right name. See the shout-out block in routes/employeeRecords.js.
+      var by = w.by
+        ? '<div class="by">' + (w.peer ? 'Shout-out from ' : 'Recognized by ') + '<b>' + esc(w.by) + '</b></div>'
+        : '';
+      return '<div class="er-win">' +
+        '<div class="avatar" style="width:34px;height:34px;font-size:12px">' + esc(initials(w.name)) + '</div>' +
+        '<div><div><span class="lab">Employee:</span> <span class="who">' + esc(w.name) + '</span>' +
+        (w.category ? ' <span class="cat">&middot; ' + esc(w.category) + '</span>' : '') +
+        (w.is_me ? '<span class="er-you">YOU</span>' : '') + '</div>' +
+        '<div class="txt">' + esc(w.body || '') + '</div>' + by + '</div></div>';
+    }).join('')
+      : '<div style="padding:16px 0;font-size:13px;color:var(--text-muted-color);line-height:1.6">' +
+        'Nothing here yet. Caught somebody doing good work? Send them a shout-out.</div>';
+
+    slot.innerHTML =
+      '<div class="card" style="margin:0;border-color:#1d4429">' + head +
+      '<div class="card-body" style="padding:6px 20px">' + body + '</div></div>';
   }
 
   // ---- "You have a notice to sign" -----------------------------------------
