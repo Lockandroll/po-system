@@ -272,6 +272,15 @@ async function seed() {
   eq(mine.peer, true, 'and it is flagged as a peer shout-out');
   eq(mine.is_me, true, 'the recipient sees the YOU badge');
   eq(mine.category, 'Customer service', 'the category rides along');
+  eq(mine.city, 'CHS', 'and the row carries its own market');
+
+  // Company-wide since 2026-08-28. Rosa is in COL and Chris is in CHS; each must
+  // see BOTH, or the card is back to being city-scoped without saying so.
+  as(OTHER);
+  var wOther = await req('GET', '/api/employee-records/wins');
+  eq((wOther.body.wins || []).filter(function (x) { return x.id === rec.id; }).length, 1,
+    'somebody in another market sees the Charleston win');
+  eq(wOther.body.city, null, 'and the payload no longer stamps a single city on the list');
 
   // A manager-written recognition credits the manager and is NOT flagged peer.
   as(MGR);
@@ -285,6 +294,14 @@ async function seed() {
   var direct2 = (w2.body.wins || []).filter(function (x) { return x.id === note.body.id; })[0];
   eq(direct2.by, 'Dana Reed', 'a manager-written win credits the manager');
   eq(direct2.peer, false, 'and is not flagged as a shout-out');
+
+  // A person with no Home City set must not break the row or invent one.
+  await pool.query('UPDATE users SET home_city = NULL WHERE id = 4');
+  var w2b = await req('GET', '/api/employee-records/wins');
+  var noCity = (w2b.body.wins || []).filter(function (x) { return x.id === note.body.id; })[0];
+  ok(!!noCity, 'the win still renders with no Home City on file');
+  eq(noCity.city, 'CHS', 'and falls back to the city stamped on the record itself');
+  await pool.query("UPDATE users SET home_city = 'CHS' WHERE id = 4");
 
   // -----------------------------------------------------------------------
   section('the approver may tidy the wording, and the original is kept');

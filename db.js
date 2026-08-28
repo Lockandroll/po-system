@@ -3033,6 +3033,88 @@ async function initDB() {
       ');'
     );
 
+    // --- Release of Liability -------------------------------------------------
+    // A receipt-of-payment and release that Nova DRAWS itself (utils/releasePdf.js)
+    // instead of an uploaded PDF with field boxes dragged onto it. That is the whole
+    // reason this is its own table rather than a signature_templates row: the form is
+    // built from a complaint, so the claimant, vehicle and job details are already
+    // known and the customer is handed a filled-in document, not a blank one.
+    //
+    // Two signers, in order: the claimant signs through a single-use token link, then
+    // the named Lock and Roll representative countersigns inside Nova. The token lives
+    // on this row (there is only ever one external signer), which is why there is no
+    // separate signers table the way signature_signers exists for the e-sign module.
+    //
+    // Anything added to this table LATER must also get its own idempotent
+    // ALTER TABLE ... ADD COLUMN IF NOT EXISTS below, or existing deployments (which
+    // already have the table) will never receive the column.
+    await client.query(
+      'CREATE TABLE IF NOT EXISTS release_forms (' +
+      '  id SERIAL PRIMARY KEY,' +
+      '  release_number VARCHAR(50) UNIQUE NOT NULL,' +
+      "  status VARCHAR(20) NOT NULL DEFAULT 'draft'," +
+      '  feedback_id INTEGER REFERENCES customer_feedback(id) ON DELETE SET NULL,' +
+      '  work_order_id INTEGER,' +
+      '  claimant_name VARCHAR(255) NOT NULL,' +
+      '  claimant_phone VARCHAR(50),' +
+      '  claimant_email VARCHAR(255),' +
+      '  claimant_address VARCHAR(255),' +
+      '  claimant_city VARCHAR(120),' +
+      '  claimant_state VARCHAR(10),' +
+      '  claimant_zip VARCHAR(20),' +
+      '  vehicle_year VARCHAR(10),' +
+      '  vehicle_make VARCHAR(100),' +
+      '  vehicle_model VARCHAR(100),' +
+      '  vehicle_color VARCHAR(60),' +
+      '  license_plate VARCHAR(40),' +
+      '  vin VARCHAR(40),' +
+      '  service_date DATE,' +
+      '  job_ref VARCHAR(100),' +
+      '  damage_description TEXT,' +
+      '  settlement_amount DECIMAL(10,2) NOT NULL DEFAULT 0,' +
+      '  release_body TEXT,' +
+      '  rep_user_id INTEGER REFERENCES users(id),' +
+      '  rep_name VARCHAR(255),' +
+      '  rep_title VARCHAR(120),' +
+      '  customer_token VARCHAR(128) UNIQUE,' +
+      '  customer_token_expires_at TIMESTAMPTZ,' +
+      '  customer_consent BOOLEAN NOT NULL DEFAULT false,' +
+      '  customer_printed_name VARCHAR(255),' +
+      '  customer_sig_r2_key VARCHAR(512),' +
+      '  customer_signed_at TIMESTAMPTZ,' +
+      '  customer_signed_ip VARCHAR(64),' +
+      '  rep_sig_r2_key VARCHAR(512),' +
+      '  rep_signed_at TIMESTAMPTZ,' +
+      '  rep_signed_ip VARCHAR(64),' +
+      '  declined_reason TEXT,' +
+      '  signed_r2_key VARCHAR(512),' +
+      '  sent_at TIMESTAMPTZ,' +
+      '  completed_at TIMESTAMPTZ,' +
+      '  expires_at TIMESTAMPTZ,' +
+      '  created_by INTEGER REFERENCES users(id),' +
+      '  created_at TIMESTAMPTZ DEFAULT NOW(),' +
+      '  updated_at TIMESTAMPTZ DEFAULT NOW()' +
+      ');'
+    );
+    // The audit trail. Mirrors signature_events: IP and user-agent on every row, so
+    // the certificate page appended to the finished PDF can prove who did what, when
+    // and from where. Never updated, only appended to.
+    await client.query(
+      'CREATE TABLE IF NOT EXISTS release_events (' +
+      '  id SERIAL PRIMARY KEY,' +
+      '  release_id INTEGER NOT NULL REFERENCES release_forms(id) ON DELETE CASCADE,' +
+      '  event_type VARCHAR(30) NOT NULL,' +
+      '  actor VARCHAR(255),' +
+      '  ip VARCHAR(64),' +
+      '  user_agent TEXT,' +
+      '  detail JSONB,' +
+      '  created_at TIMESTAMPTZ DEFAULT NOW()' +
+      ');'
+    );
+    await client.query('CREATE INDEX IF NOT EXISTS release_forms_feedback_idx ON release_forms (feedback_id);');
+    await client.query('CREATE INDEX IF NOT EXISTS release_forms_status_idx ON release_forms (status);');
+    await client.query('CREATE INDEX IF NOT EXISTS release_events_release_idx ON release_events (release_id);');
+
     // --- Secure Vault (owner-only, SHARED credential store) -------------------
     // Zero-knowledge: the server stores ONLY salts, public keys and ciphertext.
     // One shared data key (DEK) encrypts every entry. Each owner has a personal
@@ -5572,6 +5654,43 @@ async function initDB() {
     }
     await client.query('CREATE INDEX IF NOT EXISTS employee_record_attachments_rec_idx ON employee_record_attachments (record_id, id);');
 
+    // ---- Weekly wins digest -----------------------------------------------
+    //
+    // One text on Friday listing the week's recognition. Two things here.
+    //
+    // receive_win_digest is a SEPARATE switch from receive_sms, and that split is
+    // the entire reason this column exists rather than reusing the one we had.
+    // users.receive_sms also gates the 2FA login code (routes/auth.js): with it
+    // off, the code goes by email instead. So if the only way to mute a chatty
+    // recognition text were receive_sms, the first person who got tired of it
+    // would silently change how they log in. Muting the digest must cost nothing
+    // else. Defaults true; receive_sms still has to be on as well, because that
+    // is the standing "you may text me at all" answer and this does not override it.
+    await client.query('ALTER TABLE users ADD COLUMN IF NOT EXISTS receive_win_digest BOOLEAN NOT NULL DEFAULT true;');
+
+    // The claim. One row per send, keyed on the date, taken with ON CONFLICT DO
+    // NOTHING so a redeploy, a second dyno or a manual re-run on the same day
+    // cannot text everybody twice. window_start is what the NEXT run reads to
+    // decide how far back to look, so a week the job never ran is caught up
+    // rather than silently dropped - see runWinDigest in jobs/employeeRecords.js.
+    await client.query(
+      'CREATE TABLE IF NOT EXISTS win_digest_runs (' +
+      '  run_date DATE PRIMARY KEY,' +
+      '  window_start TIMESTAMPTZ,' +
+      '  window_end TIMESTAMPTZ,' +
+      '  win_count INTEGER NOT NULL DEFAULT 0,' +
+      '  sent_count INTEGER NOT NULL DEFAULT 0,' +
+      '  message TEXT,' +
+      '  created_at TIMESTAMPTZ DEFAULT NOW()' +
+      ');'
+    );
+    var _wdCols = ['window_start TIMESTAMPTZ', 'window_end TIMESTAMPTZ',
+      'win_count INTEGER NOT NULL DEFAULT 0', 'sent_count INTEGER NOT NULL DEFAULT 0',
+      'message TEXT', 'created_at TIMESTAMPTZ DEFAULT NOW()'];
+    for (var _wdi = 0; _wdi < _wdCols.length; _wdi++) {
+      await client.query('ALTER TABLE win_digest_runs ADD COLUMN IF NOT EXISTS ' + _wdCols[_wdi] + ';');
+    }
+
     // ---- Peer shout-outs --------------------------------------------------
     //
     // Recognition an employee writes about a COWORKER. This is the one thing
@@ -5755,7 +5874,7 @@ async function initDB() {
     console.log('Missed deposits: deposit_missed ready.');
 
 
-    console.log('Employee records: employee_records + employee_record_events + employee_record_attachments + shoutouts ready.');
+    console.log('Employee records: employee_records + employee_record_events + employee_record_attachments + shoutouts + win_digest_runs ready.');
 
     // ---- Certificates of Insurance ---------------------------------------
     //

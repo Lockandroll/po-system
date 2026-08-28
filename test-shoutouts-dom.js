@@ -42,17 +42,17 @@ var SRC = fs.readFileSync('public/js/employeeRecords.js', 'utf8');
 var PEER_WIN = {
   id: 501, name: 'Christopher Benson', category: 'Customer service',
   body: 'Stayed two hours past his shift to finish a lockout.',
-  by: 'Marcus Hale', peer: true, is_me: false
+  city: 'CHS', by: 'Marcus Hale', peer: true, is_me: false
 };
 var BOSS_WIN = {
   id: 502, name: 'Marcus Hale', category: 'Safety',
   body: 'Caught a bad tire before the run.',
-  by: 'Dana Reed', peer: false, is_me: true
+  city: 'COL', by: 'Dana Reed', peer: false, is_me: true
 };
 
 function fixtures() {
   return {
-    '/employee-records/wins': { city: 'CHS', wins: [PEER_WIN, BOSS_WIN] },
+    '/employee-records/wins': { city: null, wins: [PEER_WIN, BOSS_WIN] },
     '/employee-records/me': { records: [] },
     '/employee-records/me/pending': { count: 0 },
     '/employee-records/shoutouts/people': { people: [
@@ -165,11 +165,17 @@ function settle() { return new Promise(function (r) { setTimeout(r, 0); }); }
   has(card, 'Customer service', 'the category still renders');
   has(card, 'YOU', 'the YOU badge still renders');
 
+  // The card went company-wide on 2026-08-28, so each row says which market it
+  // came from and the header no longer stamps one city over the whole list.
+  has(card, '<span class="er-city">CHS</span>', 'a Charleston win is tagged CHS');
+  has(card, '<span class="er-city">COL</span>', 'a Columbia win is tagged COL');
+  eq((card.match(/er-city/g) || []).length, 2, 'one city tag per win, not a header stamp');
+
   // -----------------------------------------------------------------------
   section('the credit line degrades quietly');
   var w2 = makeWin({ perms: [], tweak: function (F) {
     F['/employee-records/wins'] = { city: 'CHS', wins: [
-      { id: 9, name: 'Old Record', category: null, body: 'from before this shipped', by: null, peer: false, is_me: false }
+      { id: 9, name: 'Old Record', category: null, body: 'from before this shipped', city: null, by: null, peer: false, is_me: false }
     ] };
   } });
   await w2.renderHomeScreen(w2.document.getElementById('content'));
@@ -178,6 +184,7 @@ function settle() { return new Promise(function (r) { setTimeout(r, 0); }); }
   has(card2, 'Employee:', 'a win with no author still gets the label');
   lacks(card2, 'Recognized by', 'and no empty credit line');
   lacks(card2, 'class="by"', 'the credit element is not emitted at all');
+  lacks(card2, 'er-city', 'and somebody with no Home City set gets no empty tag');
 
   // -----------------------------------------------------------------------
   section('the empty card');

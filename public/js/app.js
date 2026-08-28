@@ -897,6 +897,10 @@ function navModel() {
       navItem('documents', 'Document Vault', NAVI.folder),
       navItem('my-documents', 'My Documents', NAVI.file),
       can('view_signatures') ? navItem('signatures', 'Signatures', NAVI.pen, ['signatures', 'new-signature', 'signature-editor']) : null,
+      // Releases of liability sit beside Signatures because they are the same
+      // job - getting a customer's name on a document - just a form Nova draws
+      // itself rather than a PDF somebody uploaded. See public/js/releases.js.
+      can('view_releases') ? navItem('releases', 'Releases', NAVI.pen, ['releases', 'release']) : null,
       (u.isOwner && !state.realUser) ? navItem('vault', 'Vault', NAVI.lock) : null
     ]),
 
@@ -1044,6 +1048,11 @@ async function render() {
   if (_qaTok) { await renderQuoteApprovePage(app, _qaTok); return; }
   var _quizTok = new URLSearchParams(window.location.search).get('quiz');
   if (_quizTok) { await renderQuizTake(app, _quizTok); return; }
+  // Release of liability. Same no-login shape as /sign and /quote above: the
+  // whole session is the token in the URL. app.get('*') in server.js already
+  // serves this page, so there is no server route for the path itself.
+  var _relTok = relGetUrlToken();
+  if (_relTok) { await renderReleasePage(app, _relTok); return; }
   if (!state.token || !state.user) {
     app.className = 'no-sidebar';
     var resetToken = new URLSearchParams(window.location.search).get('reset');
@@ -1123,7 +1132,7 @@ async function render() {
     if (_ovOpen) _ovOpen.classList.add('open');
   }
   const content = document.getElementById('content');
-  var _viewPerm = { dashboard:'view_pos', view:'view_pos', running:'view_pos', 'running-admin':'view_pos', new:'create_po', edit:'edit_po', quotes:'view_quotes', 'view-quote':'view_quotes', 'new-quote':'create_quote', 'edit-quote':'edit_quote', 'vr-dashboard':'view_vr', 'view-vr':'view_vr', 'new-vr':'create_vr', 'edit-vr':'edit_vr', deposits:'view_deposits', 'view-deposit':'view_deposits', signoffs:'view_signoffs', 'view-signoff':'view_signoffs', 'new-signoff':'create_signoff', 'edit-signoff':'edit_signoff', 'complete-signoff':'complete_signoff', tasks:'view_tasks', 'task-detail':'view_tasks', 'new-task':'view_tasks', 'edit-task':'view_tasks', 'task-templates':'manage_tasks', 'new-task-template':'manage_tasks', 'edit-task-template':'manage_tasks', 'work-orders':'view_work_orders', 'view-work-order':'view_work_orders', 'new-work-order':'manage_work_orders', schedule:'view_schedule', 'schedule-admin':'manage_schedule', 'schedule-nowork':'manage_schedule', invoices:'view_invoices', 'view-invoice':'view_invoices', 'new-invoice':'create_invoice', 'edit-invoice':'edit_invoice', 'invoice-parts':'view_invoices', refunds:'view_invoices', 'invoice-setup':'manage_invoice_setup', feedback:'view_feedback', 'feedback-detail':'view_feedback', 'call-lookup':'play_call_recordings', signatures:'view_signatures', 'new-signature':'manage_signatures', 'signature-editor':'manage_signatures', timeclock:'view_timeclock', 'timeclock-manager':'manage_timeclock', pto:'view_pto', 'onboarding-admin':'manage_onboarding', 'employee-files':'manage_onboarding', ptt:'view_ptt', inspections:'view_inspections', 'view-inspection':'view_inspections', 'inspection-form':'view_inspections', 'inspection-checklist':'manage_inspections', assets:'manage_assets', 'asset-detail':'manage_assets', 'asset-locations':'manage_assets', 'asset-techs':'manage_assets', 'asset-tech-detail':'view_assets', 'asset-acks':'manage_assets', 'new-asset-ack':'manage_assets', 'view-asset-ack':'view_assets', 'asset-requests':'view_assets', 'asset-catalog':'manage_assets', 'my-equipment':'view_assets', 'live-map':'view_tech_locations', 'location-settings':'manage_settings', dispatch:'view_dispatch', 'dispatch-call':'view_dispatch', 'call-search':'search_dispatch', 'time-codes':'manage_pricing', coverage:'manage_coverage', 'accounts-receivable':'view_ar', leaderboards:'manage_leaderboard' };
+  var _viewPerm = { dashboard:'view_pos', view:'view_pos', running:'view_pos', 'running-admin':'view_pos', new:'create_po', edit:'edit_po', quotes:'view_quotes', 'view-quote':'view_quotes', 'new-quote':'create_quote', 'edit-quote':'edit_quote', 'vr-dashboard':'view_vr', 'view-vr':'view_vr', 'new-vr':'create_vr', 'edit-vr':'edit_vr', deposits:'view_deposits', 'view-deposit':'view_deposits', signoffs:'view_signoffs', 'view-signoff':'view_signoffs', 'new-signoff':'create_signoff', 'edit-signoff':'edit_signoff', 'complete-signoff':'complete_signoff', tasks:'view_tasks', 'task-detail':'view_tasks', 'new-task':'view_tasks', 'edit-task':'view_tasks', 'task-templates':'manage_tasks', 'new-task-template':'manage_tasks', 'edit-task-template':'manage_tasks', 'work-orders':'view_work_orders', 'view-work-order':'view_work_orders', 'new-work-order':'manage_work_orders', schedule:'view_schedule', 'schedule-admin':'manage_schedule', 'schedule-nowork':'manage_schedule', invoices:'view_invoices', 'view-invoice':'view_invoices', 'new-invoice':'create_invoice', 'edit-invoice':'edit_invoice', 'invoice-parts':'view_invoices', refunds:'view_invoices', 'invoice-setup':'manage_invoice_setup', feedback:'view_feedback', 'feedback-detail':'view_feedback', 'call-lookup':'play_call_recordings', signatures:'view_signatures', 'new-signature':'manage_signatures', 'signature-editor':'manage_signatures', timeclock:'view_timeclock', 'timeclock-manager':'manage_timeclock', pto:'view_pto', 'onboarding-admin':'manage_onboarding', 'employee-files':'manage_onboarding', ptt:'view_ptt', inspections:'view_inspections', 'view-inspection':'view_inspections', 'inspection-form':'view_inspections', 'inspection-checklist':'manage_inspections', assets:'manage_assets', 'asset-detail':'manage_assets', 'asset-locations':'manage_assets', 'asset-techs':'manage_assets', 'asset-tech-detail':'view_assets', 'asset-acks':'manage_assets', 'new-asset-ack':'manage_assets', 'view-asset-ack':'view_assets', 'asset-requests':'view_assets', 'asset-catalog':'manage_assets', 'my-equipment':'view_assets', 'live-map':'view_tech_locations', 'location-settings':'manage_settings', dispatch:'view_dispatch', 'dispatch-call':'view_dispatch', 'call-search':'search_dispatch', 'time-codes':'manage_pricing', coverage:'manage_coverage', 'accounts-receivable':'view_ar', leaderboards:'manage_leaderboard', releases:'view_releases', release:'view_releases' };
   var _viewAnyOf = { 'tech-pay': ['view_pay_report', 'manage_pay_grades', 'view_own_pay'],
     coi: ['view_vendors', 'manage_vendors', 'manage_coi'],
     'coi-account': ['view_vendors', 'manage_vendors', 'manage_coi'],
@@ -1148,6 +1157,8 @@ async function render() {
   else if (state.currentView === 'coi') await renderCoi(content);
   else if (state.currentView === 'coi-account') await renderCoiAccount(content, state.currentParam);
   else if (state.currentView === 'coi-cycle') await renderCoiCycle(content, state.currentParam);
+  else if (state.currentView === 'releases') await renderReleases(content);
+  else if (state.currentView === 'release') await renderReleaseForm(content, state.currentParam);
   else if (state.currentView === 'audit') await renderAuditLog(content);
   else if (state.currentView === 'settings') await renderSettings(content);
   else if (state.currentView === 'quotes') await renderQuotes(content);
@@ -2688,7 +2699,14 @@ async function showUserModal(id, returnView) {
         '</div>' +
         '<div class="form-group" style="display:flex;align-items:center;gap:10px">' +
           '<input type="checkbox" id="modal-receive-sms" style="width:auto"' + (user && user.receive_sms ? ' checked' : '') + ' />' +
-          '<label for="modal-receive-sms" style="margin:0;cursor:pointer">Receive SMS notifications</label>' +
+          '<label for="modal-receive-sms" style="margin:0;cursor:pointer">Receive SMS notifications <span style="font-weight:400;font-size:0.8em;color:var(--text-muted-color)">(also decides whether their 2FA login code arrives by text or by email)</span></label>' +
+        '</div>' +
+        // Deliberately its own switch rather than part of Receive SMS. Turning the
+        // digest off must not move somebody&#39;s login code to email - see the
+        // receive_win_digest comment in db.js.
+        '<div class="form-group" style="display:flex;align-items:center;gap:10px">' +
+          '<input type="checkbox" id="modal-win-digest" style="width:auto"' + (!user || user.receive_win_digest !== false ? ' checked' : '') + ' />' +
+          '<label for="modal-win-digest" style="margin:0;cursor:pointer">Friday wins digest <span style="font-weight:400;font-size:0.8em;color:var(--text-muted-color)">(one text Friday afternoon with the week&#39;s recognition &mdash; needs SMS on too)</span></label>' +
         '</div>' +
         '<div class="form-group" style="display:flex;align-items:center;gap:10px">' +
           '<input type="checkbox" id="modal-hide-schedule" style="width:auto"' + (user && user.hide_from_schedule ? ' checked' : '') + ' />' +
@@ -2775,6 +2793,7 @@ async function saveUser(id, btn) {
   const phone = document.getElementById('modal-phone').value.trim();
   const receive_emails = document.getElementById('modal-receive-emails').checked;
   const receive_sms = document.getElementById('modal-receive-sms').checked;
+  const receive_win_digest = (document.getElementById('modal-win-digest')||{}).checked !== false;
   const hide_from_schedule = (document.getElementById('modal-hide-schedule')||{}).checked === true;
   const hide_from_org = (document.getElementById('modal-hide-org')||{}).checked === true;
   var _existingEp = []; try { _existingEp = JSON.parse((document.getElementById('modal-extra-perms')||{}).value || '[]'); } catch(e) { _existingEp = []; }
@@ -2804,7 +2823,7 @@ async function saveUser(id, btn) {
   }
   try {
     btn.disabled = true;
-    var _uPayload = { name, email, password: password || undefined, role, phone: phone || undefined, receive_emails, receive_sms, city_codes, pulsar_name, nickname, hide_from_schedule, pay_type, employment_type, supervisor_id, extra_perms, title, org_level, hide_from_org, hire_date, home_city, default_backup_id };
+    var _uPayload = { name, email, password: password || undefined, role, phone: phone || undefined, receive_emails, receive_sms, receive_win_digest, city_codes, pulsar_name, nickname, hide_from_schedule, pay_type, employment_type, supervisor_id, extra_perms, title, org_level, hide_from_org, hire_date, home_city, default_backup_id };
     var _savedUser = id ? await api('PUT', '/users/' + id, _uPayload) : await api('POST', '/users', _uPayload);
     document.querySelector('.modal-overlay').remove();
     var _rv=window._userModalReturn;window._userModalReturn=null;navigate(_rv||'users');

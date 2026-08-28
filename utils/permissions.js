@@ -246,6 +246,17 @@ ALL_PERMS.push('submit_shoutout');
 // until Tony ticks the box in Roles & Access.
 ALL_PERMS.push('manage_leaderboard');
 
+// Release of Liability - the receipt-of-payment and release sent to a customer
+// after Nova pays for damage. view_releases reads them; manage_releases creates,
+// sends, reminds and voids. Countersigning is NOT a permission: it is limited to
+// the representative named on the form (plus admin/owner), because the signature
+// is that person's, not the role's - see routes/releases.js.
+//
+// Ships dark in the usual way - not in EMPLOYEE_PERMS, not in any role's
+// DEFAULTS - so on deploy only admin and owner can send a release until Tony
+// ticks the box in Roles & Access.
+ALL_PERMS.push('view_releases', 'manage_releases');
+
 var DEFAULTS = {
   admin: '*',
   manager: ['view_users', 'manage_cities', 'manage_geico', 'manage_running', 'manage_vehicles', 'manage_vendors', 'view_vendors', 'manage_addresses', 'approve_vr', 'manage_tasks', 'manage_work_orders', 'manage_schedule', 'manage_parts', 'manage_invoice_setup', 'approve_refund', 'assign_reviews', 'view_feedback', 'manage_feedback', 'manage_signatures', 'manage_timeclock', 'manage_pto', 'view_quiz', 'manage_quiz', 'view_team_quiz', 'manage_onboarding', 'ptt_all_channels', 'view_offboarding', 'play_call_recordings', 'manage_assets', 'approve_asset_replacement', 'edit_deposit', 'complete_deposit_for_employee', 'send_quote', 'manage_coi'].concat(EMPLOYEE_PERMS),

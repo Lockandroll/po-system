@@ -33,7 +33,7 @@ const { startArJobs } = require('./jobs/ar');
 const { startApJobs } = require('./jobs/ap');
 const { startWebhookRetry } = require('./jobs/webhookRetry');
 const { startCheckinSweeper, startCheckinRetention } = require('./jobs/checkins');
-const { startEmployeeRecords } = require('./jobs/employeeRecords');
+const { startEmployeeRecords, startWinDigest } = require('./jobs/employeeRecords');
 // Guarded on purpose. utils/jobHealth.js and routes/jobHealth.js are NEW files, and
 // a new file that does not make it into the commit is how this repo has broken a
 // deploy before. A diagnostics module must never be the thing that stops Nova from
@@ -371,6 +371,14 @@ app.use('/api/pay', require('./routes/pay'));
 app.use('/api/ar', require('./routes/ar'));
 app.use('/api/ap', require('./routes/ap'));
 app.use('/api/sync', require('./routes/sync'));
+// Release of Liability. Mounted twice, like the signatures module: the authed
+// router for staff, and a public token router for the customer signing page.
+// The /release/:token URL itself needs no route - app.get('*') already serves the
+// SPA, which routes on the path (see render() in public/js/app.js).
+//
+// Ships dark: every authed route is behind a permission no role has yet.
+app.use('/api/releases', require('./routes/releases'));
+app.use('/api/release', require('./routes/releases').publicRouter);
 
 // OAuth 2.1 authorization server for the remote MCP (must be before the SPA catch-all).
 //
@@ -533,7 +541,8 @@ function startScheduledJobs() {
   _startJob('startCheckinSweeper', startCheckinSweeper);
   _startJob('startCheckinRetention', startCheckinRetention);
   _startJob('startEmployeeRecords', startEmployeeRecords);
-  console.log('[boot] scheduled jobs started (' + 31 + ')');
+  _startJob('startWinDigest', startWinDigest);
+  console.log('[boot] scheduled jobs started (' + 35 + ')');
 }
 
 initDB()

@@ -10,6 +10,17 @@ const crypto = require('crypto');
 const router = express.Router();
 
 const STATUSES = ['new', 'complaint_pending', 'customer_contacted', 'in_progress', 'resolved', 'closed'];
+
+// Inline permission check for the handful of places a route returns MORE when a
+// user holds a second permission, rather than refusing outright. Same shape as
+// routes/ar.js: role matrix first, then the user's own extra_perms.
+async function hasPerm(req, perm) {
+  if (!req.user) return false;
+  if (req.user.role === 'admin' || req.user.role === 'owner') return true;
+  try { if (await permissions.hasPermission(req.user.role, perm)) return true; } catch (e) {}
+  const ep = req._userRow && req._userRow.extra_perms;
+  return Array.isArray(ep) && ep.indexOf(perm) !== -1;
+}
 const CLOSED_STATES = ['resolved', 'closed'];
 
 // Non-admins are scoped to feedback for the cities they manage.
@@ -107,7 +118,19 @@ router.get('/:id', requireAuth, requirePermission('view_feedback'), async functi
       [id]
     );
     const atts = await pool.query("SELECT id, file_name, mime_type, size_bytes, uploaded_by_name, created_at FROM customer_feedback_attachments WHERE feedback_id = $1 AND status = 'ready' ORDER BY created_at DESC", [id]);
-    res.json({ feedback: r.rows[0], activity: acts.rows, attachments: atts.rows, storageReady: r2.configured() });
+    // Releases of liability raised from this complaint. Read straight from
+    // release_forms rather than a column on this row, so deleting a draft
+    // release never leaves a dangling reference here. Empty array for anyone
+    // without view_releases, which is how the card stays hidden for them.
+    let releases = [];
+    if (await hasPerm(req, 'view_releases')) {
+      const rl = await pool.query(
+        'SELECT id, release_number, status, settlement_amount, claimant_name, rep_name, sent_at, completed_at ' +
+        'FROM release_forms WHERE feedback_id = $1 ORDER BY created_at DESC', [id]
+      );
+      releases = rl.rows;
+    }
+    res.json({ feedback: r.rows[0], activity: acts.rows, attachments: atts.rows, releases: releases, storageReady: r2.configured() });
   } catch (e) {
     console.error('GET /feedback/:id:', e.message);
     res.status(500).json({ error: 'Failed to load record' });
