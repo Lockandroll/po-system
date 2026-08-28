@@ -164,6 +164,11 @@ function _apiNoCache(path) {
          /setup-needed/.test(path) || /verify/.test(path) || /usage/.test(path) ||
          /token/.test(path) || /^\/timeclock/.test(path) || /notif/.test(path) ||
          /\/id-image/.test(path) || /\/dispute-packet/.test(path) || /^\/locations/.test(path) ||
+         // Square money reads. Hitting the server IS the reconcile, so a cached
+         // answer does not just look stale, it stops the work from happening. This
+         // used to work only by accident: invSqPoll() calls apiBustCache('/invoices/N')
+         // after every poll, and the payment-status key happens to contain that string.
+         /\/payment-status/.test(path) || /\/square-candidates/.test(path) ||
          /^\/schedule\/shifts\/\d+/.test(path); // one shift + its history: always live, never cached
 }
 function _apiCacheKey(path) { return (state.viewAsId ? 'v' + state.viewAsId + ' ' : '') + path; }
@@ -3348,7 +3353,7 @@ async function renderRoles(el) {
       {k:'checkin_job',l:'Check a job in and out (this is the technician\'s row - without it the buttons do not exist)'},
       {k:'manage_ivr_profiles',l:'Write and test the phone scripts Nova dials. Ships off for everyone but admin'},
       {k:'override_checkin',l:'Force a check-in against the evidence. Ships off for everyone but admin'} ] },
-    { group:'Fleet &amp; Vehicles', perms:[ {k:'manage_vehicles',l:'Manage fleet registry'} ] },
+    { group:'Fleet &amp; Vehicles', perms:[ {k:'manage_vehicles',l:'Manage fleet registry'}, {k:'manage_vehicle_docs',l:'Attach vehicle documents'} ] },
     { group:'Vendors / Accounts', gate:'view_vendors', perms:[ {k:'view_vendors',l:'View / access module'}, {k:'manage_vendors',l:'Manage vendors and accounts'}, {k:'manage_coi',l:'Manage certificates of insurance'} ] },
     { group:'Vehicle Inspections', gate:'view_inspections', perms:[ {k:'view_inspections',l:'View / access module (own vehicle inspections)'}, {k:'manage_inspections',l:'Manage checklist, review, edit & delete inspections'} ] },
     { group:'Shipping Addresses', perms:[ {k:'manage_addresses',l:'Manage shipping addresses'} ] },
@@ -10639,6 +10644,7 @@ function applyFleetFilters(resetPage) {
   if (resetPage) _fleetPage = 1;
   var text = ((document.getElementById('fleet-search') || {}).value || '').toLowerCase();
   var status = (document.getElementById('fleet-status') || {}).value || '';
+  var docFilter = (document.getElementById('fleet-docs') || {}).value || '';
 
   var filtered = _allVehicles.filter(function(v) {
     if (status === 'active' && !v.active) return false;
@@ -10648,6 +10654,7 @@ function applyFleetFilters(resetPage) {
       var hay = [v.year, v.make_model, v.vin, v.key_codes, v.driver_name, v.city_code, v.license_plate, v.sold_to].filter(Boolean).join(' ').toLowerCase();
       if (!hay.includes(text)) return false;
     }
+    if (docFilter && !fleetDocMatches(v, docFilter)) return false;
     return true;
   });
 
@@ -10660,7 +10667,7 @@ function applyFleetFilters(resetPage) {
   var page = filtered.slice(start, start + FLEET_PAGE_SIZE);
 
   if (!filtered.length) {
-    tbody.innerHTML = '<tr><td colspan="10" style="text-align:center;padding:32px;color:var(--text-muted-color)">No vehicles match your search.</td></tr>';
+    tbody.innerHTML = '<tr><td colspan="11" style="text-align:center;padding:32px;color:var(--text-muted-color)">No vehicles match your search.</td></tr>';
     document.getElementById('fleet-pagination').innerHTML = '';
     return;
   }
@@ -10676,6 +10683,7 @@ function applyFleetFilters(resetPage) {
       '<td>' + v.year + '</td>' +
       '<td><strong>' + escHtml(v.make_model) + '</strong></td>' +
       '<td style="font-family:monospace;font-size:13px">' + escHtml(v.vin || '—') + '</td>' +
+      '<td style="white-space:nowrap">' + fleetDocCell(v) + '</td>' +
       '<td>' + escHtml(v.key_codes || '—') + '</td>' +
       '<td>' + escHtml(v.driver_name || '—') + '</td>' +
       '<td>' + escHtml(v.city_code || '—') + '</td>' +
@@ -10702,11 +10710,13 @@ async function renderFleetRegistry(el) {
   try {
     _allVehicles = await api('GET', '/vehicles/all');
     _fleetPage = 1;
+    _fleetDocSummary = null; _fleetDocCounts = null;
     el.innerHTML =
       '<div class="page-header">' +
         '<div><div class="page-title"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="margin-right:8px;vertical-align:-4px"><rect x="1" y="3" width="15" height="13" rx="2"/><path d="M16 8h6l3 4v4h-9V8z"/><circle cx="5.5" cy="18.5" r="2.5"/><circle cx="18.5" cy="18.5" r="2.5"/></svg>Fleet Registry</div></div>' +
         '<button class="btn btn-primary" onclick="navigate(\'new-vehicle\')" style="white-space:nowrap">' + icons.plus + ' Add Vehicle</button>' +
       '</div>' +
+      '<div id="fleet-doc-banner"></div>' +
       '<div id="fleet-sell-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.7);z-index:1000;align-items:center;justify-content:center">' +
         '<div class="card" style="width:100%;max-width:440px;margin:auto">' +
           '<div class="card-header"><span class="card-title">Record Vehicle Sale</span></div>' +
@@ -10726,13 +10736,15 @@ async function renderFleetRegistry(el) {
       '<div style="display:flex;gap:10px;margin-bottom:16px;flex-wrap:wrap">' +
         '<input type="text" id="fleet-search" placeholder="Search year, make/model, VIN, driver, plate…" oninput="applyFleetFilters(true)" style="flex:1;min-width:220px" />' +
         '<select id="fleet-status" onchange="applyFleetFilters(true)" style="min-width:150px"><option value="">All Statuses</option><option value="active">Active</option><option value="sold">Sold</option><option value="inactive">Inactive</option></select>' +
+        '<select id="fleet-docs" onchange="applyFleetFilters(true)" style="min-width:180px"><option value="">Documents: All</option><option value="attention">Needs attention</option><option value="expired">Expired</option><option value="expiring">Expiring soon</option><option value="missing">Missing</option></select>' +
       '</div>' +
       '<div class="card"><div class="card-body" style="padding:0"><div class="table-wrap"><table>' +
-        '<thead><tr><th>Year</th><th>Make/Model</th><th>VIN</th><th>Key Codes</th><th>Responsible Employee</th><th>City</th><th>Date Assigned</th><th>License</th><th>Status</th><th></th></tr></thead>' +
+        '<thead><tr><th>Year</th><th>Make/Model</th><th>VIN</th><th>Documents</th><th>Key Codes</th><th>Responsible Employee</th><th>City</th><th>Date Assigned</th><th>License</th><th>Status</th><th></th></tr></thead>' +
         '<tbody id="fleet-tbody"></tbody>' +
       '</table></div></div></div>' +
       '<div id="fleet-pagination"></div>';
     applyFleetFilters();
+    loadFleetDocSummary();
   } catch(err) { el.innerHTML = '<div class="alert alert-error">' + escHtml(err.message) + '</div>'; }
 }
 async function renderEditVehicle(el, id) {
@@ -10893,6 +10905,7 @@ async function renderVehicleHistory(el, vehicleId) {
         '<div class="card"><div class="card-body" style="text-align:center"><div style="font-size:28px;font-weight:700;color:#22c55e">$' + totalSpent.toFixed(2) + '</div><div style="font-size:13px;color:var(--text-muted-color)">Approved Spend</div></div></div>' +
         '<div class="card"><div class="card-body" style="text-align:center"><div style="font-size:28px;font-weight:700;color:#f59e0b">' + vrs.filter(function(v){ return v.status==='submitted'; }).length + '</div><div style="font-size:13px;color:var(--text-muted-color)">Pending Approval</div></div></div>' +
       '</div>' +
+      '<div id="veh-docs" style="margin-bottom:20px"></div>' +
       '<div style="display:flex;gap:10px;margin-bottom:16px;flex-wrap:wrap">' +
         '<input type="text" id="vh-search" placeholder="Search VR#, shop, city…" oninput="vhFilter()" style="flex:1;min-width:200px" />' +
         '<select id="vh-status-filter" onchange="vhFilter()" style="min-width:150px"><option value="">All Statuses</option><option value="draft">Draft</option><option value="submitted">Submitted</option><option value="approved">Approved</option><option value="rejected">Rejected</option></select>' +
@@ -10903,10 +10916,365 @@ async function renderVehicleHistory(el, vehicleId) {
       '</table></div></div></div>';
     window._vhRender = vhRender;
     vhRender('', '');
+    loadVehicleDocs(vehicleId);
     el.insertAdjacentHTML('beforeend', '<div id="vh-insp" style="margin-top:20px"></div>');
     loadVehicleInspections(vehicleId);
   } catch(err) { el.innerHTML = '<div class="alert alert-error">' + escHtml(err.message) + '</div>'; }
 }
+
+// ===== Fleet documents: registration + insurance =====
+// The files themselves live in the Document Vault. A vehicle only POINTS at
+// them, so a renewal is one upload in one place instead of a file per truck,
+// and one insurance card can cover the whole fleet without being copied twelve
+// times over.
+//
+// Nothing here works out for itself whether a document is expiring. The state
+// and the day count both arrive from the server (utils/fleetDocs.js), because
+// the chip in the registry and the card on the vehicle page are two screens
+// reading two different endpoints - the moment either one does its own date
+// arithmetic they start disagreeing, on the exact day it matters.
+var _fleetDocSummary = null;
+var _fleetDocCounts = null;
+var _fleetDocsCanManage = false;
+
+var FD_KINDS = [
+  { key: 'registration', short: 'REG', label: 'Registration' },
+  { key: 'insurance', short: 'INS', label: 'Insurance' }
+];
+
+function fdDate(iso) {
+  if (!iso) return '';
+  var d = new Date(String(iso).slice(0, 10) + 'T00:00:00');
+  if (isNaN(d.getTime())) return '';
+  return d.toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' });
+}
+
+// Badge classes rather than raw hex: every one of these already has a
+// light-theme override in index.html, so the chips follow the theme for free.
+// Tooltips are plain words - the tip goes through escHtml, so an entity in it
+// would come out literal.
+function fdChip(kind, st) {
+  var cls = 'badge-inactive';
+  var txt = kind.short + ' &mdash;';
+  var tip = 'No ' + kind.label.toLowerCase() + ' on file';
+  if (st && st.state === 'current') {
+    cls = 'badge-approved';
+    txt = kind.short;
+    tip = st.dated ? (kind.label + ' current, expires ' + fdDate(st.expires_on))
+                   : (kind.label + ' on file, no expiration set');
+  } else if (st && st.state === 'expiring') {
+    cls = 'badge-submitted';
+    txt = kind.short + ' ' + (st.days != null && st.days > 0 ? (st.days + 'd') : 'soon');
+    tip = kind.label + ' expires ' + fdDate(st.expires_on);
+  } else if (st && st.state === 'expired') {
+    cls = 'badge-rejected';
+    txt = kind.short + ' expired';
+    tip = kind.label + ' expired ' + fdDate(st.expires_on);
+  }
+  return '<span class="badge ' + cls + '" style="padding:2px 7px;font-size:11px" title="' + escHtml(tip) + '">' + txt + '</span>';
+}
+
+function fleetDocCell(v) {
+  // A sold or retired van is off the policy, so grading it would be noise. The
+  // row still shows; the column just stops having an opinion about it.
+  if (!v.active) return '<span style="color:var(--text-muted-color)">&mdash;</span>';
+  if (!_fleetDocSummary) return '<span style="color:var(--text-muted-color);font-size:12px">&hellip;</span>';
+  var s = _fleetDocSummary[v.id] || {};
+  return FD_KINDS.map(function (k) { return fdChip(k, s[k.key]); }).join(' ');
+}
+
+function fleetDocStates(v) {
+  var s = (_fleetDocSummary || {})[v.id];
+  if (!s) return [];
+  return FD_KINDS.map(function (k) { return s[k.key] ? s[k.key].state : 'missing'; });
+}
+
+function fleetDocMatches(v, filter) {
+  if (!_fleetDocSummary) return true;   // still loading - never hide the fleet
+  if (!v.active) return false;
+  var states = fleetDocStates(v);
+  if (!states.length) return false;
+  if (filter === 'attention') {
+    return states.indexOf('expired') !== -1 || states.indexOf('expiring') !== -1 || states.indexOf('missing') !== -1;
+  }
+  return states.indexOf(filter) !== -1;
+}
+
+async function loadFleetDocSummary() {
+  try {
+    var r = await api('GET', '/vehicles/doc-summary');
+    _fleetDocSummary = r.summary || {};
+    _fleetDocCounts = r.counts || null;
+    _fleetDocsCanManage = !!r.canManage;
+  } catch (e) {
+    // The registry is perfectly usable without this. An older deploy, or the
+    // migration not landed yet, should cost the Documents column and nothing
+    // else - so swallow it rather than blanking the page.
+    _fleetDocSummary = {};
+    _fleetDocCounts = null;
+  }
+  fdRenderBanner();
+  applyFleetFilters();
+}
+
+function fdRenderBanner() {
+  var el = document.getElementById('fleet-doc-banner');
+  if (!el) return;
+  var c = _fleetDocCounts;
+  if (!c || !c.total) { el.innerHTML = ''; return; }
+  var bits = [];
+  if (c.expired) bits.push(c.expired + ' expired');
+  if (c.expiring) bits.push(c.expiring + ' expiring soon');
+  if (c.missing) bits.push(c.missing + ' missing a document');
+  el.innerHTML =
+    '<div class="alert alert-warn" style="display:flex;align-items:center;justify-content:space-between;gap:16px;flex-wrap:wrap">' +
+      '<div>&#9888; <strong>' + c.total + ' vehicle' + (c.total === 1 ? '' : 's') + ' need document attention</strong> &mdash; ' + bits.join(', ') + '.</div>' +
+      '<button class="btn btn-secondary btn-sm" onclick="fdShowAttention()" style="white-space:nowrap">Show only these</button>' +
+    '</div>';
+}
+
+function fdShowAttention() {
+  var sel = document.getElementById('fleet-docs');
+  if (sel) { sel.value = 'attention'; applyFleetFilters(true); }
+}
+
+// ---- The Documents card on a vehicle ----
+var _vehDocs = null;
+
+async function loadVehicleDocs(vehicleId) {
+  var el = document.getElementById('veh-docs');
+  if (!el) return;
+  el.innerHTML = '<div class="card"><div class="card-body" style="color:var(--text-muted-color);font-size:13px">Loading documents&hellip;</div></div>';
+  try {
+    var r = await api('GET', '/vehicles/' + vehicleId + '/documents');
+    _vehDocs = r;
+    vdRenderCard(vehicleId, r);
+  } catch (e) {
+    el.innerHTML = '<div class="card"><div class="card-body"><div class="alert alert-error" style="margin:0">' + escHtml(e.message) + '</div></div></div>';
+  }
+}
+
+function vdRenderCard(vehicleId, data) {
+  var el = document.getElementById('veh-docs');
+  if (!el) return;
+  var docs = data.documents || [];
+  var canManage = !!data.canManage;
+  var body = docs.length
+    ? docs.map(function (d) { return vdRow(vehicleId, d, canManage); }).join('')
+    : '<div style="padding:22px 20px;color:var(--text-muted-color);font-size:13px">No registration or insurance card is linked to this vehicle yet.' +
+      (canManage ? ' Use Attach existing document to point at a file in the vault.' : '') + '</div>';
+  el.innerHTML =
+    '<div class="card">' +
+      '<div class="card-header">' +
+        '<span class="card-title">Documents</span>' +
+        (canManage ? '<button class="btn btn-secondary btn-sm" onclick="vdAttachOpen(' + vehicleId + ')">Attach existing document</button>' : '') +
+      '</div>' +
+      '<div class="card-body" style="padding:0">' + body +
+        '<div style="padding:12px 20px;font-size:12.5px;color:var(--text-muted-color);border-top:1px solid var(--border-light)">' +
+          'These files live in the Document Vault. Replace one there and every vehicle linked to it updates at once &mdash; nothing is stored twice.' +
+        '</div>' +
+      '</div>' +
+    '</div>';
+}
+
+function vdRow(vehicleId, d, canManage) {
+  var st = d.status || {};
+  var when, tone = 'var(--text-muted-color)', weight = '400';
+  if (!st.dated) {
+    when = 'No expiration set';
+  } else if (st.state === 'expired') {
+    when = 'Expired ' + fdDate(st.expires_on); tone = '#ef4444'; weight = '600';
+  } else if (st.state === 'expiring') {
+    when = 'Expires ' + fdDate(st.expires_on) +
+      (st.days != null ? (' &middot; ' + st.days + ' day' + (st.days === 1 ? '' : 's')) : '');
+    tone = '#f59e0b'; weight = '600';
+  } else {
+    when = 'Expires ' + fdDate(st.expires_on);
+  }
+
+  var meta = [];
+  if (d.folder_path) meta.push('Vault: ' + escHtml(d.folder_path));
+  if (d.covers && d.covers > 1) meta.push('Covers ' + d.covers + ' vehicles');
+
+  var origin = d.link_source === 'fleet'
+    ? '<span class="badge badge-cancelled" style="padding:2px 8px;font-size:11px">Applies to the whole fleet</span>'
+    : (d.created_by_name
+        ? '<span class="badge badge-approver" style="padding:2px 8px;font-size:11px">Attached by ' + escHtml(d.created_by_name) + '</span>'
+        : '');
+
+  var kindCls = d.kind === 'insurance' ? 'badge-active' : 'badge-approved';
+  var kindBadge = '<span class="badge ' + kindCls + '" style="padding:2px 8px;font-size:11px">' + escHtml(d.kind_label || d.kind) + '</span>';
+
+  return '<div style="display:flex;align-items:center;gap:14px;padding:15px 20px;border-bottom:1px solid var(--border-light);flex-wrap:wrap">' +
+      '<div style="flex:1;min-width:200px">' +
+        '<div style="font-size:14px;font-weight:600;display:flex;align-items:center;gap:8px;flex-wrap:wrap">' + escHtml(d.name) + kindBadge + '</div>' +
+        '<div style="font-size:12.5px;margin-top:3px;color:' + tone + ';font-weight:' + weight + '">' + when + '</div>' +
+        (meta.length ? '<div style="font-size:12.5px;color:var(--text-muted-color);margin-top:2px">' + meta.join(' &middot; ') + '</div>' : '') +
+        (origin ? '<div style="margin-top:5px">' + origin + '</div>' : '') +
+      '</div>' +
+      '<div style="white-space:nowrap">' +
+        '<button class="btn btn-primary btn-sm" onclick="vdOpen(' + vehicleId + ',' + d.document_id + ',1)">View</button> ' +
+        '<button class="btn btn-secondary btn-sm" onclick="vdOpen(' + vehicleId + ',' + d.document_id + ',0)">Download</button> ' +
+        (canManage && d.link_id ? '<button class="btn btn-ghost btn-sm" style="color:#ef4444" onclick="vdDetach(' + vehicleId + ',' + d.link_id + ')">Remove</button>' : '') +
+        (d.link_source === 'fleet' && vdIsAdmin() ? '<button class="btn btn-ghost btn-sm" style="color:#ef4444" onclick="vdUnsetFleet(' + vehicleId + ',' + d.document_id + ')">Stop fleet-wide</button>' : '') +
+      '</div>' +
+    '</div>';
+}
+
+async function vdOpen(vehicleId, documentId, inline) {
+  try {
+    var r = await api('GET', '/vehicles/' + vehicleId + '/documents/' + documentId + '/url' + (inline ? '?inline=1' : ''));
+    window.open(r.url, '_blank', 'noopener');
+  } catch (e) { novaAlert(e.message); }
+}
+
+async function vdDetach(vehicleId, linkId) {
+  if (!await novaConfirm('Remove this document from the vehicle? The file itself stays in the Document Vault.')) return;
+  try {
+    await api('DELETE', '/vehicles/' + vehicleId + '/documents/' + linkId);
+    loadVehicleDocs(vehicleId);
+  } catch (e) { novaAlert(e.message); }
+}
+
+// ---- Attach an EXISTING vault file ----
+// Deliberately no upload button. A file uploaded from a vehicle would be a file
+// that only exists on that vehicle, which is the per-truck filing this whole
+// feature exists to stop.
+var _vdAttach = { vehicleId: null, pick: null, files: [], timer: null };
+
+// Marking a file as covering the whole fleet is admin-only on the server (it
+// puts the file in front of everyone who can see any active vehicle), so the
+// control is admin-only here too rather than offering a button that 403s.
+function vdIsAdmin() {
+  return !!(typeof state !== 'undefined' && state.user && state.user.role === 'admin');
+}
+
+function vdAttachOpen(vehicleId) {
+  _vdAttach = { vehicleId: vehicleId, pick: null, files: [], timer: null };
+  var overlay = document.createElement('div');
+  overlay.className = 'modal-overlay';
+  overlay.id = 'vd-attach-modal';
+  overlay.innerHTML =
+    '<div class="modal">' +
+      '<div class="modal-header"><span class="modal-title">Attach a document</span>' +
+        '<button class="btn btn-ghost btn-sm" onclick="vdAttachClose()">&#x2715;</button></div>' +
+      '<div class="modal-body">' +
+        '<div id="vd-attach-err"></div>' +
+        '<div class="form-group"><label>Kind</label>' +
+          '<select id="vd-attach-kind"><option value="registration">Registration</option><option value="insurance">Insurance</option></select></div>' +
+        '<div class="form-group"><label>Find a file in the vault</label>' +
+          '<input type="text" id="vd-attach-q" placeholder="Search by file name or folder" oninput="vdAttachType()" /></div>' +
+        '<div id="vd-attach-list" style="border:1px solid var(--border);border-radius:var(--radius);max-height:280px;overflow-y:auto"></div>' +
+        (vdIsAdmin()
+          ? '<label style="display:flex;align-items:flex-start;gap:9px;margin-top:14px;cursor:pointer">' +
+              '<input type="checkbox" id="vd-attach-fleet" style="margin-top:2px" />' +
+              '<span style="font-size:13px"><strong>This file covers every active vehicle</strong>' +
+                '<span style="display:block;color:var(--text-muted-color);font-size:12px;margin-top:2px">' +
+                'For an insurance card that lists the whole fleet on one page. It shows on every active vehicle at once, so there is nothing to link truck by truck.</span></span>' +
+            '</label>'
+          : '') +
+        '<div style="font-size:12px;color:var(--text-muted-color);margin-top:12px">Only files already in the vault appear here, and only ones you can open there. To add a new one, upload it to the vault first so it stays in one place.</div>' +
+      '</div>' +
+      '<div class="modal-footer">' +
+        '<button class="btn btn-ghost btn-sm" onclick="vdAttachClose()">Cancel</button>' +
+        '<button class="btn btn-primary btn-sm" onclick="vdAttachSave()">Attach</button>' +
+      '</div>' +
+    '</div>';
+  document.body.appendChild(overlay);
+  vdAttachSearch();
+}
+
+function vdAttachClose() {
+  var el = document.getElementById('vd-attach-modal');
+  if (el && el.parentNode) el.parentNode.removeChild(el);
+}
+
+function vdAttachType() {
+  if (_vdAttach.timer) clearTimeout(_vdAttach.timer);
+  _vdAttach.timer = setTimeout(vdAttachSearch, 250);
+}
+
+async function vdAttachSearch() {
+  var q = (document.getElementById('vd-attach-q') || {}).value || '';
+  var list = document.getElementById('vd-attach-list');
+  if (list) list.innerHTML = '<div style="padding:14px;color:var(--text-muted-color);font-size:13px">Searching&hellip;</div>';
+  try {
+    var r = await api('GET', '/documents/search?limit=30&q=' + encodeURIComponent(q));
+    _vdAttach.files = r.files || [];
+  } catch (e) {
+    _vdAttach.files = [];
+    if (list) list.innerHTML = '<div style="padding:14px"><div class="alert alert-error" style="margin:0">' + escHtml(e.message) + '</div></div>';
+    return;
+  }
+  vdAttachList();
+}
+
+function vdAttachList() {
+  var list = document.getElementById('vd-attach-list');
+  if (!list) return;
+  if (!_vdAttach.files.length) {
+    list.innerHTML = '<div style="padding:14px;color:var(--text-muted-color);font-size:13px">Nothing in the vault matches that.</div>';
+    return;
+  }
+  var linked = {};
+  ((_vehDocs && _vehDocs.documents) || []).forEach(function (d) { linked[d.document_id] = true; });
+  list.innerHTML = _vdAttach.files.map(function (f) {
+    var sel = _vdAttach.pick === f.id;
+    var note = [];
+    if (f.folder_path) note.push(escHtml(f.folder_path));
+    if (f.expires_on) note.push('expires ' + fdDate(f.expires_on));
+    if (f.fleet_scope) note.push('already covers the whole fleet');
+    else if (linked[f.id]) note.push('already on this vehicle');
+    return '<div onclick="vdAttachPick(' + f.id + ')" style="display:flex;align-items:center;gap:11px;padding:11px 13px;border-bottom:1px solid var(--border-light);cursor:pointer;' +
+        (sel ? 'background:rgba(249,115,22,0.08)' : '') + '">' +
+        '<span style="width:15px;height:15px;border-radius:50%;flex:0 0 15px;border:2px solid ' + (sel ? 'var(--primary)' : '#555') + ';' +
+          (sel ? 'box-shadow:inset 0 0 0 3px var(--bg-card),inset 0 0 0 9px var(--primary)' : '') + '"></span>' +
+        '<div style="min-width:0">' +
+          '<div style="font-size:13.5px;font-weight:600">' + escHtml(f.name) + '</div>' +
+          (note.length ? '<div style="font-size:12px;color:var(--text-muted-color);margin-top:2px">' + note.join(' &middot; ') + '</div>' : '') +
+        '</div>' +
+      '</div>';
+  }).join('');
+}
+
+function vdAttachPick(id) { _vdAttach.pick = id; vdAttachList(); }
+
+async function vdAttachSave() {
+  var err = document.getElementById('vd-attach-err');
+  if (!_vdAttach.pick) {
+    if (err) err.innerHTML = '<div class="alert alert-error">Pick a file first.</div>';
+    return;
+  }
+  var kind = (document.getElementById('vd-attach-kind') || {}).value || 'registration';
+  var vid = _vdAttach.vehicleId;
+  var fleetBox = document.getElementById('vd-attach-fleet');
+  var wholeFleet = !!(fleetBox && fleetBox.checked);
+  try {
+    if (wholeFleet) {
+      // Not a link at all: a flag on the file itself, so it lands on every
+      // active vehicle including ones added next year. Linking it to THIS
+      // vehicle as well would just be a duplicate the card has to dedupe.
+      await api('PUT', '/documents/' + _vdAttach.pick, { fleet_scope: true, fleet_kind: kind });
+    } else {
+      await api('POST', '/vehicles/' + vid + '/documents', { document_id: _vdAttach.pick, kind: kind });
+    }
+    vdAttachClose();
+    loadVehicleDocs(vid);
+  } catch (e) {
+    if (err) err.innerHTML = '<div class="alert alert-error">' + escHtml(e.message) + '</div>';
+  }
+}
+
+// The way back out. Without this a file marked fleet-wide by mistake could only
+// be fixed in the database.
+async function vdUnsetFleet(vehicleId, documentId) {
+  if (!await novaConfirm('Stop applying this document to every vehicle? It stays in the Document Vault, and any vehicle it is separately linked to keeps it.')) return;
+  try {
+    await api('PUT', '/documents/' + documentId, { fleet_scope: false, fleet_kind: null });
+    loadVehicleDocs(vehicleId);
+  } catch (e) { novaAlert(e.message); }
+}
+
 function vhFilter() {
   var q = (document.getElementById('vh-search')||{}).value || '';
   var s = (document.getElementById('vh-status-filter')||{}).value || '';
@@ -11600,7 +11968,14 @@ async function loadVehicleInspections(vehicleId) {
   var deepId = params.get('id');
   // Square redirects back with ?view=view-invoice&id=..&sq=<nonce>. Grab the
   // nonce here, because the replaceState below throws the query away.
-  try { window._sqBootNonce = params.get('sq') || null; window._sqBootMissing = params.get('sq_missing') === '1'; } catch (e) {}
+  // sq_missing=1 arrives on Chrome's browser_fallback_url. sq_n is the attempt it
+  // belongs to, and it is the only way to tell a real miss from a replay -- see
+  // invSqReportMiss().
+  try {
+    window._sqBootNonce = params.get('sq') || null;
+    window._sqBootMissing = params.get('sq_missing') === '1';
+    window._sqBootMissNonce = params.get('sq_n') || null;
+  } catch (e) {}
   if (deepView) {
     state.currentView = deepView;
     state.currentParam = deepId ? (isNaN(deepId) ? deepId : parseInt(deepId)) : null;
@@ -16575,8 +16950,10 @@ async function renderViewInvoice(el, id) {
     // what happened and written it onto the invoice.
     if (window._sqBootNonce) { _sqReturnNonce = window._sqBootNonce; window._sqBootNonce = null; }
     if (window._sqBootMissing) {
+      var _missNonce = window._sqBootMissNonce || null;
       window._sqBootMissing = false;
-      novaAlert('Square Point of Sale is not installed on this phone. Install it from the app store and sign in to the company Square account. Nothing was charged.');
+      window._sqBootMissNonce = null;
+      invSqReportMiss(inv.id, _missNonce);
     }
     if (_sqReturnNonce) { var _n = _sqReturnNonce; _sqReturnNonce = null; invSqPoll(inv.id, _n, 0); }
     if (inv.can_reopen_now) invStartGraceCountdown(inv.reopen_seconds_left);
@@ -16717,7 +17094,13 @@ function invSquareCardHtml(inv, canCollect, seeAll) {
             (sp.last_error ? '<br/>' + escHtml(sp.last_error) : '') +
           '</div>'
         : '') +
-      '<button class="btn btn-secondary btn-sm" style="margin-top:12px" onclick="invSqRetry(' + inv.id + ',' + sp.id + ')">Check Square now</button>' +
+      '<button class="btn btn-secondary btn-sm" style="margin-top:12px;margin-right:8px" onclick="invSqRetry(' + inv.id + ',' + sp.id + ')">Check Square now</button>' +
+      // Attaching is not running the card again, and this is the state a tech
+      // reaches after backing out of the handoff, so it is exactly where they need
+      // the offer. The line above says do not re-charge; this says what to do
+      // instead if they already charged it somewhere Nova cannot see.
+      invSqAttachBtnHtml(inv, canCollect) +
+      (canCollect && inv.square_enabled ? '<div style="font-size:11.5px;color:var(--text-muted-color);margin-top:10px;line-height:1.5">Already ran this card in the Square app? Attach that payment instead of running it again.</div>' : '') +
       foot;
   }
 
@@ -16734,6 +17117,7 @@ function invSquareCardHtml(inv, canCollect, seeAll) {
           '</div>'
         : '') +
       (seeAll ? '<button class="btn btn-secondary btn-sm" style="margin-top:12px;margin-right:8px" onclick="invSqRetry(' + inv.id + ',' + sp.id + ')">Check Square for a completed charge</button>' : '') +
+      invSqAttachBtnHtml(inv, canCollect) +
       (canCollect ? '<button class="btn btn-primary" style="margin-top:12px" onclick="invCollectPayment(' + inv.id + ')">Try again</button>' : '') +
       foot;
   }
@@ -16759,6 +17143,7 @@ function invSquareCardHtml(inv, canCollect, seeAll) {
     '<button class="btn btn-primary" id="inv-sq-btn" style="width:100%;justify-content:center;font-size:15px;padding:13px" onclick="invCollectPayment(' + inv.id + ')">' +
       '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="5" width="20" height="14" rx="2"/><path d="M2 10h20"/></svg> Collect Payment in Square' +
     '</button>' +
+    invSqAttachBtnHtml(inv, canCollect) +
     '<div style="font-size:11px;color:var(--text-muted-color);margin-top:10px;line-height:1.5">Card only. Square cash tenders cannot be matched back to an invoice, so cash and checks stay on the manual fields.</div>' +
     foot;
 }
@@ -16861,16 +17246,27 @@ async function invCollectPayment(id) {
     var left = false;
     var onHide = function () { left = true; };
     document.addEventListener('visibilitychange', onHide, { once: true });
+    window.addEventListener('pagehide', onHide, { once: true });
     window.location.href = url;
-    setTimeout(function () {
+    // 2500 ms was too tight. A cold Square start on a truck phone, or a WebView
+    // that takes its time handing off, runs past it, and the alert then fires
+    // while Square is opening -- on top of an invoice the tech is about to leave.
+    // The listeners above are the real signal; this timer only covers the case
+    // where nothing happens at all, so it can afford to wait longer. And it no
+    // longer accuses the phone on the strength of a timer: the server says whether
+    // this attempt is genuinely still sitting unstarted.
+    setTimeout(async function () {
       document.removeEventListener('visibilitychange', onHide);
+      window.removeEventListener('pagehide', onHide);
       _sqOpening = false;
-      if (!left && !document.hidden) {
-        novaAlert('Square Point of Sale did not open. Install it from the app store and sign in to the company Square account, then try again. Nothing was charged.');
-        if (btn) { btn.disabled = false; }
-        render();
-      }
-    }, 2500);
+      if (left || document.hidden) return;
+      var openRow = await invSqAttemptStillOpen(id, r.nonce);
+      if (!openRow) { if (btn) { btn.disabled = false; } render(); return; }
+      try { await api('POST', '/invoices/' + id + '/payments/' + openRow.id + '/cancel', {}); } catch (e) {}
+      invSqMissAlert();
+      if (btn) { btn.disabled = false; }
+      render();
+    }, 5000);
   } catch (e) {
     _sqOpening = false;
     if (btn) btn.disabled = false;
@@ -16974,6 +17370,171 @@ async function invSqCancel(id, pid) {
   if (!await novaConfirm('Give up on this payment attempt? Check the Square app first to make sure the card was not already charged.')) return;
   try { await api('POST', '/invoices/' + id + '/payments/' + pid + '/cancel', {}); } catch (e) {}
   render();
+}
+
+// ---- Did the handoff really fail? -----------------------------------------
+//
+// The query string is not evidence. Chrome navigates to browser_fallback_url
+// whenever it DECLINES the intent launch, not only when the app is missing, and a
+// restored tab replaying that navigation with no user gesture behind it is
+// declined every single time. That is what put "Square Point of Sale is not
+// installed on this phone. Install it from the app store" in front of Mike every
+// time he left Nova, ran the card in the Square app by hand, and came back -- which
+// he reasonably read as being told to uninstall and reinstall Square. His install
+// was fine. Nova was guessing.
+//
+// The attempt row is the fact. Still 'initiated' means nothing ever came back from
+// Square, so the handoff genuinely did not happen. Anything else (returned,
+// canceled, failed, reconciled) means Square DID see it, and the right thing to
+// say is nothing at all.
+async function invSqAttemptStillOpen(id, nonce) {
+  if (!nonce) return null;
+  try {
+    var out = await api('GET', '/invoices/' + id + '/payment-status?nonce=' + encodeURIComponent(nonce));
+    var p = out && out.payment;
+    if (!p || String(p.status || '') !== 'initiated') return null;
+    // An abandoned row from an earlier tap is not this tap. Two minutes is far
+    // longer than any deep link takes and far shorter than the 30-minute staleness
+    // window the server uses, so it cannot mistake one for the other.
+    var started = p.initiated_at ? new Date(p.initiated_at).getTime() : 0;
+    if (!started || (Date.now() - started) > 120000) return null;
+    return { id: p.id };
+  } catch (e) { return null; }
+}
+
+// One wording, used by both paths that can detect a failed handoff. It does not
+// open with the word install: the overwhelmingly common cause is not a missing
+// app, and telling a tech to reinstall Square mid-job costs the rest of the shift.
+function invSqMissAlert() {
+  novaAlert(
+    'Nova could not hand this off to the Square app, so nothing was charged.\n\n' +
+    'Open Square from your home screen, then come back here and tap Collect Payment again.\n\n' +
+    'If Square is not on this phone at all, it has to be added and signed in to the company account first.',
+    { title: 'Square did not open' }
+  );
+}
+
+// Called on the way back in from browser_fallback_url.
+async function invSqReportMiss(id, nonce) {
+  var openRow = await invSqAttemptStillOpen(id, nonce);
+  if (!openRow) return;
+  // A real miss leaves an 'initiated' row behind that would otherwise sit there
+  // until it goes stale. Close it so Collect Payment comes straight back.
+  try { await api('POST', '/invoices/' + id + '/payments/' + openRow.id + '/cancel', {}); } catch (e) {}
+  invSqMissAlert();
+  render();
+}
+
+// ---- "I ran this in the Square app instead" --------------------------------
+//
+// When the tap will not take inside the handoff, the tech backs out and runs the
+// card in Square on its own. That charge is real money with no Nova reference on
+// it, so the only close-out used to be typing the last 4 and the approval code by
+// hand: the invoice ends up paid with no Square payment ID, which is the field the
+// dispute packet reads, and the same money then shows up twice on the
+// reconciliation report. This points Nova at the actual payment instead.
+//
+// Picking is safe. The server builds a normal attempt row and hands it to the same
+// amount-checked reconcile writer everything else uses, so the wrong card comes
+// back as a mismatch a manager sees, not a wrong total written onto an invoice.
+var SQ_CANDIDATE_TEXT = {
+  not_configured: 'Nova is not connected to Square yet. Tell an admin.',
+  no_location: 'This invoice has no Square location behind it, so Nova cannot list the payments. Tell an admin.',
+  lookup_failed: 'Nova could not reach Square just now. You can still paste the payment ID or receipt number below.'
+};
+
+function invSqAttachBtnHtml(inv, allowed) {
+  if (!allowed || !inv || !inv.square_enabled) return '';
+  return '<button class="btn btn-secondary btn-sm" style="margin-top:12px;margin-right:8px" onclick="invSqAttach(' + inv.id + ')">I ran this in the Square app</button>';
+}
+
+async function invSqAttach(id) {
+  var out = null;
+  try {
+    out = await api('GET', '/invoices/' + id + '/square-candidates');
+  } catch (e) { novaAlert(e.message); return; }
+
+  var rows = (out && out.payments) || [];
+  var body = '';
+  if (!out || out.ok === false) {
+    body += '<div class="alert alert-warn">' + escHtml(SQ_CANDIDATE_TEXT[(out && out.reason) || ''] ||
+      'Nova could not read the payments from Square. You can still paste the payment ID or receipt number below.') + '</div>';
+  } else if (!rows.length) {
+    body += '<div class="alert alert-info">Square has no unattached completed payments at this location in the last 12 hours. If you can see the charge in the Square app, open it and paste its payment ID or receipt number below.</div>';
+  } else {
+    body += '<div style="font-size:12px;color:var(--text-muted-color);margin-bottom:10px;line-height:1.5">Pick the card you ran. Nova checks the amount against this invoice before it marks anything paid, so a wrong pick comes back as a mismatch rather than a wrong total.</div>';
+    body += rows.map(function (pmt) {
+      var when = pmt.taken_at ? new Date(pmt.taken_at) : null;
+      var t = when ? (when.toLocaleDateString() + ' ' + when.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })) : '';
+      var line = (pmt.card_brand || 'Card') + (pmt.card_last4 ? ' ' + String.fromCharCode(8226,8226,8226,8226) + ' ' + pmt.card_last4 : '') +
+        ' / ' + invSqEntryLabel(pmt.entry_method) + (t ? ' / ' + t : '');
+      return '<div style="display:flex;justify-content:space-between;align-items:center;gap:10px;padding:10px 0;border-bottom:0.5px solid var(--border-color)">' +
+        '<div style="min-width:0">' +
+          '<div style="font-size:15px;font-weight:600">' + invSqMoney(pmt.amount_cents) +
+            (pmt.likely ? ' <span class="badge badge-approved" style="vertical-align:2px">Matches this invoice</span>' : '') + '</div>' +
+          '<div style="font-size:12px;color:var(--text-muted-color)">' + escHtml(line) + '</div>' +
+          (parseInt(pmt.tip_cents || 0, 10) ? '<div style="font-size:11.5px;color:var(--text-muted-color)">includes ' + invSqMoney(pmt.tip_cents) + ' tip</div>' : '') +
+        '</div>' +
+        '<button class="btn btn-primary btn-sm" style="flex-shrink:0" onclick="invSqAttachChoose(' + id + ',\'' + escHtml(pmt.id) + '\')">Use this</button>' +
+      '</div>';
+    }).join('');
+    if (out.capped) body += '<div style="font-size:11.5px;color:var(--text-muted-color);margin-top:8px">Square had more payments than Nova listed, so an older one may not be here.</div>';
+  }
+  body += '<div class="form-group" style="margin-top:16px"><label>Or paste the Square payment ID or receipt number</label>' +
+    '<input type="text" id="inv-sq-ref" autocapitalize="off" autocorrect="off" placeholder="From the Square receipt" /></div>';
+
+  invSheet('Attach a Square payment', body,
+    '<button class="btn btn-secondary" onclick="invCloseSheet()">Cancel</button>' +
+    '<button class="btn btn-primary" onclick="invSqAttachTyped(' + id + ')">Attach</button>');
+}
+
+function invSqAttachTyped(id) {
+  var el = document.getElementById('inv-sq-ref');
+  var v = el ? String(el.value || '').trim() : '';
+  if (!v) { invSheetError('Enter the Square payment ID or the receipt number, or pick one from the list above.'); return; }
+  invSqAttachChoose(id, v);
+}
+
+// One guard across the round trip. The overlay does not block anything once the
+// POST is in flight, and a second tap here is a second attempt to settle one
+// invoice against a card.
+var _sqAttachBusy = false;
+
+async function invSqAttachChoose(id, ref, allowOtherLocation) {
+  if (_sqAttachBusy) return;
+  if (!ref) { invSheetError('Enter the Square payment ID or the receipt number, or pick one from the list above.'); return; }
+  _sqAttachBusy = true;
+  var out = null;
+  var body = { square_payment_id: String(ref) };
+  if (allowOtherLocation) body.allow_other_location = true;
+  try {
+    out = await api('POST', '/invoices/' + id + '/attach-square-payment', body);
+  } catch (e) {
+    _sqAttachBusy = false;
+    // The card was taken at another city's Square location. A tech is simply
+    // stopped; a manager is asked once, on purpose, because putting money in the
+    // wrong city's books quietly is worse than an extra tap. The server decides
+    // who gets asked -- needs_override is only set for a role allowed to do it.
+    if (e && e.data && e.data.needs_override && !allowOtherLocation) {
+      if (await novaConfirm(e.message + '\n\nAttach it to this invoice anyway?', { okText: 'Attach it anyway' })) {
+        return invSqAttachChoose(id, ref, true);
+      }
+      return;
+    }
+    invSheetError(e.message);
+    return;
+  }
+  _sqAttachBusy = false;
+  invCloseSheet();
+  render();
+  if (out && out.ok) { showToast('Attached. Paid in Square.', 'success'); return; }
+  // Reuse the re-check wording: these are the same reasons out of the same
+  // reconcile writer, and amount_mismatch is the one that actually matters here.
+  novaAlert(
+    SQ_RECHECK_TEXT[(out && out.reason) || ''] ||
+      'Nova found that payment but could not settle this invoice against it. Open the payment card on the invoice to see what it says.',
+    { title: 'Not settled' }
+  );
 }
 
 function invStatusBadge(s) {

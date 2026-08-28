@@ -207,4 +207,4 @@ function requirePermission(perm) {
   };
 }
 
-module.exports = { requireAuth, requireRole, requirePermission };
+module.exports = { requireAuth, requireRole, requirePermission, userHasExtraPerm };

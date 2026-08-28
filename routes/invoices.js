@@ -1766,7 +1766,15 @@ router.post('/:id/collect-payment', requireAuth, requirePermission('edit_invoice
       note: 'Nova Invoice ' + inv.invoice_number,
       state: state,
       locationId: locationId,
-      fallbackUrl: String(process.env.SQUARE_RETURN_BASE || process.env.APP_URL || '').replace(/\/+$/, '') + '/?view=view-invoice&id=' + inv.id + '&sq_missing=1'
+      // Chrome navigates here instead of launching the intent. That is NOT only
+      // "Square is not installed": it is also every time Chrome declines the
+      // launch, which includes a restored tab replaying the intent navigation with
+      // no user gesture behind it. Mike hit that every time he left Nova, ran the
+      // card in the Square app by hand and came back, and Nova told him to install
+      // Square from the app store -- which he reasonably read as "uninstall and
+      // reinstall it". The nonce rides along so the SPA can ask whether THIS
+      // attempt really never left, instead of believing the query string.
+      fallbackUrl: String(process.env.SQUARE_RETURN_BASE || process.env.APP_URL || '').replace(/\/+$/, '') + '/?view=view-invoice&id=' + inv.id + '&sq_missing=1&sq_n=' + nonce
     });
 
     try {
@@ -1865,6 +1873,252 @@ router.post('/:id/payments/:pid/cancel', requireAuth, requirePermission('edit_in
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: 'Could not cancel that attempt' });
+  }
+});
+
+// ---- "I ran this in the Square app instead" --------------------------------
+//
+// The handoff is not always usable. When the tap fails on the phone the tech backs
+// out, opens Square on its own and runs the card there, and that charge carries no
+// Nova reference at all: no REQUEST_METADATA, no 'Nova Invoice <n>' note for
+// confirmByReference() to find, and whatever location the phone is signed into
+// rather than the city-mapped one. The only close-out left was typing the last 4
+// and the approval code by hand, which pays the invoice with NO square_payment_id
+// on it -- the one field the dispute packet reads -- and leaves the same money on
+// the reconciliation report twice, once as an orphan payment and once as a paid
+// invoice with no Square behind it.
+//
+// These two let the tech point Nova at the real payment. Neither writes money:
+// the POST builds an ordinary invoice_payments row and hands it to
+// square.reconcilePayment(), which still does the amount check, still refuses a
+// second settlement, and still records a mismatch rather than settling one. So
+// picking the wrong card off the list is a mismatch a manager sees, not a wrong
+// number written quietly onto an invoice.
+
+// Where in time to look. The newest attempt on this invoice is the best anchor,
+// because the tech ran the card in Square within a few minutes of it. An invoice
+// with no attempt at all (the tap never worked, so Collect Payment was never
+// pressed) falls back to when the invoice was created.
+async function squareSearchAnchor(invoiceId, inv) {
+  try {
+    const r = await pool.query('SELECT initiated_at FROM invoice_payments WHERE invoice_id = $1 ORDER BY id DESC LIMIT 1', [invoiceId]);
+    if (r.rows[0] && r.rows[0].initiated_at) return new Date(r.rows[0].initiated_at).getTime();
+  } catch (e) {}
+  if (inv && inv.created_at) return new Date(inv.created_at).getTime();
+  return Date.now();
+}
+
+// The Square location this invoice's money belongs to. Shared by both routes so
+// they can never disagree about which city was searched.
+async function squareLocationForInvoice(inv) {
+  const map = await squareLocationMap();
+  const code = String(inv.city_code || '').trim().toUpperCase();
+  if (!code) return { ok: false, error: 'This invoice has no city on it, so Nova cannot tell which Square location to search.' };
+  const locationId = map[code];
+  if (!locationId) return { ok: false, error: 'The city ' + code + ' is not mapped to a Square location yet. Tell an admin.' };
+  return { ok: true, locationId: locationId, code: code };
+}
+
+router.get('/:id/square-candidates', requireAuth, requirePermission('view_invoices'), async (req, res) => {
+  try {
+    const r = await pool.query('SELECT id, invoice_number, city_code, locksmith_id, subtotal, tax_amount, surcharge_amount, grand_total, created_at FROM invoices WHERE id = $1', [req.params.id]);
+    const inv = r.rows[0];
+    if (!inv) return res.status(404).json({ error: 'Invoice not found' });
+    if (!canSeeAll(req.user.role) && inv.locksmith_id !== req.user.id) {
+      return res.status(403).json({ error: 'Access denied' });
+    }
+    if (!square.configured()) {
+      return res.status(400).json({ error: 'Square is not connected yet. An admin has to set it up under Invoice Setup.' });
+    }
+    const loc = await squareLocationForInvoice(inv);
+    if (!loc.ok) return res.status(400).json({ error: loc.error });
+
+    const out = await square.listCandidatePayments(loc.locationId, await squareSearchAnchor(inv.id, inv));
+    if (!out.ok) {
+      return res.json({ ok: false, reason: out.reason || 'lookup_failed', payments: [], capped: false, expected_cents: 0 });
+    }
+
+    // A payment already tied to an invoice is not a candidate for another one.
+    // square_payment_id is UNIQUE, so attaching it would throw anyway; filtering
+    // here means the tech never sees a card they cannot pick.
+    const ids = out.payments.map(function (x) { return x.id; }).filter(Boolean);
+    const taken = {};
+    if (ids.length) {
+      const t = await pool.query('SELECT square_payment_id FROM invoice_payments WHERE square_payment_id = ANY($1::text[])', [ids]);
+      t.rows.forEach(function (x) { taken[x.square_payment_id] = true; });
+    }
+
+    // Pre-tip, because the tip is the one part the customer changes inside Square.
+    // This ORDERS and LABELS the list; it never filters it. A tech who keyed a
+    // different figure than Nova computed (the card surcharge is the usual reason)
+    // still has to be able to find their own charge, and reconcilePayment() is what
+    // decides whether the amount is acceptable.
+    const wantCents = Math.round((Number(inv.subtotal) || 0) * 100) +
+      Math.round((Number(inv.tax_amount) || 0) * 100) +
+      Math.round((Number(inv.surcharge_amount) || 0) * 100);
+
+    const list = out.payments
+      .filter(function (x) { return !taken[x.id]; })
+      .map(function (x) {
+        const base = (Number(x.amount_cents) || 0) - (Number(x.tip_cents) || 0);
+        return Object.assign({}, x, { likely: Math.abs(base - wantCents) <= 1 });
+      });
+    list.sort(function (a, b) { return (a.likely === b.likely) ? 0 : (a.likely ? -1 : 1); });
+
+    res.json({
+      ok: true,
+      payments: list,
+      capped: !!out.capped,
+      expected_cents: wantCents,
+      city_code: loc.code
+    });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Could not read the Square payments for this invoice' });
+  }
+});
+
+router.post('/:id/attach-square-payment', requireAuth, requirePermission('edit_invoice'), async (req, res) => {
+  const raw = String((req.body && (req.body.square_payment_id || req.body.reference)) || '').trim();
+  if (!raw) return res.status(400).json({ error: 'Enter the Square payment ID or the receipt number, or pick one from the list.' });
+  try {
+    const r = await pool.query('SELECT * FROM invoices WHERE id = $1', [req.params.id]);
+    const inv = r.rows[0];
+    if (!inv) return res.status(404).json({ error: 'Invoice not found' });
+    if (!canSeeAll(req.user.role) && inv.locksmith_id !== req.user.id) {
+      return res.status(403).json({ error: 'Access denied' });
+    }
+    if (!square.configured()) {
+      return res.status(400).json({ error: 'Square is not connected yet. An admin has to set it up under Invoice Setup.' });
+    }
+
+    // Same finish-line gate Collect Payment enforces, for the same reason: a
+    // successful attach ends in the narrow writer, which stamps status='paid' and
+    // completed_at. Anything that could not be COMPLETED must not be settleable
+    // either, or this becomes the way round the close-out requirements. Nothing is
+    // lost by refusing -- the money stays in Square and the attach works the moment
+    // the missing field is filled in -- which is why the error names what is missing.
+    if (inv.status === 'draft') {
+      const greqs = await accountCloseoutReqs(inv.account_id);
+      const gpc = await readyPhotoCount(inv.id);
+      const gitems = (await pool.query('SELECT * FROM invoice_line_items WHERE invoice_id = $1', [inv.id])).rows;
+      const ggates = invoiceGates(inv, gitems, greqs, gpc);
+      if (!gatesPass(ggates)) {
+        const gmissing = ggates.filter(function (g) { return !g.ok; }).map(function (g) { return g.label.toLowerCase(); });
+        return res.status(400).json({
+          error: 'Invoice #' + inv.invoice_number + ' is not finished yet: ' + gmissing.join(', ') + '. Fix that and the Square payment can be attached. The money stays in Square until then.',
+          gates: ggates
+        });
+      }
+    }
+    if (LOCKED_STATUSES.indexOf(inv.status) !== -1) {
+      return res.status(409).json({ error: 'This invoice is already settled.' });
+    }
+
+    // Already settled against Square. Do NOT build a second row: the invoice is
+    // paid, and a second attempt is how one card becomes two.
+    const done = await pool.query("SELECT id, square_payment_id FROM invoice_payments WHERE invoice_id = $1 AND status = 'reconciled' LIMIT 1", [inv.id]);
+    if (done.rows.length) {
+      return res.status(409).json({ error: 'This invoice is already settled against Square payment ' + (done.rows[0].square_payment_id || '') + '.' });
+    }
+
+    const loc = await squareLocationForInvoice(inv);
+    if (!loc.ok) return res.status(400).json({ error: loc.error });
+
+    const found = await square.findPaymentByIdOrReceipt(raw, loc.locationId, await squareSearchAnchor(inv.id, inv));
+    if (!found.ok) {
+      if (found.reason === 'lookup_failed') return res.status(502).json({ error: 'Nova could not reach Square. Try again in a minute.' });
+      return res.status(404).json({ error: 'Square has no completed payment matching that under the company account, at the ' + loc.code + ' location, within 12 hours of this invoice. Check the value and try again. Nothing was changed.' });
+    }
+    const payment = found.payment;
+    if (String(payment.status || '') !== 'COMPLETED') {
+      return res.status(400).json({ error: 'Square reports that payment as ' + String(payment.status || 'incomplete').toLowerCase() + ', not completed. Nothing was changed.' });
+    }
+
+    // One Square payment settles one invoice. square_payment_id is UNIQUE so the
+    // INSERT would fail anyway, but a caught constraint violation cannot say WHICH
+    // invoice already has it, and that is the only useful part of the answer.
+    const clash = await pool.query(
+      'SELECT p.invoice_id, i.invoice_number FROM invoice_payments p JOIN invoices i ON i.id = p.invoice_id WHERE p.square_payment_id = $1 LIMIT 1',
+      [payment.id]
+    );
+    if (clash.rows.length) {
+      return res.status(409).json({ error: 'That Square payment is already attached to invoice #' + clash.rows[0].invoice_number + '. Nothing was changed.' });
+    }
+
+    // The card was taken at a DIFFERENT Square location than this invoice's city
+    // is mapped to.
+    //
+    // The picker never offers one of these: it scopes its listing to the invoice's
+    // location, exactly like confirmByReference(), because an omitted location does
+    // not search every city, it searches the wrong one. Typing the payment id
+    // reached Square directly and walked straight past that, and the amount check
+    // downstream has nothing to say about geography -- so a Tampa card settled a
+    // Jacksonville invoice and the money landed in the wrong city's books, silently.
+    //
+    // It is not automatically WRONG. A phone signed in to the wrong location is
+    // exactly what happens when a tech opens Square by hand, which is the whole
+    // situation this route exists for. So it fails closed rather than refusing
+    // outright: a tech is stopped and told to get a manager, and a manager can put
+    // it through deliberately with allow_other_location, which is recorded. Refusing
+    // it outright would strand real money nobody could ever attach.
+    const paidAt = String(payment.location_id || '');
+    if (paidAt && paidAt !== loc.locationId) {
+      const may = canSeeAll(req.user.role);
+      if (!(may && req.body && req.body.allow_other_location === true)) {
+        return res.status(409).json({
+          error: 'That card was taken at a different Square location than ' + loc.code + '. Attaching it would put the money in the wrong city. ' +
+            (may ? 'Attach it anyway only if you know that is right.' : 'A manager has to attach this one.'),
+          needs_override: !!may,
+          invoice_location_id: loc.locationId,
+          payment_location_id: paidAt
+        });
+      }
+    }
+
+    // A normal attempt row, just one that was never deep-linked. platform 'manual'
+    // is what tells the reconciliation report (and anyone reading the row later)
+    // that a human pointed at this payment rather than Square handing it back.
+    const nonce = square.newNonce();
+    const cents = Math.round((Number(inv.grand_total) || 0) * 100);
+    const ins = await pool.query(
+      'INSERT INTO invoice_payments (invoice_id, state_nonce, status, amount_requested_cents, square_location_id, platform, initiated_by, square_payment_id, returned_at) ' +
+      "VALUES ($1,$2,'returned',$3,$4,'manual',$5,$6,NOW()) RETURNING id",
+      [inv.id, nonce, cents, payment.location_id || loc.locationId, req.user.id, payment.id]
+    );
+    const rowId = ins.rows[0].id;
+
+    // Audit BEFORE the reconcile, and audit the pointing rather than the paying.
+    // reconcilePayment() writes its own paid_via_square row when money actually
+    // moves; this one records who told Nova which card to look at, which is the
+    // part no other row would ever capture.
+    try {
+      await logAudit({
+        entity_type: 'invoice', entity_id: inv.id, entity_number: String(inv.invoice_number),
+        action: 'square_payment_attached', user_id: req.user.id, user_name: req.user.name,
+        details: {
+          square_payment_id: payment.id,
+          entered: raw,
+          location_id: payment.location_id || loc.locationId,
+          invoice_location_id: loc.locationId,
+          other_location_override: !!(paidAt && paidAt !== loc.locationId)
+        }
+      });
+    } catch (e) {}
+
+    const out = await square.reconcilePayment(rowId);
+
+    // The tech found the money Nova had listed as an orphan, so it is not an
+    // orphan any more. Best effort: the attach is what mattered.
+    try {
+      await pool.query('UPDATE square_orphan_payments SET resolved = true WHERE square_payment_id = $1', [payment.id]);
+    } catch (e) {}
+
+    const again = await pool.query('SELECT * FROM invoice_payments WHERE id = $1', [rowId]);
+    res.json({ ok: !!out.ok, reason: out.reason || null, payment: scrubPaymentRow(again.rows[0]) });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Could not attach that Square payment' });
   }
 });
 

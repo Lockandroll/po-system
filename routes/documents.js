@@ -9,90 +9,24 @@ const docText = require('../utils/docText');
 
 const router = express.Router();
 
-// Roles that can be granted access via a "share with role". Only owners see
-// everything by default; admins must be granted access like anyone else, so the
-// admin role is offered as a share target (lets an owner grant the whole group).
-const SHAREABLE_ROLES = ['admin', 'manager', 'locksmith_coordinator', 'dispatcher', 'locksmith', 'roadside_technician'];
+// The vault access model (loadContext + the can* helpers) moved to
+// utils/vaultAccess.js when Fleet document linking was built, because
+// routes/vehicles.js has to ask the same question before letting anyone attach a
+// vault file to a truck. One copy, two callers - see the header of that file.
+const vault = require('../utils/vaultAccess');
+const SHAREABLE_ROLES = vault.SHAREABLE_ROLES;
+const loadContext = vault.loadContext;
+const canViewFolder = vault.canViewFolder;
+const canEditFolder = vault.canEditFolder;
+const canViewFile = vault.canViewFile;
+const canEditFile = vault.canEditFile;
+const canWriteInto = vault.canWriteInto;
+const descendantFolderIds = vault.descendantFolderIds;
 
 function sanitizeName(name) {
   return String(name || 'file').replace(/[^A-Za-z0-9._-]/g, '_').slice(0, 200) || 'file';
 }
 
-// Build the per-request access picture for a user. Only owners see everything;
-// admins (and everyone else) are limited to what they own or have been shared.
-// We load the folder tree once and expand ownership and shares downward (a folder
-// grant cascades to all descendants).
-async function loadContext(user) {
-  const isOwner = !!user.isOwner; // owner role is coerced to 'admin' upstream, but isOwner is preserved
-  const ctx = {
-    isOwner: isOwner,
-    userId: user.id,
-    viewFolders: new Set(),
-    editFolders: new Set(),
-    viewFiles: new Set(),
-    editFiles: new Set(),
-    childrenOf: new Map()
-  };
-  const folders = (await pool.query('SELECT id, parent_id, owner_id FROM document_folders')).rows;
-  folders.forEach(function (f) {
-    if (!ctx.childrenOf.has(f.parent_id)) ctx.childrenOf.set(f.parent_id, []);
-    ctx.childrenOf.get(f.parent_id).push(f.id);
-  });
-  if (isOwner) return ctx;
-
-  function addDescendants(id, set) {
-    set.add(id);
-    (ctx.childrenOf.get(id) || []).forEach(function (c) { addDescendants(c, set); });
-  }
-  // Owned folders: full view + edit, cascading down.
-  folders.forEach(function (f) {
-    if (f.owner_id === user.id) { addDescendants(f.id, ctx.viewFolders); addDescendants(f.id, ctx.editFolders); }
-  });
-  // Shares targeting this user directly or via their role.
-  const shares = (await pool.query(
-    "SELECT resource_type, resource_id, can_edit FROM document_shares " +
-    "WHERE (grantee_type = 'user' AND grantee_user_id = $1) OR (grantee_type = 'role' AND grantee_role = $2)",
-    [user.id, user.role]
-  )).rows;
-  shares.forEach(function (s) {
-    if (s.resource_type === 'folder') {
-      addDescendants(s.resource_id, ctx.viewFolders);
-      if (s.can_edit) addDescendants(s.resource_id, ctx.editFolders);
-    } else {
-      ctx.viewFiles.add(s.resource_id);
-      if (s.can_edit) ctx.editFiles.add(s.resource_id);
-    }
-  });
-  return ctx;
-}
-
-function canViewFolder(ctx, id) { return ctx.isOwner || ctx.viewFolders.has(id); }
-function canEditFolder(ctx, id) { return ctx.isOwner || ctx.editFolders.has(id); }
-function canViewFile(ctx, file) {
-  if (ctx.isOwner) return true;
-  if (file.owner_id === ctx.userId) return true;
-  if (ctx.viewFiles.has(file.id)) return true;
-  return file.folder_id != null && ctx.viewFolders.has(file.folder_id);
-}
-function canEditFile(ctx, file) {
-  if (ctx.isOwner) return true;
-  if (file.owner_id === ctx.userId) return true;
-  if (ctx.editFiles.has(file.id)) return true;
-  return file.folder_id != null && ctx.editFolders.has(file.folder_id);
-}
-// Can the user create folders / upload files into this location?
-// Root (null) is open to everyone (they own what they create); folders require edit.
-function canWriteInto(ctx, folderId) {
-  if (folderId == null) return true;
-  return canEditFolder(ctx, folderId);
-}
-
-// All descendant folder ids of a folder (inclusive), for move-cycle checks + deletes.
-function descendantFolderIds(ctx, id) {
-  const out = [];
-  (function walk(fid) { out.push(fid); (ctx.childrenOf.get(fid) || []).forEach(walk); })(id);
-  return out;
-}
 
 // ---- Listing ----
 router.get('/', requireAuth, async function (req, res) {
@@ -126,7 +60,7 @@ router.get('/', requireAuth, async function (req, res) {
     // null and the screen simply shows nothing next to that file.
     const allFiles = (await pool.query(
       "SELECT d.id, d.name, d.folder_id, d.mime_type, d.size_bytes, d.owner_id, d.owner_name, d.emailable, " +
-      "d.created_at, d.expires_on, d.reminder_lead_num, d.reminder_lead_unit, " +
+      "d.created_at, d.expires_on, d.reminder_lead_num, d.reminder_lead_unit, d.fleet_scope, d.fleet_kind, " +
       "t.status AS text_status, t.char_count AS text_chars, t.detail AS text_detail " +
       "FROM documents d LEFT JOIN document_text t ON t.document_id = d.id " +
       "WHERE d.status = 'ready' ORDER BY d.name ASC"
@@ -181,6 +115,7 @@ router.get('/', requireAuth, async function (req, res) {
           owner_name: f.owner_name, created_at: f.created_at,
           mine: f.owner_id === req.user.id, canEdit: canEditFile(ctx, f), emailable: !!f.emailable,
           expires_on: f.expires_on, reminder_lead_num: f.reminder_lead_num, reminder_lead_unit: f.reminder_lead_unit,
+          fleet_scope: !!f.fleet_scope, fleet_kind: f.fleet_kind || null,
           shareCount: shareCounts['file:' + f.id] || 0,
           // Only meaningful inside a policy folder; elsewhere it is always null
           // because nothing else in the vault is ever read.
@@ -206,6 +141,57 @@ router.get('/users-list', requireAuth, async function (req, res) {
   } catch (err) {
     console.error('Documents users-list error:', err);
     res.status(500).json({ error: 'Failed to load users' });
+  }
+});
+
+// Vault search, for pickers that attach an EXISTING file to something else -
+// today that means the Fleet Registry's "Attach existing document" dialog. It is
+// deliberately view-scoped: you can only attach a file you can already see, so
+// nobody can reach an HR document by attaching it to a van and reading it back
+// through the vehicle page. That is the one gate protecting the vehicle read
+// path, which does not consult the vault at all.
+router.get('/search', requireAuth, async function (req, res) {
+  try {
+    const ctx = await loadContext(req.user);
+    const q = String(req.query.q || '').trim().toLowerCase();
+    const limit = Math.min(60, Math.max(1, parseInt(req.query.limit, 10) || 30));
+
+    const folders = (await pool.query('SELECT id, parent_id, name FROM document_folders')).rows;
+    const byId = new Map();
+    folders.forEach(function (f) { byId.set(f.id, f); });
+    function pathOf(id) {
+      var parts = [], seen = {}, cur = id;
+      while (cur != null && byId.has(cur) && !seen[cur]) {
+        seen[cur] = true;
+        parts.unshift(byId.get(cur).name);
+        cur = byId.get(cur).parent_id;
+      }
+      return parts.join(' / ');
+    }
+
+    const rows = (await pool.query(
+      "SELECT id, name, folder_id, owner_id, mime_type, size_bytes, fleet_scope, fleet_kind, " +
+      "to_char(expires_on, 'YYYY-MM-DD') AS expires_on, reminder_lead_num, reminder_lead_unit " +
+      "FROM documents WHERE status = 'ready' ORDER BY created_at DESC"
+    )).rows;
+
+    const out = [];
+    for (var i = 0; i < rows.length && out.length < limit; i++) {
+      var f = rows[i];
+      if (!canViewFile(ctx, f)) continue;
+      var folder = pathOf(f.folder_id);
+      if (q && String(f.name).toLowerCase().indexOf(q) === -1 && folder.toLowerCase().indexOf(q) === -1) continue;
+      out.push({
+        id: f.id, name: f.name, folder_path: folder, mime_type: f.mime_type,
+        size_bytes: Number(f.size_bytes) || 0, expires_on: f.expires_on,
+        reminder_lead_num: f.reminder_lead_num, reminder_lead_unit: f.reminder_lead_unit,
+        fleet_scope: !!f.fleet_scope, fleet_kind: f.fleet_kind || null
+      });
+    }
+    res.json({ files: out });
+  } catch (err) {
+    console.error('Documents search error:', err);
+    res.status(500).json({ error: 'Failed to search documents' });
   }
 });
 
@@ -422,6 +408,21 @@ router.put('/:id', requireAuth, async function (req, res) {
     }
     if (typeof req.body.name === 'string' && req.body.name.trim()) {
       params.push(req.body.name.trim().slice(0, 255)); sets.push('name = $' + params.length);
+    }
+    // Marking a file as covering the whole fleet puts it in front of every person
+    // who can see any active vehicle, which is a wider audience than the vault's
+    // own sharing would ever give it. That is the point - an insurance card is
+    // meant to be reachable by the tech driving the van - but it is a deliberate
+    // act, so it sits at the same level as the emailable flag: admins only.
+    if (req.body.fleet_scope !== undefined || req.body.fleet_kind !== undefined) {
+      if (req.user.role !== 'admin') return res.status(403).json({ error: 'Only admins can change fleet visibility' });
+      var wantScope = !!req.body.fleet_scope;
+      var wantKind = req.body.fleet_kind == null ? null : String(req.body.fleet_kind);
+      if (wantScope && ['registration', 'insurance'].indexOf(wantKind) === -1) {
+        return res.status(400).json({ error: 'Say whether this is a registration or an insurance document' });
+      }
+      params.push(wantScope); sets.push('fleet_scope = $' + params.length);
+      params.push(wantScope ? wantKind : null); sets.push('fleet_kind = $' + params.length);
     }
     if (req.body.folder_id !== undefined) {
       const target = req.body.folder_id === null ? null : parseInt(req.body.folder_id, 10);

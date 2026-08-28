@@ -1800,6 +1800,48 @@ async function initDB() {
     await client.query("ALTER TABLE documents ADD COLUMN IF NOT EXISTS reminder_lead_unit VARCHAR(10);");
     await client.query('ALTER TABLE documents ADD COLUMN IF NOT EXISTS reminder_sent_at TIMESTAMPTZ;');
     await client.query('ALTER TABLE documents ADD COLUMN IF NOT EXISTS expiry_notice_sent_at TIMESTAMPTZ;');
+    // ===== Fleet document linking =====
+    // Registrations and insurance cards live in the Document Vault like every
+    // other file. These two columns and the link table below are the only thing
+    // that makes one of them ALSO a fleet document. Nothing is copied: a vehicle
+    // points at a vault file, so replacing the file updates every truck at once.
+    //
+    // fleet_scope marks a file that covers the whole fleet - the usual shape of
+    // an insurance ID card, which lists every VIN on one page. It saves linking
+    // that file to twelve vehicles by hand, and it is why insurance needed no
+    // matching at all. fleet_kind says which of the two things it is.
+    await client.query('ALTER TABLE documents ADD COLUMN IF NOT EXISTS fleet_scope BOOLEAN NOT NULL DEFAULT false;');
+    await client.query('ALTER TABLE documents ADD COLUMN IF NOT EXISTS fleet_kind VARCHAR(20);');
+    // The link table. Many-to-many on purpose: one insurance card covers many
+    // vehicles, and one vehicle keeps last year's registration alongside this
+    // year's (utils/fleetDocs.js takes the best of them). ON DELETE CASCADE both
+    // ways, so deleting the vault file or the vehicle takes the link with it and
+    // never leaves a row pointing at nothing.
+    await client.query(
+      'CREATE TABLE IF NOT EXISTS vehicle_documents (' +
+      '  id SERIAL PRIMARY KEY,' +
+      '  vehicle_id INTEGER NOT NULL REFERENCES vehicles(id) ON DELETE CASCADE,' +
+      '  document_id INTEGER NOT NULL REFERENCES documents(id) ON DELETE CASCADE,' +
+      "  kind VARCHAR(20) NOT NULL DEFAULT 'registration'," +
+      "  link_source VARCHAR(20) NOT NULL DEFAULT 'manual'," +
+      '  created_by INTEGER,' +
+      '  created_by_name VARCHAR(255),' +
+      '  created_at TIMESTAMPTZ DEFAULT NOW()' +
+      ');'
+    );
+    var _vdCols = ['vehicle_id INTEGER', 'document_id INTEGER', "kind VARCHAR(20) NOT NULL DEFAULT 'registration'",
+      "link_source VARCHAR(20) NOT NULL DEFAULT 'manual'", 'created_by INTEGER', 'created_by_name VARCHAR(255)',
+      'created_at TIMESTAMPTZ DEFAULT NOW()'];
+    for (var _vdi = 0; _vdi < _vdCols.length; _vdi++) {
+      await client.query('ALTER TABLE vehicle_documents ADD COLUMN IF NOT EXISTS ' + _vdCols[_vdi] + ';');
+    }
+    // One row per (vehicle, file, kind). Attaching the same file twice is a
+    // no-op rather than an error - see the ON CONFLICT in routes/vehicles.js.
+    await client.query('CREATE UNIQUE INDEX IF NOT EXISTS vehicle_documents_uniq ON vehicle_documents (vehicle_id, document_id, kind);');
+    await client.query('CREATE INDEX IF NOT EXISTS vehicle_documents_vehicle_idx ON vehicle_documents (vehicle_id);');
+    await client.query('CREATE INDEX IF NOT EXISTS vehicle_documents_document_idx ON vehicle_documents (document_id);');
+    await client.query("CREATE INDEX IF NOT EXISTS documents_fleet_scope_idx ON documents (fleet_scope) WHERE fleet_scope = true;");
+    console.log('Fleet documents: vehicle_documents ready.');
     // ===== Quote photos (R2-backed reference images attached to a quote) =====
     // Like documents, only metadata + the R2 key live here; bytes live in R2.
     await client.query(

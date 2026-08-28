@@ -232,17 +232,36 @@ const ERROR_TEXT = {
   CLIENT_NOT_AUTHORIZED_FOR_USER: 'This Square login is not allowed to take payments for the company. Tell an admin.'
 };
 
+// Android hands the browser back the FULLY-QUALIFIED constant
+// (com.squareup.pos.ERROR_TRANSACTION_CANCELED). iOS, and every table in this
+// file, use the bare name (TRANSACTION_CANCELED). Nothing stripped the prefix,
+// so on Android EVERY outcome fell through isKnownError() to 'unconfirmed':
+//
+//   - a tech who simply backed out of the Square app sat on "Confirming payment.
+//     Do not run the card again." forever, because the cancel was never
+//     recognised as a cancel;
+//   - the actionable messages (not signed in, no signal, wrong location) never
+//     showed, because the lookup missed every key.
+//
+// Normalizing here rather than at each call site means a future code added to
+// ERROR_TEXT in its bare form works on both platforms without anyone remembering
+// this. routes/square.js normalizes before it STORES the code too, so the value a
+// manager reads on the invoice is the same string these tables are keyed on.
+function normalizeErrorCode(code) {
+  return String(code || '').trim().replace(/^com\.squareup\.pos\.ERROR_/, '');
+}
+
 function errorMessage(code) {
-  return ERROR_TEXT[String(code || '')] || 'Square could not complete the payment. Nothing was charged to the customer twice — check the Square app before retrying.';
+  return ERROR_TEXT[normalizeErrorCode(code)] || 'Square could not complete the payment. Nothing was charged to the customer twice — check the Square app before retrying.';
 }
 
 function isCancel(code) {
-  const c = String(code || '');
+  const c = normalizeErrorCode(code);
   return c === 'TRANSACTION_CANCELED' || c === 'payment_canceled';
 }
 
 function isLocationError(code) {
-  const c = String(code || '');
+  const c = normalizeErrorCode(code);
   return c === 'ILLEGAL_LOCATION_ID' || c === 'invalid_location_id' || c === 'INVALID_LOCATION_ID';
 }
 
@@ -253,7 +272,7 @@ function isLocationError(code) {
 // AFTER it has already captured the card) is NOT proof of failure — the callback
 // in routes/square.js routes an unknown code to 'unconfirmed' instead.
 function isKnownError(code) {
-  var c = String(code || '');
+  var c = normalizeErrorCode(code);
   if (!c) return false;
   if (isCancel(c) || isLocationError(c)) return true;
   return Object.prototype.hasOwnProperty.call(ERROR_TEXT, c);
@@ -336,7 +355,11 @@ async function reconcilePayment(paymentRowId) {
   const row = rowRes.rows[0];
   if (!row) return { ok: false, reason: 'not_found' };
   if (row.status === 'reconciled') return { ok: true, already: true, row: row };
-  if (!row.square_transaction_id) {
+  // A row created by POST /invoices/:id/attach-square-payment carries a Square
+  // PAYMENT id and no transaction/order id, because it was never started through
+  // the Point of Sale deep link. That is enough to reconcile -- the else branch
+  // below fetches the payment directly and takes the order id off it.
+  if (!row.square_transaction_id && !row.square_payment_id) {
     return { ok: false, reason: 'no_transaction_yet', row: row };
   }
 
@@ -361,6 +384,10 @@ async function reconcilePayment(paymentRowId) {
     } else {
       const pay = await sq('GET', '/v2/payments/' + encodeURIComponent(row.square_payment_id));
       payment = pay && pay.payment;
+      // An attached row starts with no order id. Take Square's, so this row is
+      // matchable by findRowForPayment() and shows the same way on the
+      // reconciliation report as one that came through the deep link.
+      if (payment && payment.order_id) orderId = payment.order_id;
     }
   } catch (e) {
     // NOT_FOUND here usually means the tech's Square app is signed into a
@@ -853,6 +880,121 @@ async function confirmByReference(rowId) {
   return await reconcilePayment(row.id);
 }
 
+// ---------------------------------------------------------------------------
+// "I ran this in the Square app instead"
+//
+// When the tap fails inside the Nova handoff a tech routinely backs out, opens
+// Square on its own and runs the card there. That charge is real money wearing no
+// Nova reference at all: no REQUEST_METADATA state, no 'Nova Invoice <n>' note for
+// confirmByReference() to match on, and whatever location the phone happens to be
+// signed into rather than the city-mapped one Nova passes. Until now the only way
+// to close such an invoice was to type the last 4 and the approval code by hand,
+// which leaves it paid with no square_payment_id -- precisely the field the dispute
+// packet reads, and the reason the charge shows up on the reconciliation report as
+// both an orphan payment AND a paid-with-no-Square invoice.
+//
+// These two only READ. Nothing here decides an invoice is paid: the route builds a
+// normal invoice_payments row and hands it to reconcilePayment(), which still runs
+// the amount check, still refuses a second settlement, and still flags a mismatch
+// rather than settling one. Pointing at the wrong payment is therefore a mismatch
+// a manager sees, not a silent wrong number on an invoice.
+// ---------------------------------------------------------------------------
+const CANDIDATE_WINDOW_MS = 12 * 60 * 60 * 1000;
+const CANDIDATE_PAGE = 100;
+
+// Completed card payments at one location around one time, newest first.
+//
+// location_id is REQUIRED, not optional: Square silently falls back to the
+// seller's DEFAULT location when it is omitted, so leaving it off does not search
+// every city, it searches the wrong one. Same trap as confirmByReference().
+async function listCandidatePayments(locationId, aroundMs) {
+  if (!configured()) return { ok: false, reason: 'not_configured', payments: [] };
+  if (!locationId) return { ok: false, reason: 'no_location', payments: [] };
+  const center = Number(aroundMs) || Date.now();
+  const qs = [
+    'begin_time=' + encodeURIComponent(new Date(center - CANDIDATE_WINDOW_MS).toISOString()),
+    'end_time=' + encodeURIComponent(new Date(center + 60 * 60 * 1000).toISOString()),
+    'sort_order=DESC',
+    'limit=' + CANDIDATE_PAGE,
+    'location_id=' + encodeURIComponent(locationId)
+  ];
+  let payments = [];
+  try {
+    const list = await sq('GET', '/v2/payments?' + qs.join('&'));
+    payments = (list && list.payments) || [];
+  } catch (e) {
+    return { ok: false, reason: 'lookup_failed', message: e.message, payments: [] };
+  }
+  const out = payments
+    .filter(function (p) { return String(p.status || '') === 'COMPLETED'; })
+    .map(function (p) { return summarizePayment(p); });
+  return { ok: true, payments: out, capped: payments.length >= CANDIDATE_PAGE };
+}
+
+// The only shape of a Square payment that ever reaches a browser. Deliberately
+// small: a tech picking a card off a list needs the amount, the time, the last 4
+// and how it was entered, and nothing else about the customer belongs on a phone
+// screen in a parking lot.
+function summarizePayment(p) {
+  const card = (p && p.card_details && p.card_details.card) || {};
+  return {
+    id: p.id || '',
+    order_id: p.order_id || null,
+    amount_cents: (p.total_money && Number(p.total_money.amount)) || 0,
+    tip_cents: (p.tip_money && Number(p.tip_money.amount)) || 0,
+    card_brand: card.card_brand || null,
+    card_last4: card.last_4 || null,
+    entry_method: (p.card_details && p.card_details.entry_method) || null,
+    receipt_number: p.receipt_number || null,
+    receipt_url: p.receipt_url || null,
+    note: (p.note || '').slice(0, 200),
+    taken_at: p.created_at || null
+  };
+}
+
+// Look one up by whatever the tech actually has in front of them. A Square payment
+// id is unmistakable, but the thing printed on the customer's receipt is the short
+// receipt number, and Square has no endpoint that searches by it -- so a value that
+// is not a payment id is matched against the receipt numbers in the same window the
+// picker lists. Returns the raw payment, because the caller stores it.
+async function findPaymentByIdOrReceipt(value, locationId, aroundMs) {
+  const v = String(value || '').trim();
+  if (!v) return { ok: false, reason: 'no_value' };
+  if (!configured()) return { ok: false, reason: 'not_configured' };
+  try {
+    const pay = await sq('GET', '/v2/payments/' + encodeURIComponent(v));
+    if (pay && pay.payment) return { ok: true, payment: pay.payment };
+  } catch (e) {
+    // A 404 here is the normal path for a receipt number, so it is not an error
+    // yet. Anything else is, and must not be swallowed into 'no_match'.
+    if (e.status !== 404 && e.squareCode !== 'NOT_FOUND' && e.status !== 400) {
+      return { ok: false, reason: 'lookup_failed', message: e.message };
+    }
+  }
+  if (!locationId) return { ok: false, reason: 'no_match' };
+  const center = Number(aroundMs) || Date.now();
+  const qs = [
+    'begin_time=' + encodeURIComponent(new Date(center - CANDIDATE_WINDOW_MS).toISOString()),
+    'end_time=' + encodeURIComponent(new Date(center + 60 * 60 * 1000).toISOString()),
+    'sort_order=DESC',
+    'limit=' + CANDIDATE_PAGE,
+    'location_id=' + encodeURIComponent(locationId)
+  ];
+  let payments = [];
+  try {
+    const list = await sq('GET', '/v2/payments?' + qs.join('&'));
+    payments = (list && list.payments) || [];
+  } catch (e) {
+    return { ok: false, reason: 'lookup_failed', message: e.message };
+  }
+  const want = v.toUpperCase();
+  for (let i = 0; i < payments.length; i++) {
+    const p = payments[i];
+    if (String(p.status || '') !== 'COMPLETED') continue;
+    if (String(p.receipt_number || '').toUpperCase() === want) return { ok: true, payment: p };
+  }
+  return { ok: false, reason: 'no_match' };
+}
 // ---------------------------------------------------------------------------
 // Refunds
 //
@@ -1444,5 +1586,9 @@ module.exports = {
   findRowForPayment: findRowForPayment,
   isKnownError: isKnownError,
   invoiceNumberFromOrder: invoiceNumberFromOrder,
-  confirmByReference: confirmByReference
+  confirmByReference: confirmByReference,
+  normalizeErrorCode: normalizeErrorCode,
+  listCandidatePayments: listCandidatePayments,
+  findPaymentByIdOrReceipt: findPaymentByIdOrReceipt,
+  summarizePayment: summarizePayment
 };

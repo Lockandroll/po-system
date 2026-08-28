@@ -87,6 +87,17 @@ async function handleCallback(req, res) {
     } catch (e) {}
   }
 
+  // Android returns the FULLY-QUALIFIED constant
+  // (com.squareup.pos.ERROR_TRANSACTION_CANCELED); iOS and every table in
+  // utils/square.js use the bare name. Normalizing HERE, before anything reads or
+  // stores it, is what makes isCancel() / errorMessage() / isKnownError() work on
+  // Android at all -- without it every Android outcome fell through to
+  // 'unconfirmed', so a tech who just backed out of the Square app was told
+  // "Confirming payment... do not run the card again" and sat there forever.
+  // It also keeps the stored error_code keyed the same way as the tables, so the
+  // code a manager reads on the invoice is the one they can look up.
+  errorCode = square.normalizeErrorCode(errorCode);
+
   const v = square.verifyState(state);
   if (!v.ok) {
     return deadEnd(res, v.reason === 'expired'

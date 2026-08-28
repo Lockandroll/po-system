@@ -14,6 +14,7 @@ var ALL_PERMS = [
   'cancel_po',        // cancel purchase orders
   'approve_vr',       // approve / reject vehicle repairs
   'manage_vehicles',  // fleet registry
+  'manage_vehicle_docs', // attach vault files (registration / insurance) to vehicles
   'manage_vendors',   // vendors / accounts
   'manage_addresses', // shipping addresses
   'manage_cities',    // cities
