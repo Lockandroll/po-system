@@ -1907,9 +1907,20 @@
     var d;
     try { d = await api('GET', API + '/wins'); } catch (e) { return; }
     var wins = (d && d.wins) || [];
-    if (!wins.length) { slot.innerHTML = ''; return; }
+    // This slot is now the right-hand half of the Home pair (Needs Approval on
+    // the left) - it took the Recent Activity card's place on 2026-08-28. With
+    // nothing to show, collapse the row to one column rather than leaving a
+    // gap: a quiet week should look like a shorter page, not a broken one.
+    if (!wins.length) {
+      slot.innerHTML = '';
+      var pair0 = el('home-pair');
+      if (pair0) pair0.style.gridTemplateColumns = '1fr';
+      return;
+    }
+    var pair = el('home-pair');
+    if (pair) pair.style.gridTemplateColumns = '1fr 1fr';
     slot.innerHTML =
-      '<div class="card" style="margin-bottom:24px;border-color:#1d4429">' +
+      '<div class="card" style="margin:0;border-color:#1d4429">' +
       '<div class="card-header" style="border-bottom-color:#1d4429">' +
       '<div class="card-title">Recent Wins</div>' +
       (d.city ? '<span style="font-size:12px;color:var(--text-muted-color)">' + esc(d.city) + '</span>' : '') +

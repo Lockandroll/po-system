@@ -222,6 +222,16 @@ ALL_PERMS.push(
   'manage_employee_records'   // void, delete, edit visibility company-wide
 );
 
+// Weekly leaderboards - the two Home-screen cards (top revenue, most batteries
+// sold) and the screen that uploads the spreadsheet behind them.
+//
+// Only the UPLOAD is gated. Reading the cards is requireAuth in
+// routes/leaderboard.js and always will be: a board nobody can see is not a
+// leaderboard. This ships dark in the usual way - not in EMPLOYEE_PERMS, not in
+// any role's DEFAULTS - so on deploy only admin and owner can publish a week
+// until Tony ticks the box in Roles & Access.
+ALL_PERMS.push('manage_leaderboard');
+
 var DEFAULTS = {
   admin: '*',
   manager: ['view_users', 'manage_cities', 'manage_geico', 'manage_running', 'manage_vehicles', 'manage_vendors', 'view_vendors', 'manage_addresses', 'approve_vr', 'manage_tasks', 'manage_work_orders', 'manage_schedule', 'manage_parts', 'manage_invoice_setup', 'approve_refund', 'assign_reviews', 'view_feedback', 'manage_feedback', 'manage_signatures', 'manage_timeclock', 'manage_pto', 'view_quiz', 'manage_quiz', 'view_team_quiz', 'manage_onboarding', 'ptt_all_channels', 'view_offboarding', 'play_call_recordings', 'manage_assets', 'approve_asset_replacement', 'edit_deposit', 'complete_deposit_for_employee', 'send_quote', 'manage_coi'].concat(EMPLOYEE_PERMS),

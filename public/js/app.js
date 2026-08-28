@@ -2,7 +2,7 @@
 // public/sw.js (the only thing bumped each deploy) — the badge asks the active
 // service worker for it at runtime. This value is just the fallback shown when no
 // service worker is available (e.g. very first visit before it installs).
-var APP_VERSION = 'v420';
+var APP_VERSION = 'v425';
 var _resolvedAppVersion = null;
 
 // Ask the active service worker for its CACHE_VERSION (without the 'nova-' prefix).
@@ -835,6 +835,11 @@ function navModel() {
       can('view_invoices') ? navItem('refunds', 'Refunds', NAVI.refund) : null,
       can('view_deposits') ? navItem('deposits', 'Cash Deposits', NAVI.deposit, ['deposits', 'view-deposit']) : null,
       canRoyalty('view') ? navItem('royalty', 'Royalty', NAVI.royalty) : null,
+      // Weekly leaderboards live here rather than under People because the job
+      // is the same one as Royalty and the A/R import: take the week's export,
+      // read it, publish it. Reading the boards needs no permission at all -
+      // this row is only the upload.
+      can('manage_leaderboard') ? navItem('leaderboards', 'Leaderboards', NAVI.bars) : null,
       can('manage_invoice_setup') ? navItem('invoice-setup', 'Invoice Setup', icons.settings) : null,
       can('view_ar') ? navItem('accounts-receivable', 'Accounts Receivable', NAVI.receipt) : null,
       can('view_ap') ? navItem('accounts-payable', 'Accounts Payable', NAVI.receipt) : null
@@ -1118,7 +1123,7 @@ async function render() {
     if (_ovOpen) _ovOpen.classList.add('open');
   }
   const content = document.getElementById('content');
-  var _viewPerm = { dashboard:'view_pos', view:'view_pos', running:'view_pos', 'running-admin':'view_pos', new:'create_po', edit:'edit_po', quotes:'view_quotes', 'view-quote':'view_quotes', 'new-quote':'create_quote', 'edit-quote':'edit_quote', 'vr-dashboard':'view_vr', 'view-vr':'view_vr', 'new-vr':'create_vr', 'edit-vr':'edit_vr', deposits:'view_deposits', 'view-deposit':'view_deposits', signoffs:'view_signoffs', 'view-signoff':'view_signoffs', 'new-signoff':'create_signoff', 'edit-signoff':'edit_signoff', 'complete-signoff':'complete_signoff', tasks:'view_tasks', 'task-detail':'view_tasks', 'new-task':'view_tasks', 'edit-task':'view_tasks', 'task-templates':'manage_tasks', 'new-task-template':'manage_tasks', 'edit-task-template':'manage_tasks', 'work-orders':'view_work_orders', 'view-work-order':'view_work_orders', 'new-work-order':'manage_work_orders', schedule:'view_schedule', 'schedule-admin':'manage_schedule', 'schedule-nowork':'manage_schedule', invoices:'view_invoices', 'view-invoice':'view_invoices', 'new-invoice':'create_invoice', 'edit-invoice':'edit_invoice', 'invoice-parts':'view_invoices', refunds:'view_invoices', 'invoice-setup':'manage_invoice_setup', feedback:'view_feedback', 'feedback-detail':'view_feedback', 'call-lookup':'play_call_recordings', signatures:'view_signatures', 'new-signature':'manage_signatures', 'signature-editor':'manage_signatures', timeclock:'view_timeclock', 'timeclock-manager':'manage_timeclock', pto:'view_pto', 'onboarding-admin':'manage_onboarding', 'employee-files':'manage_onboarding', ptt:'view_ptt', inspections:'view_inspections', 'view-inspection':'view_inspections', 'inspection-form':'view_inspections', 'inspection-checklist':'manage_inspections', assets:'manage_assets', 'asset-detail':'manage_assets', 'asset-locations':'manage_assets', 'asset-techs':'manage_assets', 'asset-tech-detail':'view_assets', 'asset-acks':'manage_assets', 'new-asset-ack':'manage_assets', 'view-asset-ack':'view_assets', 'asset-requests':'view_assets', 'asset-catalog':'manage_assets', 'my-equipment':'view_assets', 'live-map':'view_tech_locations', 'location-settings':'manage_settings', dispatch:'view_dispatch', 'dispatch-call':'view_dispatch', 'call-search':'search_dispatch', 'time-codes':'manage_pricing', coverage:'manage_coverage', 'accounts-receivable':'view_ar' };
+  var _viewPerm = { dashboard:'view_pos', view:'view_pos', running:'view_pos', 'running-admin':'view_pos', new:'create_po', edit:'edit_po', quotes:'view_quotes', 'view-quote':'view_quotes', 'new-quote':'create_quote', 'edit-quote':'edit_quote', 'vr-dashboard':'view_vr', 'view-vr':'view_vr', 'new-vr':'create_vr', 'edit-vr':'edit_vr', deposits:'view_deposits', 'view-deposit':'view_deposits', signoffs:'view_signoffs', 'view-signoff':'view_signoffs', 'new-signoff':'create_signoff', 'edit-signoff':'edit_signoff', 'complete-signoff':'complete_signoff', tasks:'view_tasks', 'task-detail':'view_tasks', 'new-task':'view_tasks', 'edit-task':'view_tasks', 'task-templates':'manage_tasks', 'new-task-template':'manage_tasks', 'edit-task-template':'manage_tasks', 'work-orders':'view_work_orders', 'view-work-order':'view_work_orders', 'new-work-order':'manage_work_orders', schedule:'view_schedule', 'schedule-admin':'manage_schedule', 'schedule-nowork':'manage_schedule', invoices:'view_invoices', 'view-invoice':'view_invoices', 'new-invoice':'create_invoice', 'edit-invoice':'edit_invoice', 'invoice-parts':'view_invoices', refunds:'view_invoices', 'invoice-setup':'manage_invoice_setup', feedback:'view_feedback', 'feedback-detail':'view_feedback', 'call-lookup':'play_call_recordings', signatures:'view_signatures', 'new-signature':'manage_signatures', 'signature-editor':'manage_signatures', timeclock:'view_timeclock', 'timeclock-manager':'manage_timeclock', pto:'view_pto', 'onboarding-admin':'manage_onboarding', 'employee-files':'manage_onboarding', ptt:'view_ptt', inspections:'view_inspections', 'view-inspection':'view_inspections', 'inspection-form':'view_inspections', 'inspection-checklist':'manage_inspections', assets:'manage_assets', 'asset-detail':'manage_assets', 'asset-locations':'manage_assets', 'asset-techs':'manage_assets', 'asset-tech-detail':'view_assets', 'asset-acks':'manage_assets', 'new-asset-ack':'manage_assets', 'view-asset-ack':'view_assets', 'asset-requests':'view_assets', 'asset-catalog':'manage_assets', 'my-equipment':'view_assets', 'live-map':'view_tech_locations', 'location-settings':'manage_settings', dispatch:'view_dispatch', 'dispatch-call':'view_dispatch', 'call-search':'search_dispatch', 'time-codes':'manage_pricing', coverage:'manage_coverage', 'accounts-receivable':'view_ar', leaderboards:'manage_leaderboard' };
   var _viewAnyOf = { 'tech-pay': ['view_pay_report', 'manage_pay_grades', 'view_own_pay'],
     coi: ['view_vendors', 'manage_vendors', 'manage_coi'],
     'coi-account': ['view_vendors', 'manage_vendors', 'manage_coi'],
@@ -1139,6 +1144,7 @@ async function render() {
   else if (state.currentView === 'users') await renderUsers(content);
   else if (state.currentView === 'cities') await renderCities(content);
   else if (state.currentView === 'vendors') await renderVendors(content);
+  else if (state.currentView === 'leaderboards') await renderLeaderboards(content);
   else if (state.currentView === 'coi') await renderCoi(content);
   else if (state.currentView === 'coi-account') await renderCoiAccount(content, state.currentParam);
   else if (state.currentView === 'coi-cycle') await renderCoiCycle(content, state.currentParam);
@@ -3374,6 +3380,7 @@ async function renderRoles(el) {
       {k:'create_disciplinary',l:'Draft & submit disciplinary notices, record refusals and follow-ups'},
       {k:'approve_discipline',l:'Approve or send back somebody else\'s disciplinary notice'},
       {k:'manage_employee_records',l:'Void records & change visibility company-wide'} ] },
+    { group:'Leaderboards', perms:[ {k:'manage_leaderboard',l:'Upload the weekly revenue &amp; battery spreadsheets. Everyone sees the boards; this is only who publishes them'} ] },
     { group:'Users', perms:[ {k:'view_users',l:'View users'}, {k:'manage_users',l:'Add / edit / remove users'} ] },
     { group:'Administration', perms:[ {k:'manage_settings',l:'Company info, AI context, notifications, roles'}, {k:'view_audit',l:'View audit log'}, {k:'view_ai_admin',l:'View AI history / usage'} ] }
   ];
@@ -12016,8 +12023,6 @@ async function renderHomeScreen(el) {
         '<span style="font-size:11px;font-weight:600;white-space:nowrap;margin-left:10px;color:'+(od?'#ef4444':'var(--text-muted-color)')+'">'+(od?'Overdue · ':'')+escHtml(due)+'</span>' +
       '</div>';
     }).join('') : '<div style="text-align:center;padding:20px;color:var(--text-muted-color);font-size:13px">No open tasks assigned to you.</div>';
-    var actionColors = { created:'#f97316', submitted:'#f59e0b', approved:'#22c55e', rejected:'#ef4444', edited:'#888', deleted:'#ef4444', cancelled:'#ef4444', 'order placed':'#a78bfa' };
-
     var attnHtml = '';
     if (isPrivileged) {
       var items = [];
@@ -12060,19 +12065,11 @@ async function renderHomeScreen(el) {
       }
     }
 
-    var activityHtml = (data.activity || []).length ? data.activity.map(function(a) {
-      var col = actionColors[a.action] || '#888';
-      var label = (a.entity_type ? a.entity_type.toUpperCase() + ' ' : '') + (a.entity_number ? a.entity_number + ' ' : '') + a.action;
-      return '<div style="display:flex;gap:10px;padding:8px 0;border-bottom:0.5px solid var(--border-color);align-items:flex-start">' +
-        '<div style="width:7px;height:7px;border-radius:50%;background:' + col + ';margin-top:5px;flex-shrink:0"></div>' +
-        '<div><div style="font-size:12px;color:var(--text-color)">' + escHtml(label) + (a.user_name ? ' <span style="color:var(--text-muted-color)">by ' + escHtml(a.user_name) + '</span>' : '') + '</div>' +
-        // The "why" line. routes/dashboard.js builds a.note from an allowlist
-        // and only sends it to privileged viewers, so there is nothing to gate
-        // here: if the server sent it, it is showable.
-        (a.note ? '<div style="font-size:11px;color:var(--text-muted-color);font-style:italic;margin-top:2px">' + escHtml(a.note) + '</div>' : '') +
-        '<div style="font-size:11px;color:var(--text-muted-color)">' + formatDate(a.created_at) + '</div></div>' +
-      '</div>';
-    }).join('') : '<div style="text-align:center;padding:24px;color:var(--text-muted-color);font-size:13px">No recent activity.</div>';
+    // The Recent Activity feed used to live on the right of the pair below.
+    // Tony pulled it 2026-08-28: an audit trail is not what a crew wants on the
+    // screen they open every morning, and Recent Wins took the slot. The feed
+    // itself is unchanged and still lives on the Audit Log page; the dashboard
+    // route still returns data.activity, which Nova AI reads (lib/novaTools.js).
 
     el.innerHTML =
       '<div style="margin-bottom:24px">' +
@@ -12085,12 +12082,15 @@ async function renderHomeScreen(el) {
       // the one thing on this screen with a deadline attached to it.
       '<div id="home-notice"></div>' +
 
+      // The two weekly boards - top revenue and most batteries sold - filled by
+      // public/js/leaderboard.js from whatever sheet was uploaded last. Above My
+      // Tasks on purpose: it is the first thing Tony wants people to see.
+      '<div id="home-leaders"></div>' +
+
       (can('view_tasks') ? ('<div class="card" style="margin-bottom:24px"><div class="card-body">' +
         '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px"><div style="font-size:15px;font-weight:700">My Tasks</div>' +
         '<span style="font-size:12px;color:var(--primary);cursor:pointer" onclick="navigate(\'tasks\')">View all</span></div>' + myTasksHtml +
       '</div></div>') : '') +
-
-      '<div id="home-wins"></div>' +
 
       '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:12px;margin-bottom:24px">' +
         ((isPrivileged && can('view_vr')) ? '<div class="card" style="cursor:pointer" onclick="navigate(\'vr-dashboard\')"><div class="card-body" style="text-align:center;padding:16px">' +
@@ -12112,13 +12112,17 @@ async function renderHomeScreen(el) {
           '<div style="font-size:12px;color:var(--text-muted-color);margin-top:4px">Inspections Due</div></div></div>' : '') +
       '</div>' +
 
-      '<div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-bottom:24px">' +
+      // #home-pair is addressed by employeeRecords.js: with no wins to show it
+      // collapses this row to one column so Needs Approval does not sit beside
+      // an empty half.
+      '<div id="home-pair" style="display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-bottom:24px">' +
         '<div class="card"><div class="card-header"><span class="card-title">' + (isPrivileged ? 'Needs Approval' : 'My Open Items') + '</span>' +
           (pendingCount > 0 && isPrivileged ? '<span style="background:#f59e0b;color:#1a1000;font-size:11px;font-weight:700;padding:2px 8px;border-radius:10px">' + pendingCount + '</span>' : '') +
         '</div><div class="card-body" style="padding:0 16px">' + attnHtml + '</div></div>' +
-        '<div class="card"><div class="card-header"><span class="card-title">Recent Activity</span>' +
-          '<button class="btn btn-secondary btn-sm" onclick="navigate(\'audit\')" style="font-size:11px">View all</button>' +
-        '</div><div class="card-body" style="padding:0 16px">' + activityHtml + '</div></div>' +
+        // Recent Wins, filled by public/js/employeeRecords.js. It renders its own
+        // card into this slot, or leaves it empty when there is nothing to show -
+        // an empty half of the row beats a card saying nobody did anything.
+        '<div id="home-wins"></div>' +
       '</div>' +
 
       '<div style="margin-bottom:8px;font-size:11px;color:var(--text-muted-color);text-transform:uppercase;letter-spacing:0.6px">Quick actions</div>' +

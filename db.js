@@ -5895,6 +5895,79 @@ async function initDB() {
 
     console.log('COI: account_coi_requirements + account_coi_certificates + coi_renewal_cycles + coi_renewal_items + account_documents ready.');
 
+    // ---- Weekly leaderboards -------------------------------------------
+    // Two Home-screen cards: top revenue generators and most batteries sold,
+    // for one week. The numbers come from a spreadsheet somebody uploads on
+    // Monday, NOT from anything Nova can compute -- revenue lives in Pulsar and
+    // batteries are counted at the counter, so there is no query that could
+    // produce either. That is the whole reason this table exists.
+    //
+    // One published row per (metric, week_start): re-uploading the same week
+    // REPLACES it (routes/leaderboard.js deletes and re-inserts inside one
+    // transaction). Uploading the wrong file is the single most likely mistake
+    // here, and the fix has to be "upload the right one", not "call Tony".
+    await client.query(
+      'CREATE TABLE IF NOT EXISTS leaderboard_weeks (' +
+      '  id SERIAL PRIMARY KEY,' +
+      '  metric VARCHAR(20) NOT NULL,' +
+      '  week_start DATE NOT NULL,' +
+      '  file_name VARCHAR(255),' +
+      '  file_hash VARCHAR(64),' +
+      '  sheet_name VARCHAR(255),' +
+      '  name_column VARCHAR(255),' +
+      '  value_column VARCHAR(255),' +
+      '  city_column VARCHAR(255),' +
+      '  row_count INTEGER DEFAULT 0,' +
+      '  matched_count INTEGER DEFAULT 0,' +
+      '  total_value NUMERIC(14,2) DEFAULT 0,' +
+      '  uploaded_by INTEGER,' +
+      '  uploaded_by_name VARCHAR(255),' +
+      '  created_at TIMESTAMPTZ DEFAULT NOW(),' +
+      '  updated_at TIMESTAMPTZ DEFAULT NOW()' +
+      ');'
+    );
+    var _lbwCols = ['metric VARCHAR(20)', 'week_start DATE', 'file_name VARCHAR(255)',
+      'file_hash VARCHAR(64)', 'sheet_name VARCHAR(255)', 'name_column VARCHAR(255)',
+      'value_column VARCHAR(255)', 'city_column VARCHAR(255)', 'row_count INTEGER DEFAULT 0',
+      'matched_count INTEGER DEFAULT 0', 'total_value NUMERIC(14,2) DEFAULT 0',
+      'uploaded_by INTEGER', 'uploaded_by_name VARCHAR(255)',
+      'created_at TIMESTAMPTZ DEFAULT NOW()', 'updated_at TIMESTAMPTZ DEFAULT NOW()'];
+    for (var _lbwi = 0; _lbwi < _lbwCols.length; _lbwi++) {
+      await client.query('ALTER TABLE leaderboard_weeks ADD COLUMN IF NOT EXISTS ' + _lbwCols[_lbwi] + ';');
+    }
+    // The uniqueness is the contract the Home cards rely on: "the latest week
+    // for this metric" has to be one row, not a pile of half-corrected uploads.
+    await client.query('CREATE UNIQUE INDEX IF NOT EXISTS leaderboard_weeks_metric_week_idx ON leaderboard_weeks (metric, week_start);');
+    await client.query('CREATE INDEX IF NOT EXISTS leaderboard_weeks_recent_idx ON leaderboard_weeks (metric, week_start DESC);');
+
+    // One row per person named in the sheet. raw_name is kept EXACTLY as the
+    // file spelled it even when user_id matched, so a wrong match can be seen
+    // and corrected later; the display name comes from users.name when linked,
+    // so renaming somebody in Users moves the board with them.
+    await client.query(
+      'CREATE TABLE IF NOT EXISTS leaderboard_entries (' +
+      '  id SERIAL PRIMARY KEY,' +
+      '  week_id INTEGER NOT NULL REFERENCES leaderboard_weeks(id) ON DELETE CASCADE,' +
+      '  rank INTEGER NOT NULL,' +
+      '  user_id INTEGER REFERENCES users(id) ON DELETE SET NULL,' +
+      '  raw_name VARCHAR(255) NOT NULL,' +
+      '  match_tier INTEGER,' +
+      '  value NUMERIC(14,2) NOT NULL DEFAULT 0,' +
+      '  city_code VARCHAR(10),' +
+      '  created_at TIMESTAMPTZ DEFAULT NOW()' +
+      ');'
+    );
+    var _lbeCols = ['week_id INTEGER', 'rank INTEGER', 'user_id INTEGER', 'raw_name VARCHAR(255)',
+      'match_tier INTEGER', 'value NUMERIC(14,2) NOT NULL DEFAULT 0', 'city_code VARCHAR(10)',
+      'created_at TIMESTAMPTZ DEFAULT NOW()'];
+    for (var _lbei = 0; _lbei < _lbeCols.length; _lbei++) {
+      await client.query('ALTER TABLE leaderboard_entries ADD COLUMN IF NOT EXISTS ' + _lbeCols[_lbei] + ';');
+    }
+    await client.query('CREATE INDEX IF NOT EXISTS leaderboard_entries_week_idx ON leaderboard_entries (week_id, rank);');
+    await client.query('CREATE INDEX IF NOT EXISTS leaderboard_entries_user_idx ON leaderboard_entries (user_id);');
+
+    console.log('Leaderboards: leaderboard_weeks + leaderboard_entries ready.');
+
     console.log('Database initialized');
   } finally {
     client.release();
