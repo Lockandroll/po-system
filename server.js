@@ -34,6 +34,7 @@ const { startApJobs } = require('./jobs/ap');
 const { startWebhookRetry } = require('./jobs/webhookRetry');
 const { startCheckinSweeper, startCheckinRetention } = require('./jobs/checkins');
 const { startEmployeeRecords, startWinDigest } = require('./jobs/employeeRecords');
+const { startKudosPush } = require('./jobs/kudosPush');
 // Guarded on purpose. utils/jobHealth.js and routes/jobHealth.js are NEW files, and
 // a new file that does not make it into the commit is how this repo has broken a
 // deploy before. A diagnostics module must never be the thing that stops Nova from
@@ -542,7 +543,8 @@ function startScheduledJobs() {
   _startJob('startCheckinRetention', startCheckinRetention);
   _startJob('startEmployeeRecords', startEmployeeRecords);
   _startJob('startWinDigest', startWinDigest);
-  console.log('[boot] scheduled jobs started (' + 35 + ')');
+  _startJob('startKudosPush', startKudosPush);
+  console.log('[boot] scheduled jobs started (' + 36 + ')');
 }
 
 initDB()

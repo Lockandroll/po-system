@@ -369,7 +369,40 @@
       '.er-pol-h b{font-size:13px;color:var(--text)}',
       '.er-pol-q{font-size:12.5px;color:var(--text-dim);line-height:1.6;border-left:2px solid #6d28d9;padding-left:10px;font-style:italic}',
       '.er-pol-w{font-size:12px;color:var(--text-muted-color);margin-top:7px;line-height:1.55}',
-      '.er-pol-note{font-size:11.5px;color:var(--text-muted-color);line-height:1.5}'
+      '.er-pol-note{font-size:11.5px;color:var(--text-muted-color);line-height:1.5}',
+      // ---- kudos ----
+      '.er-kud-row{display:flex;align-items:center;gap:10px;margin-top:9px;flex-wrap:wrap}',
+      '.er-kud{display:inline-flex;align-items:center;gap:6px;font-family:inherit;font-size:12px;font-weight:600;',
+      '  padding:5px 11px;border-radius:20px;background:#111c14;border:1px solid #1d4429;color:#6ee7a0;cursor:pointer}',
+      '.er-kud:hover{background:#16281c;border-color:#2f7a4d}',
+      '.er-kud:disabled{cursor:default}',
+      '.er-kud.sent{background:#123020;border-color:#2f7a4d;color:#8ef0b4}',
+      '.er-kud.given{background:#0e1a12;border-color:#1d4429;color:#4d8a63;cursor:default}',
+      '.er-kud.given:hover{background:#0e1a12;border-color:#1d4429}',
+      '.er-ktally{font-size:11.5px;color:var(--text-muted-color)}',
+      '.er-ktally b{color:#6ee7a0;font-weight:700}',
+      '.er-klock{display:inline-flex;align-items:center;gap:4px;font-size:10px;font-weight:700;letter-spacing:.05em;',
+      '  color:#5c6b60;border:1px solid #1f2b23;border-radius:4px;padding:1px 6px}',
+      '.er-cel-ov{position:fixed;inset:0;background:rgba(0,0,0,.62);z-index:2600;display:flex;align-items:center;',
+      '  justify-content:center;padding:24px}',
+      '.er-cel{position:relative;width:100%;max-width:520px;max-height:90vh;overflow-y:auto;background:var(--bg-card);',
+      '  border:1px solid #1d4429;border-radius:12px;box-shadow:0 18px 50px rgba(0,0,0,.6)}',
+      '.er-cel-top{background:linear-gradient(180deg,#10251a 0%,var(--bg-card) 100%);padding:26px 26px 20px;',
+      '  text-align:center;border-bottom:1px solid #1d4429}',
+      '.er-cel-top .em{font-size:40px;line-height:1}',
+      '.er-cel-top h4{font-size:21px;font-weight:800;color:var(--text);margin:12px 0 6px}',
+      '.er-cel-top p{font-size:13px;color:var(--text-dim);line-height:1.6;margin:0}',
+      '.er-cel-faces{display:flex;justify-content:center;margin-top:16px}',
+      '.er-cel-faces .avatar{width:38px;height:38px;font-size:13px;border:2px solid var(--bg-card);margin-left:-8px}',
+      '.er-cel-faces .avatar:first-child{margin-left:0}',
+      '.er-cel-faces .more{background:#374151;color:#9ca3af}',
+      '.er-cel-body{padding:20px 26px 24px}',
+      '.er-cel-q{background:var(--bg);border:1px solid var(--border);border-left:3px solid #22c55e;border-radius:6px;',
+      '  padding:12px 14px;font-size:13px;color:var(--text-dim);line-height:1.6;white-space:pre-wrap}',
+      '.er-cel-q b{color:var(--text)}',
+      '.er-cel-names{font-size:12.5px;color:var(--text-muted-color);margin-top:14px;line-height:1.6}',
+      '.er-cel-names b{color:var(--text-dim);font-weight:600}',
+      '.er-cel-foot{display:flex;justify-content:flex-end;padding:0 26px 24px}'
     ].join('\n');
     document.head.appendChild(st);
   }
@@ -2142,6 +2175,9 @@
       await origHome(host);
       try { await fillWins(); } catch (e) {}
       try { await fillNotice(); } catch (e) {}
+      // Last, and deliberately so: the celebration is a dialog over the finished
+      // home screen, not a thing that lands while it is still drawing itself.
+      try { await fillKudos(); } catch (e) {}
     };
   }
 
@@ -2195,7 +2231,7 @@
         (w.city ? ' <span class="er-city">' + esc(w.city) + '</span>' : '') +
         (w.category ? ' <span class="cat">&middot; ' + esc(w.category) + '</span>' : '') +
         (w.is_me ? '<span class="er-you">YOU</span>' : '') + '</div>' +
-        '<div class="txt">' + esc(w.body || '') + '</div>' + by + '</div></div>';
+        '<div class="txt">' + esc(w.body || '') + '</div>' + by + kudosRowHtml(w) + '</div></div>';
     }).join('')
       : '<div style="padding:16px 0;font-size:13px;color:var(--text-muted-color);line-height:1.6">' +
         'Nothing here yet. Caught somebody doing good work? Send them a shout-out.</div>';
@@ -2311,6 +2347,261 @@
       '<button class="btn btn-primary" onclick="navigate(&#39;my-documents&#39;)">Open my file</button>' +
       '</div></div>';
   }
+
+  // ==================================================================
+  // KUDOS
+  // ==================================================================
+  //
+  // The one-tap reaction under a win. Three surfaces:
+  //
+  //   the pill        - on every win the viewer is allowed to press
+  //   the tally       - count + names, drawn ONLY for the person the win is
+  //                     about and for anybody holding view_employee_records.
+  //                     The server decides that; kudos_count is simply absent
+  //                     from the payload for everybody else, so there is no
+  //                     client-side rule here that could be wrong.
+  //   the celebration - a dialog on the recipient's next home screen.
+  //
+  // The rule that shapes all three: A ZERO IS NEVER DRAWN. No "0 kudos", no
+  // empty celebration, no push about nothing. A win nobody has pressed looks
+  // exactly like a win nobody has scrolled to, because the alternative is
+  // publishing which compliments fell flat.
+
+  function firstName(n) { return String(n || '').trim().split(/\s+/)[0] || ''; }
+
+  // The row under the credit line. Returns '' - not an empty div - when there is
+  // nothing to say, so a win with no button and no tally keeps its old spacing.
+  function kudosRowHtml(w) {
+    var bits = [];
+    if (w.kudos_open) {
+      bits.push(w.kudos_mine
+        ? '<button class="er-kud given" disabled>&#10003; You gave kudos</button>'
+        : '<button class="er-kud" onclick="erGiveKudos(' + w.id + ',this)">&#128079; Send kudos</button>');
+    }
+    if (w.kudos_count) {
+      var names = (w.kudos_from || []).slice(0, 4).map(firstName).filter(Boolean);
+      var more = w.kudos_count - names.length;
+      bits.push('<span class="er-ktally">&#128079; <b>' + w.kudos_count + ' kudos</b>' +
+        (names.length ? ' <span>from ' + esc(names.join(', ')) + (more > 0 ? ' +' + more : '') + '</span>' : '') +
+        '</span>');
+      // Said out loud on the row, because somebody looking at a number on a
+      // shared screen deserves to know who else can see it.
+      bits.push('<span class="er-klock">&#128274; ' +
+        (w.is_me ? 'ONLY YOU &amp; MANAGERS SEE THIS' : 'NOT SHOWN TO EVERYONE') + '</span>');
+    }
+    if (!bits.length) return '';
+    return '<div class="er-kud-row">' + bits.join('') + '</div>';
+  }
+
+  window.erGiveKudos = async function (id, btn) {
+    if (!btn || btn.disabled) return;
+    btn.disabled = true;
+    var d = null;
+    try {
+      d = await api('POST', API + '/wins/' + id + '/kudos', {});
+    } catch (e) {
+      // Put the button back. The one thing that must not happen is a pill that
+      // says nothing and does nothing.
+      btn.disabled = false;
+      toast((e && e.message) || 'Could not send the kudos.', 'error');
+      return;
+    }
+    btn.className = 'er-kud sent';
+    btn.innerHTML = '&#10003; Kudos sent';
+    confettiFrom(btn);
+
+    var row = btn.parentNode;
+    if (!row) return;
+    var tally = row.querySelector('.er-ktally');
+    if (d && d.kudos_count != null && tally) {
+      // Only somebody already entitled to the number gets one back.
+      tally.innerHTML = '&#128079; <b>' + d.kudos_count + ' kudos</b>';
+    } else if (!tally) {
+      // Everybody else gets the thing they actually want to know: that it landed.
+      var note = document.createElement('span');
+      note.className = 'er-ktally';
+      note.style.color = '#6ee7a0';
+      note.textContent = 'They will see it next time they open Nova.';
+      row.appendChild(note);
+    }
+  };
+
+  // ---- confetti -------------------------------------------------------------
+  //
+  // Hand-rolled on a canvas rather than pulled from a library: there is no build
+  // step here and no bundler, and this is forty lines. Fixed to the viewport so
+  // it can fire from a button in a card or from the middle of a dialog without
+  // either of them needing to become a positioning context.
+  //
+  // Silent, always. Half of these presses happen on a customer&#39;s driveway.
+  function confettiFrom(anchor) {
+    if (!anchor || typeof anchor.getBoundingClientRect !== 'function') return;
+    var r = anchor.getBoundingClientRect();
+    burstAt(r.left + r.width / 2, r.top + r.height / 2);
+  }
+
+  function burstAt(cx, cy) {
+    try {
+      if (window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches) return;
+    } catch (e) {}
+    if (!document.body || typeof requestAnimationFrame !== 'function') return;
+    var cv = document.createElement('canvas');
+    var ctx = null;
+    try { ctx = cv.getContext('2d'); } catch (e) { return; }
+    if (!ctx) return;
+
+    var dpr = window.devicePixelRatio || 1;
+    var W = window.innerWidth, H = window.innerHeight;
+    cv.width = Math.round(W * dpr);
+    cv.height = Math.round(H * dpr);
+    cv.style.cssText = 'position:fixed;left:0;top:0;width:100%;height:100%;pointer-events:none;z-index:3000';
+    document.body.appendChild(cv);
+    ctx.scale(dpr, dpr);
+
+    var COLORS = ['#f97316', '#22c55e', '#60a5fa', '#f59e0b', '#a855f7', '#f0f0f0', '#ef4444'];
+    var bits = [];
+    for (var i = 0; i < 70; i++) {
+      var a = -Math.PI / 2 + (Math.random() - 0.5) * 2.1;
+      var sp = 3.5 + Math.random() * 7;
+      bits.push({
+        x: cx, y: cy,
+        vx: Math.cos(a) * sp, vy: Math.sin(a) * sp,
+        rot: Math.random() * Math.PI * 2, vr: (Math.random() - 0.5) * 0.4,
+        w: 5 + Math.random() * 4, h: 8 + Math.random() * 5,
+        c: COLORS[(Math.random() * COLORS.length) | 0],
+        round: Math.random() < 0.28
+      });
+    }
+
+    var t0 = Date.now();
+    var LIFE = 1500;
+    function frame() {
+      var age = Date.now() - t0;
+      if (age > LIFE) { if (cv.parentNode) cv.parentNode.removeChild(cv); return; }
+      ctx.clearRect(0, 0, W, H);
+      var fade = age > LIFE - 400 ? (LIFE - age) / 400 : 1;
+      for (var j = 0; j < bits.length; j++) {
+        var b = bits[j];
+        b.vy += 0.22; b.vx *= 0.99; b.vy *= 0.99;
+        b.x += b.vx; b.y += b.vy; b.rot += b.vr;
+        ctx.save();
+        ctx.translate(b.x, b.y);
+        ctx.rotate(b.rot);
+        ctx.globalAlpha = fade;
+        ctx.fillStyle = b.c;
+        if (b.round) { ctx.beginPath(); ctx.arc(0, 0, b.w / 2, 0, 6.2832); ctx.fill(); }
+        else { ctx.fillRect(-b.w / 2, -b.h / 2, b.w, b.h); }
+        ctx.restore();
+      }
+      requestAnimationFrame(frame);
+    }
+    requestAnimationFrame(frame);
+  }
+
+  // ---- the celebration ------------------------------------------------------
+  var CEL = { shown: false, ids: [] };
+
+  async function fillKudos() {
+    if (CEL.shown) return;
+    if (typeof state === 'undefined' || !state || !state.token || !state.user) return;
+    // Never on top of somebody else&#39;s dialog, and never while an admin is
+    // previewing another person with View As - the celebration belongs to the
+    // person it is about, and marking it seen from a preview would spend it.
+    if (state.viewAsId) return;
+    if (document.querySelector('.modal-overlay') || document.querySelector('.er-cel-ov')) return;
+
+    var d;
+    try { d = await api('GET', API + '/kudos/unseen'); } catch (e) { return; }
+    var batches = (d && d.batches) || [];
+    // Rule 1. Nothing to celebrate is not an empty celebration.
+    if (!batches.length) return;
+    CEL.shown = true;
+    injectCss();
+    showCelebration(batches);
+  }
+
+  function showCelebration(batches) {
+    var total = 0, allNames = [], i;
+    for (i = 0; i < batches.length; i++) {
+      total += batches[i].count || 0;
+      allNames = allNames.concat(batches[i].names || []);
+    }
+    if (!total) return;
+    CEL.ids = batches.map(function (b) { return b.record_id; });
+
+    // De-duplicate for the faces: one person who pressed on two of your wins is
+    // one face, not two.
+    var seen = {}, uniq = [];
+    for (i = 0; i < allNames.length; i++) {
+      var n = String(allNames[i] || '').trim();
+      if (!n || seen[n.toLowerCase()]) continue;
+      seen[n.toLowerCase()] = true;
+      uniq.push(n);
+    }
+
+    var faces = uniq.slice(0, 4).map(function (n) {
+      return '<div class="avatar">' + esc(initials(n)) + '</div>';
+    }).join('');
+    if (uniq.length > 4) {
+      faces += '<div class="avatar more">+' + (uniq.length - 4) + '</div>';
+    }
+
+    var blocks = batches.map(function (b) {
+      var head = [];
+      if (b.category) head.push(esc(b.category));
+      if (b.city) head.push(esc(b.city));
+      var names = (b.names || []).filter(Boolean);
+      return '<div class="er-cel-q" style="margin-top:12px">' +
+        (head.length ? '<b>' + head.join(' &middot; ') + '</b><br>' : '') +
+        esc(b.body || '') +
+        (b.by ? '<br><span style="color:var(--text-muted-color);font-size:12px">' +
+          (b.peer ? 'Shout-out from ' : 'Recognized by ') + esc(b.by) + '</span>' : '') +
+        '</div>' +
+        (names.length ? '<div class="er-cel-names">From ' + names.map(function (n) {
+          return '<b>' + esc(n) + '</b>';
+        }).join(', ') + '.</div>' : '');
+    }).join('');
+
+    var ov = document.createElement('div');
+    ov.className = 'er-cel-ov';
+    ov.id = 'er-cel';
+    ov.innerHTML =
+      '<div class="er-cel">' +
+      '<div class="er-cel-top">' +
+      '<div class="em">&#128079;</div>' +
+      '<h4>' + (total === 1 ? 'Somebody gave you kudos' : total + ' people gave you kudos') + '</h4>' +
+      '<p>Your coworkers saw your ' + (batches.length === 1 ? 'win' : 'wins') +
+      ' on the Home screen and hit the button.</p>' +
+      '<div class="er-cel-faces">' + faces + '</div>' +
+      '</div>' +
+      '<div class="er-cel-body">' + blocks + '</div>' +
+      '<div class="er-cel-foot"><button class="btn btn-primary" onclick="erCelDone()">Nice</button></div>' +
+      '</div>';
+    // Clicking the backdrop counts as seeing it. It was on their screen; making
+    // them hunt for the right button to dismiss their own good news is silly.
+    ov.onclick = function (ev) { if (ev.target === ov) window.erCelDone(); };
+    document.body.appendChild(ov);
+
+    var card = ov.firstChild;
+    if (card && card.getBoundingClientRect) {
+      var r = card.getBoundingClientRect();
+      burstAt(r.left + r.width / 2, r.top + 120);
+    }
+  }
+
+  // Dismiss - and ONLY here is seen_at stamped. Not on the fetch. A tab opened
+  // and closed in somebody&#39;s pocket must not spend their confetti.
+  window.erCelDone = async function () {
+    var ov = el('er-cel');
+    if (ov && ov.parentNode) ov.parentNode.removeChild(ov);
+    var ids = CEL.ids.slice();
+    CEL.ids = [];
+    if (!ids.length) return;
+    try { await api('POST', API + '/kudos/seen', { record_ids: ids }); } catch (e) {}
+    // The tally on their own win is now stale by exactly the number they were
+    // just shown. Repaint the card if it is still on screen.
+    try { if (el('home-wins')) await fillWins(); } catch (e) {}
+  };
 
   window.erRefreshWins = fillWins;
   window.erFillNotice = fillNotice;

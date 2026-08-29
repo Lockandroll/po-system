@@ -5755,6 +5755,65 @@ async function initDB() {
     await client.query('CREATE UNIQUE INDEX IF NOT EXISTS shoutouts_one_pending_idx ' +
       "ON shoutouts (from_user_id, to_user_id) WHERE status = 'pending';");
 
+    // ---- Kudos ------------------------------------------------------------
+    //
+    // A one-tap reaction on a Recent Wins row. It is deliberately NOT a record
+    // and never becomes one: nothing in this table is read by employee_records,
+    // nothing here reaches anybody's file, and no approver is involved. That is
+    // the whole reason every signed-in person can press the button while
+    // writing a shout-out still needs submit_shoutout and a manager's release -
+    // a shout-out lands on a permanent file, a kudos lands on a card.
+    //
+    // Three deliberate choices, each of which has a rule behind it:
+    //
+    //  * to_user_id is COPIED off the record rather than joined on read. The
+    //    unseen lookup fires on every home screen paint in the company and has
+    //    to stay one indexed scan.
+    //  * seen_at is stamped when the celebration is DISMISSED, never when it is
+    //    fetched - same reasoning that keeps the notice badge off GET /me. A
+    //    tab opened and closed in somebody's pocket must not spend their
+    //    confetti.
+    //  * pushed_at belongs to the batching job. One push per person per win per
+    //    day, not one buzz per kudos.
+    //
+    // Rule 2 at the top of routes/employeeRecords.js applies here in full:
+    // there is no endpoint that answers "how many kudos has this person
+    // received". Counts exist per WIN, and are shown only to the person the win
+    // is about and to holders of view_employee_records.
+    await client.query(
+      'CREATE TABLE IF NOT EXISTS kudos (' +
+      '  id SERIAL PRIMARY KEY,' +
+      '  record_id INTEGER NOT NULL REFERENCES employee_records(id) ON DELETE CASCADE,' +
+      '  to_user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,' +
+      '  from_user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,' +
+      '  from_name VARCHAR(120),' +
+      '  created_at TIMESTAMPTZ DEFAULT NOW(),' +
+      '  seen_at TIMESTAMPTZ,' +
+      '  pushed_at TIMESTAMPTZ' +
+      ');'
+    );
+    // Same reason as every other table in this file: CREATE TABLE IF NOT EXISTS
+    // does nothing to a table that already exists, so a column added later would
+    // never appear on the live database. Every column is repeated here.
+    var _kuCols = [
+      'record_id INTEGER', 'to_user_id INTEGER', 'from_user_id INTEGER',
+      'from_name VARCHAR(120)', 'created_at TIMESTAMPTZ DEFAULT NOW()',
+      'seen_at TIMESTAMPTZ', 'pushed_at TIMESTAMPTZ'
+    ];
+    for (var _kui = 0; _kui < _kuCols.length; _kui++) {
+      await client.query('ALTER TABLE kudos ADD COLUMN IF NOT EXISTS ' + _kuCols[_kui] + ';');
+    }
+    // One person, one win, one kudos. The route checks first and answers
+    // cheerfully; this index is here because two fast taps on a phone in a
+    // truck are one intention, not two.
+    await client.query('CREATE UNIQUE INDEX IF NOT EXISTS kudos_one_each_idx ON kudos (record_id, from_user_id);');
+    // The celebration lookup. Partial on purpose - the answer is almost always
+    // "none", and that answer should cost nothing.
+    await client.query('CREATE INDEX IF NOT EXISTS kudos_unseen_idx ON kudos (to_user_id) WHERE seen_at IS NULL;');
+    // The batching job's sweep, and the per-win tally.
+    await client.query('CREATE INDEX IF NOT EXISTS kudos_record_idx ON kudos (record_id);');
+    await client.query('CREATE INDEX IF NOT EXISTS kudos_unpushed_idx ON kudos (created_at) WHERE pushed_at IS NULL;');
+
     // ---- Deposit shortages ------------------------------------------------
     //
     // A shortage is NOT the same kind of fact as a late deposit, and this table
@@ -5874,7 +5933,7 @@ async function initDB() {
     console.log('Missed deposits: deposit_missed ready.');
 
 
-    console.log('Employee records: employee_records + employee_record_events + employee_record_attachments + shoutouts + win_digest_runs ready.');
+    console.log('Employee records: employee_records + employee_record_events + employee_record_attachments + shoutouts + kudos + win_digest_runs ready.');
 
     // ---- Certificates of Insurance ---------------------------------------
     //

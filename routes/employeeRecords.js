@@ -1738,31 +1738,260 @@ router.get('/wins', requireAuth, async (req, res) => {
     // the author - crediting the approver would quietly take a coworker's name
     // off their own compliment.
     var sql =
-      'SELECT r.id, r.body, r.category, r.user_id, r.source, r.created_by_name, ' +
+      'SELECT r.id, r.body, r.category, r.user_id, r.source, r.created_by_name, r.created_at, ' +
       'u.name AS employee_name, COALESCE(u.home_city, r.city_code) AS win_city ' +
       'FROM employee_records r JOIN users u ON u.id = r.user_id ' +
       "WHERE r.show_in_wins = true AND r.type = 'recognition' AND r.status = 'active' " +
       'AND u.active IS NOT FALSE ' +
       'ORDER BY r.created_at DESC LIMIT ' + limit;
     const rows = (await pool.query(sql)).rows;
+
+    // The kudos side of the payload.
+    //
+    // Loaded as a second query rather than an aggregate join, because the two
+    // questions have different shapes: the wins query wants the newest rows,
+    // this one wants every giver on them. A LATERAL that returned both a count
+    // and an ordered name array would make the first query unreadable to save a
+    // round trip on three rows.
+    var ids = rows.map(function (r) { return r.id; });
+    var kud = {};
+    if (ids.length) {
+      try {
+        const krows = (await pool.query(
+          'SELECT record_id, from_user_id, from_name FROM kudos WHERE record_id = ANY($1::int[]) ORDER BY id',
+          [ids]
+        )).rows;
+        for (var ki = 0; ki < krows.length; ki++) {
+          var k = krows[ki];
+          if (!kud[k.record_id]) kud[k.record_id] = { count: 0, names: [], mine: false };
+          kud[k.record_id].count++;
+          if (kud[k.record_id].names.length < KUDOS_NAMES_MAX && k.from_name) {
+            kud[k.record_id].names.push(k.from_name);
+          }
+          if (k.from_user_id === req.user.id) kud[k.record_id].mine = true;
+        }
+      } catch (e) {
+        // A missing kudos table on a database that has not run the migration yet
+        // must not take Recent Wins down with it. The card renders without the
+        // pill; the wins themselves are the point.
+        console.error('[employee-records] kudos load failed:', e.message);
+      }
+    }
+
+    // WHO MAY SEE A COUNT. This is the whole visibility rule for kudos and it
+    // lives here, once: the person the win is about, and anybody who can already
+    // read employee records. Everybody else gets the button and never a number.
+    //
+    // That is not squeamishness. Rule 2 at the top of this file says a public
+    // per-person number derived from this module is one join away from being
+    // read as its opposite, and a visible kudos tally is exactly that: three
+    // wins on one screen with 12, 9 and 0 beside them is a ranking of people,
+    // published to the whole company, that nobody agreed to be in.
+    var mayCount = await viewerHasPerm(req, 'view_employee_records');
+    var cutoff = Date.now() - (KUDOS_WINDOW_DAYS * 86400000);
+
     res.json({
       // Kept in the payload but no longer a filter: the card header used to
       // stamp the viewer's own city on a city-scoped list. Now every row carries
       // its own.
       city: null,
       wins: rows.map(function (r) {
-        return {
+        var isMe = r.user_id === req.user.id;
+        var k = kud[r.id] || { count: 0, names: [], mine: false };
+        var out = {
           id: r.id, name: r.employee_name, category: r.category, body: r.body,
           city: r.win_city ? String(r.win_city).trim().toUpperCase() : null,
           by: r.created_by_name || null,
           peer: r.source === 'shoutout',
-          is_me: r.user_id === req.user.id
+          is_me: isMe,
+          // Everybody gets this one: it is the state of their own button, not a
+          // fact about anybody else.
+          kudos_mine: k.mine,
+          // Whether the button draws at all. You cannot congratulate yourself,
+          // and a win old enough that nobody remembers it should not be able to
+          // fire a fresh celebration - see KUDOS_WINDOW_DAYS.
+          kudos_open: !isMe && (!r.created_at || new Date(r.created_at).getTime() >= cutoff)
         };
+        if (isMe || mayCount) {
+          out.kudos_count = k.count;
+          out.kudos_from = k.names;
+        }
+        return out;
       })
     });
   } catch (e) {
     console.error('[employee-records] wins failed:', e);
     res.json({ city: null, wins: [] });
+  }
+});
+
+// ---------------------------------------------------------------- kudos
+//
+// A one-tap reaction on a Recent Wins row, and the shortest surface in this
+// file on purpose.
+//
+// Kudos is NOT a record and never becomes one. It writes to its own table,
+// employee_records never reads it, no approver is involved, and nothing it does
+// can appear on anybody's file. That is what makes it safe to hand the button
+// to every signed-in person while writing a shout-out still needs
+// submit_shoutout and a manager's release: a shout-out lands on a permanent
+// file, a kudos lands on a card.
+//
+// Four rules, all of them load-bearing:
+//
+//   1. NO ZERO IS EVER RENDERED. Not on the card, not in a push, not in the
+//      celebration. A win nobody has pressed must look exactly like a win
+//      nobody has scrolled to yet, because the alternative is publishing which
+//      compliments fell flat.
+//   2. NO LIFETIME TOTAL. There is no route here, and there must never be one,
+//      that answers "how many kudos has this person received". Counts are per
+//      WIN. See Rule 2 at the top of this file.
+//   3. NOBODY CONGRATULATES THEMSELVES. Checked here as well as hidden in the
+//      UI, because the UI is not a gate.
+//   4. SEEN IS STAMPED ON DISMISS, NOT ON FETCH. See POST /kudos/seen.
+
+// How old a win can be and still take a kudos. A month is long enough that a
+// Friday win still collects on Monday and short enough that nobody gets a
+// celebration about something from March. Tony's call; a plain constant rather
+// than a settings key for the same reason SHOUTOUT_MAX_PENDING is one.
+var KUDOS_WINDOW_DAYS = 30;
+
+// How many giver names travel with a win row. The celebration lists everybody;
+// the card lists the first few and a "+n". This only exists so one very popular
+// win cannot make the home screen payload unbounded.
+var KUDOS_NAMES_MAX = 40;
+
+// Give one.
+//
+// requireAuth and nothing else. There is deliberately no give_kudos permission:
+// a permission would ship dark like everything else in this module (CLAUDE.md
+// section 1.5) and the button would be invisible to the entire company until
+// somebody remembered to tick a box - which is exactly how the shout-out button
+// spent its first week.
+router.post('/wins/:id/kudos', requireAuth, async (req, res) => {
+  try {
+    var id = parseInt(req.params.id, 10) || 0;
+    // The win must still BE a win. Same clause the card reads with, so a
+    // recognition that was voided or un-shared between the paint and the tap
+    // cannot take a kudos - and the person hears "that win is no longer showing"
+    // rather than silently pressing into a void.
+    const rr = await pool.query(
+      'SELECT r.id, r.user_id, r.created_at FROM employee_records r JOIN users u ON u.id = r.user_id ' +
+      "WHERE r.id = $1 AND r.type = 'recognition' AND r.status = 'active' " +
+      'AND r.show_in_wins = true AND u.active IS NOT FALSE',
+      [id]
+    );
+    if (!rr.rows.length) return res.status(404).json({ error: 'That win is no longer showing.' });
+    var rec = rr.rows[0];
+
+    if (rec.user_id === req.user.id) {
+      return res.status(400).json({ error: 'You cannot give yourself kudos.' });
+    }
+    if (rec.created_at && (Date.now() - new Date(rec.created_at).getTime()) > KUDOS_WINDOW_DAYS * 86400000) {
+      return res.status(400).json({ error: 'That win is more than ' + KUDOS_WINDOW_DAYS + ' days old.' });
+    }
+
+    // ON CONFLICT DO NOTHING plus a cheerful answer either way. A second tap is
+    // not an error to show somebody - it is the same intention arriving twice,
+    // usually from one finger on a truck dashboard.
+    await pool.query(
+      'INSERT INTO kudos (record_id, to_user_id, from_user_id, from_name) VALUES ($1,$2,$3,$4) ' +
+      'ON CONFLICT (record_id, from_user_id) DO NOTHING',
+      [rec.id, rec.user_id, req.user.id, req.user.name || null]
+    );
+
+    var out = { success: true, kudos_mine: true };
+    // The count comes back only to somebody already allowed to see it - the same
+    // gate GET /wins uses. The giver is not, by giving, entitled to the tally.
+    if (await viewerHasPerm(req, 'view_employee_records')) {
+      const c = await pool.query('SELECT COUNT(*)::int AS n FROM kudos WHERE record_id = $1', [rec.id]);
+      out.kudos_count = c.rows[0].n;
+    }
+    res.json(out);
+  } catch (e) {
+    console.error('[employee-records] kudos failed:', e);
+    res.status(500).json({ error: 'Could not send the kudos.' });
+  }
+});
+
+// What is waiting for ME.
+//
+// Grouped by win, because the celebration is about a win rather than about a
+// pile of taps: "7 people gave you kudos for your Customer service win" is a
+// thing to be pleased about; "7 kudos" is a score.
+//
+// visible_to_employee is in the WHERE clause, not decoration. If a manager
+// un-shares a recognition after people have pressed the button, the kudos stay
+// in the table but the celebration stops quoting text the employee is no longer
+// meant to read.
+router.get('/kudos/unseen', requireAuth, async (req, res) => {
+  try {
+    const rows = (await pool.query(
+      'SELECT k.record_id, k.from_name, r.body, r.category, r.created_by_name, r.source, ' +
+      'COALESCE(u.home_city, r.city_code) AS win_city ' +
+      'FROM kudos k JOIN employee_records r ON r.id = k.record_id ' +
+      'JOIN users u ON u.id = r.user_id ' +
+      'WHERE k.to_user_id = $1 AND k.seen_at IS NULL ' +
+      "AND r.status = 'active' AND r.visible_to_employee = true " +
+      'ORDER BY k.record_id, k.id',
+      [req.user.id]
+    )).rows;
+
+    var byRec = {};
+    var order = [];
+    for (var i = 0; i < rows.length; i++) {
+      var r = rows[i];
+      if (!byRec[r.record_id]) {
+        byRec[r.record_id] = {
+          record_id: r.record_id,
+          body: r.body,
+          category: r.category,
+          city: r.win_city ? String(r.win_city).trim().toUpperCase() : null,
+          by: r.created_by_name || null,
+          peer: r.source === 'shoutout',
+          count: 0,
+          names: []
+        };
+        order.push(r.record_id);
+      }
+      byRec[r.record_id].count++;
+      if (r.from_name && byRec[r.record_id].names.length < KUDOS_NAMES_MAX) {
+        byRec[r.record_id].names.push(r.from_name);
+      }
+    }
+    res.json({ batches: order.map(function (id) { return byRec[id]; }) });
+  } catch (e) {
+    // Same failure posture as /wins: a home screen must not break because a
+    // celebration could not be looked up.
+    console.error('[employee-records] kudos unseen failed:', e.message);
+    res.json({ batches: [] });
+  }
+});
+
+// Mark them seen.
+//
+// Called when the celebration is DISMISSED, never when it is fetched, and that
+// is the entire reason this is a separate route instead of a side effect of the
+// GET above. It is the same reasoning that keeps the pending-notice badge off
+// GET /me: a screen that marks itself delivered merely by being drawn will
+// spend somebody's confetti on a tab that was opened and closed in a pocket.
+router.post('/kudos/seen', requireAuth, async (req, res) => {
+  try {
+    var ids = Array.isArray(req.body && req.body.record_ids)
+      ? req.body.record_ids.map(function (n) { return parseInt(n, 10) || 0; }).filter(Boolean)
+      : null;
+    if (ids && ids.length) {
+      await pool.query(
+        'UPDATE kudos SET seen_at = NOW() WHERE to_user_id = $1 AND seen_at IS NULL AND record_id = ANY($2::int[])',
+        [req.user.id, ids]
+      );
+    } else {
+      await pool.query('UPDATE kudos SET seen_at = NOW() WHERE to_user_id = $1 AND seen_at IS NULL', [req.user.id]);
+    }
+    res.json({ success: true });
+  } catch (e) {
+    console.error('[employee-records] kudos seen failed:', e);
+    res.status(500).json({ error: 'Could not save that.' });
   }
 });
 
@@ -2081,3 +2310,5 @@ module.exports.SIGN_WINDOW_DAYS = SIGN_WINDOW_DAYS;
 module.exports.REMIND_EVERY_DAYS = REMIND_EVERY_DAYS;
 module.exports.levelLabel = levelLabel;
 module.exports.SHOUTOUT_MAX_PENDING = SHOUTOUT_MAX_PENDING;
+module.exports.KUDOS_WINDOW_DAYS = KUDOS_WINDOW_DAYS;
+module.exports.KUDOS_NAMES_MAX = KUDOS_NAMES_MAX;
