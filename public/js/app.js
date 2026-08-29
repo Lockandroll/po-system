@@ -2,7 +2,7 @@
 // public/sw.js (the only thing bumped each deploy) — the badge asks the active
 // service worker for it at runtime. This value is just the fallback shown when no
 // service worker is available (e.g. very first visit before it installs).
-var APP_VERSION = 'v433';
+var APP_VERSION = 'v434';
 var _resolvedAppVersion = null;
 
 // Ask the active service worker for its CACHE_VERSION (without the 'nova-' prefix).
@@ -3399,6 +3399,31 @@ async function renderRoles(el) {
       {k:'create_disciplinary',l:'Draft & submit disciplinary notices, record refusals and follow-ups'},
       {k:'approve_discipline',l:'Approve or send back somebody else\'s disciplinary notice'},
       {k:'manage_employee_records',l:'Void records & change visibility company-wide'} ] },
+    // Deliberately its OWN group with NO gate, rather than a sixth row inside
+    // Employee Records above. That group is gated on view_employee_records, and
+    // a gated row is rendered DISABLED for any role that does not hold the gate
+    // - which is every role submit_shoutout is actually meant for. Filed under
+    // Employee Records it would have looked present and been permanently
+    // untickable for locksmiths, dispatchers and techs.
+    //
+    // This row was missing entirely until 2026-08-29. The permission has existed
+    // in ALL_PERMS since peer shout-outs shipped, utils/permissions.js told
+    // people to "tick the box in Roles & Access", and there was no box: the
+    // button was invisible to the whole company with no way to turn it on short
+    // of a deploy. test-perm-rows.js now fails if any permission goes the same
+    // way again.
+    { group:'Peer Shout-outs', perms:[ {k:'submit_shoutout',l:'Send a shout-out about a coworker - a manager still reads it before it posts. (Kudos on the Recent Wins card needs no permission; everybody can already press that.)'} ] },
+    // Same omission as submit_shoutout above, found by test-perm-rows.js on the
+    // same day. utils/permissions.js says releases ship dark "until Tony ticks
+    // the box in Roles & Access" - there was no box either.
+    { group:'Release of Liability', gate:'view_releases', perms:[
+      {k:'view_releases',l:'See releases of liability and where each one stands'},
+      {k:'manage_releases',l:'Create, send, remind & void releases. Countersigning is NOT here - it is limited to the representative named on the form'} ] },
+    // view_sync only. manage_sync carries the inbound webhook token and stays
+    // admin/owner-only by design (CLAUDE.md 1.5), which is why it has no row and
+    // is on the allowlist in test-perm-rows.js instead.
+    { group:'Inbound Sync', perms:[
+      {k:'view_sync',l:'Read the webhook sources, event log and rejections. Creating sources and replaying events stays admin-only'} ] },
     { group:'Leaderboards', perms:[ {k:'manage_leaderboard',l:'Upload the weekly revenue &amp; battery spreadsheets. Everyone sees the boards; this is only who publishes them'} ] },
     { group:'Users', perms:[ {k:'view_users',l:'View users'}, {k:'manage_users',l:'Add / edit / remove users'} ] },
     { group:'Administration', perms:[ {k:'manage_settings',l:'Company info, AI context, notifications, roles'}, {k:'view_audit',l:'View audit log'}, {k:'view_ai_admin',l:'View AI history / usage'} ] }
